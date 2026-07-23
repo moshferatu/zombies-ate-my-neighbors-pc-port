@@ -13,6 +13,10 @@ build/
 *.sfc
 *.smc
 
+# Music / audio output; never commit copyrighted content.
+*.spc
+*.wav
+
 # Analysis output. Derived from the user's ROM and quoting it verbatim (the
 # CDL, the .db runs in every listing), so it is regenerated, never committed.
 # See docs/analysis-tools.md for the commands.

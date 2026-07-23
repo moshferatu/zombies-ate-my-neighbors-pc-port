@@ -128,3 +128,16 @@ $80:C9A5  object_list_parse    # +$20 object list -> object_x/_y/_type arrays
 $80:CD20  lzss_decompress      # 4K-window LZSS; ring buffer at lzss_ring
 $80:CDDA  lzss_read_byte
 $80:CDEB  lzss_write_byte
+
+# --- Code: audio (SPC700 driver upload and command port) ---------------------
+$80:CB1A  apu_boot             # stages the driver image into $7F:0000, then uploads it
+$80:CB61  apu_ipl_upload       # SNES boot-ROM protocol; [$18] = block list
+$80:CBD9  apu_play_song        # A = song data set, X = sample set (record +$32/+$34)
+$80:CBFD  apu_load_sfx_bank    # A = data set, then command $0D
+$80:CC13  apu_cmd_01_32        # play sound $32
+$80:CC27  apu_cmd_02_32        # play sound $32 on the second channel
+$80:CC3B  apu_play_sfx         # A = sound effect id
+$80:CC6F  apu_select_and_load  # sends command $08, falls into apu_load_set
+$80:CC7C  apu_load_set         # A = data set index -> uploads it byte by byte
+$80:CCBF  apu_next_byte        # reads and advances [$18]
+$80:CCC8  apu_send             # X = command -> $2142, A = parameter -> $2141

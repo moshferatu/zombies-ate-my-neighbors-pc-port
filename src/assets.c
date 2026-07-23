@@ -37,6 +37,7 @@
 #include "assets/gfx.h"
 #include "assets/level.h"
 #include "assets/lzss.h"
+#include "assets/music.h"
 #include "assets/rom.h"
 #include "assets/sprite.h"
 
@@ -613,10 +614,12 @@ static void print_header(const LevelHeader* h, int level) {
          h->start_x1, h->start_y1, h->start_x2, h->start_y2);
   printf("  max scroll       x $%04X  y $%04X\n",
          level_max_scroll_x(h), level_max_scroll_y(h));
+  printf("  music            song %u, sample set %u (APU data sets %u and %u)\n",
+         h->song, h->sample_set, h->song, MUSIC_SET_SAMPLES + h->sample_set);
   printf("  unidentified     +$18 $%04X  +$1A $%04X  +$1C $%04X  +$1E $%04X\n"
-         "                   +$20 $%04X  +$28 $%04X  +$32 $%04X  +$34 $%04X\n",
+         "                   +$20 $%04X  +$28 $%04X\n",
          h->unknown_18, h->unknown_1a, h->list_1c, h->list_1e,
-         h->list_20, h->unknown_28, h->unknown_32, h->unknown_34);
+         h->list_20, h->unknown_28);
 }
 
 // Draw the expanded map with its own characters and palette. Mode 1 BG1 is
@@ -1744,6 +1747,728 @@ static int cmd_verify_sprites(int argc, char** argv) {
 }
 
 // ---------------------------------------------------------------------------
+// music: report the APU data sets and what each level plays
+// ---------------------------------------------------------------------------
+
+static const char* music_set_kind(int index) {
+  if (index == MUSIC_SET_DRIVER) return "driver + samples";
+  if (index == MUSIC_SET_SFX) return "sound effects";
+  if (index >= MUSIC_SET_SAMPLES) return "sample set";
+  return "song";
+}
+
+static int cmd_music(int argc, char** argv) {
+  if (argc < 1) {
+    fprintf(stderr, "usage: zamn_assets music <rom.sfc>\n");
+    return 2;
+  }
+  int rom_len = 0;
+  uint8_t* rom_data = read_file(argv[0], &rom_len);
+  if (!rom_data) return 1;
+  Rom rom = {rom_data, (uint32_t)rom_len};
+
+  printf("APU data sets — table at %s\n\n", addr_str(MUSIC_TABLE_ADDR));
+
+  uint8_t* image = (uint8_t*)malloc(MUSIC_DRIVER_BYTES);
+  MusicSet driver;
+  int err = image ? music_driver_image(&rom, image, MUSIC_DRIVER_BYTES) : MUSIC_ERR_SIZE;
+  if (err == MUSIC_OK) err = music_driver_blocks(image, MUSIC_DRIVER_BYTES, &driver);
+  if (err != MUSIC_OK) {
+    fprintf(stderr, "error: driver image does not decode (%d)\n", err);
+    free(image);
+    free(rom_data);
+    return 1;
+  }
+  printf("  [ 0] %s  %-16s  %s + %s, %u bytes staged\n",
+         addr_str(MUSIC_DRIVER_STAGE_ADDR), music_set_kind(0),
+         addr_str(MUSIC_DRIVER_PART0_ADDR), addr_str(MUSIC_DRIVER_PART1_ADDR),
+         (unsigned)MUSIC_DRIVER_BYTES);
+  for (int i = 0; i < driver.count; i++)
+    printf("       block %d: %5u bytes -> SPC $%04X\n", i, driver.blocks[i].bytes,
+           driver.blocks[i].dest);
+  printf("       execute at SPC $%04X\n\n", driver.exec);
+
+  for (int i = 1; i < MUSIC_SET_COUNT; i++) {
+    MusicSet set;
+    if (music_set_read(&rom, i, &set) != MUSIC_OK) {
+      uint32_t addr = 0;
+      music_set_addr(&rom, i, &addr);
+      printf("  [%2d] %s  does not decode\n", i, addr_str(addr));
+      continue;
+    }
+    printf("  [%2d] %s  %-16s  %2d block%s, %5u bytes  (ends %s)\n", i,
+           addr_str(set.addr), music_set_kind(i), set.count,
+           set.count == 1 ? " " : "s", set.payload_bytes,
+           addr_str(set.addr + set.stream_bytes));
+  }
+
+  printf("\nPer level (record +$32 song, +$34 sample set):\n");
+  for (int level = LEVEL_FIRST; level < LEVEL_FIRST + LEVEL_COUNT; level++) {
+    uint32_t addr = 0;
+    LevelHeader h;
+    if (!level_record_addr(&rom, level, &addr)) continue;
+    if (level_header_read(&rom, addr, &h) != LEVEL_OK) continue;
+    printf("  level %2d  song %2u  samples %u (set %2u)%s", level, h.song,
+           h.sample_set, MUSIC_SET_SAMPLES + h.sample_set,
+           level % 3 == 0 ? "\n" : "   ");
+  }
+  printf("\n");
+
+  free(image);
+  free(rom_data);
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// spc: dump a level's music as a playable .spc file
+// ---------------------------------------------------------------------------
+
+// Unlike a level or a metasprite, a song cannot be decoded to an artifact
+// straight out of the ROM: the bytes go to the SPC700 one at a time through the
+// driver's command port, and it is the *driver* that decides where they land.
+// There is no address to point a decoder at.
+//
+// So this does what the verifiers do — runs the ROM under the reference core —
+// and then dumps the APU. The one liberty it takes is overriding the arguments
+// of the game's own `$80:CBD9` call, which is what lets any of the 56 levels'
+// music be reached without playing to that level.
+
+#define SPC_PLAY_SONG 0x80cbd9  // A = song data set, X = sample set
+#define SPC_PLAY_SONG_RTL 0x80cbfc
+
+// SPC file layout (v0.30, text ID666). 66048 bytes.
+#define SPC_FILE_BYTES 0x10200
+#define SPC_OFF_RAM 0x100
+#define SPC_OFF_DSP 0x10100
+#define SPC_OFF_IPL 0x101c0
+
+static void spc_put(uint8_t* f, uint32_t off, const char* s, uint32_t field) {
+  size_t n = strlen(s);
+  if (n > field) n = field;  // ID666 text fields are padded, not terminated
+  memcpy(f + off, s, n);
+}
+
+static bool spc_write_file(const char* path, Snes* snes, const char* song_title,
+                           const char* comment) {
+  Apu* apu = snes->apu;
+  uint8_t* f = (uint8_t*)calloc(1, SPC_FILE_BYTES);
+  if (!f) return false;
+
+  memcpy(f, "SNES-SPC700 Sound File Data v0.30", 33);
+  f[0x21] = 0x1a;
+  f[0x22] = 0x1a;
+  f[0x23] = 26;  // 26 = an ID666 tag follows
+  f[0x24] = 30;  // version minor
+
+  // SPC700 register file, exactly as the core has it.
+  f[0x25] = (uint8_t)(apu->spc->pc & 0xff);
+  f[0x26] = (uint8_t)(apu->spc->pc >> 8);
+  f[0x27] = apu->spc->a;
+  f[0x28] = apu->spc->x;
+  f[0x29] = apu->spc->y;
+  f[0x2a] = (uint8_t)(apu->spc->n << 7 | apu->spc->v << 6 | apu->spc->p << 5 |
+                      apu->spc->b << 4 | apu->spc->h << 3 | apu->spc->i << 2 |
+                      apu->spc->z << 1 | apu->spc->c);
+  f[0x2b] = apu->spc->sp;
+
+  spc_put(f, 0x2e, song_title, 32);
+  spc_put(f, 0x4e, "Zombies Ate My Neighbors", 32);
+  spc_put(f, 0x6e, "zamn_assets", 16);
+  spc_put(f, 0x7e, comment, 32);
+  spc_put(f, 0xa9, "180", 3);    // seconds before fade
+  spc_put(f, 0xac, "10000", 5);  // fade length, ms
+  f[0xd2] = 0;                   // emulator: unknown
+
+  memcpy(f + SPC_OFF_RAM, apu->ram, 0x10000);
+  memcpy(f + SPC_OFF_DSP, apu->dsp->ram, 0x80);
+
+  // The boot ROM is private to the core, but its own SPC-side read handler
+  // returns it while `romReadable` is set — which the driver clears once it is
+  // running, so ask with the flag restored afterwards.
+  bool rom_was = apu->romReadable;
+  apu->romReadable = true;
+  for (uint32_t i = 0; i < 0x40; i++) f[SPC_OFF_IPL + i] = apu_spcRead(apu, (uint16_t)(0xffc0 + i));
+  apu->romReadable = rom_was;
+
+  FILE* out = fopen(path, "wb");
+  if (!out) { free(f); return false; }
+  bool ok = fwrite(f, 1, SPC_FILE_BYTES, out) == SPC_FILE_BYTES;
+  fclose(out);
+  free(f);
+  return ok;
+}
+
+// 48 kHz stereo, the rate `src/main_sdl.c` runs the core's audio at.
+#define SPC_WAV_RATE 48000
+#define SPC_WAV_FRAME_SAMPLES (SPC_WAV_RATE / 60)
+
+static void wav_u32(uint8_t* p, uint32_t v) {
+  p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8);
+  p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+static bool spc_write_wav(const char* path, const int16_t* samples, uint32_t frames) {
+  uint32_t data_bytes = frames * 2 * 2;  // stereo, 16-bit
+  uint8_t hdr[44];
+  memcpy(hdr, "RIFF", 4);
+  wav_u32(hdr + 4, 36 + data_bytes);
+  memcpy(hdr + 8, "WAVEfmt ", 8);
+  wav_u32(hdr + 16, 16);      // fmt chunk size
+  hdr[20] = 1; hdr[21] = 0;   // PCM
+  hdr[22] = 2; hdr[23] = 0;   // stereo
+  wav_u32(hdr + 24, SPC_WAV_RATE);
+  wav_u32(hdr + 28, SPC_WAV_RATE * 4);  // byte rate
+  hdr[32] = 4; hdr[33] = 0;   // block align
+  hdr[34] = 16; hdr[35] = 0;  // bits per sample
+  memcpy(hdr + 36, "data", 4);
+  wav_u32(hdr + 40, data_bytes);
+
+  FILE* f = fopen(path, "wb");
+  if (!f) return false;
+  bool ok = fwrite(hdr, 1, sizeof hdr, f) == sizeof hdr &&
+            fwrite(samples, 1, data_bytes, f) == data_bytes;
+  fclose(f);
+  return ok;
+}
+
+static struct {
+  int song, sample_set;
+  bool hijacked, done;
+  int done_frame;
+} sc;
+
+static void spc_step(Snes* snes) {
+  Cpu* cpu = snes->cpu;
+  if (!cpu->resetWanted && !cpu->stopped && !cpu->waiting && !cpu->intWanted) {
+    uint32_t pc = ((uint32_t)cpu->k << 16) | cpu->pc;
+    if (pc == SPC_PLAY_SONG && !sc.hijacked) {
+      // The game is about to load whatever the current screen wants. Swap in
+      // the sets we were asked for and let its own routine do the work.
+      cpu->a = (uint16_t)sc.song;
+      cpu->x = (uint16_t)sc.sample_set;
+      sc.hijacked = true;
+    } else if (pc == SPC_PLAY_SONG_RTL && sc.hijacked && !sc.done) {
+      sc.done = true;
+    }
+  }
+  snes_runCpuCycle(snes);
+}
+
+static void spc_frame(Snes* snes) {
+  while (snes->inVblank) spc_step(snes);
+  uint32_t frame = snes->frames;
+  while (!snes->inVblank && frame == snes->frames) spc_step(snes);
+  snes_readBBus(snes, 0x40);
+}
+
+static int cmd_spc(int argc, char** argv) {
+  if (argc < 2) {
+    fprintf(stderr,
+            "usage: zamn_assets spc <rom.sfc> <level 1-56> <out.spc> [options]\n\n"
+            "  -m, --movie <file>   input movie to reach the title screen\n"
+            "  -f, --frames <n>     frame budget (default 1600)\n"
+            "      --settle <n>     frames to run after the song starts (default 12)\n"
+            "      --song <n>       override the song data set (2-11)\n"
+            "      --samples <n>    override the sample set (0-3)\n"
+            "      --wav <file>     also render audio to a .wav\n"
+            "      --seconds <n>    how much to render (default 30)\n");
+    return 2;
+  }
+  const char* rom_path = argv[0];
+  int level = atoi(argv[1]);
+  const char* out_path = argc > 2 && argv[2][0] != '-' ? argv[2] : NULL;
+  const char* movie_path = NULL;
+  const char* wav_path = NULL;
+  int frames = 1600, settle = 12, song = -1, samples = -1, seconds = 30;
+
+  for (int i = out_path ? 3 : 2; i < argc; i++) {
+    bool has_next = i + 1 < argc;
+    if ((!strcmp(argv[i], "-m") || !strcmp(argv[i], "--movie")) && has_next) movie_path = argv[++i];
+    else if ((!strcmp(argv[i], "-f") || !strcmp(argv[i], "--frames")) && has_next) frames = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--settle") && has_next) settle = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--song") && has_next) song = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--samples") && has_next) samples = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--wav") && has_next) wav_path = argv[++i];
+    else if (!strcmp(argv[i], "--seconds") && has_next) seconds = atoi(argv[++i]);
+    else { fprintf(stderr, "error: unknown option '%s'\n", argv[i]); return 2; }
+  }
+  if (!out_path && !wav_path) { fprintf(stderr, "error: no output path\n"); return 2; }
+  if (seconds < 1) seconds = 1;
+
+  int rom_len = 0;
+  uint8_t* rom_data = read_file(rom_path, &rom_len);
+  if (!rom_data) return 1;
+
+  Snes* snes = snes_init();
+  if (!snes_loadRom(snes, rom_data, rom_len)) {
+    fprintf(stderr, "error: core rejected ROM\n");
+    return 1;
+  }
+  Rom rom = {snes->cart->rom, snes->cart->romSize};
+
+  // The level record names both sets; either can be overridden to reach a song
+  // no level uses.
+  uint32_t addr = 0;
+  LevelHeader h;
+  if (!level_record_addr(&rom, level, &addr) || level_header_read(&rom, addr, &h) != LEVEL_OK) {
+    fprintf(stderr, "error: level %d has no record\n", level);
+    return 1;
+  }
+  sc.song = song >= 0 ? song : h.song;
+  sc.sample_set = samples >= 0 ? samples : h.sample_set;
+  if (sc.song < MUSIC_SONG_FIRST || sc.song > MUSIC_SONG_LAST) {
+    fprintf(stderr, "error: song %d is not a song data set (%d-%d)\n", sc.song,
+            MUSIC_SONG_FIRST, MUSIC_SONG_LAST);
+    return 1;
+  }
+  if (sc.sample_set < 0 || sc.sample_set >= MUSIC_SAMPLE_SET_COUNT) {
+    fprintf(stderr, "error: sample set %d is out of range (0-%d)\n", sc.sample_set,
+            MUSIC_SAMPLE_SET_COUNT - 1);
+    return 1;
+  }
+
+  Movie movie;
+  bool have_movie = false;
+  if (movie_path) {
+    if (!movie_load(&movie, movie_path)) {
+      fprintf(stderr, "error: cannot load movie '%s'\n", movie_path);
+      return 1;
+    }
+    have_movie = true;
+  }
+
+  printf("Level %d (record %s): song %d, sample set %d (APU data sets %d and %d)\n",
+         level, addr_str(addr), sc.song, sc.sample_set, sc.song,
+         MUSIC_SET_SAMPLES + sc.sample_set);
+
+  snes_reset(snes, true);
+  int used = 0;
+  for (; used < frames; used++) {
+    if (have_movie) {
+      uint16_t buttons = movie_state(&movie, used);
+      for (int b = 0; b < 12; b++) snes_setButtonState(snes, 1, b, (buttons >> b) & 1);
+    }
+    spc_frame(snes);
+    if (sc.done) {
+      if (sc.done_frame == 0) sc.done_frame = used;
+      if (used - sc.done_frame >= settle) break;
+    }
+  }
+
+  if (!sc.done) {
+    fprintf(stderr,
+            "error: the game never called $80:CBD9 in %d frames — raise -f, or\n"
+            "       pass a movie that reaches the title screen\n",
+            frames);
+    return 1;
+  }
+
+  printf("Upload finished at frame %d; dumped %d frames later.\n", sc.done_frame, settle);
+
+  if (out_path) {
+    char title[64], comment[64];
+    snprintf(title, sizeof title, "Level %d (song %d)", level, sc.song);
+    snprintf(comment, sizeof comment, "samples %d, dumped frame %d", sc.sample_set, used);
+    if (!spc_write_file(out_path, snes, title, comment)) {
+      fprintf(stderr, "error: cannot write '%s'\n", out_path);
+      return 1;
+    }
+    printf("Wrote %s (%d bytes)\n", out_path, SPC_FILE_BYTES);
+  }
+
+  // Keep running and collect what the emulated DSP actually produces. The game
+  // sits on whatever screen it was on, so a stray sound effect can land in the
+  // recording — the .spc is the clean artifact, this one is the audible one.
+  if (wav_path) {
+    uint32_t want = (uint32_t)seconds * 60;
+    int16_t* pcm = (int16_t*)malloc((size_t)want * SPC_WAV_FRAME_SAMPLES * 2 * sizeof(int16_t));
+    if (!pcm) { fprintf(stderr, "error: out of memory\n"); return 1; }
+    for (uint32_t i = 0; i < want; i++) {
+      spc_frame(snes);
+      snes_setSamples(snes, pcm + (size_t)i * SPC_WAV_FRAME_SAMPLES * 2, SPC_WAV_FRAME_SAMPLES);
+    }
+    if (!spc_write_wav(wav_path, pcm, want * SPC_WAV_FRAME_SAMPLES)) {
+      fprintf(stderr, "error: cannot write '%s'\n", wav_path);
+      free(pcm);
+      return 1;
+    }
+    printf("Wrote %s (%d seconds, %d Hz stereo)\n", wav_path, seconds, SPC_WAV_RATE);
+    free(pcm);
+  }
+
+  if (have_movie) movie_free(&movie);
+  snes_free(snes);
+  free(rom_data);
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// verify-music: diff our upload against the bytes the game puts on the APU bus
+// ---------------------------------------------------------------------------
+
+// The IPL upload in `$80:CB61`. Both stores are observed at the instruction
+// that performs them, so what is captured is what reaches the ports.
+#define MU_IPL_BLOCK 0x80cba9  // STA $2142 (16-bit): A = destination, X = length
+#define MU_IPL_DATA 0x80cb8c   // STA $2140 (16-bit): A = data << 8 | boot counter
+
+// The staging `MVN`s in `$80:CB1A` are done by here (`$80:CB32` is the PLB).
+#define MU_STAGED 0x80cb33
+
+// The data-set uploader `$80:CC7C` and the RTS that ends it, plus the single
+// command send `$80:CCC8` — hooked at its `STX $2142`, where X is the command
+// and A the parameter.
+#define MU_UPLOAD_ENTRY 0x80cc7c
+#define MU_UPLOAD_RET 0x80cca0
+#define MU_SEND 0x80ccd1
+
+#define MU_MAX_CMDS 16384
+
+static struct {
+  Rom rom;
+
+  // The IPL upload, reassembled from the port writes.
+  uint8_t* ipl_bytes;
+  uint32_t ipl_len;
+  MusicBlock ipl_blocks[MUSIC_MAX_BLOCKS];
+  int ipl_count;
+  uint16_t ipl_exec;
+  bool ipl_done;
+
+  bool staged_ok, staged_seen;
+
+  // One data-set upload in flight.
+  bool active;
+  int index;
+  uint16_t sp;
+  uint16_t got[MU_MAX_CMDS];  // cmd << 8 | param
+  uint32_t got_count;
+  bool got_overflow;
+
+  uint16_t want[MU_MAX_CMDS];
+  uint32_t want_count;
+  bool want_overflow;
+
+  int uploads, uploads_ok;
+  int seen_sets[MUSIC_SET_COUNT];
+
+  // Every command sent outside an upload — the play/select traffic.
+  uint16_t other[64];
+  int other_count;
+
+  int checks, failures;
+} mu;
+
+static void mu_check(const char* what, bool ok, const char* detail) {
+  mu.checks++;
+  if (!ok) mu.failures++;
+  printf("  %-46s %s%s%s\n", what, ok ? "OK" : "FAIL",
+         detail && *detail ? "  " : "", detail ? detail : "");
+}
+
+static void mu_want(uint8_t cmd, uint8_t param, void* ctx) {
+  (void)ctx;
+  if (mu.want_count >= MU_MAX_CMDS) { mu.want_overflow = true; return; }
+  mu.want[mu.want_count++] = (uint16_t)(cmd << 8 | param);
+}
+
+static void mu_upload_end(void) {
+  mu.active = false;
+  mu.uploads++;
+  if (mu.index >= 0 && mu.index < MUSIC_SET_COUNT) mu.seen_sets[mu.index]++;
+
+  mu.want_count = 0;
+  mu.want_overflow = false;
+  // `select` is false: the leading $08 is sent by $80:CC6F before $80:CC7C is
+  // entered, so it falls outside the window being captured here.
+  int err = music_upload(&mu.rom, mu.index, false, mu_want, NULL);
+
+  if (err != MUSIC_OK) {
+    mu.failures++;
+    printf("  MISMATCH  set %d does not decode (%d)\n", mu.index, err);
+    return;
+  }
+  if (mu.got_overflow || mu.want_overflow) {
+    mu.failures++;
+    printf("  MISMATCH  set %d: command buffer overflowed (%u captured)\n", mu.index,
+           mu.got_count);
+    return;
+  }
+  if (mu.got_count == mu.want_count &&
+      memcmp(mu.got, mu.want, mu.got_count * sizeof mu.got[0]) == 0) {
+    mu.uploads_ok++;
+    return;
+  }
+
+  mu.failures++;
+  printf("  MISMATCH  set %d: ROM sent %u commands, ours %u\n", mu.index, mu.got_count,
+         mu.want_count);
+  uint32_t n = mu.got_count < mu.want_count ? mu.got_count : mu.want_count;
+  for (uint32_t i = 0, shown = 0; i < n && shown < 8; i++) {
+    if (mu.got[i] == mu.want[i]) continue;
+    printf("            command %u: ROM $%02X/$%02X, ours $%02X/$%02X\n", i,
+           mu.got[i] >> 8, mu.got[i] & 0xff, mu.want[i] >> 8, mu.want[i] & 0xff);
+    shown++;
+  }
+}
+
+static void music_step(Snes* snes) {
+  Cpu* cpu = snes->cpu;
+  if (!cpu->resetWanted && !cpu->stopped && !cpu->waiting && !cpu->intWanted) {
+    uint32_t pc = ((uint32_t)cpu->k << 16) | cpu->pc;
+    switch (pc) {
+      case MU_STAGED:
+        if (!mu.staged_seen) {
+          mu.staged_seen = true;
+          uint8_t* ours = (uint8_t*)malloc(MUSIC_DRIVER_BYTES);
+          uint8_t* theirs = (uint8_t*)malloc(MUSIC_DRIVER_BYTES);
+          mu.staged_ok = ours && theirs &&
+                         music_driver_image(&mu.rom, ours, MUSIC_DRIVER_BYTES) == MUSIC_OK &&
+                         wram_block(snes, MUSIC_DRIVER_STAGE_ADDR, MUSIC_DRIVER_BYTES, theirs) &&
+                         memcmp(ours, theirs, MUSIC_DRIVER_BYTES) == 0;
+          free(ours);
+          free(theirs);
+        }
+        break;
+
+      case MU_IPL_BLOCK:
+        // A is the destination word, X the length. A zero length ends the list
+        // and the "destination" is the entry point instead ($80:CBAE).
+        if (!mu.ipl_done) {
+          if (cpu->x == 0) {
+            mu.ipl_exec = (uint16_t)cpu->a;
+            mu.ipl_done = true;
+          } else if (mu.ipl_count < MUSIC_MAX_BLOCKS) {
+            mu.ipl_blocks[mu.ipl_count].bytes = (uint16_t)cpu->x;
+            mu.ipl_blocks[mu.ipl_count].dest = (uint16_t)cpu->a;
+            mu.ipl_blocks[mu.ipl_count].addr = MUSIC_DRIVER_STAGE_ADDR + mu.ipl_len;
+            mu.ipl_count++;
+          }
+        }
+        break;
+
+      case MU_IPL_DATA:
+        // 16-bit store: the payload byte is A's high half, the boot ROM's
+        // handshake counter its low half.
+        if (mu.ipl_bytes && mu.ipl_len < MUSIC_DRIVER_BYTES)
+          mu.ipl_bytes[mu.ipl_len++] = (uint8_t)(cpu->a >> 8);
+        break;
+
+      case MU_UPLOAD_ENTRY:
+        mu.active = true;
+        mu.index = (int)(cpu->a & 0xff);  // $80:CC7E masks it the same way
+        mu.sp = cpu->sp;
+        mu.got_count = 0;
+        mu.got_overflow = false;
+        break;
+
+      case MU_UPLOAD_RET:
+        if (mu.active && cpu->sp == mu.sp) mu_upload_end();
+        break;
+
+      case MU_SEND: {
+        uint16_t pair = (uint16_t)((cpu->x & 0xff) << 8 | (cpu->a & 0xff));
+        if (mu.active) {
+          if (mu.got_count < MU_MAX_CMDS) mu.got[mu.got_count++] = pair;
+          else mu.got_overflow = true;
+        } else if (mu.other_count < (int)(sizeof mu.other / sizeof mu.other[0])) {
+          mu.other[mu.other_count++] = pair;
+        }
+        break;
+      }
+      default: break;
+    }
+  }
+  snes_runCpuCycle(snes);
+}
+
+static void music_frame(Snes* snes) {
+  while (snes->inVblank) music_step(snes);
+  uint32_t frame = snes->frames;
+  while (!snes->inVblank && frame == snes->frames) music_step(snes);
+  snes_readBBus(snes, 0x40);
+}
+
+// The 15 data sets and the driver never overlap in ROM, and each one's stream
+// ends exactly where the next begins. That is only true if every block length
+// in every set is read correctly, so it checks the whole walk at once — without
+// running anything.
+static void music_check_layout(void) {
+  struct { uint32_t start, end; int index; } span[MUSIC_SET_COUNT];
+  int n = 0;
+  bool decoded = true;
+
+  for (int i = 1; i < MUSIC_SET_COUNT; i++) {
+    MusicSet set;
+    if (music_set_read(&mu.rom, i, &set) != MUSIC_OK) { decoded = false; continue; }
+    span[n].start = set.addr;
+    span[n].end = set.addr + set.stream_bytes;
+    span[n].index = i;
+    n++;
+  }
+  mu_check("all 15 data sets decode", decoded && n == MUSIC_SET_COUNT - 1, "");
+
+  bool overlap = false;
+  int abutting = 0;
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j < n; j++) {
+      if (i == j) continue;
+      if (span[i].start < span[j].end && span[j].start < span[i].end) overlap = true;
+      if (span[i].end == span[j].start) abutting++;
+    }
+  }
+  char detail[64];
+  snprintf(detail, sizeof detail, "%d of %d sets abut the next", abutting, n);
+  mu_check("data sets do not overlap in ROM", !overlap, detail);
+
+  // The driver image's block list has to account for every staged byte: the
+  // ROM copies a fixed length, so a short or long walk would leave a remainder.
+  uint8_t* image = (uint8_t*)malloc(MUSIC_DRIVER_BYTES);
+  MusicSet driver;
+  bool ok = image && music_driver_image(&mu.rom, image, MUSIC_DRIVER_BYTES) == MUSIC_OK &&
+            music_driver_blocks(image, MUSIC_DRIVER_BYTES, &driver) == MUSIC_OK &&
+            driver.stream_bytes == MUSIC_DRIVER_BYTES;
+  snprintf(detail, sizeof detail, "%u bytes, no remainder", (unsigned)MUSIC_DRIVER_BYTES);
+  mu_check("driver image blocks consume it exactly", ok, detail);
+  free(image);
+
+  // Every level names a song in 2..11 and one of the four sample sets. Nothing
+  // in the record says so — this is the range the decode implies, checked
+  // against all 56 records.
+  bool in_range = true;
+  for (int level = LEVEL_FIRST; level < LEVEL_FIRST + LEVEL_COUNT; level++) {
+    uint32_t addr = 0;
+    LevelHeader h;
+    if (!level_record_addr(&mu.rom, level, &addr)) { in_range = false; continue; }
+    if (level_header_read(&mu.rom, addr, &h) != LEVEL_OK) { in_range = false; continue; }
+    if (h.song < MUSIC_SONG_FIRST || h.song > MUSIC_SONG_LAST) in_range = false;
+    if (h.sample_set >= MUSIC_SAMPLE_SET_COUNT) in_range = false;
+  }
+  mu_check("all 56 levels name a song and a sample set", in_range,
+           "+$32 in 2..11, +$34 in 0..3");
+}
+
+static int cmd_verify_music(int argc, char** argv) {
+  if (argc < 1) {
+    fprintf(stderr, "usage: zamn_assets verify-music <rom.sfc> [-m movie] [-f frames]\n");
+    return 2;
+  }
+  const char* rom_path = argv[0];
+  const char* movie_path = NULL;
+  int frames = 2400;
+
+  for (int i = 1; i < argc; i++) {
+    bool has_next = i + 1 < argc;
+    if ((!strcmp(argv[i], "-m") || !strcmp(argv[i], "--movie")) && has_next) movie_path = argv[++i];
+    else if ((!strcmp(argv[i], "-f") || !strcmp(argv[i], "--frames")) && has_next) frames = atoi(argv[++i]);
+    else { fprintf(stderr, "error: unknown option '%s'\n", argv[i]); return 2; }
+  }
+
+  int rom_len = 0;
+  uint8_t* rom_data = read_file(rom_path, &rom_len);
+  if (!rom_data) return 1;
+
+  Snes* snes = snes_init();
+  if (!snes_loadRom(snes, rom_data, rom_len)) {
+    fprintf(stderr, "error: core rejected ROM\n");
+    return 1;
+  }
+  mu.rom.data = snes->cart->rom;
+  mu.rom.size = snes->cart->romSize;
+  mu.ipl_bytes = (uint8_t*)malloc(MUSIC_DRIVER_BYTES);
+  if (!mu.ipl_bytes) { fprintf(stderr, "error: out of memory\n"); return 1; }
+
+  Movie movie;
+  bool have_movie = false;
+  if (movie_path) {
+    if (!movie_load(&movie, movie_path)) {
+      fprintf(stderr, "error: cannot load movie '%s'\n", movie_path);
+      return 1;
+    }
+    have_movie = true;
+  }
+
+  printf("Static layout:\n");
+  music_check_layout();
+
+  snes_reset(snes, true);
+  printf("\nReplaying %d frames of '%s' and diffing every APU upload.\n\n", frames,
+         movie_path ? movie_path : "(no input)");
+
+  for (int frame = 0; frame < frames; frame++) {
+    if (have_movie) {
+      uint16_t buttons = movie_state(&movie, frame);
+      for (int b = 0; b < 12; b++) snes_setButtonState(snes, 1, b, (buttons >> b) & 1);
+    }
+    music_frame(snes);
+  }
+
+  // The boot upload: the staged image, the block list, and every byte of it.
+  printf("Driver upload ($80:CB61, SNES IPL protocol):\n");
+  mu_check("staged image matches ours", mu.staged_seen && mu.staged_ok,
+           mu.staged_seen ? "$7F:0000, 39558 bytes" : "never staged");
+
+  uint8_t* image = (uint8_t*)malloc(MUSIC_DRIVER_BYTES);
+  MusicSet driver;
+  bool parsed = image && music_driver_image(&mu.rom, image, MUSIC_DRIVER_BYTES) == MUSIC_OK &&
+                music_driver_blocks(image, MUSIC_DRIVER_BYTES, &driver) == MUSIC_OK;
+  bool blocks_ok = parsed && mu.ipl_done && driver.count == mu.ipl_count &&
+                   driver.exec == mu.ipl_exec;
+  for (int i = 0; parsed && i < driver.count && i < mu.ipl_count; i++) {
+    if (driver.blocks[i].bytes != mu.ipl_blocks[i].bytes ||
+        driver.blocks[i].dest != mu.ipl_blocks[i].dest)
+      blocks_ok = false;
+  }
+  char detail[96];
+  snprintf(detail, sizeof detail, "%d blocks, entry $%04X", mu.ipl_count, mu.ipl_exec);
+  mu_check("block list matches the writes to $2142", blocks_ok, detail);
+  for (int i = 0; i < mu.ipl_count; i++)
+    printf("      block %d: %5u bytes -> SPC $%04X\n", i, mu.ipl_blocks[i].bytes,
+           mu.ipl_blocks[i].dest);
+
+  // Every byte handed to the boot ROM, reassembled from the $2140 stores. The
+  // block payloads are the image minus its four-byte headers.
+  bool bytes_ok = parsed && mu.ipl_len == driver.payload_bytes;
+  for (int i = 0, at = 0; bytes_ok && i < driver.count; i++) {
+    uint32_t off = driver.blocks[i].addr - MUSIC_DRIVER_STAGE_ADDR;
+    if (memcmp(mu.ipl_bytes + at, image + off, driver.blocks[i].bytes) != 0) bytes_ok = false;
+    at += driver.blocks[i].bytes;
+  }
+  snprintf(detail, sizeof detail, "%u of %u payload bytes", mu.ipl_len,
+           parsed ? driver.payload_bytes : 0);
+  mu_check("every byte sent to $2141 matches ours", bytes_ok, detail);
+  free(image);
+
+  printf("\nData-set uploads ($80:CC7C, through the driver's command port):\n");
+  for (int i = 1; i < MUSIC_SET_COUNT; i++) {
+    if (!mu.seen_sets[i]) continue;
+    MusicSet set;
+    if (music_set_read(&mu.rom, i, &set) != MUSIC_OK) continue;
+    printf("      set %2d  %-16s  %2d block%s  %5u bytes  x%d\n", i, music_set_kind(i),
+           set.count, set.count == 1 ? " " : "s", set.payload_bytes, mu.seen_sets[i]);
+  }
+  snprintf(detail, sizeof detail, "%d of %d uploads byte-identical", mu.uploads_ok,
+           mu.uploads);
+  mu_check("command stream matches the ROM's", mu.uploads > 0 && mu.uploads_ok == mu.uploads,
+           detail);
+
+  // Not a check — the evidence for what the other commands are, and the seed
+  // for naming the ones still unidentified.
+  printf("\n%d command%s sent outside an upload:\n", mu.other_count,
+         mu.other_count == 1 ? "" : "s");
+  for (int i = 0; i < mu.other_count; i++)
+    printf("      $%02X param $%02X\n", mu.other[i] >> 8, mu.other[i] & 0xff);
+
+  printf("\n%d check%s, %d failed.\n", mu.checks, mu.checks == 1 ? "" : "s", mu.failures);
+
+  int rc = mu.failures > 0 ? 1 : 0;
+  free(mu.ipl_bytes);
+  if (have_movie) movie_free(&movie);
+  snes_free(snes);
+  free(rom_data);
+  return rc;
+}
+
+// ---------------------------------------------------------------------------
 
 static void usage(void) {
   fprintf(stderr,
@@ -1770,6 +2495,13 @@ static void usage(void) {
           "  zamn_assets verify-sprites <rom.sfc> [-m movie] [-f frames]\n"
           "      Replay a movie and diff every OAM entry the game builds\n"
           "      against the same metasprites composed in C.\n\n"
+          "  zamn_assets music <rom.sfc>\n"
+          "      Report the 16 APU data sets and the song each level plays.\n\n"
+          "  zamn_assets spc <rom.sfc> <level 1-56> <out.spc> [options]\n"
+          "      Dump a level's music as a playable .spc ('spc' for options).\n\n"
+          "  zamn_assets verify-music <rom.sfc> [-m movie] [-f frames]\n"
+          "      Replay a movie and diff every byte and command the game puts\n"
+          "      on the APU ports against the same uploads driven from C.\n\n"
           "  zamn_assets decompress <rom.sfc> <bank:addr> <out.bin>\n"
           "      Decompress one LZSS stream.\n\n"
           "  zamn_assets gfx <rom.sfc> <bank:addr> <out.png> [options]\n"
@@ -1789,6 +2521,9 @@ int main(int argc, char** argv) {
   if (!strcmp(cmd, "sprite")) return cmd_sprite(argc - 2, argv + 2);
   if (!strcmp(cmd, "frame")) return cmd_frame(argc - 2, argv + 2);
   if (!strcmp(cmd, "verify-sprites")) return cmd_verify_sprites(argc - 2, argv + 2);
+  if (!strcmp(cmd, "music")) return cmd_music(argc - 2, argv + 2);
+  if (!strcmp(cmd, "spc")) return cmd_spc(argc - 2, argv + 2);
+  if (!strcmp(cmd, "verify-music")) return cmd_verify_music(argc - 2, argv + 2);
   if (!strcmp(cmd, "decompress")) return cmd_decompress(argc - 2, argv + 2);
   if (!strcmp(cmd, "gfx")) return cmd_gfx(argc - 2, argv + 2);
   if (!strcmp(cmd, "palette")) return cmd_palette(argc - 2, argv + 2);

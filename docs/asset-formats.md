@@ -150,11 +150,12 @@ opening playable level (`movies/level1.zmv`) is **entry 2**, record `$9F:9060`.
 | `$22` / `$24` | `cols` / `rows` | level size **in blocks** |
 | `$26` | `priority_below` | tiles below this index get BG priority forced on |
 | `$2A`-`$30` | starts | the two players' spawn X/Y |
+| `$32` / `$34` | `song` / `sample_set` | which APU data sets to load — see *Music* |
 
 Each pointer is a `(16-bit address, 16-bit bank)` pair, which is how the loader
 at `$80:86A2` reads them. Fields `$1C`/`$1E`/`$20` are bank-`$9F` addresses of
 the three **placement lists** (actors, victims, objects) — decoded below.
-Fields `$18`,`$1A`,`$28`,`$32`,`$34` are still unidentified.
+Fields `$18`,`$1A`,`$28` are still unidentified.
 
 ### The three pieces
 
@@ -403,6 +404,179 @@ An independent cross-check: the pieces of `$8F:E889` name frames `$A17`-`$A1C`,
 whose addresses `$8E:8B80`-`$8E:8E00` are exactly the sprite uploads
 `analysis/dma_log.csv` records at frame 987 — and it draws the word "PASSWORD".
 
+## Music and sound — verified against the bytes on the APU bus
+
+ZAMN keeps its entire audio program on the SPC700. The 65816 never touches a
+note: it uploads a driver, uploads data for it to play, and sends one-byte
+commands. Since the port keeps the SPC700 and DSP emulated (PLAN.md, Phase 4),
+that CPU-side traffic **is** the format the port has to reproduce — get the same
+bytes onto the same ports in the same order and the original audio comes out by
+construction.
+
+Ported in `src/assets/music.c`, checked by `zamn_assets verify-music`.
+
+### The data-set table — `$80:CCDE`
+
+Sixteen 4-byte entries, each a 24-bit address plus a zero pad;`$80:CC7C` indexes
+it with `index * 4` and loads the bank and the address as two separate words.
+
+| Index | Contents |
+| --- | --- |
+| 0 | the sound driver and its samples |
+| 1 | the sound-effect bank — 50 blocks, loaded once at boot by `$80:8611` |
+| 2-11 | songs |
+| 12-15 | sample sets |
+
+The 15 ROM-resident sets are packed end to end and never overlap; several start
+exactly where the previous one's terminator ends, which is what makes the block
+walk checkable without running anything. Set 2 ends at `$97:AFC4` — the
+uncompressed tile source used as an example further up — so that address is the
+boundary between the audio data and the graphics that follow it.
+
+### Entry 0 — the driver, uploaded by the IPL boot ROM
+
+The driver image is not contiguous in ROM. `$80:CB1A` gathers it with two `MVN`
+block moves — `$91:8000` (`$8000` bytes) then `$95:BA3D` (`$1A86` bytes) — into
+WRAM at `$7F:0000`, which is why entry 0 of the table is a WRAM address and not
+a cartridge one. `$80:CB61` then uploads it with the stock SNES boot-ROM
+protocol (`$BBAA` handshake on `$2140`, payload byte in `$2141`, destination in
+`$2142`/`$2143`).
+
+Its layout is the boot ROM's own: `[len16][dest16][len bytes]` repeated, ending
+at a zero length whose second word is the entry point instead of a destination.
+The shipped image is two blocks and accounts for every one of its 39,558 bytes:
+
+| Block | Bytes | SPC destination |
+| --- | --- | --- |
+| 0 | 2,999 | `$0600` — the driver |
+| 1 | 36,547 | `$1340` — samples |
+| — | — | execute at `$0600` |
+
+### Entries 1-15 — uploaded through the running driver
+
+Once the driver is live the boot ROM is gone, so the rest goes over the driver's
+own command port, one byte per command. These streams have **no** destination
+words — the driver decides where bytes land — so the format is just
+`[len16][len bytes]` repeated until a zero length.
+
+Only the sound-effect bank has more than one block; every song and sample set is
+a single block.
+
+### The command protocol — `$80:CCC8`
+
+```
+$2142 = command      (X)
+$2141 = parameter    (A)
+$2143 = sequence counter, incremented per command
+```
+
+The CPU spins until the SPC echoes the previous counter back on `$2143` before
+writing the next command, so the stream is strictly ordered and lossless.
+
+| Command | Sent by | Meaning |
+| --- | --- | --- |
+| `$01` | `$80:CC3B` | play sound effect (parameter = id) |
+| `$02` | `$80:CC27` | play sound effect, second channel |
+| `$06` | `$80:CCA9` | one payload byte |
+| `$08` | `$80:CC6F` | the data set about to arrive |
+| `$0A` | `$80:CCA1` | start a block |
+| `$0D` | `$80:CBFD` | the sound-effect bank is loaded |
+| `$14` | `$80:CBF3` | play the song just uploaded |
+
+One wart the port has to reproduce: the parameter `$80:CCA1` sends with `$0A` is
+the block length's two bytes **ORed together**, because the ROM reuses the
+register it tested the length for zero with. It cannot be a usable size and the
+driver almost certainly ignores it, but it goes on the bus, so `music.c` emits
+it (`music_block_param()`).
+
+### Which set a level plays
+
+`$82:AC56` reads `$9F0032,X` and `$9F0034,X` — the level record's `+$32` and
+`+$34`, previously unidentified — and passes them to `$80:CBD9`, which uploads
+the song, then the sample set (adding 12 to the index at `$80:CBEB`), then sends
+`$14`. Across all 56 levels `+$32` is always in `2..11` and `+$34` in `0..3`,
+exactly the ranges the table's layout implies.
+
+### Verification
+
+`zamn_assets verify-music` observes the stores that reach the APU ports — at the
+instructions that perform them, so what is compared is what the hardware sees —
+and reassembles the whole conversation:
+
+```
+build\zamn_assets.exe verify-music "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+```
+
+On `level1.zmv` all 8 checks pass. The staged 39,558-byte driver image in WRAM
+is byte-identical to the one `music_driver_image()` builds from ROM; the block
+list matches the destinations written to `$2142`; all 39,546 payload bytes
+handed to the boot ROM match; and all 5 data-set uploads the movie performs
+(sets 1, 3, 6 and 15 twice) are byte-identical command streams — 23,820
+commands.
+
+Two independent cross-checks:
+
+* the payload bytes those 5 uploads carry sum to **23,766**, which is exactly the
+  number of `$80:CCAB → $80:CCC8` calls `analysis/callgraph.csv` recorded for the
+  same movie;
+* the commands sent *outside* an upload tell the expected story on their own —
+  `$08 $01` / upload / `$0D` at boot (sound effects), then `$08 $03` / song 3 /
+  set 15 / `$14` for the title screen, then `$08 $06` / song 6 / set 15 / `$14`
+  when level 1 loads, which is what record `$9F:9060`'s `+$32`/`+$34` say.
+
+Confirmed non-vacuous twice: simplifying `music_block_param()` to the low byte
+broke exactly the four sets with blocks longer than 255 bytes and left the
+sound-effect bank (whose blocks are all shorter) passing; moving the driver's
+second staging source by one byte broke all three driver checks.
+
+**Not yet exercised:** the movie only reaches sets 1, 3, 6 and 15. The other
+songs and sample sets decode statically and are proven not to overlap, but no
+movie has driven their upload yet.
+
+### Listening to a level's music
+
+There is no static decode for this. A level PNG can be built from ROM bytes
+alone, but a song cannot: the bytes reach the SPC700 one at a time through the
+command port and the **driver** decides where they land, so there is no address
+to point a decoder at. The only way to a playable artifact is to let the ROM
+perform the upload and then capture the APU.
+
+`zamn_assets spc` does that. It boots the game under the reference core and,
+at the game's own `$80:CBD9` call, swaps in the song and sample set you asked
+for — which is what makes all 56 levels reachable without playing to them —
+then dumps SPC RAM, the DSP registers and the SPC700's register file as a
+standard `.spc` file, and/or renders audio to a `.wav`.
+
+```
+:: level 2's music as a .spc, for an SPC player
+build\zamn_assets.exe spc "Zombies Ate My Neighbors.sfc" 2 level2.spc
+
+:: ...and/or as plain audio, no special player needed
+build\zamn_assets.exe spc "Zombies Ate My Neighbors.sfc" 2 level2.spc --wav level2.wav --seconds 60
+
+:: any song, including the two no level uses (1 is sound effects, 10 unused)
+build\zamn_assets.exe spc "Zombies Ate My Neighbors.sfc" 1 song10.spc --song 10
+```
+
+The dump is taken 12 frames after the upload finishes (`--settle`), so the song
+is at its start. Two caveats worth knowing:
+
+* the `.spc` is the clean artifact. The `.wav` is rendered by letting the game
+  keep running, so a stray title-screen sound effect can land in the recording;
+* the driver is *running* when captured, so its RAM is not byte-identical to the
+  ROM image — measured against a dump, block `$0600` differs in **4 bytes** of
+  2,999 and block `$1340` in **9** of 36,547, all of them live variables and
+  sample-directory entries. That the other 99.9% matches is itself good evidence
+  the upload landed correctly.
+
+Checked on dumps of levels 1, 2, 8, 9 and 52: every file is 66,048 bytes with a
+valid header, the SPC700's PC sits inside the driver, the DSP is unmuted with
+all 8 channels carrying volume, and song data lands above the sample block at
+`$AC5F`-`$D92F` and `$E700`-`$FEFE`. Levels 1 and 52 — which share record
+`$9F:83DA` — produce **byte-identical** SPC RAM, while levels with different
+songs differ by 20-27%. Rendered audio is continuous and unclipped for the full
+length, and no two songs share more than 0.2% of their samples.
+
 ## `zamn_assets`
 
 ```
@@ -410,6 +584,9 @@ zamn_assets verify-lzss   <rom.sfc> [-m movie] [-f frames]
 zamn_assets verify-level  <rom.sfc> [-m movie] [-f frames]
 zamn_assets verify-actors <rom.sfc> [-m movie] [-f frames]
 zamn_assets verify-sprites <rom.sfc> [-m movie] [-f frames]
+zamn_assets verify-music  <rom.sfc> [-m movie] [-f frames]
+zamn_assets music         <rom.sfc>
+zamn_assets spc           <rom.sfc> <level 1-56> [out.spc] [--wav f] [options]
 zamn_assets level         <rom.sfc> <level 1-56> [out.png]
 zamn_assets actors        <rom.sfc> <level 1-56>
 zamn_assets sprite        <rom.sfc> <bank:addr> [out.png] [options]
@@ -425,12 +602,10 @@ option list.
 
 ## Not yet decoded
 
-Music/sequence data.
-
-On the actor side, what is left is the *runtime* half. The placement lists say
-where each actor/victim/object starts and what code drives it, and the sprite
-formats above say how any given metasprite draws — but the wiring between them
-is code, not data:
+Every ROM format Phase 2 set out to decode is done. What remains is the *runtime*
+half of the actor system. The placement lists say where each actor/victim/object
+starts and what code drives it, and the sprite formats above say how any given
+metasprite draws — but the wiring between them is code, not data:
 
 * the actor **slot** tables that hold a spawned actor (the `$100`-stride array
   at `$7E:0300`+ and the 20-byte-stride table at `$7E:1872`+, flagged in

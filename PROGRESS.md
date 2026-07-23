@@ -3,19 +3,21 @@
 Cross-session status for the ZAMN native-port project. Update this whenever a
 milestone lands. See `PLAN.md` for the full multi-phase plan.
 
-## Current status: **Phase 2 in progress** 🔨 (2026-07-23)
+## Current status: **Phase 2 complete** ✅ (2026-07-23)
 
-Compression, graphics, level layout, the actor/victim/object placement lists
-**and the sprite/OAM path** are decoded as port code, and every one of them is
-**verified byte-exact against the ROM's own routines** — the level check diffs
-the full expanded map (18,304 tiles), the block library, the row tables, the
-scalars, the tile attributes and both palettes; the actor check diffs the victim
-and object arrays the ROM's parsers build; the sprite check diffs all 4,591 OAM
-emissions the movie produces, whole-buffer. All 56 levels decode and render,
-their placement lists all parse (every level has exactly 10 victims), and
-metasprites render as recognisable art (Zeke, the title-screen lettering).
+Compression, graphics, level layout, the actor/victim/object placement lists,
+the sprite/OAM path **and the audio upload path** are decoded as port code, and
+every one of them is **verified byte-exact against the ROM's own routines** —
+the level check diffs the full expanded map (18,304 tiles), the block library,
+the row tables, the scalars, the tile attributes and both palettes; the actor
+check diffs the victim and object arrays the ROM's parsers build; the sprite
+check diffs all 4,591 OAM emissions the movie produces, whole-buffer; the music
+check diffs every byte and command the game puts on the APU ports. All 56 levels
+decode and render, their placement lists all parse (every level has exactly 10
+victims), and metasprites render as recognisable art (Zeke, the title-screen
+lettering).
 
-**Music/sequence data is the only Phase 2 format left.**
+**Phase 3 (co-simulation + incremental logic port) is next.**
 
 **Phase 1 complete** (2026-07-23) — analysis toolchain built in-tree; the frame
 skeleton and a first WRAM map documented from traced execution.
@@ -63,16 +65,22 @@ through a vendored SNES core, headless + interactive.
   expansion — a port of the loader at `$80:86A2`), `actor.c` (the three
   placement lists — actors, victims, objects — a port of the parsers at
   `$81:80EC`, `$82:DB46`, `$80:C9A5`), `sprite.c` (16x16 frames, metasprites and
-  OAM composition — a port of `$80:BA51` and its three flipped twins).
+  OAM composition — a port of `$80:BA51` and its three flipped twins),
+  `music.c` (the APU data-set table, the driver image, both upload protocols and
+  the command interface — a port of `$80:CB1A`/`$80:CB61`/`$80:CC7C`).
 - `src/assets.c` → **`zamn_assets.exe`** — decodes ROM data to `.bin`/`.png`,
-  and `verify-lzss` / `verify-level` / `verify-actors` / `verify-sprites` diff
-  the C decoders against the ROM's own routines under the reference core.
-  `level <n> [out.png]` and `actors <n>` report and render any of the 56 levels;
-  `sprite <bank:addr> [out.png]` and `frame <n> [out.png]` do the same for
-  sprites.
+  and `verify-lzss` / `verify-level` / `verify-actors` / `verify-sprites` /
+  `verify-music` diff the C decoders against the ROM's own routines under the
+  reference core. `level <n> [out.png]` and `actors <n>` report and render any of
+  the 56 levels; `sprite <bank:addr> [out.png]` and `frame <n> [out.png]` do the
+  same for sprites; `music` reports the 16 APU data sets and what each level
+  plays, and `spc <n> [out.spc] [--wav f]` dumps any level's music as a
+  playable `.spc` (or plain audio) by capturing the APU after the ROM's own
+  upload — a song has no static decode, so this is the only route to one.
 - `docs/asset-formats.md` — the LZSS stream layout, the tile/palette encoding,
   the full level format (record table, block library, expansion), the sprite
-  frame/metasprite/OAM format, and how each decoder was checked.
+  frame/metasprite/OAM format, the audio upload path, and how each decoder was
+  checked.
 
 ## How to build & run
 ```
@@ -85,6 +93,9 @@ build\zamn_assets.exe verify-lzss "Zombies Ate My Neighbors.sfc" -m movies\level
 build\zamn_assets.exe verify-level "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_assets.exe verify-actors "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_assets.exe verify-sprites "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+build\zamn_assets.exe verify-music "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+build\zamn_assets.exe music "Zombies Ate My Neighbors.sfc"
+build\zamn_assets.exe spc "Zombies Ate My Neighbors.sfc" 2 level2.spc --wav level2.wav
 build\zamn_assets.exe level "Zombies Ate My Neighbors.sfc" 2 out.png
 build\zamn_assets.exe actors "Zombies Ate My Neighbors.sfc" 2
 build\zamn_assets.exe sprite "Zombies Ate My Neighbors.sfc" 90:9172 zeke.png
@@ -138,6 +149,22 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   "PASSWORD"; `$90:9172` draws Zeke mid-run. **Gap:** the movie never flips
   vertically, so `$80:BB30`/`$80:BBA6` are ported from their ROM bytes but not
   yet diffed against execution.
+- Phase 2 (music): `verify-music` watches the instructions that store to the APU
+  ports, so what it compares is what the hardware sees. All 8 checks pass: the
+  39,558-byte driver image the ROM stages in WRAM `$7F:0000` is byte-identical
+  to ours, its IPL block list matches the destinations written to `$2142`, all
+  39,546 payload bytes handed to the boot ROM match, and all 5 data-set uploads
+  `level1.zmv` performs are byte-identical command streams (23,820 commands).
+  The 15 ROM-resident sets are packed end to end and provably non-overlapping,
+  and all 56 levels name a song in `2..11` and a sample set in `0..3`.
+  Independent cross-check: those 5 uploads carry **23,766** payload bytes, which
+  is exactly the `$80:CCAB → $80:CCC8` call count in `analysis/callgraph.csv` for
+  the same movie. Non-vacuous twice: simplifying the odd `$0A` parameter to the
+  low length byte broke exactly the four sets with blocks over 255 bytes and left
+  the sound-effect bank passing, and moving the driver's second staging source by
+  one byte broke all three driver checks. **Gap:** the movie only drives sets 1,
+  3, 6 and 15; the other songs and sample sets decode statically but have not
+  been diffed against an upload.
 
 ## Key findings (Phase 1)
 - **ZAMN runs a 24-slot cooperative thread scheduler with per-thread stacks**
@@ -156,7 +183,7 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
 - CDL coverage from one boot-to-level-1 movie: **18.3%** of ROM (13,767 bytes of
   code, 177,817 of data, 182 subroutines, 362 call edges).
 
-## Next steps — Phase 2 (asset pipeline)
+## Phase 2 checklist — asset pipeline (complete)
 1. ~~Confirm our LZSS implementation against `$80:CD20` byte-for-byte.~~ ✅
 2. ~~Tile and palette decoding, cross-checked against `dma_log.csv`.~~ ✅
 3. ~~**Level layout** — record table at `$9F:8000`, block library, tilemap
@@ -170,13 +197,26 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
    them), metasprites in banks `$8F`/`$90`, and the OAM composition that turns
    one into the other. Ported (`src/assets/sprite.c`) and verified byte-exact
    against `$80:BA51`/`$BABA` by `verify-sprites`.~~ ✅
-6. **Music/sequence data** — the last Phase 2 format. Nothing is known about it
-   yet; the DMA log has no APU traffic in it, so start from the SPC upload at
-   boot and the `$80:9F8E`/`$80:9FD7` bulk transfers.
+6. ~~**Music/sequence data** — the data-set table at `$80:CCDE`, the staged
+   driver image and both upload protocols. Ported (`src/assets/music.c`) and
+   verified byte-exact against the APU port writes by `verify-music`. The port
+   never interprets a note: the SPC700 stays emulated, so reproducing the
+   upload traffic reproduces the audio.~~ ✅
 7. Extend `movies/` — password screen, level transition, a boss, two-player — to
    push CDL coverage up; every report regenerates automatically, and each new
-   movie widens every `verify-*` command's coverage for free. Two known gaps it
-   would close: the vertical-flip OAM emitters, and levels beyond the first.
+   movie widens every `verify-*` command's coverage for free. Three known gaps it
+   would close: the vertical-flip OAM emitters, levels beyond the first, and the
+   songs/sample sets no upload has driven yet.
+
+## Next steps — Phase 3 (co-simulation)
+
+Stand up the harness PLAN.md describes: run the reference core and the C
+reimplementation in lockstep on the same movie and assert per-frame WRAM
+equality, then replace one routine at a time. The five `verify-*` commands are
+already this pattern in miniature — same core, same movie, per-call equality —
+so the harness is a generalisation of what `src/assets.c` does rather than new
+machinery. The **24-slot cooperative thread scheduler** (see *Key findings*) is
+the main design constraint on how routines can be replaced.
 
 Deferred to **Phase 3** (runtime state, not ROM formats): the actor slot tables
 (`$7E:0300` stride `$100`, `$7E:1872` stride `$14`) the camera-driven spawner

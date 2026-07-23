@@ -39,8 +39,8 @@ int level_header_read(const Rom* rom, uint32_t addr, LevelHeader* out) {
   out->start_y1 = VAL(0x2c);
   out->start_x2 = VAL(0x2e);
   out->start_y2 = VAL(0x30);
-  out->unknown_32 = VAL(0x32);
-  out->unknown_34 = VAL(0x34);
+  out->song = VAL(0x32);
+  out->sample_set = VAL(0x34);
 
   #undef PTR
   #undef VAL

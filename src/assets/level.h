@@ -96,7 +96,11 @@ typedef struct {
   // between them: x = (start_x1 + start_x2) / 2 - $80.
   uint16_t start_x1, start_y1, start_x2, start_y2;
 
-  uint16_t unknown_32, unknown_34;  // +$32/$34  arguments to the intro screen
+  // +$32/$34  what the level sounds like. `$82:AC56` reads both and passes
+  // them to `$80:CBD9`: `song` selects an APU data set directly (2..11), and
+  // `sample_set` is an index 0..3 that the ROM adds MUSIC_SET_SAMPLES to. See
+  // `src/assets/music.h`.
+  uint16_t song, sample_set;
 } LevelHeader;
 
 typedef enum {
