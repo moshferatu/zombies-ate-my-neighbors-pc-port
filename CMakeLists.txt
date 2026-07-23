@@ -34,6 +34,30 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# Phase 1: analysis toolchain. `analysis` holds the pieces the tracer and the
+# disassembler share (the 65816 instruction table, the CDL format, movie
+# input); the Phase 3 co-simulation harness will reuse them too.
+# ---------------------------------------------------------------------------
+add_library(zamn_analysis STATIC
+  src/analysis/w65816.c
+  src/analysis/cdl.c
+  src/analysis/movie.c)
+target_include_directories(zamn_analysis PUBLIC src)
+if(MSVC)
+  target_compile_definitions(zamn_analysis PUBLIC _CRT_SECURE_NO_WARNINGS)
+endif()
+
+# zamn_trace: steps the core one instruction at a time and records what the CPU
+# touches (code/data log, WRAM map, call graph, DMA log, instruction traces).
+add_executable(zamn_trace src/trace.c)
+target_link_libraries(zamn_trace PRIVATE snescore zamn_analysis)
+target_include_directories(zamn_trace PRIVATE third_party/stb)
+
+# zamn_disasm: turns a ROM + its CDL into an annotated 65816 listing.
+add_executable(zamn_disasm src/disasm.c)
+target_link_libraries(zamn_disasm PRIVATE zamn_analysis)
+
+# ---------------------------------------------------------------------------
 # Phase 0b: interactive SDL frontend (the playable baseline).
 # Uses a system SDL2 if present, otherwise fetches & builds SDL2 from source.
 # Disable with -DZAMN_BUILD_SDL=OFF (headless target always builds).

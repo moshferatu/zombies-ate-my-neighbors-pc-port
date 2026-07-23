@@ -13,6 +13,12 @@ build/
 *.sfc
 *.smc
 
+# Analysis output. Derived from the user's ROM and quoting it verbatim (the
+# CDL, the .db runs in every listing), so it is regenerated, never committed.
+# See docs/analysis-tools.md for the commands.
+# Anchored: an unanchored "analysis/" would also swallow src/analysis/.
+/analysis/
+
 # Editor / OS cruft
 .vs/
 .vscode/

@@ -1,0 +1,78 @@
+# ZAMN symbols — fed to zamn_disasm with -s. Everything here was established
+# from traced execution (see docs/frame-skeleton.md and docs/wram-map.md),
+# not guessed. Add a name only once the evidence is in a trace or listing.
+#
+# Format: "$BB:AAAA name" for ROM code (canonical $80-$9F FastROM bank),
+#         "$00AAAA name" for a WRAM/direct-page variable.
+
+# --- Direct page: scheduler and NMI state ------------------------------------
+$000004  nmi_saved_sp          # SP of the interrupted thread, saved on NMI entry
+$000008  sched_cur_task        # index (x2) of the running thread
+$00000C  vbl_queue_a_count     # entries live in vbl_queue_a
+$00000E  vbl_queue_b_count     # entries live in vbl_queue_b
+$000010  vbl_queue_remaining   # countdown used while dispatching a queue
+$000012  vbl_queue_index       # slot index of the job currently dispatched
+$000014  nmi_flags             # bit 15 = NMI already running (re-entrancy guard)
+$000016  nmi_frame_counter     # incremented once per NMI
+$000020  sched_tick            # 32-bit at $20/$22, bumped once per scheduler pass
+$000026  render_flags          # bit 6 clear = flush the VRAM upload queue
+$00006E  joy1_raw              # $4218 as read this frame
+$000070  joy2_raw              # $421A
+$000072  joy1_dir              # joy1 d-pad nibble mapped through dir_table
+$000074  joy2_dir
+$0000CE  vram_queue_count      # bytes (entries x2) queued in the VRAM upload list
+
+# --- Thread scheduler tables -------------------------------------------------
+$001180  thread_wait           # 24 x u16: bit15 = live, low bits = ticks to wait
+$0011B0  thread_sp             # 24 x u16: saved stack pointer per thread
+
+# --- Vblank job queues -------------------------------------------------------
+$0012A0  vbl_queue_a           # 16 x {u16 addr-1, u8 bank, u8 pad}, run in forced blank
+$0012E0  vbl_queue_b           # 8 x {u16 addr-1, u8 bank, u8 pad}, run after blanking ends
+
+# --- PPU shadow state --------------------------------------------------------
+$001360  bg_scroll_shadow      # 12 bytes: BG1H,BG1V..BG4V, written twice each
+$00136C  brightness_shadow     # restored into INIDISP at the end of NMI
+$0013BE  oam_buffer            # 544 bytes DMA'd to OAMDATA every frame
+$005628  cgram_buffer          # 128 bytes DMA'd to CGDATA
+
+# --- VRAM upload queue (parallel arrays, vram_queue_count entries) -----------
+$001B84  vram_queue_src
+$001BB4  vram_queue_bank
+$001BE4  vram_queue_dest       # VRAM word address
+$001C14  vram_queue_vmain      # VMAIN increment mode
+$001C44  vram_queue_size
+
+# --- LZSS decompressor -------------------------------------------------------
+$006F00  lzss_ring             # 4 KB sliding window, prefilled with $20
+
+# --- Code: boot --------------------------------------------------------------
+$80:80AE  reset_entry          # the RESET vector; switches to native mode, JMLs to bank $80
+$80:80B6  reset_main
+$80:8002  init_ppu_regs        # blanks the screen and clears every PPU/DMA register
+
+# --- Code: NMI ---------------------------------------------------------------
+$80:816C  nmi_entry            # the NMI vector; trampolines through [$0000]
+$80:8179  nmi_main
+
+# --- Code: cooperative thread scheduler --------------------------------------
+$80:8353  thread_yield         # A = ticks to sleep; returns when the wait expires
+$80:8371  scheduler_idle       # WAI, then per-frame housekeeping, then re-scan
+$80:8398  thread_tick_waits    # decrement every live thread's wait counter
+
+# --- Code: vblank job queues -------------------------------------------------
+$80:83AE  vbl_queue_a_add
+$80:83D5  vbl_queue_a_remove
+$80:83E0  vbl_queue_a_run
+$80:8418  vbl_queue_b_add
+$80:843D  vbl_queue_b_run
+
+# --- Code: graphics transfer -------------------------------------------------
+$80:9E7B  vram_queue_flush     # drains the VRAM upload list via DMA, once per NMI
+$80:C872  dma_to_cgram         # A=bank, X=source, Y=length -> CGDATA from index 0
+$80:C8B8  dma_to_vram          # A=source, X=VRAM address, Y=length, bank on stack
+
+# --- Code: LZSS decompression ------------------------------------------------
+$80:CD20  lzss_decompress      # 4K-window LZSS; ring buffer at lzss_ring
+$80:CDDA  lzss_read_byte
+$80:CDEB  lzss_write_byte

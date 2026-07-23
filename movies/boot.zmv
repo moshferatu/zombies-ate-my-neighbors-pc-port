@@ -1,0 +1,3 @@
+# Boot with no input: Konami logo -> LucasArts logo -> intro -> title -> attract.
+# Exercises reset, the frame skeleton, decompression and the PPU upload paths.
+0   -
