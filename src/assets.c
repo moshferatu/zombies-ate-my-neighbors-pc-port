@@ -33,6 +33,7 @@
 
 #include "analysis/cdl.h"
 #include "analysis/movie.h"
+#include "assets/actor.h"
 #include "assets/gfx.h"
 #include "assets/level.h"
 #include "assets/lzss.h"
@@ -1009,6 +1010,269 @@ static int cmd_verify_level(int argc, char** argv) {
 }
 
 // ---------------------------------------------------------------------------
+// actors: report a level's placement lists
+// ---------------------------------------------------------------------------
+
+static void print_actor_lists(const ActorLists* al) {
+  printf("\n  actors (%d)   id  x     y     flags  behavior\n", al->actor_count);
+  for (int i = 0; i < al->actor_count; i++) {
+    const ActorPlacement* a = &al->actors[i];
+    printf("    %2d        $%02X  %-5u %-5u $%02X    %s\n",
+           i, a->id, a->x, a->y, a->flags, addr_str(a->behavior));
+  }
+  printf("\n  victims (%d)  idx  x     y     behavior\n", al->victim_count);
+  for (int i = 0; i < al->victim_count; i++) {
+    const VictimPlacement* vv = &al->victims[i];
+    printf("    %2d        %3u  %-5u %-5u %s\n", i, vv->index, vv->x, vv->y,
+           addr_str(vv->behavior));
+  }
+  printf("\n  objects (%d)  type  x     y\n", al->object_count);
+  for (int i = 0; i < al->object_count; i++) {
+    const ObjectPlacement* o = &al->objects[i];
+    printf("    %2d        $%02X   %-5u %-5u\n", i, o->type, o->x, o->y);
+  }
+}
+
+static int cmd_actors(int argc, char** argv) {
+  if (argc < 2) {
+    fprintf(stderr, "usage: zamn_assets actors <rom.sfc> <level 1-%d>\n", LEVEL_COUNT);
+    return 2;
+  }
+  int level = atoi(argv[1]);
+  int rom_len = 0;
+  uint8_t* rom_data = read_file(argv[0], &rom_len);
+  if (!rom_data) return 1;
+  Rom rom = {rom_data, (uint32_t)rom_len};
+
+  uint32_t rec = 0;
+  if (!level_record_addr(&rom, level, &rec)) {
+    fprintf(stderr, "error: level must be %d..%d\n", LEVEL_FIRST, LEVEL_COUNT);
+    free(rom_data);
+    return 2;
+  }
+  LevelHeader h;
+  if (level_header_read(&rom, rec, &h) != LEVEL_OK) {
+    fprintf(stderr, "error: the record at %s does not parse as a level\n", addr_str(rec));
+    free(rom_data);
+    return 1;
+  }
+  ActorLists al;
+  int rc = actors_read(&rom, &h, &al);
+  if (rc != ACTOR_OK) {
+    fprintf(stderr, "error: cannot read the placement lists (status %d)\n", rc);
+    free(rom_data);
+    return 1;
+  }
+  printf("Level %d — record at %s\n", level, addr_str(rec));
+  printf("  actor list   %s\n  victim list  %s\n  object list  %s\n",
+         addr_str(0x9f0000u | h.list_1c), addr_str(0x9f0000u | h.list_1e),
+         addr_str(0x9f0000u | h.list_20));
+  print_actor_lists(&al);
+
+  free(rom_data);
+  return 0;
+}
+
+// ---------------------------------------------------------------------------
+// verify-actors: diff the victim and object lists against the ROM's parsers
+// ---------------------------------------------------------------------------
+
+// The two placement parsers build flat working arrays in WRAM. Stopping right
+// as each finishes lets us diff the whole array the ROM extracted against the
+// one actors_read() decodes. `$81:80EC` (actors) spreads its work across frames
+// and is left to Phase 3, so only victims and objects are checked here.
+#define VICTIMS_PARSE_DONE 0x82db8b  // loop exit of $82:DB46
+#define OBJECTS_PARSE_DONE 0x80c9d6  // just after $80:C9A5 writes the $C000 sentinel
+
+// Where each parser leaves its results (bank $7E, offsets from $0000).
+#define WRAM_VICTIM_COUNT 0x6e30  // $82:DB46: how many victims it kept
+#define WRAM_VICTIM_X 0x6df4      // stride 4
+#define WRAM_VICTIM_Y 0x6df6      // stride 4
+#define WRAM_VICTIM_GATE 0x1d50   // $82:DB46 stops once an index exceeds this
+#define WRAM_OBJECT_X 0x6d02      // stride 2
+#define WRAM_OBJECT_Y 0x6d48      // stride 2
+#define WRAM_OBJECT_TYPE 0x1f0a   // stride 2, low byte
+#define WRAM_OBJECT_END 0x1ec4    // stride 2; $C000 marks the end of the array
+
+static struct {
+  Rom rom;
+  bool have_args, victims_done, objects_done;
+  uint32_t record;
+  ActorLists al;
+  int checks, failures;
+} ac;
+
+static void ac_check(const char* what, bool ok, const char* detail) {
+  ac.checks++;
+  if (!ok) ac.failures++;
+  printf("  %-40s %s%s%s\n", what, ok ? "OK" : "FAIL",
+         detail && *detail ? "  " : "", detail ? detail : "");
+}
+
+static void actors_on_victims(Snes* snes) {
+  ac.victims_done = true;
+  uint16_t rom_count = wram_word(snes, WRAM_VICTIM_COUNT);
+  uint16_t gate = wram_word(snes, WRAM_VICTIM_GATE);
+
+  char detail[128];
+  // The parser keeps a prefix of the list, stopping at the first index past the
+  // gate, so it can never keep *more* than we decoded — that would mean our
+  // record stride or terminator is wrong.
+  bool count_ok = rom_count <= (uint16_t)ac.al.victim_count;
+  snprintf(detail, sizeof detail, "ROM kept %u of %d (gate $1D50 = $%04X)",
+           rom_count, ac.al.victim_count, gate);
+  ac_check("victim count", count_ok, detail);
+  if (!count_ok) return;
+
+  bool ok = true;
+  detail[0] = '\0';
+  for (uint16_t i = 0; i < rom_count; i++) {
+    uint16_t rx = wram_word(snes, WRAM_VICTIM_X + i * 4);
+    uint16_t ry = wram_word(snes, WRAM_VICTIM_Y + i * 4);
+    if (rx != ac.al.victims[i].x || ry != ac.al.victims[i].y) {
+      snprintf(detail, sizeof detail,
+               "victim %u: ROM (%u, %u), ours (%u, %u)", i, rx, ry,
+               ac.al.victims[i].x, ac.al.victims[i].y);
+      ok = false;
+      break;
+    }
+  }
+  char label[64];
+  snprintf(label, sizeof label, "victim positions (%u)", rom_count);
+  ac_check(label, ok, detail);
+}
+
+static void actors_on_objects(Snes* snes) {
+  ac.objects_done = true;
+  int n = ac.al.object_count;
+
+  // The parser writes a $C000 sentinel into $1EC4 one past the last object, so
+  // that word landing exactly at our count proves the ROM stopped where we did.
+  uint16_t sentinel = wram_word(snes, WRAM_OBJECT_END + n * 2);
+  char detail[128];
+  snprintf(detail, sizeof detail, "$1EC4[%d] = $%04X (want $C000)", n, sentinel);
+  ac_check("object count", sentinel == 0xc000, detail);
+
+  bool ok = true;
+  detail[0] = '\0';
+  for (int i = 0; i < n; i++) {
+    uint16_t rx = wram_word(snes, WRAM_OBJECT_X + i * 2);
+    uint16_t ry = wram_word(snes, WRAM_OBJECT_Y + i * 2);
+    uint8_t rt = (uint8_t)wram_word(snes, WRAM_OBJECT_TYPE + i * 2);
+    const ObjectPlacement* o = &ac.al.objects[i];
+    if (rx != o->x || ry != o->y || rt != o->type) {
+      snprintf(detail, sizeof detail,
+               "object %d: ROM (%u, %u) $%02X, ours (%u, %u) $%02X", i, rx, ry,
+               rt, o->x, o->y, o->type);
+      ok = false;
+      break;
+    }
+  }
+  char label[64];
+  snprintf(label, sizeof label, "object positions and types (%d)", n);
+  ac_check(label, ok, detail);
+}
+
+static void actors_step(Snes* snes) {
+  Cpu* cpu = snes->cpu;
+  if (!cpu->resetWanted && !cpu->stopped && !cpu->waiting && !cpu->intWanted) {
+    uint32_t pc = ((uint32_t)cpu->k << 16) | cpu->pc;
+    if (pc == LEVEL_LOAD_ARGS && !ac.have_args) {
+      ac.record = 0x9f0000u | (cpu->x & 0xffff);
+      ac.have_args = true;
+      LevelHeader h;
+      if (level_header_read(&ac.rom, ac.record, &h) == LEVEL_OK) {
+        if (actors_read(&ac.rom, &h, &ac.al) != ACTOR_OK) ac.failures++;
+      } else {
+        ac.failures++;
+      }
+    } else if (pc == VICTIMS_PARSE_DONE && ac.have_args && !ac.victims_done) {
+      actors_on_victims(snes);
+    } else if (pc == OBJECTS_PARSE_DONE && ac.have_args && !ac.objects_done) {
+      actors_on_objects(snes);
+    }
+  }
+  snes_runCpuCycle(snes);
+}
+
+static void actors_verify_frame(Snes* snes) {
+  while (snes->inVblank) actors_step(snes);
+  uint32_t frame = snes->frames;
+  while (!snes->inVblank && frame == snes->frames) actors_step(snes);
+  snes_readBBus(snes, 0x40);
+}
+
+static int cmd_verify_actors(int argc, char** argv) {
+  if (argc < 1) {
+    fprintf(stderr, "usage: zamn_assets verify-actors <rom.sfc> [-m movie] [-f frames]\n");
+    return 2;
+  }
+  const char* rom_path = argv[0];
+  const char* movie_path = NULL;
+  int frames = 2400;
+
+  for (int i = 1; i < argc; i++) {
+    bool has_next = i + 1 < argc;
+    if ((!strcmp(argv[i], "-m") || !strcmp(argv[i], "--movie")) && has_next) movie_path = argv[++i];
+    else if ((!strcmp(argv[i], "-f") || !strcmp(argv[i], "--frames")) && has_next) frames = atoi(argv[++i]);
+    else { fprintf(stderr, "error: unknown option '%s'\n", argv[i]); return 2; }
+  }
+
+  int rom_len = 0;
+  uint8_t* rom_data = read_file(rom_path, &rom_len);
+  if (!rom_data) return 1;
+
+  Snes* snes = snes_init();
+  if (!snes_loadRom(snes, rom_data, rom_len)) {
+    fprintf(stderr, "error: core rejected ROM\n");
+    return 1;
+  }
+  ac.rom.data = snes->cart->rom;
+  ac.rom.size = snes->cart->romSize;
+
+  Movie movie;
+  bool have_movie = false;
+  if (movie_path) {
+    if (!movie_load(&movie, movie_path)) {
+      fprintf(stderr, "error: cannot load movie '%s'\n", movie_path);
+      return 1;
+    }
+    have_movie = true;
+  }
+
+  snes_reset(snes, true);
+  printf("Replaying %d frames of '%s' and diffing the victim and object lists.\n\n",
+         frames, movie_path ? movie_path : "(no input)");
+
+  for (int frame = 0; frame < frames && !(ac.victims_done && ac.objects_done); frame++) {
+    if (have_movie) {
+      uint16_t buttons = movie_state(&movie, frame);
+      for (int b = 0; b < 12; b++) snes_setButtonState(snes, 1, b, (buttons >> b) & 1);
+    }
+    actors_verify_frame(snes);
+  }
+
+  int rc;
+  if (!ac.have_args) {
+    printf("The movie never reached a level load — nothing was verified.\n");
+    rc = 1;
+  } else {
+    printf("\nLevel record %s: %d actors, %d victims, %d objects decoded.\n",
+           addr_str(ac.record), ac.al.actor_count, ac.al.victim_count,
+           ac.al.object_count);
+    if (!ac.victims_done) ac_check("victim list reached", false, "parser never ran");
+    if (!ac.objects_done) ac_check("object list reached", false, "parser never ran");
+    printf("%d check%s, %d failed.\n", ac.checks, ac.checks == 1 ? "" : "s", ac.failures);
+    rc = ac.failures > 0 ? 1 : 0;
+  }
+
+  if (have_movie) movie_free(&movie);
+  snes_free(snes);
+  free(rom_data);
+  return rc;
+}
+
+// ---------------------------------------------------------------------------
 
 static void usage(void) {
   fprintf(stderr,
@@ -1022,6 +1286,11 @@ static void usage(void) {
           "      against what $80:86A2 built in WRAM.\n\n"
           "  zamn_assets level <rom.sfc> <level 1-56> [out.png]\n"
           "      Report a level's record and, with a path, draw its map.\n\n"
+          "  zamn_assets actors <rom.sfc> <level 1-56>\n"
+          "      Report a level's actor, victim and object placement lists.\n\n"
+          "  zamn_assets verify-actors <rom.sfc> [-m movie] [-f frames]\n"
+          "      Replay a movie and diff the victim and object lists against\n"
+          "      what $82:DB46 and $80:C9A5 built in WRAM.\n\n"
           "  zamn_assets decompress <rom.sfc> <bank:addr> <out.bin>\n"
           "      Decompress one LZSS stream.\n\n"
           "  zamn_assets gfx <rom.sfc> <bank:addr> <out.png> [options]\n"
@@ -1036,6 +1305,8 @@ int main(int argc, char** argv) {
   if (!strcmp(cmd, "verify-lzss")) return cmd_verify_lzss(argc - 2, argv + 2);
   if (!strcmp(cmd, "verify-level")) return cmd_verify_level(argc - 2, argv + 2);
   if (!strcmp(cmd, "level")) return cmd_level(argc - 2, argv + 2);
+  if (!strcmp(cmd, "actors")) return cmd_actors(argc - 2, argv + 2);
+  if (!strcmp(cmd, "verify-actors")) return cmd_verify_actors(argc - 2, argv + 2);
   if (!strcmp(cmd, "decompress")) return cmd_decompress(argc - 2, argv + 2);
   if (!strcmp(cmd, "gfx")) return cmd_gfx(argc - 2, argv + 2);
   if (!strcmp(cmd, "palette")) return cmd_palette(argc - 2, argv + 2);

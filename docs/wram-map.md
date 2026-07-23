@@ -97,6 +97,23 @@ Five parallel arrays, `vram_queue_count/2` entries live:
 | `$7E:6F00-$7E:7EFF` | 4096 B | `lzss_ring` — the decompressor's sliding window |
 | `$7E:8000-$7F:9A85` | 72 KB | decompression output / level data |
 
+## Placement working arrays
+
+Built once at level load from the record's three placement lists (see
+`docs/asset-formats.md` → *Actor, victim and object placement*), then read by the
+gameplay code. `verify-actors` diffs the victim and object arrays byte-for-byte.
+
+| Address | Field | Built by |
+| --- | --- | --- |
+| `$7E:6DF4` | victim X, stride 4 | `$82:DB46` |
+| `$7E:6DF6` | victim Y, stride 4 | `$82:DB46` |
+| `$7E:6E30` | victim count | `$82:DB46` |
+| `$7E:6D02` | object X, stride 2 | `$80:C9A5` |
+| `$7E:6D48` | object Y, stride 2 | `$80:C9A5` |
+| `$7E:1F0A` | object type (low byte), stride 2 | `$80:C9A5` |
+| `$7E:1EC4` | object state, stride 2; `$C000` sentinel one past the last | `$80:C9A5` |
+| `$7E:1D50` | victim spawn gate — constant `$0010`, set by `$80:85E7` | `$80:85CF` |
+
 ## Repeating structures
 
 The region report shows several strided arrays that are only partly touched, so
@@ -110,7 +127,9 @@ they appear as many small regions. Two are worth recording now:
   20-byte records, read once per frame.
 
 Both smell like actor/object slot tables, which is what Phase 3 needs next. Ports
-of the actor logic should start by confirming these.
+of the actor logic should start by confirming these — the camera-driven spawner
+`$81:80EC` is what fills them from the actor placement list (`+$1C` in the level
+record; format in `docs/asset-formats.md`).
 
 ## What is still missing
 

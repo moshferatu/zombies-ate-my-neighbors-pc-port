@@ -5,12 +5,15 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 2 in progress** 🔨 (2026-07-23)
 
-Compression, graphics **and level layout** are decoded as port code. The LZSS
-decompressor and the level tilemap builder are both **verified byte-exact
-against the ROM's own routines** — the level check diffs the full expanded map
-(18,304 tiles), the block library, the row tables, the scalars, the tile
-attributes and both palettes. All 56 levels decode and render. Sprites/actors
-and music remain.
+Compression, graphics, level layout **and the actor/victim/object placement
+lists** are decoded as port code. The LZSS decompressor, the level tilemap
+builder and the placement lists are all **verified byte-exact against the ROM's
+own routines** — the level check diffs the full expanded map (18,304 tiles), the
+block library, the row tables, the scalars, the tile attributes and both
+palettes; the actor check diffs the victim and object arrays the ROM's parsers
+build. All 56 levels decode and render, and their placement lists all parse
+(every level has exactly 10 victims). Actor sprite *graphics* mapping and music
+remain.
 
 **Phase 1 complete** (2026-07-23) — analysis toolchain built in-tree; the frame
 skeleton and a first WRAM map documented from traced execution.
@@ -55,11 +58,13 @@ through a vendored SNES core, headless + interactive.
   it depends on nothing but libc. `lzss.c` (a byte-exact port of `$80:CD20`),
   `gfx.c` (planar tiles + BGR555 palettes), `rom.c` (LoROM address mapping),
   `level.c` (the level record, block-library decompression and tilemap
-  expansion — a port of the loader at `$80:86A2`).
+  expansion — a port of the loader at `$80:86A2`), `actor.c` (the three
+  placement lists — actors, victims, objects — a port of the parsers at
+  `$81:80EC`, `$82:DB46`, `$80:C9A5`).
 - `src/assets.c` → **`zamn_assets.exe`** — decodes ROM data to `.bin`/`.png`,
-  and `verify-lzss` / `verify-level` diff the C decoders against the ROM's own
-  routines under the reference core. `level <n> [out.png]` reports and renders
-  any of the 56 levels.
+  and `verify-lzss` / `verify-level` / `verify-actors` diff the C decoders
+  against the ROM's own routines under the reference core. `level <n> [out.png]`
+  and `actors <n>` report and render any of the 56 levels.
 - `docs/asset-formats.md` — the LZSS stream layout, the tile/palette encoding,
   the full level format (record table, block library, expansion), and how each
   decoder was checked.
@@ -73,7 +78,9 @@ build\zamn_trace.exe "Zombies Ate My Neighbors.sfc" -o analysis -f 2400 -m movie
 build\zamn_disasm.exe "Zombies Ate My Neighbors.sfc" analysis\zamn.cdl -b 80 -s tools\symbols\zamn.sym -o analysis\bank_80.asm
 build\zamn_assets.exe verify-lzss "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_assets.exe verify-level "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+build\zamn_assets.exe verify-actors "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_assets.exe level "Zombies Ate My Neighbors.sfc" 2 out.png
+build\zamn_assets.exe actors "Zombies Ate My Neighbors.sfc" 2
 ```
 Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select, Esc=Quit.
 
@@ -100,6 +107,15 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   1 KB tile-attribute table and both 256-byte palettes. All 56 levels decode via
   `zamn_assets level` with no errors, and maps from every tileset group render as
   coherent art (the map *values* are what `verify-level` proves exactly).
+- Phase 2 (actors): `verify-actors` replays the same movie and, as each ROM
+  parser finishes, diffs the flat array it built against `actors_read()`'s decode
+  — all 4 checks pass for record `$9F:9060`: the victim count (`$7E:6E30`) and 10
+  positions vs `$82:DB46`, and the object count (proven by the `$C000` sentinel
+  landing at our count) and 9 positions+types vs `$80:C9A5`. Non-vacuous: an
+  off-by-one on the object breakpoint made the sentinel check fail until fixed.
+  All 56 levels' placement lists parse with no errors — every level lists exactly
+  10 victims. The actor list itself is decoded and reported but its runtime spawn
+  (`$81:80EC`, camera-driven) is left for Phase 3.
 
 ## Key findings (Phase 1)
 - **ZAMN runs a 24-slot cooperative thread scheduler with per-thread stacks**
@@ -124,11 +140,13 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
 3. ~~**Level layout** — record table at `$9F:8000`, block library, tilemap
    expansion. Ported (`src/assets/level.c`) and verified byte-exact against
    `$80:86A2` by `verify-level`; all 56 levels decode.~~ ✅
-4. **Sprite/actor definitions**, then music/sequence data. Identify the actor
-   slot tables flagged in `docs/wram-map.md` (the `$100`-stride array at
-   `$7E:0300`+ and the 20-byte-stride table at `$7E:1872`+). The unidentified
-   `$9F`-internal pointers in each level record (`+$1C`/`+$1E`/`+$20`) are the
-   likely home of the per-level actor placements — the way in.
+4. ~~**Actor/victim/object placements** — the `$9F`-internal record pointers
+   `+$1C`/`+$1E`/`+$20`. Ported (`src/assets/actor.c`) and, for victims and
+   objects, verified byte-exact against `$82:DB46`/`$80:C9A5` by `verify-actors`;
+   all 56 levels' lists parse.~~ ✅ Still open: **actor sprite graphics** (which
+   tiles/palette each `id`/behavior draws with), the **runtime actor slots**
+   (`$7E:0300` stride `$100`, `$7E:1872` stride `$14`) that the camera-driven
+   spawner `$81:80EC` fills — both Phase 3 — then **music/sequence data**.
 5. Extend `movies/` — password screen, level transition, a boss, two-player — to
    push CDL coverage up; every report regenerates automatically, and each new
    movie widens the `verify-lzss`/`verify-level` coverage for free.

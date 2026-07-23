@@ -152,9 +152,9 @@ opening playable level (`movies/level1.zmv`) is **entry 2**, record `$9F:9060`.
 | `$2A`-`$30` | starts | the two players' spawn X/Y |
 
 Each pointer is a `(16-bit address, 16-bit bank)` pair, which is how the loader
-at `$80:86A2` reads them. Fields `$18`,`$1A`,`$1C`,`$1E`,`$20`,`$28`,`$32`,`$34`
-are not yet identified; `$1C`-`$20` are addresses back into bank `$9F` and are
-the most likely home of the actor placements — the next thing to decode.
+at `$80:86A2` reads them. Fields `$1C`/`$1E`/`$20` are bank-`$9F` addresses of
+the three **placement lists** (actors, victims, objects) — decoded below.
+Fields `$18`,`$1A`,`$28`,`$32`,`$34` are still unidentified.
 
 ### The three pieces
 
@@ -202,15 +202,102 @@ level's own characters and palette. All **56** levels decode without error, and
 maps from every tileset group render as coherent art (checked by eye — the
 expansion itself is what `verify-level` proves exactly).
 
+## Actor, victim and object placement — verified against the ROM's parsers
+
+Three of the level record's bank-`$9F` pointers name the level's **placement
+lists** — where its enemies, victims and objects are put. They sit in bank `$9F`
+right after the record, and the loader at `$80:86A2` hands each one to a
+dedicated routine. `src/assets/actor.c` decodes all three; the record layouts
+were read straight out of those three parsers.
+
+| Record field | Points at | Parser | Meaning |
+| --- | --- | --- | --- |
+| `+$1C` (`list_1c`) | actor list | `$81:80EC` | enemies and other actors |
+| `+$1E` (`list_1e`) | victim list | `$82:DB46` | the people you rescue |
+| `+$20` (`list_20`) | object list | `$80:C9A5` | doors, warps, item spawns |
+
+### Actor records — 10 bytes
+
+`$81:80EC` walks the list at stride 10, reading `+0` as an id (`AND #$00FF /
+BEQ` ends the list), and `+1`/`+3` as the spawn position.
+
+| Offset | Field | Notes |
+| --- | --- | --- |
+| `+0` | `id` (u8) | actor type; **`0` terminates the list** |
+| `+1` | `x` (u16) | spawn X in level pixels |
+| `+3` | `y` (u16) | spawn Y |
+| `+5` | `flags` (u8) | per-placement flags, meaning not yet established |
+| `+6`/`+8` | `behavior` | 24-bit far pointer to the actor's routine; `+9` pad |
+
+The behavior pointer varies by level and by actor (e.g. `$82:990F` throughout
+level 1, a mix of `$81:87F8`/`$81:88CA` in level 3), so it is the per-actor
+class, and `id` is a sub-type the class reads. A few levels list **no** actors
+(the list is just the `00 00` terminator).
+
+### Victim records — 12 bytes
+
+`$82:DB46` walks the list at stride 12, keying it on the index at `+6`: it stops
+at the first record whose index is `0` **or greater than `$1D50`**, and `$1D50`
+is a constant `$0010` set at every level load (`$80:85E7`). So a victim record
+is live while `0 < index <= 16`; the padding past the last victim reads as an
+index above the gate. Every one of the 56 levels lists exactly **10** victims.
+
+| Offset | Field | Notes |
+| --- | --- | --- |
+| `+0` | `x` (u16) | spawn position |
+| `+2` | `y` (u16) | |
+| `+4` | — (u16) | always `$0000` in the shipped data |
+| `+6` | `index` (u16) | 1..N; `0` or `> 16` ends the list |
+| `+8`/`+10` | `behavior` | 24-bit far pointer (bank `$83`); `+11` pad |
+
+The parser only copies `+0`/`+2` into working arrays (`$7E:6DF4` X, `$7E:6DF6`
+Y, stride 4) and counts them at `$7E:6E30`.
+
+### Object records — 5 bytes
+
+`$80:C9A5` walks the list reading `+0` (u16, `BEQ` ends the list), `+2` (u16)
+and `+4` (u8), into `$7E:6D02` (X), `$7E:6D48` (Y) and `$7E:1F0A` (type), all at
+stride 2, and writes a `$C000` sentinel into `$7E:1EC4` one past the last entry.
+
+| Offset | Field | Notes |
+| --- | --- | --- |
+| `+0` | `x` (u16) | **`0` terminates the list** |
+| `+2` | `y` (u16) | |
+| `+4` | `type` (u8) | object type |
+
+### Verification
+
+`zamn_assets verify-actors` is the same pattern as `verify-level`: it replays a
+movie under the reference core and, the instant each parser finishes, diffs the
+flat array the ROM built against the one `actors_read()` decoded from the record.
+
+```
+build\zamn_assets.exe verify-actors "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+```
+
+On `level1.zmv` (record `$9F:9060`) all four checks pass: the victim count
+(`$7E:6E30`) and all 10 victim positions match `$82:DB46`'s arrays, and the
+object count (proven by the `$C000` sentinel landing exactly at our count) and
+all 9 object positions **and** types match `$80:C9A5`'s. The tool exits non-zero
+if any diff fails or a list is never reached, so it doubles as a regression
+test. The **actor** list (`$81:80EC`) spreads its work across frames as the
+camera scrolls rather than building a flat array at load, so its runtime check
+belongs with the Phase 3 spawner; `actors_read()` decodes it here (backed by the
+`$81:80EC` disassembly) and all 56 levels' lists parse without error.
+
+`zamn_assets actors <n>` reports a level's three lists.
+
 ## `zamn_assets`
 
 ```
-zamn_assets verify-lzss  <rom.sfc> [-m movie] [-f frames]
-zamn_assets verify-level <rom.sfc> [-m movie] [-f frames]
-zamn_assets level        <rom.sfc> <level 1-56> [out.png]
-zamn_assets decompress   <rom.sfc> <bank:addr> <out.bin>
-zamn_assets gfx          <rom.sfc> <bank:addr> <out.png> [options]
-zamn_assets palette      <rom.sfc> <bank:addr> <out.png> [-n colors]
+zamn_assets verify-lzss   <rom.sfc> [-m movie] [-f frames]
+zamn_assets verify-level  <rom.sfc> [-m movie] [-f frames]
+zamn_assets verify-actors <rom.sfc> [-m movie] [-f frames]
+zamn_assets level         <rom.sfc> <level 1-56> [out.png]
+zamn_assets actors        <rom.sfc> <level 1-56>
+zamn_assets decompress    <rom.sfc> <bank:addr> <out.bin>
+zamn_assets gfx           <rom.sfc> <bank:addr> <out.png> [options]
+zamn_assets palette       <rom.sfc> <bank:addr> <out.png> [-n colors]
 ```
 
 Addresses are SNES addresses in the `$80-$BF` FastROM mirror the game itself
@@ -219,8 +306,10 @@ option list.
 
 ## Not yet decoded
 
-Sprite/actor definitions and music. The actor slot tables flagged in
-`docs/wram-map.md` (the `$100`-stride array at `$7E:0300`+ and the 20-byte-stride
-table at `$7E:1872`+) are the way into the actors, and the unidentified
-`$9F`-internal pointers (`$1C`-`$20`) in each level record are where their
-placements most likely live.
+Music/sequence data. And, on the actor side, the *runtime* half: the placement
+lists above say where each actor/victim/object starts and what code drives it,
+but the actor **slot** tables that hold them once spawned (the `$100`-stride
+array at `$7E:0300`+ and the 20-byte-stride table at `$7E:1872`+, flagged in
+`docs/wram-map.md`) are populated by the spawner as the camera scrolls, which is
+Phase 3 logic rather than a static ROM format. The behavior-pointer targets in
+banks `$81`-`$83` are those actors' update routines — also Phase 3.

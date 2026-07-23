@@ -46,6 +46,16 @@ $001C44  vram_queue_size
 # --- LZSS decompressor -------------------------------------------------------
 $006F00  lzss_ring             # 4 KB sliding window, prefilled with $20
 
+# --- Actor/victim/object placement (built at level load) ---------------------
+$001D50  victim_gate           # constant $0010; victim index must be <= this
+$001EC4  object_state          # per-object, stride 2; $C000 = end sentinel
+$001F0A  object_type           # per-object type byte, stride 2
+$006D02  object_x              # per-object X, stride 2
+$006D48  object_y              # per-object Y, stride 2
+$006DF4  victim_x              # per-victim X, stride 4
+$006DF6  victim_y              # per-victim Y, stride 4
+$006E30  victim_count          # victims kept by victim_list_parse
+
 # --- Code: boot --------------------------------------------------------------
 $80:80AE  reset_entry          # the RESET vector; switches to native mode, JMLs to bank $80
 $80:80B6  reset_main
@@ -71,6 +81,13 @@ $80:843D  vbl_queue_b_run
 $80:9E7B  vram_queue_flush     # drains the VRAM upload list via DMA, once per NMI
 $80:C872  dma_to_cgram         # A=bank, X=source, Y=length -> CGDATA from index 0
 $80:C8B8  dma_to_vram          # A=source, X=VRAM address, Y=length, bank on stack
+
+# --- Code: level loader and placement parsers --------------------------------
+$80:86A2  level_load           # builds a level from its $9F record
+$80:825E  thread_spawn         # start a cooperative thread at Y:A with DP $00.. set
+$81:80EC  actor_list_spawn     # camera-driven spawner for the +$1C actor list
+$82:DB46  victim_list_parse    # +$1E victim list -> victim_x/_y/_count arrays
+$80:C9A5  object_list_parse    # +$20 object list -> object_x/_y/_type arrays
 
 # --- Code: LZSS decompression ------------------------------------------------
 $80:CD20  lzss_decompress      # 4K-window LZSS; ring buffer at lzss_ring
