@@ -1,0 +1,20 @@
+# Build output
+build/
+*.obj
+*.exe
+*.dll
+*.ilk
+*.pdb
+
+# Headless frame-dump scratch
+*.png
+
+# The ROM is user-supplied; never commit copyrighted content.
+*.sfc
+*.smc
+
+# Editor / OS cruft
+.vs/
+.vscode/
+*.user
+Thumbs.db
