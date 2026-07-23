@@ -287,14 +287,133 @@ belongs with the Phase 3 spawner; `actors_read()` decodes it here (backed by the
 
 `zamn_assets actors <n>` reports a level's three lists.
 
+## Sprite graphics — verified against the ROM's own OAM emitters
+
+Everything the game draws as a sprite — Zeke, the monsters, the victims, item
+pickups, even the "PASSWORD" lettering on the title screen — is built from one
+unit: a **16x16 frame** of 4bpp graphics, 128 bytes, and a **metasprite** that
+places one or more frames at signed offsets.
+
+Ported in `src/assets/sprite.c`, checked by `zamn_assets verify-sprites`.
+
+### Frames — a flat array at `$84:8000`
+
+Frame `n` is the 128 bytes at `$84:8000 + n * 128`. The base is set once at boot
+by `$80:C05A`, which both `$80:85D3` and `$80:8632` call with A=`$8000`,
+Y=`$0084`; the same routine clears a `$2000`-byte frame→slot map, so the frame
+number is **12 bits — 4096 frames**, half a megabyte, most of the second half of
+the ROM.
+
+`$80:BA29` builds the address the LoROM-friendly way, which is why 128 bytes is
+the unit: 256 frames are exactly `$8000` bytes, so `n >> 8` goes in the bank and
+`(n & $FF) * 128` in the offset, and no frame ever straddles a bank.
+
+The 128 bytes are four ordinary 4bpp tiles in reading order — top-left,
+top-right, bottom-left, bottom-right. `$80:B960` uploads them as two 64-byte
+DMAs, the second to the VRAM row below (`ORA #$0100` on the address).
+
+```
+build\zamn_assets.exe frame "Zombies Ate My Neighbors.sfc" 0x463 zeke.png --count 24
+```
+
+### Metasprites — banks `$8F` and `$90`
+
+A metasprite is a count byte followed by that many 8-byte pieces. The drawing
+pass rejects any pointer outside banks `$8F`/`$90` (`$80:BD97`) or below `$8000`
+(`$80:BD8E`), and treats a count of 0 as "draw nothing" (`$80:BDAA`). Records
+are packed back to back with no index table — actors carry the pointer.
+
+| Offset | Field | Notes |
+| --- | --- | --- |
+| `+0` | `x` (i16) | signed offset from the actor's position |
+| `+2` | `y` (i16) | |
+| `+4` | `attr` (u16) | OAM attribute word: `$8000` vflip, `$4000` hflip, `$3000` priority, `$0E00` palette, `$0100` tile bit 8 |
+| `+6` | `frame` (u16) | which 16x16 frame to draw |
+
+```
+build\zamn_assets.exe sprite "Zombies Ate My Neighbors.sfc" 90:9172 zeke.png
+```
+
+### How a frame reaches VRAM
+
+The sprite character area holds only 512 tiles — 128 frames — so the game keeps
+an **LRU cache** of them and uploads on demand. `$80:B9D6` maps a frame number
+to the OAM tile number it is currently loaded at, evicting the least recently
+used slot (`$7E:175E` holds each slot's last-used tick) and queueing a DMA that
+`$80:B947` drains in vblank. Three tables drive it, and all three are exact
+functions of the slot number — the port computes them and `verify-sprites`
+proves the formulas against the ROM's 128 entries:
+
+| Table | Meaning | Formula |
+| --- | --- | --- |
+| `$80:B547` | slot → VRAM word address | `(slot / 8) * $200 + (slot % 8) * $20` |
+| `$80:B647` | slot → OAM tile number | `(slot / 8) * 32 + (slot % 8) * 2` |
+| `$80:B747` | sprite → OAM high-table address and x-bit mask | `$200 + (n / 4)`, `1 << (n % 4 * 2)` |
+
+The cache is runtime state, not a ROM format, so `sprite_emit()` takes a
+callback for the frame→tile lookup and the cache itself is left for Phase 3.
+
+### Composition — the four emitters
+
+`$80:BD1F` walks the visible-actor list and, for each actor, dispatches through
+`($80:BDEA,X)` on flag bits 1-2 to one of four near-identical routines:
+
+| `flags & 6` | Routine | Effect |
+| --- | --- | --- |
+| 0 | `$80:BA51` | as authored |
+| 2 | `$80:BABA` | mirror `x` (`-x-16`), `EOR #$4000` |
+| 4 | `$80:BB30` | mirror `y` (`-y-16`), `EOR #$8000` |
+| 6 | `$80:BBA6` | both, `EOR #$C000` |
+
+`sprite_emit()` is one function covering all four. Each piece becomes one OAM
+entry in `$7E:13BE`:
+
+* screen position is `piece + actor`, where the actor's position already has the
+  camera subtracted (`$8E`/`$90`);
+* the actor supplies an AND mask (`$96`) and an OR value (`$92`) applied to the
+  piece's attribute word — that is how an actor overrides the palette and
+  priority its frames were authored with (`$F1FF` masks the palette field out);
+* a piece whose screen `y` lands in `$00E0..$FFF0`, or whose `x` lands in
+  `$0100..$FFF0`, is dropped and does not consume an OAM slot;
+* `x` in `$FFF1..$FFFF` sets the sprite's bit-8 flag in the OAM high table.
+
+### Verification
+
+`zamn_assets verify-sprites` intercepts all four emitters. At each entry it
+snapshots the ROM's 544-byte OAM buffer and the emitter's arguments; at the
+matching `RTS` it runs `sprite_emit()` on that snapshot and diffs **the whole
+buffer** plus the resulting OAM index against what the ROM produced.
+
+```
+build\zamn_assets.exe verify-sprites "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+```
+
+On `level1.zmv` all **4591** emissions are byte-identical (3572 unflipped, 1019
+flipped horizontally), across 40 distinct metasprites in `$8F:DF86..$90:CBA3`,
+and the three slot tables match for all 128 entries. Confirmed non-vacuous
+twice: changing the mirror constant from `-16` to `-15` broke exactly the 1019
+flipped calls, and perturbing one palette bit broke the unflipped ones.
+
+**Not yet exercised:** this movie never flips vertically, so `$80:BB30` and
+`$80:BBA6` are ported from their ROM bytes (they are byte-for-byte the same
+routine as the other two with the negation moved) but have not been diffed
+against execution. A movie that reaches an actor using them would close that.
+
+An independent cross-check: the pieces of `$8F:E889` name frames `$A17`-`$A1C`,
+whose addresses `$8E:8B80`-`$8E:8E00` are exactly the sprite uploads
+`analysis/dma_log.csv` records at frame 987 — and it draws the word "PASSWORD".
+
 ## `zamn_assets`
 
 ```
 zamn_assets verify-lzss   <rom.sfc> [-m movie] [-f frames]
 zamn_assets verify-level  <rom.sfc> [-m movie] [-f frames]
 zamn_assets verify-actors <rom.sfc> [-m movie] [-f frames]
+zamn_assets verify-sprites <rom.sfc> [-m movie] [-f frames]
 zamn_assets level         <rom.sfc> <level 1-56> [out.png]
 zamn_assets actors        <rom.sfc> <level 1-56>
+zamn_assets sprite        <rom.sfc> <bank:addr> [out.png] [options]
+zamn_assets frame         <rom.sfc> <frame 0-4095> [out.png] [options]
 zamn_assets decompress    <rom.sfc> <bank:addr> <out.bin>
 zamn_assets gfx           <rom.sfc> <bank:addr> <out.png> [options]
 zamn_assets palette       <rom.sfc> <bank:addr> <out.png> [-n colors]
@@ -306,10 +425,22 @@ option list.
 
 ## Not yet decoded
 
-Music/sequence data. And, on the actor side, the *runtime* half: the placement
-lists above say where each actor/victim/object starts and what code drives it,
-but the actor **slot** tables that hold them once spawned (the `$100`-stride
-array at `$7E:0300`+ and the 20-byte-stride table at `$7E:1872`+, flagged in
-`docs/wram-map.md`) are populated by the spawner as the camera scrolls, which is
-Phase 3 logic rather than a static ROM format. The behavior-pointer targets in
-banks `$81`-`$83` are those actors' update routines — also Phase 3.
+Music/sequence data.
+
+On the actor side, what is left is the *runtime* half. The placement lists say
+where each actor/victim/object starts and what code drives it, and the sprite
+formats above say how any given metasprite draws — but the wiring between them
+is code, not data:
+
+* the actor **slot** tables that hold a spawned actor (the `$100`-stride array
+  at `$7E:0300`+ and the 20-byte-stride table at `$7E:1872`+, flagged in
+  `docs/wram-map.md`), filled by the camera-driven spawner `$81:80EC`;
+* the **animation** state that picks which metasprite an actor points at from
+  one frame to the next — the pointer lives in the actor slot (`+8`/`+$0A`),
+  written by the behavior routines in banks `$81`-`$83`;
+* the **VRAM frame cache** (`$80:B9D6`), whose slot assignment depends on the
+  whole history of what has been on screen.
+
+All three are Phase 3. Note that `verify-sprites` already proves the format side
+independently of them: it takes the pointer and the flags out of the running
+game and only checks the decode.

@@ -36,6 +36,29 @@ $00136C  brightness_shadow     # restored into INIDISP at the end of NMI
 $0013BE  oam_buffer            # 544 bytes DMA'd to OAMDATA every frame
 $005628  cgram_buffer          # 128 bytes DMA'd to CGDATA
 
+# --- Sprite build scratch (direct page) --------------------------------------
+$00007C  sprite_upload_count   # bytes (entries x2) queued for sprite_upload_flush
+$00007E  sprite_frame_base     # $7E/$80: address/bank of the frame array = $84:8000
+$000086  sprite_pieces_left    # metasprite pieces still to emit
+$000088  oam_index             # byte offset of the next free oam_buffer entry
+$00008A  sprite_meta_ptr       # $8A/$8C: 24-bit pointer into the piece array
+$00008E  sprite_origin_x       # actor position, camera already subtracted
+$000090  sprite_origin_y
+$000092  sprite_attr_or        # OAM attribute bits the actor forces on
+$000096  sprite_attr_and       # mask applied to each piece's attribute word
+$00009C  visible_actor_count   # bytes (entries x2) live in visible_actors
+$00009E  sprite_lru_slot       # x2; the cache slot evicted next
+$0000A0  sprite_tick           # sched_tick snapshot stamped into sprite_slot_tick
+
+# --- Sprite frame cache (128 slots of 16x16) ---------------------------------
+$00137E  visible_actors        # actor slot offsets the OAM pass walks
+$0015DE  sprite_upload_src     # queued upload: source address
+$00165E  sprite_upload_bank
+$0016DE  sprite_upload_dest    # VRAM word address
+$00175E  sprite_slot_tick      # 128 x u16: last tick each slot was drawn at (LRU key)
+$002128  frame_slot            # 4096 x u16: slot x2 holding this frame, or negative
+$004128  slot_frame            # 128 x u16: the reverse map, used to evict
+
 # --- VRAM upload queue (parallel arrays, vram_queue_count entries) -----------
 $001B84  vram_queue_src
 $001BB4  vram_queue_bank
@@ -81,6 +104,18 @@ $80:843D  vbl_queue_b_run
 $80:9E7B  vram_queue_flush     # drains the VRAM upload list via DMA, once per NMI
 $80:C872  dma_to_cgram         # A=bank, X=source, Y=length -> CGDATA from index 0
 $80:C8B8  dma_to_vram          # A=source, X=VRAM address, Y=length, bank on stack
+
+# --- Code: sprite build ------------------------------------------------------
+$80:B947  sprite_upload_flush  # vblank job: DMAs queued 16x16 frames, then OAM
+$80:B9C7  sprite_cache_age     # stamps every slot's tick to sched_tick-1
+$80:B9D6  sprite_frame_tile    # A = frame -> OAM tile number; loads it if absent
+$80:BA51  sprite_emit          # metasprite -> OAM entries, unflipped
+$80:BABA  sprite_emit_flip_x
+$80:BB30  sprite_emit_flip_y
+$80:BBA6  sprite_emit_flip_xy
+$80:BD1F  sprite_build_oam     # per-frame pass over visible_actors
+$80:C049  sprite_cache_reset   # ages every slot, empties visible_actors, registers the vblank job
+$80:C05A  sprite_cache_init    # A:Y = frame array base; invalidates both maps
 
 # --- Code: level loader and placement parsers --------------------------------
 $80:86A2  level_load           # builds a level from its $9F record

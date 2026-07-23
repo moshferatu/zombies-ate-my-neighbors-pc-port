@@ -47,7 +47,20 @@ The game's hot globals. 4.5 M reads / 0.95 M writes in 2400 frames.
 | `$0072` | word | `joy1_dir` | joypad nibble via the table at `$80:81F9` |
 | `$0074` | word | `joy2_dir` | |
 | `$00CE` | word | `vram_queue_count` | loop bound in `vram_queue_flush` |
-| `$0086`-`$009B` | word | *unidentified* | very hot; written from `$80:BAxx`/`$80:BDxx` (sprite build) |
+| `$007C` | word | `sprite_upload_count` | bytes (entries×2) queued for `$80:B947` |
+| `$007E`,`$0080` | word | `sprite_frame_base` | address / bank of the frame array; set to `$84:8000` by `$80:C05A` |
+| `$0086` | word | `sprite_pieces_left` | metasprite pieces still to emit |
+| `$0088` | word | `oam_index` | byte offset of the next free `oam_buffer` entry |
+| `$008A`,`$008C` | word | `sprite_meta_ptr` | 24-bit pointer into the metasprite's piece array |
+| `$008E`,`$0090` | word | `sprite_origin_x/y` | actor position with the camera already subtracted |
+| `$0092` | word | `sprite_attr_or` | OAM attribute bits the actor forces on |
+| `$0096` | word | `sprite_attr_and` | mask applied to each piece's attribute word |
+| `$009E` | word | `sprite_lru_slot` | ×2; the cache slot `$80:B9D6` evicts next |
+| `$00A0` | word | `sprite_tick` | `sched_tick` snapshot, stamped into `sprite_slot_tick` |
+
+`$0086`-`$00A0` are among the busiest words in WRAM; all of them are scratch for
+the sprite build described in `docs/asset-formats.md` → *Sprite graphics*, and
+`verify-sprites` reads them to drive the C port with the ROM's own arguments.
 
 The busiest addresses in the whole run are `$002C/$002D` (161 k reads) and
 `$0038/$0039` (102 k reads) — both LZSS decompressor state.
@@ -71,8 +84,9 @@ The busiest addresses in the whole run are `$002C/$002D` (161 k reads) and
 | --- | --- | --- |
 | `$7E:1360-$7E:136B` | 12 B | BG1-BG4 H/V scroll, written twice per register into `$210D-$2112` |
 | `$7E:136C` | 1 B | `brightness_shadow`, restored into INIDISP at the end of NMI |
+| `$7E:137E-...` | 2×n | `visible_actors` — actor slot offsets the OAM pass walks (`$80:BD12`) |
 | `$7E:13BE-$7E:15DD` | 544 B | `oam_buffer` — DMA'd to `$2104` every frame |
-| `$7E:175E-$7E:185F` | 258 B | sprite build scratch; written by `$80:B9CE`/`$80:BA09` |
+| `$7E:175E-$7E:185D` | 128×2 | `sprite_slot_tick` — last `sched_tick` each cache slot was drawn at (the LRU key) |
 | `$7E:5628-$7E:56A7` | 128 B | `cgram_buffer` — 64 colours DMA'd to `$2122` |
 
 ## Graphics transfer queue
@@ -87,11 +101,28 @@ Five parallel arrays, `vram_queue_count/2` entries live:
 | `$7E:1C14` | VMAIN increment mode |
 | `$7E:1C44` | transfer length |
 
+## Sprite frame cache
+
+The 128-slot LRU cache of 16x16 sprite frames (`docs/asset-formats.md` →
+*Sprite graphics*). Only 128 of the game's 4096 frames fit in VRAM at once, so
+`$80:B9D6` loads them on demand and `$80:B947` drains the upload queue in
+vblank.
+
+| Address | Size | Contents |
+| --- | --- | --- |
+| `$7E:15DE` | 128×2 | queued upload: source address |
+| `$7E:165E` | 128×2 | queued upload: source bank |
+| `$7E:16DE` | 128×2 | queued upload: VRAM word address |
+| `$7E:2128-$7E:4127` | 4096×2 | `frame_slot` — per frame, the cache slot ×2 holding it, or negative |
+| `$7E:4128-$7E:4227` | 128×2 | `slot_frame` — the reverse map, used to evict |
+
+That last pair is what the region report shows as the 8480-byte block
+bulk-written by `$80:C06B`: `$80:C05A` fills both with `$FFFF` at boot.
+
 ## Large buffers
 
 | Range | Size | Contents |
 | --- | --- | --- |
-| `$7E:2122-$7E:4241` | 8480 B | *unidentified*; bulk-written by `$80:C06B` |
 | `$7E:4B28-$7E:5327` | 2048 B | tilemap staging — DMA'd to VRAM via `$80:9EB2` |
 | `$7E:5F36-$7E:6935` | 2560 B | *unidentified*; written by `$80:ADAC`, `$80:9A74`, `$82:AE00` |
 | `$7E:6F00-$7E:7EFF` | 4096 B | `lzss_ring` — the decompressor's sliding window |

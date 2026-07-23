@@ -5,15 +5,17 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 2 in progress** 🔨 (2026-07-23)
 
-Compression, graphics, level layout **and the actor/victim/object placement
-lists** are decoded as port code. The LZSS decompressor, the level tilemap
-builder and the placement lists are all **verified byte-exact against the ROM's
-own routines** — the level check diffs the full expanded map (18,304 tiles), the
-block library, the row tables, the scalars, the tile attributes and both
-palettes; the actor check diffs the victim and object arrays the ROM's parsers
-build. All 56 levels decode and render, and their placement lists all parse
-(every level has exactly 10 victims). Actor sprite *graphics* mapping and music
-remain.
+Compression, graphics, level layout, the actor/victim/object placement lists
+**and the sprite/OAM path** are decoded as port code, and every one of them is
+**verified byte-exact against the ROM's own routines** — the level check diffs
+the full expanded map (18,304 tiles), the block library, the row tables, the
+scalars, the tile attributes and both palettes; the actor check diffs the victim
+and object arrays the ROM's parsers build; the sprite check diffs all 4,591 OAM
+emissions the movie produces, whole-buffer. All 56 levels decode and render,
+their placement lists all parse (every level has exactly 10 victims), and
+metasprites render as recognisable art (Zeke, the title-screen lettering).
+
+**Music/sequence data is the only Phase 2 format left.**
 
 **Phase 1 complete** (2026-07-23) — analysis toolchain built in-tree; the frame
 skeleton and a first WRAM map documented from traced execution.
@@ -60,14 +62,17 @@ through a vendored SNES core, headless + interactive.
   `level.c` (the level record, block-library decompression and tilemap
   expansion — a port of the loader at `$80:86A2`), `actor.c` (the three
   placement lists — actors, victims, objects — a port of the parsers at
-  `$81:80EC`, `$82:DB46`, `$80:C9A5`).
+  `$81:80EC`, `$82:DB46`, `$80:C9A5`), `sprite.c` (16x16 frames, metasprites and
+  OAM composition — a port of `$80:BA51` and its three flipped twins).
 - `src/assets.c` → **`zamn_assets.exe`** — decodes ROM data to `.bin`/`.png`,
-  and `verify-lzss` / `verify-level` / `verify-actors` diff the C decoders
-  against the ROM's own routines under the reference core. `level <n> [out.png]`
-  and `actors <n>` report and render any of the 56 levels.
+  and `verify-lzss` / `verify-level` / `verify-actors` / `verify-sprites` diff
+  the C decoders against the ROM's own routines under the reference core.
+  `level <n> [out.png]` and `actors <n>` report and render any of the 56 levels;
+  `sprite <bank:addr> [out.png]` and `frame <n> [out.png]` do the same for
+  sprites.
 - `docs/asset-formats.md` — the LZSS stream layout, the tile/palette encoding,
-  the full level format (record table, block library, expansion), and how each
-  decoder was checked.
+  the full level format (record table, block library, expansion), the sprite
+  frame/metasprite/OAM format, and how each decoder was checked.
 
 ## How to build & run
 ```
@@ -79,8 +84,11 @@ build\zamn_disasm.exe "Zombies Ate My Neighbors.sfc" analysis\zamn.cdl -b 80 -s 
 build\zamn_assets.exe verify-lzss "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_assets.exe verify-level "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_assets.exe verify-actors "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+build\zamn_assets.exe verify-sprites "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_assets.exe level "Zombies Ate My Neighbors.sfc" 2 out.png
 build\zamn_assets.exe actors "Zombies Ate My Neighbors.sfc" 2
+build\zamn_assets.exe sprite "Zombies Ate My Neighbors.sfc" 90:9172 zeke.png
+build\zamn_assets.exe frame "Zombies Ate My Neighbors.sfc" 0x463 frames.png --count 24
 ```
 Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select, Esc=Quit.
 
@@ -116,6 +124,20 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   All 56 levels' placement lists parse with no errors — every level lists exactly
   10 victims. The actor list itself is decoded and reported but its runtime spawn
   (`$81:80EC`, camera-driven) is left for Phase 3.
+- Phase 2 (sprites): `verify-sprites` intercepts all four OAM emitters, and for
+  each call snapshots the ROM's 544-byte OAM buffer plus the emitter's arguments,
+  then re-runs the composition in C and diffs the **whole buffer** and the
+  resulting OAM index. All **4,591** emissions on `level1.zmv` are byte-identical
+  (3,572 unflipped, 1,019 flipped horizontally) across 40 distinct metasprites in
+  `$8F:DF86..$90:CBA3`, and the three slot/OAM tables are proven to match our
+  formulas for all 128 entries. Non-vacuous twice: changing the mirror constant
+  from `-16` to `-15` broke exactly the 1,019 flipped calls and nothing else, and
+  perturbing one palette bit broke the unflipped ones. Independent cross-check:
+  the frames a metasprite names resolve to exactly the sprite-graphics addresses
+  `analysis/dma_log.csv` records being uploaded, and rendering it draws the word
+  "PASSWORD"; `$90:9172` draws Zeke mid-run. **Gap:** the movie never flips
+  vertically, so `$80:BB30`/`$80:BBA6` are ported from their ROM bytes but not
+  yet diffed against execution.
 
 ## Key findings (Phase 1)
 - **ZAMN runs a 24-slot cooperative thread scheduler with per-thread stacks**
@@ -143,13 +165,23 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
 4. ~~**Actor/victim/object placements** — the `$9F`-internal record pointers
    `+$1C`/`+$1E`/`+$20`. Ported (`src/assets/actor.c`) and, for victims and
    objects, verified byte-exact against `$82:DB46`/`$80:C9A5` by `verify-actors`;
-   all 56 levels' lists parse.~~ ✅ Still open: **actor sprite graphics** (which
-   tiles/palette each `id`/behavior draws with), the **runtime actor slots**
-   (`$7E:0300` stride `$100`, `$7E:1872` stride `$14`) that the camera-driven
-   spawner `$81:80EC` fills — both Phase 3 — then **music/sequence data**.
-5. Extend `movies/` — password screen, level transition, a boss, two-player — to
+   all 56 levels' lists parse.~~ ✅
+5. ~~**Sprite graphics** — 16x16 frames in a flat array at `$84:8000` (4096 of
+   them), metasprites in banks `$8F`/`$90`, and the OAM composition that turns
+   one into the other. Ported (`src/assets/sprite.c`) and verified byte-exact
+   against `$80:BA51`/`$BABA` by `verify-sprites`.~~ ✅
+6. **Music/sequence data** — the last Phase 2 format. Nothing is known about it
+   yet; the DMA log has no APU traffic in it, so start from the SPC upload at
+   boot and the `$80:9F8E`/`$80:9FD7` bulk transfers.
+7. Extend `movies/` — password screen, level transition, a boss, two-player — to
    push CDL coverage up; every report regenerates automatically, and each new
-   movie widens the `verify-lzss`/`verify-level` coverage for free.
+   movie widens every `verify-*` command's coverage for free. Two known gaps it
+   would close: the vertical-flip OAM emitters, and levels beyond the first.
+
+Deferred to **Phase 3** (runtime state, not ROM formats): the actor slot tables
+(`$7E:0300` stride `$100`, `$7E:1872` stride `$14`) the camera-driven spawner
+`$81:80EC` fills, the animation state that chooses an actor's metasprite from
+frame to frame, and the 128-slot VRAM frame cache (`$80:B9D6`).
 
 ## Known limitations / TODO (deferred, non-blocking)
 - Frame pacing fixed 2026-07-22: paced by sync-to-audio, with a monotonic-timer

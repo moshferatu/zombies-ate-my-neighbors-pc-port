@@ -38,6 +38,7 @@
 #include "assets/level.h"
 #include "assets/lzss.h"
 #include "assets/rom.h"
+#include "assets/sprite.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -1273,6 +1274,476 @@ static int cmd_verify_actors(int argc, char** argv) {
 }
 
 // ---------------------------------------------------------------------------
+// sprite / frame: draw one metasprite or one 16x16 frame
+// ---------------------------------------------------------------------------
+
+// A metasprite says nothing about which of the sprite palette's eight 16-colour
+// rows to use — that comes from the actor. `--pal-index` picks one, and
+// `--level` says which level's sprite palette to take it from.
+static bool load_sprite_palette(const Rom* rom, int level, uint32_t pal_addr,
+                                uint8_t out_rgb[(LEVEL_PALETTE_BYTES / 2) * 3]) {
+  if (!pal_addr) {
+    uint32_t rec = 0;
+    LevelHeader h;
+    if (!level_record_addr(rom, level, &rec) ||
+        level_header_read(rom, rec, &h) != LEVEL_OK) {
+      fprintf(stderr, "error: level must be %d..%d\n", LEVEL_FIRST, LEVEL_COUNT);
+      return false;
+    }
+    pal_addr = h.sprite_palette;
+  }
+  uint32_t avail = 0;
+  const uint8_t* p = rom_ptr(rom, pal_addr, &avail);
+  if (!p || avail < LEVEL_PALETTE_BYTES) {
+    fprintf(stderr, "error: no palette at %s\n", addr_str(pal_addr));
+    return false;
+  }
+  gfx_decode_palette(p, LEVEL_PALETTE_BYTES / 2, out_rgb);
+  return true;
+}
+
+// Composite the pieces onto a canvas big enough to hold all of them, at their
+// authored offsets. This is not the OAM path — it is what the OAM path would
+// look like on screen with nothing else around, which is the useful picture.
+static bool render_meta(const Rom* rom, const SpriteMeta* meta,
+                        const uint8_t* pal_rgb, int sub, int scale,
+                        const char* path) {
+  int min_x = 0, min_y = 0, max_x = SPRITE_W, max_y = SPRITE_H;
+  for (int i = 0; i < meta->count; i++) {
+    if (meta->pieces[i].x < min_x) min_x = meta->pieces[i].x;
+    if (meta->pieces[i].y < min_y) min_y = meta->pieces[i].y;
+    if (meta->pieces[i].x + SPRITE_W > max_x) max_x = meta->pieces[i].x + SPRITE_W;
+    if (meta->pieces[i].y + SPRITE_H > max_y) max_y = meta->pieces[i].y + SPRITE_H;
+  }
+  int w = max_x - min_x, h = max_y - min_y;
+  uint8_t* img = (uint8_t*)calloc((size_t)w * h * scale * scale, 3);
+  if (!img) return false;
+
+  // Back to front: the ROM's pieces are listed in the order they take OAM
+  // slots, and on the SNES a lower OAM index wins.
+  for (int i = meta->count - 1; i >= 0; i--) {
+    const SpritePiece* pc = &meta->pieces[i];
+    uint8_t raw[SPRITE_FRAME_BYTES], px[SPRITE_FRAME_PIXELS];
+    if (!sprite_frame_read(rom, pc->frame, raw)) continue;
+    sprite_frame_pixels(raw, px);
+    bool flip_x = (pc->attr & 0x4000) != 0, flip_y = (pc->attr & 0x8000) != 0;
+    int pal = sub >= 0 ? sub : (int)((pc->attr >> 9) & 7);
+    for (int y = 0; y < SPRITE_H; y++) {
+      for (int x = 0; x < SPRITE_W; x++) {
+        uint8_t idx = px[(flip_y ? SPRITE_H - 1 - y : y) * SPRITE_W +
+                         (flip_x ? SPRITE_W - 1 - x : x)];
+        if (!idx) continue;  // colour 0 is transparent for sprites
+        int cx = pc->x - min_x + x, cy = pc->y - min_y + y;
+        const uint8_t* c = pal_rgb + (pal * 16 + idx) * 3;
+        for (int sy = 0; sy < scale; sy++)
+          for (int sx = 0; sx < scale; sx++)
+            memcpy(img + (((size_t)cy * scale + sy) * w * scale + cx * scale + sx) * 3,
+                   c, 3);
+      }
+    }
+  }
+
+  bool ok = stbi_write_png(path, w * scale, h * scale, 3, img, w * scale * 3) != 0;
+  if (ok) printf("\n  %dx%d PNG written to %s\n", w * scale, h * scale, path);
+  else fprintf(stderr, "error: cannot write '%s'\n", path);
+  free(img);
+  return ok;
+}
+
+static int cmd_sprite(int argc, char** argv) {
+  if (argc < 2) {
+    fprintf(stderr,
+            "usage: zamn_assets sprite <rom.sfc> <bank:addr> [out.png] [options]\n"
+            "   --level <n>       take the sprite palette from level n (default 2)\n"
+            "   --pal <bank:addr> use this palette instead\n"
+            "   --pal-index <n>   force sub-palette n (default: each piece's own)\n"
+            "   --scale <n>       magnify the PNG n times (default 4)\n");
+    return 2;
+  }
+  uint32_t addr;
+  if (!parse_addr24(argv[1], &addr)) {
+    fprintf(stderr, "error: cannot parse address '%s'\n", argv[1]);
+    return 2;
+  }
+  const char* out_path = (argc > 2 && argv[2][0] != '-') ? argv[2] : NULL;
+  int level = 2, sub = -1, scale = 4;
+  uint32_t pal_addr = 0;
+  for (int i = out_path ? 3 : 2; i < argc; i++) {
+    bool has_next = i + 1 < argc;
+    if (!strcmp(argv[i], "--level") && has_next) level = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--pal-index") && has_next) sub = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--scale") && has_next) scale = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--pal") && has_next && parse_addr24(argv[++i], &pal_addr)) ;
+    else { fprintf(stderr, "error: unknown option '%s'\n", argv[i]); return 2; }
+  }
+  if (scale < 1) scale = 1;
+
+  int rom_len = 0;
+  uint8_t* rom_data = read_file(argv[0], &rom_len);
+  if (!rom_data) return 1;
+  Rom rom = {rom_data, (uint32_t)rom_len};
+
+  SpriteMeta meta;
+  int rc = sprite_meta_read(&rom, addr, &meta);
+  if (rc != SPRITE_OK) {
+    fprintf(stderr, "error: no metasprite at %s (status %d)%s\n", addr_str(addr), rc,
+            rc == SPRITE_ERR_BANK ? " — metasprites live in banks $8F and $90" : "");
+    free(rom_data);
+    return 1;
+  }
+
+  printf("Metasprite at %s — %d piece%s, %u bytes\n\n", addr_str(addr), meta.count,
+         meta.count == 1 ? "" : "s", meta.bytes);
+  printf("   #   offset      attr   frame   graphics\n");
+  for (int i = 0; i < meta.count; i++) {
+    const SpritePiece* p = &meta.pieces[i];
+    printf("  %2d  %+4d,%+4d   $%04X   $%03X    %s%s%s\n", i, p->x, p->y, p->attr,
+           p->frame, addr_str(sprite_frame_addr(p->frame)),
+           (p->attr & 0x4000) ? "  flip-x" : "", (p->attr & 0x8000) ? "  flip-y" : "");
+  }
+
+  bool ok = true;
+  if (out_path) {
+    uint8_t pal[(LEVEL_PALETTE_BYTES / 2) * 3];
+    ok = load_sprite_palette(&rom, level, pal_addr, pal) &&
+         render_meta(&rom, &meta, pal, sub, scale, out_path);
+  }
+  free(rom_data);
+  return ok ? 0 : 1;
+}
+
+static int cmd_frame(int argc, char** argv) {
+  if (argc < 2) {
+    fprintf(stderr,
+            "usage: zamn_assets frame <rom.sfc> <frame 0-%d> [out.png] [options]\n"
+            "   --count <n>       draw n consecutive frames as a sheet (default 1)\n"
+            "   --cols <n>        frames per row (default 8)\n"
+            "   --level <n>       take the sprite palette from level n (default 2)\n"
+            "   --pal <bank:addr> use this palette instead\n"
+            "   --pal-index <n>   sub-palette (default 0)\n"
+            "   --scale <n>       magnify the PNG n times (default 4)\n",
+            SPRITE_FRAME_COUNT - 1);
+    return 2;
+  }
+  int first = (int)strtol(argv[1], NULL, 0);
+  const char* out_path = (argc > 2 && argv[2][0] != '-') ? argv[2] : NULL;
+  int count = 1, cols = 8, level = 2, sub = 0, scale = 4;
+  uint32_t pal_addr = 0;
+  for (int i = out_path ? 3 : 2; i < argc; i++) {
+    bool has_next = i + 1 < argc;
+    if (!strcmp(argv[i], "--count") && has_next) count = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--cols") && has_next) cols = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--level") && has_next) level = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--pal-index") && has_next) sub = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--scale") && has_next) scale = atoi(argv[++i]);
+    else if (!strcmp(argv[i], "--pal") && has_next && parse_addr24(argv[++i], &pal_addr)) ;
+    else { fprintf(stderr, "error: unknown option '%s'\n", argv[i]); return 2; }
+  }
+  if (first < 0 || first >= SPRITE_FRAME_COUNT || count < 1) {
+    fprintf(stderr, "error: frame must be 0..%d\n", SPRITE_FRAME_COUNT - 1);
+    return 2;
+  }
+  if (cols < 1) cols = 1;
+  if (scale < 1) scale = 1;
+
+  int rom_len = 0;
+  uint8_t* rom_data = read_file(argv[0], &rom_len);
+  if (!rom_data) return 1;
+  Rom rom = {rom_data, (uint32_t)rom_len};
+
+  printf("Frame $%03X at %s", first, addr_str(sprite_frame_addr((uint16_t)first)));
+  if (count > 1)
+    printf(" .. frame $%03X at %s", first + count - 1,
+           addr_str(sprite_frame_addr((uint16_t)(first + count - 1))));
+  printf("\n");
+
+  bool ok = true;
+  if (out_path) {
+    uint8_t pal[(LEVEL_PALETTE_BYTES / 2) * 3];
+    if (!load_sprite_palette(&rom, level, pal_addr, pal)) { free(rom_data); return 1; }
+    // A 16x16 frame is four 8x8 tiles, so the existing sheet writer draws it if
+    // the frames are unpacked into tile order first.
+    int rows = (count + cols - 1) / cols;
+    uint8_t* sheet = (uint8_t*)calloc((size_t)rows * cols * 4, GFX_TILE_PIXELS);
+    if (!sheet) { free(rom_data); return 1; }
+    for (int i = 0; i < count; i++) {
+      uint8_t raw[SPRITE_FRAME_BYTES], px[SPRITE_FRAME_PIXELS];
+      if (!sprite_frame_read(&rom, (uint16_t)(first + i), raw)) continue;
+      sprite_frame_pixels(raw, px);
+      int fx = (i % cols) * 2, fy = (i / cols) * 2;  // in 8x8 tiles
+      for (int t = 0; t < SPRITE_FRAME_TILES; t++) {
+        int tile = (fy + (t >> 1)) * (cols * 2) + fx + (t & 1);
+        for (int y = 0; y < GFX_TILE_H; y++)
+          for (int x = 0; x < GFX_TILE_W; x++)
+            sheet[tile * GFX_TILE_PIXELS + y * GFX_TILE_W + x] =
+                px[((t >> 1) * 8 + y) * SPRITE_W + (t & 1) * 8 + x];
+      }
+    }
+    ok = write_tilesheet(out_path, sheet, (uint32_t)rows * cols * 4, cols * 2,
+                         pal + sub * 16 * 3, 16, scale);
+    free(sheet);
+  }
+  free(rom_data);
+  return ok ? 0 : 1;
+}
+
+// ---------------------------------------------------------------------------
+// verify-sprites: diff our OAM composition against the ROM's own emitters
+// ---------------------------------------------------------------------------
+
+// The four emitters `$80:BD1F` dispatches to through `($80:BDEA,X)`, and the
+// RTS that ends each one.
+static const struct { uint32_t entry, ret; SpriteFlip flip; const char* name; } SP_EMIT[] = {
+  {0x80ba51, 0x80bab9, SPRITE_FLIP_NONE, "$80:BA51 no flip"},
+  {0x80baba, 0x80bb2f, SPRITE_FLIP_X,    "$80:BABA flip-x"},
+  {0x80bb30, 0x80bba5, SPRITE_FLIP_Y,    "$80:BB30 flip-y"},
+  {0x80bba6, 0x80bc22, SPRITE_FLIP_XY,   "$80:BBA6 flip-xy"},
+};
+#define SP_EMIT_COUNT 4
+
+// Direct page is pinned at $0000 all game, so the emitters' scratch is just
+// WRAM. Names from the disassembly of $80:BD1F and $80:BA51.
+#define SP_DP_COUNT 0x86    // pieces left to draw
+#define SP_DP_OAM 0x88      // byte index into the OAM buffer
+#define SP_DP_META 0x8a     // pointer to the piece array (past the count byte)
+#define SP_DP_META_BANK 0x8c
+#define SP_DP_X 0x8e        // actor screen position
+#define SP_DP_Y 0x90
+#define SP_DP_ATTR_OR 0x92
+#define SP_DP_ATTR_AND 0x96
+
+#define SP_OAM_BUFFER 0x13be  // $7E:13BE, DMA'd whole to OAM by $80:B9BA
+#define SP_FRAME_SLOT_MAP 0x2128  // $7E:2128, one word per frame: slot*2, or <0
+
+// The tables the emitters index, checked against our formulas once at startup.
+#define SP_TABLE_VRAM 0x80b547
+#define SP_TABLE_TILE 0x80b647
+#define SP_TABLE_HIGH 0x80b747
+
+static struct {
+  Rom rom;
+
+  bool active;
+  int which;
+  uint16_t sp;             // stack pointer at entry, to match the right RTS
+  SpriteOam before;        // OAM as the ROM found it, plus the entry index
+  SpriteMeta meta;
+  SpriteFlip flip;
+  int16_t ox, oy;
+  uint16_t attr_or, attr_and;
+  uint32_t meta_addr;
+
+  Snes* snes;             // for the frame -> tile lookup during our own emit
+  int calls[SP_EMIT_COUNT];
+  int captured, passed;
+  int checks, failures;
+
+  // Every distinct metasprite the movie draws, for the report.
+  uint32_t seen[512];
+  int seen_count;
+} sp;
+
+static void sp_check(const char* what, bool ok, const char* detail) {
+  sp.checks++;
+  if (!ok) sp.failures++;
+  printf("  %-44s %s%s%s\n", what, ok ? "OK" : "FAIL",
+         detail && *detail ? "  " : "", detail ? detail : "");
+}
+
+// The VRAM cache lookup, read out of the emulator: after the ROM's call every
+// frame it drew is resident, so this returns the slot the ROM itself used.
+static uint16_t sp_tile_of(uint16_t frame, void* ctx) {
+  Snes* snes = (Snes*)ctx;
+  uint16_t slot2 = wram_word(snes, SP_FRAME_SLOT_MAP + (uint32_t)frame * 2);
+  if (slot2 & 0x8000) return 0;  // not resident — cannot happen after the call
+  return sprite_slot_tile(slot2 / 2);
+}
+
+static void sprites_on_entry(Snes* snes, int which) {
+  sp.active = true;
+  sp.which = which;
+  sp.flip = SP_EMIT[which].flip;
+  sp.sp = snes->cpu->sp;
+  sp.calls[which]++;
+
+  sp.ox = (int16_t)wram_word(snes, SP_DP_X);
+  sp.oy = (int16_t)wram_word(snes, SP_DP_Y);
+  sp.attr_or = wram_word(snes, SP_DP_ATTR_OR);
+  sp.attr_and = wram_word(snes, SP_DP_ATTR_AND);
+
+  memset(&sp.before, 0, sizeof sp.before);
+  sp.before.index = wram_word(snes, SP_DP_OAM);
+  wram_block(snes, 0x7e0000u | SP_OAM_BUFFER, SPRITE_OAM_BYTES, sp.before.bytes);
+
+  // $8A points one past the count byte ($80:BDAC), so the record starts there.
+  uint32_t ptr = wram_word(snes, SP_DP_META);
+  uint32_t bank = wram_word(snes, SP_DP_META_BANK) & 0xff;
+  sp.meta_addr = (bank << 16) | ((ptr - 1) & 0xffff);
+  if (sprite_meta_read(&sp.rom, sp.meta_addr, &sp.meta) != SPRITE_OK) sp.meta.count = -1;
+}
+
+static void sprites_on_exit(Snes* snes) {
+  sp.active = false;
+  sp.captured++;
+
+  uint16_t rom_index = wram_word(snes, SP_DP_OAM);
+  uint8_t rom_oam[SPRITE_OAM_BYTES];
+  wram_block(snes, 0x7e0000u | SP_OAM_BUFFER, SPRITE_OAM_BYTES, rom_oam);
+
+  SpriteOam ours = sp.before;
+  sprite_emit(&ours, &sp.meta, sp.flip, sp.ox, sp.oy, sp.attr_or, sp.attr_and,
+              sp_tile_of, snes);
+
+  bool ok = ours.index == rom_index &&
+            memcmp(ours.bytes, rom_oam, SPRITE_OAM_BYTES) == 0;
+  if (ok) {
+    sp.passed++;
+    bool known = false;
+    for (int i = 0; i < sp.seen_count; i++) known |= sp.seen[i] == sp.meta_addr;
+    if (!known && sp.seen_count < (int)(sizeof sp.seen / sizeof sp.seen[0]))
+      sp.seen[sp.seen_count++] = sp.meta_addr;
+    return;
+  }
+
+  sp.failures++;
+  printf("  MISMATCH  %s  metasprite %s  %d pieces  at (%d, %d)\n",
+         SP_EMIT[sp.which].name, addr_str(sp.meta_addr), sp.meta.count, sp.ox, sp.oy);
+  if (ours.index != rom_index)
+    printf("            OAM index: ROM $%04X, ours $%04X\n", rom_index, ours.index);
+  for (uint32_t i = 0, shown = 0; i < SPRITE_OAM_BYTES && shown < 8; i++) {
+    if (ours.bytes[i] == rom_oam[i]) continue;
+    printf("            byte $%03X (sprite %u, %s): ROM $%02X, ours $%02X\n", i,
+           i / 4, (const char*[]){"x", "y", "tile", "attr"}[i & 3], rom_oam[i],
+           ours.bytes[i]);
+    shown++;
+  }
+}
+
+static void sprites_step(Snes* snes) {
+  Cpu* cpu = snes->cpu;
+  if (!cpu->resetWanted && !cpu->stopped && !cpu->waiting && !cpu->intWanted) {
+    uint32_t pc = ((uint32_t)cpu->k << 16) | cpu->pc;
+    if (!sp.active) {
+      for (int i = 0; i < SP_EMIT_COUNT; i++)
+        if (pc == SP_EMIT[i].entry) { sprites_on_entry(snes, i); break; }
+    } else if (pc == SP_EMIT[sp.which].ret && cpu->sp == sp.sp) {
+      sprites_on_exit(snes);
+    }
+  }
+  snes_runCpuCycle(snes);
+}
+
+static void sprites_frame(Snes* snes) {
+  while (snes->inVblank) sprites_step(snes);
+  uint32_t frame = snes->frames;
+  while (!snes->inVblank && frame == snes->frames) sprites_step(snes);
+  snes_readBBus(snes, 0x40);
+}
+
+// The three tables the emitters and the VRAM cache index are pure functions of
+// the slot or sprite number, so the port computes them. Prove that here rather
+// than asserting it in a comment.
+static void sprites_check_tables(void) {
+  bool tile_ok = true, vram_ok = true, high_ok = true;
+  for (int s = 0; s < SPRITE_SLOTS; s++) {
+    tile_ok &= rom_word(&sp.rom, SP_TABLE_TILE + s * 2) == sprite_slot_tile(s);
+    vram_ok &= rom_word(&sp.rom, SP_TABLE_VRAM + s * 2) == sprite_slot_vram(s);
+  }
+  for (int n = 0; n < SPRITE_OAM_SPRITES; n++) {
+    high_ok &= rom_word(&sp.rom, SP_TABLE_HIGH + n * 4) ==
+               (uint16_t)(SPRITE_OAM_LOW_BYTES + (n >> 2));
+    high_ok &= rom_word(&sp.rom, SP_TABLE_HIGH + n * 4 + 2) ==
+               (uint16_t)(1u << ((n & 3) * 2));
+  }
+  sp_check("slot -> OAM tile ($80:B647, 128 entries)", tile_ok, "");
+  sp_check("slot -> VRAM address ($80:B547, 128 entries)", vram_ok, "");
+  sp_check("OAM high table ($80:B747, 128 entries)", high_ok, "");
+}
+
+static int cmd_verify_sprites(int argc, char** argv) {
+  if (argc < 1) {
+    fprintf(stderr, "usage: zamn_assets verify-sprites <rom.sfc> [-m movie] [-f frames]\n");
+    return 2;
+  }
+  const char* rom_path = argv[0];
+  const char* movie_path = NULL;
+  int frames = 2400;
+
+  for (int i = 1; i < argc; i++) {
+    bool has_next = i + 1 < argc;
+    if ((!strcmp(argv[i], "-m") || !strcmp(argv[i], "--movie")) && has_next) movie_path = argv[++i];
+    else if ((!strcmp(argv[i], "-f") || !strcmp(argv[i], "--frames")) && has_next) frames = atoi(argv[++i]);
+    else { fprintf(stderr, "error: unknown option '%s'\n", argv[i]); return 2; }
+  }
+
+  int rom_len = 0;
+  uint8_t* rom_data = read_file(rom_path, &rom_len);
+  if (!rom_data) return 1;
+
+  Snes* snes = snes_init();
+  if (!snes_loadRom(snes, rom_data, rom_len)) {
+    fprintf(stderr, "error: core rejected ROM\n");
+    return 1;
+  }
+  sp.rom.data = snes->cart->rom;
+  sp.rom.size = snes->cart->romSize;
+
+  Movie movie;
+  bool have_movie = false;
+  if (movie_path) {
+    if (!movie_load(&movie, movie_path)) {
+      fprintf(stderr, "error: cannot load movie '%s'\n", movie_path);
+      return 1;
+    }
+    have_movie = true;
+  }
+
+  printf("Static tables:\n");
+  sprites_check_tables();
+
+  snes_reset(snes, true);
+  printf("\nReplaying %d frames of '%s' and diffing every OAM emission.\n\n",
+         frames, movie_path ? movie_path : "(no input)");
+
+  for (int frame = 0; frame < frames; frame++) {
+    if (have_movie) {
+      uint16_t buttons = movie_state(&movie, frame);
+      for (int b = 0; b < 12; b++) snes_setButtonState(snes, 1, b, (buttons >> b) & 1);
+    }
+    sprites_frame(snes);
+  }
+
+  printf("Calls intercepted: %d\n", sp.captured);
+  for (int i = 0; i < SP_EMIT_COUNT; i++)
+    printf("  %-20s %d\n", SP_EMIT[i].name, sp.calls[i]);
+  char detail[96];
+  snprintf(detail, sizeof detail, "%d of %d emissions byte-identical", sp.passed,
+           sp.captured);
+  sp_check("OAM output matches the ROM's emitters", sp.captured > 0 && sp.passed == sp.captured,
+           detail);
+  // Which metasprites the movie actually drew — the evidence for where this
+  // data lives, and the seed for widening coverage with more movies.
+  printf("\n%d distinct metasprite%s drawn:\n", sp.seen_count,
+         sp.seen_count == 1 ? "" : "s");
+  for (int i = 1; i < sp.seen_count; i++) {  // insertion sort; the list is tiny
+    uint32_t v = sp.seen[i];
+    int j = i - 1;
+    for (; j >= 0 && sp.seen[j] > v; j--) sp.seen[j + 1] = sp.seen[j];
+    sp.seen[j + 1] = v;
+  }
+  for (int i = 0; i < sp.seen_count; i++)
+    printf("  %s%s", addr_str(sp.seen[i]), (i % 8 == 7 || i == sp.seen_count - 1) ? "\n" : "");
+
+  printf("\n%d check%s, %d failed.\n", sp.checks, sp.checks == 1 ? "" : "s", sp.failures);
+
+  int rc = sp.failures > 0 ? 1 : 0;
+  if (have_movie) movie_free(&movie);
+  snes_free(snes);
+  free(rom_data);
+  return rc;
+}
+
+// ---------------------------------------------------------------------------
 
 static void usage(void) {
   fprintf(stderr,
@@ -1291,6 +1762,14 @@ static void usage(void) {
           "  zamn_assets verify-actors <rom.sfc> [-m movie] [-f frames]\n"
           "      Replay a movie and diff the victim and object lists against\n"
           "      what $82:DB46 and $80:C9A5 built in WRAM.\n\n"
+          "  zamn_assets sprite <rom.sfc> <bank:addr> [out.png] [options]\n"
+          "      Report a metasprite's pieces and, with a path, draw it\n"
+          "      ('sprite' with no address for the option list).\n\n"
+          "  zamn_assets frame <rom.sfc> <frame 0-4095> [out.png] [options]\n"
+          "      Report and draw 16x16 sprite frames.\n\n"
+          "  zamn_assets verify-sprites <rom.sfc> [-m movie] [-f frames]\n"
+          "      Replay a movie and diff every OAM entry the game builds\n"
+          "      against the same metasprites composed in C.\n\n"
           "  zamn_assets decompress <rom.sfc> <bank:addr> <out.bin>\n"
           "      Decompress one LZSS stream.\n\n"
           "  zamn_assets gfx <rom.sfc> <bank:addr> <out.png> [options]\n"
@@ -1307,6 +1786,9 @@ int main(int argc, char** argv) {
   if (!strcmp(cmd, "level")) return cmd_level(argc - 2, argv + 2);
   if (!strcmp(cmd, "actors")) return cmd_actors(argc - 2, argv + 2);
   if (!strcmp(cmd, "verify-actors")) return cmd_verify_actors(argc - 2, argv + 2);
+  if (!strcmp(cmd, "sprite")) return cmd_sprite(argc - 2, argv + 2);
+  if (!strcmp(cmd, "frame")) return cmd_frame(argc - 2, argv + 2);
+  if (!strcmp(cmd, "verify-sprites")) return cmd_verify_sprites(argc - 2, argv + 2);
   if (!strcmp(cmd, "decompress")) return cmd_decompress(argc - 2, argv + 2);
   if (!strcmp(cmd, "gfx")) return cmd_gfx(argc - 2, argv + 2);
   if (!strcmp(cmd, "palette")) return cmd_palette(argc - 2, argv + 2);

@@ -13,8 +13,9 @@ verified against the original ROM. See **`PLAN.md`** for the full plan and
 **Phase 2 in progress** — the game boots and runs natively through a vendored
 SNES core (Phase 0), an in-tree analysis toolchain produces a Code/Data Log,
 memory map and annotated disassembly from reproducible traced runs (Phase 1),
-and the asset pipeline has begun: the game's LZSS decompressor is reimplemented
-in C and **verified byte-exact against the ROM's own routine**.
+and the asset pipeline is well along: compression, graphics, level layout, the
+placement lists and the sprite/OAM path are all reimplemented in C and
+**verified byte-exact against the ROM's own routines**.
 
 See **`docs/frame-skeleton.md`** for how the game's main loop works,
 **`docs/wram-map.md`** for the memory map, **`docs/analysis-tools.md`** for the
@@ -45,11 +46,17 @@ build\zamn_disasm.exe "Zombies Ate My Neighbors.sfc" analysis\zamn.cdl -b 80 -s 
 ```
 
 ## Decode assets
-Check the C decompressor against the ROM's own routine on every call the game
-makes while a movie plays, then decode data out of the ROM:
+Each `verify-*` command replays a movie under the reference core and diffs the C
+decoders against the ROM's own routines as they run; the rest decode data out of
+the ROM directly:
 ```
-build\zamn_assets.exe verify-lzss "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
-build\zamn_assets.exe gfx "Zombies Ate My Neighbors.sfc" 94:A300 tiles.png --lzss --pal 83:EE8C --pal-index 1 --scale 3
+build\zamn_assets.exe verify-lzss    "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+build\zamn_assets.exe verify-level   "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+build\zamn_assets.exe verify-actors  "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+build\zamn_assets.exe verify-sprites "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+build\zamn_assets.exe level  "Zombies Ate My Neighbors.sfc" 2 level1.png
+build\zamn_assets.exe sprite "Zombies Ate My Neighbors.sfc" 90:9172 zeke.png
+build\zamn_assets.exe gfx    "Zombies Ate My Neighbors.sfc" 94:A300 tiles.png --lzss --pal 83:EE8C --pal-index 1 --scale 3
 ```
 
 ## Layout
@@ -59,8 +66,9 @@ src/main_sdl.c        Phase 0b: interactive window + input + audio
 src/analysis/         Phase 1: 65816 table, CDL format, input movies (shared)
 src/trace.c           Phase 1: instruction-level tracer -> CDL, memory map, call graph
 src/disasm.c          Phase 1: CDL-driven annotated disassembler
-src/assets/           Phase 2: LZSS + tile/palette decoders (port code, libc only)
-src/assets.c          Phase 2: asset decoding CLI + the LZSS verifier
+src/assets/           Phase 2: LZSS, tiles, palettes, levels, placements, sprites
+                              (port code — ships in the game, libc only)
+src/assets.c          Phase 2: asset decoding CLI + the four verifiers
 movies/               Reproducible input scripts driving the tracer
 docs/                 Frame skeleton, WRAM map, asset formats, tool reference
 tools/symbols/        Symbol names for the disassembler
