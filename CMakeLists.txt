@@ -64,7 +64,9 @@ target_link_libraries(zamn_disasm PRIVATE zamn_analysis)
 # ---------------------------------------------------------------------------
 add_library(zamn_assets_lib STATIC
   src/assets/lzss.c
-  src/assets/gfx.c)
+  src/assets/gfx.c
+  src/assets/rom.c
+  src/assets/level.c)
 target_include_directories(zamn_assets_lib PUBLIC src)
 
 # zamn_assets: decodes ROM data, and verifies the decoders against the ROM's

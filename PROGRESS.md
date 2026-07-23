@@ -5,9 +5,12 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 2 in progress** 🔨 (2026-07-23)
 
-Compression and graphics decoding are done and the first piece of real port code
-exists. The LZSS decompressor is **verified byte-exact against the ROM's own
-routine** on every call a movie reaches. Level layout, sprites and music remain.
+Compression, graphics **and level layout** are decoded as port code. The LZSS
+decompressor and the level tilemap builder are both **verified byte-exact
+against the ROM's own routines** — the level check diffs the full expanded map
+(18,304 tiles), the block library, the row tables, the scalars, the tile
+attributes and both palettes. All 56 levels decode and render. Sprites/actors
+and music remain.
 
 **Phase 1 complete** (2026-07-23) — analysis toolchain built in-tree; the frame
 skeleton and a first WRAM map documented from traced execution.
@@ -50,11 +53,16 @@ through a vendored SNES core, headless + interactive.
 ### Phase 2 — assets
 - `src/assets/` — **port code, not tooling**: it ships in the finished game, so
   it depends on nothing but libc. `lzss.c` (a byte-exact port of `$80:CD20`),
-  `gfx.c` (planar tiles + BGR555 palettes).
+  `gfx.c` (planar tiles + BGR555 palettes), `rom.c` (LoROM address mapping),
+  `level.c` (the level record, block-library decompression and tilemap
+  expansion — a port of the loader at `$80:86A2`).
 - `src/assets.c` → **`zamn_assets.exe`** — decodes ROM data to `.bin`/`.png`,
-  and `verify-lzss` diffs the C decompressor against the ROM routine.
-- `docs/asset-formats.md` — the stream layout, the window quirk, the register
-  interface, and how each decoder was checked.
+  and `verify-lzss` / `verify-level` diff the C decoders against the ROM's own
+  routines under the reference core. `level <n> [out.png]` reports and renders
+  any of the 56 levels.
+- `docs/asset-formats.md` — the LZSS stream layout, the tile/palette encoding,
+  the full level format (record table, block library, expansion), and how each
+  decoder was checked.
 
 ## How to build & run
 ```
@@ -64,6 +72,8 @@ build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" out.png 500
 build\zamn_trace.exe "Zombies Ate My Neighbors.sfc" -o analysis -f 2400 -m movies\level1.zmv
 build\zamn_disasm.exe "Zombies Ate My Neighbors.sfc" analysis\zamn.cdl -b 80 -s tools\symbols\zamn.sym -o analysis\bank_80.asm
 build\zamn_assets.exe verify-lzss "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+build\zamn_assets.exe verify-level "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+build\zamn_assets.exe level "Zombies Ate My Neighbors.sfc" 2 out.png
 ```
 Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select, Esc=Quit.
 
@@ -83,6 +93,13 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   decoding is an eyeball check against sources named in `dma_log.csv` — the
   hardware encoding has no ROM routine to diff against — and both a compressed
   and an uncompressed source render as legible glyphs.
+- Phase 2 (level): `verify-level` lets the game load level 1 (record `$9F:9060`,
+  table entry 2) and diffs 15 things against the WRAM `$80:86A2` just built — all
+  pass, including the **entire 18,304-tile expanded map** in bank `$7F`, the
+  32 KB block library, the two row-base tables, the derived scroll scalars, the
+  1 KB tile-attribute table and both 256-byte palettes. All 56 levels decode via
+  `zamn_assets level` with no errors, and maps from every tileset group render as
+  coherent art (the map *values* are what `verify-level` proves exactly).
 
 ## Key findings (Phase 1)
 - **ZAMN runs a 24-slot cooperative thread scheduler with per-thread stacks**
@@ -104,16 +121,17 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
 ## Next steps — Phase 2 (asset pipeline)
 1. ~~Confirm our LZSS implementation against `$80:CD20` byte-for-byte.~~ ✅
 2. ~~Tile and palette decoding, cross-checked against `dma_log.csv`.~~ ✅
-3. **Level layout.** The remaining big unknown. `dma_log.csv` names the tilemap
-   sources but not the format that builds them; the level loader is reachable
-   from the callers of `$80:CD20` in banks `$82`/`$83`.
+3. ~~**Level layout** — record table at `$9F:8000`, block library, tilemap
+   expansion. Ported (`src/assets/level.c`) and verified byte-exact against
+   `$80:86A2` by `verify-level`; all 56 levels decode.~~ ✅
 4. **Sprite/actor definitions**, then music/sequence data. Identify the actor
    slot tables flagged in `docs/wram-map.md` (the `$100`-stride array at
-   `$7E:0300`+ and the 20-byte-stride table at `$7E:1872`+) — they are also the
-   way into the level format.
+   `$7E:0300`+ and the 20-byte-stride table at `$7E:1872`+). The unidentified
+   `$9F`-internal pointers in each level record (`+$1C`/`+$1E`/`+$20`) are the
+   likely home of the per-level actor placements — the way in.
 5. Extend `movies/` — password screen, level transition, a boss, two-player — to
    push CDL coverage up; every report regenerates automatically, and each new
-   movie widens the `verify-lzss` table for free.
+   movie widens the `verify-lzss`/`verify-level` coverage for free.
 
 ## Known limitations / TODO (deferred, non-blocking)
 - Frame pacing fixed 2026-07-22: paced by sync-to-audio, with a monotonic-timer
