@@ -3,10 +3,14 @@
 Cross-session status for the ZAMN native-port project. Update this whenever a
 milestone lands. See `PLAN.md` for the full multi-phase plan.
 
-## Current status: **Phase 1 complete** ✅ (2026-07-23)
+## Current status: **Phase 2 in progress** 🔨 (2026-07-23)
 
-Analysis toolchain built in-tree; the frame skeleton and a first WRAM map are
-documented from traced execution.
+Compression and graphics decoding are done and the first piece of real port code
+exists. The LZSS decompressor is **verified byte-exact against the ROM's own
+routine** on every call a movie reaches. Level layout, sprites and music remain.
+
+**Phase 1 complete** (2026-07-23) — analysis toolchain built in-tree; the frame
+skeleton and a first WRAM map documented from traced execution.
 
 **Phase 0 complete** (2026-07-22) — native Windows build of the game running
 through a vendored SNES core, headless + interactive.
@@ -43,6 +47,15 @@ through a vendored SNES core, headless + interactive.
 - `tools/symbols/zamn.sym` — evidence-backed symbol names.
 - `docs/analysis-tools.md`, `docs/frame-skeleton.md`, `docs/wram-map.md`.
 
+### Phase 2 — assets
+- `src/assets/` — **port code, not tooling**: it ships in the finished game, so
+  it depends on nothing but libc. `lzss.c` (a byte-exact port of `$80:CD20`),
+  `gfx.c` (planar tiles + BGR555 palettes).
+- `src/assets.c` → **`zamn_assets.exe`** — decodes ROM data to `.bin`/`.png`,
+  and `verify-lzss` diffs the C decompressor against the ROM routine.
+- `docs/asset-formats.md` — the stream layout, the window quirk, the register
+  interface, and how each decoder was checked.
+
 ## How to build & run
 ```
 powershell -ExecutionPolicy Bypass -File tools\build.ps1     # add -Clean to reset
@@ -50,6 +63,7 @@ build\zamn.exe "Zombies Ate My Neighbors.sfc"                # play
 build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" out.png 500
 build\zamn_trace.exe "Zombies Ate My Neighbors.sfc" -o analysis -f 2400 -m movies\level1.zmv
 build\zamn_disasm.exe "Zombies Ate My Neighbors.sfc" analysis\zamn.cdl -b 80 -s tools\symbols\zamn.sym -o analysis\bank_80.asm
+build\zamn_assets.exe verify-lzss "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 ```
 Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select, Esc=Quit.
 
@@ -62,6 +76,13 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   ($7E:13BE, 544 B → $2104) matches the WRAM region report's 562-byte
   write-only buffer at the same address, and the LZSS ring buffer inferred from
   `$80:CD20` matches the 4096-byte region at `$7E:6F00`.
+- Phase 2: `verify-lzss` intercepts all 5 decompression calls `level1.zmv`
+  reaches and finds the C port byte-identical to `$80:CD20` — output, byte
+  count, *and* the final 4 KB window. Confirmed non-vacuous: flipping one bit of
+  the C output makes all 5 fail and the tool exit non-zero. Tile and palette
+  decoding is an eyeball check against sources named in `dma_log.csv` — the
+  hardware encoding has no ROM routine to diff against — and both a compressed
+  and an uncompressed source render as legible glyphs.
 
 ## Key findings (Phase 1)
 - **ZAMN runs a 24-slot cooperative thread scheduler with per-thread stacks**
@@ -81,14 +102,18 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   code, 177,817 of data, 182 subroutines, 362 call edges).
 
 ## Next steps — Phase 2 (asset pipeline)
-1. Port Necrofy's format decoders to C, cross-checked against `dma_log.csv`
-   (which already names the exact ROM addresses of tile, tilemap and palette
-   data, plus their VRAM/CGRAM destinations).
-2. Confirm our LZSS implementation against `$80:CD20` byte-for-byte.
-3. Extend `movies/` — password screen, level transition, a boss, two-player — to
-   push CDL coverage up; every report regenerates automatically.
-4. Identify the actor slot tables flagged in `docs/wram-map.md` (the `$100`-stride
-   array at `$7E:0300`+ and the 20-byte-stride table at `$7E:1872`+).
+1. ~~Confirm our LZSS implementation against `$80:CD20` byte-for-byte.~~ ✅
+2. ~~Tile and palette decoding, cross-checked against `dma_log.csv`.~~ ✅
+3. **Level layout.** The remaining big unknown. `dma_log.csv` names the tilemap
+   sources but not the format that builds them; the level loader is reachable
+   from the callers of `$80:CD20` in banks `$82`/`$83`.
+4. **Sprite/actor definitions**, then music/sequence data. Identify the actor
+   slot tables flagged in `docs/wram-map.md` (the `$100`-stride array at
+   `$7E:0300`+ and the 20-byte-stride table at `$7E:1872`+) — they are also the
+   way into the level format.
+5. Extend `movies/` — password screen, level transition, a boss, two-player — to
+   push CDL coverage up; every report regenerates automatically, and each new
+   movie widens the `verify-lzss` table for free.
 
 ## Known limitations / TODO (deferred, non-blocking)
 - Frame pacing fixed 2026-07-22: paced by sync-to-audio, with a monotonic-timer

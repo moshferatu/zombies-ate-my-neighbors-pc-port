@@ -58,6 +58,22 @@ add_executable(zamn_disasm src/disasm.c)
 target_link_libraries(zamn_disasm PRIVATE zamn_analysis)
 
 # ---------------------------------------------------------------------------
+# Phase 2: asset pipeline. Unlike `analysis`, this library is *port* code — it
+# ships in the finished game, so it depends on nothing but libc and must stay
+# free of anything emulator- or tooling-specific.
+# ---------------------------------------------------------------------------
+add_library(zamn_assets_lib STATIC
+  src/assets/lzss.c
+  src/assets/gfx.c)
+target_include_directories(zamn_assets_lib PUBLIC src)
+
+# zamn_assets: decodes ROM data, and verifies the decoders against the ROM's
+# own routines by intercepting them under the reference core.
+add_executable(zamn_assets src/assets.c)
+target_link_libraries(zamn_assets PRIVATE snescore zamn_analysis zamn_assets_lib)
+target_include_directories(zamn_assets PRIVATE third_party/stb)
+
+# ---------------------------------------------------------------------------
 # Phase 0b: interactive SDL frontend (the playable baseline).
 # Uses a system SDL2 if present, otherwise fetches & builds SDL2 from source.
 # Disable with -DZAMN_BUILD_SDL=OFF (headless target always builds).
