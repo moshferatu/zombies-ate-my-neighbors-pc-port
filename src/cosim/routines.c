@@ -15,6 +15,7 @@
 
 #include "cosim/cosim.h"
 
+#include "port/collide.h"
 #include "port/fade.h"
 #include "port/oam.h"
 #include "port/sprite_cache.h"
@@ -369,6 +370,109 @@ static void shim_oam_buffer_clear(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
+// $80:8480  thread_call_handler — X = slot x2, Y = the argument, and it may
+//                                 decline
+// ---------------------------------------------------------------------------
+
+// The dispatcher's tail, and the only place it is written down.
+//
+// `$80:8480` has two exits and they set N and Z from completely different
+// instructions. A slot with no handler leaves through `LDA $1300,X : ORA
+// $1330,X : BEQ $84B0`, so the flags describe the zero that `ORA` produced. A
+// slot with one leaves through `PLX : PLD : PLB`, and `PLB` is the last of
+// those to set a flag — so N and Z describe the *data bank* being restored,
+// which has nothing to do with anything the routine computed. That is why
+// `CosimRegs` carries `db`: it is an input to this routine's flags.
+//
+// A, X, Y and carry are the port's, because they are the handler's and the
+// dispatcher passes them straight through.
+static void handler_exit(const CosimRegs* in, const ThreadCallResult* t,
+                         CosimRegs* out) {
+  out->a = t->a;
+  out->x = t->x;
+  out->y = t->y;
+  out->c = t->c;
+  out->n = t->entered ? (in->db & 0x80) != 0 : false;
+  out->z = t->entered ? in->db == 0 : true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static bool guard_thread_call_handler(Wram* scratch, const Rom* rom,
+                                      const CosimRegs* in) {
+  ThreadCallResult out;
+  return thread_call_handler(scratch, rom, in->x, in->y, in->c, &out);
+}
+
+static void shim_thread_call_handler(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  ThreadCallResult t;
+  thread_call_handler(w, rom, in->x, in->y, in->c, &t);  // the guard allowed it
+  handler_exit(in, &t, out);
+}
+
+// ---------------------------------------------------------------------------
+// $80:F7F7  player_collide — A = the other actor's id, D = the player's page
+// ---------------------------------------------------------------------------
+
+// Registered even though `thread_call_handler` already calls it, for the reason
+// that made `actor_collide_notify` worth its own entry: the enclosing routine
+// declines every dispatch whose handler is unported, so a handler seen only
+// through it would never be offered the calls that go somewhere else. Its own
+// entry PC gets all of them.
+//
+// It is also the first ported routine whose direct page is not `$0000`. The
+// dispatcher installed the player thread's page from `$80:82DE` before `RTL`ing
+// here, and every `$xx` in the listing is an offset into it — which is why the
+// shim hands the port `in->d` rather than assuming, and why a listing read with
+// `zamn_disasm` needs the same caveat (it resolves direct-page operands as
+// though `D` were zero).
+static bool guard_player_collide(Wram* scratch, const Rom* rom,
+                                 const CosimRegs* in) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
+  return player_collide(scratch, rom, in->d, in->a, &r);
+}
+
+// Both handlers return the same way — `CLC : RTL` for the player, `CLC : RTL`
+// or `SEC : RTL` for the enemy — so what a shim has to say is just which
+// registers the path it took left behind. The port fills all of them, because
+// which exit ran is exactly the thing the port knows and the shim does not.
+static void handler_regs(const ActorHandlerRegs* r, CosimRegs* out) {
+  out->a = r->a;
+  out->x = r->x;
+  out->y = r->y;
+  out->n = r->n;
+  out->z = r->z;
+  out->c = r->c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static void shim_player_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
+  player_collide(w, rom, in->d, in->a, &r);  // the guard allowed it
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:8888  enemy_collide — the same argument, on an enemy's page
+// ---------------------------------------------------------------------------
+
+static bool guard_enemy_collide(Wram* scratch, const Rom* rom,
+                                const CosimRegs* in) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
+  return enemy_collide(scratch, in->d, in->a, &r);
+}
+
+static void shim_enemy_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
+  enemy_collide(w, in->d, in->a, &r);  // the guard allowed it
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
 // $80:BE8F  actor_collide_notify — X = the pair's second record, and it may
 //                                  decline
 // ---------------------------------------------------------------------------
@@ -390,36 +494,22 @@ static uint16_t notify_outer(const Wram* w) {
 
 static bool guard_actor_collide_notify(Wram* scratch, const Rom* rom,
                                        const CosimRegs* in) {
-  (void)rom;
-  return actor_collide_notify(scratch, notify_outer(scratch), in->x);
+  ThreadCallResult tail = {.c = in->c};
+  return actor_collide_notify(scratch, rom, notify_outer(scratch), in->x, &tail);
 }
 
 static void shim_actor_collide_notify(Wram* w, const Rom* rom,
                                       const CosimRegs* in, CosimRegs* out) {
-  (void)rom;
   uint16_t a = notify_outer(w);
-  actor_collide_notify(w, a, in->x);  // the guard established it will not decline
+  ThreadCallResult tail = {.c = in->c};
+  actor_collide_notify(w, rom, a, in->x, &tail);  // the guard allowed it
 
-  // The routine's last instruction is the second `JSL $80:8480`, so what comes
-  // back is whatever the dispatcher left — and on the path this port serves,
-  // the dispatcher is three instructions: `LDA $1300,X : ORA $1330,X : BEQ`.
-  //
-  //   * A is that `ORA`'s result, which is zero by definition of the path.
-  //   * X and Y are the arguments `$80:BEC0`/`$80:BEC2` set up and the
-  //     dispatcher never touches: the outer record's thread slot, and the
-  //     inner record's collision id.
-  //   * N and Z are the `ORA`'s, so they describe the zero it produced.
-  out->a = 0;
-  out->x = wram_r16(w, W_NOTIFY_THREAD_A);
-  out->y = wram_r16(w, W_NOTIFY_ID_B);
-  out->n = false;
-  out->z = true;
-  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
-
-  // Carry is not claimed: nothing between `$80:BE8F` and the `RTS` touches it,
-  // so it is the caller's own. It is dead either way — the only caller is
-  // `$80:BF0E`, whose next flag-setting instruction is the `DEY DEY` that steps
-  // the inner walk.
+  // The routine's last instruction is the second `JSL $80:8480`, so everything
+  // it returns is really the dispatcher's — including X and Y, which are the
+  // arguments `$80:BEC0`/`$80:BEC2` set up and which the dispatcher hands back
+  // untouched. So this defers to `handler_exit` rather than restating it, which
+  // keeps one description of that tail rather than two.
+  handler_exit(in, &tail, out);
 }
 
 // ---------------------------------------------------------------------------
@@ -435,21 +525,20 @@ static void shim_actor_collide_notify(Wram* w, const Rom* rom,
 // is one only the walk can find. Asking it any other way would mean writing the
 // pairwise test a second time in the harness, where it could drift.
 //
-// The condition has narrowed since it was written. A hit no longer ends the
-// pass by itself: `actor_collide_notify` serves the dispatch whenever neither
-// actor has a handler registered, so what is left to decline is a collision
-// that actually reaches game logic.
+// The condition has narrowed twice since it was written. A hit no longer ends
+// the pass by itself: `actor_collide_notify` serves the dispatch, and
+// `thread_call_handler` serves the two handlers a collision in ordinary play
+// reaches. What is left to decline is a collision that enters a *third*
+// handler, or one of the two on a branch that leaves through unported code.
 static bool guard_actor_overlap_pass(Wram* scratch, const Rom* rom,
                                      const CosimRegs* in) {
-  (void)rom;
   (void)in;
-  return actor_overlap_pass(scratch);
+  return actor_overlap_pass(scratch, rom);
 }
 
 static void shim_actor_overlap_pass(Wram* w, const Rom* rom, const CosimRegs* in,
                                     CosimRegs* out) {
-  (void)rom;
-  actor_overlap_pass(w);  // the guard already established it will not decline
+  actor_overlap_pass(w, rom);  // the guard already established it will not decline
 
   // All three `RTL` paths arrive with Y zero and the flags of whatever loaded
   // it: `LDY $9C` on an empty list, `DEY DEY` on a single record, and `LDY $3C`
@@ -534,11 +623,18 @@ static void shim_sprite_build_oam(Wram* w, const Rom* rom, const CosimRegs* in,
 // The registry
 // ---------------------------------------------------------------------------
 
-// `cycles` is the mean cost of the ROM's own instructions, as `zamn_cosim
-// verify` measured it over movies/level1.zmv. It is what a substituted call
-// burns in native mode so the rest of the machine still sees a call that took
-// about as long as it used to. Re-measure and update these if a routine's ROM
-// side is ever re-read; `verify` prints the range it saw alongside the mean.
+// `cycles` is the mean cost of the ROM's own instructions and `stack_bytes` the
+// deepest its stack pointer went, both as `zamn_cosim verify` measured them over
+// **movies/level1-rescue.zmv** — the longer of the two movies, and the only one
+// that produces a collision at all. `cycles` is what a substituted call burns in
+// native mode so the rest of the machine still sees a call that took about as
+// long as it used to.
+//
+// The whole column moved when the collision handlers were ported, and not
+// because the ROM changed: a routine's mean is taken over the calls the port
+// *serves*, and the 1,226 passes containing a collision used to be declined.
+// They are the expensive ones. Re-measure and update these whenever a guard's
+// answer changes; `verify` prints the range it saw alongside the mean.
 static const CosimRoutine ROUTINES[] = {
     {
         .name = "sprite_frame_tile",
@@ -549,7 +645,7 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_sprite_frame_tile,
         .excludes = SPRITE_TILE_EXCLUDES,
         .exclude_count = 1,
-        .cycles = 304,
+        .cycles = 302,
         .stack_bytes = 2,   // the `PHA` at $80:BA2B on the miss path
     },
     {
@@ -569,7 +665,7 @@ static const CosimRoutine ROUTINES[] = {
         .ret_op = 0x8083ad,
         .ret_kind = COSIM_RTS,
         .run = shim_thread_tick_waits,
-        .cycles = 3057,
+        .cycles = 3204,
         .stack_bytes = 0,   // pushes nothing
     },
     {
@@ -579,7 +675,7 @@ static const CosimRoutine ROUTINES[] = {
         .ret_op = 0x8083d2,  // RTL
         .ret_kind = COSIM_RTL,
         .run = shim_vbl_queue_a_add,
-        .cycles = 693,
+        .cycles = 743,
         .stack_bytes = 2,   // the opening `PHY`
     },
     {
@@ -601,7 +697,7 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_actor_depth_sort,
         .excludes = DEPTH_SORT_EXCLUDES,
         .exclude_count = 1,
-        .cycles = 1477,
+        .cycles = 1605,
         .stack_bytes = 0,  // pushes nothing
     },
     {
@@ -611,7 +707,7 @@ static const CosimRoutine ROUTINES[] = {
         .ret_op = 0x80bd1e,
         .ret_kind = COSIM_RTS,
         .run = shim_actor_cull,
-        .cycles = 2448,
+        .cycles = 2675,
         .stack_bytes = 0,  // pushes nothing
     },
     {
@@ -621,8 +717,41 @@ static const CosimRoutine ROUTINES[] = {
         .ret_op = 0x80bc7e,
         .ret_kind = COSIM_RTS,
         .run = shim_oam_buffer_clear,
-        .cycles = 4817,
+        .cycles = 4814,
         .stack_bytes = 2,  // the opening `PHD`
+    },
+    {
+        .name = "thread_call_handler",
+        .symbol = "$80:8480",
+        .entry = 0x808480,
+        .ret_op = 0x8084b0,  // RTL; both exits converge on it
+        .ret_kind = COSIM_RTL,
+        .run = shim_thread_call_handler,
+        .supported = guard_thread_call_handler,
+        .cycles = 958,
+        .stack_bytes = 11,
+    },
+    {
+        .name = "player_collide",
+        .symbol = "$80:F7F7",
+        .entry = 0x80f7f7,
+        .ret_op = 0x80f807,  // RTL
+        .ret_kind = COSIM_RTL,
+        .run = shim_player_collide,
+        .supported = guard_player_collide,
+        .cycles = 515,
+        .stack_bytes = 2,
+    },
+    {
+        .name = "enemy_collide",
+        .symbol = "$81:8888",
+        .entry = 0x818888,
+        .ret_op = 0x81888e,  // the `CLC : RTL` the served branch falls into
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_collide,
+        .supported = guard_enemy_collide,
+        .cycles = 87,
+        .stack_bytes = 0,   // the served branch pushes nothing
     },
     {
         .name = "actor_collide_notify",
@@ -632,17 +761,8 @@ static const CosimRoutine ROUTINES[] = {
         .ret_kind = COSIM_RTS,
         .run = shim_actor_collide_notify,
         .supported = guard_actor_collide_notify,
-        // Not measured, because it cannot be yet: every call this movie makes
-        // enters a handler and is declined, and what a substituted call would
-        // have to cost is the cost of the path the *port* serves — the plumbing
-        // plus two dispatches that return immediately. No input has produced
-        // one. Forcing the port to serve the calls it declines measures 2,842
-        // cycles, but that is the cost *with* the handlers, so it is an upper
-        // bound on a path that has never run. `verify` will print the real
-        // range the first time an input reaches it; guessing one now would put
-        // an unmeasured number where the rest of this column is measured.
-        .cycles = 0,
-        .stack_bytes = 3,   // the `JSL $80:8480` it ends on, which returns
+        .cycles = 2842,
+        .stack_bytes = 14,   // the `JSL $80:8480` it ends on, which returns
     },
     {
         .name = "actor_overlap_pass",
@@ -652,8 +772,8 @@ static const CosimRoutine ROUTINES[] = {
         .ret_kind = COSIM_RTL,
         .run = shim_actor_overlap_pass,
         .supported = guard_actor_overlap_pass,
-        .cycles = 3018,
-        .stack_bytes = 0,  // the only `PHY` is on the path it declines
+        .cycles = 4426,
+        .stack_bytes = 18,  // the only `PHY` is on the path it declines
     },
     {
         .name = "sprite_build_oam",
@@ -669,8 +789,8 @@ static const CosimRoutine ROUTINES[] = {
         // variable: 5,864 when nothing is on screen, 66,412 when everything is.
         // A whole NTSC frame is about 57,000 master cycles, so this one pass is
         // most of the game's per-frame CPU budget.
-        .cycles = 34931,
-        .stack_bytes = 9,  // PHB + PHD + the deepest nested JSR/JSL
+        .cycles = 43111,
+        .stack_bytes = 24,  // PHB + PHD + the deepest nested JSR/JSL
     },
     {
         .name = "fade_in",
@@ -684,8 +804,8 @@ static const CosimRoutine ROUTINES[] = {
         .ctx_size = (int)sizeof(FadeCtx),
         // Per *segment*, not per call: what `verify` measured a run between two
         // suspensions to cost (162..238, mean 201 over 16 segments).
-        .cycles = 201,
-        .stack_bytes = 0,  // pushes nothing of its own
+        .cycles = 199,
+        .stack_bytes = 3,  // pushes nothing of its own
     },
 };
 

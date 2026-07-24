@@ -102,6 +102,7 @@ target_include_directories(zamn_assets PRIVATE third_party/stb)
 # co-simulation harness diff it against the ROM.
 # ---------------------------------------------------------------------------
 add_library(zamn_port STATIC
+  src/port/collide.c
   src/port/fade.c
   src/port/oam.c
   src/port/sprite_cache.c

@@ -41,6 +41,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/collide.h"
 #include "port/wram.h"
 
 // --- A display-list record --------------------------------------------------
@@ -131,18 +132,20 @@ void actor_cull(Wram* w);
 // each told the other's collision id — through `$80:8480`, which enters that
 // actor's own handler.
 //
-// So this is the seam between the sprite pass and actor behaviour, and it is
-// where the port currently stops. `thread_has_handler` (`port/thread.h`) is the
-// test that decides: a slot with no handler registered makes `$80:8480` a
-// no-op, and a pair of those is a call the port can serve exactly — it is
-// nothing but the eight scratch words. A slot that *has* one is a call into
-// game logic nobody has ported, so this **returns false having written
-// nothing** and the harness gives the call back to the ROM.
+// That is the seam between the sprite pass and actor behaviour, and the
+// handlers behind it now live in `port/collide.h`. Two of them exist, which on
+// `movies/level1-rescue.zmv` is 1,225 of the 1,226 pairs; a dispatch into
+// anything else **returns false** and the harness gives the call back to the
+// ROM. A decline may leave `w` partly written, because the dispatch is the last
+// thing the routine does and the scratch words are published before it — see
+// `sprite_build_oam` for the same convention.
 //
-// Splitting it that way is what turns "the collision dispatch" from one opaque
-// hole into a measured one: `zamn_cosim verify -c` now reports how many real
-// collisions reach a handler at all, which is the size of what is left.
-bool actor_collide_notify(Wram* w, uint16_t a, uint16_t b);
+// `tail` is in-out, and it is the routine's whole result: its `c` on the way in
+// is the caller's carry, and on the way out it holds what the *second* dispatch
+// left — which is the routine's contract, because that `JSL` is its last
+// instruction.
+bool actor_collide_notify(Wram* w, const Rom* rom, uint16_t a, uint16_t b,
+                          ThreadCallResult* tail);
 
 // --- $80:BEC9 ---------------------------------------------------------------
 
@@ -156,20 +159,20 @@ bool actor_collide_notify(Wram* w, uint16_t a, uint16_t b);
 // a non-zero `ACTOR_COLLIDE_ID` and the two differ — an actor does not collide
 // with its own side.
 //
-// **This port is deliberately partial, and it says so rather than pretending.**
-// The walk is ported, and so is the dispatch plumbing it ends a hit with
-// (`actor_collide_notify` above); what an actor *does* about being hit is not.
-// So a hit whose actors have handlers registered makes this **return false
-// having written nothing**, and the harness gives the call back to the ROM
-// (`CosimGuard` in `src/cosim/cosim.h`). A false is not a failure and not an
-// approximation: it is the port declining a call it cannot serve, counted and
-// printed as such.
+// **This port is partial, and it says so rather than pretending.** The walk is
+// ported, the dispatch plumbing is (`actor_collide_notify` above), and so are
+// the two actor handlers a collision in ordinary play reaches
+// (`port/collide.h`) — but the list of ported handlers is two long, and a
+// collision that reaches any other one makes this **return false**, which hands
+// the call back to the ROM (`CosimGuard` in `src/cosim/cosim.h`). A false is
+// not a failure and not an approximation: it is the port declining a call it
+// cannot serve, counted and printed as such.
 //
 // True means the pass ran to the end — with any hits along the way fully
 // dispatched — and WRAM now holds everything the ROM's version would have left:
 // the walk cursor back at zero and the last tested record's id and position in
 // the scratch words above.
-bool actor_overlap_pass(Wram* w);
+bool actor_overlap_pass(Wram* w, const Rom* rom);
 
 // --- $80:BC23 ---------------------------------------------------------------
 

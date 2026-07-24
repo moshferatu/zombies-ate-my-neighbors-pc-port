@@ -79,7 +79,28 @@
                                                                                 \
   /* $80:BE8F actor_collide_notify — the dispatch a hit ends with. */           \
   X(collide_none,     "actor_collide_notify", "a collision neither actor had registered a handler for") \
-  X(collide_handler,  "actor_collide_notify", "a collision that enters an actor's handler — the dispatch the port declines") \
+  X(collide_handler,  "actor_collide_notify", "a collision that entered at least one actor's handler") \
+  X(collide_unported, "actor_collide_notify", "a collision whose handler the port does not have — declined") \
+                                                                                \
+  /* $80:8480 thread_call_handler — the door into actor behaviour. */          \
+  X(handler_none,     "thread_call_handler", "a dispatch to a slot with no handler registered") \
+  X(handler_ported,   "thread_call_handler", "a dispatch the port entered itself") \
+  X(handler_unported, "thread_call_handler", "a dispatch to a handler address the port does not have") \
+  X(handler_park,     "thread_call_handler", "a handler returned carry set and its thread was parked") \
+                                                                                \
+  /* $80:F7F7 player_collide, and the hit path at $80:F950. */                  \
+  X(player_ignore,    "player_collide",      "the player told about an id of its own side, which it ignores") \
+  X(player_no_effect, "player_collide",      "an id whose jump-table entry is a bare RTS") \
+  X(player_hurt_entry,"player_collide",      "an id that dispatched to $80:F950, the hit path") \
+  X(player_unported,  "player_collide",      "an id whose jump-table entry is not ported — declined") \
+  X(hurt_state_immune,"player_collide",      "the player's state already ignores collisions") \
+  X(hurt_weapon_immune,"player_collide",     "the one weapon that turns a hit aside, with $1E set") \
+  X(hurt_iframes,     "player_collide",      "a hit inside the recovery window, ignored") \
+  X(hurt_taken,       "player_collide",      "a hit the player actually took")   \
+                                                                                \
+  /* $81:8888 enemy_collide. */                                                 \
+  X(enemy_ignore,     "enemy_collide",       "an enemy told about an id of the other side, which it ignores") \
+  X(enemy_act,        "enemy_collide",       "an enemy taking damage — the branch nobody has ported") \
                                                                                 \
   /* $80:BD1F sprite_build_oam. */                                             \
   X(draw_priority_top,"sprite_build_oam",   "ACTOR_PRIORITY_TOP raised a record's priority") \

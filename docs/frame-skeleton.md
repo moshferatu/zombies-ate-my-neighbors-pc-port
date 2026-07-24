@@ -41,8 +41,9 @@ $80:8116  MVN $7E,$7E             ; zero all 128 KB of WRAM
 operand is literally `$7E:00xx`. That is a convenient invariant for the port.~~
 
 **Corrected.** `$0000` is what boot sets and what the scheduler, NMI and the
-per-frame housekeeping all run on — which is every routine ported so far, and is
-why the invariant held for as long as nothing looked past it. But **a thread
+per-frame housekeeping all run on — which was every routine ported until the
+collision handlers (`src/port/collide.h`), and is why the invariant held for as
+long as nothing looked past it. But **a thread
 runs on its own 128-byte direct page**: `$80:82A4` installs one from a 24-entry
 table at `$80:82DE` when the thread is spawned, the resume path restores it with
 `PLD`, and `$80:8480` swaps to another thread's page to call its handler. Inside

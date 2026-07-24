@@ -76,6 +76,8 @@ static void regs_capture(Snes* snes, CosimRegs* r) {
   r->n = cpu->n;
   r->z = cpu->z;
   r->c = cpu->c;
+  r->d = cpu->dp;
+  r->db = cpu->db;
   r->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
   r->regs = COSIM_REG_ALL;
 }

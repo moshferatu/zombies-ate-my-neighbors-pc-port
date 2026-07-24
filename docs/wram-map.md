@@ -229,6 +229,27 @@ is its thread's direct page**. That is what the camera-driven spawner `$81:80EC`
 is allocating when it starts an actor thread, and it is why the enemy collision
 handler at `$81:8888` reads its own health from `$1E`.
 
+### Fields, so far
+
+Porting the two collision handlers (`src/port/collide.h`) named seven of them.
+Each is what *those* routines do with the offset and no more — the page belongs
+to each actor's own code, so `$1E` meaning health to an enemy says nothing about
+what the player keeps there.
+
+| Offset | What reads or writes it | Meaning |
+| --- | --- | --- |
+| `$0E` | `$80:8874`, `$80:D206`, `$80:F95C` | the player's index, already doubled (0 or 2) |
+| `$1E` | `$81:88A5`, `$80:F966` | health, to anything that has any |
+| `$22` | `$81:888F` | the collision id, parked before masking |
+| `$50` | `$80:F971` posts, `$80:D050` consumes and clears | an event request word |
+| `$52` | `$80:F96C`, `$80:F976` | hit recovery: a hit only lands once this goes negative |
+| `$58` | `$80:F801` | the record this actor collided with |
+| `$70` | `$80:D1EA  LDX $70 : JMP ($D1EF,X)` | which branch of its own state machine is running |
+
+One consequence for reading listings: `zamn_disasm` resolves a direct-page
+operand as though `D` were `$0000`, so inside any of these routines its symbol
+column is wrong. `$70` annotated `joy2_raw` is the page's `$70`, not `$7E:0070`.
+
 ## Thread handler callbacks — `$7E:1300`, `$7E:1330`
 
 ~~24×2 per-thread words written by `$80:8475`; *unidentified*.~~ **Identified**:
@@ -242,8 +263,22 @@ to its `thread_wait`. A slot with both words zero makes the whole call a no-op.
 
 This is how the sprite pass reaches actor behaviour. `$80:BEC9` finds a touching
 pair, `$80:BE8F` reads each record's `+$0C` — the thread slot — and dispatches
-twice, telling each actor the other's collision id. See `src/port/oam.h` and
-`docs/cosim.md` → *Half a routine, honestly*.
+twice, telling each actor the other's collision id. All of that is ported now,
+along with the two handlers it reaches in ordinary play; see `src/port/collide.h`
+and `docs/cosim.md` → *Through the door*.
+
+## Per-player arrays — `$7E:1CB8`, `$7E:1CBC`, `$7E:1CC0`
+
+Two entries of one word each, indexed by a player number already doubled — the
+same doubled index the player thread keeps at `$0E` of its own page. `$80:8874`
+seeds all three for each player that is in the game (`$1CB8` = 10, `$1CBC` = 0,
+`$1CC0` = 7) and uses `CPX #$0000` to tell player 1 from player 2, which is what
+fixes the stride and the direction.
+
+`$1CBC` is the selected weapon: `$80:D219` uses it as an index into a table,
+`$80:F38D`/`$80:F3A5` save and restore it in a pair with `$1CC0`, and `$80:F950`
+singles out one value of it when deciding whether a collision hurts. That last
+one is why the port names it at all.
 
 ## What is still missing
 

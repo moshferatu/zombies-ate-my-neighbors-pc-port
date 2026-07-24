@@ -19,9 +19,15 @@
 // states a one-line `fwrite`.
 //
 // Addressing: WRAM is banks `$7E` and `$7F`. Offset `$00000-$0FFFF` is
-// `$7E:0000-$7E:FFFF` and `$10000-$1FFFF` is `$7F:0000-$7F:FFFF`. Direct page
-// is pinned at `$0000` for the entire game (see `docs/frame-skeleton.md`), so a
-// direct-page operand `$xx` in any listing is literally offset `$00xx` here.
+// `$7E:0000-$7E:FFFF` and `$10000-$1FFFF` is `$7F:0000-$7F:FFFF`.
+//
+// Direct page is `$0000` for the scheduler, NMI and the per-frame housekeeping,
+// so a direct-page operand `$xx` in one of those routines is literally offset
+// `$00xx` here — which is every address named below. It is **not** zero inside a
+// thread: each of the 24 runs on its own 128-byte page in `$7E:0100-$7E:0CFF`,
+// and an actor's state is that page. Those fields are named in
+// `port/collide.h`, as offsets rather than addresses. See
+// `docs/frame-skeleton.md` and `docs/wram-map.md`.
 //
 // Port code: libc only.
 
@@ -131,6 +137,14 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 // --- Screen ---
 #define W_BRIGHTNESS_SHADOW 0x136c  // NMI restores this into INIDISP
 
+// --- Per-player state (2 x u16, indexed by a player number already doubled) ---
+//
+// The weapon the player currently has selected. `$80:8874` seeds it to 0 for
+// each player that is in the game, `$80:F38D`/`$80:F3A5` save and restore it in
+// a pair with `$7E:1CC0`, and `$80:D219` uses it as an index into a table of
+// them. `$80:F950` is why it is here: one weapon changes what a collision does.
+#define W_PLAYER_WEAPON 0x1cbc
+
 // --- The sprite display list (see port/oam.h) ---
 #define W_ACTOR_SLOTS 0x185e     // 32 x 20-byte records
 #define W_ACTOR_LIST_HEAD 0x1b5e  // offset of the first live record, or 0
@@ -145,7 +159,7 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_THREAD_WAIT 0x1180  // bit 15 = live, low bits = ticks remaining
 #define W_THREAD_SP 0x11b0
 // The callback a thread registers with `$80:8475` and `$80:8480` enters — see
-// `thread_has_handler` in port/thread.h. Two words rather than one far pointer
+// `thread_call_handler` in port/collide.h. Two words rather than one far pointer
 // because the ROM stores them with separate tables; the bank word's high byte
 // is always zero.
 #define W_THREAD_HANDLER 0x1300

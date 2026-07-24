@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "assets/sprite.h"
+#include "port/collide.h"
 #include "port/coverage.h"
 #include "port/sprite_cache.h"
 #include "port/thread.h"
@@ -131,8 +132,9 @@ void actor_cull(Wram* w) {
 // $80:BE8F  actor_collide_notify
 // ---------------------------------------------------------------------------
 
-bool actor_collide_notify(Wram* w, uint16_t a, uint16_t b) {
-  // `$80:BE8F`..`$80:BEAE`. Both records are read out in full before either
+bool actor_collide_notify(Wram* w, const Rom* rom, uint16_t a, uint16_t b,
+                          ThreadCallResult* tail) {
+  // `$80:BE8F`..`$80:BEA6`. Both records are read out in full before either
   // dispatch runs, which is what makes the second one see the pair as it was
   // rather than as the first handler left it.
   uint16_t id_b = wram_r16(w, (uint32_t)b + ACTOR_COLLIDE_ID);
@@ -140,28 +142,37 @@ bool actor_collide_notify(Wram* w, uint16_t a, uint16_t b) {
   uint16_t id_a = wram_r16(w, (uint32_t)a + ACTOR_COLLIDE_ID);
   uint16_t thread_a = wram_r16(w, (uint32_t)a + ACTOR_THREAD);
 
-  // The two `JSL $80:8480` at `$80:BEB4` and `$80:BEC4`. Either one entering a
-  // handler is the end of what the port can do, and both are tested before
-  // anything is written, so a decline leaves WRAM exactly as the ROM will find
-  // it. The ROM's own version would have written the six words before entering
-  // the second handler; reproducing that ordering would buy nothing, because a
-  // declined call is one the ROM runs from the top.
-  if (thread_has_handler(w, thread_b) || thread_has_handler(w, thread_a)) {
-    PORT_COVER(collide_handler);
-    return false;
-  }
-  PORT_COVER(collide_none);
-
   wram_w16(w, W_NOTIFY_REC_B, b);
   wram_w16(w, W_NOTIFY_ID_B, id_b);
   wram_w16(w, W_NOTIFY_THREAD_B, thread_b);
   wram_w16(w, W_NOTIFY_REC_A, a);
   wram_w16(w, W_NOTIFY_ID_A, id_a);
   wram_w16(w, W_NOTIFY_THREAD_A, thread_a);
-  // `$78`/`$76` are written once per dispatch and the second write is what
-  // survives the `RTS`: B's handler is told about A, then A's about B.
+
+  // The two `JSL $80:8480` at `$80:BEB4` and `$80:BEC4`, each preceded by the
+  // pair being republished the other way round. The order matters now that the
+  // handlers are ported and can read it: `player_collide` does `LDA $0076`, so
+  // whichever way `$76` is pointing when its dispatch runs is what it files.
+  wram_w16(w, W_HANDLER_SELF, b);
+  wram_w16(w, W_HANDLER_OTHER, a);
+  if (!thread_call_handler(w, rom, thread_b, id_a, tail->c, tail)) {
+    PORT_COVER(collide_unported);
+    return false;
+  }
+  bool entered = tail->entered;
+
   wram_w16(w, W_HANDLER_SELF, a);
   wram_w16(w, W_HANDLER_OTHER, b);
+  if (!thread_call_handler(w, rom, thread_a, id_b, tail->c, tail)) {
+    PORT_COVER(collide_unported);
+    return false;
+  }
+
+  // Which of the two shapes this call had, for the coverage report. `verify`
+  // measured the answer before either handler existed and it was flat: every
+  // collision in ordinary play enters a handler, and `collide_none` has never
+  // been reached by any input.
+  PORT_COVER_IF(entered || tail->entered, collide_handler, collide_none);
   return true;
 }
 
@@ -176,7 +187,7 @@ static bool within_8px(uint16_t a, uint16_t b) {
   return (uint16_t)(b - a + 8) < 0x0010;
 }
 
-bool actor_overlap_pass(Wram* w) {
+bool actor_overlap_pass(Wram* w, const Rom* rom) {
   uint16_t count = wram_r16(w, W_VISIBLE_ACTOR_COUNT);
   if (count == 0) return true;  // `LDY $9C : BEQ` — not even $3C is written
   uint16_t outer = (uint16_t)(count - 2);
@@ -215,13 +226,13 @@ bool actor_overlap_pass(Wram* w) {
             within_8px(ox, wram_r16(w, (uint32_t)b + ACTOR_X))) {
           PORT_COVER(overlap_near_x);
           if (within_8px(oy, wram_r16(w, (uint32_t)b + ACTOR_Y))) {
-            // `$80:BF0D  PHY : JSR $BE8F : PLY`. The dispatch is ported as far
-            // as the handlers themselves, and no further — see
-            // `actor_collide_notify`. A pair whose actors are listening ends
-            // the pass here, and nothing has been written yet, so the ROM can
-            // run the whole call from the top.
+            // `$80:BF0D  PHY : JSR $BE8F : PLY`. Carry is clear here by
+            // construction — the `BCS` at `$80:BF0B` is what falls through to
+            // this call — and the no-handler path inside the dispatch is the
+            // only thing that would pass it on.
             PORT_COVER(overlap_hit);
-            if (!actor_collide_notify(w, a, b)) return false;
+            ThreadCallResult tail = {.c = false};
+            if (!actor_collide_notify(w, rom, a, b, &tail)) return false;
           }
         }
         if (inner == 0) break;
@@ -416,7 +427,7 @@ bool sprite_build_oam(Wram* w, const Rom* rom) {
       wram_w16(w, W_SPRITE_SCRATCH_X, (uint16_t)(oam.index - 4));
   }
 
-  if (!actor_overlap_pass(w)) return false;
+  if (!actor_overlap_pass(w, rom)) return false;
 
   // `$80:BDD2`. Four bytes indexed by the low two bits of the tick, and all
   // four are $80 in the shipped ROM — so this is a constant with a table's

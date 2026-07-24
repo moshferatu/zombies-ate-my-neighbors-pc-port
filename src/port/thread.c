@@ -48,12 +48,3 @@ int vbl_queue_b_add(Wram* w, uint16_t addr, uint16_t bank) {
   return vbl_queue_add(w, W_VBL_QUEUE_B, W_VBL_QUEUE_B_COUNT, W_VBL_QUEUE_B_SLOTS,
                        0x1c, addr, bank);
 }
-
-bool thread_has_handler(const Wram* w, uint16_t slot) {
-  // The ROM's own test, and it is an `ORA` of the two whole words rather than a
-  // check on the address: a slot counts as having a handler if *either* table
-  // is non-zero, so a bank alone would be enough. Nothing writes one without
-  // the other — `$80:8475` stores both — but the predicate is the ROM's.
-  return (wram_r16(w, W_THREAD_HANDLER + slot) |
-          wram_r16(w, W_THREAD_HANDLER_BANK + slot)) != 0;
-}

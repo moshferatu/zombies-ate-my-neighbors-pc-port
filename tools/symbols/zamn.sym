@@ -89,6 +89,12 @@ $006DF4  victim_x              # per-victim X, stride 4
 $006DF6  victim_y              # per-victim Y, stride 4
 $006E30  victim_count          # victims kept by victim_list_parse
 
+# --- Per-player arrays (2 entries of one word each, indexed by player x2) -----
+# Seeded together by $80:8874, which takes the same doubled index.
+$001CB8  player_countdown      # seeded to 10; stepped down by $80:D03C
+$001CBC  player_weapon         # seeded to 0; the index $80:D219 looks a table up by
+$001CC0  player_weapon_arg     # seeded to 7; saved and restored with it ($80:F38D)
+
 # --- Code: boot --------------------------------------------------------------
 $80:80AE  reset_entry          # the RESET vector; switches to native mode, JMLs to bank $80
 $80:80B6  reset_main
@@ -141,7 +147,11 @@ $80:BE41  actor_slot_free      # A = record; unlinks it and marks it free
 $80:BE8F  actor_collide_notify # X = one record of a touching pair; tells both handlers
 $80:BEC9  actor_overlap_pass   # pairwise 16x16 overlap test over visible_actors
 $80:F7F7  player_collide       # the player thread's handler; A = the other actor's id
+$80:F808  player_collide_table # 57 x u16, indexed by that id x2; targets are bank $80
+$80:F87A  player_collide_none  # a bare RTS: the table entry for an id that does nothing
+$80:F950  player_collide_hurt  # the entry every collision in level 1 lands on
 $81:8888  enemy_collide        # an enemy thread's handler; same argument
+$81:8561  enemy_damage_table   # indexed by (id - $5C) x 2; subtracted from health at $1E
 $80:C049  sprite_cache_reset   # ages every slot, empties visible_actors, registers the vblank job
 $80:C05A  sprite_cache_init    # A:Y = frame array base; invalidates both maps
 

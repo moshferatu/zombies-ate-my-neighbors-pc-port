@@ -121,9 +121,13 @@ Two rules keep this from becoming a way to make failures disappear:
 `level1.zmv` declines **0 of 1,016** calls, which is the movie saying no two
 visible actors ever come within 16 pixels of each other. That was a gap as much
 as a result, and it is closed: `movies/level1-rescue.zmv` rescues a victim and
-then fights zombies in the graveyard, and declines **1,226 of 4,716**. Both
-modes decline the same calls, and `run` still reaches the end of the movie with
-no byte of live game state differing.
+then fights zombies in the graveyard, and declined **1,226 of 4,716** the first
+time it ran. Both modes decline the same calls, and `run` still reaches the end
+of the movie with no byte of live game state differing.
+
+The two sections below are what happened to that 1,226. It is **1** now, and the
+route from one number to the other is the whole method: split the hole, measure
+each half, port the half that turns out to be small.
 
 #### Splitting the hole in two
 
@@ -146,11 +150,13 @@ without its own entry the plumbing would only ever be exercised on the passes
 where nothing happened. Intercepted at its own entry PC, it is offered **every**
 collision the movie produces.
 
-And the answer is a flat one. On `level1-rescue.zmv` the port declines **1,226 of
-1,226** — the `collide_none` coverage site is never reached, so *every* collision
-in ordinary play enters a handler. That is not the result the split was hoping
-for, but it is the one worth having, because it replaces a guess about where the
-wall is with a measurement. Sizing it further took a one-off census of which
+And the answer was a flat one. With the plumbing ported and the handlers not,
+the port declined **1,226 of 1,226** — the `collide_none` coverage site was never
+reached, so *every* collision in ordinary play enters a handler. That is not the
+result the split was hoping for, but it is the one worth having, because it
+replaces a guess about where the wall is with a measurement. (`collide_none` is
+still at zero, and still ported: see the end of the next section.) Sizing it
+further took a one-off census of which
 handlers those calls reach, and the shape is much narrower than "actor
 behaviour" suggested:
 
@@ -160,23 +166,87 @@ behaviour" suggested:
 | `$80:F7F7` + `$83:A364` | 1 |
 
 Two handlers, and they split at collision id `$5C`: `$81:8888` acts on ids `≥$5C`
-and ignores everything else, `$80:F7F7` acts on ids `<$5C` through a 92-entry
-jump table at `$80:F808` and ignores the rest. Complementary, so exactly one side
-of each collision does real work — which is why serving only the ignore paths
-would not buy a single call. In this movie the enemy's side takes its `≥$5C`
-branch exactly **once** in 1,226, and the player's side lands on the same jump
-table entry, `$80:F950`, **1,225** times. So the remaining work is not a
-subsystem, it is four small routines and the per-thread direct pages they run on
+and ignores everything else, `$80:F7F7` acts on ids `<$5C` through a jump table
+at `$80:F808` and ignores the rest. Complementary, so exactly one side of each
+collision does real work — which is why serving only the ignore paths would not
+buy a single call. In this movie the enemy's side takes its `≥$5C` branch exactly
+**once** in 1,226, and the player's side lands on the same jump table entry,
+`$80:F950`, **1,225** times. So the remaining work is not a subsystem, it is four
+small routines and the per-thread direct pages they run on
 (`docs/wram-map.md`).
 
-The one thing this leaves unproven is the path the port serves, and the coverage
-report says so by name rather than leaving it implied: `collide_none` is untaken
-by any input, so the eight words `actor_collide_notify` writes are transcribed
-from the listing and have never been diffed against it. The guard around them is
-not vacuous — forcing `thread_has_handler` to return false makes the port serve
-all 1,226 and **every one fails** — but that measures the handlers' absence, not
-the plumbing's presence. It is the same status as `emit_flip_y`: ported, marked,
-and waiting for an input.
+#### Through the door
+
+Those four routines are ported, and the wall has moved from 1,226 to **1**.
+
+| Routine | Entry | What the port covers |
+| --- | --- | --- |
+| `thread_call_handler` | `$80:8480` | the whole dispatcher, for a handler it has |
+| `player_collide` | `$80:F7F7` | the ignore path, and the two ported jump-table entries |
+| `enemy_collide` | `$81:8888` | the ignore path — 1,225 of the 1,226 |
+
+`$80:8480` is the interesting one, because it is where the direct page stops
+being `$0000`. It reads the handler's far address out of
+`$7E:1300`/`$7E:1330`, installs the *target thread's* page from the 24-entry
+table at `$80:82DE`, and `RTL`s in — so the handler's `LDA $70` is offset `$70`
+into that thread's own 128 bytes. The port therefore takes `D` as an argument,
+which is why `CosimRegs` grew a `d` and a `db`: direct page and data bank are as
+much a part of a 65816 routine's calling convention as A/X/Y, and this is the
+first pair of routines where either matters. (`db` matters because `$80:8480`'s
+exit flags come from the `PLB` that restores it.)
+
+Where the dispatcher stops is now a **list of addresses**, not a subsystem. Two
+entries long; anything else declines by name, and the coverage report counts it.
+That is what makes the remaining work countable: on `level1-rescue.zmv`,
+`handler_unported` fires 6 times, all from the two call sites outside the
+collision path.
+
+The two handlers are ported as far as the branch that does nothing, which on this
+movie is nearly all of it:
+
+* **`player_collide`** files the other record on its own page and jumps through
+  the table. Every one of the 1,225 dispatches lands on `$80:F950`, which is
+  ported in full — three ways of deciding the hit does not count (a state that
+  ignores collisions, one weapon held with `$1E` set, and the recovery timer)
+  and then the two stores that say it did. The recovery timer turns 1,225
+  collisions into **17 hits the player actually took** — `hurt_taken` reads 85,
+  and five registered routines now sit on the path, so every site along it is
+  counted five times over (see *Coverage the movie does not have*). The
+  `$80:F92D` entry —
+  a sound effect — declines, because it writes no WRAM at all but does talk to
+  the APU and spin on its acknowledgement; that belongs with the audio path.
+* **`enemy_collide`** returns having read and written nothing at all for an id
+  below `$5C`. Its acting branch subtracts a damage-table entry from `$1E` and
+  leaves through unported code, and on this movie it runs **once**.
+
+That once is the entire remaining decline. `actor_overlap_pass` goes from
+**1,226 of 4,716** declined to **1 of 4,716**, and `sprite_build_oam` with it.
+Under `run`, all but three of 6,089 scheduler passes are now substituted whole,
+and no byte of live game state differs on any of them.
+
+Five deliberate perturbations, each caught at the exact byte or flag:
+
+| Change | Caught |
+| --- | --- |
+| run the handler on `D = $0000` instead of the thread's page | `$7E:0058` at call 6 of `thread_call_handler` — and nowhere else, because only that routine reads the table |
+| publish `$76`/`$78` the same way round for both dispatches | `$7E:0158` at call 30 — the player filed the wrong record |
+| reset the recovery timer to `$41` instead of `$40` | `$7E:0152` at the first hit, in all five routines at once |
+| claim `enemy_collide` returns N clear | flag N at call 1 — **and only there**, because the dispatcher's `PLB` overwrites it, so no enclosing routine could ever have caught it |
+| serve `enemy_collide`'s acting branch instead of declining | `$7E:0812` at call 685 — the decline is load-bearing |
+
+The fourth is the one that justifies the registry's shape. A handler's flags do
+not survive the routine that calls it, so registering it separately is the only
+way they are ever checked at all.
+
+What is left untaken, and named as such by the coverage report rather than
+implied: `collide_none` (still zero — no input has ever produced a collision
+between two actors with no handler), `handler_park` (neither ported handler
+returns carry set on a served path), `player_ignore` and `player_no_effect` (the
+player has never been told about a `≥$5C` id, and every id it *has* seen wanted
+`$80:F950` rather than the table's bare `RTS`), and two of `$80:F950`'s own
+exits, `hurt_state_immune` and `hurt_weapon_immune`. Those are transcribed from
+the listing and have never been diffed against it, exactly like `emit_flip_y`,
+and the fix for each is an input.
 
 Native mode returns by pointing the program counter at the routine's own
 `RTS`/`RTL` and letting the core execute it, rather than unwinding the stack by
@@ -367,7 +437,16 @@ substituted, the ROM never reaches its callees, so `sprite_frame_tile`,
 all report **not reached** there. They are running — the port calls the port's
 versions directly — they are simply no longer *intercepted*. `verify` still
 exercises every one of them on every call, because there the ROM is driving.
-This is what porting upwards looks like, and it will keep happening.
+This is what porting upwards looks like, and it will keep happening — the
+collision handlers made the chain five deep, and under `run` the whole of it
+below `sprite_build_oam` now reports single-digit call counts for the same
+reason.
+
+The three routines after that are the first here that are not the port's own
+plumbing at all. `thread_call_handler`, `player_collide` and `enemy_collide`
+(*Through the door*) are **game behaviour** — what happens to the player when a
+zombie touches them — and they are the first routines whose direct page is not
+`$0000`. That is the boundary Phase 3's remaining work is on the other side of.
 
 ## Coverage the movie does not have
 
@@ -394,11 +473,15 @@ table with hit counts. It is never a failure — an untaken branch is a movie th
 has not been written yet, and saying so is the whole job.
 
 Three things about the numbers. **A site is a decision the diff would have to
-run to check**, not every `if`: 36 of them across the twelve routines, chosen by
+run to check**, not every `if`: 51 of them across the fifteen routines, chosen by
 hand. **Hit counts are call-weighted, not event-weighted** — under `verify` the
 port runs once per interception, so a routine reached both directly and through
-a ported caller is counted once for each. Whether a site was reached at all, the
-only thing the report claims, is unaffected. And **a guard's dry run counts only
+a ported caller is counted once for each. That weighting is now five deep on the
+collision path (`sprite_build_oam` → `actor_overlap_pass` →
+`actor_collide_notify` → `thread_call_handler` → `player_collide`), so a site
+inside `$80:F950` reading 6,125 means 1,225 collisions. Whether a site was
+reached at all, the only thing the report claims, is unaffected. And **a guard's
+dry run counts only
 when it declines**: `actor_overlap_pass`'s guard answers by running the port on
 a throwaway copy, and a declined call is never run again, so that pass is the
 only record there will be; a call it allows is run for real a moment later and
@@ -411,8 +494,10 @@ finding rather than a dead counter.
 
 ### What it found
 
-On `movies/level1.zmv` — the movie every number above is measured on — **20 of
-36 sites** are taken. It reproduced all three `sprite_build_oam` gaps found by
+On `movies/level1.zmv` — the movie most numbers above are measured on — **21 of
+51 sites** are taken, which was 20 of 36 before the collision handlers added
+fifteen more that only the other movie reaches. It reproduced all three
+`sprite_build_oam` gaps found by
 hand, plus `actor_depth_sort`'s `ACTOR_SORT_FIRST` and Phase 2's known
 vertical-flip gap, without anybody perturbing anything. It also named ten more
 nobody had listed, of which the sharpest is this: **`sprite_frame_tile` is
@@ -420,9 +505,10 @@ called 10,354 times by that movie and never once evicts a resident frame.** The
 most-called ported routine in the game, and the branch that makes it a *cache*
 rather than a lookup table had never run.
 
-`movies/level1-rescue.zmv` was written against that report and takes **26 of
-36**, over 97,711 checked calls with nothing diverged. It closes five, including
-both of the two that mattered most:
+`movies/level1-rescue.zmv` was written against that report and takes **36 of
+51**, over 106,347 checked calls with nothing diverged. It closes five of the
+original ten and reaches ten of the fifteen the handlers added, including both of
+the two that mattered most:
 
 * `overlap_hit` — 2,452 marks and **1,226 of 4,716 calls declined**. Until this
   movie, "0 declined" was the only number the guard had ever produced. See
@@ -435,11 +521,12 @@ both of the two that mattered most:
   the movie: a camera that scrolls hard enough to leave an actor behind is the
   only thing that makes `actor_cull` reject anything.
 
-Ten are still untaken and they are now a measured backlog rather than a
-suspicion. `emit_flip_y` (no shipped actor in level 1 flips vertically),
-`sort_key_first`, `draw_attr_set`, `queue_full`, the two OAM-full sites, three
-defensive branches in `sprite_build_oam` that a well-formed record may simply
-never reach, and `collide_none` — the newest, and the one that is a fact about
-the *game* rather than about the movie: 1,226 collisions and not one of them
-between two actors that were not listening. Each one is a claim this document
-does not get to make yet.
+Fifteen are still untaken and they are a measured backlog rather than a
+suspicion. Ten are the original ones minus the five closed: `emit_flip_y` (no
+shipped actor in level 1 flips vertically), `sort_key_first`, `draw_attr_set`,
+`queue_full`, the two OAM-full sites, three defensive branches in
+`sprite_build_oam` that a well-formed record may simply never reach, and
+`collide_none` — a fact about the *game* rather than about the movie: 1,226
+collisions and not one of them between two actors that were not listening. The
+other five arrived with the handlers and are listed at the end of *Through the
+door*. Each one is a claim this document does not get to make yet.

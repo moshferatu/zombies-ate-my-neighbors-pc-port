@@ -94,6 +94,14 @@ typedef struct {
   bool n, z, c;
   uint8_t flags;  // which of N/Z/C the shim modelled; 0 = none
   uint8_t regs;   // which of A/X/Y the shim modelled; defaults to all three
+  // Inputs only, and never diffed. Direct page and data bank are part of a
+  // 65816 routine's calling convention exactly as A/X/Y are, and two routines
+  // need them: a collision handler runs on its *thread's* direct page (see
+  // `port/collide.h`), and `$80:8480`'s exit flags come from the `PLB` that
+  // restores its caller's data bank. Every routine here saves and restores both,
+  // so there is nothing on the way out to compare.
+  uint16_t d;
+  uint8_t db;
 } CosimRegs;
 
 // How the routine gets back to its caller — which decides how many bytes of
