@@ -123,6 +123,27 @@ typedef struct {
 typedef void (*CosimShim)(Wram* w, const Rom* rom, const CosimRegs* in,
                           CosimRegs* out);
 
+// Can the port stand in for *this* call?
+//
+// Some routines are mostly ported and partly not: `actor_overlap_pass` walks
+// every visible pair itself, but when two of them actually touch it dispatches
+// into the colliding actors' own handlers (`$80:BE8F` -> `$80:8480`), which is
+// arbitrary game logic nobody has ported yet. Half a routine is still worth
+// having — the walk is the expensive, fiddly part — but only if the half that is
+// missing can never be silently skipped.
+//
+// So a routine may declare a guard, and the engine asks it *before* the port
+// runs. `scratch` is a private, throwaway copy of live WRAM, so the guard is
+// free to run the port itself and answer with whatever it returns; nothing it
+// writes is kept. A `false` means the harness steps aside completely: the ROM's
+// own instructions run, in both modes, and the call is counted as declined
+// rather than checked. Nothing is claimed about a call the port did not make.
+//
+// The discipline this has to keep, or it stops being honest: a decline is an
+// enumerated condition the routine's own code detects and reports, never a
+// fallback for "the diff failed". Every one of them is printed.
+typedef bool (*CosimGuard)(Wram* scratch, const Rom* rom, const CosimRegs* in);
+
 // The same, for a routine that suspends — see `src/port/coroutine.h` and
 // `docs/threads.md`.
 //
@@ -147,6 +168,8 @@ typedef struct {
   // Set instead of `run` for a resumable routine, along with the three fields
   // below it. `run` and `run_yield` are mutually exclusive.
   CosimYieldShim run_yield;
+  // Optional. Asked at the entry PC; a `false` leaves the call to the ROM.
+  CosimGuard supported;
   // One past the routine's last byte. Used to decide whether a `JSL
   // thread_yield` the core is about to execute belongs to *this* routine —
   // every thread in the game yields, so the entry PC alone means nothing.
@@ -194,6 +217,9 @@ typedef struct {
   long checked;    // verified to completion (VERIFY) / substituted (NATIVE)
   long passed;
   long interrupted;  // abandoned: an interrupt landed inside the call window
+  // Handed back to the ROM by the routine's own guard — see `CosimGuard`. These
+  // are calls the port never made, so nothing about them is claimed either way.
+  long declined;
   // Resumable routines only: suspensions seen. `checked` counts *segments* for
   // these — the run between two yields is what gets diffed — so a routine with
   // one activation and fifteen yields reports 1 call and 16 segments checked.

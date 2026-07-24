@@ -80,10 +80,33 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_SPRITE_UPLOAD_COUNT 0x007c  // bytes, i.e. entries x 2
 #define W_SPRITE_FRAME_BASE 0x007e    // $7E = address, $80 = bank
 #define W_SPRITE_FRAME_BANK 0x0080
+#define W_SPRITE_PIECES_LEFT 0x0086   // metasprite pieces still to emit
+#define W_OAM_INDEX 0x0088            // byte offset of the next free OAM entry
+#define W_SPRITE_META_PTR 0x008a      // $8A = address, $8C = bank
+#define W_SPRITE_META_BANK 0x008c
+#define W_SPRITE_ORIGIN_X 0x008e  // the actor's position, camera already out
+#define W_SPRITE_ORIGIN_Y 0x0090
+#define W_SPRITE_ATTR_OR 0x0092   // OAM attribute bits the actor forces on
+#define W_SPRITE_ATTR_MASKED 0x0094  // one piece's attr, after the AND
+#define W_SPRITE_ATTR_AND 0x0096  // mask applied to each piece's attribute word
+#define W_OAM_PASS_CURSOR 0x009a  // byte index into visible_actors the pass is at
+#define W_SPRITE_LRU_SLOT 0x009e  // x2; the slot the cache evicts next
+#define W_SPRITE_TICK 0x00a0      // sched_tick snapshot for this frame's draw
 #define W_SPRITE_SCRATCH_X 0x0038  // $80:B9D6 parks the caller's X here
 #define W_SPRITE_SCRATCH_F 0x003a  // ...and the frame index x2 here
-#define W_SPRITE_LRU_SLOT 0x009e   // x2; the slot the cache evicts next
-#define W_SPRITE_TICK 0x00a0       // sched_tick snapshot for this frame's draw
+
+// --- Direct page: the overlap pass's scratch ($80:BEC9) ---
+//
+// $38 and $3A are the same two words above, and that is not a clash: $30-$4F is
+// a common scratch pool that every routine using it re-establishes on entry and
+// nobody reads across a call. They are named twice because what they hold
+// during an overlap test has nothing to do with what they hold during a sprite
+// lookup, and a name that covered both would say nothing. Neither is in
+// `zamn.sym` for the same reason — the address has no one meaning to record.
+#define W_OVERLAP_X 0x0038       // the outer record's position, the pair's origin
+#define W_OVERLAP_Y 0x003a
+#define W_OVERLAP_CURSOR 0x003c  // where the outer walk is, parked over the inner
+#define W_OVERLAP_ID 0x004a      // the outer record's ACTOR_COLLIDE_ID
 
 // --- Screen ---
 #define W_BRIGHTNESS_SHADOW 0x136c  // NMI restores this into INIDISP
@@ -96,6 +119,7 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_VISIBLE_ACTORS 0x137e   // up to 32 x u16: the records this frame draws
 #define W_VISIBLE_ACTOR_COUNT 0x009c  // bytes, i.e. entries x 2
 #define W_OAM_BUFFER 0x13be       // 544 bytes, DMA'd to OAMDATA every frame
+#define W_SPRITE_PASS_PHASE 0x1b64  // see SPRITE_PASS_PHASE_TABLE in port/oam.h
 
 // --- Thread scheduler tables (24 slots of one word each) ---
 #define W_THREAD_WAIT 0x1180  // bit 15 = live, low bits = ticks remaining

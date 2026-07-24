@@ -180,11 +180,29 @@ typedef uint16_t (*SpriteTileFn)(uint16_t frame, void* ctx);
 //     byte above — a skipped piece leaves that byte behind. It is always either
 //     overwritten by the next piece or made invisible by the terminator.
 //
+// What the ROM's emitter leaves in direct page when it returns.
+//
+// Phase 2 had no use for this — it diffed the OAM buffer, which is the whole
+// point of the routine. Phase 3 does: `sprite_build_oam` is checked on all
+// 128 KB of WRAM, and the emitter's walk lives in direct-page bytes ($86, $8A,
+// $94) that survive the call. Reporting them from the one implementation of the
+// walk is the only way the port can reproduce them without writing the walk a
+// second time.
+typedef struct {
+  int walked;      // pieces stepped past — `$86` counts down by this much and
+                   // `$8A` advances 8 bytes each. Not the same as the return
+                   // value: a piece dropped for being off screen is still
+                   // walked past, and the piece that *fills* OAM is not
+                   // ($80:BAA9 leaves before the advance).
+  uint16_t attr;   // the last emitted piece's attribute word after the AND
+  bool attr_valid; // false if no piece was emitted, leaving `$94` alone
+} SpriteEmitTrace;
+
 // Returns the number of OAM entries written. Emission stops early if OAM fills
-// up (`CPX #$0200`).
+// up (`CPX #$0200`). `trace` may be NULL.
 int sprite_emit(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
                 int16_t ox, int16_t oy, uint16_t attr_or, uint16_t attr_and,
-                SpriteTileFn tile_of, void* ctx);
+                SpriteTileFn tile_of, void* ctx, SpriteEmitTrace* trace);
 
 // Park the remaining sprites off-screen, as `$80:BDC4` does with `$E000`.
 void sprite_oam_terminate(SpriteOam* oam);

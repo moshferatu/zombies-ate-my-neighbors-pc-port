@@ -54,6 +54,7 @@ $0000A0  sprite_tick           # sched_tick snapshot stamped into sprite_slot_ti
 # --- Sprite display list (32 x 20-byte records; see src/port/oam.h) ----------
 $00185E  actor_slots           # 32 records of $14 bytes, chained by +$12
 $001B5E  actor_list_head       # offset of the first live record, or 0
+$001B64  sprite_pass_phase     # $80:BDDE stamps it per pass from a 4-entry table
 $001B6A  camera_x              # world coordinate of the top-left of the screen
 $001B6C  camera_y
 

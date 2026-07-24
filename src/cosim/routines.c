@@ -369,6 +369,109 @@ static void shim_oam_buffer_clear(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
+// $80:BEC9  actor_overlap_pass — no arguments, and it may decline
+// ---------------------------------------------------------------------------
+
+// The first routine whose port covers only part of what the ROM's version does,
+// so it is the first to need a guard — see `CosimGuard` in `cosim.h`.
+//
+// The guard is the whole routine, run on a throwaway copy of WRAM. That is not
+// a shortcut: "can the port handle this call?" and "what does the port do with
+// this call?" are the same question here, because the condition it declines on
+// is one only the walk can find. Asking it any other way would mean writing the
+// pairwise test a second time in the harness, where it could drift.
+static bool guard_actor_overlap_pass(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  (void)rom;
+  (void)in;
+  return actor_overlap_pass(scratch);
+}
+
+static void shim_actor_overlap_pass(Wram* w, const Rom* rom, const CosimRegs* in,
+                                    CosimRegs* out) {
+  (void)rom;
+  actor_overlap_pass(w);  // the guard already established it will not decline
+
+  // All three `RTL` paths arrive with Y zero and the flags of whatever loaded
+  // it: `LDY $9C` on an empty list, `DEY DEY` on a single record, and `LDY $3C`
+  // at the end of the walk, which is what the loop exits on.
+  out->y = 0;
+  out->n = false;
+  out->z = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+  out->regs = COSIM_REG_Y;
+
+  // A, X and carry are not claimed, for the same reason `actor_depth_sort`
+  // does not claim them: each is an intermediate of whichever comparison the
+  // walk happened to stop on — the id that read zero, or one of the four box
+  // tests — and predicting it here would mean writing the walk twice. They are
+  // dead. The only caller is `$80:BDCC`, whose next instructions are `PLD :
+  // PLB : LDA $20 ... TAX` and then a `SEC`, so all three are overwritten
+  // before anything reads them.
+}
+
+// ---------------------------------------------------------------------------
+// $80:BD1F  sprite_build_oam — no arguments, and it may decline
+// ---------------------------------------------------------------------------
+
+// The one address the pass legitimately leaves alone, and it is the same $38 two
+// of the routines it calls already declare. `actor_depth_sort` keeps its walk
+// predecessor there and `sprite_frame_tile` spills the emitter's X there; the
+// port keeps both in C locals.
+//
+// It does reproduce the second of the two, because that one is derivable: the
+// last frame lookup of a pass spills the OAM index of the last piece drawn,
+// which is four bytes back from where the buffer ends. That is worth doing even
+// though the exclude means it is not checked here — dropping it moves the first
+// divergence from call 192 to call 130 with the exclude off, so it is right far
+// more often than not. What is left is the depth sort's spill on passes that
+// draw nothing, which would need that routine to model its own walk in WRAM.
+//
+// The exclude costs less coverage than it looks: `actor_overlap_pass` writes $38
+// too and runs after everything else here, so whenever it has a record to test,
+// this address is checked exactly — by that routine, registered separately and
+// compared on all 1,016 of its own calls.
+static const CosimExclude BUILD_OAM_EXCLUDES[] = {
+    {0x0038, 2, "scratch: actor_depth_sort's walk predecessor, then the emitter's X"},
+};
+
+static bool guard_sprite_build_oam(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  (void)in;
+  return sprite_build_oam(scratch, rom);
+}
+
+static void shim_sprite_build_oam(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)in;
+  sprite_build_oam(w, rom);  // the guard already established it will not decline
+
+  // The tail at `$80:BDD2` is what decides all of this, and it runs on every
+  // path: `LDA $20 : AND #$0003 : TAX : LDA $BDE6,X : AND #$00FF : STA $1B64 :
+  // SEC : RTL`.
+  //
+  //   * A is the table entry after the mask — the value just stored.
+  //   * X is the tick's low two bits, from the `TAX`.
+  //   * `AND #$00FF` is the last flag-setting instruction, so N and Z describe
+  //     that same value. It is $80 for all four entries, so Z is false and N is
+  //     false too: $0080 is positive in 16 bits.
+  //   * Carry is the `SEC`, and it is the one output here a caller could
+  //     plausibly read.
+  //
+  // Y is never mentioned between `$80:BDD0` and the `RTL`, but it is not the
+  // caller's either — the pass ran a great deal of code that used it. It is
+  // whatever `actor_overlap_pass` left, and that is 0 on all three of its exits,
+  // including the one taken when nothing is visible at all.
+  out->a = wram_r16(w, W_SPRITE_PASS_PHASE);
+  out->x = (uint16_t)(wram_r16(w, W_SCHED_TICK) & 3);
+  out->y = 0;
+  out->n = (out->a & 0x8000) != 0;
+  out->z = out->a == 0;
+  out->c = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
 // The registry
 // ---------------------------------------------------------------------------
 
@@ -461,6 +564,34 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_oam_buffer_clear,
         .cycles = 4817,
         .stack_bytes = 2,  // the opening `PHD`
+    },
+    {
+        .name = "actor_overlap_pass",
+        .symbol = "$80:BEC9",
+        .entry = 0x80bec9,
+        .ret_op = 0x80bf1a,  // RTL
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_overlap_pass,
+        .supported = guard_actor_overlap_pass,
+        .cycles = 3018,
+        .stack_bytes = 0,  // the only `PHY` is on the path it declines
+    },
+    {
+        .name = "sprite_build_oam",
+        .symbol = "$80:BD1F",
+        .entry = 0x80bd1f,
+        .ret_op = 0x80bde2,  // RTL
+        .ret_kind = COSIM_RTL,
+        .run = shim_sprite_build_oam,
+        .supported = guard_sprite_build_oam,
+        .excludes = BUILD_OAM_EXCLUDES,
+        .exclude_count = 1,
+        // By far the most expensive routine substituted so far, and the most
+        // variable: 5,864 when nothing is on screen, 66,412 when everything is.
+        // A whole NTSC frame is about 57,000 master cycles, so this one pass is
+        // most of the game's per-frame CPU budget.
+        .cycles = 34931,
+        .stack_bytes = 9,  // PHB + PHD + the deepest nested JSR/JSL
     },
     {
         .name = "fade_in",

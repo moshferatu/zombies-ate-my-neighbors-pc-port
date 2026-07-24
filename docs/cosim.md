@@ -77,6 +77,48 @@ The last two are measured, never guessed. `verify` prints the real distribution
 of both, so the loop is: port the routine, run `verify`, copy the numbers it
 reports into the registry, then run `run`.
 
+### Half a routine, honestly
+
+A routine may also declare a **guard**, `supported`. That is how a port that
+covers most of a routine but not all of it stays truthful.
+
+`actor_overlap_pass` (`$80:BEC9`) is the case that forced it. Its whole body is
+a pairwise 16x16 overlap test over the visible actors — mechanical, worth
+porting, and the sort of loop the diff is good at checking. But when two records
+*do* touch, it calls `$80:BE8F`, which hands both to `$80:8480`, which builds a
+call frame out of an actor's own thread slot and `RTL`s into its handler. That
+is the entry point to actor behaviour: not a routine, a subsystem, and none of
+it is ported. `sprite_build_oam` inherits the same limit, because the overlap
+pass is the last thing it does.
+
+The dishonest options were both available and both bad. Excluding the addresses
+the handler would have touched would have waived most of WRAM. Porting the walk
+and quietly not dispatching would have been correct on every call in
+`movies/level1.zmv` — where no pair ever touches — and silently wrong the first
+time one did.
+
+So the port answers a third question first: *can I serve this call at all?* The
+engine asks the guard at the entry PC, before anything runs. A `false` and the
+harness steps aside completely — the ROM's own instructions execute, in **both**
+modes, and the call is counted in the `decl.` column rather than in `checked`.
+Nothing is claimed about a call the port did not make.
+
+The guard runs the port itself, on a throwaway copy of WRAM. "Can the port
+handle this?" and "what does the port do with this?" are the same question here,
+and asking it any other way would mean writing the pairwise test a second time
+in the harness, where it could drift from the one in `src/port/`.
+
+Two rules keep this from becoming a way to make failures disappear:
+
+* **A decline is an enumerated condition the port detects, never a fallback.**
+  There is no path from "the diff failed" to "declined".
+* **It is visible.** `zamn_cosim list` prints `covers: some` for a guarded
+  routine, and both `verify` and `run` print the count.
+
+`level1.zmv` declines **0 of 1,016** calls, which is the movie saying no two
+visible actors ever come within 16 pixels of each other — see the coverage note
+below, because that is a gap as well as a result.
+
 Native mode returns by pointing the program counter at the routine's own
 `RTS`/`RTL` and letting the core execute it, rather than unwinding the stack by
 hand. There is no reason to reimplement the core's stack and bank handling when
@@ -149,10 +191,21 @@ four routines that push, 0 for the four that do not, 3 for `fade_in`).
 use X for the lookup. The port keeps it in a C local, so `$7E:0038` is declared
 as a place the port does not write. `actor_depth_sort` declares the same two
 bytes for the same reason: with one index register, the record in front of the
-one being examined has nowhere to live but scratch. `zamn_cosim list` prints
-every such declaration. Those two are the only ones, and they are the only
-honest use of the mechanism — anything else appearing here would be a porting
-bug in disguise.
+one being examined has nowhere to live but scratch. `sprite_build_oam` declares
+the same two bytes a third time, because it calls both of those routines and
+inherits both spills. `zamn_cosim list` prints every such declaration. One
+address, three routines, one reason — and it is the only honest use of the
+mechanism. Anything else appearing here would be a porting bug in disguise.
+
+Two things keep `sprite_build_oam`'s version from being a free pass. It
+reproduces the emitter's spill anyway, because that one is derivable — the last
+frame lookup of a pass leaves the OAM index of the last piece drawn, four bytes
+back from where the buffer ends — and with the exclude switched off, writing it
+moves the first divergence from call 130 to call 192. What is left is the depth
+sort's spill on passes that draw nothing. And `actor_overlap_pass` writes `$38`
+too, after everything else in the pass, so whenever it has a record to test the
+byte is checked exactly — by that routine, registered separately and compared on
+all 1,016 of its own calls.
 
 **The stack area, in `run` only.** This is a *region* rule and deliberately the
 weakest thing in the harness. Stack residue compounds: a substituted call leaves
@@ -238,3 +291,43 @@ three calls `sprite_build_oam` opens with, and they are leaves again — which i
 the point. What is new about them is that they are the first port code to walk
 the game's own data structure, the 32-record display list at `$7E:185E`, rather
 than a table the scheduler owns.
+
+`sprite_build_oam` (`$80:BD1F`) itself closes that loop. It is the first ported
+routine that *calls other ported routines* — the three above, plus
+`sprite_frame_tile` through the emitters and `actor_overlap_pass` at the end —
+and the first place Phase 2's work is load-bearing inside Phase 3: the OAM
+composition it runs is `sprite_emit()`, unchanged, the same function
+`verify-sprites` proved byte-exact against 4,591 real emissions before any of
+this existed. What was missing was the caller. Which records to draw, in what
+order, at what screen position, with which attributes — that is what this adds,
+and it is checked on all 128 KB of WRAM on all 1,016 calls the movie makes.
+
+One consequence is visible in `run` and worth not misreading: with the caller
+substituted, the ROM never reaches its callees, so `sprite_frame_tile`,
+`actor_depth_sort`, `actor_cull`, `oam_buffer_clear` and `actor_overlap_pass`
+all report **not reached** there. They are running — the port calls the port's
+versions directly — they are simply no longer *intercepted*. `verify` still
+exercises every one of them on every call, because there the ROM is driving.
+This is what porting upwards looks like, and it will keep happening.
+
+### Coverage the movie does not have
+
+Five perturbations of `sprite_build_oam` were caught (the `ACTOR_Z` subtraction,
+the base priority bits, the flip selection, the screen-space origin, and using
+the emitted-piece count where the walked-piece count belongs — each failing
+within 130 to 421 calls, at the exact byte). Three deliberate ones were **not**,
+and each is a branch `movies/level1.zmv` never takes:
+
+* `ACTOR_ATTR_SET` (flags bit 4) — the palette override. Disabling the entire
+  branch still passed all 1,016 calls, so no record in this movie sets it.
+* `ACTOR_PRIORITY_TOP` (flags bit 3) — changing `$3000` to `$3800` passed;
+  changing `$2000` to `$2400` failed at call 130. Only the low-priority side is
+  exercised.
+* The overlap test's box size. Widening it from 16 pixels to 32 produced no
+  declines at all; only at 128 pixels do 413 of 1,016 passes find a pair. So the
+  walk that reaches the test is thoroughly exercised — dropping the geometry test
+  entirely makes 673 calls decline — but the threshold itself is not.
+
+All three are transcribed from the listing and correct by inspection. That is a
+weaker claim than the rest of this document makes, and the fix is the same one
+`actor_depth_sort`'s `ACTOR_SORT_FIRST` gap needs: more movies.

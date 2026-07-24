@@ -101,11 +101,13 @@ static int cmd_list(void) {
   int count = 0;
   const CosimRoutine* all = cosim_routines(&count);
   printf("%d routine%s ported so far:\n\n", count, count == 1 ? "" : "s");
-  printf("  %-20s %-10s %-6s %-9s %s\n", "name", "ROM", "return", "kind", "notes");
+  printf("  %-20s %-10s %-6s %-9s %-8s %s\n", "name", "ROM", "return", "kind",
+         "covers", "notes");
   for (int i = 0; i < count; i++) {
-    printf("  %-20s %-10s %-6s %-9s ", all[i].name, all[i].symbol,
+    printf("  %-20s %-10s %-6s %-9s %-8s ", all[i].name, all[i].symbol,
            all[i].ret_kind == COSIM_RTL ? "RTL" : "RTS",
-           all[i].run_yield ? "resumable" : "leaf");
+           all[i].run_yield ? "resumable" : "leaf",
+           all[i].supported ? "some" : "all");
     if (all[i].exclude_count == 0) {
       printf("all of WRAM compared\n");
     } else {
@@ -118,7 +120,11 @@ static int cmd_list(void) {
   }
   printf("\nA `leaf` routine runs to completion and is checked once per call. A\n"
          "`resumable` one suspends inside thread_yield and is checked once per\n"
-         "segment — the run between two suspensions. See docs/threads.md.\n");
+         "segment — the run between two suspensions. See docs/threads.md.\n"
+         "\n`covers` is `all` when the port stands in for every call, and `some`\n"
+         "when it declares a guard: the port inspects each call first and hands\n"
+         "back the ones it cannot serve, which the ROM then runs itself. Both\n"
+         "modes decline the same calls, and the count is the `decl.` column.\n");
   return 0;
 }
 

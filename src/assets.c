@@ -1595,7 +1595,7 @@ static void sprites_on_exit(Snes* snes) {
 
   SpriteOam ours = sp.before;
   sprite_emit(&ours, &sp.meta, sp.flip, sp.ox, sp.oy, sp.attr_or, sp.attr_and,
-              sp_tile_of, snes);
+              sp_tile_of, snes, NULL);
 
   bool ok = ours.index == rom_index &&
             memcmp(ours.bytes, rom_oam, SPRITE_OAM_BYTES) == 0;

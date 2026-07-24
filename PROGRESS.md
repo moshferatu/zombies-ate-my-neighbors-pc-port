@@ -3,26 +3,47 @@
 Cross-session status for the ZAMN native-port project. Update this whenever a
 milestone lands. See `PLAN.md` for the full multi-phase plan.
 
-## Current status: **Phase 3 underway** 🔨 (2026-07-23)
+## Current status: **Phase 3 underway** 🔨 (2026-07-24)
 
-The co-simulation harness PLAN.md calls for is **built and load-bearing**, nine
-routines are ported under it, and **the coroutine problem is solved.**
-`zamn_cosim verify` checks the port against the ROM's own code call by call —
-all 128 KB of WRAM plus registers — and passes **14,567 of 14,567**.
-`zamn_cosim run` then *substitutes* the C for real and runs two cores in
-lockstep: over 2,389 scheduler passes no byte of live game state ever differs,
-the only differences being inside the stacks and one declared scratch slot.
+The co-simulation harness PLAN.md calls for is **built and load-bearing**,
+eleven routines are ported under it, **the coroutine problem is solved**, and
+**the whole per-frame sprite pass is native.** `zamn_cosim verify` checks the
+port against the ROM's own code call by call — all 128 KB of WRAM plus
+registers — and passes **16,599 of 16,599**. `zamn_cosim run` then *substitutes*
+the C for real and runs two cores in lockstep: over 2,389 scheduler passes no
+byte of live game state ever differs, the only differences being inside the
+stacks and one declared scratch slot.
 
-Eight of the nine are leaves that never yield: `sprite_frame_tile` (the 128-slot
-VRAM frame cache Phase 2 explicitly deferred), `sprite_cache_age`,
+**`sprite_build_oam` (`$80:BD1F`) is the one this round was about.** It is the
+routine `scheduler_idle` calls once a frame and the one the whole sprite path
+hangs off: sort the display list, cull it to the camera, blank OAM, walk the
+survivors and emit each one's metasprite, then test every visible pair for an
+overlap. All 1,016 calls pass, whole-WRAM, first try. Two things make it a
+different kind of milestone from the nine before it:
+
+* It is the first ported routine that **calls other ported routines**, and the
+  first place Phase 2's work is load-bearing inside Phase 3. The OAM composition
+  it runs is `sprite_emit()` — unchanged, the same function `verify-sprites`
+  proved byte-exact against 4,591 real emissions. What was missing was the
+  caller, and that is what this adds.
+* It is the first port that is **honestly partial**. The overlap pass it ends
+  with dispatches into actor handlers (`$80:BE8F` → `$80:8480`) that nobody has
+  ported, so the port declares a **guard**: it inspects each call first and
+  hands back the ones it cannot serve, which the ROM then runs itself, in both
+  modes, counted and printed. `level1.zmv` declines 0 of 1,016 — no two visible
+  actors in it ever come within 16 pixels. See `docs/cosim.md` → *Half a
+  routine, honestly*.
+
+Eight of the eleven are leaves that never yield: `sprite_frame_tile` (the
+128-slot VRAM frame cache Phase 2 explicitly deferred), `sprite_cache_age`,
 `thread_tick_waits`, both vblank-queue adders, and the three routines
 `sprite_build_oam` opens with — `actor_depth_sort`, `actor_cull` and
-`oam_buffer_clear`. Those last three are the first port code to walk the game's
-own data structure (the 32-record sprite display list at `$7E:185E`) rather than
-a table the scheduler owns; the sprite pass itself (`$80:BD1F`) is next.
+`oam_buffer_clear`. Those three plus `actor_overlap_pass` are the port code that
+walks the game's own data structure, the 32-record sprite display list at
+`$7E:185E`, rather than a table the scheduler owns.
 
-The ninth is the one that mattered. **`fade_in` (`$80:891A`) suspends inside
-`thread_yield` and resumes fifteen times, and it is ported, verified and
+The last one is the one that mattered most. **`fade_in` (`$80:891A`) suspends
+inside `thread_yield` and resumes fifteen times, and it is ported, verified and
 substituted.** The decision deferred since Phase 1 is made: a ported routine
 suspends at an **explicit resume point, with its parked state as plain copyable
 data** — not fibers. The deciding argument came from the harness itself: `verify`
@@ -116,16 +137,20 @@ through a vendored SNES core, headless + interactive.
   same offsets the 65816 code does. That is what makes the diff possible at all,
   and it makes Phase 5's save states a one-line `fwrite`. `sprite_cache.c` (the
   128-slot VRAM frame cache — `$80:B9D6`/`$80:B9C7`), `thread.c`
-  (`$80:8398` and both vblank-queue adders), `oam.c` (the three list routines
-  `sprite_build_oam` opens with — `$80:BC7F`/`$80:BCE2`/`$80:BC23` — and the
-  32-record display list at `$7E:185E` they walk), `coroutine.h` (**how a ported
-  routine suspends** — one `resume` index plus a context struct, ~40 lines) and
-  `fade.c` (`$80:891A`, the first routine ported that uses it).
+  (`$80:8398` and both vblank-queue adders), `oam.c` (**the whole per-frame
+  sprite pass** — `$80:BD1F` and the four routines it calls,
+  `$80:BC7F`/`$80:BCE2`/`$80:BC23`/`$80:BEC9` — plus the 32-record display list
+  at `$7E:185E` they all walk), `coroutine.h` (**how a ported routine
+  suspends** — one `resume` index plus a context struct, ~40 lines) and `fade.c`
+  (`$80:891A`, the first routine ported that uses it).
 - `src/cosim/` — the harness (tooling, not port code; it goes away in Phase 4).
   `cosim.c` is the engine — snapshot, intercept, diff, substitute, lockstep —
   and `routines.c` is the registry plus one *shim* per routine that translates
   the 65816 calling convention. The shim/port split is deliberate: without it,
-  "port code" drifts into 65816 written in C.
+  "port code" drifts into 65816 written in C. A routine may also declare a
+  **guard**, which is how a port that covers only part of a routine says so: the
+  engine asks it before every call and hands the ones it declines back to the
+  ROM, in both modes, counted in the report's `decl.` column.
 - `src/cosim.c` → **`zamn_cosim.exe`** — `verify` (ROM drives, port is checked
   per call — per *segment*, for a routine that suspends), `run` (port drives,
   two cores diffed per scheduler pass), `list`.
@@ -225,19 +250,22 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   been diffed against an upload.
 
 - Phase 3 (verify): `zamn_cosim verify` replays `level1.zmv` and checks each of
-  the nine ported routines against the ROM's own on **every call the game
+  the eleven ported routines against the ROM's own on **every call the game
   makes** — the whole 128 KB of WRAM plus A/X/Y and the flags each shim claims.
-  **14,567 of 14,567 pass** (10,354 `sprite_frame_tile`, 1,016 each for
-  `thread_tick_waits`, `actor_depth_sort`, `actor_cull` and `oam_buffer_clear`,
-  107 `vbl_queue_b_add`, 24 `vbl_queue_a_add`, 2 `sprite_cache_age`, and
-  `fade_in`'s 16 segments). The only WRAM waived is
+  **16,599 of 16,599 pass** (10,354 `sprite_frame_tile`, 1,016 each for
+  `thread_tick_waits`, `actor_depth_sort`, `actor_cull`, `oam_buffer_clear`,
+  `actor_overlap_pass` and `sprite_build_oam`, 107 `vbl_queue_b_add`, 24
+  `vbl_queue_a_add`, 2 `sprite_cache_age`, and `fade_in`'s 16 segments). The
+  only WRAM waived is
   derived, not declared: per call — per *segment*, for `fade_in` — it is the
   window between the deepest the stack pointer went and where it started,
-  **2 bytes** for the four leaf routines that push, **0** for the four that do
-  not, and **3** for `fade_in` (exactly the return address its own `JSL
-  thread_yield` pushes) — plus one declared 2-byte scratch slot (`$7E:0038`,
-  which `sprite_frame_tile` and `actor_depth_sort` both use, for the caller's X
-  and the sort's walk-predecessor respectively). Non-vacuous five times:
+  **2 bytes** for the leaf routines that push, **0** for the five that do
+  not, **3** for `fade_in` (exactly the return address its own `JSL
+  thread_yield` pushes) and **9** for `sprite_build_oam`, which pushes B and D
+  and then nests — plus one declared 2-byte scratch slot (`$7E:0038`, which
+  `sprite_frame_tile`, `actor_depth_sort` and `sprite_build_oam` all declare,
+  for the caller's X and the sort's walk-predecessor respectively).
+  Non-vacuous five times:
   starting the LRU eviction scan one slot late failed on the very first call at
   `sprite_lru_slot`; returning the wrong register in a shim failed on Y after
   4 calls; a wrong VRAM destination failed at `sprite_upload_dest`; widening the
@@ -247,6 +275,41 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   `ACTOR_SORT_FIRST` branch of the sort still passed all 1,016 calls, because
   `level1.zmv` never presents two records that disagree on that bit — a real
   coverage gap the movie work (item 4 below) would close.
+- Phase 3 (the sprite pass): `sprite_build_oam` (`$80:BD1F`) passes **all 1,016
+  calls** whole-WRAM, and it is the first ported routine that calls other ported
+  routines — all three of its openers, `sprite_frame_tile` through the emitters,
+  and `actor_overlap_pass` at the end. It is also where Phase 2 becomes
+  load-bearing inside Phase 3: the composition it runs is `sprite_emit()`,
+  unchanged, the function `verify-sprites` already proved against 4,591
+  emissions. Non-vacuous five times, each failing at the exact byte: dropping
+  the `ACTOR_Z` subtraction failed at `sprite_origin_y` after 421 calls; a wrong
+  base priority constant failed at `sprite_attr_or` after 129; never flipping
+  failed inside the OAM buffer after 359; a one-pixel screen-space origin failed
+  at `sprite_origin_x` after 129; and advancing the metasprite pointer by the
+  *emitted* piece count instead of the *walked* one failed at
+  `sprite_pieces_left` after 325 — which is what proves pieces really are
+  dropped off-screen mid-metasprite, and validates the one thing this work
+  added to Phase 2's emitter (a trace of the direct-page walk state the ROM
+  leaves behind). **Gaps:** three deliberate perturbations were *not* caught,
+  and each is a branch the movie never takes — the `ACTOR_ATTR_SET` palette
+  override (disabling the whole branch still passed), `ACTOR_PRIORITY_TOP`
+  (only the low-priority side is exercised), and the overlap test's box size
+  (see below).
+- Phase 3 (**half a routine, honestly**): `actor_overlap_pass` (`$80:BEC9`) is
+  the first port that covers only part of what the ROM's version does. Its walk
+  is ported; what it does on a hit is not, because `$80:BE8F` hands the pair to
+  `$80:8480`, which `RTL`s into an actor's own handler. So the routine declares
+  a **guard**: the harness asks it before every call, on a throwaway copy of
+  WRAM, and a `false` means the ROM's own instructions run instead — in both
+  modes, counted in the report's `decl.` column. The rule that keeps this
+  honest is that a decline is an enumerated condition the port detects, never a
+  fallback for a failed diff. `level1.zmv` declines **0 of 1,016**. Non-vacuous
+  three ways: writing the wrong walk cursor failed after 129 calls; **dropping
+  the geometry test entirely made 673 of 1,016 calls decline** — which proves
+  the walk really does reach the box test, and that the decline path works end
+  to end — and widening the box from 16 px to 32 produced no declines at all.
+  Only at 128 px do 413 passes find a pair. **Gap:** the box test's threshold is
+  transcribed from the listing and unexercised, like `ACTOR_SORT_FIRST`.
 - Phase 3 (the coroutine): `fade_in` (`$80:891A`) is the first ported routine
   that does not run to completion — it sets brightness to 0 and then sleeps a
   frame between each of fifteen increments. It was chosen because it is the
@@ -275,11 +338,17 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
 - Phase 3 (run): `zamn_cosim run` actually substitutes the C — the ROM's
   instructions never execute — and diffs two cores' full WRAM once per scheduler
   pass. **Control first:** with nothing substituted the two cores are identical
-  at all 2,389 compared passes, so the machinery is deterministic. With all nine
-  substituted, at most **9 bytes of 131,072** ever differ and every one of them,
-  on all 2,389 passes where anything differed, is inside the stacks
+  at all 2,389 compared passes, so the machinery is deterministic. With all
+  eleven substituted, at most **14 bytes of 131,072** ever differ and every one
+  of them, on all 2,389 passes where anything differed, is inside the stacks
   (`$7E:1000-$7E:12FF`) or the declared scratch slot — **no byte of live game
-  state ever differs**, and the run reaches gameplay. The cycle budget each
+  state ever differs**, and the run reaches gameplay. One thing in that report
+  needs reading correctly: with `sprite_build_oam` substituted, the ROM never
+  reaches its five callees, so they report **not reached** under `run`. They are
+  running — the port calls the port's versions — they are just no longer
+  intercepted. `verify` still exercises every one of them on every call. This is
+  what porting upwards looks like and it will keep happening. The cycle budget
+  each
   substituted call burns is measured by `verify`, not guessed. A substituted
   *suspension* costs nothing extra to get right: native mode puts the sleep count
   in A and jumps to the routine's own `JSL thread_yield`, so the core performs
@@ -345,18 +414,21 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
 
 ## Next steps — Phase 3 (continued)
 
-The harness works, the coroutine question is answered (`docs/threads.md`), and
-nine routines are through it — eight leaves and one that suspends. What is left
-is scale rather than shape.
+The harness works, the coroutine question is answered (`docs/threads.md`), the
+sprite pass is native, and eleven routines are through it — ten leaves and one
+that suspends. What is left is scale rather than shape.
 
-1. **Finish `sprite_build_oam` (`$80:BD1F`).** Three of its four openers are now
-   ported — `actor_depth_sort`, `actor_cull`, `oam_buffer_clear` — leaving the
-   pass body itself and the overlap test `$80:BEC9` it ends with. The body is the
-   step that first uses `sprite_emit` (verified in Phase 2) against the display
-   list this work identified, so it closes the loop from actor to OAM. It never
-   yields — it runs from `scheduler_idle`'s housekeeping — so it needs no new
-   machinery. `$80:BEC9` is a self-contained pairwise overlap pass and can go
-   either before or after the body.
+1. **The collision dispatch, `$80:BE8F` → `$80:8480`.** This is now the single
+   named hole in an otherwise complete sprite path, and it is the door into
+   actor behaviour rather than a routine: `$80:8480` reads an actor's thread
+   slot (`$7E:1300`/`$7E:1330`), builds a call frame out of it and `RTL`s into
+   the actor's own handler, which may itself yield. Porting it means porting
+   what "an actor's handler" is, which is the same machinery item 2 and item 3
+   need. Until then `actor_overlap_pass` and `sprite_build_oam` declare a guard
+   and hand those calls back — 0 of 1,016 in `level1.zmv`, but that number is a
+   property of the movie, not of the game, and a movie with two actors touching
+   would raise it immediately. **That makes item 4 a prerequisite for measuring
+   this, not just for coverage.**
 2. **Port a routine that yields from inside a call it makes.** `fade_in` yields
    at its own top level, which is the easy half. The nested case needs the callee
    resumable too, with its own `PortCoro` in the caller's context, and it is the
@@ -373,13 +445,16 @@ is scale rather than shape.
    list at `$7E:185E` this work ported, `docs/wram-map.md`.)
 4. **Extend `movies/`** (Phase 2 checklist item 7, still open). Every new movie
    widens `verify` and `run` for free, exactly as it does the `verify-*`
-   commands. This is now the binding constraint on `fade_in` specifically:
-   `level1.zmv` calls it **once**, so sixteen segments is the whole sample, and
-   `fade_out` (`$80:8933`) is never reached at all. It is also the binding
-   constraint on `actor_depth_sort`: the movie never presents two display records
-   that disagree on the `ACTOR_SORT_FIRST` bit, so the port's sort-key branch is
-   correct by inspection but unexercised (forcing it into the wrong path still
-   passed all 1,016 calls — see the verify note above).
+   commands. **This is now the binding constraint on most of what is ported, not
+   a nice-to-have.** One movie's worth of gameplay leaves four branches
+   transcribed-but-unexercised, each demonstrated by a perturbation that the
+   diff should have caught and did not: the `ACTOR_SORT_FIRST` sort key
+   (`actor_depth_sort`), `ACTOR_ATTR_SET` and `ACTOR_PRIORITY_TOP`
+   (`sprite_build_oam`), and the overlap box threshold (`actor_overlap_pass`).
+   Separately, `fade_in`'s entire sample is one call — sixteen segments is all
+   there is — and `fade_out` (`$80:8933`) is never reached at all. A movie in
+   which two actors touch would also be the first to make the collision guard in
+   item 1 decline anything.
 
 ## Known limitations / TODO (deferred, non-blocking)
 - **`run` proves nothing inside `$7E:1000-$7E:12FF`** (the stacks). A
@@ -396,6 +471,11 @@ is scale rather than shape.
   then makes the core execute for real — about 24 master cycles inside a
   ~57,000-cycle frame. This stops mattering in Phase 4, when the reference is
   cut loose.
+- **A guarded routine's coverage is only as good as the movie.** `verify` and
+  `run` decline exactly the same calls, and both print the count, so a decline is
+  never silent — but "0 declined" on one movie says the port served every call
+  *that movie made*, not that it can serve every call. See `docs/cosim.md` →
+  *Half a routine, honestly*.
 - **Two activations of the same ported routine at once are not distinguished.**
   A suspension is attributed to the innermost in-flight call whose body contains
   the yield's return address; if two threads were ever inside the same ported

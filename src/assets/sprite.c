@@ -100,7 +100,12 @@ static inline void store16(SpriteOam* oam, uint32_t off, uint16_t v) {
 
 int sprite_emit(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
                 int16_t ox, int16_t oy, uint16_t attr_or, uint16_t attr_and,
-                SpriteTileFn tile_of, void* ctx) {
+                SpriteTileFn tile_of, void* ctx, SpriteEmitTrace* trace) {
+  if (trace) {
+    trace->walked = 0;
+    trace->attr = 0;
+    trace->attr_valid = false;
+  }
   bool flip_x = (flip & SPRITE_FLIP_X) != 0;
   bool flip_y = (flip & SPRITE_FLIP_Y) != 0;
   // The EOR the emitter applies to every finished OAM word: the hardware's own
@@ -122,14 +127,20 @@ int sprite_emit(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
     store16(oam, (uint32_t)x_index + 1, sy);
     // Keep only rows the 224-line display can show, allowing the 15 pixels a
     // sprite may hang off the top ($FFF1..$FFFF).
-    if (sy < 0xfff1 && sy >= 0x00e0) continue;
+    if (sy < 0xfff1 && sy >= 0x00e0) {
+      if (trace) trace->walked++;
+      continue;
+    }
 
     uint16_t sx = (uint16_t)p->x;
     if (flip_x) sx = mirror(sx);
     sx = (uint16_t)(sx + (uint16_t)ox);
     if (x_index < SPRITE_OAM_LOW_BYTES) oam->bytes[x_index] = (uint8_t)sx;
     if (sx >= 0x0100) {
-      if (sx < 0xfff1) continue;
+      if (sx < 0xfff1) {
+        if (trace) trace->walked++;
+        continue;
+      }
       // Off the left edge: set this sprite's x bit 8 in the high table. The
       // ROM reads it out of the table at $80:B747, which holds exactly this
       // address and mask for all 128 sprites.
@@ -139,13 +150,20 @@ int sprite_emit(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
     }
 
     uint16_t attr = (uint16_t)(p->attr & attr_and);
+    if (trace) {
+      trace->attr = attr;
+      trace->attr_valid = true;
+    }
     uint16_t word = tile_of ? tile_of(p->frame, ctx) : 0;
     word = (uint16_t)((word | attr | attr_or) ^ flip_eor);
     store16(oam, (uint32_t)x_index + 2, word);
 
     x_index += 4;
     written++;
+    // `$80:BAA9` leaves without stepping the walk past this piece, which is why
+    // the break is here rather than after the increment below.
     if (x_index == SPRITE_OAM_LOW_BYTES) break;
+    if (trace) trace->walked++;
   }
 
   oam->index = x_index;

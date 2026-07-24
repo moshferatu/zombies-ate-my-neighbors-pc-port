@@ -43,6 +43,11 @@ struct CosimPriv {
   CosimCall stack[COSIM_MAX_DEPTH];
   int depth;
   Wram* scratch;  // where the C port runs during a verify
+  // Where a routine's guard runs, in both modes: a throwaway copy of live WRAM,
+  // so asking "can the port handle this call?" can be answered by running the
+  // port and looking, without any of it being kept. Allocated only if some
+  // routine actually declares a guard.
+  Wram* guard;
   // Native mode only: bytes a substituted call is expected to have left stale,
   // because the ROM's version would have pushed there and the port has no stack
   // in WRAM at all. See cosim_stale().
@@ -134,9 +139,12 @@ void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
   // copyable data is the reason the port suspends this way at all. One buffer
   // per nesting level, sized for the largest context any routine declares.
   size_t ctx_max = 0;
-  for (int i = 0; i < count; i++)
+  for (int i = 0; i < count; i++) {
     if (all[i].run_yield && (size_t)all[i].ctx_size > ctx_max)
       ctx_max = (size_t)all[i].ctx_size;
+    if (all[i].supported && !c->priv->guard)
+      c->priv->guard = (Wram*)malloc(sizeof(Wram));
+  }
   if (ctx_max > 0)
     for (int i = 0; i < COSIM_MAX_DEPTH; i++)
       c->priv->stack[i].ctx = calloc(1, ctx_max);
@@ -145,6 +153,7 @@ void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
 void cosim_free(Cosim* c) {
   if (!c->priv) return;
   free(c->priv->scratch);
+  free(c->priv->guard);
   free(c->priv->stale);
   for (int i = 0; i < COSIM_MAX_DEPTH; i++) {
     free(c->priv->stack[i].before);
@@ -355,6 +364,17 @@ static void run_native_segment(Cosim* c, CosimCall* call) {
   // a segment returned before the segment did.
   if (c->priv->depth > 0 && &c->priv->stack[c->priv->depth - 1] == call)
     c->priv->depth--;
+}
+
+// Ask a routine's guard whether the port can stand in for the call that is
+// about to happen. Read-only as far as the game is concerned: the guard works
+// on a copy, which is what lets it answer by running the port and looking.
+static bool guard_allows(Cosim* c, const CosimRoutine* r) {
+  if (!r->supported) return true;
+  memcpy(c->priv->guard, c->snes->ram, sizeof(Wram));
+  CosimRegs in;
+  regs_capture(c->snes, &in);
+  return r->supported(c->priv->guard, &c->rom, &in);
 }
 
 // Substitute at a routine's entry. False if the routine could not be taken over
@@ -644,6 +664,14 @@ void cosim_step(Cosim* c) {
       if (!(c->enabled & (1u << i))) continue;
       const CosimRoutine* r = c->stats[i].routine;
       if (pc != r->entry) continue;
+      // The port has said it cannot handle this one. Step aside entirely and
+      // let the ROM's own instructions run — in both modes, so that `verify`
+      // and `run` decline exactly the same calls.
+      if (!guard_allows(c, r)) {
+        c->stats[i].calls++;
+        c->stats[i].declined++;
+        break;
+      }
       if (c->mode == COSIM_NATIVE) {
         if (!run_native(c, i, r, &c->stats[i])) break;
         return;  // the PC moved; do not also execute the entry instruction
@@ -707,11 +735,12 @@ const CosimRoutine* cosim_find(const char* name) {
 }
 
 int cosim_report(const Cosim* c) {
-  printf("\n%-20s %8s %7s %8s %8s %6s %6s  %-20s %s\n", "routine", "calls",
-         "yields", "checked", "passed", "int.", "stack", "ROM cycles", "result");
-  printf("%-20s %8s %7s %8s %8s %6s %6s  %-20s %s\n", "--------------------",
+  printf("\n%-20s %8s %7s %8s %8s %6s %6s %6s  %-20s %s\n", "routine", "calls",
+         "yields", "checked", "passed", "int.", "decl.", "stack", "ROM cycles",
+         "result");
+  printf("%-20s %8s %7s %8s %8s %6s %6s %6s  %-20s %s\n", "--------------------",
          "--------", "-------", "--------", "--------", "------", "------",
-         "--------------------", "------");
+         "------", "--------------------", "------");
 
   int failures = 0;
   for (int i = 0; i < c->stat_count; i++) {
@@ -724,15 +753,16 @@ int cosim_report(const Cosim* c) {
 
     const char* verdict;
     if (s->failed) { verdict = "FAIL"; failures++; }
-    else if (s->checked == 0) verdict = "not reached";
-    else verdict = "OK";
+    else if (s->checked > 0) verdict = "OK";
+    else if (s->declined > 0) verdict = "all declined";
+    else verdict = "not reached";
 
     char yields[16] = "-";
     if (s->routine->run_yield) snprintf(yields, sizeof yields, "%ld", s->yields);
 
-    printf("%-20s %8ld %7s %8ld %8ld %6ld %6d  %-20s %s\n", s->routine->name,
-           s->calls, yields, s->checked, s->passed, s->interrupted,
-           s->stack_waived, cycles, verdict);
+    printf("%-20s %8ld %7s %8ld %8ld %6ld %6ld %6d  %-20s %s\n",
+           s->routine->name, s->calls, yields, s->checked, s->passed,
+           s->interrupted, s->declined, s->stack_waived, cycles, verdict);
     if (s->failed) printf("%22s%s\n", "", s->detail);
   }
   return failures;
