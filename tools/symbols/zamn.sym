@@ -25,6 +25,8 @@ $0000CE  vram_queue_count      # bytes (entries x2) queued in the VRAM upload li
 # --- Thread scheduler tables -------------------------------------------------
 $001180  thread_wait           # 24 x u16: bit15 = live, low bits = ticks to wait
 $0011B0  thread_sp             # 24 x u16: saved stack pointer per thread
+$001300  thread_handler        # 24 x u16: callback address, set by $80:8475
+$001330  thread_handler_bank   # 24 x u16: ...and its bank; both zero = none
 
 # --- Vblank job queues -------------------------------------------------------
 $0012A0  vbl_queue_a           # 16 x {u16 addr-1, u8 bank, u8 pad}, run in forced blank
@@ -102,6 +104,9 @@ $80:8353  thread_yield         # A = ticks to sleep; returns when the wait expir
 $80:8371  scheduler_idle       # WAI, then per-frame housekeeping, then re-scan
 $80:8398  thread_tick_waits    # decrement every live thread's wait counter
 $80:833E  thread_exit          # where a thread's own RTL lands; frees the slot
+$80:8475  thread_set_handler   # A = handler address, Y = bank; stores at sched_cur_task
+$80:8480  thread_call_handler  # X = slot x2, Y = argument; RTLs into that thread's handler
+$80:82DE  thread_dp_table      # 24 x u16: each thread's direct page, $0100..$0C80
 
 # --- Code: vblank job queues -------------------------------------------------
 $80:83AE  vbl_queue_a_add
@@ -133,7 +138,10 @@ $80:BD1F  sprite_build_oam     # per-frame pass over visible_actors
 $80:BDF3  actor_list_reset     # clears all 32 records and empties the list
 $80:BE0C  actor_slot_alloc     # takes a free record and links it in at the head
 $80:BE41  actor_slot_free      # A = record; unlinks it and marks it free
+$80:BE8F  actor_collide_notify # X = one record of a touching pair; tells both handlers
 $80:BEC9  actor_overlap_pass   # pairwise 16x16 overlap test over visible_actors
+$80:F7F7  player_collide       # the player thread's handler; A = the other actor's id
+$81:8888  enemy_collide        # an enemy thread's handler; same argument
 $80:C049  sprite_cache_reset   # ages every slot, empties visible_actors, registers the vblank job
 $80:C05A  sprite_cache_init    # A:Y = frame array base; invalidates both maps
 

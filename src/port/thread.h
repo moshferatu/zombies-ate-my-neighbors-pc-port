@@ -16,6 +16,7 @@
 #ifndef PORT_THREAD_H
 #define PORT_THREAD_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "port/wram.h"
@@ -47,5 +48,28 @@ void thread_tick_waits(Wram* w);
 //     at slot 14, so slot 15 is never allocated. Queue B has no such gap.
 int vbl_queue_a_add(Wram* w, uint16_t addr, uint16_t bank);
 int vbl_queue_b_add(Wram* w, uint16_t addr, uint16_t bank);
+
+// --- $80:8480 --------------------------------------------------------------
+//
+// Has thread `slot` registered a handler?
+//
+// `$80:8475` is how a thread says "call me back": it stores a far address into
+// `thread_handler`/`thread_handler_bank` at its own slot. `$80:8480` is the
+// other end — given a slot and one word of argument, it builds a call frame out
+// of those two tables and `RTL`s into the handler, with the *handler's* thread
+// direct page installed from the 24-entry table at `$80:82DE`. The handler runs
+// on the caller's stack, returns with `RTL`, and its carry decides whether
+// `$80:84A8` parks the thread by writing `$8000` to its `thread_wait`.
+//
+// That is the entry point to actor behaviour, and none of it is ported. What is
+// ported is the one case where `$80:8480` does nothing at all: `LDA
+// thread_handler,X : ORA thread_handler_bank,X : BEQ` — a slot with no handler
+// installed is a call that writes nothing and returns. This predicate is that
+// `BEQ`, and it is what lets the collision dispatch above it serve the pairs
+// whose actors are not listening while declining the ones that are.
+//
+// `slot` is a slot index already doubled, as every one of these tables is
+// indexed and as a display record's `ACTOR_THREAD` holds it.
+bool thread_has_handler(const Wram* w, uint16_t slot);
 
 #endif

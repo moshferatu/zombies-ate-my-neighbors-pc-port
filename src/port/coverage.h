@@ -75,7 +75,11 @@
   X(overlap_no_id,    "actor_overlap_pass", "a visible record with no collision id") \
   X(overlap_same_id,  "actor_overlap_pass", "a pair sharing a collision id, skipped") \
   X(overlap_near_x,   "actor_overlap_pass", "a pair within 8 px on X")          \
-  X(overlap_hit,      "actor_overlap_pass", "a pair inside the box on both axes — the dispatch the port declines") \
+  X(overlap_hit,      "actor_overlap_pass", "a pair inside the box on both axes — a real collision") \
+                                                                                \
+  /* $80:BE8F actor_collide_notify — the dispatch a hit ends with. */           \
+  X(collide_none,     "actor_collide_notify", "a collision neither actor had registered a handler for") \
+  X(collide_handler,  "actor_collide_notify", "a collision that enters an actor's handler — the dispatch the port declines") \
                                                                                 \
   /* $80:BD1F sprite_build_oam. */                                             \
   X(draw_priority_top,"sprite_build_oam",   "ACTOR_PRIORITY_TOP raised a record's priority") \

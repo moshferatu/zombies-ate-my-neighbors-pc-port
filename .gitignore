@@ -22,6 +22,8 @@ build/
 # See docs/analysis-tools.md for the commands.
 # Anchored: an unanchored "analysis/" would also swallow src/analysis/.
 /analysis/
+# ...and any second opinion generated beside it, e.g. from another movie.
+/analysis[0-9]*/
 
 # Editor / OS cruft
 .vs/

@@ -37,8 +37,24 @@ $80:80C4  STA $7E0000 / LDA $7E2000 / CMP #$A675
 $80:8116  MVN $7E,$7E             ; zero all 128 KB of WRAM
 ```
 
-Direct page stays at `$0000` for the entire game, so every `$xx` direct-page
-operand is literally `$7E:00xx`. That is a convenient invariant for the port.
+~~Direct page stays at `$0000` for the entire game, so every `$xx` direct-page
+operand is literally `$7E:00xx`. That is a convenient invariant for the port.~~
+
+**Corrected.** `$0000` is what boot sets and what the scheduler, NMI and the
+per-frame housekeeping all run on — which is every routine ported so far, and is
+why the invariant held for as long as nothing looked past it. But **a thread
+runs on its own 128-byte direct page**: `$80:82A4` installs one from a 24-entry
+table at `$80:82DE` when the thread is spawned, the resume path restores it with
+`PLD`, and `$80:8480` swaps to another thread's page to call its handler. Inside
+thread code a `$xx` operand is that thread's page plus `$xx`, so `$1E` is an
+actor's own state and not `$7E:001E`. See `docs/wram-map.md` → *Per-thread
+direct pages*, which is also where the "array of ten objects at stride `$100`"
+in that document turned out to come from.
+
+This matters for reading listings as much as for porting: `zamn_disasm` resolves
+direct-page operands as though `D` were `$0000`, so its symbol annotations are
+correct for scheduler-level code and misleading for anything the scheduler
+dispatches.
 
 ## The scheduler (`$80:8353`)
 

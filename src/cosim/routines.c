@@ -369,6 +369,60 @@ static void shim_oam_buffer_clear(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
+// $80:BE8F  actor_collide_notify — X = the pair's second record, and it may
+//                                  decline
+// ---------------------------------------------------------------------------
+
+// Registered in its own right even though `actor_overlap_pass` already calls
+// it, and that is the point: the pass declines every call containing a
+// collision the port cannot dispatch, so without this entry the plumbing would
+// only ever be checked on the passes where nothing happened. Intercepted here,
+// it is checked on **every** collision the movie produces, including the ones
+// that go on to enter a handler and end the enclosing pass.
+//
+// The two arguments are where the ROM left them at `$80:BF0E  JSR $BE8F`: the
+// inner record in X, and the outer one reachable through the walk cursor the
+// pass parked in `$3C`. `LDX $1380,Y` is `visible_actors + 2 + $3C`, two past
+// the base because the cursor has already been stepped back.
+static uint16_t notify_outer(const Wram* w) {
+  return wram_r16(w, W_VISIBLE_ACTORS + 2 + wram_r16(w, W_OVERLAP_CURSOR));
+}
+
+static bool guard_actor_collide_notify(Wram* scratch, const Rom* rom,
+                                       const CosimRegs* in) {
+  (void)rom;
+  return actor_collide_notify(scratch, notify_outer(scratch), in->x);
+}
+
+static void shim_actor_collide_notify(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  uint16_t a = notify_outer(w);
+  actor_collide_notify(w, a, in->x);  // the guard established it will not decline
+
+  // The routine's last instruction is the second `JSL $80:8480`, so what comes
+  // back is whatever the dispatcher left — and on the path this port serves,
+  // the dispatcher is three instructions: `LDA $1300,X : ORA $1330,X : BEQ`.
+  //
+  //   * A is that `ORA`'s result, which is zero by definition of the path.
+  //   * X and Y are the arguments `$80:BEC0`/`$80:BEC2` set up and the
+  //     dispatcher never touches: the outer record's thread slot, and the
+  //     inner record's collision id.
+  //   * N and Z are the `ORA`'s, so they describe the zero it produced.
+  out->a = 0;
+  out->x = wram_r16(w, W_NOTIFY_THREAD_A);
+  out->y = wram_r16(w, W_NOTIFY_ID_B);
+  out->n = false;
+  out->z = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+
+  // Carry is not claimed: nothing between `$80:BE8F` and the `RTS` touches it,
+  // so it is the caller's own. It is dead either way — the only caller is
+  // `$80:BF0E`, whose next flag-setting instruction is the `DEY DEY` that steps
+  // the inner walk.
+}
+
+// ---------------------------------------------------------------------------
 // $80:BEC9  actor_overlap_pass — no arguments, and it may decline
 // ---------------------------------------------------------------------------
 
@@ -380,6 +434,11 @@ static void shim_oam_buffer_clear(Wram* w, const Rom* rom, const CosimRegs* in,
 // this call?" are the same question here, because the condition it declines on
 // is one only the walk can find. Asking it any other way would mean writing the
 // pairwise test a second time in the harness, where it could drift.
+//
+// The condition has narrowed since it was written. A hit no longer ends the
+// pass by itself: `actor_collide_notify` serves the dispatch whenever neither
+// actor has a handler registered, so what is left to decline is a collision
+// that actually reaches game logic.
 static bool guard_actor_overlap_pass(Wram* scratch, const Rom* rom,
                                      const CosimRegs* in) {
   (void)rom;
@@ -564,6 +623,26 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_oam_buffer_clear,
         .cycles = 4817,
         .stack_bytes = 2,  // the opening `PHD`
+    },
+    {
+        .name = "actor_collide_notify",
+        .symbol = "$80:BE8F",
+        .entry = 0x80be8f,
+        .ret_op = 0x80bec8,  // RTS
+        .ret_kind = COSIM_RTS,
+        .run = shim_actor_collide_notify,
+        .supported = guard_actor_collide_notify,
+        // Not measured, because it cannot be yet: every call this movie makes
+        // enters a handler and is declined, and what a substituted call would
+        // have to cost is the cost of the path the *port* serves — the plumbing
+        // plus two dispatches that return immediately. No input has produced
+        // one. Forcing the port to serve the calls it declines measures 2,842
+        // cycles, but that is the cost *with* the handlers, so it is an upper
+        // bound on a path that has never run. `verify` will print the real
+        // range the first time an input reaches it; guessing one now would put
+        // an unmeasured number where the rest of this column is measured.
+        .cycles = 0,
+        .stack_bytes = 3,   // the `JSL $80:8480` it ends on, which returns
     },
     {
         .name = "actor_overlap_pass",

@@ -18,8 +18,12 @@ meaning is not yet established.
   accessor PCs on each side.
 * The boot-time `MVN` that zeroes all 128 KB is counted separately in the `bulk`
   column and excluded from liveness, or every byte would look used.
-* Direct page is `$0000` for the entire game, so a `$xx` direct-page operand in
-  any listing is exactly `$7E:00xx`.
+* Direct page is `$0000` for everything the scheduler itself runs, so a `$xx`
+  operand in most listings is exactly `$7E:00xx` — but **not inside a thread**,
+  which runs on its own 128-byte page. See *Per-thread direct pages* below, and
+  read every listing with that caveat in mind: `zamn_disasm` annotates
+  direct-page operands as though `D` were `$0000`, which is wrong for any code
+  the scheduler dispatches.
 
 92,850 of 131,072 WRAM bytes were touched by this run.
 
@@ -76,7 +80,7 @@ The busiest addresses in the whole run are `$002C/$002D` (161 k reads) and
 | `$7E:129F` | — | NMI stack top |
 | `$7E:12A0-$7E:12DF` | 16×4 | `vbl_queue_a` — jobs run during forced blank |
 | `$7E:12E0-$7E:12FF` | 8×4 | `vbl_queue_b` — jobs run after blanking ends |
-| `$7E:1300`,`$7E:1330` | 24×2 | per-thread words written by `$80:8475`; *unidentified* |
+| `$7E:1300`,`$7E:1330` | 24×2 | `thread_handler` / `thread_handler_bank` — the callback `$80:8480` enters; see below |
 
 ## PPU shadow state
 
@@ -135,11 +139,12 @@ unlinks one. This is the list the per-frame sprite pass at `$80:BD1F` walks;
 | `+$04` | subtracted from Y before drawing (height off the ground) |
 | `+$06` | Y |
 | `+$08`/`+$0A` | far pointer to the metasprite; the bank must be `$8F` or `$90` |
+| `+$0C` | the scheduler slot (×2) whose handler is told when this record collides — read only by `$80:BE8F` |
 | `+$0E` | non-zero groups a record into the overlap pass at `$80:BEC9` |
 | `+$10` | attribute bits OR'd in when flags bit 4 is set |
 | `+$12` | link to the next record, or 0 |
 
-`+$0C` and the remaining bytes belong to logic that is not ported yet.
+The remaining bytes belong to logic that is not ported yet.
 
 The camera the pass subtracts lives at `$7E:1B6A` (X) and `$7E:1B6C` (Y), zeroed
 at level start by `$80:A65B` and moved by `$80:A691`/`$80:A792`.
@@ -175,9 +180,11 @@ gameplay code. `verify-actors` diffs the victim and object arrays byte-for-byte.
 The region report shows several strided arrays that are only partly touched, so
 they appear as many small regions. Two are worth recording now:
 
-* **Stride `$100`, at `$7E:0300`-`$7E:0C00`** — ten ~36-byte structures, all
+* ~~**Stride `$100`, at `$7E:0300`-`$7E:0C00`** — ten ~36-byte structures, all
   written by the same code at `$80:82B7`-`$80:82CC`. An array of ten objects with
-  a 256-byte pitch.
+  a 256-byte pitch.~~ **Identified**: these are *per-thread direct pages*, and
+  the stride is `$80`, not `$100` — see below. The report saw only every other
+  page because the busiest threads happened to land on the even ones.
 * **Stride `$14` (20 bytes), at `$7E:1872`-`$7E:1A17`** — 22 slots, of which only
   a 2-byte field is read (2012 reads each, identical counts). ~~A 22-entry table
   of 20-byte records, read once per frame.~~ **Identified**: this is the sprite
@@ -186,9 +193,57 @@ they appear as many small regions. Two are worth recording now:
   and only the flags word at `+$00`, because that is the field the sort and the
   cull read first and reject on.
 
-The first still smells like an actor slot table, which is what Phase 3 needs
-next — the camera-driven spawner `$81:80EC` is what fills it from the actor
-placement list (`+$1C` in the level record; format in `docs/asset-formats.md`).
+## Per-thread direct pages — `$7E:0100-$7E:0CFF`
+
+**Each of the 24 scheduler threads owns a 128-byte direct page, and that page is
+where its state lives.** This is the biggest single correction to this document,
+because it changes what a direct-page operand *means*: `$1E` inside a routine
+the scheduler is running is not `$7E:001E`, it is that thread's page plus `$1E`.
+
+The evidence is the spawn path. `$80:82A4` reads a 24-entry word table at
+`$80:82DE`, `STA $01 : TCD` installs it, and `$80:82B5`-`$80:82D3` then copy five
+words off the caller's stack into `$00`-`$08` of the new page — which is exactly
+the "ten ~36-byte structures" the region report showed above. `$80:8480` does the
+same `LDA $8082DE,X : TCD` when it calls into another thread's handler, and the
+scheduler's own resume path (`... TCS : PLD : PLP : PLB : RTL`) restores each
+thread's `D` from its parked stack.
+
+The table's 24 entries are 24 distinct pages covering `$7E:0100-$7E:0CFF` with no
+overlap, assigned in an order that is not monotonic:
+
+| Slot | Page | Slot | Page |
+| --- | --- | --- | --- |
+| 0 | `$0100` | 12 | `$0180` |
+| 1 | `$0280` | 13 | `$0200` |
+| 2 | `$0380` | 14 | `$0300` |
+| … | … | … | … |
+| 11 | `$0C80` | 23 | `$0C00` |
+
+Every live region the trace found between `$7E:0100` and `$7E:0CFF` falls inside
+one of those pages — including `$7E:0100-$7E:017F`, which is slot 0's page
+exactly, and `$7E:01E8-$7E:0227`, which straddles the boundary between slot 12's
+and slot 13's.
+
+So an "actor slot table" is not a separate structure to find: **an actor's state
+is its thread's direct page**. That is what the camera-driven spawner `$81:80EC`
+is allocating when it starts an actor thread, and it is why the enemy collision
+handler at `$81:8888` reads its own health from `$1E`.
+
+## Thread handler callbacks — `$7E:1300`, `$7E:1330`
+
+~~24×2 per-thread words written by `$80:8475`; *unidentified*.~~ **Identified**:
+a thread registers a callback by putting its address in `$7E:1300+slot×2` and
+its bank in `$7E:1330+slot×2` (`$80:8475`, which takes the address in A and the
+bank in Y and indexes by `sched_cur_task`). `$80:8480` is the other end: given a
+slot in X and one word of argument in Y, it builds a call frame out of those two
+words, installs the thread's direct page, and `RTL`s into the handler; when the
+handler returns, carry set makes `$80:84A8` park the thread by writing `$8000`
+to its `thread_wait`. A slot with both words zero makes the whole call a no-op.
+
+This is how the sprite pass reaches actor behaviour. `$80:BEC9` finds a touching
+pair, `$80:BE8F` reads each record's `+$0C` — the thread slot — and dispatches
+twice, telling each actor the other's collision id. See `src/port/oam.h` and
+`docs/cosim.md` → *Half a routine, honestly*.
 
 ## What is still missing
 

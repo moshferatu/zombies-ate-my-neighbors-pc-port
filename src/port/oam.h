@@ -60,10 +60,13 @@
 #define ACTOR_META_BANK 0x0a  // ...and its bank, which must be $8F or $90
 // OAM attribute bits this actor forces on, when ACTOR_ATTR_SET says so.
 #define ACTOR_ATTR 0x10
+// The scheduler slot (already doubled) whose handler is told when this record
+// collides. Only `$80:BE8F` reads it — it is how a display record, which is a
+// drawing concern, finds the thread that is running the actor behind it.
+#define ACTOR_THREAD 0x0c
 // Zero for a record that does not collide. Two records only collide when both
 // are non-zero *and* they differ, so this is what an actor is to whatever runs
-// into it — a side, not an identity. `$0C` beside it is the thread slot whose
-// handler gets told, and only `$80:BE8F` reads that.
+// into it — a side, not an identity.
 #define ACTOR_COLLIDE_ID 0x0e
 #define ACTOR_NEXT 0x12   // offset of the next record, or 0
 
@@ -118,6 +121,29 @@ uint16_t actor_depth_sort(Wram* w);
 // `oam_buffer` at `$7E:13BE`. The array is exactly as long as the list can be.
 void actor_cull(Wram* w);
 
+// --- $80:BE8F ---------------------------------------------------------------
+
+// Tell each of a touching pair about the other.
+//
+// `a` is the record the overlap walk was holding and `b` the one it ran into.
+// The routine reads both records' `ACTOR_COLLIDE_ID` and `ACTOR_THREAD` into
+// the direct-page words above, and then dispatches **twice** — once per actor,
+// each told the other's collision id — through `$80:8480`, which enters that
+// actor's own handler.
+//
+// So this is the seam between the sprite pass and actor behaviour, and it is
+// where the port currently stops. `thread_has_handler` (`port/thread.h`) is the
+// test that decides: a slot with no handler registered makes `$80:8480` a
+// no-op, and a pair of those is a call the port can serve exactly — it is
+// nothing but the eight scratch words. A slot that *has* one is a call into
+// game logic nobody has ported, so this **returns false having written
+// nothing** and the harness gives the call back to the ROM.
+//
+// Splitting it that way is what turns "the collision dispatch" from one opaque
+// hole into a measured one: `zamn_cosim verify -c` now reports how many real
+// collisions reach a handler at all, which is the size of what is left.
+bool actor_collide_notify(Wram* w, uint16_t a, uint16_t b);
+
 // --- $80:BEC9 ---------------------------------------------------------------
 
 // Test every pair of visible records for a 16x16 overlap, and tell the two that
@@ -131,17 +157,18 @@ void actor_cull(Wram* w);
 // with its own side.
 //
 // **This port is deliberately partial, and it says so rather than pretending.**
-// The walk is ported; the thing it does on a hit is not. `$80:BE8F` hands the
-// pair to `$80:8480`, which reaches into each actor's thread slot and calls its
-// handler — the entry point to actor behaviour, and the subject of a later
-// stage of Phase 3. So on a hit this **returns false having written nothing**,
-// and the harness gives the call back to the ROM (`CosimGuard` in
-// `src/cosim/cosim.h`). A false is not a failure and not an approximation: it is
-// the port declining a call it cannot serve, counted and printed as such.
+// The walk is ported, and so is the dispatch plumbing it ends a hit with
+// (`actor_collide_notify` above); what an actor *does* about being hit is not.
+// So a hit whose actors have handlers registered makes this **return false
+// having written nothing**, and the harness gives the call back to the ROM
+// (`CosimGuard` in `src/cosim/cosim.h`). A false is not a failure and not an
+// approximation: it is the port declining a call it cannot serve, counted and
+// printed as such.
 //
-// True means the pass ran to the end with no pair touching, and WRAM now holds
-// everything the ROM's version would have left: the walk cursor back at zero and
-// the last tested record's id and position in the scratch words above.
+// True means the pass ran to the end — with any hits along the way fully
+// dispatched — and WRAM now holds everything the ROM's version would have left:
+// the walk cursor back at zero and the last tested record's id and position in
+// the scratch words above.
 bool actor_overlap_pass(Wram* w);
 
 // --- $80:BC23 ---------------------------------------------------------------

@@ -108,6 +108,26 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_OVERLAP_CURSOR 0x003c  // where the outer walk is, parked over the inner
 #define W_OVERLAP_ID 0x004a      // the outer record's ACTOR_COLLIDE_ID
 
+// --- Direct page: the collision dispatch's scratch ($80:BE8F) ---
+//
+// The same pool again, and the same caveat: these six words mean this only
+// between `$80:BE8F` and the `RTS` at `$80:BEC8`. `A` is the pair's outer
+// record — the one the overlap walk was holding — and `B` is the inner one.
+// Both get told about the other, so everything is read out of both records
+// before either handler runs.
+#define W_NOTIFY_REC_A 0x003e
+#define W_NOTIFY_ID_A 0x0042
+#define W_NOTIFY_THREAD_A 0x0044
+#define W_NOTIFY_REC_B 0x0040
+#define W_NOTIFY_ID_B 0x0046
+#define W_NOTIFY_THREAD_B 0x0048
+
+// The pair as the handler that is *running* sees it, swapped between the two
+// dispatches. These two are not scratch in the sense above: they are the
+// argument an actor handler reads, so they outlive the dispatch by design.
+#define W_HANDLER_SELF 0x0078   // the record whose handler is running
+#define W_HANDLER_OTHER 0x0076  // the record it collided with
+
 // --- Screen ---
 #define W_BRIGHTNESS_SHADOW 0x136c  // NMI restores this into INIDISP
 
@@ -124,6 +144,12 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 // --- Thread scheduler tables (24 slots of one word each) ---
 #define W_THREAD_WAIT 0x1180  // bit 15 = live, low bits = ticks remaining
 #define W_THREAD_SP 0x11b0
+// The callback a thread registers with `$80:8475` and `$80:8480` enters — see
+// `thread_has_handler` in port/thread.h. Two words rather than one far pointer
+// because the ROM stores them with separate tables; the bank word's high byte
+// is always zero.
+#define W_THREAD_HANDLER 0x1300
+#define W_THREAD_HANDLER_BANK 0x1330
 #define WRAM_THREAD_SLOTS 24
 
 // --- Vblank job queues: {u16 address-1, u8 bank, u8 pad} per slot ---

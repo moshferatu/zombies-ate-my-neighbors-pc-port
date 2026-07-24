@@ -6,7 +6,7 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 ## Current status: **Phase 3 underway** 🔨 (2026-07-24)
 
 The co-simulation harness PLAN.md calls for is **built and load-bearing**,
-eleven routines are ported under it, **the coroutine problem is solved**, and
+twelve routines are ported under it, **the coroutine problem is solved**, and
 **the whole per-frame sprite pass is native.** `zamn_cosim verify` checks the
 port against the ROM's own code call by call — all 128 KB of WRAM plus
 registers — and passes **97,711 of 97,711** on the longer of the two movies.
@@ -14,33 +14,51 @@ registers — and passes **97,711 of 97,711** on the longer of the two movies.
 lockstep: over 6,089 scheduler passes no byte of live game state ever differs,
 the only differences being inside the stacks and one declared scratch slot.
 
-**This round was about the thing the diff could not tell you.** `verify` proves
-the port agrees with the ROM *on the calls a movie makes*; it says nothing about
-a branch the movie never reaches, because a branch neither machine runs is a
-branch they agree on. Four such branches were on record, and every one had been
-found by hand — change the port on purpose, run `verify`, notice it still
-passes. That is now an instrument: **the port marks its decision points and the
-harness counts them** (`src/port/coverage.h`, `zamn_cosim verify -c`), on the
-same principle as the shims' flag masks — an unclaimed output is an unchecked
-output, and **an untaken branch is an unverified branch.**
+**This round went at the one named hole in the sprite path and came back with a
+number instead of a routine.** `$80:BE8F` — the collision dispatch
+`actor_overlap_pass` ends a hit with — is now ported and registered in its own
+right (`actor_collide_notify`), which splits what used to be a single opaque
+decline into two things: the plumbing, which is transcribable, and `$80:8480`,
+which `RTL`s into an actor's own handler and is not. The port serves the case
+where a colliding actor has **no** handler registered, because that makes
+`$80:8480` three instructions that write nothing.
 
-On `movies/level1.zmv` it takes **20 of 34 sites**, reproducing all four
-hand-found gaps and Phase 2's vertical-flip gap with nothing perturbed, and
-naming ten more nobody had listed. The sharpest: `sprite_frame_tile` is called
-10,354 times by that movie and **never once evicts a resident frame** — the
-most-called ported routine in the game, and the branch that makes it a cache
-rather than a lookup table had never run.
+Registering it separately is what makes the measurement possible at all: the
+enclosing pass declines every call containing a collision, so without its own
+entry PC the plumbing would only ever be offered the passes where nothing
+happened. Offered all of them, the answer is flat — **1,226 of 1,226 declined,
+and the `collide_none` site is never reached.** Every collision in ordinary play
+enters a handler. That is a fact about the game rather than about the movie, and
+it is the first time the boundary has been measured rather than assumed.
 
-**`movies/level1-rescue.zmv` was written against that report** and takes **25 of
-34**. It rescues a victim and then fights zombies in the graveyard, and the
-headline is `actor_overlap_pass`: the collision dispatch the port declares a
-guard for now **declines 1,226 of 4,716 calls** instead of 0 of 1,016. That was
-the one number in the whole harness that was a property of the movie rather than
-of the game, and it is measured now. It also closes `draw_priority_top`, both
-cache-eviction sites, and `cull_offscreen`. Nine remain untaken — a measured
-backlog rather than a suspicion.
+**Sizing it further shrank it a lot.** A census of which handlers those 1,226
+calls actually reach found **two**, not a subsystem: `$80:F7F7` (the player's)
+and `$81:8888` (an enemy's), 1,225 of the 1,226 pairs, split at collision id
+`$5C` so that exactly one side of each collision does real work. The enemy's
+side takes its acting branch **once** in 1,226; the player's side lands on the
+same jump-table entry, `$80:F950`, **1,225** times. The remaining work is four
+small routines, not "port what an actor's handler is".
 
-**`sprite_build_oam` (`$80:BD1F`) is the one this round was about.** It is the
+Getting there also corrected the map. **A thread does not run on direct page
+`$0000` — it runs on its own 128-byte page**, installed from a 24-entry table at
+`$80:82DE`, and `$7E:0100-$7E:0CFF` is 24 of them. That supersedes both
+`docs/frame-skeleton.md`'s "direct page pinned at `$0000` for the whole game"
+and `docs/wram-map.md`'s "array of ten objects at stride `$100`", and it answers
+where actor state lives: **an actor's state is its thread's direct page.**
+`$7E:1300`/`$7E:1330`, listed as *unidentified* until now, are the handler
+callbacks themselves.
+
+The branch-coverage instrument from the previous round is what made all of this
+legible. **The port marks its decision points and the harness counts them**
+(`src/port/coverage.h`, `zamn_cosim verify -c`), on the same principle as the
+shims' flag masks — an unclaimed output is an unchecked output, and **an untaken
+branch is an unverified branch.** On `movies/level1.zmv` it takes **20 of 36
+sites**; `movies/level1-rescue.zmv`, written against that report, takes **26 of
+36** and is what put a number on the collision dispatch: `actor_overlap_pass`
+**declines 1,226 of 4,716 calls** instead of 0 of 1,016. Ten sites remain
+untaken — a measured backlog rather than a suspicion.
+
+**`sprite_build_oam` (`$80:BD1F`) is the one the previous round was about.** It is the
 routine `scheduler_idle` calls once a frame and the one the whole sprite path
 hangs off: sort the display list, cull it to the camera, blank OAM, walk the
 survivors and emit each one's metasprite, then test every visible pair for an
@@ -60,13 +78,14 @@ different kind of milestone from the nine before it:
   actors in it ever come within 16 pixels. See `docs/cosim.md` → *Half a
   routine, honestly*.
 
-Eight of the eleven are leaves that never yield: `sprite_frame_tile` (the
+Eight of the twelve are leaves that never yield: `sprite_frame_tile` (the
 128-slot VRAM frame cache Phase 2 explicitly deferred), `sprite_cache_age`,
 `thread_tick_waits`, both vblank-queue adders, and the three routines
 `sprite_build_oam` opens with — `actor_depth_sort`, `actor_cull` and
-`oam_buffer_clear`. Those three plus `actor_overlap_pass` are the port code that
-walks the game's own data structure, the 32-record sprite display list at
-`$7E:185E`, rather than a table the scheduler owns.
+`oam_buffer_clear`. Those three plus `actor_overlap_pass` and
+`actor_collide_notify` are the port code that walks the game's own data
+structure, the 32-record sprite display list at `$7E:185E`, rather than a table
+the scheduler owns.
 
 The last one is the one that mattered most. **`fade_in` (`$80:891A`) suspends
 inside `thread_yield` and resumes fifteen times, and it is ported, verified and
@@ -169,12 +188,13 @@ through a vendored SNES core, headless + interactive.
   (`$80:8398` and both vblank-queue adders), `oam.c` (**the whole per-frame
   sprite pass** — `$80:BD1F` and the four routines it calls,
   `$80:BC7F`/`$80:BCE2`/`$80:BC23`/`$80:BEC9` — plus the 32-record display list
-  at `$7E:185E` they all walk), `coroutine.h` (**how a ported routine
-  suspends** — one `resume` index plus a context struct, ~40 lines), `fade.c`
-  (`$80:891A`, the first routine ported that uses it) and `coverage.h`/`.c`
-  (**which of the port's branches any input has actually taken** — 34 marked
-  decision points across all eleven routines; with `PORT_COVERAGE` undefined
-  every mark compiles to nothing at all, which is how the shipped game builds).
+  at `$7E:185E` they all walk, plus `$80:BE8F`, **the collision dispatch a hit
+  ends with**), `coroutine.h` (**how a ported routine suspends** — one `resume`
+  index plus a context struct, ~40 lines), `fade.c` (`$80:891A`, the first
+  routine ported that uses it) and `coverage.h`/`.c` (**which of the port's
+  branches any input has actually taken** — 36 marked decision points across all
+  twelve routines; with `PORT_COVERAGE` undefined every mark compiles to nothing
+  at all, which is how the shipped game builds).
 - `src/cosim/` — the harness (tooling, not port code; it goes away in Phase 4).
   `cosim.c` is the engine — snapshot, intercept, diff, substitute, lockstep —
   and `routines.c` is the registry plus one *shim* per routine that translates
@@ -289,13 +309,14 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   been diffed against an upload.
 
 - Phase 3 (verify): `zamn_cosim verify` replays a movie and checks each of
-  the eleven ported routines against the ROM's own on **every call the game
+  the twelve ported routines against the ROM's own on **every call the game
   makes** — the whole 128 KB of WRAM plus A/X/Y and the flags each shim claims.
   On `level1-rescue.zmv`, **97,711 of 97,711 pass** (71,694 `sprite_frame_tile`,
   4,716 each for `thread_tick_waits`, `actor_depth_sort`, `actor_cull` and
   `oam_buffer_clear`, 3,490 each for `actor_overlap_pass` and `sprite_build_oam`
   with 1,226 declined, 107 `vbl_queue_b_add`, 48 `vbl_queue_a_add`, 2
-  `sprite_cache_age`, and `fade_in`'s 16 segments).
+  `sprite_cache_age`, and `fade_in`'s 16 segments; `actor_collide_notify` is
+  offered 1,226 and declines all of them).
   On `level1.zmv`, which every figure below is measured on,
   **16,599 of 16,599 pass** (10,354 `sprite_frame_tile`, 1,016 each for
   `thread_tick_waits`, `actor_depth_sort`, `actor_cull`, `oam_buffer_clear`,
@@ -371,6 +392,40 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   calls, and `run` still reaches the end of the movie with no byte of live game
   state differing. The one number in the harness that was a property of the
   movie rather than of the game is measured.
+- Phase 3 (**splitting that hole in two**): `actor_collide_notify` (`$80:BE8F`)
+  is ported and registered on its own entry PC, which separates the dispatch
+  *plumbing* — six direct-page words read out of both records, the pair written
+  to `$76`/`$78`, two calls to `$80:8480` — from the actor logic `$80:8480`
+  enters. A slot with no handler registered makes `$80:8480` three instructions
+  that write nothing, and that is the case the port serves. Registering it
+  separately is the point: the enclosing pass declines every call containing a
+  collision, so without its own entry the plumbing would only ever be offered
+  the passes where nothing happened. Offered all of them, `level1-rescue.zmv`
+  declines **1,226 of 1,226** and `collide_none` is never reached — **every
+  collision in ordinary play enters a handler**, which is a property of the game
+  and not of the movie. Non-vacuous in the one direction available: forcing
+  `thread_has_handler` to return false makes the port serve all 1,226 and every
+  one fails. That measures the handlers' absence rather than the plumbing's
+  presence, so the eight words the port writes are still transcribed-not-diffed,
+  and `collide_none` is the report saying so by name. A one-off census sized what
+  is left: **two handlers**, `$80:F7F7` (player) and `$81:8888` (enemy), 1,225 of
+  the 1,226 pairs, split at collision id `$5C` so exactly one side of each
+  collision acts — the enemy's acting branch runs **once** in 1,226, and the
+  player's lands on the same jump-table entry `$80:F950` **1,225** times.
+- Phase 3 (**the direct page is not pinned**): getting to `$80:8480` corrected
+  two documents. `$80:82A4` installs a per-thread direct page from a 24-entry
+  table at `$80:82DE` when a thread is spawned; the resume path restores it with
+  `PLD`; `$80:8480` swaps to the *target* thread's page to call its handler. So
+  `docs/frame-skeleton.md`'s "direct page pinned at `$0000` for the whole game"
+  holds only for the scheduler, NMI and the per-frame housekeeping — which is
+  every routine ported so far, which is why it survived this long. The 24 pages
+  tile `$7E:0100-$7E:0CFF` at stride `$80`, every live region the trace found in
+  that range falls inside one of them, and they are what `docs/wram-map.md`
+  recorded as "ten ~36-byte structures at stride `$100`". **An actor's state is
+  its thread's direct page**, which is item 3 below answered before it was
+  started. `$7E:1300`/`$7E:1330`, *unidentified* until now, are the handler
+  callbacks `$80:8475` registers. Reading listings needs the same caveat:
+  `zamn_disasm` resolves direct-page operands as though `D` were `$0000`.
 - Phase 3 (the coroutine): `fade_in` (`$80:891A`) is the first ported routine
   that does not run to completion — it sets brightness to 0 and then sleeps a
   frame between each of fifteen increments. It was chosen because it is the
@@ -400,7 +455,7 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   instructions never execute — and diffs two cores' full WRAM once per scheduler
   pass. **Control first:** with nothing substituted the two cores are identical
   at all 2,389 compared passes, so the machinery is deterministic. With all
-  eleven substituted, at most **14 bytes of 131,072** ever differ and every one
+  twelve substituted, at most **14 bytes of 131,072** ever differ and every one
   of them, on all 2,389 passes where anything differed, is inside the stacks
   (`$7E:1000-$7E:12FF`) or the declared scratch slot — **no byte of live game
   state ever differs**, and the run reaches gameplay. The same holds on the
@@ -482,22 +537,34 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
 ## Next steps — Phase 3 (continued)
 
 The harness works, the coroutine question is answered (`docs/threads.md`), the
-sprite pass is native, eleven routines are through it — ten leaves and one that
-suspends — and how much of them any given input actually exercises is now
+sprite pass is native, twelve routines are through it — eleven leaves and one
+that suspends — and how much of them any given input actually exercises is now
 measured rather than guessed at. What is left is scale rather than shape.
 
-1. **The collision dispatch, `$80:BE8F` → `$80:8480`.** This is the single
-   named hole in an otherwise complete sprite path, and it is the door into
-   actor behaviour rather than a routine: `$80:8480` reads an actor's thread
-   slot (`$7E:1300`/`$7E:1330`), builds a call frame out of it and `RTL`s into
-   the actor's own handler, which may itself yield. Porting it means porting
-   what "an actor's handler" is, which is the same machinery item 2 and item 3
-   need. **The prerequisite is met: it is now sized.** `actor_overlap_pass` and
-   `sprite_build_oam` hand back **1,226 of 4,716** calls on
-   `movies/level1-rescue.zmv` — a quarter of every sprite pass in ordinary
-   gameplay, and the largest single thing standing between the port and a native
-   frame. It was 0 of 1,016 before that movie existed, and that zero was the
-   movie's property, not the game's.
+1. **The two collision handlers.** The dispatch itself (`$80:BE8F`) is ported;
+   what is left is `$80:8480` entering a handler, and that is now a named list
+   rather than "the door into actor behaviour". On `movies/level1-rescue.zmv`
+   **1,225 of 1,226** collisions are the same two handlers, and the acting side
+   of each is one small routine:
+   * **`$80:F7F7`** — the player's. `CMP #$005C : BCS` ignores high ids; below
+     that it stores `$76` into its own `$58` and `JSR ($F808,X)` on the other
+     actor's id ×2. In this movie **1,225 of the 1,225** dispatches land on the
+     same entry, `$80:F950`, which is fifteen instructions and touches five
+     words. `$80:F92D` gets the other one.
+   * **`$81:8888`** — an enemy's. The mirror image: ids below `$5C` are ignored
+     with `CLC : RTL` and write nothing, which is 1,225 of 1,226 here. The
+     acting branch subtracts a damage table entry from its own health at `$1E`
+     and, on this movie, kills the actor on its single execution.
+   * **`$80:8480`** itself — build the frame, install the thread's direct page
+     from `$80:82DE`, run the handler, and on carry set write `$8000` to its
+     `thread_wait`. Both handlers above return carry clear on the paths that
+     matter.
+   The prerequisite that was missing is met: **an actor's state is its thread's
+   direct page** (`docs/wram-map.md`), so a ported handler knows where to read
+   `$1E`, `$50`, `$52`, `$58` and `$70`. Serving both sides of a collision is
+   what turns `actor_overlap_pass` and `sprite_build_oam` from 1,226 declines
+   back to zero, and it is the largest single thing standing between the port
+   and a native frame.
 2. **Port a routine that yields from inside a call it makes.** `fade_in` yields
    at its own top level, which is the easy half. The nested case needs the callee
    resumable too, with its own `PortCoro` in the caller's context, and it is the
@@ -506,21 +573,29 @@ measured rather than guessed at. What is left is scale rather than shape.
    routine's body is deliberately left unmatched rather than misattributed.
    `$80:8516` (the gameplay thread, yields at two sites and calls six unported
    routines) is the realistic target once more of its callees exist.
-3. **Then the actor slot tables** (`$7E:0300` stride `$100`) that the
-   camera-driven spawner `$81:80EC` fills, and the animation state that picks an
+3. **Then the actor state itself**, and the animation state that picks an
    actor's metasprite frame to frame. Deferred from Phase 2 as runtime state
-   rather than ROM format; the harness is what will check them. (The `$7E:1872`
-   stride-`$14` table listed here before is now identified — it is the display
-   list at `$7E:185E` this work ported, `docs/wram-map.md`.)
+   rather than ROM format; the harness is what will check it. Two tables listed
+   here in earlier rounds are now identified and neither is what it looked like:
+   the `$7E:1872` stride-`$14` one is the display list at `$7E:185E`, and the
+   "`$7E:0300` stride `$100`" one is the **24 per-thread direct pages** tiling
+   `$7E:0100-$7E:0CFF` at stride `$80` (`docs/wram-map.md`). So there is no
+   separate actor slot table to find — the camera-driven spawner `$81:80EC`
+   allocates a *thread*, and its page is the actor's state.
 4. **Extend `movies/`** (Phase 2 checklist item 7). Still the binding constraint
    on most of what is ported — but no longer an open-ended one, because
    `zamn_cosim verify -c` now says what a movie is worth. The work is: read the
    untaken list, write an input that does that thing, watch the list shrink.
-   `movies/level1-rescue.zmv` did that for five sites, `level1.zmv`'s 20 of 34
-   becoming 25 of 34. **Nine remain**, in rough order of how gettable they look:
+   `movies/level1-rescue.zmv` did that for five sites, `level1.zmv`'s 20 of 36
+   becoming 26 of 36. **Ten remain**, in rough order of how gettable they look:
    * `sort_key_first` (`ACTOR_SORT_FIRST`) and `draw_attr_set`
      (`ACTOR_ATTR_SET`) — two of the four originally hand-found gaps, both
      needing a record type level 1 does not spawn.
+   * `collide_none` — a collision between two actors with no handler registered.
+     Zero in 1,226, so this one may well be unreachable by design rather than by
+     the movie: see item 1. If it stays at zero across a movie that reaches the
+     whole game, that is a fact about the ROM, and the eight words
+     `actor_collide_notify` writes will only ever be checked through a handler.
    * `emit_flip_y` — the vertical-flip emitters `$80:BB30`/`$80:BBA6`, ported
      from their ROM bytes in Phase 2 and never once executed since. The
      longest-standing gap in the project.
@@ -555,7 +630,7 @@ measured rather than guessed at. What is left is scale rather than shape.
   never silent — but "0 declined" on one movie says the port served every call
   *that movie made*, not that it can serve every call. That is now measured
   rather than merely admitted: `zamn_cosim verify -c` reports which of the port's
-  34 marked branches an input reached, and nine are still untaken by any movie.
+  36 marked branches an input reached, and ten are still untaken by any movie.
   See `docs/cosim.md` → *Half a routine, honestly* and *Coverage the movie does
   not have*.
 - **Branch coverage counts port executions, not game events.** Under `verify` the
@@ -563,7 +638,7 @@ measured rather than guessed at. What is left is scale rather than shape.
   a ported caller has its sites counted once for each — `overlap_hit` reads 2,452
   for 1,226 declining passes, exactly twice. Whether a site was reached at all,
   which is the only thing the report claims, is unaffected.
-- **A marked branch is one somebody thought to mark.** The 34 sites are chosen by
+- **A marked branch is one somebody thought to mark.** The 36 sites are chosen by
   hand, one per decision the diff would have to run to check, not generated. A
   branch with no mark on it is invisible to the report, so this is a floor on
   coverage rather than a measurement of it.
