@@ -46,12 +46,19 @@ $00008E  sprite_origin_x       # actor position, camera already subtracted
 $000090  sprite_origin_y
 $000092  sprite_attr_or        # OAM attribute bits the actor forces on
 $000096  sprite_attr_and       # mask applied to each piece's attribute word
+$00009A  oam_pass_cursor       # byte index into visible_actors the draw pass is at
 $00009C  visible_actor_count   # bytes (entries x2) live in visible_actors
 $00009E  sprite_lru_slot       # x2; the cache slot evicted next
 $0000A0  sprite_tick           # sched_tick snapshot stamped into sprite_slot_tick
 
+# --- Sprite display list (32 x 20-byte records; see src/port/oam.h) ----------
+$00185E  actor_slots           # 32 records of $14 bytes, chained by +$12
+$001B5E  actor_list_head       # offset of the first live record, or 0
+$001B6A  camera_x              # world coordinate of the top-left of the screen
+$001B6C  camera_y
+
 # --- Sprite frame cache (128 slots of 16x16) ---------------------------------
-$00137E  visible_actors        # actor slot offsets the OAM pass walks
+$00137E  visible_actors        # up to 32 x u16: the records this frame draws
 $0015DE  sprite_upload_src     # queued upload: source address
 $00165E  sprite_upload_bank
 $0016DE  sprite_upload_dest    # VRAM word address
@@ -118,7 +125,14 @@ $80:BA51  sprite_emit          # metasprite -> OAM entries, unflipped
 $80:BABA  sprite_emit_flip_x
 $80:BB30  sprite_emit_flip_y
 $80:BBA6  sprite_emit_flip_xy
+$80:BC23  oam_buffer_clear     # parks all 128 OAM entries off screen at Y=$E0
+$80:BC7F  actor_depth_sort     # one bubble pass over the display list
+$80:BCE2  actor_cull           # display list -> visible_actors, by camera window
 $80:BD1F  sprite_build_oam     # per-frame pass over visible_actors
+$80:BDF3  actor_list_reset     # clears all 32 records and empties the list
+$80:BE0C  actor_slot_alloc     # takes a free record and links it in at the head
+$80:BE41  actor_slot_free      # A = record; unlinks it and marks it free
+$80:BEC9  actor_overlap_pass   # pairwise 16x16 overlap test over visible_actors
 $80:C049  sprite_cache_reset   # ages every slot, empties visible_actors, registers the vblank job
 $80:C05A  sprite_cache_init    # A:Y = frame array base; invalidates both maps
 

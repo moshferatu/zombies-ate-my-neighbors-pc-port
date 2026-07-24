@@ -16,6 +16,7 @@
 #include "cosim/cosim.h"
 
 #include "port/fade.h"
+#include "port/oam.h"
 #include "port/sprite_cache.h"
 #include "port/thread.h"
 
@@ -264,6 +265,110 @@ static PortStep shim_fade_in(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
+// $80:BC7F  actor_depth_sort — no arguments
+// ---------------------------------------------------------------------------
+
+// The relink needs to remember the record in front of the one it is looking at,
+// and with one index register the only place to keep it is a direct-page byte.
+// It is the same $38 `sprite_frame_tile` spills the caller's X into, and it is
+// scratch for the same reason: nothing reads it across the call. The port keeps
+// the predecessor in a C local.
+static const CosimExclude DEPTH_SORT_EXCLUDES[] = {
+    {0x0038, 2, "the ROM keeps the walk's predecessor here; the port uses a local"},
+};
+
+static void shim_actor_depth_sort(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  uint16_t tail = actor_depth_sort(w);
+
+  // Every one of the three `RTS` paths is reached by a taken `BEQ`, so N and Z
+  // are the same on all of them however the walk ended.
+  out->n = false;
+  out->z = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+
+  // X is whichever record the walk stopped on: the tail, found by `LDY $12,X`
+  // reading a zero link — or 0 from `LDX $1B5E` when the list was empty, which
+  // is the one path that never touches Y.
+  out->x = tail;
+  out->y = tail != 0 ? 0 : in->y;
+  out->regs = COSIM_REG_X | COSIM_REG_Y;
+
+  // A and carry are not claimed, and the reason is worth writing down given how
+  // much of this file is about unclaimed outputs being unchecked ones.
+  //
+  // Both are left holding an intermediate of whichever comparison ended the
+  // pass, and *which* intermediate differs per path: A is either the flags word
+  // masked to bit 5, or the Y coordinate that lost a `CMP`, or the link a swap
+  // read; carry is that `CMP`'s result, or the caller's own if the pass never
+  // reached one. Reproducing that here would mean writing the comparison a
+  // second time in the shim, which is exactly the drift this file exists to
+  // prevent.
+  //
+  // They are dead. The single caller is `$80:BD27`, and the next thing it does
+  // is `JSR $80:BCE2`, which opens `LDY #$0000 : LDX $1B5E : BEQ` — it reads
+  // neither — and whose own first use of carry is a `SEC`.
+}
+
+// ---------------------------------------------------------------------------
+// $80:BCE2  actor_cull — no arguments
+// ---------------------------------------------------------------------------
+
+static void shim_actor_cull(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  (void)rom;
+  actor_cull(w);
+
+  // The walk ends on `LDA $12,X : TAX : BNE`, so it falls out with the zero
+  // link in both A and X. An empty list exits earlier, from `LDX $1B5E : BEQ`,
+  // which leaves X zero the same way but never touches A. `actor_cull` does not
+  // move the list, so its head still says which of the two happened.
+  out->a = wram_r16(w, W_ACTOR_LIST_HEAD) != 0 ? 0 : in->a;
+  out->x = 0;
+  // `STY $9C` is the count, straight out of Y.
+  out->y = wram_r16(w, W_VISIBLE_ACTOR_COUNT);
+  out->n = false;
+  out->z = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+
+  // Carry is the last window comparison the walk happened to make — one of four
+  // `CMP`s, on whichever record was tested last, or the caller's if every record
+  // was skipped on its flags. It is dead: the caller's next instruction is
+  // `JSR $80:BC23`, which reaches its first `ADC` through the `CLC` at
+  // $80:BC2F.
+}
+
+// ---------------------------------------------------------------------------
+// $80:BC23  oam_buffer_clear — no arguments
+// ---------------------------------------------------------------------------
+
+static void shim_oam_buffer_clear(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  (void)in;
+  oam_buffer_clear(w);
+
+  // `LDA #$AAAA` and the sixteen stores of it are the last thing to touch A.
+  out->a = 0xaaaa;
+  // `SEP #$10` zeroes the high bytes of both index registers on the way in, so
+  // when `REP #$30` widens them again X is the loop counter run down to 0 and Y
+  // is still the $E0 it was seeded with.
+  out->x = 0x0000;
+  out->y = 0x00e0;
+  // `PLD` is the last flag-setting instruction, so N and Z describe the direct
+  // page it restores rather than anything the routine computed. The only caller
+  // is `sprite_build_oam`, which has just done `PEA $0000 : PLD`, so what comes
+  // back off the stack is zero.
+  out->n = false;
+  out->z = true;
+  // `CLC` at $80:BC2F, and the `ADC #$0040` that walks the direct page across
+  // the buffer eight times starts at $13BE and never carries out of 16 bits.
+  out->c = false;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
 // The registry
 // ---------------------------------------------------------------------------
 
@@ -324,6 +429,38 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_vbl_queue_b_add,
         .cycles = 393,
         .stack_bytes = 2,   // the opening `PHY`
+    },
+    {
+        .name = "actor_depth_sort",
+        .symbol = "$80:BC7F",
+        .entry = 0x80bc7f,
+        .ret_op = 0x80bce1,
+        .ret_kind = COSIM_RTS,
+        .run = shim_actor_depth_sort,
+        .excludes = DEPTH_SORT_EXCLUDES,
+        .exclude_count = 1,
+        .cycles = 1477,
+        .stack_bytes = 0,  // pushes nothing
+    },
+    {
+        .name = "actor_cull",
+        .symbol = "$80:BCE2",
+        .entry = 0x80bce2,
+        .ret_op = 0x80bd1e,
+        .ret_kind = COSIM_RTS,
+        .run = shim_actor_cull,
+        .cycles = 2448,
+        .stack_bytes = 0,  // pushes nothing
+    },
+    {
+        .name = "oam_buffer_clear",
+        .symbol = "$80:BC23",
+        .entry = 0x80bc23,
+        .ret_op = 0x80bc7e,
+        .ret_kind = COSIM_RTS,
+        .run = shim_oam_buffer_clear,
+        .cycles = 4817,
+        .stack_bytes = 2,  // the opening `PHD`
     },
     {
         .name = "fade_in",

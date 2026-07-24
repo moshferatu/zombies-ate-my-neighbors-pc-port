@@ -119,6 +119,31 @@ vblank.
 That last pair is what the region report shows as the 8480-byte block
 bulk-written by `$80:C06B`: `$80:C05A` fills both with `$FFFF` at boot.
 
+## Sprite display list
+
+**32 records of 20 bytes at `$7E:185E`**, chained into a singly-linked list
+whose head is `$7E:1B5E`. A record is addressed by its own WRAM offset, so a
+link is just that offset and `0` terminates. `$80:BDF3` clears all 32 and empties
+the list, `$80:BE0C` takes a free one and links it in at the head, `$80:BE41`
+unlinks one. This is the list the per-frame sprite pass at `$80:BD1F` walks;
+`src/port/oam.h` is the port's view of it.
+
+| Offset | Field |
+| --- | --- |
+| `+$00` | flags. Bit 15 = draw, bit 14 = the position is already screen-space, bit 5 = sort ahead, bits 1-2 = which of the four emitters to use, bits 3/4 = extra attribute bits |
+| `+$02` | X — world, or screen when bit 14 is set |
+| `+$04` | subtracted from Y before drawing (height off the ground) |
+| `+$06` | Y |
+| `+$08`/`+$0A` | far pointer to the metasprite; the bank must be `$8F` or `$90` |
+| `+$0E` | non-zero groups a record into the overlap pass at `$80:BEC9` |
+| `+$10` | attribute bits OR'd in when flags bit 4 is set |
+| `+$12` | link to the next record, or 0 |
+
+`+$0C` and the remaining bytes belong to logic that is not ported yet.
+
+The camera the pass subtracts lives at `$7E:1B6A` (X) and `$7E:1B6C` (Y), zeroed
+at level start by `$80:A65B` and moved by `$80:A691`/`$80:A792`.
+
 ## Large buffers
 
 | Range | Size | Contents |
@@ -154,13 +179,16 @@ they appear as many small regions. Two are worth recording now:
   written by the same code at `$80:82B7`-`$80:82CC`. An array of ten objects with
   a 256-byte pitch.
 * **Stride `$14` (20 bytes), at `$7E:1872`-`$7E:1A17`** — 22 slots, of which only
-  a 2-byte field is read (2012 reads each, identical counts). A 22-entry table of
-  20-byte records, read once per frame.
+  a 2-byte field is read (2012 reads each, identical counts). ~~A 22-entry table
+  of 20-byte records, read once per frame.~~ **Identified**: this is the sprite
+  display list above, which is 32 records starting one stride lower at
+  `$7E:185E`. The report only shows the slots the traced run actually touched,
+  and only the flags word at `+$00`, because that is the field the sort and the
+  cull read first and reject on.
 
-Both smell like actor/object slot tables, which is what Phase 3 needs next. Ports
-of the actor logic should start by confirming these — the camera-driven spawner
-`$81:80EC` is what fills them from the actor placement list (`+$1C` in the level
-record; format in `docs/asset-formats.md`).
+The first still smells like an actor slot table, which is what Phase 3 needs
+next — the camera-driven spawner `$81:80EC` is what fills it from the actor
+placement list (`+$1C` in the level record; format in `docs/asset-formats.md`).
 
 ## What is still missing
 

@@ -86,6 +86,7 @@ target_include_directories(zamn_assets PRIVATE third_party/stb)
 # ---------------------------------------------------------------------------
 add_library(zamn_port STATIC
   src/port/fade.c
+  src/port/oam.c
   src/port/sprite_cache.c
   src/port/thread.c)
 target_include_directories(zamn_port PUBLIC src)

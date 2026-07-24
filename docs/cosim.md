@@ -92,9 +92,19 @@ each one.
 Flags are opt-in: a shim declares which of N/Z/C it modelled, and `verify`
 compares exactly those. That keeps the claim as strong as the evidence and no
 stronger — and, as it turned out, makes an unmodelled flag a visible gap rather
-than an invisible one. A and X and Y work the same way, though every routine so
-far claims all three; the mask exists because a suspending routine's registers
-are only claimable per segment.
+than an invisible one. A, X and Y work the same way, through a second mask.
+
+Declining one is allowed, but it is a claim in itself, so a shim that declines
+has to name the instruction that makes the output dead. `actor_depth_sort` is
+the case that forced the rule: its `RTS` leaves in A, and in carry, an
+intermediate of whichever comparison happened to end the pass — a different one
+on each of its three exit paths. Reproducing that would mean writing the
+comparison a second time inside the shim, which is the drift the shim/port split
+exists to stop. So both are declined and the shim shows its work: the only
+caller is `$80:BD27`, and the next thing it runs is `JSR $80:BCE2`, which opens
+`LDY #$0000 : LDX $1B5E : BEQ` and reaches its own first use of carry through a
+`SEC`. `run` is what audits that reasoning, because it is the mode where an
+unclaimed output really does keep the caller's value.
 
 A suspension is an exit and is checked exactly as hard as a return — WRAM plus
 A/X/Y plus the claimed flags, with A being the sleep count. That is not
@@ -132,14 +142,17 @@ C port has no stack in WRAM at all. So `verify` ignores differences between the
 deepest the stack pointer got during the call and where it started. The window
 is *derived*, not declared: a routine that pushes nothing gets no leeway
 whatsoever, and the report prints the widest window it used (2 bytes for the
-three routines that push, 0 for the two that do not).
+four routines that push, 0 for the four that do not, 3 for `fade_in`).
 
 **Declared scratch.** `sprite_frame_tile` opens with `STX $38` and closes with
 `LDX $38` — with one index register, spilling the caller's X is the only way to
 use X for the lookup. The port keeps it in a C local, so `$7E:0038` is declared
-as a place the port does not write. `zamn_cosim list` prints every such
-declaration. It is the only one, and it is the only honest use of the mechanism:
-anything else appearing here would be a porting bug in disguise.
+as a place the port does not write. `actor_depth_sort` declares the same two
+bytes for the same reason: with one index register, the record in front of the
+one being examined has nowhere to live but scratch. `zamn_cosim list` prints
+every such declaration. Those two are the only ones, and they are the only
+honest use of the mechanism — anything else appearing here would be a porting
+bug in disguise.
 
 **The stack area, in `run` only.** This is a *region* rule and deliberately the
 weakest thing in the harness. Stack residue compounds: a substituted call leaves
@@ -218,3 +231,10 @@ porting the hardest part of the game with the checking turned off.
 
 What is left is scale rather than shape — nested yields, more than one activation
 of a routine at a time, and enough movies to exercise any of it properly.
+
+The three routines added after `fade_in` are the first here that are not
+infrastructure. `actor_depth_sort`, `actor_cull` and `oam_buffer_clear` are the
+three calls `sprite_build_oam` opens with, and they are leaves again — which is
+the point. What is new about them is that they are the first port code to walk
+the game's own data structure, the 32-record display list at `$7E:185E`, rather
+than a table the scheduler owns.

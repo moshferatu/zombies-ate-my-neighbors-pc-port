@@ -88,6 +88,15 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 // --- Screen ---
 #define W_BRIGHTNESS_SHADOW 0x136c  // NMI restores this into INIDISP
 
+// --- The sprite display list (see port/oam.h) ---
+#define W_ACTOR_SLOTS 0x185e     // 32 x 20-byte records
+#define W_ACTOR_LIST_HEAD 0x1b5e  // offset of the first live record, or 0
+#define W_CAMERA_X 0x1b6a         // world coordinate of the top-left of the screen
+#define W_CAMERA_Y 0x1b6c
+#define W_VISIBLE_ACTORS 0x137e   // up to 32 x u16: the records this frame draws
+#define W_VISIBLE_ACTOR_COUNT 0x009c  // bytes, i.e. entries x 2
+#define W_OAM_BUFFER 0x13be       // 544 bytes, DMA'd to OAMDATA every frame
+
 // --- Thread scheduler tables (24 slots of one word each) ---
 #define W_THREAD_WAIT 0x1180  // bit 15 = live, low bits = ticks remaining
 #define W_THREAD_SP 0x11b0
