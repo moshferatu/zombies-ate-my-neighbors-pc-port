@@ -31,13 +31,15 @@
 //
 // ## What this port covers, and what it declines
 //
-// Both handlers are ported as far as the branch that *does nothing*, which on
-// the movie that reaches them is almost all of it: the player's hit path
-// (`$80:F950`) in full, and the enemy's "not my kind of collision" early-out.
-// Taking damage — `$81:88A4` onwards, which subtracts from health and then
-// either jumps into the death routine or `$81:8506` — is not ported, and neither
-// is the sound effect `$80:F92D` plays, because it talks to the APU rather than
-// to WRAM. Both decline, and `zamn_cosim` counts them.
+// Both handlers are ported through every outcome any movie has reached: the
+// player's hit path (`$80:F950`) in full, the enemy's "not my kind of collision"
+// early-out, and — since the round that added `port/score.h` — the enemy's
+// acting branch as far as dying, which is the one outcome
+// `movies/level1-rescue.zmv` produces. What is left declines and is counted:
+// an enemy that *survives* a hit leaves through `$81:8506`, two collision ids
+// have routines of their own (`$81:83C6`, `$81:847E`), and `$80:F92D` is a sound
+// effect, which writes no WRAM but talks to the APU and so belongs with the
+// audio path rather than here.
 //
 // Port code: libc only.
 
@@ -61,6 +63,14 @@
 // arrays in `$7E:1Cxx`. `$80:8874` writes those arrays with the same doubled
 // index and `$80:D206`'s `LDA $006E,X` reads that player's joypad with it.
 #define ACTOR_DP_PLAYER 0x0e
+// An enemy's death request, and the field that makes `$81:8727` worth porting
+// rather than transcribing. The enemy's own thread body clears it before its
+// main loop (`$81:882B  STZ $12`) and reads it once per pass (`$81:8842  LDA
+// $12 : BEQ <loop>`): zero means carry on, anything else means leave, and
+// `ENEMY_DEATH_REQUEST` is the value that also means "a player killed me", which
+// `$81:8846` tests for before bumping the kill counter at `$7E:1F64`. Six live
+// enemy pages in the trace all use it this way.
+#define ACTOR_DP_DEATH_REQ 0x12
 // Health, to anything that has any. `$81:88A5` subtracts a damage-table entry
 // from it and runs the death path when the result goes negative.
 #define ACTOR_DP_HEALTH 0x1e
@@ -80,6 +90,11 @@
 // Which branch of the actor's own state machine is running — `$80:D1EA  LDX $70
 // : JMP ($D1EF,X)` is the jump it indexes. States 2 and 4 ignore collisions.
 #define ACTOR_DP_STATE 0x70
+// Zeroed by an enemy's init (`$81:87F5`) and again on the way into the death
+// path (`$81:88B9`), and read by nothing any trace has seen. Named for where it
+// is rather than for what it means, because the evidence does not say — the
+// same treatment `port/wram.h` gives `$38`.
+#define ACTOR_DP_SCRATCH_7E 0x7e
 
 // --- $80:8480 ---------------------------------------------------------------
 
@@ -163,14 +178,50 @@ bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 
 #define ENEMY_COLLIDE_ENTRY 0x818888u
 
+// Bit 15 of a collision id is not part of the id. `$81:8891  AND #$7FFF` masks
+// it off before anything is looked up, and `$80:C7D9` reads it as the side that
+// earns the points — so the top bit says *which player's* weapon this was.
+#define ENEMY_COLLIDE_ID_MASK 0x7fff
+
+// Two ids the damage table does not describe: each has its own routine
+// (`$81:83C6` and `$81:847E`) and neither is ported.
+#define ENEMY_HIT_SPECIAL_A 0x005e
+#define ENEMY_HIT_SPECIAL_B 0x005d
+
+// 43 entries of one word each, in ROM, indexed by `(masked id - $5C) x 2` and
+// subtracted from `ACTOR_DP_HEALTH`. Some entries are `$FFFF`, so a "hit" can
+// add health as easily as remove it.
+#define ENEMY_DAMAGE_TABLE 0x818561u
+
+// --- $81:8727 ---------------------------------------------------------------
+
+// What a kill is worth, as a BCD constant — `$81:8727  LDX #$0100`.
+#define ENEMY_DEATH_AWARD 0x0100
+// ...and what it posts to `ACTOR_DP_DEATH_REQ` to say so.
+#define ENEMY_DEATH_REQUEST 0xf5f5
+
 // An enemy thread's handler, and the mirror image of the player's: ids *below*
 // `COLLIDE_ID_PLAYER` are somebody else's business and it returns having written
 // nothing at all. That branch is 1,225 of the 1,226 dispatches
-// `movies/level1-rescue.zmv` produces, and it is what this port serves.
+// `movies/level1-rescue.zmv` produces.
 //
-// False for an id it would act on — `$81:889F` onwards subtracts a damage table
-// entry from `ACTOR_DP_HEALTH` and leaves through one of three routines nobody
-// has ported.
-bool enemy_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+// The other one is a hit, and it is ported as far as the outcome the movie
+// reaches. Park the id, mask it, look the damage up and subtract it from
+// `ACTOR_DP_HEALTH`, and then:
+//
+//   * **the enemy died** (the difference went negative) — store it, clear
+//     `ACTOR_DP_SCRATCH_7E`, and run `$81:8727`: award `ENEMY_DEATH_AWARD` to
+//     whichever player bit 15 named, and post `ENEMY_DEATH_REQUEST` for the
+//     enemy's own loop to find. It returns **carry set**, which is what makes
+//     `thread_call_handler` park the thread — the only thing in the game that
+//     does.
+//   * **the damage was zero** — `$81:88AD  CMP $1E : BEQ` leaves through a bare
+//     `CLC : RTL` having written only the id.
+//   * **the enemy survived** — store the new health and leave through
+//     `$81:8506`, which is not ported. Declines.
+//
+// False for that last one, and for the two special ids above.
+bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                   ActorHandlerRegs* r);
 
 #endif

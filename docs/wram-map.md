@@ -231,16 +231,19 @@ handler at `$81:8888` reads its own health from `$1E`.
 
 ### Fields, so far
 
-Porting the two collision handlers (`src/port/collide.h`) named seven of them.
-Each is what *those* routines do with the offset and no more — the page belongs
-to each actor's own code, so `$1E` meaning health to an enemy says nothing about
-what the player keeps there.
+Porting the two collision handlers (`src/port/collide.h`) named seven of them,
+and the death path behind one of them added two more. Each is what *those*
+routines do with the offset and no more — the page belongs to each actor's own
+code, so `$1E` meaning health to an enemy says nothing about what the player
+keeps there.
 
 | Offset | What reads or writes it | Meaning |
 | --- | --- | --- |
 | `$0E` | `$80:8874`, `$80:D206`, `$80:F95C` | the player's index, already doubled (0 or 2) |
+| `$12` | `$81:882B` clears, `$81:8727` posts, `$81:8842` reads | an enemy's death request: 0 = carry on, `$F5F5` = a player killed me |
 | `$1E` | `$81:88A5`, `$80:F966` | health, to anything that has any |
-| `$22` | `$81:888F` | the collision id, parked before masking |
+| `$22` | `$81:888F` | the collision id, parked before masking. **Bit 15 is not part of the id** — `$81:8891` masks it off, and `$80:C7D9` reads it as which player's weapon this was |
+| `$7E` | `$81:87F5`, `$81:88B9` | zeroed by an enemy's init and again on the way into dying; nothing any trace has seen ever reads it |
 | `$50` | `$80:F971` posts, `$80:D050` consumes and clears | an event request word |
 | `$52` | `$80:F96C`, `$80:F976` | hit recovery: a hit only lands once this goes negative |
 | `$58` | `$80:F801` | the record this actor collided with |
@@ -279,6 +282,26 @@ fixes the stride and the direction.
 `$80:F38D`/`$80:F3A5` save and restore it in a pair with `$1CC0`, and `$80:F950`
 singles out one value of it when deciding whether a collision hurts. That last
 one is why the port names it at all.
+
+## The score — `$7E:1E72`, and the slot map at `$7E:1E84`
+
+Two score slots of one 32-bit **BCD** counter each, four bytes apart: `$1E72`
+low, `$1E74` high, and the same again at `$1E76`/`$1E78`. `$80:C7EB` and
+`$80:C801` are the two copies of the addition — `SED : CLC : ADC` on the low
+half, and a second `ADC` into the high half only if that carried — and `$80:C0CF`
+is the HUD noticing the value changed and redrawing it.
+
+The slots are not indexed by player. `$80:C7D9`'s caller supplies a **side**, 0
+or 2, which is bit 15 of the collision id turned into a number, and `$80:C7C2`
+searches the two words at `$7E:1E84` for it: found at `$1E84` means slot 0, found
+at `$1E86` means slot 1, and found in neither means the points are dropped —
+which is a real branch (`$80:C817  PLA : RTL`) rather than an oversight.
+`$80:925D` seeds the pair 0 and 2, so with one player the search is the identity
+and nothing about it can be proved; see `docs/cosim.md` → *The last decline*.
+
+Two awards fell out of the diff and are worth having written down: a victim
+rescued is `$1000` and an enemy killed is `$0100`, both BCD, both constants in
+their callers (`$83:A1D5` and `$81:8727`).
 
 ## What is still missing
 

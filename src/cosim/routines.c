@@ -18,6 +18,7 @@
 #include "port/collide.h"
 #include "port/fade.h"
 #include "port/oam.h"
+#include "port/score.h"
 #include "port/sprite_cache.h"
 #include "port/thread.h"
 
@@ -457,19 +458,52 @@ static void shim_player_collide(Wram* w, const Rom* rom, const CosimRegs* in,
 // $81:8888  enemy_collide — the same argument, on an enemy's page
 // ---------------------------------------------------------------------------
 
+// Carry is an input as well as an output, and only on one path: `enemy_die`
+// hands whatever it arrived with to `score_add`, whose discard path passes it
+// straight through to the `RTL`. Every other exit sets it outright.
 static bool guard_enemy_collide(Wram* scratch, const Rom* rom,
                                 const CosimRegs* in) {
-  (void)rom;
-  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
-  return enemy_collide(scratch, in->d, in->a, &r);
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  return enemy_collide(scratch, rom, in->d, in->a, &r);
 }
 
 static void shim_enemy_collide(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
-  (void)rom;
-  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
-  enemy_collide(w, in->d, in->a, &r);  // the guard allowed it
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_collide(w, rom, in->d, in->a, &r);  // the guard allowed it
   handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $80:C7D9  score_add — X = the BCD award, A's sign = the side
+// ---------------------------------------------------------------------------
+
+// Registered in its own right for the reason `player_collide` is: the collision
+// path reaches it, but so does the victim-rescue thread at `$83:A1EC`, and those
+// two call sites have nothing to do with each other. Intercepted here it is
+// checked on both — and on the second one even in `run` mode, where
+// `enemy_collide` is substituted whole and the ROM never reaches the first.
+//
+// The `BMI` at the entry means this is the second routine whose *input* includes
+// a flag. `player_collide` needed `d`; this one needs `n`, which `CosimRegs`
+// already carries because the diff compares it on the way out.
+static bool guard_score_add(Wram* scratch, const Rom* rom, const CosimRegs* in) {
+  ScoreResult out;
+  return score_add(scratch, rom, in->n, in->x, in->c, &out);
+}
+
+static void shim_score_add(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  ScoreResult r;
+  score_add(w, rom, in->n, in->x, in->c, &r);  // the guard allowed it
+  out->a = r.a;
+  out->x = r.x;
+  // Y is never mentioned between the entry and any of the three `RTL`s.
+  out->y = in->y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
 // ---------------------------------------------------------------------------
@@ -729,7 +763,9 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_thread_call_handler,
         .supported = guard_thread_call_handler,
         .cycles = 958,
-        .stack_bytes = 11,
+        // 11 until a handler could die: `enemy_die`'s `JSR` and the `JSL` to
+        // `score_add` under it are six bytes deeper than anything else reaches.
+        .stack_bytes = 17,
     },
     {
         .name = "player_collide",
@@ -746,12 +782,29 @@ static const CosimRoutine ROUTINES[] = {
         .name = "enemy_collide",
         .symbol = "$81:8888",
         .entry = 0x818888,
-        .ret_op = 0x81888e,  // the `CLC : RTL` the served branch falls into
+        // A bare `RTL`, deliberately: the death branch returns carry *set*, and
+        // `native_publish` has already put it in the flags by the time the core
+        // gets here. Pointing this at the `CLC` two bytes earlier would undo the
+        // one output that parks the thread.
+        .ret_op = 0x81888e,
         .ret_kind = COSIM_RTL,
         .run = shim_enemy_collide,
         .supported = guard_enemy_collide,
-        .cycles = 87,
-        .stack_bytes = 0,   // the served branch pushes nothing
+        // 84 for the ignore branch, which is 1,225 of the 1,226; 1,150 for the
+        // one death, which is why the mean barely moves off the floor.
+        .cycles = 88,
+        .stack_bytes = 9,   // the ignore branch pushes nothing; a death, 9
+    },
+    {
+        .name = "score_add",
+        .symbol = "$80:C7D9",
+        .entry = 0x80c7d9,
+        .ret_op = 0x80c818,  // the discard entry's bare RTL; all three return alike
+        .ret_kind = COSIM_RTL,
+        .run = shim_score_add,
+        .supported = guard_score_add,
+        .cycles = 524,
+        .stack_bytes = 4,  // the opening `PHX`, plus the `JSR $C7C2` under it
     },
     {
         .name = "actor_collide_notify",

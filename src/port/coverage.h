@@ -98,9 +98,20 @@
   X(hurt_iframes,     "player_collide",      "a hit inside the recovery window, ignored") \
   X(hurt_taken,       "player_collide",      "a hit the player actually took")   \
                                                                                 \
-  /* $81:8888 enemy_collide. */                                                 \
+  /* $81:8888 enemy_collide, and the death at $81:8727. */                      \
   X(enemy_ignore,     "enemy_collide",       "an enemy told about an id of the other side, which it ignores") \
-  X(enemy_act,        "enemy_collide",       "an enemy taking damage — the branch nobody has ported") \
+  X(enemy_act,        "enemy_collide",       "an enemy told about a hit of its own side") \
+  X(enemy_hit_special,"enemy_collide",       "one of the two ids with a routine of its own — declined") \
+  X(enemy_died,       "enemy_collide",       "a hit that took an enemy's last health") \
+  X(enemy_no_damage,  "enemy_collide",       "a hit whose damage-table entry is zero") \
+  X(enemy_survived,   "enemy_collide",       "an enemy that lived through a hit — declined") \
+                                                                                \
+  /* $80:C7D9 score_add. */                                                     \
+  X(score_slot_0,     "score_add",           "points credited to the first score slot") \
+  X(score_slot_1,     "score_add",           "points credited to the second — two players") \
+  X(score_discard,    "score_add",           "points earned by a side no score slot owns") \
+  X(score_carry,      "score_add",           "a score that carried past four BCD digits") \
+  X(score_digit_carry,"score_add",           "an award whose BCD addition needed a decimal adjust") \
                                                                                 \
   /* $80:BD1F sprite_build_oam. */                                             \
   X(draw_priority_top,"sprite_build_oam",   "ACTOR_PRIORITY_TOP raised a record's priority") \

@@ -183,7 +183,7 @@ Those four routines are ported, and the wall has moved from 1,226 to **1**.
 | --- | --- | --- |
 | `thread_call_handler` | `$80:8480` | the whole dispatcher, for a handler it has |
 | `player_collide` | `$80:F7F7` | the ignore path, and the two ported jump-table entries |
-| `enemy_collide` | `$81:8888` | the ignore path — 1,225 of the 1,226 |
+| `enemy_collide` | `$81:8888` | the ignore path — 1,225 of the 1,226 (and, since *The last decline* below, the other one too) |
 
 `$80:8480` is the interesting one, because it is where the direct page stops
 being `$0000`. It reads the handler's far address out of
@@ -219,10 +219,11 @@ movie is nearly all of it:
   below `$5C`. Its acting branch subtracts a damage-table entry from `$1E` and
   leaves through unported code, and on this movie it runs **once**.
 
-That once is the entire remaining decline. `actor_overlap_pass` goes from
-**1,226 of 4,716** declined to **1 of 4,716**, and `sprite_build_oam` with it.
-Under `run`, all but three of 6,089 scheduler passes are now substituted whole,
-and no byte of live game state differs on any of them.
+That once was the entire remaining decline — until the next section ported it
+too. `actor_overlap_pass` goes from **1,226 of 4,716** declined to **1 of
+4,716**, and `sprite_build_oam` with it. Under `run`, all but three of 6,089
+scheduler passes are now substituted whole, and no byte of live game state
+differs on any of them.
 
 Five deliberate perturbations, each caught at the exact byte or flag:
 
@@ -240,8 +241,7 @@ way they are ever checked at all.
 
 What is left untaken, and named as such by the coverage report rather than
 implied: `collide_none` (still zero — no input has ever produced a collision
-between two actors with no handler), `handler_park` (neither ported handler
-returns carry set on a served path), `player_ignore` and `player_no_effect` (the
+between two actors with no handler), `player_ignore` and `player_no_effect` (the
 player has never been told about a `≥$5C` id, and every id it *has* seen wanted
 `$80:F950` rather than the table's bare `RTS`), and two of `$80:F950`'s own
 exits, `hurt_state_immune` and `hurt_weapon_immune`. Those are transcribed from
@@ -252,6 +252,65 @@ Native mode returns by pointing the program counter at the routine's own
 `RTS`/`RTL` and letting the core execute it, rather than unwinding the stack by
 hand. There is no reason to reimplement the core's stack and bank handling when
 the routine already contains the instruction that does it.
+
+#### The last decline
+
+The one call left was an enemy taking its last hit, and it is ported. The whole
+sprite pass now declines **nothing** on `movies/level1-rescue.zmv`.
+
+`$81:889F` onwards masks the id, rules out two ids with routines of their own,
+indexes the damage table at `$81:8561` and subtracts from health at `$1E`. It
+then has three ways out, and the movie takes one of them:
+
+* the difference went **negative** — the enemy died. Store it, clear `$7E`, and
+  `JSR $81:8727`, which awards points and posts `$F5F5` to `$12`; then `SEC :
+  RTL`. Ported.
+* the difference **equals the health it came from** — the damage-table entry was
+  zero, and not even the store happens. Ported, never taken.
+* the enemy **survived**. `JML $81:8506`, which splices a call into the thread's
+  own parked stack so that the next time the scheduler resumes it, it runs a
+  reaction first. Not ported: it declines.
+
+Two things about the death are worth having in writing.
+
+**`$81:8888` is where a thread gets parked.** `thread_call_handler`'s
+`handler_park` — carry set on the way back, thread's wait word set to `$8000` —
+had read zero on every movie ever run, and this is why: `$81:88BE  SEC : RTL` is
+the only thing in the game that reaches it. Porting the death branch took that
+site from a transcription to a diffed one, and it found a bug on the way. The
+park path ends `LDA #$8000 : STA $1180,X`, so the *parked value* is what the
+caller gets back in A, not the handler's — the port was handing back `$F5F5` and
+`verify` said so at call 1,405.
+
+**`$81:8727` is where the score lives**, which is why `port/score.h` exists and
+why `$80:C7D9` is registered as a routine in its own right rather than folded
+into the handler. Its other caller is the victim-rescue thread at `$83:A1EC`,
+which has nothing to do with collisions; registering it means both call sites
+check it, and it is the only routine so far that `run` substitutes on a path the
+collision chain does not reach. It is also the first ported code that is
+**decimal** — the score is BCD, `SED` is on for the whole addition — and the
+first whose *input* includes a flag: the `BMI` at the entry reads the caller's N,
+which is bit 15 of the collision id, which is how the game knows which player's
+weapon did it. Bits 0-14 are the id; bit 15 is the shooter.
+
+Along the way the two awards fell out of the diff: a victim is worth **$1000**
+and a kill **$0100**, both BCD.
+
+Six deliberate perturbations. Three were caught, and the three that were not are
+more useful than the three that were:
+
+| Change | Result |
+| --- | --- |
+| award `$0200` instead of `$0100` | `$7E:1E73` at call 685 of `enemy_collide` — but `score_add` still passed, because intercepted at its own entry it takes the award from the ROM's X |
+| post `$F5F4` instead of `$F5F5` as the death request | `$7E:0812` at call 685 |
+| return carry **clear** from the death | flag C at call 685 of `enemy_collide`, *and* `$7E:11A6` at call 1,405 of `thread_call_handler` — the flag and the write it causes one level up, caught independently |
+| search the two score slots in the wrong order | `$7E:1E73` at `score_add`'s **first** call — the victim rescue, before any collision happens |
+| break the BCD decimal adjust (`+$6` → `+$7`) | **not caught.** Decimal and binary addition agree until a digit runs past 9, and neither of this movie's two awards gets there. There is now a coverage site, `score_digit_carry`, that says so by name |
+| delete the `STZ $7E` on the death path | **not caught.** The word is already zero — the enemy's own init cleared it and nothing writes it in between — so the store is indistinguishable from a no-op. Kept, because it is what the ROM does, and recorded in `port/collide.c` because a store the diff cannot see is worth writing down |
+
+That last pair is the honest shape of this instrument. A branch nobody takes is
+reportable; a *store* whose value was already there is not, and the only defence
+is to notice and say so.
 
 ### Registers are outputs too
 
@@ -473,7 +532,7 @@ table with hit counts. It is never a failure — an untaken branch is a movie th
 has not been written yet, and saying so is the whole job.
 
 Three things about the numbers. **A site is a decision the diff would have to
-run to check**, not every `if`: 51 of them across the fifteen routines, chosen by
+run to check**, not every `if`: 60 of them across the sixteen routines, chosen by
 hand. **Hit counts are call-weighted, not event-weighted** — under `verify` the
 port runs once per interception, so a routine reached both directly and through
 a ported caller is counted once for each. That weighting is now five deep on the
@@ -495,8 +554,9 @@ finding rather than a dead counter.
 ### What it found
 
 On `movies/level1.zmv` — the movie most numbers above are measured on — **21 of
-51 sites** are taken, which was 20 of 36 before the collision handlers added
-fifteen more that only the other movie reaches. It reproduced all three
+60 sites** are taken, which was 20 of 36 before the collision handlers added
+fifteen more, and nine more again for the death path, that only the other movie
+reaches. It reproduced all three
 `sprite_build_oam` gaps found by
 hand, plus `actor_depth_sort`'s `ACTOR_SORT_FIRST` and Phase 2's known
 vertical-flip gap, without anybody perturbing anything. It also named ten more
@@ -505,10 +565,10 @@ called 10,354 times by that movie and never once evicts a resident frame.** The
 most-called ported routine in the game, and the branch that makes it a *cache*
 rather than a lookup table had never run.
 
-`movies/level1-rescue.zmv` was written against that report and takes **36 of
-51**, over 106,347 checked calls with nothing diverged. It closes five of the
-original ten and reaches ten of the fifteen the handlers added, including both of
-the two that mattered most:
+`movies/level1-rescue.zmv` was written against that report and takes **39 of
+60**, over 106,351 checked calls with nothing diverged. It closes five of the
+original ten and reaches ten of the fifteen the handlers added, plus four of the
+nine the death path added — including both of the two that mattered most:
 
 * `overlap_hit` — 2,452 marks and **1,226 of 4,716 calls declined**. Until this
   movie, "0 declined" was the only number the guard had ever produced. See
@@ -521,12 +581,21 @@ the two that mattered most:
   the movie: a camera that scrolls hard enough to leave an actor behind is the
   only thing that makes `actor_cull` reject anything.
 
-Fifteen are still untaken and they are a measured backlog rather than a
+Twenty-one are still untaken and they are a measured backlog rather than a
 suspicion. Ten are the original ones minus the five closed: `emit_flip_y` (no
 shipped actor in level 1 flips vertically), `sort_key_first`, `draw_attr_set`,
 `queue_full`, the two OAM-full sites, three defensive branches in
 `sprite_build_oam` that a well-formed record may simply never reach, and
 `collide_none` — a fact about the *game* rather than about the movie: 1,226
-collisions and not one of them between two actors that were not listening. The
-other five arrived with the handlers and are listed at the end of *Through the
-door*. Each one is a claim this document does not get to make yet.
+collisions and not one of them between two actors that were not listening. Four
+more arrived with the handlers and are listed at the end of *Through the door*.
+
+The last seven arrived with the death path, and they sort into two kinds. Two are
+outcomes the game plainly has and this movie does not produce —
+`enemy_survived` (every hit in it kills, because the graveyard's zombies die in
+one) and `enemy_no_damage` — plus `enemy_hit_special`, the two collision ids with
+routines of their own. The other two want a **second player**: `score_slot_1` and
+`score_discard` are both about the search in `$80:C7C2`, which with one player is
+the identity and therefore proves nothing. `score_carry` and `score_digit_carry`
+want a score large enough to carry, which a longer session would give for free.
+Each one is a claim this document does not get to make yet.

@@ -214,6 +214,23 @@ an exit like any other.**
   yield whose return address is outside the routine's own body rather than
   quietly attributing it, so the first nested case will show up as an unmatched
   yield rather than as a silent wrong answer.
+* **The game splices calls into suspended threads' stacks, and the port's
+  coroutines have no stack to splice into.** `$81:8506` — the reaction an enemy
+  runs when it survives a hit — reads the thread's parked stack pointer from
+  `$7E:11B0,X`, moves the top three words down three bytes, and writes a `JSL`
+  return frame into the gap. The next time the scheduler resumes that thread it
+  therefore runs a reaction routine *first*, and then continues exactly where it
+  left off, none the wiser. That is a real mechanism in this game and almost
+  certainly not the only use of it.
+
+  Nothing about it invalidates the decision in *Why not fibers* — a parked
+  machine stack could not be rewound and replayed either, so the check would be
+  no easier. But it does say what the equivalent has to be: a ported routine's
+  `PortCoro` will need a way to say "run this, then resume where you were",
+  which is a one-entry pending-call slot in the context rather than anything
+  structural. Nothing needs it yet — no movie reaches `$81:8506`, and
+  `enemy_survived` in the coverage report is what says so — and it should be
+  designed against the first real caller rather than in advance.
 * **Two activations of the same routine at once are not distinguished.** The
   yield-site test finds the innermost in-flight call whose body contains the
   return address. If two threads were ever inside the same ported routine

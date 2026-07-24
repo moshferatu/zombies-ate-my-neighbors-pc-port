@@ -145,6 +145,18 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 // them. `$80:F950` is why it is here: one weapon changes what a collision does.
 #define W_PLAYER_WEAPON 0x1cbc
 
+// --- The score (2 slots of one 32-bit BCD counter each, stride 4) ---
+//
+// `$80:C7EB` and `$80:C801` are the two copies of the addition — low half here,
+// carry into the half four bytes up — and `$80:C0CF` is the HUD noticing the
+// value changed. Decimal, not binary: see `port/score.h`.
+#define W_PLAYER_SCORE 0x1e72
+
+// Which *side* owns each score slot: 0 or 2, the value the sign bit of a
+// collision id resolves to. `$80:925D` seeds them 0 and 2 — the identity — and
+// `$80:C7C2` searches the pair to turn a side back into a slot.
+#define W_SCORE_SLOT_SIDE 0x1e84
+
 // --- The sprite display list (see port/oam.h) ---
 #define W_ACTOR_SLOTS 0x185e     // 32 x 20-byte records
 #define W_ACTOR_LIST_HEAD 0x1b5e  // offset of the first live record, or 0

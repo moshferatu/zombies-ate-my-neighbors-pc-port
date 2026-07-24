@@ -105,6 +105,7 @@ add_library(zamn_port STATIC
   src/port/collide.c
   src/port/fade.c
   src/port/oam.c
+  src/port/score.c
   src/port/sprite_cache.c
   src/port/thread.c)
 target_include_directories(zamn_port PUBLIC src)

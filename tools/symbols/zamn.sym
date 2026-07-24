@@ -95,6 +95,10 @@ $001CB8  player_countdown      # seeded to 10; stepped down by $80:D03C
 $001CBC  player_weapon         # seeded to 0; the index $80:D219 looks a table up by
 $001CC0  player_weapon_arg     # seeded to 7; saved and restored with it ($80:F38D)
 
+# --- The score (2 slots of one 32-bit BCD counter each, stride 4) -------------
+$001E72  player_score          # added to by $80:C7EB/$80:C801; read by the HUD at $80:C0CF
+$001E84  score_slot_side       # 2 x u16: the side (0 or 2) owning each score slot
+
 # --- Code: boot --------------------------------------------------------------
 $80:80AE  reset_entry          # the RESET vector; switches to native mode, JMLs to bank $80
 $80:80B6  reset_main
@@ -152,6 +156,10 @@ $80:F87A  player_collide_none  # a bare RTS: the table entry for an id that does
 $80:F950  player_collide_hurt  # the entry every collision in level 1 lands on
 $81:8888  enemy_collide        # an enemy thread's handler; same argument
 $81:8561  enemy_damage_table   # indexed by (id - $5C) x 2; subtracted from health at $1E
+$81:8727  enemy_die            # awards $0100 and posts $F5F5 as the thread's death request
+$80:C7C2  score_slot           # A = side (0 or 2) -> the score slot owning it, or 4
+$80:C7D9  score_add            # X = BCD award, A's sign = the side; credits that slot
+$80:C819  score_add_table      # 3 x u16: the two slots' adders, then the discard
 $80:C049  sprite_cache_reset   # ages every slot, empties visible_actors, registers the vblank job
 $80:C05A  sprite_cache_init    # A:Y = frame array base; invalidates both maps
 
