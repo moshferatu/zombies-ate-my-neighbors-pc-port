@@ -3,7 +3,23 @@
 Cross-session status for the ZAMN native-port project. Update this whenever a
 milestone lands. See `PLAN.md` for the full multi-phase plan.
 
-## Current status: **Phase 2 complete** ✅ (2026-07-23)
+## Current status: **Phase 3 underway** 🔨 (2026-07-23)
+
+The co-simulation harness PLAN.md calls for is **built and load-bearing**, and
+the first five routines are ported under it. `zamn_cosim verify` checks the port
+against the ROM's own code call by call — all 128 KB of WRAM plus registers —
+and passes **11,503 of 11,503 calls**. `zamn_cosim run` then *substitutes* the C
+for real and runs two cores in lockstep: over 2,389 scheduler passes no byte of
+live game state ever differs, the only differences being inside the stacks and
+one declared scratch slot.
+
+The routines ported are leaves that never yield: `sprite_frame_tile` (the
+128-slot VRAM frame cache Phase 2 explicitly deferred), `sprite_cache_age`,
+`thread_tick_waits`, and both vblank-queue adders. **The coroutine problem —
+porting a routine that suspends inside `thread_yield` — is untouched and is the
+next real decision.** See `docs/cosim.md`.
+
+## Phase 2 complete ✅ (2026-07-23)
 
 Compression, graphics, level layout, the actor/victim/object placement lists,
 the sprite/OAM path **and the audio upload path** are decoded as port code, and
@@ -16,8 +32,6 @@ check diffs every byte and command the game puts on the APU ports. All 56 levels
 decode and render, their placement lists all parse (every level has exactly 10
 victims), and metasprites render as recognisable art (Zeke, the title-screen
 lettering).
-
-**Phase 3 (co-simulation + incremental logic port) is next.**
 
 **Phase 1 complete** (2026-07-23) — analysis toolchain built in-tree; the frame
 skeleton and a first WRAM map documented from traced execution.
@@ -82,6 +96,24 @@ through a vendored SNES core, headless + interactive.
   frame/metasprite/OAM format, the audio upload path, and how each decoder was
   checked.
 
+### Phase 3 — native game logic + co-simulation
+- `src/port/` — **port code**, libc only, the native game logic itself.
+  `wram.h` is the load-bearing decision: the port keeps the SNES's WRAM layout
+  byte for byte, so a ported routine reads and writes the same 128 KB at the
+  same offsets the 65816 code does. That is what makes the diff possible at all,
+  and it makes Phase 5's save states a one-line `fwrite`. `sprite_cache.c` (the
+  128-slot VRAM frame cache — `$80:B9D6`/`$80:B9C7`), `thread.c`
+  (`$80:8398` and both vblank-queue adders).
+- `src/cosim/` — the harness (tooling, not port code; it goes away in Phase 4).
+  `cosim.c` is the engine — snapshot, intercept, diff, substitute, lockstep —
+  and `routines.c` is the registry plus one *shim* per routine that translates
+  the 65816 calling convention. The shim/port split is deliberate: without it,
+  "port code" drifts into 65816 written in C.
+- `src/cosim.c` → **`zamn_cosim.exe`** — `verify` (ROM drives, port is checked
+  per call), `run` (port drives, two cores diffed per scheduler pass), `list`.
+- `docs/cosim.md` — the design, what each mode proves, what the diff forgives
+  and why, and the carry-flag bug that only one of the two modes could catch.
+
 ## How to build & run
 ```
 powershell -ExecutionPolicy Bypass -File tools\build.ps1     # add -Clean to reset
@@ -100,6 +132,10 @@ build\zamn_assets.exe level "Zombies Ate My Neighbors.sfc" 2 out.png
 build\zamn_assets.exe actors "Zombies Ate My Neighbors.sfc" 2
 build\zamn_assets.exe sprite "Zombies Ate My Neighbors.sfc" 90:9172 zeke.png
 build\zamn_assets.exe frame "Zombies Ate My Neighbors.sfc" 0x463 frames.png --count 24
+build\zamn_cosim.exe list
+build\zamn_cosim.exe verify "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+build\zamn_cosim.exe run "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
+build\zamn_cosim.exe run "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -r none
 ```
 Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select, Esc=Quit.
 
@@ -166,6 +202,44 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   3, 6 and 15; the other songs and sample sets decode statically but have not
   been diffed against an upload.
 
+- Phase 3 (verify): `zamn_cosim verify` replays `level1.zmv` and checks each of
+  the five ported routines against the ROM's own on **every call the game
+  makes** — the whole 128 KB of WRAM plus A/X/Y and the flags each shim claims.
+  **11,503 of 11,503 calls pass** (10,354 `sprite_frame_tile`, 1,016
+  `thread_tick_waits`, 107 `vbl_queue_b_add`, 24 `vbl_queue_a_add`, 2
+  `sprite_cache_age`). The only WRAM waived is derived, not declared: per call
+  it is the window between the deepest the stack pointer went and where it
+  started — **2 bytes** for the three routines that push, **0** for the two that
+  do not — plus one declared 2-byte scratch slot (`$7E:0038`, where
+  `sprite_frame_tile` spills the caller's X). Non-vacuous three times: starting
+  the LRU eviction scan one slot late failed on the very first call at
+  `sprite_lru_slot`; returning the wrong register in a shim failed on Y after
+  4 calls; and a wrong VRAM destination failed at `sprite_upload_dest`.
+- Phase 3 (run): `zamn_cosim run` actually substitutes the C — the ROM's
+  instructions never execute — and diffs two cores' full WRAM once per scheduler
+  pass. **Control first:** with nothing substituted the two cores are identical
+  at all 2,389 compared passes, so the machinery is deterministic. With all five
+  substituted, at most **5 bytes of 131,072** ever differ and every one of them,
+  on all 2,260 passes where anything differed, is inside the stacks
+  (`$7E:1000-$7E:12FF`) or the declared scratch slot — **no byte of live game
+  state ever differs**, and the run reaches gameplay. The cycle budget each
+  substituted call burns is measured by `verify`, not guessed.
+- Phase 3 (the bug the harness earned its keep on): the two vblank-queue adders
+  return their verdict **in the carry flag**, and their shims first modelled
+  only N and Z. `verify` passed all 131 calls — correctly, since it compares
+  only the flags a shim claims. Under `run`, the caller at `$82:AE3A`
+  (`JSL : WAI : BCS <back>`) spun forever and the routine was entered **147,405
+  times instead of 107**. Modelling carry fixed it, and `verify` then passed
+  again with carry compared — which also proved `sprite_frame_tile` returns
+  carry clear on all 10,354 calls. **An unclaimed flag is an unchecked output.**
+- Phase 3 (comparing at the right instant): `docs/frame-skeleton.md` predicted
+  that the harness must compare at the `WAI` in `scheduler_idle`, not at a PPU
+  frame boundary, and it was right twice. Comparing at vblank caught the cores
+  mid-way through a bulk table fill and blamed the port; and once substitution
+  shifts timing, "compare if both happen to be at the `WAI`" silently fell to
+  **320 of 2,400 boundaries (13%)** while still reading as a pass. Stepping each
+  core by one scheduler pass instead compares 2,389 of 2,400.
+
 ## Key findings (Phase 1)
 - **ZAMN runs a 24-slot cooperative thread scheduler with per-thread stacks**
   (`thread_yield` at `$80:8353`, the most-called routine in the game). The main
@@ -208,22 +282,45 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
    would close: the vertical-flip OAM emitters, levels beyond the first, and the
    songs/sample sets no upload has driven yet.
 
-## Next steps — Phase 3 (co-simulation)
+## Next steps — Phase 3 (continued)
 
-Stand up the harness PLAN.md describes: run the reference core and the C
-reimplementation in lockstep on the same movie and assert per-frame WRAM
-equality, then replace one routine at a time. The five `verify-*` commands are
-already this pattern in miniature — same core, same movie, per-call equality —
-so the harness is a generalisation of what `src/assets.c` does rather than new
-machinery. The **24-slot cooperative thread scheduler** (see *Key findings*) is
-the main design constraint on how routines can be replaced.
+The harness works and five leaf routines are through it. The next step is the
+one that has been deferred since Phase 1 and cannot be deferred again:
 
-Deferred to **Phase 3** (runtime state, not ROM formats): the actor slot tables
-(`$7E:0300` stride `$100`, `$7E:1872` stride `$14`) the camera-driven spawner
-`$81:80EC` fills, the animation state that chooses an actor's metasprite from
-frame to frame, and the 128-slot VRAM frame cache (`$80:B9D6`).
+1. **Decide how a ported thread suspends.** Every routine ported so far is a
+   leaf that never calls `thread_yield`, which is exactly why they were chosen —
+   they exercise the harness without needing an answer. Real game logic
+   suspends mid-body and resumes on a parked stack, so a plain C function
+   cannot stand in for it. The options are an explicit resume-point state
+   machine per thread, or real coroutines (fibers / saved stacks).
+   `docs/frame-skeleton.md` → *Porting consequences* frames the choice; it
+   shapes every thread ported afterwards, so it wants deciding before the sixth
+   routine, not the sixtieth.
+2. **Work outward from what is already proven.** `sprite_build_oam`
+   (`$80:BD1F`, 1,016 calls) sits directly above the frame cache and
+   `sprite_emit`, both of which are now verified, so it is the shortest step
+   into real per-frame logic.
+3. **Then the actor slot tables** (`$7E:0300` stride `$100`, `$7E:1872` stride
+   `$14`) that the camera-driven spawner `$81:80EC` fills, and the animation
+   state that picks an actor's metasprite frame to frame. Deferred from Phase 2
+   as runtime state rather than ROM format; the harness is what will check them.
+4. **Extend `movies/`** (Phase 2 checklist item 7, still open). Every new movie
+   widens `verify` and `run` for free, exactly as it does the `verify-*`
+   commands.
 
 ## Known limitations / TODO (deferred, non-blocking)
+- **`run` proves nothing inside `$7E:1000-$7E:12FF`** (the stacks). A
+  substituted routine does not push what the ROM's version pushed, and that
+  residue reshuffles as later calls push and pop at different depths. Everything
+  outside that range — all 127 KB of game state — is compared byte for byte, and
+  `verify` covers the routines' own stack effects exactly. Rationale in
+  `docs/cosim.md` → *What the diff forgives*.
+- **A substituted call returns on a measured cycle budget, not the real cost.**
+  Nothing has diverged because of it yet, but the budget is a per-routine mean
+  and the ROM's own cost varies with its input (`sprite_frame_tile`: 288..1190).
+  This stops mattering in Phase 4, when the reference is cut loose.
+- 11 of 2,400 passes go uncompared by `run`: one before the scheduler exists,
+  and ten where a side never returned to the `WAI` within the step.
 - Frame pacing fixed 2026-07-22: paced by sync-to-audio, with a monotonic-timer
   fallback when no audio device (`src/main_sdl.c`).
 - No gamepad mapping yet (keyboard only). No save states / config yet.

@@ -79,6 +79,31 @@ target_link_libraries(zamn_assets PRIVATE snescore zamn_analysis zamn_assets_lib
 target_include_directories(zamn_assets PRIVATE third_party/stb)
 
 # ---------------------------------------------------------------------------
+# Phase 3: the native game logic. Like `assets`, this is *port* code — it ships
+# in the finished game and depends on nothing but libc. It keeps the SNES's WRAM
+# layout byte for byte (src/port/wram.h explains why), which is what lets the
+# co-simulation harness diff it against the ROM.
+# ---------------------------------------------------------------------------
+add_library(zamn_port STATIC
+  src/port/sprite_cache.c
+  src/port/thread.c)
+target_include_directories(zamn_port PUBLIC src)
+target_link_libraries(zamn_port PUBLIC zamn_assets_lib)
+
+# The harness itself is tooling, not port code: it may use the emulator, and it
+# goes away in Phase 4 when the reference is cut loose.
+add_library(zamn_cosim_lib STATIC
+  src/cosim/cosim.c
+  src/cosim/routines.c)
+target_include_directories(zamn_cosim_lib PUBLIC src)
+target_link_libraries(zamn_cosim_lib PUBLIC snescore zamn_port zamn_analysis)
+
+# zamn_cosim: runs the port against the ROM, either checked call-by-call
+# (`verify`) or actually substituted and diffed per frame (`run`).
+add_executable(zamn_cosim src/cosim.c)
+target_link_libraries(zamn_cosim PRIVATE zamn_cosim_lib)
+
+# ---------------------------------------------------------------------------
 # Phase 0b: interactive SDL frontend (the playable baseline).
 # Uses a system SDL2 if present, otherwise fetches & builds SDL2 from source.
 # Disable with -DZAMN_BUILD_SDL=OFF (headless target always builds).
