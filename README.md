@@ -17,18 +17,24 @@ asset pipeline is done — compression, graphics, level layout, the placement
 lists, the sprite/OAM path and the audio upload path all reimplemented in C and
 **verified byte-exact against the ROM's own routines** (Phase 2).
 
-Phase 3 is the logic port. The co-simulation harness is built, and the first
-five routines are through it: `zamn_cosim verify` checks the C against the ROM's
-own code on every call the game makes — 128 KB of WRAM plus registers — and
-passes **11,503 of 11,503**, while `zamn_cosim run` substitutes the C for real
-and finds **no byte of live game state differing** across 2,389 scheduler
-passes. Porting a routine that *suspends* inside the thread scheduler is the
-next real problem.
+Phase 3 is the logic port. The co-simulation harness is built, eleven routines
+are through it — including **the whole per-frame sprite pass** — and the
+coroutine problem is solved: a ported routine that suspends inside the thread
+scheduler does it at an explicit resume point, with its parked state as plain
+copyable data. `zamn_cosim verify` checks the C against the ROM's own code on
+every call the game makes — 128 KB of WRAM plus registers — and passes **97,711
+of 97,711**, while `zamn_cosim run` substitutes the C for real and finds **no
+byte of live game state differing** across 6,089 scheduler passes.
 
-See **`docs/cosim.md`** for the harness, **`docs/frame-skeleton.md`** for how
-the game's main loop works, **`docs/wram-map.md`** for the memory map,
-**`docs/analysis-tools.md`** for the analysis tools, and
-**`docs/asset-formats.md`** for the data formats.
+The port also reports **which of its own branches an input actually reached**,
+because a branch no movie takes is one the diff agrees with the ROM about for
+the wrong reason. Nine of 34 are still untaken, and they are the backlog.
+
+See **`docs/cosim.md`** for the harness and what coverage measures that the diff
+cannot, **`docs/threads.md`** for how a ported routine suspends,
+**`docs/frame-skeleton.md`** for how the game's main loop works,
+**`docs/wram-map.md`** for the memory map, **`docs/analysis-tools.md`** for the
+analysis tools, and **`docs/asset-formats.md`** for the data formats.
 
 ## Build (Windows)
 Requires Visual Studio 2022 (with the C++ workload — provides MSVC, CMake, Ninja).
@@ -43,9 +49,10 @@ build\zamn.exe "Zombies Ate My Neighbors.sfc"
 ```
 Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=Select · Esc=Quit
 
-Headless frame dump (for verification / debugging):
+Headless frame dump (for verification / debugging, and for aiming a movie):
 ```
 build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" frame.png 500
+build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" shot.png 6100 -m movies\level1-rescue.zmv --at 1980,3000,4200
 ```
 
 ## Analyse
@@ -74,12 +81,16 @@ build\zamn_assets.exe gfx    "Zombies Ate My Neighbors.sfc" 94:A300 tiles.png --
 ## Port game logic
 `verify` lets the ROM run the game and checks the C port against every call it
 makes to a ported routine. `run` skips the ROM's instructions entirely and diffs
-two cores per scheduler pass; `-r none` is the control, and must always pass:
+two cores per scheduler pass; `-r none` is the control, and must always pass.
+Both modes end by reporting which of the port's branches the movie reached, and
+`-c` prints the full table:
 ```
 build\zamn_cosim.exe list
 build\zamn_cosim.exe verify "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_cosim.exe run    "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_cosim.exe run    "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -r none
+build\zamn_cosim.exe verify "Zombies Ate My Neighbors.sfc" -m movies\level1-rescue.zmv -f 6100 -c
+build\zamn_cosim.exe run    "Zombies Ate My Neighbors.sfc" -m movies\level1-rescue.zmv -f 6100
 ```
 
 ## Layout
@@ -92,12 +103,13 @@ src/disasm.c          Phase 1: CDL-driven annotated disassembler
 src/assets/           Phase 2: LZSS, tiles, palettes, levels, placements, sprites, audio
                               (port code — ships in the game, libc only)
 src/assets.c          Phase 2: asset decoding CLI + the five verifiers
-src/port/             Phase 3: native game logic, on the SNES's own WRAM layout
+src/port/             Phase 3: native game logic, on the SNES's own WRAM layout,
+                              plus coverage.h — which of its branches ran
                               (port code — ships in the game, libc only)
 src/cosim/            Phase 3: the co-simulation harness + per-routine shims
                               (tooling — goes away in Phase 4)
 src/cosim.c           Phase 3: verify / run / list CLI
-movies/               Reproducible input scripts driving the tracer
+movies/               Reproducible input scripts driving the tracer and harness
 docs/                 Co-simulation, frame skeleton, WRAM map, asset formats, tools
 tools/symbols/        Symbol names for the disassembler
 third_party/lakesnes  Vendored SNES core (MIT) — reference emulator + PPU/APU

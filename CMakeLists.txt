@@ -27,7 +27,9 @@ endif()
 # Phase 0a: headless boot -> PNG (no SDL). Verifies the core boots the ROM.
 # ---------------------------------------------------------------------------
 add_executable(zamn_headless src/headless.c)
-target_link_libraries(zamn_headless PRIVATE snescore)
+# zamn_analysis, defined below, is for the movie replayer: `-m` makes this the
+# fast way to see where a candidate input script actually gets to.
+target_link_libraries(zamn_headless PRIVATE snescore zamn_analysis)
 target_include_directories(zamn_headless PRIVATE third_party/stb)
 if(MSVC)
   target_compile_definitions(zamn_headless PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -58,6 +60,20 @@ add_executable(zamn_disasm src/disasm.c)
 target_link_libraries(zamn_disasm PRIVATE zamn_analysis)
 
 # ---------------------------------------------------------------------------
+# The branch-coverage instrument (src/port/coverage.h). Port code marks its
+# decision points; this holds the counters the harness reads. It is separate
+# from the two port libraries below only because both of them mark sites, and
+# the asset library cannot depend on the one that depends on it.
+#
+# `PORT_COVERAGE` is what switches it on, and it is PUBLIC so everything
+# downstream marks. A shipping build simply does not link this target: with the
+# define absent every mark compiles to nothing.
+# ---------------------------------------------------------------------------
+add_library(zamn_cover STATIC src/port/coverage.c)
+target_include_directories(zamn_cover PUBLIC src)
+target_compile_definitions(zamn_cover PUBLIC PORT_COVERAGE=1)
+
+# ---------------------------------------------------------------------------
 # Phase 2: asset pipeline. Unlike `analysis`, this library is *port* code — it
 # ships in the finished game, so it depends on nothing but libc and must stay
 # free of anything emulator- or tooling-specific.
@@ -71,6 +87,7 @@ add_library(zamn_assets_lib STATIC
   src/assets/sprite.c
   src/assets/music.c)
 target_include_directories(zamn_assets_lib PUBLIC src)
+target_link_libraries(zamn_assets_lib PUBLIC zamn_cover)
 
 # zamn_assets: decodes ROM data, and verifies the decoders against the ROM's
 # own routines by intercepting them under the reference core.

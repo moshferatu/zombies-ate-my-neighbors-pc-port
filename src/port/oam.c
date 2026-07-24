@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "assets/sprite.h"
+#include "port/coverage.h"
 #include "port/sprite_cache.h"
 
 static uint16_t flags_of(const Wram* w, uint16_t rec) {
@@ -29,13 +30,18 @@ static void set_next(Wram* w, uint16_t rec, uint16_t to) {
 // the larger Y wins, compared unsigned exactly as `CMP` does it.
 static bool swap_needed(const Wram* w, uint16_t a, uint16_t b) {
   uint16_t fa = flags_of(w, a), fb = flags_of(w, b);
-  if ((fa ^ fb) & ACTOR_SORT_FIRST) return (fb & ACTOR_SORT_FIRST) != 0;
+  if ((fa ^ fb) & ACTOR_SORT_FIRST) {
+    PORT_COVER(sort_key_first);
+    return (fb & ACTOR_SORT_FIRST) != 0;
+  }
+  PORT_COVER(sort_key_y);
   return wram_r16(w, (uint32_t)a + ACTOR_Y) < wram_r16(w, (uint32_t)b + ACTOR_Y);
 }
 
 // Exchange `cur` with its successor `next`, given the record in front of `cur`.
 // `prev` is 0 for the head, where the list head itself is what moves.
 static void swap_with_next(Wram* w, uint16_t prev, uint16_t cur, uint16_t next) {
+  PORT_COVER_IF(prev == 0, sort_swap_head, sort_swap_mid);
   set_next(w, cur, next_of(w, next));
   set_next(w, next, cur);
   if (prev == 0)
@@ -100,12 +106,18 @@ void actor_cull(Wram* w) {
   for (uint16_t rec = wram_r16(w, W_ACTOR_LIST_HEAD); rec != 0;
        rec = next_of(w, rec)) {
     uint16_t flags = flags_of(w, rec);
-    if (!(flags & ACTOR_DRAW)) continue;
+    if (!(flags & ACTOR_DRAW)) { PORT_COVER(cull_undrawn); continue; }
     if (!(flags & ACTOR_SCREEN_SPACE)) {
-      if (!in_window((uint16_t)(wram_r16(w, (uint32_t)rec + ACTOR_X) - camera_x)))
+      if (!in_window((uint16_t)(wram_r16(w, (uint32_t)rec + ACTOR_X) - camera_x))) {
+        PORT_COVER(cull_offscreen);
         continue;
-      if (!in_window((uint16_t)(wram_r16(w, (uint32_t)rec + ACTOR_Y) - camera_y)))
+      }
+      if (!in_window((uint16_t)(wram_r16(w, (uint32_t)rec + ACTOR_Y) - camera_y))) {
+        PORT_COVER(cull_offscreen);
         continue;
+      }
+    } else {
+      PORT_COVER(cull_screen);
     }
     wram_w16(w, W_VISIBLE_ACTORS + count, rec);
     count += 2;
@@ -143,6 +155,7 @@ bool actor_overlap_pass(Wram* w) {
     outer -= 2;
 
     uint16_t a_id = wram_r16(w, (uint32_t)a + ACTOR_COLLIDE_ID);
+    if (a_id == 0) PORT_COVER(overlap_no_id);
     if (a_id != 0) {
       tested = true;
       id = a_id;
@@ -155,15 +168,22 @@ bool actor_overlap_pass(Wram* w) {
       for (uint16_t inner = outer;; inner -= 2) {
         uint16_t b = wram_r16(w, W_VISIBLE_ACTORS + inner);
         uint16_t b_id = wram_r16(w, (uint32_t)b + ACTOR_COLLIDE_ID);
+        if (b_id == id) PORT_COVER(overlap_same_id);
+        // Split across the two axes only so each half is separately countable:
+        // the X test firing is what says the 16-px threshold is exercised at
+        // all, and the pair test firing is what says the dispatch below is.
         if (b_id != 0 && b_id != id &&
-            within_8px(ox, wram_r16(w, (uint32_t)b + ACTOR_X)) &&
-            within_8px(oy, wram_r16(w, (uint32_t)b + ACTOR_Y))) {
-          // `$80:BF0D  PHY : JSR $BE8F : PLY`. That is where the port stops:
-          // `$80:BE8F` hands both records to `$80:8480`, which builds a call
-          // frame from the actor's own thread slot and `RTL`s into its
-          // handler — arbitrary game logic, none of it ported. Nothing has been
-          // written yet, so the ROM can run this call from the top.
-          return false;
+            within_8px(ox, wram_r16(w, (uint32_t)b + ACTOR_X))) {
+          PORT_COVER(overlap_near_x);
+          if (within_8px(oy, wram_r16(w, (uint32_t)b + ACTOR_Y))) {
+            // `$80:BF0D  PHY : JSR $BE8F : PLY`. That is where the port stops:
+            // `$80:BE8F` hands both records to `$80:8480`, which builds a call
+            // frame from the actor's own thread slot and `RTL`s into its
+            // handler — arbitrary game logic, none of it ported. Nothing has
+            // been written yet, so the ROM can run this call from the top.
+            PORT_COVER(overlap_hit);
+            return false;
+          }
         }
         if (inner == 0) break;
       }
@@ -234,14 +254,17 @@ typedef struct {
 static int draw_args(const Wram* w, uint16_t rec, DrawArgs* d) {
   uint16_t flags = flags_of(w, rec);
 
+  if (flags & ACTOR_PRIORITY_TOP) PORT_COVER(draw_priority_top);
   d->attr_or = (flags & ACTOR_PRIORITY_TOP) ? 0x3000 : 0x2000;
   d->attr_and = 0xffff;
   if (flags & ACTOR_ATTR_SET) {
+    PORT_COVER(draw_attr_set);
     d->attr_or |= wram_r16(w, (uint32_t)rec + ACTOR_ATTR);
     d->attr_and = 0xf1ff;
   }
 
   if (flags & ACTOR_SCREEN_SPACE) {
+    PORT_COVER(draw_screen);
     d->ox = (int16_t)wram_r16(w, (uint32_t)rec + ACTOR_X);
     d->oy = (int16_t)wram_r16(w, (uint32_t)rec + ACTOR_Y);
   } else {
@@ -252,9 +275,12 @@ static int draw_args(const Wram* w, uint16_t rec, DrawArgs* d) {
   d->flip = (SpriteFlip)(flags & ACTOR_FLIP);
 
   d->ptr = wram_r16(w, (uint32_t)rec + ACTOR_META);
-  if (d->ptr < 0x8000) return 0;
+  if (d->ptr < 0x8000) { PORT_COVER(draw_no_meta); return 0; }
   d->bank = wram_r16(w, (uint32_t)rec + ACTOR_META_BANK);
-  if (d->bank < SPRITE_META_BANK_LO || d->bank > SPRITE_META_BANK_HI) return 1;
+  if (d->bank < SPRITE_META_BANK_LO || d->bank > SPRITE_META_BANK_HI) {
+    PORT_COVER(draw_bad_bank);
+    return 1;
+  }
   return 2;
 }
 
@@ -302,6 +328,7 @@ bool sprite_build_oam(Wram* w, const Rom* rom) {
           }
           wram_w16(w, W_SPRITE_PIECES_LEFT, (uint16_t)meta.count);
 
+          if (meta.count == 0) PORT_COVER(draw_empty_meta);
           if (meta.count != 0) {
             // `$80:BDAC  INC $8A` — the pointer the emitter walks starts at the
             // first piece, one past the count byte.
@@ -321,7 +348,10 @@ bool sprite_build_oam(Wram* w, const Rom* rom) {
             // `$80:BDB7  CPX #$0200` — OAM is full, so the pass stops here and
             // does not write the terminator. Every other way of reaching that
             // test has a record offset in X, which can never be $0200.
-            if (oam.index == SPRITE_OAM_LOW_BYTES) break;
+            if (oam.index == SPRITE_OAM_LOW_BYTES) {
+              PORT_COVER(draw_oam_full);
+              break;
+            }
           }
         }
       }

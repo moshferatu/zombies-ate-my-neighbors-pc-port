@@ -9,10 +9,36 @@ The co-simulation harness PLAN.md calls for is **built and load-bearing**,
 eleven routines are ported under it, **the coroutine problem is solved**, and
 **the whole per-frame sprite pass is native.** `zamn_cosim verify` checks the
 port against the ROM's own code call by call — all 128 KB of WRAM plus
-registers — and passes **16,599 of 16,599**. `zamn_cosim run` then *substitutes*
-the C for real and runs two cores in lockstep: over 2,389 scheduler passes no
-byte of live game state ever differs, the only differences being inside the
-stacks and one declared scratch slot.
+registers — and passes **97,711 of 97,711** on the longer of the two movies.
+`zamn_cosim run` then *substitutes* the C for real and runs two cores in
+lockstep: over 6,089 scheduler passes no byte of live game state ever differs,
+the only differences being inside the stacks and one declared scratch slot.
+
+**This round was about the thing the diff could not tell you.** `verify` proves
+the port agrees with the ROM *on the calls a movie makes*; it says nothing about
+a branch the movie never reaches, because a branch neither machine runs is a
+branch they agree on. Four such branches were on record, and every one had been
+found by hand — change the port on purpose, run `verify`, notice it still
+passes. That is now an instrument: **the port marks its decision points and the
+harness counts them** (`src/port/coverage.h`, `zamn_cosim verify -c`), on the
+same principle as the shims' flag masks — an unclaimed output is an unchecked
+output, and **an untaken branch is an unverified branch.**
+
+On `movies/level1.zmv` it takes **20 of 34 sites**, reproducing all four
+hand-found gaps and Phase 2's vertical-flip gap with nothing perturbed, and
+naming ten more nobody had listed. The sharpest: `sprite_frame_tile` is called
+10,354 times by that movie and **never once evicts a resident frame** — the
+most-called ported routine in the game, and the branch that makes it a cache
+rather than a lookup table had never run.
+
+**`movies/level1-rescue.zmv` was written against that report** and takes **25 of
+34**. It rescues a victim and then fights zombies in the graveyard, and the
+headline is `actor_overlap_pass`: the collision dispatch the port declares a
+guard for now **declines 1,226 of 4,716 calls** instead of 0 of 1,016. That was
+the one number in the whole harness that was a property of the movie rather than
+of the game, and it is measured now. It also closes `draw_priority_top`, both
+cache-eviction sites, and `cull_offscreen`. Nine remain untaken — a measured
+backlog rather than a suspicion.
 
 **`sprite_build_oam` (`$80:BD1F`) is the one this round was about.** It is the
 routine `scheduler_idle` calls once a frame and the one the whole sprite path
@@ -100,8 +126,11 @@ through a vendored SNES core, headless + interactive.
   with scripted input and emits a CDL, WRAM/register maps, a call graph, a DMA
   log, and loop-collapsed instruction traces. The core is **not** modified.
 - `src/disasm.c` → **`zamn_disasm.exe`** — CDL-driven annotated 65816 listing.
-- `movies/boot.zmv`, `movies/level1.zmv` — reproducible input scripts;
-  `level1.zmv` reaches actual gameplay (verified by `--png` frame dump).
+- `movies/boot.zmv`, `movies/level1.zmv`, `movies/level1-rescue.zmv` —
+  reproducible input scripts. `level1.zmv` reaches actual gameplay;
+  `level1-rescue.zmv` goes on to rescue a victim and fight in the graveyard,
+  which is what makes actors touch. `zamn_headless -m <movie> --at f,f,...`
+  replays one and dumps a PNG per named frame, which is how a movie gets aimed.
 - `tools/symbols/zamn.sym` — evidence-backed symbol names.
 - `docs/analysis-tools.md`, `docs/frame-skeleton.md`, `docs/wram-map.md`.
 
@@ -141,8 +170,11 @@ through a vendored SNES core, headless + interactive.
   sprite pass** — `$80:BD1F` and the four routines it calls,
   `$80:BC7F`/`$80:BCE2`/`$80:BC23`/`$80:BEC9` — plus the 32-record display list
   at `$7E:185E` they all walk), `coroutine.h` (**how a ported routine
-  suspends** — one `resume` index plus a context struct, ~40 lines) and `fade.c`
-  (`$80:891A`, the first routine ported that uses it).
+  suspends** — one `resume` index plus a context struct, ~40 lines), `fade.c`
+  (`$80:891A`, the first routine ported that uses it) and `coverage.h`/`.c`
+  (**which of the port's branches any input has actually taken** — 34 marked
+  decision points across all eleven routines; with `PORT_COVERAGE` undefined
+  every mark compiles to nothing at all, which is how the shipped game builds).
 - `src/cosim/` — the harness (tooling, not port code; it goes away in Phase 4).
   `cosim.c` is the engine — snapshot, intercept, diff, substitute, lockstep —
   and `routines.c` is the registry plus one *shim* per routine that translates
@@ -153,9 +185,13 @@ through a vendored SNES core, headless + interactive.
   ROM, in both modes, counted in the report's `decl.` column.
 - `src/cosim.c` → **`zamn_cosim.exe`** — `verify` (ROM drives, port is checked
   per call — per *segment*, for a routine that suspends), `run` (port drives,
-  two cores diffed per scheduler pass), `list`.
+  two cores diffed per scheduler pass), `list`. Both modes end with a
+  **branch-coverage report**: which of the port's marked decision points this
+  movie was in a position to check at all, and by name the ones it was not.
+  `-c` prints the full table with hit counts.
 - `docs/cosim.md` — the design, what each mode proves, what the diff forgives
-  and why, and the carry-flag bug that only one of the two modes could catch.
+  and why, the carry-flag bug that only one of the two modes could catch, and
+  what branch coverage measures that the diff cannot.
 - `docs/threads.md` — **the coroutine decision**: why resume points and not
   fibers, how a suspending routine is checked segment by segment, how native
   mode suspends by jumping to the routine's own `JSL thread_yield`, and what is
@@ -166,6 +202,7 @@ through a vendored SNES core, headless + interactive.
 powershell -ExecutionPolicy Bypass -File tools\build.ps1     # add -Clean to reset
 build\zamn.exe "Zombies Ate My Neighbors.sfc"                # play
 build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" out.png 500
+build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" shot.png 6100 -m movies\level1-rescue.zmv --at 1980,3000,4200
 build\zamn_trace.exe "Zombies Ate My Neighbors.sfc" -o analysis -f 2400 -m movies\level1.zmv
 build\zamn_disasm.exe "Zombies Ate My Neighbors.sfc" analysis\zamn.cdl -b 80 -s tools\symbols\zamn.sym -o analysis\bank_80.asm
 build\zamn_assets.exe verify-lzss "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
@@ -183,6 +220,8 @@ build\zamn_cosim.exe list
 build\zamn_cosim.exe verify "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_cosim.exe run "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_cosim.exe run "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -r none
+build\zamn_cosim.exe verify "Zombies Ate My Neighbors.sfc" -m movies\level1-rescue.zmv -f 6100 -c
+build\zamn_cosim.exe run "Zombies Ate My Neighbors.sfc" -m movies\level1-rescue.zmv -f 6100
 ```
 Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select, Esc=Quit.
 
@@ -249,9 +288,15 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   3, 6 and 15; the other songs and sample sets decode statically but have not
   been diffed against an upload.
 
-- Phase 3 (verify): `zamn_cosim verify` replays `level1.zmv` and checks each of
+- Phase 3 (verify): `zamn_cosim verify` replays a movie and checks each of
   the eleven ported routines against the ROM's own on **every call the game
   makes** — the whole 128 KB of WRAM plus A/X/Y and the flags each shim claims.
+  On `level1-rescue.zmv`, **97,711 of 97,711 pass** (71,694 `sprite_frame_tile`,
+  4,716 each for `thread_tick_waits`, `actor_depth_sort`, `actor_cull` and
+  `oam_buffer_clear`, 3,490 each for `actor_overlap_pass` and `sprite_build_oam`
+  with 1,226 declined, 107 `vbl_queue_b_add`, 48 `vbl_queue_a_add`, 2
+  `sprite_cache_age`, and `fade_in`'s 16 segments).
+  On `level1.zmv`, which every figure below is measured on,
   **16,599 of 16,599 pass** (10,354 `sprite_frame_tile`, 1,016 each for
   `thread_tick_waits`, `actor_depth_sort`, `actor_cull`, `oam_buffer_clear`,
   `actor_overlap_pass` and `sprite_build_oam`, 107 `vbl_queue_b_add`, 24
@@ -268,13 +313,20 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   Non-vacuous five times:
   starting the LRU eviction scan one slot late failed on the very first call at
   `sprite_lru_slot`; returning the wrong register in a shim failed on Y after
-  4 calls; a wrong VRAM destination failed at `sprite_upload_dest`; widening the
-  camera cull window by one pixel failed on `visible_actor_count` after 446
-  calls; and inverting the depth sort's Y key failed after 129 calls at a display
-  record. A sixth perturbation was instructive rather than caught: forcing the
-  `ACTOR_SORT_FIRST` branch of the sort still passed all 1,016 calls, because
-  `level1.zmv` never presents two records that disagree on that bit — a real
-  coverage gap the movie work (item 4 below) would close.
+  4 calls; a wrong VRAM destination failed at `sprite_upload_dest`; narrowing the
+  camera cull window from 384 px to 128 failed on `visible_actor_count` at 695 of
+  1,016 calls; and inverting the depth sort's Y key failed after 129 calls at a
+  display record. A sixth perturbation was instructive rather than caught:
+  forcing the `ACTOR_SORT_FIRST` branch of the sort still passed all 1,016 calls,
+  because `level1.zmv` never presents two records that disagree on that bit — and
+  it still does not, which is now the coverage report saying so by name rather
+  than a perturbation nobody would rerun.
+  (Correction to an earlier entry here: *widening* the cull window by one pixel
+  was recorded as failing after 446 calls. It does not — it passes all 1,016,
+  and it has to, because the coverage report shows `level1.zmv` never puts a
+  record outside that window at all. Only a narrowing can be caught on this
+  movie. `level1-rescue.zmv` culls 248, so the widening direction is now
+  reachable too.)
 - Phase 3 (the sprite pass): `sprite_build_oam` (`$80:BD1F`) passes **all 1,016
   calls** whole-WRAM, and it is the first ported routine that calls other ported
   routines — all three of its openers, `sprite_frame_tile` through the emitters,
@@ -291,10 +343,13 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   dropped off-screen mid-metasprite, and validates the one thing this work
   added to Phase 2's emitter (a trace of the direct-page walk state the ROM
   leaves behind). **Gaps:** three deliberate perturbations were *not* caught,
-  and each is a branch the movie never takes — the `ACTOR_ATTR_SET` palette
+  and each is a branch `level1.zmv` never takes — the `ACTOR_ATTR_SET` palette
   override (disabling the whole branch still passed), `ACTOR_PRIORITY_TOP`
   (only the low-priority side is exercised), and the overlap test's box size
-  (see below).
+  (see below). All three are now reported by name rather than found by hand, and
+  `level1-rescue.zmv` closes two: `draw_priority_top` fires 182 times and
+  `overlap_hit` 2,452. `ACTOR_ATTR_SET` is still untaken by any movie.
+  On that movie `sprite_build_oam` passes **3,490 of 3,490** served calls.
 - Phase 3 (**half a routine, honestly**): `actor_overlap_pass` (`$80:BEC9`) is
   the first port that covers only part of what the ROM's version does. Its walk
   is ported; what it does on a hit is not, because `$80:BE8F` hands the pair to
@@ -303,13 +358,19 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   WRAM, and a `false` means the ROM's own instructions run instead — in both
   modes, counted in the report's `decl.` column. The rule that keeps this
   honest is that a decline is an enumerated condition the port detects, never a
-  fallback for a failed diff. `level1.zmv` declines **0 of 1,016**. Non-vacuous
+  fallback for a failed diff. Non-vacuous
   three ways: writing the wrong walk cursor failed after 129 calls; **dropping
   the geometry test entirely made 673 of 1,016 calls decline** — which proves
   the walk really does reach the box test, and that the decline path works end
   to end — and widening the box from 16 px to 32 produced no declines at all.
-  Only at 128 px do 413 passes find a pair. **Gap:** the box test's threshold is
-  transcribed from the listing and unexercised, like `ACTOR_SORT_FIRST`.
+  **The gap this had is closed.** `level1.zmv` declines **0 of 1,016**, which
+  said the port served every call *that movie made* and nothing more.
+  `level1-rescue.zmv` rescues a victim and then fights in the graveyard, and
+  declines **1,226 of 4,716** — so the box test now fires on real game input
+  rather than only under a 128-px perturbation, both modes decline the same
+  calls, and `run` still reaches the end of the movie with no byte of live game
+  state differing. The one number in the harness that was a property of the
+  movie rather than of the game is measured.
 - Phase 3 (the coroutine): `fade_in` (`$80:891A`) is the first ported routine
   that does not run to completion — it sets brightness to 0 and then sleeps a
   frame between each of fifteen increments. It was chosen because it is the
@@ -342,7 +403,9 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   eleven substituted, at most **14 bytes of 131,072** ever differ and every one
   of them, on all 2,389 passes where anything differed, is inside the stacks
   (`$7E:1000-$7E:12FF`) or the declared scratch slot — **no byte of live game
-  state ever differs**, and the run reaches gameplay. One thing in that report
+  state ever differs**, and the run reaches gameplay. The same holds on the
+  longer movie: **6,089 compared passes**, same 14-byte ceiling, same verdict,
+  with 667 of them declined by the collision guard. One thing in that report
   needs reading correctly: with `sprite_build_oam` substituted, the ROM never
   reaches its five callees, so they report **not reached** under `run`. They are
   running — the port calls the port's versions — they are just no longer
@@ -410,25 +473,31 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
    push CDL coverage up; every report regenerates automatically, and each new
    movie widens every `verify-*` command's coverage for free. Three known gaps it
    would close: the vertical-flip OAM emitters, levels beyond the first, and the
-   songs/sample sets no upload has driven yet.
+   songs/sample sets no upload has driven yet. **Started:**
+   `movies/level1-rescue.zmv` is the first movie written against a measured
+   coverage report rather than a guess (see Phase 3 below). The vertical-flip
+   emitters are still untaken by any movie, and `zamn_cosim verify -c` is now
+   what says so.
 
 ## Next steps — Phase 3 (continued)
 
 The harness works, the coroutine question is answered (`docs/threads.md`), the
-sprite pass is native, and eleven routines are through it — ten leaves and one
-that suspends. What is left is scale rather than shape.
+sprite pass is native, eleven routines are through it — ten leaves and one that
+suspends — and how much of them any given input actually exercises is now
+measured rather than guessed at. What is left is scale rather than shape.
 
-1. **The collision dispatch, `$80:BE8F` → `$80:8480`.** This is now the single
+1. **The collision dispatch, `$80:BE8F` → `$80:8480`.** This is the single
    named hole in an otherwise complete sprite path, and it is the door into
    actor behaviour rather than a routine: `$80:8480` reads an actor's thread
    slot (`$7E:1300`/`$7E:1330`), builds a call frame out of it and `RTL`s into
    the actor's own handler, which may itself yield. Porting it means porting
    what "an actor's handler" is, which is the same machinery item 2 and item 3
-   need. Until then `actor_overlap_pass` and `sprite_build_oam` declare a guard
-   and hand those calls back — 0 of 1,016 in `level1.zmv`, but that number is a
-   property of the movie, not of the game, and a movie with two actors touching
-   would raise it immediately. **That makes item 4 a prerequisite for measuring
-   this, not just for coverage.**
+   need. **The prerequisite is met: it is now sized.** `actor_overlap_pass` and
+   `sprite_build_oam` hand back **1,226 of 4,716** calls on
+   `movies/level1-rescue.zmv` — a quarter of every sprite pass in ordinary
+   gameplay, and the largest single thing standing between the port and a native
+   frame. It was 0 of 1,016 before that movie existed, and that zero was the
+   movie's property, not the game's.
 2. **Port a routine that yields from inside a call it makes.** `fade_in` yields
    at its own top level, which is the easy half. The nested case needs the callee
    resumable too, with its own `PortCoro` in the caller's context, and it is the
@@ -443,18 +512,28 @@ that suspends. What is left is scale rather than shape.
    rather than ROM format; the harness is what will check them. (The `$7E:1872`
    stride-`$14` table listed here before is now identified — it is the display
    list at `$7E:185E` this work ported, `docs/wram-map.md`.)
-4. **Extend `movies/`** (Phase 2 checklist item 7, still open). Every new movie
-   widens `verify` and `run` for free, exactly as it does the `verify-*`
-   commands. **This is now the binding constraint on most of what is ported, not
-   a nice-to-have.** One movie's worth of gameplay leaves four branches
-   transcribed-but-unexercised, each demonstrated by a perturbation that the
-   diff should have caught and did not: the `ACTOR_SORT_FIRST` sort key
-   (`actor_depth_sort`), `ACTOR_ATTR_SET` and `ACTOR_PRIORITY_TOP`
-   (`sprite_build_oam`), and the overlap box threshold (`actor_overlap_pass`).
-   Separately, `fade_in`'s entire sample is one call — sixteen segments is all
-   there is — and `fade_out` (`$80:8933`) is never reached at all. A movie in
-   which two actors touch would also be the first to make the collision guard in
-   item 1 decline anything.
+4. **Extend `movies/`** (Phase 2 checklist item 7). Still the binding constraint
+   on most of what is ported — but no longer an open-ended one, because
+   `zamn_cosim verify -c` now says what a movie is worth. The work is: read the
+   untaken list, write an input that does that thing, watch the list shrink.
+   `movies/level1-rescue.zmv` did that for five sites, `level1.zmv`'s 20 of 34
+   becoming 25 of 34. **Nine remain**, in rough order of how gettable they look:
+   * `sort_key_first` (`ACTOR_SORT_FIRST`) and `draw_attr_set`
+     (`ACTOR_ATTR_SET`) — two of the four originally hand-found gaps, both
+     needing a record type level 1 does not spawn.
+   * `emit_flip_y` — the vertical-flip emitters `$80:BB30`/`$80:BBA6`, ported
+     from their ROM bytes in Phase 2 and never once executed since. The
+     longest-standing gap in the project.
+   * `queue_full`, `emit_oam_full`, `draw_oam_full` — all three want a scene
+     busy enough to saturate a queue or all 128 sprites. A boss, probably.
+   * `draw_no_meta`, `draw_bad_bank`, `draw_empty_meta` — defensive branches in
+     `sprite_build_oam` that a well-formed record may never reach at all. If a
+     movie that reaches the whole game still leaves these at zero, that is worth
+     writing down as a fact about the ROM rather than a gap.
+   Separately, `fade_in`'s entire sample is still one call — sixteen segments is
+   all there is — and `fade_out` (`$80:8933`) is never reached by any movie. The
+   next targets after that are the ones item 7 named: the password screen, a
+   level transition, a boss, two-player.
 
 ## Known limitations / TODO (deferred, non-blocking)
 - **`run` proves nothing inside `$7E:1000-$7E:12FF`** (the stacks). A
@@ -471,18 +550,30 @@ that suspends. What is left is scale rather than shape.
   then makes the core execute for real — about 24 master cycles inside a
   ~57,000-cycle frame. This stops mattering in Phase 4, when the reference is
   cut loose.
-- **A guarded routine's coverage is only as good as the movie.** `verify` and
+- **Everything the harness proves is only as good as the movie.** `verify` and
   `run` decline exactly the same calls, and both print the count, so a decline is
   never silent — but "0 declined" on one movie says the port served every call
-  *that movie made*, not that it can serve every call. See `docs/cosim.md` →
-  *Half a routine, honestly*.
+  *that movie made*, not that it can serve every call. That is now measured
+  rather than merely admitted: `zamn_cosim verify -c` reports which of the port's
+  34 marked branches an input reached, and nine are still untaken by any movie.
+  See `docs/cosim.md` → *Half a routine, honestly* and *Coverage the movie does
+  not have*.
+- **Branch coverage counts port executions, not game events.** Under `verify` the
+  port runs once per interception, so a routine reached both directly and through
+  a ported caller has its sites counted once for each — `overlap_hit` reads 2,452
+  for 1,226 declining passes, exactly twice. Whether a site was reached at all,
+  which is the only thing the report claims, is unaffected.
+- **A marked branch is one somebody thought to mark.** The 34 sites are chosen by
+  hand, one per decision the diff would have to run to check, not generated. A
+  branch with no mark on it is invisible to the report, so this is a floor on
+  coverage rather than a measurement of it.
 - **Two activations of the same ported routine at once are not distinguished.**
   A suspension is attributed to the innermost in-flight call whose body contains
   the yield's return address; if two threads were ever inside the same ported
   routine simultaneously that would be ambiguous. No routine ported so far can
   be. See `docs/threads.md` → *What is not settled yet*.
-- 11 of 2,400 passes go uncompared by `run`: one before the scheduler exists,
-  and ten where a side never returned to the `WAI` within the step.
+- 11 passes go uncompared by `run` on either movie: one before the scheduler
+  exists, and ten where a side never returned to the `WAI` within the step.
 - Frame pacing fixed 2026-07-22: paced by sync-to-audio, with a monotonic-timer
   fallback when no audio device (`src/main_sdl.c`).
 - No gamepad mapping yet (keyboard only). No save states / config yet.

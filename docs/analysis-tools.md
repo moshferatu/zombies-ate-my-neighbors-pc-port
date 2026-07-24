@@ -128,7 +128,28 @@ Buttons: `A B X Y L R Start Select Up Down Left Right`, joined with `+`; `-` or
 `.` means nothing held.
 
 Movies are how every report stays reproducible, and they are the same format the
-Phase 3 regression harness will replay.
+Phase 3 regression harness replays.
+
+### Writing one
+
+The awkward part is aiming: a movie is blind input, and knowing whether frame
+4,080 leaves Zeke next to a zombie or facing a hedge takes looking. `zamn_headless`
+replays a movie and writes a PNG per frame you name, which is fast because it
+does not step instruction by instruction the way `zamn_trace --png` does:
+
+```
+build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" shot.png 6100 ^
+    -m movies\level1-rescue.zmv --at 1980,2500,3000,4200
+```
+
+That writes `shot.01980.png` and so on, plus `shot.png` for the final frame. The
+authoring loop is: run a candidate, look at where it got to, adjust the frame
+numbers, repeat.
+
+What a movie is *for* is measured by `zamn_cosim verify -c`, which reports which
+of the port's branches the movie was in a position to check at all. See
+`docs/cosim.md` → *Coverage the movie does not have*; that report is what
+`movies/level1-rescue.zmv` was written against.
 
 ## Regenerating everything
 

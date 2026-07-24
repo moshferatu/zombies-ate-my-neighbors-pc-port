@@ -1,0 +1,160 @@
+# Level 1, played rather than walked through: rescue a victim, then go down to
+# the graveyard and fight. `movies/level1.zmv` reaches gameplay and moves
+# around, but no two actors in it ever touch, so the collision dispatch the
+# sprite pass ends with is never reached at all (`zamn_cosim verify -c`, site
+# `overlap_hit`). This one reaches it hundreds of times.
+#
+# The boot prefix through frame 1484 is level1.zmv's, unchanged: mashing Start
+# through the logos, the title and the menus. Control of Zeke begins around
+# frame 1830, once "LEVEL 1 / ZOMBIE PANIC" has finished loading.
+#
+# Retune by watching where it actually gets to:
+#   zamn_headless <rom> shot.png 4200 -m movies\level1-rescue.zmv --at 1980,2500,3000
+# Regenerate with tools/make_movie.sh if the timing ever needs retuning.
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1020   Start
+1028   -
+1044   Start
+1052   -
+1068   Start
+1076   -
+1092   Start
+1100   -
+1116   Start
+1124   -
+1140   Start
+1148   -
+1164   Start
+1172   -
+1188   Start
+1196   -
+1212   Start
+1220   -
+1236   Start
+1244   -
+1260   Start
+1268   -
+1284   Start
+1292   -
+1308   Start
+1316   -
+1332   Start
+1340   -
+1356   Start
+1364   -
+1380   Start
+1388   -
+1404   Start
+1412   -
+1428   Start
+1436   -
+1452   Start
+1460   -
+1476   Start
+1484   -
+# Gameplay. Up and left into the cheerleader waiting there — the score goes
+# 0 -> 1000 by frame 1980, which is a rescue, which is a collision dispatch.
+1860   Up+Left
+# Back down and across the lawn, then into the graveyard south of it, which by
+# frame 2500 has five zombies in it. From here on the water pistol is held
+# down: a killed zombie is a death animation and a score popup, and both are
+# actors the sprite pass has to draw.
+1980   Down
+2160   Down+Left+B
+2280   Left+B
+2400   Up+B
+2520   Up+Right+B
+2640   Right+B
+2760   Down+Right+B
+2880   Down+B
+3000   Down+Left+B
+3120   Left+B
+3240   Up+Left+B
+3360   Up+B
+3480   Right+B
+3600   Down+Right+B
+3720   Down+B
+3840   Left+B
+3960   Up+B
+# Long runs in one direction, to scroll the camera hard: an actor the camera
+# leaves behind is one `actor_cull` has to reject, which nothing shorter than
+# this ever made it do.
+4080   Right+B
+4400   Up+B
+4720   Left+B
+5040   Down+B
+5360   Right+B
+5520   Up+B
+5680   Left+B
+5840   Down+B
+6000   -

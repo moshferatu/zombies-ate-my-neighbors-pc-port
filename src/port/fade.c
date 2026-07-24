@@ -1,5 +1,7 @@
 #include "port/fade.h"
 
+#include "port/coverage.h"
+
 // The resume labels are the ROM addresses they stand for: `case 0x8927` is the
 // instruction after the `JSL thread_yield` at `$80:8923`. Nothing in C cares
 // what the numbers are, so they may as well point at the listing.
@@ -21,6 +23,8 @@ PortStep fade_in(Wram* w, FadeCtx* c, uint16_t* ticks) {
       // reaches full brightness rather than one step later.
       wram_w16(w, W_BRIGHTNESS_SHADOW,
                (uint16_t)(wram_r16(w, W_BRIGHTNESS_SHADOW) + 1));
+      PORT_COVER_IF(wram_r16(w, W_BRIGHTNESS_SHADOW) != 0x000f, fade_in_step,
+                    fade_in_done);
       if (wram_r16(w, W_BRIGHTNESS_SHADOW) != 0x000f)
         return port_yield(&c->co, 1, ticks, FADE_IN_RESUME);
       break;

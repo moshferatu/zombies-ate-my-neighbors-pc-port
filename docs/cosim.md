@@ -46,12 +46,15 @@ zamn_cosim list
 zamn_cosim verify "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 zamn_cosim run    "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 zamn_cosim run    "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -r none
+zamn_cosim verify "Zombies Ate My Neighbors.sfc" -m movies\level1-rescue.zmv -f 6100 -c
 ```
 
 `-r <name>` narrows to one routine and can be repeated; the default is all of
 them. `-r none` substitutes nothing, which is the control: two stock cores must
 stay byte-identical for the whole run or nothing else measured here means
-anything. Both commands exit non-zero on a divergence.
+anything. `-c` prints the full branch-coverage table (see
+[Coverage the movie does not have](#coverage-the-movie-does-not-have)). Both
+commands exit non-zero on a divergence.
 
 ## What a ported routine has to declare
 
@@ -116,8 +119,11 @@ Two rules keep this from becoming a way to make failures disappear:
   routine, and both `verify` and `run` print the count.
 
 `level1.zmv` declines **0 of 1,016** calls, which is the movie saying no two
-visible actors ever come within 16 pixels of each other — see the coverage note
-below, because that is a gap as well as a result.
+visible actors ever come within 16 pixels of each other. That was a gap as much
+as a result, and it is closed: `movies/level1-rescue.zmv` rescues a victim and
+then fights zombies in the graveyard, and declines **1,226 of 4,716**. Both
+modes decline the same calls, and `run` still reaches the end of the movie with
+no byte of live game state differing.
 
 Native mode returns by pointing the program counter at the routine's own
 `RTS`/`RTL` and letting the core execute it, rather than unwinding the stack by
@@ -310,24 +316,74 @@ versions directly — they are simply no longer *intercepted*. `verify` still
 exercises every one of them on every call, because there the ROM is driving.
 This is what porting upwards looks like, and it will keep happening.
 
-### Coverage the movie does not have
+## Coverage the movie does not have
 
 Five perturbations of `sprite_build_oam` were caught (the `ACTOR_Z` subtraction,
 the base priority bits, the flip selection, the screen-space origin, and using
 the emitted-piece count where the walked-piece count belongs — each failing
 within 130 to 421 calls, at the exact byte). Three deliberate ones were **not**,
-and each is a branch `movies/level1.zmv` never takes:
+and each turned out to be a branch `movies/level1.zmv` never takes. Finding them
+that way — change the port on purpose, run `verify`, notice it still passes —
+works, but it is manual, destructive, and nobody would remember to redo all of
+it each time a movie is added, which is exactly when the answer changes.
 
-* `ACTOR_ATTR_SET` (flags bit 4) — the palette override. Disabling the entire
-  branch still passed all 1,016 calls, so no record in this movie sets it.
-* `ACTOR_PRIORITY_TOP` (flags bit 3) — changing `$3000` to `$3800` passed;
-  changing `$2000` to `$2400` failed at call 130. Only the low-priority side is
-  exercised.
-* The overlap test's box size. Widening it from 16 pixels to 32 produced no
-  declines at all; only at 128 pixels do 413 of 1,016 passes find a pair. So the
-  walk that reaches the test is thoroughly exercised — dropping the geometry test
-  entirely makes 673 calls decline — but the threshold itself is not.
+So the port now marks its decision points and the harness counts them.
+`src/port/coverage.h` is the instrument and the argument for it; the rule is the
+one the flag masks already follow, one step further out: an unclaimed output is
+an unchecked output, and **an untaken branch is an unverified branch.**
 
-All three are transcribed from the listing and correct by inspection. That is a
-weaker claim than the rest of this document makes, and the fix is the same one
-`actor_depth_sort`'s `ACTOR_SORT_FIRST` gap needs: more movies.
+```
+zamn_cosim verify <rom> -m movies\level1-rescue.zmv -f 6100 -c
+```
+
+Both modes print it. The untaken sites are always listed; `-c` adds the full
+table with hit counts. It is never a failure — an untaken branch is a movie that
+has not been written yet, and saying so is the whole job.
+
+Three things about the numbers. **A site is a decision the diff would have to
+run to check**, not every `if`: 34 of them across the eleven routines, chosen by
+hand. **Hit counts are call-weighted, not event-weighted** — under `verify` the
+port runs once per interception, so a routine reached both directly and through
+a ported caller is counted once for each. Whether a site was reached at all, the
+only thing the report claims, is unaffected. And **a guard's dry run counts only
+when it declines**: `actor_overlap_pass`'s guard answers by running the port on
+a throwaway copy, and a declined call is never run again, so that pass is the
+only record there will be; a call it allows is run for real a moment later and
+the dry run's marks are rolled back.
+
+The instrument was checked the way everything else here is. Narrowing
+`actor_cull`'s camera window from 384 px to 128 moves `cull_offscreen` from 0 to
+3,072 and fails the diff at 695 of 1,016 calls, so a zero in that column is a
+finding rather than a dead counter.
+
+### What it found
+
+On `movies/level1.zmv` — the movie every number above is measured on — **20 of
+34 sites** are taken. It reproduced all three `sprite_build_oam` gaps found by
+hand, plus `actor_depth_sort`'s `ACTOR_SORT_FIRST` and Phase 2's known
+vertical-flip gap, without anybody perturbing anything. It also named ten more
+nobody had listed, of which the sharpest is this: **`sprite_frame_tile` is
+called 10,354 times by that movie and never once evicts a resident frame.** The
+most-called ported routine in the game, and the branch that makes it a *cache*
+rather than a lookup table had never run.
+
+`movies/level1-rescue.zmv` was written against that report and takes **25 of
+34**, over 97,711 checked calls with nothing diverged. It closes five, including
+both of the two that mattered most:
+
+* `overlap_hit` — 2,452 marks and **1,226 of 4,716 calls declined**. Until this
+  movie, "0 declined" was the only number the guard had ever produced. See
+  *Half a routine, honestly*: that section's coverage caveat is no longer
+  hypothetical, and the decline path is now exercised end to end by a game doing
+  something ordinary rather than by a perturbation.
+* `cache_evict` and `cache_scan` — 296 and 8. The eviction path above.
+* `draw_priority_top` — 182. One of the three hand-found gaps, closed.
+* `cull_offscreen` — 248, and only after the long directional runs at the end of
+  the movie: a camera that scrolls hard enough to leave an actor behind is the
+  only thing that makes `actor_cull` reject anything.
+
+Nine are still untaken and they are now a measured backlog rather than a
+suspicion. `emit_flip_y` (no shipped actor in level 1 flips vertically),
+`sort_key_first`, `draw_attr_set`, `queue_full`, the two OAM-full sites, and
+three defensive branches in `sprite_build_oam` that a well-formed record may
+simply never reach. Each one is a claim this document does not get to make yet.

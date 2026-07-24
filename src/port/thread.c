@@ -1,5 +1,7 @@
 #include "port/thread.h"
 
+#include "port/coverage.h"
+
 void thread_tick_waits(Wram* w) {
   // Downwards from the last slot, exactly as `LDX #$002E ... DEX DEX BPL` does.
   // The direction is not observable in the result, but keeping it means the
@@ -7,8 +9,10 @@ void thread_tick_waits(Wram* w) {
   for (int slot = WRAM_THREAD_SLOTS - 1; slot >= 0; slot--) {
     uint32_t at = W_THREAD_WAIT + (uint32_t)slot * 2;
     uint16_t wait = wram_r16(w, at);
-    if (!(wait & 0x8000)) continue;  // slot empty
-    if (wait == 0x8000) continue;    // expired, and stays that way
+    // Slot empty; then: expired, and stays that way.
+    if (!(wait & 0x8000)) { PORT_COVER(wait_empty); continue; }
+    if (wait == 0x8000) { PORT_COVER(wait_expired); continue; }
+    PORT_COVER(wait_tick);
     wram_w16(w, at, (uint16_t)(wait - 1));
   }
 }
@@ -19,7 +23,7 @@ void thread_tick_waits(Wram* w) {
 // pulls it second — so they share an implementation.
 static int vbl_queue_add(Wram* w, uint32_t table, uint32_t count_at, int slots,
                          int scan_from, uint16_t addr, uint16_t bank) {
-  if (wram_r16(w, count_at) >= (uint16_t)slots) return -1;
+  if (wram_r16(w, count_at) >= (uint16_t)slots) { PORT_COVER(queue_full); return -1; }
 
   int off = 0;
   for (int x = scan_from; x != 0; x -= 4) {

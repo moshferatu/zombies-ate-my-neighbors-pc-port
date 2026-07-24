@@ -42,6 +42,7 @@ typedef struct {
   const char* selected[MAX_SELECTED];
   int selected_count;
   bool verbose;
+  bool coverage;  // print every marked branch, not just the untaken ones
 } Options;
 
 static uint8_t* read_file(const char* path, int* out_len) {
@@ -89,6 +90,8 @@ static bool parse_options(int argc, char** argv, Options* o) {
       o->selected[o->selected_count++] = name;
     } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
       o->verbose = true;
+    } else if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--coverage")) {
+      o->coverage = true;
     } else {
       fprintf(stderr, "error: unknown option '%s'\n", argv[i]);
       return false;
@@ -181,6 +184,11 @@ static int cmd_verify(const Options* o) {
   if (checked == 0)
     printf("Nothing was verified — the movie never reached any ported routine.\n");
 
+  // Not part of the pass/fail verdict, and deliberately printed after it: what
+  // follows says how much of the port this movie was in a position to check at
+  // all. See `src/port/coverage.h`.
+  cosim_coverage_report(o->coverage);
+
   if (have_movie) movie_free(&movie);
   cosim_free(&c);
   snes_free(snes);
@@ -194,6 +202,7 @@ static int cmd_run(const Options* o) {
   if (!rom_data) return 1;
   int rc = cosim_lockstep(rom_data, rom_len, o->movie_path, o->frames,
                           o->selected, o->selected_count, o->verbose);
+  cosim_coverage_report(o->coverage);
   free(rom_data);
   return rc;
 }
@@ -202,14 +211,16 @@ static void usage(void) {
   printf("zamn_cosim — Phase 3 co-simulation harness\n\n"
          "  list\n"
          "      What has been ported, and what the diff covers for each.\n\n"
-         "  verify <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v]\n"
+         "  verify <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v] [-c]\n"
          "      Let the ROM run the game, and check the port against every call\n"
          "      it makes to a ported routine: 128 KB of WRAM plus registers,\n"
          "      per call. Repeat -r to narrow it; the default is everything.\n\n"
-         "  run <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v]\n"
+         "  run <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v] [-c]\n"
          "      Substitute the port for real and run two cores in lockstep,\n"
          "      comparing all of WRAM every frame against a stock one.\n\n"
-         "Options: -m movie file, -f frames (default 2400), -v progress.\n");
+         "Options: -m movie file, -f frames (default 2400), -v progress,\n"
+         "         -c full branch-coverage table (untaken branches are always\n"
+         "         listed, with or without it).\n");
 }
 
 int main(int argc, char** argv) {

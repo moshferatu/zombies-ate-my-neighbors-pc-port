@@ -279,6 +279,19 @@ bool cosim_failed(const Cosim* c);
 // Print the per-routine table. Returns the number of routines that failed.
 int cosim_report(const Cosim* c);
 
+// Print which of the port's marked branches this run actually took, and name
+// the ones it did not. `full` prints every site with its hit count; otherwise
+// only the summary and the untaken ones. Returns how many were never reached.
+//
+// This is a different question from the diff's, and it is the one the diff
+// cannot ask: `verify` proves the port agrees with the ROM on the calls the
+// movie made, which says nothing about a branch the movie never reaches. See
+// `src/port/coverage.h`. The counters are process-global, so this reports the
+// whole run rather than one `Cosim`.
+//
+// Never a failure. An untaken branch is a movie that has not been written yet.
+int cosim_coverage_report(bool full);
+
 // ---------------------------------------------------------------------------
 // Lockstep
 // ---------------------------------------------------------------------------

@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "assets/gfx.h"
+#include "port/coverage.h"
 
 // ---------------------------------------------------------------------------
 // Frames
@@ -120,7 +121,7 @@ int sprite_emit(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
     const SpritePiece* p = &meta->pieces[i];
 
     uint16_t sy = (uint16_t)p->y;
-    if (flip_y) sy = mirror(sy);
+    if (flip_y) { PORT_COVER(emit_flip_y); sy = mirror(sy); }
     sy = (uint16_t)(sy + (uint16_t)oy);
     // 16-bit store, as the ROM does it: this also lands the high byte in the
     // tile slot, which the attribute store below overwrites.
@@ -128,19 +129,22 @@ int sprite_emit(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
     // Keep only rows the 224-line display can show, allowing the 15 pixels a
     // sprite may hang off the top ($FFF1..$FFFF).
     if (sy < 0xfff1 && sy >= 0x00e0) {
+      PORT_COVER(emit_drop_y);
       if (trace) trace->walked++;
       continue;
     }
 
     uint16_t sx = (uint16_t)p->x;
-    if (flip_x) sx = mirror(sx);
+    if (flip_x) { PORT_COVER(emit_flip_x); sx = mirror(sx); }
     sx = (uint16_t)(sx + (uint16_t)ox);
     if (x_index < SPRITE_OAM_LOW_BYTES) oam->bytes[x_index] = (uint8_t)sx;
     if (sx >= 0x0100) {
       if (sx < 0xfff1) {
+        PORT_COVER(emit_drop_x);
         if (trace) trace->walked++;
         continue;
       }
+      PORT_COVER(emit_wrap_x);
       // Off the left edge: set this sprite's x bit 8 in the high table. The
       // ROM reads it out of the table at $80:B747, which holds exactly this
       // address and mask for all 128 sprites.
@@ -162,7 +166,7 @@ int sprite_emit(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
     written++;
     // `$80:BAA9` leaves without stepping the walk past this piece, which is why
     // the break is here rather than after the increment below.
-    if (x_index == SPRITE_OAM_LOW_BYTES) break;
+    if (x_index == SPRITE_OAM_LOW_BYTES) { PORT_COVER(emit_oam_full); break; }
     if (trace) trace->walked++;
   }
 

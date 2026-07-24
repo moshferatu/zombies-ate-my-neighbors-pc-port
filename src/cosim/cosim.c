@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "analysis/movie.h"
+#include "port/coverage.h"
 
 // One in-flight call. Calls nest — an NMI can land inside a routine and the
 // handler can call another registered routine — so these live on a stack.
@@ -374,7 +375,19 @@ static bool guard_allows(Cosim* c, const CosimRoutine* r) {
   memcpy(c->priv->guard, c->snes->ram, sizeof(Wram));
   CosimRegs in;
   regs_capture(c->snes, &in);
-  return r->supported(c->priv->guard, &c->rom, &in);
+
+  // The guard answers by running the port, so it trips branch-coverage marks —
+  // and it must, because a *declined* call is only ever seen here: the port is
+  // never run again for it. But a call the guard allows will be run for real a
+  // moment later, and counting both would double every site in the routine.
+  //
+  // So: keep what the dry run recorded exactly when the dry run is the only run
+  // there will be. Each call is then counted once, by whichever pass was real.
+  unsigned long before[PORT_COVER_COUNT];
+  port_cover_save(before);
+  bool ok = r->supported(c->priv->guard, &c->rom, &in);
+  if (ok) port_cover_restore(before);
+  return ok;
 }
 
 // Substitute at a routine's entry. False if the routine could not be taken over
@@ -766,6 +779,56 @@ int cosim_report(const Cosim* c) {
     if (s->failed) printf("%22s%s\n", "", s->detail);
   }
   return failures;
+}
+
+// ---------------------------------------------------------------------------
+// Branch coverage
+// ---------------------------------------------------------------------------
+
+// What the per-call diff cannot tell you: whether this movie ever made a call
+// that *reaches* a given branch. See `src/port/coverage.h` for the argument;
+// the short version is that a branch no input takes is agreed on by the ROM and
+// the port for the same reason — neither of them runs it.
+//
+// This does not fail a run. An untaken branch is not a defect, it is a movie
+// that has not been written yet, and saying so is the whole job.
+int cosim_coverage_report(bool full) {
+  int taken = 0;
+  for (int i = 0; i < PORT_COVER_COUNT; i++)
+    if (port_cover_hits[i] > 0) taken++;
+
+  printf("\nBranch coverage: %d of %d marked sites taken.\n", taken,
+         PORT_COVER_COUNT);
+  // Worth saying once, where the numbers are: under `verify` the harness runs
+  // the port once per *interception*, so a routine reached both directly and
+  // through a ported caller has its sites counted once for each. The hit counts
+  // are therefore call-weighted rather than event-weighted. Whether a site was
+  // reached at all — the only thing this report claims — is unaffected.
+
+  if (full) {
+    printf("\n%-20s %-20s %10s  %s\n", "routine", "site", "hits", "what it means");
+    printf("%-20s %-20s %10s  %s\n", "--------------------",
+           "--------------------", "----------", "-------------");
+    for (int i = 0; i < PORT_COVER_COUNT; i++)
+      printf("%-20s %-20s %10lu  %s\n", port_cover_routine(i),
+             port_cover_name(i), port_cover_hits[i], port_cover_what(i));
+  }
+
+  int missed = PORT_COVER_COUNT - taken;
+  if (missed == 0) {
+    printf("Every marked branch was reached — nothing here is unexercised.\n");
+    return 0;
+  }
+  printf("%d never reached, so the port's code for %s unchecked by this run:\n",
+         missed, missed == 1 ? "it is" : "them is");
+  for (int i = 0; i < PORT_COVER_COUNT; i++) {
+    if (port_cover_hits[i] > 0) continue;
+    printf("    %-20s %-20s %s\n", port_cover_routine(i), port_cover_name(i),
+           port_cover_what(i));
+  }
+  printf("These are not failures. They are the movie's gaps, and the fix for\n"
+         "every one of them is an input that makes the game do it.\n");
+  return missed;
 }
 
 // ---------------------------------------------------------------------------

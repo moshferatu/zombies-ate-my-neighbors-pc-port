@@ -1,6 +1,7 @@
 #include "port/sprite_cache.h"
 
 #include "assets/sprite.h"
+#include "port/coverage.h"
 
 // The two 128-entry tables at `$80:B547` and `$80:B647` that this routine
 // indexes are the slot geometry Phase 2 already proved: `sprite_slot_vram()`
@@ -26,9 +27,11 @@ uint16_t sprite_frame_tile(Wram* w, uint16_t frame) {
   // Already resident? `frame_slot` holds the slot x2, or a negative word.
   uint16_t entry = wram_r16(w, W_FRAME_SLOT + fx);
   if (!(entry & 0x8000)) {
+    PORT_COVER(cache_hit);
     wram_w16(w, W_SPRITE_SLOT_TICK + entry, tick);
     return sprite_slot_tile(entry / 2);
   }
+  PORT_COVER(cache_miss);
 
   // Miss. `$80:B9EC` parks the doubled frame index in scratch and it stays
   // there afterwards, so the port writes it too — the harness diffs WRAM.
@@ -46,6 +49,7 @@ uint16_t sprite_frame_tile(Wram* w, uint16_t frame) {
   uint16_t sx = (uint16_t)((wram_r16(w, W_SPRITE_LRU_SLOT) + 2) & 0xff);
   for (int guard = 0; guard < SPRITE_SLOTS; guard++) {
     if (wram_r16(w, W_SPRITE_SLOT_TICK + sx) != tick) break;
+    PORT_COVER(cache_scan);
     sx = (uint16_t)((sx + 2) & 0xff);
   }
   wram_w16(w, W_SPRITE_LRU_SLOT, sx);
@@ -53,7 +57,10 @@ uint16_t sprite_frame_tile(Wram* w, uint16_t frame) {
 
   // Whatever was in the slot is no longer anywhere.
   uint16_t evicted = wram_r16(w, W_SLOT_FRAME + sx);
-  if (!(evicted & 0x8000)) wram_w16(w, W_FRAME_SLOT + evicted, 0xffff);
+  if (!(evicted & 0x8000)) {
+    PORT_COVER(cache_evict);
+    wram_w16(w, W_FRAME_SLOT + evicted, 0xffff);
+  }
 
   wram_w16(w, W_FRAME_SLOT + fx, sx);
   wram_w16(w, W_SLOT_FRAME + sx, fx);
