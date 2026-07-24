@@ -101,10 +101,11 @@ static int cmd_list(void) {
   int count = 0;
   const CosimRoutine* all = cosim_routines(&count);
   printf("%d routine%s ported so far:\n\n", count, count == 1 ? "" : "s");
-  printf("  %-20s %-10s %-6s %s\n", "name", "ROM", "return", "notes");
+  printf("  %-20s %-10s %-6s %-9s %s\n", "name", "ROM", "return", "kind", "notes");
   for (int i = 0; i < count; i++) {
-    printf("  %-20s %-10s %-6s ", all[i].name, all[i].symbol,
-           all[i].ret_kind == COSIM_RTL ? "RTL" : "RTS");
+    printf("  %-20s %-10s %-6s %-9s ", all[i].name, all[i].symbol,
+           all[i].ret_kind == COSIM_RTL ? "RTL" : "RTS",
+           all[i].run_yield ? "resumable" : "leaf");
     if (all[i].exclude_count == 0) {
       printf("all of WRAM compared\n");
     } else {
@@ -115,6 +116,9 @@ static int cmd_list(void) {
       printf("\n");
     }
   }
+  printf("\nA `leaf` routine runs to completion and is checked once per call. A\n"
+         "`resumable` one suspends inside thread_yield and is checked once per\n"
+         "segment — the run between two suspensions. See docs/threads.md.\n");
   return 0;
 }
 

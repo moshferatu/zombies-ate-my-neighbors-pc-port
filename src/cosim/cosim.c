@@ -17,9 +17,27 @@ typedef struct {
   uint64_t cycles;    // core cycle count at entry
   CosimRegs in;
   Wram* before;  // WRAM as the routine found it
+  // --- resumable routines only ---
+  // A yielding call is not one comparison but a chain of them, one per segment
+  // between suspensions. `before`, `in`, `min_sp` and `cycles` above are all
+  // retaken at each resumption, so each segment is diffed against the state the
+  // routine actually resumed with rather than the state it was first entered
+  // with — which is the whole point, because arbitrary other threads ran in
+  // between and moved WRAM under it.
+  void* ctx;            // the port's parked state; zeroed at entry
+  bool suspended;       // parked inside thread_yield, waiting to be resumed
+  bool segment_spoiled; // an interrupt landed mid-segment; do not diff this one
+  uint32_t resume_pc;   // where the current suspension will come back to
+  long segment;         // which segment is in flight, from 0
 } CosimCall;
 
 #define COSIM_MAX_DEPTH 8
+
+// `thread_yield`, `$80:8353`. Reaching it is how a segment ends; see
+// `docs/threads.md`.
+#define THREAD_YIELD_ENTRY 0x808353
+
+static void run_native_segment(Cosim* c, CosimCall* call);
 
 struct CosimPriv {
   CosimCall stack[COSIM_MAX_DEPTH];
@@ -53,6 +71,7 @@ static void regs_capture(Snes* snes, CosimRegs* r) {
   r->z = cpu->z;
   r->c = cpu->c;
   r->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  r->regs = COSIM_REG_ALL;
 }
 
 // Where a routine will return to, from the return address its caller pushed.
@@ -110,13 +129,27 @@ void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
   } else {
     c->priv->stale = (uint8_t*)calloc(WRAM_SIZE, 1);
   }
+  // Room for a resumable routine's parked state, in both modes — this is the
+  // whole of what "the port is suspended here" means, and it being plain
+  // copyable data is the reason the port suspends this way at all. One buffer
+  // per nesting level, sized for the largest context any routine declares.
+  size_t ctx_max = 0;
+  for (int i = 0; i < count; i++)
+    if (all[i].run_yield && (size_t)all[i].ctx_size > ctx_max)
+      ctx_max = (size_t)all[i].ctx_size;
+  if (ctx_max > 0)
+    for (int i = 0; i < COSIM_MAX_DEPTH; i++)
+      c->priv->stack[i].ctx = calloc(1, ctx_max);
 }
 
 void cosim_free(Cosim* c) {
   if (!c->priv) return;
   free(c->priv->scratch);
   free(c->priv->stale);
-  for (int i = 0; i < COSIM_MAX_DEPTH; i++) free(c->priv->stack[i].before);
+  for (int i = 0; i < COSIM_MAX_DEPTH; i++) {
+    free(c->priv->stack[i].before);
+    free(c->priv->stack[i].ctx);
+  }
   free(c->priv);
   c->priv = NULL;
 }
@@ -182,28 +215,35 @@ static bool dead_stack(const CosimCall* call, uint32_t off) {
   return off > (uint32_t)call->min_sp && off <= (uint32_t)call->entry_sp;
 }
 
+// Diff the WRAM half. Split out from compare() because a suspension is checked
+// on WRAM and the tick count alone — the registers do not survive one.
+static void compare_wram(CosimStat* s, const CosimCall* call, const Wram* ours,
+                         const Wram* theirs) {
+  const CosimRoutine* r = s->routine;
+  char buf[32];
+  for (uint32_t off = 0; off < WRAM_SIZE; off++) {
+    if (ours->bytes[off] == theirs->bytes[off]) continue;
+    if (excluded(r, off) || dead_stack(call, off)) continue;
+    note(s, "WRAM %s: ROM $%02X, port $%02X (SP $%04X..$%04X during segment %ld)",
+         wram_str(off, buf, sizeof buf), theirs->bytes[off], ours->bytes[off],
+         call->min_sp, call->entry_sp, call->segment);
+    return;
+  }
+}
+
 // Diff the port's result against the ROM's. `theirs` is the emulator's WRAM,
 // which at this point holds what the ROM routine produced.
 static void compare(CosimStat* s, const CosimCall* call, const Wram* ours,
                     const Wram* theirs, const CosimRegs* rom_regs,
                     const CosimRegs* our_regs) {
-  const CosimRoutine* r = s->routine;
-  char buf[32];
+  compare_wram(s, call, ours, theirs);
+  if (s->failed) return;
 
-  for (uint32_t off = 0; off < WRAM_SIZE; off++) {
-    if (ours->bytes[off] == theirs->bytes[off]) continue;
-    if (excluded(r, off) || dead_stack(call, off)) continue;
-    note(s, "WRAM %s: ROM $%02X, port $%02X (SP $%04X..$%04X during the call)",
-         wram_str(off, buf, sizeof buf), theirs->bytes[off], ours->bytes[off],
-         call->min_sp, call->entry_sp);
-    return;
-  }
-
-  if (our_regs->a != rom_regs->a)
+  if ((our_regs->regs & COSIM_REG_A) && our_regs->a != rom_regs->a)
     note(s, "A: ROM $%04X, port $%04X", rom_regs->a, our_regs->a);
-  else if (our_regs->x != rom_regs->x)
+  else if ((our_regs->regs & COSIM_REG_X) && our_regs->x != rom_regs->x)
     note(s, "X: ROM $%04X, port $%04X", rom_regs->x, our_regs->x);
-  else if (our_regs->y != rom_regs->y)
+  else if ((our_regs->regs & COSIM_REG_Y) && our_regs->y != rom_regs->y)
     note(s, "Y: ROM $%04X, port $%04X", rom_regs->y, our_regs->y);
   else if ((our_regs->flags & COSIM_FLAG_N) && our_regs->n != rom_regs->n)
     note(s, "flag N: ROM %d, port %d", rom_regs->n, our_regs->n);
@@ -223,23 +263,25 @@ static void record_cycles(CosimStat* s, long cycles) {
 // The engine
 // ---------------------------------------------------------------------------
 
-// Substitute: run the port against the emulator's own memory, publish the
-// registers, and hand the core back a routine that has already finished.
-static void run_native(Cosim* c, const CosimRoutine* r, CosimStat* s) {
-  Snes* snes = c->snes;
-  Cpu* cpu = snes->cpu;
+// Write back whatever the shim claimed to model, and nothing else.
+static void native_publish(Cosim* c, const CosimRegs* out) {
+  Cpu* cpu = c->snes->cpu;
+  if (out->regs & COSIM_REG_A) cpu->a = out->a;
+  if (out->regs & COSIM_REG_X) cpu->x = out->x;
+  if (out->regs & COSIM_REG_Y) cpu->y = out->y;
+  if (out->flags & COSIM_FLAG_N) cpu->n = out->n;
+  if (out->flags & COSIM_FLAG_Z) cpu->z = out->z;
+  if (out->flags & COSIM_FLAG_C) cpu->c = out->c;
+}
 
-  CosimRegs in, out;
-  regs_capture(snes, &in);
-  out = in;
-  r->run((Wram*)snes->ram, &c->rom, &in, &out);
-
-  cpu->a = out.a;
-  cpu->x = out.x;
-  cpu->y = out.y;
-  if (out.flags & COSIM_FLAG_N) cpu->n = out.n;
-  if (out.flags & COSIM_FLAG_Z) cpu->z = out.z;
-  if (out.flags & COSIM_FLAG_C) cpu->c = out.c;
+// Publish a finished routine's registers and hand the core its own RTS/RTL.
+//
+// Returning by pointing the program counter at the routine's own return
+// instruction borrows the core's exact stack and bank handling instead of
+// reimplementing it here, which is one fewer thing to get wrong.
+static void native_return(Cosim* c, const CosimRoutine* r, const CosimRegs* out) {
+  Cpu* cpu = c->snes->cpu;
+  native_publish(c, out);
 
   // The ROM's version of this routine pushes; the port does not, so the bytes
   // it would have written keep whatever they held before. Note them, so the
@@ -251,20 +293,118 @@ static void run_native(Cosim* c, const CosimRoutine* r, CosimStat* s) {
     if (off < WRAM_SIZE) c->priv->stale[off] = 1;
   }
 
-  // Stand in for the work the ROM's instructions would have done, so the rest
-  // of the machine — the PPU's beam position, the APU, DMA — still sees a call
-  // that took about as long as it used to.
-  if (r->cycles > 0) snes_runCycles(snes, r->cycles);
-
-  // Return the way the routine itself does, by executing its own RTS/RTL. That
-  // borrows the core's exact stack and bank handling instead of reimplementing
-  // it here, which is one fewer thing to get wrong.
   cpu->k = (uint8_t)(r->ret_op >> 16);
   cpu->pc = (uint16_t)r->ret_op;
+}
+
+// ...and the mirror image: suspend by jumping to the routine's own
+// `JSL thread_yield`, with the sleep count in A where the ROM would have put it.
+//
+// This is the same idea as `native_return`, and it is what makes substituting a
+// coroutine tractable at all. The port does not have to model parking a stack
+// pointer, choosing the next thread, or coming back: the core executes the real
+// `JSL`, the real scheduler parks the real frame, and the real scheduler
+// resumes it. Because it is literally the ROM's own instruction, the stack
+// footprint of a substituted suspension is not an approximation of the ROM's —
+// it *is* the ROM's.
+//
+// The registers and flags are published first, and that is not housekeeping.
+// `thread_yield` opens with `PHP`, so whatever is set here is what the thread
+// carries through the suspension and gets back on resume.
+static void native_yield(Cosim* c, const CosimRoutine* r, CosimCall* call,
+                         const CosimRegs* out, uint16_t ticks) {
+  Cpu* cpu = c->snes->cpu;
+  native_publish(c, out);
+  cpu->a = ticks;
+  cpu->k = (uint8_t)(r->yield_op >> 16);
+  cpu->pc = (uint16_t)r->yield_op;
+  call->suspended = true;
+  call->resume_pc = r->yield_op + 4;  // past the 4-byte JSL
+}
+
+// Run one segment of a substituted routine against the emulator's own memory,
+// then either suspend or return.
+static void run_native_segment(Cosim* c, CosimCall* call) {
+  CosimStat* s = &c->stats[call->index];
+  const CosimRoutine* r = s->routine;
+  Snes* snes = c->snes;
+
+  CosimRegs in, out;
+  regs_capture(snes, &in);
+  out = in;
+  uint16_t ticks = 0;
+  PortStep step =
+      r->run_yield((Wram*)snes->ram, &c->rom, &in, &out, call->ctx, &ticks);
+
+  s->checked++;
+  s->passed++;
+
+  // Stand in for the work the ROM's instructions would have done, so the rest
+  // of the machine — the PPU's beam position, the APU, DMA — still sees a
+  // segment that took about as long as it used to.
+  if (r->cycles > 0) snes_runCycles(snes, r->cycles);
+
+  if (step == PORT_YIELDED) {
+    s->yields++;
+    native_yield(c, r, call, &out, ticks);
+    return;
+  }
+  native_return(c, r, &out);
+  // Pop it: a resumable call keeps a frame for its context, and this is the end
+  // of it. It is the top of the stack by construction — anything called during
+  // a segment returned before the segment did.
+  if (c->priv->depth > 0 && &c->priv->stack[c->priv->depth - 1] == call)
+    c->priv->depth--;
+}
+
+// Substitute at a routine's entry. False if the routine could not be taken over
+// — which today means only that the call stack is absurdly deep — in which case
+// the ROM's own code runs and nothing is claimed.
+static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s) {
+  Snes* snes = c->snes;
+
+  if (r->run_yield) {
+    if (c->priv->depth >= COSIM_MAX_DEPTH) return false;
+    CosimCall* call = &c->priv->stack[c->priv->depth++];
+    call->index = index;
+    call->entry_sp = snes->cpu->sp;
+    call->min_sp = snes->cpu->sp;
+    call->suspended = false;
+    call->segment_spoiled = false;
+    call->segment = 0;
+    call->ret_pc = return_pc(snes, r->ret_kind);
+    memset(call->ctx, 0, (size_t)r->ctx_size);
+    s->calls++;
+    run_native_segment(c, call);
+    return true;
+  }
+
+  CosimRegs in, out;
+  regs_capture(snes, &in);
+  out = in;
+  r->run((Wram*)snes->ram, &c->rom, &in, &out);
+
+  // Stand in for the work the ROM's instructions would have done.
+  if (r->cycles > 0) snes_runCycles(snes, r->cycles);
+  native_return(c, r, &out);
 
   s->calls++;
   s->checked++;
   s->passed++;
+  return true;
+}
+
+// Start a segment: the state the port will be rewound to and run over. Called
+// at the routine's entry, and again at every resumption — because between a
+// yield and the resumption arbitrary other threads ran, so the state the
+// routine picks up with is not the state it left.
+static void segment_start(Cosim* c, CosimCall* call) {
+  call->entry_sp = c->snes->cpu->sp;
+  call->min_sp = c->snes->cpu->sp;
+  call->cycles = c->snes->cycles;
+  call->segment_spoiled = false;
+  regs_capture(c->snes, &call->in);
+  memcpy(call->before, c->snes->ram, sizeof(Wram));
 }
 
 // Begin a verification: remember everything the port will need, and let the ROM
@@ -275,40 +415,174 @@ static void begin_verify(Cosim* c, int index, const CosimRoutine* r, CosimStat* 
 
   CosimCall* call = &c->priv->stack[c->priv->depth++];
   call->index = index;
-  call->entry_sp = c->snes->cpu->sp;
-  call->min_sp = c->snes->cpu->sp;
   call->ret_pc = return_pc(c->snes, r->ret_kind);
-  call->cycles = c->snes->cycles;
-  regs_capture(c->snes, &call->in);
-  memcpy(call->before, c->snes->ram, sizeof(Wram));
+  call->suspended = false;
+  call->resume_pc = 0;
+  call->segment = 0;
+  if (r->run_yield) memset(call->ctx, 0, (size_t)r->ctx_size);
+  segment_start(c, call);
 }
 
-// The ROM routine has just returned. Rewind and run the port over the same
-// input, then diff.
-static void end_verify(Cosim* c, CosimCall* call) {
-  CosimStat* s = &c->stats[call->index];
-  const CosimRoutine* r = s->routine;
-
-  CosimRegs rom_regs;
-  regs_capture(c->snes, &rom_regs);
-
+// Run the port over one segment and diff what it produced against what the ROM
+// just produced. Returns what the port said it did, so the caller can check the
+// port and the ROM agree about *whether* the routine suspended.
+static PortStep verify_segment(Cosim* c, CosimCall* call, CosimRegs* out,
+                               uint16_t* ticks) {
+  const CosimRoutine* r = c->stats[call->index].routine;
   memcpy(c->priv->scratch, call->before, sizeof(Wram));
-  CosimRegs out = call->in;
-  out.flags = 0;
-  r->run(c->priv->scratch, &c->rom, &call->in, &out);
+  *out = call->in;
+  out->flags = 0;
+  out->regs = COSIM_REG_ALL;
+  if (!r->run_yield) {
+    r->run(c->priv->scratch, &c->rom, &call->in, out);
+    return PORT_RETURNED;
+  }
+  PortStep step =
+      r->run_yield(c->priv->scratch, &c->rom, &call->in, out, call->ctx, ticks);
+  // The sleep count *is* the accumulator — it is what the ROM has in A when it
+  // executes `JSL thread_yield`. Deciding that here rather than in each shim
+  // keeps the two from drifting apart.
+  if (step == PORT_YIELDED) out->a = *ticks;
+  return step;
+}
 
+static void record_segment(Cosim* c, CosimCall* call, CosimStat* s) {
   s->checked++;
   record_cycles(s, (long)(c->snes->cycles - call->cycles));
   int waived = (int)(call->entry_sp - call->min_sp);
   if (waived > s->stack_waived) s->stack_waived = waived;
+}
 
+static void report_first(Cosim* c, CosimStat* s, bool was_failed) {
+  if (s->failed && !was_failed && c->verbose)
+    printf("  %s: first divergence at call %ld — %s\n", s->routine->name, s->calls,
+           s->detail);
+}
+
+// The ROM routine has reached its `JSL thread_yield`. That ends a segment: the
+// port gets rewound and run over the same input, and everything it produced is
+// diffed against what the ROM produced.
+//
+// A suspension is checked exactly as hard as a return, and that is a deliberate
+// answer to the carry bug in `docs/cosim.md`. It would be easy to argue that a
+// yield has no outputs because the routine has not finished — but `thread_yield`
+// opens with `PHP` and the scheduler resumes with `PLP`, so the flags at the
+// `JSL` are parked with the thread and handed back to it. In native mode nothing
+// else would ever set them. An unchecked output is an unchecked output whether
+// the routine is on its way out or on its way to sleep.
+static void suspend_verify(Cosim* c, CosimCall* call) {
+  CosimStat* s = &c->stats[call->index];
   bool was_failed = s->failed;
-  compare(s, call, c->priv->scratch, (const Wram*)c->snes->ram, &rom_regs, &out);
-  if (!s->failed) {
-    s->passed++;
-  } else if (!was_failed && c->verbose) {
-    printf("  %s: first divergence at call %ld — %s\n", r->name, s->calls, s->detail);
+
+  s->yields++;
+  call->resume_pc = return_pc(c->snes, COSIM_RTL);
+  call->suspended = true;
+
+  if (call->segment_spoiled) {
+    s->interrupted++;
+    // The port still has to run, or its context would fall a segment behind the
+    // ROM and every later comparison would be meaningless. It just is not
+    // scored.
+    CosimRegs out;
+    uint16_t ticks = 0;
+    verify_segment(c, call, &out, &ticks);
+    return;
   }
+
+  CosimRegs rom_regs;
+  regs_capture(c->snes, &rom_regs);
+
+  CosimRegs out;
+  uint16_t ticks = 0xffff;
+  PortStep step = verify_segment(c, call, &out, &ticks);
+  record_segment(c, call, s);
+
+  if (step != PORT_YIELDED)
+    note(s, "segment %ld: the ROM suspended at $%06X, the port returned",
+         call->segment, THREAD_YIELD_ENTRY);
+  else if (ticks != rom_regs.a)
+    // The same difference `compare` would find in A, reported in the terms the
+    // routine is written in. A sleep of the wrong length is worth naming.
+    note(s, "segment %ld: sleep count — ROM %u ticks, port %u", call->segment,
+         rom_regs.a, ticks);
+  else
+    compare(s, call, c->priv->scratch, (const Wram*)c->snes->ram, &rom_regs, &out);
+
+  if (!s->failed) s->passed++;
+  report_first(c, s, was_failed);
+}
+
+// ...and it has come back. Everything the port will be rewound to has to be
+// retaken from here, not from the entry.
+static void resume_verify(Cosim* c, CosimCall* call) {
+  call->suspended = false;
+  call->segment++;
+  segment_start(c, call);
+}
+
+// The ROM routine has returned for good. Same as a suspension, plus the
+// registers — which are outputs again, because the routine's own code
+// re-established them after the last resumption.
+static void end_verify(Cosim* c, CosimCall* call) {
+  CosimStat* s = &c->stats[call->index];
+  bool was_failed = s->failed;
+
+  if (call->segment_spoiled) {
+    s->interrupted++;
+    return;
+  }
+
+  CosimRegs rom_regs;
+  regs_capture(c->snes, &rom_regs);
+
+  CosimRegs out;
+  uint16_t ticks = 0;
+  PortStep step = verify_segment(c, call, &out, &ticks);
+  record_segment(c, call, s);
+
+  if (step != PORT_RETURNED)
+    note(s, "segment %ld: the ROM returned, the port suspended for %u ticks",
+         call->segment, ticks);
+  else
+    compare(s, call, c->priv->scratch, (const Wram*)c->snes->ram, &rom_regs, &out);
+
+  if (!s->failed) s->passed++;
+  report_first(c, s, was_failed);
+}
+
+// The innermost in-flight call that is parked inside `thread_yield` and is
+// waiting for exactly this address, or NULL. The stack-pointer test is what
+// distinguishes a genuine resumption from the many other times execution
+// wanders past the same instruction — while a routine is suspended the whole
+// rest of the game is running.
+static CosimCall* find_resume(Cosim* c, uint32_t pc) {
+  for (int i = c->priv->depth - 1; i >= 0; i--) {
+    CosimCall* call = &c->priv->stack[i];
+    if (call->suspended && pc == call->resume_pc &&
+        c->snes->cpu->sp == call->entry_sp)
+      return call;
+  }
+  return NULL;
+}
+
+// The call this `JSL thread_yield` belongs to, or NULL.
+//
+// Every thread in the game yields, so being at `thread_yield` proves nothing on
+// its own. What settles it is the return address the `JSL` just pushed: if it
+// points inside the routine's own body, this is that routine suspending. A
+// yield from something the routine *called* has a return address in the callee
+// and is not matched — correctly, because a nested yield is a different thing
+// the port would have to model, and silently treating it as this routine's
+// would be exactly the kind of quiet approximation the harness exists to refuse.
+static CosimCall* find_yield(Cosim* c) {
+  uint32_t site = return_pc(c->snes, COSIM_RTL);
+  for (int i = c->priv->depth - 1; i >= 0; i--) {
+    CosimCall* call = &c->priv->stack[i];
+    const CosimRoutine* r = c->stats[call->index].routine;
+    if (call->suspended || !r->run_yield) continue;
+    if (site > r->entry && site < r->end) return call;
+  }
+  return NULL;
 }
 
 void cosim_step(Cosim* c) {
@@ -318,13 +592,31 @@ void cosim_step(Cosim* c) {
   // entitled to scribble on. Sampling between instructions is enough: a push
   // leaves SP one below the byte it wrote, so the low-water mark always sits
   // just under the lowest address touched.
+  //
+  // A suspended call is skipped, and that is not a detail. While a routine is
+  // parked the scheduler switches to other threads' stacks entirely, so the
+  // stack pointer goes far below anything this routine touched; carrying that
+  // low-water mark into the next segment would waive most of a kilobyte of WRAM
+  // for free. The window is per segment, and it is retaken at every resumption.
   for (int i = 0; i < c->priv->depth; i++) {
     CosimCall* call = &c->priv->stack[i];
-    if (snes->cpu->sp < call->min_sp) call->min_sp = snes->cpu->sp;
+    if (!call->suspended && snes->cpu->sp < call->min_sp)
+      call->min_sp = snes->cpu->sp;
   }
 
   if (at_instruction(snes)) {
     uint32_t pc = cpu_pc24(snes);
+
+    // A suspended call coming back to life. Checked before anything else: this
+    // address is inside the routine's body, so nothing else should claim it.
+    CosimCall* resumed = find_resume(c, pc);
+    if (resumed) {
+      if (c->mode == COSIM_NATIVE) {
+        run_native_segment(c, resumed);
+        return;  // the PC moved
+      }
+      resume_verify(c, resumed);
+    }
 
     // Has an in-flight call returned? Both the PC and the stack pointer have to
     // match, which is what keeps an NMI that happens to pass through the same
@@ -332,6 +624,7 @@ void cosim_step(Cosim* c) {
     while (c->priv->depth > 0) {
       CosimCall* call = &c->priv->stack[c->priv->depth - 1];
       const CosimRoutine* r = c->stats[call->index].routine;
+      if (call->suspended) break;  // parked; it cannot be returning
       if (pc != call->ret_pc ||
           snes->cpu->sp != return_sp(call->entry_sp, r->ret_kind))
         break;
@@ -339,24 +632,50 @@ void cosim_step(Cosim* c) {
       end_verify(c, call);
     }
 
+    // A ported routine is about to suspend. Only verify mode sees this: native
+    // mode never lets the ROM's instructions run, so its suspensions are the
+    // ones it issues itself in run_native_segment().
+    if (c->mode == COSIM_VERIFY && pc == THREAD_YIELD_ENTRY) {
+      CosimCall* yielding = find_yield(c);
+      if (yielding) suspend_verify(c, yielding);
+    }
+
     for (int i = 0; i < c->stat_count; i++) {
       if (!(c->enabled & (1u << i))) continue;
       const CosimRoutine* r = c->stats[i].routine;
       if (pc != r->entry) continue;
       if (c->mode == COSIM_NATIVE) {
-        run_native(c, r, &c->stats[i]);
+        if (!run_native(c, i, r, &c->stats[i])) break;
         return;  // the PC moved; do not also execute the entry instruction
       }
       begin_verify(c, i, r, &c->stats[i]);
       break;
     }
-  } else if (snes->cpu->intWanted && c->priv->depth > 0) {
+  } else if (snes->cpu->intWanted && c->priv->depth > 0 &&
+             c->mode == COSIM_VERIFY) {
     // An interrupt is about to land inside a call we are verifying. The handler
     // will change WRAM that the port, which only models the routine, cannot
-    // account for — so every call currently in flight has to be abandoned
-    // rather than reported as a divergence that is really ours.
+    // account for — so the call has to be abandoned rather than reported as a
+    // divergence that is really ours.
+    //
+    // A *suspended* call is the one case where an interrupt is not a problem
+    // but the entire point: being parked across an NMI is what yielding is for,
+    // and the state the routine resumes with is re-snapshotted anyway. So the
+    // walk stops at the first suspended call and leaves it alone.
+    //
+    // A resumable routine caught mid-segment is not abandoned either, because
+    // dropping it would strand its context a segment behind the ROM's and make
+    // every later comparison meaningless. The segment is marked spoiled instead:
+    // the port is still run, to keep the two in step, but the result is counted
+    // as interrupted rather than diffed.
     while (c->priv->depth > 0) {
-      CosimCall* call = &c->priv->stack[--c->priv->depth];
+      CosimCall* call = &c->priv->stack[c->priv->depth - 1];
+      if (call->suspended) break;
+      if (c->stats[call->index].routine->run_yield) {
+        call->segment_spoiled = true;
+        break;
+      }
+      c->priv->depth--;
       c->stats[call->index].interrupted++;
     }
   }
@@ -388,10 +707,10 @@ const CosimRoutine* cosim_find(const char* name) {
 }
 
 int cosim_report(const Cosim* c) {
-  printf("\n%-20s %8s %8s %8s %6s %6s  %-20s %s\n", "routine", "calls", "checked",
-         "passed", "int.", "stack", "ROM cycles", "result");
-  printf("%-20s %8s %8s %8s %6s %6s  %-20s %s\n", "--------------------",
-         "--------", "--------", "--------", "------", "------",
+  printf("\n%-20s %8s %7s %8s %8s %6s %6s  %-20s %s\n", "routine", "calls",
+         "yields", "checked", "passed", "int.", "stack", "ROM cycles", "result");
+  printf("%-20s %8s %7s %8s %8s %6s %6s  %-20s %s\n", "--------------------",
+         "--------", "-------", "--------", "--------", "------", "------",
          "--------------------", "------");
 
   int failures = 0;
@@ -408,8 +727,12 @@ int cosim_report(const Cosim* c) {
     else if (s->checked == 0) verdict = "not reached";
     else verdict = "OK";
 
-    printf("%-20s %8ld %8ld %8ld %6ld %6d  %-20s %s\n", s->routine->name, s->calls,
-           s->checked, s->passed, s->interrupted, s->stack_waived, cycles, verdict);
+    char yields[16] = "-";
+    if (s->routine->run_yield) snprintf(yields, sizeof yields, "%ld", s->yields);
+
+    printf("%-20s %8ld %7s %8ld %8ld %6ld %6d  %-20s %s\n", s->routine->name,
+           s->calls, yields, s->checked, s->passed, s->interrupted,
+           s->stack_waived, cycles, verdict);
     if (s->failed) printf("%22s%s\n", "", s->detail);
   }
   return failures;

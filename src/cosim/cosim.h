@@ -48,6 +48,7 @@
 #include "snes.h"
 
 #include "assets/rom.h"
+#include "port/coroutine.h"
 #include "port/wram.h"
 
 // ---------------------------------------------------------------------------
@@ -70,10 +71,29 @@ enum {
   COSIM_FLAG_C = 1 << 2,
 };
 
+// A, X and Y are claimed by default and every leaf routine claims all three.
+// Resumable routines are why the mask exists.
+//
+// `thread_yield` does not preserve the accumulator or the index registers: the
+// scheduler resumes a thread with `LDA thread_sp,X : TCS : PLD : PLP : PLB :
+// RTL`, which restores D, P and B and leaves A holding the parked stack pointer
+// and X holding the slot index. So a routine that suspends can only be held to
+// the registers its *own* code re-established after the last resume. Claiming
+// the rest would not be strictness, it would be asserting the scheduler's
+// leftovers — and the moment the port's scheduler replaces the ROM's in Phase 4
+// those leftovers legitimately change.
+enum {
+  COSIM_REG_A = 1 << 0,
+  COSIM_REG_X = 1 << 1,
+  COSIM_REG_Y = 1 << 2,
+  COSIM_REG_ALL = COSIM_REG_A | COSIM_REG_X | COSIM_REG_Y,
+};
+
 typedef struct {
   uint16_t a, x, y;
   bool n, z, c;
-  uint8_t flags;  // which of the above the shim modelled; 0 = none
+  uint8_t flags;  // which of N/Z/C the shim modelled; 0 = none
+  uint8_t regs;   // which of A/X/Y the shim modelled; defaults to all three
 } CosimRegs;
 
 // How the routine gets back to its caller — which decides how many bytes of
@@ -103,6 +123,20 @@ typedef struct {
 typedef void (*CosimShim)(Wram* w, const Rom* rom, const CosimRegs* in,
                           CosimRegs* out);
 
+// The same, for a routine that suspends — see `src/port/coroutine.h` and
+// `docs/threads.md`.
+//
+// One call to this runs **one segment**: from the routine's entry to its first
+// `thread_yield`, or from one resumption to the next, or from the last
+// resumption to the `RTL`. `ctx` is the port's parked state, which the harness
+// zeroes at entry and preserves untouched across every suspension; `ticks` is
+// the sleep count the ROM would have had in A at its `JSL thread_yield`, and it
+// is diffed like any other output. `out` is only read when the return is
+// `PORT_RETURNED`, because a yield's contract is WRAM plus the tick count and
+// nothing else — `thread_yield` clobbers the registers on the way through.
+typedef PortStep (*CosimYieldShim)(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out, void* ctx, uint16_t* ticks);
+
 typedef struct {
   const char* name;      // as it appears on the command line
   const char* symbol;    // the name in tools/symbols/zamn.sym
@@ -110,6 +144,20 @@ typedef struct {
   uint32_t ret_op;       // an RTS/RTL belonging to it, jumped to when substituting
   CosimReturn ret_kind;
   CosimShim run;
+  // Set instead of `run` for a resumable routine, along with the three fields
+  // below it. `run` and `run_yield` are mutually exclusive.
+  CosimYieldShim run_yield;
+  // One past the routine's last byte. Used to decide whether a `JSL
+  // thread_yield` the core is about to execute belongs to *this* routine —
+  // every thread in the game yields, so the entry PC alone means nothing.
+  uint32_t end;
+  // A `JSL thread_yield` inside the routine. When the port suspends, native
+  // mode puts the tick count in A and jumps here, so the *core* performs the
+  // suspension: the same instruction, the same pushes, the same parked stack.
+  // Same reasoning as `ret_op` — the routine already contains the code that
+  // does the 65816 part correctly.
+  uint32_t yield_op;
+  int ctx_size;  // sizeof the port's context struct
   const CosimExclude* excludes;
   int exclude_count;
   // Cycles a substituted call burns in place of the ROM's instructions.
@@ -146,6 +194,10 @@ typedef struct {
   long checked;    // verified to completion (VERIFY) / substituted (NATIVE)
   long passed;
   long interrupted;  // abandoned: an interrupt landed inside the call window
+  // Resumable routines only: suspensions seen. `checked` counts *segments* for
+  // these — the run between two yields is what gets diffed — so a routine with
+  // one activation and fifteen yields reports 1 call and 16 segments checked.
+  long yields;
   // Widest run of dead stack the diff waived on any one call, in bytes — how
   // much of WRAM the routine's own pushes put out of reach. Printed so the
   // strength of an "OK" is visible rather than assumed.

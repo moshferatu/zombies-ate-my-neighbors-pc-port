@@ -5,19 +5,28 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-07-23)
 
-The co-simulation harness PLAN.md calls for is **built and load-bearing**, and
-the first five routines are ported under it. `zamn_cosim verify` checks the port
-against the ROM's own code call by call — all 128 KB of WRAM plus registers —
-and passes **11,503 of 11,503 calls**. `zamn_cosim run` then *substitutes* the C
-for real and runs two cores in lockstep: over 2,389 scheduler passes no byte of
-live game state ever differs, the only differences being inside the stacks and
-one declared scratch slot.
+The co-simulation harness PLAN.md calls for is **built and load-bearing**, six
+routines are ported under it, and **the coroutine problem is solved.**
+`zamn_cosim verify` checks the port against the ROM's own code call by call —
+all 128 KB of WRAM plus registers — and passes **11,519 of 11,519**.
+`zamn_cosim run` then *substitutes* the C for real and runs two cores in
+lockstep: over 2,389 scheduler passes no byte of live game state ever differs,
+the only differences being inside the stacks and one declared scratch slot.
 
-The routines ported are leaves that never yield: `sprite_frame_tile` (the
-128-slot VRAM frame cache Phase 2 explicitly deferred), `sprite_cache_age`,
-`thread_tick_waits`, and both vblank-queue adders. **The coroutine problem —
-porting a routine that suspends inside `thread_yield` — is untouched and is the
-next real decision.** See `docs/cosim.md`.
+Five of the six are leaves that never yield: `sprite_frame_tile` (the 128-slot
+VRAM frame cache Phase 2 explicitly deferred), `sprite_cache_age`,
+`thread_tick_waits`, and both vblank-queue adders.
+
+The sixth is the one that mattered. **`fade_in` (`$80:891A`) suspends inside
+`thread_yield` and resumes fifteen times, and it is ported, verified and
+substituted.** The decision deferred since Phase 1 is made: a ported routine
+suspends at an **explicit resume point, with its parked state as plain copyable
+data** — not fibers. The deciding argument came from the harness itself: `verify`
+works by rewinding WRAM and replaying the port over it, and a fiber's parked
+machine stack cannot be rewound, so choosing fibers would mean porting the
+hardest part of the game with the checking turned off. See **`docs/threads.md`**
+for the full argument, the mechanism, and the carry bug the stronger checking
+found.
 
 ## Phase 2 complete ✅ (2026-07-23)
 
@@ -103,16 +112,23 @@ through a vendored SNES core, headless + interactive.
   same offsets the 65816 code does. That is what makes the diff possible at all,
   and it makes Phase 5's save states a one-line `fwrite`. `sprite_cache.c` (the
   128-slot VRAM frame cache — `$80:B9D6`/`$80:B9C7`), `thread.c`
-  (`$80:8398` and both vblank-queue adders).
+  (`$80:8398` and both vblank-queue adders), `coroutine.h` (**how a ported
+  routine suspends** — one `resume` index plus a context struct, ~40 lines) and
+  `fade.c` (`$80:891A`, the first routine ported that uses it).
 - `src/cosim/` — the harness (tooling, not port code; it goes away in Phase 4).
   `cosim.c` is the engine — snapshot, intercept, diff, substitute, lockstep —
   and `routines.c` is the registry plus one *shim* per routine that translates
   the 65816 calling convention. The shim/port split is deliberate: without it,
   "port code" drifts into 65816 written in C.
 - `src/cosim.c` → **`zamn_cosim.exe`** — `verify` (ROM drives, port is checked
-  per call), `run` (port drives, two cores diffed per scheduler pass), `list`.
+  per call — per *segment*, for a routine that suspends), `run` (port drives,
+  two cores diffed per scheduler pass), `list`.
 - `docs/cosim.md` — the design, what each mode proves, what the diff forgives
   and why, and the carry-flag bug that only one of the two modes could catch.
+- `docs/threads.md` — **the coroutine decision**: why resume points and not
+  fibers, how a suspending routine is checked segment by segment, how native
+  mode suspends by jumping to the routine's own `JSL thread_yield`, and what is
+  still open.
 
 ## How to build & run
 ```
@@ -203,27 +219,58 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
   been diffed against an upload.
 
 - Phase 3 (verify): `zamn_cosim verify` replays `level1.zmv` and checks each of
-  the five ported routines against the ROM's own on **every call the game
+  the six ported routines against the ROM's own on **every call the game
   makes** — the whole 128 KB of WRAM plus A/X/Y and the flags each shim claims.
-  **11,503 of 11,503 calls pass** (10,354 `sprite_frame_tile`, 1,016
+  **11,519 of 11,519 pass** (10,354 `sprite_frame_tile`, 1,016
   `thread_tick_waits`, 107 `vbl_queue_b_add`, 24 `vbl_queue_a_add`, 2
-  `sprite_cache_age`). The only WRAM waived is derived, not declared: per call
-  it is the window between the deepest the stack pointer went and where it
-  started — **2 bytes** for the three routines that push, **0** for the two that
-  do not — plus one declared 2-byte scratch slot (`$7E:0038`, where
-  `sprite_frame_tile` spills the caller's X). Non-vacuous three times: starting
-  the LRU eviction scan one slot late failed on the very first call at
+  `sprite_cache_age`, and `fade_in`'s 16 segments). The only WRAM waived is
+  derived, not declared: per call — per *segment*, for `fade_in` — it is the
+  window between the deepest the stack pointer went and where it started,
+  **2 bytes** for the three leaf routines that push, **0** for the two that do
+  not, and **3** for `fade_in` (exactly the return address its own `JSL
+  thread_yield` pushes) — plus one declared 2-byte scratch slot (`$7E:0038`,
+  where `sprite_frame_tile` spills the caller's X). Non-vacuous three times:
+  starting the LRU eviction scan one slot late failed on the very first call at
   `sprite_lru_slot`; returning the wrong register in a shim failed on Y after
   4 calls; and a wrong VRAM destination failed at `sprite_upload_dest`.
+- Phase 3 (the coroutine): `fade_in` (`$80:891A`) is the first ported routine
+  that does not run to completion — it sets brightness to 0 and then sleeps a
+  frame between each of fifteen increments. It was chosen because it is the
+  smallest routine in the game that suspends and calls nothing but
+  `thread_yield`, so its whole observable effect is one word of WRAM.
+  `verify` checks it **once per segment** — the run between two suspensions,
+  with WRAM and the registers re-snapshotted at every resumption because
+  arbitrary other threads ran in between — and **16 of 16 segments** are
+  identical, registers and flags included. `run` substitutes all sixteen and
+  the game reaches gameplay unchanged. Non-vacuous four times: sleeping 2 ticks
+  instead of 1 failed at segment 0 on the sleep count; ending the loop at 14
+  instead of 15 failed at segment 14 with "the ROM suspended, the port
+  returned"; a wrong A on return failed on A; and see below.
+- Phase 3 (**carry, again**): the engine at first compared no registers at a
+  suspension, reasoning that `thread_yield` clobbers A/X/Y so nothing at the
+  `JSL` is readable. Wrong, and wrong the same way the queue-adder bug was:
+  `thread_yield` opens with `PHP`, so the flags at the `JSL` are parked *with the
+  thread* and handed back by `PLP`. Comparing them found a real error the same
+  hour: the shim claimed carry passed through untouched, which is what the
+  preceding `LDA #$0001` implies — but the loop reaches that `LDA` by falling
+  through `CMP #$000F`, which borrows for every brightness below 15 and clears
+  carry. Only the *first* suspension, entered from the top of the routine, skips
+  that `CMP`. One segment in sixteen differs from the other fifteen. **An
+  unclaimed output is an unchecked output, and a suspension is an exit like any
+  other.**
 - Phase 3 (run): `zamn_cosim run` actually substitutes the C — the ROM's
   instructions never execute — and diffs two cores' full WRAM once per scheduler
   pass. **Control first:** with nothing substituted the two cores are identical
-  at all 2,389 compared passes, so the machinery is deterministic. With all five
+  at all 2,389 compared passes, so the machinery is deterministic. With all six
   substituted, at most **5 bytes of 131,072** ever differ and every one of them,
   on all 2,260 passes where anything differed, is inside the stacks
   (`$7E:1000-$7E:12FF`) or the declared scratch slot — **no byte of live game
   state ever differs**, and the run reaches gameplay. The cycle budget each
-  substituted call burns is measured by `verify`, not guessed.
+  substituted call burns is measured by `verify`, not guessed. A substituted
+  *suspension* costs nothing extra to get right: native mode puts the sleep count
+  in A and jumps to the routine's own `JSL thread_yield`, so the core performs
+  the real suspension with the real stack footprint, which is why `fade_in`
+  leaves no stale bytes at all.
 - Phase 3 (the bug the harness earned its keep on): the two vblank-queue adders
   return their verdict **in the carry flag**, and their shims first modelled
   only N and Z. `verify` passed all 131 calls — correctly, since it compares
@@ -284,29 +331,33 @@ Controls: Arrows=D-pad, Z=B, X=A, A=Y, S=X, Q=L, W=R, Enter=Start, RShift=Select
 
 ## Next steps — Phase 3 (continued)
 
-The harness works and five leaf routines are through it. The next step is the
-one that has been deferred since Phase 1 and cannot be deferred again:
+The harness works, the coroutine question is answered (`docs/threads.md`), and
+six routines are through it — five leaves and one that suspends. What is left is
+scale rather than shape.
 
-1. **Decide how a ported thread suspends.** Every routine ported so far is a
-   leaf that never calls `thread_yield`, which is exactly why they were chosen —
-   they exercise the harness without needing an answer. Real game logic
-   suspends mid-body and resumes on a parked stack, so a plain C function
-   cannot stand in for it. The options are an explicit resume-point state
-   machine per thread, or real coroutines (fibers / saved stacks).
-   `docs/frame-skeleton.md` → *Porting consequences* frames the choice; it
-   shapes every thread ported afterwards, so it wants deciding before the sixth
-   routine, not the sixtieth.
+1. **Port a routine that yields from inside a call it makes.** `fade_in` yields
+   at its own top level, which is the easy half. The nested case needs the callee
+   resumable too, with its own `PortCoro` in the caller's context, and it is the
+   one part of the decision that is designed but not yet exercised. The harness
+   will not paper over it: a yield whose return address is outside the ported
+   routine's body is deliberately left unmatched rather than misattributed.
+   `$80:8516` (the gameplay thread, yields at two sites and calls six unported
+   routines) is the realistic target once more of its callees exist.
 2. **Work outward from what is already proven.** `sprite_build_oam`
    (`$80:BD1F`, 1,016 calls) sits directly above the frame cache and
-   `sprite_emit`, both of which are now verified, so it is the shortest step
-   into real per-frame logic.
+   `sprite_emit`, both of which are verified, so it is the shortest step into
+   real per-frame logic. It never yields — it runs from `scheduler_idle`'s own
+   housekeeping — so it needs no new machinery, but it does pull in `$80:BC7F`,
+   `$80:BCE2`, `$80:BC23` and `$80:BEC9`.
 3. **Then the actor slot tables** (`$7E:0300` stride `$100`, `$7E:1872` stride
    `$14`) that the camera-driven spawner `$81:80EC` fills, and the animation
    state that picks an actor's metasprite frame to frame. Deferred from Phase 2
    as runtime state rather than ROM format; the harness is what will check them.
 4. **Extend `movies/`** (Phase 2 checklist item 7, still open). Every new movie
    widens `verify` and `run` for free, exactly as it does the `verify-*`
-   commands.
+   commands. This is now the binding constraint on `fade_in` specifically:
+   `level1.zmv` calls it **once**, so sixteen segments is the whole sample, and
+   `fade_out` (`$80:8933`) is never reached at all.
 
 ## Known limitations / TODO (deferred, non-blocking)
 - **`run` proves nothing inside `$7E:1000-$7E:12FF`** (the stacks). A
@@ -318,7 +369,16 @@ one that has been deferred since Phase 1 and cannot be deferred again:
 - **A substituted call returns on a measured cycle budget, not the real cost.**
   Nothing has diverged because of it yet, but the budget is a per-routine mean
   and the ROM's own cost varies with its input (`sprite_frame_tile`: 288..1190).
-  This stops mattering in Phase 4, when the reference is cut loose.
+  It is also a slight over-count, because the measured figure includes the
+  `RTS`/`RTL` (or, for a suspension, the `JSL thread_yield`) that native mode
+  then makes the core execute for real — about 24 master cycles inside a
+  ~57,000-cycle frame. This stops mattering in Phase 4, when the reference is
+  cut loose.
+- **Two activations of the same ported routine at once are not distinguished.**
+  A suspension is attributed to the innermost in-flight call whose body contains
+  the yield's return address; if two threads were ever inside the same ported
+  routine simultaneously that would be ambiguous. No routine ported so far can
+  be. See `docs/threads.md` → *What is not settled yet*.
 - 11 of 2,400 passes go uncompared by `run`: one before the scheduler exists,
   and ten where a side never returned to the `WAI` within the step.
 - Frame pacing fixed 2026-07-22: paced by sync-to-audio, with a monotonic-timer

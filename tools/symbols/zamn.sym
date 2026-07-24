@@ -89,9 +89,11 @@ $80:816C  nmi_entry            # the NMI vector; trampolines through [$0000]
 $80:8179  nmi_main
 
 # --- Code: cooperative thread scheduler --------------------------------------
+$80:825E  thread_spawn         # A = far entry address; builds a fake yield frame
 $80:8353  thread_yield         # A = ticks to sleep; returns when the wait expires
 $80:8371  scheduler_idle       # WAI, then per-frame housekeeping, then re-scan
 $80:8398  thread_tick_waits    # decrement every live thread's wait counter
+$80:833E  thread_exit          # where a thread's own RTL lands; frees the slot
 
 # --- Code: vblank job queues -------------------------------------------------
 $80:83AE  vbl_queue_a_add
@@ -99,6 +101,9 @@ $80:83D5  vbl_queue_a_remove
 $80:83E0  vbl_queue_a_run
 $80:8418  vbl_queue_b_add
 $80:843D  vbl_queue_b_run
+
+# --- Code: screen ------------------------------------------------------------
+$80:891A  fade_in              # ramps brightness_shadow 0->15, yielding each step
 
 # --- Code: graphics transfer -------------------------------------------------
 $80:9E7B  vram_queue_flush     # drains the VRAM upload list via DMA, once per NMI

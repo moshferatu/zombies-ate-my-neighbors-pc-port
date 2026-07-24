@@ -85,6 +85,9 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_SPRITE_LRU_SLOT 0x009e   // x2; the slot the cache evicts next
 #define W_SPRITE_TICK 0x00a0       // sched_tick snapshot for this frame's draw
 
+// --- Screen ---
+#define W_BRIGHTNESS_SHADOW 0x136c  // NMI restores this into INIDISP
+
 // --- Thread scheduler tables (24 slots of one word each) ---
 #define W_THREAD_WAIT 0x1180  // bit 15 = live, low bits = ticks remaining
 #define W_THREAD_SP 0x11b0

@@ -15,6 +15,7 @@
 
 #include "cosim/cosim.h"
 
+#include "port/fade.h"
 #include "port/sprite_cache.h"
 #include "port/thread.h"
 
@@ -199,6 +200,70 @@ static void shim_vbl_queue_b_add(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
+// $80:891A  fade_in — no arguments, and it suspends
+// ---------------------------------------------------------------------------
+
+// The first shim for a routine that does not run to completion.
+//
+// A suspension is an exit like any other, and the reason to say so out loud is
+// the carry bug above. It would be easy to treat a yield as "the routine is not
+// finished, so there is nothing to check yet" — but the state at the `JSL
+// thread_yield` is handed straight to `PHP`, parked with the thread, and given
+// back by `PLP` when it resumes. Anything wrong there is wrong for the rest of
+// the routine, and in native mode nothing else would ever set it. So a
+// suspension declares its registers and flags exactly as a return does.
+//
+// `in` is captured per *segment* — at the routine's entry, and again at each
+// resumption — so "unchanged" here means unchanged across this run of the
+// routine's own instructions, not across the suspension. That is the claim the
+// routine's listing can actually support, and it is the one that survives Phase
+// 4 replacing the scheduler underneath it.
+//
+//   * Neither X nor Y is mentioned anywhere in `$80:891A-$80:8932`, so both come
+//     back as the segment found them.
+//   * At a suspension, `LDA #$0001` is the last instruction before the `JSL`:
+//     A is the sleep count, and N and Z describe it.
+//   * Carry at a suspension depends on **which** suspension, and this is the one
+//     thing here that is not obvious from reading the routine top to bottom. The
+//     loop reaches the `JSL` by falling through `CMP #$000F`, which borrows for
+//     every brightness below 15 and so leaves carry clear. The *first*
+//     suspension is entered from the top of the routine and never executes that
+//     `CMP` at all, so it carries the caller's own carry through untouched.
+//     Fifteen of the sixteen segments agree with the simple answer, which is
+//     exactly why it is worth getting right rather than guessing.
+//   * At the return, `LDA $136C : CMP #$000F` is the tail: A is $000F, and 15
+//     minus 15 is zero with no borrow, so N=0, Z=1, C=1. Nothing between that
+//     and the `RTL` touches any of them.
+static PortStep shim_fade_in(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out, void* ctx, uint16_t* ticks) {
+  (void)rom;
+  FadeCtx* fade = (FadeCtx*)ctx;
+  // Which segment is about to run, read before the call advances it.
+  bool from_top = fade->co.resume == PORT_CORO_ENTRY;
+
+  PortStep step = fade_in(w, fade, ticks);
+
+  out->x = in->x;
+  out->y = in->y;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+
+  if (step == PORT_YIELDED) {
+    // A is filled in from `ticks` by the harness — the sleep count *is* the
+    // accumulator, and having one place decide that keeps the two from drifting.
+    out->n = false;  // the count is 1: positive, non-zero
+    out->z = false;
+    out->c = from_top ? in->c : false;
+    return step;
+  }
+
+  out->a = 0x000f;
+  out->n = false;
+  out->z = true;
+  out->c = true;
+  return step;
+}
+
+// ---------------------------------------------------------------------------
 // The registry
 // ---------------------------------------------------------------------------
 
@@ -259,6 +324,21 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_vbl_queue_b_add,
         .cycles = 393,
         .stack_bytes = 2,   // the opening `PHY`
+    },
+    {
+        .name = "fade_in",
+        .symbol = "$80:891A",
+        .entry = 0x80891a,
+        .end = 0x808933,     // one past the `RTL`; bounds the yield-site test
+        .ret_op = 0x808932,  // RTL
+        .ret_kind = COSIM_RTL,
+        .run_yield = shim_fade_in,
+        .yield_op = 0x808923,  // the `JSL thread_yield` native mode jumps to
+        .ctx_size = (int)sizeof(FadeCtx),
+        // Per *segment*, not per call: what `verify` measured a run between two
+        // suspensions to cost (162..238, mean 201 over 16 segments).
+        .cycles = 201,
+        .stack_bytes = 0,  // pushes nothing of its own
     },
 };
 

@@ -65,6 +65,14 @@ function, four fields carry the weight:
 | `cycles` | what a substituted call burns | the mean `verify` measured |
 | `stack_bytes` | how much stack the ROM's version pushes and abandons | the `stack` column `verify` measured |
 
+A routine that *suspends* sets `run_yield` instead of `run`, plus three more
+fields — `end`, `yield_op` and `ctx_size`. `docs/threads.md` covers what those
+mean and why the coroutine problem turned out to be tractable; the short version
+is that a suspending routine is checked once per **segment** (the run between two
+suspensions) rather than once per call, and that native mode suspends by jumping
+to the routine's own `JSL thread_yield` for the same reason it returns by jumping
+to the routine's own `RTS`.
+
 The last two are measured, never guessed. `verify` prints the real distribution
 of both, so the loop is: port the routine, run `verify`, copy the numbers it
 reports into the registry, then run `run`.
@@ -84,7 +92,15 @@ each one.
 Flags are opt-in: a shim declares which of N/Z/C it modelled, and `verify`
 compares exactly those. That keeps the claim as strong as the evidence and no
 stronger — and, as it turned out, makes an unmodelled flag a visible gap rather
-than an invisible one.
+than an invisible one. A and X and Y work the same way, though every routine so
+far claims all three; the mask exists because a suspending routine's registers
+are only claimable per segment.
+
+A suspension is an exit and is checked exactly as hard as a return — WRAM plus
+A/X/Y plus the claimed flags, with A being the sleep count. That is not
+symmetry for its own sake: `thread_yield` opens with `PHP`, so the flags at the
+`JSL` are parked with the thread and given back by `PLP` on resume. Adding that
+check found a real carry bug within the hour. See `docs/threads.md`.
 
 ### The shim/port split
 
@@ -185,13 +201,20 @@ an unchecked output.** `verify` alone would have shipped it.
 
 ## Where this is going
 
-The five routines here are leaves — they never call `thread_yield`. That was
-deliberate, to get the harness working against routines whose contract is
-simple. The hard part is still ahead and `docs/frame-skeleton.md` states it:
+The first five routines here are leaves — they never call `thread_yield`. That
+was deliberate, to get the harness working against routines whose contract is
+simple. The sixth, `fade_in`, is the first that suspends, and the question
+`docs/frame-skeleton.md` posed in Phase 1 —
 
 > ZAMN's routines suspend mid-body via `thread_yield` and resume with their
 > stack intact, so a naive C function cannot stand in for one.
 
-Porting a *thread* needs either an explicit resume-point state machine or a real
-coroutine, and that decision shapes every thread ported after it. The harness
-does not answer it — but the harness is what will prove the answer right.
+— is now answered: **explicit resume points, with the suspended state as plain
+copyable data.** The argument, the mechanism and what it proved are in
+`docs/threads.md`. The deciding reason is this harness itself: `verify` works by
+rewinding WRAM and replaying the port over it, and a fiber's parked machine stack
+cannot be rewound. Picking a representation the harness cannot inspect would mean
+porting the hardest part of the game with the checking turned off.
+
+What is left is scale rather than shape — nested yields, more than one activation
+of a routine at a time, and enough movies to exercise any of it properly.

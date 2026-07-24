@@ -1,0 +1,230 @@
+# How a ported routine suspends
+
+The decision `docs/frame-skeleton.md` flagged at the end of Phase 1, deferred
+through all of Phase 2, and named in PROGRESS.md as the thing that "cannot be
+deferred again". This is the answer, the argument for it, and what has been
+built and proved on top of it.
+
+## The problem
+
+ZAMN is not a flat state machine. It runs a 24-slot cooperative scheduler
+(`thread_yield` at `$80:8353`, the most-called routine in the game), and its
+game logic is written as coroutines:
+
+```
+fade_in:                          ; $80:891A
+  LDA #$0000 : STA $136C          ; brightness_shadow = 0
+loop:
+  LDA #$0001 : JSL thread_yield   ; sleep one tick — and one frame passes here
+  INC $136C
+  LDA $136C : CMP #$000F : BNE loop
+  RTL
+```
+
+That `JSL` does not return for a frame. The scheduler parks the thread's stack
+pointer in `thread_sp`, picks somebody else, and only later restores the stack
+and lets `thread_yield` return. Between the `JSL` and the `INC`, the whole rest
+of the game ran.
+
+A plain C function cannot stand in for that. So: how does the port's version of
+this routine stop in the middle?
+
+## The answer
+
+**An explicit resume point, and the suspended state is plain data.** No fibers,
+no saved machine stacks, no `ucontext`, no per-ABI assembly. `src/port/fade.c`
+is the whole of the routine above:
+
+```c
+PortStep fade_in(Wram* w, FadeCtx* c, uint16_t* ticks) {
+  switch (c->co.resume) {
+    case PORT_CORO_ENTRY:
+      wram_w16(w, W_BRIGHTNESS_SHADOW, 0);
+      return port_yield(&c->co, 1, ticks, FADE_IN_RESUME);
+    case FADE_IN_RESUME:
+      wram_w16(w, W_BRIGHTNESS_SHADOW, wram_r16(w, W_BRIGHTNESS_SHADOW) + 1);
+      if (wram_r16(w, W_BRIGHTNESS_SHADOW) != 0x000f)
+        return port_yield(&c->co, 1, ticks, FADE_IN_RESUME);
+      break;
+  }
+  return PORT_RETURNED;
+}
+```
+
+The mechanism is `src/port/coroutine.h`, and it is about forty lines. A routine
+that suspends is a function over a context struct whose first member is a
+`PortCoro` — one `uint16_t` saying where to re-enter. Anything that has to
+survive a suspension goes in that struct instead of being a C local; that is the
+promotion the 65816 version gets for free by leaving it on its parked stack, and
+doing it by hand is the entire cost of this approach.
+
+## Why not fibers
+
+Fibers are the obvious alternative and they are genuinely nicer to write: the C
+would read exactly like the original, straight down the page, with real calls to
+`thread_yield` in the middle and no context struct at all. Three things rule
+them out, in increasing order of weight.
+
+**`src/port/` depends on nothing but libc.** That rule has held since the first
+line of Phase 2 and it is what makes the port portable. Fibers are `CreateFiber`
+on Windows, `ucontext` on POSIX (deprecated on macOS), or hand-written assembly
+per ABI. None of those is libc.
+
+**Phase 5's save states stop being a `fwrite`.** PLAN.md's payoff feature list
+includes save states, and `src/port/wram.h` was designed so that "the game state"
+is one 128 KB array plus, now, a handful of small context structs. Where each
+thread is parked stays a number. With fibers it is a native call stack — not
+portable across builds, not portable across compilers, and not something you can
+write to a file and read back next week.
+
+**And the decisive one: `verify` could not check them.** This is the argument
+that actually settles it, and it comes from the harness that already exists.
+
+`zamn_cosim verify` works by *rewinding*. It snapshots WRAM as a routine is
+entered, lets the ROM's own instructions run, and then rewinds its copy and runs
+the C port over the same input to compare the two. That is the instrument this
+whole phase rests on — 11,519 calls checked, and every bug found so far found by
+it.
+
+You cannot rewind a native call stack. A suspended fiber's state is a stack
+pointer into memory the C runtime owns, with return addresses, spilled
+registers, and red zones in it; there is no defined way to copy it, replay it, or
+run it twice. A suspended coroutine whose state is `{ resume, locals }` in a
+struct is a `memcpy`. **Choosing fibers would mean choosing a representation the
+harness cannot inspect** — which is to say, porting the hardest part of the game
+with the checking turned off, exactly where it is needed most.
+
+The cost of the decision is real and worth stating: a routine that yields inside
+a routine it *calls* needs the callee to be resumable too, with its own
+`PortCoro`, and the caller's resume point has to re-enter it. That nesting is
+manual, and for a deeply nested yield it will be tedious. It is still the right
+trade, because the alternative is untestable.
+
+## How the harness checks one
+
+A suspending routine is not one comparison but a chain of them. Its execution
+decomposes into **segments**: entry to the first `thread_yield`, then each
+resumption to the next suspension, then the last resumption to the `RTL`. Every
+segment is straight-line code that terminates — which is exactly the shape the
+existing engine already handled.
+
+So `verify` does per segment what it used to do per call:
+
+| At | What happens |
+| --- | --- |
+| entry | snapshot WRAM and registers; zero the port's context |
+| a `JSL thread_yield` in the routine's body | rewind, run one segment of the port, diff WRAM + A/X/Y + the claimed flags. A *is* the sleep count. |
+| the resumption | **re-**snapshot WRAM and registers |
+| the `RTL` | rewind, run the last segment, diff WRAM and the registers |
+
+The re-snapshot at each resumption is the part that matters. Between a
+suspension and its resumption arbitrary other threads ran and moved WRAM
+underneath the routine, so the state it picks up with is emphatically not the
+state it left. Diffing the next segment against the entry snapshot would compare
+the port against a world that no longer exists.
+
+Two smaller things fall out of the same observation:
+
+**The dead-stack window is per segment.** `verify` waives differences between
+the deepest the stack pointer went during a call and where it started. While a
+routine is parked the scheduler switches to other threads' stacks entirely, so
+the stack pointer goes hundreds of bytes below anything the routine touched.
+Carrying that low-water mark across a suspension would waive most of a kilobyte
+of WRAM for free. It is reset at every resumption, and suspended calls are
+skipped while the mark is being tracked at all. `fade_in` reports a waived window
+of **3 bytes** — precisely the return address its own `JSL thread_yield` pushes.
+
+**An interrupt while parked is not a problem, it is the point.** The engine
+abandons a call when an NMI lands inside it, because the handler moves WRAM the
+port does not model. A suspended routine is parked across an NMI by definition,
+so the walk stops at the first suspended call and leaves it alone. A resumable
+routine caught *mid-segment* is not abandoned either — dropping it would strand
+its context a segment behind the ROM and make every later comparison
+meaningless — so the segment is marked spoiled, the port is still run to keep the
+two in step, and the result is counted as interrupted rather than diffed.
+
+## How the harness substitutes one
+
+`run` skips the ROM's instructions and runs the C for real. For a leaf routine it
+publishes the result registers and jumps the program counter to the routine's own
+`RTS`/`RTL`, so the *core* performs the return. Suspending works the same way,
+in mirror image: **when the port yields, native mode puts the sleep count in A
+and jumps to the routine's own `JSL thread_yield`.**
+
+The port therefore never models parking a stack pointer, choosing the next
+thread, or coming back. The core executes the real `JSL`, the real scheduler
+parks the real frame, and the real scheduler resumes it — at which point the
+harness recognises the resume address and runs the next segment. Because it is
+literally the ROM's own instruction, the stack footprint of a substituted
+suspension is not an approximation of the ROM's, it *is* the ROM's, which is why
+`fade_in` declares `stack_bytes = 0` and leaves nothing stale behind.
+
+This is the same reasoning as `ret_op`, and it is the reason the coroutine
+problem turned out to be tractable at all: the hard part of suspending is the
+65816 part, and the 65816 part is already written.
+
+## What this proved, and the bug it caught
+
+`fade_in` is the smallest routine in the game that suspends. It calls nothing but
+`thread_yield`, so its entire observable effect is one word of WRAM and there is
+no unported subroutine inside a segment to muddy the diff.
+
+* **`verify`** — 1 activation, 15 suspensions, **16 of 16 segments** identical:
+  all 128 KB of WRAM, plus A, X, Y and N/Z/C, at every suspension *and* at the
+  return. Waived: 3 bytes of dead stack per segment, derived, nothing declared.
+* **`run`** — the ROM's instructions never execute, and all sixteen segments are
+  substituted. Over 2,389 compared scheduler passes no byte of live game state
+  ever differs, and the run reaches gameplay with all six ported routines
+  substituted at once.
+
+Non-vacuous four times. Yielding for 2 ticks instead of 1 failed at segment 0 on
+the sleep count; ending the loop at 14 instead of 15 failed at segment 14 with
+"the ROM suspended, the port returned", after 14 segments had passed; returning
+`$000E` in A failed on A; and:
+
+**Carry, again.** The first version of the engine did not compare registers at a
+suspension at all — the reasoning being that `thread_yield` clobbers A, X and Y,
+so nothing at the `JSL` is an output anybody reads. That reasoning is wrong, and
+wrong in exactly the way the queue-adder bug in `docs/cosim.md` was wrong.
+`thread_yield` opens with `PHP`. The flags at the `JSL` are parked *with the
+thread* and handed back by `PLP` when it resumes, and under substitution nothing
+else would ever set them.
+
+Comparing them found a real error the same hour it was added. The shim claimed
+carry passed through the suspension untouched, which is what the last instruction
+before the `JSL` — `LDA #$0001` — implies. But the loop reaches that `LDA` by
+falling through `CMP #$000F`, which borrows for every brightness below 15 and
+leaves carry *clear*. Only the very first suspension, entered from the top of the
+routine, never executes that `CMP`. One segment in sixteen behaves differently
+from the other fifteen, and the simple answer is right about that one and wrong
+about the rest.
+
+The lesson from `docs/cosim.md` generalises, so it is worth restating in its
+stronger form: **an unclaimed output is an unchecked output, and a suspension is
+an exit like any other.**
+
+## What is not settled yet
+
+* **One activation is a thin sample.** `movies/level1.zmv` calls `fade_in` once.
+  Sixteen segments is enough to prove the mechanism and it caught a real bug, but
+  it is not enough to claim the routine is exercised. This is the same gap
+  PROGRESS.md's Phase 2 checklist item 7 names, and the same fix: more movies.
+* **Nested yields are unimplemented, not just unwritten.** No routine ported so
+  far yields from inside a call. The harness deliberately refuses to match a
+  yield whose return address is outside the routine's own body rather than
+  quietly attributing it, so the first nested case will show up as an unmatched
+  yield rather than as a silent wrong answer.
+* **Two activations of the same routine at once are not distinguished.** The
+  yield-site test finds the innermost in-flight call whose body contains the
+  return address. If two threads were ever inside the same ported routine
+  simultaneously, that is ambiguous. No routine ported so far can be.
+* **`fade_out` at `$80:8933` is not ported.** It is the mirror image — `DEC`
+  instead of `INC`, ending in a forced blank and a bare `WAI` — and
+  `movies/level1.zmv` never executes it. A routine the harness cannot reach is a
+  routine the harness cannot check, so it waits for a movie that reaches it.
+* **A substituted suspension over-burns its cycle budget slightly.** The measured
+  mean (201 cycles for `fade_in`) covers the segment *including* its `JSL`, and
+  the core then executes that `JSL` for real. It is the same shape as the
+  existing over-count of the `RTS`/`RTL` for leaf routines, it is about 24 master
+  cycles inside a ~57,000-cycle frame, and it stops mattering in Phase 4 when the
+  reference is cut loose.
