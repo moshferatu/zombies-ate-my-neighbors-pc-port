@@ -32,7 +32,7 @@
 #include "snes.h"
 
 #include "analysis/cdl.h"
-#include "analysis/movie.h"
+#include "analysis/movie_apply.h"
 #include "assets/actor.h"
 #include "assets/gfx.h"
 #include "assets/level.h"
@@ -289,8 +289,7 @@ static int cmd_verify_lzss(int argc, char** argv) {
 
   for (int frame = 0; frame < frames; frame++) {
     if (have_movie) {
-      uint16_t buttons = movie_state(&movie, frame);
-      for (int b = 0; b < 12; b++) snes_setButtonState(snes, 1, b, (buttons >> b) & 1);
+      movie_apply(&movie, snes, frame);
     }
     verify_frame(snes);
   }
@@ -982,8 +981,7 @@ static int cmd_verify_level(int argc, char** argv) {
 
   for (int frame = 0; frame < frames && !lv.done; frame++) {
     if (have_movie) {
-      uint16_t buttons = movie_state(&movie, frame);
-      for (int b = 0; b < 12; b++) snes_setButtonState(snes, 1, b, (buttons >> b) & 1);
+      movie_apply(&movie, snes, frame);
     }
     level_frame(snes);
   }
@@ -1250,8 +1248,7 @@ static int cmd_verify_actors(int argc, char** argv) {
 
   for (int frame = 0; frame < frames && !(ac.victims_done && ac.objects_done); frame++) {
     if (have_movie) {
-      uint16_t buttons = movie_state(&movie, frame);
-      for (int b = 0; b < 12; b++) snes_setButtonState(snes, 1, b, (buttons >> b) & 1);
+      movie_apply(&movie, snes, frame);
     }
     actors_verify_frame(snes);
   }
@@ -1710,8 +1707,7 @@ static int cmd_verify_sprites(int argc, char** argv) {
 
   for (int frame = 0; frame < frames; frame++) {
     if (have_movie) {
-      uint16_t buttons = movie_state(&movie, frame);
-      for (int b = 0; b < 12; b++) snes_setButtonState(snes, 1, b, (buttons >> b) & 1);
+      movie_apply(&movie, snes, frame);
     }
     sprites_frame(snes);
   }
@@ -2045,8 +2041,7 @@ static int cmd_spc(int argc, char** argv) {
   int used = 0;
   for (; used < frames; used++) {
     if (have_movie) {
-      uint16_t buttons = movie_state(&movie, used);
-      for (int b = 0; b < 12; b++) snes_setButtonState(snes, 1, b, (buttons >> b) & 1);
+      movie_apply(&movie, snes, used);
     }
     spc_frame(snes);
     if (sc.done) {
@@ -2396,8 +2391,7 @@ static int cmd_verify_music(int argc, char** argv) {
 
   for (int frame = 0; frame < frames; frame++) {
     if (have_movie) {
-      uint16_t buttons = movie_state(&movie, frame);
-      for (int b = 0; b < 12; b++) snes_setButtonState(snes, 1, b, (buttons >> b) & 1);
+      movie_apply(&movie, snes, frame);
     }
     music_frame(snes);
   }

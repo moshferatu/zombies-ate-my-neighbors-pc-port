@@ -105,6 +105,21 @@
   X(enemy_died,       "enemy_collide",       "a hit that took an enemy's last health") \
   X(enemy_no_damage,  "enemy_collide",       "a hit whose damage-table entry is zero") \
   X(enemy_survived,   "enemy_collide",       "an enemy that lived through a hit — declined") \
+                                                                               \
+  X(shot_expire,      "shot_collide",        "a shot that hit something and is ending") \
+  X(shot_expire_zero, "shot_collide",        "...on id 0, the one path that runs no CMP at all") \
+  X(shot_pass,        "shot_collide",        "an id a shot flies straight through") \
+                                                                                \
+  /* $83:A364 victim_collide — eight ids, eight endings. */                      \
+  X(victim_latched,   "victim_collide",      "a victim whose fate was already settled, so this is ignored") \
+  X(victim_claim_a,   "victim_collide",      "one side claimed a victim — $18 latched with bit 15 clear") \
+  X(victim_claim_b,   "victim_collide",      "the other side claimed one — $18 latched $8000") \
+  X(victim_event_2,   "victim_collide",      "id $0B, which has an ending to itself") \
+  X(victim_event_3,   "victim_collide",      "one of the three ids that share the give-up code") \
+  X(victim_keep_id,   "victim_collide",      "...with $26 set, the one path that leaves the collision id alone") \
+  X(victim_event_4,   "victim_collide",      "id $34, which has an ending to itself") \
+  X(victim_event_ff,  "victim_collide",      "id $FF, the only ending that is not a small integer") \
+  X(victim_ignore,    "victim_collide",      "an id a victim has no reaction to at all") \
                                                                                 \
   /* $80:C7D9 score_add. */                                                     \
   X(score_slot_0,     "score_add",           "points credited to the first score slot") \

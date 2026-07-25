@@ -1,17 +1,20 @@
-// The door into actor behaviour: the callback dispatcher, and the two handlers
-// a collision reaches.
+// The door into actor behaviour: the callback dispatcher, and every handler a
+// collision on the current movies reaches.
 //
 // `port/oam.h` ends at `actor_collide_notify` (`$80:BE8F`), which hands a
-// touching pair to `$80:8480` twice — once per actor. Until now that was where
-// the port stopped, and `zamn_cosim` measured the size of the hole rather than
+// touching pair to `$80:8480` twice — once per actor. That was once where the
+// port stopped, and `zamn_cosim` measured the size of the hole rather than
 // filling it: on `movies/level1-rescue.zmv` **1,226 of 1,226** collisions enter
-// a handler, and a census found that 1,225 of them reach exactly **two**
-// handlers. This is those two, plus the dispatcher that enters them.
+// a handler. The census then named the handlers one at a time, and this is all
+// of them, plus the dispatcher that enters them.
 //
 //   $80:8480  thread_call_handler  build the frame, swap direct page, RTL in
 //   $80:F7F7  player_collide       the player's; jump-tables on the other's id
 //   $80:F950  player_collide_hurt  the entry 1,225 of 1,225 of them land on
 //   $81:8888  enemy_collide        an enemy's; the mirror image of the player's
+//   $81:FE0E  shot_collide         a weapon shot's; four ids stop it, the rest
+//                                  it flies through
+//   $83:A364  victim_collide       a victim's; eight ids, eight endings, latched
 //
 // ## Why this is where the direct page stops being pinned
 //
@@ -31,15 +34,21 @@
 //
 // ## What this port covers, and what it declines
 //
-// Both handlers are ported through every outcome any movie has reached: the
+// Every handler is ported through every outcome any movie has reached: the
 // player's hit path (`$80:F950`) in full, the enemy's "not my kind of collision"
-// early-out, and — since the round that added `port/score.h` — the enemy's
-// acting branch as far as dying, which is the one outcome
-// `movies/level1-rescue.zmv` produces. What is left declines and is counted:
-// an enemy that *survives* a hit leaves through `$81:8506`, two collision ids
-// have routines of their own (`$81:83C6`, `$81:847E`), and `$80:F92D` is a sound
-// effect, which writes no WRAM but talks to the APU and so belongs with the
-// audio path rather than here.
+// early-out, the enemy's acting branch as far as dying — which is the one
+// outcome `movies/level1-rescue.zmv` produces — and all of `shot_collide` and
+// `victim_collide`, both of which are small enough to be here whole.
+//
+// **One thing is left, and it is not a WRAM problem.** `$80:F92D` is one entry
+// of the player's jump table and it is a single `JSL apu_play_sfx`: it writes no
+// WRAM at all but does talk to the APU, so it belongs with the audio path rather
+// than here. It is the only address left in the decline census on any movie.
+//
+// Two more are unreached rather than unported: an enemy that *survives* a hit
+// leaves through `$81:8506`, and two collision ids (`$81:83C6`, `$81:847E`) have
+// routines of their own. No input has produced either, so both decline by name
+// and wait for a movie rather than for code.
 //
 // Port code: libc only.
 
@@ -95,6 +104,48 @@
 // is rather than for what it means, because the evidence does not say — the
 // same treatment `port/wram.h` gives `$38`.
 #define ACTOR_DP_SCRATCH_7E 0x7e
+
+// A victim's own display record — the *address* of it, and the same field the
+// shot keeps at `$0A`. Two pages, two offsets, one meaning: each actor's code
+// lays out its own page, so there is no reason for them to agree and they do
+// not. `$83:A213  LDY #$0004 : LDA ($08),Y : INC A : STA ($08),Y` walks it as a
+// pointer twenty times over on the way out of a rescue, which is `ACTOR_Z`
+// stepping up — a rescued victim rises twenty pixels — and that indirection is
+// what proves it holds an address rather than a slot index.
+#define VICTIM_DP_RECORD 0x08
+// Which side claimed this victim, in `score_add`'s convention: bit 15 and
+// nothing else. `$83:A1EA  LDA $18 : JSL $80C7D9` is the reader — the rescue
+// thread on this same page — and the award that goes with it is the `$1000`
+// the diff handed over when `score.c` was written.
+//
+// Measured rather than inferred: on `movies/level1-rescue.zmv` the id-5 path
+// below runs and `score_slot_0` is credited four times against `score_slot_1`'s
+// zero. So id 5 is one player claiming a victim, and this is where the game
+// writes down which player it was.
+#define VICTIM_DP_CLAIMANT 0x18
+// What happened to this victim, latched. Zero means nothing yet, and the whole
+// routine is guarded on that — the *first* thing to touch a victim decides what
+// became of it and everything after is ignored.
+//
+// This is the third meaning `$1E` has had. It is health to an enemy
+// (`ACTOR_DP_HEALTH`) and something else again to the player, which is what a
+// page each actor's own code lays out looks like from the outside.
+#define VICTIM_DP_EVENT 0x1e
+// Read on one path only, and only to decide whether to switch the victim's
+// collision off. Named for where it is rather than for what it means — the same
+// treatment `ACTOR_DP_SCRATCH_7E` gets — because one `BNE` is not evidence of a
+// meaning, and no input has taken both sides of it yet.
+#define VICTIM_DP_FLAG_26 0x26
+
+// The shot's own display record — the *address* of it, not an index. `$81:FA48
+// LDX $0A : STA $0008,X` writes the metasprite pointer through it and
+// `$81:FE21  LDY $0A : STA $000E,Y` writes `ACTOR_COLLIDE_ID`, so the same field
+// the sprite pass reads is the one a shot switches off when it stops flying.
+#define ACTOR_DP_RECORD 0x0a
+// Frames of life left, on a weapon shot's page. `$81:FDD1  LDA #$0014 : STA $42`
+// sets it when the shot launches and `$81:FD1E  DEC $42 : BNE <loop>` is the
+// shot thread's whole main loop, so writing 1 here means "end on the next pass".
+#define ACTOR_DP_LIFE 0x42
 
 // --- $80:8480 ---------------------------------------------------------------
 
@@ -223,5 +274,99 @@ bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 // False for that last one, and for the two special ids above.
 bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                    ActorHandlerRegs* r);
+
+// --- $81:FE0E ---------------------------------------------------------------
+
+#define SHOT_COLLIDE_ENTRY 0x81fe0eu
+
+// The four ids that end a shot. They are bare `CMP` operands in a chain, not a
+// table, so there is nothing to look up and nothing to get wrong except the
+// order — which matters only for the flags, and the flags are what the diff
+// checks.
+#define SHOT_STOP_ID_A 0x0000
+#define SHOT_STOP_ID_B 0x0003
+#define SHOT_STOP_ID_C 0x0004
+#define SHOT_STOP_ID_D 0x0001
+
+// What `$81:FE21` writes to `ACTOR_DP_LIFE`: one more pass, then the shot's own
+// loop falls out of `DEC $42 : BNE` and runs its splash.
+#define SHOT_LIFE_ENDING 0x0001
+
+// A weapon shot's handler — twenty-one bytes, and 616 of the 618 dispatches
+// `movies/level1-2p.zmv` could not serve before it existed.
+//
+// The thread at `$81:FCB2` registers it (`$81:FCCC  LDA #$FE0E : LDY #$0081 :
+// JSL thread_set_handler`), lives twenty frames, and spends them flying. This is
+// what happens when it touches something: if the id is one of four, switch the
+// shot's collision id off so it cannot hit anything else, and set its life to 1
+// so the next pass ends it. Every other id it flies straight through.
+//
+// It takes no `Rom*` — there is no table in it — and it never declines. The
+// whole routine is reachable and all of it is here.
+bool shot_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// --- $83:A364 ---------------------------------------------------------------
+
+#define VICTIM_COLLIDE_ENTRY 0x83a364u
+
+// The eight ids a victim reacts to, as a `CMP` chain in this order. Nothing is
+// looked up: each one branches straight to its own two or three instructions,
+// so what an id *is* here is entirely the code behind it.
+//
+// The two below produce the same event and differ only in the word they latch
+// into `VICTIM_DP_CLAIMANT` — and `score_add` reads bit 15 of that and nothing
+// else, so this pair is the two players. `$83:A392  BRA` skips the `LDA #$8000`
+// that the other one falls into, which means the first latches the id *itself*,
+// still in A from the dispatcher. Three bytes saved, and the reason the field
+// ends up holding `$0005` rather than a flag — confirmed by a perturbation,
+// which failed at `$7E:0418` reading ROM `$05` against the port's `$00`.
+//
+// Only the first has ever run. `victim_claim_b` is untaken by every movie,
+// including the two-player one, which rescues nobody: the input that takes it
+// is the second player walking into a victim.
+#define VICTIM_ID_CLAIM_A 0x0005
+#define VICTIM_ID_CLAIM_B 0x0006
+// One id of its own...
+#define VICTIM_ID_EVENT_2 0x000b
+// ...three that share an outcome, and it is the same code the victim's own
+// thread writes when it gives up waiting (`$83:A23D  LDA #$0003 : STA $1E`
+// after a 300-frame sleep). Whatever these three are, the game files them with
+// "nobody came".
+#define VICTIM_ID_EVENT_3_A 0x0003
+#define VICTIM_ID_EVENT_3_B 0x0004
+#define VICTIM_ID_EVENT_3_C 0x0009
+// ...and two more, each with an event to itself and no other evidence about
+// what it is. `$FF` is the only one whose code is not a small integer.
+#define VICTIM_ID_EVENT_4 0x0034
+#define VICTIM_ID_EVENT_FF 0x00ff
+
+// The codes it latches. They are what `$83:A239  LDA $1E : BNE` wakes on, so
+// each one is a different ending for the thread waiting underneath.
+#define VICTIM_EVENT_CLAIMED 0x0001
+#define VICTIM_EVENT_2 0x0002
+#define VICTIM_EVENT_3 0x0003
+#define VICTIM_EVENT_4 0x0004
+#define VICTIM_EVENT_FF 0xffff
+
+// A victim's handler — the last address the decline census named on any movie,
+// and with it the census is empty of everything but the sound effect.
+//
+// It is the smallest kind of handler there is: a latch. Read
+// `VICTIM_DP_EVENT`; if anything is already there, this victim's fate is
+// settled and the whole routine is two instructions. Otherwise walk a chain of
+// eight comparisons, and the one that matches writes a code into that field for
+// the victim's own thread to find. Five of the eight also clear
+// `ACTOR_COLLIDE_ID` in the display record, which is a victim switching its own
+// collision off so nothing can claim it twice — exactly what `shot_collide`
+// does to a spent shot, through a different field of a different page.
+//
+// The three movies find this handler on a page based at `$7E:0400` and the
+// records it writes in the display list at `$7E:1A38`/`$7E:1A60`, so it is the
+// second ported handler to reach outside its own direct page and the first to
+// do it on a path that is not a shot ending.
+//
+// It takes no `Rom*` and it never declines: there is no table in it and every
+// one of its exits is here.
+bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 
 #endif

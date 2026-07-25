@@ -401,7 +401,23 @@ static void handler_exit(const CosimRegs* in, const ThreadCallResult* t,
 static bool guard_thread_call_handler(Wram* scratch, const Rom* rom,
                                       const CosimRegs* in) {
   ThreadCallResult out;
-  return thread_call_handler(scratch, rom, in->x, in->y, in->c, &out);
+  if (thread_call_handler(scratch, rom, in->x, in->y, in->c, &out)) return true;
+
+  // Declined. `handler_unported` already counts these; what it cannot say is
+  // *which* handler, and a count with no address is not a work list. Read the
+  // same two words the dispatcher reads and record it.
+  //
+  // Only when the entry is a handler the port has never heard of. A decline
+  // through `player_collide` or `enemy_collide` is a decline further down —
+  // a jump-table entry, or an enemy that survived — and censusing the door it
+  // came through would name the wrong routine. Those have coverage sites of
+  // their own, and `player_collide`'s guard censuses its table entry below.
+  uint32_t entry =
+      ((uint32_t)(wram_r16(scratch, W_THREAD_HANDLER_BANK + in->x) & 0xff) << 16) |
+      wram_r16(scratch, W_THREAD_HANDLER + in->x);
+  if (entry != PLAYER_COLLIDE_ENTRY && entry != ENEMY_COLLIDE_ENTRY)
+    cosim_census_note("handler", entry);
+  return false;
 }
 
 static void shim_thread_call_handler(Wram* w, const Rom* rom,
@@ -430,7 +446,14 @@ static void shim_thread_call_handler(Wram* w, const Rom* rom,
 static bool guard_player_collide(Wram* scratch, const Rom* rom,
                                  const CosimRegs* in) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
-  return player_collide(scratch, rom, in->d, in->a, &r);
+  if (player_collide(scratch, rom, in->d, in->a, &r)) return true;
+  // The only way this declines is an id whose jump-table entry is a routine
+  // nobody has written. Name the entry, not the id: two ids sharing a target
+  // are one piece of work, and `$80:F92D` is more use in a report than `$29`.
+  cosim_census_note("player id table",
+                    0x800000u | rom_word(rom, PLAYER_COLLIDE_TABLE +
+                                                  (uint32_t)(in->a * 2)));
+  return false;
 }
 
 // Both handlers return the same way — `CLC : RTL` for the player, `CLC : RTL`
@@ -471,6 +494,38 @@ static void shim_enemy_collide(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
   enemy_collide(w, rom, in->d, in->a, &r);  // the guard allowed it
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:FE0E  shot_collide — the same argument again, on a weapon shot's page
+// ---------------------------------------------------------------------------
+
+// Carry is an input on exactly one of its three paths: id 0 reaches the `RTL`
+// without executing a single `CMP`, so what leaves in carry is what arrived.
+// The other two paths set it. No guard — the port has all of this routine, so
+// there is no condition under which it could decline.
+static void shim_shot_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;  // no table, no ROM read
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  shot_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $83:A364  victim_collide — the same argument again, on a victim's page
+// ---------------------------------------------------------------------------
+
+// No guard, for the same reason `shot_collide` has none: every exit is ported,
+// so there is no condition it could decline on. Carry is an output on all nine
+// paths and an input on none — eight `SEC`s and a `CLC`, and the entry guard's
+// `BNE` reaches one of them without reading it.
+static void shim_victim_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;  // no table, no ROM read
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
+  victim_collide(w, in->d, in->a, &r);
   handler_regs(&r, out);
 }
 
@@ -794,6 +849,34 @@ static const CosimRoutine ROUTINES[] = {
         // one death, which is why the mean barely moves off the floor.
         .cycles = 88,
         .stack_bytes = 9,   // the ignore branch pushes nothing; a death, 9
+    },
+    {
+        .name = "shot_collide",
+        .symbol = "$81:FE0E",
+        .entry = 0x81fe0e,
+        // Two `RTL`s, at $FE20 and $FE2E, and they are not interchangeable: the
+        // expire path arrives with A = 1 and carry set by a `CMP`, the pass path
+        // with A = the id. `native_publish` has already put the port's answer in
+        // the registers, so either one returns correctly — this is the shorter.
+        .ret_op = 0x81fe20,
+        .ret_kind = COSIM_RTL,
+        .run = shim_shot_collide,
+        .cycles = 40,
+        .stack_bytes = 0,  // it pushes nothing at all
+    },
+    {
+        .name = "victim_collide",
+        .symbol = "$83:A364",
+        .entry = 0x83a364,
+        // Six `RTL`s. `$A3C9` is the shared tail two of the exits reach — the
+        // entry guard's `BNE` and the `$34` case falling through — and, like
+        // `shot_collide`'s, which one is named does not affect what returns:
+        // `native_publish` has already put the port's registers in place.
+        .ret_op = 0x83a3c9,
+        .ret_kind = COSIM_RTL,
+        .run = shim_victim_collide,
+        .cycles = 40,
+        .stack_bytes = 0,  // it pushes nothing at all
     },
     {
         .name = "score_add",

@@ -301,6 +301,28 @@ int cosim_report(const Cosim* c);
 int cosim_coverage_report(bool full);
 
 // ---------------------------------------------------------------------------
+// The decline census
+// ---------------------------------------------------------------------------
+
+// Record that a call was declined *because of* the code at `addr`.
+//
+// The `decl.` column counts declines and the coverage report names the branch
+// that decided one, but neither says where the ROM went instead. A guard that
+// knows the address calls this with it, and the report prints the distinct ones
+// with their counts — so "1,959 dispatches to a handler the port does not have"
+// becomes a list of handler entry points, in descending order of how much
+// porting each one would buy.
+//
+// `kind` groups them ("handler", "player id table"); it must be a literal, and
+// the pair (kind, addr) is the key. Counters are process-global, like the
+// coverage ones, and for the same reason: they describe the run, not a `Cosim`.
+void cosim_census_note(const char* kind, uint32_t addr);
+
+// Print the census, most-declined first. Returns the number of distinct
+// addresses. Silent, and 0, when nothing declined.
+int cosim_census_report(void);
+
+// ---------------------------------------------------------------------------
 // Lockstep
 // ---------------------------------------------------------------------------
 

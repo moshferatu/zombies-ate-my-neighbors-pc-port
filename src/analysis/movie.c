@@ -35,15 +35,27 @@ static bool parse_buttons(const char* s, uint16_t* out) {
   return true;
 }
 
+static bool track_push(MovieTrack* t, int frame, uint16_t mask, int* cap) {
+  if (t->count == *cap) {
+    int grown_cap = *cap ? *cap * 2 : 64;
+    MovieEvent* grown =
+        (MovieEvent*)realloc(t->events, sizeof(MovieEvent) * (size_t)grown_cap);
+    if (!grown) return false;
+    t->events = grown;
+    *cap = grown_cap;
+  }
+  t->events[t->count].frame = frame;
+  t->events[t->count].buttons = mask;
+  t->count++;
+  return true;
+}
+
 bool movie_load(Movie* m, const char* path) {
   memset(m, 0, sizeof *m);
   FILE* f = fopen(path, "r");
   if (!f) return false;
 
-  int cap = 64;
-  m->events = (MovieEvent*)malloc(sizeof(MovieEvent) * cap);
-  if (!m->events) { fclose(f); return false; }
-
+  int cap[MOVIE_PORTS] = {0, 0};
   char line[256];
   int lineno = 0;
   while (fgets(line, sizeof line, f)) {
@@ -52,46 +64,72 @@ bool movie_load(Movie* m, const char* path) {
     while (*p == ' ' || *p == '\t') p++;
     if (*p == '#' || *p == ';' || *p == '\n' || *p == '\r' || *p == '\0') continue;
 
+    // An optional `<n>:` prefix aims the line at a controller; default is 1.
+    int port = 0;
+    if (p[0] >= '1' && p[0] <= '0' + MOVIE_PORTS && p[1] == ':') {
+      port = p[0] - '1';
+      p += 2;
+    }
+
     char buttons[128];
     int frame = 0;
     if (sscanf(p, "%d %127s", &frame, buttons) != 2) {
-      fprintf(stderr, "movie: %s:%d: expected '<frame> <buttons>'\n", path, lineno);
-      fclose(f);
-      movie_free(m);
-      return false;
+      fprintf(stderr, "movie: %s:%d: expected '[<port>:]<frame> <buttons>'\n",
+              path, lineno);
+      goto fail;
     }
     uint16_t mask = 0;
     if (!parse_buttons(buttons, &mask)) {
-      fprintf(stderr, "movie: %s:%d: unknown button in '%s'\n", path, lineno, buttons);
-      fclose(f);
-      movie_free(m);
-      return false;
+      fprintf(stderr, "movie: %s:%d: unknown button in '%s'\n", path, lineno,
+              buttons);
+      goto fail;
     }
-    if (m->count == cap) {
-      cap *= 2;
-      MovieEvent* grown = (MovieEvent*)realloc(m->events, sizeof(MovieEvent) * cap);
-      if (!grown) { fclose(f); movie_free(m); return false; }
-      m->events = grown;
+    // Replay walks each port's list once, forwards, so an out-of-order line
+    // would silently never be applied. Refuse it instead.
+    MovieTrack* t = &m->track[port];
+    if (t->count && frame < t->events[t->count - 1].frame) {
+      fprintf(stderr,
+              "movie: %s:%d: frame %d precedes %d on controller %d "
+              "(frames must ascend within a port)\n",
+              path, lineno, frame, t->events[t->count - 1].frame, port + 1);
+      goto fail;
     }
-    m->events[m->count].frame = frame;
-    m->events[m->count].buttons = mask;
-    m->count++;
+    if (!track_push(t, frame, mask, &cap[port])) goto fail;
   }
   fclose(f);
   return true;
+
+fail:
+  fclose(f);
+  movie_free(m);
+  return false;
 }
 
 void movie_free(Movie* m) {
-  free(m->events);
+  for (int i = 0; i < MOVIE_PORTS; i++) free(m->track[i].events);
   memset(m, 0, sizeof *m);
 }
 
-uint16_t movie_state(Movie* m, int frame) {
-  while (m->next < m->count && m->events[m->next].frame <= frame) {
-    m->current = m->events[m->next].buttons;
-    m->next++;
+MovieInput movie_state(Movie* m, int frame) {
+  MovieInput in;
+  for (int i = 0; i < MOVIE_PORTS; i++) {
+    MovieTrack* t = &m->track[i];
+    while (t->next < t->count && t->events[t->next].frame <= frame) {
+      t->current = t->events[t->next].buttons;
+      t->next++;
+    }
+    in.port[i] = t->current;
   }
-  return m->current;
+  return in;
+}
+
+bool movie_uses_port(const Movie* m, int port) {
+  if (port < 0 || port >= MOVIE_PORTS) return false;
+  const MovieTrack* t = &m->track[port];
+  for (int i = 0; i < t->count; i++) {
+    if (t->events[i].buttons) return true;
+  }
+  return false;
 }
 
 const char* movie_format(uint16_t buttons, char* out, int out_size) {

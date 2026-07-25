@@ -18,7 +18,7 @@
 
 #include "snes.h"
 
-#include "analysis/movie.h"
+#include "analysis/movie_apply.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -122,15 +122,15 @@ int main(int argc, char** argv) {
       return 1;
     }
     have_movie = true;
-    printf("Replaying '%s'\n", movie_path);
+    printf("Replaying '%s'%s\n", movie_path,
+           movie_uses_port(&movie, 1) ? " (two controllers)" : "");
   }
 
   printf("Running %d frames...\n", frames);
   int next_snap = 0;
   for (int i = 0; i < frames; i++) {
     if (have_movie) {
-      uint16_t buttons = movie_state(&movie, i);
-      for (int b = 0; b < 12; b++) snes_setButtonState(snes, 1, b, (buttons >> b) & 1);
+      movie_apply(&movie, snes, i);
     }
     snes_runFrame(snes);
     // `--at` frames are requested in whatever order they were typed, but they

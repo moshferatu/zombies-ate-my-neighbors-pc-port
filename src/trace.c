@@ -34,7 +34,7 @@
 #include "snes.h"
 
 #include "analysis/cdl.h"
-#include "analysis/movie.h"
+#include "analysis/movie_apply.h"
 #include "analysis/w65816.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -898,9 +898,7 @@ int main(int argc, char** argv) {
   printf("Tracing %d frames of '%s'...\n", frames, rom_path);
   for (g.frame = 0; g.frame < frames; g.frame++) {
     if (have_movie) {
-      uint16_t mask = movie_state(&movie, g.frame);
-      for (int b = 0; b < 12; b++)
-        snes_setButtonState(snes, 1, b, (mask >> b) & 1);
+      movie_apply(&movie, snes, g.frame);
     }
     run_frame(snes);
     if ((g.frame % 200) == 0) {

@@ -1,0 +1,186 @@
+# Two players, level 1. The first movie in the project that uses controller 2,
+# and the only way to reach the parts of the game that ask *which* player did
+# something: the per-player score slots at $80:C7C2 (`score_slot_1`,
+# `score_discard`) and a player told about a collision id of its own side
+# (`player_ignore`), which needs two players to touch each other.
+#
+# The boot prefix through frame 1484 is level1.zmv's, unchanged. Controller 2
+# joins on the "PLAYER LEFT / PLAYER RIGHT" screen, which is up between roughly
+# frames 1090 and 1200 — Start on port 2 anywhere in that window puts Julie in
+# the game beside Zeke. Control of both begins around frame 1830.
+#
+# Retune by watching where it actually gets to:
+#   zamn_headless <rom> shot.png 4200 -m movies\level1-2p.zmv --at 1880,2500,3000
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1020   Start
+1028   -
+1044   Start
+1052   -
+1068   Start
+1076   -
+1092   Start
+1100   -
+1116   Start
+1124   -
+1140   Start
+1148   -
+1164   Start
+1172   -
+1188   Start
+1196   -
+1212   Start
+1220   -
+1236   Start
+1244   -
+1260   Start
+1268   -
+1284   Start
+1292   -
+1308   Start
+1316   -
+1332   Start
+1340   -
+1356   Start
+1364   -
+1380   Start
+1388   -
+1404   Start
+1412   -
+1428   Start
+1436   -
+1452   Start
+1460   -
+1476   Start
+1484   -
+
+# Player 2 joins. Four presses across the window rather than one, for the
+# same reason the boot prefix mashes Start: the exact frame the screen
+# appears is not worth pinning down.
+2:1108   Start
+2:1116   -
+2:1132   Start
+2:1140   -
+2:1156   Start
+2:1164   -
+2:1180   Start
+2:1188   -
+
+# Gameplay. Y is the fire button, not B — the earlier movies hold B for
+# thousands of frames and never once shoot, which is why `level1-rescue.zmv`
+# reaches the enemy's acting branch exactly once in 1,226 collisions. Both
+# players hold Y from the second cue on: a kill scores, and a kill by *each*
+# of them is the point, because the score-slot search at $80:C7C2 is the
+# identity in one-player mode and so cannot be told from a hard-coded index.
+#
+# The two direction tracks are deliberately counter-phase — Zeke runs right
+# while Julie runs left and back again — so the pair repeatedly cross. Two
+# players touching is the only thing that hands a player's handler an id of
+# its own side ($5C or above), which is `player_ignore`.
+1860   Down+Left
+2:1860   Left
+1980   Down+Y
+2:1980   Up+Y
+2100   Left+Y
+2:2100   Right+Y
+2220   Up+Y
+2:2220   Down+Y
+2340   Right+Y
+2:2340   Left+Y
+2460   Down+Y
+2:2460   Up+Y
+2580   Left+Y
+2:2580   Right+Y
+2700   Up+Left+Y
+2:2700   Down+Right+Y
+2820   Right+Y
+2:2820   Left+Y
+2940   Down+Right+Y
+2:2940   Up+Left+Y
+3060   Left+Y
+2:3060   Right+Y
+3180   Up+Y
+2:3180   Down+Y
+3300   Right+Y
+2:3300   Left+Y
+3420   Down+Y
+2:3420   Up+Y
+3540   Left+Y
+2:3540   Right+Y
+3660   Up+Y
+2:3660   Down+Y
+3780   Right+Y
+2:3780   Left+Y
+3900   Down+Y
+2:3900   Up+Y
+4020   -
+2:4020   -

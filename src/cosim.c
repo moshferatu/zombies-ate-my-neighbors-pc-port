@@ -30,7 +30,7 @@
 
 #include "snes.h"
 
-#include "analysis/movie.h"
+#include "analysis/movie_apply.h"
 #include "cosim/cosim.h"
 
 #define MAX_SELECTED 32
@@ -162,14 +162,17 @@ static int cmd_verify(const Options* o) {
   }
 
   snes_reset(snes, true);
-  printf("Replaying %d frames of '%s' and checking each ported routine against\n"
-         "the ROM's own, call by call.\n",
-         o->frames, o->movie_path ? o->movie_path : "(no input)");
+  // Whether a movie drives port 2 is worth saying out loud: several coverage
+  // sites below are reachable only with two players, so it changes how the
+  // report at the end should be read.
+  printf("Replaying %d frames of '%s'%s and checking each ported routine\n"
+         "against the ROM's own, call by call.\n",
+         o->frames, o->movie_path ? o->movie_path : "(no input)",
+         have_movie && movie_uses_port(&movie, 1) ? " (two controllers)" : "");
 
   for (int frame = 0; frame < o->frames; frame++) {
     if (have_movie) {
-      uint16_t buttons = movie_state(&movie, frame);
-      for (int b = 0; b < 12; b++) snes_setButtonState(snes, 1, b, (buttons >> b) & 1);
+      movie_apply(&movie, snes, frame);
     }
     cosim_frame(&c);
   }
@@ -188,6 +191,8 @@ static int cmd_verify(const Options* o) {
   // follows says how much of the port this movie was in a position to check at
   // all. See `src/port/coverage.h`.
   cosim_coverage_report(o->coverage);
+  // ...and where the calls it could not serve went instead.
+  cosim_census_report();
 
   if (have_movie) movie_free(&movie);
   cosim_free(&c);
@@ -203,6 +208,7 @@ static int cmd_run(const Options* o) {
   int rc = cosim_lockstep(rom_data, rom_len, o->movie_path, o->frames,
                           o->selected, o->selected_count, o->verbose);
   cosim_coverage_report(o->coverage);
+  cosim_census_report();
   free(rom_data);
   return rc;
 }

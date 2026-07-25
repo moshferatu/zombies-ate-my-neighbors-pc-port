@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "analysis/movie.h"
+#include "analysis/movie_apply.h"
 #include "port/coverage.h"
 
 // One in-flight call. Calls nest — an NMI can land inside a routine and the
@@ -834,6 +834,68 @@ int cosim_coverage_report(bool full) {
 }
 
 // ---------------------------------------------------------------------------
+// The decline census
+// ---------------------------------------------------------------------------
+
+// Where the ROM went when the port stepped aside. See `cosim_census_note`.
+//
+// Fixed capacity on purpose: the whole value of this is that the list is short
+// enough to read and work through. If it ever overflows, that is the report
+// saying the port is further from covering a path than a list can express, and
+// the overflow line says so rather than silently truncating.
+#define CENSUS_MAX 64
+
+typedef struct {
+  const char* kind;
+  uint32_t addr;
+  long count;
+} CensusEntry;
+
+static CensusEntry census[CENSUS_MAX];
+static int census_count;
+static long census_overflow;
+
+void cosim_census_note(const char* kind, uint32_t addr) {
+  for (int i = 0; i < census_count; i++) {
+    if (census[i].addr == addr && !strcmp(census[i].kind, kind)) {
+      census[i].count++;
+      return;
+    }
+  }
+  if (census_count == CENSUS_MAX) { census_overflow++; return; }
+  census[census_count].kind = kind;
+  census[census_count].addr = addr;
+  census[census_count].count = 1;
+  census_count++;
+}
+
+int cosim_census_report(void) {
+  if (census_count == 0) return 0;
+
+  printf("\nDeclined to, by address — where the ROM went when the port stepped\n"
+         "aside. Each line is one unported routine, and the count is how much\n"
+         "of this run porting it would have bought:\n");
+  printf("\n%-16s %-10s %10s\n", "reached from", "address", "declines");
+  printf("%-16s %-10s %10s\n", "----------------", "----------", "----------");
+
+  // Selection sort, descending. 64 entries at most and it runs once.
+  bool done[CENSUS_MAX] = {false};
+  for (int n = 0; n < census_count; n++) {
+    int best = -1;
+    for (int i = 0; i < census_count; i++)
+      if (!done[i] && (best < 0 || census[i].count > census[best].count)) best = i;
+    done[best] = true;
+    printf("%-16s $%02X:%04X   %10ld\n", census[best].kind,
+           (census[best].addr >> 16) & 0xff, census[best].addr & 0xffff,
+           census[best].count);
+  }
+  if (census_overflow)
+    printf("...and %ld more declines at addresses past the %d this can hold.\n",
+           census_overflow, CENSUS_MAX);
+  return census_count;
+}
+
+// ---------------------------------------------------------------------------
 // Lockstep
 // ---------------------------------------------------------------------------
 
@@ -929,9 +991,7 @@ static bool side_pass(Side* s, long budget) {
   for (long i = 0; i < budget; i++) {
     if (s->have_movie && s->snes->frames != s->last_frame) {
       s->last_frame = s->snes->frames;
-      uint16_t buttons = movie_state(&s->movie, (int)s->last_frame);
-      for (int b = 0; b < 12; b++)
-        snes_setButtonState(s->snes, 1, b, (buttons >> b) & 1);
+      movie_apply(&s->movie, s->snes, (int)s->last_frame);
     }
     if (at_sync_point(&s->cosim)) {
       if (left) {

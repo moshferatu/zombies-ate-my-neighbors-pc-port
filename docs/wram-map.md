@@ -231,11 +231,19 @@ handler at `$81:8888` reads its own health from `$1E`.
 
 ### Fields, so far
 
-Porting the two collision handlers (`src/port/collide.h`) named seven of them,
-and the death path behind one of them added two more. Each is what *those*
-routines do with the offset and no more — the page belongs to each actor's own
-code, so `$1E` meaning health to an enemy says nothing about what the player
-keeps there.
+Porting the four collision handlers (`src/port/collide.h`) named fifteen of them.
+Each is what *those* routines do with the offset and no more — the page belongs
+to each actor's own code, so `$1E` meaning health to an enemy says nothing about
+what the player keeps there.
+
+**Read the three tables below as three different layouts, not one.** They are
+grouped by which kind of actor's page they were found on, because the pages do
+not agree: `$1E` is health to an enemy and a latched event code to a victim; a
+shot keeps its display record at `$0A` and a victim keeps its at `$08`. Nothing
+here is a struct definition. It is a record of what each actor's own code does
+with its own 128 bytes.
+
+#### On a player's or an enemy's page
 
 | Offset | What reads or writes it | Meaning |
 | --- | --- | --- |
@@ -248,6 +256,22 @@ keeps there.
 | `$52` | `$80:F96C`, `$80:F976` | hit recovery: a hit only lands once this goes negative |
 | `$58` | `$80:F801` | the record this actor collided with |
 | `$70` | `$80:D1EA  LDX $70 : JMP ($D1EF,X)` | which branch of its own state machine is running |
+
+#### On a weapon shot's page (`$81:FCB2`'s thread)
+
+| Offset | What reads or writes it | Meaning |
+| --- | --- | --- |
+| `$0A` | `$81:FA48`, `$81:FE21` | the shot's own display record — an *address*, not an index |
+| `$42` | `$81:FDD1` sets `$14`, `$81:FD1E  DEC $42 : BNE` is the whole main loop | frames of life left; writing 1 means "end on the next pass" |
+
+#### On a victim's page (`$83:A364`'s thread)
+
+| Offset | What reads or writes it | Meaning |
+| --- | --- | --- |
+| `$08` | `$83:A39E`, and `$83:A213  LDA ($08),Y` walks it as a pointer | the victim's own display record — an address, like the shot's `$0A` and at a different offset |
+| `$18` | `$83:A397` writes, `$83:A1EA  LDA $18 : JSL $80C7D9` reads | which side claimed this victim, in `score_add`'s convention: **bit 15 and nothing else**. Id 5 latches `$0005` here and id 6 latches `$8000`, so the pair is the two players |
+| `$1E` | `$83:A364  LDX $1E : BNE` guards on it; every exit writes it; `$83:A239  LDA $1E : BNE` wakes on it | what happened to this victim, **latched** — the first thing to reach it decides, and everything after is ignored. `$83:A23D` writes 3 itself after a 300-frame timeout, so 3 is "nobody came" |
+| `$26` | `$83:A3B1  LDA $26 : BNE` | read once, to decide whether to clear the record's `ACTOR_COLLIDE_ID`. Named for where it is rather than for what it means: one `BNE` is not evidence, and no input has taken both sides of it |
 
 One consequence for reading listings: `zamn_disasm` resolves a direct-page
 operand as though `D` were `$0000`, so inside any of these routines its symbol

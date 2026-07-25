@@ -4,6 +4,15 @@
 # sprite pass ends with is never reached at all (`zamn_cosim verify -c`, site
 # `overlap_hit`). This one reaches it hundreds of times.
 #
+# CORRECTION, and the reason `movies/level1-2p.zmv` exists: the B held below
+# does *nothing*. **Y is the fire button.** Not one shot is fired anywhere in
+# this movie — the ammo counter reads 150 from the first frame of gameplay to
+# the last — so what looks like a firefight is a man running into zombies with
+# his hands full. That is why 1,226 collisions contain exactly one enemy taking
+# damage. The inputs are left exactly as they were: every number in PROGRESS.md
+# and docs/cosim.md was measured against these bytes, and a regression baseline
+# that quietly changes cannot regress.
+#
 # The boot prefix through frame 1484 is level1.zmv's, unchanged: mashing Start
 # through the logos, the title and the menus. Control of Zeke begins around
 # frame 1830, once "LEVEL 1 / ZOMBIE PANIC" has finished loading.
@@ -126,9 +135,10 @@
 # 0 -> 1000 by frame 1980, which is a rescue, which is a collision dispatch.
 1860   Up+Left
 # Back down and across the lawn, then into the graveyard south of it, which by
-# frame 2500 has five zombies in it. From here on the water pistol is held
-# down: a killed zombie is a death animation and a score popup, and both are
-# actors the sprite pass has to draw.
+# frame 2500 has five zombies in it. From here on B is held down, which was
+# meant to be the water pistol and is not (see the correction above): what this
+# stretch actually produces is 1,226 collisions between a player and the things
+# chasing him, and no shots at all.
 1980   Down
 2160   Down+Left+B
 2280   Left+B

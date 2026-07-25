@@ -121,7 +121,7 @@ set is absolute and stays in effect until the next line.
 180  Start
 188  -
 1560 Right
-1620 Right+B
+1620 Right+Y
 ```
 
 Buttons: `A B X Y L R Start Select Up Down Left Right`, joined with `+`; `-` or
@@ -129,6 +129,43 @@ Buttons: `A B X Y L R Start Select Up Down Left Right`, joined with `+`; `-` or
 
 Movies are how every report stays reproducible, and they are the same format the
 Phase 3 regression harness replays.
+
+### Two controllers
+
+A frame may carry a `2:` prefix, which aims the line at controller 2:
+
+```
+# movies/level1-2p.zmv
+130   Start        # player 1 starts the game
+2:130 Start        # player 2 joins
+2:132 -
+1980  Down+Y       # Zeke runs down, firing...
+2:1980 Up+Y        # ...while Julie runs up
+```
+
+The two ports are independent event streams, each with its own absolute
+semantics, so a stretch in which one player does nothing costs no lines. Frames
+must ascend *within* a port — a line that goes backwards is refused rather than
+silently ignored, because replay walks each list once, forwards. A movie with no
+`2:` lines holds nothing on controller 2, which is what every one-player movie
+written before the format grew did implicitly.
+
+Two players is not cosmetic. It is the only way to reach the code that asks
+*which* player did something: the score-slot search at `$80:C7C2` is the identity
+with one player, so nothing can tell it from a hard-coded index, and the player's
+collision handler only ever sees an id of its own side when two players touch.
+`movies/level1-2p.zmv` is the first movie that does either.
+
+### Which button fires
+
+**`Y`.** Not `B` — `B` does nothing at all in normal play. `movies/level1.zmv`
+and `movies/level1-rescue.zmv` were written holding `B` for thousands of frames
+under the impression they were shooting, and the ammo counter says otherwise: it
+sits at 150 for the whole of both. That is why `level1-rescue.zmv` produces 1,226
+collisions and only **one** of them is an enemy taking damage — a movie can look
+like a firefight and be a man running into zombies. Checked by holding each of
+`B Y A X L R` in turn for 120 frames on a standing player and watching the
+counter: only `Y` moves it.
 
 ### Writing one
 

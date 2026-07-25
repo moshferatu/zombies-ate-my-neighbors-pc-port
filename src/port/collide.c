@@ -1,6 +1,10 @@
 #include "port/collide.h"
 
 #include "port/coverage.h"
+// For `ACTOR_COLLIDE_ID`: `shot_collide` writes the same display-record field
+// the sprite pass reads, which is the first time a handler reaches out of its
+// own direct page into the game's shared data structure.
+#include "port/oam.h"
 #include "port/score.h"
 
 // ---------------------------------------------------------------------------
@@ -242,6 +246,195 @@ bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 }
 
 // ---------------------------------------------------------------------------
+// $81:FE0E  shot_collide
+// ---------------------------------------------------------------------------
+
+bool shot_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
+  // `$81:FE0E  TAY`. A is not touched again on the way out of the ignore path,
+  // so the argument is still in it at the `RTL`; Y is the id from here on.
+  r->y = arg;
+
+  // `BEQ` then `CMP #$0003 : BEQ`, `CMP #$0004 : BEQ`, `CMP #$0001 : BEQ`. The
+  // first test is the `TAY`'s own Z rather than a comparison, which is the only
+  // thing that makes id 0 different from the other three: **it runs no `CMP`, so
+  // carry leaves as the caller's.** Nothing about the writes below depends on
+  // which id got here, so without the two marks that difference would be
+  // invisible — and it is a real output.
+  if (arg == SHOT_STOP_ID_A) {
+    PORT_COVER(shot_expire);
+    PORT_COVER(shot_expire_zero);
+    // carry untouched: `r->c` is what the dispatcher handed in
+  } else if (arg == SHOT_STOP_ID_B || arg == SHOT_STOP_ID_C ||
+             arg == SHOT_STOP_ID_D) {
+    PORT_COVER(shot_expire);
+    // Whichever of the three matched, the `CMP` that matched set carry: an
+    // equal comparison never borrows.
+    r->c = true;
+  } else {
+    // `$81:FE20  RTL`, reached by falling through all three comparisons, so the
+    // flags are the last one's — `arg - 1`. Carry is set because the only id
+    // that could clear it is 0, and 0 left through the branch above.
+    PORT_COVER(shot_pass);
+    uint16_t diff = (uint16_t)(arg - SHOT_STOP_ID_D);
+    r->a = arg;
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = true;
+    return true;
+  }
+
+  // `$81:FE21  LDY $0A : LDA #$0000 : STA $000E,Y`. The absolute-indexed store
+  // goes through the record's *address*, and lands in `$7E` whichever of $7E/$80
+  // the data bank holds — the same reasoning as `$1CBC` in the player's hit
+  // path. Clearing `ACTOR_COLLIDE_ID` is what stops `actor_overlap_pass`
+  // offering this shot to anything else in the frames before it dies:
+  // `overlap_no_id` is the branch that then skips it.
+  uint16_t record = wram_r16(w, (uint32_t)dp + ACTOR_DP_RECORD);
+  r->y = record;  // the `LDY` overwrites the `TAY`, and Y is an output
+  wram_w16(w, (uint32_t)record + ACTOR_COLLIDE_ID, 0);
+
+  // `$81:FE29  LDA #$0001 : STA $42`, and that `LDA` is the last instruction to
+  // set a flag.
+  wram_w16(w, (uint32_t)dp + ACTOR_DP_LIFE, SHOT_LIFE_ENDING);
+  r->a = SHOT_LIFE_ENDING;
+  r->n = false;
+  r->z = false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $83:A364  victim_collide
+// ---------------------------------------------------------------------------
+
+// `$83:A39E  LDX $08 : STZ $000E,X`, on the three paths that run it.
+//
+// Both stores are outputs: the record's collision id goes to zero, and X — a
+// register the dispatcher hands back to its caller — ends up holding the record
+// address, with N and Z describing it. The `STZ` sets no flags, so the `LDX` is
+// the last word on both.
+static void victim_drop_collide_id(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+  uint16_t record = wram_r16(w, (uint32_t)dp + VICTIM_DP_RECORD);
+  r->x = record;
+  r->n = (record & 0x8000) != 0;
+  r->z = record == 0;
+  wram_w16(w, (uint32_t)record + ACTOR_COLLIDE_ID, 0);
+}
+
+bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
+  // `$83:A364  LDX $1E : BNE $A3C8`, and `$A3C8` is `SEC : RTL` — the tail the
+  // `$34` case falls into, shared. The latch is the whole design of the routine:
+  // a victim has one fate, the first thing to reach it decides which, and every
+  // collision after that is read-only. A is not touched on this path, so the
+  // argument is still in it at the `RTL`; X is the latched code from here on,
+  // whichever exit runs.
+  //
+  // And it is the one line here no diff can check. Deleting this branch
+  // outright — letting a settled victim be claimed a second time — passes
+  // every call on all three movies, because none of them ever dispatches to a
+  // victim twice. That is the same shape as `shot_collide`'s "add a fifth id"
+  // and the opposite of a store the diff cannot see: the port would be *more
+  // permissive* than the ROM, and only an input that produces the distinguishing
+  // case can tell. `victim_latched` is the coverage site that says so by name.
+  uint16_t latched = wram_r16(w, (uint32_t)dp + VICTIM_DP_EVENT);
+  r->x = latched;
+  if (latched != 0) {
+    PORT_COVER(victim_latched);
+    r->n = (latched & 0x8000) != 0;
+    r->z = false;  // it is not zero; that is why we are here
+    r->c = true;
+    return true;
+  }
+
+  switch (arg) {
+    case VICTIM_ID_CLAIM_A:
+      // `$83:A392  BRA $A397`, skipping the `LDA #$8000`. What reaches `STA
+      // $18` is the accumulator the dispatcher arrived with, which is the id —
+      // so this side's marker is literally `$0005`. Only bit 15 of it is ever
+      // read.
+      PORT_COVER(victim_claim_a);
+      wram_w16(w, (uint32_t)dp + VICTIM_DP_CLAIMANT, arg);
+      break;
+    case VICTIM_ID_CLAIM_B:
+      PORT_COVER(victim_claim_b);
+      wram_w16(w, (uint32_t)dp + VICTIM_DP_CLAIMANT, 0x8000);
+      break;
+
+    case VICTIM_ID_EVENT_2:
+      // `$83:A3A5  LDA #$0002 : STA $1E : SEC : RTL`. No record write, so X is
+      // still the zero the entry `LDX` read.
+      PORT_COVER(victim_event_2);
+      wram_w16(w, (uint32_t)dp + VICTIM_DP_EVENT, VICTIM_EVENT_2);
+      r->a = VICTIM_EVENT_2;
+      r->n = false;
+      r->z = false;
+      r->c = true;
+      return true;
+
+    case VICTIM_ID_EVENT_3_A:
+    case VICTIM_ID_EVENT_3_B:
+    case VICTIM_ID_EVENT_3_C: {
+      // `$83:A3AC  LDA #$0003 : STA $1E : LDA $26 : BNE $A3BA`. The only exit
+      // that reads a second field before deciding, and the only one where the
+      // collision id survives.
+      PORT_COVER(victim_event_3);
+      wram_w16(w, (uint32_t)dp + VICTIM_DP_EVENT, VICTIM_EVENT_3);
+      uint16_t flag = wram_r16(w, (uint32_t)dp + VICTIM_DP_FLAG_26);
+      r->a = flag;
+      r->n = (flag & 0x8000) != 0;
+      r->z = flag == 0;
+      if (flag != 0) {
+        PORT_COVER(victim_keep_id);
+      } else {
+        victim_drop_collide_id(w, dp, r);
+      }
+      r->c = true;
+      return true;
+    }
+
+    case VICTIM_ID_EVENT_4:
+      // `$83:A3C3  LDA #$0004 : STA $1E`, falling into the shared `SEC : RTL`
+      // the entry guard also branches to.
+      PORT_COVER(victim_event_4);
+      wram_w16(w, (uint32_t)dp + VICTIM_DP_EVENT, VICTIM_EVENT_4);
+      r->a = VICTIM_EVENT_4;
+      r->n = false;
+      r->z = false;
+      r->c = true;
+      return true;
+
+    case VICTIM_ID_EVENT_FF:
+      PORT_COVER(victim_event_ff);
+      wram_w16(w, (uint32_t)dp + VICTIM_DP_EVENT, VICTIM_EVENT_FF);
+      r->a = VICTIM_EVENT_FF;
+      r->n = true;
+      r->z = false;
+      r->c = true;
+      return true;
+
+    default:
+      // `$83:A390  CLC : RTL`, reached by falling through all eight
+      // comparisons, so the flags are the last one's — `arg - $FF` — and not
+      // the first's. Nothing is written and nothing but `$1E` was read: an id a
+      // victim has no reaction to costs it one word of WRAM.
+      PORT_COVER(victim_ignore);
+      r->a = arg;
+      r->n = ((uint16_t)(arg - VICTIM_ID_EVENT_FF) & 0x8000) != 0;
+      r->z = false;
+      r->c = false;
+      return true;
+  }
+
+  // The tail both claim ids share: latch the event, then switch the victim's
+  // own collision off so the pass cannot offer it to anybody else. `LDA #$0001`
+  // is the last instruction to set a flag before `LDX $08` sets them again.
+  wram_w16(w, (uint32_t)dp + VICTIM_DP_EVENT, VICTIM_EVENT_CLAIMED);
+  victim_drop_collide_id(w, dp, r);
+  r->a = VICTIM_EVENT_CLAIMED;
+  r->c = true;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // $80:8480  thread_call_handler
 // ---------------------------------------------------------------------------
 
@@ -280,8 +473,12 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
     served = player_collide(w, rom, dp, arg, &r);
   } else if (entry == ENEMY_COLLIDE_ENTRY) {
     served = enemy_collide(w, rom, dp, arg, &r);
+  } else if (entry == SHOT_COLLIDE_ENTRY) {
+    served = shot_collide(w, dp, arg, &r);
+  } else if (entry == VICTIM_COLLIDE_ENTRY) {
+    served = victim_collide(w, dp, arg, &r);
   } else {
-    // The list of handlers the port has is exactly two. Anything else is a
+    // The list of handlers the port has is exactly four. Anything else is a
     // routine that has not been written yet, and saying so by address is what
     // makes the remaining work countable instead of vague.
     PORT_COVER(handler_unported);

@@ -1,5 +1,10 @@
 # Mashes Start through the logos, title and menus to reach gameplay, then
-# walks Zeke around level 1 firing the water pistol.
+# walks Zeke around level 1. The trailing B was meant to be the water pistol and
+# is not — **Y is the fire button**, and the ammo counter never moves off 150 in
+# this movie or in level1-rescue.zmv. Left as it is on purpose: this is the
+# oldest regression baseline in the project and every count recorded against it
+# was measured from these exact bytes. `movies/level1-2p.zmv` is the one that
+# shoots.
 # Regenerate with tools/make_movie.sh if the timing ever needs retuning.
 0   -
 180   Start
