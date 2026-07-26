@@ -110,7 +110,7 @@ static int cmd_list(void) {
     printf("  %-20s %-10s %-6s %-9s %-8s ", all[i].name, all[i].symbol,
            all[i].ret_kind == COSIM_RTL ? "RTL" : "RTS",
            all[i].run_yield ? "resumable" : "leaf",
-           all[i].supported ? "some" : "all");
+           all[i].verify_only ? "verify" : all[i].supported ? "some" : "all");
     if (all[i].exclude_count == 0) {
       printf("all of WRAM compared\n");
     } else {
@@ -127,7 +127,10 @@ static int cmd_list(void) {
          "\n`covers` is `all` when the port stands in for every call, and `some`\n"
          "when it declares a guard: the port inspects each call first and hands\n"
          "back the ones it cannot serve, which the ROM then runs itself. Both\n"
-         "modes decline the same calls, and the count is the `decl.` column.\n");
+         "modes decline the same calls, and the count is the `decl.` column.\n"
+         "\n`verify` means checked per call but never substituted — the routine's\n"
+         "body is a hardware handshake, and only the CPU that substitution stops\n"
+         "can perform one. `run` leaves it to the ROM and prints `verify only`.\n");
   return 0;
 }
 

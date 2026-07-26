@@ -264,7 +264,38 @@ stride 2, and writes a `$C000` sentinel into `$7E:1EC4` one past the last entry.
 | --- | --- | --- |
 | `+0` | `x` (u16) | **`0` terminates the list** |
 | `+2` | `y` (u16) | |
-| `+4` | `type` (u8) | object type |
+| `+4` | `type` (u8) | object type — **already doubled**, see below |
+
+#### What the type means: `$80:CA30`
+
+The type byte is not an identity, it is an index, and it is stored pre-doubled
+(every type in every level is even). `$80:C9E3`, the routine that gives an
+object its display record, uses it twice — once at `$80:CA0E  LDA $CA6C,X` for
+the metasprite, and once at `$80:CA20  LDA $CA30,X` for the record's
+**collision id**, which is the only thing the rest of the game knows the object
+by. So the 30-word table at `$80:CA30` is what turns level data into behaviour:
+
+| type | id | | type | id | | type | id |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `$00` | `$0C` | | `$14` | `$27` | | `$28` | `$18` |
+| `$02` | `$0D` | | `$16` | `$12` | | `$2A` | `$19` |
+| `$04` | `$0E` | | `$18` | `$13` | | `$2C` | `$29` |
+| `$06` | `$0F` | | `$1A` | `$14` | | `$2E` | `$2A` |
+| `$08` | `$21` | | `$1C` | `$15` | | `$30` | `$2B` |
+| `$0A` | `$22` | | `$1E` | `$28` | | `$32` | `$2C` |
+| `$0C` | `$23` | | `$20` | `$16` | | `$34` | `$2D` |
+| `$0E` | `$24` | | `$22` | `$17` | | `$36` | `$2E` |
+| `$10` | `$25` | | `$24` | `$10` | | `$38` | `$2F` |
+| `$12` | `$26` | | `$26` | `$11` | | `$3A` | `$30` |
+
+Ids `$0C..$20` are the 21 **pickups** — `$80:F808`'s jump table sends every one
+of them to `$80:F87B`, and the item's slot and its amount both come from the id
+alone. Everything else is an object you interact with rather than collect
+(`$08`, the key, is id `$21`).
+
+That mapping is how a route through a level is aimed at a *particular* branch
+of the port rather than at objects in general: see `docs/cosim.md` → *Two
+pickups, two items*.
 
 ### Verification
 

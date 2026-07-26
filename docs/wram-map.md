@@ -41,6 +41,7 @@ The game's hot globals. 4.5 M reads / 0.95 M writes in 2400 frames.
 | `$0012` | word | `vbl_queue_index` | slot index across the `RTL` into a job |
 | `$0014` | word | `nmi_flags` | bit 15 is the NMI re-entrancy guard |
 | `$0016` | word | `nmi_frame_counter` | `INC $16` once per NMI |
+| `$001E` | **byte** | `apu_seq` | `$80:CCC8  LDY $1E : CPY $2143 : BNE` — the APU command counter, and the only WRAM the audio path has |
 | `$0020` | dword | `sched_tick` | `INC $20 / BNE / INC $22` per scheduler pass |
 | `$0026` | word | `render_flags` | bit 6 gates `vram_queue_flush` |
 | `$0028` | word | LZSS source pointer | `[$28]` long-indirect fetch in the decompressor |
@@ -236,7 +237,7 @@ Each is what *those* routines do with the offset and no more — the page belong
 to each actor's own code, so `$1E` meaning health to an enemy says nothing about
 what the player keeps there.
 
-**Read the three tables below as three different layouts, not one.** They are
+**Read the four tables below as four different layouts, not one.** They are
 grouped by which kind of actor's page they were found on, because the pages do
 not agree: `$1E` is health to an enemy and a latched event code to a victim; a
 shot keeps its display record at `$0A` and a victim keeps its at `$08`. Nothing
@@ -257,6 +258,19 @@ with its own 128 bytes.
 | `$58` | `$80:F801` | the record this actor collided with |
 | `$70` | `$80:D1EA  LDX $70 : JMP ($D1EF,X)` | which branch of its own state machine is running |
 
+Four more came out of `$80:F87B` and `$80:EA63` — a pickup, and the weapon
+selection a pickup can trigger. All four are on a **player's** page only; the
+table above is shared with an enemy's because the collision handlers happened
+to agree, and these do not test that.
+
+| Offset | What reads or writes it | Meaning |
+| --- | --- | --- |
+| `$0A` | `$80:EA5A  LDY $0A : STA $000A,Y`, and `$80:EA42` writes `+$0E` through it | the player's own display record — an *address*, exactly as on a shot's page and at the same offset |
+| `$0C` | `$80:EA4F  LDX $0C : LDA $FD9C,X` | the index a two-entry table of per-weapon data is read with. It has to be a doubled player number for the table to have two entries — which the page already keeps at `$0E` — so either it is held twice or one of the two is something else. Named for where it is |
+| `$12` | `$80:EA58  STA $12` | a word out of that player's weapon-data table, filed when the weapon changes. **The same offset is an enemy's death request**, which is the clearest case yet of two pages disagreeing |
+| `$64` | `$80:F88A  CLC : ADC $64` | the base of this player's `player_inventory` array — `$1CCC` or `$1CEC`, the two words at `$80:EAA4` |
+| `$2C`,`$2E` | `$80:EA66`, `$80:EA6A`, `$80:EA86  DEC $2E` | the weapon search's scratch: a pointer that is overwritten mid-routine, and a countdown from 15. Neither survives the call, and they are named because the diff compares them |
+
 #### On a weapon shot's page (`$81:FCB2`'s thread)
 
 | Offset | What reads or writes it | Meaning |
@@ -272,6 +286,20 @@ with its own 128 bytes.
 | `$18` | `$83:A397` writes, `$83:A1EA  LDA $18 : JSL $80C7D9` reads | which side claimed this victim, in `score_add`'s convention: **bit 15 and nothing else**. Id 5 latches `$0005` here and id 6 latches `$8000`, so the pair is the two players |
 | `$1E` | `$83:A364  LDX $1E : BNE` guards on it; every exit writes it; `$83:A239  LDA $1E : BNE` wakes on it | what happened to this victim, **latched** — the first thing to reach it decides, and everything after is ignored. `$83:A23D` writes 3 itself after a 300-frame timeout, so 3 is "nobody came" |
 | `$26` | `$83:A3B1  LDA $26 : BNE` | read once, to decide whether to clear the record's `ACTOR_COLLIDE_ID`. Named for where it is rather than for what it means: one `BNE` is not evidence, and no input has taken both sides of it |
+
+#### On the object manager's page (`$80:CAEE`'s thread)
+
+The odd one out, and the reason it is worth its own table: this page does not
+belong to *an* object. `$80:C9D6  LDA #$CAEE : LDY #$0080 : JSL
+thread_set_handler` registers one handler on one thread for **every object in
+the level**, so what the page holds is not an object's state but a queue of the
+ones that were touched. Which object is being reacted to comes in through
+`W_HANDLER_SELF` (`$7E:0078`) rather than off this page at all.
+
+| Offset | What reads or writes it | Meaning |
+| --- | --- | --- |
+| `$12` | `$80:C9E0  STZ $12` initialises, `$80:CB0E`/`$80:CB12` reads and advances by 2 | how many **bytes** of the queue below are in use — a cursor, not a count, because `STA $14,X` indexes by it directly |
+| `$14` | `$80:CB10  STA $14,X` | the queue itself: display-record *addresses* of objects picked up and not yet dealt with, one word each. Nothing in this routine bounds it; the manager's own pass is what empties it |
 
 One consequence for reading listings: `zamn_disasm` resolves a direct-page
 operand as though `D` were `$0000`, so inside any of these routines its symbol
@@ -305,7 +333,27 @@ fixes the stride and the direction.
 `$1CBC` is the selected weapon: `$80:D219` uses it as an index into a table,
 `$80:F38D`/`$80:F3A5` save and restore it in a pair with `$1CC0`, and `$80:F950`
 singles out one value of it when deciding whether a collision hurts. That last
-one is why the port names it at all.
+one is why the port names it at all. **Negative means none selected** —
+`$80:EA8A` writes `$FFFF` when the search comes up empty, and both `$80:EA72
+BMI` and `$80:F8A6  BPL` test the sign.
+
+## Per-player inventory — `$7E:1CCC`, stride `$20`
+
+Fourteen words per player, and the same **BCD** encoding the score uses. The two
+base addresses are the words at `$80:EAA4` — `$1CCC` and `$1CEC` — indexed by
+the same doubled player number, and `$80:EA7E  CPY #$001C` is what bounds a walk
+at fourteen entries. The player's own page caches its base at `$64`.
+
+Two routines touch it and they are the two halves of picking something up.
+`$80:F87B` adds to one slot: the item's collision id, doubled, minus `$18`, is
+the byte offset, and the amount comes from a parallel 21-word table at
+`$80:F8AC` — `SED : CLC : ADC`, capped at `$0999`. `$80:EA63` searches the whole
+array for a non-empty slot, which is what pressing **B** does.
+
+The ids that reach `$80:F87B` run `$0C..$20`, which is 21 of them against 14
+slots, and the last seven of the amount table are zero — so those ids add
+nothing and store the counter back unchanged. Nothing bounds the index, so on
+player 1 they write past the end of the array and into player 2's.
 
 ## The score — `$7E:1E72`, and the slot map at `$7E:1E84`
 

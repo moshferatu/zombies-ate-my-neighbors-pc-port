@@ -200,6 +200,36 @@ typedef struct {
   // how deep the stack pointer actually went. Native mode uses it to know which
   // bytes it is *expected* to leave stale, since the port pushes nothing.
   int stack_bytes;
+  // Checked per call by `verify`, never substituted by `run`. The report prints
+  // the row with `verify only` where a verdict would go, so the exclusion is
+  // visible rather than silent.
+  //
+  // Exactly one routine needs this, and what it needs it for is a property of the
+  // routine rather than a gap in the port: **`$80:CCC8`'s body is a bus
+  // handshake, and the thing that performs a handshake is the CPU.** Eight of its
+  // eleven instructions are `CPY $2143 : BNE`, a spin that ends when the SPC700
+  // echoes the last sequence number back. The port computes the routine's memory
+  // effect and its register contract exactly — 23,997 calls on one movie, every
+  // one passing — and `apu_drive` can put the right bytes on the right ports.
+  // What neither can do is *wait*, because substitution's whole mechanism is to
+  // stop the 65816 executing, and during a driver upload the SPC does not answer
+  // until the CPU has been round that loop a while. Advancing the machine from
+  // inside the hook without running opcodes is not a substitute for it: the SPC
+  // was measured running 12,959 of its own cycles inside one such wait — still in
+  // the driver's RAM-clear init loop — where the ROM's own spin at the same point
+  // took about a thousand.
+  //
+  // `apu_play_sfx` sits directly on top of it and *is* substituted, which is not
+  // an inconsistency but the same fact from the other side: a lone sound effect
+  // finds the SPC caught up from sounds ago, so its wait is satisfied by the first
+  // read and no spin happens. It is the uploader's 23,820 back-to-back commands
+  // that need the wait to be real.
+  //
+  // And this is a statement about the harness, not about Phase 4. The finished
+  // port owns its own main loop and can spin on `$2143` exactly as the ROM does.
+  // What it cannot do is spin while impersonating one instruction inside somebody
+  // else's core.
+  bool verify_only;
 } CosimRoutine;
 
 // The registry. Every routine `src/port/` has replaced, in the order they were

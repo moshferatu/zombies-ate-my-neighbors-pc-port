@@ -1,0 +1,171 @@
+# Level 1, and the point of it is **two pickups of two different items.**
+#
+# Every movie before this one contains exactly one pickup, it is collision id
+# $0C, and its inventory slot is 0 -- so `$80:F87B`'s slot arithmetic agreed
+# with every wrong version of itself (`index / 2 - $0C` and `index - $18` are
+# both 0 when the id is the first one), and both of its other two branches were
+# untaken: the one pickup leaves through the auto-select tail rather than the
+# routine's own `RTS`, and $99 added to an empty counter needs no decimal
+# adjust. Three perturbations of a ported routine passed because of that.
+#
+# What this movie does is walk Zeke over two of level 1's nine objects. The
+# object list is placement data (`zamn_assets actors <rom> 2`) and the type ->
+# collision id table is `$80:CA30`, indexed by the object's type byte, which is
+# already doubled:
+#
+#     obj  type  position      id    $80:F808 entry
+#      6   $16   (251, 302)   $12    $80:F87B  pickup, slot 6   <- first
+#      0   $00   (307, 135)   $0C    $80:F87B  pickup, slot 0   <- second
+#      1   $08   (128, 310)   $21    $80:F8D6  not ported
+#      5   $34   (351,  71)   $2D    $80:FA26  not ported
+#
+# Object 6 is the one that settles the arithmetic: its slot is 6, so the two
+# ways of computing it differ ($0C vs $06) and the diff can finally tell them
+# apart. Object 0 is the one that settles the BCD: slot 0 starts the level at
+# $0150 and the table at `$80:F8AC` pays $0099, and $50 + $99 carries a digit --
+# which you can read off the HUD, where the ammo counter goes 150 -> 249.
+#
+# The route matters more than it looks, because `$80:BEE1` is a 16x16 box on
+# the two records' own coordinates: eight pixels either way, which is four
+# frames of walking. Zeke goes left along the foot of the pool enclosure and
+# then straight up the outside of its left hedge, which puts him through object
+# 6 without ever coming near object 1 (the key at (128,310), whose id is not
+# ported and would show up as a decline). Object 0 sits just above a bench, and
+# the bench is solid -- walking north into it stops him ten pixels short -- so
+# the last four lines go round its right end, up, back left over the top of it
+# and down onto the item.
+#
+# Nothing is fired here and nothing is rescued; this movie is one thing.
+#
+# The boot prefix through frame 1484 is level1.zmv's, unchanged.
+#
+# Retune by watching where it actually gets to:
+#   zamn_headless <rom> shot.png 2300 -m movies\level1-pickups.zmv --at 2100,2252
+
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1020   Start
+1028   -
+1044   Start
+1052   -
+1068   Start
+1076   -
+1092   Start
+1100   -
+1116   Start
+1124   -
+1140   Start
+1148   -
+1164   Start
+1172   -
+1188   Start
+1196   -
+1212   Start
+1220   -
+1236   Start
+1244   -
+1260   Start
+1268   -
+1284   Start
+1292   -
+1308   Start
+1316   -
+1332   Start
+1340   -
+1356   Start
+1364   -
+1380   Start
+1388   -
+1404   Start
+1412   -
+1428   Start
+1436   -
+1452   Start
+1460   -
+1476   Start
+1484   -
+
+# Gameplay. Left along the bottom of the pool enclosure, then straight up its
+# left side: object 6 is at (251,302) and this crosses it around frame 2000.
+1860   Left
+1910   Up
+# Up and right into the north-west yard, until the bench below object 0 stops
+# him.
+2070   Up+Right
+2100   Up
+# Round the right end of the bench, up over it, back left, and down onto the
+# item. The ammo counter reads 249 from here on.
+2170   Right
+2200   Up
+2225   Left
+2252   Down
+2282   -

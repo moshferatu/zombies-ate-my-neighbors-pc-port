@@ -1,42 +1,28 @@
 #include "port/score.h"
 
+#include "port/bcd.h"
 #include "port/coverage.h"
 
 // ---------------------------------------------------------------------------
 // Decimal-mode addition
 // ---------------------------------------------------------------------------
 
-// 16-bit `ADC` with the decimal flag set, as the 65816 performs it.
+// The 65816's 16-bit decimal `ADC` now lives in `port/bcd.h`, because the score
+// stopped being the only thing in the game that uses it — `$80:F87B` adds a
+// pickup amount to an inventory counter the same way. What stays here is the
+// coverage mark, because what an adjust *means* is the caller's to say.
 //
-// Written out nibble by nibble rather than as "unpack the digits, add, repack"
-// because those two are not the same function. The hardware's carry propagation
-// is defined for operands that are not valid BCD at all — `$0A + $01` is `$11`,
-// not `$0B` — and the diff compares the word that lands in WRAM. Scores stay
-// valid BCD in practice, so this is a difference that should never show up; the
-// point is that if it ever does, it will be the ROM's answer and not a
-// plausible-looking approximation of it.
-//
-// `carry` is both the carry in (the `CLC`/`SEC` before the `ADC`) and the carry
-// out.
+// Decimal and binary addition only disagree once a digit runs past 9, so
+// without this mark `bcd_add16` could be replaced by `a + value` and every diff
+// would still pass. It does not fire on either of the two awards
+// `movies/level1-rescue.zmv` produces, which is a fact about the movie's scores
+// and not about the arithmetic — proven by replacing the `$6` adjust with a `$7`
+// and watching all 3,740 checks still pass.
 static uint16_t score_bcd_add16(uint16_t a, uint16_t value, bool* carry) {
   bool adjusted = false;
-  int result = (a & 0xf) + (value & 0xf) + (*carry ? 1 : 0);
-  if (result > 0x9) { result = ((result + 0x6) & 0xf) + 0x10; adjusted = true; }
-  result = (a & 0xf0) + (value & 0xf0) + result;
-  if (result > 0x9f) { result = ((result + 0x60) & 0xff) + 0x100; adjusted = true; }
-  result = (a & 0xf00) + (value & 0xf00) + result;
-  if (result > 0x9ff) { result = ((result + 0x600) & 0xfff) + 0x1000; adjusted = true; }
-  result = (a & 0xf000) + (value & 0xf000) + result;
-  if (result > 0x9fff) { result += 0x6000; adjusted = true; }
-  // Decimal and binary addition only disagree once a digit runs past 9, so
-  // without this mark the whole of the code above could be replaced by `a +
-  // value` and every diff would still pass. It does not fire on either of the
-  // two awards `movies/level1-rescue.zmv` produces, which is a fact about the
-  // movie's scores and not about the arithmetic — proven by replacing the `$6`
-  // adjust with a `$7` and watching all 3,740 checks still pass.
+  uint16_t result = bcd_add16(a, value, carry, &adjusted);
   if (adjusted) PORT_COVER(score_digit_carry);
-  *carry = result > 0xffff;
-  return (uint16_t)result;
+  return result;
 }
 
 // ---------------------------------------------------------------------------

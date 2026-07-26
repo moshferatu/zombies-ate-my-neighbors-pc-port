@@ -158,14 +158,23 @@ collision handler only ever sees an id of its own side when two players touch.
 
 ### Which button fires
 
-**`Y`.** Not `B` — `B` does nothing at all in normal play. `movies/level1.zmv`
-and `movies/level1-rescue.zmv` were written holding `B` for thousands of frames
-under the impression they were shooting, and the ammo counter says otherwise: it
-sits at 150 for the whole of both. That is why `level1-rescue.zmv` produces 1,226
-collisions and only **one** of them is an enemy taking damage — a movie can look
-like a firefight and be a man running into zombies. Checked by holding each of
-`B Y A X L R` in turn for 120 frames on a standing player and watching the
-counter: only `Y` moves it.
+**`Y`.** Not `B`. `movies/level1.zmv` and `movies/level1-rescue.zmv` were
+written holding `B` for thousands of frames under the impression they were
+shooting, and the ammo counter says otherwise: it sits at 150 for the whole of
+both. That is why `level1-rescue.zmv` produces 1,226 collisions and only **one**
+of them is an enemy taking damage — a movie can look like a firefight and be a
+man running into zombies. Checked by holding each of `B Y A X L R` in turn for
+120 frames on a standing player and watching the counter: only `Y` moves it.
+
+**Correction, from porting `$80:EA63`:** what that experiment shows is that `B`
+does not *fire*, and the conclusion recorded here — that it "does nothing at
+all" — was too strong. `B` cycles to the next weapon. `$80:D259  LDA $1A : AND
+#$8000 : ... : JSR $EA63` is the player's input handler edge-detecting it, and
+`$80:EA63` walks the fourteen-slot inventory for the next non-empty one. It is
+invisible to that experiment twice over: the test is a *hold*, and the handler
+takes an edge; and a player carrying one weapon cycles to the weapon they are
+already holding, whose first exit is `CMP $1CBC,X : BEQ` — no store, no sound.
+The ammo counter is exactly the thing that would not move.
 
 ### Writing one
 

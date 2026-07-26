@@ -15,9 +15,11 @@
 
 #include "cosim/cosim.h"
 
+#include "port/apu.h"
 #include "port/collide.h"
 #include "port/fade.h"
 #include "port/oam.h"
+#include "port/player.h"
 #include "port/score.h"
 #include "port/sprite_cache.h"
 #include "port/thread.h"
@@ -446,13 +448,16 @@ static void shim_thread_call_handler(Wram* w, const Rom* rom,
 static bool guard_player_collide(Wram* scratch, const Rom* rom,
                                  const CosimRegs* in) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
-  if (player_collide(scratch, rom, in->d, in->a, &r)) return true;
-  // The only way this declines is an id whose jump-table entry is a routine
-  // nobody has written. Name the entry, not the id: two ids sharing a target
-  // are one piece of work, and `$80:F92D` is more use in a report than `$29`.
-  cosim_census_note("player id table",
-                    0x800000u | rom_word(rom, PLAYER_COLLIDE_TABLE +
-                                                  (uint32_t)(in->a * 2)));
+  uint32_t unported = 0;
+  if (player_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  // Name the routine that is missing, and let the port say which one that is.
+  // For most ids it is the jump-table entry — the entry, not the id, because
+  // twelve ids sharing a target are one piece of work and `$80:F8D6` is more
+  // use in a report than `$29`. For a pickup it is not the entry at all:
+  // `$80:F87B` *is* ported and what it ran out of road on is the auto-select
+  // it tail-calls. Censusing the table entry there would put a routine that
+  // already exists at the top of the work list.
+  cosim_census_note("player id table", unported);
   return false;
 }
 
@@ -473,8 +478,59 @@ static void handler_regs(const ActorHandlerRegs* r, CosimRegs* out) {
 static void shim_player_collide(Wram* w, const Rom* rom, const CosimRegs* in,
                                 CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
-  player_collide(w, rom, in->d, in->a, &r);  // the guard allowed it
+  player_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
   handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $80:CCC8  apu_send — X = the command, A = its parameter
+// ---------------------------------------------------------------------------
+
+// The one routine in the registry with two kinds of caller that disagree about
+// register width, and the reason it took this long to register: 8 bits from the
+// data-set uploader, 16 from `apu_play_sfx`. `port/apu.h` argues why that turns
+// out not to need a width field in `CosimRegs` — the routine's own opening `SEP
+// #$30` normalises it — and this is where the argument gets tested, on both
+// widths at once.
+static void shim_apu_send(Wram* w, const Rom* rom, const CosimRegs* in,
+                          CosimRegs* out) {
+  (void)rom;
+  ApuSendRegs r;
+  apu_send(w, in->a, in->x, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:CC3B  apu_play_sfx — A = the sound effect id
+// ---------------------------------------------------------------------------
+
+// The first ported routine that talks to hardware, and the first whose flags
+// are decided by a register nobody thought they were passing: `PLD` restores
+// the caller's direct page and sets N and Z from it. See `port/apu.h`.
+//
+// Registered in its own right rather than only through the two collision
+// entries that reach it, and this one earns it more than most: the movie's
+// callers are six different routines (`$80:9738`, `$80:D085`, `$80:E9D1`,
+// `$80:EA9F`, `$80:F87F`, `$82:AE94`), only one of which is on the collision
+// path. Everything else about it would go unchecked.
+static void shim_apu_play_sfx(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  ApuSfxRegs r;
+  apu_play_sfx(w, in->a, in->d, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
 // ---------------------------------------------------------------------------
@@ -527,6 +583,48 @@ static void shim_victim_collide(Wram* w, const Rom* rom, const CosimRegs* in,
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
   victim_collide(w, in->d, in->a, &r);
   handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $80:CAEE  object_collide — the same argument, on the object manager's page
+// ---------------------------------------------------------------------------
+
+// No guard, for the same reason `shot_collide` and `victim_collide` have none.
+// Carry is an output on all three paths and an input on none: two `CLC`s and a
+// `SEC`, and nothing reads it on the way to any of them.
+static void shim_object_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;  // no table, no ROM read
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
+  object_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $80:EA63  weapon_select_next — no arguments but the player's direct page
+// ---------------------------------------------------------------------------
+
+// Registered in its own right for the reason `score_add` is: `player_pickup`
+// reaches it, and so does `$80:D267`, the player's input handler noticing that
+// B was pressed. Those two call sites have nothing to do with each other, and
+// the second one is by far the more common — a pickup is rare and pressing B
+// is not.
+//
+// It is reached two different ways, too. `$80:D267` is a `JSR`; `$80:F8A8` is a
+// `JMP`, so on that path the return address on the stack is `player_collide`'s
+// and the frame is still `COSIM_RTS`-shaped. The engine reads the frame rather
+// than assuming, so both work.
+static void shim_weapon_select_next(Wram* w, const Rom* rom, const CosimRegs* in,
+                                    CosimRegs* out) {
+  WeaponSelectRegs r;
+  weapon_select_next(w, rom, in->d, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
 // ---------------------------------------------------------------------------
@@ -820,7 +918,7 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 958,
         // 11 until a handler could die: `enemy_die`'s `JSR` and the `JSL` to
         // `score_add` under it are six bytes deeper than anything else reaches.
-        .stack_bytes = 17,
+        .stack_bytes = 19,
     },
     {
         .name = "player_collide",
@@ -831,7 +929,9 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_player_collide,
         .supported = guard_player_collide,
         .cycles = 515,
-        .stack_bytes = 2,
+        // 2 until the pickup entry was ported; its `JSL apu_play_sfx` and the
+        // weapon selector under it are nine bytes deeper than the hit path.
+        .stack_bytes = 11,
     },
     {
         .name = "enemy_collide",
@@ -879,6 +979,73 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 0,  // it pushes nothing at all
     },
     {
+        .name = "object_collide",
+        .symbol = "$80:CAEE",
+        .entry = 0x80caee,
+        // Two `RTL`s, at $CB06 and $CB17, and as with the two handlers above
+        // which one is named does not affect what returns — `native_publish`
+        // has already put the port's registers in place. The shared ignore tail
+        // is the shorter.
+        .ret_op = 0x80cb06,
+        .ret_kind = COSIM_RTL,
+        .run = shim_object_collide,
+        .cycles = 40,
+        .stack_bytes = 0,  // it pushes nothing at all
+    },
+    {
+        // Before `apu_play_sfx`, because it is that routine's callee: the
+        // registry reads callees-first so the report reads the way the call
+        // chain does.
+        .name = "apu_send",
+        .symbol = "$80:CCC8",
+        .entry = 0x80ccc8,
+        .ret_op = 0x80ccdd,  // RTS
+        .ret_kind = COSIM_RTS,
+        .run = shim_apu_send,
+        // Never substituted, so this budget is never spent — see
+        // `CosimRoutine::verify_only`, which is where the whole argument lives.
+        // The measured distribution is 218..85,184 with a mean of 2,615..2,649
+        // across the four movies, and the reason no figure in it is usable is that
+        // the spread *is* the SPC700 deciding how long the 65816 waits. 218 is
+        // what a call that did not wait at all costs, which is the only part of
+        // the routine a budget could honestly stand for.
+        .cycles = 218,
+        .stack_bytes = 0,   // it pushes nothing at all
+        .verify_only = true
+    },
+    {
+        .name = "apu_play_sfx",
+        .symbol = "$80:CC3B",
+        .entry = 0x80cc3b,
+        .ret_op = 0x80cc4b,  // RTL
+        .ret_kind = COSIM_RTL,
+        .run = shim_apu_play_sfx,
+        // Measured, and by far the most variable routine in the registry for
+        // its size: 484..85,450, because eight of its eleven instructions are a
+        // spin on `$2143` and what they cost is how long the SPC700 took to
+        // acknowledge the *previous* command. 85,450 is a wait of a frame and a
+        // half. The mean is 507 on one movie and 2,134 on another, so no single
+        // figure is right — so this is the measured **minimum**, the cost of a
+        // call that did not wait, and every substituted call is one of those: a
+        // lone sound effect finds the SPC caught up from sounds ago, so
+        // `apu_drive`'s spin exits on its first read. Charging the mean would be
+        // billing a wait that did not happen.
+        .cycles = 484,
+        .stack_bytes = 4,  // PHD + PEA, then the `JSR $CCC8` at the same depth
+    },
+    {
+        .name = "weapon_select_next",
+        .symbol = "$80:EA63",
+        .entry = 0x80ea63,
+        .ret_op = 0x80eaa3,  // RTS; both exits converge on it
+        .ret_kind = COSIM_RTS,
+        .run = shim_weapon_select_next,
+        .cycles = 3227,
+        // The unchanged exit pushes nothing — `level1-rescue.zmv` measures 0 —
+        // and a change adds the `JSR $EA4B` and the `JSL apu_play_sfx` under it.
+        .stack_bytes = 7,
+    },
+    {
         .name = "score_add",
         .symbol = "$80:C7D9",
         .entry = 0x80c7d9,
@@ -898,7 +1065,7 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_actor_collide_notify,
         .supported = guard_actor_collide_notify,
         .cycles = 2842,
-        .stack_bytes = 14,   // the `JSL $80:8480` it ends on, which returns
+        .stack_bytes = 22,   // the `JSL $80:8480` it ends on, and all of what that reaches
     },
     {
         .name = "actor_overlap_pass",
@@ -909,7 +1076,7 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_actor_overlap_pass,
         .supported = guard_actor_overlap_pass,
         .cycles = 4426,
-        .stack_bytes = 18,  // the only `PHY` is on the path it declines
+        .stack_bytes = 26,  // its `PHY`, plus the deepest the dispatch under it goes
     },
     {
         .name = "sprite_build_oam",
@@ -926,7 +1093,7 @@ static const CosimRoutine ROUTINES[] = {
         // A whole NTSC frame is about 57,000 master cycles, so this one pass is
         // most of the game's per-frame CPU budget.
         .cycles = 43111,
-        .stack_bytes = 24,  // PHB + PHD + the deepest nested JSR/JSL
+        .stack_bytes = 32,  // PHB + PHD + the deepest nested JSR/JSL
     },
     {
         .name = "fade_in",

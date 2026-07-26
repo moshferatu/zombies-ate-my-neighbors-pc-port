@@ -1,0 +1,197 @@
+# Two players, level 1, and **the second one does the rescuing.**
+#
+# `movies/level1-rescue.zmv` walks Zeke into the cheerleader five times and so
+# takes `victim_claim_a` — collision id 5, the branch that latches the id
+# *itself* into the victim's `$18`. Nothing has ever taken id 6, the branch
+# three bytes away that latches `$8000` instead, because it needs the *other*
+# player to arrive first. That one word is the whole of "bit 15 names the
+# player" on a victim, and `score_add`'s `BMI` is what reads it, so this movie
+# is also the only thing that credits `score_slot_1` for a rescue rather than
+# for a kill.
+#
+# So: Zeke stands still and Julie walks up-left into the victim. The order
+# matters and it is the only thing this movie has to get right — the latch at
+# `$83:A364` means whichever player touches her first settles her fate, and
+# a second claim after that is `victim_latched` (which is a different untaken
+# site, and also on the list — see the tail of this file).
+#
+# The boot prefix through frame 1484 is level1-2p.zmv's, unchanged, including
+# controller 2 joining on the "PLAYER LEFT / PLAYER RIGHT" screen.
+#
+# Retune by watching where it actually gets to:
+#   zamn_headless <rom> shot.png 4200 -m movies\level1-2p-rescue.zmv --at 1900,2000,2100
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1020   Start
+1028   -
+1044   Start
+1052   -
+1068   Start
+1076   -
+1092   Start
+1100   -
+1116   Start
+1124   -
+1140   Start
+1148   -
+1164   Start
+1172   -
+1188   Start
+1196   -
+1212   Start
+1220   -
+1236   Start
+1244   -
+1260   Start
+1268   -
+1284   Start
+1292   -
+1308   Start
+1316   -
+1332   Start
+1340   -
+1356   Start
+1364   -
+1380   Start
+1388   -
+1404   Start
+1412   -
+1428   Start
+1436   -
+1452   Start
+1460   -
+1476   Start
+1484   -
+
+# Player 2 joins. Four presses across the window rather than one, for the
+# same reason the boot prefix mashes Start: the exact frame the screen
+# appears is not worth pinning down.
+2:1108   Start
+2:1116   -
+2:1132   Start
+2:1140   -
+2:1156   Start
+2:1164   -
+2:1180   Start
+2:1188   -
+
+# Gameplay. Julie goes up and left into the cheerleader; Zeke does not move at
+# all until she has her, so there is no doubt about who arrived first. The
+# score going 0 -> 1000 with the credit landing in the *second* slot is the
+# thing to watch.
+2:1860   Up+Left
+2:2100   Up
+2:2220   Left
+2:2340   -
+
+# With the rescue settled, both players move as a pair — identical inputs on
+# the two ports from here on — and head for the cluster of victims in the
+# north-west of the map (the level lists three inside a 200x200 box up there:
+# $9F:84FB entries at 175,430 / 184,282 / 355,492). Moving together is the
+# point: `actor_overlap_pass` reads the *outer* record's collision id once and
+# then walks every record below it, so a victim that is the outer record of a
+# pass with both players inside its box has its handler called twice in the one
+# pass — and the second call is `victim_latched`, the branch that proves the
+# latch guard does anything at all. Whether the victim sorts as the outer
+# record is a property of the depth sort rather than of the input, so this is
+# an attempt rather than a guarantee; the coverage report says which way it
+# went.
+#
+# Y is held throughout (the fire button, not B — see level1-2p.zmv). B is not
+# nothing, though: it cycles weapons, which porting $80:EA63 turned up. See
+# docs/analysis-tools.md.
+2460   Up+Y
+2:2460   Up+Y
+2700   Up+Left+Y
+2:2700   Up+Left+Y
+3000   Left+Y
+2:3000   Left+Y
+3300   Up+Y
+2:3300   Up+Y
+3600   Up+Left+Y
+2:3600   Up+Left+Y
+3900   Left+Y
+2:3900   Left+Y
+4200   Up+Y
+2:4200   Up+Y
+4500   Right+Y
+2:4500   Right+Y
+4800   Up+Y
+2:4800   Up+Y
+5100   Left+Y
+2:5100   Left+Y
+5400   Down+Y
+2:5400   Down+Y
+5700   Right+Y
+2:5700   Right+Y
+6000   -
+2:6000   -

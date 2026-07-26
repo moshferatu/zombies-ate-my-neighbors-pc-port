@@ -40,10 +40,17 @@
 // outcome `movies/level1-rescue.zmv` produces — and all of `shot_collide` and
 // `victim_collide`, both of which are small enough to be here whole.
 //
-// **One thing is left, and it is not a WRAM problem.** `$80:F92D` is one entry
-// of the player's jump table and it is a single `JSL apu_play_sfx`: it writes no
-// WRAM at all but does talk to the APU, so it belongs with the audio path rather
-// than here. It is the only address left in the decline census on any movie.
+// **The audio wall is down.** Two jump-table entries used to stop here because
+// they open with `JSL apu_play_sfx` and nobody had decided how port code drives
+// the APU. `port/apu.h` is that decision, and both are ported: `$80:F92D`,
+// whose entire reaction is a noise, and `$80:F87B`, the player's side of a
+// pickup — a BCD add into an inventory counter, capped at `$0999`, which is the
+// arithmetic that was stuck behind the noise.
+//
+// `$80:F87B` also has a **tail call**: a player who picks something up while
+// holding no weapon falls into `$80:EA63`, which selects one for them. That is
+// ported too, in `port/player.h`, because following the census there is what
+// turned up the fact that `B` cycles weapons.
 //
 // Two more are unreached rather than unported: an enemy that *survives* a hit
 // leaves through `$81:8506`, and two collision ids (`$81:83C6`, `$81:847E`) have
@@ -204,6 +211,29 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
 #define PLAYER_COLLIDE_TABLE 0x80f808u
 #define PLAYER_COLLIDE_NOP 0xf87au   // a bare RTS: this id does nothing
 #define PLAYER_COLLIDE_HURT 0xf950u  // the hit path — see collide.c
+#define PLAYER_COLLIDE_SFX 0xf92du   // one id, and its whole reaction is a noise
+#define PLAYER_COLLIDE_PICKUP 0xf87bu  // ids $0C..$20: the player takes an item
+
+// The two sound effects those two entries play. Bare `LDA` operands, and the
+// only thing `$80:F92D` does at all.
+#define PLAYER_SFX_TOUCH 0x0009
+#define PLAYER_SFX_PICKUP 0x000e
+
+// The first collision id that is an item. `$80:F885  SEC : SBC #$0018` turns a
+// *doubled* id into a slot, so the constant in the listing is twice this.
+#define PICKUP_ID_FIRST 0x000c
+// 21 words in ROM, one per item id, in the same units as the counter they are
+// added to — BCD. The last seven are zero, which is what the ids past the end
+// of a 14-slot inventory are worth.
+#define PICKUP_AMOUNT_TABLE 0x80f8acu
+// `$80:F895  CMP #$0999`. Three digits is what the HUD has room for.
+#define PICKUP_MAX 0x0999
+
+// The base of this player's inventory array, on the player's own page. Two
+// values only, and they are the two words at `$80:EAA4` that `$80:EA63` indexes
+// with the doubled player number — so the field is a cached pointer rather than
+// anything the player chose.
+#define ACTOR_DP_INVENTORY 0x64
 
 // Ids at or above this are the player's own side of a collision, and each
 // handler ignores the ids that belong to the other. That is what makes exactly
@@ -219,11 +249,17 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
 // `dp` is the player's direct page, which the dispatcher has already installed.
 // `r` comes in holding the registers the handler was entered with.
 //
-// False if the id's jump-table entry is a routine the port does not have. Two
-// of the 57 entries are ported: `$80:F87A`, which is a bare `RTS`, and
-// `$80:F950`, the hit path.
+// Four of the 57 jump-table entries are ported: `$80:F87A`, a bare `RTS`;
+// `$80:F950`, the hit path; `$80:F92D`, one sound effect and nothing else; and
+// `$80:F87B`, a pickup, which twenty-one item ids share.
+//
+// False if the port could not finish, which is now two different things — an
+// entry nobody has written, or the pickup's auto-select tail. `unported` is set
+// to the ROM address it gave up at, so the decline census names the routine
+// that is actually missing rather than the one it was reached through. NULL if
+// the caller does not care.
 bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                    ActorHandlerRegs* r);
+                    ActorHandlerRegs* r, uint32_t* unported);
 
 // --- $81:8888 ---------------------------------------------------------------
 
@@ -368,5 +404,60 @@ bool shot_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 // It takes no `Rom*` and it never declines: there is no table in it and every
 // one of its exits is here.
 bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// --- $80:CAEE ---------------------------------------------------------------
+
+#define OBJECT_COLLIDE_ENTRY 0x80caeeu
+
+// How many bytes of the queue below are in use, and the queue itself: record
+// *addresses*, one word each, on the object manager's own page.
+//
+// `$80:C9E0  STZ $12` is the initialisation, and it is the last instruction of
+// `object_list_parse` — the same routine `src/assets/actor.c` ports the static
+// half of. So the parser that reads the placement list out of ROM and the
+// handler that reacts to a pickup are two ends of one routine, which is how
+// `$80:CAEE` was identified at all: the ROM installs it three instructions
+// later (`$80:C9D6  LDA #$CAEE : LDY #$0080 : JSL thread_set_handler`).
+//
+// `INC $12` twice per entry, and `STA $14,X` indexes by it directly, so this is
+// a byte cursor rather than a count. Nothing here bounds it — the object
+// thread's own pass is what empties the queue.
+#define OBJECT_DP_QUEUE_LEN 0x12
+#define OBJECT_DP_QUEUE 0x14
+
+// The three ids that take an object. Two of them are the ids `victim_collide`
+// calls its claim pair, which is the second piece of evidence that **5 and 6
+// are the two players**: the same two ids rescue a victim and pick up an item,
+// and no third id does either. The third, `$0004`, is also one of the three a
+// victim files under "nobody came" (`VICTIM_ID_EVENT_3_B`), so what it is is
+// still open.
+//
+// They are tested against A — the *other* actor's collision id, as the
+// dispatcher handed it in — while the `BEQ` above them tests X, which is the
+// object's *own*. Two different records, three instructions apart.
+//
+// The object's own id is `$0C`, which the diff handed over rather than the
+// listing: a perturbation that dropped the `STZ` below failed at `$7E:1A10`
+// with ROM `$00` against the port's `$0C`, and `$7E:1A10` is `ACTOR_COLLIDE_ID`
+// in the display record the pickup was reacting to.
+#define OBJECT_ID_TAKE_A 0x0005
+#define OBJECT_ID_TAKE_B 0x0006
+#define OBJECT_ID_TAKE_C 0x0004
+
+// The object manager's handler — the fifth, and the first that is not an actor
+// reacting on its own behalf.
+//
+// Every object in the level shares one thread (`$80:C9D6` registers this on
+// slot `$80` once, for all of them), so `dp` is the manager's page and not the
+// object's. What the handler is handed is the display record of whichever
+// object was touched, in `W_HANDLER_SELF`, and all it does is switch that
+// record's collision off and write its address into a queue for the manager's
+// own pass to drain. **The reaction is deferred, not computed here** — which is
+// a different shape from the four handlers before it, and the reason this one
+// is eleven instructions long.
+//
+// It takes no `Rom*` and it never declines: there is no table in it and all
+// three of its exits are here.
+bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 
 #endif

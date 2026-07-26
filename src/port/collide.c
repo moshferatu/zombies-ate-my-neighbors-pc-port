@@ -1,6 +1,11 @@
 #include "port/collide.h"
 
+#include "port/apu.h"
+#include "port/bcd.h"
 #include "port/coverage.h"
+// For `weapon_select_next`: a pickup by a player holding nothing tail-calls
+// into the weapon selector, which is not collision code and lives on its own.
+#include "port/player.h"
 // For `ACTOR_COLLIDE_ID`: `shot_collide` writes the same display-record field
 // the sprite pass reads, which is the first time a handler reaches out of its
 // own direct page into the game's shared data structure.
@@ -75,11 +80,142 @@ static void player_collide_hurt(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
 }
 
 // ---------------------------------------------------------------------------
+// $80:F92D  the entry whose whole reaction is a noise
+// ---------------------------------------------------------------------------
+
+// `LDA #$0009 : JSL apu_play_sfx : RTS` — three instructions, and the smallest
+// thing that has ever been on PROGRESS.md's work list. It writes nothing but
+// the APU sequence counter and it was blocked on nothing but the decision
+// `port/apu.h` now records.
+static void player_sfx(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+  ApuSfxRegs a;
+  apu_play_sfx(w, PLAYER_SFX_TOUCH, dp, &a);
+  r->a = a.a;
+  r->x = a.x;
+  r->y = a.y;
+  // The `PLD` inside `apu_play_sfx` is the last flag-setting instruction on the
+  // way to this `RTS`, so what the player's handler returns describes the
+  // player's own direct page. Carry is not carried over: `$80:F806  CLC`
+  // overwrites it two instructions later, which is why `player_collide` sets it
+  // for every path rather than each path setting its own.
+  r->n = a.n;
+  r->z = a.z;
+}
+
+// ---------------------------------------------------------------------------
+// $80:F87B  a pickup, from the player's side
+// ---------------------------------------------------------------------------
+
+// The other half of `object_collide`. The object manager switches the touched
+// object off and queues it; *this* is what the player does about it, and the
+// two run one after the other on the same collision — the two dispatches
+// `actor_collide_notify` makes for one pair.
+//
+// `index` is the other actor's collision id **already doubled**, because
+// `$80:F7FC  ASL A : TAX` did that to index the jump table and `PHX : ... :
+// PLA` carries the doubled value across the sound effect and back into A. Ids
+// $0C..$20 all land here, one per item type, and the item's identity is
+// entirely the id: it picks both the inventory slot and how much of it arrives.
+//
+// This is the game's second decimal routine after `score_add`, and the reason
+// the APU decision was worth making rather than working around — the amount is
+// added with `SED` on, so behind the sound effect there was real arithmetic
+// that no movie could diff.
+static void player_pickup(Wram* w, const Rom* rom, uint16_t dp, uint16_t index,
+                          ActorHandlerRegs* r) {
+  // `PHX : LDA #$000E : JSL apu_play_sfx : PLA`. Nothing the sound leaves in a
+  // register survives — the `PLA`, the `TAX` and the `TAY` below overwrite all
+  // three — so only its WRAM effect matters here.
+  ApuSfxRegs sfx;
+  apu_play_sfx(w, PLAYER_SFX_PICKUP, dp, &sfx);
+  (void)sfx;
+
+  // `SEC : SBC #$0018 : TAX`. $18 is the *doubled* id of the first item type,
+  // so what this produces is the item's slot as a byte offset — which is what
+  // both of the two things below want, because both are arrays of words.
+  //
+  // **This line is checked now, and it was not.** Every movie that existed
+  // before `movies/level1-pickups.zmv` picked up exactly one item and it was
+  // id $0C, the first — so the slot was 0, and every wrong way of computing it
+  // is also 0. Writing `index / 2 - PICKUP_ID_FIRST` instead passed all
+  // 138,513 calls, and no coverage site could name it, because it is not a
+  // branch. The fix was an input, not code: level 1's object 6 is id $12, so
+  // the two spellings disagree ($0C against $06) and the wrong one fails on
+  // its first call at `$7E:1CD3` — the *high* byte of the neighbouring
+  // inventory word, because slot $06 also reads the wrong amount out of the
+  // table ($0300 where $0020 belongs).
+  uint16_t slot = (uint16_t)(index - PICKUP_ID_FIRST * 2);
+
+  // `CLC : ADC $64 : TAY`, then `LDA $0000,Y`. The data bank is $80, whose low
+  // half is the WRAM mirror, so this is an absolute WRAM address and `$64`
+  // holds the base of *this* player's inventory. That the base really is
+  // `W_PLAYER_INVENTORY` is not read off the listing — it is the two words at
+  // `$80:EAA4`, which `$80:EA63` indexes with the doubled player number — and
+  // the diff is what settles it, because a wrong base lands the store on the
+  // wrong word of WRAM.
+  uint16_t at = (uint16_t)(slot + wram_r16(w, (uint32_t)dp + ACTOR_DP_INVENTORY));
+
+  // `SED : CLC : ADC $F8AC,X`. The table is in bank $80 above $8000, so it is
+  // ROM and read as such — a Necrofy-style hack that retunes what a pickup is
+  // worth works in the port for free.
+  bool carry = false;
+  bool adjusted = false;
+  uint16_t sum = bcd_add16(wram_r16(w, at),
+                           rom_word(rom, PICKUP_AMOUNT_TABLE + slot), &carry,
+                           &adjusted);
+  if (adjusted) PORT_COVER(pickup_digit_carry);
+
+  // `CMP #$0999 : BCC : LDA #$0999`. Three BCD digits and a ceiling, which is
+  // what an ammo counter on the HUD has room for. That `CMP` is the last thing
+  // in the routine to touch carry and nothing here reads it, because
+  // `$80:F806  CLC` overwrites it on the way out.
+  //
+  // Still transcribed rather than diffed: deleting the ceiling passes every
+  // call on every movie, and `pickup_capped` says so by reading zero. Level 1
+  // pays $0099 twice into a counter that starts at $0150, which is nowhere
+  // near $0999 — this one wants a long session rather than a route.
+  if (sum >= PICKUP_MAX) {
+    PORT_COVER(pickup_capped);
+    sum = PICKUP_MAX;
+  }
+  wram_w16(w, at, sum);
+
+  // `CLD : LDY $0E : LDA $1CBC,Y : BPL <rts>`. Picking something up while
+  // holding no weapon falls into `$80:EA63`, which finds one and selects it —
+  // and *that* is the path the one pickup on `movies/level1-2p-rescue.zmv`
+  // takes, so the ordinary exit below is the one no input has reached.
+  //
+  // A `JMP`, not a `JSR`: what `$80:EA63` returns is what this routine returns,
+  // registers and flags included.
+  uint16_t player = wram_r16(w, (uint32_t)dp + ACTOR_DP_PLAYER);
+  uint16_t weapon = wram_r16(w, W_PLAYER_WEAPON + player);
+  if (weapon & 0x8000) {
+    PORT_COVER(pickup_autoselect);
+    WeaponSelectRegs sel;
+    weapon_select_next(w, rom, dp, &sel);
+    r->a = sel.a;
+    r->x = sel.x;
+    r->y = sel.y;
+    r->n = sel.n;
+    r->z = sel.z;
+    return;
+  }
+
+  PORT_COVER(pickup_taken);
+  r->a = weapon;
+  r->x = slot;
+  r->y = player;
+  // That `LDA` is the last flag-setting instruction, and the `BPL` was taken.
+  r->n = false;
+  r->z = weapon == 0;
+}
+
+// ---------------------------------------------------------------------------
 // $80:F7F7  player_collide
 // ---------------------------------------------------------------------------
 
 bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                    ActorHandlerRegs* r) {
+                    ActorHandlerRegs* r, uint32_t* unported) {
   // `$80:F7F7  CMP #$005C : BCS $F806`, and `$F806` is `CLC : RTL`. An id at or
   // above the player's own side belongs to the other half of the pair, so this
   // returns having read one word and written none.
@@ -119,14 +255,20 @@ bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
       PORT_COVER(player_hurt_entry);
       player_collide_hurt(w, dp, r);
       break;
+    case PLAYER_COLLIDE_SFX:
+      PORT_COVER(player_sfx_only);
+      player_sfx(w, dp, r);
+      break;
+    case PLAYER_COLLIDE_PICKUP:
+      PORT_COVER(player_pickup_entry);
+      player_pickup(w, rom, dp, index, r);
+      break;
     default:
-      // Everything else is a routine nobody has ported. `$80:F92D` — the only
-      // other entry any input has reached — is `LDA #$0009 : JSL apu_play_sfx`,
-      // which writes no WRAM at all but does talk to the APU and spin on its
-      // acknowledgement. That belongs with the audio path, not here, and
-      // pretending the port had served it would be claiming a sound effect that
-      // never played.
+      // Everything else is a routine nobody has ported, and four of the 57
+      // entries now are. Name the entry rather than the id when saying so:
+      // `$80:F8D6` is one routine whatever the thirteen ids reaching it are.
       PORT_COVER(player_unported);
+      if (unported) *unported = 0x800000u | target;
       return false;
   }
 
@@ -435,6 +577,83 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
 }
 
 // ---------------------------------------------------------------------------
+// $80:CAEE  object_collide
+// ---------------------------------------------------------------------------
+
+bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
+  // `$80:CAEE  LDY $0078 : LDX $000E,Y`. `$78` is the record whose handler is
+  // running — the object that was touched — and Y keeps it for the rest of the
+  // routine. The absolute-indexed read lands in `$7E` whichever of $7E/$80 the
+  // data bank holds, the same reasoning as `$1CBC` in the player's hit path.
+  uint16_t self = wram_r16(w, W_HANDLER_SELF);
+  uint16_t self_id = wram_r16(w, (uint32_t)self + ACTOR_COLLIDE_ID);
+  r->y = self;
+  r->x = self_id;
+
+  // `$80:CAF4  BEQ $CB05`, and `$CB05` is `CLC : RTL`. An object whose
+  // collision is already off has been taken and is waiting in the queue below;
+  // this is the same guard `victim_collide` opens with and the same one a spent
+  // shot enforces on itself, written a third way.
+  //
+  // Note which register each test reads. The `BEQ` is on the `LDX` — the
+  // *object's* id — and the three `CMP`s below are on A, which is the *other*
+  // actor's, untouched since the dispatcher's `TYA`. Two records, three
+  // instructions apart, and nothing in the listing says so.
+  //
+  // And this branch is the one line here no diff can check, for the third time
+  // in this file: deleting it outright — letting an object already in the queue
+  // be queued a second time — passes every call on every movie, because no
+  // input has ever touched a spent object. Same shape as `victim_collide`'s
+  // latch and `shot_collide`'s fifth `CMP`; the port would be *more permissive*
+  // than the ROM. `object_spent` is the coverage site that says so by name.
+  if (self_id == 0) {
+    PORT_COVER(object_spent);
+    r->n = false;
+    r->z = true;  // the `LDX` is the last thing to set a flag before the `CLC`
+    r->c = false;
+    return true;
+  }
+
+  if (arg != OBJECT_ID_TAKE_A && arg != OBJECT_ID_TAKE_B &&
+      arg != OBJECT_ID_TAKE_C) {
+    // `$80:CB05  CLC : RTL` reached by falling through all three comparisons,
+    // so the flags are the last one's — `arg - $0004` — and not the first's.
+    PORT_COVER(object_ignore);
+    r->a = arg;
+    r->n = ((uint16_t)(arg - OBJECT_ID_TAKE_C) & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$80:CB07  LDX $0078 : STZ $000E,X`. Switching the object's own collision
+  // off is what makes the queue a set rather than a bag: the next pass will
+  // find no id on this record and skip it (`overlap_no_id`), so a player
+  // standing on an item cannot bank it twice.
+  PORT_COVER(object_taken);
+  wram_w16(w, (uint32_t)self + ACTOR_COLLIDE_ID, 0);
+
+  // `$80:CB0D  TXA : LDX $12 : STA $14,X : INC $12 : INC $12`. The record
+  // address goes into the queue at the byte cursor, and the cursor advances by
+  // one word. A is the address; X is the cursor as it was *before* the two
+  // increments, because the `LDX` is what loaded it.
+  uint16_t cursor = wram_r16(w, (uint32_t)dp + OBJECT_DP_QUEUE_LEN);
+  wram_w16(w, (uint32_t)dp + OBJECT_DP_QUEUE + cursor, self);
+  uint16_t advanced = (uint16_t)(cursor + 2);
+  wram_w16(w, (uint32_t)dp + OBJECT_DP_QUEUE_LEN, advanced);
+  r->a = self;
+  r->x = cursor;
+  // The second `INC $12` is the last instruction to set a flag, and it sets
+  // them from the word in memory rather than from A or X.
+  r->n = (advanced & 0x8000) != 0;
+  r->z = advanced == 0;
+  // `$80:CB16  SEC : RTL` — so the manager's thread is parked, exactly as a
+  // dying enemy parks its own. The second thing in the game that does this.
+  r->c = true;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // $80:8480  thread_call_handler
 // ---------------------------------------------------------------------------
 
@@ -470,15 +689,21 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
   uint32_t entry = ((uint32_t)(bank & 0xff) << 16) | lo;
   bool served;
   if (entry == PLAYER_COLLIDE_ENTRY) {
-    served = player_collide(w, rom, dp, arg, &r);
+    // The address a decline happened at is the harness's business, and it asks
+    // `player_collide` directly through its own registry entry. Passing NULL
+    // here is what keeps `guard_thread_call_handler` from censusing the door
+    // rather than the room behind it.
+    served = player_collide(w, rom, dp, arg, &r, NULL);
   } else if (entry == ENEMY_COLLIDE_ENTRY) {
     served = enemy_collide(w, rom, dp, arg, &r);
   } else if (entry == SHOT_COLLIDE_ENTRY) {
     served = shot_collide(w, dp, arg, &r);
   } else if (entry == VICTIM_COLLIDE_ENTRY) {
     served = victim_collide(w, dp, arg, &r);
+  } else if (entry == OBJECT_COLLIDE_ENTRY) {
+    served = object_collide(w, dp, arg, &r);
   } else {
-    // The list of handlers the port has is exactly four. Anything else is a
+    // The list of handlers the port has is exactly five. Anything else is a
     // routine that has not been written yet, and saying so by address is what
     // makes the remaining work countable instead of vague.
     PORT_COVER(handler_unported);

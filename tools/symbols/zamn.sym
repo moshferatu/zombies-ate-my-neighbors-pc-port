@@ -14,6 +14,7 @@ $000010  vbl_queue_remaining   # countdown used while dispatching a queue
 $000012  vbl_queue_index       # slot index of the job currently dispatched
 $000014  nmi_flags             # bit 15 = NMI already running (re-entrancy guard)
 $000016  nmi_frame_counter     # incremented once per NMI
+$00001E  apu_seq               # 1 byte: the counter $80:CCC8 puts on $2143 and waits for
 $000020  sched_tick            # 32-bit at $20/$22, bumped once per scheduler pass
 $000026  render_flags          # bit 6 clear = flush the VRAM upload queue
 $00006E  joy1_raw              # $4218 as read this frame
@@ -93,6 +94,7 @@ $006E30  victim_count          # victims kept by victim_list_parse
 # Seeded together by $80:8874, which takes the same doubled index.
 $001CB8  player_countdown      # seeded to 10; stepped down by $80:D03C
 $001CBC  player_weapon         # seeded to 0; the index $80:D219 looks a table up by
+$001CCC  player_inventory      # 2 x 14 BCD counters, stride $20; bases at $80:EAA4
 $001CC0  player_weapon_arg     # seeded to 7; saved and restored with it ($80:F38D)
 
 # --- The score (2 slots of one 32-bit BCD counter each, stride 4) -------------
@@ -169,6 +171,9 @@ $80:825E  thread_spawn         # start a cooperative thread at Y:A with DP $00..
 $81:80EC  actor_list_spawn     # camera-driven spawner for the +$1C actor list
 $82:DB46  victim_list_parse    # +$1E victim list -> victim_x/_y/_count arrays
 $80:C9A5  object_list_parse    # +$20 object list -> object_x/_y/_type arrays
+$80:C9E3  object_spawn         # one object -> a display record, from its type
+$80:CA30  object_type_to_id    # 30 words: object type -> collision id
+$80:CA6C  object_type_to_meta  # 30 words: object type -> metasprite in bank $8F
 
 # --- Code: LZSS decompression ------------------------------------------------
 $80:CD20  lzss_decompress      # 4K-window LZSS; ring buffer at lzss_ring

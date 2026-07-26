@@ -68,6 +68,10 @@ function, four fields carry the weight:
 | `cycles` | what a substituted call burns | the mean `verify` measured |
 | `stack_bytes` | how much stack the ROM's version pushes and abandons | the `stack` column `verify` measured |
 
+There is also `verify_only`, which one routine sets: checked per call, never
+substituted, because its body is a hardware handshake and the thing that performs
+a handshake is the CPU. See *The uploader's 23,820 calls* below.
+
 A routine that *suspends* sets `run_yield` instead of `run`, plus three more
 fields — `end`, `yield_op` and `ctx_size`. `docs/threads.md` covers what those
 mean and why the coroutine problem turned out to be tractable; the short version
@@ -639,6 +643,274 @@ plumbing at all. `thread_call_handler`, `player_collide` and `enemy_collide`
 zombie touches them — and they are the first routines whose direct page is not
 `$0000`. That is the boundary Phase 3's remaining work is on the other side of.
 
+## The APU: an output the diff could not see
+
+For several rounds the decline census came down to two addresses and one
+question. `$80:F92D` and `$80:F87B` are both entries of the player's collision
+jump table, both open with `JSL apu_play_sfx`, and neither was hard — what was
+missing was a decision about **how port code drives the APU**, because until
+then the port had only ever touched WRAM.
+
+`src/port/apu.h` is that decision and states it at length. The short version is
+a three-way split of `$80:CCC8`:
+
+* what it does to **memory** is one byte, `W_APU_SEQ`, and the port owns it
+  exactly as it owns the rest of WRAM;
+* what it puts on the **bus** goes out through `ApuPorts`, a hook the host
+  installs once;
+* and the **wait** — the `CPY $2143 : BNE` the CPU spins on until the SPC700
+  echoes the last command — is the host's, because the port has no way to
+  advance an SPC700 and no business trying.
+
+That split is what keeps the routine verifiable: `apu_send()` is left a pure
+function of WRAM plus two arguments, so `apu_play_sfx` is intercepted, rewound
+and diffed exactly like every other routine. The harness installs a different
+hook per mode. `verify` installs a **recorder** — the ROM already made the noise
+and the port is being replayed over a snapshot of the past, so writing to the
+emulated APU here would send every sound effect twice. `run` installs a
+**driver**, which performs the wait by advancing the machine until the SPC
+answers and then writes the three ports for real. Whether that wait can be made
+to work at all turned out to be the interesting question, and the section after
+next is about it.
+
+### Why the ports are compared, and what that caught
+
+This leaves a hole that no amount of WRAM diffing closes: **a port that computed
+the sequence counter correctly and sent nothing at all would pass every byte of
+every check**, because the ports are not memory. So the traffic is compared too,
+by the same rule as everything else here — watch what the ROM's own instruction
+put on the bus. `$80:CCD1  STX $2142` is that instruction, with the command in X
+and the parameter in A, and it is where `zamn_assets verify-music` hooks for the
+same reason. Each call records the window of ROM sends that happened inside it
+and diffs them against what the port asked for.
+
+Three perturbations, all caught on the first call:
+
+| perturbation | what failed |
+| --- | --- |
+| send nothing to the APU at all | `APU: the ROM sent 1 command, the port 0` |
+| send the sound effect id + 1 | `APU command 0: ROM $01/$31, port $01/$32` |
+| take N and Z from the `INY` rather than the `PLD` | `flag N: ROM 0, port 1` |
+
+The first is the one that justifies the mechanism: without the bus comparison it
+passes 16,607 of 16,607 calls and the whole game goes silent.
+
+The third is a finding about the routine rather than about the harness.
+`$80:CC3B` ends `REP #$30 : PLD : RTL`, and **`PLD` sets N and Z from the
+direct page it restores** — so the flags a caller gets back describe *its own
+direct page*, not the sequence counter the visibly-last arithmetic (`INY`)
+produced. It is the first ported routine whose output depends on a register the
+caller never thought it was passing.
+
+One more thing had to be got right, and it is the same shape as the coverage
+counters one line above it in `guard_allows`. A guard answers "can the port
+serve this call?" **by running the port** on a throwaway copy of WRAM. That is
+harmless for memory and not harmless for a sound card: five nested guards asking
+about one pickup would play it five times, and under `run` they would be real.
+The hook is muted for the length of a dry run.
+
+### And the two routines behind it
+
+`$80:F92D` is three instructions and was for several rounds the shortest
+unported routine in the game. `$80:F87B` is the player's side of a pickup — the
+other half of `object_collide`, which was ported last round — and is the game's
+second decimal routine: it turns the item's collision id into an inventory slot,
+adds a BCD amount from a table at `$80:F8AC` to the counter there, and caps it
+at `$0999`.
+
+It also **tail-calls**, and that is where the round stopped being about audio.
+A player who picks something up while holding no weapon falls through
+`JMP $80:EA63`, which searches their inventory for one and selects it — and that
+is the path the single pickup on `movies/level1-2p-rescue.zmv` actually takes.
+So `$80:EA63` is ported too (`src/port/player.h`), registered in its own right
+because it has a second caller that has nothing to do with pickups.
+
+**That second caller is a correction.** An earlier round established that `Y` is
+the fire button and recorded that `B` "does nothing", because holding B for 120
+frames moved no counter. It does something: `$80:D259  LDA $1A : AND #$8000 :
+... : JSR $EA63` is the player's input handler, edge-detecting **B**, cycling to
+the next weapon. It looked like nothing because a player carrying one weapon
+cycles to the one they are already holding, and the routine's first exit is
+`CMP $1CBC,X : BEQ` — no store, no sound, nothing to see.
+
+Three perturbations of the selector were caught, each on its first call:
+starting the search at the slot already held (`$7E:012E`, which is how the
+player's page is known to be based at `$7E:0100`), giving it fourteen tries
+instead of fifteen, and never writing the countdown back. The middle one failed
+at **`$7E:001E`** — the APU sequence counter — because one try short of a full
+lap the search finds nothing, decides the weapon changed, and plays a sound the
+ROM did not. Two subsystems ported an hour apart, and the second is what caught
+the first.
+
+### What it did not catch
+
+Three perturbations of the pickup were **not** caught, and all three have one
+cause: every input that exists picks up exactly one item.
+
+* **Dropping the `$0999` ceiling** and **breaking the BCD decimal adjust** pass
+  every call. Both are named by coverage sites — `pickup_capped` and
+  `pickup_digit_carry` — which is the report saying in advance what the
+  perturbations then confirmed.
+* **Indexing the amount table by the id rather than the doubled id** also passes
+  every call, and *nothing* names that one. The item picked up is id `$0C`, the
+  first, so its slot is 0 — and every wrong way of computing zero is also zero.
+  It is not a branch, so no coverage mark can express it; it is written down in
+  `src/port/collide.c` beside the line, the same defence the `STZ $7E` in
+  `enemy_die` gets.
+
+### The census is empty
+
+With those four routines ported, **no call declines anywhere on any movie.**
+`verify` on `movies/level1-2p-rescue.zmv` checks 138,513 of 138,513 with a
+zero in every `decl.` column and prints no census section at all; the other
+three movies do the same. `run` substitutes all twenty-one routines over 5,989
+scheduler passes with at most 35 bytes differing at once, every one of them
+inside the stacks or a declared scratch byte. (Those totals are the figures
+before `apu_send` was registered in its own right; the section after next
+replaces them.)
+
+That number will not stay at zero — it goes back up the moment an input reaches
+`$81:8506` or one of the two special collision ids — and that is the point of
+the instrument rather than a failure of it.
+
+There are **88** marked sites now, up from 75, and the four movies take 26, 42,
+50 and 56 of them for a **union of 59**. Three of the thirteen new sites are
+already untaken by everything, and all three are the same missing input:
+`pickup_taken` — the pickup's own return path, which the one pickup in the
+corpus misses by tail-calling instead — plus `pickup_capped` and
+`pickup_digit_carry`. `weapon_unchanged` looked like a fourth and is not: the
+two-player movies press B with an empty inventory, but `level1.zmv` and
+`level1-rescue.zmv` both take it.
+
+## The uploader's 23,820 calls
+
+`$80:CCC8` had been checked all along, but only ever through `apu_play_sfx` — a
+few hundred calls, all of them from the same handful of sites, all of them
+sending the same command. Meanwhile the same eleven instructions are the inner
+loop of the data-set uploader, which puts **23,820 commands** through them on
+every movie. Registering the routine on its own entry PC turns the largest single
+body of execution in the whole corpus from unchecked into checked, and it did not
+need a line of new port code — only a signature that says what the arguments are.
+
+### The width question, answered by the routine's first instruction
+
+The reason this waited several rounds is written down in `port/apu.h`, and it was
+wrong. `$80:CCC8` has two kinds of caller and they disagree about register width:
+`apu_play_sfx` arrives sixteen bits wide, the uploader eight (`$80:CC90  SEP
+#$30`). `CosimRegs` has no width field, so intercepting here looked like it would
+mean comparing high bytes that mean nothing, and adding a field looked like the
+prerequisite.
+
+It is not, and the reason is the routine's own first instruction. `SEP #$30`
+normalises everything the contract depends on before anything else happens:
+
+* `A` is only ever **read** (`STA $2141` takes the low byte), so the whole
+  sixteen-bit register comes back exactly as it went in — high byte included,
+  whatever junk it holds. On the uploader's path that high byte is the top half
+  of a pointer word left over from `$80:CC84  LDA $80CCE0,X`. It is junk, and it
+  is *preserved* junk, identically on both sides.
+* `X` and `Y` have their high bytes **cleared** by that `SEP` itself, so a caller
+  who arrived wide is narrowed before the routine looks at them, and a caller who
+  arrived narrow was already there.
+* `Y` is then loaded fresh from one byte of WRAM.
+
+So the port takes `A` and `X` full width — which is what the ROM's calling
+convention actually says — and there is nothing left for a width field to
+disambiguate. **23,632 of 23,632 calls pass on `level1.zmv`, first run**, and
+23,656 / 23,979 / 23,997 on the other three.
+
+### What the new sample caught
+
+Six perturbations. Four fail on **call 1**:
+
+| perturbation | what failed |
+| --- | --- |
+| never write the counter back | `WRAM $7E:001E: ROM $01, port $00` |
+| swap the command and the parameter | `APU command 0: ROM $08/$01, port $01/$08` |
+| take N and Z from the pre-`INY` counter | `flag Z: ROM 0, port 1` |
+| return carry clear | `flag C: ROM 1, port 0` |
+
+The second is the bus comparison earning its keep for a second time — it is not
+a memory difference and nothing else in the harness could see it.
+
+The fifth is the one worth having the sample for. **Returning a sixteen-bit
+`seq + 1` instead of the byte passes 251 calls and fails on call 256**, with
+`Y: ROM $0000, port $0100`. The sequence counter is one byte and it wraps, and
+the only thing in the game that goes round it is an uploader sending 23,820
+commands in a row — which goes round it ninety-three times. A few hundred
+scattered sound effects would have had to be very unlucky to catch that.
+
+### What it did not catch
+
+The sixth was not caught, and it is the honest limit of the width argument above.
+**Deleting the `x & 0xff` mask passes every call on every movie.** The six call
+sites in the ROM are `LDX #$0001`, `#$0002`, `#$0006`, `#$0008`, `#$000A` and
+`#$0013` — every one a small constant whose high byte is already zero, so the one
+place register width could still have shown through is a place no caller ever
+puts anything. It is not a branch, so no coverage mark can express it; it is
+written down in `src/port/apu.c` beside the line, the same defence the
+`STZ $7E` in `enemy_die` and the doubled-id index in `player_pickup` get.
+
+### `verify_only`: a routine whose body is a handshake
+
+Substituting it does not work, and that is a genuine finding rather than a bug to
+fix. `run` with `apu_send` substituted **desynchronises the two cores inside the
+first ten scheduler passes** — `$7E:0016`, the NMI frame counter, reads `$02DC`
+on the stock side and `$0595` on the native one.
+
+Chasing it is worth recording, because the answer is structural. The first guess
+was the cycle budget, and it is true that no single budget fits a routine whose
+measured cost is 218..85,184 master cycles. It is also beside the point. Eight of
+those eleven instructions are `CPY $2143 : BNE`, and **the spread is not work the
+budget should be paying for — it is the SPC700 deciding how long the 65816 has to
+sit still.** So `apu_drive`'s wait was changed to burn the machine's time
+(`snes_runCycles`) rather than the APU's (`apu_runCycles`), which is right on its
+own terms: fast-forwarding the APU alone moves it without moving `snes->cycles`,
+putting it on a different clock from everything else.
+
+It still deadlocks, and instrumenting the hook says why in one line: during a
+driver upload the SPC700 sits in the driver's own **RAM-clear init loop**
+(`$0672: MOV [$C0]+Y,A : INC Y : BNE`), and the harness watched it run **12,959
+of its own cycles** there without answering, where the ROM's spin at the same
+point takes about a thousand. The machine is being advanced; the CPU is not, and
+during a wait that long the CPU is what the rest of the machine is waiting for.
+Substitution's whole mechanism is to stop the 65816 executing, so a routine whose
+body *is* a bus handshake cannot be substituted from inside it.
+
+So the registry grew one field. `verify_only` means **checked per call, never
+substituted**, and the report prints `verify only` where a verdict would go so
+the exclusion is visible rather than silent:
+
+```
+apu_send                    0       -        0        0      0      0      0  -   verify only
+```
+
+Two things keep this from being a euphemism for "gave up". It is not a decline —
+nothing was offered, so nothing is claimed either way, and the `decl.` column
+stays honestly at zero. And `apu_play_sfx`, sitting directly on top of it, *is*
+still substituted, which is the same fact from the other side: a lone sound
+effect finds the SPC caught up from sounds ago, so its wait is satisfied by the
+first read and no spin happens at all. That is also why its cycle budget is now
+the measured **minimum** (484) rather than a mean — every call it makes is a call
+that did not wait.
+
+None of this is a limit on Phase 4. The finished port owns its own main loop and
+can spin on `$2143` exactly as the ROM does. What it cannot do is spin while
+impersonating one instruction inside somebody else's core.
+
+### Where the totals stand
+
+Twenty-two routines. `verify` checks **40,239** calls on `level1.zmv`,
+**130,048** on `level1-rescue.zmv`, **150,170** on `level1-2p.zmv` and
+**162,510** on `level1-2p-rescue.zmv` — every one passing, with a zero in every
+`decl.` column and no census section printed on any of them. `run` still
+substitutes twenty-one of the twenty-two over 2,389 / 6,089 / 5,989 / 5,989
+scheduler passes with at most 18 / 31 / 34 / 35 bytes differing at once, every
+one inside the stacks or a declared scratch byte, and no byte of live game state
+ever differing. Branch coverage is unchanged at 88 sites, because `apu_send` has
+no branch of its own to mark: its one decision point is the wait, and the wait
+belongs to the host.
+
 ## Coverage the movie does not have
 
 Five perturbations of `sprite_build_oam` were caught (the `ACTOR_Z` subtraction,
@@ -664,8 +936,8 @@ table with hit counts. It is never a failure — an untaken branch is a movie th
 has not been written yet, and saying so is the whole job.
 
 Three things about the numbers. **A site is a decision the diff would have to
-run to check**, not every `if`: 60 of them across the sixteen routines, chosen by
-hand. **Hit counts are call-weighted, not event-weighted** — under `verify` the
+run to check**, not every `if`: 88 of them across the twenty-one routines,
+chosen by hand. **Hit counts are call-weighted, not event-weighted** — under `verify` the
 port runs once per interception, so a routine reached both directly and through
 a ported caller is counted once for each. That weighting is now five deep on the
 collision path (`sprite_build_oam` → `actor_overlap_pass` →
@@ -787,3 +1059,152 @@ busier scene for the three OAM-full and queue-full sites, a longer session for
 the two BCD carry sites — plus `collide_none` and the three defensive branches in
 `sprite_build_oam`, which may well be facts about the ROM rather than gaps in
 the movies.
+
+### The second player rescues somebody
+
+`movies/level1-2p-rescue.zmv` was written against that list too, and it went
+straight for the one entry it named as the most gettable: **`victim_claim_b`,
+the second player walking into a victim.**
+
+`victim_collide` reacts to eight collision ids, and two of them — `$0005` and
+`$0006` — produce the same event and differ in one word. Id 5 latches the id
+*itself* into the victim's `$18`; id 6 latches `$8000`. `score_add` reads bit 15
+of that word and nothing else, so the pair is the two players, and until this
+movie only the first half had ever run. The input is not subtle: give Julie the
+controller, let Zeke stand still, and walk her up and left into the cheerleader
+`movies/level1-rescue.zmv` rescues with Zeke. `victim_claim_b` fires, and the
+credit lands in `score_slot_1` for a *rescue* rather than for a kill, which is
+the other half of "bit 15 names the player" proved on the other kind of award.
+
+Two more things came out of it that were not planned, and one of them retires a
+suspicion this document has carried since `actor_collide_notify` was ported.
+
+**`collide_none` is reachable.** It is the branch where a collision happens
+between two actors *neither* of which has a handler registered, and it had read
+zero on every movie ever run — enough that the note above it said it "may well be
+unreachable by design rather than by the movie". It is not. Playing two players
+as a pair rather than counter-phase reaches it **2,277** times. The eight words
+`actor_collide_notify` writes are no longer only ever checked through a handler.
+
+**And the decline census grew two addresses, which is the point of having one.**
+Both are one event seen from its two sides: a player picked something up.
+
+* `$80:CAEE` is the **object manager's** collision handler, and it is now ported
+  (`object_collide`, the fifth handler). It was identified from the ROM rather
+  than guessed at: `$80:C9D6  LDA #$CAEE : LDY #$0080 : JSL thread_set_handler`
+  is the last thing `object_list_parse` does, so the routine `src/assets/actor.c`
+  ports the static half of is the same routine that installs this. Every object
+  in the level shares one thread, so the handler's direct page is the *manager's*
+  and the object is handed to it in `W_HANDLER_SELF` — the first ported handler
+  that is not an actor reacting on its own behalf. What it does is eleven
+  instructions: switch the touched object's collision off, append its record
+  address to a queue on the manager's page, and park. **The reaction is
+  deferred, not computed here.**
+* `$80:F87B` is the *player's* side of the same pickup, and it is **not** ported,
+  because it opens with `LDA #$000E : JSL apu_play_sfx`. What is behind that call
+  is not a sound effect this time: it indexes a table at `$80:F8AC` and adds the
+  amount to a counter with `SED` on, capped at `$0999`. So the audio wall now
+  blocks real arithmetic — the second decimal routine in the game — rather than
+  only a noise, which raises what the APU decision is worth.
+
+`object_collide` passes its one call whole-WRAM and registers first try, and
+three deliberate perturbations were caught at the exact byte, all three failing
+at `$7E:1A10` — the touched object's `ACTOR_COLLIDE_ID` in the display list,
+which is also how the object's own id is known to be `$0C`: dropping the `STZ`,
+advancing the queue cursor by 4 instead of 2, and queueing `W_HANDLER_OTHER`
+instead of the object. **The fourth was not caught, and it is the finding.**
+Deleting the entry guard — letting an object already sitting in the queue be
+queued a second time — passes every call on every movie, because nothing has ever
+touched a spent object. That is the same shape as `victim_collide`'s latch and
+`shot_collide`'s fifth `CMP`, for the third time in one file: the port would be
+*more permissive* than the ROM, and only an input can tell. `object_spent` is
+the coverage site that names it.
+
+Across 138,129 checked calls nothing diverges, and `run` compares **5,989 of
+5,989** scheduler passes with at most 18 bytes differing at once, all of them
+inside the stacks or a declared scratch byte. The movie takes **49 of 75** sites
+— the most of any single input — and it is the only one that reaches
+`collide_none`, `object_taken` and `victim_claim_b`. **The union across all four
+is 51 of 75.**
+
+`level1.zmv` and `level1-2p.zmv` now contribute nothing their siblings do not,
+which is worth saying plainly: they are kept as regression baselines, not as
+coverage. `level1-rescue.zmv` is down to exactly one site of its own —
+`victim_claim_a`, and it keeps that only because this movie deliberately has
+Zeke stand still. `cull_offscreen` and `player_unported`, which it used to hold
+alone, are both reached here as well.
+
+### Two pickups, two items
+
+The list above is written on the assumption that an untaken site is the only
+thing a movie can be missing. It is not, and `movies/level1-pickups.zmv` was
+written to close the other kind of gap — the one this document calls *a store
+the diff cannot see*, in its worst form so far.
+
+`player_pickup` (`$80:F87B`) turns a collision id into an inventory slot:
+`SEC : SBC #$0018`, on an id the dispatcher has already doubled. Two spellings
+of that produce the same answer for the first item and different answers for
+every other one, and **every input that existed picked up exactly one item and
+it was the first.** Id `$0C`, slot 0. So `index / 2 - PICKUP_ID_FIRST` — which
+is off by a factor of two on every other id in the game — passed all 138,513
+calls, and no coverage site could name it, because it is not a branch. Two of
+`player_pickup`'s four marks read zero for the same reason: the one pickup left
+through the auto-select tail rather than the routine's own `RTS`, and $99 added
+to an empty counter needs no decimal adjust.
+
+**Aiming an input at that needed the object table, not the level.** A level's
+object list is placement data — x, y, type — and the type is an index into
+`$80:CA30`, which is what gives the object's display record its **collision
+id** (`docs/asset-formats.md` → *What the type means*). Read that way, level 1's
+nine objects sort themselves into a shopping list:
+
+| obj | type | position | id | `$80:F808` entry |
+| --- | --- | --- | --- | --- |
+| 6 | `$16` | (251, 302) | `$12` | `$80:F87B` — pickup, **slot 6** |
+| 0 | `$00` | (307, 135) | `$0C` | `$80:F87B` — pickup, slot 0 |
+| 1, 2, 3 | `$08` | (128, 310), … | `$21` | `$80:F8D6` — not ported |
+| 5 | `$34` | (351, 71) | `$2D` | `$80:FA26` — not ported |
+
+So the movie is a route: walk over object 6, then over object 0, and go nowhere
+near objects 1 and 5, whose ids would come back as declines. It is tighter than
+it sounds, because `$80:BEE1` is a 16×16 box on the two records' own
+coordinates — eight pixels either way, which is four frames of walking — and the
+bench under object 0 is solid, so the last four lines of the movie go round its
+right end and drop onto the item from above.
+
+It **checks 41,233 of 41,233 calls with nothing declined**, and it settles two
+of the three open questions:
+
+* **The slot arithmetic.** Object 6's id is `$12`, so the right spelling gives
+  `$0C` and the wrong one `$06`. The wrong one now fails on **call 1** at
+  `$7E:1CD3` — the *high* byte of the neighbouring inventory word, because slot
+  `$06` also reads the wrong entry out of the amount table at `$80:F8AC`
+  (`$0300` where `$0020` belongs). A line that survived 138,513 calls falls on
+  the first call of a movie written to look at it.
+* **The BCD.** Slot 0 starts level 1 at `$0150` and object 0 pays `$0099`, so
+  the tens digit carries: `pickup_digit_carry` is taken, and deleting that line
+  of `bcd_add16` fails on **call 2** at `$7E:1CCC` — ROM `$49`, port `$E9`. The
+  same perturbation still passes call 1, whose `$0000 + $0020` needs no
+  correction, which is the instrument being exactly as sharp as the input is.
+  You can read the whole finding off the HUD: the ammo counter goes 150 → 249.
+
+**The third is still open, and it was named in advance.** Dropping the `$0999`
+ceiling passes every call on every movie, and `pickup_capped` reads zero on all
+five. Level 1 pays `$0099` twice into a counter starting at `$0150`; nothing
+in reach of a route gets near `$0999`. That one wants a long session, not a
+better path — and the difference between "not caught, and here is the site that
+says so" and "not caught" is the whole reason the marks exist.
+
+`run` compares **2,389 of 2,389** scheduler passes with at most 33 bytes
+differing at once, every one inside the stacks or a declared scratch byte. Both
+pickups happen identically on the native side — the inventory words are live
+game state, and no byte of live game state ever differs. Note what the run's own
+table says about how they got there: `player_collide` and the six routines above
+it read *not reached*, and `sprite_build_oam` reads 2,389. Under substitution the
+whole collision chain runs inside the port rather than through six separate
+interceptions, so the counts are a picture of the call graph and not a gap.
+
+The movie takes **34 of 88** sites, which is the fewest of the five: it is 2,400
+frames long, it fires nothing, it rescues nobody, and it is the only input that
+holds `pickup_taken` and `pickup_digit_carry`. That is the argument for writing
+narrow movies. The union across all five is **61 of 88**.

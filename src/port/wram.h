@@ -82,6 +82,15 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_NMI_FRAME_COUNTER 0x0016
 #define W_SCHED_TICK 0x0020  // 32-bit: $20 low, $22 high
 
+// --- Direct page: the APU command protocol ($80:CCC8) ---
+//
+// One *byte*, and the only piece of game state the audio path has. `$80:CCC8`
+// writes it to `$2143` after every command and the SPC copies it back, so the
+// next command's `CPY $2143 : BNE` waits on it. It is on direct page zero for
+// every caller — `apu_play_sfx` installs `D = $0000` before sending — which is
+// what makes it a global rather than a field of the thread making the noise.
+#define W_APU_SEQ 0x001e
+
 // --- Direct page: sprite build scratch ---
 #define W_SPRITE_UPLOAD_COUNT 0x007c  // bytes, i.e. entries x 2
 #define W_SPRITE_FRAME_BASE 0x007e    // $7E = address, $80 = bank
@@ -144,6 +153,17 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 // a pair with `$7E:1CC0`, and `$80:D219` uses it as an index into a table of
 // them. `$80:F950` is why it is here: one weapon changes what a collision does.
 #define W_PLAYER_WEAPON 0x1cbc
+
+// --- Per-player inventory (2 x 14 x u16 BCD counters, stride $20) ---
+//
+// How much of each item a player is carrying, in the same BCD the score uses.
+// `$80:EAA4` holds the two base addresses — `$1CCC` and `$1CEC` — indexed by a
+// player number already doubled, and `$80:EA7E  CPY #$001C` is what bounds the
+// walk at fourteen entries. `$80:F87B` adds to one of them on a pickup and
+// `$80:EA63` searches the whole array for a non-empty slot.
+#define W_PLAYER_INVENTORY 0x1ccc
+#define W_PLAYER_INVENTORY_STRIDE 0x20
+#define W_PLAYER_INVENTORY_SLOTS 14
 
 // --- The score (2 slots of one 32-bit BCD counter each, stride 4) ---
 //

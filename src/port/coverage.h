@@ -97,6 +97,23 @@
   X(hurt_weapon_immune,"player_collide",     "the one weapon that turns a hit aside, with $1E set") \
   X(hurt_iframes,     "player_collide",      "a hit inside the recovery window, ignored") \
   X(hurt_taken,       "player_collide",      "a hit the player actually took")   \
+  X(player_sfx_only,  "player_collide",      "an id whose entire reaction is a sound effect") \
+  X(player_pickup_entry,"player_collide",    "an id that dispatched to $80:F87B, a pickup") \
+                                                                                \
+  /* $80:F87B player_pickup — the player's side of taking an item. */            \
+  X(pickup_taken,     "player_pickup",       "an item added to a player's inventory") \
+  X(pickup_capped,    "player_pickup",       "a counter that hit the $0999 ceiling") \
+  X(pickup_digit_carry,"player_pickup",      "a pickup whose BCD addition needed a decimal adjust") \
+  X(pickup_autoselect,"player_pickup",       "a pickup by a player holding no weapon, which selects one") \
+                                                                                \
+  /* $80:EA63 weapon_select_next, and $80:EA4B under it. */                      \
+  X(weapon_none_held, "weapon_select_next",  "a search that began with nothing selected, so from slot 0") \
+  X(weapon_scan_empty,"weapon_select_next",  "an inventory slot the search found empty") \
+  X(weapon_scan_wrap, "weapon_select_next",  "a search that ran off the end of the inventory and wrapped") \
+  X(weapon_none_found,"weapon_select_next",  "fifteen tries and every slot empty") \
+  X(weapon_unchanged, "weapon_select_next",  "the search settled on the weapon already held — B with one weapon") \
+  X(weapon_changed,   "weapon_select_next",  "a different weapon selected")      \
+  X(weapon_no_data,   "weapon_select_next",  "...to nothing at all, so $80:EA4B returned at once") \
                                                                                 \
   /* $81:8888 enemy_collide, and the death at $81:8727. */                      \
   X(enemy_ignore,     "enemy_collide",       "an enemy told about an id of the other side, which it ignores") \
@@ -120,6 +137,11 @@
   X(victim_event_4,   "victim_collide",      "id $34, which has an ending to itself") \
   X(victim_event_ff,  "victim_collide",      "id $FF, the only ending that is not a small integer") \
   X(victim_ignore,    "victim_collide",      "an id a victim has no reaction to at all") \
+                                                                                \
+  /* $80:CAEE object_collide — the object manager's side of a pickup. */         \
+  X(object_spent,     "object_collide",      "an object already taken this frame, so its id is gone") \
+  X(object_taken,     "object_collide",      "one of the three ids that pick an object up") \
+  X(object_ignore,    "object_collide",      "an id that touches an object without taking it") \
                                                                                 \
   /* $80:C7D9 score_add. */                                                     \
   X(score_slot_0,     "score_add",           "points credited to the first score slot") \

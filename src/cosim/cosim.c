@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "analysis/movie_apply.h"
+#include "port/apu.h"
 #include "port/coverage.h"
 
 // One in-flight call. Calls nest — an NMI can land inside a routine and the
@@ -30,6 +31,11 @@ typedef struct {
   bool segment_spoiled; // an interrupt landed mid-segment; do not diff this one
   uint32_t resume_pc;   // where the current suspension will come back to
   long segment;         // which segment is in flight, from 0
+  // Where the ROM's APU traffic stood when this segment began. Everything
+  // logged after it is this call's, which is how a nested call's sends are kept
+  // out of its caller's comparison — the caller's window simply also contains
+  // them, exactly as its own sends would be.
+  uint32_t apu_mark;
 } CosimCall;
 
 #define COSIM_MAX_DEPTH 8
@@ -37,6 +43,107 @@ typedef struct {
 // `thread_yield`, `$80:8353`. Reaching it is how a segment ends; see
 // `docs/threads.md`.
 #define THREAD_YIELD_ENTRY 0x808353
+
+// ---------------------------------------------------------------------------
+// The APU: the one output a WRAM diff cannot see
+// ---------------------------------------------------------------------------
+//
+// `port/apu.h` hands the actual bus traffic to a hook, because the port cannot
+// wait for an SPC700 and, under `verify`, must not write to one — the ROM
+// already did, and the port is being replayed over a snapshot of the past. That
+// leaves a real hole: a port that computed the sequence counter correctly and
+// then sent nothing at all would pass every byte of every diff, because the
+// ports are not memory.
+//
+// So the traffic is compared too, and by the same rule as everything else here:
+// watch what the *ROM's own instruction* put on the bus. `$80:CCD1  STX $2142`
+// is that instruction — X is the command, A the parameter — which is exactly
+// where `zamn_assets verify-music` hooks for the same reason.
+//
+// Two logs, both process-global for the reason the coverage counters are: they
+// describe the run and not a `Cosim`. Only calls inside an interception are
+// logged, which used to keep a data-set upload's 23,820 commands out — until
+// `$80:CCC8` was registered on its own entry and every one of them became an
+// interception, one command per call. The ring is 64 deep and nothing ported
+// sends more than one command per call, so a window is always 1 and the extra
+// volume costs nothing.
+#define APU_SEND_STORE 0x80ccd1
+#define COSIM_APU_LOG 64
+
+typedef struct {
+  uint16_t cmd_param[COSIM_APU_LOG];  // cmd << 8 | param
+  uint32_t count;                     // monotonic; may run past the buffer
+} ApuLog;
+
+static ApuLog g_apu_rom;   // what the ROM's instructions sent, across the run
+static ApuLog g_apu_port;  // what the port asked for, during one segment
+
+// A guard answers "can the port serve this call?" by *running the port* on a
+// throwaway copy of WRAM. That is fine for memory and it is not fine for a
+// sound card: five nested guards asking about one pickup would play the pickup
+// five times, and in native mode they would be real. So the hook is muted for
+// the length of a dry run, the same way `guard_allows` saves and restores the
+// coverage counters — for exactly the same reason, and one line apart.
+static bool g_apu_dry;
+
+// A ring on both sides: `count` is monotonic for the ROM's log, which runs for
+// the whole movie, and reset per segment for the port's. Reads index it the
+// same way, which is the point — a log that wrote linearly and read modulo
+// would quietly start comparing every call against the first one.
+static void apu_log_add(ApuLog* log, uint8_t cmd, uint8_t param) {
+  log->cmd_param[log->count % COSIM_APU_LOG] =
+      (uint16_t)((uint16_t)cmd << 8 | param);
+  log->count++;
+}
+
+// The hook `verify` installs: record, send nothing. Writing to the emulated
+// APU here would be sending every sound effect twice.
+static void apu_record(void* ctx, uint8_t seq, uint8_t cmd, uint8_t param) {
+  (void)ctx;
+  (void)seq;  // the sequence counter is WRAM, and the diff already checks it
+  if (g_apu_dry) return;
+  apu_log_add(&g_apu_port, cmd, param);
+}
+
+// ...and the one `run` installs: do it for real, including the wait.
+//
+// **In practice the wait does not happen, and that is load-bearing rather than
+// lucky.** Every substituted caller of this is a sound effect, and a sound effect
+// finds the SPC caught up from sounds ago: the first read already matches and the
+// loop body is never entered. The one path that *would* enter it — a data-set
+// upload's 23,820 back-to-back commands — is why `$80:CCC8` is registered
+// `verify_only`, because no amount of care in here makes a substituted spin work.
+// See `CosimRoutine::verify_only` for the measurement and the argument.
+//
+// The loop is still written to burn the machine's time rather than the APU's,
+// with `snes_runCycles` and not `apu_runCycles`. Two reasons, and the first holds
+// whether or not the body ever runs: fast-forwarding the APU alone moves it
+// forward without moving `snes->cycles`, which puts the APU on a different clock
+// from the rest of the machine — the last thing lockstep wants. And the second is
+// what the ROM's `CPY $2143 : BNE` actually buys for the price of its two
+// instructions: the beam moves, HDMA fires, the APU catches up, and an NMI comes
+// due if one is due. It runs no CPU opcodes, which is right — the only opcodes
+// the ROM would have run here are the two this loop stands in for. That it is
+// *still* not enough for an upload is exactly the finding.
+//
+// The bound keeps a wedged SPC from hanging the harness rather than failing it,
+// and it is generous on purpose: `verify` measured the ROM's own worst case at
+// 85,450 master cycles, a frame and a half.
+#define APU_SPIN_LIMIT 262144
+static void apu_drive(void* ctx, uint8_t seq, uint8_t cmd, uint8_t param) {
+  Snes* snes = (Snes*)ctx;
+  if (g_apu_dry) return;
+  // Reading through `snes_readBBus` rather than off `apu->outPorts` is what the
+  // ROM's `CPY $2143` does, catch-up and all.
+  for (int spun = 0;
+       spun < APU_SPIN_LIMIT &&
+       snes_readBBus(snes, APU_PORT_SEQ & 0xff) != seq;
+       spun += 32)
+    snes_runCycles(snes, 32);
+  snes_writeBBus(snes, APU_PORT_CMD & 0xff, cmd);
+  snes_writeBBus(snes, APU_PORT_PARAM & 0xff, param);
+  snes_writeBBus(snes, APU_PORT_SEQ & 0xff, (uint8_t)(seq + 1));
+}
 
 static void run_native_segment(Cosim* c, CosimCall* call);
 
@@ -53,6 +160,9 @@ struct CosimPriv {
   // because the ROM's version would have pushed there and the port has no stack
   // in WRAM at all. See cosim_stale().
   uint8_t* stale;
+  // The port's window onto the APU, held here so it outlives every call that
+  // uses it. See the `ApuLog` comment above.
+  ApuPorts apu;
 };
 
 // ---------------------------------------------------------------------------
@@ -151,10 +261,21 @@ void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
   if (ctx_max > 0)
     for (int i = 0; i < COSIM_MAX_DEPTH; i++)
       c->priv->stack[i].ctx = calloc(1, ctx_max);
+
+  // Give the port an APU. Which one depends on what this harness is for: under
+  // `verify` the ROM has already made the noise and the port is only asked what
+  // it would have sent; under `run` the port *is* the game, so it drives the
+  // real ports. Lockstep builds two harnesses and only the substituting one
+  // ever runs port code, so the single hook is never contended — see
+  // `port/apu.h` on why there is only one.
+  c->priv->apu.send = mode == COSIM_VERIFY ? apu_record : apu_drive;
+  c->priv->apu.ctx = snes;
+  apu_attach(&c->priv->apu);
 }
 
 void cosim_free(Cosim* c) {
   if (!c->priv) return;
+  apu_attach(NULL);  // the hook lives in `priv`, which is about to go
   free(c->priv->scratch);
   free(c->priv->guard);
   free(c->priv->stale);
@@ -243,12 +364,45 @@ static void compare_wram(CosimStat* s, const CosimCall* call, const Wram* ours,
   }
 }
 
+// Diff what each side put on the APU's ports during this segment. See the
+// `ApuLog` comment: the ports are not memory, so nothing above can see this.
+static void compare_apu(CosimStat* s, const CosimCall* call) {
+  uint32_t theirs = g_apu_rom.count - call->apu_mark;
+  uint32_t ours = g_apu_port.count;
+  if (theirs == 0 && ours == 0) return;  // the overwhelmingly common case
+
+  if (call->apu_mark + COSIM_APU_LOG < g_apu_rom.count ||
+      ours > COSIM_APU_LOG) {
+    // Never truncate quietly. Nothing ported sends more than one command per
+    // call, so reaching this means something is being intercepted that the
+    // design above did not anticipate, and that is worth stopping for.
+    note(s, "APU: %u commands in one segment overflowed the %d-entry log",
+         theirs > ours ? theirs : ours, COSIM_APU_LOG);
+    return;
+  }
+  if (theirs != ours) {
+    note(s, "APU: the ROM sent %u command%s, the port %u", theirs,
+         theirs == 1 ? "" : "s", ours);
+    return;
+  }
+  for (uint32_t i = 0; i < ours; i++) {
+    uint16_t rom = g_apu_rom.cmd_param[(call->apu_mark + i) % COSIM_APU_LOG];
+    if (rom == g_apu_port.cmd_param[i]) continue;
+    note(s, "APU command %u: ROM $%02X/$%02X, port $%02X/$%02X", i, rom >> 8,
+         rom & 0xff, g_apu_port.cmd_param[i] >> 8,
+         g_apu_port.cmd_param[i] & 0xff);
+    return;
+  }
+}
+
 // Diff the port's result against the ROM's. `theirs` is the emulator's WRAM,
 // which at this point holds what the ROM routine produced.
 static void compare(CosimStat* s, const CosimCall* call, const Wram* ours,
                     const Wram* theirs, const CosimRegs* rom_regs,
                     const CosimRegs* our_regs) {
   compare_wram(s, call, ours, theirs);
+  if (s->failed) return;
+  compare_apu(s, call);
   if (s->failed) return;
 
   if ((our_regs->regs & COSIM_REG_A) && our_regs->a != rom_regs->a)
@@ -387,7 +541,9 @@ static bool guard_allows(Cosim* c, const CosimRoutine* r) {
   // there will be. Each call is then counted once, by whichever pass was real.
   unsigned long before[PORT_COVER_COUNT];
   port_cover_save(before);
+  g_apu_dry = true;  // nothing a dry run asks for reaches the APU — see apu_record
   bool ok = r->supported(c->priv->guard, &c->rom, &in);
+  g_apu_dry = false;
   if (ok) port_cover_restore(before);
   return ok;
 }
@@ -438,6 +594,7 @@ static void segment_start(Cosim* c, CosimCall* call) {
   call->min_sp = c->snes->cpu->sp;
   call->cycles = c->snes->cycles;
   call->segment_spoiled = false;
+  call->apu_mark = g_apu_rom.count;
   regs_capture(c->snes, &call->in);
   memcpy(call->before, c->snes->ram, sizeof(Wram));
 }
@@ -465,6 +622,7 @@ static PortStep verify_segment(Cosim* c, CosimCall* call, CosimRegs* out,
                                uint16_t* ticks) {
   const CosimRoutine* r = c->stats[call->index].routine;
   memcpy(c->priv->scratch, call->before, sizeof(Wram));
+  g_apu_port.count = 0;
   *out = call->in;
   out->flags = 0;
   out->regs = COSIM_REG_ALL;
@@ -642,6 +800,18 @@ void cosim_step(Cosim* c) {
   if (at_instruction(snes)) {
     uint32_t pc = cpu_pc24(snes);
 
+    // The ROM is about to put a command on the APU's ports. Logged only inside
+    // an interception, because that is the only window anything compares. Since
+    // `apu_send` was registered, a data-set upload's 23,820 commands each arrive
+    // inside their own interception, so each is a window of one. Under `run` the
+    // ROM never reaches this instruction for a substituted routine, so there is
+    // nothing to log and nothing to compare — native mode's check is lockstep,
+    // as it is for everything else. An upload is the exception, and deliberately:
+    // `apu_send` is `verify_only`, so under `run` the ROM does execute it, at
+    // depth 0, and these writes are not logged because nothing is comparing them.
+    if (pc == APU_SEND_STORE && c->priv->depth > 0)
+      apu_log_add(&g_apu_rom, (uint8_t)snes->cpu->x, (uint8_t)snes->cpu->a);
+
     // A suspended call coming back to life. Checked before anything else: this
     // address is inside the routine's body, so nothing else should claim it.
     CosimCall* resumed = find_resume(c, pc);
@@ -679,6 +849,10 @@ void cosim_step(Cosim* c) {
       if (!(c->enabled & (1u << i))) continue;
       const CosimRoutine* r = c->stats[i].routine;
       if (pc != r->entry) continue;
+      // Verified but never substituted — see `CosimRoutine::verify_only`. Nothing
+      // is counted, because nothing was offered: the report says `verify only`
+      // against a row of zeroes rather than pretending this was a decline.
+      if (c->mode == COSIM_NATIVE && r->verify_only) break;
       // The port has said it cannot handle this one. Step aside entirely and
       // let the ROM's own instructions run — in both modes, so that `verify`
       // and `run` decline exactly the same calls.
@@ -768,6 +942,8 @@ int cosim_report(const Cosim* c) {
 
     const char* verdict;
     if (s->failed) { verdict = "FAIL"; failures++; }
+    else if (c->mode == COSIM_NATIVE && s->routine->verify_only)
+      verdict = "verify only";
     else if (s->checked > 0) verdict = "OK";
     else if (s->declined > 0) verdict = "all declined";
     else verdict = "not reached";
@@ -1014,6 +1190,10 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
   // Only the native side gets a harness; the reference side runs stock. Both
   // are driven by the same movie, so any difference between their WRAM is
   // caused by the substitution and nothing else.
+  //
+  // The native side is built *second* on purpose: `cosim_init` claims the
+  // port's one APU hook, so whichever harness is constructed last owns it, and
+  // the one that should own it is the one that runs port code.
   Side ref, nat;
   if (!side_start(&ref, rom_data, rom_len, COSIM_VERIFY, movie_path)) return 1;
   if (!side_start(&nat, rom_data, rom_len, COSIM_NATIVE, movie_path)) return 1;
