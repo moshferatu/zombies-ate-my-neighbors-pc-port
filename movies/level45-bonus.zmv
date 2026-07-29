@@ -1,0 +1,172 @@
+# **The movie that found a bug**, and the third of the five spawn entries to get
+# an input.
+#
+# BLHR is level 45 as it starts. The target is the type-$36 object at (866,994)
+# -- collision id $2E ($80:CA30), whose jump-table entry is `$80:FA4A`: kind 1,
+# and a counter at $7E:1D4C that stops at five.
+#
+# `$80:FA4A` ends `LDX $0E : LDA $1D4C,X : CMP #$0005 : BCS : INC A : STA`, and
+# **the `LDX` is an output as well as an index.** The port had been leaving X as
+# whatever `thread_spawn` returned, because the whole tail was transcribed from
+# the listing with no input able to run it. First call: `X: ROM $0000, port
+# $0022`. Every byte of WRAM matched; only X did not, which is the same shape as
+# `thread_spawn`'s own first run. `$80:FA26` had the identical error and no input
+# reaches it even now -- it was fixed by reading, not by diffing.
+#
+# `spawn_count_capped` is still zero: one object is one increment, and the
+# ceiling wants five.
+#
+# **Nothing contests this one, and that took two goes.** A chained route that
+# collected the (540,1100) object first arrived here with the player's own
+# collision id reading $38 rather than $05 -- level 45's spiders do something to
+# him on the way -- and $38 is not one of the three ids `$80:CAEE` lets take an
+# object, so he walked over it and nothing happened. The direct route gets here
+# in twelve legs with the id still $05.
+#
+# `zamn_cosim verify -f 3400` checks 54,342 calls with no divergence.
+#
+# Route: east along the bottom of the map, then north up the x=862 lane.
+
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Right
+1408   -
+1416   Right
+1424   -
+1432   Right
+1440   -
+1448   Down
+1456   -
+1464   A
+1472   -
+1480   Right
+1488   -
+1496   Down
+1504   -
+1512   A
+1520   -
+1528   Left
+1536   -
+1544   Left
+1552   -
+1560   Left
+1568   -
+1576   A
+1584   -
+1592   Right
+1600   -
+1608   Down
+1616   -
+1624   A
+1632   -
+1640   Right
+1648   -
+1656   Right
+1664   -
+1672   Right
+1680   -
+1688   Right
+1696   -
+1704   Down
+1712   -
+1720   A
+1728   -
+1876   Start
+1886   -
+1906   Start
+1916   -
+1936   Start
+1946   -
+1966   Start
+1976   -
+1996   Start
+2006   -
+2026   Start
+2036   -
+2116   -
+2530   Right
+2613   Down
+2647   Right
+3016   Up
+3030   Right
+3122   Up
+3151   Left
+3201   Up
+3306   Right
+3312   Up
+3329   Left
+3339   Up
+3395   -

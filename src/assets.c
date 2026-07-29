@@ -38,6 +38,7 @@
 #include "assets/level.h"
 #include "assets/lzss.h"
 #include "assets/music.h"
+#include "assets/password.h"
 #include "assets/rom.h"
 #include "assets/sprite.h"
 
@@ -1016,11 +1017,13 @@ static int cmd_verify_level(int argc, char** argv) {
 // ---------------------------------------------------------------------------
 
 static void print_actor_lists(const ActorLists* al) {
-  printf("\n  actors (%d)   id  x     y     flags  behavior\n", al->actor_count);
+  // "type", not "id": +0 is what kind of actor this is, not what it is to
+  // something that runs into it. See `assets/actor.h` for what proved it.
+  printf("\n  actors (%d)  type  x     y     flags  behavior\n", al->actor_count);
   for (int i = 0; i < al->actor_count; i++) {
     const ActorPlacement* a = &al->actors[i];
     printf("    %2d        $%02X  %-5u %-5u $%02X    %s\n",
-           i, a->id, a->x, a->y, a->flags, addr_str(a->behavior));
+           i, a->type, a->x, a->y, a->flags, addr_str(a->behavior));
   }
   printf("\n  victims (%d)  idx  x     y     behavior\n", al->victim_count);
   for (int i = 0; i < al->victim_count; i++) {
@@ -2464,6 +2467,282 @@ static int cmd_verify_music(int argc, char** argv) {
 
 // ---------------------------------------------------------------------------
 
+
+// ---------------------------------------------------------------------------
+// password
+// ---------------------------------------------------------------------------
+
+static int cmd_password(int argc, char** argv) {
+  if (argc < 1) {
+    fprintf(stderr, "usage: zamn_assets password <rom.sfc> [<4 letters>]\n");
+    return 2;
+  }
+  int rom_len = 0;
+  uint8_t* rom_data = read_file(argv[0], &rom_len);
+  if (!rom_data) return 1;
+  Rom rom = {rom_data, (uint32_t)rom_len};
+
+  if (argc >= 2) {
+    char want[5] = {0};
+    for (int i = 0; i < 4 && argv[1][i]; i++)
+      want[i] = (char)toupper((unsigned char)argv[1][i]);
+    int group = 0, variant = 0;
+    if (!password_read(&rom, want, &group, &variant)) {
+      printf("%s is not a password.\n", want);
+      free(rom_data);
+      return 1;
+    }
+    if (group < 0) {
+      printf("%s is the one that is code rather than data ($82:B018), and it\n"
+             "stores %d into $7E:1E7C where a level number goes.\n",
+             want, PASSWORD_CHEAT_LEVEL);
+    } else {
+      printf("%s -> level %d, victim gate %d%s\n", want,
+             password_level(group), password_victims(variant),
+             variant == PASSWORD_VARIANTS - 1 ? " — the level as it starts" : "");
+    }
+    free(rom_data);
+    return 0;
+  }
+
+  printf("Passwords, spelled from $82:B14A / $82:B164 / $82:B18D through the\n"
+         "alphabet at $82:B178. The column is how many neighbours are left, so\n"
+         "the last one in each row is that level as it starts.\n\n");
+  printf("  level  ");
+  for (int v = 0; v < PASSWORD_VARIANTS; v++) printf(" %4d", password_victims(v));
+  printf("\n");
+  for (int g = 0; g < PASSWORD_GROUPS; g++) {
+    printf("   %4d  ", password_level(g));
+    for (int v = 0; v < PASSWORD_VARIANTS; v++) {
+      char pw[5];
+      if (!password_spell(&rom, g, v, pw)) {
+        fprintf(stderr, "error: table entry %d/%d does not decode\n", g, v);
+        free(rom_data);
+        return 1;
+      }
+      printf(" %s", pw);
+    }
+    printf("\n");
+  }
+  printf("\n  %s   the one that is code rather than data ($82:B018)\n",
+         PASSWORD_CHEAT);
+
+  // Non-vacuous: every spelling has to read back to the pair it came from, the
+  // way $82:B018 reads one, or the two halves disagree about the tables.
+  int checked = 0;
+  for (int g = 0; g < PASSWORD_GROUPS; g++) {
+    for (int v = 0; v < PASSWORD_VARIANTS; v++) {
+      char pw[5];
+      int rg = 0, rv = 0;
+      if (!password_spell(&rom, g, v, pw) ||
+          !password_read(&rom, pw, &rg, &rv) || rg != g || rv != v) {
+        fprintf(stderr, "error: %s does not read back as %d/%d\n", pw, g, v);
+        free(rom_data);
+        return 1;
+      }
+      checked++;
+    }
+  }
+  printf("  all %d read back to the group and variant they were spelled from.\n",
+         checked);
+  free(rom_data);
+  return 0;
+}
+
+
+// ---------------------------------------------------------------------------
+// route
+// ---------------------------------------------------------------------------
+
+// Cutting a route through a level by hand is the slowest thing in this project.
+// It is also, since passwords, the *only* thing standing between the port and a
+// dozen marked-but-untaken branches: the objects that reach them are in levels
+// nobody has mapped, and every attempt so far has been a screenshot, a guess and
+// a wall.
+//
+// The level already says where its walls are. Bit 0 of a tile's attribute word
+// blocks movement (`$80:AE43  LSR A : BCS`), the expanded map gives a 9-bit tile
+// index per 8x8 cell, and that is a grid to search. So this breadth-firsts from
+// one point to another and prints the turns.
+//
+// The box is the game's own, not a guess. `$80:AE1F` turns a position into a
+// map index as `col = x / 8` and `row = (y - 8) / 8`, and then samples **six**
+// tiles at `+0`, `+2`, `+4` and the same three a row down (`$80:AE43`,
+// `$80:AE52`, `$80:AE61`, `$80:AE6F`, `$80:AE7F`, `$80:AE8B`). Those offsets are
+// **bytes, not columns**: `LSR A : LSR A : AND #$FFFE` leaves the column index
+// already doubled, because the expanded map is one *word* per cell. So they are
+// columns c, c+1, c+2 -- a contiguous 3x2 block, which is the loop below. So
+// what has to be clear to stand somewhere is three cells across and two down:
+// twenty-four pixels by sixteen, with the y anchored eight pixels above the
+// position and the x at its left edge.
+// And the answer is *waypoints*, not inputs: what the movie needs is a frame to
+// turn on, and turning a distance into a frame needs the walking speed, which is
+// two pixels a frame and is measured rather than derived. The `--frames` form
+// does that arithmetic and prints .zmv lines; without it you get coordinates.
+
+#define ROUTE_CELL 8
+#define ROUTE_SPEED 2  // pixels per frame, measured with zamn_headless --pos
+
+// Exactly the game's box, with no margin, because there is none to be had: the
+// corridors are two rows tall and adding a single row of slack disconnects
+// level 1's own route -- the one this search is checked against. So a path this
+// finds is walkable on the row it was planned for and on no other, which is a
+// constraint on the *movie* rather than on the search. See
+// `docs/analysis-tools.md`.
+#define ROUTE_BOX_W 3
+#define ROUTE_BOX_H 2
+#define ROUTE_BOX_X0 0
+#define ROUTE_BOX_Y0 0
+// `$80:AE21  SEC : SBC #$0008` before the shift: the row index is measured from
+// eight pixels above the position, so a grid cell `cy` is world y `cy * 8 + 8`.
+#define ROUTE_Y_BIAS 8
+
+static bool route_open(const uint16_t* map, const uint16_t* attrs,
+                       uint32_t cols, uint32_t rows, int cx, int cy) {
+  // Off the map counts as blocked, which is also what the game does -- the
+  // camera never shows past the edge.
+  for (int dy = 0; dy < ROUTE_BOX_H; dy++) {
+    for (int dx = 0; dx < ROUTE_BOX_W; dx++) {
+      int x = cx + ROUTE_BOX_X0 + dx, y = cy + ROUTE_BOX_Y0 + dy;
+      if (x < 0 || y < 0 || (uint32_t)x >= cols || (uint32_t)y >= rows) return false;
+      uint16_t tile = map[(uint32_t)y * cols + (uint32_t)x] & 0x1ff;
+      if (attrs[tile] & LEVEL_ATTR_SOLID) return false;
+    }
+  }
+  return true;
+}
+
+static int cmd_route(int argc, char** argv) {
+  if (argc < 6) {
+    fprintf(stderr,
+            "usage: zamn_assets route <rom.sfc> <level 1-56> <x0> <y0> <x1> <y1>"
+            " [--frames <start>]\n");
+    return 2;
+  }
+  int rom_len = 0;
+  uint8_t* rom_data = read_file(argv[0], &rom_len);
+  if (!rom_data) return 1;
+  Rom rom = {rom_data, (uint32_t)rom_len};
+  int level = atoi(argv[1]);
+  int x0 = atoi(argv[2]), y0 = atoi(argv[3]);
+  int x1 = atoi(argv[4]), y1 = atoi(argv[5]);
+  int frame0 = -1;
+  for (int i = 6; i + 1 < argc; i++)
+    if (!strcmp(argv[i], "--frames")) frame0 = atoi(argv[i + 1]);
+
+  uint32_t addr = 0;
+  LevelHeader h;
+  if (!level_record_addr(&rom, level, &addr) ||
+      level_header_read(&rom, addr, &h) != LEVEL_OK) {
+    fprintf(stderr, "error: level %d does not decode\n", level);
+    free(rom_data);
+    return 1;
+  }
+  uint8_t* blocks = (uint8_t*)malloc(LEVEL_BLOCK_LIB_BYTES);
+  uint16_t* map = (uint16_t*)malloc(level_map_entries(&h) * 2);
+  LzssRing ring;
+  uint32_t blocks_len = 0;
+  if (!blocks || !map ||
+      level_load_blocks(&rom, &h, blocks, &blocks_len, &ring) != LEVEL_OK ||
+      level_expand(&h, blocks, blocks_len, &rom, map, level_map_entries(&h)) != LEVEL_OK) {
+    fprintf(stderr, "error: level %d does not expand\n", level);
+    free(blocks); free(map); free(rom_data);
+    return 1;
+  }
+  uint32_t avail = 0;
+  const uint8_t* attr_src = rom_ptr(&rom, h.tile_attrs, &avail);
+  if (!attr_src || avail < LEVEL_TILE_ATTR_BYTES) {
+    fprintf(stderr, "error: tile attributes at %s are short\n", addr_str(h.tile_attrs));
+    free(blocks); free(map); free(rom_data);
+    return 1;
+  }
+  uint16_t attrs[LEVEL_BG_TILES];
+  for (int i = 0; i < LEVEL_BG_TILES; i++)
+    attrs[i] = (uint16_t)(attr_src[i * 2] | (attr_src[i * 2 + 1] << 8));
+
+  uint32_t cols = level_tile_cols(&h), rows = level_tile_rows(&h);
+  uint32_t cells = cols * rows;
+  int32_t* prev = (int32_t*)malloc(cells * sizeof(int32_t));
+  int32_t* queue = (int32_t*)malloc(cells * sizeof(int32_t));
+  if (!prev || !queue) { free(prev); free(queue); free(blocks); free(map); free(rom_data); return 1; }
+  for (uint32_t i = 0; i < cells; i++) prev[i] = -2;
+
+  int sx = x0 / ROUTE_CELL, sy = (y0 - ROUTE_Y_BIAS) / ROUTE_CELL;
+  int gx = x1 / ROUTE_CELL, gy = (y1 - ROUTE_Y_BIAS) / ROUTE_CELL;
+  int32_t head = 0, tail = 0;
+  prev[(uint32_t)sy * cols + (uint32_t)sx] = -1;
+  queue[tail++] = (int32_t)((uint32_t)sy * cols + (uint32_t)sx);
+  const int dxs[4] = {1, -1, 0, 0}, dys[4] = {0, 0, 1, -1};
+  bool found = false;
+  while (head < tail && !found) {
+    int32_t cur = queue[head++];
+    int cx = (int)((uint32_t)cur % cols), cy = (int)((uint32_t)cur / cols);
+    for (int k = 0; k < 4; k++) {
+      int nx = cx + dxs[k], ny = cy + dys[k];
+      if (nx < 0 || ny < 0 || (uint32_t)nx >= cols || (uint32_t)ny >= rows) continue;
+      uint32_t ni = (uint32_t)ny * cols + (uint32_t)nx;
+      if (prev[ni] != -2) continue;
+      if (!route_open(map, attrs, cols, rows, nx, ny)) continue;
+      prev[ni] = cur;
+      queue[tail++] = (int32_t)ni;
+      if (nx == gx && ny == gy) { found = true; break; }
+    }
+  }
+
+  int rc = 0;
+  if (prev[(uint32_t)gy * cols + (uint32_t)gx] == -2) {
+    printf("no route from (%d,%d) to (%d,%d) through level %d.\n", x0, y0, x1, y1, level);
+    printf("the 2x2-clear grid does not connect them, so either the target is\n");
+    printf("inside scenery or the way in is a door rather than a gap.\n");
+    rc = 1;
+  } else {
+    // Walk the chain back, then collapse it into axis-aligned runs -- which is
+    // what a movie line is: one direction held until the next turn.
+    int32_t* path = (int32_t*)malloc(cells * sizeof(int32_t));
+    int n = 0;
+    for (int32_t at = (int32_t)((uint32_t)gy * cols + (uint32_t)gx); at >= 0; at = prev[at])
+      path[n++] = at;
+    printf("level %d: (%d,%d) -> (%d,%d), %d cells\n\n", level, x0, y0, x1, y1, n);
+    int frame = frame0;
+    int px = x0, py = y0;
+    for (int i = n - 1; i > 0;) {
+      int cx = (int)((uint32_t)path[i] % cols), cy = (int)((uint32_t)path[i] / cols);
+      int ddx = (int)((uint32_t)path[i - 1] % cols) - cx;
+      int ddy = (int)((uint32_t)path[i - 1] / cols) - cy;
+      int j = i;
+      while (j > 0) {
+        int ax = (int)((uint32_t)path[j] % cols), ay = (int)((uint32_t)path[j] / cols);
+        if ((int)((uint32_t)path[j - 1] % cols) - ax != ddx) break;
+        if ((int)((uint32_t)path[j - 1] / cols) - ay != ddy) break;
+        j--;
+      }
+      int tx = (int)((uint32_t)path[j] % cols) * ROUTE_CELL + ROUTE_CELL / 2;
+      int ty = (int)((uint32_t)path[j] / cols) * ROUTE_CELL + ROUTE_CELL / 2 +
+               ROUTE_Y_BIAS;
+      const char* dir = ddx > 0 ? "Right" : ddx < 0 ? "Left" : ddy > 0 ? "Down" : "Up";
+      int dist = ddx ? abs(tx - px) : abs(ty - py);
+      if (frame0 >= 0) {
+        printf("%d   %s\n", frame, dir);
+        // Two pixels a frame and six frames of slack. That is a *first draft*
+        // and it will drift: walking is two pixels a frame except when it is
+        // being pushed, slowed, or snapped to a lane, and the error compounds
+        // leg by leg.  replays the movie and moves each
+        // turn to the frame the previous leg actually finished on, which is
+        // the closed loop this open one needs.
+        frame += dist / ROUTE_SPEED + 6;
+      } else {
+        printf("  %-5s to (%d,%d)   %d px\n", dir, tx, ty, dist);
+      }
+      px = tx; py = ty;
+      i = j;
+    }
+    if (frame0 >= 0) printf("%d   -\n", frame);
+    free(path);
+  }
+  free(prev); free(queue); free(blocks); free(map); free(rom_data);
+  return rc;
+}
+
 static void usage(void) {
   fprintf(stderr,
           "zamn_assets — decode ZAMN data from the ROM (Phase 2)\n\n"
@@ -2476,6 +2755,12 @@ static void usage(void) {
           "      against what $80:86A2 built in WRAM.\n\n"
           "  zamn_assets level <rom.sfc> <level 1-56> [out.png]\n"
           "      Report a level's record and, with a path, draw its map.\n\n"
+          "  zamn_assets password <rom.sfc> [<4 letters>]\n"
+          "      Spell every password out of the ROM's own tables, or read one\n"
+          "      back to the level and victim count it means.\n\n"
+          "  zamn_assets route <rom.sfc> <level> <x0> <y0> <x1> <y1> [--frames f]\n"
+          "      Breadth-first a walkable path through a level and print the\n"
+          "      turns, or .zmv lines with --frames.\n\n"
           "  zamn_assets actors <rom.sfc> <level 1-56>\n"
           "      Report a level's actor, victim and object placement lists.\n\n"
           "  zamn_assets verify-actors <rom.sfc> [-m movie] [-f frames]\n"
@@ -2511,11 +2796,13 @@ int main(int argc, char** argv) {
   if (!strcmp(cmd, "verify-level")) return cmd_verify_level(argc - 2, argv + 2);
   if (!strcmp(cmd, "level")) return cmd_level(argc - 2, argv + 2);
   if (!strcmp(cmd, "actors")) return cmd_actors(argc - 2, argv + 2);
+  if (!strcmp(cmd, "route")) return cmd_route(argc - 2, argv + 2);
   if (!strcmp(cmd, "verify-actors")) return cmd_verify_actors(argc - 2, argv + 2);
   if (!strcmp(cmd, "sprite")) return cmd_sprite(argc - 2, argv + 2);
   if (!strcmp(cmd, "frame")) return cmd_frame(argc - 2, argv + 2);
   if (!strcmp(cmd, "verify-sprites")) return cmd_verify_sprites(argc - 2, argv + 2);
   if (!strcmp(cmd, "music")) return cmd_music(argc - 2, argv + 2);
+  if (!strcmp(cmd, "password")) return cmd_password(argc - 2, argv + 2);
   if (!strcmp(cmd, "spc")) return cmd_spc(argc - 2, argv + 2);
   if (!strcmp(cmd, "verify-music")) return cmd_verify_music(argc - 2, argv + 2);
   if (!strcmp(cmd, "decompress")) return cmd_decompress(argc - 2, argv + 2);

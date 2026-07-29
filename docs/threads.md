@@ -214,23 +214,35 @@ an exit like any other.**
   yield whose return address is outside the routine's own body rather than
   quietly attributing it, so the first nested case will show up as an unmatched
   yield rather than as a silent wrong answer.
-* **The game splices calls into suspended threads' stacks, and the port's
-  coroutines have no stack to splice into.** `$81:8506` — the reaction an enemy
-  runs when it survives a hit — reads the thread's parked stack pointer from
-  `$7E:11B0,X`, moves the top three words down three bytes, and writes a `JSL`
-  return frame into the gap. The next time the scheduler resumes that thread it
-  therefore runs a reaction routine *first*, and then continues exactly where it
-  left off, none the wiser. That is a real mechanism in this game and almost
-  certainly not the only use of it.
+* **The game splices calls into suspended threads' stacks — and the port now
+  does it too, without needing a stack of its own.** `$81:8506`, the reaction an
+  enemy runs when it survives a hit, reads the thread's parked stack pointer
+  from `$7E:11B0,X`, moves the top three words down three bytes, and writes
+  `$81:8541` into the gap. The next time the scheduler resumes that thread the
+  `RTL` it resumes through returns into `$81:8542` first, which sets
+  `ACTOR_ATTR_SET` on the enemy's display record, sleeps two ticks, clears it,
+  and only then returns into whatever the enemy was actually doing. The flash
+  you see when you shoot something that does not die is a call injected into
+  code that is not running.
 
-  Nothing about it invalidates the decision in *Why not fibers* — a parked
-  machine stack could not be rewound and replayed either, so the check would be
-  no easier. But it does say what the equivalent has to be: a ported routine's
-  `PortCoro` will need a way to say "run this, then resume where you were",
-  which is a one-entry pending-call slot in the context rather than anything
-  structural. Nothing needs it yet — no movie reaches `$81:8506`, and
-  `enemy_survived` in the coverage report is what says so — and it should be
-  designed against the first real caller rather than in advance.
+  **It is ported** (`src/port/collide.c`), and the thing that made it tractable
+  is a distinction this page did not draw when it wrote the paragraph above: the
+  splice is not a *coroutine* operation, it is twelve bytes of WRAM. The thread
+  being spliced into belongs to the ROM — an enemy body nobody has ported — and
+  what `$81:8506` does to it is arithmetic on `W_THREAD_SP` and six stores.
+  `verify` compares all of it, and `movies/level53.zmv` splices twenty frames
+  byte-identically. Seven of eight deliberate perturbations were caught, two of
+  them on things only this routine could get wrong: moving the three overlapping
+  words highest-first instead of lowest-first, and swapping the two overlapping
+  stores that lay down the 24-bit address.
+
+  **What is still open is the other direction**: what happens when the routine
+  being spliced *into* is a ported one. Nothing in the game does that yet — every
+  thread `$81:8506` has ever touched is an enemy body running from ROM — and the
+  answer when it comes is still the one this page guessed: a one-entry
+  pending-call slot in `PortCoro`, "run this, then resume where you were",
+  designed against the first real caller rather than in advance. The difference
+  is that the mechanism is now understood rather than only observed.
 * **Two activations of the same routine at once are not distinguished.** The
   yield-site test finds the innermost in-flight call whose body contains the
   return address. If two threads were ever inside the same ported routine

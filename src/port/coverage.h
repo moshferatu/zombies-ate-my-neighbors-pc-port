@@ -58,7 +58,7 @@
   X(wait_tick,        "thread_tick_waits",  "a sleeping thread's counter stepped down") \
   X(wait_expired,     "thread_tick_waits",  "a thread already at its wake tick")\
   X(wait_empty,       "thread_tick_waits",  "an unused scheduler slot")         \
-  X(queue_full,       "vbl_queue_add",      "a vblank queue rejected a job (carry set)") \
+  X(queue_full,       "vbl_queue_add",      "a vblank queue rejected a job (carry set)")   X(spawn_took,       "thread_spawn",       "a free scheduler slot turned into a running thread")   X(spawn_full,       "thread_spawn",       "all 24 slots live, so the spawn failed") \
                                                                                 \
   /* $80:BC7F actor_depth_sort. */                                             \
   X(sort_key_first,   "actor_depth_sort",   "ACTOR_SORT_FIRST decided the order") \
@@ -99,12 +99,27 @@
   X(hurt_taken,       "player_collide",      "a hit the player actually took")   \
   X(player_sfx_only,  "player_collide",      "an id whose entire reaction is a sound effect") \
   X(player_pickup_entry,"player_collide",    "an id that dispatched to $80:F87B, a pickup") \
+  X(player_item_entry,"player_collide",      "an id that dispatched to $80:F8D6, the other pickup") \
+  X(player_spawn_0,   "player_collide",      "id $2D: spawn $82:E0B4 kind 0, and bump a counter") \
+  X(player_spawn_1,   "player_collide",      "id $2E: kind 1, and a counter that stops at five") \
+  X(spawn_count_capped,"player_collide",     "...that counter already at five, so nothing stored") \
+  X(player_spawn_2,   "player_collide",      "id $2F: kind 2, and $0500 of score") \
+  X(player_spawn_3,   "player_collide",      "id $30: kind 3, and $1000 of score") \
+  X(player_heal_entry,"player_collide",      "id $27: three health back") \
+  X(heal_at_full,     "player_collide",      "...refused, because health was already ten") \
+  X(heal_capped,      "player_collide",      "...ceilinged, because three would have overshot") \
                                                                                 \
   /* $80:F87B player_pickup — the player's side of taking an item. */            \
   X(pickup_taken,     "player_pickup",       "an item added to a player's inventory") \
   X(pickup_capped,    "player_pickup",       "a counter that hit the $0999 ceiling") \
   X(pickup_digit_carry,"player_pickup",      "a pickup whose BCD addition needed a decimal adjust") \
   X(pickup_autoselect,"player_pickup",       "a pickup by a player holding no weapon, which selects one") \
+                                                                                \
+  /* $80:F8D6 player_item_pickup — the same four decisions over the items. */    \
+  X(item_taken,       "player_item_pickup",  "an item added to a player's item array") \
+  X(item_pickup_capped,"player_item_pickup", "a counter that hit the $0099 ceiling") \
+  X(item_digit_carry, "player_item_pickup",  "an item whose BCD addition needed a decimal adjust") \
+  X(item_autoselect,  "player_item_pickup",  "a pickup by a player holding no item, which selects one") \
                                                                                 \
   /* $80:EA63 weapon_select_next, and $80:EA4B under it. */                      \
   X(weapon_none_held, "weapon_select_next",  "a search that began with nothing selected, so from slot 0") \
@@ -115,13 +130,21 @@
   X(weapon_changed,   "weapon_select_next",  "a different weapon selected")      \
   X(weapon_no_data,   "weapon_select_next",  "...to nothing at all, so $80:EA4B returned at once") \
                                                                                 \
+  /* $80:EAA8 item_select_next — the same search over the shorter array. */      \
+  X(item_none_held,   "item_select_next",    "a search that began with nothing selected, so from slot 0") \
+  X(item_scan_empty,  "item_select_next",    "an item slot the search found empty") \
+  X(item_scan_wrap,   "item_select_next",    "a search that ran off the end of the items and wrapped") \
+  X(item_none_found,  "item_select_next",    "thirteen tries and every slot empty") \
+  X(item_unchanged,   "item_select_next",    "the search settled on the item already held — A with one item") \
+  X(item_changed,     "item_select_next",    "a different item selected")        \
+                                                                                \
   /* $81:8888 enemy_collide, and the death at $81:8727. */                      \
   X(enemy_ignore,     "enemy_collide",       "an enemy told about an id of the other side, which it ignores") \
   X(enemy_act,        "enemy_collide",       "an enemy told about a hit of its own side") \
   X(enemy_hit_special,"enemy_collide",       "one of the two ids with a routine of its own — declined") \
   X(enemy_died,       "enemy_collide",       "a hit that took an enemy's last health") \
   X(enemy_no_damage,  "enemy_collide",       "a hit whose damage-table entry is zero") \
-  X(enemy_survived,   "enemy_collide",       "an enemy that lived through a hit — declined") \
+  X(enemy_survived,   "enemy_collide",       "an enemy that lived through a hit")                                                                                   /* $81:8506 enemy_survived_react — the splice into a parked stack. */           X(react_already,    "enemy_survived_react","a second hit while the flash from the first is still on")   X(react_splice,     "enemy_survived_react","a JSL frame written into a suspended thread's stack") \
                                                                                \
   X(shot_expire,      "shot_collide",        "a shot that hit something and is ending") \
   X(shot_expire_zero, "shot_collide",        "...on id 0, the one path that runs no CMP at all") \
@@ -142,6 +165,20 @@
   X(object_spent,     "object_collide",      "an object already taken this frame, so its id is gone") \
   X(object_taken,     "object_collide",      "one of the three ids that pick an object up") \
   X(object_ignore,    "object_collide",      "an id that touches an object without taking it") \
+                                                                                \
+  /* $81:C4A6 monster_collide — the second enemy subsystem. */                  \
+  X(monster_ignore_low,  "monster_collide",  "an id below the object range, which it ignores") \
+  X(monster_ignore_high, "monster_collide",  "an id above the object range and below a shot's") \
+  X(monster_take,     "monster_collide",     "an object taken out from under whoever else wanted it") \
+  X(monster_latched,  "monster_collide",     "...refused, because something already happened to this one") \
+  X(monster_latch_alt,"monster_collide",     "...latching $46 rather than $42, on the one value that redirects") \
+  X(monster_hit,      "monster_collide",     "a weapon shot, which is the only id it takes damage from") \
+  X(monster_special,  "monster_collide",     "id $5D, which has a routine of its own — declined") \
+  X(monster_died,     "monster_collide",     "a hit that took its last health") \
+  X(monster_fatal_id, "monster_collide",     "...id $5E, which skips the subtraction and dies outright") \
+  X(monster_no_damage,"monster_collide",     "a hit whose damage-table entry is zero") \
+  X(monster_survived, "monster_collide",     "one that lived through a hit")   X(monster_react_already,"monster_survived_react","a second hit while ACTOR_ATTR still holds the first")   X(monster_react_splice,"monster_survived_react","a JSL frame written into a suspended thread's stack") \
+  X(monster_kill_award,"monster_collide",    "$81:BBEB paid out; its guard is the parked id being zero") \
                                                                                 \
   /* $80:C7D9 score_add. */                                                     \
   X(score_slot_0,     "score_add",           "points credited to the first score slot") \

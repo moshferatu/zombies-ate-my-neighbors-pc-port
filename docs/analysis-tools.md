@@ -93,6 +93,7 @@ build\zamn_disasm.exe "Zombies Ate My Neighbors.sfc" analysis\zamn.cdl ^
 | `-s, --symbols <file>` | extra names; see `tools/symbols/zamn.sym` |
 | `-o, --out <file>` | output listing (default stdout) |
 | `--code-only` | omit data runs |
+| `--force` | decode the whole range as code, traced or not |
 
 Output conventions:
 
@@ -102,6 +103,30 @@ Output conventions:
 * Hardware-register operands are annotated automatically (`STA $2100 ; INIDISP`).
 * `; !! M/X width varies here` flags a byte executed at two different register
   widths, where a static disassembly is genuinely ambiguous. ZAMN has 7.
+
+### `--force`, and why a CDL-driven disassembler needed an escape hatch
+
+The CDL is the whole reason this tool is trustworthy, and it says nothing at all
+about a byte that never executed. That was fine while the work list was made of
+routines the movies reached. It is not fine now: Phase 3's list is made of
+routines **no input has ever run** — a jump-table entry nothing dispatched to, a
+handler the port declines to — and those are exactly the bytes the CDL calls
+data.
+
+`--force` drops the CDL's opinion about *what is code* and keeps everything
+else. Register widths still come from the CDL wherever the byte was traced;
+where it was not, they come from a running M/X state the scan updates on every
+`REP`/`SEP` it decodes, starting 16-bit. That is exact down a straight-line
+routine and a guess the moment it walks into a table, which is why it is a flag
+rather than the default — and why lines it decoded on its own guess are marked
+`~` in the byte column, so a listing always says which half you are reading.
+
+```
+build\zamn_disasm.exe "Zombies Ate My Neighbors.sfc" analysis2\zamn.cdl ^
+    --from 80F8D6 --to 80F950 -s tools\symbols\zamn.sym --force
+```
+
+`$80:F8D6` and `$80:EAA8` were both read this way before either was ported.
 
 ### Addressing convention
 
@@ -176,6 +201,27 @@ takes an edge; and a player carrying one weapon cycles to the weapon they are
 already holding, whose first exit is `CMP $1CBC,X : BEQ` — no store, no sound.
 The ammo counter is exactly the thing that would not move.
 
+**And the other two, from porting `$80:F8D6`.** The input handler reads three
+buttons in a row and they are three different jobs:
+
+| Button | Test | Calls | What it does |
+| --- | --- | --- | --- |
+| `B` | `$80:D25B  AND #$8000` | `$80:EA63` | cycle to the next non-empty **weapon** |
+| `A` | `$80:D26C  AND #$0080` | `$80:EAA8` | cycle to the next non-empty **item** |
+| `X` | `$80:D27D  AND #$0040` | `$80:EAE1` | **use** the selected item |
+
+All three edge-detect against the previous frame's buttons (`$1A` against
+`$1C`), so all three are invisible to a 120-frame hold — which is the same trap
+`B` fell into, twice more. `Y` fires; `L` and `R` remain unaccounted for.
+
+`X` is worth one more line, because it is the button that changes what the other
+two can be made to do. The player starts level 1 holding one first-aid kit in
+item slot 7, with slot 7 selected, so the item array is never empty and two of
+`$80:EAA8`'s six branches cannot be reached by pressing `A` at all. Spending the
+kit is what empties it — and `$80:EB2F  CMP #$000A : BEQ` refuses to spend one
+while `$1CB8` is still 10, so the input that reaches those branches is *get hit
+first, then press X*. `movies/level1-keys.zmv` is that input.
+
 ### Writing one
 
 The awkward part is aiming: a movie is blind input, and knowing whether frame
@@ -191,6 +237,240 @@ build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" shot.png 6100 ^
 That writes `shot.01980.png` and so on, plus `shot.png` for the final frame. The
 authoring loop is: run a candidate, look at where it got to, adjust the frame
 numbers, repeat.
+
+`--pos` is the same loop with the eyeballing taken out, and it is much the
+faster of the two once a route has a *target*. What you are usually aiming at is
+a coordinate — `zamn_assets actors <rom> 2` prints level 1's nine objects and
+where they are — and a PNG only tells you whether you arrived, through a
+256x224 window, at the frames you thought to ask about. This prints where each
+player actually is, in the level's own coordinates:
+
+```
+build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" shot.png 4050 ^
+    -m movies\level1-keys.zmv --pos 1860,4050,20
+```
+
+```
+  frame        p1 x,y        p2 x,y
+   1860    350,585        --,--
+   1880    312,585        --,--
+```
+
+It is not inferred from the picture: it walks the 24 thread pages for the one
+whose `$64` holds `$1CCC` or `$1CEC` — the two inventory bases, the only field
+that names a player and nothing else — and reads the X and Y out of the display
+record that page keeps at `$08`. `--,--` means there is no such player on the
+board, which is the honest answer before a level loads and for player 2 in a
+one-player game. `movies/level1-keys.zmv`'s whole route was cut this way; the
+lanes named in its comments are the numbers this printed.
+
+`--records` is the same idea for everything that is not a player. `--pos`
+answers *did I get there*; when the answer is yes and nothing happened, the next
+question is what was actually **at** there — and that is the display list, the
+same 32 records `actor_overlap_pass` tests pairwise:
+
+```
+build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" shot.png 3800 ^
+    -m route.zmv --records 3780,3800,2
+```
+
+```
+  frame 3790 — display list, score 00000000 / 00000000
+    addr   flags   x     y      id   thread
+    $1A52  $8011    354  1142   $04   $20
+    $1AB6  $8001    222  1050   $05   $00
+    $1A7A  $8011    230  1050   $04   $24
+    $1AA2  $8001    230  1044   $30   $26
+```
+
+It walks `ACTOR_NEXT` from `$7E:1B5E` rather than the 32 slots, so a line here is
+a record the game considers live, in the order the depth sort left it. The three
+columns that matter are `x`, `y` and `id`: two records collide when both ids are
+non-zero, they differ, and the positions are within eight pixels
+(`$80:BEF1`). A record with a zero id is in the picture and not in the game; a
+thing with no record at all was never spawned.
+
+The two score slots ride on the header line because they are the cheapest answer
+to the question a record dump raises — a bonus object vanished, and who got it.
+`$80:FA79` is worth `$0500` and `$80:FAA4` `$1000`, so a score that did not move
+means the player was not the one who took it.
+
+The four lines above are one frame of an answer. See *Cutting a route without
+looking at it* below for what they say.
+
+### Cutting a route without looking at it
+
+Aiming a movie is the slowest thing in this project, and since passwords it is
+the *only* thing between the port and a dozen marked-but-untaken branches: the
+objects that reach them are in levels nobody has mapped. The loop was a
+screenshot, a guess and a wall.
+
+The level already says where its walls are. Bit 0 of a tile's attribute word
+blocks movement (`$80:AE43  LSR A : BCS`), the expanded map gives a 9-bit tile
+index per 8x8 cell, and that is a grid to search:
+
+```
+build\zamn_assets.exe route "Zombies Ate My Neighbors.sfc" 2 350 585 251 302
+```
+
+```
+level 2: (350,585) -> (251,302), 49 cells
+
+  Left  to (252,588)   98 px
+  Up    to (252,300)   288 px
+```
+
+That is `movies/level1-pickups.zmv`'s first two lines, which were cut by hand
+over a dozen headless runs. `--frames <start>` prints .zmv lines instead of
+coordinates, and `tools/fit_route.py` closes the loop on the timing: the emitted
+frames assume two pixels a frame, the game does not always agree, and every
+leg's error is inherited by the next, so the fitter replays the movie with
+`--pos`, finds the frame each leg *actually* finished on, and moves the next
+turn there.
+
+**The box is the game's own.** `$80:AE1F` turns a position into a map index as
+`col = x / 8` and `row = (y - 8) / 8` — note the eight-pixel bias — and then
+samples **six** tiles (`$80:AE43`, `$80:AE52`, `$80:AE61`, `$80:AE6F`, `$80:AE7F`,
+`$80:AE8B`). The offsets it samples at are `+0`, `+2`, `+4` and the same three a
+row down, and those are **byte** offsets rather than columns: `LSR A : LSR A :
+AND #$FFFE` leaves the column index already doubled, because the expanded map is
+one *word* per cell. So the six cells are a contiguous 3x2 block — three across,
+two down, twenty-four pixels by sixteen — and that is what the search uses.
+
+(Worth spelling out because it was worth re-deriving: an object that no route can
+reach is a claim about the game, and it is only as good as this predicate.)
+
+**What it is good for, and what it is not.** It reproduces a route cut by hand,
+and it answers negatives definitively: `route 42 1534 703 1524 557` says there is
+no way from level 41's start to the first-aid object 156 pixels from it, which is
+worth more than twenty screenshots that each fail to find one.
+
+**A path is walkable on the row it was planned for and on no other**, and that
+is the constraint everything else follows from. These corridors are exactly two
+rows tall: widening the search by a single row disconnects level 1's own route,
+the one it is checked against. So a leg that snaps the player into a
+neighbouring lane invalidates every leg after it — level 45's first attempt
+walked into a wall at x=788, at y=1226, one row below the 1220 it was planned
+for, where row 152 is blocked and row 151 is open.
+
+That cannot be fixed by better *timing*, because the error is positional. So
+`tools/fit_route.py` re-plans instead: it asks for a route from where the player
+is, takes only the **first** leg, replays to find the frame he actually finished
+it on, and asks again. Lane snapping then stops being an error to correct and
+becomes just the position the next search starts from.
+
+```
+python tools\fit_route.py "Zombies Ate My Neighbors.sfc" prefix.zmv 46 140 1158 230 1044 2530
+arrived at (228,1038) after 14 legs, last frame 3489
+```
+
+Fourteen legs where the route planner's own plan had eight, and it gets there —
+through a maze, on a level nobody has mapped, without anyone looking at it.
+
+**It used to take fifty-six**, and most of the difference is one constant (the
+rest is the stall fix two sections down). The fitter stopped when it was within
+three pixels of the goal, which is stricter than the game: `$80:BEF1` tests a pair of display records as `other - self + 8 < 16` on
+each axis, so **two things touch when they are within eight pixels**. The first
+run reached the box on leg 36 and then spent twenty more legs thrashing between
+lanes trying to stand on the exact pixel. `ARRIVED` is 7 now — the box with the
+asymmetry taken off, because the test is `[-8,+7]` and which end you get depends
+on which of the two records the depth sort put later.
+
+**And standing in the box is still not the same as getting the thing.** The
+fifty-six-leg run touched the object and did not pick it up, and `--records` is
+what says why:
+
+```
+  frame 3790 — display list, score 00000000 / 00000000
+    addr   flags   x     y      id   thread
+    $1AB6  $8001    222  1050   $05   $00     <- the player
+    $1A7A  $8011    230  1050   $04   $24     <- a monster, on the same object
+    $1AA2  $8001    230  1044   $30   $26     <- the object
+```
+
+The record is exactly where the object list puts it. `$80:C9E3` copies the
+list's X and Y into the display record verbatim, and the only indirection is the
+collision id, which comes from `$80:CA30` — so the coordinates were never the
+question. **Collision id `$0004` takes objects too, and it is the monster
+side**: its entry in the player's own jump table is `$80:F950`, the hit path.
+`actor_overlap_pass` walks pairs from the end of the list, the monster sorted
+later than the player, and `$80:CAEE` clears the object's collision id the
+instant the first of the two is told about it — so the loser's handler is called
+with an id of zero, which for the player is `$80:F87A`, a bare `RTS`.
+`zamn_cosim verify -c` counts it from the other side: `object_spent` 3,
+`player_no_effect` 3, in the same run.
+
+So a route to an object is a **race**, and being quicker beats being more
+accurate. Level 45's `$80:FAA4` object is the one that took six goes: a monster
+patrolling that corridor takes it at frame 3466 whether or not the player is
+anywhere near, so it is a *deadline* rather than a race, and beating it needed the
+next section.
+
+### Where a fitted route's slack actually was
+
+The obvious guess is detours — re-planning after every leg means lane snapping
+sends the player the long way round. Measured, that guess is wrong. Summing
+`--pos` frame by frame over level 45's route:
+
+```
+total path travelled: 1838 px      (optimum 1808)
+frames moving: 919   frames standing still: 263
+```
+
+**Thirty pixels of detour, and 263 frames of standing still.** The stalls came in
+blocks of 103, 43 and 43, each ending exactly on a leg line: a leg whose target
+the player never reached — because he walked into a wall — ran to the end of its
+padded replay window before the fitter looked again. The fitter now ends such a
+leg where he *stopped*; eight frames without movement means he has arrived or he
+is against something, and both mean re-plan now (`STALL`).
+
+That is worth 151 frames on the same target, and every route cut from here on is
+shorter for it, because the saving is per stalled leg rather than per route.
+
+It is not, on its own, enough to beat the deadline above — the refit *without*
+`--fire` arrives at frame 3489, earlier than the movie that wins, and still finds
+the object gone, because a monster was standing on it. Both changes were needed.
+`docs/cosim.md` has the display lists.
+
+### `--fire`
+
+```
+python tools\fit_route.py "Zombies Ate My Neighbors.sfc" prefix.zmv 30 277 1435 451 964 2700 --fire
+arrived at (451,965) after 23 legs, last frame 4190
+```
+
+Holds Y down the whole way. It is free to a closed loop for the same reason lane
+snapping is: re-planning after every leg measures where the player *is*, so a shot
+that changes the board only changes the next search's starting point. **Patching
+`+Y` onto a movie the fitter has already finished does not work** and was tried —
+the trajectory diverges inside a leg or two and every turn after it is aimed at
+the wrong place.
+
+It is not only for contested objects. The same target reached with Y held is a
+different *movie*: level 29's first-aid object costs nineteen hits to walk to and
+fifteen to shoot to, which is the difference between `$80:FACF` storing three
+health and clamping at ten, and between 44 marked branches and 51. Firing turns on
+`enemy_collide`, `shot_collide` and every id a bullet can touch — including an
+object, which is how `object_ignore` was finally reached.
+
+### Starting somewhere other than level 1
+
+Every movie here began the same way for a long time: mash Start through the
+logos and take the title menu's first entry, which is level 1 and only ever
+level 1. That is a real limit on what an input can be aimed at — three items on
+Phase 3's work list turned out to want things level 1 does not contain — and the
+way past it is a password.
+
+```
+build\zamn_assets.exe password "Zombies Ate My Neighbors.sfc"       # all 130
+build\zamn_assets.exe password "Zombies Ate My Neighbors.sfc" xjqy  # what one means
+python tools\make_password_movie.py XJQY > movies\level33.zmv      # the boot half
+```
+
+Thirteen levels are reachable — 5, 9, 13 … 53, because the game hands you a
+password every fourth level — and the second half of a password says how many
+neighbours are still out there, so the tenth spelling of each is that level as
+it starts. `docs/password.md` is the format, the screen and how it is driven.
 
 What a movie is *for* is measured by `zamn_cosim verify -c`, which reports which
 of the port's branches the movie was in a position to check at all. See

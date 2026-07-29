@@ -373,6 +373,35 @@ static void shim_oam_buffer_clear(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
+// $80:825E  thread_spawn — A:Y = the far entry, D = the caller's page
+// ---------------------------------------------------------------------------
+
+// The one routine so far whose *third* argument is the caller's direct page
+// itself rather than something on it: its last act is to copy five words off
+// that page onto the new thread's, so `in->d` is an input in the same way
+// `player_collide`'s is, and for a completely different reason.
+static void shim_thread_spawn(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  int slot = thread_spawn(w, rom, in->a, in->y, in->d);
+
+  // `TXA : RTL` on success, `LDA #$0000 : RTL` when the board is full — and the
+  // ROM cannot tell those two apart either, because slot 0 doubled is also 0.
+  out->a = slot < 0 ? 0 : (uint16_t)slot;
+  // X is the slot the search settled on and survives to the `RTL`; on the full
+  // path the search ran off the bottom at $FFFE and `PLA : PLD` do not touch it.
+  out->x = slot < 0 ? 0xfffe : (uint16_t)slot;
+  // Y is *not* the bank any more by the time it returns: the argument copy ends
+  // `LDY #$0008 : LDA ($01,S),Y`, so what comes back is the last offset it read.
+  // The harness found this on call 1 — WRAM matched and only Y did.
+  out->y = slot < 0 ? in->y : (THREAD_SPAWN_ARGS - 1) * 2;
+  // `TXA` is the last flag-setting instruction on the success path and the
+  // `LDA #$0000` on the other; both describe what is in A.
+  out->n = (out->a & 0x8000) != 0;
+  out->z = out->a == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+}
+
+// ---------------------------------------------------------------------------
 // $80:8480  thread_call_handler — X = slot x2, Y = the argument, and it may
 //                                 decline
 // ---------------------------------------------------------------------------
@@ -417,7 +446,8 @@ static bool guard_thread_call_handler(Wram* scratch, const Rom* rom,
   uint32_t entry =
       ((uint32_t)(wram_r16(scratch, W_THREAD_HANDLER_BANK + in->x) & 0xff) << 16) |
       wram_r16(scratch, W_THREAD_HANDLER + in->x);
-  if (entry != PLAYER_COLLIDE_ENTRY && entry != ENEMY_COLLIDE_ENTRY)
+  if (entry != PLAYER_COLLIDE_ENTRY && entry != ENEMY_COLLIDE_ENTRY &&
+      entry != MONSTER_COLLIDE_ENTRY)
     cosim_census_note("handler", entry);
   return false;
 }
@@ -543,13 +573,43 @@ static void shim_apu_play_sfx(Wram* w, const Rom* rom, const CosimRegs* in,
 static bool guard_enemy_collide(Wram* scratch, const Rom* rom,
                                 const CosimRegs* in) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  return enemy_collide(scratch, rom, in->d, in->a, &r);
+  uint32_t unported = 0;
+  if (enemy_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  // Two ids left, and the census names the routine each goes to rather than the
+  // id, for the reason `player_collide` does: the routine is the piece of work.
+  cosim_census_note("enemy id", unported);
+  return false;
 }
 
 static void shim_enemy_collide(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  enemy_collide(w, rom, in->d, in->a, &r);  // the guard allowed it
+  enemy_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:C4A6  monster_collide — a second enemy subsystem, on a third kind of page
+// ---------------------------------------------------------------------------
+
+// Carry is an input on the same one path `enemy_collide`'s is: the death tail
+// hands whatever arrived to `score_add`, whose discard path passes it through.
+static bool guard_monster_collide(Wram* scratch, const Rom* rom,
+                                  const CosimRegs* in) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  uint32_t unported = 0;
+  if (monster_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  // One decline left — id `$5D`'s `JML $81:BB05`, the other splice in the
+  // `$81:8506` family — and the census names the routine rather than the id for
+  // the reason it always has.
+  cosim_census_note("monster id", unported);
+  return false;
+}
+
+static void shim_monster_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  monster_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
   handler_regs(&r, out);
 }
 
@@ -618,6 +678,28 @@ static void shim_weapon_select_next(Wram* w, const Rom* rom, const CosimRegs* in
                                     CosimRegs* out) {
   WeaponSelectRegs r;
   weapon_select_next(w, rom, in->d, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:EAA8  item_select_next — the same, one array over
+// ---------------------------------------------------------------------------
+
+// Registered separately from `weapon_select_next` even though the two are the
+// same twenty-two instructions, because they are two routines in the ROM at two
+// addresses with four callers between them and no way to tell from a call site
+// which one is meant. `$80:F903` is the `JMP` under `item_pickup`; `$80:D278` is
+// the input handler noticing **A**, which is to items what B is to weapons.
+static void shim_item_select_next(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  WeaponSelectRegs r;
+  item_select_next(w, rom, in->d, &r);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -908,6 +990,19 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 2,  // the opening `PHD`
     },
     {
+        .name = "thread_spawn",
+        .symbol = "$80:825E",
+        .entry = 0x80825e,
+        .ret_op = 0x8082d7,  // RTL; the full-board path has its own at $82DD
+        .ret_kind = COSIM_RTL,
+        .run = shim_thread_spawn,
+        // 330 calls on `movies/level1-2p.zmv`, spanning 1,558..2,944 — the
+        // spread is the slot search, which runs downwards and so costs more the
+        // emptier the board is.
+        .cycles = 2327,
+        .stack_bytes = 4,  // the opening PHD and the PHA under it
+    },
+    {
         .name = "thread_call_handler",
         .symbol = "$80:8480",
         .entry = 0x808480,
@@ -949,6 +1044,28 @@ static const CosimRoutine ROUTINES[] = {
         // one death, which is why the mean barely moves off the floor.
         .cycles = 88,
         .stack_bytes = 9,   // the ignore branch pushes nothing; a death, 9
+    },
+    {
+        .name = "monster_collide",
+        .symbol = "$81:C4A6",
+        .entry = 0x81c4a6,
+        // `$81:C50B`, a bare `RTL`, for `enemy_collide`'s reason: three of the
+        // four exits set carry themselves and two of those set it, so landing on
+        // a `CLC` or a `SEC` would overwrite the answer the port already
+        // published. The `CLC` that shares this exit is the byte before.
+        .ret_op = 0x81c50b,
+        .ret_kind = COSIM_RTL,
+        .run = shim_monster_collide,
+        .supported = guard_monster_collide,
+        // Measured 120..540, mean 135, over 186 calls on
+        // `movies/level45-race.zmv`. The floor is the ignore branch, which is
+        // 157 of them; the ceiling is taking an object.
+        .cycles = 120,
+        // 2 observed, and every call so far is an ignore, a latch or a take —
+        // none of which nests. Left at the death path's depth, which is the same
+        // `JSR` into `$81:BBEB` plus its `JSL score_add` that `enemy_collide`
+        // budgets 9 for, because that path is transcribed and will want it.
+        .stack_bytes = 9,
     },
     {
         .name = "shot_collide",
@@ -1044,6 +1161,21 @@ static const CosimRoutine ROUTINES[] = {
         // The unchanged exit pushes nothing — `level1-rescue.zmv` measures 0 —
         // and a change adds the `JSR $EA4B` and the `JSL apu_play_sfx` under it.
         .stack_bytes = 7,
+    },
+    {
+        .name = "item_select_next",
+        .symbol = "$80:EAA8",
+        .entry = 0x80eaa8,
+        .ret_op = 0x80eae0,  // RTS; both exits converge on it, as next door
+        .ret_kind = COSIM_RTS,
+        .run = shim_item_select_next,
+        // Measured on `movies/level1-keys.zmv`, the only movie that reaches it
+        // at all: five calls spanning 1,038..12,486, and this is their mean.
+        // The spread is `apu_play_sfx`'s — the two exits differ by a sound
+        // effect, and a sound effect's cost is how long the SPC700 took to
+        // acknowledge the last one.
+        .cycles = 4316,
+        .stack_bytes = 4,  // the `JSL apu_play_sfx` the changed exit ends with
     },
     {
         .name = "score_add",

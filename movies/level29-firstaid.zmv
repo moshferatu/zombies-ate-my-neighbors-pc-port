@@ -1,0 +1,193 @@
+# **The only entry in the player's collision table that gives health back**, and
+# the second of the five transcribed a round ago to get an input.
+#
+# GLZJ is level 29 as it starts (`zamn_assets password`). The target is the
+# type-$14 object at (451,964) -- collision id $27 ($80:CA30), whose jump-table
+# entry is `$80:FACF`: three health, ceilinged at the same ten `$80:EB2F`
+# refuses to spend a first-aid kit at.
+#
+# **The route has to hurt him on the way, and it does.** `heal_at_full` is the
+# entry's own refusal path and it reads zero here, which is the report saying he
+# arrived damaged; `heal_capped` reads zero too, which says three did not
+# overshoot, so he was on six or less of ten. Both are named and untaken rather
+# than quietly missing.
+#
+# Nobody contests this one. At frame 4360 the object's record is still at
+# (451,964) with the player eight pixels away at (459,961) and nothing else
+# inside the box; at 4370 it is gone. That is worth saying because level 45's
+# `$80:FAA4` object was lost to a monster standing on it on three separate
+# routes -- collision id $0004 takes objects too.
+#
+# `zamn_cosim verify -f 4420` checks 65,448 calls with nothing declined and no
+# divergence. It also holds three victim sites nothing else reaches:
+# `victim_event_4` (id $34), `victim_ignore`, and `victim_latched`.
+#
+# Route: east, south around the block, then a long staircase north-west through
+# the level's middle. Thirty-one legs, all of them fitted.
+
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   A
+1440   -
+1448   Right
+1456   -
+1464   Right
+1472   -
+1480   Right
+1488   -
+1496   Right
+1504   -
+1512   A
+1520   -
+1528   Left
+1536   -
+1544   Left
+1552   -
+1560   Down
+1568   -
+1576   Down
+1584   -
+1592   A
+1600   -
+1608   Up
+1616   -
+1624   Up
+1632   -
+1640   A
+1648   -
+1656   Right
+1664   -
+1672   Right
+1680   -
+1688   Right
+1696   -
+1704   Right
+1712   -
+1720   Down
+1728   -
+1736   Down
+1744   -
+1752   A
+1760   -
+1908   Start
+1918   -
+1938   Start
+1948   -
+1968   Start
+1978   -
+1998   Start
+2008   -
+2028   Start
+2038   -
+2058   Start
+2068   -
+2148   -
+2700   Right
+2787   Down
+2807   Down
+2811   Right
+3075   Up
+3142   Left
+3229   Up
+3401   Right
+3408   Up
+3578   Left
+3585   Up
+3674   Left
+3688   Right
+3702   Left
+3716   Right
+3730   Left
+3747   Up
+3836   Left
+3850   Right
+3869   Up
+3899   Left
+3946   Up
+3960   Left
+4002   Up
+4016   Left
+4070   Up
+4084   Left
+4126   Up
+4140   Left
+4182   Up
+4196   Left
+4406   -

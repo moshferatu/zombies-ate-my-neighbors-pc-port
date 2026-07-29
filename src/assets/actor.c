@@ -32,10 +32,10 @@ int actors_read(const Rom* rom, const LevelHeader* h, ActorLists* out) {
     if (!p) return ACTOR_ERR_ADDRESS;
     for (uint32_t off = 0;; off += 10) {
       if (off + 10 > avail) return ACTOR_ERR_ADDRESS;  // ran off the bank
-      if (p[off] == 0) break;                          // id 0 terminates
+      if (p[off] == 0) break;                          // type 0 terminates
       if (out->actor_count >= ACTOR_LIST_MAX) return ACTOR_ERR_OVERFLOW;
       ActorPlacement* a = &out->actors[out->actor_count++];
-      a->id = p[off];
+      a->type = p[off];
       a->x = rd16(p + off + 1);
       a->y = rd16(p + off + 3);
       a->flags = p[off + 5];

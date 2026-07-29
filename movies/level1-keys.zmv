@@ -1,0 +1,241 @@
+# Level 1, and the point of it is **the other pickup** -- `$80:F8D6`, the
+# thirteen collision ids that add to the *item* array rather than the weapon
+# one, and `$80:EAA8`, the selector under it.
+#
+# `movies/level1-pickups.zmv` named two entries of the player's collision jump
+# table that no input had ever dispatched to. This movie is the first of them.
+# Level 1's object types map to collision ids through `$80:CA30` and the ids to
+# jump-table entries through `$80:F808`:
+#
+#     obj  type  position       id    $80:F808 entry
+#      1   $08   ( 128, 310)   $21    $80:F8D6  item pickup, slot 0   <- key 1
+#      2   $08   (1214, 694)   $21    $80:F8D6  item pickup, slot 0   <- key 2
+#      3   $08   ( 853, 281)   $21    $80:F8D6  same id again
+#      8   $1E   (1208,  71)   $28    $80:F8D6  item pickup, slot 7   -- see below
+#      5   $34   ( 351,  71)   $2D    $80:FA26  not ported -- see below
+#
+# `$80:F8D6` is `$80:F87B` written a second time over a second array: the same
+# `PHX`/`PLA` around the same sound effect, the same `SED : CLC : ADC` out of a
+# table, the same `CMP`/`BCC` ceiling, the same `BPL` into a selector when the
+# player is holding nothing. What differs is the base (`$66`, not `$64`), the
+# first id ($21, not $0C), the amount table (`$80:F907`) and the ceiling --
+# $0099, two digits, against the weapons' $0999.
+#
+# **Three buttons are established here, and two of them were unknown.** The
+# player's input handler reads `$80:D262  AND #$8000` = **B**, weapons;
+# `$80:D26C  AND #$0080` = **A**, items; `$80:D27D  AND #$0040` = **X**, use the
+# selected item. All three edge-detect, so every press below is a press and not
+# a hold.
+#
+# **The order of what happens is the whole design of the movie**, because the
+# player does not start level 1 empty-handed: `$1CC0 = 7` and item slot 7 holds
+# one first-aid kit. So:
+#
+#   1. **A**, standing still. Slot 7 is selected and slot 7 is the only full
+#      one, so the search walks all eleven others, wraps, and comes back to the
+#      one it started on -- `item_unchanged` the long way round.
+#   2. A zombie catches him on the way down the west side and `$1CB8` goes
+#      10 -> 9. That matters: slot 7's use routine (`$80:EB2F`) opens `CMP
+#      #$000A : BEQ`, so a kit refuses to be spent at full health. Pressing X
+#      before the hit does nothing at all, which is how that was established.
+#   3. **X** at frame 2520. The kit heals him, subtracts 1 from the counter in
+#      BCD, and because that leaves zero ends `JMP $EAA8` -- the selector's
+#      *third* caller (`$80:EB60`), arriving at an array with nothing in it:
+#      thirteen tries, `item_none_found`, and $FFFF stored over the 7.
+#   4. **A** again, now starting from that $FFFF -- `item_none_held` -- which
+#      gives up again and settles on the value already there. No store, no
+#      sound.
+#   5. **Key 1** at (128,310), with $FFFF selected, so it leaves through the
+#      auto-select tail: `item_autoselect`, and `$80:EAA8` a fourth time --
+#      from `$80:F903`, its third distinct caller here -- finding the key it has
+#      just been given.
+#   6. **Key 2** at (1214,694), with slot 0 now selected, so it leaves through
+#      the `RTS` two bytes earlier instead: `item_taken`, the routine's other
+#      ending, and $01 + $01 in the counter.
+#   7. **A** once more, to end on the full-lap `item_unchanged` again.
+#
+# That is all six of `$80:EAA8`'s decisions and both of `$80:F8D6`'s endings.
+#
+# **What it does not settle**, and it is the same shape as the thing
+# `movies/level1-pickups.zmv` settled for the other routine: both keys are id
+# $21, whose slot is 0, so `index - $42` and `index / 2 - $21` are both 0 and
+# the diff cannot tell them apart. The id that would is $28 -- object 8, slot 7
+# -- at (1208,71), on the far side of the fence along the top of the map, where
+# walking under it stops at y=129 and `$80:BEE1`'s box is 16 pixels wide. Nor
+# can the $0099 ceiling or the BCD adjust be reached: level 1 pays $01 twice.
+# Those are statements about the level, not about the movie.
+#
+# Object 5, id $2D, is not reachable either -- it sits inside the hedge column
+# at the top left -- so `$80:FA26` stays on the work list with no input to
+# offer it.
+#
+# The route, in known lanes: west along the foot of the pool enclosure, north
+# up the lane at x=110 until it stops at y=289, east to x=180 and south to
+# y=655, west and down through the gap at x=102 to y=711 (which is where the
+# zombie is), then north again to y=313 and west through the key. Then back
+# down the same way, west to x=26, down to the bottom corridor at y=775 --
+# clear from x=26 to x=1336 -- east to x=1214 and north into the gap between
+# the mud hole (x<1207) and the gravestone (x>1240), where key 2 sits.
+#
+# Nothing is fired here and nobody is rescued.
+#
+# The boot prefix through frame 1484 is level1.zmv's, unchanged.
+#
+# Retune by watching where it actually gets to:
+#   zamn_headless <rom> shot.png 4050 -m movies\level1-keys.zmv --pos 1820,4050,20
+
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1020   Start
+1028   -
+1044   Start
+1052   -
+1068   Start
+1076   -
+1092   Start
+1100   -
+1116   Start
+1124   -
+1140   Start
+1148   -
+1164   Start
+1172   -
+1188   Start
+1196   -
+1212   Start
+1220   -
+1236   Start
+1244   -
+1260   Start
+1268   -
+1284   Start
+1292   -
+1308   Start
+1316   -
+1332   Start
+1340   -
+1356   Start
+1364   -
+1380   Start
+1388   -
+1404   Start
+1412   -
+1428   Start
+1436   -
+1452   Start
+1460   -
+1476   Start
+1484   -
+
+# A, standing still: slot 7 is selected and slot 7 is the only full one, so the
+# search does a full lap and settles where it started.
+1820   A
+1826   -
+# West along the foot of the pool enclosure, then north up the lane at x=110
+# until it stops at y=289, east to x=180 and back south to y=655.
+1860   Left
+1980   Up
+2140   Right
+2170   Down
+# West and down through the gap at x=102, which lands him at (100,711) -- and
+# on a zombie. `$1CB8` goes 10 -> 9 around frame 2485.
+2400   Left
+2435   Down
+# X: the kit is spendable now. Slot 7 -> 0, the array is empty, and the tail
+# `JMP $EAA8` stores $FFFF over the 7.
+2520   X
+2526   -
+# A: from $FFFF, which is the branch nothing else takes.
+2540   A
+2546   -
+# North again -- out of the zombie, up the x=180 lane to y=313 -- and west
+# through the key at (128,310). Frame ~2825, and it auto-selects.
+2560   Up
+2600   Right
+2640   Up
+2800   Left
+# Back east, south down the same lane, west and down to the bottom corridor.
+2860   Right
+2915   Down
+3110   Left
+3144   Down
+3195   Left
+3255   Down
+# East along the corridor, 26 -> 1214, then north into the gap. Key 2 at frame
+# ~3935, and this one does not auto-select.
+3300   Right
+3894   Up
+3960   -
+# And a last A, to end on the full lap again now that slot 0 has two in it.
+3970   A
+3976   -
+4010   -

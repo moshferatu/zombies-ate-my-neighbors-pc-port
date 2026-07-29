@@ -133,3 +133,89 @@ void weapon_select_next(Wram* w, const Rom* rom, uint16_t dp,
   out->z = sfx.z;
   out->c = sfx.c;
 }
+
+// ---------------------------------------------------------------------------
+// $80:EAA8  item_select_next
+// ---------------------------------------------------------------------------
+
+void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
+                      WeaponSelectRegs* out) {
+  // `LDA #$000D : STA $2E : LDX $0E`. No `STA $2C` here: the weapon search parks
+  // its base on the page because it is about to overwrite `$2C` with a
+  // weapon-data pointer and needs it back; this one reads `$66` in place and the
+  // page keeps it between calls, which is why `$66` is a field and `$2C` is
+  // scratch.
+  uint16_t tries = ITEM_SCAN_TRIES;
+  uint16_t player = wram_r16(w, (uint32_t)dp + ACTOR_DP_PLAYER);
+  uint16_t base = wram_r16(w, (uint32_t)dp + PLAYER_DP_ITEMS);
+
+  // `LDA $1CC0,X : BMI $EAC3`, and `$EAC3` is the wrap's own `LDY #$0000`, so
+  // holding nothing starts at slot 0 and holding something starts at the slot
+  // after it. Identical to `$80:EAB2`'s twin twenty-nine bytes up.
+  uint16_t held = wram_r16(w, W_PLAYER_ITEM + player);
+  uint16_t y;
+  if (held & 0x8000) {
+    PORT_COVER(item_none_held);
+    y = 0;
+  } else {
+    y = (uint16_t)(held * 2 + 2);
+    if (y == ITEM_SCAN_WRAP) {
+      PORT_COVER(item_scan_wrap);
+      y = 0;
+    }
+  }
+
+  uint16_t found;
+  for (;;) {
+    tries = (uint16_t)(tries - 1);
+    if (tries == 0) {
+      PORT_COVER(item_none_found);
+      found = ITEM_NONE;
+      break;
+    }
+    // `LDA ($66),Y` — a direct-page *pointer*, where the weapon search uses
+    // `($2C),Y`. The same addressing mode through the same data bank, so it gets
+    // the same decode: `$1D0C` and `$1D2C` are both below `$2000` and land in
+    // the WRAM mirror, and a hack that moved the array into ROM would still read
+    // right.
+    if (bank80_word(w, rom, (uint16_t)(base + y)) != 0) {
+      // `$EACF  TYA : LSR A`.
+      found = (uint16_t)(y >> 1);
+      break;
+    }
+    PORT_COVER(item_scan_empty);
+    y = (uint16_t)(y + 2);
+    if (y == ITEM_SCAN_WRAP) {
+      PORT_COVER(item_scan_wrap);
+      y = 0;
+    }
+  }
+  wram_w16(w, (uint32_t)dp + PLAYER_DP_SCAN, tries);
+
+  // `CMP $1CC0,X : BEQ $EAE0`.
+  if (found == held) {
+    PORT_COVER(item_unchanged);
+    out->a = found;
+    out->x = player;
+    out->y = y;
+    out->n = false;
+    out->z = true;
+    out->c = true;
+    return;
+  }
+
+  // `STA $1CC0,X : LDA #$0012 : JSL apu_play_sfx : RTS`. No `JSR $EA4B` on this
+  // side — an item has no data table and does not change what the player is
+  // drawn as — so the store and the noise are the whole of it.
+  PORT_COVER(item_changed);
+  wram_w16(w, W_PLAYER_ITEM + player, found);
+
+  ApuSfxRegs sfx;
+  apu_play_sfx(w, ITEM_SFX_SWITCH, dp, &sfx);
+  out->a = sfx.a;
+  out->x = sfx.x;
+  out->y = sfx.y;
+  out->n = sfx.n;
+  out->z = sfx.z;
+  out->c = sfx.c;
+}

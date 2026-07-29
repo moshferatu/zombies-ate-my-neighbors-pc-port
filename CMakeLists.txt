@@ -85,7 +85,8 @@ add_library(zamn_assets_lib STATIC
   src/assets/level.c
   src/assets/actor.c
   src/assets/sprite.c
-  src/assets/music.c)
+  src/assets/music.c
+  src/assets/password.c)
 target_include_directories(zamn_assets_lib PUBLIC src)
 target_link_libraries(zamn_assets_lib PUBLIC zamn_cover)
 

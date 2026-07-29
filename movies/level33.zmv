@@ -1,0 +1,243 @@
+# **The first movie that reaches a level other than level 1**, and it gets there
+# the way a player would: by typing a password.
+#
+# Every movie before this one begins by mashing Start through the logos and
+# taking the title menu's first entry, which is level 1 and only ever level 1.
+# That was the binding constraint on most of Phase 3's work list. Three separate
+# items were marked *not reachable in level 1* rather than *not written yet* --
+# `$80:F8D6`'s slot arithmetic wants collision id $28, which is behind a fence;
+# `$80:FA26` wants id $2D, which is inside a hedge; and `enemy_survived` wants an
+# enemy with health, which level 1's actor list does not place. All fourteen of
+# its actors run `$81:87F8`, whose init is `LDA #$0000 : STA $1E`.
+#
+# **XJQY is level 33.** It is not guessed and it is not looked up: `$82:B018`
+# reads a password out of four tables in bank $82, and `zamn_assets password`
+# spells all 130 of them back out of the same tables --
+#
+#     build\zamn_assets.exe password "Zombies Ate My Neighbors.sfc"
+#     build\zamn_assets.exe password "Zombies Ate My Neighbors.sfc" xjqy
+#         XJQY -> level 33, victim gate 16 -- the level as it starts
+#
+# -- so any of the thirteen levels a password can name is now one command and
+# one regenerate away. `docs/password.md` is the format.
+#
+# Level 33 is "Weird Kids on the Block", and what it has that level 1 does not
+# is **enemies with health**: fourteen of its twenty-nine actors run `$81:8C17`,
+# whose init is `LDA #$0004 : STA $1E`, against a damage table whose smallest
+# non-zero entry is 1. Nothing here hits one yet -- the route to them is a maze
+# and this movie stops at the first junction -- but they are three hundred
+# pixels north of where Zeke stands, which is closer than any of them have ever
+# been.
+#
+# What this movie is for right now is the structural question, and it answers
+# it: **the port runs a level it has never seen.** Different tileset, different
+# actor bodies, different music, 29 actors instead of 14 -- and `verify` checks
+# every call without a single divergence or a single decline.
+#
+# Regenerate the boot half with:
+#     python tools\make_password_movie.py XJQY
+#
+# Frames 0-1004 are level1.zmv's logo mashing. 1200-1268 takes the title menu's
+# *second* entry. 1400-2056 walks the 7x5 character grid and types X, J, Q, Y
+# and enter. The Start presses after that are the player-select screen.
+
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   Down
+1440   -
+1448   Down
+1456   -
+1464   A
+1472   -
+1480   Right
+1488   -
+1496   Right
+1504   -
+1512   Up
+1520   -
+1528   Up
+1536   -
+1544   A
+1552   -
+1560   Left
+1568   -
+1576   Down
+1584   -
+1592   A
+1600   -
+1608   Down
+1616   -
+1624   A
+1632   -
+1640   Right
+1648   -
+1656   Right
+1664   -
+1672   Right
+1680   -
+1688   Right
+1696   -
+1704   Right
+1712   -
+1720   A
+1728   -
+1876   Start
+1886   -
+1906   Start
+1916   -
+1936   Start
+1946   -
+1966   Start
+1976   -
+1996   Start
+2006   -
+2026   Start
+2036   -
+2116   -
+
+# Gameplay: fire north, then east. Nothing is hit -- 171 collisions and 36 shots
+# that all expire on scenery -- and that is the point of running it: the port
+# serves every one of them.
+2900   Right
+2930   Up+Y
+2938   Up
+2946   Up+Y
+2954   Up
+2962   Up+Y
+2970   Up
+2978   Up+Y
+2986   Up
+2994   Up+Y
+3002   Up
+3010   Up+Y
+3018   Up
+3026   Up+Y
+3034   Up
+3042   Up+Y
+3050   Up
+3058   Up+Y
+3066   Up
+3074   Up+Y
+3082   Up
+3090   Up+Y
+3098   Up
+3106   Up+Y
+3114   Up
+3122   Up+Y
+3130   Up
+3138   Up+Y
+3146   Up
+3154   Up+Y
+3162   Up
+3170   Up+Y
+3178   Up
+3186   Right+Y
+3194   Right
+3202   Right+Y
+3210   Right
+3218   Right+Y
+3226   Right
+3234   Right+Y
+3242   Right
+3250   Right+Y
+3258   Right
+3266   Right+Y
+3274   Right
+3282   Right+Y
+3290   Right
+3298   Right+Y
+3306   Right
+3314   Right+Y
+3322   Right
+3330   Right+Y
+3338   Right
+3346   Right+Y
+3354   Right
+3362   Right+Y
+3370   Right
+3378   Right+Y
+3386   Right
+3394   Right+Y
+3402   Right
+3410   Right+Y
+3418   Right
+3426   Right+Y
+3434   Right
+3442   -

@@ -53,6 +53,33 @@
 // `$80:EA9C  LDA #$0012` — the sound a weapon change makes.
 #define WEAPON_SFX_SWITCH 0x0012
 
+// --- $80:EAA8 ---------------------------------------------------------------
+//
+// The *item* selector, and `$80:EA63` written out a second time with three
+// numbers changed. Where the weapon search walks fourteen slots with fifteen
+// tries and ends by looking the new weapon's data up and redrawing the player,
+// this one walks twelve with thirteen and ends at the store — an item has no
+// data table and does not change what you look like. It plays the same sound.
+//
+// Four callers, which is why it is registered in its own right: `$80:D278` (the
+// player's input handler, on **A**), `$80:EB60`, `$80:EE7E`, and `$80:F903`,
+// which is `item_pickup`'s tail call — the same shape as `$80:F8A8`'s into the
+// weapon selector.
+
+#define ITEM_SELECT_ENTRY 0x80eaa8u
+
+// `$80:EABE  CPY #$0018` — twelve words, two fewer than the weapons.
+#define ITEM_SCAN_WRAP 0x0018
+// `$80:EAA8  LDA #$000D`. Thirteen tries at twelve slots, one spare, exactly as
+// the weapon search has one spare at fourteen.
+#define ITEM_SCAN_TRIES 0x000d
+// What `$80:EACA` settles on when every slot is empty, and what `W_PLAYER_ITEM`
+// holds when nothing is selected. `$80:EAB2  BMI` and `$80:F901  BPL` are the
+// two tests for it.
+#define ITEM_NONE 0xffff
+// `$80:EAD9  LDA #$0012` — and it is the same sound a weapon change makes.
+#define ITEM_SFX_SWITCH 0x0012
+
 // --- $80:EA4B ---------------------------------------------------------------
 
 // Two words in ROM, one per player, each pointing at a per-weapon table that
@@ -78,6 +105,12 @@
 // `LDA ($2C),Y` and neither survives the routine. It is named because the diff
 // compares it, not because anything reads it.
 #define PLAYER_DP_PTR 0x2c
+// The base of this player's `W_PLAYER_ITEMS` array, and the exact counterpart of
+// `ACTOR_DP_INVENTORY`: `$80:D1C6`/`$80:D1CB` fill the two from two tables one
+// after the other. `$80:F8E5  ADC $66` uses it as an address and `$80:EAB8  LDA
+// ($66),Y` uses the same word as a pointer, which is the pair of instructions
+// that says it is a base rather than an index.
+#define PLAYER_DP_ITEMS 0x66
 // The search's countdown, `$80:EA86  DEC $2E`. Left at whatever the walk
 // stopped on, which is how many tries were unused.
 #define PLAYER_DP_SCAN 0x2e
@@ -113,5 +146,14 @@ typedef struct {
 // Never declines. There is no branch of either routine that is not here.
 void weapon_select_next(Wram* w, const Rom* rom, uint16_t dp,
                         WeaponSelectRegs* out);
+
+// Select the player's next non-empty *item* slot. Same shape as the weapon
+// search above and the same two exits, minus the weapon-data lookup — so the
+// changed exit's registers are `apu_play_sfx`'s and the unchanged one's are the
+// `CMP`'s.
+//
+// Never declines.
+void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
+                      WeaponSelectRegs* out);
 
 #endif

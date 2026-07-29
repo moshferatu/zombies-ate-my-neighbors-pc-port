@@ -154,6 +154,19 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 // them. `$80:F950` is why it is here: one weapon changes what a collision does.
 #define W_PLAYER_WEAPON 0x1cbc
 
+// The player's health, and the reason it is here rather than only in the symbol
+// file: `$80:FACF` adds three to it and ceilings it at ten, and `$80:EB2F`
+// refuses to spend a first-aid kit while it is already ten. Ten is full.
+#define W_PLAYER_HEALTH 0x1cb8
+
+// The item the player currently has selected, and the exact counterpart of the
+// word above: `$80:EAA8` is to `$80:EA63` what `$1CC0` is to `$1CBC`. The pair
+// is saved and restored together at `$80:F38D`/`$80:F3A5`, and the two are
+// selected by two different buttons — B cycles weapons, **A cycles items**
+// (`$80:D26C  AND #$0080 : ... JSR $EAA8`) and **X uses the selected one**
+// (`$80:D27D  AND #$0040 : ... JSR $EAE1`).
+#define W_PLAYER_ITEM 0x1cc0
+
 // --- Per-player inventory (2 x 14 x u16 BCD counters, stride $20) ---
 //
 // How much of each item a player is carrying, in the same BCD the score uses.
@@ -164,6 +177,19 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_PLAYER_INVENTORY 0x1ccc
 #define W_PLAYER_INVENTORY_STRIDE 0x20
 #define W_PLAYER_INVENTORY_SLOTS 14
+
+// --- Per-player items (2 x 12 x u16 BCD counters, stride $20) ---
+//
+// The second inventory, and everything above it is duplicated one array over:
+// `$80:D1E6` holds *its* two base addresses — `$1D0C` and `$1D2C` — the page
+// keeps the one that applies at `PLAYER_DP_ITEMS`, `$80:F8D6` adds to a slot of
+// it and `$80:EAA8` searches it for a non-empty one. Two words shorter than the
+// weapons (`$80:EABE  CPY #$0018`), and its counters are capped two digits lower
+// (`$80:F8F0  CMP #$0099` against the weapons' `$0999`) — which is the whole
+// difference between a thing you carry and a thing you shoot.
+#define W_PLAYER_ITEMS 0x1d0c
+#define W_PLAYER_ITEMS_STRIDE 0x20
+#define W_PLAYER_ITEMS_SLOTS 12
 
 // --- The score (2 slots of one 32-bit BCD counter each, stride 4) ---
 //
@@ -197,6 +223,19 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_THREAD_HANDLER 0x1300
 #define W_THREAD_HANDLER_BANK 0x1330
 #define WRAM_THREAD_SLOTS 24
+
+// What each thread was started as, filed by `$80:8276`/`$80:827B` when the slot
+// is allocated and read by nothing any trace has seen. Two parallel arrays, both
+// indexed by the same doubled slot, and the address is the entry point **minus
+// one** — the same off-by-one every far address in this game's stack frames
+// carries, because what reaches them is an `RTL`.
+#define W_THREAD_ENTRY 0x2002
+#define W_THREAD_ENTRY_BANK 0x2032
+
+// How many threads are live. `$80:8271  INC $0006` is the only writer any trace
+// has seen, and it is absolute rather than direct-page — so it is this word
+// whatever page the caller was running on.
+#define W_THREAD_COUNT 0x0006
 
 // --- Vblank job queues: {u16 address-1, u8 bank, u8 pad} per slot ---
 #define W_VBL_QUEUE_A 0x12a0

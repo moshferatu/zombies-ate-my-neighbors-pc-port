@@ -1,0 +1,194 @@
+# **The contested object, won**, and the last of the five transcribed entries to
+# get an input. Its twin is `movies/level45-contested.zmv`, which is the same
+# object lost.
+#
+# BLHR is level 45. The target is the type-$3A object at (230,1044) -- collision
+# id $30, jump-table entry `$80:FAA4`: kind 3, and $1000 of score. Six earlier
+# routes reached its box or its corridor and every one found it already gone,
+# taken by a monster patrolling there.
+#
+# **It needed two changes to `tools/fit_route.py`, and neither is enough alone.**
+#
+# `--fire` alone arrived at frame 3712; the object was gone at 3466. Then the
+# fitter learned to end a leg where the player *stopped* rather than letting the
+# padded replay window expire -- level 45's route travelled 1,838 px against an
+# 1,808 px optimum, so its slack was never detours, it was **263 frames of
+# standing still** in blocks of 103, 43 and 43 at the ends of legs that had walked
+# into a wall. That is worth 151 frames. But the stall fix *without* `--fire`
+# arrives at **3489** -- earlier than this movie does -- and still loses: at frame
+# 3460 the object is live, a monster is standing on it at (222,1046), the player is
+# forty pixels below at (222,1086), and by 3470 it is gone. He watches it happen.
+#
+# So the clock is necessary and not sufficient, and the difference is visible in
+# the display list. At frame 3550 here the object is still at (230,1044), the
+# player is eight pixels below it at (222,1052) -- inside the box -- and the two
+# id-$04 monsters nearby are at (234,1052) and (244,1052), **beside him rather
+# than on it**, with one of his own shots at (222,1028). Shooting keeps the thief
+# interested in the player instead of the object.
+#
+# The proof it landed is one word of WRAM: `zamn_headless --records` reads
+# `score 00001000` at frame 3600, and $1000 is what this entry awards and nothing
+# else in the game does.
+#
+# It is also the only movie that takes **all three of `$80:CAEE`'s exits at
+# once** -- `object_taken` 19, `object_spent` 2, `object_ignore` 196 -- because a
+# firing route puts bullets over objects, walks over one that a monster claimed
+# first, and collects three of its own.
+#
+# `zamn_cosim verify -f 3600` checks 76,127 calls with no divergence, and 48 of
+# the 111 marked branches.
+
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Right
+1408   -
+1416   Right
+1424   -
+1432   Right
+1440   -
+1448   Down
+1456   -
+1464   A
+1472   -
+1480   Right
+1488   -
+1496   Down
+1504   -
+1512   A
+1520   -
+1528   Left
+1536   -
+1544   Left
+1552   -
+1560   Left
+1568   -
+1576   A
+1584   -
+1592   Right
+1600   -
+1608   Down
+1616   -
+1624   A
+1632   -
+1640   Right
+1648   -
+1656   Right
+1664   -
+1672   Right
+1680   -
+1688   Right
+1696   -
+1704   Down
+1712   -
+1720   A
+1728   -
+1876   Start
+1886   -
+1906   Start
+1916   -
+1936   Start
+1946   -
+1966   Start
+1976   -
+1996   Start
+2006   -
+2026   Start
+2036   -
+2116   -
+2530   Right+Y
+2613   Down+Y
+2647   Right+Y
+2916   Up+Y
+2924   Right+Y
+3014   Up+Y
+3043   Left+Y
+3384   Up+Y
+3386   Down+Y
+3388   Up+Y
+3390   Down+Y
+3392   Up+Y
+3394   Down+Y
+3396   Up+Y
+3410   Down+Y
+3424   Up+Y
+3438   Left+Y
+3441   Up+Y
+3455   Left+Y
+3458   Up+Y
+3472   Left+Y
+3534   Up+Y
+3556   Right+Y
+3601   -

@@ -1,0 +1,189 @@
+# **The movie where Zeke stops being able to pick things up**, and the only input
+# that shows the *player* on the wrong side of `object_collide`'s third exit.
+#
+# BLHR is level 45. This is the chained route -- collect the type-$38 object at
+# (540,1100) first, then carry on to the type-$36 one at (866,994) -- and it
+# collects neither, because level 45's spiders **pick him up and carry him**. His
+# own display record leaves the list, and when it comes back his
+# `ACTOR_COLLIDE_ID` reads **$38** rather than $05.
+#
+# $38 is not one of the three ids `$80:CAEE` accepts, so he walks over an object
+# with both records live, both ids non-zero and different, the pair well inside
+# the box -- and the object's handler runs all three `CMP`s, matches none of
+# them, and returns carry clear having written nothing. That is
+# **`object_ignore`**, and all three of the routine's exits are diffed here:
+# `object_taken` (14), `object_spent` (3) and `object_ignore` (**48**).
+#
+# `movies/level29-fighting.zmv` reaches that third exit too, and more cheaply: a
+# shot in flight is id $5C, which is also not one of the three. So this movie is
+# not load-bearing for the coverage number. What it is load-bearing for is the
+# claim that a *player* can be on that branch.
+#
+# It is also the largest single-level-45 sample in the corpus -- `zamn_cosim
+# verify -f 4400` checks 95,261 calls with no divergence -- and it takes
+# `object_spent` and `player_no_effect` three times each, the same way
+# `movies/level45-contested.zmv` does. That movie is kept for its own reason: it
+# is the one where a monster and the player stand on the same object on the same
+# frame, which is a different way to lose an object from this one.
+#
+# Route: east along the bottom, north up the x=836 lane into the spiders, then
+# whatever the fitter could still do with a player who was being carried. The
+# stutter of Left/Right lines after frame 4156 is that -- re-planning from a
+# position the player does not control.
+
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Right
+1408   -
+1416   Right
+1424   -
+1432   Right
+1440   -
+1448   Down
+1456   -
+1464   A
+1472   -
+1480   Right
+1488   -
+1496   Down
+1504   -
+1512   A
+1520   -
+1528   Left
+1536   -
+1544   Left
+1552   -
+1560   Left
+1568   -
+1576   A
+1584   -
+1592   Right
+1600   -
+1608   Down
+1616   -
+1624   A
+1632   -
+1640   Right
+1648   -
+1656   Right
+1664   -
+1672   Right
+1680   -
+1688   Right
+1696   -
+1704   Down
+1712   -
+1720   A
+1728   -
+1876   Start
+1886   -
+1906   Start
+1916   -
+1936   Start
+1946   -
+1966   Start
+1976   -
+1996   Start
+2006   -
+2026   Start
+2036   -
+2116   -
+2530   Right
+2613   Down
+2647   Right
+3016   Up
+3030   Right
+3122   Up
+3151   Left
+3394   Up
+3430   Right
+3525   Down
+3568   Right
+3742   Right
+3915   Right
+4086   Up
+4156   Left
+4170   Right
+4184   Left
+4198   Right
+4212   Left
+4226   Right
+4240   Up
+4310   Up
+4331   Right
+4350   Up
+4366   Left
+4412   -

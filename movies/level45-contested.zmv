@@ -1,0 +1,179 @@
+# **The movie that loses**, kept because losing is the finding.
+#
+# BLHR is level 45 as it starts. This route is aimed at the type-$3A object at
+# (230,1044) -- collision id $30, whose jump-table entry is `$80:FAA4` -- and it
+# reaches it: at frame 3790 the player is at (222,1050), eight pixels away on X
+# and six on Y, which `$80:BEF1` counts as touching.
+#
+# **He does not get it, and `zamn_headless --records` says why in one frame:**
+#
+#     $1AB6  $8001    222  1050   $05   $00     <- the player
+#     $1A7A  $8011    230  1050   $04   $24     <- a monster, on the same object
+#     $1AA2  $8001    230  1044   $30   $26     <- the object
+#
+# `$80:CAEE` accepts three collision ids and the third, $0004, is the monster
+# side. `actor_overlap_pass` walks pairs from the end of the display list, the
+# monster sorted later than the player, and the object's `ACTOR_COLLIDE_ID` is
+# cleared on that first ask -- so the player's handler is called with an id of
+# zero, which is `$80:F87A`, a bare RTS.
+#
+# So this movie is the only input in the project that takes **`object_spent`**
+# and **`player_no_effect`**, and it takes each of them three times. Both are
+# paths that only exist because two things can want the same object on the same
+# frame, and neither had ever run.
+#
+# It is also fifty-six legs where the same target refitted is fourteen, because it
+# was cut before `tools/fit_route.py` learned the game's eight-pixel box: it
+# reached that box on leg 36 and spent twenty more trying to stand on the exact
+# pixel. The tail after frame 3803 is that thrashing, cut off here.
+#
+# `zamn_cosim verify -f 3810` checks 69,768 calls with no divergence.
+
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Right
+1408   -
+1416   Right
+1424   -
+1432   Right
+1440   -
+1448   Down
+1456   -
+1464   A
+1472   -
+1480   Right
+1488   -
+1496   Down
+1504   -
+1512   A
+1520   -
+1528   Left
+1536   -
+1544   Left
+1552   -
+1560   Left
+1568   -
+1576   A
+1584   -
+1592   Right
+1600   -
+1608   Down
+1616   -
+1624   A
+1632   -
+1640   Right
+1648   -
+1656   Right
+1664   -
+1672   Right
+1680   -
+1688   Right
+1696   -
+1704   Down
+1712   -
+1720   A
+1728   -
+1876   Start
+1886   -
+1906   Start
+1916   -
+1936   Start
+1946   -
+1966   Start
+1976   -
+1996   Start
+2006   -
+2026   Start
+2036   -
+2116   -
+2530   Right
+2613   Down
+2647   Right
+3016   Up
+3030   Right
+3122   Up
+3151   Left
+3506   Left
+3558   Up
+3572   Left
+3615   Up
+3629   Left
+3672   Up
+3686   Left
+3772   Up
+3795   Right
+3803   Down
+3810   -

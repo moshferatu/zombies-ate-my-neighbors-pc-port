@@ -32,10 +32,23 @@
 #define OBJECT_LIST_MAX 128
 
 // A 10-byte actor record, as `$81:80EC` reads it (stride 10, `LDA ($0C),Y`):
-// +0 the id byte (0 ends the list), +1 spawn x, +3 spawn y, +5 a flags byte,
+// +0 a type byte (0 ends the list), +1 spawn x, +3 spawn y, +5 a flags byte,
 // +6/+8 a far pointer to the actor's behavior routine, +9 padding.
+//
+// **+0 is not a collision id**, which this file used to call it and
+// `zamn_assets actors` used to print as one. An object's list byte *is* an index
+// that yields a collision id, through `$80:CA30`, so the assumption was cheap to
+// make and it is wrong for actors: `zamn_headless --records` shows the record at
+// level 29's (290,1302) carrying `ACTOR_COLLIDE_ID` **$00** where the list says
+// `$2D`, and level 46's monsters carrying `$03` and `$04`, neither of which
+// appears anywhere in that level's actor list. An actor's collision id is
+// written by its own body, not by its placement.
+//
+// The correction cost something: fourteen placements across the game carry type
+// `$2D`, and for an afternoon they looked like the way to reach `$80:FA26` —
+// the one jump-table entry with no input. They are not.
 typedef struct {
-  uint8_t id;         // +0  actor type; 0 terminates the list
+  uint8_t type;       // +0  actor type; 0 terminates the list
   uint16_t x, y;      // +1/+3  spawn position, in level pixels
   uint8_t flags;      // +5  per-placement flags (meaning not yet established)
   uint32_t behavior;  // +6/+8  24-bit far pointer to the behavior routine

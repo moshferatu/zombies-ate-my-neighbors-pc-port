@@ -19,6 +19,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "assets/rom.h"
 #include "port/wram.h"
 
 // `$80:8398` — age every live thread's wait counter by one tick.
@@ -48,6 +49,50 @@ void thread_tick_waits(Wram* w);
 //     at slot 14, so slot 15 is never allocated. Queue B has no such gap.
 int vbl_queue_a_add(Wram* w, uint16_t addr, uint16_t bank);
 int vbl_queue_b_add(Wram* w, uint16_t addr, uint16_t bank);
+
+// --- $80:825E ---------------------------------------------------------------
+//
+// **How a thread gets its first stack frame**, and the exact counterpart of
+// `enemy_survived_react` in `port/collide.h`: that one splices a call into a
+// thread that already exists, this one manufactures the whole parked state of a
+// thread that does not.
+//
+// Everything the scheduler needs to resume a thread is nine bytes on that
+// thread's own stack, because `$80:8390` resumes one with
+//
+//     LDA $11B0,X : TCS : PLD : PLP : PLB : RTL
+//
+// — so `thread_spawn` writes a D, a P, a DB and a far return address that lands
+// on the entry point, and under that a second far return address to
+// `$80:833E`, which is where a thread body's own `RTL` goes to free the slot.
+// A brand-new thread and a thread parked in the middle of `thread_yield` are
+// the same nine bytes; the only difference is what is in them.
+//
+// The routine is also how a spawner passes arguments: its last act is to copy
+// the **caller's first five direct-page words** into the new thread's page
+// (`$80:82B5  LDA ($01,S),Y`, reading through the `D` the opening `PHD` saved).
+// `$80:FA26` is the example — it fills `$00`, `$02` and `$04` with a position
+// and then spawns.
+//
+// `entry` and `bank` are the far address to start at, and `caller_dp` is the
+// page those five words come from. Returns the slot index already doubled, or
+// -1 when all 24 slots are live — which the ROM reports as `A = 0`, and so
+// cannot be told from slot 0. The search runs downwards from slot 23, so slot 0
+// is the last one taken and that collision is very nearly unreachable.
+#define THREAD_SPAWN_ENTRY 0x80825eu
+// 24 words in ROM: the stack pointer each slot starts with.
+#define THREAD_SP_TABLE 0x80830eu
+// 24 more: the direct page each slot runs on, `$7E:0100` at stride `$80`.
+#define THREAD_DP_TABLE 0x8082deu
+// `$80:82AB  LDA #$8001` — live, and runnable on the next tick.
+#define THREAD_WAIT_NEW 0x8001
+// `$80:829E  LDA #$833E : DEC A` — where a thread body returns to when it ends.
+#define THREAD_EXIT_RETURN 0x833d
+// How many of the caller's direct-page words the new thread inherits.
+#define THREAD_SPAWN_ARGS 5
+
+int thread_spawn(Wram* w, const Rom* rom, uint16_t entry, uint16_t bank,
+                 uint16_t caller_dp);
 
 // `$80:8475` is how a thread says "call me back": it stores a far address into
 // `thread_handler`/`thread_handler_bank` at its own slot. The other end,

@@ -92,10 +92,12 @@ $006E30  victim_count          # victims kept by victim_list_parse
 
 # --- Per-player arrays (2 entries of one word each, indexed by player x2) -----
 # Seeded together by $80:8874, which takes the same doubled index.
-$001CB8  player_countdown      # seeded to 10; stepped down by $80:D03C
+$001CB8  player_health         # 10 at level start, stepped by $80:D03C; a zombie's touch takes
+                               # one, and $80:EB2F refuses a first-aid kit while it is still 10
 $001CBC  player_weapon         # seeded to 0; the index $80:D219 looks a table up by
 $001CCC  player_inventory      # 2 x 14 BCD counters, stride $20; bases at $80:EAA4
-$001CC0  player_weapon_arg     # seeded to 7; saved and restored with it ($80:F38D)
+$001CC0  player_item           # the selected *item*, seeded to 7; the pair of player_weapon
+$001D0C  player_items          # 2 x 12 BCD counters, stride $20; bases at $80:D1E6
 
 # --- The score (2 slots of one 32-bit BCD counter each, stride 4) -------------
 $001E72  player_score          # added to by $80:C7EB/$80:C801; read by the HUD at $80:C0CF
@@ -111,7 +113,13 @@ $80:816C  nmi_entry            # the NMI vector; trampolines through [$0000]
 $80:8179  nmi_main
 
 # --- Code: cooperative thread scheduler --------------------------------------
-$80:825E  thread_spawn         # A = far entry address; builds a fake yield frame
+$80:825E  thread_spawn         # A:Y = far entry; builds the nine-byte parked frame a
+                               # brand-new thread resumes through, and copies the caller's
+                               # first five direct-page words onto the new thread's page
+$80:830E  thread_sp_table      # 24 x u16: the stack pointer each slot starts at
+$002002  thread_entry         # 24 x u16: what each slot was spawned as, minus one
+$002032  thread_entry_bank
+$000006  thread_count         # live threads; $80:8271 is the only writer traced
 $80:8353  thread_yield         # A = ticks to sleep; returns when the wait expires
 $80:8371  scheduler_idle       # WAI, then per-frame housekeeping, then re-scan
 $80:8398  thread_tick_waits    # decrement every live thread's wait counter
@@ -155,10 +163,25 @@ $80:BEC9  actor_overlap_pass   # pairwise 16x16 overlap test over visible_actors
 $80:F7F7  player_collide       # the player thread's handler; A = the other actor's id
 $80:F808  player_collide_table # 57 x u16, indexed by that id x2; targets are bank $80
 $80:F87A  player_collide_none  # a bare RTS: the table entry for an id that does nothing
+$80:F87B  player_pickup        # ids $0C..$20: adds to player_inventory, caps at $0999
+$80:F8AC  pickup_amount_table  # 21 x u16 BCD, indexed by (id - $0C) x 2
+$80:F8D6  player_item_pickup   # 13 ids from $21: adds to player_items, caps at $0099
+$80:F907  item_amount_table    # 19 x u16 BCD, indexed by (id - $21) x 2
+$80:F92D  player_collide_sfx   # id $01: three instructions, all of them a noise
 $80:F950  player_collide_hurt  # the entry every collision in level 1 lands on
 $81:8888  enemy_collide        # an enemy thread's handler; same argument
 $81:8561  enemy_damage_table   # indexed by (id - $5C) x 2; subtracted from health at $1E
 $81:8727  enemy_die            # awards $0100 and posts $F5F5 as the thread's death request
+$81:8506  enemy_survived_react # splices a JSL frame into the enemy thread's own parked stack
+$81:8542  enemy_hurt_flash     # what that frame runs: ACTOR_ATTR_SET for two ticks
+$81:8C17  enemy_body_health4   # an actor body whose init is LDA #$0004 : STA $1E
+$81:87F8  enemy_body_health0   # ...and level 1's, which is LDA #$0000, so every hit is fatal
+$80:D259  player_input_buttons # B -> $EA63, A -> $EAA8, X -> $EAE1; all three edge-detected
+$80:EA63  weapon_select_next   # next non-empty player_inventory slot; 14 slots, 15 tries
+$80:EAA8  item_select_next     # next non-empty player_items slot; 12 slots, 13 tries
+$80:EAE1  item_use             # dispatches the selected item through item_use_table
+$80:EB07  item_use_table       # 12 x u16, indexed by the item slot x2; $EB06 = nothing
+$80:EB2F  item_use_first_aid   # slot 7: refuses at player_health 10, else heals and spends one
 $80:C7C2  score_slot           # A = side (0 or 2) -> the score slot owning it, or 4
 $80:C7D9  score_add            # X = BCD award, A's sign = the side; credits that slot
 $80:C819  score_add_table      # 3 x u16: the two slots' adders, then the discard
@@ -192,3 +215,25 @@ $80:CC6F  apu_select_and_load  # sends command $08, falls into apu_load_set
 $80:CC7C  apu_load_set         # A = data set index -> uploads it byte by byte
 $80:CCBF  apu_next_byte        # reads and advances [$18]
 $80:CCC8  apu_send             # X = command -> $2142, A = parameter -> $2141
+
+# --- Code: the password screen (docs/password.md) ----------------------------
+$82:AFF3  password_screen_open  # picks a struct out of $82:B000 and enters the screen
+$82:B018  password_read         # 4 chars -> level in $1E7C + victim gate in $1D50; C set = reject
+$82:B0DE  password_write        # level in $1E7C + $1F9C/$1F9E -> 4 chars in $1EA0
+$82:B14A  password_group_table  # 13 index pairs: which four levels
+$82:B164  password_variant_table # 10 index pairs: how many neighbours are left
+$82:B178  password_alphabet     # 21 consonants, and no password uses a digit
+$82:B18D  password_group_offset # 13 pairs added to the variant indices
+$82:B232  password_screen       # the grid's own thread: cursor, entry, timeout
+$82:B333  password_cursor_clamp # wraps x to $20..$E0 by 32 and y to $47..$87 by 16
+$82:B7FC  password_cursor_step  # 9 (dx,dy) pairs indexed by joy1_dir
+$001E7C  password_level        # what password_read writes: 5 + 4i, or 0 for BCDF
+$001E96  password_cursor_x
+$001E9A  password_cursor_y
+$001EA0  password_entry        # the four characters, in entry order
+
+# --- Code: walkability (docs/analysis-tools.md) ------------------------------
+$80:AE00  tile_walkable        # A = x, Y = y; carry set = blocked. col = x/8,
+                               # row = (y-8)/8, and six tiles tested: +0/+2/+4
+                               # along the row and the same three on the next
+$80:AE43  tile_attr_test       # LDA [$BA],Y : LSR : BCS -- bit 0 is solid

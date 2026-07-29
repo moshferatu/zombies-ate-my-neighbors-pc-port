@@ -265,11 +265,13 @@ to agree, and these do not test that.
 
 | Offset | What reads or writes it | Meaning |
 | --- | --- | --- |
-| `$0A` | `$80:EA5A  LDY $0A : STA $000A,Y`, and `$80:EA42` writes `+$0E` through it | the player's own display record — an *address*, exactly as on a shot's page and at the same offset |
+| `$08` | the record `zamn_headless --pos` reads back, and the one that carries the player's world position | the player's **body** record — an address. Two records, not one: `$08` moves and `$0A` does not |
+| `$0A` | `$80:EA5A  LDY $0A : STA $000A,Y`, and `$80:EA42` writes `+$0E` through it | a *second* display record — an address, exactly as on a shot's page and at the same offset. It is the one the weapon selection writes a metasprite into, and it is not the one the player is drawn at: on `movies/level1-pickups.zmv` it sits at a fixed (72,80) with bit 15 of its flags clear the whole time |
 | `$0C` | `$80:EA4F  LDX $0C : LDA $FD9C,X` | the index a two-entry table of per-weapon data is read with. It has to be a doubled player number for the table to have two entries — which the page already keeps at `$0E` — so either it is held twice or one of the two is something else. Named for where it is |
 | `$12` | `$80:EA58  STA $12` | a word out of that player's weapon-data table, filed when the weapon changes. **The same offset is an enemy's death request**, which is the clearest case yet of two pages disagreeing |
 | `$64` | `$80:F88A  CLC : ADC $64` | the base of this player's `player_inventory` array — `$1CCC` or `$1CEC`, the two words at `$80:EAA4` |
-| `$2C`,`$2E` | `$80:EA66`, `$80:EA6A`, `$80:EA86  DEC $2E` | the weapon search's scratch: a pointer that is overwritten mid-routine, and a countdown from 15. Neither survives the call, and they are named because the diff compares them |
+| `$66` | `$80:F8E5  CLC : ADC $66`, and `$80:EAB8  LDA ($66),Y` | the base of this player's `player_items` array — `$1D0C` or `$1D2C`, the two words at `$80:D1E6`. The pair of `$64`, filled by the instruction after the one that fills `$64`, and read *both* ways: as an address to add to and as a direct-page pointer to index through |
+| `$2C`,`$2E` | `$80:EA66`, `$80:EA6A`, `$80:EA86  DEC $2E` | the weapon search's scratch: a pointer that is overwritten mid-routine, and a countdown from 15. Neither survives the call, and they are named because the diff compares them. **`$2E` is shared with the item search** (`$80:EAC6  DEC $2E`), which counts down from 13 — so the field's final value says which of the two ran last as well as how many tries it had left |
 
 #### On a weapon shot's page (`$81:FCB2`'s thread)
 
@@ -337,6 +339,19 @@ one is why the port names it at all. **Negative means none selected** —
 `$80:EA8A` writes `$FFFF` when the search comes up empty, and both `$80:EA72
 BMI` and `$80:F8A6  BPL` test the sign.
 
+`$1CC0` is the same word one array over: the selected **item**. Everything in
+the paragraph above is true of it with three addresses changed —
+`$80:EACA` writes the `$FFFF`, `$80:EAB2  BMI` and `$80:F901  BPL` read the
+sign, and it is saved and restored beside `$1CBC` rather than instead of it.
+Two buttons, not one: **B** cycles `$1CBC` and **A** cycles `$1CC0`
+(`$80:D262` and `$80:D26C`, both edge-detected).
+
+`$1CB8` is **health**, and the evidence is a first-aid kit. It is 10 at level
+start; a zombie's touch takes one; and `$80:EB2F` — the routine **X** runs for
+item slot 7 — opens `LDA $1CB8,X : CMP #$000A : BEQ <rts>`, so the kit refuses
+to be spent while the number is still 10 and sets it back to 10 when it is not.
+Its old name here was `player_countdown`, for the `$80:D03C` that steps it.
+
 ## Per-player inventory — `$7E:1CCC`, stride `$20`
 
 Fourteen words per player, and the same **BCD** encoding the score uses. The two
@@ -354,6 +369,27 @@ The ids that reach `$80:F87B` run `$0C..$20`, which is 21 of them against 14
 slots, and the last seven of the amount table are zero — so those ids add
 nothing and store the counter back unchanged. Nothing bounds the index, so on
 player 1 they write past the end of the array and into player 2's.
+
+## Per-player items — `$7E:1D0C`, stride `$20`
+
+**The section above again, one array over**, and the differences are worth
+listing precisely because there are so few of them. Twelve words per player
+rather than fourteen (`$80:EABE  CPY #$0018`); base addresses at `$80:D1E6` —
+`$1D0C` and `$1D2C` — rather than at `$80:EAA4`; cached on the player's page at
+`$66` rather than `$64`, by the two instructions `$80:D1C6`/`$80:D1CB` one after
+the other. `$80:F8D6` adds to a slot — collision id doubled, minus `$42`, amount
+from a 19-word table at `$80:F907`, `SED : CLC : ADC` — and caps it at `$0099`,
+two digits against the weapons' three. `$80:EAA8` searches it, which is what
+pressing **A** does.
+
+The ids that reach `$80:F8D6` are `$21`-`$26`, `$28`-`$2B` and `$31`-`$33`:
+thirteen of them, and the last three index past the end of a twelve-word array
+in the same way and for the same reason as the weapon inventory's last seven.
+
+Item slot 7 is a first-aid kit — the one thing a player starts level 1 holding,
+which is why `$1CC0` is seeded to 7 rather than to 0. `$80:EB07` is the
+twelve-entry table of what **X** does with a slot; five of the twelve are the
+same bare `RTS`, and slot 0 — the keys — is one of them.
 
 ## The score — `$7E:1E72`, and the slot map at `$7E:1E84`
 
