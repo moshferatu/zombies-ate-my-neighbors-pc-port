@@ -1,0 +1,221 @@
+# Level 25, reached by password GYLM, and the boss fought in the corridor it
+# actually crosses rather than wherever the player happened to be standing.
+#
+# **The previous round fired 596 shots at this boss for one point of damage and
+# concluded that it does not walk into a stream of fire. There was no stream of
+# fire.** Every shot died six pixels from the barrel. Sampled per frame instead
+# of every fourth -- the fire rate is 12 frames, so the old every-fourth sampling
+# aliased against it and always caught a shot at the same age -- a shot spawns at
+# x=665, reaches x=671, and is gone. That is the same two-frame, six-pixel death
+# that proved level 17's creature was in a sealed pen rather than behind an uncut
+# route. `movies/level25-heavy.zmv` and all four parked experiments stood at
+# y=561, pressed against the wall that bounds the corridor, shooting into it.
+#
+# `zamn_assets route --reach <rom> 26` puts that corridor at **y=588 and 408
+# pixels long**, running straight through the band the boss spends about 40% of
+# its time in. Twenty-seven pixels lower and the same gun works.
+#
+# Two changes from `level25-heavy`, and no new route:
+#
+#  * **Fire is held from frame 3387**, the second $22 pickup. That movie spends
+#    all forty $67 shots -- four damage each, and not one of the four ids this
+#    boss rewrites -- walking north with Y held down, at about ten percent. Here
+#    they survive the trip, so the fight starts with the boss on its full 70.
+#  * The tail sweeps the lane in 300-frame legs instead of spinning on the spot.
+#
+# **70 -> 44.** Twenty-six damage against the recorded movie's sixteen, and the
+# first number in this fight that came from aiming the experiment rather than
+# from lengthening it.
+#
+# `boss_died` is still untaken. The reachable arsenal is 390 damage of
+# ammunition -- 150 $5C, 40 $67, 20 $61 rewritten to $60 -- against 70 of health,
+# and the lane has not yet held better than a fifth of it. The three weapons that
+# would settle it are all off the boss's side of the map: $5F's 300 shots and $64
+# sit inside scenery, and $62 is in a sealed pocket. See docs/cosim.md, "The
+# stream of fire that was a wall".
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   A
+1440   -
+1448   Right
+1456   -
+1464   Down
+1472   -
+1480   Down
+1488   -
+1496   A
+1504   -
+1512   Right
+1520   -
+1528   Right
+1536   -
+1544   Right
+1552   -
+1560   Up
+1568   -
+1576   Up
+1584   -
+1592   A
+1600   -
+1608   Right
+1616   -
+1624   A
+1632   -
+1640   Right
+1648   -
+1656   Down
+1664   -
+1672   Down
+1680   -
+1688   A
+1696   -
+1844   Start
+1854   -
+1874   Start
+1884   -
+1904   Start
+1914   -
+1934   Start
+1944   -
+1964   Start
+1974   -
+1994   Start
+2004   -
+2084   -
+2580   Down
+2730   Left
+2920   Down
+3200   Right
+3270   Down
+3304   Left
+3316   Down
+3340   Right
+3382   Up
+3400   Left
+3432   Up
+3474   Left
+3560   Right
+3594   Up
+3780   -
+3790   B
+3802   -
+3820   Left
+3880   Up
+3940   Right
+4000   Down
+4060   Left
+4120   Up
+4180   Right
+4240   Down
+4300   Left
+4360   Up
+4420   Right
+4480   Down
+4540   Left
+4600   Up
+4660   Right
+4720   Down
+4780   Left
+4840   Up
+4900   Right
+4960   Down
+5020   Left
+5080   Up
+5140   Right
+5200   Down
+5260   Left
+5320   Up
+5380   Right
+5390   Down
+5402   Right+Y
+5702   Left+Y
+6002   Right+Y
+6302   Left+Y
+6602   Right+Y
+6902   Left+Y
+7202   Right+Y
+7502   Left+Y
+7802   Right+Y
+8102   Left+Y
+8402   Right+Y
+8702   Left+Y
+9002   Right+Y
+9302   Left+Y
+9400   -

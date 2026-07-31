@@ -5,6 +5,97 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-07-31)
 
+### The stream of fire that was a wall (2026-07-31)
+
+**The previous round fired 596 shots at level 25's boss, did one point of damage,
+and concluded that the boss does not walk into a stream of fire. There was no
+stream of fire** — every one of those shots died six pixels from the barrel, and
+the round that drew the conclusion never had a line of fire to measure.
+
+`--records` sampled **per frame** rather than every fourth is what shows it. The
+fire rate is 12 frames, so the old every-fourth sampling was aliased against it
+and caught every shot at the same age; at step 1 a shot spawns at x=665, reaches
+x=671 and is gone two frames later. That is the identical two-frame, six-pixel
+death that proved level 17's creature was in a sealed pen rather than behind an
+uncut route — the player was pressed against a wall, shooting into it.
+
+`zamn_assets route --reach <rom> 26` says where the wall is not: a clean
+**408-pixel corridor at y=588**, running x=748 to x=1156, straight through the
+band the boss spends about 40% of its time in. `movies/level25-heavy.zmv` and all
+four parked experiments fought at y≈561. **Twenty-seven pixels, and the same gun
+goes from nothing to eight hits in four hundred frames:**
+
+| row fought on | walk ends | boss health 54 → |
+| --- | --- | --- |
+| y=577 | stuck at (759,577) | 54 |
+| **y=585** | (1207,585) | **46** |
+| y=593 | (1271,593) | 48 |
+| **y=601** | (1203,601) | **46** |
+| y=609 | (1271,609) | 51 |
+| y=617 | (1271,617) | 54 |
+
+**`movies/level25-lane.zmv` is that, plus one other change and no new route.**
+`level25-heavy` collects forty shots of `$67` — four damage each, and not one of
+the four ids this boss rewrites — by frame 3387, then fires every one of them
+walking north with Y held, at about ten percent. Holding fire from 3387 lets them
+survive the trip, so the fight starts with the boss on its **full 70** rather
+than on 54. The tail sweeps the lane in 300-frame legs instead of spinning on the
+spot. **70 → 44:** twenty-six damage against the recorded movie's sixteen, and
+the first number in this fight that came from aiming the experiment rather than
+from lengthening it.
+
+**Four of the boss's five untaken branches are now accounted for rather than
+outstanding.** Running `$80:CA30` backwards — it is a **word** table, and type/2
+indexes it rather than being the id — names every weapon each level places, and
+`--reach` says which are on the boss's side of the map:
+
+| weapon | object | reachable from the lane? |
+| --- | --- | --- |
+| `$5C` | starting inventory | yes, 150 shots |
+| `$67` | `$22` ×2 | yes, 40 shots at 4 |
+| `$61` | `$26` ×4 | yes, 20 shots — rewritten to `$60` |
+| `$5F` | `$06` (989,122) | **no** — solid, nearest reached ground 48 px off |
+| `$64` | `$1A` (369,1083) | **no** — solid, nothing within 40 px |
+| `$62` | `$16` (1243,505) | **no** — a sealed pocket |
+
+`boss_alt_cheap`, `boss_alt_dear` and `boss_no_damage` are one weapon between
+them: all three want `$62` or `$70`, `$62` is rewritten on a coin toss off the
+scheduler clock to `$5C` (1 damage) or `$5D` (**0**), and a dozen hits would take
+all three without a kill. `--reach` draws level 25's one `$62` in a five-by-three
+block of `o` walled on all four sides, with a one-cell neck two rows above it —
+exactly the shape the 2×2-clear box refuses on ground the game allows, so it was
+walked rather than assumed. `tools/fit_route.py` put the player on the lip in 15
+legs; **he goes in and stops at y=470**, from three different columns, which is
+the row the overlay draws `#`. Sixteen pixels short, and `$7E:1CD8` never leaves
+zero.
+
+`boss_remap_6f` is unreachable for a simpler reason: `$80:CA30`'s first fourteen
+entries are the weapon slots, `slot = id - $0C` and `weapon = $5C + slot`, so the
+pickup weapons run `$5C` to `$69` and stop. **No object in the game can hand a
+player `$6F`.**
+
+So `boss_died` is the one branch of the five an input could still close, and it
+is arithmetic rather than mystery: 390 damage of reachable ammunition against 70
+of health, at an accuracy the lane has not yet held above about a fifth across a
+whole load. What it wants is aim — a fitter that turns the player toward the boss
+between legs, the way `fit_route.py` re-plans between them — not a longer movie.
+
+**One tooling trap worth recording, because `docs/analysis-tools.md` warns about
+it and it caught me anyway:** `route`, `level`, `actors` and `spc` take the
+*record index*, so level 25 is `26`. Asked for `25` it answers about a 960×1408
+map, and the boss's own x reaches 1259 — a level whose actors are off its own
+edge is the shape that error makes.
+
+**3,931,989 calls checked across 42 movies, 0 diverged; branch coverage 184 of
+254, 70 untaken by every input, and the census is still empty** — from 3,674,068
+across 41. `movies/level25-lane.zmv` contributes 257,921 checked calls and 0
+declines, and it takes **no site the corpus did not already have**: all 70
+untaken names appear in its own never-reached list, which is what says the union
+did not move. A movie that adds a quarter of a million checked calls and no
+coverage is worth having anyway — it is a quarter of a million more chances for
+the port to disagree with the ROM — but it is not progress against the backlog,
+and the backlog is what the boss round was aimed at.
+
 ### The census named an address, and the input came before the port (2026-07-31)
 
 **`$81:E6E4` went onto the census with one decline and came off it ported, and

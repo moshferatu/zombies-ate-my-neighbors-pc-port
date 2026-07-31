@@ -3886,3 +3886,177 @@ the harness checks.
 scheduler passes** of `movies/level37-e6e4.zmv`, so its 192-cycle budget costs
 nothing. All forty-seven together find **no byte of live game state differing**
 on the same 5,989, and `-r none` is identical at all of them.
+
+## The stream of fire that was a wall
+
+**The previous round fired 596 shots at level 25's boss, did one point of damage,
+and concluded that the boss does not walk into a stream of fire. There was no
+stream of fire.** Every one of those shots died six pixels from the barrel.
+
+The measurement that says so takes one command. `movies/level25-heavy.zmv` ends
+with an eight-leg spin at (639..663, 561), and `--records` sampled every frame
+rather than every fourth — the fire rate is 12 frames and the old sampling was
+aliased against it — shows the whole life of a shot:
+
+```
+frame 6015    $1A52  $8003    665   559   $5C   $22    $0600  $81:FE0E
+frame 6016    $1A52  $8003    671   559   $5C   $22    $0600  $81:FE0E
+frame 6017    (gone)
+```
+
+Two frames, six pixels, and then nothing. That is not a shot missing a boss 200
+pixels away; it is `movies/level17.zmv`'s signature exactly — the six-pixel death
+that proved the creature there was in a sealed pen and not behind an uncut route.
+The player was pressed against a wall and shooting into it.
+
+**`--reach` says where the wall isn't.** `zamn_assets route --reach <rom> 26`
+puts a clean **408-pixel corridor at y=588**, running x=748 to x=1156, straight
+through the band the boss spends about 40% of its time in. The five failed
+experiments all stood at y≈561: twenty-seven pixels high, on the wrong side of
+the wall that bounds it.
+
+Twenty-seven pixels is the whole difference:
+
+| row the player fights on | where the walk ends | boss health 54 → |
+| --- | --- | --- |
+| y=577 | stuck at (759,577) | 54 |
+| **y=585** | (1207,585) | **46** |
+| y=593 | (1271,593) | 48 |
+| **y=601** | (1203,601) | **46** |
+| y=609 | (1271,609) | 51 |
+| y=617 | (1271,617) | 54 |
+
+Same gun, same movie, same boss. In the lane the player crosses the whole 408
+pixels and lands eight hits in about four hundred frames; a row up or two rows
+down it lands none at all.
+
+**It also explains the four zeroes.** The previous round parked and held Left,
+Right, Up and Down for 1,800 frames each and read four zeroes as evidence about
+the boss's pathing. Re-run with a gun that is not empty — and one press of **B**
+was needed, because the movie's `$67` runs dry at frame 5351 and 150 shots of
+`$5C` sit unused in slot 0 — they are still four zeroes, because all four
+directions walk the player into geometry and hold him there. `park-left` fires
+nothing for twenty frames at a stretch; `park-down` puts a shot 6 px and stops.
+The experiment never had a line of fire to measure.
+
+### The weapon that was spent before the fight
+
+`movies/level25-heavy.zmv` collects both `$22` objects — forty shots of `$67`, at
+four damage each and not one of the four ids the boss rewrites — and then fires
+every one of them walking north with Y held. The pickups land at frames 3308 and
+3387; the first shot goes at 3823 and the last at 5351, all of it in transit, all
+of it at about ten percent.
+
+Holding fire from 3387 and spending them in the lane instead is the same movie
+with the same route:
+
+| | boss health at the fight | damage done |
+| --- | --- | --- |
+| as recorded | 54 (16 already lost in transit) | 16 |
+| fire held to the lane | **70** | **26** |
+
+Twenty-six is not seventy, so `boss_died` is still untaken. But it is the first
+number in this fight that came from aiming the experiment rather than from
+lengthening it.
+
+### What the arena can actually hand you
+
+The reason twenty-six is where it stops is ammunition, and the census is short
+enough to write out. Running `$80:CA30` backwards — it is a **word** table, and
+type/2 indexes it rather than being the id — gives each of level 25's six weapon
+objects, and `--reach` says which of them are on the boss's side of the map:
+
+| weapon | object | where | reachable from the lane? |
+| --- | --- | --- | --- |
+| `$5C` | — | starting inventory | yes, 150 shots |
+| `$67` | `$22` ×2 | (1046,1045), (1110,1077) | yes, 40 shots, 4 damage |
+| `$61` | `$26` ×4 | (550,700), (700,650), (1081,288) ×2 | yes, 20 shots — but rewritten to `$60` |
+| `$5F` | `$06` | (989,122) | **no** — solid, nearest reached ground 48 px off |
+| `$64` | `$1A` | (369,1083) | **no** — solid, nothing reachable within 40 px |
+| `$62` | `$16` | (1243,505) | **no** — a sealed pocket |
+
+So the reachable arsenal is 390 damage of ammunition against 70 of health, which
+sounds ample and is not: at the fifth-or-so accuracy the lane gives, 390 buys
+about 78, and nothing in the corpus has yet held that accuracy across a whole
+load. `$5F` is the one that would settle it — 300 shots — and it is 48 pixels
+inside scenery, with the band above it drawn `o`: open ground the search can
+reach no more than the player can. The third sealed pen in the project, after
+level 17's creature and level 5's `$5D`.
+
+### The three sites the pocket holds
+
+`boss_alt_cheap`, `boss_alt_dear` and `boss_no_damage` are one weapon between
+them. All three need id `$62` or `$70` fired at this boss — `$62` is rewritten on
+`LDA $0020 : AND #$0001`, a coin toss off the scheduler clock, to `$5C` (1
+damage) or `$5D` (**0**), so a dozen hits takes all three sites at once and no
+kill is required. The boss exists on level 25 and nowhere else, and level 25's
+one `$62` is object `$16` at (1243,505).
+
+`--reach` draws it as a five-by-three block of `o` walled on all four sides:
+
+```
+  489 ################.###.
+  497 ########ooooo###.###.
+  505 ########ooooo###.###.     <- the $62 sits at the middle of this row
+  513 ########ooooo###.###.
+  521 ################.###.
+```
+
+The nearest reached cell is 48 px east. Two rows above it there is a neck —
+`o` at (1243,465) and (1243,473), one cell wide, blocked at 481 — and that is
+exactly the shape the 2×2-clear box refuses on ground the game itself allows, so
+it was worth walking rather than assuming. `tools/fit_route.py` put the player at
+(1237,452), on the lip of it, in 15 legs.
+
+**He goes in and stops at y=470.** Held Down from the lip, and from a column
+either side of it:
+
+| entered at | came to rest | `$62` collected |
+| --- | --- | --- |
+| x=1227 | (1227,470) | no |
+| x=1237 | (1237,470) | no |
+| x=1247 | (1247,470) | no |
+
+Three columns, one answer, and it is the row the overlay draws as `#`. The neck
+is real and it is a dead end: the player fits into the two `o` rows and the wall
+at 481 stops him, with the pocket and the weapon in it sixteen pixels further
+down. `$7E:1CD8` never leaves zero.
+
+**So the three sites have no input, and not for want of a route.** The only
+weapon that can take `boss_alt_cheap`, `boss_alt_dear` or `boss_no_damage` is
+walled off from the only level that has the boss. They join `boss_remap_6f`,
+which is unreachable for a different and simpler reason, and the seven
+`*_no_damage` sites: four of the boss's five untaken branches are now accounted
+for rather than merely outstanding, and `boss_died` is the one left that an input
+could still close.
+
+### And the fifth site, which no level can reach
+
+`boss_remap_6f` wants id `$6F`, and **no object in the game can hand a player
+that weapon.** `$80:CA30`'s 30 entries are ids `$0C`–`$19` and `$21`–`$30`; the
+first fourteen are the weapon slots, `slot = id - $0C` and `weapon = $5C + slot`,
+so the pickup weapons run `$5C` to `$69` and stop. `$6F` is above the top of the
+table. Whatever carries that id into `boss_9660_collide` — `enemy_cdde_collide`
+tallies the same `$6F` alongside `$64` — it is not something a player picks up,
+and no route or movie will change that. It belongs with the seven `*_no_damage`
+sites: named, understood, and not reachable by any input.
+
+### Corpus
+
+**Forty-seven routines. 3,931,989 calls checked across 42 movies, 0 diverged;
+branch coverage 184 of 254, 70 untaken by every input, and the census is still
+empty** -- from 3,674,068 across 41.
+
+**The whole of that gain is one movie and none of it is coverage.**
+`movies/level25-lane.zmv` contributes 257,921 checked calls and 0 declines, and
+takes no site the corpus did not already have: every one of the 70 untaken names
+appears in its own never-reached list, which is what says the union did not move
+rather than an assumption that it did not. Worth having anyway -- a quarter of a
+million more chances for the port to disagree with the ROM, on a boss handler
+that had one busy input and now has two -- but the backlog is unchanged, and the
+backlog is what the round was aimed at.
+
+What did change is the shape of that backlog. Four of `boss_9660_collide`'s five
+untaken branches are now closed questions rather than open ones: three of them
+want a weapon sealed behind a wall, and the fourth wants an id no object in the
+game can hand a player. `boss_died` is the one an input could still take.

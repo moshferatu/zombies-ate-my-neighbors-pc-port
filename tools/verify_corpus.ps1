@@ -53,6 +53,7 @@ $corpus = [ordered]@{
     "level25-2p.zmv"         = 4700
     "level25-boss.zmv"       = 7600
     "level25-heavy.zmv"      = 6700
+    "level25-lane.zmv"       = 9400
     "level29-fighting.zmv"   = 4400
     "level29-firstaid.zmv"   = 4700
     "level29-ice.zmv"        = 6000

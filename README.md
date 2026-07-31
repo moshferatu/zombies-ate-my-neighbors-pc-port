@@ -24,9 +24,9 @@ number generator** — and the coroutine problem is solved: a ported routine tha
 suspends inside the thread scheduler does it at an explicit resume point, with its
 parked state as plain copyable data. `zamn_cosim verify` checks the C against the
 ROM's own code on every call the game makes — 128 KB of WRAM plus registers — and
-passes **3,674,068 of 3,674,068 across the whole movie corpus**, thirteen levels
+passes **3,931,989 of 3,931,989 across the whole movie corpus**, thirteen levels
 deep, while `zamn_cosim run` substitutes the C for real and finds **no byte of live
-game state differing** on every movie but two. Across all forty-one movies the ROM
+game state differing** on every movie but two. Across all forty-two movies the ROM
 is **no longer asked to run a single routine the port does not have**.
 
 The port also reports **which of its own branches an input actually reached**,
@@ -61,7 +61,7 @@ instead of by the 65816, and the window title carries a live count of how many.
 `--stock` clears the enable mask to get the Phase 0 emulated baseline back, and
 F1 moves between the two at a frame boundary while the game is running.
 
-What this is *not* is a native game yet. Forty-six routines are ported; the
+What this is *not* is a native game yet. Forty-seven routines are ported; the
 main loop, the NMI handler, player movement, level and camera code and every
 enemy body still belong to the ROM under the emulated core. What runs natively
 are the leaves those call — the sprite/OAM pass, the depth sort, collision

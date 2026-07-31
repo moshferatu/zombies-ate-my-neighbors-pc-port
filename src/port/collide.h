@@ -1701,11 +1701,25 @@ bool actor_f1c2_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r)
 
 // Health, seeded to 70 at `$82:9561`.
 //
-// **And that number is why `boss_died` is untaken.** The player's basic shot is
-// id `$5C`, whose `ENEMY_DAMAGE_TABLE` entry is 1, and `BOSS_9660_DP_FLASH`
-// refuses every hit for the three passes after one lands — so a kill is about
-// seventy clean hits with a gap between each. The busiest input in the corpus
-// lands 45. What closes that site is a weapon or a route, not a longer movie.
+// **And that number is why `boss_died` is untaken**, though not for the reason
+// first written here. The original note priced a kill off the basic shot — id
+// `$5C`, `ENEMY_DAMAGE_TABLE` entry 1, so seventy clean hits — and concluded
+// that what closed the site was "a weapon or a route". The weapon exists: `$67`
+// costs 4 and is not one of the four ids rewritten below, so eighteen hits do
+// it, and level 25 places forty shots of it. **The route exists too, and it is
+// what the arithmetic kept missing.** A shot fired from the row
+// `movies/level25-heavy.zmv` fights on dies six pixels out against a wall; the
+// corridor the boss actually crosses is twenty-seven pixels lower, 408 px long,
+// and `zamn_assets route --reach <rom> 26` draws it. Fighting in it takes the
+// same forty shots from 16 damage to 26.
+//
+// What is left is arithmetic rather than mystery, and it is short. Of the six
+// weapons level 25 places, three cannot be picked up from the boss's own side
+// of the map — `$5F`'s 300 shots and `$64` sit in scenery, and `$62` is in a
+// sealed pocket — so the reachable arsenal is 150 `$5C`, 40 `$67` and 20 `$61`
+// (rewritten to `$60`), which is 390 damage of ammunition against 70 of health
+// at an accuracy no input has yet got above about a fifth. See `docs/cosim.md`,
+// "The stream of fire that was a wall".
 #define BOSS_9660_DP_HEALTH 0x3c
 // Where the raw id is parked, sign bit and all — and unlike every other copy of
 // this idea, something *reads* it: the death sequence hands it to `score_add`,
