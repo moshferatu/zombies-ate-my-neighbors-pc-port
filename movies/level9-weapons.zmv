@@ -1,0 +1,270 @@
+# Level 9, reached by password WBGR, and the first movie that fires three
+# different weapons at two different creatures.
+#
+# `movies/level9.zmv` was a probe: it held Y and walked a box, and every shot it
+# ever fired carried `$5C`. That is why the coverage table listed eight of
+# `enemy_d301_collide`'s branches and five of `enemy_cdde_collide`'s as untaken
+# -- neither creature had ever been hit by anything but the default gun, and
+# neither of them takes damage from it.
+#
+# What the per-level weapon table said (docs/cosim.md) is that level 9's own
+# object list holds three: type `$00` at (1150,650) is `$5C`, type `$02` at
+# (260,252) is `$5D` -- the ice weapon, and `CDDE_HIT_DAMAGE` -- and the two
+# type `$06` objects are `$5F`, which is the one id in reach that hurts
+# `$81:D301`. This movie collects the second and the third and spends them.
+#
+# The route is walked against walls rather than against the router. Level 9's
+# corridors are narrow and its actors get in the way, so a leg timed to end in
+# open ground ends somewhere different on a slower pass; every turn here is
+# taken *at* a wall, where holding the button longer changes nothing. The one
+# exception is the descent to the ice weapon, which is timed, and the one
+# back-off that finds the vertical corridor at x=348: walk east into the wall at
+# x=392, hold Left for exactly twenty frames, then go up.
+#
+# Phases:
+#   2700  walk west and north to the ice weapon at (260,252), 99 shots
+#   3730  back east, up, west and down to the $81:D301 creature at (107,315)
+#   4270  fire ice at it            -> d301_special, and the whole freeze family
+#   4510  B, then fire $5C at it    -> d301_shot_immune
+#   4830  north-west to the $06 object at (43,69), 300 shots of $5F
+#   5650  return to the same spot and fire $5F
+#                                   -> d301_died, d301_survived, d301_reseed,
+#                                      d301_no_reseed
+#   6430  B twice, back to the ice  (B is only read every other pass: presses
+#         closer together than about forty frames are dropped, which is why the
+#         two are sixty apart)
+#   6520  south and east to the $81:CDDE ground, arriving at (934,673)
+#   7280  60-frame legs with Y held -> cdde_survived, cdde_react_begin
+#
+# `cdde_killed_reacting` is still untaken and this movie says why: `$81:CC90`
+# arms the countdown at 4, and the flash lasts 30 frames and puts it back up to
+# 20 -- so finishing one *during* the flash is 21 hits in 30 frames, against a
+# fire rate of one shot every eight frames and about four hits a shot.
+#
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Right
+1408   -
+1416   Right
+1424   -
+1432   Right
+1440   -
+1448   Right
+1456   -
+1464   Right
+1472   -
+1480   Right
+1488   -
+1496   Down
+1504   -
+1512   Down
+1520   -
+1528   Down
+1536   -
+1544   A
+1552   -
+1560   Left
+1568   -
+1576   Left
+1584   -
+1592   Left
+1600   -
+1608   Up
+1616   -
+1624   Up
+1632   -
+1640   A
+1648   -
+1656   Left
+1664   -
+1672   Left
+1680   -
+1688   Left
+1696   -
+1704   Down
+1712   -
+1720   A
+1728   -
+1736   Right
+1744   -
+1752   Right
+1760   -
+1768   Down
+1776   -
+1784   A
+1792   -
+1800   Right
+1808   -
+1816   Right
+1824   -
+1832   Right
+1840   -
+1848   Right
+1856   -
+1864   Down
+1872   -
+1880   A
+1888   -
+2036   Start
+2046   -
+2066   Start
+2076   -
+2096   Start
+2106   -
+2126   Start
+2136   -
+2156   Start
+2166   -
+2186   Start
+2196   -
+2276   -
+2700   Left
+3240   Up
+3496   Right
+3590   Down
+3616   Left
+3690   -
+3710   B
+3722   -
+3730   Right
+3900   Left
+3920   Up
+4000   Left
+4140   Down
+4256   -
+4270   Right
+4273   Y
+4500   -
+4510   B
+4522   -
+4530   Y
+4750   -
+4830   Left
+4870   Up
+4902   Left
+5000   Up
+5090   Right
+5120   -
+5130   B
+5142   -
+5150   B
+5162   -
+5180   Left
+5200   Down
+5300   Right
+5360   Up
+5460   Left
+5520   Down
+5636   -
+5650   Right
+5653   Y
+6400   -
+6430   B
+6442   -
+6490   B
+6502   -
+6520   Down
+6800   Right
+7220   Up
+7240   -
+7280   Right+Y
+7340   Down+Y
+7400   Left+Y
+7460   Up+Y
+7520   Right+Y
+7580   Down+Y
+7640   Left+Y
+7700   Up+Y
+7760   Right+Y
+7820   Down+Y
+7880   Left+Y
+7940   Up+Y
+8000   Right+Y
+8060   Down+Y
+8120   Left+Y
+8180   Up+Y
+8240   Right+Y
+8300   Down+Y
+8360   Left+Y
+8420   Up+Y
+8480   Right+Y
+8540   Down+Y
+8600   Left+Y
+8660   Up+Y
+8720   Right+Y
+8780   Down+Y
+8840   Left+Y
+8900   -

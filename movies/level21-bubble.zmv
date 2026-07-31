@@ -1,0 +1,285 @@
+# Level 21, reached by password BXBS, and the movie that put two addresses on an
+# empty census and took them both off again.
+#
+# `movies/level21-spin.zmv` already stands next to the `$81:9B6B` creatures and
+# hits them 35 times. Every one of those hits carries `$5C`, and `$5C` is not the
+# id the two interesting branches want. Level 21's object list has the other one:
+# a type `$04` at (485,1340), which is inventory slot 2 and weapon **`$5E`**, the
+# bubble gun -- the id `enemy_9b6b_collide` counts at `$7E:1FDC` before handing
+# the creature to `enemy_bubble_react`.
+#
+# Getting there is a climb, and the route is anchored at walls the way
+# `movies/level9-weapons.zmv` is: north to the ceiling at y=2280, east to x=504,
+# north again to y=2112, west to the wall at x=242, and the shaft at x=364 is
+# entered by *backing off* -- hold Left for exactly seventy frames from the wall
+# at x=504.
+#
+# Three things this level does that no earlier movie had to deal with:
+#
+#   * **A pickup parks `$7E:1CBC` at `$000F` for about 460 frames** and the
+#     player can neither fire nor switch weapons until it clears. The B press
+#     that selects the bubble gun is at 4700 for that reason and not because
+#     anything is slow.
+#   * **The shaft at x=364 is one-way.** The player climbs through y=1438 going
+#     up and is stopped by it coming down, which is why this movie never returns
+#     south -- and does not need to, because there are three `$81:9B6B` creatures
+#     at (400,1220) and (308,1102), a hundred pixels from the weapon.
+#   * **Walking two tiles north of (404,1334) stops the player firing entirely.**
+#     Held `Up` from there reaches (404,1302) and no shot ever leaves; the ammo
+#     word does not move. So the fight is *taps*: three frames of a direction to
+#     turn, then Y held for thirty-seven, four times around.
+#
+# Phases:
+#   2700  north, east, north, west, back off twenty, north up the shaft
+#   4010  east to the type $04 object at (485,1340), 40 shots of $5E
+#   4700  B, once the pickup window has closed  -> $1CBC = 2
+#   4730  west to (404,1334), the last spot that can shoot
+#   4810  tap-and-fire, four directions, forty frames each
+#           -> d9b6b_hit, d9b6b_fatal_id, d9b6b_died, d9b6b_bubble_slot_0,
+#              bubble_splice
+#
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Right
+1408   -
+1416   Right
+1424   -
+1432   Right
+1440   -
+1448   Down
+1456   -
+1464   A
+1472   -
+1480   Left
+1488   -
+1496   Left
+1504   -
+1512   Left
+1520   -
+1528   Down
+1536   -
+1544   Down
+1552   -
+1560   Down
+1568   -
+1576   A
+1584   -
+1592   Right
+1600   -
+1608   Right
+1616   -
+1624   Right
+1632   -
+1640   Up
+1648   -
+1656   Up
+1664   -
+1672   Up
+1680   -
+1688   A
+1696   -
+1704   Down
+1712   -
+1720   Down
+1728   -
+1736   A
+1744   -
+1752   Right
+1760   -
+1768   Right
+1776   -
+1784   Right
+1792   -
+1800   Down
+1808   -
+1816   A
+1824   -
+1972   Start
+1982   -
+2002   Start
+2012   -
+2032   Start
+2042   -
+2062   Start
+2072   -
+2092   Start
+2102   -
+2122   Start
+2132   -
+2212   -
+2700   Right
+2719   Up
+3010   Right
+3130   Up
+3400   Left
+3470   Up
+4010   Right
+4270   -
+4700   B
+4712   -
+4730   Left
+4790   -
+4810   Up
+4813   Y
+4850   Right
+4853   Y
+4890   Down
+4893   Y
+4930   Left
+4933   Y
+4970   Up
+4973   Y
+5010   Right
+5013   Y
+5050   Down
+5053   Y
+5090   Left
+5093   Y
+5130   Up
+5133   Y
+5170   Right
+5173   Y
+5210   Down
+5213   Y
+5250   Left
+5253   Y
+5290   Up
+5293   Y
+5330   Right
+5333   Y
+5370   Down
+5373   Y
+5410   Left
+5413   Y
+5450   Up
+5453   Y
+5490   Right
+5493   Y
+5530   Down
+5533   Y
+5570   Left
+5573   Y
+5610   Up
+5613   Y
+5650   Right
+5653   Y
+5690   Down
+5693   Y
+5730   Left
+5733   Y
+5770   Up
+5773   Y
+5810   Right
+5813   Y
+5850   Down
+5853   Y
+5890   Left
+5893   Y
+5930   Up
+5933   Y
+5970   Right
+5973   Y
+6010   Down
+6013   Y
+6050   Left
+6053   Y
+6090   Up
+6093   Y
+6130   Right
+6133   Y
+6170   Down
+6173   Y
+6210   Left
+6213   Y
+6250   Up
+6253   Y
+6290   Right
+6293   Y
+6330   Down
+6333   Y
+6370   Left
+6373   Y
+6410   Up
+6413   Y
+6450   Right
+6453   Y
+6490   Down
+6493   Y
+6530   Left
+6533   Y
+6570   Up
+6573   Y
+6610   -

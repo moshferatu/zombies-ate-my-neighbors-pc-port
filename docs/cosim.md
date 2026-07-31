@@ -455,10 +455,22 @@ in `src/cosim/routines.c` that says what the registers meant on the way in and
 what the ROM leaves in them on the way out, citing the instruction that decides
 each one.
 
-Flags are opt-in: a shim declares which of N/Z/C it modelled, and `verify`
+Flags are opt-in: a shim declares which of N/Z/C/V it modelled, and `verify`
 compares exactly those. That keeps the claim as strong as the evidence and no
 stronger — and, as it turned out, makes an unmodelled flag a visible gap rather
 than an invisible one. A, X and Y work the same way, through a second mask.
+
+**V was added to that set by `run`, not by `verify`, and the asymmetry is worth
+recording.** Thirty-eight routines needed only N/Z/C, because a caller that
+branches on overflow is rare and none of them had one. `rng_next` (`$80:9D39`)
+does not have one either — what it has is an `ADC` whose overflow output survives
+the `RTL` into a *thread suspension*, where `thread_yield`'s `PHP` turns the flag
+into a byte of WRAM. `verify` cannot see that: it compares the flags a shim
+claims, and a flag nobody claims is a flag nobody looks at. The whole-program
+diff can, and did — `$7E:0DE8  stock $40, native $00`, one byte on two movies out
+of twenty-five, `$40` being exactly bit 6 of `P`. **An unclaimed output is
+invisible to the per-call diff by construction and visible to the whole-program
+one by accident**, which is the clearest argument yet for running both.
 
 Declining one is allowed, but it is a claim in itself, so a shim that declines
 has to name the instruction that makes the output dead. `actor_depth_sort` is
@@ -1901,3 +1913,1726 @@ which dies without subtracting anything), `monster_no_damage`, and
 The census that remains is level 29's: `$81:B41C` (163), `$81:CDDE` (112) and
 `$81:B592` (5). Three more handlers, on a level whose actors are a third kind
 again.
+
+## A routine that was checked and never called
+
+`monster_collide` above is the case that says why "the port passes every call"
+and "the port serves every call" are different sentences, and it took four
+rounds and a corpus runner to notice they had come apart.
+
+It was registered on its own entry PC for the reason `actor_collide_notify` and
+`player_collide` are: an enclosing routine that declines a dispatch never offers
+its callee anything, so a handler seen only through `thread_call_handler` would
+be checked on none of the calls that go somewhere else. Registered directly, it
+got all 1,138 of them and passed.
+
+**And `thread_call_handler`'s own dispatch list never had it.** The port's
+dispatcher is a chain of `entry == …_COLLIDE_ENTRY` tests and `$81:C4A6` was not
+among them, so every dispatch to the giant spider fell through to
+`handler_unported` and declined — 1,351 of 2,800 calls on
+`movies/level45-carried.zmv`, in the same run where the routine itself reported
+1,351 checked and 0 declined.
+
+Two mechanisms hid it, and both are ones this document argues for elsewhere:
+
+* **The census excludes the handlers the port has**, by address, so that a
+  decline *inside* `player_collide` names the jump-table entry rather than the
+  door it came through. `$81:C4A6` was on that exclusion list — correctly, as a
+  handler the port has — while not being on the dispatcher's. So the declines
+  were counted in the `decl.` column and never given a name, which is exactly
+  the state the census exists to prevent.
+* **A decline is not a failure.** Nothing goes red when the ROM runs a routine
+  itself; that is the whole design. The `decl.` column had been non-zero on the
+  level-45 movies for four rounds and read as ordinary.
+
+What found it was summing the columns across every movie at once
+(`tools/verify_corpus.ps1`) and asking why four movies declined thousands of
+calls while printing no census. Wiring the entry in takes
+`thread_call_handler` to 2,800 of 2,800 and the level-45 movies to no declines
+at all.
+
+The lesson is narrow and worth keeping: **a routine's own verdict says nothing
+about whether its callers reach it.** `verify` answers "does the port compute
+what the ROM computes"; only the `decl.` column, read against the census, answers
+"and does the port ever get asked".
+
+## A harness has no harness
+
+The instrument that says when the port is wrong is checked by nothing, and the
+one time that mattered its failure mode was to keep running and measure nothing.
+
+Registering the **thirty-third** routine made `verify` print an empty routine
+table and `0 calls checked` on every movie in the corpus. Not a divergence — a
+divergence is loud and names a byte. Not a decline either, which would at least
+have shown up in a column. `Cosim::enabled` was a `uint32_t` bitmask over the
+registry and `Cosim::stats` a fixed `CosimStat[32]`, so the 33rd routine shifted
+by 32 (undefined behaviour) and indexed one past the end of an array, and what
+came out the other side was a harness that examined nothing and said so only by
+the absence of numbers.
+
+Three things about it are worth keeping.
+
+**It was a limit nobody had written down as a limit.** `cosim_enable_all` even
+had `count >= 32 ? 0xffffffffu : …` — a line that had already noticed the
+boundary and handled it by clamping, which is exactly the shape of a bug that
+waits. Both are 64 now, and `cosim_init` **exits** rather than clamping:
+
+```
+error: 65 routines registered but COSIM_MAX_ROUTINES is 64 — widen
+       Cosim::enabled and Cosim::stats together, in cosim.h.
+```
+
+**Nothing measured before it is affected**, and that is checkable rather than
+hopeful: the break is at 33 and every total recorded in `PROGRESS.md` was taken
+at 31 routines or fewer. The corpus was re-run at 34 and again at 37 after the
+fix.
+
+**The general form is the interesting part.** This document argues throughout
+that an unclaimed output is an unchecked output and an untaken branch is an
+unverified branch. The same rule applies one level out: *a harness that reports
+nothing is indistinguishable from a harness with nothing to report*, and neither
+`verify` nor `run` had a way to tell those apart. `tools/verify_corpus.ps1` is
+what surfaced it — twenty-five movies printing `0` in the same column is a
+pattern one movie cannot show — and the guard above is what makes the next one
+say so directly.
+
+## Where `run`'s clock runs out
+
+`run` returns a substituted routine on a **fixed cycle budget** — the mean
+`verify` measured — and every number in this document until now was measured on
+a movie where that was close enough. `movies/level25.zmv` is the first one where
+it is not.
+
+The symptom is unambiguous and it is not a wrong answer. At pass 4371 the NMI
+frame counter at `$7E:0016` reads `$0F64` on the stock side and `$0F2F` on the
+native one: **fifty-three frames apart**. Everything else that differs is
+downstream of that — 1,910 bytes the stack rule cannot account for, in timers
+and scratch that are simply further along on one side than the other. The
+substituted frontend says it from the other end, and more legibly: `zamn` and
+`zamn_headless` produce **identical framebuffers for 3,950 frames of level 25
+and differ from 3,980**.
+
+Three things keep this in proportion.
+
+**It is not any one routine's bug.** Taking the level-25 boss handler back out of
+the dispatcher — so it declines exactly as it did before it was ported — makes
+`run` fail *worse* (2,148 bytes unaccounted against 1,910) and leaves the
+frontend diverging at the same frame. Porting a routine on this level moves the
+budget closer to the truth, not further from it.
+
+**It is the busiest level anyone has run.** `sprite_build_oam`'s measured cost
+spans 5,864 to 125,014 cycles across the corpus, and a single budget cannot be
+right for both ends of that. Every other movie stays inside the tolerance
+because its actor counts stay in the middle of the range.
+
+**`verify` is untouched by it.** That mode never substitutes anything: the ROM
+drives, the port is replayed over a snapshot, and the comparison is of results
+rather than of two clocks. Level 25 verifies 86,023 of 86,023. The failure is
+`run`'s, and `run` is the weaker of the two instruments by construction —
+see *What the diff forgives, and why*.
+
+What would fix it is a budget that is a function of the call rather than a
+constant, which is a change to `CosimRoutine` and a round of its own. What it
+does **not** threaten is Phase 4: a finished port owns its own main loop and does
+not have to impersonate an instruction stream on somebody else's clock.
+
+## The generator, and a flag the per-call diff could not see
+
+`$81:D301` was the last address in the census — three declines on level 9, the
+only thing in twenty-five movies the ROM still had to run. Porting it needed
+`$80:9D39` first, because the branch a survivor takes rolls a random number, and
+that turned out to be the more interesting half.
+
+### `$80:9D39` is twenty-two bytes and its carry is an argument
+
+```
+SEP #$20 : LDA $0024 : ROL $0024 : EOR $0024 : ROR $0024
+INC $0025 : ADC $0025 : BVC +3 : INC $0025
+STA $0024 : REP #$20 : AND #$00FF : RTL
+```
+
+An eight-bit shift register at `$0024`, stirred by a counter at `$0025`, with the
+answer zero-extended to a word. PLAN.md lists "faithful RNG replication" as one
+of the project's three top risks; the routine that carries it is smaller than
+`enemy_collide`'s ignore path.
+
+Three things about it are not obvious from the listing.
+
+**The caller's carry is an input.** `LDA` does not touch carry, so the `ROL`
+shifts in whatever flag the caller arrived with. That is not a rounding error to
+be tidied away: `enemy_d301_collide` reaches the generator on two paths whose
+carry differs — `enemy_survived_react` returns carry **set** from the splice and
+**clear** from the already-flashing guard — so the same creature draws from a
+different sequence depending on which one it took.
+
+**It is a byte generator.** `SEP #$20` makes the state, the arithmetic and the
+answer eight bits, and the `AND #$00FF` on the way out discards the accumulator's
+hidden high half. So the caller's A does not leak into the result, and every
+caller in the game reads it as 0..255 — `CMP #$0019`, `CMP #$0087`, `AND #$0003`.
+
+**It was worth registering rather than inlining**, for `score_add`'s reason: one
+actor body alone calls it from `$81:D04A`, `$81:D069` and `$81:D08B`, none of
+which is ported. `verify` offers the port **1,868 calls on level 9 and 3,722 on
+`movies/level45-carried.zmv`**, all of them from code nobody has written yet.
+
+### And then `run` found the flag `verify` was not looking at
+
+With the generator substituted, `verify` passed every call on every movie and
+`run` diverged — by **one byte, on two movies out of twenty-five**:
+
+```
+$7E:0DE8  stock $40, native $00   *** unexplained ***
+$7E:0D58  stock $41, native $01   *** unexplained ***   (level 29)
+```
+
+`$40` is bit 6 of `P`, which is **V**, and both addresses are inside a thread's
+stack. The `ADC` sets overflow; the port did not model it, so `native_publish`
+left the core's V as the caller's; and then `thread_yield`'s `PHP` parked the
+whole status byte on the suspended thread's stack, where the whole-program diff
+compares it as memory.
+
+**The asymmetry is the finding.** Flags are opt-in in this harness precisely so
+that a claim stays as strong as its evidence — and the cost of that design is
+that a flag nobody claims is a flag `verify` never compares. Thirty-eight
+routines had lived with N/Z/C because no caller of any of them branches on
+overflow; no caller of *this* one does either. What made V observable is not a
+branch, it is a suspension. So:
+
+* the per-call diff cannot see an unclaimed output **by construction**;
+* the whole-program diff can see it **by accident**, and only when the value
+  happens to be written to memory;
+* running both is what closed the gap, and `COSIM_FLAG_V` is now part of the
+  same opt-in mask as the other three, claimed by exactly one shim.
+
+With V published, level 9 and level 29 are clean again and `verify` checks the
+overflow flag on every one of the generator's calls — which is a stronger
+statement than the one that was true before the bug existed.
+
+### `$81:D301` itself, and a counter that finally has a reader
+
+The eighth copy of `$81:8888`, and the one worth having. Four earlier copies end
+a death with a bare decrement of a word on their own page instead of paying an
+award, and every one of those words is named for where it lives —
+`B41C_DP_COUNTER_0A`, `D9B6B_DP_COUNTER_26`, `D9063_DP_COUNTER_2E` — because
+nothing in reach reads them. Here the reader is eleven instructions away:
+
+```
+$81:D2AD  LDA $0C : BEQ <loop top>   ; zero: carry on
+          BPL $D2CE                  ; positive: leave, quietly
+          ; negative: LDX #$0200 : LDA $36 : BEQ : JSL score_add : ...
+```
+
+So `$0C` is a **three-way verdict** the handler writes and the body reads on its
+next pass, and the award this family "does not pay" is paid — `$0200` of it — by
+the actor's own main loop, out of the id the handler parked at `$36`. It is
+evidence about the other four rather than proof: different pages, different
+words, and `$81:B41C`'s has a second writer this one does not.
+
+Two more things it does that no sibling does. **It is immune to the ordinary
+weapon** — after masking, `CMP #$005C : BEQ` sends the player's basic shot, which
+is every hit anywhere in the corpus, straight to a `CLC : RTL` — and **`$FF` is
+how it is told to stop**, tested ahead of the family's `CMP #$005C` and answered
+with `INC $0C`, the positive verdict. That is the same id `actor_deeb_collide`
+latches on and the one `victim_a264_collide` calls `A264_ID_GIVE_UP_FF`: three
+unrelated actors reading `$FF` as "you are done here".
+
+**And that one id is all the corpus checks.** All three calls level 9 makes carry
+it. One branch of eight is diffed and seven are transcribed, which is the honest
+counterweight to the paragraphs above.
+
+### A list that wanted to be a field
+
+`guard_thread_call_handler` censuses the address a declined dispatch went to, and
+it has always had to exclude the handlers that decline *internally* — an id
+`enemy_collide` hands back is a decline one level down, and naming the door it
+came through would put a routine the port already has at the top of the work
+list. That exclusion was a list of four addresses, written when four handlers
+could decline. By this round eight could.
+
+Nothing would have reported the omission. The symptom is a census line naming a
+routine the port already has — which is the same shape as the bug that hid
+`monster_collide`'s missing dispatch for four rounds, and just as quiet.
+`thread_call_handler` now hands the address back in `ThreadCallResult::unported`,
+set only on the branch that does not recognise the handler at all, so the guard
+has one thing to test instead of a list to keep in step.
+
+### A movie that adds no coverage and proves something anyway
+
+`movies/level25-2p.zmv` is the input this document's *Coverage the movie does not
+have* section has been asking for since the level-45 round. `monster_death_award`
+ends `LDA $20 : AND #$8000 : ASL A : ROL A : ROL A : TAX : INC $1FD4,X`, a
+counter indexed by the side that landed the blow **already doubled**, and writing
+`1` there instead of `2` passed every call on every input for two rounds: every
+death in the corpus was player one's, and both spellings of zero are zero.
+
+The movie is level 25's password prefix with four Start presses on port 2 in the
+same player-select window, and two box walks mirrored so the players cover
+different ground. Julie does most of the killing — `score_slot_0` 6 against
+`score_slot_1` 18, and 00000300 / 00000900 on the two slots — and the
+perturbation now fails at **`$7E:1FD5`**, the byte *between* the two counters,
+which is exactly where an undoubled index lands.
+
+**The branch-coverage union does not move.** It is 139 of 219 with this movie and
+139 without: all 68 sites it takes were already taken by some other input, even
+though 68 is the highest any single input reaches. That is not a disappointment,
+it is the shape of the thing being measured. **A coverage table counts decisions
+the code makes, and the doubled index is not a decision** — it is a value that has
+only ever flowed through one branch one way. The port's two instruments answer
+"did the port agree with the ROM on the calls this movie made" and "which
+branches did any movie reach", and neither of them asks *which values* reached a
+branch. This is the second finding of that kind, after `enemy_cdde_collide`'s
+already-zero `STZ $22`, and the fix for both is the same: a second input that
+carries a different number down a path something has already walked.
+
+## The second weapon, and what `STZ $7E` was for
+
+Every input in this project fired the same gun. `player_collide`'s table, eight
+copies of `$81:8888`, `shot_collide` and `ENEMY_DAMAGE_TABLE` between them
+recognise more than twenty weapon ids, and **every shot in every movie carried
+`$5C`** — which is why `enemy_hit_special`, the branch each copy of the enemy
+subsystem keeps for ids `$5D` and `$5E`, had read zero since the day it was
+written.
+
+It cost four moves to fix. `zamn_assets actors <rom> 18` lists an object of type
+`$02` at (220,431) on level 17, sixty-four pixels from where the player starts;
+`$80:CA30` says type `$02` is collision id `$0D`, which is inventory slot 1; and
+B cycles the selection (`$80:EA63`). `zamn_assets route` walks there in ten cells
+— Left is blocked at x=242, so it is Left, Down, Left — and from then on
+`--records` shows every shot on screen reading `$5D` instead of `$5C`.
+
+### The routine behind it, and the store six rounds could not check
+
+`$81:847E` is `enemy_survived_react` a third time, with something in front of it:
+
+```
+INC $7E : LDA $7E : CMP #$0005 : BCS act : <CLC : RTL>
+act:  LDX $08 : LDA $0000,X : AND #$0010 : BNE <CLC : RTL>
+      TYA : ASL A : AND #$0000 : ROL A : ROL A   ; bit 15 of Y -> side
+      TXY : JSL $80:9D6A                          ; side -> score slot
+      INC $1FE0,X
+      <the three-word splice, resuming at $81:84D6>
+      SEC : RTL
+```
+
+**`$7E` is the word every death path in this file clears.** Eight copies of
+`$81:8888` end with `STZ $7E`, and every one of them carries a comment saying the
+store is transcribed rather than diffed because the word is already zero on every
+call the corpus makes — recorded as an honest gap four separate times, and once
+from the other direction when *adding* a store of zero that the ROM does not make
+turned out to be equally invisible. It was always zero because nothing had ever
+fired this weapon. `INC $7E` is the only instruction in the game that makes it
+non-zero, and the `STZ` is its reset.
+
+**And the weapon is identified off the ROM's own text.** `$81:849F  INC $1FE0,X`
+is the only writer of `$7E:1FE0`; the only reader is `$82:CA8C  LDA $1FE0 :
+CMP #$0028 : BCC`, on the end-of-level tally, deciding whether to draw the string
+at `$82:CABD` — which reads `MONSTER/FROZEN/....////BONUS?`. So `$5D` is the ice
+weapon, five hits freeze one thing, and forty freezes pay a bonus. Its
+`ENEMY_DAMAGE_TABLE` entry being **zero** stops being a curiosity: it never
+damages anything, which is the whole reason it needs a counter of its own.
+
+`$81:83C6`, the `$5E` twin, is the same splice **without** the counter, and the
+same tally one array over at `$7E:1FDC` — which `collide.h` already described
+from `$81:9B6B`'s declined branch, and whose string two lines up reads
+`MARTIAN/BUBBLED`. It is **not** ported: no input fires that weapon either, and a
+routine written ahead of its input is transcription.
+
+### Three copies of a splice, written once
+
+`$81:8506`, `$81:BAB3` and `$81:847E` end with the same ten instructions and
+differ only in the address they leave in the gap. The file had been carrying two
+copies of that in C since the level-45 round, with a note saying two copies of one
+routine are two things that can drift; a third would have made the point twice.
+`enemy_react_splice` is now the body and the three keep their own guards, which is
+the half of them that genuinely differs.
+
+### And a second player, again
+
+Eleven perturbations, ten caught on the one-player movie. The miss was
+`TYA : ASL A : ...` reading the side off **A** instead of **Y** — invisible,
+because with one player every collision id is positive and every wrong way of
+computing zero is also zero. It is `movies/level25-2p.zmv`'s finding one routine
+over, and the fix was the same shape: `movies/level17-2p-freeze.zmv` walks the
+same four moves with **player two**, whose shots read `$805D`, and the same
+perturbation fails at `$7E:1FE0`. The site pair `freeze_slot_0` / `freeze_slot_1`
+is what names the gap, and it takes one movie each to fill.
+
+**A note on the harness rather than the port.** That perturbation round also
+produced an hour of chasing a divergence that was not in the tree: the
+perturbation script restored the source and left the *binary* built from the
+perturbed one, so the next `verify` reported `$7E:067E: ROM $01, port $00` — the
+freeze counter, reset by a line that no longer existed. A tool that edits code to
+break it on purpose has to put the build back as well as the file.
+
+## The pass that is not only the scheduler's
+
+**`sprite_build_oam` had a wrong register for forty-one routines, and the reason
+nobody noticed is the sharpest statement of this project's own rule yet.**
+
+The routine ends:
+
+```
+$80:BDCC  JSL $80BEC9      ; actor_overlap_pass
+$80:BDD0  PLD
+$80:BDD1  PLB
+$80:BDD2  LDA $20
+$80:BDD5  AND #$0003
+$80:BDD7  TAX
+$80:BDD8  LDA $BDE6,X
+$80:BDDB  AND #$00FF
+$80:BDDE  STA $1B64
+$80:BDE1  SEC
+$80:BDE2  RTL
+```
+
+`LDA $20` is a **direct-page** read, and the `PLD` one instruction above it has
+already put the *caller's* page back — the `PEA $0000 : PLD` at the top of the
+routine covers everything else it does, but not this. The port read absolute
+`$0020`, which is `W_SCHED_TICK`, and that is right whenever the caller's page is
+zero.
+
+**It is not always zero, because the scheduler is not the only caller.** There are
+three `JSL $80BD1F` in the ROM. `$80:837C` is `scheduler_idle`, whose page is zero
+because `thread_yield` sets it there on the way past. The other two are `$82:DE03`
+and `$82:DE4B`, inside the alert `$82:DDA7` runs when the player comes near the
+actor whose handler is `actor_deeb_collide` — a thread, on its own page, driving the
+sprite pass itself between two `WAI`s. At the failing call the caller's `D` was
+`$0700` and `$7E:0720` held `$001B`, so the ROM's `X` came back `$0003` and the
+port's `$0000`.
+
+**And that difference reaches exactly one register.** All four entries of the table
+at `$80:BDE6` are `$80`, so the index it feeds changes nothing the routine writes:
+`$7E:1B64` gets `$0080` either way and so does `A`. 128 KB of WRAM agreed on the
+failing call. The wrong value escaped through **X** alone, and X is compared only
+because the shim claims it.
+
+That is the mirror image of the V-flag finding one round earlier. There, an output
+the shim did *not* claim was invisible to `verify` and only `run` caught it. Here,
+an output the shim *did* claim was the only thing standing between a long-standing
+bug and nobody ever knowing — and `run` would not have caught it, because it never
+becomes a byte of WRAM. **The two findings together are the argument for claiming
+every register you can justify:** the per-call diff sees exactly what it is told to
+look at, and the two failure modes sit on opposite sides of that line.
+
+The fix is one parameter. `sprite_build_oam(Wram*, const Rom*, uint16_t dp)`, with
+`dp` reaching precisely one instruction — the same way a collision handler takes the
+page its actor lives on.
+
+## The other second weapon
+
+**`$81:83C6` is ported, and with it the last of the three splices and the last
+branch the `$81:8888` family kept for an id no input produced.**
+
+### Which object gives which weapon, off the ROM
+
+`movies/level17-weapon.zmv` established that `$5D` is the ice weapon by finding an
+object whose collision id lands in an inventory slot and pressing B. Doing the same
+for `$5E` needed the mapping rather than a guess, and the ROM states it plainly.
+Each weapon has its own shot spawner and each spawner its own two-word
+collision-id table, one entry per player with bit 15 set on the second — so
+searching the ROM for `5E 00 5E 80` finds **one** address:
+
+| id | id table | | id | id table |
+| --- | --- | --- | --- | --- |
+| `$5C` | `$81:FEC3` | | `$60` | `$81:EB9E` |
+| `$5D` | `$81:FC0A` | | `$61` | `$81:EDAB` |
+| `$5E` | `$81:F4C6` | | `$62` | `$81:FACD`, `$81:FC0E` |
+| `$5F` | `$81:EA0C` | | `$63` | `$81:F6B8` |
+
+`$80:D219  LDA $1CBC,X : ASL A : TAY : LDA ($64),Y` is the selector, so `$1CBC` is
+an inventory **slot** and firing is gated on that slot's count. `$80:CA30` turns
+object type `$04` into collision id `$0E`, and `$80:F87B` puts id `$0E` in slot 2.
+Slot 0 is `$5C` and slot 1 is `$5D`, so slot 2 should be `$5E` — and `--records`
+says every shot on screen reads `$5E`, which is what makes it a measurement.
+
+Three password-reachable levels place a type-`$04` object. Level 21's is across
+water and the router walks into it and drowns, from either side; level 41's took 43
+legs of fitting and never arrived; **level 49's is 24 legs from the start**, and
+that is `movies/level49-bubble.zmv`.
+
+### What the walk found was not what it was aimed at
+
+The census came back with **`$81:AC92`, 290 declines** — a handler no input had
+reached, and nothing to do with the weapon. It is the **ninth copy of `$81:8888`**
+and the plainest re-spelling yet: health `$3C`, parked id `$3E`, `DEC $10` on
+death, `enemy_freeze` for `$5D`, `enemy_survived_react` for a survivor, and one
+comparison no other copy has. `$81:ACA8  CMP #$0067 : BEQ` sends id `$67` straight
+into the death tail with no subtraction — `MONSTER_HIT_FATAL`'s mechanism at a
+different id — and `ENEMY_DAMAGE_TABLE` says what that is worth: `$67` costs 4
+ordinarily, so this is a middling weapon being made lethal rather than a strong one
+waved through.
+
+**`$81:845E` is the round's oddity, and it came from the control.** Thirty-two
+bytes, four comparisons, three exits — and **no stores at all**. Every other
+handler in the project leaves at least one word of WRAM behind; this one writes
+nothing anywhere, so carry is not merely most of its interface, it is the whole of
+it. Ids `$03`, `$05` and `$06` — tested before the mask, so by name — park the
+thread; anything below `COLLIDE_ID_PLAYER` does not; `$5E` does not, picked out one
+comparison later; everything else at or above `COLLIDE_ID_PLAYER` does. It is the
+only place in the game where `$5E` is an exception rather than a branch of its own.
+It is also the first registry entry with `supported = NULL`: a routine that cannot
+decline and cannot write has nothing to try on a scratch copy.
+
+### `$81:83C6` is `enemy_survived_react` with one word changed
+
+Once `$81:AC92` was ported, its `$5E` branch put the address on the census, and the
+routine behind it is nine words of stack surgery:
+
+```
+$81:83C6  LDY $08 : LDA $0000,Y : AND #$0010 : BEQ +2 : <CLC : RTL>
+          LDA $000C,Y : TAX : LDA $11B0,X : PHA : DEC A : DEC A : DEC A
+          STA $11B0,X : PLX : TAY
+          <three words slid down three bytes>
+          LDA #$0081 : XBA : STA $0006,Y
+          LDA #$8404 : DEC A : STA $0005,Y
+          SEC : RTL
+```
+
+That is `$81:8506` with the guard's branch polarity flipped and `$8404` where the
+twin writes `$8542`. `enemy_react_splice` already existed for the other three, so
+what this cost was a guard and a constant.
+
+**PROGRESS.md described this routine wrongly two rounds ago**, and the bytes say
+so: "the same splice without the counter and with its tally one array over at
+`$7E:1FDC`". The first half is right and the second half belongs to a different
+routine — `$7E:1FDC` is incremented by `$81:9BA2`, the nine instructions
+`enemy_9b6b_collide`'s own `$5E` branch runs *before* it `JML`s here. `$81:83C6`
+has no counter, no tally and no side lookup at all.
+
+The naming chain is one link longer than `enemy_freeze`'s and it still closes.
+`$81:9BA2` increments `$7E:1FDC`; the end-of-level tally reads that word to decide
+whether to draw a string reading `MARTIAN/BUBBLED`; and `$81:8404`, what a
+spliced-in thread wakes up running, pushes the creature's metasprite and collision
+id and then writes `$0036` over `ACTOR_COLLIDE_ID`. So `$5E` is the **bubble**
+weapon, its damage-table entry is zero for the same reason `$5D`'s is, and what it
+does is replace what a creature *is* rather than take anything off it. One weapon
+freezes and one bubbles, and neither does a point of damage.
+
+### The control that stopped being one
+
+`movies/level49-corner.zmv` is the same walk with the B press removed, written to
+separate "new weapon" from "new route". It does that job — `$81:AC92` appears on
+both movies, so it is the route's finding, and `$81:845E` appears only on the
+control — and then it stops being a control. Holding Y for eighteen hundred frames
+**empties the squirt gun**, and the game moves the selection on by itself:
+`weapon_select_next` is called twice with `weapon_changed` both times and no B
+press anywhere in the file, and `--records` shows `$5C` up to about frame 4550 and
+`$5E` from 4560. So both movies fire the bubble gun; the control just arrives late,
+by a path no input had taken.
+
+Which is why `$81:83C6`'s three diffed calls are on the *control* and not on the
+movie built to reach it. By the time the bubble movie is firing `$5E` its walk is in
+the north-west corner and the `$81:AC92` creature is not; by the time the control is
+firing `$5E` the walk has come back. Three calls is a thin sample, all three of them
+the splice, and `bubble_already` — the guard's refusal — has never been reached.
+
+## Seven untaken sites that are not waiting for a movie
+
+**The coverage table's largest single family is `*_no_damage`, and most of it
+cannot be reached at all.** Nine copies of the enemy collision subsystem each
+mark "a hit whose damage-table entry is zero", and after thirty movies every one
+of the nine reads zero. The obvious reading is that the corpus is thin. It is
+not, and the ROM says so in two steps.
+
+**Step one: which ids have a zero entry.** `ENEMY_DAMAGE_TABLE` at `$81:8561` is
+32 words, indexed `(id - $5C) * 2`, and exactly seven of them are zero — `$5D`,
+`$5E`, `$71`, `$72`, `$73`, `$78` and `$7B`.
+
+**Step two: which ids a shot can carry.** Each weapon has its own spawner and
+each spawner a two-word collision-id table, one entry per player with bit 15 set
+on the second, so every id the player can put on the screen appears in the ROM as
+the four bytes `id 00 id 80`. Searching all 1 MB for that pattern and keeping the
+hits in bank `$81` — the shot bank — enumerates them:
+
+| id | table | | id | table |
+| --- | --- | --- | --- | --- |
+| `$5C` | `$81:FEC3` | | `$63` | `$81:F6B8` |
+| `$5D` | `$81:FC0A` | | `$64` | `$81:F6BC`, `$81:F6C0` |
+| `$5E` | `$81:F4C6` | | `$66` | `$81:F6C4` |
+| `$5F` | `$81:EA0C` | | `$67` | `$81:F6C8` |
+| `$60` | `$81:EB9E` | | `$68` | `$81:F918` |
+| `$61` | `$81:EDAB` | | `$6F` | `$81:F109` |
+| `$62` | `$81:FACD`, `$81:FC0E` | | | |
+
+`$71`, `$72`, `$73` and `$7B` are not there — and they are not anywhere else
+either: there is no `LDA #$0071`, `#$0072`, `#$0073` or `#$007B` in the whole
+ROM. `$78` has five immediate loads, none of them near shot code.
+
+**So the only zero-damage ids a shot can carry are `$5D` and `$5E`, and seven of
+the nine copies divert both of them before the subtraction.** `enemy_collide` and
+`enemy_b41c_collide` hand both to a routine of their own; `monster_collide`,
+`enemy_d7f6_collide`, `enemy_9b6b_collide` and `enemy_9063_collide` divert `$5D`
+and give `$5E` the death tail with no subtraction at all; `enemy_ac92_collide`
+sends one to `enemy_freeze` and the other to `enemy_bubble_react`. Nothing that
+reaches their `CMP` can arrive with a zero. **`enemy_no_damage`,
+`monster_no_damage`, `b41c_no_damage`, `d7f6_no_damage`, `d9b6b_no_damage`,
+`d9063_no_damage` and `dac92_no_damage` have no input, in the same sense
+`$80:FA26` has no movie.**
+
+**The two that are not in that list are the interesting half.**
+`enemy_d301_collide` has no `CMP #$005E` — the port's own comment on that line
+says so — so `$5E` falls through to the table and `d301_no_damage` is one bubble
+shot away. And `boss_9660_collide` *rewrites* ids before indexing: `$62` and `$70`
+become `$5C` or `$5D` on the scheduler clock's low bits, and the boss does not
+divert `$5D`, so half of that weapon's hits land on a zero entry. Both are
+reachable, and both need a weapon rather than a longer walk.
+
+**What this changes is the work list rather than the port.** An untaken site is
+an unverified branch either way; the difference is whether the answer is an input
+or an argument. Seven of these are an argument, and writing it down is what stops
+them being counted as outstanding work every round.
+
+## The weapon the boss rewrites, and a word nothing could read
+
+**`boss_remap_61` is taken.** `$82:9660` answers four collision ids as some other
+id and no input had ever produced one of them, so four of its eleven sites had
+read zero since the routine was written. `movies/level25-boss.zmv` produces one.
+
+### Which object gives which weapon, priced
+
+The chain from a level's object list to a number of damage is three ROM tables,
+and reading all three at once turns "try a weapon" into arithmetic:
+
+* `$80:CA30` — object type to collision id. Thirty entries; type `$26` is id `$11`.
+* `$80:F87B` — id to inventory slot, `slot = id - $0C`. Slot 5 is weapon `$61`.
+* `$80:F8AC` — **how much a pickup gives**, by slot. Slot 5 gives **five shots**.
+* `$81:8561` — `ENEMY_DAMAGE_TABLE`. `$61` costs 20, and the boss rewrites it to
+  `$60`, which costs 4.
+
+Level 25 places five weapon objects. Two of them the router refuses and it is
+right both times — the `$16` at (1243,505) is inside a display case and the `$06`
+at (989,122) is in a water feature, and the map picture says so. The other three
+are `$26`s, and there are four of them because two sit on the same pixel.
+
+**So the whole of level 25's heavy ammunition is twenty shots at four damage,
+against seventy health.** That is a ceiling of 80, which is why the movie
+collects all four objects rather than the two on the way.
+
+### Three things about the route that were not in any table
+
+**The start is the top of an escalator.** It pushes the player back up the moment
+Down is released, so the first leg has to be *held* through — and that is why
+`tools/fit_route.py` cannot fit this route. The fitter's loop is plan a leg,
+release, measure, re-plan; on an escalator it measures itself back where it
+started. Three runs, of 40, 53 and 48 legs, spent about forty minutes each and
+finished 0, 200 and 46 pixels from where they began. It is the first level in the
+corpus with an escalator on it.
+
+**The route planner's grid treats escalator tiles as walkable both ways**, which
+they are not: the southbound leg at x=937 stops dead at y=790, at the lip. Both
+of the planner's routes to the south of the level go through that tile.
+
+**And the level's own geometry is a better guide than either.** Rendering the map
+with `zamn_assets level` and marking the start and the target on it found the
+open corridor at x=1017 in about a minute; the whole route is nine hand-written
+legs, tuned against `--pos` four times.
+
+### The finding is a word, and neither instrument could see it
+
+The first run landed **47 damaging hits with no zero-damage hits among them** —
+`boss_hit` 47, `boss_survived` 47, `boss_no_damage` 0 — on a health word seeded
+once, to 70, by the only instruction in the ROM that writes it other than the
+handler's own store. Forty-seven hits of at least one damage each cannot leave 70
+health standing, and `verify` reported **0 diverged on all 9,138 calls**, so the
+port and the ROM agreed about every one of them. Something was wrong with a
+*reading*, and neither `--pos` nor `--records` could say what: the boss's health
+is not a position and it is not in the display list.
+
+`zamn_headless --watch <addr>[,first[,last[,step]]]` is the third instrument, and
+it prints a word only when it changes, so a whole movie costs ten lines:
+
+```
+watch $7E:083C  frame  3900  $0046 (70)
+watch $7E:083C  frame  4540  $0042 (66)
+watch $7E:083C  frame  4544  $003A (58)
+watch $7E:083C  frame  4548  $0032 (50)
+watch $7E:083C  frame  4552  $002E (46)
+watch $7E:083C  frame  5488  $002D (45)   ... 43, 42, 41, 40
+```
+
+Thirty damage, in about eleven hits, and the four-at-a-time drops in twelve
+frames at 4540 are the `$61` volley arriving. It is repeatable over all
+twenty-four thread pages at once — `--watch` may be given more than once, which
+is what ruled out the theory that a second creature was soaking the rest: on
+every other page the word at `+$3C` cycles 0/2/6/10/14 like an animation frame,
+and only `$7E:083C` starts at 70 and falls.
+
+**And the discrepancy was the report telling the truth about itself.** Under
+`verify` the harness runs the port once per *interception*, and `boss_9660` is
+reached both at its own entry PC and through `thread_call_handler`, which is
+ported — so its sites are counted twice per call. `cosim_coverage_report` says
+so, in a comment beside the numbers: *the hit counts are call-weighted rather
+than event-weighted*. Halved, 47 hits is 23 and 17 `$61` hits is 8 or 9, and
+8 × 4 = 32 against 30 measured. Everything agrees. **A "bug" that survives ten
+minutes of arithmetic and dies to reading the paragraph next to the number is
+worth writing down**, because the next reader of that table will do the same sum.
+
+### What would actually kill it
+
+Twenty `$61` shots is 80 damage against 70, so the kill exists and has almost no
+slack: this movie lands about nine of the twenty and the rest fly into the
+mall. Two things would close it — a route that presses B with the boss already
+adjacent and stays adjacent for the whole volley, or a **two-player** movie,
+which doubles the ammunition rather than the accuracy. Retiming the B press was
+tried twice, at 4300 and 4450, and both are *worse* (20 damage against 30): the
+volley is 600 frames long and moving it moves every monster on the level with it.
+`boss_died` stays untaken, and it is now priced rather than merely open.
+
+## One byte
+
+**The boss movie put an address back on a census that had been empty for three
+rounds, and the routine behind it is a single instruction.** `$81:EDAA`, 62
+declines on `movies/level25-boss.zmv` and none anywhere else:
+
+```
+$81:EDAA  6B              ; RTL
+$81:EDAB  61 00 61 80     ; weapon $61's two-player collision-id table
+$81:EDAF  23 EE 47 EE     ; and its two routine pointers
+```
+
+The address and the table are one weapon's shot code laid out back to back, which
+is what identifies it: **it is the `$61` shot's own collision handler**. The
+squirt gun's `$81:FE0E` reads the id it was hit by, expires on some and passes
+through others; this one is told about every collision it has and answers none of
+them. The thing it hit still reacts — the enemy handler runs on the other side of
+the pair, which is how `boss_remap_61` is reached at all — but the shot carries
+on. For a weapon that costs five shots a pickup, that is the right behaviour, and
+it is spelled as the absence of code.
+
+**The shim claims every output there is, and the emptiness is what licenses it.**
+`RTL` sets no flag and touches no register, so A, X, Y, N, Z, C **and V** come
+back exactly as they went in; all four flags are claimed and all four are checked
+on every call. Set that beside `$82:F1C2`, where the port read "no `CLC` and no
+`SEC`" as "carry comes back as the caller left it" and `verify` said
+`flag C: ROM 1, port 0` on the second call it ever saw — because a `CMP` on every
+path had already decided carry. **The absence of a carry instruction is not the
+absence of a carry output; the absence of every instruction is.** Those are
+different facts and only the second one supports this shim.
+
+It is also the second entry in the registry with no coverage site, after
+`actor_845e_collide`: a routine with no decision in it has no untaken branch.
+
+And the measured cost is worth one line. `verify` reports **42..82 cycles, mean
+43**, for an instruction that takes six — because what the harness measures is
+entry PC to return, and for a one-byte routine that is almost entirely the `JSL`
+and the bus. Every other `cycles` figure in the registry has the same
+constant folded into it; this is the entry where it is the whole number.
+
+## A column that says which routine owns which thing on the board
+
+**The census had been empty for four rounds, so the work list was the coverage
+table — and the coverage table names branches, not inputs.** `d7f6_hit`,
+`d9b6b_hit`, `d9063_survived`, `dac92_died` and thirty more say what the port has
+never been asked to do; none of them says *where, on which level*, the creature
+that would ask is standing. Every round before this one answered that by walking
+around and looking at the picture.
+
+`--records` answers it directly now. Each row already carried `ACTOR_REC_THREAD`,
+the byte offset of the thread that owns the record; two more columns turn that
+into a name:
+
+```
+    addr   flags   x     y      id   thread  page   handler
+    $1A66  $8009    581   707   $03   $26    $0800  $82:9660
+    $1A52  $8001    609   690   $61   $20    $0500  $81:EDAA
+    $1A3E  $8001    490   674   $04   $22    $0600  $81:C440
+```
+
+`$1300,X` and `$1330,X` are the collision handler that thread installed — the
+same pair `thread_call_handler` reads — so the display list stops being a list of
+things and becomes **a list of routines**, every one named by the entry address
+`src/port/collide.c` already uses. Pointed at `movies/level17.zmv` it finds
+`$81:D7F6` at (563,513) in thirty seconds, and `zamn_assets actors` then confirms
+it without running anything: actor 11, type `$23`, behavior `$81:D704` — the body
+that installs the handler, `$F2` bytes ahead of it in the same routine.
+
+**The page column had a bug in it that looked right, which is why it is worth a
+paragraph.** The obvious reading of the thread arrays is that slot `n` lives at
+`$0100 + n*$80`, and the first column of the real table agrees with it. It is a
+table, not a formula: `$80:82DE` reads `$0100 $0280 $0380 … $0C80` for the first
+thirteen slots and then starts again at `$0180 $0200 $0300 … $0C00` for the
+twelve after. The formula puts level 25's boss on `$0A80` where the ROM says
+`$0800`, so `--watch 0ABC` — aimed at its health with real care — printed a
+steady zero and looked exactly like a boss that never gets hurt. The column reads
+`$80:82DE` now, and the first thing it did after the fix was print `$0800` beside
+`$82:9660`.
+
+## The spin probe
+
+**`$81:9B6B` shows up 96 times in 126 sampled frames of level 21's display
+list — three copies alive at once for much of it — and every call it made took
+the ignore path.** Five of its seven
+sites had read zero since it was ported. The reason is visible only with the two
+position dumps side by side: **these things walk at the player**, and
+`movies/level21.zmv`'s legs are 180 frames long, so the player spends almost all
+of its time facing away from the crowd it is towing. A shot leaves in the
+direction you are facing; a chaser is behind it by construction.
+
+`tools/make_spin_probe.py` rewrites the tail as the same twelve directions at 30
+frames instead of 180. Four legs of 30 cancel out, so the player stays roughly
+where it started and faces all four directions once a second.
+`movies/level21-spin.zmv` is that, and it verifies **73,039 of 73,039 on the
+first run** with `d9b6b_hit` 35, `d9b6b_died` 35 and `f534_ignore` taken as well.
+
+**The two 35s being equal is the finding.** Every hit this creature takes kills
+it, so `d9b6b_survived` needs a weapon doing less than one point of damage — and
+the only damage-table entries below 1 are the zeroes, which are a different
+branch. It is the previous round's `*_no_damage` argument applied to a
+`*_survived` site: one more of the eighty-six untaken sites is now known to have
+no input rather than merely to lack one.
+
+**The spin is not universally better, and that is worth recording because the
+obvious next move is to run it everywhere.** On levels 5, 17 and 49 it adds
+nothing at all — it trades ground for aim, and a creature that does not come to
+you has to be walked to. `--leg 180 --lookback 30`, a box walk with a short
+reversed leg after each, is the compromise, and it does reach level 5's
+`$81:9063` where the pure spin does not.
+
+## What a level's object list says about which branches have an input
+
+The previous round proved seven `*_no_damage` sites unreachable by reading which
+ids a shot can carry. The same tables, run the other way, say for **every** level
+which weapons it can hand you — and so which `*_special`, `*_freeze` and
+`*_fatal_id` branches any input on that level could ever take:
+
+* `$80:CA30` — object type / 2 to collision id.
+* `slot = id - $0C`, weapon `$5C + slot` (`$80:F87B`).
+* `$80:F8AC` — shots per pickup, **by slot and in BCD**. Slot 11 reads `$0020`,
+  which is twenty and not thirty-two, and that difference is a boss's health.
+* `$81:8561` — `ENEMY_DAMAGE_TABLE`.
+
+| level | weapons its own object list gives | best ceiling |
+| --- | --- | --- |
+| 1 | `$5C`x2 (1 dmg, 198 shots), `$5D` (0, 99), `$62` (3, 20) | 198 |
+| 5 | `$5C`, `$5D`, `$5F`x3 (1, 900), `$61`x2 (20, 10), `$66`, `$67` | 900 |
+| 9 | `$5C`, `$5D` (0, 99), `$5F`x2 (1, 600) | 600 |
+| 13 | `$5C`x2, `$61`x2, `$62`, `$64` | 200 |
+| 17 | `$5C`x3, `$5D`, `$60` (4, 30), `$63` | 297 |
+| 21 | `$5D`, `$5E` (0, 40), `$61`x3, `$62`x2 | 300 |
+| 25 | `$5F`, `$61`x4 (20, 20), `$62`, `$64`, **`$67`x2 (4, 40)** | 400 |
+| 29 | `$5C`x2, `$5D`, `$5F`, `$60`, `$61`, `$62`x2 | 300 |
+| 33 | `$5C`, `$60`x2, `$62` | 240 |
+| 37 | `$5F`, `$60`, `$61`, `$62` | 300 |
+| 41 | `$5C`, `$5D`, `$5E`, `$5F`, `$61`, `$62`, `$66`x5 | 300 |
+| 45 | `$5C`, `$5F`, `$60`, `$61`x9 (20, 45), `$62`x2 | 900 |
+| 49 | `$5E` (0, 40), `$5F`, `$66` | 300 |
+| 53 | — none — | — |
+
+Read against the untaken list it turns four shrugs into work items and one into a
+closed question:
+
+* **`cdde_survived`, `cdde_killed_reacting` and `cdde_react_begin` have an
+  input.** `CDDE_HIT_DAMAGE` is `$5D` — the ice weapon is the only thing that
+  hurts that creature, which is why `cdde_unmatched` is taken and the damage path
+  is not — and level 9 places a type `$02` object at (260,252) worth 99 shots.
+  `$81:CDDE` shows up 204 times in 126 sampled frames of level 9's display list.
+* **`d9b6b_special` and `d9b6b_fatal_id` have an input**: level 21 places both
+  `$5D` and `$5E`, and `movies/level21-spin.zmv` already stands next to the
+  creature.
+* **`d7f6_special` and `d9063_special` have inputs** — levels 17 and 5 both place
+  `$5D` — though level 17's creature is behind a route nobody has walked.
+  *(Corrected later: level 17's creature is not behind a route, it is in a sealed
+  pen, and level 5's `$5D` is in one too. The `d7f6_special` input is level 29's.
+  See "Six branches nobody could reach, and the pen they were in".)*
+* **`dac92_freeze` does not.** It is id `$5D`, and level 49 places `$5E` and
+  nothing else that freezes. Unless `$81:AC92` turns up on another level, that
+  site belongs with the seven `*_no_damage`.
+
+## The boss, repriced — and still alive
+
+**The previous round's ceiling for level 25 was eighty damage against seventy
+health, and it was half the real number because it read one weapon.** The four
+`$26` objects give `$61`: five shots each, twenty damage rewritten by
+`boss_9660_collide` to `$60`'s four, so 20 × 4 = 80. Level 25's object list also
+holds **two type `$22` objects**, at (1046,1045) and (1110,1077) — id `$17`, slot
+11, weapon **`$67`**: twenty shots a pickup, four damage, and **not one of the
+four ids the boss rewrites**. Forty shots at four is a hundred and sixty.
+`movies/level25-heavy.zmv` collects both.
+
+**So the kill stopped being ammunition-limited and became accuracy-limited, and
+this round measured the accuracy.** Six attempts, all after the same detour:
+
+| attempt | damage done |
+| --- | --- |
+| 60-frame spin beside the boss | 16 (4 hits of 40 shots) |
+| the box walk `movies/level25-boss.zmv` uses, after the detour | 8 (12 with the squirt gun's four) |
+| park and hold Left + fire, 1,800 frames | 0 |
+| ...Right | 0 |
+| ...Up | 0 |
+| ...Down | 0 |
+
+Four zeroes in a row is the useful measurement. **This boss does not walk into a
+stream of fire.** It crosses the plaza at about ten pixels a frame against the
+player's two, and between two samples forty frames apart it can be four hundred
+pixels away. Every earlier theory about the fight assumed it would come to you,
+because in `movies/level25-boss.zmv` it did — and that movie's player was
+standing where it happened to be. `boss_died` stays untaken; what it needs is a
+fight, and the ammunition to lose most of is there now.
+
+**Two route findings came out of reaching the `$22` objects.** The south of the
+mall is behind a pair of escalators eight pixels apart — **down at x≈917, up at
+x≈945** — and each is one-way. `zamn_assets route` treats both as walkable both
+ways, so every route it plans out of the south climbs the down one; it is the
+second escalator its 2x2-clear grid has been wrong about and the first where the
+error strands the player. And a pickup wants the player within about ten pixels:
+passing at (1057,1032) with the object at (1046,1045) collects nothing, which is
+what `--watch 1CE2` is for.
+
+## Seventeen bytes, four weapons
+
+**`movies/level25-heavy.zmv` put an address back on a census that had been empty
+for four rounds**: `$81:F6A3`, 273 declines, and none anywhere else.
+
+```
+$81:F6A3  CMP #$0003 : BEQ $F6B4
+          CMP #$0004 : BEQ $F6B4
+          CMP #$0001 : BEQ $F6B4
+          CLC : RTL
+$81:F6B4  STA $3E : CLC : RTL
+```
+
+**It is identified off the bytes after it, the way `$81:EDAA` was, and the answer
+is different in kind.** `$81:F6B8` begins `63 00 63 80 | 64 00 64 80 | 64 00 64
+80 | 66 00 66 80 | 67 00 67 80` — five two-word collision-id tables in a row, and
+`$81:F6B8` is the address the weapon table already gives for id `$63`. So this is
+not one weapon's shot code but **four weapons sharing one handler**, the first
+address in the project reached by more than one weapon, and the reason its census
+entry is 273 declines rather than a handful: `$67` is only the first of the four
+to be fired.
+
+**Both exits clear carry**, so unlike `actor_845e_collide` — the same shape, three
+named ids and an else — this one can never park its thread. A shot that hits
+something keeps flying either way; what changes is whether the shot's *body* is
+told, and `$3E` is where it is told. That word has its seed and its readers in
+the same bank: `$81:F691  STZ $3E` clears it four instructions before
+`$81:F69B  LDA #$F6A3 : LDY #$0081 : JSL $80:8475` installs this very handler,
+and `$81:F3F6  LDA $3E : BNE` and `$81:F57B  LDA $3E : BEQ` are the body polling
+it on its next pass.
+
+**273 of 273 checked on the first run, 0 diverged**, and both sites taken:
+`f6a3_record` 35, `f6a3_ignore` 1,282.
+
+**Ten perturbations, eight caught**, and both misses are named by something the
+routine or the movie already says:
+
+| perturbation | what failed |
+| --- | --- |
+| store at `$3C` instead of `$3E` | `$7E:043C: ROM $00, port $03` |
+| store zero instead of the id | `$7E:043E: ROM $03, port $00` |
+| store on every id, guard dropped | `$7E:053E: ROM $00, port $05` |
+| carry set on the record path | `$7E:119E: ROM $01, port $00` |
+| A returned as the stored word | `A: ROM $0005, port $0000` |
+| Z clear on the record path | `flag Z: ROM 1, port 0` |
+| N set on the record path | `flag N: ROM 0, port 1` |
+| Z set on the ignore path | `flag Z: ROM 0, port 1` |
+| **drop the `CMP #$0001`** | *nothing* |
+| **ignore-path flags from the first `CMP` rather than the last** | *nothing* |
+
+The carry perturbation is the one worth reading twice: it fails at **`$7E:119E`,
+one level up**, because carry set is what `thread_call_handler` parks a thread
+on, and a shot whose thread parks stops moving. Nothing inside the routine
+disagrees at all.
+
+The first miss is the movie's: all 35 recorded hits carry `$03` or `$04`, and no
+collision in 6,700 frames hands this shot an id of `$01`. The second is
+arithmetic — `arg - $0001` and `arg - $0003` have the same sign for every id
+except `$0002`, and `$0001` and `$0003` both take the other branch — so that
+perturbation is invisible to anything except a collision with an id of exactly
+two. Both are gaps in the input rather than in the port, and both are cheap to
+state, which is the difference between a miss that is recorded and a miss that is
+an unknown.
+
+**And the harness's own perturbation script had a bug of exactly the kind it
+exists to find.** Two of these cases first came back MISSED because the three
+lines they matched — `r->n = false; r->z = true; return true;` — are identical in
+an earlier routine, and `str.replace(old, new, 1)` perturbed *that* one. A tool
+that breaks code on purpose has to be sure it broke the code it meant to; it
+asserts the pattern occurs exactly once now. The previous round's version of this
+lesson was that such a tool has to restore the *binary* as well as the file.
+
+**Corpus after this round: 2,906,006 calls checked across 33 movies, 0 diverged;
+branch coverage 159 of 242, 83 untaken by every input, census empty.** The two
+new sites are both taken on the movie that added them, and the three the round
+set out to take — `d9b6b_hit`, `d9b6b_died`, `f534_ignore` — are taken as well.
+
+### And what `run` says about the new movie
+
+`movies/level21-spin.zmv` substitutes cleanly. `movies/level25-heavy.zmv` does
+not: **1,959 bytes unaccounted for**, with `$7E:0016` — the NMI frame counter —
+reading `$0C` on the stock side against `$FF` on the native one. That is the
+clock-drift signature this file recorded for level 25 two rounds ago, and the
+control settles what it is not: run with **`-r shot_f6a3` alone**, so that the
+only substituted routine is the new one, and the two cores are **identical at all
+6,689 compared passes** over the same 6,700 frames. The 148-cycle budget costs
+nothing; it is the other forty-four returning on fixed budgets across a long busy
+level.
+
+**But the gap is not a property of level 25, which is how this round changed the
+diagnosis.** Three level-25 movies, all with all forty-five substituted:
+
+| movie | frames | `run` |
+| --- | --- | --- |
+| `movies/level25.zmv` | 4,700 | 1,910 bytes unaccounted — unchanged for three rounds |
+| `movies/level25-heavy.zmv` | 6,700 | 1,959 bytes unaccounted |
+| `movies/level25-boss.zmv` | 7,600 | **clean**, at most 57 bytes at once |
+
+The longest of the three is the one that holds. So "the busiest level anyone has
+run" is not the whole story: whatever the drift latches onto, one route through
+level 25 avoids it for 7,600 frames and two do not.
+
+## Spending the weapon table
+
+The previous round ended by turning `$80:CA30`, `$80:F8AC` and
+`ENEMY_DAMAGE_TABLE` into a per-level list of which weapons each password level
+can hand you, and reading it against the untaken sites. It named four work items
+and closed one. This round spent the first of them, and what came back was
+larger than the entry: **one movie, nine newly-taken sites**, and three more
+that the same table says have no input at all.
+
+The entry was one line:
+
+> `cdde_survived`, `cdde_killed_reacting` and `cdde_react_begin` have an input.
+> `CDDE_HIT_DAMAGE` is `$5D` — the ice weapon is the only thing that hurts that
+> creature — and level 9 places a type `$02` object at (260,252) worth 99 shots.
+
+`movies/level9-weapons.zmv` collects that object. It also collects the type `$06`
+object at (43,69), which is `$5F`, and it fires all three weapons the level owns
+at two different creatures, because once the player is standing next to
+`$81:D301` with two guns it costs eighty frames to fire the other one.
+
+### The index is the level plus one
+
+`zamn_assets actors <rom> 10` is level **9**. The tool takes the internal record
+index and the game's level numbering starts one below it, which the previous
+round used correctly and this file never wrote down — so the first thing this
+round did was dump `actors … 9`, find no type `$02` object anywhere in it, and
+spend twenty minutes preparing to correct a table that was right. The tell is the
+level-25 row: `actors … 26` has the four `$26` objects and the two `$22` objects
+at (1046,1045) and (1110,1077) that `movies/level25-heavy.zmv` actually picked
+up, and `actors … 25` has neither. The per-level weapon table in this file is
+built from the `+1` index and stands.
+
+### Walls, not stopwatches
+
+Every route in this project so far has been a list of timed legs: hold Left for
+540 frames, then Up for 214. That works on the levels it was invented on and it
+does not work on level 9, whose corridors are one tile wide and whose actors get
+in front of you. The same Up leg measured twice took the player to y=204 once and
+y=299 the next time, because on the second pass something was standing in it for
+sixty frames — and a leg that ends in the wrong place turns into a leg that walks
+into a wall for two hundred frames.
+
+**So this movie's turns are taken at walls.** Walk east until the corridor ends
+at x=392; walk north until the ceiling stops you at y=129; walk west until x=90;
+walk south until y=719. Each of those legs is held well past the point of
+arrival, so a slow pass and a fast pass end in the same pixel, and the leg after
+it starts from a known place instead of an estimated one. Nine of the movie's
+twelve travel legs are anchored that way and the whole route is reproducible.
+
+Two of them cannot be, and both are worth naming:
+
+* **The descent to the ice weapon is timed**, because the object is in the middle
+  of a corridor and there is no wall at (260,252). It is `Down` from y=207 for
+  twenty-six frames, and the tolerance is about eight pixels: turning at 3612
+  passes at (338,251) and collects nothing, turning at 3616 collects 99 shots.
+* **The vertical corridor at x≈348 has no anchor of its own**, so it gets one:
+  walk east into the wall at x=392, then hold `Left` for exactly twenty frames.
+  Sixteen frames leaves the player at x=360 and Up is blocked; twenty-four leaves
+  it at x=344 and Up is blocked. A back-off from a wall is a timed leg whose
+  start is exact, which is most of what makes timing work.
+
+### B is dropped if you press it twice too quickly
+
+Selecting a weapon costs two presses of B when the player owns three, and the
+second one does nothing if it comes too soon. Twelve frames down and twenty-eight
+frames apart: the first press is swallowed. Twelve down and forty-eight apart:
+still swallowed. **Sixty apart and every press lands** — `$1CBC` walks
+`$0003 → $0000 → $0001 → $0003` on the nose. This cost a phase of the movie,
+because the two presses meant to put the ice weapon back had put the ordinary one
+there instead and the fight that followed spent eighty shots of `$5C` on a
+creature that is immune to it.
+
+That is the second time a `--watch` on `$1CBC` has been the thing that found it,
+and the general shape is the one `--records` was built for: **the movie is an
+input and the game's state is the output, and checking the output is cheaper than
+reasoning about the input.**
+
+### What the three weapons bought
+
+`movies/level9-weapons.zmv`, 9,000 frames, **165,757 calls checked, 0 diverged,
+and 75 of 242 sites** — which ties `movies/level25-boss.zmv` for the most any
+single input has ever reached.
+
+| site | count | what it needed |
+| --- | --- | --- |
+| `d301_shot_immune` | 60 | the ordinary `$5C`, which this creature is the only one in the family to refuse |
+| `d301_special` | 380 | `$5D`, which leaves through `enemy_freeze` |
+| `d301_survived` | 125 | `$5F`, the one id in reach that costs it a point |
+| `d301_died` | 20 | ...enough of them |
+| `d301_reseed` | 20 | the 25-in-256 draw on a death |
+| `d301_no_reseed` | 105 | and the 231 that are not |
+| `cdde_survived` | 100 | `$5D` again, one page over |
+| `cdde_react_begin` | 5 | five of them in a row |
+| `d301_ignore` | 7,564 | anything below a shot — untaken only because nothing had walked up to this creature |
+
+**`$81:D301` was the routine with one branch of eight diffed and seven
+transcribed**, which this file said in the header when it was written. **Seven of
+the eight are diffed now**, on an input that hits the same creature with three
+different guns in ninety seconds, and the eighth is argued below to have no input
+at all. That is the largest single change in the standing of one routine since
+the census went empty.
+
+The freeze family came free: `freeze_counting`, `freeze_already`, `freeze_took`
+and `freeze_slot_0` all read on the ice phase, because `d301_special` *is* a tail
+call into `enemy_freeze` and 380 hits is more than enough to walk its counter
+past five.
+
+### Range is not the same as facing
+
+The `$5F` phase failed twice before it worked, and the failure is worth recording
+because it looks like a bug in the port and is not.
+
+Fired **up**, from (98,331) at a creature sitting at (107,315) — sixteen pixels
+away and nine to the side — two hundred and eighteen shots produced **zero**
+calls on the damage path. Fired **sideways**, from (90,313) at the same creature
+seventeen pixels to the right, the same weapon produced **145** — 125 it survived
+and 20 that killed it. The same gun, the same creature, a comparable distance.
+What `--records` shows in the failing case is a `$5F` record at (97,339) living for a single frame, which
+is a shot that spawned and expired without touching anything.
+
+The working shape is the one the ice phase had already found by accident, and the
+movie now uses it for both weapons: **stand level with the thing and fire along
+the row.** Whether the cause is the shot's hitbox, the spawn offset or the
+facing, the input that distinguishes them is one this project can now write, and
+the cheapest way to find it was to fire the same gun from two places.
+
+### Three sites that are not waiting for a movie
+
+The same table that produced the movie closes three more of the eighty-three, by
+the argument the seven `*_no_damage` sites established two rounds ago: *name the
+id the branch needs, then ask whether any reachable level places the object that
+carries it.*
+
+* **`d301_no_damage`** needs a hit whose damage-table entry is zero. Those ids are
+  `$5D`, `$5E`, `$71`, `$72` and `$73`; `$5D` never gets there, because
+  `d301_special` catches it two comparisons earlier. That leaves `$5E`, which is
+  object type `$04` — and type `$04` is placed on eight levels, of which
+  **21, 41 and 49** are password-reachable, and `$81:D301` appears in no sampled
+  frame of any of the six movies that walk them. It is level 9's creature, and
+  level 9 has no type `$04`.
+* **`cdde_counted`** needs `$64` or `$6F`. `$64` is object type `$1A`, which
+  level 9 does not place; `$6F` is not a pickup at all — no entry of `$80:CA30`
+  maps to its inventory slot, and the only thing in the ROM known to produce it
+  is `boss_9660_collide`'s remap.
+* **`cdde_killed_reacting`** needs the countdown to go under **while the flash is
+  still running**, and `enemy_cdde_react_begin` is what makes that hard: it sets
+  the timer to 30 frames and puts the countdown *back up* to 20. So it is
+  twenty-one damaging hits inside thirty frames, from the one weapon that damages
+  this creature.
+
+That last one is arithmetic rather than a shrug. `$7E:1CCE` drains eighty shots
+in 607 frames of held fire — **one shot every eight frames** — and one shot is
+worth about four hits — `$070C` walks `4 → 3 → 2 → 1 → 0` on four consecutive
+frames from a single hit and then stops. Thirty frames is therefore about
+**fifteen hits** at the very best, against twenty-one needed, and the shortfall is
+not the sort a better route closes.
+
+Two players would close it, and **no level in the game places two type `$02`
+objects** — all sixteen that place one place exactly one. Both players cannot
+carry the ice weapon, and no other id damages this creature. The site is
+one player's fire rate short of reachable, and there is no second player to
+borrow from.
+
+### Corpus, and what `run` says about a 9,000-frame movie
+
+**3,071,763 calls checked across 34 movies, 0 diverged; branch coverage 168 of
+242, 74 untaken by every input, census empty** — from 159 of 242 and 83. All
+165,757 of the new calls are the one movie's, and nine of the nine sites it added
+are ones no other input reaches.
+
+`zamn_cosim run` substitutes all forty-five routines on it and finds **no byte of
+live game state differing on any of 8,989 compared passes**, at most 79 bytes at
+once and every one of those inside the stacks or a declared scratch byte. That is
+worth one line in the level-25 clock-drift file: `movies/level9-weapons.zmv` is
+**9,000 frames**, longer than any movie in the corpus and 1,400 frames longer than
+`movies/level25-boss.zmv`, and it is clean. Length is not the trigger, which is
+the same thing the three level-25 movies said from the other direction.
+
+## The bubble gun, and two addresses on an empty census
+
+The previous section spent one entry off the weapon table and got nine sites.
+This one spends the next — *`d9b6b_special` and `d9b6b_fatal_id` have an input:
+level 21 places both `$5D` and `$5E`, and `movies/level21-spin.zmv` already
+stands next to the creature* — and gets something the table did not predict:
+**two addresses on a census that had been empty for five rounds, and both of them
+ported by the end of the round.**
+
+`movies/level21-bubble.zmv` climbs to the type `$04` object at (485,1340), which
+is inventory slot 2 and weapon **`$5E`**, and shoots the `$81:9B6B` creatures
+with it. It checks **128,558 calls, 0 diverged**, and takes `d9b6b_hit`,
+`d9b6b_fatal_id`, `d9b6b_died`, `d9b6b_bubble_slot_0`, `bubble_splice` and
+`f4ef_player`.
+
+### `$81:9BA2` — nine instructions, and four rounds of declining
+
+`enemy_9b6b_collide`'s `$5E` branch is the only one in the family that did not
+go straight to `enemy_bubble_react`, and this file has said why since the routine
+was written:
+
+```
+$81:9BA2  TYA : ASL A : AND #$0000 : ROL A : ROL A   ; bit 15 of Y -> side
+          JSL $80:9D6A                               ; side -> score slot
+          INC $1FDC,X
+          JML $81:83C6
+```
+
+Nine instructions in front of a routine the port already had. **They are the
+whole reason the branch declined**, and the reason nobody had ported them is
+that nothing could reach them: `$5E` is the bubble gun, no movie had ever fired
+it, and a routine with no input is a routine nobody can check. That is the shape
+this project keeps finding — the work item was never the code, it was the movie.
+
+**The counter names the weapon, and its threshold is not the one next door.**
+`$82:C9AE  LDA $1FDC : CMP #$000A : BCC` is the end-of-level screen deciding
+whether to draw `MARTIAN/BUBBLED`, exactly as `$82:CA8C  LDA $1FE0 : CMP #$0028
+: BCC` decides `MONSTER/FROZEN`. The two counters are two words apart because
+they are two lines of the same screen — but **ten bubbled martians earn the bonus
+and it takes forty frozen monsters**, which is the ROM's own estimate of which
+gun is scarcer. `$1FDE` is player 2's, at the same ten.
+
+### `$82:F4EF` — sixteen bytes, and the first handler outside bank `$81`
+
+The climb also put a second address on the census, and it is the smallest kind
+of find this project gets:
+
+```
+$82:F4EF  CMP #$0005 : BEQ $F4FB
+          CMP #$0006 : BEQ $F4FB
+          CLC : RTL
+$82:F4FB  STA $18 : CLC : RTL
+```
+
+`shot_f6a3_collide`'s shape one comparison shorter, and **the first ported
+handler that lives in bank `$82`** — the level and UI bank rather than the actor
+bank. What makes it worth a paragraph is *which* ids it names. `$05` and `$06`
+are the two players' own collision ids: the numbers every other handler in the
+game sees at the bottom of its `CMP #$005C` and throws away as "below a shot's".
+This one throws away everything else. No weapon, no monster and no shot can make
+it store anything; its entire collision interface is **"a player is standing on
+me"**.
+
+`$18` has its seed and its reader in the same routine, the pattern `$81:F6A3`'s
+`$3E` established last round: `$82:F3A7  STZ $18` is four instructions ahead of
+`$82:F3A9  LDA #$F4EF : LDY #$0082 : JSL $80:8475`, and `$82:F4C6  LDA $18 : BEQ
+$F4AF` is the body waiting to be stood on.
+
+**And it is never drawn.** `--records` does not show it in any sampled frame of
+the movie that calls it seven times, and neither does a sweep of all 24 live
+handler words at six different frames. Every other handler in the registry
+belongs to something with a display record; this one belongs to a trigger. That
+is also why `f4ef_ignore` is untaken and hard to aim at — with nothing on screen
+to stand next to, there is no way yet to make a shot fly over it.
+
+Its cycle budget is **118 exactly, on all seven calls** — the only entry in the
+registry with no spread at all, because sixteen bytes of comparisons have nothing
+to be slow about.
+
+### The route, and three things level 21 does that nothing else did
+
+The wall-anchoring from the previous section carried over and was needed again:
+north to the ceiling at y=2280, east to x=504, north to y=2112, west to the wall
+at x=242, and the shaft at x=364 entered by backing off the x=504 wall for
+exactly seventy frames. Three new obstacles came with it.
+
+**A pickup parks `$7E:1CBC` at `$000F` for about 460 frames.** With no buttons
+pressed at all the word goes `$0000 → $000F` on the frame the object is collected
+and back to `$0000` 462 frames later, and for that whole window the player can
+neither fire nor change weapons. Six presses of B spaced sixty frames apart put
+five of them inside it and only the last did anything, which reads exactly like
+the input-timing problem the previous section found — and is not. Wait for the
+window and one press is enough.
+
+**The shaft at x=364 is one-way.** The player climbs through y=1438 going up and
+is stopped dead by it coming down: `Down` held for a thousand frames does not
+move. That is the second one-way passage the project has found after level 25's
+escalators, and the first that would have stranded a movie — this one never
+returns south, and does not need to, because there are three `$81:9B6B` creatures
+at (400,1220) and (308,1102), a hundred pixels from the weapon.
+
+**Two tiles north of (404,1334) the player stops firing entirely.** Held `Up`
+from there reaches (404,1302) and no shot ever leaves — the ammo word does not
+move across 550 frames at step 1, with either weapon. It is not the weapon and it
+is not the ammo; it is the two tiles. So the fight is not a spin but a **tap**:
+three frames of a direction to turn, then `Y` held for thirty-seven, four times
+around. That is a third fight shape after the box walk and the spin, and the one
+to reach for when the ground the player can shoot from is a single tile.
+
+### Ten of thirteen, and the three misses have one cause
+
+| perturbation | result |
+| --- | --- |
+| `INC` the frozen counter instead of the bubbled one | CAUGHT |
+| no increment at all | CAUGHT |
+| increment by two | CAUGHT |
+| skip the splice | CAUGHT |
+| `$18` stored one word over | CAUGHT |
+| `$18` stored `arg + 1` | CAUGHT |
+| no store | CAUGHT |
+| carry set on the store path | CAUGHT |
+| Z clear on the store path | CAUGHT |
+| A rewritten on the way out | CAUGHT |
+| slot forced to the first player's | **MISSED** |
+| side taken from bit 14 instead of bit 15 | **MISSED** |
+| `$82:F4EF` answering `$05` only, not `$06` | **MISSED** |
+
+**All three misses are the same missing input**, which is the useful part: only
+one player ever fires in this movie, so the side arithmetic has one value to
+produce and the id `$06` never arrives. A two-player level-21 movie catches all
+three at once, and it is the same input `freeze_slot_1` has been waiting for
+since `enemy_freeze` was written. Three lines that cannot be checked by any input
+in the corpus, priced at one movie.
+
+### Corpus, and the count that changed shape
+
+**3,200,321 calls checked across 35 movies, 0 diverged; branch coverage 174 of
+246, 72 untaken by every input, census empty** — from 168 of 242 and 74.
+
+The denominator moved this round, which it has not done often, so the accounting
+is worth spelling out. Four sites the *whole corpus* had never taken are taken
+now: `d9b6b_fatal_id`, the one the movie was built for, and three the route
+collected on the way — `a264_flag_set` and `a264_give_up`, which are a victim
+being claimed and then giving up on level 21's long climb, and
+`player_hurt_alt_ignored`, which is the player being hit by the second kind of
+hit while already in the window for one. Four sites are new: `f4ef_player` and
+`d9b6b_bubble_slot_0` arrive taken, `f4ef_ignore` and `d9b6b_bubble_slot_1`
+arrive untaken and are both priced above.
+
+`zamn_cosim run` substitutes all forty-six routines on the movie and finds **no
+byte of live game state differing on any of 6,689 compared passes**, at most 39
+bytes at once and all of them in the stacks or a declared scratch byte.
+
+## The player who was never player one
+
+The previous section ends with three perturbations that no input could
+distinguish and one sentence saying what would: *a two-player level-21 movie*.
+That sentence was wrong about the movie and right about everything else. There
+is no such movie — the level cannot hold two players — and the input that
+catches all three is a **one-player game whose one player is player two**.
+
+No port code changed this round. What changed is that three lines of
+`src/port/collide.c` which had never been checked by anything are now checked,
+and the exercise that finds such lines is a script instead of a habit.
+
+### Why the obvious movie does not exist
+
+Two reasons, and the second is the one that closes the question rather than
+merely blocking the attempt.
+
+**The camera tethers the players to about 176 pixels of each other**, and level
+21's route north is a sequence of one-tile shafts. That number is measured rather
+than assumed: give both players the same inputs and the one that spawns thirty
+pixels east is stopped by a wall at the first shaft mouth while the other climbs,
+and the climber halts at `296,2648` with its partner at `326,2824` — 176 pixels
+apart, and neither moves again for four hundred frames.
+
+Aligning the second player and staggering the two by sixteen frames gets both
+into the shaft and fails differently. The one in front ends the run **stranded at
+`x=378` beside a shaft at `x=364`**, having reached the entrance at the same
+moment the one behind it did, while the one behind climbs away. Reading that as a
+shove is a reading and not a measurement — nothing here watched a push happen —
+but whatever the mechanism, two players cannot both use this staircase.
+
+**And level 21 places exactly one type `$04` object.** `zamn_assets actors <rom>
+22` lists nineteen objects and one of them is the bubble gun, at (485,1340). No
+arrangement of two players puts that weapon in the second one's hands, so even a
+route that solved the tether could not have produced a `$805E` shot.
+
+### Answer the player-select window on port 2 alone
+
+The password goes in on port 1 exactly as every password movie types it. Then
+the four Start presses that dismiss the player-select screen are aimed at
+**port 2 and nothing else**, and Zeke never joins. `--pos` prints `--,--` in the
+first column for all 6,700 frames; the player it does print is the page whose
+`$64` holds `$1CEC`, which is the second inventory base.
+
+That one change reaches further than the three lines it was aimed at, because
+the game asks *which player* in more places than anybody had listed:
+
+| what the game reads | with player one | here |
+| --- | --- | --- |
+| the player record's `ACTOR_COLLIDE_ID` | `$05` | `$06` |
+| a shot's collision id | `$5E` | `$805E` |
+| `score_slot`'s answer | slot 0 | slot 2 |
+| `$81:9BA2`'s side, `$81:8493`'s side | `$0000` | `$0002` |
+
+Every handler that names a player by id is offered the other one, for the whole
+movie, without two players ever having to be in the same place at the same time.
+`f4ef_player` reads 30 here and every one of them is `$06`; on
+`movies/level21-bubble.zmv` every one of them is `$05`, and that is the whole
+difference between a site being taken and a branch being checked.
+
+### Three frames, and each of them is thirty pixels
+
+Julie spawns at (288,2836) where Zeke spawns at (258,2836), so the route is
+`movies/level21-bubble.zmv`'s with three frames moved. What is worth recording is
+which three, because it is the same rule the level-9 round arrived at from the
+other direction: **a leg that ends at a wall survives a thirty-pixel offset and a
+leg that ends on a stopwatch does not.**
+
+* **2704, not 2719.** The opening leg east is four frames rather than nineteen.
+  Both end at `x=296`, the mouth of the first shaft, and every wall-anchored leg
+  after it keeps its original frame unchanged.
+* **3985, not 4010.** The climb up the shaft at `x=364` covers about 24 more
+  pixels in the same time — the two position traces are identical to the pixel
+  as far as `y=1814`, where Zeke is held up by something Julie walks past — so
+  the turn east comes 25 frames sooner. This one is worth a frame of care: at
+  3990 the player finishes at (463,1304) against a wall with the object
+  uncollected, and at 3985 it finishes at (504,1338) with `$7E:1CF0` reading
+  `$0040`. Twenty-five frames of slack, and five of tolerance inside them.
+* **`Down` held from 4790.** The tap-and-fire phase **drifts north about two
+  pixels a cycle** and above `y≈1310` the player stops firing altogether, which
+  is the same two-tile dead zone the previous section measured. Starting from
+  `y=1338` instead of `y=1336` was enough to lose 35 of the 40 shots. `Down`
+  held for the twenty frames before the first tap seats the player on the floor
+  at `y≈1372` and all forty land. An anchor is cheaper than a retimed fight.
+
+### Three misses, three catches
+
+| perturbation | result | where |
+| --- | --- | --- |
+| slot forced to the first player's | CAUGHT | `$7E:1FDC`: ROM `$00`, port `$01` |
+| side taken from bit 14 instead of bit 15 | CAUGHT | `$7E:1FDC`: ROM `$00`, port `$01` |
+| `$82:F4EF` answering `$05` only, not `$06` | CAUGHT | `$7E:0618`: ROM `$06`, port `$00` |
+
+The first two fail at the **same byte**, which is the clearest statement of what
+they were: `$7E:1FDC` is the *first* player's MARTIAN/BUBBLED tally and
+`$7E:1FDE` is the second's, so both wrong spellings of the side put the count in
+the wrong array slot, and with only Zeke on the board both wrong spellings and
+the right one landed in the same place. The third fails on the trigger's own
+direct page — `$7E:0618` is `$18` at page `$0600` — which also locates a routine
+that has never appeared in a display list.
+
+### The exercise is a script now
+
+`tools/perturb.py` runs the table above: apply one edit, rebuild, `verify`,
+restore, rebuild. It exists because the hand-done version acquired the same two
+bugs more than once, and both are now impossible rather than merely known:
+
+* **It anchors uniquely.** `str.replace(old, new, 1)` edits the first match in
+  the file, and this port has nine near-identical copies of the collision
+  subsystem — three lines that look unique inside one routine are verbatim the
+  same three lines four hundred lines above it. Two perturbations came back
+  MISSED that way, having broken a routine the movie never runs. Every anchor is
+  counted first and a count that is not one is a hard error with that sentence
+  in it.
+* **It restores the binary, not just the file.** An earlier round spent an hour
+  on a divergence in a correct tree, because the source had been put back and
+  `build/zamn_cosim.exe` had not. The rebuild is in a `finally`, so an
+  interrupted run leaves the tree and the binary agreeing too.
+* **And it restores the file byte for byte.** The edit is done in `bytes`,
+  because Python's text mode turns CRLF into LF on the way in and would write LF
+  back out — a whole-file reformat, from a tool whose entire job is to make one
+  line wrong and then put it back exactly. The check is a hash of the file before
+  and after, and it matches.
+
+```
+python tools/perturb.py --list
+python tools/perturb.py f4ef_p2_only
+```
+
+A perturbation is CAUGHT when `verify` exits non-zero, and the first divergence
+it printed is echoed beside the verdict, because *where* it failed is most of
+what the exercise is for.
+
+### Corpus
+
+**3,336,969 calls checked across 36 movies, 0 diverged; branch coverage 175 of
+246, 71 untaken by every input, and no census section on any movie** — from
+3,200,321 across 35 and 174 of 246.
+
+One site moved, and it is the one the movie was built for:
+`d9b6b_bubble_slot_1`. The new input adds no site of its own, because a port with
+no new routine in it has no new decision to mark, and it takes 70 of the 246 —
+every one of the other 69 already taken by something else. That is the same shape
+`movies/level25-2p.zmv` had and the same reading: **a coverage table counts
+decisions the code makes, and cannot count a value that flows through a decision
+only one way.** Which is exactly why the perturbations are run as well.
+
+`run` on the new movie substitutes all forty-six routines with **no byte of live
+game state differing on any of 6,689 compared passes**, and `-r none` — two stock
+cores, the control that has to pass before anything else here means anything — is
+**identical at all 6,689 of them**.
+
+## The neighbour nobody had rescued
+
+`victim_a264_collide` is `$83:A264`, and four of its eight branches had been
+taken by the corpus for several rounds: `a264_give_up`, `a264_ignore_low`,
+`a264_shot_clears` and `a264_flag_set`. The two that had not were the two that
+matter — `a264_claim_a` and `a264_claim_b`, the ids `$05` and `$06`, which is to
+say **nothing in the project had ever rescued one of these neighbours.** Both are
+taken now, by two movies that differ in one thing.
+
+### Finding the level, which is a question about data and not about play
+
+A neighbour's collision handler is not a property of the neighbour, it is a
+property of its *behaviour*, and the behaviour is in the level's own victim list.
+`zamn_assets actors <rom> <record>` prints it, so the search is a sweep of the
+data rather than a sweep of the movies:
+
+```
+for i in $(seq 1 56); do zamn_assets actors rom.sfc $i | sed -n '/victims/,/objects/p'; done
+```
+
+Nine of level 21's ten neighbours run `$83:993D`, `$83:9776`, `$83:9A89` or
+`$83:9EBE`. Victim list entry **3, at (237,2726), runs `$83:9699`** — and that is
+the one whose collisions arrive at `$83:A264`. The other direction confirms it:
+`--records` over sixteen movies, one per level, finds `$83:A264` on **level 21
+and nowhere else** — six sightings on that sweep, against fourteen of the
+ordinary `$83:A364` on the same movie.
+
+**And the handler is a state, not a label.** The same display record `$1A8E`, at
+the same coordinates, on page `$0600`, answers at `$83:A364` at frame 2700 and at
+`$83:A264` from 2740. So a level that places a `$83:9699` neighbour is necessary
+and not sufficient; the movie has to arrive while it is in the second state.
+
+### Seventy frames
+
+The corpus had reached this routine before. `movies/level21.zmv` — a probe with
+no route in it — walks the column at x=242 and passes (242,2728) at frame **3180**,
+which is one pixel-lane from the neighbour. The record disappears at **3110**.
+Seventy frames, and that is the whole difference between the two branches the
+corpus had and the two it did not: the probe takes `a264_give_up`, because the
+level got there first.
+
+The route that beats it is eighty frames long, and both of its legs end at a wall:
+
+```
+2700  Left ten frames from the spawn at (258,2836) to x=238
+2710  Up the open column, into the neighbour at (237,2726)
+```
+
+### What a claim writes, and the one word that differs
+
+`movies/level21-rescue.zmv` is that walk with a firing phase in the middle;
+`movies/level21-p2-rescue.zmv` is the same walk made by **the other player**,
+using the port-2-only trick the previous round found. Julie spawns thirty pixels
+east, so the opening leg is twenty-six frames rather than ten and the climb is
+unchanged — a leg that ends at a wall survives the offset.
+
+Each takes its own claim branch **25 times**, the same count, over the same
+twenty-five frames of overlap. Three words are written, and only the first of
+them differs:
+
+| | `$7E:0618` claimant | `$7E:061E` event | `$7E:605D` flag |
+|---|---|---|---|
+| `level21-rescue.zmv` (id `$05`) | `$0005` | `$0001` | `$80` |
+| `level21-p2-rescue.zmv` (id `$06`) | `$8000` | `$0001` | `$80` |
+
+The claimant is the three-byte saving `victim_collide` makes one page over:
+`$83:A293  LDA #$8000` falls into `$83:A296  STA $18`, and id `$05` enters at the
+`STA` with the id still in the accumulator. One side latches a bit and the other
+latches its own id, and `score_add` reads bit 15 of the word, so both spellings
+work.
+
+The flag byte is the same in both because it is not the player's, it is the
+neighbour's: `$81:8191` writes one byte of `$80` at `$7E:605A` indexed by the
+victim's own list index, and this neighbour is entry **3**, so the byte is
+`$7E:605D`. Watching the word at `$605C` shows it go `$0100` → `$8000`, which is
+that byte and its neighbour and not a word write.
+
+### A shot that cleared a give-up
+
+The first movie stands still for 136 frames before walking in, and the reason is
+in `$7E:061E`. Standing still lets the level catch up with the neighbour, and the
+event word goes to **`$0003` at frame 2776** — the give-up value. A shot lands at
+**2788** and `a264_shot_clears` puts it back to `$0000`. The claim at **2924**
+then writes `$0001` over that.
+
+The control is the same route without the firing phase: the player arrives at
+2788 and the word goes straight from `$0000` to `$0001`, never touching `$0003`.
+Reading the three transitions as *a shot undoing a give-up already in flight* is
+a reading and not a measurement — `a264_give_up` counts **0** on both movies, so
+the `$0003` was written by the neighbour's own unported behaviour and not by the
+handler — but the transitions themselves are measured, and this is the only
+handler in the project where a weapon shot *clears* a verdict instead of casting
+one.
+
+### Three perturbations, and the one that disagrees with itself
+
+| perturbation | `level21-rescue.zmv` | `level21-p2-rescue.zmv` |
+|---|---|---|
+| claimant latched `$8000` for both ids | **CAUGHT** `$7E:0618`: ROM `$05`, port `$00` | **MISSED** |
+| the claim writing the give-up event | **CAUGHT** `$7E:061E`: ROM `$01`, port `$03` | **CAUGHT** same bytes |
+| the flag byte written at index 0 | **CAUGHT** `$7E:605A`: ROM `$00`, port `$80` | **CAUGHT** same bytes |
+
+The first row is the point. **One broken line, two inputs, opposite verdicts** —
+because the perturbation makes the port do what the second player's claim already
+does correctly, so the movie where Julie rescues the neighbour cannot see it. That
+is the coverage report's whole thesis stated as a pair of verdicts rather than as
+a count, and it is why `tools/perturb.py` now takes a *list* of inputs per
+perturbation and runs all of them. A perturbation caught by everything it is
+offered says less than one caught by exactly one thing.
+
+`$7E:0618` is also where the previous round's `$82:F4EF` perturbation failed, on
+a different movie. It is `$18` on page `$0600`, and page `$0600` is a thread
+page — level 21's `$83:9699` neighbour is its tenant here, and something else was
+its tenant there. The address names an offset on a page, not a routine.
+
+### Corpus
+
+**3,429,877 calls checked across 38 movies, 0 diverged; branch coverage 177 of
+246, 69 untaken by every input, and no census section on any movie** — from
+3,336,969 across 36 and 175 of 246. The two movies add 46,885 and 46,023 calls,
+which is the whole difference to the digit.
+
+Neither movie adds a site of its own — no port code changed this round — and
+between them they take 58 of 246, two of which nothing else has. `run` substitutes
+all forty-six routines on both and finds **no byte of live game state differing on
+any of 2,989 compared passes** on either, and `-r none` is **identical at all
+2,989** on both.
+
+Two of the handler's eight branches are still untaken and each names its own
+problem. `a264_flag_none` wants a neighbour carrying `$FFFF` in the index word at
+`$06`, and nothing the corpus has put on the board carries one. `a264_ignore_named`
+wants id `$02` or id `$5E` — `$5E` is a bubble-gun shot from the first player, so
+it wants a level with both a `$83:9699` neighbour and a type `$04` object. Of the
+fourteen levels the corpus can start on — level 1 and the thirteen a password
+reaches — exactly two have both: level 21, where the gun is up a one-way shaft
+north of a neighbour that dies long before, and **level 41**, where the gun at
+(1044,599) is on the same side of the map as the neighbour at (1580,548). That is
+the next round's route, and it is not a cheap one: `tools/fit_route.py` stopped at
+(1242,861) after 43 legs, 500 pixels short.
+
+### What the level-41 route needed first, which nobody had checked
+
+That plan has a prerequisite the paragraph above does not mention, and it is not
+met. **`$83:A264` is a state and something has to put the neighbour into it.**
+`$83:9699`'s idle loop reads its event word and dispatches; the `$0002` arm is
+`$83:9712  JSR $A21D`, and `$83:A21D` swaps the record's sprite for `$0090`,
+installs `$83:A264` over `$83:A364`, and — if nothing answers — writes the give-up
+value itself at `$83:A23D  LDA #$0003 : STA $1E` and waits `$012C` frames before
+putting `$83:A364` back. So the window is bounded, it is entered from one
+place, and what opens it is a collision carrying `VICTIM_ID_EVENT_2` — id `$0B`,
+the one arm of `victim_collide` with an ending to itself. The only 16-bit
+immediate `$000B` in the actor bank is `$81:FD5B`, which puts a record on the
+board carrying it, reached from `$81:FCC9` behind a `JSL $80:AF2C` position test — which reads as *something walking onto the neighbour*, though
+that last step is a reading and the rest is not.
+
+`verify -c` counts that from the other end and the two levels disagree
+completely:
+
+| movie | `victim_event_2` |
+|---|---|
+| `movies/level21.zmv` | 5 |
+| `movies/level41.zmv` | **0** |
+
+and `--records` agrees over the whole 4,700 frames — level 41's neighbour at
+(1580,548) answers at `$83:A364` in every sampled frame from 2580 to 4440, on
+three different pages as the camera culls and rebuilds it, and never once at
+`$83:A264`. **The route was never the expensive part of that plan; the level
+simply never menaces this neighbour.** Level 21 does, and there the gun is up a
+one-way shaft 1,300 frames away from a window that lasts about 340. So
+`a264_ignore_named` is not a route waiting to be cut, and the `$5E` half of it is
+closed on every level a password reaches.
+
+## Six branches nobody could reach, and the pen they were in
+
+`enemy_d7f6_collide` is `$81:D7F6`, and **six of its seven branches had read zero
+on every input ever recorded.** The routine has been in the registry since the
+round that added `--records`, which found it on level 17 at (563,513) and
+identified the actor from the level list — actor 11, type `$23`, behaviour
+`$81:D704`. Four rounds of level-17 movies have walked past it since. Not one of
+them ever hit it, and the reason is not a route that nobody cut.
+
+### The instrument that says why a route does not exist
+
+`route` answers "no route" for two completely different reasons and had no way to
+say which: the goal is inside scenery, or the goal is open ground with nothing
+leading to it. `--reach` tints the map per grid cell — green reached, **orange
+open but cut off**, red solid — and level 17 is the case the distinction was
+missing for:
+
+```
+ 496 ######################################
+ 504 #######ooooooooo###ooooooooo##########
+ 512     ###ooooooooo###oGooooooo######
+ 520     ###ooooooooo###ooooooooo######
+ 528     ##############################
+```
+
+Two alcoves of clear floor, solid on all four sides, with the creature in the
+right-hand one and the level's objects at (521,505) and (577,505) inside them
+too. **The creature is not merely hard to reach; there is no way in.**
+
+Nor can it be shot over the wall. Standing at (586,462), the closest the player
+can get, `--records` shows the same thing every frame: a `$5C` record spawning at
+(586,462) with handler `$81:FE0E` and sitting at (586,468) with handler
+`$00:0000` on the next — a shot that travels six pixels and splashes — while the
+creature, which chases, sits at (586,504) with `d7f6_ignore` counting 90 and
+`d7f6_hit` counting nothing.
+
+### The level the handler was on all along
+
+The handler belongs to **behaviour `$81:D704`**, not to level 17, and the actor
+sweep finds six levels that place one: 5, 17, 29, 31, 49 and 54. Of the four a
+password reaches, `--reach` puts level 49's creature at (651,314) in a pen of
+exactly the same shape as level 17's, and level 29's is 430 cells from the spawn.
+**Level 5's, at (985,120), is standing in the open, 166 cells away.**
+
+`tools/fit_route.py` walks it in **nine legs on its first run with no hand-tuning
+at all**, arriving at (926,123) on frame 3208 — which is what an open level costs
+against the twenty-three and forty-three legs the maze levels have wanted. Then
+Right and Y held, and the fight is over in fifty frames.
+
+### One health, and the ratio that says the counts are right
+
+`--watch 050C` reads the creature's health word straight off its thread page:
+
+```
+  3140  $0001      seeded
+  3235  $0000      d7f6_survived   — 1 - 1 does not borrow, and 0 != 1
+  3246  $FFFF      d7f6_died
+  3258  $FFFE      and again
+  3270  $FFFD      and again
+```
+
+Four hits, one survivor, three deaths, and the squirt gun's damage-table entry is
+1. The report says `d7f6_hit` **20**, `d7f6_died` **15**, `d7f6_survived` **5**,
+against **4** calls on the routine's own row — five interceptions per call, which
+is the note beside the coverage table doing exactly what it says. The *ratio* is
+what is measured, and it is 1:3 in both places.
+
+`d7f6_survived` is the odd one of the three: with one health the only way a hit
+leaves this creature alive is a damage of exactly one, so "survived" here means
+the hit that took it to zero, and the kill is the hit after.
+
+### And two of the seven are now known to have no input
+
+Same argument as the seven `*_no_damage` sites: name the id the branch needs,
+then ask whether any reachable level places the object that carries it.
+
+* **`d7f6_fatal_id`** wants `$5E`, object type `$04`. Of the six levels that place
+  behaviour `$81:D704`, **exactly one also places a type `$04`** — level 49, at
+  (105,86) — and level 49's creature is the one in the pen. Levels 31 and 54 place
+  neither a `$04` nor a password.
+* **`d7f6_no_damage`** was already closed two rounds ago, for the reason all seven
+  of its family were: no shot can carry a zero-damage id here.
+
+**`d7f6_special` is the one that is still work rather than closed.** It wants
+`$5D`, object type `$02`, and four of the six levels place one — but level 5's is
+sealed in a basement pocket at (667,1068), level 17's is reachable next to a
+creature that is not, and level 31 has no password. **Level 29 has both**: the
+type `$02` at (756,730) is on a blocked cell with reachable ground beside it at
+x=751, and both of its `$81:D704` creatures route from the spawn.
+
+### Corpus
+
+**3,482,740 calls checked across 39 movies, 0 diverged; branch coverage 180 of
+246, 66 untaken by every input, and no census section on any movie** — from
+3,429,877 across 38 and 177 of 246. `movies/level5-d7f6.zmv` adds 52,863 calls,
+which is the whole difference, and it reaches 49 sites of which **exactly three
+are sites nothing else in the corpus has**: intersecting its untaken list with the
+corpus's names `d7f6_hit`, `d7f6_died` and `d7f6_survived` and nothing else. No
+port code changed this round. `run` substitutes all forty-six routines on it and
+finds **no byte of live game state differing on any of 3,489 compared passes**,
+and `-r none` is **identical at all 3,489**.

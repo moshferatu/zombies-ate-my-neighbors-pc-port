@@ -65,11 +65,24 @@
 // routine whose callers never branch on the result. `flags` says which ones the
 // shim actually modelled, and the report prints it, so the claim stays exactly
 // as strong as the evidence.
+// `V` is here for one routine and it was `run` that asked for it, not `verify`.
+// `$80:9D39`'s `ADC` is the only arithmetic in the port whose overflow output
+// outlives the call: the scheduler pushes `P` onto a thread's stack, so the bit
+// becomes a byte of WRAM that the whole-program diff compares. Substituting the
+// generator without publishing V left that byte differing by exactly `$40` —
+// once on level 9, once on level 29, on movies where every other byte matched.
 enum {
   COSIM_FLAG_N = 1 << 0,
   COSIM_FLAG_Z = 1 << 1,
   COSIM_FLAG_C = 1 << 2,
+  COSIM_FLAG_V = 1 << 3,
 };
+
+// How many routines the registry may hold. It is the width of `Cosim::enabled`
+// and the size of `Cosim::stats`, and `cosim_init` asserts the registry is
+// within it — see the note on `enabled` for what happened the one time nothing
+// did.
+#define COSIM_MAX_ROUTINES 64
 
 // A, X and Y are claimed by default and every leaf routine claims all three.
 // Resumable routines are why the mask exists.
@@ -91,8 +104,8 @@ enum {
 
 typedef struct {
   uint16_t a, x, y;
-  bool n, z, c;
-  uint8_t flags;  // which of N/Z/C the shim modelled; 0 = none
+  bool n, z, c, v;
+  uint8_t flags;  // which of N/Z/C/V the shim modelled; 0 = none
   uint8_t regs;   // which of A/X/Y the shim modelled; defaults to all three
   // Inputs only, and never diffed. Direct page and data bank are part of a
   // 65816 routine's calling convention exactly as A/X/Y are, and two routines
@@ -286,9 +299,17 @@ typedef struct {
   CosimPriv* priv;
 
   // Which routines are live, as a bitmask over the registry.
-  uint32_t enabled;
+  //
+  // **This was `uint32_t` and the registry outgrew it at the 33rd routine**, in
+  // the round that ported level 21's three handlers. The failure was not a
+  // divergence: `1u << 32` is undefined, `stats[32]` was one past the end of a
+  // fixed array, and what came out was `verify` reporting *zero* calls checked
+  // on every movie with an empty routine table — a harness that had stopped
+  // measuring rather than a port that had stopped working. Widened, and
+  // `COSIM_MAX_ROUTINES` is asserted at init so the next one says so.
+  uint64_t enabled;
 
-  CosimStat stats[32];
+  CosimStat stats[COSIM_MAX_ROUTINES];
   int stat_count;
 
   long frames;

@@ -108,6 +108,7 @@ add_library(zamn_port STATIC
   src/port/fade.c
   src/port/oam.c
   src/port/player.c
+  src/port/rng.c
   src/port/score.c
   src/port/sprite_cache.c
   src/port/thread.c)
@@ -128,7 +129,14 @@ add_executable(zamn_cosim src/cosim.c)
 target_link_libraries(zamn_cosim PRIVATE zamn_cosim_lib)
 
 # ---------------------------------------------------------------------------
-# Phase 0b: interactive SDL frontend (the playable baseline).
+# The interactive frontend — the playable build, with the port substituted in.
+#
+# It links `zamn_cosim_lib` rather than the bare core, which is the whole of
+# what makes it native: the same `COSIM_NATIVE` interception `zamn_cosim run`
+# uses, pointed at one live core with a keyboard on the front instead of at a
+# pair of cores driven by a movie. `--stock` gets the old Phase 0b baseline back
+# by clearing the enable mask. See the header comment in src/main_sdl.c.
+#
 # Uses a system SDL2 if present, otherwise fetches & builds SDL2 from source.
 # Disable with -DZAMN_BUILD_SDL=OFF (headless target always builds).
 # ---------------------------------------------------------------------------
@@ -150,8 +158,10 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
   endif()
 
   add_executable(zamn WIN32 src/main_sdl.c)
-  target_link_libraries(zamn PRIVATE snescore SDL2::SDL2 SDL2::SDL2main)
-  target_include_directories(zamn PRIVATE third_party/lakesnes/snes)
+  # zamn_cosim_lib pulls in snescore, zamn_port and zamn_analysis transitively:
+  # the core to run on, the port to substitute, and the movie reader for `-m`.
+  target_link_libraries(zamn PRIVATE zamn_cosim_lib SDL2::SDL2 SDL2::SDL2main)
+  target_include_directories(zamn PRIVATE third_party/lakesnes/snes third_party/stb)
   if(MSVC)
     target_compile_definitions(zamn PRIVATE _CRT_SECURE_NO_WARNINGS)
   endif()

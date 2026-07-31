@@ -81,6 +81,9 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_VBL_QUEUE_B_COUNT 0x000e
 #define W_NMI_FRAME_COUNTER 0x0016
 #define W_SCHED_TICK 0x0020  // 32-bit: $20 low, $22 high
+// The two bytes `$80:9D39` keeps its shift register and its clock in — named in
+// `port/rng.h`, where the routine that owns them is, and repeated here only
+// because every other global is.
 
 // --- Direct page: the APU command protocol ($80:CCC8) ---
 //

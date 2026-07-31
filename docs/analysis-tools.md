@@ -181,6 +181,36 @@ with one player, so nothing can tell it from a hard-coded index, and the player'
 collision handler only ever sees an id of its own side when two players touch.
 `movies/level1-2p.zmv` is the first movie that does either.
 
+### One player, and it is player two
+
+Two players is not the only way to produce the second player's collision id, and
+it is often the worse one. **Answer the player-select window on port 2 alone and
+Zeke never joins**: the password is typed on port 1 as usual, no Start reaches
+port 1 afterwards, and the game runs with a single player who is player *two*.
+`--pos` prints `--,--` in the first column for the whole movie.
+`movies/level21-p2-bubble.zmv` is that.
+
+What it buys is every place the game asks *which* player, at once and without
+anybody having to arrange a meeting: the player's record carries id `$06` rather
+than `$05`, so `$82:F4EF`, `$81:845E` and `victim_a264_collide` are all offered
+the id they had never seen; every shot leaves carrying `$805E` rather than `$5E`,
+so the side arithmetic in `enemy_freeze` and `enemy_9b6b_bubble` has a non-zero
+answer to compute; and `score_slot_1` is credited where `score_slot_0` always was.
+
+It is also the only thing that works on a level like 21. Two real players are
+**tethered to about 176 pixels of each other** by the shared camera, and this
+level's route north is a sequence of one-tile shafts: with both players walking
+it the leader is stopped dead by the screen while the follower is still climbing,
+and staggering them so both fit leaves whichever reaches the shaft mouth first
+stranded beside it. Three attempts died that way. And the level places exactly **one** type `$04`
+object, so no arrangement of two players ever puts the bubble gun in the second
+one's hands.
+
+The cost is the route: Julie spawns thirty pixels east of Zeke, so a route tuned
+for one is not a route for the other. Legs that end at walls survive it
+unchanged; timed legs do not, and the movie's header names the three frames that
+had to move.
+
 ### Which button fires
 
 **`Y`.** Not `B`. `movies/level1.zmv` and `movies/level1-rescue.zmv` were
@@ -256,6 +286,12 @@ build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" shot.png 4050 ^
    1880    312,585        --,--
 ```
 
+**That `2` is not a typo.** `zamn_assets actors`, `level`, `route` and `spc` all
+take the *record index*, and the game's level numbering is one below it: level 9
+is `actors <rom> 10`, level 17 is `18`, level 25 is `26`. Ask for `9` and you get
+a real level's real object list with none of the objects you were expecting,
+which reads exactly like a table somewhere being wrong.
+
 It is not inferred from the picture: it walks the 24 thread pages for the one
 whose `$64` holds `$1CCC` or `$1CEC` — the two inventory bases, the only field
 that names a player and nothing else — and reads the X and Y out of the display
@@ -276,11 +312,11 @@ build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" shot.png 3800 ^
 
 ```
   frame 3790 — display list, score 00000000 / 00000000
-    addr   flags   x     y      id   thread
-    $1A52  $8011    354  1142   $04   $20
-    $1AB6  $8001    222  1050   $05   $00
-    $1A7A  $8011    230  1050   $04   $24
-    $1AA2  $8001    230  1044   $30   $26
+    addr   flags   x     y      id   thread  page   handler
+    $1A52  $8011    354  1142   $04   $20    $0500  $81:C440
+    $1AB6  $8001    222  1050   $05   $00    $0100  $80:F7F7
+    $1A7A  $8011    230  1050   $04   $24    $0700  $81:8888
+    $1AA2  $8001    230  1044   $30   $26    $0800  $82:9660
 ```
 
 It walks `ACTOR_NEXT` from `$7E:1B5E` rather than the 32 slots, so a line here is
@@ -289,6 +325,23 @@ columns that matter are `x`, `y` and `id`: two records collide when both ids are
 non-zero, they differ, and the positions are within eight pixels
 (`$80:BEF1`). A record with a zero id is in the picture and not in the game; a
 thing with no record at all was never spawned.
+
+**The last two columns are what make it an aiming instrument rather than a
+census.** `thread` is the byte offset the record carries; `$7E:1300,X` and
+`$7E:1330,X` are the collision handler that thread installed — the pair
+`thread_call_handler` dispatches on — and `$80:82DE,X` is the direct page it runs
+on. So every line names a routine in `src/port/collide.c` by its entry address,
+and the coverage table's untaken sites become coordinates: `d7f6_hit` has never
+been taken, `$81:D7F6` is at (563,513) on level 17, and that took one command
+rather than an afternoon of screenshots. `zamn_assets actors` corroborates it
+statically — the actor's *behavior* address is the body that installs the
+handler, a couple of hundred bytes ahead of it in the same routine.
+
+The page is a **table lookup and not a formula**, which matters because the
+formula is wrong in a way that looks right: `$80:82DE` reads `$0100 $0280 $0380 …
+$0C80` for the first thirteen slots and then restarts at `$0180 $0200 $0300 …
+$0C00`. Computing `$0100 + slot/2 * $80` puts level 25's boss two pages off, and
+a `--watch` aimed at its health then prints a steady zero.
 
 The two score slots ride on the header line because they are the cheapest answer
 to the question a record dump raises — a bonus object vanished, and who got it.
@@ -406,6 +459,51 @@ patrolling that corridor takes it at frame 3466 whether or not the player is
 anywhere near, so it is a *deadline* rather than a race, and beating it needed the
 next section.
 
+### `--reach`, and the difference between a wall and a door
+
+"No route" is the search's most useful answer and its least informative one: it
+says the goal is not connected, and says nothing about *why*, which is the only
+part that decides what to do next. A goal inside scenery is a goal to give up on.
+A goal in open ground with no way into it is a door to find — or, sometimes, a
+creature nobody can ever hit.
+
+```
+build\zamn_assets.exe route "Zombies Ate My Neighbors.sfc" 18 284 420 563 513 --reach reach18.png
+```
+
+The map, tinted per grid cell: **green** reached, **orange** open but cut off from
+the start, **red** solid, yellow the start, blue the goal. Orange is the whole
+point of the picture. Level 17's `$81:D704` creature stands at (563,513) and the
+search says no route; what `--reach` says is that it stands in one of two sealed
+alcoves —
+
+```
+ 496 ######################################
+ 504 #######ooooooooo###ooooooooo##########
+ 512     ###ooooooooo###oGooooooo######
+ 520     ###ooooooooo###ooooooooo######
+ 528     ##############################
+```
+
+— eight cells of clear floor with solid on all four sides, and the objects the
+level puts at (521,505) and (577,505) are inside them too. That is not a route
+problem. **A shot fired from the walkable strip above dies six pixels out**, at
+the counter between: `--records` shows the same `$5C` record spawn at (586,462)
+with handler `$81:FE0E` and be at (586,468) with handler `$00:0000` on the next
+frame, over and over, while the creature sits at (586,504) untouched. Six of
+`enemy_d7f6_collide`'s seven branches had been untaken for four rounds for that
+reason and not for want of a movie.
+
+The same instrument then finds the input, because the handler belongs to
+*behaviour* `$81:D704` rather than to level 17, and six levels place one — 5, 17,
+29, 31, 49 and 54. Level 49's is in the same kind of pen. **Level 5's is standing
+in the open, 166 cells from the spawn**, which is `movies/level5-d7f6.zmv`.
+
+It is also what says an object is on a table rather than in a room. Level 29's
+type `$02` object at (756,730) has no route to it, and every cell around it does
+except the one it is on: the player stands at x=751 and the eight-pixel touch box
+does the rest.
+
 ### Where a fitted route's slack actually was
 
 The obvious guess is detours — re-planning after every leg means lane snapping
@@ -476,6 +574,169 @@ What a movie is *for* is measured by `zamn_cosim verify -c`, which reports which
 of the port's branches the movie was in a position to check at all. See
 `docs/cosim.md` → *Coverage the movie does not have*; that report is what
 `movies/level1-rescue.zmv` was written against.
+
+### Which level can reach a routine
+
+When the coverage report names an untaken branch, the first question is not how
+to route to it but **which level could contain it at all**, and that is a
+question about the ROM's data rather than about play. Two sweeps answer it from
+opposite ends and they should agree.
+
+*Downwards, from the level lists.* An actor's or neighbour's collision handler
+follows from its **behaviour address**, which is in the level record:
+
+```
+for i in $(seq 1 56); do build/zamn_assets.exe actors rom.sfc $i \
+    | sed -n '/victims/,/objects/p'; done
+```
+
+Level 21's ten neighbours run five different behaviours, and only entry 3 runs
+`$83:9699` — the one whose collisions arrive at `$83:A264` instead of the usual
+`$83:A364`. The same sweep over the *object* lists is how a movie aimed at a
+particular weapon id finds its level: a type `$04` is the bubble gun and its
+shots carry `$5E`.
+
+*Upwards, from the movies.* `--records` names the handler each thing on the board
+is running, so the corpus can be asked what it has actually seen:
+
+```
+build\zamn_headless.exe rom.sfc out.png 4700 -m movies\level21.zmv --records 300,4700,60
+```
+
+Piped through `grep -o '\$8[0-9A-F]:[0-9A-F]\{4\}$' | sort | uniq -c`, one movie
+per level, that is a census of which handlers thirteen levels have ever put in
+front of the player — about twenty seconds a movie. `$83:A264` appears on level
+21 and on no other — six sightings on that sweep, against fourteen of the
+ordinary `$83:A364` on the same movie.
+
+**Neither sweep is sufficient on its own, because a handler can be a state.** The
+same display record answers at `$83:A364` at frame 2700 and at `$83:A264` from
+2740, on the same page, at the same coordinates. So the level list says where a
+routine *can* be reached and the record census says when it *was*, and a movie
+needs both.
+
+**And a third question comes after both of them: can the player stand next to
+it.** The downward sweep over the *actor* lists is the same shape — `$81:D7F6`'s
+creature is behaviour `$81:D704`, and six levels place one — but where it lands
+is a set of coordinates, and coordinates are not yet an input. `route … --reach`
+is the filter: of the four such levels a password reaches, two put the creature
+in a sealed pen and one puts it 430 cells away, so the sweep's six candidates
+came down to one before a single frame was replayed. **A behaviour sweep that
+does not end in a reachability check will send you to a level you cannot fight
+on**, which is exactly the four rounds level 17 cost.
+
+### Facing the thing you are shooting at
+
+The nine `movies/levelN.zmv` probes all end with the same tail: hold Y and walk
+Right/Down/Left/Up for 180 frames each. It was written to make a level *run* and
+it did, producing a census of eleven unported handlers. What it cannot do is hit
+anything, and the coverage report says so in whole families at a time.
+
+The reason only shows up with `--pos` and `--records` side by side: a great many
+of this game's creatures **walk at the player**, and on a 180-frame leg the
+player spends nearly all of its time facing away from the crowd it is towing. A
+shot leaves in the direction you are facing, so a chaser is behind it by
+construction.
+
+```
+python tools\make_spin_probe.py movies\level21.zmv movies\level21-spin.zmv
+python tools\make_spin_probe.py movies\level5.zmv  probe.zmv --leg 180 --lookback 30
+```
+
+The first form is twelve legs of 30 frames instead of twelve of 180: four legs of
+30 cancel out, so the player stays roughly where it started and faces all four
+directions once a second. On level 21 that is the difference between 0 hits and
+35 in the same 2,100 frames.
+
+The second is the compromise for a level whose creatures do *not* come to you —
+each long leg followed by a short reversed one, so the player still covers ground
+but turns around often enough to shoot what is following it. **Neither is
+universally better**: the pure spin added nothing at all on levels 5, 17 and 49,
+because it trades ground for aim.
+
+### Routes that end at walls
+
+Every movie up to `movies/level9-weapons.zmv` is a list of timed legs — hold Left
+for 540 frames, then Up for 214 — and on levels 1, 25 and 45 that is fine.
+Level 9 is where it stops being fine. Its corridors are one tile wide, its
+actors stand in them, and **the same leg measured twice can end 95 pixels
+apart**: an `Up` leg that reached y=204 on one pass reached y=299 on the next,
+because that time something was in the way for sixty frames. Every leg after it
+then starts from the wrong place, and the movie walks into a wall for the rest
+of its length.
+
+The fix is to stop timing arrivals and start timing *departures*. Hold each leg
+well past the point where the player gets there and let geometry stop it: east
+to the wall at x=392, north to the ceiling at y=129, west to x=90, south to
+y=719. A slow pass and a fast pass end in the same pixel, so the leg after it
+starts from a known one. Nine of that movie's twelve travel legs are anchored
+that way.
+
+Two things it does not fix, both of which have a workaround:
+
+* **An object in the middle of a corridor has no wall to stop at.** That leg
+  stays timed, and the tolerance is about ten pixels — turning down at frame
+  3612 passes the ice weapon at (338,251) and collects nothing, turning at 3616
+  collects 99 shots. `--watch` on the inventory slot (`$7E:1CCC + 2*slot`) is
+  how you tell those two apart without looking at a picture.
+* **A gap in a wall has no anchor of its own.** Give it one by *backing off* a
+  wall that does: walk east into x=392, then hold `Left` for exactly twenty
+  frames to arrive at x=352. Sixteen frames stops at x=360 and twenty-four at
+  x=344, and `Up` is blocked at both. A back-off is still a timed leg, but its
+  start is exact, which is most of what makes timing work.
+
+**And a wall is the best place to restart the *fitter*, not just to end a leg.**
+`tools/fit_route.py` nudges sideways when a leg makes no progress at all, and the
+nudge was one fixed length: 14 frames, 28 pixels, enough to undo a leg that
+snapped one lane the wrong way. Level 29 has a chicane it cannot undo — at
+(773,461) the way west is a 56-pixel detour south — and the fitter spent **41
+legs** stepping 28 pixels down, 28 back up, and asking the same blocked question
+again. Walking on by hand to the wall at (721,591), 130 pixels away, cut the same
+route from 277 cells to 147 and it fitted without a thrash.
+
+So `STUCK_NUDGE` is `(14, 28, 56)` now, tried shortest first, which is the same
+fix without the hand-walking. It reproduces the level-5 route byte for byte —
+nine legs, same frames — because a route that never gets stuck never reaches it.
+
+### A pickup locks the player out for 460 frames
+
+Collecting a weapon parks `$7E:1CBC` at `$000F` — not a slot index; the array is
+fourteen entries — and puts it back about **462 frames** later. That window is
+visible with no buttons pressed at all, and for its whole length the player can
+neither fire nor cycle weapons. Six presses of B sixty frames apart, aimed at
+selecting the thing that was just collected, put five of them inside the window
+and only the last did anything.
+
+It looks exactly like the dropped-press problem above and is a different thing.
+The difference is that this one has a tell: watch `$7E:1CBC` with **no** input at
+all and the `$000F` shows up anyway.
+
+### Two more things that stop a movie without looking like it
+
+**Some passages are one-way.** Level 21's shaft at x=364 is climbed through
+y=1438 and refuses to be descended through it — `Down` held for a thousand frames
+does not move the player a pixel. Level 25's south escalators are the same shape.
+Neither shows up in `zamn_assets route`, whose grid is symmetric, so a route
+planned out of a place you climbed into can be unwalkable in a way no tool will
+warn about. Walk the return leg before building the movie around it.
+
+**And some ground cannot be shot from.** Two tiles north of (404,1334) on level
+21 the player stops firing entirely: `Y` held for 550 frames moves neither
+weapon's counter, with either weapon selected. The fix is not to stand there —
+and the fight shape that comes out of it is the **tap**: three frames of a
+direction to turn, then `Y` held for thirty-seven, four times around. It faces
+all four ways like the spin while staying inside one tile, which is what to reach
+for when the ground you can shoot from is that small.
+
+### B is dropped if you press it twice too quickly
+
+`$80:EA63` — the search for the next non-empty inventory slot, which is what B
+does — will not run twice in quick succession. With B held for twelve frames,
+presses **28 and 48 frames apart both lose one**, and presses **60 frames apart
+all land**: `$7E:1CBC` walks `$0003 → $0000 → $0001 → $0003` cleanly. A movie
+that needs two presses to reach the third weapon and spaces them by 40 ends up
+holding the first, which looks nothing like an input-timing problem from the
+coverage report — it looks like a fight in the wrong place. Watch `$7E:1CBC`.
 
 ## Regenerating everything
 

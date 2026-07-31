@@ -1,0 +1,172 @@
+# Level 37, reached by password KZVJ, then a box walked with fire held.
+#
+# **This is a probe rather than a route.** Fifteen of the sixteen movies before
+# these were aimed at something -- an object, a victim, a branch the coverage
+# report had named -- and every one of them cost a round of route-finding. What
+# these nine are for is the other half of the work: the decline census had gone
+# empty, which meant no input the project had reached a routine the port did not
+# have, and the only way to find the next routine was to make the game run code
+# nobody had run yet. Passwords reach thirteen levels; the corpus had five.
+#
+# The tail is deliberately not a route. It holds Y and walks Right/Down/Left/Up
+# for 180 frames each, twelve legs, which is enough to put shots on the screen,
+# be touched by whatever this level places, and let the level's own actors reach
+# their handlers. What it is measured by is the census, not by where it ends up.
+#
+# Census: `$82:F1C2`, 2 declines.
+#
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Right
+1408   -
+1416   Right
+1424   -
+1432   Right
+1440   -
+1448   Down
+1456   -
+1464   Down
+1472   -
+1480   A
+1488   -
+1496   Left
+1504   -
+1512   Down
+1520   -
+1528   Down
+1536   -
+1544   A
+1552   -
+1560   Right
+1568   -
+1576   Right
+1584   -
+1592   Right
+1600   -
+1608   Up
+1616   -
+1624   A
+1632   -
+1640   Left
+1648   -
+1656   Left
+1664   -
+1672   Left
+1680   -
+1688   Up
+1696   -
+1704   A
+1712   -
+1720   Right
+1728   -
+1736   Right
+1744   -
+1752   Right
+1760   -
+1768   Right
+1776   -
+1784   Down
+1792   -
+1800   Down
+1808   -
+1816   A
+1824   -
+1972   Start
+1982   -
+2002   Start
+2012   -
+2032   Start
+2042   -
+2062   Start
+2072   -
+2092   Start
+2102   -
+2122   Start
+2132   -
+2212   -
+2500   Right+Y
+2680   Down+Y
+2860   Left+Y
+3040   Up+Y
+3220   Right+Y
+3400   Down+Y
+3580   Left+Y
+3760   Up+Y
+3940   Right+Y
+4120   Down+Y
+4300   Left+Y
+4480   Up+Y
+4660   -

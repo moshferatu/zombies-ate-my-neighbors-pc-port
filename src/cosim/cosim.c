@@ -186,9 +186,10 @@ static void regs_capture(Snes* snes, CosimRegs* r) {
   r->n = cpu->n;
   r->z = cpu->z;
   r->c = cpu->c;
+  r->v = cpu->v;
   r->d = cpu->dp;
   r->db = cpu->db;
-  r->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  r->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
   r->regs = COSIM_REG_ALL;
 }
 
@@ -231,6 +232,15 @@ void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
 
   int count = 0;
   const CosimRoutine* all = cosim_routines(&count);
+  // The registry outgrew a 32-bit mask once and the symptom was `verify`
+  // silently measuring nothing — see `Cosim::enabled`. Say so instead.
+  if (count > COSIM_MAX_ROUTINES) {
+    fprintf(stderr,
+            "error: %d routines registered but COSIM_MAX_ROUTINES is %d — widen\n"
+            "       Cosim::enabled and Cosim::stats together, in cosim.h.\n",
+            count, COSIM_MAX_ROUTINES);
+    exit(2);
+  }
   c->stat_count = count;
   for (int i = 0; i < count; i++) {
     c->stats[i].routine = &all[i];
@@ -292,7 +302,7 @@ bool cosim_enable(Cosim* c, const char* name) {
   const CosimRoutine* all = cosim_routines(&count);
   for (int i = 0; i < count; i++) {
     if (!strcmp(all[i].name, name)) {
-      c->enabled |= 1u << i;
+      c->enabled |= UINT64_C(1) << i;
       return true;
     }
   }
@@ -302,7 +312,7 @@ bool cosim_enable(Cosim* c, const char* name) {
 void cosim_enable_all(Cosim* c) {
   int count = 0;
   cosim_routines(&count);
-  c->enabled = count >= 32 ? 0xffffffffu : (1u << count) - 1u;
+  c->enabled = count >= 64 ? ~UINT64_C(0) : (UINT64_C(1) << count) - 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -417,6 +427,8 @@ static void compare(CosimStat* s, const CosimCall* call, const Wram* ours,
     note(s, "flag Z: ROM %d, port %d", rom_regs->z, our_regs->z);
   else if ((our_regs->flags & COSIM_FLAG_C) && our_regs->c != rom_regs->c)
     note(s, "flag C: ROM %d, port %d", rom_regs->c, our_regs->c);
+  else if ((our_regs->flags & COSIM_FLAG_V) && our_regs->v != rom_regs->v)
+    note(s, "flag V: ROM %d, port %d", rom_regs->v, our_regs->v);
 }
 
 static void record_cycles(CosimStat* s, long cycles) {
@@ -438,6 +450,7 @@ static void native_publish(Cosim* c, const CosimRegs* out) {
   if (out->flags & COSIM_FLAG_N) cpu->n = out->n;
   if (out->flags & COSIM_FLAG_Z) cpu->z = out->z;
   if (out->flags & COSIM_FLAG_C) cpu->c = out->c;
+  if (out->flags & COSIM_FLAG_V) cpu->v = out->v;
 }
 
 // Publish a finished routine's registers and hand the core its own RTS/RTL.
@@ -846,7 +859,7 @@ void cosim_step(Cosim* c) {
     }
 
     for (int i = 0; i < c->stat_count; i++) {
-      if (!(c->enabled & (1u << i))) continue;
+      if (!(c->enabled & (UINT64_C(1) << i))) continue;
       const CosimRoutine* r = c->stats[i].routine;
       if (pc != r->entry) continue;
       // Verified but never substituted — see `CosimRoutine::verify_only`. Nothing
@@ -911,7 +924,7 @@ void cosim_frame(Cosim* c) {
 
 bool cosim_failed(const Cosim* c) {
   for (int i = 0; i < c->stat_count; i++)
-    if ((c->enabled & (1u << i)) && c->stats[i].failed) return true;
+    if ((c->enabled & (UINT64_C(1) << i)) && c->stats[i].failed) return true;
   return false;
 }
 
@@ -933,7 +946,7 @@ int cosim_report(const Cosim* c) {
 
   int failures = 0;
   for (int i = 0; i < c->stat_count; i++) {
-    if (!(c->enabled & (1u << i))) continue;
+    if (!(c->enabled & (UINT64_C(1) << i))) continue;
     const CosimStat* s = &c->stats[i];
     char cycles[32] = "-";
     if (s->checked > 0 && c->mode == COSIM_VERIFY)
@@ -1138,7 +1151,7 @@ static bool accounted_for(const Cosim* c, uint32_t off) {
   if (off >= STACK_AREA_LO && off < STACK_AREA_HI) return true;
   if (c->priv->stale && c->priv->stale[off]) return true;
   for (int i = 0; i < c->stat_count; i++) {
-    if (!(c->enabled & (1u << i))) continue;
+    if (!(c->enabled & (UINT64_C(1) << i))) continue;
     if (excluded(c->stats[i].routine, off)) return true;
   }
   return false;

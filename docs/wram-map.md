@@ -43,6 +43,8 @@ The game's hot globals. 4.5 M reads / 0.95 M writes in 2400 frames.
 | `$0016` | word | `nmi_frame_counter` | `INC $16` once per NMI |
 | `$001E` | **byte** | `apu_seq` | `$80:CCC8  LDY $1E : CPY $2143 : BNE` — the APU command counter, and the only WRAM the audio path has |
 | `$0020` | dword | `sched_tick` | `INC $20 / BNE / INC $22` per scheduler pass |
+| `$0024` | **byte** | `rng_state` | `$80:9D39`'s shift register; `ROL`/`EOR`/`ROR` on itself, then the `ADC`'s answer stored back |
+| `$0025` | **byte** | `rng_counter` | `INC $25` per draw, twice when the `ADC` overflowed. Both bytes are also bumped as one *word* by `$80:81E9  INC $24` in the NMI tail — the generator's only entropy |
 | `$0026` | word | `render_flags` | bit 6 gates `vram_queue_flush` |
 | `$0028` | word | LZSS source pointer | `[$28]` long-indirect fetch in the decompressor |
 | `$002A`,`$002C`,`$002E` | word | LZSS state | destination / length / bank |
@@ -225,10 +227,30 @@ one of those pages — including `$7E:0100-$7E:017F`, which is slot 0's page
 exactly, and `$7E:01E8-$7E:0227`, which straddles the boundary between slot 12's
 and slot 13's.
 
+**It is a table and not a formula, and the difference is a trap worth naming.**
+`$0100 + n*$80` for n = 0..23 enumerates *exactly the same twenty-four pages*, in
+a different order — which is why the `--watch` sweep below, which asks about all
+of them at once, is correct, and why using the formula to answer "which page does
+slot `n` use?" is not. `--records`' page column did that at first and put level
+25's boss two pages away from where `$80:82DE` says it is; `--watch` aimed at the
+result printed a steady zero and looked like a boss that never gets hurt. Index
+the table.
+
 So an "actor slot table" is not a separate structure to find: **an actor's state
 is its thread's direct page**. That is what the camera-driven spawner `$81:80EC`
 is allocating when it starts an actor thread, and it is why the enemy collision
 handler at `$81:8888` reads its own health from `$1E`.
+
+### Reading one of them, live
+
+`zamn_headless --watch <addr>[,first[,last[,step]]]` prints a WRAM word whenever
+it changes, and it may be given more than once — which turns "which thread page
+is this on?" into a single replay rather than twenty-four. Pointing it at
+`$0100 + n*$80 + $3C` for all twenty-four slots over `movies/level25-boss.zmv`
+answers a question no other instrument in the project can: only `$7E:083C` holds
+the boss's health (70, falling to 40), and on every other page the same offset
+cycles 0/2/6/10/14 like an animation frame. A field named from a listing is a
+guess about one page; this is what checks it against the other twenty-three.
 
 ### Fields, so far
 

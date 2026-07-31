@@ -10,6 +10,10 @@
 // the sprite pass reads, which is the first time a handler reaches out of its
 // own direct page into the game's shared data structure.
 #include "port/oam.h"
+// For `rng_next`: `enemy_d301_collide` is the first handler in the project that
+// draws a random number, and the carry it hands the generator is one it got back
+// from `enemy_survived_react`.
+#include "port/rng.h"
 #include "port/score.h"
 #include "port/thread.h"
 
@@ -360,6 +364,60 @@ static void player_spawn_score(Wram* w, const Rom* rom, uint16_t dp,
   r->c = score.c;
 }
 // ---------------------------------------------------------------------------
+// $80:DC09  the tail of $80:F9AE
+// ---------------------------------------------------------------------------
+
+// Reached by `JMP`, so this is the rest of the jump-table entry's call rather
+// than a call of its own — which is the whole reason it is ported here instead
+// of being named as a decline. Three guards, all of which return having written
+// nothing, and one store.
+static void player_state_tail(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+  // `$80:DC09  LDA $52 : BPL $DC1D`. Still inside the invulnerability window
+  // `ACTOR_DP_HURT_TIMER` counts, so nothing happens. Note the sense: the timer
+  // has to have gone *negative* for anything below to run, which is the same
+  // test `$80:F96C` makes before letting a hit land at all.
+  uint16_t timer = wram_r16(w, (uint32_t)dp + ACTOR_DP_HURT_TIMER);
+  r->a = timer;
+  r->n = (timer & 0x8000) != 0;
+  r->z = timer == 0;
+  if (!(timer & 0x8000)) {
+    PORT_COVER(state_tail_recovering);
+    return;
+  }
+
+  // `LDA $70 : BNE $DC1D`. Any state but zero declines — so between this and the
+  // caller's two comparisons, only state 0 reaches the store.
+  uint16_t state = wram_r16(w, (uint32_t)dp + ACTOR_DP_STATE);
+  r->a = state;
+  r->n = (state & 0x8000) != 0;
+  r->z = state == 0;
+  if (state != 0) {
+    PORT_COVER(state_tail_busy);
+    return;
+  }
+
+  // `LDA $10 : CMP #$FD72 : BEQ $DC1D`. A sentinel compare; see
+  // `PLAYER_STATE_TAIL_SENTINEL` for how little is known about what it means.
+  uint16_t word = wram_r16(w, (uint32_t)dp + PLAYER_DP_TAIL_WORD);
+  uint16_t diff = (uint16_t)(word - PLAYER_STATE_TAIL_SENTINEL);
+  r->a = word;
+  r->n = (diff & 0x8000) != 0;
+  r->z = diff == 0;
+  if (word == PLAYER_STATE_TAIL_SENTINEL) {
+    PORT_COVER(state_tail_sentinel);
+    return;
+  }
+
+  // `LDA #$DC1E : STA $28`. The one thing this routine can do: queue what the
+  // player's own code runs next. `LDA` of a constant is the last flag-setter.
+  PORT_COVER(state_tail_queued);
+  wram_w16(w, (uint32_t)dp + PLAYER_DP_NEXT, PLAYER_STATE_TAIL_NEXT);
+  r->a = PLAYER_STATE_TAIL_NEXT;
+  r->n = (PLAYER_STATE_TAIL_NEXT & 0x8000) != 0;
+  r->z = false;
+}
+
+// ---------------------------------------------------------------------------
 // $80:F7F7  player_collide
 // ---------------------------------------------------------------------------
 
@@ -473,6 +531,88 @@ bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
       player_spawn_score(w, rom, dp, PLAYER_SPAWN_AWARD_3, sfx.c, r);
       return true;
     }
+    case PLAYER_COLLIDE_STATE_GATE: {
+      // `$80:F9AE  LDA $70 : CMP #$0002 : BEQ : CMP #$0004 : BEQ : JMP $DC09`.
+      // The states-2-and-4 guard, written out longhand, and the last entry in
+      // this table any input has ever reached — one call in the whole corpus.
+      PORT_COVER(player_state_gate);
+      uint16_t state = wram_r16(w, (uint32_t)dp + ACTOR_DP_STATE);
+      r->a = state;
+      if (state == PLAYER_STATE_IGNORE_A || state == PLAYER_STATE_IGNORE_B) {
+        // `$80:F9BD  RTS`, with the flags of whichever `CMP` matched — and a
+        // match is equality, so Z is set either way and N is clear.
+        PORT_COVER(player_state_ignored);
+        r->n = false;
+        r->z = true;
+        break;
+      }
+      // `JMP $DC09`, not `JSR`: what follows is the rest of *this* call, so it
+      // is ported here rather than declined. Flags on the way in are the second
+      // `CMP`'s, and `$80:DC09` opens with an `LDA` that replaces them.
+      player_state_tail(w, dp, r);
+      break;
+    }
+    case PLAYER_COLLIDE_QUEUE: {
+      // `$80:F9BE`, id `$0A`, and it is the entry above with `$80:DC09`'s one
+      // store inlined instead of jumped to — same two state tests, and then
+      // `LDA #$F9D0 : STA $28` unconditionally rather than behind three more
+      // guards.
+      PORT_COVER(player_queue_entry);
+      uint16_t state = wram_r16(w, (uint32_t)dp + ACTOR_DP_STATE);
+      r->a = state;
+      if (state == PLAYER_STATE_IGNORE_A || state == PLAYER_STATE_IGNORE_B) {
+        PORT_COVER(player_queue_ignored);
+        r->n = false;
+        r->z = true;
+        break;
+      }
+      PORT_COVER(player_queue_next);
+      wram_w16(w, (uint32_t)dp + PLAYER_DP_NEXT, PLAYER_QUEUE_NEXT);
+      // `LDA #$F9D0` is the last instruction to set a flag; the `STA` sets none.
+      r->a = PLAYER_QUEUE_NEXT;
+      r->n = (PLAYER_QUEUE_NEXT & 0x8000) != 0;
+      r->z = false;
+      break;
+    }
+    case PLAYER_COLLIDE_HURT_ALT: {
+      // `$80:F979`, id `$0B`. The only one of the four that writes something
+      // other than a next-routine pointer, and what it writes is a hit —
+      // `$80:F950`'s two stores with both constants changed.
+      PORT_COVER(player_hurt_alt);
+      // `LDA $52 : BPL` — the invulnerability window, tested before the state is
+      // even read, which is the opposite order from `$80:DC09`'s.
+      uint16_t timer = wram_r16(w, (uint32_t)dp + ACTOR_DP_HURT_TIMER);
+      r->a = timer;
+      if (!(timer & 0x8000)) {
+        PORT_COVER(player_hurt_alt_recovering);
+        r->n = false;  // `BPL` was taken, so bit 15 is clear
+        r->z = timer == 0;
+        break;
+      }
+      uint16_t state = wram_r16(w, (uint32_t)dp + ACTOR_DP_STATE);
+      r->a = state;
+      if (state == PLAYER_STATE_IGNORE_A || state == PLAYER_STATE_IGNORE_B ||
+          state == PLAYER_STATE_IGNORE_C) {
+        // Three states here rather than the other three entries' two, and the
+        // third — `$0E` — appears in no other member of the group.
+        PORT_COVER(player_hurt_alt_ignored);
+        r->n = false;
+        r->z = true;
+        break;
+      }
+      // `LDA #$C000 : STA $50` then `LDA #$0030 : STA $52`.
+      PORT_COVER(player_hurt_alt_taken);
+      wram_w16(w, (uint32_t)dp + ACTOR_DP_EVENT, PLAYER_EVENT_HURT_ALT);
+      wram_w16(w, (uint32_t)dp + ACTOR_DP_HURT_TIMER, PLAYER_HURT_ALT_TIMER);
+      // The second `LDA` is the last flag-setter, and `$0030` is small and
+      // positive — so N comes back clear even though the *event* just written is
+      // negative. Worth the line: taking N from `$C000` would be the natural
+      // mistake and the diff would catch it only on this branch.
+      r->a = PLAYER_HURT_ALT_TIMER;
+      r->n = false;
+      r->z = false;
+      break;
+    }
     case PLAYER_COLLIDE_HEAL: {
       // `$80:FACF`, the only entry in the table that gives health back. Three
       // of it, ceilinged at the same ten `$80:EB2F` refuses to spend a kit at --
@@ -573,15 +713,19 @@ bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
 
   // `$81:8894  CMP #$005E : BEQ` and `$81:8899  CMP #$005D : BEQ`, both `JML`s
-  // into routines of their own. Neither is ported and neither is reached by any
-  // movie, so what they are is still an open question rather than an answer.
-  if (id == ENEMY_HIT_SPECIAL_A || id == ENEMY_HIT_SPECIAL_B) {
+  // into routines of their own — and the two are no longer symmetrical. `$5D`
+  // goes to `enemy_freeze`, which the port has; `$5E` goes to `$81:83C6`, which
+  // it does not, because **no input fires that weapon**. The two sites are
+  // separate for exactly that reason: one of them is now the busiest branch in
+  // this routine on `movies/level17-weapon.zmv` and the other has still never
+  // been reached.
+  if (id == ENEMY_HIT_SPECIAL_B) {
+    PORT_COVER(enemy_hit_freeze);
+    return enemy_freeze(w, dp, r);
+  }
+  if (id == ENEMY_HIT_SPECIAL_A) {
     PORT_COVER(enemy_hit_special);
-    // Name the routine rather than the id, the way `player_collide` does.
-    if (unported)
-      *unported = id == ENEMY_HIT_SPECIAL_A ? ENEMY_SPECIAL_A_ENTRY
-                                            : ENEMY_SPECIAL_B_ENTRY;
-    return false;
+    return enemy_bubble_react(w, dp, r);
   }
 
   // `$81:889E  SEC : SBC #$005C : ASL A : TAX`, then `SEC : LDA $1E : SBC
@@ -637,6 +781,53 @@ bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 // $81:8506  the survivor's reaction
 // ---------------------------------------------------------------------------
 
+// **The splice, written once.** `$81:8506`, `$81:BAB3` and `$81:847E` all end
+// with these ten instructions and differ only in the address they leave behind —
+// and this file has been carrying two copies of them since the level-45 round,
+// with a note saying that two copies of one routine are two things that can
+// drift. A third would have made the point twice.
+//
+// What it does is the mechanism `docs/threads.md` describes: the record names
+// its thread, the scheduler holds that thread's parked stack pointer, and three
+// bytes of gap open under the top three words so a far return address can be
+// written into a suspension nobody called.
+//
+// `resume` is the spliced address **already decremented**, because what resumes a
+// parked thread is an `RTL` and an `RTL` adds one. The three routines' guards,
+// and what each hands back when its guard refuses, stay where they are: that is
+// the half of them that genuinely differs.
+static void enemy_react_splice(Wram* w, uint16_t record, uint16_t resume,
+                               ActorHandlerRegs* r) {
+  uint16_t slot = wram_r16(w, (uint32_t)record + ACTOR_THREAD);
+  uint16_t sp = wram_r16(w, (uint32_t)W_THREAD_SP + slot);
+  uint16_t gap = (uint16_t)(sp - ENEMY_REACT_FRAME);
+  wram_w16(w, (uint32_t)W_THREAD_SP + slot, gap);
+
+  // `LDA $0000,X : STA $0000,Y` three times over, X = the old pointer and
+  // Y = the new one. Three *words* moved three *bytes*, so the copies overlap
+  // and the order they run in is the whole of why it works: lowest first, which
+  // is what a downward move needs.
+  for (int i = 0; i < ENEMY_REACT_FRAME; i++)
+    wram_w16(w, (uint32_t)(uint16_t)(gap + i * 2),
+             wram_r16(w, (uint32_t)(uint16_t)(sp + i * 2)));
+
+  // `LDA #$0081 : XBA : STA $0006,Y`, then `LDA #<addr> : DEC A : STA $0005,Y`.
+  // Two overlapping 16-bit stores that between them lay down three bytes — the
+  // second writes over the first's low half.
+  wram_w16(w, (uint32_t)(uint16_t)(gap + 6), (uint16_t)(ENEMY_REACT_BANK << 8));
+  wram_w16(w, (uint32_t)(uint16_t)(gap + 5), resume);
+
+  // `SEC : RTL`. Carry set is what parks the thread — the same output a death
+  // produces, for a different reason. The last instruction to touch a flag is
+  // the `DEC A` two above, and every address the three splice is negative.
+  r->a = resume;
+  r->x = sp;
+  r->y = gap;
+  r->n = (resume & 0x8000) != 0;
+  r->z = false;
+  r->c = true;
+}
+
 bool enemy_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
   // `LDY $08 : LDA $0000,Y : AND #$0010 : BNE $855F`. `$08` on an enemy's page
   // is its own display record — the same offset the player keeps one at — and
@@ -659,36 +850,119 @@ bool enemy_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
   // scheduler keeps that thread's parked stack pointer — so an actor can find
   // where its own suspended machine state is without being the thing running.
   PORT_COVER(react_splice);
-  uint16_t slot = wram_r16(w, (uint32_t)record + ACTOR_THREAD);
-  uint16_t sp = wram_r16(w, (uint32_t)W_THREAD_SP + slot);
-  uint16_t gap = (uint16_t)(sp - ENEMY_REACT_FRAME);
-  wram_w16(w, (uint32_t)W_THREAD_SP + slot, gap);
+  enemy_react_splice(w, record, ENEMY_REACT_RETURN, r);
+  return true;
+}
 
-  // `LDA $0000,X : STA $0000,Y` three times over, X = the old pointer and
-  // Y = the new one. Three *words* moved three *bytes*, so the copies overlap
-  // and the order they run in is the whole of why it works: lowest first, which
-  // is what a downward move needs.
-  for (int i = 0; i < ENEMY_REACT_FRAME; i++)
-    wram_w16(w, (uint32_t)(uint16_t)(gap + i * 2),
-             wram_r16(w, (uint32_t)(uint16_t)(sp + i * 2)));
+// ---------------------------------------------------------------------------
+// $81:83C6  enemy_bubble_react
+// ---------------------------------------------------------------------------
 
-  // `LDA #$0081 : XBA : STA $0006,Y`, then `LDA #$8542 : DEC A : STA $0005,Y`.
-  // Two overlapping 16-bit stores that between them lay down three bytes — the
-  // second writes over the first's low half — and the result is `$81:8541` at
-  // `gap + 5`, one below `$81:8542`, because what resumes a parked thread is an
-  // `RTL` and an `RTL` adds one.
-  wram_w16(w, (uint32_t)(uint16_t)(gap + 6), (uint16_t)(ENEMY_REACT_BANK << 8));
-  wram_w16(w, (uint32_t)(uint16_t)(gap + 5), ENEMY_REACT_RETURN);
+bool enemy_bubble_react(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+  // **It is `enemy_survived_react` with one word changed**, and after four
+  // rounds of the file saying the `$5E` twin was unported, that is the whole
+  // finding. `$81:83C6  LDY $08 : LDA $0000,Y : AND #$0010 : BEQ` is
+  // `$81:8506`'s guard with the branch polarity flipped and the same two exits
+  // behind it; `$81:83D2`..`$81:8403` is the same ten-instruction splice; and the
+  // address it leaves behind is `$81:8404` where the twin leaves `$81:8542`.
+  //
+  // What is *not* here is the reason `enemy_freeze` needed forty lines. There is
+  // **no counter, no tally and no side lookup** — no `INC $7E`, no
+  // `INC $1FE0,X`, nothing indexed by which player fired. PROGRESS.md described
+  // this routine as "the same splice without the counter and with its tally one
+  // array over at `$7E:1FDC`", and the second half of that sentence belongs to a
+  // different routine: `$7E:1FDC` is incremented by `$81:9BA2`, the nine
+  // instructions `enemy_9b6b_collide`'s own `$5E` branch runs *before* it
+  // `JML`s here. This one is nine words of stack surgery and nothing else.
+  uint16_t record = wram_r16(w, (uint32_t)dp + VICTIM_DP_RECORD);
+  uint16_t flags = wram_r16(w, record);
+  if (flags & ACTOR_ATTR_SET) {
+    // `$81:83D0  CLC : RTL`, with the `AND`'s flags standing — identical to
+    // `react_already`'s, which is why the two have sites of their own rather
+    // than sharing one. A branch that is the same code twice is still two
+    // branches, and only a movie that reaches both proves it.
+    PORT_COVER(bubble_already);
+    r->a = ACTOR_ATTR_SET;
+    r->y = record;
+    r->n = false;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
 
-  // `SEC : RTL`. Carry set is what parks the thread — the same output the death
-  // path produces, for a different reason. The last instruction to touch a flag
-  // is the `DEC A` two above, and it left A negative.
-  r->a = ENEMY_REACT_RETURN;
-  r->x = sp;
-  r->y = gap;
-  r->n = true;
-  r->z = false;
-  r->c = true;
+  PORT_COVER(bubble_splice);
+  enemy_react_splice(w, record, BUBBLE_REACT_RETURN, r);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $81:847E  enemy_freeze
+// ---------------------------------------------------------------------------
+
+bool enemy_freeze(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+  // `$81:847E  INC $7E : LDA $7E : CMP #$0005 : BCS : BRA <CLC : RTL>`.
+  //
+  // **This is what `STZ $7E` is for**, and it took six rounds and a second
+  // weapon to find out. Every copy of `$81:8888` in this file ends a death with
+  // a store of zero to `$7E`, and every one of them carries a comment saying the
+  // store is transcribed because the word is already zero and deleting it
+  // changes nothing the diff can see. It was already zero because **no input in
+  // the project had ever fired this weapon**; here is the only writer that ever
+  // makes it non-zero, and the death path is its reset.
+  uint16_t hits = (uint16_t)(wram_r16(w, (uint32_t)dp + ACTOR_DP_FREEZE_HITS) + 1);
+  wram_w16(w, (uint32_t)dp + ACTOR_DP_FREEZE_HITS, hits);
+  r->a = hits;
+  if (hits < FREEZE_HITS_NEEDED) {
+    // The flags are the `CMP #$0005`'s, and it borrowed. Nothing else on this
+    // path is touched — X and Y are still the dispatcher's.
+    PORT_COVER(freeze_counting);
+    uint16_t diff = (uint16_t)(hits - FREEZE_HITS_NEEDED);
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;  // `$81:84D4  CLC : RTL`
+    return true;
+  }
+
+  // `$81:8489  LDX $08 : LDA $0000,X : AND #$0010 : BNE`. `react_already`'s
+  // guard, spelled with X where the twin uses Y — so a hit that lands while the
+  // creature is still flashing from the last one is counted and then thrown
+  // away.
+  uint16_t record = wram_r16(w, (uint32_t)dp + VICTIM_DP_RECORD);
+  uint16_t flags = wram_r16(w, record);
+  r->x = record;
+  if (flags & ACTOR_ATTR_SET) {
+    PORT_COVER(freeze_already);
+    r->a = ACTOR_ATTR_SET;  // what the `AND` left
+    r->n = false;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:8493  TYA : ASL A : AND #$0000 : ROL A : ROL A` — bit 15 of **Y**, which
+  // is the raw collision id the dispatcher put there and never took out, turned
+  // into the doubled side. `collide.h` names this idiom on `$81:9B6B`'s declined
+  // branch; this is the first time the port runs it.
+  PORT_COVER(freeze_took);
+  uint16_t side = (uint16_t)((r->y & 0x8000) ? 2 : 0);
+
+  // `$81:849B  JSL $80:9D6A`, which is `score_slot` with one comparison instead
+  // of two: `LDX #$0000 : CMP $1E84 : BEQ : INX : INX : RTL`. It cannot answer
+  // "nobody" — a side that matches neither slot comes back as slot 1 — so unlike
+  // `$80:C7C2` there is no discard path to reach.
+  uint16_t slot = side == wram_r16(w, W_SCORE_SLOT_SIDE) ? 0 : 2;
+  PORT_COVER_IF(slot == 0, freeze_slot_0, freeze_slot_1);
+
+  // `$81:849F  INC $1FE0,X`. The counter the end-of-level tally reads:
+  // `$82:CA8C  LDA $1FE0 : CMP #$0028 : BCC` decides whether to draw
+  // `MONSTER/FROZEN/....////BONUS?`, and `$82:CAA5` does the same for `$1FE2`.
+  // Forty freezes is a bonus.
+  uint16_t at = (uint16_t)(W_MONSTERS_FROZEN + slot);
+  wram_w16(w, at, (uint16_t)(wram_r16(w, at) + 1));
+
+  // `$81:84A2` onwards is the splice, and `$81:84D6` is what a frozen creature
+  // wakes up running.
+  enemy_react_splice(w, record, FREEZE_REACT_RETURN, r);
   return true;
 }
 
@@ -964,6 +1238,8 @@ bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
 
 bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
                          bool carry_in, ThreadCallResult* out) {
+  out->unported = 0;
+
   // `$80:8480  LDA $1300,X : ORA $1330,X : BEQ $84B0`. A slot with no handler
   // registered makes the whole routine three instructions and no writes.
   uint16_t lo = wram_r16(w, W_THREAD_HANDLER + slot);
@@ -1001,17 +1277,70 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
     served = player_collide(w, rom, dp, arg, &r, NULL);
   } else if (entry == ENEMY_COLLIDE_ENTRY) {
     served = enemy_collide(w, rom, dp, arg, &r, NULL);
+  } else if (entry == MONSTER_COLLIDE_ENTRY) {
+    // **This one was missing, and nothing could see it.** `monster_collide` has
+    // been registered on its own entry PC since the level-45 round, so `verify`
+    // offered it every call the giant spider made and it passed all 1,138 of
+    // them — but the *dispatcher* never routed to it, so every one of those
+    // calls also declined here, one level up. The two facts are not in tension:
+    // a routine reached directly is checked, and the same routine reached
+    // through a caller that does not know about it is a decline. What hid it is
+    // the census, which excludes the handlers the port has by address — and
+    // `$81:C4A6` was on that exclusion list while not being on this one, so the
+    // declines were counted and never named. On `movies/level45-carried.zmv`
+    // that is 1,351 of `thread_call_handler`'s 2,800 calls.
+    served = monster_collide(w, rom, dp, arg, &r, NULL);
+  } else if (entry == MONSTER_C440_COLLIDE_ENTRY) {
+    served = monster_c440_collide(w, rom, dp, arg, &r, NULL);
+  } else if (entry == ENEMY_B41C_COLLIDE_ENTRY) {
+    served = enemy_b41c_collide(w, rom, dp, arg, &r, NULL);
+  } else if (entry == ENEMY_CDDE_COLLIDE_ENTRY) {
+    served = enemy_cdde_collide(w, dp, arg, &r);
+  } else if (entry == ENEMY_B592_COLLIDE_ENTRY) {
+    served = enemy_b592_collide(w, dp, arg, &r);
+  } else if (entry == ENEMY_D7F6_COLLIDE_ENTRY) {
+    served = enemy_d7f6_collide(w, rom, dp, arg, &r, NULL);
+  } else if (entry == ENEMY_9B6B_COLLIDE_ENTRY) {
+    served = enemy_9b6b_collide(w, rom, dp, arg, &r, NULL);
+  } else if (entry == ENEMY_9063_COLLIDE_ENTRY) {
+    served = enemy_9063_collide(w, rom, dp, arg, &r, NULL);
+  } else if (entry == ENEMY_D301_COLLIDE_ENTRY) {
+    served = enemy_d301_collide(w, rom, dp, arg, &r, NULL);
+  } else if (entry == ENEMY_AC92_COLLIDE_ENTRY) {
+    served = enemy_ac92_collide(w, rom, dp, arg, &r, NULL);
+  } else if (entry == ACTOR_845E_COLLIDE_ENTRY) {
+    served = actor_845e_collide(arg, &r);
+  } else if (entry == ACTOR_DEEB_COLLIDE_ENTRY) {
+    served = actor_deeb_collide(w, dp, arg, &r);
+  } else if (entry == ACTOR_F1C2_COLLIDE_ENTRY) {
+    served = actor_f1c2_collide(w, dp, arg, &r);
+  } else if (entry == ACTOR_F534_COLLIDE_ENTRY) {
+    served = actor_f534_collide(w, dp, arg, &r);
+  } else if (entry == VICTIM_A264_COLLIDE_ENTRY) {
+    served = victim_a264_collide(w, dp, arg, &r);
+  } else if (entry == BOSS_9660_COLLIDE_ENTRY) {
+    served = boss_9660_collide(w, rom, dp, arg, &r);
   } else if (entry == SHOT_COLLIDE_ENTRY) {
     served = shot_collide(w, dp, arg, &r);
+  } else if (entry == SHOT_EDAA_COLLIDE_ENTRY) {
+    // `r` is already exactly what `$80:84A3  TYA` left, and a bare `RTL`
+    // changes none of it — so there is deliberately no assignment here. The
+    // absence is the routine.
+    served = shot_edaa_collide();
+  } else if (entry == SHOT_F6A3_COLLIDE_ENTRY) {
+    served = shot_f6a3_collide(w, dp, arg, &r);
+  } else if (entry == ACTOR_F4EF_COLLIDE_ENTRY) {
+    served = actor_f4ef_collide(w, dp, arg, &r);
   } else if (entry == VICTIM_COLLIDE_ENTRY) {
     served = victim_collide(w, dp, arg, &r);
   } else if (entry == OBJECT_COLLIDE_ENTRY) {
     served = object_collide(w, dp, arg, &r);
   } else {
-    // The list of handlers the port has is exactly five. Anything else is a
-    // routine that has not been written yet, and saying so by address is what
-    // makes the remaining work countable instead of vague.
+    // Twenty-two addresses are handled above. Anything else is a routine that has
+    // not been written yet, and saying so by address is what makes the remaining
+    // work countable instead of vague — which is what `unported` carries out.
     PORT_COVER(handler_unported);
+    out->unported = entry;
     return false;
   }
   if (!served) return false;
@@ -1070,6 +1399,15 @@ static bool monster_death_award(Wram* w, const Rom* rom, uint16_t dp,
     // id over it and the three shifts reduce it to the side, so what the caller
     // gets back is 0 or 2 — which is what the diff said on the one death in the
     // corpus: `A: ROM $0000, port $0300`, the port having kept the award.
+    //
+    // **The doubling is diffed now, and it took a movie rather than a reading.**
+    // Writing `1` here instead of `2` passed every call on every input for two
+    // rounds, because every death in the corpus was player one's and both
+    // spellings of zero are zero — `player_pickup`'s doubled-id index and
+    // `enemy_b41c_collide`'s `ASL` for the third time.
+    // `movies/level25-2p.zmv` is Julie killing three of these, and the same
+    // perturbation now fails at **`$7E:1FD5`**: the byte *between* the two
+    // counters, which is exactly where an undoubled index lands.
     uint16_t side = (uint16_t)((id & 0x8000) ? 2 : 0);
     uint16_t at = (uint16_t)(W_MONSTER_KILL_COUNT + side);
     uint16_t n = (uint16_t)(wram_r16(w, at) + 1);
@@ -1078,6 +1416,16 @@ static bool monster_death_award(Wram* w, const Rom* rom, uint16_t dp,
     r->x = side;
     r->n = (n & 0x8000) != 0;
     r->z = n == 0;
+  } else {
+    // **This site exists because a perturbation got past the report.** Paying
+    // the award unconditionally — deleting the `BEQ` — passed all 151 calls on
+    // `movies/level25.zmv`, and `monster_kill_award` read 10 the whole time, so
+    // the coverage table said nothing was missing. A site marks the branch it is
+    // written on; a guard with a mark on its *passing* side only says the guard
+    // was reached, never that it refused. Marking the skip is what makes the
+    // refusal countable, and it is untaken: every monster that has died in the
+    // corpus was killed by something carrying an id.
+    PORT_COVER(monster_kill_free);
   }
   // `$81:BC02  DEC $2A`, on both paths, and it is the last thing to set flags.
   uint16_t count = (uint16_t)(wram_r16(w, (uint32_t)dp + MONSTER_DP_COUNT) - 1);
@@ -1098,8 +1446,23 @@ static bool monster_die(Wram* w, const Rom* rom, uint16_t dp, uint16_t health,
   return true;
 }
 
-bool monster_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                     ActorHandlerRegs* r, uint32_t* unported) {
+// The two copies, `$81:C4A6` and `$81:C440`, and everything that differs
+// between them. Three bytes in the ROM; two fields here.
+//
+// Sharing the body rather than transcribing it twice is the same call
+// `ENEMY_REACT_FRAME` makes: two copies of one routine in C are two things that
+// can drift, and the diff would only ever catch the drift on a level that runs
+// both. What it costs is that the coverage sites inside this function no longer
+// say *which* copy an input reached — so the two places the copies genuinely
+// differ get sites of their own, below, and those do.
+typedef struct {
+  bool is_c440;                // which copy, for the two marks that need it
+  uint32_t special_entry;      // where id `$5D` goes, and declines
+} MonsterCopy;
+
+static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
+                                 uint16_t arg, ActorHandlerRegs* r,
+                                 uint32_t* unported, const MonsterCopy* copy) {
   // `$81:C4A6  CMP #$005C : BCS`. Everything below a weapon shot is sorted by
   // two more comparisons into three outcomes, and two of those write nothing.
   if (arg < COLLIDE_ID_PLAYER) {
@@ -1185,9 +1548,16 @@ bool monster_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
 
   if (id == MONSTER_HIT_SPECIAL) {
-    // `JML $81:BB05`, a splice in the `$81:8506` family. Not ported.
+    // `JML $81:BB05` on the spider, `JML $81:847E` one stage earlier — and this
+    // is where the two copies genuinely part company, which is why they had
+    // separate sites before either address meant anything. The earlier one goes
+    // to `enemy_freeze`, which the port has; the spider's still declines.
+    if (copy->is_c440) {
+      PORT_COVER(c440_special);
+      return enemy_freeze(w, dp, r);
+    }
     PORT_COVER(monster_special);
-    if (unported) *unported = MONSTER_SPECIAL_ENTRY;
+    if (unported) *unported = copy->special_entry;
     return false;
   }
 
@@ -1226,7 +1596,29 @@ bool monster_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // it belongs to this routine even though the reaction does not.
   PORT_COVER(monster_survived);
   wram_w16(w, (uint32_t)dp + MONSTER_DP_HEALTH, left);
+  if (copy->is_c440) {
+    // ...and one stage earlier the jump is to `$81:8506` instead, which is a
+    // different reaction and not a relocation of the same one: it guards on bit
+    // 4 of the record's flags and splices an address that sets that bit, where
+    // `$81:BAB3` guards on the whole of `ACTOR_ATTR` and splices one that writes
+    // `$0C00`. This is the only difference between the two copies that changes
+    // what lands in WRAM.
+    PORT_COVER(c440_survived);
+    return enemy_survived_react(w, dp, r);
+  }
   return monster_survived_react(w, dp, r);
+}
+
+bool monster_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                     ActorHandlerRegs* r, uint32_t* unported) {
+  static const MonsterCopy spider = {false, MONSTER_SPECIAL_ENTRY};
+  return monster_collide_body(w, rom, dp, arg, r, unported, &spider);
+}
+
+bool monster_c440_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                          ActorHandlerRegs* r, uint32_t* unported) {
+  static const MonsterCopy earlier = {true, MONSTER_C440_SPECIAL_ENTRY};
+  return monster_collide_body(w, rom, dp, arg, r, unported, &earlier);
 }
 
 // ---------------------------------------------------------------------------
@@ -1251,30 +1643,1348 @@ bool monster_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
     return true;
   }
 
-  // From here it is `$81:8506` instruction for instruction: the record names its
-  // thread, the scheduler holds that thread's parked stack pointer, and three
-  // bytes of gap get opened under the top three words.
+  // From here it is `$81:8506` instruction for instruction, so it is the same
+  // C: `$81:BAEC` goes in as `$81:BAEB`, for the one an `RTL` adds.
   PORT_COVER(monster_react_splice);
-  uint16_t slot = wram_r16(w, (uint32_t)record + ACTOR_THREAD);
-  uint16_t sp = wram_r16(w, (uint32_t)W_THREAD_SP + slot);
-  uint16_t gap = (uint16_t)(sp - ENEMY_REACT_FRAME);
-  wram_w16(w, (uint32_t)W_THREAD_SP + slot, gap);
+  enemy_react_splice(w, record, MONSTER_REACT_RETURN, r);
+  return true;
+}
 
-  // Lowest word first, because the move overlaps its own source.
-  for (int i = 0; i < ENEMY_REACT_FRAME; i++)
-    wram_w16(w, (uint32_t)(uint16_t)(gap + i * 2),
-             wram_r16(w, (uint32_t)(uint16_t)(sp + i * 2)));
+// ---------------------------------------------------------------------------
+// $81:B41C  enemy_b41c_collide — the same routine a third time
+// ---------------------------------------------------------------------------
 
-  // The same two overlapping stores laying down three bytes, and the same
-  // `DEC A` for the one an `RTL` adds — `$81:BAEC` goes in as `$81:BAEB`.
-  wram_w16(w, (uint32_t)(uint16_t)(gap + 6), (uint16_t)(MONSTER_REACT_BANK << 8));
-  wram_w16(w, (uint32_t)(uint16_t)(gap + 5), MONSTER_REACT_RETURN);
+bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported) {
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `$81:B41C  CMP #$005C : BCS : CLC : RTL`, which is `enemy_collide`'s first
+    // four instructions unchanged — and, as there, the branch that writes
+    // nothing at all.
+    PORT_COVER(b41c_ignore);
+    uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
+    r->a = arg;
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
 
-  r->a = MONSTER_REACT_RETURN;
-  r->x = sp;
-  r->y = gap;
-  r->n = true;  // the `DEC A` left `$BAEB`
+  // `$81:B423  STA $5A : AND #$7FFF`. The park happens here the way it does in
+  // both twins, even though this copy never reads it back.
+  PORT_COVER(b41c_act);
+  wram_w16(w, (uint32_t)dp + B41C_DP_HIT_ID, arg);
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+
+  // `$81:B428  CMP #$005E : BEQ` and `$81:B42D  CMP #$005D : BEQ` — the same two
+  // ids leaving through the same two routines as `enemy_collide`'s, which is one
+  // more piece of evidence that this is that routine again.
+  if (id == ENEMY_HIT_SPECIAL_B) {
+    PORT_COVER(b41c_hit_freeze);
+    return enemy_freeze(w, dp, r);
+  }
+  if (id == ENEMY_HIT_SPECIAL_A) {
+    PORT_COVER(b41c_hit_special);
+    return enemy_bubble_react(w, dp, r);
+  }
+
+  // `$81:B432  CMP #$0061 : BEQ $B462`, the comparison neither twin has, and
+  // `$B462  LDY $08 : LDX $0004,Y : BNE $B437` — one on the ground gets the
+  // special answer, one in the air falls through and takes damage like anything
+  // else. The `BNE` reads the `LDX`, so the flags this path leaves are the
+  // record's height, not the id.
+  if (id == B41C_HIT_SPECIAL) {
+    uint16_t record = wram_r16(w, (uint32_t)dp + B41C_DP_RECORD);
+    uint16_t z = wram_r16(w, (uint32_t)record + ACTOR_Z);
+    if (z == 0) {
+      // `JSR $B168`, three instructions, inlined for `monster_collide`'s reason.
+      PORT_COVER(b41c_special_grounded);
+      wram_w16(w, (uint32_t)dp + B41C_DP_NEXT, B41C_NEXT_ON_SPECIAL);
+      r->a = B41C_NEXT_ON_SPECIAL;
+      r->x = z;  // what the `LDX` left, which is zero on this side of the `BNE`
+      r->y = record;
+      r->n = (B41C_NEXT_ON_SPECIAL & 0x8000) != 0;
+      r->z = false;
+      r->c = true;  // `$81:B46C  SEC : RTL`
+      return true;
+    }
+    // Airborne: the `BNE` goes back to `$B437` with X holding the height and Y
+    // the record, and the damage path below overwrites X but never Y.
+    PORT_COVER(b41c_special_airborne);
+    r->x = z;
+    r->y = record;
+  }
+
+  // `$81:B437  INC $4C` — the hit flag, raised before the damage is even
+  // computed, so a hit that does nothing still tells the body it happened.
+  PORT_COVER(b41c_hit);
+  uint16_t flag = wram_r16(w, (uint32_t)dp + B41C_DP_HIT_FLAG);
+  wram_w16(w, (uint32_t)dp + B41C_DP_HIT_FLAG, (uint16_t)(flag + 1));
+
+  // `$81:B439  SEC : SBC #$005C : ASL A : TAX`, then `SEC : LDA $0C : SBC
+  // $818561,X` — the same arithmetic against the same table, one page over.
+  //
+  // **Dropping the `ASL` passes every call on every movie**, and it is the same
+  // blind spot `player_pickup`'s doubled-id index had before
+  // `movies/level1-pickups.zmv`: every hit that reaches this creature in the
+  // whole corpus carries id `$005C`, whose index is 0 either way. Sixteen movies
+  // were instrumented to check that rather than assumed — `$5C` was the only id
+  // any of them produced. Not a branch, so no coverage mark can express it;
+  // written down here beside the line, like the `STZ $7E` in `enemy_die`. What
+  // would settle it is an input that hits this creature with a second weapon.
+  uint16_t index = (uint16_t)((id - COLLIDE_ID_PLAYER) * 2);
+  uint16_t health = wram_r16(w, (uint32_t)dp + B41C_DP_HEALTH);
+  uint16_t left =
+      (uint16_t)(health - rom_word(rom, ENEMY_DAMAGE_TABLE + (uint32_t)index));
+
+  if (left & 0x8000) {
+    // `$81:B452  DEC $0A : STA $0C : STZ $7E : SEC : RTL`. **No award.** Where
+    // `enemy_collide` reaches `$81:8727` and pays `ENEMY_DEATH_AWARD`, this copy
+    // decrements a word on its own page and returns — see `B41C_DP_COUNTER_0A`
+    // for how little that is known to mean. The store of the negative health
+    // happens here too, exactly as it does in the twin.
+    PORT_COVER(b41c_died);
+    uint16_t count = wram_r16(w, (uint32_t)dp + B41C_DP_COUNTER_0A);
+    wram_w16(w, (uint32_t)dp + B41C_DP_COUNTER_0A, (uint16_t)(count - 1));
+    wram_w16(w, (uint32_t)dp + B41C_DP_HEALTH, left);
+    // `STZ $7E`, and the same caveat as `enemy_die`'s: transcribed rather than
+    // diffed, because the word is already zero every time this runs.
+    wram_w16(w, (uint32_t)dp + ACTOR_DP_SCRATCH_7E, 0);
+    r->a = left;
+    r->x = index;
+    // The last instruction to set flags is the `STZ`'s predecessor, the `STA` —
+    // and `STA` sets none. So N and Z are still the `SBC`'s, from a difference
+    // this branch already knows is negative.
+    r->n = true;
+    r->z = false;
+    r->c = true;  // `SEC : RTL`, which parks the thread
+    return true;
+  }
+
+  if (left == health) {
+    // `$81:B448  CMP $0C : BEQ $B46E`, and `$B46E` is a bare `CLC : RTL`. Zero
+    // damage, and this copy has already raised the hit flag by the time it finds
+    // that out — which is a real difference from the twin, where a zero-damage
+    // hit leaves no trace at all.
+    PORT_COVER(b41c_no_damage);
+    r->a = left;
+    r->x = index;
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:B44C  STA $0C : JML $81:8506` — the same reaction routine the twin
+  // jumps to, shared rather than re-spelled, because `enemy_survived_react`
+  // reads the record from `$08` and that is where this page keeps it too.
+  PORT_COVER(b41c_survived);
+  wram_w16(w, (uint32_t)dp + B41C_DP_HEALTH, left);
+  return enemy_survived_react(w, dp, r);
+}
+
+// ---------------------------------------------------------------------------
+// $81:CC0A  the reaction — a next-routine swap rather than a stack splice
+// ---------------------------------------------------------------------------
+
+void enemy_cdde_react_begin(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+  PORT_COVER(cdde_react_begin);
+
+  // `LDA $16 : STA $26` then `LDA #$CC2F : STA $16`. The routine it displaces is
+  // parked next door, and `$81:CC2F` is what puts it back — so the flash is a
+  // detour in the actor's own state machine rather than anything to do with
+  // threads. Nothing is suspended and no stack is touched.
+  wram_w16(w, (uint32_t)dp + CDDE_DP_NEXT_SAVED,
+           wram_r16(w, (uint32_t)dp + CDDE_DP_NEXT));
+  wram_w16(w, (uint32_t)dp + CDDE_DP_NEXT, CDDE_REACT_NEXT);
+
+  // `LDA #$001E : STA $24` — the timer `$81:CC2F` counts down, and the thing
+  // this handler reads to know it is already reacting.
+  wram_w16(w, (uint32_t)dp + CDDE_DP_REACT_TIMER, CDDE_REACT_TICKS);
+  // `LDA #$0014 : STA $0C` — and the countdown goes *back up*. A hit that lands
+  // during the reaction is the only way this actor can be finished off, which is
+  // what the branch above this one is for.
+  wram_w16(w, (uint32_t)dp + CDDE_DP_COUNTDOWN, CDDE_REACT_COUNTDOWN);
+
+  // `LDY $08 : LDA $0000,Y : ORA #$0010 : STA $0000,Y`, then `LDA #$0C00 : STA
+  // $0010,Y`. The same two fields `monster_survived_react` ends with, reached
+  // without any of the machinery.
+  uint16_t record = wram_r16(w, (uint32_t)dp + CDDE_DP_RECORD);
+  uint16_t flags = wram_r16(w, (uint32_t)record + ACTOR_FLAGS);
+  wram_w16(w, (uint32_t)record + ACTOR_FLAGS, (uint16_t)(flags | ACTOR_ATTR_SET));
+  wram_w16(w, (uint32_t)record + ACTOR_ATTR, CDDE_REACT_ATTR);
+
+  // `LDA #$0C00` is the last instruction here to set a flag; the two `STA`s that
+  // follow set none, and so does the `RTS`.
+  r->a = CDDE_REACT_ATTR;
+  r->y = record;
+  r->n = false;
   r->z = false;
-  r->c = true;  // `SEC : RTL` — parks the thread
+}
+
+// ---------------------------------------------------------------------------
+// $81:CDDE  enemy_cdde_collide
+// ---------------------------------------------------------------------------
+
+bool enemy_cdde_collide(Wram* w, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r) {
+  r->c = false;  // every one of the four exits is a `CLC : RTL`
+
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `$81:CDDE  CMP #$005C : BCC $CDF7`, and `$CDF7` is `STZ $22 : CLC : RTL`.
+    // Unlike all three copies of `enemy_collide`, the branch that ignores an id
+    // still *writes*: the parked id is cleared. The `STZ` sets no flags, so what
+    // comes back is the `CMP`'s.
+    //
+    // **Deleting this store passes every call on every movie, and clearing the
+    // wrong offset does not** — which is the pair of results that says what is
+    // going on. `$22` is already zero every time this runs, because the only
+    // thing that ever puts anything there is a weapon shot and no input in the
+    // corpus lands one on this creature; write the zero to `$20` instead and the
+    // diff fails at once, because *that* word is live. So the store is
+    // transcribed rather than diffed, exactly like the `STZ $7E` in `enemy_die`
+    // — and unlike that one it stops being a no-op the moment a shot arrives,
+    // which is the same input the five untaken branches below are waiting for.
+    PORT_COVER(cdde_ignore);
+    uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
+    wram_w16(w, (uint32_t)dp + CDDE_DP_HIT_ID, 0);
+    r->a = arg;
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    return true;
+  }
+
+  // `$81:CDE3  STA $22 : AND #$7FFF`, and from here A is the masked id — the
+  // three comparisons below never touch it again, so it is also what comes back.
+  wram_w16(w, (uint32_t)dp + CDDE_DP_HIT_ID, arg);
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+
+  if (id == CDDE_HIT_COUNTED_A || id == CDDE_HIT_COUNTED_B) {
+    // `$81:CE12  INC $0A : CLC : RTL`, reached from two different `BEQ`s.
+    PORT_COVER(cdde_counted);
+    uint16_t n = (uint16_t)(wram_r16(w, (uint32_t)dp + CDDE_DP_COUNTER_0A) + 1);
+    wram_w16(w, (uint32_t)dp + CDDE_DP_COUNTER_0A, n);
+    r->n = (n & 0x8000) != 0;
+    r->z = n == 0;
+    return true;
+  }
+
+  if (id != CDDE_HIT_DAMAGE) {
+    // Everything else falls off the end of the three comparisons into the same
+    // `STZ $22` the below-`$5C` branch uses — so an id it does not recognise
+    // erases the one it just parked two instructions ago. The flags are the last
+    // comparison's, `CMP #$006F`, not the first's.
+    PORT_COVER(cdde_unmatched);
+    uint16_t diff = (uint16_t)(id - CDDE_HIT_COUNTED_B);
+    wram_w16(w, (uint32_t)dp + CDDE_DP_HIT_ID, 0);
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;  // `id == $6F` went to the counted branch above
+    return true;
+  }
+
+  // `$81:CE03  DEC $0C : BMI`. One hit is one decrement — there is no damage
+  // table on this page and no id that costs more than any other.
+  uint16_t left = (uint16_t)(wram_r16(w, (uint32_t)dp + CDDE_DP_COUNTDOWN) - 1);
+  wram_w16(w, (uint32_t)dp + CDDE_DP_COUNTDOWN, left);
+  if (!(left & 0x8000)) {
+    PORT_COVER(cdde_survived);
+    r->n = false;
+    r->z = left == 0;
+    return true;
+  }
+
+  // `$81:CE09  LDX $24 : BNE $CE12`. The countdown has gone under, and what
+  // happens next is decided by whether this actor is *already* reacting.
+  uint16_t timer = wram_r16(w, (uint32_t)dp + CDDE_DP_REACT_TIMER);
+  r->x = timer;
+  if (timer != 0) {
+    // Already flashing, so the killing blow is counted rather than acted on —
+    // and `INC $0A` is the same three instructions the two counted ids reach.
+    // This is `react_already`'s guard with a consequence: the other two copies
+    // return having done nothing, this one keeps a tally.
+    PORT_COVER(cdde_killed_reacting);
+    uint16_t n = (uint16_t)(wram_r16(w, (uint32_t)dp + CDDE_DP_COUNTER_0A) + 1);
+    wram_w16(w, (uint32_t)dp + CDDE_DP_COUNTER_0A, n);
+    r->n = (n & 0x8000) != 0;
+    r->z = n == 0;
+    return true;
+  }
+
+  // `$81:CE0D  JSR $CC0A`, then `CLC : RTL`. X is the zero the `LDX` just read.
+  enemy_cdde_react_begin(w, dp, r);
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $81:B592  enemy_b592_collide
+// ---------------------------------------------------------------------------
+
+bool enemy_b592_collide(Wram* w, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r) {
+  r->a = arg;    // nothing here writes A; there is no `AND #$7FFF` either
+  r->c = false;  // all three exits are `CLC : RTL`
+
+  if (arg != B592_HIT_A && arg != B592_HIT_B) {
+    // `$81:B59C  CLC : RTL`, reached by falling off the end of both `CMP`s — so
+    // the flags are the *second* comparison's. An id of `$07` never gets here,
+    // having branched at the first, which is why subtracting `B592_HIT_B` is the
+    // right spelling and cannot be zero.
+    PORT_COVER(b592_ignore);
+    uint16_t diff = (uint16_t)(arg - B592_HIT_B);
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    return true;
+  }
+
+  // `$81:B59E  STA $1E : DEC $0C : BMI`. One touch is one decrement, with no
+  // table and no distinction between the two ids that get here.
+  wram_w16(w, (uint32_t)dp + B592_DP_HIT_ID, arg);
+  uint16_t left = (uint16_t)(wram_r16(w, (uint32_t)dp + B592_DP_COUNTDOWN) - 1);
+  wram_w16(w, (uint32_t)dp + B592_DP_COUNTDOWN, left);
+  if (!(left & 0x8000)) {
+    PORT_COVER(b592_survived);
+    r->n = false;
+    r->z = left == 0;
+    return true;
+  }
+
+  // `$81:B5A6  INC $0A : CLC : RTL`.
+  PORT_COVER(b592_exhausted);
+  uint16_t n = (uint16_t)(wram_r16(w, (uint32_t)dp + B592_DP_COUNTER_0A) + 1);
+  wram_w16(w, (uint32_t)dp + B592_DP_COUNTER_0A, n);
+  r->n = (n & 0x8000) != 0;
+  r->z = n == 0;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $81:D7F6  enemy_d7f6_collide
+// ---------------------------------------------------------------------------
+
+// The tail at `$81:D825`, reached both by a negative difference and by id `$5E`
+// arriving without one. `health` is whatever was in A at the branch, which is
+// the point of passing it rather than recomputing it.
+static void d7f6_die(Wram* w, uint16_t dp, uint16_t health,
+                     ActorHandlerRegs* r) {
+  // `DEC $0A : STA $0C : STZ $7E`. The order matters for the flags and for
+  // nothing else: the `DEC` is the last instruction here that sets any.
+  uint16_t dead = (uint16_t)(wram_r16(w, (uint32_t)dp + D7F6_DP_DEAD) - 1);
+  wram_w16(w, (uint32_t)dp + D7F6_DP_DEAD, dead);
+  wram_w16(w, (uint32_t)dp + D7F6_DP_HEALTH, health);
+  // The same store `enemy_die` makes and the same caveat: transcribed, because
+  // the word is already zero — `$81:D6DC  STZ $7E` is in this actor's own init.
+  wram_w16(w, (uint32_t)dp + ACTOR_DP_SCRATCH_7E, 0);
+  r->a = health;
+  r->n = (dead & 0x8000) != 0;
+  r->z = dead == 0;
+  r->c = true;  // `$81:D82B  SEC : RTL` — which parks the thread
+}
+
+bool enemy_d7f6_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported) {
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `$81:D7F6  CMP #$005C : BCS : CLC : RTL`. Two instructions and no writes
+    // at all — not even the parked id `enemy_cdde_collide` clears here.
+    //
+    // **And that the store is absent cannot be checked either**, which is the
+    // exact mirror of the finding recorded on `enemy_cdde_collide`'s ignore
+    // path. There, deleting the ROM's `STZ $22` passed every call because the
+    // word was already zero. Here, *adding* a store of zero to `$20` passes
+    // every call for the same reason: nothing in the corpus has ever hit this
+    // creature, so its parked id has never been anything but zero. A store the
+    // diff cannot see and an absent store the diff cannot see are one fact from
+    // two directions, and the input that settles both is the same one.
+    PORT_COVER(d7f6_ignore);
+    uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
+    r->a = arg;
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:D7FD  STA $20 : AND #$7FFF`.
+  PORT_COVER(d7f6_hit);
+  wram_w16(w, (uint32_t)dp + D7F6_DP_HIT_ID, arg);
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+
+  if (id == ENEMY_HIT_SPECIAL_A) {
+    // `CMP #$005E : BEQ $D825` — **into the death tail, not out to a routine**.
+    // Both other copies of this comparison are a `JML $81:83C6`; this one is the
+    // id that kills outright, which is `monster_collide`'s reading of `$5E`
+    // rather than `enemy_collide`'s. What gets stored as health is therefore the
+    // masked id itself, `$005E`, and no subtraction happens.
+    PORT_COVER(d7f6_fatal_id);
+    d7f6_die(w, dp, id, r);
+    return true;
+  }
+
+  if (id == ENEMY_HIT_SPECIAL_B) {
+    // `CMP #$005D : BEQ : JML $81:847E`, the one id it hands back.
+    PORT_COVER(d7f6_special);
+    return enemy_freeze(w, dp, r);
+  }
+
+  // `SEC : SBC #$005C : ASL A : TAX`, then `SEC : LDA $0C : SBC $818561,X`.
+  uint16_t index = (uint16_t)((id - COLLIDE_ID_PLAYER) * 2);
+  uint16_t health = wram_r16(w, (uint32_t)dp + D7F6_DP_HEALTH);
+  uint16_t left =
+      (uint16_t)(health - rom_word(rom, ENEMY_DAMAGE_TABLE + (uint32_t)index));
+  r->x = index;
+
+  if (left & 0x8000) {
+    PORT_COVER(d7f6_died);
+    d7f6_die(w, dp, left, r);
+    return true;
+  }
+
+  if (left == health) {
+    // `CMP $0C : BEQ $D835`, a bare `CLC : RTL` of its own — a different exit
+    // from the ignore path's, and it writes nothing either. With health seeded
+    // to 1 this is the only way a hit leaves this creature alive at all, and it
+    // needs a damage-table entry of zero to do it.
+    PORT_COVER(d7f6_no_damage);
+    r->a = left;
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+
+  // `STA $0C : JML $81:8506` — shared with three of the four other copies,
+  // because this page keeps its display record at `$08` like they do.
+  PORT_COVER(d7f6_survived);
+  wram_w16(w, (uint32_t)dp + D7F6_DP_HEALTH, left);
+  return enemy_survived_react(w, dp, r);
+}
+
+// ---------------------------------------------------------------------------
+// $81:9B6B  enemy_9b6b_collide
+// ---------------------------------------------------------------------------
+
+bool enemy_9b6b_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported) {
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `$81:9B6B  CMP #$005C : BCC : CLC : RTL`, writing nothing — `$81:D7F6`'s
+    // spelling rather than `enemy_cdde_collide`'s.
+    PORT_COVER(d9b6b_ignore);
+    uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
+    r->a = arg;
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  PORT_COVER(d9b6b_hit);
+  wram_w16(w, (uint32_t)dp + D9B6B_DP_HIT_ID, arg);
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+
+  if (id == ENEMY_HIT_SPECIAL_A) {
+    // `$81:9BA2`, nine instructions and then `JML $81:83C6`. For four rounds
+    // this handed back, because those nine were the one thing between this copy
+    // and a routine the port already had.
+    PORT_COVER(d9b6b_fatal_id);
+    (void)unported;
+    return enemy_9b6b_bubble(w, dp, r);
+  }
+  if (id == ENEMY_HIT_SPECIAL_B) {
+    PORT_COVER(d9b6b_special);
+    return enemy_freeze(w, dp, r);
+  }
+
+  uint16_t index = (uint16_t)((id - COLLIDE_ID_PLAYER) * 2);
+  uint16_t health = wram_r16(w, (uint32_t)dp + D9B6B_DP_HEALTH);
+  uint16_t left =
+      (uint16_t)(health - rom_word(rom, ENEMY_DAMAGE_TABLE + (uint32_t)index));
+  r->x = index;
+
+  if (left & 0x8000) {
+    // `$81:9B9A  DEC $26 : STA $32 : STZ $7E : SEC : RTL`. No award, and the
+    // `DEC` is the last instruction here to set a flag.
+    PORT_COVER(d9b6b_died);
+    uint16_t count =
+        (uint16_t)(wram_r16(w, (uint32_t)dp + D9B6B_DP_COUNTER_26) - 1);
+    wram_w16(w, (uint32_t)dp + D9B6B_DP_COUNTER_26, count);
+    wram_w16(w, (uint32_t)dp + D9B6B_DP_HEALTH, left);
+    wram_w16(w, (uint32_t)dp + ACTOR_DP_SCRATCH_7E, 0);
+    r->a = left;
+    r->n = (count & 0x8000) != 0;
+    r->z = count == 0;
+    r->c = true;
+    return true;
+  }
+
+  if (left == health) {
+    PORT_COVER(d9b6b_no_damage);
+    r->a = left;
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+
+  PORT_COVER(d9b6b_survived);
+  wram_w16(w, (uint32_t)dp + D9B6B_DP_HEALTH, left);
+  return enemy_survived_react(w, dp, r);
+}
+
+// ---------------------------------------------------------------------------
+// $81:9BA2  enemy_9b6b_bubble — the tally in front of the splice
+// ---------------------------------------------------------------------------
+
+bool enemy_9b6b_bubble(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+  // `$81:9BA2  TYA : ASL A : AND #$0000 : ROL A : ROL A`. Bit 15 of **Y** — the
+  // raw collision id the dispatcher left there, sign bit still on it — doubled
+  // into a side. The same five instructions `enemy_freeze` runs at `$81:8493`,
+  // and this is the second place the port runs them rather than reading them.
+  uint16_t side = (uint16_t)((r->y & 0x8000) ? 2 : 0);
+
+  // `$81:9BA9  JSL $80:9D6A` — `score_slot` with one comparison instead of two,
+  // so a side matching neither slot comes back as slot 1 rather than "nobody".
+  uint16_t slot = side == wram_r16(w, W_SCORE_SLOT_SIDE) ? 0 : 2;
+  PORT_COVER_IF(slot == 0, d9b6b_bubble_slot_0, d9b6b_bubble_slot_1);
+
+  // `$81:9BAD  INC $1FDC,X`, and `$82:C9AE` is the screen that reads it.
+  uint16_t at = (uint16_t)(D9B6B_FATAL_COUNT + slot);
+  wram_w16(w, at, (uint16_t)(wram_r16(w, at) + 1));
+
+  // `$81:9BB0  JML $81:83C6` — a jump and not a call, so whatever the splice
+  // leaves in the registers is what this branch returns.
+  return enemy_bubble_react(w, dp, r);
+}
+
+// ---------------------------------------------------------------------------
+// $81:F534  actor_f534_collide
+// ---------------------------------------------------------------------------
+
+bool actor_f534_collide(Wram* w, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r) {
+  r->a = arg;    // nothing here writes A
+  r->c = false;  // all three exits are `CLC : RTL`
+
+  if (arg == F534_LATCH_A || arg == F534_LATCH_B || arg == F534_LATCH_C) {
+    // `$81:F54F  STA $3E : CLC : RTL`. The `STA` sets no flags, so what comes
+    // back is the matching `CMP`'s — and a match is equality.
+    PORT_COVER(f534_latch);
+    wram_w16(w, (uint32_t)dp + F534_DP_LATCH, arg);
+    r->n = false;
+    r->z = true;
+    return true;
+  }
+
+  if (arg == F534_LATCH_GUARDED_A || arg == F534_LATCH_GUARDED_B) {
+    // `$81:F553  LDX $06 : CPX #$0004 : BNE +2 : STA $3E`. The store is skipped
+    // unless the guard word is exactly four, and **the flags come from the
+    // `CPX` either way** — not from the `CMP` that got here — because the `STA`
+    // sets none and the `BNE` only jumps over it.
+    uint16_t guard = wram_r16(w, (uint32_t)dp + F534_DP_GUARD);
+    r->x = guard;
+    if (guard == F534_GUARD_VALUE) {
+      PORT_COVER(f534_latch_guarded);
+      wram_w16(w, (uint32_t)dp + F534_DP_LATCH, arg);
+      r->n = false;
+      r->z = true;
+    } else {
+      PORT_COVER(f534_guard_refused);
+      uint16_t diff = (uint16_t)(guard - F534_GUARD_VALUE);
+      r->n = (diff & 0x8000) != 0;
+      r->z = false;
+    }
+    return true;
+  }
+
+  // `$81:F54D  CLC : RTL`, off the end of all five comparisons — so the flags
+  // are the *last* one's, `CMP #$0006`.
+  PORT_COVER(f534_ignore);
+  uint16_t diff = (uint16_t)(arg - F534_LATCH_GUARDED_B);
+  r->n = (diff & 0x8000) != 0;
+  r->z = false;  // `arg == $06` took the branch above
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $83:A264  victim_a264_collide
+// ---------------------------------------------------------------------------
+
+// `$81:8191`, nine bytes, inlined for `$81:B168`'s reason: a routine that sets
+// one byte behind one guard is not a routine worth a registry entry. It is also
+// the first thing in the port to write above `$7E:2000`.
+static void a264_flag_set(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+  uint16_t index = wram_r16(w, (uint32_t)dp + A264_DP_ARRAY_INDEX);
+  r->a = index;
+  if (index == A264_INDEX_NONE) {
+    PORT_COVER(a264_flag_none);
+    // `CMP #$FFFF : BEQ` — equality, so Z set and N clear, and X is untouched.
+    r->n = false;
+    r->z = true;
+    return;
+  }
+  PORT_COVER(a264_flag_set);
+  wram_w8(w, W_A264_FLAG_ARRAY + (uint32_t)index, A264_FLAG_SET);
+  r->x = index;
+  // `SEP #$20 : LDA #$80 : STA : REP #$30`. The `LDA` is eight bits wide, so
+  // what it leaves in the accumulator is `$80` in the low byte over whatever the
+  // high byte held — and the high byte here is the index's, because `TAX` did
+  // not disturb A. N comes from bit 7 of an 8-bit load, and `REP` does not
+  // change it.
+  r->a = (uint16_t)((index & 0xff00) | A264_FLAG_SET);
+  r->n = true;
+  r->z = false;
+}
+
+bool victim_a264_collide(Wram* w, uint16_t dp, uint16_t arg,
+                         ActorHandlerRegs* r) {
+  r->a = arg;
+
+  if (arg == A264_ID_GIVE_UP_FF || arg == A264_ID_GIVE_UP_A ||
+      arg == A264_ID_GIVE_UP_B) {
+    // `$83:A2A5  LDA $06 : JSL $81:8191 : LDA #$0003 : STA $1E : SEC : RTL`.
+    PORT_COVER(a264_give_up);
+    a264_flag_set(w, dp, r);
+    wram_w16(w, (uint32_t)dp + A264_DP_EVENT, A264_EVENT_GIVE_UP);
+    r->a = A264_EVENT_GIVE_UP;
+    r->n = false;
+    r->z = false;
+    r->c = true;  // which parks the thread, as a victim's ending does
+    return true;
+  }
+
+  if (arg == A264_ID_CLAIM_A || arg == A264_ID_CLAIM_B) {
+    // `$83:A293  LDA #$8000` for id `$06`, falling into `$83:A296  STA $18` —
+    // and id `$05` enters at the `STA` with the id still in A. **The same
+    // three-byte saving `victim_collide` makes**, and the same consequence:
+    // one side latches `$8000` and the other latches `$0005`, which is what
+    // `score_add` reads bit 15 of.
+    uint16_t claimant = arg;
+    if (arg == A264_ID_CLAIM_B) {
+      PORT_COVER(a264_claim_b);
+      claimant = 0x8000;
+    } else {
+      PORT_COVER(a264_claim_a);
+    }
+    wram_w16(w, (uint32_t)dp + A264_DP_CLAIMANT, claimant);
+    a264_flag_set(w, dp, r);
+    wram_w16(w, (uint32_t)dp + A264_DP_EVENT, A264_EVENT_CLAIMED);
+    r->a = A264_EVENT_CLAIMED;
+    r->n = false;
+    r->z = false;
+    r->c = true;
+    return true;
+  }
+
+  if (arg == A264_ID_IGNORE_A || arg == A264_ID_IGNORE_B) {
+    // `$83:A2B2  CLC : RTL`, reached by name from two `BEQ`s rather than by
+    // falling off the end — so Z is set here where the fall-through's is not.
+    PORT_COVER(a264_ignore_named);
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+
+  // `$83:A287  AND #$7FFF : CMP #$005C : BCC $A2B2`. Everything that is left is
+  // sorted by whether it is a weapon shot, and this is the only handler in the
+  // project where a shot is answered by *clearing* the event word.
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+  if (id < COLLIDE_ID_PLAYER) {
+    PORT_COVER(a264_ignore_low);
+    uint16_t diff = (uint16_t)(id - COLLIDE_ID_PLAYER);
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$83:A28F  STZ $1E : SEC : RTL`. The `STZ` sets no flags, so the `CMP`'s
+  // stand — and it did not borrow.
+  PORT_COVER(a264_shot_clears);
+  wram_w16(w, (uint32_t)dp + A264_DP_EVENT, 0);
+  r->n = false;
+  r->z = id == COLLIDE_ID_PLAYER;
+  r->c = true;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $81:9063  enemy_9063_collide
+// ---------------------------------------------------------------------------
+
+bool enemy_9063_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported) {
+  if (arg < COLLIDE_ID_PLAYER) {
+    PORT_COVER(d9063_ignore);
+    uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
+    r->a = arg;
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  PORT_COVER(d9063_hit);
+  wram_w16(w, (uint32_t)dp + D9063_DP_HIT_ID, arg);
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+
+  if (id == ENEMY_HIT_SPECIAL_A) {
+    PORT_COVER(d9063_fatal_id);
+    return enemy_bubble_react(w, dp, r);
+  }
+  if (id == ENEMY_HIT_SPECIAL_B) {
+    PORT_COVER(d9063_special);
+    return enemy_freeze(w, dp, r);
+  }
+
+  uint16_t index = (uint16_t)((id - COLLIDE_ID_PLAYER) * 2);
+  uint16_t health = wram_r16(w, (uint32_t)dp + D9063_DP_HEALTH);
+  uint16_t left =
+      (uint16_t)(health - rom_word(rom, ENEMY_DAMAGE_TABLE + (uint32_t)index));
+  r->x = index;
+
+  if (left & 0x8000) {
+    // `$81:9092  DEC $2E : STA $22 : STZ $7E : SEC : RTL`.
+    PORT_COVER(d9063_died);
+    uint16_t count =
+        (uint16_t)(wram_r16(w, (uint32_t)dp + D9063_DP_COUNTER_2E) - 1);
+    wram_w16(w, (uint32_t)dp + D9063_DP_COUNTER_2E, count);
+    wram_w16(w, (uint32_t)dp + D9063_DP_HEALTH, left);
+    wram_w16(w, (uint32_t)dp + ACTOR_DP_SCRATCH_7E, 0);
+    r->a = left;
+    r->n = (count & 0x8000) != 0;
+    r->z = count == 0;
+    r->c = true;
+    return true;
+  }
+
+  if (left == health) {
+    PORT_COVER(d9063_no_damage);
+    r->a = left;
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+
+  PORT_COVER(d9063_survived);
+  wram_w16(w, (uint32_t)dp + D9063_DP_HEALTH, left);
+  return enemy_survived_react(w, dp, r);
+}
+
+// ---------------------------------------------------------------------------
+// $81:AC92  enemy_ac92_collide
+// ---------------------------------------------------------------------------
+
+// `$81:ACC6  DEC $10 : STA $3C : STZ $7E : SEC : RTL`, reached two ways — by a
+// negative difference and by `AC92_HIT_FATAL`, which arrives with the masked id
+// in A instead. `DEC` is the last instruction here that sets a flag, so N and Z
+// describe the *counter* and not the health, exactly as in `enemy_9063_collide`.
+static void ac92_die(Wram* w, uint16_t dp, uint16_t health,
+                     ActorHandlerRegs* r) {
+  uint16_t count =
+      (uint16_t)(wram_r16(w, (uint32_t)dp + DAC92_DP_COUNTER_10) - 1);
+  wram_w16(w, (uint32_t)dp + DAC92_DP_COUNTER_10, count);
+  wram_w16(w, (uint32_t)dp + DAC92_DP_HEALTH, health);
+  // The ninth `STZ $7E`, and the first one written after the store had a reader.
+  // `enemy_freeze` is the only thing in the game that makes this word non-zero,
+  // and level 49's bubble gun is id `$5E` rather than `$5D`, so on this creature
+  // it is zero again — transcribed, not diffed, and now for a stated reason
+  // rather than an unexplained one.
+  wram_w16(w, (uint32_t)dp + ACTOR_DP_SCRATCH_7E, 0);
+  r->a = health;
+  r->n = (count & 0x8000) != 0;
+  r->z = count == 0;
+  r->c = true;
+}
+
+bool enemy_ac92_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported) {
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `$81:AC97  CLC : RTL`, and — like `enemy_9063_collide`'s and unlike
+    // `enemy_cdde_collide`'s — it does not even park the id first.
+    PORT_COVER(dac92_ignore);
+    uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
+    r->a = arg;
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:AC99  STA $3E : AND #$7FFF`.
+  PORT_COVER(dac92_hit);
+  wram_w16(w, (uint32_t)dp + DAC92_DP_HIT_ID, arg);
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+
+  if (id == ENEMY_HIT_SPECIAL_A) {
+    // `CMP #$005E : BEQ $ACCE`, and `$81:ACCE  JML $81:83C6` — served now.
+    PORT_COVER(dac92_special);
+    return enemy_bubble_react(w, dp, r);
+  }
+  if (id == ENEMY_HIT_SPECIAL_B) {
+    // `CMP #$005D : BEQ $ACD2`, and `$81:ACD2  JML $81:847E`.
+    PORT_COVER(dac92_freeze);
+    return enemy_freeze(w, dp, r);
+  }
+  if (id == AC92_HIT_FATAL) {
+    // `CMP #$0067 : BEQ $ACC6` — straight into the death tail with the id still
+    // in A, so `$005E`'s trick at a different address and a different id.
+    PORT_COVER(dac92_fatal_id);
+    ac92_die(w, dp, id, r);
+    return true;
+  }
+
+  // `SEC : SBC #$005C : ASL A : TAX`, then `SEC : LDA $3C : SBC $818561,X`.
+  uint16_t index = (uint16_t)((id - COLLIDE_ID_PLAYER) * 2);
+  uint16_t health = wram_r16(w, (uint32_t)dp + DAC92_DP_HEALTH);
+  uint16_t left =
+      (uint16_t)(health - rom_word(rom, ENEMY_DAMAGE_TABLE + (uint32_t)index));
+  r->x = index;
+
+  if (left & 0x8000) {
+    PORT_COVER(dac92_died);
+    ac92_die(w, dp, left, r);
+    return true;
+  }
+
+  if (left == health) {
+    // `$81:ACD6  CLC : RTL`, a second bare exit and a different one from the
+    // ignore path's.
+    PORT_COVER(dac92_no_damage);
+    r->a = left;
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+
+  PORT_COVER(dac92_survived);
+  wram_w16(w, (uint32_t)dp + DAC92_DP_HEALTH, left);
+  return enemy_survived_react(w, dp, r);
+}
+
+// ---------------------------------------------------------------------------
+// $81:845E  actor_845e_collide
+// ---------------------------------------------------------------------------
+
+bool actor_845e_collide(uint16_t arg, ActorHandlerRegs* r) {
+  // The three named ids come first and are matched against the *unmasked*
+  // argument. An equal `CMP` is the last flag-setting instruction on each of
+  // those exits, so Z set and N clear; the following `SEC` supplies the carry.
+  if (arg == D845E_PARK_A || arg == D845E_PARK_B || arg == D845E_PARK_C) {
+    PORT_COVER(d845e_park_named);
+    r->a = arg;
+    r->n = false;
+    r->z = true;
+    r->c = true;
+    return true;
+  }
+
+  // `AND #$7FFF` — and from here on A is the masked id, on every remaining exit.
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+
+  if (id < COLLIDE_ID_PLAYER) {
+    // `CMP #$005C : BCC $847A`, a bare `CLC : RTL`. The comparison is what sets
+    // N and Z, and it borrowed, which is what the `BCC` took.
+    PORT_COVER(d845e_ignore);
+    uint16_t diff = (uint16_t)(id - COLLIDE_ID_PLAYER);
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  if (id == D845E_PASS_ID) {
+    // `CMP #$005E : BNE $847C` falls *through* on equal, into the same
+    // `CLC : RTL` the ignore path uses. Z and N come from that comparison and
+    // carry from the `CLC` that undoes its borrow-free result.
+    PORT_COVER(d845e_pass);
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:847C  SEC : RTL` — the thread parks. N and Z are the `CMP #$005E`'s.
+  PORT_COVER(d845e_park);
+  uint16_t diff = (uint16_t)(id - D845E_PASS_ID);
+  r->n = (diff & 0x8000) != 0;
+  r->z = false;
+  r->c = true;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $81:EDAA  shot_edaa_collide
+// ---------------------------------------------------------------------------
+
+bool shot_edaa_collide(void) {
+  // One byte, `6B`. There is nothing to write, nothing to read, nothing to
+  // branch on and so no coverage site — a routine with no decision in it has no
+  // untaken branch. What the shim claims is the whole of the interface, and it
+  // claims all of it: see the note in `collide.h`.
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $81:F6A3  shot_f6a3_collide
+// ---------------------------------------------------------------------------
+
+bool shot_f6a3_collide(Wram* w, uint16_t dp, uint16_t arg,
+                       ActorHandlerRegs* r) {
+  // A is never written — `CMP` does not touch it and `STA` does not either — so
+  // the argument comes back in A on both exits, and X and Y are the
+  // dispatcher's.
+  r->a = arg;
+  // Both exits are `CLC : RTL`. There is no `SEC` anywhere in the routine and,
+  // unlike `$82:F1C2`, that really does settle carry: the `CLC` is executed on
+  // every path, so the comparisons' carry never escapes.
+  r->c = false;
+
+  if (arg == SHOT_F6A3_RECORD_A || arg == SHOT_F6A3_RECORD_B ||
+      arg == SHOT_F6A3_RECORD_C) {
+    // `$81:F6B4  STA $3E`, which sets no flags — so N and Z are the matching
+    // `CMP`'s, and an equal comparison is Z set and N clear whichever of the
+    // three it was.
+    PORT_COVER(f6a3_record);
+    wram_w16(w, (uint32_t)dp + SHOT_F6A3_DP_HIT_ID, arg);
+    r->n = false;
+    r->z = true;
+    return true;
+  }
+
+  // Fell off the end of all three comparisons, so the flags are the *last*
+  // one's — `arg - $0001` — and not the first's.
+  PORT_COVER(f6a3_ignore);
+  uint16_t diff = (uint16_t)(arg - SHOT_F6A3_RECORD_C);
+  r->n = (diff & 0x8000) != 0;
+  r->z = false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $82:F4EF  actor_f4ef_collide
+// ---------------------------------------------------------------------------
+
+bool actor_f4ef_collide(Wram* w, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r) {
+  // Nothing here writes A, so the argument is what comes back on both exits.
+  r->a = arg;
+  // `CLC : RTL` twice, with no `SEC` in the routine at all — so this actor can
+  // never park its thread either, and standing on it is a thing it notices
+  // rather than a thing that stops it.
+  r->c = false;
+
+  if (arg == F4EF_LATCH_P1 || arg == F4EF_LATCH_P2) {
+    // `$82:F4FB  STA $18`, which sets no flags — so N and Z are the matching
+    // `CMP`'s, and an equal comparison is Z set and N clear for either id.
+    PORT_COVER(f4ef_player);
+    wram_w16(w, (uint32_t)dp + F4EF_DP_HIT_ID, arg);
+    r->n = false;
+    r->z = true;
+    return true;
+  }
+
+  // Fell off the end of both comparisons, so the flags are the *second* one's —
+  // `arg - $0006`. An id of `$0005` never gets here, having branched at the
+  // first, which is why subtracting `F4EF_LATCH_P2` is the right spelling and
+  // cannot come out zero.
+  PORT_COVER(f4ef_ignore);
+  uint16_t diff = (uint16_t)(arg - F4EF_LATCH_P2);
+  r->n = (diff & 0x8000) != 0;
+  r->z = false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $82:DEEB  actor_deeb_collide
+// ---------------------------------------------------------------------------
+
+bool actor_deeb_collide(Wram* w, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r) {
+  // `CMP #$00FF` is the only instruction in the routine that sets a flag, so
+  // both exits carry its N and Z — and an equal comparison is Z set, N clear.
+  r->a = arg;
+  if (arg != DEEB_ID_STOP) {
+    PORT_COVER(deeb_ignore);
+    uint16_t diff = (uint16_t)(arg - DEEB_ID_STOP);
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+  PORT_COVER(deeb_stop);
+  wram_w16(w, (uint32_t)dp + DEEB_DP_LATCH, arg);
+  r->n = false;
+  r->z = true;
+  r->c = true;  // `$82:DEF2  SEC` before the store — this parks the thread
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $82:F1C2  actor_f1c2_collide
+// ---------------------------------------------------------------------------
+
+bool actor_f1c2_collide(Wram* w, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r) {
+  // `$82:F1C2  TAY` — and nothing puts Y back, so the id is an output too.
+  r->a = arg;
+  r->y = arg;
+
+  bool act = arg == F1C2_ID_A || arg == F1C2_ID_B || arg == F1C2_ID_C;
+  uint16_t id = arg;
+  if (!act) {
+    // `AND #$7FFF : CMP #$005C : BCS`. The mask happens only on this path, so
+    // what comes back in A is the raw id for the three named ids and the masked
+    // one for everything else.
+    id = arg & ENEMY_COLLIDE_ID_MASK;
+    r->a = id;
+    act = id >= COLLIDE_ID_PLAYER;
+    if (!act) {
+      // `$82:F1DA  RTL`, with no `CLC` in front of it — and carry is still
+      // *clear*, because the `CMP #$005C` that decided this borrowed. See the
+      // note on `ACTOR_F1C2_COLLIDE_ENTRY`: this is where the first reading of
+      // the routine was wrong and the diff said so.
+      PORT_COVER(f1c2_ignore);
+      uint16_t diff = (uint16_t)(id - COLLIDE_ID_PLAYER);
+      r->n = (diff & 0x8000) != 0;
+      r->z = false;
+      r->c = false;
+      return true;
+    }
+    PORT_COVER(f1c2_act_shot);
+  } else {
+    PORT_COVER(f1c2_act_id);
+  }
+
+  // `LDY $08 : LDA #$0000 : STA $000E,Y : DEC $14 : RTL`. Switching its own
+  // collision off, the way a spent shot and a claimed victim do.
+  uint16_t record = wram_r16(w, (uint32_t)dp + F1C2_DP_RECORD);
+  wram_w16(w, (uint32_t)record + ACTOR_COLLIDE_ID, 0);
+  uint16_t count = (uint16_t)(wram_r16(w, (uint32_t)dp + F1C2_DP_COUNTER_14) - 1);
+  wram_w16(w, (uint32_t)dp + F1C2_DP_COUNTER_14, count);
+  // `LDY $08` replaced the `TAY`, and `LDA #$0000` replaced the id.
+  r->a = 0;
+  r->y = record;
+  // The `DEC` is the last flag-setter, and it reads the word in memory.
+  r->n = (count & 0x8000) != 0;
+  r->z = count == 0;
+  // All four ways in got here through a comparison that did not borrow — three
+  // of them equal, the fourth the `BCS` — so carry is set on every one.
+  r->c = true;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $82:9660  boss_9660_collide
+// ---------------------------------------------------------------------------
+
+bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                       ActorHandlerRegs* r) {
+  // `$82:9660  LDY $0078 : LDX $000E,Y`. Absolute, not direct — its own display
+  // record out of the global the dispatcher published, and then that record's
+  // `ACTOR_COLLIDE_ID`. Y is never touched again, so this is also what comes
+  // back in Y on all seven exits.
+  uint16_t record = wram_r16(w, W_HANDLER_SELF);
+  uint16_t self_id = wram_r16(w, (uint32_t)record + ACTOR_COLLIDE_ID);
+  r->y = record;
+  r->a = arg;  // nothing before the `STA $42` writes A
+
+  if (self_id == BOSS_9660_ID_INVULNERABLE) {
+    // `CPX #$0009 : BEQ $9674`, and `$9674` is `STZ $42 : CLC : RTL`. The
+    // comparison is the last thing to set N and Z, and it found them equal.
+    PORT_COVER(boss_invulnerable);
+    r->x = self_id;
+    wram_w16(w, (uint32_t)dp + BOSS_9660_DP_HIT_ID, 0);
+    r->n = false;
+    r->z = true;
+    r->c = false;  // `CLC`
+    return true;
+  }
+
+  // `$82:966B  LDX $40 : BNE $9674` — the flash timer, which is read on every
+  // call and decides two of the three ignore paths between them.
+  uint16_t flash = wram_r16(w, (uint32_t)dp + BOSS_9660_DP_FLASH);
+  r->x = flash;
+  if (flash != 0) {
+    // The `LDX` is what set N and Z here, from the timer rather than from any
+    // comparison — so a flash timer with bit 15 set would come back N, which is
+    // a thing the port has to reproduce even though `$82:8F86` only ever writes
+    // 3.
+    PORT_COVER(boss_flashing);
+    wram_w16(w, (uint32_t)dp + BOSS_9660_DP_HIT_ID, 0);
+    r->n = (flash & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `CMP #$005C : BCS $9678`, falling through into the same three
+    // instructions. The comparison is unsigned and `arg` still carries bit 15,
+    // so a second player's shot (`$805C`) is above the line exactly as a first
+    // player's is.
+    PORT_COVER(boss_ignore);
+    uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
+    wram_w16(w, (uint32_t)dp + BOSS_9660_DP_HIT_ID, 0);
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;  // `arg == $5C` took the branch
+    r->c = false;
+    return true;
+  }
+
+  // `$82:9678  STA $42 : AND #$7FFF`. The parked id keeps bit 15, because the
+  // death sequence hands this very word to `score_add` to decide whose $2000 it
+  // is; the masked copy is what the comparisons below work on.
+  wram_w16(w, (uint32_t)dp + BOSS_9660_DP_HIT_ID, arg);
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+
+  // The four rewrites. Nothing else in the game does this, and two of them are
+  // decided by `LDA $0020 : AND #$0001` / `AND #$0003` — the low bits of the
+  // scheduler tick, read straight rather than through `$80:9D39`. The tick is a
+  // 32-bit counter at `W_SCHED_TICK` and only its low word is loaded.
+  uint16_t tick = wram_r16(w, W_SCHED_TICK);
+  if (id == BOSS_9660_ID_ALT_HALF || id == BOSS_9660_ID_ALT_QUARTER) {
+    uint16_t mask = id == BOSS_9660_ID_ALT_HALF ? 0x0001 : 0x0003;
+    if (tick & mask) {
+      PORT_COVER(boss_alt_dear);
+      id = BOSS_9660_ID_DEAR;
+    } else {
+      PORT_COVER(boss_alt_cheap);
+      id = BOSS_9660_ID_CHEAP;
+    }
+  } else if (id == BOSS_9660_ID_REMAP_61) {
+    PORT_COVER(boss_remap_61);
+    id = BOSS_9660_ID_61_AS;
+  } else if (id == BOSS_9660_ID_REMAP_6F) {
+    PORT_COVER(boss_remap_6f);
+    id = BOSS_9660_ID_6F_AS;
+  }
+
+  // `$82:96BA  SEC : SBC #$005C : ASL A : TAX`, the same index the whole enemy
+  // family builds, into the same `ENEMY_DAMAGE_TABLE` — so a boss and a level-1
+  // zombie read one table and differ only in what they do with the answer.
+  PORT_COVER(boss_hit);
+  uint16_t index = (uint16_t)((id - COLLIDE_ID_PLAYER) * 2);
+  r->x = index;
+
+  // `DEC $3E : DEC $44` — both unconditional, and both before the subtraction,
+  // so a hit that turns out to do no damage at all still flashes the boss and
+  // still counts against its phase.
+  wram_w16(w, (uint32_t)dp + BOSS_9660_DP_HIT_FLAG,
+           (uint16_t)(wram_r16(w, (uint32_t)dp + BOSS_9660_DP_HIT_FLAG) - 1));
+  wram_w16(w, (uint32_t)dp + BOSS_9660_DP_PHASE_COUNT,
+           (uint16_t)(wram_r16(w, (uint32_t)dp + BOSS_9660_DP_PHASE_COUNT) - 1));
+
+  uint16_t health = wram_r16(w, (uint32_t)dp + BOSS_9660_DP_HEALTH);
+  uint16_t left =
+      (uint16_t)(health - rom_word(rom, ENEMY_DAMAGE_TABLE + (uint32_t)index));
+  r->a = left;
+  // Every one of the three damage exits is `SEC : RTL`, so **each of them parks
+  // the boss's thread** — `thread_call_handler`'s `handler_park`, which until
+  // now only a dying enemy reached. That is the ROM's own arithmetic and not a
+  // reading of it: `$82:96D7  38 6B`, with all three branches falling into it.
+  r->c = true;
+
+  if (left & 0x8000) {
+    // `$82:96D5  DEC $3A`, and nothing else — **the negative health is not
+    // stored**, which is where this parts company with `enemy_collide` and both
+    // of its copies. What ends the boss is the flag, not the number.
+    PORT_COVER(boss_died);
+    uint16_t dead = (uint16_t)(wram_r16(w, (uint32_t)dp + BOSS_9660_DP_DEAD) - 1);
+    wram_w16(w, (uint32_t)dp + BOSS_9660_DP_DEAD, dead);
+    // The `DEC` is the last instruction to set a flag, so N and Z describe the
+    // word in memory rather than the subtraction that got here.
+    r->n = (dead & 0x8000) != 0;
+    r->z = dead == 0;
+    return true;
+  }
+
+  if (left == health) {
+    // `CMP $3C : BEQ $96D7`. A damage-table entry of zero, and the store is
+    // skipped as pointless — but `$3E` and `$44` above already moved, so unlike
+    // `enemy_collide`'s equivalent this one is not invisible.
+    PORT_COVER(boss_no_damage);
+    r->n = false;
+    r->z = true;
+    return true;
+  }
+
+  // `$82:96D1  STA $3C`, which sets no flags — so N and Z are the `CMP $3C`'s,
+  // comparing a difference that is smaller than the health it came from.
+  PORT_COVER(boss_survived);
+  wram_w16(w, (uint32_t)dp + BOSS_9660_DP_HEALTH, left);
+  r->n = ((uint16_t)(left - health) & 0x8000) != 0;
+  r->z = false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $81:D301  enemy_d301_collide
+// ---------------------------------------------------------------------------
+
+// `$81:D33E`, the tail a survivor runs after `enemy_survived_react` comes back.
+// It is reached by `JMP` from the instruction after the `JSL`, so it is the rest
+// of this call rather than a call of its own — `$80:DC09`'s situation exactly.
+//
+// `carry_in` is the reaction's carry and it is a genuine input: `rng_next`'s
+// `ROL` shifts it in.
+static void d301_survived_tail(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+  RngResult rng;
+  rng_next(w, r->c, &rng);
+
+  // `CMP #$0019 : BCS $D35E`, and `$D35E` is `SEC : RTL`. Twenty-five draws in
+  // 256 do something; the other 231 leave with the comparison's flags standing
+  // and the `SEC` over the top of its carry.
+  if (rng.a >= D301_RESEED_CHANCE) {
+    PORT_COVER(d301_no_reseed);
+    r->a = rng.a;
+    uint16_t diff = (uint16_t)(rng.a - D301_RESEED_CHANCE);
+    r->n = (diff & 0x8000) != 0;
+    r->z = rng.a == D301_RESEED_CHANCE;
+    r->c = true;
+    return;
+  }
+
+  // `JSR $81:D142`, three instructions — `LDA #$D148 : STA $14 : RTS` — inlined
+  // for `$81:B168`'s reason: a routine that stores one constant is not a routine
+  // worth a registry entry.
+  PORT_COVER(d301_reseed);
+  wram_w16(w, (uint32_t)dp + D301_NEXT_ROUTINE, D301_NEXT_ROUTINE_HURT);
+
+  // `LDA $10 : STA $1A : STA $1E : STA $22 : STA $26`, then the same for `$12`
+  // into the odd halves. Four of the eight trail slots put back to where the
+  // actor actually is — the same four `$81:D210` seeds when it is built.
+  uint16_t x = wram_r16(w, (uint32_t)dp + D301_DP_X);
+  uint16_t y = wram_r16(w, (uint32_t)dp + D301_DP_Y);
+  for (int i = 0; i < D301_DP_TRAIL_RESEED; i++) {
+    uint32_t slot = (uint32_t)dp + D301_DP_TRAIL + i * D301_DP_TRAIL_STRIDE;
+    wram_w16(w, slot, x);
+    wram_w16(w, slot + 2, y);
+  }
+
+  // The `LDA $12` is the last flag-setter — the stores under it set none — and
+  // then `SEC : RTL`.
+  r->a = y;
+  r->n = (y & 0x8000) != 0;
+  r->z = y == 0;
+  r->c = true;
+}
+
+bool enemy_d301_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported) {
+  r->a = arg;
+
+  if (arg == D301_ID_STOP) {
+    // `$81:D301  CMP #$00FF : BEQ $D362`, and `$D362` is `INC $0C : SEC : RTL`.
+    // The positive verdict: the body's next pass sees a non-zero, non-negative
+    // `$0C` and takes itself apart without paying anybody.
+    //
+    // **This is the whole of what the corpus checks.** All three calls level 9
+    // makes carry this id.
+    PORT_COVER(d301_stop);
+    uint16_t verdict =
+        (uint16_t)(wram_r16(w, (uint32_t)dp + D301_DP_VERDICT) + 1);
+    wram_w16(w, (uint32_t)dp + D301_DP_VERDICT, verdict);
+    // The `INC` reads and writes memory, so N and Z describe the word rather
+    // than the `CMP` that got here.
+    r->n = (verdict & 0x8000) != 0;
+    r->z = verdict == 0;
+    r->c = true;
+    return true;
+  }
+
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `$81:D306  CMP #$005C : BCC $D360` — spelled as a branch *to* the ignore
+    // exit rather than past it, which changes nothing but is why the listing
+    // does not rhyme with the other seven at a glance. `$D360` is `CLC : RTL`
+    // and writes nothing.
+    PORT_COVER(d301_ignore);
+    uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:D30B  STA $36 : AND #$7FFF`. The raw id, sign bit and all, because the
+  // body's award reads it to decide whose points these are.
+  wram_w16(w, (uint32_t)dp + D301_DP_HIT_ID, arg);
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+
+  if (id == COLLIDE_ID_PLAYER) {
+    // `$81:D310  CMP #$005C : BEQ $D360`, and **no other copy of this routine
+    // has this comparison**. The ordinary player shot is parked and then thrown
+    // away: in the other seven `$5C` is index zero of `ENEMY_DAMAGE_TABLE` and
+    // costs a point, and here it costs nothing at all. An equal `CMP` leaves Z
+    // set and carry set, and the `CLC` at the exit takes the carry back.
+    PORT_COVER(d301_shot_immune);
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+
+  if (id == ENEMY_HIT_SPECIAL_B) {
+    // `$81:D315  CMP #$005D : BEQ $D33A : JML $81:847E`, the family's one
+    // hand-back. There is no `CMP #$005E` here — `$5E` falls through to the
+    // damage table, where its entry is the index-2 word — so the `JML $81:83C6`
+    // three bytes above `$D33A` is unreachable from this entry point.
+    PORT_COVER(d301_special);
+    return enemy_freeze(w, dp, r);
+  }
+
+  // `SEC : SBC #$005C : ASL A : TAX`, then `SEC : LDA $0E : SBC $818561,X`.
+  uint16_t index = (uint16_t)((id - COLLIDE_ID_PLAYER) * 2);
+  uint16_t health = wram_r16(w, (uint32_t)dp + D301_DP_HEALTH);
+  uint16_t left =
+      (uint16_t)(health - rom_word(rom, ENEMY_DAMAGE_TABLE + (uint32_t)index));
+  r->x = index;
+
+  if (left & 0x8000) {
+    // `$81:D366  DEC $0C : STA $0E : STZ $7E : SEC : RTL`. The negative verdict,
+    // and the `DEC` is the last instruction here to set a flag.
+    PORT_COVER(d301_died);
+    uint16_t verdict =
+        (uint16_t)(wram_r16(w, (uint32_t)dp + D301_DP_VERDICT) - 1);
+    wram_w16(w, (uint32_t)dp + D301_DP_VERDICT, verdict);
+    wram_w16(w, (uint32_t)dp + D301_DP_HEALTH, left);
+    // `enemy_die`'s store, and the same caveat for the sixth time: `$81:D26D
+    // STZ $7E` is in this actor's own init, so the word is already zero and
+    // deleting the line would change nothing the diff can see.
+    wram_w16(w, (uint32_t)dp + ACTOR_DP_SCRATCH_7E, 0);
+    r->a = left;
+    r->n = (verdict & 0x8000) != 0;
+    r->z = verdict == 0;
+    r->c = true;
+    return true;
+  }
+
+  if (left == health) {
+    // `$81:D329  CMP $0E : BEQ $D360` — the same bare `CLC : RTL` the two ignore
+    // paths use, so three of this routine's eight exits share one instruction
+    // pair and differ only in the flags they arrive with.
+    PORT_COVER(d301_no_damage);
+    r->a = left;
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:D32D  STA $0E : JSL $81:8506`, and then — unlike every other copy — the
+  // reaction *returns* here rather than being tail-called into. This page keeps
+  // its display record at `$08` (`$81:D214  STA $08`), which is what lets the
+  // shared routine work on it.
+  PORT_COVER(d301_survived);
+  wram_w16(w, (uint32_t)dp + D301_DP_HEALTH, left);
+  if (!enemy_survived_react(w, dp, r)) return false;
+  d301_survived_tail(w, dp, r);
   return true;
 }

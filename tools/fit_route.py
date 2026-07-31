@@ -28,6 +28,17 @@ replay per leg, which is a few seconds each.
 Prints a complete .zmv -- the prefix, then the route -- on stdout, and says on
 stderr whether it arrived.
 
+**It cannot cross an escalator, and level 25 starts on one.** The loop's whole
+method is press, release, measure -- and an escalator moves the player while the
+button is up, so the measurement lands back where the leg began and the
+no-progress guard nudges sideways forever. Three runs of 40, 53 and 48 legs
+finished 0, 200 and 46 pixels from where they started. `zamn_assets route` is no
+help either: its 2x2-clear grid treats escalator tiles as walkable in both
+directions, and both of its routes south through level 25 go through one.
+`movies/level25-boss.zmv` is hand-written for that reason -- render the map with
+`zamn_assets level <rom> <n> map.png`, mark the start and the target, and tune
+nine legs against `--pos`.
+
 `--fire` holds Y down the whole way, which turns a walk into a fighting retreat.
 Some objects are **contested**: `$80:CAEE` lets collision id $0004 -- the monster
 side -- take one, and level 45's `$80:FAA4` object was lost to a monster standing
@@ -59,7 +70,17 @@ ASSETS = os.path.join("build", "zamn_assets.exe")
 # 45's fitter thrashed for twenty legs trying to stand exactly on an object it
 # had been touching since leg 36.
 ARRIVED = 7
-STUCK_NUDGE = 14  # frames of a perpendicular step, when a leg cannot finish
+# Frames of a perpendicular step, when a leg cannot finish -- tried in this
+# order, so a lane change is attempted before a corridor change.
+#
+# **One length is not enough, and level 29 is what proved it.** 14 frames is 28
+# pixels, which clears a leg that snapped one lane the wrong way. It does not
+# clear a *chicane*: at (773,461) the way west is a 56-pixel detour south, and
+# the fitter spent 41 legs stepping 28 pixels down, 28 back up and asking the
+# same blocked question again. Re-anchoring by hand at a wall 130 pixels away cut
+# the same route from 277 cells to 147 and it fitted without a thrash -- so the
+# fix is to try a longer step before giving up, not to plan better.
+STUCK_NUDGE = (14, 28, 56)
 # How long the player must hold still before a leg that has not reached its
 # target is called finished anyway. Four pixels of walking, which is well clear
 # of anything the position could do on its own, and short enough to be worth
@@ -128,7 +149,7 @@ def main():
             # planned for is not the row he is in. Step one lane the other way
             # and let the next search start from wherever that lands, which is
             # the whole reason this loop re-plans rather than corrects.
-            direction, target, hold = unstick.pop(0), None, STUCK_NUDGE
+            (direction, hold), target = unstick.pop(0), None
         else:
             leg = first_leg(rom, level, pos[0], pos[1], x1, y1)
             if leg is None:
@@ -174,7 +195,8 @@ def main():
             # Not one pixel of progress. Try a lane either side before giving up
             # on the route; if neither helps, the loop's own no-progress guard
             # below stops it.
-            unstick = ["Up", "Down"] if AXIS[direction] == 0 else ["Left", "Right"]
+            both = ["Up", "Down"] if AXIS[direction] == 0 else ["Left", "Right"]
+            unstick = [(d, n) for n in STUCK_NUDGE for d in both]
             continue
 
         legs.append((frame, direction))

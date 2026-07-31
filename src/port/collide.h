@@ -186,6 +186,17 @@ typedef struct {
   bool entered;
   uint16_t a, x, y;
   bool c;
+  // Set, on a `false` return only, to the handler address the port does not
+  // have — and left zero when the routine *does* have the handler and the
+  // handler itself declined one level down.
+  //
+  // The two are different findings and the census has to tell them apart: a
+  // dispatch to an address nobody has written is a routine to port, while
+  // `enemy_collide` handing back id `$5D` is a decline that `enemy_collide`'s own
+  // registry entry already names by its real address. This field replaced a list
+  // of the handlers that can decline internally, which had four of them on it and
+  // by then wanted eight.
+  uint32_t unported;
 } ThreadCallResult;
 
 // Enter thread `slot`'s registered handler with one word of argument.
@@ -223,6 +234,77 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
 #define PLAYER_COLLIDE_SPAWN_3 0xfaa4u
 // And id $27, which is the only one of the seventeen that heals you.
 #define PLAYER_COLLIDE_HEAL 0xfacfu
+// The last entry any input has ever asked for and the only one the census still
+// named: **one call, on `movies/level29-firstaid.zmv`, in the whole corpus.**
+// `LDA $70 : CMP #$0002 : BEQ : CMP #$0004 : BEQ : JMP $DC09` — the states-2-and-4
+// guard `ACTOR_DP_STATE` already documents, written out longhand, with a tail
+// jump for every other state.
+#define PLAYER_COLLIDE_STATE_GATE 0xf9aeu
+
+// **Two more of the same shape**, named by the nine-level round's census. All
+// four of `$80:F979`, `$80:F999`, `$80:F9AE` and `$80:F9BE` open by testing
+// `ACTOR_DP_STATE` against the same small set and returning if it matches; what
+// differs is what they do when it does not, and how many states are in the set.
+// Read as a group they are one idea written four times, which is the third time
+// this table has done that (`$80:FA26`'s four spawns, `$80:F87B`/`$80:F8D6`).
+//
+// `$80:F9BE` is id `$0A`, and it is `$80:F9AE` with the tail inlined: two state
+// tests and then `LDA #$F9D0 : STA $28` — a queue into `PLAYER_DP_NEXT` rather
+// than a `JMP` to a routine that queues. What it queues is a routine that costs
+// the player a point of health (`$80:F9D2  LDA $1CB8,X : BEQ : DEC A : STA`),
+// plays sound `$19`, and runs an animation for `$4B` ticks.
+#define PLAYER_COLLIDE_QUEUE 0xf9beu
+#define PLAYER_QUEUE_NEXT 0xf9d0u
+
+// `$80:F979` is id `$0B`, and it is the one that is not just a guard. It tests
+// `ACTOR_DP_HURT_TIMER` first — the same `BPL` `$80:DC09` and `$80:F96C` open
+// with, so a hit inside the invulnerability window does nothing — then **three**
+// states rather than two, and then posts a hit: `ACTOR_DP_EVENT` = `$C000` and
+// the recovery timer back to `$30`.
+//
+// That makes it a sibling of `$80:F950`, the ordinary hit path, with two
+// constants changed: that one posts `$8001` and re-arms `$40`. Two kinds of
+// being hurt, told apart by the word `$80:D050` reads out of `ACTOR_DP_EVENT`.
+#define PLAYER_COLLIDE_HURT_ALT 0xf979u
+#define PLAYER_EVENT_HURT_ALT 0xc000
+#define PLAYER_HURT_ALT_TIMER 0x0030
+// The third state this one also returns on, on top of the two above.
+#define PLAYER_STATE_IGNORE_C 0x000e
+
+// The fourth of the group, and the only one still unported: id `$35`, three
+// state tests and then `JMP $80:E331`. It is *not* in any census — no input has
+// ever carried id `$35` to the player — so it is recorded here rather than
+// written, because a routine ported ahead of its input is transcription and this
+// project has enough of that already.
+#define PLAYER_COLLIDE_STATE_GATE_E331 0xf999u
+
+// --- $80:DC09, the tail ------------------------------------------------------
+
+// A `JMP`, not a `JSR`, so this routine's `RTS` is the one the jump table's
+// caller gets — which is why it is ported here rather than declined: it is not a
+// separate call, it is the rest of this one.
+//
+// Three guards and one store. `BPL` on `ACTOR_DP_HURT_TIMER` — still
+// recovering, so nothing; `BNE` on `ACTOR_DP_STATE` — any state but zero, so
+// nothing (which makes the caller's `CMP #$0002`/`CMP #$0004` redundant for
+// every state except those two, and they are the two that return early anyway);
+// and a compare of `$10` against a constant that reads like a sentinel.
+#define PLAYER_STATE_TAIL 0x80dc09u
+// What it queues into `PLAYER_DP_NEXT` when all three guards pass.
+#define PLAYER_STATE_TAIL_NEXT 0xdc1eu
+// `$80:DC13  CMP #$FD72`. A magic word compared against `$10` and nothing else
+// in reach explains it, so it is named for the comparison rather than for a
+// meaning nobody has established.
+#define PLAYER_STATE_TAIL_SENTINEL 0xfd72u
+// `$10` and `$28` on the player's page. `$28` is the "what I do next" pointer —
+// the same role `$0E`, `$12` and `$16` play on the three enemy pages, at a fourth
+// offset, because every actor lays out its own page.
+#define PLAYER_DP_TAIL_WORD 0x10
+#define PLAYER_DP_NEXT 0x28
+// The two states `$80:F9AE` returns on without doing anything — the ones
+// `ACTOR_DP_STATE` already describes as ignoring collisions.
+#define PLAYER_STATE_IGNORE_A 0x0002
+#define PLAYER_STATE_IGNORE_B 0x0004
 
 // What all four spawn — `LDA #$E0B4 : LDY #$0082` — and the four values of `$04`
 // that tell it apart. The thread body is unported; what the port owns is the
@@ -415,8 +497,19 @@ bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 #define ENEMY_SURVIVED_ENTRY 0x818506u
 // The two ids that leave through routines of their own — `$81:8894  CMP #$005E :
 // BEQ` and `$81:8899  CMP #$005D : BEQ`, both `JML`s. Still unreached.
-#define ENEMY_SPECIAL_A_ENTRY 0x81847eu
-#define ENEMY_SPECIAL_B_ENTRY 0x8183c6u
+//
+// **These two were the wrong way round until `$81:B41C` was ported.** The `_A`
+// and `_B` suffixes pair with `ENEMY_HIT_SPECIAL_A`/`_B` — `$5E` and `$5D` — but
+// the addresses were written down in the order the `JML`s appear in the ROM,
+// which is the opposite order: `$8897  BEQ` lands on `$88C0  JML $8183C6` and
+// `$889C  BEQ` on `$88C4  JML $81847E`. Nothing could see it. Both ids decline
+// either way, so the only thing the constant picks is the address the *census*
+// prints, and neither id has ever been reached by any input — `enemy_hit_special`
+// is one of the sites the coverage report has carried untaken from the start. It
+// was caught by porting the third copy of this routine and reading the same two
+// branches again from the bytes.
+#define ENEMY_SPECIAL_A_ENTRY 0x8183c6u  /* id $5E */
+#define ENEMY_SPECIAL_B_ENTRY 0x81847eu  /* id $5D */
 
 // The far address `$81:8539  LDA #$8542 : DEC A` writes into the gap, and the
 // bank `$81:8532  LDA #$0081 : XBA` writes above it. One less than the routine
@@ -426,6 +519,81 @@ bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 // How far the parked stack pointer moves, which is also how many bytes the
 // three words below it slide.
 #define ENEMY_REACT_FRAME 3
+
+// --- $81:83C6  enemy_bubble_react -------------------------------------------
+//
+// **The routine every copy of `$81:8888` hands id `$5E` to**, and the last of
+// the three splices in this family to be written.
+//
+// It is `enemy_survived_react` with the resume address changed, and nothing
+// else: the same `LDY $08 : LDA $0000,Y : AND #$0010` guard (branch polarity
+// flipped, same two exits), the same three-word frame slid into a suspended
+// thread's stack, the same `SEC` that parks the thread. What the woken thread
+// runs is `$81:8404`, which opens by pushing the creature's metasprite and
+// collision id and then writes `$0036` over `ACTOR_COLLIDE_ID` — so the id `$5E`
+// does not damage anything, it *replaces what the creature is* until something
+// pops those words back.
+//
+// **The weapon is named off the ROM's text, and the chain is one link longer
+// than `enemy_freeze`'s.** `$81:9BA2` — the nine instructions
+// `enemy_9b6b_collide` runs on this same id before `JML`ing here — increments
+// `D9B6B_FATAL_COUNT`, `$7E:1FDC`, and the end-of-level tally reads that word to
+// decide whether to draw a string that says `MARTIAN/BUBBLED`. So `$5E` is the
+// **bubble** weapon: `ENEMY_DAMAGE_TABLE`'s entry for it is zero, like `$5D`'s,
+// because neither weapon damages anything. One freezes and one bubbles.
+#define ENEMY_BUBBLE_ENTRY 0x8183c6u
+
+// `$81:83FB  LDA #$8404 : DEC A` — the same bank and the same three-word frame as
+// the other two splices, one less than the routine it wants because an `RTL`
+// adds one.
+#define BUBBLE_REACT_RETURN 0x8403
+
+// The reaction. Always true: it has nothing left to decline.
+bool enemy_bubble_react(Wram* w, uint16_t dp, ActorHandlerRegs* r);
+
+// --- $81:847E  enemy_freeze -------------------------------------------------
+//
+// **The routine every copy of `$81:8888` hands id `$5D` to**, and the one that
+// explains a store this file has apologised for six times.
+//
+// Each of the eight copies ends a death with `STZ $7E`, and each carries a
+// comment saying the store is transcribed rather than diffed because the word is
+// already zero on every call. It was already zero because **no input in the
+// project had ever fired anything but the squirt gun.** `movies/level17-weapon.zmv`
+// is the first one that does, and `$81:847E  INC $7E` is the only writer in the
+// game that ever makes that word non-zero. The `STZ` is its reset.
+//
+// What it does with the count identifies the weapon, off the ROM's own text
+// rather than off the screen: on the fifth hit it increments `$7E:1FE0`, and
+// `$82:CA8C  LDA $1FE0 : CMP #$0028 : BCC` is the end-of-level tally deciding
+// whether to draw the string at `$82:CABD`, which reads
+// `MONSTER/FROZEN/....////BONUS?`. So `$5D` is the **ice** weapon, five hits
+// freeze one thing, and forty freezes pay a bonus. Its `ENEMY_DAMAGE_TABLE`
+// entry being **zero** is not an oversight either: it never damages anything.
+#define ENEMY_FREEZE_ENTRY 0x81847eu
+
+// `INC $7E : LDA $7E : CMP #$0005 : BCS`, on the *target's* page. Never reset by
+// this routine, so once a creature is at five every later hit acts.
+#define ACTOR_DP_FREEZE_HITS 0x7e  /* the same word as ACTOR_DP_SCRATCH_7E */
+#define FREEZE_HITS_NEEDED 0x0005
+
+// `INC $1FE0,X`, indexed by the score *slot* — not the side. `$81:849B  JSL
+// $80:9D6A` converts one to the other, and it is `score_slot` with one
+// comparison instead of two: `LDX #$0000 : CMP $1E84 : BEQ : INX : INX : RTL`.
+// It cannot answer "nobody", so there is no discard path here.
+#define W_MONSTERS_FROZEN 0x1fe0
+#define FREEZE_BONUS_AT 0x0028  /* documentation: $82:CA8F reads it, not this */
+
+// What goes into the gap: `$81:84D6` less the one an `RTL` adds. Same bank and
+// same three-word frame as the other two splices.
+#define FREEZE_REACT_RETURN 0x84d5
+
+// The routine. Always true — it calls nothing the port does not have.
+//
+// `dp` is the *target's* page, because it is reached by `JML` from that
+// creature's own handler, and `r->y` still holds the raw collision id the
+// dispatcher put there: bit 15 of it is the player whose bonus this counts.
+bool enemy_freeze(Wram* w, uint16_t dp, ActorHandlerRegs* r);
 
 // `$81:8506`, on the enemy's own page and after its health has been stored.
 // True always: there is no branch of it that is not here.
@@ -726,5 +894,929 @@ bool monster_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 // two coverage sites of its own and one of them is an entry guard no diff can
 // check. Always true — there is nothing in it to decline.
 bool monster_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $81:B41C  enemy_b41c_collide — the third copy of the enemy subsystem
+// ---------------------------------------------------------------------------
+//
+// **The name is the address, and that is a claim about what is known rather
+// than a failure of imagination.** `enemy_collide` and `monster_collide` are
+// named for what they are; this one is not identified. Its body is entered
+// through `$81:AEA6`, no actor in level 29's placement list names it — the
+// creature is spawned rather than placed — and nothing in the disassembly ties
+// it to a sprite. `VICTIM_DP_FLAG_26` is named for where it is rather than for
+// what it means, for exactly this reason, and the same discipline applies to a
+// routine. Rename it the day something proves what it is.
+//
+// What *is* established is its shape: it is `$81:8888` instruction for
+// instruction, on a third page layout, with five differences. Three are
+// relocations — the parked id, the health word, the display record. The other
+// two are real, and both are below.
+#define ENEMY_B41C_COLLIDE_ENTRY 0x81b41cu
+
+// --- this actor's own page --------------------------------------------------
+
+// Health. `$0C` here, against `enemy_collide`'s `$1E` and `monster_collide`'s
+// `$22` — three copies of one routine, three different pages, and the same
+// damage table at `ENEMY_DAMAGE_TABLE` indexed the same way.
+#define B41C_DP_HEALTH 0x0c
+// Where the raw id is parked on the way in, sign bit and all. `$5A` here.
+// Nothing in this copy reads it back — the death path awards no score, so there
+// is no `enemy_die` to ask whose shot it was — but the store still happens and
+// the diff still checks it.
+#define B41C_DP_HIT_ID 0x5a
+// The display record, `LDY $08`, the offset `enemy_survived_react` already
+// expects — which is why this copy can share it rather than re-spell it.
+#define B41C_DP_RECORD 0x08
+// **`INC $4C` — the first difference, and it is an outbound message.** The
+// handler raises it on every hit that reaches the damage path, and the actor's
+// own body consumes it on its next pass: `$81:AEC5  LDA $4C : BEQ : STZ $4C :
+// JMP $AF4E`. It is `ACTOR_DP_DEATH_REQ`'s shape one rung down — that one says
+// "take yourself apart", this one says "you were hit" — and `$81:B437` is its
+// only writer in the whole bank.
+#define B41C_DP_HIT_FLAG 0x4c
+// **`DEC $0A` on the death path — the second difference, and the honest one.**
+// Where `enemy_collide` calls `$81:8727` to pay out `ENEMY_DEATH_AWARD`, this
+// copy awards nothing and decrements this word instead. The actor's body
+// decrements it too, at `$81:AEE9`, when `$80:B26B` hands back no target. Two
+// decrements, no initialiser and no reader anywhere in this actor's code, so
+// what it counts is **not established** and the name says only where it lives.
+#define B41C_DP_COUNTER_0A 0x0a
+// Where `$81:B168` puts the routine below — the "what I do next" pointer on
+// this page, the way `MONSTER_DP_NEXT` is `$12` on the spider's.
+#define B41C_DP_NEXT 0x0e
+
+// --- the third accepted id --------------------------------------------------
+
+// `CMP #$0061 : BEQ`, a third comparison neither twin has. It is a weapon id
+// like any other — `($61 - $5C) * 2` is a perfectly good `ENEMY_DAMAGE_TABLE`
+// index, and the airborne path below uses it — so this is a specific weapon
+// getting a specific answer out of a specific creature.
+#define B41C_HIT_SPECIAL 0x0061
+
+// ...and what decides the answer: `LDY $08 : LDX $0004,Y : BNE`. Record `+4` is
+// `ACTOR_Z`, the height off the ground — so **the special case is only for one
+// standing on the ground**, and one in the air falls through and takes the
+// damage every other id takes. The actor's body tests the same field the same
+// way at `$81:B217`.
+#define B41C_Z_AIRBORNE_TO_DAMAGE 1  /* documentation, not a value */
+
+// `$81:B168  LDA #$B16E : STA $0E : RTS` — three instructions, inlined for the
+// reason `monster_collide` inlines `JSR $C04A`: a routine that only ever queues
+// one constant is not a routine worth a registry entry. `$81:B16E` is what
+// happens next — it swaps the record's metasprite out of the table at
+// `$81:B199`, drops the handler, sleeps `$20` ticks and re-installs this one.
+#define B41C_NEXT_ON_SPECIAL 0xb16e
+
+// The handler. `arg` is the other actor's collision id, `dp` this actor's page.
+//
+// False on the two ids that `JML` elsewhere — `$5E` and `$5D`, the same two
+// `enemy_collide` declines, to the same two addresses — with `unported` taking
+// the address it gave up at.
+bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported);
+
+// ---------------------------------------------------------------------------
+// $81:C440  monster_c440_collide — the same creature, one stage earlier
+// ---------------------------------------------------------------------------
+//
+// **This is `$81:C4A6` again, 102 bytes before it, and for once the copy is not
+// a guess.** The two share a page down to the last offset — health `$22`,
+// parked id `$20`, latch `$26`, record `$08`, counter `$2A`, next-routine `$12`
+// — and the same `JSR $81:BBEB` pays the same `MONSTER_DEATH_AWARD`. What makes
+// it the *same creature* rather than a relative is the bodies: `$81:C321`
+// installs this handler and then `$81:C326  JMP $C3B5` falls into `$81:C3B6`,
+// which installs `$81:C4A6`. One thread, two handlers, in that order. So this
+// is the giant spider before whatever `$81:BFA8` decides, and `monster_collide`
+// is it afterwards.
+//
+// **Three bytes differ and two of them matter.**
+#define MONSTER_C440_COLLIDE_ENTRY 0x81c440u
+
+// A survivor goes to `enemy_survived_react` rather than to
+// `monster_survived_react` — `JML $81:8506` against `JML $81:BAB3`. Both are
+// ported, and they are not interchangeable: one guards on bit 4 of the record's
+// flags and splices an address that *sets* that bit, the other guards on the
+// whole of `ACTOR_ATTR` and splices one that writes `$0C00` into it. So the
+// earlier stage flashes the way an ordinary enemy does and the later one does
+// not.
+#define MONSTER_C440_SURVIVE_ENTRY 0x818506u
+
+// Id `$5D` goes to `ENEMY_SPECIAL_B_ENTRY` — `$81:847E`, the address
+// `enemy_collide` declines to — rather than to `$81:BB05`. Unported either way,
+// so the only thing this constant chooses is the address the census prints; it
+// is written down because that is the whole value of the census, and because
+// getting exactly this wrong once already cost a round (see the `_A`/`_B`
+// mix-up recorded at `ENEMY_SPECIAL_A_ENTRY`).
+#define MONSTER_C440_SPECIAL_ENTRY ENEMY_SPECIAL_B_ENTRY
+
+// The third difference is not observable and is recorded so that nobody has to
+// re-derive it: the two `CMP`s that pick out `$5D` and `$5E` are in the
+// opposite order here. Both are equality tests against distinct constants and
+// the fall-through immediately runs `SEC : SBC #$005C`, so neither which one
+// matches nor what flags the pair leaves can differ.
+#define MONSTER_C440_CMP_ORDER_IMMATERIAL 1  /* documentation, not a value */
+
+// The handler, and it is `monster_collide`'s implementation with the two
+// addresses above substituted — shared rather than re-spelled, for the reason
+// `ENEMY_REACT_FRAME` is shared. False only on `$5D`, exactly as its twin.
+bool monster_c440_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                          ActorHandlerRegs* r, uint32_t* unported);
+
+// ---------------------------------------------------------------------------
+// $81:D7F6  enemy_d7f6_collide — level 17's, and the fifth copy of $81:8888
+// ---------------------------------------------------------------------------
+//
+// Sixty-four bytes, `$81:8888`'s shape, and **not** near enough to any of the
+// four existing copies to share their code: the health word, the parked id and
+// the whole of what `$5E` means are all different. Written out, therefore, the
+// way `enemy_b41c_collide` was — and, like it, named for its address, because
+// nothing ties the creature to a sprite.
+//
+// | | `enemy_collide` | `enemy_b41c` | this |
+// | --- | --- | --- | --- |
+// | health | `$1E` | `$0C` | `$0C` |
+// | parked id | `$22` | `$5A` | `$20` |
+// | id `$5E` | `JML $81:83C6` | `JML $81:83C6` | **the death tail** |
+// | id `$5D` | `JML $81:847E` | `JML $81:847E` | `JML $81:847E` |
+// | a survivor | `JML $81:8506` | `JML $81:8506` | `JML $81:8506` |
+// | a death | award `$0100` | `DEC $0A` | `DEC $0A` |
+#define ENEMY_D7F6_COLLIDE_ENTRY 0x81d7f6u
+
+// Health, and it is **one**: `$81:D6D2  LDA #$0001 : STA $0C`. Every entry in
+// `ENEMY_DAMAGE_TABLE` except `$5D`'s and `$5E`'s is at least 1, so almost
+// anything that hits this thing kills it.
+#define D7F6_DP_HEALTH 0x0c
+// Where the raw id is parked, sign bit and all — and here it is read twice
+// rather than not at all: the body's death sequence uses it as `score_add`'s
+// side *and* as the guard on whether to pay anything.
+#define D7F6_DP_HIT_ID 0x20
+
+// **`$0A` is a death flag, and this page is what proves the family meaning.**
+// `enemy_b41c_collide` and `enemy_cdde_collide` both decrement a word at `$0A`
+// and `B41C_DP_COUNTER_0A` says in as many words that what it counts is not
+// established. Here it is: `$81:D6D8  STZ $0A` seeds it, the handler's
+// `DEC $0A` is the only other writer in the routine's whole bank, and
+// `$81:D72E  LDA $0A : BEQ <loop>` is the body's main loop deciding whether to
+// go on living. One writer, one reader, no ambiguity.
+//
+// It is evidence about the twins rather than proof: `$81:B41C`'s copy has a
+// *second* writer (`$81:AEE9`, when `$80:B26B` hands back no target) and this
+// one does not, so `B41C_DP_COUNTER_0A` keeps its careful name.
+#define D7F6_DP_DEAD 0x0a
+
+// What the body does with that flag, recorded here because it is where the
+// handler's two stores end up being read: `LDX #$0050 : LDA $20 : BEQ` — an
+// award of `$0050`, the smallest in the game, and **skipped entirely when the
+// parked id is zero**, which is `monster_death_award`'s guard again on another
+// page. Then `INC $1F74`, a death animation, and `actor_slot_free`.
+#define D7F6_DEATH_AWARD 0x0050  /* documentation: the body pays it, not this */
+
+// The handler. False only on id `$5D`, which `JML`s to `ENEMY_SPECIAL_B_ENTRY`
+// — the same address `enemy_collide` and `enemy_b41c_collide` decline to, and
+// still unreached by any input.
+bool enemy_d7f6_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported);
+
+// ---------------------------------------------------------------------------
+// $81:CDDE  enemy_cdde_collide — and this one is *not* the same routine again
+// ---------------------------------------------------------------------------
+//
+// Named for its address for `enemy_b41c_collide`'s reason and by the same
+// evidence: two install sites (`$81:CBDE`, `$81:CCAD`), both `LDA #$CDDE : LDY
+// #$0081 : JSL thread_set_handler`, and nothing in level 29's placement list
+// names either — this creature is spawned rather than placed.
+//
+// **What is worth saying is how little it has in common with the other three.**
+// It opens `CMP #$005C` like all of them and then stops rhyming: there is no
+// `ENEMY_DAMAGE_TABLE` lookup, no health word, no `$5E`, and no `JML` into the
+// `$81:8506` family. Damage is a plain countdown — one hit is one `DEC` — and
+// the reaction to a killing blow is a *different mechanism* again, below. Three
+// copies of one routine had made the shape look universal; this is the
+// counter-example, and it is the reason to read the bytes rather than assume.
+#define ENEMY_CDDE_COLLIDE_ENTRY 0x81cddeu
+
+// --- the three ids it answers to --------------------------------------------
+
+// `CMP #$005D : BEQ` — the only id that costs it anything. `$5E`, which both
+// twins treat specially, is not tested here at all and falls out as unmatched.
+#define CDDE_HIT_DAMAGE 0x005d
+// `CMP #$0064 : BEQ` and `CMP #$006F : BEQ`, two ids that share one exit: they
+// increment `CDDE_DP_COUNTER_0A` and do nothing else. Two distinct ids reaching
+// the same three instructions is why the coverage site is one site.
+#define CDDE_HIT_COUNTED_A 0x0064
+#define CDDE_HIT_COUNTED_B 0x006f
+
+// --- this actor's own page --------------------------------------------------
+
+// Where the raw id is parked — `$22`, the same offset `enemy_collide` uses.
+// **And it is cleared rather than left**: `$81:CDF7  STZ $22` is where both the
+// below-`$5C` branch and every unmatched id above it land, so an id this actor
+// does not care about actively erases the last one it did.
+#define CDDE_DP_HIT_ID 0x22
+// The countdown that stands in for health. `DEC $0C` per damaging hit, negative
+// means dead; `$81:CC0A` resets it to `CDDE_REACT_COUNTDOWN` and `$81:CC2F` to 4.
+#define CDDE_DP_COUNTDOWN 0x0c
+// Incremented by the two counted ids, and by a killing hit that arrives while
+// the actor is already reacting. Same standing as `B41C_DP_COUNTER_0A`: named
+// for where it is, because nothing in reach reads it.
+#define CDDE_DP_COUNTER_0A 0x0a
+// **The already-reacting guard, and this one is readable.** `$81:CC0A` sets it
+// to `CDDE_REACT_TICKS` and `$81:CC2F` counts it down to zero, so non-zero means
+// "mid-reaction" — which is `react_already`'s question asked of a page rather
+// than of a display record's flags word.
+#define CDDE_DP_REACT_TIMER 0x24
+// The "what I do next" pointer on this page, and where the reaction parks the
+// value it displaces so `$81:CC2F` can put it back.
+#define CDDE_DP_NEXT 0x16
+#define CDDE_DP_NEXT_SAVED 0x26
+// The display record, at `$08` again.
+#define CDDE_DP_RECORD 0x08
+
+// --- $81:CC0A, the reaction -------------------------------------------------
+
+// **A third way of reacting to a hit, and the simplest of the three.**
+// `enemy_survived_react` splices a `JSL` frame into a suspended thread's own
+// stack; `monster_survived_react` does the same one page over. This one just
+// swaps its own next-routine pointer: save `CDDE_DP_NEXT`, install `$81:CC2F`,
+// arm the timer, reset the countdown, and set the flash on the display record.
+// `$81:CC2F` is the undo — count down, restore, clear. No stack, no splice, and
+// nothing suspended.
+#define CDDE_REACT_NEXT 0xcc2f
+#define CDDE_REACT_TICKS 0x001e
+#define CDDE_REACT_COUNTDOWN 0x0014
+// What it writes into the record's `ACTOR_ATTR` — the same `$0C00`
+// `monster_survived_react` writes, alongside the same `ACTOR_ATTR_SET` bit.
+#define CDDE_REACT_ATTR 0x0c00
+
+// The handler. Always true: every one of its ids is answered here, and the one
+// routine it calls is `$81:CC0A`, which is ported below it. It is the first
+// collision handler in the project with nothing to decline.
+bool enemy_cdde_collide(Wram* w, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r);
+
+// `$81:CC0A`, split out for the reason the other two reactions are: it has a
+// coverage site of its own and it is a mechanism worth naming.
+void enemy_cdde_react_begin(Wram* w, uint16_t dp, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $81:B592  enemy_b592_collide — twenty-four bytes, and the last of level 29's
+// ---------------------------------------------------------------------------
+//
+// The smallest collision handler in the game: two comparisons, a decrement, an
+// increment, three `RTL`s. It is also the only one that does not test
+// `COLLIDE_ID_PLAYER` at all — **the two ids it answers to are `$07` and `$08`,
+// far below a weapon shot**, so whatever hurts this thing hurts it by touching
+// it rather than by being fired at it.
+//
+// Named for its address for the reason the other two are, and with the same
+// caveat about the creature. Its page does resemble `enemy_b41c_collide`'s —
+// countdown at `$0C`, tally at `$0A`, next-routine at `$0E`, and its code sits
+// a hundred bytes past `$81:B41C`'s in the same block — which makes "the same
+// creature in a different state" the obvious guess. It is left as a guess:
+// `$0A` runs *up* here and *down* there, and one shared offset is not a shared
+// meaning.
+#define ENEMY_B592_COLLIDE_ENTRY 0x81b592u
+
+// `CMP #$0007 : BEQ` and `CMP #$0008 : BEQ`, both to the same instruction.
+#define B592_HIT_A 0x0007
+#define B592_HIT_B 0x0008
+
+// Where the id is parked — `$1E` on this page, which is `ACTOR_DP_HEALTH`'s
+// offset on an enemy's. A reminder that these numbers are per-page and mean
+// nothing across one.
+#define B592_DP_HIT_ID 0x1e
+// One touch, one decrement; negative is the end of it.
+#define B592_DP_COUNTDOWN 0x0c
+// ...and what that end does, which is to add one to a word nothing in reach
+// reads. Same standing as `B41C_DP_COUNTER_0A` and `CDDE_DP_COUNTER_0A`.
+#define B592_DP_COUNTER_0A 0x0a
+
+// The handler. Always true — like `enemy_cdde_collide`, it answers every id it
+// is given and calls nothing.
+bool enemy_b592_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $81:9B6B  enemy_9b6b_collide — level 21's, and the sixth copy of $81:8888
+// ---------------------------------------------------------------------------
+//
+// The family's sixth member and the third with an award-free death. Nearest to
+// `enemy_d7f6_collide` and not near enough to share: three offsets move, and id
+// `$5E` goes back to being a routine of its own rather than the death tail.
+//
+// | | `enemy_d7f6` | this |
+// | --- | --- | --- |
+// | health | `$0C` | `$32` |
+// | parked id | `$20` | `$30` |
+// | death | `DEC $0A` | `DEC $26` |
+// | id `$5E` | the death tail | `$81:9BA2`, then `JML $81:83C6` |
+#define ENEMY_9B6B_COLLIDE_ENTRY 0x819b6bu
+#define D9B6B_DP_HEALTH 0x32
+#define D9B6B_DP_HIT_ID 0x30
+// Decremented on the death path, and — like `B41C_DP_COUNTER_0A` and unlike
+// `D7F6_DP_DEAD` — **named for where it is**. Nothing in reach reads it, so
+// whether it is this creature's death flag or a tally is not established.
+#define D9B6B_DP_COUNTER_26 0x26
+
+// $81:9BA2  the nine instructions in front of `enemy_bubble_react`, and for four
+// rounds the only reason this branch declined. Every other copy of `$81:8888`
+// hands `$5E` straight to `$81:83C6`; this one counts it first.
+//
+// `TYA : ASL A : AND #$0000 : ROL A : ROL A` turns bit 15 of Y into 0 or 2 — the
+// doubled side index `score_add` searches with and `monster_death_award` builds
+// the same way — `JSL $80:9D6A` turns that into a score *slot*, and `INC
+// $1FDC,X` counts one bubbled martian for the player who fired.
+//
+// **The counter is what names the weapon.** `$82:C9AE  LDA $1FDC : CMP #$000A :
+// BCC` is the end-of-level tally deciding whether to draw `MARTIAN/BUBBLED`,
+// exactly as `$82:CA8C  LDA $1FE0 : CMP #$0028 : BCC` decides `MONSTER/FROZEN`.
+// The two counters are two words apart because they are the same screen's two
+// lines — and **the thresholds are not the same**: ten bubbled martians earn the
+// bonus and it takes forty frozen monsters, which is the ROM saying the bubble
+// gun is the scarcer of the two. `$1FDE` is player 2's, at the same ten.
+#define D9B6B_FATAL_COUNT 0x1fdc
+
+// The handler. False on `$5D` only, now that `$5E` has somewhere to go.
+bool enemy_9b6b_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported);
+
+// The tally, then the splice. Always true — `enemy_bubble_react` has nothing
+// left to decline either.
+bool enemy_9b6b_bubble(Wram* w, uint16_t dp, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $81:F534  actor_f534_collide — forty-two bytes, five ids, one store
+// ---------------------------------------------------------------------------
+//
+// The second-smallest handler in the game after `enemy_b592_collide`, and the
+// second with nothing to decline: it calls nothing, reads two words and writes
+// one. Five ids latch themselves into `$3E` and everything else returns having
+// done nothing — except that two of the five latch **conditionally**, on a word
+// this page keeps at `$06`, and that is the whole of what makes it interesting.
+#define ACTOR_F534_COLLIDE_ENTRY 0x81f534u
+
+// `CMP #$0003`, `#$0004`, `#$0001`, all to the same `STA $3E`.
+#define F534_LATCH_A 0x0003
+#define F534_LATCH_B 0x0004
+#define F534_LATCH_C 0x0001
+// `CMP #$0005`, `#$0006`, both to the guarded one.
+#define F534_LATCH_GUARDED_A 0x0005
+#define F534_LATCH_GUARDED_B 0x0006
+
+// Where the id goes. Named for where it is: one store and no reader in reach,
+// the same standing as `VICTIM_DP_FLAG_26`.
+#define F534_DP_LATCH 0x3e
+// ...and the guard the last two ids pass through — `LDX $06 : CPX #$0004 : BNE`,
+// so those two only count while this word holds exactly four. `$06` is
+// `thread_count`'s offset in the scheduler's own page and means nothing of the
+// sort here; every actor lays out its own.
+#define F534_DP_GUARD 0x06
+#define F534_GUARD_VALUE 0x0004
+
+// The handler. Always true: every id is answered here and nothing is called.
+bool actor_f534_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $83:A264  victim_a264_collide — victim_collide's sibling, one page over
+// ---------------------------------------------------------------------------
+//
+// Same bank, same idea, same two fields: `$18` is which side claimed it and
+// `$1E` is what became of it, exactly as `VICTIM_DP_CLAIMANT` and
+// `VICTIM_DP_EVENT` are at `$83:A364`. What differs is the id list and one
+// mechanism — where `victim_collide` clears `ACTOR_COLLIDE_ID` in its display
+// record to switch itself off, this one calls `$81:8191`, which sets a byte in
+// a **flat array at `$7E:605A`** indexed by a word this page keeps at `$06`.
+//
+// That array is the only thing in the project so far that lives above
+// `$7E:2000`, and the routine that writes it is nine bytes, so it is inlined
+// rather than registered — `$81:8191  CMP #$FFFF : BEQ : TAX : SEP #$20 : LDA
+// #$80 : STA $7E605A,X : REP #$30 : RTL`, a single byte and a guard.
+#define VICTIM_A264_COLLIDE_ENTRY 0x83a264u
+
+// The three ids that end it one way — `$FF`, `$03`, `$04` — and the two that
+// end it the other, `$05` and `$06`, which are the two players exactly as
+// `victim_claim_a`/`_b` are at `$83:A364`.
+#define A264_EVENT_GIVE_UP 0x0003
+#define A264_EVENT_CLAIMED 0x0001
+#define A264_ID_GIVE_UP_FF 0x00ff
+#define A264_ID_GIVE_UP_A 0x0003
+#define A264_ID_GIVE_UP_B 0x0004
+#define A264_ID_CLAIM_A 0x0005
+#define A264_ID_CLAIM_B 0x0006
+// Two ids that are ignored by name rather than by falling off the end: `$02`
+// and `$5E`. The second is the enemy family's fatal id, which is a hint about
+// what can reach this thing and not evidence of anything.
+#define A264_ID_IGNORE_A 0x0002
+#define A264_ID_IGNORE_B 0x005e
+
+// The last comparison, and the one that makes this a victim rather than an
+// enemy: **anything at or above a weapon shot clears the event word** rather
+// than setting one — `AND #$7FFF : CMP #$005C : BCC : STZ $1E : SEC : RTL`.
+#define A264_SHOT_CLEARS 1  /* documentation, not a value */
+
+#define A264_DP_CLAIMANT 0x18
+#define A264_DP_EVENT 0x1e
+// The index `$81:8191` uses into the array below, out of this page.
+#define A264_DP_ARRAY_INDEX 0x06
+// `STA $7E605A,X`, one byte of `$80`, guarded on the index not being `$FFFF`.
+#define W_A264_FLAG_ARRAY 0x605au
+#define A264_FLAG_SET 0x80
+#define A264_INDEX_NONE 0xffff
+
+// The handler. Always true — every id is answered and the only routine it calls
+// is inlined above.
+bool victim_a264_collide(Wram* w, uint16_t dp, uint16_t arg,
+                         ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $81:9063  enemy_9063_collide — level 5's, and the seventh copy of $81:8888
+// ---------------------------------------------------------------------------
+//
+// `enemy_9b6b_collide` with two offsets moved and its one flourish removed: the
+// id-`$5E` branch is a bare `JML $81:83C6` here rather than nine instructions
+// and then the same `JML`. Health `$22` — which is `ACTOR_DP_HIT_ID`'s offset on
+// an enemy's page and `MONSTER_DP_HEALTH`'s on the spider's, a reminder that
+// these numbers mean nothing across a page.
+#define ENEMY_9063_COLLIDE_ENTRY 0x819063u
+#define D9063_DP_HEALTH 0x22
+#define D9063_DP_HIT_ID 0x30
+// Decremented on death, and named for where it is: no reader in reach.
+#define D9063_DP_COUNTER_2E 0x2e
+
+// The handler. False on `$5E` and `$5D`, to the same two addresses as every
+// other member of the family.
+bool enemy_9063_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported);
+
+// ---------------------------------------------------------------------------
+// $81:AC92  enemy_ac92_collide — level 49's, and the ninth copy of $81:8888
+// ---------------------------------------------------------------------------
+//
+// Nine copies now, and this one is the plainest re-spelling of `enemy_9063` yet
+// — three offsets moved and **one comparison added**, which is the only reason
+// it is interesting.
+//
+// | | `enemy_9063` | this |
+// | --- | --- | --- |
+// | health | `$22` | `$3C` |
+// | parked id | `$30` | `$3E` |
+// | death | `DEC $2E` | `DEC $10` |
+// | fatal id | — | **`$67`** |
+#define ENEMY_AC92_COLLIDE_ENTRY 0x81ac92u
+#define DAC92_DP_HEALTH 0x3c
+#define DAC92_DP_HIT_ID 0x3e
+// Decremented on death, and named for where it is: no reader in reach, exactly
+// as with `B41C_DP_COUNTER_0A`, `D9B6B_DP_COUNTER_26` and `D9063_DP_COUNTER_2E`.
+// Four copies of this family now end a death by stepping a word down and the
+// port still cannot say what any of the four counts.
+#define DAC92_DP_COUNTER_10 0x10
+
+// `$81:ACA8  CMP #$0067 : BEQ` — an id that kills this creature outright,
+// skipping the subtraction, and no other copy singles it out. It is
+// `MONSTER_HIT_FATAL`'s mechanism at a different id: what gets stored into
+// `DAC92_DP_HEALTH` is the masked id itself.
+//
+// **What it buys is legible from the damage table.** `ENEMY_DAMAGE_TABLE`'s
+// entry for `$67` is 4 — a middling weapon, dearer than the basic shot's 1 and a
+// fifth of `$61`'s 20 — so this is not a strong weapon being waved through, it is
+// one specific thing being this creature's undoing whatever its health is.
+#define AC92_HIT_FATAL 0x0067
+
+// The handler. False on `$5E` alone: `$5D` is `enemy_freeze`, which the port
+// has, and `$5E` is `JML $81:83C6`, which it does not.
+bool enemy_ac92_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported);
+
+// ---------------------------------------------------------------------------
+// $81:845E  actor_845e_collide — thirty-two bytes and **no stores at all**
+// ---------------------------------------------------------------------------
+//
+// `actor_deeb_collide` holds the record for the shortest handler in the game;
+// this one holds a different record, and it is the more surprising of the two.
+// It is four comparisons, a mask and two two-instruction exits — and it **writes
+// nothing anywhere**. No latch, no counter, no health, no record. Every other
+// handler in the project leaves at least one word behind. Carry is not the whole
+// of this one's interface the way it is *most* of `$82:DEEB`'s; carry is
+// literally all of it.
+//
+// What it decides is whether the thread parks. `thread_call_handler` parks on
+// carry set, so:
+//
+//   * ids `$03`, `$05` and `$06` — tested **before** the mask, so by name and
+//     not as weapons — park it;
+//   * anything below `COLLIDE_ID_PLAYER` does not;
+//   * `$5E` does not, and it is picked out one comparison later;
+//   * every other id at or above `COLLIDE_ID_PLAYER` parks it.
+//
+// So the one thing that does *not* stop this actor is the id `$81:83C6` belongs
+// to. That is the only place in the game where `$5E` is the exception rather
+// than a branch of its own, and it is the second reading of that id this round
+// after `AC92_HIT_FATAL`'s neighbour.
+#define ACTOR_845E_COLLIDE_ENTRY 0x81845eu
+
+// The three ids compared before the `AND #$7FFF`, so the raw argument is what
+// they match — a shot from player two carries bit 15 and could not be one of
+// these anyway, all three being far below a weapon.
+#define D845E_PARK_A 0x0005
+#define D845E_PARK_B 0x0006
+#define D845E_PARK_C 0x0003
+// ...and the one masked id that leaves it running.
+#define D845E_PASS_ID 0x005e
+
+// The handler. Always true, and it never touches `w` — which is why it does not
+// take one.
+bool actor_845e_collide(uint16_t arg, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $81:EDAA  shot_edaa_collide — one byte, and the smallest routine there can be
+// ---------------------------------------------------------------------------
+//
+// `$81:EDAA  6B` — a bare `RTL`, and that is the whole routine. It is the
+// collision handler the **heavy weapon's shot** installs: the four bytes
+// immediately after it, `$81:EDAB  61 00 61 80`, are weapon `$61`'s two-player
+// collision-id table, so this address and that table are one weapon's shot code
+// laid out back to back.
+//
+// **What it means is that this shot does not react to anything it hits.** The
+// squirt gun's `$81:FE0E` looks at the id, expires on some and passes through
+// others; this one is told about every collision it has and answers none of
+// them. The thing it hit still reacts — the enemy handler runs on its own side
+// of the pair, which is how `boss_remap_61` gets taken — but the shot itself
+// carries on, which is what a weapon that costs five shots a pickup should do.
+//
+// **Its interface is the strongest claim any shim in the project makes, and it
+// is strong precisely because the routine is empty.** `RTL` sets no flag and
+// touches no register, so A, X, Y, N, Z, C and V all come back exactly as they
+// went in — every one of them claimed, and every one of them checked on every
+// call. `$82:F1C2` is the cautionary opposite: no `CLC` and no `SEC` there
+// either, but a `CMP` on every path had already decided carry, and reading "no
+// carry instruction" as "carry passes through" failed on the second call. Here
+// there is no instruction at all, which is a different fact and the only one
+// that licenses this claim.
+#define SHOT_EDAA_COLLIDE_ENTRY 0x81edaau
+
+bool shot_edaa_collide(void);
+
+// ---------------------------------------------------------------------------
+// $81:F6A3  shot_f6a3_collide — one shot handler for four weapons
+// ---------------------------------------------------------------------------
+//
+// ```
+// $81:F6A3  CMP #$0003 : BEQ $F6B4
+//           CMP #$0004 : BEQ $F6B4
+//           CMP #$0001 : BEQ $F6B4
+//           CLC : RTL
+// $81:F6B4  STA $3E : CLC : RTL
+// ```
+//
+// Seventeen bytes: three comparisons, one store and two exits that both clear
+// carry, so — unlike `actor_845e_collide`, which is the same shape — **this one
+// can never park its thread**. A shot that hits something keeps flying either
+// way; what changes is whether the shot's own body is told.
+//
+// **It is identified the same way `$81:EDAA` was, off the bytes after it.**
+// `$81:F6B8` begins `63 00 63 80 | 64 00 64 80 | 64 00 64 80 | 66 00 66 80 |
+// 67 00 67 80` — five two-word collision-id tables in a row, and `$81:F6B8` is
+// the address `docs/cosim.md`'s weapon table already gives for id `$63`. So this
+// is not one weapon's shot code but **four weapons sharing one handler**, which
+// is the first time any address in this project has been reached by more than
+// one weapon.
+//
+// **`$3E` is the shot's "what I hit", and it has both its seed and its readers
+// in the same bank.** `$81:F691  STZ $3E` clears it four instructions before
+// `$81:F69B  LDA #$F6A3 : LDY #$0081 : JSL $80:8475` installs this very handler,
+// and `$81:F3F6  LDA $3E : BNE` and `$81:F57B  LDA $3E : BEQ` are the shot body
+// polling it on its next pass. So the store is not a latch the port has to guess
+// at: the word is zero on every frame the shot has hit nothing, and the three
+// ids below are the only things that can make it non-zero.
+#define SHOT_F6A3_COLLIDE_ENTRY 0x81f6a3u
+
+// The three ids it records. They are compared against the *unmasked* argument,
+// like `actor_845e_collide`'s and for the same reason — all three are far below
+// `COLLIDE_ID_PLAYER`, so no weapon and no second player's anything can be one.
+#define SHOT_F6A3_RECORD_A 0x0003
+#define SHOT_F6A3_RECORD_B 0x0004
+#define SHOT_F6A3_RECORD_C 0x0001
+
+// `STA $3E`, on the shot's own page.
+#define SHOT_F6A3_DP_HIT_ID 0x3e
+
+bool shot_f6a3_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $82:F4EF  actor_f4ef_collide — sixteen bytes, and it only wants the players
+// ---------------------------------------------------------------------------
+//
+// ```
+// $82:F4EF  CMP #$0005 : BEQ $F4FB
+//           CMP #$0006 : BEQ $F4FB
+//           CLC : RTL
+// $82:F4FB  STA $18 : CLC : RTL
+// ```
+//
+// The same shape as `shot_f6a3_collide` one comparison shorter, and the first
+// handler in the project that lives in **bank `$82`** rather than `$81` — the
+// bank the level and UI code is in, not the actor bank.
+//
+// **What makes it different from the other latches is which ids it names.**
+// `$05` and `$06` are the two players' own collision ids, the ones every other
+// handler in the game sees at the bottom of its `CMP #$005C` and throws away as
+// "below a shot's". This one throws away everything *else*: no weapon, no
+// monster and no shot can make it store anything. It is an actor whose entire
+// collision interface is "a player is standing on me".
+//
+// **`$18` has its seed and its reader in the same routine**, which is the
+// pattern `$81:F6A3`'s `$3E` established last round and the reason neither store
+// has to be guessed at. `$82:F3A7  STZ $18` is four instructions ahead of
+// `$82:F3A9  LDA #$F4EF : LDY #$0082 : JSL $80:8475`, so the word is zero on
+// every frame the actor has not been touched, and `$82:F4C6  LDA $18 : BEQ` is
+// the body polling it — the branch back is `$F4AF`, so a zero means *keep
+// waiting* and anything else falls through to `JSR $82:F3F4 : SEC`.
+#define ACTOR_F4EF_COLLIDE_ENTRY 0x82f4efu
+
+// The two ids it answers to, compared against the unmasked argument. Both are
+// far below `COLLIDE_ID_PLAYER`, so the mask would change nothing.
+#define F4EF_LATCH_P1 0x0005
+#define F4EF_LATCH_P2 0x0006
+
+// `STA $18`, on the actor's own page.
+#define F4EF_DP_HIT_ID 0x18
+
+bool actor_f4ef_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $82:DEEB  actor_deeb_collide — seven bytes, and the smallest in the game
+// ---------------------------------------------------------------------------
+//
+// `CMP #$00FF : BEQ : CLC : RTL` / `SEC : STA $12 : RTL`. One id, one store,
+// two exits, and it takes the record from `enemy_b592_collide` as the shortest
+// handler in the project by a factor of three.
+//
+// The carry is the whole of its interface: the id it answers to comes back with
+// carry **set**, which parks its thread, and everything else clears it. So this
+// is an actor whose entire collision behaviour is "when `$FF` touches me, stop
+// and remember what it was".
+#define ACTOR_DEEB_COLLIDE_ENTRY 0x82deebu
+#define DEEB_ID_STOP 0x00ff
+#define DEEB_DP_LATCH 0x12
+
+// The handler. Always true.
+bool actor_deeb_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $82:F1C2  actor_f1c2_collide — level 37's, and a lesson about carry
+// ---------------------------------------------------------------------------
+//
+// Thirty-six bytes and four ids. It contains **no `CLC` and no `SEC`**, which
+// this header read as "carry comes back as the caller left it" — and `verify`
+// said `flag C: ROM 1, port 0` on the second call it ever saw.
+//
+// `CMP` *is* a subtraction and it sets carry. Every path out of this routine has
+// executed at least one, so carry is fully determined after all: **set** on all
+// four acting paths (three of them by an equal comparison, the fourth by the
+// `BCS` that got there) and **clear** on the ignore path, where `CMP #$005C`
+// borrowed. The absence of a carry instruction is not the absence of a carry
+// output, and this is the one routine in the registry where the difference was
+// load-bearing enough to fail.
+#define ACTOR_F1C2_COLLIDE_ENTRY 0x82f1c2u
+
+// `CMP #$0001`, `#$0005`, `#$0006`, plus anything at or above a weapon shot
+// once masked — four ways to reach one pair of stores.
+#define F1C2_ID_A 0x0001
+#define F1C2_ID_B 0x0005
+#define F1C2_ID_C 0x0006
+
+// What those stores are: clear its own record's `ACTOR_COLLIDE_ID` — the same
+// switching-off `shot_collide` and `victim_collide` do, through the record
+// pointer this page keeps at `$08` — and decrement a word at `$14`.
+#define F1C2_DP_RECORD 0x08
+#define F1C2_DP_COUNTER_14 0x14
+
+// The handler. Always true.
+bool actor_f1c2_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $82:9660  boss_9660_collide — level 25's, and the first handler in bank $82
+// ---------------------------------------------------------------------------
+//
+// **The creature is not identified and the routine is named for its address**,
+// the same choice `enemy_b41c_collide` makes. What *is* established is that it
+// is a boss rather than an enemy, and the evidence is all in the code its
+// handler shares a page with:
+//
+// * its thread allocates **four** display records (`$82:94B4`, called four
+//   times into `$24`/`$26`/`$28`/`$2A`), where every other actor in the project
+//   has one;
+// * it starts on **70 health** (`$82:955E  LDA #$0046 : STA $3C`) against an
+//   enemy's 0 and level 33's 4;
+// * dying pays `$2000` (`$82:95AC  LDX #$2000 : LDA $42 : BEQ : JSL score_add`)
+//   — **twice a victim's `$1000` and the largest award in the game**;
+// * and the death itself is a set piece rather than a slot being freed: sixteen
+//   passes of a mosaic ramp queued into vblank (`$82:95E3`), `INC $1D52`, and a
+//   `thread_spawn` of `$83:9776` where it stood.
+//
+// It is also the first ported handler that **mixes absolute and direct-page
+// addressing**, and reading that correctly is the whole of getting it right.
+// `LDY $0078` and `LDA $0020` are three-byte absolute operands — the globals
+// `W_HANDLER_SELF` and `W_SCHED_TICK` — while `$3A`, `$3C`, `$3E`, `$40`, `$42`
+// and `$44` are two-byte direct-page ones on this thread's own page. The two
+// coincide only if `D` is zero and it is not: `$82:948F` writes absolute
+// `$003C` as a *coordinate* in the same routine that seeds direct `$3C` to 70.
+#define BOSS_9660_COLLIDE_ENTRY 0x829660u
+
+// --- the two guards, and both are states rather than ids --------------------
+
+// `LDY $0078 : LDX $000E,Y : CPX #$0009 : BEQ`. Its own record's
+// `ACTOR_COLLIDE_ID`, not the other one's — the boss refusing to be hit while
+// it is wearing a particular id. `$82:94B4` builds all four records with `$03`,
+// so `$09` is a state something else in its body installs.
+#define BOSS_9660_ID_INVULNERABLE 0x0009
+
+// `LDX $40 : BNE`. The flash timer, and the second guard. `$82:8F6A` is the
+// other half and the reason this one is worth a name: on a pass where `$40` is
+// zero and `BOSS_9660_DP_HIT_FLAG` has gone negative, the body clears the flag,
+// sets this to 3 and swaps the palette; three passes later it swaps it back.
+// **So a hit while the boss is flashing is not a hit at all** — this is
+// `react_already`'s guard with a consequence, like `enemy_cdde_collide`'s, but
+// tested at the door rather than at the kill.
+#define BOSS_9660_DP_FLASH 0x40
+
+// --- this actor's own page --------------------------------------------------
+
+// Health, seeded to 70 at `$82:9561`.
+//
+// **And that number is why `boss_died` is untaken.** The player's basic shot is
+// id `$5C`, whose `ENEMY_DAMAGE_TABLE` entry is 1, and `BOSS_9660_DP_FLASH`
+// refuses every hit for the three passes after one lands — so a kill is about
+// seventy clean hits with a gap between each. The busiest input in the corpus
+// lands 45. What closes that site is a weapon or a route, not a longer movie.
+#define BOSS_9660_DP_HEALTH 0x3c
+// Where the raw id is parked, sign bit and all — and unlike every other copy of
+// this idea, something *reads* it: the death sequence hands it to `score_add`,
+// whose bit 15 is which player gets the `$2000`. The main loop clears it at the
+// top of every pass (`$82:9579  STZ $42`), so what the award sees is the id of
+// whatever landed the killing blow on that pass and nothing older.
+#define BOSS_9660_DP_HIT_ID 0x42
+// **The outbound "you were hit" message**, and it is `B41C_DP_HIT_FLAG` upside
+// down: that one counts up from zero and its body tests `BNE`, this one counts
+// *down* from zero and its body tests `BIT $3E : BPL` — a sign bit rather than
+// a count. `$82:8F81  STZ $3E` is the consumer.
+#define BOSS_9660_DP_HIT_FLAG 0x3e
+// Hits until it changes its mind. Seeded to 6 (`$82:9566`), decremented on
+// every hit that reaches the damage path, and read at two decision points in
+// the body (`$82:8C79`, `$82:8CDF`, both `LDA $44 : BMI`) which put it back to
+// 6 on the way past. So six hits is a phase.
+#define BOSS_9660_DP_PHASE_COUNT 0x44
+// The death flag, and the thing that ends the main loop: `$82:959C  LDA $3A :
+// BEQ <loop>`. The handler decrements it from zero rather than storing a
+// constant, which is the same spelling `$3E` uses one word up.
+#define BOSS_9660_DP_DEAD 0x3a
+
+// --- the four ids that are answered as some other id ------------------------
+//
+// No other handler in the game does this. Four ids are rewritten before the
+// `SBC #$005C` that turns an id into an `ENEMY_DAMAGE_TABLE` index, so what a
+// weapon costs this boss is not what the table says under that weapon's own id.
+// Two of the four are rewritten **on a coin toss taken from the scheduler
+// clock** — `LDA $0020 : AND #$0001` and `AND #$0003` — so the same weapon does
+// two different amounts of damage depending on the tick the hit landed on. That
+// is the first use of `W_SCHED_TICK` as a random source in ported code, and it
+// is not `$80:9D39`: it is the low bits of a counter, read straight.
+// Reading `ENEMY_DAMAGE_TABLE` says what the rewrites buy, and it is not small:
+// `$61` costs 20 and `$60` costs 4, so that remap is this creature taking a
+// fifth of what that weapon does to anything else; `$5C` costs 1 and **`$5D`
+// costs 0**, so the coin toss is a weapon that does one damage half the time
+// and nothing the other half. `boss_no_damage` is therefore not a defensive
+// branch — it is the ordinary outcome of two of the four rewritten ids, and it
+// is untaken only because no input has fired those weapons at this boss.
+#define BOSS_9660_ID_ALT_HALF 0x0062   // 1 tick in 2 answers as the dearer id
+#define BOSS_9660_ID_ALT_QUARTER 0x0070  // 1 in 4
+#define BOSS_9660_ID_REMAP_61 0x0061   // always answers as $60
+#define BOSS_9660_ID_REMAP_6F 0x006f   // always answers as $63
+#define BOSS_9660_ID_CHEAP 0x005c      // what the coin toss answers on a miss
+#define BOSS_9660_ID_DEAR 0x005d       // ...and on a hit
+#define BOSS_9660_ID_61_AS 0x0060
+#define BOSS_9660_ID_6F_AS 0x0063
+
+// The handler. Always true: there is no `JML` out of it, no id it hands back
+// and nothing under it that is not ported, so it declares no guard — the third
+// handler in the registry that does not, after `enemy_cdde` and `enemy_b592`.
+bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                       ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $81:D301  enemy_d301_collide — level 9's, and the copy whose counter has a
+//                               reader
+// ---------------------------------------------------------------------------
+//
+// The eighth copy of `$81:8888`, and the one that answers the question four of
+// the others left open.
+//
+// `$81:B41C`, `$81:D7F6`, `$81:9B6B` and `$81:9063` all end a death with a bare
+// decrement of some word on their own page instead of paying an award, and every
+// one of those words was named for where it lives — `B41C_DP_COUNTER_0A`,
+// `D9B6B_DP_COUNTER_26`, `D9063_DP_COUNTER_2E` — because nothing in reach reads
+// them. **Here the reader is eleven instructions away and unambiguous**, and what
+// it turns out to be is not a count at all:
+//
+//     $81:D2AD  LDA $0C : BEQ <loop top>    ; zero: keep running
+//               BPL $D2CE                   ; positive: leave, quietly
+//               ; negative: LDX #$0200 : LDA $36 : BEQ +$14 : JSL score_add
+//               ;           INC $1F84 : ... : JSL $81:8191
+//     $81:D2CE  ; ...both endings free the slot
+//
+// So `$0C` is a **three-way verdict word** that the handler writes and the body
+// reads on its next pass: nought means carry on, positive means stop, negative
+// means die — and the award this family "does not pay" is paid, `$0200` of it,
+// by the actor's own main loop out of the id the handler parked. The death is
+// still a `DEC` in the handler; what the `DEC` is *for* is a message.
+//
+// **That is evidence about the other four and not proof**, and the distinction is
+// the same one `enemy_d7f6_collide` drew about `$0A`: those are different words on
+// different pages with different writers, and one of them (`$81:B41C`'s) has a
+// second writer this one does not. What has changed is that the shape now has one
+// worked example instead of none.
+//
+// Two more things are worth knowing before reading the code.
+//
+// **It is immune to the ordinary weapon.** After masking, `CMP #$005C : BEQ` sends
+// the player's basic shot — the id that is *every* hit in the corpus — straight to
+// a `CLC : RTL`. No other copy does that; in all seven of the others `$5C` is the
+// index-zero entry of `ENEMY_DAMAGE_TABLE` and costs a point. It parks the id at
+// `$36` on the way past, so the shot is noticed and then ignored.
+//
+// **And `$FF` is how it is told to stop.** `CMP #$00FF : BEQ` is the *first*
+// instruction, ahead of the family's `CMP #$005C`, and what it does is `INC $0C`
+// — the positive verdict, the quiet exit. That is the same id `actor_deeb_collide`
+// latches on and the same one `victim_a264_collide` calls `A264_ID_GIVE_UP_FF`, so
+// three unrelated actors read `$FF` as "you are done here". **All three calls any
+// input in the corpus makes to this handler are that one id**, which is the honest
+// counterweight to everything above: one branch of eight is diffed and seven are
+// transcribed.
+#define ENEMY_D301_COLLIDE_ENTRY 0x81d301u
+
+// The id that means "stop", tested ahead of everything else and answered with
+// the positive verdict. `DEEB_ID_STOP` and `A264_ID_GIVE_UP_FF` are the same
+// number reached by two other actors, which is three readings of `$FF` that agree
+// and no routine anywhere that produces it yet.
+#define D301_ID_STOP 0x00ff
+
+// The verdict word above. Seeded to zero at `$81:D269`, and the handler is its
+// only other writer in the bank.
+#define D301_DP_VERDICT 0x0c
+// Health, seeded to 25 at `$81:D262` — the same order as the boss's 70 and an
+// order above an enemy's 0.
+#define D301_DP_HEALTH 0x0e
+// Where the raw id is parked, sign bit and all, and it *is* read: `$81:D2B6  LDA
+// $36 : BEQ` skips the award when it is zero, exactly as `$81:BBEB` and the boss
+// do. The main loop clears it every pass (`$81:D29C  STZ $36`).
+#define D301_DP_HIT_ID 0x36
+// Its own position, and the source of the four pairs the reseed below writes.
+#define D301_DP_X 0x10
+#define D301_DP_Y 0x12
+// The four (x, y) pairs `$81:D210` seeds from that position when the actor is
+// built, and that the reseed puts back. `$81:D028` walks such slots through
+// `$18`, which `$81:D0F6` steps by four and wraps at `$20` — eight of them,
+// `$1A` to `$36`.
+//
+// **The eighth is `D301_DP_HIT_ID`**, and this header does not claim to know
+// whether that is deliberate. What is certain is that both are written: the main
+// loop clears `$36` every pass and the handler parks an id there, while
+// `$81:D041  STA $1A,X` writes it as a trail slot on the pass where `$18` has
+// come round to `$1C`. Only the first four are named here, because only the first
+// four are what this routine touches.
+#define D301_DP_TRAIL 0x1a
+#define D301_DP_TRAIL_STRIDE 4
+#define D301_DP_TRAIL_RESEED 4  /* how many of the eight the handler rewrites */
+
+// --- the survivor's tail, which is the only place a handler draws a number ----
+//
+// A hit it lives through leaves through `enemy_survived_react` — by `JSL` here,
+// where every other copy uses `JML`, so there is a routine left to run when it
+// comes back — and then rolls `rng_next` and acts on a 25-in-256 chance:
+//
+//     JSL $80:9D39 : CMP #$0019 : BCS <SEC : RTL>
+//     JSR $81:D142                       ; $14 = $D148, its next routine
+//     LDA $10 : STA $1A : STA $1E : STA $22 : STA $26
+//     LDA $12 : STA $1C : STA $20 : STA $24 : STA $28
+//
+// `$81:D142` is three instructions and is inlined below for `$81:B168`'s reason.
+// What it installs is the routine the body calls through `$14` on its next pass,
+// and `$81:D148` opens with **the same `CMP #$0019` against a fresh draw** — so
+// being hurt puts this creature into a state that keeps re-rolling.
+//
+// The draw is the reason `rng_next` had to be ported to port this handler at all,
+// and the reason its carry input is not a detail: the two ways out of
+// `enemy_survived_react` return *different* carry — set from the splice, clear
+// from the already-flashing guard — and that flag is the bit the generator's `ROL`
+// shifts in.
+#define D301_NEXT_ROUTINE 0x0014   /* where `$81:D142` writes... */
+#define D301_NEXT_ROUTINE_HURT 0xd148  /* ...this */
+#define D301_RESEED_CHANCE 0x0019  /* `CMP #$0019 : BCS` — 25 draws in 256 */
+
+// The handler. False on id `$5D`, which `JML`s to `$81:847E` like the rest of the
+// family; every other id is answered here.
+bool enemy_d301_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported);
 
 #endif

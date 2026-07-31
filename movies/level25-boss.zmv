@@ -1,0 +1,201 @@
+# Level 25, reached by password GYLM, then the *heavy weapon* collected and
+# fired at the boss.
+#
+# **This is the first input in the project that fires a weapon the boss rewrites.**
+# `$82:9660` answers four ids as some other id, and `boss_remap_61` -- `$61`
+# always answered as `$60` -- had read zero on every movie ever recorded, because
+# no input had ever held anything but the squirt gun on this level.
+#
+# The route is the level's own geometry and it took three findings to walk.
+# **The start is the top of an escalator**, which pushes the player back up the
+# moment Down is released, so the first leg has to be held through; that is also
+# why `tools/fit_route.py` cannot fit this route -- it plans a leg, releases,
+# measures, and measures itself back where it started, 48 legs running. **The two
+# objects the router likes are inside scenery** (the `$16` at (1243,505) is in a
+# display case, the `$06` at (989,122) in a water feature) and it says so
+# correctly. What is reachable is four `$26` objects: two at (1081,288) in the
+# north plaza and one each at (700,650) and (550,700) in the central one.
+#
+# Object type `$26` is collision id `$11` (`$80:CA30`), which is inventory slot 5
+# (`$80:F87B`), which is weapon `$61` -- checked with `--records`, which shows
+# every shot reading `$61` from frame 3300. `$80:F8AC` says a pickup is **five
+# shots**, which is why all four are collected and why the B press is at 3900,
+# with the boss forty pixels away.
+#
+# What it buys: `boss_remap_61`, and thirty of the boss's seventy health --
+# 70 -> 66 -> 58 -> 50 -> 46 -> 45 -> 43 -> 42 -> 41 -> 40, read off
+# `zamn_headless --watch 083C`. It does **not** kill it; `boss_died` is still
+# untaken and `docs/cosim.md` prices what would.
+#
+# Retune by watching the health word rather than the picture:
+#   zamn_headless <rom> shot.png 7600 -m movies\level25-boss.zmv --watch 083C,3900,7580,1
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   A
+1440   -
+1448   Right
+1456   -
+1464   Down
+1472   -
+1480   Down
+1488   -
+1496   A
+1504   -
+1512   Right
+1520   -
+1528   Right
+1536   -
+1544   Right
+1552   -
+1560   Up
+1568   -
+1576   Up
+1584   -
+1592   A
+1600   -
+1608   Right
+1616   -
+1624   A
+1632   -
+1640   Right
+1648   -
+1656   Down
+1664   -
+1672   Down
+1680   -
+1688   A
+1696   -
+1844   Start
+1854   -
+1874   Start
+1884   -
+1904   Start
+1914   -
+1934   Start
+1944   -
+1964   Start
+1974   -
+1994   Start
+2004   -
+2084   -
+2580   Down
+2730   Left
+2870   Up
+3072   Right
+3108   -
+3120   Left
+3160   -
+3168   Down
+3372   -
+3380   Left
+3645   -
+3653   Up
+3661   -
+3669   Left
+3780   -
+3788   Down
+3816   -
+3824   Left
+3864   -
+3872   Down
+3884   -
+3900   B
+3912   -
+3940   Right+Y
+4120   Up+Y
+4300   Left+Y
+4480   Down+Y
+4660   Right+Y
+4840   Up+Y
+5020   Left+Y
+5200   Down+Y
+5380   Right+Y
+5560   Up+Y
+5740   Left+Y
+5920   Down+Y
+6100   Right+Y
+6280   Up+Y
+6460   Left+Y
+6640   Down+Y
+6820   Right+Y
+7000   Up+Y
+7180   Left+Y
+7360   Down+Y
+7540   -

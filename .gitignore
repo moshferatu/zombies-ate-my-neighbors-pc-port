@@ -25,6 +25,9 @@ build/
 # ...and any second opinion generated beside it, e.g. from another movie.
 /analysis[0-9]*/
 
+# Byte-compiled Python from tools/
+__pycache__/
+
 # Editor / OS cruft
 .vs/
 .vscode/

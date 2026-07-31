@@ -106,6 +106,12 @@
   X(player_spawn_2,   "player_collide",      "id $2F: kind 2, and $0500 of score") \
   X(player_spawn_3,   "player_collide",      "id $30: kind 3, and $1000 of score") \
   X(player_heal_entry,"player_collide",      "id $27: three health back") \
+  X(player_state_gate,"player_collide",      "$80:F9AE: the entry that gates on the player's state") \
+  X(player_state_ignored,"player_collide",   "...state 2 or 4, which ignore collisions outright") \
+  X(state_tail_recovering,"player_state_tail","$80:DC09 declined: still inside the hurt window") \
+  X(state_tail_busy,  "player_state_tail",   "...declined: the player is in a state other than 0") \
+  X(state_tail_sentinel,"player_state_tail", "...declined: $10 held the $FD72 sentinel") \
+  X(state_tail_queued,"player_state_tail",   "...and the one path that writes: $80:DC1E queued") \
   X(heal_at_full,     "player_collide",      "...refused, because health was already ten") \
   X(heal_capped,      "player_collide",      "...ceilinged, because three would have overshot") \
                                                                                 \
@@ -143,7 +149,7 @@
   X(enemy_act,        "enemy_collide",       "an enemy told about a hit of its own side") \
   X(enemy_hit_special,"enemy_collide",       "one of the two ids with a routine of its own — declined") \
   X(enemy_died,       "enemy_collide",       "a hit that took an enemy's last health") \
-  X(enemy_no_damage,  "enemy_collide",       "a hit whose damage-table entry is zero") \
+  X(enemy_no_damage,  "enemy_collide",       "a hit whose damage-table entry is zero — no shot can carry one here") \
   X(enemy_survived,   "enemy_collide",       "an enemy that lived through a hit")                                                                                   /* $81:8506 enemy_survived_react — the splice into a parked stack. */           X(react_already,    "enemy_survived_react","a second hit while the flash from the first is still on")   X(react_splice,     "enemy_survived_react","a JSL frame written into a suspended thread's stack") \
                                                                                \
   X(shot_expire,      "shot_collide",        "a shot that hit something and is ending") \
@@ -176,9 +182,163 @@
   X(monster_special,  "monster_collide",     "id $5D, which has a routine of its own — declined") \
   X(monster_died,     "monster_collide",     "a hit that took its last health") \
   X(monster_fatal_id, "monster_collide",     "...id $5E, which skips the subtraction and dies outright") \
-  X(monster_no_damage,"monster_collide",     "a hit whose damage-table entry is zero") \
+  X(monster_no_damage,"monster_collide",     "a hit whose damage-table entry is zero — no shot can carry one here") \
   X(monster_survived, "monster_collide",     "one that lived through a hit")   X(monster_react_already,"monster_survived_react","a second hit while ACTOR_ATTR still holds the first")   X(monster_react_splice,"monster_survived_react","a JSL frame written into a suspended thread's stack") \
   X(monster_kill_award,"monster_collide",    "$81:BBEB paid out; its guard is the parked id being zero") \
+  X(monster_kill_free,"monster_collide",     "...and that guard refusing — killed by something with no id, so worth nothing") \
+                                                                                \
+  /* $81:B41C enemy_b41c_collide — the third copy of the same subsystem. */      \
+  X(b41c_ignore,      "enemy_b41c_collide",  "an id below a weapon shot's, which it ignores") \
+  X(b41c_act,         "enemy_b41c_collide",  "a weapon shot, the only id it reacts to") \
+  X(b41c_hit_special, "enemy_b41c_collide",  "id $5E or $5D, each with a routine of its own — declined") \
+  X(b41c_special_grounded,"enemy_b41c_collide","id $61 while on the ground, which queues $81:B16E instead of damage") \
+  X(b41c_special_airborne,"enemy_b41c_collide","...id $61 in the air, which falls through and takes the damage") \
+  X(b41c_hit,         "enemy_b41c_collide",  "the damage path, which raises the hit flag its body reads") \
+  X(b41c_died,        "enemy_b41c_collide",  "a hit that took its last health — and awards nothing") \
+  X(b41c_no_damage,   "enemy_b41c_collide",  "a hit whose damage-table entry is zero — no shot can carry one here") \
+  X(b41c_survived,    "enemy_b41c_collide",  "one that lived through a hit")    \
+                                                                                \
+  /* $81:CDDE enemy_cdde_collide — a fourth handler, and a different shape. */   \
+  X(cdde_ignore,      "enemy_cdde_collide",  "an id below a weapon shot's — which still clears the parked id") \
+  X(cdde_unmatched,   "enemy_cdde_collide",  "a shot it does not recognise, off the end of the three comparisons") \
+  X(cdde_counted,     "enemy_cdde_collide",  "id $64 or $6F, which it only tallies") \
+  X(cdde_survived,    "enemy_cdde_collide",  "a damaging hit its countdown absorbed") \
+  X(cdde_killed_reacting,"enemy_cdde_collide","...the last one, but it was already reacting, so it is only tallied") \
+  X(cdde_react_begin, "enemy_cdde_react",    "the flash: its next-routine pointer swapped for $81:CC2F") \
+                                                                                \
+  /* $81:B592 enemy_b592_collide — twenty-four bytes, and no weapon in sight. */ \
+  X(b592_ignore,      "enemy_b592_collide",  "an id that is neither $07 nor $08") \
+  X(b592_survived,    "enemy_b592_collide",  "a touch its countdown absorbed")   \
+  X(b592_exhausted,   "enemy_b592_collide",  "the touch that took the last of it") \
+                                                                                \
+  /* $81:C440 — the same routine one stage earlier. Only the two branches that \
+     differ from $81:C4A6's are marked; everything else is one shared body. */   \
+  X(c440_special,     "monster_c440_collide","id $5D, which goes to $81:847E rather than $81:BB05 — declined") \
+  X(c440_survived,    "monster_c440_collide","a survivor, which flashes through $81:8506 rather than $81:BAB3") \
+                                                                                \
+  /* $80:F9BE and $80:F979 — two more of the player table's state-gate group. */ \
+  X(player_queue_entry,"player_collide",     "id $0A: $80:F9BE, the state gate with its store inlined") \
+  X(player_queue_ignored,"player_collide",   "...state 2 or 4, so nothing is queued") \
+  X(player_queue_next,"player_collide",      "...and the store: $80:F9D0 queued, which costs a point of health") \
+  X(player_hurt_alt,  "player_collide",      "id $0B: $80:F979, the second kind of hit") \
+  X(player_hurt_alt_recovering,"player_collide","...inside the invulnerability window, so it does not land") \
+  X(player_hurt_alt_ignored,"player_collide","...state 2, 4 or $0E, the only entry with a third") \
+  X(player_hurt_alt_taken,"player_collide",  "...and the hit itself: ACTOR_DP_EVENT $C000, timer back to $30") \
+                                                                                \
+  /* $81:D7F6 enemy_d7f6_collide — level 17's, and the fifth copy of $81:8888. */ \
+  X(d7f6_ignore,      "enemy_d7f6_collide",  "an id below a weapon shot's, which it ignores outright") \
+  X(d7f6_hit,         "enemy_d7f6_collide",  "a weapon shot, and the id parked for the body's award to read") \
+  X(d7f6_fatal_id,    "enemy_d7f6_collide",  "id $5E, which reaches the death tail without subtracting") \
+  X(d7f6_special,     "enemy_d7f6_collide",  "id $5D, which JMLs to $81:847E — declined") \
+  X(d7f6_died,        "enemy_d7f6_collide",  "a hit that took its last health, which is usually the first") \
+  X(d7f6_no_damage,   "enemy_d7f6_collide",  "a hit whose damage-table entry is zero — no shot can carry one here") \
+  X(d7f6_survived,    "enemy_d7f6_collide",  "one that lived through a hit — on one health, so it took no damage") \
+                                                                                \
+  /* $81:9B6B enemy_9b6b_collide — level 21's, and the sixth copy of $81:8888. */ \
+  X(d9b6b_ignore,     "enemy_9b6b_collide",  "an id below a weapon shot's, which it ignores outright") \
+  X(d9b6b_hit,        "enemy_9b6b_collide",  "a weapon shot, with the id parked at $30") \
+  X(d9b6b_fatal_id,   "enemy_9b6b_collide",  "id $5E, the bubble gun, counted at $7E:1FDC before the splice") \
+  X(d9b6b_bubble_slot_0, "enemy_9b6b_bubble", "...credited to the first player's MARTIAN BUBBLED tally") \
+  X(d9b6b_bubble_slot_1, "enemy_9b6b_bubble", "...or to the second's")            \
+  X(d9b6b_special,    "enemy_9b6b_collide",  "id $5D, which JMLs to $81:847E — declined") \
+  X(d9b6b_died,       "enemy_9b6b_collide",  "a hit that took its last health, which awards nothing") \
+  X(d9b6b_no_damage,  "enemy_9b6b_collide",  "a hit whose damage-table entry is zero — no shot can carry one here") \
+  X(d9b6b_survived,   "enemy_9b6b_collide",  "one that lived through a hit") \
+                                                                                \
+  /* $81:F534 actor_f534_collide — five ids, one store, and a guard on two. */    \
+  X(f534_latch,       "actor_f534_collide",  "id $01, $03 or $04, latched unconditionally") \
+  X(f534_latch_guarded,"actor_f534_collide", "id $05 or $06 with the guard word at four, so also latched") \
+  X(f534_guard_refused,"actor_f534_collide", "...and the guard refusing, which is the store being skipped") \
+  X(f534_ignore,      "actor_f534_collide",  "an id it has no reaction to at all") \
+                                                                                \
+  /* $83:A264 victim_a264_collide — victim_collide's sibling one page over. */    \
+  X(a264_give_up,     "victim_a264_collide", "id $FF, $03 or $04: the ending that is not a rescue") \
+  X(a264_claim_a,     "victim_a264_collide", "id $05 — one side claimed it, $18 latched with bit 15 clear") \
+  X(a264_claim_b,     "victim_a264_collide", "id $06 — the other side, $18 latched $8000") \
+  X(a264_ignore_named,"victim_a264_collide", "id $02 or $5E, ignored by name rather than by falling through") \
+  X(a264_ignore_low,  "victim_a264_collide", "anything else below a weapon shot") \
+  X(a264_shot_clears, "victim_a264_collide", "a weapon shot, which *clears* the event word instead of setting one") \
+  X(a264_flag_set,    "victim_a264_collide", "$81:8191 setting its byte in the array at $7E:605A") \
+  X(a264_flag_none,   "victim_a264_collide", "...refused, because the index word held $FFFF") \
+                                                                                \
+  /* $81:9063 enemy_9063_collide — level 5's, the seventh copy of $81:8888. */    \
+  X(d9063_ignore,     "enemy_9063_collide",  "an id below a weapon shot's, which it ignores outright") \
+  X(d9063_hit,        "enemy_9063_collide",  "a weapon shot, with the id parked at $30") \
+  X(d9063_fatal_id,   "enemy_9063_collide",  "id $5E, a bare JML to $81:83C6 — declined") \
+  X(d9063_special,    "enemy_9063_collide",  "id $5D, which JMLs to $81:847E — declined") \
+  X(d9063_died,       "enemy_9063_collide",  "a hit that took its last health, which awards nothing") \
+  X(d9063_no_damage,  "enemy_9063_collide",  "a hit whose damage-table entry is zero — no shot can carry one here") \
+  X(d9063_survived,   "enemy_9063_collide",  "one that lived through a hit") \
+                                                                                \
+  /* $81:AC92 enemy_ac92_collide — level 49's, the ninth copy of $81:8888. */     \
+  X(dac92_ignore,     "enemy_ac92_collide",  "an id below a weapon shot's, which it ignores outright") \
+  X(dac92_hit,        "enemy_ac92_collide",  "a weapon shot, with the id parked at $3E") \
+  X(dac92_special,    "enemy_ac92_collide",  "id $5E, a bare JML to $81:83C6 — declined") \
+  X(dac92_freeze,     "enemy_ac92_collide",  "id $5D, which leaves through enemy_freeze") \
+  X(dac92_fatal_id,   "enemy_ac92_collide",  "id $67, which dies outright with no subtraction") \
+  X(dac92_died,       "enemy_ac92_collide",  "a hit that took its last health, which awards nothing") \
+  X(dac92_no_damage,  "enemy_ac92_collide",  "a hit whose damage-table entry is zero — no shot can carry one here") \
+  X(dac92_survived,   "enemy_ac92_collide",  "one that lived through a hit") \
+                                                                                \
+  /* $81:845E actor_845e_collide — thirty-two bytes and no stores at all. */      \
+  X(d845e_park_named, "actor_845e_collide",  "id $03, $05 or $06, matched unmasked — the thread parks") \
+  X(d845e_ignore,     "actor_845e_collide",  "an id below a weapon shot's, which leaves it running") \
+  X(d845e_pass,       "actor_845e_collide",  "id $5E, the one weapon it does not stop for") \
+  X(d845e_park,       "actor_845e_collide",  "any other weapon, which parks the thread") \
+                                                                                \
+  /* $81:F6A3 shot_f6a3_collide — the shot handler four weapons share. */        \
+  X(f6a3_record,      "shot_f6a3_collide",   "id $01, $03 or $04, the three the shot's body is told about") \
+  X(f6a3_ignore,      "shot_f6a3_collide",   "any other id, which the shot flies straight through") \
+  X(f4ef_player,      "actor_f4ef_collide",  "id $05 or $06 — one of the two players, and nothing else counts") \
+  X(f4ef_ignore,      "actor_f4ef_collide",  "any other id, which this actor does not notice at all") \
+                                                                                \
+  /* $82:DEEB and $82:F1C2 — seven bytes and thirty-six. */                      \
+  X(deeb_stop,        "actor_deeb_collide",  "id $FF, which latches itself and parks the thread") \
+  X(deeb_ignore,      "actor_deeb_collide",  "any other id, which it does nothing about") \
+  X(f1c2_act_id,      "actor_f1c2_collide",  "id $01, $05 or $06 — one of the three it answers by name") \
+  X(f1c2_act_shot,    "actor_f1c2_collide",  "...or anything at or above a weapon shot, once masked") \
+  X(f1c2_ignore,      "actor_f1c2_collide",  "an id below a shot's — the one exit of the four that clears carry") \
+                                                                                \
+  /* $82:9660 boss_9660_collide — level 25's, and the first in bank $82. */      \
+  X(boss_invulnerable,"boss_9660_collide",   "its own record wearing id $09, which refuses every hit") \
+  X(boss_flashing,    "boss_9660_collide",   "...or the flash from the last hit still running") \
+  X(boss_ignore,      "boss_9660_collide",   "an id below a weapon shot's, which it ignores") \
+  X(boss_alt_cheap,   "boss_9660_collide",   "id $62 or $70 answered as $5C — the scheduler clock's coin toss") \
+  X(boss_alt_dear,    "boss_9660_collide",   "...and the same two ids answered as $5D") \
+  X(boss_remap_61,    "boss_9660_collide",   "id $61, which is always answered as $60") \
+  X(boss_remap_6f,    "boss_9660_collide",   "id $6F, which is always answered as $63") \
+  X(boss_hit,         "boss_9660_collide",   "a hit that reached the damage path, whatever it then did") \
+  X(boss_died,        "boss_9660_collide",   "the hit that took its last health, which ends its thread's loop") \
+  X(boss_no_damage,   "boss_9660_collide",   "a hit whose damage-table entry is zero") \
+  X(boss_survived,    "boss_9660_collide",   "one it lived through, and the only path that stores health") \
+                                                                                \
+  /* $81:847E enemy_freeze — where every copy of $81:8888 sends id $5D. */       \
+  X(enemy_hit_freeze, "enemy_collide",       "id $5D, the ice weapon — served by enemy_freeze") \
+  X(b41c_hit_freeze,  "enemy_b41c_collide",  "...the same id, one page over")    \
+  X(freeze_counting,  "enemy_freeze",        "a hit short of the fifth, which only bumps the counter") \
+  X(freeze_already,   "enemy_freeze",        "the fifth or later, refused because it is still flashing") \
+  X(freeze_took,      "enemy_freeze",        "a hit that actually froze something") \
+  X(freeze_slot_0,    "enemy_freeze",        "...credited to the first player's MONSTER FROZEN tally") \
+  X(freeze_slot_1,    "enemy_freeze",        "...or to the second's")            \
+                                                                                \
+  /* $81:83C6 enemy_bubble_react — where the same copies send id $5E. */          \
+  X(bubble_already,   "enemy_bubble_react",  "a second hit while the flash from the first is still on") \
+  X(bubble_splice,    "enemy_bubble_react",  "a JSL frame written into a suspended thread's stack") \
+                                                                                \
+  /* $81:D301 enemy_d301_collide — level 9's, the eighth copy of $81:8888. */    \
+  X(d301_stop,        "enemy_d301_collide",  "id $FF, the positive verdict — the only branch any input takes") \
+  X(d301_ignore,      "enemy_d301_collide",  "an id below a weapon shot's, which it ignores outright") \
+  X(d301_shot_immune, "enemy_d301_collide",  "the ordinary shot $5C, parked at $36 and then thrown away") \
+  X(d301_special,     "enemy_d301_collide",  "id $5D, which leaves through enemy_freeze") \
+  X(d301_died,        "enemy_d301_collide",  "a hit that took its last health, leaving the negative verdict") \
+  X(d301_no_damage,   "enemy_d301_collide",  "a hit whose damage-table entry is zero") \
+  X(d301_survived,    "enemy_d301_collide",  "one it lived through, which returns from the reaction rather than tail-calling it") \
+  X(d301_reseed,      "enemy_d301_collide",  "the 25-in-256 draw that rewrites its trail and its next routine") \
+  X(d301_no_reseed,   "enemy_d301_collide",  "...and the 231 that do not") \
+                                                                                \
+  /* $80:9D39 rng_next — the generator's one branch. */                         \
+  X(rng_counter_twice,"rng_next",            "an addition that overflowed as signed, so the counter advanced twice") \
+  X(rng_counter_once, "rng_next",            "...and one that did not")          \
                                                                                 \
   /* $80:C7D9 score_add. */                                                     \
   X(score_slot_0,     "score_add",           "points credited to the first score slot") \

@@ -20,6 +20,7 @@
 #include "port/fade.h"
 #include "port/oam.h"
 #include "port/player.h"
+#include "port/rng.h"
 #include "port/score.h"
 #include "port/sprite_cache.h"
 #include "port/thread.h"
@@ -435,20 +436,20 @@ static bool guard_thread_call_handler(Wram* scratch, const Rom* rom,
   if (thread_call_handler(scratch, rom, in->x, in->y, in->c, &out)) return true;
 
   // Declined. `handler_unported` already counts these; what it cannot say is
-  // *which* handler, and a count with no address is not a work list. Read the
-  // same two words the dispatcher reads and record it.
+  // *which* handler, and a count with no address is not a work list. The
+  // dispatcher hands the address back in `unported`.
   //
-  // Only when the entry is a handler the port has never heard of. A decline
-  // through `player_collide` or `enemy_collide` is a decline further down —
-  // a jump-table entry, or an enemy that survived — and censusing the door it
-  // came through would name the wrong routine. Those have coverage sites of
-  // their own, and `player_collide`'s guard censuses its table entry below.
-  uint32_t entry =
-      ((uint32_t)(wram_r16(scratch, W_THREAD_HANDLER_BANK + in->x) & 0xff) << 16) |
-      wram_r16(scratch, W_THREAD_HANDLER + in->x);
-  if (entry != PLAYER_COLLIDE_ENTRY && entry != ENEMY_COLLIDE_ENTRY &&
-      entry != MONSTER_COLLIDE_ENTRY)
-    cosim_census_note("handler", entry);
+  // It is zero when the port *has* the handler and the handler declined one
+  // level down — a jump-table entry, or an id an enemy `JML`s out on. Censusing
+  // the door those came through would name the wrong routine, and each of them
+  // is named properly by its own registry entry's guard.
+  //
+  // **This used to be a list of the four handlers that could decline internally,
+  // and by the eighth copy of `$81:8888` it wanted eight.** Nothing would have
+  // reported a missing entry: the symptom is a census line naming a routine the
+  // port already has, which is exactly the shape of the bug that hid
+  // `monster_collide`'s missing dispatch for four rounds.
+  if (out.unported) cosim_census_note("handler", out.unported);
   return false;
 }
 
@@ -610,6 +611,370 @@ static void shim_monster_collide(Wram* w, const Rom* rom, const CosimRegs* in,
                                  CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
   monster_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:C440  monster_c440_collide — the same creature one stage earlier
+// ---------------------------------------------------------------------------
+
+// Registered separately even though the port body is shared with the routine
+// above, and the reason is the same one that made `player_collide` worth its own
+// entry: the two are different addresses in the ROM, so `verify` intercepting
+// one never intercepts the other, and the flags each leaves are checked only at
+// its own entry PC. A shared implementation is a claim that they compute the
+// same thing; two registry entries are what test it.
+static bool guard_monster_c440_collide(Wram* scratch, const Rom* rom,
+                                       const CosimRegs* in) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  uint32_t unported = 0;
+  if (monster_c440_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  cosim_census_note("c440 id", unported);
+  return false;
+}
+
+static void shim_monster_c440_collide(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  monster_c440_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:B41C  enemy_b41c_collide — the same routine a third time
+// ---------------------------------------------------------------------------
+
+// Carry is not an input here, unlike both twins: this copy's death path awards
+// nothing, so there is no `score_add` to pass a caller's carry through. Every
+// exit sets it.
+static bool guard_enemy_b41c_collide(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  uint32_t unported = 0;
+  if (enemy_b41c_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  cosim_census_note("b41c id", unported);
+  return false;
+}
+
+static void shim_enemy_b41c_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_b41c_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:D7F6  enemy_d7f6_collide — the fifth copy, on level 17
+// ---------------------------------------------------------------------------
+
+static bool guard_enemy_d7f6_collide(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  uint32_t unported = 0;
+  if (enemy_d7f6_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  cosim_census_note("d7f6 id", unported);
+  return false;
+}
+
+static void shim_enemy_d7f6_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_d7f6_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:9B6B  enemy_9b6b_collide — the sixth copy, on level 21
+// ---------------------------------------------------------------------------
+
+static bool guard_enemy_9b6b_collide(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  uint32_t unported = 0;
+  if (enemy_9b6b_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  cosim_census_note("9b6b id", unported);
+  return false;
+}
+
+static void shim_enemy_9b6b_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_9b6b_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:9063  enemy_9063_collide — the seventh copy, on level 5
+// ---------------------------------------------------------------------------
+
+static bool guard_enemy_9063_collide(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  uint32_t unported = 0;
+  if (enemy_9063_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  cosim_census_note("9063 id", unported);
+  return false;
+}
+
+static void shim_enemy_9063_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_9063_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:AC92  enemy_ac92_collide — the ninth copy, on level 49
+// ---------------------------------------------------------------------------
+
+static bool guard_enemy_ac92_collide(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  uint32_t unported = 0;
+  if (enemy_ac92_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  cosim_census_note("ac92 id", unported);
+  return false;
+}
+
+static void shim_enemy_ac92_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_ac92_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:845E  actor_845e_collide — no WRAM at all, so no `w` and no guard body
+// ---------------------------------------------------------------------------
+
+// It cannot decline and it cannot write, so `supported` is left NULL: there is
+// nothing to try on a scratch copy. It is the first entry in the registry with
+// that shape, and the reason is the routine's, not the harness's.
+static void shim_actor_845e_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  actor_845e_collide(in->a, &r);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:EDAA  shot_edaa_collide — one byte
+// ---------------------------------------------------------------------------
+
+// `out` arrives as a copy of `in`, so "nothing changed" needs no assignment at
+// all — only the claim. All four flags, because an `RTL` sets none of them and
+// the point of the entry is that this is checkable: the one routine in the
+// registry whose entire specification is that it does nothing.
+static void shim_shot_edaa_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  (void)in;
+  shot_edaa_collide();
+  out->flags =
+      COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
+}
+
+// ---------------------------------------------------------------------------
+// $81:F6A3  shot_f6a3_collide — one shot handler, four weapons
+// ---------------------------------------------------------------------------
+
+// It cannot decline — three named ids and an else — so there is nothing for a
+// guard to try, and like `actor_845e` it leaves `supported` NULL. Unlike
+// `actor_845e` it does write, so it gets `w` and the whole-WRAM diff covers the
+// one store.
+static void shim_shot_f6a3_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  shot_f6a3_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $82:F4EF  actor_f4ef_collide — the two players, and nothing else
+// ---------------------------------------------------------------------------
+
+static void shim_actor_f4ef_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                                    CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  actor_f4ef_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:D301  enemy_d301_collide — the eighth copy, on level 9
+// ---------------------------------------------------------------------------
+
+static bool guard_enemy_d301_collide(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  uint32_t unported = 0;
+  if (enemy_d301_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  cosim_census_note("d301 id", unported);
+  return false;
+}
+
+static void shim_enemy_d301_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  // The seeded carry is load-bearing here in a way it is not for the rest of the
+  // family: a survivor's tail hands whatever `enemy_survived_react` returned to
+  // `rng_next`, whose `ROL` shifts it into the state byte. Get it wrong and the
+  // creature draws a different number.
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_d301_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:847E  enemy_freeze — reached by JML, so its RTL is its caller's caller's
+// ---------------------------------------------------------------------------
+
+// Registered on its own entry PC as well as being called from six handlers, for
+// `player_collide`'s reason: a routine seen only through a caller that declines
+// is never offered the calls that go somewhere else. Here it is the other way
+// round — every one of the six is ported — but the entry PC is also the only
+// place the *flags* it leaves can be checked against the ROM's at the exact
+// instruction the ROM leaves them.
+//
+// `in->y` is a genuine input: the raw collision id is still in Y from
+// `$80:84A3  TYA`, and bit 15 of it is which player's tally this counts.
+static void shim_enemy_freeze(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_freeze(w, in->d, &r);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:83C6  enemy_bubble_react — the `$5D` twin's twin, reached the same way
+// ---------------------------------------------------------------------------
+
+// Registered on its own entry PC for `enemy_freeze`'s reason, and `in->y` is
+// *not* an input here: this routine never reads Y, having no side to credit.
+static void shim_enemy_bubble_react(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_bubble_react(w, in->d, &r);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $80:9D39  rng_next — no arguments, and one of them is the caller's carry
+// ---------------------------------------------------------------------------
+
+static void shim_rng_next(Wram* w, const Rom* rom, const CosimRegs* in,
+                          CosimRegs* out) {
+  (void)rom;
+  RngResult rng;
+  rng_next(w, in->c, &rng);
+  out->a = rng.a;
+  // X and Y are never mentioned between the entry and the `RTL`.
+  out->x = in->x;
+  out->y = in->y;
+  out->n = rng.n;
+  out->z = rng.z;
+  out->c = rng.c;
+  out->v = rng.v;
+  // The only shim in the registry that claims V, and the only one that needs to.
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
+}
+
+// ---------------------------------------------------------------------------
+// $82:DEEB and $82:F1C2 — the two smallest handlers in the game
+// ---------------------------------------------------------------------------
+
+static void shim_actor_deeb_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  actor_deeb_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+// This routine contains no `CLC` and no `SEC`, which the first version of the
+// port read as "carry passes through" — and `verify` failed it on call 2 with
+// `flag C: ROM 1, port 0`. `CMP` sets carry; every exit here has run one. The
+// seed stays because the shim's job is to hand the port what the ROM was called
+// with, not because anything depends on it now.
+static void shim_actor_f1c2_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  actor_f1c2_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:F534  actor_f534_collide, and $83:A264  victim_a264_collide
+// ---------------------------------------------------------------------------
+//
+// Neither declares a guard: between them they answer every id they are given
+// and the only routine either calls (`$81:8191`) is inlined into the port.
+
+static void shim_actor_f534_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  actor_f534_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+static void shim_victim_a264_collide(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  victim_a264_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:CDDE  enemy_cdde_collide — the first handler with no guard
+// ---------------------------------------------------------------------------
+
+// No `supported` hook, and that is the entry worth noticing rather than an
+// omission. Every other collision handler in the registry has ids it hands back
+// — a jump-table entry nobody has written, a `JML` into the `$81:8506` family —
+// and declares a guard to say so honestly. This one answers all three of its ids
+// itself and the only routine it calls (`$81:CC0A`) is ported with it, so there
+// is no condition under which it steps aside and nothing for a guard to report.
+static void shim_enemy_cdde_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;  // no table lookup: this one's damage is a decrement
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_cdde_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $81:B592  enemy_b592_collide — no guard either, and even less to guard
+// ---------------------------------------------------------------------------
+
+static void shim_enemy_b592_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_b592_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $82:9660  boss_9660_collide — no guard either, and the first in bank $82
+// ---------------------------------------------------------------------------
+
+// `rom` is back, because unlike the two above this one does index
+// `ENEMY_DAMAGE_TABLE`. `in->d` matters more here than anywhere else in the
+// registry: this handler reads *both* its thread's page and two absolute
+// globals, and getting the two confused is the one way to write it wrong.
+static void shim_boss_9660_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  boss_9660_collide(w, rom, in->d, in->a, &r);
   handler_regs(&r, out);
 }
 
@@ -828,7 +1193,7 @@ static void shim_actor_overlap_pass(Wram* w, const Rom* rom, const CosimRegs* in
 }
 
 // ---------------------------------------------------------------------------
-// $80:BD1F  sprite_build_oam — no arguments, and it may decline
+// $80:BD1F  sprite_build_oam — one argument, the caller's page, and it may decline
 // ---------------------------------------------------------------------------
 
 // The one address the pass legitimately leaves alone, and it is the same $38 two
@@ -854,21 +1219,26 @@ static const CosimExclude BUILD_OAM_EXCLUDES[] = {
 
 static bool guard_sprite_build_oam(Wram* scratch, const Rom* rom,
                                    const CosimRegs* in) {
-  (void)in;
-  return sprite_build_oam(scratch, rom);
+  return sprite_build_oam(scratch, rom, in->d);
 }
 
 static void shim_sprite_build_oam(Wram* w, const Rom* rom, const CosimRegs* in,
                                   CosimRegs* out) {
-  (void)in;
-  sprite_build_oam(w, rom);  // the guard already established it will not decline
+  // The guard already established it will not decline.
+  sprite_build_oam(w, rom, in->d);
 
   // The tail at `$80:BDD2` is what decides all of this, and it runs on every
   // path: `LDA $20 : AND #$0003 : TAX : LDA $BDE6,X : AND #$00FF : STA $1B64 :
   // SEC : RTL`.
   //
   //   * A is the table entry after the mask — the value just stored.
-  //   * X is the tick's low two bits, from the `TAX`.
+  //   * X is the low two bits of `$20` on the **caller's** page, from the `TAX`.
+  //     `$80:BDD0  PLD` has already restored it, so this is `in->d + $20` and
+  //     not `W_SCHED_TICK`; two of the three callers are threads. Because all
+  //     four table entries are $80, the difference is invisible in WRAM and
+  //     shows up here and nowhere else — `movies/level49-bubble.zmv` is the
+  //     first input to reach one of those callers, and it failed on this
+  //     register with 128 KB matching.
   //   * `AND #$00FF` is the last flag-setting instruction, so N and Z describe
   //     that same value. It is $80 for all four entries, so Z is false and N is
   //     false too: $0080 is positive in 16 bits.
@@ -880,7 +1250,9 @@ static void shim_sprite_build_oam(Wram* w, const Rom* rom, const CosimRegs* in,
   // whatever `actor_overlap_pass` left, and that is 0 on all three of its exits,
   // including the one taken when nothing is visible at all.
   out->a = wram_r16(w, W_SPRITE_PASS_PHASE);
-  out->x = (uint16_t)(wram_r16(w, W_SCHED_TICK) & 3);
+  out->x = (uint16_t)(wram_r16(w, (uint32_t)((in->d + SPRITE_PASS_PHASE_DP) &
+                                            0xffff)) &
+                     3);
   out->y = 0;
   out->n = (out->a & 0x8000) != 0;
   out->z = out->a == 0;
@@ -1066,6 +1438,371 @@ static const CosimRoutine ROUTINES[] = {
         // `JSR` into `$81:BBEB` plus its `JSL score_add` that `enemy_collide`
         // budgets 9 for, because that path is transcribed and will want it.
         .stack_bytes = 9,
+    },
+    {
+        .name = "monster_c440",
+        .symbol = "$81:C440",
+        .entry = 0x81c440,
+        // `$81:C4A5`, this copy's own bare `RTL` — the one two bytes into
+        // `$81:C4A4  CLC : RTL`. Not `$81:C50B`: the copies are separate code
+        // and pointing one at the other's exit would work by luck and stop
+        // working the day either moves.
+        .ret_op = 0x81c4a5,
+        .ret_kind = COSIM_RTL,
+        .run = shim_monster_c440_collide,
+        .supported = guard_monster_c440_collide,
+        // Measured 120..1322, mean 267, over the 151 calls
+        // `movies/level25.zmv` makes — and unlike the spider's, this sample is
+        // not all ignores: 115 of them are hits, 105 survivors and 10 deaths.
+        // The mean is twice `monster_collide`'s for exactly that reason.
+        .cycles = 267,
+        .stack_bytes = 9,  // the same death path, budgeted the same way
+    },
+    {
+        .name = "enemy_b41c",
+        .symbol = "$81:B41C",
+        .entry = 0x81b41c,
+        // `$81:B422`, the first of this routine's four bare `RTL`s, chosen for
+        // `enemy_collide`'s reason: every exit decides carry for itself — two set
+        // it and two clear it — so landing anywhere that runs a `CLC` or a `SEC`
+        // would overwrite the answer the port has already published.
+        .ret_op = 0x81b422,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_b41c_collide,
+        .supported = guard_enemy_b41c_collide,
+        // Measured 84..1312, mean 235, over the 66 calls
+        // `movies/level29-fighting.zmv` makes. The floor is the ignore branch and
+        // the ceiling is a survivor, whose `JML $81:8506` walks a parked stack.
+        .cycles = 235,
+        // 2, measured over those 66 — which included a death. This copy's death
+        // path is the cheap one: no `JSR $81:8727`, because it awards nothing.
+        // The `$61` branch's `JSR $B168` pushes the same 2 when something finally
+        // takes it.
+        .stack_bytes = 2,
+    },
+    {
+        .name = "enemy_d7f6",
+        .symbol = "$81:D7F6",
+        .entry = 0x81d7f6,
+        // `$81:D7FC`, the ignore path's `RTL`. The death tail sets carry and the
+        // two ignore exits clear it, so the same rule as everywhere in this
+        // family applies: land on a bare `RTL` and let `native_publish`'s flags
+        // stand.
+        .ret_op = 0x81d7fc,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_d7f6_collide,
+        .supported = guard_enemy_d7f6_collide,
+        // Measured 84..124, mean 86, over the 128 calls `movies/level17.zmv`
+        // makes — and every one of them is the ignore branch, so this is the
+        // cost of two instructions and nothing else. The damage path will be
+        // dearer; it is budgeted low deliberately, because a budget that is too
+        // small shows up as a `run` divergence rather than hiding.
+        .cycles = 86,
+        // The death tail calls nothing; a survivor leaves through `$81:8506`,
+        // which pushes nothing either. Budgeted 2 rather than 0 because the one
+        // id that declines is the only path with a `JML` this port does not
+        // follow, and a budget that is too small fails a call.
+        .stack_bytes = 2,
+    },
+    {
+        .name = "enemy_9b6b",
+        .symbol = "$81:9B6B",
+        .entry = 0x819b6b,
+        // `$81:9B71`, the ignore path's `RTL`, for the family's usual reason.
+        .ret_op = 0x819b71,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_9b6b_collide,
+        .supported = guard_enemy_9b6b_collide,
+        // Measured 84..124, mean 86, over the 33 calls `movies/level21.zmv`
+        // makes — all of them the ignore branch, so this is two instructions.
+        .cycles = 86,
+        // 0 observed, for the same reason. Left at 2, which is what the damage
+        // path's `JML` into `$81:8506` will want.
+        .stack_bytes = 2,
+    },
+    {
+        .name = "enemy_9063",
+        .symbol = "$81:9063",
+        .entry = 0x819063,
+        .ret_op = 0x819069,  // the ignore path's RTL
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_9063_collide,
+        .supported = guard_enemy_9063_collide,
+        // Measured 84..490, mean 98, over the 32 calls `movies/level5.zmv`
+        // makes. The 490 is the one call that is not an ignore.
+        .cycles = 98,
+        .stack_bytes = 2,
+    },
+    {
+        .name = "enemy_ac92",
+        .symbol = "$81:AC92",
+        .entry = 0x81ac92,
+        .ret_op = 0x81ac98,  // the ignore path's RTL, after its own CLC
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_ac92_collide,
+        .supported = guard_enemy_ac92_collide,
+        // Measured 98..1126, mean 109, over the 309 calls
+        // `movies/level49-corner.zmv` makes. Almost all of them are ignores,
+        // which is two instructions; the 1,126 is a hit that spliced.
+        .cycles = 109,
+        .stack_bytes = 2,
+    },
+    {
+        .name = "actor_845e",
+        .symbol = "$81:845E",
+        .entry = 0x81845e,
+        .ret_op = 0x81847b,  // the pass path's RTL, after its CLC
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_845e_collide,
+        // Nothing to guard: it cannot decline and it writes no WRAM.
+        .supported = NULL,
+        // Measured 104..322, mean 115, over the 38 calls
+        // `movies/level49-corner.zmv` makes.
+        .cycles = 115,
+        // It pushes nothing and calls nothing — the only entry in the registry
+        // that touches neither the stack nor WRAM.
+        .stack_bytes = 0,
+    },
+    {
+        .name = "shot_edaa",
+        .symbol = "$81:EDAA",
+        .entry = 0x81edaa,
+        .ret_op = 0x81edaa,  // the entry *is* the RTL
+        .ret_kind = COSIM_RTL,
+        .run = shim_shot_edaa_collide,
+        // Nothing to guard: one instruction, no ids, no stores, no decline.
+        .supported = NULL,
+        // Measured 42..82, mean 43, over the 62 calls
+        // `movies/level25-boss.zmv` makes — which is worth a line, because an
+        // `RTL` is six cycles and this is the entry where the difference between
+        // *the routine* and *reaching the routine* is the whole number. What the
+        // harness measures is entry PC to return, and for a one-byte routine that
+        // is almost entirely the `JSL` and the bus.
+        .cycles = 43,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "shot_f6a3",
+        .symbol = "$81:F6A3",
+        .entry = 0x81f6a3,
+        // `$81:F6B7`, the store path's `RTL`. The ignore path has its own two
+        // instructions earlier at `$81:F6B3`; either would do, and this is the
+        // one the majority of calls do not take, which is the same choice
+        // `actor_845e` made and for the same reason: pick the return the harness
+        // can be sure it is watching.
+        .ret_op = 0x81f6b7,
+        .ret_kind = COSIM_RTL,
+        .run = shim_shot_f6a3_collide,
+        // Nothing to guard: three ids and an else, and neither exit declines.
+        .supported = NULL,
+        // Measured 118..188, mean 148, over the 273 calls
+        // `movies/level25-heavy.zmv` makes.
+        .cycles = 148,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "actor_f4ef",
+        .symbol = "$82:F4EF",
+        .entry = 0x82f4ef,
+        // `$82:F4FE`, the store path's `RTL`; the ignore path has its own four
+        // bytes earlier at `$82:F4FA`. Same choice as `shot_f6a3`, and the first
+        // entry in this registry whose bank is `$82`.
+        .ret_op = 0x82f4fe,
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_f4ef_collide,
+        // Two ids and an else; neither exit declines.
+        .supported = NULL,
+        // Measured 118 exactly, on all seven calls `movies/level21-bubble.zmv`
+        // makes — the only entry in the registry with no spread at all, because
+        // sixteen bytes of comparisons have nothing to be slow about.
+        .cycles = 118,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "enemy_d301",
+        .symbol = "$81:D301",
+        .entry = 0x81d301,
+        // `$81:D361`, the `RTL` the three carry-clearing exits share. The other
+        // five set carry themselves, so the same rule as the rest of the family:
+        // land on a bare `RTL` and let `native_publish`'s flags stand rather than
+        // on the `CLC` at `$81:D360`.
+        .ret_op = 0x81d361,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_d301_collide,
+        .supported = guard_enemy_d301_collide,
+        // Measured 140..140 over the three calls `movies/level9.zmv` makes —
+        // all of them the `$FF` id, which is six instructions. The damage path
+        // is dearer and this is budgeted low deliberately: a budget that is too
+        // small shows up as a `run` divergence rather than hiding.
+        .cycles = 140,
+        // The `$FF` path pushes nothing. Budgeted for the survivor's tail, which
+        // is a `JSL` into `$81:8506` and a `JSR` into `$81:D142`.
+        .stack_bytes = 2,
+    },
+    {
+        .name = "enemy_freeze",
+        .symbol = "$81:847E",
+        .entry = 0x81847e,
+        // `$81:84D3`, the `RTL` after the `SEC`. Two of the three exits clear
+        // carry and one sets it, so the same rule as the rest of the family:
+        // land on a bare `RTL` and let `native_publish`'s flags stand.
+        .ret_op = 0x8184d3,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_freeze,
+        // Measured 180..1240, mean 296, over the 73 calls
+        // `movies/level17-weapon.zmv` puts through the entry PC itself. The
+        // 1,240 is a freeze: the counter, the guard, the slot lookup and the
+        // splice. The 180 is a hit that only counted.
+        .cycles = 296,
+        .stack_bytes = 2,  // `JSL $80:9D6A` on the acting path; nothing else
+    },
+    {
+        .name = "enemy_bubble",
+        .symbol = "$81:83C6",
+        .entry = 0x8183c6,
+        // `$81:8403`, the `RTL` after the splice's `SEC`. Same rule as
+        // `enemy_freeze`: land on a bare `RTL` so `native_publish`'s flags stand
+        // rather than on the `CLC` at `$81:83D0`.
+        .ret_op = 0x818403,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_bubble_react,
+        // Measured 906..946, mean 933, over the three calls
+        // `movies/level49-corner.zmv` puts through it — all of them the splice,
+        // so the guard's own refusal has never been timed.
+        .cycles = 933,
+        // `PHA` and `PLX` inside the splice, which is all it pushes: it calls
+        // nothing.
+        .stack_bytes = 2,
+    },
+    {
+        .name = "rng",
+        .symbol = "$80:9D39",
+        .entry = 0x809d39,
+        .ret_op = 0x809d5a,  // its one `RTL`
+        .ret_kind = COSIM_RTL,
+        .run = shim_rng_next,
+        // Measured 338..412, mean 355, and the mean is the same on every movie
+        // in the corpus to within two cycles — it has one branch and it is three
+        // instructions long. The spread is the `BVC` and nothing else.
+        .cycles = 355,
+        .stack_bytes = 0,  // it calls nothing
+    },
+    {
+        .name = "actor_deeb",
+        .symbol = "$82:DEEB",
+        .entry = 0x82deeb,
+        // `$82:DEF1`, the ignore path's `RTL`, and it has to be that one: the
+        // other exit's `SEC` is two instructions before its `RTL`, so landing
+        // there would run nothing but the return anyway — but landing on the
+        // `CLC` at `$82:DEF0` would clear the carry the port just published.
+        .ret_op = 0x82def1,
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_deeb_collide,
+        // Measured 118..124, mean 119, over the twelve calls
+        // `movies/level49.zmv` makes — all of them the id it answers to.
+        .cycles = 119,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "actor_f1c2",
+        .symbol = "$82:F1C2",
+        .entry = 0x82f1c2,
+        .ret_op = 0x82f1da,  // one of its two bare RTLs; neither touches carry
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_f1c2_collide,
+        // Measured 256..256 over both calls `movies/level37.zmv` makes.
+        .cycles = 256,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "actor_f534",
+        .symbol = "$81:F534",
+        .entry = 0x81f534,
+        // `$81:F54E`, the fall-through `RTL`. All three exits clear carry, so
+        // as with `enemy_cdde` the choice is not load-bearing — and a bare `RTL`
+        // is picked anyway so that it does not become load-bearing by accident.
+        .ret_op = 0x81f54e,
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_f534_collide,
+        // Measured 178..266, mean 216, over the five calls
+        // `movies/level21.zmv` makes — 15 marks on the unguarded latch and 10
+        // on the guarded one, so both of its stores are in the sample.
+        .cycles = 216,
+        .stack_bytes = 0,  // it calls nothing and pushes nothing
+    },
+    {
+        .name = "victim_a264",
+        .symbol = "$83:A264",
+        .entry = 0x83a264,
+        // `$83:A2B3`, the ignore path's `RTL`. This one *is* load-bearing in the
+        // other direction: four of the six exits set carry, and landing on the
+        // `CLC` two bytes back would clear the answer the port published.
+        .ret_op = 0x83a2b3,
+        .ret_kind = COSIM_RTL,
+        .run = shim_victim_a264_collide,
+        // Measured 318..358, mean 339, over four calls — and none of them took
+        // a path that calls `$81:8191`, so this is the shot-clears exit's cost
+        // and nothing else's.
+        .cycles = 339,
+        // The `JSL $81:8191` it makes on two paths, inlined by the port but not
+        // by the ROM.
+        .stack_bytes = 4,
+    },
+    {
+        .name = "enemy_cdde",
+        .symbol = "$81:CDDE",
+        .entry = 0x81cdde,
+        // `$81:CDFA`. All four exits are `CLC : RTL`, so unlike the enemy family
+        // the choice is not load-bearing here — carry is false whatever this
+        // lands on. Pointed at the bare `RTL` anyway, because the day an exit
+        // stops clearing carry is not the day to discover the rule was being
+        // relied on by accident.
+        .ret_op = 0x81cdfa,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_cdde_collide,
+        // Measured 118..158, mean 120, over the 32 calls
+        // `movies/level29-fighting.zmv` makes — and every one of them took the
+        // same branch, so this is the ignore path's cost and nothing else's.
+        .cycles = 120,
+        // 0 observed, for the same reason: nothing in the corpus reaches the
+        // `JSR $CC0A`. Left at 2, which is what that `JSR` will push the day
+        // something does, because a budget that is too small fails a call and one
+        // that is too large only waives two dead bytes.
+        .stack_bytes = 2,
+    },
+    {
+        .name = "enemy_b592",
+        .symbol = "$81:B592",
+        .entry = 0x81b592,
+        // `$81:B59D`, the first of three bare `RTL`s. Every exit clears carry,
+        // as `enemy_cdde`'s do, and the same reasoning applies to picking one.
+        .ret_op = 0x81b59d,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_b592_collide,
+        // Measured 114..154, mean 122, over the five calls
+        // `movies/level29-firstaid.zmv` makes — all five the ignore branch.
+        .cycles = 122,
+        .stack_bytes = 0,  // it calls nothing and pushes nothing
+    },
+    {
+        .name = "boss_9660",
+        .symbol = "$82:9660",
+        .entry = 0x829660,
+        // `$82:9677`, the `RTL` the ignore path clears carry into. The other
+        // exit is `$82:96D8` and it *sets* carry — the two are not
+        // interchangeable in the ROM, but they are here, because
+        // `native_publish` puts the port's flags in place before the core
+        // executes this instruction and an `RTL` sets none of them.
+        .ret_op = 0x829677,
+        .ret_kind = COSIM_RTL,
+        .run = shim_boss_9660_collide,
+        // Measured 192..792, mean 264, over the 5,126 calls
+        // `movies/level25.zmv` makes. The spread is the three ignore paths
+        // against the damage path's `SBC $818561,X` — a long-addressed read out
+        // of another bank — and the mean is the ignore path's, because 10,032
+        // of the 10,112 marks land there.
+        .cycles = 264,
+        .stack_bytes = 0,  // it calls nothing and pushes nothing
     },
     {
         .name = "shot_collide",

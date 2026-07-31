@@ -1,0 +1,190 @@
+# Level 21, reached by password BXBS: rescue the neighbour at (237,2726), which
+# is the first time anything in the corpus has claimed a `$83:A264` victim.
+#
+# **Level 21 has ten neighbours and only one of them is this kind.** Nine run
+# behaviour `$83:993D`, `$83:9776`, `$83:9A89` or `$83:9EBE` and answer
+# collisions at `$83:A364`; victim list entry 3, at (237,2726), runs `$83:9699`
+# and is the only one on the level whose handler is `$83:A264`. It does not
+# start there either -- `--records` shows the same display record answering at
+# `$83:A364` at frame 2700 and at `$83:A264` from 2740 -- so the handler is a
+# state of the neighbour and not a property of it.
+#
+# The corpus had reached that routine before: `movies/level21.zmv` walks past
+# this same neighbour at frame 3180 and takes `a264_give_up`, because the level
+# gets there first -- the record disappears at 3110 and the probe arrives at
+# 3180. Seventy frames, and the difference between the two branches nobody had
+# taken and the two that were already covered.
+#
+# The route is eighty frames long and both of its legs end at a wall:
+#
+#   2700  Left ten frames from the spawn at (258,2836) to x=238, which is the
+#         neighbour's column -- (237,2726) rounds into the same lane
+#   2710  Up, which climbs the open column at x=238
+#   2764  Y, standing still and facing north, from y=2776
+#   2900  Up again, into the neighbour
+#
+# **The Y phase is not decoration.** Standing still for 136 frames lets the
+# level catch up with the neighbour, and `$7E:061E` -- the word `$83:A264`
+# writes its verdict into -- goes to `$0003` at frame 2776, which is the
+# give-up value. A shot lands at 2788 and `a264_shot_clears` puts it back to
+# `$0000`, and the rescue at 2924 then writes `$0001` over that. Without the Y
+# phase the player arrives at 2788 and the word goes straight from `$0000` to
+# `$0001`; the reading that the shot undid a give-up already in flight is a
+# reading and not a measurement, but the three transitions are measured.
+#
+# What the claim leaves behind, all three words:
+#
+#   $7E:0618  $0005   the claimant, which is this player's id and not $8000
+#   $7E:061E  $0001   A264_EVENT_CLAIMED
+#   $7E:605D  $80     the flag byte, index 3 -- the victim list entry's own
+#
+# `movies/level21-p2-rescue.zmv` is the same walk made by the other player, and
+# the only word that differs is the first.
+#
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Right
+1408   -
+1416   Right
+1424   -
+1432   Right
+1440   -
+1448   Down
+1456   -
+1464   A
+1472   -
+1480   Left
+1488   -
+1496   Left
+1504   -
+1512   Left
+1520   -
+1528   Down
+1536   -
+1544   Down
+1552   -
+1560   Down
+1568   -
+1576   A
+1584   -
+1592   Right
+1600   -
+1608   Right
+1616   -
+1624   Right
+1632   -
+1640   Up
+1648   -
+1656   Up
+1664   -
+1672   Up
+1680   -
+1688   A
+1696   -
+1704   Down
+1712   -
+1720   Down
+1728   -
+1736   A
+1744   -
+1752   Right
+1760   -
+1768   Right
+1776   -
+1784   Right
+1792   -
+1800   Down
+1808   -
+1816   A
+1824   -
+1972   Start
+1982   -
+2002   Start
+2012   -
+2032   Start
+2042   -
+2062   Start
+2072   -
+2092   Start
+2102   -
+2122   Start
+2132   -
+2212   -
+2700   Left
+2710   Up
+2764   Y
+2900   Up
+2960   -

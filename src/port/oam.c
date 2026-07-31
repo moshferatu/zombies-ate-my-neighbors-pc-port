@@ -334,7 +334,7 @@ static int draw_args(const Wram* w, uint16_t rec, DrawArgs* d) {
   return 2;
 }
 
-bool sprite_build_oam(Wram* w, const Rom* rom) {
+bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp) {
   actor_depth_sort(w);
   actor_cull(w);
   oam_buffer_clear(w);
@@ -429,12 +429,16 @@ bool sprite_build_oam(Wram* w, const Rom* rom) {
 
   if (!actor_overlap_pass(w, rom)) return false;
 
-  // `$80:BDD2`. Four bytes indexed by the low two bits of the tick, and all
-  // four are $80 in the shipped ROM — so this is a constant with a table's
-  // shape. Read rather than assumed: a ROM hack that varies it by frame phase
-  // would still work, and it costs one lookup a frame.
-  uint16_t tick = wram_r16(w, W_SCHED_TICK);
+  // `$80:BDD2`. Four bytes indexed by the low two bits of a word, and all four
+  // are $80 in the shipped ROM — so this is a constant with a table's shape.
+  // Read rather than assumed: a ROM hack that varies it by frame phase would
+  // still work, and it costs one lookup a frame.
+  //
+  // The word is `$20` on the **caller's** page, not `W_SCHED_TICK`: `$80:BDD0
+  // PLD` runs first. They are the same thing for the scheduler, whose page is
+  // zero, and different for `$82:DE03`/`$82:DE4B` — see the header.
+  uint16_t phase = wram_r16(w, (uint32_t)((dp + SPRITE_PASS_PHASE_DP) & 0xffff));
   wram_w16(w, W_SPRITE_PASS_PHASE,
-           (uint16_t)(rom_word(rom, SPRITE_PASS_PHASE_TABLE + (tick & 3)) & 0xff));
+           (uint16_t)(rom_word(rom, SPRITE_PASS_PHASE_TABLE + (phase & 3)) & 0xff));
   return true;
 }

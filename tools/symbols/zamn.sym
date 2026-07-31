@@ -176,6 +176,54 @@ $81:8506  enemy_survived_react # splices a JSL frame into the enemy thread's own
 $81:8542  enemy_hurt_flash     # what that frame runs: ACTOR_ATTR_SET for two ticks
 $81:8C17  enemy_body_health4   # an actor body whose init is LDA #$0004 : STA $1E
 $81:87F8  enemy_body_health0   # ...and level 1's, which is LDA #$0000, so every hit is fatal
+$81:B41C  enemy_b41c_collide   # the third copy of enemy_collide; health $0C, no death award
+$81:B168  b41c_queue_b16e      # LDA #$B16E : STA $0E — what id $61 does to one on the ground
+$81:B16E  b41c_special_react   # swaps the record's metasprite, sleeps $20, re-installs the handler
+$81:AEA6  b41c_body            # its actor body; consumes the $4C hit flag at $81:AEC5
+$81:CDDE  enemy_cdde_collide   # a fourth handler: no damage table, a plain countdown at $0C
+$81:CC0A  cdde_react_begin     # its hurt flash — swaps $16 for $81:CC2F, no stack splice
+$81:CC2F  cdde_react_end       # ...and the undo, when the $24 timer reaches zero
+$81:CC90  cdde_arm             # countdown $0C = 4, clears $0A/$1E/$20/$24/$28-$2E,
+                               # then installs enemy_cdde_collide. Four hits is the
+                               # whole of this creature's health; cdde_react_begin
+                               # putting it back up to $14 for 30 frames is why
+                               # cdde_killed_reacting has no input.
+$81:B592  enemy_b592_collide   # 24 bytes; answers ids $07 and $08 and nothing else
+$80:F9BE  player_queue_entry   # id $0A: the state gate with $80:DC09's store inlined
+$80:F9D0  player_queue_body    # what it queues: costs a point of health, sound $19, $4B ticks
+$80:F979  player_hurt_alt      # id $0B: the second kind of hit — event $C000, timer $30
+$80:F999  player_state_gate_e331 # id $35: three state tests, then JMP $80:E331. Unported, unreached
+$81:9B6B  enemy_9b6b_collide   # level 21's; health $32, id $30, death is DEC $26
+$81:9063  enemy_9063_collide   # level 5's; health $22, id $30, death is DEC $2E
+$81:F534  actor_f534_collide   # five ids into $3E, two of them guarded on $06 == 4
+$83:A264  victim_a264_collide  # victim_collide's sibling; claims via $18/$1E and $7E:605A
+$81:8191  a264_flag_set        # STA $7E605A,X — one byte, guarded on the index being $FFFF
+$82:DEEB  actor_deeb_collide   # seven bytes: id $FF latches into $12 and parks the thread
+$82:F1C2  actor_f1c2_collide   # level 37's; clears its own ACTOR_COLLIDE_ID and DECs $14
+$82:F4EF  actor_f4ef_collide   # sixteen bytes: ids $05 and $06 -- the two players and
+                               # nothing else -- latch into $18. Never drawn
+$82:F3A7  actor_f4ef_seed      # STZ $18, four instructions before it installs the handler
+$82:F4C6  actor_f4ef_poll      # LDA $18 : BEQ $F4AF — the body waiting to be stood on
+$81:C440  monster_c440_collide # $81:C4A6 one stage earlier: same page, $81:8506 and $81:847E instead
+$81:C321  monster_c440_body    # installs it, then JMP $C3B5 into the body that installs $81:C4A6
+$81:D7F6  enemy_d7f6_collide   # level 17's; health $0C = 1, $5E kills outright, death is DEC $0A
+$81:D6B0  enemy_d7f6_body      # seeds $0C=1 and $0A=0, then registers the handler
+$81:D72B  enemy_d7f6_die       # what DEC $0A wakes: award $0050 if $20 is set, then free the slot
+$81:EDAA  shot_edaa_collide    # one byte, RTL: the $61 shot reacts to nothing it hits
+$81:EDAB  shot_edaa_id_table   # $61's two-player collision ids, immediately after the handler
+$80:F8AC  weapon_pickup_amount # how many shots a pickup gives, by inventory slot, in BCD; slot 5 is 5, slot 11 is 20
+$81:F6A3  shot_f6a3_collide    # 17 bytes, shared by weapons $63/$64/$66/$67; records $01/$03/$04 at $3E
+$81:F6B8  shot_f6a3_id_tables  # five two-word id tables in a row — which is what says four weapons share it
+$81:F691  shot_f6a3_install    # STZ $3E, then LDA #$F6A3 : LDY #$0081 : JSL $80:8475
+$81:F57B  shot_f6a3_poll       # LDA $3E : BEQ — the shot body reading what its handler recorded
+$82:9660  boss_9660_collide    # level 25's boss; 70 health at $3C, four ids remapped before the table
+$82:94E4  boss_9660_body       # its thread: four display records, then the handler and the seeds
+$82:94B4  boss_9660_alloc_rec  # one of the four, with ACTOR_COLLIDE_ID $03
+$82:8F6A  boss_9660_flash      # consumes the $3E hit flag, arms $40 for 3 passes, swaps the palette
+$82:95A0  boss_9660_die        # drops the handler, pays $2000, frees four slots, mosaics out
+$80:F9AE  player_state_gate    # jump-table entry: returns on states 2 and 4, else JMPs to $DC09
+$80:DC09  player_state_tail    # three guards and one store; queues $80:DC1E into $28
+$80:DC1E  player_state_next    # what that store queues — unported, and never called from here
 $80:D259  player_input_buttons # B -> $EA63, A -> $EAA8, X -> $EAE1; all three edge-detected
 $80:EA63  weapon_select_next   # next non-empty player_inventory slot; 14 slots, 15 tries
 $80:EAA8  item_select_next     # next non-empty player_items slot; 12 slots, 13 tries
@@ -237,3 +285,35 @@ $80:AE00  tile_walkable        # A = x, Y = y; carry set = blocked. col = x/8,
                                # row = (y-8)/8, and six tiles tested: +0/+2/+4
                                # along the row and the same three on the next
 $80:AE43  tile_attr_test       # LDA [$BA],Y : LSR : BCS -- bit 0 is solid
+
+# --- Code: the random number generator ---------------------------------------
+$80:9D39  rng_next             # 8-bit: state ^ (state ROL C), plus a counter,
+                               # ADC'd together. Returns 0..255 in A, and the
+                               # caller's carry is an input to the ROL
+$000024  rng_state             # 1 byte: the shift register $80:9D39 keeps
+$000025  rng_counter           # 1 byte: bumped every call, twice when the ADC
+                               # overflowed as signed
+
+# --- Code: the ice weapon (collision id $5D) ---------------------------------
+$81:847E  enemy_freeze         # where every copy of enemy_collide sends id $5D:
+                               # INC $7E, and on the fifth hit tally + splice
+$80:9D6A  score_slot_2         # score_slot with one comparison: A = side -> X,
+                               # 0 or 2, and it cannot answer "nobody"
+$001FE0  monsters_frozen       # 2 x u16: what $81:849F counts, per score slot
+$81:84D6  freeze_react         # what a frozen creature's thread wakes up running
+$82:CA87  bonus_screen_tally   # reads monsters_frozen, and $1FE2 for player two;
+                               # 40 of them draws MONSTER/FROZEN/....////BONUS?
+$81:83C6  enemy_bubble         # the same splice for id $5E, without the counter
+$81:9BA2  enemy_9b6b_bubble    # the nine instructions in front of it on level 21:
+                               # side -> score slot -> INC $1FDC, then JML $83C6
+$001FDC  martians_bubbled      # 2 x u16, two words below monsters_frozen
+$82:C9AE  bonus_tally_bubbled  # reads it: CMP #$000A, so ten bubbled is a bonus
+                               # where it takes forty frozen
+
+# --- Code: level 9's actor ($81:D301's) --------------------------------------
+$81:D301  enemy_d301_collide   # the eighth copy of enemy_collide; health $0E = 25,
+                               # id $5C ignored outright, $FF is "stop"
+$81:D210  enemy_d301_alloc     # its display record and the four trail pairs
+$81:D262  enemy_d301_seed      # health $19, verdict $0C = 0, then the handler
+$81:D28C  enemy_d301_body      # the loop that reads the verdict and pays $0200
+$81:D142  enemy_d301_queue_hurt # LDA #$D148 : STA $14 — what a survived hit installs

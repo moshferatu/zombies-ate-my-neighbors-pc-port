@@ -1,0 +1,238 @@
+# Level 21, reached by password BXBS, then a *spin* rather than a box.
+#
+# **What this is aimed at is a creature that chases.** `$81:9B6B` is on level
+# 21's display list for most of `movies/level21.zmv` -- 96 of 126 sampled frames,
+# three copies at once -- and every call it makes takes the ignore path, so five
+# of its seven sites had read zero since it was ported. The reason is in the two
+# position dumps side by side: these things walk *at* the player, and the box
+# walk's legs are 180 frames long, so the player spends almost all of its time
+# facing away from the crowd it is towing. A shot leaves in the direction you are
+# facing, so a chaser is behind it by construction.
+#
+# The tail is the same twelve directions at 30 frames instead of 180
+# (`tools/make_spin_probe.py`). Four legs of 30 cancel out, so the player stays
+# roughly where it started and faces all four directions once a second, which is
+# what puts a shot into something that is walking into you. That is the whole
+# difference between 0 hits and 35 over the same 2,100 frames.
+#
+# It takes `d9b6b_hit` and `d9b6b_died` -- 35 each, and the fact that those two
+# numbers are *equal* is itself the finding: every hit this creature takes kills
+# it, so `d9b6b_survived` needs a weapon weaker than one damage and there is no
+# such thing. It also takes `f534_ignore`, which nothing had.
+#
+# The spin is not universally better. Run on levels 5, 17 and 49 it added nothing
+# at all -- a creature that does not come to you has to be walked to, and the
+# spin trades ground for aim. `--leg 180 --lookback 30` is the compromise.
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Right
+1408   -
+1416   Right
+1424   -
+1432   Right
+1440   -
+1448   Down
+1456   -
+1464   A
+1472   -
+1480   Left
+1488   -
+1496   Left
+1504   -
+1512   Left
+1520   -
+1528   Down
+1536   -
+1544   Down
+1552   -
+1560   Down
+1568   -
+1576   A
+1584   -
+1592   Right
+1600   -
+1608   Right
+1616   -
+1624   Right
+1632   -
+1640   Up
+1648   -
+1656   Up
+1664   -
+1672   Up
+1680   -
+1688   A
+1696   -
+1704   Down
+1712   -
+1720   Down
+1728   -
+1736   A
+1744   -
+1752   Right
+1760   -
+1768   Right
+1776   -
+1784   Right
+1792   -
+1800   Down
+1808   -
+1816   A
+1824   -
+1972   Start
+1982   -
+2002   Start
+2012   -
+2032   Start
+2042   -
+2062   Start
+2072   -
+2092   Start
+2102   -
+2122   Start
+2132   -
+2212   -
+2500   Right+Y
+2530   Down+Y
+2560   Left+Y
+2590   Up+Y
+2620   Right+Y
+2650   Down+Y
+2680   Left+Y
+2710   Up+Y
+2740   Right+Y
+2770   Down+Y
+2800   Left+Y
+2830   Up+Y
+2860   Right+Y
+2890   Down+Y
+2920   Left+Y
+2950   Up+Y
+2980   Right+Y
+3010   Down+Y
+3040   Left+Y
+3070   Up+Y
+3100   Right+Y
+3130   Down+Y
+3160   Left+Y
+3190   Up+Y
+3220   Right+Y
+3250   Down+Y
+3280   Left+Y
+3310   Up+Y
+3340   Right+Y
+3370   Down+Y
+3400   Left+Y
+3430   Up+Y
+3460   Right+Y
+3490   Down+Y
+3520   Left+Y
+3550   Up+Y
+3580   Right+Y
+3610   Down+Y
+3640   Left+Y
+3670   Up+Y
+3700   Right+Y
+3730   Down+Y
+3760   Left+Y
+3790   Up+Y
+3820   Right+Y
+3850   Down+Y
+3880   Left+Y
+3910   Up+Y
+3940   Right+Y
+3970   Down+Y
+4000   Left+Y
+4030   Up+Y
+4060   Right+Y
+4090   Down+Y
+4120   Left+Y
+4150   Up+Y
+4180   Right+Y
+4210   Down+Y
+4240   Left+Y
+4270   Up+Y
+4300   Right+Y
+4330   Down+Y
+4360   Left+Y
+4390   Up+Y
+4420   Right+Y
+4450   Down+Y
+4480   Left+Y
+4510   Up+Y
+4540   Right+Y
+4570   Down+Y
+4600   -

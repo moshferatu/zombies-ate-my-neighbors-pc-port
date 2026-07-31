@@ -17,18 +17,22 @@ asset pipeline is done — compression, graphics, level layout, the placement
 lists, the sprite/OAM path and the audio upload path all reimplemented in C and
 **verified byte-exact against the ROM's own routines** (Phase 2).
 
-Phase 3 is the logic port. The co-simulation harness is built, eleven routines
-are through it — including **the whole per-frame sprite pass** — and the
-coroutine problem is solved: a ported routine that suspends inside the thread
-scheduler does it at an explicit resume point, with its parked state as plain
-copyable data. `zamn_cosim verify` checks the C against the ROM's own code on
-every call the game makes — 128 KB of WRAM plus registers — and passes **97,711
-of 97,711**, while `zamn_cosim run` substitutes the C for real and finds **no
-byte of live game state differing** across 6,089 scheduler passes.
+Phase 3 is the logic port. The co-simulation harness is built, forty-six routines
+are through it — including **the whole per-frame sprite pass**, the collision
+dispatch and the twenty-four actor handlers it routes to, plus the game's **random
+number generator** — and the coroutine problem is solved: a ported routine that
+suspends inside the thread scheduler does it at an explicit resume point, with its
+parked state as plain copyable data. `zamn_cosim verify` checks the C against the
+ROM's own code on every call the game makes — 128 KB of WRAM plus registers — and
+passes **3,482,740 of 3,482,740 across the whole movie corpus**, thirteen levels
+deep, while `zamn_cosim run` substitutes the C for real and finds **no byte of live
+game state differing** on every movie but two. Across all thirty-nine movies the ROM
+is **no longer asked to run a single routine the port does not have**.
 
 The port also reports **which of its own branches an input actually reached**,
 because a branch no movie takes is one the diff agrees with the ROM about for
-the wrong reason. Nine of 34 are still untaken, and they are the backlog.
+the wrong reason. 66 of 246 are still untaken by every input, and they are the
+backlog.
 
 See **`docs/cosim.md`** for the harness and what coverage measures that the diff
 cannot, **`docs/threads.md`** for how a ported routine suspends,
@@ -48,11 +52,56 @@ SDL2 is fetched and built automatically the first time.
 build\zamn.exe "Zombies Ate My Neighbors.sfc"
 ```
 Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=Select · Esc=Quit
+· **F1 = toggle native substitution**
+
+**This is the substituted build, not the emulated baseline.** It installs the
+same `COSIM_NATIVE` interception `zamn_cosim run` uses, against the one live
+core: every call the game makes to a ported routine is executed by the C port
+instead of by the 65816, and the window title carries a live count of how many.
+`--stock` clears the enable mask to get the Phase 0 emulated baseline back, and
+F1 moves between the two at a frame boundary while the game is running.
+
+What this is *not* is a native game yet. Forty-six routines are ported; the
+main loop, the NMI handler, player movement, level and camera code and every
+enemy body still belong to the ROM under the emulated core. What runs natively
+are the leaves those call — the sprite/OAM pass, the depth sort, collision
+dispatch, thread spawn and tick, score, fades. Phase 4 is where that inverts.
+
+Other options — `-m <movie.zmv>` replays a recorded movie instead of reading the
+keyboard, `--frames N` runs N frames uncapped and exits, `--shot out.png` writes
+the final frame, `--no-audio` skips the audio device. The three together are how
+the substituted frontend gets checked against the baseline without anyone
+playing it:
+```
+build\zamn.exe "Zombies Ate My Neighbors.sfc" -m movies\level29-fighting.zmv ^
+    --frames 6000 --no-audio --shot native.png
+build\zamn.exe "Zombies Ate My Neighbors.sfc" -m movies\level29-fighting.zmv ^
+    --frames 6000 --no-audio --shot stock.png --stock
+```
+Those two framebuffers are identical, as are level 1's, level 1 two-player and
+level 45's. On exit the frontend prints the same per-routine table `zamn_cosim`
+does — minus the verdict column, since there is no reference core here to diff
+against — plus the decline census naming whatever the ROM still had to run.
+(It is a `WIN32` binary, so it borrows the parent console for that; run it from
+a terminal to see it.)
 
 Headless frame dump (for verification / debugging, and for aiming a movie):
 ```
 build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" frame.png 500
 build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" shot.png 6100 -m movies\level1-rescue.zmv --at 1980,3000,4200
+```
+Three options make it the movie-authoring loop rather than a screenshot tool:
+`--pos` prints where each player is, `--records` prints the whole display list
+with the fields that decide a collision, and `--watch <addr>[,first[,last[,step]]]`
+prints one WRAM word whenever it changes. `--watch` may be repeated.
+
+`--records` also names the **collision handler** each thing on the board is
+running, and the direct page it runs on — so the display list doubles as a map
+from what is on screen to the routines in `src/port/collide.c`, and the page is
+what to point `--watch` at.
+```
+build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" shot.png 7600 ^
+    -m movies\level25-boss.zmv --watch 083C,3900,7580,1
 ```
 
 ## Analyse
@@ -72,6 +121,7 @@ build\zamn_assets.exe verify-actors  "Zombies Ate My Neighbors.sfc" -m movies\le
 build\zamn_assets.exe verify-sprites "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_assets.exe verify-music   "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_assets.exe level  "Zombies Ate My Neighbors.sfc" 2 level1.png
+build\zamn_assets.exe route  "Zombies Ate My Neighbors.sfc" 18 284 420 563 513 --reach reach18.png
 build\zamn_assets.exe music  "Zombies Ate My Neighbors.sfc"
 build\zamn_assets.exe spc    "Zombies Ate My Neighbors.sfc" 2 level2.spc --wav level2.wav
 build\zamn_assets.exe sprite "Zombies Ate My Neighbors.sfc" 90:9172 zeke.png
@@ -91,6 +141,15 @@ build\zamn_cosim.exe run    "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv 
 build\zamn_cosim.exe run    "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -r none
 build\zamn_cosim.exe verify "Zombies Ate My Neighbors.sfc" -m movies\level1-rescue.zmv -f 6100 -c
 build\zamn_cosim.exe run    "Zombies Ate My Neighbors.sfc" -m movies\level1-rescue.zmv -f 6100
+```
+
+`verify` over the **whole corpus** — every movie at the frame count it wants,
+which is a table in the script rather than a property of the `.zmv` — plus the
+two numbers no single run can produce: the branch-coverage union, and the
+decline census summed across every input. This is what `PROGRESS.md`'s totals
+are measured with:
+```
+powershell -ExecutionPolicy Bypass -File tools\verify_corpus.ps1
 ```
 
 ## Layout
@@ -115,6 +174,14 @@ tools/symbols/        Symbol names for the disassembler
 third_party/lakesnes  Vendored SNES core (MIT) — reference emulator + PPU/APU
 third_party/stb       stb_image_write.h (public domain)
 tools/build.ps1       Sets up MSVC env, configures + builds with Ninja
+tools/verify_corpus.ps1  Runs `verify` over every movie; owns the frame counts
+tools/make_spin_probe.py Rewrites a probe movie's tail as short legs, so the
+                              player faces every direction instead of towing a
+                              crowd it never turns to shoot
+tools/perturb.py      Breaks one line of the port on purpose, rebuilds, runs
+                              `verify` against every input listed for it, and puts
+                              both back — a branch no input distinguishes, or one
+                              only a single input does, is what it is looking for
 ```
 
 `analysis/` is git-ignored: it is derived from your ROM and quotes it verbatim.

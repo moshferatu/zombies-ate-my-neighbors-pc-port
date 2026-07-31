@@ -184,7 +184,7 @@ static int cmd_verify(const Options* o) {
 
   long checked = 0;
   for (int i = 0; i < c.stat_count; i++)
-    if (c.enabled & (1u << i)) checked += c.stats[i].checked;
+    if (c.enabled & (UINT64_C(1) << i)) checked += c.stats[i].checked;
   printf("\n%ld call%s checked, %d routine%s diverged.\n", checked,
          checked == 1 ? "" : "s", failures, failures == 1 ? "" : "s");
   if (checked == 0)

@@ -626,8 +626,20 @@ static void print_header(const LevelHeader* h, int level) {
 // 4bpp, and the 16 KB of characters is exactly 512 tiles — which is also how
 // many entries the tile attribute table has, so a map entry's tile index is
 // 9 bits even though the hardware field is 10.
+//
+// `reach`, when it is not NULL, is one byte per grid cell: 0 solid, 1 reached,
+// 2 the start, 3 the goal, 4 open but cut off from the start. It is tinted over
+// the map rather than drawn instead of it, because what a route needs is not
+// "which cells are open" but *which opening is the way in*, and that is a
+// question about the picture.
+//
+// **Solid and cut-off are different colours on purpose.** A search that answers
+// "no route" has said nothing about which of the two it hit, and the two want
+// opposite things: a solid target is a target to give up on, and a cut-off one
+// is a door to find. Level 17's `$81:D7F6` creature lives in a pen that is
+// open ground with no way into it, and one picture says so.
 static bool render_level(const LevelHeader* h, const uint16_t* map, const Rom* rom,
-                         const char* path) {
+                         const char* path, const uint8_t* reach) {
   uint32_t avail = 0;
   const uint8_t* chars = rom_ptr(rom, h->bg_tiles, &avail);
   if (!chars || avail < LEVEL_BG_TILES_BYTES) {
@@ -675,6 +687,27 @@ static bool render_level(const LevelHeader* h, const uint16_t* map, const Rom* r
           p[0] = pal[c * 3 + 0];
           p[1] = pal[c * 3 + 1];
           p[2] = pal[c * 3 + 2];
+        }
+      }
+    }
+  }
+
+  // The route grid is 8x8 like the tiles are, so one cell is one tile and the
+  // overlay needs no scaling. A cell's *world* row is eight pixels below its
+  // grid row (`ROUTE_Y_BIAS`), which is why the tint is drawn one tile down.
+  if (reach) {
+    static const uint8_t tint[5][3] = {{160, 0, 0},   {0, 200, 0},
+                                       {255, 255, 0}, {0, 128, 255},
+                                       {220, 110, 0}};
+    for (uint32_t ty = 0; ty + 1 < tile_rows; ty++) {
+      for (uint32_t tx = 0; tx < tile_cols; tx++) {
+        const uint8_t* t = tint[reach[ty * tile_cols + tx]];
+        for (uint32_t y = 0; y < GFX_TILE_H; y++) {
+          for (uint32_t x = 0; x < GFX_TILE_W; x++) {
+            uint8_t* p = img + (((size_t)((ty + 1) * GFX_TILE_H + y)) * w
+                                + tx * GFX_TILE_W + x) * 3;
+            for (int c = 0; c < 3; c++) p[c] = (uint8_t)((p[c] + t[c]) / 2);
+          }
         }
       }
     }
@@ -735,7 +768,7 @@ static int cmd_level(int argc, char** argv) {
   }
 
   bool ok = true;
-  if (out_path) ok = render_level(&h, map, &rom, out_path);
+  if (out_path) ok = render_level(&h, map, &rom, out_path, NULL);
 
   free(blocks);
   free(map);
@@ -2616,7 +2649,7 @@ static int cmd_route(int argc, char** argv) {
   if (argc < 6) {
     fprintf(stderr,
             "usage: zamn_assets route <rom.sfc> <level 1-56> <x0> <y0> <x1> <y1>"
-            " [--frames <start>]\n");
+            " [--frames <start>] [--reach <out.png>]\n");
     return 2;
   }
   int rom_len = 0;
@@ -2627,8 +2660,11 @@ static int cmd_route(int argc, char** argv) {
   int x0 = atoi(argv[2]), y0 = atoi(argv[3]);
   int x1 = atoi(argv[4]), y1 = atoi(argv[5]);
   int frame0 = -1;
-  for (int i = 6; i + 1 < argc; i++)
+  const char* reach_path = NULL;
+  for (int i = 6; i + 1 < argc; i++) {
     if (!strcmp(argv[i], "--frames")) frame0 = atoi(argv[i + 1]);
+    if (!strcmp(argv[i], "--reach")) reach_path = argv[i + 1];
+  }
 
   uint32_t addr = 0;
   LevelHeader h;
@@ -2673,8 +2709,11 @@ static int cmd_route(int argc, char** argv) {
   prev[(uint32_t)sy * cols + (uint32_t)sx] = -1;
   queue[tail++] = (int32_t)((uint32_t)sy * cols + (uint32_t)sx);
   const int dxs[4] = {1, -1, 0, 0}, dys[4] = {0, 0, 1, -1};
-  bool found = false;
-  while (head < tail && !found) {
+  // Flooded to exhaustion rather than stopped at the goal. Breadth-first sets
+  // every `prev` once and in the same order either way, so the path printed is
+  // the path that was always printed; what the extra cells buy is `--reach`,
+  // and twelve thousand of them cost nothing.
+  while (head < tail) {
     int32_t cur = queue[head++];
     int cx = (int)((uint32_t)cur % cols), cy = (int)((uint32_t)cur / cols);
     for (int k = 0; k < 4; k++) {
@@ -2685,7 +2724,24 @@ static int cmd_route(int argc, char** argv) {
       if (!route_open(map, attrs, cols, rows, nx, ny)) continue;
       prev[ni] = cur;
       queue[tail++] = (int32_t)ni;
-      if (nx == gx && ny == gy) { found = true; break; }
+    }
+  }
+
+  if (reach_path) {
+    uint8_t* reach = (uint8_t*)calloc(cells, 1);
+    if (reach) {
+      for (uint32_t i = 0; i < cells; i++)
+        reach[i] = prev[i] != -2
+                       ? 1
+                       : (route_open(map, attrs, cols, rows,
+                                     (int)(i % cols), (int)(i / cols))
+                              ? 4
+                              : 0);
+      reach[(uint32_t)sy * cols + (uint32_t)sx] = 2;
+      if (gy >= 0 && (uint32_t)gy < rows && gx >= 0 && (uint32_t)gx < cols)
+        reach[(uint32_t)gy * cols + (uint32_t)gx] = 3;
+      render_level(&h, map, &rom, reach_path, reach);
+      free(reach);
     }
   }
 
@@ -2759,8 +2815,12 @@ static void usage(void) {
           "      Spell every password out of the ROM's own tables, or read one\n"
           "      back to the level and victim count it means.\n\n"
           "  zamn_assets route <rom.sfc> <level> <x0> <y0> <x1> <y1> [--frames f]\n"
+          "                    [--reach out.png]\n"
           "      Breadth-first a walkable path through a level and print the\n"
-          "      turns, or .zmv lines with --frames.\n\n"
+          "      turns, or .zmv lines with --frames. --reach tints the map:\n"
+          "      green reached, orange open but cut off, red solid, yellow the\n"
+          "      start, blue the goal. Orange is the one that says where a\n"
+          "      missing route wants a door.\n\n"
           "  zamn_assets actors <rom.sfc> <level 1-56>\n"
           "      Report a level's actor, victim and object placement lists.\n\n"
           "  zamn_assets verify-actors <rom.sfc> [-m movie] [-f frames]\n"

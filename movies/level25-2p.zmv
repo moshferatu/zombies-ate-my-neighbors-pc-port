@@ -1,0 +1,181 @@
+# Level 25 with two players, reached by password GYLM.
+#
+# **What this is for is one word of WRAM.** `monster_kill_award` ends
+# `LDA $20 : AND #$8000 : ASL A : ROL A : ROL A : TAX : INC $1FD4,X` -- a kill
+# counter indexed by the *side* that landed the blow, already doubled. Every
+# death in the corpus before this movie was player one's, and both spellings of
+# zero are zero, so deleting the doubling passed every call on every input.
+# PROGRESS.md has carried that as a work item for two rounds; a second player
+# killing something on level 25 is the input that settles it.
+#
+# The prefix through frame 2084 is level25.zmv's, unchanged, plus Start on
+# port 2 in the same player-select window. The tail is two box walks with fire
+# held, mirrored so the two cover different ground.
+#
+# It works: 20 awards paid over 4700 frames, score_slot_0 6 against
+# score_slot_1 18, and 00000300 / 00000900 on the two slots at frame 4600.
+# The perturbation now fails at $7E:1FD5 -- the byte *between* the two counters,
+# which is where an undoubled index lands.
+#
+# Retune by watching where it actually gets to:
+#   zamn_headless <rom> shot.png 4700 -m movies\level25-2p.zmv --records 4600,4600,40
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   A
+1440   -
+1448   Right
+1456   -
+1464   Down
+1472   -
+1480   Down
+1488   -
+1496   A
+1504   -
+1512   Right
+1520   -
+1528   Right
+1536   -
+1544   Right
+1552   -
+1560   Up
+1568   -
+1576   Up
+1584   -
+1592   A
+1600   -
+1608   Right
+1616   -
+1624   A
+1632   -
+1640   Right
+1648   -
+1656   Down
+1664   -
+1672   Down
+1680   -
+1688   A
+1696   -
+1844   Start
+1854   -
+2:1854   Start
+2:1862   -
+1874   Start
+1884   -
+2:1884   Start
+2:1892   -
+1904   Start
+1914   -
+2:1914   Start
+2:1922   -
+1934   Start
+1944   -
+2:1944   Start
+2:1952   -
+1964   Start
+1974   -
+1994   Start
+2004   -
+2084   -
+2500   Right+Y
+2:2500   Left+Y
+2680   Down+Y
+2:2680   Up+Y
+2860   Left+Y
+2:2860   Right+Y
+3040   Up+Y
+2:3040   Down+Y
+3220   Right+Y
+2:3220   Left+Y
+3400   Down+Y
+2:3400   Up+Y
+3580   Left+Y
+2:3580   Right+Y
+3760   Up+Y
+2:3760   Down+Y
+3940   Right+Y
+2:3940   Left+Y
+4120   Down+Y
+2:4120   Up+Y
+4300   Left+Y
+2:4300   Right+Y
+4480   Up+Y
+2:4480   Down+Y
+4660   -
+2:4660   -

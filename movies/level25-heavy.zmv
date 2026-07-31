@@ -1,0 +1,226 @@
+# Level 25, reached by password GYLM, then the *other* heavy weapon collected
+# from the south of the mall and fired at the boss.
+#
+# **What this is for is one ROM table the previous round did not read.**
+# `movies/level25-boss.zmv` priced the boss kill off the four `$26` objects --
+# weapon `$61`, five shots a pickup, twenty damage rewritten to four -- and got a
+# ceiling of eighty against seventy health. Level 25's object list has two type
+# `$22` objects as well, at (1046,1045) and (1110,1077). `$80:CA30` makes that id
+# `$17`, `slot = id - $0C` makes it slot 11, and **`$80:F8AC` says slot 11 gives
+# twenty shots a pickup** -- so forty shots at four damage each, a hundred and
+# sixty, and `$67` is **not** one of the four ids `boss_9660_collide` rewrites.
+# The kill stopped being ammunition-limited and became accuracy-limited.
+#
+# **Three things about the route.** The south of the mall is reached by an
+# escalator and there are two of them side by side: down at x=917, up at x=945,
+# eight pixels apart and one-way each. `zamn_assets route` treats both as
+# walkable in both directions, which is the second escalator in this project its
+# grid has been wrong about -- every route it plans out of the south goes back up
+# the down one. The pickups need the player within about ten pixels: passing at
+# (1057,1032) with the object at (1046,1045) collects nothing, and the leg is
+# tuned against `--watch 1CE2`, which is slot 11's count and reads `$0020` BCD
+# per pickup rather than the 64 a hex reading would give.
+#
+# What it buys: the census, which was empty. Weapon `$67`'s shots install
+# `$81:F6A3` as their collision handler and no input had ever fired one --
+# **273 declines**, and the routine behind them is seventeen bytes.
+#
+# What it does not buy is the kill. The boss takes 70 -> 66 -> 62 -> 58 -> 54,
+# four hits out of forty shots, and `boss_died` is still untaken. Six attempts
+# are recorded in docs/cosim.md; the useful measurement is that standing still
+# and firing one way lands **nothing at all**, four times out of four.
+#
+# Retune by watching the health word, on the page the record dump gives:
+#   zamn_headless <rom> shot.png 6700 -m movies\level25-heavy.zmv --watch 083C
+#   zamn_headless <rom> shot.png 6700 -m movies\level25-heavy.zmv --records 3890,3890,1
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   A
+1440   -
+1448   Right
+1456   -
+1464   Down
+1472   -
+1480   Down
+1488   -
+1496   A
+1504   -
+1512   Right
+1520   -
+1528   Right
+1536   -
+1544   Right
+1552   -
+1560   Up
+1568   -
+1576   Up
+1584   -
+1592   A
+1600   -
+1608   Right
+1616   -
+1624   A
+1632   -
+1640   Right
+1648   -
+1656   Down
+1664   -
+1672   Down
+1680   -
+1688   A
+1696   -
+1844   Start
+1854   -
+1874   Start
+1884   -
+1904   Start
+1914   -
+1934   Start
+1944   -
+1964   Start
+1974   -
+1994   Start
+2004   -
+2084   -
+2580   Down
+2730   Left
+2920   Down
+3200   Right
+3270   Down
+3304   Left
+3316   Down
+3340   Right
+3382   Up
+3400   Left
+3432   Up
+3474   Left
+3560   Right
+3594   Up
+3780   -
+3790   B
+3802   -
+3820   Left+Y
+3880   Up+Y
+3940   Right+Y
+4000   Down+Y
+4060   Left+Y
+4120   Up+Y
+4180   Right+Y
+4240   Down+Y
+4300   Left+Y
+4360   Up+Y
+4420   Right+Y
+4480   Down+Y
+4540   Left+Y
+4600   Up+Y
+4660   Right+Y
+4720   Down+Y
+4780   Left+Y
+4840   Up+Y
+4900   Right+Y
+4960   Down+Y
+5020   Left+Y
+5080   Up+Y
+5140   Right+Y
+5200   Down+Y
+5260   Left+Y
+5320   Up+Y
+5380   Right+Y
+5440   Down+Y
+5500   Left+Y
+5560   Up+Y
+5620   Right+Y
+5680   Down+Y
+5740   Left+Y
+5800   Up+Y
+5860   Right+Y
+5920   Down+Y
+5980   Left+Y
+6040   Up+Y
+6100   Right+Y
+6160   Down+Y
+6220   Left+Y
+6280   Up+Y
+6340   Right+Y
+6400   Down+Y
+6460   Left+Y
+6520   Up+Y
+6580   Right+Y
+6640   -

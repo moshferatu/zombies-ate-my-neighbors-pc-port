@@ -1,0 +1,204 @@
+# Level 49, the same walk as `movies/level49-bubble.zmv` with the B press taken
+# out -- so the shots start out as the ordinary $5C.
+#
+# **They do not stay that way, and that is the finding.** With Y held for
+# eighteen hundred frames the squirt gun runs dry, and the game then moves the
+# selection on by itself: `weapon_select_next` is called twice on this movie with
+# `weapon_changed` both times and no B press anywhere in the file, and
+# `--records` shows every shot reading $5C up to about frame 4550 and $5E from
+# 4560. So this is not the clean control it was written to be -- it is the same
+# weapon arriving later, by a route no input had taken before.
+#
+# Which makes the pair worth keeping for a different reason than the intended
+# one. The two movies' censuses differ: `$81:AC92` appears on both (309 declines
+# here against 290), so that handler is a finding about the *route* -- level 49's
+# north-west corner is somewhere no input had walked. `$81:845E` appears only
+# here, 38 declines. And `$81:83C6` is reached only here, three times, because by
+# the time this movie is firing $5E the walk has come back to where the $81:AC92
+# creature is and the bubble movie's has not.
+#
+# The bubble movie fires that weapon from frame 3400 and reaches $81:83C6 zero
+# times. One input carrying a new weapon *and* a new route cannot say which of
+# them bought which census entry, and this project has been wrong in that exact
+# shape before -- see the `monster_collide` dispatch that was counted for four
+# rounds and never named.
+#
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   Down
+1440   -
+1448   Down
+1456   -
+1464   A
+1472   -
+1480   Right
+1488   -
+1496   Right
+1504   -
+1512   Right
+1520   -
+1528   Right
+1536   -
+1544   Right
+1552   -
+1560   Right
+1568   -
+1576   Up
+1584   -
+1592   A
+1600   -
+1608   Left
+1616   -
+1624   Left
+1632   -
+1640   Left
+1648   -
+1656   Left
+1664   -
+1672   Up
+1680   -
+1688   A
+1696   -
+1704   Down
+1712   -
+1720   A
+1728   -
+1736   Right
+1744   -
+1752   Right
+1760   -
+1768   Right
+1776   -
+1784   Right
+1792   -
+1800   Down
+1808   -
+1816   A
+1824   -
+1972   Start
+1982   -
+2002   Start
+2012   -
+2032   Start
+2042   -
+2062   Start
+2072   -
+2092   Start
+2102   -
+2122   Start
+2132   -
+2212   -
+2700   Right+Y
+2710   Down+Y
+2849   Right+Y
+2871   Up+Y
+2873   Down+Y
+2875   Up+Y
+2877   Down+Y
+2879   Up+Y
+2881   Down+Y
+2883   Up+Y
+2885   Down+Y
+2899   Right+Y
+2936   Up+Y
+3026   Right+Y
+3034   Up+Y
+3098   Right+Y
+3114   Up+Y
+3178   Left+Y
+3213   Up+Y
+3227   Left+Y
+3230   Up+Y
+3244   Left+Y
+3250   Left+Y
+3266   Up+Y
+3400   Right+Y
+3580   Down+Y
+3760   Left+Y
+3940   Up+Y
+4120   Right+Y
+4300   Down+Y
+4480   Left+Y
+4660   Up+Y
+4840   Right+Y
+5020   Down+Y
+5200   Left+Y
+5380   Up+Y
+5560   -

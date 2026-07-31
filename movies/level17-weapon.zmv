@@ -1,0 +1,176 @@
+# Level 17, reached by password, then a *second weapon* picked up and fired.
+#
+# **This is the first input in the project that fires anything but the squirt
+# gun**, and it is what the coverage table has been asking for since the level-29
+# round. Every shot in every earlier movie carries collision id $5C, which is why
+# `enemy_hit_special` -- the branch each of the eight copies of $81:8888 keeps for
+# ids $5D and $5E -- had read zero on every input ever recorded.
+#
+# The route is four moves, because level 17 puts an object of type $02 sixty-four
+# pixels from where the player starts. `zamn_assets actors <rom> 18` lists it at
+# (220,431) and `zamn_assets route <rom> 18 284 420 220 431` walks there in ten
+# cells: Left is blocked at x=242, so it is Left, Down, Left. Object type $02 is
+# collision id $0D ($80:CA30), which is inventory slot 1, and B cycles the
+# selection to it ($80:EA63). From then on every shot on screen reads $5D --
+# checked with `--records`, not assumed.
+#
+# What it buys: `enemy_hit_special` 333, `shot_expire` 25, and a census entry of
+# $81:847E, the routine the whole family hands $5D to and that nothing had ever
+# reached.
+#
+# Retune by watching where it actually gets to:
+#   zamn_headless <rom> shot.png 4700 -m movies\level17-weapon.zmv --records 2560,2760,200
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Right
+1408   -
+1416   Right
+1424   -
+1432   Right
+1440   -
+1448   Down
+1456   -
+1464   Down
+1472   -
+1480   A
+1488   -
+1496   A
+1504   -
+1512   Left
+1520   -
+1528   Left
+1536   -
+1544   Down
+1552   -
+1560   Down
+1568   -
+1576   A
+1584   -
+1592   Right
+1600   -
+1608   Right
+1616   -
+1624   Right
+1632   -
+1640   Right
+1648   -
+1656   Up
+1664   -
+1672   Up
+1680   -
+1688   A
+1696   -
+1704   Right
+1712   -
+1720   Down
+1728   -
+1736   Down
+1744   -
+1752   A
+1760   -
+1908   Start
+1918   -
+1938   Start
+1948   -
+1968   Start
+1978   -
+1998   Start
+2008   -
+2028   Start
+2038   -
+2058   Start
+2068   -
+2148   -
+2560 Left
+2592 Down
+2598 Left
+2626 -
+2680 B
+2692 -
+2740 Y
+2760 Right+Y
+3100 Down+Y
+3260 Left+Y
+3420 Up+Y
+3580 Right+Y
+3740 Down+Y
+3900 Left+Y
+4060 Up+Y
+4220 Right+Y
+4380 Down+Y
+4540 Left+Y
+4700 Up+Y
+4860 -

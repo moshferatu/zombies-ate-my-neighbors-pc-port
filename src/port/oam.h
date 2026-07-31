@@ -190,9 +190,15 @@ void oam_buffer_clear(Wram* w);
 
 // --- $80:BD1F ---------------------------------------------------------------
 
-// The four-byte table at `$80:BDE6`, indexed by the low two bits of the
-// scheduler tick. All four entries are $80.
+// The four-byte table at `$80:BDE6`, indexed by the low two bits of the word at
+// `$20` **on the caller's direct page**. All four entries are $80.
 #define SPRITE_PASS_PHASE_TABLE 0x80bde6u
+
+// The tail's `$80:BDD2  LDA $20` is a direct-page read, and the `$80:BDD0  PLD`
+// two instructions earlier has already put the *caller's* page back. So the word
+// it indexes the table with is `dp + $20`, which is `W_SCHED_TICK` only when the
+// caller's page is zero — see the note on `sprite_build_oam`.
+#define SPRITE_PASS_PHASE_DP 0x20
 
 // The whole per-frame sprite pass: the routine `scheduler_idle` calls once a
 // frame, and the one everything above is a part of.
@@ -208,8 +214,19 @@ void oam_buffer_clear(Wram* w);
 // what was missing was the caller — which records to draw, in what order, at
 // what screen position, and with which attributes. That is what this is.
 //
-// The pass never yields. It runs from the scheduler's own housekeeping between
-// frames, not from a thread, so it is a leaf in the sense that matters here.
+// The pass never yields, and it is a leaf in the sense that matters here — but
+// it is **not** only the scheduler's. `$80:837C` is one of three `JSL $80BD1F`
+// in the ROM; the other two are `$82:DE03` and `$82:DE4B`, inside the alert
+// `$82:DDA7` runs when the player comes near the actor whose handler is
+// `actor_deeb_collide`. Those two are called from a *thread*, so the caller's
+// direct page is that thread's own page rather than zero — which is why `dp` is
+// a parameter. Everything the pass itself does is inside `$80:BD21  PEA $0000 :
+// PLD`, so `dp` reaches exactly one instruction: the tail's `LDA $20`.
+//
+// It went unnoticed for forty-one routines because the table that read indexes
+// is `$80,$80,$80,$80`: the index changes nothing the pass writes, so 128 KB of
+// WRAM agrees either way and the wrong value escapes only through **X**. See
+// `docs/cosim.md` → *The pass that is not only the scheduler's*.
 //
 // Returns false if it could not serve the call: `actor_overlap_pass` found a
 // pair to dispatch (see its note above), or — in a case no shipped metasprite
@@ -218,6 +235,6 @@ void oam_buffer_clear(Wram* w);
 // the pass it declines on comes last. A false therefore means "throw `w` away",
 // which is exactly what the harness does: it runs this on a private copy first
 // and only keeps the result if it comes back true.
-bool sprite_build_oam(Wram* w, const Rom* rom);
+bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp);
 
 #endif

@@ -27,6 +27,18 @@
 // that decide whether a pair collides: `ACTOR_X`, `ACTOR_Y` and
 // `ACTOR_COLLIDE_ID`. A record with a zero id is in the picture and not in the
 // game; a thing with no record at all was never spawned.
+//
+// `--watch <addr>[,first[,last[,step]]]` is the third of these, and it exists
+// because the two above answer questions about *things* and some questions are
+// about one word. It prints `$7E:addr` as a word, and only when the value
+// changes, so a run over a whole movie costs a handful of lines.
+//
+// What asked for it: level 25's boss takes 47 damaging hits from a health word
+// seeded once to 70, and does not die. Every one of those calls passes the
+// per-call diff, so the port and the ROM agree about all of it — which means the
+// disagreement is between the ROM and somebody's *reading* of the ROM, and the
+// only way to tell those apart is to look at the word. Neither `--pos` nor
+// `--records` can: it is not a position and it is not in the display list.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -81,6 +93,7 @@ static bool write_png(Snes* snes, const char* path) {
 }
 
 #define MAX_SNAPSHOTS 64
+#define MAX_WATCH 32  // one per thread page, which is what the option is for
 
 // An actor's state is its thread's own 128-byte direct page, and the 24 of them
 // tile `$7E:0100-$7E:0CFF` (`docs/wram-map.md`). Which page is a player's is not
@@ -108,6 +121,28 @@ static bool write_png(Snes* snes, const char* path) {
 #define ACTOR_REC_THREAD 0x0C
 #define ACTOR_REC_ID 0x0E
 #define ACTOR_REC_NEXT 0x12
+
+// The collision handler a thread has installed, split across two arrays that
+// `thread_call_handler` reads together: `$1300,X` is the low word and `$1330,X`
+// the bank, indexed by the *byte* offset a record carries in `ACTOR_REC_THREAD`.
+// That pair is what turns the display list from a list of things into a list of
+// **routines**: every handler in `src/port/collide.c` is named by its entry
+// address, and this is the only place in the running game that says which thing
+// on the board belongs to which of them.
+#define W_THREAD_HANDLER 0x1300
+#define W_THREAD_HANDLER_BANK 0x1330
+
+// And the page that handler runs on: `$80:84A3  LDA $8082DE,X : TCD`, indexed by
+// the same byte offset. **It is a table and not a formula**, which is worth
+// stating because the obvious formula is wrong and looks right: the first
+// thirteen slots are `$0100` then `$0280` in steps of `$80`, and the twelve
+// after them start again at `$0180` in steps of `$0100`. Computing
+// `$0100 + slot/2 * $80` agrees with the table for slot `$00` and for nothing
+// else that matters -- it puts the level-25 boss on `$0A80` when `$80:82DE`
+// says `$0800`, so a `--watch` aimed at its health reads a word of somebody
+// else's page and prints a steady zero.
+#define THREAD_DP_TABLE_BANK 0x80
+#define THREAD_DP_TABLE_ADDR 0x82de
 
 // The two score slots: one 32-bit BCD counter each, stride 4 (`src/port/wram.h`).
 // They ride on the record dump because they are the cheapest answer to the
@@ -144,12 +179,21 @@ static void print_player_pos(Snes* snes, int n) {
 // order, which is the order the depth sort left it in. The list is walked
 // through `ACTOR_NEXT` rather than over the 32 slots, so a record that appears
 // here is one the game considers live.
-static void print_records(Snes* snes, int frame) {
+// LoROM: bank `$80` is the first half of the file, mirrored from `$8000`.
+static uint16_t rom_word(const uint8_t* rom, int rom_len, uint8_t bank,
+                         uint16_t addr) {
+  int o = ((bank & 0x7f) << 15) | (addr - 0x8000);
+  if (o < 0 || o + 1 >= rom_len) return 0;
+  return (uint16_t)(rom[o] | (rom[o + 1] << 8));
+}
+
+static void print_records(Snes* snes, const uint8_t* rom, int rom_len,
+                          int frame) {
   printf("  frame %d — display list, score %04X%04X / %04X%04X\n", frame,
          wram16(snes, SCORE_BASE + 2), wram16(snes, SCORE_BASE),
          wram16(snes, SCORE_BASE + SCORE_STRIDE + 2),
          wram16(snes, SCORE_BASE + SCORE_STRIDE));
-  printf("    addr   flags   x     y      id   thread\n");
+  printf("    addr   flags   x     y      id   thread  page   handler\n");
   int n = 0;
   for (uint16_t rec = wram16(snes, ACTOR_LIST_HEAD);
        rec != 0 && n < ACTOR_LIST_COUNT; n++) {
@@ -158,12 +202,19 @@ static void print_records(Snes* snes, int frame) {
       printf("    $%04X  (off the list)\n", rec);
       break;
     }
-    printf("    $%04X  $%04X  %5u %5u   $%02X   $%02X\n", rec,
-           wram16(snes, (uint16_t)(rec + ACTOR_REC_FLAGS)),
+    uint16_t slot = wram16(snes, (uint16_t)(rec + ACTOR_REC_THREAD));
+    // A record's thread is a byte offset into the scheduler's arrays, and the
+    // page it runs on is that offset looked up in the ROM's own table — which
+    // is what makes `--watch $page+$3C` an aimed instrument rather than a guess.
+    printf("    $%04X  $%04X  %5u %5u   $%02X   $%02X    $%04X  $%02X:%04X\n",
+           rec, wram16(snes, (uint16_t)(rec + ACTOR_REC_FLAGS)),
            wram16(snes, (uint16_t)(rec + ACTOR_REC_X)),
            wram16(snes, (uint16_t)(rec + ACTOR_REC_Y)),
-           wram16(snes, (uint16_t)(rec + ACTOR_REC_ID)),
-           wram16(snes, (uint16_t)(rec + ACTOR_REC_THREAD)));
+           wram16(snes, (uint16_t)(rec + ACTOR_REC_ID)), slot,
+           rom_word(rom, rom_len, THREAD_DP_TABLE_BANK,
+                    (uint16_t)(THREAD_DP_TABLE_ADDR + slot)),
+           wram16(snes, (uint16_t)(W_THREAD_HANDLER_BANK + slot)) & 0xff,
+           wram16(snes, (uint16_t)(W_THREAD_HANDLER + slot)));
     rec = wram16(snes, (uint16_t)(rec + ACTOR_REC_NEXT));
   }
   if (n == 0) printf("    (empty)\n");
@@ -172,7 +223,9 @@ static void print_records(Snes* snes, int frame) {
 int main(int argc, char** argv) {
   if (argc < 3) {
     fprintf(stderr,
-            "usage: %s <rom.sfc> <out.png> [frames] [-m movie] [--at f,f,...]\n",
+            "usage: %s <rom.sfc> <out.png> [frames] [-m movie] [--at f,f,...]\n"
+            "       [--pos first[,last[,step]]] [--records first[,last[,step]]]\n"
+            "       [--watch addr[,first[,last[,step]]]]...\n",
             argv[0]);
     return 2;
   }
@@ -184,6 +237,14 @@ int main(int argc, char** argv) {
   int snap_count = 0;
   int pos_first = -1, pos_last = -1, pos_step = 10;
   int rec_first = -1, rec_last = -1, rec_step = 10;
+  // `--watch` may be given more than once. One word is the usual question; the
+  // question that produced this option was "which of the twenty-four thread
+  // pages is this word on", and answering that with twenty-four runs of a
+  // three-minute replay is not answering it.
+  int watch_addr[MAX_WATCH];
+  int watch_prev[MAX_WATCH];
+  int watch_count = 0;
+  int watch_first = 0, watch_last = -1, watch_step = 1;
 
   for (int i = 3; i < argc; i++) {
     bool has_next = i + 1 < argc;
@@ -213,6 +274,33 @@ int main(int argc, char** argv) {
         rec_first = v[0];
         rec_last = v[1];
         rec_step = v[2] > 0 ? v[2] : 1;
+      }
+    } else if (!strcmp(argv[i], "--watch") && has_next) {
+      // `<addr>[,first[,last[,step]]]`, the address in hex with or without a
+      // leading `$`, because every other tool in the project prints it that way.
+      const char* p = argv[++i];
+      if (*p == '$') p++;
+      if (watch_count == MAX_WATCH) {
+        fprintf(stderr, "error: at most %d --watch addresses\n", MAX_WATCH);
+        return 2;
+      }
+      watch_prev[watch_count] = -1;
+      watch_addr[watch_count++] = (int)strtol(p, NULL, 16);
+      int v[3] = {0, -1, 1};
+      int n = 0;
+      while (*p && *p != ',') p++;
+      if (*p == ',') p++;
+      for (; *p && n < 3;) {
+        v[n++] = atoi(p);
+        while (*p && *p != ',') p++;
+        if (*p == ',') p++;
+      }
+      // The window is the last one given, so `--watch a,f,l --watch b` reads b
+      // over the same frames rather than over all of them.
+      if (n > 0) {
+        watch_first = v[0];
+        watch_last = v[1];
+        watch_step = v[2] > 0 ? v[2] : 1;
       }
     } else if (argv[i][0] != '-') {
       frames = atoi(argv[i]);
@@ -285,7 +373,19 @@ int main(int argc, char** argv) {
     }
     if (rec_first >= 0 && i + 1 >= rec_first && i + 1 <= rec_last &&
         (i + 1 - rec_first) % rec_step == 0) {
-      print_records(snes, i + 1);
+      print_records(snes, rom, rom_len, i + 1);
+    }
+    if (watch_count > 0 && i + 1 >= watch_first &&
+        (watch_last < 0 || i + 1 <= watch_last) &&
+        (i + 1 - watch_first) % watch_step == 0) {
+      for (int w = 0; w < watch_count; w++) {
+        int v = wram16(snes, (uint16_t)watch_addr[w]);
+        if (v != watch_prev[w]) {
+          printf("  watch $7E:%04X  frame %5d  $%04X (%d)\n", watch_addr[w],
+                 i + 1, v, v);
+          watch_prev[w] = v;
+        }
+      }
     }
   }
   printf("Ran %u frames (core reports %u), %llu cpu cycles\n",
