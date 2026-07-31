@@ -504,6 +504,25 @@ type `$02` object at (756,730) has no route to it, and every cell around it does
 except the one it is on: the player stands at x=751 and the eight-pixel touch box
 does the rest.
 
+**And a sweep with it found a way for the search to answer "yes" that had nothing
+to do with the level.** Level 33's actor list places an actor at **(1260,1737) on
+a level 1,280 pixels tall**, and `route` reported a two-cell path to it from a
+spawn 814 pixels away. The goal's row is `(1737 - 8) / 8 = 216` against 160 rows,
+and it was used to subscript `prev` without a bounds check — so the search was
+reading past the end of its own array and reporting whatever was there. Both ends
+are range-checked now and an off-map coordinate is reported as one:
+
+```
+> zamn_assets route rom.sfc 34 1231 923 1260 1737
+(1231,923) or (1260,1737) is off level 34's 168 x 160 map (1344 x 1280 pixels).
+```
+
+Worth the paragraph rather than a silent fix, for two reasons. **An off-map actor
+is a real thing to find in this ROM** — that entry is in the level's own list, so
+the coordinate came from the game and not from a typo. And every reachability
+claim in `docs/cosim.md` rests on this predicate, so a way for it to say "yes"
+spuriously is worse than a way for it to say "no".
+
 ### Where a fitted route's slack actually was
 
 The obvious guess is detours — re-planning after every leg means lane snapping

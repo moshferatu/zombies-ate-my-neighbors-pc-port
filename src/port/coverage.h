@@ -233,6 +233,15 @@
   X(d7f6_died,        "enemy_d7f6_collide",  "a hit that took its last health, which is usually the first") \
   X(d7f6_no_damage,   "enemy_d7f6_collide",  "a hit whose damage-table entry is zero — no shot can carry one here") \
   X(d7f6_survived,    "enemy_d7f6_collide",  "one that lived through a hit — on one health, so it took no damage") \
+  /* $81:E6E4 enemy_e6e4_collide — the tenth copy, shared by two behaviours. */ \
+  X(e6e4_airborne,    "enemy_e6e4_collide",  "ACTOR_Z non-zero: off the ground, so every collision is refused") \
+  X(e6e4_ignore,      "enemy_e6e4_collide",  "an id below a weapon shot's, which it ignores outright") \
+  X(e6e4_hit,         "enemy_e6e4_collide",  "a weapon shot, and the id parked at $22 for the body's award") \
+  X(e6e4_bubble,      "enemy_e6e4_collide",  "id $5E, which JMLs to $81:83C6 — the bubble tail") \
+  X(e6e4_freeze,      "enemy_e6e4_collide",  "id $5D, which JMLs to $81:847E") \
+  X(e6e4_died,        "enemy_e6e4_collide",  "a hit that took its last health, of the three it starts with") \
+  X(e6e4_no_damage,   "enemy_e6e4_collide",  "a hit whose damage-table entry is zero") \
+  X(e6e4_survived,    "enemy_e6e4_collide",  "one it lived through, and the only path that stores health") \
                                                                                 \
   /* $81:9B6B enemy_9b6b_collide — level 21's, and the sixth copy of $81:8888. */ \
   X(d9b6b_ignore,     "enemy_9b6b_collide",  "an id below a weapon shot's, which it ignores outright") \

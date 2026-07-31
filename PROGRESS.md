@@ -5,6 +5,91 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-07-31)
 
+### The census named an address, and the input came before the port (2026-07-31)
+
+**`$81:E6E4` went onto the census with one decline and came off it ported, and
+the order of those two halves is the finding.** The previous round put it there
+and deliberately did not write it: one call cannot reach more than one of eight
+branches, and a routine written against one call is transcription with a diff
+attached to a corner of it. So the input came first. `movies/level37-e6e4.zmv`
+reaches the same routine **367 times**, and the port is written against that.
+
+**Finding the level was three ROM reads and no play at all.** `A9 E4 E6` — `LDA
+#$E6E4` — occurs **once in the whole ROM**, at `$81:E476`, inside an actor init
+at `$81:E413` that also seeds this creature's health to `$0003`. Two behaviours
+reach that init by a plain `JSR $E413`, `$81:E481` and `$81:E51A`, and that is
+the first thing that makes this copy unlike the other nine: **every other member
+of the `$81:8888` family belongs to one behaviour and this one is shared**, which
+is why it turns up on nine levels with nine different actor types in front of it.
+Three of those a password reaches, and `--reach` sorted them in seconds: level
+29's is **inside solid scenery**, all seven of level 33's are **cut off** from its
+spawn, and level 37's at (1057,204) is **61 cells away** with standable ground on
+the same row. `tools/fit_route.py` walked it in **two legs**, first run.
+
+**The sweep found a bug in the search it was using.** Level 33's actor list
+places one at **(1260,1737) on a level 1,280 pixels tall**, and `route` answered
+"2 cells" for a goal 814 pixels from the spawn — it computed the goal's row as
+216 against 160 and subscripted `prev` with it, reading past the end of its own
+array. Both ends are range-checked now. An off-map actor is a real thing to find
+in this ROM, and the whole reachability method rests on that predicate having no
+way to answer "yes" for a reason unrelated to the level.
+
+**The routine is the tenth copy of `$81:8888` and the only one that can be
+switched off.** `$81:E6E4  LDY $08 : LDX $0004,Y : BNE $E72A` is the same three
+instructions `enemy_b41c_collide` opens with — record `+$04` is `ACTOR_Z`, the
+height off the ground — but where `$81:B41C` lets height decide the answer to
+**one** id and takes the damage either way, this one sends *every* collision to a
+bare `CLC : RTL` while the creature is airborne. **That matters beyond the
+routine**: `port/oam.h` has `ACTOR_Z` down as a drawing concern, with an actor
+that jumps keeping its Y "and so its depth sort order and its collision box", and
+the overlap pass really does ignore height. So height immunity is not a property
+of the collision system at all — **it is something individual handlers opt into**,
+two of ten do, with the same three instructions and to different extents. And
+`$5E` and `$5D` leave to *different* routines here, which is
+`enemy_ac92_collide`'s pair rather than `enemy_d7f6_collide`'s, where the same
+`$5E` falls into the death tail with no subtraction. Ten copies and no two of
+them answer `$5E` alike.
+
+**No survivors, and `--watch` says why in two words.** `e6e4_ignore` 1720,
+`e6e4_hit` 46, `e6e4_died` 46 — on a creature seeded to three health. `$7E:050C`
+goes `$0003` → `$FFFF` in a single hit at frame 4200, and `$7E:0522`, the id this
+routine parks, reads **`$0060`** on that same frame: damage 4 against health 3 is
+one hit, every time. **It is not the player's weapon** — `$7E:1CBC` is parked at
+`$0012` by a pickup from 2980 to 4158 and reads 0 after, so the player's own
+shots are `$5C` and do 1. Something else on level 37 lands the `$60`s and this
+movie does not say what.
+
+**Five perturbations, four caught, and the pair that disagree are two
+instructions apart.** Parking the id over the health word, not stepping the death
+counter, and clearing carry instead of setting it all fail — the last at
+`$7E:11A0`, *one level up*, because carry is what parks a thread. The interesting
+pair is the guard: **reading `ACTOR_Y` instead of `ACTOR_Z` is caught
+immediately, and deleting the guard's decision entirely is missed.**
+`e6e4_airborne` reads 0 on this movie, so nothing it collides with is ever off
+the ground — the guard demonstrably *executes* on all 367 calls and its branch is
+taken on none of them, and only running both perturbations says so. The fourth
+also cost a lesson the script already knew: its first anchor occurred twice,
+because `enemy_b41c_collide` reads the same field with the same line four hundred
+lines above, and the anchor check refused it rather than breaking the wrong
+routine.
+
+**Forty-seven routines, and the census is empty again: 3,674,068 calls checked
+across 41 movies, 0 diverged; branch coverage 184 of 254, 70 untaken by every
+input** — from 3,588,215 across 40 and 183 of 246. The denominator moved because
+the round added eight sites; three of them are taken and five are not, and
+`collide_unported` and `handler_unported` went **back** to untaken, which is the
+empty census stated as coverage. `movies/level29-ice.zmv` gained five checked
+calls without a frame changing — 105,475 to 105,480 — because the one call it
+used to decline is now one the harness checks. `run` substituting **only**
+`enemy_e6e4` is **identical at all 5,989 compared scheduler passes** of the movie
+that reaches it, so its 192-cycle budget costs nothing; all forty-seven together
+find **no byte of live game state differing** on the same 5,989, and `-r none` is
+identical at all of them.
+
+---
+
+*The rest of this section is the previous round, kept as written.*
+
 ### The creature in the sealed room (2026-07-31)
 
 **Six of `enemy_d7f6_collide`'s seven branches had never been taken, and for four
@@ -59,20 +144,61 @@ is what is measured and it is 1:3 in both places.**
 for one.** `d7f6_fatal_id` wants `$5E`, object type `$04`, and of the six levels
 that place behaviour `$81:D704` **exactly one also places a type `$04`** — level
 49, whose creature is the one in the pen. `d7f6_no_damage` was closed two rounds
-ago with its six siblings. What is left is `d7f6_special`, id `$5D`: level 5's ice
-weapon is sealed in a basement pocket at (667,1068), level 17's is reachable
-beside a creature that is not, and level 31 has no password — **level 29 has
-both**, its type `$02` at (756,730) sitting on a blocked cell with standable
-ground at x=751 beside it.
+ago with its six siblings. That leaves `d7f6_special`, id `$5D` — and
+**`movies/level29-ice.zmv` takes it**, which finishes the routine: five branches
+diffed and the other two argued to have no input at all.
 
-**Forty-six routines, no port code changed, three sites moved: 3,482,740 calls
-checked across 39 movies, 0 diverged; branch coverage 180 of 246, 66 untaken by
-every input, and no census section on any movie** — from 3,429,877 across 38 and
-177 of 246, the difference being the new movie's 52,863 exactly. It reaches 49
-sites, and intersecting its untaken list with the corpus's says the three it has
-to itself are precisely `d7f6_hit`, `d7f6_died` and `d7f6_survived`. `run`
-substitutes all forty-six on it and finds **no byte of live game state differing
-on any of 3,489 compared passes**, and `-r none` is **identical at all 3,489**.
+**The second movie is the first one's argument stated as a route.** `d7f6_special`
+wants the ice weapon and a `$81:D704` actor on the same level; six levels place
+the behaviour and four place a type `$02` object, and the intersection that
+survives *reachability* is exactly one. Level 5's ice weapon is sealed in a
+basement pocket, level 17's creature is sealed in an alcove, level 31 has no
+password — **level 29 has both**, and it costs 2,800 frames of walking to put
+them together, fitted in four goes. Every shot on screen reads `$5D`: 69 of them
+across 200 consecutive sampled frames, against no other weapon-range id at all.
+
+**One of the four legs was walked by hand, and it is the one that changed a
+tool.** At (773,461) the way west is a 56-pixel detour south, and
+`tools/fit_route.py` spent **41 legs** stepping 28 pixels down, 28 back up and
+asking the same blocked question again — its unstick nudge was one fixed length,
+and one length cannot clear a chicane. Walking on to the wall at (721,591), 130
+pixels away, cut the remaining route from 277 cells to 147 and it fitted first
+time. `STUCK_NUDGE` is `(14, 28, 56)` now, shortest first, and it reproduces the
+level-5 route byte for byte — nine legs, same frames — because a route that never
+gets stuck never reaches it.
+
+**And the movie put an address on a census that had been empty for rounds.**
+`$81:E6E4`, one decline, which is also why `collide_unported` and
+`handler_unported` are taken for the first time by anything. It is a **tenth copy
+of `$81:8888`** and it differs from `enemy_d7f6_collide` at both ends: an opening
+`LDX $0004,Y : BNE` guard — a word on the *display record* rather than the thread
+page, which makes the creature ignore every collision it has — and a `$5E` that
+`JML`s to `$81:83C6`, the bubble tail, where `$81:D7F6` sends the same id into
+its death tail. Nine copies of this subsystem and no two answer `$5E` alike.
+**It is not ported this round, on purpose**: one call cannot reach more than one
+of eleven branches, and a routine written against one call is transcription with
+a diff attached to a corner of it. The address and the shape are written down so
+the input that would fix that is cheap to aim.
+
+**One thing on the level-29 movie is measured and unexplained.** `d7f6_hit` 15
+and `d7f6_died` 10 count beside `d7f6_special` 5, and `$5D` is diverted two
+comparisons before the damage table — so a lethal hit needs some other id at or
+above `$5C`, and the display list over the frames those hits land in holds only
+`$03`, `$36`, `$38`, `$00`, `$01` and `$5D`. Whatever carried them has no display
+record, which this project has seen before. Both sites were already taken by the
+level-5 movie, so nothing rests on it; it is written down because it is
+unaccounted for.
+
+**Forty-six routines, no port code changed, four sites moved and a census that is
+no longer empty: 3,588,215 calls checked across 40 movies, 0 diverged; branch
+coverage 183 of 246, 63 untaken by every input** — from 3,429,877 across 38 and
+177 of 246. The two movies add 52,863 and 105,475, which is the whole difference
+to the digit. Between them they take `d7f6_hit`, `d7f6_died`, `d7f6_survived` and
+`d7f6_special`; `collide_unported` and `handler_unported` come with the census
+entry, and the arithmetic that says so is the intersection of each movie's untaken
+list with the corpus's rather than a count. `run` substitutes all forty-six on
+both and finds **no byte of live game state differing on any of 3,489 and 5,989
+compared passes**, and `-r none` is **identical at all of them** on both.
 
 **And last round's named next item turned out to have a prerequisite nobody had
 checked.** `a264_ignore_named` was priced as a level-41 route; the route was never

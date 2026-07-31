@@ -17,21 +17,21 @@ asset pipeline is done — compression, graphics, level layout, the placement
 lists, the sprite/OAM path and the audio upload path all reimplemented in C and
 **verified byte-exact against the ROM's own routines** (Phase 2).
 
-Phase 3 is the logic port. The co-simulation harness is built, forty-six routines
+Phase 3 is the logic port. The co-simulation harness is built, forty-seven routines
 are through it — including **the whole per-frame sprite pass**, the collision
-dispatch and the twenty-four actor handlers it routes to, plus the game's **random
+dispatch and the twenty-five actor handlers it routes to, plus the game's **random
 number generator** — and the coroutine problem is solved: a ported routine that
 suspends inside the thread scheduler does it at an explicit resume point, with its
 parked state as plain copyable data. `zamn_cosim verify` checks the C against the
 ROM's own code on every call the game makes — 128 KB of WRAM plus registers — and
-passes **3,482,740 of 3,482,740 across the whole movie corpus**, thirteen levels
+passes **3,674,068 of 3,674,068 across the whole movie corpus**, thirteen levels
 deep, while `zamn_cosim run` substitutes the C for real and finds **no byte of live
-game state differing** on every movie but two. Across all thirty-nine movies the ROM
+game state differing** on every movie but two. Across all forty-one movies the ROM
 is **no longer asked to run a single routine the port does not have**.
 
 The port also reports **which of its own branches an input actually reached**,
 because a branch no movie takes is one the diff agrees with the ROM about for
-the wrong reason. 66 of 246 are still untaken by every input, and they are the
+the wrong reason. 70 of 254 are still untaken by every input, and they are the
 backlog.
 
 See **`docs/cosim.md`** for the harness and what coverage measures that the diff

@@ -1308,6 +1308,8 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
     served = enemy_d301_collide(w, rom, dp, arg, &r, NULL);
   } else if (entry == ENEMY_AC92_COLLIDE_ENTRY) {
     served = enemy_ac92_collide(w, rom, dp, arg, &r, NULL);
+  } else if (entry == ENEMY_E6E4_COLLIDE_ENTRY) {
+    served = enemy_e6e4_collide(w, rom, dp, arg, &r, NULL);
   } else if (entry == ACTOR_845E_COLLIDE_ENTRY) {
     served = actor_845e_collide(arg, &r);
   } else if (entry == ACTOR_DEEB_COLLIDE_ENTRY) {
@@ -1336,7 +1338,7 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
   } else if (entry == OBJECT_COLLIDE_ENTRY) {
     served = object_collide(w, dp, arg, &r);
   } else {
-    // Twenty-two addresses are handled above. Anything else is a routine that has
+    // Twenty-five addresses are handled above. Anything else is a routine that has
     // not been written yet, and saying so by address is what makes the remaining
     // work countable instead of vague — which is what `unported` carries out.
     PORT_COVER(handler_unported);
@@ -2464,6 +2466,116 @@ bool enemy_ac92_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 
   PORT_COVER(dac92_survived);
   wram_w16(w, (uint32_t)dp + DAC92_DP_HEALTH, left);
+  return enemy_survived_react(w, dp, r);
+}
+
+// ---------------------------------------------------------------------------
+// $81:E6E4  enemy_e6e4_collide
+// ---------------------------------------------------------------------------
+
+// The tail at `$81:E71A`, and the fifth spelling of it in this family:
+// `DEC $0A : STA $0C : STZ $7E : SEC : RTL`. Reached only by a borrow, so —
+// unlike `d7f6_die` and `ac92_die` — there is no id-that-kills-outright path
+// into it and `health` is always the negative difference.
+static void e6e4_die(Wram* w, uint16_t dp, uint16_t health,
+                     ActorHandlerRegs* r) {
+  uint16_t count = (uint16_t)(wram_r16(w, (uint32_t)dp + E6E4_DP_COUNTER_0A) - 1);
+  wram_w16(w, (uint32_t)dp + E6E4_DP_COUNTER_0A, count);
+  wram_w16(w, (uint32_t)dp + E6E4_DP_HEALTH, health);
+  // The tenth `STZ $7E`, and the second written with a stated reason rather than
+  // an unexplained one: `enemy_freeze` is the only writer of that word, and on
+  // this creature `$5D` never reaches the death tail — it leaves two
+  // comparisons earlier. So it is zero on every call for the same reason
+  // `enemy_ac92_collide`'s is.
+  wram_w16(w, (uint32_t)dp + ACTOR_DP_SCRATCH_7E, 0);
+  r->a = health;
+  r->n = (count & 0x8000) != 0;
+  r->z = count == 0;
+  r->c = true;
+}
+
+bool enemy_e6e4_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported) {
+  (void)unported;  // both of its two `JML`s are served — see the header
+  // `$81:E6E4  LDY $08 : LDX $0004,Y : BNE $E72A`. Y and X are both outputs —
+  // the record address and the height — and they are set on *every* path
+  // through this routine, because nothing below writes Y and only the damage
+  // path writes X.
+  uint16_t record = wram_r16(w, (uint32_t)dp + E6E4_DP_RECORD);
+  uint16_t z = wram_r16(w, (uint32_t)record + ACTOR_Z);
+  r->y = record;
+  r->x = z;
+  if (z != 0) {
+    // `$81:E72A  CLC : RTL`, shared with the no-damage exit. The `LDX` is the
+    // last instruction to set a flag, so N and Z describe the height and not
+    // the argument — which is the one place this routine's flags differ from
+    // every other copy's, and the only reason A is left alone here.
+    PORT_COVER(e6e4_airborne);
+    r->n = (z & 0x8000) != 0;
+    r->z = false;  // it is not zero; that is why we are here
+    r->c = false;
+    return true;
+  }
+
+  r->a = arg;
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `$81:E6F0  CLC : RTL`, a second bare exit — and, like
+    // `enemy_d7f6_collide`'s and unlike `enemy_cdde_collide`'s, it does not
+    // park the id first.
+    PORT_COVER(e6e4_ignore);
+    uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:E6F2  STA $22 : AND #$7FFF`.
+  PORT_COVER(e6e4_hit);
+  wram_w16(w, (uint32_t)dp + E6E4_DP_HIT_ID, arg);
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+
+  if (id == ENEMY_HIT_SPECIAL_A) {
+    // `CMP #$005E : BEQ $E722`, and `$81:E722  JML $81:83C6`.
+    PORT_COVER(e6e4_bubble);
+    return enemy_bubble_react(w, dp, r);
+  }
+  if (id == ENEMY_HIT_SPECIAL_B) {
+    // `CMP #$005D : BEQ $E726`, and `$81:E726  JML $81:847E`.
+    PORT_COVER(e6e4_freeze);
+    return enemy_freeze(w, dp, r);
+  }
+
+  // `SEC : SBC #$005C : ASL A : TAX`, then `SEC : LDA $0C : SBC $818561,X` —
+  // the same arithmetic against the same table for the tenth time, and the
+  // `TAX` is what overwrites the height the guard left in X.
+  uint16_t index = (uint16_t)((id - COLLIDE_ID_PLAYER) * 2);
+  uint16_t health = wram_r16(w, (uint32_t)dp + E6E4_DP_HEALTH);
+  uint16_t left =
+      (uint16_t)(health - rom_word(rom, ENEMY_DAMAGE_TABLE + (uint32_t)index));
+  r->x = index;
+
+  if (left & 0x8000) {
+    PORT_COVER(e6e4_died);
+    e6e4_die(w, dp, left, r);
+    return true;
+  }
+
+  if (left == health) {
+    // `$81:E712  CMP $0C : BEQ $E72A` — back to the *guard's* exit rather than
+    // to a bare one of its own. This is the only copy in the family where the
+    // no-damage path and the "off the ground" path are the same two bytes.
+    PORT_COVER(e6e4_no_damage);
+    r->a = left;
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+
+  PORT_COVER(e6e4_survived);
+  wram_w16(w, (uint32_t)dp + E6E4_DP_HEALTH, left);
   return enemy_survived_react(w, dp, r);
 }
 

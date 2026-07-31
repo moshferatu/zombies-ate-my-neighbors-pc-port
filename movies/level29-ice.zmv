@@ -1,0 +1,267 @@
+# Level 29, reached by password, then the ice weapon carried across the whole map
+# to the one creature in the game the corpus can freeze.
+#
+# This is `movies/level5-d7f6.zmv`'s other half. `enemy_d7f6_collide` had six
+# untaken branches; that movie took three of them with the squirt gun, and the
+# only one left with an input at all is `d7f6_special`, the `CMP #$005D : BEQ`
+# that hands the creature to `$81:847E`. It wants the ice weapon and a
+# `$81:D704` actor **on the same level**, and exactly one level a password
+# reaches has both:
+#
+#   level 5   creature open, ice weapon sealed in a basement pocket (667,1068)
+#   level 17  ice weapon open, creature sealed in an alcove (563,513)
+#   level 31  both, no password
+#   level 29  both --- this movie
+#
+# `zamn_assets route ... --reach` is what says "sealed" rather than "far".
+#
+# The route is 2,800 frames long and was fitted in four goes, because level 29 is
+# a maze and `tools/fit_route.py` had one fixed unstick step:
+#
+#   2560 -> 3672   spawn (277,1435) to the type $02 object at (756,730)
+#   3730 -> 4325   south loop out of the cul-de-sac, up to (773,461)
+#   4370 -> 4610   hand-walked: Left to the wall at x=721, then Down to y=591
+#   4620 -> 5344   (721,591) to (203,241), 27 legs
+#
+# The third leg is the interesting one. At (773,461) the way west is a 56-pixel
+# detour south, and the fitter spent 41 legs stepping 28 pixels down, 28 back up
+# and asking the same blocked question again -- one nudge length cannot clear a
+# chicane. Walking on to the wall at (721,591) by hand cut the remaining route
+# from 277 cells to 147 and it fitted first time. `STUCK_NUDGE` is `(14, 28, 56)`
+# now, which is the same fix without the hand-walking.
+#
+# Two things the object needed:
+#
+#   * **It is on a blocked cell.** (756,730) has no route to it and every cell
+#     around it does; the player stands at x=751 and the game's eight-pixel touch
+#     box does the rest. `--watch 1CCE` says it worked: $0000 -> $0099 at 3679.
+#   * **B is pressed at 5390 and not earlier**, which is 1,700 frames after the
+#     pickup rather than the 460 the lockout needs -- the walk pays for it.
+#     `$7E:1CBC` goes $0000 -> $0001 at 5392 and stays there.
+#
+# The fight is a retreat, not a stand: this creature chases, so the player walks
+# west with Y held and it follows. Every shot on screen reads `$5D` -- 69 of them
+# in 200 sampled frames, against no other weapon-range id at all.
+#
+# What it buys: `d7f6_special` 5, and `freeze_took`, `freeze_counting` and
+# `freeze_already` off a ninth caller.
+#
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   A
+1440   -
+1448   Right
+1456   -
+1464   Right
+1472   -
+1480   Right
+1488   -
+1496   Right
+1504   -
+1512   A
+1520   -
+1528   Left
+1536   -
+1544   Left
+1552   -
+1560   Down
+1568   -
+1576   Down
+1584   -
+1592   A
+1600   -
+1608   Up
+1616   -
+1624   Up
+1632   -
+1640   A
+1648   -
+1656   Right
+1664   -
+1672   Right
+1680   -
+1688   Right
+1696   -
+1704   Right
+1712   -
+1720   Down
+1728   -
+1736   Down
+1744   -
+1752   A
+1760   -
+1908   Start
+1918   -
+1938   Start
+1948   -
+1968   Start
+1978   -
+1998   Start
+2008   -
+2028   Start
+2038   -
+2058   Start
+2068   -
+2148   -
+2560   Right
+2647   Down
+2667   Down
+2671   Right
+2935   Up
+3002   Left
+3089   Up
+3094   Right
+3101   Up
+3259   Left
+3267   Up
+3281   Left
+3284   Up
+3298   Left
+3313   Up
+3327   Left
+3330   Up
+3344   Left
+3430   Up
+3494   Down
+3498   Right
+3534   Up
+3624   Right
+3672   Down
+3730   Left
+3752   Up
+3766   Left
+3769   Up
+3783   Left
+3786   Up
+3800   Left
+3822   Down
+3891   Right
+3970   Up
+4069   Right
+4113   Up
+4145   Left
+4208   Up
+4213   Right
+4220   Up
+4246   Left
+4262   Up
+4276   Left
+4279   Up
+4293   Left
+4296   Up
+4310   Left
+4316   Down
+4365   -
+4370   Left
+4530   Down
+4610   -
+4620   Left
+4678   Up
+4688   Right
+4695   Up
+4721   Left
+4737   Up
+4751   Left
+4754   Up
+4768   Left
+4771   Up
+4785   Left
+4820   Up
+4834   Left
+4837   Up
+4851   Left
+4917   Up
+5020   Right
+5027   Up
+5057   Left
+5188   Down
+5196   Right
+5203   Down
+5231   Right
+5265   Down
+5318   Right
+5330   Up
+5337   Left
+5384   -
+5390   B
+5402   -
+5420   Left
+5424   Left+Y
+5900   -

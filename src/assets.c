@@ -2705,6 +2705,21 @@ static int cmd_route(int argc, char** argv) {
 
   int sx = x0 / ROUTE_CELL, sy = (y0 - ROUTE_Y_BIAS) / ROUTE_CELL;
   int gx = x1 / ROUTE_CELL, gy = (y1 - ROUTE_Y_BIAS) / ROUTE_CELL;
+  // Both ends have to be *on the map*, and this is not a formality: level 33's
+  // actor list places one at (1260,1737) on a level 1280 pixels tall, and
+  // without this the goal index ran off the end of `prev` and the search
+  // answered "2 cells" out of whatever was past it. An off-map coordinate is a
+  // real thing to find in this ROM, so the search has to say so rather than
+  // read garbage.
+  if (sx < 0 || sy < 0 || (uint32_t)sx >= cols || (uint32_t)sy >= rows ||
+      gx < 0 || gy < 0 || (uint32_t)gx >= cols || (uint32_t)gy >= rows) {
+    printf("(%d,%d) or (%d,%d) is off level %d's %u x %u map "
+           "(%u x %u pixels).\n",
+           x0, y0, x1, y1, level, cols, rows, level_width_px(&h),
+           level_height_px(&h));
+    free(prev); free(queue); free(blocks); free(map); free(rom_data);
+    return 1;
+  }
   int32_t head = 0, tail = 0;
   prev[(uint32_t)sy * cols + (uint32_t)sx] = -1;
   queue[tail++] = (int32_t)((uint32_t)sy * cols + (uint32_t)sx);

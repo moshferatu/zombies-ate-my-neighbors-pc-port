@@ -1388,6 +1388,62 @@ bool enemy_ac92_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                         ActorHandlerRegs* r, uint32_t* unported);
 
 // ---------------------------------------------------------------------------
+// $81:E6E4  enemy_e6e4_collide — the tenth copy, and the only one that can be
+// switched off
+// ---------------------------------------------------------------------------
+//
+// Found the way a routine is supposed to be found: it is the one address on the
+// decline census, put there by `movies/level29-ice.zmv` **once**. One call names
+// an address and nothing else, so the input came before the port —
+// `movies/level37-e6e4.zmv` reaches it 367 times, and this is written against
+// that.
+//
+// Its body is `$81:E413`, which seeds `$0C` and `$0E` to **3** and is entered
+// from two behaviours rather than one — `$81:E481` and `$81:E51A`, both by a
+// plain `JSR $E413`. Nine other copies of `$81:8888` each belong to a single
+// behaviour; this one is shared, which is why it turns up on levels 15, 29, 31,
+// 33, 35, 37, 38, 43 and 44 with nine different actor *types* in front of it.
+//
+// Two things make it not just a tenth re-spelling:
+//
+// **It opens on `enemy_b41c_collide`'s guard applied to everything.**
+// `$81:E6E4  LDY $08 : LDX $0004,Y : BNE $E72A` is the same three instructions
+// `$81:B462` uses — `$08` is this page's display record and `+$04` is `ACTOR_Z`,
+// the height off the ground — but where `$81:B41C` lets height decide the answer
+// to **one** id and takes the damage either way, this one sends *every*
+// collision to a bare `CLC : RTL` while the creature is off the ground.
+//
+// That matters beyond this routine. `ACTOR_Z` is documented in `port/oam.h` as
+// drawing-only: an actor that jumps or is thrown keeps its Y, "and so its depth
+// sort order and its collision box", and only draws higher up. The overlap pass
+// really does ignore height. So **height immunity is not a property of the
+// collision system, it is a thing individual handlers opt into** — two of ten do,
+// and they do it with the same three instructions and to different extents.
+//
+// **`$5E` and `$5D` go to different routines, and `$5E` is the bubble tail.**
+// `$81:E722  JML $81:83C6` and `$81:E726  JML $81:847E` — which is
+// `enemy_ac92_collide`'s pair rather than `enemy_d7f6_collide`'s, where the same
+// `$5E` falls into the death tail without a subtraction. Ten copies of this
+// subsystem and no two of them answer `$5E` the same way.
+#define ENEMY_E6E4_COLLIDE_ENTRY 0x81e6e4u
+#define E6E4_DP_HEALTH 0x0c
+#define E6E4_DP_HIT_ID 0x22
+// Decremented on death. The fifth counter in this family named for where it is
+// rather than for what it counts, and the fifth with no reader in reach.
+#define E6E4_DP_COUNTER_0A 0x0a
+
+// Where the record lives on this page — `$81:E6E4  LDY $08`, the same `$08`
+// `enemy_d7f6_collide` and three others keep theirs at.
+#define E6E4_DP_RECORD 0x08
+
+// The handler. Both of the ids that `JML` elsewhere are served — `$81:83C6` is
+// `enemy_bubble_react` and `$81:847E` is `enemy_freeze`, and the port has had
+// both since the level-49 round — so `unported` is carried for the family's
+// signature and never written.
+bool enemy_e6e4_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported);
+
+// ---------------------------------------------------------------------------
 // $81:845E  actor_845e_collide — thirty-two bytes and **no stores at all**
 // ---------------------------------------------------------------------------
 //

@@ -744,6 +744,24 @@ static void shim_enemy_ac92_collide(Wram* w, const Rom* rom,
 }
 
 // ---------------------------------------------------------------------------
+// $81:E6E4  enemy_e6e4_collide — the tenth copy, and the one with two owners
+// ---------------------------------------------------------------------------
+//
+// It has no `supported` guard, and that is a claim rather than an omission: both
+// ids that leave by `JML` are served (`$81:83C6` is `enemy_bubble_react`,
+// `$81:847E` is `enemy_freeze`), so there is no argument this routine can be
+// handed that it declines. `actor_845e_collide` is the other entry with none,
+// for the opposite reason — it cannot write, so there is nothing to try on a
+// scratch copy. This one can write plenty; it just never gives up.
+
+static void shim_enemy_e6e4_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_e6e4_collide(w, rom, in->d, in->a, &r, NULL);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
 // $81:845E  actor_845e_collide — no WRAM at all, so no `w` and no guard body
 // ---------------------------------------------------------------------------
 
@@ -1545,6 +1563,28 @@ static const CosimRoutine ROUTINES[] = {
         // `movies/level49-corner.zmv` makes. Almost all of them are ignores,
         // which is two instructions; the 1,126 is a hit that spliced.
         .cycles = 109,
+        .stack_bytes = 2,
+    },
+    {
+        .name = "enemy_e6e4",
+        .symbol = "$81:E6E4",
+        .entry = 0x81e6e4,
+        // `$81:E6F1`, the ignore path's `RTL` after its own `CLC`. The airborne
+        // guard and the no-damage path share a *different* `CLC : RTL` at
+        // `$81:E72A`, and the death tail sets carry — so, as everywhere in this
+        // family, land on a bare `RTL` and let `native_publish`'s flags stand.
+        .ret_op = 0x81e6f1,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_e6e4_collide,
+        // No guard: nothing it can be handed makes it decline. See above.
+        .supported = NULL,
+        // Measured 164..570, mean 192, over the 367 calls
+        // `movies/level37-e6e4.zmv` makes. The floor is higher than the rest of
+        // the family's — 164 against `enemy_d7f6`'s 84 — because even the ignore
+        // path reads the display record first, which is `LDY $08 : LDX $0004,Y`
+        // before any comparison happens. A guard costs every caller, including
+        // the ones it does not refuse.
+        .cycles = 192,
         .stack_bytes = 2,
     },
     {

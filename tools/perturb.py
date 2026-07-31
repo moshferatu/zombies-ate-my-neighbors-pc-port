@@ -83,6 +83,62 @@ PERTURBATIONS = [
         inputs=[("movies/level21-p2-bubble.zmv", 6700)],
     ),
     dict(
+        name="e6e4_guard_ignored",
+        file="src/port/collide.c",
+        why="$81:E6E9 refuses every collision while ACTOR_Z is non-zero; never refuse",
+        old="  if (z != 0) {\n"
+            "    // `$81:E72A  CLC : RTL`, shared with the no-damage exit.",
+        new="  if (false) {  /* PERTURBED */\n"
+            "    // `$81:E72A  CLC : RTL`, shared with the no-damage exit.",
+        inputs=[("movies/level37-e6e4.zmv", 6000)],
+    ),
+    dict(
+        name="e6e4_guard_field",
+        file="src/port/collide.c",
+        # `enemy_b41c_collide` reads the same field with the same line, four
+        # hundred lines above -- which the anchor check caught rather than the
+        # diff, exactly as the previous round's two MISSED results asked it to.
+        why="the guard reads ACTOR_Z; read ACTOR_Y, the field two bytes along",
+        old="  uint16_t record = wram_r16(w, (uint32_t)dp + E6E4_DP_RECORD);\n"
+            "  uint16_t z = wram_r16(w, (uint32_t)record + ACTOR_Z);",
+        new="  uint16_t record = wram_r16(w, (uint32_t)dp + E6E4_DP_RECORD);\n"
+            "  uint16_t z = wram_r16(w, (uint32_t)record + ACTOR_Y);  /* PERTURBED */",
+        inputs=[("movies/level37-e6e4.zmv", 6000)],
+    ),
+    dict(
+        name="e6e4_park_offset",
+        file="src/port/collide.c",
+        why="$81:E6F2 parks the hit id at $22; park it over the health word instead",
+        old="  wram_w16(w, (uint32_t)dp + E6E4_DP_HIT_ID, arg);",
+        new="  wram_w16(w, (uint32_t)dp + E6E4_DP_HEALTH, arg);  /* PERTURBED */",
+        inputs=[("movies/level37-e6e4.zmv", 6000)],
+    ),
+    dict(
+        name="e6e4_death_counter",
+        file="src/port/collide.c",
+        why="$81:E71A steps the counter at $0A down on a death; leave it alone",
+        old="  uint16_t count = (uint16_t)(wram_r16(w, (uint32_t)dp + E6E4_DP_COUNTER_0A) - 1);\n"
+            "  wram_w16(w, (uint32_t)dp + E6E4_DP_COUNTER_0A, count);",
+        new="  uint16_t count = wram_r16(w, (uint32_t)dp + E6E4_DP_COUNTER_0A);  /* PERTURBED */",
+        inputs=[("movies/level37-e6e4.zmv", 6000)],
+    ),
+    dict(
+        name="e6e4_died_carry",
+        file="src/port/collide.c",
+        why="the death tail sets carry, which parks the thread; clear it instead",
+        old="  r->z = count == 0;\n"
+            "  r->c = true;\n"
+            "}\n"
+            "\n"
+            "bool enemy_e6e4_collide(",
+        new="  r->z = count == 0;\n"
+            "  r->c = false;  /* PERTURBED */\n"
+            "}\n"
+            "\n"
+            "bool enemy_e6e4_collide(",
+        inputs=[("movies/level37-e6e4.zmv", 6000)],
+    ),
+    dict(
         name="a264_claim_latch",
         file="src/port/collide.c",
         why="$83:A293 latches $8000 for id $06 and the id itself for $05; latch $8000 for both",

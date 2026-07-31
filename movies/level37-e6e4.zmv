@@ -1,0 +1,377 @@
+# Level 37, reached by password, then a spin fight against $81:E6E4 -- the one
+# address the decline census had on it.
+#
+# **The census named an address and the address named a level, in that order,
+# which is how this is supposed to go.** `movies/level29-ice.zmv` reached
+# `$81:E6E4` exactly **once**, which is enough to name a routine and not enough
+# to write one against: one call cannot reach more than one of eight branches.
+# So the input came first.
+#
+# Finding the level took three ROM reads and no play at all:
+#
+#   1. `A9 E4 E6` -- LDA #$E6E4 -- occurs once in the ROM, at `$81:E476`, inside
+#      the actor init `$81:E413`, which also seeds this creature's health to 3.
+#   2. Two behaviours `JSR $E413`: `$81:E481` and `$81:E51A`. Every other copy of
+#      `$81:8888` belongs to one behaviour; this one is shared, which is why it
+#      turns up on nine levels with nine different actor types in front of it.
+#   3. Of the levels a password reaches, 29, 33 and 37 place one. Level 29's is
+#      inside solid scenery, all seven of level 33's are cut off from its spawn,
+#      and **level 37's `$81:E481` at (1057,204) is 61 cells from the spawn**.
+#
+# `zamn_assets route ... --reach` is what says "inside scenery" rather than
+# "far", and it is also what caught a bug while doing it: level 33's actor list
+# places one at (1260,1737) on a level 1280 pixels tall, and the route search had
+# been indexing `prev` with an off-map goal and answering out of whatever was
+# past the end of the array. It range-checks both ends now.
+#
+# The route is **two legs** and the fitter found them first try. The fight is a
+# spin -- 30-frame legs, four directions, Y held -- rather than a stand, because
+# four of these things crowd the player at once from three sides, and the same
+# tap-and-turn shape that `movies/level21-spin.zmv` established is what faces
+# all of them in turn.
+#
+# What it buys: **367 calls to `$81:E6E4`, against the one call that named it.**
+# `e6e4_ignore` 1720, `e6e4_hit` 46, `e6e4_died` 46 -- and the two deaths watched
+# frame by frame both carry `$22` = `$0060`, damage 4 against health 3, which is
+# `$0003 -> $FFFF` in one hit. It is not the player's weapon: `$7E:1CBC` is
+# parked at `$0012` by a pickup from 2980 to 4158 and reads 0 after, so the
+# player's own shots are `$5C`. Something else on this level lands them.
+#
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Right
+1408   -
+1416   Right
+1424   -
+1432   Right
+1440   -
+1448   Down
+1456   -
+1464   Down
+1472   -
+1480   A
+1488   -
+1496   Left
+1504   -
+1512   Down
+1520   -
+1528   Down
+1536   -
+1544   A
+1552   -
+1560   Right
+1568   -
+1576   Right
+1584   -
+1592   Right
+1600   -
+1608   Up
+1616   -
+1624   A
+1632   -
+1640   Left
+1648   -
+1656   Left
+1664   -
+1672   Left
+1680   -
+1688   Up
+1696   -
+1704   A
+1712   -
+1720   Right
+1728   -
+1736   Right
+1744   -
+1752   Right
+1760   -
+1768   Right
+1776   -
+1784   Down
+1792   -
+1800   Down
+1808   -
+1816   A
+1824   -
+1972   Start
+1982   -
+2002   Start
+2012   -
+2032   Start
+2042   -
+2062   Start
+2072   -
+2092   Start
+2102   -
+2122   Start
+2132   -
+2212   -
+2500   Right+Y
+2640   Right
+2717   Up
+2900   Right
+3050   -
+3060   Up
+3063   Up+Y
+3090   Right
+3093   Right+Y
+3120   Down
+3123   Down+Y
+3150   Left
+3153   Left+Y
+3180   Up
+3183   Up+Y
+3210   Right
+3213   Right+Y
+3240   Down
+3243   Down+Y
+3270   Left
+3273   Left+Y
+3300   Up
+3303   Up+Y
+3330   Right
+3333   Right+Y
+3360   Down
+3363   Down+Y
+3390   Left
+3393   Left+Y
+3420   Up
+3423   Up+Y
+3450   Right
+3453   Right+Y
+3480   Down
+3483   Down+Y
+3510   Left
+3513   Left+Y
+3540   Up
+3543   Up+Y
+3570   Right
+3573   Right+Y
+3600   Down
+3603   Down+Y
+3630   Left
+3633   Left+Y
+3660   Up
+3663   Up+Y
+3690   Right
+3693   Right+Y
+3720   Down
+3723   Down+Y
+3750   Left
+3753   Left+Y
+3780   Up
+3783   Up+Y
+3810   Right
+3813   Right+Y
+3840   Down
+3843   Down+Y
+3870   Left
+3873   Left+Y
+3900   Up
+3903   Up+Y
+3930   Right
+3933   Right+Y
+3960   Down
+3963   Down+Y
+3990   Left
+3993   Left+Y
+4020   Up
+4023   Up+Y
+4050   Right
+4053   Right+Y
+4080   Down
+4083   Down+Y
+4110   Left
+4113   Left+Y
+4140   Up
+4143   Up+Y
+4170   Right
+4173   Right+Y
+4200   Down
+4203   Down+Y
+4230   Left
+4233   Left+Y
+4260   Up
+4263   Up+Y
+4290   Right
+4293   Right+Y
+4320   Down
+4323   Down+Y
+4350   Left
+4353   Left+Y
+4380   Up
+4383   Up+Y
+4410   Right
+4413   Right+Y
+4440   Down
+4443   Down+Y
+4470   Left
+4473   Left+Y
+4500   Up
+4503   Up+Y
+4530   Right
+4533   Right+Y
+4560   Down
+4563   Down+Y
+4590   Left
+4593   Left+Y
+4620   Up
+4623   Up+Y
+4650   Right
+4653   Right+Y
+4680   Down
+4683   Down+Y
+4710   Left
+4713   Left+Y
+4740   Up
+4743   Up+Y
+4770   Right
+4773   Right+Y
+4800   Down
+4803   Down+Y
+4830   Left
+4833   Left+Y
+4860   Up
+4863   Up+Y
+4890   Right
+4893   Right+Y
+4920   Down
+4923   Down+Y
+4950   Left
+4953   Left+Y
+4980   Up
+4983   Up+Y
+5010   Right
+5013   Right+Y
+5040   Down
+5043   Down+Y
+5070   Left
+5073   Left+Y
+5100   Up
+5103   Up+Y
+5130   Right
+5133   Right+Y
+5160   Down
+5163   Down+Y
+5190   Left
+5193   Left+Y
+5220   Up
+5223   Up+Y
+5250   Right
+5253   Right+Y
+5280   Down
+5283   Down+Y
+5310   Left
+5313   Left+Y
+5340   Up
+5343   Up+Y
+5370   Right
+5373   Right+Y
+5400   Down
+5403   Down+Y
+5430   Left
+5433   Left+Y
+5460   Up
+5463   Up+Y
+5490   Right
+5493   Right+Y
+5520   Down
+5523   Down+Y
+5550   Left
+5553   Left+Y
+5580   Up
+5583   Up+Y
+5610   Right
+5613   Right+Y
+5640   Down
+5643   Down+Y
+5670   Left
+5673   Left+Y
+5700   Up
+5703   Up+Y
+5730   Right
+5733   Right+Y
+5760   Down
+5763   Down+Y
+5790   Left
+5793   Left+Y
+5820   Up
+5823   Up+Y
+5850   Right
+5853   Right+Y
+5880   Down
+5883   Down+Y
+5900   -
