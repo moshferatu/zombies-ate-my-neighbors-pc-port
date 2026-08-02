@@ -17,21 +17,37 @@ asset pipeline is done — compression, graphics, level layout, the placement
 lists, the sprite/OAM path and the audio upload path all reimplemented in C and
 **verified byte-exact against the ROM's own routines** (Phase 2).
 
-Phase 3 is the logic port. The co-simulation harness is built, forty-seven routines
+Phase 3 is the logic port. The co-simulation harness is built, sixty-one routines
 are through it — including **the whole per-frame sprite pass**, the collision
-dispatch and the twenty-five actor handlers it routes to, plus the game's **random
-number generator** — and the coroutine problem is solved: a ported routine that
-suspends inside the thread scheduler does it at an explicit resume point, with its
-parked state as plain copyable data. `zamn_cosim verify` checks the C against the
+dispatch and the twenty-five actor handlers it routes to, the game's **random
+number generator**, the two searches every enemy uses to pick who to chase
+and to ask what is in its way, and **the whole of the movement step validator**:
+where a mover wants to go, and all four tests that decide whether it may — what
+is in the way, what the terrain under it is, whether it is still on the map, and
+whether it has reached the end of its co-op leash — and the coroutine problem is solved: a ported
+routine that suspends inside the thread scheduler does it at an explicit resume
+point, with its parked state as plain copyable data. `zamn_cosim verify` checks
+the C against the
 ROM's own code on every call the game makes — 128 KB of WRAM plus registers — and
-passes **3,931,989 of 3,931,989 across the whole movie corpus**, thirteen levels
-deep, while `zamn_cosim run` substitutes the C for real and finds **no byte of live
-game state differing** on every movie but two. Across all forty-two movies the ROM
-is **no longer asked to run a single routine the port does not have**.
+passes **9,811,421 of 9,811,421 across the whole movie corpus**, thirteen levels
+deep. Across all forty-two movies the ROM is **no longer asked to run a single
+routine the port does not have**.
+
+`zamn_cosim run` goes further and substitutes the C for real, diffing two whole
+machines every scheduler pass, and **finds no byte of live game state differing
+on any movie tried** — `level1`, `level9-weapons` at 9,000 frames,
+`level25-boss` at 7,600, `level29-fighting` at 6,000, every substitutable routine
+at once. On the heaviest level it stops early and says why: a scheduler pass
+whose work overruns vblank takes two frames instead of one, whether it does is
+decided by a few hundred cycles, and a substituted core spends a different
+number of cycles by construction — so the two machines end up on different
+frames of the same game and nothing after that is comparable. `docs/cosim.md`
+has the account, including the two harness bugs that made this look for months
+like a divergence in the port.
 
 The port also reports **which of its own branches an input actually reached**,
 because a branch no movie takes is one the diff agrees with the ROM about for
-the wrong reason. 70 of 254 are still untaken by every input, and they are the
+the wrong reason. 77 of 317 are still untaken by every input, and they are the
 backlog.
 
 See **`docs/cosim.md`** for the harness and what coverage measures that the diff
@@ -61,11 +77,13 @@ instead of by the 65816, and the window title carries a live count of how many.
 `--stock` clears the enable mask to get the Phase 0 emulated baseline back, and
 F1 moves between the two at a frame boundary while the game is running.
 
-What this is *not* is a native game yet. Forty-seven routines are ported; the
-main loop, the NMI handler, player movement, level and camera code and every
-enemy body still belong to the ROM under the emulated core. What runs natively
-are the leaves those call — the sprite/OAM pass, the depth sort, collision
-dispatch, thread spawn and tick, score, fades. Phase 4 is where that inverts.
+What this is *not* is a native game yet. Sixty-one routines are ported; the
+main loop, the NMI handler, the movement thread, level code, the camera itself
+and every enemy body still belong to the ROM under the emulated core. What runs
+natively are the leaves those call — the sprite/OAM pass, the depth sort,
+collision dispatch, the step proposer and every test a step is checked against,
+thread spawn and tick, score, fades, and now the bottom of the tilemap streamer
+the camera scrolls with. Phase 4 is where that inverts.
 
 Other options — `-m <movie.zmv>` replays a recorded movie instead of reading the
 keyboard, `--frames N` runs N frames uncapped and exits, `--shot out.png` writes
@@ -79,7 +97,12 @@ build\zamn.exe "Zombies Ate My Neighbors.sfc" -m movies\level29-fighting.zmv ^
     --frames 6000 --no-audio --shot stock.png --stock
 ```
 Those two framebuffers are identical, as are level 1's, level 1 two-player and
-level 45's. On exit the frontend prints the same per-routine table `zamn_cosim`
+level 45's. `level25-lane.zmv` at 9,400 frames is the one that does **not**
+match, and for a reason that is not a wrong answer: on that level a scheduler
+pass sits close enough to the vblank boundary that the two builds eventually
+disagree about whether one overran it, after which they are showing different
+moments of the same game. `zamn_cosim run` detects and reports exactly that —
+see `docs/cosim.md`. On exit the frontend prints the same per-routine table `zamn_cosim`
 does — minus the verdict column, since there is no reference core here to diff
 against — plus the decline census naming whatever the ROM still had to run.
 (It is a `WIN32` binary, so it borrows the parent console for that; run it from
@@ -178,6 +201,16 @@ tools/verify_corpus.ps1  Runs `verify` over every movie; owns the frame counts
 tools/make_spin_probe.py Rewrites a probe movie's tail as short legs, so the
                               player faces every direction instead of towing a
                               crowd it never turns to shoot
+tools/native_share.py What share of the work the game does runs natively, and a
+                              ranking of what is left by the same measure — reads
+                              `profile.bin` from the tracer, and discounts the
+                              busy-waits, which are 10.9% of the instruction count
+                              and none of the work
+tools/hotbytes.py     Where inside a routine the instructions went. Run it on a
+                              row of that ranking before porting it: a routine's
+                              first byte is its entry, so nothing in a loop-free
+                              routine can run more often — three rows near the top
+                              have turned out to be spin loops wearing a name
 tools/perturb.py      Breaks one line of the port on purpose, rebuilds, runs
                               `verify` against every input listed for it, and puts
                               both back — a branch no input distinguishes, or one

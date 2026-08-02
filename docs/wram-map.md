@@ -33,7 +33,7 @@ The game's hot globals. 4.5 M reads / 0.95 M writes in 2400 frames.
 
 | Address | Width | Name | Evidence |
 | --- | --- | --- | --- |
-| `$0004` | word | `nmi_saved_sp` | `TSC / STA $04` on NMI entry, restored at exit |
+| `$0004` | word | `nmi_saved_sp` | `$80:819C  TSC / STA $04` on entry, `$80:81EB  LDA $04 / TCS` on exit |
 | `$0008` | word | `sched_cur_task` | index into `thread_wait` / `thread_sp` |
 | `$000C` | word | `vbl_queue_a_count` | incremented by `$80:83AE`, decremented by `$80:83D5` |
 | `$000E` | word | `vbl_queue_b_count` | same pattern at `$80:8418` |
@@ -76,7 +76,7 @@ The busiest addresses in the whole run are `$002C/$002D` (161 k reads) and
 
 | Range | Size | Contents |
 | --- | --- | --- |
-| `$7E:1120-$7E:114F` | 48 B | active thread stacks (the NMI prologue pushes here) |
+| `$7E:0CF6-$7E:1175` | 24×48 | the 24 per-thread stacks — see below |
 | `$7E:1180-$7E:11AF` | 24×2 | `thread_wait` — bit 15 live, low bits ticks remaining |
 | `$7E:11B0-$7E:11DF` | 24×2 | `thread_sp` — parked stack pointer per thread |
 | `$7E:125F` | — | scheduler's own stack top |
@@ -84,6 +84,40 @@ The busiest addresses in the whole run are `$002C/$002D` (161 k reads) and
 | `$7E:12A0-$7E:12DF` | 16×4 | `vbl_queue_a` — jobs run during forced blank |
 | `$7E:12E0-$7E:12FF` | 8×4 | `vbl_queue_b` — jobs run after blanking ends |
 | `$7E:1300`,`$7E:1330` | 24×2 | `thread_handler` / `thread_handler_bank` — the callback `$80:8480` enters; see below |
+
+### The thread stacks are a ROM table, not an observation
+
+This row used to read *"`$7E:1120-$7E:114F`, 48 B, active thread stacks"*, and
+that was one stack described as all of them. It came from a trace, and a trace
+only sees the slots the traced run happened to spawn.
+
+`$80:830E` is a **24-entry table of initial stack pointers**, one per scheduler
+slot; `thread_spawn` loads slot *n*'s entry with `LDA $80830E,X : STA $11B0,X :
+TCD` and installs it. The table is the answer, and it does not need observing:
+
+| Slot | Top | Slot | Top | Slot | Top | Slot | Top |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0 | `$0D25` | 6 | `$0F95` | 12 | `$0D55` | 18 | `$0F65` |
+| 1 | `$0DB5` | 7 | `$0FF5` | 13 | `$0D85` | 19 | `$0FC5` |
+| 2 | `$0E15` | 8 | `$1055` | 14 | `$0DE5` | 20 | `$1025` |
+| 3 | `$0E75` | 9 | `$10B5` | 15 | `$0E45` | 21 | `$1085` |
+| 4 | `$0ED5` | 10 | `$1115` | 16 | `$0EA5` | 22 | `$10E5` |
+| 5 | `$0F35` | 11 | `$1175` | 17 | `$0F05` | 23 | `$1145` |
+
+Sorted, those are 24 values **exactly 48 bytes apart**, so the block is
+contiguous: `$7E:0CF6-$7E:1175`, 1152 bytes, and `$7E:1120-$7E:114F` is slot
+23's alone. Like the direct-page table two sections down it is *a table and not
+a formula*, and for the same reason: the slot order is not the address order.
+
+**The bottom of it overlaps a direct page**, which is worth knowing before
+trusting either. The 24 pages run to `$7E:0CFF`, so slot 0's stack — `$0CF6` up
+to `$0D25` — shares its lowest ten bytes with offsets `$76`-`$7F` of slot 11's
+page, and `$76` is live (it is `STEP_DP_SPEED_CLASS`). A thread on slot 0 that
+went 42 bytes deep would land on them. Nothing has ever been seen to; the
+scheduler's own frame is 9 bytes and the deepest measured is well under half.
+
+`src/cosim/cosim.c` reads this table at startup rather than repeating it, and
+clamps the low end to `$0D00` so it never waives a byte that is also page data.
 
 ## PPU shadow state
 

@@ -540,6 +540,39 @@ static FILE* open_out(const char* dir, const char* name) {
   return f;
 }
 
+// Per-ROM-byte execution and call counts, in the CDL's shape but a word wide.
+//
+//   char magic[4] = "ZPRF"
+//   u32  version  = 1
+//   u32  rom_size
+//   u32  exec[rom_size]      instructions executed, counted at the opcode byte
+//   u32  call[rom_size]      JSR/JSL entries, counted at the target
+//
+// **The CDL says whether a byte ran; this says how often**, and the difference
+// between those two is the difference between "how much of the ROM has been
+// ported" and "how much of the work the ROM does has been ported". The second
+// is the number that says whether a routine was worth porting, and nothing in
+// the toolchain could answer it before: `subroutines.csv` carries a call count
+// per entry, which is how often a routine started rather than how much it then
+// did. Attribution to routines is left to whoever reads this, because the
+// interesting groupings — ported vs not, by bank, by actor behaviour — are not
+// ones the tracer should have to know about.
+static void report_profile(const char* dir) {
+  char path[512];
+  snprintf(path, sizeof path, "%s/profile.bin", dir);
+  FILE* f = fopen(path, "wb");
+  if (!f) {
+    fprintf(stderr, "error: cannot write '%s'\n", path);
+    return;
+  }
+  const uint32_t hdr[2] = {1u, g.cdl.size};
+  fwrite("ZPRF", 1, 4, f);
+  fwrite(hdr, sizeof hdr[0], 2, f);
+  fwrite(g.exec_count, sizeof g.exec_count[0], g.cdl.size, f);
+  fwrite(g.call_count, sizeof g.call_count[0], g.cdl.size, f);
+  fclose(f);
+}
+
 static void format_pcs(char* out, int out_size, const uint32_t* pcs, uint8_t n) {
   int w = 0;
   out[0] = '\0';
@@ -920,6 +953,7 @@ int main(int argc, char** argv) {
   }
   report_cdl(out_dir);
   report_subs(out_dir);
+  report_profile(out_dir);
   report_mem(out_dir, "wram_map.csv", g.wram, 0x20000, 0, true);
   report_wram_regions(out_dir);
   report_mem(out_dir, "registers.csv", g.reg, REG_END - REG_BASE, REG_BASE, false);

@@ -367,7 +367,81 @@
                                                                                 \
   /* $80:891A fade_in. */                                                      \
   X(fade_in_step,     "fade_in",            "a brightness step short of full")  \
-  X(fade_in_done,     "fade_in",            "the ramp reached full brightness and returned")
+  X(fade_in_done,     "fade_in",            "the ramp reached full brightness and returned") \
+                                                                                \
+  /* $80:B123 actor_nearest — the four ways a slot is dismissed, and the two \
+     that keep it. */                                                          \
+  X(nearest_undrawn,  "actor_nearest",      "a slot with ACTOR_DRAW clear, which is most of them") \
+  X(nearest_inactive, "actor_nearest",      "...drawn, but without flag bit 0") \
+  X(nearest_wrong_id, "actor_nearest",      "a live record wearing none of the four ids it looks for") \
+  X(nearest_candidate,"actor_nearest",      "one it measured the distance to")  \
+  X(nearest_closer,   "actor_nearest",      "...and one that beat the best so far, so the search moved") \
+                                                                                \
+  /* $80:BF67 actor_at_point — six ways to dismiss an entry and two endings. */  \
+  X(at_point_empty,   "actor_at_point",     "nothing visible at all, so it never entered the walk") \
+  X(at_point_self,    "actor_at_point",     "the record the caller asked to be ignored") \
+  X(at_point_inactive,"actor_at_point",     "a visible record without flag bit 0") \
+  X(at_point_no_id,   "actor_at_point",     "a record with no collision id")     \
+  X(at_point_id_band, "actor_at_point",     "an id in the $0C..$33 band, which it steps over wholesale") \
+  X(at_point_id_named,"actor_at_point",     "id $07 or $08, the two named exceptions below that band") \
+  X(at_point_far_x,   "actor_at_point",     "close enough to look at, but more than six pixels away on X") \
+  X(at_point_far_y,   "actor_at_point",     "...or on Y")                        \
+  X(at_point_hit,     "actor_at_point",     "something inside the window, so it returns carry set") \
+  X(at_point_none,    "actor_at_point",     "the walk ran out, which is the empty answer") \
+  X(obstacle_empty,   "actor_obstacle_at_point", "nothing visible at all, so it never entered the walk") \
+  X(obstacle_player_a,"actor_obstacle_at_point", "player A's record, which a walker is allowed through") \
+  X(obstacle_player_b,"actor_obstacle_at_point", "...and player B's, so this one needs two players on the board") \
+  X(obstacle_inactive,"actor_obstacle_at_point", "a visible record without flag bit 0") \
+  X(obstacle_no_id,   "actor_obstacle_at_point", "a record with no collision id")     \
+  X(obstacle_id_below_band, "actor_obstacle_at_point", "an id under $0C, which skips the range tests entirely") \
+  X(obstacle_id_band, "actor_obstacle_at_point", "an id in the $0C..$33 band, stepped over wholesale") \
+  X(obstacle_id_high, "actor_obstacle_at_point", "an id of $5C or above, over the ceiling the band test ends at") \
+  X(obstacle_id_above_band, "actor_obstacle_at_point", "$34..$5B: past the band, under the ceiling, and still made to face the named chain") \
+  X(obstacle_id_named,"actor_obstacle_at_point", "one of the seven singletons, six of them below the band and $37 above it") \
+  X(obstacle_far_x,   "actor_obstacle_at_point", "close enough to look at, but more than six pixels away on X") \
+  X(obstacle_far_y,   "actor_obstacle_at_point", "...or on Y")                        \
+  X(obstacle_hit,     "actor_obstacle_at_point", "something in the way, so the step the caller proposed is refused") \
+  X(obstacle_none,    "actor_obstacle_at_point", "the walk ran out, so the step is allowed") \
+  X(terrain_attrs_bank_7e, "terrain_blocked*",   "the attribute table in WRAM bank $7E, which is everywhere it has been looked at") \
+  X(terrain_attrs_bank_7f, "terrain_blocked*",   "...and in bank $7F, which nothing has yet been seen to do") \
+  X(terrain_hit_upper,"terrain_blocked*",        "one of the three tiles across the top of the footprint blocks") \
+  X(terrain_hit_lower,"terrain_blocked*",        "the row below does, which needs the whole top row clear first") \
+  X(terrain_hit_last, "terrain_blocked*",        "the sixth and last tile does — the probe the ROM leaves without a branch") \
+  X(terrain_clear,    "terrain_blocked*",        "all six tiles are clear, which is falling out of the loop") \
+  X(bounds_x_negative,"terrain_out_of_bounds",   "a negative X, rejected before any arithmetic") \
+  X(bounds_x_low,     "terrain_out_of_bounds",   "X within four quarter-tiles of the left edge") \
+  X(bounds_x_high,    "terrain_out_of_bounds",   "X past the right edge — the one exit that keeps its own compare's carry") \
+  X(bounds_y_negative,"terrain_out_of_bounds",   "a negative Y")                       \
+  X(bounds_y_low,     "terrain_out_of_bounds",   "Y within two tiles of the top edge") \
+  X(bounds_y_high,    "terrain_out_of_bounds",   "Y past the bottom edge")             \
+  X(bounds_inside,    "terrain_out_of_bounds",   "the point is on the map, which is the only way out with carry clear") \
+  X(speed_dir_still,  "step_propose",       "direction zero, so both deltas are zero and the candidate is where it already is") \
+  X(speed_dir_moving, "step_propose",       "any of the eight real directions") \
+  X(speed_single,     "step_propose",       "the mask and the tick disagree, so one pixel on each axis") \
+  X(speed_double,     "step_propose",       "...and when they agree, two — which is the whole of how speed is expressed") \
+  X(tether_mover_a,   "step_tether_blocked", "player A is asking, so the reference is player B") \
+  X(tether_mover_b,   "step_tether_blocked", "...and anyone else asking is measured against player A") \
+  X(tether_alone,     "step_tether_blocked", "the reference record is zero, which is every frame of a one-player game") \
+  X(tether_inside,    "step_tether_blocked", "the candidate is inside the 224x176 window, the only exit that is not arithmetic") \
+  X(tether_outside_x, "step_tether_blocked", "too far apart on X") \
+  X(tether_outside_y, "step_tether_blocked", "...or on Y, which needs X to have passed first") \
+  X(tether_closing,   "step_tether_blocked", "outside the window but strictly closing the gap, so allowed anyway") \
+  X(tether_equal,     "step_tether_blocked", "outside, and exactly as far as the players already are — the BEQ that refuses a tie") \
+  X(tether_leashed,   "step_tether_blocked", "outside, and not closing: the leash, and the only carry-set exit") \
+  X(wide_floor_first, "terrain_blocked_wide", "the very first tile is below the priority threshold — the one exit that leaves Y as the caller passed it") \
+  X(wide_floor_other, "terrain_blocked_wide", "...one of the other nine is, and that one has set Y itself") \
+  X(wide_attr_upper,  "terrain_blocked_wide", "a tile in the top row of five carries attribute bit 1") \
+  X(wide_attr_lower,  "terrain_blocked_wide", "...or one in the row below, which needs all five above it to pass") \
+  X(wide_clear,       "terrain_blocked_wide", "all ten tiles pass both tests, which is falling off the end of the tenth LSR") \
+  X(lzss_read_spent,  "lzss_read_byte",      "the stream is exhausted — the SEC exit, and the only end marker the format has") \
+  X(column_priority,  "tilemap_copy_column", "a tile below the level's priority threshold, so bit 13 is forced on as it is copied") \
+  X(column_plain,     "tilemap_copy_column", "...and one at or above it, copied across untouched")
+
+// `$80:CD20 lzss_decompress` has no sites here on purpose. `src/port/lzss.c` is
+// written and is not registered — the harness cannot check a routine that
+// outlives a frame, and `src/cosim/routines.c` says why at length. A site for a
+// routine nothing calls is untaken forever, and three of those would quietly
+// inflate the one number this file exists to keep honest.
 
 typedef enum {
 #define PORT_COVER_ENUM_(id, routine, what) PORT_COVER_##id,

@@ -37,6 +37,7 @@
 #include "assets/gfx.h"
 #include "assets/level.h"
 #include "assets/lzss.h"
+#include "port/lzss.h"
 #include "assets/music.h"
 #include "assets/password.h"
 #include "assets/rom.h"
@@ -119,6 +120,7 @@ static const char* addr_str(uint32_t addr24) {
 typedef struct {
   uint32_t src, dst;    // 24-bit SNES addresses
   uint16_t sp;          // stack pointer at entry, to match the matching RTL
+  uint16_t a, x, y;     // the register arguments, for the WRAM transcription
   LzssRing ring_in;     // window contents the ROM call started from
 } LzssCall;
 
@@ -130,10 +132,52 @@ static struct {
   LzssCall call;
 
   int captured, passed, skipped;
+  int wram_checked, wram_passed;
   uint8_t rom_out[MAX_OUTPUT];
   uint8_t c_out[MAX_OUTPUT];
   LzssRing ring;
+  // A whole copy of WRAM as the ROM call found it, so `src/port/lzss.c` can be
+  // run on the same starting state and its memory effect compared.
+  Wram wram_in;
 } v;
+
+// Does `src/port/lzss.c` leave memory the way `$80:CD20` left it?
+//
+// **This is a different question from the one above and needs a different
+// comparison.** `lzss_decompress()` is the asset pipeline's: bytes in, bytes
+// out, and the check is the output and the window. `lzss_decompress_wram()` is
+// the game's, and its result is a memory footprint — nine words of scratch on
+// direct page zero, the window, and the decompressed bytes where the caller
+// asked for them.
+//
+// It is scoped to that footprint rather than to all of WRAM, and the reason is
+// worth being precise about, because everywhere else in this project the answer
+// is "all 128 KB". **One call is about 440,000 instructions, near seven frames,
+// so NMIs land inside it** — that is why the routine is not in the
+// co-simulation registry, and `src/cosim/routines.c` says so at length. What
+// the NMI handler did in the meantime is genuinely not this routine's business.
+// The footprint below is what the routine's own instructions can write, read
+// off the disassembly, so anything outside it differing would be the NMI's and
+// anything inside it differing is the port's.
+static const char* lzss_wram_check(Snes* snes, uint32_t rom_len) {
+  uint16_t written = lzss_decompress_wram(&v.wram_in, &(Rom){v.rom, v.rom_size},
+                                          v.call.sp, v.call.a, v.call.x,
+                                          v.call.y);
+  if (written != (uint16_t)rom_len) return "WRAM (length differs)";
+  if (memcmp(&v.wram_in.bytes[0x6f00], &snes->ram[0x6f00], LZSS_RING_SIZE) != 0)
+    return "WRAM (window differs)";
+  // $28-$41: the two long pointers, the byte count, the window position, the
+  // match scratch and the destination the count is measured from.
+  if (memcmp(&v.wram_in.bytes[0x28], &snes->ram[0x28], 0x1a) != 0)
+    return "WRAM (scratch differs)";
+  for (uint32_t i = 0; i < rom_len; i++) {
+    uint32_t cur = (v.call.dst & 0xff0000) | ((v.call.dst + i) & 0xffff);
+    uint32_t off;
+    if (!snes_to_wram(cur, &off)) return "WRAM (destination left WRAM)";
+    if (v.wram_in.bytes[off] != snes->ram[off]) return "WRAM (output differs)";
+  }
+  return NULL;
+}
 
 // WRAM only: everything the game decompresses lands there, and reading it
 // directly avoids the side effects snes_read() has on hardware registers.
@@ -168,6 +212,10 @@ static void lzss_on_entry(Snes* snes) {
   v.call.src = ((uint32_t)(cpu->a & 0xff) << 16) | lo | ((uint32_t)hi << 8);
   v.call.dst = ((uint32_t)(cpu->x & 0xff) << 16) | cpu->y;
   v.call.sp = cpu->sp;
+  v.call.a = cpu->a;
+  v.call.x = cpu->x;
+  v.call.y = cpu->y;
+  memcpy(v.wram_in.bytes, snes->ram, WRAM_SIZE);
   // Snapshot the window so the C port starts from exactly the same state,
   // including the 17 bytes the ROM's refill never touches.
   memcpy(v.call.ring_in.bytes, &snes->ram[0x6f00], LZSS_RING_SIZE);
@@ -216,6 +264,14 @@ static void lzss_on_exit(Snes* snes) {
     verdict = "FAIL (window differs)";
   } else {
     v.passed++;
+  }
+
+  // And the same call again, as a memory effect rather than a byte stream.
+  if (!strcmp(verdict, "OK")) {
+    const char* bad = lzss_wram_check(snes, rom_len);
+    v.wram_checked++;
+    if (bad) verdict = bad;
+    else v.wram_passed++;
   }
 
   printf("%-3d %-11s %-11s %8u %8u  %s\n", v.captured, src_s, dst_s, r.read, rom_len, verdict);
@@ -298,6 +354,9 @@ static int cmd_verify_lzss(int argc, char** argv) {
   int failed = v.captured - v.passed - v.skipped;
   printf("\n%d call%s intercepted: %d byte-identical, %d failed, %d skipped.\n",
          v.captured, v.captured == 1 ? "" : "s", v.passed, failed, v.skipped);
+  printf("%d of %d also checked as a memory effect — src/port/lzss.c against "
+         "the same call's\nwindow, direct-page scratch and output range.\n",
+         v.wram_passed, v.wram_checked);
   if (v.captured == 0) {
     printf("The movie never reached a decompression call — nothing was verified.\n");
   }

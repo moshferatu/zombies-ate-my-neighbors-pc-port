@@ -93,7 +93,8 @@ target_link_libraries(zamn_assets_lib PUBLIC zamn_cover)
 # zamn_assets: decodes ROM data, and verifies the decoders against the ROM's
 # own routines by intercepting them under the reference core.
 add_executable(zamn_assets src/assets.c)
-target_link_libraries(zamn_assets PRIVATE snescore zamn_analysis zamn_assets_lib)
+target_link_libraries(zamn_assets PRIVATE snescore zamn_analysis zamn_assets_lib
+                                          zamn_port)
 target_include_directories(zamn_assets PRIVATE third_party/stb)
 
 # ---------------------------------------------------------------------------
@@ -106,11 +107,15 @@ add_library(zamn_port STATIC
   src/port/apu.c
   src/port/collide.c
   src/port/fade.c
+  src/port/camera.c
+  src/port/lzss.c
   src/port/oam.c
   src/port/player.c
   src/port/rng.c
   src/port/score.c
   src/port/sprite_cache.c
+  src/port/step.c
+  src/port/terrain.c
   src/port/thread.c)
 target_include_directories(zamn_port PUBLIC src)
 target_link_libraries(zamn_port PUBLIC zamn_assets_lib)

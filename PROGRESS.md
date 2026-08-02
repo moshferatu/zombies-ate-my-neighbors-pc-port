@@ -3,7 +3,906 @@
 Cross-session status for the ZAMN native-port project. Update this whenever a
 milestone lands. See `PLAN.md` for the full multi-phase plan.
 
-## Current status: **Phase 3 underway** 🔨 (2026-07-31)
+## Current status: **Phase 3 underway** 🔨 (2026-08-01)
+
+### Starting up the camera chain, from the bottom (2026-08-01)
+
+**`$80:A93F` is the top portable row on the work ranking -- 1.6% over 146,000
+calls, and `hotbytes.py` gives it a clean bill: every byte runs exactly once per
+call.** It is camera centring, and it reads quickly. The target is one player's
+position, the other's, or the **midpoint of the two**; the deltas are against
+the live scroll at `$1B6A`/`$1B6C`; and each axis dispatches by sign into one of
+two tilemap scroll routines, which move the camera **one pixel** and push a new
+column or row into the VRAM queue every eighth. That is why the view drifts
+after the players rather than snapping to them.
+
+**It cannot be taken yet, and the reason decides the order of work.** A
+substituted routine has to do everything the ROM's does, and there is no way to
+call back into the ROM half-way through -- so `$80:A93F` needs all four scroll
+routines, and `$80:A68B` alone calls five more. The alternative is a guard
+serving the calls that need no scroll, somewhere between 41% and 69% of them;
+that would put the first entry in a decline census empty for several rounds, and
+would credit the ranking 1.6% for a routine doing half of it. Bottom-up is the
+honest order, and `src/port/camera.h` now carries the whole chain with each
+link's share against it.
+
+**`$80:AD1C tilemap_tile_addr` -- routine fifty-nine, the floor of the stack.**
+Fifteen bytes, no calls, 42,167 of them, no loop: `TXA : ASL A : PHA / TYA : ASL
+A : TAX / LDA $7E4328,X / CLC : ADC $01,S / PLX : RTL`. `$7E:4328` is
+`W_TILE_ROW_BASE`, which `port/terrain.h` has documented since the first terrain
+routine, so it lives there rather than in a file of its own. **Three registers
+come back and no two from the same place**: A from the `ADC`, X from a `PLX` of
+the column *already doubled* -- not a restore, and `$80:A5E5` depends on it --
+and N and Z from that `PLX`, so they describe the doubled column and not the
+address. Carry is the `ADC`'s and survives untouched. 1,037 calls on level 1 and
+9,754 on level 25, 0 diverged, first run.
+
+**`$80:A5E5 tilemap_copy_column` -- routine sixty.** A vertical strip of the
+expanded map copied into the caller's buffer, source stepping by
+`W_TILEMAP_ROW_BYTES` and destination by two. **303 calls on
+`movies/level45-race.zmv`, 0 diverged, both new sites taken, first run.**
+`stack_bytes` is 7 and it was predicted before it was measured: its own `PHA` is
+2, the `JSL` is 3, `$80:AD1C`'s `PHA` under it is 2.
+
+**`$DC` turns up doing its third job, and this is the one it was named for.**
+`CMP $DC : BCS` forces bit 13 -- the PPU's background priority bit -- on every
+tile whose nine-bit index is below `W_TILE_PRIORITY_BELOW`. `src/assets/level.h`
+had that field as a draw-time flag since Phase 2; `$82:90F7` showed this morning
+it is also a collision threshold; here is the draw-time half in the flesh. It is
+not two rules that happen to agree -- it is **one number read twice**, which is
+exactly why the tiles drawn in front of the player are the tiles nothing may
+stand on.
+
+Two things transcribed rather than tidied: the loop is `DEX : BNE`, so a count
+of zero means **65,536 iterations and not none**, and its flags are for once the
+ones a reader would guess -- `ADC $54` is last, so N, Z and C describe the
+pointer it returns. Both other links in this chain end on a pull, so this one
+breaking the pattern is worth noticing.
+
+Its cycle spread, 1,526..14,250, is unlike any other in the registry: not the
+bus and not a branch but **the count**. The same shape of number that made the
+LZSS leaves unsubstitutable, at a thousandth of the call volume -- and at 303
+calls it is harmless, which the checks confirm.
+
+**`$80:A401 tilemap_buffer_alloc` -- routine sixty-one, and a guard used as a
+statement.** Twenty-one bytes of bump allocator over the `$7E:4B28` arena that
+every tilemap strip comes out of; neither `$CA` nor `$CC` had a name before this,
+in `zamn.sym` or `docs/wram-map.md`, so they are now `W_TILEMAP_ARENA_NEXT` and
+`W_TILEMAP_ARENA_LEFT`. **Its one branch is a spin, not a retry** -- the `BCC`
+goes back to a reload of the same unchanged `$CC`, waiting for somebody else to
+hand the arena back -- and in ten traces it is never taken once: every byte in
+the routine runs exactly 3,977 times against 3,977 calls.
+
+That branch is awkward to own. Implemented faithfully it is an infinite loop in
+C, because nothing inside the port can change `$CC`; ignored, it is the port
+quietly disagreeing with the ROM; as a coverage site it could never be taken,
+and `coverage.h` says in as many words that a site no corpus can reach dilutes
+the number the file exists to keep. **So it is a guard** -- declined and
+censused if it ever happens, costing nothing while it does not. The `decl.`
+column reads 0 on every movie, which is the profile's fact arrived at from the
+front. 227 calls on `level45-race`, 0 diverged, 0 declined, first run.
+
+**9,811,421 calls checked across 42 movies, 0 diverged; branch coverage 240 of
+317, 77 untaken, census still empty** -- from 9,647,058 and 238 of 315. `run`
+substituting each alone is clean at every compared pass with no timeline
+parting, `run` with everything on level 1 is 2,389 of 2,389, and the frontend's
+four framebuffers stay identical.
+
+**The standing check was exact three times running.** `$80:AD1C` moved the
+native total by 463,837 and executes 463,837; `$80:A5E5` moved it by 1,115,377
+and executes 1,115,377; `$80:A401` by 55,678 against a span of 55,678. The
+subsumed count did not move once. That is the useful shape for a check to have
+-- boring on the rounds where nothing is wrong, and it caught a real 1.28%
+inflation on the round before these.
+
+**60.0% strict, 71.5% call-weighted; 67.4% and 80.3% with the waiting out.**
+
+**Next**, `$80:A61D` -- `$80:A5E5`'s horizontal twin, same loop and same `$DC`
+rule with `LDY #$0040` counting down instead of a caller's count up. Its only
+outstanding dependency was `$80:A401`, which is now in, so it needs nothing
+further and will not need reading twice. Then `$80:A54D`, `$80:A588` and
+`$80:9E6D` -- 0.06% between them and all loop-free -- and the four scroll
+routines close over `$80:A93F` and its 1.6%.
+
+### The LZSS leaves, and the metric inflating in exactly the documented way (2026-08-01)
+
+**`$80:CDDA lzss_read_byte` and `$80:CDEB lzss_write_byte` — routines
+fifty-seven and fifty-eight, and the first registered without their caller.**
+`$80:CD20 lzss_decompress` has been written-but-unregistered for rounds because
+one call is ~440,000 instructions and an NMI always lands inside it. That
+argument is about the body. Its two leaves are the opposite shape in every
+respect: 8 and 5 instructions, 1,071,108 calls across the corpus, **2.6% of
+every instruction the game executes** — more work than any single routine left
+on the ranking. Interception is per call site, so the ROM runs the body and the
+port answers each `JSR` out of it; the six call sites in the trace are all
+inside that one body, so neither needs a guard. **Both passed first run.**
+
+Neither ends where it looks like it does: `$80:CDDA` closes on `INC $28` and
+`$80:CDEB` on `INC $2C`, so N and Z describe *the pointer the routine just
+advanced*, not the byte. The `PLD` trap in a third costume.
+
+**9,647,058 calls checked across 42 movies, 0 diverged; branch coverage 238 of
+315, 77 untaken, census still empty** — from 5,244,269 and 237 of 314.
+
+**Substituting them broke the framebuffer test on every movie, and that is the
+timeline law with a bigger lever.** `zamn.exe` against `--stock` had been
+byte-identical on `level1`, `level1-2p`, `level29-fighting` and `level45-race`;
+with these two in, all four differed and `run` on `level1` parted at pass 187
+with stock on frame 1,049 and native on 1,052. `cycles` is one constant standing
+in for a distribution — `lzss_read_byte` really costs 98 to 298 — and a million
+calls packed inside one multi-frame decompression give the error no chance to
+cancel. A level load lands three frames off, and a `.zmv` applies its inputs by
+frame index. **No budget fixes it and the failed attempt is the argument**: the
+mean is the mean by construction, so what is left over is variance and a
+constant has none.
+
+So both are **`verify_only`** — checked on every call, all 128 KB, never
+substituted. That is the flag's second reason and quite a different one from
+`apu_send`'s: that routine cannot be substituted because it has to *wait*, these
+two because they cannot keep *time*. All four framebuffers are identical again,
+which is the point — that check is the only end-to-end evidence in the project
+involving no harness at all.
+
+**And the metric inflated again, exactly the way the last inflation predicted.**
+Registering them moved the native total by 8,382,014 instructions where the two
+routines execute 7,113,522. `lzss_write_byte` is five instructions ending at its
+`RTS` on `$80:CDF3`; `$80:CDF4` starts a different routine, reached by a jump,
+opening `JSR $D13A` and `JSL thread_yield`. Attribution by nearest preceding
+entry credited those call edges to the five-byte leaf — so the moment it counted
+as ported, `$80:D13A`, `$80:D1EA`, `$80:D01B` and their closures were subsumed
+for free: 13 routines, 1.28%. One line in `JUMP_ENTRIES`, and with the boundary
+declared on both sides the total moves by **6,474,904** against a predicted
+697,920 x 5 + 373,188 x 8 = **6,475,104**. Subsumed count does not move at all.
+
+It restates the last round's figures too, because the boundary was missing then:
+the call-weighted estimate was **70.2%**, not the 70.9% recorded, and 78.8%
+rather than 79.6% with waits out. The strict number is unaffected — it counts
+the entries themselves, which the boundary does not touch.
+
+**59.5% strict, 71.0% call-weighted; 66.8% and 79.7% with the waiting out.**
+
+**Next**, `$80:A93F` is the top portable row at 1.6% over 146,000 calls, and
+`hotbytes.py` says NO LOOP — every byte exactly 1.0x its entry. It is camera
+centring: the midpoint of the two players, or one of them, minus the current
+scroll, dispatching into four tilemap scroll routines. Those four are only 0.20%
+between them, but `$80:A68B` alone calls five more (`$A401`, `$A54D`, `$A588`,
+`$A5E5`, `$9E6D`), so full coverage pulls in the whole column streamer. A guard
+that serves the roughly half of calls needing no scroll is the cheap version.
+`$81:81A2` is 1.6% but only 79 calls with a real loop at 2,133x its entry.
+
+### `run` was measuring the wrong thing, in three separate ways (2026-08-01)
+
+**`zamn_cosim run` on `movies/level25-lane.zmv` now reports 3,485 of 3,485
+compared passes with no byte of live game state differing, all fifty-six
+routines substituted.** Nothing in `src/port/` changed. The last round filed
+this as "two causes, one certain, one open"; both were wrong, and the way they
+were wrong is the result.
+
+**The stack region was missing sixteen of the twenty-four stacks.** The harness
+waived `$7E:1000-$7E:12FF` as "the stacks", a constant taken from
+`docs/wram-map.md`'s *"`$7E:1120-$7E:114F`, 48 B, active thread stacks"* — which
+came from a trace, and a trace only sees the slots the run spawned. It had seen
+**one** stack and described it as all of them. `$80:830E` is a 24-entry table of
+initial stack pointers: 24 values exactly 48 bytes apart, block `$7E:0CF6`-`$1175`,
+and **sixteen of them sit below `$1000`**. So the mysterious "Cause B" bytes at
+`$7E:0FB3` and `$7E:0F04` were stack residue in slots 19 and 17, as inert as the
+residue at `$1021` the harness was already waiving. `cosim_init()` now reads the
+table out of the ROM instead of trusting prose.
+
+**`$7E:0004` is not state.** `$80:819C` writes `nmi_saved_sp` with `TSC : STA
+$04`; `$80:81EB` reads it back with `LDA $04 : TCS` seventy-nine bytes later,
+and nothing else in the game reads it. Between two NMIs it records where the
+last NMI landed, nothing more. It is waived and **counted** — it is the only
+visible measure of the cycle budget being an estimate, and `run` now prints it,
+rare and small: `terrain_out_of_bounds` 6 passes of 9,389, `terrain_blocked` 2
+of 6,057, both by at most 7 bytes of stack — one `JSL` deep.
+
+**What is left is not a bug and cannot be fixed.** At pass 3,496 one core is on
+frame 2,685 and the other on 2,684: a scheduler pass whose work overruns vblank
+takes two NMIs, on a heavy level that is decided by a few hundred cycles, and a
+substituted core spends a different number of cycles *by construction*. From
+there the old report was comparing frame *N* against frame *N+1*. Realigning on
+`$16` was tried and fails informatively — it costs the lagging side a scheduler
+pass and puts `sched_tick` out by one instead. The two clocks genuinely
+disagree, because one core really did run a pass in two frames. `run` now stops
+comparing there and says so.
+
+**Both of the last round's exclusions were sound experiments aimed at the wrong
+number.** They measured *the first difference*, which is dead stack. Against the
+number that decides the outcome — the pass the timelines part — `terrain_blocked`
+at `.cycles` of 1,400, 1,591, 1,900 and 3,000 all part at **pass 6,068**, and so
+does the four-line push repair, which moves only the first difference. **Cause A
+is therefore not a cause**; it is cosmetic, and the "principled repair belongs
+in `native_return`" plan is withdrawn rather than deferred. The general form is
+worth keeping: **an experiment that does not move the number is only evidence if
+that number is the one that matters.**
+
+`run` with everything substituted, all of WRAM every pass: `level1` 2,389 of
+2,389, `level9-weapons` 8,989 of 8,989, `level25-boss` 7,589 of 7,589,
+`level29-fighting` 5,989 of 5,989, `level25-lane` 3,485 and then the timelines
+part — no live state differing on any of them. `-r none` stays clean at all
+9,389, which is what makes the parting attributable to substitution.
+
+**The frontend agrees, with no harness involved.** `zamn.exe` against `--stock`
+produces a byte-identical final framebuffer on `level1`, `level1-2p`,
+`level29-fighting` and `level45-race` at 6,000 frames, and **not** on
+`level25-lane` at 9,400 — the same event `run` names at pass 3,496, arrived at
+independently. The corpus is unmoved by any of this: **5,244,269 calls across 42
+movies, 0 diverged; 237 of 314 sites, 77 untaken; census empty.**
+
+**Next**, the ranking by work is unchanged and now unblocked: `$80:A93F` (1.8%
+over 73,000 — camera centring, dispatching into four tilemap scroll routines),
+`$81:81A2` (1.6% over 79), the three `lzss_*` helpers, `$80:C8B8 dma_to_vram`
+(1.0% over 4,557), `$82:8069` (1.1% over 1,126).
+
+### A third footprint test, two spins, and `run` proving less than claimed (2026-08-01)
+
+**`$82:90F7 terrain_blocked_wide` — routine fifty-six.** It is `$80:AE14` with
+five tiles across instead of three (a 40x16 box, `SBC #$0011` for the origin),
+the loop written out ten times, and a nine-bit tile mask instead of ten. **46,560
+calls on `movies/level25-lane.zmv`, 0 diverged, all five new sites taken, first
+run.**
+
+**It also identifies a field `src/assets/level.h` has been half-right about since
+Phase 2.** Before the attribute word is fetched at all, `CMP $00DC : BCC`
+refuses any tile whose index is below the level record's `+$26` — the field
+`level.h` calls `priority_below` and describes as *"a draw-time flag, not part
+of the expanded map"*. It is also a collision threshold: **the tiles the game
+draws in front of the player are exactly the tiles it will not let something
+stand on**, and one 16-bit field does both jobs. Its caller `$82:8F93` is a
+placement search, so refusing an overhead tile is exactly right — a thing put
+there would be invisible. Every corpus movie that reaches it is a level 25
+movie; nothing on the other thirteen sampled levels enters it at all.
+
+**Fifty-six routines. 5,244,269 calls checked across 42 movies, 0 diverged;
+branch coverage 237 of 314, 77 untaken by every input, and the census is still
+empty** — from 5,116,847 and 232 of 309.
+
+**`$82:AC07` was 97.8% asleep.** It sat third on the ranking at 3.3%, and
+9,673,566 of its 9,893,468 instructions are two `LDA $0016 : CMP #$0078 : BCC`
+loops — the level loader holding for **120 frames**, once for the intro screen
+and once after the block library decompresses. Into `WAIT_SITES`, and it leaves
+the top thirty entirely. The waiting is now **10.93%** of every instruction the
+game executes, up from 7.89%.
+
+**That closes `$82:AB5B` three rounds late, and against what was written down.**
+`docs/analysis-tools.md` has said for several rounds that it *"never executed at
+all: CDL flag `00`, exec count 0, in every one of the ten traces"*. It executes
+520 times. The flag was read out of `analysis/zamn.cdl` — a level 1 trace, which
+genuinely never reaches it — and then asserted of the ten *profile* traces,
+which are different runs and in which the flag is `69`: code, and a `JSR`
+target, an ordinary sixteen-iteration loop over the sprite palette. So the whole
+of that 3.3% row is 0.03% of real routine, 3.03% of deliberate silence, and
+0.07% of everything else. **Never read a flag out of one trace and a count out of
+another.**
+
+**`tools/hotbytes.py`** now exists, because that check had been done by hand
+three times and each time found a spin. Its test is *not* "is the profile flat",
+which was the first thing written and is wrong — an unrolled routine with early
+exits is not flat and that is healthy. It is that **the first byte of a routine
+is its entry, so nothing in a loop-free routine can run more often than that
+byte does.** `$82:90F7`'s worst byte is 1.0x its entry; `$82:AC07`'s is
+218,452x.
+
+**The native share is 57.5% of executed instructions and 70.9% call-weighted —
+64.5% and 79.6% with the waiting out of the denominator.** Registering the
+routine moved the native total by 6,595,659 instructions, which is exactly what
+the routine executes and nothing more: the check the last round's `$80:A937`
+inflation demanded, passing on its first real use.
+
+**And `run` proves less than this file has been claiming.** Every substitution
+check ever recorded here was `movies/level1.zmv`, and *"identical at all 2,389
+compared passes"* was true of it. `movies/level9-weapons.zmv` at 9,000 frames is
+identical at all 8,989 too, so length is not the issue.
+`movies/level25-lane.zmv` is a different answer, and the same answer for **every
+routine tried, including `terrain_blocked` which shipped two rounds ago**:
+5,935 of 9,389 passes differing, against a `-r none` control that is clean at
+all 9,389. It starts at **2 bytes** — `$7E:0F04`/`$0F05`, which the harness
+itself labels *"a push the port never made"* — and grows to 7,135 by frame
+9,400, by which point `$7E:0016`, the NMI frame counter, differs and the two
+cores are running different frames.
+
+It is **not** the cycle budget: changing one routine's by 5x did not move the
+onset a single pass, and correcting another's by the 2% its own measurement
+suggests changed the blast radius by 9 bytes in 7,135.
+
+**There are two causes and one is now certain.** *Cause A is the pushes a
+routine abandons* — `terrain_out_of_bounds` declares `stack_bytes = 0` and is
+clean where a four-byte pusher is already differing. That was a hypothesis, so
+it was tested: `CosimRegs::s` gives a shim the entry stack pointer, so four
+lines make `terrain_blocked`'s shim write exactly what its `PHD` and `PHA`
+write — and its first difference moves from pass 1466 to **pass 3496**, which
+is where every routine that pushes nothing first differs. Cause A is real,
+understood, and four lines to repair. *Cause B is what remains*: every
+substituted routine, pushes or not, first differs at pass ~3,500 at `$7E:0004`
+and a few bytes near `$7E:0FB3`, marked `*** unexplained ***`; by pass 8,356
+`$7E:0016`, the NMI frame counter, differs and nothing after that is evidence.
+
+**The Cause A repair is deliberately not applied.** One shim of fifty-six makes
+the registry inconsistent, and the principled version belongs in
+`native_return` — which knows `stack_bytes` but not what to write, so it wants
+a description of the pushes rather than a count. That is worth doing once Cause
+B is understood and not before. `verify` is untouched by any of it — 5.2M
+calls, 42 movies, 0 diverged, all 128 KB compared after every call — so what is
+in question is the shims, not the C.
+
+**Next**, the ranking by work reads `$80:A93F` (1.8% over 73,000 — camera
+centring, and it dispatches into four tilemap scroll routines), `$81:81A2` (1.6%
+over 79), the three `lzss_*` helpers, `$80:C8B8 dma_to_vram` (1.0% over 4,557)
+and `$82:8069` (1.1% over 1,126). But the substitution result above is worth
+more than any of them.
+
+### The step validator closes, and the metric turns out to be inflatable (2026-08-01)
+
+**`$80:E450` and `$80:A8B3` — routines fifty-four and fifty-five.** They are the
+first and last things `$80:E4C1` does: work out where the mover wants to go,
+then ask the four tests whether it may. With these two, **everything `$80:E4C1`
+calls is C**, and only the sequencing is still the ROM's.
+
+**Speed in this game is not a number.** `$80:E450` reads a direction out of
+`$24` — already doubled, so it indexes the tables directly — and every delta in
+those tables is one pixel. What makes a thing fast is a *mask*, ANDed with the
+frame counter, deciding whether to add the delta twice. Two rows of four:
+cardinals get `$FFFF`/`$0001`/`$0000`/`$0000`, diagonals get
+`$0001`/`$0000`/`$0000`/`$0000`, and `dir & 2` picks the row. So the fastest
+class moves 2 pixels straight and 1.5 diagonally — a 0.75 standing in for
+0.707, which means diagonal movement in ZAMN is about 6% too fast and has been
+since 1993. It is one table lookup and no multiply, which in 1993 was the entire
+argument. A `$FFFF` mask is "always" except one frame in 65,536, when the
+counter is zero; nothing depends on it and the port reproduces it because
+reproducing it is free.
+
+**`$80:A8B3` is the co-op leash**, and it needed a new WRAM symbol to read:
+`$D6`, which `$80:A8A4` fills with the task that was running when player A's
+record was registered. Comparing it against the current task is how the routine
+asks *which player am I*, and the answer selects **the other one** as the
+reference. A step is allowed inside a 224x176 window around that reference —
+and outside it, allowed anyway if it strictly shortens the Manhattan distance
+between the two players. You can always walk toward your partner; you can only
+walk away until the leash runs out. A tie is refused, by a `BEQ` one instruction
+ahead of the `BCS` that would otherwise have allowed it.
+
+**Both passed first run** — 467 calls on level 1, 0 diverged, no second attempt
+on either.
+
+**And two thirds of one of them had never been read.** `$80:A8CC` through
+`$80:A936` — 107 bytes, both windows and the whole distance comparison — is
+`.db` in `analysis/bank_80.asm` and in every one of its four successors, because
+no traced movie had ever reached it: in a one-player game the routine returns
+eleven instructions in. That C was written by hand out of a hex dump.
+`movies/level1-2p.zmv` settles it — **11,100 calls, 0 diverged, and the only two
+sites it misses are `speed_dir_still` and `tether_alone`**, so the far path is
+not merely reached but exhausted, tie included. The two-player movies were cut
+four rounds ago for a single branch in `actor_obstacle_at_point`. What they were
+actually worth was this.
+
+**Fifty-five routines. 5,116,847 calls checked across 42 movies, 0 diverged;
+branch coverage 232 of 309, 77 untaken by every input, and the census is still
+empty** — from 4,888,163 and 219 of 296. **All thirteen new sites are taken**,
+which has not happened before: the untaken count did not move at all.
+
+**Then the completion metric moved three points for eight tenths of a point's
+worth of work, which is how the round found a hole in itself.** `$80:A937` is
+four bytes — a `JSL` — starting one byte past `$80:A8B3`'s `RTL`, and nothing
+calls it. Attribution is by nearest preceding entry, so it belonged to
+`$80:A8B3`; and because `owner_of` maps a **call site** to the entry above it,
+the edge leaving that orphan was filed as *`$80:A8B3` calls `$80:A93B`*. The
+moment `$80:A8B3` became native the closure walked down through `$80:A93B` to
+`$80:A93F` and the four tilemap scroll routines under it and marked them all
+native too: **1.6 points with no C behind them**, in the routine the previous
+round had explicitly set aside as a subsystem rather than a leaf.
+
+The documented caveat was always "a jump-entered routine scores zero and its
+neighbour scores too much" — the loud version, which somebody checks, because a
+row that is too big looks too big. This is the quiet version: the neighbour
+inherits the orphan's outgoing *calls*, and what those buy shows up in no column
+of the report. `JUMP_ENTRIES` in `native_share.py` now holds `$80:A937` and
+`$82:AC07`.
+
+**The native share is 55.4% of executed instructions and 68.8% call-weighted —
+60.2% and 74.7% with the waiting out of the denominator** — from 54.6/68.0 and
+59.2/73.8 measured the same way. Exactly 0.8 points for 0.8% of the work, which
+is the only evidence available that the fix is right. (The 54.1/67.3 the last
+entry records was measured before `JUMP_ENTRIES` existed and is not comparable;
+54.6/68.0 is that same tree re-measured today.) The check that finds the next
+one belongs in every round from here: **port a routine and see whether the
+number moves by more than that routine is worth.**
+
+**The ranking also turned out to be three deep in things this phase cannot
+finish.** Its top three rows are 12.6% of everything the game does, and not one
+of them can go through the harness: `lzss_decompress`, `thread_yield` and
+`vbl_queue_a_run` — which the last entry called *"the first
+genuine, self-contained, per-frame leaf"* and which is nothing of the kind. It
+is a **dispatcher**: it pushes a far return address, pushes a job's address out
+of a WRAM table and `RTL`s into it, so verifying it per call means porting all
+thirteen jobs that can be in the table first. Its 3.0% is not the jobs —
+attribution stops at the next entry — it is the *scan*, sixteen slots from the
+top down every frame whether two are live or none. `vbl_queue_b_run` is the
+same shape.
+
+**"Cannot go through the harness" is not "cannot be written", and the
+difference matters.** `src/port/lzss.c` is a complete transcription of
+`$80:CD20` that exists today and cannot be registered only because it outlives
+a frame and the harness diffs at frame boundaries. `thread_yield` is the
+primitive the harness measures scheduler passes *with*, so substituting it
+would be substituting the ruler; the port has had its own coroutine machinery
+since the round that solved that problem. The two
+dispatchers are twenty lines of C each, and `nmi_entry` is an interrupt vector
+rather than a subroutine. **None of the 15.2% is un-reimplementable. All of it
+is outside the reach of one instrument**, and the
+instrument verifies leaves called within a frame, so the things it cannot see
+are precisely the things that *are* the frame: the scheduler, the dispatchers,
+the decompressor that spans a level load. They were never going to fit, and
+Phase 4 is defined as the point where that inverts.
+
+It also shrank while being looked at. `$82:AB5B`'s 3.3% was on that list this
+morning and is not on it now: adding `$82:AC07` to `JUMP_ENTRIES` moved the work
+to the routine that actually does it, and that routine is ordinary. The blocked
+total is **15.2%**, not the 18.5% the first pass reported, and the difference
+was a labelling bug rather than any code changing.
+
+What the rest of it does mean is a ceiling. Strict native share cannot exceed
+about **85%** while Phase 3's definition of "ported" is "registered and diffed
+per call", and the steps will get smaller from here. That is worth stating
+plainly rather than discovering later. They stay in the denominator, because a completion estimate
+that quietly excluded the hard parts would be worth nothing; the ranking now
+prints `!` against them and says which ones they are.
+
+**Next**, with the walls marked, the ranking by work reads `$82:90F7` (2.2% over
+46,563 calls), `$81:81A2` (1.6% over 79), the three `lzss_*` helpers,
+`$80:C8B8 dma_to_vram` (1.0% over 4,557) and `$82:8069` (1.1% over 1,126). Not
+one of them is a movement or collision routine, which is the round's other
+result: the part of this game the port knows best is now the part that is
+finished.
+
+### Three at once, because they were one thing (2026-07-31)
+
+**`$80:AE14`, `$80:AE97` and `$80:B422` — routines fifty-one to fifty-three.**
+Last round ported the third of the four tests `$80:E4C1` puts a proposed step
+through; this round takes the other two, plus the enemy bodies' copy of the
+first. Together they are 3.8% of the work the game does, and they were picked as
+a *unit* rather than off the top of the ranking.
+
+**What a terrain test actually reads.** The game never consults the level record
+at run time and never looks at the block map at all: it expands the level once
+into a 16-bit tilemap in WRAM bank `$7F` and from then on collision is two
+indirections — tilemap entry, masked to ten bits, indexes a 512-word attribute
+table, and the low bits of that word are what blocks. Neither pointer is a
+constant, and three scalars fell out of watching level 1 load: `$B2` is 352,
+`$B4` is 104, `[$BA]` is `$7E:611A`. Level 1's record says 22 by 13 blocks, and
+22 x 8 x 2 is 352 while 13 x 8 is 104 — so those are the row stride in bytes and
+the row count in tiles, exactly, and `$7E:4328` is a per-row table of byte
+offsets so a row lookup is a read rather than a multiply.
+
+**A field the asset pipeline had left blank.** `src/assets/level.h` has said
+since Phase 2 that attribute bit 0 blocks movement and *"the rest of the word is
+not yet identified"*. `$80:AE97` identifies bit 1: it is `$80:AE14` byte for byte
+over the same six-tile footprint with `BIT #$0002 : BNE` in place of
+`LSR A : BCS`, and its three callers are all enemy bodies. The obvious next
+question is whether bit 1 is just a stricter bit 0, and reading all 55 levels'
+tables out of the ROM says **no**: 216 tiles carry bit 0 without bit 1 and 519
+carry bit 1 without bit 0. Neither set contains the other, so 735 tiles across
+the game stop one kind of mover and not the other. Two further copies of the
+loop test bit 2 and bit 12 and are not ported; `level.h` now says that too.
+
+**And the first routine here with no `PHD`.** Every other shim in this project
+takes N and Z from the `PLD` on the way out — the trap `actor_nearest` cost four
+movies to learn. `$80:B422` never touches the direct page, so there is nothing
+to take them from: they are whatever the instruction that decided the answer
+left. There are **six exits and six different answers** — two `TXA`/`TYA` and
+four compares — and four of them share a `SEC` that does not touch N or Z, while
+a fifth skips it and keeps its own compare's carry. Publishing the routine's
+last instruction everywhere would have been right one path in six. That is the
+`PLD` lesson from the opposite side: the flags come from the last instruction
+that *ran*, not the last one written.
+
+**All three passed first run** — 2,122 calls on level 1, 0 diverged, no second
+attempt on any of them.
+
+**Fifty-three routines. 4,888,163 calls checked across 42 movies, 0 diverged;
+branch coverage 219 of 296, 77 untaken by every input, and the census is still
+empty.** Eleven of the thirteen new sites are taken, and **five of `$80:B422`'s
+six exits are among them** — so the six-answers table is checked rather than
+argued. The two untaken are `bounds_y_negative`, which needs a step that is off
+the top of the map while being comfortably inside it horizontally, and
+`terrain_attrs_bank_7f`, which exists to make an assumption falsifiable: the
+attribute table's bank is `$7E` everywhere anyone has looked, the port handles
+`$7F` correctly anyway, and if that site is ever taken the port will already
+have been right.
+
+**The native share is 54.1% of executed instructions and 67.3% call-weighted —
+58.7% and 73.0% with the waiting out of the denominator** — from 50.6% and
+64.1%. That is the largest single step this measurement has recorded, and it is
+the unit-rather-than-ranking hypothesis paying off.
+
+**Next**, the ranking by work now reads: `lzss_decompress` (5.3%, written and
+unregisterable), `thread_yield` (4.3%, the thing the harness measures against),
+`$82:AB5B` (3.3%, the known misattribution — its real code starts at `$82:AC07`
+and is jump-entered), `vbl_queue_a_run` (3.0% over 60,940 calls), `$82:90F7`
+(2.2% over 46,563) and `$80:A93F` (1.7% over 73,000). `vbl_queue_a_run` is the
+first of those that is a genuine, self-contained, per-frame leaf.
+
+### The third one, and the 6% that turned out to be a CPU waiting (2026-07-31)
+
+**`$80:BFC8` is the fiftieth routine**, and it is `actor_at_point` again —
+eighty bytes further down bank `$80`, same backwards walk of `visible_actors`,
+same six-pixel window, same `PLD` then `SEC`/`CLC` at both exits — asking a
+different question about the same board. **2.2% of every instruction the game
+executes, over 41,232 calls.**
+
+Reading its callers is what named it. Both are inside `$80:E4C1`, the
+**movement step validator**: something wants to be at a new position, and that
+routine puts the candidate through `$80:AE14`, `$80:A8B3`, this, and
+`$80:B422` in turn, committing it only if all four agree. A set carry here
+means *the step is blocked* — a collision test, not a search, which is why it
+can stop at the first record it finds and never uses which one that was.
+
+Two things separate it from its twin. **It takes no self argument**: instead of
+skipping one record the caller names, it skips `$D2` and `$D4`, both players,
+always — a walker may walk through a player and somebody else decides what that
+costs. And **the id filter is much narrower**, with a fall-through that is the
+only real trap in the routine: the `$0C`..`$33` band test does not decide on
+its own, so an id between `$34` and `$5B` drops out of the bottom of it and is
+put through the seven singleton comparisons as well. That is the sole reason the
+`CMP #$0037` in that chain is ever live.
+
+The third difference is the one that would have cost a round if it had been
+missed: **A is an input even though the routine never reads it.** There is no
+`STA` on the way in and nothing on the empty-board path writes A, so a caller
+that asks about an empty display list gets its own accumulator back.
+
+**311 of 311 calls on level 1, 0 diverged, first run, no second attempt** — the
+`PLD` lesson from two rounds ago paying for itself. `run` substituting only this
+routine is identical at all 2,389 compared scheduler passes.
+
+**Fifty routines. 4,317,463 calls checked across 42 movies, 0 diverged; branch
+coverage 208 of 283, 75 untaken by every input, and the census is still empty.**
+Twelve of the fourteen sites it added are taken, the best ratio any round here
+has managed; the two that are not want a board state no movie has produced.
+
+**Then the ranking that picked it was asked what to do next, and was wrong.**
+
+`$80:9F9D` sat at the top of the list at 6.0% of everything the game executes,
+over 49 calls — 394,000 instructions a call, for a routine that is nine
+instructions long. It queues a VBL callback and then spins on `BIT $00C8 : BPL`
+waiting for it. Summing the profile over those five bytes: **19,289,582 of the
+19,289,827 instructions credited to it are the spin**, and `apu_ipl_upload`'s
+`CMP $2140 : BNE` handshakes with the SPC700 are another 1.85%.
+
+So **7.9% of the game's executed instructions are a CPU waiting**, it was in the
+denominator of the completion estimate, and it was the number one thing to port
+next — where porting it would have moved the number six points and achieved
+nothing at all, because the C would spin on the same flag. `native_share.py` now
+carries a measured table of wait sites and reports a **ranking by work**;
+`$80:9F9D` leaves that ranking entirely and `apu_ipl_upload` drops from 3.1% to
+1.3% with its wait annotated beside it.
+
+This is the second time in three rounds that following the profile has meant
+repairing the profile first, and both were the same shape: the tool measured
+exactly what it claimed to and the claim was the wrong one.
+
+**The native share is 50.6% of executed instructions and 64.1% call-weighted**
+— or **54.9% and 69.6%** with the waiting taken out of the denominator, which
+is the honest pair. From 48.4% and 61.8%.
+
+Two side repairs went in with it. `src/port/oam.h` had its include guard closing
+two thirds of the way down the file, leaving three routine blocks and two
+`typedef struct`s outside it; and `src/port/lzss.h` was redefining
+`LZSS_RING_START` at every build, which is now `W_LZSS_RING_*` because that
+header describes the ring as a WRAM address while `src/assets/lzss.h` describes
+it as a struct field.
+
+**Next is `$80:E4C1`'s remaining leaves**, which is a coherent unit rather than
+a list: `$80:AE14` (1.1%, 47,514 calls) and `$80:AE97` (1.4%, 58,331) are
+near-identical twins that turn a point into tile coordinates and look up the
+level's collision map, and `$80:B422` (1.3%, 79,021) tests the level extents.
+Together they are 3.8% of the game's work and they finish the validator this
+round started on. `$80:A93F` is tempting at 1.7% over 73,000 calls — it is the
+camera centring on the two players, and it uses the `$D2`/`$D4` pointers this
+round named — but it ends by dispatching into the four scroll routines at
+`$80:A68B`, `$80:A70A`, `$80:A789` and `$80:A816`, which stream tilemap columns
+into the VRAM queue and are a subsystem rather than a leaf.
+
+### The second one the profiler picked, and it took nine minutes (2026-07-31)
+
+**`$80:BF67` is the routine next to the one before it, in every sense.** It sits
+eighty bytes further down bank `$80`, it is called by the same four enemy bodies
+(`$81:85E3`, `$81:8627`, `$81:89E6`, `$81:8A15`), and the ranking had it second
+at **1.8% of every instruction the game executes over 43,605 calls**. Where
+`actor_nearest` asks *who is closest*, this asks **is anything standing within
+six pixels of this point** — and answers in the carry.
+
+It walks `visible_actors` backwards rather than the record table, so it sees
+only what this frame's cull kept and costs whatever the board is wide instead of
+a fixed 32. The window is the `CLC : ADC #$0006 : CMP #$000C : BCS` trick the
+collision box uses, which tests **-6 <= d <= +5** in two instructions — a pixel
+wider to the left than to the right, and `actor_overlap_pass` does the same
+thing at 8 and 16.
+
+The id filter is the fiddly part and the disassembly is the only place it is
+written down: `$00` never, the whole band `$0C`-`$33` never, `$07` and `$08`
+never, and everything else — `$01`-`$06`, `$09`-`$0B`, and everything above
+`$33` — yes. Three comparisons, four ways out.
+
+**The previous round's lesson paid for itself immediately.** Both exits are
+`PLD` and *then* an explicit `SEC` or `CLC`, so carry is genuinely the routine's
+and N and Z are the `PLD`'s — the same split as `actor_nearest` arrived at from
+the opposite direction. Written that way from the start, it passed on the first
+run, on every movie, including the four that caught the last one out. **26,796
+calls across seven movies, 0 diverged**, and no second attempt.
+
+A, X and Y are all claimed and none of them is tidy, because the ROM never
+tidies them: it falls out of the loop with the last comparison's arithmetic in
+A, the loop index in X — `$FFFE` when the walk ran out, the count being a byte
+count and so always even — and the last entry examined in Y, which on the found
+path is the record that matched and is presumably what the caller wanted.
+
+**4182751 calls checked across 42 movies, 0 diverged; branch coverage 196 of 269, 73
+untaken by every input, and the census is still empty.** Of the ten sites the routine added, 2 are untaken: `at_point_empty`, `at_point_id_named`.
+
+`run` substituting only `actor_at_point` differs on 1,963 of 2,389 passes and
+that is the declared model working rather than failing: `$7E:0F00` and
+`$7E:0F02` hold the `PHD` and the `PEA` the port never pushed, which is what
+`stack_bytes = 4` is for. **No byte of live game state ever differed.** The
+cycle figure is 2,645, weighted across the 26,796 calls rather than taken from
+one movie — the real spread is 698 to 6,958, because unlike `actor_nearest`'s
+fixed 32 slots this one stops as soon as it finds something.
+
+**Forty-nine routines, and the native share is 48.4% of executed instructions,
+61.8% call-weighted** — from 46.6% and 60.0%. Two rounds of following the
+profile have moved it seven points, against the 0.15% that porting the game's
+entire placed cast would buy.
+
+**And the next one is next door.** `$80:BFC8` is the routine immediately after
+this one, opens with the identical `PHD : PEA $0000 : PLD`, takes the point in X
+and Y without the self argument, and is 2.2% over 41,232 calls. After that the
+list stops being easy: `$80:9F9D` is 6.0% over 49 calls and is jump-entered, so
+its attribution is suspect; `thread_yield` is 3.9% and is the thing the harness
+measures against; and `apu_ipl_upload` is a bus handshake.
+
+### The first routine the profiler picked (2026-07-31)
+
+**`$80:B123` is the first routine in this project chosen by measurement rather
+than by the decline census**, and the census could never have named it: it is
+not a collision handler, so the dispatcher never meets it. The
+execution-weighted ranking built last round put it top of everything portable —
+**5.2% of every instruction the game executes, over 44,248 calls** — and it is
+375 instructions a call, which is what makes it checkable at all after
+`$80:CD20` proved that a routine has to fit inside a frame.
+
+It is a nearest-thing search by **Manhattan distance**, walking the raw 32-slot
+record table downwards rather than following `ACTOR_NEXT`, and costing the same
+32 iterations whatever the board holds. **The ids say what it is for**: `$05`
+and `$06` are the two players, the same numbers `victim_a264_collide` claims a
+victim by, and every caller is inside an enemy body (`$81:86B7`, `$81:870A`,
+`$81:8ADC`, `$81:8B3A`). It is an enemy choosing who to go after.
+
+Two things the listing gives away that a summary would not. **Ties go to the
+higher slot**, because the comparison is strict and the walk runs downwards. And
+**`$44` is never seeded**, so a search that matches nothing returns whatever
+record the last successful search left there, alongside `$FFFF`. The port
+reproduces both.
+
+**The first version passed 1,006 of 1,006 calls on `movies/level1.zmv` and then
+failed on four movies at once**, with one line of diff — `flag N: ROM 0, port
+1`. Memory matched everywhere; so did A, X and Y. The shim had taken N and Z
+from `$80:B18B  LDA $38`, the last instruction that looks like it computes
+anything, and the routine ends `LDA $38 : PLD : RTL`. **`PLD` sets N and Z from
+the value it pulls**, so what a caller sees is the sign and zeroness of its own
+direct page. Level 1 hid it perfectly: every search there found something, and a
+distance below `$8000` has its sign bit clear exactly like a thread page does.
+Seeing the disagreement needs a search that comes up empty — 2,463 of level 21's
+3,503 calls, and none of level 1's.
+
+**The project had already learned this twice and I did not look.**
+`shim_oam_buffer_clear` carries the note that "`PLD` is the last flag-setting
+instruction, so N and Z describe the direct page it restores rather than
+anything the routine computed", and `src/port/apu.c` says of the same thing
+"that is easy to get wrong from the listing". So it is worth writing down as a
+rule rather than as a third discovery: **a shim's flags come from the routine's
+last flag-setting instruction, which is usually not the one that computes its
+result**, and on anything that opens `PHD` that instruction is the `PLD`. An
+audit of the whole registry for the same shape found no other case that has it
+wrong.
+
+`ACTOR_FLAGS` bit 0 got a name out of it — `ACTOR_ACTIVE`, set on every live
+record in every display list sampled, with `$80:B123` the only reader found and
+a comment saying that what clears it has not been established, because it has
+not.
+
+**4066151 calls checked across 42 movies, 0 diverged; branch coverage 188 of 259, 71
+untaken by every input, and the census is still empty.** `run` substituting only
+`actor_nearest` is **identical at all 2,389 compared scheduler passes** of
+`movies/level1.zmv`, so the measured 7,195-cycle budget holds under real
+substitution.
+
+**And the ranking moved by what it predicted, which is the point.** One routine
+took the native share of executed instructions from 41.4% to **46.6%**, and the
+call-weighted estimate from 55.1% to **60.0%** — against the 0.15% that porting
+the entire placed cast of the game would have bought. Forty-eight routines now,
+and the next three targets are the same shape: `$80:BF67` (1.8%), `$80:AE97`
+(1.3%) and `$80:B422` (1.2%), all short, all called tens of thousands of times
+from the same enemy bodies.
+
+### The routine that could not be checked, and the check that could (2026-07-31)
+
+**The profile said LZSS was the best-value thing left — 7.1% of every
+instruction the game executes, and a decoder already written and verified in
+Phase 2 — and acting on it found the reason the harness had never been asked
+for it.**
+
+Writing the routine was the easy half. `src/assets/lzss.c` is the asset
+pipeline's shape: bytes in, bytes out. `$80:CD20` is a 65816 routine whose
+result is a *memory footprint* — a long source pointer it advances in place at
+`$28`, a destination pointer at `$2C`, the byte count at `$38`, the window
+position at `$3A`, and a 4 KB sliding window at `$7E:6F00` — so standing in for
+it means reproducing all of that and not just the output. `src/port/lzss.c` is
+that transcription, and it is deliberately not a wrapper around the other one.
+
+It is also **the first routine whose argument arrives on the stack**: `PEA <src
+address>` and then `JSL`, read back by `$80:CD27  LDA $06,S` once the routine's
+own `PHD` is down, which is `s + 4` at the entry point. `CosimRegs` grew an `s`
+for it, on the same footing as `d` and `db` — a stacked argument is part of a
+calling convention too.
+
+**And then the harness refused it, for a reason that is about the routine rather
+than the port.** Registered, it reported five calls, five *interruptions* and
+nothing checked. `verify` snapshots WRAM at entry and diffs it at exit, so an
+interrupt landing in between makes the comparison meaningless and the call is
+abandoned rather than reported as a divergence that is really the NMI handler's.
+The profile says why it always lands:
+
+| | instructions per call |
+| --- | --- |
+| `$80:CD20` body | 310,829 |
+| `$80:CDDA lzss_read_byte` | 59,706 |
+| `$80:CDEB lzss_write_byte` | 69,792 |
+| **total** | **440,327 — about seven frames** |
+
+`run` is no help either: substitution burns one mean cycle count in place of the
+ROM's instructions, and a seven-frame mean cannot hold NMI alignment. **So the
+registry entry was removed**, along with its three coverage sites — a site for a
+routine nothing calls is untaken forever, and three of those would quietly
+inflate the one number `coverage.h` exists to keep honest.
+
+**Every one of the 47 routines ported so far fits inside a frame, and nobody had
+noticed that was a requirement.** The census names what the ROM ran and the port
+lacked; it has never named `$80:CD20`, because the dispatcher only meets what
+the game calls during a scheduler pass. The harness's design has been quietly
+selecting for short routines for twenty rounds.
+
+**What could check it is a comparison scoped to a declared footprint**, and that
+turned out to belong in `verify-lzss` rather than in the co-simulation harness.
+That verifier already intercepts `$80:CD20` at entry, snapshots the window, and
+diffs the ROM's output against the C decoder's — a controlled call, outside the
+scheduler. Giving it a whole copy of WRAM at entry lets `lzss_decompress_wram()`
+run from the same starting state, and the comparison is then the window, the
+direct-page scratch at `$28`-`$41`, and the output range: exactly what the
+routine's own instructions can write, read off the disassembly. What the NMI did
+meanwhile is outside the comparison rather than inside it.
+
+**35 of 35 calls across seven levels, byte-identical on all three.** The port is
+verified against the ROM; it is simply verified by a different instrument, and
+the co-simulation guarantee — all 128 KB, every call — is untouched, because
+this check lives beside the asset verifiers and not inside it.
+
+The routine count stays at 47 and the corpus is unchanged. What the round
+actually produced is a piece of Phase 4 landing early — the finished game needs
+a decompressor that works on the SNES's own memory whatever the harness can
+do — and a much sharper idea of what the next harness capability has to be.
+
+### The routine count finally got a denominator (2026-07-31)
+
+**"Forty-seven routines ported" has been the headline number since Phase 3
+began, and it has never had anything under it.** It cannot tell a 17-byte leaf
+from a 2 KB state machine -- `shot_f6a3_collide` and `sprite_build_oam` both
+count as one -- so after twenty rounds nobody could say whether the port was a
+tenth of the way through the game's logic or half of it. `tools/native_share.py`
+answers that, and the answer is **not the one the routine count implied**.
+
+It took one addition to `zamn_trace`. The CDL records whether each ROM byte
+executed; **`profile.bin` now records how often**, one word per byte counted at
+the opcode, so summing it over a range gives instructions executed rather than
+bytes touched. `subroutines.csv` already had a call count per entry, but that is
+how often a routine *started* rather than how much it then did, and the two are
+not close: `lzss_write_byte` is called 697,920 times and `$80:9F9D` 49 times,
+and the second does four times the work.
+
+Ten movies, one per level from 1 to 53, **319,152,834 instructions**:
+
+| measure | share |
+| --- | --- |
+| static — distinct executed code bytes inside native code | **40.4%** |
+| dynamic — instructions in wholly-native routines | **41.8%** |
+| dynamic — weighted by native call fraction | **58.5%** |
+
+**The gap between 28.9% and 41.8% is the finding that matters most**, because it
+is a mistake this tracker had been making in prose. The 47 registry entries are
+not the whole of what runs natively: the ROM splits work into subroutines the
+port inlines, and `$80:BA51 sprite_emit` -- 16,221 calls from inside
+`sprite_build_oam`'s body, four coverage sites of its own in `coverage.h` --
+never executes at all under `zamn_cosim run`, because the port served its
+caller. Counting entry points credits that to the ROM. Closing over the call
+graph adds 171 such routines and 13.0 points; crediting the 75 routines reached
+from both sides by their call share adds the rest.
+
+So the honest summary is that **the port is between two-fifths and three-fifths
+of the way through the work the game actually does**, not the under-a-tenth that
+a routine count and a glance at code volume suggest. The reason is that every
+routine chosen so far was chosen because the decline census asked for it, and
+the census asks for what runs -- twenty rounds of following it has been an
+accidental profile-guided ordering.
+
+**And the ranking named low-hanging fruit that is not a porting job at all.**
+`src/assets/` already holds `lzss.c`, `level.c`, `gfx.c`, `sprite.c` and
+`music.c`, reimplemented in Phase 2 and **verified byte-exact against the ROM's
+own routines** by the five `verify-*` commands. None of them is in the
+co-simulation registry, so under substitution the ROM still runs all of it:
+
+| routine | share of all instructions | calls |
+| --- | --- | --- |
+| `$80:CD20 lzss_decompress` | 4.9% | 50 |
+| `$80:CDEB lzss_write_byte` | 1.3% | 697,920 |
+| `$80:CDDA lzss_read_byte` | 0.9% | 373,188 |
+
+**Seven percent of every instruction the game executes is LZSS, and the port has
+had a verified LZSS decoder since Phase 2.** What is missing is a registry entry
+and a shim, not a decoder. `apu_ipl_upload` is another 3.1% but is not the same
+opportunity -- it is a handshake with the APU's own boot ROM, and its
+instruction count is a spin loop waiting on hardware rather than work a C
+function can do instead.
+
+**Two caveats, both readable off the table.** `$80:9F9D` is 6.0% of the corpus
+over 49 calls and no `callgraph.csv` edge names it as a callee -- it is reached
+by a jump, so the span credited to it runs to the next `JSR` target and probably
+swallows several pieces of level-load code. And load time is not gameplay:
+`lzss_decompress`'s 50 calls and `apu_ipl_upload`'s 10 are per-level and
+per-boot, so ranking by share alone points at the loader rather than at the
+game. Which of those matters depends on whether the goal is Phase 4 or a faster
+level load.
+
+
+**The first thing the ranking did was refute the advice that prompted it.**
+Counting the placed cast of the fourteen password levels gives 21 actor
+behaviours and 10 victim behaviours -- 31 addresses for 291 actors and 140
+victims, nine of them covering 85% of every enemy in the game -- and that looked
+like the obvious next target. Weighted by execution it is not:
+
+| | instructions | share |
+| --- | --- | --- |
+| all 15 actor behaviours reached | 447,825 | **0.14%** |
+| all 10 victim behaviours reached | 23,472 | **0.01%** |
+
+**Porting the entire cast of the game would move the native share by about a
+seventh of a percent.** The reason is the thing that made the coroutine problem
+worth solving in the first place: a behaviour is not a loop, it is a coroutine
+that runs a few instructions, sets a wait and yields. The repetition lives in the
+scheduler -- `thread_yield` alone is 3.9% across 236,192 calls -- and the bodies
+barely execute. Placement count and code volume both pointed the other way, and
+both were wrong, which is the whole argument for having the measurement.
+
+It also took a second pass to see this at all. **Thread bodies are invisible to
+a call-graph profiler**: the scheduler enters a behaviour through an indirect
+jump, so no `CDL_SUB` mark is set, no `callgraph.csv` edge names it, and every
+instruction it runs is credited to whatever subroutine sits above it in the
+bank. All 31 scored exactly zero on the first run, which is the signature of the
+bug and not of idle code; `native_share.py --entries` seeds them from
+`zamn_assets actors` and the totals barely move (41.8% to 41.4%), which is how
+you know the mis-attribution was small.
+
+**What the behaviours do instead is call a library, and that is where the work
+is.** `$80:B123` is 5.2% over 44,248 calls, and its callers are `$81:86B7`,
+`$81:870A`, `$81:8ADC`, `$81:8B3A` -- addresses inside enemy bodies. So are
+`$80:BF67`'s (1.8%), `$80:AE97`'s (1.3%) and `$80:B422`'s (1.2%). These are
+shared movement and physics helpers in bank `$80` that every behaviour leans on,
+they are the same shape as the 47 routines already ported, and together with
+`$80:AE14` and `$80:A93F` they are **12.2% of every instruction the game
+executes**.
+
+So the ordering that comes out is: the LZSS decoder that is already written
+(7.1%), the scheduler's own core (`thread_yield` plus the two vblank queue
+runners, 7.7%), and the bank-`$80` helpers the actor bodies call (12.2%). The
+bodies themselves are last, not first.
 
 ### The stream of fire that was a wall (2026-07-31)
 

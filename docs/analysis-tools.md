@@ -757,6 +757,231 @@ that needs two presses to reach the third weapon and spaces them by 40 ends up
 holding the first, which looks nothing like an input-timing problem from the
 coverage report — it looks like a fight in the wrong place. Watch `$7E:1CBC`.
 
+## `native_share.py`, and the denominator the routine count never had
+
+**"Fifty-three routines ported" is a real number with nothing under it.** It
+cannot tell a 17-byte leaf from a 2 KB state machine, both count as one, and
+after twenty rounds of it nobody could say whether the port was a tenth of the
+way through the game's logic or half. This answers the question that count
+cannot, and it ranks what is left by the same measure so that "what to port
+next" is a number rather than a taste.
+
+It needed one addition to `zamn_trace`. The CDL records *whether* each ROM byte
+executed; `profile.bin` now records **how often**, one word per byte, counted at
+the opcode -- so summing it over a range gives instructions executed rather than
+bytes touched. `subroutines.csv` already carried a call count per entry, which is
+how often a routine *started* rather than how much it then did, and those are
+very different numbers: `$80:CDEB lzss_write_byte` is called 697,920 times and
+`$80:9F9D` 49 times, and the second does four times the work.
+
+```
+build\zamn_trace.exe "Zombies Ate My Neighbors.sfc" -o analysis\prof\level1 ^
+    -f 6100 -m movies\level1.zmv
+python tools\native_share.py analysis\prof\*
+```
+
+### What it reports, and why there are three numbers
+
+* **static** -- of the distinct code bytes the game executed at all, what share
+  is inside code the port stands in for. "How much of the ROM have we written."
+* **dynamic, strict** -- of the instructions executed, the share in routines
+  that are *wholly* native: a registry entry, or a routine every one of whose
+  callers is native.
+* **dynamic, weighted** -- the same, with routines reached from both sides
+  credited by the fraction of their calls that came from native code. This is
+  the best estimate of what full substitution actually removes.
+
+The third exists because the second is provably too low and the reason is
+instructive. **The registry's fifty-three entries are not the whole of what runs
+natively.** The ROM splits work into subroutines the port inlines: `$80:BA51
+sprite_emit` is called 16,221 times from inside `sprite_build_oam`'s body, has
+its own four coverage sites in `coverage.h`, and under `zamn_cosim run` never
+executes at all -- because the port served its caller. Counting registry entries
+alone credited that to the ROM and put the share at 41.6%; closing over the call
+graph moves it to 54.1%, and weighting the routines called from both sides puts
+it at 67.3%.
+
+### Attribution, and where to distrust it
+
+**By nearest preceding subroutine entry**, which is what a sampling profiler
+does with a symbol table and carries the same caveat: code entered only by a
+jump is credited to the routine above it. Usually that is the same routine -- a
+branch target in its body, or its tail -- and it is wrong where the ROM jumps
+between two adjacent things.
+
+The `entries` line in the report -- 579 boundaries over ten movies -- is how
+much resolution the attribution had, and a row that looks too big is a row to
+check against the disassembly. Two have been checked, and they failed in
+opposite ways.
+
+**`$80:9F9D` was not a misattribution at all**, though this document said it
+probably was. It is 6.0% of every instruction in the corpus across 49 calls,
+which is 393,000 instructions a call, and the guess here was that a jump-entered
+span had swallowed several pieces of level-load code. Summing the profile over
+its bytes says otherwise: the routine is nine instructions long, and 19,289,582
+of the 19,289,827 credited to it are the `BIT $00C8 : BPL` at `$80:9FAA`. It is
+a **busy-wait**, and the attribution was right all along -- see below.
+
+**`$82:AB5B` was the real thing, though not for the reason recorded here.**
+This document used to say the routine "never executed at all: CDL flag `00`,
+exec count 0, in every one of the ten traces". That is wrong, and the way it is
+wrong is worth keeping. The flag came from `analysis/zamn.cdl` — a level 1
+trace, which indeed never reaches it — and was then asserted of the ten
+*profile* traces, which are a different set of runs. In those ten it is flag
+`69`: code, and a `JSR`/`JSL` target, called **520 times**. Force-disassembling
+it shows an ordinary sixteen-iteration loop over the sprite palette at
+`$7E:5528`.
+
+The misattribution underneath was real all the same. `$82:AC07` is 172 bytes
+on, its flag is `71` — code, **not** a subroutine target — and it is entered by
+a jump, so it is not a boundary the attribution knows about; everything from
+there to the next `JSR`/`JSL` target was filed under the label above it. That is
+where the 3.3% came from, and `JUMP_ENTRIES` now holds `$82:AC07` so it does
+not. **Never read a flag out of one trace and a count out of another**, which is
+the mistake this paragraph was, and which `hotbytes.py` would have caught in a
+second by printing 520 where a zero was claimed.
+
+`--entries` exists for this and takes a file of addresses, but
+the general fix is a tracer change: `CDL_JUMP` is set by `FLOW_JUMP` *and*
+`FLOW_BRANCH`, so it marks every branch target and cannot be used as an entry
+list without shattering routines into basic blocks. Marking long and indirect
+jump targets separately would find jump-entered bodies exactly.
+
+### A missing entry does not just lose work — it hands work out
+
+The two rows above are the harmless shape of the problem: a routine scores
+zero and its neighbour scores too much, and the report says so loudly enough
+that somebody checks. There is a second shape, and it is silent.
+
+`owner_of` maps a **call site** to the entry above it, because that is the only
+thing the CDL knows. So the call graph a jump-entered orphan produces is filed
+under its neighbour — and the subsumption closure, which marks a routine native
+when all of its callers are native, will then believe the orphan's callees are
+called from ported code.
+
+`$80:A937` is four bytes, a `JSL $80A93B`, and it begins one byte past
+`$80:A8B3`'s `RTL`. Nothing calls it. So the round that ported `$80:A8B3` —
+twenty-five instructions, 0.2% of the game's work — moved the native share by
+**2.4 points**, because it had also claimed `$80:A93F` and the four tilemap
+scroll routines beneath it, none of which anybody had written a line of C for.
+
+`JUMP_ENTRIES` in the script is where those addresses go, next to `WAIT_SITES`
+and for the same reason: found by reading, checked against the profile, and
+written down rather than remembered. It holds `$80:A937` and `$82:AC07`. The
+check that finds the next one is cheap and worth doing every round — **port a
+routine, and see whether the number moves by more than that routine is worth.**
+If it does, the extra came from somewhere, and it was not from the C.
+
+### Waiting is not working
+
+**`WAIT_SITES` is a table of busy-waits**, each an address and a byte span, and
+the report subtracts them: what share of the run is spent waiting, the estimate
+with that out of the denominator, and a ranking **by work** rather than by
+instructions.
+
+Without it the top of the ranking is a lie of a particular kind. `$80:9F9D`
+spins on a flag an NMI callback sets; `apu_ipl_upload` spins three times on
+`CMP $2140 : BNE` handshaking with the SPC700. Between them that is **7.9% of
+every instruction the game executes**, it was in the denominator of the
+completion estimate, and it was the number one thing to port next -- where
+porting it would have moved the estimate six points and achieved nothing, since
+the C would have to spin on the same flag.
+
+`$82:AC07` was the third to be caught this way and the least like the others.
+It is the **level loader**, and 97.8% of the 3.3% the ranking credited to it is
+two copies of `LDA $0016 : CMP #$0078 : BCC` — the loader holding for 120
+frames, once for the intro screen and once after the block library decompresses.
+Not a hardware handshake at all: a deliberate two-second pause, twice per level
+load, and a native port would express it as a timer rather than a spin. Either
+way it is not work anyone has to reproduce instruction for instruction. **The
+waiting is 10.93% of every instruction the game executes**, up from 7.89% before
+that row was read.
+
+Each entry was found by reading the disassembly of a routine the ranking had put
+near the top, and each is measured against the profile rather than assumed —
+three for three so far, which is worth taking as a habit rather than luck: **a
+row near the top of a work ranking is worth summing byte by byte before it is
+worth porting.** `tools/hotbytes.py` is that check, and the test it applies is
+not "is the profile flat" — an unrolled routine with early exits is not flat and
+is perfectly healthy. It is that **the first byte of a routine is its entry, so
+no byte in a loop-free routine can run more often than that one.** `$82:90F7`'s
+worst byte is 1.0x its entry, so all of it is work; `$82:AC07`'s is 218,452x,
+which is a spin wearing a routine's name. A high multiple is a prompt to read
+the disassembly rather than a verdict — a real loop over real data looks the
+same from here — but it reliably says which rows need reading.
+
+The table is short and hand-made on purpose: a heuristic that guessed at spin
+loops would be a worse thing to have in the denominator than the spins were.
+
+### Some of the ranking is a wall, and it says so
+
+A `!` in the left margin means the harness structurally cannot take that row —
+not that it would be hard, that there is no shim shape for it. `BLOCKED` holds
+the reasons, and today they are 15.2% of all the work the game does, sitting in
+the **top three rows** of the list:
+
+* `$80:CD20 lzss_decompress` is written and cannot be registered, because it
+  outlives a frame and the harness compares at frame boundaries.
+* `$80:8353 thread_yield` is the coroutine primitive the harness measures
+  scheduler passes against; substituting it would be substituting the ruler.
+* `$80:816C nmi_entry` is an interrupt vector. Nothing calls it, so there is no
+  call for a shim to stand in for.
+* `$80:83E0 vbl_queue_a_run` and `$80:843D vbl_queue_b_run` are **dispatchers**.
+  Each pushes a far return address, pushes a job's address out of a WRAM table
+  and `RTL`s into it, so porting one means porting every job that can be in the
+  table: thirteen distinct enqueue sites for queue A, one for queue B. What the
+  profile credits to them is not the jobs — attribution stops at the next entry
+  — it is the **scan**: sixteen slots from the top down, every call, whether
+  two are live or none. 146 instructions a frame in A, 53 in B.
+
+**Blocked here means blocked from the harness, not from the port.** Two of the
+five are already written in C; the dispatchers are twenty lines each. What none
+of them can do is pass through per-call substitution, and the reason is
+structural rather than incidental: the harness verifies leaves called inside a
+frame, so what it cannot see is what *is* the frame. Phase 4 is where that
+inverts.
+
+They stay in the denominator, because a thing the port has not taken over is a
+thing the port has not taken over, and a completion estimate that quietly
+excluded the hard parts would be worth nothing. But a ranking is a to-do list,
+and this one was three deep in things that cannot be done *yet*, which caps the
+Phase 3 number at about 85%.
+
+### Load time is not gameplay
+
+Read the calls column before reading the share. `lzss_decompress` is 5.3% of all
+the work in the corpus over **50 calls**; `apu_ipl_upload` is 1.3% over **10**,
+on top of the 1.9% it spends waiting. Those run a handful of times per movie, at
+level load, and a movie is mostly gameplay only if it is long. Ranking by share alone will point at the loader; ranking by share
+*per frame of play* points at the game. Both are in the table, and which one
+matters depends on whether the goal is a faster loader or a native game.
+
+## `hotbytes.py`, the check to run before believing a row
+
+`native_share.py` says *which* routines cost the most. This says **where inside
+one of them the instructions went**, which is the difference between a routine
+worth porting and a spin loop wearing a routine's name.
+
+```
+python tools\hotbytes.py 82 AC07 AF00 analysis\prof\*
+```
+
+Bank, start, end, then any number of profile directories, summed. It reads the
+same `profile.bin` — one count per ROM byte, incremented at the opcode — and
+prints the busiest bytes in the range with each as a **multiple of the entry's
+count**, because the first byte of a routine is its entry and therefore its call
+count.
+
+| what you see | what it means |
+| --- | --- |
+| worst byte ≈ **1.0x** the entry | no loop; every instruction is work the port must do |
+| worst byte **hundreds of x** the entry | a loop — read it. A loop over data is real work; a loop on a flag or a counter belongs in `WAIT_SITES` |
+| the entry itself ran **0 times** | the range does not start at a routine entry, so there is no call count to measure against and the whole report is meaningless |
+
+Three of the seven `WAIT_SITES` entries were found this way, and the ranking has
+so far never put a spin near the top without this catching it. It costs a second
+to run and it has changed the plan for the round three times.
+
 ## Regenerating everything
 
 ```

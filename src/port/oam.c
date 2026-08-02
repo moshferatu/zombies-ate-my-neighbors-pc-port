@@ -442,3 +442,278 @@ bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp) {
            (uint16_t)(rom_word(rom, SPRITE_PASS_PHASE_TABLE + (phase & 3)) & 0xff));
   return true;
 }
+
+// ---------------------------------------------------------------------------
+// $80:B123  actor_nearest
+// ---------------------------------------------------------------------------
+
+// `SEC : SBC : BCS : EOR #$FFFF : INC A` — the ROM's absolute value, and it
+// keeps the signed difference as well because the store happens before the
+// negation.
+static uint16_t nearest_abs(uint16_t a, uint16_t b, uint16_t* raw) {
+  uint16_t d = (uint16_t)(a - b);
+  *raw = d;
+  // The branch is on carry, which `SBC` leaves set when there was no borrow.
+  return (a >= b) ? d : (uint16_t)(~d + 1);
+}
+
+uint16_t actor_nearest(Wram* w, uint16_t x, uint16_t y, uint16_t* dist) {
+  wram_w16(w, NEAREST_DP_X, x);
+  wram_w16(w, NEAREST_DP_Y, y);
+  wram_w16(w, NEAREST_DP_BEST, 0xffffu);
+
+  // $80:B131. From the top slot down, every slot, ending on the base itself.
+  for (int i = ACTOR_SLOT_COUNT - 1; i >= 0; i--) {
+    uint32_t rec = W_ACTOR_SLOTS + (uint32_t)i * ACTOR_SLOT_STRIDE;
+    uint16_t flags = wram_r16(w, rec + ACTOR_FLAGS);
+    if (!(flags & ACTOR_DRAW)) {
+      PORT_COVER(nearest_undrawn);
+      continue;
+    }
+    if (!(flags & ACTOR_ACTIVE)) {
+      PORT_COVER(nearest_inactive);
+      continue;
+    }
+    uint16_t id = wram_r16(w, rec + ACTOR_COLLIDE_ID);
+    if (id != NEAREST_ID_PLAYER_A && id != NEAREST_ID_PLAYER_B &&
+        id != NEAREST_ID_C && id != NEAREST_ID_D) {
+      PORT_COVER(nearest_wrong_id);
+      continue;
+    }
+    PORT_COVER(nearest_candidate);
+
+    uint16_t raw;
+    uint16_t d = nearest_abs(wram_r16(w, rec + ACTOR_X), x, &raw);
+    wram_w16(w, NEAREST_DP_DX, raw);
+    wram_w16(w, NEAREST_DP_DIST, d);
+
+    uint16_t dy = nearest_abs(wram_r16(w, rec + ACTOR_Y), y, &raw);
+    wram_w16(w, NEAREST_DP_DY, raw);
+    d = (uint16_t)(d + dy);
+    wram_w16(w, NEAREST_DP_DIST, d);
+
+    // `CMP $38 : BCS` — strictly nearer wins, so on a tie the higher slot
+    // keeps it, and the walk runs downwards.
+    if (d < wram_r16(w, NEAREST_DP_BEST)) {
+      PORT_COVER(nearest_closer);
+      wram_w16(w, NEAREST_DP_BEST, d);
+      wram_w16(w, NEAREST_DP_FOUND, (uint16_t)rec);
+    }
+  }
+
+  // $80:B189. `$44` is not seeded, so when nothing matched this hands back
+  // whatever the last search that did find something left there.
+  *dist = wram_r16(w, NEAREST_DP_BEST);
+  return wram_r16(w, NEAREST_DP_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// $80:BF67  actor_at_point
+// ---------------------------------------------------------------------------
+
+// `LDA $0002,Y : SEC : SBC $3A : CLC : ADC #$0006 : CMP #$000C : BCS`.
+// Returns the value the ROM leaves in A as well as the verdict, because the
+// skip paths exit with it still there.
+static bool at_point_axis(uint16_t pos, uint16_t target, uint16_t* a) {
+  *a = (uint16_t)(pos - target + AT_POINT_HALF_WINDOW);
+  return *a < AT_POINT_WINDOW;
+}
+
+void actor_at_point(Wram* w, uint16_t self, uint16_t x, uint16_t y,
+                    AtPointRegs* out) {
+  wram_w16(w, AT_POINT_DP_SELF, self);
+  wram_w16(w, AT_POINT_DP_X, x);
+  wram_w16(w, AT_POINT_DP_Y, y);
+
+  // A, X and Y all survive to the exit, so they are tracked rather than
+  // returned: the ROM's registers hold whatever the last iteration left.
+  out->a = self;  // `STA $38` does not disturb it
+  out->y = y;
+  out->found = false;
+
+  uint16_t count = wram_r16(w, W_VISIBLE_ACTOR_COUNT);
+  if (count == 0) {
+    // $80:BF74. `LDX $9C : BEQ` — X is the zero it just loaded.
+    PORT_COVER(at_point_empty);
+    out->x = 0;
+    return;
+  }
+
+  // $80:BF76. A byte index into a word array, walked downwards.
+  for (int32_t i = (int32_t)count - 2; i >= 0; i -= 2) {
+    out->x = (uint16_t)i;
+    uint16_t rec = wram_r16(w, W_VISIBLE_ACTORS + (uint32_t)i);
+    out->y = rec;
+
+    if (rec == self) {
+      PORT_COVER(at_point_self);
+      continue;
+    }
+    uint16_t flags = wram_r16(w, rec + ACTOR_FLAGS);
+    out->a = (uint16_t)(flags >> 1);  // `LSR A` leaves this behind
+    if (!(flags & ACTOR_ACTIVE)) {
+      PORT_COVER(at_point_inactive);
+      continue;
+    }
+
+    uint16_t id = wram_r16(w, rec + ACTOR_COLLIDE_ID);
+    out->a = id;
+    // $80:BF88-BF9E. Three comparisons and four ways out of them: id 0, the
+    // whole band $0C..$33, and $07 and $08 on their own.
+    if (id == 0) {
+      PORT_COVER(at_point_no_id);
+      continue;
+    }
+    if (id >= AT_POINT_ID_RANGE_LO && id <= AT_POINT_ID_RANGE_HI) {
+      PORT_COVER(at_point_id_band);
+      continue;
+    }
+    if (id == AT_POINT_ID_SKIP_A || id == AT_POINT_ID_SKIP_B) {
+      PORT_COVER(at_point_id_named);
+      continue;
+    }
+
+    if (!at_point_axis(wram_r16(w, rec + ACTOR_X), x, &out->a)) {
+      PORT_COVER(at_point_far_x);
+      continue;
+    }
+    if (!at_point_axis(wram_r16(w, rec + ACTOR_Y), y, &out->a)) {
+      PORT_COVER(at_point_far_y);
+      continue;
+    }
+
+    // $80:BFBE. `PLD : SEC : RTL`, and X is left on the entry that matched.
+    PORT_COVER(at_point_hit);
+    out->found = true;
+    return;
+  }
+
+  // $80:BFC3. The `BPL` fails on the first negative index, which is -2 because
+  // the count is a byte count and so always even.
+  PORT_COVER(at_point_none);
+  out->x = 0xfffeu;
+}
+
+// ---------------------------------------------------------------------------
+// $80:BFC8  actor_obstacle_at_point
+// ---------------------------------------------------------------------------
+
+// `$80:BFFE`-`$80:C020`, in the ROM's order, which is not sorted and is not
+// worth sorting: the port compares against all seven either way, and keeping
+// the order makes the listing and this array read the same.
+//
+// `$05` and `$06` are the two players — refused here by id as well as by
+// record, above — and `$37` is the only one of the seven that an id above the
+// band can be, since the six below it are all under `$0C`.
+const uint16_t OBSTACLE_ID_SKIP[OBSTACLE_ID_SKIP_COUNT] = {
+    0x0005, 0x0006, 0x0007, 0x0008, 0x0002, 0x0001, 0x0037,
+};
+
+void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,
+                             ObstacleRegs* out) {
+  wram_w16(w, OBSTACLE_DP_X, x);
+  wram_w16(w, OBSTACLE_DP_Y, y);
+
+  // `$80:BFC8  PHD : PEA $0000 : PLD : STX $3A : STY $3C` — and no `STA`.
+  // Nothing before the loop touches A, so a caller whose search never gets
+  // going gets its own accumulator back. `$80:E4DD  LDA $08` loads one anyway,
+  // which is the caller filing the thread slot for a routine that does not want
+  // it; harmless, and the reason `a_in` has to be threaded through here.
+  out->a = a_in;
+  out->y = y;
+  out->blocked = false;
+
+  uint16_t count = wram_r16(w, W_VISIBLE_ACTOR_COUNT);
+  if (count == 0) {
+    // $80:BFD3. `LDX $9C : BEQ` — X is the zero it just loaded.
+    PORT_COVER(obstacle_empty);
+    out->x = 0;
+    return;
+  }
+
+  // Read once: the ROM re-reads them every iteration, but nothing in the loop
+  // writes WRAM, so the values cannot move underneath it.
+  uint16_t player_a = wram_r16(w, W_PLAYER_A_RECORD);
+  uint16_t player_b = wram_r16(w, W_PLAYER_B_RECORD);
+
+  // $80:BFD5. Same backwards walk of the same byte-indexed array.
+  for (int32_t i = (int32_t)count - 2; i >= 0; i -= 2) {
+    out->x = (uint16_t)i;
+    uint16_t rec = wram_r16(w, W_VISIBLE_ACTORS + (uint32_t)i);
+    out->y = rec;
+
+    // $80:BFDA. `CPY $D2` / `CPY $D4`, and in a one-player game `$D4` is zero,
+    // so the second test is against a record address that cannot occur.
+    if (rec == player_a) {
+      PORT_COVER(obstacle_player_a);
+      continue;
+    }
+    if (rec == player_b) {
+      PORT_COVER(obstacle_player_b);
+      continue;
+    }
+
+    uint16_t flags = wram_r16(w, rec + ACTOR_FLAGS);
+    out->a = (uint16_t)(flags >> 1);  // `LSR A` leaves this behind
+    if (!(flags & ACTOR_ACTIVE)) {
+      PORT_COVER(obstacle_inactive);
+      continue;
+    }
+
+    uint16_t id = wram_r16(w, rec + ACTOR_COLLIDE_ID);
+    out->a = id;
+    if (id == 0) {
+      PORT_COVER(obstacle_no_id);
+      continue;
+    }
+    // $80:BFED-BFFD. The high half, entered only when `CMP #$000C` says so, and
+    // **it can fall out of the bottom into the chain below** rather than
+    // deciding on its own — which is what makes `$37` reachable twice over.
+    if (id >= OBSTACLE_ID_BAND_LO) {
+      if (id <= OBSTACLE_ID_BAND_HI) {
+        PORT_COVER(obstacle_id_band);
+        continue;
+      }
+      if (id >= OBSTACLE_ID_CEILING) {
+        PORT_COVER(obstacle_id_high);
+        continue;
+      }
+      PORT_COVER(obstacle_id_above_band);
+    } else {
+      PORT_COVER(obstacle_id_below_band);
+    }
+
+    // $80:BFFE-C020. Seven `CMP : BEQ` in a row.
+    bool named = false;
+    for (int k = 0; k < OBSTACLE_ID_SKIP_COUNT; k++) {
+      if (id == OBSTACLE_ID_SKIP[k]) {
+        named = true;
+        break;
+      }
+    }
+    if (named) {
+      PORT_COVER(obstacle_id_named);
+      continue;
+    }
+
+    // The same six-pixel window as `actor_at_point`, down to sharing the
+    // helper: `$80:C021`-`$80:C03E` is `$80:BFA0`-`$80:BFBD` byte for byte
+    // except for the branch targets.
+    if (!at_point_axis(wram_r16(w, rec + ACTOR_X), x, &out->a)) {
+      PORT_COVER(obstacle_far_x);
+      continue;
+    }
+    if (!at_point_axis(wram_r16(w, rec + ACTOR_Y), y, &out->a)) {
+      PORT_COVER(obstacle_far_y);
+      continue;
+    }
+
+    // $80:C03F. `PLD : SEC : RTL` — the step the caller was testing is blocked.
+    PORT_COVER(obstacle_hit);
+    out->blocked = true;
+    return;
+  }
+
+  PORT_COVER(obstacle_none);
+  out->x = 0xfffeu;
+}

@@ -76,6 +76,13 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 // ---------------------------------------------------------------------------
 
 // --- Direct page: scheduler and NMI state ---
+// The stack pointer NMI interrupted, and the shortest-lived word in WRAM: it is
+// written by `$80:819C  TSC : STA $04` on the way in and read back by
+// `$80:81EB  LDA $04 : TCS` seventy-nine bytes later, and nothing else in the
+// game reads it. (The disassembler labels several other `STA $04`s with this
+// name — `$80:8295`, `$80:82C5`, `$80:8816` — but those run with `D` on a
+// thread's own page, so they are page+4 and not this address at all.)
+#define W_NMI_SAVED_SP 0x0004
 #define W_SCHED_CUR_TASK 0x0008
 #define W_VBL_QUEUE_A_COUNT 0x000c
 #define W_VBL_QUEUE_B_COUNT 0x000e
@@ -215,6 +222,64 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_VISIBLE_ACTOR_COUNT 0x009c  // bytes, i.e. entries x 2
 #define W_OAM_BUFFER 0x13be       // 544 bytes, DMA'd to OAMDATA every frame
 #define W_SPRITE_PASS_PHASE 0x1b64  // see SPRITE_PASS_PHASE_TABLE in port/oam.h
+
+// --- The expanded tilemap, and the scalars collision reads it with ---
+//
+// The level loader turns the block map into a full 16-bit tilemap in WRAM bank
+// `$7F` and then never looks at the level record again; everything below is
+// what it leaves behind for the collision routines in `port/terrain.h`. See
+// `src/assets/level.h` for the expansion itself.
+//
+// On `movies/level1.zmv` these hold 352, 104 and `$7E:611A`, which is level 1's
+// 22x13 blocks expanded to 176x104 tiles at two bytes each.
+#define W_TILEMAP_ROW_BYTES 0x00b2  // tile columns x 2, i.e. one row in bytes
+#define W_TILEMAP_ROWS 0x00b4       // tile rows
+// A 24-bit pointer, low word here and bank byte at +2, to 512 attribute words —
+// one per BG tile, indexed by the tilemap entry's low ten bits doubled.
+#define W_TILE_ATTRS 0x00ba
+// One word per tile row, holding that row's byte offset into the tilemap, so a
+// row lookup is a table read rather than a multiply. Indexed by the row number
+// already doubled, which is exactly what `LSR A : LSR A : AND #$FFFE` produces.
+#define W_TILE_ROW_BASE 0x4328
+
+// The two players' records, as *pointers into* `W_ACTOR_SLOTS`, or zero for a
+// player who is not on the board — which is what `$D4` reads in one-player mode.
+//
+// `$80:A93F` is the proof and also the reason they exist: it reads `($D2),Y`
+// at `Y = 2` and `Y = 6` — `ACTOR_X` and `ACTOR_Y` — adds `($D4),Y`, halves the
+// sum and stores it as the point the camera centres on. Watching `$D2` on
+// `movies/level1.zmv` it takes `$1AB6` at frame 1705, and `$1AB6` is the record
+// the display list shows carrying collision id `$05`, which is player A.
+//
+// They are direct-page addresses that everything reads absolutely, because the
+// routines that want them open `PEA $0000 : PLD` first.
+#define W_PLAYER_A_RECORD 0x00d2
+#define W_PLAYER_B_RECORD 0x00d4
+
+// Which thread player A is. `$80:A8A4` registers a player's record with
+// `STA $00D2,X`, and when `X` is zero — player A — it also files the task that
+// was running at the time: `LDA $0008 : STA $00D6`. Nothing else writes it.
+//
+// One routine reads it, `step_tether_blocked`, and it reads it to find out
+// which of the two players is asking, so that the answer can be about the
+// other one. See `port/step.h`.
+#define W_PLAYER_A_TASK 0x00d6
+
+// The level record's `+$26`, copied here by `$80:86F9` at load. `level.h` calls
+// it `priority_below` because `$80:A47B` forces BG priority on for every tile
+// whose index is under it as the camera streams them — but `$82:90F7` reads the
+// same word as a **collision** threshold, refusing any tile below it before it
+// has even looked at the attribute word. The tiles the game draws in front of
+// the player are the tiles it will not let something stand on.
+// The bump allocator `$80:A401` hands tilemap staging buffers out of: `$CA`
+// is the next free address and `$CC` how many bytes are left. `$80:A64F`
+// starts them at `$4B28` and `$0900`, so the arena is `$7E:4B28-$7E:5428`.
+//
+// Neither had a name before, in `zamn.sym` or in `docs/wram-map.md`, which
+// is why they are spelled out here rather than cited.
+#define W_TILEMAP_ARENA_NEXT 0x00ca
+#define W_TILEMAP_ARENA_LEFT 0x00cc
+#define W_TILE_PRIORITY_BELOW 0x00dc
 
 // --- Thread scheduler tables (24 slots of one word each) ---
 #define W_THREAD_WAIT 0x1180  // bit 15 = live, low bits = ticks remaining

@@ -62,8 +62,24 @@
 #define LEVEL_PALETTE_BYTES 256
 
 // Bit 0 of a tile attribute word blocks movement (`$80:AE43` and friends test
-// it with `LSR A / BCS`). The rest of the word is not yet identified.
+// it with `LSR A / BCS`).
 #define LEVEL_ATTR_SOLID 0x0001
+
+// Bit 1 blocks it too, for a different set of movers. `$80:AE97` is `$80:AE14`
+// byte for byte over the same six-tile footprint with `BIT #$0002 / BNE` in
+// place of the `LSR A / BCS`, and its three callers — `$81:80CB`, `$81:85D7`,
+// `$81:8618` — are all enemy bodies, two of them the same routines that pick a
+// chase target twelve and fifteen bytes further on.
+//
+// **The two bits are not a hierarchy.** Across all 55 levels 216 tiles carry
+// bit 0 without bit 1 and 519 carry bit 1 without bit 0, so neither set
+// contains the other and terrain that stops one kind of mover need not stop the
+// other. 9,903 of the 15,000-odd blocking tiles carry both.
+#define LEVEL_ATTR_SOLID_ENEMY 0x0002
+
+// The rest of the word is still unidentified, though two more masks have been
+// seen tested by the same footprint loop copied again: `$80:AF2C` tests bit 2
+// and `$80:AF66` tests bit 12. Neither is ported.
 
 // The 54-byte level record. Offsets are the ones `$80:86A2` indexes.
 typedef struct {
@@ -86,8 +102,15 @@ typedef struct {
   uint16_t rows;  // +$24  block rows
 
   // +$26  tiles with an index below this get BG priority forced on as they are
-  // streamed to the PPU (`$80:A47B`). It is a draw-time flag, not part of the
-  // expanded map.
+  // streamed to the PPU (`$80:A47B`), so it is not part of the expanded map.
+  //
+  // **It is not only a draw-time flag, which this comment used to say it was.**
+  // `$80:86F9` copies it to `W_TILE_PRIORITY_BELOW`, and `$82:90F7` reads it as
+  // a *collision* threshold: a tile whose index is below it is refused before
+  // the attribute word is even fetched. So the tiles the game draws in front of
+  // the player are exactly the tiles it will not let something stand on, and
+  // one field does both jobs — which is also why the two uses agree about which
+  // direction the comparison goes.
   uint16_t priority_below;
 
   uint16_t unknown_28;  // +$28  passed to $80:9F29 as X

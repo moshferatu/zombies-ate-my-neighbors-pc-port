@@ -115,6 +115,18 @@ typedef struct {
   // so there is nothing on the way out to compare.
   uint16_t d;
   uint8_t db;
+  // The stack pointer, on entry, and it is here for the same reason as the two
+  // above: **a stacked argument is part of a calling convention too.**
+  // `$80:CD20` is the first routine in the registry whose caller passes
+  // something on the stack rather than in a register — `PEA <source address>`
+  // and then `JSL`, which the routine reads back with `LDA $06,S` once its own
+  // `PHD` is down. At the shim's entry that word is at `s + 4`: three bytes of
+  // return address the `JSL` pushed, and then the argument.
+  //
+  // Never diffed, and it could not be: the port pushes nothing, so its stack
+  // pointer at the end is its own business. `stack_bytes` is what describes the
+  // outgoing side.
+  uint16_t s;
 } CosimRegs;
 
 // How the routine gets back to its caller — which decides how many bytes of
@@ -242,6 +254,23 @@ typedef struct {
   // port owns its own main loop and can spin on `$2143` exactly as the ROM does.
   // What it cannot do is spin while impersonating one instruction inside somebody
   // else's core.
+  //
+  // **The second reason a routine lands here is call volume, and it is a
+  // different argument with the same shape.** `cycles` is one constant standing
+  // in for a distribution — `lzss_read_byte` really costs anywhere from 98 to
+  // 298 — and that is harmless while the errors are independent and few. The two
+  // LZSS leaves are neither: they are called 1,071,108 times across the corpus,
+  // almost all of it inside a single multi-frame decompression, and the error
+  // correlates with the data rather than cancelling against it. Substituted, a
+  // level load finishes three frames off, which is enough to move every input a
+  // movie applies by frame index afterwards.
+  //
+  // No budget fixes that, and the failed attempt is the argument: the mean is
+  // the mean *by construction*, so if a mean could make the totals agree it
+  // already would. What is left over is variance, and a constant has none. So
+  // these are verified on every call — 107,678 of them, all 128 KB compared —
+  // and never substituted, which keeps the frontend's framebuffer check honest
+  // for the other fifty-six.
   bool verify_only;
 } CosimRoutine;
 

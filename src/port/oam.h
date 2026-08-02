@@ -81,6 +81,12 @@
 // Bit 5: the sort's primary key. A record with it set is ordered ahead of one
 // without, whatever their positions. Nothing here needs to know what it means.
 #define ACTOR_SORT_FIRST 0x0020
+// Bit 0: set on every live record in every display list sampled so far — the
+// flags seen are `$8000`, `$8001`, `$8003`, `$8005`, `$8009` — and `$80:B123`
+// is the only reader found, which requires it alongside `ACTOR_DRAW`. What
+// clears it has not been established, so the name says where it is rather than
+// claiming to know more than that.
+#define ACTOR_ACTIVE 0x0001
 // Bit 4: take the OAM palette from `ACTOR_ATTR` instead of the metasprite's.
 // The pass ORs the field in and masks the piece's own palette bits away.
 #define ACTOR_ATTR_SET 0x0010
@@ -237,4 +243,150 @@ void oam_buffer_clear(Wram* w);
 // and only keeps the result if it comes back true.
 bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp);
 
-#endif
+// --- $80:B123 ---------------------------------------------------------------
+
+// **Which of the things on the board is nearest to a point**, by Manhattan
+// distance, out of the four collision ids it will look at.
+//
+// This is the most-executed routine in bank `$80` that the port did not have:
+// 44,248 calls and 5.2% of every instruction the game executes, over ten movies
+// one per level. Its callers are all inside enemy bodies — `$81:86B7`,
+// `$81:870A`, `$81:8ADC`, `$81:8B3A` — which together with the ids it accepts
+// is what it is: **an enemy choosing who to go after.** `$05` and `$06` are the
+// two players, claimed by those same two numbers in `victim_a264_collide`.
+//
+// It walks all 32 slots from the top down rather than following
+// `ACTOR_NEXT`, so it sees records the linked list has dropped, and it costs
+// the same 32 iterations whatever the board looks like.
+#define ACTOR_NEAREST_ENTRY 0x80b123u
+
+// `LDA $000E,X` against four ids, in this order, and anything else is skipped.
+#define NEAREST_ID_PLAYER_A 0x0005
+#define NEAREST_ID_PLAYER_B 0x0006
+#define NEAREST_ID_C 0x0038
+#define NEAREST_ID_D 0x0001
+
+// Its scratch, all on direct page zero — `LDA #$0000 : TCD` at `$80:B124` is
+// what makes these absolute rather than relative to the calling thread's page.
+//
+// Three of them are left holding the *last candidate examined* rather than the
+// best one, which is dead storage the routine never reads back. It is written
+// anyway, so the port writes it too.
+#define NEAREST_DP_BEST 0x38    // best distance so far; seeded $FFFF
+#define NEAREST_DP_X 0x3a       // the point being searched from
+#define NEAREST_DP_Y 0x3c
+#define NEAREST_DP_DX 0x3e      // raw, signed, of the last candidate
+#define NEAREST_DP_DY 0x40      // ...and its Y
+#define NEAREST_DP_DIST 0x42    // ...and its distance
+#define NEAREST_DP_FOUND 0x44   // the winning record, untouched if none matched
+
+// Returns the winning record's address, which the ROM leaves in X, and puts the
+// distance — `$FFFF` when nothing matched — in `*dist`, which it leaves in A.
+uint16_t actor_nearest(Wram* w, uint16_t x, uint16_t y, uint16_t* dist);
+
+// --- $80:BF67 ---------------------------------------------------------------
+
+// **Is anything standing within six pixels of this point?**
+//
+// The second routine the profiler picked: 1.8% of every instruction the game
+// executes over 43,605 calls, and its callers are the same enemy bodies that
+// call `actor_nearest` — `$81:85E3`, `$81:8627`, `$81:89E6`, `$81:8A15`.
+//
+// It walks `visible_actors` **backwards** rather than the record table, so it
+// sees only what this frame's cull kept, and it costs whatever the board is
+// wide rather than a fixed 32.
+//
+// The window is the `CLC : ADC #$0006 : CMP #$000C : BCS` trick the collision
+// box uses: adding half the width and testing unsigned against the width tests
+// **-6 <= d <= +5** in two instructions, so the box is a pixel wider to the
+// left than to the right. `actor_overlap_pass` does the same thing at 8 and 16.
+#define ACTOR_AT_POINT_ENTRY 0x80bf67u
+
+// The ids it will stop for, as the ROM's three comparisons leave them:
+// `$00` never, `$07` and `$08` never, everything from `$0C` to `$33` never, and
+// anything else — `$01`-`$06`, `$09`-`$0B`, and everything above `$33` — yes.
+#define AT_POINT_ID_RANGE_LO 0x000c
+#define AT_POINT_ID_RANGE_HI 0x0033
+#define AT_POINT_ID_SKIP_A 0x0007
+#define AT_POINT_ID_SKIP_B 0x0008
+#define AT_POINT_HALF_WINDOW 0x0006
+#define AT_POINT_WINDOW 0x000c
+
+// Its scratch, on direct page zero like `actor_nearest`'s.
+#define AT_POINT_DP_SELF 0x38  // the record the caller wants ignored
+#define AT_POINT_DP_X 0x3a
+#define AT_POINT_DP_Y 0x3c
+
+// What the ROM leaves in A, X and Y, which is all three of them and none of it
+// tidy — see the shim for why each one is what it is.
+typedef struct {
+  uint16_t a, x, y;
+  bool found;  // the carry: set by `SEC` at $80:BFBF, cleared at $80:BFC6
+} AtPointRegs;
+
+void actor_at_point(Wram* w, uint16_t self, uint16_t x, uint16_t y,
+                    AtPointRegs* out);
+
+// --- $80:BFC8 ---------------------------------------------------------------
+
+// **Is something a walker would bump into standing at this point?** — the same
+// search as `actor_at_point`, eighty bytes further down the bank, asking a
+// different question about the same board.
+//
+// Third on the profiler's list at 2.2% of every instruction the game executes
+// over 41,232 calls, and unlike the two above it this one is not an enemy's:
+// both callers are in `$80:E4C1`, the **movement step validator**. That routine
+// computes where a walker wants to be next, puts it through `$80:AE14`,
+// `$80:A8B3`, this, and `$80:B422` in turn, and only if all four agree does it
+// commit the candidate — `$80:E4FF  LDA $34 : STA $30`. So a set carry here
+// means *the step is blocked*, and the routine is a collision test rather than
+// a search: nothing about which record it found is used.
+//
+// Structurally it is `actor_at_point` line for line — the same backwards walk
+// of `visible_actors`, the same `ACTOR_ACTIVE` test, the same six-pixel window
+// on both axes, and the same `PLD` then explicit `SEC`/`CLC` at both exits. The
+// two differences are the whole of the semantics:
+//
+//   1. **It takes no self argument.** Where `actor_at_point` skips one record
+//      the caller names in A, this skips `W_PLAYER_A_RECORD` and
+//      `W_PLAYER_B_RECORD` — *both players, always.* A walker may walk through
+//      a player; something else has to decide what that costs. A is therefore
+//      untouched on the way in, and a caller that hits the empty board gets its
+//      own A back.
+//   2. **A much narrower accept set**, below.
+#define ACTOR_OBSTACLE_AT_POINT_ENTRY 0x80bfc8u
+
+// The id filter, which is written down nowhere but the disassembly and is
+// seven comparisons arranged so that two ranges and eight singletons fall out
+// of them. `$80:BFED  CMP #$000C : BCC` splits the low ids off to the named
+// chain; the band between `$0C` and `$33` goes out on `BEQ`+`BCC` against
+// `$0033`; `$005C` and above goes out on `BCS`; and everything left over —
+// which is `$34`..`$5B` — *falls through into the named chain as well*, so the
+// `CMP #$0037` in it is live for exactly one id above the band.
+//
+// What survives: `$03`, `$04`, `$09`, `$0A`, `$0B`, and `$34`..`$5B` except
+// `$37`. Note `$05` and `$06` in the named chain — the two players again, by id
+// this time, so a player is refused twice over.
+#define OBSTACLE_ID_BAND_LO 0x000c   // `$0C`..`$33` never
+#define OBSTACLE_ID_BAND_HI 0x0033
+#define OBSTACLE_ID_CEILING 0x005c   // `$5C` and up never
+// The named chain, in the ROM's own order, which is not sorted:
+#define OBSTACLE_ID_SKIP_COUNT 7
+extern const uint16_t OBSTACLE_ID_SKIP[OBSTACLE_ID_SKIP_COUNT];
+
+// Its scratch. Two words, not three: there is no self to file.
+#define OBSTACLE_DP_X 0x3a
+#define OBSTACLE_DP_Y 0x3c
+
+// A, X and Y again, and again none of them tidy — same reasoning as
+// `AtPointRegs`, except that `a_in` is what comes back when the board is empty,
+// because nothing on that path writes A at all.
+typedef struct {
+  uint16_t a, x, y;
+  bool blocked;  // the carry: `SEC` at $80:C040, `CLC` at $80:C047
+} ObstacleRegs;
+
+void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,
+                             ObstacleRegs* out);
+
+#endif  // PORT_OAM_H

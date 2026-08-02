@@ -8,6 +8,7 @@
 #include "analysis/movie_apply.h"
 #include "port/apu.h"
 #include "port/coverage.h"
+#include "port/thread.h"
 
 // One in-flight call. Calls nest — an NMI can land inside a routine and the
 // handler can call another registered routine — so these live on a stack.
@@ -160,6 +161,9 @@ struct CosimPriv {
   // because the ROM's version would have pushed there and the port has no stack
   // in WRAM at all. See cosim_stale().
   uint8_t* stale;
+  // The block the 24 thread stacks occupy, read out of the ROM at init rather
+  // than declared. See stack_area().
+  uint32_t stack_lo, stack_hi;
   // The port's window onto the APU, held here so it outlives every call that
   // uses it. See the `ApuLog` comment above.
   ApuPorts apu;
@@ -189,6 +193,7 @@ static void regs_capture(Snes* snes, CosimRegs* r) {
   r->v = cpu->v;
   r->d = cpu->dp;
   r->db = cpu->db;
+  r->s = cpu->sp;
   r->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
   r->regs = COSIM_REG_ALL;
 }
@@ -223,6 +228,42 @@ static uint32_t cpu_pc24(Snes* snes) {
 // Setup
 // ---------------------------------------------------------------------------
 
+// Everything above the thread stacks that is also stack: the scheduler's own,
+// topped at $125F, NMI's at $129F, and the thread bookkeeping tables between
+// them. The bottom end is not a constant — see stack_area_lo() — because it is
+// a table in the ROM, and this file had it wrong by sixteen stacks.
+#define STACK_AREA_HI 0x1300
+
+// Where the thread stacks start, read out of the ROM instead of described.
+//
+// `$80:830E` is a 24-entry table of initial stack pointers, one per scheduler
+// slot, and `thread_spawn` installs slot n's entry with `TCS`. The table *is*
+// the map, so there is no reason to keep a second copy of it in a comment: the
+// entries are 24 values exactly 48 bytes apart, which makes the block
+// contiguous from $7E:0CF6 up to $7E:1175.
+//
+// This replaces a hardcoded $1000. That number came from `docs/wram-map.md`,
+// which says "$7E:1120-$7E:114F, 48 B, active thread stacks" — a trace had seen
+// *one* stack, slot 23's, and the note described it as all of them. Sixteen of
+// the twenty-four are below $1000, so their dead bytes were being reported as
+// unexplained divergences, which is what the "Cause B" investigation in
+// `docs/cosim.md` was chasing.
+//
+// The low end is clamped to $0D00 rather than $0CF6. The 24 direct pages run to
+// $0CFF and slot 11's owns $0C80-$0CFF, whose offsets $76-$7F are live state —
+// `STEP_DP_SPEED_CLASS` is one of them. Waiving those ten bytes would blind the
+// diff to real data in order to excuse stack residue nothing has ever been seen
+// to leave there. Reporting them if it ever happens is the cheaper mistake.
+static uint32_t stack_area_lo(const Rom* rom) {
+  uint32_t lo = 0xffffu;
+  for (uint32_t slot = 0; slot < 24 * 2; slot += 2) {
+    uint32_t top = rom_word(rom, THREAD_SP_TABLE + slot);
+    if (top < lo) lo = top;
+  }
+  lo -= 0x2f;  // the stacks are 48 bytes each and grow down from their top
+  return lo < 0x0d00u ? 0x0d00u : lo;
+}
+
 void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
   memset(c, 0, sizeof *c);
   c->snes = snes;
@@ -248,6 +289,8 @@ void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
   }
 
   c->priv = (CosimPriv*)calloc(1, sizeof(CosimPriv));
+  c->priv->stack_lo = stack_area_lo(&c->rom);
+  c->priv->stack_hi = STACK_AREA_HI;
   // Verify mode needs somewhere to rewind to and somewhere to run; native mode
   // works on the emulator's memory in place and needs neither.
   if (mode == COSIM_VERIFY) {
@@ -1117,15 +1160,10 @@ static bool at_sync_point(const Cosim* c) {
   return cpu->waiting && cpu_pc24(c->snes) == SCHEDULER_IDLE_WAI + 1;
 }
 
-// The stacks, from `docs/wram-map.md`: the per-thread stacks at $1120-$114F,
-// the scheduler's own topped at $125F, NMI's at $129F, and the thread bookkeepig
-// tables between them. Nothing else lives in this range.
-#define STACK_AREA_LO 0x1000
-#define STACK_AREA_HI 0x1300
 
 // Can this byte's difference be explained without appealing to a bug?
 //
-// Three things can, and they are not equally strong — which is the point of
+// Four things can, and they are not equally strong — which is the point of
 // separating them:
 //
 //   * a scratch byte the routine's descriptor declares the port does not write;
@@ -1133,6 +1171,7 @@ static bool at_sync_point(const Cosim* c) {
 //     ROM's version would have pushed there. Native mode marks these as it
 //     goes, from the push footprint `verify` measured, so the set is exactly
 //     the bytes some real substitution skipped;
+//   * `nmi_saved_sp`, which is not state at all — see below;
 //   * any byte in the stack area at all.
 //
 // That last rule is a region, not a derivation, and it is deliberately the
@@ -1143,12 +1182,26 @@ static bool at_sync_point(const Cosim* c) {
 // stacks' live extents, which buys nothing — no code reads below its own stack
 // pointer.
 //
-// What it costs is real and worth stating plainly: inside $7E:1000-$7E:12FF
-// this run proves nothing. Everything outside it — all 127 KB of actual game
-// state — is compared byte for byte, and `verify` covers the routines'
-// behaviour exactly, stack included.
+// What it costs is real and worth stating plainly: inside the stack area this
+// run proves nothing. Everything outside it — 126 KB of actual game state — is
+// compared byte for byte, and `verify` covers the routines' behaviour exactly,
+// stack included.
+//
+// `nmi_saved_sp` is the narrow one, and it is exempt for a reason no other
+// address in WRAM has: **its whole lifetime is one interrupt.** `$80:819C`
+// writes it with `TSC : STA $04` and `$80:81EB` reads it back with
+// `LDA $04 : TCS` seventy-nine bytes later, and nothing else in the game reads
+// it — so at a sync point, between two NMIs, it is not live state, it is a
+// fossil of *where the last NMI happened to land*. A substituted routine
+// returns on a cycle budget rather than by executing the original instructions,
+// so the two cores reach any given point a few cycles apart and NMI catches one
+// of them a call deeper than the other. That is real drift and it is worth
+// counting — `run` reports how many passes it showed up on — but it is a
+// difference in timing, not in what the game computed, and no instruction can
+// observe it.
 static bool accounted_for(const Cosim* c, uint32_t off) {
-  if (off >= STACK_AREA_LO && off < STACK_AREA_HI) return true;
+  if (off >= c->priv->stack_lo && off < STACK_AREA_HI) return true;
+  if (off == W_NMI_SAVED_SP || off == W_NMI_SAVED_SP + 1) return true;
   if (c->priv->stale && c->priv->stale[off]) return true;
   for (int i = 0; i < c->stat_count; i++) {
     if (!(c->enabled & (UINT64_C(1) << i))) continue;
@@ -1175,6 +1228,14 @@ static bool side_start(Side* s, const uint8_t* rom_data, int rom_len,
 // Advance one side by one scheduler pass: run until it is parked on the `WAI`
 // again, having first left the one it was on. False if it never gets there —
 // which is normal only during boot, before the scheduler exists.
+// The game's own idea of what frame it is on. `$80:8186  INC $16` runs once per
+// NMI and nothing else writes it, which makes it the only clock both cores
+// agree to keep — see the resync in cosim_lockstep().
+static uint16_t side_frame(const Side* s) {
+  return (uint16_t)(s->snes->ram[W_NMI_FRAME_COUNTER] |
+                    s->snes->ram[W_NMI_FRAME_COUNTER + 1] << 8);
+}
+
 static bool side_pass(Side* s, long budget) {
   bool left = !at_sync_point(&s->cosim);
   for (long i = 0; i < budget; i++) {
@@ -1243,10 +1304,23 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
   }
 
   int rc = 0;
-  bool reported = false;
+  bool reported = false, reported_bad = false;
   long compared = 0, unsynced = 0, diverged_frames = 0, explained_only = 0;
+  // How often the two cores' last NMI landed at different call depths. Waived
+  // by accounted_for() and counted here rather than either failed on or hidden:
+  // it is the only visible symptom of the cycle budget being an estimate.
+  long nmi_drift = 0;
+  uint32_t nmi_drift_worst = 0;
+  // The pass at which the two cores stopped being on the same frame, after
+  // which nothing is comparable. See the loop.
+  long parted_at = -1;
   uint32_t worst = 0, last_differ = 0, worst_unexplained = 0;
   uint32_t worst_unexplained_at[8];
+  // The values as they stood *at that pass*. Reading them back out of the cores
+  // when the run ends prints whatever the game has since written there, which
+  // for a while had this report showing bytes that were identical on both sides
+  // under a heading saying they differed.
+  uint8_t worst_unexplained_ref[8], worst_unexplained_nat[8];
   int worst_unexplained_n = 0;
   long worst_unexplained_pass = -1;
   for (long pass = booted; pass < frames; pass++) {
@@ -1255,6 +1329,46 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
     bool ref_ok = side_pass(&ref, 4000000);
     bool nat_ok = side_pass(&nat, 4000000);
     if (!ref_ok || !nat_ok) { unsynced++; continue; }
+
+    // Where this run stops being able to prove anything, and why it is a
+    // property of the method rather than a bug in the port.
+    //
+    // A scheduler pass is *nearly* a frame. The exception is a pass whose work
+    // overruns vblank: it takes two NMIs instead of one, and on a level where
+    // the game already fills most of a frame, whether that happens is decided
+    // by a few hundred cycles either way. A substituted core spends a different
+    // number of cycles doing the same work — that is what substitution *is* —
+    // so sooner or later one side overruns a pass the other does not, and from
+    // then on the two cores are one frame apart.
+    //
+    // Nothing can be realigned. Aligning on `$16` costs the lagging side an
+    // extra scheduler pass, which puts `sched_tick` out by one instead: the two
+    // clocks genuinely disagree, because one core really did run a pass in two
+    // frames and the other in one. They are not computing different answers,
+    // they are running different timelines of the same game — the difference
+    // between a console that dropped a frame and one that did not.
+    //
+    // So the comparison stops here and says so. Everything before this point is
+    // a real result; everything after would be frame N against frame N+1, and
+    // reporting that as thousands of differing bytes is what this harness did
+    // for months. Both cores keep running, because the call counts, coverage
+    // and census below are still worth having.
+    // Once parted, permanently: the counters can come back level later if the
+    // other side overruns too, and comparing then would be worse than not
+    // comparing at all — the frame numbers would agree while the game states
+    // behind them had spent a hundred frames apart.
+    uint16_t frame_ref = side_frame(&ref), frame_nat = side_frame(&nat);
+    if (parted_at >= 0 || frame_ref != frame_nat) {
+      if (parted_at < 0) {
+        parted_at = pass;
+        printf("\nThe two timelines part at pass %ld: stock is on frame %u and\n"
+               "native on frame %u, so one of them overran vblank on a pass the\n"
+               "other did not. Nothing past here is comparable — see the note in\n"
+               "cosim_lockstep(). %ld passes were compared before it.\n",
+               pass, frame_ref, frame_nat, compared);
+      }
+      continue;
+    }
     compared++;
 
     uint32_t differ = 0, unexplained = 0;
@@ -1270,6 +1384,17 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
       if (!accounted_for(&nat.cosim, i)) unexplained++;
     }
     explained_only += (differ > 0 && unexplained == 0) ? 1 : 0;
+
+    uint32_t ref_sp = ref.snes->ram[W_NMI_SAVED_SP] |
+                      (uint32_t)ref.snes->ram[W_NMI_SAVED_SP + 1] << 8;
+    uint32_t nat_sp = nat.snes->ram[W_NMI_SAVED_SP] |
+                      (uint32_t)nat.snes->ram[W_NMI_SAVED_SP + 1] << 8;
+    if (ref_sp != nat_sp) {
+      uint32_t gap = ref_sp > nat_sp ? ref_sp - nat_sp : nat_sp - ref_sp;
+      nmi_drift++;
+      if (gap > nmi_drift_worst) nmi_drift_worst = gap;
+    }
+
     if (differ == 0) continue;
 
     // The first divergence gets described in full, and then the run *keeps
@@ -1293,6 +1418,24 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
       }
       reported = true;
     }
+    // ...and separately, the first pass carrying a difference nothing accounts
+    // for. That is a different event from the first difference and the one that
+    // matters: dead stack shows up early and stays inert, so a run that ends
+    // badly did something *between* the two, and the gap is where to look.
+    if (unexplained > 0 && !reported_bad) {
+      char buf[32];
+      printf("\nFirst *unaccounted* difference at pass %ld — %u of %u byte%s:\n",
+             pass, unexplained, differ, differ == 1 ? "" : "s");
+      uint32_t shown = 0;
+      for (uint32_t i = 0; i < WRAM_SIZE && shown < 16; i++) {
+        if (ref.snes->ram[i] == nat.snes->ram[i]) continue;
+        if (accounted_for(&nat.cosim, i)) continue;
+        printf("    %s  stock $%02X, native $%02X\n", wram_str(i, buf, sizeof buf),
+               ref.snes->ram[i], nat.snes->ram[i]);
+        shown++;
+      }
+      reported_bad = true;
+    }
     if (unexplained > 0 && unexplained >= worst_unexplained) {
       // Keep the worst offender's addresses; a summary that says "5 bytes were
       // unexplained" without saying which is not a finding, it is a rumour.
@@ -1301,6 +1444,8 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
       for (uint32_t i = 0; i < WRAM_SIZE && worst_unexplained_n < 8; i++) {
         if (ref.snes->ram[i] == nat.snes->ram[i]) continue;
         if (accounted_for(&nat.cosim, i)) continue;
+        worst_unexplained_ref[worst_unexplained_n] = ref.snes->ram[i];
+        worst_unexplained_nat[worst_unexplained_n] = nat.snes->ram[i];
         worst_unexplained_at[worst_unexplained_n++] = i;
       }
     }
@@ -1318,9 +1463,10 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
            "%u at the end of the run.\n",
            diverged_frames, compared, worst, worst == 1 ? "" : "s", last_differ);
     if (rc == 0)
-      printf("Every one, on all %ld passes, was inside the stacks ($7E:1000-$7E:12FF)\n"
+      printf("Every one, on all %ld passes, was inside the stacks "
+             "($7E:%04X-$7E:%04X)\n"
              "or a declared scratch byte. No byte of live game state ever differed.\n",
-             explained_only);
+             explained_only, nat.cosim.priv->stack_lo, STACK_AREA_HI - 1);
     else {
       char buf[32];
       printf("Up to %u byte%s could not be accounted for — worst at pass %ld:\n",
@@ -1329,10 +1475,17 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
       for (int i = 0; i < worst_unexplained_n; i++)
         printf("    %s  stock $%02X, native $%02X\n",
                wram_str(worst_unexplained_at[i], buf, sizeof buf),
-               ref.snes->ram[worst_unexplained_at[i]],
-               nat.snes->ram[worst_unexplained_at[i]]);
+               worst_unexplained_ref[i], worst_unexplained_nat[i]);
     }
   }
+  if (parted_at >= 0)
+    printf("Comparison stopped at pass %ld of %d, where the timelines parted.\n",
+           parted_at, frames);
+  if (nmi_drift > 0)
+    printf("NMI landed at a different call depth on %ld of %ld passes, by at\n"
+           "most %u bytes of stack — the cycle budget being an estimate, made\n"
+           "visible. Nothing reads nmi_saved_sp outside the NMI that wrote it.\n",
+           nmi_drift, compared, nmi_drift_worst);
   if (booted > 0)
     printf("%ld pass%s spent booting, before there was a scheduler to sync on.\n",
            booted, booted == 1 ? "" : "es");
