@@ -161,7 +161,7 @@ static void attach_parent_console(void) {
 static void substitution_totals(const Cosim* c, long* served, long* declined) {
   long s = 0, d = 0;
   for (int i = 0; i < c->stat_count; i++) {
-    if (!(c->enabled & (UINT64_C(1) << i))) continue;
+    if (!cosim_mask_get(&c->enabled, i)) continue;
     s += c->stats[i].checked;
     d += c->stats[i].declined;
   }
@@ -190,7 +190,12 @@ int main(int argc, char** argv) {
   const char* rom_path = NULL;
   const char* movie_path = NULL;
   const char* shot_path = NULL;
-  const char* only[32];
+  // Room for every routine in the registry and then some. It was 32, which
+  // was more than the registry held when it was written and is not any more:
+  // past the cap the `-r` was dropped and its argument fell through to the
+  // positional check, so asking for "everything except two" failed with
+  // `unexpected argument 'enemy_cdde'` and no hint that a limit existed.
+  const char* only[128];
   int only_count = 0;
   long frame_limit = 0;
   bool native = true, want_audio = true;
@@ -201,7 +206,13 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--stock")) native = false;
     else if (!strcmp(a, "--no-audio")) want_audio = false;
     else if (!strcmp(a, "-r") && i + 1 < argc) {
-      if (only_count < 32) only[only_count++] = argv[++i];
+      if (only_count == (int)(sizeof only / sizeof *only)) {
+        fprintf(stderr, "error: at most %d -r options\n\n",
+                (int)(sizeof only / sizeof *only));
+        usage();
+        return 2;
+      }
+      only[only_count++] = argv[++i];
     }
     else if (!strcmp(a, "-m") && i + 1 < argc) movie_path = argv[++i];
     else if (!strcmp(a, "--shot") && i + 1 < argc) shot_path = argv[++i];
@@ -243,10 +254,11 @@ int main(int argc, char** argv) {
   }
   // The selection is remembered so F1 can put it back; `enabled` is what the
   // engine reads, and clearing it is the whole of running stock.
-  const uint64_t selected = cosim.enabled;
+  const CosimMask selected = cosim.enabled;
   int routine_count = 0;
-  for (uint32_t m = selected; m; m >>= 1) routine_count += (int)(m & 1);
-  if (!native) cosim.enabled = 0;
+  for (int i = 0; i < cosim.stat_count; i++)
+    routine_count += cosim_mask_get(&selected, i) ? 1 : 0;
+  if (!native) cosim_mask_none(&cosim.enabled);
 
   Movie movie;
   bool have_movie = false;
@@ -324,7 +336,8 @@ int main(int argc, char** argv) {
           // the toggle is safe to hit at any moment.
           if (e.type == SDL_KEYDOWN && !e.key.repeat) {
             native = !native;
-            cosim.enabled = native ? selected : 0;
+            if (native) cosim.enabled = selected;
+            else cosim_mask_none(&cosim.enabled);
             printf("Substitution %s\n", native ? "on" : "off (stock)");
             fflush(stdout);
           }

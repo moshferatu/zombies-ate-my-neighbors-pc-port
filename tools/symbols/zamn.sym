@@ -77,6 +77,20 @@ $001BE4  vram_queue_dest       # VRAM word address
 $001C14  vram_queue_vmain      # VMAIN increment mode
 $001C44  vram_queue_size
 
+# --- Background DMA queue (a second one; 32 entries, see src/port/bossbg.h) ---
+$001D54  bg_dma_cursor         # entry count already doubled; $82:81C9 zeroes it
+$001D56  bg_dma_src
+$001D96  bg_dma_bank
+$001DD6  bg_dma_len            # bytes, i.e. tiles x 2
+$001E16  bg_dma_dest           # VRAM word address
+$005736  boss_bg_stage         # 560 bytes: one mirrored figure, built per frame
+
+# --- The big figure's position (not an actor record; 8 writers in banks 82/83) -
+$001E62  boss_x                # top centre of a footprint 36 wide, about 20 tall
+$001E64  boss_y
+$001E66  boss_draw_dx          # $82:892E derives these two from the frame table,
+$001E68  boss_draw_dy          # negating dx when the facing flag $36 is negative
+
 # --- LZSS decompressor -------------------------------------------------------
 $006F00  lzss_ring             # 4 KB sliding window, prefilled with $20
 
@@ -142,6 +156,25 @@ $80:891A  fade_in              # ramps brightness_shadow 0->15, yielding each st
 $80:9E7B  vram_queue_flush     # drains the VRAM upload list via DMA, once per NMI
 $80:C872  dma_to_cgram         # A=bank, X=source, Y=length -> CGDATA from index 0
 $80:C8B8  dma_to_vram          # A=source, X=VRAM address, Y=length, bank on stack
+$82:8138  palette_copy_a       # A=addr, Y=bank: 16 words -> $7E:5508 and $7E:5708
+$82:816F  palette_copy_b       # ...the sibling, -> $7E:5608/$7E:5808; never executed
+$80:91F7  screen_show_fade     # gfx -> BG3, fade in over 15, hold 128, fade out
+$80:9C52  fade_in_start        # zeroes $136C and queues the counting job below
+$80:9C63  fade_in_job          # vbl job: INC $136C, dequeues itself at $0F
+$80:9C72  fade_out_start       # ...the other direction
+$80:9C7D  fade_out_job         # vbl job: DEC $136C, dequeues when it goes negative
+$80:9F29  vram_bulk_upload     # queues $80:9ED0 and spins on $C6 until it drains
+$82:8163  palette_job_a        # vbl job: queues $82:8308
+$82:819A  palette_job_b        # vbl job: DMAs $7E:5608 into CGRAM at index $F0
+$82:8209  camera_scroll_job    # vbl job: BG scroll from camera_x/_y
+$80:C8DC  hw_multiply          # 16x16 through $211B/$2134; .db, and never executed
+$80:C8F6  object_spawner_body  # a thread, spawned at $80:87C1 -- not a subroutine
+$82:8014  boss_bg_queue        # a stored 14x20 figure -> 20 bg_dma jobs, one per row
+$82:8069  boss_bg_queue_flip   # ...the same, staged through boss_bg_stage and mirrored
+$82:81C9  boss_bg_dma          # the vblank job both register: drains bg_dma into $2118
+$82:892E  boss_bg_frame        # picks one of four frames, and plain or flipped on $36
+$82:895E  boss_bg_frame_table  # 4 far pointers: $97:FD9D and three in bank $83
+$82:896E  boss_bg_frame_offset # 4 (dx,dy) pairs; dx negated when $36 is negative
 
 # --- Code: sprite build ------------------------------------------------------
 $80:B947  sprite_upload_flush  # vblank job: DMAs queued 16x16 frames, then OAM
@@ -151,6 +184,10 @@ $80:BA51  sprite_emit          # metasprite -> OAM entries, unflipped
 $80:BABA  sprite_emit_flip_x
 $80:BB30  sprite_emit_flip_y
 $80:BBA6  sprite_emit_flip_xy
+$80:B123  actor_nearest        # X,Y = a point -> the nearest record of id 5/6/$38/1
+$80:B379  actor_aligned        # ...and the first of id 5/6/1 within a tile, as a direction
+$80:B3F1  actor_snap_to        # X,Y = two records; snaps either axis of X within 1px onto Y
+$80:BF1B  actor_notify_box     # tells every visible record inside a rectangle; the blast radius
 $80:BC23  oam_buffer_clear     # parks all 128 OAM entries off screen at Y=$E0
 $80:BC7F  actor_depth_sort     # one bubble pass over the display list
 $80:BCE2  actor_cull           # display list -> visible_actors, by camera window
@@ -239,7 +276,12 @@ $80:C05A  sprite_cache_init    # A:Y = frame array base; invalidates both maps
 # --- Code: level loader and placement parsers --------------------------------
 $80:86A2  level_load           # builds a level from its $9F record
 $80:825E  thread_spawn         # start a cooperative thread at Y:A with DP $00.. set
+                              # -- parks addr-1 and is resumed by RTL, exactly as a
+                              # vblank job is; see THREAD_BODIES in native_share.py
 $81:80EC  actor_list_spawn     # camera-driven spawner for the +$1C actor list
+$80:84B1  thread_handler_body  # a thread, one byte past thread_call_handler's RTL
+$80:ED8C  thread_spawn_table   # 8 records of (addr, bank, param), read at $80:ED74
+$82:C209  boss_thread_table    # 12 records of (addr, bank), read at $82:C0ED/$C131
 $82:DB46  victim_list_parse    # +$1E victim list -> victim_x/_y/_count arrays
 $80:C9A5  object_list_parse    # +$20 object list -> object_x/_y/_type arrays
 $80:C9E3  object_spawn         # one object -> a display record, from its type

@@ -508,6 +508,240 @@ uint16_t actor_nearest(Wram* w, uint16_t x, uint16_t y, uint16_t* dist) {
 }
 
 // ---------------------------------------------------------------------------
+// $80:B379  actor_aligned
+// ---------------------------------------------------------------------------
+
+// `SEC : SBC : CLC : ADC #$0008 : CMP #$0010 : BCS` -- the same
+// add-half-and-compare-unsigned window `actor_at_point` uses, so "aligned"
+// means the difference is in `-8..+7`: one tile.
+static bool aligned_within(uint16_t rec, uint16_t point) {
+  uint16_t diff = (uint16_t)(rec - point);
+  return (uint16_t)(diff + ALIGNED_HALF) < ALIGNED_WINDOW;
+}
+
+// `SEC : SBC` again, on the other axis, from scratch -- the ROM does not reuse
+// the difference the window test just computed. `BMI` reads the sign, and the
+// carry it leaves is what the direction exits hand back.
+static bool aligned_negative(uint16_t rec, uint16_t point, bool* out_carry) {
+  *out_carry = rec >= point;
+  return (int16_t)(uint16_t)(rec - point) < 0;
+}
+
+void actor_aligned(Wram* w, uint16_t x, uint16_t y, ActorAlignedRegs* out) {
+  wram_w16(w, ALIGNED_DP_X, x);
+  wram_w16(w, ALIGNED_DP_Y, y);
+
+  // $80:B382 seeds X with $1ACA, the *last* record, and the `CPX #$185E : BCS`
+  // at the bottom is what stops it -- so all 32 are visited, top down, exactly
+  // as `actor_nearest` visits them.
+  for (int i = ACTOR_SLOT_COUNT - 1; i >= 0; i--) {
+    uint32_t rec = W_ACTOR_SLOTS + (uint32_t)i * ACTOR_SLOT_STRIDE;
+    uint16_t flags = wram_r16(w, rec + ACTOR_FLAGS);
+    if (!(flags & ACTOR_DRAW)) {
+      PORT_COVER(aligned_undrawn);
+      continue;
+    }
+    if (!(flags & ACTOR_ACTIVE)) {
+      PORT_COVER(aligned_inactive);
+      continue;
+    }
+    uint16_t id = wram_r16(w, rec + ACTOR_COLLIDE_ID);
+    if (id != ALIGNED_ID_PLAYER_A && id != ALIGNED_ID_PLAYER_B &&
+        id != ALIGNED_ID_D) {
+      PORT_COVER(aligned_wrong_id);
+      continue;
+    }
+
+    bool carry;
+    // X is tested first and returns, so a record inside the window on both
+    // axes is reported as up or down and never as left or right.
+    if (aligned_within(wram_r16(w, rec + ACTOR_X), x)) {
+      bool up = aligned_negative(wram_r16(w, rec + ACTOR_Y), y, &carry);
+      PORT_COVER_IF(up, aligned_up, aligned_down);
+      out->a = up ? ALIGNED_UP : ALIGNED_DOWN;
+      out->x = (uint16_t)rec;
+      out->c = carry;
+      return;
+    }
+    if (aligned_within(wram_r16(w, rec + ACTOR_Y), y)) {
+      bool left = aligned_negative(wram_r16(w, rec + ACTOR_X), x, &carry);
+      PORT_COVER_IF(left, aligned_left, aligned_right);
+      out->a = left ? ALIGNED_LEFT : ALIGNED_RIGHT;
+      out->x = (uint16_t)rec;
+      out->c = carry;
+      return;
+    }
+    PORT_COVER(aligned_off);
+  }
+
+  // $80:B3EC. X is the loop counter one stride past the bottom of the table,
+  // which is a number rather than a record, and the carry is the `CPX` that
+  // just failed.
+  PORT_COVER(aligned_none);
+  out->a = ALIGNED_NONE;
+  out->x = (uint16_t)(W_ACTOR_SLOTS - ACTOR_SLOT_STRIDE);
+  out->c = false;
+}
+
+// ---------------------------------------------------------------------------
+// $80:B3F1  actor_snap_to
+// ---------------------------------------------------------------------------
+
+// One axis. `SEC : SBC : BPL : EOR #$FFFF : INC A` is the ROM's absolute value,
+// a two's-complement negate, so `$8000` comes back as itself exactly as it does
+// there.
+//
+// `CMP #$0002` **does not write A** -- it sets the flags from a subtraction it
+// throws away -- so on the no-snap path A is still the absolute difference
+// while N and Z describe that difference minus two. The two have to be carried
+// separately, which is why `flags_src` is not just `*out_a`.
+static bool snap_axis(Wram* w, uint16_t rec, uint16_t onto, uint16_t field,
+                      uint16_t* out_a, uint16_t* flags_src, bool* carry) {
+  uint16_t mine = wram_r16(w, (uint32_t)rec + field);
+  uint16_t theirs = wram_r16(w, (uint32_t)onto + field);
+  uint16_t diff = (uint16_t)(mine - theirs);
+  if (diff & 0x8000u) diff = (uint16_t)(~diff + 1u);
+
+  if (diff >= SNAP_WINDOW) {
+    *out_a = diff;                                   // untouched by the CMP
+    *flags_src = (uint16_t)(diff - SNAP_WINDOW);     // ...which set N and Z
+    *carry = true;
+    return false;
+  }
+  wram_w16(w, (uint32_t)rec + field, theirs);
+  *out_a = theirs;    // `LDA $0002,Y`; the `STA` under it sets nothing
+  *flags_src = theirs;
+  *carry = false;
+  return true;
+}
+
+void actor_snap_to(Wram* w, uint16_t rec, uint16_t onto, ActorSnapRegs* out) {
+  uint16_t a, flags;
+  bool c;
+  // X first, then Y, and only Y's registers and flags survive.
+  bool x_snapped = snap_axis(w, rec, onto, ACTOR_X, &a, &flags, &c);
+  PORT_COVER_IF(x_snapped, snap_x_took, snap_x_left);
+  bool y_snapped = snap_axis(w, rec, onto, ACTOR_Y, &a, &flags, &c);
+  PORT_COVER_IF(y_snapped, snap_y_took, snap_y_left);
+
+  out->a = a;
+  out->n = (flags & 0x8000u) != 0;
+  out->z = flags == 0;
+  out->c = c;
+}
+
+// ---------------------------------------------------------------------------
+// $80:BF1B  actor_notify_box
+// ---------------------------------------------------------------------------
+
+bool actor_notify_box(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
+                      ThreadCallResult* tail, ActorNotifyRegs* out) {
+  // `LDX #$0006 : BIT $38,X : BPL : STZ $38,X`, downwards over four words.
+  // Only a negative bound is touched, and it is zeroed rather than clamped to
+  // anything the map knows about. X falls out of this loop at $FFFE, which is
+  // what the two early exits below hand back.
+  for (int i = NOTIFY_BOX_BOUNDS - 1; i >= 0; i--) {
+    uint32_t at = NOTIFY_BOX_DP_X0 + (uint32_t)i * 2;
+    if (wram_r16(w, at) & 0x8000u) {
+      PORT_COVER(notify_bound_clamped);
+      wram_w16(w, at, 0);
+    } else {
+      PORT_COVER(notify_bound_kept);
+    }
+  }
+
+  out->a = a_in;
+  out->x = 0xfffeu;
+  out->y = 0;
+  out->c = c_in;
+
+  uint16_t count = wram_r16(w, W_VISIBLE_ACTOR_COUNT);
+  if (count == 0) {
+    PORT_COVER(notify_no_actors);
+    return true;
+  }
+  // `DEY DEY : BEQ` — one visible record is refused as well as none, so a board
+  // holding exactly one actor is never told anything. The walk would have run
+  // from index 0 to index 0; the guard rejects it for being zero rather than
+  // for being empty, and the port keeps that.
+  uint16_t at = (uint16_t)(count - 2);
+  if (at == 0) {
+    PORT_COVER(notify_one_actor);
+    return true;
+  }
+
+  uint16_t id = wram_r16(w, NOTIFY_BOX_DP_ID);
+  uint16_t x0 = wram_r16(w, NOTIFY_BOX_DP_X0), x1 = wram_r16(w, NOTIFY_BOX_DP_X1);
+  uint16_t y0 = wram_r16(w, NOTIFY_BOX_DP_Y0), y1 = wram_r16(w, NOTIFY_BOX_DP_Y1);
+
+  // A, X and the carry are whatever the *last* record examined left behind, so
+  // they are carried through the walk rather than reconstructed at the end.
+  // Each `CMP` below writes the carry and not A; each `LDA` writes A and not
+  // the carry; a record with no id writes neither.
+  for (;;) {
+    uint16_t rec = wram_r16(w, W_VISIBLE_ACTORS + at);
+    out->x = rec;
+    uint16_t rec_id = wram_r16(w, (uint32_t)rec + ACTOR_COLLIDE_ID);
+    out->a = rec_id;
+
+    if (rec_id == 0) {
+      PORT_COVER(notify_no_id);            // `BEQ`, and the carry stands
+    } else if (rec_id == id) {
+      PORT_COVER(notify_self_id);
+      out->c = true;                       // `CMP $40` equal, so C is set
+    } else {
+      out->c = rec_id >= id;
+      uint16_t rx = wram_r16(w, (uint32_t)rec + ACTOR_X);
+      out->a = rx;
+      out->c = rx >= x0;
+      if (!out->c) {
+        PORT_COVER(notify_left_of);
+      } else {
+        out->c = rx >= x1;
+        if (out->c) {
+          PORT_COVER(notify_right_of);
+        } else {
+          uint16_t ry = wram_r16(w, (uint32_t)rec + ACTOR_Y);
+          out->a = ry;
+          out->c = ry >= y0;
+          if (!out->c) {
+            PORT_COVER(notify_above);
+          } else {
+            out->c = ry >= y1;
+            if (out->c) {
+              PORT_COVER(notify_below);
+            } else {
+              PORT_COVER(notify_hit);
+              // `PHY : LDA $0C,X : STX $78 : TAX : LDY $40 : JSL $808480 :
+              // PLY`. The record is published *before* the dispatch, as
+              // everywhere else, so a handler reading `$78` sees the actor it
+              // is being told about. `PHY`/`PLY` is why the walk survives it.
+              wram_w16(w, W_HANDLER_SELF, rec);
+              tail->c = out->c;
+              if (!thread_call_handler(
+                      w, rom, wram_r16(w, (uint32_t)rec + ACTOR_THREAD), id,
+                      tail->c, tail)) {
+                return false;
+              }
+              out->a = tail->a;
+              out->x = tail->x;
+              out->c = tail->c;
+            }
+          }
+        }
+      }
+    }
+
+    if (at == 0) break;
+    at -= 2;
+  }
+
+  // `DEY DEY : BPL` off the end of index 0.
+  out->y = 0xfffeu;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
 // $80:BF67  actor_at_point
 // ---------------------------------------------------------------------------
 

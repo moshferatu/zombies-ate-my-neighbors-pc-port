@@ -142,6 +142,50 @@ Five parallel arrays, `vram_queue_count/2` entries live:
 | `$7E:1C14` | VMAIN increment mode |
 | `$7E:1C44` | transfer length |
 
+There is a **second one**, and nothing links the two. It has four columns
+rather than five — everything that goes through it is a tilemap row, so there
+is no step-mode to record — and its own count, its own drain routine, and no
+bound at all:
+
+| Address | Field |
+| --- | --- |
+| `$7E:1D54` | `bg_dma_cursor` — entry count, already doubled |
+| `$7E:1D56` | source address |
+| `$7E:1D96` | source bank |
+| `$7E:1DD6` | transfer length in bytes |
+| `$7E:1E16` | VRAM destination word address |
+
+The arrays are `$40` bytes apart, so it holds 32 entries, and the only thing
+enforcing that is the arithmetic: `$82:8014` and `$82:8069` append to it
+without ever testing the cursor, and a caller that queued two figures in one
+frame would walk the source array into the bank array. Nothing does.
+`$82:81C9` drains it in vblank, downwards from the cursor, and zeroes the
+cursor on the way out. See `src/port/bossbg.h`.
+
+`$7E:5736` belongs to the same mechanism: 560 bytes the mirrored blitter builds
+a flipped figure in, live only between the routine that writes it and the
+vblank DMA that reads it back.
+
+## The big figure's position
+
+A boss too large for sprites is not an actor and has no record. Its position
+lives in two fixed words, with the draw offsets `$82:892E` derives from them in
+the two after:
+
+| Address | Field |
+| --- | --- |
+| `$7E:1E62` | `boss_x` — top centre of a footprint 36 wide, about 20 tall |
+| `$7E:1E64` | `boss_y` |
+| `$7E:1E66` | `boss_draw_dx` — negated when the facing flag `$36` is negative |
+| `$7E:1E68` | `boss_draw_dy` |
+
+**Eight routines across banks `$82` and `$83` write the pair**, so this is not
+level 25's baby's slot but whichever oversized thing the level has; only one of
+those eight can be live at a time. `$82:8F93` is the one that moves it against
+terrain — see `src/port/boss.h` — and it is also the only reason the four words
+are adjacent, since `$82:892E` reads the position and writes the offsets in the
+same breath.
+
 ## Sprite frame cache
 
 The 128-slot LRU cache of 16x16 sprite frames (`docs/asset-formats.md` →
@@ -185,6 +229,14 @@ The remaining bytes belong to logic that is not ported yet.
 
 The camera the pass subtracts lives at `$7E:1B6A` (X) and `$7E:1B6C` (Y), zeroed
 at level start by `$80:A65B` and moved by `$80:A691`/`$80:A792`.
+
+How far it may travel is `$B8` across and `$B6` down — the expanded tilemap's
+size in pixels less one screen, derived at `$80:ACE7` from `$B2 * 4 - 256` and
+`$B4 * 8 - 240`. The two scroll routines that raise a camera coordinate stop
+dead when they match; the two that lower one stop at zero. Alongside them,
+`$7E:1B7E` is the VRAM word address BG2's tilemap starts at — `$7800`, loaded
+once at `$80:8732` and never changed — which every strip those routines queue is
+an offset from.
 
 ## Large buffers
 

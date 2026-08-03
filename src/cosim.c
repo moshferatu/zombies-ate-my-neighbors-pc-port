@@ -33,7 +33,11 @@
 #include "analysis/movie_apply.h"
 #include "cosim/cosim.h"
 
-#define MAX_SELECTED 32
+// Room for every routine in the registry and then some. It was 32, chosen when
+// that was more than the registry held, and "run everything except one" — which
+// is how a divergence gets pinned on a routine or cleared of it — needs one
+// more than there are entries.
+#define MAX_SELECTED 128
 
 typedef struct {
   const char* rom_path;
@@ -184,7 +188,7 @@ static int cmd_verify(const Options* o) {
 
   long checked = 0;
   for (int i = 0; i < c.stat_count; i++)
-    if (c.enabled & (UINT64_C(1) << i)) checked += c.stats[i].checked;
+    if (cosim_mask_get(&c.enabled, i)) checked += c.stats[i].checked;
   printf("\n%ld call%s checked, %d routine%s diverged.\n", checked,
          checked == 1 ? "" : "s", failures, failures == 1 ? "" : "s");
   if (checked == 0)

@@ -67,6 +67,20 @@ WAIT_SITES = [
     (0x80CB99, 4, 'ADC #$03 : BEQ    -- the IPL delay loop after it'),
     (0x82AC65, 8, 'CMP #$0078 : BCC  -- the level intro, holding for 120 frames'),
     (0x82AC92, 8, 'CMP #$0078 : BCC  -- ...and again after the block library'),
+    # `$80:91F7` spends 4,406,310 of its 4,406,610 instructions in these two
+    # loops -- 99.993% -- and the 300 that are left are 30 real instructions a
+    # call. Both spin on `$136C`, which the main CPU never touches: `$80:9C52`
+    # zeroes it and queues the vblank job `$80:9C63` to `INC` it fifteen times,
+    # and `$80:9C72` queues `$80:9C7D` to `DEC` it back past zero. So this is a
+    # fade counted on the vblank side with the CPU held against it, and porting
+    # either loop would replace a spin with a spin.
+    (0x80923A, 8, 'CMP #$000F : BNE  -- a screen fading in, counted by a VBL job'),
+    (0x80924C, 8, 'AND #$0080 : BEQ  -- ...and the same screen fading back out'),
+    # The same story one row down. `$80:9F29` queues the vblank job `$80:9ED0`
+    # to push a tilemap into VRAM and then holds here until `$C6`, the job's
+    # remaining byte count, reaches zero: 2,149,252 of its 2,149,592
+    # instructions, 99.98%, leaving 34 a call that are real.
+    (0x809F5C, 4, 'LDA $C6 : BNE     -- waiting for a queued VRAM upload to drain'),
 ]
 
 # Routines the ranking will keep putting near the top and which the harness
@@ -112,6 +126,30 @@ JUMP_ENTRIES = {
     # leaves moved the native total by 8,382,014 where the routines themselves
     # execute 7,113,522.
     0x80CDF4: 'the real start of what the ranking credits to $80:CDEB',
+    # $81:81A2 ends at its RTS on $81:81EE, with a two-instruction alternate
+    # tail at $81:81EF; the entry itself executes 3,234 instructions in ten
+    # profiles. Everything the ranking credited to it -- 4,671,086, or 1.46% --
+    # belongs to what starts here, which is not a subroutine at all: it opens
+    # `PEI $02 : PLB`, drops into a loop around `JSL thread_yield`, and is
+    # entered by the scheduler resuming a thread rather than by any JSR.
+    # Without this line, `$81:81A2` reads as the top portable row on the whole
+    # ranking at 1.6% over 79 calls, and it is neither.
+    0x8181F6: 'the real start of what the ranking credits to $81:81A2',
+    # $80:C8B8 dma_to_vram is fifteen instructions and ends at its RTL on
+    # $80:C8DB: 68,355 instructions over 4,557 calls, 0.02%. The 0.91% the
+    # ranking added to that begins here, and this is a thread body too --
+    # $80:87C1, inside the level loader, does `LDA #$C8F6 : LDY #$0080 :
+    # JSL thread_spawn`, and nothing in the ROM JSRs or JSLs to it or holds a
+    # pointer to it. It opens `JSR object_list_parse` and then loops on
+    # `JSL thread_yield`, spawning objects near the camera centre. Note that
+    # its direct page is a thread's own 128-byte page, so the $0C/$0E/$10/$12
+    # the listing annotates as vbl_queue_* are nothing of the kind -- they are
+    # this thread's locals, and the symbol names are actively misleading there.
+    # Between them the two routines at $80:C8DB and $80:C8DC are also the
+    # tidiest example of why the listing is a lower bound: $80:C8DC is a 16x16
+    # hardware multiply through $211B/$2134, entirely .db, and executed zero
+    # times in all ten profiles.
+    0x80C8F6: 'the real start of what the ranking credits to $80:C8B8',
 }
 
 BLOCKED = {
@@ -122,6 +160,114 @@ BLOCKED = {
     0x80816C: 'the NMI entry point, which is not called and cannot be shimmed',
 }
 
+# ...and every vblank job, for the same reason as the NMI entry: the dispatcher
+# reaches it by `RTL`, so there is no call for the harness to substitute. See
+# VBL_JOBS below for how the list is derived.
+BLOCKED.update({a: 'a vblank job -- reached by RTL from a queue, never called'
+                for a in ()})  # filled in below, once VBL_JOBS exists
+
+
+# Every vblank job in the ROM, and a whole class of misattribution.
+#
+# The two queues store a job as **`addr - 1`** and the dispatchers reach it by
+# pushing that and executing `RTL` (`$80:83E0`, `$80:843D`). So a vblank job is
+# never the target of a `JSR` or a `JSL`, the call graph therefore has no edge
+# into it, and attribution-by-nearest-preceding-entry always credits it to
+# whatever subroutine happens to sit below it in the ROM. Every one of these is
+# invisible to the ranking until it is declared, and they are not small: five of
+# them stacked on `$82:8138` turned a 105,000-instruction palette copier into a
+# 0.6 per cent row, which is how the class was found.
+#
+# This is the same structural problem as `$81:81F6` and `$80:C8F6` -- code that
+# runs and is never called -- and it is the third and largest family of it. The
+# other two had to be found one at a time. This one does not, because the ROM
+# registers a job with a fixed three-instruction idiom:
+#
+#     LDA #$<addr> : LDY #$00<bank> : JSL $8083AE    (queue A)
+#                                     JSL $80841 8   (queue B)
+#
+# so the set below is every match for it in the cartridge, and reproducing it is
+# a twelve-line script rather than an afternoon of reading. A job that is also a
+# registry entry (`$80:9E7B vram_queue_flush`) is already a boundary and appears
+# here harmlessly.
+#
+# They are also **unportable for the same reason they are invisible**: the
+# harness substitutes per call, and nothing calls these. So they go into BLOCKED
+# too, alongside the NMI entry and the two dispatchers that run them.
+VBL_JOBS = frozenset((
+    0x808B17, 0x808B2B, 0x808B48, 0x808B5C, 0x808B70, 0x808B82,
+    0x80938E, 0x80953B, 0x809A1B, 0x809A90, 0x809BFC, 0x809C63,
+    0x809C7D, 0x809CB2, 0x809E3E, 0x809E7B, 0x809ED0, 0x809F62,
+    0x809FDF, 0x80A084, 0x80A09E, 0x80A2AB, 0x80AC55, 0x80C2AB,
+    0x80EC7A, 0x80ECA0, 0x828163, 0x82819A, 0x8281C9, 0x828209,
+    0x828259, 0x8282B5, 0x828308, 0x828425, 0x82882C, 0x8288F0,
+    0x828903, 0x828C49, 0x829644, 0x829657, 0x829CA6, 0x829D4D,
+    0x82A9D1, 0x82A9E5, 0x82AE44, 0x82AEB4, 0x82B1F9, 0x82B82E,
+    0x82B9B6, 0x82D88C, 0x82DAA0, 0x82DADE, 0x82DC0C, 0x82E076,
+    0x838255, 0x83B0EC, 0x83B100, 0x83C949, 0x83C95D,
+))
+
+# `$80:9E7B vram_queue_flush` is the one exception in the fifty-nine, and it is
+# worth stating rather than hiding: `$80:A676` registers it as a queue-A job in
+# the ordinary way, *and* `$80:81A2` inside the NMI calls it outright, 60,940
+# times over the corpus. It is therefore the one job the harness can substitute,
+# because there is a call to intercept -- so it is an entry like the rest but is
+# not blocked. It is also the only one of the fifty-nine with an inbound edge in
+# the call graph, which is how it was found.
+VBL_JOB_CALLED = frozenset({0x809E7B})
+
+BLOCKED.update({a: 'a vblank job -- reached by RTL from a queue, never called'
+                for a in VBL_JOBS - VBL_JOB_CALLED if a not in BLOCKED})
+
+
+# Every thread body in the ROM, and the second family of "runs and is never
+# called" reduced to a script.
+#
+# `$80:825E thread_spawn` takes the far entry in `A:Y`, and its second
+# instruction is `DEC` -- it parks **`addr - 1`** in a nine-byte frame that the
+# scheduler resumes with `RTL`, which is precisely what the two vblank queues do
+# with a job. So a thread body has no inbound call edge either, the call graph
+# cannot see it, and attribution-by-nearest-preceding-entry credits it to
+# whatever subroutine sits below it. `$81:81F6` and `$80:C8F6` were each found
+# by hand, a round apart, after a ranking row made no sense; this is the same
+# search done once.
+#
+# The spawn idiom is `LDA #$<addr> : LDY #$00<bank> : JSL $80825E`, and matching
+# it over the cartridge resolves 32 of the 67 spawn sites. Three more are
+# spawned from tables that are themselves in ROM and are expanded below.
+#
+# **The remaining four read the address from data, and this set is therefore a
+# lower bound in a way `VBL_JOBS` is not.** `$80:8774` and `$80:87FB` take it
+# from bank `$9F` -- per-level data, so which threads a level starts is a
+# property of the level and not of the code -- `$81:80E7` takes it from WRAM,
+# and `$81:81D7` walks a list through `($0C),Y`. Anything they start that is not
+# already below stays misattributed, and there is no static way to find it. The
+# honest claim is "every thread body the code names", not "every thread body".
+THREAD_BODIES = frozenset((
+    # from `LDA #imm : LDY #imm : JSL thread_spawn`
+    0x8084B1, 0x80A36E, 0x80C8F6, 0x8180EC, 0x8181F6, 0x81ABF5,
+    0x81B4EA, 0x81B664, 0x81CF10, 0x81D4C9, 0x81E72C, 0x81EEB7,
+    0x81F159, 0x81F2B2, 0x81F380, 0x82D8DB, 0x82DCA0, 0x82DEFB,
+    0x82DF6B, 0x82E0B4, 0x82F03E, 0x82F1E6, 0x82F49E, 0x82F6EB,
+    0x82F70B, 0x839776, 0x83B1DD, 0x83B277, 0x83B55E, 0x83B8F8,
+    0x83C687, 0x83CA4A,
+    # ...plus `$80:ED8C`, eight six-byte records of (addr, bank, parameter),
+    # read at `$80:ED74`. `$81:F380` appears here and above, which is the
+    # cross-check that says the record layout was read correctly.
+    0x81FCB2, 0x81FAF5, 0x81E8A8, 0x81EAE6, 0x81EBE2, 0x81F976,
+    0x81F55E,
+    # ...and `$82:C209`, twelve four-byte records read at `$82:C0ED` and
+    # `$82:C131`, the first of them a null entry. `$83:9776` is the same kind of
+    # cross-check.
+    0x839699, 0x839843, 0x83993D, 0x839C6D, 0x839D00, 0x839E15,
+    0x839EBE, 0x839FE2, 0x839A89, 0x839BAD,
+))
+
+# Nothing in the ROM calls a thread body, so none of them can be a registry
+# entry and all of them are blocked -- unlike `VBL_JOBS`, which had one
+# exception. They stay in the denominator because the work is real.
+BLOCKED.update({a: 'a thread body -- resumed by RTL from a parked frame, never called'
+                for a in THREAD_BODIES if a not in BLOCKED})
 
 def rom_to_snes(off):
     return ((0x80 + off // BANK_SIZE) << 16) | (0x8000 + off % BANK_SIZE)
@@ -238,7 +384,7 @@ def main(dirs, extra=None):
     # Boundaries: every JSR/JSL target the corpus actually reached, plus the
     # registry's entries in case one was only ever jumped to, plus the ones
     # above that nothing calls at all.
-    jump_offsets = {off for a in JUMP_ENTRIES
+    jump_offsets = {off for a in set(JUMP_ENTRIES) | VBL_JOBS | THREAD_BODIES
                     if (off := snes_to_rom(a)) is not None}
     entries = np.array(sorted(
         set(np.nonzero(flags & CDL_SUB)[0].tolist())
@@ -440,11 +586,13 @@ def main(dirs, extra=None):
         print('\n  ! -- %s of the work above, %.1f%% of everything the game does,'
               % ('{:,}'.format(blocked_work), 100.0 * blocked_work / tot_work))
         print('  is in routines the harness structurally cannot take -- which is'
-              '\n  not the same as cannot be written. Two of these are already C,'
-              '\n  and the rest are twenty lines each. What none of them can do is'
-              '\n  pass through per-call substitution, because they *are* the'
-              '\n  frame rather than something called inside one. They stay in the'
-              '\n  denominator because the work is real:\n')
+              '\n  not the same as cannot be written. What none of them can do is'
+              '\n  pass through per-call substitution, because nothing calls them:'
+              '\n  a dispatcher reaches a vblank job by RTL and the scheduler'
+              '\n  reaches a thread body the same way, so there is no call to'
+              '\n  intercept. They are the frame rather than something called'
+              '\n  inside one, and they stay in the denominator because the work'
+              '\n  is real:\n')
         for addr, why in seen_blocked:
             print('    $%02X:%04X  %s' % (addr >> 16, addr & 0xFFFF, why))
 

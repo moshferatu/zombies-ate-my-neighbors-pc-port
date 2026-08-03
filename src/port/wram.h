@@ -218,6 +218,54 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_ACTOR_LIST_HEAD 0x1b5e  // offset of the first live record, or 0
 #define W_CAMERA_X 0x1b6a         // world coordinate of the top-left of the screen
 #define W_CAMERA_Y 0x1b6c
+// The tile window `$80:A54D` derives from the two above, and the four values
+// the scroll routines index the tilemap with. `$1B66`/`$1B68` are the camera's
+// sub-tile remainder -- the low three bits it has drifted past a tile boundary
+// -- and `$1B76`/`$1B7A` are the writing cursor into the PPU's 64x32 tilemap,
+// which is why they wrap at $3F and $1F rather than at the level's size.
+#define W_CAMERA_SUB_X 0x1b66
+#define W_CAMERA_SUB_Y 0x1b68
+#define W_CAMERA_TILE_X 0x1b6e   // camera x >> 3
+#define W_CAMERA_TILE_X_END 0x1b70  // ...plus 32, a screen's width of tiles
+#define W_CAMERA_TILE_Y 0x1b72   // camera y >> 3
+#define W_CAMERA_TILE_Y_END 0x1b74  // ...plus 28, a screen's height
+#define W_TILEMAP_CURSOR_X 0x1b76   // wraps at 64
+#define W_TILEMAP_CURSOR_X_END 0x1b78
+#define W_TILEMAP_CURSOR_Y 0x1b7a   // wraps at 32
+#define W_TILEMAP_CURSOR_Y_END 0x1b7c
+// `$80:8732` loads it with `$7800` and never changes it: the VRAM word address
+// BG2's tilemap starts at, which every strip the scroll routines queue is an
+// offset from.
+#define W_TILEMAP_VRAM_BASE 0x1b7e
+
+// The VRAM transfer queue -- five parallel arrays of 24 words each, indexed
+// together by `$CE`, which is an entry count already doubled. `$80:9E37` bounds
+// it with `CMP #$0030` and that 48 is where the 24 comes from. One job is a
+// source in WRAM, a destination VRAM *word* address, a `$2115` step mode and a
+// length in bytes; `port/camera.h`'s scroll routines write them and the vblank
+// handler at `$80:9E7B` runs them.
+#define W_VRAM_QUEUE_SRC 0x1b84
+#define W_VRAM_QUEUE_BANK 0x1bb4
+#define W_VRAM_QUEUE_DEST 0x1be4
+#define W_VRAM_QUEUE_VMAIN 0x1c14
+#define W_VRAM_QUEUE_SIZE 0x1c44
+
+// A second, entirely separate transfer queue -- four parallel arrays of 32
+// words, indexed together by `$1D54`, which like `$CE` is an entry count
+// already doubled. There is no step-mode column because everything that goes
+// through it is a tilemap row, and no bound at all: `$82:8014` and `$82:8069`
+// in `port/bossbg.h` append to it without ever testing the cursor, and
+// `$82:81C9` drains it in vblank and zeroes the cursor. That the arrays are
+// `$40` bytes apart is the only thing that decides where it ends.
+#define W_BG_DMA_CURSOR 0x1d54
+#define W_BG_DMA_SRC 0x1d56
+#define W_BG_DMA_BANK 0x1d96
+#define W_BG_DMA_LEN 0x1dd6
+#define W_BG_DMA_DEST 0x1e16
+// 560 bytes of scratch the mirrored blitter builds a flipped figure in, one
+// frame at a time. Nothing else in the corpus touches it.
+#define W_BOSS_BG_STAGE 0x5736
+
 #define W_VISIBLE_ACTORS 0x137e   // up to 32 x u16: the records this frame draws
 #define W_VISIBLE_ACTOR_COUNT 0x009c  // bytes, i.e. entries x 2
 #define W_OAM_BUFFER 0x13be       // 544 bytes, DMA'd to OAMDATA every frame
@@ -234,6 +282,12 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 // 22x13 blocks expanded to 176x104 tiles at two bytes each.
 #define W_TILEMAP_ROW_BYTES 0x00b2  // tile columns x 2, i.e. one row in bytes
 #define W_TILEMAP_ROWS 0x00b4       // tile rows
+// How far the camera may travel before it runs out of map, which is the same
+// two numbers in pixels less one screen. `$80:ACE7` derives both from the two
+// above -- `$B2 * 4 - 256` across and `$B4 * 8 - 240` down -- and the scroll
+// routines that *raise* a camera coordinate stop dead when they match.
+#define W_CAMERA_MAX_X 0x00b8
+#define W_CAMERA_MAX_Y 0x00b6
 // A 24-bit pointer, low word here and bank byte at +2, to 512 attribute words —
 // one per BG tile, indexed by the tilemap entry's low ten bits doubled.
 #define W_TILE_ATTRS 0x00ba
@@ -279,6 +333,10 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 // is why they are spelled out here rather than cited.
 #define W_TILEMAP_ARENA_NEXT 0x00ca
 #define W_TILEMAP_ARENA_LEFT 0x00cc
+// `$26` is the render flags word and `$CE` the VRAM queue's entry count, both
+// read by `$80:9E6D` to decide whether to ask for a transfer this frame.
+#define W_RENDER_FLAGS 0x0026
+#define W_VRAM_QUEUE_COUNT 0x00ce
 #define W_TILE_PRIORITY_BELOW 0x00dc
 
 // --- Thread scheduler tables (24 slots of one word each) ---

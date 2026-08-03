@@ -82,9 +82,12 @@
 // without, whatever their positions. Nothing here needs to know what it means.
 #define ACTOR_SORT_FIRST 0x0020
 // Bit 0: set on every live record in every display list sampled so far — the
-// flags seen are `$8000`, `$8001`, `$8003`, `$8005`, `$8009` — and `$80:B123`
-// is the only reader found, which requires it alongside `ACTOR_DRAW`. What
-// clears it has not been established, so the name says where it is rather than
+// flags seen are `$8000`, `$8001`, `$8003`, `$8005`, `$8009`. Two readers are
+// now known, `$80:B123` and `$80:B379`, and they test it identically: right
+// after `ACTOR_DRAW`, as a second gate on the same walk. Both of the port's
+// coverage sites for that branch are untaken by all 42 movies, so no input has
+// ever produced a record that is drawn with this bit clear. What clears it has
+// still not been established, and the name says where it is rather than
 // claiming to know more than that.
 #define ACTOR_ACTIVE 0x0001
 // Bit 4: take the OAM palette from `ACTOR_ATTR` instead of the metasprite's.
@@ -283,6 +286,178 @@ bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp);
 // Returns the winning record's address, which the ROM leaves in X, and puts the
 // distance — `$FFFF` when nothing matched — in `*dist`, which it leaves in A.
 uint16_t actor_nearest(Wram* w, uint16_t x, uint16_t y, uint16_t* dist);
+
+// --- $80:B379 ---------------------------------------------------------------
+
+// **Is anything lined up with this point, and which way is it?**
+//
+// `actor_nearest`'s sibling, and near enough its twin to be worth reading as
+// one: the same 32 slots walked from the top down, the same `ACTOR_DRAW` and
+// flag-bit-0 gate, the same collision ids — `$05`, `$06` and `$01`, which is
+// `actor_nearest`'s four without `$38`. What differs is the question. That one
+// measures every candidate and keeps the closest; this one takes the **first**
+// candidate that lines up and returns immediately, so it answers with whichever
+// matching record sits in the highest slot rather than with the nearest.
+//
+// Its two callers, `$81:9D34` and `$81:9DD4`, are one enemy body, and the line
+// under the first of them is `JSL $80:B123` on a `$3C`-frame timer. So the same
+// creature asks two different questions at two different rates: *who should I
+// be walking towards*, once a second, and *can I shoot right now*, every frame.
+// This is the second one.
+#define ACTOR_ALIGNED_ENTRY 0x80b379u
+
+#define ALIGNED_ID_PLAYER_A 0x0005
+#define ALIGNED_ID_PLAYER_B 0x0006
+#define ALIGNED_ID_D 0x0001
+
+// Direct page zero, forced by the routine's own `LDA #$0000 : TCD`, and the
+// point it was asked about. Note these are *not* `actor_nearest`'s slots:
+// `$38` is the X here and the best distance there.
+#define ALIGNED_DP_X 0x38
+#define ALIGNED_DP_Y 0x3a
+
+// `SBC : CLC : ADC #$0008 : CMP #$0010 : BCS` — the same add-half-and-compare
+// -unsigned trick `actor_at_point` uses, so the window is one tile: the record
+// is aligned when the difference is in `-8..+7`.
+#define ALIGNED_HALF 0x0008
+#define ALIGNED_WINDOW 0x0010
+
+// What it answers with: a direction index already doubled, in the game's usual
+// 1-8 clockwise-from-up ordering, and zero for nothing found. The ROM's caller
+// does `TAX : BEQ` and then indexes with it.
+//
+// **X is tested first and wins ties.** A record diagonally within one tile on
+// both axes is reported as up or down, never left or right.
+#define ALIGNED_NONE 0x0000
+#define ALIGNED_UP 0x0002
+#define ALIGNED_RIGHT 0x0006
+#define ALIGNED_DOWN 0x000a
+#define ALIGNED_LEFT 0x000e
+
+// A is the direction. X is the record that matched, or `$184A` — one stride
+// below the table — when the walk ran off the bottom without a match, which is
+// the loop counter's final value and not a pointer to anything. Y is the `y`
+// argument, untouched from first instruction to last.
+//
+// Carry is the leftover of whichever `SBC` decided the direction, so it says
+// `record >= point` on that axis and is never read by anything; it is clear on
+// the no-match exit, from the `CPX` that ended the loop. N and Z belong to the
+// caller's direct page, off the closing `PLD` — the caller re-derives Z from A
+// with its own `TAX`.
+typedef struct {
+  uint16_t a, x;
+  bool c;
+} ActorAlignedRegs;
+
+void actor_aligned(Wram* w, uint16_t x, uint16_t y, ActorAlignedRegs* out);
+
+// --- $80:B3F1 ---------------------------------------------------------------
+
+// **Snap one record onto another when they are nearly lined up.**
+//
+// Twenty-one instructions, and the other half of what `actor_aligned` is for.
+// That routine answers *is something roughly lined up with me*, with a tile of
+// slack; this one closes the last pixel of it. For each axis independently: if
+// `|rec.pos - onto.pos| < 2`, write `onto`'s coordinate into `rec`. Otherwise
+// leave it alone.
+//
+// Without it, an enemy that walks towards a target one pixel at a time can step
+// straight past the alignment it was aiming for and shoot down an empty
+// corridor. With it, the last pixel is a snap rather than a step, so lining up
+// always succeeds exactly.
+//
+// **This is below the threshold the ranking is for**: 199,679 instructions over
+// ten profiles, 0.06%, where the rows around it are ten times that. It went in
+// because it was already read, sits in the same file as its partner, is a leaf
+// that calls nothing, and has thirteen callers across banks `$81` and `$82` —
+// which is the sort of thing that turns other routines into fully-subsumed ones
+// later. It is not an argument for porting the next 0.06% row.
+#define ACTOR_SNAP_TO_ENTRY 0x80b3f1u
+
+// `CMP #$0002 : BCS` on the absolute difference, so the snap happens at a
+// distance of 0 or 1 and never at 2.
+#define SNAP_WINDOW 0x0002
+
+// A is whatever the *Y* axis last put there — `onto`'s Y when that axis
+// snapped, and the absolute difference when it did not — because the X axis
+// runs first and everything it left is overwritten. X and Y are the two record
+// addresses, unchanged; the routine indexes with them and never writes them.
+//
+// Carry is the `CMP` that decided the Y axis: **set means it did not snap**.
+// N and Z come from that same `CMP`, and on the no-snap path they therefore
+// describe the difference **minus two** while A still holds the difference
+// itself — `CMP` sets flags from a subtraction it does not store, and reading
+// it as an `SBC` is worth exactly two, which is what the harness reported.
+// There is no `PHD` here and no `PLD`, so unlike its neighbours these flags are
+// the routine's own.
+typedef struct {
+  uint16_t a;
+  bool n, z, c;
+} ActorSnapRegs;
+
+void actor_snap_to(Wram* w, uint16_t rec, uint16_t onto, ActorSnapRegs* out);
+
+// --- $80:BF1B ---------------------------------------------------------------
+
+// **Tell everything inside a rectangle.** The blast radius, as a routine.
+//
+// `actor_overlap_pass` is the game asking *who is touching whom*, pair by pair,
+// once a frame. This is one actor asking *who is inside this box* and telling
+// all of them at once, and it is the mechanism behind every attack in the game
+// that is not a contact hit: fifteen call sites across four banks reach it.
+//
+// The caller sets up five direct-page words and calls. The rectangle is
+// half-open — `>= min` and `< max` on both axes, from `CMP : BCC` and
+// `CMP : BCS` — and `$40` is the caller's own collision id, which is both the
+// argument each handler is entered with and the id that is skipped, so nothing
+// blasts itself.
+//
+// It walks `visible_actors` **backwards**, like `actor_at_point` and unlike
+// `actor_nearest`, so it sees only what this frame's cull kept.
+#define ACTOR_NOTIFY_BOX_ENTRY 0x80bf1bu
+
+#define NOTIFY_BOX_DP_X0 0x38  // left, inclusive
+#define NOTIFY_BOX_DP_X1 0x3a  // right, exclusive
+#define NOTIFY_BOX_DP_Y0 0x3c  // top, inclusive
+#define NOTIFY_BOX_DP_Y1 0x3e  // bottom, exclusive
+#define NOTIFY_BOX_DP_ID 0x40  // the caller's id: passed on, and skipped
+
+// **The four bounds are clamped to zero if negative, and only if negative.**
+// `LDX #$0006 : BIT $38,X : BPL + : STZ $38,X : + DEX DEX : BPL` is a four-word
+// loop testing bit 15, so a box that hangs off the left or top of the map is
+// clipped to the edge — but a box off the right or bottom is not clipped at
+// all, because there is no map size here to clip it against. The asymmetry is
+// the ROM's and the port keeps it.
+#define NOTIFY_BOX_BOUNDS 4
+
+// The dispatch is `thread_call_handler`, so this routine inherits its decline:
+// **false means some actor in the box has a handler the port does not have**,
+// and the harness gives the whole call back to the ROM. As with
+// `actor_collide_notify`, a decline may leave `w` partly written — earlier
+// actors in the box have already been told — because the ROM has already told
+// them by then too.
+//
+// `tail` is in-out and carries the last dispatch's registers, exactly as it does
+// for the overlap pass.
+//
+// The three register outputs are all leftovers of the *last record examined*,
+// and they are claimed rather than written off because there are fifteen call
+// sites and four of the five looked at return immediately, which puts the
+// values one frame further from anywhere they could be shown to be dead. So:
+// A is the last value loaded — the id that read zero, or the X or Y that failed
+// a bound, or the dispatch's A. X is that record, or the dispatch's X. Carry is
+// whichever `CMP` decided the last record's fate.
+//
+// Y is the walk index run off the end: `$FFFE` when the walk happened, and 0 on
+// both early exits, where `LDY $9C` or `DEY DEY` left it there. X on those two
+// is `$FFFE` — the bound-clamping loop's counter, gone negative.
+typedef struct {
+  uint16_t a, x, y;
+  bool c;
+} ActorNotifyRegs;
+
+bool actor_notify_box(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
+                      ThreadCallResult* tail, ActorNotifyRegs* out);
 
 // --- $80:BF67 ---------------------------------------------------------------
 

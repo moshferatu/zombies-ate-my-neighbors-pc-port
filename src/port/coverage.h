@@ -377,6 +377,25 @@
   X(nearest_candidate,"actor_nearest",      "one it measured the distance to")  \
   X(nearest_closer,   "actor_nearest",      "...and one that beat the best so far, so the search moved") \
                                                                                 \
+  /* $80:B379 actor_aligned — the same three dismissals as its sibling above, \
+     then the four directions it can answer with and the two ways to find \
+     nothing. */                                                                \
+  X(aligned_undrawn,  "actor_aligned",      "a slot with ACTOR_DRAW clear, which is most of them") \
+  X(aligned_inactive, "actor_aligned",      "...drawn, but without flag bit 0 — untaken for actor_nearest too") \
+  X(aligned_wrong_id, "actor_aligned",      "a live record wearing none of the three ids it looks for") \
+  X(aligned_up,       "actor_aligned",      "within a tile on X, and above the point") \
+  X(aligned_down,     "actor_aligned",      "...or below it") \
+  X(aligned_left,     "actor_aligned",      "not on X but within a tile on Y, and left of the point") \
+  X(aligned_right,    "actor_aligned",      "...or right of it") \
+  X(aligned_off,      "actor_aligned",      "a candidate lined up on neither axis, so the walk carried on") \
+  X(aligned_none,     "actor_aligned",      "all 32 slots looked at and nothing lined up — the zero exit") \
+                                                                                \
+  /* $80:BF1B actor_notify_box — four bounds, two refusals, and the five ways      a visible record is dismissed before its handler is entered. */             X(notify_bound_clamped,"actor_notify_box",  "a rectangle bound was negative, so it was zeroed")   X(notify_bound_kept,  "actor_notify_box",  "...or was not, and stood")   X(notify_no_actors,   "actor_notify_box",  "an empty visible list — the LDY $9C exit")   X(notify_one_actor,   "actor_notify_box",  "exactly one visible record, which the DEY DEY refuses to test")   X(notify_no_id,       "actor_notify_box",  "a visible record with no collision id")   X(notify_self_id,     "actor_notify_box",  "...or wearing the caller's own, so nothing blasts itself")   X(notify_left_of,     "actor_notify_box",  "left of the box")   X(notify_right_of,    "actor_notify_box",  "...or right of it")   X(notify_above,       "actor_notify_box",  "inside on X but above the box")   X(notify_below,       "actor_notify_box",  "...or below it")   X(notify_hit,         "actor_notify_box",  "inside the box, so its handler was entered")                                                                                   /* $80:B3F1 actor_snap_to — two independent axes, each snapped or left. */    \
+  X(snap_x_took,      "actor_snap_to",      "within a pixel on X, so X was snapped exactly onto the target") \
+  X(snap_x_left,      "actor_snap_to",      "...or two or more away, so it was left where it was") \
+  X(snap_y_took,      "actor_snap_to",      "the same on Y, which is the axis whose flags the caller gets") \
+  X(snap_y_left,      "actor_snap_to",      "...and the same again") \
+                                                                                \
   /* $80:BF67 actor_at_point — six ways to dismiss an entry and two endings. */  \
   X(at_point_empty,   "actor_at_point",     "nothing visible at all, so it never entered the walk") \
   X(at_point_self,    "actor_at_point",     "the record the caller asked to be ignored") \
@@ -435,7 +454,45 @@
   X(wide_clear,       "terrain_blocked_wide", "all ten tiles pass both tests, which is falling off the end of the tenth LSR") \
   X(lzss_read_spent,  "lzss_read_byte",      "the stream is exhausted — the SEC exit, and the only end marker the format has") \
   X(column_priority,  "tilemap_copy_column", "a tile below the level's priority threshold, so bit 13 is forced on as it is copied") \
-  X(column_plain,     "tilemap_copy_column", "...and one at or above it, copied across untouched")
+  X(column_plain,     "tilemap_copy_column", "...and one at or above it, copied across untouched") \
+  X(row_priority,     "tilemap_copy_row",    "the same rule one axis over: a tile under the threshold, priority forced on") \
+  X(row_plain,        "tilemap_copy_row",    "...and one at or above it") \
+  X(request_pending,  "vram_queue_request",  "a transfer was already asked for -- the BIT/BMI exit, whose Z is the caller's A") \
+  X(request_made,     "vram_queue_request",  "the frame's transfer actually requested") \
+  X(split_x_left,     "camera_split_x",      "the tilemap cursor is in the left screen, so the overflow lands at $400") \
+  X(split_x_right,    "camera_split_x",      "...or in the right one, so it wraps back to word 0 instead") \
+  X(scroll_at_limit,  "camera_scroll",       "the camera is as far as the map goes, so nothing happens -- the CMP exit") \
+  X(scroll_at_zero,   "camera_scroll",       "...or against the near edge, the one exit that hands back a carry it never set") \
+  X(scroll_mid_tile_fwd,"camera_scroll",     "a pixel of movement that crossed no tile boundary, going towards the far edge") \
+  X(scroll_mid_tile_back,"camera_scroll",    "...and the same going the other way, where the boundary is a remainder of 7") \
+  X(scroll_x_split,   "camera_scroll_x",     "a new column whose two halves come from two places in the map") \
+  X(scroll_x_whole,   "camera_scroll_x",     "...and one the tilemap's wrap falls exactly on, copied in a single call") \
+  X(follow_held,      "camera_follow",       "bit 14 of $26 set -- the camera held still, which $80:AB8D does across a bulk tilemap blit") \
+  X(follow_no_players,"camera_follow",       "neither player on the board, so there is nothing to centre on") \
+  X(follow_midpoint,  "camera_follow",       "both players up, so the view centres on the midpoint of the two") \
+  X(follow_player_a,  "camera_follow",       "player A alone, which is every frame of a one-player game") \
+  X(follow_player_b,  "camera_follow",       "...and player B alone, which needs A gone from a two-player one") \
+  X(follow_left,      "camera_follow",       "the target is behind the camera on X") \
+  X(follow_right,     "camera_follow",       "...or ahead of it") \
+  X(follow_x_still,   "camera_follow",       "...or exactly on it, the one X delta that scrolls nothing") \
+  X(follow_up,        "camera_follow",       "the target is above the camera") \
+  X(follow_down,      "camera_follow",       "...or below it") \
+  X(follow_y_still,   "camera_follow",       "...or exactly on it")                \
+                                                                                   \
+  /* $82:8F93 boss_step — the speed the caller asked for, the two probes of each   \
+     pass, the axis that pass commits, and whether anything moved at all. */       \
+  X(boss_step_double, "boss_step",           "the caller passed #$6969, so the deltas double and $2C ticks") \
+  X(boss_step_single, "boss_step",           "...or anything else, which is a single step") \
+  X(boss_cardinal,    "boss_step",           "a cardinal direction: one axis, one pass") \
+  X(boss_diagonal,    "boss_step",           "...or a diagonal, which gets a pass per axis and may take one of them") \
+  X(boss_lead_blocked,"boss_step",           "the first of the pass's two probes is in terrain, so the axis is refused") \
+  X(boss_lead_clear,  "boss_step",           "...or is clear, and the second is worth testing") \
+  X(boss_trail_blocked,"boss_step",          "the second probe is in terrain -- one corner of the leading edge fits and the other does not") \
+  X(boss_commit_x,    "boss_step",           "bit 3 of the probe index set, so this pass writes $1E62") \
+  X(boss_commit_y,    "boss_step",           "...or clear, and it writes $1E64") \
+  X(boss_moved_x,     "boss_step",           "X ended somewhere else, which is the first thing the exit compares") \
+  X(boss_moved_y,     "boss_step",           "X held but Y moved -- a diagonal that took only its vertical half") \
+  X(boss_stuck,       "boss_step",           "neither moved: carry set, and the caller reaches for the RNG")
 
 // `$80:CD20 lzss_decompress` has no sites here on purpose. `src/port/lzss.c` is
 // written and is not registered — the harness cannot check a routine that

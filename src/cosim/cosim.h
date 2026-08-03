@@ -78,11 +78,39 @@ enum {
   COSIM_FLAG_V = 1 << 3,
 };
 
-// How many routines the registry may hold. It is the width of `Cosim::enabled`
-// and the size of `Cosim::stats`, and `cosim_init` asserts the registry is
-// within it — see the note on `enabled` for what happened the one time nothing
-// did.
-#define COSIM_MAX_ROUTINES 64
+// How many routines the registry may hold. It sizes `Cosim::stats` and
+// `Cosim::enabled`, and `cosim_init` asserts the registry is within it — see
+// the note on `enabled` for what happened the one time nothing did.
+//
+// It was 64 until the registry reached 65, at which point that assert did its
+// job and said so instead of quietly measuring nothing. The mask is now a small
+// bitset rather than a machine word, so the next raise is this line alone.
+#define COSIM_MAX_ROUTINES 128
+#define COSIM_MASK_WORDS ((COSIM_MAX_ROUTINES + 63) / 64)
+
+// Which routines are switched on. A struct rather than a `uint64_t` so it keeps
+// assigning and comparing by value the way the old scalar did — `main_sdl.c`
+// saves one across an F1 toggle by plain assignment, and that still works.
+typedef struct {
+  uint64_t w[COSIM_MASK_WORDS];
+} CosimMask;
+
+static inline bool cosim_mask_get(const CosimMask* m, int i) {
+  return (m->w[i >> 6] >> (i & 63)) & 1u;
+}
+
+static inline void cosim_mask_set(CosimMask* m, int i) {
+  m->w[i >> 6] |= UINT64_C(1) << (i & 63);
+}
+
+static inline void cosim_mask_none(CosimMask* m) {
+  for (int i = 0; i < COSIM_MASK_WORDS; i++) m->w[i] = 0;
+}
+
+static inline void cosim_mask_first(CosimMask* m, int n) {
+  cosim_mask_none(m);
+  for (int i = 0; i < n; i++) cosim_mask_set(m, i);
+}
 
 // A, X and Y are claimed by default and every leaf routine claims all three.
 // Resumable routines are why the mask exists.
@@ -336,7 +364,7 @@ typedef struct {
   // on every movie with an empty routine table — a harness that had stopped
   // measuring rather than a port that had stopped working. Widened, and
   // `COSIM_MAX_ROUTINES` is asserted at init so the next one says so.
-  uint64_t enabled;
+  CosimMask enabled;
 
   CosimStat stats[COSIM_MAX_ROUTINES];
   int stat_count;

@@ -17,7 +17,7 @@ asset pipeline is done — compression, graphics, level layout, the placement
 lists, the sprite/OAM path and the audio upload path all reimplemented in C and
 **verified byte-exact against the ROM's own routines** (Phase 2).
 
-Phase 3 is the logic port. The co-simulation harness is built, sixty-one routines
+Phase 3 is the logic port. The co-simulation harness is built, seventy-seven routines
 are through it — including **the whole per-frame sprite pass**, the collision
 dispatch and the twenty-five actor handlers it routes to, the game's **random
 number generator**, the two searches every enemy uses to pick who to chase
@@ -29,7 +29,7 @@ routine that suspends inside the thread scheduler does it at an explicit resume
 point, with its parked state as plain copyable data. `zamn_cosim verify` checks
 the C against the
 ROM's own code on every call the game makes — 128 KB of WRAM plus registers — and
-passes **9,811,421 of 9,811,421 across the whole movie corpus**, thirteen levels
+passes **10,610,679 of 10,610,679 across the whole movie corpus**, thirteen levels
 deep. Across all forty-two movies the ROM is **no longer asked to run a single
 routine the port does not have**.
 
@@ -47,7 +47,7 @@ like a divergence in the port.
 
 The port also reports **which of its own branches an input actually reached**,
 because a branch no movie takes is one the diff agrees with the ROM about for
-the wrong reason. 77 of 317 are still untaken by every input, and they are the
+the wrong reason. 80 of 364 are still untaken by every input, and they are the
 backlog.
 
 See **`docs/cosim.md`** for the harness and what coverage measures that the diff
@@ -77,13 +77,16 @@ instead of by the 65816, and the window title carries a live count of how many.
 `--stock` clears the enable mask to get the Phase 0 emulated baseline back, and
 F1 moves between the two at a frame boundary while the game is running.
 
-What this is *not* is a native game yet. Sixty-one routines are ported; the
-main loop, the NMI handler, the movement thread, level code, the camera itself
-and every enemy body still belong to the ROM under the emulated core. What runs
-natively are the leaves those call — the sprite/OAM pass, the depth sort,
-collision dispatch, the step proposer and every test a step is checked against,
-thread spawn and tick, score, fades, and now the bottom of the tilemap streamer
-the camera scrolls with. Phase 4 is where that inverts.
+What this is *not* is a native game yet. Seventy-six routines are ported; the
+main loop, the NMI handler, the movement thread, level code and every enemy body
+still belong to the ROM under the emulated core. What runs natively are the
+leaves those call — the sprite/OAM pass, the depth sort, collision dispatch, the
+step proposer and every test a step is checked against, thread spawn and tick,
+score, fades, **the camera and the whole tilemap streamer under it** — where the
+view should be, the one pixel a frame it moves towards it, and every strip of
+map that appears at the edge as it does — and the blitter that draws a boss too
+big for sprites as a background layer, mirroring it a tile at a time when it
+turns around. Phase 4 is where that inverts.
 
 Other options — `-m <movie.zmv>` replays a recorded movie instead of reading the
 keyboard, `--frames N` runs N frames uncapped and exits, `--shot out.png` writes
@@ -97,12 +100,14 @@ build\zamn.exe "Zombies Ate My Neighbors.sfc" -m movies\level29-fighting.zmv ^
     --frames 6000 --no-audio --shot stock.png --stock
 ```
 Those two framebuffers are identical, as are level 1's, level 1 two-player and
-level 45's. `level25-lane.zmv` at 9,400 frames is the one that does **not**
-match, and for a reason that is not a wrong answer: on that level a scheduler
-pass sits close enough to the vblank boundary that the two builds eventually
-disagree about whether one overran it, after which they are showing different
-moments of the same game. `zamn_cosim run` detects and reports exactly that —
-see `docs/cosim.md`. On exit the frontend prints the same per-routine table `zamn_cosim`
+level 45's. Two movies do **not** match — `level25-lane.zmv` and
+`level21-bubble.zmv` — and for a reason that is not a wrong answer: on those
+levels a scheduler pass sits close enough to the vblank boundary that the two
+builds eventually disagree about whether one overran it, after which they are
+showing different moments of the same game. `zamn_cosim run` detects and reports exactly that —
+see `docs/cosim.md`. Stopping the same two runs at frame 2,600, before the pass
+where they part, gives byte-identical framebuffers, which is the check that
+tells a timing divergence from a wrong answer. On exit the frontend prints the same per-routine table `zamn_cosim`
 does — minus the verdict column, since there is no reference core here to diff
 against — plus the decline census naming whatever the ROM still had to run.
 (It is a `WIN32` binary, so it borrows the parent console for that; run it from

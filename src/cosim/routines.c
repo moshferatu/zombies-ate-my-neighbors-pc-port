@@ -16,6 +16,8 @@
 #include "cosim/cosim.h"
 
 #include "port/apu.h"
+#include "port/boss.h"
+#include "port/bossbg.h"
 #include "port/camera.h"
 #include "port/collide.h"
 #include "port/fade.h"
@@ -1528,6 +1530,98 @@ static void shim_step_tether_blocked(Wram* w, const Rom* rom,
 }
 
 // ---------------------------------------------------------------------------
+// $80:A54D / $80:A588 / $80:9E6D -- the last three leaves under the camera
+// ---------------------------------------------------------------------------
+//
+// Small enough to take together, and between them they finish the layer the
+// four scroll routines stand on. See `port/camera.h` for each.
+//
+// `$80:9E6D` is the one worth pausing on. It opens `BIT $26`, and `BIT` against
+// memory sets N from **bit 15 of the operand** but Z from **A AND the operand**
+// -- so the Z this routine returns on its first exit is a fact about the
+// caller's accumulator, which it never loads and has no other use for. A shim
+// that derived Z from anything the routine computes would be wrong on every
+// call that takes that path, and right by accident on the rest.
+static void shim_camera_window_update(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  CameraWindowRegs r;
+  camera_window_update(w, &r);
+  out->a = r.a;
+  out->x = in->x;  // neither index is mentioned in twenty-seven instructions
+  out->y = in->y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static void shim_camera_split_y(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  CameraSplitRegs r;
+  camera_split_y(w, &r);
+  out->a = r.a;
+  out->x = in->x;
+  out->y = in->y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static void shim_vram_queue_request(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  VramRequestRegs r;
+  vram_queue_request(w, in->a, &r);
+  out->a = r.a;
+  out->x = in->x;
+  out->y = in->y;
+  out->n = r.n;
+  out->z = r.z;
+  // Seven bytes and none of them touches carry, on any of the three paths.
+  out->c = in->c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:A61D  tilemap_copy_row -- X = column, Y = row
+// ---------------------------------------------------------------------------
+//
+// `tilemap_copy_column`'s twin, and the last leaf under the Y-axis scroll
+// routines. It buys its own 66-byte strip out of the arena instead of being
+// handed one, which is why it carries the allocator's guard as well.
+//
+// Its outputs are the least summary-like in the registry: A and carry are
+// *whatever the thirty-third tile happened to be*, N and Z belong to a `DEY`
+// that has already run off the end, and X belongs to the allocator's `PLX`
+// three instructions before the loop even started. Four registers, four
+// unrelated origins, and the routine returns nothing that describes its work.
+static bool guard_tilemap_copy_row(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  (void)rom;
+  (void)in;
+  if (tilemap_copy_row_supported(scratch)) return true;
+  cosim_census_note("tilemap arena exhausted", TILEMAP_COPY_ROW_ENTRY);
+  return false;
+}
+
+static void shim_tilemap_copy_row(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  TilemapCopyRegs r;
+  tilemap_copy_row(w, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
 // $80:A401  tilemap_buffer_alloc -- A = bytes wanted; A = where they start
 // ---------------------------------------------------------------------------
 //
@@ -1710,6 +1804,372 @@ static void shim_lzss_write_byte(Wram* w, const Rom* rom, const CosimRegs* in,
   // came. Claiming that rather than omitting it is the point: `verify` then
   // checks the claim 697,920 times instead of ignoring the flag.
   out->c = in->c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:A599  camera_split_x -- no arguments, and neither index touched
+// ---------------------------------------------------------------------------
+//
+// `camera_split_y`'s counterpart, and four times the routine, because the
+// tilemap is 64 columns stored as two 32x32 screens `$400` words apart: a row
+// that crosses the seam is two transfers rather than one wrapped one. It hands
+// back both of them, as `$5C`/`$5E`/`$60` and `$62`/`$64`/`$66`.
+//
+// Its two branches write those six words in opposite orders and it would be
+// easy to publish two different flag expressions to match. They are the same
+// one: both close on `LDA #$0042 : SEC : SBC <the run this branch measured>`,
+// so A, N, Z and C agree even though the store underneath them does not.
+static void shim_camera_split_x(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  CameraSplitRegs r;
+  camera_split_x(w, &r);
+  out->a = r.a;
+  out->x = in->x;
+  out->y = in->y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:A68B / $A70A / $A789 / $A816 -- the four scroll routines
+// ---------------------------------------------------------------------------
+//
+// The camera moves one pixel at a time and these are the four ways it can do
+// it. Everything ported into `port/camera.h` before now exists to serve them,
+// and they exist to serve `$80:A93F`, which is the 1.6% the chain was for.
+//
+// Two of the four are not in the listing as code at all -- `$80:A70A` and
+// `$A816` are `.db` runs the tracer never proved were instructions -- and
+// decoding them by hand is what shows they are their partners byte for byte
+// with six substitutions. `port/camera.c` therefore has one X scroller and one
+// Y scroller and a table of the six differences, which is the only way to write
+// a mirror down such that the mirroring is checkable.
+//
+// **All four take carry as an input**, which nothing else in this registry
+// does, and one exit is why: `$80:A68B` and `$A816` open `LDA $1B6A : BEQ out`
+// with no `CMP` anywhere on that path, so a camera already against the near
+// edge of the map returns the caller's carry untouched. The forward pair's
+// `CMP $B8` overwrites it before anything can observe it, so they are handed it
+// and ignore it -- and are handed it anyway, because a shim that passed
+// `false` would be asserting something about the caller instead of about the
+// routine.
+//
+// On the exits that do reach a strip, the three registers come from three
+// places again: A, N and Z from `$80:9E6D`, the last call any of them makes; X
+// from `STX $CE`, so it is the VRAM queue's new length; and Y from the `TAY`
+// that indexed the destination table, so it is the tilemap cursor doubled.
+// Carry belongs to the `ADC $1B7E` that built the last destination.
+static bool guard_camera_scroll_left(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  (void)rom;
+  (void)in;
+  if (camera_scroll_left_supported(scratch)) return true;
+  cosim_census_note("tilemap arena exhausted", CAMERA_SCROLL_LEFT_ENTRY);
+  return false;
+}
+
+static bool guard_camera_scroll_right(Wram* scratch, const Rom* rom,
+                                      const CosimRegs* in) {
+  (void)rom;
+  (void)in;
+  if (camera_scroll_right_supported(scratch)) return true;
+  cosim_census_note("tilemap arena exhausted", CAMERA_SCROLL_RIGHT_ENTRY);
+  return false;
+}
+
+static bool guard_camera_scroll_down(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  (void)rom;
+  (void)in;
+  if (camera_scroll_down_supported(scratch)) return true;
+  cosim_census_note("tilemap arena exhausted", CAMERA_SCROLL_DOWN_ENTRY);
+  return false;
+}
+
+static bool guard_camera_scroll_up(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  (void)rom;
+  (void)in;
+  if (camera_scroll_up_supported(scratch)) return true;
+  cosim_census_note("tilemap arena exhausted", CAMERA_SCROLL_UP_ENTRY);
+  return false;
+}
+
+static void publish_camera_scroll(const CameraScrollRegs* r, CosimRegs* out) {
+  out->a = r->a;
+  out->x = r->x;
+  out->y = r->y;
+  out->n = r->n;
+  out->z = r->z;
+  out->c = r->c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static void shim_camera_scroll_left(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  CameraScrollIn args = {in->x, in->y, in->c};
+  CameraScrollRegs r;
+  camera_scroll_left(w, rom, &args, &r);
+  publish_camera_scroll(&r, out);
+}
+
+static void shim_camera_scroll_right(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  CameraScrollIn args = {in->x, in->y, in->c};
+  CameraScrollRegs r;
+  camera_scroll_right(w, rom, &args, &r);
+  publish_camera_scroll(&r, out);
+}
+
+static void shim_camera_scroll_down(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  CameraScrollIn args = {in->x, in->y, in->c};
+  CameraScrollRegs r;
+  camera_scroll_down(w, rom, &args, &r);
+  publish_camera_scroll(&r, out);
+}
+
+static void shim_camera_scroll_up(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  CameraScrollIn args = {in->x, in->y, in->c};
+  CameraScrollRegs r;
+  camera_scroll_up(w, rom, &args, &r);
+  publish_camera_scroll(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $80:A93F  camera_follow -- no arguments; the camera one pixel further on
+// ---------------------------------------------------------------------------
+//
+// The top of the camera chain and the whole reason for reading it bottom-up:
+// eleven routines had to go in before this one could, because a substituted
+// routine has to do everything the ROM's does and there is no way to call back
+// into the ROM half-way through.
+//
+// It picks the point the view should centre on -- one player, the other, or the
+// midpoint -- and then moves the camera **one pixel** towards it per axis. The
+// delta is computed in full and then only its sign is used, by an `ASL A` whose
+// result is discarded and whose carry is the answer. That is why the view
+// drifts after the players rather than snapping to them.
+//
+// A `PHD` routine, so N and Z are the caller's direct page, and every one of
+// its exits is `PLD : SEC : RTL`, so **carry is set on all four and says
+// nothing**. The three register outputs are worth stating because two of them
+// are leftovers: A is the Y delta, or zero on the exits that never compute one;
+// X is that delta unless a scroll routine overwrote it; and Y is `$0006`, the
+// index the record read left behind, unless one did.
+//
+// The guard is the four scroll routines' arena guard asked once for both of
+// them: a call can reach one X scroll and one Y scroll, the second buys its
+// strip out of what the first left, so the question has to be asked about the
+// sum rather than about either.
+static bool guard_camera_follow(Wram* scratch, const Rom* rom,
+                                const CosimRegs* in) {
+  (void)rom;
+  (void)in;
+  if (camera_follow_supported(scratch)) return true;
+  cosim_census_note("tilemap arena exhausted", CAMERA_FOLLOW_ENTRY);
+  return false;
+}
+
+static void shim_camera_follow(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  CameraFollowRegs r;
+  camera_follow(w, rom, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = (in->d & 0x8000u) != 0;  // the closing `PLD`
+  out->z = in->d == 0;
+  out->c = true;  // ...and the `SEC` under it, on every exit
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:B379  actor_aligned -- X, Y = a point; A = which way something is
+// ---------------------------------------------------------------------------
+//
+// `actor_nearest`'s sibling, called by the same enemy body and answering the
+// other half of its question: not *who is closest* but *is anything lined up
+// with me right now*. It returns a doubled direction index, or zero.
+//
+// A `PHD` routine like `camera_follow`, so N and Z are the caller's direct page
+// and neither means anything about the search -- the ROM's own caller does
+// `TAX : BEQ` to get the answer's Z back. Carry is the leftover of whichever
+// `SBC` picked the direction, and is clear on the no-match exit because a `CPX`
+// ended the loop there. X is the record that matched, or `$184A`, which is the
+// loop counter one stride below the table rather than a pointer to anything.
+// Y is the argument, untouched.
+//
+// No guard: it reads 32 fixed records out of WRAM and cannot fail.
+static void shim_actor_aligned(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  ActorAlignedRegs r;
+  actor_aligned(w, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = in->y;
+  out->n = (in->d & 0x8000u) != 0;  // the closing `PLD`
+  out->z = in->d == 0;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:BF1B  actor_notify_box -- no arguments; everything in a rectangle told
+// ---------------------------------------------------------------------------
+//
+// The blast radius. `actor_overlap_pass` asks who is touching whom; this is one
+// actor asking who is inside a box and telling all of them, and it is how every
+// attack that is not a contact hit reaches its victims.
+//
+// It dispatches through `thread_call_handler`, so it inherits the decline that
+// `actor_collide_notify` and `sprite_build_oam` already have: **false means some
+// actor in the box has a handler the port does not**, and the harness gives the
+// whole call back to the ROM. A decline may leave `w` partly written, because
+// the records before it in the walk have been told and the ROM would have told
+// them too.
+//
+// Every register is claimed. They are all leftovers of the last record the walk
+// looked at, which is the sort of thing this project usually declines to claim
+// -- but four of the five call sites read return immediately, so "it is dead"
+// would be a guess about the caller's caller rather than a fact, and 9,784
+// calls is enough for the harness to settle it either way.
+static bool guard_actor_notify_box(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  ThreadCallResult tail = {.c = in->c};
+  ActorNotifyRegs r;
+  return actor_notify_box(scratch, rom, in->a, in->c, &tail, &r);
+}
+
+static void shim_actor_notify_box(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  ThreadCallResult tail = {.c = in->c};
+  ActorNotifyRegs r;
+  actor_notify_box(w, rom, in->a, in->c, &tail, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->c = r.c;
+  out->n = (in->d & 0x8000u) != 0;  // the closing `PLD`
+  out->z = in->d == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:B3F1  actor_snap_to -- X, Y = two records; X moved onto Y if it is close
+// ---------------------------------------------------------------------------
+//
+// `actor_aligned` finds something lined up to within a tile; this closes the
+// last pixel of it, per axis, and it is the one routine in the registry with no
+// `PHD` whose flags are therefore its own. The X axis runs first and everything
+// it leaves is overwritten by the Y axis, so what the caller gets back describes
+// Y alone: carry **set** means Y did not snap.
+static void shim_actor_snap_to(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  ActorSnapRegs r;
+  actor_snap_to(w, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = in->x;  // both are indices; neither is written
+  out->y = in->y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $82:8014 / $82:8069  boss_bg_queue -- no arguments; twenty DMA jobs
+// ---------------------------------------------------------------------------
+//
+// The big-figure blitter, and a pair in the same shape as the four scroll
+// routines: two entries that differ in one thing, here whether the figure is
+// mirrored on the way to VRAM.
+//
+// Neither takes a register argument -- everything comes out of direct page,
+// which they force to zero themselves -- and neither *produces* one either.
+// Both end on `LDA #$81C9 : LDY #$0082 : JSL $8083AE : PLD : RTL`, so all
+// three registers and the carry belong to `vbl_queue_a_add` and say only
+// whether the vblank queue had room, and N and Z are the caller's direct page
+// off the closing `PLD`. That leaves the entire result of a 2,746-instruction
+// routine in WRAM, which is the easiest kind of routine to check and the
+// reason these two passed first run.
+//
+// The guards differ, because what the two routines read differs. The plain one
+// only ever reads the four header bytes; the mirrored one reads all 560 and
+// stages a flipped copy, so its guard has to ask about the whole figure.
+static bool guard_boss_bg_queue(Wram* scratch, const Rom* rom,
+                                const CosimRegs* in) {
+  (void)in;
+  if (boss_bg_queue_supported(scratch, rom)) return true;
+  cosim_census_note("figure header unreadable", BOSS_BG_QUEUE_ENTRY);
+  return false;
+}
+
+static bool guard_boss_bg_queue_flip(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  (void)in;
+  if (boss_bg_queue_flip_supported(scratch, rom)) return true;
+  cosim_census_note("figure unreadable", BOSS_BG_QUEUE_FLIP_ENTRY);
+  return false;
+}
+
+static void boss_bg_out(const BossBgRegs* r, const CosimRegs* in,
+                        CosimRegs* out) {
+  out->a = r->a;
+  out->x = r->x;
+  out->y = r->y;
+  out->n = (in->d & 0x8000u) != 0;  // the closing `PLD`
+  out->z = in->d == 0;
+  out->c = r->c;  // ...and `vbl_queue_a_add`'s own `CPY #$0010`, untouched
+                  // by everything between it and the `RTL`
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static void shim_boss_bg_queue(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  BossBgRegs r;
+  boss_bg_queue(w, rom, &r);
+  boss_bg_out(&r, in, out);
+}
+
+static void shim_boss_bg_queue_flip(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  BossBgRegs r;
+  boss_bg_queue_flip(w, rom, &r);
+  boss_bg_out(&r, in, out);
+}
+
+// ---------------------------------------------------------------------------
+// $82:8F93  boss_step — the direction in `$16`, `#$6969` in A for double speed
+// ---------------------------------------------------------------------------
+//
+// A `JSR` from the boss thread, so the direct page is the caller's and the shim
+// hands it over rather than assuming — even though every call site reaches the
+// figure's position at a fixed `$1E62` and the thread's `D` has been zero every
+// time the harness has looked.
+//
+// N and Z are the exit compare's and A is not: `CMP` does not write the
+// accumulator, so the routine returns the coordinate it loaded while the flags
+// describe the difference. X and Y are `terrain_blocked_wide`'s leftovers from
+// the last probe the pass loop ran, and there is always one — the loop tests
+// its counter at the bottom.
+static void shim_boss_step(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  BossStepRegs r;
+  boss_step(w, rom, in->d, in->a, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
@@ -2496,6 +2956,59 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 4,  // the opening PHD and the PEA under it
     },
     {
+        .name = "camera_window_update",
+        .symbol = "$80:A54D",
+        .entry = 0x80a54d,
+        .ret_op = 0x80a587,
+        .ret_kind = COSIM_RTS,
+        .run = shim_camera_window_update,
+        // 608..648 over 227 calls. Twenty-seven instructions and no branch,
+        // so the whole 40-cycle band is the bus.
+        .cycles = 613,
+        .stack_bytes = 0,  // no push at all
+    },
+    {
+        .name = "camera_split_y",
+        .symbol = "$80:A588",
+        .entry = 0x80a588,
+        .ret_op = 0x80a598,
+        .ret_kind = COSIM_RTS,
+        .run = shim_camera_split_y,
+        // 206..246 over 203 calls; six instructions, same band.
+        .cycles = 210,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "vram_queue_request",
+        .symbol = "$80:9E6D",
+        .entry = 0x809e6d,
+        .ret_op = 0x809e7a,
+        .ret_kind = COSIM_RTS,
+        .run = shim_vram_queue_request,
+        // 166..206. The three exits are 4, 5 and 7 instructions, so this is
+        // a mean over paths as well as over the bus -- narrow because the
+        // paths barely differ.
+        .cycles = 173,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "tilemap_copy_row",
+        .symbol = "$80:A61D",
+        .entry = 0x80a61d,
+        .ret_op = 0x80a64e,
+        .ret_kind = COSIM_RTS,
+        .run = shim_tilemap_copy_row,
+        .supported = guard_tilemap_copy_row,
+        // 8,074..10,126. The loop count is fixed at 33, so unlike
+        // `tilemap_copy_column` this spread is the priority branch and
+        // the bus rather than a variable trip count -- a 2,000-cycle band
+        // around a routine that always does the same amount of work.
+        .cycles = 9314,
+        // The JSL to $80:AD1C is 3 and its own PHA is 2 under that. The
+        // JSR to $80:A401 only reaches 4, so 5 is the floor.
+        .stack_bytes = 5,
+    },
+    {
         .name = "tilemap_buffer_alloc",
         .symbol = "$80:A401",
         .entry = 0x80a401,
@@ -2644,6 +3157,205 @@ static const CosimRoutine ROUTINES[] = {
         // entirely by whether a second player is on the board.
         .cycles = 519,
         .stack_bytes = 2,  // the opening PHD, and nothing else
+    },
+    {
+        .name = "camera_split_x",
+        .symbol = "$80:A599",
+        .entry = 0x80a599,
+        .ret_op = 0x80a5c0,  // the first branch's RTS; the other is at $A5E4
+                             // and RTS touches no flag either way
+        .ret_kind = COSIM_RTS,
+        .run = shim_camera_split_x,
+        // 452..522, call-weighted over 455 calls on six movies. Twenty-two
+        // instructions, no loop, and the two branches are the same length, so
+        // the whole 70-cycle spread is the bus.
+        .cycles = 458,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "camera_scroll_left",
+        .symbol = "$80:A68B",
+        .entry = 0x80a68b,
+        .ret_op = 0x80a709,  // the one RTL all three exits reach
+        .ret_kind = COSIM_RTL,
+        .run = shim_camera_scroll_left,
+        .supported = guard_camera_scroll_left,
+        // 94..17,032, call-weighted over 15,896 calls on six movies, and the
+        // widest spread in the registry by a distance -- 180x, where the next
+        // worst is `tilemap_copy_column`'s 9x. Three exits of wildly different
+        // lengths is only half of it; the other half is that *which* exit a
+        // movie takes is a property of the movie. `movies/level49.zmv` holds
+        // the camera against the left edge of the map for its whole length and
+        // contributes 13,560 calls at 94 cycles each, which is what drags this
+        // mean down to a value no single call has ever cost.
+        .cycles = 394,
+        .stack_bytes = 9,
+    },
+    {
+        .name = "camera_scroll_right",
+        .symbol = "$80:A70A",
+        .entry = 0x80a70a,
+        .ret_op = 0x80a788,  // two RTLs, at $A711 and here; this is the tail
+        .ret_kind = COSIM_RTL,
+        .run = shim_camera_scroll_right,
+        .supported = guard_camera_scroll_right,
+        // 116..18,476 over 2,504 calls. Same shape as its mirror, without a
+        // movie that pins the camera against this edge -- so the mean lands
+        // near the strip path rather than far below every call.
+        .cycles = 1883,
+        .stack_bytes = 9,
+    },
+    {
+        .name = "camera_scroll_down",
+        .symbol = "$80:A789",
+        .entry = 0x80a789,
+        .ret_op = 0x80a815,  // the early exits share an RTL at $A790
+        .ret_kind = COSIM_RTL,
+        .run = shim_camera_scroll_down,
+        .supported = guard_camera_scroll_down,
+        // 116..14,578 over 10,378 calls, and the same bimodality one axis
+        // over: `level13` and `level29-fighting` between them are 7,304 calls
+        // that cross no tile boundary at all.
+        .cycles = 342,
+        .stack_bytes = 7,
+    },
+    {
+        .name = "camera_scroll_up",
+        .symbol = "$80:A816",
+        .entry = 0x80a816,
+        .ret_op = 0x80a8a3,  // ...and this one's at $A81B
+        .ret_kind = COSIM_RTL,
+        .run = shim_camera_scroll_up,
+        .supported = guard_camera_scroll_up,
+        // 250..15,032 over 2,159 calls -- the narrowest of the four, because
+        // nothing in the corpus scrolls upward for long without stopping.
+        .cycles = 1731,
+        .stack_bytes = 7,
+    },
+    {
+        .name = "camera_follow",
+        .symbol = "$80:A93F",
+        .entry = 0x80a93f,
+        .ret_op = 0x80a9cb,  // the main RTL; the early exits share one at $A952
+                             // and both are the same PLD : SEC : RTL
+        .ret_kind = COSIM_RTL,
+        .run = shim_camera_follow,
+        .supported = guard_camera_follow,
+        // 266..27,816, call-weighted over 94,784 calls on seven movies. The
+        // floor is the exit that finds both deltas already zero -- two thirds
+        // of all calls -- and the ceiling is a two-player frame that scrolls on
+        // both axes at once, which is four routines deep and buys two strips.
+        .cycles = 1062,
+        // The PHD is 2, the JSL into a scroll routine 3, and that routine's own
+        // 9 under it. The X pair are the deep ones; a movie that only ever
+        // scrolls on Y measures 12.
+        .stack_bytes = 14,
+    },
+    {
+        .name = "actor_aligned",
+        .symbol = "$80:B379",
+        .entry = 0x80b379,
+        .ret_op = 0x80b3f0,  // the no-match RTL; the four direction exits have
+                             // one each at $B3BA, $B3BF, $B3DB and $B3E0, and
+                             // all five are the same PLD : RTL
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_aligned,
+        // 758..7,386 over 6,921 calls on level21-bubble, which is the only
+        // movie in the corpus that runs this enemy at all. The floor is a
+        // match in a high slot and the ceiling is all 32 walked for nothing;
+        // the mean sits near the top because nothing is usually lined up.
+        .cycles = 4576,
+        // The PHD, and nothing else — it calls nothing.
+        .stack_bytes = 2,
+    },
+    {
+        .name = "actor_notify_box",
+        .symbol = "$80:BF1B",
+        .entry = 0x80bf1b,
+        .ret_op = 0x80bf66,
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_notify_box,
+        .supported = guard_actor_notify_box,
+        // 642..11,272, call-weighted across 8,556 calls on six movies. The
+        // floor is a box that found nothing to tell and the ceiling is one that
+        // entered several handlers, so the spread is the handlers' rather than
+        // the walk's -- the walk is 32 records whatever happens.
+        .cycles = 5545,
+        // Its own PHD and PHY, plus the deepest the dispatch under it goes.
+        // Movies that only ever blast one actor measure 18.
+        .stack_bytes = 24,
+    },
+    {
+        .name = "actor_snap_to",
+        .symbol = "$80:B3F1",
+        .entry = 0x80b3f1,
+        .ret_op = 0x80b421,
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_snap_to,
+        // 334..496 over 5,515 calls on level25-lane. The floor is neither axis
+        // snapping and the ceiling is both, and there are only four shapes it
+        // can have, so the spread is the narrowest in the registry after the
+        // boss blitter's.
+        .cycles = 407,
+        // It calls nothing and pushes nothing.
+        .stack_bytes = 0,
+    },
+    {
+        .name = "boss_bg_queue",
+        .symbol = "$82:8014",
+        .entry = 0x828014,
+        .ret_op = 0x828068,
+        .ret_kind = COSIM_RTL,
+        .run = shim_boss_bg_queue,
+        .supported = guard_boss_bg_queue,
+        // 11,528..11,686 over 903 calls on level25-lane -- a spread of 158
+        // cycles, or 1.4%, and the narrowest of any routine in the registry.
+        // Nothing about this routine varies except which of four stored
+        // figures it was pointed at, and all four are the same size.
+        .cycles = 11565,
+        // PHD is 2 and the PEA under it is popped by the PLD, then the closing
+        // JSL is 3 with vbl_queue_a_add's own PHY on top.
+        .stack_bytes = 7,
+    },
+    {
+        .name = "boss_bg_queue_flip",
+        .symbol = "$82:8069",
+        .entry = 0x828069,
+        .ret_op = 0x8280df,
+        .ret_kind = COSIM_RTL,
+        .run = shim_boss_bg_queue_flip,
+        .supported = guard_boss_bg_queue_flip,
+        // 88,980..89,256 over 1,126 calls -- 276 cycles, 0.3%, on a mean seven
+        // and a half times larger, because the extra work is the mirror loop
+        // and the mirror loop runs a fixed 280 times whatever else happens.
+        // This is the largest budget in the registry, by a factor of two, and
+        // it is spent entirely on moving 560 bytes of WRAM so that a figure
+        // can face the other way.
+        .cycles = 89008,
+        .stack_bytes = 7,
+    },
+    {
+        .name = "boss_step",
+        .symbol = "$82:8F93",
+        .entry = 0x828f93,
+        // The bare `RTS` on the stuck path. There are two, one under a `SEC`
+        // and one under a `CLC`, and the teleport must land on an instruction
+        // that does not touch the carry the shim has just published — so it
+        // lands on the `RTS` itself rather than on either flag setter.
+        .ret_op = 0x829032,
+        .ret_kind = COSIM_RTS,
+        .run = shim_boss_step,
+        // 2,076..15,616, call-weighted over 42,207 calls on the five level-25
+        // movies -- the only movies in the corpus that reach it at all. The
+        // floor is a direction whose first probe is already in terrain; the
+        // ceiling is a diagonal that runs both passes and finds all four probes
+        // clear, which is four `terrain_blocked_wide` calls in one step. Almost
+        // all of the budget is those calls: the routine's own arithmetic is
+        // about sixty instructions and the probes are the rest.
+        .cycles = 11770,
+        // Two bytes of `JSR` return address with `terrain_blocked_wide`'s own
+        // four on top of it, and the routine pushes nothing itself.
+        .stack_bytes = 6,
     },
 };
 

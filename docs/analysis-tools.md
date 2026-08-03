@@ -867,10 +867,77 @@ scroll routines beneath it, none of which anybody had written a line of C for.
 
 `JUMP_ENTRIES` in the script is where those addresses go, next to `WAIT_SITES`
 and for the same reason: found by reading, checked against the profile, and
-written down rather than remembered. It holds `$80:A937` and `$82:AC07`. The
-check that finds the next one is cheap and worth doing every round — **port a
-routine, and see whether the number moves by more than that routine is worth.**
-If it does, the extra came from somewhere, and it was not from the C.
+written down rather than remembered. The check that finds the next one is cheap
+and worth doing every round — **port a routine, and see whether the number moves
+by more than that routine is worth.** If it does, the extra came from somewhere,
+and it was not from the C.
+
+### Three families of code that runs and is never called
+
+The check above is a delta test, and it has been exact ten times. What it cannot
+see is a bias already present in *both* of its terms, and there is one, because
+the ROM has three kinds of live code with no call edge into it:
+
+| family | how it is entered | how many |
+| --- | --- | --- |
+| the NMI handler | the hardware vector | 1 |
+| **thread bodies** | the scheduler resuming a parked stack, by `RTL` | **49 the code names** |
+| **vblank jobs** | a queue dispatcher pushing `addr - 1` and executing `RTL` | **59** |
+
+None of them can be a `JSR` or `JSL` target, so none appears in the call graph,
+so each is charged to whatever subroutine happens to precede it in the ROM. That
+is bad twice over: the job's own instructions land on its neighbour, *and* the
+call edges leaving the job land there too, which can make the job's callees look
+as though only ported code reaches them.
+
+The vblank jobs are the tractable case, because the ROM registers one with a
+fixed idiom — `LDA #$<addr> : LDY #$00<bank> : JSL $8083AE` (queue A) or
+`$808418` (queue B) — so all fifty-nine come out of one scan of the cartridge.
+`VBL_JOBS` is that list. Declaring it moved the strict share **down** by
+1,138,046 instructions: 984,217 of job code that was inside a native routine's
+span, and 153,829 in 24 routines that stopped being subsumed once their phantom
+ported caller went away.
+
+One of the fifty-nine, `$80:9E7B vram_queue_flush`, is *also* called outright by
+the NMI 60,940 times — the only one with an inbound edge, which is how it was
+found. It is the one job the harness could substitute, and `VBL_JOB_CALLED`
+records the exception.
+
+**Thread bodies turned out to be the same scan**, and a much larger correction.
+`$80:825E thread_spawn` takes the far entry in `A:Y` and its second instruction
+is `DEC`: it parks `addr - 1` in a nine-byte frame the scheduler resumes with
+`RTL`, which is structurally identical to a queued vblank job. So the idiom
+`LDA #$<addr> : LDY #$00<bank> : JSL $80825E` finds them, and `THREAD_BODIES` is
+that list — 32 from immediates, 17 more out of two tables in ROM that three of
+the spawn sites index. Two of the 49 (`$81:81F6`, `$80:C8F6`) had already been
+found by hand, a round apart, each after a ranking row made no sense.
+
+Declaring them moved the strict share down by **12,763,896 instructions** and
+the call-weighted estimate from 73.9% to 60.8%. The decomposition is exact:
+
+| where it went | instructions |
+| --- | --- |
+| thread-body code inside five ported routines' owned ranges | 224,946 |
+| 112 routines that stopped being subsumed, and 12 that left the both-sides band | 12,538,950 |
+
+All 49 were checked two ways before any of that was believed: **none has a
+`JSR`, `JSL`, `JMP` or `JML` anywhere in the cartridge**, and every one contains
+`JSL $80:8353 thread_yield`. And each of the five splits lands *after* the ported
+routine's own return — `$80:84B1` begins one byte past `thread_call_handler`'s
+`RTL`, and the widest gap is 269 bytes — so nothing was carved out of ported
+code. `$81:EDAA shot_edaa`, one `RTL` long, correctly drops to zero executions.
+
+**This set is a lower bound in a way `VBL_JOBS` is not.** Four spawn sites read
+the address from data rather than from an immediate or a ROM table: `$80:8774`
+and `$80:87FB` take it from bank `$9F`, which is per-level data, so *which
+threads a level starts is a property of the level*; `$81:80E7` takes it from
+WRAM; `$81:81D7` walks a list through `($0C),Y`. Anything they start that is not
+already in the list stays misattributed, and no static scan will find it.
+
+The lesson generalises past this ROM: **a delta check validates each step and
+says nothing about the level.** If a codebase has code that runs without being
+called, an attribution built on the call graph will quietly credit it to a
+neighbour, and only enumerating the entry mechanism fixes it.
 
 ### Waiting is not working
 
@@ -981,6 +1048,46 @@ count.
 Three of the seven `WAIT_SITES` entries were found this way, and the ranking has
 so far never put a spin near the top without this catching it. It costs a second
 to run and it has changed the plan for the round three times.
+
+## `dis816.py`, because the listing is a lower bound
+
+`zamn_disasm` works from the CDL, so it only ever disassembles bytes the game
+was *observed to execute*. Everything else comes out as `.db`, and that is not
+a cosmetic gap — five times now a fact this project needed has been sitting
+inside one of those runs:
+
+| where | what was in it |
+| --- | --- |
+| `$80:A70A`, `$80:A816` | two of the four camera scroll routines, entire |
+| `$80:AB8D` | the only writer of the bit that freezes the camera |
+| `$82:8014`, `$82:8069` | the big-figure blitter, 1.1% of the corpus |
+| `$80:B379`, `$80:B3F1` | the alignment test and the coordinate snap beside it |
+| `$82:8F93` | the big figure's mover, 0.4% of the corpus and 2.0% of level 25 |
+
+The first of those was found by noticing that a routine the ranking named had
+no listing at all. The second was found only because a branch-coverage site
+came back untaken and the reason given for expecting it was "nothing in four
+banks writes this bit" — which was a claim about the *listing*, and the listing
+does not know. **A grep of `analysis/bank_8*.asm` is a lower bound on what the
+ROM contains, and in these banks it is not a tight one.**
+
+```
+python tools\dis816.py "Zombies Ate My Neighbors.sfc" 82:8069 0x80
+```
+
+Bank and address, then a byte count. The optional fourth and fifth arguments
+are the initial `M` and `X` widths — 0 for 16-bit, which is the default and
+where the game spends nearly all of its time — and `SEP`/`REP` are tracked from
+there, so a run that changes width decodes correctly without being told twice.
+
+No control flow analysis and no symbols: it decodes forwards from where it is
+pointed, which is exactly what is wanted when the question is *what is actually
+here*. Data decodes as nonsense, and the giveaway is the usual one — a real
+routine ends at an `RTS`, `RTL` or `RTI`.
+
+The rule this leaves behind: **before porting a routine, decode its bytes, not
+its listing.** The two agree most of the time, and the times they do not are
+the times it matters.
 
 ## Regenerating everything
 

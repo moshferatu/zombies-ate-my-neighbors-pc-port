@@ -345,7 +345,7 @@ bool cosim_enable(Cosim* c, const char* name) {
   const CosimRoutine* all = cosim_routines(&count);
   for (int i = 0; i < count; i++) {
     if (!strcmp(all[i].name, name)) {
-      c->enabled |= UINT64_C(1) << i;
+      cosim_mask_set(&c->enabled, i);
       return true;
     }
   }
@@ -355,7 +355,7 @@ bool cosim_enable(Cosim* c, const char* name) {
 void cosim_enable_all(Cosim* c) {
   int count = 0;
   cosim_routines(&count);
-  c->enabled = count >= 64 ? ~UINT64_C(0) : (UINT64_C(1) << count) - 1;
+  cosim_mask_first(&c->enabled, count);
 }
 
 // ---------------------------------------------------------------------------
@@ -902,7 +902,7 @@ void cosim_step(Cosim* c) {
     }
 
     for (int i = 0; i < c->stat_count; i++) {
-      if (!(c->enabled & (UINT64_C(1) << i))) continue;
+      if (!cosim_mask_get(&c->enabled, i)) continue;
       const CosimRoutine* r = c->stats[i].routine;
       if (pc != r->entry) continue;
       // Verified but never substituted — see `CosimRoutine::verify_only`. Nothing
@@ -967,7 +967,7 @@ void cosim_frame(Cosim* c) {
 
 bool cosim_failed(const Cosim* c) {
   for (int i = 0; i < c->stat_count; i++)
-    if ((c->enabled & (UINT64_C(1) << i)) && c->stats[i].failed) return true;
+    if (cosim_mask_get(&c->enabled, i) && c->stats[i].failed) return true;
   return false;
 }
 
@@ -989,7 +989,7 @@ int cosim_report(const Cosim* c) {
 
   int failures = 0;
   for (int i = 0; i < c->stat_count; i++) {
-    if (!(c->enabled & (UINT64_C(1) << i))) continue;
+    if (!cosim_mask_get(&c->enabled, i)) continue;
     const CosimStat* s = &c->stats[i];
     char cycles[32] = "-";
     if (s->checked > 0 && c->mode == COSIM_VERIFY)
@@ -1204,7 +1204,7 @@ static bool accounted_for(const Cosim* c, uint32_t off) {
   if (off == W_NMI_SAVED_SP || off == W_NMI_SAVED_SP + 1) return true;
   if (c->priv->stale && c->priv->stale[off]) return true;
   for (int i = 0; i < c->stat_count; i++) {
-    if (!(c->enabled & (UINT64_C(1) << i))) continue;
+    if (!cosim_mask_get(&c->enabled, i)) continue;
     if (excluded(c->stats[i].routine, off)) return true;
   }
   return false;
@@ -1271,7 +1271,7 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
   Side ref, nat;
   if (!side_start(&ref, rom_data, rom_len, COSIM_VERIFY, movie_path)) return 1;
   if (!side_start(&nat, rom_data, rom_len, COSIM_NATIVE, movie_path)) return 1;
-  ref.cosim.enabled = 0;
+  cosim_mask_none(&ref.cosim.enabled);
 
   if (name_count == 0) {
     cosim_enable_all(&nat.cosim);
