@@ -266,6 +266,13 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 // frame at a time. Nothing else in the corpus touches it.
 #define W_BOSS_BG_STAGE 0x5736
 
+// The big figure's position. Not an actor record: eight routines across banks
+// $82 and $83 write this pair, one per oversized boss. See `port/boss.h`.
+#define W_BOSS_X 0x1e62
+#define W_BOSS_Y 0x1e64
+#define W_BOSS_DRAW_DX 0x1e66
+#define W_BOSS_DRAW_DY 0x1e68
+
 #define W_VISIBLE_ACTORS 0x137e   // up to 32 x u16: the records this frame draws
 #define W_VISIBLE_ACTOR_COUNT 0x009c  // bytes, i.e. entries x 2
 #define W_OAM_BUFFER 0x13be       // 544 bytes, DMA'd to OAMDATA every frame
@@ -295,6 +302,10 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 // row lookup is a table read rather than a multiply. Indexed by the row number
 // already doubled, which is exactly what `LSR A : LSR A : AND #$FFFE` produces.
 #define W_TILE_ROW_BASE 0x4328
+
+// The same table for the *block* map -- one word per block-map row -- which is
+// the only thing separating `$80:ACF6` from `$80:AD1C`. See `port/levelmap.h`.
+#define W_BLOCK_ROW_BASE 0x4228
 
 // The two players' records, as *pointers into* `W_ACTOR_SLOTS`, or zero for a
 // player who is not on the board — which is what `$D4` reads in one-player mode.

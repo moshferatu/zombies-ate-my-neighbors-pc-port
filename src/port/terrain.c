@@ -262,3 +262,32 @@ void tilemap_tile_addr(const Wram* w, uint16_t x, uint16_t y,
   out->n = (col & 0x8000u) != 0;
   out->z = col == 0;
 }
+
+// --- $80:ADC8 / $80:ADF3  tile_attrs_at_pixel / tile_attrs_at_tile ----------
+
+void tile_attrs_at_tile(const Wram* w, uint16_t col, uint16_t row,
+                        TileAttrsRegs* out) {
+  // `JSL $80AD1C : TAX`, then `LDA $0000,X` with the data bank the `PEA $007F`
+  // put there. The doubled column `tilemap_tile_addr` leaves in X is its own
+  // business; this caller only wants A.
+  TilemapAddrRegs addr;
+  tilemap_tile_addr(w, col, row, &addr);
+  uint16_t entry =
+      wram_r16(w, ((uint32_t)(TERRAIN_MAP_BANK & 1) << 16) + addr.a);
+
+  // `AND #$03FF : ASL A : TAY : LDA [$BA],Y` -- the same two lines as
+  // `probe_attrs` above, and the same 24-bit pointer out of `W_TILE_ATTRS`.
+  uint16_t tile = (uint16_t)((entry & TILEMAP_INDEX_MASK) << 1);
+  uint16_t attrs = wram_r16(w, W_TILE_ATTRS);
+  uint8_t bank = wram_r8(w, W_TILE_ATTRS + 2);
+  out->a = wram_r16(w, ((uint32_t)(bank & 1) << 16) + attrs + tile);
+
+  // The `ASL` shifted a ten-bit value, so nothing can have come out of the top.
+  out->c = false;
+}
+
+void tile_attrs_at_pixel(const Wram* w, uint16_t x, uint16_t y,
+                         TileAttrsRegs* out) {
+  tile_attrs_at_tile(w, (uint16_t)(x >> TILE_ATTRS_PIXEL_SHIFT),
+                     (uint16_t)(y >> TILE_ATTRS_PIXEL_SHIFT), out);
+}

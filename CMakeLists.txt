@@ -109,7 +109,9 @@ add_library(zamn_port STATIC
   src/port/bossbg.c
   src/port/collide.c
   src/port/fade.c
+  src/port/floor.c
   src/port/camera.c
+  src/port/levelmap.c
   src/port/lzss.c
   src/port/oam.c
   src/port/player.c

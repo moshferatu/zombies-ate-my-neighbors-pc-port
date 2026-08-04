@@ -103,11 +103,9 @@
 
 #define BOSS_STEP_ENTRY 0x828f93u
 
-// The big figure's position. Absolute, not direct page: the routine reaches it
-// as `$1E62` through a data bank of `$82`, whose low 8 KB is the WRAM mirror.
-// `$1E66` and `$1E68`, the draw offsets, are `$82:892E`'s business.
-#define W_BOSS_X 0x1e62
-#define W_BOSS_Y 0x1e64
+// The big figure's position is `W_BOSS_X`/`W_BOSS_Y` in `port/wram.h`. The
+// routine reaches it as absolute `$1E62`, not direct page, through a data bank
+// of `$82` whose low 8 KB is the WRAM mirror.
 
 // Direct page.
 #define BOSS_STEP_DP_PROBE_BASE 0x08u  // the direction's entry in $82:9035

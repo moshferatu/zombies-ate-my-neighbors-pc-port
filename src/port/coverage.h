@@ -427,6 +427,37 @@
   X(terrain_hit_lower,"terrain_blocked*",        "the row below does, which needs the whole top row clear first") \
   X(terrain_hit_last, "terrain_blocked*",        "the sixth and last tile does — the probe the ROM leaves without a branch") \
   X(terrain_clear,    "terrain_blocked*",        "all six tiles are clear, which is falling out of the loop") \
+  X(psn_weapon_none,  "player_state_normal",     "the held weapon index is negative, so the ammunition check is skipped whole") \
+  X(psn_not_firing,   "player_state_normal",     "...or it is a real weapon and the fire button is not down") \
+  X(psn_weapon_empty, "player_state_normal",     "the held weapon has run out, and the routine writes bit 15 back over the pad word") \
+  X(psn_weapon_ready, "player_state_normal",     "...or it has not, which clears that bit again") \
+  X(psn_fire_low,     "player_state_normal",     "weapon index below 6: the fire flag files in $1E") \
+  X(psn_fire_band,    "player_state_normal",     "6 through 12: it files in $20 instead") \
+  X(psn_fire_high,    "player_state_normal",     "13 or above: back to $1E, which is the same exit by a different branch") \
+  X(psn_dir_moving,   "player_state_normal",     "a direction this frame, latched into $26 as well as $24") \
+  X(psn_dir_still,    "player_state_normal",     "...or none, and $26 keeps the last one") \
+  X(psn_press_weapon, "player_state_normal",     "B on the edge: cycle to the next non-empty weapon") \
+  X(psn_press_item,   "player_state_normal",     "A on the edge: cycle to the next item") \
+  X(psn_spawn_swallowed, "player_state_normal",  "L or R with the flag already set: the press is eaten and the flag cleared") \
+  X(psn_spawn,        "player_state_normal",     "...or the flag was clear, so a thread starts at $82:D8DB and a sound plays") \
+  X(psn_press_none,   "player_state_normal",     "no button edge this frame, which is nearly all of them") \
+  X(psn_t3_expired,   "player_state_normal",     "the fourth countdown reached zero, which clears $54 as well") \
+  X(floor_plain,      "floor_effect",            "an ordinary floor: no bit 3, none of the three special words, and the routine returns") \
+  X(floor_clear_2a,   "floor_effect",            "the $8000 tile, whose whole effect is `STZ $2A`") \
+  X(floor_harm_plain, "floor_effect",            "the $0400 floor, which harms whoever stands on it unconditionally") \
+  X(floor_gate_other_weapon, "floor_effect",     "the $4000 floor with any weapon but 3, which harms the same way") \
+  X(floor_gate_open,  "floor_effect",            "...weapon 3, but the guard word is clear, so it harms after all") \
+  X(floor_gate_shut,  "floor_effect",            "...weapon 3 with the guard set: the one floor a player can be immune to") \
+  X(floor_mode_off,   "floor_effect",            "$70 is one of the two values that suppress the harm entirely") \
+  X(floor_harm_cooling, "floor_effect",          "the cooldown has not expired, so the last one is still running") \
+  X(floor_harm_start, "floor_effect",            "...it has, so $50 starts the effect and $52 begins counting again") \
+  X(floor_belt,       "floor_effect",            "attribute bit 3: a conveyor, and the four directions follow") \
+  X(floor_belt_up,    "floor_effect",            "$0108 — one pixel up, with no terrain test at all") \
+  X(floor_belt_down,  "floor_effect",            "$0408 — one pixel down, likewise") \
+  X(floor_belt_left,  "floor_effect",            "$0208 — one pixel left, likewise") \
+  X(floor_belt_right, "floor_effect",            "$0028 — one pixel right, and the way is clear") \
+  X(floor_belt_right_blocked, "floor_effect",    "...or it is not, which is the only direction that can be refused") \
+  X(floor_belt_none,  "floor_effect",            "none of the four matched — every return from the harm path lands here") \
   X(bounds_x_negative,"terrain_out_of_bounds",   "a negative X, rejected before any arithmetic") \
   X(bounds_x_low,     "terrain_out_of_bounds",   "X within four quarter-tiles of the left edge") \
   X(bounds_x_high,    "terrain_out_of_bounds",   "X past the right edge — the one exit that keeps its own compare's carry") \
@@ -494,6 +525,12 @@
   X(boss_moved_y,     "boss_step",           "X held but Y moved -- a diagonal that took only its vertical half") \
   X(boss_stuck,       "boss_step",           "neither moved: carry set, and the caller reaches for the RNG")
 
+// `$80:AD2B blockmap_expand` has none either, and for the same reason:
+// `src/port/levelmap.c` is written, one call is about six frames long, and the
+// harness abandons every one of them. Its helper `$80:ACF6` is registered and
+// has no sites of its own because it has no branches at all -- seven
+// instructions, straight through.
+//
 // `$80:CD20 lzss_decompress` has no sites here on purpose. `src/port/lzss.c` is
 // written and is not registered — the harness cannot check a routine that
 // outlives a frame, and `src/cosim/routines.c` says why at length. A site for a

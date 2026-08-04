@@ -880,8 +880,8 @@ the ROM has three kinds of live code with no call edge into it:
 
 | family | how it is entered | how many |
 | --- | --- | --- |
-| the NMI handler | the hardware vector | 1 |
-| **thread bodies** | the scheduler resuming a parked stack, by `RTL` | **49 the code names** |
+| the hardware vectors | the console fetching `$00:FFEA` and `$00:FFFC` | 2 |
+| **thread bodies** | the scheduler resuming a parked stack, by `RTL` | **61 the cartridge names** |
 | **vblank jobs** | a queue dispatcher pushing `addr - 1` and executing `RTL` | **59** |
 
 None of them can be a `JSR` or `JSL` target, so none appears in the call graph,
@@ -931,8 +931,109 @@ code. `$81:EDAA shot_edaa`, one `RTL` long, correctly drops to zero executions.
 the address from data rather than from an immediate or a ROM table: `$80:8774`
 and `$80:87FB` take it from bank `$9F`, which is per-level data, so *which
 threads a level starts is a property of the level*; `$81:80E7` takes it from
-WRAM; `$81:81D7` walks a list through `($0C),Y`. Anything they start that is not
-already in the list stays misattributed, and no static scan will find it.
+WRAM; `$81:81D7` walks a list through `($0C),Y`.
+
+This page used to end that paragraph by saying no static scan would find them.
+**For two of the four that was wrong**, and the section below is what corrected
+it: per-level data is still data in the cartridge, and walking it added twelve
+bodies, taking 49 to 61. The other two are genuinely dynamic, so the set is
+still a lower bound — but the honest claim is now "every thread body the
+cartridge names", not "every thread body the code names".
+
+### Twelve more thread bodies, out of the level records
+
+`$82:BB0D` is what found them, and it is the "ten calls" tell again: 784,715
+instructions, 0.3% of everything, across ten calls — one per profile. Running
+`hotbytes.py` over its own bytes accounted for 609 of them in three profiles.
+The rest was 7 KB downstream, and `span.py` says why: the CDL marks no
+subroutine entry between `$82:BB0D` and `$82:D88C`, so the attribution span is
+**7,551 bytes** and everything in it lands on the routine at the top.
+
+The work is at `$82:D81F`, and the shape of the count is what identifies it:
+
+| byte | what | executions |
+| --- | --- | --- |
+| `$82:D818` | `TXA : LSR : STA $48` — the loop's set-up | 2 |
+| `$82:D81C` | `LDX #$FFFE` — the same loop's restart | 10,263 |
+| `$82:D883` | `BNE $D81C` — which is where the other 10,261 come from | 10,261 |
+| `$82:D87D` | `JSL $808353` — **`thread_yield`** | 10,263 |
+
+Two entries and ten thousand iterations, each ending in a yield: a thread body,
+resumed by `RTL`, never called. It is `$82:D7CF`, and the level records name it.
+
+**`$9F:8002` is a table of level-record bases**, indexed `level*2` at `$80:886D`
+(`LDA $9F8002,X : STA $10`); index 56 holds `$8000`, the address of the table
+itself, and is the sentinel, so there are 56 records for levels 0..55. Two of
+their fields name threads:
+
+  * **offset `$18`/`$1A`** — one far entry, spawned at `$80:8774` when non-zero.
+    35 levels have one; five distinct bodies, and all five animate the palette
+    shadow that `$82:8138 palette_copy_a` fills. `$80:A0EF` is the plainest:
+    `AND #$FC1F` clears green in BGR555, ORs a new value in, yields four ticks,
+    repeats.
+  * **offset `$3C`** — `$80:87CB` is `CLC : LDA #$003C : ADC $10 : PHA`, and the
+    loop above it walks **eight-byte `(entry far, parameter far)` records** from
+    there, spawning each until a zero entry. 36 levels, seven distinct bodies.
+    A body can be listed more than once in one level with different parameters,
+    which is what the parameter field is for: `$82:A8BB` appears three times in
+    level 20 alone.
+
+The parameter is why these had to be data. `$82:D7CF` is one routine driving
+eight animation channels, each a script of `(tile, delay)` pairs reached through
+`[$00]`, and the script is the parameter — so twenty-one levels share the code
+and differ only in the table. An immediate-scan cannot see that, and neither can
+a call graph.
+
+**All twelve were held to the two checks the original 49 were.** Every one of
+them reaches `JSL $808353 thread_yield` within `$C5` bytes of its entry — only a
+thread yields — and **none has an inbound call edge anywhere in the cartridge**.
+That second scan has a trap worth writing down: `JSR` and `JMP` are
+program-bank-relative, so matching their operand bytes alone reports a `JSR
+$A0EF` in bank `$91` as an edge into `$80:A0EF`. It is a call to `$91:A0EF`.
+Only `JSL` and `JML` carry a bank; for the other two the match has to be inside
+the target's own bank, and with that restriction the count is zero.
+
+`tools/levelthreads.py` regenerates the list and asserts the rest — that all 56
+records parse, that every entry is a code pointer into banks `$80..$83`, and
+that every list terminates — and cross-checks its output against
+`THREAD_BODIES`. The count of levels using `$82:D7CF` is 21, which is exactly
+the number of times the three bytes `CF D7 82` occur anywhere in bank `$9F`.
+
+The correction is smaller than the first thread-body round and lands the same
+way: `$82:BB0D` drops off the board entirely, keeping the 2,030 instructions
+that are genuinely its own, and the blocked families go from 21.1% of
+everything to 21.4%. **The native share does not move**, because a thread body
+was already in the denominator and never in the numerator — all that changed is
+which routine's name the work is filed under. That is the point of the exercise:
+the ranking is a list of what to port next, and a row that cannot be ported does
+not belong on it.
+
+**The second hardware vector was found last, and it is the cheapest of all these
+to have missed.** `$80:8002 init_ppu_regs` sat at 0.5% over ten calls, and 63 of
+those 0.5% belong to it: the routine is 44 instructions and ends at its `RTS` on
+`$80:80AD`, 630 instructions over ten profiles. The rest is `$80:80AE`, which
+`$00:FFFC` holds — the **reset vector** — and 1,310,710 of its 1,311,180
+instructions are two bytes:
+
+| byte | what | executions |
+| --- | --- | --- |
+| `$80:8116` | `MVN $7E,$7E` — zero-fill bank `$7E` | 655,350 |
+| `$80:813B` | `MVN $7F,$7E` — copy the zeroes over bank `$7F` | 655,360 |
+
+A 65816 block move re-executes itself once per byte, so clearing 128 KB of WRAM
+really is 131,071 instructions and the profile is not lying about the work. It
+is simply the machine coming up, once per movie, and nothing calls it. The other
+two vectors are inert: `$80:8000` is a bare `COP #$FE` (BRK, and COP in
+emulation mode) and `$80:8209` a bare `RTI` (IRQ, ABORT, COP), both executed
+zero times in all ten profiles.
+
+Two details are worth keeping. `reset_entry` was **already in `zamn.sym`** — the
+symbol had been read and named rounds earlier, and naming it did nothing,
+because the ranking's boundaries come from the CDL's subroutine flags and not
+from the symbol table. And the routine it was hiding behind is the one case
+where the "ten calls" tell pointed at the *right* row for the wrong reason: the
+count was honest, `init_ppu_regs` really is called ten times, and what was
+inflated was the span attributed to it rather than the calls.
 
 The lesson generalises past this ROM: **a delta check validates each step and
 says nothing about the level.** If a codebase has code that runs without being

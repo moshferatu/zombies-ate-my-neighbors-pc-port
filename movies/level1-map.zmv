@@ -1,0 +1,158 @@
+# Level 1, and the only thing it does is **press L and R**, which no other movie
+# in the corpus does at all.
+#
+# `$80:D1FF player_state_normal` reads four edge-triggered buttons and the
+# fourth is `#$0030` -- L or R together -- which spawns a thread at `$82:D8DB`
+# and plays sound `$0D`. Both of its branches were untaken by all 42 movies,
+# not because they are hard to reach but because forty-two routes had never
+# needed that button. That is backlog rather than dilution, and this is the
+# input that clears it.
+#
+# The two branches are a press and *the same press again too soon*:
+#
+#   * `$82:D8DB`'s first instruction is `INC $1F98,X`, so the thread sets the
+#     player's flag itself.
+#   * `$80:D29C` requires that flag to be **clear**. When it is not, the press
+#     is eaten and the flag is cleared instead -- so the first press after the
+#     thread has run does nothing except re-arm the button.
+#
+# So `psn_spawn` needs one press and `psn_spawn_swallowed` needs a second one
+# while the first is still up. The movie presses L five times at 40-frame
+# spacing, then R five times at 12, and the close spacing is what takes the
+# swallow.
+#
+# The prefix through frame 1484 is `movies/level1.zmv`'s title mashing verbatim.
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1020   Start
+1028   -
+1044   Start
+1052   -
+1068   Start
+1076   -
+1092   Start
+1100   -
+1116   Start
+1124   -
+1140   Start
+1148   -
+1164   Start
+1172   -
+1188   Start
+1196   -
+1212   Start
+1220   -
+1236   Start
+1244   -
+1260   Start
+1268   -
+1284   Start
+1292   -
+1308   Start
+1316   -
+1332   Start
+1340   -
+1356   Start
+1364   -
+1380   Start
+1388   -
+1404   Start
+1412   -
+1428   Start
+1436   -
+1452   Start
+1460   -
+1476   Start
+1484   -
+1560   Right
+1620   -
+1700   L
+1706   -
+1740   L
+1746   -
+1780   L
+1786   -
+1820   L
+1826   -
+1860   L
+1866   -
+2100   R
+2104   -
+2112   R
+2116   -
+2124   R
+2128   -
+2136   R
+2140   -
+2148   R
+2152   -
+2400   -

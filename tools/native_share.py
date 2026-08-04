@@ -150,14 +150,31 @@ JUMP_ENTRIES = {
     # hardware multiply through $211B/$2134, entirely .db, and executed zero
     # times in all ten profiles.
     0x80C8F6: 'the real start of what the ranking credits to $80:C8B8',
+    # $80:8002 init_ppu_regs is 44 instructions and ends at its RTS on
+    # $80:80AD: 630 instructions over ten profiles, 63 per call, 0.0002%. The
+    # 0.5% the ranking added to that is the **reset vector** -- $00:FFFC holds
+    # $80AE -- and 1,310,710 of its 1,311,180 instructions are two bytes:
+    # `MVN $7E,$7E` at $80:8116 and `MVN $7F,$7E` at $80:813B, which clear
+    # both WRAM banks a byte per instruction. A block move is genuinely 65,536
+    # instructions on this CPU, so the work is real; it is simply the machine
+    # coming up, once per movie, and nothing calls it.
+    #
+    # This is the fourth kind of code that runs and is never called, and the
+    # only one that is not a family: the reset entry and the NMI entry are the
+    # two hardware vectors, and the other two vectors are inert -- $80:8000 is
+    # a bare `COP #$FE` (BRK, COP in emulation) and $80:8209 a bare `RTI`
+    # (IRQ, ABORT, COP), both executed zero times in all ten profiles.
+    0x8080AE: 'the reset vector, which is not called and cannot be shimmed',
 }
 
 BLOCKED = {
     0x80CD20: 'written, unregisterable: it outlives a frame',
+    0x80AD2B: 'written, unregisterable: it outlives a frame -- six of them',
     0x808353: 'the coroutine primitive the harness measures passes against',
     0x8083E0: 'a dispatcher -- RTLs into any of 13 jobs held in WRAM',
     0x80843D: 'a dispatcher -- the same, for the one job queue B carries',
     0x80816C: 'the NMI entry point, which is not called and cannot be shimmed',
+    0x8080AE: 'the reset vector, which is not called and cannot be shimmed',
 }
 
 # ...and every vblank job, for the same reason as the NMI entry: the dispatcher
@@ -236,13 +253,31 @@ BLOCKED.update({a: 'a vblank job -- reached by RTL from a queue, never called'
 # it over the cartridge resolves 32 of the 67 spawn sites. Three more are
 # spawned from tables that are themselves in ROM and are expanded below.
 #
-# **The remaining four read the address from data, and this set is therefore a
-# lower bound in a way `VBL_JOBS` is not.** `$80:8774` and `$80:87FB` take it
-# from bank `$9F` -- per-level data, so which threads a level starts is a
-# property of the level and not of the code -- `$81:80E7` takes it from WRAM,
-# and `$81:81D7` walks a list through `($0C),Y`. Anything they start that is not
-# already below stays misattributed, and there is no static way to find it. The
-# honest claim is "every thread body the code names", not "every thread body".
+# **The remaining four read the address from data.** This file used to say there
+# was no static way to follow them; for two of the four that was wrong, and
+# `$82:BB0D` is what proved it -- a 0.3% row with ten calls whose work turned
+# out to be 7 KB downstream, in `$82:D7CF`, a thread body reached from a level
+# record. The address is data, but the data is in the cartridge:
+#
+#   * `$80:886D` is `LDA $9F8002,X : STA $10` with X = level*2, so `$9F:8002` is
+#     a table of level-record bases (index 56 holds $8000, the table's own
+#     address, and is the sentinel: 56 records, levels 0..55).
+#   * `$80:8774` spawns the single far entry at record offset **$18/$1A**, when
+#     it is non-zero -- 35 levels have one, five distinct bodies.
+#   * `$80:87CB` is `CLC : LDA #$003C : ADC $10 : PHA`, and the loop above it
+#     walks **eight-byte (entry far, parameter far) records** from offset
+#     **$3C**, spawning each until a zero entry -- 36 levels, seven distinct
+#     bodies, some listed more than once with different parameters.
+#
+# All twelve contain `JSL $808353 thread_yield` within $C5 bytes of their entry,
+# which is the check that says they are threads and not mis-parsed data: only a
+# thread yields. `tools/levelthreads.py` regenerates the list and asserts that
+# all 56 records parse -- every entry a code pointer, every list terminating.
+#
+# **The other two remain a lower bound.** `$81:80E7` takes the address from WRAM
+# and `$81:81D7` walks a list through `($0C),Y`; anything they start that is not
+# below stays misattributed. So this is now "every thread body the cartridge
+# names", which is more than the code names and still not provably all of them.
 THREAD_BODIES = frozenset((
     # from `LDA #imm : LDY #imm : JSL thread_spawn`
     0x8084B1, 0x80A36E, 0x80C8F6, 0x8180EC, 0x8181F6, 0x81ABF5,
@@ -261,6 +296,14 @@ THREAD_BODIES = frozenset((
     # cross-check.
     0x839699, 0x839843, 0x83993D, 0x839C6D, 0x839D00, 0x839E15,
     0x839EBE, 0x839FE2, 0x839A89, 0x839BAD,
+    # ...and the level records in bank $9F, per the comment above. One far entry
+    # at record offset $18, spawned at `$80:8774`:
+    0x80A0AD, 0x80A0EF, 0x80A137, 0x80A222, 0x80A264,
+    # ...and the eight-byte (entry, parameter) list at record offset $3C,
+    # spawned at `$80:87FB`. `$82:A8BB` and `$82:A8C3` are two entry points into
+    # one body -- both reach the same `thread_yield` at `$82:A8EB`.
+    0x82873C, 0x829569, 0x82A8BB, 0x82A8C3, 0x82AB95, 0x82D7CF,
+    0x83AD33,
 ))
 
 # Nothing in the ROM calls a thread body, so none of them can be a registry

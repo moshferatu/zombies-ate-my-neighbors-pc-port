@@ -21,6 +21,8 @@
 #include "port/camera.h"
 #include "port/collide.h"
 #include "port/fade.h"
+#include "port/floor.h"
+#include "port/levelmap.h"
 #include "port/lzss.h"
 #include "port/oam.h"
 #include "port/player.h"
@@ -1709,6 +1711,110 @@ static void shim_tilemap_tile_addr(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
+// $80:ADC8 / $80:ADF3  tile_attrs_at_pixel / tile_attrs_at_tile
+// ---------------------------------------------------------------------------
+//
+// One tile's attribute word, which is what `terrain_blocked` reads six of. 22
+// call sites across banks $80, $81 and $82 reach the pixel form and four reach
+// the tile form, and between them they are how everything that is not a
+// footprint test asks the map a question.
+//
+// X and Y come straight back out: `PHX : PHY` at the top saved the caller's,
+// the six `LSR`s work on copies, and `PLY : PLX` put the originals back. The
+// shim therefore hands `in->x` and `in->y` through rather than modelling them,
+// which is also why `port/terrain.h`'s register struct has neither.
+//
+// **N and Z are the closing `PLB`'s**, so they are the caller's data bank byte
+// and not the attribute word -- the same trap as every `PHD` routine above,
+// one register over. `$80:8480` is the only other place `CosimRegs::db` is
+// read, and it is read for exactly this.
+static void shim_tile_attrs_at_pixel(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  TileAttrsRegs r;
+  tile_attrs_at_pixel(w, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = in->x;
+  out->y = in->y;
+  out->c = r.c;
+  out->n = (in->db & 0x80u) != 0;
+  out->z = in->db == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static void shim_tile_attrs_at_tile(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  TileAttrsRegs r;
+  tile_attrs_at_tile(w, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = in->x;
+  out->y = in->y;
+  out->c = r.c;
+  out->n = (in->db & 0x80u) != 0;
+  out->z = in->db == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:E86D  floor_effect -- what the tile under the player does to them
+// ---------------------------------------------------------------------------
+//
+// The first thing `$80:D1FF` does every frame, before it looks at a button.
+// Two of its three callees are already in this registry -- `$80:ADC8` and
+// `$80:AE14` -- and the third, `$80:F935`, has exactly one call site in the
+// cartridge and is inlined into `port/floor.c` rather than registered.
+//
+// It takes no argument. Everything comes out of the player thread's direct
+// page, which is the caller's and is why `in->d` is passed through; there is no
+// `PHD` anywhere in it, so there is also no `PLD` to take N and Z from and the
+// flags are whichever comparison the exit stopped at. Eleven of those.
+static void shim_floor_effect(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  FloorRegs r;
+  floor_effect(w, rom, in->d, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:D1FF  player_state_normal -- the player's ordinary frame
+// ---------------------------------------------------------------------------
+//
+// **A state handler, not a subroutine.** `$80:D1EC JMP ($D1EF,X)` reaches it
+// 26,972 times and the one real `JSR $D1FF` at `$80:D40B` reaches it 726 more.
+// The harness does not mind -- `cosim_step` intercepts on `pc == r->entry` and
+// never looks at how the PC got there, and the `RTS` returns to whoever called
+// the dispatcher -- but the ranking's calls column undercounts its entries by
+// 38x, which matters when reading the standing check.
+//
+// Everything it reaches is already C except `$80:EAE1 item_use`, so the guard
+// declines the frames that would reach that and nothing else.
+static void shim_player_state_normal(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  PlayerStateRegs r;
+  player_state_normal(w, rom, in->d, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static bool guard_player_state_normal(const Wram* w, const Rom* rom,
+                                      const CosimRegs* in) {
+  (void)rom;
+  return player_state_normal_supported(w, in->d);
+}
+
+// ---------------------------------------------------------------------------
 // $80:CD20  lzss_decompress is written and is deliberately **not** registered
 // ---------------------------------------------------------------------------
 //
@@ -2172,6 +2278,69 @@ static void shim_boss_step(Wram* w, const Rom* rom, const CosimRegs* in,
   out->c = r.c;
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
+
+// ---------------------------------------------------------------------------
+// $80:ACF6  blockmap_cell_ptr — X = column, Y = row
+// ---------------------------------------------------------------------------
+//
+// No `PHD`, so the direct page is the caller's and the shim hands it over. Ten
+// call sites in four banks reach it and this registry has one of their callers,
+// so it will be a both-sides row for a while yet.
+static void shim_blockmap_cell_ptr(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out) {
+  (void)rom;
+  BlockCellRegs r;
+  blockmap_cell_ptr(w, in->d, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = in->y;  // never touched
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static bool guard_blockmap_cell_ptr(Wram* scratch, const Rom* rom,
+                                    const CosimRegs* in) {
+  (void)rom;
+  return blockmap_cell_ptr_supported(scratch, in->d);
+}
+
+// ---------------------------------------------------------------------------
+// $80:AD2B  blockmap_expand is written and, for the same reason as $80:CD20,
+// **not** registered
+// ---------------------------------------------------------------------------
+//
+// `src/port/levelmap.c` is a complete transcription and the shim it would need
+// is written out below in a comment rather than in code, because the harness
+// cannot check it and registering it would claim a check that is not happening.
+//
+// One call is about 395,000 instructions -- roughly six frames, against
+// `lzss_decompress`'s seven -- and `verify` snapshots WRAM at entry and diffs
+// it at exit, so an interrupt landing in between makes the comparison
+// meaningless. Registered, it reported the same thing on every movie tried:
+// **one call, one interruption, nothing checked**, on `level1`, `level1-rescue`,
+// `level9`, `level25-boss` and `level53` alike. There was no movie on which a
+// call completed inside a frame, and there cannot be: the routine's own inner
+// loop runs 20,691 times a call.
+//
+// It wants the same thing `$80:CD20` wants -- a verification mode scoped to a
+// declared footprint, here the block map it reads and the range of `$7F` it
+// writes, compared against the port run on the entry snapshot. That is the same
+// deliberate weakening of "all 128 KB, every call", and it is still worth doing
+// on purpose rather than to get a second routine in.
+//
+// The shim would be four lines: no arguments, N and Z from the closing `PLD`,
+// the carry from the last `ADC $B2` in the copy loop, A the destination pointer
+// as that add left it, X zero and Y `$FFFE`. `port/levelmap.h` records all of
+// it, so nothing is lost by not writing it down twice.
+//
+// **What can be checked is its helper.** `$80:ACF6 blockmap_cell_ptr` is seven
+// instructions -- far too short for an NMI to land in -- and ten call sites in
+// four banks reach it, so it is registered on its own, exactly as
+// `lzss_read_byte` and `lzss_write_byte` are registered under a body that is
+// not. The code for the body stays because the finished game needs it: Phase 4
+// has to build a tile map from a level record like everything else.
 
 // ---------------------------------------------------------------------------
 // The registry
@@ -3356,6 +3525,87 @@ static const CosimRoutine ROUTINES[] = {
         // Two bytes of `JSR` return address with `terrain_blocked_wide`'s own
         // four on top of it, and the routine pushes nothing itself.
         .stack_bytes = 6,
+    },
+    {
+        .name = "blockmap_cell_ptr",
+        .symbol = "$80:ACF6",
+        .entry = 0x80acf6,
+        .ret_op = 0x80ad0a,  // the RTL, after the PLX the flags come from
+        .ret_kind = COSIM_RTL,
+        .run = shim_blockmap_cell_ptr,
+        .supported = guard_blockmap_cell_ptr,
+        // 334..374, call-weighted over 1,410 calls on four movies. There is not
+        // a branch in the routine, so the 40-cycle spread is the bus and
+        // nothing else -- the same shape, and very nearly the same number, as
+        // its twin `$80:AD1C tilemap_tile_addr` at 258.
+        .cycles = 343,
+        .stack_bytes = 2,  // the PHA it reads back through `$01,S`
+    },
+    {
+        .name = "tile_attrs_at_pixel",
+        .symbol = "$80:ADC8",
+        .entry = 0x80adc8,
+        .ret_op = 0x80adf2,  // the RTL, after the second PLB the flags are from
+        .ret_kind = COSIM_RTL,
+        .run = shim_tile_attrs_at_pixel,
+        // 960..1000, and the 40-cycle spread is the bus: there is not a branch
+        // in the routine. Very nearly four times `$80:AD1C tilemap_tile_addr`'s
+        // 258, which is most of what it does.
+        .cycles = 990,
+        // PHB, PHD, PHX, PHY are seven and the PEA makes nine, but the PLB
+        // takes one back *before* the JSL -- so the deepest point is eight, the
+        // three the JSL to $80:AD1C pushes, and that routine's own PHA under
+        // them. Thirteen, which is what `verify` measured.
+        .stack_bytes = 13,
+    },
+    {
+        .name = "tile_attrs_at_tile",
+        .symbol = "$80:ADF3",
+        .entry = 0x80adf3,
+        .ret_op = 0x80ae13,
+        .ret_kind = COSIM_RTL,
+        .run = shim_tile_attrs_at_tile,
+        // 840..880, call-weighted over the 76 calls the whole corpus makes --
+        // 52 on `level9-weapons` and 24 on `level29-ice`, both through
+        // `$81:D0D4`, and nothing else in 42 movies reaches it. 128 cycles
+        // under the pixel form, which is the six `LSR`s and the two transfers
+        // around them almost exactly.
+        .cycles = 862,
+        .stack_bytes = 13,
+    },
+    {
+        .name = "floor_effect",
+        .symbol = "$80:E86D",
+        .entry = 0x80e86d,
+        .ret_op = 0x80e8d2,  // the RTS every path but $80:E88C reaches
+        .ret_kind = COSIM_RTS,
+        .run = shim_floor_effect,
+        // 1,248..1,792, call-weighted. The floor is 1,248 and everything above
+        // it is the two nested calls: `tile_attrs_at_pixel` on every single
+        // call, and `terrain_blocked` on the one conveyor direction that asks.
+        .cycles = 1322,
+        // The routine pushes nothing of its own. The deepest point is the
+        // `JSL` to `$80:ADC8` -- three bytes, with that routine's own thirteen
+        // under them -- and the `JSR` to the inlined `$80:F935` is only two.
+        .stack_bytes = 16,
+    },
+    {
+        .name = "player_state_normal",
+        .symbol = "$80:D1FF",
+        .entry = 0x80d1ff,
+        .ret_op = 0x80d2e5,  // the RTS all eleven paths converge on
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_state_normal,
+        .supported = guard_player_state_normal,
+        // 2,104..7,012, call-weighted over 24,419 calls on five movies. The
+        // floor is `floor_effect` plus the four countdowns and nothing else --
+        // which is most frames -- and the ceiling is a button edge that reaches
+        // `apu_play_sfx`, whose cost is how long the SPC700 took to acknowledge
+        // the previous sound.
+        .cycles = 2434,
+        // It pushes nothing of its own: two bytes for the `JSR $E86D`, and
+        // `floor_effect`'s own sixteen under that.
+        .stack_bytes = 18,
     },
 };
 

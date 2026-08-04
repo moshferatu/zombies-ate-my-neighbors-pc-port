@@ -156,4 +156,119 @@ void weapon_select_next(Wram* w, const Rom* rom, uint16_t dp,
 void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
                       WeaponSelectRegs* out);
 
+// --- $80:D1FF  player_state_normal ------------------------------------------
+//
+// The player's ordinary frame, and the routine both of the two above are
+// reached from. 0.4% of everything the game executes, and until this round it
+// was the top portable row on the board.
+//
+// ## It is a state handler, so the calls column is wrong about it
+//
+// `$80:D1EC` is `JMP ($D1EF,X)` — a jump table of eight player states, four of
+// them live — and 26,972 of this routine's **27,698** entries arrive that way.
+// The other 726 are the one real `JSR $D1FF`, at `$80:D40B` inside another
+// state. The ranking's call count is a `JSR`/`JSL` count and undercounts the
+// entries by 38x.
+//
+// **The harness does not care**, and that is worth stating rather than
+// discovering: `cosim_step` intercepts on `pc == r->entry` and never asks how
+// the PC got there, and the closing `RTS` returns to whoever called the
+// dispatcher either way. What it does affect is the standing check, which has
+// to be read against the routine's span and not against 726.
+//
+// ## What a frame does, in order
+//
+//   1. `JSR $E86D floor_effect` — **before a single button is read**;
+//   2. the weapon the player is holding, checked against how much of it is
+//      left, and one of two flag words set from where it sits in the list;
+//   3. the direction latch, `$0072,X` into `$24` and into `$26` if non-zero;
+//   4. four edge-triggered buttons;
+//   5. four countdowns, each `LDA : BEQ : DEC`, and the fourth clears `$54`
+//      when it lands on zero.
+//
+// The four buttons are all `this frame AND mask` with `last frame AND mask`
+// clear, which is an edge and not a level:
+//
+//     $8000  B   -> $80:EA63 weapon_select_next
+//     $0080  A   -> $80:EAA8 item_select_next
+//     $0040  X   -> $80:EAE1 item_use          -- the one thing not ported
+//     $0030  L or R -> spawn $82:D8DB, and play sound $0D
+//
+// ## Weapon zero is empty, and the two flag words
+//
+// `LDY $1CBC,X : BMI` skips everything when the weapon index is negative, and
+// then `$1A AND #$4000` gates it on Y being held — so this block only runs
+// while the player is trying to fire. `LDA ($64),Y` reads that weapon's BCD
+// counter, and:
+//
+//   * **zero** sets bit 15 of `$006E,X` — the routine writes back to the raw
+//     input word, which is the one place in this file where the game modifies
+//     what it read from the controller;
+//   * **non-zero** clears it, and then files `#$4000` in `$1E` or `$20`
+//     depending on where the weapon sits: indices 6..12 in `$20`, everything
+//     else in `$1E`. Both were zeroed two instructions into the routine.
+//
+// `$1E` is the same word `port/floor.h`'s `$4000` floor reads to decide whether
+// weapon 3 makes the player immune — so *that* immunity is a weapon that is
+// both selected and not empty, and this is where the connection is made.
+//
+// ## `$80:EAE1 item_use` is not ported, so those calls are declined
+//
+// It executes **zero times in all ten profiles** and dispatches through a table
+// of per-item routines, so porting it would be a large amount of code the
+// corpus cannot check. The guard declines instead, and it can, because the
+// condition is entirely readable before the routine runs: `$006E,X & $0040`
+// set and `$1C & $0040` clear. Bit 15 is the only bit of `$006E,X` the routine
+// rewrites, so the guard reading the raw word rather than `$1A` is exact.
+#define PLAYER_STATE_NORMAL_ENTRY 0x80d1ffu
+
+// Absolute, not direct page: `$80:D208` is `BD 6E 00`, `LDA $006E,X`.
+#define W_JOY_RAW 0x006eu    // `$4218` as read this frame, one word per player
+#define W_JOY_DIR 0x0072u    // ...the direction half of it, latched below
+#define W_PLAYER_FLAG 0x1f98u  // the L/R spawn checks and clears this
+
+// Direct page — the player thread's own.
+#define PSN_DP_PLAYER 0x0eu    // player index, already doubled
+#define PSN_DP_BUTTONS 0x1au   // this frame's input, and where bit 15 lands
+#define PSN_DP_PREV 0x1cu      // last frame's, which is what makes it an edge
+#define PSN_DP_FIRE_A 0x1eu    // `#$4000` when the held weapon is not empty...
+#define PSN_DP_FIRE_B 0x20u    // ...in one of two words, by weapon index
+#define PSN_DP_DIR 0x24u       // the direction, every frame
+#define PSN_DP_DIR_HELD 0x26u  // ...and the last non-zero one
+#define PSN_DP_INVENTORY 0x64u  // this player's 14 BCD counters
+#define PSN_DP_T0 0x16u         // four countdowns, each `LDA : BEQ : DEC`
+#define PSN_DP_T1 0x4eu
+#define PSN_DP_T2 0x4cu
+#define PSN_DP_T3 0x56u
+#define PSN_DP_T3_TAIL 0x54u  // ...and what the fourth clears when it lands
+
+#define PSN_BTN_WEAPON 0x8000u  // B
+#define PSN_BTN_ITEM 0x0080u    // A
+#define PSN_BTN_USE 0x0040u     // X -- `$80:EAE1`, and the reason for the guard
+#define PSN_BTN_SPAWN 0x0030u   // L or R
+#define PSN_BTN_FIRE 0x4000u    // Y, which gates the empty-weapon check
+
+#define PSN_EMPTY_FLAG 0x8000u    // what an empty weapon sets in `$006E,X`
+#define PSN_WEAPON_BAND_LO 0x0006u  // indices 6..12 file in `$20`...
+#define PSN_WEAPON_BAND_HI 0x000du  // ...and everything else in `$1E`
+#define PSN_SPAWN_ARG_TABLE 0x80d2e6u  // two words, `$0002` and `$0016`
+#define PSN_SPAWN_ENTRY 0xd8dbu
+#define PSN_SPAWN_BANK 0x0082u
+#define PSN_SPAWN_ARG_COUNT 0x0006u
+#define PSN_SPAWN_SFX 0x000du
+
+// A, X and Y all differ by exit; there is no `PHD`, so N and Z are whichever
+// of the four countdowns the routine stopped on rather than anything to do
+// with the input.
+typedef struct {
+  uint16_t a, x, y;
+  bool n, z, c;
+} PlayerStateRegs;
+
+// True unless the frame would reach `$80:EAE1 item_use`.
+bool player_state_normal_supported(const Wram* w, uint16_t dp);
+
+void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
+                         PlayerStateRegs* out);
+
 #endif

@@ -7,6 +7,13 @@
 //   $80:AE97  terrain_blocked_enemy  ...the same footprint, attribute bit 1
 //   $80:B422  terrain_out_of_bounds  is the point off the edge of the level
 //
+// ...and, below, the three leaves the rest of the ROM reaches this table
+// through:
+//
+//   $80:AD1C  tilemap_tile_addr      column and row to a tilemap address
+//   $80:ADC8  tile_attrs_at_pixel    0.4%  one point's attribute word
+//   $80:ADF3  tile_attrs_at_tile     --    ...for a caller that has tiles
+//
 // The first and third are two of the four tests `$80:E4C1` puts a proposed step
 // through -- `actor_obstacle_at_point` in `port/oam.h` is another -- and the
 // second is the same footprint test with a different mask, called only by enemy
@@ -207,5 +214,73 @@ typedef struct {
 
 void tilemap_tile_addr(const Wram* w, uint16_t x, uint16_t y,
                        TilemapAddrRegs* out);
+
+// --- $80:ADC8 / $80:ADF3  one point's attribute word ------------------------
+//
+// The other leaf under this table, and the one the rest of the cartridge
+// actually uses. `terrain_blocked` and its two neighbours read six probes and
+// answer a yes/no; **these two read one tile and hand back the raw attribute
+// word**, and 22 call sites across four banks pick their own bits out of it.
+// 32,169 calls over the profile corpus, 31 instructions each, every byte
+// exactly once -- the arithmetic above already covers all of it:
+//
+//   TXA : LSR A x3 : TAX       ; pixel to tile, both axes
+//   TYA : LSR A x3 : TAY
+//   PEA $007F : PLB
+//   JSL $80AD1C : TAX          ; the row table, again
+//   LDA $0000,X                ; the tilemap entry, in bank $7F
+//   AND #$03FF : ASL A : TAY   ; ten bits, doubled
+//   LDA [$BA],Y                ; the attribute table, wherever the loader put it
+//
+// `$80:ADF3` is the same twenty-one instructions **without the six `LSR`s**,
+// for the four call sites that already hold tile coordinates. It is 76 calls to
+// `$80:ADC8`'s 32,169 and it is here because it is free, not because it is hot.
+//
+// ## The shift is not the one the footprint tests use
+//
+// `TERRAIN_TILE_SHIFT` is 2, because `terrain_blocked` wants a *byte offset*
+// into a row of 16-bit entries and gets it by shifting twice and clearing the
+// low bit. These two want a tile *number*, because `tilemap_tile_addr` does the
+// doubling itself -- so they shift three times and mask nothing. Same
+// conversion, two representations, and mixing them up costs a factor of two in
+// one direction and an off-by-one tile in the other.
+//
+// Note also that there is **no `TERRAIN_ORIGIN_X`/`_Y` subtraction here**. The
+// footprint tests bias the point by (9, 8) before dividing; these do not touch
+// it. So the two families do not agree about which tile a pixel is in, and that
+// is the ROM's arrangement rather than an oversight in the port: a caller
+// asking "what am I standing on" and a caller asking "can this actor fit"
+// are asking about different rectangles.
+//
+// ## `PEA $007F : PLB` leaves a byte behind
+//
+// `PLB` pulls one byte and `PEA` pushed two, so the high `$00` stays on the
+// stack until the `PLB` at `$80:ADEE` takes it -- which sets the data bank to
+// zero for four instructions that do not use it, and only the *second* `PLB`
+// restores the caller's. The stack balances, and the routine is nine bytes deep
+// of its own before `tilemap_tile_addr`'s `JSL` and `PHA` go under it.
+//
+// That second `PLB` is also the last flag-setting instruction, so **N and Z
+// describe the caller's data bank byte** and have nothing to do with the
+// attribute word in A. `$80:8480` is the other routine in this registry that
+// ends that way, and `CosimRegs::db` exists for the pair of them.
+#define TILE_ATTRS_AT_PIXEL_ENTRY 0x80adc8u
+#define TILE_ATTRS_AT_TILE_ENTRY 0x80adf3u
+
+// `LSR A` three times, on both axes. Eight pixels to the tile.
+#define TILE_ATTRS_PIXEL_SHIFT 3
+
+// A is the attribute word. X and Y are the caller's own, put back by `PLX` and
+// `PLY` -- the shifted copies never leave the routine. Carry is the `ASL`'s,
+// and it is always clear, because `AND #$03FF` has already taken bit 15 out.
+typedef struct {
+  uint16_t a;
+  bool c;
+} TileAttrsRegs;
+
+void tile_attrs_at_tile(const Wram* w, uint16_t col, uint16_t row,
+                        TileAttrsRegs* out);
+void tile_attrs_at_pixel(const Wram* w, uint16_t x, uint16_t y,
+                         TileAttrsRegs* out);
 
 #endif  // PORT_TERRAIN_H

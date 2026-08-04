@@ -17,7 +17,7 @@ asset pipeline is done — compression, graphics, level layout, the placement
 lists, the sprite/OAM path and the audio upload path all reimplemented in C and
 **verified byte-exact against the ROM's own routines** (Phase 2).
 
-Phase 3 is the logic port. The co-simulation harness is built, seventy-seven routines
+Phase 3 is the logic port. The co-simulation harness is built, eighty-two routines
 are through it — including **the whole per-frame sprite pass**, the collision
 dispatch and the twenty-five actor handlers it routes to, the game's **random
 number generator**, the two searches every enemy uses to pick who to chase
@@ -29,8 +29,8 @@ routine that suspends inside the thread scheduler does it at an explicit resume
 point, with its parked state as plain copyable data. `zamn_cosim verify` checks
 the C against the
 ROM's own code on every call the game makes — 128 KB of WRAM plus registers — and
-passes **10,610,679 of 10,610,679 across the whole movie corpus**, thirteen levels
-deep. Across all forty-two movies the ROM is **no longer asked to run a single
+passes **11,094,719 of 11,094,719 across the whole movie corpus**, thirteen levels
+deep. Across all forty-three movies the ROM is **no longer asked to run a single
 routine the port does not have**.
 
 `zamn_cosim run` goes further and substitutes the C for real, diffing two whole
@@ -47,7 +47,7 @@ like a divergence in the port.
 
 The port also reports **which of its own branches an input actually reached**,
 because a branch no movie takes is one the diff agrees with the ROM about for
-the wrong reason. 80 of 364 are still untaken by every input, and they are the
+the wrong reason. 87 of 407 are still untaken by every input, and they are the
 backlog.
 
 See **`docs/cosim.md`** for the harness and what coverage measures that the diff
@@ -77,7 +77,7 @@ instead of by the 65816, and the window title carries a live count of how many.
 `--stock` clears the enable mask to get the Phase 0 emulated baseline back, and
 F1 moves between the two at a frame boundary while the game is running.
 
-What this is *not* is a native game yet. Seventy-six routines are ported; the
+What this is *not* is a native game yet. Eighty-two routines are ported; the
 main loop, the NMI handler, the movement thread, level code and every enemy body
 still belong to the ROM under the emulated core. What runs natively are the
 leaves those call — the sprite/OAM pass, the depth sort, collision dispatch, the
@@ -86,7 +86,15 @@ score, fades, **the camera and the whole tilemap streamer under it** — where t
 view should be, the one pixel a frame it moves towards it, and every strip of
 map that appears at the edge as it does — and the blitter that draws a boss too
 big for sprites as a background layer, mirroring it a tile at a time when it
-turns around. Phase 4 is where that inverts.
+turns around, and the mover that walks that boss into walls a single axis at a
+time so it slides along them, and **the two leaves the rest of the cartridge
+asks the map through** — one tile in, one attribute word out, twenty-six call
+sites across four banks — and **what the floor under the player does to them**:
+the conveyor belts, and the harmful tiles with the cooldown that stops one
+hurting you twice — and, on top of those, **the player's ordinary frame**: the
+ground checked before a button is, the held weapon against how much of it is
+left, and the four button edges that cycle a weapon, cycle an item or open the
+map. Phase 4 is where that inverts.
 
 Other options — `-m <movie.zmv>` replays a recorded movie instead of reading the
 keyboard, `--frames N` runs N frames uncapped and exits, `--shot out.png` writes

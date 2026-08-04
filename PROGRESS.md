@@ -3,7 +3,909 @@
 Cross-session status for the ZAMN native-port project. Update this whenever a
 milestone lands. See `PLAN.md` for the full multi-phase plan.
 
-## Current status: **Phase 3 underway** 🔨 (2026-08-02)
+## Current status: **Phase 3 underway** 🔨 (2026-08-03)
+
+### ...and the level 29 route, which is not a route-following problem (2026-08-03)
+
+The entry above left the level 29 route as the obvious next thing and called it
+bounded. It is bounded, and it is **not** the problem it looked like. Two
+route-followers were written, the second one works, and the route still fails --
+at a single cell, for a reason none of the three obvious explanations covers.
+
+## The closed loop was the wrong correction, and the source says so
+
+The first attempt re-planned from wherever the player actually was after every
+leg, on the reasoning that drift cannot accumulate if it is measured out each
+time. It **oscillates**: the player ping-pongs between (945,1487) and
+(999,1487) for forty legs, because the plan from one cell begins `Left` and the
+plan from the other begins `Right`.
+
+`src/assets.c` already explains why, in a comment written when the search was:
+
+> Exactly the game's box, with no margin, because there is none to be had ... So
+> a path this finds is walkable **on the row it was planned for and on no
+> other**, which is a constraint on the *movie* rather than on the search.
+
+Re-planning from a drifted position is therefore the one correction guaranteed
+not to work: it puts the player on a row the new plan was not drawn for. The
+right correction runs the other way -- keep the original plan and steer the
+player back onto it.
+
+## The second follower works, and the bug in it is worth keeping
+
+Walk each leg on its own axis, then put the **perpendicular** coordinate back
+exactly where the plan expects it before starting the next leg. The first
+version of that still missed, and the reason was mine rather than the game's:
+
+    n = max(2, int(px / SPEED) + 2)      # two frames of slop "to be sure"
+
+At two pixels a frame, two frames of slop turns a **three-pixel correction into
+a six-pixel one**. Every fix overshot and left the player three pixels off on
+the other side, which for a plan that is only walkable on its own row is exactly
+as bad as not correcting at all. With `n = round(px / SPEED)` and no slop the
+follower tracks the plan to **within one pixel** for four legs running -- (445,
+1435), (445,1467), (453,1467), (453,1475) against wanted 444/1436, 444/1468,
+452/1468, 452/1476.
+
+Adding slack to be safe is the natural instinct and it was the whole bug.
+
+## And leg 5 still fails, identically, both times
+
+    leg  4  Right  want (972,1476)  got (973,1475)
+    leg  5  Up     want (972,1228)  got (973,1473)
+
+The player is on the planned row to the pixel, holds `Up`, moves **two pixels**,
+and stops. Same cell, same result, with and without the correction bug -- so
+this was never a route-following problem.
+
+Three explanations were checked and all three are wrong:
+
+  * **The planner and the game disagree about the map.** They do not.
+    `zamn_assets verify-level` on this level compares the expanded map, both row
+    tables, the block library, the tile attributes and all three palettes
+    against WRAM: **15 checks, 0 failed.** Same data, byte for byte.
+  * **Some other attribute mask stops the player.** `src/assets/level.h` records
+    two footprint tests the planner does not model -- `$80:AF2C` on bit 2 and
+    `$80:AF66` on bit 12. But all **19** `JSL $80AF2C` sites are in banks $81,
+    $82 and $83, the actor and boss banks; none is in bank $80, so it is not on
+    the player's movement path.
+  * **An object is standing in the passage.** Level 30's object list has 22
+    entries and **none** is within (900..1060, 1300..1500).
+
+So: the planner models the game's box exactly, off the same bytes, with no
+object in the way and no second mask involved -- and the player still cannot
+enter the cell. **What stops it is not yet known**, and that is the finding.
+
+## Why this is worth writing down rather than pushing through
+
+`psn_t3_expired` is one coverage site, and the route to it now has a repro that
+fits in a sentence: **stand at (973,1475) in level 29 and hold Up.** The player
+moves two pixels and stops, where `zamn_assets route 30` says the way is open
+for 248 more. That is a much better thing to hand the next round than another
+hour of leg-tuning, because whatever explains it is a fact about the game that
+every future route inherits -- the movie comments have been describing routes
+that "drift" for a dozen rounds, and at least one of those may be this instead.
+
+Neither follower's movie was kept. Both ended nowhere near the item, and a movie
+whose header describes reaching it would be worse than none.
+
+**Nothing in the tree changed for this entry.** The corpus is still 11,094,719
+calls across 43 movies with 87 sites untaken; `psn_t3_expired` is still one of
+them.
+
+### The untaken list instead of the ranking -- two sites cleared, and two priced (2026-08-03)
+
+The round before last ended by saying the ranking had stopped being the
+interesting question and `docs/cosim.md`'s untaken list had started being it.
+This is the first round run that way: nothing was ported, one movie was written,
+and the two sites it did not clear are now priced instead of guessed at.
+
+## `psn_spawn` and `psn_spawn_swallowed`, for the cost of one movie
+
+`movies/level1-map.zmv`. **No movie in the corpus had ever pressed L or R** --
+checked, not assumed: zero rows across all 42 files name either button. That is
+the whole reason those two branches were untaken, and it is the cleanest example
+yet of backlog rather than dilution.
+
+The two branches are a press and *the same press again too soon*. `$82:D8DB`'s
+first instruction is `INC $1F98,X`, so the spawned thread sets the player's flag
+itself, and `$80:D29C` requires that flag clear -- when it is not, the press is
+eaten and the flag cleared instead. So `psn_spawn` wants one press and
+`psn_spawn_swallowed` wants a second one while the first is still up. The movie
+presses L five times at 40-frame spacing and then R five times at 12, and the
+tight spacing is what takes the swallow.
+
+**Both taken on the first run**, with 162,997 calls checked and nothing
+diverged. Some inputs cost a round of route-finding; this one cost ten lines.
+
+## `psn_fire_high` is one object in the cartridge
+
+`$80:D245  CPY #$000D` sends weapon indices 13-and-up back to `$1E`, and the
+weapon search walks fourteen slots -- so the branch means **slot 13 exactly**,
+the last one. `$80:F87B player_pickup` does `SBC #$0018` on the doubled
+collision id, so slot = id - `$0C` and slot 13 is id `$19`; `$80:CA30
+object_type_to_id` maps that back to **object type `$2A`**.
+
+There is exactly one type `$2A` in all 56 level records: **game level 22, at
+(739,133)**. Level 22 has no password -- the table only spells every fourth
+level -- so the input is a level-21 password start and then playing level 21 to
+its exit. That is one level completion, not a route, and it is a different kind
+of work from anything the corpus contains. Priced, not attempted.
+
+## `psn_t3_expired` needed the mechanism understood before the input
+
+This one looked like the cheap one and was not, and the reason is worth keeping
+because it is a fact about the game rather than about the movie.
+
+**`$56` is a per-state timer, not a global one.** States 2, 4 and 6 each arm it
+and each decrement their own copy, and the two paths that end a state do it
+*exactly* when `$56` hits zero -- inside that state. `player_state_normal` is
+state 0, and `$80:D2DF DEC $56` has executed **zero times in 27,698 calls**: by
+the time state 0 runs, `$56` is always already zero.
+
+The dig that ruled out the obvious route is worth recording. `$80:DC5C` arms
+`$56` with 390 as part of entering state 6, and state 6 is **the bubble** --
+`movies/level21-bubble.zmv` is the only movie in the corpus that enters it, once,
+at frame 4204, and it waits out all 390 frames. State 6 has an escape: `$80:D493`
+and `$80:D4A6` want `$0072,X` and last frame's `$24` to be `$06` and `$0E` in
+either order, which is a **d-pad wiggle** -- the codes are direction x 2, so
+`$06` is right and `$0E` is left, off the nine `(dx,dy)` pairs at `$82:B7FC`.
+Three alternations and `$80:D4BE` sets `$56` to 1.
+
+**And that is still no good**, which is the point: `$80:D4DB` decrements it in
+the same frame, hits zero, and takes the exit. `$80:D4BE` ends the bubble early;
+it never hands a live countdown to state 0. The same is true of `$80:DB16`,
+which arms `$56` with 5 and returns -- it is reached only from state 2, whose
+body has never executed at all.
+
+**The one site that can do it is `$80:EB23`**, item slot 1's entry in the
+`JMP ($EB07,X)` table:
+
+    $80:EB23  LDA #$8000 : STA $54
+    $80:EB28  LDA #$0352 : STA $56
+
+`$80:EAEC  LDA $4E : ORA $70 : BNE` refuses the item unless `$70` is zero, so it
+is used **from state 0 and stays there**, and its 850 frames count down in
+`player_state_normal` until the fourth countdown clears the `$8000` this set.
+That pairing -- `$54` armed here, cleared there -- is what the branch is *for*,
+and neither routine says so alone.
+
+Item slot 1 is id `$22`, object type `$0A`, and there are nine in the cartridge:
+in the records for game levels 3, 12 (two), 19 (two), 25, 29, 41 and 47. Only
+three of those levels have a password -- 25, 29 and 41 -- and of the three
+**only one has a route**. `zamn_assets route` refuses both of the others from
+their movies' own start positions with its standard verdict, that the target is
+either inside scenery or behind a door; which of the two it is was not chased.
+So the branch hangs on the object at (553,212) in level 29.
+
+**The route drifts and the movie was not kept.** `zamn_assets route 30` returns
+375 cells in 37 legs, and replaying them puts the player at (899,1217) when the
+route wants (876,1228) -- the BFS grid calls that cell walkable and the player's
+3x2 footprint cannot reach it. Everything after that leg is walking into walls:
+the player finishes at (911,1025), **888 pixels from the item**, and sits there
+for the rest of the movie. That is the failure mode every routed movie in
+`movies/` has a paragraph about, and the fix is the same one they used: anchor
+the legs on walls instead of on cell counts. A movie whose header described
+reaching the item while ending nowhere near it would be worse than no movie, so
+it was deleted rather than committed.
+
+## Two things about the tools that cost time
+
+**The player's direct page is `$7E:0100`.** `--watch` needs an address and the
+state index lives at `$70` on the player thread's page, which `src/headless.c`
+finds by scanning `$7E:0100` upwards in `$80` strides for the page whose `$64`
+holds `$1CCC`. For player 1 it is the first page, so the state index is
+`$7E:0170` and `$56` is `$7E:0156`. That is what turned "the bubble happens
+somewhere in this movie" into "frames 4204 to 4667" in one run.
+
+**`zamn_assets actors` and `zamn_assets route` are off by one from each other.**
+`route` takes the record index and `actors` prints it too, but the *game's* level
+number is the record minus one: `movies/level29-firstaid.zmv` routes through
+record 30. This was checked rather than inferred -- the first weapon-13 scan
+reported "level 23" and the answer is level 22.
+
+## Results
+
+**Corpus: 11,094,719 calls checked across 43 movies, 0 diverged; branch coverage
+320 of 407, 87 untaken.** Up from 318 and 89. The total is 162,997 higher than
+last round, which is exactly `level1-map.zmv`'s own count -- nothing else in the
+tree changed, so every other movie's numbers are unchanged and **the native
+share is untouched**. This round moved coverage, not share.
+
+Of `player_state_normal`'s fifteen sites, **thirteen are now taken**. The two
+that are not are the two above, and both are priced: `psn_fire_high` wants a
+level-21 playthrough, `psn_t3_expired` wants a wall-anchored route to one object
+in level 29.
+
+The drop is exactly two -- 89 to 87 -- so no site went the other way and nothing
+new appeared. That is worth checking every round and not assuming: registering a
+routine adds its sites to the denominator, and a round that clears two while
+quietly adding three has not moved.
+
+## Next
+
+The level 29 route is the obvious next thing, and it is now a bounded problem
+rather than an open one: the target, the item, the mechanism and the exact cell
+the BFS route cannot reach are all written down. After that the remaining
+untaken sites are worth re-reading as a list, because this round is evidence for
+something the census keeps suggesting -- **the cheap ones are cheap for the same
+reason every time.** L and R were untaken because forty-two routes had never
+needed a button, not because the branch was hard. It is worth checking the rest
+of the list for that shape before spending another round on route-finding.
+
+### $82:BB0D was never a routine -- twelve thread bodies out of the level records (2026-08-03)
+
+The write-up above said the next round would either take `$82:BB0D` or start
+reducing the untaken list, and that `$82:BB0D` should be **checked for a spin
+first**, because three of the last five single-digit-call-count rows had been
+spins or misattributions. It is the fourth. Nothing was ported this round; a
+row came off the board and the tooling got less wrong.
+
+## Ten calls, 0.3%, and 609 instructions
+
+`$82:BB0D` was 784,715 instructions across ten calls -- one per profile. The
+first check is `hotbytes.py` over the routine's own bytes, and it accounted for
+**609 of them in three profiles**. Everything else was somewhere else.
+
+`span.py` says where and why: the CDL marks no subroutine entry anywhere between
+`$82:BB0D` and `$82:D88C`, so the attribution span is **7,551 bytes** and
+whatever runs inside it is charged to the routine at the top. The work is 7 KB
+downstream at `$82:D81F`, and the profile alone identifies what it is:
+
+| byte | what | executions |
+| --- | --- | --- |
+| `$82:D818` | `TXA : LSR : STA $48` -- the loop's set-up | 2 |
+| `$82:D81C` | `LDX #$FFFE` -- the same loop's restart | 10,263 |
+| `$82:D883` | `BNE $D81C` -- where the other 10,261 arrive from | 10,261 |
+| `$82:D87D` | `JSL $808353` -- **`thread_yield`** | 10,263 |
+
+Two entries, ten thousand iterations, each ending in a yield. A thread body.
+
+The tell is worth keeping separate from the count: it was **`$82:D818` running
+twice while `$82:D81C` ran 10,263 times** that said the entry was not where the
+fall-through suggested. A relative-branch scan of the surrounding 200 bytes
+found `$82:D883 BNE $D81C`, which closed the loop and sent the search backwards
+instead -- and nothing at all executes before `$82:D7CF`.
+
+## Which is a thread the *level* names, not the code
+
+`$82:D7CF` is in no `THREAD_BODIES` entry, and `native_share.py` explained why
+before the search started. Its own comment listed four spawn sites that read the
+address from data, `$80:8774` and `$80:87FB` among them, and finished: *"there
+is no static way to find it."*
+
+**That was wrong for two of the four.** Per-level data is still data in the
+cartridge:
+
+  * `$80:886D` is `LDA $9F8002,X : STA $10` with X = level*2, so `$9F:8002` is a
+    table of level-record bases. Index 56 holds `$8000`, the address of the
+    table itself, and is the sentinel -- 56 records, levels 0..55.
+  * `$80:8774` spawns the single far entry at record offset **`$18`/`$1A`**.
+    35 levels have one; five distinct bodies, and all five turned out to animate
+    the palette shadow `$82:8138 palette_copy_a` fills. `$80:A0EF` is the
+    clearest: `AND #$FC1F` clears green in BGR555, ORs a new value in, yields
+    four ticks, repeats.
+  * `$80:87CB` is `CLC : LDA #$003C : ADC $10 : PHA`, and the loop above it
+    walks **eight-byte `(entry far, parameter far)` records** from offset
+    **`$3C`**, spawning each until a zero entry. 36 levels, seven bodies.
+
+**Twelve new thread bodies, 49 to 61.**
+
+## The parameter is the reason they had to be data
+
+`$82:D7CF` runs eight animation channels off one direct-page table, each channel
+a script of `(tile, delay)` pairs reached through `[$00]` -- and that script is
+the spawn parameter. Twenty-one levels share the code and differ only in the
+table, so the entry is a constant and the behaviour is not. An immediate scan
+cannot see that, and a call graph cannot either.
+
+The same field explains a shape that looked like a parse error at first:
+`$82:A8BB` appears **three times in level 20 alone**. It is not a duplicate --
+it is three instances of one body with three parameters. `$82:A8BB` and
+`$82:A8C3` are also two entry points into a single body: both reach the same
+`thread_yield` at `$82:A8EB`, eight bytes apart.
+
+## Checked the way the first 49 were
+
+Every one of the twelve reaches `JSL $808353 thread_yield` within `$C5` bytes of
+its entry -- only a thread yields -- and **none has an inbound call edge**.
+
+That second scan has a trap that bit on the first attempt and is worth writing
+down: `JSR` and `JMP` are program-bank-relative, so matching operand bytes alone
+reported a `JSR $A0EF` in bank `$91` as an edge into `$80:A0EF`. It is a call to
+`$91:A0EF`. Only `JSL` and `JML` carry a bank; the other two only count inside
+the target's own bank. With that fixed the total is zero.
+
+`tools/levelthreads.py` is the round's artefact and asserts the rest: all 56
+records parse, every entry is a code pointer into banks `$80..$83`, every list
+terminates, and every body yields. It also cross-checks itself against
+`THREAD_BODIES`, so it stays honest as the set changes. One free cross-check
+fell out: the 21 levels that use `$82:D7CF` is exactly the number of times the
+three bytes `CF D7 82` occur anywhere in bank `$9F`.
+
+## Results, and why the headline number does not move
+
+`$82:BB0D` leaves the board, keeping the **2,030 instructions that are genuinely
+its own** -- which puts it below every row the report prints. `$82:D7CF` takes
+its place in the blocked family at 782,685. The blocked families go from
+58,543,890 to **59,326,575**, 21.1% of everything to **21.4%**.
+
+**The native share does not move at all: 61.1% strict, 61.6% call-weighted,
+before and after.** That is correct and it is the point. A thread body was
+already in the denominator and never in the numerator; all that changed is whose
+name the work is filed under. The ranking is a list of what to port next, and a
+row that cannot be ported does not belong on it.
+
+The other eleven bodies executed nothing in these ten profiles, because ten
+profiles are ten levels and these are per-level threads. They are registered
+now, so the next profile that visits levels 12, 20, 47 or 52 will attribute
+them correctly rather than quietly inflating whatever sits above them.
+
+## What this says about the remaining rows
+
+Four of the last six single-digit-call-count rows have now been spins or
+misattributions, and none has been a routine worth porting. **A call count in
+single digits next to a share above 0.1% has not once meant real work.** That is
+no longer a heuristic to apply case by case; it is strong enough to check first
+and by default, and `hotbytes.py` plus `span.py` do it in two commands.
+
+What is left on the board above 0.2% is now `$80:CB61 apu_ipl_upload` (1.4%),
+`$80:CC7C apu_load_set` (0.8%), `$80:CCBF apu_next_byte` (0.3%) and `$80:B2A5`
+(0.3%) -- three of the four APU handshakes, checkable but not substitutable.
+**The ranking has run out of things to say.** The next round should be the
+untaken list: 89 sites, and the cheapest four are `psn_fire_high`, `psn_spawn`,
+`psn_spawn_swallowed` and `psn_t3_expired`, two of which need nothing more than
+a movie that presses L or R -- which no movie in the corpus does at all.
+
+### $80:D1FF player_state_normal -- the player's ordinary frame, and a site that came back out (2026-08-03)
+
+The top portable row on the board, and it went in without needing anything new.
+Five of the six things it reaches were already C -- `floor_effect` from last
+round, `weapon_select_next`, `item_select_next`, `thread_spawn` and
+`apu_play_sfx` -- which is what two rounds of working *down* the call graph
+instead of across the ranking buys you.
+
+## A state handler, so the calls column is wrong about it
+
+`$80:D1EC` is `JMP ($D1EF,X)`: a table of eight player states, four of them
+live. **26,972 of this routine's 27,698 entries arrive that way**, and the other
+726 are the one real `JSR $D1FF` at `$80:D40B`, inside another state.
+
+The harness does not mind, and that is worth writing down rather than
+rediscovering: `cosim_step` intercepts on `pc == r->entry` and never asks how
+the PC got there, and the closing `RTS` returns to whoever called the dispatcher
+either way. What it does affect is the standing check, which had to be read
+against the routine's span and not against the calls column -- the first row
+where that column *under*counts rather than over-attributing work.
+
+## A frame, in order
+
+  1. `JSR $E86D floor_effect` -- **before a single button is read**;
+  2. the held weapon, checked against how much of it is left;
+  3. the direction latch, `$0072,X` into `$24` and into `$26` if non-zero;
+  4. four edge-triggered buttons -- B cycles weapons, A cycles items, X uses
+     one, and L or R spawn a thread at `$82:D8DB` with a sound;
+  5. four countdowns, each `LDA : BEQ : DEC`, the fourth clearing `$54` when it
+     lands on zero.
+
+The weapon block is the interesting one. It runs only while the fire button is
+held and the weapon index is not negative, and then `LDA ($64),Y` reads that
+weapon's BCD counter. **Empty sets bit 15 of `$006E,X`** -- the routine writing
+back over the word it read from the controller, which is the only place in this
+file the game does that. Non-empty clears it again and files `#$4000` in `$1E`
+or `$20` by where the weapon sits in the list: 6 through 12 in `$20`, everything
+else in `$1E`.
+
+And `$1E` is the same word `port/floor.h`'s `$4000` floor reads to decide
+whether weapon 3 makes the player immune. **So that immunity is a weapon both
+selected and not empty**, and the two routines only connect through this word --
+neither header could have said so on its own.
+
+## Carry belongs to whatever ran before the countdowns
+
+Nothing in the four closing `LDA : BEQ : DEC` blocks writes carry, so what the
+caller gets at the `RTS` is whichever earlier instruction last did: the `ASL A`
+that doubles the weapon index, one of the two `CPY`s that pick between `$1E` and
+`$20`, the `LSR A` on the spawn path, or a nested call's. Eleven paths, and the
+port tracks the flag through each rather than setting it at the end.
+
+N and Z are simpler and worth saying so: all four countdowns write them
+unconditionally, so the exit's N and Z are always the fourth one's, whatever
+else happened.
+
+## `$80:EAE1 item_use` is declined, and its coverage site came back out
+
+`item_use` dispatches through a table of per-item routines and executes **zero
+times in all ten profiles**, so porting it would be a large amount of C the
+corpus cannot check. The guard declines those frames instead, and it can,
+because the condition is entirely readable before the routine runs: `$006E,X &
+$0040` set with `$1C & $0040` clear. Bit 15 is the only bit of `$006E,X` the
+routine rewrites, so the guard reading the raw word rather than `$1A` is exact
+rather than approximate.
+
+**The first draft marked that branch with a coverage site, and it should not
+have.** The guard declines every frame that would reach it, so the port never
+runs it and no input can ever make it run -- which is precisely
+`blockmap_expand`'s rule about sites the harness cannot reach. The branch itself
+stays, because `$80:D28C` is what makes the fourth button exclusive with the
+third; the site is gone. Sixteen sites became fifteen.
+
+That distinction is now worth stating in one line, because three rounds have
+turned on it: **a site no input has reached yet is backlog; a site the harness
+is structurally prevented from reaching is dilution.** A guard is what turns the
+first into the second.
+
+## Results
+
+**24,419 calls checked across five movies, 0 diverged**, first run -- 3,584 on
+`level1-rescue`, 5,712 on `level9-weapons`, 2,235 on `level1-keys`, 7,245 on
+`level1-2p` and 5,643 on `level25-lane`. **One decline in the entire corpus**,
+on `level1-keys`, which is the guard catching its `item_use` frame.
+
+Cycles 2,104..7,012, call-weighted **2,434**. The floor is `floor_effect` plus
+four countdowns and nothing else, which is most frames; the ceiling is a button
+edge that reaches `apu_play_sfx`, and what that costs is how long the SPC700
+took to acknowledge the previous sound. `stack_bytes` 18: the routine pushes
+nothing itself, so it is two bytes of `JSR` with `floor_effect`'s sixteen under
+them.
+
+**Eleven of fifteen coverage sites taken across the corpus.** The four that are
+not -- `psn_fire_high`, `psn_spawn`, `psn_spawn_swallowed`, `psn_t3_expired` --
+are backlog: reachable, and no movie has done them. Two of the four want a movie
+that presses L or R, which no movie in the corpus does at all.
+
+`run` is clean on both movies tried with the routine alone and with everything
+substituted: `level1-2p` at 6,000 frames, 5,989 compared passes, and
+`level9-weapons` at 9,000 frames, 8,989 passes. **No byte of live game state
+differed on any of them.**
+
+## The standing check, exact for the sixteenth time
+
+195,017,908 less 193,799,438 is **1,218,470**, against a measured span of
+exactly 1,218,470. Nothing new was subsumed, because everything this routine
+calls was already registered -- which is itself the check working: a routine
+whose callees are all ported should move the number by its own span and not a
+byte more.
+
+**Corpus: 10,931,722 calls checked across 42 movies, 0 diverged; branch coverage
+318 of 407, 89 untaken.** The total is 98,782 higher than last round.
+
+**61.1% strict, 61.6% call-weighted; 70.2% and 70.8% with the waiting out.**
+Static 22.3%. 82 registry entries.
+
+## Next, and the board has changed shape
+
+For the first time there is **no portable row above 1%**, and the top of what is
+left is APU: `$80:CB61 apu_ipl_upload` at 1.4% with 5.9 million more instructions
+of measured waiting behind it, and `$80:CC7C apu_load_set` at 0.8%. Both are
+hardware handshakes -- `CB61` spins on `$2140` inside its own byte loop and
+`CC7C` drives `$80:CCC8 apu_send`, already registered `verify_only` for exactly
+that reason. They are checkable and not substitutable.
+
+Below them the rows are 0.3% and under: `$80:CCBF apu_next_byte` (231,975
+calls), `$82:BB0D` (10 calls -- **check it for a spin first**), `$80:B2A5`
+(18,927), `$80:CDF4`, `$81:BC3D`, `$80:AF2C`, `$81:8024`. That is the shape of
+a project that has taken the big things: what remains is either hardware, a
+thread body the harness cannot intercept, or a long tail of small routines. The
+tail is worth taking on its own terms -- eight rows of 0.2% is 1.6% -- but the
+honest framing is that the ranking has stopped being the interesting question
+and `docs/cosim.md`'s untaken list has started being it.
+
+### $80:E86D floor_effect -- what the ground does to you, and eleven ways out of it (2026-08-03)
+
+The routine `$80:D1FF` runs before it looks at a single button. It reads one
+tile attribute through `$80:ADC8` -- ported last round, which is why this one
+was possible -- and for five particular words does something to the player.
+28,088 calls, 13.2 instructions each.
+
+    $4000   harm, unless the player holds weapon 3 and `$1E` is set
+    $0400   harm, unconditionally
+    $8000   `STZ $2A`, and nothing else
+    bit 3   a conveyor, and then one of four directions
+
+    $0108  one pixel up        $0208  one pixel left
+    $0408  one pixel down      $0028  one pixel right, if the way is clear
+
+**Only the rightward belt asks the terrain.** The other three write `$30` or
+`$32` outright, so a belt can push a player into a wall going up, down or left
+and cannot going right. There is no comment and no obvious reason. The port
+reproduces the asymmetry, because a guard on the other three would be a
+difference from the ROM that no input can tell apart from a fix.
+
+`AND #$FF7F` comes first, so bit 7 is not part of any of those comparisons --
+whatever it marks is orthogonal to what the floor does, and the routine drops it
+rather than testing it.
+
+## `BIT #$0008` is not `BIT $0008`
+
+The conveyor test is `BIT` in **immediate** mode, and on the 65816 that form
+sets **Z only**. Every other addressing mode loads N and V from bits 15 and 14
+of the operand; immediate does not. So on the routine's commonest exit --
+`$80:E88C RTS`, 26,479 of 28,088 calls -- Z is the `BIT`'s and **N and carry are
+`CMP #$8000`'s, three instructions earlier**.
+
+That is the kind of thing a port gets wrong silently. Nothing in this routine
+reads N afterwards; a caller might, and the harness compares the flag on every
+call either way, which is what makes it cheap to be right about.
+
+## `$80:F935` is inlined, and what it told us about `$50` and `$52`
+
+Eleven instructions and **one call site in the entire cartridge**, four
+instructions up at `$80:E89F`. So it goes in the body rather than the registry
+-- the same call the blockmap round made about `$80:AD0B` -- and porting
+`$80:E86D` subsumes it whole.
+
+    LDA $70 : CMP #$0002 : BEQ out      ; two modes suppress it entirely
+              CMP #$0004 : BEQ out
+    LDA $52 : BPL out                   ; ...and so does the cooldown
+    LDA #$8001 : STA $50
+    LDA #$0020 : STA $52
+
+`$50` and `$52` are a pair, and reading `$80:D01B` is what named them.
+`BIT $50 : BMI` takes an "effect is running" branch that walks an animation
+frame table and clears `$50` at the end of it before going on to
+`$1CB8 player_health`; `DEC $52 : BPL` counts the other one down and parks it at
+`$FFFF`. **So `$52` negative means idle**, the `BPL` here is a guard rather than
+a test, and `$0020` is a cooldown: the floor cannot hurt you again until the
+last one has finished. 19 of 493 calls get that far.
+
+The port does not name `$70`. Two of its values switch the whole thing off and
+the ROM does not say which two states they are, so the header says that instead
+of guessing.
+
+**And `$80:F935` is not a void call, however much it looks like one.** Its `RTS`
+lands on `$80:E8A2`, which is the first of the four conveyor compares -- so A on
+the way out matters, and A on the way out is `$70`, `$52` or `#$0020` depending
+on which of its three exits it took. None of the three normally matches a
+conveyor word, and "normally" is not "never": `$52` holding `$0028` would take
+the rightward belt. The port reproduces the fall-through literally rather than
+returning early.
+
+## Direct page, and the trap next door
+
+There is no `PHD` anywhere in either routine, so every one of `$0E`, `$1E`,
+`$2A`, `$30`, `$32`, `$50`, `$52` and `$70` is a field of the **player thread's
+own page**. Read against the absolute symbol table they are `vbl_queue_b_count`
+and `apu_seq`, and they are nothing of the kind -- exactly the trap the thread
+bodies sprang one file over, and the reason `zamn.sym` now carries a warning on
+the row rather than a name. `$1CBC player_weapon` is the exception and is
+genuinely absolute, because `LDA $1CBC,X` has a 16-bit operand.
+
+No `PHD` also means **no `PLD` to take N and Z from**, so the flags are whichever
+comparison the exit stopped at. There are eleven exits and the port tracks them
+one at a time; `terrain_out_of_bounds` is the only other routine here shaped
+that way, and it has six.
+
+## Results
+
+**11,355 calls checked, 0 diverged, 0 declines**, first run: 5,712 on
+`level9-weapons` and 5,643 on `level25-lane`. Cycles 1,248..1,792,
+call-weighted **1,322** -- the floor is the routine on its own and everything
+above it is the two nested calls. `stack_bytes` 16: it pushes nothing itself,
+and the deepest point is the `JSL` to `$80:ADC8` with that routine's thirteen
+under it.
+
+**Sixteen coverage sites, eleven of them taken across the 42-movie corpus.**
+The five that are not are `floor_clear_2a`, `floor_mode_off`,
+`floor_belt_left`, `floor_belt_right` and `floor_belt_right_blocked` -- zero in
+all ten profiles and zero in all forty-two movies, and they go to the untaken
+backlog rather than being dropped. That is the distinction
+`blockmap_expand` established: a site the harness can *never* reach dilutes the
+number and comes out; a site no movie has reached *yet* is what the backlog is
+for.
+
+`run` on `level25-lane`, the one movie with conveyors: **floor_effect alone is
+clean on all 9,389 compared passes**, no live game state differing. With
+everything substituted that movie parts at pass 3496 -- the same level-25
+parting `boss_step` was established to own two rounds ago, six passes earlier
+than before because the cycle budget moved. `level9-weapons` with everything
+substituted is clean for all 8,989 passes.
+
+## The standing check, exact for the fifteenth time
+
+193,799,438 less 193,425,111 is **374,327**, against 370,307 for `$80:E86D` and
+4,020 for the `$80:F935` it subsumes -- **374,327**.
+
+**Corpus: 10,832,940 calls checked across 42 movies, 0 diverged; branch coverage
+307 of 376, 85 untaken.** The total is 100,138 higher than last
+round.
+
+**60.7% strict, 61.2% call-weighted; 69.8% and 70.3% with the waiting out.**
+Static 21.9%. 81 registry entries.
+
+**Next.** `$80:D1FF` is now the top portable row on the board at 0.4%, and the
+chain under it is gone: `$80:E86D` was its first instruction and everything
+`$80:E86D` reached is ported. Two things to carry into that round. Its ranking
+row says **726 calls** while its entry byte executes **27,698** times, because
+`$80:D1EC` is `JMP ($D1EF,X)` -- a player-state dispatcher with eight table
+entries, four of them live -- so the standing check wants reading against the
+span and not against the call count. And three of its four remaining callees
+(`$80:EA63 weapon_select_next`, `$80:EAA8 item_select_next`, `$80:EAE1
+item_use`) are edge-triggered on buttons that **no movie in the profile set
+presses in that state** -- `$80:EAA8` is already registered and executes nothing
+in ten profiles -- so a port of `$80:D1FF` will be checked on 27,698 calls that
+never enter three of its four branches. Worth knowing before, not after.
+
+### $80:ADC8 and $80:ADF3 -- one tile's attributes, and the row under the row (2026-08-03)
+
+`$80:D1FF` was the next row, and reading it turned into a different round.
+Its very first instruction is `JSR $E86D`, on every one of its 27,698 entries,
+and `$80:E86D`'s third is `JSL $80ADC8`. A port substitutes the whole call
+including everything nested inside it, so **`$80:D1FF` cannot be written until
+`$80:ADC8` is**, and `$80:E86D` also reaches `$80:F935` and `$80:AE14`. The
+board is not a list of independent rows; it is a graph, and the row below the
+one being read was underneath it all along.
+
+So: bottom of the chain first.
+
+## `$80:ADC8` is 43 bytes and everything it needs is already here
+
+Thirty-one instructions, `hotbytes.py` says every byte runs exactly once per
+call, and 997,239 / 32,169 is 31.0 -- the listing and the profile agreeing to
+one decimal place, which is what a routine with no loop and no early exit looks
+like.
+
+    TXA : LSR A x3 : TAX       ; pixel to tile, both axes
+    TYA : LSR A x3 : TAY
+    PEA $007F : PLB
+    JSL $80AD1C : TAX          ; tilemap_tile_addr -- already ported
+    LDA $0000,X                ; the tilemap entry, in bank $7F
+    AND #$03FF : ASL A : TAY   ; ten bits of tile number, doubled
+    LDA [$BA],Y                ; the attribute table, wherever the loader put it
+
+Every line of that already exists in `port/terrain.c`: the first half is
+`tilemap_tile_addr`, the second is the back half of `probe_attrs`, and
+`terrain_blocked` has been doing both six times a call since Phase 3 started.
+What was missing was the *one-tile* form, which is what the other 22 call sites
+in banks `$80`, `$81` and `$82` want -- **the raw attribute word**, for callers
+that pick their own bits out of it rather than asking a yes/no question.
+
+`$80:ADF3` is the same twenty-one instructions **without the six `LSR`s**, for
+the four sites that already hold tile coordinates. 76 calls in 42 movies against
+`$80:ADC8`'s 32,169, and it is in because it is free.
+
+## The shift is not the footprint tests' shift
+
+`TERRAIN_TILE_SHIFT` is 2, because `terrain_blocked` wants a byte offset into a
+row of 16-bit entries and gets there by shifting twice and clearing the low bit.
+These two want a tile *number*, because `tilemap_tile_addr` does the doubling
+itself, so they shift three times and mask nothing.
+
+And there is **no `(9, 8)` origin bias here**. The footprint tests subtract one
+before dividing; these do not. The two families genuinely disagree about which
+tile a pixel is in, and that is the ROM's arrangement: "what am I standing on"
+and "can this actor fit" are questions about different rectangles.
+
+## `PEA $007F : PLB` leaves a byte on the stack
+
+`PLB` pulls one and `PEA` pushed two, so the high `$00` sits there until the
+`PLB` at `$80:ADEE` takes it -- setting the data bank to zero for four
+instructions that do not use it -- and only the *second* `PLB` restores the
+caller's. That second `PLB` is the last flag-setting instruction in the routine,
+so **N and Z are the caller's data bank byte** and have nothing to do with the
+attribute word in A. `$80:8480` is the only other routine here that ends that
+way, and `CosimRegs::db` was put there for it; this is the second customer.
+
+The same idiom is why `stack_bytes` is 13 and not 14. Nine bytes go down (`PHB`,
+`PHD`, `PHX`, `PHY`, `PEA`) but the `PLB` takes one back *before* the `JSL`, so
+the deepest point is eight, plus three for the `JSL` and two for
+`tilemap_tile_addr`'s own `PHA`. `verify` measured 13.
+
+Carry is the `ASL`'s, and it is always clear: `AND #$03FF` has already taken bit
+15 out. X and Y are the caller's, put back by `PLX`/`PLY` -- the shifted copies
+never leave -- which is why the register struct in `port/terrain.h` has neither.
+
+## Results
+
+**14,053 calls checked across three movies, 0 diverged, 0 declines**, first run:
+3,584 on `level1-rescue`, 6,124 and 52 on `level9-weapons`, 4,269 and 24 on
+`level29-ice`. Those last two movies are the only ones in 42 that reach
+`$80:ADF3` at all, both through `$81:D0D4`.
+
+Cycles 960..1000, call-weighted **990** for the pixel form and **862** for the
+tile form. The 40-cycle spread is the bus, because there is not a branch in
+either routine -- the same shape as `tilemap_tile_addr`'s 258 and
+`blockmap_cell_ptr`'s 343, and 990 is very nearly four times the first of them,
+which is most of what the routine does. The 128 cycles between the two forms are
+the six `LSR`s and the transfers around them, almost exactly.
+
+**No coverage sites.** There is no branch to mark, and the two
+`terrain_attrs_bank_7e`/`_7f` sites that already exist test the same pointer
+from inside `terrain_footprint`; a second copy here would report the same
+condition twice and dilute the number, which is the rule `blockmap_expand` had
+its two sites removed under.
+
+`run` on `level9-weapons`, 9,000 frames, with the two alone and then with
+everything: **no byte of live game state ever differed on any compared pass.**
+Nothing parted, so there was nothing to chase to a framebuffer this time.
+
+## A symbol that was never a routine
+
+`zamn.sym` had carried `$80:AE00 tile_walkable` since the walkability work, with
+a comment describing the six-tile footprint test. `$80:AE00` is **the second
+byte of `$80:ADFF JSL $80AD1C`**. It is an opcode boundary in no execution, the
+profile counts it zero times in ten movies, and the routine it described is
+`$80:AE14`, four instructions past the end of the one it pointed into.
+
+It never did any harm because nothing read it, which is the point: **a wrong
+symbol is invisible until something starts using the file.** This round put four
+correct names in that block and a note on the row where the wrong one was. It is
+the same failure as the `.db` hazard one level up -- a name read off a listing,
+believed because it was written down -- and it wants the same rule.
+
+## The standing check, exact for the fourteenth time
+
+193,425,111 less 192,426,276 is **998,835**, against a measured span of 997,239
+plus 1,596 -- **998,835**. Two routines, both leaves, and the number moved by
+exactly what they execute and not a byte more.
+
+**Corpus: 10,732,802 calls checked across 42 movies, 0 diverged; branch coverage
+296 of 376, 80 untaken; census still empty.** The total is 108,250
+higher than last round, which is the two routines' own corpus counts, and the
+untaken figure did not move because neither has a branch to mark.
+
+**60.6% strict, 61.1% call-weighted; 69.6% and 70.2% with the waiting out.**
+Static 21.7%. 80 registry entries.
+
+**Next.** Back up the chain. `$80:E86D` is 0.1% over 28,088 calls -- 13.2
+instructions each, `$80:E86D..$E8D2` and every one of the 370,307 inside it --
+and it calls exactly three things: `$80:ADC8` and `$80:AE14`, **both now
+ported**, and `$80:F935`, which is 493 calls and 125 instructions each. One
+small routine stands between this registry and the whole of it. Then `$80:D1FF`
+itself. Before either, note the wrinkle the reset round turned up:
+`$80:D1FF`'s ranking row says **726 calls** and its entry byte executes
+**27,698** times, because `$80:D1EC` is `JMP ($D1EF,X)` -- a player-state
+dispatcher with eight table entries, four of them live -- and 26,972 entries
+arrive that way. That is not a blocker. `cosim_step` intercepts on
+`pc == r->entry` and never asks how the PC got there, and the `RTS` returns to
+whoever called the dispatcher either way. But it is the first row where the
+calls column *under*counts, so the standing check will want reading with that in
+mind rather than against 726.
+
+### $80:8002 was $80:80AE all along -- the second hardware vector (2026-08-03)
+
+The next row on the board was `$80:8002 init_ppu_regs`, 0.5% over ten calls, and
+the write-up above said to check it for a spin first because three of the last
+four single-digit call counts had been one. It is not a spin. `hotbytes.py`
+printed **NO LOOP** over its 44 instructions, which is exactly right and exactly
+not the point, because the range that answer applies to is not the range the
+ranking was scoring.
+
+`init_ppu_regs` ends at its `RTS` on `$80:80AD` and executes **630 instructions
+over ten profiles** -- 63 a call, 0.0002%. The other 1,311,180 belong to
+`$80:80AE`, and `$00:FFFC` holds `$80AE`. **It is the reset vector.**
+
+Almost all of it is two bytes:
+
+| byte | what | executions |
+| --- | --- | --- |
+| `$80:8116` | `MVN $7E,$7E` -- zero-fill bank `$7E` | 655,350 |
+| `$80:813B` | `MVN $7F,$7E` -- copy the zeroes over bank `$7F` | 655,360 |
+
+A block move on this CPU re-executes itself once per byte, so clearing 128 KB of
+WRAM genuinely is 131,071 instructions and the profile is not exaggerating. It
+is the machine coming up, once per movie, and nothing calls it -- so it joins
+`$80:816C nmi_entry` in `BLOCKED`, and the doc's "three families of code that
+runs and is never called" now names the first row **hardware vectors, 2**. The
+remaining two vectors are inert: `$80:8000` is a bare `COP #$FE` and `$80:8209`
+a bare `RTI`, both executed zero times in all ten profiles.
+
+**Two things about this one are worth more than the correction.**
+
+`reset_entry` was **already a symbol in `zamn.sym`**, named rounds ago, sitting
+eight lines above `init_ppu_regs`. Naming it achieved nothing, because the
+ranking takes its boundaries from the CDL's subroutine flags and not from the
+symbol table, and no amount of reading the disassembly would have fixed that on
+its own. The declaration is what counts.
+
+And the "ten calls" tell pointed at the right row for the **wrong reason**. The
+count was honest -- `init_ppu_regs` really is called ten times, once per reset --
+and the tell has been reading a small call count as evidence the *routine* is
+not what it looks like. Here the routine was exactly what it looked like and the
+**span** was wrong. So the tell is better stated as: a single-digit call count
+next to a large share means the share does not belong to those calls, and which
+of the two ways that can be true is still a question.
+
+Nothing was ported. The board is 630 instructions shorter and one row honester,
+and the reset row now reads `!$80:80AE reset_entry ... 0 calls`.
+
+**Next.** `$80:D1FF` (0.4%), and it has a wrinkle worth stating before the round
+rather than after: the ranking says 726 calls and the entry byte executes
+**27,698** times. `$80:D1EC` is `JMP ($D1EF,X)`, a player-state dispatcher, and
+26,972 of those entries arrive through it. That is not a blocker -- `cosim_step`
+intercepts on `pc == r->entry` and never looks at how the PC got there, and the
+`RTS` returns to the dispatcher's caller either way -- but it is the first row
+where the calls column undercounts the entries rather than overcounting the
+work, and the standing check will have to be read with that in mind.
+
+### $80:AD2B and $80:ACF6 -- where the map comes from, and one of them will not go in (2026-08-02)
+
+The first row on the corrected board that survived being checked. `$80:AD2B` is
+not a spin and not a misattribution: its hot bytes are `LDA [$28],Y :
+STA [$2C],Y : DEY DEY : BPL`, an eight-word copy run 20,691 times a call. It is
+real work, it is written, and **it is not registered**, for a reason that took
+one `verify` run to find and is worth more than the routine would have been.
+
+**A ZAMN level is not stored as tiles.** It is a *block map* -- one 16-bit index
+per 8x8-tile block -- plus a library of those blocks at `$7E:8000`.
+`$80:86A2 level_load` points `$AA`/`$AC` at the library and calls `$80:AD2B`,
+which walks the map once and expands every cell into 64 tiles of the real map in
+bank `$7F`. That is the map `port/terrain.h` has been reading all along and
+`port/camera.h` copies strips out of as the view scrolls. **So this is where it
+comes from, and it is the first thing in the ranking that builds rather than
+reads.**
+
+Three helpers, one per level of loop: `$80:AD1C tilemap_tile_addr` (already
+ported) for where the tiles go, `$80:ACF6` for where the cell is, and `$80:AD0B`
+-- seven `ASL`s, which is 128 bytes, which is eight rows of sixteen -- for where
+the block is.
+
+## The body cannot be checked, and that is a property of the routine
+
+One call is about **395,000 instructions, roughly six frames**. `verify`
+snapshots WRAM at entry and diffs it at exit, so an interrupt landing in between
+makes the comparison meaningless, and the harness abandons the call rather than
+reporting a divergence that is really the NMI handler's.
+
+Registered, it reported the same thing on every movie tried -- **one call, one
+interruption, nothing checked** -- on `level1`, `level1-rescue`, `level9`,
+`level25-boss` and `level53` alike. There was no movie where a call fitted
+inside a frame and there cannot be: the inner loop runs 20,691 times.
+
+This is `$80:CD20 lzss_decompress` again, almost to the frame count -- that one
+is seven, this one is six -- and it gets the same answer, which the project
+already argued out once and does not get to re-argue cheaply: **registering it
+would claim a check that is not happening.** What it wants is a verification
+mode scoped to a declared footprint, here the block map it reads and the range
+of `$7F` it writes, compared against the port run on the entry snapshot. That is
+a deliberate weakening of "all 128 KB, every call", and it is worth doing on
+purpose rather than to get a second routine in.
+
+So: **`src/port/levelmap.c` is written and is unverified**, and this write-up
+says so rather than leaving it to be inferred from a registry it is absent from.
+The code stays because Phase 4 needs to build a tile map from a level record
+like everything else. Its two coverage sites were removed with it -- a site the
+harness can never reach dilutes the number, which is the rule `lzss_decompress`
+already has a paragraph about.
+
+## The helper does go in, and that is the same split lzss made
+
+`$80:ACF6 blockmap_cell_ptr` is **seven instructions** -- far too short for an
+NMI to land in -- and it is `tilemap_tile_addr`'s exact twin: the same shape
+against `$7E:4228` instead of `$7E:4328`, leaving its answer in `$28` rather
+than in A. It carries the same trap, too. **X comes back doubled and that is not
+a restore**: `PHA` saves the column already shifted and `PLX` puts that back, so
+N and Z describe the doubled column rather than anything useful, and the carry
+is the `ADC`'s from two instructions earlier.
+
+**Ten call sites in four banks reach it** and this registry has one of their
+callers, so it will read as a both-sides row for a while yet -- which is the
+right answer rather than a defect.
+
+**1,410 calls checked across four movies, 0 diverged, 0 declines**, first run.
+Cycles 334..374, call-weighted 343, `stack_bytes` 2 -- and with no branch in the
+routine at all the 40-cycle spread is the bus and nothing else, the same shape
+and very nearly the same number as its twin's 258.
+
+**Corpus: 10,624,552 calls checked across 42 movies, 0 diverged; branch coverage
+296 of 376, 80 untaken; census still empty.** The total is 13,873 higher than
+last round, which is `blockmap_cell_ptr`'s own corpus count and nothing else,
+and the untaken figure did not move because the routine has no branches to mark.
+
+**The standing check, exact for the thirteenth time.** 192,426,276 less
+192,381,014 is 45,262, against a measured span of exactly 45,262.
+
+**60.3% strict, 60.8% call-weighted; 69.3% and 69.8% with the waiting out.**
+Static 21.5%. 78 registry entries.
+
+**Next.** `$80:8002 init_ppu_regs` (0.5% over ten calls -- and *check it for a
+spin first*, because three of the last four rows with a single-digit call count
+have been one) and `$80:D1FF` (0.4% over 726). The two APU rows above them,
+`$80:CB61 apu_ipl_upload` and `$80:CC7C apu_load_set`, are both hardware
+handshakes: `CB61` spins on `$2140` inside its own byte loop and `CC7C` drives
+`$80:CCC8 apu_send`, which is already registered `verify_only` for exactly that
+reason. They are checkable but not substitutable, and worth a round only when
+somebody wants the check rather than the share.
 
 ### Two more spins at the top of the board, and a rule for spotting them (2026-08-02)
 
@@ -61,7 +963,9 @@ denominator *should* be and not what the port has done.
 **`$80:AD2B` was checked the same way and is real.** Its hot bytes are
 `LDA [$28],Y : STA [$2C],Y : DEY DEY : BPL`, an eight-word copy run 20,691 times
 a call -- a bulk move of the level's block library, not a spin. It stands at
-0.5% over ten calls and is a genuine target.
+0.5% over ten calls and is a genuine target. (*It is genuine work and still did not
+go into the registry: one call is six frames long, so `verify` abandons every
+one of them. See the entry above.*)
 
 **Next.** With three of the top rows now correctly labelled, the board reads:
 `$80:CB61 apu_ipl_upload` (1.4%, and already carrying 5,906,040 instructions of

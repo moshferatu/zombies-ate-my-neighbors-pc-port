@@ -31,6 +31,7 @@ $corpus = [ordered]@{
     "boot.zmv"               = 2400
     "level1.zmv"             = 2400
     "level1-pickups.zmv"     = 2400
+    "level1-map.zmv"         = 2700
     "level1-keys.zmv"        = 4050
     "level1-rescue.zmv"      = 6100
     "level1-2p.zmv"          = 6000

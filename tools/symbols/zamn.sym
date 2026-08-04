@@ -19,7 +19,11 @@ $000020  sched_tick            # 32-bit at $20/$22, bumped once per scheduler pa
 $000026  render_flags          # bit 6 clear = flush the VRAM upload queue
 $00006E  joy1_raw              # $4218 as read this frame
 $000070  joy2_raw              # $421A
-$000072  joy1_dir              # joy1 d-pad nibble mapped through dir_table
+$000072  joy1_dir              # joy1 d-pad nibble mapped through dir_table, and
+                               # the code is the direction x 2: $02 up, $04
+                               # up-right, $06 right, $08 down-right, $0A down,
+                               # $0C down-left, $0E left, $10 up-left, 0 none.
+                               # $82:B7FC's 9 (dx,dy) pairs are what name them
 $000074  joy2_dir
 $0000CE  vram_queue_count      # bytes (entries x2) queued in the VRAM upload list
 
@@ -265,7 +269,34 @@ $80:D259  player_input_buttons # B -> $EA63, A -> $EAA8, X -> $EAE1; all three e
 $80:EA63  weapon_select_next   # next non-empty player_inventory slot; 14 slots, 15 tries
 $80:EAA8  item_select_next     # next non-empty player_items slot; 12 slots, 13 tries
 $80:EAE1  item_use             # dispatches the selected item through item_use_table
+                              # -- $80:EAEC `LDA $4E : ORA $70 : BNE` refuses it
+                              # unless the player is in state 0, so every item
+                              # below runs from player_state_normal and returns
+                              # to it
+$80:EB23  item_slot1_use       # `LDA #$8000 : STA $54` then `LDA #$0352 : STA $56`
+                              # -- the *only* site in the cartridge that arms the
+                              # player page's $56 from state 0, so it is the only
+                              # way psn_t3_expired can be reached. $56 is a
+                              # per-state timer everywhere else: states 2, 4 and 6
+                              # each arm and decrement their own, and both paths
+                              # that end a state do it exactly when $56 hits zero
+                              # -- inside that state, never in state 0.
+                              # Item slot 1 is collision id $22 = object type $0A
+
+# --- The player state machine ------------------------------------------------
+$80:D1EA  player_state_run     # `LDX $70 : JMP ($D1EF,X)`; $70 is the index, x2
+$80:D1EF  player_state_table   # 8 words: D1FF D2EA D31C D343 D35E D404 D465 D343
+$80:D31C  player_state_2       # $56 expires -> STZ $72 : JMP $DB08; never executed
+$80:D465  player_state_bubble  # state 6, 390 frames from $80:DC5C. Escape is a
+                              # d-pad *wiggle*: $80:D493/$D4A6 want $0072,X and
+                              # last frame's $24 to be 6 and $0E in either order,
+                              # and three alternations set $56 to 1 -- which the
+                              # same frame's own DEC consumes, so it ends the
+                              # state early and never reaches state 0
+$80:DB08  player_land_retry    # `LDA $72 : BNE : terrain_blocked : $56 = 5`;
+                              # reached only from state 2, and never executed
 $80:EB07  item_use_table       # 12 x u16, indexed by the item slot x2; $EB06 = nothing
+                              # -- slots 0, 6, 9 and 11 all point at that RTS
 $80:EB2F  item_use_first_aid   # slot 7: refuses at player_health 10, else heals and spends one
 $80:C7C2  score_slot           # A = side (0 or 2) -> the score slot owning it, or 4
 $80:C7D9  score_add            # X = BCD award, A's sign = the side; credits that slot
@@ -275,6 +306,11 @@ $80:C05A  sprite_cache_init    # A:Y = frame array base; invalidates both maps
 
 # --- Code: level loader and placement parsers --------------------------------
 $80:86A2  level_load           # builds a level from its $9F record
+$80:AD2B  blockmap_expand      # the block map -> the $7F tile map, once per level
+$80:ACF6  blockmap_cell_ptr    # X,Y = block col,row -> $28 = that cell of the map
+$80:AD0B  blockmap_block_ptr   # A = block index -> $28 = its 128 bytes in the library
+$004228  block_row_base       # one word per block-map row; $7E:4328 is its twin
+$008000  block_library        # 128 bytes per block; $80:86A2 writes $AA/$AC at it
 $80:825E  thread_spawn         # start a cooperative thread at Y:A with DP $00.. set
                               # -- parks addr-1 and is resumed by RTL, exactly as a
                               # vblank job is; see THREAD_BODIES in native_share.py
@@ -282,6 +318,35 @@ $81:80EC  actor_list_spawn     # camera-driven spawner for the +$1C actor list
 $80:84B1  thread_handler_body  # a thread, one byte past thread_call_handler's RTL
 $80:ED8C  thread_spawn_table   # 8 records of (addr, bank, param), read at $80:ED74
 $82:C209  boss_thread_table    # 12 records of (addr, bank), read at $82:C0ED/$C131
+
+# --- Code: the threads a level record starts ---------------------------------
+# $9F:8002 is a table of 56 level-record bases, indexed level*2 at $80:886D.
+# Two fields of that record name threads, and `tools/levelthreads.py` walks
+# them. None of these is callable -- the scheduler resumes a thread by RTL --
+# so they are in THREAD_BODIES, not the ranking. Every one of them reaches
+# `JSL $808353 thread_yield` within $C5 bytes, which is what says it is a
+# thread and not mis-parsed data.
+$9F:8002  level_record_table   # level*2 -> the level's record base in bank $9F
+# Record offset $18/$1A: one far entry, spawned at $80:8774. All five animate
+# the palette shadow that $82:8138 palette_copy_a fills ($7E:5508 / $7E:5708).
+$80:A0AD  level_pal_rotate     # 17 levels use $A0EF; this one, 9. $7E:5728 indexes a
+                              # 6-word rotation of $7E:549A into $7E:569A
+$80:A0EF  level_pal_green      # masks #$FC1F and cycles green in $7E:54DC / $7E:56DC
+$80:A137  level_pal_table      # walks $80:A182, 16 bytes a step, into $7E:5508,X
+$80:A222  level_pal_rotate_b   # the $A0AD idiom with an 8-tick reload; 3 levels
+$80:A264  level_pal_a264       # 1 level (52)
+# Record offset $3C: an eight-byte (entry far, parameter far) list, spawned at
+# $80:87FB and stopping at a zero entry. A body may appear more than once in
+# one level with different parameters.
+$82:D7CF  level_tile_anim      # 21 levels: 8 animation channels, each a script of
+                              # (tile, delay) at [$00]; sets $1F56 and queues $D88C
+$82:D88C  level_tile_anim_job  # the vblank job it queues -- $2115 and the upload
+$82:AB95  level_script         # 19 levels: reads its parameter through [$00]
+$82:9569  level_intro_9569     # 3 levels: adds #$0028 to $00DE, then a palette load
+$82:873C  level_intro_873c     # 2 levels: the same with #$0018 and $94:FFAB
+$83:AD33  level_intro_ad33     # 2 levels: JSR $83:AAB2, then the $9569 idiom
+$82:A8BB  level_thread_a8bb    # 4 uses; falls into the same body as...
+$82:A8C3  level_thread_a8c3    # ...this, a second entry, 3 uses -- both yield at $82:A8EB
 $82:DB46  victim_list_parse    # +$1E victim list -> victim_x/_y/_count arrays
 $80:C9A5  object_list_parse    # +$20 object list -> object_x/_y/_type arrays
 $80:C9E3  object_spawn         # one object -> a display record, from its type
@@ -322,11 +387,34 @@ $001E96  password_cursor_x
 $001E9A  password_cursor_y
 $001EA0  password_entry        # the four characters, in entry order
 
-# --- Code: walkability (docs/analysis-tools.md) ------------------------------
-$80:AE00  tile_walkable        # A = x, Y = y; carry set = blocked. col = x/8,
-                               # row = (y-8)/8, and six tiles tested: +0/+2/+4
-                               # along the row and the same three on the next
+# --- Code: walkability (docs/analysis-tools.md, port/terrain.h) --------------
+$80:AE14  terrain_blocked      # X,Y = the point; carry set = blocked. col and row
+                               # are biased by (9,8) first, and six tiles tested:
+                               # +0/+2/+4 along the row and the same three on the
+                               # next. Attribute bit 0
+$80:AE97  terrain_blocked_enemy # the same footprint against attribute bit 1
+$82:90F7  terrain_blocked_wide # ...and the same again for a big figure
+$80:B422  terrain_out_of_bounds # X,Y = the point; carry set = off the map
 $80:AE43  tile_attr_test       # LDA [$BA],Y : LSR : BCS -- bit 0 is solid
+$80:AD1C  tilemap_tile_addr    # X,Y = tile col,row -> A = the $7F tilemap address
+$80:ADC8  tile_attrs_at_pixel  # X,Y = a pixel -> A = that tile's attribute word
+$80:ADF3  tile_attrs_at_tile   # ...and the same for a caller that has tile col,row
+$80:E86D  floor_effect         # the tile under the player: conveyors, the harmful
+                               # floors, and one word that clears $2A. $80:D1FF
+                               # calls it before it reads a button
+$80:F935  floor_harm           # starts the effect $80:D01B animates, once its
+                               # cooldown has expired. One call site, from $80:E89F
+$80:F950                       # the same shape, testing player_weapon 4 and using
+                               # $0040 -- no caller anywhere in the cartridge
+# $80:E86D and $80:F935 run on the **player thread's** direct page, so $0E, $1E,
+# $2A, $30, $32, $50, $52 and $70 there are thread locals. Do not read them
+# against the absolute names below -- see port/floor.h.
+# There was a `$80:AE00 tile_walkable` here for a long time and it was never a
+# routine: $AE00 is the second byte of `$80:ADFF JSL $80AD1C`, it is an opcode
+# boundary in no execution, and the profile counts it zero times in ten movies.
+# The thing it described is `$80:AE14`, four instructions past the end of the
+# routine it pointed into. Symbols read off a listing want the same treatment
+# as the listing itself -- see the `.db` table in docs/analysis-tools.md.
 
 # --- Code: the random number generator ---------------------------------------
 $80:9D39  rng_next             # 8-bit: state ^ (state ROL C), plus a counter,
