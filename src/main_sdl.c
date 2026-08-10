@@ -168,6 +168,24 @@ static void substitution_totals(const Cosim* c, long* served, long* declined) {
   *served = s; *declined = d;
 }
 
+// ...and what share of the game those calls are, which is the number that
+// actually says how the port is doing.
+//
+// A raw count of served calls only goes up, so it cannot tell you whether a
+// round of porting bought anything: 13,204 calls is a big number on a level
+// that makes 61,000 of them and a huge one on a level that makes 20,000. The
+// harness measures both denominators as it runs — see `CosimWork` — so this
+// costs a struct copy and puts the progress of the whole port on screen while
+// somebody plays it. `work` leads because it is the honest one: it weights a
+// routine by the cycles it costs rather than counting a 17-byte leaf and a 2 KB
+// state machine alike.
+static void share_summary(const Cosim* c, char* out, size_t n) {
+  CosimShare s;
+  cosim_share(c, &s);
+  snprintf(out, n, "%.1f%% of work, %.1f%% of calls", 100.0 * s.work_share,
+           100.0 * s.call_share);
+}
+
 static void usage(void) {
   printf(
     "zamn — Zombies Ate My Neighbors, with the C port substituted in\n\n"
@@ -404,11 +422,13 @@ int main(int argc, char** argv) {
     if (frame % 30 == 0) {
       long served, declined;
       substitution_totals(&cosim, &served, &declined);
+      char share[64];
+      share_summary(&cosim, share, sizeof share);
       if (native)
         snprintf(title, sizeof title,
-                 "Zombies Ate My Neighbors — native: %d routines, "
+                 "Zombies Ate My Neighbors — native: %s · %d routines, "
                  "%ld calls served, %ld declined",
-                 routine_count, served, declined);
+                 share, routine_count, served, declined);
       else
         snprintf(title, sizeof title,
                  "Zombies Ate My Neighbors — stock (emulated; F1 for native)");
@@ -434,6 +454,12 @@ int main(int argc, char** argv) {
   printf("\n%ld frames in %.1f s (%.1f fps).\n", frame, secs,
          secs > 0 ? frame / secs : 0.0);
   cosim_report(&cosim);
+  // The two percentages the table cannot give: 82 rows of `OK` say each ported
+  // routine worked, and say nothing at all about what fraction of the game that
+  // is. This does, for the session that was just played, and it is measured
+  // over the whole run — including any stretch spent stock, because F1 toggling
+  // to the emulator and back is exactly a stretch where the port ran nothing.
+  cosim_share_report(&cosim);
   cosim_census_report();
 
   if (have_movie) movie_free(&movie);

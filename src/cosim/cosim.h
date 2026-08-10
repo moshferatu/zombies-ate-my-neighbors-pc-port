@@ -349,6 +349,67 @@ typedef struct {
 // exactly what lockstep does.
 typedef struct CosimPriv CosimPriv;
 
+// ---------------------------------------------------------------------------
+// How much of the run was native
+// ---------------------------------------------------------------------------
+//
+// The per-routine table above says what each ported routine did. What it cannot
+// say is what share of the whole that *is* — 82 routines is a number with no
+// denominator attached, and it cannot tell a 17-byte leaf from a 2 KB state
+// machine. `tools/native_share.py` answers that question offline, from a traced
+// profile plus a call-graph closure. This answers it live, from the seam
+// itself, so that a session anybody plays reports its own number.
+//
+// Two denominators, because there are two honest questions:
+//
+//   * **work** — of the cycles the CPU spent working, how many belonged to code
+//     the port executed instead. This is the one that matters: it weights a
+//     routine by how much of the machine's time it actually costs. Native
+//     mode already burns a measured cycle budget in place of every substituted
+//     routine (`CosimRoutine::cycles`), so the numerator is not an estimate —
+//     it is the same number the rest of the machine was advanced by.
+//
+//   * **calls** — of the subroutine calls the game made, how many the port
+//     served. Cruder, since every call counts the same, but it is the thing
+//     people mean when they ask how much of the game is ported, and it is
+//     exact: the engine counts `JSR`/`JSL` at the instruction that executes it.
+//
+// Both denominators shrink correctly as the port grows: a call made *inside* a
+// substituted routine never executes, so neither its cycles nor its `JSR` are
+// ever counted. Two things are outside both, and it is worth knowing which way
+// they bias: a thread body and a vblank job are entered by `RTL` rather than by
+// a call, so their cycles are in the work denominator and unreachable by the
+// call one — see `tools/native_share.py` for the full account of that family.
+typedef struct {
+  // Every cycle the core advanced while the harness was stepping it.
+  uint64_t cycles_total;
+  // ...of which, burned standing in for a substituted routine's instructions.
+  uint64_t cycles_native;
+  // ...of which, spent halted on a `WAI` — the scheduler idling until NMI. The
+  // CPU is not executing anything at all here.
+  uint64_t cycles_idle;
+  // ...of which, spent going round one of the ROM's declared busy-wait loops.
+  // See `src/cosim/waits.h` for why these come out of the denominator.
+  uint64_t cycles_wait;
+  // `JSR`/`JSL`/`JSR (abs,X)` instructions the 65816 executed...
+  uint64_t calls_total;
+  // ...plus the ones it did not, because the port served them at the entry PC.
+  uint64_t calls_native;
+} CosimWork;
+
+// The same, reduced to the two percentages and their denominators.
+typedef struct {
+  uint64_t cycles_work;    // total - idle - wait: what a CPU was actually doing
+  uint64_t cycles_native;
+  uint64_t calls_total;    // executed + served
+  uint64_t calls_native;
+  uint64_t calls_declined; // handed back by a guard; part of `calls_total`
+  double work_share;       // 0..1
+  double call_share;       // 0..1
+} CosimShare;
+
+// (`cosim_share` and `cosim_share_report` are declared below `Cosim`.)
+
 typedef struct {
   Snes* snes;
   Rom rom;
@@ -369,10 +430,20 @@ typedef struct {
   CosimStat stats[COSIM_MAX_ROUTINES];
   int stat_count;
 
+  // Cycles and calls, native and otherwise — see `CosimWork`.
+  CosimWork work;
+
   long frames;
   bool stop_on_fail;
   bool verbose;
 } Cosim;
+
+// Reduce `c->work` to shares. Safe with an empty run: everything reads 0.
+void cosim_share(const Cosim* c, CosimShare* out);
+
+// Print it. Two lines and the caveats under native mode; under verify it says
+// why the question does not apply, because there the ROM ran everything.
+void cosim_share_report(const Cosim* c);
 
 // Attach to a core that already has the ROM loaded. Does not reset it.
 void cosim_init(Cosim* c, Snes* snes, CosimMode mode);

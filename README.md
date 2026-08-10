@@ -77,6 +77,42 @@ instead of by the 65816, and the window title carries a live count of how many.
 `--stock` clears the enable mask to get the Phase 0 emulated baseline back, and
 F1 moves between the two at a frame boundary while the game is running.
 
+The title bar and the exit report also carry **what share of the game that is**,
+measured over the session you just played, because a count of served calls only
+ever goes up and cannot tell you whether a round of porting bought anything:
+
+```
+  work        296,719,746 of 654,074,274      45.4%
+  calls            55,225 of 318,792          17.3%
+```
+
+`work` is SNES cycles — the budget each substituted routine burns in place of
+the instructions the ROM no longer executes, over the cycles the CPU spent
+*working*, with the scheduler's `WAI` and the ROM's ten declared busy-wait loops
+(`src/cosim/waits.h`) out of the denominator, since porting a spin gives a spin.
+`calls` is `JSR`/`JSL`: every subroutine call the game made against the ones the
+port served. Both denominators shrink as the port grows — a call made inside a
+substituted routine never executes at all — which is the property that makes the
+ratio mean something.
+
+The two rows are far apart on purpose. `calls` weights a 17-byte leaf and a 2 KB
+state machine alike; `work` weights each by what it costs, and is the one to
+read. Neither counts a thread body or a vblank job as a call, because the
+scheduler and the vblank dispatcher reach those by `RTL` and there is no call to
+intercept.
+
+The number depends heavily on what the game is doing. Level 1's movie is
+**23.6%** of work over 2,400 frames because most of it is boot — the APU upload,
+LZSS decompression and the fades, none of it substituted. Actually playing a
+level is where the ported routines are: **45.4%** on `level29-fighting`, 45.6%
+on `level9-weapons`, **56.9%** on `level25-boss`.
+
+`tools/native_share.py` measures the same quantity offline by a completely
+different method — a traced instruction profile and a call-graph closure, rather
+than cycle budgets at the substitution seam — and its `...substituted only`
+line reads 24.0% where the live figure for the same movie reads 23.6%. Two
+independent measurements agreeing is the check on both.
+
 What this is *not* is a native game yet. Eighty-two routines are ported; the
 main loop, the NMI handler, the movement thread, level code and every enemy body
 still belong to the ROM under the emulated core. What runs natively are the
@@ -201,8 +237,11 @@ src/assets.c          Phase 2: asset decoding CLI + the five verifiers
 src/port/             Phase 3: native game logic, on the SNES's own WRAM layout,
                               plus coverage.h — which of its branches ran
                               (port code — ships in the game, libc only)
-src/cosim/            Phase 3: the co-simulation harness + per-routine shims
-                              (tooling — goes away in Phase 4)
+src/cosim/            Phase 3: the co-simulation harness + per-routine shims,
+                              plus waits.h — the ROM's busy-wait loops, which
+                              are instructions but not work, and which every
+                              measure of native share takes out of its
+                              denominator (tooling — goes away in Phase 4)
 src/cosim.c           Phase 3: verify / run / list CLI
 movies/               Reproducible input scripts driving the tracer and harness
 docs/                 Co-simulation, frame skeleton, WRAM map, asset formats, tools
@@ -218,7 +257,10 @@ tools/native_share.py What share of the work the game does runs natively, and a
                               ranking of what is left by the same measure — reads
                               `profile.bin` from the tracer, and discounts the
                               busy-waits, which are 10.9% of the instruction count
-                              and none of the work
+                              and none of the work. Reports "written" and
+                              "actually substituted" separately, because a
+                              `verify_only` routine is the first and not the
+                              second; the second is what the game itself prints
 tools/hotbytes.py     Where inside a routine the instructions went. Run it on a
                               row of that ranking before porting it: a routine's
                               first byte is its entry, so nothing in a loop-free

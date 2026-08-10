@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "analysis/movie_apply.h"
+#include "cosim/waits.h"
 #include "port/apu.h"
 #include "port/coverage.h"
 #include "port/thread.h"
@@ -519,6 +520,18 @@ static void native_return(Cosim* c, const CosimRoutine* r, const CosimRegs* out)
   cpu->pc = (uint16_t)r->ret_op;
 }
 
+// Burn a substituted routine's cycle budget, and remember that we did.
+//
+// Every cycle counted here is a cycle the 65816 would have spent executing the
+// routine's own instructions and did not, which makes this the numerator of the
+// native work share — measured at the seam rather than inferred from a trace.
+static void cycles_burn(Cosim* c, int cycles) {
+  if (cycles <= 0) return;
+  uint64_t before = c->snes->cycles;
+  snes_runCycles(c->snes, cycles);
+  c->work.cycles_native += c->snes->cycles - before;
+}
+
 // ...and the mirror image: suspend by jumping to the routine's own
 // `JSL thread_yield`, with the sleep count in A where the ROM would have put it.
 //
@@ -564,7 +577,13 @@ static void run_native_segment(Cosim* c, CosimCall* call) {
   // Stand in for the work the ROM's instructions would have done, so the rest
   // of the machine — the PPU's beam position, the APU, DMA — still sees a
   // segment that took about as long as it used to.
-  if (r->cycles > 0) snes_runCycles(snes, r->cycles);
+  //
+  // The delta is measured rather than assumed to be `r->cycles`, because
+  // `snes_runCycles` adds 40 for a DRAM refresh when the budget crosses the end
+  // of a scanline. Those cycles are the machine's, so they are the port's here:
+  // whatever the burn actually advanced the core by is what the ROM's own
+  // instructions no longer have to. See `CosimWork`.
+  cycles_burn(c, r->cycles);
 
   if (step == PORT_YIELDED) {
     s->yields++;
@@ -622,6 +641,10 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
     call->ret_pc = return_pc(snes, r->ret_kind);
     memset(call->ctx, 0, (size_t)r->ctx_size);
     s->calls++;
+    // The *call*, not the segments. A routine that suspends fifteen times is
+    // still one `JSL` the ROM did not have to serve, and the call share's
+    // denominator counts calls.
+    c->work.calls_native++;
     run_native_segment(c, call);
     return true;
   }
@@ -632,12 +655,13 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
   r->run((Wram*)snes->ram, &c->rom, &in, &out);
 
   // Stand in for the work the ROM's instructions would have done.
-  if (r->cycles > 0) snes_runCycles(snes, r->cycles);
+  cycles_burn(c, r->cycles);
   native_return(c, r, &out);
 
   s->calls++;
   s->checked++;
   s->passed++;
+  c->work.calls_native++;
   return true;
 }
 
@@ -834,7 +858,7 @@ static CosimCall* find_yield(Cosim* c) {
   return NULL;
 }
 
-void cosim_step(Cosim* c) {
+static void cosim_step_inner(Cosim* c) {
   Snes* snes = c->snes;
 
   // How deep the stack got is what tells the diff which bytes the routine was
@@ -956,6 +980,79 @@ void cosim_step(Cosim* c) {
   snes_runCpuCycle(snes);
 }
 
+// The opcode about to execute, straight out of the cartridge image.
+//
+// Read from `c->rom` rather than through the core's bus, deliberately: a bus
+// read of an I/O address has side effects, and instrumentation that changes the
+// machine it is measuring is worse than no instrumentation. Every instruction
+// this game executes is in the `$80-$BF` FastROM mirror, so `rom_ptr` answers
+// for all of them and returns NULL for anything that is not cartridge — which
+// is then simply not counted, rather than guessed at.
+static int opcode_at(const Cosim* c, uint32_t pc) {
+  uint32_t avail = 0;
+  const uint8_t* p = rom_ptr(&c->rom, pc, &avail);
+  return p ? *p : -1;
+}
+
+// One instruction, with the accounting around it.
+//
+// `snes_runCpuCycle` is one whole opcode, not one clock, so the cycles the core
+// advances across a step are exactly that instruction's cost and the PC at the
+// top is exactly the instruction being paid for. That is what makes this
+// measurement cheap enough to leave switched on in a build people play: one
+// range check and one cartridge byte per instruction.
+//
+// Substitution is the one case where a step spends cycles without executing an
+// instruction — `run_native` burns the budget and returns before
+// `snes_runCpuCycle`. Those cycles are attributed by `cycles_burn`, and they
+// cannot land in `cycles_idle` or `cycles_wait` as well, because the PC at the
+// top of such a step is a registry entry: never a wait site, never halted.
+void cosim_step(Cosim* c) {
+  Snes* snes = c->snes;
+  const uint64_t before = snes->cycles;
+
+  // Nothing is executing at all: the CPU is halted on the scheduler's `WAI`
+  // (or a `STP`), waiting for the NMI that starts the next frame. `waiting` is
+  // also what makes `at_instruction` false, so this is the same test the engine
+  // below already trusts, asked one line earlier.
+  const bool halted = snes->cpu->waiting || snes->cpu->stopped;
+
+  // ...and if something is, which instruction, and is it a call or a spin.
+  uint32_t pc = 0;
+  bool counted_call = false;
+  bool spinning = false;
+  if (!halted && at_instruction(snes)) {
+    pc = cpu_pc24(snes);
+    spinning = cosim_is_wait_site(pc);
+    switch (opcode_at(c, pc)) {
+      case 0x20:  // JSR abs
+      case 0x22:  // JSL long
+      case 0xFC:  // JSR (abs,X)
+        counted_call = true;
+        break;
+      default:
+        break;
+    }
+  }
+
+  cosim_step_inner(c);
+
+  const uint64_t spent = snes->cycles - before;
+  c->work.cycles_total += spent;
+  if (halted) c->work.cycles_idle += spent;
+  else if (spinning) c->work.cycles_wait += spent;
+  // Every call the game made, including the ones the port went on to serve:
+  // substitution happens at the *callee's* entry PC, so the caller's `JSR` has
+  // already executed by then and is counted here either way. `calls_native` is
+  // a subset of this, not a second bucket to add to it.
+  //
+  // The denominator shrinks as the port grows, which is the property that makes
+  // the ratio mean anything: calls made *inside* a substituted routine never
+  // execute at all, so a routine that used to contribute its own call plus six
+  // of its callees' now contributes one — and that one is served.
+  if (counted_call) c->work.calls_total++;
+}
+
 void cosim_frame(Cosim* c) {
   Snes* snes = c->snes;
   while (snes->inVblank) cosim_step(c);
@@ -1013,6 +1110,126 @@ int cosim_report(const Cosim* c) {
     if (s->failed) printf("%22s%s\n", "", s->detail);
   }
   return failures;
+}
+
+// ---------------------------------------------------------------------------
+// How much of the run was native
+// ---------------------------------------------------------------------------
+
+// `12345678` -> `"12,345,678"`. These numbers run to nine digits and the report
+// is meant to be read at a glance, which an undifferentiated run of digits is
+// not. Four rotating buffers so several can appear in one `printf`; nothing
+// here prints more than three, and the fourth is the margin that stops a future
+// fourth argument silently overwriting the first.
+static const char* fmt_u64(uint64_t v) {
+  static char buf[4][32];
+  static int slot;
+  char* out = buf[slot = (slot + 1) & 3];
+
+  char digits[24];
+  int n = 0;
+  do { digits[n++] = (char)('0' + (v % 10)); v /= 10; } while (v);
+
+  int w = 0;
+  for (int i = n - 1; i >= 0; i--) {
+    out[w++] = digits[i];
+    if (i && i % 3 == 0) out[w++] = ',';
+  }
+  out[w] = '\0';
+  return out;
+}
+
+void cosim_share(const Cosim* c, CosimShare* out) {
+  const CosimWork* w = &c->work;
+  memset(out, 0, sizeof *out);
+
+  // The denominator is the cycles a CPU was actually doing something. `idle` is
+  // a halted processor and `wait` is a spinning one; neither is work, and
+  // neither is work the port could take — see `src/cosim/waits.h`. Clamped
+  // rather than trusted: the three buckets are measured independently and a
+  // negative denominator should read as zero, not as an enormous share.
+  uint64_t not_work = w->cycles_idle + w->cycles_wait;
+  out->cycles_work = w->cycles_total > not_work ? w->cycles_total - not_work : 0;
+  out->cycles_native = w->cycles_native;
+  out->calls_total = w->calls_total;
+  out->calls_native = w->calls_native;
+
+  for (int i = 0; i < c->stat_count; i++)
+    if (cosim_mask_get(&c->enabled, i))
+      out->calls_declined += (uint64_t)c->stats[i].declined;
+
+  if (out->cycles_work)
+    out->work_share = (double)out->cycles_native / (double)out->cycles_work;
+  if (out->calls_total)
+    out->call_share = (double)out->calls_native / (double)out->calls_total;
+}
+
+void cosim_share_report(const Cosim* c) {
+  CosimShare s;
+  cosim_share(c, &s);
+
+  if (c->mode != COSIM_NATIVE) {
+    // Under `verify` the ROM executes every instruction of every routine and
+    // the port is replayed alongside it, so nothing was substituted and the
+    // honest answer is not "0%" — it is that the question was not asked.
+    printf("\nNative share: not measured under verify — the ROM ran every\n"
+           "instruction here by design, and the port was checked against it\n"
+           "rather than standing in for it. Use `run`, or the game itself.\n");
+    return;
+  }
+
+  printf("\nNative share — how much of this session the port ran, not the 65816\n");
+  printf("\n  %-8s %14s of %-14s %6.1f%%\n", "work",
+         fmt_u64(s.cycles_native), fmt_u64(s.cycles_work), 100.0 * s.work_share);
+  printf("  %-8s %14s of %-14s %6.1f%%\n", "calls",
+         fmt_u64(s.calls_native), fmt_u64(s.calls_total), 100.0 * s.call_share);
+
+  // What each row means, and what it is not, because a percentage with no
+  // denominator stated is the thing this whole report exists to replace.
+  printf("\n  work  is SNES cycles: the budget every substituted routine burns\n"
+         "        in place of the instructions the ROM no longer executes,\n"
+         "        over the cycles the CPU spent working. %s more were\n"
+         "        spent halted on the scheduler's WAI and %s going round\n"
+         "        the %d busy-wait loops in src/cosim/waits.h; porting a spin\n"
+         "        gives a spin, so neither is in the denominator.\n",
+         fmt_u64(c->work.cycles_idle), fmt_u64(c->work.cycles_wait),
+         COSIM_WAIT_SITE_COUNT);
+  printf("  calls is JSR/JSL: every subroutine call the game made, against the\n"
+         "        ones the port served at the callee's entry. Calls made inside\n"
+         "        a substituted routine never execute, so they leave the\n"
+         "        denominator as the port grows");
+  if (s.calls_declined)
+    printf("; %s were offered to the port\n        and handed back by a guard — the census below says to what.\n",
+           fmt_u64(s.calls_declined));
+  else
+    printf(". Nothing was declined.\n");
+  printf("\n  Neither counts a thread body or a vblank job as a call: the\n"
+         "  scheduler and the vblank dispatcher reach those by RTL, so there is\n"
+         "  no call to intercept and none to count. Their cycles are in the work\n"
+         "  denominator, where they belong.\n");
+  // How strong the work figure is, stated rather than left to be assumed. The
+  // numerator is a per-routine mean standing in for a distribution, so it is
+  // the one number here that is an estimate — and the size of the error is
+  // measurable, by running the same movie `--stock` and comparing the work
+  // denominators. On level 1 at 2,400 PPU frames that is 273.1M stock against
+  // 282.3M substituted: the budgets over-pay for what they displaced by about
+  // 16%, so this row reads high by roughly that much and not by a factor.
+  //
+  // Note that `zamn.exe --frames N` and `zamn_cosim run -f N` do not measure
+  // the same stretch of game — N PPU frames against N scheduler passes after
+  // boot — so their percentages differ for that reason before any other, and
+  // only runs of the same kind are worth putting side by side.
+  printf("\n  The work numerator is the measured *mean* cost of each routine,\n"
+         "  so it stands in for a distribution and the row is an estimate. Run\n"
+         "  the same input --stock and compare the two denominators to see by\n"
+         "  how much: they should differ by about the budget, and do.\n");
+  printf("\n  `tools/native_share.py` measures the same quantity offline from a\n"
+         "  traced profile — instructions and a call-graph closure rather than\n"
+         "  cycles at the seam, independent all the way down. Its\n"
+         "  `...substituted only, likewise` line is the one to compare against\n"
+         "  this row, over the same input and the same number of frames. Do not\n"
+         "  compare it against the line above that, which counts routines that\n"
+         "  are written and deliberately never substituted.\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -1493,6 +1710,11 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
     printf("%ld pass%s not compared — a side never came back to the WAI.\n",
            unsynced, unsynced == 1 ? " was" : "es were");
   cosim_report(&nat.cosim);
+  // ...and what fraction of the run that table represents. The native side is
+  // the one to ask: the reference side has an empty mask by construction, so
+  // its share is zero and saying so would be a fact about the control, not
+  // about the port.
+  cosim_share_report(&nat.cosim);
 
   movie_free(&ref.movie);
   movie_free(&nat.movie);

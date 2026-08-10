@@ -45,43 +45,31 @@ BANK_SIZE = 0x8000
 CDL_CODE = 0x01
 CDL_SUB = 0x08
 
-# Busy-waits, as (address, bytes, what it is waiting for).
-#
-# These are counted by the profiler like any other instructions, and they are
-# not work: a 65816 going round `BIT $00C8 : BPL` a hundred thousand times is a
-# CPU with nothing to do until the next VBlank. Left in the denominator they
-# make the port's share look smaller than it is, and left in the ranking they
-# put a two-instruction loop at the top of the list of things to port next --
-# where porting it would achieve exactly nothing, because the C would have to
-# spin on the same flag.
-#
-# Each was found by reading the disassembly of a routine the ranking had put
-# near the top, and each is checked against the profile rather than assumed:
-# `$80:9F9D` is nine instructions long and 19,289,582 of the 19,289,827 credited
-# to it are the two below.
-WAIT_SITES = [
-    (0x809FAA, 5, 'BIT $00C8 : BPL   -- waiting for a VBL callback to fire'),
-    (0x80CB6C, 5, 'CMP $2140 : BNE   -- SPC700 IPL, waiting for $BBAA'),
-    (0x80CB84, 5, 'CMP $2140 : BNE   -- SPC700 IPL, waiting per byte'),
-    (0x80CB94, 5, 'CMP $2140 : BNE   -- SPC700 IPL, waiting per block'),
-    (0x80CB99, 4, 'ADC #$03 : BEQ    -- the IPL delay loop after it'),
-    (0x82AC65, 8, 'CMP #$0078 : BCC  -- the level intro, holding for 120 frames'),
-    (0x82AC92, 8, 'CMP #$0078 : BCC  -- ...and again after the block library'),
-    # `$80:91F7` spends 4,406,310 of its 4,406,610 instructions in these two
-    # loops -- 99.993% -- and the 300 that are left are 30 real instructions a
-    # call. Both spin on `$136C`, which the main CPU never touches: `$80:9C52`
-    # zeroes it and queues the vblank job `$80:9C63` to `INC` it fifteen times,
-    # and `$80:9C72` queues `$80:9C7D` to `DEC` it back past zero. So this is a
-    # fade counted on the vblank side with the CPU held against it, and porting
-    # either loop would replace a spin with a spin.
-    (0x80923A, 8, 'CMP #$000F : BNE  -- a screen fading in, counted by a VBL job'),
-    (0x80924C, 8, 'AND #$0080 : BEQ  -- ...and the same screen fading back out'),
-    # The same story one row down. `$80:9F29` queues the vblank job `$80:9ED0`
-    # to push a tilemap into VRAM and then holds here until `$C6`, the job's
-    # remaining byte count, reaches zero: 2,149,252 of its 2,149,592
-    # instructions, 99.98%, leaving 34 a call that are real.
-    (0x809F5C, 4, 'LDA $C6 : BNE     -- waiting for a queued VRAM upload to drain'),
-]
+def load_wait_sites(path='src/cosim/waits.h'):
+    """Busy-waits, as (address, bytes, what it is waiting for).
+
+    These are counted by the profiler like any other instructions, and they are
+    not work: a 65816 going round `BIT $00C8 : BPL` a hundred thousand times is
+    a CPU with nothing to do until the next VBlank. Left in the denominator they
+    make the port's share look smaller than it is, and left in the ranking they
+    put a two-instruction loop at the top of the list of things to port next --
+    where porting it would achieve exactly nothing, because the C would have to
+    spin on the same flag.
+
+    **The table used to live here and now lives in C**, because the substituted
+    build measures the same share live and needs the same exclusions: the game
+    prints its own native share when you quit it, and a denominator that the
+    offline tool and the running game disagreed about would make those two
+    numbers incomparable for no reason. `src/cosim/waits.h` is the one copy and
+    carries the argument for each site; this reads it.
+    """
+    src = open(path, encoding='utf-8', errors='replace').read()
+    sites = [(int(a, 16), int(n), what) for a, n, what in re.findall(
+        r'\{\s*0x([0-9A-Fa-f]+)\s*,\s*(\d+)\s*,\s*"((?:[^"\\]|\\.)*)"\s*\}', src)]
+    if not sites:
+        raise SystemExit('%s: no wait sites found -- has the shape of the '
+                         'table changed? See the note in that file.' % path)
+    return sites
 
 # Routines the ranking will keep putting near the top and which the harness
 # cannot take, for reasons that are structural rather than a matter of effort.
@@ -324,13 +312,37 @@ def snes_to_rom(addr):
 
 
 def load_ported(path='src/cosim/routines.c'):
-    """The registry's entry points -- the addresses the harness intercepts."""
+    """The registry's entry points -- the addresses the harness intercepts.
+
+    Returns `(names, verify_only)`, and the second one matters more than it
+    looks. **A `verify_only` routine is written, checked on every call, and
+    never substituted** -- `CosimRoutine::verify_only` has the argument for each
+    of the three. So it counts towards how much of the game has been *written*
+    and not at all towards how much of a run executes as C, and on some movies
+    that is not a rounding difference: `$80:CCC8 apu_send` alone is 23.8% of
+    every instruction level 1 executes.
+
+    Conflating the two is what this function used to do, and it made this tool
+    disagree with the running game by a factor of two and a half for a reason
+    that was entirely bookkeeping. Both numbers are now reported, and the second
+    is the one to compare against what `zamn.exe` prints when you quit it.
+    """
     src = open(path, encoding='utf-8', errors='replace').read()
-    out = {}
-    for m in re.finditer(r'\.name\s*=\s*"([^"]+)".*?\.entry\s*=\s*0x([0-9a-fA-F]+)',
-                         src, re.S):
-        out[int(m.group(2), 16)] = m.group(1)
-    return out
+    names, verify_only = {}, set()
+    # A record runs from its `.name` to the next one's, which is what makes a
+    # flag anywhere inside it attributable to the right routine. Splitting is
+    # more honest here than a single regex with `.*?`: the fields are in no
+    # guaranteed order, and `.verify_only` sits at the end of a long record.
+    for chunk in re.split(r'(?=\.name\s*=\s*")', src):
+        m = re.search(r'\.name\s*=\s*"([^"]+)"', chunk)
+        e = re.search(r'\.entry\s*=\s*0x([0-9a-fA-F]+)', chunk)
+        if not (m and e):
+            continue
+        addr = int(e.group(1), 16)
+        names[addr] = m.group(1)
+        if re.search(r'\.verify_only\s*=\s*true', chunk):
+            verify_only.add(addr)
+    return names, verify_only
 
 
 def load_symbols(path='tools/symbols/zamn.sym'):
@@ -393,7 +405,7 @@ def load_extra_entries(path):
 
 
 def main(dirs, extra=None):
-    ported = load_ported()
+    ported, verify_only = load_ported()
     symbols = load_symbols()
     extra_entries = load_extra_entries(extra) if extra else set()
 
@@ -423,6 +435,9 @@ def main(dirs, extra=None):
     size = len(total_exec)
     ported_offsets = {off for a in ported
                       if (off := snes_to_rom(a)) is not None}
+    # ...and the subset that a substituted build actually runs. See load_ported.
+    run_offsets = {off for a in ported if a not in verify_only
+                   if (off := snes_to_rom(a)) is not None}
 
     # Boundaries: every JSR/JSL target the corpus actually reached, plus the
     # registry's entries in case one was only ever jumped to, plus the ones
@@ -499,21 +514,25 @@ def main(dirs, extra=None):
     # entries pinned at 1, anything with no caller at all (`nmi_entry`, reset)
     # at 0. A routine every one of whose callers is native reaches 1 on its
     # own, which is the all-or-nothing closure as a special case.
-    frac = {r: (1.0 if r in ported_offsets else 0.0) for r in exec_by_routine}
-    for _ in range(200):
-        delta = 0.0
-        for r in exec_by_routine:
-            if r in ported_offsets:
-                continue
-            cs = callers.get(r)
-            if not cs:
-                continue
-            tot = sum(cs.values())
-            v = sum(n * frac.get(c, 0.0) for c, n in cs.items()) / tot
-            delta = max(delta, abs(v - frac[r]))
-            frac[r] = v
-        if delta < 1e-9:
-            break
+    def close_over(seeds):
+        frac = {r: (1.0 if r in seeds else 0.0) for r in exec_by_routine}
+        for _ in range(200):
+            delta = 0.0
+            for r in exec_by_routine:
+                if r in seeds:
+                    continue
+                cs = callers.get(r)
+                if not cs:
+                    continue
+                tot = sum(cs.values())
+                v = sum(n * frac.get(c, 0.0) for c, n in cs.items()) / tot
+                delta = max(delta, abs(v - frac[r]))
+                frac[r] = v
+            if delta < 1e-9:
+                break
+        return frac
+
+    frac = close_over(ported_offsets)
 
     native = {r for r in exec_by_routine if frac[r] > 0.999}
     mixed = {r for r in exec_by_routine if 0.001 < frac[r] <= 0.999}
@@ -527,6 +546,27 @@ def main(dirs, extra=None):
     mixed_exec = sum(exec_by_routine.get(e, 0) for e in mixed)
     # The point estimate: every routine credited by its native call fraction.
     weighted_exec = sum(v * frac[e] for e, v in exec_by_routine.items())
+
+    # ...and the same closure again over the routines that are actually
+    # substituted, which is a smaller set and a different question. Everything
+    # above answers "how much of this game have we written"; this answers "how
+    # much of a run executes as C", which is what the game itself reports and
+    # what Phase 4 has to get to 100%. They are not close on every movie: a
+    # `verify_only` routine is fully written and never substituted, and the
+    # subsumption closure follows -- a routine whose only caller is `apu_send`
+    # counts as written and still runs on the 65816.
+    run_frac = close_over(run_offsets)
+    run_native = {r for r in exec_by_routine if run_frac[r] > 0.999}
+    run_exec = sum(v for e, v in exec_by_routine.items() if e in run_native)
+    run_weighted = sum(v * run_frac[e] for e, v in exec_by_routine.items())
+    vo_exec = sum(v for e, v in exec_by_routine.items()
+                  if e in native and e not in run_native)
+
+    def label(off):
+        a = rom_to_snes(off)
+        s = '$%02X:%04X' % (a >> 16, a & 0xFFFF)
+        nm = ported.get(a) or symbols.get(a)
+        return '%s %s' % (s, nm) if nm else s
 
     print('Traced %d movie(s), %s instructions total\n'
           % (len(per_movie), '{:,}'.format(tot_exec)))
@@ -553,12 +593,28 @@ def main(dirs, extra=None):
     print('\n  best estimate, every routine weighted by its native call'
           ' fraction: %5.1f%%' % pct(weighted_exec, tot_exec))
 
+    if vo_exec:
+        print('\n  ...of which %5.1f%% is in %d verify_only routine(s) and what'
+              ' they subsume:' % (pct(vo_exec, tot_exec), len(verify_only)))
+        for a in sorted(verify_only):
+            off = snes_to_rom(a)
+            if off is None:
+                continue
+            print('    %-34s %12s' % (label(off),
+                                      '{:,}'.format(exec_by_routine.get(off, 0))))
+        print('  written and checked on every call, and never substituted --'
+              ' see\n  CosimRoutine::verify_only. So a build that runs the port'
+              ' executes\n  these on the 65816, and the share it reaches is'
+              ' lower than the one\n  above by exactly this much:')
+        print('\n  dynamic share actually substituted:          %5.1f%%'
+              % pct(run_exec, tot_exec))
+
     # --- and the part of the denominator that is not work at all -----------
     wait_rows = []
     # ...and which routine each wait belongs to, by the same attribution the
     # rest of the report uses, so the ranking below can charge it back.
     wait_by_routine = collections.Counter()
-    for addr, span, what in WAIT_SITES:
+    for addr, span, what in load_wait_sites():
         off = snes_to_rom(addr)
         if off is None:
             continue
@@ -583,17 +639,20 @@ def main(dirs, extra=None):
               % pct(nat_exec, tot_exec - wait_total))
         print('  best estimate, likewise:                     %5.1f%%'
               % pct(weighted_exec, tot_exec - wait_total))
+        # The one number that has a counterpart measured a completely different
+        # way. `zamn.exe` and `zamn_cosim run` report the same quantity live,
+        # from the substitution seam and in SNES cycles rather than from a
+        # profile and in instructions -- so the two are independent all the way
+        # down, and agreeing is worth something. They will not agree to the
+        # decimal: a cycle is not an instruction, and the live numerator is a
+        # per-routine mean budget where this is a per-instruction count.
+        print('  ...substituted only, likewise:               %5.1f%%   <- what'
+              ' the game reports' % pct(run_exec, tot_exec - wait_total))
     print('\n  %d routine entries used for attribution; %s instructions (%.1f%%)'
           % (len(entries), '{:,}'.format(unattributed_exec),
              pct(unattributed_exec, tot_exec)))
     print('  fell before the first entry in their bank and are counted as'
           ' unported.')
-
-    def label(off):
-        a = rom_to_snes(off)
-        s = '$%02X:%04X' % (a >> 16, a & 0xFFFF)
-        nm = ported.get(a) or symbols.get(a)
-        return '%s %s' % (s, nm) if nm else s
 
     print('\n%s' % ('=' * 66))
     print('TOP UNNATIVE ROUTINES BY WORK (registry entries + subsumed)')

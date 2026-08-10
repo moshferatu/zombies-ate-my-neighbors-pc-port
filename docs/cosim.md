@@ -7670,3 +7670,133 @@ whose header describes reaching it would be worse than none.
 **Nothing in the tree changed for this entry.** The corpus is still 11,094,719
 calls across 43 movies with 87 sites untaken; `psn_t3_expired` is still one of
 them.
+
+## The number a session reports about itself
+
+Eighty-two routines is a number with no denominator attached. The per-routine
+table says each of them worked; it cannot say what fraction of the game that
+*is*, and it cannot tell a 17-byte leaf from a 2 KB state machine. That question
+had one answer -- `tools/native_share.py`, offline, over a traced profile -- and
+it could not be asked of the thing anybody actually does with the port, which is
+play it. So the harness now measures it as it runs, and `zamn.exe` and
+`zamn_cosim run` both print it when they exit.
+
+Two rows, because there are two honest questions:
+
+```
+  work        296,719,746 of 654,074,274      45.4%
+  calls            55,225 of 318,792          17.3%
+```
+
+**work** is SNES cycles. Native mode already burns a measured cycle budget in
+place of every substituted routine -- `CosimRoutine::cycles`, the mean `verify`
+reported for it -- so the numerator is not a new estimate bolted on for
+reporting: it is the same number the rest of the machine was advanced by, and
+`cycles_burn()` records the core's own delta rather than the budget, because
+`snes_runCycles` adds 40 for a DRAM refresh when the burn crosses a scanline.
+
+**calls** is `JSR`/`JSL`/`JSR (abs,X)`, counted at the instruction that executes
+one. Substitution happens at the *callee's* entry PC, so the caller's `JSR` has
+already run by then and is in the denominator whether the port served the call
+or not; `calls_native` is a subset, never a second bucket to add.
+
+Both denominators shrink as the port grows, and that is the property that makes
+either ratio mean anything: **a call made inside a substituted routine never
+executes at all.** A routine that used to contribute its own call plus six of
+its callees' contributes one once it is ported, and that one is served.
+
+### What comes out of the denominator, and why
+
+Two kinds of cycle are not work and neither is in it:
+
+  * **Halted.** The scheduler's `WAI` -- `$80:8371`, the same instruction
+    lockstep synchronises on. The CPU is executing nothing, waiting for the NMI
+    that starts the next frame. This is not a small correction: on level 1 at
+    2,400 frames it is 485,200,770 cycles against 282,329,364 of work.
+  * **Spinning.** The ten loops in `src/cosim/waits.h`. Porting a spin gives a
+    spin -- the C would have to wait on the same flag -- so counting them would
+    make the port's share look smaller than it is for no reason anyone could
+    act on.
+
+That table used to live in `tools/native_share.py` and now lives in C, because
+the offline tool and the running game must not disagree about a denominator.
+The Python reads the header.
+
+What is *not* in the call denominator, and is in the work one, is the family
+`native_share.py` documents at length: a thread body and a vblank job are
+entered by `RTL` from a parked frame or a queue, so there is no call to
+intercept and none to count. Their cycles are real and stay where they are.
+
+### Two independent measurements, and what they cost to reconcile
+
+`tools/native_share.py` measures the same quantity from the other end --
+instructions from a traced profile, attributed by nearest preceding entry, with
+a call-graph closure over what the registry subsumes. Nothing about that method
+touches the substitution seam. Getting the two to agree took one real fix, and
+the disagreement was worth having:
+
+The first comparison was **62.3% offline against 23.6% live**, on the same movie.
+The gap is entirely `verify_only`. `native_share.py` read the registry and
+counted every entry in it as ported, which answers "how much of this game have
+we written" -- and three of those entries are written, checked on every call,
+and *never substituted*. On level 1 that is not a rounding difference:
+`$80:CCC8 apu_send` alone is **23.8% of every instruction the movie executes**,
+with the two LZSS leaves another 4.5%.
+
+So the tool now closes over both sets and reports both numbers. "Written" is
+still the one that says what to port next; "actually substituted" is what a run
+of the port reaches, and it is the line that has a counterpart:
+
+```
+  dynamic share, waits out of the denominator:  62.3%
+  ...substituted only, likewise:                24.0%   <- what the game reports
+```
+
+**24.0% offline, 23.6% live** -- one counting instructions from a profile, the
+other counting cycles at the seam, with no shared code between them but the wait
+table. They will never agree to the decimal and should not be made to: a cycle
+is not an instruction, and the live numerator is a per-routine mean where the
+offline one is a per-instruction count.
+
+### How strong the work row is
+
+The numerator is a mean standing in for a distribution, which is the same
+approximation that `run` already lives with -- and its size is measurable rather
+than assumed. Run the same movie twice and compare the work denominators:
+
+```
+  stock       273,055,690 cycles of work
+  native      282,329,364 cycles of work, of which 66,634,070 is budget
+```
+
+Substituting removed 273,055,690 - (282,329,364 - 66,634,070) = **57.4M cycles
+of real ROM work** and paid 66.6M of budget for it. The budgets over-pay by
+about 16%, so the row reads high by roughly that and not by a factor, and the
+totals stay within 3.4% of each other. Both framebuffers are identical at
+2,400 frames, which is the check that says none of this perturbed the run.
+
+### What it says
+
+The number depends enormously on what the game is doing, which is itself the
+useful part:
+
+| movie | frames | work | calls |
+| --- | --- | --- | --- |
+| `level1` | 2,400 | 23.6% | 5.8% |
+| `level9-weapons` | 6,000 | 45.6% | 18.1% |
+| `level29-fighting` | 6,000 | 45.4% | 17.3% |
+| `level25-boss` | 6,000 | 56.9% | 24.1% |
+
+Level 1's movie is boot-dominated -- the APU upload, the LZSS decompression and
+the fades, none of it substituted -- and 23.6% is a fact about the movie rather
+than about the port. **Playing a level is where the ported routines are**, and
+there the port is doing between two-fifths and three-fifths of the work the CPU
+does. That is the number to watch across Phase 3, and the one Phase 4 has to
+take to 100%.
+
+One trap when comparing runs: those are `zamn.exe --frames N`, which is N **PPU
+frames** from power-on. `zamn_cosim run -f N` is N **scheduler passes after
+boot**, so it covers more game and less boot for the same N and reads higher --
+40.1% against 23.6% on `level1`, both correct about different stretches. Only
+runs of the same kind belong side by side, and the offline tool follows the
+tracer, which counts PPU frames.
