@@ -44,6 +44,7 @@
 //
 // Usage: zamn [rom.sfc] [--stock] [-r routine]... [-m movie.zmv]
 //             [--frames N] [--shot out.png] [--no-audio]
+//             [--windowed] [--scale N] [--filter sharp|integer|linear]
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -213,7 +214,10 @@ static void usage(void) {
     "  --frames <N>    Run N frames and exit, uncapped rather than paced at 60 Hz.\n"
     "  --shot <a.png>  Write the final frame as a PNG on the way out.\n"
     "  --no-audio      Skip the audio device (and pace off a timer instead).\n"
-    "  --scale <N>     Open the window at N times 512x480. Default 1.\n"
+    "  --windowed      Start in a window. The default is fullscreen; F11 or\n"
+    "                  Alt+Enter moves between them at any time.\n"
+    "  --scale <N>     Size the window at N times 512x480, and start in it.\n"
+    "                  Default 1, which is also the size F11 returns to.\n"
     "  --filter <how>  How to fill a window that is not a whole multiple:\n"
     "                    sharp   (default) nearest up to the next whole\n"
     "                            multiple, then one bilinear step down. Uniform\n"
@@ -221,7 +225,8 @@ static void usage(void) {
     "                    integer only whole multiples; letterbox the remainder.\n"
     "                    linear  one bilinear step from 512x480. The blurry one.\n\n"
     "Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
-    "          F1 = toggle native substitution   F2 = cycle scaling   Esc = quit\n");
+    "          F1 = toggle native substitution   F2 = cycle scaling\n"
+    "          F11 or Alt+Enter = fullscreen     Esc = quit\n");
 }
 
 int main(int argc, char** argv) {
@@ -241,12 +246,20 @@ int main(int argc, char** argv) {
   bool native = true, want_audio = true;
   ScaleMode scale_mode = SCALE_SHARP;
   int window_scale = 1;
+  // Fullscreen is what playing it looks like, so it is the default and the flags
+  // below are the ways of saying "not now". `--windowed` is the explicit one;
+  // `--scale N` is asking for a window of a particular size, which is not a
+  // request one can honour fullscreen; and `--frames N` is a batch run — a smoke
+  // test or a throughput measurement — which has no business seizing the display
+  // of whoever started it.
+  bool fullscreen = true;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
     if (!strcmp(a, "--help") || !strcmp(a, "-h")) { usage(); return 0; }
     else if (!strcmp(a, "--stock")) native = false;
     else if (!strcmp(a, "--no-audio")) want_audio = false;
+    else if (!strcmp(a, "--windowed")) fullscreen = false;
     else if (!strcmp(a, "-r") && i + 1 < argc) {
       if (only_count == (int)(sizeof only / sizeof *only)) {
         fprintf(stderr, "error: at most %d -r options\n\n",
@@ -275,10 +288,14 @@ int main(int argc, char** argv) {
         usage();
         return 2;
       }
+      fullscreen = false;
     }
     else if (!strcmp(a, "-m") && i + 1 < argc) movie_path = argv[++i];
     else if (!strcmp(a, "--shot") && i + 1 < argc) shot_path = argv[++i];
-    else if (!strcmp(a, "--frames") && i + 1 < argc) frame_limit = atol(argv[++i]);
+    else if (!strcmp(a, "--frames") && i + 1 < argc) {
+      frame_limit = atol(argv[++i]);
+      fullscreen = false;
+    }
     else if (a[0] == '-') {
       fprintf(stderr, "error: unknown option '%s'\n\n", a); usage(); return 2;
     }
@@ -340,14 +357,32 @@ int main(int argc, char** argv) {
     fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
     return 1;
   }
+  // `FULLSCREEN_DESKTOP` rather than `FULLSCREEN`: it borrows the display at the
+  // resolution it is already in instead of asking for a mode change. No black
+  // screen while the monitor re-syncs, no windows on other displays getting
+  // rearranged, and alt-tab comes straight back — none of which is worth trading
+  // for an exclusive mode this game cannot use. The core hands over 512x480
+  // whatever the display is, so fullscreen is a question about the destination
+  // rectangle only, and `scale_plan` already answers that for arbitrary sizes.
+  //
+  // The size passed here is still the windowed size even when starting
+  // fullscreen: it is what SDL restores on the way back out, so `--scale` sets
+  // it whether or not the window is shown at that size first.
+  Uint32 win_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
+  if (fullscreen) win_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
   SDL_Window* win = SDL_CreateWindow("Zombies Ate My Neighbors (native)",
       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-      FB_W * window_scale, FB_H * window_scale,
-      SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+      FB_W * window_scale, FB_H * window_scale, win_flags);
   if (!win) {
     fprintf(stderr, "error: cannot open a window: %s\n", SDL_GetError());
     return 1;
   }
+  // There is no mouse input in this game, so the pointer is only ever something
+  // sitting on top of the picture. This is a process-wide SDL setting rather
+  // than a per-window one, but SDL only draws the cursor while it is over a
+  // window of its own — so windowed, it reappears the moment it leaves the
+  // client area, and the title bar and close button keep theirs.
+  SDL_ShowCursor(SDL_DISABLE);
   SDL_Renderer* ren = SDL_CreateRenderer(win, -1,
       SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
   // ...and if there is no accelerated renderer, whatever SDL has. There is one
@@ -389,13 +424,28 @@ int main(int argc, char** argv) {
   }
 
   printf("Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
-         "          F1=toggle native substitution  F2=cycle scaling  Esc=Quit\n");
-  printf("Scaling: %s, window at %dx (%dx%d)\n", scale_name(scale_mode),
-         window_scale, FB_W * window_scale, FB_H * window_scale);
+         "          F1=toggle native substitution  F2=cycle scaling\n"
+         "          F11 or Alt+Enter=fullscreen    Esc=Quit\n");
+  {
+    // What the picture is actually being drawn into, which fullscreen makes a
+    // question worth answering: the display's size, not the window size asked
+    // for. `SDL_GetRendererOutputSize` is the same call `present_draw` scales
+    // by, so this line and the picture cannot disagree.
+    int ow = 0, oh = 0;
+    SDL_GetRendererOutputSize(ren, &ow, &oh);
+    printf("Display: %s, %dx%d, scaling %s (windowed size %dx%d)\n",
+           fullscreen ? "fullscreen" : "windowed", ow, oh,
+           scale_name(scale_mode), FB_W * window_scale, FB_H * window_scale);
+  }
   printf("Substitution: %s (%d routine%s registered)%s\n",
          native ? "on" : "off (stock)", routine_count,
          routine_count == 1 ? "" : "s",
          have_movie ? ", replaying a movie" : "");
+  // Redirected to a file, this is block-buffered, and everything above it
+  // describes the session that is about to start — so it wants to be readable
+  // *during* the session and not only after a clean exit. A run that is killed
+  // or crashes is exactly the run whose settings someone wants to look up.
+  fflush(stdout);
 
   // Frame pacing. VSync is unreliable (may be >60 Hz or driver-ignored), so we
   // pace explicitly. Primary clock is the audio device: it consumes samples at
@@ -445,6 +495,32 @@ int main(int argc, char** argv) {
             fflush(stdout);
           }
           continue;
+        }
+        // Fullscreen on F11, and on the Alt+Enter that every emulator has had
+        // since DOS. That second spelling has to be recognised here rather than
+        // in `key_to_button`, because Enter on its own is Start — and it has to
+        // be matched *before* the key reaches that mapping, or toggling the
+        // display would also press Start.
+        {
+          const bool alt_enter = e.key.keysym.sym == SDLK_RETURN &&
+                                 (e.key.keysym.mod & KMOD_ALT) != 0;
+          if (e.key.keysym.sym == SDLK_F11 || alt_enter) {
+            if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+              const bool want = !fullscreen;
+              if (SDL_SetWindowFullscreen(
+                      win, want ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) != 0) {
+                // Report it and keep the flag on what is actually on screen. A
+                // toggle that silently believed it had worked would put the key
+                // out of phase with the display for the rest of the session.
+                fprintf(stderr, "cannot change display mode: %s\n", SDL_GetError());
+              } else {
+                fullscreen = want;
+                printf("Display: %s\n", fullscreen ? "fullscreen" : "windowed");
+              }
+              fflush(stdout);
+            }
+            continue;
+          }
         }
         // A movie is driving the controller; the keyboard would fight it.
         if (!have_movie) {

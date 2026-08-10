@@ -69,10 +69,23 @@ build\zamn.exe "Zombies Ate My Neighbors.sfc"
 ```
 Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=Select · Esc=Quit
 · **F1 = toggle native substitution** · **F2 = cycle scaling**
+· **F11 / Alt+Enter = fullscreen**
 
-`--scale N` opens the window at N times 512x480 (1–8), and `--filter` decides
-what happens when the window is *not* a whole multiple — after a resize, or
-maximised:
+It starts **fullscreen**, with the mouse cursor hidden — there is no mouse input
+in this game, so the pointer is only ever something on top of the picture. F11
+and Alt+Enter move between fullscreen and a window at any time, and Esc quits
+from either. Fullscreen is the borderless desktop kind rather than an exclusive
+mode change: no resync while the monitor changes mode, and alt-tab comes
+straight back.
+
+Three ways to start windowed instead: `--windowed`; `--scale N`, which sizes the
+window at N times 512x480 (1–8) and starts in it; and `--frames N`, because a
+batch run is a smoke test or a throughput measurement and has no business
+seizing the display of whoever started it. Whichever way, `--scale` is also the
+size F11 comes back to.
+
+`--filter` decides what happens when the output is *not* a whole multiple of
+512x480 — which fullscreen usually is not:
 
 | `--filter` | what it does | trade |
 | --- | --- | --- |
@@ -87,6 +100,16 @@ pixels wide while some land 1. On a moving sprite that narrow column crawls
 across it. The artifact is the fractional factor, not the filter, and `sharp`
 and `integer` are the two ways of not having one. F2 cycles the three while the
 game runs, which is the only way to judge them.
+
+What that means at the resolutions fullscreen actually lands on — all four are
+pinned as named cases in `tools/test_scale.c`:
+
+| display | `sharp` does | why |
+| --- | --- | --- |
+| 2560x1440 | nothing at all — exact 3x | 1440 is 3x480, and a 16:15 picture in a 16:9 window is height-constrained |
+| 1920x1080 | 3x offscreen, step down to 1152x1080 | 1080/480 is 2.25 |
+| 3840x2160 | 5x offscreen, step down to 2304x2160 | 2160/480 is 4.5, so nearest would double every other row |
+| 1366x768 | 2x offscreen, step down to 819x768 | 1.6, the worst case, and the one this mode exists for |
 
 **This is the substituted build, not the emulated baseline.** It installs the
 same `COSIM_NATIVE` interception `zamn_cosim run` uses, against the one live

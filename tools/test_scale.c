@@ -132,6 +132,21 @@ int main(void) {
       {SCALE_INTEGER, 1920, 1080, 448,  60, 1024,  960, 0, false},
       {SCALE_SHARP,   1920, 1080, 384,   0, 1152, 1080, 3, true},
       {SCALE_LINEAR,  1920, 1080, 384,   0, 1152, 1080, 0, true},
+      // The rest of what fullscreen actually lands on, now that fullscreen is
+      // the default and these are no longer hypothetical window sizes.
+      //
+      // 1440p is the happy one: 1440 is exactly 3x480 and the height is what
+      // constrains a 16:15 picture in a 16:9 window, so it comes out an exact
+      // 3x with no intermediate and no filtering at all. Worth pinning, because
+      // "sharp built a stage here" would be a silent quality regression that no
+      // property in the sweep above forbids.
+      {SCALE_SHARP,   2560, 1440, 512,   0, 1536, 1440, 0, false},
+      // 4K is the fractional one: 2160/480 is 4.5, so nearest alone would give
+      // every other row a double. Stage 5 and step down.
+      {SCALE_SHARP,   3840, 2160, 768,   0, 2304, 2160, 5, true},
+      // ...and the laptop panel that is not a multiple of anything: 768/480 is
+      // 1.6, the worst case for plain nearest and the one this mode is for.
+      {SCALE_SHARP,   1366,  768, 273,   0,  819,  768, 2, true},
       // Smaller than the framebuffer: every mode reduces, and reduces smoothly.
       {SCALE_SHARP,    256,  240,   0,   0,  256,  240, 0, true},
       {SCALE_INTEGER,  256,  240,   0,   0,  256,  240, 0, true},
