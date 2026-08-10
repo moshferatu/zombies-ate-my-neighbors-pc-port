@@ -42,6 +42,11 @@
 
 #define SRC_W 512
 #define SRC_H 480
+// The live rectangle, matching what the core actually produces: rows 16..463
+// are picture and the rest is blanked. `present_draw` must scale only this, and
+// `COL_DEAD` below is how that gets checked rather than assumed.
+#define SRC_TOP 16
+#define SRC_LIVE_H 448
 
 // Two colours, laid out the way the PPU lays out this game: every game pixel is
 // a 2x2 block, because `ppu_handlePixel` writes each one twice across and
@@ -55,6 +60,11 @@
 #define COL_A 0x20408000u
 #define COL_B 0xE0C0A000u
 #define COL_MASK 0xFFFFFF00u
+// Painted into the rows the core blanks. It is deliberately not black, so that
+// "the dead rows were cropped" and "the dead rows were drawn but happened to be
+// the same colour as the letterbox" are distinguishable — which they would not
+// be if this were 0.
+#define COL_DEAD 0x00FF0000u
 #define BLOCK 2
 
 static int failures;
@@ -78,8 +88,14 @@ static void fill_source(Present* p) {
   }
   for (int y = 0; y < SRC_H; y++) {
     uint32_t* row = (uint32_t*)((uint8_t*)pixels + (size_t)y * pitch);
-    for (int x = 0; x < SRC_W; x++)
-      row[x] = (((x / BLOCK) + (y / BLOCK)) & 1) ? COL_A : COL_B;
+    const bool live = y >= SRC_TOP && y < SRC_TOP + SRC_LIVE_H;
+    for (int x = 0; x < SRC_W; x++) {
+      if (!live) { row[x] = COL_DEAD; continue; }
+      // The checkerboard is phased from the top of the *live* area, so a
+      // cropping error shifts it and the block-width checks notice.
+      const int ly = y - SRC_TOP;
+      row[x] = (((x / BLOCK) + (ly / BLOCK)) & 1) ? COL_A : COL_B;
+    }
   }
   SDL_UnlockTexture(p->frame);
 }
@@ -173,7 +189,8 @@ static bool measure_ex(ScaleMode mode, int ow, int oh, bool allow_target,
   if (!ren) { fail("no renderer: %s", SDL_GetError()); SDL_DestroyWindow(win); return false; }
 
   Present p;
-  if (!present_init(&p, ren, SRC_W, SRC_H, mode)) {
+  const SDL_Rect live = {0, SRC_TOP, SRC_W, SRC_LIVE_H};
+  if (!present_init(&p, ren, SRC_W, SRC_H, live, mode, ASPECT_SQUARE)) {
     fail("present_init: %s", SDL_GetError());
     SDL_DestroyRenderer(ren); SDL_DestroyWindow(win);
     return false;
@@ -185,14 +202,27 @@ static bool measure_ex(ScaleMode mode, int ow, int oh, bool allow_target,
   fill_source(&p);
   present_draw(&p);
 
-  ScalePlan plan = scale_plan(mode, SRC_W, SRC_H, ow, oh, p.can_target);
-  *out_stage = plan.stage;
+  int aw = 0, ah = 0;
+  aspect_ratio(ASPECT_SQUARE, SRC_W, SRC_LIVE_H, &aw, &ah);
+  ScalePlan plan =
+      scale_plan(mode, SRC_W, SRC_LIVE_H, aw, ah, ow, oh, p.can_target);
+  *out_stage = plan.stage_x;
 
   bool ok = false;
   uint32_t* px = readback(ren, ow, oh);
   if (px) {
     *out_purity = purity(px, ow, plan.dst);
     run_widths(px, ow, plan.dst, best_row(px, ow, plan.dst), out_lo, out_hi);
+    // The blanked rows must reach the screen nowhere, in any mode, at any size.
+    // A bilinear step can only mix colours that were drawn, so a single trace of
+    // `COL_DEAD` anywhere in the output means the crop was not applied.
+    for (int i = 0; i < ow * oh; i++) {
+      if ((px[i] & COL_MASK) == (COL_DEAD & COL_MASK)) {
+        fail("blanked source rows reached the screen (%s at %dx%d)",
+             scale_name(mode), ow, oh);
+        break;
+      }
+    }
     free(px);
     ok = true;
   }
@@ -225,7 +255,7 @@ int main(int argc, char** argv) {
   // --- an exact whole multiple -------------------------------------------
   // 2x. Nothing to interpolate, so nearest must reproduce the source exactly
   // and every block must be exactly 2 * BLOCK wide.
-  if (measure(SCALE_SHARP, SRC_W * 2, SRC_H * 2, &pur, &lo, &hi, &stage)) {
+  if (measure(SCALE_SHARP, SRC_W * 2, SRC_LIVE_H * 2, &pur, &lo, &hi, &stage)) {
     if (stage != 0) fail("sharp built an intermediate at an exact 2x");
     if (pur < 0.9999)
       fail("sharp at exact 2x is only %.1f%% pure — it should be untouched",

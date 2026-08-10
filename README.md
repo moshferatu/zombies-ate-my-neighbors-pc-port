@@ -69,7 +69,7 @@ build\zamn.exe "Zombies Ate My Neighbors.sfc"
 ```
 Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=Select · Esc=Quit
 · **F1 = toggle native substitution** · **F2 = cycle scaling**
-· **F11 / Alt+Enter = fullscreen**
+· **F3 = toggle aspect** · **F11 / Alt+Enter = fullscreen**
 
 It starts **fullscreen**, with the mouse cursor hidden — there is no mouse input
 in this game, so the pointer is only ever something on top of the picture. F11
@@ -79,19 +79,41 @@ mode change: no resync while the monitor changes mode, and alt-tab comes
 straight back.
 
 Three ways to start windowed instead: `--windowed`; `--scale N`, which sizes the
-window at N times 512x480 (1–8) and starts in it; and `--frames N`, because a
+window at N times the picture (1–8) and starts in it; and `--frames N`, because a
 batch run is a smoke test or a throughput measurement and has no business
 seizing the display of whoever started it. Whichever way, `--scale` is also the
 size F11 comes back to.
 
-`--filter` decides what happens when the output is *not* a whole multiple of
-512x480 — which fullscreen usually is not:
+### What actually reaches the screen
+
+The core hands over 512x480, but **only 512x448 of it is picture**.
+`ppu_putPixels` doubles the game's 224 scanlines into rows 16..463 and zeroes
+sixteen rows top and bottom, so scaling the whole buffer spends 6.7% of the
+screen enlarging black and then letterboxes *that*. Only the live rectangle is
+drawn.
+
+Those 448 rows are not square pixels either. The console puts 256 across a frame
+a television showed at 4:3, so the game is composed for 4:3 and square pixels
+make it 8:7 — visibly narrow, and 11% less screen. `--aspect` picks, **4:3 by
+default**, `square` for the framebuffer's own shape; F3 toggles them on the same
+frame, which is the only way to judge it. At 3840x2160:
+
+| | picture | of the screen |
+| --- | --- | --- |
+| whole buffer, square pixels | 2304x2160, 144px of it blank top and bottom | 56% |
+| cropped, square pixels (8:7) | 2468x2160 | 64% |
+| cropped, 4:3 (default) | **2880x2160** | **75%** |
+
+### `--filter`
+
+Decides what happens when the output is not a whole multiple of 512x448 — which
+fullscreen usually is not:
 
 | `--filter` | what it does | trade |
 | --- | --- | --- |
 | `sharp` (default) | nearest up to the next whole multiple offscreen, then one bilinear step down to fit | uniform pixels, fills the window, a sub-pixel seam at each block edge |
-| `integer` | only whole multiples, letterbox the rest | perfectly uniform; 1920x1080 fits 2x and leaves 42% of the height black |
-| `linear` | one bilinear step from 512x480 | blurry — kept so the difference can be seen rather than argued |
+| `integer` | only whole multiples, letterbox the rest — and therefore square pixels, so it ignores `--aspect` | perfectly uniform; 1920x1080 fits 2x and leaves 17% of the height black |
+| `linear` | one bilinear step from 512x448 | blurry — kept so the difference can be seen rather than argued |
 
 Nearest-neighbour on its own is **not** one of the options, because on its own
 it is the problem: scale 512 into a 1000-pixel window and the factor is 1.953,
@@ -99,17 +121,55 @@ so nearest drops one source pixel in 21 and most game pixels land 2 screen
 pixels wide while some land 1. On a moving sprite that narrow column crawls
 across it. The artifact is the fractional factor, not the filter, and `sharp`
 and `integer` are the two ways of not having one. F2 cycles the three while the
-game runs, which is the only way to judge them.
+game runs.
 
-What that means at the resolutions fullscreen actually lands on — all four are
-pinned as named cases in `tools/test_scale.c`:
+Aspect correction and sharp scaling genuinely fight: at 4:3 the two axes
+magnify by different amounts, so one whole-multiple intermediate cannot serve
+both and the offscreen stage is a whole multiple **per axis**. That also buys
+something the square-pixel version could not have — an output that is a whole
+multiple of the source on each axis independently is pixel-exact even though its
+pixels are oblong, so 4:3 is not automatically the blurry choice. All of the
+below are pinned as named cases in `tools/test_scale.c`:
 
-| display | `sharp` does | why |
+| display | 4:3 `sharp` does | why |
 | --- | --- | --- |
-| 2560x1440 | nothing at all — exact 3x | 1440 is 3x480, and a 16:15 picture in a 16:9 window is height-constrained |
-| 1920x1080 | 3x offscreen, step down to 1152x1080 | 1080/480 is 2.25 |
-| 3840x2160 | 5x offscreen, step down to 2304x2160 | 2160/480 is 4.5, so nearest would double every other row |
-| 1366x768 | 2x offscreen, step down to 819x768 | 1.6, the worst case, and the one this mode exists for |
+| 3840x2160 | 2880x2160, stage **6 across by 5 down** | 5.625x and 4.821x — the case one stage number cannot express |
+| 2560x1440 | 1920x1440, stage 4x4 | 3.75x and 3.214x |
+| 1920x1080 | 1440x1080, stage 3x3 | 2.8125x and 2.411x |
+| 1366x768 | 1024x768, stage 2x2 | exact across, 1.714x down |
+| 3584x2688 | **nothing at all — pixel-exact** | 7 source widths by 6 source heights is exactly 4:3 |
+
+### Frame pacing
+
+"Runs at 60 fps" and "looks smooth" are different claims, and the mean frame
+rate cannot tell them apart. This used to gate frame production on the audio
+queue draining — the device consumes 48000 samples a second, so the queue looked
+like an exact clock. It is exact *on average only*: the device pulls its whole
+buffer at once, so the queue fell in 42.7 ms lumps and the loop emitted two or
+three frames as fast as it could and then stalled. Measured over 600 frames:
+
+```
+arrival  mean 16.57  p50  4.25  p90 40.75  max 50.36 ms
+within 1 ms of the period: 0.0%
+```
+
+A flawless 60.3 fps in which **not one frame of 599 arrived on cadence** — about
+23 visible updates a second. The clock is now a deadline on the high-resolution
+timer, at a period locked to the display refresh where the display is a sensible
+multiple of the console's rate (60.0988 Hz NTSC, which no monitor offers), and
+the audio is corrected to *that* by resampling each frame by up to half a percent
+— the same dynamic rate control emulator frontends use. Same machine, same movie:
+
+```
+arrival  mean 16.66  p50 16.75  p90 16.75  max 19.60 ms
+within 1 ms of the period: 98.7%
+```
+
+Every run prints this at exit; `--paced` keeps 60 Hz pacing under `--frames` so a
+bounded run measures cadence instead of throughput. `src/pace.h` has the details,
+including why the audio backlog is reported alongside — video no longer depends
+on it, so nothing but the correction stops it drifting, and a `min` near zero is
+that correction failing.
 
 **This is the substituted build, not the emulated baseline.** It installs the
 same `COSIM_NATIVE` interception `zamn_cosim run` uses, against the one live
@@ -273,6 +333,9 @@ src/scale.h           Where the framebuffer lands on the screen and how it gets
                               there — arithmetic only, no SDL, so it can be
                               checked without a window
 src/present.h         ...and the SDL that carries that out
+src/pace.h            Frame cadence: measuring how evenly frames arrive, and
+                              the deadline clock and audio rate control that
+                              make them arrive evenly. No SDL either
 src/analysis/         Phase 1: 65816 table, CDL format, input movies (shared)
 src/trace.c           Phase 1: instruction-level tracer -> CDL, memory map, call graph
 src/disasm.c          Phase 1: CDL-driven annotated disassembler

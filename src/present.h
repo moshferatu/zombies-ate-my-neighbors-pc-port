@@ -24,43 +24,50 @@
 
 typedef struct {
   SDL_Renderer* ren;
-  SDL_Texture* frame;  // the source, at its native size
+  SDL_Texture* frame;  // the source, at the full texture size
   SDL_Texture* stage;  // `sharp`'s whole-multiple intermediate, or NULL
-  int stage_scale;     // the multiple `stage` was built at; 0 if there is none
-  int sw, sh;          // the framebuffer's size
+  int stage_x, stage_y;  // the multiples `stage` was built at; 0 if none
+  // The live part of `frame`. The core writes 512x480 but blanks sixteen rows
+  // top and bottom, so this is the 512x448 that is actually picture — and it is
+  // what every size below is measured against.
+  SDL_Rect src;
   bool can_target;     // can this renderer draw into a texture at all
   ScaleMode mode;
+  AspectMode aspect;
 } Present;
 
-// The offscreen target `sharp` needs, at `n` times the framebuffer. Kept between
-// frames and rebuilt only when `n` changes — which happens when the window is
-// resized across a whole multiple, and not once a frame.
-static inline bool present_stage(Present* p, int n) {
-  if (p->stage && p->stage_scale == n) return true;
+// The offscreen target `sharp` needs, at `nx` by `ny` times the source. Kept
+// between frames and rebuilt only when the multiples change — which happens
+// when the window is resized across a whole multiple, and not once a frame.
+static inline bool present_stage(Present* p, int nx, int ny) {
+  if (p->stage && p->stage_x == nx && p->stage_y == ny) return true;
   if (p->stage) SDL_DestroyTexture(p->stage);
   p->stage = SDL_CreateTexture(p->ren, SDL_PIXELFORMAT_RGBX8888,
-                               SDL_TEXTUREACCESS_TARGET, p->sw * n, p->sh * n);
-  p->stage_scale = p->stage ? n : 0;
+                               SDL_TEXTUREACCESS_TARGET, p->src.w * nx,
+                               p->src.h * ny);
+  p->stage_x = p->stage ? nx : 0;
+  p->stage_y = p->stage ? ny : 0;
   // Linear on the way *out* of the stage is the entire point of building one.
   // The way in is nearest, and that is the frame texture's own mode.
   if (p->stage) SDL_SetTextureScaleMode(p->stage, SDL_ScaleModeLinear);
   return p->stage != NULL;
 }
 
-static inline bool present_init(Present* p, SDL_Renderer* ren, int sw, int sh,
-                                ScaleMode mode) {
+static inline bool present_init(Present* p, SDL_Renderer* ren, int tex_w,
+                                int tex_h, SDL_Rect src, ScaleMode mode,
+                                AspectMode aspect) {
   memset(p, 0, sizeof *p);
   p->ren = ren;
   p->mode = mode;
-  p->sw = sw;
-  p->sh = sh;
+  p->aspect = aspect;
+  p->src = src;
 
   SDL_RendererInfo info;
   p->can_target = SDL_GetRendererInfo(ren, &info) == 0 &&
                   (info.flags & SDL_RENDERER_TARGETTEXTURE) != 0;
 
   p->frame = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBX8888,
-                               SDL_TEXTUREACCESS_STREAMING, sw, sh);
+                               SDL_TEXTUREACCESS_STREAMING, tex_w, tex_h);
   if (!p->frame) return false;
   // Set rather than left to the default. Nearest *is* SDL's default, but it is
   // also overridable from outside the process by `SDL_RENDER_SCALE_QUALITY`,
@@ -85,7 +92,10 @@ static inline void present_draw(Present* p) {
   // whole number.
   int ow = 0, oh = 0;
   SDL_GetRendererOutputSize(p->ren, &ow, &oh);
-  ScalePlan plan = scale_plan(p->mode, p->sw, p->sh, ow, oh, p->can_target);
+  int aw = 0, ah = 0;
+  aspect_ratio(p->aspect, p->src.w, p->src.h, &aw, &ah);
+  ScalePlan plan =
+      scale_plan(p->mode, p->src.w, p->src.h, aw, ah, ow, oh, p->can_target);
   if (plan.dst.w <= 0 || plan.dst.h <= 0) return;  // minimised, or not up yet
 
   const SDL_Rect dst = {plan.dst.x, plan.dst.y, plan.dst.w, plan.dst.h};
@@ -96,13 +106,16 @@ static inline void present_draw(Present* p) {
   SDL_SetRenderDrawColor(p->ren, 0, 0, 0, 255);
   SDL_RenderClear(p->ren);
 
-  if (plan.stage > 0 && present_stage(p, plan.stage)) {
+  if (plan.stage_x > 0 && plan.stage_y > 0 &&
+      present_stage(p, plan.stage_x, plan.stage_y)) {
     SDL_Texture* was = SDL_GetRenderTarget(p->ren);
     if (SDL_SetRenderTarget(p->ren, p->stage) == 0) {
       // Up to the whole multiple with nearest — an exact blow-up, every block
       // the same size — and back down to the window with one bilinear step.
+      // Only `p->src` goes up: the blank rows the core leaves top and bottom
+      // are not picture and must not be given any of the screen.
       SDL_SetTextureScaleMode(p->frame, SDL_ScaleModeNearest);
-      SDL_RenderCopy(p->ren, p->frame, NULL, NULL);
+      SDL_RenderCopy(p->ren, p->frame, &p->src, NULL);
       SDL_SetRenderTarget(p->ren, was);
       SDL_RenderCopy(p->ren, p->stage, NULL, &dst);
       return;
@@ -115,7 +128,7 @@ static inline void present_draw(Present* p) {
 
   SDL_SetTextureScaleMode(
       p->frame, plan.linear ? SDL_ScaleModeLinear : SDL_ScaleModeNearest);
-  SDL_RenderCopy(p->ren, p->frame, NULL, &dst);
+  SDL_RenderCopy(p->ren, p->frame, &p->src, &dst);
 }
 
 #endif

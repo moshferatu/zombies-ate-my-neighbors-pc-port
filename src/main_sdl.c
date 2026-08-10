@@ -58,6 +58,7 @@
 #include "analysis/movie.h"
 #include "analysis/movie_apply.h"
 #include "cosim/cosim.h"
+#include "pace.h"
 #include "present.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -69,8 +70,25 @@
 
 #define FB_W 512
 #define FB_H 480
+// The live part of it. `ppu_putPixels` doubles the game's 224 scanlines into
+// rows 16..463 and zeroes the sixteen above and below, so a third of a
+// megapixel of every frame is blank by construction. Scaling that with the rest
+// spends 6.7% of the screen's height enlarging black — measured on a real
+// frame: first non-blank row 16, last 463 — so only this rectangle is drawn.
+#define FB_TOP 16
+#define FB_LIVE_H 448
 #define AUDIO_FREQ 48000
 #define SAMPLES_PER_FRAME (AUDIO_FREQ / 60) // 800
+// How far a single frame's sample count may stray from that, for rate control.
+// Four in eight hundred is half a percent — the same ceiling RetroArch uses for
+// the same job, and about a tenth of the smallest pitch change a listener can
+// pick out. It is a drift correction and must never become a pitch bend.
+#define AUDIO_MAX_ADJUST 4
+// How many samples the device asks for at a time. This was 2048, and 2048 is
+// 42.7 ms — which was invisible while the queue was only feeding a speaker, and
+// catastrophic once the loop paced itself off the queue's depth. It no longer
+// does, but a shorter buffer still means a shallower queue and lower latency.
+#define AUDIO_DEVICE_SAMPLES 512
 
 // Keyboard -> SNES button bit. The `BTN_*` names are `analysis/movie.h`'s, which
 // is where they belong now that this file replays movies too: one definition of
@@ -202,6 +220,19 @@ static void share_summary(const Cosim* c, char* out, size_t n) {
            100.0 * s.call_share);
 }
 
+// Push `bytes` of silence at the device. Used to establish the backlog at
+// startup and to refill it if it ever collapses — in both cases the alternative
+// is not "no silence", it is the device running dry and repeating or clicking.
+static void queue_silence(SDL_AudioDeviceID dev, long bytes) {
+  int16_t zeros[512];
+  memset(zeros, 0, sizeof zeros);
+  while (bytes > 0) {
+    const long chunk = bytes < (long)sizeof zeros ? bytes : (long)sizeof zeros;
+    SDL_QueueAudio(dev, zeros, (Uint32)chunk);
+    bytes -= chunk;
+  }
+}
+
 static void usage(void) {
   printf(
     "zamn — Zombies Ate My Neighbors, with the C port substituted in\n\n"
@@ -212,12 +243,17 @@ static void usage(void) {
     "                  routine `zamn_cosim list` reports.\n"
     "  -m <movie.zmv>  Replay a recorded movie instead of reading the keyboard.\n"
     "  --frames <N>    Run N frames and exit, uncapped rather than paced at 60 Hz.\n"
+    "  --paced         Keep 60 Hz pacing under --frames. Turns a bounded run\n"
+    "                  from a throughput measurement into a cadence one.\n"
     "  --shot <a.png>  Write the final frame as a PNG on the way out.\n"
     "  --no-audio      Skip the audio device (and pace off a timer instead).\n"
     "  --windowed      Start in a window. The default is fullscreen; F11 or\n"
     "                  Alt+Enter moves between them at any time.\n"
     "  --scale <N>     Size the window at N times 512x480, and start in it.\n"
     "                  Default 1, which is also the size F11 returns to.\n"
+    "  --aspect <how>  4:3 (default) is the shape the game was composed for and\n"
+    "                  what every emulator shows it in; square is 8:7, the\n"
+    "                  framebuffer's own shape, narrower by 11%%. F3 toggles.\n"
     "  --filter <how>  How to fill a window that is not a whole multiple:\n"
     "                    sharp   (default) nearest up to the next whole\n"
     "                            multiple, then one bilinear step down. Uniform\n"
@@ -226,7 +262,8 @@ static void usage(void) {
     "                    linear  one bilinear step from 512x480. The blurry one.\n\n"
     "Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
     "          F1 = toggle native substitution   F2 = cycle scaling\n"
-    "          F11 or Alt+Enter = fullscreen     Esc = quit\n");
+    "          F3 = toggle aspect ratio          F11/Alt+Enter = fullscreen\n"
+    "          Esc = quit\n");
 }
 
 int main(int argc, char** argv) {
@@ -245,6 +282,10 @@ int main(int argc, char** argv) {
   long frame_limit = 0;
   bool native = true, want_audio = true;
   ScaleMode scale_mode = SCALE_SHARP;
+  // 4:3 by default, because that is the shape the game was composed for and the
+  // shape every emulator shows it in. Square pixels are 8:7 — visibly narrow,
+  // and about 11% less screen.
+  AspectMode aspect_mode = ASPECT_43;
   int window_scale = 1;
   // Fullscreen is what playing it looks like, so it is the default and the flags
   // below are the ways of saying "not now". `--windowed` is the explicit one;
@@ -253,6 +294,11 @@ int main(int argc, char** argv) {
   // test or a throughput measurement — which has no business seizing the display
   // of whoever started it.
   bool fullscreen = true;
+  // `--frames N` means "run N and stop", and it turns pacing off because a
+  // throughput measurement wants to finish rather than to be watched. Those are
+  // two decisions in one flag, and measuring the *cadence* needs the first
+  // without the second: a bounded run, at real speed, that exits with a report.
+  bool force_pacing = false;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
@@ -260,6 +306,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--stock")) native = false;
     else if (!strcmp(a, "--no-audio")) want_audio = false;
     else if (!strcmp(a, "--windowed")) fullscreen = false;
+    else if (!strcmp(a, "--paced")) force_pacing = true;
     else if (!strcmp(a, "-r") && i + 1 < argc) {
       if (only_count == (int)(sizeof only / sizeof *only)) {
         fprintf(stderr, "error: at most %d -r options\n\n",
@@ -268,6 +315,14 @@ int main(int argc, char** argv) {
         return 2;
       }
       only[only_count++] = argv[++i];
+    }
+    else if (!strcmp(a, "--aspect") && i + 1 < argc) {
+      if (!aspect_parse(argv[++i], &aspect_mode)) {
+        fprintf(stderr, "error: unknown aspect '%s' — want 4:3 or square\n\n",
+                argv[i]);
+        usage();
+        return 2;
+      }
     }
     else if (!strcmp(a, "--filter") && i + 1 < argc) {
       if (!scale_parse(argv[++i], &scale_mode)) {
@@ -370,9 +425,20 @@ int main(int argc, char** argv) {
   // it whether or not the window is shown at that size first.
   Uint32 win_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
   if (fullscreen) win_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
+  // `--scale N` means N times the *picture*, which is 448 rows and whatever
+  // width the chosen aspect makes of them — not N times the 512x480 buffer.
+  // Sizing from the buffer would ask for a window 480N tall to show a 448N-tall
+  // picture, so at 4:3 the frontend would letterbox its own window and then
+  // shrink the game below 1:1 to fit the leftover, which is a blurrier picture
+  // than 1x from a window that never claimed to be scaling at all.
+  int win_h = FB_LIVE_H * window_scale, win_w = FB_W * window_scale;
+  {
+    int aw = 0, ah = 0;
+    aspect_ratio(aspect_mode, FB_W, FB_LIVE_H, &aw, &ah);
+    win_w = (int)((long)win_h * aw / ah);
+  }
   SDL_Window* win = SDL_CreateWindow("Zombies Ate My Neighbors (native)",
-      SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-      FB_W * window_scale, FB_H * window_scale, win_flags);
+      SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h, win_flags);
   if (!win) {
     fprintf(stderr, "error: cannot open a window: %s\n", SDL_GetError());
     return 1;
@@ -405,7 +471,8 @@ int main(int argc, char** argv) {
   // of `Present` is about choosing that factor deliberately. The letterboxing
   // it did is reproduced exactly, in output pixels, by `present_frame`.
   Present present;
-  if (!present_init(&present, ren, FB_W, FB_H, scale_mode)) {
+  const SDL_Rect live = {0, FB_TOP, FB_W, FB_LIVE_H};
+  if (!present_init(&present, ren, FB_W, FB_H, live, scale_mode, aspect_mode)) {
     fprintf(stderr, "error: cannot create the frame texture: %s\n", SDL_GetError());
     return 1;
   }
@@ -414,18 +481,79 @@ int main(int argc, char** argv) {
            "      falls back to nearest on a fractional window size.\n");
 
   SDL_AudioDeviceID audio = 0;
-  int16_t audio_buf[SAMPLES_PER_FRAME * 2];
+  // Sized for the largest frame rate control can ask for, not for the nominal
+  // one: `snes_setSamples` writes exactly as many stereo pairs as it is told to
+  // and asks nothing about the buffer behind the pointer.
+  int16_t audio_buf[(SAMPLES_PER_FRAME + AUDIO_MAX_ADJUST) * 2];
   if (want_audio) {
     SDL_AudioSpec want, have;
     SDL_memset(&want, 0, sizeof(want));
-    want.freq = AUDIO_FREQ; want.format = AUDIO_S16SYS; want.channels = 2; want.samples = 2048;
+    want.freq = AUDIO_FREQ; want.format = AUDIO_S16SYS; want.channels = 2;
+    want.samples = AUDIO_DEVICE_SAMPLES;
     audio = SDL_OpenAudioDevice(NULL, 0, &want, &have, 0);
     if (audio) SDL_PauseAudioDevice(audio, 0);
   }
 
+  // Frame pacing. This used to gate frame production on the audio queue
+  // draining, on the reasoning that the device consumes samples at a fixed
+  // 48000 Hz and so makes an exact clock. It does — on average, and only on
+  // average. The device pulls `want.samples` at a time, so the queue does not
+  // drain continuously, it drops in one lump per period; the loop then emitted
+  // two or three frames as fast as it could and stalled until the next lump.
+  // Measured over 600 frames that was a flawless 60.3 fps of which *no frame at
+  // all* landed within a millisecond of the period: bursts 2-8 ms apart
+  // separated by 26-50 ms of nothing, which the eye reads as about 23 fps.
+  //
+  // So the clock is now a deadline on the high-resolution timer, at a period
+  // locked to the display where the display allows it (see `pace_period_ms`),
+  // and the audio queue is corrected *to* that rather than the other way round.
+  // `--frames` still opts out, because a throughput measurement wants to finish
+  // rather than to be watched; `--paced` is how a bounded run keeps real time.
+  const Uint32 bytes_per_frame = (Uint32)(SAMPLES_PER_FRAME * 2 * sizeof(int16_t));
+  // Bytes of queued audio to milliseconds of sound: stereo 16-bit at 48 kHz is
+  // 192 bytes per millisecond.
+  const double audio_bytes_per_ms = (double)AUDIO_FREQ * 2.0 * sizeof(int16_t) / 1000.0;
+  // Three frames of slack in front of the device. Enough that an ordinary
+  // scheduling hiccup cannot empty it, small enough that the added latency is
+  // under the frame period the game already costs.
+  const long audio_target = (long)bytes_per_frame * 3;
+  // ...and a ceiling, for the case rate control cannot fix: a display whose
+  // refresh has no relationship to the console's rate at all. Half a percent
+  // per frame cannot absorb that, and unbounded growth would end as seconds of
+  // delay between a shot being fired and it being heard.
+  const long audio_ceiling = (long)bytes_per_frame * 12;
+  // Start the queue at that depth rather than climbing to it. Every frame puts
+  // in as many samples as the device takes out, so an empty queue stays empty
+  // and only rate control fills it — at four samples a frame, which is ten
+  // seconds of running one hiccup away from underrun. (Measured: `audioQ min`
+  // was 0.00 ms over a 30-second run.) Half a frame of silence at a moment when
+  // nothing is happening yet costs nothing and skips the whole ramp.
+  if (audio) queue_silence(audio, audio_target);
+  // ...and a floor under it, because priming alone does not hold. Measured: the
+  // device takes a large first bite as it starts its own pipeline, which drops
+  // the backlog to about 4 ms — and since rate control moves at four samples a
+  // frame it then needs some five hundred frames to climb back, all of them one
+  // hiccup from silence. Below one frame of sound, refill to the target outright
+  // rather than creep toward it.
+  const long audio_floor = (long)bytes_per_frame;
+  long audio_refills = 0;
+
+  int refresh_hz = 0;
+  {
+    SDL_DisplayMode mode;
+    const int idx = SDL_GetWindowDisplayIndex(win);
+    if (idx >= 0 && SDL_GetCurrentDisplayMode(idx, &mode) == 0)
+      refresh_hz = mode.refresh_rate;
+  }
+  const double content_hz = snes->palTiming ? PACE_FPS_PAL : PACE_FPS_NTSC;
+  const double target_frame_ms = pace_period_ms(refresh_hz, content_hz);
+  Pacer pacer;
+  pacer_init(&pacer, target_frame_ms);
+
   printf("Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
          "          F1=toggle native substitution  F2=cycle scaling\n"
-         "          F11 or Alt+Enter=fullscreen    Esc=Quit\n");
+         "          F3=toggle aspect ratio         F11 or Alt+Enter=fullscreen\n"
+         "          Esc=Quit\n");
   {
     // What the picture is actually being drawn into, which fullscreen makes a
     // question worth answering: the display's size, not the window size asked
@@ -433,10 +561,36 @@ int main(int argc, char** argv) {
     // by, so this line and the picture cannot disagree.
     int ow = 0, oh = 0;
     SDL_GetRendererOutputSize(ren, &ow, &oh);
-    printf("Display: %s, %dx%d, scaling %s (windowed size %dx%d)\n",
+    int aw = 0, ah = 0;
+    aspect_ratio(aspect_mode, FB_W, FB_LIVE_H, &aw, &ah);
+    const ScalePlan plan = scale_plan(scale_mode, FB_W, FB_LIVE_H, aw, ah, ow,
+                                      oh, present.can_target);
+    printf("Display: %s, %dx%d, scaling %s, aspect %s\n",
            fullscreen ? "fullscreen" : "windowed", ow, oh,
-           scale_name(scale_mode), FB_W * window_scale, FB_H * window_scale);
+           scale_name(scale_mode), aspect_name(aspect_mode));
+    printf("Picture: %dx%d at %d,%d from %dx%d live pixels (%.0f%% of the"
+           " screen)%s\n",
+           plan.dst.w, plan.dst.h, plan.dst.x, plan.dst.y, FB_W, FB_LIVE_H,
+           ow > 0 && oh > 0
+               ? 100.0 * plan.dst.w * plan.dst.h / ((double)ow * oh)
+               : 0.0,
+           plan.stage_x ? "" : ", pixel-exact");
+  if (!fullscreen)
+    printf("Window: %dx%d (--scale %d)\n", win_w, win_h, window_scale);
   }
+  printf("Pacing: %.3f ms/frame (%.2f fps)%s, display %d Hz, content %.4f Hz\n",
+         target_frame_ms, 1000.0 / target_frame_ms,
+         target_frame_ms == 1000.0 / content_hz ? " from the console"
+                                                : " locked to the display",
+         refresh_hz, content_hz);
+  if (audio)
+    printf("Audio: %d Hz, %d-sample device buffer, backlog target %.0f ms"
+           " (primed to %.0f ms)\n",
+           AUDIO_FREQ, AUDIO_DEVICE_SAMPLES,
+           (double)audio_target / audio_bytes_per_ms,
+           (double)SDL_GetQueuedAudioSize(audio) / audio_bytes_per_ms);
+  else
+    printf("Audio: none%s\n", want_audio ? " (device would not open)" : "");
   printf("Substitution: %s (%d routine%s registered)%s\n",
          native ? "on" : "off (stock)", routine_count,
          routine_count == 1 ? "" : "s",
@@ -447,19 +601,19 @@ int main(int argc, char** argv) {
   // or crashes is exactly the run whose settings someone wants to look up.
   fflush(stdout);
 
-  // Frame pacing. VSync is unreliable (may be >60 Hz or driver-ignored), so we
-  // pace explicitly. Primary clock is the audio device: it consumes samples at
-  // a fixed 48000 Hz, so gating frame production on the queue draining locks the
-  // loop to exactly 60 Hz and keeps A/V in sync. Fallback (no audio) is a timer.
-  // `--frames` opts out of both — a smoke test wants to finish, not to be
-  // watched — which is also what makes it a usable throughput measurement.
-  const Uint32 bytes_per_frame = (Uint32)(SAMPLES_PER_FRAME * 2 * sizeof(int16_t));
-  const Uint32 audio_high_water = bytes_per_frame * 4; // keep <= ~4 frames buffered
-  const double target_frame_ms = 1000.0 / 60.0;
   const Uint64 perf_freq = SDL_GetPerformanceFrequency();
-  Uint64 prev_frame = SDL_GetPerformanceCounter();
-  const bool paced = frame_limit == 0;
+  const bool paced = frame_limit == 0 || force_pacing;
   const Uint64 started = SDL_GetPerformanceCounter();
+
+  // What the loop spends each frame on, and — the point of the exercise — how
+  // evenly the frames come out the far end. See `src/pace.h` for why the mean
+  // is not the interesting statistic.
+  PaceHist h_interval, h_wait, h_emulate, h_draw, h_audio;
+  pace_reset(&h_interval); pace_reset(&h_wait);
+  pace_reset(&h_emulate);  pace_reset(&h_draw);
+  pace_reset(&h_audio);
+  Uint64 last_arrival = 0;
+  #define PACE_MS(a, b) ((double)((b) - (a)) * 1000.0 / (double)perf_freq)
 
   long frame = 0;
   char title[160];
@@ -482,6 +636,17 @@ int main(int argc, char** argv) {
             if (native) cosim.enabled = selected;
             else cosim_mask_none(&cosim.enabled);
             printf("Substitution %s\n", native ? "on" : "off (stock)");
+            fflush(stdout);
+          }
+          continue;
+        }
+        if (e.key.keysym.sym == SDLK_F3) {
+          // Aspect, on its own key, because the only honest way to judge it is
+          // to flip between the two on the same frame of the same scene.
+          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+            present.aspect =
+                (AspectMode)((present.aspect + 1) % ASPECT_MODE_COUNT);
+            printf("Aspect: %s\n", aspect_name(present.aspect));
             fflush(stdout);
           }
           continue;
@@ -531,19 +696,21 @@ int main(int argc, char** argv) {
     }
     if (!running) break;
 
+    const Uint64 t_wait0 = SDL_GetPerformanceCounter();
     if (paced) {
-      if (audio) {
-        while (running && SDL_GetQueuedAudioSize(audio) > audio_high_water)
-          SDL_Delay(1);
-      } else {
-        for (;;) {
-          double elapsed = (SDL_GetPerformanceCounter() - prev_frame) * 1000.0 / perf_freq;
-          if (elapsed >= target_frame_ms) break;
-          if (target_frame_ms - elapsed > 2.0) SDL_Delay(1); // busy-wait only the tail
-        }
-        prev_frame = SDL_GetPerformanceCounter();
+      const double deadline = pacer_next(&pacer, PACE_MS(started, t_wait0));
+      for (;;) {
+        const double left = deadline - PACE_MS(started, SDL_GetPerformanceCounter());
+        if (left <= 0.0) break;
+        // Sleep away the bulk and spin the tail. `SDL_Delay(1)` cannot resolve
+        // better than the scheduler's tick, and overshooting the deadline is
+        // the jitter we came here to remove — so the last two milliseconds are
+        // worth a busy-wait, which on this loop is about a tenth of one core.
+        if (left > 2.0) SDL_Delay(1);
       }
     }
+    const Uint64 t_wait1 = SDL_GetPerformanceCounter();
+    pace_add(&h_wait, PACE_MS(t_wait0, t_wait1));
 
     // Movies are indexed by this loop's own frame counter, which is what
     // `zamn_headless` does — and headless is the tool the corpus was fitted
@@ -563,13 +730,41 @@ int main(int argc, char** argv) {
     cosim_frame(&cosim);
     frame++;
 
-    // Always queue this frame's audio (the queue is our clock; do not drop it).
+    // This frame's audio, resampled by however much it takes to hold the queue
+    // at `audio_target`. `dsp_getSamples` already resamples the DSP's native
+    // 534 samples per frame to whatever is asked for, so the count *is* the
+    // rate-control knob and asking for 802 instead of 800 costs nothing.
     if (audio) {
-      snes_setSamples(snes, audio_buf, SAMPLES_PER_FRAME);
-      SDL_QueueAudio(audio, audio_buf, sizeof(audio_buf));
+      long queued = (long)SDL_GetQueuedAudioSize(audio);
+      pace_add(&h_audio, (double)queued / audio_bytes_per_ms);
+      if (queued < audio_floor) {
+        queue_silence(audio, audio_target - queued);
+        queued = audio_target;
+        audio_refills++;
+      }
+      if (queued < audio_ceiling) {
+        const int want_samples = pace_audio_samples(
+            SAMPLES_PER_FRAME, queued, audio_target, 4, AUDIO_MAX_ADJUST);
+        snes_setSamples(snes, audio_buf, want_samples);
+        SDL_QueueAudio(audio, audio_buf,
+                       (Uint32)want_samples * 2 * sizeof(int16_t));
+      }
+      // Over the ceiling, this frame's sound is dropped rather than deepening a
+      // backlog that is already past what rate control can pull back. It is
+      // audible, and it is the lesser of the two.
     }
+    const Uint64 t_emul = SDL_GetPerformanceCounter();
+    pace_add(&h_emulate, PACE_MS(t_wait1, t_emul));
 
     present_frame(&present, snes);
+
+    // Measured after `SDL_RenderPresent` has returned, which is the moment the
+    // frame is the screen's problem rather than ours — so `arrival` is the
+    // cadence a player sees, not the cadence the loop intended.
+    const Uint64 t_drawn = SDL_GetPerformanceCounter();
+    pace_add(&h_draw, PACE_MS(t_emul, t_drawn));
+    if (last_arrival) pace_add(&h_interval, PACE_MS(last_arrival, t_drawn));
+    last_arrival = t_drawn;
 
     // The status the window can carry without a console. Twice a second is
     // often enough to read and rare enough not to matter.
@@ -607,6 +802,17 @@ int main(int argc, char** argv) {
   // that. The census names any handler a guard declined, which is the work list.
   printf("\n%ld frames in %.1f s (%.1f fps).\n", frame, secs,
          secs > 0 ? frame / secs : 0.0);
+  // ...and the line above is exactly the statistic that cannot see a stutter,
+  // so it is immediately followed by the one that can.
+  pace_report(&h_interval, &h_wait, &h_emulate, &h_draw, &h_audio,
+              target_frame_ms, (double)audio_target / audio_bytes_per_ms, paced);
+  // One refill is the device starting up. More than that, in a run of any
+  // length, means rate control is losing and the sound is being patched with
+  // silence to cover it — which is worth saying out loud rather than leaving to
+  // be noticed as an occasional click.
+  if (audio_refills > 1)
+    printf("  audio backlog refilled %ld times — rate control is not keeping up\n",
+           audio_refills);
   cosim_report(&cosim);
   // The two percentages the table cannot give: 82 rows of `OK` say each ported
   // routine worked, and say nothing at all about what fraction of the game that

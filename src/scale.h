@@ -40,11 +40,30 @@
 //   * `linear` — one bilinear step straight from 512x480. This is what "not
 //     sharp" looks like, kept so the difference can be seen rather than argued.
 //
-// Aspect ratio is left where it was: square pixels, letterboxed to fit, which
-// is what `SDL_RenderSetLogicalSize` was doing before any of this existed.
-// Correcting to the SNES's real 8:7 pixel aspect is a different change with a
-// different argument, and one that fights this one — 4:3 needs a fractional
-// horizontal factor by definition.
+// ## Aspect ratio
+//
+// The core hands over 512x480, but only rows 16..463 are picture: `ppu_putPixels`
+// zeroes sixteen rows top and bottom when the game is not in overscan, and this
+// one is not. Scaling all 480 rows spends 6.7% of the screen enlarging black and
+// then letterboxes *that*, so the caller crops to the live 512x448 and the sizes
+// below are the cropped ones.
+//
+// What shape those 448 rows should be shown in is a separate question, and the
+// answer is not "square". A SNES pixel is not square: the console puts 256
+// pixels across a frame that a television showed at 4:3, so the picture is
+// composed for 4:3 and square pixels make it 8:7 — noticeably narrow, and 11%
+// less screen than it should have. snes9x reports 4:3 to RetroArch for exactly
+// this reason, which is why the same game looks wider there.
+//
+// So `scale_plan` takes the intended display aspect as a ratio, and the shape of
+// the source no longer decides the shape of the output. This does fight sharp
+// upscaling, and the fight is the interesting part: at 4:3 the horizontal and
+// vertical magnifications are different numbers, so a single whole-multiple
+// intermediate cannot serve both axes. `stage_x` and `stage_y` are therefore
+// separate, and the intermediate is a whole multiple *per axis* — which also
+// buys something the square-pixel version could not have: an output that is a
+// whole multiple of the source on each axis independently is pixel-exact even
+// though its pixels are oblong, so 4:3 is not automatically the blurry choice.
 
 #ifndef ZAMN_SCALE_H
 #define ZAMN_SCALE_H
@@ -67,13 +86,40 @@ typedef enum {
 // 32,768 pixels wide that has to be killed from a task manager.
 #define SCALE_MAX_STAGE 8
 
+// How the picture should be shaped on screen, independent of how many pixels
+// the source happens to have.
+typedef enum {
+  ASPECT_43,      // what a CRT showed, and what snes9x reports to RetroArch
+  ASPECT_SQUARE,  // square pixels: the source's own shape, 8:7 once cropped
+  ASPECT_MODE_COUNT,  // what F3 cycles through; keep last
+} AspectMode;
+
+static inline const char* aspect_name(AspectMode m) {
+  return m == ASPECT_SQUARE ? "square" : "4:3";
+}
+
+static inline bool aspect_parse(const char* s, AspectMode* out) {
+  if (!strcmp(s, "4:3"))    { *out = ASPECT_43;     return true; }
+  if (!strcmp(s, "square")) { *out = ASPECT_SQUARE; return true; }
+  if (!strcmp(s, "1:1"))    { *out = ASPECT_SQUARE; return true; }
+  return false;
+}
+
+// The ratio to hand `scale_plan`, given the source's own dimensions.
+static inline void aspect_ratio(AspectMode m, int sw, int sh, int* aw, int* ah) {
+  if (m == ASPECT_SQUARE) { *aw = sw; *ah = sh; return; }
+  *aw = 4; *ah = 3;
+}
+
 typedef struct { int x, y, w, h; } ScaleRect;
 
 typedef struct {
   ScaleRect dst;  // where the picture lands, in output pixels
-  // 0 to copy the framebuffer straight to `dst`; otherwise the multiple of the
-  // framebuffer to draw nearest into first, and then shrink from.
-  int stage;
+  // 0 to copy the source straight to `dst`; otherwise the whole multiple of the
+  // source to draw nearest into first and then shrink from. Per axis, because
+  // aspect correction magnifies the two axes by different amounts and one
+  // number cannot describe both.
+  int stage_x, stage_y;
   // The filter for the final copy — whichever that is. False means nearest,
   // and nearest is only ever chosen where it is exactly right.
   bool linear;
@@ -102,37 +148,41 @@ static inline bool scale_parse(const char* s, ScaleMode* out) {
 // be an exact question, and a double that lands on 1.9999999 would build an
 // intermediate to fix a factor that was already whole. Nothing overflows — the
 // products are at most a screen dimension times 512, and they are done in long.
-static inline ScalePlan scale_plan(ScaleMode mode, int sw, int sh, int ow,
-                                   int oh, bool can_target) {
+static inline ScalePlan scale_plan(ScaleMode mode, int sw, int sh, int aw,
+                                   int ah, int ow, int oh, bool can_target) {
   ScalePlan p;
-  p.stage = 0;
+  p.stage_x = p.stage_y = 0;
   p.linear = false;
   p.dst.x = p.dst.y = p.dst.w = p.dst.h = 0;
   if (sw <= 0 || sh <= 0 || ow <= 0 || oh <= 0) return p;
+  if (aw <= 0 || ah <= 0) { aw = sw; ah = sh; }
 
-  // The largest rectangle of the source's shape that fits.
+  // The largest rectangle of the *intended* shape that fits — which is not the
+  // source's shape once aspect correction is asked for.
   ScaleRect fit;
-  if ((long)ow * sh <= (long)oh * sw) {  // the window is the narrower shape
+  if ((long)ow * ah <= (long)oh * aw) {  // the window is the narrower shape
     fit.w = ow;
-    fit.h = (int)((long)ow * sh / sw);
+    fit.h = (int)((long)ow * ah / aw);
   } else {
     fit.h = oh;
-    fit.w = (int)((long)oh * sw / sh);
+    fit.w = (int)((long)oh * aw / ah);
   }
   // A window narrower than the aspect step rounds the other axis to nothing —
-  // 1 pixel wide gives 1 * 480 / 512 = 0 rows — and a zero-sized rectangle is
+  // 1 pixel wide gives 1 * 448 / 512 = 0 rows — and a zero-sized rectangle is
   // not something a caller should have to special-case. Found by the sweep in
   // `tools/test_scale.c` rather than by thinking of it, which is the argument
   // for sweeping degenerate sizes at all.
   if (fit.w < 1) fit.w = 1;
   if (fit.h < 1) fit.h = 1;
 
-  // The whole multiple at or below that, and whether the fit already is one.
+  p.dst = fit;
+  // `integer` means whole multiples of the source on both axes, which forces
+  // square pixels and therefore ignores the requested aspect. That is the
+  // honest reading of the request: a whole multiple of a 512x448 image is a
+  // 512x448-shaped image, and stretching one to 4:3 would put it back exactly
+  // where the fractional factors it exists to avoid live.
   int whole = ow / sw;
   if (oh / sh < whole) whole = oh / sh;
-  const bool exact = whole >= 1 && fit.w == sw * whole && fit.h == sh * whole;
-
-  p.dst = fit;
   if (mode == SCALE_INTEGER && whole >= 1) {
     p.dst.w = sw * whole;
     p.dst.h = sh * whole;
@@ -140,18 +190,21 @@ static inline ScalePlan scale_plan(ScaleMode mode, int sw, int sh, int ow,
   p.dst.x = (ow - p.dst.w) / 2;
   p.dst.y = (oh - p.dst.h) / 2;
 
-  // An exact multiple needs no help from anybody: nearest reproduces every
-  // block at the same size, and a bilinear step could only soften it. This is
-  // the case `integer` mode arranges on purpose and the other two get for free
-  // whenever the window happens to be the right size.
+  // Magnifying by a whole number on each axis needs no help from anybody:
+  // nearest reproduces every block at the same size and a bilinear step could
+  // only soften it. The two multiples need not be *equal* — a 6-wide, 5-tall
+  // block is still uniform across the picture — which is what lets aspect
+  // correction be pixel-exact rather than automatically soft.
+  const bool magnifying = p.dst.w >= sw && p.dst.h >= sh;
+  const bool exact = magnifying && p.dst.w % sw == 0 && p.dst.h % sh == 0;
   if (exact || (mode == SCALE_INTEGER && whole >= 1)) return p;
 
-  // Below 1:1 there is nothing to be sharp about — the picture is being
-  // *reduced*, every mode is throwing pixels away, and bilinear throws them
-  // away better. `integer` lands here too when the window is too small to hold
-  // even one whole copy, because showing the middle of an unscaled frame
+  // Below 1:1 on either axis there is nothing to be sharp about — the picture
+  // is being *reduced*, every mode is throwing pixels away, and bilinear throws
+  // them away better. `integer` lands here too when the window is too small to
+  // hold even one whole copy, because showing the middle of an unscaled frame
   // through a letterbox would be worse than showing all of a shrunken one.
-  if (whole < 1) {
+  if (!magnifying) {
     p.linear = true;
     return p;
   }
@@ -161,11 +214,19 @@ static inline ScalePlan scale_plan(ScaleMode mode, int sw, int sh, int ow,
     return p;
   }
 
-  // `sharp`, magnifying, and not by a whole number: go up to the next whole
-  // multiple with nearest and come back down with one bilinear step.
-  if (mode == SCALE_SHARP && can_target && whole + 1 <= SCALE_MAX_STAGE) {
-    p.stage = whole + 1;
-    p.linear = true;
+  // `sharp`, magnifying, and not by a whole number on at least one axis: go up
+  // to the next whole multiple on each axis with nearest, and come back down
+  // with one bilinear step. Rounding *up* is what makes the second step a
+  // shrink; a stage smaller than the picture drawn from it would be a bilinear
+  // magnification, which is the blur this mode exists to avoid.
+  if (mode == SCALE_SHARP && can_target) {
+    const int sx = (p.dst.w + sw - 1) / sw;
+    const int sy = (p.dst.h + sh - 1) / sh;
+    if (sx <= SCALE_MAX_STAGE && sy <= SCALE_MAX_STAGE) {
+      p.stage_x = sx;
+      p.stage_y = sy;
+      p.linear = true;
+    }
   }
   // ...and if the renderer cannot hold an intermediate, or the magnification is
   // past anything one could improve, `p` is left as a plain nearest copy. That
