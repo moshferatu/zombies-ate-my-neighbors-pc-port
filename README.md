@@ -68,7 +68,25 @@ SDL2 is fetched and built automatically the first time.
 build\zamn.exe "Zombies Ate My Neighbors.sfc"
 ```
 Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=Select · Esc=Quit
-· **F1 = toggle native substitution**
+· **F1 = toggle native substitution** · **F2 = cycle scaling**
+
+`--scale N` opens the window at N times 512x480 (1–8), and `--filter` decides
+what happens when the window is *not* a whole multiple — after a resize, or
+maximised:
+
+| `--filter` | what it does | trade |
+| --- | --- | --- |
+| `sharp` (default) | nearest up to the next whole multiple offscreen, then one bilinear step down to fit | uniform pixels, fills the window, a sub-pixel seam at each block edge |
+| `integer` | only whole multiples, letterbox the rest | perfectly uniform; 1920x1080 fits 2x and leaves 42% of the height black |
+| `linear` | one bilinear step from 512x480 | blurry — kept so the difference can be seen rather than argued |
+
+Nearest-neighbour on its own is **not** one of the options, because on its own
+it is the problem: scale 512 into a 1000-pixel window and the factor is 1.953,
+so nearest drops one source pixel in 21 and most game pixels land 2 screen
+pixels wide while some land 1. On a moving sprite that narrow column crawls
+across it. The artifact is the fractional factor, not the filter, and `sharp`
+and `integer` are the two ways of not having one. F2 cycles the three while the
+game runs, which is the only way to judge them.
 
 **This is the substituted build, not the emulated baseline.** It installs the
 same `COSIM_NATIVE` interception `zamn_cosim run` uses, against the one live
@@ -228,6 +246,10 @@ powershell -ExecutionPolicy Bypass -File tools\verify_corpus.ps1
 ```
 src/headless.c        Phase 0a: boot ROM -> PNG (no SDL)
 src/main_sdl.c        Phase 0b: interactive window + input + audio
+src/scale.h           Where the framebuffer lands on the screen and how it gets
+                              there — arithmetic only, no SDL, so it can be
+                              checked without a window
+src/present.h         ...and the SDL that carries that out
 src/analysis/         Phase 1: 65816 table, CDL format, input movies (shared)
 src/trace.c           Phase 1: instruction-level tracer -> CDL, memory map, call graph
 src/disasm.c          Phase 1: CDL-driven annotated disassembler
@@ -266,6 +288,12 @@ tools/hotbytes.py     Where inside a routine the instructions went. Run it on a
                               first byte is its entry, so nothing in a loop-free
                               routine can run more often — three rows near the top
                               have turned out to be spin loops wearing a name
+tools/test_scale.c    Sweeps every window size from 1x1 to 5K and asserts what
+                              `src/scale.h` promises. No SDL, no ROM
+tools/test_present.c  Draws through `src/present.h` into a software renderer,
+                              reads the pixels back and measures them — which is
+                              the only way to show that `sharp` is sharp and
+                              that the two filters are not the wrong way round
 tools/perturb.py      Breaks one line of the port on purpose, rebuilds, runs
                               `verify` against every input listed for it, and puts
                               both back — a branch no input distinguishes, or one

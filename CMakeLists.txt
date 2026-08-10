@@ -59,6 +59,15 @@ target_include_directories(zamn_trace PRIVATE third_party/stb)
 add_executable(zamn_disasm src/disasm.c)
 target_link_libraries(zamn_disasm PRIVATE zamn_analysis)
 
+# `src/scale.h` is arithmetic with no SDL in it — where the framebuffer lands on
+# the screen and how it gets there — so it can be checked without a window, and
+# is. Builds and runs in about a second; `zamn_test_scale` needs no ROM.
+add_executable(zamn_test_scale tools/test_scale.c)
+target_include_directories(zamn_test_scale PRIVATE src)
+if(MSVC)
+  target_compile_definitions(zamn_test_scale PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # ---------------------------------------------------------------------------
 # The branch-coverage instrument (src/port/coverage.h). Port code marks its
 # decision points; this holds the counters the harness reads. It is separate
@@ -173,6 +182,17 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
   target_include_directories(zamn PRIVATE third_party/lakesnes/snes third_party/stb)
   if(MSVC)
     target_compile_definitions(zamn PRIVATE _CRT_SECURE_NO_WARNINGS)
+  endif()
+
+  # `src/present.h` is the SDL half of the scaling, and it is checked the only
+  # way a filter can be: draw through it into a software renderer, read the
+  # pixels back and measure them. No GPU, no display — `SDL_VIDEODRIVER=dummy`
+  # is set from inside — so this runs anywhere the frontend builds.
+  add_executable(zamn_test_present tools/test_present.c)
+  target_link_libraries(zamn_test_present PRIVATE SDL2::SDL2 SDL2::SDL2main)
+  target_include_directories(zamn_test_present PRIVATE src)
+  if(MSVC)
+    target_compile_definitions(zamn_test_present PRIVATE _CRT_SECURE_NO_WARNINGS)
   endif()
 
   # SDL2 builds as a DLL; place it next to the executable so zamn.exe runs.

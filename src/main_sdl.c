@@ -57,6 +57,7 @@
 #include "analysis/movie.h"
 #include "analysis/movie_apply.h"
 #include "cosim/cosim.h"
+#include "present.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -134,6 +135,20 @@ static bool write_png(Snes* snes, const char* path) {
   return ok;
 }
 
+// This frame, from the core to the screen. The scaling lives in `src/scale.h`
+// (where it goes and how) and `src/present.h` (the SDL that does it), both so
+// that `zamn_test_scale` and `zamn_test_present` can check them without a
+// window between them.
+static void present_frame(Present* p, Snes* snes) {
+  void* pixels; int pitch;
+  if (SDL_LockTexture(p->frame, NULL, &pixels, &pitch) == 0) {
+    snes_setPixels(snes, (uint8_t*)pixels);
+    SDL_UnlockTexture(p->frame);
+  }
+  present_draw(p);
+  SDL_RenderPresent(p->ren);
+}
+
 // A WIN32-subsystem binary has no console of its own, so `printf` goes nowhere
 // even when it was launched from one. Borrowing the parent's is what makes the
 // substitution report at exit readable; when there is no parent console — a
@@ -197,9 +212,16 @@ static void usage(void) {
     "  -m <movie.zmv>  Replay a recorded movie instead of reading the keyboard.\n"
     "  --frames <N>    Run N frames and exit, uncapped rather than paced at 60 Hz.\n"
     "  --shot <a.png>  Write the final frame as a PNG on the way out.\n"
-    "  --no-audio      Skip the audio device (and pace off a timer instead).\n\n"
+    "  --no-audio      Skip the audio device (and pace off a timer instead).\n"
+    "  --scale <N>     Open the window at N times 512x480. Default 1.\n"
+    "  --filter <how>  How to fill a window that is not a whole multiple:\n"
+    "                    sharp   (default) nearest up to the next whole\n"
+    "                            multiple, then one bilinear step down. Uniform\n"
+    "                            pixels, no shimmer, and the window is filled.\n"
+    "                    integer only whole multiples; letterbox the remainder.\n"
+    "                    linear  one bilinear step from 512x480. The blurry one.\n\n"
     "Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
-    "          F1 = toggle native substitution   Esc = quit\n");
+    "          F1 = toggle native substitution   F2 = cycle scaling   Esc = quit\n");
 }
 
 int main(int argc, char** argv) {
@@ -217,6 +239,8 @@ int main(int argc, char** argv) {
   int only_count = 0;
   long frame_limit = 0;
   bool native = true, want_audio = true;
+  ScaleMode scale_mode = SCALE_SHARP;
+  int window_scale = 1;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
@@ -231,6 +255,26 @@ int main(int argc, char** argv) {
         return 2;
       }
       only[only_count++] = argv[++i];
+    }
+    else if (!strcmp(a, "--filter") && i + 1 < argc) {
+      if (!scale_parse(argv[++i], &scale_mode)) {
+        fprintf(stderr, "error: unknown filter '%s' — want sharp, integer or linear\n\n",
+                argv[i]);
+        usage();
+        return 2;
+      }
+    }
+    else if (!strcmp(a, "--scale") && i + 1 < argc) {
+      // Capped at 8 for the same reason the stage is: past that the window is
+      // larger than any display it could be on, and a typo should not open a
+      // 32,768-pixel window that has to be killed from a task manager.
+      window_scale = atoi(argv[++i]);
+      if (window_scale < 1 || window_scale > SCALE_MAX_STAGE) {
+        fprintf(stderr, "error: --scale wants 1..%d, got '%s'\n\n",
+                SCALE_MAX_STAGE, argv[i]);
+        usage();
+        return 2;
+      }
     }
     else if (!strcmp(a, "-m") && i + 1 < argc) movie_path = argv[++i];
     else if (!strcmp(a, "--shot") && i + 1 < argc) shot_path = argv[++i];
@@ -297,13 +341,42 @@ int main(int argc, char** argv) {
     return 1;
   }
   SDL_Window* win = SDL_CreateWindow("Zombies Ate My Neighbors (native)",
-      SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, FB_W, FB_H,
+      SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+      FB_W * window_scale, FB_H * window_scale,
       SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+  if (!win) {
+    fprintf(stderr, "error: cannot open a window: %s\n", SDL_GetError());
+    return 1;
+  }
   SDL_Renderer* ren = SDL_CreateRenderer(win, -1,
       SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-  SDL_RenderSetLogicalSize(ren, FB_W, FB_H);
-  SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBX8888,
-      SDL_TEXTUREACCESS_STREAMING, FB_W, FB_H);
+  // ...and if there is no accelerated renderer, whatever SDL has. There is one
+  // under the `dummy` video driver, which is how `--frames --shot` runs on a
+  // machine with no display, and on a box with no GPU at all this is the
+  // difference between a software-rendered game and none.
+  //
+  // Neither this nor the window was checked before the scaling work, and the
+  // failure was silent rather than absent: every later call took a NULL
+  // renderer, did nothing, and the frontend ran a whole movie showing an empty
+  // window and reporting success. `present_init` returning false is what
+  // surfaced it.
+  if (!ren) ren = SDL_CreateRenderer(win, -1, 0);
+  if (!ren) {
+    fprintf(stderr, "error: cannot create a renderer: %s\n", SDL_GetError());
+    return 1;
+  }
+  // No `SDL_RenderSetLogicalSize`. It letterboxes to the right shape, which is
+  // what this used to want, but it also owns the scale factor — and the whole
+  // of `Present` is about choosing that factor deliberately. The letterboxing
+  // it did is reproduced exactly, in output pixels, by `present_frame`.
+  Present present;
+  if (!present_init(&present, ren, FB_W, FB_H, scale_mode)) {
+    fprintf(stderr, "error: cannot create the frame texture: %s\n", SDL_GetError());
+    return 1;
+  }
+  if (scale_mode == SCALE_SHARP && !present.can_target)
+    printf("note: this renderer cannot draw into a texture, so --filter sharp\n"
+           "      falls back to nearest on a fractional window size.\n");
 
   SDL_AudioDeviceID audio = 0;
   int16_t audio_buf[SAMPLES_PER_FRAME * 2];
@@ -316,7 +389,9 @@ int main(int argc, char** argv) {
   }
 
   printf("Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
-         "          F1=toggle native substitution  Esc=Quit\n");
+         "          F1=toggle native substitution  F2=cycle scaling  Esc=Quit\n");
+  printf("Scaling: %s, window at %dx (%dx%d)\n", scale_name(scale_mode),
+         window_scale, FB_W * window_scale, FB_H * window_scale);
   printf("Substitution: %s (%d routine%s registered)%s\n",
          native ? "on" : "off (stock)", routine_count,
          routine_count == 1 ? "" : "s",
@@ -357,6 +432,16 @@ int main(int argc, char** argv) {
             if (native) cosim.enabled = selected;
             else cosim_mask_none(&cosim.enabled);
             printf("Substitution %s\n", native ? "on" : "off (stock)");
+            fflush(stdout);
+          }
+          continue;
+        }
+        if (e.key.keysym.sym == SDLK_F2) {
+          // Cycling rather than a set of three keys, because the only way to
+          // judge these is to watch one turn into the next on the same frame.
+          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+            present.mode = (ScaleMode)((present.mode + 1) % SCALE_MODE_COUNT);
+            printf("Scaling: %s\n", scale_name(present.mode));
             fflush(stdout);
           }
           continue;
@@ -408,14 +493,7 @@ int main(int argc, char** argv) {
       SDL_QueueAudio(audio, audio_buf, sizeof(audio_buf));
     }
 
-    void* pixels; int pitch;
-    if (SDL_LockTexture(tex, NULL, &pixels, &pitch) == 0) {
-      snes_setPixels(snes, (uint8_t*)pixels);
-      SDL_UnlockTexture(tex);
-    }
-    SDL_RenderClear(ren);
-    SDL_RenderCopy(ren, tex, NULL, NULL);
-    SDL_RenderPresent(ren);
+    present_frame(&present, snes);
 
     // The status the window can carry without a console. Twice a second is
     // often enough to read and rare enough not to matter.
@@ -441,7 +519,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "error: cannot write '%s'\n", shot_path);
 
   if (audio) SDL_CloseAudioDevice(audio);
-  SDL_DestroyTexture(tex);
+  present_free(&present);
   SDL_DestroyRenderer(ren);
   SDL_DestroyWindow(win);
   SDL_Quit();
