@@ -84,6 +84,36 @@ batch run is a smoke test or a throughput measurement and has no business
 seizing the display of whoever started it. Whichever way, `--scale` is also the
 size F11 comes back to.
 
+### Skipping the intro
+
+```
+build\zamn.exe --skip-intro
+```
+
+Konami, LucasArts, a story screen and then the title: **19.2 seconds** before the
+menu is up, which is a long time to sit through once and an absurd one to sit
+through on every launch of a build you are testing. `--skip-intro` runs those
+frames as fast as the machine can — 3.55 s here, so about 5x — and hands over
+with START/PASSWORD on screen and no button held.
+
+The input is a rule rather than a recorded table, which is worth saying because
+it looked like a table for years: every movie in `movies/` mashes Start at frame
+180 and every 24 frames after, held 8 and released 16, up to frame 1004. Checked
+against `movies/level1-pickups.zmv` — 71 events, no deviation — so the frontend
+reproduces the corpus's boot half from four constants and needs no movie file at
+runtime.
+
+It stops at frame 1150, the same figure `tools/make_password_movie.py` uses for
+"up and idle", so the two cannot drift apart about when the menu is ready. The
+margin is wide (the menu is drawn by 1050 and still sitting there at 1600) and
+it is verified rather than assumed: a single Start at exactly 1150 takes you to
+the player-select screen.
+
+The intro runs through the same substitution the game does, so those frames
+count toward the figures reported at exit. `--skip-intro` cannot be combined
+with `-m`: a movie is indexed from reset and carries its own boot half, so doing
+both would run the logos twice.
+
 ### What actually reaches the screen
 
 The core hands over 512x480, but **only 512x448 of it is picture**.

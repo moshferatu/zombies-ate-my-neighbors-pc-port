@@ -220,6 +220,66 @@ static void share_summary(const Cosim* c, char* out, size_t n) {
            100.0 * s.call_share);
 }
 
+// Boot to the title menu without making anybody watch it.
+//
+// The intro is Konami, LucasArts, a story screen and then the title — about
+// nineteen seconds before the menu is up, which is a long time to sit through
+// once and an absurd one to sit through on every launch of a build you are
+// testing. `--skip-intro` runs those frames as fast as the machine can and
+// hands over with START/PASSWORD on screen.
+//
+// The input is not a recorded table but a rule, which is worth stating because
+// it looked like a table for a long time: every movie in `movies/` mashes Start
+// at frame 180 and every 24 frames after, held 8 and released 16, up to 1004.
+// Checked against `movies/level1-pickups.zmv` — 71 events, no deviation — so
+// the four constants below reproduce the corpus's boot half exactly, and a
+// movie is not needed at runtime to do it.
+#define INTRO_FIRST_PRESS  180
+#define INTRO_PRESS_PERIOD 24
+#define INTRO_PRESS_HOLD   8
+#define INTRO_LAST_PRESS   1004
+// Where to stop. The menu is drawn by 1050 and the screen is still sitting
+// there at 1600, so there is a wide margin either side; 1150 is the figure the
+// corpus already uses for "up and idle" — `tools/make_password_movie.py` waits
+// until 1200 before it touches the D-pad — and taking the same number means the
+// frontend and the movie generator cannot drift apart about when the menu is
+// ready for input.
+#define INTRO_TITLE_FRAME  1150
+
+// Runs the intro through `cosim_frame`, exactly as the main loop would, rather
+// than through a bare core. Two reasons: the frames genuinely execute, so they
+// belong in the substitution figures; and ported routines keep state, so
+// booting stock and then switching to native would hand the port a machine it
+// had not been watching.
+static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win) {
+  long f = 0;
+  for (; f < INTRO_TITLE_FRAME; f++) {
+    const bool down =
+        f >= INTRO_FIRST_PRESS && f <= INTRO_LAST_PRESS &&
+        (f - INTRO_FIRST_PRESS) % INTRO_PRESS_PERIOD < INTRO_PRESS_HOLD;
+    snes_setButtonState(snes, 1, BTN_START, down);
+    cosim_frame(cosim);
+    // Nothing is drawn — the whole point is not to see it — but the window
+    // still has to answer the compositor, or a few seconds of not pumping gets
+    // the process marked unresponsive and greyed out. Esc still aborts, which
+    // matters most on a machine slow enough for this to take a while.
+    if ((f & 63) == 0) {
+      SDL_Event e;
+      while (SDL_PollEvent(&e)) {
+        if (e.type == SDL_QUIT ||
+            (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)) {
+          snes_setButtonState(snes, 1, BTN_START, false);
+          return f;
+        }
+      }
+      SDL_SetWindowTitle(win, "Zombies Ate My Neighbors — skipping the intro…");
+    }
+  }
+  // Never hand the player a held button.
+  snes_setButtonState(snes, 1, BTN_START, false);
+  return f;
+}
+
 // Push `bytes` of silence at the device. Used to establish the backlog at
 // startup and to refill it if it ever collapses — in both cases the alternative
 // is not "no silence", it is the device running dry and repeating or clicking.
@@ -247,6 +307,9 @@ static void usage(void) {
     "                  from a throughput measurement into a cadence one.\n"
     "  --shot <a.png>  Write the final frame as a PNG on the way out.\n"
     "  --no-audio      Skip the audio device (and pace off a timer instead).\n"
+    "  --skip-intro    Run the logos and the story screen at full speed and\n"
+    "                  hand over at the title menu. Cannot be combined with -m:\n"
+    "                  a movie drives from reset and contains its own boot.\n"
     "  --windowed      Start in a window. The default is fullscreen; F11 or\n"
     "                  Alt+Enter moves between them at any time.\n"
     "  --scale <N>     Size the window at N times 512x480, and start in it.\n"
@@ -299,6 +362,7 @@ int main(int argc, char** argv) {
   // two decisions in one flag, and measuring the *cadence* needs the first
   // without the second: a bounded run, at real speed, that exits with a report.
   bool force_pacing = false;
+  bool skip_the_intro = false;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
@@ -306,6 +370,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--stock")) native = false;
     else if (!strcmp(a, "--no-audio")) want_audio = false;
     else if (!strcmp(a, "--windowed")) fullscreen = false;
+    else if (!strcmp(a, "--skip-intro")) skip_the_intro = true;
     else if (!strcmp(a, "--paced")) force_pacing = true;
     else if (!strcmp(a, "-r") && i + 1 < argc) {
       if (only_count == (int)(sizeof only / sizeof *only)) {
@@ -358,6 +423,15 @@ int main(int argc, char** argv) {
     else { fprintf(stderr, "error: unexpected argument '%s'\n\n", a); usage(); return 2; }
   }
   if (!rom_path) rom_path = "Zombies Ate My Neighbors.sfc";
+  // A movie is indexed from reset and carries its own boot half — the same
+  // Start mashing `skip_intro` performs — so doing both would run the logos
+  // twice and land the movie 1150 frames into a game it thinks has not begun.
+  // Refusing is better than silently picking one.
+  if (skip_the_intro && movie_path) {
+    fprintf(stderr, "error: --skip-intro and -m cannot be combined; a movie\n"
+                    "       drives from reset and already contains its boot.\n");
+    return 2;
+  }
 
   int rom_len = 0;
   uint8_t* rom = read_file(rom_path, &rom_len);
@@ -435,7 +509,12 @@ int main(int argc, char** argv) {
   {
     int aw = 0, ah = 0;
     aspect_ratio(aspect_mode, FB_W, FB_LIVE_H, &aw, &ah);
-    win_w = (int)((long)win_h * aw / ah);
+    // Rounded *up*. Rounding down leaves the window fractionally too narrow for
+    // the picture it was sized for, so the fit becomes width-constrained and
+    // the height comes back a pixel short — at `--scale 1` that was a 597x447
+    // picture in a 597x448 window, which is a *reduction* below 1:1 and gets
+    // filtered as one. A pixel of pillarbox is the cheaper rounding error.
+    win_w = (int)(((long)win_h * aw + ah - 1) / ah);
   }
   SDL_Window* win = SDL_CreateWindow("Zombies Ate My Neighbors (native)",
       SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, win_w, win_h, win_flags);
@@ -528,7 +607,6 @@ int main(int argc, char** argv) {
   // seconds of running one hiccup away from underrun. (Measured: `audioQ min`
   // was 0.00 ms over a 30-second run.) Half a frame of silence at a moment when
   // nothing is happening yet costs nothing and skips the whole ramp.
-  if (audio) queue_silence(audio, audio_target);
   // ...and a floor under it, because priming alone does not hold. Measured: the
   // device takes a large first bite as it starts its own pipeline, which drops
   // the backlog to about 4 ms — and since rate control moves at four samples a
@@ -574,7 +652,10 @@ int main(int argc, char** argv) {
            ow > 0 && oh > 0
                ? 100.0 * plan.dst.w * plan.dst.h / ((double)ow * oh)
                : 0.0,
-           plan.stage_x ? "" : ", pixel-exact");
+           // Nearest with no intermediate — which is not the same as "no
+           // intermediate", since a reduction and a past-the-cap magnification
+           // both skip the stage too and neither is exact.
+           !plan.linear && !plan.stage_x ? ", pixel-exact" : "");
   if (!fullscreen)
     printf("Window: %dx%d (--scale %d)\n", win_w, win_h, window_scale);
   }
@@ -584,11 +665,9 @@ int main(int argc, char** argv) {
                                                 : " locked to the display",
          refresh_hz, content_hz);
   if (audio)
-    printf("Audio: %d Hz, %d-sample device buffer, backlog target %.0f ms"
-           " (primed to %.0f ms)\n",
+    printf("Audio: %d Hz, %d-sample device buffer, backlog target %.0f ms\n",
            AUDIO_FREQ, AUDIO_DEVICE_SAMPLES,
-           (double)audio_target / audio_bytes_per_ms,
-           (double)SDL_GetQueuedAudioSize(audio) / audio_bytes_per_ms);
+           (double)audio_target / audio_bytes_per_ms);
   else
     printf("Audio: none%s\n", want_audio ? " (device would not open)" : "");
   printf("Substitution: %s (%d routine%s registered)%s\n",
@@ -603,11 +682,28 @@ int main(int argc, char** argv) {
 
   const Uint64 perf_freq = SDL_GetPerformanceFrequency();
   const bool paced = frame_limit == 0 || force_pacing;
-  const Uint64 started = SDL_GetPerformanceCounter();
+  // Not const: `--skip-intro` runs a few seconds of emulation before the loop,
+  // and folding that into the elapsed time would report the session at 44 fps
+  // when every frame of it arrived on cadence. The clock starts when play does.
+  Uint64 started = SDL_GetPerformanceCounter();
 
   // What the loop spends each frame on, and — the point of the exercise — how
   // evenly the frames come out the far end. See `src/pace.h` for why the mean
   // is not the interesting statistic.
+  // Last thing before the loop, so the frames it burns are not paced, not
+  // drawn and not heard — and so the audio priming below lands on a device that
+  // is about to be fed rather than one about to sit idle for a few seconds.
+  if (skip_the_intro) {
+    const Uint64 t0 = SDL_GetPerformanceCounter();
+    const long ran = skip_intro(&cosim, snes, win);
+    printf("Skipped the intro: %ld frames (%.1f s of game) in %.2f s.\n", ran,
+           ran / 60.0,
+           (double)(SDL_GetPerformanceCounter() - t0) / (double)perf_freq);
+    fflush(stdout);
+    started = SDL_GetPerformanceCounter();
+  }
+  if (audio) queue_silence(audio, audio_target);
+
   PaceHist h_interval, h_wait, h_emulate, h_draw, h_audio;
   pace_reset(&h_interval); pace_reset(&h_wait);
   pace_reset(&h_emulate);  pace_reset(&h_draw);
