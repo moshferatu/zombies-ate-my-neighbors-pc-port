@@ -50,12 +50,62 @@ static const CosimExclude SPRITE_TILE_EXCLUDES[] = {
     {0x0038, 2, "the ROM spills the caller's X here; the port keeps it in a local"},
 };
 
+// What one lookup cost the 65816, from which of its runs the lookup took. Same
+// shape as the display list's three walks, with one difference worth naming:
+// **this is the first model whose bytes are not all program bytes.**
+//
+// `LDA $B447,X`, `LDA $B547,X` and `LDA $B647,X` read the slot geometry through
+// the data bank, and with the data bank at `$80` that is a fast ROM read — 6
+// master cycles a byte while `$420D` is set and 8 while it is clear, exactly
+// like an opcode fetch. `CosimRun::bytes` is "bytes that cost 2 more with
+// FastROM off", so those six data bytes belong in it: the hit path is 12
+// program bytes and 14 counted ones.
+//
+// This is what made `tools/cycles816.py` grow a `fast_rom()` and start calling
+// the column FastROM bytes rather than program bytes. Every model before this
+// one either touched WRAM only or reached its table through a low bank, where
+// the two counts are the same number, so the distinction had never come up.
+//
+// The whole thing turns on the data bank being `$80`, so the shim checks.
+static const CosimRun TILE_COST[TILE_BLOCK_COUNT] = {
+    // $80:B9D6..$80:B9EB, `BMI` not taken. 288, and 288 is exactly the minimum
+    // `verify` measures over the corpus — the model's first witness.
+    [TILE_BLK_HIT]        = {104 + 184, 10 + 14},
+    // The same prologue with the branch taken, then $80:B9EC..$80:B9F5.
+    [TILE_BLK_MISS]       = {104 + 6 + 132, 10 + 12},
+    // $80:B9F6 `CMP : BNE` not taken, then `INX : INX : CPX : BNE` taken.
+    [TILE_BLK_SCAN_NEXT]  = {52 + 54 + 6, 5 + 7},
+    // ...and the same with that `BNE` falling through to `LDX #$0000 : BRA`.
+    [TILE_BLK_SCAN_WRAP]  = {52 + 54 + 30 + 6, 5 + 7 + 5},
+    [TILE_BLK_SCAN_FOUND] = {52 + 6, 5},
+    // $80:BA07..$80:BA11, `BMI` taken.
+    [TILE_BLK_SLOT_EMPTY] = {120 + 6, 11},
+    // ...not taken, so $80:BA12..$80:BA19 unmaps the frame that was there.
+    [TILE_BLK_SLOT_EVICT] = {120 + 70, 11 + 8},
+    // $80:BA1A..$80:BA50. Two ROM table reads, hence 55 program bytes and 59.
+    [TILE_BLK_TAIL]       = {724, 55 + 4},
+};
+
+static int tile_cycles(const SpriteTileWork* k, bool fast) {
+  int cycles = 0;
+  for (int i = 0; i < TILE_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles(&TILE_COST[i], fast);
+  return cycles;
+}
+
 static void shim_sprite_frame_tile(Wram* w, const Rom* rom, const CosimRegs* in,
                                    CosimRegs* out) {
   (void)rom;
   uint16_t queued_before = wram_r16(w, W_SPRITE_UPLOAD_COUNT);
 
-  out->a = sprite_frame_tile(w, in->a);
+  SpriteTileWork work;
+  out->a = sprite_frame_tile_counted(w, in->a, &work);
+
+  // The direct page has to be zero rather than merely page-aligned: the port
+  // reads `W_SPRITE_TICK` and friends at their absolute addresses, so a call on
+  // any other page would be a porting bug before it was a pricing one. The data
+  // bank has to be `$80` for the three table reads above to be fast ROM.
+  if (in->d == 0 && in->db == 0x80) cosim_cost(tile_cycles(&work, in->fastrom));
 
   // `LDX $38` puts the caller's X back, unchanged.
   out->x = in->x;
@@ -479,11 +529,40 @@ static void shim_actor_cull(Wram* w, const Rom* rom, const CosimRegs* in,
 // $80:BC23  oam_buffer_clear — no arguments
 // ---------------------------------------------------------------------------
 
+// The one routine here whose cost does not depend on anything, and it is worth
+// pricing anyway.
+//
+// `PHD : LDA #$13BE : TCD` means the caller's direct page cannot reach it, the
+// eight iterations are `LDX #$0008` and nothing else, and every address it
+// touches is under `$2000`. So this is a straight line 372 bytes long and there
+// is nothing to count: 94 for the prologue, 24 for `LDY #$E0 : CLC`, 3,898 for
+// eight passes of the sixteen `STY`s (482 each, +6 for the seven taken `BNE`s),
+// 562 for `LDA #$AAAA` and its sixteen stores, and 92 to unwind.
+//
+// Every direct-page access in it pays an extra internal cycle, because `$13BE`
+// is not page-aligned and neither is any of the eight pages `ADC #$0040` walks
+// it through — the low byte alternates `$BE` and `$FE` and is never `$00`.
+//
+// **The interesting part is that pricing a constant is not redundant**, and the
+// reason is the difference between the two burns rather than anything about
+// this routine. `.cycles` is a mean of what `verify` *measured*, so it already
+// contains the three or four refreshes the call crossed; `cycles_burn` hands it
+// to the core in a single piece and the core adds one more. A reported cost is
+// instruction cycles only and `cycles_burn_modelled` hands it over twelve at a
+// time, so the core puts every refresh back exactly where the scanlines are.
+//
+// For this routine that is 4,814 + 40 against a real 4,790..4,830: about 43
+// cycles a call too slow, every call, forever. It is the least interesting kind
+// of drift there is and also the easiest to leave in place, because a routine
+// whose measured spread is 40 wide looks like one there is nothing left to say
+// about.
+static const CosimRun OAM_CLEAR_COST = {94 + 24 + 3898 + 562 + 92, 372};
+
 static void shim_oam_buffer_clear(Wram* w, const Rom* rom, const CosimRegs* in,
                                   CosimRegs* out) {
   (void)rom;
-  (void)in;
   oam_buffer_clear(w);
+  cosim_cost(cosim_run_cycles(&OAM_CLEAR_COST, in->fastrom));
 
   // `LDA #$AAAA` and the sixteen stores of it are the last thing to touch A.
   out->a = 0xaaaa;
@@ -1732,10 +1811,183 @@ static bool guard_sprite_build_oam(Wram* scratch, const Rom* rom,
   return sprite_build_oam(scratch, rom, in->d);
 }
 
+// ---------------------------------------------------------------------------
+// ...and what a pass costs, which is the sum of six of these tables.
+//
+// `$80:BD1F` is the outermost substituted routine on the sprite path, so it is
+// the only one whose model is ever consulted: the sort, the cull, the buffer
+// clear, the overlap pass and the frame cache are all reached from inside it
+// and every one of them has exactly one caller. Their models have been right
+// and unreachable for two rounds. This is where they start being used.
+//
+// It also settles the guards. Standalone, four of those five have to check the
+// caller's direct page before they can price anything, and the cache has to
+// check the data bank as well. Reached from here they need neither: `$80:BD21
+// PEA $0000 : PLD` and `$80:BD25 PHK : PLB` establish page zero and bank $80
+// for the whole pass. Only two instructions run outside that window — the
+// `LDA $20` and `LDA $BDE6,X` after `$80:BDD0 PLD : PLB` — and they are the
+// only reason anything below asks about the caller at all.
+// ---------------------------------------------------------------------------
+
+static CosimRun run_plus(CosimRun a, CosimRun b) {
+  CosimRun r = {a.cycles + b.cycles, a.bytes + b.bytes};
+  return r;
+}
+
+// One emitter, in `SpriteEmitBlock` order, priced as `$80:BA51` — the unflipped
+// one. The other three are this plus the deltas below; see `SpriteEmitWork` for
+// why that is a fair description of them rather than a convenience.
+static const CosimRun EMIT_COST[EMIT_BLOCK_COUNT] = {
+    [EMIT_BLK_PROLOGUE]   = {28, 2},
+    // $80:BA53..$80:BA60 is 164 over 16, and every path through the piece pays
+    // it: `LDY #$0002 : LDA [$8A],Y : CLC : ADC $90 : STA $13BF,X : CMP #$FFF1`.
+    // Two of those 16 bytes are the metasprite word itself, read through a long
+    // pointer into bank $8F or $90 — fast ROM, and so FastROM-sensitive.
+    [EMIT_BLK_Y_HIGH]     = {164 + 18, 18},
+    [EMIT_BLK_Y_LOW]      = {164 + 12 + 18 + 12, 23},
+    [EMIT_BLK_Y_DROP]     = {164 + 12 + 18 + 18, 23},
+    // $80:BA68..$80:BA76, 174 over 17, then the same two-test shape on x.
+    [EMIT_BLK_X_NEAR]     = {174 + 18, 19},
+    [EMIT_BLK_X_DROP]     = {174 + 12 + 18 + 18, 24},
+    // ...and $80:BA7E..$80:BA89, the four instructions that set the sprite's
+    // ninth x bit in the high table. Two ROM table reads, hence 16 bytes.
+    [EMIT_BLK_X_WRAP]     = {174 + 12 + 18 + 12 + 152, 40},
+    // $80:BA8A..$80:BAA8, 390 over 35: the attribute word, the frame number,
+    // the `JSR $B9D6` itself — 40, with the lookup's own cost coming from
+    // `TILE_COST` — and the four `INX`.
+    [EMIT_BLK_PIECE]      = {390 + 12, 37},
+    [EMIT_BLK_PIECE_FULL] = {390 + 18, 37},
+    // $80:BAAB..$80:BAB4, the pointer advance and `DEC $86`.
+    [EMIT_BLK_NEXT]       = {136 + 18, 12},
+    [EMIT_BLK_DONE]       = {136 + 12, 12},
+    [EMIT_BLK_EXIT]       = {68, 3},
+};
+
+// `EOR #$FFFF : SEC : SBC #$000F`, the mirror. In front of the y offset for a
+// vertical flip, in front of the x offset for a horizontal one.
+static const CosimRun EMIT_MIRROR = {48, 7};
+// `EOR #$4000` / `#$8000` / `#$C000` on the finished OAM word — one instruction
+// with three operands, present in all three flipped emitters and in none of the
+// unflipped one.
+static const CosimRun EMIT_FLIP_EOR = {18, 3};
+// The loop-back. Three extra bytes of body per piece put `$80:BA53` out of a
+// relative branch's reach, so the flipped emitters spend `BEQ : JMP` where
+// `$80:BAB5` spends a `BNE` — dearer to go round, dearer to stop.
+static const CosimRun EMIT_FAR_NEXT = {12, 3};
+static const CosimRun EMIT_FAR_DONE = {6, 0};
+
+static int emit_cycles(const SpriteBuildWork* k, bool fast) {
+  int cycles = 0;
+  for (int flip = 0; flip < 8; flip += 2) {
+    const bool fx = (flip & SPRITE_FLIP_X) != 0;
+    const bool fy = (flip & SPRITE_FLIP_Y) != 0;
+    for (int i = 0; i < EMIT_BLOCK_COUNT; i++) {
+      if (k->emit[flip][i] == 0) continue;
+      CosimRun r = EMIT_COST[i];
+      if (fy && (i == EMIT_BLK_Y_HIGH || i == EMIT_BLK_Y_LOW ||
+                 i == EMIT_BLK_Y_DROP))
+        r = run_plus(r, EMIT_MIRROR);
+      if (fx && (i == EMIT_BLK_X_NEAR || i == EMIT_BLK_X_DROP ||
+                 i == EMIT_BLK_X_WRAP))
+        r = run_plus(r, EMIT_MIRROR);
+      if (flip != SPRITE_FLIP_NONE) {
+        if (i == EMIT_BLK_PIECE || i == EMIT_BLK_PIECE_FULL)
+          r = run_plus(r, EMIT_FLIP_EOR);
+        if (i == EMIT_BLK_NEXT) r = run_plus(r, EMIT_FAR_NEXT);
+        if (i == EMIT_BLK_DONE) r = run_plus(r, EMIT_FAR_DONE);
+      }
+      cycles += k->emit[flip][i] * cosim_run_cycles(&r, fast);
+    }
+  }
+  return cycles;
+}
+
+// The walk itself, `$80:BD1F`..`$80:BDE2`, in `SpriteBuildBlock` order. The
+// three `JSR`s and the one `JSL` are in here at 40 and 54; what they call is
+// not.
+static const CosimRun BUILD_COST[BUILD_BLOCK_COUNT] = {
+    // $80:BD1F..$80:BD36 is 378 over 25 with the `BEQ` falling through, so an
+    // empty pass is that with the branch taken plus `$80:BD77 BRA $BDCC`.
+    [BUILD_BLK_EMPTY]      = {378 + 6 + 18, 27},
+    [BUILD_BLK_NONEMPTY]   = {378 + 46, 30},
+    // $80:BD3D..$80:BD43 `STY $9A : LDX $137E,Y : LDA $00,X`, then the `BPL`.
+    [BUILD_BLK_UNDRAWN]    = {114 + 6, 9},
+    [BUILD_BLK_DRAWN]      = {114, 9},
+    // Each of the next three pairs ends on the store the two paths share, so
+    // one of each pair is counted per drawable record and nothing is left over.
+    [BUILD_BLK_PRIO_PLAIN] = {18 + 18 + 18 + 28, 10},
+    [BUILD_BLK_PRIO_TOP]   = {18 + 18 + 12 + 18 + 28, 13},
+    [BUILD_BLK_ATTR_PLAIN] = {18 + 34 + 18 + 18 + 28, 12},
+    [BUILD_BLK_ATTR_SET]   = {190 + 28, 21},
+    [BUILD_BLK_SCREEN]     = {34 + 12 + 12 + 124 + 18, 15},
+    [BUILD_BLK_WORLD]      = {34 + 12 + 18 + 262, 24},
+    // $80:BD8C onwards: three ways to be rejected, at 7, 16 and 21 bytes, and
+    // then the count byte. The prefix each one shares is folded in, so exactly
+    // one of the five below is counted per drawable record.
+    [BUILD_BLK_NO_META]    = {34 + 18 + 18, 7},
+    [BUILD_BLK_BANK_LOW]   = {64 + 28 + 34 + 18 + 18, 16},
+    [BUILD_BLK_BANK_HIGH]  = {64 + 92 + 18 + 18, 21},
+    [BUILD_BLK_EMPTY_META] = {186 + 140, 34},
+    // ...and the one that draws: `INC $8A : LDA $00,X : AND #$0006 : TAX` and
+    // the `JSR ($BDEA,X)` at 52, whose two vector bytes come out of bank $80
+    // and so belong in the byte column with the program.
+    [BUILD_BLK_DRAW]       = {186 + 300, 47},
+    [BUILD_BLK_FULL]       = {18 + 18, 5},
+    [BUILD_BLK_NOT_FULL]   = {18 + 12, 5},
+    [BUILD_BLK_NEXT]       = {28 + 12 + 12 + 28 + 18 + 18, 11},
+    // ...or the last record, which falls through to `$80:BDC4`'s terminator.
+    [BUILD_BLK_LAST]       = {92 + 86, 16},
+    // $80:BDCC..$80:BDE2, with the `JSL` at 54 and the `RTL` at 42. Priced with
+    // the four-byte table read fast; `build_cycles` corrects it when the data
+    // bank the `PLB` restored cannot reach bank $80 in six.
+    [BUILD_BLK_EPILOGUE]   = {314, 25},
+};
+
+// The two program bytes of `$80:BDD8 LDA $BDE6,X` cost 8 apiece rather than 6
+// when the caller's data bank is a low one, and stop being FastROM-sensitive
+// when they do. It is the only instruction in the pass that asks.
+static const CosimRun BUILD_EPILOGUE_SLOW_TABLE = {4, -2};
+
+static int build_cycles(const SpriteBuildWork* k, const CosimRegs* in) {
+  const bool fast = in->fastrom;
+  int cycles = 0;
+  for (int i = 0; i < BUILD_BLOCK_COUNT; i++) {
+    CosimRun r = BUILD_COST[i];
+    if (i == BUILD_BLK_EPILOGUE && in->db < 0x80)
+      r = run_plus(r, BUILD_EPILOGUE_SLOW_TABLE);
+    cycles += k->blocks[i] * cosim_run_cycles(&r, fast);
+  }
+  // ...and everything the walk called. `oam_buffer_clear` runs once per pass
+  // and is the only one of the five that costs the same every time.
+  cycles += depth_sort_cycles(&k->sort, fast);
+  cycles += cull_cycles(&k->cull, fast);
+  cycles += cosim_run_cycles(&OAM_CLEAR_COST, fast);
+  cycles += overlap_cycles(&k->overlap, fast);
+  cycles += emit_cycles(k, fast);
+  cycles += tile_cycles(&k->tile, fast);
+  return cycles;
+}
+
 static void shim_sprite_build_oam(Wram* w, const Rom* rom, const CosimRegs* in,
                                   CosimRegs* out) {
   // The guard already established it will not decline.
-  sprite_build_oam(w, rom, in->d);
+  SpriteBuildWork work;
+  sprite_build_oam_counted(w, rom, in->d, &work);
+
+  // `$80:BDD2 LDA $20` runs after `PLD`, on the caller's page, so an unaligned
+  // one costs an internal cycle the table above does not carry. `$80:BDDE STA
+  // $1B64` runs after `PLB` and reaches low WRAM in 8 through every bank a
+  // caller could plausibly leave behind — but not through $40..$7F or $C0+,
+  // where it would not be WRAM at all, so those decline rather than guess.
+  // ...and the pass inherits `actor_overlap_pass`'s one refusal. A pair that
+  // actually touched sends `$80:BF0E JSR $BE8F` into the collision handler
+  // tree, which is game logic nobody has priced, so a pass containing a hit
+  // reports nothing rather than reporting the walk and calling it the whole
+  // cost. It is worth about 4,300 cycles a hit, and it is the reason `priced`
+  // sits below `checked` on any movie where two actors meet.
+  if (work.overlap.hits == 0 && (in->d & 0xff) == 0 &&
+      (in->db < 0x40 || (in->db >= 0x80 && in->db < 0xc0)))
+    cosim_cost(build_cycles(&work, in));
 
   // The tail at `$80:BDD2` is what decides all of this, and it runs on every
   // path: `LDA $20 : AND #$0003 : TAX : LDA $BDE6,X : AND #$00FF : STA $1B64 :

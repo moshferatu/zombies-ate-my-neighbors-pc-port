@@ -2394,6 +2394,193 @@ whose hit path is eleven bytes and whose miss path walks a 256-entry ring at
 It is modelable the same way everything here has been — count the iterations —
 and it is a round of its own.
 
+## The pass, priced (2026-08-11)
+
+The previous round ended with a table of five parts and three ticks. This round
+fills in the other two and then prices the routine they are parts of, which is
+the first time any of the six models on the sprite path is actually consulted.
+
+### The constant that was not a constant
+
+`$80:BC23 oam_buffer_clear` looked like nothing worth a round: `verify` measures
+it at 4,790..4,830, a spread of exactly one refresh, and it was declared at its
+mean of 4,814. It is genuinely constant — `PHD : LDA #$13BE : TCD` puts the
+caller's page out of reach, `LDX #$0008` is the whole of its control flow, and
+every address it touches is under `$2000`. Its instruction cost is 4,670 cycles
+over 372 bytes and it never varies.
+
+Which is 144 short of what it was declared at, and the difference is worth
+naming because it applies to **every** routine still being burned as a constant.
+`.cycles` is a mean of what `verify` *measured*, and a measurement is elapsed
+time — it contains the three or four DRAM refreshes the call crossed.
+`cycles_burn` then hands that number to the core in a single piece, and
+`snes_runCycles` adds one refresh per call however many scanlines the call
+spans. So the declared path burns `mean + 40`: for this routine 4,854 against a
+real 4,790..4,830, about 43 cycles a call too slow, on every pass of every
+movie. The modelled path reports instruction cycles only and hands them over
+twelve at a time, so the core puts each refresh back exactly where the scanlines
+are.
+
+Pricing a constant is not redundant when the constant was arrived at by
+measuring. It is also the easiest kind of drift to leave in place forever,
+because a routine whose measured spread is 40 wide looks like one there is
+nothing left to say about.
+
+### `sprite_frame_tile`, and the byte column growing up
+
+The frame cache came out exactly as the previous round predicted: eight blocks,
+a hit path of 288 cycles and a miss path whose spread is entirely the ring walk
+at `$80:B9F6`. 288 is also the minimum `verify` measures across the corpus, so
+the model had a witness before it had a test.
+
+The step has two flavours, which is the only part that is not mechanical.
+`INX : INX : CPX #$0100 : BNE` falls through to `LDX #$0000 : BRA` on the 128th
+slot, so wrapping costs one branch-not-taken and one taken `BRA` more than an
+ordinary step. It happens about once every 64 misses: often enough to matter,
+rare enough that a model which forgot it would still look right on a short
+movie.
+
+What this one changed was `CosimRun::bytes`. The routine reads its slot geometry
+out of three ROM tables through the data bank — `LDA $B447,X`, `$B547,X`,
+`$B647,X` — and with the data bank at `$80` those are fast ROM reads: 6 master
+cycles a byte while `$420D` is set and 8 while it is clear, exactly like an
+opcode fetch. `bytes` has always meant "bytes that cost 2 more with FastROM
+off", so those data bytes belong in it. Every model before this one either
+touched WRAM only or reached its table through a low bank, where the two counts
+are the same number, so the distinction had never come up.
+`tools/cycles816.py` now has a `fast_rom()` beside its `access()` and calls the
+column FastROM bytes rather than program bytes.
+
+### The four emitters are one table and three deltas
+
+`assets/sprite.h` has claimed since Phase 2 that `$80:BA51` and its three
+flipped twins "differ only in how a piece offset is negated and which OAM flip
+bits get toggled, so they are one function here". Pricing them is a chance to
+check that claim against the bytes rather than the prose, and it holds — with
+one addition nobody had noticed.
+
+Stripped of the mirror sequence `EOR #$FFFF : SEC : SBC #$000F`, the four
+emitters are 105, 111, 111 and 111 bytes. Not equal. The extra six bytes are two
+things:
+
+* `EOR #$4000` / `#$8000` / `#$C000` on the finished OAM word — the flip toggle,
+  one instruction with three operands, present in all three flipped emitters and
+  absent from the unflipped one.
+* `BEQ : JMP` where `$80:BAB5` has a `BNE`. Adding three bytes of body per piece
+  pushed the loop-back target out of a relative branch's reach, so the flipped
+  emitters pay two instructions to go round and a taken branch to stop.
+
+So the model is `EMIT_COST[]` plus `EMIT_MIRROR` on the y blocks when the actor
+is flipped vertically, the same on the x blocks when horizontally,
+`EMIT_FLIP_EOR` on the emit blocks for any flip at all, and `EMIT_FAR_NEXT` /
+`EMIT_FAR_DONE` on the loop tail. Twelve blocks and four deltas describe all
+four emitters, which is the same claim `sprite_emit` makes by existing.
+
+### Composing removes the guards
+
+Every model so far has had to ask about its caller before it could price
+anything. `actor_cull`, `actor_depth_sort` and `actor_overlap_pass` all check
+`(d & $ff) == 0`, because an unaligned direct page costs an extra internal cycle
+on every direct-page instruction; `sprite_frame_tile` checks the data bank as
+well, for the three table reads above.
+
+Reached from `sprite_build_oam` they need neither. `$80:BD21 PEA $0000 : PLD`
+and `$80:BD25 PHK : PLB` establish page zero and bank `$80` for the whole pass,
+so every precondition its parts have is satisfied by construction. Exactly two
+instructions run outside that window — the `LDA $20` and `LDA $BDE6,X` after
+`$80:BDD0 PLD : PLB` — and they are the only reason the pass's own model asks
+about the caller at all. One of them is why `BUILD_EPILOGUE_SLOW_TABLE` exists:
+the four-byte phase table is read through whatever data bank the `PLB` restored,
+and a low bank costs 8 a byte rather than 6.
+
+### The one thing that was wrong, and how it was found
+
+The composed model was refresh-exact on `level1` — all 1,016 calls — and wrong
+on 27% of `level25-2p`, with errors up to +16,770 that were not multiples of 40.
+
+Guessing at that from the aggregate report went nowhere: a run declining on
+each suspicious block in turn narrowed it a little and pointed at nothing. What
+worked was making the harness print the block counts of the first few calls
+whose error was not a refresh multiple, which took a temporary `zzz_dump` in
+`record_model` and about ten minutes. The answer was in the second line of the
+first dump:
+
+    BAD actual=53540 model=46836 err=6704
+      ovl: ... 10=2 12=2 ...
+
+`OVL_BLK_Y_NEAR = 2`. Two pairs of actors were touching, and
+`$80:BF0E JSR $BE8F` had dispatched twice into the collision handler tree.
+`actor_overlap_pass`'s own shim has declined on exactly that since the round it
+was written; composing it into `build_cycles` had quietly dropped the check.
+Calls with one hit were short by about 4,300, calls with two by 6,704.
+
+The fix is one clause, and the corpus proves it is the right one arithmetically:
+`sprite_build_oam` prices 113,629 calls and `actor_overlap_pass` prices 113,629
+calls, out of 143,929 passes. The two routines decline on precisely the same
+30,300 — 21% of all passes contain a collision.
+
+### Results
+
+13,209,637 calls across the 43 movies, **0 diverged**; branch coverage 432 of
+538, unchanged. Nine cost models now, all exact over the whole corpus:
+
+| routine | refresh-exact / priced, PPU quiet | priced under HDMA |
+| --- | --- | --- |
+| `sprite_frame_tile` | 1,707,880 / 1,707,880 | 19,607 |
+| `actor_depth_sort` | 143,929 / 143,929 | 1,915 |
+| `actor_cull` | 143,929 / 143,929 | 1,915 |
+| `oam_buffer_clear` | 143,929 / 143,929 | 1,915 |
+| `actor_overlap_pass` | 113,629 / 113,629 | 1,915 |
+| `sprite_build_oam` | 113,629 / 113,629 | 1,915 |
+| `hud_refresh` | 51,172 / 51,172 | 154 |
+| `hud_panel2` | 25,603 / 25,603 | 75 |
+| `hud_panel1` | 25,571 / 25,571 | 79 |
+
+2,469,271 calls priced with the PPU quiet, every one short by an exact multiple
+of the 40-cycle refresh; 29,490 more under HDMA, none over-claiming. Lockstep
+`run` on `level1`, `level25-2p` and `level45-race` still ends with no byte of
+live game state ever differing.
+
+Drift on `level25-2p` at 6,000 frames falls from 635.7 frames to **411.2** as
+`drift.py` reports it, and to about **324** once its one blind spot is
+subtracted: the instrument does not know about subsumption, so it still charges
+`actor_overlap_pass` 87.4 frames for calls on which it is never substituted at
+all. `sprite_build_oam` itself is down from 382.7 to 159.2, and all of what is
+left is the 2,139 passes of 4,420 that contained a collision.
+
+The framebuffers have not moved, and this time that was checked rather than
+assumed: with the three new models gated behind an environment variable, the
+same eight movies compared against `--stock` at 6,000 frames give the same
+answers before and after. Five identical, three differing, no flips in either
+direction. The three that differ — `level21-bubble`, `level25-2p`,
+`level25-lane` — are the busy ones, which is to say the ones with collisions in
+them.
+
+### What is left, precisely
+
+The sprite path is finished except for one thing, and it is not on the sprite
+path:
+
+| part | state |
+| --- | --- |
+| `$80:BC7F` the depth sort | **priced** |
+| `$80:BCE2` the cull | **priced** |
+| `$80:BC23` the buffer clear | **priced** — a constant, and 144 off the declared one |
+| `$80:B9D6` the frame cache | **priced** |
+| `$80:BA51` and its three twins | **priced** — one table, three deltas |
+| `$80:BD30`..`$80:BDCB` the walk | **priced** |
+| `$80:BEC9` the overlap pass | **priced, except the 21% of passes that dispatched** |
+
+Everything above the line is done. What stops the last 159 frames is
+`$80:BE8F`, the collision handler tree, and that is a different kind of problem
+from every model in this document: it is not a walk whose iterations can be
+counted, it is a dispatch into a hundred and something handlers, most of which
+are ported and none of which has ever been asked what it cost. The next round is
+either that, or it is the next routine down the drift table —
+`actor_obstacle_at_point` at 39.9 frames, `actor_notify_box` at 28.1,
+`actor_nearest` at 22.2 — none of which is subsumed by anything, so unlike this
+round's work, pricing them would move a framebuffer the day it landed.
+
 ## Where this is going
 
 The first five routines here are leaves — they never call `thread_yield`. That

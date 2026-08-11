@@ -393,8 +393,22 @@ void oam_buffer_clear(Wram* w) {
 // The VRAM cache lookup, as `sprite_emit` wants it. This is the `JSR $80:B9D6`
 // at `$80:BA98`, and routing it through the callback rather than calling it
 // directly is what keeps `assets/sprite.c` free of runtime state.
+//
+// The context carries a tally as well as the WRAM because the lookup is a cost
+// the *pass* pays: it runs once per emitted piece, deep inside an emitter that
+// knows nothing about cycles, and the only place its counts can be added up is
+// the one place that owns both ends of the callback.
+typedef struct {
+  Wram* w;
+  SpriteTileWork* tally;
+} FrameTileCtx;
+
 static uint16_t frame_tile(uint16_t frame, void* ctx) {
-  return sprite_frame_tile((Wram*)ctx, frame);
+  FrameTileCtx* c = (FrameTileCtx*)ctx;
+  SpriteTileWork one;
+  uint16_t tile = sprite_frame_tile_counted(c->w, frame, &one);
+  for (int i = 0; i < TILE_BLOCK_COUNT; i++) c->tally->blocks[i] += one.blocks[i];
+  return tile;
 }
 
 // Everything the pass reads out of one record before it can draw it. Returned
@@ -422,18 +436,25 @@ typedef struct {
 // with. Priority always (bit 3 picks 3 over 2), and on top of that
 // `ACTOR_ATTR_SET` ORs the record's own attribute word in *and* masks the
 // piece's palette bits away, so one metasprite can be drawn in any palette.
-static int draw_args(const Wram* w, uint16_t rec, DrawArgs* d) {
+static int draw_args(const Wram* w, uint16_t rec, DrawArgs* d,
+                     SpriteBuildWork* work) {
   uint16_t flags = flags_of(w, rec);
 
   if (flags & ACTOR_PRIORITY_TOP) PORT_COVER(draw_priority_top);
+  work->blocks[(flags & ACTOR_PRIORITY_TOP) ? BUILD_BLK_PRIO_TOP
+                                            : BUILD_BLK_PRIO_PLAIN]++;
   d->attr_or = (flags & ACTOR_PRIORITY_TOP) ? 0x3000 : 0x2000;
   d->attr_and = 0xffff;
+  work->blocks[(flags & ACTOR_ATTR_SET) ? BUILD_BLK_ATTR_SET
+                                        : BUILD_BLK_ATTR_PLAIN]++;
   if (flags & ACTOR_ATTR_SET) {
     PORT_COVER(draw_attr_set);
     d->attr_or |= wram_r16(w, (uint32_t)rec + ACTOR_ATTR);
     d->attr_and = 0xf1ff;
   }
 
+  work->blocks[(flags & ACTOR_SCREEN_SPACE) ? BUILD_BLK_SCREEN
+                                            : BUILD_BLK_WORLD]++;
   if (flags & ACTOR_SCREEN_SPACE) {
     PORT_COVER(draw_screen);
     d->ox = (int16_t)wram_r16(w, (uint32_t)rec + ACTOR_X);
@@ -446,22 +467,34 @@ static int draw_args(const Wram* w, uint16_t rec, DrawArgs* d) {
   d->flip = (SpriteFlip)(flags & ACTOR_FLIP);
 
   d->ptr = wram_r16(w, (uint32_t)rec + ACTOR_META);
-  if (d->ptr < 0x8000) { PORT_COVER(draw_no_meta); return 0; }
+  if (d->ptr < 0x8000) {
+    PORT_COVER(draw_no_meta);
+    work->blocks[BUILD_BLK_NO_META]++;
+    return 0;
+  }
   d->bank = wram_r16(w, (uint32_t)rec + ACTOR_META_BANK);
+  // Two `CMP`s again, and again the ROM pays differently for the two ways of
+  // failing: a bank below $8F costs one test and a bank above $90 costs two.
   if (d->bank < SPRITE_META_BANK_LO || d->bank > SPRITE_META_BANK_HI) {
     PORT_COVER(draw_bad_bank);
+    work->blocks[d->bank < SPRITE_META_BANK_LO ? BUILD_BLK_BANK_LOW
+                                               : BUILD_BLK_BANK_HIGH]++;
     return 1;
   }
   return 2;
 }
 
-bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp) {
-  actor_depth_sort(w);
-  actor_cull(w);
+bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp,
+                              SpriteBuildWork* work) {
+  memset(work, 0, sizeof *work);
+  actor_depth_sort_counted(w, &work->sort);
+  actor_cull_counted(w, &work->cull);
   oam_buffer_clear(w);
   wram_w16(w, W_SPRITE_TICK, wram_r16(w, W_SCHED_TICK));
+  work->blocks[BUILD_BLK_EPILOGUE]++;
 
   uint16_t count = wram_r16(w, W_VISIBLE_ACTOR_COUNT);
+  work->blocks[count != 0 ? BUILD_BLK_NONEMPTY : BUILD_BLK_EMPTY]++;
   if (count != 0) {
     // The OAM buffer is worked on as a block and copied back once. That is not
     // a shortcut around the WRAM-layout rule — the bytes end up in the same
@@ -472,14 +505,26 @@ bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp) {
     memcpy(oam.bytes, &w->bytes[W_OAM_BUFFER], SPRITE_OAM_BYTES);
     oam.index = 0;
 
+    FrameTileCtx tiles = {w, &work->tile};
     bool emitted_any = false;
     for (uint16_t cursor = 0;;) {
       wram_w16(w, W_OAM_PASS_CURSOR, cursor);
       uint16_t rec = wram_r16(w, W_VISIBLE_ACTORS + cursor);
 
+      // `$80:BDB7 CPX #$0200` runs for a record the walk skipped as well as for
+      // one it drew, and on those paths X is a record offset, so it always says
+      // "not full". Only a record that actually emitted can reach the other
+      // answer, which is why this is set to true here and cleared below.
+      bool reached_full_test = true;
+
       DrawArgs d;
+      if (!(flags_of(w, rec) & ACTOR_DRAW)) work->blocks[BUILD_BLK_UNDRAWN]++;
       if (flags_of(w, rec) & ACTOR_DRAW) {
-        int stage = draw_args(w, rec, &d);
+        work->blocks[BUILD_BLK_DRAWN]++;
+        int stage = draw_args(w, rec, &d, work);
+        // A record that fails either metasprite test branches straight to
+        // `$80:BDBC` and never reaches the OAM-full test at all.
+        reached_full_test = stage == 2;
         wram_w16(w, W_SPRITE_ATTR_OR, d.attr_or);
         wram_w16(w, W_SPRITE_ATTR_AND, d.attr_and);
         wram_w16(w, W_SPRITE_ORIGIN_X, (uint16_t)d.ox);
@@ -500,6 +545,8 @@ bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp) {
           wram_w16(w, W_SPRITE_PIECES_LEFT, (uint16_t)meta.count);
 
           if (meta.count == 0) PORT_COVER(draw_empty_meta);
+          work->blocks[meta.count == 0 ? BUILD_BLK_EMPTY_META
+                                       : BUILD_BLK_DRAW]++;
           if (meta.count != 0) {
             // `$80:BDAC  INC $8A` — the pointer the emitter walks starts at the
             // first piece, one past the count byte.
@@ -507,8 +554,11 @@ bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp) {
             wram_w16(w, W_SPRITE_META_PTR, first);
 
             SpriteEmitTrace t;
-            sprite_emit(&oam, &meta, d.flip, d.ox, d.oy, d.attr_or, d.attr_and,
-                        frame_tile, w, &t);
+            SpriteEmitWork ew;
+            sprite_emit_counted(&oam, &meta, d.flip, d.ox, d.oy, d.attr_or,
+                                d.attr_and, frame_tile, &tiles, &t, &ew);
+            for (int i = 0; i < EMIT_BLOCK_COUNT; i++)
+              work->emit[d.flip & 7][i] += ew.blocks[i];
             wram_w16(w, W_SPRITE_PIECES_LEFT, (uint16_t)(meta.count - t.walked));
             wram_w16(w, W_SPRITE_META_PTR,
                      (uint16_t)(first + (uint32_t)t.walked * SPRITE_PIECE_BYTES));
@@ -521,13 +571,17 @@ bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp) {
             // test has a record offset in X, which can never be $0200.
             if (oam.index == SPRITE_OAM_LOW_BYTES) {
               PORT_COVER(draw_oam_full);
+              work->blocks[BUILD_BLK_FULL]++;
               break;
             }
           }
         }
       }
 
+      if (reached_full_test) work->blocks[BUILD_BLK_NOT_FULL]++;
+
       cursor += 2;
+      work->blocks[cursor < count ? BUILD_BLK_NEXT : BUILD_BLK_LAST]++;
       if (cursor >= count) {
         // `$80:BDC4`. The ROM compares with `BNE`, which would loop forever if
         // the cursor ever stepped past the count; it cannot, because both are
@@ -548,7 +602,7 @@ bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp) {
       wram_w16(w, W_SPRITE_SCRATCH_X, (uint16_t)(oam.index - 4));
   }
 
-  if (!actor_overlap_pass(w, rom)) return false;
+  if (!actor_overlap_pass_counted(w, rom, &work->overlap)) return false;
 
   // `$80:BDD2`. Four bytes indexed by the low two bits of a word, and all four
   // are $80 in the shipped ROM — so this is a constant with a table's shape.
@@ -562,6 +616,11 @@ bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp) {
   wram_w16(w, W_SPRITE_PASS_PHASE,
            (uint16_t)(rom_word(rom, SPRITE_PASS_PHASE_TABLE + (phase & 3)) & 0xff));
   return true;
+}
+
+bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp) {
+  SpriteBuildWork work;
+  return sprite_build_oam_counted(w, rom, dp, &work);
 }
 
 // ---------------------------------------------------------------------------

@@ -45,7 +45,9 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "assets/sprite.h"
 #include "port/collide.h"
+#include "port/sprite_cache.h"
 #include "port/wram.h"
 
 // --- A display-list record --------------------------------------------------
@@ -391,6 +393,60 @@ void oam_buffer_clear(Wram* w);
 // which is exactly what the harness does: it runs this on a private copy first
 // and only keeps the result if it comes back true.
 bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp);
+
+// The pass's own walk, `$80:BD30`..`$80:BDCB`, counted for `cosim_cost`.
+//
+// This is the last of the five parts, and the one that finally makes the other
+// four worth having: the sort, the cull, the buffer clear and the overlap pass
+// are all reached from here, so their models were correct and unreachable until
+// this one existed. Nothing outside `sprite_build_oam` calls any of them.
+typedef enum {
+  BUILD_BLK_EMPTY,       // $80:BD36 BEQ taken: nothing visible, straight out
+  BUILD_BLK_NONEMPTY,    // ...not taken, so the walk starts
+  BUILD_BLK_UNDRAWN,     // $80:BD44 BPL taken: ACTOR_DRAW clear
+  BUILD_BLK_DRAWN,       // ...not taken
+  BUILD_BLK_PRIO_PLAIN,  // $80:BD4C BEQ taken: attributes OR $2000
+  BUILD_BLK_PRIO_TOP,    // ...not taken: ACTOR_PRIORITY_TOP, so $3000
+  BUILD_BLK_ATTR_PLAIN,  // $80:BD5B BEQ taken: the frames' own palette stands
+  BUILD_BLK_ATTR_SET,    // ...not taken: ACTOR_ATTR_SET overrides it
+  BUILD_BLK_SCREEN,      // $80:BD6B BPL not taken: screen space, no camera
+  BUILD_BLK_WORLD,       // ...taken: three subtractions instead
+  BUILD_BLK_NO_META,     // $80:BD91 BCC taken: the pointer is not in ROM
+  BUILD_BLK_BANK_LOW,    // $80:BD9A BCC taken: bank below $8F
+  BUILD_BLK_BANK_HIGH,   // $80:BD9F BCS taken: bank above $90
+  BUILD_BLK_EMPTY_META,  // $80:BDAA BEQ taken: a metasprite with no pieces
+  BUILD_BLK_DRAW,        // ...not taken: the emitter runs
+  BUILD_BLK_FULL,        // $80:BDBA BEQ taken: OAM filled, the walk stops
+  BUILD_BLK_NOT_FULL,    // ...not taken
+  BUILD_BLK_NEXT,        // $80:BDC2 BNE taken: another record
+  BUILD_BLK_LAST,        // ...not taken, so park the rest of OAM off screen
+  BUILD_BLK_EPILOGUE,    // $80:BDCC..$80:BDE2, and every exit reaches it
+  BUILD_BLOCK_COUNT,
+} SpriteBuildBlock;
+
+// Everything one pass did, at every level it did it at.
+//
+// The three sub-walks price themselves through their own `_counted` entry
+// points and are not repeated here. The two things that *are* repeated are the
+// two that run per piece rather than per record: the emitter, which runs once
+// per drawable record and is summed because a pass draws many, and the VRAM
+// cache lookup, which runs once per emitted piece. Summing them loses which
+// record was expensive, which is exactly what a cost model does not need.
+typedef struct {
+  uint16_t blocks[BUILD_BLOCK_COUNT];
+  ActorSortWork sort;
+  ActorCullWork cull;
+  ActorOverlapWork overlap;
+  // Per flip variant, because the four emitters do not cost the same. Indexed
+  // by `SpriteFlip` as it comes out of the actor's flag bits, so entries 1, 3,
+  // 5 and 7 stay zero — a four-entry array indexed by `flip / 2` would be
+  // tidier and would put a division between the ROM's own value and the table.
+  uint16_t emit[8][EMIT_BLOCK_COUNT];
+  SpriteTileWork tile;
+} SpriteBuildWork;
+
+bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp,
+                              SpriteBuildWork* work);
 
 // --- $80:B123 ---------------------------------------------------------------
 

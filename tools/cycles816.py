@@ -97,6 +97,21 @@ def access(addr, bank=0x80):
     return FAST if bank >= 0x80 else SLOW
 
 
+def fast_rom(addr, bank=0x80):
+    """Is this byte one of the ones `$420D` makes cheap?
+
+    The same question `access` answers with a number, asked so the byte can be
+    counted. A ROM byte reached through bank $80+ costs 6 with FastROM on and 8
+    with it off, exactly like an opcode fetch -- so it belongs in the byte
+    column, which is what a cost model multiplies by 2 when the register is
+    clear. `$2000`-`$5FFF` is also 6 and is *not* this: those are registers, and
+    they cost 6 whatever `$420D` says.
+    """
+    if (bank < 0x40 or 0x80 <= bank < 0xC0) and addr < 0x8000:
+        return False
+    return bank >= 0x80
+
+
 # Opcodes whose implied form is not the two-cycle kind: an entry is the number
 # of internal cycles and the number of stack bytes it moves.
 STACK_OPS = {
@@ -105,6 +120,15 @@ STACK_OPS = {
     "PLA": (2, 2), "PLX": (2, 2), "PLY": (2, 2), "PLD": (2, 2),
     "PLB": (2, 1), "PLP": (2, 1),
 }
+
+# The implied instructions that touch no memory and still are not two cycles.
+# Everything else in that shape -- the transfers, the flag sets, `INC A`, the
+# shifts on A -- spends exactly one internal cycle, so this is the exception
+# list rather than a table. `XBA` is the only entry the ROM uses, at `$80:BA2A`
+# in the frame cache's miss path, and it is here because the default cost it
+# six master cycles too little: `cpu.c` runs it as two `cpu_idle` calls with no
+# `cpu_adrImp` in front, which is the 3-cycle instruction the manual describes.
+IMP_IDLES = {"XBA": 2, "WAI": 2, "STP": 2}
 
 # Read-modify-write: the value is read, an internal cycle passes, and it goes
 # back out. `INC`/`DEC` in their memory forms, and the four shifts.
@@ -132,11 +156,17 @@ def operand_width(name, m, x):
     return 1 if m else 2
 
 
-def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80):
-    """Master cycles for one instruction, and a note when it is not a number.
+def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
+         bank=0x80):
+    """Master cycles for one instruction, its note, and its FastROM-sensitive bytes.
 
-    Returns `(cycles, note)`. `note` is a string for a branch, whose taken cost
-    differs, and None otherwise.
+    Returns `(cycles, note, fast)`. `note` is a string for a branch, whose taken
+    cost differs, and None otherwise. `fast` counts the *data* bytes this
+    instruction reaches at 6 cycles through a bank $80+ ROM address -- a ROM
+    table read, or a `[dp]` pointer into one -- because those cost 2 more apiece
+    while `$420D` is clear, exactly as its opcode bytes do. Adding them to the
+    instruction's own length is what makes the byte column the number a
+    `CosimRun` wants.
     """
     c = FETCH * (1 + size)  # the opcode and its operand bytes
     width = operand_width(name, m, x)
@@ -146,38 +176,48 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80):
         # spend an extra internal cycle setting the flags.
         if name in ("SEP", "REP"):
             c += IDLE
-        return c, None
+        return c, None, 0
 
     if mode == IMP:
         if name in STACK_OPS:
             idles, bytes_ = STACK_OPS[name]
-            return c + idles * IDLE + bytes_ * SLOW, None
+            return c + idles * IDLE + bytes_ * SLOW, None, 0
         if name == "RTS":
-            return c + 3 * IDLE + 2 * SLOW, None
+            return c + 3 * IDLE + 2 * SLOW, None, 0
         if name == "RTL":
-            return c + 2 * IDLE + 3 * SLOW, None
+            return c + 2 * IDLE + 3 * SLOW, None, 0
         if name == "RTI":
             raise Unpriced("RTI: an interrupt return is not a routine's cost")
+        if name in IMP_IDLES:
+            return c + IMP_IDLES[name] * IDLE, None, 0
         # The two-cycle kind: transfers, flag sets, INC/DEC A, the shifts on A.
-        return c + IDLE, None
+        return c + IDLE, None, 0
 
     if mode == REL:
-        return c, "%d taken" % (c + IDLE)
+        return c, "%d taken" % (c + IDLE), 0
     if mode == REL16:  # BRL is always taken and always costs the extra
-        return c + IDLE, None
+        return c + IDLE, None, 0
 
     if name == "JSR" and mode == ABS:
-        return c + IDLE + 2 * SLOW, None
+        return c + IDLE + 2 * SLOW, None, 0
+    if name == "JSR" and mode == IIDX:
+        # `JSR ($BDEA,X)`, the drawing pass's four-way dispatch on the actor's
+        # flip bits. The vector is read out of the *program* bank, so unlike
+        # `[dp]` there is nothing to ask the caller about: two more bytes at
+        # whatever bank $80 costs, which is why they are counted as program.
+        return (c + 2 * SLOW + IDLE + 2 * access(val, bank), None,
+                2 * fast_rom(val, bank))
     if name == "JSL":
-        return c + IDLE + 3 * SLOW, None
+        return c + IDLE + 3 * SLOW, None, 0
     if name == "JMP" and mode == ABS:
-        return c, None
+        return c, None, 0
     if name == "JML":
-        return c, None
+        return c, None, 0
     if name in ("JMP",):  # ($xxxx) and ($xxxx,X) reach a table this cannot see
         raise Unpriced("%s %s: an indirect jump's table is not in this run" % (name, mode))
 
     # ...everything else reaches memory.
+    fast = False  # is the operand a FastROM byte? see the docstring
     if mode == DP:
         c += (IDLE if dp_unaligned else 0)
         at = SLOW
@@ -186,6 +226,7 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80):
         at = SLOW
     elif mode == ABS:
         at = access(val, db)
+        fast = fast_rom(val, db)
     elif mode in (ABSX, ABSY):
         # 16-bit index registers take the extra cycle unconditionally, and so
         # does every write. With 8-bit ones it would depend on a page crossing,
@@ -194,19 +235,39 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80):
             raise Unpriced("%s with 8-bit index: the page crossing decides" % name)
         c += IDLE
         at = access(val, db)
+        fast = fast_rom(val, db)
     elif mode in (ABL, ABLX):
         # A long address carries its own bank, so this is the one mode that does
         # not have to assume one. `ABLX` costs no more than `ABL`: the index is
         # added without an internal cycle.
         at = access(val & 0xFFFF, val >> 16)
+        fast = fast_rom(val & 0xFFFF, val >> 16)
+    elif mode in (ILDP, ILDPY):
+        # `LDA [$8A]` and `LDA [$8A],Y`: three bytes of pointer read out of the
+        # direct page — always low WRAM, always 8 apiece — and then the operand,
+        # wherever the pointer says. `cpu_adrIly` adds no idle for the index, so
+        # the two modes cost the same.
+        #
+        # Where the pointer *points* is runtime data this cannot see, and the
+        # difference between a metasprite in bank $8F and something in WRAM is 2
+        # cycles a byte, so it is asked for rather than assumed. `$80:BA51`
+        # reaches metasprites, and `$80:BD91`/`$80:BD97` are the two tests that
+        # guarantee `--ind=8F:8000` describes every pointer that gets that far.
+        if ind is None:
+            raise Unpriced("%s [dp]: pass --ind=BANK:ADDR for where it points" % name)
+        c += (IDLE if dp_unaligned else 0) + 3 * SLOW
+        at = access(ind & 0xFFFF, ind >> 16)
+        fast = fast_rom(ind & 0xFFFF, ind >> 16)
     else:
         raise Unpriced("addressing mode %d is not priced" % mode)
 
     if name in RMW:
         c += width * at + IDLE + width * at
+        touched = 2 * width
     else:
         c += width * at
-    return c, None
+        touched = width
+    return c, None, touched if fast else 0
 
 
 def main():
@@ -219,6 +280,7 @@ def main():
     dp_unaligned = "--dp-unaligned" in args
     m = x = 0
     db = 0x80
+    ind = None
     for a in args:
         if a.startswith("--m="):
             m = int(a[4:])
@@ -226,6 +288,9 @@ def main():
             x = int(a[4:])
         if a.startswith("--db="):
             db = int(a[5:], 16)
+        if a.startswith("--ind="):
+            ib, ia = a[6:].split(":")
+            ind = (int(ib, 16) << 16) | int(ia, 16)
 
     off = (bank & 0x7F) * 0x8000 + (addr - 0x8000)
     end = off + count
@@ -244,12 +309,15 @@ def main():
         for i, b in enumerate(rom[off + 1:off + 1 + n]):
             val |= b << (8 * i)
 
-        c, note = cost(name, mode, val, n, m, x, dp_unaligned, db)
+        c, note, fast = cost(name, mode, val, n, m, x, dp_unaligned, db, ind,
+                             bank)
         total += c
         # Every byte of an instruction is fetched exactly once, immediates
         # included — `cpu_adrImm` hands the opcode function two program
-        # addresses and it reads them like any other operand.
-        program += 1 + n
+        # addresses and it reads them like any other operand — and a data byte
+        # this instruction read out of bank $80+ ROM costs the same 2 more with
+        # FastROM off, so it belongs in the same column.
+        program += 1 + n + fast
         if not total_only:
             raw = " ".join("%02X" % b for b in rom[off:off + 1 + n])
             if mode == REL:
@@ -279,7 +347,7 @@ def main():
         off += 1 + n
         pc += 1 + n
 
-    print("%d master cycles over %d program bytes, branches not taken "
+    print("%d master cycles over %d FastROM bytes, branches not taken "
           "(add 2 per byte with FastROM off)" % (total, program))
 
 

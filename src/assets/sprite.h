@@ -204,6 +204,48 @@ int sprite_emit(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
                 int16_t ox, int16_t oy, uint16_t attr_or, uint16_t attr_and,
                 SpriteTileFn tile_of, void* ctx, SpriteEmitTrace* trace);
 
+// Which of the emitter's straight-line runs this call went through, for
+// `cosim_cost`. Same division of labour as everywhere else in the port: this
+// counts branch outcomes, which is a fact about the metasprite and where it
+// landed on screen, and `src/cosim/routines.c` multiplies them by cycles.
+//
+// The four emitters are one function here and they are one table there too,
+// which is worth a sentence because it is not obvious that it can be. They
+// differ in exactly four places and every one of them is a fixed insertion:
+// `EOR #$FFFF : SEC : SBC #$000F` in front of the y offset for a vertical flip
+// and in front of the x offset for a horizontal one, an `EOR #$4000`/`$8000`/
+// `$C000` on the finished OAM word for any flip at all, and — because adding
+// those pushed the loop-back past a byte's reach — `BEQ : JMP` where the
+// unflipped one has a `BNE`. So the model is this table plus three deltas,
+// which is the same claim `sprite_emit` makes by existing.
+typedef enum {
+  EMIT_BLK_PROLOGUE,    // $80:BA51  LDX $88, once a call
+  EMIT_BLK_Y_HIGH,      // $80:BA61 BCS taken: y >= $FFF1, hanging off the top
+  EMIT_BLK_Y_LOW,       // ...and $80:BA66 not taken: y < $00E0, on screen
+  EMIT_BLK_Y_DROP,      // ...or taken: below the display, so skip the piece
+  EMIT_BLK_X_NEAR,      // $80:BA77 BCC taken: x < $0100
+  EMIT_BLK_X_DROP,      // $80:BA7C BCC taken: off the right, so skip the piece
+  EMIT_BLK_X_WRAP,      // ...not taken: off the left, so set its high-table bit
+  EMIT_BLK_PIECE,       // $80:BAA9 BEQ not taken: emitted, and OAM has room
+  EMIT_BLK_PIECE_FULL,  // ...taken: that piece was the 128th
+  EMIT_BLK_NEXT,        // $80:BAB5 BNE taken: another piece to walk
+  EMIT_BLK_DONE,        // ...not taken: `$86` reached zero
+  EMIT_BLK_EXIT,        // $80:BAB7  STX $88 : RTS
+  EMIT_BLOCK_COUNT,
+} SpriteEmitBlock;
+
+// `flip` is carried so the harness knows which of the four emitters ran without
+// being told twice; the block counts alone do not say.
+typedef struct {
+  uint16_t blocks[EMIT_BLOCK_COUNT];
+  SpriteFlip flip;
+} SpriteEmitWork;
+
+int sprite_emit_counted(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
+                        int16_t ox, int16_t oy, uint16_t attr_or,
+                        uint16_t attr_and, SpriteTileFn tile_of, void* ctx,
+                        SpriteEmitTrace* trace, SpriteEmitWork* work);
+
 // Park the remaining sprites off-screen, as `$80:BDC4` does with `$E000`.
 void sprite_oam_terminate(SpriteOam* oam);
 

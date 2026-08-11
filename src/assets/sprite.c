@@ -94,6 +94,17 @@ static inline uint16_t mirror(uint16_t v) {
   return (uint16_t)(((uint16_t)~v) - 0x000f);
 }
 
+// Will `$80:BAB3 DEC $86 : BNE` go round again after the piece at `i`?
+//
+// The three ways out of a piece — dropped on y, dropped on x, emitted — all
+// converge on `$80:BAAB`, and the loop-back is the same branch for all three,
+// so the answer is the same question asked in three places rather than three
+// questions. The piece that *fills* OAM never reaches it: `$80:BAA9` leaves
+// first, which is why there is no call from that path.
+static inline bool piece_next(const SpriteMeta* meta, int i) {
+  return i + 1 < meta->count;
+}
+
 static inline void store16(SpriteOam* oam, uint32_t off, uint16_t v) {
   if (off < SPRITE_OAM_BYTES) oam->bytes[off] = (uint8_t)v;
   if (off + 1 < SPRITE_OAM_BYTES) oam->bytes[off + 1] = (uint8_t)(v >> 8);
@@ -102,6 +113,19 @@ static inline void store16(SpriteOam* oam, uint32_t off, uint16_t v) {
 int sprite_emit(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
                 int16_t ox, int16_t oy, uint16_t attr_or, uint16_t attr_and,
                 SpriteTileFn tile_of, void* ctx, SpriteEmitTrace* trace) {
+  SpriteEmitWork work;
+  return sprite_emit_counted(oam, meta, flip, ox, oy, attr_or, attr_and,
+                             tile_of, ctx, trace, &work);
+}
+
+int sprite_emit_counted(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
+                        int16_t ox, int16_t oy, uint16_t attr_or,
+                        uint16_t attr_and, SpriteTileFn tile_of, void* ctx,
+                        SpriteEmitTrace* trace, SpriteEmitWork* work) {
+  memset(work->blocks, 0, sizeof work->blocks);
+  work->flip = flip;
+  work->blocks[EMIT_BLK_PROLOGUE]++;
+  work->blocks[EMIT_BLK_EXIT]++;
   if (trace) {
     trace->walked = 0;
     trace->attr = 0;
@@ -127,24 +151,38 @@ int sprite_emit(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
     // tile slot, which the attribute store below overwrites.
     store16(oam, (uint32_t)x_index + 1, sy);
     // Keep only rows the 224-line display can show, allowing the 15 pixels a
-    // sprite may hang off the top ($FFF1..$FFFF).
-    if (sy < 0xfff1 && sy >= 0x00e0) {
+    // sprite may hang off the top ($FFF1..$FFFF). Two `CMP`s in the ROM and so
+    // three outcomes here, not two: a piece kept because it is above the screen
+    // costs one branch less than one kept because it is on it.
+    if (sy >= 0xfff1) {
+      work->blocks[EMIT_BLK_Y_HIGH]++;
+    } else if (sy >= 0x00e0) {
       PORT_COVER(emit_drop_y);
+      work->blocks[EMIT_BLK_Y_DROP]++;
+      work->blocks[piece_next(meta, i) ? EMIT_BLK_NEXT : EMIT_BLK_DONE]++;
       if (trace) trace->walked++;
       continue;
+    } else {
+      work->blocks[EMIT_BLK_Y_LOW]++;
     }
 
     uint16_t sx = (uint16_t)p->x;
     if (flip_x) { PORT_COVER(emit_flip_x); sx = mirror(sx); }
     sx = (uint16_t)(sx + (uint16_t)ox);
     if (x_index < SPRITE_OAM_LOW_BYTES) oam->bytes[x_index] = (uint8_t)sx;
+    if (sx < 0x0100) {
+      work->blocks[EMIT_BLK_X_NEAR]++;
+    }
     if (sx >= 0x0100) {
       if (sx < 0xfff1) {
         PORT_COVER(emit_drop_x);
+        work->blocks[EMIT_BLK_X_DROP]++;
+        work->blocks[piece_next(meta, i) ? EMIT_BLK_NEXT : EMIT_BLK_DONE]++;
         if (trace) trace->walked++;
         continue;
       }
       PORT_COVER(emit_wrap_x);
+      work->blocks[EMIT_BLK_X_WRAP]++;
       // Off the left edge: set this sprite's x bit 8 in the high table. The
       // ROM reads it out of the table at $80:B747, which holds exactly this
       // address and mask for all 128 sprites.
@@ -166,7 +204,13 @@ int sprite_emit(SpriteOam* oam, const SpriteMeta* meta, SpriteFlip flip,
     written++;
     // `$80:BAA9` leaves without stepping the walk past this piece, which is why
     // the break is here rather than after the increment below.
-    if (x_index == SPRITE_OAM_LOW_BYTES) { PORT_COVER(emit_oam_full); break; }
+    if (x_index == SPRITE_OAM_LOW_BYTES) {
+      PORT_COVER(emit_oam_full);
+      work->blocks[EMIT_BLK_PIECE_FULL]++;
+      break;
+    }
+    work->blocks[EMIT_BLK_PIECE]++;
+    work->blocks[piece_next(meta, i) ? EMIT_BLK_NEXT : EMIT_BLK_DONE]++;
     if (trace) trace->walked++;
   }
 

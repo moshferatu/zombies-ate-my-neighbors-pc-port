@@ -53,6 +53,45 @@ void sprite_cache_age(Wram* w);
 // Returns the value the ROM leaves in A: the slot's OAM tile word.
 uint16_t sprite_frame_tile(Wram* w, uint16_t frame);
 
+// ...and the same lookup, counting which of the ROM's straight-line runs it
+// went through, so `cosim_cost` can price the call. Same rule as the display
+// list's three walks: the port counts *branch outcomes*, which is a fact about
+// the game, and the harness multiplies them by cycles, which is a fact about
+// the machine. `sprite_frame_tile()` is this with the counts thrown away.
+//
+// This is the routine the whole exercise has been walking towards. Its cost
+// spans 288 to 2,414 and the miss path's scan is all of it: the hit path is
+// eleven bytes and one `RTS`, the miss path evicts, rewrites two maps and
+// appends a DMA, and between them sits a ring walk over 128 slots that stops at
+// the first one not already drawn this frame. How far that walk goes is a fact
+// about how crowded the screen is, which is exactly the kind of thing a
+// declared mean cannot carry.
+typedef enum {
+  TILE_BLK_HIT,         // $80:B9DE BMI not taken: the frame is already resident
+  TILE_BLK_MISS,        // ...taken, so a slot has to be found for it
+  TILE_BLK_SCAN_NEXT,   // $80:B9F9 BNE not taken: drawn this frame, step on
+  TILE_BLK_SCAN_WRAP,   // ...and that step ran past slot 127, so back to slot 0
+  TILE_BLK_SCAN_FOUND,  // $80:B9F9 BNE taken: this slot is free
+  TILE_BLK_SLOT_EMPTY,  // $80:BA10 BMI taken: nothing was loaded there
+  TILE_BLK_SLOT_EVICT,  // ...not taken, so unmap the frame that was
+  TILE_BLK_TAIL,        // $80:BA1A..$80:BA50: rewrite both maps, queue the DMA
+  TILE_BLOCK_COUNT,
+} SpriteTileBlock;
+
+// Invariants, which are the same statement three ways and are what makes the
+// table above readable as a path rather than as a histogram:
+//
+//   HIT + MISS == 1                          one call takes one of the two
+//   MISS == SCAN_FOUND == TAIL               a miss always settles somewhere
+//   SLOT_EMPTY + SLOT_EVICT == SCAN_FOUND    ...and the slot was one or other
+//
+// `SCAN_NEXT + SCAN_WRAP` is the only unbounded one, and it is the spread.
+typedef struct {
+  uint16_t blocks[TILE_BLOCK_COUNT];
+} SpriteTileWork;
+
+uint16_t sprite_frame_tile_counted(Wram* w, uint16_t frame, SpriteTileWork* work);
+
 // --- $80:C05A  sprite_cache_init --------------------------------------------
 //
 // Point the cache at a frame array and declare all 128 slots empty. Five call

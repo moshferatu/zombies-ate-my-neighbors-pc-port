@@ -1,5 +1,7 @@
 #include "port/sprite_cache.h"
 
+#include <string.h>
+
 #include "assets/sprite.h"
 #include "port/coverage.h"
 
@@ -20,7 +22,9 @@ void sprite_cache_age(Wram* w) {
     wram_w16(w, W_SPRITE_SLOT_TICK + slot * 2, aged);
 }
 
-uint16_t sprite_frame_tile(Wram* w, uint16_t frame) {
+uint16_t sprite_frame_tile_counted(Wram* w, uint16_t frame, SpriteTileWork* work) {
+  memset(work->blocks, 0, sizeof work->blocks);
+
   uint16_t tick = wram_r16(w, W_SPRITE_TICK);
   uint16_t fx = (uint16_t)(frame * 2);  // the ROM's index: frame number x2
 
@@ -28,10 +32,12 @@ uint16_t sprite_frame_tile(Wram* w, uint16_t frame) {
   uint16_t entry = wram_r16(w, W_FRAME_SLOT + fx);
   if (!(entry & 0x8000)) {
     PORT_COVER(cache_hit);
+    work->blocks[TILE_BLK_HIT]++;
     wram_w16(w, W_SPRITE_SLOT_TICK + entry, tick);
     return sprite_slot_tile(entry / 2);
   }
   PORT_COVER(cache_miss);
+  work->blocks[TILE_BLK_MISS]++;
 
   // Miss. `$80:B9EC` parks the doubled frame index in scratch and it stays
   // there afterwards, so the port writes it too — the harness diffs WRAM.
@@ -46,22 +52,32 @@ uint16_t sprite_frame_tile(Wram* w, uint16_t frame) {
   // is not a behaviour change — it is a hang the port declines to reproduce. If
   // it ever fired, the slot we settle on would diverge and the harness would
   // say so.
+  //
+  // The step is counted in two flavours because the ROM pays for them
+  // differently: `INX : INX : CPX #$0100 : BNE` falls through to `LDX #$0000 :
+  // BRA` on the 128th slot, so the wrap costs one branch-not-taken and one
+  // taken `BRA` more than an ordinary step. It happens once every 64 misses or
+  // so, which is often enough to matter and rare enough to be easy to forget.
   uint16_t sx = (uint16_t)((wram_r16(w, W_SPRITE_LRU_SLOT) + 2) & 0xff);
   for (int guard = 0; guard < SPRITE_SLOTS; guard++) {
     if (wram_r16(w, W_SPRITE_SLOT_TICK + sx) != tick) break;
     PORT_COVER(cache_scan);
     sx = (uint16_t)((sx + 2) & 0xff);
+    work->blocks[sx == 0 ? TILE_BLK_SCAN_WRAP : TILE_BLK_SCAN_NEXT]++;
   }
+  work->blocks[TILE_BLK_SCAN_FOUND]++;
   wram_w16(w, W_SPRITE_LRU_SLOT, sx);
   wram_w16(w, W_SPRITE_SLOT_TICK + sx, tick);
 
   // Whatever was in the slot is no longer anywhere.
   uint16_t evicted = wram_r16(w, W_SLOT_FRAME + sx);
+  work->blocks[(evicted & 0x8000) ? TILE_BLK_SLOT_EMPTY : TILE_BLK_SLOT_EVICT]++;
   if (!(evicted & 0x8000)) {
     PORT_COVER(cache_evict);
     wram_w16(w, W_FRAME_SLOT + evicted, 0xffff);
   }
 
+  work->blocks[TILE_BLK_TAIL]++;
   wram_w16(w, W_FRAME_SLOT + fx, sx);
   wram_w16(w, W_SLOT_FRAME + sx, fx);
 
@@ -86,6 +102,11 @@ uint16_t sprite_frame_tile(Wram* w, uint16_t frame) {
   wram_w16(w, W_SPRITE_UPLOAD_COUNT, (uint16_t)(q + 2));
 
   return sprite_slot_tile(sx / 2);
+}
+
+uint16_t sprite_frame_tile(Wram* w, uint16_t frame) {
+  SpriteTileWork work;
+  return sprite_frame_tile_counted(w, frame, &work);
 }
 
 void sprite_cache_init(Wram* w, uint16_t base, uint16_t bank, uint16_t caller_db,
