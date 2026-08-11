@@ -259,6 +259,21 @@ void actor_cull_counted(Wram* w, ActorCullWork* work);
 bool actor_collide_notify(Wram* w, const Rom* rom, uint16_t a, uint16_t b,
                           ThreadCallResult* tail);
 
+// What the two dispatches did, for `src/cosim/routines.c` to price.
+//
+// The routine itself has no branches at all: twenty-six instructions of
+// straight line with a `JSL $80:8480` at `$80:BEB4` and another at `$80:BEC4`.
+// So there is no block table here — its own cost is one constant — and the only
+// thing that varies between calls is what the two dispatches cost, which is why
+// this carries a `ThreadCallWork` apiece rather than a count of anything.
+typedef struct {
+  ThreadCallWork call[2];
+} CollideNotifyWork;
+
+bool actor_collide_notify_counted(Wram* w, const Rom* rom, uint16_t a,
+                                  uint16_t b, ThreadCallResult* tail,
+                                  CollideNotifyWork* work);
+
 // --- $80:BEC9 ---------------------------------------------------------------
 
 // Test every pair of visible records for a 16x16 overlap, and tell the two that
@@ -309,17 +324,26 @@ typedef enum {
   OVL_BLOCK_COUNT,
 } ActorOverlapBlock;
 
+// How many dispatches one pass can record the shape of. A pass with more hits
+// than this is not priced — not because the cost is unknowable but because
+// there is nowhere to put it, so the bound is set well above anything the
+// corpus produces and the overflow is treated as a decline like any other.
+#define OVL_MAX_PRICED_HITS 16
+
 // What one pass did, and whether its cost can be known at all.
 //
-// `hits` is the count of `OVL_BLK_Y_NEAR`, kept separately because it is not a
-// cost but a veto. Every other block is a straight line the port can price, but
-// `$80:BF0E JSR $BE8F` is a dispatch into two actor handlers, and what those
-// cost is a tree this port does not walk. **A pass with any hit in it therefore
-// reports no cost at all** and falls back to its declared mean — visibly, as a
-// `priced` below `checked` in the cost-model report. See `cosim_cost`.
+// `hits` is the count of `OVL_BLK_Y_NEAR`. It used to be a veto: `$80:BF0E JSR
+// $BE8F` is a dispatch into two actor handlers, and until those handlers had
+// cost models a pass with any hit in it reported no cost at all. Now each hit
+// records the two dispatches it made, and the veto has moved down a level — a
+// pass is priced when every handler it entered is one `src/cosim/routines.c`
+// has a table for, and declines otherwise. The count is still kept because a
+// pass with more hits than `notify` can hold has to decline for a different
+// reason, and the two should not be confused.
 typedef struct {
   uint16_t blocks[OVL_BLOCK_COUNT];
   uint16_t hits;
+  CollideNotifyWork notify[OVL_MAX_PRICED_HITS];
 } ActorOverlapWork;
 
 // The same pass, reporting what it did. `actor_overlap_pass` is this with the

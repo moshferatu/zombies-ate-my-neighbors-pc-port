@@ -114,10 +114,17 @@ def fast_rom(addr, bank=0x80):
 
 # Opcodes whose implied form is not the two-cycle kind: an entry is the number
 # of internal cycles and the number of stack bytes it moves.
+# Idles spent, and bytes moved to or from the stack. `None` for the width means
+# "ask `operand_width`": `PHA`/`PLA` follow `m` and `PHX`/`PHY`/`PLX`/`PLY`
+# follow `x`, exactly as `cpu.c` does — `case 0x48` pushes one byte when
+# `cpu->mf` is set and two when it is clear. Hardcoding two made every 8-bit
+# push 8 master cycles too dear, which is half of the 6-cycle error the
+# dispatcher's frame first showed up as: `$80:848F` and `$80:8496` are both
+# `PHA` under `SEP #$20`.
 STACK_OPS = {
-    "PHA": (1, 2), "PHX": (1, 2), "PHY": (1, 2), "PHD": (1, 2),
+    "PHA": (1, None), "PHX": (1, None), "PHY": (1, None), "PHD": (1, 2),
     "PHB": (1, 1), "PHK": (1, 1), "PHP": (1, 1),
-    "PLA": (2, 2), "PLX": (2, 2), "PLY": (2, 2), "PLD": (2, 2),
+    "PLA": (2, None), "PLX": (2, None), "PLY": (2, None), "PLD": (2, 2),
     "PLB": (2, 1), "PLP": (2, 1),
 }
 
@@ -138,6 +145,14 @@ RMW = {"INC", "DEC", "ASL", "LSR", "ROL", "ROR", "TSB", "TRB"}
 STORES = {"STA", "STX", "STY", "STZ"}
 
 BRANCHES = {"BPL", "BMI", "BVC", "BVS", "BCC", "BCS", "BNE", "BEQ", "BRA"}
+
+# The modes whose effective address is built from D, and which therefore cost
+# one extra internal cycle whenever D's low byte is non-zero. `--dp-unaligned`
+# prices a run that way; the count is reported separately as well, because a
+# routine reached through `$80:84A2  TCD` runs on a page the *caller* picks and
+# a model of it has to carry both numbers. Stack-relative is not on the list:
+# its address is built from S, which has no such penalty.
+DP_MODES = {DP, DPX, DPY, IDP, IDPX, IDPY, ILDP, ILDPY}
 
 # Index-register width decides the operand size for these; A's width for the
 # rest. Only matters for immediates, which `dis816` has already sized.
@@ -181,6 +196,8 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
     if mode == IMP:
         if name in STACK_OPS:
             idles, bytes_ = STACK_OPS[name]
+            if bytes_ is None:
+                bytes_ = width
             return c + idles * IDLE + bytes_ * SLOW, None, 0
         if name == "RTS":
             return c + 3 * IDLE + 2 * SLOW, None, 0
@@ -197,6 +214,20 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
         return c, "%d taken" % (c + IDLE), 0
     if mode == REL16:  # BRL is always taken and always costs the extra
         return c + IDLE, None, 0
+
+    # The three that push something instead of reading it. Without these `PEA`
+    # decodes as an absolute operand and gets priced as a *load* of the address
+    # it is pushing — 24 cycles instead of 34, at `$80:8490` a read of `$84A4`
+    # that the hardware never performs.
+    if name == "PEA":
+        # `cpu_readOpcodeWord` then `cpu_pushWord`, and no idle between them.
+        return c + 2 * SLOW, None, 0
+    if name == "PER":
+        return c + IDLE + 2 * SLOW, None, 0
+    if name == "PEI":
+        # ...and this one really does read, out of the direct page, before it
+        # pushes.
+        return c + (IDLE if dp_unaligned else 0) + 2 * SLOW + 2 * SLOW, None, 0
 
     if name == "JSR" and mode == ABS:
         return c + IDLE + 2 * SLOW, None, 0
@@ -297,6 +328,7 @@ def main():
     pc = addr
     total = 0
     program = 0  # bytes fetched from the program stream: see --sum
+    dp_insns = 0  # instructions that pay an idle when D is unaligned
     while off < end:
         op = rom[off]
         name, mode = T[op]
@@ -318,6 +350,8 @@ def main():
         # this instruction read out of bank $80+ ROM costs the same 2 more with
         # FastROM off, so it belongs in the same column.
         program += 1 + n + fast
+        if mode in DP_MODES:
+            dp_insns += 1
         if not total_only:
             raw = " ".join("%02X" % b for b in rom[off:off + 1 + n])
             if mode == REL:
@@ -347,8 +381,9 @@ def main():
         off += 1 + n
         pc += 1 + n
 
-    print("%d master cycles over %d FastROM bytes, branches not taken "
-          "(add 2 per byte with FastROM off)" % (total, program))
+    print("%d master cycles over %d FastROM bytes, %d direct-page, branches "
+          "not taken (add 2 per byte with FastROM off, 6 per direct-page "
+          "instruction with D unaligned)" % (total, program, dp_insns))
 
 
 if __name__ == "__main__":

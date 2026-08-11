@@ -392,13 +392,30 @@ void cosim_cost(int cycles);
 // while `$420D` is clear each costs 2 more. Carrying the length rather than
 // assuming the register never changes is the difference between a model that is
 // right on 40 movies and one that is right on 43.
+//
+// `dp` is how many of the run's instructions use direct-page addressing. Each
+// of them costs one extra internal cycle while `D`'s low byte is non-zero, and
+// unlike the other two columns that is a property of the *caller*, not of the
+// run. Every routine priced before the collision handlers ran on page zero, so
+// the column was `0` everywhere and did not need to exist; `$80:84A2  TCD`
+// installs the target thread's own page, and the table at `$80:82DE` tiles
+// `$7E:0100-$7E:0CFF` at stride `$80` — so twelve of the twenty-four threads
+// run unaligned and twelve do not. A handler model that ignored this would be
+// right on half the actors in the game.
 typedef struct {
   int cycles;
   int bytes;
+  int dp;
 } CosimRun;
 
+static inline int cosim_run_cycles_dp(const CosimRun* r, bool fastrom,
+                                      bool dp_unaligned) {
+  return r->cycles + (fastrom ? 0 : 2 * r->bytes) +
+         (dp_unaligned ? 6 * r->dp : 0);
+}
+
 static inline int cosim_run_cycles(const CosimRun* r, bool fastrom) {
-  return r->cycles + (fastrom ? 0 : 2 * r->bytes);
+  return cosim_run_cycles_dp(r, fastrom, false);
 }
 
 // What one routine did over a run.

@@ -1,5 +1,7 @@
 #include "port/collide.h"
 
+#include <string.h>
+
 #include "port/apu.h"
 #include "port/bcd.h"
 #include "port/coverage.h"
@@ -28,18 +30,24 @@
 // `r` comes in holding the registers as `player_collide` left them at its
 // `JSR ($F808,X)`, and every exit here is a branch to the same `RTS`, so which
 // one was taken is exactly what decides A, X and the flags.
-static void player_collide_hurt(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+static void player_collide_hurt(Wram* w, uint16_t dp, ActorHandlerRegs* r,
+                                uint16_t* blk) {
+  blk[HURT_BLK_RTS]++;  // every exit below reaches the same $80:F978
+
   // `$80:F950  LDA $70 : CMP #$0002 : BEQ : CMP #$0004 : BEQ`. Two of the
   // player's states ignore collisions outright. Either comparison that matches
-  // leaves zero behind, so both exits carry the same flags.
+  // leaves zero behind, so both exits carry the same flags — but they are
+  // reached a comparison apart, so the two are counted apart.
   uint16_t state = wram_r16(w, (uint32_t)dp + ACTOR_DP_STATE);
   r->a = state;
   if (state == 2 || state == 4) {
     PORT_COVER(hurt_state_immune);
+    blk[state == 2 ? HURT_BLK_STATE_A : HURT_BLK_STATE_B]++;
     r->n = false;
     r->z = true;
     return;
   }
+  blk[HURT_BLK_STATE_PASS]++;
 
   // `$80:F95C  LDX $0E : LDA $1CBC,X : CMP #$0004 : BNE`. The absolute read is
   // unambiguous whatever the data bank holds — `sprite_build_oam` sets it to $80
@@ -50,17 +58,23 @@ static void player_collide_hurt(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
   uint16_t weapon = wram_r16(w, W_PLAYER_WEAPON + player);
   r->a = weapon;
   if (weapon == PLAYER_WEAPON_IMMUNE) {
+    blk[HURT_BLK_WEAPON_MATCH]++;
     // `$80:F966  LDA $1E : BNE`. Holding that one weapon with `$1E` set is the
     // second way out, and it is the one branch here no input has ever taken.
     uint16_t health = wram_r16(w, (uint32_t)dp + ACTOR_DP_HEALTH);
     r->a = health;
     if (health != 0) {
       PORT_COVER(hurt_weapon_immune);
+      blk[HURT_BLK_HEALTH_SET]++;
       r->n = (health & 0x8000) != 0;
       r->z = false;
       return;
     }
+    blk[HURT_BLK_HEALTH_ZERO]++;
+  } else {
+    blk[HURT_BLK_WEAPON_OTHER]++;
   }
+  blk[HURT_BLK_TIMER]++;
 
   // `$80:F96A  LDA $52 : BPL`. The hit-recovery timer: a hit only lands once it
   // has run past zero into the sign bit.
@@ -68,6 +82,7 @@ static void player_collide_hurt(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
   r->a = timer;
   if (!(timer & 0x8000)) {
     PORT_COVER(hurt_iframes);
+    blk[HURT_BLK_IFRAMES]++;
     r->n = false;
     r->z = timer == 0;
     return;
@@ -76,6 +91,7 @@ static void player_collide_hurt(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
   // The two stores that are the whole point of the routine: post the event for
   // the player's own code to pick up, and start the recovery timer again.
   PORT_COVER(hurt_taken);
+  blk[HURT_BLK_TAKEN]++;
   wram_w16(w, (uint32_t)dp + ACTOR_DP_EVENT, 0x8001);
   wram_w16(w, (uint32_t)dp + ACTOR_DP_HURT_TIMER, PLAYER_HURT_TIMER_RESET);
   // `LDA #$0040` is the last instruction to set a flag; `STA` sets none.
@@ -421,13 +437,17 @@ static void player_state_tail(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
 // $80:F7F7  player_collide
 // ---------------------------------------------------------------------------
 
-bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                    ActorHandlerRegs* r, uint32_t* unported) {
+bool player_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                            ActorHandlerRegs* r, uint32_t* unported,
+                            PlayerCollideWork* work) {
+  memset(work, 0, sizeof *work);
+
   // `$80:F7F7  CMP #$005C : BCS $F806`, and `$F806` is `CLC : RTL`. An id at or
   // above the player's own side belongs to the other half of the pair, so this
   // returns having read one word and written none.
   if (arg >= COLLIDE_ID_PLAYER) {
     PORT_COVER(player_ignore);
+    work->blocks[PLAYER_BLK_IGNORE]++;
     uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
     r->a = arg;
     r->n = (diff & 0x8000) != 0;
@@ -440,6 +460,7 @@ bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // the pair `actor_collide_notify` just published — and `$58` is direct page,
   // so this files the other record on the player's own page for its per-frame
   // code to find. Both happen before the dispatch, and both survive it.
+  work->blocks[PLAYER_BLK_DISPATCH]++;
   uint16_t index = (uint16_t)(arg * 2);
   uint16_t other = wram_r16(w, W_HANDLER_OTHER);
   r->x = index;
@@ -452,6 +473,7 @@ bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // bank $80 and the table is read straight out of ROM rather than transcribed
   // — which is also what makes a ROM hack's table work.
   uint16_t target = rom_word(rom, PLAYER_COLLIDE_TABLE + (uint32_t)index);
+  work->target = target;
   switch (target) {
     case PLAYER_COLLIDE_NOP:
       // `$80:F87A` is a bare `RTS`. This id does nothing to the player, and the
@@ -460,7 +482,7 @@ bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
       break;
     case PLAYER_COLLIDE_HURT:
       PORT_COVER(player_hurt_entry);
-      player_collide_hurt(w, dp, r);
+      player_collide_hurt(w, dp, r, work->hurt);
       break;
     case PLAYER_COLLIDE_SFX:
       PORT_COVER(player_sfx_only);
@@ -658,6 +680,12 @@ bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   return true;
 }
 
+bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                    ActorHandlerRegs* r, uint32_t* unported) {
+  PlayerCollideWork work;
+  return player_collide_counted(w, rom, dp, arg, r, unported, &work);
+}
+
 // ---------------------------------------------------------------------------
 // $81:8888  enemy_collide
 // ---------------------------------------------------------------------------
@@ -689,14 +717,17 @@ static bool enemy_die(Wram* w, const Rom* rom, uint16_t dp,
   return true;
 }
 
-bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                   ActorHandlerRegs* r, uint32_t* unported) {
+bool enemy_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                           ActorHandlerRegs* r, uint32_t* unported,
+                           EnemyCollideWork* work) {
+  memset(work->blocks, 0, sizeof work->blocks);
   if (arg < COLLIDE_ID_PLAYER) {
     // `$81:8888  CMP #$005C : BCS : CLC : RTL`. The comparison borrowed, so N is
     // set on every call that gets here and Z never is. Nothing is read and
     // nothing is written, which is the finding rather than an oversight: an
     // enemy told about a non-player collision touches nothing at all.
     PORT_COVER(enemy_ignore);
+    work->blocks[ENEMY_BLK_IGNORE]++;
     uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
     r->a = arg;
     r->n = (diff & 0x8000) != 0;
@@ -721,10 +752,12 @@ bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // been reached.
   if (id == ENEMY_HIT_SPECIAL_B) {
     PORT_COVER(enemy_hit_freeze);
+    work->blocks[ENEMY_BLK_DEEP]++;
     return enemy_freeze(w, dp, r);
   }
   if (id == ENEMY_HIT_SPECIAL_A) {
     PORT_COVER(enemy_hit_special);
+    work->blocks[ENEMY_BLK_DEEP]++;
     return enemy_bubble_react(w, dp, r);
   }
 
@@ -741,6 +774,7 @@ bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // holding its negative health.
   if (left & 0x8000) {
     PORT_COVER(enemy_died);
+    work->blocks[ENEMY_BLK_DEEP]++;
     wram_w16(w, (uint32_t)dp + ACTOR_DP_HEALTH, left);
     // `$81:88B9  STZ $7E`. Transcribed rather than diffed: the word is already
     // zero every time this runs — the enemy's own init cleared it and nothing
@@ -762,6 +796,7 @@ bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // Z is set and the `CLC` that follows is what carry ends up as.
   if (left == health) {
     PORT_COVER(enemy_no_damage);
+    work->blocks[ENEMY_BLK_NO_DAMAGE]++;
     r->a = left;
     r->x = index;
     r->n = false;
@@ -773,8 +808,15 @@ bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // `$81:88B1  STA $1E : JML $81:8506`. A `JML`, so what the reaction returns is
   // what this routine returns.
   PORT_COVER(enemy_survived);
+  work->blocks[ENEMY_BLK_DEEP]++;
   wram_w16(w, (uint32_t)dp + ACTOR_DP_HEALTH, left);
   return enemy_survived_react(w, dp, r);
+}
+
+bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                   ActorHandlerRegs* r, uint32_t* unported) {
+  EnemyCollideWork work;
+  return enemy_collide_counted(w, rom, dp, arg, r, unported, &work);
 }
 
 // ---------------------------------------------------------------------------
@@ -970,7 +1012,10 @@ bool enemy_freeze(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
 // $81:FE0E  shot_collide
 // ---------------------------------------------------------------------------
 
-bool shot_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
+bool shot_collide_counted(Wram* w, uint16_t dp, uint16_t arg,
+                          ActorHandlerRegs* r, ShotCollideWork* work) {
+  memset(work->blocks, 0, sizeof work->blocks);
+
   // `$81:FE0E  TAY`. A is not touched again on the way out of the ignore path,
   // so the argument is still in it at the `RTL`; Y is the id from here on.
   r->y = arg;
@@ -984,10 +1029,17 @@ bool shot_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
   if (arg == SHOT_STOP_ID_A) {
     PORT_COVER(shot_expire);
     PORT_COVER(shot_expire_zero);
+    work->blocks[SHOT_BLK_STOP_A]++;
     // carry untouched: `r->c` is what the dispatcher handed in
   } else if (arg == SHOT_STOP_ID_B || arg == SHOT_STOP_ID_C ||
              arg == SHOT_STOP_ID_D) {
     PORT_COVER(shot_expire);
+    // The chain is unrolled and these three sit at different depths in it, so
+    // the block is which one matched — the one thing about a stop that costs
+    // different amounts.
+    work->blocks[arg == SHOT_STOP_ID_B   ? SHOT_BLK_STOP_B
+                 : arg == SHOT_STOP_ID_C ? SHOT_BLK_STOP_C
+                                         : SHOT_BLK_STOP_D]++;
     // Whichever of the three matched, the `CMP` that matched set carry: an
     // equal comparison never borrows.
     r->c = true;
@@ -996,6 +1048,7 @@ bool shot_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
     // flags are the last one's — `arg - 1`. Carry is set because the only id
     // that could clear it is 0, and 0 left through the branch above.
     PORT_COVER(shot_pass);
+    work->blocks[SHOT_BLK_FLY]++;
     uint16_t diff = (uint16_t)(arg - SHOT_STOP_ID_D);
     r->a = arg;
     r->n = (diff & 0x8000) != 0;
@@ -1003,6 +1056,7 @@ bool shot_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
     r->c = true;
     return true;
   }
+  work->blocks[SHOT_BLK_TAIL]++;
 
   // `$81:FE21  LDY $0A : LDA #$0000 : STA $000E,Y`. The absolute-indexed store
   // goes through the record's *address*, and lands in `$7E` whichever of $7E/$80
@@ -1021,6 +1075,11 @@ bool shot_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
   r->n = false;
   r->z = false;
   return true;
+}
+
+bool shot_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
+  ShotCollideWork work;
+  return shot_collide_counted(w, dp, arg, r, &work);
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,8 +1295,10 @@ bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
 // $80:8480  thread_call_handler
 // ---------------------------------------------------------------------------
 
-bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
-                         bool carry_in, ThreadCallResult* out) {
+bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
+                                 uint16_t arg, bool carry_in,
+                                 ThreadCallResult* out, ThreadCallWork* work) {
+  memset(work, 0, sizeof *work);
   out->unported = 0;
 
   // `$80:8480  LDA $1300,X : ORA $1330,X : BEQ $84B0`. A slot with no handler
@@ -1246,6 +1307,7 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
   uint16_t bank = wram_r16(w, W_THREAD_HANDLER_BANK + slot);
   if ((lo | bank) == 0) {
     PORT_COVER(handler_none);
+    work->blocks[THREAD_CALL_BLK_NONE]++;
     out->entered = false;
     out->a = 0;  // what the `ORA` produced
     out->x = slot;
@@ -1257,6 +1319,8 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
   // `$80:849E  LDA $8082DE,X : TCD` — the handler runs on *its own* thread's
   // direct page, not the caller's. Everything an actor is lives on that page.
   uint16_t dp = rom_word(rom, THREAD_DP_TABLE + slot);
+  work->blocks[THREAD_CALL_BLK_ENTER]++;
+  work->dp = dp;
 
   // `$80:84A3  TYA` then `RTL`: A is the argument, and X and Y are what the
   // dispatcher was called with, untouched.
@@ -1268,15 +1332,16 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
                         .c = carry_in};
 
   uint32_t entry = ((uint32_t)(bank & 0xff) << 16) | lo;
+  work->entry = entry;
   bool served;
   if (entry == PLAYER_COLLIDE_ENTRY) {
     // The address a decline happened at is the harness's business, and it asks
     // `player_collide` directly through its own registry entry. Passing NULL
     // here is what keeps `guard_thread_call_handler` from censusing the door
     // rather than the room behind it.
-    served = player_collide(w, rom, dp, arg, &r, NULL);
+    served = player_collide_counted(w, rom, dp, arg, &r, NULL, &work->player);
   } else if (entry == ENEMY_COLLIDE_ENTRY) {
-    served = enemy_collide(w, rom, dp, arg, &r, NULL);
+    served = enemy_collide_counted(w, rom, dp, arg, &r, NULL, &work->enemy);
   } else if (entry == MONSTER_COLLIDE_ENTRY) {
     // **This one was missing, and nothing could see it.** `monster_collide` has
     // been registered on its own entry PC since the level-45 round, so `verify`
@@ -1323,7 +1388,7 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
   } else if (entry == BOSS_9660_COLLIDE_ENTRY) {
     served = boss_9660_collide(w, rom, dp, arg, &r);
   } else if (entry == SHOT_COLLIDE_ENTRY) {
-    served = shot_collide(w, dp, arg, &r);
+    served = shot_collide_counted(w, dp, arg, &r, &work->shot);
   } else if (entry == SHOT_EDAA_COLLIDE_ENTRY) {
     // `r` is already exactly what `$80:84A3  TYA` left, and a bare `RTL`
     // changes none of it — so there is deliberately no assignment here. The
@@ -1360,14 +1425,23 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
   // site read zero on every movie.
   if (r.c) {
     PORT_COVER(handler_park);
+    work->blocks[THREAD_CALL_BLK_PARK]++;
     // `$80:84A8  LDA #$8000 : STA $1180,X`, and that `LDA` is the last thing to
     // touch A — so the parked value, not the handler's, is what the caller gets
     // back. Nothing but a dying enemy comes through here, which is why this was
     // invisible until `enemy_collide` grew its death branch.
     wram_w16(w, W_THREAD_WAIT + slot, 0x8000);
     out->a = 0x8000;
+  } else {
+    work->blocks[THREAD_CALL_BLK_RESUME]++;
   }
   return true;
+}
+
+bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
+                         bool carry_in, ThreadCallResult* out) {
+  ThreadCallWork work;
+  return thread_call_handler_counted(w, rom, slot, arg, carry_in, out, &work);
 }
 
 // ---------------------------------------------------------------------------

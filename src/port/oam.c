@@ -223,8 +223,9 @@ void actor_cull(Wram* w) {
 // $80:BE8F  actor_collide_notify
 // ---------------------------------------------------------------------------
 
-bool actor_collide_notify(Wram* w, const Rom* rom, uint16_t a, uint16_t b,
-                          ThreadCallResult* tail) {
+bool actor_collide_notify_counted(Wram* w, const Rom* rom, uint16_t a,
+                                  uint16_t b, ThreadCallResult* tail,
+                                  CollideNotifyWork* work) {
   // `$80:BE8F`..`$80:BEA6`. Both records are read out in full before either
   // dispatch runs, which is what makes the second one see the pair as it was
   // rather than as the first handler left it.
@@ -246,7 +247,8 @@ bool actor_collide_notify(Wram* w, const Rom* rom, uint16_t a, uint16_t b,
   // whichever way `$76` is pointing when its dispatch runs is what it files.
   wram_w16(w, W_HANDLER_SELF, b);
   wram_w16(w, W_HANDLER_OTHER, a);
-  if (!thread_call_handler(w, rom, thread_b, id_a, tail->c, tail)) {
+  if (!thread_call_handler_counted(w, rom, thread_b, id_a, tail->c, tail,
+                                   &work->call[0])) {
     PORT_COVER(collide_unported);
     return false;
   }
@@ -254,7 +256,8 @@ bool actor_collide_notify(Wram* w, const Rom* rom, uint16_t a, uint16_t b,
 
   wram_w16(w, W_HANDLER_SELF, a);
   wram_w16(w, W_HANDLER_OTHER, b);
-  if (!thread_call_handler(w, rom, thread_a, id_b, tail->c, tail)) {
+  if (!thread_call_handler_counted(w, rom, thread_a, id_b, tail->c, tail,
+                                   &work->call[1])) {
     PORT_COVER(collide_unported);
     return false;
   }
@@ -265,6 +268,12 @@ bool actor_collide_notify(Wram* w, const Rom* rom, uint16_t a, uint16_t b,
   // been reached by any input.
   PORT_COVER_IF(entered || tail->entered, collide_handler, collide_none);
   return true;
+}
+
+bool actor_collide_notify(Wram* w, const Rom* rom, uint16_t a, uint16_t b,
+                          ThreadCallResult* tail) {
+  CollideNotifyWork work;
+  return actor_collide_notify_counted(w, rom, a, b, tail, &work);
 }
 
 // ---------------------------------------------------------------------------
@@ -343,9 +352,16 @@ bool actor_overlap_pass_counted(Wram* w, const Rom* rom,
               // this call — and the no-handler path inside the dispatch is the
               // only thing that would pass it on.
               PORT_COVER(overlap_hit);
-              work->hits++;
               ThreadCallResult tail = {.c = false};
-              if (!actor_collide_notify(w, rom, a, b, &tail)) return false;
+              // Record the dispatch's shape while there is room for it; past
+              // that the pass still runs, and only its price is lost.
+              CollideNotifyWork spill;
+              CollideNotifyWork* into = work->hits < OVL_MAX_PRICED_HITS
+                                            ? &work->notify[work->hits]
+                                            : &spill;
+              work->hits++;
+              if (!actor_collide_notify_counted(w, rom, a, b, &tail, into))
+                return false;
             }
           }
         }

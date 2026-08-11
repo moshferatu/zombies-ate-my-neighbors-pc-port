@@ -2581,6 +2581,226 @@ either that, or it is the next routine down the drift table —
 `actor_nearest` at 22.2 — none of which is subsumed by anything, so unlike this
 round's work, pricing them would move a framebuffer the day it landed.
 
+## Into the handler tree (2026-08-11)
+
+The last round ended by naming `$80:BE8F` as the thing standing between the
+sprite pass and a price, and by describing it as "not a walk whose iterations
+can be counted, it is a dispatch into a hundred and something handlers, most of
+which are ported and none of which has ever been asked what it cost." Two of
+those clauses were wrong, and the round started by finding that out rather than
+by believing it.
+
+### What the census actually said
+
+`$80:BE8F` is twenty-six instructions of straight line with two `JSL $80:8480`
+in it. `$80:8480` is `thread_call_handler`, the general dispatcher, and it is
+that routine — not the collision code — that opens onto the whole game.
+
+So the question is how many handlers a *collision* can reach.
+`src/port/collide.h` opened with a census that answered "five". Its own dispatch
+chain, forty lines further down, has twenty-five. The header's list was written
+when it was complete and the chain grew past it without anybody editing the
+prose above — which is the ordinary way a comment goes stale, and a reason to
+check the code under a comment before planning a round around it. The header now
+says so itself.
+
+Neither number is the one that matters. Counting the addresses that actually
+came up, per movie, gives a much smaller and much more lopsided answer:
+
+| movie | dispatches to a handler with no price |
+| --- | --- |
+| `level25-2p` | `$82:9660` 9,802 · `$81:C440` 2,700 · `$80:CAEE` 1,666 · `$81:CDDE` 212 |
+| `level1-rescue` | `$81:8888` 2,451 · `$83:A364` 4 |
+| `level45-carried` | `$81:C4A6` 4,269 · `$80:CAEE` 86 · `$83:A364` 2 |
+| `level53` | `$81:8888` 530 · `$83:A364` 4 |
+
+Four or five addresses a movie, one of them dominant. That is a work list, and
+it is the reason this round priced four handlers rather than despairing at
+twenty-five.
+
+### A third column, because a handler is not on page zero
+
+Every routine priced before this one ran with `D` at `$0000`, so every model in
+this file quietly assumed direct-page instructions cost what the manual's base
+figure says. Handlers do not: `$80:84A2  TCD` installs the *target thread's*
+page, read from the 24-entry table at `$80:82DE`, and that table tiles
+`$7E:0100-$7E:0CFF` at stride `$80`:
+
+    slot  0  D=$0100   aligned
+    slot  1  D=$0280   UNALIGNED
+    ...
+    slot 12  D=$0180   UNALIGNED
+    slot 13  D=$0200   aligned
+
+Twelve aligned, twelve not. A non-zero low byte costs one extra internal cycle
+on *every* direct-page instruction, and `$80:F950` — the entry nearly every
+collision in the game lands on — is six of those out of seventeen. A model that
+ignored this would have been exactly right on half the actors in the game and
+36 cycles out on the other half, which is close enough to look like a refresh
+and wrong in a way that would have taken a long time to see.
+
+So `CosimRun` grew a third field: how many of the run's instructions address
+through `D`. `cosim_run_cycles_dp` adds six per instruction when the caller says
+the page is unaligned, and the old two-argument `cosim_run_cycles` is now that
+function with `false` — which is why none of the seventeen existing call sites
+had to change. `tools/cycles816.py` reports the count alongside the other two.
+
+### The harness caught the tool again
+
+The dispatcher's frame is four blocks and no table: its control flow is two
+branches. It priced at 140 cycles for the no-handler path — which is *exactly*
+the minimum `verify` measures for `thread_call_handler` across the corpus — and
+504 for the path that enters a handler.
+
+504 on the second attempt. The first said 510, and the first report was
+`+0..+40` on the 394 calls that entered no handler and **`-6`** on all 641 that
+did. A negative error is the one thing a cost model is never allowed to produce,
+and it localised the bug to the frame in one run. Reading `cpu.c` against a
+hand-count of the twenty instructions found two mistakes in
+`tools/cycles816.py`, both mine, and both older than this round:
+
+* **`PHA` and `PLA` ignored `m`; `PHX`/`PHY`/`PLX`/`PLY` ignored `x`.** The
+  table hardcoded two bytes of stack traffic. `case 0x48` in `cpu.c` pushes one
+  byte when `cpu->mf` is set, and `$80:848F` and `$80:8496` are both `PHA` under
+  `SEP #$20` — so the tool charged 8 cycles too many, twice.
+* **`PEA` was priced as a *read* of its operand.** It decodes as an absolute
+  address, fell through to the generic memory path, and got charged for loading
+  `$84A4` from ROM instead of pushing it onto the stack: 24 where the answer is
+  34.
+
+The two errors ran in opposite directions and cancelled to within 6 cycles,
+which is the interesting part. A tool wrong in two places by 16 and 10 looks
+like a tool wrong by 6, and 6 is small enough to be mistaken for a modelling
+subtlety rather than an arithmetic bug. What made it findable is that the
+harness compares against the real hardware timing on every call, so the residual
+had a sign, and the sign was impossible.
+
+This is the second round in a row where a cost model's first report found a bug
+in the instrument rather than in the model — `XBA` last time, the stack widths
+this time. Six models were refresh-exact over the whole corpus while both bugs
+were live, which says only that none of them contained an 8-bit push.
+
+### Pricing a routine that cannot be priced
+
+`thread_call_handler` is the first routine here that is genuinely unpriceable as
+a whole. It enters twenty-five different handlers and the general case is every
+behaviour in the game, so there is no table that describes it.
+
+What it *can* do is price its own frame and add the handler's cost when the
+handler is one that has a table — and decline, by name, when it is not. That is
+the same bargain `actor_overlap_pass` has been making since it was written, one
+level further down, and it generalises: `ThreadCallWork` carries the entry
+address it dispatched to and the work struct of whichever handler ran, and
+`thread_call_cycles` is a `switch` with a `default: return false`.
+
+Four handlers went in:
+
+| handler | what it is | witness |
+| --- | --- | --- |
+| `$81:FE0E  shot_collide` | four `CMP`s and a five-instruction tail | fly-through prices at 156; measured minimum 156 |
+| `$80:F7F7  player_collide` | a 92-entry jump table on the other actor's id | out-of-range exit prices at 90; measured minimum 90 |
+| `$80:F950  player_collide_hurt` | the entry nearly every collision reaches | — |
+| `$81:8888  enemy_collide` | the enemy mirror, two flat exits priced | ignore path prices at 84; measured minimum 84 |
+
+Each of the four unrolls a `CMP` chain, and in each case the chain is the whole
+cost model: what an id costs is *where it sits in the chain* and nothing else.
+`shot_collide`'s four stop ids are four blocks for that reason and no other —
+they do identical work and are reached 30, 60, 90 and 120 cycles in. The same
+goes for the two state exits of `$80:F950`, which the port tests with a single
+`state == 2 || state == 4` and which the model has to tell apart.
+
+`enemy_collide` is the one that declines a lot. Its two flat exits are priced;
+its other four leave through a `JML` or a `JSR` into `enemy_freeze`,
+`enemy_bubble_react`, `enemy_die` (and `score_add` under it) or
+`enemy_survived_react` (and sometimes `rng_next`). Each is a tree of its own, so
+the model prices what returns from inside `$81:8888` and says nothing about the
+rest.
+
+### Composing, and the veto moving down
+
+With handlers priced, the chain above them falls in order:
+
+`actor_collide_notify` has no branches at all — twenty-six instructions and two
+`JSL`s — so its own cost is one constant, 856 cycles over 58 bytes. Its model is
+that constant plus two dispatches, and **856 + 2 × 140 = 1,136, which is exactly
+the minimum `verify` measures for it.** Three of the five new models had a
+witness before they had a test.
+
+`actor_overlap_pass` had refused to price any pass containing a hit since the
+round it was written. That refusal is now narrower rather than absolute: each
+hit records the two dispatches it made, and a pass is priced when every handler
+it entered has a table. The `hits` field survives, but it means something
+different — it is a bound check now, not a veto, because a pass with more hits
+than `ActorOverlapWork` can describe has to decline for a different reason and
+the two should not be confused.
+
+`sprite_build_oam` inherits that, exactly as it inherited the refusal. The clause
+added last round — `work.overlap.hits == 0` — is gone, and `build_cycles`
+returns a bool instead.
+
+### Results
+
+The nine models from last round still hold, and there are five more. On the
+43-movie corpus: 13,209,637 calls checked, **0 diverged**; branch coverage 432 of
+538. Both unchanged from before the round.
+
+| routine | refresh-exact / priced, PPU quiet | priced under HDMA |
+| --- | --- | --- |
+| `sprite_frame_tile` | 1,707,880 / 1,707,880 | 19,607 |
+| `actor_depth_sort` | 143,929 / 143,929 | 1,915 |
+| `actor_cull` | 143,929 / 143,929 | 1,915 |
+| `oam_buffer_clear` | 143,929 / 143,929 | 1,915 |
+| `actor_overlap_pass` | 131,922 / 131,922 | 1,915 |
+| `sprite_build_oam` | 131,922 / 131,922 | 1,915 |
+| `thread_call_handler` | 57,336 / 57,336 | 0 |
+| `hud_refresh` | 51,172 / 51,172 | 154 |
+| `player_collide` | 32,771 / 32,771 | 0 |
+| `hud_panel2` | 25,603 / 25,603 | 75 |
+| `hud_panel1` | 25,571 / 25,571 | 79 |
+| `actor_collide_notify` | 22,361 / 22,361 | 0 |
+| `shot_collide` | 8,052 / 8,052 | 0 |
+| `enemy_collide` | 5,602 / 5,602 | 0 |
+
+2,631,979 calls priced with the PPU quiet, up from 2,469,271, every one short by
+an exact multiple of the 40-cycle refresh; 29,490 more under HDMA, none
+over-claiming. No `MODEL WRONG` anywhere. `actor_overlap_pass` and
+`sprite_build_oam` still price the identical set of passes, and that set has
+grown from 113,629 to **131,922** of 143,929 — the 18,293 passes whose
+collisions all landed on one of the four priced handlers.
+
+Lockstep `run` on `level1`, `level25-2p` and `level45-race` still ends with no
+byte of live game state ever differing.
+
+Drift on `level25-2p` at 6,000 frames falls from 411.2 frames to **341.4** as
+`drift.py` reports it. `sprite_build_oam` itself goes from 159.2 to 115.2, and
+it now prices 3,090 of the movie's 4,420 passes rather than 2,281. On
+`level1-rescue`, where the collisions are the ordinary kind rather than a boss
+fight, it prices **4,615 of 4,616**.
+
+The instrument's blind spot is unchanged and worth restating: it does not know
+about subsumption, so it still charges `actor_overlap_pass` 63.2 frames for
+calls on which it is never substituted at all. Subtracting that, the real figure
+is about 278 frames, down from about 324.
+
+### What is left, precisely
+
+The handler tree is no longer the wall it was described as; it is a list, and
+the list is short. In corpus order of what it would buy:
+
+| handler | where it dominates |
+| --- | --- |
+| `$82:9660  boss_9660_collide` | `level25-2p`, 9,802 dispatches — far the largest single item |
+| `$81:C4A6  monster_collide` | `level45-carried`, 4,269 |
+| `$81:C440  monster_c440_collide` | `level25-2p`, 2,700 |
+| `$80:CAEE  object_collide` | `level25-2p`, 1,666 |
+| `$81:8888`'s four deep exits | `level1-rescue` and `level53` |
+
+Below those, the drift table is unchanged and still names
+`actor_obstacle_at_point` at 39.9 frames, `actor_notify_box` at 28.1,
+`actor_nearest` at 22.2 and `actor_at_point` at 21.6 — four routines that are
+subsumed by nothing, so unlike the sprite pass they would move a framebuffer the
+day they landed.
+
 ## Where this is going
 
 The first five routines here are leaves — they never call `thread_yield`. That

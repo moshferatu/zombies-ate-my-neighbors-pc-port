@@ -663,11 +663,28 @@ static bool guard_thread_call_handler(Wram* scratch, const Rom* rom,
   return false;
 }
 
+// What the dispatch cost, or `false` when the handler it entered has no cost
+// table yet. Defined far below, after every handler's own cost function, since
+// it is the sum of the frame and one of those — see `ThreadCallWork`.
+static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
+                               int* out);
+
 static void shim_thread_call_handler(Wram* w, const Rom* rom,
                                      const CosimRegs* in, CosimRegs* out) {
   ThreadCallResult t;
-  thread_call_handler(w, rom, in->x, in->y, in->c, &t);  // the guard allowed it
+  ThreadCallWork work;
+  // the guard allowed it
+  thread_call_handler_counted(w, rom, in->x, in->y, in->c, &t, &work);
   handler_exit(in, &t, out);
+
+  // `LDA $1300,X` and the two beside it reach the thread tables through the
+  // data bank, and every bank that mirrors low WRAM costs the same 8 a byte —
+  // so the model holds for `$7E` and for the `$80` the sprite pass leaves, and
+  // asks only that it is not a bank where `$1300` would be ROM.
+  int cycles;
+  if ((in->db < 0x40 || (in->db >= 0x80 && in->db < 0xc0)) &&
+      thread_call_cycles(&work, in, &cycles))
+    cosim_cost(cycles);
 }
 
 // ---------------------------------------------------------------------------
@@ -716,11 +733,84 @@ static void handler_regs(const ActorHandlerRegs* r, CosimRegs* out) {
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
+// What `$80:F950` costs, indexed by `PlayerHurtBlock`. Every one of its reads
+// is direct-page except `LDA $1CBC,X`, which goes through the data bank to a
+// WRAM mirror, so the third column carries almost the whole routine.
+static const CosimRun HURT_COST[HURT_BLOCK_COUNT] = {
+    [HURT_BLK_STATE_A] = {28 + 18 + 18, 7, 1},
+    [HURT_BLK_STATE_B] = {28 + 18 + 12 + 18 + 18, 12, 1},
+    // ...and neither matched, so `LDX $0E : LDA $1CBC,X : CMP #$0004` runs.
+    [HURT_BLK_STATE_PASS] = {28 + 18 + 12 + 18 + 12 + 28 + 40 + 18, 20, 2},
+    [HURT_BLK_WEAPON_OTHER] = {18, 2},
+    [HURT_BLK_WEAPON_MATCH] = {12 + 28, 4, 1},
+    [HURT_BLK_HEALTH_SET] = {18, 2},
+    [HURT_BLK_HEALTH_ZERO] = {12, 2},
+    [HURT_BLK_TIMER] = {28, 2, 1},
+    [HURT_BLK_IFRAMES] = {18, 2},
+    // $80:F96E LDA #$8001 : STA $50 : LDA #$0040 : STA $52, behind the `BPL`
+    // that did not branch.
+    [HURT_BLK_TAKEN] = {12 + 18 + 28 + 18 + 28, 12, 2},
+    [HURT_BLK_RTS] = {40, 1},
+};
+
+static int hurt_cycles(const uint16_t* blk, bool fast, bool dp_unaligned) {
+  int cycles = 0;
+  for (int i = 0; i < HURT_BLOCK_COUNT; i++)
+    cycles +=
+        blk[i] * cosim_run_cycles_dp(&HURT_COST[i], fast, dp_unaligned);
+  return cycles;
+}
+
+// `$80:F7F7`'s own two blocks. The dispatch block runs from the `CMP` to the
+// `RTL` and includes the `JSR ($F808,X)` but not what it reached: that is the
+// target's, and `PlayerCollideWork::target` says which.
+static const CosimRun PLAYER_COST[PLAYER_BLOCK_COUNT] = {
+    [PLAYER_BLK_IGNORE] = {18 + 18 + 12 + 42, 7},
+    [PLAYER_BLK_DISPATCH] = {18 + 12 + 12 + 12 + 34 + 28 + 52 + 12 + 42, 19, 1},
+};
+
+// `$80:F87A`, the entry seventeen ids share: a bare `RTS` and nothing else.
+static const CosimRun PLAYER_TARGET_NOP = {40, 1};
+
+// Returns false when the id dispatched to a jump-table entry with no table
+// here. Ten of the seventeen targets are ported and two are priced, so this
+// declines on more calls than it serves for now — see `docs/cosim.md`.
+static bool player_cycles(const PlayerCollideWork* k, bool fast,
+                          bool dp_unaligned, int* out) {
+  int cycles = 0;
+  for (int i = 0; i < PLAYER_BLOCK_COUNT; i++)
+    cycles +=
+        k->blocks[i] * cosim_run_cycles_dp(&PLAYER_COST[i], fast, dp_unaligned);
+
+  if (k->blocks[PLAYER_BLK_IGNORE]) {  // the id was out of range: no dispatch
+    *out = cycles;
+    return true;
+  }
+  switch (k->target) {
+    case PLAYER_COLLIDE_NOP:
+      cycles += cosim_run_cycles_dp(&PLAYER_TARGET_NOP, fast, dp_unaligned);
+      break;
+    case PLAYER_COLLIDE_HURT:
+      cycles += hurt_cycles(k->hurt, fast, dp_unaligned);
+      break;
+    default:
+      return false;
+  }
+  *out = cycles;
+  return true;
+}
+
 static void shim_player_collide(Wram* w, const Rom* rom, const CosimRegs* in,
                                 CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
-  player_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  PlayerCollideWork work;
+  // the guard allowed it
+  player_collide_counted(w, rom, in->d, in->a, &r, NULL, &work);
   handler_regs(&r, out);
+
+  int cycles;
+  if (player_cycles(&work, in->fastrom, (in->d & 0xff) != 0, &cycles))
+    cosim_cost(cycles);
 }
 
 // ---------------------------------------------------------------------------
@@ -1101,11 +1191,39 @@ static bool guard_enemy_collide(Wram* scratch, const Rom* rom,
   return false;
 }
 
+// The two exits that end inside `$81:8888`, indexed by `EnemyCollideBlock`.
+// `ENEMY_BLK_DEEP` has no entry on purpose: a call that reached it left through
+// a `JML` or a `JSR` into a routine this file does not describe, and the model
+// declines rather than pricing the part it can see.
+static const CosimRun ENEMY_COST[ENEMY_BLOCK_COUNT] = {
+    [ENEMY_BLK_IGNORE] = {18 + 12 + 12 + 42, 7},
+    // $81:888F through the damage subtraction, the `BMI` falling through, and
+    // the `BEQ` at `$81:88AF` taking it to the `CLC : RTL` at `$81:88C8`.
+    [ENEMY_BLK_NO_DAMAGE] = {312 + 18 + 54, 43, 3},
+};
+
+static bool enemy_cycles(const EnemyCollideWork* k, bool fast,
+                         bool dp_unaligned, int* out) {
+  if (k->blocks[ENEMY_BLK_DEEP]) return false;
+  int cycles = 0;
+  for (int i = 0; i < ENEMY_BLOCK_COUNT; i++)
+    cycles +=
+        k->blocks[i] * cosim_run_cycles_dp(&ENEMY_COST[i], fast, dp_unaligned);
+  *out = cycles;
+  return true;
+}
+
 static void shim_enemy_collide(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  enemy_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  EnemyCollideWork work;
+  // the guard allowed it
+  enemy_collide_counted(w, rom, in->d, in->a, &r, NULL, &work);
   handler_regs(&r, out);
+
+  int cycles;
+  if (enemy_cycles(&work, in->fastrom, (in->d & 0xff) != 0, &cycles))
+    cosim_cost(cycles);
 }
 
 // ---------------------------------------------------------------------------
@@ -1523,12 +1641,127 @@ static void shim_boss_9660_collide(Wram* w, const Rom* rom, const CosimRegs* in,
 // without executing a single `CMP`, so what leaves in carry is what arrived.
 // The other two paths set it. No guard — the port has all of this routine, so
 // there is no condition under which it could decline.
+
+// What each exit of `$81:FE0E` costs, indexed by `ShotCollideBlock`.
+//
+// **The first table in this file with a third column.** A handler runs on the
+// page `$80:84A2  TCD` installed, not on page zero, and half of the twenty-four
+// pages in `$80:82DE` have a non-zero low byte — so the two `STA`s in the tail
+// cost an idle more on half the actors in the game. Every routine priced before
+// this one ran on page zero and could leave the column implicitly `0`.
+//
+// The four stop prefixes are cumulative walks down the `CMP` chain: 12 for the
+// `TAY`, then 12 and 18 for each comparison that misses, and 18 for the branch
+// that finally hits.
+static const CosimRun SHOT_COST[SHOT_BLOCK_COUNT] = {
+    [SHOT_BLK_STOP_A] = {12 + 18, 3},
+    [SHOT_BLK_STOP_B] = {12 + 12 + 18 + 18, 8},
+    [SHOT_BLK_STOP_C] = {12 + 12 + 18 + 12 + 18 + 18, 13},
+    [SHOT_BLK_STOP_D] = {12 + 12 + 18 + 12 + 18 + 12 + 18 + 18, 18},
+    // $81:FE21 LDY $0A : LDA #$0000 : STA $000E,Y : LDA #$0001 : STA $42 : RTL.
+    // `LDY $0A` and `STA $42` are the two direct-page instructions; the store in
+    // between goes through the record's absolute address and does not care.
+    [SHOT_BLK_TAIL] = {174, 14, 2},
+    // Falling through all four tests to `$81:FE20 RTL` — and 156 is exactly the
+    // minimum `verify` measures for this routine.
+    [SHOT_BLK_FLY] = {156, 19},
+};
+
+static int shot_cycles(const ShotCollideWork* k, bool fast, bool dp_unaligned) {
+  int cycles = 0;
+  for (int i = 0; i < SHOT_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles_dp(&SHOT_COST[i], fast,
+                                                 dp_unaligned);
+  return cycles;
+}
+
 static void shim_shot_collide(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
   (void)rom;  // no table, no ROM read
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  shot_collide(w, in->d, in->a, &r);
+  ShotCollideWork work;
+  shot_collide_counted(w, in->d, in->a, &r, &work);
   handler_regs(&r, out);
+  cosim_cost(shot_cycles(&work, in->fastrom, (in->d & 0xff) != 0));
+}
+
+// ---------------------------------------------------------------------------
+// $80:8480  thread_call_handler, priced
+// ---------------------------------------------------------------------------
+
+// The frame the dispatcher builds around a handler. Four blocks and no table:
+// its control flow is two branches, and everything it touches is either the
+// stack, low WRAM through the data bank, or the page table in bank $80 ROM.
+//
+// None of its own instructions is direct-page — it is running on the *caller's*
+// page and deliberately touches nothing on it — so the third column is 0 here
+// and non-zero only in the handler tables it sums.
+static const CosimRun THREAD_CALL_NONE = {40 + 40 + 18 + 42, 9};
+// $80:8480..$80:84A4, the `BEQ` falling through and the `RTL` that enters the
+// handler. The two `PHA`s at `$80:848F` and `$80:8496` run under `SEP #$20` and
+// push one byte each, and `PEA` pushes its operand rather than reading it —
+// between them that is the 6 cycles this constant was first written 510 for.
+static const CosimRun THREAD_CALL_ENTER = {504, 39};
+// $80:84A5 PLX : BCC taken : PLD : PLB : RTL.
+static const CosimRun THREAD_CALL_RESUME = {34 + 18 + 34 + 26 + 42, 6};
+// ...and not taken, so `LDA #$8000 : STA $1180,X` parks the thread first.
+static const CosimRun THREAD_CALL_PARK = {34 + 12 + 18 + 40 + 34 + 26 + 42, 12};
+
+static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
+                               int* out) {
+  bool fast = in->fastrom;
+  int cycles = k->blocks[THREAD_CALL_BLK_NONE] *
+                   cosim_run_cycles(&THREAD_CALL_NONE, fast) +
+               k->blocks[THREAD_CALL_BLK_ENTER] *
+                   cosim_run_cycles(&THREAD_CALL_ENTER, fast) +
+               k->blocks[THREAD_CALL_BLK_RESUME] *
+                   cosim_run_cycles(&THREAD_CALL_RESUME, fast) +
+               k->blocks[THREAD_CALL_BLK_PARK] *
+                   cosim_run_cycles(&THREAD_CALL_PARK, fast);
+
+  // No handler ran, so the frame is the whole routine — and this is the path
+  // that costs 140, which is what `verify` measures as the minimum.
+  if (k->entry == 0) {
+    *out = cycles;
+    return true;
+  }
+
+  // `$80:84A2  TCD` installed the thread's own page a few instructions ago, and
+  // whether its low byte is zero is what the handler's direct-page instructions
+  // cost an extra idle on.
+  bool dp_unaligned = (k->dp & 0xff) != 0;
+  switch (k->entry) {
+    case SHOT_COLLIDE_ENTRY:
+      cycles += shot_cycles(&k->shot, fast, dp_unaligned);
+      break;
+    case PLAYER_COLLIDE_ENTRY: {
+      int handler;
+      if (!player_cycles(&k->player, fast, dp_unaligned, &handler)) return false;
+      cycles += handler;
+      break;
+    }
+    case ENEMY_COLLIDE_ENTRY: {
+      int handler;
+      if (!enemy_cycles(&k->enemy, fast, dp_unaligned, &handler)) return false;
+      cycles += handler;
+      break;
+    }
+    default:
+      // A handler with no table. Not an error and not a gap in the port — the
+      // port has twenty-five of these and this file prices four of them.
+      //
+      // Which addresses land here is the work list for the next round, and the
+      // way to read it is a run with a `printf` on this line: on the corpus it
+      // is `$82:9660` first by a distance, then `$81:C4A6`, `$81:C440`,
+      // `$80:CAEE` and `$81:8888`'s three deep exits. It is deliberately not
+      // wired into `cosim_census_note` — this function is called again for
+      // every level of the four models stacked on top of it, so a census here
+      // would count one dispatch up to four times and read like a frequency
+      // when it is not one.
+      return false;
+  }
+  *out = cycles;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1669,11 +1902,35 @@ static bool guard_actor_collide_notify(Wram* scratch, const Rom* rom,
   return actor_collide_notify(scratch, rom, notify_outer(scratch), in->x, &tail);
 }
 
+// $80:BE8F..$80:BEC8 in full, both `JSL`s included and neither dispatch. The
+// routine has no branches — twenty-six instructions of straight line — so this
+// is one constant rather than a table, and the only thing that varies call to
+// call is what the two dispatches cost.
+//
+// 856 + 2 x 140, the two slots having no handler registered, is 1,136, which is
+// exactly the minimum `verify` measures for this routine.
+static const CosimRun NOTIFY_COST = {856, 58, 23};
+
+static bool notify_cycles(const CollideNotifyWork* k, const CosimRegs* in,
+                          int* out) {
+  int cycles =
+      cosim_run_cycles_dp(&NOTIFY_COST, in->fastrom, (in->d & 0xff) != 0);
+  for (int i = 0; i < 2; i++) {
+    int call;
+    if (!thread_call_cycles(&k->call[i], in, &call)) return false;
+    cycles += call;
+  }
+  *out = cycles;
+  return true;
+}
+
 static void shim_actor_collide_notify(Wram* w, const Rom* rom,
                                       const CosimRegs* in, CosimRegs* out) {
   uint16_t a = notify_outer(w);
   ThreadCallResult tail = {.c = in->c};
-  actor_collide_notify(w, rom, a, in->x, &tail);  // the guard allowed it
+  CollideNotifyWork work;
+  // the guard allowed it
+  actor_collide_notify_counted(w, rom, a, in->x, &tail, &work);
 
   // The routine's last instruction is the second `JSL $80:8480`, so everything
   // it returns is really the dispatcher's — including X and Y, which are the
@@ -1681,6 +1938,11 @@ static void shim_actor_collide_notify(Wram* w, const Rom* rom,
   // untouched. So this defers to `handler_exit` rather than restating it, which
   // keeps one description of that tail rather than two.
   handler_exit(in, &tail, out);
+
+  int cycles;
+  if ((in->db < 0x40 || (in->db >= 0x80 && in->db < 0xc0)) &&
+      notify_cycles(&work, in, &cycles))
+    cosim_cost(cycles);
 }
 
 // ---------------------------------------------------------------------------
@@ -1744,11 +2006,30 @@ static const CosimRun OVL_COST[OVL_BLOCK_COUNT] = {
     [OVL_BLK_OUTER_DONE] = {28 + 12 + 42, 5},
 };
 
-static int overlap_cycles(const ActorOverlapWork* k, bool fast) {
+// `$80:BF0D  PHY : JSR $BE8F : PLY`, the three instructions a hit costs on top
+// of the two axis tests — not counting the dispatch itself, which is
+// `notify_cycles`.
+static const CosimRun OVL_HIT = {28 + 40 + 34, 5};
+
+// False when a hit in this pass entered a handler with no cost table, or when
+// there were more hits than `ActorOverlapWork` can describe. The blocks are
+// summed either way: what is missing is never a *part* of the answer, it is the
+// answer, so there is no version of this that reports a number it half knows.
+static bool overlap_cycles(const ActorOverlapWork* k, const CosimRegs* in,
+                           int* out) {
+  bool fast = in->fastrom;
   int cycles = 0;
   for (int i = 0; i < OVL_BLOCK_COUNT; i++)
     cycles += k->blocks[i] * cosim_run_cycles(&OVL_COST[i], fast);
-  return cycles;
+
+  if (k->hits > OVL_MAX_PRICED_HITS) return false;
+  for (int i = 0; i < k->hits; i++) {
+    int notify;
+    if (!notify_cycles(&k->notify[i], in, &notify)) return false;
+    cycles += cosim_run_cycles(&OVL_HIT, fast) + notify;
+  }
+  *out = cycles;
+  return true;
 }
 
 static void shim_actor_overlap_pass(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -1757,11 +2038,13 @@ static void shim_actor_overlap_pass(Wram* w, const Rom* rom, const CosimRegs* in
   ActorOverlapWork work;
   actor_overlap_pass_counted(w, rom, &work);
 
-  // Priced only when nothing was dispatched, and only off a page-aligned direct
-  // page — `$9C`, `$3C`, `$4A`, `$38`, `$3A` and the four `$xx,X` reads would
-  // each cost one more internal cycle otherwise.
-  if (work.hits == 0 && (in->d & 0xff) == 0)
-    cosim_cost(overlap_cycles(&work, in->fastrom));
+  // Priced only off a page-aligned direct page — `$9C`, `$3C`, `$4A`, `$38`,
+  // `$3A` and the four `$xx,X` reads would each cost one more internal cycle
+  // otherwise. A hit no longer disqualifies the pass by itself; what does is a
+  // hit whose handler has no table, and `overlap_cycles` is what knows that.
+  int cycles;
+  if ((in->d & 0xff) == 0 && overlap_cycles(&work, in, &cycles))
+    cosim_cost(cycles);
 
   // All three `RTL` paths arrive with Y zero and the flags of whatever loaded
   // it: `LDY $9C` on an empty list, `DEY DEY` on a single record, and `LDY $3C`
@@ -1948,7 +2231,11 @@ static const CosimRun BUILD_COST[BUILD_BLOCK_COUNT] = {
 // when they do. It is the only instruction in the pass that asks.
 static const CosimRun BUILD_EPILOGUE_SLOW_TABLE = {4, -2};
 
-static int build_cycles(const SpriteBuildWork* k, const CosimRegs* in) {
+// False for the same reason `overlap_cycles` is: a collision inside this pass
+// entered a handler with no table. Everything else about the pass is priced
+// whether or not that happens.
+static bool build_cycles(const SpriteBuildWork* k, const CosimRegs* in,
+                         int* out) {
   const bool fast = in->fastrom;
   int cycles = 0;
   for (int i = 0; i < BUILD_BLOCK_COUNT; i++) {
@@ -1962,10 +2249,13 @@ static int build_cycles(const SpriteBuildWork* k, const CosimRegs* in) {
   cycles += depth_sort_cycles(&k->sort, fast);
   cycles += cull_cycles(&k->cull, fast);
   cycles += cosim_run_cycles(&OAM_CLEAR_COST, fast);
-  cycles += overlap_cycles(&k->overlap, fast);
+  int overlap;
+  if (!overlap_cycles(&k->overlap, in, &overlap)) return false;
+  cycles += overlap;
   cycles += emit_cycles(k, fast);
   cycles += tile_cycles(&k->tile, fast);
-  return cycles;
+  *out = cycles;
+  return true;
 }
 
 static void shim_sprite_build_oam(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -1979,15 +2269,18 @@ static void shim_sprite_build_oam(Wram* w, const Rom* rom, const CosimRegs* in,
   // $1B64` runs after `PLB` and reaches low WRAM in 8 through every bank a
   // caller could plausibly leave behind — but not through $40..$7F or $C0+,
   // where it would not be WRAM at all, so those decline rather than guess.
-  // ...and the pass inherits `actor_overlap_pass`'s one refusal. A pair that
-  // actually touched sends `$80:BF0E JSR $BE8F` into the collision handler
-  // tree, which is game logic nobody has priced, so a pass containing a hit
-  // reports nothing rather than reporting the walk and calling it the whole
-  // cost. It is worth about 4,300 cycles a hit, and it is the reason `priced`
-  // sits below `checked` on any movie where two actors meet.
-  if (work.overlap.hits == 0 && (in->d & 0xff) == 0 &&
-      (in->db < 0x40 || (in->db >= 0x80 && in->db < 0xc0)))
-    cosim_cost(build_cycles(&work, in));
+  // ...and the pass still inherits `actor_overlap_pass`'s refusal, but it is a
+  // narrower one than it was. A pair that actually touched sends `$80:BF0E JSR
+  // $BE8F` into the collision handler tree; four of those handlers now have
+  // cost tables, so a pass whose collisions all landed on one of the four is
+  // priced like any other, and only the rest report nothing. That is why
+  // `build_cycles` returns a bool now instead of taking `hits == 0` as a
+  // precondition.
+  int cycles;
+  if ((in->d & 0xff) == 0 &&
+      (in->db < 0x40 || (in->db >= 0x80 && in->db < 0xc0)) &&
+      build_cycles(&work, in, &cycles))
+    cosim_cost(cycles);
 
   // The tail at `$80:BDD2` is what decides all of this, and it runs on every
   // path: `LDA $20 : AND #$0003 : TAX : LDA $BDE6,X : AND #$00FF : STA $1B64 :

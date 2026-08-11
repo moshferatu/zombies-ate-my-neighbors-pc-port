@@ -5,8 +5,8 @@
 // touching pair to `$80:8480` twice — once per actor. That was once where the
 // port stopped, and `zamn_cosim` measured the size of the hole rather than
 // filling it: on `movies/level1-rescue.zmv` **1,226 of 1,226** collisions enter
-// a handler. The census then named the handlers one at a time, and this is all
-// of them, plus the dispatcher that enters them.
+// a handler. The census then named the handlers one at a time, and the five
+// below were the first of them:
 //
 //   $80:8480  thread_call_handler  build the frame, swap direct page, RTL in
 //   $80:F7F7  player_collide       the player's; jump-tables on the other's id
@@ -15,6 +15,13 @@
 //   $81:FE0E  shot_collide         a weapon shot's; four ids stop it, the rest
 //                                  it flies through
 //   $83:A364  victim_collide       a victim's; eight ids, eight endings, latched
+//
+// **That list is a snapshot, not the inventory.** It was written when it was
+// complete and the dispatch chain in `thread_call_handler` has grown past it
+// several times since — there are twenty-five addresses in that chain now, and
+// the `else if` ladder is the only place they are all written down. A round was
+// planned off this comment once, on the strength of its saying "five"; read the
+// code below it instead.
 //
 // ## Why this is where the direct page stops being pinned
 //
@@ -420,6 +427,55 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
 bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                     ActorHandlerRegs* r, uint32_t* unported);
 
+// The five ways out of `$80:F950`, the entry nearly every collision in the game
+// lands on.
+//
+// The two state exits are separate blocks although the port tests them with one
+// `||`: `CMP #$0002 : BEQ` and `CMP #$0004 : BEQ` are a chain, so state 4 is
+// reached one comparison further in and costs 30 more. That is the same reason
+// `shot_collide` splits its four stop ids, and it is the kind of difference only
+// a cost model cares about — every other observer sees one outcome.
+typedef enum {
+  HURT_BLK_STATE_A,       // $80:F955 BEQ taken: state 2, over in three
+                          // instructions
+  HURT_BLK_STATE_B,       // $80:F95A BEQ taken: state 4, one CMP further
+  HURT_BLK_STATE_PASS,    // neither, so $80:F95C reads the weapon
+  HURT_BLK_WEAPON_OTHER,  // $80:F964 BNE taken: not the weapon that guards
+  HURT_BLK_WEAPON_MATCH,  // ...not taken, so $80:F966 LDA $1E runs
+  HURT_BLK_HEALTH_SET,    // $80:F968 BNE taken: guarded, and over
+  HURT_BLK_HEALTH_ZERO,   // ...not taken, and the hit goes on to the timer
+  HURT_BLK_TIMER,         // $80:F96A LDA $52, which every surviving path reads
+  HURT_BLK_IFRAMES,       // $80:F96C BPL taken: still recovering, so no hit
+  HURT_BLK_TAKEN,         // ...not taken: the two stores that post the hit
+  HURT_BLK_RTS,           // $80:F978, which all five exits share
+  HURT_BLOCK_COUNT,
+} PlayerHurtBlock;
+
+// `$80:F7F7`'s own two exits. Everything past the dispatch is the jump-table
+// target's, and which one that was is `target`.
+typedef enum {
+  PLAYER_BLK_IGNORE,    // $80:F7FA BCS taken: CLC : RTL, and 90 cycles is
+                        // exactly the minimum `verify` measures here
+  PLAYER_BLK_DISPATCH,  // ...not taken: file the other record and JSR through
+                        // the table
+  PLAYER_BLOCK_COUNT,
+} PlayerCollideBlock;
+
+typedef struct {
+  uint16_t blocks[PLAYER_BLOCK_COUNT];
+  // The address `$80:F803  JSR ($F808,X)` went to, or 0 when the id was out of
+  // range and the table was never read. The cost model switches on it the same
+  // way `ThreadCallWork::entry` does one level up, and for the same reason:
+  // seventeen targets share this entry and they are seventeen routines.
+  uint16_t target;
+  // Valid only when `target` is `PLAYER_COLLIDE_HURT`.
+  uint16_t hurt[HURT_BLOCK_COUNT];
+} PlayerCollideWork;
+
+bool player_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                            ActorHandlerRegs* r, uint32_t* unported,
+                            PlayerCollideWork* work);
+
 // --- $81:8888 ---------------------------------------------------------------
 
 #define ENEMY_COLLIDE_ENTRY 0x818888u
@@ -471,6 +527,29 @@ bool player_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 // caller does not want one.
 bool enemy_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                    ActorHandlerRegs* r, uint32_t* unported);
+
+// Its two flat exits, and a mark for the four that are not flat.
+//
+// Unlike the player's, this handler's interesting paths do not end in it: `$5E`
+// and `$5D` are `JML`s, a death runs `enemy_die` into `score_add`, and a
+// survival runs `enemy_survived_react` into the thread splice and sometimes
+// `rng_next`. Each is a tree of its own, so the model prices what returns from
+// inside `$81:8888` and declines the rest — the same bargain `player_collide`
+// makes with its jump table.
+typedef enum {
+  ENEMY_BLK_IGNORE,     // $81:888B BCS not taken: not a player id, CLC : RTL
+  ENEMY_BLK_NO_DAMAGE,  // $81:88AF BEQ taken: the subtraction took nothing off
+  ENEMY_BLK_DEEP,       // freeze, bubble, death or survival: not priced here
+  ENEMY_BLOCK_COUNT,
+} EnemyCollideBlock;
+
+typedef struct {
+  uint16_t blocks[ENEMY_BLOCK_COUNT];
+} EnemyCollideWork;
+
+bool enemy_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                           ActorHandlerRegs* r, uint32_t* unported,
+                           EnemyCollideWork* work);
 
 // --- $81:8506 ---------------------------------------------------------------
 //
@@ -628,6 +707,32 @@ bool enemy_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r);
 // It takes no `Rom*` — there is no table in it — and it never declines. The
 // whole routine is reachable and all of it is here.
 bool shot_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// Which of the five exits a call took, for `src/cosim/routines.c` to price.
+//
+// The four stop ids are separate blocks rather than one because the `CMP` chain
+// is unrolled: each is reached through a different number of comparisons, so
+// what an id costs here is *where it sits in the chain* and nothing else. Id 0
+// is first because it is the `TAY`'s own Z flag, which is the same reason it is
+// the one that leaves carry alone.
+typedef enum {
+  SHOT_BLK_STOP_A,  // $81:FE0F BEQ taken: id 0, reached with no CMP at all
+  SHOT_BLK_STOP_B,  // $81:FE14 BEQ taken: id 3, one CMP in
+  SHOT_BLK_STOP_C,  // $81:FE19 BEQ taken: id 4, two
+  SHOT_BLK_STOP_D,  // $81:FE1E BEQ taken: id 1, three
+  SHOT_BLK_TAIL,    // $81:FE21..$FE2E: the shared tail all four fall into
+  SHOT_BLK_FLY,     // $81:FE20 RTL: every other id, straight through the chain
+  SHOT_BLOCK_COUNT,
+} ShotCollideBlock;
+
+// Exactly one of the four `STOP` blocks or `FLY` is set on any call, and
+// `TAIL` is set exactly when one of the four is.
+typedef struct {
+  uint16_t blocks[SHOT_BLOCK_COUNT];
+} ShotCollideWork;
+
+bool shot_collide_counted(Wram* w, uint16_t dp, uint16_t arg,
+                          ActorHandlerRegs* r, ShotCollideWork* work);
 
 // --- $83:A364 ---------------------------------------------------------------
 
@@ -1888,5 +1993,50 @@ bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 // family; every other id is answered here.
 bool enemy_d301_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                         ActorHandlerRegs* r, uint32_t* unported);
+
+// --- Pricing the dispatch ----------------------------------------------------
+//
+// `$80:8480` again, and it is at the end of the header rather than up with its
+// own section because what it costs is its own four blocks *plus whatever the
+// handler cost*, so the struct cannot be written until every handler's work
+// struct exists. That is the same reason `SpriteBuildWork` sits below the parts
+// it aggregates in `port/oam.h`.
+//
+// The dispatcher is the one routine in the project that cannot be priced whole:
+// it enters twenty-five different handlers and the general case is every
+// behaviour in the game. So the model prices the frame — which is constant, and
+// whose no-handler path is exactly the 140 cycles `verify` measures as this
+// routine's minimum — and adds the handler's own cost when the handler is one
+// that has a table. It declines otherwise, and the set it declines on shrinks by
+// a handler at a time.
+typedef enum {
+  THREAD_CALL_BLK_NONE,    // $80:8486 BEQ taken: no handler registered
+  THREAD_CALL_BLK_ENTER,   // ...not taken: build the frame, swap D, RTL in
+  THREAD_CALL_BLK_RESUME,  // $80:84A6 BCC taken: the handler left carry clear
+  THREAD_CALL_BLK_PARK,    // ...not taken, so $80:84A8 parks the thread
+  THREAD_CALL_BLOCK_COUNT,
+} ThreadCallBlock;
+
+typedef struct {
+  uint16_t blocks[THREAD_CALL_BLOCK_COUNT];
+  // The handler `$80:849E` dispatched to, or 0 when none was registered. The
+  // cost model switches on it, and an address it does not know is what makes
+  // the call unpriceable rather than priced short.
+  uint32_t entry;
+  // The page `$80:84A2  TCD` installed. Its low byte is the whole reason
+  // `CosimRun` has a third column: the table at `$80:82DE` tiles
+  // `$7E:0100-$7E:0CFF` at stride `$80`, so twelve of the twenty-four threads
+  // run their handler with `D` unaligned and pay an idle per direct-page
+  // instruction.
+  uint16_t dp;
+  // Valid only when `entry` names the matching handler; the rest are untouched.
+  ShotCollideWork shot;
+  PlayerCollideWork player;
+  EnemyCollideWork enemy;
+} ThreadCallWork;
+
+bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
+                                 uint16_t arg, bool carry_in,
+                                 ThreadCallResult* out, ThreadCallWork* work);
 
 #endif
