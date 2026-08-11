@@ -125,6 +125,45 @@
 // anything.
 uint16_t actor_depth_sort(Wram* w);
 
+// Which key decided a pair, and which way.
+//
+// The sort does not care — it relinks or it does not — but the ROM reaches the
+// four answers down straight lines of four different lengths, and something has
+// to count them apart. See `ActorSortWork`.
+typedef enum {
+  ACTOR_SORT_CMP_FIRST_SWAP,    // $80:BC98/$80:BCC4 taken: ACTOR_SORT_FIRST set
+  ACTOR_SORT_CMP_FIRST_NOSWAP,  // ...clear, so the pair is already in order
+  ACTOR_SORT_CMP_Y_SWAP,        // $80:BCA1/$80:BCCD not taken: the successor is lower
+  ACTOR_SORT_CMP_Y_NOSWAP,
+  ACTOR_SORT_CMP_COUNT,
+} ActorSortCmp;
+
+// What one pass actually did, counted by the branch the ROM would have taken.
+//
+// **This is the routine's cost, in the only terms the port can honestly know
+// it.** `$80:BC7F` costs 92 cycles on an empty display list and 7,524 on a full
+// one, and substituting it against the mean of 1,605 moves the machine's clock
+// enough to part a framebuffer — see `cosim_cost` for the whole account. Nothing
+// here is about cycles: these are counts of branch outcomes, the same kind of
+// fact `PORT_COVER` records, and `src/cosim/routines.c` is where they get
+// multiplied by what the corresponding run of 65816 instructions costs.
+//
+// The fields are not independent, and the redundancy is the check: the compares
+// always number `steps + 1`, and `$80:BCAD` runs `1 + steps - swap_mid` times.
+typedef struct {
+  bool empty;   // the list head was 0: the first of the two early returns
+  bool single;  // one record, so there was no pair to compare
+  // Compares by outcome, indexed by `ActorSortCmp`. Head plus loop.
+  uint16_t compares[ACTOR_SORT_CMP_COUNT];
+  bool swap_head;      // the head itself moved, which relinks nothing behind it
+  uint16_t swap_mid;   // relinks that needed the predecessor
+  uint16_t steps;      // times the walk re-entered `$80:BCB0` and found a successor
+} ActorSortWork;
+
+// The same pass, reporting what it did. `actor_depth_sort` is this with the
+// counts thrown away, and is what the rest of the port calls.
+uint16_t actor_depth_sort_counted(Wram* w, ActorSortWork* work);
+
 // --- $80:BCE2 ---------------------------------------------------------------
 
 // Collect the records worth drawing into `visible_actors`, and write the count

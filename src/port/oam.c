@@ -25,19 +25,30 @@ static void set_next(Wram* w, uint16_t rec, uint16_t to) {
 // $80:BC7F  actor_depth_sort
 // ---------------------------------------------------------------------------
 
-// Does the successor `b` belong in front of `a`?
+// Does the successor `b` belong in front of `a`, and which key said so?
 //
 // `ACTOR_SORT_FIRST` decides it whenever the two records disagree about that
 // bit — the ROM tests `(fa ^ fb) & $20` and then looks only at `fb`. Otherwise
 // the larger Y wins, compared unsigned exactly as `CMP` does it.
-static bool swap_needed(const Wram* w, uint16_t a, uint16_t b) {
+//
+// Which key answered is not a detail the sort cares about — it returns the same
+// list either way — but the ROM reaches the two answers down straight lines of
+// different lengths, so `ActorSortWork` counts them apart.
+static ActorSortCmp compare_pair(const Wram* w, uint16_t a, uint16_t b) {
   uint16_t fa = flags_of(w, a), fb = flags_of(w, b);
   if ((fa ^ fb) & ACTOR_SORT_FIRST) {
     PORT_COVER(sort_key_first);
-    return (fb & ACTOR_SORT_FIRST) != 0;
+    return (fb & ACTOR_SORT_FIRST) ? ACTOR_SORT_CMP_FIRST_SWAP
+                                   : ACTOR_SORT_CMP_FIRST_NOSWAP;
   }
   PORT_COVER(sort_key_y);
-  return wram_r16(w, (uint32_t)a + ACTOR_Y) < wram_r16(w, (uint32_t)b + ACTOR_Y);
+  return wram_r16(w, (uint32_t)a + ACTOR_Y) < wram_r16(w, (uint32_t)b + ACTOR_Y)
+             ? ACTOR_SORT_CMP_Y_SWAP
+             : ACTOR_SORT_CMP_Y_NOSWAP;
+}
+
+static bool cmp_swaps(ActorSortCmp cmp) {
+  return cmp == ACTOR_SORT_CMP_FIRST_SWAP || cmp == ACTOR_SORT_CMP_Y_SWAP;
 }
 
 // Exchange `cur` with its successor `next`, given the record in front of `cur`.
@@ -53,13 +64,31 @@ static void swap_with_next(Wram* w, uint16_t prev, uint16_t cur, uint16_t next) 
 }
 
 uint16_t actor_depth_sort(Wram* w) {
+  ActorSortWork work;
+  return actor_depth_sort_counted(w, &work);
+}
+
+uint16_t actor_depth_sort_counted(Wram* w, ActorSortWork* work) {
+  memset(work, 0, sizeof *work);
+
   uint16_t cur = wram_r16(w, W_ACTOR_LIST_HEAD);
-  if (cur == 0) return 0;
+  if (cur == 0) {
+    work->empty = true;
+    return 0;
+  }
   uint16_t next = next_of(w, cur);
-  if (next == 0) return cur;
+  if (next == 0) {
+    work->single = true;
+    return cur;
+  }
 
   // The head has no predecessor to relink, so the list head itself moves.
-  if (swap_needed(w, cur, next)) swap_with_next(w, 0, cur, next);
+  ActorSortCmp cmp = compare_pair(w, cur, next);
+  work->compares[cmp]++;
+  if (cmp_swaps(cmp)) {
+    work->swap_head = true;
+    swap_with_next(w, 0, cur, next);
+  }
 
   // `$80:BCAD`, which both branches above fall into: the ROM advances with
   // `STX $38 : TYX` whether or not it swapped. After a swap that steps `cur`
@@ -77,11 +106,15 @@ uint16_t actor_depth_sort(Wram* w) {
   for (;;) {
     next = next_of(w, cur);
     if (next == 0) return cur;
-    if (!swap_needed(w, cur, next)) {
+    work->steps++;
+    cmp = compare_pair(w, cur, next);
+    work->compares[cmp]++;
+    if (!cmp_swaps(cmp)) {
       prev = cur;
       cur = next;
       continue;
     }
+    work->swap_mid++;
     swap_with_next(w, prev, cur, next);
     // `cur` stays where it is — it has moved one place back, so the record
     // after it is the one the walk has not seen yet.

@@ -1970,6 +1970,265 @@ a yield in it and **no exit** — the level's main body. Nothing calls it, it
 never returns, and the profile agrees at zero calls in eleven traces. All three
 are now in `tools/native_share.py`'s `BLOCKED` with their reasons.
 
+## A routine that says what it cost (2026-08-10)
+
+The previous round ended with a finding and a refusal. `actor_depth_sort`
+substituted against a fixed 1,605 cycles was parting `level25-2p`'s framebuffer
+from the stock core's, the port's logic was provably not at fault, and retuning
+the constant was named as the wrong fix:
+
+> The honest next step is not to retune 1,605 — that would move the divergence
+> rather than remove it — but to let a routine whose cost is a function of its
+> input **report** what it did, the way `run_yield` lets one report that it
+> suspended. That is a change to the harness, and it belongs in its own round.
+
+This is that round. The mechanism is one function, the checking is what makes it
+worth having, and applying it to four routines found one wrong assumption about
+the machine that had been sitting in this project's head unexamined.
+
+### One function, and the two rules that keep it a measurement
+
+```c
+void cosim_cost(int cycles);
+```
+
+A shim calls it from inside `run` with what the call it just served would have
+cost the 65816, and native mode burns that instead of `CosimRoutine::cycles`. A
+shim that says nothing gets the constant, exactly as before; a shim that can
+price some of its paths and not others reports on those and stays quiet on the
+rest. Nothing else in the registry changed, and 107 of the 111 routines do not
+know this exists.
+
+What makes it a measurement rather than a nicer-looking guess is the second
+half. **`verify` already knows what the ROM's instructions really cost** — it
+has been printing the range and the mean in a column nobody read for eleven
+rounds — so a reported cost is diffed against the real one on every single call
+and the report prints the error:
+
+```
+cost models (error is what the ROM took, less what the port said it
+would; a correct model is short by one 40-cycle DRAM refresh per
+scanline the call crossed)
+
+  routine                  priced         of  error                     refresh-exact under HDMA
+  actor_depth_sort           1518       1518  +0..+240, mean +53            1518/1518          0
+```
+
+A model nobody checks is a guess with a struct around it.
+
+### Why a correct model's error is not zero
+
+The core adds 40 master cycles for a DRAM refresh whenever a run of cycles
+crosses the end of a scanline. Where those land is a property of the machine's
+clock at the moment of the call, not of the call's arguments, so no function of
+the input can predict them — and a model that tried would be fitting noise.
+
+So the contract is that a reported cost is the routine's **own instruction
+cycles and excludes refresh**, and the residual is read as the diagnostic it is:
+a correct model is short by exactly 40 cycles per scanline the call crossed, and
+by nothing else. That gives the report a column with a yes-or-no in it.
+`+0..+240` on a routine whose calls run to 7,642 cycles is five and a bit
+scanlines, and **1,518 of 1,518 refresh-exact** says every one of those errors
+was a whole number of refreshes. One call that was not would be printed as
+`MODEL WRONG`, and several were, which is the story below.
+
+Refresh is not the only thing the machine adds. **An armed HDMA channel
+transfers at the start of every scanline**, and those cycles land inside the
+measurement in amounts that depend on how many channels are running and what
+they are moving — as unpredictable from the routine's input as refresh, and not
+as tidy. Three movies in the corpus run HDMA at all: level 1's map screen and
+both level 49 probes. Calls made while a channel was armed are counted
+separately and held only to the direction — the model must never claim a call
+cost *more* than the ROM took — and the sharp test is the other forty movies'.
+
+The other half of that contract is on the burning side. `snes_runCycles` adds
+its 40 once per *call*, so a 7,000-cycle budget handed over in one piece gets
+one refresh where the ROM executing the same work in twelve-cycle bites gets
+five. A reported cost is therefore burned in pieces no longer than a single
+memory access, and the core inserts refresh wherever the clock says it is due. A
+declared `cycles` constant is still burned in one piece, because it was
+*measured* refresh-inclusive and chunking it would count refresh twice.
+
+### `tools/cycles816.py`, because summing a listing by hand is how this goes wrong
+
+A cost model is a table of constants and every constant is the sum of one
+straight-line run of the listing. `$80:BC7F` alone needs eleven of them. Doing
+that arithmetic by hand eleven times, and then forty more times for the HUD, is
+an invitation to a silent off-by-six, so it is done by a tool that prices the
+ROM instead:
+
+```
+$80:BC7F  AE 5E 1B     LDX  $1B5E         34     34
+$80:BC82  F0 5D        BEQ  $BCE1         12     46   (18 taken)
+$80:BC84  B4 12        LDY  $12,X         34     80
+```
+
+It reuses `dis816.py`'s opcode table, follows `SEP`/`REP`, prices both sides of
+every branch, and refuses — rather than guesses — at anything whose cost it
+cannot see, such as an indirect jump or an indexed mode with 8-bit indices where
+a page crossing decides. `LDX $1B5E : BEQ : RTS` comes out at 34 + 18 + 40 = 92,
+which is exactly the minimum `verify` had already measured for the empty-list
+path. That agreement, before a line of model code was written, is what made the
+rest of it worth doing.
+
+### The sort, exact on the first attempt
+
+`$80:BC7F` is a bubble pass over the display list, and its shape is four
+compares, two relinks, one advance and one loop step, each a straight line of a
+different length. The port already walked the list in exactly the ROM's order —
+that was the whole point of transcribing the second look a swap causes — so
+`actor_depth_sort_counted` returns the counts and `src/cosim/routines.c` prices
+them. The port learns nothing about cycles: it counts branch outcomes, which is
+the same kind of fact `PORT_COVER` records.
+
+Refresh-exact on every call of every movie it was tried on, first run. And the
+framebuffer test the previous round left behind now passes: substituting
+`actor_depth_sort` alone on `level25-2p` at frame 2,700 gives a frame
+**byte-identical** to the stock core's, where before it was the exact
+24,549-byte frame that had been parting.
+
+### The HUD, and a fact about the cartridge that was wrong
+
+`hud_refresh` costs 1,084 cycles when the six comparisons all match their
+shadows and 11,950 when the score, both counts and both icons have all moved. It
+was declared at 1,367. Same disease, worse ratio, and the bisection said so:
+with the sort fixed, `hud_refresh` became the first routine in the registry that
+parted the frame.
+
+The tree is sixteen routines, so the port's side is a `HudWork` — one counter
+per straight-line run, riding along inside the `HudRegs` that every routine in
+the file already threads — and the harness's side is a table of 37 constants.
+Thirty-four of them were right. The three that were not are the interesting
+part:
+
+```
+  hud_refresh                 231        231  +0..+428, mean +59       228/231  <-- MODEL WRONG
+  hud_panel1                  116        116  +0..+388, mean +44       114/116  <-- MODEL WRONG
+```
+
+Three calls out of 233, all of them the ones where the health bar was redrawn.
+Everything else refresh-exact. A per-instruction trace of one such call, next to
+the model:
+
+    $80:C5A3  LDA $C5B6,X    modelled 36   measured 40
+    $80:C383  LDA $C3DE,Y    modelled 36   measured 40
+
+**A LoROM cartridge appears twice in the address space and only the `$80`+ copy
+is fast.** `$80:C5A3` is an instruction in bank `$80` — fetched at 6 cycles a
+byte, because the boot code sets `$420D` — reading a table through the *data
+bank register*, which the HUD's callers leave holding a low bank. So the table
+read costs 8 a byte and not 6. `port/hud.h` had been asserting a data bank of
+`$80` since the round that wrote it; the assertion was about which *addresses*
+the tables live at, and it quietly carried a claim about their speed that
+nothing had ever tested.
+
+Twelve cycles across the three table reads in `$80:C59C`, forty across the ten
+in `$80:C379`, eight in each icon routine. Corrected, and the shim now declines
+to price any call whose data bank is `$80` or above, so the assumption is a
+condition rather than a hope. `tools/cycles816.py` grew a `--db` for the same
+reason, and its docstring leads with this because it is the trap the tool is
+most likely to hand somebody else.
+
+Nothing about the port's *behaviour* was wrong here, and nothing in eleven
+rounds of WRAM diffing could have found it: this is a fact about how long an
+instruction takes, and the only instrument that asks that question is the one
+this round built.
+
+### ...and a second one, which the corpus found and one movie could not
+
+Four movies of five said the models were now exact. The corpus said otherwise —
+and the number that mattered was not the aggregate but the three movies it
+isolated: `level1-map`, `level49-bubble` and `level49-corner`. HDMA explained
+the first. It did not explain the other two, where no channel was armed at all
+and the shortest path in the whole cluster was still wrong:
+
+    hud_panel2   model 86, ROM 98, out by 12 — D=$0C00, DB=$00
+
+Eighty-six cycles is `LDA $1E8A : BNE : RTS` and there is nothing in it to get
+wrong. A trace of that PC, on that movie, priced each instruction twice over:
+
+    $80:C139  LDA $1E8A   34 cycles ... or 40
+    $80:C13C  BNE         12        ... or 16
+    $80:C13E  RTS         40        ... or 42
+
+Six, four and two — **two cycles per byte of the three instructions**, which is
+one thing: the opcodes and operands are being fetched at 8 cycles a byte instead
+of 6. **`$420D` is not always set.** The boot code turns FastROM on at
+`$80:80A2`, that is the only write to the register in the image, and this
+project has been assuming since Phase 1 that it therefore stays on. On level 49
+it does not.
+
+The fix generalises rather than patching: a modelled run is now a `CosimRun` —
+what it costs with FastROM on, and **its length in program bytes**, since every
+byte of an instruction is fetched from the program stream exactly once. The cost
+is `cycles + 2 * bytes` while the register is clear, and `$420D`'s state travels
+to the shim in `CosimRegs::fastrom` alongside the direct page and the data bank,
+which is where it belongs: it is part of the machine the call was made on.
+`tools/cycles816.py` prints the byte count next to the cycle count for the same
+reason.
+
+Two assumptions about this cartridge, both a decade older than this port, both
+wrong, both found in one round by the same instrument — and neither of them
+findable by comparing memory, because neither of them changes a byte.
+
+### Results
+
+Over the whole 43-movie corpus, with everything in the registry enabled:
+
+* **13,209,637 calls checked, 0 diverged** — unchanged, which is the point: the
+  port's behaviour was not touched.
+* **Branch coverage 432 of 538**, also unchanged.
+* **248,498 calls priced themselves.** Of the 246,275 made while the PPU was
+  not stealing cycles, **246,275 were refresh-exact** — every error a whole
+  number of 40-cycle refreshes, on every call of every movie. The remaining
+  2,223 were made under HDMA and every one of them errs in the right direction.
+
+| routine | refresh-exact / priced, PPU quiet | priced under HDMA |
+| --- | --- | --- |
+| `actor_depth_sort` | 143,929 / 143,929 | 1,915 |
+| `hud_refresh` | 51,172 / 51,172 | 154 |
+| `hud_panel2` | 25,603 / 25,603 | 75 |
+| `hud_panel1` | 25,571 / 25,571 | 79 |
+
+Lockstep `run` on `level1`, `level25-2p` and `level45-race` agrees with every
+previous round: differences confined to stacks and declared scratch, and no byte
+of live game state ever differing.
+
+`tools/verify_corpus.ps1` now sums the cost-model columns and fails the run if
+any model is not exact, so this is a claim the corpus re-checks rather than one
+this document asserts.
+
+### What it fixed, and what it did not
+
+Seven of the eight framebuffer probes were already identical and still are.
+`level25-2p` still differs, and the bisection now says why: with the four
+modelled routines in place the first prefix that parts it is the tenth,
+`actor_cull` — another walk over the same display list, 138 to 8,688 cycles,
+declared at one number.
+
+That is not a disappointment, it is the shape of the remaining work, and it is
+now measurable rather than mysterious. Ranked by how much clock error each
+routine can inject over one movie — its spread times its call count, on
+`level25-2p` at 3,000 frames:
+
+| routine | calls | min | max | mean |
+| --- | --- | --- | --- | --- |
+| `apu_send` | 23,373 | 218 | 13,470 | 2,639 |
+| `sprite_build_oam` | 1,518 | 5,864 | 118,252 | 34,527 |
+| `actor_overlap_pass` | 1,518 | 88 | 45,954 | 8,011 |
+| `camera_follow` | 2,168 | 266 | 13,264 | 897 |
+| `actor_cull` | 1,518 | 138 | 8,688 | 2,523 |
+| `boss_step` | 910 | 2,118 | 15,616 | 12,995 |
+
+`sprite_build_oam` is the one that matters and the one that cannot be done in an
+afternoon: a 20× spread over the whole sprite pass, whose cost is four emitters,
+a pairwise overlap test and the three list walks above it. `apu_send` is
+`verify_only` and never substituted, so its spread costs nothing today. The rest
+are each about the size of the sort.
+
+The mechanism is general, the tool makes each one mechanical, and the report
+will refuse to let a wrong one through. What is left is doing them.
+
 ## Where this is going
 
 The first five routines here are leaves — they never call `thread_yield`. That

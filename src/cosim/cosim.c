@@ -19,6 +19,7 @@ typedef struct {
   uint16_t min_sp;    // lowest SP seen during the call — see dead_stack()
   uint32_t ret_pc;    // where it will return to, read off the stack at entry
   uint64_t cycles;    // core cycle count at entry
+  bool hdma;          // ...and whether the PPU was stealing any, at entry
   CosimRegs in;
   Wram* before;  // WRAM as the routine found it
   // --- resumable routines only ---
@@ -195,6 +196,7 @@ static void regs_capture(Snes* snes, CosimRegs* r) {
   r->d = cpu->dp;
   r->db = cpu->db;
   r->s = cpu->sp;
+  r->fastrom = snes->fastMem;
   r->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
   r->regs = COSIM_REG_ALL;
 }
@@ -482,6 +484,64 @@ static void record_cycles(CosimStat* s, long cycles) {
 }
 
 // ---------------------------------------------------------------------------
+// What the call the port just served would have cost
+// ---------------------------------------------------------------------------
+
+// What the last shim reported, or -1 if it reported nothing. A global for the
+// same reason the coverage counters are one: the shim signature belongs to all
+// 111 routines and this concerns four of them, and there is never more than one
+// shim running — a port routine calls no other shim, and lockstep steps its two
+// cores one after the other rather than side by side.
+static int g_cosim_cost = -1;
+
+void cosim_cost(int cycles) { g_cosim_cost = cycles; }
+
+// Compare a reported cost against what the ROM's own instructions really took.
+// See `cosim_cost` for why a right answer here is a multiple of 40 rather than
+// zero, and `CosimStat::model_hdma` for when it is neither.
+//
+// Is the PPU stealing cycles from the CPU? See `CosimStat::model_hdma`: an
+// armed channel transfers at the start of every scanline, and those cycles land
+// inside a routine's measured cost without being any part of what the routine
+// did.
+static bool hdma_armed(const Snes* snes) {
+  for (int i = 0; i < 8; i++)
+    if (snes->dma->channel[i].hdmaActive) return true;
+  return false;
+}
+
+static void record_model(CosimStat* s, long actual, const CosimRegs* in,
+                         bool hdma) {
+  if (g_cosim_cost < 0) return;
+  const long err = actual - (long)g_cosim_cost;
+
+  s->modelled++;
+  if (s->modelled == 1) {
+    s->model_err_min = s->model_err_max = err;
+  } else {
+    if (err < s->model_err_min) s->model_err_min = err;
+    if (err > s->model_err_max) s->model_err_max = err;
+  }
+  s->model_err_mean += ((double)err - s->model_err_mean) / (double)s->modelled;
+  if (hdma) {
+    // Only the direction is checkable here: the model must never claim a call
+    // cost *more* than the ROM took, whatever the PPU was doing alongside.
+    s->model_hdma++;
+    if (err >= 0) return;
+  } else if (err >= 0 && err % COSIM_REFRESH_CYCLES == 0) {
+    s->model_refresh_exact++;
+    return;
+  }
+  if (!s->model_bad) {
+    s->model_bad = true;
+    s->model_bad_model = g_cosim_cost;
+    s->model_bad_actual = actual;
+    s->model_bad_d = in->d;
+    s->model_bad_db = in->db;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // The engine
 // ---------------------------------------------------------------------------
 
@@ -532,6 +592,37 @@ static void cycles_burn(Cosim* c, int cycles) {
   c->work.cycles_native += c->snes->cycles - before;
 }
 
+// The longest run of cycles a real 65816 access can take, and the size a
+// reported cost is burned in.
+//
+// `snes_runCycles` adds 40 for a DRAM refresh when *one call* crosses the end of
+// a scanline, so a routine's cost handed over in one piece gets one refresh
+// however many scanlines it spans, while the ROM executing the same work in
+// twelve-cycle bites gets one per scanline. For a 92-cycle call that is nothing;
+// for a 7,524-cycle one it is five refreshes the machine never sees. Burning a
+// cost in pieces no longer than a single access puts them back exactly where the
+// clock says they belong, and costs one loop.
+#define COSIM_BURN_PIECE 12
+
+// Burn a cost the routine reported for itself. See `cosim_cost`: the number
+// excludes refresh, which is precisely what this lets the core add.
+static void cycles_burn_modelled(Cosim* c, int cycles) {
+  uint64_t before = c->snes->cycles;
+  while (cycles > 0) {
+    const int piece = cycles < COSIM_BURN_PIECE ? cycles : COSIM_BURN_PIECE;
+    snes_runCycles(c->snes, piece);
+    cycles -= piece;
+  }
+  c->work.cycles_native += c->snes->cycles - before;
+}
+
+// The cost of the call that just ran: whatever the shim reported, or the
+// routine's declared constant if it reported nothing.
+static void cycles_burn_call(Cosim* c, const CosimRoutine* r) {
+  if (g_cosim_cost >= 0) cycles_burn_modelled(c, g_cosim_cost);
+  else cycles_burn(c, r->cycles);
+}
+
 // ...and the mirror image: suspend by jumping to the routine's own
 // `JSL thread_yield`, with the sleep count in A where the ROM would have put it.
 //
@@ -568,6 +659,7 @@ static void run_native_segment(Cosim* c, CosimCall* call) {
   regs_capture(snes, &in);
   out = in;
   uint16_t ticks = 0;
+  g_cosim_cost = -1;
   PortStep step =
       r->run_yield((Wram*)snes->ram, &c->rom, &in, &out, call->ctx, &ticks);
 
@@ -583,7 +675,7 @@ static void run_native_segment(Cosim* c, CosimCall* call) {
   // of a scanline. Those cycles are the machine's, so they are the port's here:
   // whatever the burn actually advanced the core by is what the ROM's own
   // instructions no longer have to. See `CosimWork`.
-  cycles_burn(c, r->cycles);
+  cycles_burn_call(c, r);
 
   if (step == PORT_YIELDED) {
     s->yields++;
@@ -652,10 +744,11 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
   CosimRegs in, out;
   regs_capture(snes, &in);
   out = in;
+  g_cosim_cost = -1;
   r->run((Wram*)snes->ram, &c->rom, &in, &out);
 
   // Stand in for the work the ROM's instructions would have done.
-  cycles_burn(c, r->cycles);
+  cycles_burn_call(c, r);
   native_return(c, r, &out);
 
   s->calls++;
@@ -673,6 +766,7 @@ static void segment_start(Cosim* c, CosimCall* call) {
   call->entry_sp = c->snes->cpu->sp;
   call->min_sp = c->snes->cpu->sp;
   call->cycles = c->snes->cycles;
+  call->hdma = hdma_armed(c->snes);
   call->segment_spoiled = false;
   call->apu_mark = g_apu_rom.count;
   regs_capture(c->snes, &call->in);
@@ -706,6 +800,7 @@ static PortStep verify_segment(Cosim* c, CosimCall* call, CosimRegs* out,
   *out = call->in;
   out->flags = 0;
   out->regs = COSIM_REG_ALL;
+  g_cosim_cost = -1;
   if (!r->run_yield) {
     r->run(c->priv->scratch, &c->rom, &call->in, out);
     return PORT_RETURNED;
@@ -721,7 +816,11 @@ static PortStep verify_segment(Cosim* c, CosimCall* call, CosimRegs* out,
 
 static void record_segment(Cosim* c, CosimCall* call, CosimStat* s) {
   s->checked++;
-  record_cycles(s, (long)(c->snes->cycles - call->cycles));
+  const long actual = (long)(c->snes->cycles - call->cycles);
+  record_cycles(s, actual);
+  // Sampled at both ends, because a channel armed at any point in the window
+  // will have transferred somewhere inside it.
+  record_model(s, actual, &call->in, call->hdma || hdma_armed(c->snes));
   int waived = (int)(call->entry_sp - call->min_sp);
   if (waived > s->stack_waived) s->stack_waived = waived;
 }
@@ -1076,6 +1175,56 @@ const CosimRoutine* cosim_find(const char* name) {
   return NULL;
 }
 
+// What the routines that priced themselves got right, and by how much they were
+// wrong. Silent unless something reported — see `cosim_cost`.
+//
+// The column that matters is `refresh-exact`. A cost model is the routine's own
+// instruction cycles and nothing else, so its error is what the *machine* added
+// on top: 40 cycles per scanline the call crossed, and never zero. What makes a
+// model right is that every one of those errors is a whole number of refreshes.
+// One call whose error is not says the model has an instruction wrong, and no
+// amount of averaging hides it here.
+//
+// The denominator is calls made while the PPU was not also stealing cycles. An
+// armed HDMA channel transfers at every scanline start and those cycles land
+// inside the measurement, in amounts that depend on what is being drawn — so
+// calls made under HDMA are counted separately and held only to the direction:
+// the model must never claim more than the ROM took. See `CosimStat::model_hdma`.
+static void cost_model_report(const Cosim* c) {
+  int any = 0;
+  for (int i = 0; i < c->stat_count; i++)
+    if (cosim_mask_get(&c->enabled, i) && c->stats[i].modelled > 0) any++;
+  if (!any) return;
+
+  printf("\ncost models (error is what the ROM took, less what the port said it\n"
+         "would; a correct model is short by one 40-cycle DRAM refresh per\n"
+         "scanline the call crossed, and by more wherever HDMA was running)\n\n");
+  printf("  %-20s %10s %10s  %-24s %14s %s\n", "routine", "priced", "of",
+         "error", "refresh-exact", "under HDMA");
+  for (int i = 0; i < c->stat_count; i++) {
+    if (!cosim_mask_get(&c->enabled, i)) continue;
+    const CosimStat* s = &c->stats[i];
+    if (s->modelled == 0) continue;
+
+    char err[32], exact[32];
+    snprintf(err, sizeof err, "%+ld..%+ld, mean %+.0f", s->model_err_min,
+             s->model_err_max, s->model_err_mean);
+    const long quiet = s->modelled - s->model_hdma;
+    snprintf(exact, sizeof exact, "%ld/%ld", s->model_refresh_exact, quiet);
+    // `model_bad` and not `exact != quiet`: a call made under HDMA is not held
+    // to refresh-exactness, but it is still held to the direction, and a model
+    // that over-claimed there would slip past a comparison of those two counts.
+    printf("  %-20s %10ld %10ld  %-24s %14s %10ld%s\n", s->routine->name,
+           s->modelled, s->checked, err, exact, s->model_hdma,
+           s->model_bad ? "  <-- MODEL WRONG" : "");
+    if (s->model_bad)
+      printf("  %-20s   first wrong: model %ld, ROM %ld, out by %ld — D=$%04X, DB=$%02X\n",
+             "", s->model_bad_model, s->model_bad_actual,
+             s->model_bad_actual - s->model_bad_model, s->model_bad_d,
+             s->model_bad_db);
+  }
+}
+
 int cosim_report(const Cosim* c) {
   printf("\n%-20s %8s %7s %8s %8s %6s %6s %6s  %-20s %s\n", "routine", "calls",
          "yields", "checked", "passed", "int.", "decl.", "stack", "ROM cycles",
@@ -1109,6 +1258,8 @@ int cosim_report(const Cosim* c) {
            s->interrupted, s->declined, s->stack_waived, cycles, verdict);
     if (s->failed) printf("%22s%s\n", "", s->detail);
   }
+
+  cost_model_report(c);
   return failures;
 }
 

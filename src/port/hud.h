@@ -273,12 +273,101 @@
 #define HUD_SIDE_P1 0u
 #define HUD_SIDE_P2 2u
 
+// --- What the refresh actually did ------------------------------------------
+//
+// **The panel's cost is not a number, it is a shape.** One call costs 1,084
+// cycles when the six comparisons all match their shadows and 11,950 when the
+// score, both counts and both icons have all moved — and substituted against the
+// mean of the two, this routine drags the machine's clock far enough to part
+// `movies/level25-2p` from the stock core's framebuffer. `cosim_cost` is the
+// harness side of the answer; this is the port's.
+//
+// Every constant is one straight-line run of the listing, and the run is named
+// by where it starts. Nothing here is a cycle count: these are counts of
+// branches taken, the same kind of fact `PORT_COVER` records, and
+// `src/cosim/routines.c` is where each one is multiplied by what the
+// corresponding instructions cost. Keeping the two apart is what lets the port
+// stay ignorant of the machine's clock while still being able to say what it
+// did.
+//
+// The whole model is checked against the ROM on every call — see the
+// cost-model report `zamn_cosim verify` prints.
+typedef enum {
+  // $80:C07F itself. The two phases differ by one taken branch, and the tail is
+  // either the quiet `RTL` or the upload.
+  HUD_BLK_REFRESH_P1,
+  HUD_BLK_REFRESH_P2,
+  HUD_BLK_REFRESH_IDLE,
+  HUD_BLK_REFRESH_QUEUE,
+  // ...and $80:83AE, which `$80:C098` tail-jumps into, so its cost is part of
+  // this call. `QUEUE_BUSY` is one rejected slot of the search; `QUEUE_FELL` is
+  // the search running off the end and using slot 0 regardless.
+  HUD_BLK_QUEUE_FULL,
+  HUD_BLK_QUEUE_ACCEPTED,
+  HUD_BLK_QUEUE_BUSY,
+  HUD_BLK_QUEUE_FELL,
+  // $80:C0A3 / $80:C139, which price the same: the two are the same code with
+  // different constants in it.
+  HUD_BLK_PANEL_OFF,
+  HUD_BLK_PANEL_ON,
+  HUD_BLK_PANEL_RTS,
+  // The six comparisons. Health and the two icons have one shape, the two
+  // counts another (they index an inventory first), and the score a third — it
+  // is the only 32-bit test, so it can find the low half equal and the high half
+  // not.
+  HUD_BLK_FIELD_SAME,
+  HUD_BLK_FIELD_CHANGED,
+  HUD_BLK_COUNT_SAME,
+  HUD_BLK_COUNT_CHANGED,
+  HUD_BLK_SCORE_SAME,
+  HUD_BLK_SCORE_LOW,
+  HUD_BLK_SCORE_HIGH,
+  HUD_BLK_SCORE_TAIL,
+  // The adapters at $80:C6E4..$80:C7AB — three instructions each, and the reason
+  // the tree has sixteen routines in it rather than six.
+  HUD_BLK_ADAPT_SCORE,
+  HUD_BLK_ADAPT_HEALTH,
+  HUD_BLK_ADAPT_COUNT_NONE,
+  HUD_BLK_ADAPT_COUNT_OVER,
+  HUD_BLK_ADAPT_COUNT_SHOWN,
+  HUD_BLK_ADAPT_ICON_SHOWN,
+  HUD_BLK_ADAPT_ICON_NONE,
+  // The drawing. `$80:C5C2` and `$80:C666` are one function in the port and two
+  // prices here: the weapon's has an `LDY $20` at `$80:C5C8` the item's does not.
+  HUD_BLK_BLANK,
+  HUD_BLK_HEALTH,
+  HUD_BLK_ICON_WEAPON,
+  HUD_BLK_ICON_ITEM,
+  // One digit, three ways. A digit that is not zero prints straight away; a zero
+  // prints only once something before it has, and pays for the `BIT` that found
+  // out; a leading zero blanks the cell.
+  HUD_BLK_DIGIT_NONZERO,
+  HUD_BLK_DIGIT_LEAD,
+  HUD_BLK_DIGIT_BLANK,
+  HUD_BLK_DIGITS_END_PRINTED,
+  HUD_BLK_DIGITS_END_ZERO,
+  // Everything in the two renderers except the digits: fixed, because both loops
+  // are counted rather than terminated.
+  HUD_BLK_DIGITS8,
+  HUD_BLK_DIGITS3,
+  HUD_BLOCK_COUNT,
+} HudBlock;
+
+typedef struct {
+  uint16_t blocks[HUD_BLOCK_COUNT];
+} HudWork;
+
 // What `$80:C0A3` and `$80:C139` leave behind. Both are `RTS` and both have two
 // exits — the early one when the panel is switched off, which touches nothing
 // but A, and the end of the sixth test.
+//
+// `work` is where the call records what it did, and it must not be NULL: every
+// caller of these is a shim, and a shim that did not want the counts would still
+// have to give them somewhere to go.
 typedef struct {
   uint16_t a, x, y;
   bool n, z, c;
+  HudWork* work;
 } HudPanelRegs;
 
 // `$80:C0A3` / `$80:C139` — refresh one player's panel.
@@ -297,6 +386,7 @@ void hud_panel(Wram* w, const Rom* rom, uint16_t dp, uint16_t side,
 typedef struct {
   uint16_t a, x, y;
   bool n, z, c;
+  HudWork* work;  // as above, and not optional
 } HudRefreshRegs;
 
 // `$80:C07F` — refresh whichever panel is this call's turn, and queue the upload

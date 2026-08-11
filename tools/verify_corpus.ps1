@@ -80,6 +80,13 @@ $siteTotal = 0
 # says what the *corpus* has never done. Per-movie coverage cannot be added up.
 $untakenEverywhere = $null
 $censusAll = @{}
+# Cost models, summed over the corpus: how many calls priced themselves and how
+# many of those were refresh-exact. A model is only as good as the movie that
+# has not caught it out yet, so the number worth quoting is this one and not any
+# single run's. See `cosim_cost`.
+$pricedAll = @{}
+$exactAll = @{}
+$hdmaAll = @{}
 "{0,-24} {1,6} {2,10} {3,7} {4,6}  {5}" -f "movie", "frames", "checked", "decl.", "sites", "census"
 foreach ($movie in $corpus.Keys) {
     $frames = $corpus[$movie]
@@ -123,6 +130,14 @@ foreach ($movie in $corpus.Keys) {
         $rows += ($f[-2] + "=" + $f[-1])
         $censusAll[$f[-2]] = [int]$censusAll[$f[-2]] + [int]$f[-1]
     }
+    # Rows of the cost-model table: name, priced, checked, the error range, then
+    # "<refresh-exact>/<priced with the PPU quiet>" and the HDMA count.
+    foreach ($line in ($out | Select-String -Pattern "^  (\S+) +\d+ +\d+ +[-+0-9.]+\.\.[-+0-9.]+, mean [-+0-9.]+ +(\d+)/(\d+) +(\d+)")) {
+        $g = $line.Matches[0].Groups
+        $pricedAll[$g[1].Value] = [int]$pricedAll[$g[1].Value] + [int]$g[3].Value
+        $exactAll[$g[1].Value] = [int]$exactAll[$g[1].Value] + [int]$g[2].Value
+        $hdmaAll[$g[1].Value] = [int]$hdmaAll[$g[1].Value] + [int]$g[4].Value
+    }
     $census = $rows -join " "
     $total += $checked
     if (-not $ok) { $failed++ }
@@ -142,5 +157,17 @@ if ($censusAll.Count -gt 0) {
     foreach ($k in ($censusAll.Keys | Sort-Object { -$censusAll[$_] })) {
         "  {0,-12} {1,6}" -f $k, $censusAll[$k]
     }
+}
+if ($pricedAll.Count -gt 0) {
+    ""
+    "Cost models over the corpus (refresh-exact / priced with the PPU quiet, then priced under HDMA):"
+    $modelsWrong = 0
+    foreach ($k in ($pricedAll.Keys | Sort-Object)) {
+        $bad = $exactAll[$k] -ne $pricedAll[$k]
+        if ($bad) { $modelsWrong++ }
+        "  {0,-24} {1,10} / {2,-10} {3,8} HDMA{4}" -f $k, $exactAll[$k], $pricedAll[$k],
+            $hdmaAll[$k], $(if ($bad) { "  <-- MODEL WRONG" } else { "" })
+    }
+    if ($modelsWrong -gt 0) { $failed++ }
 }
 if ($failed -gt 0) { exit 1 }

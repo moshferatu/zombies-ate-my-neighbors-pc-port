@@ -174,4 +174,7 @@ def main():
         pc += 1 + n
 
 
-main()
+# Importable: `tools/cycles816.py` reuses the tables above rather than keeping a
+# second copy of the opcode map in step with this one.
+if __name__ == "__main__":
+    main()

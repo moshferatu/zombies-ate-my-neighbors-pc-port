@@ -289,10 +289,88 @@ static const CosimExclude DEPTH_SORT_EXCLUDES[] = {
     {0x0038, 2, "the ROM keeps the walk's predecessor here; the port uses a local"},
 };
 
+// What one pass would have cost the 65816, from what the pass did — the routine
+// `cosim_cost` was written for, and the case that showed why a constant is not
+// enough. `$80:BC7F` runs every frame and costs anywhere from 92 cycles to
+// 7,524; declared at its mean of 1,605 it drifts `movies/level25-2p` off the
+// stock core's framebuffer by frame 2,700.
+//
+// Every constant below is the sum of one straight-line run of the listing, at
+// the access times this ROM actually gets: 6 master cycles for an opcode or
+// operand byte (the boot code sets `$420D`, so banks $80+ are fast), 8 for a
+// data byte — the display list and its head both live under `$7E:2000`, and
+// every bank the data-bank register can hold reaches them in 8 — and 6 for an
+// internal cycle. `LDX $1B5E : BEQ : RTS` is 34 + 18 + 40 = 92, which is exactly
+// the minimum `verify` measures, and the whole model is checked against the ROM
+// on every call.
+//
+// Refresh is deliberately absent, and so is the fetch penalty: see `cosim_cost`
+// and `CosimRun`.
+//
+// $80:BC7F LDX $1B5E : BEQ (taken) : $80:BCE1 RTS.
+static const CosimRun SORT_EMPTY = {34 + 18 + 40, 6};
+// ...BEQ not taken, then LDY $12,X : BEQ (taken) : RTS.
+static const CosimRun SORT_SINGLE = {34 + 12 + 34 + 18 + 40, 10};
+// The same four instructions with both branches falling through: what every
+// call with a pair in it starts with.
+static const CosimRun SORT_PROLOGUE = {34 + 12 + 34 + 12, 9};
+// $80:BCB0 LDY $12,X : BEQ, not taken — one more record to look at.
+static const CosimRun SORT_STEP = {34 + 12, 4};
+// ...and taken, which is where every full walk ends: + $80:BCE1 RTS.
+static const CosimRun SORT_EXIT = {34 + 18 + 40, 5};
+// $80:BCAD STX $38 : TYX, the advance both no-swap paths branch to and the head
+// falls into.
+static const CosimRun SORT_ADVANCE = {28 + 12, 3};
+// $80:BCA3 / $80:BCCF, the two relinks. The head's moves the list head; the
+// other has a predecessor to fix up, reloads X from `$38`, and jumps back to
+// the top of the walk rather than through the advance.
+static const CosimRun SORT_SWAP_HEAD = {40 + 34 + 34 + 34, 10};
+static const CosimRun SORT_SWAP_MID = {40 + 34 + 34 + 28 + 34 + 28 + 40 + 18, 18};
+
+// The four compares, in `ActorSortCmp` order. Each is `LDA $00,X : EOR $0000,Y
+// : AND #$0020` — 92 cycles over 8 bytes — plus its own branch and whichever
+// second test it needed, and each includes the branch it ends on, so the caller
+// adds nothing.
+static const CosimRun SORT_CMP[ACTOR_SORT_CMP_COUNT] = {
+    [ACTOR_SORT_CMP_FIRST_SWAP] = {92 + 12 + 40 + 18 + 18, 18},
+    [ACTOR_SORT_CMP_FIRST_NOSWAP] = {92 + 12 + 40 + 18 + 12 + 18, 20},
+    [ACTOR_SORT_CMP_Y_SWAP] = {92 + 18 + 34 + 40 + 12, 17},
+    [ACTOR_SORT_CMP_Y_NOSWAP] = {92 + 18 + 34 + 40 + 18, 17},
+};
+
+static int depth_sort_cycles(const ActorSortWork* k, bool fast) {
+  if (k->empty) return cosim_run_cycles(&SORT_EMPTY, fast);
+  if (k->single) return cosim_run_cycles(&SORT_SINGLE, fast);
+
+  int cycles = cosim_run_cycles(&SORT_PROLOGUE, fast) +
+               cosim_run_cycles(&SORT_EXIT, fast);
+  for (int i = 0; i < ACTOR_SORT_CMP_COUNT; i++)
+    cycles += k->compares[i] * cosim_run_cycles(&SORT_CMP[i], fast);
+  if (k->swap_head) cycles += cosim_run_cycles(&SORT_SWAP_HEAD, fast);
+  cycles += k->swap_mid * cosim_run_cycles(&SORT_SWAP_MID, fast);
+  cycles += k->steps * cosim_run_cycles(&SORT_STEP, fast);
+  // Once for the head, then once per loop step that did not relink — a mid-list
+  // swap jumps straight back to `$80:BCB0`.
+  cycles += (1 + k->steps - k->swap_mid) * cosim_run_cycles(&SORT_ADVANCE, fast);
+  return cycles;
+}
+
 static void shim_actor_depth_sort(Wram* w, const Rom* rom, const CosimRegs* in,
                                   CosimRegs* out) {
   (void)rom;
-  uint16_t tail = actor_depth_sort(w);
+  ActorSortWork work;
+  uint16_t tail = actor_depth_sort_counted(w, &work);
+
+  // Every direct-page address the routine touches costs one extra internal
+  // cycle when the direct page is not page-aligned, and the model above does not
+  // carry that term because no caller has ever presented one. If a caller ever
+  // does, this reports nothing and the routine falls back to its declared mean —
+  // visibly, as a `priced` below `checked` in the cost-model report.
+  //
+  // The data bank needs no such guard: every address the walk touches is under
+  // `$2000`, which costs 8 cycles a byte through any bank there is.
+  if ((in->d & 0xff) == 0)
+    cosim_cost(depth_sort_cycles(&work, in->fastrom));
 
   // Every one of the three `RTS` paths is reached by a taken `BEQ`, so N and Z
   // are the same on all of them however the walk ended.
@@ -2974,11 +3052,114 @@ static bool guard_blockmap_cell_ptr(Wram* scratch, const Rom* rom,
 // that leaves it alone: a `CMP` against a shadow sets it six times over, and
 // below that so do the shifts that build a table index and the `ROR $1E` inside
 // every printed digit. See `port/hud.h`.
+// What each straight-line run of the HUD tree costs the 65816, indexed by
+// `HudBlock`. Every number came out of `tools/cycles816.py`, which prices the
+// listing rather than being told what it costs; the whole table is checked
+// against the ROM on every call, and the cost-model report says so.
+//
+// The tree is sixteen routines but only five shapes of cost: the refresh's own
+// two branches, the panel's six comparisons, three adapters that are three
+// instructions each, four drawing routines whose loops are all counted rather
+// than terminated, and one digit — which is where the variation actually lives,
+// eleven of them per full redraw at three different prices.
+static const CosimRun HUD_BLOCK_COST[HUD_BLOCK_COUNT] = {
+    // $80:C07F. P1 costs the extra `BRA $C090` on the way back from the panel;
+    // P2 costs the taken `BNE` instead. Both include the `JSR`.
+    [HUD_BLK_REFRESH_P1] = {28 + 18 + 28 + 12 + 40 + 18, 14},
+    [HUD_BLK_REFRESH_P2] = {28 + 18 + 28 + 18 + 40, 12},
+    [HUD_BLK_REFRESH_IDLE] = {34 + 18 + 42, 6},
+    [HUD_BLK_REFRESH_QUEUE] = {34 + 12 + 34 + 18 + 18 + 24, 18},
+    // $80:83AE, tail-jumped into. `ACCEPTED` is the prologue, the compare that
+    // found a free slot and the whole of the store; `BUSY` is one turn of the
+    // search that did not; `FELL` is all fifteen turns and no free slot, which
+    // ends on a `BNE` that falls through rather than a `BEQ` that is taken.
+    [HUD_BLK_QUEUE_FULL] = {28 + 34 + 18 + 18 + 34 + 42, 11},
+    [HUD_BLK_QUEUE_ACCEPTED] = {110 + 58 + 248, 12 + 5 + 14},
+    [HUD_BLK_QUEUE_BUSY] = {40 + 12 + 48 + 18, 11},
+    [HUD_BLK_QUEUE_FELL] = {110 + 13 * 118 + 112 + 248, 12 + 13 * 11 + 11 + 14},
+    // $80:C0A3 and $80:C139, which are the same code and so the same price.
+    [HUD_BLK_PANEL_OFF] = {34 + 12 + 40, 6},
+    [HUD_BLK_PANEL_ON] = {34 + 18, 5},
+    [HUD_BLK_PANEL_RTS] = {40, 1},
+    // `LDA : CMP long : BEQ`, then the store, the `JSR` and the `INC $1E7A`.
+    [HUD_BLK_FIELD_SAME] = {34 + 40 + 18, 9},
+    [HUD_BLK_FIELD_CHANGED] = {34 + 40 + 12 + 40 + 40 + 56, 19},
+    // ...the same with `LDA : ASL : TAX : LDA table,X` in front of the compare.
+    [HUD_BLK_COUNT_SAME] = {34 + 12 + 12 + 40 + 40 + 18, 14},
+    [HUD_BLK_COUNT_CHANGED] = {34 + 12 + 12 + 40 + 40 + 12 + 40 + 40 + 56, 24},
+    // The score: two compares, and three ways out of them.
+    [HUD_BLK_SCORE_SAME] = {34 + 40 + 12 + 34 + 40 + 18, 18},
+    [HUD_BLK_SCORE_LOW] = {34 + 40 + 18, 9},
+    [HUD_BLK_SCORE_HIGH] = {34 + 40 + 12 + 34 + 40 + 12, 18},
+    [HUD_BLK_SCORE_TAIL] = {40 + 34 + 40 + 34 + 40 + 56, 20},
+    // $80:C6E4 .. $80:C7AB.
+    [HUD_BLK_ADAPT_SCORE] = {18 + 18 + 18, 9},
+    [HUD_BLK_ADAPT_HEALTH] = {18 + 18, 6},
+    [HUD_BLK_ADAPT_COUNT_NONE] = {18 + 34 + 18 + 18, 11},
+    [HUD_BLK_ADAPT_COUNT_OVER] = {18 + 34 + 12 + 18 + 18 + 18, 16},
+    [HUD_BLK_ADAPT_COUNT_SHOWN] =
+        {18 + 34 + 12 + 18 + 12 + 12 + 12 + 18 + 12 + 18, 22},
+    [HUD_BLK_ADAPT_ICON_SHOWN] = {34 + 12 + 18 + 18, 11},
+    // The blank path is the long one: it clears the icon *and* the count beside
+    // it, so it pays for two `hud_blank`s as well as these six instructions.
+    [HUD_BLK_ADAPT_ICON_NONE] = {34 + 18 + 18 + 40 + 18 + 18, 17},
+    // $80:C580: one `LDA #$0000` and six stores.
+    [HUD_BLK_BLANK] = {18 + 6 * 40 + 40, 28},
+    // $80:C59C and the $80:C379 it jumps into — ten tiles out of a table.
+    [HUD_BLK_HEALTH] = {326 + 1248, 26 + 101},
+    // $80:C5C2 and $80:C666: four tiles each, and one `LDY $20` apart.
+    [HUD_BLK_ICON_WEAPON] = {308 + 340, 24 + 28},
+    [HUD_BLK_ICON_ITEM] = {280 + 340, 22 + 28},
+    // $80:C4EC. The common tail — store, `INX INX`, `RTS` — is 104 over 7
+    // bytes, and the print's `CLC : ADC : SEC : ROR $1E` is 92 over 7.
+    [HUD_BLK_DIGIT_NONZERO] = {18 + 92 + 104, 2 + 7 + 7},
+    [HUD_BLK_DIGIT_LEAD] = {12 + 28 + 18 + 92 + 104, 6 + 7 + 7},
+    [HUD_BLK_DIGIT_BLANK] = {12 + 28 + 12 + 18 + 18 + 104, 11 + 7},
+    // The `BIT $1E` both renderers end on, and the forced zero when nothing
+    // printed.
+    [HUD_BLK_DIGITS_END_PRINTED] = {28 + 18, 4},
+    [HUD_BLK_DIGITS_END_ZERO] = {28 + 12 + 18 + 40, 11},
+    // $80:C519 and $80:C553 with their digits taken out. The score's includes
+    // the two dead instructions at `$80:C526` — the port does not have them
+    // because they leave nothing behind, but the machine still pays for them.
+    [HUD_BLK_DIGITS8] = {128 + 80 + 1290 + 40, 13 + 6 + 4 * 27 + 1},
+    [HUD_BLK_DIGITS3] = {410, 34},
+};
+
+static int hud_cycles(const HudWork* k, bool fast) {
+  int cycles = 0;
+  for (int i = 0; i < HUD_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles(&HUD_BLOCK_COST[i], fast);
+  return cycles;
+}
+
+// Two things about the caller decide prices the table above does not carry, so
+// a call that presents either goes unpriced and falls back to the declared mean
+// — visibly, as a `priced` below `checked` in the cost-model report.
+//
+// **The direct page has to be page-aligned.** Every routine in the cluster
+// scratches `$1E`, `$20`, `$22` and `$24` on the caller's, and a direct page
+// with a low byte costs one extra internal cycle on each of those.
+//
+// **The data bank has to be a slow one, and this is the assumption that was
+// wrong first time round.** A LoROM cartridge appears twice and only the `$80`+
+// copy is fast, so `$80:C5A3 LDA $C5B6,X` — an instruction in bank $80 reading a
+// table through the *data bank* — costs 40 cycles through bank $00 and 36
+// through bank $80. Every caller in the corpus leaves a low bank there, the
+// three-instruction difference is real, and it showed up as exactly three calls
+// out of 233 whose model was short by 12.
+static void hud_report_cost(const CosimRegs* in, const HudWork* work) {
+  if ((in->d & 0xff) == 0 && in->db < 0x80)
+    cosim_cost(hud_cycles(work, in->fastrom));
+}
+
 static void shim_hud_panel1(Wram* w, const Rom* rom, const CosimRegs* in,
                             CosimRegs* out) {
+  HudWork work = {0};
   HudPanelRegs r = {.a = in->a, .x = in->x, .y = in->y,
-                    .n = in->n, .z = in->z, .c = in->c};
+                    .n = in->n, .z = in->z, .c = in->c, .work = &work};
   hud_panel(w, rom, in->d, HUD_SIDE_P1, &r);
+  hud_report_cost(in, &work);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -2990,9 +3171,11 @@ static void shim_hud_panel1(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static void shim_hud_panel2(Wram* w, const Rom* rom, const CosimRegs* in,
                             CosimRegs* out) {
+  HudWork work = {0};
   HudPanelRegs r = {.a = in->a, .x = in->x, .y = in->y,
-                    .n = in->n, .z = in->z, .c = in->c};
+                    .n = in->n, .z = in->z, .c = in->c, .work = &work};
   hud_panel(w, rom, in->d, HUD_SIDE_P2, &r);
+  hud_report_cost(in, &work);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -3006,8 +3189,10 @@ static void shim_hud_refresh(Wram* w, const Rom* rom, const CosimRegs* in,
                              CosimRegs* out) {
   // A is not an input: `LDA $24` overwrites it before anything reads it. X, Y
   // and carry are, because the quiet paths hand all three straight back.
-  HudRefreshRegs r = {.x = in->x, .y = in->y, .c = in->c};
+  HudWork work = {0};
+  HudRefreshRegs r = {.x = in->x, .y = in->y, .c = in->c, .work = &work};
   hud_refresh(w, rom, in->d, &r);
+  hud_report_cost(in, &work);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;

@@ -155,6 +155,16 @@ typedef struct {
   // pointer at the end is its own business. `stack_bytes` is what describes the
   // outgoing side.
   uint16_t s;
+  // Is `$420D` set — are banks $80+ being fetched at 6 master cycles a byte
+  // rather than 8? Also an input and also never diffed; it is here for the cost
+  // models (`cosim_cost`), which are the only thing in the harness that cares
+  // how long an instruction takes.
+  //
+  // The boot code sets it and this project assumed for eleven rounds that it
+  // stayed set. It does not: on level 49 the same three instructions of
+  // `$80:C139` were measured at 86 cycles and at 98, and the difference is
+  // exactly 2 per byte of program the run fetches.
+  bool fastrom;
 } CosimRegs;
 
 // How the routine gets back to its caller — which decides how many bytes of
@@ -247,6 +257,11 @@ typedef struct {
   // Cycles a substituted call burns in place of the ROM's instructions.
   // Measured, not guessed: `zamn_cosim verify` reports the real distribution
   // per routine and this is the mean it reported. See docs/cosim.md.
+  //
+  // A mean is only good enough while the errors are small and independent. When
+  // they are not — a routine whose cost is the length of a list it was handed —
+  // the shim reports the real cost per call with `cosim_cost` and this is the
+  // fallback for the paths it declines to price.
   int cycles;
   // How many bytes of stack the ROM's version pushes and abandons. Also
   // measured — it is the `stack` column `verify` prints, which is derived from
@@ -322,6 +337,70 @@ typedef enum {
   COSIM_NATIVE,  // the port drives; the ROM's instructions are skipped
 } CosimMode;
 
+// ---------------------------------------------------------------------------
+// Routines whose cost is a function of their input
+// ---------------------------------------------------------------------------
+
+// Report what the call this shim just served would have cost the 65816.
+//
+// `CosimRoutine::cycles` is one constant standing in for a distribution, and for
+// most of the registry that is fine: the errors are small, independent, and they
+// cancel. For a routine that walks a list they are none of those things.
+// `actor_depth_sort` is the case that forced this — 92 cycles on an empty
+// display list, 7,524 on a full one, declared at the mean of 1,605 — and the
+// symptom was not a failed diff but a framebuffer: substituted, `level25-2p`
+// parts from the stock core around frame 2,700, because a routine that runs
+// every frame and is wrong by thousands of cycles moves the rest of the machine.
+//
+// No constant fixes that, and the shape of the failure is the argument. The mean
+// is the mean *by construction*, so if some constant could make the totals agree
+// the measured one already would; what is left over is variance, and a constant
+// has none. The routine, on the other hand, knows exactly what it did — it just
+// did it — so it can say. A shim calls this from inside `run` with the cost of
+// the particular call, and native mode burns that instead of the constant.
+//
+// Two rules, and they are what keep this a measurement rather than a fudge:
+//
+//   * **The number is the ROM's own instruction cycles and excludes DRAM
+//     refresh.** The core adds 40 whenever a run of cycles crosses the end of a
+//     scanline, and where those land is a property of the machine's clock, not
+//     of the call. So a reported cost is burned in per-access pieces and the
+//     core inserts refresh wherever it falls due, exactly as it did while the
+//     ROM's own instructions were executing. (A declared `cycles` constant is
+//     burned in one piece, as it always was: it was *measured* refresh-inclusive,
+//     so chunking it would count refresh twice.)
+//
+//   * **It is checked on every call.** `verify` already knows what the ROM's
+//     instructions really cost, so a reported cost is diffed against that and
+//     the report prints the error — see `CosimStat::model_err_min`. A model
+//     nobody checks is a guess with a struct around it.
+//
+// Costing a routine is optional and per call: a shim that does not call this
+// gets `cycles`, and one that can only price some of its paths can report on
+// those and stay silent on the rest.
+void cosim_cost(int cycles);
+
+// Cycles the core inserts for a DRAM refresh, once per scanline. It is the unit
+// a correct cost model's residual error comes in — see `model_refresh_exact`.
+#define COSIM_REFRESH_CYCLES 40
+
+// One straight-line run of the ROM, priced. `tools/cycles816.py` prints both
+// numbers for any range of the listing, and a model is a table of these.
+//
+// `cycles` is what the run costs with FastROM on. `bytes` is its length, and
+// every one of those bytes is fetched from the program stream exactly once — so
+// while `$420D` is clear each costs 2 more. Carrying the length rather than
+// assuming the register never changes is the difference between a model that is
+// right on 40 movies and one that is right on 43.
+typedef struct {
+  int cycles;
+  int bytes;
+} CosimRun;
+
+static inline int cosim_run_cycles(const CosimRun* r, bool fastrom) {
+  return r->cycles + (fastrom ? 0 : 2 * r->bytes);
+}
+
 // What one routine did over a run.
 typedef struct {
   const CosimRoutine* routine;
@@ -343,6 +422,39 @@ typedef struct {
   // Cycle cost of the ROM's own instructions, over the calls that completed.
   long cycles_min, cycles_max;
   double cycles_mean;
+  // ...and how well the routine predicted its own, for the ones that priced
+  // themselves with `cosim_cost`. `modelled` is how many calls reported at all,
+  // so a routine that can only price some of its paths is visible as a
+  // `modelled` below `checked` rather than as a silently weaker claim.
+  //
+  // The error is `actual - model`, and a *correct* model does not have an error
+  // of zero: it excludes DRAM refresh, so what is left over is 40 cycles for
+  // every scanline the call happened to cross. `model_refresh_exact` counts the
+  // calls whose error was exactly that — a non-negative multiple of
+  // `COSIM_REFRESH_CYCLES` — and it is the number that says whether the model is
+  // right. Anything else is the model being wrong about an instruction.
+  //
+  // ...on a call where refresh is the only thing the machine adds, which is not
+  // every call. **HDMA steals cycles from the CPU too**, and how many depends on
+  // how many channels the PPU has armed and what they are transferring — a
+  // property of the frame being drawn, not of the routine's arguments, and so
+  // exactly as unpredictable from the input as refresh is and not as tidy. Three
+  // movies in the corpus run it: level 1's map screen and both level 49 probes.
+  // Calls made while any channel was armed are counted in `model_hdma` and held
+  // only to `error >= 0`; the sharp test is the other 40 movies'.
+  long modelled, model_refresh_exact, model_hdma;
+  long model_err_min, model_err_max;
+  double model_err_mean;
+  // The first call whose error was not a whole number of refreshes, with the
+  // two pieces of the calling convention that most often explain one: an
+  // unaligned direct page costs an extra internal cycle per direct-page
+  // instruction, and a data bank of $80 or above reaches a ROM table two cycles
+  // a byte faster than a low one does. Printed under the row, because "the
+  // model is wrong somewhere in 43 movies" is not a lead and this is.
+  bool model_bad;
+  long model_bad_model, model_bad_actual;
+  uint16_t model_bad_d;
+  uint8_t model_bad_db;
   // First divergence, if any.
   bool failed;
   char detail[256];
