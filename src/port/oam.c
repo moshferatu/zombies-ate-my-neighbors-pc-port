@@ -129,36 +129,94 @@ uint16_t actor_depth_sort_counted(Wram* w, ActorSortWork* work) {
 // The camera window on one axis, as the ROM tests it: `CMP #$FF80 : BCS in`
 // then `CMP #$0180 : BCS out`. Unsigned, so it is one wrapped range — 128 px
 // behind the origin through 383 px ahead of it.
-static bool in_window(uint16_t delta) {
-  return delta >= 0xff80 || delta < 0x0180;
+//
+// Which of the two comparisons answered it is not something the cull cares
+// about — the record is in or it is out — but the ROM reaches the answers down
+// runs of different lengths, so this reports the comparison as well as its
+// result. See `ActorCullBlock`.
+typedef enum {
+  CULL_WINDOW_HIGH,  // `CMP #$FF80` said so: behind the origin
+  CULL_WINDOW_LOW,   // ...it did not, and `CMP #$0180` put it inside
+  CULL_WINDOW_OUT,
+} CullWindow;
+
+static CullWindow window_of(uint16_t delta) {
+  if (delta >= 0xff80) return CULL_WINDOW_HIGH;
+  return delta < 0x0180 ? CULL_WINDOW_LOW : CULL_WINDOW_OUT;
 }
 
-void actor_cull(Wram* w) {
+void actor_cull_counted(Wram* w, ActorCullWork* work) {
+  memset(work, 0, sizeof(*work));
+
   uint16_t camera_x = wram_r16(w, W_CAMERA_X);
   uint16_t camera_y = wram_r16(w, W_CAMERA_Y);
   uint16_t count = 0;
 
-  for (uint16_t rec = wram_r16(w, W_ACTOR_LIST_HEAD); rec != 0;
-       rec = next_of(w, rec)) {
+  uint16_t rec = wram_r16(w, W_ACTOR_LIST_HEAD);
+  if (rec == 0) {
+    // `$80:BCE8 BEQ $BD1C` — the count still gets written, and it is zero
+    // because `LDY #$0000` ran before the list was ever looked at.
+    work->blocks[CULL_BLK_EMPTY]++;
+    wram_w16(w, W_VISIBLE_ACTOR_COUNT, 0);
+    return;
+  }
+  work->blocks[CULL_BLK_PROLOGUE]++;
+
+  for (;;) {
     uint16_t flags = flags_of(w, rec);
-    if (!(flags & ACTOR_DRAW)) { PORT_COVER(cull_undrawn); continue; }
-    if (!(flags & ACTOR_SCREEN_SPACE)) {
-      if (!in_window((uint16_t)(wram_r16(w, (uint32_t)rec + ACTOR_X) - camera_x))) {
-        PORT_COVER(cull_offscreen);
-        continue;
-      }
-      if (!in_window((uint16_t)(wram_r16(w, (uint32_t)rec + ACTOR_Y) - camera_y))) {
-        PORT_COVER(cull_offscreen);
-        continue;
-      }
-    } else {
-      PORT_COVER(cull_screen);
+    if (!(flags & ACTOR_DRAW)) {
+      work->blocks[CULL_BLK_UNDRAWN]++;
+      PORT_COVER(cull_undrawn);
+      goto advance;
     }
+    work->blocks[CULL_BLK_DRAWN]++;
+
+    if (flags & ACTOR_SCREEN_SPACE) {
+      work->blocks[CULL_BLK_SCREEN]++;
+      PORT_COVER(cull_screen);
+    } else {
+      work->blocks[CULL_BLK_WORLD]++;
+
+      CullWindow wx =
+          window_of((uint16_t)(wram_r16(w, (uint32_t)rec + ACTOR_X) - camera_x));
+      work->blocks[wx == CULL_WINDOW_HIGH ? CULL_BLK_X_HIGH : CULL_BLK_X_TEST]++;
+      if (wx != CULL_WINDOW_HIGH)
+        work->blocks[wx == CULL_WINDOW_LOW ? CULL_BLK_X_IN : CULL_BLK_X_OUT]++;
+      if (wx == CULL_WINDOW_OUT) {
+        PORT_COVER(cull_offscreen);
+        goto advance;
+      }
+
+      CullWindow wy =
+          window_of((uint16_t)(wram_r16(w, (uint32_t)rec + ACTOR_Y) - camera_y));
+      work->blocks[wy == CULL_WINDOW_HIGH ? CULL_BLK_Y_HIGH : CULL_BLK_Y_TEST]++;
+      if (wy != CULL_WINDOW_HIGH)
+        work->blocks[wy == CULL_WINDOW_LOW ? CULL_BLK_Y_IN : CULL_BLK_Y_OUT]++;
+      if (wy == CULL_WINDOW_OUT) {
+        PORT_COVER(cull_offscreen);
+        goto advance;
+      }
+    }
+
+    work->blocks[CULL_BLK_EMIT]++;
     wram_w16(w, W_VISIBLE_ACTORS + count, rec);
     count += 2;
+
+  advance:
+    // `$80:BD17 LDA $12,X : TAX : BNE $BCEA`. Every one of the three ways
+    // through a record arrives here, which is why it is a label and not a loop
+    // condition: the ROM's `continue` and its fall-through are the same address.
+    rec = next_of(w, rec);
+    work->blocks[rec != 0 ? CULL_BLK_ADVANCE : CULL_BLK_EXIT]++;
+    if (rec == 0) break;
   }
 
   wram_w16(w, W_VISIBLE_ACTOR_COUNT, count);
+}
+
+void actor_cull(Wram* w) {
+  ActorCullWork work;
+  actor_cull_counted(w, &work);
 }
 
 // ---------------------------------------------------------------------------
@@ -220,11 +278,21 @@ static bool within_8px(uint16_t a, uint16_t b) {
   return (uint16_t)(b - a + 8) < 0x0010;
 }
 
-bool actor_overlap_pass(Wram* w, const Rom* rom) {
+bool actor_overlap_pass_counted(Wram* w, const Rom* rom,
+                                ActorOverlapWork* work) {
+  memset(work, 0, sizeof(*work));
+
   uint16_t count = wram_r16(w, W_VISIBLE_ACTOR_COUNT);
-  if (count == 0) return true;  // `LDY $9C : BEQ` — not even $3C is written
+  if (count == 0) {  // `LDY $9C : BEQ` — not even $3C is written
+    work->blocks[OVL_BLK_EMPTY]++;
+    return true;
+  }
   uint16_t outer = (uint16_t)(count - 2);
-  if (outer == 0) return true;  // one record; nothing to pair it with
+  if (outer == 0) {  // one record; nothing to pair it with
+    work->blocks[OVL_BLK_SINGLE]++;
+    return true;
+  }
+  work->blocks[OVL_BLK_PROLOGUE]++;
 
   // The ROM writes its four scratch words as it goes; the port accumulates them
   // and writes at the end. Only the values at the `RTL` are observable — the
@@ -239,6 +307,7 @@ bool actor_overlap_pass(Wram* w, const Rom* rom) {
 
     uint16_t a_id = wram_r16(w, (uint32_t)a + ACTOR_COLLIDE_ID);
     if (a_id == 0) PORT_COVER(overlap_no_id);
+    work->blocks[a_id == 0 ? OVL_BLK_OUTER_NOID : OVL_BLK_OUTER_ID]++;
     if (a_id != 0) {
       tested = true;
       id = a_id;
@@ -252,26 +321,40 @@ bool actor_overlap_pass(Wram* w, const Rom* rom) {
         uint16_t b = wram_r16(w, W_VISIBLE_ACTORS + inner);
         uint16_t b_id = wram_r16(w, (uint32_t)b + ACTOR_COLLIDE_ID);
         if (b_id == id) PORT_COVER(overlap_same_id);
-        // Split across the two axes only so each half is separately countable:
-        // the X test firing is what says the 16-px threshold is exercised at
-        // all, and the pair test firing is what says the dispatch below is.
-        if (b_id != 0 && b_id != id &&
-            within_8px(ox, wram_r16(w, (uint32_t)b + ACTOR_X))) {
-          PORT_COVER(overlap_near_x);
-          if (within_8px(oy, wram_r16(w, (uint32_t)b + ACTOR_Y))) {
-            // `$80:BF0D  PHY : JSR $BE8F : PLY`. Carry is clear here by
-            // construction — the `BCS` at `$80:BF0B` is what falls through to
-            // this call — and the no-handler path inside the dispatch is the
-            // only thing that would pass it on.
-            PORT_COVER(overlap_hit);
-            ThreadCallResult tail = {.c = false};
-            if (!actor_collide_notify(w, rom, a, b, &tail)) return false;
+        // The tests below read as one condition but the ROM reaches them down
+        // four branches, each with its own length, so they are counted apart.
+        // Splitting the two axes is also what makes each half separately
+        // countable: the X test firing is what says the 16-px threshold is
+        // exercised at all, and the pair test firing is what says the dispatch
+        // below is.
+        work->blocks[b_id == 0 ? OVL_BLK_INNER_NOID : OVL_BLK_INNER_ID]++;
+        if (b_id != 0)
+          work->blocks[b_id == id ? OVL_BLK_SAME_ID : OVL_BLK_DIFF_ID]++;
+        if (b_id != 0 && b_id != id) {
+          bool near_x = within_8px(ox, wram_r16(w, (uint32_t)b + ACTOR_X));
+          work->blocks[near_x ? OVL_BLK_X_NEAR : OVL_BLK_X_FAR]++;
+          if (near_x) {
+            PORT_COVER(overlap_near_x);
+            bool near_y = within_8px(oy, wram_r16(w, (uint32_t)b + ACTOR_Y));
+            work->blocks[near_y ? OVL_BLK_Y_NEAR : OVL_BLK_Y_FAR]++;
+            if (near_y) {
+              // `$80:BF0D  PHY : JSR $BE8F : PLY`. Carry is clear here by
+              // construction — the `BCS` at `$80:BF0B` is what falls through to
+              // this call — and the no-handler path inside the dispatch is the
+              // only thing that would pass it on.
+              PORT_COVER(overlap_hit);
+              work->hits++;
+              ThreadCallResult tail = {.c = false};
+              if (!actor_collide_notify(w, rom, a, b, &tail)) return false;
+            }
           }
         }
+        work->blocks[inner == 0 ? OVL_BLK_INNER_DONE : OVL_BLK_INNER_NEXT]++;
         if (inner == 0) break;
       }
     }
 
+    work->blocks[outer == 0 ? OVL_BLK_OUTER_DONE : OVL_BLK_OUTER_NEXT]++;
     if (outer == 0) break;
   }
 
@@ -282,6 +365,11 @@ bool actor_overlap_pass(Wram* w, const Rom* rom) {
     wram_w16(w, W_OVERLAP_Y, oy);
   }
   return true;
+}
+
+bool actor_overlap_pass(Wram* w, const Rom* rom) {
+  ActorOverlapWork work;
+  return actor_overlap_pass_counted(w, rom, &work);
 }
 
 // ---------------------------------------------------------------------------

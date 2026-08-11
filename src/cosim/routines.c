@@ -405,10 +405,56 @@ static void shim_actor_depth_sort(Wram* w, const Rom* rom, const CosimRegs* in,
 // $80:BCE2  actor_cull — no arguments
 // ---------------------------------------------------------------------------
 
+// What each run of `$80:BCE2` costs, indexed by `ActorCullBlock`. Same rules as
+// the sort's table above: 6 cycles for a program byte with FastROM on, 8 for a
+// byte of the display list, the camera or `visible_actors` — all of which live
+// under `$7E:2000` and cost 8 through every bank the data-bank register can hold
+// — and 6 for an internal cycle. Branch costs are folded into the block the
+// outcome names, so a tally of the blocks needs nothing added to it.
+//
+// The empty-list case is the check that the rest is priced the same way:
+// `LDY #$0000 : LDX $1B5E : BEQ` taken plus `STY $9C : RTS` is 70 + 68 = 138,
+// which is exactly the minimum `verify` measures over the corpus.
+static const CosimRun CULL_COST[CULL_BLOCK_COUNT] = {
+    [CULL_BLK_EMPTY] = {18 + 34 + 18 + 28 + 40, 11},
+    [CULL_BLK_PROLOGUE] = {18 + 34 + 12, 8},
+    [CULL_BLK_UNDRAWN] = {34 + 18, 4},
+    [CULL_BLK_DRAWN] = {34 + 12, 4},
+    [CULL_BLK_SCREEN] = {12 + 18, 3},
+    [CULL_BLK_WORLD] = {12 + 12, 3},
+    // LDA $02,X : SEC : SBC $1B6A : CMP #$FF80 : BCS — 98 over 9 bytes, plus
+    // the branch. The Y axis is the same five instructions off `$06` and `$1B6C`.
+    [CULL_BLK_X_HIGH] = {98 + 18, 11},
+    [CULL_BLK_X_TEST] = {98 + 12, 11},
+    [CULL_BLK_X_IN] = {18 + 12, 5},
+    [CULL_BLK_X_OUT] = {18 + 18, 5},
+    [CULL_BLK_Y_HIGH] = {98 + 18, 11},
+    [CULL_BLK_Y_TEST] = {98 + 12, 11},
+    [CULL_BLK_Y_IN] = {18 + 12, 5},
+    [CULL_BLK_Y_OUT] = {18 + 18, 5},
+    [CULL_BLK_EMIT] = {12 + 40 + 12 + 12, 6},
+    [CULL_BLK_ADVANCE] = {34 + 12 + 18, 5},
+    [CULL_BLK_EXIT] = {34 + 12 + 12 + 28 + 40, 8},
+};
+
+static int cull_cycles(const ActorCullWork* k, bool fast) {
+  int cycles = 0;
+  for (int i = 0; i < CULL_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles(&CULL_COST[i], fast);
+  return cycles;
+}
+
 static void shim_actor_cull(Wram* w, const Rom* rom, const CosimRegs* in,
                             CosimRegs* out) {
   (void)rom;
-  actor_cull(w);
+  ActorCullWork work;
+  actor_cull_counted(w, &work);
+
+  // `LDA $00,X`, `LDA $02,X`, `LDA $06,X`, `LDA $12,X` and `STY $9C` each cost
+  // one extra internal cycle when the direct page is not page-aligned, and the
+  // table does not carry that term because no caller presents one. The data bank
+  // needs no guard: every address the walk touches is under `$2000`.
+  if ((in->d & 0xff) == 0) cosim_cost(cull_cycles(&work, in->fastrom));
 
   // The walk ends on `LDA $12,X : TAX : BNE`, so it falls out with the zero
   // link in both A and X. An empty list exits earlier, from `LDX $1B5E : BEQ`,
@@ -1582,9 +1628,61 @@ static bool guard_actor_overlap_pass(Wram* scratch, const Rom* rom,
   return actor_overlap_pass(scratch, rom);
 }
 
+// What each run of `$80:BEC9` costs, indexed by `ActorOverlapBlock`. Same rules
+// as the two tables above; `visible_actors`, the records and the four scratch
+// words are all under `$7E:2000` and cost 8 a byte through every bank.
+//
+// The empty-list case is again the check: `LDY $9C : BEQ` taken plus `RTL` is
+// 28 + 18 + 42 = 88, which is exactly the minimum `verify` measures.
+//
+// There is no entry for the hit. `$80:BF0D PHY : JSR $BE8F : PLY` would be 102
+// cycles of its own, but the `JSR` enters a dispatch into two actor handlers and
+// what *they* cost is a tree this table does not describe, so a pass with a hit
+// in it is not priced at all rather than priced short. See `ActorOverlapWork`.
+static const CosimRun OVL_COST[OVL_BLOCK_COUNT] = {
+    [OVL_BLK_EMPTY] = {28 + 18 + 42, 5},
+    [OVL_BLK_SINGLE] = {28 + 12 + 24 + 18 + 42, 9},
+    [OVL_BLK_PROLOGUE] = {28 + 12 + 24 + 12, 8},
+    // $80:BED1 LDX $137E,Y : DEY : DEY : STY $3C : LDA $0E,X — 126 over 9 bytes
+    // — and the `BEQ` that decides whether the record has an id at all.
+    [OVL_BLK_OUTER_NOID] = {126 + 18, 11},
+    // ...and the four instructions that publish it: 126 + 12 + 152.
+    [OVL_BLK_OUTER_ID] = {126 + 12 + 152, 21},
+    // $80:BEE6 LDX $137E,Y : LDA $0E,X — 74 over 5 bytes — plus its `BEQ`.
+    [OVL_BLK_INNER_NOID] = {74 + 18, 7},
+    [OVL_BLK_INNER_ID] = {74 + 12, 7},
+    [OVL_BLK_SAME_ID] = {28 + 18, 4},
+    [OVL_BLK_DIFF_ID] = {28 + 12, 4},
+    // LDA $02,X : SEC : SBC $38 : CLC : ADC #$0008 : CMP #$0010 — 122 over 12
+    // bytes — plus the `BCS`. The Y axis is the same six off `$06` and `$3A`.
+    [OVL_BLK_X_FAR] = {122 + 18, 14},
+    [OVL_BLK_X_NEAR] = {122 + 12, 14},
+    [OVL_BLK_Y_FAR] = {122 + 18, 14},
+    [OVL_BLK_Y_NEAR] = {122 + 12, 14},
+    [OVL_BLK_INNER_NEXT] = {24 + 18, 4},
+    [OVL_BLK_INNER_DONE] = {24 + 12, 4},
+    [OVL_BLK_OUTER_NEXT] = {28 + 18, 4},
+    [OVL_BLK_OUTER_DONE] = {28 + 12 + 42, 5},
+};
+
+static int overlap_cycles(const ActorOverlapWork* k, bool fast) {
+  int cycles = 0;
+  for (int i = 0; i < OVL_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles(&OVL_COST[i], fast);
+  return cycles;
+}
+
 static void shim_actor_overlap_pass(Wram* w, const Rom* rom, const CosimRegs* in,
                                     CosimRegs* out) {
-  actor_overlap_pass(w, rom);  // the guard already established it will not decline
+  // The guard already established it will not decline.
+  ActorOverlapWork work;
+  actor_overlap_pass_counted(w, rom, &work);
+
+  // Priced only when nothing was dispatched, and only off a page-aligned direct
+  // page — `$9C`, `$3C`, `$4A`, `$38`, `$3A` and the four `$xx,X` reads would
+  // each cost one more internal cycle otherwise.
+  if (work.hits == 0 && (in->d & 0xff) == 0)
+    cosim_cost(overlap_cycles(&work, in->fastrom));
 
   // All three `RTL` paths arrive with Y zero and the flags of whatever loaded
   // it: `LDY $9C` on an empty list, `DEY DEY` on a single record, and `LDY $3C`

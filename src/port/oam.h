@@ -179,6 +179,59 @@ uint16_t actor_depth_sort_counted(Wram* w, ActorSortWork* work);
 // `oam_buffer` at `$7E:13BE`. The array is exactly as long as the list can be.
 void actor_cull(Wram* w);
 
+// The straight-line runs of `$80:BCE2`, one per branch outcome.
+//
+// The routine is a walk with five decisions in it, and every one of them is a
+// branch the ROM either takes or does not. Each entry below is the run of
+// instructions between one such fork and the next, named for the outcome that
+// reaches it, so that a tally of these is a complete account of what the call
+// executed — see `ActorCullWork`.
+//
+// The pairs read as a transcript of the listing: `..._UNDRAWN` is the branch
+// taken and `..._DRAWN` the same branch falling through, and so on down.
+typedef enum {
+  CULL_BLK_EMPTY,     // $80:BCE8 BEQ taken: no list, straight to the RTS
+  CULL_BLK_PROLOGUE,  // ...not taken, so there is a first record
+  CULL_BLK_UNDRAWN,   // $80:BCEC BPL taken: ACTOR_DRAW clear, skip it
+  CULL_BLK_DRAWN,     // ...not taken
+  CULL_BLK_SCREEN,    // $80:BCEF BMI taken: ACTOR_SCREEN_SPACE, no window test
+  CULL_BLK_WORLD,     // ...not taken, so both axes get tested
+  // The window is one wrapped unsigned range, so each axis is up to two
+  // comparisons: `CMP #$FF80` catches the 128 px behind the origin and, when it
+  // does not, `CMP #$0180` decides between the 384 ahead and off-screen.
+  CULL_BLK_X_HIGH,  // $80:BCFA BCS taken: behind the origin, in without a second test
+  CULL_BLK_X_TEST,  // ...not taken: ahead of it, and how far is still open
+  CULL_BLK_X_IN,    // $80:BCFF BCS not taken: inside the 384
+  CULL_BLK_X_OUT,   // ...taken: off-screen, and the record is dropped
+  CULL_BLK_Y_HIGH,  // $80:BD0A, the same four for the other axis
+  CULL_BLK_Y_TEST,
+  CULL_BLK_Y_IN,
+  CULL_BLK_Y_OUT,
+  CULL_BLK_EMIT,     // $80:BD11 TXA : STA $137E,Y : INY : INY
+  CULL_BLK_ADVANCE,  // $80:BD1A BNE taken: another record follows
+  CULL_BLK_EXIT,     // ...not taken: the link was 0, so STY $9C : RTS
+  CULL_BLOCK_COUNT,
+} ActorCullBlock;
+
+// What one cull actually did, counted by the branch the ROM would have taken.
+//
+// Same arrangement as `ActorSortWork` and `HudWork`, and for the same reason:
+// `$80:BCE2` costs 138 cycles on an empty display list and 8,688 on a full one,
+// and a routine declared at one number cannot be substituted for one whose cost
+// is a function of its input. Nothing here is about cycles — `src/cosim/routines.c`
+// multiplies these counts by what each run costs. See `cosim_cost`.
+//
+// The counts are not independent, which is what makes the model checkable:
+// `EMPTY + PROLOGUE` is 1, `UNDRAWN + DRAWN` is the number of records walked,
+// `EMIT` is `SCREEN + Y_HIGH + Y_IN`, and `EXIT` is 1 whenever `PROLOGUE` is.
+typedef struct {
+  uint16_t blocks[CULL_BLOCK_COUNT];
+} ActorCullWork;
+
+// The same pass, reporting what it did. `actor_cull` is this with the counts
+// thrown away, and is what the rest of the port calls.
+void actor_cull_counted(Wram* w, ActorCullWork* work);
+
 // --- $80:BE8F ---------------------------------------------------------------
 
 // Tell each of a touching pair about the other.
@@ -230,6 +283,51 @@ bool actor_collide_notify(Wram* w, const Rom* rom, uint16_t a, uint16_t b,
 // the walk cursor back at zero and the last tested record's id and position in
 // the scratch words above.
 bool actor_overlap_pass(Wram* w, const Rom* rom);
+
+// The straight-line runs of `$80:BEC9`, one per branch outcome, as
+// `ActorCullBlock` is for the cull. Two nested walks and five decisions.
+typedef enum {
+  OVL_BLK_EMPTY,       // $80:BECB BEQ taken: `$9C` is zero, straight to the RTL
+  OVL_BLK_SINGLE,      // $80:BECF BEQ taken: one record, nothing to pair it with
+  OVL_BLK_PROLOGUE,    // ...neither, so there is at least one pair
+  OVL_BLK_OUTER_NOID,  // $80:BEDA BEQ taken: the outer record has no collision id
+  OVL_BLK_OUTER_ID,    // ...it has one, which is published to $4A/$38/$3A
+  OVL_BLK_INNER_NOID,  // $80:BEEB BEQ taken: the inner record has no id
+  OVL_BLK_INNER_ID,
+  OVL_BLK_SAME_ID,  // $80:BEEF BEQ taken: same id, so the two are on one side
+  OVL_BLK_DIFF_ID,
+  OVL_BLK_X_FAR,   // $80:BEFD BCS taken: more than 8 px apart on X
+  OVL_BLK_X_NEAR,  // ...within 8, so the other axis is worth testing
+  OVL_BLK_Y_FAR,   // $80:BF0B BCS taken
+  OVL_BLK_Y_NEAR,  // ...a real overlap: `PHY : JSR $BE8F : PLY`
+  OVL_BLK_INNER_NEXT,  // $80:BF14 BPL taken: another record below this one
+  OVL_BLK_INNER_DONE,  // ...the inner walk ran off the bottom
+  OVL_BLK_OUTER_NEXT,  // $80:BF18 BNE taken
+  OVL_BLK_OUTER_DONE,  // ...and the RTL
+  OVL_BLOCK_COUNT,
+} ActorOverlapBlock;
+
+// What one pass did, and whether its cost can be known at all.
+//
+// `hits` is the count of `OVL_BLK_Y_NEAR`, kept separately because it is not a
+// cost but a veto. Every other block is a straight line the port can price, but
+// `$80:BF0E JSR $BE8F` is a dispatch into two actor handlers, and what those
+// cost is a tree this port does not walk. **A pass with any hit in it therefore
+// reports no cost at all** and falls back to its declared mean — visibly, as a
+// `priced` below `checked` in the cost-model report. See `cosim_cost`.
+typedef struct {
+  uint16_t blocks[OVL_BLOCK_COUNT];
+  uint16_t hits;
+} ActorOverlapWork;
+
+// The same pass, reporting what it did. `actor_overlap_pass` is this with the
+// counts thrown away.
+//
+// A pass that **declines** leaves `work` holding whatever it had counted when it
+// gave up, which is not a cost and must not be used as one: the `false` return
+// hands the whole call back to the ROM.
+bool actor_overlap_pass_counted(Wram* w, const Rom* rom,
+                                ActorOverlapWork* work);
 
 // --- $80:BC23 ---------------------------------------------------------------
 

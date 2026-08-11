@@ -2229,6 +2229,171 @@ are each about the size of the sort.
 The mechanism is general, the tool makes each one mechanical, and the report
 will refuse to let a wrong one through. What is left is doing them.
 
+## Two more walks, and the reason they change nothing yet (2026-08-11)
+
+The previous round ended by naming `actor_cull` as the routine that parts
+`level25-2p`, so this round priced it, and priced `actor_overlap_pass` beside it.
+Both models are exact. Neither moves a single framebuffer, and the reason why is
+the most useful thing this round found.
+
+### The two models
+
+`$80:BCE2` is a walk with five decisions in it, and `$80:BEC9` is two nested
+walks with five more. Both were done the way the sort was: `src/port/oam.c`
+counts branch outcomes into an `ActorCullWork` / `ActorOverlapWork`, and
+`src/cosim/routines.c` multiplies those counts by what each straight-line run of
+65816 instructions costs. Seventeen blocks each, every constant off
+`tools/cycles816.py`.
+
+Each got the same free check before any of it ran. The cull's empty-list path is
+`LDY #$0000 : LDX $1B5E : BEQ` taken plus `STY $9C : RTS` — 70 + 68 = **138**,
+and 138 is exactly the minimum `verify` had already measured for it over the
+corpus. The overlap pass's is `LDY $9C : BEQ` taken plus `RTL` — 28 + 18 + 42 =
+**88**, against a measured minimum of 88. Two numbers arrived at from the listing
+agreeing with two the harness measured from the ROM, before the models were
+wired up at all.
+
+Both then came out refresh-exact on the first attempt.
+
+### The first model that declines
+
+`actor_overlap_pass` is the first one that cannot price all of its own calls.
+Sixteen of its seventeen blocks are straight lines, but `$80:BF0D PHY : JSR
+$BE8F : PLY` enters a dispatch into two actor handlers, and what *those* cost is
+a tree this port does not walk. Pricing the pass at 102 cycles for that block
+would be a model that is wrong by however long the collision took.
+
+So a pass with any hit in it reports **no cost at all** and falls back to its
+declared mean. That is not a special case bolted on: it is the same shape as the
+direct-page guard the sort already had, and it shows up the same way, as a
+`priced` column below `checked`:
+
+```
+  actor_overlap_pass         2581       4420  +0..+1920, mean +436    2569/2569    12
+```
+
+2,581 of 4,420 priced on `level25-2p`, and all 2,569 of those made with the PPU
+quiet refresh-exact. The other 1,839 dispatched.
+
+### ...and then: all three walks have exactly one caller
+
+Scanning the ROM for the three call sites settles something the previous round
+assumed rather than checked:
+
+| routine | callers |
+| --- | --- |
+| `$80:BC7F actor_depth_sort` | one — `$80:BD27` |
+| `$80:BCE2 actor_cull` | one — `$80:BD2A` |
+| `$80:BEC9 actor_overlap_pass` | one — `$80:BDCC` |
+
+All three of those addresses are inside `$80:BD1F`..`$80:BDE2`, which is
+`sprite_build_oam`. The sort, the cull and the overlap pass are not three
+routines the game calls; they are three parts of one routine, and that routine is
+itself in the registry.
+
+Which means that with the full registry active, **none of these three models is
+ever consulted.** `sprite_build_oam` is substituted first, the walks underneath
+it never trap, and the clock advances by the outer routine's single declared
+constant. The framebuffer probes say so: seven of eight identical before this
+round and the same seven after, with `level25-2p` differing exactly as it did.
+
+The models are not wrong, they are unreachable. Substituting each one *alone*,
+where nothing sits above it, is the demonstration — `level25-2p` at frame 6,000
+against `--stock`:
+
+| substituted alone | frame 6,000 |
+| --- | --- |
+| `actor_depth_sort` | identical to stock |
+| `actor_cull` | identical to stock |
+| `actor_overlap_pass` | differs — 42% of its calls still unpriced |
+| `sprite_frame_tile` | differs — unpriced |
+| `sprite_build_oam` | differs — unpriced |
+
+### The instrument that should have been built first
+
+The previous round ranked what was left by *spread* — a routine's range times
+its call count. That is the wrong quantity, and ranking by it is what put
+`actor_cull` at the top of the list.
+
+What actually parts a framebuffer is **drift**: how far a substituted routine
+pushes the emulated clock away from where the ROM's own instructions would have
+left it. That is `calls × (mean actual − declared)`, per routine, and it is
+measurable from a `verify` run plus the registry's declared constants
+(`scratchpad/drift.py`). A frame is 357,366 master cycles. On `level25-2p` at
+6,000 frames, after this round:
+
+| routine | calls | declared | mean | drift, in frames |
+| --- | --- | --- | --- | --- |
+| `sprite_build_oam` | 4,420 | 43,111 | 74,055 | **382.7** |
+| `actor_overlap_pass` | 4,420 | 4,426 | 21,405 | 87.4 |
+| `actor_obstacle_at_point` | 5,575 | 3,630 | 6,190 | 39.9 |
+| `actor_notify_box` | 3,657 | 5,545 | 8,288 | 28.1 |
+| `actor_nearest` | 5,442 | 7,195 | 8,653 | 22.2 |
+| `actor_at_point` | 2,734 | 2,645 | 5,474 | 21.6 |
+
+Two things fall out of it immediately. `apu_send` looked like the third-worst
+offender by spread and contributes **nothing**, because it is `verify_only` and
+never substituted. And `sprite_frame_tile` — 73,204 calls, the most-called
+routine in the registry — drifts by 1.02 frames over the whole movie, which is
+why the *bisection* blamed it: at frame 6,000 one frame of drift is enough to
+part a screenshot, so a prefix test finds whichever routine comes first in
+registry order, not whichever matters. The bisection was answering a different
+question than the one being asked of it.
+
+Ranking by drift also explains why the framebuffers did not move. Because the
+inner walks are subsumed, the drift they used to inject was already being counted
+inside `sprite_build_oam`'s 382.7 frames — the two numbers were never additive.
+
+### Results
+
+13,209,637 calls checked across the 43 movies, **0 diverged**, and branch
+coverage holds at 432 of 538 — both unchanged from before the round, which is
+what "no behaviour changed" looks like when it is measured rather than asserted.
+
+Six cost models now, all exact over the corpus. `tools/verify_corpus.ps1` fails
+the run if any of them is not, so this is re-derived on every sweep:
+
+| routine | refresh-exact / priced, PPU quiet | priced under HDMA |
+| --- | --- | --- |
+| `actor_depth_sort` | 143,929 / 143,929 | 1,915 |
+| `actor_cull` | 143,929 / 143,929 | 1,915 |
+| `actor_overlap_pass` | 113,629 / 113,629 | 1,915 |
+| `hud_refresh` | 51,172 / 51,172 | 154 |
+| `hud_panel2` | 25,603 / 25,603 | 75 |
+| `hud_panel1` | 25,571 / 25,571 | 79 |
+
+503,833 calls priced with the PPU quiet, every one of them short by an exact
+multiple of the 40-cycle refresh; 6,053 more priced under HDMA, none of them
+over-claiming. The three sprite-pass walks share their HDMA count of 1,915,
+which is another way of noticing they are all one routine.
+
+Lockstep `run` on `level1`, `level25-2p` and `level45-race` still ends with no
+byte of live game state ever differing.
+
+Measured on `level25-2p` at 6,000 frames, total injected drift across every
+substituted routine falls from 793.7 frames to 635.7 — a 20% cut that is
+currently invisible, and will stop being invisible the moment the pass above it
+is priced.
+
+### What is left, precisely
+
+`sprite_build_oam` is the whole ballgame: 382.7 frames of the remaining 635.7.
+It is five parts, and three of them are now done:
+
+| part | state |
+| --- | --- |
+| `$80:BC7F` the depth sort | **priced** |
+| `$80:BCE2` the cull | **priced** |
+| `$80:BC23 oam_buffer_clear` | not priced, but 4,790..4,830 — a fixed loop, one scanline of refresh wide |
+| the emit walk, `$80:BD30`..`$80:BDCB` | not priced: needs `sprite_emit` per piece and `$80:B9D6 sprite_frame_tile` per lookup |
+| `$80:BEC9` the overlap pass | **priced, except calls that dispatched** |
+
+`sprite_frame_tile` is the one with real structure left in it: a cache lookup
+whose hit path is eleven bytes and whose miss path walks a 256-entry ring at
+`$80:B9F6` looking for a free slot, which is the whole of its 288..2,414 spread.
+It is modelable the same way everything here has been — count the iterations —
+and it is a round of its own.
+
 ## Where this is going
 
 The first five routines here are leaves — they never call `thread_yield`. That
