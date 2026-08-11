@@ -584,6 +584,284 @@ void actor_aligned(Wram* w, uint16_t x, uint16_t y, ActorAlignedRegs* out) {
 }
 
 // ---------------------------------------------------------------------------
+// $80:B093  actor_gap
+// ---------------------------------------------------------------------------
+
+// `SEC : SBC : BPL : EOR #$FFFF : INC A`. The test is on the *sign* of the
+// difference where `nearest_abs` above tests the borrow, so `$8000` comes back
+// as itself here and as `$8000` there too -- the two agree everywhere, and they
+// are still two different instructions and stay that way.
+static uint16_t gap_abs(uint16_t a, uint16_t b) {
+  uint16_t d = (uint16_t)(a - b);
+  return (d & 0x8000u) ? (uint16_t)(~d + 1u) : d;
+}
+
+void actor_gap(Wram* w, uint16_t rec, ActorGapRegs* out) {
+  // $80:B093 `TYA : BEQ`. No record, no distance, and nothing that writes
+  // carry between here and the `RTS`.
+  if (rec == 0) {
+    PORT_COVER(gap_empty);
+    out->a = 0xffffu;
+    out->n = true;
+    out->z = false;
+    out->has_c = false;
+    return;
+  }
+  out->has_c = true;
+
+  const uint16_t x = wram_r16(w, GAP_DP_X);
+  const uint16_t y = wram_r16(w, GAP_DP_Y);
+  const uint16_t dx = gap_abs(wram_r16(w, (uint32_t)rec + ACTOR_X), x);
+  wram_w16(w, GAP_DP_DX, dx);
+  const uint16_t dy = gap_abs(wram_r16(w, (uint32_t)rec + ACTOR_Y), y);
+
+  // `CMP $3C : BCS` -- the Y gap keeps the answer on a tie, and the flags the
+  // caller sees are that comparison's rather than the distance's.
+  if (dy >= dx) {
+    PORT_COVER(gap_y_wider);
+    const uint16_t diff = (uint16_t)(dy - dx);
+    out->a = dy;
+    out->n = (diff & 0x8000u) != 0;
+    out->z = diff == 0;
+    out->c = true;
+    return;
+  }
+  // `LDA $3C`, which sets N and Z from the X gap and leaves the failed `CMP`'s
+  // carry alone.
+  PORT_COVER(gap_x_wider);
+  out->a = dx;
+  out->n = (dx & 0x8000u) != 0;
+  out->z = dx == 0;
+  out->c = false;
+}
+
+// ---------------------------------------------------------------------------
+// $80:B18F  actor_nearest_id3
+// ---------------------------------------------------------------------------
+
+uint16_t actor_nearest_id3(Wram* w, uint16_t x, uint16_t y, uint16_t* dist) {
+  wram_w16(w, NEAREST_DP_X, x);
+  wram_w16(w, NEAREST_DP_Y, y);
+  wram_w16(w, NEAREST_DP_BEST, 0xffffu);
+
+  // $80:B19D, and the same walk `actor_nearest` runs: the top slot down to the
+  // base, all 32, whatever the board holds.
+  for (int i = ACTOR_SLOT_COUNT - 1; i >= 0; i--) {
+    uint32_t rec = W_ACTOR_SLOTS + (uint32_t)i * ACTOR_SLOT_STRIDE;
+    uint16_t flags = wram_r16(w, rec + ACTOR_FLAGS);
+    if (!(flags & ACTOR_DRAW)) {
+      PORT_COVER(nearest3_undrawn);
+      continue;
+    }
+    if (!(flags & ACTOR_ACTIVE)) {
+      PORT_COVER(nearest3_inactive);
+      continue;
+    }
+    // The one line that is not `actor_nearest`: one id, tested with a `BNE`
+    // rather than four tested with `BEQ`s.
+    if (wram_r16(w, rec + ACTOR_COLLIDE_ID) != NEAREST3_ID) {
+      PORT_COVER(nearest3_wrong_id);
+      continue;
+    }
+    PORT_COVER(nearest3_candidate);
+
+    uint16_t raw;
+    uint16_t d = nearest_abs(wram_r16(w, rec + ACTOR_X), x, &raw);
+    wram_w16(w, NEAREST_DP_DX, raw);
+    wram_w16(w, NEAREST_DP_DIST, d);
+
+    uint16_t dy = nearest_abs(wram_r16(w, rec + ACTOR_Y), y, &raw);
+    wram_w16(w, NEAREST_DP_DY, raw);
+    d = (uint16_t)(d + dy);
+    wram_w16(w, NEAREST_DP_DIST, d);
+
+    if (d < wram_r16(w, NEAREST_DP_BEST)) {
+      PORT_COVER(nearest3_closer);
+      wram_w16(w, NEAREST_DP_BEST, d);
+      wram_w16(w, NEAREST_DP_FOUND, (uint16_t)rec);
+    }
+  }
+
+  *dist = wram_r16(w, NEAREST_DP_BEST);
+  return wram_r16(w, NEAREST_DP_FOUND);
+}
+
+// ---------------------------------------------------------------------------
+// $80:B1EC, $80:B22A  actor_bearing_point, actor_bearing
+// ---------------------------------------------------------------------------
+
+// One axis of the table index. `CMP : BEQ` first, so "the same" is its own
+// answer, and then `ADC #$0001` with the comparison's own carry underneath it,
+// which makes 1 for *less than* and 2 for *greater*.
+static int bearing_axis(uint16_t rec, uint16_t point) {
+  if (rec == point) return 0;
+  return rec > point ? 2 : 1;
+}
+
+// The half the two routines share: the point is already in `GAP_DP_X` and
+// `GAP_DP_Y`, and everything from here down is common except which table is
+// read and whether the vertical half of the index survives to reach it.
+static void bearing_lookup(Wram* w, const Rom* rom, uint16_t rec, bool keep_v,
+                           ActorBearingRegs* out) {
+  const uint16_t x = wram_r16(w, GAP_DP_X);
+  const uint16_t y = wram_r16(w, GAP_DP_Y);
+  const uint16_t rx = wram_r16(w, (uint32_t)rec + ACTOR_X);
+  const uint16_t ry = wram_r16(w, (uint32_t)rec + ACTOR_Y);
+
+  const int v = bearing_axis(ry, y);
+  const int h = bearing_axis(rx, x);
+  if (v == 0) PORT_COVER(bearing_level);
+  else PORT_COVER_IF(v == 1, bearing_above, bearing_below);
+  if (h == 0) PORT_COVER(bearing_column);
+  else PORT_COVER_IF(h == 1, bearing_left, bearing_right);
+
+  const int index = keep_v ? 4 * v + h : h;
+  out->x = (uint16_t)index;
+  out->a = (uint16_t)(rom_word(rom, (keep_v ? BEARING_TABLE
+                                            : BEARING_POINT_TABLE) +
+                                        (uint32_t)index) &
+                      0xffu);
+  // **Not the horizontal `CMP`'s carry.** `ADC #$0001` sits between it and the
+  // `RTL`, and an `ADC` writes carry whether anything asked it to or not — so
+  // on every path where the two differ the comparison's answer is overwritten
+  // by an addition of at most ten, which never carries. Only the `BEQ` path
+  // skips the `ADC` and keeps the `CMP`'s carry, and that is the equal case, so
+  // carry out means *the record shares the point's X* and nothing else.
+  //
+  // Modelled as `rx >= x` first, which is what the comparison says and what the
+  // instruction after it throws away: 2,078 calls, 2,078 diverging, `flag C:
+  // ROM 0, port 1`.
+  out->c = rx == x;
+}
+
+void actor_bearing(Wram* w, const Rom* rom, uint16_t from_rec, uint16_t to_rec,
+                   ActorBearingRegs* out) {
+  // $80:B22F. The `from` record's position *is* the point, copied into the
+  // same two words the whole family reads.
+  wram_w16(w, GAP_DP_X, wram_r16(w, (uint32_t)from_rec + ACTOR_X));
+  wram_w16(w, GAP_DP_Y, wram_r16(w, (uint32_t)from_rec + ACTOR_Y));
+  bearing_lookup(w, rom, to_rec, true, out);
+}
+
+void actor_bearing_point(Wram* w, const Rom* rom, uint16_t rec, uint16_t x,
+                         uint16_t y, ActorBearingRegs* out) {
+  wram_w16(w, GAP_DP_X, x);
+  wram_w16(w, GAP_DP_Y, y);
+  // `keep_v` false is the bug, and it is the whole difference: $80:B208 is
+  // `TXA` where $80:B249 is `TAX`, so the vertical half is computed, shifted
+  // twice, and dropped on the floor. See the header.
+  PORT_COVER_IF(wram_r16(w, (uint32_t)rec + ACTOR_Y) != y, bearing_v_dropped,
+                bearing_v_zero);
+  bearing_lookup(w, rom, rec, false, out);
+}
+
+// ---------------------------------------------------------------------------
+// $80:B26B, $80:B2A5  player_in_range, player_bearing
+// ---------------------------------------------------------------------------
+
+// Which player, if either, is inside `limit` -- the twenty instructions
+// `$80:B26B` and `$80:B2A5` have in common, down to the order the two `$D2`
+// and `$D4` gaps are measured in and the two dead scratch words they leave
+// behind.
+//
+// Returns the chosen record, or zero when neither is close enough, and reports
+// the carry the exit it took was reached with.
+static uint16_t player_pick(Wram* w, uint16_t limit, uint16_t* dist,
+                            bool* carry) {
+  ActorGapRegs g;
+
+  const uint16_t rec_a = wram_r16(w, W_PLAYER_A_RECORD);
+  actor_gap(w, rec_a, &g);
+  const uint16_t da = g.a;
+  wram_w16(w, PICK_DP_DIST_A, da);
+
+  const uint16_t rec_b = wram_r16(w, W_PLAYER_B_RECORD);
+  actor_gap(w, rec_b, &g);
+  const uint16_t db = g.a;
+  wram_w16(w, PICK_DP_DIST_B, db);
+
+  // `CMP $42 : BCS` -- player B first, and out of range for B sends the whole
+  // question to A rather than comparing the two.
+  if (db < limit) {
+    if (db < da) {
+      PORT_COVER(pick_b_nearer);
+      *dist = db;
+      *carry = false;
+      return rec_b;
+    }
+    // The `BRA`, reached with the failed `CMP $3E`'s carry still set. A is no
+    // further than B and B is inside the limit, so A is inside it too and the
+    // routine does not re-check.
+    PORT_COVER(pick_a_nearer);
+    *dist = da;
+    *carry = true;
+    return rec_a;
+  }
+  if (da < limit) {
+    PORT_COVER(pick_a_only);
+    *dist = da;
+    *carry = false;
+    return rec_a;
+  }
+  PORT_COVER(pick_neither);
+  *dist = 0;
+  *carry = true;
+  return 0;
+}
+
+void player_in_range(Wram* w, uint16_t limit, uint16_t x, uint16_t y,
+                     PlayerPickRegs* out) {
+  wram_w16(w, PICK_DP_LIMIT, limit);
+  wram_w16(w, GAP_DP_X, x);
+  wram_w16(w, GAP_DP_Y, y);
+
+  uint16_t dist = 0;
+  bool carry = false;
+  const uint16_t rec = player_pick(w, limit, &dist, &carry);
+
+  out->a = rec;
+  // `LDX $3E`/`LDX $40` on the two found exits; the zero exit never loads X at
+  // all, so the caller's own argument is still in it.
+  out->x = rec ? dist : x;
+  // `LDY $D4` on the way in and nothing after it, whichever player won.
+  out->y = wram_r16(w, W_PLAYER_B_RECORD);
+  out->c = carry;
+}
+
+void player_bearing(Wram* w, const Rom* rom, uint16_t limit, uint16_t x,
+                    uint16_t y, PlayerPickRegs* out) {
+  wram_w16(w, PICK_DP_LIMIT, limit);
+  wram_w16(w, GAP_DP_X, x);
+  wram_w16(w, GAP_DP_Y, y);
+
+  uint16_t dist = 0;
+  bool carry = false;
+  const uint16_t rec = player_pick(w, limit, &dist, &carry);
+  if (rec == 0) {
+    // $80:B2CE. A is zero, which is how every caller reads "nobody in range",
+    // and X and Y are the leftovers the selection stopped on.
+    out->a = BEARING_NONE;
+    out->x = x;
+    out->y = wram_r16(w, W_PLAYER_B_RECORD);
+    out->c = carry;
+    return;
+  }
+
+  const uint16_t rx = wram_r16(w, (uint32_t)rec + ACTOR_X);
+  const uint16_t ry = wram_r16(w, (uint32_t)rec + ACTOR_Y);
+  const int index = 4 * bearing_axis(ry, y) + bearing_axis(rx, x);
+  PORT_COVER_IF(index == 0, player_bearing_same, player_bearing_off);
+
+  // A word table, so the index is doubled -- and that `ASL` is also the last
+  // thing on this path to write carry. Ten shifted left is not enough to shift
+  // anything out, so carry is clear on every direction exit.
+  out->a = rom_word(rom, PLAYER_BEARING_TABLE + (uint32_t)index * 2);
+  out->x = dist;  // `PEI` before the lookup, `PLX` after it
+  out->y = rec;   // ...and `PHY`/`PLY` around it
+  out->c = false;
+}
+
+// ---------------------------------------------------------------------------
 // $80:B3F1  actor_snap_to
 // ---------------------------------------------------------------------------
 
@@ -950,4 +1228,133 @@ void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,
 
   PORT_COVER(obstacle_none);
   out->x = 0xfffeu;
+}
+
+// ---------------------------------------------------------------------------
+// $80:BE0C  actor_slot_alloc
+// ---------------------------------------------------------------------------
+
+void actor_slot_alloc(Wram* w, uint16_t caller_db, SlotAllocRegs* out) {
+  uint16_t rec = ACTOR_SLOT_LAST;
+  uint16_t tries = ACTOR_SLOT_COUNT;
+  uint16_t flags = 0;
+
+  for (;;) {
+    // `LDA $0000,Y : LSR : BCC found` — the shift is the test, and the value
+    // that survives it is what a failed scan hands back in A.
+    flags = wram_r16(w, (uint16_t)(rec + ACTOR_FLAGS));
+    if (!(flags & ACTOR_ACTIVE)) break;
+    flags >>= 1;
+
+    // `TYA : SBC #$0014 : TAY`, and the `LSR` that just set carry is what makes
+    // the subtraction exactly $14 rather than $15.
+    rec = (uint16_t)(rec - ACTOR_SLOT_STRIDE);
+    if (--tries == 0) {
+      PORT_COVER(slot_alloc_full);
+      out->a = flags;
+      out->x = 0;
+      out->y = rec;
+      out->n = (caller_db & 0x80u) != 0;
+      out->z = (caller_db & 0xffu) == 0;
+      out->c = true;  // the `SBC` that stepped Y, which never borrows here
+      return;
+    }
+    PORT_COVER(slot_alloc_scan);
+  }
+  PORT_COVER(slot_alloc_took);
+
+  // `LDA #$0001 : STA $0000,Y` — the whole flags word, so a slot arrives with
+  // nothing but the allocation bit and its previous tenant's everything gone.
+  wram_w16(w, (uint16_t)(rec + ACTOR_FLAGS), ACTOR_ACTIVE);
+  wram_w16(w, (uint16_t)(rec + ACTOR_NEXT), wram_r16(w, W_ACTOR_LIST_HEAD));
+  wram_w16(w, W_ACTOR_LIST_HEAD, rec);
+
+  out->a = rec;  // `TYA`
+  out->x = tries;
+  out->y = rec;
+  out->n = (caller_db & 0x80u) != 0;
+  out->z = (caller_db & 0xffu) == 0;
+  out->c = false;  // the `LSR` the `BCC` was taken on
+}
+
+// ---------------------------------------------------------------------------
+// $80:BE41  actor_slot_free
+// ---------------------------------------------------------------------------
+
+void actor_slot_free(Wram* w, uint16_t rec, uint16_t caller_d, uint16_t in_x,
+                     uint16_t in_y, SlotFreeRegs* out) {
+  const uint16_t owner = wram_r16(w, W_SCHED_CUR_TASK);
+  const uint16_t theirs = wram_r16(w, (uint16_t)(rec + ACTOR_THREAD));
+
+  out->x = in_x;
+  out->y = rec;  // `TAY`, before anything can decline
+
+  // `LDA $0008 : CMP $000C,Y : BNE`. Someone else's record, so nothing happens
+  // and the caller is not told — see the header.
+  if (owner != theirs) {
+    PORT_COVER(slot_free_not_mine);
+    uint16_t r = (uint16_t)(owner - theirs);
+    out->a = owner;
+    out->n = (r & 0x8000u) != 0;
+    out->z = false;
+    out->c = owner >= theirs;
+    return;
+  }
+
+  uint16_t flags = wram_r16(w, (uint16_t)(rec + ACTOR_FLAGS));
+  if (!(flags & ACTOR_ACTIVE)) {
+    PORT_COVER(slot_free_already);
+    out->a = (uint16_t)(flags >> 1);
+    out->n = false;  // an `LSR` cannot leave bit 15 set
+    out->z = (flags >> 1) == 0;
+    out->c = false;
+    return;
+  }
+  PORT_COVER(slot_free_took);
+
+  wram_w16(w, (uint16_t)(rec + ACTOR_FLAGS), 0);
+  // `PHD : LDA #$0000 : TCD : STY $38`. From here the routine is on page zero
+  // and `$38` is how the walk below recognises the record it is looking for.
+  wram_w16(w, W_SLOT_FREE_SELF, rec);
+
+  out->n = (caller_d & 0x8000u) != 0;  // `PLD`
+  out->z = caller_d == 0;
+  out->c = true;  // still the `LSR` that let the free through
+
+  const uint16_t head = wram_r16(w, W_ACTOR_LIST_HEAD);
+  if (rec == head) {
+    PORT_COVER(slot_free_head);
+    uint16_t next = wram_r16(w, (uint16_t)(rec + ACTOR_NEXT));
+    wram_w16(w, W_ACTOR_LIST_HEAD, next);
+    out->a = next;
+    return;
+  }
+
+  // Walk from the head looking for the link that points at us. `X` trails one
+  // record behind `Y`, which is the pair the unlink needs.
+  uint16_t prev = head;
+  for (;;) {
+    uint16_t next = wram_r16(w, (uint16_t)(prev + ACTOR_NEXT));
+    if (next == 0) {
+      // Off the end without finding it: the record's flags are cleared and it
+      // is still on the list. Nothing in the ROM stops that happening and
+      // nothing here does either.
+      PORT_COVER(slot_free_unlisted);
+      out->a = 0;  // still the `LDA #$0000` from the flags store
+      out->x = prev;
+      out->y = 0;
+      return;
+    }
+    if (next == rec) {
+      PORT_COVER(slot_free_unlink);
+      uint16_t after = wram_r16(w, (uint16_t)(rec + ACTOR_NEXT));
+      wram_w16(w, (uint16_t)(prev + ACTOR_NEXT), after);
+      out->a = after;
+      out->x = prev;
+      out->y = rec;
+      return;
+    }
+    PORT_COVER(slot_free_walk);
+    prev = next;
+  }
 }

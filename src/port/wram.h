@@ -133,6 +133,14 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_OVERLAP_CURSOR 0x003c  // where the outer walk is, parked over the inner
 #define W_OVERLAP_ID 0x004a      // the outer record's ACTOR_COLLIDE_ID
 
+// ...and a third tenant of `$38`, for the same reason and with the same caveat.
+// `$80:BE41 actor_slot_free` parks the record it is unlinking here so that the
+// walk down the list has something to compare each link against. It is the only
+// one of the three that reaches the byte through a direct page it installed
+// *itself* — `PHD : TCD` with A already zero — because the routine is a `JSL`
+// from anywhere and cannot know what page it arrived on.
+#define W_SLOT_FREE_SELF 0x0038
+
 // --- Direct page: the collision dispatch's scratch ($80:BE8F) ---
 //
 // The same pool again, and the same caveat: these six words mean this only
@@ -212,6 +220,20 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 // collision id resolves to. `$80:925D` seeds them 0 and 2 — the identity — and
 // `$80:C7C2` searches the pair to turn a side back into a slot.
 #define W_SCORE_SLOT_SIDE 0x1e84
+
+// --- The status panel (see port/hud.h) ---
+//
+// Whether each player's half of the HUD is drawn at all: `$80:C0A3` and
+// `$80:C139` both open by reading this and returning if it is zero, so a
+// one-player game refreshes one panel and skips the other every other frame.
+// Indexed by side, like every other per-player word above.
+#define W_HUD_PANEL_ON 0x1e88
+
+// How many of the twelve change tests fired since the last upload. `$80:C07F`
+// reads it, and it only ever asks whether it is zero — a nonzero one becomes a
+// queued vblank job and is reset. It is a count because `INC` was the shortest
+// way to write "yes", not because anything reads the magnitude.
+#define W_HUD_DIRTY 0x1e7a
 
 // --- The sprite display list (see port/oam.h) ---
 #define W_ACTOR_SLOTS 0x185e     // 32 x 20-byte records
@@ -350,6 +372,37 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_VRAM_QUEUE_COUNT 0x00ce
 #define W_TILE_PRIORITY_BELOW 0x00dc
 
+// **A weighted census of what is alive**, and the admission control the whole
+// game's spawning goes through — see `spawn_has_room` in `port/thread.h`.
+//
+// Zeroed in exactly one place, `$80:867B`, in the level-init chain, and never
+// again: it is a level-long running total, not a per-frame budget. **137 sites
+// read-modify-write it** — 6 in bank `$80`, 74 in `$81`, 22 in `$82`, 35 in
+// `$83` — and every one is `CLC : LDA $00DE : ADC #$xx : STA $00DE` or the
+// `SEC : SBC` that undoes it. Nothing else writes it at all.
+//
+// So each kind of actor charges its own weight on the way in and refunds it on
+// the way out, and the ledger balances: 21 distinct weights appear, from `$01`
+// to `$28`, and the charge and refund histograms match value for value to
+// within one site each. A dog costs 1 and the heaviest thing in the game costs
+// 40 — nearly a third of the 138 ceiling on its own — which is why this is a
+// *census* rather than a count.
+#define W_SPAWN_LOAD 0x00de
+
+// The 24-bit cursor `apu_next_byte` walks a sound data set with: `$18`/`$19`
+// are its low and high bytes and `$1A` its bank, all read and written eight
+// bits at a time, on direct page zero like `W_APU_SEQ`.
+#define W_APU_SRC 0x0018
+#define W_APU_SRC_BANK 0x001a
+
+// The two bytes after it: `$80:CC7C`'s block counter, low then high, and the
+// only 16-bit quantity in the port that is decremented **a byte at a time with
+// the borrow written out by hand** — `LDA $1C : BNE +2 : DEC $1D : + DEC $1C`.
+// It is that way because the routine runs its whole length under `SEP #$30`,
+// which is also why `$1A`'s high byte is never touched and a data set wraps
+// inside its bank. See `port/apu.h`.
+#define W_APU_BLOCK_LEFT 0x001c
+
 // --- Thread scheduler tables (24 slots of one word each) ---
 #define W_THREAD_WAIT 0x1180  // bit 15 = live, low bits = ticks remaining
 #define W_THREAD_SP 0x11b0
@@ -387,5 +440,19 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_SPRITE_SLOT_TICK 0x175e    // 128 x u16, the LRU key
 #define W_FRAME_SLOT 0x2128          // 4096 x u16: slot x2, or negative if absent
 #define W_SLOT_FRAME 0x4128          // 128 x u16: frame x2, or negative if empty
+
+// --- The HDMA wave table ($80:9570 builds it, channel 6 reads it) ---
+//
+// The first address in this file that is **not** a variable: it is a table the
+// PPU's DMA controller walks by itself, one entry per scanline, while the CPU
+// is somewhere else. A header byte, then two bytes of parameter per line, then
+// the next header, then a zero to stop.
+//
+// It is also the highest thing the port names in bank `$7E`, and it is up here
+// on its own rather than in the crowd below `$4128` because nothing else in the
+// game is anywhere near it. `$80:9570` writes at most `$1C2` bytes of it and
+// the terminator moves as the wave retracts, so the extent is not a constant
+// and is not given one.
+#define W_WAVE_HDMA 0x8000
 
 #endif

@@ -153,11 +153,73 @@ JUMP_ENTRIES = {
     # a bare `COP #$FE` (BRK, COP in emulation) and $80:8209 a bare `RTI`
     # (IRQ, ABORT, COP), both executed zero times in all ten profiles.
     0x8080AE: 'the reset vector, which is not called and cannot be shimmed',
+    # $81:BC3D ends at its RTS and is 112,743 instructions over 1,775 calls --
+    # 63 per call for a routine of about that many bytes, which is the shape of
+    # a leaf. The 581,911 the ranking credited to it is four fifths something
+    # else: $81:BEDA, reached by `JMP` from $81:BB8F and $81:BBE7 and by
+    # nothing that calls it, so the CDL never marks it and attribution walks
+    # back past it. On its own it is 469,168 instructions, 0.16%, and it ranked
+    # as the top *portable* row on the whole list for two rounds while being
+    # neither the routine named nor anything anyone could shim at that address.
+    #
+    # It is also a fourth family, and this one is not enumerated here. $81:BEDA
+    # is three instructions -- `LDA #$BEE3 : STA $12 : RTS` -- that install the
+    # *next* state of the monster's behaviour in `$12`, which its thread then
+    # reaches with `PEA <ret> : LDA $12 : DEC : PHA : RTS`. So the state bodies
+    # under it are entered by a computed `RTS` through a WRAM word: no JSR, no
+    # JSL, and no spawn idiom to grep for. Declaring the installer separates the
+    # two rows; the bodies below it stay charged to it, and that is a lower
+    # bound again.
+    0x81BEDA: 'a state installer reached by JMP; what the ranking credited to $81:BC3D',
+    # ...and the round that ported $81:BB75 and $81:BBA4 -- the two routines
+    # whose tail *is* $81:BEDA -- found the body the installer names, because
+    # writing the port meant reading the constant it stores. $81:BEDA is four
+    # instructions (`JMP $BEDD` and the three it lands on) and the 469,168 above
+    # is almost all $81:BEE3, the monster's chase: `LDX $0A : LDY $0C : JSL
+    # actor_nearest` and then two hundred bytes of steering. Declaring it makes
+    # the installer's row the size of an installer and gives the chase a row of
+    # its own, which is where it belongs -- but note it is still not portable,
+    # for the reason the paragraph above gives. Nothing calls it.
+    0x81BEE3: 'the monster chase state, entered by computed RTS through $12',
 }
 
 BLOCKED = {
     0x80CD20: 'written, unregisterable: it outlives a frame',
     0x80AD2B: 'written, unregisterable: it outlives a frame -- six of them',
+    # ...and the third of them, and the only one that is not a loop over data.
+    # $80:C05A is 16,900 instructions of `STA $2128,X : DEX : DEX : BPL`, about
+    # half a million master cycles, so an NMI lands inside every call: two calls
+    # on boot.zmv and two on level1.zmv, all four interrupted, none checked. The
+    # C is written and `src/cosim/routines.c` says what its shim would be.
+    0x80C05A: 'written, unregisterable: it outlives a frame -- a $2002-byte memset',
+    # ...and the fourth, which is the largest and the one that hurts. $80:CC7C
+    # is the sound-data uploader: about 23,800 SPC commands and 104,000
+    # instructions per call, some eight frames, and every call is interrupted --
+    # 5 of 5 on level25-lane, 3 of 3 on boot.zmv, where the screen is off. It is
+    # written (`port/apu.h`) and it would have needed `verify_only` even if it
+    # could be registered, because every command it sends waits on the SPC700.
+    0x80CC7C: 'written, unregisterable: it outlives a frame -- 23,800 SPC commands',
+    # $80:CDF4 is already a JUMP_ENTRIES line above, because it is the real
+    # start of what the ranking used to credit to lzss_write_byte. Declaring it
+    # made it visible and also made it obvious what it is: `JSR $D13A : LDA
+    # #$0001 : JSL thread_yield : ... : BRA $CDF7`. It is a **loop with a yield
+    # in it and no exit** -- the level's main body. Nothing calls it, it never
+    # returns, and the profile agrees: 651,060 instructions and zero calls in
+    # eleven movies.
+    0x80CDF4: 'a thread body, and a loop with no exit -- nothing calls it',
+    # $80:CB61 is the biggest row this list has left -- 1.5%, plus 1.95% of the
+    # machine waiting inside it -- and it is out on two independent grounds.
+    # Measured: registered against an empty shim (it writes no WRAM, so that is
+    # a clean probe) it reports 1 call, 1 interrupted, 0 checked on boot.zmv,
+    # where the screen is off, and the same on level25-lane. Structural: its
+    # whole effect is on the SPC700 through $2140-$2143, one byte at a time,
+    # gated on the SPC's replies -- there is nothing in WRAM to diff, so it
+    # could at best be verify_only like apu_send, and never substituted.
+    0x80CB61: 'unregisterable: a per-byte SPC handshake, and every call is interrupted',
+    # ...and its caller, which is the two MVN blocks plus a JSR into the above,
+    # so it inherits both problems. 1 call, 1 interrupted, on the same two
+    # movies.
+    0x80CB1A: 'unregisterable: it calls $80:CB61 and inherits both of its problems',
     0x808353: 'the coroutine primitive the harness measures passes against',
     0x8083E0: 'a dispatcher -- RTLs into any of 13 jobs held in WRAM',
     0x80843D: 'a dispatcher -- the same, for the one job queue B carries',
@@ -292,6 +354,19 @@ THREAD_BODIES = frozenset((
     # one body -- both reach the same `thread_yield` at `$82:A8EB`.
     0x82873C, 0x829569, 0x82A8BB, 0x82A8C3, 0x82AB95, 0x82D7CF,
     0x83AD33,
+    # ...and one of the four the comment above calls a lower bound, found by the
+    # check the `$80:A937` round installed rather than by a search. Registering
+    # `$81:C16B monster_anim` moved the native total by 291,771 where the
+    # routine itself executes 145,410; the other 146,361 begins at `$81:C1FB`,
+    # opens `JSR $B9F9 : JSR $BA46 : CLC : LDA $00DE : ADC #$001C` -- the spawn
+    # charge -- installs `$81:C440` as its collision handler and then loops on
+    # `thread_yield`. **No instruction in the cartridge names the address.**
+    # Nothing `JSR`s or `JSL`s it, no `LDA #imm : LDY #imm : JSL thread_spawn`
+    # matches it, and it is in none of the three tables above, so it comes from
+    # `$81:80E7` or `$81:81D7` -- the two spawners that read a body's address out
+    # of WRAM. It executes four times over the eleven profiles, which is how
+    # often the creature is placed.
+    0x81C1FB,
 ))
 
 # Nothing in the ROM calls a thread body, so none of them can be a registry

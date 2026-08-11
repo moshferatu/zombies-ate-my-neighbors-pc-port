@@ -12,6 +12,10 @@
 //   $80:BEC9  actor_overlap_pass  tell touching pairs about each other
 //   $80:BD1F  sprite_build_oam    the pass itself
 //
+// ...and, at the end of the file, the two routines that put records on the list
+// and take them off — `$80:BE0C actor_slot_alloc` and `$80:BE41 actor_slot_free`,
+// 143 call sites between them.
+//
 // Between them they read and write nothing but WRAM and the metasprites in ROM,
 // and none of them yields — the pass runs from `scheduler_idle`'s housekeeping,
 // not from a thread. Each runs 1,016 times in `movies/level1.zmv`.
@@ -81,14 +85,19 @@
 // Bit 5: the sort's primary key. A record with it set is ordered ahead of one
 // without, whatever their positions. Nothing here needs to know what it means.
 #define ACTOR_SORT_FIRST 0x0020
-// Bit 0: set on every live record in every display list sampled so far — the
-// flags seen are `$8000`, `$8001`, `$8003`, `$8005`, `$8009`. Two readers are
-// now known, `$80:B123` and `$80:B379`, and they test it identically: right
-// after `ACTOR_DRAW`, as a second gate on the same walk. Both of the port's
-// coverage sites for that branch are untaken by all 42 movies, so no input has
-// ever produced a record that is drawn with this bit clear. What clears it has
-// still not been established, and the name says where it is rather than
-// claiming to know more than that.
+// Bit 0: **the allocator's mark, and the name is now earned.** `$80:BE0C` sets
+// it with `LDA #$0001 : STA $0000,Y` — the whole flags word, so a record starts
+// its life as exactly `$0001` and everything else about it, `ACTOR_DRAW`
+// included, is written afterwards by whoever asked for it. `$80:BE41` clears it
+// with `LDA #$0000` to the same word, and those two are the only writers.
+//
+// That answers a question this comment carried for four rounds. The flags seen
+// on live records are `$8000`, `$8001`, `$8003`, `$8005`, `$8009`; the two
+// readers that test it during a *walk*, `$80:B123` and `$80:B379`, do so right
+// after `ACTOR_DRAW` as a second gate, and both of the port's coverage sites for
+// that branch are untaken by all 43 movies. They are untaken because a record on
+// the display list has been allocated by definition — the walk is testing an
+// invariant, not a state.
 #define ACTOR_ACTIVE 0x0001
 // Bit 4: take the OAM palette from `ACTOR_ATTR` instead of the metasprite's.
 // The pass ORs the field in and masks the piece's own palette bits away.
@@ -351,6 +360,224 @@ typedef struct {
 
 void actor_aligned(Wram* w, uint16_t x, uint16_t y, ActorAlignedRegs* out);
 
+// --- $80:B093, $80:B18F, $80:B1EC, $80:B22A, $80:B26B, $80:B2A5 -------------
+
+// **The rest of the enemy's targeting arithmetic**: six routines packed into
+// the 530 bytes between `actor_nearest` and `actor_aligned`, sharing one leaf
+// and one table.
+//
+// They are here as a family because they are one: `actor_nearest` above
+// answers *which record*, and every one of these answers a follow-on question
+// about it — *how far*, *which way*, *is it close enough*. Four of them read
+// the two player-record pointers `$D2`/`$D4` directly instead of walking the
+// slot table, which is what makes them the cheap question an enemy can afford
+// every frame where `actor_nearest`'s 32 slots is the expensive one it asks
+// once a second.
+//
+//   $80:B093  actor_gap             the larger of the two axis gaps
+//   $80:B18F  actor_nearest_id3     actor_nearest, for collision id $03
+//   $80:B1EC  actor_bearing_point   which way is a record from a point
+//   $80:B22A  actor_bearing         ...and from another record
+//   $80:B26B  player_in_range       the nearer player, if either is close
+//   $80:B2A5  player_bearing        ...and which way that is
+//
+// **Three of them were being counted as already ported and are not.**
+// `tools/native_share.py` attributes an instruction to the nearest preceding
+// subroutine entry, and with nothing declared between `$80:B123` and `$80:B2A5`
+// the whole of `$80:B1EC`, `$80:B22A` and `$80:B26B` fell inside
+// `actor_nearest`'s block. The ranking's own caveat — "a routine with a
+// suspiciously large share is worth checking against the disassembly before it
+// is believed" — earned its keep here: `actor_nearest` was the third-largest
+// native routine in the report and part of what it was credited with was code
+// nobody had written.
+
+// The 65816 gets its direct page to zero and then reads these as absolute
+// addresses, so they are the same six bytes for every caller and every thread —
+// exactly as `actor_nearest`'s and `actor_aligned`'s scratch is, and note that
+// `$38` and `$3A` mean something different in all three.
+#define GAP_DP_X 0x38   // the point, written by the caller and not by $80:B093
+#define GAP_DP_Y 0x3a
+#define GAP_DP_DX 0x3c  // the X gap, kept only so the Y gap can be compared
+
+// A is the gap. X is untouched; Y is the record it was asked about, likewise.
+//
+// **Carry is the caller's on the empty-record exit and the routine's on every
+// other**, which is why it is reported separately rather than defaulted:
+// `TYA : BEQ` reaches `LDA #$FFFF : RTS` without executing anything that writes
+// carry, so what the caller sees there is what it came in with. Nothing reads
+// it — both callers overwrite it with a `CMP` two instructions later — and a
+// shim that claimed it would be asserting the caller's leftovers.
+typedef struct {
+  uint16_t a;
+  bool n, z;
+  bool c;
+  bool has_c;
+} ActorGapRegs;
+
+// **How far is this record from the point, measured as the wider axis?**
+//
+// Chebyshev distance: `max(|rec.x - x|, |rec.y - y|)`, and `$FFFF` when `rec`
+// is zero, which is what `$D4` reads in one-player mode. Nine hundred calls a
+// second between the two routines below.
+//
+// It takes the point out of `GAP_DP_X`/`GAP_DP_Y` rather than as arguments
+// because that is where it reads them from: it is a `JSR` leaf with no calling
+// convention of its own beyond the record in Y, and both of its callers set
+// those two words up before entering it.
+//
+// **The absolute value here is `BPL`, not the `BCS` `actor_nearest` uses.**
+// The two are the same answer for every input either routine can be given and
+// they are not the same instruction: `BPL` tests the sign of the difference and
+// `BCS` tests whether the subtraction borrowed, which differ once the gap
+// exceeds `$8000`. Transcribed as written, on the principle that a port is not
+// entitled to decide that a distinction cannot be reached.
+void actor_gap(Wram* w, uint16_t rec, ActorGapRegs* out);
+
+// `actor_nearest`'s four collision ids, and this one's single `CMP #$0003`.
+#define NEAREST3_ID 0x0003
+
+// **`actor_nearest` with one id instead of four.** Byte for byte the same
+// routine otherwise: the same 32 slots top-down, the same `ACTOR_DRAW` and
+// flag-bit-0 gate, the same `|dx| + |dy|` sum into the same seven scratch
+// words, the same strictly-nearer-wins comparison, the same three registers
+// out. Both of its callers are in bank $83, the boss bank, and between them
+// they account for 54 calls in the whole corpus — this is transcribed because
+// it sits inside the family rather than because the ranking asked for it.
+//
+// Returns the winning record and puts the distance in `*dist`, exactly as
+// `actor_nearest` does, including leaving `$44` alone when nothing matched so
+// that a search that finds nothing hands back the last one that did.
+uint16_t actor_nearest_id3(Wram* w, uint16_t x, uint16_t y, uint16_t* dist);
+
+// The three direction tables, all twelve entries, all indexed `4 * v + h` where
+// each half is 0 for "the same", 1 for "less than" and 2 for "greater than".
+// Every fourth entry is the unreachable `h == 3` slot and every one of them is
+// zero.
+//
+// Read from ROM rather than transcribed: they are ordinary data in an ordinary
+// bank, and a hack that retunes an enemy's facing by editing twelve bytes would
+// still work.
+#define BEARING_POINT_TABLE 0x80b21eu  // $80:B1EC's, bytes, mirrored
+#define BEARING_TABLE 0x80b25fu        // $80:B22A's, bytes
+#define PLAYER_BEARING_TABLE 0x80b302u // $80:B2A5's, words
+
+// The compass every one of them answers in, clockwise from up, and the same one
+// `ALIGNED_UP` and friends use undoubled.
+#define BEARING_NONE 0
+#define BEARING_UP 1
+#define BEARING_UP_RIGHT 2
+#define BEARING_RIGHT 3
+#define BEARING_DOWN_RIGHT 4
+#define BEARING_DOWN 5
+#define BEARING_DOWN_LEFT 6
+#define BEARING_LEFT 7
+#define BEARING_UP_LEFT 8
+
+// A is the direction. X is the table index it came from — a number, not a
+// pointer, and left in X only because `TAX` is how the ROM indexes. Y is the
+// record, untouched.
+//
+// N and Z are the closing `PLD`'s, so they describe the caller's direct page
+// and not the answer; the callers re-derive what they need from A.
+//
+// **Carry is not the horizontal comparison's**, which is the obvious reading
+// and the wrong one. `ADC #$0001` sits between that `CMP` and the `RTL`, and an
+// `ADC` writes carry whether or not the code wanted an answer from it — so on
+// every path where the record and the point differ on X, the comparison's carry
+// is replaced by that of an addition of at most ten, which never carries. Only
+// the equal case branches over the `ADC` and keeps it. Carry out therefore
+// means *the record shares the point's X*, and nothing reads it.
+typedef struct {
+  uint16_t a, x;
+  bool c;
+} ActorBearingRegs;
+
+// **Which way is one record from another?** `from` supplies the point — its
+// `ACTOR_X` and `ACTOR_Y` are copied into the same `$38`/`$3A` the whole family
+// uses — and `to` is measured against it. 13,671 calls over fifteen sites in
+// three banks, which makes it the busiest routine in this group.
+void actor_bearing(Wram* w, const Rom* rom, uint16_t from_rec, uint16_t to_rec,
+                   ActorBearingRegs* out);
+
+// **The same question with a bare point for the `from` — and it does not work.**
+//
+// `$80:B1EC` is `actor_bearing` with the point passed in X and Y instead of
+// read out of a record, and its table is the mirror image of the other's:
+// where that one answers *up* this one answers *down*, because it reports which
+// way the point is from the record rather than the other way about.
+//
+// It computes the vertical half of the index, shifts it into place, and then
+// **throws it away**: the instruction that should fold it into the index is
+// `TXA` where its sibling twenty-two bytes further on has `TAX`, so X is still
+// the zero it was seeded with and only the horizontal half ever reaches the
+// table. Eight of that table's twelve bytes are unreachable, and every answer
+// is `BEARING_NONE`, `BEARING_RIGHT` or `BEARING_LEFT` — an enemy asking this
+// one which way to face can never be told to go up or down.
+//
+// **The port reproduces it.** It is not a transcription slip to be tidied on
+// the way past: it is what the game does, three call sites reach it, and
+// `movies/level17-weapon.zmv` among others is playing against the version with
+// the bug in it.
+void actor_bearing_point(Wram* w, const Rom* rom, uint16_t rec, uint16_t x,
+                         uint16_t y, ActorBearingRegs* out);
+
+// $80:B26B's and $80:B2A5's shared scratch: the range limit and the two
+// distances, on top of `GAP_DP_X`/`GAP_DP_Y` which they set for the leaf.
+#define PICK_DP_LIMIT 0x42
+#define PICK_DP_DIST_A 0x3e
+#define PICK_DP_DIST_B 0x40
+
+// What the two of them hand back. A is the answer — a record pointer for
+// `player_in_range`, a direction for `player_bearing`, zero from either when
+// neither player is close enough. X and Y differ per routine and are documented
+// at each.
+//
+// N and Z are the closing `PLD`'s in both, as everywhere in this family.
+typedef struct {
+  uint16_t a, x, y;
+  bool c;
+} PlayerPickRegs;
+
+// **Which player is nearer, if either is within `limit`?**
+//
+// A is that player's record pointer, or zero. X is its distance on the two
+// found exits and the caller's own `x` on the third, because the zero exit
+// never loads it. Y is `$D4` — player B's record — on all three, including
+// when the answer is player A: it is left over from the second `actor_gap` call
+// and the routine never tidies it.
+//
+// Carry is the leftover of whichever comparison chose the exit, and it is not
+// the same one on the two paths that both return player A: `1` when B was in
+// range but no nearer, `0` when B was out of range and A was in it. Nothing
+// reads it. It is claimed anyway, because an unclaimed output is an unchecked
+// one.
+void player_in_range(Wram* w, uint16_t limit, uint16_t x, uint16_t y,
+                     PlayerPickRegs* out);
+
+// **Which way is the nearer player, if either is within `limit`?**
+//
+// The same selection as `player_in_range` — the two routines are the same
+// twenty instructions up to the point where they answer — and then the same
+// direction lookup as `actor_bearing`, from a word-wide table.
+//
+// A is the direction and zero means *neither player is close enough*, which is
+// exactly how its callers read it: `JSL : TAX : BNE`. That is why its table
+// differs from `actor_bearing`'s in its first entry and only there — **a player
+// standing exactly on top of the enemy answers `BEARING_UP` rather than zero**,
+// because zero is already spoken for and an enemy told "nowhere" would stop
+// chasing something it is touching.
+//
+// X is the chosen player's distance, pushed with `PEI` before the lookup and
+// pulled back into X after it, and on the zero exit it is the caller's own `x`.
+// Y is the chosen player's record on the direction exit — `PHY`/`PLY` around
+// the lookup — and `$D4` on the zero exit.
+//
+// Carry is 0 on every direction exit: the last thing to write it is the `ASL`
+// that doubles the table index, and an index of at most ten shifts nothing out.
+// On the zero exit it is 1, from the comparison that rejected player A.
+void player_bearing(Wram* w, const Rom* rom, uint16_t limit, uint16_t x,
+                    uint16_t y, PlayerPickRegs* out);
+
 // --- $80:B3F1 ---------------------------------------------------------------
 
 // **Snap one record onto another when they are nearly lined up.**
@@ -563,5 +790,88 @@ typedef struct {
 
 void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,
                              ObstacleRegs* out);
+
+// --- $80:BE0C, $80:BE41 — the two ends of a record's life -------------------
+//
+// Everything else in this file walks the display list. These two are what puts
+// records on it and takes them off, and between them they have **143 call sites
+// in the cartridge** — 80 for the allocator and 63 for the free — which is more
+// than any other pair the port has taken and is the reason a fourteen- and a
+// twenty-instruction routine are worth their own registry slots.
+//
+// The list is a stack, not a queue: the allocator pushes onto the head at
+// `$7E:1B5E` through `ACTOR_NEXT`, so the newest record is the first one every
+// walk in this file sees. And the *slot* it pushes is found by scanning the 32
+// records **downwards** from the last one, `$7E:1ACA`, taking the first with
+// `ACTOR_ACTIVE` clear. Two orders, opposite directions, and neither is the
+// other's inverse — which is why the list's order says nothing about the array's.
+//
+// ## `ACTOR_ACTIVE` is the allocation bit
+//
+// `port/oam.h` has carried a note for several rounds saying that bit 0 of
+// `ACTOR_FLAGS` is set on every live record ever sampled and that *what clears
+// it had not been established*. `$80:BE41` clears it: `LDA #$0000 : STA
+// $0000,Y`, the whole word, as the first thing it does once it has decided the
+// free is allowed. And `$80:BE0C` is the only thing that sets it, with `LDA
+// #$0001` — a record's flags start at exactly `$0001` and everything else about
+// it, including `ACTOR_DRAW`, is written afterwards by whoever asked for it.
+//
+// So the bit is not a property of a drawn record at all. It is the allocator's
+// free-list mark, read by `LSR : BCC` in both routines and by nothing else, and
+// the two coverage sites that test it during a *walk* are untaken by all 43
+// movies because a record on the list always has it.
+//
+// ## A free needs the caller's permission slip
+//
+//     TAY : LDA $0008 : CMP $000C,Y : BNE out
+//
+// `$0008` is `W_SCHED_CUR_TASK` and `$0C` is `ACTOR_THREAD` — so a record can
+// only be freed by the thread that owns it, and every one of the 63 call sites
+// is inside the actor whose record it is. Passing another actor's record does
+// nothing at all, silently. That is the only ownership check anywhere in the
+// port so far.
+//
+// ## Three exits, three different sources of N and Z
+//
+// `$80:BE41` is the clearest example yet of the thing this codebase keeps
+// running into. Its "not yours" exit leaves the `CMP`'s flags; its "already
+// free" exit leaves the `LSR`'s; and its working exit ends `PLD : RTL`, so N
+// and Z come off **the caller's own direct page** — the same shape
+// `apu_play_sfx` has, and the same instruction.
+// The `PHD` is there because the unlink walk uses direct-page addressing with
+// `D` forced to zero (`LDA #$0000 : TCD`), which is how a `JSL` from any page
+// reaches `$7E:0038` and `$7E:0012,X` without knowing where it came from.
+//
+// `$80:BE0C` does the same trick one register over: `PHB : PEA $007E : PLB`
+// costs a stray byte and the exit pulls twice, so its N and Z are the caller's
+// **data bank**. See `port/sprite_cache.h`, which pays for the same idiom.
+#define ACTOR_SLOT_ALLOC_ENTRY 0x80be0cu
+#define ACTOR_SLOT_FREE_ENTRY 0x80be41u
+
+// `LDY #$1ACA` — the last of the 32, where the scan starts.
+#define ACTOR_SLOT_LAST (W_ACTOR_SLOTS + (ACTOR_SLOT_COUNT - 1) * ACTOR_SLOT_STRIDE)
+
+typedef struct {
+  uint16_t a, x, y;
+  bool n, z, c;
+} SlotAllocRegs;
+
+// Take a free record, mark it live and push it onto the head of the list.
+// Returns its offset in A, and **zero is not the failure value** — a full board
+// comes back with A holding the last record's flags word shifted right one, and
+// with carry set where a success clears it. `caller_db` answers for N and Z.
+void actor_slot_alloc(Wram* w, uint16_t caller_db, SlotAllocRegs* out);
+
+typedef struct {
+  uint16_t a, x, y;
+  bool n, z, c;
+} SlotFreeRegs;
+
+// Clear a record and unlink it, if the calling thread owns it. `rec` is A on
+// entry; `caller_d` is the direct page the `JSL` arrived on, which the routine
+// parks and restores and which decides N and Z on the one path that gets that
+// far. `in_x`/`in_y` answer for the two paths that decline.
+void actor_slot_free(Wram* w, uint16_t rec, uint16_t caller_d, uint16_t in_x,
+                     uint16_t in_y, SlotFreeRegs* out);
 
 #endif  // PORT_OAM_H

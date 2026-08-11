@@ -278,6 +278,10 @@ typedef struct {
   // read and no spin happens. It is the uploader's 23,820 back-to-back commands
   // that need the wait to be real.
   //
+  // The uploader itself, `$80:CC7C`, would have needed this too — and does not
+  // appear in the registry at all, because a call that runs for eight frames
+  // cannot be verified either. See the note where its entry would be.
+  //
   // And this is a statement about the harness, not about Phase 4. The finished
   // port owns its own main loop and can spin on `$2143` exactly as the ROM does.
   // What it cannot do is spin while impersonating one instruction inside somebody

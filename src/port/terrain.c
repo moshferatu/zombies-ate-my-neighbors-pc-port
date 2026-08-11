@@ -291,3 +291,110 @@ void tile_attrs_at_pixel(const Wram* w, uint16_t x, uint16_t y,
   tile_attrs_at_tile(w, (uint16_t)(x >> TILE_ATTRS_PIXEL_SHIFT),
                      (uint16_t)(y >> TILE_ATTRS_PIXEL_SHIFT), out);
 }
+
+// ---------------------------------------------------------------------------
+// $80:AF2C / $80:AF66 / $80:B03B / $80:B05F — the rest of the attribute word
+// ---------------------------------------------------------------------------
+
+// The opening these four share with `terrain_footprint`, minus the origin bias
+// two of them do not apply: `LSR A : LSR A : AND #$FFFE` on each axis, the row
+// through `W_TILE_ROW_BASE`, and the 24-bit pointer left behind in `$28`.
+//
+// Returns the tilemap offset and, through `row`, the value `TAX` puts in X.
+static uint16_t attr_map_ptr(Wram* w, uint16_t x, uint16_t y, uint16_t* row) {
+  *row = (uint16_t)((y >> TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
+  uint16_t col = (uint16_t)((x >> TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
+  uint16_t map = (uint16_t)(col + wram_r16(w, W_TILE_ROW_BASE + *row));
+  wram_w16(w, TERRAIN_DP_MAP, map);
+  wram_w16(w, TERRAIN_DP_MAP_BANK, TERRAIN_MAP_BANK);
+  return map;
+}
+
+// One probe at the map offset already in `$28`, which is `probe_attrs` with the
+// Y register published: `AND #$03FF : ASL A : TAY` is what these leave behind.
+static uint16_t attr_one(const Wram* w, uint16_t map, TerrainRegs* out) {
+  uint16_t tile = 0;
+  uint16_t attrs = probe_attrs(w, map, 0, &tile);
+  out->y = tile;
+  return attrs;
+}
+
+void terrain_point_bit2(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out) {
+  // $80:AF2D. A real `JSL`, and the only thing in this family that calls
+  // anything. Its exit leaves A its own and never touches X or Y, so a point
+  // rejected here comes back with the caller's own arguments in both.
+  BoundsRegs bounds;
+  terrain_out_of_bounds(w, x, y, &bounds);
+  if (bounds.c) {
+    PORT_COVER(bit2_outside);
+    out->a = bounds.a;
+    out->x = x;
+    out->y = y;
+    out->blocked = true;
+    return;
+  }
+
+  uint16_t map = attr_map_ptr(w, x, y, &out->x);
+  // `BIT #$0004` does not disturb A, so what comes back is the whole word.
+  out->a = attr_one(w, map, out);
+  out->blocked = (out->a & TERRAIN_MASK_BIT2) != 0;
+  PORT_COVER_IF(out->blocked, bit2_hit, bit2_clear);
+}
+
+void terrain_point_bit8(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out) {
+  uint16_t map = attr_map_ptr(w, x, y, &out->x);
+  uint16_t attrs = attr_one(w, map, out);
+  // `AND #$0100`, so A is the mask or it is zero.
+  out->a = (uint16_t)(attrs & TERRAIN_MASK_BIT8);
+  out->blocked = out->a != 0;
+  PORT_COVER_IF(out->blocked, bit8_hit, bit8_clear);
+}
+
+void terrain_tile_bit3(Wram* w, uint16_t col, uint16_t row, TerrainRegs* out) {
+  // $80:B040. The one that reaches for the shared leaf instead of inlining it —
+  // and inherits its `PLX`, so X comes back as the doubled column rather than
+  // as the argument.
+  TilemapAddrRegs addr;
+  tilemap_tile_addr(w, col, row, &addr);
+  out->x = addr.x;
+
+  wram_w16(w, TERRAIN_DP_MAP, addr.a);
+  wram_w16(w, TERRAIN_DP_MAP_BANK, TERRAIN_MAP_BANK);
+
+  uint16_t attrs = attr_one(w, addr.a, out);
+  out->a = (uint16_t)(attrs & TERRAIN_MASK_BIT3);
+  out->blocked = out->a != 0;
+  PORT_COVER_IF(out->blocked, bit3_hit, bit3_clear);
+}
+
+void terrain_footprint_bit12(Wram* w, uint16_t x, uint16_t y,
+                             TerrainRegs* out) {
+  // $80:AF67-AF7B. `terrain_footprint`'s opening exactly, bias and all.
+  uint16_t row = (uint16_t)(((uint16_t)(y - TERRAIN_ORIGIN_Y) >>
+                             TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
+  uint16_t col = (uint16_t)(((uint16_t)(x - TERRAIN_ORIGIN_X) >>
+                             TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
+  uint16_t map = (uint16_t)(col + wram_r16(w, W_TILE_ROW_BASE + row));
+
+  wram_w16(w, TERRAIN_DP_MAP, map);
+  wram_w16(w, TERRAIN_DP_MAP_BANK, TERRAIN_MAP_BANK);
+
+  out->x = row;
+
+  // The loop runs the other way round from every other one here: a probe
+  // *without* the bit is what ends it, and getting to the end is the answer.
+  for (int i = 0; i < TERRAIN_PROBE_COUNT; i++) {
+    uint16_t tile = 0;
+    uint16_t attrs = probe_attrs(w, map, probe_offset(w, i), &tile);
+    out->y = tile;
+    out->a = (uint16_t)(attrs & TERRAIN_MASK_BIT12);
+    if (out->a == 0) {
+      PORT_COVER_IF(i < TERRAIN_PROBE_COLS, bit12_gap_upper, bit12_gap_lower);
+      out->blocked = true;
+      return;
+    }
+  }
+  // $80:AFF5. All six carried it, and A is still `$1000` from the last `AND`.
+  PORT_COVER(bit12_all);
+  out->blocked = false;
+}

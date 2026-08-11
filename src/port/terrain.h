@@ -283,4 +283,144 @@ void tile_attrs_at_tile(const Wram* w, uint16_t col, uint16_t row,
 void tile_attrs_at_pixel(const Wram* w, uint16_t x, uint16_t y,
                          TileAttrsRegs* out);
 
+// --- The rest of the attribute word ----------------------------------------
+//
+// Four more routines, out of the five that fill the 359 bytes between
+// `terrain_blocked_enemy` and `actor_gap` (the fifth, `$80:AFFB`, is not about
+// terrain at all and is in `port/step.h` with the other one like it). These
+// four are the same question about four more bits:
+//
+//   $80:AF2C  terrain_point_bit2       0.17%  one tile, bit 2, bounds first
+//   $80:AF66  terrain_footprint_bit12    --   the 3x2 footprint, bit 12, all six
+//   $80:B03B  terrain_tile_bit3          --   one tile from tile coordinates, bit 3
+//   $80:B05F  terrain_point_bit8       0.05%  one tile, bit 8
+//
+// `level.h` has said since Phase 2 that the rest of the attribute word is
+// unidentified, and has named two more masks since: this is where the other two
+// come from, and what four of the sixteen bits are worth measuring.
+//
+// ## What the four bits cost the level designer
+//
+// Counted straight out of the ROM, over all 55 levels' attribute tables (which
+// are five distinct tilesets shared between them, so a tile is counted once per
+// level that uses it — the same denominator the bit 0/bit 1 table in
+// `docs/cosim.md` uses):
+//
+// | bit | mask | tiles | of 28,160 | also bit 0 | also bit 1 | neither |
+// | --- | --- | --- | --- | --- | --- | --- |
+// | 0 | `$0001` | 15,166 | 53.9% | — | 14,950 | — |
+// | 1 | `$0002` | 15,469 | 54.9% | 14,950 | — | — |
+// | **2** | `$0004` | **5,216** | 18.5% | 4,980 | 4,989 | **221** |
+// | **3** | `$0008` | **410** | 1.5% | 223 | 217 | **187** |
+// | **8** | `$0100` | **465** | 1.7% | 429 | 393 | **36** |
+// | **12** | `$1000` | **2,098** | 7.5% | 48 | 39 | **2,050** |
+//
+// Three shapes fall out of that, and they match what the routines do with the
+// answer.
+//
+// **Bits 2 and 8 mark terrain that is already blocking.** 95% of bit 2 and 92%
+// of bit 8 also carry bit 0 — so a caller testing one of them is refining a
+// *no* it would have got anyway, asking not "may I stand here" but "what kind
+// of wall is this".
+//
+// **Bit 12 is the opposite.** 2,050 of its 2,098 tiles carry neither blocking
+// bit, so it marks terrain that everything can walk on and that is nonetheless
+// worth a mask of its own. `$80:AF66` is the routine that reads it, and it is
+// the only test in this file whose answer is inverted: carry *clear* means all
+// six probes carried the bit. That is a mover confined to a surface rather than
+// kept off one, and `$82:A088` — a step validator built to the same plan as
+// `$80:E4C1`, proposal and two axes and all — puts its candidate through this
+// and `terrain_out_of_bounds` and nothing else.
+//
+// **Bit 3 is neither.** Its 410 tiles are barely correlated with blocking at
+// all (54%), and its reader is not a movement test: `$80:E861` asks about the
+// tile a mover has *already* stepped onto, and a set bit arms a state change.
+// The bit says something happens here, not that something may or may not pass.
+//
+// All four bits appear in every one of the five tilesets (bit 12 in four of
+// them, bit 8 in four), in tens rather than hundreds of tiles. Whatever they
+// are, they are not a property of one level's theme.
+#define TERRAIN_MASK_BIT2 0x0004
+#define TERRAIN_MASK_BIT3 0x0008
+#define TERRAIN_MASK_BIT8 0x0100
+#define TERRAIN_MASK_BIT12 0x1000
+
+#define TERRAIN_POINT_BIT2_ENTRY 0x80af2cu
+#define TERRAIN_FOOTPRINT_BIT12_ENTRY 0x80af66u
+#define TERRAIN_TILE_BIT3_ENTRY 0x80b03bu
+#define TERRAIN_POINT_BIT8_ENTRY 0x80b05fu
+//
+// ## Three of them are `tile_attrs_at_pixel` written out longhand
+//
+// `$80:AF2C` and `$80:B05F` shift the point by two, mask the low bit off, add
+// `W_TILE_ROW_BASE`, build the pointer in `$28`, take ten bits of the tilemap
+// entry and index `[$BA]` — which is `tile_attrs_at_pixel` to the byte, and
+// `$80:ADC8` is 356 bytes back up the same bank. `$80:B03B` gets halfway there:
+// it calls `tilemap_tile_addr` like `$80:ADC8` does, and then inlines the rest.
+//
+// **They are not quite interchangeable, though**, and the difference is not in
+// the answer. `tile_attrs_at_pixel` goes through `PEA $007F : PLB` and leaves no
+// trace; these three write `$28`/`$2A` and leave the pointer behind, so a port
+// that called the tidy leaf instead would agree about the attribute word and
+// differ about four bytes of direct page. Two of them also skip the origin bias
+// the footprint tests apply, so they and `terrain_blocked` do not agree about
+// which tile a pixel is in — see the note under `$80:ADC8` above, which is the
+// same distinction for the same reason.
+//
+// ## `BIT` keeps the word; `AND` does not
+//
+// `$80:AF2C` tests with `BIT #$0004`, which does not disturb A, so it returns
+// the **whole attribute word** and a caller could pick more bits out of it. The
+// other three test with `AND`, so A comes back as the mask or as zero and
+// carries nothing the carry flag did not already say. Nobody uses either fact;
+// the port reproduces both because a shim that publishes A has to.
+//
+// All four open `PHD` and close `PLD : RTL`, so N and Z are the caller's direct
+// page — the trap `actor_nearest` cost four movies to learn, and by now the
+// default assumption in this file.
+
+// `$80:AF2C`. **Carry set means blocked**, and there are two ways to be: the
+// point is off the map, or its tile carries bit 2. The bounds test comes first
+// and is a real `JSL $80B422`, so on that exit A is whatever
+// `terrain_out_of_bounds` left in it and X and Y are still the caller's — the
+// routine has not reached its own `PHA` yet.
+//
+// Nineteen call sites, all of them in banks $81, $82 and $83, which is to say
+// all of them actor bodies. 18,497 calls over the eleven profile movies, and it
+// is the only one of the four that is hot.
+void terrain_point_bit2(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out);
+
+// `$80:AF66`. **Carry clear means all six tiles carry bit 12** — the inverted
+// one. The footprint is `terrain_blocked`'s exactly: the same `(9, 8)` origin,
+// the same three-across two-down box, the same six offsets in the same order.
+// A comes back as `$1000` on the clear path and `$0000` on the blocked one,
+// because `AND` is the test.
+//
+// Six call sites: `$81:A832`, three in `$82:A088`'s two-axis step validator,
+// and `$82:E963` / `$82:EC1C`. Twenty-six calls in the whole profile corpus,
+// all of them on `level49-corner`.
+void terrain_footprint_bit12(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out);
+
+// `$80:B03B`. **Carry set means the tile carries bit 3.** The only one of the
+// four whose caller has already done the pixel-to-tile division: `$80:E861`
+// passes `$30 >> 3` and `$32 >> 3`, and `$80:F41A` passes tile coordinates it
+// built out of a table. X comes back **doubled**, because `tilemap_tile_addr`'s
+// `PLX` hands back the shifted column rather than restoring the argument.
+//
+// `$80:E861` runs on the tile a mover has just stepped onto, and a set bit 3
+// arms a ten-frame countdown that ends in a hundred-pixel jump — see
+// `partner_near` in `port/step.h`, which is the other end of it. Three movies
+// in the corpus reach this: `level5`, `level21` and `level21-spin`, 426 calls
+// between them, of which three get as far as the jump.
+void terrain_tile_bit3(Wram* w, uint16_t col, uint16_t row, TerrainRegs* out);
+
+// `$80:B05F`. **Carry set means the tile carries bit 8.** Four call sites, all
+// in bank $80's movement code, and one of them — `$80:E543` — is a step
+// validator that treats carry *set* as permission to move and takes a different
+// path entirely when the bit is absent. So bit 8, like bit 12, is a surface
+// something is confined to; unlike bit 12 it is terrain that blocks everyone
+// else, which makes it the more interesting of the two and the one this port
+// can say least about.
+void terrain_point_bit8(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out);
+
 #endif  // PORT_TERRAIN_H

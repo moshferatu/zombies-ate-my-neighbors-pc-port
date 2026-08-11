@@ -49,6 +49,50 @@ int vbl_queue_b_add(Wram* w, uint16_t addr, uint16_t bank) {
                        0x1c, addr, bank);
 }
 
+void vbl_queue_flags(const Wram* w, uint32_t count_at, uint16_t cap, bool added,
+                     VblQueueFlags* out) {
+  const uint16_t count = wram_r16(w, count_at);
+  if (added) {
+    // The `INC` of the count is the last thing to run, and it leaves carry
+    // alone — which means clear, from the `CPY` that let the job through.
+    out->n = (count & 0x8000u) != 0;
+    out->z = count == 0;
+    out->c = false;
+    return;
+  }
+  // Refused: N and Z are what the `CPY #$0008` that refused produced.
+  const uint16_t diff = (uint16_t)(count - cap);
+  out->n = (diff & 0x8000u) != 0;
+  out->z = diff == 0;
+  out->c = true;
+}
+
+// ---------------------------------------------------------------------------
+// $80:9D5B  spawn_has_room
+// ---------------------------------------------------------------------------
+
+// One `CMP`, with its three flags. Unsigned, so `BCS` is "at or above".
+static void spawn_cmp(SpawnRoomRegs* out, uint16_t v, uint16_t limit) {
+  uint16_t r = (uint16_t)(v - limit);
+  out->a = v;
+  out->n = (r & 0x8000u) != 0;
+  out->z = r == 0;
+  out->c = v >= limit;
+}
+
+void spawn_has_room(const Wram* w, SpawnRoomRegs* out) {
+  spawn_cmp(out, wram_r16(w, W_SPAWN_LOAD), SPAWN_LOAD_MAX);
+  if (out->c) {
+    PORT_COVER(spawn_load_full);
+    return;
+  }
+  PORT_COVER(spawn_load_ok);
+  // `LDA $0006 : CMP #$0012` — and this compare overwrites all three flags, so
+  // the first one is invisible to a caller unless it refused.
+  spawn_cmp(out, wram_r16(w, W_THREAD_COUNT), SPAWN_THREAD_MAX);
+  PORT_COVER_IF(out->c, spawn_threads_full, spawn_room);
+}
+
 // ---------------------------------------------------------------------------
 // $80:825E  thread_spawn
 // ---------------------------------------------------------------------------

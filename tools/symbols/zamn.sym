@@ -197,8 +197,16 @@ $80:BC7F  actor_depth_sort     # one bubble pass over the display list
 $80:BCE2  actor_cull           # display list -> visible_actors, by camera window
 $80:BD1F  sprite_build_oam     # per-frame pass over visible_actors
 $80:BDF3  actor_list_reset     # clears all 32 records and empties the list
-$80:BE0C  actor_slot_alloc     # takes a free record and links it in at the head
-$80:BE41  actor_slot_free      # A = record; unlinks it and marks it free
+$80:BE0C  actor_slot_alloc     # takes a free record and links it in at the head.
+                               # Scans the 32 downwards from $7E:1ACA for one with
+                               # ACTOR_ACTIVE clear and sets its flags to $0001,
+                               # which is the only thing that ever sets that bit.
+                               # 80 call sites
+$80:BE41  actor_slot_free      # A = record; unlinks it and marks it free -- but
+                               # only if ACTOR_THREAD matches sched_cur_task,
+                               # which is the game's one ownership check. Zeroes
+                               # the flags word, so it is what clears
+                               # ACTOR_ACTIVE. 63 call sites
 $80:BE8F  actor_collide_notify # X = one record of a touching pair; tells both handlers
 $80:BEC9  actor_overlap_pass   # pairwise 16x16 overlap test over visible_actors
 $80:F7F7  player_collide       # the player thread's handler; A = the other actor's id
@@ -302,7 +310,11 @@ $80:C7C2  score_slot           # A = side (0 or 2) -> the score slot owning it, 
 $80:C7D9  score_add            # X = BCD award, A's sign = the side; credits that slot
 $80:C819  score_add_table      # 3 x u16: the two slots' adders, then the discard
 $80:C049  sprite_cache_reset   # ages every slot, empties visible_actors, registers the vblank job
-$80:C05A  sprite_cache_init    # A:Y = frame array base; invalidates both maps
+$80:C05A  sprite_cache_init    # A:Y = frame array base; invalidates both maps.
+                               # $FFFF over all 4096 frame_slot words and all 128
+                               # slot_frame words -- 16,900 instructions a call,
+                               # so it outlives the frame it starts in and no
+                               # call of it can be checked per call
 
 # --- Code: level loader and placement parsers --------------------------------
 $80:86A2  level_load           # builds a level from its $9F record
@@ -314,7 +326,10 @@ $008000  block_library        # 128 bytes per block; $80:86A2 writes $AA/$AC at 
 $80:825E  thread_spawn         # start a cooperative thread at Y:A with DP $00.. set
                               # -- parks addr-1 and is resumed by RTL, exactly as a
                               # vblank job is; see THREAD_BODIES in native_share.py
-$81:80EC  actor_list_spawn     # camera-driven spawner for the +$1C actor list
+$81:80EC  actor_list_spawn     # camera-driven spawner for the +$1C actor list;
+                               # picks the eligible point nearest a player, with
+                               # $81:8024, and sleeps a frame at a time on
+                               # $80:9D5B until the census has room
 $80:84B1  thread_handler_body  # a thread, one byte past thread_call_handler's RTL
 $80:ED8C  thread_spawn_table   # 8 records of (addr, bank, param), read at $80:ED74
 $82:C209  boss_thread_table    # 12 records of (addr, bank), read at $82:C0ED/$C131
@@ -367,7 +382,12 @@ $80:CC13  apu_cmd_01_32        # play sound $32
 $80:CC27  apu_cmd_02_32        # play sound $32 on the second channel
 $80:CC3B  apu_play_sfx         # A = sound effect id
 $80:CC6F  apu_select_and_load  # sends command $08, falls into apu_load_set
-$80:CC7C  apu_load_set         # A = data set index -> uploads it byte by byte
+$80:CC7C  apu_load_set         # A = data set index -> uploads it byte by byte:
+                               # {u16 count, count bytes}* $0000 out of the
+                               # table at $80:CCDE, command $0A per block and
+                               # $06 per byte. Written; unverifiable, 104,000
+                               # instructions a call and an NMI in every one
+$80:CCDE  apu_set_table        # pairs of words, {address, bank}, indexed id*4
 $80:CCBF  apu_next_byte        # reads and advances [$18]
 $80:CCC8  apu_send             # X = command -> $2142, A = parameter -> $2141
 
@@ -447,3 +467,96 @@ $81:D210  enemy_d301_alloc     # its display record and the four trail pairs
 $81:D262  enemy_d301_seed      # health $19, verdict $0C = 0, then the handler
 $81:D28C  enemy_d301_body      # the loop that reads the verdict and pays $0200
 $81:D142  enemy_d301_queue_hurt # LDA #$D148 : STA $14 — what a survived hit installs
+
+# --- Code: admission control, trigonometry and the actor frame's last line ----
+$80:9D5B  spawn_has_room       # LDA $00DE : CMP #$008A / LDA $0006 : CMP #$0012.
+                               # Carry set means no. Every spawn in the game
+                               # waits on it, a frame at a time
+$80:9C8C  sin_deg_far          # JSR $9C90 : RTL — the far-callable trampoline
+$80:9C90  sin_deg              # A = degrees 0..359, A = sin x 128 sign-extended.
+                               # $FF at index 90 is a sentinel for +128
+$83:9431  sin_table            # 360 signed bytes, one per whole degree
+$80:9570  wave_hdma_build      # the only caller: an HDMA offset table at
+                               # $7E:8000, four degrees of arc per scanline
+$80:F327  actor_publish_pos    # copies the thread's $30/$32 into its actor
+                               # record; $1E non-zero means a stacked pair, and
+                               # the upper one gets Y+1 and Z-1
+$81:8024  nearest_player_dist  # max(|dx|,|dy|) to the nearer player, $FFFF for
+                               # one who is not there
+
+# --- Code: a step, a wobble and the monster's walk ---------------------------
+$80:950B  wave_thread          # yield 1 : JSR wave_hdma_build, until $70 goes
+                               # negative or either player presses Start
+$81:9BF3  actor_step_bearing   # A = doubled direction; steps 2px per axis on
+                               # three frames in four, each axis vetoed on its
+                               # own by terrain_blocked_enemy, out_of_bounds and
+                               # actor_at_point
+$81:9C62  step_bearing_table   # 9 x {i16 dx, i16 dy}, clockwise from up
+$81:C201  monster_thread       # charges $1C to spawn_load, installs $81:C440
+$81:C16B  monster_anim         # three frames a leg, four legs, nine directions
+                               # of which three draw the mirror of another three
+$81:C1B1  monster_frame_table  # 9 x 4 x u16 metasprite pointers, bank $90
+$81:C00B  monster_place_carried # puts $28's record beside the monster, offset by
+                               # facing; $FFFF means empty-handed
+$81:C026  monster_carry_table  # 9 x {i16 dx, i16 dy}
+$81:BEDA  monster_state_beda   # LDA #$BEE3 : STA $12 : RTS — installs the next
+                               # state, which the thread reaches by a computed
+                               # RTS through $12. 469,168 instructions over the
+                               # corpus were credited to $81:BC3D for want of
+                               # this line
+
+# --- Code: the monster decides where to go, and the big figure's hitboxes ----
+$81:BB75  monster_seek         # one actor_nearest scan asked at two ranges:
+                               # inside $B4 chase it, beyond $D0 ask whether
+                               # either player is still about and give up if not
+$81:BBA4  monster_deliver      # the carrying state's: within 16px of the spawn
+                               # point, free $28 and clear $26; then seek's tail
+$81:BEE3  monster_chase        # the state $81:BEDA installs, entered by the
+                               # thread's computed RTS. 439,308 instructions
+                               # over six movies and nothing calls it
+$81:B9F9  monster_setup        # writes the spawn point to $0A/$0C *and* to
+                               # $2E/$30, which is what monster_deliver measures
+                               # its way home against
+$82:9265  boss_place_parts     # drags the four records at $24..$2A to boss_x/
+                               # boss_y plus a fixed offset, mirrored by $36
+$82:92C6  boss_parts_table     # 2 x 4 x i16 X offsets, east then west
+$82:92D6  boss_stomp           # a 56x32 box six pixels left of the figure,
+                               # handed to actor_notify_box with id $0A, every
+                               # frame the thread runs
+
+# --- Code: the status panel, and the shadow tilemap it draws into -------------
+$80:C07F  hud_refresh          # JSL entry: alternates the two panels on the low
+                               # bit of the caller's $24, then queues the upload
+                               # if any of the six tests fired
+$80:C0A3  hud_panel1           # player 1's six change tests. Also reached from
+$80:C139  hud_panel2           # $80:C1D1/$C1F1/$C1F5/$C215, the transitions
+$80:C379  hud_bar              # ten tiles of health bar out of $C3DE, ORed with
+                               # the palette the caller left in $1E
+$80:C3DE  hud_bar_table        # 11 x 10 x u16, health 0..10
+$80:C4EC  hud_digit            # one digit; $1E is rotated, not set, so the word
+                               # is the number's whole history
+$80:C505  hud_digits2          # dead: no JSR, JMP, JSL or JML anywhere reaches
+                               # it
+$80:C519  hud_digits8          # the score: four bytes top-down, two digits each
+$80:C553  hud_digits3          # an inventory count: three digits out of a word
+$80:C580  hud_blank            # six tiles cleared, two rows of three
+$80:C59C  hud_health           # health -> hud_bar; palette by score slot,
+                               # column by side
+$80:C5B6  hud_health_attr      # 2 x u16 palettes, by score slot
+$80:C5BA  hud_health_column    # 2 x u16 tilemap columns, by side
+$80:C5BE  hud_health_at        # 2 x u16: the *addresses* $1CB8 and $1CBA
+$80:C5C2  hud_weapon_icon      # 2x2 icon; its "nothing selected" half at $C5F6
+                               # is unreachable from either caller
+$80:C612  hud_weapon_column    # 2 x u16 columns, by side
+$80:C616  hud_weapon_tables    # 2 pointers, by score slot: $C61A and $C640,
+                               # which differ only in their first entry
+$80:C666  hud_item_icon        # the same, and its dead half at $C697 is an RTS
+$80:C698  hud_item_column      # 2 x u16 columns, by side
+$80:C69C  hud_item_tables      # 2 pointers: $C6C2 and $C6A0, byte-identical
+$80:C6E4  hud_adapt            # twelve one-line adapters run to $80:C7BF, two
+                               # per field per player
+$7E:5F36  hud_tilemap          # 4 rows of 32 words; a vblank job uploads it
+$7E:6036  hud_shadow           # 11 words of change detection, laid out by field
+                               # and then by player
+$7E:1E7A  hud_dirty            # how many tests fired; read only as a flag
+$7E:1E88  hud_panel_on         # 2 x u16, by side: is this player in the game

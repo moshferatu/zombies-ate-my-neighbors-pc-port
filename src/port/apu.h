@@ -55,6 +55,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "assets/rom.h"
 #include "port/wram.h"
 
 // The three ports `$80:CCC8` uses, named here as well as in `assets/music.h`
@@ -139,5 +140,143 @@ typedef struct {
 // flags this returns. It is the first ported routine whose output depends on a
 // register the caller never thought it was passing.
 void apu_play_sfx(Wram* w, uint16_t id, uint16_t caller_dp, ApuSfxRegs* out);
+
+// --- $80:CCBF  apu_next_byte ------------------------------------------------
+//
+// Five instructions, and 255,859 calls over the eleven profiled movies — third
+// in the registry behind `sprite_frame_tile` (577,573) and `apu_send`
+// (257,114), and ahead of `thread_yield` (240,307). That it lands within 1,255
+// calls of `apu_send` is not a coincidence but the shape of the caller: the
+// data-set uploader `$80:CC7C` points `$18`/`$19`/`$1A` at a table entry in ROM
+// and then does nothing but fetch a byte through here and hand it straight to
+// `apu_send`, two bytes of length and then that many bytes of payload.
+//
+// It is here rather than in `port/lzss.h` next to the other two stream readers
+// because it is not a decoder: there is no window, no control byte and no end
+// marker. It is a pointer with an increment, and the only thing about it that
+// is worth writing down is that the increment is done **eight bits at a time**.
+//
+//     LDA [$18] : INC $18 : BNE +2 : INC $19
+//
+// `$80:CC90  SEP #$30` is still in force, so `INC $18` increments the *byte* at
+// `$18` and the `BNE` is the carry into `$19` written out by hand. A 16-bit
+// `INC $18` would do the same arithmetic and would be one instruction shorter,
+// and the ROM does not use one — which matters, because it means `$1A` is never
+// touched. A data set that runs off the end of its bank wraps to `$xx:0000`
+// rather than crossing into the next one, exactly as `rom_ptr` describes.
+//
+// The flags come out of whichever `INC` ran last, so **N and Z describe the
+// cursor, not the byte**: 255 calls in every 256 return N from bit 7 of the new
+// low byte with Z clear, and the 256th returns the high byte's. Nothing reads
+// them — the caller's next instruction is `STA $1C` — but an unclaimed output
+// is an unchecked output, and at about 23,900 calls a movie the wrap comes
+// round some ninety times in every one of them.
+#define APU_NEXT_BYTE_ENTRY 0x80ccbfu
+
+// What the routine leaves behind. `a` is the byte in the low half with the
+// caller's own high byte still above it, the same preservation `apu_send`
+// documents at length: `SEP #$20` hides the high byte rather than clearing it,
+// and an 8-bit `LDA` never writes it.
+typedef struct {
+  uint16_t a;
+  bool n, z;
+} ApuNextRegs;
+
+// Fetch one byte from the cursor and advance it. `out` may be NULL. `in_a` is
+// the accumulator on entry, and is wanted only for the high byte it carries
+// through — the routine's answer is in the low one.
+void apu_next_byte(Wram* w, const Rom* rom, uint16_t in_a, ApuNextRegs* out);
+
+// --- $80:CC7C  apu_load_set -------------------------------------------------
+//
+// **The caller of the other three, and the reason two of them are in the
+// registry at all.** `apu_next_byte`'s 255,859 calls and `apu_send`'s 257,114
+// are almost entirely this routine's: it points the cursor at a table entry and
+// then does nothing but fetch a byte and hand it to the SPC, over and over, for
+// as long as the set lasts.
+//
+// ## The format is two nested lengths and no header
+//
+//     set := block* $0000
+//     block := u16 count, count bytes
+//
+// A count of zero ends the set — there is no size in front of it and no
+// terminator beyond that zero — and each block is announced with command `$0A`
+// before its bytes go out one at a time under command `$06`. Twelve calls over
+// six movies, about 23,800 commands each, which is what makes this a 104,000
+// instruction call and everything else in this file a leaf.
+//
+// The block boundary is not a length the SPC is told. `$0A` is sent with a
+// parameter that is `$1C ORA $1D` — **the two count bytes ORed together**, not
+// the count and not either half of it. Any nonzero count produces a nonzero
+// parameter and that is all the value can mean; it is the accumulator the `BNE`
+// three instructions earlier happened to leave, spent rather than computed.
+// The port sends the same byte because the SPC is the other side of a hook and
+// the port does not get to decide what it makes of it.
+//
+// ## Everything is eight bits wide, including the loop counter
+//
+// `$80:CC90  SEP #$30` covers the whole body, so `W_APU_BLOCK_LEFT` is a 16-bit
+// count decremented as two bytes with the borrow spelled out, and the four
+// pointer bytes at `W_APU_SRC` behave as `apu_next_byte` documents. Only the
+// nine instructions before that `SEP` are wide, and all they do is index the
+// table:
+//
+//     AND #$00FF : ASL : ASL : TAX
+//     LDA $80CCE0,X : STA $1A     the bank, high byte and all
+//     LDA $80CCDE,X : STA $18     the address
+//
+// so a set id is masked to a byte and scaled by four, and the table is pairs of
+// words at `$80:CCDE`. **`$1A` is written 16 bits wide and read 8**, which is
+// where the junk high byte `apu_send` preserves in A comes from — see the note
+// on `ApuSendRegs`.
+//
+// ## It is written and it is not checked
+//
+// **This is the second routine in the port that the harness structurally cannot
+// verify**, after `sprite_cache_init`, and for the same reason: 104,000
+// instructions is roughly eight frames, and an NMI lands inside every call.
+// Measured, not assumed — 5 calls and 5 interrupted on `level25-lane`, 3 and 3
+// on `boot.zmv`, where the load happens with the screen off and before the
+// title. There is no registry entry and no shim; `tools/native_share.py` has
+// the address in `BLOCKED` so the ranking stops offering it.
+//
+// It would have needed `verify_only` as well if it could be registered, because
+// it spins: every one of those 23,800 commands goes through `apu_send`'s
+// `CPY $2143 : BNE`, so the routine's duration is the SPC700's to decide and
+// not the port's. Two independent reasons, and either one alone is enough.
+//
+// What the code below is *for*, then, is Phase 4 rather than the harness. It is
+// the bookkeeping — the cursor, the counter, the order of the bytes — written
+// out where the disassembly can be checked against it by eye, and the day the
+// port owns its own main loop it is the routine that loads the music.
+#define APU_LOAD_SET_ENTRY 0x80cc7cu
+
+// Pairs of words: address then bank, indexed by `id * 4`.
+#define APU_SET_TABLE 0x80ccdeu
+// `LDX #$0A` before a block, `LDX #$06` for each byte in it.
+#define APU_CMD_BLOCK 0x0a
+#define APU_CMD_BYTE 0x06
+
+// What it leaves. A's high byte is the junk from the table read that `SEP #$20`
+// hid and nothing since has written; its low byte is the zero count that ended
+// the set. X is `APU_CMD_BYTE` on any set that had a block in it and the low
+// byte of `id * 4` on one that did not. Y is `W_APU_SEQ` after the last command,
+// one byte wide.
+//
+// N and Z are the final `ORA $1C`'s, so they are always clear and set — the
+// routine cannot return any other way. Carry is the last `apu_send`'s, which is
+// its wait's, so it is set unless no command was ever sent; on that path it is
+// whatever the caller arrived with, and so is Y with its high byte cleared.
+typedef struct {
+  uint16_t a, x, y;
+  bool n, z, c;
+} ApuLoadRegs;
+
+// Upload sound data set `id`. `in_y` and `in_c` are wanted only for a set whose
+// very first count is zero, which sends nothing and leaves both alone. `out`
+// may be NULL.
+void apu_load_set(Wram* w, const Rom* rom, uint16_t id, uint16_t in_y,
+                  bool in_c, ApuLoadRegs* out);
 
 #endif

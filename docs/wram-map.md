@@ -64,6 +64,9 @@ The game's hot globals. 4.5 M reads / 0.95 M writes in 2400 frames.
 | `$0096` | word | `sprite_attr_and` | mask applied to each piece's attribute word |
 | `$009E` | word | `sprite_lru_slot` | ×2; the cache slot `$80:B9D6` evicts next |
 | `$00A0` | word | `sprite_tick` | `sched_tick` snapshot, stamped into `sprite_slot_tick` |
+| `$0018`,`$001A` | **bytes** | `apu_src` / `apu_src_bank` | the data-set cursor `$80:CCBF` walks; low and high advanced separately, bank never touched |
+| `$001C` | **bytes** | `apu_block_left` | `$80:CC7C`'s block counter, low then high — a 16-bit count decremented **a byte at a time with the borrow written out by hand**, `LDA $1C : BNE +2 : DEC $1D : + DEC $1C`, because the whole routine runs under one `SEP #$30`. Same reason `$1A`'s high byte is never touched |
+| `$00DE` | word | `spawn_load` | a **weighted census of what is alive**, and the thing `$80:9D5B` refuses a spawn on at 138. Zeroed once at level init (`$80:867B`); **137 read-modify-write sites** — 6 in bank `$80`, 74 in `$81`, 22 in `$82`, 35 in `$83` — each charging its own actor's weight (`+$01`, `+$14`, `+$15`, `+$1C`…) on the way in and refunding it on the way out, in 21 distinct weights from `$01` to `$28` whose charge and refund histograms match value for value to within one site each |
 
 `$0086`-`$00A0` are among the busiest words in WRAM; all of them are scratch for
 the sprite build described in `docs/asset-formats.md` → *Sprite graphics*, and
@@ -204,6 +207,27 @@ vblank.
 That last pair is what the region report shows as the 8480-byte block
 bulk-written by `$80:C06B`: `$80:C05A` fills both with `$FFFF` at boot.
 
+Two things about that fill are worth having written down. Its first loop runs
+`$1001` times and not `$1000` — `BPL` rather than `BNE`, so it clears `$2002`
+bytes and steps one word into `slot_frame`, which the second loop rewrites four
+instructions later. And at 16,900 instructions a call it is the longest
+straight-line stretch of work in the game: `zamn_cosim` cannot check it per
+call at all, because a call outlives the frame it starts in and an NMI always
+lands inside it. See `docs/cosim.md`.
+
+## The HDMA wave table
+
+| Address | Size | Contents |
+| --- | --- | --- |
+| `$7E:8000` | ≤`$1C2` | `wave_hdma` — HDMA channel 6's table, rebuilt every frame by `$80:9570` |
+
+The one address in bank `$7E` the port names that is not a variable: a header
+byte, 120 sixteen-bit parameters, a second header, and a `$00` to stop. Four
+degrees of arc per scanline out of `sin_table`, a phase that advances a degree
+a frame, and a terminator that walks two bytes closer every time the bottom of
+the wave lands exactly on the axis. Nothing else in WRAM is within `$3D00` of
+it.
+
 ## Sprite display list
 
 **32 records of 20 bytes at `$7E:185E`**, chained into a singly-linked list
@@ -243,7 +267,9 @@ an offset from.
 | Range | Size | Contents |
 | --- | --- | --- |
 | `$7E:4B28-$7E:5327` | 2048 B | tilemap staging — DMA'd to VRAM via `$80:9EB2` |
-| `$7E:5F36-$7E:6935` | 2560 B | *unidentified*; written by `$80:ADAC`, `$80:9A74`, `$82:AE00` |
+| `$7E:5F36-$7E:6035` | 256 B | `hud_tilemap` — the status panel, 4 rows of 32 tiles |
+| `$7E:6036-$7E:6051` | 28 B | `hud_shadow` — 11 words of change detection under it |
+| `$7E:6052-$7E:6935` | 2276 B | *unidentified*; written by `$80:ADAC`, `$80:9A74`, `$82:AE00` |
 | `$7E:6F00-$7E:7EFF` | 4096 B | `lzss_ring` — the decompressor's sliding window |
 | `$7E:8000-$7F:9A85` | 72 KB | decompression output / level data |
 
@@ -518,6 +544,26 @@ and nothing about it can be proved; see `docs/cosim.md` → *The last decline*.
 Two awards fell out of the diff and are worth having written down: a victim
 rescued is `$1000` and an enemy killed is `$0100`, both BCD, both constants in
 their callers (`$83:A1D5` and `$81:8727`).
+
+## The status panel — `$7E:1E88`, `$7E:1E7A`, and the two buffers
+
+`$7E:1E88` and `$7E:1E8A` say whether each player's half of the HUD is drawn at
+all: `$80:C0A3` and `$80:C139` both open by reading theirs and returning if it is
+zero, so a one-player game refreshes one panel and skips the other. Indexed by
+side, like every per-player word above it.
+
+`$7E:1E7A` is a dirty count. Each of the twelve change tests that fires does
+`INC $1E7A`, and `$80:C07F` turns a nonzero one into a queued vblank job and
+resets it. Nothing reads the magnitude — `INC` was simply the shortest way to
+write "yes".
+
+The two buffers under *Large buffers* are what all of that draws into.
+`hud_tilemap` at `$7E:5F36` is four rows of 32 tiles, the panel's own copy of
+what will be uploaded to VRAM; `hud_shadow` at `$7E:6036` is eleven words of
+last-seen values, laid out **by field and then by player** — health p1, health
+p2, weapon p1, weapon p2, and so on — so every one of them is `base + side` at
+the same stride the live words use. The score is the exception at two words per
+player. `docs/cosim.md` → *The panel that is six comparisons* has the rest.
 
 ## What is still missing
 

@@ -77,9 +77,32 @@
 // other. 9,903 of the 15,000-odd blocking tiles carry both.
 #define LEVEL_ATTR_SOLID_ENEMY 0x0002
 
-// The rest of the word is still unidentified, though two more masks have been
-// seen tested by the same footprint loop copied again: `$80:AF2C` tests bit 2
-// and `$80:AF66` tests bit 12. Neither is ported.
+// Four more bits are read by four routines in one stretch of bank $80, and all
+// four are now ported — see `port/terrain.h`, which has the counts and the call
+// sites. They fall into three kinds.
+//
+// **Bits 2 and 8 refine a blocking tile.** 4,980 of bit 2's 5,216 tiles also
+// carry bit 0, and so do 429 of bit 8's 465, so a caller testing one of them is
+// mostly asking what kind of wall it has run into rather than whether it has.
+#define LEVEL_ATTR_BIT2 0x0004
+#define LEVEL_ATTR_BIT8 0x0100
+
+// **Bit 3 is not terrain at all, it is a trigger.** Only 223 of its 410 tiles
+// block anything, and its reader — `$80:B03B`, called from `$80:E861` on the
+// tile a mover has just stepped onto — arms a ten-frame countdown ending in a
+// hundred-pixel jump. `partner_near` in `port/step.h` is the other end of it.
+#define LEVEL_ATTR_BIT3 0x0008
+
+// **Bit 12 is the opposite of bits 2 and 8.** 2,050 of its 2,098 tiles carry
+// neither blocking bit, and the routine that reads it — `$80:AF66` — is the
+// only terrain test in the game whose answer is inverted: it refuses a position
+// unless *all six* tiles of the footprint carry the bit. That is a surface
+// something is confined to rather than kept off, and `$82:A088` is a step
+// validator built around it the way `$80:E4C1` is built around bit 0.
+#define LEVEL_ATTR_BIT12 0x1000
+
+// The remaining nine bits are still unidentified. All of them are set on
+// somewhere between 55 and 1,429 tiles, so none of them is dead.
 
 // The 54-byte level record. Offsets are the ones `$80:86A2` indexes.
 typedef struct {

@@ -87,3 +87,26 @@ uint16_t sprite_frame_tile(Wram* w, uint16_t frame) {
 
   return sprite_slot_tile(sx / 2);
 }
+
+void sprite_cache_init(Wram* w, uint16_t base, uint16_t bank, uint16_t caller_db,
+                       SpriteCacheInitRegs* out) {
+  // `STA $007E : STY $0080`, absolute rather than direct-page, so these land on
+  // the two globals whatever page the `JSL` arrived on.
+  wram_w16(w, W_SPRITE_FRAME_BASE, base);
+  wram_w16(w, W_SPRITE_FRAME_BANK, bank);
+
+  // `<=`, not `<`: see the note in the header about the extra word.
+  for (uint32_t off = 0; off <= SPRITE_FRAME_COUNT * 2; off += 2)
+    wram_w16(w, W_FRAME_SLOT + off, SPRITE_CACHE_EMPTY);
+  for (uint32_t off = 0; off <= (SPRITE_SLOTS - 1) * 2; off += 2)
+    wram_w16(w, W_SLOT_FRAME + off, SPRITE_CACHE_EMPTY);
+
+  if (!out) return;
+  out->a = SPRITE_CACHE_EMPTY;  // still the `LDA #$FFFF` both loops stored
+  // Both loops end the same way, on the `DEX : DEX` that takes X below zero.
+  out->x = 0xfffe;
+  out->y = bank;  // `STY` reads Y and nothing writes it
+  // The last `PLB`, which pulls one byte of the caller's own data bank.
+  out->n = (caller_db & 0x80u) != 0;
+  out->z = (caller_db & 0xffu) == 0;
+}

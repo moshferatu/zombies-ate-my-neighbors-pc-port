@@ -119,9 +119,11 @@ add_library(zamn_port STATIC
   src/port/collide.c
   src/port/fade.c
   src/port/floor.c
+  src/port/hud.c
   src/port/camera.c
   src/port/levelmap.c
   src/port/lzss.c
+  src/port/monster.c
   src/port/oam.c
   src/port/player.c
   src/port/rng.c
@@ -129,7 +131,8 @@ add_library(zamn_port STATIC
   src/port/sprite_cache.c
   src/port/step.c
   src/port/terrain.c
-  src/port/thread.c)
+  src/port/thread.c
+  src/port/trig.c)
 target_include_directories(zamn_port PUBLIC src)
 target_link_libraries(zamn_port PUBLIC zamn_assets_lib)
 

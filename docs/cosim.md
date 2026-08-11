@@ -607,6 +607,1369 @@ passed with carry compared — a strictly stronger check that also confirmed
 The lesson is small and sharp: **an unclaimed flag is not a small omission, it is
 an unchecked output.** `verify` alone would have shipped it.
 
+### A claimed flag can be claimed from the wrong instruction
+
+The rule above says to name the instruction each output comes from. The
+targeting family — `$80:B093` and the five routines around it — is where that
+stopped being a documentation habit and started catching things.
+
+`actor_bearing` (`$80:B22A`) ends by turning a comparison into a table index:
+`CMP $38 : BEQ : TXA : ADC #$0001 : TAX : LDA <table>,X : AND #$00FF : PLD :
+RTL`. Reading the last comparison and calling it the routine's carry is the
+obvious move and it is wrong on every path but one. **`ADC` writes carry whether
+or not anybody wanted an arithmetic answer from it**, and the sum here is an
+index of at most ten, which never carries — so the comparison's verdict survives
+only on the `BEQ` path that skips the addition. Carry out means *the record
+shares the point's X*, which is the opposite of what the `CMP` under it appears
+to say. 2,078 calls on `movies/level17-weapon.zmv`, 2,078 diverging, `flag C:
+ROM 0, port 1`.
+
+Three things about this are worth keeping:
+
+* it is the same shape as the `PLD` trap that `actor_nearest`'s shim records —
+  an output taken from the instruction that *computed* it rather than from the
+  last one to *write* it — arrived at through a different opcode, which suggests
+  the shape rather than the opcode is the thing to look for;
+* the four sibling routines that share the same tail all passed on the first
+  run, including `player_bearing`, whose carry comes from an `ASL` two
+  instructions further on and is clear for exactly the same reason. Getting one
+  of six wrong is what a per-call diff is for;
+* nothing in the game reads it. The bug was unobservable, in the sense that no
+  input could have produced a wrong pixel from it, and it was still a wrong
+  statement about what the ROM does. That is the standard the flag masks exist
+  to hold, and lowering it to "does it matter" would have cost the check.
+
+### An existence check that works by accident of where WRAM is
+
+`$80:AFFB` opens by making sure both players exist, and writes it as
+
+```
+$80:AFFB  BIT $00D2
+$80:AFFE  BEQ <no such player>
+$80:B000  BIT $00D4
+$80:B003  BEQ <no such player>
+```
+
+`W_PLAYER_A_RECORD` and `W_PLAYER_B_RECORD` are pointers into the actor slot
+table, or zero for a player who is not in the game, so reading that as *test
+each against zero* takes about a second. It is not what the instruction does.
+**`BIT abs` sets Z from A AND memory**, not from memory — and A here is the
+caller's own record pointer, which it was handed in `$08`. What is actually
+being asked is whether the caller's record and the player's record have a bit in
+common.
+
+It gives the right answer every time, and the reason is the address map.
+`W_ACTOR_SLOTS` is `$185E` and there are 32 records of `$14` bytes, so every
+record pointer in the game lies in `$185E..$1ACA` — entirely inside `$1800`, and
+so every one of them has bits 11 and 12 set. Any two therefore share at least
+`$1800` and can never AND to zero. The only zero available is the literal
+`$0000` that means *no such player*, which is exactly the case the branch is
+looking for.
+
+So the check is correct, and it is correct for a reason that is nowhere near
+the code. Move the slot table to a page that does not straddle `$1800` and this
+routine starts reporting a missing player at random, in two-player only, ten
+frames after somebody stepped on a particular tile. The port reproduces the
+`AND` rather than the intent, and `port/step.h` says why at the site.
+
+### The eleven-movie profile set is not the 43-movie corpus
+
+Two of this round's five routines executed **zero times** across all eleven
+profiles the ranking tool reads. That is what the profiles are for, so it was
+tempting to conclude the corpus could not reach them either — and this document
+briefly said so.
+
+It is wrong, and the branch-coverage list is what said so. Eleven of this
+round's seventeen new sites came back taken corpus-wide, including both of
+`terrain_tile_bit3`'s. Hunting the movies down: `level5`, `level21` and
+`level21-spin` call it 426 times between them, and none of those three is in the
+profile set. `partner_near` is called three times.
+
+The lesson is about which measurement answers which question. The profile set is
+eleven movies chosen to be *representative of work*, and `native_share.py` ranks
+against it because a routine's share of instructions is what makes it worth
+porting. The corpus is 43 movies chosen to be *representative of behaviour*, and
+it is the only thing that can say whether a path is reachable. Reading a zero in
+the first as an answer to the second is a category error, and it cost the two
+cheapest cycle budgets in this round being guessed instead of measured.
+
+### One mechanic, seen from both ends, and a funnel that measures itself
+
+`terrain_tile_bit3` and `partner_near` are not two routines that happen to be
+rarely called. They are the two ends of the same thing:
+
+1. `$80:E855` re-divides a mover's position after a step commits and asks
+   `terrain_tile_bit3` about the tile it landed on.
+2. Bit 3 set, so `$80:E021` installs the state body `$80:E035` with `$16 = 10`
+   — ten frames of nothing at all.
+3. `$80:E035` computes a point **100 pixels ahead in the facing direction**
+   (`$80:E06C`, `$FF9C` and `$0064` on each axis) and hands it to `partner_near`.
+4. Near, and the mover enters state `$06`; far, and it is as if nothing had been
+   asked.
+
+A hundred pixels forward, vetoable by the co-op leash *before* it happens rather
+than after. 410 tiles across the 55 levels carry bit 3, about seven per level,
+and the call counts are the funnel: **426 steps onto one of those tiles, three
+that got as far as the jump.**
+
+The veto is only real in two-player, because with `$D4` zero the `BIT` at the
+top answers *near* and a lone player always goes — and all three corpus calls
+take exactly that exit, eleven instructions in, measuring nothing. Hence
+`partner_near` at 165 cycles, the cheapest entry in the registry, and hence six
+of its seven sites untaken: the corpus has five two-player movies and not one of
+them has ever stood on one of those tiles. That is a coverage gap with a name
+and a recipe, which is a better thing for the untaken list to carry than
+silence.
+
+### A correction to what this document said about `$80:AF2C`
+
+The round that ported `$80:AE97` looked ahead and wrote:
+
+> Two more copies of the same loop exist and are not ported: `$80:AF2C` tests
+> bit 2 (after calling `$80:B422` first), and `$80:AF66` tests bit 12.
+
+Half right. `$80:AF66` is the loop, six probes and the same `(9, 8)` origin bias
+and the same offsets. `$80:AF2C` is **not a loop at all** — it is a single probe
+on the tile the point lands in, with no origin bias, which makes it
+`tile_attrs_at_pixel` with a mask rather than `terrain_blocked` with a mask.
+Two of the four routines this round are that shape and a third is halfway there,
+so the family is smaller and flatter than the earlier note implies: 1,046 to
+1,086 cycles for `$80:AF2C` against `terrain_blocked`'s 678 to 1,776.
+
+### The ranking's top row was 90% something the harness cannot call
+
+`native_share.py` attributes every executed instruction to the **nearest
+preceding declared subroutine entry**, which is the only thing it can do with a
+profile and a symbol file. It works, and once a round it does not.
+
+This round's top portable row was `$81:BC3D` — 581,911 instructions of work over
+1,775 calls, which reads as 328 instructions per call. The routine is 92 bytes
+and has no loop in it. Both facts cannot be true, and the way to find out which
+is to stop trusting the attribution and go back to the profile:
+
+```
+$ region.py 81 BC3D C000        # every offset with a non-zero *call* count
+entry             calls    exec(sum)      per
+$81:BC3D         1,775      581,911      327
+$81:BFA8            32          359       11
+```
+
+Only one entry in 900 bytes, so the attribution had nowhere else to put
+anything. Then the per-byte histogram:
+
+```
+total 581,911 over 301 live bytes
+  $81:BEE2   7,465  1.3%      $81:BF82   7,436  1.3%
+  $81:BEE0   7,465  1.3%      $81:BF7F   7,436  1.3%
+  ...
+```
+
+Three hundred bytes each executed about 7,400 times, flat, with no entry point
+in front of them. That is not a subroutine — it is an actor **thread body**,
+reached by `RTL` from the scheduler, and it is in exactly the category the
+`BLOCKED` list at the top of `native_share.py` exists for: nothing calls it, so
+there is no call to intercept. `$81:BC3D` itself is a cheap little terrain probe
+that happens to be the last declared symbol before it.
+
+The fix is a second ranking that does not trust the symbol file at all. Call
+counts in a profile are non-zero **only at real entry points**, because that is
+what a `JSR`/`JSL` target is, so:
+
+* take every offset with a non-zero call count that is not already in the
+  registry;
+* charge it the instructions from there to the next such offset, capped;
+* rank by that.
+
+Every row this produces is a routine somebody actually calls, and the top of it
+looks nothing like the top of the other one:
+
+| entry | work | calls | per call |
+| --- | --- | --- | --- |
+| `$80:CCBF` | 1,024,442 | 255,859 | 4 |
+| `$81:8024` | 540,347 | 22,283 | 24 |
+| `$80:9C90` | 364,925 | 29,436 | 12 |
+| `$80:F327` | 346,216 | 31,971 | 10 |
+| `$80:9D5B` | 208,402 | 37,151 | 5 |
+
+Those are this round: five routines, 2.48M instructions, **0.86% of everything
+the game does that is not a wait** — four times the share the previous round
+moved, for less code. None of them was visible on the old ranking's first
+thirty rows, and the reason is structural rather than accidental: a small
+routine called a quarter of a million times is invisible to nearest-preceding
+attribution whenever it happens to sit downstream of a big declared symbol.
+
+The prediction is worth keeping because it came true to the decimal. 2,484,332
+of 333,472,542 instructions is 0.745%, and the dynamic share afterwards moved
+**61.2% → 61.9%**; on the waits-removed denominator the predicted 0.86% showed
+up as 70.7% → 71.6%. When a ranking says what a round will be worth and the
+round is worth that, the ranking is measuring the thing it claims to.
+
+The two rankings are not competitors. The old one answers *where is the work*
+and will keep surfacing thread bodies and dispatchers, which is correct and
+useful — they really are where the work is. The new one answers *where is the
+work the harness can take*, which is a different question and the one a porting
+round is actually asking.
+
+### `$00DE` is a weighted census, and every spawn in the game waits on it
+
+`$80:9D5B` is six instructions and fifteen bytes:
+
+```
+LDA $00DE : CMP #$008A : BCS out : LDA $0006 : CMP #$0012
+out: RTL
+```
+
+`$0006` is `W_THREAD_COUNT` and the ceiling is 18 of the scheduler's 24 slots.
+`$00DE` had no name: absent from `docs/wram-map.md` entirely, and present in
+`zamn.sym` only as a raw address inside somebody else's comment
+(`$82:9569 level_intro_9569  # 3 levels: adds #$0028 to $00DE`). Finding out
+what it is meant reading its **writers** rather than its readers. There are 137
+of them — 6 in bank `$80`, 74 in `$81`, 22 in `$82`, 35 in `$83` — and every one
+has the same shape:
+
+```
+$81:87F8  CLC : LDA $00DE : ADC #$0014 : STA $00DE
+$81:885B  SEC : LDA $00DE : SBC #$0014 : STA $00DE
+$81:C202  CLC : LDA $00DE : ADC #$001C : STA $00DE
+$80:C9E4  CLC : LDA $00DE : ADC #$0001 : STA $00DE
+```
+
+Each kind of actor charges its own weight on the way in and refunds it on the
+way out. Tabulating the immediates settles that it is a ledger rather than a
+coincidence: **21 distinct weights from `$01` to `$28`, and the charge and
+refund histograms match value for value to within one site each.** Nothing else
+writes the word — the only other access in the ROM is the single `STZ $00DE` at
+`$80:867B` in the level-init chain.
+
+So `$00DE` is not a population, it is a **load**: 138 is a budget for how much
+the board is *worth* rather than how much of it there is, and the heaviest
+single actor spends 40 of it.
+
+What makes this worth a section is the shape of the caller. `$81:80EC
+actor_list_spawn` does not check-and-give-up:
+
+```
+$81:8108  LDA #$0001 : JSL thread_yield : JSL $809D5B : BCS $8108
+```
+
+— a frame at a time, forever, until there is room. 37,151 calls over eleven
+movies, and **most of them are refusals**: a level's spawn list is not a
+schedule, it is a queue that drains at whatever rate the players clear the
+board. The busier the screen, the slower the next thing arrives, which is a
+difficulty curve implemented as back-pressure and nowhere written down as one.
+
+The comment that turned out to be the clue is also the sharpest illustration:
+three levels open by charging `#$0028` — the heaviest weight there is — against
+a budget of 138, so those levels begin with nearly a third of the board already
+spent and spawn more slowly from the first frame. It is a difficulty knob with
+no counter of its own, spelled as an actor that is not there.
+
+### The sine table's one impossible byte
+
+`$80:9C90` reads `$83:9431` — 360 signed bytes, one per whole **degree**, of
+`round(128 · sin d)`. A degree table rather than the power-of-two-turn table
+almost every SNES game uses, which is what makes the index register sixteen bits
+wide: 359 does not fit in eight, and that is the only evidence anywhere for the
+width. The harness's measured stack column agrees, at 2 bytes for the `PHX`.
+
+One entry is `$FF`, at index 90, and it is a sentinel meaning **+128** — the one
+value a signed byte cannot hold:
+
+```
+LDA $839431,X : CMP #$FF : BNE + : LDA #$0080 : BRA out
+```
+
+Spending `$FF` is free, and the table says why. One degree of arc is
+`128 · sin 1° = 2.23`, so the first step either side of a zero crossing is ±2 and
+**±1 never occurs anywhere in the circle**: there is no `$01` byte in the table
+and no `$FF` but the sentinel. Both honest extremes are present — `$7F` fourteen
+times across the plateau, `$80` once at 270 — so the one value the encoding
+could not represent is the one value that is not needed. Two's complement's
+asymmetry pays for one extreme and the sentinel pays for the other.
+
+Three smaller things came out of it:
+
+* **The flags belong to the `PHX` at the top.** Every path converges on `PLX :
+  RTS`, and `PLX` sets N and Z from what it pulls, so a caller reads back flags
+  describing *the index register it passed in*. Third routine in the registry
+  with that shape, after `apu_play_sfx`'s `PLD` and `terrain_point_bit2`'s.
+  Carry, meanwhile, survives from the `CMP #$FF` — so carry set means *this call
+  hit the sentinel*, a fact no caller reads and the routine advertises anyway.
+* **The caller sign-extends the answer a second time.** `$80:959A` follows the
+  `JSL` with `BIT #$8000 : BEQ +2 : ORA #$FF00`, and bit 15 is set only on the
+  path where the callee has already done exactly that `ORA`. Four instructions
+  in an inner loop that cannot change a bit.
+* **What the game wants a sine for is a screen wobble.** The one caller builds an
+  HDMA table at `$7E:8000`, three bytes an entry, four degrees of arc per
+  scanline, phase advancing a degree a frame. That is the whole of the game's
+  trigonometry.
+
+And the call count is the tell. `sin_deg` is called **2,676 times, to the call,
+on every movie measured** — different levels, different lengths, different
+inputs. Bisecting `level1` finds nothing before frame 900 and nothing after
+frame 1,200: all 2,676 are one burst in the level-entry transition. A routine
+whose call count does not depend on the input is a routine no input is driving,
+and that is a thing very few rows in the registry can say about themselves.
+
+### A routine whose cost is a straight function of who is playing
+
+`$81:8024 nearest_player_dist` answers *how far is this point from whichever
+player is closer*, as `max(|dx|, |dy|)`. That makes three distance metrics in
+`port/step.h` and no two of them agree about which of two points is nearer:
+`step_tether_blocked` uses the Manhattan sum, `partner_near` uses two
+independent per-axis tests, and this one is Chebyshev. None is Euclidean.
+
+The measured cost separates the corpus cleanly in two:
+
+| movie | calls | mean cycles |
+| --- | --- | --- |
+| `level1` | 290 | 603 |
+| `level25-lane` | 2,617 | 598 |
+| `level9-weapons` | 2,205 | 609 |
+| `level29-fighting` | 2,075 | 602 |
+| `level1-2p` | 1,053 | **918** |
+
+Four one-player movies inside eleven cycles of each other, and the two-player
+one half again as expensive, because the second player *is* the second half of
+the routine. Nothing else in the registry reads its input that plainly.
+
+The absent player is not skipped, either: both scratch words are primed with
+`$FFFF` first, so a missing player enters the comparison as the largest distance
+there is and a one-player game falls through to A's answer without a branch
+anywhere. That is why `nearest_no_b` is taken on every one-player movie and
+`nearest_b_wins` needs two players to exist at all.
+
+Its one caller is `$81:80EC actor_list_spawn` again, taking a linear minimum
+over the level's spawn points: what spawns, spawns at **the eligible point
+closest to a player**, decided fresh on every spawn and never by the level.
+
+### One caller, 31,971 calls, and the second record is placed rather than copied
+
+`$80:F327 actor_publish_pos` is the far end of the pipeline `port/step.h` opens
+with `step_propose`. `$30`/`$32` are a thread's *own* idea of where it is; until
+this routine copies them into the actor record, the mover has moved only in its
+own opinion. It is the last line of `$80:CDF4`, the generic actor body, so the
+order of an actor's frame is **sleep, think, publish**.
+
+When `$1E` is non-zero the actor is two stacked records, and the upper one is
+not a copy of the lower:
+
+| field | lower (`$08`) | upper (`$0A`) |
+| --- | --- | --- |
+| `ACTOR_X` | `$30` | `$30` |
+| `ACTOR_Y` | `$32` | `$32 + 1` |
+| `ACTOR_Z` | untouched | *lower's* `ACTOR_Z` − 1 |
+
+One pixel down closes the seam between two metasprites that ought to abut; one Z
+in front is a tie the depth sort cannot break the wrong way. And the Z is read
+back **out of the record**, not off the thread, so the upper half follows
+whatever else moved the lower one this frame.
+
+The two paths also use `$08` two different ways — `LDX $08 : STA $0002,X` on one
+and `STA ($08),Y` on the other — which is free on the 65816 and is why they
+share no code. The budget makes the split visible: 244 cycles for one record and
+614 for two, so the call-weighted mean reads as *what fraction of this movie's
+board is two records tall*, and it moves further between movies than anything
+else in the registry (251 on `level25-lane`, 413 on `level1-2p`).
+
+### Five instructions and a quarter of a million calls
+
+`$80:CCBF apu_next_byte` — 255,859 calls across eleven movies, third in the
+registry behind `sprite_frame_tile` (577,573) and `apu_send` (257,114) and ahead
+of `thread_yield` (240,307). Landing within 1,255 calls of `apu_send` is the
+shape of the caller rather than a coincidence: the uploader fetches a byte
+through here and hands it straight to `apu_send`, so the two run in lockstep.
+
+```
+LDA [$18] : INC $18 : BNE +2 : INC $19
+```
+
+It is the byte source of the APU data-set uploader, and the only thing about it
+worth recording is that the increment is done **eight bits at a time**. A 16-bit
+`INC $18` would do the same arithmetic in one fewer instruction; because the ROM
+does not use one, `$1A` is never touched, and a data set that runs off the end
+of its bank wraps to `$xx:0000` rather than crossing into the next.
+
+Its flags therefore describe the *cursor*, not the byte: 255 calls in 256 return
+the low byte's N with Z clear, and the 256th returns the high byte's. Nothing
+reads them — the caller's next instruction is `STA $1C` — and at roughly 23,900
+calls a movie the wrap comes round some ninety times in each one, so an
+unclaimed flag here would have been an unchecked output on a quarter of a
+million calls.
+
+### What the round measured
+
+| | before | after |
+| --- | --- | --- |
+| registry entries | 93 | 98 |
+| calls checked, 43 movies | 11,408,676 | **12,930,985** |
+| routines diverged | 0 | **0** |
+| coverage sites taken | 352 / 446 | **370 / 464** |
+| ...untaken by every input | 94 | **94** |
+| static share | 23.8% | 24.2% |
+| dynamic share | 61.0% | **61.9%** |
+| ...substituted only | 47.8% | **48.8%** |
+| ...substituted, waits removed | 55.5% | **56.4%** |
+
+The untaken column is the one to read twice. It did not move: eighteen sites
+were added and eighteen more came back taken, so every branch this round wrote
+is a branch some input in the corpus exercises. That has not happened before —
+the previous round added seventeen and left six of them unreached.
+
+`zamn_cosim run` reproduces the documented baselines to the pass on all four
+movies — `level1` 2389/2389, `level29-fighting` 5989/5989, `level25-boss`
+7589/7589, `level9-weapons` 8989/8989 — with every difference inside the stacks
+or a declared scratch byte and no byte of live game state differing anywhere.
+Framebuffers against `--stock` are identical on `level1`, `level1-2p`,
+`level29-fighting` and `level45-race` at 6,000 frames, and on `level21-bubble`
+and `level25-lane` at 2,600.
+
+It is also the flattest thing in the registry: 134..202 cycles, **mean 138 on
+every movie measured**, because there is one branch in it and it is taken once
+in 256. Cheaper entries exist — the collision dispatchers bottom out at 40 — but
+none of them is called a quarter of a million times.
+
+### The thread body was not a thread body, and the fix took two rounds
+
+The section above worked out that `$81:BC3D`'s 581,911 instructions were four
+fifths somebody else's, called it "an actor thread body", and moved on to build
+a second ranking rather than fix the first. Both halves of that were half right.
+
+It is not a thread body. `$81:BEDA` is three instructions —
+
+```
+$81:BEDA  JMP $BEDD
+$81:BEDD  LDA #$BEE3 : STA $12 : RTS
+```
+
+— reached by `JMP` from `$81:BB8F` and `$81:BBE7`, which are two of the
+monster's own routines, and by nothing that *calls* it, so the CDL never marks
+it as a subroutine and attribution-by-nearest-entry
+walks straight back past it to `$81:BC3D`. What it installs in `$12` is the
+monster's **next state**, which its thread then enters with
+
+```
+$81:C21E  PEA $C225 : LDA $12 : DEC A : PHA : RTS
+```
+
+— a computed `RTS` through a WRAM word. So this is a fourth family of code that
+runs and is never called, after the vblank jobs, the thread bodies and the
+one-off jump entries, and it is the only one of the four that cannot be found by
+grepping the cartridge for an idiom: there is no `JSL thread_spawn`, no
+`JSL vbl_queue_a_add`, nothing but the state word itself.
+
+Declaring `$81:BEDA` in `JUMP_ENTRIES` splits the row where it belongs:
+
+| | instructions | share |
+| --- | --- | --- |
+| `$81:BC3D` | 581,911 → **112,743** | 0.20% → 0.04% |
+| `$81:BEDA` | — → **469,168** | — → 0.16% |
+
+63 instructions per call over 1,775 calls is what a 92-byte leaf should look
+like, and it now does. The state bodies *below* `$81:BEDA` are still charged to
+it, because finding them means reading the states rather than matching a
+pattern, so the row is a lower bound and is labelled as one.
+
+### ...and the same thing again, caught by the check rather than by reading
+
+`native_share.py` has carried an instruction since the `$80:A937` round:
+**port a neighbour, and see whether the number moves by more than the neighbour
+is worth.** This round is the first time following it caught something.
+
+Registering `$81:C16B monster_anim` moved the native total by **291,771**
+instructions where the routine itself executes 145,410. The other 146,361 starts
+at `$81:C1FB`, and it is another thread body:
+
+```
+$81:C1FB  JSR $B9F9 : JSR $BA46
+$81:C201  CLC : LDA $00DE : ADC #$001C : STA $00DE   ; the spawn charge
+          LDA #$C440 : LDY #$0081 : JSL $808475      ; its collision handler
+          LDA #$0001 : JSL thread_yield
+```
+
+**No instruction in the cartridge names that address.** Nothing `JSR`s or `JSL`s
+it; no `LDA #imm : LDY #imm : JSL thread_spawn` matches it; it is in none of the
+three tables `THREAD_BODIES` is built from. It is one of the four the comment
+there already calls a lower bound — spawned by `$81:80E7` or `$81:81D7`, which
+read a body's address out of WRAM — and it executes four times across the eleven
+profiles, once per placement of the creature.
+
+Without the check, this round would have claimed 146,361 instructions of a
+thread body nobody had written a line of C for, which is 0.05% of the game and
+about a third of what the routine above it is actually worth. Declared, and the
+round's headline number is smaller and correct.
+
+The general lesson is the one `$80:A937` taught and these are the fourth and
+fifth instances of it: **a routine missing from the entry list does not score
+zero, it scores somebody else's work** — and the somebody else is always the
+nearest declared symbol above it, which is by construction a routine small
+enough that nobody looked twice.
+
+### A `memset` that outlives its frame
+
+`$80:C05A` clears the sprite cache: `$FFFF` over 4,096 `frame_slot` words and
+128 `slot_frame` words, then two globals naming the frame array. Five call
+sites — three in the loader in bank `$80`, two in the boss code in `$82` — 31
+calls across the corpus, and **16,900 instructions a call**: half a million
+master cycles, which is a frame and a half.
+
+So an NMI lands inside every single call, and the harness abandons all of them.
+Two calls on `boot.zmv`, two on `level1.zmv`, four interrupted, none checked. It
+is the third routine to be unregisterable for that reason rather than for want
+of anyone writing it — `$80:CD20 lzss_decompress` and `$80:AD2B blockmap_expand`
+are the other two — and the only one of the three that is not a loop over data.
+It is 524,241 instructions of the corpus, a fifth of a per cent of everything
+the game does, spent writing the same constant 4,225 times.
+
+The C is written and the header carries the contract; `routines.c` says what the
+shim would be and `native_share.py` lists the address in `BLOCKED`, so the share
+it earns is zero on both sides of the report rather than zero on one. Two things
+came out of reading it that are worth keeping either way.
+
+Its first loop runs `$1001` times, not `$1000`: `DEX : DEX : BPL` runs the body
+with `X` at zero too, so it clears `$2002` bytes and steps one word into
+`slot_frame`, which the second loop rewrites four instructions later. And its
+exit is `PLB : PLB : RTL` — `PEA $007E` pushes two bytes where `PLB` pulls one,
+so there is a stray `$00` under the saved bank for the whole routine and the
+last `PLB` is the one that restores the caller's own. **N and Z therefore
+describe the caller's data bank** — one more routine in a list this document
+keeps extending, after `apu_play_sfx`'s `PLD`, `sin_deg`'s and
+`terrain_point_bit2`'s `PLX`, and `thread_call_handler`'s `PLB`.
+
+### The whole of the game's trigonometry is half a frame of work
+
+`$80:9570` is `sin_deg`'s only caller and the round's payoff for having ported
+it. It rebuilds `$7E:8000` from scratch every frame: a `$F8` repeat header, 120
+sixteen-bit parameters at four degrees of arc per scanline, a second header, and
+a `$0000` to stop. The phase advances one degree a frame, so the wave slides
+down the screen on a 90-frame cycle.
+
+It is by a wide margin the most expensive substitutable routine in the registry.
+`sin_deg` itself is 286 master cycles; the loop around it measures **115,606**
+over 2,021 calls on seven movies, which is a third of a frame's CPU budget in
+one call — ahead of `$82:8069 boss_bg_queue_flip` at 89,008 and
+`sprite_build_oam` at 43,111, and it is neither a DMA nor the whole sprite pass.
+The distribution is two
+populations: every level movie makes exactly 12 calls at 163,164..163,514, and
+`boot.zmv` makes 1,077 with a floor of 1,176, because the title's wobble spends
+most of its life retracted almost to nothing.
+
+Three things in it are worth writing down.
+
+**The second header is written over a parameter.** `LDA #$F800 : STA $7E7FFF,X`
+at `X = $F1` puts the `$F8` at `$80F1`, where the next repeat block begins — and
+its low byte, `$00`, at `$80F0`, which is the high byte of the 120th parameter.
+One scanline of the wave loses its sign every frame, on the seam between the two
+blocks, and it is a scroll offset so nobody has ever seen it.
+
+**The effect ends as a boundary condition.** The table only shrinks on a frame
+whose *last* parameter came out exactly zero — the bottom of the wave sitting on
+the axis — and then only once a hold counter has run out. Two bytes, one
+scanline, at the one moment in each 90-frame cycle when removing that line
+changes nothing on screen. A fade-out written as an `if`.
+
+**And the caller can be skipped.** The thread's loop is
+`thread_yield(1) : JSR $9570` until the length goes negative *or either player
+presses Start*, which is what says the wobble is a screen the player waits
+through. That also corrects something this document implied last round. The
+2,676 `sin_deg` calls that are identical on every level movie are one burst in
+the level-entry transition — but `boot.zmv` reaches the same routine **1,077
+times**, because the title sequence holds the same wobble for as long as nobody
+touches the controller. The count is input-independent *within a level movie*;
+across the whole corpus it is a function of how long you sit on the title.
+
+### A step validator that is not the player's
+
+`port/step.h` has held the two ends of `$80:E4C1`, the movement step validator,
+since the round that ported `step_propose` and `step_tether_blocked`: propose a
+candidate, put it through four tests, commit it, and then do the whole thing
+again for the other axis so a mover slides along a wall instead of stopping
+against it. The sequencing in the middle was still the ROM's.
+
+`$81:9BF3` is that same shape written for something that is not a player, and it
+is short enough to take whole:
+
+```
+if (sched_tick & 3) == 0: return                 ; one frame in four is a rest
+$10 = $0C + dx ; $12 = $0E + dy                  ; from a nine-entry table
+if blocked_enemy($10,$0E) || out_of_bounds($10,$0E) || at_point($10,$0E): keep $0C
+else: $0C = $10
+if blocked_enemy($0C,$12) || out_of_bounds($0C,$12) || at_point($0C,$12): keep $0E
+else: $0E = $12
+record.X = $0C ; record.Y = $0E
+```
+
+Three tests where the player's validator has four, and not the same three: the
+tether is a two-player rule that does not apply, and where `$80:E4C1` asks
+`terrain_blocked` and `actor_obstacle_at_point` this asks `terrain_blocked_enemy`
+and `actor_at_point` — the same two questions about the board, put with the
+other attribute bit and the other id filter. The commit also goes straight into
+the actor record rather than into `$30`/`$32` for `actor_publish_pos` to carry
+across later.
+
+All three tests were already ported, so what this adds is the *order*, and the
+order is the whole mechanic: the second axis is tested from the column the first
+one just committed.
+
+Speed is a duty cycle again, and one scale up. `step_propose`'s table steps one
+pixel per axis and doubles the step on frames a mask selects; this one steps
+**two** and skips one frame in four. 1.5 pixels a frame either way, reached from
+opposite directions, and the two tables are otherwise the same object — nine
+entries, clockwise from up, indexed by a direction already doubled.
+
+#### The carry belonged to the first instruction
+
+This is the round's one divergence, and it is the same shape as every other one
+this document records: a flag claimed from the wrong instruction.
+
+The routine's three tests each end in a `BCS`, so the obvious reading is that
+carry comes back as the second axis's verdict — set when the step was refused.
+That is right on three calls in four. On the fourth it is a rest frame, and the
+routine never reaches a test at all:
+
+```
+$81:9BF3  ASL A : TAX
+          LDA $0020 : AND #$0003 : BEQ out
+```
+
+Neither `LDA` nor `AND` touches carry, so what a caller reads on that path is
+**the `ASL`** — bit 15 of a doubled direction, which is a constant zero. Passing
+the caller's carry through was wrong on 741 of 2,955 calls, and `verify` said so
+at call 564 of `level21-bubble` with A, X, Y, N and Z all matching.
+
+Worth noting how the isolation went, because the obvious reading of the harness
+output is wrong: `passed` counts the calls *before* the first divergence, not
+the calls that matched. Four experiments — carry dropped, carry always clear,
+carry passed through, carry as the axis verdict — gave 2,955, 314, 15 and 563,
+which read as a distribution and are actually four first-failure indices.
+Dropping the claim entirely and getting a clean 2,955/2,955 is what proved the
+rest of the routine and left carry as the only thing to explain.
+
+It is also the round's one routine whose X output had to be *composed* rather
+than written. The register that survives to the `RTS` is whichever of the three
+ported callees ended the second axis: `terrain_blocked_enemy` and
+`actor_at_point` each model their own X, and `terrain_out_of_bounds` provably
+touches neither index register, so chaining the three reproduces a register the
+port never chose. It is checked on all 16,569 calls `level21-bubble` makes.
+
+### Four sprite sets, a mirror, and one frame of lag on half the compass
+
+`port/collide.h` has the big monster's two collision handlers and calls it "the
+monster side, the one that takes objects out from under the player". `$81:C16B`
+and `$81:C00B` are the other half of its frame: the walk cycle, and what it does
+with what it has taken.
+
+The walk is a three-frame leg and a four-leg stride, and the frame table has
+nine groups of four for nine directions — but they are not nine drawings. Up has
+its own, down and standing-still share one, and the six remaining directions
+share a third, with the three west-facing groups holding *the same pointers* as
+the three east-facing ones. What separates them is one bit:
+
+```
+CPX #$0030 : BCS +      ; the sixth group
+LDA $0000,Y : AND #$FFFD : STA $0000,Y      ; ...and fall into the placement
++ : LDA $0000,Y : ORA #$0002 : STA $0000,Y  ; ...and return
+```
+
+Four sprite sets and a mirror is an eight-way walk. And the asymmetry at the two
+exits is real: the mirrored path returns **without** calling `$81:C00B`, so on
+the frame a west-facing monster advances its cycle, whatever it is carrying is
+not repositioned. It catches up the next frame, when the leg timer has not
+expired and the routine takes a shortcut into the placement with the *previous*
+frame's facing still in `$2C`. The carried record therefore trails the monster
+by up to one frame, in one half of the compass and not the other. That is what
+the ROM does; why is not recorded anywhere and is not guessed at here.
+
+The placement itself is a nine-entry table of offsets — 24 pixels to whichever
+side it faces and 14 up, 24 up facing north, 8 down facing south — and `$FFFF`
+in `$28` for empty-handed. Note the third scale: the facing lives doubled in
+`$14`, doubled again in `$2C` to index a four-byte table, and doubled a third
+time with the phase `ORA`d in to index an eight-byte one. The `ORA` is only a
+concatenation because `$14 * 2` has its low two bits clear, which is the ROM
+asserting that the facing is already doubled.
+
+### What clears `ACTOR_ACTIVE`
+
+`port/oam.h` has carried this note since the round that ported `actor_nearest`:
+
+> Bit 0: set on every live record in every display list sampled so far... Two
+> readers are now known and they test it identically... **What clears it has
+> still not been established**, and the name says where it is rather than
+> claiming to know more than that.
+
+`$80:BE41` clears it. `LDA #$0000 : STA $0000,Y` — the whole flags word, as the
+first thing the routine does once it has decided the free is allowed. And
+`$80:BE0C` is the only thing that sets it, with `LDA #$0001`: a record's flags
+start at exactly `$0001` and everything else about it, `ACTOR_DRAW` included, is
+written afterwards by whoever asked for it.
+
+So the bit is not a property of a drawn record at all. **It is the allocator's
+free mark**, read by `LSR : BCC` in those two routines and by nothing else, and
+the two coverage sites that test it during a list *walk* are untaken by all 43
+movies for the sound reason that a record on the list always has it. A question
+that had been open for four rounds turned out to be answered by the two
+routines nobody had read yet, and they were sitting at 143 call sites — 80 and
+63 — which is more than any pair the port has taken.
+
+The rest of them is worth a paragraph each.
+
+**The list is a stack and the array is scanned backwards.** The allocator takes
+the first free slot going *down* from `$7E:1ACA`, the last of the 32, and pushes
+it onto the *head* of the list at `$7E:1B5E`. Two orders, opposite directions,
+neither the other's inverse — so the list's order says nothing about the array's
+and every walk in `port/oam.c` sees the newest record first.
+
+**A free needs the caller's permission slip.** `LDA $0008 : CMP $000C,Y : BNE
+out` — `W_SCHED_CUR_TASK` against `ACTOR_THREAD`, so a record can only be freed
+by the thread that owns it and passing somebody else's does nothing, silently.
+It is the only ownership check anywhere in the port so far.
+
+**Three exits, three sources of N and Z.** The "not yours" exit leaves the
+`CMP`'s flags; the "already free" exit leaves the `LSR`'s; and the working exit
+ends `PLD : RTL`, so N and Z come off the caller's own direct page. The `PHD` is
+there because the unlink walk addresses `$7E:0038` and `$7E:0012,X` through a
+direct page it forces to zero itself — which is how a `JSL` from any of 63 sites
+reaches two fixed words without knowing where it came from. `$80:BE0C` does the
+same trick one register over and pays for it in a stray stack byte.
+
+### What this round measured
+
+| | before | after |
+| --- | --- | --- |
+| registry entries | 98 | **104** |
+| calls checked, 43 movies | 12,930,985 | **13,032,692** |
+| routines diverged | 0 | **0** |
+| coverage sites taken | 370 / 464 | **394 / 494** |
+| ...untaken by every input | 94 | **100** |
+| static share | 24.2% | **25.2%** |
+| dynamic share | 61.9% | **62.3%** |
+| ...substituted only | 48.8% | **49.1%** |
+| ...substituted, waits removed | 56.4% | **56.8%** |
+
+Thirty coverage sites went in and **six of them came back untaken**, which is
+worse than the previous round's zero and is the honest shape of a round that
+went looking for rarer code. Five are the answer arriving in the negative and
+are worth having: `slot_alloc_full` says **no input in 43 movies has ever filled
+all 32 display records**; `slot_free_not_mine` and `slot_free_already` say no
+thread has ever tried to free a record it did not own or had already freed, so
+the two guards `$80:BE41` opens with have never once fired; `slot_free_unlisted`
+says the unlink walk has never run off the end; and `bearing_bounds` says the
+one actor that uses `$81:9BF3` never reaches the edge of its level.
+
+The sixth is different. **`wave_over` is unreachable from the ROM's only
+caller.** `$80:9570` opens `LDA $70 : BMI out` — the effect is finished, do
+nothing — but the thread around it tests the same word at the bottom of its own
+loop and exits on it, so the routine is never entered with a negative length. It
+is a guard against a state its caller has already excluded, and the corpus is
+what says so rather than a reading of the two routines.
+
+The `dynamic` row is the one to read for what the round was worth: **0.38% of
+every instruction the game executes**, against the previous round's 0.745%. That
+is not a worse round, it is a flatter list — the callable ranking's top row is
+now `$80:CC7C apu_load_set` at 0.8%, which drives the APU bus and would have to
+be `verify_only`, and everything under it is a tenth of a per cent at a time.
+
+### The top of the list was a wall, and going through it took a round
+
+The previous round ended by naming `$80:CC7C apu_load_set` as the next target
+and everything below it as "a flat tail of tenth-of-a-per-cent rows". This round
+took the top row and three rows out of the tail — `$82:9265`, `$82:92D6` and
+`$81:BB75` — and picked up a fourth routine, `$81:BBA4`, that is not on the
+ranking at all because it has never once executed.
+
+The top row turned out not to be registerable. What follows is in the order the
+work happened, because the order is the argument.
+
+### `$80:CC7C apu_load_set` is written and cannot be checked
+
+It is the largest single item the ranking still offers: 1,247,196 instructions
+over the six profiled movies, 0.7% of everything the game does, in **twelve
+calls**. That ratio is the whole story — about 104,000 instructions per call.
+
+The routine itself is small and completely legible. A set id is masked to a
+byte, scaled by four, and used to index a table of `{address, bank}` pairs at
+`$80:CCDE`; then the whole body runs under one `SEP #$30` and does nothing but
+
+```
+block := u16 count, count bytes
+set   := block* $0000
+```
+
+fetching each byte through `apu_next_byte` and handing it to `apu_send`. Both of
+those are already in the registry, which is why they are the second- and
+third-most-called routines in it: a quarter of a million calls each, and almost
+all of them come from here.
+
+Two details are worth the reading. The count lives in `$1C`/`$1D` and is
+decremented **a byte at a time with the borrow written out by hand** — `LDA $1C :
+BNE +2 : DEC $1D : + DEC $1C` — because eight bits wide is all the routine has.
+And the parameter that goes out with the block header, command `$0A`, is
+`$1C ORA $1D`: the two count bytes folded together, which is not the count and
+not either half of it. It is the accumulator the `BNE` two instructions earlier
+tested and left behind. Any nonzero count gives a nonzero byte and that is all
+the value can mean.
+
+**None of which can be verified.** 104,000 instructions is roughly eight frames,
+and the harness abandons any call an interrupt lands inside. Measured rather
+than assumed, with the routine registered and then unregistered:
+
+```
+routine                 calls  yields  checked   passed   int.  result
+apu_load_set                5       -        0        0      5  not reached   (level25-lane)
+apu_load_set                3       -        0        0      3  not reached   (boot.zmv)
+```
+
+`boot.zmv` was the movie worth trying, because the load there happens with the
+screen off and before the title — if NMI were disabled anywhere it would be
+there. It is not. So this is the **fourth** written-but-unregisterable routine,
+after `lzss_decompress`, `blockmap_expand` and `sprite_cache_init`, and all four
+are in `BLOCKED` for the same reason: a call longer than a frame has an NMI in
+it.
+
+It is the only one of the four with a *second* disqualification. It would have
+needed `verify_only` as well, for `apu_send`'s reason one level up: substituting
+it would take 23,800 SPC handshakes off the 65816 in one go. Either reason alone
+is enough. The C stands in `port/apu.c`, unchecked, for Phase 4 — the day the
+port owns its own main loop, this is the routine that loads the music.
+
+### The boss's four hitboxes, and the box it walks with
+
+`$82:9265` and `$82:92D6` are the two instructions after `boss_step` in the same
+thread's loop, and they are the other two things a figure drawn out of
+background tiles needs.
+
+A big figure has no actor record: `port/bossbg.h` blits it into BG tiles and its
+position lives in two fixed words, `W_BOSS_X`/`W_BOSS_Y`. So there is nothing
+for `actor_overlap_pass` to find. The thread's setup buys four records instead
+— `JSR $94B4 : STX $24` four times — and **`$82:9265` is what keeps them under
+the drawing**: once a frame it writes `ACTOR_X` and `ACTOR_Y` of all four from
+the figure's position plus a fixed offset.
+
+| part | dx facing east | dx facing west | dy |
+| --- | --- | --- | --- |
+| `$24` | −14 | +14 | −6 |
+| `$26` | −4 | +4 | 0 |
+| `$28` | +10 | −10 | +4 |
+| `$2A` | +20 | −20 | +12 |
+
+Four hitboxes on a line running down and to the right, and the mirror flips the
+line about the vertical without touching the heights. The X offsets come from a
+table and the Y offsets are immediates in the instruction stream, which is why
+one axis is read from ROM and the other is transcribed. **The mirror is a second
+table rather than a negation** — `LDY #$0000` or `LDY #$0008` into eight words
+laid back to back — and the port reads all eight even though they are four exact
+negative pairs, because a hack that gave the figure a lopsided reach by editing
+four bytes would still work.
+
+The flag that selects it is `$36`, which is the same word `boss_step` writes out
+of its own delta table. Three routines, one facing.
+
+`$82:92D6` is five stores and a `JSL`: the rectangle under the figure, handed to
+`actor_notify_box`. It fires **every frame the thread runs**, not on contact and
+not on a timer, so anything standing inside is told once a frame for as long as
+it stands there. The box is
+
+```
+x0 = W_BOSS_X - 34    x1 = x0 + 56      ->  -34 .. +22
+y0 = W_BOSS_Y -  8    y1 = y0 + 32      ->   -8 .. +24
+```
+
+against a body `boss_step` describes as 36 wide from the top centre and about 20
+tall — so the walked-on box sits six pixels left of the thing it belongs to and
+stands eight proud of the top of it. That is what the ROM does. Why is not
+recorded anywhere and is not guessed at here.
+
+`boss_place_parts` has the **flattest distribution in the registry**: 1,090 to
+1,142 master cycles over 6,560 calls, a 52-cycle spread on a routine that costs
+eleven hundred. There is exactly one branch in it and both arms are an `LDY` of
+a constant; everything else is about forty straight-line instructions with no
+call, no loop and no early exit.
+
+Next to it, on the same frames and the same two movies, `boss_stomp` runs 1,112
+to 13,054 over 6,549. The two routines differ by one `JSL`, so the difference
+between the two ranges is that one call's whole distribution, isolated: at the
+floor it costs about twenty cycles, which is `actor_notify_box` finding an empty
+visible list and leaving, and at the ceiling it is 91% of the call. That is a
+cleaner reading of what a walk costs than the callee's own row can give, because
+the caller here is a constant.
+
+#### Neither register the `JSL` passes on is the caller's
+
+`boss_stomp` failed on call 1 of `level25-lane`:
+
+```
+boss_stomp  108  -  108  0  0  0  21  1152..6460, mean 2389  FAIL
+            A: ROM $000A, port $021D
+```
+
+The shim had been written the obvious way — `boss_stomp(w, rom, in->a, in->c,
+&r)` — on the reasoning that a routine which is five stores and a `JSL` passes
+its caller's registers straight through. It does not. Look at the two
+instructions before the `JSL`:
+
+```
+$82:92F1  CLC : ADC #$0020 : STA $003E     the bottom edge
+$82:92F8  LDA #$000A : STA $0040           the id
+$82:92FE  JSL $80BF1B
+```
+
+A is `$000A` — the id, handed over **twice**, once in memory where
+`actor_notify_box` reads it as `NOTIFY_BOX_DP_ID` and once in a register where
+it reads it as the argument. And the carry is not the caller's either: it is the
+`ADC #$0020` at `$82:92F2` that produced the bottom edge, set only when that
+addition wrapped sixteen bits, and nothing between there and the `JSL` touches
+it.
+
+The ROM's own answer was the tell. `$000A` coming back in A is what
+`actor_notify_box` returns when its walk found nothing to look at — the input,
+passed straight through — so the value the callee received had to be the one the
+`LDA` two instructions up had just loaded. This is the same lesson as
+`apu_play_sfx`'s `PLD` and `actor_slot_free`'s, arriving from the other end: **a
+routine's register inputs are whatever is in the registers at the call, and a
+wrapper computes some of them.** Both are recomputed in the port now, and
+neither function takes them.
+
+### The monster's other half
+
+`port/monster.h` already had the half of the creature's states that draws.
+`$81:BB75` and `$81:BBA4` are the half that decides where to go — and the shape
+is exact, because four of its state bodies open with a pair of `JSR`s and
+nothing else:
+
+```
+$81:C226  JSR $BB75 : JSR $C16B     the wander
+$81:C2BB  JSR $BBA4 : JSR $C16B     ...carrying somebody home
+$81:C355  JSR $BB75 : JSR $C16B
+$81:C3DF  JSR $BB75 : JSR $C16B
+```
+
+`$81:BB75` asks one 32-slot scan two questions at two ranges, and **the two
+ranges are asking about different populations**. `actor_nearest` looks at four
+collision ids — the two players, `$38` and `$01`; `player_in_range` looks at
+exactly the two players. So:
+
+* inside `$B4`, and not already holding something → install the chase;
+* between `$B4` and `$D0` → do nothing;
+* beyond `$D0` → is *either player* within `$D0`? If not, `INC $2A`, and the
+  thread ends at the bottom of its next loop.
+
+The gap between `$B4` and `$D0` is not hysteresis. Nothing here is a state with
+an exit condition — the routine is re-entered from scratch every frame — so it
+is a dead band: something 180 to 207 pixels away neither starts a chase nor
+counts as an empty board, and the creature stands there. And the asymmetry
+between the two populations is the behaviour: it will walk towards any of the
+four, and it gives up and leaves only when **both players** are far. A board with
+a player at `$D1` and a `$38` at `$40` takes the near exit and never reaches the
+give-up test at all.
+
+`$81:BBA4` is the carrying state's, and it opens with a question the other never
+asks: **am I standing where I started?** The thread's own setup writes the spawn
+point into `$2E`/`$30` at the same time as into `$0A`/`$0C`:
+
+```
+$81:B9FD  LDA $00 : STA $0A : STA $2E
+$81:BA03  LDA $02 : STA $0C : STA $30
+```
+
+Within sixteen pixels on both axes — a square, tested as two independent
+absolute differences and not a radius — whatever is being carried is freed and
+`$28` goes back to `$FFFF`. That is the monster reaching its lair and dropping
+the victim in it.
+
+From there the two routines are the same four instructions, and the differences
+are both tests `$81:BBA4` leaves out. It does not test `$26`, so a monster still
+carrying somebody across the level will drop into the chase state the moment
+anything comes within `$B4` — with `$28` still pointing at whoever it is holding.
+And it has no far test, so `$2A` is never incremented from this state and a
+monster carrying a victim never gives up and leaves. Both omissions are
+reproduced; why they are there is not recorded anywhere.
+
+#### A routine with its `RTS` in three places
+
+Both of these end by installing the next state and returning, through a stub
+they share:
+
+```
+$81:BEDA  JMP $BEDD
+$81:BEDD  LDA #$BEE3 : STA $12 : RTS
+```
+
+reached by `JMP` and not `JSR`, so the `RTS` at `$81:BEE2` is the one that
+returns to whoever called `$81:BB75`. A routine with three exits therefore has
+its `RTS` in three different addresses, two of which are outside it.
+
+This costs the harness nothing, and the reason is worth stating because it looks
+like it should: **`ret_op` is where a *substituted* call is sent, not how a
+returning one is recognised.** A return is detected by program counter and stack
+pointer (`cosim.c`'s `snes->cpu->sp != return_sp(...)` check), so any `RTS`
+inside the routine will do for the teleport. Both entries name the plain one.
+
+#### A registry entry no movie reaches
+
+`monster_deliver` is checked on zero calls, on all 43 movies, and the profiler
+agrees: `$81:BBA4` has a call count of **zero in every one of the eleven
+traces**. The creature has to actually pick somebody up and set off home with
+them, and no input in the corpus has ever made it do that.
+
+The entry stays. It is checked the moment any input reaches it, which is what a
+registry entry is for, and the project already carries seven ported routines
+that executed nothing in the last profiling run. What it cannot have is a
+measured budget: `.cycles` is `monster_seek`'s figure, which is defensible
+rather than measured — the two make the same single `JSL actor_nearest` and that
+call is nearly all of the cost — and the comment on the entry says exactly that.
+
+### The chase, found by porting its installer
+
+`$81:BEDA` was declared a jump entry two rounds ago, when it turned out that
+four fifths of what the ranking credited to `$81:BC3D` was really a
+three-instruction state installer nothing calls. The note left behind said the
+bodies under it "stay charged to it, and that is a lower bound again".
+
+Writing `monster_seek` meant reading the constant that installer stores, which
+is the address of the body: **`$81:BEE3`**, the monster's chase. Declaring it
+splits 469,168 instructions into an installer's four and a chase's 439,308, and
+the chase now has a row of its own at 0.2%. It is still not portable, for the
+reason the older note gives — nothing calls it, it is entered by a computed
+`RTS` through `$12` — but the ranking is now telling the truth about where the
+work is, which is the point of the tool.
+
+That is a fourth address found not by grepping for an idiom but by porting its
+neighbour and reading what the neighbour writes.
+
+### What this round measured
+
+| | before | after |
+| --- | --- | --- |
+| registry entries | 104 | **108** |
+| calls checked, 43 movies | 13,032,692 | **13,106,971** |
+| routines diverged | 0 | **0** |
+| coverage sites taken | 394 / 494 | **402 / 506** |
+| ...untaken by every input | 100 | **104** |
+| static share | 25.2% | **25.6%** |
+| dynamic share | 62.3% | **62.5%** |
+| ...substituted only | 49.1% | **49.3%** |
+| ...substituted, waits removed | 56.8% | **57.0%** |
+
+Lockstep against a stock core is clean on `level1` (2,389 passes),
+`level25-lane` (3,485), `level45-race` (6,089) and `level25-2p` (1,220): every
+difference is inside the stacks or a declared scratch byte, and no byte of live
+game state ever differed. Framebuffers against `--stock` are identical on eight
+movies, two of which — `level25-2p` and `level45-carried` — were added to that
+set for this round because they run the boss and the monster.
+
+**Sixteen coverage sites were declared and four were taken back out**, and
+taking them out is the part worth recording. The four were `apu_load_set`'s. A
+site that no input can ever reach does not belong in a list whose stated meaning
+is *an input is missing*: `$80:CC7C` has no shim, so nothing in this harness
+will ever execute its C, and four permanently-untaken rows would have made the
+corpus report quietly dishonest about its own gaps. The branches are described
+in `port/apu.c` instead. **Sites are a harness mechanism and they belong only to
+code the harness runs.**
+
+Of the twelve that stayed, **eight were taken and four were not**, and the four
+are all `monster_deliver`'s. Those are the good kind of untaken: they name
+something the game does that no input in the corpus has made it do — pick a
+victim up and set off home with them — and the fix for them is a movie, exactly
+as the report says it is.
+
+The `dynamic` row is worth **0.158% of every instruction the game executes**,
+against the previous round's 0.38% and the one before that's 0.745%. The list is
+flattening, and this is the round that shows why: the largest item left on it
+could not be registered at all, and the three that could are a tenth of a per
+cent each. What the round bought that the numbers do not carry is two things —
+a shim convention that was silently wrong for wrapper routines, and a state body
+worth 439,308 instructions that the ranking had been crediting to a
+four-instruction stub.
+
+## The panel that is six comparisons (2026-08-10)
+
+The ranking after the last round offered one large registerable row and then a
+cliff: `$80:CB61 apu_ipl_upload` at 1.5%, and after it nothing above 0.25%. This
+round went past the cliff on purpose and took the **status panel** —
+twenty-three routines between `$80:C07F` and `$80:C7BF` that draw both players'
+health bars, weapon and item icons, inventory counts and scores.
+
+Three of the twenty-three are registered. The other twenty come with them,
+because every one of them is reached only from inside the tree: searched for
+`JSR`, `JMP`, `JSL` and `JML` across the whole ROM, and the two panels are the
+only entries with an outside caller at all.
+
+| routine | what it is | budget | stack |
+| --- | --- | --- | --- |
+| `$80:C07F hud_refresh` | alternates the two panels, then queues the upload | 1,367 | 6 |
+| `$80:C0A3 hud_panel1` | player 1's six change tests | 1,247 | 4 |
+| `$80:C139 hud_panel2` | ...and player 2's, at different addresses | 694 | 4 |
+
+`hud_panel2`'s budget is half its twin's only because player 2 is usually
+absent and the panel-off exit is two instructions. On `level1-2p` the two means
+are 1,342 and 1,331.
+
+The whole corpus verifies clean: **13,209,637 calls checked across 43 movies,
+0 diverged**. Lockstep `run` is clean on four movies — `level1` 2,389 passes,
+`level1-2p` 5,989, `level25-2p` 1,220, `level45-race` 6,089 — with every
+difference inside the stacks or a declared scratch byte and **no byte of live
+game state ever differing**.
+
+Under lockstep the two panel entries mostly read `not reached`, because
+`hud_refresh` is substituted above them and the port does not call the ROM. They
+are not idle: `level45-race` enters `hud_panel1` twice, from the transition sites
+`$80:C1D1`/`$80:C1F1`, which is precisely the traffic registering them
+separately was for.
+
+### A HUD is not the last thing a WRAM diff can check — it is one of the easiest
+
+The instinct is that a HUD is display, and display is hardware, and hardware is
+where this harness stops. It is not: every routine in the cluster writes a
+**shadow tilemap in WRAM** at `$7E:5F36`, four rows of 32 tiles, and a separate
+vblank job uploads that later. So the whole thing is memory, and the harness
+checks it exactly as it checks a collision.
+
+That also gives the WRAM map two new named ranges out of a 2,560-byte block that
+had been `*unidentified*` since Phase 1 — the tilemap, and the eleven words of
+change detection sitting immediately above it at `$7E:6036`.
+
+### Two lookups that agree, and stay two
+
+Every per-player word in the cluster is indexed by a **side**: 0 or 2, already
+doubled, the same value `port/score.h` describes. Every shadow word and every
+tilemap column follows the same rule, and player 2's column is always player 1's
+plus `$20` — sixteen words, half a tilemap row. The panel is one layout drawn
+twice into the two halves of the same four rows.
+
+The *colour* does not follow that rule. `$80:C59C`, `$80:C5C2` and `$80:C666`
+each fetch their palette or their tile table through `$7E:1E84 + side` — the
+score-slot pairing — and index a two-entry ROM table with what they find. So
+where a bar is drawn is fixed by which half of the panel you are, and what
+colour it is drawn in is fixed by which score slot you own. `$80:925D` seeds the
+pairing as the identity, so on a stock boot the two lookups always agree and no
+diff can tell them apart. The port keeps them two anyway, for the same reason
+`score_add` reads its jump table out of ROM: a ROM hack that repoints one of
+them works, and a port that collapsed them would be a port of a coincidence.
+
+### Leading-zero suppression is a rotate, and it is diffed
+
+`$80:C4EC` prints one digit and remembers whether anything has printed yet, in
+direct-page `$1E`:
+
+    emit: CLC : ADC #$3C07 : SEC : ROR $1E
+
+Only bit 15 is ever tested, so a port could store a flag and satisfy every
+branch in the game. It cannot store a flag, because `ROR` **shifts what is
+already there**: `$1E` is `$8000` after one digit, `$F000` after four and
+`$FF00` after eight, and it is a live direct-page word the harness diffs along
+with the other 131,071. This is the sort of thing the register-and-WRAM contract
+catches for free and a screenshot comparison would never see.
+
+The same word does double duty. `$80:C59C` puts the health bar's **palette** in
+`$1E` before calling `$80:C379`, which ORs it into ten tiles. One direct-page
+word, two unrelated meanings, distinguished only by which routine is running.
+
+### The bug, and the one line that found it
+
+`hud_panel1` failed on call 119 of `movies/level1-rescue.zmv` with
+
+    WRAM $7E:0C20: ROM $24, port $00
+
+`$0C20` is the running thread's page plus `$20`, and `$24` is 36, and 36 is
+nine times four. The health bar builds its table row as `A*4` then `A*16 + A*4`,
+out of shifts — and the intermediate is parked in `$20` by an `STA` that reads
+like scratch and is not. `$20` is a live direct-page word; health-times-four is
+still sitting in it when the routine returns, on top of the side `$80:C59C` put
+there four instructions earlier.
+
+Nothing in the game reads it. Every branch, every register and every visible
+tile was already correct. It is exactly the class of thing a port gets wrong
+forever without a byte-for-byte diff, and the diff found it on the first movie.
+
+### Carry, claimed rather than shrugged off
+
+Nothing in this cluster returns a value in carry, and leaving it unclaimed would
+have been easy and quiet. It is claimed on all three entries, because the
+`$80:83AE` episode earlier in this document is what an unclaimed flag costs: 107
+calls passed while the substitution left carry at whatever the caller had, and
+the caller's retry loop then ran 147,405 times under `run`.
+
+Claiming it here means threading it through the whole tree, and the chain is not
+short: a `CMP` against a shadow sets it six times per panel, and under that so do
+the four shifts that build a health row, the `ASL` that doubles an inventory
+index, the `CMP #$000E` that rejects one, the four `LSR`s that shift a nibble
+down, and the `ROR $1E` inside every printed digit — where what lands in carry is
+the bit rotated *out*, which is bit 0 of the leading-zero history. Whichever ran
+last is what the caller gets, and on the paths where none ran it is the caller's
+own.
+
+### Two branches that exist, run, and cannot be reached
+
+`$80:C5C2` and `$80:C666` each open by testing the selected slot for `BMI` and
+branching to a "nothing selected" path. The weapon's clears six tiles — three
+rows of two, including a row its drawing path never writes. The item's is a bare
+`RTS` that clears nothing at all.
+
+Neither can run. `$80:C5C2` is reached only from `$80:C76E` and `$80:C79C`, and
+`$80:C666` only from `$80:C785` and `$80:C7B3`, and all four of those sit on the
+far side of a `BMI` **on the same word**, in adapters that do their own clearing
+when it is negative. The inner test is always false by the time it executes.
+
+The port implements neither, and neither carries a coverage site. That is the
+`apu_load_set` lesson applied before it cost anything rather than after: a site
+no input can reach would sit in the untaken list forever describing a thing the
+game cannot do, and the untaken list's whole meaning is *an input is missing*.
+
+`$80:C505`, a two-digit renderer sitting between `$C4EC` and `$C519`, is dead in
+the stronger sense — no `JSR`, `JMP`, `JSL` or `JML` anywhere in the four banks
+reaches it. It is recorded in the symbol file as dead and not ported.
+
+### A duplicated fact, removed rather than duplicated again
+
+`$80:C07F` does not end with an `RTS`. It ends `JML $8083AE`, a tail jump into
+the vblank queue adder — so on its interesting path the registers and the carry
+a caller sees are **that routine's**, not its own.
+
+`$80:83AE` is already registered, and its exit flags were already written down
+once, in `shim_vbl_queue_a_add`. Writing them a second time in `port/hud.c` would
+have been ten lines of the kind of duplication that is correct on the day it is
+written and wrong a year later. They moved instead: `vbl_queue_flags` now lives
+in `port/thread.c`, the shim calls it, and so does the HUD. One copy, two
+callers, and the 13-million-call corpus checks both.
+
+### Results
+
+| | before | after |
+| --- | --- | --- |
+| registry entries | 108 | **111** |
+| static share | 25.6% | **26.5%** |
+| dynamic share | 62.5% | **62.6%** |
+| ...substituted only | 49.3% | **49.4%** |
+| ...as the game reports it | 57.0% | **57.2%** |
+| coverage sites | 506 | **538** |
+| ...taken by some input | 402 | **432** |
+| calls checked, whole corpus | 13,106,971 | **13,209,637** |
+
+Thirty of the thirty-two new sites were taken. The two that were not are
+`hud_score_high_only` — a score carrying past `$9999` between two consecutive
+looks at the same panel — and `hud_upload_refused`, which needs queue A to be
+holding sixteen jobs at the moment the HUD wants to add one. Both are the good
+kind of untaken: real branches naming something the game can do that no input in
+the corpus has made it do.
+
+Both columns come from the same tool run over the same eleven profiles, with the
+before column produced by stripping the three new `.name` records out of a copy
+of `routines.c`; it reproduces the last round's published figures exactly.
+
+The dynamic row is **481,056 instructions, or 0.144%** of everything the game
+executes — the smallest round yet, after 0.158%, 0.38% and 0.745%. The static
+row is the one to look at instead: **+0.9 points, 173 distinct code bytes**, the
+largest static gain per dynamic point of any round so far, and that is simply
+what twenty small routines look like. The cliff in the ranking is real, and past
+it the useful measure stops being "how much work did this take over" and starts
+being "how much of the cartridge is now written down".
+
+The whole cluster is gone from the ranking — not one `$80:C0xx`–`$80:C7xx` row
+survives — which is the subsumption closure confirming that the tree really is
+closed, including the seven leaves that are reached by `JMP` and so have no call
+edge for the closure to follow.
+
+### The screenshot check had not been checking anything
+
+The framebuffer comparison — run the port build and a `--stock` build over the
+same movie, screenshot both at the same frame, compare the PNGs — is the last
+line of evidence in every round here, and it had a bug in it that made seven of
+its eight results vacuous.
+
+**PowerShell variable names are case-insensitive.** The script held its output
+directory in `$S` and then wrote
+
+    $s = Join-Path $S "$name-stock.png"
+
+which is the same variable. From the second movie onward the directory was a
+PNG path, the emulator refused to write into it, `ReadAllBytes` threw, `$a` and
+`$b` still held the **previous** movie's bytes, and the comparison dutifully
+reported them identical. Every run said "8 of 8 identical" and meant "1 of 8
+checked, and the other seven compared movie one against itself".
+
+Fixed — distinct names, an existence check before comparing, and the byte counts
+printed alongside the verdict so a vacuous pass cannot look like a real one. The
+corrected run says something different:
+
+| movie | frame | |
+| --- | --- | --- |
+| `level1`, `level1-2p`, `level29-fighting`, `level45-race` | 6,000 | identical |
+| `level21-bubble`, `level25-lane` | 2,600 | identical |
+| `level45-carried` | 6,000 | identical |
+| **`level25-2p`** | 6,000 | **differs** |
+
+`level25-2p` parts from stock between frames 2,600 and 2,700 and stays parted.
+It is **not this round's doing**, and the test for that is exact: re-run the
+same frame with all 111 routines substituted *except* the three new ones, and
+the port's framebuffer is **byte-identical** to the full-substitution one. The
+divergence belongs to something already in the registry, and the broken script
+is why nobody had seen it.
+
+### ...and what it was hiding is the cycle budget, not a bug
+
+A bisection over the 108 pre-existing entries — substitute a prefix, screenshot
+frame 2,700, halve — landed on the sixth routine in the registry. Substituting
+**`actor_depth_sort` and nothing else** reproduces the divergence *exactly*: the
+same 24,549-byte frame, byte for byte, as substituting all 111.
+
+It is not a bug in the port. Verify on the same movie: **1,223 calls, 1,223
+checked, 1,223 passed**, and `run` reports no byte of live game state ever
+differing. What the same report shows is the cause, in the column nobody reads:
+
+    actor_depth_sort   1223 calls   92..7524, mean 958   OK
+
+The registry burns a **fixed 1,605** master cycles for every one of those calls.
+The real routine costs between 92 and 7,524 — an eighty-fold spread, because it
+is a sort and its cost is the length of the actor list — and 1,605 is not even
+this movie's mean; it is `level1-rescue`'s, from the round that added it.
+
+So each substituted call puts the machine as much as 5,900 cycles out of step
+with where the ROM would have been, which is several scanlines. Every byte of
+state still agrees. What moves is *when* the frame's work lands relative to the
+beam, and on a movie with two players and a boss on screen that is eventually
+enough to change a frame.
+
+This reframes what the framebuffer check can and cannot prove. It was never a
+check on the port's logic — `verify` and `run` are that, at 13.2 million calls
+and every byte of WRAM. It is a check on the *substituted build as a whole*, and
+that build deliberately approximates one thing: how long a routine took. A
+fixed budget standing in for an 80× range is an approximation with a visible
+limit, and this is the first movie busy enough to find it.
+
+`CosimRoutine::cycles` says it is "the mean cost of the ROM's own instructions".
+The honest next step is not to retune 1,605 — that would move the divergence
+rather than remove it — but to let a routine whose cost is a function of its
+input **report** what it did, the way `run_yield` lets one report that it
+suspended. That is a change to the harness, and it belongs in its own round.
+
+### The largest row that is left, and why it is not next
+
+`$80:CB61 apu_ipl_upload` is 1.5% plus another 1.95% of the machine waiting
+inside it, and it is the last big registerable-looking row. It is out on two
+independent grounds, and both were established rather than argued.
+
+**Measured.** It writes no WRAM at all, which makes an empty shim a clean probe:
+register it temporarily against one, and whatever the harness says about
+interruption is uncontaminated by any question of whether the port is right. It
+says `1 call, 1 interrupted, 0 checked` — on `boot.zmv`, where the screen is off
+and NMI has its best chance of being disabled, and again on `level25-lane`.
+About 986,000 instructions per call is many frames, and an interrupt lands in
+every one. `$80:CB1A apu_boot` calls it and reports the same.
+
+**Structural**, and this is the one that would still hold if the frame problem
+went away: the routine's entire observable effect is on the SPC700, through
+`$2140`-`$2143`, one byte at a time, gated on the SPC's replies. There is
+nothing in WRAM for a diff to compare. A substituted port would have to drive
+the real handshake through the host — which is what `apu_send` does, and why
+`apu_send` is `verify_only` and can never be substituted. `$80:CB61` could at
+best be the same thing, on a call the harness cannot reach the end of.
+
+`$80:CDF4`, the other row that looked registerable, is settled from the listing:
+`JSR $D13A : LDA #$0001 : JSL thread_yield : ... : BRA $CDF7`. It is a loop with
+a yield in it and **no exit** — the level's main body. Nothing calls it, it
+never returns, and the profile agrees at zero calls in eleven traces. All three
+are now in `tools/native_share.py`'s `BLOCKED` with their reasons.
+
 ## Where this is going
 
 The first five routines here are leaves — they never call `thread_yield`. That

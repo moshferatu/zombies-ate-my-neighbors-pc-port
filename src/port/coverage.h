@@ -390,6 +390,39 @@
   X(aligned_off,      "actor_aligned",      "a candidate lined up on neither axis, so the walk carried on") \
   X(aligned_none,     "actor_aligned",      "all 32 slots looked at and nothing lined up — the zero exit") \
                                                                                 \
+  /* $80:B093 actor_gap — no record, or which axis was the wider one. */        \
+  X(gap_empty,        "actor_gap",          "asked about record zero, which is what $D4 reads in one-player mode") \
+  X(gap_y_wider,      "actor_gap",          "the Y gap was at least the X gap, so it is the answer") \
+  X(gap_x_wider,      "actor_gap",          "...or was smaller, so the X gap is")  \
+                                                                                \
+  /* $80:B18F actor_nearest_id3 — actor_nearest's five sites, over one id. */   \
+  X(nearest3_undrawn, "actor_nearest_id3",  "a slot with ACTOR_DRAW clear, which is most of them") \
+  X(nearest3_inactive,"actor_nearest_id3",  "...drawn, but without flag bit 0") \
+  X(nearest3_wrong_id,"actor_nearest_id3",  "a live record not wearing collision id $03") \
+  X(nearest3_candidate,"actor_nearest_id3", "one it measured the distance to")  \
+  X(nearest3_closer,  "actor_nearest_id3",  "...and one that beat the best so far") \
+                                                                                \
+  /* $80:B1EC, $80:B22A actor_bearing_point, actor_bearing — the two halves of \
+     the table index, and whether the dropped half of $80:B1EC's was ever \
+     anything but zero, which is what makes its bug a bug and not a shape. */   \
+  X(bearing_level,    "bearing_lookup",     "the record shares the point's Y")  \
+  X(bearing_above,    "bearing_lookup",     "...or sits above it")              \
+  X(bearing_below,    "bearing_lookup",     "...or below it")                   \
+  X(bearing_column,   "bearing_lookup",     "the record shares the point's X")  \
+  X(bearing_left,     "bearing_lookup",     "...or sits left of it")            \
+  X(bearing_right,    "bearing_lookup",     "...or right of it")                \
+  X(bearing_v_dropped,"actor_bearing_point","a call whose vertical answer $80:B208 discarded — the ROM bug, reached") \
+  X(bearing_v_zero,   "actor_bearing_point","...or one already level, where the bug changes nothing") \
+                                                                                \
+  /* $80:B26B, $80:B2A5 player_in_range, player_bearing — the four exits of \
+     the selection they share, and the direction table's first entry. */        \
+  X(pick_b_nearer,    "player_pick",        "player B in range and strictly nearer than A") \
+  X(pick_a_nearer,    "player_pick",        "...or in range and no nearer, so A wins without being re-checked") \
+  X(pick_a_only,      "player_pick",        "player B out of range and A inside it") \
+  X(pick_neither,     "player_pick",        "neither player close enough — the zero exit") \
+  X(player_bearing_same,"player_bearing",   "the player is on exactly the same pixel, which answers UP rather than zero") \
+  X(player_bearing_off,"player_bearing",    "...or is somewhere, which is every other call") \
+                                                                                \
   /* $80:BF1B actor_notify_box — four bounds, two refusals, and the five ways      a visible record is dismissed before its handler is entered. */             X(notify_bound_clamped,"actor_notify_box",  "a rectangle bound was negative, so it was zeroed")   X(notify_bound_kept,  "actor_notify_box",  "...or was not, and stood")   X(notify_no_actors,   "actor_notify_box",  "an empty visible list — the LDY $9C exit")   X(notify_one_actor,   "actor_notify_box",  "exactly one visible record, which the DEY DEY refuses to test")   X(notify_no_id,       "actor_notify_box",  "a visible record with no collision id")   X(notify_self_id,     "actor_notify_box",  "...or wearing the caller's own, so nothing blasts itself")   X(notify_left_of,     "actor_notify_box",  "left of the box")   X(notify_right_of,    "actor_notify_box",  "...or right of it")   X(notify_above,       "actor_notify_box",  "inside on X but above the box")   X(notify_below,       "actor_notify_box",  "...or below it")   X(notify_hit,         "actor_notify_box",  "inside the box, so its handler was entered")                                                                                   /* $80:B3F1 actor_snap_to — two independent axes, each snapped or left. */    \
   X(snap_x_took,      "actor_snap_to",      "within a pixel on X, so X was snapped exactly onto the target") \
   X(snap_x_left,      "actor_snap_to",      "...or two or more away, so it was left where it was") \
@@ -483,6 +516,23 @@
   X(wide_attr_upper,  "terrain_blocked_wide", "a tile in the top row of five carries attribute bit 1") \
   X(wide_attr_lower,  "terrain_blocked_wide", "...or one in the row below, which needs all five above it to pass") \
   X(wide_clear,       "terrain_blocked_wide", "all ten tiles pass both tests, which is falling off the end of the tenth LSR") \
+  X(bit2_outside,     "terrain_point_bit2",  "the point is off the map, and the JSL answers before the routine reads a tile") \
+  X(bit2_hit,         "terrain_point_bit2",  "...or it is on the map and its tile carries bit 2") \
+  X(bit2_clear,       "terrain_point_bit2",  "...or it does not, the only way out with carry clear") \
+  X(bit8_hit,         "terrain_point_bit8",  "the tile under the point carries bit 8") \
+  X(bit8_clear,       "terrain_point_bit8",  "...or it does not") \
+  X(bit3_hit,         "terrain_tile_bit3",   "the tile carries bit 3") \
+  X(bit3_clear,       "terrain_tile_bit3",   "...or it does not") \
+  X(bit12_gap_upper,  "terrain_footprint_bit12", "one of the three tiles across the top lacks bit 12, so the footprint is off the surface") \
+  X(bit12_gap_lower,  "terrain_footprint_bit12", "...or one in the row below, which needs all three above it to carry it") \
+  X(bit12_all,        "terrain_footprint_bit12", "all six carry it — the inverted answer, and the only carry-clear exit") \
+  X(partner_no_a,     "partner_near",        "player A's record ANDs to zero with the caller's, which means there is no player A") \
+  X(partner_no_b,     "partner_near",        "...or player B's does, which is every frame of a one-player game") \
+  X(partner_mover_a,  "partner_near",        "the caller is player A, so the reference is B") \
+  X(partner_mover_b,  "partner_near",        "...or it is anything else, and the reference is A") \
+  X(partner_far_x,    "partner_near",        "more than $80 apart on X") \
+  X(partner_far_y,    "partner_near",        "...or on Y, which needs X to have passed first") \
+  X(partner_close,    "partner_near",        "inside the square on both axes, which is what the one caller is waiting to hear") \
   X(lzss_read_spent,  "lzss_read_byte",      "the stream is exhausted — the SEC exit, and the only end marker the format has") \
   X(column_priority,  "tilemap_copy_column", "a tile below the level's priority threshold, so bit 13 is forced on as it is copied") \
   X(column_plain,     "tilemap_copy_column", "...and one at or above it, copied across untouched") \
@@ -523,13 +573,151 @@
   X(boss_commit_y,    "boss_step",           "...or clear, and it writes $1E64") \
   X(boss_moved_x,     "boss_step",           "X ended somewhere else, which is the first thing the exit compares") \
   X(boss_moved_y,     "boss_step",           "X held but Y moved -- a diagonal that took only its vertical half") \
-  X(boss_stuck,       "boss_step",           "neither moved: carry set, and the caller reaches for the RNG")
+  X(boss_stuck,       "boss_step",           "neither moved: carry set, and the caller reaches for the RNG") \
+                                                                                   \
+  /* $82:9265, $82:92D6 — the four hitboxes under the big figure, and the box   \
+     it walks on things with. */                                                   \
+  X(boss_parts_plain, "boss_place_parts",    "$36 is zero, so the four parts trail down and to the right") \
+  X(boss_parts_mirrored,"boss_place_parts",  "...or it is not, and the same four X offsets come from the second half of the table") \
+                                                                                   \
+  /* $80:CCBF apu_next_byte — the 16-bit cursor incremented eight bits at a time. */ \
+  X(apu_src_step,     "apu_next_byte",       "the low byte advanced without carrying, which is 255 calls in 256") \
+  X(apu_src_wrap,     "apu_next_byte",       "...and the 256th, where the second INC runs and takes over the flags") \
+                                                                                   \
+  /* $80:CC7C apu_load_set has four branches and **no sites**, because it has no  \
+     shim: every call to it outlives a frame, so nothing in this harness ever     \
+     executes the C. Sites for it would sit in the corpus report's "untaken by    \
+     every input" list forever, and that list means "an input is missing" --      \
+     which would be a lie about four branches no input can reach. The branches    \
+     are described in `port/apu.c` instead. */                                    \
+                                                                                   \
+  /* $80:9D5B spawn_has_room — the two ceilings every spawn in the game clears. */ \
+  X(spawn_load_full,  "spawn_has_room",      "the weighted census is at 138 or past it, so the spawner sleeps a frame") \
+  X(spawn_load_ok,    "spawn_has_room",      "...or under it, and the thread count is worth asking about") \
+  X(spawn_threads_full,"spawn_has_room",     "eighteen live threads: room on the board, none in the scheduler") \
+  X(spawn_room,       "spawn_has_room",      "both ceilings clear -- the only answer that lets an actor exist") \
+                                                                                   \
+  /* $80:9C90 sin_deg — the table's three kinds of entry. */                       \
+  X(sin_positive,     "sin_deg",             "a byte with bit 7 clear, masked to $00FF") \
+  X(sin_negative,     "sin_deg",             "...or set, and sign-extended with ORA #$FF00") \
+  X(sin_sentinel,     "sin_deg",             "the $FF at index 90, the one answer a signed byte could not hold") \
+                                                                                   \
+  /* $80:F327 actor_publish_pos — one record or two. */                            \
+  X(publish_one,      "actor_publish_pos",   "a single record, written through $08 as an index") \
+  X(publish_two,      "actor_publish_pos",   "...or a stacked pair, the upper one placed a pixel down and a Z in front") \
+                                                                                   \
+  /* $81:8024 nearest_player_dist — who is on the board, and who turned out nearer. */ \
+  X(nearest_has_a,    "nearest_player_dist", "player A is up, so a real distance goes into $1E") \
+  X(nearest_no_a,     "nearest_player_dist", "...or is not, and $1E keeps the $FFFF it was primed with") \
+  X(nearest_has_b,    "nearest_player_dist", "player B is up") \
+  X(nearest_no_b,     "nearest_player_dist", "...or is not, which is every call of a one-player game") \
+  X(nearest_a_wins,   "nearest_player_dist", "A strictly nearer -- the BCC exit, whose flags are a discarded subtraction") \
+  X(nearest_b_wins,   "nearest_player_dist", "B strictly nearer, which needs two players and cannot happen without them") \
+  X(nearest_tie,      "nearest_player_dist", "the two are exactly equidistant, and the tie goes to B") \
+                                                                                   \
+  /* $80:9570 wave_hdma_build — one frame of the screen wobble. */                  \
+  X(wave_over,        "wave_hdma_build",     "the length went negative: the effect is finished and nothing is written") \
+  X(wave_building,    "wave_hdma_build",     "...or it has not, and the whole table is rebuilt") \
+  X(wave_second_header,"wave_hdma_build",    "X reached $F1, so the second repeat header goes in over a parameter's high byte") \
+  X(wave_off_axis,    "wave_hdma_build",     "the last parameter was not zero, so the table keeps its length this frame") \
+  X(wave_hold,        "wave_hdma_build",     "...it was zero, but the hold counter has frames left") \
+  X(wave_retract,     "wave_hdma_build",     "...and it has not: one scanline comes off, at the one moment it cannot show") \
+                                                                                   \
+  /* $81:9BF3 actor_step_bearing — a step, per axis, against three tests. */        \
+  X(bearing_rest,     "actor_step_bearing",  "a rest frame: one in four, on which nothing is even tested") \
+  X(bearing_move,     "actor_step_bearing",  "...or one of the other three") \
+  X(bearing_terrain,  "actor_step_bearing",  "the candidate is on a tile an enemy may not stand on") \
+  X(bearing_bounds,   "actor_step_bearing",  "...or off the edge of the level") \
+  X(bearing_occupied, "actor_step_bearing",  "...or somebody else is already standing there") \
+  X(bearing_clear,    "actor_step_bearing",  "...or all three agree and the axis is allowed") \
+  X(bearing_took_x,   "actor_step_bearing",  "the X step was taken, so the Y step is tested from the new column") \
+  X(bearing_took_y,   "actor_step_bearing",  "the Y step was taken") \
+                                                                                   \
+  /* $81:C16B, $81:C00B — the big monster's walk cycle and what it carries. */      \
+  X(monster_anim_hold,"monster_anim",        "the leg timer has not expired, so $2C is last frame's facing") \
+  X(monster_anim_advance,"monster_anim",     "...or it has, and the walk takes its next leg") \
+  X(monster_anim_mirror,"monster_anim",      "a west-facing direction: set the flip bit and return without placing the load") \
+  X(monster_anim_plain,"monster_anim",       "...or one of the other six, which clears it and does place it") \
+  X(monster_empty_handed,"monster_place_carried","holding nothing -- $28 is $FFFF and the TAX never happens") \
+  X(monster_carrying, "monster_place_carried","...or holding something, which gets put beside whichever way it faces") \
+                                                                                   \
+  /* $81:BB75, $81:BBA4 — the two states that decide where the monster goes. */     \
+  X(monster_board_far,"monster_seek",        "nothing of the four ids within $D0, so ask about the two players instead") \
+  X(monster_player_about,"monster_seek",     "...and one of them is close enough, so the creature stays") \
+  X(monster_gives_up, "monster_seek",        "...or neither is, and INC $2A ends the thread at the bottom of its loop") \
+  X(monster_dead_band,"monster_seek",        "between $B4 and $D0: too far to chase, too near to count as an empty board") \
+  X(monster_hands_full,"monster_seek",       "inside $B4 but $26 is set, so it will not start a second chase") \
+  X(monster_hands_free,"monster_seek",       "...or it is empty-handed, and the chase state is installed") \
+  X(monster_drops_victim,"monster_deliver",  "home to within 16 pixels on both axes and holding something, which is freed") \
+  X(monster_still_travelling,"monster_deliver","...or not home, or home with empty hands -- one instruction serves all three") \
+  X(monster_nothing_near,"monster_deliver",  "the shared tail: nothing inside $B4, so the state stands") \
+  X(monster_gives_chase,"monster_deliver",   "...or something is, and $12 gets $BEE3 whatever is still being carried") \
+                                                                                   \
+  /* $80:BE0C, $80:BE41 — a record's two ends. */                                   \
+  X(slot_alloc_scan,  "actor_slot_alloc",    "this slot is taken, so try the one below it") \
+  X(slot_alloc_took,  "actor_slot_alloc",    "...or it is free, and gets $0001 and the head of the list") \
+  X(slot_alloc_full,  "actor_slot_alloc",    "all 32 are taken: A comes back holding a flags word, not a zero") \
+  X(slot_free_not_mine,"actor_slot_free",    "ACTOR_THREAD is not the running thread, so the free does nothing and says nothing") \
+  X(slot_free_already,"actor_slot_free",     "...or the record is not allocated, which declines the same way") \
+  X(slot_free_took,   "actor_slot_free",     "...or it is ours and live: clear the flags word and install page zero") \
+  X(slot_free_head,   "actor_slot_free",     "it was the head, so the list head becomes its link") \
+  X(slot_free_walk,   "actor_slot_free",     "...or it is further down, and this link is not it") \
+  X(slot_free_unlink, "actor_slot_free",     "...this one is: the predecessor's link jumps over it") \
+  X(slot_free_unlisted,"actor_slot_free",    "walked off the end without finding it -- cleared, and still on the list") \
+                                                                                   \
+  /* $80:C07F and $80:C0A3 / $80:C139 — which panel, and whether to upload. */      \
+  X(hud_phase_p1,     "hud_refresh",         "the toggle came up zero, so this call looks at player 1") \
+  X(hud_phase_p2,     "hud_refresh",         "...or nonzero, and it looks at player 2") \
+  X(hud_upload_idle,  "hud_refresh",         "not one of the six tests fired: no job queued, nothing to upload") \
+  X(hud_upload_queued,"hud_refresh",         "...or something changed, so $1E7A is cleared and the tilemap goes on queue A") \
+  X(hud_upload_accepted,"hud_refresh",       "queue A had room, so X comes back as the slot the search stopped on") \
+  X(hud_upload_refused,"hud_refresh",        "...or all 16 were busy, and the upload is silently dropped for this frame") \
+  X(hud_panel_off,    "hud_panel",           "$1E88/$1E8A is zero -- this player is not in the game, and the panel is skipped") \
+  X(hud_panel_on,     "hud_panel",           "...or they are, and all six tests run") \
+                                                                                   \
+  /* The six change tests, in the order the panel makes them. */                    \
+  X(hud_health_changed,"hud_panel",          "health differs from its shadow, so the bar is redrawn") \
+  X(hud_health_same,  "hud_panel",           "...or it does not, and nothing is") \
+  X(hud_item_changed, "hud_panel",           "a different item is selected, so its icon is redrawn") \
+  X(hud_item_same,    "hud_panel",           "...or the same one still is") \
+  X(hud_score_changed,"hud_panel",           "the 32-bit score moved, so eight digits are redrawn") \
+  X(hud_score_same,   "hud_panel",           "...or both halves match their shadows") \
+  X(hud_score_high_only,"hud_panel",         "the low half matched and the high half did not -- a carry past $9999 since the last look") \
+  X(hud_item_count_changed,"hud_panel",      "the selected item's count moved") \
+  X(hud_item_count_same,"hud_panel",         "...or it did not") \
+  X(hud_weapon_changed,"hud_panel",          "a different weapon is selected, so its icon is redrawn") \
+  X(hud_weapon_same,  "hud_panel",           "...or the same one still is") \
+  X(hud_weapon_count_changed,"hud_panel",    "the selected weapon's count moved") \
+  X(hud_weapon_count_same,"hud_panel",       "...or it did not") \
+                                                                                   \
+  /* $80:C766 / $80:C77D and $80:C702 / $80:C71B — the adapters that can refuse. */ \
+  X(hud_weapon_shown, "hud_icon_adapter",    "a weapon is selected, so its 2x2 icon is drawn") \
+  X(hud_weapon_none,  "hud_icon_adapter",    "...or none is, and the icon and the count beside it are both cleared") \
+  X(hud_item_shown,   "hud_icon_adapter",    "an item is selected, so its 2x2 icon is drawn") \
+  X(hud_item_none,    "hud_icon_adapter",    "...or none is, and both blocks are cleared") \
+  X(hud_count_shown,  "hud_count_adapter",   "the selection indexes a real inventory slot, so three digits are drawn") \
+  X(hud_count_none,   "hud_count_adapter",   "nothing is selected, so the three columns are blanked instead") \
+  X(hud_count_over,   "hud_count_adapter",   "...or the slot is past the end of the inventory, which blanks them the same way") \
+                                                                                   \
+  /* $80:C4EC and the coda both number renderers share. */                          \
+  X(hud_digit_printed,"hud_digit",           "a digit worth showing: tile $3C07 plus it, and the rotate remembers") \
+  X(hud_digit_blank,  "hud_digit",           "...or a leading zero, which writes an empty tile and leaves carry alone") \
+  X(hud_digits_printed,"hud_digits_end",     "at least one digit printed, so the number stands as drawn") \
+  X(hud_digits_all_zero,"hud_digits_end",    "...or none did, and the last column is forced to a literal 0")
 
 // `$80:AD2B blockmap_expand` has none either, and for the same reason:
 // `src/port/levelmap.c` is written, one call is about six frames long, and the
 // harness abandons every one of them. Its helper `$80:ACF6` is registered and
 // has no sites of its own because it has no branches at all -- seven
 // instructions, straight through.
+//
+// The two "nothing selected" paths inside `$80:C5C2` and `$80:C666` have no
+// sites, and that one is not about frames. Both are live 65816 code with a
+// `BMI` in front of them, and both are unreachable: each is reached only from
+// adapters that have already branched on the same word. `src/port/hud.c` does
+// not implement either, so there is nothing to mark — and a mark would have sat
+// in the untaken list forever describing a thing no input can do, which is the
+// same trap `src/port/apu.c` fell into once and was pulled back out of.
 //
 // `$80:CD20 lzss_decompress` has no sites here on purpose. `src/port/lzss.c` is
 // written and is not registered — the harness cannot check a routine that

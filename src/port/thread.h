@@ -50,6 +50,20 @@ void thread_tick_waits(Wram* w);
 int vbl_queue_a_add(Wram* w, uint16_t addr, uint16_t bank);
 int vbl_queue_b_add(Wram* w, uint16_t addr, uint16_t bank);
 
+// The three flags either adder leaves, given the queue it worked on and whether
+// the job went in. Carry is the return value — set means refused — and the
+// comment in `src/cosim/routines.c` says what leaving it unclaimed cost.
+//
+// This is here rather than in the shim that used to own it because `$80:C07F`
+// ends `JML $8083AE` and so returns these same three flags as its own. Two
+// copies of one fact is one copy too many.
+typedef struct {
+  bool n, z, c;
+} VblQueueFlags;
+
+void vbl_queue_flags(const Wram* w, uint32_t count_at, uint16_t cap, bool added,
+                     VblQueueFlags* out);
+
 // --- $80:825E ---------------------------------------------------------------
 //
 // **How a thread gets its first stack frame**, and the exact counterpart of
@@ -93,6 +107,60 @@ int vbl_queue_b_add(Wram* w, uint16_t addr, uint16_t bank);
 
 int thread_spawn(Wram* w, const Rom* rom, uint16_t entry, uint16_t bank,
                  uint16_t caller_dp);
+
+// --- $80:9D5B  spawn_has_room — carry set means no ---------------------------
+//
+// Six instructions, fifteen bytes, and **every spawn in the game goes through
+// it**: 37,151 calls over the eleven profiled movies, from fourteen `JSL` sites
+// spread across banks `$80`, `$81`, `$82` and `$83`.
+//
+//     LDA $00DE : CMP #$008A : BCS out : LDA $0006 : CMP #$0012
+//     out: RTL
+//
+// Two ceilings, and they are different kinds of thing. The second is the
+// scheduler's: eighteen live threads out of the twenty-four slots
+// `thread_spawn` hands out, so six are held back for whatever is not an actor.
+// The first is `W_SPAWN_LOAD` against 138, and that one is a **weighted**
+// census — see `port/wram.h`. An actor charges its own weight when it spawns
+// and refunds it when it dies, over 137 sites and 21 distinct weights running
+// from 1 to 40, so 138 is not a population but a load: what it limits is how
+// much the board is *worth* rather than how much of it there is.
+//
+// ## The wait loop this is the condition of
+//
+// `$81:80EC actor_list_spawn` is where it shows: it walks a level's spawn list
+// and, before each entry,
+//
+//     LDA #$0001 : JSL thread_yield : JSL $809D5B : BCS back
+//
+// — a frame at a time, forever, until the board has room. That is why the
+// routine is called 37,151 times for far fewer actors than that: most calls are
+// a *refusal*, and the spawner's answer to a refusal is to sleep a frame and
+// ask again. A spawn list is therefore not a schedule; it is a queue that
+// drains at whatever rate the players clear the board.
+//
+// ## Both compares are `CMP`, so both are unsigned and both can be equal
+//
+// `BCS` is taken on equal, so 138 and 18 are the first *refused* values, not the
+// last accepted ones. The carry a caller reads back is whichever compare ran
+// last, which is the first one only when it refused — and that is the whole
+// return value. A and the flags are the same word looked at twice.
+#define SPAWN_HAS_ROOM_ENTRY 0x809d5bu
+
+// `CMP #$008A` — the weighted census's ceiling.
+#define SPAWN_LOAD_MAX 0x008a
+// `CMP #$0012` — eighteen of the twenty-four scheduler slots.
+#define SPAWN_THREAD_MAX 0x0012
+
+// A is whichever of the two counters was last loaded, and N/Z belong to the
+// compare that went with it. X and Y are never touched.
+typedef struct {
+  uint16_t a;
+  bool n, z;
+  bool c;  // set means **no room**, and it is the only thing any caller reads
+} SpawnRoomRegs;
+
+void spawn_has_room(const Wram* w, SpawnRoomRegs* out);
 
 // `$80:8475` is how a thread says "call me back": it stores a far address into
 // `thread_handler`/`thread_handler_bank` at its own slot. The other end,

@@ -22,8 +22,10 @@
 #include "port/collide.h"
 #include "port/fade.h"
 #include "port/floor.h"
+#include "port/hud.h"
 #include "port/levelmap.h"
 #include "port/lzss.h"
+#include "port/monster.h"
 #include "port/oam.h"
 #include "port/player.h"
 #include "port/rng.h"
@@ -32,6 +34,7 @@
 #include "port/step.h"
 #include "port/terrain.h"
 #include "port/thread.h"
+#include "port/trig.h"
 
 // ---------------------------------------------------------------------------
 // $80:B9D6  sprite_frame_tile — A = frame number, A = OAM tile word
@@ -152,21 +155,17 @@ static void shim_thread_tick_waits(Wram* w, const Rom* rom, const CosimRegs* in,
 // at whatever the caller happened to have. Under `run`, the caller's retry loop
 // never exited and the routine was entered 147,405 times instead of 107. An
 // unclaimed flag is not a small omission; it is an unchecked output.
+//
+// The three lines that decide it now live in `port/thread.c`, because
+// `$80:C07F` ends `JML $8083AE` and hands the same three flags back as its own
+// — see `port/hud.c`. What stays here is which of them this shim claims.
 static void queue_flags(Wram* w, uint32_t count_at, uint16_t cap, bool added,
                         CosimRegs* out) {
-  uint16_t count = wram_r16(w, count_at);
-  if (added) {
-    // `INC` of the count is the last thing to run, and it leaves carry alone.
-    out->n = (count & 0x8000) != 0;
-    out->z = count == 0;
-    out->c = false;
-  } else {
-    // Refused: N and Z are what the `CPY` that refused produced.
-    uint16_t diff = (uint16_t)(count - cap);
-    out->n = (diff & 0x8000) != 0;
-    out->z = diff == 0;
-    out->c = true;
-  }
+  VblQueueFlags f;
+  vbl_queue_flags(w, count_at, cap, added, &f);
+  out->n = f.n;
+  out->z = f.z;
+  out->c = f.c;
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
@@ -563,6 +562,315 @@ static void shim_apu_play_sfx(Wram* w, const Rom* rom, const CosimRegs* in,
   (void)rom;
   ApuSfxRegs r;
   apu_play_sfx(w, in->a, in->d, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:CCBF  apu_next_byte — nothing in, one byte out, cursor advanced
+// ---------------------------------------------------------------------------
+
+// The most-called entry in this registry, and the one where a shim's "which
+// registers did you model" mask earns its keep the other way round: X and Y are
+// never touched by five instructions that mention neither, so they are claimed
+// by simply handing back what came in, and any surprise is a diff.
+//
+// The routine runs eight bits wide, and `out->a`'s high byte is the caller's —
+// see `port/apu.h`, which is the same preservation `apu_send` documents.
+static void shim_apu_next_byte(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  ApuNextRegs r;
+  apu_next_byte(w, rom, in->a, &r);
+  out->a = r.a;
+  out->x = in->x;
+  out->y = in->y;
+  out->n = r.n;
+  out->z = r.z;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+}
+
+// ---------------------------------------------------------------------------
+// $80:CC7C  apu_load_set — written, and with no shim
+// ---------------------------------------------------------------------------
+//
+// The other two APU routines' caller, and the reason they are called a quarter
+// of a million times each. `apu_load_set()` exists in `port/apu.c` and is the
+// largest single item the ranking still offers — 1.25M instructions over the
+// six profiled movies, 0.7% of everything the game does.
+//
+// It cannot be checked. A call is about 104,000 instructions, which is some
+// eight frames, and the harness abandons any call an interrupt lands inside;
+// every one of them does. There is no shim here because a `static` function
+// nothing references is a warning, and no registry entry because the row would
+// read `not reached` forever. The registry section below says the rest.
+
+// ---------------------------------------------------------------------------
+// $80:9D5B  spawn_has_room — nothing in, carry out
+// ---------------------------------------------------------------------------
+
+// Six instructions, no arguments and no writes: it reads two globals and
+// answers with a flag. The port takes a `const Wram*` for that reason, which is
+// the only shim here whose routine could not modify memory if it wanted to.
+static void shim_spawn_has_room(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  SpawnRoomRegs r;
+  spawn_has_room(w, &r);
+  out->a = r.a;
+  out->x = in->x;
+  out->y = in->y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:9C90  sin_deg — A = degrees, A = sin x 128
+// ---------------------------------------------------------------------------
+
+// Registered at the inner `JSR` target rather than at `$80:9C8C`, the four-byte
+// `JSR : RTL` trampoline in front of it, because that is where the work is and
+// every call reaches it either way. The trampoline is therefore *subsumed*: it
+// is two instructions neither side can get wrong.
+//
+// N and Z come off the closing `PLX`, so they belong to the caller's own index
+// register — the third routine in this registry whose flags describe an
+// argument nobody thought they were passing, after `apu_play_sfx`'s `PLD` and
+// `terrain_point_bit2`'s. Carry is the `CMP #$FF`'s and means *sentinel*.
+static void shim_sin_deg(Wram* w, const Rom* rom, const CosimRegs* in,
+                         CosimRegs* out) {
+  (void)w;
+  SinRegs r;
+  sin_deg(rom, in->a, in->x, &r);
+  out->a = r.a;
+  out->x = in->x;
+  out->y = in->y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:F327  actor_publish_pos — nothing in; the record is on the thread's page
+// ---------------------------------------------------------------------------
+
+// Everything it needs is on `in->d`, which is why `CosimRegs` carries a direct
+// page at all: this routine takes no register arguments and would be
+// uncallable without it.
+static void shim_actor_publish_pos(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out) {
+  (void)rom;
+  PublishRegs r;
+  actor_publish_pos(w, in->d, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+}
+
+// ---------------------------------------------------------------------------
+// $81:8024  nearest_player_dist — the point is on the page too
+// ---------------------------------------------------------------------------
+
+static void shim_nearest_player_dist(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  NearestRegs r;
+  nearest_player_dist(w, in->d, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:C05A  sprite_cache_init — A:Y is the frame array, and DB is the answer
+// ---------------------------------------------------------------------------
+
+// **Written, and not in the table below.** `$80:C05A` is 16,900 instructions of
+// two stores in a loop — about half a million master cycles, which is a frame
+// and a half — so an NMI lands inside every single call and the harness
+// abandons all of them: two calls on `boot.zmv`, two on `level1.zmv`, zero
+// checked, twice interrupted. It is the third routine in the port to be
+// unregisterable for that reason rather than for want of anyone writing it,
+// after `$80:CD20 lzss_decompress` and `$80:AD2B blockmap_expand`, and it is
+// the only one of the three that is not a loop over data: it is a `memset`.
+//
+// There is no shim here, and a dead one would only be a warning to suppress.
+// The port function is `sprite_cache_init` in `port/sprite_cache.c`, its
+// contract is written out in the header, and the shim it wants is four lines:
+// `in->a` and `in->y` are the frame array, `in->db` is what N and Z come back
+// as, and A/X/Y are constants. `tools/native_share.py` lists the address in
+// `BLOCKED` with the same reason, so the share it earns is zero on both sides
+// of the report rather than zero on one.
+//
+// It would also have been the first routine here whose *only* claimed flags
+// come from `in->db`. That field was added for `$80:8480 thread_call_handler`,
+// whose exit `PLB` restores its caller's bank; this is the same instruction
+// used the same way, two banks apart.
+
+// ---------------------------------------------------------------------------
+// $80:9570  wave_hdma_build — everything is on the wobble thread's page
+// ---------------------------------------------------------------------------
+
+// Carry is an input for the same reason `enemy_collide`'s is: one exit does not
+// touch it. Here it is the first instruction's `BMI`, which is the exit taken
+// on every frame after the effect has finished — so the path that needs the
+// passthrough is the common one rather than the rare one.
+static void shim_wave_hdma_build(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  WaveRegs r;
+  wave_hdma_build(w, rom, in->d, in->x, in->y, in->c, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $81:9BF3  actor_step_bearing — A is a doubled direction
+// ---------------------------------------------------------------------------
+
+// X is claimed, and it is the leftover of whichever of three *other* ported
+// routines refused the second axis. That is only checkable because all three
+// model their own X: `terrain_blocked_enemy` and `actor_at_point` write it, and
+// `terrain_out_of_bounds` provably does not touch either index register. The
+// port therefore reproduces a register it never chose, by composition.
+static void shim_actor_step_bearing(Wram* w, const Rom* rom, const CosimRegs* in,
+                                    CosimRegs* out) {
+  StepBearingRegs r;
+  actor_step_bearing(w, rom, in->d, in->a, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $81:C16B, $81:C00B — the monster's walk, and its load
+// ---------------------------------------------------------------------------
+
+// Two entries for what is nearly one routine: `$81:C16B` falls into `$81:C00B`
+// on three of its four paths, so registering the caller alone would leave the
+// callee unchecked on the frames it is reached from anywhere else — and there
+// is nowhere else, which is exactly the sort of claim worth making the harness
+// prove rather than reading off a listing.
+//
+// V is not claimed by either. On `$81:C00B`'s working path it is a coordinate
+// addition's overflow, on its guard path it is the caller's own, and the walk
+// above never touches it; the one caller in the ROM reads none of the four.
+static void shim_monster_place_carried(Wram* w, const Rom* rom,
+                                       const CosimRegs* in, CosimRegs* out) {
+  MonsterCarryRegs r;
+  monster_place_carried(w, rom, in->d, in->a, in->x, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static void shim_monster_anim(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  MonsterAnimRegs r;
+  monster_anim(w, rom, in->d, in->x, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $81:BB75, $81:BBA4  monster_seek, monster_deliver — nothing in but the page
+// ---------------------------------------------------------------------------
+//
+// The other half of each of the creature's states: `monster_anim` draws and one
+// of these two decides where to go. Neither takes an argument — the first
+// instruction of one is `STZ $24` and of the other `LDA $0A` — so the direct
+// page is the whole calling convention.
+//
+// Both end in a `JMP` to a two-instruction stub whose `RTS` is the one that
+// returns, which is why `ret_op` below points at an address that does not look
+// like either routine's last instruction. `ret_op` decides where a *substituted*
+// call is sent, not how a returning one is recognised, so any `RTS` inside the
+// routine does the job; see `port/monster.h`.
+static void shim_monster_seek(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  MonsterSeekRegs r;
+  monster_seek(w, in->d, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static void shim_monster_deliver(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  MonsterDeliverRegs r;
+  monster_deliver(w, in->d, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:BE0C, $80:BE41 — a display record's two ends
+// ---------------------------------------------------------------------------
+
+static void shim_actor_slot_alloc(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  SlotAllocRegs r;
+  actor_slot_alloc(w, in->db, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// `in->d` is not scratch here the way it is everywhere else in this file — the
+// routine installs page zero for itself and puts the caller's back with `PLD`,
+// which is what decides N and Z on the only path that changes anything.
+static void shim_actor_slot_free(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  SlotFreeRegs r;
+  actor_slot_free(w, in->a, in->d, in->x, in->y, &r);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -1320,6 +1628,152 @@ static void shim_actor_nearest(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
+// $80:B093  actor_gap — Y = a record; A = its distance from $38/$3A
+// ---------------------------------------------------------------------------
+//
+// **The only routine in the registry whose point arrives in memory rather than
+// in registers.** It is a `JSR` leaf inside bank $80 with two callers, both of
+// which write `$38` and `$3A` before entering it, so there is nothing to read
+// off `in` but Y — and reading them from WRAM inside the shim is not a shortcut,
+// it is the calling convention.
+//
+// Carry is declared on two of the three exits and withheld on the third. See
+// `ActorGapRegs`: the empty-record exit does not execute anything that writes
+// it, so claiming a value there would be asserting what the *caller* left, and
+// `out->flags` is per call precisely so a shim can decline.
+//
+// X is untouched; Y is the record, and the routine never writes either.
+static void shim_actor_gap(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  (void)rom;
+  ActorGapRegs r;
+  actor_gap(w, in->y, &r);
+  out->a = r.a;
+  out->x = in->x;
+  out->y = in->y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | (r.has_c ? COSIM_FLAG_C : 0);
+}
+
+// ---------------------------------------------------------------------------
+// $80:B18F  actor_nearest_id3 — X, Y = the point; X = winner, A = its distance
+// ---------------------------------------------------------------------------
+//
+// `actor_nearest`'s register contract exactly, because it is `actor_nearest`
+// with one collision id in place of four: N and Z off the closing `PLD` and so
+// the caller's own direct page, carry clear from the `CPX` that ends a walk
+// which always ends the same way, Y untouched from the `STY $3C` on the way in.
+static void shim_actor_nearest_id3(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out) {
+  (void)rom;
+  uint16_t dist = 0;
+  uint16_t found = actor_nearest_id3(w, in->x, in->y, &dist);
+  out->a = dist;
+  out->x = found;
+  out->y = in->y;
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->c = false;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:B22A  actor_bearing — X = the record to look from, Y = the one to find
+// ---------------------------------------------------------------------------
+//
+// A is the direction, X is the table index that produced it, Y is the record
+// asked about and is never written. N and Z are the closing `PLD`'s — the same
+// split as `actor_nearest`, and for the same reason.
+//
+// Carry is the routine's own and is **not** the horizontal `CMP`'s: the `ADC`
+// under it overwrites it on every path but the equal one. See
+// `ActorBearingRegs`, where the 2,078 diverging calls that said so are
+// recorded.
+static void shim_actor_bearing(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  ActorBearingRegs r;
+  actor_bearing(w, rom, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = in->y;
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:B1EC  actor_bearing_point — A = a record, X and Y = the point
+// ---------------------------------------------------------------------------
+//
+// The same three registers as `actor_bearing`, and the same flags, off a
+// routine that reaches only three of its twelve table entries. Y out is the
+// record — `PHA : ... : PLA : TAY` puts the accumulator argument there on the
+// way in and nothing moves it afterwards — which is *not* the `y` that came in,
+// and is the one place this routine's contract differs from its sibling's.
+static void shim_actor_bearing_point(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  ActorBearingRegs r;
+  actor_bearing_point(w, rom, in->a, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = in->a;
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:B26B  player_in_range — A = the range, X and Y = the point
+// ---------------------------------------------------------------------------
+//
+// Three exits, three different carries, and two of them return the same player;
+// `PlayerPickRegs` is where the four cases are set out. N and Z are the `PLD`'s
+// as everywhere in this family.
+static void shim_player_in_range(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  PlayerPickRegs r;
+  player_in_range(w, in->a, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:B2A5  player_bearing — A = the range, X and Y = the point
+// ---------------------------------------------------------------------------
+//
+// The busiest of the six: 19,898 calls over twenty-seven sites in three banks,
+// and the one the enemies actually steer by.
+//
+// All three registers are claimed and all three are different per exit — the
+// direction exit hands back a distance in X and a record in Y, both pulled off
+// the stack around the table lookup, while the zero exit hands back the
+// caller's own `x` and whatever `$D4` held. Carry is clear on every direction
+// exit and set on the zero one, and it is not a `SEC`/`CLC` pair that makes it
+// so: it is the `ASL` that doubles a word-table index, which never carries.
+static void shim_player_bearing(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  PlayerPickRegs r;
+  player_bearing(w, rom, in->a, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
 // $80:BF67  actor_at_point — A = self, X, Y = the point; carry = occupied
 // ---------------------------------------------------------------------------
 //
@@ -1475,6 +1929,107 @@ static void shim_terrain_blocked_wide(Wram* w, const Rom* rom,
   out->c = r.blocked;
   out->n = (in->d & 0x8000u) != 0;
   out->z = in->d == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:AF2C / $80:B05F / $80:B03B / $80:AF66 — the rest of the attribute word
+// ---------------------------------------------------------------------------
+//
+// Four more masks out of the same sixteen-bit word, three of them one tile and
+// the fourth the familiar six. All four `PHD`/`PLD`, so N and Z are the
+// caller's direct page and only carry is ever the answer.
+//
+// The one thing worth watching in a shim here is **A**, because the four do not
+// agree about it. `$80:AF2C` tests with `BIT #$0004` and hands back the whole
+// attribute word; the other three test with `AND` and hand back the mask or
+// zero, which says nothing carry did not. And `$80:AF2C` has a fifth exit
+// before any of that — `JSL $80B422` deciding the point is off the map, with A
+// the bounds test's own and X and Y never touched.
+static void shim_terrain_point_bit2(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  TerrainRegs r;
+  terrain_point_bit2(w, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->c = r.blocked;
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static void shim_terrain_point_bit8(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  TerrainRegs r;
+  terrain_point_bit8(w, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->c = r.blocked;
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// X and Y are tile coordinates here, not pixels — this is the one whose caller
+// has already divided. X comes back doubled, which is `tilemap_tile_addr`'s
+// `PLX` showing through rather than anything this routine decided.
+static void shim_terrain_tile_bit3(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out) {
+  (void)rom;
+  TerrainRegs r;
+  terrain_tile_bit3(w, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->c = r.blocked;
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// The inverted one: carry *clear* means all six probes carried bit 12.
+static void shim_terrain_footprint_bit12(Wram* w, const Rom* rom,
+                                         const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  TerrainRegs r;
+  terrain_footprint_bit12(w, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->c = r.blocked;
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:AFFB  partner_near — A = the caller's record, X/Y = a point
+// ---------------------------------------------------------------------------
+//
+// Sat in the middle of those four in the ROM and belongs with `$80:A8B3`
+// instead: the other test about the other player, with the leash taken off.
+//
+// **No `PHD`**, which puts it in the small class `terrain_out_of_bounds`
+// started — N and Z are whatever decided, and there are two kinds of decision.
+// The two absent-player exits leave a `BIT`'s flags, and `BIT abs` sets Z from
+// **A AND memory** rather than from memory, so the routine's existence check is
+// really an overlap test that works only because every actor record pointer in
+// the game has bits 11 and 12 set. `port/step.h` says why at length.
+static void shim_partner_near(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  PartnerRegs r;
+  partner_near(w, in->a, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
@@ -2280,6 +2835,64 @@ static void shim_boss_step(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
+// $82:9265, $82:92D6  boss_place_parts, boss_stomp — the same two words again
+// ---------------------------------------------------------------------------
+//
+// `boss_step` moves `$1E62`/`$1E64`; these two are what the same thread does
+// with them on the next two instructions. Neither takes a register argument.
+//
+// `boss_place_parts` reads four record pointers off the direct page and one
+// mirror flag, and writes eight words. Its V is that of the `ADC` its flags
+// come from and is not claimed — the caller's next instruction is another
+// `JSR`, and no exit of this routine has ever had a reader for it.
+static void shim_boss_place_parts(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  BossPartsRegs r;
+  boss_place_parts(w, rom, in->d, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// `boss_stomp` is five stores and a `JSL`, so it inherits `actor_notify_box`'s
+// decline whole — including the part where a declined call may already have
+// told some of the actors in the box. The guard has to build the box before it
+// can ask, because what the walk finds is what decides the answer; it does that
+// to the harness's scratch copy, which is thrown away either way.
+//
+// **Neither `in->a` nor `in->c` is passed through**, and that is the whole of
+// what this shim gets wrong if it is written the obvious way: the `JSL` hands
+// `actor_notify_box` an A and a carry that `$82:92D6` made itself, three and
+// two instructions earlier. Passing the caller's A instead fails on call 1 of
+// `level25-lane` with `A: ROM $000A, port $021D` — `$000A` being the id the
+// routine had just loaded. See `port/boss.h`.
+static bool guard_boss_stomp(Wram* scratch, const Rom* rom,
+                             const CosimRegs* in) {
+  (void)in;
+  return boss_stomp_supported(scratch, rom);
+}
+
+static void shim_boss_stomp(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  BossStompRegs r;
+  boss_stomp(w, rom, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->c = r.c;
+  // The `PLD` inside `actor_notify_box`, restoring the page this routine was
+  // called on — so two of the three flags describe the boss thread and not the
+  // box.
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
 // $80:ACF6  blockmap_cell_ptr — X = column, Y = row
 // ---------------------------------------------------------------------------
 //
@@ -2343,6 +2956,97 @@ static bool guard_blockmap_cell_ptr(Wram* scratch, const Rom* rom,
 // has to build a tile map from a level record like everything else.
 
 // ---------------------------------------------------------------------------
+// $80:C07F, $80:C0A3, $80:C139  the status panel
+// ---------------------------------------------------------------------------
+
+// Three entries for a tree of twenty routines, and the reason there are three
+// rather than one is that the two panels have callers `$80:C07F` does not.
+// `$80:C1D1`, `$80:C1F1`, `$80:C1F5` and `$80:C215` — the screen transitions —
+// reach them directly, so registering only the top would leave those four sites
+// running the ROM and checking nothing.
+//
+// All three take the caller's direct page, because `$1E`, `$20`, `$22` and `$24`
+// are scratch on whatever thread's page is current. `$80:C07F` is a `JSL`
+// target from three banks; the two panels are `JSR`ed from bank `$80` only.
+//
+// Carry is claimed on all three, and it is the flag that took the work. Nothing
+// in the cluster returns anything in it, but there is no path through a panel
+// that leaves it alone: a `CMP` against a shadow sets it six times over, and
+// below that so do the shifts that build a table index and the `ROR $1E` inside
+// every printed digit. See `port/hud.h`.
+static void shim_hud_panel1(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  HudPanelRegs r = {.a = in->a, .x = in->x, .y = in->y,
+                    .n = in->n, .z = in->z, .c = in->c};
+  hud_panel(w, rom, in->d, HUD_SIDE_P1, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static void shim_hud_panel2(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  HudPanelRegs r = {.a = in->a, .x = in->x, .y = in->y,
+                    .n = in->n, .z = in->z, .c = in->c};
+  hud_panel(w, rom, in->d, HUD_SIDE_P2, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static void shim_hud_refresh(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  // A is not an input: `LDA $24` overwrites it before anything reads it. X, Y
+  // and carry are, because the quiet paths hand all three straight back.
+  HudRefreshRegs r = {.x = in->x, .y = in->y, .c = in->c};
+  hud_refresh(w, rom, in->d, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:CB61 and $80:CB1A — the SPC700 upload, and why neither is registered
+// ---------------------------------------------------------------------------
+//
+// `$80:CB61 apu_ipl_upload` is the largest registerable-looking row the ranking
+// has left: 4,351,919 instructions over eleven calls, 1.5%, with another
+// 6,496,644 of the machine waiting inside it. `$80:CB1A apu_boot` is the `MVN`
+// pair and the four port writes around it, and it calls `$CB61`.
+//
+// Neither is here, and there are two independent reasons — one measured, one
+// structural.
+//
+// **Measured.** Both were registered temporarily against an empty shim, which
+// is enough to read the harness's own verdict because `$80:CB61` writes no WRAM
+// at all: `1 call, 1 interrupted, 0 checked` on `boot.zmv`, where the screen is
+// off and NMI has the best chance of being disabled, and the same on
+// `level25-lane`. About 986,000 instructions per call is many frames, and an
+// interrupt lands in every one.
+//
+// **Structural, and the one that would still apply if the frame problem went
+// away.** The routine's entire observable effect is on the SPC700, through
+// `$2140`-`$2143`, one byte at a time and gated on the SPC's replies. There is
+// nothing in WRAM for a diff to compare, and a substituted port would have to
+// drive the real handshake through the host — which is what `apu_send` does,
+// and why `apu_send` is `verify_only` and can never be substituted. `$80:CB61`
+// could at best be the same, on a call the harness cannot reach the end of.
+//
+// `tools/native_share.py` carries both verdicts in `BLOCKED`.
+
+// ---------------------------------------------------------------------------
 // The registry
 // ---------------------------------------------------------------------------
 
@@ -2390,6 +3094,43 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_thread_tick_waits,
         .cycles = 3204,
         .stack_bytes = 0,   // pushes nothing
+    },
+    {
+        .name = "hud_refresh",
+        .symbol = "$80:C07F",
+        .entry = 0x80c07f,
+        // `$C0A2`, the quiet path's `RTL`. The other exit is a `JML $8083AE`
+        // and returns through *that* routine's `RTL` — which is fine, because a
+        // return is detected by PC and stack pointer rather than by address,
+        // and `ret_op` is only where a substituted call is teleported to.
+        .ret_op = 0x80c0a2,
+        .ret_kind = COSIM_RTL,
+        .run = shim_hud_refresh,
+        .cycles = 1367,
+        .stack_bytes = 6,  // `JSR` a panel, `JSR` an adapter, `JSR` a digit
+    },
+    {
+        .name = "hud_panel1",
+        .symbol = "$80:C0A3",
+        .entry = 0x80c0a3,
+        .ret_op = 0x80c138,
+        .ret_kind = COSIM_RTS,
+        .run = shim_hud_panel1,
+        .cycles = 1247,
+        .stack_bytes = 4,
+    },
+    {
+        .name = "hud_panel2",
+        .symbol = "$80:C139",
+        .entry = 0x80c139,
+        .ret_op = 0x80c1ce,
+        .ret_kind = COSIM_RTS,
+        .run = shim_hud_panel2,
+        // Lower than its twin's only because player 2 is usually absent, and
+        // the panel-off exit is eight cycles of work. On a two-player movie the
+        // two means are within one percent of each other.
+        .cycles = 694,
+        .stack_bytes = 4,
     },
     {
         .name = "vbl_queue_a_add",
@@ -2992,6 +3733,248 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 4,  // PHD + PEA, then the `JSR $CCC8` at the same depth
     },
     {
+        // Also a callee of the uploader `apu_send` serves, and the third of the
+        // three routines the data-set path is made of. Unlike the other two it
+        // is ordinary: it touches no register, waits for nothing, and is
+        // substituted like anything else.
+        .name = "apu_next_byte",
+        .symbol = "$80:CCBF",
+        .entry = 0x80ccbf,
+        .ret_op = 0x80ccc7,  // RTS
+        .ret_kind = COSIM_RTS,
+        .run = shim_apu_next_byte,
+        // 134..202, and the mean is **138 on every movie measured** — the
+        // flattest profile in this registry by a distance, because there is one
+        // branch in it and it is taken once in 256. Cheaper entries exist (the
+        // collision dispatchers bottom out at 40) but none of them is called a
+        // quarter of a million times.
+        .cycles = 138,
+        .stack_bytes = 0,   // no pushes; five instructions and four of them are
+                            // a byte-wide increment
+    },
+    // `$80:CC7C apu_load_set` would go here, after the two routines it calls,
+    // and it is written — `port/apu.h`, `apu_load_set()` — but there is no
+    // entry for it and no shim. **Every call to it is interrupted.** It sends
+    // about 23,800 commands per set and spends roughly 104,000 instructions
+    // doing it, which is eight frames or so, and an NMI lands inside all of
+    // them: 5 calls / 5 interrupted / 0 checked on `level25-lane`, and 3/3/0 on
+    // `boot.zmv`, where the screen is off and the load happens before the title.
+    // A routine that outlives a frame cannot be verified per call, so
+    // registering it would add a row that says `not reached` on every movie in
+    // the corpus and check nothing.
+    //
+    // The C stands, unverified, exactly as `sprite_cache_init` does; the
+    // address is declared in `tools/native_share.py`'s `BLOCKED` so the ranking
+    // stops offering it. See `docs/cosim.md`.
+    {
+        .name = "spawn_has_room",
+        .symbol = "$80:9D5B",
+        .entry = 0x809d5b,
+        .ret_op = 0x809d69,  // RTL; both compares fall onto it
+        .ret_kind = COSIM_RTL,
+        .run = shim_spawn_has_room,
+        // 112..198, call-weighted 150 over 15,393 calls on five movies. The
+        // two ends are the two exits: 112 is a refusal on the census, which
+        // is three instructions, and 198 is both compares. The mean sits
+        // nearer the top because most calls get past the first ceiling.
+        .cycles = 150,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "sin_deg",
+        .symbol = "$80:9C90",
+        .entry = 0x809c90,
+        .ret_op = 0x809cb1,  // RTS, after the PLX that decides N and Z
+        .ret_kind = COSIM_RTS,
+        .run = shim_sin_deg,
+        // 240..324, mean 286 — and **2,676 calls, to the call, on every one of
+        // the five movies measured**, which are different levels of different
+        // lengths with different inputs. Bisecting `level1` says why: nothing
+        // reaches it before frame 900 and nothing reaches it after frame 1,200,
+        // so all 2,676 are one burst in the level-entry transition and none of
+        // them is play. The count is a property of the ROM, not of the input,
+        // which is a thing very few rows in this table can say.
+        .cycles = 286,
+        .stack_bytes = 2,  // the PHX, and the index register is sixteen bits
+                           // because the table is 360 entries long — which the
+                           // harness's measured stack column independently
+                           // confirms
+    },
+    {
+        .name = "actor_publish_pos",
+        .symbol = "$80:F327",
+        .entry = 0x80f327,
+        .ret_op = 0x80f337,  // the single-record RTS; the other exit is $F353
+        .ret_kind = COSIM_RTS,
+        .run = shim_actor_publish_pos,
+        // 244..614, call-weighted 353 over 17,076 calls on five movies. The
+        // floor is the single-record path — six instructions — and the ceiling
+        // is the stacked pair, which is eleven and does four more memory
+        // accesses. The mean therefore reads as *what fraction of the board is
+        // two records tall*, and it moves the most of anything in this
+        // registry between movies: 251 on `level25-lane` against 413 on
+        // `level1-2p`.
+        .cycles = 353,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "nearest_player_dist",
+        .symbol = "$81:8024",
+        .entry = 0x818024,
+        .ret_op = 0x81807d,  // RTS
+        .ret_kind = COSIM_RTS,
+        .run = shim_nearest_player_dist,
+        // 556..978, call-weighted 643 over 8,240 calls on five movies, and the
+        // one routine in this round whose cost is a straight function of how
+        // many players are on the board: four one-player movies all land
+        // between 598 and 609, and `level1-2p` alone measures 918. The second
+        // player is the second half of the routine, and it is the only input
+        // that turns it on.
+        .cycles = 643,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "wave_hdma_build",
+        .symbol = "$80:9570",
+        .entry = 0x809570,
+        .ret_op = 0x8095da,  // RTS; every path in the routine converges on it
+        .ret_kind = COSIM_RTS,
+        .run = shim_wave_hdma_build,
+        // **The most expensive substitutable routine in the registry**, ahead
+        // of `$82:8069 boss_bg_queue_flip` at 89,008 and `sprite_build_oam` at
+        // 43,111 — and unlike either of those it is neither a DMA nor a pass
+        // over the whole board. 68,996..164,382, call-weighted 115,606 over
+        // 2,021 calls on seven movies — a third of a frame's CPU budget in one
+        // call, because the loop makes ~223 far calls to `sin_deg` and does two
+        // long-addressed stores per scanline.
+        //
+        // The distribution is two populations rather than one. Every level
+        // movie measures exactly 12 calls at 163,164..163,514, the full-length
+        // table built twelve times in the level-entry transition; `boot.zmv`
+        // makes 1,077 at a mean of 96,406 and a floor of 1,176, which is the
+        // title sequence holding the wobble and then retracting it two bytes at
+        // a time until there is almost no table left to build. `level45-race`
+        // sits between the two at 884 calls and 135,762.
+        .cycles = 115606,
+        .stack_bytes = 7,  // JSL (3) into the trampoline, its JSR (2), and the
+                           // PHX inside sin_deg (2)
+    },
+    {
+        .name = "actor_step_bearing",
+        .symbol = "$81:9BF3",
+        .entry = 0x819bf3,
+        .ret_op = 0x819c61,  // RTS, shared with the rest-frame exit
+        .ret_kind = COSIM_RTS,
+        .run = shim_actor_step_bearing,
+        // 134..16,904, mean 5,154 over 16,569 calls — and the spread is the
+        // whole story: 134 is a rest frame, which is four instructions, and the
+        // ceiling is six calls into three other ported routines, two of which
+        // walk the visible-actor list. One movie in the corpus reaches it at
+        // all (`level21-bubble`), which is what a per-actor behaviour looks
+        // like from here.
+        .cycles = 5154,
+        .stack_bytes = 7,  // the deepest of the three JSLs: $80:BF67's own
+                           // PHD and PEA under the call's three bytes
+    },
+    {
+        .name = "monster_anim",
+        .symbol = "$81:C16B",
+        .entry = 0x81c16b,
+        .ret_op = 0x81c1a6,  // the RTS after the JSR; the mirror exits at $C1B0
+        .ret_kind = COSIM_RTS,
+        .run = shim_monster_anim,
+        // 280..1,166, call-weighted 473 over 26,736 calls on the two movies
+        // that meet the creature — `level25-lane` and `level45-race`, at 461
+        // and 480, which is as close as two movies get in this table.
+        .cycles = 473,
+        .stack_bytes = 2,  // the JSR into $81:C00B on three of the four paths
+    },
+    {
+        .name = "monster_place_carried",
+        .symbol = "$81:C00B",
+        .entry = 0x81c00b,
+        .ret_op = 0x81c025,  // RTS
+        .ret_kind = COSIM_RTS,
+        .run = shim_monster_place_carried,
+        // 104..400, call-weighted 120 over 24,422 calls, and the two ends are
+        // the two paths: 104 is the `CPY #$FFFF` guard and an `RTS`, and the
+        // rest is two table reads and two coordinate adds. The 2,314-call gap
+        // between this and `monster_anim` is the mirrored exit that returns
+        // without calling it.
+        .cycles = 120,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "monster_seek",
+        .symbol = "$81:BB75",
+        .entry = 0x81bb75,
+        // Three exits in two routines: `$BB92`, `$BBA3`, and the `RTS` at
+        // `$81:BEE2` that the `JMP $BEDA` tail returns through. This is the
+        // first of them, chosen because it is the one that touches nothing.
+        .ret_op = 0x81bb92,
+        .ret_kind = COSIM_RTS,
+        .run = shim_monster_seek,
+        // 6,494..10,948, call-weighted 7,964 over 27,280 calls on four movies.
+        // Eleven of its own instructions and one `JSL actor_nearest`, which is
+        // 32 slots walked whatever the board looks like — so this budget is
+        // almost entirely the callee's, and the 4,454-cycle spread is how many
+        // of those 32 hold something worth measuring.
+        .cycles = 7964,
+        .stack_bytes = 7,  // the `JSL`s' three bytes with `actor_nearest`'s own
+                           // PHD and `player_in_range`'s deeper pushes on top
+    },
+    {
+        .name = "monster_deliver",
+        .symbol = "$81:BBA4",
+        .entry = 0x81bba4,
+        .ret_op = 0x81bbea,  // likewise: the plain `RTS`, not the stub's
+        .ret_kind = COSIM_RTS,
+        .run = shim_monster_deliver,
+        // **Not measured, because no movie in the corpus reaches it.** The
+        // creature has to pick somebody up and carry them, and 43 movies never
+        // once do; the profiler agrees, counting zero calls at `$81:BBA4` in
+        // every one of the eleven traces. This is `monster_seek`'s figure,
+        // which is defensible rather than measured: the two routines make the
+        // same single `JSL actor_nearest` and that call is nearly all of the
+        // budget, and the extra work here is three compares and, on one path,
+        // an `actor_slot_free`. It has never been spent and, on the evidence,
+        // may never be.
+        .cycles = 7964,
+        .stack_bytes = 7,  // likewise `actor_nearest`'s, which is the deepest
+                           // of the two calls it can make
+    },
+    {
+        .name = "actor_slot_alloc",
+        .symbol = "$80:BE0C",
+        .entry = 0x80be0c,
+        .ret_op = 0x80be3a,  // the success RTL; a full board returns at $BE27
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_slot_alloc,
+        // 458..2,578, call-weighted 1,277 over 1,606 calls on six movies. The
+        // floor is a first-slot hit and the ceiling is a scan that walked all
+        // 32, so the mean reads as **how full the board is**: 1,008 on
+        // `level9-weapons` against 1,631 on `level25-lane`. It is the one
+        // routine in this registry whose cost is a linear search nothing
+        // bounds but the array.
+        .cycles = 1277,
+        .stack_bytes = 3,  // PHB, and the PEA that costs a byte more than it
+                           // needs to
+    },
+    {
+        .name = "actor_slot_free",
+        .symbol = "$80:BE41",
+        .entry = 0x80be41,
+        .ret_op = 0x80be7c,  // RTL; the two declines branch straight to it
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_slot_free,
+        // 502..2,288, call-weighted 1,071 over 1,552 calls on six movies, and
+        // the shape is the same as the allocator's for the same reason: the
+        // unlink walks the list, so a long list is a slow free. 502 is a
+        // decline, which is four instructions.
+        .cycles = 1071,
+        .stack_bytes = 2,  // PHD
+    },
+    {
         .name = "weapon_select_next",
         .symbol = "$80:EA63",
         .entry = 0x80ea63,
@@ -3095,6 +4078,95 @@ static const CosimRoutine ROUTINES[] = {
         // 6,498..7,592 over 1,006 calls on movies/level1.zmv.
         .cycles = 7195,
         .stack_bytes = 2,  // the opening PHD
+    },
+    {
+        // Before its two callers, because the registry reads callees-first.
+        .name = "actor_gap",
+        .symbol = "$80:B093",
+        .entry = 0x80b093,
+        // Two `RTS`es, at $B0B6 and $B0BA, and neither is preceded by anything
+        // that has to run: `native_publish` has already put the answer and the
+        // flags in place, and an `RTS` writes none of either.
+        .ret_op = 0x80b0b6,
+        .ret_kind = COSIM_RTS,
+        .run = shim_actor_gap,
+        // 88..490 over 44,164 calls on ten movies, call-weighted. The floor is
+        // the empty-record exit, which is four instructions, and the ceiling is
+        // both absolute values being taken; nothing here varies with the board,
+        // so this is as tight as a budget in the registry gets.
+        .cycles = 230,
+        .stack_bytes = 0,  // it pushes nothing at all
+    },
+    {
+        .name = "actor_nearest_id3",
+        .symbol = "$80:B18F",
+        .entry = 0x80b18f,
+        .ret_op = 0x80b1eb,  // RTL, after the PLD that undoes the opening PHD
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_nearest_id3,
+        // 5,482..8,256 over 147 calls on five movies. A fixed 32 slots like
+        // `actor_nearest`, and a wider spread than its 6,498..7,592 for the
+        // opposite reason to the usual one: with one id instead of four, more
+        // slots are dismissed before the subtraction and fewer after it.
+        .cycles = 6909,
+        .stack_bytes = 2,  // the opening PHD
+    },
+    {
+        .name = "actor_bearing_point",
+        .symbol = "$80:B1EC",
+        .entry = 0x80b1ec,
+        .ret_op = 0x80b21d,  // RTL
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_bearing_point,
+        // 604..748 over 35 calls on two movies, which is the thinnest sample in
+        // the registry and is the sample the corpus has: three call sites, and
+        // 45 executions of them in eleven traced movies.
+        .cycles = 679,
+        .stack_bytes = 4,  // the opening PHD and the PHA under it
+    },
+    {
+        .name = "actor_bearing",
+        .symbol = "$80:B22A",
+        .entry = 0x80b22a,
+        .ret_op = 0x80b25e,  // RTL
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_bearing,
+        // 514..760 over 12,172 calls on ten movies, call-weighted. Straight-line
+        // code with two branches in it, so the spread is only which of them are
+        // taken.
+        .cycles = 611,
+        .stack_bytes = 2,  // the opening PHD
+    },
+    {
+        .name = "player_in_range",
+        .symbol = "$80:B26B",
+        .entry = 0x80b26b,
+        // Three `RTL`s — $B298, $B29E, $B2A4 — and which one is named does not
+        // affect what returns, for the same reason as everywhere else here.
+        .ret_op = 0x80b298,
+        .ret_kind = COSIM_RTL,
+        .run = shim_player_in_range,
+        // 1,002..1,298 over 3,385 calls on five movies, call-weighted, and both
+        // `actor_gap` calls are inside it — which is the whole of why it costs
+        // four and a half times what one of those does.
+        .cycles = 1104,
+        .stack_bytes = 4,  // the opening PHD and the PEA under it
+    },
+    {
+        .name = "player_bearing",
+        .symbol = "$80:B2A5",
+        .entry = 0x80b2a5,
+        .ret_op = 0x80b2d2,  // the RTL on the nobody-in-range path
+        .ret_kind = COSIM_RTL,
+        .run = shim_player_bearing,
+        // 1,002..1,636 over 18,697 calls on seven movies, call-weighted. The
+        // floor is the nobody-in-range exit and the ceiling is the direction
+        // path with its stack traffic and its long-addressed table read, and the
+        // mean sits near the top because 99 calls in 100 find somebody.
+        .cycles = 1548,
+        // The opening PHD, the PEI that saves the winning distance, and the PHY
+        // under that — the deepest of the six, and only on the direction path.
+        .stack_bytes = 6,
     },
     {
         .name = "actor_at_point",
@@ -3298,6 +4370,75 @@ static const CosimRoutine ROUTINES[] = {
         // ceiling is a straight line rather than an iteration count.
         .cycles = 3167,
         .stack_bytes = 4,  // the PHD, and the PHA/PLA that stashes X under it
+    },
+    {
+        .name = "terrain_point_bit2",
+        .symbol = "$80:AF2C",
+        .entry = 0x80af2c,
+        .ret_op = 0x80af62,  // the RTL on the clear path, after its CLC
+        .ret_kind = COSIM_RTL,
+        .run = shim_terrain_point_bit2,
+        // 1,046..1,086 over 4,477 calls on `level25-lane`, and the flattest
+        // profile of anything in this registry: forty cycles between the
+        // cheapest call and the dearest. There is no loop and the bounds test
+        // in front of it is nearly as straight, so what looks like two paths
+        // costs the same either way.
+        .cycles = 1077,
+        .stack_bytes = 5,  // the PHD, then the JSL under it — the deeper path
+    },
+    {
+        .name = "terrain_footprint_bit12",
+        .symbol = "$80:AF66",
+        .entry = 0x80af66,
+        .ret_op = 0x80aff7,  // the RTL all six probes reach, after its CLC
+        .ret_kind = COSIM_RTL,
+        .run = shim_terrain_footprint_bit12,
+        // 810..2,128 over 166 calls on `level49-corner`, the only movie in the
+        // corpus that reaches it. The floor is the first probe answering and
+        // the ceiling is all six — the same shape as `terrain_blocked`, run
+        // the other way round.
+        .cycles = 885,
+        .stack_bytes = 4,
+    },
+    {
+        .name = "terrain_tile_bit3",
+        .symbol = "$80:B03B",
+        .entry = 0x80b03b,
+        .ret_op = 0x80b05b,  // the RTL on the clear path
+        .ret_kind = COSIM_RTL,
+        .run = shim_terrain_tile_bit3,
+        // 700..746 over 426 calls on `level5`, `level21` and `level21-spin`,
+        // the only three movies that reach it. Forty-six cycles of spread and
+        // no loop: the tile either has the bit or it does not.
+        .cycles = 721,
+        .stack_bytes = 7,  // the PHD, the JSL, and tilemap_tile_addr's own PHA
+    },
+    {
+        .name = "terrain_point_bit8",
+        .symbol = "$80:B05F",
+        .entry = 0x80b05f,
+        .ret_op = 0x80b08f,  // the RTL on the clear path
+        .ret_kind = COSIM_RTL,
+        .run = shim_terrain_point_bit8,
+        // 630..676 over 5,806 calls on `level37-e6e4`. One tile, no bounds
+        // test in front of it, so it is `terrain_point_bit2` minus the `JSL`.
+        .cycles = 655,
+        .stack_bytes = 4,
+    },
+    {
+        .name = "partner_near",
+        .symbol = "$80:AFFB",
+        .entry = 0x80affb,
+        .ret_op = 0x80b038,  // the RTL on the far path, after its CLC
+        .ret_kind = COSIM_RTL,
+        .run = shim_partner_near,
+        // 152..192 over **three calls in the whole corpus**, and the cheapest
+        // entry in this registry — because all three are one-player, where the
+        // second `BIT` answers eleven instructions in and nothing is measured.
+        // What a two-player call costs is not known, and the corpus has never
+        // made one.
+        .cycles = 165,
+        .stack_bytes = 0,  // no PHD and no pushes, the same as $80:B422
     },
     {
         .name = "step_propose",
@@ -3525,6 +4666,39 @@ static const CosimRoutine ROUTINES[] = {
         // Two bytes of `JSR` return address with `terrain_blocked_wide`'s own
         // four on top of it, and the routine pushes nothing itself.
         .stack_bytes = 6,
+    },
+    {
+        .name = "boss_place_parts",
+        .symbol = "$82:9265",
+        .entry = 0x829265,
+        .ret_op = 0x8292c5,  // the only RTS
+        .ret_kind = COSIM_RTS,
+        .run = shim_boss_place_parts,
+        // 1,090..1,142, call-weighted 1,127 over 6,560 calls on the two
+        // level-25 movies that raise the figure. **The flattest distribution in
+        // this registry**: a 52-cycle spread on a routine that costs eleven
+        // hundred, because there is exactly one branch in it and both arms are
+        // an `LDY` of a constant. Everything else is 40 straight-line
+        // instructions with no call, no loop and no early exit.
+        .cycles = 1127,
+        .stack_bytes = 0,  // it calls nothing and pushes nothing
+    },
+    {
+        .name = "boss_stomp",
+        .symbol = "$82:92D6",
+        .entry = 0x8292d6,
+        .ret_op = 0x829302,  // the RTS under the JSL
+        .ret_kind = COSIM_RTS,
+        .run = shim_boss_stomp,
+        .supported = guard_boss_stomp,
+        // 1,112..13,054, call-weighted 8,230 over 6,549 calls — and next to
+        // `boss_place_parts` above, which runs on the same frames and the same
+        // two movies, it is the clearest measurement of what a walk costs. The
+        // two routines differ by one `JSL`, and that `JSL` is between 90% and
+        // 99% of this one.
+        .cycles = 8230,
+        .stack_bytes = 21,  // two bytes of `JSR` return address, and
+                            // `actor_notify_box`'s dispatch under it
     },
     {
         .name = "blockmap_cell_ptr",
