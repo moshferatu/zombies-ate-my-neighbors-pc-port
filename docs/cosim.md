@@ -4073,6 +4073,244 @@ interesting version. `actor_nearest` and `actor_at_point` are both walks over
 `visible_actors` with per-record branches, so they are `actor_notify_box` again
 without the dispatch, and the model above is most of the shape they need.
 
+## Two searches, and the branch that gave one of them away (2026-08-11)
+
+Last round ended by naming three rows off the end of `level25-boss.zmv`, and
+this round took the first and the third. Each of them turned out to have a
+sibling sitting next to it in the same bank, so four rows came out of the drift
+table for the work of two models:
+
+```
+  actor_nearest              -6422607      11721       -548.0
+  actor_at_point             -5159541       5985       -862.1
+  actor_obstacle_at_point    -1606186       5674       -283.1
+  actor_nearest_id3                 -          -            -   (too rare to rank)
+```
+
+Neither model can decline. A fixed walk, no dispatch, no leaf call and a block
+for every branch means there is no such thing as a call these cannot price,
+which is the first time that has been true of anything in this file since
+`oam_buffer_clear`.
+
+### One table for two routines, and this time the ROM means it
+
+`$80:B123 actor_nearest` and `$80:B18F actor_nearest_id3` are the same routine
+written twice: the same prologue, the same two flag gates, the same `|dx| +
+|dy|` into the same seven scratch words, the same strictly-nearer test, the same
+loop tail, the same epilogue. What differs is four `CMP : BEQ` pairs where the
+other has one `CMP #$0003 : BNE`.
+
+Last round's monster pair shared one table because the three bytes that differed
+were provably cost-neutral. This is the other case: the difference is real, it
+costs a different number of cycles, and the table holds it as **two extra blocks
+that only one of the two routines ever touches**. Twelve blocks shared, two each
+side, and a reader can see at a glance which is which.
+
+**The four id blocks climb 152, 182, 212, 236 — spacings 30, 30, and then 24.**
+The 24 is not a slip. A test that fails costs `CMP` plus an untaken branch = 30
+either way, but the first three *succeed* on a taken `BEQ` (36) while the fourth
+succeeds by falling through its `BNE` (30). The same asymmetry read from the
+other side is why `NEAR_BLK_WRONG_ID` is exactly six more than
+`NEAR_BLK_ID_D`: one branch, taken instead of not. Two numbers that have to
+agree, arrived at from opposite ends of the same instruction.
+
+And because the walk is a fixed 32 slots whatever the board holds, nearly the
+whole table checks itself on every call:
+
+```
+  UNDRAWN + INACTIVE + WRONG_ID + (the id blocks)  ==  32
+  (the id blocks)  ==  DX_POS + DX_NEG  ==  DY_POS + DY_NEG  ==  KEPT + CLOSER
+  LOOP_NEXT == 31,   LOOP_DONE == 1,   FIXED == 1
+```
+
+Splitting a loop that always runs the same number of times is the point and not
+an oversight, for the reason `actor_notify_box`'s bound loop was split last
+round: a fixed count folded into the prologue is the cheapest place in a model
+to hide an arithmetic error.
+
+### The band that leaves two ways
+
+`$80:BF67 actor_at_point` and `$80:BFC8 actor_obstacle_at_point` walk the same
+visible list backwards and ask different questions about it. Two things about
+the shape are worth recording, and both are places where the port's coverage
+table and the ROM's control flow do not line up one to one.
+
+**The id band leaves on two different instructions.** Both routines run
+`CMP #$0033 : BEQ` and then `BCC` under it, so the id at the *top* of the band
+goes out twelve cycles earlier than every id below it. The port has one branch
+there and the coverage table calls it `at_point_id_band`; the model has to have
+two, and `$33` is the cheapest way out of the range that contains it.
+
+**The chain is not a prefix walk.** `CMP #$000C : BCC $BF96` sends the *low* ids
+forward to the named comparisons, and then the band test drops the *high* ones
+into exactly the same place. So the two arrivals are their own blocks and the
+named tests are counted one at a time on top of whichever arrived — additive
+rather than nested. In `actor_at_point` that saves two blocks; in
+`actor_obstacle_at_point`, which has seven named comparisons, it is the
+difference between thirteen blocks and twenty-eight.
+
+The two tables are separate, unlike the pair above, and the reason is the same
+reason stated the other way round: there the ROM holds one routine twice, here
+it holds two routines written from one sketch. But everything from the window
+tests down really is byte for byte the same — `$80:C021`-`$80:C03E` is
+`$80:BFA0`-`$80:BFBD` — so **the last seven entries of the two tables must be
+equal**, and they were counted off their own listings rather than copied. Two
+tables disagreeing there would be a transcription error in one of them and
+nothing else.
+
+### 132 is not a multiple of 40
+
+The first run of the obstacle model came back like this:
+
+```
+  actor_obstacle_at_point   5674   5674   +0..+276, mean +127   2869/5674   <-- MODEL WRONG
+                            first wrong: model 3450, ROM 3582, out by 132
+```
+
+**That the error is 132 is the whole diagnosis.** A model that is merely
+missing DRAM refreshes is short by a multiple of 40 and nothing else, so the
+refresh-exact column is the one check in the harness that can tell "the error is
+the bus" from "the error is an instruction". 132 is 120 and 12, and 12 is an
+untaken branch. The worst call in the run was out by 276, which is 240 and
+three of them.
+
+The missing instruction was `$80:BFF7  BCC $C042`, not taken, in the two blocks
+that walk past it: the `$5C` ceiling exit and the `$34`..`$5B` arrival. Both had
+the band's `BEQ` above it and the ceiling's `CMP`/`BCS` below it and neither had
+the branch in between. `actor_at_point` next door was exact on its first run
+because its chain stops one instruction before that one exists.
+
+It is worth being precise about what caught this, because it was not the thing
+that usually catches things. The port's *answers* were right the whole time —
+5,674 of 5,674 calls agreed with the ROM on every byte of WRAM and every
+register, and a `verify` that only checked behaviour would have passed. What
+failed was the claim about how long the behaviour took.
+
+### A floor that was already written down, and three that never will be
+
+`actor_obstacle_at_point`'s registry entry has said `426..7,794` for rounds. The
+model's cheapest possible call is the prologue, one record in the visible list
+that turns out to be player A, and the loop running out:
+
+```
+  216 + 86 + 124  =  426
+```
+
+Not close to it — it. And this is a stronger version of the same check than last
+round's, because 426 is the model's *absolute minimum* over calls that enter the
+walk at all, so there was nothing to choose: `verify` on `level1.zmv` reports
+exactly 426 for the cheapest of its 311 calls, and the model cannot produce a
+smaller number to be fitted to it.
+
+**The cheaper exits below it have still never been measured, and that is now
+three of them.** `obstacle_empty` costs 286 and `at_point_empty` costs 314 — the
+count at `$9C` found zero, no walk at all, straight to `PLD : CLC : RTL` — and
+neither is taken by any input in the corpus. Last round found the same about
+`notify_no_actors` at 606. Three routines that walk the visible list, three
+empty-list exits, and in 13.2 million calls the game has never handed any of
+them an empty board. That is a fact about the game rather than about the port:
+something is always on screen.
+
+There is a fourth block in the same position, and it is the one that makes the
+duplication between the two tables worth having. `at_point_id_named` — id `$07`
+or `$08`, the two exceptions in that routine's named chain — is untaken by every
+movie, so `AT_BLK_NAME_HIT`'s 36 cycles have never been measured. The
+identically-derived `OBST_BLK_NAME_HIT` **is** measured, thousands of times,
+because that routine's chain has seven ids in it and the board keeps handing it
+one. Two tables, written separately from two listings, and the block one of them
+cannot check is the block the other one checks constantly.
+
+### Results
+
+All four models are refresh-exact on every call, and every call is priced:
+
+| routine | priced | error | refresh-exact |
+| --- | --- | --- | --- |
+| `actor_nearest` | 11,721 of 11,721 | +160..+280, mean +228 | 11,721 / 11,721 |
+| `actor_nearest_id3` | 24 of 24 | +200..+240, mean +233 | 24 / 24 |
+| `actor_at_point` | 5,985 of 5,985 | +0..+200, mean **+103** | 5,985 / 5,985 |
+| `actor_obstacle_at_point` | 5,674 of 5,674 | +0..+240, mean +115 | 5,674 / 5,674 |
+
+`actor_nearest`'s floor of **+160** is the only one of the four with no zero in
+it, and the reason is structural rather than a defect: it is the only one of the
+four that cannot exit early. Thirty-two slots at 6,120 cycles minimum is four
+and a half scanlines, and a call that crosses four scanlines crosses four
+refreshes whatever else it does. The three that can stop at the first record
+they like all reach 0.
+
+Over the whole corpus the four together are **387,577 priced calls, every one
+of them refresh-exact**:
+
+```
+  actor_at_point               117544 / 117544          449 HDMA
+  actor_nearest                134983 / 134983          447 HDMA
+  actor_nearest_id3               338 / 338               0 HDMA
+  actor_obstacle_at_point      134712 / 134712            0 HDMA
+```
+
+The corpus is otherwise **13,209,637 calls across 43 movies, 0 diverged, branch
+coverage 432 of 538**, identical to the last one line for line. The entire diff
+against it is six new rows in the cost-model table: these four, and
+`actor_notify_box` and `boss_stomp` from last round, which the previous corpus
+predates.
+
+**Every lockstep window moved, and every one of them moved by exactly eleven
+frames:**
+
+```
+  level1           317 -> 328
+  level45-race    1045 -> 1056
+  level49-corner  1141 -> 1152
+  level53         1173 -> 1184
+  level25-2p      1023 -> 1034
+  boot                 never parts, still
+```
+
+Eleven on all five is worth staring at rather than celebrating. Those are five
+different levels, two of them two-player, parting at five different points for
+five different reasons — and four models that only make the substituted timeline
+more accurate moved all of them by the same amount. The reading that fits is
+that what finally parts a run is dominated by one accumulating source none of
+this touched, and that the four models bought the same fixed head start against
+it everywhere. Which is a lead worth following later: a per-frame drift that
+uniform has one cause, and it is not in the registry.
+
+Live state is clean everywhere. On `level1` the first difference is at pass 8
+and all eleven bytes of it are inside `$7E:1100`-`$7E:12FF`, which is stack.
+Native work share reads **57.0%** on `level1` and **57.6%** on `level25-boss`.
+Both unit tests exit 0, `verify-lzss` is 2 of 2 byte-identical and both also
+check as a memory effect, and `zamn_headless` still renders the giant spider
+correctly at frame 3,000 of `level25-boss.zmv`.
+
+### The total moved the right way, and that is luck about signs
+
+On `level25-boss.zmv` at 7,600 frames the `--- substituted` line went from
+**-22,900,382** to **-9,686,354**, and it is worth saying plainly that this is
+not evidence of anything. All four rows removed this round happened to be
+negative, so taking them out shrank the column; last round removed a positive
+one and the same column got worse while the machine got strictly better. The
+signed total over a registry is the one number in that table that means nothing,
+in either direction.
+
+The per-routine numbers are the ones that moved: three of the four largest
+debts in the harness at the start of this round, and the ninth, are gone.
+
+### Next
+
+`boss_step` is what is left of last round's three, and it is now the largest
+thing in the table by a factor of two:
+
+```
+  routine                      cycles      calls     per call
+  boss_step                  +5428166      11593       +468.2
+  camera_follow              -3151348      20608       -152.9
+  monster_seek               -2606030       6817       -382.3
+```
+
+It is also the first of these in a while that is not a walk. `camera_follow` and
+`monster_seek` under it are both single passes with a handful of branches, which
+makes them the cheapest models left rather than the most interesting ones.
+
 ## Where this is going
 
 The first five routines here are leaves — they never call `thread_yield`. That

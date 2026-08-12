@@ -653,7 +653,42 @@ static uint16_t nearest_abs(uint16_t a, uint16_t b, uint16_t* raw) {
   return (a >= b) ? d : (uint16_t)(~d + 1);
 }
 
-uint16_t actor_nearest(Wram* w, uint16_t x, uint16_t y, uint16_t* dist) {
+// The half of a slot that both searches share: the two absolute values, the
+// sum, and the strictly-nearer test. Reached only by a slot that got past the
+// id chain, so its blocks are the check on the id blocks above it.
+static bool nearest_candidate_cost(Wram* w, uint32_t rec, uint16_t x,
+                                   uint16_t y, ActorNearestWork* work) {
+  uint16_t raw;
+  uint16_t rx = wram_r16(w, rec + ACTOR_X);
+  uint16_t d = nearest_abs(rx, x, &raw);
+  work->blocks[rx >= x ? NEAR_BLK_DX_POS : NEAR_BLK_DX_NEG]++;
+  wram_w16(w, NEAREST_DP_DX, raw);
+  wram_w16(w, NEAREST_DP_DIST, d);
+
+  uint16_t ry = wram_r16(w, rec + ACTOR_Y);
+  uint16_t dy = nearest_abs(ry, y, &raw);
+  work->blocks[ry >= y ? NEAR_BLK_DY_POS : NEAR_BLK_DY_NEG]++;
+  wram_w16(w, NEAREST_DP_DY, raw);
+  d = (uint16_t)(d + dy);
+  wram_w16(w, NEAREST_DP_DIST, d);
+
+  // `CMP $38 : BCS` — strictly nearer wins, so on a tie the higher slot
+  // keeps it, and the walk runs downwards.
+  if (d >= wram_r16(w, NEAREST_DP_BEST)) {
+    work->blocks[NEAR_BLK_KEPT]++;
+    return false;
+  }
+  work->blocks[NEAR_BLK_CLOSER]++;
+  wram_w16(w, NEAREST_DP_BEST, d);
+  wram_w16(w, NEAREST_DP_FOUND, (uint16_t)rec);
+  return true;
+}
+
+uint16_t actor_nearest_counted(Wram* w, uint16_t x, uint16_t y, uint16_t* dist,
+                               ActorNearestWork* work) {
+  memset(work->blocks, 0, sizeof work->blocks);
+  work->blocks[NEAR_BLK_FIXED]++;
+
   wram_w16(w, NEAREST_DP_X, x);
   wram_w16(w, NEAREST_DP_Y, y);
   wram_w16(w, NEAREST_DP_BEST, 0xffffu);
@@ -661,46 +696,48 @@ uint16_t actor_nearest(Wram* w, uint16_t x, uint16_t y, uint16_t* dist) {
   // $80:B131. From the top slot down, every slot, ending on the base itself.
   for (int i = ACTOR_SLOT_COUNT - 1; i >= 0; i--) {
     uint32_t rec = W_ACTOR_SLOTS + (uint32_t)i * ACTOR_SLOT_STRIDE;
+    work->blocks[i ? NEAR_BLK_LOOP_NEXT : NEAR_BLK_LOOP_DONE]++;
     uint16_t flags = wram_r16(w, rec + ACTOR_FLAGS);
     if (!(flags & ACTOR_DRAW)) {
       PORT_COVER(nearest_undrawn);
+      work->blocks[NEAR_BLK_UNDRAWN]++;
       continue;
     }
     if (!(flags & ACTOR_ACTIVE)) {
       PORT_COVER(nearest_inactive);
+      work->blocks[NEAR_BLK_INACTIVE]++;
       continue;
     }
+    // Four `CMP`s and four ways past them, and they do not cost the same: the
+    // first three match on a taken `BEQ` and the fourth by falling through a
+    // `BNE`, so id $01 is six cycles cheaper to accept than id $38.
     uint16_t id = wram_r16(w, rec + ACTOR_COLLIDE_ID);
-    if (id != NEAREST_ID_PLAYER_A && id != NEAREST_ID_PLAYER_B &&
-        id != NEAREST_ID_C && id != NEAREST_ID_D) {
+    if (id == NEAREST_ID_PLAYER_A) {
+      work->blocks[NEAR_BLK_ID_A]++;
+    } else if (id == NEAREST_ID_PLAYER_B) {
+      work->blocks[NEAR_BLK_ID_B]++;
+    } else if (id == NEAREST_ID_C) {
+      work->blocks[NEAR_BLK_ID_C]++;
+    } else if (id == NEAREST_ID_D) {
+      work->blocks[NEAR_BLK_ID_D]++;
+    } else {
       PORT_COVER(nearest_wrong_id);
+      work->blocks[NEAR_BLK_WRONG_ID]++;
       continue;
     }
     PORT_COVER(nearest_candidate);
-
-    uint16_t raw;
-    uint16_t d = nearest_abs(wram_r16(w, rec + ACTOR_X), x, &raw);
-    wram_w16(w, NEAREST_DP_DX, raw);
-    wram_w16(w, NEAREST_DP_DIST, d);
-
-    uint16_t dy = nearest_abs(wram_r16(w, rec + ACTOR_Y), y, &raw);
-    wram_w16(w, NEAREST_DP_DY, raw);
-    d = (uint16_t)(d + dy);
-    wram_w16(w, NEAREST_DP_DIST, d);
-
-    // `CMP $38 : BCS` — strictly nearer wins, so on a tie the higher slot
-    // keeps it, and the walk runs downwards.
-    if (d < wram_r16(w, NEAREST_DP_BEST)) {
-      PORT_COVER(nearest_closer);
-      wram_w16(w, NEAREST_DP_BEST, d);
-      wram_w16(w, NEAREST_DP_FOUND, (uint16_t)rec);
-    }
+    if (nearest_candidate_cost(w, rec, x, y, work)) PORT_COVER(nearest_closer);
   }
 
   // $80:B189. `$44` is not seeded, so when nothing matched this hands back
   // whatever the last search that did find something left there.
   *dist = wram_r16(w, NEAREST_DP_BEST);
   return wram_r16(w, NEAREST_DP_FOUND);
+}
+
+uint16_t actor_nearest(Wram* w, uint16_t x, uint16_t y, uint16_t* dist) {
+  ActorNearestWork work;
+  return actor_nearest_counted(w, x, y, dist, &work);
 }
 
 // ---------------------------------------------------------------------------
@@ -835,7 +872,11 @@ void actor_gap(Wram* w, uint16_t rec, ActorGapRegs* out) {
 // $80:B18F  actor_nearest_id3
 // ---------------------------------------------------------------------------
 
-uint16_t actor_nearest_id3(Wram* w, uint16_t x, uint16_t y, uint16_t* dist) {
+uint16_t actor_nearest_id3_counted(Wram* w, uint16_t x, uint16_t y,
+                                   uint16_t* dist, ActorNearestWork* work) {
+  memset(work->blocks, 0, sizeof work->blocks);
+  work->blocks[NEAR_BLK_FIXED]++;
+
   wram_w16(w, NEAREST_DP_X, x);
   wram_w16(w, NEAREST_DP_Y, y);
   wram_w16(w, NEAREST_DP_BEST, 0xffffu);
@@ -844,42 +885,38 @@ uint16_t actor_nearest_id3(Wram* w, uint16_t x, uint16_t y, uint16_t* dist) {
   // base, all 32, whatever the board holds.
   for (int i = ACTOR_SLOT_COUNT - 1; i >= 0; i--) {
     uint32_t rec = W_ACTOR_SLOTS + (uint32_t)i * ACTOR_SLOT_STRIDE;
+    work->blocks[i ? NEAR_BLK_LOOP_NEXT : NEAR_BLK_LOOP_DONE]++;
     uint16_t flags = wram_r16(w, rec + ACTOR_FLAGS);
     if (!(flags & ACTOR_DRAW)) {
       PORT_COVER(nearest3_undrawn);
+      work->blocks[NEAR_BLK_UNDRAWN]++;
       continue;
     }
     if (!(flags & ACTOR_ACTIVE)) {
       PORT_COVER(nearest3_inactive);
+      work->blocks[NEAR_BLK_INACTIVE]++;
       continue;
     }
     // The one line that is not `actor_nearest`: one id, tested with a `BNE`
-    // rather than four tested with `BEQ`s.
+    // rather than four tested with `BEQ`s — and so the only pair of blocks in
+    // the shared table that this routine ever touches and that one never does.
     if (wram_r16(w, rec + ACTOR_COLLIDE_ID) != NEAREST3_ID) {
       PORT_COVER(nearest3_wrong_id);
+      work->blocks[NEAR_BLK_ID3_MISS]++;
       continue;
     }
     PORT_COVER(nearest3_candidate);
-
-    uint16_t raw;
-    uint16_t d = nearest_abs(wram_r16(w, rec + ACTOR_X), x, &raw);
-    wram_w16(w, NEAREST_DP_DX, raw);
-    wram_w16(w, NEAREST_DP_DIST, d);
-
-    uint16_t dy = nearest_abs(wram_r16(w, rec + ACTOR_Y), y, &raw);
-    wram_w16(w, NEAREST_DP_DY, raw);
-    d = (uint16_t)(d + dy);
-    wram_w16(w, NEAREST_DP_DIST, d);
-
-    if (d < wram_r16(w, NEAREST_DP_BEST)) {
-      PORT_COVER(nearest3_closer);
-      wram_w16(w, NEAREST_DP_BEST, d);
-      wram_w16(w, NEAREST_DP_FOUND, (uint16_t)rec);
-    }
+    work->blocks[NEAR_BLK_ID3_MATCH]++;
+    if (nearest_candidate_cost(w, rec, x, y, work)) PORT_COVER(nearest3_closer);
   }
 
   *dist = wram_r16(w, NEAREST_DP_BEST);
   return wram_r16(w, NEAREST_DP_FOUND);
+}
+
+uint16_t actor_nearest_id3(Wram* w, uint16_t x, uint16_t y, uint16_t* dist) {
+  ActorNearestWork work;
+  return actor_nearest_id3_counted(w, x, y, dist, &work);
 }
 
 // ---------------------------------------------------------------------------
@@ -1264,8 +1301,9 @@ static bool at_point_axis(uint16_t pos, uint16_t target, uint16_t* a) {
   return *a < AT_POINT_WINDOW;
 }
 
-void actor_at_point(Wram* w, uint16_t self, uint16_t x, uint16_t y,
-                    AtPointRegs* out) {
+void actor_at_point_counted(Wram* w, uint16_t self, uint16_t x, uint16_t y,
+                            AtPointRegs* out, AtPointWork* work) {
+  memset(work->blocks, 0, sizeof work->blocks);
   wram_w16(w, AT_POINT_DP_SELF, self);
   wram_w16(w, AT_POINT_DP_X, x);
   wram_w16(w, AT_POINT_DP_Y, y);
@@ -1280,9 +1318,11 @@ void actor_at_point(Wram* w, uint16_t self, uint16_t x, uint16_t y,
   if (count == 0) {
     // $80:BF74. `LDX $9C : BEQ` — X is the zero it just loaded.
     PORT_COVER(at_point_empty);
+    work->blocks[AT_BLK_EMPTY]++;
     out->x = 0;
     return;
   }
+  work->blocks[AT_BLK_PROLOGUE]++;
 
   // $80:BF76. A byte index into a word array, walked downwards.
   for (int32_t i = (int32_t)count - 2; i >= 0; i -= 2) {
@@ -1292,13 +1332,15 @@ void actor_at_point(Wram* w, uint16_t self, uint16_t x, uint16_t y,
 
     if (rec == self) {
       PORT_COVER(at_point_self);
-      continue;
+      work->blocks[AT_BLK_SELF]++;
+      goto next;
     }
     uint16_t flags = wram_r16(w, rec + ACTOR_FLAGS);
     out->a = (uint16_t)(flags >> 1);  // `LSR A` leaves this behind
     if (!(flags & ACTOR_ACTIVE)) {
       PORT_COVER(at_point_inactive);
-      continue;
+      work->blocks[AT_BLK_INACTIVE]++;
+      goto next;
     }
 
     uint16_t id = wram_r16(w, rec + ACTOR_COLLIDE_ID);
@@ -1307,36 +1349,68 @@ void actor_at_point(Wram* w, uint16_t self, uint16_t x, uint16_t y,
     // whole band $0C..$33, and $07 and $08 on their own.
     if (id == 0) {
       PORT_COVER(at_point_no_id);
-      continue;
+      work->blocks[AT_BLK_NO_ID]++;
+      goto next;
     }
     if (id >= AT_POINT_ID_RANGE_LO && id <= AT_POINT_ID_RANGE_HI) {
       PORT_COVER(at_point_id_band);
-      continue;
+      // One coverage branch, two blocks: `$33` leaves on the `BEQ` above the
+      // `BCC` the rest of the band leaves on.
+      work->blocks[id == AT_POINT_ID_RANGE_HI ? AT_BLK_ID_33 : AT_BLK_ID_BAND]++;
+      goto next;
     }
-    if (id == AT_POINT_ID_SKIP_A || id == AT_POINT_ID_SKIP_B) {
+    work->blocks[id < AT_POINT_ID_RANGE_LO ? AT_BLK_ARRIVE_LOW
+                                           : AT_BLK_ARRIVE_HIGH]++;
+    // $80:BF96. Two `CMP : BEQ` in a row, and only an id under `$0C` can match
+    // either — but every id over `$33` is made to ask them both anyway.
+    if (id == AT_POINT_ID_SKIP_A) {
       PORT_COVER(at_point_id_named);
-      continue;
+      work->blocks[AT_BLK_NAME_HIT]++;
+      goto next;
     }
+    work->blocks[AT_BLK_NAME_MISS]++;
+    if (id == AT_POINT_ID_SKIP_B) {
+      PORT_COVER(at_point_id_named);
+      work->blocks[AT_BLK_NAME_HIT]++;
+      goto next;
+    }
+    work->blocks[AT_BLK_NAME_MISS]++;
 
     if (!at_point_axis(wram_r16(w, rec + ACTOR_X), x, &out->a)) {
       PORT_COVER(at_point_far_x);
-      continue;
+      work->blocks[AT_BLK_FAR_X]++;
+      goto next;
     }
+    work->blocks[AT_BLK_NEAR_X]++;
     if (!at_point_axis(wram_r16(w, rec + ACTOR_Y), y, &out->a)) {
       PORT_COVER(at_point_far_y);
-      continue;
+      work->blocks[AT_BLK_FAR_Y]++;
+      goto next;
     }
+    work->blocks[AT_BLK_NEAR_Y]++;
 
     // $80:BFBE. `PLD : SEC : RTL`, and X is left on the entry that matched.
     PORT_COVER(at_point_hit);
+    work->blocks[AT_BLK_HIT]++;
     out->found = true;
     return;
+
+  next:
+    // $80:BFC1 DEX DEX : BPL. The dismissal paths all arrive here; a hit is the
+    // one way out of the walk that does not.
+    work->blocks[i ? AT_BLK_LOOP_NEXT : AT_BLK_LOOP_DONE]++;
   }
 
   // $80:BFC3. The `BPL` fails on the first negative index, which is -2 because
   // the count is a byte count and so always even.
   PORT_COVER(at_point_none);
   out->x = 0xfffeu;
+}
+
+void actor_at_point(Wram* w, uint16_t self, uint16_t x, uint16_t y,
+                    AtPointRegs* out) {
+  AtPointWork work;
+  actor_at_point_counted(w, self, x, y, out, &work);
 }
 
 // ---------------------------------------------------------------------------
@@ -1354,8 +1428,10 @@ const uint16_t OBSTACLE_ID_SKIP[OBSTACLE_ID_SKIP_COUNT] = {
     0x0005, 0x0006, 0x0007, 0x0008, 0x0002, 0x0001, 0x0037,
 };
 
-void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,
-                             ObstacleRegs* out) {
+void actor_obstacle_at_point_counted(Wram* w, uint16_t a_in, uint16_t x,
+                                     uint16_t y, ObstacleRegs* out,
+                                     ObstacleWork* work) {
+  memset(work->blocks, 0, sizeof work->blocks);
   wram_w16(w, OBSTACLE_DP_X, x);
   wram_w16(w, OBSTACLE_DP_Y, y);
 
@@ -1372,9 +1448,11 @@ void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,
   if (count == 0) {
     // $80:BFD3. `LDX $9C : BEQ` — X is the zero it just loaded.
     PORT_COVER(obstacle_empty);
+    work->blocks[OBST_BLK_EMPTY]++;
     out->x = 0;
     return;
   }
+  work->blocks[OBST_BLK_PROLOGUE]++;
 
   // Read once: the ROM re-reads them every iteration, but nothing in the loop
   // writes WRAM, so the values cannot move underneath it.
@@ -1391,25 +1469,29 @@ void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,
     // so the second test is against a record address that cannot occur.
     if (rec == player_a) {
       PORT_COVER(obstacle_player_a);
-      continue;
+      work->blocks[OBST_BLK_PLAYER_A]++;
+      goto next;
     }
     if (rec == player_b) {
       PORT_COVER(obstacle_player_b);
-      continue;
+      work->blocks[OBST_BLK_PLAYER_B]++;
+      goto next;
     }
 
     uint16_t flags = wram_r16(w, rec + ACTOR_FLAGS);
     out->a = (uint16_t)(flags >> 1);  // `LSR A` leaves this behind
     if (!(flags & ACTOR_ACTIVE)) {
       PORT_COVER(obstacle_inactive);
-      continue;
+      work->blocks[OBST_BLK_INACTIVE]++;
+      goto next;
     }
 
     uint16_t id = wram_r16(w, rec + ACTOR_COLLIDE_ID);
     out->a = id;
     if (id == 0) {
       PORT_COVER(obstacle_no_id);
-      continue;
+      work->blocks[OBST_BLK_NO_ID]++;
+      goto next;
     }
     // $80:BFED-BFFD. The high half, entered only when `CMP #$000C` says so, and
     // **it can fall out of the bottom into the chain below** rather than
@@ -1417,15 +1499,22 @@ void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,
     if (id >= OBSTACLE_ID_BAND_LO) {
       if (id <= OBSTACLE_ID_BAND_HI) {
         PORT_COVER(obstacle_id_band);
-        continue;
+        // As in `actor_at_point`: the top of the band leaves one instruction
+        // earlier than the rest of it, on the `BEQ` rather than the `BCC`.
+        work->blocks[id == OBSTACLE_ID_BAND_HI ? OBST_BLK_ID_33
+                                               : OBST_BLK_ID_BAND]++;
+        goto next;
       }
       if (id >= OBSTACLE_ID_CEILING) {
         PORT_COVER(obstacle_id_high);
-        continue;
+        work->blocks[OBST_BLK_ID_HIGH]++;
+        goto next;
       }
       PORT_COVER(obstacle_id_above_band);
+      work->blocks[OBST_BLK_ARRIVE_HIGH]++;
     } else {
       PORT_COVER(obstacle_id_below_band);
+      work->blocks[OBST_BLK_ARRIVE_LOW]++;
     }
 
     // $80:BFFE-C020. Seven `CMP : BEQ` in a row.
@@ -1433,12 +1522,14 @@ void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,
     for (int k = 0; k < OBSTACLE_ID_SKIP_COUNT; k++) {
       if (id == OBSTACLE_ID_SKIP[k]) {
         named = true;
+        work->blocks[OBST_BLK_NAME_HIT]++;
         break;
       }
+      work->blocks[OBST_BLK_NAME_MISS]++;
     }
     if (named) {
       PORT_COVER(obstacle_id_named);
-      continue;
+      goto next;
     }
 
     // The same six-pixel window as `actor_at_point`, down to sharing the
@@ -1446,21 +1537,35 @@ void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,
     // except for the branch targets.
     if (!at_point_axis(wram_r16(w, rec + ACTOR_X), x, &out->a)) {
       PORT_COVER(obstacle_far_x);
-      continue;
+      work->blocks[OBST_BLK_FAR_X]++;
+      goto next;
     }
+    work->blocks[OBST_BLK_NEAR_X]++;
     if (!at_point_axis(wram_r16(w, rec + ACTOR_Y), y, &out->a)) {
       PORT_COVER(obstacle_far_y);
-      continue;
+      work->blocks[OBST_BLK_FAR_Y]++;
+      goto next;
     }
+    work->blocks[OBST_BLK_NEAR_Y]++;
 
     // $80:C03F. `PLD : SEC : RTL` — the step the caller was testing is blocked.
     PORT_COVER(obstacle_hit);
+    work->blocks[OBST_BLK_HIT]++;
     out->blocked = true;
     return;
+
+  next:
+    work->blocks[i ? OBST_BLK_LOOP_NEXT : OBST_BLK_LOOP_DONE]++;
   }
 
   PORT_COVER(obstacle_none);
   out->x = 0xfffeu;
+}
+
+void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,
+                             ObstacleRegs* out) {
+  ObstacleWork work;
+  actor_obstacle_at_point_counted(w, a_in, x, y, out, &work);
 }
 
 // ---------------------------------------------------------------------------

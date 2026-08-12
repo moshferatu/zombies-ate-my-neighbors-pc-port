@@ -2597,11 +2597,82 @@ static void shim_sprite_build_oam(Wram* w, const Rom* rom, const CosimRegs* in,
 // so it is still what the `CPX #$185E` that ended the walk left — always clear,
 // because the walk always ends the same way, running a fixed 32 slots. Y is
 // untouched after the `STY $3C` on the way in.
+// What each run of a block of `$80:B123` costs, indexed by `ActorNearestBlock`,
+// and of `$80:B18F` too: see `ActorNearestWork` for why one table is enough for
+// both and what the two id blocks in the middle are doing there.
+//
+// **No `dp_unaligned` anywhere, and no shim here checks `in->d`.** `$80:B124
+// LDA #$0000 : TCD` puts the routine on page zero before it touches a
+// direct-page word, exactly as `$80:BF1D PEA $0000 : PLD` does for
+// `actor_notify_box`. The `dp` counts are recorded all the same, because they
+// are how a reader checks the instruction list against the listing.
+//
+// The four id blocks climb **152, 182, 212, 236**, and the last spacing is 24
+// where the first two are 30. That is not a slip: a failed test costs `CMP` +
+// an untaken branch = 30 either way, but the first three *succeed* on a taken
+// `BEQ` (36) while the fourth succeeds by falling through its `BNE` (30). The
+// same asymmetry is the reason `NEAR_BLK_WRONG_ID` is exactly six more than
+// `NEAR_BLK_ID_D` — one branch, taken instead of not.
+static const CosimRun NEAREST_COST[NEAREST_BLOCK_COUNT] = {
+    // `PHD : LDA #$0000 : TCD : STX $3A : STY $3C : LDA #$FFFF : STA $38 :
+    // LDX #$1ACA`, and at the far end `LDX $44 : LDA $38 : PLD : RTL`. Both
+    // run exactly once, so they are one block.
+    [NEAR_BLK_FIXED] = {28 + 18 + 12 + 28 + 28 + 18 + 28 + 18 + 28 + 28 + 34 +
+                            42,
+                        23, 5},
+    // $80:B134 LDA $0000,X : BPL taken.
+    [NEAR_BLK_UNDRAWN] = {40 + 18, 5},
+    // ...not taken, then `LSR A : BCC` taken.
+    [NEAR_BLK_INACTIVE] = {40 + 12 + 12 + 18, 7},
+    // ...not taken either, then `LDA $000E,X` and the four `CMP`s, all missed.
+    [NEAR_BLK_WRONG_ID] = {40 + 12 + 12 + 12 + 40 + 18 + 12 + 18 + 12 + 18 + 12 +
+                               18 + 18,
+                           31, 0},
+    [NEAR_BLK_ID_A] = {40 + 12 + 12 + 12 + 40 + 18 + 18, 16},
+    [NEAR_BLK_ID_B] = {40 + 12 + 12 + 12 + 40 + 18 + 12 + 18 + 18, 21},
+    [NEAR_BLK_ID_C] = {40 + 12 + 12 + 12 + 40 + 18 + 12 + 18 + 12 + 18 + 18, 26},
+    [NEAR_BLK_ID_D] = {40 + 12 + 12 + 12 + 40 + 18 + 12 + 18 + 12 + 18 + 12 +
+                           18 + 12,
+                       31},
+    // $80:B1AB CMP #$0003 : BNE, not taken and taken. The sibling's whole
+    // difference from the routine above, in two lines.
+    [NEAR_BLK_ID3_MATCH] = {40 + 12 + 12 + 12 + 40 + 18 + 12, 16},
+    [NEAR_BLK_ID3_MISS] = {40 + 12 + 12 + 12 + 40 + 18 + 18, 16},
+    // $80:B153 LDA $0002,X : SEC : SBC $3A : STA $3E : BCS taken.
+    [NEAR_BLK_DX_POS] = {40 + 12 + 28 + 28 + 18, 10, 2},
+    // ...not taken, so `EOR #$FFFF : INC A` runs. Always 24 more: the two
+    // instructions' 30, less the 6 the branch saves by not being taken.
+    [NEAR_BLK_DX_NEG] = {40 + 12 + 28 + 28 + 12 + 18 + 12, 14, 2},
+    // $80:B161 STA $42 : LDA $0006,X : SEC : SBC $3C : STA $40 : BCS taken.
+    [NEAR_BLK_DY_POS] = {28 + 40 + 12 + 28 + 28 + 18, 12, 3},
+    // ...and the same 24 on the other axis.
+    [NEAR_BLK_DY_NEG] = {28 + 40 + 12 + 28 + 28 + 12 + 18 + 12, 16, 3},
+    // $80:B171 CLC : ADC $42 : STA $42 : CMP $38 : BCS taken — not nearer.
+    [NEAR_BLK_KEPT] = {12 + 28 + 28 + 28 + 18, 9, 3},
+    // ...not taken, then `STA $38 : STX $44`.
+    [NEAR_BLK_CLOSER] = {12 + 28 + 28 + 28 + 12 + 28 + 28, 13, 5},
+    // $80:B17E TXA : SEC : SBC #$0014 : TAX : CPX #$185E : BCS taken.
+    [NEAR_BLK_LOOP_NEXT] = {12 + 12 + 18 + 12 + 18 + 18, 11},
+    // ...not taken, which is the 32nd slot and no other.
+    [NEAR_BLK_LOOP_DONE] = {12 + 12 + 18 + 12 + 18 + 12, 11},
+};
+
+// No `bool`: there is nothing here to decline. A fixed 32 slots, no dispatch,
+// no leaf call, and every branch in the routine has a block.
+static int nearest_cycles(const ActorNearestWork* k, bool fast) {
+  int cycles = 0;
+  for (int i = 0; i < NEAREST_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles(&NEAREST_COST[i], fast);
+  return cycles;
+}
+
 static void shim_actor_nearest(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
   (void)rom;
   uint16_t dist = 0;
-  uint16_t found = actor_nearest(w, in->x, in->y, &dist);
+  ActorNearestWork work;
+  uint16_t found = actor_nearest_counted(w, in->x, in->y, &dist, &work);
+  cosim_cost(nearest_cycles(&work, in->fastrom));
   out->a = dist;
   out->x = found;
   out->y = in->y;
@@ -2653,7 +2724,9 @@ static void shim_actor_nearest_id3(Wram* w, const Rom* rom, const CosimRegs* in,
                                    CosimRegs* out) {
   (void)rom;
   uint16_t dist = 0;
-  uint16_t found = actor_nearest_id3(w, in->x, in->y, &dist);
+  ActorNearestWork work;
+  uint16_t found = actor_nearest_id3_counted(w, in->x, in->y, &dist, &work);
+  cosim_cost(nearest_cycles(&work, in->fastrom));
   out->a = dist;
   out->x = found;
   out->y = in->y;
@@ -2773,11 +2846,77 @@ static void shim_player_bearing(Wram* w, const Rom* rom, const CosimRegs* in,
 // `$FFFE` when the walk ran out, because the count is a byte count and always
 // even — and the last entry it looked at in Y, which on the found path is the
 // record that matched and is presumably the point.
+// What each block of `$80:BF67` costs, indexed by `AtPointBlock`. `$80:BF68
+// PEA $0000 : PLD` again, so again no `dp_unaligned`, and again the `dp` counts
+// are here to be checked against the listing rather than to be paid.
+//
+// The per-record dismissals climb **86, 150, 202, 262, 274**, and every step is
+// the question the record just failed plus the six a taken branch costs over an
+// untaken one. `ID_33` at 262 sitting *under* `ID_BAND` at 274 is the whole of
+// the reason those two are separate blocks.
+static const CosimRun AT_POINT_COST[AT_POINT_BLOCK_COUNT] = {
+    // `PHD : PEA $0000 : PLD : STA $38 : STX $3A : STY $3C : LDX $9C : BEQ`
+    // not taken, and the first `DEX DEX`.
+    [AT_BLK_PROLOGUE] = {28 + 34 + 34 + 28 + 28 + 28 + 28 + 12 + 12 + 12, 17, 4},
+    // ...taken instead, and the `PLD : CLC : RTL` the walk's end shares.
+    [AT_BLK_EMPTY] = {28 + 34 + 34 + 28 + 28 + 28 + 28 + 18 + 34 + 12 + 42, 18,
+                      4},
+    // $80:BF78 LDY $137E,X : CPY $38 : BEQ taken.
+    [AT_BLK_SELF] = {40 + 28 + 18, 7, 1},
+    // ...not taken, then `LDA $0000,Y : LSR A : BCC` taken.
+    [AT_BLK_INACTIVE] = {40 + 28 + 12 + 40 + 12 + 18, 13, 1},
+    // ...not taken, then `LDA $000E,Y : BEQ` taken.
+    [AT_BLK_NO_ID] = {40 + 28 + 12 + 40 + 12 + 12 + 40 + 18, 18, 1},
+    // ...not taken, then `CMP #$000C : BCC` not taken and `CMP #$0033 : BEQ`
+    // taken. The band's ceiling, and the cheapest way out of the band.
+    [AT_BLK_ID_33] = {40 + 28 + 12 + 40 + 12 + 12 + 40 + 12 + 18 + 12 + 18 + 18,
+                      28, 1},
+    // ...not taken either, then the `BCC` under it: $0C..$32.
+    [AT_BLK_ID_BAND] = {40 + 28 + 12 + 40 + 12 + 12 + 40 + 12 + 18 + 12 + 18 +
+                            12 + 18,
+                        30, 1},
+    // $80:BF8D CMP #$000C : BCC taken — under the band, on to the named tests.
+    [AT_BLK_ARRIVE_LOW] = {40 + 28 + 12 + 40 + 12 + 12 + 40 + 12 + 18 + 18, 23,
+                           1},
+    // ...and over the band, falling out of the bottom of the range tests into
+    // the same two comparisons, which no id up there can match.
+    [AT_BLK_ARRIVE_HIGH] = {40 + 28 + 12 + 40 + 12 + 12 + 40 + 12 + 18 + 12 +
+                                18 + 12 + 12,
+                            30, 1},
+    // One `CMP #$xxxx : BEQ`, missed and hit. Counted per test rather than per
+    // path: two named tests and two arrivals would otherwise be four blocks.
+    [AT_BLK_NAME_MISS] = {18 + 12, 5},
+    [AT_BLK_NAME_HIT] = {18 + 18, 5},
+    // $80:BFA0 LDA $0002,Y : SEC : SBC $3A : CLC : ADC #$0006 : CMP #$000C :
+    // BCS taken, and the same six instructions on Y at $80:BFAF.
+    [AT_BLK_FAR_X] = {40 + 12 + 28 + 12 + 18 + 18 + 18, 15, 1},
+    [AT_BLK_NEAR_X] = {40 + 12 + 28 + 12 + 18 + 18 + 12, 15, 1},
+    [AT_BLK_FAR_Y] = {40 + 12 + 28 + 12 + 18 + 18 + 18, 15, 1},
+    [AT_BLK_NEAR_Y] = {40 + 12 + 28 + 12 + 18 + 18 + 12, 15, 1},
+    // $80:BFBE PLD : SEC : RTL, which leaves the walk without the loop tail.
+    [AT_BLK_HIT] = {34 + 12 + 42, 3},
+    // $80:BFC1 DEX DEX : BPL taken.
+    [AT_BLK_LOOP_NEXT] = {12 + 12 + 18, 4},
+    // ...not taken, and the `PLD : CLC : RTL` at $80:BFC5.
+    [AT_BLK_LOOP_DONE] = {12 + 12 + 12 + 34 + 12 + 42, 7},
+};
+
+// Nothing to decline, as with `nearest_cycles`: no dispatch, no leaf call, and
+// a block for every branch.
+static int at_point_cycles(const AtPointWork* k, bool fast) {
+  int cycles = 0;
+  for (int i = 0; i < AT_POINT_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles(&AT_POINT_COST[i], fast);
+  return cycles;
+}
+
 static void shim_actor_at_point(Wram* w, const Rom* rom, const CosimRegs* in,
                                 CosimRegs* out) {
   (void)rom;
   AtPointRegs r;
-  actor_at_point(w, in->a, in->x, in->y, &r);
+  AtPointWork work;
+  actor_at_point_counted(w, in->a, in->x, in->y, &r, &work);
+  cosim_cost(at_point_cycles(&work, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -2803,11 +2942,78 @@ static void shim_actor_at_point(Wram* w, const Rom* rom, const CosimRegs* in,
 // the first frame with an empty display list. `in->a` is not passed because the
 // routine wants it — it is passed because the routine's silence about it is
 // part of the contract.
+// `AT_POINT_COST` with this routine's own id chain, indexed by `ObstacleBlock`.
+//
+// **Its last seven entries are `AT_POINT_COST`'s last seven, to the cycle**,
+// because `$80:C021`-`$80:C03E` is `$80:BFA0`-`$80:BFBD` byte for byte and the
+// loop tails match too. That is not a shortcut taken here — both were counted
+// off their own listings — it is the check that neither was miscounted.
+//
+// Where they part is the top of a record: two `CPY` against the player records
+// instead of one against a caller's, a `CMP #$005C` ceiling the other has no
+// use for, and seven named comparisons where the other has two. The dismissals
+// climb **86, 126, 190, 242, 302, 314, 344**, one question apiece.
+static const CosimRun OBSTACLE_COST[OBSTACLE_BLOCK_COUNT] = {
+    // `PHD : PEA $0000 : PLD : STX $3A : STY $3C : LDX $9C : BEQ` not taken,
+    // and the first `DEX DEX`. No `STA`: this one files no self.
+    [OBST_BLK_PROLOGUE] = {28 + 34 + 34 + 28 + 28 + 28 + 12 + 12 + 12, 15, 3},
+    [OBST_BLK_EMPTY] = {28 + 34 + 34 + 28 + 28 + 28 + 18 + 34 + 12 + 42, 16, 3},
+    // $80:BFD7 LDY $137E,X : CPY $D2 : BEQ taken.
+    [OBST_BLK_PLAYER_A] = {40 + 28 + 18, 7, 1},
+    // ...not taken, then `CPY $D4 : BEQ` taken.
+    [OBST_BLK_PLAYER_B] = {40 + 28 + 12 + 28 + 18, 11, 2},
+    // ...not taken, then `LDA $0000,Y : LSR A : BCC` taken.
+    [OBST_BLK_INACTIVE] = {40 + 28 + 12 + 28 + 12 + 40 + 12 + 18, 17, 2},
+    // ...not taken, then `LDA $000E,Y : BEQ` taken.
+    [OBST_BLK_NO_ID] = {40 + 28 + 12 + 28 + 12 + 40 + 12 + 12 + 40 + 18, 22, 2},
+    // ...not taken, then `CMP #$000C : BCC` not taken, `CMP #$0033 : BEQ`
+    // taken.
+    [OBST_BLK_ID_33] = {40 + 28 + 12 + 28 + 12 + 40 + 12 + 12 + 40 + 12 + 18 +
+                            12 + 18 + 18,
+                        32, 2},
+    // ...the `BCC` under it instead: $0C..$32.
+    [OBST_BLK_ID_BAND] = {40 + 28 + 12 + 28 + 12 + 40 + 12 + 12 + 40 + 12 + 18 +
+                              12 + 18 + 12 + 18,
+                          34, 2},
+    // ...neither, then `CMP #$005C : BCS` taken: over the ceiling.
+    [OBST_BLK_ID_HIGH] = {40 + 28 + 12 + 28 + 12 + 40 + 12 + 12 + 40 + 12 + 18 +
+                              12 + 18 + 12 + 12 + 18 + 18,
+                          39, 2},
+    // $80:BFF0 CMP #$000C : BCC taken — under the band.
+    [OBST_BLK_ARRIVE_LOW] = {40 + 28 + 12 + 28 + 12 + 40 + 12 + 12 + 40 + 12 +
+                                 18 + 18,
+                             27, 2},
+    // ...$34..$5B, which is past the band, under the ceiling, and falls into
+    // the named chain anyway. The only ids for which `CMP #$0037` is live.
+    [OBST_BLK_ARRIVE_HIGH] = {40 + 28 + 12 + 28 + 12 + 40 + 12 + 12 + 40 + 12 +
+                                  18 + 12 + 18 + 12 + 12 + 18 + 12,
+                              39, 2},
+    [OBST_BLK_NAME_MISS] = {18 + 12, 5},
+    [OBST_BLK_NAME_HIT] = {18 + 18, 5},
+    // From here down, `AT_POINT_COST`'s tail exactly.
+    [OBST_BLK_FAR_X] = {40 + 12 + 28 + 12 + 18 + 18 + 18, 15, 1},
+    [OBST_BLK_NEAR_X] = {40 + 12 + 28 + 12 + 18 + 18 + 12, 15, 1},
+    [OBST_BLK_FAR_Y] = {40 + 12 + 28 + 12 + 18 + 18 + 18, 15, 1},
+    [OBST_BLK_NEAR_Y] = {40 + 12 + 28 + 12 + 18 + 18 + 12, 15, 1},
+    [OBST_BLK_HIT] = {34 + 12 + 42, 3},
+    [OBST_BLK_LOOP_NEXT] = {12 + 12 + 18, 4},
+    [OBST_BLK_LOOP_DONE] = {12 + 12 + 12 + 34 + 12 + 42, 7},
+};
+
+static int obstacle_cycles(const ObstacleWork* k, bool fast) {
+  int cycles = 0;
+  for (int i = 0; i < OBSTACLE_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles(&OBSTACLE_COST[i], fast);
+  return cycles;
+}
+
 static void shim_actor_obstacle_at_point(Wram* w, const Rom* rom,
                                          const CosimRegs* in, CosimRegs* out) {
   (void)rom;
   ObstacleRegs r;
-  actor_obstacle_at_point(w, in->a, in->x, in->y, &r);
+  ObstacleWork work;
+  actor_obstacle_at_point_counted(w, in->a, in->x, in->y, &r, &work);
+  cosim_cost(obstacle_cycles(&work, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -5552,7 +5758,10 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_actor_nearest,
         // A fixed 32 slots whatever the board holds, so the spread is narrow
         // and it is all in how many records get as far as the subtraction:
-        // 6,498..7,592 over 1,006 calls on movies/level1.zmv.
+        // 6,498..7,592 over 1,006 calls on movies/level1.zmv. The fallback
+        // now, and not the price — `nearest_cycles` reports a real one on
+        // every call, and being unable to decline it never reports anything
+        // else. See `NEAREST_COST`.
         .cycles = 7195,
         .stack_bytes = 2,  // the opening PHD
     },
@@ -5585,6 +5794,8 @@ static const CosimRoutine ROUTINES[] = {
         // `actor_nearest`, and a wider spread than its 6,498..7,592 for the
         // opposite reason to the usual one: with one id instead of four, more
         // slots are dismissed before the subtraction and fewer after it.
+        // Also the fallback and not the price: the same `NEAREST_COST` table
+        // prices this, through its own two id blocks.
         .cycles = 6909,
         .stack_bytes = 2,  // the opening PHD
     },
@@ -5655,7 +5866,8 @@ static const CosimRoutine ROUTINES[] = {
         // 698..6,958 across seven movies, and the spread is the board: unlike
         // `actor_nearest`'s fixed 32 slots this walks only what the cull kept,
         // and it stops early when it finds something. 2,645 is the mean
-        // weighted by the 26,796 calls those movies made, not one movie's.
+        // weighted by the 26,796 calls those movies made, not one movie's —
+        // and it is the fallback now, not the price. See `AT_POINT_COST`.
         .cycles = 2645,
         .stack_bytes = 4,  // the opening PHD and the PEA under it
     },
@@ -5670,6 +5882,8 @@ static const CosimRoutine ROUTINES[] = {
         // than taken from one. Borrowing `actor_at_point`'s 2,645 would have
         // been 27% low: same loop, but a filter that accepts far fewer ids
         // means far fewer early exits, so the walk usually runs to the end.
+        // `OBSTACLE_COST` prices it per call now, so this is the fallback —
+        // and that 27% is the measurement of why it could not be borrowed.
         .cycles = 3630,
         .stack_bytes = 4,  // the opening PHD and the PEA under it
     },

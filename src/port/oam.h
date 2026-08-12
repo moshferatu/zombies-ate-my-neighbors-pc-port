@@ -666,6 +666,60 @@ void actor_gap(Wram* w, uint16_t rec, ActorGapRegs* out);
 // that a search that finds nothing hands back the last one that did.
 uint16_t actor_nearest_id3(Wram* w, uint16_t x, uint16_t y, uint16_t* dist);
 
+// --- What a search costs ----------------------------------------------------
+
+// One block table prices both searches, because "byte for byte the same routine
+// otherwise" above is not a figure of speech: `$80:B123` and `$80:B18F` differ
+// only in the four `CMP`/`BEQ` pairs one uses where the other has a single
+// `CMP #$0003 : BNE`. Everything else — the prologue, the two flag gates, the
+// two absolute values, the sum, the strictly-nearer test, the loop tail and the
+// epilogue — is the same instructions at the same costs, so the two id chains
+// get their own blocks and the other twelve are shared.
+//
+// The walk is a fixed 32 slots whatever the board holds, which makes almost all
+// of this self-checking. On every call:
+//
+//   UNDRAWN + INACTIVE + WRONG_ID + (the id blocks)  ==  32
+//   ID_A + ID_B + ID_C + ID_D + ID3_MATCH  ==  DX_POS + DX_NEG
+//                                          ==  DY_POS + DY_NEG
+//                                          ==  KEPT + CLOSER
+//   LOOP_NEXT == 31,  LOOP_DONE == 1,  FIXED == 1
+//
+// Splitting a loop that always runs the same number of times is the point
+// rather than an oversight: a fixed count folded into the prologue is the
+// cheapest place in a model to hide an arithmetic error.
+typedef enum {
+  NEAR_BLK_FIXED,      // the prologue and the epilogue: both run exactly once
+  NEAR_BLK_UNDRAWN,    // $80:B137 BPL taken: no ACTOR_DRAW
+  NEAR_BLK_INACTIVE,   // $80:B13A BCC taken: drawn, but flag bit 0 clear
+  NEAR_BLK_WRONG_ID,   // $80:B151 BNE taken: none of the four ids
+  NEAR_BLK_ID_A,       // $80:B142 BEQ taken: id $05, player A
+  NEAR_BLK_ID_B,       // $80:B147 BEQ taken: id $06, player B
+  NEAR_BLK_ID_C,       // $80:B14C BEQ taken: id $38
+  NEAR_BLK_ID_D,       // $80:B151 BNE *not* taken: id $01, matched by falling
+                       // through, which is why it is cheaper than $38's
+  NEAR_BLK_ID3_MATCH,  // $80:B1AE BNE not taken: the sibling's single id $03
+  NEAR_BLK_ID3_MISS,   // ...taken
+  NEAR_BLK_DX_POS,     // $80:B15B BCS taken: X difference needed no negating
+  NEAR_BLK_DX_NEG,     // ...not taken, so `EOR #$FFFF : INC A` ran
+  NEAR_BLK_DY_POS,     // $80:B16B BCS taken, and the same on Y
+  NEAR_BLK_DY_NEG,     // ...not taken
+  NEAR_BLK_KEPT,       // $80:B178 BCS taken: not strictly nearer, so no store
+  NEAR_BLK_CLOSER,     // ...not taken: a new winner, `STA $38 : STX $44`
+  NEAR_BLK_LOOP_NEXT,  // $80:B187 BCS taken: another slot below this one
+  NEAR_BLK_LOOP_DONE,  // ...not taken, which happens once
+  NEAREST_BLOCK_COUNT,
+} ActorNearestBlock;
+
+typedef struct {
+  uint16_t blocks[NEAREST_BLOCK_COUNT];
+} ActorNearestWork;
+
+uint16_t actor_nearest_counted(Wram* w, uint16_t x, uint16_t y, uint16_t* dist,
+                               ActorNearestWork* work);
+uint16_t actor_nearest_id3_counted(Wram* w, uint16_t x, uint16_t y,
+                                   uint16_t* dist, ActorNearestWork* work);
+
 // The three direction tables, all twelve entries, all indexed `4 * v + h` where
 // each half is 0 for "the same", 1 for "less than" and 2 for "greater than".
 // Every fourth entry is the unreachable `h == 3` slot and every one of them is
@@ -1005,6 +1059,51 @@ typedef struct {
 void actor_at_point(Wram* w, uint16_t self, uint16_t x, uint16_t y,
                     AtPointRegs* out);
 
+// What a search of the visible list costs, block by block.
+//
+// The id chain is the only part that is not a straight prefix walk, because
+// `$80:BF8D  CMP #$000C : BCC $BF96` sends the *low* ids forward to the named
+// tests and the band test then drops the *high* ones into the same place. So
+// the two arrivals are their own blocks and the named tests are counted one at
+// a time on top of whichever arrived — additive rather than nested, which is
+// what stops two id ranges times two named tests becoming four blocks.
+//
+// **`ID_BAND` and `ID_33` are one branch in the port and two here.** The ROM
+// leaves `$33` on a `BEQ` and `$0C`..`$32` on the `BCC` under it, and a taken
+// branch reached one instruction earlier is twelve cycles cheaper, so the id
+// the coverage table calls the top of the band is the cheapest way out of it.
+//
+// Per call: `PROLOGUE + EMPTY == 1`, `LOOP_DONE + HIT + EMPTY == 1`, and
+// `NEAR_X == FAR_Y + NEAR_Y`, `NEAR_Y == HIT + (the walk ending on a hit)`.
+typedef enum {
+  AT_BLK_PROLOGUE,     // $80:BF67..$BF77, including the first `DEX DEX`
+  AT_BLK_EMPTY,        // $80:BF74 BEQ taken: `$9C` was zero, and the `CLC : RTL`
+  AT_BLK_SELF,         // $80:BF7D BEQ taken: the record the caller named
+  AT_BLK_INACTIVE,     // $80:BF83 BCC taken: flag bit 0 clear
+  AT_BLK_NO_ID,        // $80:BF88 BEQ taken: collision id zero
+  AT_BLK_ID_33,        // $80:BF92 BEQ taken: id exactly $33
+  AT_BLK_ID_BAND,      // $80:BF94 BCC taken: $0C..$32
+  AT_BLK_ARRIVE_LOW,   // $80:BF8D BCC taken: under $0C, on to the named tests
+  AT_BLK_ARRIVE_HIGH,  // ...over $33, which falls into the same tests
+  AT_BLK_NAME_MISS,    // one `CMP : BEQ` that did not match
+  AT_BLK_NAME_HIT,     // ...and one that did, which is six dearer
+  AT_BLK_FAR_X,        // $80:BFAD BCS taken: outside the six-pixel window
+  AT_BLK_NEAR_X,       // ...inside it
+  AT_BLK_FAR_Y,        // $80:BFBC BCS taken
+  AT_BLK_NEAR_Y,       // ...inside, which is the answer
+  AT_BLK_HIT,          // $80:BFBE PLD : SEC : RTL
+  AT_BLK_LOOP_NEXT,    // $80:BFC3 BPL taken: another entry below this one
+  AT_BLK_LOOP_DONE,    // ...not taken, and the shared `PLD : CLC : RTL`
+  AT_POINT_BLOCK_COUNT,
+} AtPointBlock;
+
+typedef struct {
+  uint16_t blocks[AT_POINT_BLOCK_COUNT];
+} AtPointWork;
+
+void actor_at_point_counted(Wram* w, uint16_t self, uint16_t x, uint16_t y,
+                            AtPointRegs* out, AtPointWork* work);
+
 // --- $80:BFC8 ---------------------------------------------------------------
 
 // **Is something a walker would bump into standing at this point?** — the same
@@ -1066,6 +1165,49 @@ typedef struct {
 
 void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,
                              ObstacleRegs* out);
+
+// `AtPointBlock` again, with the differences the routine has: two player tests
+// where that one has a self test, a ceiling above the band, and seven named
+// comparisons where that one has two. Everything from the window tests down is
+// the same instructions — `$80:C021`-`$80:C03E` is `$80:BFA0`-`$80:BFBD` byte
+// for byte — so **the last seven entries of `OBSTACLE_COST` must equal the last
+// seven of `AT_POINT_COST`**, and two tables disagreeing there is a
+// transcription error in one of them and nothing else.
+//
+// A separate table rather than a shared one, unlike `NEAREST_COST` above: there
+// the ROM really does hold one routine twice over, here it holds two routines
+// that were written from the same sketch.
+typedef enum {
+  OBST_BLK_PROLOGUE,     // $80:BFC8..$BFD6, including the first `DEX DEX`
+  OBST_BLK_EMPTY,        // $80:BFD3 BEQ taken, and the `CLC : RTL`
+  OBST_BLK_PLAYER_A,     // $80:BFDC BEQ taken: `CPY $D2`
+  OBST_BLK_PLAYER_B,     // $80:BFE0 BEQ taken: `CPY $D4`
+  OBST_BLK_INACTIVE,     // $80:BFE6 BCC taken
+  OBST_BLK_NO_ID,        // $80:BFEB BEQ taken
+  OBST_BLK_ID_33,        // $80:BFF5 BEQ taken: id exactly $33
+  OBST_BLK_ID_BAND,      // $80:BFF7 BCC taken: $0C..$32
+  OBST_BLK_ID_HIGH,      // $80:BFFC BCS taken: $5C and up
+  OBST_BLK_ARRIVE_LOW,   // $80:BFF0 BCC taken: under $0C
+  OBST_BLK_ARRIVE_HIGH,  // ...$34..$5B, which falls through into the same chain
+  OBST_BLK_NAME_MISS,    // one of the seven `CMP : BEQ` that did not match
+  OBST_BLK_NAME_HIT,     // ...and the one that did
+  OBST_BLK_FAR_X,        // $80:C02E BCS taken
+  OBST_BLK_NEAR_X,
+  OBST_BLK_FAR_Y,        // $80:C03D BCS taken
+  OBST_BLK_NEAR_Y,
+  OBST_BLK_HIT,          // $80:C03F PLD : SEC : RTL — the step is refused
+  OBST_BLK_LOOP_NEXT,    // $80:C044 BPL taken
+  OBST_BLK_LOOP_DONE,    // ...not taken, and the shared `PLD : CLC : RTL`
+  OBSTACLE_BLOCK_COUNT,
+} ObstacleBlock;
+
+typedef struct {
+  uint16_t blocks[OBSTACLE_BLOCK_COUNT];
+} ObstacleWork;
+
+void actor_obstacle_at_point_counted(Wram* w, uint16_t a_in, uint16_t x,
+                                     uint16_t y, ObstacleRegs* out,
+                                     ObstacleWork* work);
 
 // --- $80:BE0C, $80:BE41 — the two ends of a record's life -------------------
 //
