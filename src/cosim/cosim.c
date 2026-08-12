@@ -61,12 +61,29 @@ typedef struct {
 // loop, and `RTI`s back to the entry instruction, where the rest of the budget
 // is spent. Nothing about this is specific to long routines; it is the same
 // code path for a 92-cycle one, which simply never stops early.
+//
+// The same argument applies to one kind of *write*, and that is what `commit`
+// is. A routine which publishes work to the NMI by writing a queue count last
+// would, in the ROM, have that store land at the end of its instructions. Run
+// atomically it lands at the start of the budget instead, and every interrupt
+// the budget takes sees a job the hardware would not have seen yet. So the word
+// is held back and written when the budget runs out, next to the registers.
+// See `CosimRoutine::commit`.
+typedef struct {
+  int count;
+  const CosimCommitSpan* span;
+  uint16_t delta[COSIM_MAX_COMMIT];  // for an `add` span
+  uint8_t was[COSIM_MAX_COMMIT][COSIM_COMMIT_BYTES];   // before the port ran
+  uint8_t now[COSIM_MAX_COMMIT][COSIM_COMMIT_BYTES];   // ...and after
+} CosimCommit;
+
 typedef struct {
   const CosimRoutine* routine;
   CosimRegs out;   // what to publish when the budget runs out
   uint32_t entry;  // the instruction the CPU is parked on meanwhile
   int left;        // cycles still owed
   int piece;       // how finely to spend them — see cycles_burn_modelled()
+  CosimCommit commit;  // ...and the WRAM words, published with them
 } CosimBurn;
 
 // `thread_yield`, `$80:8353`. Reaching it is how a segment ends; see
@@ -783,6 +800,52 @@ static bool interrupt_due(const Snes* snes) {
   return cpu->nmiWanted || (cpu->irqWanted && !cpu->i);
 }
 
+// What the stretches this routine publishes hold right now, before it runs.
+static void commit_capture(const Cosim* c, const CosimRoutine* r,
+                           CosimCommit* k) {
+  k->count = r->commit_count;
+  k->span = r->commit;
+  for (int i = 0; i < k->count; i++)
+    memcpy(k->was[i], c->snes->ram + k->span[i].at, k->span[i].len);
+}
+
+// Take back what the port just published, and keep it for later.
+//
+// What is left behind is the payload written and the queue not yet claimed,
+// which is what an interrupt landing in the middle of the ROM's version would
+// have found. An `add` span keeps the difference rather than the value, because
+// the handler may move the word while we are holding it.
+static void commit_hold(Cosim* c, CosimCommit* k) {
+  for (int i = 0; i < k->count; i++) {
+    uint8_t* at = c->snes->ram + k->span[i].at;
+    memcpy(k->now[i], at, k->span[i].len);
+    memcpy(at, k->was[i], k->span[i].len);
+    if (k->span[i].add)
+      k->delta[i] = (uint16_t)((k->now[i][0] | (k->now[i][1] << 8)) -
+                               (k->was[i][0] | (k->was[i][1] << 8)));
+  }
+}
+
+// The budget is spent: publish, in the order the ROM writes them.
+//
+// A plain span is replayed only where the routine changed something. Replaying
+// all of it would undo the handler's own writes to the bytes the routine never
+// touched -- `$80:8408` zeroes the slots it dispatched, and those are somebody
+// else's jobs.
+static void commit_publish(Cosim* c, CosimCommit* k) {
+  Wram* w = (Wram*)c->snes->ram;
+  for (int i = 0; i < k->count; i++) {
+    const CosimCommitSpan* sp = &k->span[i];
+    if (sp->add) {
+      wram_w16(w, sp->at, (uint16_t)(wram_r16(w, sp->at) + k->delta[i]));
+      continue;
+    }
+    for (uint16_t o = 0; o < sp->len; o++)
+      if (k->now[i][o] != k->was[i][o]) c->snes->ram[sp->at + o] = k->now[i][o];
+  }
+  k->count = 0;
+}
+
 // Spend as much of the innermost budget as can be spent without standing in the
 // way of an interrupt. True when the budget is gone and the call has returned.
 //
@@ -807,6 +870,7 @@ static bool burn_spend(Cosim* c) {
     snes_runCpuCycle(c->snes);  // the core takes it, from the entry instruction
     return false;
   }
+  commit_publish(c, &b->commit);
   native_return(c, b->routine, &b->out);
   c->priv->burn_depth--;
   return true;
@@ -817,12 +881,14 @@ static bool burn_spend(Cosim* c) {
 // Nothing is deferred in the common case: a budget that no interrupt interrupts
 // is spent here in full and the routine returns before this does, which is what
 // it did before there was a stack of these at all.
-static void burn_begin(Cosim* c, const CosimRoutine* r, const CosimRegs* out) {
+static void burn_begin(Cosim* c, const CosimRoutine* r, const CosimRegs* out,
+                       CosimCommit* commit) {
   if (c->priv->burn_depth >= COSIM_MAX_DEPTH) {
     // Nowhere to park it. Spending it immediately is the old behaviour and is
     // wrong only in the way the old behaviour was wrong, which beats losing the
     // cycles altogether.
     cycles_burn_now(c, r, COSIM_TAIL_RETURN);
+    commit_publish(c, commit);
     native_return(c, r, out);
     return;
   }
@@ -830,6 +896,7 @@ static void burn_begin(Cosim* c, const CosimRoutine* r, const CosimRegs* out) {
   b->routine = r;
   b->out = *out;
   b->entry = r->entry;
+  b->commit = *commit;
   burn_plan(c, r, COSIM_TAIL_RETURN, &b->left, &b->piece);
   burn_spend(c);
 }
@@ -968,12 +1035,15 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
   regs_capture(snes, &in);
   out = in;
   g_cosim_cost = -1;
+  CosimCommit commit;
+  commit_capture(c, r, &commit);
   r->run((Wram*)snes->ram, &c->rom, &in, &out);
+  commit_hold(c, &commit);
 
   // Stand in for the work the ROM's instructions would have done, and return
   // when it is paid for. Usually that is here and now; a budget an interrupt
   // falls due inside is parked and finished by the loop. See `CosimBurn`.
-  burn_begin(c, r, &out);
+  burn_begin(c, r, &out, &commit);
 
   s->calls++;
   s->checked++;

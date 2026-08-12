@@ -229,6 +229,38 @@ typedef bool (*CosimGuard)(Wram* scratch, const Rom* rom, const CosimRegs* in);
 typedef PortStep (*CosimYieldShim)(Wram* w, const Rom* rom, const CosimRegs* in,
                                    CosimRegs* out, void* ctx, uint16_t* ticks);
 
+// A stretch of WRAM a routine publishes to the NMI, and how the ROM writes it.
+//
+// It is a span rather than a word because the two vblank queues are dispatched
+// off their *slots*: `$80:83E0` reads `$12A0,X` and skips the slot when it is
+// zero, using the count at `$0C` only as a gate and a running budget. So the
+// instruction that publishes a queue A job is the `STA $12A0,X` at `$83CC`, not
+// the `INC $0C` two instructions later, and holding back the count alone leaves
+// the job visible a frame early exactly as before. The VRAM queue is the other
+// way round -- `$80:9E7B` bounds its loop with `CPX $CE` -- so there the count
+// really is the publishing word and the span is two bytes.
+//
+// `add` is the difference between `INC $0C` and `STA $12A0,X`, and it is not a
+// detail: while a commit is held back the NMI handler writes these same
+// locations itself, and `$80:840B` decrements the very count a queue add is
+// waiting to increment. Replaying an absolute value over that would wipe the
+// handler's decrement out; replaying the delta the routine computed does not.
+// An `add` span is one 16-bit word. A plain span is replayed byte by byte and
+// only where the routine actually changed something, which is what leaves the
+// dispatcher's own zeroing of the *other* slots alone.
+typedef struct {
+  uint16_t at;   // WRAM offset
+  uint16_t len;  // bytes; 2 when `add`
+  bool add;      // ROM increments this word in place; otherwise it stores bytes
+} CosimCommitSpan;
+
+// Four is `boss_bg_queue_flip`, the widest commit in the registry: a BG DMA
+// cursor, then a queue A slot table and its count.
+#define COSIM_MAX_COMMIT 4
+
+// The widest span, `$12A0`'s sixteen four-byte slots.
+#define COSIM_COMMIT_BYTES 64
+
 typedef struct {
   const char* name;      // as it appears on the command line
   const char* symbol;    // the name in tools/symbols/zamn.sym
@@ -361,6 +393,29 @@ typedef struct {
   // share it earns is real on the `run` side of the report and zero on the
   // `verify` side, and the report says which.
   bool run_only;
+
+  // --- The words this routine publishes to the NMI ---------------------------
+  //
+  // A ported routine runs atomically and the ROM's version does not. Where that
+  // shows is a routine which writes a payload and then one word that *publishes*
+  // it -- a queue's slot and then its count, four parallel arrays and then their
+  // cursor. The NMI handler reads that word to decide whether there is a job
+  // waiting, so an interrupt landing between the payload and the publish sees no
+  // job, while the same interrupt landing anywhere inside the port's budget sees
+  // one already queued. `$7E:000C` came back `$03` against the ROM's `$04` for
+  // exactly that reason; see "Sizing the atomicity hazard" in docs/cosim.md.
+  //
+  // Naming the word here is what lets the harness hold it back. The port writes
+  // it as it always did, `run_native` puts the old value straight back, and
+  // `burn_spend` publishes it once the budget is spent -- which is where the
+  // ROM's own store falls, because in all ten routines that need this the
+  // publishing write is the last one the routine makes. That makes the ordering
+  // exact rather than approximate, and it costs the routines nothing: none of
+  // them know it is happening.
+  //
+  // Spans are in the order the ROM writes them.
+  const CosimCommitSpan* commit;
+  int commit_count;
 } CosimRoutine;
 
 // The registry. Every routine `src/port/` has replaced, in the order they were

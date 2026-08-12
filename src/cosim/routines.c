@@ -4877,6 +4877,54 @@ static void shim_hud_refresh(Wram* w, const Rom* rom, const CosimRegs* in,
 // *serves*, and the 1,226 passes containing a collision used to be declined.
 // They are the expensive ones. Re-measure and update these whenever a guard's
 // answer changes; `verify` prints the range it saw alongside the mean.
+// The stretches of WRAM these routines publish to the NMI, held back until
+// their budget is spent. See `CosimRoutine::commit`; the census that says which
+// routines need this, and which of them the corpus actually interrupts, is in
+// docs/cosim.md.
+//
+// Each span is where the ROM's *publishing* write lands, which is not always
+// where it looks. Getting that wrong is not a small error: the first cut of
+// this named `$0C` for the vblank queues, and `$80:83E0` dispatches on the slot
+// rather than the count, so it held back a word nobody was waiting on and
+// changed nothing at all.
+
+// Queue A and queue B are dispatched off their slots -- `$80:83E9` and
+// `$80:8446` read the slot and skip it when it is zero -- so the slot table is
+// what publishes a job. The count comes too, because `$80:840B` decrements it
+// while we are holding it and only the delta survives that.
+static const CosimCommitSpan COMMIT_VBL_A[] = {
+    {W_VBL_QUEUE_A, W_VBL_QUEUE_A_SLOTS * 4, false},
+    {W_VBL_QUEUE_A_COUNT, 2, true},
+};
+static const CosimCommitSpan COMMIT_VBL_B[] = {
+    {W_VBL_QUEUE_B, W_VBL_QUEUE_B_SLOTS * 4, false},
+    {W_VBL_QUEUE_B_COUNT, 2, true},
+};
+
+// The VRAM queue is the other shape: `$80:9EB9` bounds the drain with
+// `CPX $CE`, so nothing in the five arrays is reachable until the count says
+// so, and the count is the whole commit. It is a store rather than an increment
+// because the routine reads `$CE` before it writes the payload and stores an
+// absolute value after -- so it really does overwrite the `STZ $CE` at
+// `$80:9EBF`, and that quirk is the ROM's.
+static const CosimCommitSpan COMMIT_VRAM_QUEUE[] = {{W_VRAM_QUEUE_COUNT, 2, false}};
+
+// Bit 6 gates the flush at `$80:9E7D`, and the routine writes the word rather
+// than setting a bit in it.
+static const CosimCommitSpan COMMIT_RENDER_FLAGS[] = {{W_RENDER_FLAGS, 2, false}};
+
+// The widest commit in the registry: the row loop's cursor, absolute for the
+// same reason `$CE` is, and then the vblank job queued on top of it.
+static const CosimCommitSpan COMMIT_BOSS_BG[] = {
+    {W_BG_DMA_CURSOR, 2, false},
+    {W_VBL_QUEUE_A, W_VBL_QUEUE_A_SLOTS * 4, false},
+    {W_VBL_QUEUE_A_COUNT, 2, true},
+};
+
+// The count is the table's length by construction, so it cannot drift from it.
+#define COSIM_COMMIT(tbl) \
+  .commit = (tbl), .commit_count = (int)(sizeof(tbl) / sizeof((tbl)[0]))
+
 static const CosimRoutine ROUTINES[] = {
     {
         .name = "sprite_frame_tile",
@@ -4912,6 +4960,7 @@ static const CosimRoutine ROUTINES[] = {
     },
     {
         .name = "hud_refresh",
+        COSIM_COMMIT(COMMIT_VBL_A),
         .symbol = "$80:C07F",
         .entry = 0x80c07f,
         // `$C0A2`, the quiet path's `RTL`. The other exit is a `JML $8083AE`
@@ -4949,6 +4998,7 @@ static const CosimRoutine ROUTINES[] = {
     },
     {
         .name = "vbl_queue_a_add",
+        COSIM_COMMIT(COMMIT_VBL_A),
         .symbol = "$80:83AE",
         .entry = 0x8083ae,
         .ret_op = 0x8083d2,  // RTL
@@ -4959,6 +5009,7 @@ static const CosimRoutine ROUTINES[] = {
     },
     {
         .name = "vbl_queue_b_add",
+        COSIM_COMMIT(COMMIT_VBL_B),
         .symbol = "$80:8418",
         .entry = 0x808418,
         .ret_op = 0x80843a,  // RTL
@@ -6061,6 +6112,7 @@ static const CosimRoutine ROUTINES[] = {
     },
     {
         .name = "vram_queue_request",
+        COSIM_COMMIT(COMMIT_RENDER_FLAGS),
         .symbol = "$80:9E6D",
         .entry = 0x809e6d,
         .ret_op = 0x809e7a,
@@ -6348,6 +6400,7 @@ static const CosimRoutine ROUTINES[] = {
     },
     {
         .name = "camera_scroll_left",
+        COSIM_COMMIT(COMMIT_VRAM_QUEUE),
         .symbol = "$80:A68B",
         .entry = 0x80a68b,
         .ret_op = 0x80a709,  // the one RTL all three exits reach
@@ -6367,6 +6420,7 @@ static const CosimRoutine ROUTINES[] = {
     },
     {
         .name = "camera_scroll_right",
+        COSIM_COMMIT(COMMIT_VRAM_QUEUE),
         .symbol = "$80:A70A",
         .entry = 0x80a70a,
         .ret_op = 0x80a788,  // two RTLs, at $A711 and here; this is the tail
@@ -6381,6 +6435,7 @@ static const CosimRoutine ROUTINES[] = {
     },
     {
         .name = "camera_scroll_down",
+        COSIM_COMMIT(COMMIT_VRAM_QUEUE),
         .symbol = "$80:A789",
         .entry = 0x80a789,
         .ret_op = 0x80a815,  // the early exits share an RTL at $A790
@@ -6395,6 +6450,7 @@ static const CosimRoutine ROUTINES[] = {
     },
     {
         .name = "camera_scroll_up",
+        COSIM_COMMIT(COMMIT_VRAM_QUEUE),
         .symbol = "$80:A816",
         .entry = 0x80a816,
         .ret_op = 0x80a8a3,  // ...and this one's at $A81B
@@ -6486,6 +6542,7 @@ static const CosimRoutine ROUTINES[] = {
     },
     {
         .name = "boss_bg_queue",
+        COSIM_COMMIT(COMMIT_BOSS_BG),
         .symbol = "$82:8014",
         .entry = 0x828014,
         .ret_op = 0x828068,
@@ -6503,6 +6560,7 @@ static const CosimRoutine ROUTINES[] = {
     },
     {
         .name = "boss_bg_queue_flip",
+        COSIM_COMMIT(COMMIT_BOSS_BG),
         .symbol = "$82:8069",
         .entry = 0x828069,
         .ret_op = 0x8280df,

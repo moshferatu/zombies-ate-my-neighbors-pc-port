@@ -4935,6 +4935,241 @@ second wall on the three `level25` movies, so their gameplay past pass ~2000 is
 uncompared; and `lzss_decompress` and `camera_follow` are checked by `verify`
 alone, by construction, since the pass exists by handing them back.
 
+## Sizing the atomicity hazard, before choosing what to do about it (2026-08-12)
+
+The round above ended on a decision rather than a patch: a ported routine runs
+atomically where the ROM's version can be interrupted, and `$7E:000C` was the
+first byte to show it. The decision was left open on purpose. This is the census
+that sizes it, taken before choosing, because "how many routines is this" and
+"how many of them does the corpus actually reach" are the two facts the choice
+turns on, and neither was known when the choice was posed.
+
+### What the NMI reads
+
+The hazard needs two things at once: the port writes a WRAM location, and the
+NMI handler — or a job it dispatches — reads that location. The second half
+is a closed list, and `docs/frame-skeleton.md` already had it:
+
+| Location | Read by | What it does with it |
+| --- | --- | --- |
+| `$7E:000C` + `$7E:12A0` | `$80:83E0` | dispatches queue A, decrements the count |
+| `$7E:000E` + `$7E:12E0` | `$80:843D` | dispatches queue B, decrements the count |
+| `$7E:00CE` + `$7E:1B84..1C44` | `$80:9E7B` | drains the VRAM queue, zeroes the count |
+| `$7E:1D54` + `$7E:1D56..1E16` | `$82:81C9` | drains the BG DMA queue, zeroes the cursor |
+| `$7E:0026` bit 6 | `$80:9E7B` | gates the flush |
+| `$7E:136C` | step 9 | restored into `INIDISP` |
+| `$7E:13BE` | the queue A job | DMA'd to `OAMDATA` |
+
+Grepping the port for writes to those gives eight sites in six files, which roll
+up to **twelve of the registry's 114 routines**. It is worth saying plainly that
+it is twelve and not a hundred and fourteen. The hazard is not "the port is
+atomic"; it is "the port is atomic *about something the NMI reads*", and most
+routines are not about anything the NMI reads.
+
+### Three shapes, not one
+
+The twelve do not fail the same way, and the difference is what decides the cost
+of fixing them.
+
+**Commit-word routines (ten).** `hud_refresh`, `boss_bg_queue`,
+`boss_bg_queue_flip`, the four `camera_scroll_*`, `vram_queue_request`,
+`vbl_queue_a_add`, `vbl_queue_b_add`. Each writes a payload and then a single
+word that publishes it: a slot then a count, four parallel arrays then a cursor,
+five arrays then `$CE`. **In all ten, the publishing write is the last one the
+routine makes** — `hud.c:583`, `bossbg.c:106`, `camera.c:476` and `:535`. That
+is not a coincidence, it is how a queue append is written in 65816, and it is
+what makes this shape exactly fixable rather than approximately.
+
+Which write actually publishes is a separate question from which one is last,
+and the section below is what happens when you assume they are the same.
+
+**Bulk-buffer routines (one).** `oam_buffer_clear` walks 128 entries writing one
+byte each, and has no commit word at all. Interrupted, the ROM leaves a half
+cleared buffer for the NMI to DMA and the port leaves a whole one. There is
+nothing to defer, because there is no moment at which the routine becomes
+visible: it is visible throughout.
+
+**Single-store routines (one).** `fade_in` writes `$136C` and nothing else, one
+16-bit `STA` per segment, and its segments are separated by real `thread_yield`
+calls that the ROM has too. A single store cannot be interrupted half way, so
+this one is not exposed at all. It is on the list because the grep put it there,
+and taking it back off is the point of doing the census by hand.
+
+### Which of the twelve the corpus actually interrupts
+
+`verify` already counts this and has all along: the `int.` column is calls an
+interrupt landed inside. Summed over all 43 movies, **20 of the 114 routines were
+ever interrupted at all** — 12,002 calls out of 13,221,010.
+
+Intersect that with the twelve, and three are left:
+
+| routine | what it publishes | calls | interrupted | where |
+| --- | --- | --- | --- | --- |
+| `boss_bg_queue_flip` | BG DMA rows, then the cursor, then a queue A job | 3,280 | **55** | `level25-2p` 37, `level25-boss` 17, `level25-heavy` 1 |
+| `hud_refresh` | a queue A slot and count | 51,335 | **7** | `level25-2p` 7 |
+| `vbl_queue_a_add` | a queue A slot and count | 31,968 | **4** | `level25-2p` 4 |
+
+The other nine are exposed and never touched: `boss_bg_queue`,
+`vbl_queue_b_add`, `vram_queue_request`, all four `camera_scroll_*`,
+`oam_buffer_clear`, and `fade_in`, which was never exposed anyway.
+
+Two things in that table are worth more than the byte that started this.
+
+**`boss_bg_queue_flip` is interrupted eight times more often than `hud_refresh`,
+and on three movies rather than one.** At 1.677% it has the highest interruption
+rate of any routine in the registry, and it is the one member of the class that
+writes two NMI-read structures in the same call: a loop of BG DMA rows committed
+by a cursor, and then a queue A job on top of that. It is not the routine the
+lockstep pass caught, and it is the more exposed of the two by every measure
+available.
+
+**Being interrupted is not the hazard by itself.** The three most interrupted
+routines in the corpus are `apu_send` at 8,568, `lzss_read_byte` at 1,555 and
+`lzss_write_byte` at 1,551 — between them 92% of all interrupted calls, and
+not one of them writes anything the NMI reads. The intersection is the whole
+finding: interruption is common, exposure is rare, and only the overlap can hurt.
+
+One caveat on the `int.` column, and it matters for how much the table is worth.
+It is measured in `verify`, where the ROM's own timeline decides where the
+interrupts land. In `run` the native core's timing differs, so *which* calls get
+interrupted differs too. `level25-boss` takes 17 interrupted flips here and still
+runs the lockstep pass clean. So this is a map of exposure, not a prediction of
+which movie fails — which is the right thing for it to be, since the point is
+to find the routines to reason about rather than to wait for one to break.
+
+### What this does to the options
+
+Of the three options the round above offered, one was described with more
+confidence than it had earned: that `fade_in`'s explicit resume points are "the
+existing machinery for exactly this". They are the right shape and the wrong
+event. `port_yield` models `thread_yield` — a cooperative suspension the ROM
+also performs, costed in ticks and visible to the scheduler. What this needs is a
+suspension the ROM does *not* perform: stop mid-body, let an interrupt land,
+carry on. `PortStep` has no such variant.
+
+The harness half, though, already exists, and that is the thing the census turned
+up that changes the arithmetic. From `CosimBurn` in `src/cosim/cosim.c`:
+
+> the budget is spent with the CPU parked on the routine's own entry
+> instruction, **in pieces**, and stopped the moment an interrupt comes due.
+
+The interrupt windows are already there. A substituted call already stops part
+way through its budget, hands the core the NMI and resumes. What it does not do
+is arrange for any of the port's *writes* to fall on the far side of one:
+`CosimRegs out` is "what to publish when the budget runs out", and registers are
+the only thing that gets that treatment.
+
+So for the ten commit-word routines the fix is not a coroutine split. It is
+extending what that struct already does for registers to cover one word of WRAM:
+hold the commit word alongside them, publish it when the budget is spent. Because
+the commit word is the last write in all ten, that reproduces the ROM's ordering
+exactly rather than approximately — an NMI landing anywhere in the budget sees
+the payload written and the queue not yet published, which is what the hardware
+sees. It also needs no new `PortStep`, no context struct, and no change to any of
+the ten routines.
+
+`oam_buffer_clear` is not covered by that and would want its writes spread across
+the budget, which is a real coroutine split. `fade_in` wants nothing. Nine of the
+twelve are latent, so a fix could be taken for the three live ones and the policy
+left for the rest.
+
+### Next
+
+The decision is still the user's to take and nothing here has been changed. What
+the census moves is its price: the deferred-commit-word option covers ten of the
+twelve routines, needs one field on a struct that already publishes deferred
+state, and is exact rather than approximate for all ten. That was the expensive
+option when it was believed to need a coroutine split, and it is now the cheap
+one.
+
+If it is taken, `boss_bg_queue_flip` is the one to verify against rather than
+`hud_refresh`: more interrupted calls, more movies, and two NMI-read structures
+in a single call.
+
+### The fix, and the two things it corrected (2026-08-12)
+
+Built: `CosimRoutine::commit`, a list of WRAM spans a routine publishes to the
+NMI. `run_native` captures them, runs the port, puts the old bytes straight
+back, and `burn_spend` replays them when the budget is spent — on the far side
+of the interrupt windows `CosimBurn` was already taking. Ten routines name a
+span; none of the ten changed a line.
+
+**The first cut named the wrong word, and measured that it had.** For the two
+vblank queues it declared the count at `$0C`, on the reasoning that the count is
+the last thing a queue add writes. `$80:83E0` does not read it that way:
+
+```
+$80:83E0  LDA $0C          ; a gate, and a budget in $10
+$80:83E2  BEQ exit
+$80:83E9  LDA $12A0,X      ; ...but this is what decides the slot runs
+$80:83EC  BEQ skip
+```
+
+The count gates the drain and bounds it. What makes a job *visible* is the slot
+being nonzero, so the ROM publishes at the `STA $12A0,X` at `$83CC`, two
+instructions before the `INC`. Holding the count back left the slot where it
+was and changed nothing whatsoever: same byte, same value, same pass. That is
+the useful kind of wrong — it cost one build and said so unambiguously.
+
+So a commit is a span rather than a word. The slot table is held back with the
+count, and replayed only where the routine changed bytes, which is what leaves
+the dispatcher's own `STA $12A0,X` zeroing of *other* slots at `$8408` intact.
+The count travels as a difference rather than a value, because `$80:840B`
+decrements the very word a queue add is waiting to increment and an absolute
+replay would wipe that out. The VRAM queue needed none of this: `$80:9EB9`
+bounds its drain with `CPX $CE`, so there the count really is the publishing
+word, and the two-byte span the first cut gave it was right.
+
+**It works, and the isolation test is the whole evidence.** On `level25-2p`,
+with `hud_refresh` as the only substitution in the registry:
+
+| | before | after |
+| --- | --- | --- |
+| `$7E:000C` | stock `$04`, native `$03` | no byte of live game state ever differed |
+| passes compared | 4,689 | 4,689 |
+| drift | +0 | +0 |
+
+One routine, no drift either side, the byte gone. `verify` is untouched at
+349,265 calls and 0 diverged.
+
+**And the second correction is to the round above.** That round named
+`hud_refresh` as the root cause of the corpus's one dirty byte. It was right
+that `hud_refresh` had an atomicity defect and wrong that the defect was this
+byte. With the fix in, the full configuration still reports `$7E:000C` stock
+`$04` native `$03` at pass 1231 — and it survives handing *every* queue A
+writer back to the ROM, which is a configuration in which the port cannot touch
+queue A at all. It is also unmoved by drift: excluding 57 routines takes the
+steady state from -9,014 to -24,146 and the byte stays on pass 1231. Not
+atomicity, and not the clock.
+
+Bisected, it lives in registry entries 44 to 57, and excluding that band
+replaces it with a different failure at pass 2117 carrying two bytes. So there
+are at least two further causes here, neither of them the one that was fixed.
+
+The evidence that misled the round above was `-x hud_refresh` appearing to clear
+the byte. It did clear it, and that was a coincidence: excluding a routine hands
+its cycles back to the ROM and perturbs everything downstream, so an exclusion
+clearing a symptom is much weaker evidence than it looks. The isolation in the
+other direction — `-r` one routine and nothing else — is the one that held
+up, and it is the one worth spending runs on next time.
+
+The corpus totals are unchanged either way: 197,867 passes, 40 of 43 never
+parted, one movie with a live byte differing, the same three partings. This fix
+buys no corpus number today. What it buys is that the ten routines are now
+correct about *when* they become visible, which is a property the next ported
+routine inherits rather than a number on this table.
+
+### Next
+
+Two named causes now, both on `level25-2p`: whatever in registry 44-57 puts
+`$7E:000C` a job behind on pass 1231, and the two bytes at pass 2117 behind it.
+Neither is atomicity and neither is drift, which makes them the first port
+defects the lockstep pass has turned up that are simply bugs.
+
+`oam_buffer_clear` is still the one exposed routine with no commit point to
+defer, and is still latent — it wants a real coroutine split, and nothing in
+the corpus is asking for it yet.
+
 ## Where this is going
 
 The first five routines here are leaves — they never call `thread_yield`. That
