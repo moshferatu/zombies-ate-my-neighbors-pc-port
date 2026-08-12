@@ -53,6 +53,32 @@ static inline bool present_stage(Present* p, int nx, int ny) {
   return p->stage != NULL;
 }
 
+// A black veil over the whole output, 0..255, drawn after the picture.
+//
+// This is the quit gesture's only feedback — `src/pad.h` fades the screen while
+// Start+Select is held — and it lives here rather than in the frontend so that
+// `tools/test_present.c` can read the result back. The failure it is guarding
+// against is a silent one: leave the blend mode at `NONE`, which is the
+// renderer's default and what it will be if nothing sets it, and every dim from
+// 1 to 255 paints solid opaque black. The fade then does not fade, it cuts, and
+// a still frame of it looks perfectly correct.
+//
+// The whole output and not the picture: the letterbox has to go down with
+// everything else, or the game fades inside a bright frame.
+static inline void present_dim(Present* p, int amount) {
+  if (amount <= 0) return;
+  if (amount > 255) amount = 255;
+  // Put the blend mode back. `present_draw` sets its own colour before it
+  // clears, so nothing here breaks it today; leaving the renderer in a mode it
+  // was not in is the kind of change that breaks something a year from now.
+  SDL_BlendMode was = SDL_BLENDMODE_NONE;
+  SDL_GetRenderDrawBlendMode(p->ren, &was);
+  SDL_SetRenderDrawBlendMode(p->ren, SDL_BLENDMODE_BLEND);
+  SDL_SetRenderDrawColor(p->ren, 0, 0, 0, (Uint8)amount);
+  SDL_RenderFillRect(p->ren, NULL);
+  SDL_SetRenderDrawBlendMode(p->ren, was);
+}
+
 static inline bool present_init(Present* p, SDL_Renderer* ren, int tex_w,
                                 int tex_h, SDL_Rect src, ScaleMode mode,
                                 AspectMode aspect) {

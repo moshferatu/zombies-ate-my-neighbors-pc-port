@@ -198,6 +198,18 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
     target_compile_definitions(zamn_test_present PRIVATE _CRT_SECURE_NO_WARNINGS)
   endif()
 
+  # `src/pad.h` is the controller layer, and the half of it that decides how the
+  # game feels — deadzone, hysteresis, the eight-way snap, the button table — is
+  # arithmetic. This checks it with no device attached and no subsystem started:
+  # it links SDL only for the `SDL_CONTROLLER_BUTTON_*` names. `zamn_analysis`
+  # comes along for `BTN_*`, which is a header, but the include path is its.
+  add_executable(zamn_test_pad tools/test_pad.c)
+  target_link_libraries(zamn_test_pad PRIVATE SDL2::SDL2 SDL2::SDL2main)
+  target_include_directories(zamn_test_pad PRIVATE src)
+  if(MSVC)
+    target_compile_definitions(zamn_test_pad PRIVATE _CRT_SECURE_NO_WARNINGS)
+  endif()
+
   # SDL2 builds as a DLL; place it next to the executable so zamn.exe runs.
   if(TARGET SDL2::SDL2)
     add_custom_command(TARGET zamn POST_BUILD

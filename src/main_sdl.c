@@ -43,7 +43,7 @@
 // controller rather than a recorded movie, which no other target could do.
 //
 // Usage: zamn [rom.sfc] [--stock] [-r routine]... [-m movie.zmv]
-//             [--frames N] [--shot out.png] [--no-audio]
+//             [--frames N] [--shot out.png] [--no-audio] [--no-pads]
 //             [--windowed] [--scale N] [--filter sharp|integer|linear]
 
 #include <stdio.h>
@@ -59,6 +59,7 @@
 #include "analysis/movie_apply.h"
 #include "cosim/cosim.h"
 #include "pace.h"
+#include "pad.h"
 #include "present.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -92,7 +93,12 @@
 
 // Keyboard -> SNES button bit. The `BTN_*` names are `analysis/movie.h`'s, which
 // is where they belong now that this file replays movies too: one definition of
-// the controller's bit order, shared by everything that drives one.
+// the controller's bit order, shared by everything that drives one — the movie
+// reader, `src/pad.h`, and this.
+//
+// The keyboard drives port 1 only. Port 2 is reachable from a movie or from a
+// second pad, and a second set of keys for it would be a set of keys nobody has
+// asked for on a keyboard two people cannot comfortably share.
 static int key_to_button(SDL_Keycode k) {
   switch (k) {
     case SDLK_UP:        return BTN_UP;
@@ -158,13 +164,17 @@ static bool write_png(Snes* snes, const char* path) {
 // (where it goes and how) and `src/present.h` (the SDL that does it), both so
 // that `zamn_test_scale` and `zamn_test_present` can check them without a
 // window between them.
-static void present_frame(Present* p, Snes* snes) {
+// `dim` is 0..255 of black laid over the finished picture, which is how the quit
+// chord shows itself — see `pad_quit` for the gesture and `present_dim` for what
+// draws it.
+static void present_frame(Present* p, Snes* snes, int dim) {
   void* pixels; int pitch;
   if (SDL_LockTexture(p->frame, NULL, &pixels, &pitch) == 0) {
     snes_setPixels(snes, (uint8_t*)pixels);
     SDL_UnlockTexture(p->frame);
   }
   present_draw(p);
+  present_dim(p, dim);
   SDL_RenderPresent(p->ren);
 }
 
@@ -251,7 +261,7 @@ static void share_summary(const Cosim* c, char* out, size_t n) {
 // belong in the substitution figures; and ported routines keep state, so
 // booting stock and then switching to native would hand the port a machine it
 // had not been watching.
-static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win) {
+static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads) {
   long f = 0;
   for (; f < INTRO_TITLE_FRAME; f++) {
     const bool down =
@@ -266,6 +276,10 @@ static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win) {
     if ((f & 63) == 0) {
       SDL_Event e;
       while (SDL_PollEvent(&e)) {
+        // Including the device events: this is several seconds of real time, and
+        // a pad plugged in during it would otherwise be announced to an empty
+        // queue and never seen again.
+        pad_event(pads, &e);
         if (e.type == SDL_QUIT ||
             (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)) {
           snes_setButtonState(snes, 1, BTN_START, false);
@@ -307,6 +321,7 @@ static void usage(void) {
     "                  from a throughput measurement into a cadence one.\n"
     "  --shot <a.png>  Write the final frame as a PNG on the way out.\n"
     "  --no-audio      Skip the audio device (and pace off a timer instead).\n"
+    "  --no-pads       Ignore game controllers and read only the keyboard.\n"
     "  --skip-intro    Run the logos and the story screen at full speed and\n"
     "                  hand over at the title menu. Cannot be combined with -m:\n"
     "                  a movie drives from reset and contains its own boot.\n"
@@ -326,7 +341,15 @@ static void usage(void) {
     "Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
     "          F1 = toggle native substitution   F2 = cycle scaling\n"
     "          F3 = toggle aspect ratio          F11/Alt+Enter = fullscreen\n"
-    "          Esc = quit\n");
+    "          Esc = quit\n\n"
+    "Controllers: any pad SDL recognises, hot-pluggable, first two take the two\n"
+    "          SNES ports. Face buttons are positional — the bottom one is B,\n"
+    "          the left one is Y, which is this game's fire button. Shoulders\n"
+    "          and triggers are L and R; left stick or D-pad steers.\n"
+    "          Start+Select held for a second quits (Options+Share on a\n"
+    "          DualSense); the picture fades to black as you hold it. Drop a\n"
+    "          gamecontrollerdb.txt beside the executable for anything SDL maps\n"
+    "          wrongly. See src/pad.h.\n");
 }
 
 int main(int argc, char** argv) {
@@ -343,7 +366,7 @@ int main(int argc, char** argv) {
   const char* only[128];
   int only_count = 0;
   long frame_limit = 0;
-  bool native = true, want_audio = true;
+  bool native = true, want_audio = true, want_pads = true;
   ScaleMode scale_mode = SCALE_SHARP;
   // 4:3 by default, because that is the shape the game was composed for and the
   // shape every emulator shows it in. Square pixels are 8:7 — visibly narrow,
@@ -369,6 +392,7 @@ int main(int argc, char** argv) {
     if (!strcmp(a, "--help") || !strcmp(a, "-h")) { usage(); return 0; }
     else if (!strcmp(a, "--stock")) native = false;
     else if (!strcmp(a, "--no-audio")) want_audio = false;
+    else if (!strcmp(a, "--no-pads")) want_pads = false;
     else if (!strcmp(a, "--windowed")) fullscreen = false;
     else if (!strcmp(a, "--skip-intro")) skip_the_intro = true;
     else if (!strcmp(a, "--paced")) force_pacing = true;
@@ -629,6 +653,9 @@ int main(int argc, char** argv) {
   pacer_init(&pacer, target_frame_ms);
 
   printf("Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
+         "          A pad: bottom=B right=A left=Y (fire) top=X, shoulders and\n"
+         "          triggers=L/R, left stick or D-pad steers, Start+Select\n"
+         "          held for a second quits.\n"
          "          F1=toggle native substitution  F2=cycle scaling\n"
          "          F3=toggle aspect ratio         F11 or Alt+Enter=fullscreen\n"
          "          Esc=Quit\n");
@@ -659,6 +686,19 @@ int main(int argc, char** argv) {
   if (!fullscreen)
     printf("Window: %dx%d (--scale %d)\n", win_w, win_h, window_scale);
   }
+  // Controllers. Opened here rather than beside `SDL_Init` so that what they
+  // print lands in this banner with everything else the session is about to run
+  // with — and skipped entirely under `-m`, where a movie is the input and a pad
+  // would have nothing to do but be listed.
+  PadSet pads;
+  memset(&pads, 0, sizeof pads);
+  if (!want_pads) printf("Controllers: disabled (--no-pads)\n");
+  else if (have_movie) printf("Controllers: not read (a movie is driving)\n");
+  else if (pad_init(&pads) && pad_count(&pads) == 0)
+    printf("Controllers: none attached — keyboard, or plug one in at any time\n");
+  if (pad_ignored(&pads))
+    printf("Controllers: %d more attached than the SNES has ports; ignored\n",
+           pad_ignored(&pads));
   printf("Pacing: %.3f ms/frame (%.2f fps)%s, display %d Hz, content %.4f Hz\n",
          target_frame_ms, 1000.0 / target_frame_ms,
          target_frame_ms == 1000.0 / content_hz ? " from the console"
@@ -695,7 +735,7 @@ int main(int argc, char** argv) {
   // is about to be fed rather than one about to sit idle for a few seconds.
   if (skip_the_intro) {
     const Uint64 t0 = SDL_GetPerformanceCounter();
-    const long ran = skip_intro(&cosim, snes, win);
+    const long ran = skip_intro(&cosim, snes, win, &pads);
     printf("Skipped the intro: %ld frames (%.1f s of game) in %.2f s.\n", ran,
            ran / 60.0,
            (double)(SDL_GetPerformanceCounter() - t0) / (double)perf_freq);
@@ -714,10 +754,27 @@ int main(int argc, char** argv) {
   long frame = 0;
   char title[160];
   bool running = true;
+  // What the keyboard is holding, as an SNES button mask rather than as core
+  // state. The core is written once a frame from this ORed with what the pads
+  // report, because a pad cannot be read from key events and a keyboard cannot
+  // be polled — see `src/pad.h` for why the pad half has to be the polled one.
+  uint16_t key_held = 0;
+  // Frames the pad quit chord has been held, which is also how far the picture
+  // has faded. Declared out here because the frame is drawn well below where the
+  // input is read.
+  int quit_chord = 0;
   while (running && (frame_limit == 0 || frame < frame_limit)) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
+      pad_event(&pads, &e);
       if (e.type == SDL_QUIT) running = false;
+      // Alt-tabbing away with a key down never delivers its KEYUP, and the
+      // player comes back to a character walking into a wall. The pads have no
+      // equivalent bug — they are read fresh every frame — so this is the one
+      // place a release can go missing and the one place it has to be forced.
+      else if (e.type == SDL_WINDOWEVENT &&
+               e.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
+        key_held = 0;
       else if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) {
         if (e.key.keysym.sym == SDLK_ESCAPE) { running = false; continue; }
         if (e.key.keysym.sym == SDLK_F1) {
@@ -785,8 +842,11 @@ int main(int argc, char** argv) {
         }
         // A movie is driving the controller; the keyboard would fight it.
         if (!have_movie) {
-          int b = key_to_button(e.key.keysym.sym);
-          if (b >= 0) snes_setButtonState(snes, 1, b, e.type == SDL_KEYDOWN);
+          const int b = key_to_button(e.key.keysym.sym);
+          if (b >= 0) {
+            if (e.type == SDL_KEYDOWN) key_held |= (uint16_t)(1u << b);
+            else key_held &= (uint16_t)~(1u << b);
+          }
         }
       }
     }
@@ -817,7 +877,31 @@ int main(int argc, char** argv) {
     // counts drift apart. There is one core here, so there is nothing to drift
     // from and the simpler counter is also the more faithful one — keying off
     // `snes->frames` put this frontend one frame away from headless at 2400.)
-    if (have_movie) movie_apply(&movie, snes, (int)frame);
+    if (have_movie) {
+      movie_apply(&movie, snes, (int)frame);
+    } else {
+      // Both controllers, from both kinds of input, written once. The keyboard
+      // is port 1 only; a pad takes the lowest free port, so one pad plays
+      // alone, two play together, and a pad plus the keyboard is a two-player
+      // game with one of each. Writing the whole 12-bit state every frame — the
+      // same thing `movie_apply` does — is what makes an unplugged pad release
+      // its buttons rather than leave them held.
+      uint16_t held[PAD_MAX];
+      pad_poll(&pads, held);
+      // Start+Select on a pad is Esc, and `pad_quit` takes those two bits back
+      // out of `held` before the game can see them. Checked before the keyboard
+      // is folded in, so the chord is a pad gesture and Enter+RShift is not one.
+      quit_chord = pad_quit(&pads, held);
+      if (quit_chord >= PAD_QUIT_FRAMES) {
+        printf("Quit: Start+Select held on a controller.\n");
+        fflush(stdout);
+        running = false;
+      }
+      held[0] |= key_held;
+      for (int p = 0; p < MOVIE_PORTS; p++)
+        for (int b = 0; b < 12; b++)
+          snes_setButtonState(snes, p + 1, b, (held[p] >> b) & 1);
+    }
 
     // The substitution seam. Identical to `snes_runFrame` when the mask is
     // clear; when it is not, a registered routine's entry PC hands the call to
@@ -852,7 +936,7 @@ int main(int argc, char** argv) {
     const Uint64 t_emul = SDL_GetPerformanceCounter();
     pace_add(&h_emulate, PACE_MS(t_wait1, t_emul));
 
-    present_frame(&present, snes);
+    present_frame(&present, snes, pad_quit_dim(quit_chord));
 
     // Measured after `SDL_RenderPresent` has returned, which is the moment the
     // frame is the screen's problem rather than ours — so `arrival` is the
@@ -886,6 +970,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "error: cannot write '%s'\n", shot_path);
 
   if (audio) SDL_CloseAudioDevice(audio);
+  pad_free(&pads);
   present_free(&present);
   SDL_DestroyRenderer(ren);
   SDL_DestroyWindow(win);

@@ -71,6 +71,27 @@ Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=
 · **F1 = toggle native substitution** · **F2 = cycle scaling**
 · **F3 = toggle aspect** · **F11 / Alt+Enter = fullscreen**
 
+**Game controllers** work too, and are the way to actually play it: any pad SDL
+recognises — which is most of them, and a `gamecontrollerdb.txt` beside the
+executable covers the rest — hot-pluggable, with the first two taking the two
+SNES ports. So two pads is two players, and a pad plus the keyboard is also two
+players. Face buttons are positional: the bottom one is B, the right one A, the
+left one Y, the top one X. Worth knowing before you start rather than after,
+because it is not where a modern game would put it: **Y is this game's fire
+button**, and it is held rather than tapped — B and A cycle weapons and items, X
+uses one. Shoulders and triggers are both L and R; the left stick steers as well
+as the D-pad, snapped to eight ways with a deadzone that has to be crossed
+further to enter than to leave.
+
+**Start and Select held together for a second quits** — Options and Share on a
+DualSense — because a pad has no Esc. Held rather than pressed, since both are
+buttons the game itself uses and an instant quit on the pair is a session lost to
+a thumb that bridged them; the picture fades to black while you hold it, so the
+second is visible rather than a button that appears not to work. Neither button
+reaches the game while the chord is down, so a quit thought better of leaves
+nothing behind. `--no-pads` turns the whole thing off. The reasoning, and the
+measurements the deadzone came from, are in `src/pad.h`.
+
 It starts **fullscreen**, with the mouse cursor hidden — there is no mouse input
 in this game, so the pointer is only ever something on top of the picture. F11
 and Alt+Enter move between fullscreen and a window at any time, and Esc quits
@@ -265,7 +286,8 @@ map. Phase 4 is where that inverts.
 
 Other options — `-m <movie.zmv>` replays a recorded movie instead of reading the
 keyboard, `--frames N` runs N frames uncapped and exits, `--shot out.png` writes
-the final frame, `--no-audio` skips the audio device. The three together are how
+the final frame, `--no-audio` skips the audio device, `--no-pads` ignores game
+controllers. The three together are how
 the substituted frontend gets checked against the baseline without anyone
 playing it:
 ```
