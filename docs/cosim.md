@@ -2801,6 +2801,1278 @@ Below those, the drift table is unchanged and still names
 subsumed by nothing, so unlike the sprite pass they would move a framebuffer the
 day they landed.
 
+## The boss handler, and the first routine `verify` cannot check (2026-08-11)
+
+This round has two halves and they are not the same kind of work. The first
+finished the handler tree's largest item and found out that finishing it did not
+buy what the last round predicted it would. The second is the first piece of
+Phase 4 in this file.
+
+### The hypothesis, and what measuring it cost
+
+The last round left `$82:9660 boss_9660_collide` at the top of the work list —
+9,802 dispatches on `level25-2p`, far the largest single item — and `run`'s
+lockstep on that same movie stops early:
+
+    The two timelines part at pass 1231: stock is on frame 410 and
+    native on frame 409, so one of them overran vblank on a pass the
+    other did not.
+
+One movie, one handler, and the movie is the handler's own level. That is a
+strong enough coincidence to be worth an hour, and the hour is what settled it:
+**it was wrong.** The handler is priced, the model is exact, and `level25-2p`
+parts at pass 1231 exactly as it did before.
+
+Why it was wrong is the useful part. `actor_overlap_pass` vetoes a whole pass
+when *any* handler it entered has no table, and `level25-2p`'s census has four
+addresses on it, not one. Pricing the biggest of the four took
+`thread_call_handler`'s own priced set from 57,336 calls to **103,161** — nearly
+double — and moved `sprite_build_oam` from 3,090 priced passes to **3,103**.
+Thirteen. The dispatcher is priced on far more calls and the pass above it is
+priced on thirteen more, because the passes that were declining were declining
+for `$81:C440` and `$80:CAEE` as well, and an all-or-nothing veto does not care
+which of its reasons you remove.
+
+So the drift on that movie fell from 341.4 frames to 338.6, and the number that
+was supposed to move — `sprite_build_oam`'s 114 frames — did not move at all.
+
+**The honest conclusion is that the lockstep parting is not a one-round fix.**
+Even with all four handlers priced, the four largest unsubsumed routines below
+them are still unpriced — `actor_obstacle_at_point` at 39.9 frames,
+`actor_notify_box` at 28.1, `actor_nearest` at 22.2, `actor_at_point` at 21.6 —
+and any of them can tip a marginal pass over a vblank boundary. Buying back
+whole-corpus lockstep means clearing most of the drift table, not the top of it.
+
+### What the parting is actually worth, which is less than the table says
+
+Worth stating plainly, because this document has been over-charging it for
+several rounds. `drift.py` reports 341 frames of injected error per 6,000. What
+`run` exhibits is **zero frame-level divergence for 1,230 passes and then one
+frame**. The gap between those two numbers is in the same report:
+
+      work        180,236,938 of 431,832,408   41.7%
+                  702,727,814 more spent halted on the scheduler's WAI
+                  104,548,578 going round the declared busy-wait loops
+
+The CPU is **halted on `WAI` for about 57% of every cycle the machine runs**. The
+frame is self-synchronising: charge a routine too little and the scheduler sits
+on the `WAI` longer and nothing observable happens. Mis-pricing only becomes
+behaviour on a pass heavy enough to cross the vblank boundary — a threshold
+event, not an accumulation. The drift table measures injected cycles; the `WAI`
+absorbs nearly all of them.
+
+That does not make the table useless. It makes it a ranking rather than a
+budget, and it means the sentence "341 frames of drift" should never again be
+read as "341 frames wrong".
+
+### The model, and the four blocks that are one decision
+
+`$82:9660` is fourteen blocks, and two features of it are worth the space.
+
+**Four ids are answered as some other id, and two of them on a coin toss.** `$62`
+and `$70` both come out as `$5C` or `$5D` depending on `LDA $0020 : AND #$0001`
+and `AND #$0003` — the scheduler tick read straight. They give the same two
+answers, so the port tests them together, and **the model has to tell them
+apart**, because `$70` is tested at `$82:968F` and `$62` at `$82:967D`: one
+comparison and one taken branch further down the chain, for an identical result.
+That is `shot_collide`'s four stop ids again, and it is the third time the same
+shape has come up — what a path costs in an unrolled `CMP` chain is where it sits
+in the chain and nothing else.
+
+**It is the first handler priced whose costs are not all direct-page.** `LDY
+$0078`, `LDX $000E,Y` and `LDA $0020` are absolute reads of low WRAM through the
+data bank; `$3A` through `$44` are on the thread's own page. The third column
+separates them, and `$82:948F` writing absolute `$003C` as a *coordinate* in the
+routine that seeds direct `$3C` to 70 is what makes confusing them plausible.
+
+It also has no `verify` minimum to check against — the handler is not in the
+registry and is only ever reached through `$80:8480` — so the witness is the
+dispatcher's own residual: `+0..+80, mean +27` on `level25-2p`, **12,773 of
+12,773 refresh-exact**, and 103,161 of 103,161 across the corpus. A table wrong
+anywhere makes that negative somewhere, which is the property the last two rounds
+have been leaning on.
+
+### And then: a routine `verify` structurally cannot check
+
+`$80:C05A sprite_cache_init` is 16,900 instructions of `STA $2128,X : DEX : DEX
+: BPL` — a `$2002`-byte `memset`, 0.97 of a frame — so an NMI lands inside
+virtually every call. `verify` abandons all of them: two calls on `boot.zmv`, two
+on `level1.zmv`, zero checked, four interrupted. For three rounds this file and
+`tools/native_share.py` both recorded that as **unregisterable**, alongside
+`lzss_decompress` and `blockmap_expand`.
+
+That reading was one instrument too narrow, and noticing it is this round's real
+result. **An interrupt breaks rewind-and-replay. It breaks nothing about
+substitution.** What `verify` cannot survive is that the ROM's NMI handler wrote
+WRAM inside the call window, and the port models the routine rather than the
+handler — so the diff would report the harness's problem as the port's. Under
+`run` the ROM never executes the routine at all: the core waits at the
+instruction after the `JSL` while the budget is burned, and takes any NMI that
+falls due exactly as it would have.
+
+So there is a new flag, `CosimRoutine::run_only`, and it is the mirror of
+`verify_only` in mechanism and in honesty:
+
+| | `verify_only` | `run_only` |
+| --- | --- | --- |
+| what it means | checked on every call, never substituted | substituted, never checked on a call |
+| why | the body is a bus handshake — `$80:CCC8` | an interrupt lands inside the call window |
+| what stands behind it | 128 KB diffed per call | 128 KB diffed per **scheduler pass** |
+
+The last row is the point. A `run_only` routine is not unchecked; it is checked
+by a claim about a *stretch* rather than about a call — which is the only claim
+Phase 4 can be built on, because a port that owns its own main loop has no
+per-call boundary left to rewind to. This is the first routine in the project
+whose correctness rests on it.
+
+Two conditions before anything else gets the flag, and both are load-bearing:
+
+* **`verify` must be unable to score it, not merely unwilling** — structurally,
+  with the interrupted count in a report as the evidence.
+* **`.cycles` must be a count, not a mean.** Every other entry's budget is an
+  average `verify` observed; there is nothing here to have observed. `$80:C05A`
+  has no data dependence and one loop with a known trip count, so
+  `tools/cycles816.py` prices it exactly:
+
+      prologue $C05A..$C06A                                       184
+      loop 1   4,097 x (STA abs,X + DEX + DEX) + 4,096 taken BPL  335,948
+      LDX #$00FE                                                   18
+      loop 2   128 x the same + 127 taken BPL                   10,490
+      epilogue PLB : PLB : RTL                                      94
+      -------------------------------------------------------------------
+                                                                346,734
+
+  `BPL` and not `BNE` is why the trip counts are 4,097 and 128 — the same
+  off-by-one that makes the routine write `$2002` bytes rather than `$2000`,
+  which `port/sprite_cache.h` records from the other direction. A routine whose
+  cost varies with its input could not honestly be given a constant nobody
+  watched.
+
+**0.97 of a frame is a margin, not a coincidence.** The core takes at most one
+pending interrupt when it resumes, so a substituted call spanning two NMI
+boundaries would leave one NMI un-taken that the ROM took — which is what
+"outlives a frame" should have meant all along, and it is a real limit rather
+than a bookkeeping one. At 346,734 the call cannot straddle two. With FastROM
+*off* the same routine costs 405,930, which can. Measured, `run` burns 357,194
+master cycles a call including the refreshes the core adds — 346,734 plus 261 of
+them — so `$420D` is set on every call any movie makes, and the margin is
+measured rather than assumed.
+
+### Results
+
+The corpus is unchanged where it should be and moved where it should have:
+**13,209,637 calls checked across 43 movies, 0 diverged; branch coverage 432 of
+538.** Fifteen cost models, every priced call refresh-exact, `thread_call_handler`
+at 103,161 from 57,336. `run` compares 1,989 of 1,989 passes on `level1`,
+`level1-rescue`, `level45-race`, `level49-corner` and `level53` with no byte of
+live game state ever differing, and `level25-2p` still parts at pass 1231.
+
+The native share moves for the first time in several rounds, because for several
+rounds nothing had been added to the registry:
+
+| | before | after |
+| --- | --- | --- |
+| registry entries | 111 | **112** |
+| dynamic share written | 64.6% | **64.7%** |
+| dynamic share substituted | 51.6% | **51.8%** |
+
+`native_share.py` reports the new category in its own right rather than folding
+it into the substituted figure silently, for the same reason it reports
+`verify_only` separately: the two numbers answer different questions and this one
+now has three parts.
+
+### What is left, precisely
+
+The handler tree still has `$81:C4A6 monster_collide` (4,269 dispatches on
+`level45-carried`), `$81:C440` (2,700), `$80:CAEE object_collide` (1,666) and
+`$81:8888`'s four deep exits — but this round is the reason to stop there. They
+buy accuracy in a number the `WAI` is already absorbing, they do not buy back
+lockstep on their own, and the cut makes them moot.
+
+What is worth doing next is the rest of what `run_only` opened. Three addresses
+sat in `BLOCKED` for the same wrong reason and are worth **7.1% of everything the
+game does** between them:
+
+| | share | what it needs |
+| --- | --- | --- |
+| `$80:CD20 lzss_decompress` | 5.8% | written; spans many frames, so more than one NMI is due — the margin `$80:C05A` has and this does not |
+| `$80:CC7C apu_load_set` | 0.8% | written; every command waits on the SPC700, so it needs `apu.h`'s split as well |
+| `$80:AD2B blockmap_expand` | 0.5% | written; six calls, and the same multi-frame problem |
+
+All three are already in C. None of them clears the one-NMI margin, which makes
+the next question concrete rather than architectural: **what does a substituted
+routine do when more than one interrupt falls due inside it?** The answer is
+almost certainly to let the core take them — park the CPU at the return, burn the
+budget in pieces, and run the pending NMI handler between pieces — and that is
+the same primitive the scheduler will need in the other direction when the port
+owns the frame and has to resume a thread body that is still the ROM's.
+
+## Parking a burn, and the second routine `verify` cannot check (2026-08-11)
+
+The last round opened `run_only` and closed on a question rather than a result:
+*what does a substituted routine do when more than one interrupt falls due
+inside it?* This round answers it, and then spends the answer on the routine
+that needed it.
+
+### The bug that was hiding behind `$80:C05A`'s margin
+
+Burning a cycle budget executes no instructions. `snes_runCycles` drives the
+PPU, the APU and the timers; the CPU is driven separately by `snes_runCpuCycle`,
+and a substituted call never touches it. So an NMI that falls due *inside* a burn
+is not taken inside it — it waits, and `cpu->nmiWanted` is a single `bool`.
+
+Last round drew the right conclusion from that and drew it too narrowly. The
+conclusion was that a call spanning two vblank boundaries would drop one of the
+game's NMIs, and that `$80:C05A sprite_cache_init` at 0.97 of a frame safely
+cannot. Both true. What went unnoticed is the *other* half of the same fact:
+even a call that spans only one boundary hands the interrupt over **late**, by
+however much of the budget was left when it fell due. For a 92-cycle dispatcher
+that is nothing. Measured on `boot.zmv`, `$80:C05A` was handing the core its NMI
+**18,126 cycles late** — thirteen scanlines into a vblank that had already
+started. It worked because the screen is off while the sprite cache is built. It
+was luck, and the margin that made the NMI *count* right was doing nothing at all
+about *when*.
+
+### What replaced it
+
+`CosimBurn`, in `src/cosim/cosim.c`. A substituted call's budget is now owed
+rather than spent, and the CPU is parked on the routine's own entry instruction
+while it is paid off:
+
+* the budget is spent in pieces, and stopped the moment an interrupt comes due;
+* the core then takes it **from that instruction** — which is exactly where the
+  ROM's version of the routine would have been standing;
+* the handler runs through the harness's normal loop, so its own calls are
+  intercepted and counted like anyone else's;
+* the `RTI` lands back on the entry instruction, and the rest of the budget is
+  spent.
+
+The one liberty it takes with the core is a store to `cpu->intWanted`, and it is
+the honest one: that flag is a latch only `cpu_checkInt` refreshes, from inside
+an executing instruction — which during a burn is precisely what is not
+happening. The ROM's version of the routine *was* executing instructions, and one
+of them would have latched exactly this. Everything else about taking the
+interrupt — the pushes, the vector, the handler, the `RTI` — is the core's own.
+
+**Nothing about this is scoped to long routines**, and that is the point. It is
+the same code path for a 92-cycle call, which simply never stops early: the
+budget is spent in full before the call returns and no state is parked at all.
+The corpus is the evidence, and it is unchanged to the digit — **13,209,637 calls
+across 43 movies, 0 diverged, branch coverage 432 of 538**, and all fourteen cost
+models still refresh-exact on every priced call, `thread_call_handler` at
+103,161 of 103,161. No second code path was needed to keep them safe, which is
+the argument for there not being one.
+
+Two things stayed out of it deliberately. A resumable routine's *segments* still
+burn on the spot, because a segment is bounded by the `thread_yield` it reaches
+this frame, so at most one interrupt can fall due in one and the core's single
+latch already handles that; parking one would mean deferring the choice between
+suspending and returning as well, for no question about NMI counting. And a
+declared *mean* is still burned whole rather than in twelve-cycle pieces, because
+a mean is what `verify` watched the ROM's elapsed cycles do, refreshes included,
+and chopping it up would add a second set on top of the ones already inside the
+average.
+
+`run` reports the parks, and that number is not a diagnostic. It is the evidence
+for the one thing about a long substitution that comparing memory cannot check:
+how many NMIs the port owed the game and paid.
+
+### `$80:AD2B blockmap_expand` — ten frames of it
+
+The routine that needed all of the above. It walks the block map once at level
+load and expands every cell into 64 tiles of the real map in bank `$7F` — the map
+`port/terrain.h` reads for the rest of the level and `port/camera.h` scrolls
+across. One call is about ten frames, so `verify` reported **one call, one
+interruption, nothing checked** on `level1`, `level1-rescue`, `level9`,
+`level25-boss` and `level53` alike, and this file recorded it as unregisterable
+for several rounds.
+
+That was the same error `$80:C05A`'s entry was: a fact about rewind-and-replay
+reported as a fact about substitution. It is `run_only` now, and ten frames is
+ten NMIs, so it is also the first routine that could not have been substituted
+honestly before this round.
+
+**Its cost is a count, which `run_only` requires and which is available here for
+an unusually strong reason: no branch in the routine depends on the data it
+reads.** The nest is `$B0` rows x `$AE >> 1` cells x 8 block rows x 8 words, and
+every trip count falls out of the level record. So the port counts the four loops
+and the two questions about which memory the operands came from
+(`BlockExpandWork`), and `routines.c` prices them — the ordinary `_counted`
+pattern, with the difference that the answer is exact rather than an average.
+
+It is counted rather than computed in the shim from `$AE` and `$B0`, and that is
+not fussiness. Both loops are do-whiles, so a map whose `$AE >> 1` is zero is
+walked 65,536 times and not none; a shim reading the same two words would price
+such a call at nothing. Counting what the loop actually did cannot make that
+mistake.
+
+### Three independent checks on one model
+
+Worth setting out, because a `run_only` routine has no per-call residual and the
+temptation is to assert the model instead of testing it.
+
+**The shape.** Level 1 is `$AE`=44, so 22 columns, and `$B0`=13 rows: **286
+cells**. `verify` independently measures `blockmap_cell_ptr` taking **286 calls**
+on `level1.zmv` — a count made by a different mechanism, of a routine registered
+in its own right, that the model never consults.
+
+**The unit price.** That same row reports `334..374, mean 345` master cycles. Its
+floor, 334, is to the cycle what `tools/cycles816.py` prices its 21 bytes at, and
+the spread above it is 40 — one DRAM refresh. So the tool that priced every block
+of this model is checked against a real measurement taken *inside this very
+call*.
+
+**The total.** `verify` cannot score the call, but that is a limit of
+rewind-and-replay and not of the clock, so the ROM's own execution was timed
+directly: cycles spent with the program counter inside `$80:ACF6..$80:AD91`, with
+the eleven interrupts that land in the middle attributed to the handler where
+they belong.
+
+      measured, the ROM's own instructions      3,713,172
+      less 2,722 DRAM refreshes at 40             -108,880
+      ------------------------------------------------------
+                                                3,604,292
+      the model                                 3,604,294
+      ------------------------------------------------------
+      residual                                         -2
+
+Two cycles on three and a half million. Two is not zero and the difference is the
+probe's rather than the model's — a `snes_runCycle` granule is two master cycles,
+so which side of a boundary a step is attributed to is worth exactly this much.
+It is stated as a measurement and not as the refresh-exact residual the per-call
+models are held to, because that standard needs `verify` and `verify` is the
+thing this routine cannot have.
+
+Ten point zero nine frames, which is where the parked burn stops being an
+argument and starts being a requirement.
+
+### Results
+
+**Six levels' maps, built in C, byte-exact.** `run` reaches `blockmap_expand` on
+every movie tried but `boot.zmv`, and every one of them compares clean:
+
+| movie | passes | `blockmap_expand` | parked burns |
+| --- | --- | --- | --- |
+| `level1` | 2,389 of 2,389 | 1 call, OK | 14 |
+| `level1-rescue` | 1,989 of 1,989 | 1 call, OK | 14 |
+| `level45-race` | 1,989 of 1,989 | 1 call, OK | 17 |
+| `level49-corner` | 1,989 of 1,989 | 1 call, OK | 12 |
+| `level53` | 1,989 of 1,989 | 1 call, OK | 10 |
+| `level25-2p` | 1,220 of 1,220 | 1 call, OK | — |
+| `boot` | 1,990 of 1,990 | not reached | 1 |
+
+No byte of live game state ever differed on any of them, and `level25-2p` still
+parts at pass 1231 exactly as it did before — the boss-handler round's finding is
+untouched. That is the whole tile map of six different levels compared against
+the ROM's, 128 KB at a time, on every scheduler pass of every movie, and it is
+**the first check this routine has ever had**: `verify` never completed a call of
+it.
+
+The park counts are worth a second look, because they are not noise. `boot.zmv`
+reaches no map build at all and parks once — that one is `sprite_cache_init`, the
+call this round found was thirteen scanlines late. The rest sit between 10 and
+17, and what varies is the number of vblank boundaries that level's map build
+crosses, which is the model answering to the geometry in the level record.
+Before this round every one of these numbers was zero, and not because it was
+true.
+
+An earlier reading of the corpus said only the seven `level1` movies reach a
+level load, and that was an artefact of asking `verify`: its `-f` counts PPU
+frames and `run`'s counts scheduler passes, so the same budget buys much more of
+a movie under `run`. The coverage here is six distinct maps, not one.
+
+| | before | after |
+| --- | --- | --- |
+| registry entries | 112 | **113** |
+| dynamic share written | 62.8% | **63.2%** |
+| dynamic share substituted | 49.6% | **50.1%** |
+| distinct code bytes executed | 26.6% | **26.9%** |
+
+Measured against a baseline registry run for the purpose rather than quoted from
+the last round, and that is worth a word: the 64.6%/51.6% pair this file's
+previous section reports does not reproduce against the eleven-movie profile set,
+so the delta above is the number to trust and the absolutes there are not.
+
+`tools/cycles816.py` grew stack-relative addressing along the way — `ADC $01,S`,
+which both of the pointer helpers use to reach past the return address a `JSL`
+just pushed. The mode's whole point is that its address is built from S rather
+than D, so it has no direct-page penalty; the file already said so in a comment
+next to `DP_MODES` and then raised `Unpriced` when it met one.
+
+### What is left, and what it now costs
+
+Two addresses, and neither is blocked by the harness any more:
+
+| | share | what it still needs |
+| --- | --- | --- |
+| `$80:CD20 lzss_decompress` | 5.8% | a counted cost model — its branches *do* depend on the stream, so this is the first `run_only` whose price cannot be exact |
+| `$80:CC7C apu_load_set` | 0.8% | `apu.h`'s split, because every one of its ~23,800 commands waits on the SPC700 |
+
+`lzss_decompress` is the interesting one, and not only for its size. Every entry
+in the registry so far is priced either by a mean `verify` measured or by a count
+nothing had to watch. This would be the first that is neither: a model of a
+data-dependent routine with no per-call residual to check it against. The two
+leaves under it, `lzss_read_byte` and `lzss_write_byte`, are registered and
+`verify` scores both — so the honest construction is to price those against their
+own measured residuals and let the body carry only what is left, which is the
+loop structure the stream decides. That is a smaller unchecked claim than pricing
+the whole thing, and it is worth building rather than assuming.
+
+One coverage gap to state plainly. Six maps are checked, but every level record
+the corpus reaches keeps its block map in the cartridge and its block library in
+`$7E`. So `blockmap_expand`'s WRAM-map branch and its cartridge-library branch
+are both modelled and neither is exercised. `cells_rom` and `words_rom` are
+counted rather than assumed so that the day one of them is reached, the model
+prices it instead of quietly pricing it wrong.
+
+## The price a stream decides, and the instruction that was charged twice (2026-08-11)
+
+The last section left `$80:CD20 lzss_decompress` on the ranking with a
+prediction attached: that it would be *the first `run_only` whose price cannot be
+exact*, because its branches depend on the compressed stream rather than on
+anything a model can see in advance. It is registered now, and the prediction was
+wrong in a way worth keeping on the page, because the reasoning behind it was
+the kind that sounds careful.
+
+### What "data-dependent" was worth as a reason
+
+Every branch in the routine really is decided by the stream. How many tokens
+there are, which of them are literals, how far each match reaches back and how
+long it runs — none of that is in the arguments, none of it is in a table, and
+nothing carries over between calls. So there is no function from the routine's
+inputs to its cost.
+
+That is true and it is not an obstacle, because **the port decompresses the same
+stream.** It takes the same branches, in the same order, for the same reasons —
+that is what being a transcription means — so it can count them. `LzssWork` in
+`port/lzss.h` is the tally: two token counts, the flag refills, the bytes copied
+out of the window, and how many source reads landed in the cartridge rather than
+in WRAM. `lzss_cycles` in `cosim/routines.c` multiplies them by block prices.
+The ordinary `_counted` pattern, and the only thing new about it is what it
+answers.
+
+**A price nobody can predict is not the same thing as a price nobody can
+compute.** The distinction had never come up because every model before this one
+was on the easy side of it.
+
+Three things do have to be handled separately, and finding them was most of the
+work:
+
+* the `MVN $7E,$7E` at `$CD42`, which is one instruction paid for `$0FEE` times
+  — `cpu.c` moves a byte and then rewinds PC by three rather than looping inside
+  the opcode, so every byte re-fetches all three program bytes and then reads
+  one, writes one and idles twice: 46 master cycles a byte, 187,588 for the
+  window fill, better than half a frame before the routine has read anything;
+* `LDA [$28]`, which is 48 master cycles against a cartridge stream and 52
+  against one in WRAM — hence `reads_fast`, counted rather than assumed, and
+  `head_fast` for the length word the prologue reads the same way;
+* the three ways a stream can stop in the middle of a token, which pop different
+  numbers of bytes on the way out.
+
+That last one turned out not to be defensive coding. **Every stream this game
+contains ends inside a match** — `end == 2` in the tally, the `BCS` at `$CD87`,
+31 of 31 measured across fifteen movies — and the reason is the format rather
+than the data: a flag byte carries eight bits and the stream runs out before all
+eight are spent, so the leftover zero bits read as matches and the first of them
+finds it empty. The tidy end-at-the-refill case the model was written around
+first has not occurred once. Had the three partial exits been left out as
+unreachable, every call in the game would have been priced short by the block the
+routine really ran and by two bytes of stack it really popped — and X would have
+come back as the `0` that case leaves rather than the 1, 3, 4 or 6 the real ones
+do.
+
+### It is exact
+
+Not "refresh-exact", not "within a residual" — equal.
+
+The check is a direct one. `verify` cannot score this routine, so the ROM's own
+execution was timed instead: every instruction between `$80:CD20` and
+`$80:CDF3`, with the interrupts that land in the middle attributed to the handler
+where they belong, and DRAM refresh subtracted so that what is left is what
+`cosim_cost` is defined to report.
+
+| call | the ROM | the model |
+| --- | --- | --- |
+| 1 | 1,591,640 | 1,591,640 |
+| 2 | 6,101,318 | 6,101,318 |
+| 3 | 9,449,390 | 9,449,390 |
+| 4 | 12,907,460 | 12,907,460 |
+| 5 | 25,492,862 | 25,492,862 |
+
+Five calls, 55.5 million master cycles, no residual anywhere. The instruction
+counts agree too — 369,871 predicted against 369,871 executed on call 3 — and
+`zamn_assets verify-lzss` independently reports 649 bytes in and 2,048 out for
+the first stream, which is the tally's read and write counts arrived at by a
+tool that knows nothing about cycles.
+
+Getting there took a per-instruction histogram rather than an argument, and that
+is the lesson from the two things it caught. Both were in the pricing, not in the
+counting; both were invisible in aggregate and obvious per instruction.
+
+**`tools/cycles816.py` was sizing `PHX`/`PHY`/`PLX`/`PLY` from `m`.** `cpu.c`
+sizes them from `xf`, the file's own comment beside `STACK_OPS` says so, and
+`operand_width` did not implement it because the four opcodes were missing from
+`INDEX_OPS`. It only shows where the two widths differ, which is why it survived
+this long — the game is 16-bit nearly everywhere. `$80:CDAE  PHX` and
+`$80:CDB4  PLX` sit inside `SEP #$20 ... REP #$20` in the match loop, 8-bit A and
+16-bit X, so each was priced 8 master cycles light: 16 per byte of every match
+expanded, 27,376 on level 1's first stream alone.
+
+**And a block was assembled out of the wrong column.** The tool prints a running
+total, and the match head at `$CD82` follows the literal block at `$CD65` in
+address order but not in execution order, so subtracting the cumulative figure at
+`$CD63` charged every match for a literal it never ran. 332 cycles a match, in
+the opposite direction from the `PLX` error and roughly cancelling it on the
+first call, which is exactly how a plausible-looking total hides two mistakes.
+
+### The instruction that was charged twice
+
+The other thing the histogram turned up is not about this routine.
+
+`native_return` finishes a substituted call by parking the CPU **on** the
+routine's `ret_op` — the real `RTS` or `RTL` — and letting the core execute it,
+so that the 65816 half of returning is done by the code that already does it
+correctly. That is sound. What it means is that the return instruction's cycles
+are spent by the machine, on top of whatever the budget was.
+
+And `verify` measures a call from its entry to the return address, so what it
+compares a reported cost against **includes** that same instruction. Every
+checked model in `routines.c` is built to match `verify`, so every substituted
+call has been overspending by one return instruction: 40 cycles for an `RTS`,
+which is a DRAM refresh to the cycle and has therefore never looked like
+anything, and 42 for an `RTL`.
+
+The measurement is unambiguous — burn-end to back-at-the-caller ran 42 cycles
+longer than the ROM's entry-to-`RTL`, on three consecutive calls, before anything
+was changed. `LZSS_EPILOGUE` and `BLOCK_EPILOGUE` both drop their `RTL` now, and
+both say why. Reconciling the two modes properly is a change to the harness
+rather than to a model, and it belongs in a round of its own; these two are where
+the difference is large enough to be worth not waiting for it.
+
+### Results
+
+| | before | after |
+| --- | --- | --- |
+| registry entries | 113 | **114** |
+| dynamic share written | 63.2% | **68.4%** |
+| dynamic share substituted | 50.1% | **57.3%** |
+| substituted, waits out of the denominator | 57.9% | **66.3%** |
+| distinct code bytes executed | 26.9% | **27.4%** |
+
+Measured against a baseline registry built for the purpose rather than quoted
+from the section above.
+
+The substituted figure moves further than the written one, and the gap is the
+interesting part. `lzss_read_byte` and `lzss_write_byte` have been in the
+registry for several rounds as `verify_only` — written, checked on every one of
+their 1,071,108 calls, and never substituted, because a mean standing in for a
+98-to-298-cycle spread cannot survive a million calls packed inside one
+decompression. That has not changed and will not. What changed is that their only
+caller is substituted now, so **they never execute at all**, and 2.1% of the
+corpus moved from "written but still running on the 65816" into the substituted
+column without a line being altered in either of them.
+
+`tools/native_share.py` was already right about this in its arithmetic and wrong
+in its printing — the `verify_only` deduction counted them out and the list under
+it named them anyway. It now lists only the ones a substituted build still runs,
+and says how many it dropped and why.
+
+The corpus is unchanged to the digit, which is what it has to be: `verify` never
+intercepts a `run_only` routine, so registering this one cannot move it.
+**13,209,637 calls across 43 movies, 0 diverged, branch coverage 432 of 538**,
+and all fourteen cost models still refresh-exact on every priced call.
+
+`run` compares all 128 KB of WRAM against a stock core once per scheduler pass,
+and on all seven movies swept — `boot`, `level1`, `level1-rescue`, `level45-race`,
+`level49-corner`, `level53`, `level25-2p` — **no byte of live game state ever
+differed**, with every one of each movie's decompressions substituted — five on
+the level movies, three on `boot`. Level 1's graphics are now built in C, checked
+against the ROM's byte for byte, on the way into a level that then plays.
+
+### What it cost, which is not nothing
+
+The lockstep window shrank. Measured this round: `level1` compares 317 passes,
+`level45-race` 1,045, `level49-corner` 1,141, `level53` 1,173, `level25-2p`
+1,023, and `boot` the full 2,390 without parting at all. The figures the last
+section recorded for the first five were 2,389, 1,989, 1,989, 1,989 and 1,231, so
+between a half and seven eighths of each window has gone. (`boot`'s number does
+not line up with the 1,990 recorded there and no attempt is made here to
+reconcile them, for the same reason the share absolutes were not reconciled last
+time: the like-for-like figures are the ones above.) Every one of them still
+covers the level load in full, and the comparison stops for a timing reason
+rather than a correctness one — but several hundred passes of gameplay that used
+to be compared are not being compared any more, and that is evidence lost.
+
+The cause is worth being precise about, because it is not the cost model.
+Substituting these calls hands over 55 million master cycles in a single
+scheduler pass, and during a burn the CPU is parked: an NMI is taken at a
+twelve-cycle boundary rather than at the end of whatever instruction the ROM
+would have been in the middle of. The handler then runs at a slightly different
+phase, and its own duration depends on that phase — DMA aligns to eight-cycle
+boundaries and a DRAM refresh falls on one side of a scanline end or the other.
+Measured, the two timelines end an 8.2-million-cycle stretch **36 cycles** apart.
+Sixteen frames later a scheduler pass lands across a vblank boundary on one side
+and not on the other, and `run` stops comparing because nothing past there is
+comparable.
+
+Thirty-six cycles in eight million is the floor of what this mechanism can do
+without knowing where the ROM's instruction boundaries were, which is the thing
+substitution exists not to need. What would buy the window back is not a better
+model but a harness that can resynchronise two timelines that have parted, rather
+than giving up at the first pass where they disagree about which frame it is.
+That is the largest single thing `run` could gain, and it is now the largest
+thing standing between the corpus and a full-length lockstep of a level.
+
+### What is left
+
+| | share | what it needs |
+| --- | --- | --- |
+| `$80:CC7C apu_load_set` | 0.8% | `apu.h`'s split, because every one of its ~23,800 commands waits on the SPC700 |
+
+One address left that is written and not registered, and it is the small half of
+the sound problem. The large half is `$80:CCC8 apu_send`, which *is* registered,
+is 11.0% of the corpus, and is `verify_only` and staying that way: a per-byte
+handshake with a second processor is not something a cycle budget can stand in
+for. Between them they are most of what separates the 68.4% written from the
+57.3% substituted, and closing that gap is a question about how the port talks to
+the SPC700 rather than about another routine.
+
+Everything above them on the unnative ranking is structural rather than
+unwritten — `thread_yield` at 4.4%, the two vblank-queue dispatchers at 3.2% and
+1.1%, the NMI entry, the reset vector, and seven thread bodies that are resumed
+by `RTL` from a parked frame and never called at all. Those are Phase 4's problem
+by definition: they are the scheduler, and a scheduler cannot be substituted one
+call at a time because nothing calls it.
+
+The coverage gap from the last section stands unchanged and is worth repeating
+because this round added one of its own. `blockmap_expand`'s WRAM-map branch and
+its cartridge-library branch are modelled and neither is exercised; the same is
+now true of `lzss_decompress`'s WRAM-source price — `head_fast` and `reads_fast`
+came back saying *every* byte of *every* stream in fifteen movies was read out of
+the cartridge with FastROM on — and of all three of its truncated-stream exits
+other than `end == 2`. In both routines those are counted
+rather than assumed, so the day a stream or a map takes one, the model prices it
+instead of quietly pricing it wrong.
+
+## The instruction that was charged twice, and what the parting is made of (2026-08-11)
+
+Two things were owed from the last round and both are paid here, and paying the
+second one turned up an answer to a question this file has been asking since
+`run` existed. It is not the answer that was planned for.
+
+### The instruction that was charged twice
+
+`native_return` does not synthesise a return. It publishes the port's registers,
+points the program counter at an `RTS` or `RTL` **belonging to the routine**, and
+lets the core execute it -- borrowing the core's own stack and bank handling
+rather than writing a second copy of it. That is a good decision and it stays.
+
+What went with it and should not have is that the budget also contained that
+instruction. `verify` measures a call from its entry PC to the caller's return
+address, so what it hands a model to match *includes* the routine's own return;
+every cost model in `routines.c` is built to that window because it is the only
+window a measurement can be taken over. Under `run` the same models therefore
+paid for the return and then the core executed it. Twice, every substituted call.
+
+It hid for a long time behind a coincidence. An `RTS` here costs exactly 40
+cycles -- a fetch at 6, three idles at 6, two stack reads at 8 -- and 40 is a
+DRAM refresh, the one residual the model check is built to forgive. `RTL` costs
+42 and that is what finally showed up, as an exact +42 on three consecutive
+calls of `lzss_decompress` last round. The fix then was to take the `RTL` out of
+that one model, with a note saying the general case was a harness change and
+wanted doing on purpose.
+
+It is done on purpose now. `tail_cycles()` prices the instruction the core is
+about to be handed and `burn_plan` subtracts it, once, for every substituted
+call -- and the two models that had been hand-corrected are put back to the
+`verify` convention, so there is one rule and no routine has to remember it.
+There are three tails, not one: `RTS` at 40, `RTL` at 42, and the
+`JSL thread_yield` a suspending segment is handed at 54. The costs are not a
+table copied out of the core; they are the core's own sequence of accesses,
+priced with the two access times a registry entry can have -- every `ret_op` and
+`yield_op` in the registry is in a ROM bank at $8000 or above, and the stack is
+always in low WRAM.
+
+On `level1.zmv` that is **2,881,698 cycles across 67,157 substituted calls**,
+and it moves the native work share from 57.0% down to 56.6%. Down, because the
+old number was crediting the port with cycles the 65816 had actually spent.
+
+### What a mean is worth, measured in cycles
+
+`verify` already reported whether a cost model was *right*: the error against the
+ROM, and whether it was a whole number of refreshes. What it never reported was
+what being slightly wrong is *worth*. Those are different questions -- a model
+can be wrong by six cycles and be called a million times, or wrong by six
+thousand and be called ten -- and only the second one is denominated in the
+thing `run` actually loses.
+
+So `verify` now prints a **budget drift** table: for every routine, the signed
+total a substituted run would have paid for the calls this movie made, less what
+the ROM spent on them. Positive is over-payment -- a native core arriving at the
+same point in the game later than a stock one. Refresh comes off a reported cost
+first, because the burn spends its budget in twelve-cycle pieces and the core
+puts the refreshes back, so an exact model scores exactly zero rather than 40 per
+scanline it happened to cross.
+
+It ranks by size of debt rather than by size of error, which is the point: six
+cycles a call is not a wrong model, and on a routine called a million times it is
+six million cycles. On `level25-boss.zmv` the whole registry comes to **+38,892
+cycles over the movie, 0.11 of a frame** -- and that total is flattered by two
+errors cancelling, which is exactly the sort of thing a table shows and a summary
+statistic does not:
+
+```
+  routine                      cycles      calls     per call
+  apu_send                  -56084434      23093      -2428.6   (verify only: never paid)
+  thread_tick_waits           +605704       1016       +596.2
+  wave_hdma_build             -572436         12     -47703.0
+```
+
+`apu_send` is the largest number in the table and is not anybody's problem: it is
+`verify_only`, so its budget is never spent. It gets a row because leaving it out
+would hide the size of what the port computes and never stands in for, and a tag
+because a reader who saw the number without one would go and fix the wrong thing.
+The three `run_only` routines are missing from the table and cannot be added --
+`verify` never checks them, so there is no `actual` to subtract -- which the
+footer counts and says rather than leaving to be noticed.
+
+### The hole in the frame where HDMA should have been
+
+Chasing the drift turned up something the burn had been getting wrong since it
+was written. Every access the 65816 makes goes through `snes_cpuRead`,
+`snes_cpuWrite` or `snes_cpuIdle`, and all three call `dma_handleDma` first --
+which is the **only** place HDMA is ever performed. A burn called `snes_runCycles`
+directly, so for its whole duration HDMA did not happen. `hdmaRunRequested` is a
+single bool set once per scanline, so a substituted routine spanning 200 lines
+suppressed 199 of them; `lzss_decompress` spans four to seventy-one *frames*.
+
+The burn now advances the machine the way a busy CPU advances it. On
+`level49-corner.zmv`, which is one of the three movies that runs HDMA at all,
+that is 2,640 cycles the frame gets back. On `level1.zmv` it is exactly nothing,
+because no channel is armed while anything long is substituted -- which is why
+this was invisible rather than why it was harmless.
+
+### What the parting is made of
+
+`run` stops comparing when the two cores stop agreeing about what frame it is, and
+this file has said for several sections that what would buy that window back is
+either better cost models or a harness that can resynchronise. The drift readout
+now prints how far apart the clocks were when it happened, and on `level1.zmv`
+that is **+395,322 cycles, 1.11 of a frame**. It also prints where it came from,
+and 394,676 of it arrives in **one pass** -- the pass that parts. The 317 passes
+before it accumulated 646 cycles between them.
+
+Substituting one routine at a time says which. `-r none` is identical at all 389
+passes, as it must be. `-r lzss_decompress` alone reproduces **390,222** of the
+395,322 and parts at the same pass. So the whole of it is one routine -- and that
+routine's five calls, timed on both sides from the entry PC to the caller's
+return address, went:
+
+| call | stock | native | out by |
+| --- | --- | --- | --- |
+| 1 | 1,692,786 | 1,692,780 | -6 |
+| 2 | 6,476,668 | 6,476,638 | -30 |
+| 3 | 10,032,038 | 10,031,990 | -48 |
+| 4 | 13,661,174 | 13,661,234 | +60 |
+| 5 | 26,981,744 | 26,981,846 | +102 |
+
+**Six cycles out on the first and a hundred and two on the last, on windows of up
+to twenty-seven million.** One part in 209,000 at its worst, which is the third
+call rather than the largest one -- the error does not grow with the window,
+because it is not the model's. And that was
+enough: a scheduler pass sitting on the vblank boundary went the other way, the
+pass had to wait for the next NMI, and the frame it waited is the entire drift.
+
+So the answer is that better cost models will not buy the window back, and that
+is worth knowing precisely because improving the models was the plan. The models
+are already two orders of magnitude finer than the thing that decides it. What is
+left is a coin landing, and there is no accuracy at which a coin stops landing.
+
+Nor does the other half work. Comparing past the parting anyway -- which the
+harness refuses to do, so this was a one-off -- gives 162 bytes at the parting
+against 16 before it, rising to 255 later. Not thousands, and recognisably a
+frame rather than a fault: `$16` off by one and the counters downstream of it off
+by one with it. But it is a real divergence and not an artefact. An extra NMI is
+an extra `thread_tick_waits`, so a sleeping thread wakes a tick early and the
+game genuinely goes on differing from there. Aligning on `$16` instead costs the
+lagging side an extra scheduler pass and puts the thread clock out by one in
+place of the frame clock. There is no filter that keeps the dropped frame out and
+lets a wrong answer through, and that is what resynchronisation would need to be.
+
+**What `run` measures is a window, and the window is set by how long two
+timelines can stay on the same side of a vblank deadline.** That is a property of
+the game filling most of a frame, not of the port. It is worth stating plainly
+rather than carrying another round as an open problem with a plan attached to it.
+
+### Results
+
+The corpus is unchanged and has to be: `verify` never burns a budget, so nothing
+in this round can touch it. **13,209,637 calls across 43 movies, 0 diverged,
+branch coverage 432 of 538.**
+
+Every lockstep window is unchanged too, and every one of them ends the same way
+-- which is the honest result rather than a disappointing one, and the section
+above is why:
+
+| movie | passes compared | drift at the parting |
+| --- | --- | --- |
+| `level1` | 317 | +395,322 (1.11 frames) |
+| `level1-rescue` | 317 | +395,322 (1.11) |
+| `level45-race` | 1,045 | +405,924 (1.14) |
+| `level49-corner` | 1,141 | +397,376 (1.11) |
+| `level53` | 1,173 | +398,118 (1.11) |
+| `level25-2p` | 1,023 | +427,802 (1.20) |
+| `boot` | 2,390 | never parted |
+
+Six movies, six different levels, six different lengths of window, and all six
+part within a tenth of a frame of the same number. That is not six cost models
+each happening to be wrong by the same amount; it is one frame plus the phase
+left over, six times, because the frame is what a dropped pass costs and the
+phase is all the models were ever out by. Live state is clean on every one: no
+byte outside the stacks and the declared scratch ever differed.
+
+What did move is the accounting. `level1.zmv`'s native work share is 56.6% where
+it was 57.0%, and the 0.4 points is the return instruction the port used to be
+paid for twice. `level49-corner.zmv`'s work rises by 2,640 instead of falling,
+because HDMA now runs during its burns and those cycles are the game's.
+
+### Next
+
+The drift table picks the next target and it is not the one the work ranking
+would have picked. **`$80:9570 wave_hdma_build` is out by more per call than
+anything else in the registry**, by two orders of magnitude: -47,703 cycles a
+call, twelve calls a level movie, 572,436 cycles. Only `thread_tick_waits`
+outruns it on a total, and only by being called a thousand times as often -- at
++596 a call on `level25-boss` and +147 on `level1`, which is a routine whose cost
+is the length of a list, not a routine with the wrong number written down.
+
+`wave_hdma_build`'s declared mean is 115,606 and it is not wrong -- it is the
+call-weighted mean of two populations that do not overlap. Every level movie
+measures exactly twelve calls at 163,164..163,514, the full-length table built
+during the level-entry transition, while `boot.zmv` makes 1,077 at a mean of
+96,406 as the title sequence retracts the wobble two bytes at a time. A single
+number cannot be right about both, and the spread inside each population is 350
+cycles, so a counted model would be nearly exact. It is the clearest case in the
+registry for the `_counted` pattern, and the only reason it was not obvious
+before is that nothing measured what the mean was costing.
+
+## The mean that described neither half (2026-08-11)
+
+The drift table built last round named its own next target, and this is it.
+`$80:9570 wave_hdma_build` now prices itself per call, out of counts. What the
+old number was costing is worth stating before anything else: on `boot.zmv` it
+was **20.7 million cycles, thirty times every other routine a substituted run
+pays for put together**, and on every level movie it was wrong by about the same
+amount in the opposite direction.
+
+### Two populations and one number
+
+The registry entry said `.cycles = 115606`. Nothing ever cost that. Every level
+movie makes exactly twelve calls, all of them within 350 cycles of 163,300,
+because the level-entry transition builds the table at its full `$01C0` bytes
+and then leaves. `boot.zmv` makes 1,077 at a mean of 96,406 and a floor of
+1,176, because the title screen holds the same wobble for as long as nobody
+presses Start while the retraction takes the table apart two bytes at a time.
+115,606 is the call-weighted mean of the two and it sits in the gap between them.
+
+What that was worth, in the drift table's own terms:
+
+| movie | calls | budget drift, before | after |
+| --- | --- | --- | --- |
+| any level movie | 12 | **-572,436** | **-292** |
+| `boot.zmv` | 1,077 | **+20,678,400** | **-20,590** |
+
+Both directions at once, out of one wrong number, which is what a mean between
+two populations does. On `boot.zmv` the port was being paid 19,200 cycles a call
+for work it had not done -- 6.9% of that movie's entire 300M-cycle work
+denominator, against a `--- substituted` total of about a million for everything
+else in the table. On every level movie it was under-paying by 47,703 a call
+instead. The new figures are a thousandth of the old and the sign no longer
+depends on the input.
+
+### What the count is
+
+Sixteen blocks, and the routine makes them easy: almost the whole cost is the
+loop, the loop runs once per two bytes of table, and everything inside it is a
+branch whose outcome the port already computes. Five of the sixteen number the
+iterations independently -- the head with and without its arc wrap, the three
+arms of `sin_deg`, the seam test, the loop-back test, and the per-iteration
+constant -- so a mistake in any one of them disagrees with four others.
+
+**Three of the blocks price a routine that has a registry entry of its own**, and
+that is not a duplicate. `$80:9C90 sin_deg` is called 223 times from inside this
+loop, and when `wave_hdma_build` is substituted its body never runs -- so the
+`JSL` never happens and the shim that would have priced those 223 calls is never
+entered. `sin_deg`'s own entry is what `verify` checks it with; these three
+blocks are what `run` pays for it. The cost is 82 cycles for the
+`$80:9C8C JSR : RTL` trampoline, 118 for the shared prologue down to the sentinel
+compare, one of three arms, 74 for `PLX : RTS`, and then the caller's own
+`BIT #$8000 : BEQ : ORA #$FF00` -- which is decided by the same bit as the arm,
+so the three arms of the callee and the two of the caller are one count and not
+two. The arms differ by 36 cycles and the negative one is taken over half the
+circle, which is about 2,700 cycles on a full-length call: forty times the spread
+the twelve level-movie calls measure between them, and so not roundable away.
+
+The two entries agreeing is the check, and they agree three times.
+
+* `sin_deg`'s row measures a **floor of 240 cycles**. 118 + 48 + 74 -- prologue,
+  sentinel arm, `PLX : RTS` -- is 240 exactly, arrived at from the listing rather
+  than fitted to the measurement.
+* Its call count on a level movie is **2,676, which is 12 x 223**: twelve calls
+  to `wave_hdma_build`, 223 iterations of a full-length table each. That number
+  has been in the registry since `sin_deg` was ported, identical on five
+  different movies, and nothing had ever had a reason to factorise it.
+* On `boot.zmv` it is **140,938** over 1,077 calls, a mean of 131 iterations,
+  which is the retraction taking the table down two bytes at a time exactly as
+  described. `WAVE_BLK_ITER` is a second, independent count of the same
+  quantity.
+
+### It is exact, and the residual says so
+
+`verify` cannot certify this one refresh-exact, and the reason is the routine's
+own name. It builds an HDMA table and its caller arms channel 6 before entering
+the loop (`$80:9504  LDA #$40 : STA $420C`), so **every call it ever makes is
+made under HDMA** -- and HDMA steals cycles per scanline that no static model can
+know. Calls under HDMA are held only to direction: the model must never claim
+more than the ROM took.
+
+It never does, and the shape of the residual is what says the model is right
+rather than merely low:
+
+| movie | calls | error against the ROM |
+| --- | --- | --- |
+| `level1` | 12 | +9,250..+9,624, mean +9,374 |
+| `level45-race` | 384 | +9,074..+9,664, mean +9,323 |
+| `boot` | 1,077 | **+40**..+9,632, mean +5,371 |
+
+The floor is the whole argument. Over `boot.zmv`'s 1,077 calls, which run the
+loop anywhere from once to 223 times, the smallest error the model makes is
+**exactly 40** -- one DRAM refresh, and nothing else. So on at least one of them
+the model is right to the cycle. At the other end the error is 9,600 on a call of
+163,000: about 120 scanlines of refresh at 40 and 120 scanlines of one HDMA
+channel at about 38. Both of those grow with the call, which is why the error
+does and the model does not.
+
+Under `run` neither is owed by the budget. `burn_slice` advances the machine
+through `dma_handleDma` and `snes_runCycles`, so the core inserts its own
+refreshes and runs its own HDMA during a burn, exactly as it does under the CPU.
+The budget is meant to be the quiet cost, and the quiet cost is what this reports.
+
+### Results
+
+**13,209,637 calls across 43 movies, 0 diverged, branch coverage 432 of 538** --
+identical to the previous corpus line for line, which is required: `verify` runs
+the ROM and checks the port against it, so a cost model cannot move it. The whole
+diff against the last run is one new row in the cost-model table:
+
+```
+  wave_hdma_build                   0 / 0              1581 HDMA
+```
+
+1,581 priced calls over the corpus, none of them refresh-exact and all of them
+under HDMA -- which is not a failure but the one thing this routine can never be,
+for the reason above.
+
+Every lockstep window is unchanged -- 317, 317, 1,045, 1,141, 1,173, 1,023 and
+`boot`'s full 2,390 -- and on the level movies it could not have been anything
+else: the wobble runs during the level-entry transition around frames 900-1,200,
+and every level movie parts before frame 210. The drifts at the parting are
++395,332 (`level1` and `level1-rescue`), +405,924 (`level45-race`), +397,376
+(`level49-corner`), +398,118 (`level53`) and +427,802 (`level25-2p`) -- the same
+six numbers as last round to within ten cycles, and for last round's reason,
+which is that they are a dropped frame and not a cost model.
+
+`boot.zmv` is the one movie where this round's work falls inside the compared
+window, all 1,077 calls of it, and it still runs all 2,390 passes without
+parting. Live state is clean on every movie: no byte outside the stacks ever
+differed.
+
+Boot is also where the accounting moves, and it is worth giving both numbers,
+measured by leaving the model in place and only suppressing the report:
+
+|  | work numerator | denominator | share |
+| --- | --- | --- | --- |
+| against the mean | 200,916,426 | 321,176,122 | 62.6% |
+| against the count | 180,539,666 | 300,723,564 | **60.0%** |
+| `-r none` control | 0 | 298,930,120 | -- |
+
+The denominator moved too, and that is the part worth looking at. Substituting
+this one routine against a mean made the whole session **22,246,002 cycles --
+7.4% -- longer than the game actually is**. It is now 1,793,444, or 0.60%, and
+almost none of that is this routine.
+
+### The total got bigger, and that is the result
+
+On `level25-boss.zmv` the drift table's `--- substituted` line now reads
+**+611,036** where it read **+38,892**. The difference is exactly the 572,144
+`wave_hdma_build` stopped owing, and the total went *up* because what it had been
+owing was negative.
+
+Last round's section called the +38,892 "flattered by two errors cancelling" and
+left it there. It is worth being blunter now. `thread_tick_waits` was over-paying
+by 605,704 cycles and `wave_hdma_build` was under-paying by 572,436, and the two
+happen in different minutes of the same movie -- one of them 1,016 times spread
+across the whole of it, the other twelve times inside a transition three hundred
+frames long. **They could not cancel in time, only in a column.** A signed total
+over a registry is the one number in that table with no operational meaning, and
+what this round did to it was remove a coincidence.
+
+### What the work numerator actually is
+
+Measuring the above turned up a stale claim in `cosim_report`. It said the work
+numerator is "the measured *mean* cost of each routine", and that the row reads
+high by about 16% -- both true when written and neither true now. Sixteen of the
+registry's routines price themselves per call, including most of the expensive
+ones, so a mean is the fallback and not the rule.
+
+The check is a control run: `-r none` substitutes nothing, so its work
+denominator is what the game costs undisturbed. `boot.zmv` is the honest movie to
+use, because it never parts and both sides therefore play the same game for all
+2,390 passes:
+
+```
+  boot.zmv       -r none   298,930,120      substituted   300,723,564
+  level1.zmv     -r none   461,037,142      substituted   461,307,102
+```
+
+**0.99% on `boot`, 0.10% on `level1`** -- 98 cycles on each of boot's 18,285
+substituted calls, where the paragraph claimed 16%. The report says so now.
+
+### Next, found by reading the table off the end of a movie
+
+Every drift table above was read at `verify`'s default of 2,400 PPU frames.
+Reading `level25-boss.zmv` at its full 7,600 -- far enough in to reach the boss
+-- produces a different table and a much larger number:
+
+```
+  routine                      cycles      calls     per call
+  sprite_build_oam          -41732304       6042      -6907.0
+  boss_stomp                +13759236       4991      +2756.8
+  actor_overlap_pass        -10901026       6042      -1804.2
+```
+
+`sprite_build_oam` prices **5,014 of its 6,042 calls** and falls back to its
+declared 43,111 on the other 1,028 -- and those are not a random 17%. A call
+declines when its collisions land on a handler with no cost table, which is what
+a boss fight is made of, so the calls that decline are the crowded ones and the
+fallback is worst exactly where it is used. That movie's measured ceiling is
+137,160 cycles, against a registry comment that still said 66,412: no input had
+ever put that much on the board.
+
+So the largest debt in the harness is now a **guard to widen rather than a model
+to write** -- the model exists and is exact on the calls it accepts; it is the
+pricing that gives up. Second to it is `$82:92D6 boss_stomp` at +2,757 a call
+over 4,991, which is a mean where a count should be, and the same again for
+`actor_overlap_pass`. None of the three was visible until the table was read past
+where the default stops, which is a thing worth remembering about the default.
+
+## Two handlers, one of them counted twice (2026-08-11)
+
+Last round's section ended by naming three targets off the end of a movie, and
+this round took the first two. Both turned out to be the same kind of job and
+neither was the job the table appeared to describe.
+
+### The largest debt was not a model to write
+
+`sprite_build_oam` owed **-41,732,304 cycles over 6,042 calls** on
+`level25-boss.zmv` at its full 7,600 frames, which was more than everything else
+in the table put together. But its model is exact on the calls it accepts. What
+it did was *decline* 1,028 of the 6,042 and fall back to a declared mean of
+43,111 on those -- and, as recorded last round, the calls that decline are the
+crowded ones, so the fallback is worst exactly where it is used.
+
+So the question was never "what does this routine cost". It was "which handler
+is it giving up on", and that is a question a `printf` answers. A temporary
+census, keyed on the entry address `thread_call_cycles` refused, counted once
+per declining call rather than once per dispatch:
+
+```
+  81C440  calls    984
+  81EDAA  calls     28
+  80CAEE  calls     15
+  000000  calls      1
+```
+
+**984 of 1,028 is one address.** The four rows sum to 1,028 exactly, which is
+the arithmetic check that the census counts what the drift table counts.
+
+### One table for two copies of one routine
+
+`$81:C440` is the giant spider one stage before `$81:C4A6 monster_collide`, and
+the port has shared a body between them since the level-45 round -- three bytes
+differ in the ROM. Two of the three are `JML` targets on paths that decline
+anyway, and the third is the order of the `CMP #$005D`/`CMP #$005E` pair, which
+cannot cost anything different because both comparisons run and neither branch
+is taken on any path that reaches them.
+
+So there is one `MonsterCollideBlock` table and it prices both entries. Writing
+it twice would have been two things that can drift, which is the same argument
+that made the port share the body in the first place.
+
+Six blocks: the two ignore exits, the latch refusal, the theft and its
+alternate, and the zero-damage exit. The four deep paths -- id `$5D`, id `$5E`,
+a death, a survival -- decline, exactly as `enemy_cycles` declines its own.
+
+**And the zero-damage block agrees with a routine eleven kilobytes away.**
+`$81:C4A6` is `$81:8888` on a different page, and its no-damage exit prices to
+**384 cycles over 43 bytes with 3 direct-page instructions** -- which is
+`ENEMY_BLK_NO_DAMAGE`, digit for digit. The two were transcribed from separate
+listings rounds apart and had never been put next to each other. Neither has
+ever been measured and neither ever will be by these movies: no shot in the game
+carries a damage-table entry of zero, so `enemy_no_damage` and
+`monster_no_damage` are both untaken on every input. Two independent
+transcriptions agreeing is the only check available for a branch nothing
+reaches, and it is a real one.
+
+### What it was worth
+
+| | before | after |
+| --- | --- | --- |
+| `sprite_build_oam` budget drift | **-41,732,304** | **-4,448,875** |
+| ...per call, over 6,042 | -6,907 | -736 |
+| declining calls | 1,028 | **105** |
+
+`verify` measures `monster_c440`'s cheapest call at **exactly 120 cycles**, which
+is `MON_BLK_IGNORE_LOW` -- `CMP : BCS : CMP : BCC` into the shared `CLC : RTL` --
+arrived at from the listing and not fitted to anything. Over the 1,311 priced
+calls the error is **+0..+40, mean +4**, and all 1,311 are refresh-exact with no
+HDMA anywhere near them. A model whose minimum error is zero is not approximately
+right.
+
+The remaining 105 declines are a different composition from the original 1,028,
+and that is worth noticing: `$83:A364 victim_collide` now appears with 26 where
+it did not appear at all before. It had been there the whole time, hidden --
+a declining call records only the *first* handler that refuses, so the biggest
+one masks everything behind it. Removing `$81:C440` did not only remove
+`$81:C440`; it revealed what it had been standing in front of.
+
+### The blast radius, and the boss that is only its caller
+
+The table's next two rows were `boss_stomp` at **+13,759,236 over 4,991 calls**
+and `actor_notify_box` at **+3,391,533 over 5,245**. They are one job. `$82:92D6
+boss_stomp` is five stores and a `JSL` into `$80:BF1B`, so it has no control flow
+of its own at all: 376 cycles of arithmetic, 54 for the `JSL`, 40 for the `RTS`,
+and everything that varies call to call varies inside the callee.
+
+This makes `boss_stomp` the second registry entry priced by a table it does not
+own -- the first being the three blocks of `wave_hdma_build` that pay for
+`sin_deg` -- and it is not a duplicate for the same reason: when `$82:92D6` is
+substituted its `JSL` never happens, so `actor_notify_box`'s shim is never
+entered on that call.
+
+`$80:BF1B` itself is one screen of listing, 76 bytes and 14 direct-page
+instructions, and seventeen blocks describe it exactly. Two things about the
+shape are worth recording.
+
+**The bound loop is four blocks, not a constant.** `LDX #$0006 : BIT $38,X :
+BPL : STZ $38,X : DEX DEX : BPL` always runs exactly four times, so its cost
+could have been folded into the prologue. Counting the clamp, the keep and both
+outcomes of the loop-back separately makes the fixed part self-checking:
+`BOUND_NEXT` must come out at three times `BOUND_DONE` on every call, and the
+two bound blocks must sum to four times it. A fixed loop is the cheapest place
+in a model to hide an arithmetic error, and this is what stops it being free.
+
+**The seven per-record blocks are nested prefixes, and their spacings are the
+check.** They climb 92, 132, 206, 246, 320, 360, 572, and the differences are
+**40, 74, 40, 74, 40** and then the dispatch preamble's 212. The alternation is
+not decoration: a test that reuses what is already in A costs `CMP` plus the
+branch's six, which is 40, and one that has to fetch a fresh word out of the
+record first costs `LDA $xx,X` on top, which is 74. So the id test and the two
+*upper* bounds are 40, and the two *lower* bounds -- which open each axis -- are
+74. Any table where those five numbers are not in that order has an instruction
+in the wrong block.
+
+### Two floors that were already written down
+
+Both halves of this model reproduce a number the harness had recorded before the
+model existed, and in neither case was one fitted to the other.
+
+`actor_notify_box`'s registry entry has said `642..11,272` for rounds. The model
+says the cheapest possible call is all four bounds kept and then the one-record
+refusal at `$80:BF33`:
+
+```
+  114 + 4x76 + 3x18 + 12 + 158  =  642
+```
+
+That also corrects the entry's own description of its floor. It said 642 was "a
+box that found nothing to tell", which is loose in a way that matters: **the
+empty-list exit two instructions earlier costs 606, and 606 has never been
+measured**, because no call in the corpus has ever found `$9C` at zero.
+`notify_no_actors` is untaken on every movie. The floor is not the cheapest exit
+in the routine; it is the cheapest exit the game has ever taken.
+
+And `boss_stomp`'s entry has said `1,112..13,054` over 6,549 calls. Its own 470
+cycles plus the 642 above is **1,112** exactly -- one number from the corpus
+reporting the cheapest call it ever saw, the other from two listings added up.
+The cheapest stomp in the game is a boss standing on a board that holds one
+visible actor, and it costs 1,112 cycles with no DRAM refresh in it at all.
+
+### Results
+
+**13,209,637 calls across 43 movies, 0 diverged, branch coverage 432 of 538** --
+identical to the previous corpus, which is required: `verify` runs the ROM and
+checks the port against it, so a cost model cannot move it. What did move is the
+*priced* column, in six places at once:
+
+```
+  actor_collide_notify   22453 -> 28840
+  actor_overlap_pass    131994 -> 137432
+  sprite_build_oam      131994 -> 137432
+  thread_call_handler   103161 -> 109865
+  monster_c440               -> 4152      (new)
+  monster_collide            -> 2552      (new)
+```
+
+Both new models are refresh-exact on every call they accept, which is the
+strongest verdict the harness gives:
+
+| routine | priced | error | refresh-exact |
+| --- | --- | --- | --- |
+| `monster_c440` | 1,311 of 1,343 | +0..+40, mean **+4** | 1,311 / 1,311 |
+| `actor_notify_box` | 5,138 of 5,245 | +0..+360, mean +141 | 5,138 / 5,138 |
+| `boss_stomp` | 4,884 of 4,991 | +40..+360, mean +158 | 4,884 / 4,884 |
+
+Every lockstep window is unchanged -- 317 (`level1`), 1,045 (`level45-race`),
+1,141 (`level49-corner`), 1,173 (`level53`), 1,023 (`level25-2p`) and `boot`'s
+full 2,390, which still never parts. Live state is clean on every movie: no byte
+outside the stacks differed on any compared pass. Native work share reads 56.7%
+on `level1` and 57.6% on `level25-boss`. Both unit tests exit 0, `verify-lzss` is
+3 of 3 byte-identical, and `zamn_headless` renders the giant spider -- which is
+`$81:C440`'s own creature -- correctly at frame 3,000 of `level25-boss.zmv`.
+
+### The total moved twice, in opposite directions
+
+On `level25-boss.zmv` at 7,600 frames the `--- substituted` line read
+**-5,125,320** after the monster round and **-22,900,382** after the notify-box
+round. It got worse, and for the reason last round set out at length: the signed
+total over a registry is the one number in that table with no operational
+meaning. `boss_stomp` was over-paying by 13.8M and `sprite_build_oam` was
+under-paying by 41.7M, and removing the positive one leaves the column looking
+worse while the machine is strictly closer to the ROM on every call either
+routine makes.
+
+The number that means something is the per-routine one, and by that measure the
+three largest debts in the harness at the start of this round are now the
+sixth, and gone, and gone.
+
+### Next
+
+The same table, same movie, same 7,600 frames:
+
+```
+  routine                      cycles      calls     per call
+  actor_nearest              -6422607      11721       -548.0
+  boss_step                  +5428166      11593       +468.2
+  actor_at_point             -5159541       5985       -862.1
+```
+
+All three are means where counts should be, and none of them is a guard problem
+-- which makes them the ordinary version of this work rather than the
+interesting version. `actor_nearest` and `actor_at_point` are both walks over
+`visible_actors` with per-record branches, so they are `actor_notify_box` again
+without the dispatch, and the model above is most of the shape they need.
+
 ## Where this is going
 
 The first five routines here are leaves — they never call `thread_yield`. That

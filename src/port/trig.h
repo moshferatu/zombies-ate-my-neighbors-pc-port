@@ -233,4 +233,54 @@ typedef struct {
 void wave_hdma_build(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
                      uint16_t in_y, bool in_c, WaveRegs* out);
 
+// What one frame of the wobble did, counted by the branch the ROM would have
+// taken — the same arrangement `ActorSortWork` uses, and for a sharper reason.
+//
+// A call here costs between about 1,200 cycles and about 163,000, and the two
+// ends are not a tail: **they are two populations that do not overlap.** Every
+// level movie makes exactly twelve calls, all of them within 350 cycles of
+// 163,300, because the level-entry transition builds the table at its full 448
+// bytes and then leaves. `boot.zmv` makes 1,077, mean 96,406, floor 1,176 — the
+// title screen holding the same wobble for as long as nobody presses Start,
+// while the retraction takes the table apart two bytes at a time. A single mean
+// is not a poor description of that; it is a description of neither half.
+//
+// Almost the whole cost is `iterations x (a far call to sin_deg + two long
+// stores)`, and the loop runs once per two bytes of table — 223 times at the
+// full `$01C0` that `$80:94CD` starts it at — so what a call costs is how much
+// of the table is left. That is a count, and this is where it is taken.
+typedef enum {
+  WAVE_BLK_OVER,       // $80:9572 BMI taken: the effect is finished, incl. the RTS
+  WAVE_BLK_PROLOGUE,   // entry through the first header store, phase below 360
+  WAVE_BLK_PROLOGUE_WRAP,  // ...and the same with `LDA #$0000` in it
+  WAVE_BLK_HEAD,       // $80:958D INY x4 : CPY : BCC taken
+  WAVE_BLK_HEAD_WRAP,  // ...not taken, so the arc wrapped: + `LDY #$0000`
+  WAVE_BLK_ITER,       // the rest of the loop body that every iteration pays
+  WAVE_BLK_SIN_SENTINEL,  // the call to $80:9C8C, by which arm of `sin_deg` it took
+  WAVE_BLK_SIN_NEGATIVE,  // ...including the caller's `BIT`/`BEQ`/`ORA`, which
+  WAVE_BLK_SIN_POSITIVE,  //    is decided by the same bit the arm is
+  WAVE_BLK_HEADER_SKIP,   // $80:95AF BNE taken: not the seam
+  WAVE_BLK_HEADER_FIXUP,  // ...not taken: the second repeat header goes in
+  WAVE_BLK_STEP,          // $80:95BB CPX $70 : BCC taken: another scanline
+  WAVE_BLK_EXIT,          // ...not taken: the table is as long as it is
+  WAVE_BLK_OFF_AXIS,      // the three exits, each including its own `RTS`
+  WAVE_BLK_HOLD,
+  WAVE_BLK_RETRACT,
+  WAVE_BLOCK_COUNT,
+} WaveBlock;
+
+// `HEAD` + `HEAD_WRAP`, the three `SIN`s, `HEADER_SKIP` + `HEADER_FIXUP` and
+// `STEP` + `EXIT` all number the iterations, and `ITER` does too — five ways of
+// counting the same loop, which is what makes a mistake in any of them visible.
+// Exactly one of `OVER`, `OFF_AXIS`, `HOLD` and `RETRACT` is set on any call.
+typedef struct {
+  uint16_t blocks[WAVE_BLOCK_COUNT];
+} WaveWork;
+
+// The same frame, reporting what it did. `wave_hdma_build` is this with the
+// counts thrown away, and is what the rest of the port calls.
+void wave_hdma_build_counted(Wram* w, const Rom* rom, uint16_t dp,
+                             uint16_t in_x, uint16_t in_y, bool in_c,
+                             WaveRegs* out, WaveWork* work);
+
 #endif

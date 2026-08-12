@@ -76,16 +76,74 @@ bool lzss_decompress_supported(const Wram* w, const Rom* rom, uint16_t s,
 uint16_t lzss_decompress_wram(Wram* w, const Rom* rom, uint16_t s, uint16_t a,
                               uint16_t x, uint16_t y);
 
-// --- the two byte helpers, which *can* be checked --------------------------
+// What the stream made the routine do, for the cost model in `cosim/routines.c`.
 //
-// The body above cannot be co-simulated, for a reason that is a property of the
-// routine: one call is about seven frames long, so an NMI always lands inside
-// it and there is no instant at which the two sides' WRAM is comparable. Its
-// two leaves have the opposite shape. They are eight instructions each, they
-// are called 1,071,108 times between them across the corpus — **2.6% of every
-// instruction the game executes** — and a call is far too short for an
-// interrupt to land in. So they are registered on their own even though nothing
-// that calls them is, which is the first time that has been worth doing.
+// **Every branch in `$80:CD20` is decided by the stream, and not one of them is
+// decided by anything else** — there is no state carried between calls, no
+// table, no register the caller can set. So the price of a call is a function
+// of these counts alone, and the counts are what running the algorithm produces.
+// That is the same `_counted` arrangement `BlockExpandWork` uses; what is new is
+// that the trip counts here could not have been worked out in advance from the
+// arguments, only by decompressing, which is exactly what the port is for.
+//
+// The two token counters are **blocks entered**, not blocks completed. A stream
+// that runs out half-way through one still entered it, and `end` says which half
+// it got through — so the last token is priced as the partial block it was and
+// the exit path's `PLA`s are counted rather than assumed away.
+typedef struct {
+  uint32_t tokens_lit;    // $CD65 -- one byte copied straight through
+  uint32_t tokens_match;  // $CD82 -- a window offset and a length
+  uint32_t refills;       // $CD59 -- a fresh byte of flag bits, one per eight
+  uint32_t run_bytes;     // $CDA8 trips, over every match together
+  uint32_t reads_fast;    // $CDDA calls whose `LDA [$28]` landed in FastROM
+  bool head_fast;         // ...and the same question for `$CD46`'s length word
+  // Where the stream ran out. `0` is the flag refill at `$CD5F`, which is how a
+  // well-formed stream ends and the only value seen so far; `1` is inside a
+  // literal at `$CD69`, `2` and `3` are a match's first and second byte at
+  // `$CD87` and `$CD8E`. The three non-zero values are a truncated stream, and
+  // they are modelled because the ROM has code for them, not because one has
+  // been observed.
+  uint8_t end;
+} LzssWork;
+
+// What the ROM leaves behind. `$80:CDD2  SEC : LDA $2C : SBC $40 : TAY` puts
+// the bytes written in A and Y and the subtraction's carry in C — and X is the
+// one that has to be watched: nothing in the routine sets it after the `TYX` at
+// `$CD56`, and every path out of the loop passes through that, so X comes back
+// holding the *flag bits still unconsumed* at the top of the last iteration.
+// Publishing `0` would have looked right — it is what a stream that ran out at
+// the refill would leave — and it is wrong on every stream the game actually
+// contains, because they all run out mid-token with bits to spare. Measured
+// over fifteen movies it comes back as 1, 3, 4 or 6, and never as 0.
+//
+// N and Z are not here. The closing `PLD` restores the caller's page and
+// overwrites both, so they describe that and not the count — see the shim.
+typedef struct {
+  uint16_t a, x, y;
+  bool c;
+} LzssDecompressRegs;
+
+void lzss_decompress_wram_counted(Wram* w, const Rom* rom, uint16_t s,
+                                  uint16_t a, uint16_t x, uint16_t y,
+                                  LzssDecompressRegs* out, LzssWork* work);
+
+// --- the two byte helpers, which are checked per call ----------------------
+//
+// The body above cannot be checked per call, for a reason that is a property of
+// the routine rather than of the port: one call is several frames long, so an
+// NMI always lands inside it and there is no instant at which the two sides'
+// WRAM is comparable. It is `run_only` — substituted, and checked by `run`'s
+// comparison of all 128 KB once a scheduler pass. Its two leaves have the
+// opposite shape. They are eight instructions each, they are called 1,071,108
+// times between them across the corpus — **2.6% of every instruction the game
+// executes** — and a call is far too short for an interrupt to land in.
+//
+// So they were registered on their own before anything that calls them was, and
+// now that `$80:CD20` is registered above them they are worth more rather than
+// less: a substituted run never executes either of them, and their cost lives in
+// `lzss_cycles` as four constants that `verify` goes on measuring against the
+// ROM a million times a corpus. That is the one part of a `run_only` cost model
+// this project can check by measurement.
 //
 // Both are `JSR` leaves private to `$80:CD20`: the six call sites in the trace
 // are all inside its body, so neither needs a guard.

@@ -46,14 +46,18 @@ static uint16_t wave_wrap(uint16_t deg) {
   return deg >= WAVE_DEGREES ? 0 : deg;
 }
 
-void wave_hdma_build(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
-                     uint16_t in_y, bool in_c, WaveRegs* out) {
+void wave_hdma_build_counted(Wram* w, const Rom* rom, uint16_t dp,
+                             uint16_t in_x, uint16_t in_y, bool in_c,
+                             WaveRegs* out, WaveWork* work) {
+  for (int i = 0; i < WAVE_BLOCK_COUNT; i++) work->blocks[i] = 0;
+
   const uint16_t len = wram_r16(w, (uint16_t)(dp + WAVE_DP_LENGTH));
 
   // `LDA $70 : BMI $95DA`. The effect is over and the caller's `BPL` is about
   // to notice; nothing is written and carry is not touched.
   if (len & 0x8000u) {
     PORT_COVER(wave_over);
+    work->blocks[WAVE_BLK_OVER]++;
     out->a = len;
     out->x = in_x;
     out->y = in_y;
@@ -64,7 +68,11 @@ void wave_hdma_build(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
   }
   PORT_COVER(wave_building);
 
-  uint16_t phase = wave_wrap((uint16_t)(wram_r16(w, (uint16_t)(dp + WAVE_DP_PHASE)) + 1));
+  const uint16_t stepped =
+      (uint16_t)(wram_r16(w, (uint16_t)(dp + WAVE_DP_PHASE)) + 1);
+  uint16_t phase = wave_wrap(stepped);
+  work->blocks[stepped >= WAVE_DEGREES ? WAVE_BLK_PROLOGUE_WRAP
+                                       : WAVE_BLK_PROLOGUE]++;
   wram_w16(w, (uint16_t)(dp + WAVE_DP_PHASE), phase);
 
   // `LDA #$00F8 : STA $7E8000,X` at X = 0. The high half is the first
@@ -73,22 +81,35 @@ void wave_hdma_build(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
 
   uint16_t x = 1, deg = phase, a = 0;
   do {
-    deg = wave_wrap((uint16_t)(deg + WAVE_DEGREES_PER_LINE));
+    const uint16_t advanced = (uint16_t)(deg + WAVE_DEGREES_PER_LINE);
+    deg = wave_wrap(advanced);
+    work->blocks[advanced >= WAVE_DEGREES ? WAVE_BLK_HEAD_WRAP : WAVE_BLK_HEAD]++;
+    work->blocks[WAVE_BLK_ITER]++;
 
     SinRegs s;
     sin_deg(rom, deg, x, &s);
     // `BIT #$8000 : BEQ +2 : ORA #$FF00`, which cannot change a bit.
     a = s.a;
+    // Carry set is the sentinel arm; bit 15 set is the sign-extending one, and
+    // it is also what decides the caller's dead `ORA`. So the three arms of
+    // `sin_deg` and the two of its caller are one count, not two.
+    work->blocks[s.c ? WAVE_BLK_SIN_SENTINEL
+                     : (a & 0x8000u) ? WAVE_BLK_SIN_NEGATIVE
+                                     : WAVE_BLK_SIN_POSITIVE]++;
     wram_w16(w, (uint16_t)(W_WAVE_HDMA + x), a);
     x = (uint16_t)(x + 2);
 
     if (x == WAVE_SECOND_HEADER) {
       PORT_COVER(wave_second_header);
+      work->blocks[WAVE_BLK_HEADER_FIXUP]++;
       // `STA $7E7FFF,X`, so the low byte lands one below the header and takes
       // the high byte of the parameter just written with it.
       wram_w16(w, (uint16_t)(W_WAVE_HDMA - 1 + x), WAVE_HEADER_FIXUP);
       x++;
+    } else {
+      work->blocks[WAVE_BLK_HEADER_SKIP]++;
     }
+    work->blocks[x < len ? WAVE_BLK_STEP : WAVE_BLK_EXIT]++;
   } while (x < len);
 
   wram_w16(w, (uint16_t)(W_WAVE_HDMA + x), 0);
@@ -101,6 +122,7 @@ void wave_hdma_build(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
   // store by `PHA`/`PLA`.
   if (a != 0) {
     PORT_COVER(wave_off_axis);
+    work->blocks[WAVE_BLK_OFF_AXIS]++;
     out->a = a;
     out->n = (a & 0x8000u) != 0;
     out->z = false;
@@ -110,6 +132,7 @@ void wave_hdma_build(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
   const uint16_t hold = wram_r16(w, (uint16_t)(dp + WAVE_DP_HOLD));
   if (hold != 0) {
     PORT_COVER(wave_hold);
+    work->blocks[WAVE_BLK_HOLD]++;
     uint16_t left = (uint16_t)(hold - 1);
     wram_w16(w, (uint16_t)(dp + WAVE_DP_HOLD), left);
     out->a = left;
@@ -121,9 +144,16 @@ void wave_hdma_build(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
   // `DEC $70 : DEC $70` — one scanline off the bottom, and the flags are the
   // second `DEC`'s. A is the zero the `LDA $76` left.
   PORT_COVER(wave_retract);
+  work->blocks[WAVE_BLK_RETRACT]++;
   uint16_t shorter = (uint16_t)(len - 2);
   wram_w16(w, (uint16_t)(dp + WAVE_DP_LENGTH), shorter);
   out->a = 0;
   out->n = (shorter & 0x8000u) != 0;
   out->z = shorter == 0;
+}
+
+void wave_hdma_build(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
+                     uint16_t in_y, bool in_c, WaveRegs* out) {
+  WaveWork ignored;
+  wave_hdma_build_counted(w, rom, dp, in_x, in_y, in_c, out, &ignored);
 }

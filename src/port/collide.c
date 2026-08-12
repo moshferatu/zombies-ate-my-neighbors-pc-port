@@ -1354,9 +1354,10 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
     // `$81:C4A6` was on that exclusion list while not being on this one, so the
     // declines were counted and never named. On `movies/level45-carried.zmv`
     // that is 1,351 of `thread_call_handler`'s 2,800 calls.
-    served = monster_collide(w, rom, dp, arg, &r, NULL);
+    served = monster_collide_counted(w, rom, dp, arg, &r, NULL, &work->monster);
   } else if (entry == MONSTER_C440_COLLIDE_ENTRY) {
-    served = monster_c440_collide(w, rom, dp, arg, &r, NULL);
+    served =
+        monster_c440_collide_counted(w, rom, dp, arg, &r, NULL, &work->monster);
   } else if (entry == ENEMY_B41C_COLLIDE_ENTRY) {
     served = enemy_b41c_collide(w, rom, dp, arg, &r, NULL);
   } else if (entry == ENEMY_CDDE_COLLIDE_ENTRY) {
@@ -1386,7 +1387,7 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
   } else if (entry == VICTIM_A264_COLLIDE_ENTRY) {
     served = victim_a264_collide(w, dp, arg, &r);
   } else if (entry == BOSS_9660_COLLIDE_ENTRY) {
-    served = boss_9660_collide(w, rom, dp, arg, &r);
+    served = boss_9660_collide_counted(w, rom, dp, arg, &r, &work->boss);
   } else if (entry == SHOT_COLLIDE_ENTRY) {
     served = shot_collide_counted(w, dp, arg, &r, &work->shot);
   } else if (entry == SHOT_EDAA_COLLIDE_ENTRY) {
@@ -1538,7 +1539,9 @@ typedef struct {
 
 static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
                                  uint16_t arg, ActorHandlerRegs* r,
-                                 uint32_t* unported, const MonsterCopy* copy) {
+                                 uint32_t* unported, const MonsterCopy* copy,
+                                 MonsterCollideWork* work) {
+  memset(work->blocks, 0, sizeof work->blocks);
   // `$81:C4A6  CMP #$005C : BCS`. Everything below a weapon shot is sorted by
   // two more comparisons into three outcomes, and two of those write nothing.
   if (arg < COLLIDE_ID_PLAYER) {
@@ -1547,6 +1550,7 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
       // branch a player standing on it takes, every frame, which is why it is
       // most of the 2,039 declines the census counted.
       PORT_COVER(monster_ignore_low);
+      work->blocks[MON_BLK_IGNORE_LOW]++;
       uint16_t diff = (uint16_t)(arg - MONSTER_OBJECT_ID_FIRST);
       r->a = arg;
       r->n = (diff & 0x8000) != 0;
@@ -1568,6 +1572,7 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
       // branch, so no coverage mark can say it; written down here beside the
       // line, like the `STZ $7E` in `enemy_die`.
       PORT_COVER(monster_ignore_high);
+      work->blocks[MON_BLK_IGNORE_HIGH]++;
       uint16_t diff = (uint16_t)(arg - MONSTER_OBJECT_ID_END);
       r->a = arg;
       r->n = (diff & 0x8000) != 0;
@@ -1582,6 +1587,7 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
     uint16_t latch = wram_r16(w, (uint32_t)dp + MONSTER_DP_LATCH);
     if (latch != 0) {
       PORT_COVER(monster_latched);
+      work->blocks[MON_BLK_LATCHED]++;
       r->a = latch;
       r->n = (latch & 0x8000) != 0;
       r->z = false;
@@ -1601,7 +1607,10 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
     uint16_t src = wram_r16(w, W_MONSTER_LATCH_SRC);
     if (src == MONSTER_LATCH_SRC_ALT) {
       PORT_COVER(monster_latch_alt);
+      work->blocks[MON_BLK_TAKE_ALT]++;
       src = wram_r16(w, W_MONSTER_LATCH_ALT);
+    } else {
+      work->blocks[MON_BLK_TAKE]++;
     }
     wram_w16(w, (uint32_t)dp + MONSTER_DP_LATCH, src);
 
@@ -1628,6 +1637,7 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
     // is where the two copies genuinely part company, which is why they had
     // separate sites before either address meant anything. The earlier one goes
     // to `enemy_freeze`, which the port has; the spider's still declines.
+    work->blocks[MON_BLK_DEEP]++;
     if (copy->is_c440) {
       PORT_COVER(c440_special);
       return enemy_freeze(w, dp, r);
@@ -1644,6 +1654,7 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
     // arithmetic on health. Transcribed from the listing and worth flagging as
     // such: no input has produced id $5E.
     PORT_COVER(monster_fatal_id);
+    work->blocks[MON_BLK_DEEP]++;
     return monster_die(w, rom, dp, id, r);
   }
 
@@ -1656,11 +1667,13 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
 
   if (left & 0x8000) {
     PORT_COVER(monster_died);
+    work->blocks[MON_BLK_DEEP]++;
     return monster_die(w, rom, dp, left, r);
   }
   if (left == health) {
     // `CMP $22 : BEQ $C50A`, the shared `CLC : RTL`. Not even the store happens.
     PORT_COVER(monster_no_damage);
+    work->blocks[MON_BLK_NO_DAMAGE]++;
     r->a = left;
     r->n = false;
     r->z = true;
@@ -1671,6 +1684,7 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
   // `STA $22 : JML $81:BAB3` — it lived. The store happens *before* the jump, so
   // it belongs to this routine even though the reaction does not.
   PORT_COVER(monster_survived);
+  work->blocks[MON_BLK_DEEP]++;
   wram_w16(w, (uint32_t)dp + MONSTER_DP_HEALTH, left);
   if (copy->is_c440) {
     // ...and one stage earlier the jump is to `$81:8506` instead, which is a
@@ -1685,16 +1699,34 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
   return monster_survived_react(w, dp, r);
 }
 
+static const MonsterCopy MONSTER_SPIDER = {false, MONSTER_SPECIAL_ENTRY};
+static const MonsterCopy MONSTER_EARLIER = {true, MONSTER_C440_SPECIAL_ENTRY};
+
+bool monster_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                             ActorHandlerRegs* r, uint32_t* unported,
+                             MonsterCollideWork* work) {
+  return monster_collide_body(w, rom, dp, arg, r, unported, &MONSTER_SPIDER,
+                              work);
+}
+
+bool monster_c440_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
+                                  uint16_t arg, ActorHandlerRegs* r,
+                                  uint32_t* unported,
+                                  MonsterCollideWork* work) {
+  return monster_collide_body(w, rom, dp, arg, r, unported, &MONSTER_EARLIER,
+                              work);
+}
+
 bool monster_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                      ActorHandlerRegs* r, uint32_t* unported) {
-  static const MonsterCopy spider = {false, MONSTER_SPECIAL_ENTRY};
-  return monster_collide_body(w, rom, dp, arg, r, unported, &spider);
+  MonsterCollideWork ignored;
+  return monster_collide_counted(w, rom, dp, arg, r, unported, &ignored);
 }
 
 bool monster_c440_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                           ActorHandlerRegs* r, uint32_t* unported) {
-  static const MonsterCopy earlier = {true, MONSTER_C440_SPECIAL_ENTRY};
-  return monster_collide_body(w, rom, dp, arg, r, unported, &earlier);
+  MonsterCollideWork ignored;
+  return monster_c440_collide_counted(w, rom, dp, arg, r, unported, &ignored);
 }
 
 // ---------------------------------------------------------------------------
@@ -2872,6 +2904,16 @@ bool actor_f1c2_collide(Wram* w, uint16_t dp, uint16_t arg,
 
 bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                        ActorHandlerRegs* r) {
+  BossCollideWork work;
+  return boss_9660_collide_counted(w, rom, dp, arg, r, &work);
+}
+
+bool boss_9660_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
+                               uint16_t arg, ActorHandlerRegs* r,
+                               BossCollideWork* work) {
+  uint16_t* blk = work->blocks;
+  memset(blk, 0, sizeof work->blocks);
+
   // `$82:9660  LDY $0078 : LDX $000E,Y`. Absolute, not direct — its own display
   // record out of the global the dispatcher published, and then that record's
   // `ACTOR_COLLIDE_ID`. Y is never touched again, so this is also what comes
@@ -2885,6 +2927,7 @@ bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
     // `CPX #$0009 : BEQ $9674`, and `$9674` is `STZ $42 : CLC : RTL`. The
     // comparison is the last thing to set N and Z, and it found them equal.
     PORT_COVER(boss_invulnerable);
+    blk[BOSS_BLK_INVULN]++;
     r->x = self_id;
     wram_w16(w, (uint32_t)dp + BOSS_9660_DP_HIT_ID, 0);
     r->n = false;
@@ -2903,6 +2946,7 @@ bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
     // a thing the port has to reproduce even though `$82:8F86` only ever writes
     // 3.
     PORT_COVER(boss_flashing);
+    blk[BOSS_BLK_FLASHING]++;
     wram_w16(w, (uint32_t)dp + BOSS_9660_DP_HIT_ID, 0);
     r->n = (flash & 0x8000) != 0;
     r->z = false;
@@ -2916,6 +2960,7 @@ bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
     // so a second player's shot (`$805C`) is above the line exactly as a first
     // player's is.
     PORT_COVER(boss_ignore);
+    blk[BOSS_BLK_IGNORE]++;
     uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
     wram_w16(w, (uint32_t)dp + BOSS_9660_DP_HIT_ID, 0);
     r->n = (diff & 0x8000) != 0;
@@ -2927,6 +2972,7 @@ bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // `$82:9678  STA $42 : AND #$7FFF`. The parked id keeps bit 15, because the
   // death sequence hands this very word to `score_add` to decide whose $2000 it
   // is; the masked copy is what the comparisons below work on.
+  blk[BOSS_BLK_HIT]++;
   wram_w16(w, (uint32_t)dp + BOSS_9660_DP_HIT_ID, arg);
   uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
 
@@ -2936,20 +2982,33 @@ bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // 32-bit counter at `W_SCHED_TICK` and only its low word is loaded.
   uint16_t tick = wram_r16(w, W_SCHED_TICK);
   if (id == BOSS_9660_ID_ALT_HALF || id == BOSS_9660_ID_ALT_QUARTER) {
-    uint16_t mask = id == BOSS_9660_ID_ALT_HALF ? 0x0001 : 0x0003;
+    // Which of the two ids it was matters to the clock even though it does not
+    // matter to the answer: `$70` is tested at `$82:968F` and `$62` at
+    // `$82:967D`, so the quarter-odds id arrives one comparison and one taken
+    // branch later than the half-odds one.
+    bool half = id == BOSS_9660_ID_ALT_HALF;
+    uint16_t mask = half ? 0x0001 : 0x0003;
     if (tick & mask) {
       PORT_COVER(boss_alt_dear);
+      blk[half ? BOSS_BLK_REMAP_62_DEAR : BOSS_BLK_REMAP_70_DEAR]++;
       id = BOSS_9660_ID_DEAR;
     } else {
       PORT_COVER(boss_alt_cheap);
+      blk[half ? BOSS_BLK_REMAP_62_CHEAP : BOSS_BLK_REMAP_70_CHEAP]++;
       id = BOSS_9660_ID_CHEAP;
     }
   } else if (id == BOSS_9660_ID_REMAP_61) {
     PORT_COVER(boss_remap_61);
+    blk[BOSS_BLK_REMAP_61]++;
     id = BOSS_9660_ID_61_AS;
   } else if (id == BOSS_9660_ID_REMAP_6F) {
     PORT_COVER(boss_remap_6f);
+    blk[BOSS_BLK_REMAP_6F]++;
     id = BOSS_9660_ID_6F_AS;
+  } else {
+    // No mark: not a decision the diff could check, since nothing is written
+    // either way. It is still a fourth `CMP` and a taken branch on the clock.
+    blk[BOSS_BLK_REMAP_NONE]++;
   }
 
   // `$82:96BA  SEC : SBC #$005C : ASL A : TAX`, the same index the whole enemy
@@ -2982,6 +3041,7 @@ bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
     // stored**, which is where this parts company with `enemy_collide` and both
     // of its copies. What ends the boss is the flag, not the number.
     PORT_COVER(boss_died);
+    blk[BOSS_BLK_DIED]++;
     uint16_t dead = (uint16_t)(wram_r16(w, (uint32_t)dp + BOSS_9660_DP_DEAD) - 1);
     wram_w16(w, (uint32_t)dp + BOSS_9660_DP_DEAD, dead);
     // The `DEC` is the last instruction to set a flag, so N and Z describe the
@@ -2996,6 +3056,7 @@ bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
     // skipped as pointless — but `$3E` and `$44` above already moved, so unlike
     // `enemy_collide`'s equivalent this one is not invisible.
     PORT_COVER(boss_no_damage);
+    blk[BOSS_BLK_NO_DAMAGE]++;
     r->n = false;
     r->z = true;
     return true;
@@ -3004,6 +3065,7 @@ bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // `$82:96D1  STA $3C`, which sets no flags — so N and Z are the `CMP $3C`'s,
   // comparing a difference that is smaller than the health it came from.
   PORT_COVER(boss_survived);
+  blk[BOSS_BLK_SURVIVED]++;
   wram_w16(w, (uint32_t)dp + BOSS_9660_DP_HEALTH, left);
   r->n = ((uint16_t)(left - health) & 0x8000) != 0;
   r->z = false;

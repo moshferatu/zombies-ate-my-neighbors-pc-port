@@ -319,6 +319,48 @@ typedef struct {
   // and never substituted, which keeps the frontend's framebuffer check honest
   // for the other fifty-six.
   bool verify_only;
+
+  // ...and the mirror of it, which is the first piece of Phase 4 in this file.
+  //
+  // `verify_only` means *checked on every call and never substituted*. This
+  // means *substituted and never checked per call*, and the routine it was
+  // added for is `$80:C05A sprite_cache_init`: 0.97 of a frame of `memset`, so
+  // an NMI lands inside virtually every call and `verify` abandons all of them.
+  //
+  // **The thing worth being precise about is that those are two different
+  // failures.** An interrupt breaks *rewind-and-replay*: the ROM's NMI handler
+  // wrote WRAM inside the call window, and the port models the routine rather
+  // than the handler, so the diff would be reporting the harness's problem as
+  // the port's. It breaks nothing about substitution — under `run` the ROM
+  // never executes the routine, so there is no window to land inside. The core
+  // waits at the instruction after the `JSL` while the budget is burned, and
+  // takes any NMI that falls due exactly as it would have.
+  //
+  // So a `run_only` routine is not unchecked. It is checked by a different
+  // claim: `run` compares all 128 KB of WRAM once per scheduler pass, so what
+  // stands behind it is *the stretch containing it agreed*, not *the call
+  // agreed*. That is a weaker claim per call and a broader one per movie, and
+  // it is the claim Phase 4 has to be built on anyway — a port that owns its own
+  // main loop has no per-call boundary left to rewind to.
+  //
+  // Two conditions before anything else gets this flag, and both are the point
+  // rather than paperwork:
+  //
+  //   * **`verify` must be unable to score it, not merely unwilling.** The
+  //     reason has to be structural — an interrupt, or a body that outlives a
+  //     frame — and the interrupted count in a `verify` report is the evidence.
+  //     A routine that could be checked per call and is not is just unchecked.
+  //   * **`.cycles` must be a count, not a mean.** Every other entry's budget is
+  //     an average `verify` measured; there is no measurement here, so the
+  //     figure has to come from the instruction stream instead. `$80:C05A` has
+  //     no data dependence and one loop with a known trip count, so
+  //     `tools/cycles816.py` prices it exactly. A routine whose cost varies with
+  //     its input cannot honestly be given a constant nobody watched.
+  //
+  // `tools/native_share.py` no longer lists such an address in `BLOCKED`: the
+  // share it earns is real on the `run` side of the report and zero on the
+  // `verify` side, and the report says which.
+  bool run_only;
 } CosimRoutine;
 
 // The registry. Every routine `src/port/` has replaced, in the order they were
@@ -383,6 +425,12 @@ void cosim_cost(int cycles);
 // Cycles the core inserts for a DRAM refresh, once per scanline. It is the unit
 // a correct cost model's residual error comes in — see `model_refresh_exact`.
 #define COSIM_REFRESH_CYCLES 40
+
+// Master cycles in one NTSC frame: 262 scanlines of 1,364. The unit the drift
+// between two lockstepped cores is worth reading in, because one whole frame of
+// it is what a pass overrunning vblank costs — see `CosimStat::budget_residual`
+// and the parting in `cosim_lockstep`.
+#define COSIM_FRAME_CYCLES 357366
 
 // One straight-line run of the ROM, priced. `tools/cycles816.py` prints both
 // numbers for any range of the listing, and a model is a table of these.
@@ -462,6 +510,25 @@ typedef struct {
   long modelled, model_refresh_exact, model_hdma;
   long model_err_min, model_err_max;
   double model_err_mean;
+  // What a substituted run would have *paid* for these calls, less what the ROM
+  // actually spent on them. Positive is over-payment: a native core reaching the
+  // same point in the game later than a stock one.
+  //
+  // This is the quantity behind the parting in `cosim_lockstep` — two timelines
+  // separate when one of them has accumulated enough of it to overrun a vblank
+  // the other did not — and it is not the same thing as `model_err_*` above.
+  // That says whether a model is *right*; this says what being slightly wrong
+  // is worth, summed over a run and signed, so a routine 6 cycles light on a
+  // million calls outranks one 6,000 cycles light on ten. A mean is scored the
+  // same way, which is the only place the cost of using one shows up as a
+  // number rather than as a caveat.
+  //
+  // Refresh is taken off first for a reported cost, because the burn spends it
+  // in pieces and the core puts the refreshes back — so the part of the error
+  // that is a whole number of refreshes is not a debt, and an exact model scores
+  // exactly zero here rather than 40 per scanline it crossed.
+  long long budget_residual;
+  long budget_calls;
   // The first call whose error was not a whole number of refreshes, with the
   // two pieces of the calling convention that most often explain one: an
   // unaligned direct page costs an extra internal cycle per direct-page
@@ -528,6 +595,16 @@ typedef struct {
   uint64_t calls_total;
   // ...plus the ones it did not, because the port served them at the entry PC.
   uint64_t calls_native;
+  // How many times a substituted call's budget was stopped part-way because an
+  // interrupt had fallen due, and resumed after the core had taken it.
+  //
+  // Not a diagnostic: it is the evidence for the one thing about a long
+  // substitution that cannot be checked by comparing memory. A routine that
+  // spans two vblank boundaries owes the game two NMIs, and the core's
+  // `nmiWanted` is a single bool — so this number is how many NMIs would
+  // otherwise have been dropped or handed over late. Zero on a session made
+  // only of short calls, and that is the correct answer there.
+  uint64_t burns_parked;
 } CosimWork;
 
 // The same, reduced to the two percentages and their denominators.

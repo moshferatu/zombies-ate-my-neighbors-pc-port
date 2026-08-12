@@ -2,7 +2,14 @@
 
 #include "port/levelmap.h"
 
+#include <string.h>
+
 #include "port/terrain.h"  // tilemap_tile_addr, and the row table it shares
+
+// Is a 24-bit pointer's bank one whose bytes `$420D` makes cheap? The block map
+// and the block library are each either WRAM or cartridge, and the two cost
+// differently per operand byte — see `BlockExpandWork`.
+static bool bank_is_rom(uint16_t bank) { return (bank & 0xfffeu) != 0x007eu; }
 
 // A word through a 24-bit pointer the ROM built at run time. The block library
 // is always WRAM, but the block map's bank comes out of the level record, so
@@ -75,7 +82,7 @@ bool blockmap_expand_supported(const Wram* w, const Rom* rom) {
 // `src`/`dest` are threaded back out because the ROM keeps them in `$28`/`$2C`
 // and the caller's next iteration does not care, but the exit registers do.
 static void expand_cell(Wram* w, const Rom* rom, uint16_t col, uint16_t row,
-                        uint16_t* out_a, bool* out_c) {
+                        uint16_t* out_a, bool* out_c, BlockExpandWork* k) {
   TilemapAddrRegs addr;
   tilemap_tile_addr(w, (uint16_t)(col * LM_BLOCK_TILES_ACROSS),
                     (uint16_t)(row * LM_BLOCK_TILES_ACROSS), &addr);
@@ -85,8 +92,9 @@ static void expand_cell(Wram* w, const Rom* rom, uint16_t col, uint16_t row,
   // `$80:ACF6`, then the word it pointed at: the block's index.
   BlockCellRegs cell;
   blockmap_cell_ptr(w, 0, col, row, &cell);
-  uint16_t index = map_word(w, rom, wram_r16(w, LM_DP_SRC_BANK),
-                            wram_r16(w, LM_DP_SRC));
+  uint16_t map_bank = wram_r16(w, LM_DP_SRC_BANK);
+  if (bank_is_rom(map_bank)) k->cells_rom++;
+  uint16_t index = map_word(w, rom, map_bank, wram_r16(w, LM_DP_SRC));
 
   // `$80:AD0B` — seven `ASL`s and the library base. The shifts set carry and
   // the `CLC` throws it away, so only the `ADC` here can be seen from outside.
@@ -101,9 +109,13 @@ static void expand_cell(Wram* w, const Rom* rom, uint16_t col, uint16_t row,
   uint16_t a = dest;
   bool c = false;
 
+  const bool lib_rom = bank_is_rom(src_bank);
   for (int r = LM_BLOCK_ROWS; r > 0; --r) {
+    k->block_rows++;
     // `LDA [$28],Y : STA [$2C],Y : DEY DEY : BPL` — eight words, backwards.
     for (int16_t y = (int16_t)LM_BLOCK_LAST_WORD; y >= 0; y -= 2) {
+      k->words++;
+      if (lib_rom) k->words_rom++;
       uint16_t v = map_word(w, rom, src_bank, (uint16_t)(src + (uint16_t)y));
       wram_w16(w, ((uint32_t)(LM_TILE_MAP_BANK & 1u) << 16) |
                       (uint16_t)(dest + (uint16_t)y),
@@ -124,6 +136,13 @@ static void expand_cell(Wram* w, const Rom* rom, uint16_t col, uint16_t row,
 }
 
 void blockmap_expand(Wram* w, const Rom* rom, BlockExpandRegs* out) {
+  BlockExpandWork work;
+  blockmap_expand_counted(w, rom, out, &work);
+}
+
+void blockmap_expand_counted(Wram* w, const Rom* rom, BlockExpandRegs* out,
+                             BlockExpandWork* k) {
+  memset(k, 0, sizeof *k);
   wram_w16(w, LM_DP_COL, 0);
   wram_w16(w, LM_DP_ROW, 0);
   wram_w16(w, LM_DP_ROWS_LEFT, wram_r16(w, LM_DP_MAP_ROWS));
@@ -133,14 +152,16 @@ void blockmap_expand(Wram* w, const Rom* rom, BlockExpandRegs* out) {
   uint16_t rows_left, cols_left;
 
   do {  // $AD38 — one row of the block map
+    k->rows++;
     // `LDA $AE : LSR` — the row's byte count, two per block.
     wram_w16(w, LM_DP_COLS_LEFT,
              (uint16_t)(wram_r16(w, LM_DP_MAP_ROW_BYTES) >> 1));
 
     do {  // $AD3D — one cell
+      k->cells++;
       uint16_t col = wram_r16(w, LM_DP_COL);
       uint16_t row = wram_r16(w, LM_DP_ROW);
-      expand_cell(w, rom, col, row, &a, &c);
+      expand_cell(w, rom, col, row, &a, &c, k);
 
       wram_w16(w, LM_DP_COL, (uint16_t)(col + 1u));
       cols_left = (uint16_t)(wram_r16(w, LM_DP_COLS_LEFT) - 1u);

@@ -132,4 +132,30 @@ typedef struct {
 bool blockmap_expand_supported(const Wram* w, const Rom* rom);
 void blockmap_expand(Wram* w, const Rom* rom, BlockExpandRegs* out);
 
+// What the walk did, for the cost model in `src/cosim/routines.c`.
+//
+// **No branch in this routine depends on the data it is reading**, which makes
+// it the one shape in the registry where counting is not about outcomes: it is
+// four loop trip counts and two questions about which memory the operands came
+// out of. Every taken branch follows from them — the copy loop's `BPL` is taken
+// `words - block_rows` times, the row loop's `BNE` `block_rows - cells` times,
+// and so on down the nest — so nothing here has to be counted twice.
+//
+// It is counted rather than derived from `$AE` and `$B0` in the shim for one
+// reason, and it is the do-while wrap the header describes: a map whose
+// `$AE >> 1` is zero is walked 65,536 times and not none, so a shim reading the
+// same two words would price such a call at nothing. Counting what the loop
+// actually did cannot make that mistake.
+typedef struct {
+  uint32_t rows;        // $AD38 trips — one per row of the block map
+  uint32_t cells;       // $AD3D trips, over all rows together
+  uint32_t cells_rom;   // ...of which read the block map out of the cartridge
+  uint32_t block_rows;  // $AD65 trips — eight per cell
+  uint32_t words;       // $AD68 trips — eight per block row
+  uint32_t words_rom;   // ...of which came out of a cartridge block library
+} BlockExpandWork;
+
+void blockmap_expand_counted(Wram* w, const Rom* rom, BlockExpandRegs* out,
+                             BlockExpandWork* work);
+
 #endif

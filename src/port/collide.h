@@ -995,6 +995,37 @@ bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 bool monster_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                      ActorHandlerRegs* r, uint32_t* unported);
 
+// The five exits that end inside the routine, and a mark for the four that do
+// not — the same bargain `EnemyCollideBlock` makes, on the same reasoning: a
+// death runs `$81:BBEB` into `score_add`, a survivor leaves through a `JML`
+// into the thread splice, and neither is a tree this file describes.
+//
+// **One table prices both copies.** `$81:C440` differs from `$81:C4A6` in three
+// bytes: two `JML` targets, which are only on the deep paths that decline
+// anyway, and the order of the `CMP #$005D`/`CMP #$005E` pair, which costs the
+// same either way because both comparisons run and neither branch is taken on
+// any path that reaches them. So there is no `MonsterCopy` in the cost model
+// and there does not need to be — see `monster_collide_body`, which the two
+// share for the same reason.
+typedef enum {
+  MON_BLK_IGNORE_LOW,   // $81:C4AE BCC taken: below the object range, CLC : RTL
+  MON_BLK_IGNORE_HIGH,  // $81:C4B3 BCC not taken: above it, a different CLC : RTL
+  MON_BLK_LATCHED,      // $81:C4EE BNE taken: something already happened to this one
+  MON_BLK_TAKE,         // the theft, latching $42
+  MON_BLK_TAKE_ALT,     // ...and the same latching $46, which costs one more load
+  MON_BLK_NO_DAMAGE,    // $81:C4D7 BEQ taken: the subtraction took nothing off
+  MON_BLK_DEEP,         // $5D, $5E, a death or a survival: not priced here
+  MONSTER_BLOCK_COUNT,
+} MonsterCollideBlock;
+
+typedef struct {
+  uint16_t blocks[MONSTER_BLOCK_COUNT];
+} MonsterCollideWork;
+
+bool monster_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                             ActorHandlerRegs* r, uint32_t* unported,
+                             MonsterCollideWork* work);
+
 // `$81:BAB3`, split out for the same reason `enemy_survived_react` is: it has
 // two coverage sites of its own and one of them is an entry guard no diff can
 // check. Always true — there is nothing in it to decline.
@@ -1127,6 +1158,12 @@ bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 // `ENEMY_REACT_FRAME` is shared. False only on `$5D`, exactly as its twin.
 bool monster_c440_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                           ActorHandlerRegs* r, uint32_t* unported);
+
+// ...and it counts into the same `MonsterCollideWork`, priced by the same
+// table. See `MonsterCollideBlock` for why one table is enough for both.
+bool monster_c440_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
+                                  uint16_t arg, ActorHandlerRegs* r,
+                                  uint32_t* unported, MonsterCollideWork* work);
 
 // ---------------------------------------------------------------------------
 // $81:D7F6  enemy_d7f6_collide — level 17's, and the fifth copy of $81:8888
@@ -1879,6 +1916,45 @@ bool actor_f1c2_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r)
 bool boss_9660_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                        ActorHandlerRegs* r);
 
+// Which path a call took, for `src/cosim/routines.c` to price.
+//
+// Three groups, and a call increments exactly one block of the first three, or
+// `HIT` plus one remap plus one damage exit. That is the routine's own shape:
+// everything before `$82:9678` is a guard, everything between there and
+// `$82:96BA` is the id being rewritten, and everything after is arithmetic on
+// health.
+//
+// **The two coin-toss ids are four blocks rather than two.** `$62` and `$70`
+// end at the same two `LDA #$005C`/`LDA #$005D`, but `$70` is reached one
+// comparison and one taken branch further down the chain, so the two cost
+// different amounts to arrive at the same answer — `shot_collide`'s four stop
+// ids are separate blocks for exactly this reason and no other.
+typedef enum {
+  BOSS_BLK_INVULN,          // $82:9669 BEQ taken: wearing id $09, out at $9674
+  BOSS_BLK_FLASHING,        // $82:966D BNE taken: $40 still running, same exit
+  BOSS_BLK_IGNORE,          // $82:9672 BCS not taken: below $5C, same exit
+  BOSS_BLK_HIT,             // ...taken: $9678 STA $42 : AND #$7FFF
+  BOSS_BLK_REMAP_62_CHEAP,  // id $62 and the tick is even: answers as $5C
+  BOSS_BLK_REMAP_62_DEAR,   // ...or odd, and it answers as $5D
+  BOSS_BLK_REMAP_70_CHEAP,  // id $70, two comparisons further in
+  BOSS_BLK_REMAP_70_DEAR,   // ...and the dear half of the same toss
+  BOSS_BLK_REMAP_61,        // always $60
+  BOSS_BLK_REMAP_6F,        // always $63
+  BOSS_BLK_REMAP_NONE,      // the chain ran out and the id stood
+  BOSS_BLK_DIED,            // $82:96CB BMI taken: DEC $3A, health not stored
+  BOSS_BLK_NO_DAMAGE,       // $82:96CF BEQ taken: the table entry was zero
+  BOSS_BLK_SURVIVED,        // ...not taken, so $82:96D1 STA $3C
+  BOSS_BLOCK_COUNT,
+} BossCollideBlock;
+
+typedef struct {
+  uint16_t blocks[BOSS_BLOCK_COUNT];
+} BossCollideWork;
+
+bool boss_9660_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
+                               uint16_t arg, ActorHandlerRegs* r,
+                               BossCollideWork* work);
+
 // ---------------------------------------------------------------------------
 // $81:D301  enemy_d301_collide — level 9's, and the copy whose counter has a
 //                               reader
@@ -2033,6 +2109,10 @@ typedef struct {
   ShotCollideWork shot;
   PlayerCollideWork player;
   EnemyCollideWork enemy;
+  BossCollideWork boss;
+  // Both copies of `$81:C4A6` count into this one, because both are priced by
+  // one table — `MonsterCollideBlock` says why.
+  MonsterCollideWork monster;
 } ThreadCallWork;
 
 bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,

@@ -203,12 +203,14 @@ bool boss_stomp_supported(Wram* scratch, const Rom* rom) {
   return actor_notify_box(scratch, rom, BOSS_STOMP_ID, c, &tail, &r);
 }
 
-bool boss_stomp(Wram* w, const Rom* rom, BossStompRegs* out) {
+bool boss_stomp_counted(Wram* w, const Rom* rom, BossStompRegs* out,
+                        ActorNotifyWork* work) {
   const bool c = boss_stomp_box(w);
 
   ThreadCallResult tail = {.c = c};
   ActorNotifyRegs r;
-  const bool ok = actor_notify_box(w, rom, BOSS_STOMP_ID, c, &tail, &r);
+  const bool ok =
+      actor_notify_box_counted(w, rom, BOSS_STOMP_ID, c, &tail, &r, work);
   if (out) {
     out->a = r.a;
     out->x = r.x;
@@ -216,4 +218,9 @@ bool boss_stomp(Wram* w, const Rom* rom, BossStompRegs* out) {
     out->c = r.c;
   }
   return ok;
+}
+
+bool boss_stomp(Wram* w, const Rom* rom, BossStompRegs* out) {
+  ActorNotifyWork ignored;
+  return boss_stomp_counted(w, rom, out, &ignored);
 }

@@ -61,6 +61,17 @@ caller's business. `--sum` counts branches as not taken and says so, which is
 what makes it right for a straight-line run and wrong for anything else: sum the
 pieces between branches, then add the branch you meant.
 
+`MVN`/`MVP` print the price of **one byte moved**, for the same reason and with
+the note to say so: the count is A+1 and A is not in the listing. `--sum` counts
+one. The three program bytes are re-fetched per byte as well, so both columns
+want the same multiplier.
+
+The running total is a running total, not a block price. Subtracting the figure
+at the end of one block from the figure at the end of another is only the cost of
+what lies between them *in the listing* — which is not the same thing as what
+lies between them in execution, and getting that wrong is what charged every
+LZSS match for a literal it never ran.
+
 The check that this is right is not this file. It is `zamn_cosim verify`, which
 compares a model built out of these numbers against what the ROM's own
 instructions really took, on every call, and reports the error. `$80:BC7F`'s
@@ -155,9 +166,18 @@ BRANCHES = {"BPL", "BMI", "BVC", "BVS", "BCC", "BCS", "BNE", "BEQ", "BRA"}
 DP_MODES = {DP, DPX, DPY, IDP, IDPX, IDPY, ILDP, ILDPY}
 
 # Index-register width decides the operand size for these; A's width for the
-# rest. Only matters for immediates, which `dis816` has already sized.
+# rest. Only matters for immediates, which `dis816` has already sized -- and for
+# the four index pushes, which is what `STACK_OPS` means by `None`.
+#
+# `PHX`/`PHY`/`PLX`/`PLY` are on this list because `cpu.c` sizes them from
+# `cpu->xf`, and leaving them off it silently sized them from `m` instead. That
+# is only wrong where the two widths differ, which is why it survived: the game
+# runs 16-bit almost everywhere. `$80:CDAE  PHX` and `$80:CDB4  PLX` are inside
+# `SEP #$20 ... REP #$20` in the LZSS match loop, 8-bit A and 16-bit X, and they
+# were each priced 8 master cycles light -- 16 per byte of every match the
+# decompressor expands, which is 27,376 cycles on level 1's first stream alone.
 INDEX_OPS = {"LDX", "LDY", "STX", "STY", "CPX", "CPY", "INX", "INY", "DEX",
-             "DEY"}
+             "DEY", "PHX", "PHY", "PLX", "PLY"}
 
 
 class Unpriced(Exception):
@@ -247,6 +267,32 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
     if name in ("JMP",):  # ($xxxx) and ($xxxx,X) reach a table this cannot see
         raise Unpriced("%s %s: an indirect jump's table is not in this run" % (name, mode))
 
+    if mode == BLK:
+        # `MVN $7E,$7E`, the block move. One instruction that is paid for once
+        # per byte: `cpu.c` moves a single byte and then rewinds PC by three
+        # rather than looping inside the opcode, so every byte re-fetches all
+        # three program bytes and then reads one, writes one and spends two
+        # internal cycles.
+        #
+        # The count is A+1, and A is not in this listing, so what comes back is
+        # the price of **one byte** -- the note says so, and a model multiplies
+        # it. `--sum` therefore undercounts a run containing one by exactly the
+        # count, which is the same shape of wrongness as its branches and is
+        # documented in the same place.
+        dest, src = val & 0xFF, (val >> 8) & 0xFF
+        for b in (dest, src):
+            if b < 0x40 or 0x80 <= b < 0xC0:
+                # Banks where the price depends on where inside them X and Y
+                # are, and X and Y are not here either. Every block move in this
+                # ROM is $7E to $7E, where it does not.
+                raise Unpriced("MVN through bank $%02X: the address decides" % b)
+        # The three program bytes are re-read per byte moved, so they are
+        # FastROM-sensitive once per byte as well. `main` credits them to the
+        # program column once, which is right for a listing and wrong for a
+        # model, so the note carries the multiplier for both columns.
+        return (c + access(0, src) + access(0, dest) + 2 * IDLE,
+                "x A+1 bytes moved, 3 program bytes each", 0)
+
     # ...everything else reaches memory.
     fast = False  # is the operand a FastROM byte? see the docstring
     if mode == DP:
@@ -273,6 +319,18 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
         # added without an internal cycle.
         at = access(val & 0xFFFF, val >> 16)
         fast = fast_rom(val & 0xFFFF, val >> 16)
+    elif mode == SR:
+        # `ADC $01,S` -- reaching past the return address a `JSL` just pushed to
+        # the argument the caller left under it. `cpu_adrSr` reads the one-byte
+        # offset, spends an internal cycle adding it to S, and lands in bank 0,
+        # where the stack always is. So there is nothing to ask the caller about
+        # and nothing to look up: the address is low WRAM by construction, which
+        # is why this is `SLOW` outright rather than an `access` call.
+        #
+        # No direct-page penalty, and that is the point of the mode: the address
+        # is built from S. See `DP_MODES`.
+        c += IDLE
+        at = SLOW
     elif mode in (ILDP, ILDPY):
         # `LDA [$8A]` and `LDA [$8A],Y`: three bytes of pointer read out of the
         # direct page — always low WRAM, always 8 apiece — and then the operand,

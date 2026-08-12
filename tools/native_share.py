@@ -184,14 +184,35 @@ JUMP_ENTRIES = {
 }
 
 BLOCKED = {
-    0x80CD20: 'written, unregisterable: it outlives a frame',
-    0x80AD2B: 'written, unregisterable: it outlives a frame -- six of them',
-    # ...and the third of them, and the only one that is not a loop over data.
-    # $80:C05A is 16,900 instructions of `STA $2128,X : DEX : DEX : BPL`, about
-    # half a million master cycles, so an NMI lands inside every call: two calls
-    # on boot.zmv and two on level1.zmv, all four interrupted, none checked. The
-    # C is written and `src/cosim/routines.c` says what its shim would be.
-    0x80C05A: 'written, unregisterable: it outlives a frame -- a $2002-byte memset',
+    # $80:CD20 is not on this list any more either, and it is the one that
+    # settles what "data-dependent" was worth as a reason. It sat here saying
+    # the cost could not be priced because the compressed stream picks every
+    # branch -- which is true, and which turned out not to be an obstacle at
+    # all. The port decompresses the same stream, so it takes the same branches,
+    # so it can count them: `LzssWork` in `port/lzss.h` is the tally and
+    # `lzss_cycles` in `cosim/routines.c` prices it, and the total came out
+    # equal to the ROM's own elapsed cycles on all five calls level1.zmv makes,
+    # to the cycle, the largest of them 12.9 million. A price nobody can predict
+    # in advance is not the same thing as a price nobody can compute.
+    # $80:AD2B left this list the round after $80:C05A did, and for the same
+    # reason plus one. The same reason: `verify` cannot check a ten-frame call,
+    # which is a fact about rewind-and-replay and not about substitution, so it
+    # is registered `run_only`. The one more: ten frames is ten NMIs and the
+    # core latches one, so it needed the parked burn -- `CosimBurn` in
+    # `src/cosim/cosim.c` -- before substituting it could be honest about the
+    # interrupts it owes the game. Priced by counting: no branch in it depends
+    # on the data it reads, so the four loop trip counts are the whole cost.
+    # $80:C05A was the third of them and is not on this list any more, which is
+    # worth a note where it sat rather than a silent deletion. It is 16,900
+    # instructions of `STA $2128,X : DEX : DEX : BPL`, 346,734 master cycles, so
+    # an NMI lands inside virtually every call and `verify` abandons all of them
+    # -- two on boot.zmv, two on level1.zmv, none checked. That makes it
+    # unverifiable, and this list read it as unregisterable, which was one
+    # instrument too narrow: an interrupt breaks rewind-and-replay and breaks
+    # nothing about substitution, because under `run` the ROM never executes the
+    # routine at all. It is registered `run_only`, priced by counting rather
+    # than by measurement, and checked by `run`'s per-pass comparison of all
+    # 128 KB instead of per call. See `CosimRoutine::run_only`.
     # ...and the fourth, which is the largest and the one that hurts. $80:CC7C
     # is the sound-data uploader: about 23,800 SPC commands and 104,000
     # instructions per call, some eight frames, and every call is interrupted --
@@ -401,9 +422,17 @@ def load_ported(path='src/cosim/routines.c'):
     disagree with the running game by a factor of two and a half for a reason
     that was entirely bookkeeping. Both numbers are now reported, and the second
     is the one to compare against what `zamn.exe` prints when you quit it.
+
+    There is now a third set, and it is the mirror of the second. A `run_only`
+    routine is **substituted and never checked per call**, because `verify`
+    structurally cannot score it -- an interrupt lands inside the call window.
+    It therefore counts towards both numbers, and the report names it anyway:
+    the substituted figure is real, and what stands behind it is `run`'s
+    per-pass comparison rather than a per-call diff. Saying which is which is
+    the whole reason this function reads flags instead of just addresses.
     """
     src = open(path, encoding='utf-8', errors='replace').read()
-    names, verify_only = {}, set()
+    names, verify_only, run_only = {}, set(), set()
     # A record runs from its `.name` to the next one's, which is what makes a
     # flag anywhere inside it attributable to the right routine. Splitting is
     # more honest here than a single regex with `.*?`: the fields are in no
@@ -417,7 +446,9 @@ def load_ported(path='src/cosim/routines.c'):
         names[addr] = m.group(1)
         if re.search(r'\.verify_only\s*=\s*true', chunk):
             verify_only.add(addr)
-    return names, verify_only
+        if re.search(r'\.run_only\s*=\s*true', chunk):
+            run_only.add(addr)
+    return names, verify_only, run_only
 
 
 def load_symbols(path='tools/symbols/zamn.sym'):
@@ -480,7 +511,7 @@ def load_extra_entries(path):
 
 
 def main(dirs, extra=None):
-    ported, verify_only = load_ported()
+    ported, verify_only, run_only = load_ported()
     symbols = load_symbols()
     extra_entries = load_extra_entries(extra) if extra else set()
 
@@ -668,21 +699,55 @@ def main(dirs, extra=None):
     print('\n  best estimate, every routine weighted by its native call'
           ' fraction: %5.1f%%' % pct(weighted_exec, tot_exec))
 
+    # Only the ones a substituted build still executes. A `verify_only` routine
+    # whose every caller is itself substituted never runs at all, so it costs
+    # the substituted share nothing -- `vo_exec` has always been right about
+    # that, and the list under it used to name them anyway. The two LZSS leaves
+    # are what made the difference visible: they are 2.1% of the corpus, they
+    # are `verify_only` and always will be, and the round that registered
+    # `$80:CD20` above them took every one of their 1,071,108 calls out of a
+    # substituted run without changing a line about either.
+    vo_still_run = [a for a in sorted(verify_only)
+                    if (off := snes_to_rom(a)) is not None
+                    and off not in run_native]
     if vo_exec:
         print('\n  ...of which %5.1f%% is in %d verify_only routine(s) and what'
-              ' they subsume:' % (pct(vo_exec, tot_exec), len(verify_only)))
-        for a in sorted(verify_only):
+              ' they subsume:' % (pct(vo_exec, tot_exec), len(vo_still_run)))
+        for a in vo_still_run:
             off = snes_to_rom(a)
-            if off is None:
-                continue
             print('    %-34s %12s' % (label(off),
                                       '{:,}'.format(exec_by_routine.get(off, 0))))
+        subsumed_vo = len(verify_only) - len(vo_still_run)
+        if subsumed_vo:
+            print('    (%d more written and never substituted, and never'
+                  ' reached either:\n     every caller of each is itself'
+                  ' substituted, so they cost this nothing)' % subsumed_vo)
         print('  written and checked on every call, and never substituted --'
               ' see\n  CosimRoutine::verify_only. So a build that runs the port'
               ' executes\n  these on the 65816, and the share it reaches is'
               ' lower than the one\n  above by exactly this much:')
         print('\n  dynamic share actually substituted:          %5.1f%%'
               % pct(run_exec, tot_exec))
+
+    # ...and the mirror, which has to be said out loud for the same reason: the
+    # substituted figure above *includes* these, and what stands behind them is
+    # not a per-call diff.
+    ro_exec = sum(v for e, v in exec_by_routine.items()
+                  if rom_to_snes(e) in run_only)
+    if ro_exec:
+        print('\n  ...and %5.1f%% of the substituted figure is in %d run_only'
+              ' routine(s):' % (pct(ro_exec, tot_exec), len(run_only)))
+        for a in sorted(run_only):
+            off = snes_to_rom(a)
+            if off is None:
+                continue
+            print('    %-34s %12s' % (label(off),
+                                      '{:,}'.format(exec_by_routine.get(off, 0))))
+        print('  substituted on every call and never checked on one, because'
+              ' an\n  interrupt lands inside the call window and `verify`'
+              ' abandons it.\n  What stands behind them is `run`\'s comparison'
+              ' of all 128 KB once\n  per scheduler pass -- a claim about a'
+              ' stretch rather than a call.\n  See CosimRoutine::run_only.')
 
     # --- and the part of the denominator that is not work at all -----------
     wait_rows = []

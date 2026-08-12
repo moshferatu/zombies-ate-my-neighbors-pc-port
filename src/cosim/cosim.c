@@ -5,6 +5,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "dma.h"
+
 #include "analysis/movie_apply.h"
 #include "cosim/waits.h"
 #include "port/apu.h"
@@ -42,6 +44,30 @@ typedef struct {
 } CosimCall;
 
 #define COSIM_MAX_DEPTH 8
+
+// A substituted call's cycle budget, and where the CPU sits while it is spent.
+//
+// Burning a budget executes no instructions — `snes_runCycles` drives the PPU,
+// the APU and the timers, and the CPU is driven separately by
+// `snes_runCpuCycle` — so an NMI that falls due inside a burn is not *taken*
+// inside it. `cpu->nmiWanted` is a single bool, so a burn long enough to cross
+// two vblank boundaries silently collapses two of the game's NMIs into one, and
+// a burn of any length hands the handler to the core late.
+//
+// So the budget is spent with the CPU parked on the routine's own entry
+// instruction, in pieces, and stopped the moment an interrupt comes due. The
+// core then takes it from that instruction — which is exactly where the ROM's
+// version of the routine would have been — runs the handler through the normal
+// loop, and `RTI`s back to the entry instruction, where the rest of the budget
+// is spent. Nothing about this is specific to long routines; it is the same
+// code path for a 92-cycle one, which simply never stops early.
+typedef struct {
+  const CosimRoutine* routine;
+  CosimRegs out;   // what to publish when the budget runs out
+  uint32_t entry;  // the instruction the CPU is parked on meanwhile
+  int left;        // cycles still owed
+  int piece;       // how finely to spend them — see cycles_burn_modelled()
+} CosimBurn;
 
 // `thread_yield`, `$80:8353`. Reaching it is how a segment ends; see
 // `docs/threads.md`.
@@ -169,6 +195,11 @@ struct CosimPriv {
   // The port's window onto the APU, held here so it outlives every call that
   // uses it. See the `ApuLog` comment above.
   ApuPorts apu;
+  // Budgets still being spent, innermost last. These nest for the same reason
+  // `stack` does: a burn stops for an interrupt, and the handler can call a
+  // registered routine, whose own budget is spent before the outer one resumes.
+  CosimBurn burn[COSIM_MAX_DEPTH];
+  int burn_depth;
 };
 
 // ---------------------------------------------------------------------------
@@ -510,6 +541,24 @@ static bool hdma_armed(const Snes* snes) {
   return false;
 }
 
+// What a substituted run would have paid for this call, less what it cost. See
+// `CosimStat::budget_residual` — this is the drift, one call at a time.
+static void record_budget(CosimStat* s, const CosimRoutine* r, long actual) {
+  long long resid;
+  if (g_cosim_cost >= 0) {
+    // `actual` carries the refreshes the ROM's own instructions collected; a
+    // burn collects its own, so the whole refreshes in the error are not owed.
+    const long err = actual - g_cosim_cost;
+    const long refresh =
+        err > 0 ? (err / COSIM_REFRESH_CYCLES) * COSIM_REFRESH_CYCLES : 0;
+    resid = -(long long)(err - refresh);
+  } else {
+    resid = (long long)r->cycles - actual;
+  }
+  s->budget_residual += resid;
+  s->budget_calls++;
+}
+
 static void record_model(CosimStat* s, long actual, const CosimRegs* in,
                          bool hdma) {
   if (g_cosim_cost < 0) return;
@@ -580,6 +629,26 @@ static void native_return(Cosim* c, const CosimRoutine* r, const CosimRegs* out)
   cpu->pc = (uint16_t)r->ret_op;
 }
 
+// Advance the machine by a slice of a budget, the way a busy CPU advances it.
+//
+// **`snes_runCycles` on its own is not what the ROM does with its time.** Every
+// access the 65816 makes goes through `snes_cpuRead`/`Write`/`Idle`, and all
+// three call `dma_handleDma` first — which is the *only* place HDMA is ever
+// performed. A burn that skipped it left a hole in the frame where HDMA should
+// have been: `hdmaRunRequested` is a single bool set once per scanline, so a
+// substituted routine spanning 200 lines suppressed 199 of them and the PPU
+// drew a picture the console never would. `lzss_decompress` spans four to
+// seventy-one *frames*.
+//
+// Nothing here says how many cycles it takes; `dma_handleDma` advances the same
+// clock the burn does, exactly as it does under the CPU. The cost of HDMA lands
+// in `cycles_native` alongside the budget, which is where the ROM would have put
+// it too — it is time the game spent and did not choose to spend.
+static void burn_slice(Cosim* c, int cycles) {
+  dma_handleDma(c->snes->dma, cycles);
+  snes_runCycles(c->snes, cycles);
+}
+
 // Burn a substituted routine's cycle budget, and remember that we did.
 //
 // Every cycle counted here is a cycle the 65816 would have spent executing the
@@ -588,7 +657,7 @@ static void native_return(Cosim* c, const CosimRoutine* r, const CosimRegs* out)
 static void cycles_burn(Cosim* c, int cycles) {
   if (cycles <= 0) return;
   uint64_t before = c->snes->cycles;
-  snes_runCycles(c->snes, cycles);
+  burn_slice(c, cycles);
   c->work.cycles_native += c->snes->cycles - before;
 }
 
@@ -610,17 +679,166 @@ static void cycles_burn_modelled(Cosim* c, int cycles) {
   uint64_t before = c->snes->cycles;
   while (cycles > 0) {
     const int piece = cycles < COSIM_BURN_PIECE ? cycles : COSIM_BURN_PIECE;
-    snes_runCycles(c->snes, piece);
+    burn_slice(c, piece);
     cycles -= piece;
   }
   c->work.cycles_native += c->snes->cycles - before;
 }
 
+// Which of the routine's own instructions the core is about to be handed.
+typedef enum {
+  COSIM_TAIL_RETURN,  // native_return: the `RTS`/`RTL` at `ret_op`
+  COSIM_TAIL_YIELD,   // native_yield: the `JSL thread_yield` at `yield_op`
+} CosimTail;
+
+// What that instruction will cost, so the budget can stop short of it.
+//
+// **Substituting does not end when the budget does.** `native_return` and
+// `native_yield` park the program counter on an instruction *belonging to the
+// routine* and let the core execute it, because borrowing the core's stack and
+// bank handling is one fewer thing to get wrong. But that instruction is inside
+// the window `verify` measures: `actual` runs from the entry PC to the caller's
+// return address, so it includes the routine's own `RTS`. Every cost model in
+// `routines.c` is calibrated against that window and is right to be. So a budget
+// spent in full and *then* followed by the real instruction pays for it twice.
+//
+// It went unseen for a long time because an `RTS` here costs exactly 40 cycles,
+// which is a DRAM refresh to the cycle — the one residual `record_model` is
+// built to forgive. An `RTL` costs 42, and that is what finally showed up.
+//
+// The subtraction belongs here rather than in a hundred models each remembering
+// to leave a return out. The costs are not a table copied out of the core; they
+// are the core's own sequence of accesses, priced with the two access times that
+// can apply to a registry entry — every `ret_op` and `yield_op` in the registry
+// is in a ROM bank at $8000 or above, and the stack is always in low WRAM.
+#define COSIM_IDLE_CYCLES 6
+#define COSIM_STACK_CYCLES 8  // bank 0 below $2000, which is where the stack is
+
+static int tail_cycles(const Snes* snes, const CosimRoutine* r, CosimTail tail) {
+  const uint32_t op = tail == COSIM_TAIL_YIELD ? r->yield_op : r->ret_op;
+  // A code fetch, at whichever speed the FastROM bit currently says. Every entry
+  // in the registry is in a ROM bank at $8000 or above, so that is the only case
+  // priced; anything else declines rather than guessing, which leaves the old
+  // double charge in place for it instead of putting a wrong number in silently.
+  if ((op >> 16) < 0x80u || (op & 0xffffu) < 0x8000u) return 0;
+  const int fetch = snes->fastMem ? 6 : 8;
+
+  if (tail == COSIM_TAIL_YIELD) {
+    // `JSL abl` — opcode, two operand bytes, the new bank byte, one idle, and
+    // three stack writes (the old bank and the return address).
+    return 4 * fetch + COSIM_IDLE_CYCLES + 3 * COSIM_STACK_CYCLES;
+  }
+  if (r->ret_kind == COSIM_RTL) {
+    // `RTL` — opcode, two idles, three stack reads.
+    return fetch + 2 * COSIM_IDLE_CYCLES + 3 * COSIM_STACK_CYCLES;
+  }
+  // `RTS` — opcode, two idles, two stack reads, and a third idle after.
+  return fetch + 3 * COSIM_IDLE_CYCLES + 2 * COSIM_STACK_CYCLES;
+}
+
 // The cost of the call that just ran: whatever the shim reported, or the
-// routine's declared constant if it reported nothing.
-static void cycles_burn_call(Cosim* c, const CosimRoutine* r) {
-  if (g_cosim_cost >= 0) cycles_burn_modelled(c, g_cosim_cost);
-  else cycles_burn(c, r->cycles);
+// routine's declared constant if it reported nothing — less the instruction the
+// core is about to execute on the port's behalf. See `tail_cycles`.
+//
+// The two costs differ in more than provenance, which is why they differ in
+// piece size. A reported cost excludes refresh and is spent twelve cycles at a
+// time so the core puts the refreshes back where the clock says they go. A
+// declared mean is what `verify` watched the ROM's own elapsed cycles do,
+// refreshes included, so it is spent whole — chopping it up would add a second
+// set on top of the ones already inside the average. (A mean therefore has the
+// tail's own share of refresh baked in, and the subtraction leaves that behind;
+// it is a fraction of one refresh against an average of thousands of cycles, and
+// smaller than the spread the mean already stands for.)
+static void burn_plan(const Cosim* c, const CosimRoutine* r, CosimTail tail,
+                      int* cycles, int* piece) {
+  *cycles = g_cosim_cost >= 0 ? g_cosim_cost : r->cycles;
+  *cycles -= tail_cycles(c->snes, r, tail);
+  if (*cycles < 0) *cycles = 0;
+  *piece = g_cosim_cost >= 0 ? COSIM_BURN_PIECE : *cycles;
+}
+
+// Spend a whole budget on the spot, without parking the CPU.
+//
+// What a resumable routine's *segments* use, and only they. A segment is bounded
+// by construction — it ends at the `thread_yield` the thread reaches this frame
+// — so at most one interrupt can fall due inside one, which is the case the
+// core's single `nmiWanted` latch already handles. Parking a segment would mean
+// deferring the choice between suspending and returning as well, and there is no
+// question about NMI counting to buy with it.
+static void cycles_burn_now(Cosim* c, const CosimRoutine* r, CosimTail tail) {
+  int cycles, piece;
+  burn_plan(c, r, tail, &cycles, &piece);
+  if (piece == COSIM_BURN_PIECE) cycles_burn_modelled(c, cycles);
+  else cycles_burn(c, cycles);
+}
+
+// Has an interrupt fallen due since the CPU last looked?
+//
+// `cpu->intWanted` is a latch, and only `cpu_checkInt` refreshes it — from
+// inside an executing instruction, which during a burn is exactly what is not
+// happening. So the condition is recomputed here from the two inputs it is made
+// of, rather than read out of a flag that is stale by construction.
+static bool interrupt_due(const Snes* snes) {
+  const Cpu* cpu = snes->cpu;
+  return cpu->nmiWanted || (cpu->irqWanted && !cpu->i);
+}
+
+// Spend as much of the innermost budget as can be spent without standing in the
+// way of an interrupt. True when the budget is gone and the call has returned.
+//
+// The `intWanted` store is the one liberty this takes with the core, and it is
+// the honest one: the ROM's version of this routine was executing instructions,
+// and one of them would have run `cpu_checkInt` and latched exactly this. Every
+// other part of taking the interrupt — the pushes, the vector, the handler, the
+// `RTI` — is the core's own, unmodelled.
+static bool burn_spend(Cosim* c) {
+  CosimBurn* b = &c->priv->burn[c->priv->burn_depth - 1];
+  const uint64_t before = c->snes->cycles;
+  while (b->left > 0 && !interrupt_due(c->snes)) {
+    const int piece = b->left < b->piece ? b->left : b->piece;
+    burn_slice(c, piece);
+    b->left -= piece;
+  }
+  c->work.cycles_native += c->snes->cycles - before;
+
+  if (b->left > 0) {
+    c->work.burns_parked++;
+    c->snes->cpu->intWanted = true;
+    snes_runCpuCycle(c->snes);  // the core takes it, from the entry instruction
+    return false;
+  }
+  native_return(c, b->routine, &b->out);
+  c->priv->burn_depth--;
+  return true;
+}
+
+// Owe a substituted call its cycles, and start paying.
+//
+// Nothing is deferred in the common case: a budget that no interrupt interrupts
+// is spent here in full and the routine returns before this does, which is what
+// it did before there was a stack of these at all.
+static void burn_begin(Cosim* c, const CosimRoutine* r, const CosimRegs* out) {
+  if (c->priv->burn_depth >= COSIM_MAX_DEPTH) {
+    // Nowhere to park it. Spending it immediately is the old behaviour and is
+    // wrong only in the way the old behaviour was wrong, which beats losing the
+    // cycles altogether.
+    cycles_burn_now(c, r, COSIM_TAIL_RETURN);
+    native_return(c, r, out);
+    return;
+  }
+  CosimBurn* b = &c->priv->burn[c->priv->burn_depth++];
+  b->routine = r;
+  b->out = *out;
+  b->entry = r->entry;
+  burn_plan(c, r, COSIM_TAIL_RETURN, &b->left, &b->piece);
+  burn_spend(c);
+}
+
+// Is the CPU parked on a substituted routine's entry instruction, waiting out
+// the rest of its budget? See `CosimBurn`.
+static bool burn_parked(const Cosim* c) {
+  return c->priv->burn_depth > 0 && at_instruction(c->snes) &&
+         cpu_pc24(c->snes) == c->priv->burn[c->priv->burn_depth - 1].entry;
 }
 
 // ...and the mirror image: suspend by jumping to the routine's own
@@ -675,7 +893,12 @@ static void run_native_segment(Cosim* c, CosimCall* call) {
   // of a scanline. Those cycles are the machine's, so they are the port's here:
   // whatever the burn actually advanced the core by is what the ROM's own
   // instructions no longer have to. See `CosimWork`.
-  cycles_burn_call(c, r);
+  // The tail differs by how the segment ends, and `step` already says which:
+  // a suspension hands the core a `JSL thread_yield`, a return hands it an
+  // `RTS`/`RTL`, and both are inside the window the segment's cost was measured
+  // over. See `tail_cycles`.
+  cycles_burn_now(c, r,
+                  step == PORT_YIELDED ? COSIM_TAIL_YIELD : COSIM_TAIL_RETURN);
 
   if (step == PORT_YIELDED) {
     s->yields++;
@@ -747,9 +970,10 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
   g_cosim_cost = -1;
   r->run((Wram*)snes->ram, &c->rom, &in, &out);
 
-  // Stand in for the work the ROM's instructions would have done.
-  cycles_burn_call(c, r);
-  native_return(c, r, &out);
+  // Stand in for the work the ROM's instructions would have done, and return
+  // when it is paid for. Usually that is here and now; a budget an interrupt
+  // falls due inside is parked and finished by the loop. See `CosimBurn`.
+  burn_begin(c, r, &out);
 
   s->calls++;
   s->checked++;
@@ -821,6 +1045,7 @@ static void record_segment(Cosim* c, CosimCall* call, CosimStat* s) {
   // Sampled at both ends, because a channel armed at any point in the window
   // will have transferred somewhere inside it.
   record_model(s, actual, &call->in, call->hdma || hdma_armed(c->snes));
+  record_budget(s, c->stats[call->index].routine, actual);
   int waived = (int)(call->entry_sp - call->min_sp);
   if (waived > s->stack_waived) s->stack_waived = waived;
 }
@@ -976,6 +1201,15 @@ static void cosim_step_inner(Cosim* c) {
       call->min_sp = snes->cpu->sp;
   }
 
+  // A substituted call with cycles still owed, and the CPU parked on its entry
+  // instruction until they are paid. Checked before anything else, because that
+  // instruction is a registered entry point and every other test below would
+  // read the CPU sitting on it as a fresh call. See `CosimBurn`.
+  if (burn_parked(c)) {
+    burn_spend(c);
+    return;  // either the call returned or the core took an interrupt
+  }
+
   if (at_instruction(snes)) {
     uint32_t pc = cpu_pc24(snes);
 
@@ -1032,6 +1266,11 @@ static void cosim_step_inner(Cosim* c) {
       // is counted, because nothing was offered: the report says `verify only`
       // against a row of zeroes rather than pretending this was a decline.
       if (c->mode == COSIM_NATIVE && r->verify_only) break;
+      // ...and the mirror. `verify` cannot score this one — an interrupt lands
+      // inside the call window — so it does not intercept it either, rather
+      // than counting a call it is going to abandon. See
+      // `CosimRoutine::run_only`.
+      if (c->mode == COSIM_VERIFY && r->run_only) break;
       // The port has said it cannot handle this one. Step aside entirely and
       // let the ROM's own instructions run — in both modes, so that `verify`
       // and `run` decline exactly the same calls.
@@ -1120,7 +1359,11 @@ void cosim_step(Cosim* c) {
   uint32_t pc = 0;
   bool counted_call = false;
   bool spinning = false;
-  if (!halted && at_instruction(snes)) {
+  // A parked burn is excluded: the CPU is sitting on a substituted routine's
+  // entry instruction without executing it, and if that instruction happens to
+  // be a `JSR` this would count one call per interrupt it waits out. The call
+  // was already counted when the ROM's caller reached it.
+  if (!halted && !burn_parked(c) && at_instruction(snes)) {
     pc = cpu_pc24(snes);
     spinning = cosim_is_wait_site(pc);
     switch (opcode_at(c, pc)) {
@@ -1225,6 +1468,77 @@ static void cost_model_report(const Cosim* c) {
   }
 }
 
+// Who is responsible for the drift, and by how much.
+//
+// `cost_model_report` above says whether each model is *right*. This says what
+// being slightly wrong is worth: the signed total a substituted run would have
+// over- or under-paid for the calls this movie made, biggest first. The two
+// disagree about what matters on purpose — six cycles a call is not a wrong
+// model, and on `thread_tick_waits` it is 14,000 cycles a movie.
+//
+// It is printed under `verify`, because `verify` is where both numbers exist:
+// the ROM really executes the routine and the budget is computed alongside it.
+// A `run` never sees what it did not spend.
+#define COSIM_DRIFT_ROWS 12
+
+static void drift_report(const Cosim* c) {
+  int order[COSIM_MAX_ROUTINES];
+  int n = 0;
+  long long total = 0;
+  for (int i = 0; i < c->stat_count; i++) {
+    if (!cosim_mask_get(&c->enabled, i)) continue;
+    const CosimStat* s = &c->stats[i];
+    if (s->budget_calls == 0) continue;
+    // A `verify_only` routine is checked here and never substituted there, so
+    // its budget is never spent and its residual is not part of anyone's drift.
+    // It is still worth a row — `apu_send`'s is the largest number in the table
+    // and reads as the biggest problem in the port until you notice the tag.
+    if (!s->routine->verify_only) total += s->budget_residual;
+    if (s->budget_residual == 0) continue;
+    order[n++] = i;
+  }
+  if (n == 0) return;
+
+  // Insertion sort by size of debt: a dozen rows out of a hundred-odd entries,
+  // and the array is already nearly ordered by how often routines are called.
+  for (int i = 1; i < n; i++) {
+    const int v = order[i];
+    long long key = llabs(c->stats[v].budget_residual);
+    int j = i - 1;
+    while (j >= 0 && llabs(c->stats[order[j]].budget_residual) < key) {
+      order[j + 1] = order[j];
+      j--;
+    }
+    order[j + 1] = v;
+  }
+
+  printf("\nbudget drift — what a substituted run would have paid for these\n"
+         "calls, less what the ROM spent on them. Positive is over-payment: a\n"
+         "native core reaching the same point in the game later than a stock\n"
+         "one, which is what makes two timelines part. Refresh is taken off a\n"
+         "reported cost first, so an exact model scores zero — see\n"
+         "record_budget().\n\n");
+  printf("  %-20s %14s %10s %12s\n", "routine", "cycles", "calls", "per call");
+  for (int i = 0; i < n && i < COSIM_DRIFT_ROWS; i++) {
+    const CosimStat* s = &c->stats[order[i]];
+    printf("  %-20s %+14lld %10ld %+12.1f%s\n", s->routine->name,
+           s->budget_residual, s->budget_calls,
+           (double)s->budget_residual / (double)s->budget_calls,
+           s->routine->verify_only ? "   (verify only: never paid)" : "");
+  }
+  int run_only = 0;
+  for (int i = 0; i < c->stat_count; i++)
+    if (cosim_mask_get(&c->enabled, i) && c->stats[i].routine->run_only) run_only++;
+
+  printf("  %-20s %+14lld %10s %12s\n", "--- substituted", total, "", "");
+  printf("\n  %+.2f frames over the movie, over the routines a `run` really\n"
+         "  pays for. %d `run_only` routine%s missing from it and cannot be\n"
+         "  added: `verify` never checks one, so there is no `actual` to\n"
+         "  subtract. Their models are exact by direct measurement instead.\n",
+         (double)total / COSIM_FRAME_CYCLES, run_only,
+         run_only == 1 ? " is" : "s are");
+}
+
 int cosim_report(const Cosim* c) {
   printf("\n%-20s %8s %7s %8s %8s %6s %6s %6s  %-20s %s\n", "routine", "calls",
          "yields", "checked", "passed", "int.", "decl.", "stack", "ROM cycles",
@@ -1246,6 +1560,8 @@ int cosim_report(const Cosim* c) {
     if (s->failed) { verdict = "FAIL"; failures++; }
     else if (c->mode == COSIM_NATIVE && s->routine->verify_only)
       verdict = "verify only";
+    else if (c->mode == COSIM_VERIFY && s->routine->run_only)
+      verdict = "run only";
     else if (s->checked > 0) verdict = "OK";
     else if (s->declined > 0) verdict = "all declined";
     else verdict = "not reached";
@@ -1260,6 +1576,7 @@ int cosim_report(const Cosim* c) {
   }
 
   cost_model_report(c);
+  if (c->mode == COSIM_VERIFY) drift_report(c);
   return failures;
 }
 
@@ -1354,26 +1671,43 @@ void cosim_share_report(const Cosim* c) {
            fmt_u64(s.calls_declined));
   else
     printf(". Nothing was declined.\n");
+  if (c->work.burns_parked)
+    printf("\n  %s substituted call%s had an interrupt fall due part-way through\n"
+           "  the cycle budget. Each was stopped there, the core took it from the\n"
+           "  routine's own entry instruction and ran the handler, and the rest of\n"
+           "  the budget was spent after the RTI — so a call longer than a frame\n"
+           "  owes the game every NMI it spans, not one. See `CosimBurn`.\n",
+           fmt_u64(c->work.burns_parked), c->work.burns_parked == 1 ? "" : "s");
   printf("\n  Neither counts a thread body or a vblank job as a call: the\n"
          "  scheduler and the vblank dispatcher reach those by RTL, so there is\n"
          "  no call to intercept and none to count. Their cycles are in the work\n"
          "  denominator, where they belong.\n");
-  // How strong the work figure is, stated rather than left to be assumed. The
-  // numerator is a per-routine mean standing in for a distribution, so it is
-  // the one number here that is an estimate — and the size of the error is
-  // measurable, by running the same movie `--stock` and comparing the work
-  // denominators. On level 1 at 2,400 PPU frames that is 273.1M stock against
-  // 282.3M substituted: the budgets over-pay for what they displaced by about
-  // 16%, so this row reads high by roughly that much and not by a factor.
+  // How strong the work figure is, stated rather than left to be assumed, and
+  // it is a good deal stronger than it was. A routine whose shim calls
+  // `cosim_cost` is priced per call from what that call actually did, so its
+  // contribution to the numerator is not an estimate at all; only the rest fall
+  // back to `CosimRoutine::cycles`, a mean standing in for a distribution.
+  //
+  // The size of what is left is measurable, by running the same movie with
+  // `-r none` and comparing the work denominators — the control substitutes
+  // nothing, so its denominator is what the game costs when nothing is
+  // displaced. On `boot.zmv`, which is the honest one to use because it never
+  // parts and so both sides play the same game all the way through, that is
+  // 298,930,120 against 300,723,564: the budgets over-pay by 1.79M, which is
+  // **0.99% of the numerator** and 98 cycles on each of the 18,285 substituted
+  // calls. On `level1.zmv` it is 461,037,142 against 461,307,102, or 0.10%.
+  //
+  // This paragraph used to say 16%, measured when almost nothing priced itself.
   //
   // Note that `zamn.exe --frames N` and `zamn_cosim run -f N` do not measure
   // the same stretch of game — N PPU frames against N scheduler passes after
   // boot — so their percentages differ for that reason before any other, and
   // only runs of the same kind are worth putting side by side.
-  printf("\n  The work numerator is the measured *mean* cost of each routine,\n"
-         "  so it stands in for a distribution and the row is an estimate. Run\n"
-         "  the same input --stock and compare the two denominators to see by\n"
-         "  how much: they should differ by about the budget, and do.\n");
+  printf("\n  The work numerator is what each call's cost model reported, and a\n"
+         "  per-routine mean only where a shim reported nothing. Run the same\n"
+         "  input with -r none and compare the two denominators to see what the\n"
+         "  remaining slack is: on boot.zmv it is 0.99%%, and it was 16%% when\n"
+         "  the means were all there was.\n");
   printf("\n  `tools/native_share.py` measures the same quantity offline from a\n"
          "  traced profile — instructions and a call-graph closure rather than\n"
          "  cycles at the seam, independent all the way down. Its\n"
@@ -1682,6 +2016,17 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
   // The pass at which the two cores stopped being on the same frame, after
   // which nothing is comparable. See the loop.
   long parted_at = -1;
+  // ...and how far apart their clocks had drifted when it happened.
+  //
+  // The parting is what this number does once it is large enough, so measuring
+  // it turns the end of the comparison from an event into a quantity: a run that
+  // stops at pass 328 with 300,000 cycles of drift has a cost model that is off
+  // by most of a frame, and one that stops there with 900 has a pass that landed
+  // on a boundary. Those want opposite work, and until now the report could not
+  // tell them apart.
+  long long drift = 0, drift_prev = 0, drift_at_parting = 0, drift_worst = 0;
+  long long drift_jump = 0;
+  long drift_jump_pass = -1;
   uint32_t worst = 0, last_differ = 0, worst_unexplained = 0;
   uint32_t worst_unexplained_at[8];
   // The values as they stood *at that pass*. Reading them back out of the cores
@@ -1698,6 +2043,21 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
     bool nat_ok = side_pass(&nat, 4000000);
     if (!ref_ok || !nat_ok) { unsynced++; continue; }
 
+    // Positive means the substituted core has spent more time reaching the same
+    // point in the game — the budgets over-paying — and negative means the
+    // opposite. Sampled at the `WAI`, so both sides are at the same instruction
+    // of the same pass and the difference is the clocks alone.
+    drift = (long long)nat.snes->cycles - (long long)ref.snes->cycles;
+    if (parted_at < 0) {
+      const long long step = drift - drift_prev;
+      if (step > drift_jump) {
+        drift_jump = step;
+        drift_jump_pass = pass;
+      }
+      if (llabs(drift) > llabs(drift_worst)) drift_worst = drift;
+    }
+    drift_prev = drift;
+
     // Where this run stops being able to prove anything, and why it is a
     // property of the method rather than a bug in the port.
     //
@@ -1709,6 +2069,20 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
     // so sooner or later one side overruns a pass the other does not, and from
     // then on the two cores are one frame apart.
     //
+    // **It is decided by tens of cycles, and that is measured rather than
+    // supposed.** Substituting `lzss_decompress` alone reproduces 390,222 of
+    // level 1's 395,322 cycles of drift, all of it arriving in the single pass
+    // that parts — and the five calls it made took 1,692,780 / 6,476,638 /
+    // 10,031,990 / 13,661,234 / 26,981,846 cycles against the ROM's own
+    // 1,692,786 / 6,476,668 / 10,032,038 / 13,661,174 / 26,981,744. Six cycles
+    // out on the first and a hundred and two on the last, on windows of up to
+    // twenty-seven million. A pass sitting on the vblank boundary was decided by
+    // sixty, and the frame it then had to wait for is the whole of the drift.
+    //
+    // So the window this comparison gets is not a cost-model problem and no
+    // achievable model accuracy buys it back. That is worth knowing, because
+    // improving the models was the plan.
+    //
     // Nothing can be realigned. Aligning on `$16` costs the lagging side an
     // extra scheduler pass, which puts `sched_tick` out by one instead: the two
     // clocks genuinely disagree, because one core really did run a pass in two
@@ -1717,10 +2091,18 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
     // between a console that dropped a frame and one that did not.
     //
     // So the comparison stops here and says so. Everything before this point is
-    // a real result; everything after would be frame N against frame N+1, and
-    // reporting that as thousands of differing bytes is what this harness did
-    // for months. Both cores keep running, because the call counts, coverage
-    // and census below are still worth having.
+    // a real result; everything after would be frame N against frame N+1. Both
+    // cores keep running, because the call counts, coverage and census below are
+    // still worth having.
+    //
+    // Comparing anyway, once, to see what it looks like now that the models are
+    // what they are: 162 bytes at the parting and up to 255 later, against 16
+    // before it. Not thousands, and recognisably a frame rather than a fault —
+    // `$16` off by one, and the counters downstream of it off by one with it.
+    // But it is a real divergence, not an artefact: an extra NMI means an extra
+    // `thread_tick_waits`, so a sleeping thread wakes a tick early and the game
+    // goes on differing from there. There is no filter that keeps the frame out
+    // and lets a wrong answer through, which is what would be needed.
     // Once parted, permanently: the counters can come back level later if the
     // other side overruns too, and comparing then would be worse than not
     // comparing at all — the frame numbers would agree while the game states
@@ -1729,11 +2111,17 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
     if (parted_at >= 0 || frame_ref != frame_nat) {
       if (parted_at < 0) {
         parted_at = pass;
+        drift_at_parting = drift;
         printf("\nThe two timelines part at pass %ld: stock is on frame %u and\n"
                "native on frame %u, so one of them overran vblank on a pass the\n"
                "other did not. Nothing past here is comparable — see the note in\n"
                "cosim_lockstep(). %ld passes were compared before it.\n",
                pass, frame_ref, frame_nat, compared);
+        printf("The two clocks were %+lld cycles apart there — %.2f of a frame —\n"
+               "having reached %+lld at their furthest, and the largest single\n"
+               "pass added %lld at pass %ld.\n",
+               drift_at_parting, (double)drift_at_parting / COSIM_FRAME_CYCLES, drift_worst,
+               drift_jump, drift_jump_pass);
       }
       continue;
     }

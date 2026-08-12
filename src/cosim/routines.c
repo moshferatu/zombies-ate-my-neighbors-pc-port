@@ -992,31 +992,158 @@ static void shim_nearest_player_dist(Wram* w, const Rom* rom,
 // $80:C05A  sprite_cache_init — A:Y is the frame array, and DB is the answer
 // ---------------------------------------------------------------------------
 
-// **Written, and not in the table below.** `$80:C05A` is 16,900 instructions of
-// two stores in a loop — about half a million master cycles, which is a frame
-// and a half — so an NMI lands inside every single call and the harness
-// abandons all of them: two calls on `boot.zmv`, two on `level1.zmv`, zero
-// checked, twice interrupted. It is the third routine in the port to be
-// unregisterable for that reason rather than for want of anyone writing it,
-// after `$80:CD20 lzss_decompress` and `$80:AD2B blockmap_expand`, and it is
-// the only one of the three that is not a loop over data: it is a `memset`.
+// **The first routine here that `verify` cannot score and `run` can.**
+// `$80:C05A` is 16,900 instructions of two stores in a loop — 346,734 master
+// cycles, which is 0.97 of a frame — so an NMI lands inside very nearly every
+// call and the per-call harness abandons all of them: two calls on `boot.zmv`,
+// two on `level1.zmv`, zero checked, twice interrupted. For three rounds that
+// was read as "unregisterable", and `tools/native_share.py` still carried the
+// address in `BLOCKED` beside `$80:CD20 lzss_decompress` and `$80:AD2B
+// blockmap_expand`.
 //
-// There is no shim here, and a dead one would only be a warning to suppress.
-// The port function is `sprite_cache_init` in `port/sprite_cache.c`, its
-// contract is written out in the header, and the shim it wants is four lines:
-// `in->a` and `in->y` are the frame array, `in->db` is what N and Z come back
-// as, and A/X/Y are constants. `tools/native_share.py` lists the address in
-// `BLOCKED` with the same reason, so the share it earns is zero on both sides
-// of the report rather than zero on one.
+// That reading was one instrument too narrow. What an interrupt breaks is the
+// *rewind-and-replay* claim: the ROM's NMI handler wrote WRAM inside the call
+// window and the port, which models the routine and not the handler, cannot
+// account for it. It breaks nothing about substitution. Under `run` the ROM
+// never executes these instructions at all, so there is no window for an
+// interrupt to land inside — the core sits at the instruction after the `JSL`
+// while the budget is burned, and if an NMI falls due during it the core takes
+// it exactly as it would have anyway.
 //
-// It would also have been the first routine here whose *only* claimed flags
-// come from `in->db`. That field was added for `$80:8480 thread_call_handler`,
-// whose exit `PLB` restores its caller's bank; this is the same instruction
-// used the same way, two banks apart.
+// So this is the first entry marked `run_only`, and it is the mirror of
+// `verify_only` in both mechanism and honesty: that flag means *checked on
+// every call and never substituted*, this one means *substituted and never
+// checked per call*. What checks it instead is `run` itself, which compares all
+// 128 KB of WRAM once per scheduler pass — a claim about a stretch rather than
+// about a call, which is the claim Phase 4 has to be built on. See
+// `CosimRoutine::run_only`.
+//
+// **Its cycle figure is a count rather than a mean**, which is the other half of
+// what makes it safe to substitute unmeasured. Every other entry's `.cycles` is
+// an average `verify` observed; there is no average to observe here, and there
+// does not need to be one — the routine has no data dependence and no branch
+// that is not the loop, so `tools/cycles816.py` prices it exactly:
+//
+//     prologue $C05A..$C06A                                       184
+//     loop 1   4,097 x (STA abs,X + DEX + DEX) + 4,096 taken BPL  335,948
+//     LDX #$00FE                                                   18
+//     loop 2   128 x the same + 127 taken BPL                   10,490
+//     epilogue PLB : PLB : RTL                                      94
+//
+// `BPL` and not `BNE` is why the counts are 4,097 and 128 rather than 4,096 and
+// 127 — the same off-by-one that makes the routine write `$2002` bytes, which
+// `port/sprite_cache.h` records from the other direction.
+//
+// **0.97 of a frame is a safety margin and not a coincidence to ignore.** The
+// core takes at most one pending interrupt when it resumes, so a substituted
+// call that spans more than one NMI boundary would leave one NMI un-taken that
+// the ROM took — a real divergence, and the thing that makes "outlives a frame"
+// the right worry even under `run`. At 346,734 the call fits inside a frame and
+// can straddle at most one boundary, so it cannot. With FastROM *off* the same
+// routine costs 405,930, which can straddle two. Measured, `run` burns 357,194
+// master cycles a call including the refreshes the core adds, which is 346,734
+// plus 261 of them — so `$420D` is set on every call any movie makes, and the
+// margin is real rather than assumed. If an input ever reaches this routine
+// with FastROM off, this is the line that says what to expect.
+//
+// It is also the first routine here whose *only* claimed flags come from
+// `in->db`. That field was added for `$80:8480 thread_call_handler`, whose exit
+// `PLB` restores its caller's bank; this is the same instruction used the same
+// way, two banks apart.
+static const CosimRun SPRITE_CACHE_INIT_COST = {184 + 335948 + 18 + 10490 + 94,
+                                                29598};
+
+static void shim_sprite_cache_init(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out) {
+  (void)rom;  // no table, no ROM read
+  SpriteCacheInitRegs r;
+  sprite_cache_init(w, in->a, in->y, in->db, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = r.n;
+  out->z = r.z;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+  cosim_cost(cosim_run_cycles(&SPRITE_CACHE_INIT_COST, in->fastrom));
+}
 
 // ---------------------------------------------------------------------------
 // $80:9570  wave_hdma_build — everything is on the wobble thread's page
 // ---------------------------------------------------------------------------
+
+// **Three of the sixteen blocks price a routine that has a registry entry of
+// its own.** The far call at `$80:959A` costs the trampoline `$80:9C8C JSR :
+// RTL` plus whichever arm of `$80:9C90 sin_deg` the table byte sent it down,
+// plus the caller's own `BIT #$8000 : BEQ : ORA #$FF00`, which is decided by
+// the same bit as the arm. `sin_deg` is in the registry two entries up and that
+// is not a duplicate: when `wave_hdma_build` is substituted its body never
+// runs, so the `JSL` never happens and the shim that would have priced those
+// 223 calls is never entered. One entry is what `verify` checks `sin_deg`
+// with; this is what `run` pays for it.
+//
+// The two agree, which is the check. `sin_deg`'s own row measures a floor of
+// **240** cycles over 2,676 calls, and 118 + 48 + 74 — the shared prologue, the
+// sentinel arm, `PLX : RTS` — is 240 exactly. Its call count is the other
+// check: **2,676 is 12 x 223**, the twelve calls a level movie makes here
+// against the 223 iterations of a full-length table, and it was measured long
+// before anything counted the loop.
+//
+// The three arms differ by 36 cycles and the negative one is taken on roughly
+// half the circle, so the difference is real money — about 2,700 cycles a
+// full-length call, which is 1.7% of it and forty times the spread the twelve
+// level-movie calls measure between them.
+// In the three `SIN` rows, 82 is the trampoline's `JSR $9C90 : RTL`; 118 is
+// `PHX : SEP : TAX : LDA $839431,X : CMP : REP` — the `LDA` is a long-indexed
+// read out of bank $83, so with FastROM on it costs 30 and the data byte is one
+// of the run's fetched bytes; 74 is `PLX : RTS`; and the 36 or 48 on the end is
+// the caller's. None of it touches the direct page: `sin_deg` is written to be
+// callable from anywhere and it is.
+static const CosimRun WAVE_COST[WAVE_BLOCK_COUNT] = {
+    // $80:9570 LDA $70 : BMI taken : $95DA RTS.
+    [WAVE_BLK_OVER] = {28 + 18 + 40, 5, 1},
+    // ...BMI not taken, through `LDA #$00F8 : STA $7E8000,X : INX`. The header
+    // store is sixteen bits into bank $7E, which is 8 a byte and never fast.
+    [WAVE_BLK_PROLOGUE] = {244, 26, 3},
+    // ...with `$957C LDA #$0000` in it, which is the phase's yearly wrap.
+    [WAVE_BLK_PROLOGUE_WRAP] = {256, 29, 3},
+    // $80:958D INY x4 : CPY #$0168 : BCC taken.
+    [WAVE_BLK_HEAD] = {48 + 18 + 18, 9},
+    // ...not taken : LDY #$0000. Twice or three times a call, four degrees of
+    // arc at a time.
+    [WAVE_BLK_HEAD_WRAP] = {48 + 18 + 12 + 18, 12},
+    // $80:9599 TYA : JSL $809C8C ... $95A6 STA $7E8000,X : INX : INX : CPX
+    // #$00F1 — everything in the body that does not depend on an outcome.
+    [WAVE_BLK_ITER] = {12 + 54 + 40 + 12 + 12 + 18, 14},
+    // $80:9C9C BNE not taken : LDA #$0080 : BRA taken, and bit 15 clear, so the
+    // caller's `BEQ` skips its `ORA`: + 36.
+    [WAVE_BLK_SIN_SENTINEL] = {82 + 118 + 12 + 18 + 18 + 74 + 36, 31},
+    // ...taken : BIT #$0080 : BEQ not taken : ORA #$FF00 : BRA taken. The one
+    // arm that sets bit 15, so the caller's dead `ORA` runs too: + 48.
+    [WAVE_BLK_SIN_NEGATIVE] = {82 + 118 + 18 + 18 + 12 + 18 + 18 + 74 + 48, 39},
+    // ...and `BEQ` taken : AND #$00FF.
+    [WAVE_BLK_SIN_POSITIVE] = {82 + 118 + 18 + 18 + 18 + 18 + 74 + 36, 34},
+    // $80:95AF BNE taken: 222 of the 223 iterations of a full-length call.
+    [WAVE_BLK_HEADER_SKIP] = {18, 2},
+    // ...not taken : PHA : LDA #$F800 : STA $7E7FFF,X : INX : PLA. Once.
+    [WAVE_BLK_HEADER_FIXUP] = {12 + 28 + 18 + 40 + 12 + 34, 12},
+    // $80:95BB CPX $70 : BCC taken / not taken.
+    [WAVE_BLK_STEP] = {28 + 18, 4, 1},
+    [WAVE_BLK_EXIT] = {28 + 12, 4, 1},
+    // $80:95BF PHA : LDA #$0000 : STA $7E8000,X : PLA : CMP #$0000 — 138 over
+    // 12 bytes — and then one of three tails, each ending on the shared `RTS`.
+    [WAVE_BLK_OFF_AXIS] = {138 + 18 + 40, 15},
+    [WAVE_BLK_HOLD] = {138 + 12 + 28 + 12 + 12 + 28 + 18 + 40, 24, 2},
+    // `DEC $70` twice, and a direct-page read-modify-write is 50 apiece.
+    [WAVE_BLK_RETRACT] = {138 + 12 + 28 + 18 + 50 + 50 + 40, 23, 3},
+};
+
+static int wave_cycles(const WaveWork* k, bool fast, bool dp_unaligned) {
+  int cycles = 0;
+  for (int i = 0; i < WAVE_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles_dp(&WAVE_COST[i], fast,
+                                                 dp_unaligned);
+  return cycles;
+}
 
 // Carry is an input for the same reason `enemy_collide`'s is: one exit does not
 // touch it. Here it is the first instruction's `BMI`, which is the exit taken
@@ -1025,7 +1152,8 @@ static void shim_nearest_player_dist(Wram* w, const Rom* rom,
 static void shim_wave_hdma_build(Wram* w, const Rom* rom, const CosimRegs* in,
                                  CosimRegs* out) {
   WaveRegs r;
-  wave_hdma_build(w, rom, in->d, in->x, in->y, in->c, &r);
+  WaveWork work;
+  wave_hdma_build_counted(w, rom, in->d, in->x, in->y, in->c, &r, &work);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -1033,6 +1161,7 @@ static void shim_wave_hdma_build(Wram* w, const Rom* rom, const CosimRegs* in,
   out->z = r.z;
   out->c = r.c;
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  cosim_cost(wave_cycles(&work, in->fastrom, (in->d & 0xff) != 0));
 }
 
 // ---------------------------------------------------------------------------
@@ -1244,11 +1373,64 @@ static bool guard_monster_collide(Wram* scratch, const Rom* rom,
   return false;
 }
 
+// The five exits that end inside `$81:C4A6`, indexed by `MonsterCollideBlock`,
+// and the same table prices `$81:C440` — see the enum for the three bytes that
+// differ and why none of them is on a priced path.
+//
+// **The last block is a cross-check and it is an exact one.** This routine is
+// `$81:8888` on a different page, and its zero-damage exit prices to
+// `384` over `43` bytes with `3` direct-page instructions — which is
+// `ENEMY_BLK_NO_DAMAGE`, digit for digit, arrived at from a listing eleven
+// kilobytes away and never compared until it was written down. Neither has ever
+// been measured: no shot in the game carries a damage-table entry of zero, so
+// both are transcription and both say the same thing.
+static const CosimRun MONSTER_COST[MONSTER_BLOCK_COUNT] = {
+    // $81:C4A6 CMP #$005C : BCS not taken : CMP #$000C : BCC taken, into the
+    // shared `CLC : RTL` at `$81:C50A`.
+    [MON_BLK_IGNORE_LOW] = {18 + 12 + 18 + 18 + 12 + 42, 12},
+    // ...taken instead, then `CMP #$0033 : BCC` not taken, which falls into a
+    // *different* `CLC : RTL` — the one at `$81:C4B5`.
+    [MON_BLK_IGNORE_HIGH] = {18 + 12 + 18 + 12 + 18 + 12 + 12 + 42, 17},
+    // ...the third comparison branching to `$81:C4EC LDA $26 : BNE` taken.
+    [MON_BLK_LATCHED] = {96 + 28 + 18 + 12 + 42, 21, 1},
+    // ...not taken, so the record is rewritten, the latch stored and
+    // `JSR $C04A` — `LDA #$C050 : STA $12 : RTS`, 86 — queues the next routine.
+    // The `BNE $C503` is taken here: `$0042` is not the one value that redirects.
+    [MON_BLK_TAKE] = {96 + 28 + 12 + 28 + 18 + 40 + 34 + 18 + 18 + 28 + 40 + 86 +
+                          12 + 42,
+                      48, 4},
+    // ...and not taken, which costs the branch's 6 back and one more absolute
+    // load: `LDA $0046` at 34 over 3 bytes.
+    [MON_BLK_TAKE_ALT] = {96 + 28 + 12 + 28 + 18 + 40 + 34 + 18 + 12 + 34 + 28 +
+                              40 + 86 + 12 + 42,
+                          51, 4},
+    // $81:C4B7 through the damage subtraction, the `BMI` falling through, and
+    // the `BEQ` at `$81:C4D7` taking it to the `CLC : RTL` at `$81:C50A`.
+    [MON_BLK_NO_DAMAGE] = {18 + 18 + 312 + 18 + 54, 43, 3},
+};
+
+static bool monster_cycles(const MonsterCollideWork* k, bool fast,
+                           bool dp_unaligned, int* out) {
+  if (k->blocks[MON_BLK_DEEP]) return false;
+  int cycles = 0;
+  for (int i = 0; i < MONSTER_BLOCK_COUNT; i++)
+    cycles +=
+        k->blocks[i] * cosim_run_cycles_dp(&MONSTER_COST[i], fast, dp_unaligned);
+  *out = cycles;
+  return true;
+}
+
 static void shim_monster_collide(Wram* w, const Rom* rom, const CosimRegs* in,
                                  CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  monster_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  MonsterCollideWork work;
+  // the guard allowed it
+  monster_collide_counted(w, rom, in->d, in->a, &r, NULL, &work);
   handler_regs(&r, out);
+
+  int cycles;
+  if (monster_cycles(&work, in->fastrom, (in->d & 0xff) != 0, &cycles))
+    cosim_cost(cycles);
 }
 
 // ---------------------------------------------------------------------------
@@ -1273,8 +1455,14 @@ static bool guard_monster_c440_collide(Wram* scratch, const Rom* rom,
 static void shim_monster_c440_collide(Wram* w, const Rom* rom,
                                       const CosimRegs* in, CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  monster_c440_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  MonsterCollideWork work;
+  // the guard allowed it
+  monster_c440_collide_counted(w, rom, in->d, in->a, &r, NULL, &work);
   handler_regs(&r, out);
+
+  int cycles;
+  if (monster_cycles(&work, in->fastrom, (in->d & 0xff) != 0, &cycles))
+    cosim_cost(cycles);
 }
 
 // ---------------------------------------------------------------------------
@@ -1686,6 +1874,66 @@ static void shim_shot_collide(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
+// $82:9660  boss_9660_collide, priced
+// ---------------------------------------------------------------------------
+//
+// This one has no shim of its own — the handler is not in the registry and is
+// only ever reached through `$80:8480` — so unlike the four models above there
+// is no `verify` minimum to check it against. What stands in for that witness is
+// the same thing that found the last two tool bugs: the dispatcher's own error
+// has to stay a non-negative multiple of 40 on the 9,802 calls of `level25-2p`
+// that arrive here, and a table that is wrong anywhere makes it negative
+// somewhere.
+//
+// It is also the first handler priced whose costs are not all direct-page.
+// `LDY $0078`, `LDX $000E,Y` and `LDA $0020` are absolute reads of low WRAM
+// through the data bank; `$3A` to `$44` are on the thread's own page. The two
+// columns are what tells them apart, and `$82:948F` writing absolute `$003C` as
+// a *coordinate* in the routine that seeds direct `$3C` to 70 is what makes
+// getting it wrong plausible.
+static const CosimRun BOSS_COST[BOSS_BLOCK_COUNT] = {
+    // $82:9660..$9668, the `BEQ` taking it to `$9674  STZ $42 : CLC : RTL`.
+    [BOSS_BLK_INVULN] = {92 + 18 + 82, 15, 1},
+    // ...falling through, then `LDX $40` and its `BNE` to the same three.
+    [BOSS_BLK_FLASHING] = {92 + 12 + 28 + 18 + 82, 19, 2},
+    // ...and the `CMP #$005C` under it not carrying, which lands there again.
+    [BOSS_BLK_IGNORE] = {92 + 12 + 28 + 12 + 18 + 12 + 82, 24, 2},
+    // ...or carrying, so `$9678  STA $42 : AND #$7FFF` and into the chain.
+    [BOSS_BLK_HIT] = {92 + 12 + 28 + 12 + 18 + 18 + 46, 25, 2},
+    // $967D `CMP #$0062` matching, the tick read, and one of the two answers.
+    [BOSS_BLK_REMAP_62_CHEAP] = {18 + 12 + 52 + 12 + 18 + 18, 18},
+    [BOSS_BLK_REMAP_62_DEAR] = {18 + 12 + 52 + 18 + 18 + 18, 18},
+    // ...or not, and `$968F  CMP #$0070` matching one comparison later.
+    [BOSS_BLK_REMAP_70_CHEAP] = {18 + 18 + 18 + 12 + 52 + 12 + 18 + 18, 23},
+    [BOSS_BLK_REMAP_70_DEAR] = {18 + 18 + 18 + 12 + 52 + 18 + 18 + 18, 23},
+    // Two comparisons in, and no tick: these two are not a coin toss.
+    [BOSS_BLK_REMAP_61] = {18 + 18 + 18 + 18 + 18 + 12 + 18 + 18, 20},
+    [BOSS_BLK_REMAP_6F] = {18 + 18 + 18 + 18 + 18 + 18 + 18 + 12 + 18 + 18, 25},
+    // All four `CMP`s and all four branches taken, and nothing rewritten.
+    [BOSS_BLK_REMAP_NONE] = {18 + 18 + 18 + 18 + 18 + 18 + 18 + 18, 20},
+    // $96BA through the `SBC $818561,X` — whose two-byte read of a ROM table is
+    // why the byte column is 19 for seventeen bytes of instruction — then the
+    // `BMI` taking it to `$96D5  DEC $3A` and the shared `SEC : RTL`.
+    [BOSS_BLK_DIED] = {230 + 18 + 50 + 54, 25, 4},
+    // ...not taken, and `CMP $3C : BEQ` finding the subtraction took nothing.
+    [BOSS_BLK_NO_DAMAGE] = {230 + 12 + 28 + 18 + 54, 27, 4},
+    // ...or finding it took something, so `$96D1  STA $3C` first.
+    [BOSS_BLK_SURVIVED] = {230 + 12 + 28 + 12 + 28 + 18 + 54, 31, 5},
+};
+
+// No guard. Every exit of `$82:9660` is inside `$82:9660` — there is no `JML`
+// out of it and nothing under it that is not ported — so unlike `enemy_cycles`
+// this one cannot fail, and the dispatcher's `switch` treats it like
+// `shot_cycles` rather than like the two that can decline.
+static int boss_cycles(const BossCollideWork* k, bool fast, bool dp_unaligned) {
+  int cycles = 0;
+  for (int i = 0; i < BOSS_BLOCK_COUNT; i++)
+    cycles +=
+        k->blocks[i] * cosim_run_cycles_dp(&BOSS_COST[i], fast, dp_unaligned);
+  return cycles;
+}
+
+// ---------------------------------------------------------------------------
 // $80:8480  thread_call_handler, priced
 // ---------------------------------------------------------------------------
 
@@ -1734,6 +1982,9 @@ static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
     case SHOT_COLLIDE_ENTRY:
       cycles += shot_cycles(&k->shot, fast, dp_unaligned);
       break;
+    case BOSS_9660_COLLIDE_ENTRY:
+      cycles += boss_cycles(&k->boss, fast, dp_unaligned);
+      break;
     case PLAYER_COLLIDE_ENTRY: {
       int handler;
       if (!player_cycles(&k->player, fast, dp_unaligned, &handler)) return false;
@@ -1746,14 +1997,26 @@ static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
       cycles += handler;
       break;
     }
+    // The two copies share a table because they share a body. `$81:C440` is
+    // 96% of what `sprite_build_oam` used to decline on and `$81:C4A6` was on
+    // the same work list; pricing one without the other would have meant
+    // writing the same six constants twice.
+    case MONSTER_COLLIDE_ENTRY:
+    case MONSTER_C440_COLLIDE_ENTRY: {
+      int handler;
+      if (!monster_cycles(&k->monster, fast, dp_unaligned, &handler))
+        return false;
+      cycles += handler;
+      break;
+    }
     default:
       // A handler with no table. Not an error and not a gap in the port — the
       // port has twenty-five of these and this file prices four of them.
       //
       // Which addresses land here is the work list for the next round, and the
-      // way to read it is a run with a `printf` on this line: on the corpus it
-      // is `$82:9660` first by a distance, then `$81:C4A6`, `$81:C440`,
-      // `$80:CAEE` and `$81:8888`'s three deep exits. It is deliberately not
+      // way to read it is a run with a `printf` on this line: `$82:9660` was
+      // first by a distance and is now above, so what is left is `$81:C4A6`,
+      // `$81:C440`, `$80:CAEE` and `$81:8888`'s three deep exits. It is not
       // wired into `cosim_census_note` — this function is called again for
       // every level of the four models stacked on top of it, so a census here
       // would count one dispatch up to four times and read like a frequency
@@ -3091,57 +3354,206 @@ static bool guard_player_state_normal(const Wram* w, const Rom* rom,
 }
 
 // ---------------------------------------------------------------------------
-// $80:CD20  lzss_decompress is written and is deliberately **not** registered
+// $80:CD20  lzss_decompress — the stream picks every branch, and the price is
+// still exact
 // ---------------------------------------------------------------------------
 //
-// `src/port/lzss.c` is a complete transcription of it, and the shim it would
-// need is four lines: the argument is the word at `s + 4` (`$80:CD27  LDA
-// $06,S`, six deep because the routine's own `PHD` is already down), and
-// `$80:CDD2  SEC : LDA $2C : SBC $40 : TAY : PLD : RTL` leaves the bytes
-// written in both A and Y with carry always set — and N and Z coming from the
-// `PLD` rather than from the count, the same trap `actor_nearest` above fell
-// into and which is worth expecting from every routine here that opens `PHD`.
+// Four frames a call at the smallest and seventy-one at the largest, measured on
+// the five `level1.zmv` makes, so the same structural fact as `$80:AD2B` above:
+// an NMI lands inside every one of them, `verify` abandons the lot, and what
+// stands behind the substitution is `run`'s per-pass comparison of all 128 KB
+// rather than a per-call diff. `run_only`. The shim is four lines — the argument
+// is the
+// word at `s + 4` (`$80:CD27  LDA $06,S`, six deep because the routine's own
+// `PHD` is already down) and the exit is `$80:CDD2  SEC : LDA $2C : SBC $40 :
+// TAY : PLD : RTL`.
 //
-// **The harness cannot check it, and the reason is a property of the routine
-// rather than of the port.** One call is about 440,000 instructions — 310,829
-// in the body and the rest in `lzss_read_byte` and `lzss_write_byte` — which is
-// roughly seven frames. `verify` snapshots WRAM at entry and diffs it at exit,
-// so an interrupt landing in between makes the comparison meaningless, and it
-// abandons such a call rather than reporting a divergence that is really the
-// NMI handler's. Registered, it reported five calls, five interruptions and
-// nothing checked. `run` is no better: substitution burns a single mean cycle
-// count in place of the ROM's instructions, and a seven-frame mean cannot keep
-// NMI alignment.
+// **What is new here is the price.** Everything registered before this is costed
+// one of two ways: a mean `verify` watched the ROM take, or a count nothing had
+// to watch because the trip counts fall out of the arguments. This routine is
+// neither. Every branch in it is decided by the compressed stream — how many
+// tokens, which are literals, how long each match runs — and there is no
+// argument, table or piece of state that predicts any of it.
 //
-// So registering it would claim a check that is not happening. What it wants is
-// a verification mode scoped to a declared footprint — the ring at `$7E:6F00`,
-// the scratch at `$28`-`$40`, and the output range — compared against the port
-// run on the entry snapshot, so that what the NMI did in the meantime is
-// outside the comparison rather than inside it. That is a deliberate weakening
-// of "all 128 KB of WRAM, every call", which is the project's whole correctness
-// story, and it is worth doing on purpose rather than to get one routine in.
+// It is exact anyway, and the reason is worth stating because it is the general
+// answer rather than a lucky property of this routine: **the port decompresses
+// the same stream, so it takes the same branches, so it can count them.** The
+// counts are not derived from the input, they are produced by doing the work.
+// `LzssWork` is that tally and this is the ordinary `_counted` pattern; the
+// thing that had to be checked was not whether the counts could be had but
+// whether anything else moved the clock, and three things do:
 //
-// The code stays because the finished game needs it either way: `src/assets/`'s
-// decompressor serves the asset pipeline, and Phase 4's main loop will need one
-// that works on the SNES's own memory. See `src/port/lzss.h`.
+//   * the `MVN` at `$CD42`, which is one instruction paid for `$0FEE` times;
+//   * `LDA [$28]`, 4 master cycles dearer when the stream is in WRAM than in
+//     the cartridge — hence `reads_fast` and `head_fast`;
+//   * where the stream runs out, because the four places it can do that pop
+//     different numbers of bytes on the way to `$CDD2`. Not a defensive case:
+//     **every stream this game contains ends inside a match**, at the `BCS` on
+//     `$CD87` — 31 of 31 measured across fifteen movies — because a flag byte
+//     carries eight bits and the data runs out before all eight are spent, so
+//     the leftover zero bits read as matches and the first of them finds
+//     nothing. The tidy end-at-the-refill case has never once been seen, and a
+//     model that assumed it would be short on every call in the game.
+//
+// Nothing else: `PEA $0000 : PLD` puts the routine on page zero, so no
+// direct-page penalty anywhere, and the destination is WRAM by the guard.
+
+// The window fill and everything either side of it. `MVN` is split out because
+// it is one instruction whose cost is not in the instruction: `cpu.c` moves a
+// single byte and then rewinds PC by three rather than looping inside the
+// opcode, so each byte re-fetches all three program bytes and then reads one,
+// writes one and idles twice. The count is A+1 and A is `$0FED`.
+static const CosimRun LZSS_PROLOGUE_ROM = {668, 53};   // $CD20..$CD53, less MVN
+static const CosimRun LZSS_PROLOGUE_WRAM = {672, 51};  // ...header word in WRAM
+static const CosimRun LZSS_MVN_BYTE = {46, 3};         // $CD42, $0FEE of them
+#define LZSS_MVN_BYTES 0x0feeu
+
+// $CDD2..$CDD9, the `RTL` included. **Every model in this file is priced to the
+// window `verify` measures**, which runs from the entry PC to the caller's
+// return address and therefore contains the routine's own `RTS` or `RTL`. That
+// is the only window a measurement can be taken over, so it is the one a model
+// is written for, and the one place the boundary has to be stated is here.
+//
+// `run` used to disagree with that, silently. `native_return` parks the CPU on
+// `ret_op` and the core executes it for real, so a budget that also contained it
+// paid for it twice — 40 cycles for an `RTS`, which is a DRAM refresh to the
+// cycle and so never looked like anything, and 42 for an `RTL`, which is what
+// finally showed up: burn-end to back-at-the-caller measured 42 longer than the
+// ROM's entry-to-`RTL` on three calls running. The harness now takes the tail
+// off the budget itself, once, for every substituted call. See `tail_cycles` in
+// `cosim/cosim.c`; nothing in this file has to remember it.
+static const CosimRun LZSS_EPILOGUE = {156, 8};
+
+// The token loop. Every branch is priced not taken and `LZSS_TAKEN` is added
+// back per taken outcome, which is the same arrangement as `blockmap_cycles`.
+static const CosimRun LZSS_HEAD = {24, 3};          // $CD56..$CD57
+static const CosimRun LZSS_REFILL = {70, 8};        // $CD59..$CD5F
+static const CosimRun LZSS_SHIFT = {36, 4};         // $CD61..$CD63
+static const CosimRun LZSS_LITERAL = {338, 29};     // $CD65..$CD80, BRA taken
+static const CosimRun LZSS_MATCH_HEAD = {460, 38};  // $CD82..$CDA6
+static const CosimRun LZSS_RUN_BYTE = {384, 34};    // $CDA8..$CDC8
+static const CosimRun LZSS_MATCH_TAIL = {114, 6};   // $CDCA..$CDCE, BRA taken
+#define LZSS_TAKEN 6
+
+// The two leaves. They are in the registry in their own right and `verify`
+// scores both on every one of the million-odd calls the corpus makes — so these
+// four numbers are the only ones in this model that have already been checked
+// against the ROM by measurement, and they are the ones the model leans on
+// hardest. Under substitution the leaves never execute, so their cost has to be
+// here; `verify` is what says it is right.
+static const CosimRun LZSS_READ_ROM = {258, 17};  // $CDDA..$CDE8, stream in ROM
+static const CosimRun LZSS_READ_WRAM = {262, 15};
+static const CosimRun LZSS_READ_SPENT = {98, 6};  // $CDDA, $CDE9, $CDEA
+static const CosimRun LZSS_WRITE = {170, 9};      // $CDEB..$CDF3, dest in WRAM
+
+// A stream that stops in the middle of a token. Each includes the `PLA`s at
+// `$CDD0`/`$CDD1` that unwind what the block had pushed, which is the only
+// reason the three differ at all and the reason `end` distinguishes them.
+static const CosimRun LZSS_END_LIT = {120, 7};  // $CD65..$CD69, one PLA
+static const CosimRun LZSS_END_M1 = {182, 9};   // $CD82..$CD87, two
+static const CosimRun LZSS_END_M2 = {262, 16};  // $CD82..$CD8E, two
+
+static int lzss_cycles(const LzssWork* k, bool fast) {
+  // `tokens_lit` and `tokens_match` count blocks *entered*, so the last one is
+  // in there whether or not the stream let it finish. These four are what the
+  // model actually multiplies.
+  const uint32_t tokens = k->tokens_lit + k->tokens_match;
+  const uint32_t lits_full = k->tokens_lit - (k->end == 1 ? 1u : 0u);
+  const uint32_t match_full = k->tokens_match - (k->end >= 2 ? 1u : 0u);
+  // One `$CD56` per entered block, and one more when the stream ended at the
+  // flag refill — that iteration reached the head and got no further.
+  const uint32_t heads = tokens + (k->end == 0 ? 1u : 0u);
+  // Every `JSR $CDDA` the call made: one per refill, one per literal, two per
+  // match unless the first of the two is what ended it. Exactly one of them
+  // found the stream spent, because that is what ended the loop.
+  const uint32_t reads = k->refills + k->tokens_lit + 2u * k->tokens_match -
+                         (k->end == 2 ? 1u : 0u);
+  const uint32_t reads_slow = reads - 1u - k->reads_fast;
+
+  long cycles = cosim_run_cycles(
+                    k->head_fast ? &LZSS_PROLOGUE_ROM : &LZSS_PROLOGUE_WRAM,
+                    fast) +
+                cosim_run_cycles(&LZSS_EPILOGUE, fast) +
+                (long)LZSS_MVN_BYTES * cosim_run_cycles(&LZSS_MVN_BYTE, fast);
+
+  cycles += (long)heads * cosim_run_cycles(&LZSS_HEAD, fast);
+  cycles += (long)k->refills * cosim_run_cycles(&LZSS_REFILL, fast);
+  cycles += (long)tokens * cosim_run_cycles(&LZSS_SHIFT, fast);
+  cycles += (long)lits_full * cosim_run_cycles(&LZSS_LITERAL, fast);
+  cycles += (long)match_full * (cosim_run_cycles(&LZSS_MATCH_HEAD, fast) +
+                                cosim_run_cycles(&LZSS_MATCH_TAIL, fast));
+  cycles += (long)k->run_bytes * cosim_run_cycles(&LZSS_RUN_BYTE, fast);
+
+  cycles += (long)k->reads_fast * cosim_run_cycles(&LZSS_READ_ROM, fast);
+  cycles += (long)reads_slow * cosim_run_cycles(&LZSS_READ_WRAM, fast);
+  cycles += cosim_run_cycles(&LZSS_READ_SPENT, fast);
+  // One `JSR $CDEB` per literal that finished and one per byte of every match.
+  cycles += (long)(lits_full + k->run_bytes) * cosim_run_cycles(&LZSS_WRITE,
+                                                               fast);
+
+  // The four branches, each of which the blocks above priced not taken.
+  cycles += (long)LZSS_TAKEN *
+            ((long)(heads - k->refills) +               // $CD57, flag bits left
+             (long)k->tokens_match +                    // $CD63, a match token
+             (long)(k->run_bytes - match_full) +        // $CDC8, another byte
+             (long)(k->end == 0 ? 1 : 0));              // $CD5F, stream spent
+
+  switch (k->end) {
+    case 1:
+      cycles += cosim_run_cycles(&LZSS_END_LIT, fast);
+      break;
+    case 2:
+      cycles += cosim_run_cycles(&LZSS_END_M1, fast);
+      break;
+    case 3:
+      cycles += cosim_run_cycles(&LZSS_END_M2, fast);
+      break;
+    default:
+      break;
+  }
+  return (int)cycles;
+}
+
+static void shim_lzss_decompress(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  LzssDecompressRegs r;
+  LzssWork work;
+  lzss_decompress_wram_counted(w, rom, in->s, in->a, in->x, in->y, &r, &work);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->c = r.c;
+  // The closing `PLD` restores the caller's page, so N and Z describe *that* and
+  // not the count — the same trap every `PHD` routine in this file sets.
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  cosim_cost(lzss_cycles(&work, in->fastrom));
+}
+
+static bool guard_lzss_decompress(Wram* scratch, const Rom* rom,
+                                  const CosimRegs* in) {
+  return lzss_decompress_supported(scratch, rom, in->s, in->a, in->x);
+}
 
 // ---------------------------------------------------------------------------
 // $80:CDDA  lzss_read_byte / $80:CDEB  lzss_write_byte — its two leaves, which
 // *can* be checked
 // ---------------------------------------------------------------------------
 //
-// The argument above rules out the body and says nothing against these. What
-// makes `$80:CD20` uncheckable is that one call is seven frames long; these are
-// eight instructions, so the interrupt problem inverts — a call is far too
-// short for an NMI to land in, and the 1,071,108 of them across the corpus are
-// **2.6% of every instruction the game executes**, which is more work than any
-// single routine left on the ranking.
+// What stops `$80:CD20` being scored per call is that one call is frames long;
+// these are eight instructions, so the interrupt problem inverts — a call
+// is far too short for an NMI to land in, and the 1,071,108 of them across the
+// corpus are **2.6% of every instruction the game executes**, which is more work
+// than any single routine left on the ranking.
 //
-// So the first pair of routines in the registry whose only caller is not in it.
-// That is sound because interception is per call site: the ROM runs `$80:CD20`
-// and the port answers each `JSR` out of it, which is the same arrangement as
-// any other leaf and needs no guard — the six call sites in the trace are all
-// inside that one body.
+// They were the first pair of routines in the registry whose only caller was not
+// in it, and now that it is they are worth more rather than less. Under `run`
+// the body is substituted and these never execute, so their cost lives in
+// `lzss_cycles` above as four constants — and `verify`, where the body is not
+// substituted, still measures them against the ROM a million times a corpus.
+// **That is the only part of a `run_only` model this project can check by
+// measurement, and it happens to be the part that carries most of the total.**
 //
 // Both are `RTS` leaves that push nothing. Neither ends where it looks like it
 // does: each closes on an `INC` of a direct-page pointer, so N and Z describe
@@ -3429,11 +3841,102 @@ static bool guard_actor_notify_box(Wram* scratch, const Rom* rom,
   return actor_notify_box(scratch, rom, in->a, in->c, &tail, &r);
 }
 
+// What each run of `$80:BF1B` costs, indexed by `ActorNotifyBlock`. The whole
+// routine is 76 bytes of listing and 14 direct-page instructions, and every
+// block below is a straight run between two branches of it.
+//
+// The seven per-record blocks are nested prefixes of one another — each is the
+// one above it plus the instructions that ask the next question — which is why
+// they climb 92, 132, 206, 246, 320, 360, 572 rather than being independent
+// numbers. A transcription error in any one of them therefore shows up as a
+// broken spacing, and the spacings are **40, 74, 40, 74, 40** and then the
+// dispatch preamble's 212.
+//
+// The alternation is not decoration. A test that can reuse what is already in A
+// costs `CMP` + the branch's six = 40; one that has to fetch a fresh word from
+// the record first costs `LDA $xx,X` on top of that = 74. So the id test and
+// the two *upper* bounds are 40, and the two *lower* bounds — which open each
+// axis — are 74. Any table where those five numbers are not in that order has
+// an instruction in the wrong block.
+//
+// `NOTIFY_BLK_HIT` carries `JSL $808480`'s own 54 and not a cycle of what it
+// dispatches into: that is `thread_call_cycles`, summed per hit below, exactly
+// as `OVL_HIT` carries `JSR $BE8F` and leaves the rest to `notify_cycles`.
+static const CosimRun NOTIFY_BOX_COST[NOTIFY_BLOCK_COUNT] = {
+    [NOTIFY_BLK_PROLOGUE] = {28 + 34 + 34 + 18, 8},
+    [NOTIFY_BLK_BOUND_KEPT] = {34 + 18 + 12 + 12, 6, 1},
+    [NOTIFY_BLK_BOUND_CLAMPED] = {34 + 12 + 34 + 12 + 12, 8, 2},
+    [NOTIFY_BLK_BOUND_NEXT] = {18, 2},
+    [NOTIFY_BLK_BOUND_DONE] = {12, 2},
+    // `LDY $9C : BEQ` taken, and the shared `PLD : RTL` at `$80:BF65`.
+    [NOTIFY_BLK_NO_ACTORS] = {28 + 18 + 34 + 42, 6, 1},
+    // ...not taken, then `DEY DEY : BEQ` taken into the same two instructions.
+    [NOTIFY_BLK_ONE_ACTOR] = {28 + 12 + 12 + 12 + 18 + 34 + 42, 10, 1},
+    // ...and not taken either, which is the walk.
+    [NOTIFY_BLK_WALK] = {28 + 12 + 12 + 12 + 12, 8, 1},
+    // $80:BF35 LDX $137E,Y : LDA $0E,X : BEQ taken.
+    [NOTIFY_BLK_NO_ID] = {40 + 34 + 18, 7, 1},
+    // ...not taken, then `CMP $40 : BEQ` taken.
+    [NOTIFY_BLK_SELF_ID] = {40 + 34 + 12 + 28 + 18, 11, 2},
+    // ...not taken, then `LDA $02,X : CMP $38 : BCC` taken.
+    [NOTIFY_BLK_LEFT_OF] = {40 + 34 + 12 + 28 + 12 + 34 + 28 + 18, 17, 4},
+    // ...not taken, then `CMP $3A : BCS` taken.
+    [NOTIFY_BLK_RIGHT_OF] = {40 + 34 + 12 + 28 + 12 + 34 + 28 + 12 + 28 + 18,
+                             21, 5},
+    // ...not taken, then `LDA $06,X : CMP $3C : BCC` taken.
+    [NOTIFY_BLK_ABOVE] = {40 + 34 + 12 + 28 + 12 + 34 + 28 + 12 + 28 + 12 + 34 +
+                              28 + 18,
+                          27, 7},
+    // ...not taken, then `CMP $3E : BCS` taken.
+    [NOTIFY_BLK_BELOW] = {40 + 34 + 12 + 28 + 12 + 34 + 28 + 12 + 28 + 12 + 34 +
+                              28 + 12 + 28 + 18,
+                          31, 8},
+    // ...not taken: inside the box. `PHY : LDA $0C,X : STX $78 : TAX :
+    // LDY $40 : JSL $808480 : PLY`.
+    [NOTIFY_BLK_HIT] = {40 + 34 + 12 + 28 + 12 + 34 + 28 + 12 + 28 + 12 + 34 +
+                            28 + 12 + 28 + 12 + 28 + 34 + 28 + 12 + 28 + 54 +
+                            34,
+                        44, 11},
+    // $80:BF61 DEY DEY : BPL taken.
+    [NOTIFY_BLK_LOOP_NEXT] = {12 + 12 + 18, 4},
+    // ...not taken, and the `PLD : RTL` the early exits share.
+    [NOTIFY_BLK_LOOP_DONE] = {12 + 12 + 12 + 34 + 42, 6},
+};
+
+// False when a hit in this box entered a handler with no cost table, or when
+// there were more hits than the array can describe — the same all-or-nothing
+// `overlap_cycles` makes, for the same reason.
+static bool notify_box_cycles(const ActorNotifyWork* k, const CosimRegs* in,
+                              int* out) {
+  bool fast = in->fastrom;
+  // The routine forces its own page to zero at `$80:BF1D PEA $0000 : PLD`
+  // before it touches a direct-page word, so the caller's `D` cannot make any
+  // of the fourteen cost an extra idle — which is why, alone among the models
+  // here, this one takes no `dp_unaligned` and its shims check no `in->d`.
+  int cycles = 0;
+  for (int i = 0; i < NOTIFY_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles(&NOTIFY_BOX_COST[i], fast);
+
+  if (k->hits > NOTIFY_BOX_MAX_PRICED_HITS) return false;
+  for (int i = 0; i < k->hits; i++) {
+    int call;
+    if (!thread_call_cycles(&k->call[i], in, &call)) return false;
+    cycles += call;
+  }
+  *out = cycles;
+  return true;
+}
+
 static void shim_actor_notify_box(Wram* w, const Rom* rom, const CosimRegs* in,
                                   CosimRegs* out) {
   ThreadCallResult tail = {.c = in->c};
   ActorNotifyRegs r;
-  actor_notify_box(w, rom, in->a, in->c, &tail, &r);
+  ActorNotifyWork work;
+  actor_notify_box_counted(w, rom, in->a, in->c, &tail, &r, &work);
+
+  int cycles;
+  if (notify_box_cycles(&work, in, &cycles)) cosim_cost(cycles);
+
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -3597,10 +4100,31 @@ static bool guard_boss_stomp(Wram* scratch, const Rom* rom,
   return boss_stomp_supported(scratch, rom);
 }
 
+// Everything `$82:92D6` does that is not `actor_notify_box`: `$82:92D6`
+// through `$82:92FB STA $0040` is 376 over 40 bytes, then `JSL $80BF1B` at 54
+// and the `RTS` at 40. **All five stores are absolute** — `STA $0038` and not
+// `STA $38` — because the routine that reads them forces `D` to zero itself, so
+// there is no direct-page column here and none is owed.
+//
+// **470 + `actor_notify_box`'s own floor of 642 is 1,112, and 1,112 is the
+// number already written in this routine's registry entry below** — recorded as
+// its measured minimum over 6,549 calls, rounds before either half of that sum
+// existed. Neither figure was fitted to the other: one is the corpus reporting
+// the cheapest call it ever saw, the other is two listings added up. The
+// cheapest call is a boss standing on a board holding one visible actor, and it
+// costs 1,112 cycles with no refresh in it at all.
+static const CosimRun BOSS_STOMP_COST = {376 + 54 + 40, 45};
+
 static void shim_boss_stomp(Wram* w, const Rom* rom, const CosimRegs* in,
                             CosimRegs* out) {
   BossStompRegs r;
-  boss_stomp(w, rom, &r);
+  ActorNotifyWork work;
+  boss_stomp_counted(w, rom, &r, &work);
+
+  int cycles;
+  if (notify_box_cycles(&work, in, &cycles))
+    cosim_cost(cycles + cosim_run_cycles(&BOSS_STOMP_COST, in->fastrom));
+
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -3641,40 +4165,148 @@ static bool guard_blockmap_cell_ptr(Wram* scratch, const Rom* rom,
 }
 
 // ---------------------------------------------------------------------------
-// $80:AD2B  blockmap_expand is written and, for the same reason as $80:CD20,
-// **not** registered
+// $80:AD2B  blockmap_expand — ten frames, and the second routine `verify`
+// structurally cannot check
 // ---------------------------------------------------------------------------
 //
-// `src/port/levelmap.c` is a complete transcription and the shim it would need
-// is written out below in a comment rather than in code, because the harness
-// cannot check it and registering it would claim a check that is not happening.
+// This entry stood as a comment saying the routine could not be registered, for
+// the same reason `$80:C05A` did: **one call is about ten frames long, so
+// `verify` reported one call, one interruption and nothing checked** on every
+// movie tried — `level1`, `level1-rescue`, `level9`, `level25-boss` and
+// `level53` alike. There was no movie on which a call completed inside a frame
+// and there cannot be.
 //
-// One call is about 395,000 instructions -- roughly six frames, against
-// `lzss_decompress`'s seven -- and `verify` snapshots WRAM at entry and diffs
-// it at exit, so an interrupt landing in between makes the comparison
-// meaningless. Registered, it reported the same thing on every movie tried:
-// **one call, one interruption, nothing checked**, on `level1`, `level1-rescue`,
-// `level9`, `level25-boss` and `level53` alike. There was no movie on which a
-// call completed inside a frame, and there cannot be: the routine's own inner
-// loop runs 20,691 times a call.
+// That is a statement about rewind-and-replay and not about substitution, which
+// is the distinction `CosimRoutine::run_only` exists to make. Under `run` the
+// ROM never executes any of it, so there is no call window for an NMI to land
+// inside; what checks the port is `run`'s comparison of all 128 KB at the next
+// scheduler pass, and every pass after it for the rest of the movie. The map
+// this builds is the map the whole level is played on, so a port that got one
+// cell wrong would be visible in the very next frame the camera drew.
 //
-// It wants the same thing `$80:CD20` wants -- a verification mode scoped to a
-// declared footprint, here the block map it reads and the range of `$7F` it
-// writes, compared against the port run on the entry snapshot. That is the same
-// deliberate weakening of "all 128 KB, every call", and it is still worth doing
-// on purpose rather than to get a second routine in.
+// **It is also what the parked burn was built for.** Ten frames is ten NMIs, and
+// the core latches one — see `CosimBurn` in `cosim.c`. `$80:C05A` fits inside a
+// frame and so never needed it; this does not, and `run` reports the parks.
 //
-// The shim would be four lines: no arguments, N and Z from the closing `PLD`,
-// the carry from the last `ADC $B2` in the copy loop, A the destination pointer
-// as that add left it, X zero and Y `$FFFE`. `port/levelmap.h` records all of
-// it, so nothing is lost by not writing it down twice.
+// ## Why the cost is a count and not a mean
 //
-// **What can be checked is its helper.** `$80:ACF6 blockmap_cell_ptr` is seven
-// instructions -- far too short for an NMI to land in -- and ten call sites in
-// four banks reach it, so it is registered on its own, exactly as
-// `lzss_read_byte` and `lzss_write_byte` are registered under a body that is
-// not. The code for the body stays because the finished game needs it: Phase 4
-// has to build a tile map from a level record like everything else.
+// `run_only` requires it — a mean is something `verify` watched, and `verify`
+// has never seen this routine finish. It is available here because **no branch
+// in the routine depends on the data it reads.** The nest is
+// `$B0` rows x `$AE >> 1` cells x 8 block rows x 8 words, and every trip count
+// falls out of the level record. So the port counts the four loops and the two
+// bank questions (`BlockExpandWork`) and this prices them, exactly as a hot
+// dispatcher's branch outcomes are priced — the difference being that here the
+// answer is exact rather than an average.
+//
+// Level 1 is 22 x 13 = **286 cells, which is exactly the 286 calls `verify`
+// measures `blockmap_cell_ptr` taking** on `level1.zmv`: the shape of this model
+// is confirmed by a count the harness makes independently of it. And that
+// routine's own measured floor, 334 master cycles, is to the cycle what
+// `tools/cycles816.py` prices its 21 bytes at — so the same tool that priced the
+// rest of this table is checked against a real measurement inside this very
+// call. Level 1 comes out at 3,604,294 cycles, 10.09 frames.
+//
+// ## ...and it was checked against the ROM anyway
+//
+// `verify` cannot score this call, but that is a limit of rewind-and-replay and
+// not of the clock, so the ROM's own execution was timed directly: the cycles
+// spent with the program counter inside `$80:ACF6..$80:AD91` on `level1.zmv`,
+// with the eleven interrupts that land in the middle attributed to the handler
+// where they belong. **3,713,172 cycles**, less the 2,722 DRAM refreshes the
+// core adds at 40 apiece, is **3,604,292** — two cycles under this model, on a
+// figure of three and a half million.
+//
+// Two is not zero, and the difference is the probe's rather than the model's: a
+// `snes_runCycle` granule is two master cycles, so attributing a step to one
+// side or the other of the boundary is worth exactly this much. It is stated as
+// a measurement and not as the refresh-exact residual the per-call models are
+// held to, because that standard needs `verify`, and `verify` is the thing this
+// routine cannot have.
+//
+// ## The blocks
+//
+// Two of them come in pairs because the block map's bank is level data — `$A8`
+// out of the level record, WRAM on some levels and cartridge on others — and a
+// cartridge operand byte costs 6 rather than 8 and moves into the FastROM
+// column. The block *library* is `$7E` at every call site the ROM has, but the
+// port checks rather than trusting it, so the copy loop carries the same pair;
+// `words_rom` is expected to stay zero and the report will say so if it does not.
+static const CosimRun BLOCK_PROLOGUE = {208, 13};   // $AD2B..$AD37, once
+static const CosimRun BLOCK_ROW_HEAD = {68, 5};     // $AD38..$AD3C, per row
+static const CosimRun BLOCK_ROW_TAIL = {140, 8};    // $AD88..$AD8F, BNE not taken
+static const CosimRun BLOCK_CELL_WRAM = {514, 40};  // $AD3D..$AD64
+static const CosimRun BLOCK_CELL_ROM = {510, 42};   // ...map in the cartridge
+static const CosimRun BLOCK_TILE_ADDR = {250, 15};  // $80:AD1C, called per cell
+static const CosimRun BLOCK_CELL_PTR = {334, 21};   // $80:ACF6, likewise
+static const CosimRun BLOCK_LIB_PTR = {250, 17};    // $80:AD0B, likewise
+static const CosimRun BLOCK_ROW_START = {18, 3};    // $AD65..$AD67, per block row
+static const CosimRun BLOCK_WORD_WRAM = {140, 8};   // $AD68..$AD6F, BPL not taken
+// The same eight bytes with the library in the cartridge: the two operand bytes
+// of `LDA [$28],Y` cost 6 rather than 8, and they join the byte column. Derived
+// rather than measured, and the pair above is the check on the derivation —
+// `cycles816.py` prices the cell head at exactly this difference, -4 and +2.
+static const CosimRun BLOCK_WORD_ROM = {136, 10};
+static const CosimRun BLOCK_ROW_ADVANCE = {206, 18};  // $AD70..$AD81, BNE not taken
+static const CosimRun BLOCK_CELL_TAIL = {112, 6};     // $AD82..$AD87, BNE not taken
+static const CosimRun BLOCK_EPILOGUE = {76, 2};       // $AD90..$AD91, the RTL too
+
+// A branch this routine takes rather than falls through. Every one of the four
+// is a `DEC`/`DEY` loop closing, so how often each is taken follows from the
+// trip counts and is not counted separately — see `BlockExpandWork`.
+#define BLOCK_TAKEN 6
+
+static int blockmap_cycles(const BlockExpandWork* k, bool fast) {
+  const uint32_t cells_wram = k->cells - k->cells_rom;
+  const uint32_t words_wram = k->words - k->words_rom;
+  long cycles = cosim_run_cycles(&BLOCK_PROLOGUE, fast) +
+                cosim_run_cycles(&BLOCK_EPILOGUE, fast);
+
+  cycles += (long)k->rows * (cosim_run_cycles(&BLOCK_ROW_HEAD, fast) +
+                             cosim_run_cycles(&BLOCK_ROW_TAIL, fast));
+  cycles += (long)k->cells * (cosim_run_cycles(&BLOCK_TILE_ADDR, fast) +
+                              cosim_run_cycles(&BLOCK_CELL_PTR, fast) +
+                              cosim_run_cycles(&BLOCK_LIB_PTR, fast) +
+                              cosim_run_cycles(&BLOCK_CELL_TAIL, fast));
+  cycles += (long)cells_wram * cosim_run_cycles(&BLOCK_CELL_WRAM, fast);
+  cycles += (long)k->cells_rom * cosim_run_cycles(&BLOCK_CELL_ROM, fast);
+  cycles += (long)k->block_rows * (cosim_run_cycles(&BLOCK_ROW_START, fast) +
+                                   cosim_run_cycles(&BLOCK_ROW_ADVANCE, fast));
+  cycles += (long)words_wram * cosim_run_cycles(&BLOCK_WORD_WRAM, fast);
+  cycles += (long)k->words_rom * cosim_run_cycles(&BLOCK_WORD_ROM, fast);
+
+  // ...and the four loop-backs. Each loop takes its branch on every trip but
+  // the one that ends it, so the count is the difference between the trips and
+  // the trips of the loop outside it — and the outermost is `rows - 1`.
+  cycles += (long)BLOCK_TAKEN *
+            ((long)(k->words - k->block_rows) +
+             (long)(k->block_rows - k->cells) + (long)(k->cells - k->rows) +
+             (long)(k->rows ? k->rows - 1 : 0));
+  return (int)cycles;
+}
+
+static void shim_blockmap_expand(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  BlockExpandRegs r;
+  BlockExpandWork work;
+  blockmap_expand_counted(w, rom, &r, &work);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->c = r.c;
+  // The closing `PLD` restores the caller's page, so N and Z describe *that*
+  // and not the count — the same trap every `PHD` routine in this file sets.
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  cosim_cost(blockmap_cycles(&work, in->fastrom));
+}
+
+static bool guard_blockmap_expand(Wram* scratch, const Rom* rom,
+                                  const CosimRegs* in) {
+  (void)in;
+  return blockmap_expand_supported(scratch, rom);
+}
 
 // ---------------------------------------------------------------------------
 // $80:C07F, $80:C0A3, $80:C139  the status panel
@@ -4683,6 +5315,14 @@ static const CosimRoutine ROUTINES[] = {
         // title sequence holding the wobble and then retracting it two bytes at
         // a time until there is almost no table left to build. `level45-race`
         // sits between the two at 884 calls and 135,762.
+        //
+        // So `.cycles` is a number no call is ever near, and until the model
+        // above existed the budget drift table measured what that was worth:
+        // -47,703 cycles a call on a level movie, two orders of magnitude
+        // worse per call than anything else in the registry. It is kept because
+        // a declared mean is what a routine falls back to when its shim reports
+        // nothing, and this one always reports — but it is the fallback now and
+        // not the price.
         .cycles = 115606,
         .stack_bytes = 7,  // JSL (3) into the trampoline, its JSR (2), and the
                            // PHX inside sin_deg (2)
@@ -4872,10 +5512,19 @@ static const CosimRoutine ROUTINES[] = {
         .supported = guard_sprite_build_oam,
         .excludes = BUILD_OAM_EXCLUDES,
         .exclude_count = 1,
-        // By far the most expensive routine substituted so far, and the most
-        // variable: 5,864 when nothing is on screen, 66,412 when everything is.
-        // A whole NTSC frame is about 57,000 master cycles, so this one pass is
-        // most of the game's per-frame CPU budget.
+        // The most variable routine in the registry: 5,864 when nothing is on
+        // screen and **137,160** on `level25-boss.zmv`, where the ceiling used
+        // to read 66,412 because no movie had put that much on the board. A
+        // whole NTSC frame is 357,366 master cycles — see `COSIM_FRAME_CYCLES`,
+        // not the 57,000 this comment claimed — so the worst pass is 38% of a
+        // frame and the mean is 12%.
+        //
+        // 5,014 of the 6,042 calls `level25-boss` makes are priced; the other
+        // 1,028 are the ones whose collisions land on a handler with no cost
+        // table, and they are also the expensive ones, so the fallback mean of
+        // 43,111 leaves the largest single debt in the drift table — -41.7M
+        // cycles over that movie. That is the next thing to fix and it is a
+        // guard to widen, not a model to write.
         .cycles = 43111,
         .stack_bytes = 32,  // PHB + PHD + the deepest nested JSR/JSL
     },
@@ -5118,6 +5767,26 @@ static const CosimRoutine ROUTINES[] = {
         // routine: there are no branches in it at all.
         .cycles = 258,
         .stack_bytes = 2,  // the PHA it reads back through `$01,S`
+    },
+    {
+        .name = "lzss_decompress",
+        .symbol = "$80:CD20",
+        .entry = 0x80cd20,
+        .ret_op = 0x80cdd9,  // the RTL, after the PLD that restores the caller
+        .ret_kind = COSIM_RTL,
+        .run = shim_lzss_decompress,
+        .supported = guard_lzss_decompress,
+        // Never used: the shim reports the call's exact cost and every call
+        // reports one. It is level 1's first stream — 4.5 frames, and the
+        // smallest of the five that movie makes — so the scale is on show and
+        // nothing silently falls back to a number nobody measured.
+        .cycles = 1591682,
+        // How deep it goes, not how much it leaks — everything balances by the
+        // `RTL`. `PHD` and `PEA $0000` put it 4 down, the `PLD` at `$CD24`
+        // takes 2 back, and the deepest point is inside a match: `PHA` and
+        // `PHY` at `$CD82`, then the `JSR` to a byte helper.
+        .stack_bytes = 8,
+        .run_only = true,
     },
     {
         .name = "lzss_read_byte",
@@ -5414,10 +6083,20 @@ static const CosimRoutine ROUTINES[] = {
         .ret_kind = COSIM_RTL,
         .run = shim_actor_notify_box,
         .supported = guard_actor_notify_box,
-        // 642..11,272, call-weighted across 8,556 calls on six movies. The
-        // floor is a box that found nothing to tell and the ceiling is one that
-        // entered several handlers, so the spread is the handlers' rather than
-        // the walk's -- the walk is 32 records whatever happens.
+        // 642..11,272, call-weighted across 8,556 calls on six movies -- the
+        // fallback now and not the price, since `notify_box_cycles` reports
+        // every call it can.
+        //
+        // The floor is worth being exact about, because the model reproduces it
+        // and the old description does not. 642 is **not** "a box that found
+        // nothing to tell": it is specifically the *one-record refusal* at
+        // `$80:BF33`, with all four bounds kept. An empty visible list leaves
+        // through `$80:BF2F` two instructions earlier and would cost 606, and
+        // that number has never been measured because no call in the corpus has
+        // ever found `$9C` at zero -- `notify_no_actors` is untaken on every
+        // movie. The ceiling is a box that entered several handlers, so the
+        // spread is the handlers' rather than the walk's; the walk is 32
+        // records whatever happens.
         .cycles = 5545,
         // Its own PHD and PHY, plus the deepest the dispatch under it goes.
         // Movies that only ever blast one actor measure 18.
@@ -5519,11 +6198,13 @@ static const CosimRoutine ROUTINES[] = {
         .ret_kind = COSIM_RTS,
         .run = shim_boss_stomp,
         .supported = guard_boss_stomp,
-        // 1,112..13,054, call-weighted 8,230 over 6,549 calls — and next to
-        // `boss_place_parts` above, which runs on the same frames and the same
-        // two movies, it is the clearest measurement of what a walk costs. The
-        // two routines differ by one `JSL`, and that `JSL` is between 90% and
-        // 99% of this one.
+        // 1,112..13,054, call-weighted 8,230 over 6,549 calls — the fallback
+        // now and not the price. Next to `boss_place_parts` above, which runs
+        // on the same frames and the same two movies, it is the clearest
+        // measurement of what a walk costs: the two routines differ by one
+        // `JSL`, and that `JSL` is between 90% and 99% of this one. Which is
+        // also why this entry is priced by `actor_notify_box`'s table and owns
+        // only the 470 cycles of stores around it — see `BOSS_STOMP_COST`.
         .cycles = 8230,
         .stack_bytes = 21,  // two bytes of `JSR` return address, and
                             // `actor_notify_box`'s dispatch under it
@@ -5608,6 +6289,38 @@ static const CosimRoutine ROUTINES[] = {
         // It pushes nothing of its own: two bytes for the `JSR $E86D`, and
         // `floor_effect`'s own sixteen under that.
         .stack_bytes = 18,
+    },
+    {
+        .name = "sprite_cache_init",
+        .symbol = "$80:C05A",
+        .entry = 0x80c05a,
+        .ret_op = 0x80c07e,  // the RTL, after the two PLBs
+        .ret_kind = COSIM_RTL,
+        .run = shim_sprite_cache_init,
+        // Counted, not measured — there is nothing here for `verify` to have
+        // measured. The derivation is above the shim.
+        .cycles = 346734,
+        // `PHB` then `PEA $007E`: one byte and two, and the exit pulls all
+        // three. Nothing else in the body touches the stack.
+        .stack_bytes = 3,
+        .run_only = true,
+    },
+    {
+        .name = "blockmap_expand",
+        .symbol = "$80:AD2B",
+        .entry = 0x80ad2b,
+        .ret_op = 0x80ad91,  // the RTL, after the PLD that restores the caller
+        .ret_kind = COSIM_RTL,
+        .run = shim_blockmap_expand,
+        .supported = guard_blockmap_expand,
+        // Never used: the shim reports the call's exact cost, and every call
+        // reports one. It is the level-1 figure, so a reader who wants a sense
+        // of the scale has one and nothing silently falls back to it.
+        .cycles = 3604294,
+        // `PHD` then `PEA $0000`, four bytes; the `PLD` two instructions later
+        // takes the `PEA`'s back and the one at `$AD90` takes the `PHD`'s.
+        .stack_bytes = 4,
+        .run_only = true,
     },
 };
 

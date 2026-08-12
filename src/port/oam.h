@@ -903,6 +903,65 @@ typedef struct {
 bool actor_notify_box(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
                       ThreadCallResult* tail, ActorNotifyRegs* out);
 
+// What a run of `$80:BF1B` did, block by block.
+//
+// The routine is one screen of listing and every branch in it is an outcome the
+// port already computes, so this is the shape the `_counted` pattern was made
+// for. Two things are worth saying about the layout:
+//
+// **The bound loop is four blocks, not one.** `LDX #$0006 : BIT $38,X : BPL :
+// STZ $38,X : DEX DEX : BPL` always runs exactly four times, so its cost could
+// have been a constant — but the `STZ` only happens on a negative bound, and
+// the loop-back `BPL` is taken three times and not taken once. Counting all
+// four independently makes the fixed part self-checking: `BOUND_NEXT` must come
+// out at three times `BOUND_DONE` on every call, and the two bound blocks must
+// sum to four times it.
+//
+// **The floor is the check, and it is exact.** All four bounds kept, then the
+// one-record refusal at `$80:BF33`, is
+// `114 + 4x76 + 3x18 + 12 + 158`, which is **642** — and 642 is the minimum
+// `verify` measures over the 5,245 calls `movies/level25-boss.zmv` makes. On
+// that movie `notify_bound_clamped` and `notify_no_actors` are both untaken, so
+// the cheapest call available *is* that path, and it prices to the cycle.
+typedef enum {
+  NOTIFY_BLK_PROLOGUE,       // $80:BF1B PHD : PEA $0000 : PLD : LDX #$0006
+  NOTIFY_BLK_BOUND_KEPT,     // $80:BF25 BPL taken: bit 15 clear, no STZ
+  NOTIFY_BLK_BOUND_CLAMPED,  // ...not taken, so the bound is zeroed
+  NOTIFY_BLK_BOUND_NEXT,     // $80:BF2B BPL taken: three of the four
+  NOTIFY_BLK_BOUND_DONE,     // ...not taken, which is the fourth
+  NOTIFY_BLK_NO_ACTORS,      // $80:BF2F BEQ taken: nothing visible at all
+  NOTIFY_BLK_ONE_ACTOR,      // $80:BF33 BEQ taken: exactly one, which is refused
+  NOTIFY_BLK_WALK,           // ...neither, so the walk runs
+  NOTIFY_BLK_NO_ID,          // $80:BF3A BEQ taken: the record has no collision id
+  NOTIFY_BLK_SELF_ID,        // $80:BF3E BEQ taken: it is the caller's own
+  NOTIFY_BLK_LEFT_OF,        // $80:BF44 BCC taken: x below the left edge
+  NOTIFY_BLK_RIGHT_OF,       // $80:BF48 BCS taken: x at or past the right one
+  NOTIFY_BLK_ABOVE,          // $80:BF4E BCC taken: y above the top edge
+  NOTIFY_BLK_BELOW,          // $80:BF52 BCS taken: y at or past the bottom one
+  NOTIFY_BLK_HIT,            // inside the box: $80:BF54 PHY .. PLY, the JSL included
+  NOTIFY_BLK_LOOP_NEXT,      // $80:BF63 BPL taken: another record
+  NOTIFY_BLK_LOOP_DONE,      // ...not taken, and the shared PLD : RTL
+  NOTIFY_BLOCK_COUNT,
+} ActorNotifyBlock;
+
+// The walk covers `visible_actors`, which the cull holds to 32 records, so 32
+// is the most hits a call can produce and the array never has to refuse one for
+// being too long. It is still guarded — a bound that is right by construction
+// is worth asserting anyway, and `OVL_MAX_PRICED_HITS` is guarded for the same
+// reason.
+#define NOTIFY_BOX_MAX_PRICED_HITS 32
+
+typedef struct {
+  uint16_t blocks[NOTIFY_BLOCK_COUNT];
+  // One per `NOTIFY_BLK_HIT`, in the order the walk made them, capped above.
+  uint16_t hits;
+  ThreadCallWork call[NOTIFY_BOX_MAX_PRICED_HITS];
+} ActorNotifyWork;
+
+bool actor_notify_box_counted(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
+                              ThreadCallResult* tail, ActorNotifyRegs* out,
+                              ActorNotifyWork* work);
+
 // --- $80:BF67 ---------------------------------------------------------------
 
 // **Is anything standing within six pixels of this point?**

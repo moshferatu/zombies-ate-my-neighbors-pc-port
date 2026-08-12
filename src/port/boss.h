@@ -111,6 +111,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/oam.h"  // ActorNotifyWork: `boss_stomp` is priced by the box's table
 #include "port/wram.h"
 
 #define BOSS_STEP_ENTRY 0x828f93u
@@ -293,5 +294,18 @@ bool boss_stomp_supported(Wram* scratch, const Rom* rom);
 // decline, having possibly told some of them, exactly as `actor_notify_box`
 // does and for the same reason.
 bool boss_stomp(Wram* w, const Rom* rom, BossStompRegs* out);
+
+// ...and what it did, which is *entirely* `actor_notify_box`'s: five stores and
+// a `JSL`, so there is no block table of this routine's own and no enum here.
+// The five stores are a constant the cost model adds, and everything that
+// varies call to call varies inside the callee.
+//
+// This is the second registry entry priced by a table it does not own -- the
+// first being the three blocks of `wave_hdma_build` that pay for `sin_deg` --
+// and it is not a duplicate for the same reason: when `$82:92D6` is
+// substituted its `JSL` never happens, so `actor_notify_box`'s own shim is
+// never entered on that call and its entry prices nothing.
+bool boss_stomp_counted(Wram* w, const Rom* rom, BossStompRegs* out,
+                        ActorNotifyWork* work);
 
 #endif

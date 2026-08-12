@@ -1108,8 +1108,13 @@ void actor_snap_to(Wram* w, uint16_t rec, uint16_t onto, ActorSnapRegs* out) {
 // $80:BF1B  actor_notify_box
 // ---------------------------------------------------------------------------
 
-bool actor_notify_box(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
-                      ThreadCallResult* tail, ActorNotifyRegs* out) {
+bool actor_notify_box_counted(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
+                              ThreadCallResult* tail, ActorNotifyRegs* out,
+                              ActorNotifyWork* work) {
+  memset(work->blocks, 0, sizeof work->blocks);
+  work->hits = 0;
+  work->blocks[NOTIFY_BLK_PROLOGUE]++;
+
   // `LDX #$0006 : BIT $38,X : BPL : STZ $38,X`, downwards over four words.
   // Only a negative bound is touched, and it is zeroed rather than clamped to
   // anything the map knows about. X falls out of this loop at $FFFE, which is
@@ -1118,10 +1123,14 @@ bool actor_notify_box(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
     uint32_t at = NOTIFY_BOX_DP_X0 + (uint32_t)i * 2;
     if (wram_r16(w, at) & 0x8000u) {
       PORT_COVER(notify_bound_clamped);
+      work->blocks[NOTIFY_BLK_BOUND_CLAMPED]++;
       wram_w16(w, at, 0);
     } else {
       PORT_COVER(notify_bound_kept);
+      work->blocks[NOTIFY_BLK_BOUND_KEPT]++;
     }
+    // `DEX DEX : BPL $BF23` — taken on the first three, not on the last.
+    work->blocks[i ? NOTIFY_BLK_BOUND_NEXT : NOTIFY_BLK_BOUND_DONE]++;
   }
 
   out->a = a_in;
@@ -1132,6 +1141,7 @@ bool actor_notify_box(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
   uint16_t count = wram_r16(w, W_VISIBLE_ACTOR_COUNT);
   if (count == 0) {
     PORT_COVER(notify_no_actors);
+    work->blocks[NOTIFY_BLK_NO_ACTORS]++;
     return true;
   }
   // `DEY DEY : BEQ` — one visible record is refused as well as none, so a board
@@ -1141,8 +1151,10 @@ bool actor_notify_box(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
   uint16_t at = (uint16_t)(count - 2);
   if (at == 0) {
     PORT_COVER(notify_one_actor);
+    work->blocks[NOTIFY_BLK_ONE_ACTOR]++;
     return true;
   }
+  work->blocks[NOTIFY_BLK_WALK]++;
 
   uint16_t id = wram_r16(w, NOTIFY_BOX_DP_ID);
   uint16_t x0 = wram_r16(w, NOTIFY_BOX_DP_X0), x1 = wram_r16(w, NOTIFY_BOX_DP_X1);
@@ -1160,8 +1172,10 @@ bool actor_notify_box(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
 
     if (rec_id == 0) {
       PORT_COVER(notify_no_id);            // `BEQ`, and the carry stands
+      work->blocks[NOTIFY_BLK_NO_ID]++;
     } else if (rec_id == id) {
       PORT_COVER(notify_self_id);
+      work->blocks[NOTIFY_BLK_SELF_ID]++;
       out->c = true;                       // `CMP $40` equal, so C is set
     } else {
       out->c = rec_id >= id;
@@ -1170,31 +1184,44 @@ bool actor_notify_box(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
       out->c = rx >= x0;
       if (!out->c) {
         PORT_COVER(notify_left_of);
+        work->blocks[NOTIFY_BLK_LEFT_OF]++;
       } else {
         out->c = rx >= x1;
         if (out->c) {
           PORT_COVER(notify_right_of);
+          work->blocks[NOTIFY_BLK_RIGHT_OF]++;
         } else {
           uint16_t ry = wram_r16(w, (uint32_t)rec + ACTOR_Y);
           out->a = ry;
           out->c = ry >= y0;
           if (!out->c) {
             PORT_COVER(notify_above);
+            work->blocks[NOTIFY_BLK_ABOVE]++;
           } else {
             out->c = ry >= y1;
             if (out->c) {
               PORT_COVER(notify_below);
+              work->blocks[NOTIFY_BLK_BELOW]++;
             } else {
               PORT_COVER(notify_hit);
+              work->blocks[NOTIFY_BLK_HIT]++;
               // `PHY : LDA $0C,X : STX $78 : TAX : LDY $40 : JSL $808480 :
               // PLY`. The record is published *before* the dispatch, as
               // everywhere else, so a handler reading `$78` sees the actor it
               // is being told about. `PHY`/`PLY` is why the walk survives it.
               wram_w16(w, W_HANDLER_SELF, rec);
               tail->c = out->c;
-              if (!thread_call_handler(
+              // Past the cap the dispatch still runs — the port's job is the
+              // WRAM, not the price — and only the *pricing* gives up, which
+              // `notify_box_cycles` sees as `hits` having run past the array.
+              ThreadCallWork spill;
+              ThreadCallWork* into = work->hits < NOTIFY_BOX_MAX_PRICED_HITS
+                                         ? &work->call[work->hits]
+                                         : &spill;
+              work->hits++;
+              if (!thread_call_handler_counted(
                       w, rom, wram_r16(w, (uint32_t)rec + ACTOR_THREAD), id,
-                      tail->c, tail)) {
+                      tail->c, tail, into)) {
                 return false;
               }
               out->a = tail->a;
@@ -1206,13 +1233,23 @@ bool actor_notify_box(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
       }
     }
 
-    if (at == 0) break;
+    if (at == 0) {
+      work->blocks[NOTIFY_BLK_LOOP_DONE]++;
+      break;
+    }
+    work->blocks[NOTIFY_BLK_LOOP_NEXT]++;
     at -= 2;
   }
 
   // `DEY DEY : BPL` off the end of index 0.
   out->y = 0xfffeu;
   return true;
+}
+
+bool actor_notify_box(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
+                      ThreadCallResult* tail, ActorNotifyRegs* out) {
+  ActorNotifyWork ignored;
+  return actor_notify_box_counted(w, rom, a_in, c_in, tail, out, &ignored);
 }
 
 // ---------------------------------------------------------------------------
