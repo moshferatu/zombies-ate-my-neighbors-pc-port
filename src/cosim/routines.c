@@ -3108,11 +3108,75 @@ static void shim_terrain_out_of_bounds(Wram* w, const Rom* rom,
 // threshold decides it is the tile *index*, unshifted — and on those exits `Y`
 // is the map offset, except for the first probe, which does not index at all
 // and returns the caller's own `Y`.
+//
+// **Unrolling is what makes this priceable.** A rolled loop would hide its
+// counter arithmetic in a block that has to be right ten times over; ten copies
+// of the same two tests, each reached by its own load, price as a straight sum
+// with nothing to iterate. The five loads are the only thing that varies, and
+// the whole table is those five plus four outcomes and two exits.
+//
+// The routine forces `D` to zero itself — `LDA #$0000 : TCD`, four instructions
+// in — so nothing here owes a direct-page penalty. The `dp` column is a
+// listing cross-check and nothing more, and the two stores it counts in the
+// prologue happen *after* the `TCD`, which is the only reason that is true.
+static const CosimRun WIDE_COST[WIDE_BLOCK_COUNT] = {
+    // $82:90F7-$82:911D. `PHD : TXA : SEC : SBC : PHA` on the caller's page,
+    // then `TCD` and the same again for Y, then `ADC $7E4328,X` (40: the row
+    // table is in bank $7E and costs 8 a byte) and the pointer into `$28`.
+    [WIDE_BLK_PROLOGUE] = {28 + 12 + 12 + 18 + 28 + 18 + 12 + 12 + 12 + 18 +
+                               12 + 12 + 18 + 12 + 34 + 12 + 12 + 18 + 12 +
+                               40 + 28 + 18 + 28,
+                           40, 2},  // 426
+    // The five loads. `LDA [$28],Y` is 52 — three bytes of pointer at 6 apiece
+    // for the fetch, then two WRAM reads at 8 and the indirection's own idle.
+    [WIDE_BLK_LOAD_FIRST] = {52, 2, 1},              // `LDA [$28]`
+    [WIDE_BLK_LOAD_IMM] = {18 + 52, 5, 1},           // `LDY #imm`
+    [WIDE_BLK_LOAD_ROW] = {28 + 52, 4, 2},           // `LDY $B2`
+    [WIDE_BLK_LOAD_ROW_INC] = {28 + 12 + 12 + 52, 6, 2},        // ...`INY:INY`
+    [WIDE_BLK_LOAD_ROW_ADD] = {28 + 12 + 18 + 12 + 52, 9, 2},   // ...`ADC:TAY`
+    // `AND #$01FF : CMP $00DC : BCC`. The `CMP` is absolute and lands in the
+    // bank $82 mirror of low WRAM, which is why it is 34 and not 18.
+    [WIDE_BLK_PRIO_PASS] = {18 + 34 + 12, 8, 0},  // 64
+    [WIDE_BLK_PRIO_FAIL] = {18 + 34 + 18, 8, 0},  // 70
+    // `ASL : TAY : LDA [$BA],Y : LSR : LSR : BCS`.
+    [WIDE_BLK_ATTR_PASS] = {12 + 12 + 52 + 12 + 12 + 12, 8, 1},  // 112
+    [WIDE_BLK_ATTR_FAIL] = {12 + 12 + 52 + 12 + 12 + 18, 8, 1},  // 118
+    // ...and the tenth, which has no `BCS` because the exit is the next
+    // instruction. One block for both outcomes: the branch it does not have is
+    // the only thing the other two disagree about.
+    [WIDE_BLK_ATTR_LAST] = {12 + 12 + 52 + 12 + 12, 6, 1},  // 100
+    [WIDE_BLK_ROW_BRA] = {18, 2, 0},
+    [WIDE_BLK_EXIT_SEC] = {12 + 34 + 40, 3, 0},  // 86
+    [WIDE_BLK_EXIT_PLD] = {34 + 40, 2, 0},       // 74
+};
+
+// **634 is this routine's registry floor, and it is four blocks added up.**
+// Prologue 426, the first probe's bare `LDA [$28]` 52, the priority test
+// rejecting at 70, and `SEC : PLD : RTS` at 86. There is no cheaper call: the
+// pass loop cannot be entered fewer than once and the first tile cannot be
+// refused sooner than by its own number. The registry has said `634..3,268`
+// since long before this table existed, from the corpus reporting the cheapest
+// call it ever saw.
+//
+// The ceiling agrees the same way and is worth doing because it exercises every
+// row of the table: all ten probes clear is 426 + 228 + 4x246 + 18 + 256 + 280
+// + 2x298 + 286 + 74 = 3,148, and 3,268 - 3,148 = 120, which is three DRAM
+// refreshes over a call three scanlines long.
+static int wide_cycles(const TerrainWideWork* k, bool fast) {
+  int cycles = 0;
+  for (int i = 0; i < WIDE_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles(&WIDE_COST[i], fast);
+  return cycles;
+}
+
 static void shim_terrain_blocked_wide(Wram* w, const Rom* rom,
                                       const CosimRegs* in, CosimRegs* out) {
   (void)rom;
   TerrainRegs r;
-  terrain_blocked_wide(w, in->x, in->y, &r);
+  TerrainWideWork work;
+  memset(work.blocks, 0, sizeof work.blocks);
+  terrain_blocked_wide_counted(w, in->x, in->y, &r, &work);
+  cosim_cost(wide_cycles(&work, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -4251,10 +4315,95 @@ static void shim_boss_bg_queue_flip(Wram* w, const Rom* rom,
 // describe the difference. X and Y are `terrain_blocked_wide`'s leftovers from
 // the last probe the pass loop ran, and there is always one — the loop tests
 // its counter at the bottom.
+//
+// **Thirteen blocks of arithmetic wrapped round somebody else's table.** The
+// probes are `terrain_blocked_wide`'s and are priced by `wide_cycles` above;
+// what is here is the two table lookups, the pass loop and the exit compare.
+// The `JSR`s are in `PASS_HEAD` and `LEAD_CLEAR` and the `RTS`s that match them
+// are in the leaf's exit blocks, so the seam is paid for exactly once from each
+// side.
+//
+// This routine does **not** force `D` — no `PHD`, no `TCD`, fifteen direct-page
+// instructions on whatever page the boss thread was running. So unlike the leaf
+// it calls, the `dp` column here is a real cost and not a cross-check, and the
+// shim passes `in->d` for both the arithmetic and the answer.
+static const CosimRun BOSS_STEP_COST[BOSS_STEP_BLOCK_COUNT] = {
+    // `LDX $16 : CMP #$6969 : BNE` taken.
+    [BOSS_BLK_SINGLE] = {28 + 18 + 18, 7, 1},  // 64
+    // ...or not taken, and `DEC $2C` is a direct-page read-modify-write at 50,
+    // which is most of what the double step costs over the single one.
+    [BOSS_BLK_DOUBLE] = {28 + 18 + 12 + 12 + 12 + 18 + 12 + 50, 15, 2},  // 162
+    // $82:8FA2-$82:8FD4. Four long reads out of `$82:906F` at 36 apiece, the
+    // two absolute `$1E62`/`$1E64` loads at 34, and eight direct-page stores.
+    [BOSS_BLK_SETUP] = {34 + 28 + 34 + 28 + 36 + 12 + 34 + 28 + 36 + 12 + 34 +
+                            28 + 36 + 28 + 36 + 28 + 28 + 12 + 12 + 12 + 36 +
+                            28,
+                        62, 8},  // 600
+    // $82:8FD6-$82:8FEC, ending on the `JSR`: the probe index, both offsets
+    // added to the candidate, and the call.
+    [BOSS_BLK_PASS_HEAD] = {28 + 12 + 28 + 28 + 12 + 36 + 12 + 28 + 12 + 36 +
+                                12 + 28 + 12 + 40,
+                            29, 5},  // 324
+    [BOSS_BLK_LEAD_BLOCKED] = {18, 2, 0},
+    // The same shape again for the trailing probe, under a `BCS` not taken.
+    [BOSS_BLK_LEAD_CLEAR] = {12 + 28 + 36 + 12 + 28 + 12 + 36 + 12 + 28 + 12 +
+                                 40,
+                             25, 3},  // 256
+    [BOSS_BLK_TRAIL_BLOCKED] = {18, 2, 0},
+    // `BCS` not taken, `LDA $0A : AND #$0008 : BEQ` not taken, the store, and
+    // the `BRA` over the other half.
+    [BOSS_BLK_COMMIT_X] = {12 + 28 + 18 + 12 + 28 + 34 + 18, 16, 2},  // 150
+    // ...or the `BEQ` taken, which is cheaper by exactly the `BRA` it lands
+    // past: 150 - 138 = 12, and 12 is a branch not taken.
+    [BOSS_BLK_COMMIT_Y] = {12 + 28 + 18 + 18 + 28 + 34, 14, 2},  // 138
+    // `LDA $18 : SEC : SBC #$0008 : STA $18 : BPL`.
+    [BOSS_BLK_LOOP_NEXT] = {28 + 12 + 18 + 28 + 18, 10, 2},  // 104
+    [BOSS_BLK_LOOP_DONE] = {28 + 12 + 18 + 28 + 12, 10, 2},  // 98
+    // `LDA $1E62 : CMP $10 : BNE` taken, then `CLC : RTS`.
+    [BOSS_BLK_EXIT_X] = {34 + 28 + 18 + 12 + 40, 9, 1},  // 132
+    [BOSS_BLK_EXIT_Y] = {34 + 28 + 12 + 34 + 28 + 18 + 12 + 40, 16, 2},  // 206
+    // ...and neither, which is the same run of instructions with `SEC` in
+    // place of `CLC` and the second `BNE` not taken: 206 - 200 = 6.
+    [BOSS_BLK_EXIT_STUCK] = {34 + 28 + 12 + 34 + 28 + 12 + 12 + 40, 16, 2},
+};
+
+// **2,076 and 15,616 are this routine's registry bounds, and the table
+// reproduces both — but only the second one the way it was expected to.**
+//
+// The ceiling is a diagonal that runs both passes and finds all four probes
+// clear: 162 + 600 + 2x(324 + 256) + 150 + 138 + 104 + 98 + 132 = 2,544 of
+// arithmetic, plus four ceiling probes at 3,148 = 15,136. The measured 15,616
+// is 480 more, which is twelve refreshes over a call eleven scanlines long.
+//
+// The floor is the interesting one. The cheapest call the table can build is a
+// *single* step whose first probe is already in terrain — 64 + 600 + 324 + 634
+// + 18 + 98 + 200 = 1,938 — and 2,076 is 138 more, which is not a multiple of
+// 40 and so cannot be refresh alone. Swap `SINGLE` for `DOUBLE` and it is
+// 2,036, and 2,076 - 2,036 = 40 exactly.
+//
+// **So the cheapest call ever measured is a double step, and it is not because
+// single steps are rare.** `boss_step_single` is taken 247 times in
+// `level25-boss.zmv` alone. What has never happened is the two cheap things at
+// once: a single step whose very first probe is refused on the tile number.
+// Each half is ordinary, the combination is not, and a model built out of
+// blocks says so where a fitted constant could not — 1,938 is a price this
+// table can quote for a call the game has never made.
+static int boss_step_cycles(const BossStepWork* k, bool fast,
+                            bool dp_unaligned) {
+  int cycles = wide_cycles(&k->probes, fast);
+  for (int i = 0; i < BOSS_STEP_BLOCK_COUNT; i++)
+    cycles +=
+        k->blocks[i] * cosim_run_cycles_dp(&BOSS_STEP_COST[i], fast,
+                                           dp_unaligned);
+  return cycles;
+}
+
 static void shim_boss_step(Wram* w, const Rom* rom, const CosimRegs* in,
                            CosimRegs* out) {
   BossStepRegs r;
-  boss_step(w, rom, in->d, in->a, &r);
+  BossStepWork work;
+  boss_step_counted(w, rom, in->d, in->a, &r, &work);
+  cosim_cost(boss_step_cycles(&work, in->fastrom, (in->d & 0xff) != 0));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -6079,6 +6228,10 @@ static const CosimRoutine ROUTINES[] = {
         // failing the priority test; the ceiling is all ten probes, both reads
         // each, with nothing found — and because the loop is unrolled the
         // ceiling is a straight line rather than an iteration count.
+        //
+        // Now the fallback and not the price: `WIDE_COST` reports each call
+        // from what that call actually probed. Both ends of the range above are
+        // block sums — see `wide_cycles`.
         .cycles = 3167,
         .stack_bytes = 4,  // the PHD, and the PHA/PLA that stashes X under it
     },
@@ -6383,6 +6536,12 @@ static const CosimRoutine ROUTINES[] = {
         // clear, which is four `terrain_blocked_wide` calls in one step. Almost
         // all of the budget is those calls: the routine's own arithmetic is
         // about sixty instructions and the probes are the rest.
+        //
+        // Now the fallback and not the price. "Almost all of the budget is
+        // those calls" turned out to be 83% of the ceiling, and the model says
+        // so by construction: `BOSS_STEP_COST` is the arithmetic and the probes
+        // come from `WIDE_COST` through the same `TerrainWideWork` the port
+        // fills in. See `boss_step_cycles`.
         .cycles = 11770,
         // Two bytes of `JSR` return address with `terrain_blocked_wide`'s own
         // four on top of it, and the routine pushes nothing itself.

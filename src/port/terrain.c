@@ -2,6 +2,8 @@
 
 #include "port/terrain.h"
 
+#include <string.h>
+
 #include "port/coverage.h"
 
 // The six probes, as byte offsets from the tile the point lands on. The lower
@@ -120,7 +122,21 @@ static uint16_t wide_probe(const Wram* w, int i, uint16_t entry_y,
   return off;
 }
 
-void terrain_blocked_wide(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out) {
+// Which of the five loads probe `i` uses. See `TerrainWideBlock`: the ROM
+// reaches the same map through five different pieces of arithmetic, and this
+// is the only way the ten probes differ from one another.
+static TerrainWideBlock wide_load_block(int i) {
+  if (i == 0) return WIDE_BLK_LOAD_FIRST;
+  if (i < TERRAIN_WIDE_COLS) return WIDE_BLK_LOAD_IMM;
+  if (i == TERRAIN_WIDE_COLS) return WIDE_BLK_LOAD_ROW;
+  if (i == TERRAIN_WIDE_COLS + 1) return WIDE_BLK_LOAD_ROW_INC;
+  return WIDE_BLK_LOAD_ROW_ADD;
+}
+
+void terrain_blocked_wide_counted(Wram* w, uint16_t x, uint16_t y,
+                                  TerrainRegs* out, TerrainWideWork* work) {
+  work->blocks[WIDE_BLK_PROLOGUE]++;
+
   // $82:90F8-$82:9118, and it is `$80:AE14`'s opening with one constant
   // changed: `SBC #$0011` where that one has `SBC #$0009`.
   uint16_t row = (uint16_t)(((uint16_t)(y - TERRAIN_WIDE_ORIGIN_Y) >>
@@ -140,6 +156,12 @@ void terrain_blocked_wide(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out) {
   uint32_t attrs_bank = (uint32_t)(wram_r8(w, W_TILE_ATTRS + 2) & 1) << 16;
 
   for (int i = 0; i < TERRAIN_WIDE_PROBE_COUNT; i++) {
+    // $82:9185 `BRA $918C`, stepping over the two exits row one branches back
+    // to. Row two has its own pair at the bottom, so this is paid once and
+    // only by a call that gets past all five of the upper tiles.
+    if (i == TERRAIN_WIDE_COLS) work->blocks[WIDE_BLK_ROW_BRA]++;
+    work->blocks[wide_load_block(i)]++;
+
     uint16_t yreg;
     uint16_t off = wide_probe(w, i, y, &yreg);
     uint16_t entry =
@@ -150,28 +172,44 @@ void terrain_blocked_wide(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out) {
     // rather than an attribute word on this exit.
     if (idx < floor) {
       PORT_COVER_IF(i == 0, wide_floor_first, wide_floor_other);
+      work->blocks[WIDE_BLK_PRIO_FAIL]++;
+      work->blocks[WIDE_BLK_EXIT_SEC]++;
       out->a = idx;
       out->y = yreg;
       out->blocked = true;
       return;
     }
+    work->blocks[WIDE_BLK_PRIO_PASS]++;
 
     uint16_t tile = (uint16_t)(idx << 1);
     out->y = tile;  // `ASL A : TAY`
     uint16_t attrs = wram_r16(w, attrs_bank + attrs_ptr + tile);
     out->a = (uint16_t)(attrs >> 2);  // `LSR A : LSR A`, the test and the value
 
+    // The last probe's block is the others' without the `BCS`, and it is
+    // counted whichever way the test goes -- there is no branch to be taken.
+    bool last = i == TERRAIN_WIDE_PROBE_COUNT - 1;
     if (attrs & TERRAIN_MASK_ENEMY) {
       PORT_COVER_IF(i < TERRAIN_WIDE_COLS, wide_attr_upper, wide_attr_lower);
+      work->blocks[last ? WIDE_BLK_ATTR_LAST : WIDE_BLK_ATTR_FAIL]++;
+      work->blocks[WIDE_BLK_EXIT_PLD]++;
       out->blocked = true;
       return;
     }
+    work->blocks[last ? WIDE_BLK_ATTR_LAST : WIDE_BLK_ATTR_PASS]++;
   }
 
   // $82:91FE. The tenth probe's `LSR A` is the only one with no branch after
   // it, so falling into the `PLD` with its carry clear *is* the answer.
   PORT_COVER(wide_clear);
+  work->blocks[WIDE_BLK_EXIT_PLD]++;
   out->blocked = false;
+}
+
+void terrain_blocked_wide(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out) {
+  TerrainWideWork ignored;
+  memset(ignored.blocks, 0, sizeof ignored.blocks);
+  terrain_blocked_wide_counted(w, x, y, out, &ignored);
 }
 
 // ---------------------------------------------------------------------------

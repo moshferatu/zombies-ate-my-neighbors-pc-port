@@ -2,6 +2,8 @@
 
 #include "port/boss.h"
 
+#include <string.h>
+
 #include "port/coverage.h"
 #include "port/oam.h"
 #include "port/terrain.h"
@@ -19,36 +21,48 @@ static uint16_t table_word(const Rom* rom, uint16_t base, uint16_t index) {
 // `last` collects the registers of whichever probe ran most recently, because
 // they are what the routine returns in X and Y.
 static void boss_step_pass(Wram* w, const Rom* rom, uint16_t probe,
-                           uint16_t try_x, uint16_t try_y, TerrainRegs* last) {
-  terrain_blocked_wide(w, (uint16_t)(table_word(rom, BOSS_STEP_PROBES, probe) + try_x),
-                       (uint16_t)(table_word(rom, BOSS_STEP_PROBES + 2u, probe) + try_y),
-                       last);
+                           uint16_t try_x, uint16_t try_y, TerrainRegs* last,
+                           BossStepWork* work) {
+  work->blocks[BOSS_BLK_PASS_HEAD]++;
+  terrain_blocked_wide_counted(
+      w, (uint16_t)(table_word(rom, BOSS_STEP_PROBES, probe) + try_x),
+      (uint16_t)(table_word(rom, BOSS_STEP_PROBES + 2u, probe) + try_y), last,
+      &work->probes);
   if (last->blocked) {
     PORT_COVER(boss_lead_blocked);
+    work->blocks[BOSS_BLK_LEAD_BLOCKED]++;
     return;
   }
   PORT_COVER(boss_lead_clear);
+  work->blocks[BOSS_BLK_LEAD_CLEAR]++;
 
-  terrain_blocked_wide(w, (uint16_t)(table_word(rom, BOSS_STEP_PROBES + 4u, probe) + try_x),
-                       (uint16_t)(table_word(rom, BOSS_STEP_PROBES + 6u, probe) + try_y),
-                       last);
+  terrain_blocked_wide_counted(
+      w, (uint16_t)(table_word(rom, BOSS_STEP_PROBES + 4u, probe) + try_x),
+      (uint16_t)(table_word(rom, BOSS_STEP_PROBES + 6u, probe) + try_y), last,
+      &work->probes);
   if (last->blocked) {
     PORT_COVER(boss_trail_blocked);
+    work->blocks[BOSS_BLK_TRAIL_BLOCKED]++;
     return;
   }
 
   // `LDA $0A : AND #$0008` — the index that chose the probes chooses the axis.
   if (probe & BOSS_STEP_AXIS_X) {
     PORT_COVER(boss_commit_x);
+    work->blocks[BOSS_BLK_COMMIT_X]++;
     wram_w16(w, W_BOSS_X, try_x);
   } else {
     PORT_COVER(boss_commit_y);
+    work->blocks[BOSS_BLK_COMMIT_Y]++;
     wram_w16(w, W_BOSS_Y, try_y);
   }
 }
 
-void boss_step(Wram* w, const Rom* rom, uint16_t dp, uint16_t a_in,
-               BossStepRegs* out) {
+void boss_step_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t a_in,
+                       BossStepRegs* out, BossStepWork* work) {
+  memset(work->blocks, 0, sizeof work->blocks);
+  memset(work->probes.blocks, 0, sizeof work->probes.blocks);
+  work->blocks[BOSS_BLK_SETUP]++;
   uint16_t dir = wram_r16(w, dp + BOSS_STEP_DP_DIR);
 
   // `LDX $16 : CMP #$6969` — X is loaded before the test, so the single-step
@@ -57,11 +71,13 @@ void boss_step(Wram* w, const Rom* rom, uint16_t dp, uint16_t a_in,
   uint16_t at = dir;
   if (a_in == BOSS_STEP_FAST) {
     PORT_COVER(boss_step_double);
+    work->blocks[BOSS_BLK_DOUBLE]++;
     at = (uint16_t)(at + BOSS_STEP_FAST_BIAS);
     wram_w16(w, dp + BOSS_STEP_DP_TICK,
              (uint16_t)(wram_r16(w, dp + BOSS_STEP_DP_TICK) - 1u));
   } else {
     PORT_COVER(boss_step_single);
+    work->blocks[BOSS_BLK_SINGLE]++;
   }
 
   uint16_t was_x = wram_r16(w, W_BOSS_X);
@@ -94,9 +110,11 @@ void boss_step(Wram* w, const Rom* rom, uint16_t dp, uint16_t a_in,
   do {
     uint16_t probe = (uint16_t)(base + pass);
     wram_w16(w, dp + BOSS_STEP_DP_PROBE, probe);
-    boss_step_pass(w, rom, probe, try_x, try_y, &last);
+    boss_step_pass(w, rom, probe, try_x, try_y, &last, work);
     pass = (uint16_t)(pass - 8u);
     wram_w16(w, dp + BOSS_STEP_DP_PASS, pass);
+    work->blocks[(pass & 0x8000u) == 0 ? BOSS_BLK_LOOP_NEXT
+                                       : BOSS_BLK_LOOP_DONE]++;
   } while ((pass & 0x8000u) == 0);
 
   // `LDA $1E62 : CMP $10 : BNE` then the same for Y. `CMP` does not write A,
@@ -106,6 +124,7 @@ void boss_step(Wram* w, const Rom* rom, uint16_t dp, uint16_t a_in,
   uint16_t now_x = wram_r16(w, W_BOSS_X);
   if (now_x != was_x) {
     PORT_COVER(boss_moved_x);
+    work->blocks[BOSS_BLK_EXIT_X]++;
     out->a = now_x;
     out->n = ((uint16_t)(now_x - was_x) & 0x8000u) != 0;
     out->z = false;
@@ -115,11 +134,13 @@ void boss_step(Wram* w, const Rom* rom, uint16_t dp, uint16_t a_in,
     out->a = now_y;
     if (now_y != was_y) {
       PORT_COVER(boss_moved_y);
+      work->blocks[BOSS_BLK_EXIT_Y]++;
       out->n = ((uint16_t)(now_y - was_y) & 0x8000u) != 0;
       out->z = false;
       out->c = false;
     } else {
       PORT_COVER(boss_stuck);
+      work->blocks[BOSS_BLK_EXIT_STUCK]++;
       out->n = false;
       out->z = true;
       out->c = true;
@@ -128,6 +149,12 @@ void boss_step(Wram* w, const Rom* rom, uint16_t dp, uint16_t a_in,
 
   out->x = last.x;
   out->y = last.y;
+}
+
+void boss_step(Wram* w, const Rom* rom, uint16_t dp, uint16_t a_in,
+               BossStepRegs* out) {
+  BossStepWork ignored;
+  boss_step_counted(w, rom, dp, a_in, out, &ignored);
 }
 
 // The four vertical offsets are immediates in the instruction stream rather

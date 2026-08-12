@@ -112,6 +112,7 @@
 
 #include "assets/rom.h"
 #include "port/oam.h"  // ActorNotifyWork: `boss_stomp` is priced by the box's table
+#include "port/terrain.h"  // TerrainWideWork: and `boss_step` by the probe's
 #include "port/wram.h"
 
 #define BOSS_STEP_ENTRY 0x828f93u
@@ -159,6 +160,59 @@ typedef struct {
 // else for a single one.
 void boss_step(Wram* w, const Rom* rom, uint16_t dp, uint16_t a_in,
                BossStepRegs* out);
+
+// --- What a step costs ------------------------------------------------------
+//
+// **Almost none of this is the routine.** Sixty-odd instructions of table
+// lookups and additions, and then between one and four calls to
+// `terrain_blocked_wide`, which is the most expensive leaf in the registry.
+// A step that runs both passes and finds all four probes clear spends 12,592
+// of its 15,136 cycles inside the leaf -- 83% of the call in a routine that is
+// not, itself, doing anything expensive.
+//
+// So this table is thirteen blocks of arithmetic plus a `TerrainWideWork` that
+// the probes accumulate into, and the two are added at the end. The `JSR`s live
+// here (in `PASS_HEAD` and `LEAD_CLEAR`) and the matching `RTS`s live in the
+// leaf's own exit blocks, which is where they are already paid for.
+typedef enum {
+  BOSS_BLK_SINGLE,        // $82:8F98 BNE taken: A was not #$6969
+  BOSS_BLK_DOUBLE,        // ...or it was, so the index moves $40 on and $2C
+                          // is decremented -- a read-modify-write at 50
+  BOSS_BLK_SETUP,         // $82:8FA2-$82:8FD4: four table words and the base
+  BOSS_BLK_PASS_HEAD,     // $82:8FD6-$82:8FEC: the leading probe, and its JSR
+  BOSS_BLK_LEAD_BLOCKED,  // $82:8FEF BCS taken: the axis is refused here
+  BOSS_BLK_LEAD_CLEAR,    // ...or not, and the trailing probe follows
+  BOSS_BLK_TRAIL_BLOCKED, // $82:9004 BCS taken: one corner fits, one does not
+  BOSS_BLK_COMMIT_X,      // bit 3 of $0A set, so $1E62 is written
+  BOSS_BLK_COMMIT_Y,      // ...or clear, and $1E64 is
+  BOSS_BLK_LOOP_NEXT,     // $82:9021 BPL taken: a diagonal's second pass
+  BOSS_BLK_LOOP_DONE,     // ...or the counter went negative
+  BOSS_BLK_EXIT_X,        // $82:9028 BNE taken: X moved
+  BOSS_BLK_EXIT_Y,        // $82:902F BNE taken: X held and Y moved
+  BOSS_BLK_EXIT_STUCK,    // ...neither, which is the SEC the caller reads
+  BOSS_STEP_BLOCK_COUNT,
+} BossStepBlock;
+
+// The arithmetic and the probes, kept apart because they are priced from two
+// different listings and only added up at the seam.
+//
+//     SINGLE + DOUBLE == 1,  SETUP == 1,  LOOP_DONE == 1
+//     PASS_HEAD == LOOP_NEXT + LOOP_DONE == the passes run (1 or 2)
+//     LEAD_BLOCKED + LEAD_CLEAR == PASS_HEAD
+//     TRAIL_BLOCKED + COMMIT_X + COMMIT_Y == LEAD_CLEAR
+//     EXIT_X + EXIT_Y + EXIT_STUCK == 1
+//     probes.blocks[WIDE_BLK_PROLOGUE] == PASS_HEAD + LEAD_CLEAR
+//
+// That last one is the only cross-check in this port that ties two separately
+// derived tables together by a count rather than by a cost, and it is the one
+// that would catch a `JSR` counted in the wrong block.
+typedef struct {
+  uint16_t blocks[BOSS_STEP_BLOCK_COUNT];
+  TerrainWideWork probes;
+} BossStepWork;
+
+void boss_step_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t a_in,
+                       BossStepRegs* out, BossStepWork* work);
 
 // --- $82:9265  boss_place_parts ---------------------------------------------
 //

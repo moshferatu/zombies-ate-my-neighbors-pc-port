@@ -153,6 +153,71 @@ void terrain_blocked_enemy(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out);
 // first test returns with `Y` still holding the caller's own argument.
 void terrain_blocked_wide(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out);
 
+// --- What ten unrolled probes cost ------------------------------------------
+//
+// **The loop being written out ten times is what makes this priceable, and it
+// is also the only reason it needs a table at all.** A rolled loop would have
+// one body and one counter; this has ten bodies that agree about the two tests
+// and disagree about how each one reaches the map. So the blocks split the way
+// the ROM does: five ways of loading a probe, then the two tests, which are
+// byte for byte the same all ten times.
+//
+// The five loads are the whole of the difference between the probes:
+//
+//     probe 0      `LDA [$28]`                        -- no index at all
+//     probes 1-4   `LDY #$0002` .. `LDY #$0008`       -- an immediate
+//     probe 5      `LDY $B2`                          -- the row stride
+//     probe 6      `LDY $B2 : INY : INY`              -- ...and two increments
+//     probes 7-9   `LDA $B2 : CLC : ADC #imm : TAY`   -- ...and an addition
+//
+// Nine of those cost more than the one before, and the sequence 52, 70, 80,
+// 104, 122 is the price of the assembler never being asked to add a constant
+// to a direct-page word twice the same way.
+//
+// Two exits and three routes to them. `SEC : PLD : RTS` is the priority
+// rejection and `PLD : RTS` is everything else -- an attribute rejection,
+// whose carry the second `LSR` already set, and the clear fall-off, whose
+// carry the same `LSR` already cleared. **The tenth probe has no `BCS` after
+// it**, because the instruction it would branch to is the one underneath it,
+// so `WIDE_BLK_ATTR_LAST` is the ninth probe's block less a branch.
+typedef enum {
+  WIDE_BLK_PROLOGUE,      // $82:90F7-$82:911D: both shifts and the pointer
+  WIDE_BLK_LOAD_FIRST,    // probe 0, the one that does not index
+  WIDE_BLK_LOAD_IMM,      // probes 1-4
+  WIDE_BLK_LOAD_ROW,      // probe 5
+  WIDE_BLK_LOAD_ROW_INC,  // probe 6
+  WIDE_BLK_LOAD_ROW_ADD,  // probes 7-9
+  WIDE_BLK_PRIO_PASS,     // `AND : CMP $00DC : BCC` not taken
+  WIDE_BLK_PRIO_FAIL,     // ...or taken, which is the tile number alone
+  WIDE_BLK_ATTR_PASS,     // `ASL : TAY : LDA [$BA],Y : LSR : LSR : BCS` clear
+  WIDE_BLK_ATTR_FAIL,     // ...or set
+  WIDE_BLK_ATTR_LAST,     // the same without the branch: probe 9 only
+  WIDE_BLK_ROW_BRA,       // $82:9185 BRA, stepping over row one's two exits
+  WIDE_BLK_EXIT_SEC,      // $82:9189 / $82:9201, the priority rejection
+  WIDE_BLK_EXIT_PLD,      // $82:9187 / $82:91FF, the other two
+  WIDE_BLOCK_COUNT,
+} TerrainWideBlock;
+
+typedef struct {
+  uint16_t blocks[WIDE_BLOCK_COUNT];
+} TerrainWideWork;
+
+// **This one adds to `work` instead of clearing it**, which is the opposite of
+// every other `_counted` in this port. It is a leaf, and its caller worth
+// pricing -- `$82:8F93 boss_step` -- calls it two, three or four times in one
+// step and owes the sum. A caller that wants one call's figure clears the
+// struct itself; `shim_terrain_blocked_wide` does exactly that.
+//
+// Every call adds, and the sums check:
+//
+//     PROLOGUE == EXIT_SEC + EXIT_PLD == calls
+//     EXIT_SEC == PRIO_FAIL
+//     PRIO_PASS + PRIO_FAIL == the probes reached
+//     ATTR_PASS + ATTR_FAIL + ATTR_LAST == PRIO_PASS
+//     LOAD_FIRST == PROLOGUE, and no LOAD_* may exceed its share of the ten
+void terrain_blocked_wide_counted(Wram* w, uint16_t x, uint16_t y,
+                                  TerrainRegs* out, TerrainWideWork* work);
+
 // --- $80:B422 ---------------------------------------------------------------
 
 // **Is the point off the edge of the level?** Carry set means yes.

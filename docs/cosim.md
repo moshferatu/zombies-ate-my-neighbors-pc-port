@@ -4311,6 +4311,215 @@ It is also the first of these in a while that is not a walk. `camera_follow` and
 `monster_seek` under it are both single passes with a handful of branches, which
 makes them the cheapest models left rather than the most interesting ones.
 
+## The biggest debt in the registry, and the frames it did not buy (2026-08-12)
+
+The drift table's largest row was `boss_step`, at **+5,428,166 cycles over
+11,593 calls**. Its own registry comment had been saying for rounds that almost
+all of that budget belongs to somebody else:
+
+> Almost all of the budget is those calls: the routine's own arithmetic is
+> about sixty instructions and the probes are the rest.
+
+So the round is two models and they had to be done in order. `$82:90F7
+terrain_blocked_wide` is the leaf, and the most expensive one in the registry;
+`$82:8F93 boss_step` is the caller that spends 83% of its worst call inside it.
+
+### Unrolling is what makes a routine priceable
+
+`terrain_blocked_wide` is 406 bytes for what `$80:AE14` says in 130, because its
+loop is written out ten times. That has always been described in this port as
+the reason its *profile* is flat. It is also the reason it is easy to price, and
+that is worth separating out, because the two are not the same claim.
+
+A rolled loop puts its counter arithmetic in a block that has to be right ten
+times over, and an error there is multiplied before anything measures it. Ten
+copies of the same two tests price as a straight sum with nothing to iterate.
+What varies between the copies is only how each one reaches the map:
+
+```
+  probe 0      LDA [$28]                        no index at all         52
+  probes 1-4   LDY #$0002 .. LDY #$0008         an immediate            70
+  probe 5      LDY $B2                          the row stride          80
+  probe 6      LDY $B2 : INY : INY              ...and two increments  104
+  probes 7-9   LDA $B2 : CLC : ADC #imm : TAY   ...and an addition     122
+```
+
+Five ways of adding a constant to a direct-page word, and the sequence 52, 70,
+80, 104, 122 is what it costs to never be asked to do it the same way twice.
+Everything after the load is byte for byte identical all ten times.
+
+**The tenth probe has no `BCS`.** Its `LSR` falls straight into the `PLD` that
+every rejection also reaches, so the clear exit and the attribute rejection are
+the same two instructions and the carry the `LSR` left is the whole answer.
+`WIDE_BLK_ATTR_LAST` is therefore the other probes' block less one branch, and
+it is counted whichever way the test goes -- there is no branch to take.
+
+### 634, again, exactly
+
+The registry has said `634..3,268` for this routine since long before the table
+existed. The model's cheapest possible call is four blocks:
+
+```
+  prologue 426 + LDA [$28] 52 + the priority test rejecting 70 + SEC:PLD:RTS 86
+```
+
+which is **634**. There is nothing to fit: the pass loop cannot run fewer than
+once and the first tile cannot be refused sooner than by its own number, so 634
+is the model's absolute minimum and not a number chosen to match one. The
+ceiling checks the same way from the other end and exercises every row of the
+table -- all ten probes clear is 3,148, and the measured 3,268 is 120 more,
+which is three DRAM refreshes over a call three scanlines long.
+
+This is the third round running that a registry floor written down from
+measurement has turned out to be a block sum, and the third time the two were
+derived years apart in the same file without either being told about the other.
+
+### The seam, and the one cross-check that counts rather than costs
+
+`boss_step` is thirteen blocks of table lookups and additions wrapped round one
+to four calls into the leaf. The `JSR`s are counted in the caller's blocks and
+the matching `RTS`s in the leaf's exit blocks, so the seam is paid for once from
+each side and neither table needs to know the other's total.
+
+What ties them together is not a cost at all:
+
+```
+  probes.blocks[WIDE_BLK_PROLOGUE]  ==  PASS_HEAD + LEAD_CLEAR
+```
+
+The leaf counts one prologue per call it serves; the caller counts one `JSR` in
+each of the two blocks that make one. **A `JSR` counted into the wrong block
+would still add up to the right number of cycles and would break this
+equality**, which is the point of having it: it is the only check in this file
+that would catch a structural error the arithmetic cannot see.
+
+### Both bounds, and the one that had to be read backwards
+
+`boss_step`'s registry range is `2,076..15,616`.
+
+The ceiling is a diagonal that runs both passes and finds all four probes clear:
+2,544 of arithmetic and 12,592 of probes is **15,136**, and 15,616 is 480 more,
+which is twelve refreshes over a call eleven scanlines long. Straightforward.
+
+The floor is not. The cheapest call the table can build is a *single* step whose
+first probe is already in terrain: 64 + 600 + 324 + 634 + 18 + 98 + 200 =
+**1,938**, and 2,076 is 138 more -- which is not a multiple of 40, so it cannot
+be refresh. Swap the single-step block for the double-step one and the floor is
+2,036, and 2,076 - 2,036 is **40 exactly**.
+
+So the cheapest `boss_step` ever measured is a double step. The first reading of
+that -- which went into the source and had to come back out -- was that the
+figure is never seen moving at single speed. It is: `boss_step_single` is taken
+247 times in `level25-boss.zmv` alone. What has *never* happened is the two cheap
+things at once, a single step whose very first probe is refused on the tile
+number. Each half is ordinary and the combination is not.
+
+**1,938 is a price this table can quote for a call the game has never made**,
+and a fitted constant could not have told the difference.
+
+### Results
+
+Both models were refresh-exact on their first run, which has not happened for a
+pair before:
+
+| routine | priced | error | refresh-exact |
+| --- | --- | --- | --- |
+| `terrain_blocked_wide` | 33,542 of 33,542 | +0..+120, mean +93 | 33,542 / 33,542 |
+| `boss_step` | 11,593 of 11,593 | +40..+480, mean +331 | 11,593 / 11,593 |
+
+`boss_step`'s **+40 floor and +480 ceiling are the two predictions above**,
+measured rather than derived, and they are the same two numbers.
+
+Neither model can decline. Over the whole corpus both are exact on every call:
+
+```
+  boss_step                     42207 / 42207             0 HDMA
+  terrain_blocked_wide         127422 / 127422            0 HDMA
+```
+
+**42,207 is the number already written in `boss_step`'s registry entry** --
+"call-weighted over 42,207 calls on the five level-25 movies" -- so the model
+priced exactly the population the constant was averaged over, and got a
+different answer for every one of them. `terrain_blocked_wide`'s 127,422 is 33
+short of its own entry's 127,455, and the 33 are calls an interrupt fell due
+inside; `verify` does not check those, so there is no `actual` to compare.
+
+The corpus is **13,209,637 calls across 43 movies, 0 diverged, branch coverage
+432 of 538**, and the entire diff against last round's is the two rows above.
+Live state is clean, `verify-lzss` is 2 of 2 byte-identical and both checked as
+a memory effect, both unit tests exit 0, and `zamn_headless` still renders the
+giant spider at frame 3,000 of `level25-boss.zmv`.
+
+### Zero frames, and why that is the finding
+
+Last round every lockstep window moved by exactly eleven frames, and this file
+said that was worth staring at rather than celebrating. This round the largest
+debt in the registry came out, and **not one window moved at all**:
+
+```
+  level1           328     level45-race    1056     level49-corner  1152
+  level53         1184     level25-2p      1034     boot            never parts
+```
+
+The three movies that actually raise the figure part earlier still, and all
+three at the same frame:
+
+```
+  level25-boss    1024     level25-lane    1024     level25-heavy   1024
+```
+
+The reason is legible and worth writing down rather than filing as a
+disappointment. **`boss_step` does not run until somewhere between frame 2,000
+and 2,600**, and every lockstep window in the corpus has already closed by
+1,184. A routine cannot move a parting point that happens before it executes,
+however large its debt, and +5,428,166 cycles of over-payment spread over
+11,593 calls buys exactly nothing in a comparison that stopped at pass 1,024.
+
+Read together with last round, the two results say the same thing from opposite
+directions. Four models that run constantly moved every window by an identical
+eleven frames; one model carrying twice their combined debt, running late, moved
+none. **What parts a run is early and it is uniform**, and neither round has
+touched it. That is now a much sharper lead than it was a week ago, and it is
+the reason the drift table is a means and not the goal: the table ranks by
+cycles owed, and cycles owed is not the same quantity as frames bought.
+
+### The share went down, and that is the model working
+
+Native work share on `level25-boss.zmv` reads **66.8%**, against 67.0% before
+this round. Nothing got slower and nothing was un-ported. The flat 11,770-cycle
+constant `boss_step` had been charging was above what its calls actually cost,
+and a routine that stops over-reporting its own budget reports a smaller share
+of the session. **A number about the port that only ever goes up is not
+measuring anything**, and this is the first round where it went the other way
+for a reason worth having.
+
+The `--- substituted` total went from -9,686,354 to -15,225,338, which is the
+same non-fact it was last round with the sign reversed: the row removed this
+time was positive, so taking it out moved the column down.
+
+### Next
+
+With `boss_step` gone the table's largest real row is one that is already
+priced:
+
+```
+  routine                      cycles      calls     per call
+  sprite_build_oam           -4448875       6042       -736.3
+  camera_follow              -3151348      20608       -152.9
+  monster_seek               -2606030       6817       -382.3
+```
+
+`sprite_build_oam`'s model is refresh-exact on the 5,937 calls it prices and
+**declines the other 105**, and those 105 carry the whole -4.4M. That is a
+different job from the last several rounds: not a routine to price but a guard
+to narrow, and the drift it shows is the cost of the fallback constant rather
+than an error in any block. `camera_follow` and `monster_seek` under it are the
+single passes they were last round.
+
+But the honest reading of the zero above is that none of these three will move a
+lockstep window either, and that the early uniform drift deserves a round of its
+own before the table gets much shorter.
+
 ## Where this is going
 
 The first five routines here are leaves — they never call `thread_yield`. That
