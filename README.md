@@ -377,6 +377,20 @@ are measured with:
 powershell -ExecutionPolicy Bypass -File tools\verify_corpus.ps1
 ```
 
+`-Lockstep` puts the same table through the stronger check: the port substituted
+for real, and all 128 KB of WRAM compared once per scheduler pass rather than one
+routine's answer per call. It costs about forty seconds a movie against one, and
+it leaves `lzss_decompress` and `camera_follow` to the ROM — those two end the
+comparison inside the first level load on nearly every movie, for a reason no
+cost model can fix. `-Without none` runs it without that concession, which is
+what the concession is measured against:
+```
+powershell -ExecutionPolicy Bypass -File tools\verify_corpus.ps1 -Lockstep
+```
+
+`-Only <wildcard>` narrows either pass to one movie, and says how many movies
+its totals are totals over.
+
 ## Layout
 ```
 src/headless.c        Phase 0a: boot ROM -> PNG (no SDL)
@@ -409,7 +423,8 @@ tools/symbols/        Symbol names for the disassembler
 third_party/lakesnes  Vendored SNES core (MIT) — reference emulator + PPU/APU
 third_party/stb       stb_image_write.h (public domain)
 tools/build.ps1       Sets up MSVC env, configures + builds with Ninja
-tools/verify_corpus.ps1  Runs `verify` over every movie; owns the frame counts
+tools/verify_corpus.ps1  Runs `verify` over every movie — or `run`, with
+                              -Lockstep; owns the frame counts
 tools/make_spin_probe.py Rewrites a probe movie's tail as short legs, so the
                               player faces every direction instead of towing a
                               crowd it never turns to shoot

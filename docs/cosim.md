@@ -4688,6 +4688,253 @@ all 43 movies. After that the honest target is `level25` — not because it is
 large in the table, but because it is the one parting in the corpus that a
 better model would actually move, and there are now four movies that say so.
 
+## The corpus in lockstep, and the byte it found (2026-08-12)
+
+Last round left two jobs: put the `-x` configuration through the whole corpus,
+and then fix `level25`, "the one parting in the corpus that a better model would
+actually move". The first is done and is now a switch. The second is wrong — and
+doing the first is what proves it, and turned up a divergence in live game state
+that no configuration before today could reach.
+
+### `verify_corpus.ps1 -Lockstep`
+
+The script has only ever run `verify`, which asks each call whether the port's
+answer matches the ROM's. `-Lockstep` runs `run` over the same movie table
+instead: the port substituted for real, all 128 KB of WRAM compared once per
+scheduler pass. It costs about forty seconds a movie against one.
+
+Three of its columns are the port's **steady state** — the peak the two clocks
+reached, the largest single pass, the mean pass — with the parting pass left out
+on a movie that parts, because that pass is a level load worth 400,000 cycles and
+averaging it in describes nothing. `-Without none` runs the plain configuration,
+so the concession stays measured rather than assumed, and `-Only <wildcard>`
+narrows either pass to one movie and says so at the top, because two of the
+totals below it — the branch-coverage union and the decline census — are
+corpus-wide claims by name and a subset printing them unannounced reads as one.
+
+### The two configurations, over all 43 movies
+
+|                       | `-Without none` | `-Lockstep` |
+| --- | --- | --- |
+| never part            | **1 / 43**      | **40 / 43** |
+| passes compared       | **42,980**      | **197,867** |
+| movies with a live byte differing | **0** | **1** |
+| exit code             | 0               | 1           |
+
+42,980 reproduces last round's hand-run figure exactly, which is the first
+evidence that the script and the shell loop it replaces agree.
+
+`boot.zmv` is the one movie that survives the plain configuration, and only
+because it never loads a level. The other forty-two part at pass 328, 368, 1024,
+1034, 1056, 1088, 1098, 1152, 1184 or 1216 — every one of them the first level
+load, every one carrying the same `+1642 / 1674 / 36–47` steady state. It is one
+wall, met at forty-two different pass numbers because the movies reach their
+first load at different times.
+
+**One discrepancy against last round, stated rather than smoothed over.** That
+round recorded 39 of 43 and named four survivors — `level25`, `-2p`, `-heavy`,
+`-lane`. The script says 40 of 43 and three: `level25-lane` now runs all 9,389 of
+its passes clean. The pass counts are consistent with exactly that one movie
+(197,867 − 194,535 = 3,332, which is `level25-lane` contributing 9,389 rather
+than parting around pass 6,068), but the earlier configuration was a shell loop
+emitting 113 `-r` flags and cannot be re-run to find out why. The script's figure
+is the reproducible one from here, which is the whole reason for having it.
+
+### `level25`, bisected
+
+`level25` was named because its parting is the one that does not look like a
+level load: a busy gameplay pass, 1.38 frames long, stock overrunning where
+native does not. If cycles owed buys a lockstep window anywhere, it buys it here.
+
+It does not. The parting is at pass 1972 and it will not move:
+
+| substituted, except | steady peak | native's pass 1972 | parts at |
+| --- | --- | --- | --- |
+| the pair only | −70,006 | 461,820 | **1972** |
+| ...and the ten largest drift rows | −33,178 | 454,304 | **1972** |
+| ...and all 29 of registry 58–86 | −17,662 | 454,332 | **1972** |
+| ...and all 28 of registry 87–114 | −67,536 | 461,810 | **1972** |
+| ...and all 57 of registry 58–114 | −5,282 | 454,602 | 2186 |
+| nothing substituted at all | 0 | 491,628 | never |
+
+Excluding a routine **is a perfect cost model for it**: the ROM runs it and the
+native core pays exactly what the hardware pays. So rows two to four are the
+ceiling on what any amount of pricing work could achieve for those routines, and
+they are not small — the ten largest rows of the drift table together, and then
+twenty-nine routines at once. **Cutting the accumulated drift by three quarters
+does not move the parting by a single pass.**
+
+Only the fifth row moves it: fifty-seven routines made exact simultaneously,
+which is not a target but the rest of the project. What it buys is nine hundred
+passes, after which the run dies at pass 2186 — stock 498,224 cycles, native
+454,602, **1.39 and 1.27 frames**. The same shape as 1972. Surviving one boundary
+pass only means meeting the next one.
+
+The last row is the control and it is worth stating plainly: with nothing
+substituted the two cores report `+0` cycles apart over 4,689 passes. Every cycle
+of drift anywhere in this document is the port's, and none of it is the
+harness's.
+
+### The size of the drift is not what decides a parting
+
+The corpus pass makes the real discriminator visible, which no single run could:
+
+* `level21` carries a peak of −100,228 and never parts;
+* `level21-p2-bubble` carries −95,768, with a mean pass of 10,751.8, and never
+  parts;
+* `level17-weapon` carries −76,352 and never parts;
+* `level25` parts carrying −70,006.
+
+`level25` is not the movie that drifts most, and it is not close. What it has is
+a pass that straddles a frame boundary while the port carries any drift at all,
+and the tolerance there is brutal: −17,662 still parts, −5,282 survives.
+
+That is the same finding as `lzss_decompress`, reached from the opposite
+direction. There the long pass was a level load and the wait quantised in whole
+frames; here it is ordinary gameplay that happens to run heavy. Both times the
+cost models do not decide the drift — they decide which side of one boundary a
+pass lands on, and both times the margin is a hundred times wider than any
+modelling accuracy on offer.
+
+### `$7E:000C`
+
+The reach the `-x` pass buys is not theoretical. On its first full run it failed:
+
+```
+level25-2p.zmv             4700     1262    1273     -9014     5314   185.5  1 UNEXPLAINED
+    $7E:000C  stock $04, native $03
+```
+
+`$7E:000C` is `vbl_queue_a_count` — direct page zero, so `wram-map.md`'s name
+applies and the warning about thread-local `$0C` does not. The port is one queued
+entry short, at pass 1231, reproducibly. What is established so far:
+
+* **not the harness** — `-r none` over the same movie is clean;
+* **not drift** — it survives three drift regimes (−8,988, −9,014, −24,146)
+  unchanged, at the same pass, with the same two values;
+* **not `vbl_queue_a_add`** — excluding that routine does not clear it;
+* **not a wrong answer from any call** — `verify` on the same movie checks
+  **349,265 calls and diverges on none of them**.
+
+That last point is the one worth keeping. This is a defect `verify` is
+structurally unable to see: every routine returns exactly what the ROM returns,
+every time, and the state the game accumulates from those answers still parts
+company by a byte. It reproduces with any two thirds of the registry substituted,
+which points at a missing side effect or an ordering difference rather than one
+routine's logic.
+
+**It was 175 passes past the edge.** Before today `run` stopped comparing this
+movie at pass 1056, inside the first level load. The byte has presumably been
+there for as long as the routines around it have been ported, and no
+configuration that existed could see it.
+
+### The cause: an atomic port against an interruptible ROM
+
+`-x hud_refresh` clears it. None of the other routines that queue vblank jobs
+does — not `boss_bg_queue`, `boss_bg_queue_flip`, `vram_queue_request`,
+`vbl_queue_b_add` or `hud_panel1`. And the positive control is decisive:
+`-r hud_refresh`, with that routine the *only* thing substituted in the whole
+registry, reproduces the byte exactly — and **never parts, over all 4,689
+passes**. Zero drift, one substituted routine, same wrong byte. Whatever this is,
+it is not a clock.
+
+The `int.` column names it. It counts calls the harness refuses to diff:
+
+> `bool segment_spoiled;  // an interrupt landed mid-segment; do not diff this one`
+
+And it correlates perfectly with the failure:
+
+| movie | `hud_refresh` calls | checked | `int.` | `run` verdict |
+| --- | --- | --- | --- | --- |
+| `level25-2p` | 1034 | 1027 | **7** | **1 UNEXPLAINED** |
+| `level25` | 1091 | 1091 | 0 | clean |
+| `level25-heavy` | 2087 | 2087 | 0 | clean |
+| `level1-2p` | 2115 | 2115 | 0 | clean |
+| `level17-2p-freeze` | 1060 | 1060 | 0 | clean |
+| `level21-p2-bubble` | 2029 | 2029 | 0 | clean |
+
+The one movie in the corpus with interrupted `hud_refresh` calls is the one movie
+in the corpus that fails. Four of the five clean ones are two-player, so it is not
+about the second panel.
+
+**The mechanism.** The ROM's `hud_refresh` clears `hud_dirty` and then *tail
+jumps* into `$80:83AE`, which scans for a free slot, stores the job, and
+increments `$000C`. Those are separate instructions and an NMI can land between
+them. `$80:83D5` — the drain, which is not ported and is therefore the same code
+on both sides — runs in that NMI and decrements the count.
+
+The port does the whole thing atomically and then spends its cycle budget parked
+on the entry instruction, where the interrupt is taken at the right *moment*. But
+by the time the handler runs, every one of the port's writes has already landed.
+So on an interrupted call the two cores hand their NMI different worlds: the
+stock core's handler sees the job **not yet queued** and leaves it for the next
+frame; the native core's sees it **already queued** and drains it a frame early.
+Stock `$04`, native `$03`. The sign is the mechanism's own prediction.
+
+**This is a class, not a bug.** Any ported routine whose WRAM effects are
+consumed by the NMI handler has the same hazard, and `verify` is structurally
+incapable of finding any of it: the calls where it happens are exactly the calls
+`verify` declines to diff, by design and for a good reason — WRAM moved under
+them. The `0 diverged` on 349,265 calls was never a claim about these seven.
+
+What it needs is a decision rather than a patch, so it is written down and not
+acted on: either the budget for such a routine is split so its queue write lands
+after the interrupt point (`fade_in`'s explicit resume points are the existing
+machinery for exactly this), or routines the NMI reads from are marked and
+excluded from atomic substitution, or the effect is declared and lived with. That
+choice wants making deliberately, and it is the first thing this harness has
+turned up that Phase 4 inherits rather than retires.
+
+### What this settles
+
+Three rounds have now ranked routines by cycles owed and picked the top one. This
+one says the ranking has never predicted a lockstep window, including for the
+movie chosen *because* it looked like the exception. The drift table is a
+diagnostic for a single model, not a work queue.
+
+What accuracy still earns is worth writing down, because it is not nothing and it
+is not lockstep:
+
+* **the native-share headline is computed from the budgets.** `60.3%` on
+  `level25` is the budget substituted routines burn over the cycles the CPU spent
+  working. Total model error across the whole registry on that movie is
+  **−4,916,015 cycles, −13.76 frames, about 0.5% of working cycles** — so the
+  headline is good to half a point, and that reason to price things is already
+  satisfied;
+* **a refresh-exact model is a correctness signal, not a timing one.** Predicting
+  the ROM's cycle count to the cycle means the control flow was modelled right,
+  and `verify_corpus.ps1` already fails the run when a model that was exact stops
+  being exact.
+
+Both are per-call, checked in `verify`, and neither needs the two clocks to stay
+together.
+
+So the quantity worth buying was never `+0` between two clocks. It is **reach** —
+how far the strongest check gets into the parts of the game the port actually
+runs — and the cheapest route to it is concessions like `-x`, not accuracy. Two
+flags bought 4.6× and a defect.
+
+The last row of the configuration table says it best. The run that concedes
+nothing to the ROM reports zero live bytes differing, and reports it because it
+stops before the bug. The stricter-looking configuration is the one that cannot
+see.
+
+### Next
+
+The atomicity decision above, which is now the only open question this round
+raised. It is worth taking before more routines are ported, because every one of
+them that writes something the NMI reads inherits the same hazard silently — and
+the `int.` column is a ready-made census of where to look.
+
+After that the scheduler round — every parting in this document is a statement
+about the scheduler's frame boundary rather than about any routine on either side
+of it.
+
+Two limits on the 40 of 43 to carry forward. The `-x` pass still stops at the
+second wall on the three `level25` movies, so their gameplay past pass ~2000 is
+uncompared; and `lzss_decompress` and `camera_follow` are checked by `verify`
+alone, by construction, since the pass exists by handing them back.
+
 ## Where this is going
 
 The first five routines here are leaves — they never call `thread_yield`. That
