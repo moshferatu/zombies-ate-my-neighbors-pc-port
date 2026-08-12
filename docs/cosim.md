@@ -4520,6 +4520,174 @@ But the honest reading of the zero above is that none of these three will move a
 lockstep window either, and that the early uniform drift deserves a round of its
 own before the table gets much shorter.
 
+## What actually ends a lockstep run (2026-08-12)
+
+Two rounds running have ended the same way: the models got better, the drift
+table got shorter, and **not one lockstep window moved**. The last one said the
+early uniform drift deserved a round of its own. This is it, and the first thing
+it found is that there is no early uniform drift.
+
+### The report was hiding the answer inside its own headline
+
+`run` has been saying this for months:
+
+```
+  The two clocks were +395332 cycles apart there — 1.11 of a frame —
+  having reached +395332 at their furthest, and the largest single
+  pass added 394696 at pass 328.
+```
+
+The comment beside those variables already knew what they were for:
+
+> a run that stops at pass 328 with 300,000 cycles of drift has a cost model
+> that is off by most of a frame, and one that stops there with 900 has a pass
+> that landed on a boundary. Those want opposite work, and until now the report
+> could not tell them apart.
+
+It still could not, because `drift_worst` and `drift_jump` are both updated
+*before* the parting is detected, so on the pass that parts they each swallow
+the whole lost frame. +395,332 is 394,696 of one pass and **636 of the other
+three hundred and seventeen**. It was the second kind wearing the first kind's
+clothes, and every round that read it as a cost-model debt read it wrong.
+
+The fix is to keep a copy of both accumulators as they stood one pass back and
+print that too:
+
+```
+  Without that pass — over the 317 the two timelines shared — the
+  clocks reached +3040 apart, no single pass moved them by more
+  than 2404 (pass 187), and the mean pass moved them 47.5.
+```
+
+**That is the port's steady state, and it is very good.** On five of the six
+movies first checked it is the same three numbers to the cycle — peak +1,642,
+largest step 1,674 at pass 137, mean step 36 to 47 — whether the run lasted
+1,013 passes or 1,173. The drift does not accumulate. It reaches about 1,600
+cycles early in the shared boot and then oscillates there for the rest of the
+movie, because the models are wrong in both directions by tens of cycles and the
+errors cancel. Two stock cores report `+0`, so none of it is the harness.
+
+### The pass that parts is usually not a pass that nearly fills a frame
+
+The old story said a parting is a pass that almost fills a frame and tips over,
+"decided by a few hundred cycles either way". So the report was made to print how
+long that pass actually took, on each side:
+
+```
+  That pass took 176883258 cycles stock and 177280750 native, 494.96
+  and 496.08 frames, against 357368 and 357368 on the pass before.
+```
+
+An ordinary scheduler pass is 357,368 cycles — one frame, to the cycle, hundreds
+in a row. The pass that parts is **495 frames**. It is a level load: the game
+leaves the `WAI` loop entirely, decompresses, fades, and comes back about eight
+seconds later. That is why every movie parts at roughly the same *game* frame
+(197 to 213) at wildly different pass numbers (328 to 1,184) — they reach their
+first load at different times and none of them survives it.
+
+### Three causes, and only one of them is a cost model
+
+Bisecting the registry against the parting is a short job once the report says
+which pass to look at. It does not come back with one answer.
+
+**`lzss_decompress`** takes 33 movies. Alone it reproduces 393,026 of level 53's
+397,492 cycles of drift — 98.9%, all inside the load — while over the other
+1,173 passes it is **32 cycles out in total**, the best steady-state figure any
+subset produces.
+
+**`camera_follow`** takes the six `level21` movies, which `-x lzss_decompress`
+does not move by a single pass. Same shape: a 507-frame load, and the native
+side 359,954 cycles longer through it.
+
+**And four movies are left** — `level25`, `-2p`, `-heavy`, `-lane` — which turn
+out to be the only ones in the corpus that part the way the old comment said
+they all did:
+
+```
+  That pass took 491628 cycles stock and 461972 native, 1.38
+  and 1.29 frames, against 329606 and 276272 on the pass before.
+```
+
+A busy gameplay pass, genuinely on the boundary, stock overrunning where native
+does not, with the accumulated drift at −69,790. **That one is a cost-model
+problem**, and it is the only one here that is.
+
+### The corpus, both ways
+
+```
+                            default    -x lzss    -x lzss -x camera_follow
+  never part               1 / 43      33 / 43           39 / 43
+  compared passes          42,980      172,647          194,535
+```
+
+Four and a half times as much comparison, and on every one of those 194,535 the same
+verdict as before: differences only ever inside the stacks or a declared scratch
+byte, **no byte of live game state ever differing**. The port has been able to
+run whole movies in lockstep for some time. Nothing was measuring it.
+
+### Why accuracy does not buy the loads back
+
+The obvious next thought is to price `lzss_decompress` better. It does not help,
+and the experiment is cheap — put a knob on its five budgets and turn it:
+
+```
+  cycles removed        drift at the parting pass
+           0            +393,026
+     200,000            +393,028
+     400,000            stops overrunning — the parting moves to an earlier pass
+```
+
+**Taking 200,000 cycles off the model moves the drift by two.** The pass
+overruns exactly as it did. Only somewhere between 350,000 and 400,000 — about a
+frame — does anything change, and what changes is *which* pass parts, not
+whether one does.
+
+So the load contains a wait that quantises in frames. The model does not decide
+the drift; it decides which side of a single boundary a 55-million-cycle
+decompression finishes on, and no achievable accuracy reliably puts it on the
+right side. The old comment reached that conclusion from a reading of the
+evidence that was wrong in every particular except the conclusion — and it is
+worth having right, because the wrong version put the margin at sixty cycles.
+Sixty cycles is a target. Two hundred thousand is not.
+
+### `-x`
+
+`src/cosim.c` has carried a comment for a long time saying `MAX_SELECTED` is
+sized for "run everything except one — which is how a divergence gets pinned on
+a routine or cleared of it". That is the shape of every experiment above, and it
+was being done with a shell loop emitting 113 `-r` flags. So it is a flag now:
+
+```
+  zamn_cosim run <rom> -m movies/level53.zmv -x lzss_decompress
+```
+
+`-x` is `-r` inverted, repeatable, and refused in combination with `-r`, because
+`-r a -x b` has two readings and guessing between them would be worse than
+saying no.
+
+### What this changes
+
+The drift table ranks routines by cycles owed. Three rounds now say that cycles
+owed is not the quantity a lockstep window is bought with:
+
+* four models that run every pass moved every window by eleven frames each;
+* one model carrying twice their combined debt moved none, because it ran after
+  every window had closed;
+* and the windows turn out to be held shut by two routines, for a reason that
+  more accuracy cannot open.
+
+`camera_follow` is the interesting exception, because it is *also* the second
+row of the drift table. The two ways of choosing work agree on it, and they have
+agreed on almost nothing else.
+
+### Next
+
+The corpus script should gain the `-x` pass, since that configuration compares
+four times as many scheduler passes and until today had never been run across
+all 43 movies. After that the honest target is `level25` — not because it is
+large in the table, but because it is the one parting in the corpus that a
+better model would actually move, and there are now four movies that say so.
+
 ## Where this is going
 
 The first five routines here are leaves — they never call `thread_yield`. That

@@ -2027,6 +2027,29 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
   long long drift = 0, drift_prev = 0, drift_at_parting = 0, drift_worst = 0;
   long long drift_jump = 0;
   long drift_jump_pass = -1;
+  long long drift_sum = 0;
+  long drift_n = 0;
+  // What each side spent on this pass and on the one before it. A parting
+  // is one side overrunning vblank, and there are two ways that happens: a
+  // pass that already nearly fills a frame, where a few hundred cycles
+  // decide it, and a pass that is genuinely long on both sides. Those want
+  // different work and the drift figure alone cannot tell them apart --
+  // both look like a step of about a frame.
+  long long ref_at = 0, nat_at = 0;
+  long long ref_len = 0, nat_len = 0, ref_len_prev = 0, nat_len_prev = 0;
+  // ...and the same figures with the parting pass left out, which is the
+  // distinction the paragraph above asked for and did not get. Both of the
+  // two above are updated before the parting is detected, so on the pass
+  // that parts they absorb the whole of the lost frame: a peak of +395,332
+  // that is 394,696 of one pass and 636 of the other three hundred says the
+  // opposite of what it looks like, and that is the reading this report has
+  // been giving. These lag one pass behind, so at the parting they hold the
+  // port's steady state -- what the budgets were worth over every pass the
+  // two timelines actually shared.
+  struct {
+    long long drift, jump, sum;
+    long jump_pass, n;
+  } steady = {0, 0, 0, -1, 0};
   uint32_t worst = 0, last_differ = 0, worst_unexplained = 0;
   uint32_t worst_unexplained_at[8];
   // The values as they stood *at that pass*. Reading them back out of the cores
@@ -2049,39 +2072,82 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
     // of the same pass and the difference is the clocks alone.
     drift = (long long)nat.snes->cycles - (long long)ref.snes->cycles;
     if (parted_at < 0) {
+      ref_len_prev = ref_len;
+      nat_len_prev = nat_len;
+      ref_len = (long long)ref.snes->cycles - ref_at;
+      nat_len = (long long)nat.snes->cycles - nat_at;
+    }
+    ref_at = (long long)ref.snes->cycles;
+    nat_at = (long long)nat.snes->cycles;
+    if (parted_at < 0) {
       const long long step = drift - drift_prev;
+      // Kept as they stood without this pass. On every pass but one that is
+      // a reading nobody asks for; on the pass that parts it is the only one
+      // worth having, and by then this pass cannot be taken back out.
+      steady.drift = drift_worst;
+      steady.jump = drift_jump;
+      steady.jump_pass = drift_jump_pass;
+      steady.sum = drift_sum;
+      steady.n = drift_n;
       if (step > drift_jump) {
         drift_jump = step;
         drift_jump_pass = pass;
       }
       if (llabs(drift) > llabs(drift_worst)) drift_worst = drift;
+      drift_sum += llabs(step);
+      drift_n++;
     }
     drift_prev = drift;
 
     // Where this run stops being able to prove anything, and why it is a
     // property of the method rather than a bug in the port.
     //
-    // A scheduler pass is *nearly* a frame. The exception is a pass whose work
-    // overruns vblank: it takes two NMIs instead of one, and on a level where
-    // the game already fills most of a frame, whether that happens is decided
-    // by a few hundred cycles either way. A substituted core spends a different
-    // number of cycles doing the same work — that is what substitution *is* —
-    // so sooner or later one side overruns a pass the other does not, and from
-    // then on the two cores are one frame apart.
+    // Most scheduler passes are a frame — 357,368 cycles, to the cycle, over
+    // hundreds of them in a row. The exception is a pass that leaves the WAI
+    // loop altogether, which is a level load, and those are enormous. On
+    // `level53.zmv` the pass that parts took 176,883,258 cycles stock and
+    // 177,280,750 native: 495 frames, against 357,368 for the pass before it.
+    // That is where the comparison ends on every movie in this corpus, and the
+    // report above prints both lengths so it no longer has to be guessed at.
     //
-    // **It is decided by tens of cycles, and that is measured rather than
-    // supposed.** Substituting `lzss_decompress` alone reproduces 390,222 of
-    // level 1's 395,322 cycles of drift, all of it arriving in the single pass
-    // that parts — and the five calls it made took 1,692,780 / 6,476,638 /
-    // 10,031,990 / 13,661,234 / 26,981,846 cycles against the ROM's own
-    // 1,692,786 / 6,476,668 / 10,032,038 / 13,661,174 / 26,981,744. Six cycles
-    // out on the first and a hundred and two on the last, on windows of up to
-    // twenty-seven million. A pass sitting on the vblank boundary was decided by
-    // sixty, and the frame it then had to wait for is the whole of the drift.
+    // **Two routines end thirty-nine of the forty-three.** Substituting
+    // `lzss_decompress` alone reproduces 393,026 of level 53's 397,492 cycles
+    // of drift — 98.9%, all of it inside that one pass — while over the other
+    // 1,173 passes it is 32 cycles out in total. `camera_follow` alone does the
+    // same to the six `level21` movies, which `-x lzss_decompress` does not move
+    // at all. Exclude both and 39 of the 43 run their movie to the end; across
+    // the corpus, compared scheduler passes go from 42,980 to 172,647.
     //
-    // So the window this comparison gets is not a cost-model problem and no
-    // achievable model accuracy buys it back. That is worth knowing, because
-    // improving the models was the plan.
+    // The four that are left are `level25`, `-2p`, `-heavy` and `-lane`, and
+    // they are a different thing entirely — the only ones in the corpus that
+    // part the way this comment used to say they all did. `level25` parts at
+    // pass 1,972 on a pass of 491,628 cycles stock against 461,972 native, 1.38
+    // frames and 1.29, with the accumulated drift at -69,790. That is a busy
+    // gameplay pass genuinely sitting on the boundary, tipped by the models
+    // being tens of thousands of cycles cheap — and it is the one case here
+    // where a better model is the fix.
+    //
+    // **It is not decided by tens of cycles**, which is what this comment used
+    // to say. Take 200,000 off the five budgets and the drift moves by two, from
+    // 393,026 to 393,028, and the pass overruns exactly as before. Somewhere
+    // between 350,000 and 400,000 — about a frame — it stops overrunning, and
+    // the parting then moves to a different pass rather than going away. So what
+    // the load contains is a wait that quantises in frames, and the cost model
+    // does not decide the drift: it decides which side of one boundary a
+    // 55-million-cycle decompression finishes on.
+    //
+    // (The five calls on level 1 took 1,692,780 / 6,476,638 / 10,031,990 /
+    // 13,661,234 / 26,981,846 cycles against the ROM's own 1,692,786 /
+    // 6,476,668 / 10,032,038 / 13,661,174 / 26,981,744 — six cycles out on the
+    // first and a hundred and two on the last. That is still the model's error
+    // and it is still that small. It is simply not what ends the run.)
+    //
+    // So for the level loads — which is 39 of the 43 — the window is not a
+    // cost-model problem and no achievable model accuracy buys it back. That is
+    // the conclusion this comment reached before, now for a measured reason
+    // instead of a supposed one, and narrowed: it holds for the loads and not
+    // for the four gameplay partings above, which is the distinction it was
+    // missing. `-x` is the switch that separates them.
     //
     // Nothing can be realigned. Aligning on `$16` costs the lagging side an
     // extra scheduler pass, which puts `sched_tick` out by one instead: the two
@@ -2122,6 +2188,19 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
                "pass added %lld at pass %ld.\n",
                drift_at_parting, (double)drift_at_parting / COSIM_FRAME_CYCLES, drift_worst,
                drift_jump, drift_jump_pass);
+        if (steady.n > 0)
+          printf("Without that pass — over the %ld the two timelines shared — the\n"
+                 "clocks reached %+lld apart, no single pass moved them by more\n"
+                 "than %lld (pass %ld), and the mean pass moved them %.1f.\n"
+                 "That is the port's steady state. The rest of the figure above\n"
+                 "is the frame one side waited for, arriving all at once.\n",
+                 steady.n, steady.drift, steady.jump, steady.jump_pass,
+                 (double)steady.sum / (double)steady.n);
+        printf("That pass took %lld cycles stock and %lld native, %.2f\n"
+               "and %.2f frames, against %lld and %lld on the pass before.\n",
+               ref_len, nat_len, (double)ref_len / COSIM_FRAME_CYCLES,
+               (double)nat_len / COSIM_FRAME_CYCLES, ref_len_prev,
+               nat_len_prev);
       }
       continue;
     }
@@ -2237,6 +2316,12 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
   if (parted_at >= 0)
     printf("Comparison stopped at pass %ld of %d, where the timelines parted.\n",
            parted_at, frames);
+  else if (drift_n > 0)
+    printf("The timelines never parted. Over %ld passes the clocks reached\n"
+           "%+lld cycles apart, no single pass moved them by more than %lld\n"
+           "(pass %ld), and the mean pass moved them %.1f.\n",
+           drift_n, drift_worst, drift_jump, drift_jump_pass,
+           (double)drift_sum / (double)drift_n);
   if (nmi_drift > 0)
     printf("NMI landed at a different call depth on %ld of %ld passes, by at\n"
            "most %u bytes of stack — the cycle budget being an estimate, made\n"

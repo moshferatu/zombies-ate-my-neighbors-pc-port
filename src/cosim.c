@@ -22,6 +22,9 @@
 //   zamn_cosim list
 //   zamn_cosim verify <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v]
 //   zamn_cosim run    <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v]
+//
+// `-x routine` is the inverse of `-r`: run everything the registry has
+// except the named ones.
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -47,6 +50,13 @@ typedef struct {
   int selected_count;
   bool verbose;
   bool coverage;  // print every marked branch, not just the untaken ones
+  // ...and the other way round. `-x` is `-r` with the selection inverted,
+  // and it exists because the interesting question is now that shape: one
+  // routine in the registry ends every `run` comparison in the corpus, and
+  // `-x lzss_decompress` is how that was found and how it stays checkable.
+  // Expanded into `selected` below, so nothing downstream knows about it.
+  const char* excluded[MAX_SELECTED];
+  int excluded_count;
 } Options;
 
 static uint8_t* read_file(const char* path, int* out_len) {
@@ -92,6 +102,19 @@ static bool parse_options(int argc, char** argv, Options* o) {
         return false;
       }
       o->selected[o->selected_count++] = name;
+    } else if ((!strcmp(argv[i], "-x") || !strcmp(argv[i], "--without")) &&
+               has_next) {
+      if (o->excluded_count >= MAX_SELECTED) {
+        fprintf(stderr, "error: too many -x options\n");
+        return false;
+      }
+      const char* name = argv[++i];
+      if (!cosim_find(name)) {
+        fprintf(stderr, "error: no ported routine named '%s' (try `list`)\n",
+                name);
+        return false;
+      }
+      o->excluded[o->excluded_count++] = name;
     } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
       o->verbose = true;
     } else if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--coverage")) {
@@ -100,6 +123,30 @@ static bool parse_options(int argc, char** argv, Options* o) {
       fprintf(stderr, "error: unknown option '%s'\n", argv[i]);
       return false;
     }
+  }
+  if (o->excluded_count > 0) {
+    // Both at once has no sensible reading -- `-r a -x b` is either `a` or
+    // everything-but-`b`, and guessing which would be worse than refusing.
+    if (o->selected_count > 0) {
+      fprintf(stderr, "error: -r selects and -x deselects; use one or the other\n");
+      return false;
+    }
+    int count = 0;
+    const CosimRoutine* all = cosim_routines(&count);
+    for (int i = 0; i < count; i++) {
+      bool out = false;
+      for (int e = 0; e < o->excluded_count && !out; e++)
+        out = !strcmp(all[i].name, o->excluded[e]);
+      if (out) continue;
+      if (o->selected_count >= MAX_SELECTED) {
+        fprintf(stderr, "error: registry outgrew MAX_SELECTED\n");
+        return false;
+      }
+      o->selected[o->selected_count++] = all[i].name;
+    }
+    // An empty selection would mean "everything" downstream, which is the
+    // exact opposite of what was asked for.
+    if (o->selected_count == 0) o->selected[o->selected_count++] = "none";
   }
   return true;
 }
@@ -232,6 +279,8 @@ static void usage(void) {
          "      Substitute the port for real and run two cores in lockstep,\n"
          "      comparing all of WRAM every frame against a stock one.\n\n"
          "Options: -m movie file, -f frames (default 2400), -v progress,\n"
+         "         -x routine to run everything but that one (repeatable,\n"
+         "         and not combinable with -r),\n"
          "         -c full branch-coverage table (untaken branches are always\n"
          "         listed, with or without it).\n");
 }
