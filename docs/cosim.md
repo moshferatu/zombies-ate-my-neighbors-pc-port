@@ -5159,12 +5159,102 @@ buys no corpus number today. What it buys is that the ten routines are now
 correct about *when* they become visible, which is a property the next ported
 routine inherits rather than a number on this table.
 
+### The queues were never being compared (2026-08-12)
+
+The byte above resisted every attempt to localise it, and the reason is that it
+was never the defect. It was the part of the defect that fell outside a mask.
+
+`accounted_for` waves through any byte in the stack area, which is the weakest
+rule in the diff and is documented as such: inside it this pass proves nothing.
+The top of that area was the constant `STACK_AREA_HI`, and it was `$1300`. The
+comment immediately above it has always said where the stack really ends:
+
+> the scheduler's own, topped at `$125F`, NMI's at `$129F`
+
+`$129F`. The next byte is `$12A0`, which is vblank queue A's sixteen slots, and
+`$12E0` is queue B's eight. Rounding the constant up to `$1300` exempted all 96
+bytes of both queues from the lockstep diff, so every difference in a slot table
+was written off as dead stack — silently, and for the whole life of the pass.
+
+What made that invisible rather than merely wrong is that the two counts live in
+the zero page at `$0C` and `$0E`, nowhere near the mask. A dropped job therefore
+surfaced as the queue's own bookkeeping being off by one, with the job that went
+missing unreportable. That is exactly the shape that made `$7E:000C` look like a
+mystery: it survived excluding every queue A writer, it was invariant across
+drift, and it bisected to a band of fourteen registry entries. All three
+observations were about a symptom two instructions removed from its cause.
+
+The band was the clearest warning and it was read too late. Excluding entries 44
+to 57 moved the failure, so they looked implicated; running those fourteen and
+nothing else came back clean, which is the same routines and the opposite
+verdict. A subset run has its own drift and need never reach the state that
+fails, so neither direction of subsetting was going to localise this. The
+instrument that did was four lines that printed both queues either side of the
+pass.
+
+With `STACK_AREA_HI` corrected to `$12A0`, pass 1231 of `level25-2p` reports the
+whole thing rather than a quarter of it:
+
+```
+First *unaccounted* difference at pass 1231 — 4 of 90 bytes:
+    $7E:000C  stock $04, native $03
+    $7E:12CC  stock $49, native $00
+    $7E:12CD  stock $C3, native $00
+    $7E:12CE  stock $80, native $82
+```
+
+Slot 11 holds `$80:C349` on the stock side and nothing on the native one. The
+port dropped a vblank job: `$80:C34A`, the 192-byte DMA from `$7E:5F36` to VRAM
+`$6440` that uploads the HUD's shadow tilemap, queued from `hud.c:583`. The
+count was never off by one against a matching table — the table was short a
+job, and the count was telling the truth about it.
+
+`verify` is untouched by any of this. Its `dead_stack` is the call's own stack
+window rather than this constant, `min_sp` to `entry_sp` measured per call, so
+the queues were never exempted there and its figures stand as they were.
+
+### What the mask was hiding, corpus-wide
+
+Nothing else, as it turns out:
+
+| | before | after |
+| --- | --- | --- |
+| scheduler passes compared | 197,867 | 197,867 |
+| never parted | 40 of 43 | 40 of 43 |
+| movies with a live byte differing | 1 | 1 |
+| unexplained bytes on `level25-2p` | 1 | 4 |
+
+Forty-two movies were clean with the queues exempt and are still clean with them
+compared, which is the strongest thing this table has said about the queue code:
+the ten routines that publish into these slots are getting them right everywhere
+the corpus looks, and the one place they do not is the one failure that was
+already known. The three bytes that appeared are the rest of a defect this pass
+had already found, not three new ones.
+
+The claim that changes is the standing one. Every "clean" this pass printed
+before today meant clean *outside the queues*, and neither the totals nor the
+prose said so. These are the first that mean what they say.
+
+One detail of the format is worth recording, because it decides what a
+difference in a slot is worth. A slot is `{u16 address-1, u8 bank, u8 pad}`, and
+the dispatcher retires one with a 16-bit `STA`: it clears the address word and
+leaves the bank and pad bytes as residue from whatever job was there before. A
+slot whose address word is zero on both sides is empty on both sides whatever
+its other two bytes hold. That needed no special case here — `$12CE` differs
+at pass 1231 for the opposite reason, the stock side having a live job where the
+native side has the leftovers of an old one — but a future difference in a
+bank byte alone would be residue and not a dropped job.
+
 ### Next
 
-Two named causes now, both on `level25-2p`: whatever in registry 44-57 puts
-`$7E:000C` a job behind on pass 1231, and the two bytes at pass 2117 behind it.
-Neither is atomicity and neither is drift, which makes them the first port
-defects the lockstep pass has turned up that are simply bugs.
+The dropped job is a real port defect and now a legible one: on pass 1231
+`hud_refresh` declined to queue an upload the ROM queued. The gate is
+`W_HUD_DIRTY` at `$1E7A`, set by six tests over the panel state and read only as
+a flag. At the sync point every byte of HUD state agrees, and `verify` scores
+the routine 349,265 calls and none diverged — so the question is not what the
+dirty test computed but when it ran relative to a change it was watching for.
+That is a different kind of defect from either of the two this pass has chased
+so far, and it is the next thing to measure.
 
 `oam_buffer_clear` is still the one exposed routine with no commit point to
 defer, and is still latent — it wants a real coroutine split, and nothing in

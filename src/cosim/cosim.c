@@ -283,7 +283,18 @@ static uint32_t cpu_pc24(Snes* snes) {
 // topped at $125F, NMI's at $129F, and the thread bookkeeping tables between
 // them. The bottom end is not a constant — see stack_area_lo() — because it is
 // a table in the ROM, and this file had it wrong by sixteen stacks.
-#define STACK_AREA_HI 0x1300
+//
+// The top end was wrong too, and by more than it looks. NMI's stack tops at
+// $129F, as the paragraph above always said, and the next byte is not stack at
+// all: `$12A0` is vblank queue A's sixteen slots and `$12E0` is queue B's
+// eight. Rounding this constant up to $1300 exempted all 96 bytes of both
+// queues from the lockstep diff, so every difference in a slot table was
+// written off as dead stack -- silently, and for the whole life of the pass.
+// What made it hard to see is that the counts at $0C and $0E live in the zero
+// page and were compared all along: a divergence showed up as its own
+// bookkeeping being off by one, with the job that went missing invisible.
+// See "The queues were never being compared" in docs/cosim.md.
+#define STACK_AREA_HI 0x12a0
 
 // Where the thread stacks start, read out of the ROM instead of described.
 //
