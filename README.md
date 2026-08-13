@@ -390,6 +390,50 @@ game's own map says it holds — 10.9 million VRAM words compared against the RO
 and the only mismatch in the whole run is on a frame that borrowed nothing, where
 the game's own upload had not landed yet.
 
+**And some of them are not there to be dropped at all.** Two more kinds of
+thing vanish at a widened edge, and neither is a piece an emitter threw away:
+they are things the game has taken out of the world altogether.
+`object_spawner_body` (`$80:C8F6`) walks the level's list of pickups every
+fourth tick and measures each against the middle of the camera's window — inside
+`$90` of it on both axes the object holds an actor record, outside it
+`$80:CAA8` takes the record back. On the horizontal that window is the console's
+256 plus sixteen pixels either side: exactly one sprite's width of slack, which
+is enough for a pickup to be gone by the time the last of it has left the
+console and not one pixel more. The neighbours are the same idea with their own
+list, their own thread (`$81:81F6`) and their own constant — `CMP #$00A0`, so 32
+pixels. Monsters have no such window; they are spawned by their own threads and
+roam. Which is why a zombie walks calmly off the side of a widened frame while
+the first-aid kit beside him blinks out of existence.
+
+A pickup can be put back exactly, because it is a row in a table. `W_OBJECT_X`,
+`W_OBJECT_Y`, `W_OBJECT_TYPE` and `W_OBJECT_STATE` all survive the despawn, and
+`object_spawn` builds every record it ever makes out of those and the metasprite
+table at `$80:CA6C` — thirty types, every one a single 16x16. So
+`ws_object_sprites` draws any entry whose state says it has no record, at the
+position the list gives it, with the metasprite its type names. When the camera
+comes back the game puts the record at that same position out of that same list,
+so this is not a guess at where the thing would be; it is where it is. It fixes
+the leading edge as much as the trailing one, an object the camera is walking
+towards not having been spawned yet either. Over fourteen movies **947 frames
+draw at least one** of these and the busiest draws three.
+
+A neighbour cannot be, and she is the one thing in the widened picture that is
+remembered rather than read. She is a thread, not a row: what she looks like is
+whatever her thread had reached and where she is is wherever she had walked to,
+and both die with it — `W_VICTIM_X` holds where she *started*, which is not the
+same place. So when `W_VICTIM_SPAWNED` goes from 1 to 0, which is `$81:8276` and
+nothing else — a rescue writes `$80` and so does the password gate, so a
+neighbour who is killed off never reaches this — the last record the game had of
+her is kept, and drawn on in world coordinates until the camera has carried it
+off the picture. Nothing is animated and nothing is invented: it is the last
+frame the game drew of her, held still for the half second it takes to leave.
+It is only ever taken up for a record the console was showing nothing of, and it
+is let go the moment the game re-lets that record, or the position leaves the
+picture, or the position comes back inside the spawner's window and the game
+starts her thread again. Across the whole movie corpus that happens
+**41 times in 42 movies** — it is a rare event, and it was the one
+the bug report opened with.
+
 And the console's own 256 columns are untouched by any of it. Comparing a 16:9
 level frame against a 4:3 one of the same input, pixel for pixel, **every row
 outside the status panel differs in exactly one column**, and that column is the

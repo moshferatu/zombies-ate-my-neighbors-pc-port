@@ -300,6 +300,58 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 #define W_OAM_BUFFER 0x13be       // 544 bytes, DMA'd to OAMDATA every frame
 #define W_SPRITE_PASS_PHASE 0x1b64  // see SPRITE_PASS_PHASE_TABLE in port/oam.h
 
+// --- The level's object list ---
+//
+// Everything a level puts on the ground and leaves there: the pickups, the
+// keys, and the neighbours waiting to be rescued. Four parallel arrays of 35
+// words, indexed together by an entry number already doubled -- `$1EC4 + 70` is
+// `$1F0A` and `$7E:6D02 + 70` is `$7E:6D48`, which is where the 35 comes from.
+// `object_list_parse` (`$80:C9A5`) fills them from the level's `+$20` list.
+//
+// These are *not* actor records. `object_spawner_body` (`$80:C8F6`) walks the
+// list every fourth tick and compares each entry against the middle of the
+// camera's window, `($1B6A + $80, $1B6C + $70)`: within $90 of it on both axes
+// the object holds an actor record, outside it does not. So a pickup 16 pixels
+// past the left edge of the console's 256 has no record at all, and one the
+// camera is walking towards has not been given one yet. Both of those bands are
+// picture once the frame is widened -- see `src/widescreen.h`, which draws them
+// from these four arrays and the table `object_spawn` reads.
+//
+// `W_OBJECT_STATE` is what says which: zero for an object with no record, the
+// record's offset while it has one, `$8000` once it has been picked up or
+// rescued and will not come back, and `$C000` for the one entry past the end of
+// the list. The spawner tests exactly that, with `BIT : BVS done : BMI skip`.
+#define W_OBJECT_X 0x6d02      // 35 x u16, world coordinates
+#define W_OBJECT_Y 0x6d48
+#define W_OBJECT_TYPE 0x1f0a   // ...already doubled, to index `$80:CA6C`
+#define W_OBJECT_STATE 0x1ec4
+#define OBJECT_SLOT_COUNT 35
+
+// --- ...and the neighbours ---
+//
+// The people waiting to be rescued are on the same plan and a different list.
+// `victim_list_parse` (`$82:DB46`) walks the level's `+$1E` list of twelve-byte
+// records and copies the x and y of each into `W_VICTIM_X`/`W_VICTIM_Y`, and
+// the thread at `$81:81F6` spawns and unspawns them against the middle of the
+// camera's window exactly as the object spawner does -- the same
+// `($1B6A + $80, $1B6C + $70)`, but $A0 rather than $90, so 32 pixels of slack
+// either side of the console's 256 rather than 16.
+//
+// A neighbour is a thread, not a record: `$81:81A2` starts one from the list's
+// last two fields and it makes its own actor, and unspawning kills the thread.
+// That is why there is nothing here to draw one from and `src/widescreen.h`
+// keeps the last picture of one instead.
+//
+// One byte each, indexed by the entry number: `W_VICTIM_SPAWNED` is 0 for a
+// neighbour with no thread, 1 while it has one, and `$80` once rescued or
+// gated out by a password. Both arrays are cleared 64 wide by `$81:817E`.
+#define W_VICTIM_X 0x6df4        // stride 4, and `+2` is the y beside it
+#define W_VICTIM_Y 0x6df6
+#define W_VICTIM_COUNT 0x6e30
+#define W_VICTIM_SPAWNED 0x605a  // 64 x u8
+#define W_VICTIM_THREAD 0x609a
+#define VICTIM_SLOT_COUNT 64
+
 // --- The expanded tilemap, and the scalars collision reads it with ---
 //
 // The level loader turns the block map into a full 16-bit tilemap in WRAM bank

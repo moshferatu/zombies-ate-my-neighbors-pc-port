@@ -6,7 +6,7 @@
 // or where this game's world stops. Those are facts about the game, and this
 // header is the only place they are written down.
 //
-// There are five of them.
+// There are seven of them.
 //
 // ## The status panel belongs on the edges
 //
@@ -128,6 +128,98 @@
 // Either way the game's own tables are never written. It is not told that a
 // slot has changed, because by the time it could look, it has not.
 //
+// ## The things on the ground are not there yet, or not any more
+//
+// A dropped piece is at least a record the game still has. This one is not.
+//
+// Everything a level leaves lying about -- the pickups, the keys, the weapons
+// and the potions, thirty kinds of them and every one a single 16x16 -- is an
+// entry in the level's object list and only sometimes an actor.
+// `object_spawner_body` (`$80:C8F6`) walks that list every fourth tick and
+// measures each entry against the middle of the camera's window,
+// `($1B6A + $80, $1B6C + $70)`:
+//
+//     LDA $7E6D02,X : SEC : SBC $0E : (abs) : CMP #$0090 : BCS out
+//
+// Inside $90 of the middle on both axes it calls `object_spawn` and the object
+// gets an actor record; outside, `$80:CAA8` takes the record away again. On the
+// horizontal that window is the console's 256 plus sixteen pixels either side
+// -- exactly one sprite's width of slack, which is precisely enough for a
+// pickup to be gone by the time the last of it leaves the console and not one
+// pixel more. Widen the picture by 43 and it pops out of existence with a body
+// still showing, and pops back in at the other edge just as abruptly.
+//
+// That is the difference the monsters do not have, and it is why a zombie walks
+// calmly off the side of a widened frame while the first-aid kit beside him
+// blinks out of existence: monsters are spawned by their own threads and roam,
+// and only the things a level put down live and die by the camera.
+//
+// It cannot be fixed the way the dropped pieces were, because there is no
+// record to read. It does not need to be. The list itself is still there and
+// still complete -- `W_OBJECT_X`, `W_OBJECT_Y`, `W_OBJECT_TYPE` and
+// `W_OBJECT_STATE` in `port/wram.h` -- and so is the table `object_spawn`
+// builds the record from, so `ws_object_sprites` draws the object from the two
+// of them directly: an entry with no record, at the position the list gives it,
+// with the metasprite `$80:CA6C` names for its type. When the camera does reach
+// it, `object_spawn` puts the record at that same position out of that same
+// list, so this is not a guess at where the thing would be. It is where it is.
+//
+// The state word is what keeps this honest. Zero is an object with no record,
+// and the only kind drawn here. A record offset means it is already an actor
+// and the pass above has it. `$8000` means it has been picked up or rescued and
+// is never coming back, and `$C000` is the end of the list. Nothing else is
+// consulted and nothing is remembered between frames: an object that stops
+// being listed stops being drawn, the same tick.
+//
+// ## The neighbours go the same way, and there is nothing to draw them from
+//
+// The people are on the same plan as the pickups and a different list. A thread
+// at `$81:81F6` walks the level's neighbour list against the same middle of the
+// camera's window and the same kind of test, `CMP #$00A0` rather than `#$0090`,
+// so the slack is 32 pixels either side of the console's 256 instead of 16.
+// Inside it, `$81:81A2` starts a thread from the list's last two fields and the
+// thread makes its own actor; outside it, `$81:8276` kills the thread, and the
+// record goes with it. Thirty-two pixels is again just enough for the console
+// and nothing like enough for a margin: a cheerleader standing in the widened
+// left edge has a good half of herself still showing when the camera nudges
+// right and takes her away.
+//
+// The pickups' answer will not work here. An object is a row in a table and a
+// type, and `object_spawn` puts the same metasprite at the same coordinates
+// every time, so drawing one is reading. A neighbour is a *thread*: what she
+// looks like is whatever her thread had reached, her position is wherever she
+// had walked to, and both die with it. `W_VICTIM_X` still holds where she
+// started, and that is not where she is.
+//
+// So this one is remembered rather than read, and it is the only thing in this
+// file that is. When the spawner takes a neighbour's thread away,
+// `ws_hold_victims` keeps the last record the game had of her -- position,
+// metasprite, flags, exactly as they stood in the tick that drew her last --
+// and `ws_held_sprites` goes on drawing that, in world coordinates, until the
+// camera has carried it off the widened picture. Nothing is animated, nothing
+// is moved and nothing is invented: it is the last frame the game drew, held
+// still for the second or so it takes to leave.
+//
+// Three things keep it from becoming a ghost story.
+//
+// It is only ever entered in the few ticks after `W_VICTIM_SPAWNED` goes from 1
+// to 0, which is `$81:8276` and nothing else -- a rescue writes `$80` and so
+// does the password gate, so a neighbour who is *killed off* never reaches
+// this. (Not the same tick: the spawner writes the flag and then asks the
+// thread to die, and the record comes free when the thread does, which the
+// corpus says is always the tick after. `WS_HOLD_GRACE` allows three.)
+//
+// It is only ever taken up for a record the console was showing nothing of --
+// 32 pixels or more outside the 256, which is the spawner's own window, so a
+// neighbour who leaves over the top or the bottom is not held at all, there
+// being no extra rows to hold her for.
+//
+// And it is let go the moment any of three things happens: the game re-lets
+// that record to anything, the camera carries the position off the picture, or
+// the position comes back inside the spawner's window -- that last one because
+// the game will start her thread again from her list position, which is not
+// where this is, and two of her would show.
+//
 // ## Everything above happens one tick late
 //
 // The frame the console is about to draw was composed during the *previous*
@@ -167,6 +259,29 @@
 // rather than a limit anything is expected to reach.
 #define WS_LENT_MAX 24
 
+// The metasprite `object_spawn` (`$80:C9E3`) gives an object of each type, as
+// `LDA $1F0A,X : TAX : LDA $CA6C,X` reads it -- 30 words, indexed by a type
+// already doubled, and every one of them a pointer into bank `$8F`. The table
+// next door at `$80:CA30` is the collide id, which a picture does not need.
+#define OBJECT_META_TABLE 0x80ca6cu
+#define OBJECT_TYPE_COUNT 30
+
+// How many neighbours may be held over at once. One is unspawned at a time --
+// the thread does one entry per pass -- so this is only ever reached if two
+// walk off the same edge within a few frames of each other.
+#define WS_HELD_MAX 4
+
+// Ticks after a neighbour is unspawned in which the record she was drawn from
+// is still expected to come free. See `ws_hold_victims`.
+#define WS_HOLD_GRACE 3
+
+// The last picture the game drew of a neighbour whose thread it has since taken
+// away, kept in world coordinates so the camera carries it out of the margin.
+typedef struct {
+  uint16_t rec;  // the record it was in, so it is dropped if that is re-let
+  uint16_t flags, wx, wy, wz, meta, bank, attr;
+} WsHeld;
+
 // Everything the hook needs: where the ROM is, because metasprites and sprite
 // graphics are read from it, how wide the margins are, the memory the picture
 // on screen was composed from, and the cache slots borrowed for it.
@@ -181,6 +296,14 @@ typedef struct {
   int back_slot[WS_LENT_MAX];  // ...of those, the ones that have to be put back
   int back_count;
   uint8_t slot_drawn[SPRITE_SLOTS];  // slots this frame's own sprites read from
+  // The frame before `mem`, of just the two things that have to be compared
+  // across a tick: the actor records and the neighbours' spawned flags.
+  uint8_t was_actors[ACTOR_SLOT_COUNT * ACTOR_SLOT_STRIDE];
+  uint8_t was_victims[VICTIM_SLOT_COUNT];
+  bool have_was;
+  WsHeld held[WS_HELD_MAX];
+  int held_count;
+  int hold_grace;
 } Widescreen;
 
 // WRAM as a flat 128 KB, the way `src/port/wram.h` numbers it: bank `$7E` is
@@ -266,6 +389,200 @@ static inline int ws_lend_slot(Snes* snes, Widescreen* ws, uint16_t frame) {
   return -1;
 }
 
+// One metasprite's pieces, composed exactly as `sprite_emit` composes them and
+// placed in the OAM entries the game's own pass left parked, for the pieces
+// that fall outside the console's 256 and inside the widened picture. Returns
+// the next free entry.
+//
+// The one test worth reading twice is the one that decides which pieces those
+// are. `x > -16 && x < 256` is the console's own picture: a 16-wide piece with
+// any part of it in there. For a record the game drew, that is precisely the
+// `CMP #$0100 / CMP #$FFF1` pair the emitters keep a piece on, so skipping it
+// leaves exactly the pieces the ROM dropped. For something the game has no
+// record of -- an unspawned object, a neighbour held over -- the same test
+// means something different and just as necessary: nothing drawn from outside
+// the game may put a pixel where the console puts one, because there the
+// console is right and this is not.
+static inline int ws_emit_meta(Snes* snes, Widescreen* ws, int slot,
+                               const SpriteMeta* meta, int16_t ox, int16_t oy,
+                               uint16_t attr_or, uint16_t attr_and, bool flip_x,
+                               bool flip_y, int left, int right) {
+  const uint16_t flip_eor =
+      (uint16_t)((flip_x ? 0x4000 : 0) | (flip_y ? 0x8000 : 0));
+
+  for (int i = 0; i < meta->count && slot < OAM_ENTRIES; i++) {
+    const SpritePiece* p = &meta->pieces[i];
+
+    uint16_t sy = (uint16_t)p->y;
+    if (flip_y) sy = ws_mirror(sy);
+    sy = (uint16_t)(sy + (uint16_t)oy);
+    // The ROM's Y test, unchanged: nothing is added above or below, because
+    // nothing was added above or below.
+    if (sy >= 0x00e0 && sy < 0xfff1) continue;
+
+    uint16_t sx = (uint16_t)p->x;
+    if (flip_x) sx = ws_mirror(sx);
+    sx = (uint16_t)(sx + (uint16_t)ox);
+    const int x = (int16_t)sx;
+    if (x > -16 && x < 256) continue;
+    // A 16-wide piece at `x` covers `x..x+15`, so it is worth drawing while any
+    // of that is inside the widened picture.
+    if (x >= 0 ? x > 255 + right : x < -15 - left) continue;
+
+    const int tile = ws_lend_slot(snes, ws, p->frame);
+    if (tile < 0) continue;
+    const uint16_t word =
+        (uint16_t)(((uint16_t)tile | (p->attr & attr_and) | attr_or) ^ flip_eor);
+    snes_setSprite(snes, slot, x & 0x1ff, sy & 0xff, word, true);
+    slot = snes_freeSprite(snes, slot + 1);
+  }
+  return slot;
+}
+
+// The objects the level put on the ground that have no actor record right now,
+// drawn from the four arrays the spawner reads and the metasprite table it
+// spawns them with. See the header, and `W_OBJECT_STATE` in `port/wram.h` for
+// what the states mean.
+static inline int ws_object_sprites(Snes* snes, Widescreen* ws, int slot,
+                                    int left, int right) {
+  const uint8_t* mem = ws->mem;
+  const uint16_t cam_x = ws_r16(mem, W_CAMERA_X);
+  const uint16_t cam_y = ws_r16(mem, W_CAMERA_Y);
+
+  for (int i = 0; i < OBJECT_SLOT_COUNT && slot < OAM_ENTRIES; i++) {
+    // `$80:C934 BIT $1EC4,X : BVS done : BMI skip`, in that order and for the
+    // same reasons: past the end of the list there is nothing, and an object
+    // already picked up is not coming back.
+    const uint16_t state = ws_r16(mem, W_OBJECT_STATE + (uint32_t)i * 2);
+    if (state & 0x4000) break;
+    if (state) continue;  // gone for good, or holding a record already drawn
+
+    const uint16_t type = ws_r16(mem, W_OBJECT_TYPE + (uint32_t)i * 2);
+    if (type >= OBJECT_TYPE_COUNT * 2 || (type & 1)) continue;
+    SpriteMeta meta;
+    if (sprite_meta_read(&ws->rom,
+                         ((uint32_t)SPRITE_META_BANK_LO << 16) |
+                             rom_word(&ws->rom, OBJECT_META_TABLE + type),
+                         &meta) != SPRITE_OK)
+      continue;
+
+    // `object_spawn` writes the record it allocates from these three and
+    // nothing else: X and Y straight out of the list, Z zero, and the only
+    // flag it sets is `ACTOR_DRAW`. So there is no flip, no forced palette and
+    // no raised priority to work out -- an object is drawn one way.
+    slot = ws_emit_meta(
+        snes, ws, slot, &meta,
+        (int16_t)(ws_r16(mem, W_OBJECT_X + (uint32_t)i * 2) - cam_x),
+        (int16_t)(ws_r16(mem, W_OBJECT_Y + (uint32_t)i * 2) - cam_y), 0x2000,
+        0xffff, false, false, left, right);
+  }
+  return slot;
+}
+
+// Take up the last picture of any neighbour whose thread the spawner has just
+// killed, and let go of the ones that have run out of reasons to be held. See
+// the header: this is the one place the widened picture keeps anything, and
+// what makes it honest is that it is only ever entered just after the spawner
+// has actually unspawned somebody.
+static inline void ws_hold_victims(Widescreen* ws) {
+  const uint8_t* mem = ws->mem;
+
+  // A record the game has given to something else is not this neighbour any
+  // more, and nothing may be drawn from a stale one.
+  int keep = 0;
+  for (int i = 0; i < ws->held_count; i++)
+    if (!(ws_r16(mem, ws->held[i].rec + ACTOR_FLAGS) & ACTOR_ACTIVE))
+      ws->held[keep++] = ws->held[i];
+  ws->held_count = keep;
+
+  if (!ws->have_was) return;
+  // `$81:8276`, the only place `W_VICTIM_SPAWNED` goes from 1 back to 0: a
+  // rescue writes `$80` and the password gate writes `$80`, so one and zero
+  // between two ticks means the camera, and only the camera.
+  //
+  // It writes the flag and then asks the thread to die, and the record goes
+  // when the thread does, which is not the same tick. Measured over the corpus
+  // it is always the very next one; this allows three and asks for nothing
+  // else, so for a record to be mistaken for a neighbour it would have to go
+  // missing within three ticks of one being unspawned, from outside the
+  // console, having been drawn.
+  for (int i = 0; i < VICTIM_SLOT_COUNT; i++)
+    if (ws->was_victims[i] == 1 && mem[W_VICTIM_SPAWNED + i] == 0)
+      ws->hold_grace = WS_HOLD_GRACE;
+  if (ws->hold_grace == 0) return;
+  ws->hold_grace--;
+
+  const uint16_t cam_x = ws_r16(mem, W_CAMERA_X);
+  for (int s = 0; s < ACTOR_SLOT_COUNT && ws->held_count < WS_HELD_MAX; s++) {
+    const uint16_t rec = (uint16_t)(W_ACTOR_SLOTS + s * ACTOR_SLOT_STRIDE);
+    const uint8_t* was = &ws->was_actors[s * ACTOR_SLOT_STRIDE];
+    const uint16_t flags = ws_r16(was, ACTOR_FLAGS);
+    if (!(flags & ACTOR_ACTIVE) || !(flags & ACTOR_DRAW)) continue;
+    if (flags & ACTOR_SCREEN_SPACE) continue;
+    if (ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS) & ACTOR_ACTIVE) continue;
+
+    // Only a record the spawner's own window had let go of, and only where the
+    // console was showing none of it: 32 pixels either side of the 256, which
+    // is the `CMP #$00A0` at `$81:823C` written out.
+    const int16_t ox = (int16_t)(ws_r16(was, ACTOR_X) - cam_x);
+    if (ox > -32 && ox < 288) continue;
+
+    WsHeld* h = &ws->held[ws->held_count++];
+    h->rec = rec;
+    h->flags = flags;
+    h->wx = ws_r16(was, ACTOR_X);
+    h->wy = ws_r16(was, ACTOR_Y);
+    h->wz = ws_r16(was, ACTOR_Z);
+    h->meta = ws_r16(was, ACTOR_META);
+    h->bank = ws_r16(was, ACTOR_META_BANK);
+    h->attr = ws_r16(was, ACTOR_ATTR);
+  }
+}
+
+// ...and draw them, dropping each as the camera carries it off the picture.
+static inline int ws_held_sprites(Snes* snes, Widescreen* ws, int slot,
+                                  int left, int right) {
+  const uint8_t* mem = ws->mem;
+  const uint16_t cam_x = ws_r16(mem, W_CAMERA_X);
+  const uint16_t cam_y = ws_r16(mem, W_CAMERA_Y);
+
+  int keep = 0;
+  for (int i = 0; i < ws->held_count; i++) {
+    const WsHeld* h = &ws->held[i];
+    const int16_t ox = (int16_t)(h->wx - cam_x);
+    // Held over exactly the band between the spawner's window and the edge of
+    // the picture. Back inside the window and the game will start her thread
+    // again -- at her list position, which is not this one, so two of her would
+    // show. Past the edge and there is nothing left to hold: nothing of a
+    // metasprite reaches further than a piece and a half from its origin, so
+    // this clears the last column one could put a pixel in.
+    if (ox > -32 && ox < 288) continue;
+    if (ox < -48 - left || ox > 288 + right) continue;
+    ws->held[keep++] = *h;
+
+    if (h->meta < 0x8000 || h->bank < SPRITE_META_BANK_LO ||
+        h->bank > SPRITE_META_BANK_HI)
+      continue;
+    SpriteMeta meta;
+    if (sprite_meta_read(&ws->rom, ((uint32_t)h->bank << 16) | h->meta, &meta) !=
+        SPRITE_OK)
+      continue;
+    // `draw_args` again, from the record as it last stood.
+    uint16_t attr_or = (h->flags & ACTOR_PRIORITY_TOP) ? 0x3000 : 0x2000;
+    uint16_t attr_and = 0xffff;
+    if (h->flags & ACTOR_ATTR_SET) {
+      attr_or |= h->attr;
+      attr_and = 0xf1ff;
+    }
+    slot = ws_emit_meta(snes, ws, slot, &meta, ox,
+                        (int16_t)(h->wy - h->wz - cam_y), attr_or, attr_and,
+                        (h->flags & SPRITE_FLIP_X) != 0,
+                        (h->flags & SPRITE_FLIP_Y) != 0, left, right);
+  }
+  ws->held_count = keep;
+  return slot;
+}
+
 // The pieces `sprite_emit` dropped for being outside the console's 256, drawn
 // into the OAM entries the game's own pass left parked. See the header.
 static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
@@ -322,42 +639,17 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
         SPRITE_OK)
       continue;
 
-    const bool flip_x = (flags & SPRITE_FLIP_X) != 0;
-    const bool flip_y = (flags & SPRITE_FLIP_Y) != 0;
-    const uint16_t flip_eor =
-        (uint16_t)((flip_x ? 0x4000 : 0) | (flip_y ? 0x8000 : 0));
-
-    for (int i = 0; i < meta.count && slot < OAM_ENTRIES; i++) {
-      const SpritePiece* p = &meta.pieces[i];
-
-      uint16_t sy = (uint16_t)p->y;
-      if (flip_y) sy = ws_mirror(sy);
-      sy = (uint16_t)(sy + (uint16_t)oy);
-      // The ROM's Y test, unchanged: nothing is added above or below, because
-      // nothing was added above or below.
-      if (sy >= 0x00e0 && sy < 0xfff1) continue;
-
-      uint16_t sx = (uint16_t)p->x;
-      if (flip_x) sx = ws_mirror(sx);
-      sx = (uint16_t)(sx + (uint16_t)ox);
-      // ...and the ROM's X test, which is the one being undone. A piece it kept
-      // is already in OAM and drawing itself; only the ones it dropped are this
-      // routine's business.
-      if (sx < 0x0100 || sx >= 0xfff1) continue;
-      const int x = (int16_t)sx;
-      // A 16-wide piece at `x` covers `x..x+15`, so it is worth drawing while
-      // any of that is inside the widened picture.
-      if (x >= 0 ? x > 255 + right : x < -15 - left) continue;
-
-      const int tile = ws_lend_slot(snes, ws, p->frame);
-      if (tile < 0) continue;
-      const uint16_t word =
-          (uint16_t)(((uint16_t)tile | (p->attr & attr_and) | attr_or) ^
-                     flip_eor);
-      snes_setSprite(snes, slot, x & 0x1ff, sy & 0xff, word, true);
-      slot = snes_freeSprite(snes, slot + 1);
-    }
+    slot = ws_emit_meta(snes, ws, slot, &meta, ox, oy, attr_or, attr_and,
+                        (flags & SPRITE_FLIP_X) != 0,
+                        (flags & SPRITE_FLIP_Y) != 0, left, right);
   }
+
+  // ...then the ones with no record to have been dropped from, and last the
+  // neighbours whose record the spawner took away while they were still in the
+  // picture. Last because they are the only ones being remembered rather than
+  // read, so if OAM runs out it is these that go without.
+  slot = ws_object_sprites(snes, ws, slot, left, right);
+  ws_held_sprites(snes, ws, slot, left, right);
 }
 
 // Called at the top of every frame, before any of it is drawn — see
@@ -382,6 +674,8 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   snes_setLayerWide(snes, 4, in_level ? ppu_wideStretch : ppu_wideClip);
 
   if (!in_level || margin <= 0) {
+    // Nothing held over survives leaving the level it belonged to.
+    ws->held_count = 0;
     // Nothing outside a level has a map to run off the end of.
     snes_setWidescreen(snes, margin, margin);
     snes_setWideClamp(snes, -PPU_EXTRA_MAX, 255 + PPU_EXTRA_MAX);
@@ -480,6 +774,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
     }
   }
 
+  ws_hold_victims(ws);
   ws_margin_sprites(snes, ws, left, right);
 }
 
@@ -490,6 +785,12 @@ static inline void widescreen_hook(Snes* snes, void* ctx) {
   if (ws->have_mem) {
     ws_return_slots(snes, ws);
     widescreen_frame(snes, ws);
+    // What `mem` held before this frame overwrites it, which is the tick before
+    // the one the picture was composed from — see `ws_hold_victims`, the only
+    // thing that needs to see a change happen rather than see it already made.
+    memcpy(ws->was_actors, &ws->mem[W_ACTOR_SLOTS], sizeof ws->was_actors);
+    memcpy(ws->was_victims, &ws->mem[W_VICTIM_SPAWNED], sizeof ws->was_victims);
+    ws->have_was = true;
   }
   memcpy(ws->mem, snes->ram, sizeof ws->mem);
   ws->have_mem = true;
