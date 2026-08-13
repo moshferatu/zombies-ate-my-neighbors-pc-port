@@ -136,6 +136,78 @@ count toward the figures reported at exit. `--skip-intro` cannot be combined
 with `-m`: a movie is indexed from reset and carries its own boot half, so doing
 both would run the logos twice.
 
+### Starting on a level
+
+```
+build\zamn.exe --skip-intro --level 30
+```
+
+The game already knows how to start anywhere — that is what a password is — and
+it keeps the answer in one word. `$7E:1E7C` is the level number: `$80:885B`
+indexes the record table `$9F:8002` with twice it, `$80:8909` steps it between
+levels, and `$80:84DB` compares it against 49 to decide the game is over instead
+of stepping again. So there is nothing here to implement, only one instruction to
+change:
+
+```
+$80:85F0  A9 01 00   LDA #$0001
+$80:85F3  8D 7C 1E   STA $1E7C
+```
+
+That is inside `$80:85CF`, which the main game thread at `$80:84B1` calls once,
+above the per-level loop that starts at `$80:84C1`. Change the immediate and the
+level card, the load, the victim gate and the step to the next level are all the
+game's own and all unchanged, because none of them knows where the number came
+from. Two bytes, in `snes->cart->rom` after the load — `cart_load` mallocs its
+own copy, so the buffer read off disk is not the one the 65816 fetches from.
+
+**It is two sites, not one, and the second one is the whole story.** Patching
+`$80:85F0` alone works, and then stops working for anyone who leaves the menu
+sitting there: `$80:9126` runs the attract demo at `$80:9AB0`, the demo plays
+real levels off its own list at `$80:9BCF`, and it has to put the number back
+when it is done —
+
+```
+$80:9BBD  A9 01 00   LDA #$0001
+$80:9BC0  8D 7C 1E   STA $1E7C
+```
+
+— which happens *after* `$80:85CF` has run and *before* the player presses Start,
+and it does not take long: the demo is playing by frame 2000, fourteen seconds
+after `--skip-intro` hands over. Measured rather than reasoned about — a movie
+that boots to the menu, idles to frame 7000 so the demo plays through, and only
+then mashes Start lands on level 1 with one site patched and on the level you
+asked for with both. Those two are
+every `LDA #$0001 : STA $1E7C` in the cartridge. The other five writes are the
+level step, the password routine and the demo's own list, and none of them is
+touched — so a password typed at the menu still wins, which is right, because it
+is the player asking second.
+
+**The range is 1..48.** All 56 records load and every one of them draws a card,
+but only 1..48 are the numbered levels you walk from one to the next. The cards
+sort the other eight themselves: **49 reads CREDIT LEVEL**, and `$80:84DB  CMP
+#$0031 : BEQ $8500` sends the game to its ending rather than to `$80:8909` when
+that is the level just finished — it is where finishing 48 takes you. **0 and
+50..55 read BONUS LEVEL**, all seven of them; 0 is the one the `BCDF` password
+loads. They sit past the count at `$9F:8000` (`$0032`, which is what `$80:8909`
+wraps on) because a bonus room is entered from inside a level and left by
+`$80:885B`'s `DEC` back to the level that owned it, and finishing 55 from a cold
+start would step to record 56, which is the table's own end sentinel. A flag
+whose promise is "and then carry on as usual" offers the levels where that
+sentence is true.
+
+Two things were checked rather than assumed. **The step is the game's**: stub
+`$80:8516` — play the level — down to `CLC : RTL` in a scratch ROM so every level
+completes the instant it loads, and `$1E7C` walks `30 → 31 → 32` on its own, and
+`47 → 48` into the level-48 finale at `$80:8BBB`. **And it costs nothing when it
+is not asked for**: `--level 1` writes the stock value back, and 2400 frames of
+`movies/level1.zmv` come out a byte-identical PNG with the flag and without it.
+
+`--level` applies to every new game the session starts, including the one after a
+game over — `$80:8514` branches back to `$80:84B1`, so a game over puts you on
+your level rather than on level 1, which is what a flag for looking at level 30
+should do.
+
 ### What actually reaches the screen
 
 The core hands over 512x480, but **only 512x448 of it is picture**.

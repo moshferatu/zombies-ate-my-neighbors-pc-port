@@ -45,6 +45,7 @@
 // Usage: zamn [rom.sfc] [--stock] [-r routine]... [-m movie.zmv]
 //             [--frames N] [--shot out.png] [--no-audio] [--no-pads]
 //             [--windowed] [--scale N] [--filter sharp|integer|linear]
+//             [--level N]
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -252,6 +253,81 @@ static void share_summary(const Cosim* c, char* out, size_t n) {
            100.0 * s.call_share);
 }
 
+// Start a new game somewhere other than level 1.
+//
+// `$7E:1E7C` is the level number, and everything downstream of it is already
+// general: `$80:885B` indexes the record table `$9F:8002` with twice it,
+// `$80:8909` steps it between levels, and `$80:84DB` compares it against 49 to
+// decide the game is over rather than stepping again. So there is nothing to
+// implement — only one instruction to change, the one place a fresh game says
+// where it begins:
+//
+//     $80:85F0  A9 01 00   LDA #$0001
+//     $80:85F3  8D 7C 1E   STA $1E7C
+//
+// That is inside `$80:85CF`, which the main game thread at `$80:84B1` calls
+// once, above the per-level loop that starts at `$80:84C1`. Change the immediate
+// and the level card, the load, the victim gate and the step to the next level
+// are all the game's own and all unchanged, because none of them knows where the
+// number came from.
+//
+// **Two sites, not one.** `$80:9126` — the title menu — runs the attract demo at
+// `$80:9AB0`, and the demo plays real levels off its own list at `$80:9BCF`, so
+// it has to put the number back when it is done:
+//
+//     $80:9BBD  A9 01 00   LDA #$0001
+//     $80:9BC0  8D 7C 1E   STA $1E7C
+//
+// The demo runs *after* `$80:85CF` and before the player presses Start, so
+// patching only the first site works until somebody leaves the menu alone —
+// which does not take long: the demo is playing by frame 2000, fourteen seconds
+// after `--skip-intro` hands over. Those two are every `LDA #$0001 : STA
+// $1E7C` in the cartridge; the other five writes are the level step, the
+// password and the demo's own list, and none of them should be touched. A
+// password still overrides this, which is right — it is the player asking
+// second.
+//
+// Bank $80 is LoROM file offset $00000, so the two bytes of each immediate are
+// at $005F1 and $01BBE.
+#define LEVEL_SITES 2
+static const uint32_t level_site[LEVEL_SITES] = {0x005f0u, 0x01bbdu};
+// Why 48 and not 55. There are 56 records in `$9F:8002`, and loading any of them
+// works — every one draws its own card — but only 1..48 are the numbered levels
+// you walk from one to the next. The other eight sort into two groups, and the
+// cards say which is which:
+//
+//   * **49 is the credits.** Its card reads CREDIT LEVEL, and `$80:84DB  CMP
+//     #$0031 : BEQ $8500` sends the game to its ending rather than to `$80:8909`
+//     when the level just finished was that one. It is where finishing 48 takes
+//     you, so it is the end of the chain rather than a place to be dropped into.
+//   * **0 and 50..55 are the seven bonus rooms** — all seven cards read BONUS
+//     LEVEL, and 0 is the one the BCDF password loads. They sit past the count
+//     at `$9F:8000` (`$0032`, which is what `$80:8909` wraps on), because a
+//     bonus room is entered from inside a level and left by `$80:885B`'s `DEC`
+//     back to the level that owned it. Finishing 55 from a cold start would step
+//     to record 56, and record 56 is the table's own end sentinel.
+//
+// A flag whose promise is "and then carry on as usual" should offer the levels
+// where that sentence is true, so it offers 48 of them.
+#define LEVEL_FIRST 1
+#define LEVEL_LAST 48
+
+// False if `$80:85F0` and `$80:9BBD` are not both `LDA #`, which is the whole of
+// what makes this the ROM it is meant for. Nothing is written unless both are.
+static bool start_at_level(Snes* snes, int level) {
+  Cart* cart = snes->cart;
+  if (!cart || !cart->rom) return false;
+  for (int i = 0; i < LEVEL_SITES; i++) {
+    if (cart->romSize <= level_site[i] + 2) return false;
+    if (cart->rom[level_site[i]] != 0xa9) return false;
+  }
+  for (int i = 0; i < LEVEL_SITES; i++) {
+    cart->rom[level_site[i] + 1] = (uint8_t)level;
+    cart->rom[level_site[i] + 2] = (uint8_t)(level >> 8);
+  }
+  return true;
+}
+
 // Boot to the title menu without making anybody watch it.
 //
 // The intro is Konami, LucasArts, a story screen and then the title — about
@@ -347,6 +423,12 @@ static void usage(void) {
     "  --skip-intro    Run the logos and the story screen at full speed and\n"
     "                  hand over at the title menu. Cannot be combined with -m:\n"
     "                  a movie drives from reset and contains its own boot.\n"
+    "  --level <N>     Start a new game on level N (1..48) instead of 1, and go\n"
+    "                  on to N+1, N+2 ... from there as usual. Applies to every\n"
+    "                  new game the session starts, including after a game over.\n"
+    "                  A password entered at the menu still wins. 48 is the last\n"
+    "                  numbered level; the credit roll and the seven bonus rooms\n"
+    "                  are not levels this can start you on.\n"
     "  --windowed      Start in a window. The default is fullscreen; F11 or\n"
     "                  Alt+Enter moves between them at any time.\n"
     "  --scale <N>     Size the window at N times 512x480, and start in it.\n"
@@ -417,6 +499,9 @@ int main(int argc, char** argv) {
   // without the second: a bounded run, at real speed, that exits with a report.
   bool force_pacing = false;
   bool skip_the_intro = false;
+  // 0 rather than -1 as the "not asked for" value, because 0 is not in the range
+  // this accepts and the ROM is left exactly as it came off disk without it.
+  int start_level = 0;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
@@ -473,6 +558,15 @@ int main(int argc, char** argv) {
       }
       fullscreen = false;
     }
+    else if (!strcmp(a, "--level") && i + 1 < argc) {
+      start_level = atoi(argv[++i]);
+      if (start_level < LEVEL_FIRST || start_level > LEVEL_LAST) {
+        fprintf(stderr, "error: --level wants %d..%d, got '%s'\n\n",
+                LEVEL_FIRST, LEVEL_LAST, argv[i]);
+        usage();
+        return 2;
+      }
+    }
     else if (!strcmp(a, "-m") && i + 1 < argc) movie_path = argv[++i];
     else if (!strcmp(a, "--shot") && i + 1 < argc) shot_path = argv[++i];
     else if (!strcmp(a, "--frames") && i + 1 < argc) {
@@ -503,6 +597,17 @@ int main(int argc, char** argv) {
   Snes* snes = snes_init();
   if (!snes_loadRom(snes, rom, rom_len)) {
     fprintf(stderr, "error: core rejected ROM '%s'\n", rom_path);
+    return 1;
+  }
+  // After the load, not before it: `cart_load` mallocs its own copy and memcpys
+  // into it, so the buffer read off disk is not the one the 65816 fetches from.
+  // Once, not per frame — unlike the widescreen window, nothing at runtime can
+  // change the answer.
+  if (start_level && !start_at_level(snes, start_level)) {
+    fprintf(stderr,
+            "error: --level: '%s' does not have `LDA #` at $80:85F0 and\n"
+            "       $80:9BBD, so there is no level number in it to change.\n",
+            rom_path);
     return 1;
   }
 
@@ -763,6 +868,15 @@ int main(int argc, char** argv) {
          native ? "on" : "off (stock)", routine_count,
          routine_count == 1 ? "" : "s",
          have_movie ? ", replaying a movie" : "");
+  // Announced because it is the one option here that changes what the *game*
+  // does rather than how it is shown, and a run that starts on level 30 should
+  // say so in its own log rather than leave somebody wondering.
+  if (start_level == LEVEL_LAST)
+    printf("Start level: %d (--level; the last numbered one, then the credits)\n",
+           start_level);
+  else if (start_level)
+    printf("Start level: %d (--level; on to %d from there)\n", start_level,
+           start_level + 1);
   // Redirected to a file, this is block-buffered, and everything above it
   // describes the session that is about to start — so it wants to be readable
   // *during* the session and not only after a clean exit. A run that is killed
