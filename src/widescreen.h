@@ -6,7 +6,7 @@
 // or where this game's world stops. Those are facts about the game, and this
 // header is the only place they are written down.
 //
-// There are four of them.
+// There are five of them.
 //
 // ## The status panel belongs on the edges
 //
@@ -89,19 +89,68 @@
 // VRAM cache, applies the same composition, and keeps the pieces the ROM
 // dropped for being outside the console's 256 and inside the widened picture.
 // They go into OAM entries the game's pass left parked, so nothing it placed
-// moves. Not one byte of WRAM is written: this is the frame the game has
-// already built, plus the entries it could not afford.
+// moves, and not one byte of the game's memory is written: this is the frame
+// the game has already built, plus the entries it could not afford.
 //
-// The one thing it will not do is guess at graphics. A piece is drawn only if
-// its 16x16 frame is resident in the sprite cache — if the game has not had a
-// reason to upload it, the piece is skipped rather than drawn with whatever
-// happens to be in that VRAM slot.
+// ## The graphics for those sprites are not loaded, because nothing asked for
+// ## them
+//
+// A 16x16 frame is only in VRAM if something has drawn it: `sprite_emit` looks
+// the frame up as it emits a piece (`$80:B9D6`), and that lookup is what
+// uploads it. A piece dropped for being off the console's edge never reaches
+// the lookup, so an actor walking off the side of the screen stops refreshing
+// the frames of whatever parts of it are already past the edge, and the LRU
+// reclaims them a few frames later. Put the sprite back without its graphics
+// and you get exactly what this looked like: survivors and pickups that lose
+// half of themselves at the margin, and flicker as slots come and go.
+//
+// `ws_lend_slot` fixes that by borrowing a slot, uploading the frame's 128
+// bytes from ROM into it exactly as `$80:B960`'s DMA would have, and pointing
+// the margin sprite at it. Which slot can be borrowed is the whole question,
+// and there are two answers.
+//
+// A slot whose `slot_frame` entry is still negative is one the game has never
+// allocated: no frame maps to it, so nothing the game can emit points at it,
+// and it is free outright. Early in a level there are dozens of those. But the
+// cache only ever fills — a slot goes from unused to used and never back —
+// so after a few minutes there are none, which is why a long level was where
+// the flicker got worse.
+//
+// The second answer is what makes it hold up: a slot whose graphics no sprite
+// in *this frame's* OAM is drawing from is free for exactly the length of this
+// picture. The OAM being drawn is sitting right there to be read, and every
+// sprite in it is a whole 16x16 frame, so the slots it reads from are known
+// exactly. Such a slot is borrowed for one frame and given back at the top of
+// the next one — `ws_return_slots` puts into it whatever the game's own cache
+// map says belongs there, read back out of ROM — before a single line of that
+// frame is drawn.
+//
+// Either way the game's own tables are never written. It is not told that a
+// slot has changed, because by the time it could look, it has not.
+//
+// ## Everything above happens one tick late
+//
+// The frame the console is about to draw was composed during the *previous*
+// tick: the game builds an OAM buffer and a tilemap upload queue as it runs,
+// and the NMI at the top of the next frame DMAs both into the hardware and only
+// then lets the game run again. So at the moment the margins are drawn, the
+// OAM and VRAM on screen are one tick older than the actor records, the camera
+// and the sprite cache in WRAM.
+//
+// Reading the live memory therefore composes the margins from a world that has
+// already moved: pieces land one frame's motion away from the same actor's
+// on-screen pieces, and near an eight-pixel boundary the tilemap columns go to
+// the wrong ring slots. Both show up as edge flicker whenever the camera moves.
+// So `Widescreen` keeps a copy of WRAM as it stood at the previous frame start,
+// and everything here reads that. It is a lot of memory to copy and it is
+// exactly the memory the picture was made from.
 
 #ifndef ZAMN_WIDESCREEN_H
 #define ZAMN_WIDESCREEN_H
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "ppu.h"
 #include "snes.h"
@@ -112,18 +161,32 @@
 #include "port/oam.h"
 #include "port/wram.h"
 
-// Everything the hook needs: where the ROM is, because metasprites are read
-// from it, and how wide the margins are.
+// How many distinct frames one widened picture may borrow cache slots for.
+// Measured over nine movies and 13,869 frames of play: the busiest picture puts
+// twelve pieces back and borrows for five of them, so this is room to spare
+// rather than a limit anything is expected to reach.
+#define WS_LENT_MAX 24
+
+// Everything the hook needs: where the ROM is, because metasprites and sprite
+// graphics are read from it, how wide the margins are, the memory the picture
+// on screen was composed from, and the cache slots borrowed for it.
 typedef struct {
   Rom rom;
   int margin;  // game pixels per side, 0 when widescreen is off
+  uint8_t mem[0x20000];
+  bool have_mem;
+  uint16_t lent_frame[WS_LENT_MAX];
+  int lent_slot[WS_LENT_MAX];
+  int lent_count;
+  int back_slot[WS_LENT_MAX];  // ...of those, the ones that have to be put back
+  int back_count;
+  uint8_t slot_drawn[SPRITE_SLOTS];  // slots this frame's own sprites read from
 } Widescreen;
 
 // WRAM as a flat 128 KB, the way `src/port/wram.h` numbers it: bank `$7E` is
 // `$00000-$0FFFF` and bank `$7F` is `$10000-$1FFFF`.
-static inline uint16_t ws_r16(const Snes* snes, uint32_t off) {
-  return (uint16_t)(snes->ram[off & 0x1ffff] |
-                    (snes->ram[(off + 1) & 0x1ffff] << 8));
+static inline uint16_t ws_r16(const uint8_t* mem, uint32_t off) {
+  return (uint16_t)(mem[off & 0x1ffff] | (mem[(off + 1) & 0x1ffff] << 8));
 }
 
 // `EOR #$FFFF : SEC : SBC #$000F`, the mirror the flipped emitters apply to a
@@ -132,42 +195,131 @@ static inline uint16_t ws_mirror(uint16_t v) {
   return (uint16_t)(((uint16_t)~v) - 0x000f);
 }
 
+// Put a 16x16 frame into a cache slot's VRAM, which is what the DMA `$80:B960`
+// queues would have done: the first 64 bytes are the slot's two top tiles and
+// the second 64 the two below them, one VRAM row of 32 words further on.
+static inline bool ws_upload(Snes* snes, const Rom* rom, uint16_t frame,
+                             int slot) {
+  uint8_t raw[SPRITE_FRAME_BYTES];
+  if (!sprite_frame_read(rom, frame, raw)) return false;
+  const uint16_t base = sprite_slot_vram(slot);
+  for (int i = 0; i < 32; i++) {
+    snes_writeVramWord(snes, (uint16_t)(base + i),
+                       (uint16_t)(raw[i * 2] | (raw[i * 2 + 1] << 8)));
+    snes_writeVramWord(snes, (uint16_t)(base + 0x100 + i),
+                       (uint16_t)(raw[64 + i * 2] | (raw[65 + i * 2] << 8)));
+  }
+  return true;
+}
+
+// Give back the slots the last picture borrowed, by putting into each one the
+// graphics the game's own cache map says belongs there. The live map and not
+// the snapshot: a slot the game has re-let since has already had its own upload
+// DMA'd into it, and the newest owner is the one whose graphics belong there.
+static inline void ws_return_slots(Snes* snes, Widescreen* ws) {
+  for (int i = 0; i < ws->back_count; i++) {
+    const uint16_t f = ws_r16(snes->ram, W_SLOT_FRAME + ws->back_slot[i] * 2);
+    if (!(f & 0x8000))
+      ws_upload(snes, &ws->rom, (uint16_t)(f / 2), ws->back_slot[i]);
+  }
+  ws->back_count = 0;
+}
+
+// The OAM tile word for `frame`, putting it into a cache slot nothing else is
+// reading from if it is not already in one. -1 if there is nowhere to put it.
+//
+// Two kinds of slot will do, in that order. One the game has never allocated —
+// `slot_frame` still negative — is free outright: no frame maps to it, so
+// nothing the game can emit points at it. Failing that, one whose graphics no
+// sprite in *this* frame's OAM is drawing from is free for the length of this
+// picture, and is put back at the top of the next one before anything is drawn.
+// A level that has been running for a while has none of the first kind left,
+// because the cache only ever fills, and that is when the second kind matters.
+//
+// Either way the game's own tables are not touched: it is not told that a slot
+// has changed, because by the time it could look, it has not.
+static inline int ws_lend_slot(Snes* snes, Widescreen* ws, uint16_t frame) {
+  const uint16_t entry = ws_r16(ws->mem, W_FRAME_SLOT + (uint32_t)frame * 2);
+  if (!(entry & 0x8000)) return sprite_slot_tile(entry / 2);
+
+  for (int i = 0; i < ws->lent_count; i++)
+    if (ws->lent_frame[i] == frame) return sprite_slot_tile(ws->lent_slot[i]);
+  if (ws->lent_count == WS_LENT_MAX) return -1;
+
+  for (int pass = 0; pass < 2; pass++) {
+    for (int slot = 0; slot < SPRITE_SLOTS; slot++) {
+      const bool mapped =
+          !(ws_r16(snes->ram, W_SLOT_FRAME + slot * 2) & 0x8000);
+      if (pass == 0 ? mapped : (!mapped || ws->slot_drawn[slot])) continue;
+      bool taken = false;
+      for (int i = 0; i < ws->lent_count; i++) taken |= ws->lent_slot[i] == slot;
+      if (taken) continue;
+      if (!ws_upload(snes, &ws->rom, frame, slot)) return -1;
+
+      if (pass == 1) ws->back_slot[ws->back_count++] = slot;
+      ws->lent_frame[ws->lent_count] = frame;
+      ws->lent_slot[ws->lent_count] = slot;
+      ws->lent_count++;
+      return sprite_slot_tile(slot);
+    }
+  }
+  return -1;
+}
+
 // The pieces `sprite_emit` dropped for being outside the console's 256, drawn
 // into the OAM entries the game's own pass left parked. See the header.
-static inline void ws_margin_sprites(Snes* snes, const Rom* rom, int left,
+static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
                                      int right) {
-  const uint16_t count = ws_r16(snes, W_VISIBLE_ACTOR_COUNT);
-  const uint16_t cam_x = ws_r16(snes, W_CAMERA_X);
-  const uint16_t cam_y = ws_r16(snes, W_CAMERA_Y);
+  const uint8_t* mem = ws->mem;
+  const uint16_t count = ws_r16(mem, W_VISIBLE_ACTOR_COUNT);
+  const uint16_t cam_x = ws_r16(mem, W_CAMERA_X);
+  const uint16_t cam_y = ws_r16(mem, W_CAMERA_Y);
   int slot = snes_freeSprite(snes, 0);
+  ws->lent_count = 0;
+
+  // Which cache slots the picture already on its way to the screen is reading
+  // from. Every sprite the game emits is a whole 16x16 frame, so an entry's
+  // tile number is a slot's tile number and the map back is exact.
+  memset(ws->slot_drawn, 0, sizeof ws->slot_drawn);
+  for (int e = 0; e < OAM_ENTRIES; e++) {
+    // Parked is `$E0` exactly, and the emitters can reach neither it nor the
+    // sixteen rows below it; `$F1` upwards is a sprite hanging off the top of
+    // the screen, which is drawn.
+    const int y = snes->ppu->oam[e * 2] >> 8;
+    if (y >= 0xe0 && y <= 0xf0) continue;
+    const int tile = snes->ppu->oam[e * 2 + 1] & 0x1ff;
+    const int s = (tile / 32) * SPRITE_SLOTS_PER_ROW + (tile % 32) / 2;
+    if (s < SPRITE_SLOTS) ws->slot_drawn[s] = 1;
+  }
 
   for (uint16_t cur = 0; cur < count && slot < OAM_ENTRIES; cur += 2) {
-    const uint16_t rec = ws_r16(snes, W_VISIBLE_ACTORS + cur);
-    const uint16_t flags = ws_r16(snes, (uint32_t)rec + ACTOR_FLAGS);
+    const uint16_t rec = ws_r16(mem, W_VISIBLE_ACTORS + cur);
+    const uint16_t flags = ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS);
     if (!(flags & ACTOR_DRAW)) continue;
 
     // `draw_args` in `src/port/oam.c`, which is `$80:BD46`..`$80:BD9F`.
     uint16_t attr_or = (flags & ACTOR_PRIORITY_TOP) ? 0x3000 : 0x2000;
     uint16_t attr_and = 0xffff;
     if (flags & ACTOR_ATTR_SET) {
-      attr_or |= ws_r16(snes, (uint32_t)rec + ACTOR_ATTR);
+      attr_or |= ws_r16(mem, (uint32_t)rec + ACTOR_ATTR);
       attr_and = 0xf1ff;
     }
     int16_t ox, oy;
     if (flags & ACTOR_SCREEN_SPACE) {
-      ox = (int16_t)ws_r16(snes, (uint32_t)rec + ACTOR_X);
-      oy = (int16_t)ws_r16(snes, (uint32_t)rec + ACTOR_Y);
+      ox = (int16_t)ws_r16(mem, (uint32_t)rec + ACTOR_X);
+      oy = (int16_t)ws_r16(mem, (uint32_t)rec + ACTOR_Y);
     } else {
-      ox = (int16_t)(ws_r16(snes, (uint32_t)rec + ACTOR_X) - cam_x);
-      oy = (int16_t)(ws_r16(snes, (uint32_t)rec + ACTOR_Y) -
-                     ws_r16(snes, (uint32_t)rec + ACTOR_Z) - cam_y);
+      ox = (int16_t)(ws_r16(mem, (uint32_t)rec + ACTOR_X) - cam_x);
+      oy = (int16_t)(ws_r16(mem, (uint32_t)rec + ACTOR_Y) -
+                     ws_r16(mem, (uint32_t)rec + ACTOR_Z) - cam_y);
     }
-    const uint16_t ptr = ws_r16(snes, (uint32_t)rec + ACTOR_META);
+    const uint16_t ptr = ws_r16(mem, (uint32_t)rec + ACTOR_META);
     if (ptr < 0x8000) continue;
-    const uint16_t bank = ws_r16(snes, (uint32_t)rec + ACTOR_META_BANK);
+    const uint16_t bank = ws_r16(mem, (uint32_t)rec + ACTOR_META_BANK);
     if (bank < SPRITE_META_BANK_LO || bank > SPRITE_META_BANK_HI) continue;
     SpriteMeta meta;
-    if (sprite_meta_read(rom, ((uint32_t)bank << 16) | ptr, &meta) != SPRITE_OK)
+    if (sprite_meta_read(&ws->rom, ((uint32_t)bank << 16) | ptr, &meta) !=
+        SPRITE_OK)
       continue;
 
     const bool flip_x = (flags & SPRITE_FLIP_X) != 0;
@@ -197,16 +349,10 @@ static inline void ws_margin_sprites(Snes* snes, const Rom* rom, int left,
       // any of that is inside the widened picture.
       if (x >= 0 ? x > 255 + right : x < -15 - left) continue;
 
-      // The VRAM cache, read and not touched: `frame_slot` holds the slot x2,
-      // or a negative word for a frame that is not loaded. `$80:B9D6` would
-      // load it and queue a DMA; this declines instead, because a slot the game
-      // has not filled holds another sprite's graphics.
-      const uint16_t entry = ws_r16(snes, W_FRAME_SLOT + (uint32_t)p->frame * 2);
-      if (entry & 0x8000) continue;
-
+      const int tile = ws_lend_slot(snes, ws, p->frame);
+      if (tile < 0) continue;
       const uint16_t word =
-          (uint16_t)((sprite_slot_tile(entry / 2) | (p->attr & attr_and) |
-                      attr_or) ^
+          (uint16_t)(((uint16_t)tile | (p->attr & attr_and) | attr_or) ^
                      flip_eor);
       snes_setSprite(snes, slot, x & 0x1ff, sy & 0xff, word, true);
       slot = snes_freeSprite(snes, slot + 1);
@@ -216,10 +362,13 @@ static inline void ws_margin_sprites(Snes* snes, const Rom* rom, int left,
 
 // Called at the top of every frame, before any of it is drawn — see
 // `SnesFrameHook`. At that moment the game's vblank has finished: this frame's
-// tilemap columns are in VRAM, its OAM has been DMA'd, and the camera is where
-// the frame will be drawn from. Nothing here writes WRAM or changes what the
-// game does; it decides what happens in the columns the console never had.
-static inline void widescreen_frame(Snes* snes, const Rom* rom, int margin) {
+// tilemap columns are in VRAM, its OAM has been DMA'd, and the picture is fixed
+// but for the columns the console never had. Everything read here comes from
+// `ws->mem`, the memory that picture was composed from, which is a tick behind
+// the memory the game is running on now.
+static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
+  const uint8_t* mem = ws->mem;
+  const int margin = ws->margin;
   const bool in_level = snes_bgTilemapWider(snes, 1);
   // BG3 is the status panel in a level and everything else outside one.
   snes_setLayerWide(snes, 2, in_level ? ppu_wideAnchor : ppu_wideAuto);
@@ -239,17 +388,17 @@ static inline void widescreen_frame(Snes* snes, const Rom* rom, int margin) {
     return;
   }
 
-  const uint16_t cam_x = ws_r16(snes, W_CAMERA_X);
-  const uint16_t cam_y = ws_r16(snes, W_CAMERA_Y);
+  const uint16_t cam_x = ws_r16(mem, W_CAMERA_X);
+  const uint16_t cam_y = ws_r16(mem, W_CAMERA_Y);
   const int cam_tx = cam_x >> 3, cam_ty = cam_y >> 3;
-  const int cursor_x = ws_r16(snes, W_TILEMAP_CURSOR_X);
-  const int cursor_y = ws_r16(snes, W_TILEMAP_CURSOR_Y);
-  const uint16_t vram_base = ws_r16(snes, W_TILEMAP_VRAM_BASE);
-  const uint16_t threshold = ws_r16(snes, W_TILE_PRIORITY_BELOW);
+  const int cursor_x = ws_r16(mem, W_TILEMAP_CURSOR_X);
+  const int cursor_y = ws_r16(mem, W_TILEMAP_CURSOR_Y);
+  const uint16_t vram_base = ws_r16(mem, W_TILEMAP_VRAM_BASE);
+  const uint16_t threshold = ws_r16(mem, W_TILE_PRIORITY_BELOW);
   // One map row in bytes, so half of it is the map's width in tiles. This is
   // the only measurement of the world's size taken here, and both the clamp
   // below and the column bounds come out of it.
-  const int map_cols = ws_r16(snes, W_TILEMAP_ROW_BYTES) >> 1;
+  const int map_cols = ws_r16(mem, W_TILEMAP_ROW_BYTES) >> 1;
 
   // ## Where the extra width goes
   //
@@ -315,10 +464,10 @@ static inline void widescreen_frame(Snes* snes, const Rom* rom, int margin) {
         // Rows cannot leave the map: the camera's own limit stops it 28 rows
         // short of the bottom, and this adds nothing vertically.
         const uint16_t row_base =
-            ws_r16(snes, (uint32_t)(W_TILE_ROW_BASE + row * 2));
+            ws_r16(mem, (uint32_t)(W_TILE_ROW_BASE + row * 2));
         uint16_t tile = ws_r16(
-            snes, ((uint32_t)(TILEMAP_SRC_BANK & 1) << 16) |
-                      (uint16_t)(row_base + col * 2));
+            mem, ((uint32_t)(TILEMAP_SRC_BANK & 1) << 16) |
+                     (uint16_t)(row_base + col * 2));
         // The priority rule the ROM's column copy applies, and for the same
         // reason: a tile below the level record's threshold is drawn in front
         // of whatever walks over it.
@@ -331,18 +480,26 @@ static inline void widescreen_frame(Snes* snes, const Rom* rom, int margin) {
     }
   }
 
-  ws_margin_sprites(snes, rom, left, right);
+  ws_margin_sprites(snes, ws, left, right);
 }
 
 static inline void widescreen_hook(Snes* snes, void* ctx) {
-  const Widescreen* ws = (const Widescreen*)ctx;
-  widescreen_frame(snes, &ws->rom, ws->margin);
+  Widescreen* ws = (Widescreen*)ctx;
+  // The first frame has no tick before it to have been composed from, and the
+  // game has drawn nothing yet either.
+  if (ws->have_mem) {
+    ws_return_slots(snes, ws);
+    widescreen_frame(snes, ws);
+  }
+  memcpy(ws->mem, snes->ram, sizeof ws->mem);
+  ws->have_mem = true;
 }
 
 // Hang the above off the machine's frame start. `ws` must outlive `snes`.
 static inline void widescreen_install(Snes* snes, Widescreen* ws,
                                       const uint8_t* rom, int rom_len,
                                       int margin) {
+  memset(ws, 0, sizeof *ws);
   ws->rom.data = rom;
   ws->rom.size = (uint32_t)rom_len;
   ws->margin = margin;

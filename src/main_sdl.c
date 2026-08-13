@@ -548,7 +548,9 @@ int main(int argc, char** argv) {
   // ...and the per-frame half of it runs at the top of each frame, from the
   // machine itself, because that is the only moment the game's vblank is over
   // and none of the picture has been drawn yet. See `SnesFrameHook`.
-  Widescreen ws;
+  // Static because it carries a copy of the machine's whole 128 KB of work RAM
+  // — see `widescreen.h` on why the margins are drawn from a tick-old memory.
+  static Widescreen ws;
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
   snes_reset(snes, true);
 

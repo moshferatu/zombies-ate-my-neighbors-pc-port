@@ -208,8 +208,24 @@ screen is named anywhere in it.
 answer is the honest one: draw what the hardware would have drawn if the
 scanline were longer. A background is a tilemap and a scroll, both defined at
 any x; the console stops at 256 because it runs out of time, not because the map
-runs out. Three things take a layer off that default, and they are asked in
+runs out. Four things take a layer off that default, and they are asked in
 this order.
+
+**Is it being drawn a line at a time?** A layer whose horizontal scroll is
+rewritten on every scanline is not scrolling; it is a raster effect, and each
+line is a window on the map at its own offset. Every question below reads one
+scroll for the whole frame and would answer it for the wrong line, so none of
+them is asked. This is the title logo, which sweeps in on a per-line scroll and
+is twice as wide as the console: read one scroll for it and its edge columns
+come out empty, which had the whole animation clipped at the console's edge with
+the spiral carrying on past it either side. Continuing each line along its own
+map is the only answer that means anything, and it is also the honest one.
+
+Measured rather than assumed: over the intro and a level, an ordinary layer's
+scroll changes at most four times in a frame and the title logo's changes on all
+224 lines, so the threshold sits in a gap two orders of magnitude wide. Latched
+per screen and cleared behind a forced blank, exactly like the scroll test
+below.
 
 **Has it anything at the console's edges at all?** A layer whose outermost
 columns are entirely transparent is a picture composed to be seen at one place —
@@ -248,9 +264,9 @@ every screen change goes through, so a wall that moves one pixel every fourth
 frame does not flicker between the two.
 
 So: Konami's white field, LucasArts' stone wall, the character select's monster
-wallpaper and the title's spiral all reach the edges of a 16:9 frame; the legal
-text, the story card and the level card keep their black, because black is what
-their background is out there.
+wallpaper, the title's spiral and the logo sweeping across it all reach the
+edges of a 16:9 frame; the legal text, the story card and the level card keep
+their black, because black is what their background is out there.
 
 **Off by default, and every measurement in this file is made without it.** At
 zero margins each widened expression reduces to the one the vendored core
@@ -258,8 +274,8 @@ always had: same 2048-byte rows, same 32-sprite and 34-tile ceilings, same
 window edges. The check is that `zamn_headless` renders a byte-identical PNG
 against a build of the commit before any of this existed — both the boot frame
 and 2,400 frames of level 1 — and that `zamn_cosim` is unmoved: `run -r none`
-still identical at all 2,389 passes of level 1, `verify` still 206,755 calls and
-none diverged.
+still identical at all 2,389 passes of level 1, `verify` still 191,614 calls
+and none diverged.
 
 **The margins hold the map, and getting there took one more step.** BG2's
 tilemap ring is 64 columns but the game only ever *maintains* 32 of them: it
@@ -322,17 +338,62 @@ vblank, before a line is drawn — it walks the same visible list the game's own
 pass walked, reads the same records and metasprites, composes them exactly as
 `sprite_emit` does, and keeps the pieces the ROM dropped for being outside the
 console's 256 and inside the widened picture. They go into OAM entries the
-game's pass left parked, so nothing it placed moves, and not one byte of WRAM is
-written. The one thing it will not do is guess at graphics: a piece is drawn
-only if its frame is resident in the sprite cache, never with whatever happens
-to be in that VRAM slot.
+game's pass left parked, so nothing it placed moves, and not one byte of the
+game's own memory is written.
 
-Measured: across level 1 and level 25, 676 frames of ordinary play have at least
-one such piece, and the busiest puts six back — a plant the console shows a
-sliver of at the left edge stands there whole instead. And the console's own 256
-columns are untouched by any of it. Comparing a 16:9 level frame against a 4:3
-one of the same input, pixel for pixel, **every row outside the status panel
-differs in exactly one column**, and that column is the next section.
+Getting that to hold still took two more things, and both of them were visible
+as flicker at the edges before they were understood.
+
+**The picture is a tick behind the memory.** The game composes an OAM buffer and
+a queue of graphics uploads as it runs, and the NMI at the top of the next frame
+DMAs both into the hardware before letting the game run on. So at the moment the
+margins are drawn, the OAM and VRAM the console is about to read are one tick
+older than the actor records and the camera in WRAM. Compose the margins from
+the live memory and every piece lands one frame's motion away from the same
+actor's on-screen pieces — a survivor is torn along the seam whenever the camera
+moves, and near an eight-pixel boundary the extra tilemap columns go to the
+wrong ring slots as well. So `Widescreen` keeps a copy of WRAM as it stood at
+the previous frame start and reads that instead. The check is exact and it is
+the one that settled this: recompose every piece the ROM *did* emit and compare
+it against the OAM entry it actually produced, in order, and **13,641 pieces
+over 926 frames match to the word** — position, tile, palette, priority and
+flip. Against the live memory, 7,629 of them did not.
+
+**The graphics are not loaded, because nothing asked for them.** A 16x16 frame
+is only in VRAM if something drew it: the lookup that resolves a frame to a tile
+(`$80:B9D6`) is what uploads it, and a piece dropped by the test above never
+reaches the lookup. So an actor walking off the side of the screen stops
+refreshing the frames of whatever part of it is already past the edge, and the
+LRU reclaims them a few frames later — which is exactly what survivors and
+pickups losing half of themselves at the margin looked like.
+
+The cache has 128 slots and the fix is to borrow one. A slot the game has never
+allocated is free outright: no frame maps to it, so nothing the game can emit
+points at it. Early in a level there are dozens, but the cache only ever fills,
+so in a long level there are none — which is why this got worse the longer you
+played. The second answer is what makes it hold: a slot whose graphics no sprite
+in *this frame's* OAM reads from is free for exactly the length of this picture.
+The OAM being drawn is right there to be read, every sprite in it is a whole
+16x16 frame, so the slots it uses are known exactly. Such a slot is borrowed for
+one frame and given back at the top of the next, before a line of it is drawn,
+by putting back whatever the game's own cache map says belongs there. The game's
+tables are never written; it is not told a slot has changed, because by the time
+it could look, it has not.
+
+Measured over nine movies and 13,869 frames of play: **15,583 pieces the ROM
+dropped, and all 15,583 drawn** — none skipped for want of graphics, where the
+first version of this skipped one in five. 5,423 frames put at least one piece
+back, the busiest puts twelve, and no picture ever borrows more than five slots.
+The invariant behind the borrowing was checked directly too: on every frame,
+every cache slot the console is about to read from still holds the graphics the
+game's own map says it holds — 10.9 million VRAM words compared against the ROM,
+and the only mismatch in the whole run is on a frame that borrowed nothing, where
+the game's own upload had not landed yet.
+
+And the console's own 256 columns are untouched by any of it. Comparing a 16:9
+level frame against a 4:3 one of the same input, pixel for pixel, **every row
+outside the status panel differs in exactly one column**, and that column is the
+next section.
 
 ### The one that was a real emulation bug
 

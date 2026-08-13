@@ -88,6 +88,8 @@ Ppu* ppu_init(Snes* snes) {
     ppu->layerEdgeEmpty[i] = 0;
     ppu->layerScrolled[i] = 0;
     ppu->lastHScroll[i] = 0;
+    ppu->layerRaster[i] = 0;
+    ppu->hScrollWrites[i] = 0;
   }
   ppu->wideClampLo = -PPU_EXTRA_MAX;
   ppu->wideClampHi = 255 + PPU_EXTRA_MAX;
@@ -360,6 +362,9 @@ void ppu_handleFrameStart(Ppu* ppu) {
       ppu->layerScrolled[i] = 1;
     }
     ppu->lastHScroll[i] = ppu->bgLayer[i].hScroll;
+    if(ppu->forcedBlank || ppu->brightness == 0) ppu->layerRaster[i] = 0;
+    else if(ppu->hScrollWrites[i] >= PPU_RASTER_WRITES) ppu->layerRaster[i] = 1;
+    ppu->hScrollWrites[i] = 0;
   }
   if(ppu->extraLeft != 0 || ppu->extraRight != 0) {
     for(int i = 0; i < 4; i++) {
@@ -727,6 +732,16 @@ static bool ppu_wideMapX(const Ppu* ppu, int layer, int* x) {
       // and the margins are simply more of the same world, which is what
       // `ppu_wideStretch` says; on a fixed screen they are composed for the
       // console's 256 and whoever set the policy will have said `ppu_wideClip`.
+      policy = ppu_wideStretch;
+    } else if(ppu->layerRaster[layer]) {
+      // A layer whose horizontal scroll is rewritten many times while the frame
+      // is being drawn is not scrolling: it is being drawn a line at a time,
+      // and each line is a window on the map at its own offset. Every question
+      // below reads one scroll for the whole frame and would answer for the
+      // wrong line, so they are not asked. Continuing to read along each line's
+      // own map is both the honest answer and the only one that means anything
+      // -- see the title logo, which sweeps in on a per-line scroll and is
+      // twice as wide as the console.
       policy = ppu_wideStretch;
     } else if(ppu->layerEdgeEmpty[layer]) {
       // Nothing at the edge of the console means nothing beyond it. The margins
@@ -1143,7 +1158,15 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
     case 0x0f:
     case 0x11:
     case 0x13: {
-      ppu->bgLayer[(adr - 0xd) / 2].hScroll = ((val << 8) | (ppu->scrollPrev & 0xf8) | (ppu->scrollPrev2 & 0x7)) & 0x3ff;
+      // Counted as well as stored, because how *often* within one frame a
+      // background's horizontal scroll changes is the difference between a
+      // layer that is scrolling and a layer being drawn a line at a time. See
+      // `layerRaster`.
+      const int hsLayer = (adr - 0xd) / 2;
+      const uint16_t hsNew = ((val << 8) | (ppu->scrollPrev & 0xf8) | (ppu->scrollPrev2 & 0x7)) & 0x3ff;
+      if(hsNew != ppu->bgLayer[hsLayer].hScroll && ppu->hScrollWrites[hsLayer] < 255)
+        ppu->hScrollWrites[hsLayer]++;
+      ppu->bgLayer[hsLayer].hScroll = hsNew;
       ppu->scrollPrev = val;
       ppu->scrollPrev2 = val;
       break;

@@ -32,6 +32,13 @@ typedef struct Ppu Ppu;
 // always had.
 #define PPU_ROW_BYTES (PPU_MAX_WIDTH * 8)
 
+// How many times a background's horizontal scroll has to change within one
+// frame before the layer is read as a raster effect rather than as a scroll.
+// Measured over the whole intro and a level: an ordinary layer changes it at
+// most four times a frame, and the title logo's per-line sweep changes it on
+// every one of the 224 lines. Anywhere in that gap does; this is the middle.
+#define PPU_RASTER_WRITES 16
+
 // What a layer does with the margins. The mechanism is here; which layer is
 // which is the game's business and is set from outside.
 enum {
@@ -229,6 +236,14 @@ struct Ppu {
   // and the scroll it was at last frame, which is how that is noticed
   uint8_t layerScrolled[4];
   uint16_t lastHScroll[4];
+  // ...whether its scroll is rewritten *while the frame is being drawn*, which
+  // is a raster effect and not a scroll at all. `hScrollWrites` counts the
+  // changes between one frame start and the next; a layer the game scrolls
+  // normally is written once or twice a frame and one drawn a line at a time is
+  // written for every line, so PPU_RASTER_WRITES sits in the wide gap between.
+  // Latched and cleared exactly like `layerScrolled`, and for the same reason.
+  uint8_t layerRaster[4];
+  uint8_t hScrollWrites[4];
   // ...and the columns of the picture that have any world in them at all, so
   // that a margin running off the end of a map shows the backdrop rather than
   // whatever the tilemap ring was last used for
