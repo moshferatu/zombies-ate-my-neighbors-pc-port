@@ -417,26 +417,85 @@ the leading edge as much as the trailing one, an object the camera is walking
 towards not having been spawned yet either. Over fourteen movies **947 frames
 draw at least one** of these and the busiest draws three.
 
-A neighbour cannot be, and she is the one thing in the widened picture that is
-remembered rather than read. She is a thread, not a row: what she looks like is
-whatever her thread had reached and where she is is wherever she had walked to,
-and both die with it — `W_VICTIM_X` holds where she *started*, which is not the
-same place. So when `W_VICTIM_SPAWNED` goes from 1 to 0, which is `$81:8276` and
-nothing else — a rescue writes `$80` and so does the password gate, so a
-neighbour who is killed off never reaches this — the last record the game had of
-her is kept, and drawn on in world coordinates until the camera has carried it
-off the picture. Nothing is animated and nothing is invented: it is the last
-frame the game drew of her, held still for the half second it takes to leave.
-It is only ever taken up for a record the console was showing nothing of, and it
-is let go the moment the game re-lets that record, or the position leaves the
-picture, or the position comes back inside the spawner's window and the game
-starts her thread again. Across the whole movie corpus that happens
-**41 times in 42 movies** — it is a rare event, and it was the one
-the bug report opened with.
+A neighbour cannot be. She is a thread, not a row. *Where* she is survives her —
+she stands where her list entry says she stands, and sixteen neighbours followed
+for 2,659 ticks are exactly on it for 2,520 of them and never more than two
+pixels off — but what she *looks* like is wherever her own thread had got to in
+whatever script it runs, and that dies with the thread. Keeping the last record
+the game had of her and drawing it on is easy; making it live is not, and two
+rounds of trying is what made the shape of the problem clear. A copy stops the
+moment the game lets go, and a player who stops walking leaves her stopped for as
+long as they like. Reading a loop off the poses she was seen in gets her
+breathing again and no further — that is what she was doing a moment ago, not
+what she was going to do next. And neither touches the far end at all, because
+when the camera comes back the spawner starts her thread again and the thread
+starts its script from the top, a pose or two from wherever the copy had reached.
 
-And the console's own 256 columns are untouched by any of it. Comparing a 16:9
-level frame against a 4:3 one of the same input, pixel for pixel, **every row
-outside the status panel differs in exactly one column**, and that column is the
+None of which is a failure of the copy. The window is the thing that is wrong,
+and it is wrong in exactly one respect: it is 256 pixels wide because the picture
+was. So `ws_widen_window` writes `#$00A0 + 2 * margin` over the immediate at
+`$81:823D` and the spawner goes on doing precisely what it always did — one
+comparison, against the picture that is actually being drawn. Twice the margin
+because the two margins slide: at the end of a map the side with no world left
+gives its pixels to the other, so either can be the whole 86 at once, and one
+figure that covers the worst case is a figure that does not move as they trade.
+She is spawned before she reaches the edge of the picture and taken away 32
+pixels past the other one, which is the stock game's relationship to its own edge
+to the pixel. Her thread runs the whole time she is in view, so she animates
+because she **is** animating: nothing follows her poses, remembers them or
+replays them, and everything that used to is gone -- the hold, the pose tracker
+and the two structs behind them, 177 lines out of `widescreen.h` against 83 in.
+
+Counted over the whole corpus at 16:9 — every tick of every movie, against every
+neighbour the level's list still has — frames in which a neighbour is inside the
+drawn picture with nothing drawing her fall from **8,492 to 269**, and
+neighbour-frames drawn rise from 34,862 to **43,469**. Every one of those 269 is
+between tick 26 and tick 45 of a level, before the spawner thread has walked its
+list for the first time; outside a level's opening second there is no residue at
+all, at either edge.
+
+This is the one thing the widescreen does to the game rather than to the picture,
+and the cost is real: a neighbour in the margin is a *neighbour*. She can be
+rescued out there, and a monster standing next to her can reach her out there,
+where on a console she would have been lifted out of the world and been safe
+until the camera came back. Parked in a level 17 library with the camera stopped
+and a neighbour 40 pixels off the left edge, that is exactly what happens: she
+goes on animating on the four-pose 48/80/48/160 loop the game has her on, and 172
+ticks after the last button press a monster that had been walking at her the
+whole time covers the last 44 pixels and takes her. In the stock game she would
+have been despawned before it arrived. The rule the widened window actually
+enforces is *if you can see her, she is real*, which is arguably the fairer of the
+two, but it is a change and it is not hidden. Across the corpus it is not a
+rounding error either: the camera path -- which the players drive, so it is a fair
+proxy for the run having gone the same way -- stays identical tick for tick in 31
+of the 42 movies, and **12 neighbours end a movie gone who did not before, against
+2 who no longer do**. Every one of the 12 has a monster within 15 pixels on the
+tick it happens and goes into the same `fcd5 fcde fd07 fd48` sequence, so they are
+losses rather than rescues. There is no smaller window that would avoid this,
+because the exposure is exactly co-extensive with being visible: it is the same
+fact as the fix. She also holds an actor slot for longer; `$80:825E` already returns empty-handed when the thread table is
+full and `$81:81A2` already gives up quietly when it does, so that pressure has
+the failure mode the game shipped with.
+
+Nothing else is written — and in particular the pickups' `#$0090` is left exactly
+where it is. The same one-byte trick would work there and would buy nothing: a
+pickup can already be drawn from its list to the pixel, so changing the game to
+put a record behind it would only be changing the game. It is the neighbour who
+cannot be drawn from anything, and she is the only one who gets this. The
+vertical half of her own test at `$81:8250` keeps its `#$00A0` too, no rows
+having been added, and at margin zero the stock figure goes back — which is why
+`--widescreen off` is still byte-identical to the build from before any of this
+existed. The co-simulation never sees it either: `widescreen.h`
+is included by the two frontends and by nothing the gates run.
+
+And the console's own 256 columns are still untouched by any of it — but the
+check for that had to be sharpened, because the reference moved. Comparing a 16:9
+frame against a plain 4:3 one of the same input now compares two runs that are no
+longer the same run, and the diff fills up with the game legitimately doing
+something else. Compared instead against a 4:3 frame of a run with the *same*
+spawner window, so that the only difference left is how much of it is drawn,
+**every row outside the status panel differs in exactly one column** — 48 frames,
+three movies, both aspects each against its own reference — and that column is the
 next section.
 
 ### The one that was a real emulation bug
