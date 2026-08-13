@@ -42,6 +42,13 @@
 #include "assets/password.h"
 #include "assets/rom.h"
 #include "assets/sprite.h"
+// For `terrain_blocked` alone, and it is the whole point of `probe`: the
+// question "can the player stand here" already has an answer in this project
+// that the cosim harness diffs against `$80:AE14` on every call a movie makes.
+// Asking that function is not a second opinion about the game's box — it is the
+// box, and `route` had been carrying a third version of it that was wrong.
+#include "port/terrain.h"
+#include "port/wram.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -2657,16 +2664,29 @@ static int cmd_password(int argc, char** argv) {
 // index per 8x8 cell, and that is a grid to search. So this breadth-firsts from
 // one point to another and prints the turns.
 //
-// The box is the game's own, not a guess. `$80:AE1F` turns a position into a
-// map index as `col = x / 8` and `row = (y - 8) / 8`, and then samples **six**
-// tiles at `+0`, `+2`, `+4` and the same three a row down (`$80:AE43`,
-// `$80:AE52`, `$80:AE61`, `$80:AE6F`, `$80:AE7F`, `$80:AE8B`). Those offsets are
-// **bytes, not columns**: `LSR A : LSR A : AND #$FFFE` leaves the column index
-// already doubled, because the expanded map is one *word* per cell. So they are
-// columns c, c+1, c+2 -- a contiguous 3x2 block, which is the loop below. So
-// what has to be clear to stand somewhere is three cells across and two down:
-// twenty-four pixels by sixteen, with the y anchored eight pixels above the
-// position and the x at its left edge.
+// The box is the game's own, and this round is the one that found out it was
+// not. `$80:AE14` -- which every player step goes through, at `$80:E4C8` --
+// turns a position into a map index as
+//
+//     col = (x - 9) / 8    TXA : SEC : SBC #$0009 : LSR : LSR : AND #$FFFE
+//     row = (y - 8) / 8    TYA : SEC : SBC #$0008 : LSR : LSR : AND #$FFFE
+//
+// and then samples **six** tiles at `+0`, `+2`, `+4` and the same three a row
+// down (`$80:AE43`, `$80:AE52`, `$80:AE61`, `$80:AE6F`, `$80:AE7F`,
+// `$80:AE8B`). Those offsets are **bytes, not columns**: `LSR A : LSR A : AND
+// #$FFFE` leaves the column index already doubled, because the expanded map is
+// one *word* per cell. So they are columns c, c+1, c+2 -- a contiguous 3x2
+// block, twenty-four pixels by sixteen.
+//
+// **Nine, not zero, and that was the bug.** This search modelled the row's bias
+// and not the column's, which put its box one tile right of the game's -- two
+// when x was a multiple of eight. It cleared a column the player's box never
+// covers and never looked at the column the player's left edge is in, so a
+// route it printed was walkable only where the corridor was wider than the
+// error. Every "the movie drifts" note in this project is worth re-reading
+// against that. The `probe` subcommand below asks `$80:AE14` itself and is
+// what settled it.
+//
 // And the answer is *waypoints*, not inputs: what the movie needs is a frame to
 // turn on, and turning a distance into a frame needs the walking speed, which is
 // two pixels a frame and is measured rather than derived. The `--frames` form
@@ -2683,25 +2703,253 @@ static int cmd_password(int argc, char** argv) {
 // `docs/analysis-tools.md`.
 #define ROUTE_BOX_W 3
 #define ROUTE_BOX_H 2
-#define ROUTE_BOX_X0 0
-#define ROUTE_BOX_Y0 0
-// `$80:AE21  SEC : SBC #$0008` before the shift: the row index is measured from
-// eight pixels above the position, so a grid cell `cy` is world y `cy * 8 + 8`.
+// The two subtractions above. A grid cell (cx,cy) is therefore the box a player
+// standing anywhere in x = 8cx+9 .. 8cx+16, y = 8cy+8 .. 8cy+15 occupies, and
+// the two `route_pixel_*` below pick the middle of that range rather than its
+// edge -- a waypoint on the boundary is one rounding away from the next cell.
+#define ROUTE_X_BIAS 9
 #define ROUTE_Y_BIAS 8
 
-static bool route_open(const uint16_t* map, const uint16_t* attrs,
-                       uint32_t cols, uint32_t rows, int cx, int cy) {
-  // Off the map counts as blocked, which is also what the game does -- the
-  // camera never shows past the edge.
-  for (int dy = 0; dy < ROUTE_BOX_H; dy++) {
-    for (int dx = 0; dx < ROUTE_BOX_W; dx++) {
-      int x = cx + ROUTE_BOX_X0 + dx, y = cy + ROUTE_BOX_Y0 + dy;
-      if (x < 0 || y < 0 || (uint32_t)x >= cols || (uint32_t)y >= rows) return false;
-      uint16_t tile = map[(uint32_t)y * cols + (uint32_t)x] & 0x1ff;
-      if (attrs[tile] & LEVEL_ATTR_SOLID) return false;
-    }
+// `AND #$03FF` at `$80:AE47`: ten bits of tile number. The attribute table is
+// 512 words, so an index with the tenth bit set reads *past* it -- in the game
+// as much as here, which is why this reports rather than guesses. Measured with
+// `probe`, no level's expansion produces one.
+#define ROUTE_TILE_MASK 0x03ffu
+
+// A level loaded far enough to ask a movement question about it. `route` and
+// `probe` want exactly this and nothing else, and sharing it is what keeps the
+// search and the instrument that checks the search reading the same bytes.
+typedef struct {
+  LevelHeader h;
+  uint16_t* map;  // level_map_entries(&h) entries, the expanded tilemap
+  uint16_t attrs[LEVEL_BG_TILES];
+  uint32_t cols, rows;
+} LevelWalk;
+
+static bool level_walk_load(const Rom* rom, int level, LevelWalk* out) {
+  uint32_t addr = 0;
+  memset(out, 0, sizeof *out);
+  if (!level_record_addr(rom, level, &addr) ||
+      level_header_read(rom, addr, &out->h) != LEVEL_OK) {
+    fprintf(stderr, "error: level %d does not decode\n", level);
+    return false;
+  }
+  uint8_t* blocks = (uint8_t*)malloc(LEVEL_BLOCK_LIB_BYTES);
+  out->map = (uint16_t*)malloc(level_map_entries(&out->h) * 2);
+  LzssRing ring;
+  uint32_t blocks_len = 0;
+  if (!blocks || !out->map ||
+      level_load_blocks(rom, &out->h, blocks, &blocks_len, &ring) != LEVEL_OK ||
+      level_expand(&out->h, blocks, blocks_len, rom, out->map,
+                   level_map_entries(&out->h)) != LEVEL_OK) {
+    fprintf(stderr, "error: level %d does not expand\n", level);
+    free(blocks);
+    free(out->map);
+    out->map = NULL;
+    return false;
+  }
+  free(blocks);
+  uint32_t avail = 0;
+  const uint8_t* attr_src = rom_ptr(rom, out->h.tile_attrs, &avail);
+  if (!attr_src || avail < LEVEL_TILE_ATTR_BYTES) {
+    fprintf(stderr, "error: tile attributes at %s are short\n",
+            addr_str(out->h.tile_attrs));
+    free(out->map);
+    out->map = NULL;
+    return false;
+  }
+  for (int i = 0; i < LEVEL_BG_TILES; i++)
+    out->attrs[i] = (uint16_t)(attr_src[i * 2] | (attr_src[i * 2 + 1] << 8));
+  out->cols = level_tile_cols(&out->h);
+  out->rows = level_tile_rows(&out->h);
+  return true;
+}
+
+static void level_walk_free(LevelWalk* lw) {
+  free(lw->map);
+  lw->map = NULL;
+}
+
+// Position to grid cell and back. Integer division truncates toward zero rather
+// than down, so a coordinate inside the bias -- x below 9, y below 8 -- lands on
+// cell 0 instead of on -1; both callers bounds-check the answer, and no actor in
+// any level record sits there.
+static int route_cell_x(int px) { return (px - ROUTE_X_BIAS) / ROUTE_CELL; }
+static int route_cell_y(int py) { return (py - ROUTE_Y_BIAS) / ROUTE_CELL; }
+static int route_pixel_x(int cx) { return cx * ROUTE_CELL + ROUTE_CELL / 2 + ROUTE_X_BIAS; }
+static int route_pixel_y(int cy) { return cy * ROUTE_CELL + ROUTE_CELL / 2 + ROUTE_Y_BIAS; }
+
+// One of the six, as `$80:AE43` and its five copies read it.
+typedef struct {
+  int col, row;
+  bool on_map;
+  uint16_t entry;  // the tilemap word...
+  uint16_t index;  // ...masked to ten bits
+  bool known;      // ...and whether that index is inside the attribute table
+  uint16_t attr;
+  bool solid;
+} ProbeTile;
+
+static ProbeTile probe_tile(const LevelWalk* lw, int col, int row) {
+  ProbeTile t;
+  memset(&t, 0, sizeof t);
+  t.col = col;
+  t.row = row;
+  t.on_map = col >= 0 && row >= 0 && (uint32_t)col < lw->cols &&
+             (uint32_t)row < lw->rows;
+  if (!t.on_map) return t;
+  t.entry = lw->map[(uint32_t)row * lw->cols + (uint32_t)col];
+  t.index = t.entry & ROUTE_TILE_MASK;
+  t.known = t.index < LEVEL_BG_TILES;
+  if (!t.known) return t;
+  t.attr = lw->attrs[t.index];
+  t.solid = (t.attr & LEVEL_ATTR_SOLID) != 0;
+  return t;
+}
+
+// The six, in the order the ROM tests them: left to right, then the row down.
+static void probe_tiles(const LevelWalk* lw, int cx, int cy,
+                        ProbeTile out[ROUTE_BOX_W * ROUTE_BOX_H]) {
+  int n = 0;
+  for (int dy = 0; dy < ROUTE_BOX_H; dy++)
+    for (int dx = 0; dx < ROUTE_BOX_W; dx++)
+      out[n++] = probe_tile(lw, cx + dx, cy + dy);
+}
+
+static bool route_open(const LevelWalk* lw, int cx, int cy) {
+  ProbeTile t[ROUTE_BOX_W * ROUTE_BOX_H];
+  probe_tiles(lw, cx, cy, t);
+  for (int i = 0; i < ROUTE_BOX_W * ROUTE_BOX_H; i++) {
+    // Off the map counts as blocked, which is also what the game does -- the
+    // camera never shows past the edge. So does a tile whose attribute this
+    // cannot read, because a search that guessed there would be guessing about
+    // the one thing it exists to be exact about.
+    if (!t[i].on_map || !t[i].known || t[i].solid) return false;
   }
   return true;
+}
+
+// --- and the same level as the game's own routine wants it -------------------
+//
+// Everything above is an array lookup off `level_expand`. `terrain_blocked` --
+// `src/port/terrain.c`, the port of `$80:AE14` that `zamn_cosim verify` diffs
+// against the ROM on every call a movie makes -- reads a *WRAM* tilemap through
+// the row table instead, so handing it one is what turns "the search thinks" into
+// "the game says". `probe` reports both and compares them.
+
+// Where the ROM's own loader puts the attribute table on level 1. Any free WRAM
+// would do -- nothing else is in this one -- but using the game's address keeps
+// a dump of it comparable with the real thing.
+#define PROBE_ATTRS_AT 0x611au
+#define PROBE_ATTRS_BANK 0x7eu
+
+static Wram* level_walk_wram(const LevelWalk* lw) {
+  const uint32_t bytes = lw->cols * lw->rows * 2;
+  if (bytes > WRAM_SIZE - WRAM_BANK_7F) {
+    fprintf(stderr, "error: a %u x %u tilemap is %u bytes and bank $7F holds %u\n",
+            lw->cols, lw->rows, bytes, (uint32_t)(WRAM_SIZE - WRAM_BANK_7F));
+    return NULL;
+  }
+  Wram* w = (Wram*)calloc(1, sizeof *w);
+  if (!w) return NULL;
+  const uint16_t stride = (uint16_t)(lw->cols * 2);
+  wram_w16(w, W_TILEMAP_ROW_BYTES, stride);
+  wram_w16(w, W_TILEMAP_ROWS, (uint16_t)lw->rows);
+  wram_w16(w, W_TILE_ATTRS, PROBE_ATTRS_AT);
+  wram_w8(w, W_TILE_ATTRS + 2, PROBE_ATTRS_BANK);
+  for (uint32_t r = 0; r < lw->rows; r++)
+    wram_w16(w, W_TILE_ROW_BASE + r * 2, (uint16_t)(r * stride));
+  for (uint32_t i = 0; i < lw->cols * lw->rows; i++)
+    wram_w16(w, WRAM_BANK_7F + i * 2, lw->map[i]);
+  for (int i = 0; i < LEVEL_BG_TILES; i++)
+    wram_w16(w, PROBE_ATTRS_AT + (uint32_t)i * 2, lw->attrs[i]);
+  return w;
+}
+
+// The port's answer for a point, with this file's six tiles beside it. `first`
+// receives the first probe the ROM's order would have rejected on, which is the
+// one worth naming when something stops.
+static bool probe_point(const LevelWalk* lw, Wram* w, int x, int y,
+                        ProbeTile out[ROUTE_BOX_W * ROUTE_BOX_H], int* first) {
+  probe_tiles(lw, route_cell_x(x), route_cell_y(y), out);
+  *first = -1;
+  for (int i = 0; i < ROUTE_BOX_W * ROUTE_BOX_H; i++) {
+    if (out[i].on_map && out[i].known && !out[i].solid) continue;
+    *first = i;
+    break;
+  }
+  TerrainRegs r;
+  terrain_blocked(w, (uint16_t)x, (uint16_t)y, &r);
+  // The cross-check, and the reason the two are worth keeping separate: the
+  // tiles above come from the search's own arithmetic and the verdict comes from
+  // the game's. They are allowed to differ in exactly no cases, and the round
+  // that added this is the round they did.
+  const bool mine = *first >= 0;
+  if (mine != r.blocked)
+    printf("  ** (%d,%d): $80:AE14 says %s and this file's own box says %s.\n"
+           "     The two have to agree; the one to believe is $80:AE14.\n",
+           x, y, r.blocked ? "blocked" : "open", mine ? "blocked" : "open");
+  return r.blocked;
+}
+
+// --- walking a printed route, without a movie --------------------------------
+//
+// A route that prints is not a route that walks, and until this the only way to
+// find out which had been to build a movie and watch it. So the legs go through
+// `terrain_blocked` here, two pixels a frame, from the caller's own start.
+//
+// **The perpendicular coordinate is left where the walk puts it**, not snapped
+// to the next waypoint, because that is what the game does and it is the whole
+// difficulty: these corridors are two tiles tall, a plan is walkable on the row
+// it was planned for and on no other, and a leg that ends a pixel off-lane
+// invalidates every leg after it. A check that snapped would pass routes the
+// movie cannot walk, which is the check nobody needs.
+typedef struct {
+  int dx, dy;  // the direction held, one axis
+  int tx, ty;  // ...and the waypoint it is held to
+} RouteLeg;
+
+// `pre` is what each line opens with, and in `--frames` mode it is `# ` -- that
+// output is a .zmv to paste, and a report in the middle of one is a movie the
+// reader rejects at line 1.
+static void route_walk_check(const LevelWalk* lw, Wram* w, int x0, int y0,
+                             const RouteLeg* legs, int nlegs, const char* pre) {
+  int x = x0, y = y0, frames = 0;
+  ProbeTile t[ROUTE_BOX_W * ROUTE_BOX_H];
+  int first = -1;
+  if (probe_point(lw, w, x, y, t, &first)) {
+    printf("\n%swalk: (%d,%d) is not a place the player can stand.\n", pre, x, y);
+    return;
+  }
+  for (int i = 0; i < nlegs; i++) {
+    const int want = legs[i].dx ? legs[i].tx : legs[i].ty;
+    for (;;) {
+      const int at = legs[i].dx ? x : y;
+      // One step short of the waypoint on an odd distance, which is a real
+      // thing at two pixels a frame and not a rounding to hide.
+      if (abs(want - at) < ROUTE_SPEED) break;
+      const int nx = x + legs[i].dx * ROUTE_SPEED, ny = y + legs[i].dy * ROUTE_SPEED;
+      if (probe_point(lw, w, nx, ny, t, &first)) {
+        printf("\n%swalk: blocked on leg %d at (%d,%d) after %d frames", pre,
+               i + 1, x, y, frames);
+        if (first >= 0 && t[first].on_map && t[first].known)
+          printf(" -- col %d row %d, tile $%03X, attribute $%04X", t[first].col,
+                 t[first].row, t[first].index, t[first].attr);
+        else if (first >= 0)
+          printf(" -- col %d row %d, off the map", t[first].col, t[first].row);
+        printf(".\n");
+        return;
+      }
+      x = nx;
+      y = ny;
+      frames++;
+    }
+  }
+  printf("\n%swalk: %d frames from (%d,%d) to (%d,%d)%s.\n", pre, frames, x0, y0, x, y,
+         nlegs && (x != legs[nlegs - 1].tx || y != legs[nlegs - 1].ty)
+             ? ", which is not the last waypoint -- two pixels a frame cannot"
+               " land on an odd distance, and the lane is whatever the start was"
+             : "");
 }
 
 static int cmd_route(int argc, char** argv) {
@@ -2725,45 +2973,21 @@ static int cmd_route(int argc, char** argv) {
     if (!strcmp(argv[i], "--reach")) reach_path = argv[i + 1];
   }
 
-  uint32_t addr = 0;
-  LevelHeader h;
-  if (!level_record_addr(&rom, level, &addr) ||
-      level_header_read(&rom, addr, &h) != LEVEL_OK) {
-    fprintf(stderr, "error: level %d does not decode\n", level);
+  LevelWalk lw;
+  if (!level_walk_load(&rom, level, &lw)) {
     free(rom_data);
     return 1;
   }
-  uint8_t* blocks = (uint8_t*)malloc(LEVEL_BLOCK_LIB_BYTES);
-  uint16_t* map = (uint16_t*)malloc(level_map_entries(&h) * 2);
-  LzssRing ring;
-  uint32_t blocks_len = 0;
-  if (!blocks || !map ||
-      level_load_blocks(&rom, &h, blocks, &blocks_len, &ring) != LEVEL_OK ||
-      level_expand(&h, blocks, blocks_len, &rom, map, level_map_entries(&h)) != LEVEL_OK) {
-    fprintf(stderr, "error: level %d does not expand\n", level);
-    free(blocks); free(map); free(rom_data);
-    return 1;
-  }
-  uint32_t avail = 0;
-  const uint8_t* attr_src = rom_ptr(&rom, h.tile_attrs, &avail);
-  if (!attr_src || avail < LEVEL_TILE_ATTR_BYTES) {
-    fprintf(stderr, "error: tile attributes at %s are short\n", addr_str(h.tile_attrs));
-    free(blocks); free(map); free(rom_data);
-    return 1;
-  }
-  uint16_t attrs[LEVEL_BG_TILES];
-  for (int i = 0; i < LEVEL_BG_TILES; i++)
-    attrs[i] = (uint16_t)(attr_src[i * 2] | (attr_src[i * 2 + 1] << 8));
-
-  uint32_t cols = level_tile_cols(&h), rows = level_tile_rows(&h);
+  const LevelHeader h = lw.h;
+  const uint32_t cols = lw.cols, rows = lw.rows;
   uint32_t cells = cols * rows;
   int32_t* prev = (int32_t*)malloc(cells * sizeof(int32_t));
   int32_t* queue = (int32_t*)malloc(cells * sizeof(int32_t));
-  if (!prev || !queue) { free(prev); free(queue); free(blocks); free(map); free(rom_data); return 1; }
+  if (!prev || !queue) { free(prev); free(queue); level_walk_free(&lw); free(rom_data); return 1; }
   for (uint32_t i = 0; i < cells; i++) prev[i] = -2;
 
-  int sx = x0 / ROUTE_CELL, sy = (y0 - ROUTE_Y_BIAS) / ROUTE_CELL;
-  int gx = x1 / ROUTE_CELL, gy = (y1 - ROUTE_Y_BIAS) / ROUTE_CELL;
+  int sx = route_cell_x(x0), sy = route_cell_y(y0);
+  int gx = route_cell_x(x1), gy = route_cell_y(y1);
   // Both ends have to be *on the map*, and this is not a formality: level 33's
   // actor list places one at (1260,1737) on a level 1280 pixels tall, and
   // without this the goal index ran off the end of `prev` and the search
@@ -2776,7 +3000,7 @@ static int cmd_route(int argc, char** argv) {
            "(%u x %u pixels).\n",
            x0, y0, x1, y1, level, cols, rows, level_width_px(&h),
            level_height_px(&h));
-    free(prev); free(queue); free(blocks); free(map); free(rom_data);
+    free(prev); free(queue); level_walk_free(&lw); free(rom_data);
     return 1;
   }
   int32_t head = 0, tail = 0;
@@ -2795,7 +3019,7 @@ static int cmd_route(int argc, char** argv) {
       if (nx < 0 || ny < 0 || (uint32_t)nx >= cols || (uint32_t)ny >= rows) continue;
       uint32_t ni = (uint32_t)ny * cols + (uint32_t)nx;
       if (prev[ni] != -2) continue;
-      if (!route_open(map, attrs, cols, rows, nx, ny)) continue;
+      if (!route_open(&lw, nx, ny)) continue;
       prev[ni] = cur;
       queue[tail++] = (int32_t)ni;
     }
@@ -2807,14 +3031,13 @@ static int cmd_route(int argc, char** argv) {
       for (uint32_t i = 0; i < cells; i++)
         reach[i] = prev[i] != -2
                        ? 1
-                       : (route_open(map, attrs, cols, rows,
-                                     (int)(i % cols), (int)(i / cols))
+                       : (route_open(&lw, (int)(i % cols), (int)(i / cols))
                               ? 4
                               : 0);
       reach[(uint32_t)sy * cols + (uint32_t)sx] = 2;
       if (gy >= 0 && (uint32_t)gy < rows && gx >= 0 && (uint32_t)gx < cols)
         reach[(uint32_t)gy * cols + (uint32_t)gx] = 3;
-      render_level(&h, map, &rom, reach_path, reach);
+      render_level(&h, lw.map, &rom, reach_path, reach);
       free(reach);
     }
   }
@@ -2835,6 +3058,10 @@ static int cmd_route(int argc, char** argv) {
     printf("level %d: (%d,%d) -> (%d,%d), %d cells\n\n", level, x0, y0, x1, y1, n);
     int frame = frame0;
     int px = x0, py = y0;
+    // Collected as well as printed, so the walk below can be the same legs
+    // rather than a second reading of them. At most one per cell.
+    RouteLeg* legs = (RouteLeg*)malloc((size_t)n * sizeof(RouteLeg));
+    int nlegs = 0;
     for (int i = n - 1; i > 0;) {
       int cx = (int)((uint32_t)path[i] % cols), cy = (int)((uint32_t)path[i] / cols);
       int ddx = (int)((uint32_t)path[i - 1] % cols) - cx;
@@ -2846,17 +3073,23 @@ static int cmd_route(int argc, char** argv) {
         if ((int)((uint32_t)path[j - 1] / cols) - ay != ddy) break;
         j--;
       }
-      int tx = (int)((uint32_t)path[j] % cols) * ROUTE_CELL + ROUTE_CELL / 2;
-      int ty = (int)((uint32_t)path[j] / cols) * ROUTE_CELL + ROUTE_CELL / 2 +
-               ROUTE_Y_BIAS;
+      int tx = route_pixel_x((int)((uint32_t)path[j] % cols));
+      int ty = route_pixel_y((int)((uint32_t)path[j] / cols));
       const char* dir = ddx > 0 ? "Right" : ddx < 0 ? "Left" : ddy > 0 ? "Down" : "Up";
       int dist = ddx ? abs(tx - px) : abs(ty - py);
+      if (legs) {
+        legs[nlegs].dx = ddx > 0 ? 1 : ddx < 0 ? -1 : 0;
+        legs[nlegs].dy = ddy > 0 ? 1 : ddy < 0 ? -1 : 0;
+        legs[nlegs].tx = tx;
+        legs[nlegs].ty = ty;
+        nlegs++;
+      }
       if (frame0 >= 0) {
         printf("%d   %s\n", frame, dir);
         // Two pixels a frame and six frames of slack. That is a *first draft*
         // and it will drift: walking is two pixels a frame except when it is
         // being pushed, slowed, or snapped to a lane, and the error compounds
-        // leg by leg.  replays the movie and moves each
+        // leg by leg. `tools/fit_route.py` replays the movie and moves each
         // turn to the frame the previous leg actually finished on, which is
         // the closed loop this open one needs.
         frame += dist / ROUTE_SPEED + 6;
@@ -2867,9 +3100,222 @@ static int cmd_route(int argc, char** argv) {
       i = j;
     }
     if (frame0 >= 0) printf("%d   -\n", frame);
+    // The plan, walked. Terrain only: this knows nothing about the objects,
+    // actors and tether the other three of `$80:E4C1`'s tests ask about, and a
+    // creature standing in a corridor will stop a movie that passes here.
+    Wram* w = legs ? level_walk_wram(&lw) : NULL;
+    if (w) {
+      route_walk_check(&lw, w, x0, y0, legs, nlegs, frame0 >= 0 ? "# " : "  ");
+      free(w);
+    }
+    free(legs);
     free(path);
   }
-  free(prev); free(queue); free(blocks); free(map); free(rom_data);
+  free(prev); free(queue); level_walk_free(&lw); free(rom_data);
+  return rc;
+}
+
+// ---------------------------------------------------------------------------
+// probe
+// ---------------------------------------------------------------------------
+//
+// `route` prints a path, a movie either walks it or does not, and when it does
+// not there has been nothing to ask *why*. Level 29's leg 5 spent a round on
+// that: the player stood on the planned row to the pixel, held `Up`, moved two
+// pixels and stopped, where the search said the way was open for 248 more.
+//
+// So this asks the game instead of the search. The verdict comes from
+// `terrain_blocked` -- `src/port/terrain.c`, the port of `$80:AE14`, which
+// `zamn_cosim verify` diffs against the ROM on every call a movie makes -- run
+// against a WRAM built the way the level loader leaves it: the expanded tilemap
+// in bank `$7F`, one row-base word per row, and `$BA` pointing at the 512
+// attribute words. The six tiles printed beside the verdict are this file's own
+// arithmetic, and the two are compared on every probe. **If they disagree the
+// disagreement is the finding**, and it is printed as one rather than swallowed
+// -- which is exactly what happened the first time this was run, because the
+// search's box was a column out.
+//
+// `--to` is the other half of it. Holding a direction is two pixels a frame
+// through the same test, so a leg can be walked here without a movie, and "the
+// player moves two pixels and stops" becomes a column, a tile and an attribute
+// word.
+
+static void probe_print_tiles(const ProbeTile t[ROUTE_BOX_W * ROUTE_BOX_H]) {
+  printf("  col  row  entry  tile  attr\n");
+  for (int i = 0; i < ROUTE_BOX_W * ROUTE_BOX_H; i++) {
+    if (!t[i].on_map) {
+      printf("  %3d  %3d  --     --    --     off the map\n", t[i].col, t[i].row);
+      continue;
+    }
+    if (!t[i].known) {
+      printf("  %3d  %3d  $%04X  $%03X  --     past the 512-word table\n",
+             t[i].col, t[i].row, t[i].entry, t[i].index);
+      continue;
+    }
+    printf("  %3d  %3d  $%04X  $%03X  $%04X%s\n", t[i].col, t[i].row, t[i].entry,
+           t[i].index, t[i].attr, t[i].solid ? "  solid" : "");
+  }
+}
+
+// Every cell of a level, both ways round: what the search believes about the
+// cell against what `$80:AE14` says about a player standing in the middle of it.
+// The two are a *model* and the thing modelled, and the mapping between them --
+// which pixel is which cell -- is the part that was wrong for a dozen rounds and
+// that nothing else checks.
+//
+// The edge is the honest exception. Off the map the search says blocked, while
+// the game reads whatever the tilemap holds past the end of the row -- the next
+// row's left-hand tiles -- and past the last row it indexes `W_TILE_ROW_BASE`
+// past the end of the row table, which is a WRAM question no static reading can
+// answer. So a disagreement is counted, and separated into edge and interior:
+// **the interior number is the one that has to be zero.**
+static int probe_sweep(const LevelWalk* lw, Wram* w, int level) {
+  uint32_t open = 0, edge = 0, interior = 0;
+  for (uint32_t cy = 0; cy < lw->rows; cy++) {
+    for (uint32_t cx = 0; cx < lw->cols; cx++) {
+      const bool mine = route_open(lw, (int)cx, (int)cy);
+      TerrainRegs r;
+      terrain_blocked(w, (uint16_t)route_pixel_x((int)cx),
+                      (uint16_t)route_pixel_y((int)cy), &r);
+      if (mine) open++;
+      if (mine == !r.blocked) continue;
+      const bool at_edge = cx + ROUTE_BOX_W > lw->cols || cy + ROUTE_BOX_H > lw->rows;
+      if (at_edge) {
+        edge++;
+        continue;
+      }
+      if (interior++ < 8)
+        printf("  ** cell (%u,%u) -> (%d,%d): the search says %s, $80:AE14 says"
+               " %s\n",
+               cx, cy, route_pixel_x((int)cx), route_pixel_y((int)cy),
+               mine ? "open" : "blocked", r.blocked ? "blocked" : "open");
+    }
+  }
+  printf("level %2d: %6u cells, %6u open, %4u disagree at the edge, %u inside\n",
+         level, lw->cols * lw->rows, open, edge, interior);
+  return interior == 0 ? 0 : 1;
+}
+
+static int cmd_probe(int argc, char** argv) {
+  if (argc < 3) {
+    fprintf(stderr,
+            "usage: zamn_assets probe <rom.sfc> <level 1-56> <x> <y>"
+            " [--to <x> <y>]\n"
+            "       zamn_assets probe <rom.sfc> <level 1-56> --sweep\n");
+    return 2;
+  }
+  int rom_len = 0;
+  uint8_t* rom_data = read_file(argv[0], &rom_len);
+  if (!rom_data) return 1;
+  Rom rom = {rom_data, (uint32_t)rom_len};
+  const int level = atoi(argv[1]);
+  const bool sweep = !strcmp(argv[2], "--sweep");
+  if (!sweep && argc < 4) {
+    fprintf(stderr, "error: probe wants <x> <y>, or --sweep for the whole map\n");
+    free(rom_data);
+    return 2;
+  }
+  const int x0 = sweep ? 0 : atoi(argv[2]), y0 = sweep ? 0 : atoi(argv[3]);
+  int x1 = x0, y1 = y0;
+  bool have_to = false;
+  for (int i = 4; i + 2 < argc; i++) {
+    if (!strcmp(argv[i], "--to")) {
+      x1 = atoi(argv[i + 1]);
+      y1 = atoi(argv[i + 2]);
+      have_to = true;
+    }
+  }
+  if (have_to && x1 != x0 && y1 != y0) {
+    fprintf(stderr, "error: --to walks one axis at a time, as a held direction"
+                    " does\n");
+    free(rom_data);
+    return 2;
+  }
+
+  LevelWalk lw;
+  if (!level_walk_load(&rom, level, &lw)) {
+    free(rom_data);
+    return 1;
+  }
+  Wram* w = level_walk_wram(&lw);
+  if (!w) {
+    level_walk_free(&lw);
+    free(rom_data);
+    return 1;
+  }
+
+  // The tenth bit, counted rather than assumed: `$80:AE47` masks a tilemap
+  // entry to ten bits and the table it indexes has 512 words, so an entry with
+  // that bit set would send the game past the end of it.
+  uint32_t past = 0;
+  for (uint32_t i = 0; i < lw.cols * lw.rows; i++)
+    if ((lw.map[i] & ROUTE_TILE_MASK) >= LEVEL_BG_TILES) past++;
+
+  if (sweep) {
+    const int rc = probe_sweep(&lw, w, level);
+    if (past)
+      printf("  ...and %u of %u entries index past the attribute table\n", past,
+             lw.cols * lw.rows);
+    free(w);
+    level_walk_free(&lw);
+    free(rom_data);
+    return rc;
+  }
+
+  printf("level %d: %u x %u tiles, %u x %u pixels; %u of %u entries index past"
+         " the attribute table\n\n",
+         level, lw.cols, lw.rows, level_width_px(&lw.h), level_height_px(&lw.h),
+         past, lw.cols * lw.rows);
+
+  ProbeTile t[ROUTE_BOX_W * ROUTE_BOX_H];
+  int first = -1;
+  const bool blocked = probe_point(&lw, w, x0, y0, t, &first);
+  printf("(%d,%d): cols %d..%d, rows %d..%d\n\n", x0, y0, route_cell_x(x0),
+         route_cell_x(x0) + ROUTE_BOX_W - 1, route_cell_y(y0),
+         route_cell_y(y0) + ROUTE_BOX_H - 1);
+  probe_print_tiles(t);
+  printf("\n  $80:AE14: %s\n", blocked ? "blocked" : "open");
+
+  int rc = 0;
+  if (have_to) {
+    const int dx = x1 > x0 ? 1 : x1 < x0 ? -1 : 0;
+    const int dy = y1 > y0 ? 1 : y1 < y0 ? -1 : 0;
+    const char* dir = dx > 0 ? "Right" : dx < 0 ? "Left" : dy > 0 ? "Down" : "Up";
+    const int want = abs(x1 - x0) + abs(y1 - y0);
+    printf("\n%s from (%d,%d) to (%d,%d), %d px at %d a frame:\n\n", dir, x0, y0,
+           x1, y1, want, ROUTE_SPEED);
+    int x = x0, y = y0, frames = 0;
+    for (;;) {
+      const int nx = x + dx * ROUTE_SPEED, ny = y + dy * ROUTE_SPEED;
+      if (abs(nx - x0) > want || abs(ny - y0) > want) break;
+      if (probe_point(&lw, w, nx, ny, t, &first)) {
+        printf("  stopped at (%d,%d) after %d frame%s, %d px short.\n", x, y,
+               frames, frames == 1 ? "" : "s", want - abs(x - x0) - abs(y - y0));
+        if (first >= 0)
+          printf("  (%d,%d) is blocked by col %d row %d", nx, ny, t[first].col,
+                 t[first].row);
+        if (first >= 0 && t[first].on_map && t[first].known)
+          printf(", tile $%03X, attribute $%04X", t[first].index, t[first].attr);
+        printf(".\n");
+        rc = 1;
+        break;
+      }
+      x = nx;
+      y = ny;
+      frames++;
+      if (x == x1 && y == y1) break;
+    }
+    // A leg that ends between two frames is a leg the walk cannot land on
+    // exactly: two pixels a frame divides an odd distance into a hold that
+    // stops one pixel short, which is worth saying rather than rounding away.
+    if (rc == 0)
+      printf("  walked it: (%d,%d) after %d frames%s.\n", x, y, frames,
+             x == x1 && y == y1 ? "" : ", one pixel short of an odd distance");
+  }
+
+  free(w);
+  level_walk_free(&lw);
+  free(rom_data);
   return rc;
 }
 
@@ -2895,6 +3341,12 @@ static void usage(void) {
           "      green reached, orange open but cut off, red solid, yellow the\n"
           "      start, blue the goal. Orange is the one that says where a\n"
           "      missing route wants a door.\n\n"
+          "  zamn_assets probe <rom.sfc> <level> <x> <y> [--to <x> <y>]\n"
+          "      Ask $80:AE14 itself whether the player can stand at a point:\n"
+          "      the six tiles it reads, their attributes, and the verdict out\n"
+          "      of the port the cosim harness diffs against the ROM. --to\n"
+          "      walks a straight leg two pixels a frame and reports the tile\n"
+          "      that stops it, which is what a route that fails wants asked.\n\n"
           "  zamn_assets actors <rom.sfc> <level 1-56>\n"
           "      Report a level's actor, victim and object placement lists.\n\n"
           "  zamn_assets verify-actors <rom.sfc> [-m movie] [-f frames]\n"
@@ -2931,6 +3383,7 @@ int main(int argc, char** argv) {
   if (!strcmp(cmd, "level")) return cmd_level(argc - 2, argv + 2);
   if (!strcmp(cmd, "actors")) return cmd_actors(argc - 2, argv + 2);
   if (!strcmp(cmd, "route")) return cmd_route(argc - 2, argv + 2);
+  if (!strcmp(cmd, "probe")) return cmd_probe(argc - 2, argv + 2);
   if (!strcmp(cmd, "verify-actors")) return cmd_verify_actors(argc - 2, argv + 2);
   if (!strcmp(cmd, "sprite")) return cmd_sprite(argc - 2, argv + 2);
   if (!strcmp(cmd, "frame")) return cmd_frame(argc - 2, argv + 2);

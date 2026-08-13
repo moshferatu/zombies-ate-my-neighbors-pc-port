@@ -359,8 +359,10 @@ objects that reach them are in levels nobody has mapped. The loop was a
 screenshot, a guess and a wall.
 
 The level already says where its walls are. Bit 0 of a tile's attribute word
-blocks movement (`$80:AE43  LSR A : BCS`), the expanded map gives a 9-bit tile
-index per 8x8 cell, and that is a grid to search:
+blocks movement (`$80:AE43  LSR A : BCS`), the expanded map gives a tile index
+per 8x8 cell — ten bits of one, `AND #$03FF`, against a 512-word attribute
+table, and no level's expansion sets the tenth (counted: `probe --sweep` reports
+it per level, and every level answers zero) — and that is a grid to search:
 
 ```
 build\zamn_assets.exe route "Zombies Ate My Neighbors.sfc" 2 350 585 251 302
@@ -381,17 +383,35 @@ leg's error is inherited by the next, so the fitter replays the movie with
 `--pos`, finds the frame each leg *actually* finished on, and moves the next
 turn there.
 
-**The box is the game's own.** `$80:AE1F` turns a position into a map index as
-`col = x / 8` and `row = (y - 8) / 8` — note the eight-pixel bias — and then
-samples **six** tiles (`$80:AE43`, `$80:AE52`, `$80:AE61`, `$80:AE6F`, `$80:AE7F`,
-`$80:AE8B`). The offsets it samples at are `+0`, `+2`, `+4` and the same three a
-row down, and those are **byte** offsets rather than columns: `LSR A : LSR A :
-AND #$FFFE` leaves the column index already doubled, because the expanded map is
-one *word* per cell. So the six cells are a contiguous 3x2 block — three across,
-two down, twenty-four pixels by sixteen — and that is what the search uses.
+**The box is the game's own.** `$80:AE14` turns a position into a map index as
+
+```
+col = (x - 9) / 8    TXA : SEC : SBC #$0009 : LSR : LSR : AND #$FFFE
+row = (y - 8) / 8    TYA : SEC : SBC #$0008 : LSR : LSR : AND #$FFFE
+```
+
+and then samples **six** tiles (`$80:AE43`, `$80:AE52`, `$80:AE61`, `$80:AE6F`,
+`$80:AE7F`, `$80:AE8B`). The offsets it samples at are `+0`, `+2`, `+4` and the
+same three a row down, and those are **byte** offsets rather than columns: `LSR A
+: LSR A : AND #$FFFE` leaves the column index already doubled, because the
+expanded map is one *word* per cell. So the six cells are a contiguous 3x2 block
+— three across, two down, twenty-four pixels by sixteen — and that is what the
+search uses.
 
 (Worth spelling out because it was worth re-deriving: an object that no route can
 reach is a claim about the game, and it is only as good as this predicate.)
+
+**Nine, and it was zero here for a dozen rounds.** The search modelled the row's
+bias and not the column's, which put its box one tile right of the game's — two
+where x was a multiple of eight. It cleared a column the player's box never
+covers and never looked at the column his left edge is in, so a route it printed
+was walkable only where the corridor was wider than the error. That is what
+stopped level 29's leg 5, and it is worth re-reading every "the movie drifts"
+note in `docs/cosim.md` against it. Fixed, and now checked rather than argued:
+`probe --sweep` compares the search's verdict for every cell of a level against
+`$80:AE14`'s for a player standing in the middle of it, and over all 56 levels —
+**1,254,624 cells** — the only disagreements are at the map's right and bottom
+edges, where the search says blocked and the game reads on into the next row.
 
 **What it is good for, and what it is not.** It reproduces a route cut by hand,
 and it answers negatives definitively: `route 42 1534 703 1524 557` says there is
@@ -458,6 +478,65 @@ accurate. Level 45's `$80:FAA4` object is the one that took six goes: a monster
 patrolling that corridor takes it at frame 3466 whether or not the player is
 anywhere near, so it is a *deadline* rather than a race, and beating it needed the
 next section.
+
+### `probe`, and walking a route without a movie
+
+A route that prints is not a route that walks, and the only way to find out which
+had been to build a movie and watch it. Level 29's leg 5 cost a round on that:
+the player stood on the planned row to the pixel, held `Up`, moved two pixels and
+stopped, where the search said the way was open for 248 more. Three explanations
+were checked and all three were wrong, because the fourth was in the search.
+
+```
+> build\zamn_assets.exe probe "Zombies Ate My Neighbors.sfc" 30 973 1475 --to 973 1227
+level 30: 136 x 192 tiles, 1088 x 1536 pixels; 0 of 26112 entries index past the attribute table
+
+(973,1475): cols 120..122, rows 183..184
+
+  col  row  entry  tile  attr
+  120  183  $0CA8  $0A8  $0000
+  121  183  $0CA8  $0A8  $0000
+  122  183  $0CA6  $0A6  $0000
+  120  184  $0815  $015  $0000
+  121  184  $0815  $015  $0000
+  122  184  $0815  $015  $0000
+
+  $80:AE14: open
+
+Up from (973,1475) to (973,1227), 248 px at 2 a frame:
+
+  stopped at (973,1473) after 1 frame, 246 px short.
+  (973,1471) is blocked by col 120 row 182, tile $09D, attribute $0003.
+```
+
+**Column 120 is the one the search never looked at.** The verdict is not this
+tool's opinion: it comes from `terrain_blocked` in `src/port/terrain.c`, the port
+of `$80:AE14` that `zamn_cosim verify` diffs against the ROM on every call a
+movie makes, run against a WRAM built the way the level loader leaves it — the
+expanded tilemap in bank `$7F`, one row-base word per row, `$BA` pointing at the
+512 attribute words. The six tiles printed beside it are the search's own
+arithmetic, and every probe compares the two; a disagreement is printed as the
+finding it is.
+
+`route` now walks its own plan the same way before it hands it over, from the
+start position it was given and with the perpendicular coordinate left where the
+walk puts it rather than snapped to the next waypoint — which is the whole
+difficulty, and a check that snapped would pass routes no movie can walk:
+
+```
+level 30: (973,1475) -> (973,1227), 34 cells
+
+  Right to (981,1476)   8 px
+  Up    to (981,1228)   248 px
+  Left  to (973,1228)   8 px
+
+  walk: 131 frames from (973,1475) to (973,1229), off the last waypoint by the odd pixels.
+```
+
+Eight pixels right first, and then the way is open. Terrain only, though: this
+knows nothing about the objects, actors and tether that are the other three of
+`$80:E4C1`'s four tests, so a creature standing in a corridor will still stop a
+movie that this says walks.
 
 ### `--reach`, and the difference between a wall and a door
 

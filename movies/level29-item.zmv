@@ -1,0 +1,238 @@
+# **`psn_t3_expired`** — the fourth of `player_state_normal`'s countdowns
+# reaching zero, and the only one of the four that clears something on its way
+# out (`$80:D2DF  DEC $56 : BNE : STZ $54`).
+#
+# **The mechanism had to be understood before the input, because the obvious
+# ones cannot do it.** `$56` is a per-state timer: states 2, 4 and 6 each arm
+# their own copy and each end exactly when it runs out, inside that state. So
+# `$80:D2DF` had executed **zero times in 27,698 calls** — by the time state 0
+# runs, `$56` is always already zero. The one site that hands a live countdown
+# to state 0 is `$80:EB23`, item slot 1's entry in the `JMP ($EB07,X)` table:
+#
+#     $80:EB23  LDA #$8000 : STA $54
+#     $80:EB28  LDA #$0352 : STA $56
+#
+# `$80:EAEC  LDA $4E : ORA $70 : BNE` refuses the item unless `$70` is zero, so
+# it is used from state 0 and stays there, and its 850 frames count down in
+# `player_state_normal` until the fourth countdown clears the `$8000` this set.
+# That pairing — `$54` armed there, cleared here — is what the branch is *for*,
+# and neither routine says so alone.
+#
+# Item slot 1 is collision id `$22`, object type `$0A`, and nine are placed in
+# the cartridge: levels 3, 12 (two), 19 (two), 25, 29, 41 and 47. Only three of
+# those have a password, and only one of the three has a route — `zamn_assets
+# route` still refuses level 25's (128,694) and level 41's (1590,123) from their
+# own movies' starts. So the branch hangs on one object in level 29.
+#
+# **GLZJ is level 29**, and this is 47 legs of `tools/fit_route.py` from the
+# spawn at (277,1435) to the object at (553,212).
+#
+# It is also the first movie cut after the search's box was corrected, and the
+# reason the correction happened. `$80:AE14` biases **both** axes before
+# dividing — `SBC #$0009` on the column, `SBC #$0008` on the row — and the
+# search had modelled only the row's, which put its box a tile right of the
+# game's. The old plan died on leg 5, holding `Up` at (973,1475): two pixels and
+# a wall, where the search said 248 px were clear. `zamn_assets probe 30 973
+# 1475 --to 973 1227` names the tile that stops him — col 120, row 182,
+# attribute `$0003` — and the corrected plan goes eight pixels right first.
+#
+# The tail, from `--watch`:
+#
+#     4301  $1D0E 0 -> 1                 he walks onto the object
+#     4362  $1CC0 7 -> 1                 A cycles off the first-aid kit onto it
+#     4386  $54 = $8000, $56 = 849, and $1CC0 back to 7: X spends it, the slot
+#           empties, and the selection moves to the only one left
+#     5235  $56 -> 0 and $54 -> 0 in the same frame — the branch
+#
+# 849 frames of countdown and not one of them interrupted, which is the other
+# half of the input: the item is spent standing where the route ended, and
+# anything that took him out of state 0 would have taken the countdown with it.
+#
+# `zamn_cosim verify -f 5300` checks 300,136 calls with nothing diverged.
+
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   A
+1440   -
+1448   Right
+1456   -
+1464   Right
+1472   -
+1480   Right
+1488   -
+1496   Right
+1504   -
+1512   A
+1520   -
+1528   Left
+1536   -
+1544   Left
+1552   -
+1560   Down
+1568   -
+1576   Down
+1584   -
+1592   A
+1600   -
+1608   Up
+1616   -
+1624   Up
+1632   -
+1640   A
+1648   -
+1656   Right
+1664   -
+1672   Right
+1680   -
+1688   Right
+1696   -
+1704   Right
+1712   -
+1720   Down
+1728   -
+1736   Down
+1744   -
+1752   A
+1760   -
+1908   Start
+1918   -
+1938   Start
+1948   -
+1968   Start
+1978   -
+1998   Start
+2008   -
+2028   Start
+2038   -
+2058   Start
+2068   -
+2148   -
+2600   Right
+2691   Down
+2711   Right
+2717   Right
+2977   Up
+3128   Left
+3182   Up
+3246   Right
+3323   Up
+3336   Left
+3342   Up
+3368   Right
+3390   Up
+3460   Left
+3468   Up
+3492   Left
+3496   Up
+3501   Left
+3526   Up
+3540   Left
+3568   Left
+3572   Up
+3579   Left
+3584   Up
+3592   Left
+3597   Up
+3638   Right
+3644   Up
+3702   Left
+3764   Up
+3769   Right
+3775   Up
+3801   Left
+3819   Up
+3855   Left
+3874   Down
+3881   Left
+3898   Down
+3926   Left
+3959   Up
+3994   Left
+4083   Up
+4115   Left
+4152   Up
+4216   Right
+4270   Up
+4298   Left
+4344   -
+4360   A
+4368   -
+4384   X
+4392   -

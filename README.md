@@ -1038,11 +1038,19 @@ build\zamn_assets.exe verify-sprites "Zombies Ate My Neighbors.sfc" -m movies\le
 build\zamn_assets.exe verify-music   "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 build\zamn_assets.exe level  "Zombies Ate My Neighbors.sfc" 2 level1.png
 build\zamn_assets.exe route  "Zombies Ate My Neighbors.sfc" 18 284 420 563 513 --reach reach18.png
+build\zamn_assets.exe probe  "Zombies Ate My Neighbors.sfc" 30 973 1475 --to 973 1227
 build\zamn_assets.exe music  "Zombies Ate My Neighbors.sfc"
 build\zamn_assets.exe spc    "Zombies Ate My Neighbors.sfc" 2 level2.spc --wav level2.wav
 build\zamn_assets.exe sprite "Zombies Ate My Neighbors.sfc" 90:9172 zeke.png
 build\zamn_assets.exe gfx    "Zombies Ate My Neighbors.sfc" 94:A300 tiles.png --lzss --pal 83:EE8C --pal-index 1 --scale 3
 ```
+
+`route` breadth-firsts a walkable path through a level's own tile attributes;
+`probe` asks `$80:AE14` — through `src/port/terrain.c`, the port the cosim
+harness diffs against the ROM — whether the player can stand at a point, prints
+the six tiles it reads, and with `--to` walks a leg two pixels a frame and names
+the tile that stops it. `route` now walks its own plan that way before printing
+it. See `docs/analysis-tools.md`.
 
 ## Port game logic
 `verify` lets the ROM run the game and checks the C port against every call it
