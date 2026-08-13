@@ -375,6 +375,56 @@ leaves `$24` left and `$26` right, standing still and aiming leaves `$26` on the
 aim rather than the last walk, disarming puts it straight back, and player 2's
 stick does not aim player 1.
 
+**And then the two are checked against each other**, which is what `verify` is
+for and what two implementations of one routine deserve. `zamn_cosim verify
+--twin-aim <period>[,<from>]` patches the cartridge, arms the port the same way,
+holds fire and cycles the aim through left, right and centred — so the ROM runs
+the stub, the port runs its branch, and the harness diffs all 128 KB and the
+registers on every call:
+
+| movie | `player_state_normal` calls | passed |
+| --- | --- | --- |
+| `level1.zmv` | 2,448 | 2,448 |
+| `level21-spin.zmv` | 1,977 | 1,977 |
+| `level17-weapon.zmv` | 2,007 | 2,007 |
+| `level29-fighting.zmv` | 2,023 | 2,023 |
+| `level33.zmv` | 2,079 | 2,079 |
+
+The first run of that probe **failed**, and on one bit: the stub compared with
+`CMP $26`, which writes carry, and the routine's carry at the `RTS` belongs to a
+`CPY` a long way further up that the port reproduces faithfully. `EOR $26` sets
+Z without touching carry, and a `PHA`/`PLA` around it puts A and N/Z back to the
+aim on every path out. Two engines that agree except in the flags do not agree,
+and nothing but this check was ever going to say so.
+
+### Standing still, the pose is drawn once
+
+The last thing to go wrong, and the neatest illustration of what a second stick
+breaks. The idle state builds the player's pose from `$26` **on entry** and then
+parks on a resume routine that only rebuilds it when the *button word* changes:
+
+```
+$80:D53D  LDA $1A : CMP $1C : BNE $D558   -> JMP $D4E9, which rebuilds
+$80:D543  LDA $4C : BNE rts               -- the cooldown
+$80:D547  LDA $1E : BNE $D554             -> JSR $ED30, and nothing else
+```
+
+Stock that is airtight: the only way to change `$26` is to press a direction, and
+that is a button. With a right stick it is not, so a player standing still
+flicking the aim from left to right shot right while still drawn facing left.
+Walking hid it — `$80:D72A` rebuilds the pose from `$26` every five frames to run
+the walk cycle, so it is right again inside 83ms.
+
+The repair takes the game's own route: `$28` is the word the thread loop
+dispatches through each frame, the idle state parks `$D53D` there, and `$D4E9` —
+what `$80:D558` jumps to when the input changes — put there instead re-enters the
+state and rebuilds the pose. It is done only when **`$24` is zero and `$26` is
+not already the aim**: walking refreshes itself and would stutter if the state
+restarted under it, and `$26` already equalling the aim means the sprite is
+already right, which is what makes the test stateless — `$26` *is* the facing, so
+comparing against it asks the question directly instead of remembering last
+frame's aim.
+
 **And it costs nothing when nobody is using it.** A `JSR`, an `RTS`, a long
 `LDA`, a taken `BEQ` and six `NOP`s twice a frame, against 1,364,000 cycles — with
 both words zero the stub is byte for byte the routine that was there, and 4,600
@@ -991,7 +1041,18 @@ build\zamn_cosim.exe run    "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv 
 build\zamn_cosim.exe run    "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -r none
 build\zamn_cosim.exe verify "Zombies Ate My Neighbors.sfc" -m movies\level1-rescue.zmv -f 6100 -c
 build\zamn_cosim.exe run    "Zombies Ate My Neighbors.sfc" -m movies\level1-rescue.zmv -f 6100
+build\zamn_cosim.exe verify "Zombies Ate My Neighbors.sfc" -m movies\level21-spin.zmv -f 4600 --twin-aim 20
 ```
+
+`--twin-aim <period>[,<from>]` is a probe rather than a way to play: it patches
+the cartridge for `--twin-stick`, arms the port the same way, holds fire and
+cycles the aim through left, right and centred. `--twin-stick` is the one thing
+in the project implemented **twice** — nine bytes of 65816 for the stock path and
+the same decision in `src/port/player.c` for the substituted one — and `verify`
+is the instrument for asking whether two implementations of a routine agree.
+Without it the halves can only be checked apart, which is how the first version
+of the flag came to work in an engine nobody plays in. It arms from frame 2,400
+by default, past every movie's Start-mashing and any password it types.
 
 `verify` over the **whole corpus** — every movie at the frame count it wants,
 which is a table in the script rather than a property of the `.zmv` — plus the

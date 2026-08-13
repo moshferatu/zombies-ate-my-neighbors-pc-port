@@ -65,6 +65,9 @@ static uint8_t* make_rom(void) {
   uint8_t* rom = (uint8_t*)calloc(ROM_SIZE, 1);
   memcpy(rom + TWIN_DIR_TABLE, dir_table, sizeof dir_table);
   memcpy(rom + TWIN_LATCH, twin_latch_was, TWIN_LATCH_LEN);
+  // `$80:D4E9  LDA $24`, the state re-entry the stub sends the player to.
+  rom[TWIN_REENTER] = 0xa5;
+  rom[TWIN_REENTER + 1] = 0x24;
   memset(rom + PAD_AT, 0xff, PAD_LEN);
   return rom;
 }
@@ -160,12 +163,49 @@ static void test_install(void) {
   expect(rom, TWIN_STUB + 10, (uint8_t)TWIN_AIM_ADDR, "aim low");
   expect(rom, TWIN_STUB + 11, (uint8_t)(TWIN_AIM_ADDR >> 8), "aim high");
   expect(rom, TWIN_STUB + 12, 0x80, "aim bank");
-  expect(rom, TWIN_STUB + 13, 0xf0, "BEQ");
-  expect(rom, TWIN_STUB + 14, 0x02, "BEQ over the store");
-  expect(rom, TWIN_STUB + 15, 0x85, "STA dp");
-  expect(rom, TWIN_STUB + 16, 0x26, "STA $26");
-  expect(rom, TWIN_STUB + 17, 0x60, "RTS");
-  if (TWIN_STUB_LEN != 18) fail("TWIN_STUB_LEN is %d, not 18", (int)TWIN_STUB_LEN);
+  expect(rom, TWIN_STUB + 13, 0xf0, "BEQ end");
+  expect(rom, TWIN_STUB + 15, 0x48, "PHA");
+  // `EOR` and not `CMP`, which is load-bearing: the routine's carry at the
+  // `RTS` belongs to a `CPY` much further up, `CMP` would overwrite it, and the
+  // port does not — so a `CMP` here is two engines disagreeing about a flag.
+  // `zamn_cosim verify --twin-aim` is what says so.
+  expect(rom, TWIN_STUB + 16, 0x45, "EOR dp");
+  expect(rom, TWIN_STUB + 17, 0x26, "EOR $26");
+  expect(rom, TWIN_STUB + 18, 0xf0, "BEQ pull");
+  expect(rom, TWIN_STUB + 20, 0xa5, "LDA dp");
+  expect(rom, TWIN_STUB + 21, 0x24, "LDA $24");
+  expect(rom, TWIN_STUB + 22, 0xd0, "BNE pull");
+  expect(rom, TWIN_STUB + 24, 0xa9, "LDA #");
+  expect(rom, TWIN_STUB + 25, (uint8_t)TWIN_REENTER_ADDR, "re-entry low");
+  expect(rom, TWIN_STUB + 26, (uint8_t)(TWIN_REENTER_ADDR >> 8), "re-entry high");
+  expect(rom, TWIN_STUB + 27, 0x85, "STA dp");
+  expect(rom, TWIN_STUB + 28, TWIN_DP_RESUME, "STA $28");
+  expect(rom, TWIN_STUB + 29, 0x68, "PLA");
+  expect(rom, TWIN_STUB + 30, 0x85, "STA dp");
+  expect(rom, TWIN_STUB + 31, 0x26, "STA $26");
+  expect(rom, TWIN_STUB + 32, 0x60, "RTS");
+  if (TWIN_STUB_LEN != 33) fail("TWIN_STUB_LEN is %d, not 33", (int)TWIN_STUB_LEN);
+
+  // The three branch offsets, worked out from where the labels landed rather
+  // than restated — an off-by-one here is a `PLA` that never happens and a
+  // stack that unwinds into whatever called the player.
+  //
+  //   13 BEQ -> end (32), from a next-PC of 15
+  //   18 BEQ -> pull (29), from 20
+  //   22 BNE -> pull (29), from 24
+  if (rom[TWIN_STUB + 14] != 32 - 15) fail("BEQ end is +%d", rom[TWIN_STUB + 14]);
+  if (rom[TWIN_STUB + 19] != 29 - 20) fail("BEQ pull is +%d", rom[TWIN_STUB + 19]);
+  if (rom[TWIN_STUB + 23] != 29 - 24) fail("BNE pull is +%d", rom[TWIN_STUB + 23]);
+  // The stack has to balance. The `PHA` at 15 is passed only by the branch at
+  // 13, which leaves before pushing; every other way out goes through the `PLA`
+  // at 29. A stub that returned with a word still on the stack would `RTS` into
+  // the middle of the player.
+  if (15 + (int)rom[TWIN_STUB + 14] < 32)
+    fail("the BEQ at 13 lands before the RTS, having skipped the PHA");
+  if (20 + (int)rom[TWIN_STUB + 19] != 29)
+    fail("the BEQ at 18 does not land on the PLA");
+  if (24 + (int)rom[TWIN_STUB + 23] != 29)
+    fail("the BNE at 22 does not land on the PLA");
 
   // Centred, not $FF. $FF is not a code the table can produce and the stub would
   // read it as one.
@@ -216,6 +256,7 @@ static void test_refusals(void) {
   } cases[] = {
       {"a latch that is not the latch", TWIN_LATCH, 0x22, ROM_SIZE},
       {"a latch storing somewhere else", TWIN_LATCH + 8, 0x28, ROM_SIZE},
+      {"a state that re-enters somewhere else", TWIN_REENTER, 0x4c, ROM_SIZE},
       {"a pad with code in it", TWIN_STUB + 4, 0x60, ROM_SIZE},
       {"a pad whose last byte is taken", TWIN_STUB + TWIN_STUB_LEN - 1, 0x00,
        ROM_SIZE},
@@ -352,6 +393,53 @@ static void test_port(const uint8_t* rom_bytes, uint32_t rom_size) {
   if (wram_r16(w, dp + PSN_DP_DIR_HELD) != right)
     fail("port: standing still and aiming right, $26 is $%04X",
          wram_r16(w, dp + PSN_DP_DIR_HELD));
+
+  // ...and the pose. Standing still, `$80:D53D` fires and never redraws, so an
+  // aim that changed has to ask the state to re-enter or the player goes on
+  // being drawn facing the way they were. Three cases, and only the first is
+  // allowed to touch `$28`.
+  const uint16_t idle_resume = 0xd53d;  // what the idle state parks there
+
+  //   1. standing still, aim flipped: re-enter.
+  wram_w16(w, dp + PSN_DP_RESUME, idle_resume);
+  wram_w16(w, W_JOY_DIR, 0);
+  player_set_aim(0, left);
+  player_state_normal(w, &rom, dp, &r);
+  if (wram_r16(w, dp + PSN_DP_RESUME) != PSN_STATE_REENTER)
+    fail("port: flicking the aim did not ask for a redraw — $28 is $%04X",
+         wram_r16(w, dp + PSN_DP_RESUME));
+
+  //   2. standing still, aim unchanged: leave it alone, or the frame that would
+  //      have fired is spent turning to face where it already faces.
+  wram_w16(w, dp + PSN_DP_RESUME, idle_resume);
+  player_state_normal(w, &rom, dp, &r);
+  if (wram_r16(w, dp + PSN_DP_RESUME) != idle_resume)
+    fail("port: a steady aim redrew anyway — $28 is $%04X",
+         wram_r16(w, dp + PSN_DP_RESUME));
+
+  //   3. walking, aim flipped: leave it alone. The walk rebuilds its own pose
+  //      every five frames, and restarting the state under it would reset the
+  //      animation phase on every frame that both walks and aims.
+  wram_w16(w, dp + PSN_DP_RESUME, idle_resume);
+  wram_w16(w, W_JOY_DIR, left);
+  player_set_aim(0, right);
+  player_state_normal(w, &rom, dp, &r);
+  if (wram_r16(w, dp + PSN_DP_RESUME) != idle_resume)
+    fail("port: aiming while walking restarted the state — $28 is $%04X",
+         wram_r16(w, dp + PSN_DP_RESUME));
+  if (wram_r16(w, dp + PSN_DP_DIR_HELD) != right)
+    fail("port: walking, the aim still has to reach $26");
+
+  //   4. unarmed, whatever happens: `$28` is not this feature's word.
+  wram_w16(w, dp + PSN_DP_RESUME, idle_resume);
+  wram_w16(w, W_JOY_DIR, 0);
+  player_set_aim(0, 0);
+  player_state_normal(w, &rom, dp, &r);
+  if (wram_r16(w, dp + PSN_DP_RESUME) != idle_resume)
+    fail("port: unarmed, $28 became $%04X", wram_r16(w, dp + PSN_DP_RESUME));
+  player_set_aim(0, right);
+  wram_w16(w, W_JOY_DIR, 0);
+  player_state_normal(w, &rom, dp, &r);
 
   // Disarmed again: back to the ROM's own behaviour, with nothing left behind.
   player_set_aim(0, 0);

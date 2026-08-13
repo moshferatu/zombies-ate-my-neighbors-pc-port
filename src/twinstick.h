@@ -65,6 +65,52 @@
 // at `$80:D250`. `LDA` long-indexed rather than absolute because the stub cannot
 // know what the data bank holds and does not need to care.
 //
+// ## Standing still, the pose is drawn once
+//
+// `$26` changing is not enough by itself, and the reason is an invariant the
+// stock game has that this breaks. The idle state builds the player's pose from
+// `$26` **on entry** — `$80:D530  LDA $26 : DEC : DEC : ORA $18 : ASL : JSR
+// $F300` — and then parks on a resume routine that never rebuilds it:
+//
+//     $80:D53D  LDA $1A : CMP $1C : BNE $D558   -> JMP $D4E9, which rebuilds
+//     $80:D543  LDA $4C : BNE rts               -- the cooldown
+//     $80:D547  LDA $1E : BNE $D554             -> JSR $ED30, and nothing else
+//
+// So the pose is refreshed only when the **button word** changes. Stock that is
+// airtight, because the only way to change `$26` is to press a direction and
+// that is a button; with a second stick it is not, and a player standing still
+// flicking the aim from left to right shoots right while still drawn facing
+// left. Walking hides it: `$80:D72A` rebuilds the pose from `$26` every five
+// frames to run the walk cycle, so it is right again within 83ms.
+//
+// The repair is to take the game's own route. `$80:D558` — the branch for "the
+// input changed" — is `JMP $D4E9`, and `$28` is the word the thread loop
+// dispatches through each frame (`$80:CE04  LDA $28 : DEC A : PHA : RTS`), set
+// to `$D53D` by the idle state itself. Putting `$D4E9` there instead re-enters
+// the state exactly as a button press would, one dispatch later in the same
+// frame, and the pose is rebuilt from the new `$26`.
+//
+// It is done only when **`$24` is zero and `$26` is not already the aim**, and
+// both halves of that matter. `$24` non-zero is walking, which refreshes itself
+// and would stutter if the state restarted under it — and while walking `$26`
+// has just been overwritten with the walk, so the comparison would be true every
+// frame. `$26` already equal to the aim means the sprite on screen is already
+// facing that way, which is what makes the test stateless: **`$26` is the
+// facing**, so comparing against it asks the question directly instead of
+// remembering last frame's aim.
+//
+// The frame that turns does not also fire — it goes through `$80:D4F4` rather
+// than `$80:D53D`. That is what stock does when you change direction with fire
+// held, so it is the right amount of nothing.
+//
+// The comparison is `EOR $26` and not `CMP $26`, and that is not a style
+// choice: `CMP` writes carry, the routine's carry at the `RTS` belongs to a
+// `CPY` much further up, and `zamn_cosim verify --twin-aim` caught the two
+// engines disagreeing about exactly that bit on the first run of it. `EOR` sets
+// Z without touching carry, and the `PHA`/`PLA` around it puts A and N/Z back
+// to the aim on every path out — so the stub and `src/port/player.c` end in the
+// same registers whatever the stick is doing.
+//
 // ## Two engines, not one — and this is where it first went wrong
 //
 // **`$80:D1FF` is a substituted routine.** In the playable build the C port runs
@@ -136,12 +182,23 @@
 #define TWIN_LATCH 0x05250u
 #define TWIN_LATCH_LEN 9
 
+// `$80:D4E9`, the state's own "the input changed, work out what to draw" entry,
+// and what `$80:D558` jumps to. Only the address is used — the two bytes are
+// checked so that a cartridge whose state machine is not this one is refused
+// rather than sent somewhere arbitrary.
+#define TWIN_REENTER 0x054e9u
+#define TWIN_REENTER_ADDR 0xd4e9u
+// `$28` on the player's page: the resume routine the thread loop dispatches
+// through at `$80:CE04`, and the one word that can ask for that re-entry.
+#define TWIN_DP_RESUME 0x28
+
 // The stub, in the end-of-bank pad — in the file, and as the 65816 sees it,
 // which is what the `JSR` takes.
 #define TWIN_STUB 0x07f80u
 #define TWIN_STUB_ADDR 0xff80u
-// The nine copied bytes, then `LDA long,X` (4), `BEQ` (2), `STA $26` (2), `RTS`.
-#define TWIN_STUB_LEN (TWIN_LATCH_LEN + 9)
+// The nine copied bytes, then 24 more: the aim, the two tests that decide
+// whether the pose needs rebuilding, and the store.
+#define TWIN_STUB_LEN (TWIN_LATCH_LEN + 24)
 
 // Two words of aim, one per port, indexed by the doubled player number the
 // latch already has in `X`. The last four bytes of the pad: the cartridge header
@@ -183,6 +240,10 @@ static inline uint16_t twin_dir(const uint8_t* rom, uint16_t dpad) {
 static inline bool twin_install(uint8_t* rom, uint32_t rom_size) {
   if (!rom || rom_size < TWIN_ROM_MIN) return false;
   if (memcmp(rom + TWIN_LATCH, twin_latch_was, TWIN_LATCH_LEN) != 0) return false;
+  // `$80:D4E9  LDA $24`. The stub sends the state machine here, so being wrong
+  // about it is not a feature that fails to work, it is a jump into the middle
+  // of something.
+  if (rom[TWIN_REENTER] != 0xa5 || rom[TWIN_REENTER + 1] != 0x24) return false;
   for (uint32_t i = 0; i < TWIN_STUB_LEN; i++)
     if (rom[TWIN_STUB + i] != 0xff) return false;
   for (uint32_t i = 0; i < TWIN_AIM_LEN; i++)
@@ -190,16 +251,35 @@ static inline bool twin_install(uint8_t* rom, uint32_t rom_size) {
 
   uint8_t* stub = rom + TWIN_STUB;
   memcpy(stub, rom + TWIN_LATCH, TWIN_LATCH_LEN);
+  // Offsets are from the start of the stub, so `end` is 32 and the branches
+  // below are written against that; the assembly this spells is in the header
+  // comment. `X` and `Y` are left alone deliberately — `X` is still the doubled
+  // player index the rest of the routine indexes with.
   uint8_t* p = stub + TWIN_LATCH_LEN;
-  p[0] = 0xbf;                             // LDA $80FFBC,X -- long, because the
-  p[1] = (uint8_t)TWIN_AIM_ADDR;           // stub has no claim on the data bank
+  p[0] = 0xbf;                     // 9   LDA $80FFBC,X -- long, because the stub
+  p[1] = (uint8_t)TWIN_AIM_ADDR;   //     has no claim on the data bank
   p[2] = (uint8_t)(TWIN_AIM_ADDR >> 8);
   p[3] = 0x80;
-  p[4] = 0xf0;                             // BEQ +2 -- no stick, no override
-  p[5] = 0x02;
-  p[6] = 0x85;                             // STA $26
-  p[7] = 0x26;
-  p[8] = 0x60;                             // RTS
+  p[4] = 0xf0;                     // 13  BEQ end  -- no stick, nothing to do
+  p[5] = 0x11;
+  p[6] = 0x48;                     // 15  PHA      -- keep the aim
+  p[7] = 0x45;                     // 16  EOR $26  -- already facing this way?
+  p[8] = 0x26;
+  p[9] = 0xf0;                     // 18  BEQ pull -- yes: nothing to redraw
+  p[10] = 0x09;
+  p[11] = 0xa5;                    // 20  LDA $24  -- walking?
+  p[12] = 0x24;
+  p[13] = 0xd0;                    // 22  BNE pull -- yes: it redraws itself
+  p[14] = 0x05;
+  p[15] = 0xa9;                    // 24  LDA #$D4E9 -- no: re-enter the state,
+  p[16] = (uint8_t)TWIN_REENTER_ADDR;
+  p[17] = (uint8_t)(TWIN_REENTER_ADDR >> 8);
+  p[18] = 0x85;                    // 27  STA $28    -- which rebuilds the pose
+  p[19] = TWIN_DP_RESUME;
+  p[20] = 0x68;                    // 29  pull:  PLA
+  p[21] = 0x85;                    // 30  store: STA $26
+  p[22] = 0x26;
+  p[23] = 0x60;                    // 32  end:   RTS
 
   rom[TWIN_LATCH] = 0x20;                            // JSR $FF80
   rom[TWIN_LATCH + 1] = (uint8_t)TWIN_STUB_ADDR;

@@ -21,6 +21,7 @@
 // Usage:
 //   zamn_cosim list
 //   zamn_cosim verify <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v]
+//                               [--twin-aim <period>[,<from>]]
 //   zamn_cosim run    <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v]
 //
 // `-x routine` is the inverse of `-r`: run everything the registry has
@@ -35,12 +36,21 @@
 
 #include "analysis/movie_apply.h"
 #include "cosim/cosim.h"
+#include "port/player.h"  // player_set_aim, for --twin-aim
+#include "twinstick.h"
 
 // Room for every routine in the registry and then some. It was 32, chosen when
 // that was more than the registry held, and "run everything except one" — which
 // is how a divergence gets pinned on a routine or cleared of it — needs one
 // more than there are entries.
 #define MAX_SELECTED 128
+
+// Where `--twin-aim` starts arming, unless told otherwise. Holding fire before
+// the level is up drives a movie somewhere it was not written for — every one of
+// them mashes Start to 1,004, and several then type a password, which is a
+// screen with its own opinion about the buttons. 2,400 is past both; a movie
+// that reaches gameplay later takes `--twin-aim <period>,<from>`.
+#define TWIN_AIM_FROM 2400
 
 typedef struct {
   const char* rom_path;
@@ -57,6 +67,21 @@ typedef struct {
   // Expanded into `selected` below, so nothing downstream knows about it.
   const char* excluded[MAX_SELECTED];
   int excluded_count;
+  // `--twin-aim <period>[,<from>]`: patch the cartridge for `--twin-stick`, arm
+  // the port the same way, hold the fire button, and cycle the aim through
+  // left, right and centred every `period` frames from frame `from`.
+  //
+  // It exists because that feature is the one thing in the project written
+  // **twice** — nine bytes of 65816 at `$80:D250` for the stock path, and the
+  // same decision in `src/port/player.c` for the substituted one — and `verify`
+  // is exactly the instrument for asking whether two implementations of one
+  // routine agree. Without this the two halves can only be checked apart, which
+  // is how the first version shipped working in an engine nobody plays in.
+  //
+  // Not a way to play: there is no stick here. It is a probe, like `--watch` in
+  // `zamn_headless`.
+  int twin_aim;
+  int twin_from;  // ...and the frame it starts arming on
 } Options;
 
 static uint8_t* read_file(const char* path, int* out_len) {
@@ -115,6 +140,16 @@ static bool parse_options(int argc, char** argv, Options* o) {
         return false;
       }
       o->excluded[o->excluded_count++] = name;
+    } else if (!strcmp(argv[i], "--twin-aim") && has_next) {
+      const char* spec = argv[++i];
+      char* end = NULL;
+      o->twin_aim = (int)strtol(spec, &end, 10);
+      o->twin_from = *end == ',' ? (int)strtol(end + 1, &end, 10) : TWIN_AIM_FROM;
+      if (end == spec || *end || o->twin_aim <= 0 || o->twin_from < 0) {
+        fprintf(stderr, "error: --twin-aim wants <period>[,<from>], both frame\n"
+                        "       counts and the period above 0\n");
+        return false;
+      }
     } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
       o->verbose = true;
     } else if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--coverage")) {
@@ -196,6 +231,11 @@ static int cmd_verify(const Options* o) {
     return 1;
   }
 
+  if (o->twin_aim && !twin_install(snes->cart->rom, snes->cart->romSize)) {
+    fprintf(stderr, "error: --twin-aim: this cartridge cannot take the patch\n");
+    return 1;
+  }
+
   Cosim c;
   cosim_init(&c, snes, COSIM_VERIFY);
   c.verbose = o->verbose;
@@ -224,9 +264,33 @@ static int cmd_verify(const Options* o) {
          o->frames, o->movie_path ? o->movie_path : "(no input)",
          have_movie && movie_uses_port(&movie, 1) ? " (two controllers)" : "");
 
+  if (o->twin_aim)
+    printf("--twin-aim: the cartridge is patched and the port armed, flipping\n"
+           "left/right/centred every %d frames from frame %d, with fire held.\n"
+           "Both engines make the same decision here, so any disagreement is a\n"
+           "real one.\n",
+           o->twin_aim, o->twin_from);
+
   for (int frame = 0; frame < o->frames; frame++) {
     if (have_movie) {
       movie_apply(&movie, snes, frame);
+    }
+    // Not before `TWIN_AIM_FROM`: a movie's boot half is 1,004 frames of
+    // mashing Start through the logos and the menu, and holding fire through
+    // that lands somewhere the movie was not written for — the first run of
+    // this reached gameplay 26 times in 4,600 frames instead of 1,912.
+    if (o->twin_aim && frame >= o->twin_from) {
+      // Left, right, and nothing. The first two are the case that matters —
+      // opposite directions are what a walk can never produce alongside the aim
+      // — and the third is the centred stick, which has its own path through
+      // both engines and so has to be in the cycle rather than assumed.
+      static const uint16_t cycle[3] = {0x000e, 0x0006, 0x0000};
+      const uint16_t dir = cycle[((frame - o->twin_from) / o->twin_aim) % 3];
+      twin_set_aim(snes->cart->rom, 0, dir);   // what the 65816 reads
+      player_set_aim(0, dir);                  // ...and what the port reads
+      // After `movie_apply`, so it is not undone: the aim only means anything
+      // while the player is trying to fire.
+      snes_setButtonState(snes, 1, BTN_Y, true);
     }
     cosim_frame(&c);
   }

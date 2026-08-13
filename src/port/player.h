@@ -235,6 +235,13 @@ void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
 #define PSN_DP_FIRE_B 0x20u    // ...in one of two words, by weapon index
 #define PSN_DP_DIR 0x24u       // the direction, every frame
 #define PSN_DP_DIR_HELD 0x26u  // ...and the last non-zero one
+// The routine the thread loop resumes into after the state runs — `$80:CE04
+// LDA $28 : DEC A : PHA : RTS`. The idle state parks `$D53D` here, which fires
+// and does not redraw; `$D4E9` is where `$80:D558` jumps when the input changes,
+// and putting it here is how an aim change asks for the same redraw. Only
+// `player_set_aim` reaches for it — see the note there.
+#define PSN_DP_RESUME 0x28u
+#define PSN_STATE_REENTER 0xd4e9u  // `$80:D4E9`, and `LDA $24` is its first byte
 #define PSN_DP_INVENTORY 0x64u  // this player's 14 BCD counters
 #define PSN_DP_T0 0x16u         // four countdowns, each `LDA : BEQ : DEC`
 #define PSN_DP_T1 0x4eu

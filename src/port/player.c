@@ -228,8 +228,15 @@ void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
 // is what the game itself means by no direction, so an unarmed build cannot tell
 // this is here. See `port/player.h`.
 static uint16_t psn_aim[2];
+// Whether a frontend has taken an interest at all, which is a different question
+// from whether the stick is out. The stub's `LDA $80FFBC,X` runs either way and
+// leaves A and N/Z as the aim's, so the port has to as well — and it must not do
+// that in a build where nothing armed it, or an unpatched cartridge would stop
+// matching. One call is the signal, and no session turns the flag back off.
+static bool psn_aim_on;
 
 void player_set_aim(uint16_t player, uint16_t dir) {
+  psn_aim_on = true;
   psn_aim[(player >> 1) & 1u] = dir;
 }
 
@@ -373,11 +380,30 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
   // stock path even when the aim is centred, where this leaves both as the
   // walk's. Nothing reads either: `$80:D259  LDA $1A` is the next instruction
   // both ways.
-  const uint16_t aim = psn_aim[(player >> 1) & 1u];
-  if (aim != 0) {
+  // `$80:FF89  LDA $80FFBC,X : BEQ end`, and everything after it. The load is
+  // unconditional in the stub, so A and N/Z are the aim's whether or not the
+  // stick is out; only the store below is conditional. Mirrored exactly rather
+  // than approximately, because `zamn_cosim verify --twin-aim` compares the
+  // registers too, and two engines that agree except in the flags do not agree.
+  if (psn_aim_on) {
+    const uint16_t aim = psn_aim[(player >> 1) & 1u];
     out->a = aim;
     psn_nz(out, aim);
-    wram_w16(w, dp + PSN_DP_DIR_HELD, aim);
+    if (aim != 0) {
+      // Standing still and not already facing the aim: ask the state to
+      // re-enter, which is the only thing that rebuilds the pose. `$80:D53D` —
+      // the idle resume — fires and never redraws, and rebuilds only when the
+      // *button* word changes, which an aim change is not. Walking is left
+      // alone: it rebuilds itself every five frames for the walk cycle, and
+      // `$26` has just been overwritten with the walk, so the comparison would
+      // be true every frame and would restart the cycle under itself.
+      //
+      // `$26` is the facing, so comparing against it asks the question directly
+      // and needs no memory of last frame's aim.
+      if (dir == 0 && wram_r16(w, dp + PSN_DP_DIR_HELD) != aim)
+        wram_w16(w, dp + PSN_DP_RESUME, PSN_STATE_REENTER);
+      wram_w16(w, dp + PSN_DP_DIR_HELD, aim);
+    }
   }
 
   // $80:D259 player_input_buttons. Four edges. The first two are independent;
