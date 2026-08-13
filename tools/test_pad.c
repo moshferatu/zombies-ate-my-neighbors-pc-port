@@ -359,6 +359,42 @@ static void test_devices(void) {
   move(gc, SDL_CONTROLLER_AXIS_LEFTY, 0);
   if (poll1(&s, 0) != 0) fail("centring the stick left %03x held", poll1(&s, 0));
 
+  // The right stick, which is `--twin-stick`'s and nothing else's. Two claims,
+  // and the second is the one that would ruin a game rather than merely fail to
+  // improve one: it snaps the same eight ways the left stick does, and the two
+  // sticks do not leak into each other. A right stick that reached `pad_poll`
+  // would walk the player; a left stick that reached `pad_aim` would make the
+  // whole flag a no-op with extra steps.
+  {
+    uint16_t aim[PAD_MAX];
+    pad_aim(&s, aim);
+    if (aim[0] != 0) fail("an untouched right stick aimed %03x", aim[0]);
+
+    move(gc, SDL_CONTROLLER_AXIS_RIGHTX, -30000);
+    pad_aim(&s, aim);
+    if (aim[0] != (1u << BTN_LEFT)) fail("right stick left aimed %03x", aim[0]);
+    if (poll1(&s, 0) != 0) fail("the right stick reached the D-pad: %03x", poll1(&s, 0));
+
+    // Walking one way and aiming the other, which is the whole point of it.
+    move(gc, SDL_CONTROLLER_AXIS_LEFTX, 30000);
+    pad_aim(&s, aim);
+    if (aim[0] != (1u << BTN_LEFT)) fail("the left stick moved the aim to %03x", aim[0]);
+    if (poll1(&s, 0) != (1u << BTN_RIGHT))
+      fail("the right stick moved the walk to %03x", poll1(&s, 0));
+
+    move(gc, SDL_CONTROLLER_AXIS_RIGHTY, 30000);
+    pad_aim(&s, aim);
+    if (aim[0] != ((1u << BTN_LEFT) | (1u << BTN_DOWN)))
+      fail("right stick down-left aimed %03x", aim[0]);
+
+    move(gc, SDL_CONTROLLER_AXIS_RIGHTX, 0);
+    move(gc, SDL_CONTROLLER_AXIS_RIGHTY, 0);
+    move(gc, SDL_CONTROLLER_AXIS_LEFTX, 0);
+    pad_aim(&s, aim);
+    if (aim[0] != 0) fail("centring the right stick left %03x aimed", aim[0]);
+    if (poll1(&s, 0) != 0) fail("centring both sticks left %03x held", poll1(&s, 0));
+  }
+
   // Triggers reach L and R, alongside the shoulders that already do.
   //
   // A released trigger is -32768 and not 0, which is worth stating because

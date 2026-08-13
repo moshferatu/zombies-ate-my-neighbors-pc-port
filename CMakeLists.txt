@@ -71,6 +71,21 @@ if(MSVC)
   target_compile_definitions(zamn_test_scale PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# `src/twinstick.h` is the other half of the controller work and is a ROM patch,
+# so it is checked the way a ROM patch has to be: exact bytes, against a
+# synthetic cartridge built to the header's own description. No SDL and no ROM —
+# hand it the cartridge as an argument and it checks the offsets against that
+# too, which is the part a synthetic ROM cannot claim.
+add_executable(zamn_test_twinstick tools/test_twinstick.c)
+target_include_directories(zamn_test_twinstick PRIVATE src)
+# It links the port because half of `--twin-stick` *is* the port: `$80:D1FF` is
+# substituted, so the ROM patch is the `--stock` path and `player_set_aim` is the
+# one the playable build takes. Only the section given a real cartridge runs it.
+target_link_libraries(zamn_test_twinstick PRIVATE zamn_port)
+if(MSVC)
+  target_compile_definitions(zamn_test_twinstick PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # ---------------------------------------------------------------------------
 # The branch-coverage instrument (src/port/coverage.h). Port code marks its
 # decision points; this holds the counters the harness reads. It is separate

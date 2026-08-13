@@ -257,6 +257,29 @@ void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
 #define PSN_SPAWN_ARG_COUNT 0x0006u
 #define PSN_SPAWN_SFX 0x000du
 
+// --- Input the console did not have ------------------------------------------
+//
+// A second stick, and the only thing in this file that is not the ROM's.
+// `src/twinstick.h` has the reasoning; the short of it is that `$26` is the shot
+// direction, the facing and the firing pose all at once, and it is not the word
+// movement uses — so aiming somewhere other than where you are walking is this
+// one store going somewhere else.
+//
+// **This has to live in the port, and not only in the frontend, because the port
+// is what runs this routine.** `$80:D1FF` is substituted, so the nine bytes at
+// `$80:D250` that `twin_install` patches are never executed in the playable
+// build — they are the `--stock` path and the F1 path, and the two have to agree.
+// They agree by being the same sentence twice: store the aim in `$26` instead of
+// the walk.
+//
+// Zero is off, which is what the game means by "no direction" as well. Nothing
+// in the corpus arms it — `zamn_cosim` never calls this — so with it unarmed
+// `player_state_normal` is bit for bit the routine it was, and the diff is
+// untouched.
+//
+// `player` is the doubled index the routine already carries, so 0 and 2.
+void player_set_aim(uint16_t player, uint16_t dir);
+
 // A, X and Y all differ by exit; there is no `PHD`, so N and Z are whichever
 // of the four countdowns the routine stopped on rather than anything to do
 // with the input.

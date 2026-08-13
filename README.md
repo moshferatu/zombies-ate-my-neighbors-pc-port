@@ -93,6 +93,8 @@ reaches the game while the chord is down, so a quit thought better of leaves
 nothing behind. `--no-pads` turns the whole thing off. The reasoning, and the
 measurements the deadzone came from, are in `src/pad.h`.
 
+The **right stick does nothing** unless you ask for it — `--twin-stick`, below.
+
 It starts **fullscreen**, with the mouse cursor hidden — there is no mouse input
 in this game, so the pointer is only ever something on top of the picture. F11
 and Alt+Enter move between fullscreen and a window at any time, and Esc quits
@@ -274,6 +276,125 @@ chain carries on from there. **And it costs nothing when it is not asked for** �
 game over — `$80:8514` branches back to `$80:84B1`, so a game over puts you on
 your level rather than on level 1, which is what a flag for looking at level 30
 should do.
+
+### `--twin-stick`
+
+```
+build\zamn.exe --twin-stick
+```
+
+The right stick fires the held weapon in the direction it is pushed, and the left
+stick goes on steering. Off by default: it changes what the game is rather than
+how it looks, and this game counts every shot, so a stick that fires is asked for
+rather than assumed. Needs a controller — the keyboard has one D-pad.
+
+**The game already separates walking from facing**, which is what makes this one
+word rather than a rewrite. The NMI puts the D-pad nibble through a sixteen-byte
+table at `$80:81F9` into `$0072,X` — not four bits but a *direction code*, the
+eight compass points doubled and offset by two so they index the nine `(dx,dy)`
+pairs at `$82:B7FC`. Then the player's own frame splits that one code in two:
+
+```
+$80:D250  LDA $0072,X : STA $24 : BEQ + : STA $26 : +
+```
+
+`$24` is this frame's direction, `$26` is the last non-zero one, and they are
+read for different things:
+
+| word | who reads it | what it decides |
+| --- | --- | --- |
+| `$24` | `$80:D4E9  LDA $24 : BEQ`, and `$80:E450  LDA $24 : TAY : … ADC $30` | standing still or walking, and the step itself — **movement** |
+| `$26` | `$80:ED54  LDA $26 : STA $04`, the argument `$80:ED30` hands `thread_spawn` | **where the shot goes** |
+| `$26` | `$80:D526`, `$80:D743`, `$80:ECD8` | the idle, walking and firing poses — **which way you are drawn** |
+
+So aim and facing are already the same word, and it is already not the word
+movement uses. Twin-stick is `$26` getting its value from somewhere other than
+`$24`; the shot direction, the sprite and the firing pose all follow for free,
+because all three were reading that word to begin with.
+
+**The store has one place it can go.** After `$80:D250`'s own conditional store,
+or a frame spent walking would overwrite the aim with the walk; before `$80:ED30`
+reads it, which is later in the same thread step; and once per player, because
+the two have separate direct pages. The latch is all three at once — it already
+runs per player with the doubled index in `X`, and nothing touches `X` between
+`$80:D206  LDX $0E` and there. So the nine bytes at `$80:D250` become a `JSR` and
+six `NOP`s, and the nine displaced bytes are *copied* into a stub in the
+end-of-bank pad, which adds the override:
+
+```
+LDA $0072,X : STA $24 : BEQ + : STA $26     the nine that were there
++  LDA $80FFBC,X : BEQ ++ : STA $26         and the aim on top
+++ RTS
+```
+
+**And the cartridge is only half of it, which is the thing this got wrong first.**
+`$80:D1FF` is one of the 114 **substituted** routines, so in the playable build
+the C port runs the player's frame and those nine bytes are never executed — they
+are the `--stock` path and the F1 path. The first version of this was the ROM
+patch alone and it passed everything it was shown: `zamn_headless` walked left
+and shot right, because headless has no port in it to substitute. In the game it
+did nothing. `src/port/player.c` now makes the same decision from
+`player_set_aim`, the frontend arms both from one value, and the two agree by
+being the same sentence twice — store the aim in `$26` instead of the walk.
+Unarmed, the port is bit for bit the routine it was: `zamn_cosim verify` checks
+`player_state_normal` 1,912 times over `level21-spin.zmv` and passes 1,912.
+
+`$80:FFBC` is two words, one per port, and the frontend writes them before each
+frame. That is a strange place to keep input and it is the right one: `cart_load`
+mallocs the ROM and the 65816 fetches out of that buffer, so writing it works
+exactly as writing WRAM would and needs no argument about which WRAM address the
+game will never use — an argument that would have to hold for all 56 levels, both
+players and the attract demo. Zero means nothing is asked for, which is the
+game's own convention for this word and not one invented here: a centred stick
+snaps to no octant, no octant is nibble 0, and nibble 0 is the table's own `$00`.
+It shares the pad with `--level`'s bonus-room stub at `$FF68`, does not overlap
+it, and each refuses unless its own bytes are still `$FF`, so the two flags
+compose in either order.
+
+**Measured** on `movies/level21-spin.zmv`, which walks the four directions in
+30-frame legs with `Y` held, against a scratch ROM with the aim word forced to
+`$02` (up):
+
+| frame | leg | `$24` (walk) | `$26` stock | `$26` aimed up |
+| --- | --- | --- | --- | --- |
+| 3175 | left | `$0E` | `$0E` | **`$02`** |
+| 3205 | up | `$02` | `$02` | **`$02`** |
+| 3235 | right | `$06` | `$06` | **`$02`** |
+| 3385 | down | `$0A` | `$0A` | **`$02`** |
+
+Stock, the two columns are the same word all the way down — that is the coupling.
+Aimed, `$24` still tracks every leg and `$26` never moves. Positions are
+identical either way: x goes 316 → 268 in both, so the walk is untouched. The
+picture agrees — one frame of the left-walking leg, with the aim forced right,
+draws Zeke still moving left while facing right, pistol out to the right and the
+squirt travelling right.
+
+That is the ROM path. The port path is checked where it lives, by calling
+`player_state_normal` directly with the aim armed: walking left and aiming right
+leaves `$24` left and `$26` right, standing still and aiming leaves `$26` on the
+aim rather than the last walk, disarming puts it straight back, and player 2's
+stick does not aim player 1.
+
+**And it costs nothing when nobody is using it.** A `JSR`, an `RTS`, a long
+`LDA`, a taken `BEQ` and six `NOP`s twice a frame, against 1,364,000 cycles — with
+both words zero the stub is byte for byte the routine that was there, and 4,600
+frames of that movie through the frontend come out a byte-identical PNG with the
+flag and without it.
+
+`tools/test_twinstick.c` checks the two halves separately and needs no ROM: nine
+stick positions becoming nine direction codes, all eight of them different — a
+nibble built the wrong way round still produces plausible codes and would aim up
+when asked for right — and then the patch as exact bytes against a synthetic
+cartridge, including that every refusal writes nothing at all. Hand it the real
+cartridge as an argument and it checks the offsets against that too. The stick
+becoming an aim *and* a fire button is one call, `twin_apply`, so that pair is
+checkable rather than living in a line of the frontend nothing could reach: a
+pushed stick presses `Y`, a centred one presses nothing and hands `$26` back to
+the game, and port 2's stick does not fire port 1. `tools/test_pad.c` covers the
+other end through a virtual controller — the right stick must not reach the
+D-pad and the left stick must not reach the aim, which is the leak that would
+turn walking one way and shooting the other back into walking and shooting the
+same way.
 
 ### What actually reaches the screen
 
@@ -903,6 +1024,11 @@ src/scale.h           Where the framebuffer lands on the screen and how it gets
                               there — arithmetic only, no SDL, so it can be
                               checked without a window
 src/present.h         ...and the SDL that carries that out
+src/pad.h             Game controllers: the deadzone, the eight-way snap and the
+                              button table — the half of it that decides how the
+                              game feels, and is arithmetic
+src/twinstick.h       `--twin-stick`: what the right stick becomes — an aim
+                              direction, and nine bytes of 65816 at `$80:D250`
 src/pace.h            Frame cadence: measuring how evenly frames arrive, and
                               the deadline clock and audio rate control that
                               make them arrive evenly. No SDL either
@@ -951,6 +1077,14 @@ tools/test_present.c  Draws through `src/present.h` into a software renderer,
                               reads the pixels back and measures them — which is
                               the only way to show that `sharp` is sharp and
                               that the two filters are not the wrong way round
+tools/test_pad.c      Sweeps the circle a tenth of a degree at a time, and drives
+                              the device layer through a virtual controller — the
+                              only way to check a quit chord or a pad unplugged
+                              mid-press
+tools/test_twinstick.c Nine stick positions becoming nine direction codes, and
+                              the ROM patch as exact bytes against a synthetic
+                              cartridge — including that every refusal writes
+                              nothing at all. No SDL, no ROM
 tools/perturb.py      Breaks one line of the port on purpose, rebuilds, runs
                               `verify` against every input listed for it, and puts
                               both back — a branch no input distinguishes, or one

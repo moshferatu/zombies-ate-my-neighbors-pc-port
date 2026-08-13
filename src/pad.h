@@ -99,6 +99,15 @@
 // at 32,767 and one pushed diagonally sits at 23,170 on both axes, which clears
 // any fixed gate low enough to be usable.
 //
+// ## The other stick
+//
+// A SNES pad has one stick's worth of directions and a modern pad has two, so
+// `pad_aim` reads the right one through the identical snap and returns the
+// identical eight-way bits. It is deliberately not part of `pad_poll`: there is
+// no SNES button it could be, so there is nothing for `pad_poll` to say about
+// it. `--twin-stick` is what gives it a meaning — see `src/twinstick.h` — and
+// without that flag nothing calls this and the stick does nothing.
+//
 // ## Devices
 //
 // SDL 2.30 knows several thousand controllers by GUID and this program adds
@@ -213,6 +222,7 @@ typedef struct {
   SDL_GameController* gc;
   SDL_JoystickID id;
   bool stick;            // left stick was out of the deadzone last frame
+  bool aim;              // ...and the right one, which no SNES pad has
   bool trig_l, trig_r;   // ...and the triggers, same hysteresis
   char name[64];
 } Pad;
@@ -407,6 +417,29 @@ static inline void pad_poll(PadSet* s, uint16_t held[PAD_MAX]) {
                     &p->trig_r))
       m |= (uint16_t)(1u << BTN_R);
     held[i] = m;
+  }
+}
+
+// The right stick, as the same eight-way bits the left one produces.
+//
+// Separate from `pad_poll` rather than folded into it, because `pad_poll`'s
+// answer is *what the SNES port holds* and a second stick is not something a
+// SNES port can hold. What it means is a decision for whoever asked — see
+// `src/twinstick.h`, where it becomes an aim direction and a fire button — and
+// this end of it is only the same octant snapping and the same hysteresis on the
+// other pair of axes.
+//
+// A port with no pad reads centred, so a caller can walk both without checking.
+static inline void pad_aim(PadSet* s, uint16_t aim[PAD_MAX]) {
+  for (int i = 0; i < PAD_MAX; i++) aim[i] = 0;
+  if (!s->ready) return;
+  SDL_GameControllerUpdate();
+  for (int i = 0; i < PAD_MAX; i++) {
+    Pad* p = &s->pad[i];
+    if (!p->gc) continue;
+    aim[i] = pad_stick(SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_RIGHTX),
+                       SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_RIGHTY),
+                       &p->aim);
   }
 }
 

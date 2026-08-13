@@ -224,6 +224,15 @@ void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
 
 // --- $80:D1FF  player_state_normal ------------------------------------------
 
+// `--twin-stick`, one word per player. Zero until a frontend arms it, and zero
+// is what the game itself means by no direction, so an unarmed build cannot tell
+// this is here. See `port/player.h`.
+static uint16_t psn_aim[2];
+
+void player_set_aim(uint16_t player, uint16_t dir) {
+  psn_aim[(player >> 1) & 1u] = dir;
+}
+
 static void psn_nz(PlayerStateRegs* out, uint16_t v) {
   out->n = (v & 0x8000u) != 0;
   out->z = v == 0;
@@ -350,6 +359,25 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
     wram_w16(w, dp + PSN_DP_DIR_HELD, dir);
   } else {
     PORT_COVER(psn_dir_still);
+  }
+  // ...and the aim on top of it, which is `--twin-stick`. After the store above
+  // and not instead of it: `$24` keeps the walk either way, and a frame that is
+  // both walking and aiming has to leave the *aim* in `$26`, or the walk would
+  // win and the two would be coupled again.
+  //
+  // Not marked for coverage: the corpus cannot reach it, and a branch no input
+  // distinguishes is exactly what the census exists to complain about.
+  //
+  // This is `$80:FF80`'s `LDA $80FFBC,X : BEQ +2 : STA $26` in C. The one thing
+  // it does not copy is the `LDA` itself, which lands in A and the flags on the
+  // stock path even when the aim is centred, where this leaves both as the
+  // walk's. Nothing reads either: `$80:D259  LDA $1A` is the next instruction
+  // both ways.
+  const uint16_t aim = psn_aim[(player >> 1) & 1u];
+  if (aim != 0) {
+    out->a = aim;
+    psn_nz(out, aim);
+    wram_w16(w, dp + PSN_DP_DIR_HELD, aim);
   }
 
   // $80:D259 player_input_buttons. Four edges. The first two are independent;

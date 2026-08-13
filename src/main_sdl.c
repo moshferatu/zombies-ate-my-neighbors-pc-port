@@ -45,7 +45,7 @@
 // Usage: zamn [rom.sfc] [--stock] [-r routine]... [-m movie.zmv]
 //             [--frames N] [--shot out.png] [--no-audio] [--no-pads]
 //             [--windowed] [--scale N] [--filter sharp|integer|linear]
-//             [--level N]
+//             [--level N] [--twin-stick]
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,9 +59,13 @@
 #include "analysis/movie.h"
 #include "analysis/movie_apply.h"
 #include "cosim/cosim.h"
+// For `player_set_aim` alone: `$80:D1FF` is substituted, so `--twin-stick` has
+// to reach the port as well as the cartridge. See `src/twinstick.h`.
+#include "port/player.h"
 #include "pace.h"
 #include "pad.h"
 #include "present.h"
+#include "twinstick.h"
 #include "widescreen.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -544,6 +548,12 @@ static void usage(void) {
     "                  and finishing one of those goes to the level its door\n"
     "                  would have led out to. Applies to every new game the\n"
     "                  session starts, including after a game over.\n"
+    "  --twin-stick    Fire with the right stick, in the direction it is pushed,\n"
+    "                  while the left stick goes on steering — so you can walk\n"
+    "                  one way and shoot the other. Off by default:\n"
+    "                  it patches the cartridge, and ammunition in this game is\n"
+    "                  finite enough that a stick which fires should be asked\n"
+    "                  for. Needs a controller; the keyboard has one D-pad.\n"
     "  --windowed      Start in a window. The default is fullscreen; F11 or\n"
     "                  Alt+Enter moves between them at any time.\n"
     "  --scale <N>     Size the window at N times 512x480, and start in it.\n"
@@ -571,7 +581,9 @@ static void usage(void) {
     "          the left one is Y, which is this game's fire button. Shoulders\n"
     "          and triggers are L and R; left stick or D-pad steers.\n"
     "          Start+Select held for a second quits (Options+Share on a\n"
-    "          DualSense); the picture fades to black as you hold it. Drop a\n"
+    "          DualSense); the picture fades to black as you hold it. The right\n"
+    "          stick does nothing unless --twin-stick is given, and then it aims\n"
+    "          and fires while the left one still steers. Drop a\n"
     "          gamecontrollerdb.txt beside the executable for anything SDL maps\n"
     "          wrongly. See src/pad.h.\n");
 }
@@ -618,6 +630,11 @@ int main(int argc, char** argv) {
   // cannot double as "not asked for". Without the flag the ROM is left exactly
   // as it came off disk.
   int start_level = -1;
+  // Off by default, on the same grounds as widescreen: it changes what the game
+  // is rather than how it looks. The stick it claims does nothing at all today,
+  // so turning it on costs a player who does not want it nothing — but it fires
+  // a weapon, and this game counts every shot, so it is asked for.
+  bool twin_stick = false;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
@@ -628,6 +645,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--windowed")) fullscreen = false;
     else if (!strcmp(a, "--skip-intro")) skip_the_intro = true;
     else if (!strcmp(a, "--paced")) force_pacing = true;
+    else if (!strcmp(a, "--twin-stick")) twin_stick = true;
     else if (!strcmp(a, "-r") && i + 1 < argc) {
       if (only_count == (int)(sizeof only / sizeof *only)) {
         fprintf(stderr, "error: at most %d -r options\n\n",
@@ -728,6 +746,17 @@ int main(int argc, char** argv) {
             "error: --level: '%s' is not a cartridge this can change — it wants\n"
             "       `LDA #` at $80:85F0 and $80:9BBD, a `JSL` at $80:84BD, and\n"
             "       an untouched end-of-bank pad at $80:FF68.\n",
+            rom_path);
+    return 1;
+  }
+  // The same buffer and the same pad, and the two claim different parts of it —
+  // so the order of these does not matter and neither has to know about the
+  // other. See `src/twinstick.h` for what nine bytes at $80:D250 become.
+  if (twin_stick && !twin_install(snes->cart->rom, snes->cart->romSize)) {
+    fprintf(stderr,
+            "error: --twin-stick: '%s' is not a cartridge this can change — it\n"
+            "       wants the direction latch `LDA $0072,X : STA $24 : BEQ +2 :\n"
+            "       STA $26` at $80:D250 and an untouched pad at $80:FF80.\n",
             rom_path);
     return 1;
   }
@@ -1004,6 +1033,11 @@ int main(int argc, char** argv) {
       printf("Start level: %d (--level; %son to %d from there)\n", start_level,
              start_level == 0 ? "a bonus room, " : "", plan.next);
   }
+  if (twin_stick)
+    printf("Twin stick: on (--twin-stick; right stick aims and fires%s)\n",
+           have_movie          ? ", but a movie is driving"
+           : !want_pads        ? ", but --no-pads"
+                               : "");
   // Redirected to a file, this is block-buffered, and everything above it
   // describes the session that is about to start — so it wants to be readable
   // *during* the session and not only after a clean exit. A run that is killed
@@ -1216,6 +1250,32 @@ int main(int argc, char** argv) {
         running = false;
       }
       held[0] |= key_held;
+      // The right stick, if it was asked for: an aim direction into the
+      // cartridge for the stub at `$80:D250` to pick up, and `Y` — this game's
+      // fire button — pressed for as long as the stick is out. Written before
+      // the frame that reads it, like every other input here, and left at zero
+      // for a port with no pad, which hands `$26` straight back to the game.
+      // The right stick, if it was asked for: an aim direction, and `Y` — this
+      // game's fire button — held for as long as the stick is out. Written
+      // before the frame that reads it, like every other input here.
+      //
+      // **Both places, because there are two of them.** `$80:D1FF` is a
+      // substituted routine, so the nine patched bytes at `$80:D250` are the
+      // path `--stock` and F1 take and `player_set_aim` is the path the default
+      // build takes. Arming one and not the other is a flag that works in one
+      // mode and silently does nothing in the other, which is worse than a flag
+      // that does not work at all.
+      if (twin_stick) {
+        uint16_t aim[PAD_MAX];
+        pad_aim(&pads, aim);
+        for (int p = 0; p < MOVIE_PORTS; p++) {
+          held[p] |= twin_apply(snes->cart->rom, p, aim[p]);
+          // Read back rather than worked out again, so the two paths cannot
+          // disagree: the port is armed with the exact word the 65816 would
+          // have fetched. The player index is doubled, as the routine's own is.
+          player_set_aim((uint16_t)(p * 2), twin_aim_of(snes->cart->rom, p));
+        }
+      }
       for (int p = 0; p < MOVIE_PORTS; p++)
         for (int b = 0; b < 12; b++)
           snes_setButtonState(snes, p + 1, b, (held[p] >> b) & 1);

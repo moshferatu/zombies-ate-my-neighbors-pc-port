@@ -293,6 +293,20 @@ $80:EB23  item_slot1_use       # `LDA #$8000 : STA $54` then `LDA #$0352 : STA $
 
 # --- The player state machine ------------------------------------------------
 $80:D1EA  player_state_run     # `LDX $70 : JMP ($D1EF,X)`; $70 is the index, x2
+$80:81F9  dir_table            # 16 bytes: the d-pad nibble (U8 D4 L2 R1) as a
+                              # direction code. $80:81C7 and $80:81D9 are its two
+                              # readers, one per port
+$80:D250  player_dir_latch     # `LDA $0072,X : STA $24 : BEQ +2 : STA $26`, and
+                              # the one place move and aim part company: $24 is
+                              # this frame's direction and drives the step
+                              # ($80:D4E9, $80:E450), $26 is the last non-zero
+                              # one and is what a shot leaves along ($80:ED54)
+                              # and what the player is drawn facing ($80:D526,
+                              # $80:D743, $80:ECD8). --twin-stick patches here
+$80:ED30  player_fire          # spends one BCD round, files $30/$32/$26/$0C as
+                              # the shot's x/y/direction/side, and thread_spawns
+                              # the weapon's own body off the table at $80:ED8C.
+                              # $4C is the cooldown that gates it
 $80:D1EF  player_state_table   # 8 words: D1FF D2EA D31C D343 D35E D404 D465 D343
 $80:D31C  player_state_2       # $56 expires -> STZ $72 : JMP $DB08; never executed
 $80:D465  player_state_bubble  # state 6, 390 frames from $80:DC5C. Escape is a
