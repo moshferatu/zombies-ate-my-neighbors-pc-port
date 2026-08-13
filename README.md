@@ -181,26 +181,93 @@ asked for with both. Those two are
 every `LDA #$0001 : STA $1E7C` in the cartridge. The other five writes are the
 level step, the password routine and the demo's own list, and none of them is
 touched — so a password typed at the menu still wins, which is right, because it
-is the player asking second.
+is the player asking second. (One exception, below: a bonus room is armed with a
+second flag that outlives the password, so `--level 50` and then a password gives
+you the room first and the password's level after it.)
 
-**The range is 1..48.** All 56 records load and every one of them draws a card,
-but only 1..48 are the numbered levels you walk from one to the next. The cards
-sort the other eight themselves: **49 reads CREDIT LEVEL**, and `$80:84DB  CMP
-#$0031 : BEQ $8500` sends the game to its ending rather than to `$80:8909` when
-that is the level just finished — it is where finishing 48 takes you. **0 and
-50..55 read BONUS LEVEL**, all seven of them; 0 is the one the `BCDF` password
-loads. They sit past the count at `$9F:8000` (`$0032`, which is what `$80:8909`
-wraps on) because a bonus room is entered from inside a level and left by
-`$80:885B`'s `DEC` back to the level that owned it, and finishing 55 from a cold
-start would step to record 56, which is the table's own end sentinel. A flag
-whose promise is "and then carry on as usual" offers the levels where that
-sentence is true.
+**The range is 0..55, which is every record there is**, and the eight that are
+not numbered levels are worth knowing about because the cards name them
+themselves.
 
-Two things were checked rather than assumed. **The step is the game's**: stub
-`$80:8516` — play the level — down to `CLC : RTL` in a scratch ROM so every level
-completes the instant it loads, and `$1E7C` walks `30 → 31 → 32` on its own, and
-`47 → 48` into the level-48 finale at `$80:8BBB`. **And it costs nothing when it
-is not asked for**: `--level 1` writes the stock value back, and 2400 frames of
+**49 reads CREDIT LEVEL.** `$80:84DB  CMP #$0031 : BEQ $8500` sends the game to
+its ending rather than to `$80:8909` when *that* is the level just finished, so
+it plays, the game ends, and the title comes back. It is where finishing 48 takes
+you, and starting on it needs nothing special.
+
+**0 and 50..55 read BONUS LEVEL** — the seven bonus rooms. 0 is the one the
+`BCDF` password loads and it behaves like any other number: `$80:8909` steps 0 to
+1, so level 1 follows it, which is what the password does too. The other six are
+not in the chain at all. They sit past the count at `$9F:8000` (`$0032`, what
+`$80:8909` wraps on), and they are reached a way of their own:
+
+```
+$82:D118  LDA $1E7C : ASL : TAX : LDA $D17E,X : BEQ .none
+$82:D122  STA $1F50
+```
+
+`$82:D17E` is 56 words indexed by level, six of them non-zero: **level 1's door
+leads to room 51, 9's to 54, 12's to 55, 17's to 52, 22's to 50 and 33's to 53.**
+Walking it puts the room's number in `$1F50`, the level ends, `$80:8909` steps
+`$1E7C` to N+1 — and then the loop head reads the flag:
+
+```
+$80:885B  LDA $1F50 : BEQ .plain : STZ $1F50 : DEC $1E7C : BRA .index
+$80:8868  .plain  LDA $1E7C
+$80:886B  .index  ASL : TAX : LDA $9F8002,X
+```
+
+The subtlety is in what is *not* there. `STZ` and `DEC` do not touch A, so the
+accumulator at `.index` is still the room number this loaded out of `$1F50`: **the
+record it loads is the bonus room, and the `DEC` is bookkeeping.** It puts `$1E7C`
+back to N so that the step at the end of the room lands on N+1 a second time. A
+bonus room costs the chain nothing, which is exactly why it can be dropped
+between two levels.
+
+So *"do what it would normally do"* turns out to be one more pair of numbers
+rather than a different mechanism. To start on room B: put N+1 in `$1E7C` and arm
+`$1F50` with B, and the game's own `$80:885B` does the rest — the room loads,
+`$1E7C` comes back to N, and finishing it goes to N+1 exactly as walking the door
+would have.
+
+Arming `$1F50` needs somewhere to arm it *from*, and the window is narrow. It has
+to be after the title menu, because the attract demo lives inside the menu and
+goes through `$80:885B` itself — a flag set before it would be eaten by the demo,
+which would play the bonus room and leave the player with a stale one. And it has
+to be before the first pass of the per-level loop. There is exactly one
+instruction in that window, and it is a call:
+
+```
+$80:84B1  JSL $8085CF   the init above -- level number, victim gate
+$80:84B5  JSL $809126   the title menu, and the demo inside it
+$80:84B9  JSL $8088A9
+$80:84BD  JSL $808618   <- here
+$80:84C1  JSL $80885B   the loop head, which reads $1F50
+```
+
+`$80:84BD` is redirected to an eleven-byte stub that makes the call it displaced
+— copied from the call site rather than written out — and then does the store.
+The stub goes at `$80:FF68`, which is 88 bytes of `$FF` between the last code in
+the bank and the cartridge header at `$80:FFC0`. It is the only thing written
+outside the two immediates, it is written only when a bonus room is asked for,
+and it is refused unless the pad is still a pad.
+
+Three things were checked rather than assumed, all with `$80:8516` — play the
+level — stubbed down to `CLC : RTL` in a scratch ROM so that every level completes
+the instant it loads, and `$1E7C` watched the whole way:
+
+| asked for | `$1E7C` goes |
+| --- | --- |
+| `--level 30` | 30 → 31 → 32 |
+| `--level 47` | 47 → 48, into the level-48 finale at `$80:8BBB` |
+| `--level 50` (room off 22) | **23 → 22** as the room loads → 23 → 24 → 25 … |
+| `--level 55` (room off 12) | **13 → 12** as the room loads → 13 → 14 → 15 … |
+| `--level 0` | 0 → 1 → 2 → 3 … |
+| `--level 49` | 49 → the ending → the title → 49 again |
+
+The two bonus rows are the whole claim in one line each: the room is visited
+once, `$1E7C` lands back on the level its door would have led out to, and the
+chain carries on from there. **And it costs nothing when it is not asked for** —
+`--level 1` writes the stock value back and installs no stub, and 2400 frames of
 `movies/level1.zmv` come out a byte-identical PNG with the flag and without it.
 
 `--level` applies to every new game the session starts, including the one after a

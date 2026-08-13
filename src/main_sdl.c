@@ -283,47 +283,161 @@ static void share_summary(const Cosim* c, char* out, size_t n) {
 // which does not take long: the demo is playing by frame 2000, fourteen seconds
 // after `--skip-intro` hands over. Those two are every `LDA #$0001 : STA
 // $1E7C` in the cartridge; the other five writes are the level step, the
-// password and the demo's own list, and none of them should be touched. A
-// password still overrides this, which is right — it is the player asking
-// second.
+// password and the demo's own list, and none of them should be touched. So a
+// password typed at the menu still overrides the number, which is right — it is
+// the player asking second. (The one exception is a bonus room: the flag it is
+// armed with below outlives the password, so `--level 50` and then a password
+// gives you the room first and the password's level after it.)
 //
 // Bank $80 is LoROM file offset $00000, so the two bytes of each immediate are
 // at $005F1 and $01BBE.
 #define LEVEL_SITES 2
 static const uint32_t level_site[LEVEL_SITES] = {0x005f0u, 0x01bbdu};
-// Why 48 and not 55. There are 56 records in `$9F:8002`, and loading any of them
-// works — every one draws its own card — but only 1..48 are the numbered levels
-// you walk from one to the next. The other eight sort into two groups, and the
-// cards say which is which:
+// All 56 records, and where the eight that are not numbered levels sit.
 //
-//   * **49 is the credits.** Its card reads CREDIT LEVEL, and `$80:84DB  CMP
-//     #$0031 : BEQ $8500` sends the game to its ending rather than to `$80:8909`
-//     when the level just finished was that one. It is where finishing 48 takes
-//     you, so it is the end of the chain rather than a place to be dropped into.
-//   * **0 and 50..55 are the seven bonus rooms** — all seven cards read BONUS
-//     LEVEL, and 0 is the one the BCDF password loads. They sit past the count
-//     at `$9F:8000` (`$0032`, which is what `$80:8909` wraps on), because a
-//     bonus room is entered from inside a level and left by `$80:885B`'s `DEC`
-//     back to the level that owned it. Finishing 55 from a cold start would step
-//     to record 56, and record 56 is the table's own end sentinel.
+// `$9F:8002` holds 56 of them and every one loads and draws its own card, but
+// only 1..48 are the levels you walk from one to the next. The cards sort the
+// other eight themselves.
 //
-// A flag whose promise is "and then carry on as usual" should offer the levels
-// where that sentence is true, so it offers 48 of them.
-#define LEVEL_FIRST 1
-#define LEVEL_LAST 48
+// **49 is the credits.** Its card reads CREDIT LEVEL. `$80:84DB  CMP #$0031 :
+// BEQ $8500` sends the game to its ending when *that* is the level just
+// finished, so 49 plays, the game ends and the title comes back. It is where
+// finishing 48 takes you, and starting on it needs nothing special.
+//
+// **0 and 50..55 are the seven bonus rooms**, all seven cards reading BONUS
+// LEVEL. 0 is the one the `BCDF` password loads, and it behaves like any other
+// number: `$80:8909` steps 0 to 1, so it is followed by level 1, which is what
+// the password does too. The other six are not in the chain at all — they sit
+// past the count at `$9F:8000` (`$0032`, which is what `$80:8909` wraps on) —
+// and they are reached a way of their own:
+//
+//     $82:D118  LDA $1E7C : ASL : TAX : LDA $D17E,X : BEQ .none
+//     $82:D122  STA $1F50
+//
+// `$82:D17E` is 56 words indexed by level, six of them non-zero: **level 1 leads
+// to room 51, 9 to 54, 12 to 55, 17 to 52, 22 to 50 and 33 to 53**. Walking the
+// door on level N puts the room's number in `$1F50`, the level ends, `$80:8909`
+// steps `$1E7C` to N+1 — and then the loop head reads the flag:
+//
+//     $80:885B  LDA $1F50 : BEQ .plain : STZ $1F50 : DEC $1E7C : BRA .index
+//     $80:8868  .plain  LDA $1E7C
+//     $80:886B  .index  ASL : TAX : LDA $9F8002,X
+//
+// The subtlety is that `DEC` and `STZ` do not touch A, so the accumulator at
+// `.index` is still the room number this loaded from `$1F50`: **the record it
+// loads is the bonus room, and the `DEC` is bookkeeping** — it puts `$1E7C` back
+// to N so that the step at the end of the room lands on N+1 again. A bonus room
+// costs the chain nothing, which is why it can be dropped between two levels.
+//
+// So "do what it would normally do" is one more pair of numbers rather than a
+// different mechanism: to start on room B, set `$1E7C` to N+1 and arm `$1F50`
+// with B, and the game's own `$80:885B` does the rest — the room loads, `$1E7C`
+// comes back to N, and finishing it goes to N+1 exactly as it would have.
+#define LEVEL_FIRST 0
+#define LEVEL_LAST 55
+#define LEVEL_RECORDS 56
+#define LEVEL_CREDITS 49
+// `$82:D17E`. Bank $82 is LoROM file offset $10000, so the table starts at
+// $1517E. Read rather than transcribed: change it in a ROM hack and this changes
+// with it.
+#define LEVEL_DOOR_TABLE 0x1517eu
+// The last byte any of this reads or writes, and the door table is the furthest
+// in of them — so one bound covers the immediates, the stub and the table both.
+#define LEVEL_ROM_MIN (LEVEL_DOOR_TABLE + 2u * LEVEL_RECORDS)
 
-// False if `$80:85F0` and `$80:9BBD` are not both `LDA #`, which is the whole of
-// what makes this the ROM it is meant for. Nothing is written unless both are.
+// Arming `$1F50` needs somewhere to arm it *from*. It has to be after the title
+// menu — the attract demo at `$80:9AB0` runs inside the menu and goes through
+// `$80:885B` itself, so a flag set before it would be eaten by the demo — and
+// before the first pass of the per-level loop. There is exactly one instruction
+// in that window, and it is a call:
+//
+//     $80:84B1  JSL $8085CF   the init above -- level number, victim gate
+//     $80:84B5  JSL $809126   the title menu, and the demo inside it
+//     $80:84B9  JSL $8088A9
+//     $80:84BD  JSL $808618   <- here
+//     $80:84C1  JSL $80885B   the loop head, which reads $1F50
+//
+// So `$80:84BD` is redirected to a stub that makes the call it displaced and
+// then does the store. The stub goes at `$80:FF68`, which is 88 bytes of `$FF`
+// between the last code in the bank and the cartridge header at `$80:FFC0` — the
+// end-of-bank pad, and the only thing written outside the two immediates.
+#define LEVEL_DOOR_CALL 0x004bdu
+#define LEVEL_STUB 0x07f68u       // in the file...
+#define LEVEL_STUB_ADDR 0xff68u   // ...and to the 65816, which is what the JSL takes
+#define LEVEL_STUB_LEN 11
+
+// Which level's door leads to bonus room `level`, or -1 if it is not one of the
+// six — which includes room 0, whose only way in is the password and which needs
+// none of this.
+static int level_door_owner(const uint8_t* rom, int level) {
+  if (level <= 0) return -1;
+  for (int i = 0; i < LEVEL_RECORDS; i++) {
+    const uint32_t e = LEVEL_DOOR_TABLE + 2u * (uint32_t)i;
+    if ((rom[e] | (rom[e + 1] << 8)) == level) return i;
+  }
+  return -1;
+}
+
+// What `--level N` will actually do, worked out from the ROM so the banner and
+// the patch cannot disagree. `number` is what goes in `$1E7C`; `arm` is the
+// bonus room to put in `$1F50`, or 0 for none; `next` is the level the game goes
+// to when this one is finished, or -1 for "the game ends and the title returns".
+typedef struct {
+  int number, arm, next;
+} LevelStart;
+
+static LevelStart level_start_plan(const uint8_t* rom, int level) {
+  const int owner = level_door_owner(rom, level);
+  LevelStart p;
+  if (owner >= 0) {
+    p.arm = level;
+    // `$80:885B` DECs its way back to the owner as it loads the room, so the
+    // step at the end of the room lands on the owner's successor — which is
+    // where the number started, and where the room would have led anyway.
+    p.number = p.next = owner + 1;
+  } else {
+    p.arm = 0;
+    p.number = level;
+    p.next = level == LEVEL_CREDITS ? -1 : level + 1;
+  }
+  return p;
+}
+
+// False if the ROM is not the one this knows how to change — both immediates
+// have to be `LDA #`, `$80:84BD` has to be the `JSL` it is displacing, and the
+// end-of-bank pad has to still be a pad. Nothing is written unless all of that
+// holds, so a refusal leaves the cartridge as it came off disk.
 static bool start_at_level(Snes* snes, int level) {
   Cart* cart = snes->cart;
-  if (!cart || !cart->rom) return false;
-  for (int i = 0; i < LEVEL_SITES; i++) {
-    if (cart->romSize <= level_site[i] + 2) return false;
+  if (!cart || !cart->rom || cart->romSize < LEVEL_ROM_MIN) return false;
+  const LevelStart plan = level_start_plan(cart->rom, level);
+  for (int i = 0; i < LEVEL_SITES; i++)
     if (cart->rom[level_site[i]] != 0xa9) return false;
+  if (plan.arm) {
+    if (cart->rom[LEVEL_DOOR_CALL] != 0x22) return false;
+    for (int i = 0; i < LEVEL_STUB_LEN; i++)
+      if (cart->rom[LEVEL_STUB + i] != 0xff) return false;
   }
+
   for (int i = 0; i < LEVEL_SITES; i++) {
-    cart->rom[level_site[i] + 1] = (uint8_t)level;
-    cart->rom[level_site[i] + 2] = (uint8_t)(level >> 8);
+    cart->rom[level_site[i] + 1] = (uint8_t)plan.number;
+    cart->rom[level_site[i] + 2] = (uint8_t)(plan.number >> 8);
+  }
+  if (plan.arm) {
+    uint8_t* stub = cart->rom + LEVEL_STUB;
+    // The call this is standing in front of, carried over rather than written
+    // out, so the stub stays right if `$80:84BD` ever points somewhere else.
+    memcpy(stub, cart->rom + LEVEL_DOOR_CALL, 4);
+    stub[4] = 0xa9;                          // LDA #$00xx  (16-bit here: the
+    stub[5] = (uint8_t)plan.arm;             // routine it just called opens
+    stub[6] = (uint8_t)(plan.arm >> 8);      // `LDX #$0000` three bytes wide)
+    stub[7] = 0x8d;                          // STA $1F50
+    stub[8] = 0x50;
+    stub[9] = 0x1f;
+    stub[10] = 0x6b;                         // RTL
+    cart->rom[LEVEL_DOOR_CALL + 1] = (uint8_t)LEVEL_STUB_ADDR;         // JSL
+    cart->rom[LEVEL_DOOR_CALL + 2] = (uint8_t)(LEVEL_STUB_ADDR >> 8);  // $80FF68
+    cart->rom[LEVEL_DOOR_CALL + 3] = 0x80;
   }
   return true;
 }
@@ -423,12 +537,13 @@ static void usage(void) {
     "  --skip-intro    Run the logos and the story screen at full speed and\n"
     "                  hand over at the title menu. Cannot be combined with -m:\n"
     "                  a movie drives from reset and contains its own boot.\n"
-    "  --level <N>     Start a new game on level N (1..48) instead of 1, and go\n"
-    "                  on to N+1, N+2 ... from there as usual. Applies to every\n"
-    "                  new game the session starts, including after a game over.\n"
-    "                  A password entered at the menu still wins. 48 is the last\n"
-    "                  numbered level; the credit roll and the seven bonus rooms\n"
-    "                  are not levels this can start you on.\n"
+    "  --level <N>     Start a new game on record N (0..55) instead of level 1,\n"
+    "                  and carry on from there as the game would. 1..48 are the\n"
+    "                  numbered levels; 49 is the credit roll, after which the\n"
+    "                  title comes back; 0 and 50..55 are the seven bonus rooms,\n"
+    "                  and finishing one of those goes to the level its door\n"
+    "                  would have led out to. Applies to every new game the\n"
+    "                  session starts, including after a game over.\n"
     "  --windowed      Start in a window. The default is fullscreen; F11 or\n"
     "                  Alt+Enter moves between them at any time.\n"
     "  --scale <N>     Size the window at N times 512x480, and start in it.\n"
@@ -499,9 +614,10 @@ int main(int argc, char** argv) {
   // without the second: a bounded run, at real speed, that exits with a report.
   bool force_pacing = false;
   bool skip_the_intro = false;
-  // 0 rather than -1 as the "not asked for" value, because 0 is not in the range
-  // this accepts and the ROM is left exactly as it came off disk without it.
-  int start_level = 0;
+  // -1, not 0: 0 is a level — the bonus room the BCDF password loads — so it
+  // cannot double as "not asked for". Without the flag the ROM is left exactly
+  // as it came off disk.
+  int start_level = -1;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
@@ -559,13 +675,17 @@ int main(int argc, char** argv) {
       fullscreen = false;
     }
     else if (!strcmp(a, "--level") && i + 1 < argc) {
-      start_level = atoi(argv[++i]);
-      if (start_level < LEVEL_FIRST || start_level > LEVEL_LAST) {
+      // Not `atoi`: it reads "abc" as 0, and 0 is a level here rather than a
+      // way of saying nothing, so the argument has to be a number and no more.
+      char* end = NULL;
+      const long v = strtol(argv[++i], &end, 10);
+      if (end == argv[i] || *end || v < LEVEL_FIRST || v > LEVEL_LAST) {
         fprintf(stderr, "error: --level wants %d..%d, got '%s'\n\n",
                 LEVEL_FIRST, LEVEL_LAST, argv[i]);
         usage();
         return 2;
       }
+      start_level = (int)v;
     }
     else if (!strcmp(a, "-m") && i + 1 < argc) movie_path = argv[++i];
     else if (!strcmp(a, "--shot") && i + 1 < argc) shot_path = argv[++i];
@@ -603,10 +723,11 @@ int main(int argc, char** argv) {
   // into it, so the buffer read off disk is not the one the 65816 fetches from.
   // Once, not per frame — unlike the widescreen window, nothing at runtime can
   // change the answer.
-  if (start_level && !start_at_level(snes, start_level)) {
+  if (start_level >= 0 && !start_at_level(snes, start_level)) {
     fprintf(stderr,
-            "error: --level: '%s' does not have `LDA #` at $80:85F0 and\n"
-            "       $80:9BBD, so there is no level number in it to change.\n",
+            "error: --level: '%s' is not a cartridge this can change — it wants\n"
+            "       `LDA #` at $80:85F0 and $80:9BBD, a `JSL` at $80:84BD, and\n"
+            "       an untouched end-of-bank pad at $80:FF68.\n",
             rom_path);
     return 1;
   }
@@ -871,12 +992,18 @@ int main(int argc, char** argv) {
   // Announced because it is the one option here that changes what the *game*
   // does rather than how it is shown, and a run that starts on level 30 should
   // say so in its own log rather than leave somebody wondering.
-  if (start_level == LEVEL_LAST)
-    printf("Start level: %d (--level; the last numbered one, then the credits)\n",
-           start_level);
-  else if (start_level)
-    printf("Start level: %d (--level; on to %d from there)\n", start_level,
-           start_level + 1);
+  if (start_level >= 0) {
+    const LevelStart plan = level_start_plan(snes->cart->rom, start_level);
+    if (plan.arm)
+      printf("Start level: %d (--level; the bonus room off level %d, then"
+             " level %d)\n", start_level, plan.next - 1, plan.next);
+    else if (plan.next < 0)
+      printf("Start level: %d (--level; the credit roll, then the title)\n",
+             start_level);
+    else
+      printf("Start level: %d (--level; %son to %d from there)\n", start_level,
+             start_level == 0 ? "a bonus room, " : "", plan.next);
+  }
   // Redirected to a file, this is block-buffered, and everything above it
   // describes the session that is about to start — so it wants to be readable
   // *during* the session and not only after a clean exit. A run that is killed
