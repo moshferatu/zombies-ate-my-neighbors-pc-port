@@ -45,7 +45,7 @@
 // Usage: zamn [rom.sfc] [--stock] [-r routine]... [-m movie.zmv]
 //             [--frames N] [--shot out.png] [--no-audio] [--no-pads]
 //             [--windowed] [--scale N] [--filter sharp|integer|linear]
-//             [--level N] [--twin-stick]
+//             [--level N] [--no-twin-stick]
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,8 +59,8 @@
 #include "analysis/movie.h"
 #include "analysis/movie_apply.h"
 #include "cosim/cosim.h"
-// For `player_set_aim` alone: `$80:D1FF` is substituted, so `--twin-stick` has
-// to reach the port as well as the cartridge. See `src/twinstick.h`.
+// For `player_set_aim` alone: `$80:D1FF` is substituted, so twin-stick aiming
+// has to reach the port as well as the cartridge. See `src/twinstick.h`.
 #include "port/player.h"
 #include "pace.h"
 #include "pad.h"
@@ -548,12 +548,12 @@ static void usage(void) {
     "                  and finishing one of those goes to the level its door\n"
     "                  would have led out to. Applies to every new game the\n"
     "                  session starts, including after a game over.\n"
-    "  --twin-stick    Fire with the right stick, in the direction it is pushed,\n"
-    "                  while the left stick goes on steering — so you can walk\n"
-    "                  one way and shoot the other. Off by default:\n"
-    "                  it patches the cartridge, and ammunition in this game is\n"
-    "                  finite enough that a stick which fires should be asked\n"
-    "                  for. Needs a controller; the keyboard has one D-pad.\n"
+    "  --no-twin-stick Give the right stick back to the game, which is to say to\n"
+    "                  nothing: stock, it reads no second stick. On by default,\n"
+    "                  the right stick fires the held weapon in the direction it\n"
+    "                  is pushed while the left one goes on steering, so you can\n"
+    "                  walk one way and shoot the other. A pad-only feature —\n"
+    "                  the keyboard has one D-pad and is unaffected either way.\n"
     "  --windowed      Start in a window. The default is fullscreen; F11 or\n"
     "                  Alt+Enter moves between them at any time.\n"
     "  --scale <N>     Size the window at N times 512x480, and start in it.\n"
@@ -582,8 +582,8 @@ static void usage(void) {
     "          and triggers are L and R; left stick or D-pad steers.\n"
     "          Start+Select held for a second quits (Options+Share on a\n"
     "          DualSense); the picture fades to black as you hold it. The right\n"
-    "          stick does nothing unless --twin-stick is given, and then it aims\n"
-    "          and fires while the left one still steers. Drop a\n"
+    "          stick aims and fires while the left one still steers, unless\n"
+    "          --no-twin-stick takes that back. Drop a\n"
     "          gamecontrollerdb.txt beside the executable for anything SDL maps\n"
     "          wrongly. See src/pad.h.\n");
 }
@@ -630,11 +630,20 @@ int main(int argc, char** argv) {
   // cannot double as "not asked for". Without the flag the ROM is left exactly
   // as it came off disk.
   int start_level = -1;
-  // Off by default, on the same grounds as widescreen: it changes what the game
-  // is rather than how it looks. The stick it claims does nothing at all today,
-  // so turning it on costs a player who does not want it nothing — but it fires
-  // a weapon, and this game counts every shot, so it is asked for.
-  bool twin_stick = false;
+  // On by default, which widescreen is not, and the difference is what the
+  // feature takes away. Widescreen draws columns the console never drew, so it
+  // is on screen whether or not anyone wanted it. This claims a stick the stock
+  // game does not read at all: leave it centred and the cartridge is byte for
+  // byte the one that shipped — measured, a 4,600-frame movie renders to the
+  // same PNG with it and without — and the keyboard never reaches it. So the
+  // player who does not want it pays nothing and need say nothing, and the flag
+  // is the way to say no.
+  bool twin_stick = true;
+  // ...but `--twin-stick` still parses, and it is not a synonym. Asking for it
+  // makes a cartridge that cannot take the patch an error; the default settles
+  // for a warning, because a default has no business refusing to start a ROM it
+  // was never told to change.
+  bool twin_asked = false;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
@@ -645,7 +654,8 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--windowed")) fullscreen = false;
     else if (!strcmp(a, "--skip-intro")) skip_the_intro = true;
     else if (!strcmp(a, "--paced")) force_pacing = true;
-    else if (!strcmp(a, "--twin-stick")) twin_stick = true;
+    else if (!strcmp(a, "--no-twin-stick")) twin_stick = false;
+    else if (!strcmp(a, "--twin-stick")) twin_stick = twin_asked = true;
     else if (!strcmp(a, "-r") && i + 1 < argc) {
       if (only_count == (int)(sizeof only / sizeof *only)) {
         fprintf(stderr, "error: at most %d -r options\n\n",
@@ -754,11 +764,16 @@ int main(int argc, char** argv) {
   // other. See `src/twinstick.h` for what nine bytes at $80:D250 become.
   if (twin_stick && !twin_install(snes->cart->rom, snes->cart->romSize)) {
     fprintf(stderr,
-            "error: --twin-stick: '%s' is not a cartridge this can change — it\n"
+            "%s: twin stick: '%s' is not a cartridge this can change — it\n"
             "       wants the direction latch `LDA $0072,X : STA $24 : BEQ +2 :\n"
             "       STA $26` at $80:D250 and an untouched pad at $80:FF80.\n",
-            rom_path);
-    return 1;
+            twin_asked ? "error" : "note ", rom_path);
+    // Asked for and impossible is an error; on by default and impossible is a
+    // line of output and a game that still starts. A ROM this cannot patch is
+    // one it can leave entirely alone, and refusing to run it would make the
+    // default the strictest thing in the program.
+    if (twin_asked) return 1;
+    twin_stick = false;
   }
 
   // Attach the harness before the reset, exactly as `cosim_lockstep` does: it
@@ -1033,11 +1048,17 @@ int main(int argc, char** argv) {
       printf("Start level: %d (--level; %son to %d from there)\n", start_level,
              start_level == 0 ? "a bonus room, " : "", plan.next);
   }
+  // Both ways round, unlike `--level`, because this one is on unless told
+  // otherwise: a session that has it should say so, and a session where it was
+  // turned off — or could not be installed — should say that rather than look
+  // like a pad that has stopped working.
   if (twin_stick)
-    printf("Twin stick: on (--twin-stick; right stick aims and fires%s)\n",
+    printf("Twin stick: on (right stick aims and fires%s)\n",
            have_movie          ? ", but a movie is driving"
            : !want_pads        ? ", but --no-pads"
                                : "");
+  else
+    printf("Twin stick: off (right stick does nothing)\n");
   // Redirected to a file, this is block-buffered, and everything above it
   // describes the session that is about to start — so it wants to be readable
   // *during* the session and not only after a clean exit. A run that is killed
@@ -1250,14 +1271,11 @@ int main(int argc, char** argv) {
         running = false;
       }
       held[0] |= key_held;
-      // The right stick, if it was asked for: an aim direction into the
+      // The right stick, unless it was turned off: an aim direction into the
       // cartridge for the stub at `$80:D250` to pick up, and `Y` — this game's
       // fire button — pressed for as long as the stick is out. Written before
       // the frame that reads it, like every other input here, and left at zero
       // for a port with no pad, which hands `$26` straight back to the game.
-      // The right stick, if it was asked for: an aim direction, and `Y` — this
-      // game's fire button — held for as long as the stick is out. Written
-      // before the frame that reads it, like every other input here.
       //
       // **Both places, because there are two of them.** `$80:D1FF` is a
       // substituted routine, so the nine patched bytes at `$80:D250` are the

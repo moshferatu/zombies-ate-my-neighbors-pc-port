@@ -105,8 +105,10 @@
 // `pad_aim` reads the right one through the identical snap and returns the
 // identical eight-way bits. It is deliberately not part of `pad_poll`: there is
 // no SNES button it could be, so there is nothing for `pad_poll` to say about
-// it. `--twin-stick` is what gives it a meaning — see `src/twinstick.h` — and
-// without that flag nothing calls this and the stick does nothing.
+// it. Twin-stick aiming is what gives it a meaning — see `src/twinstick.h` —
+// and it is on unless `--no-twin-stick` says otherwise, in which case nothing
+// calls this and the stick does nothing, which is what the stock game does with
+// a stick it cannot read.
 //
 // ## Devices
 //

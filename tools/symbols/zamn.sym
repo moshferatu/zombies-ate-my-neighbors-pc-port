@@ -302,7 +302,8 @@ $80:D250  player_dir_latch     # `LDA $0072,X : STA $24 : BEQ +2 : STA $26`, and
                               # ($80:D4E9, $80:E450), $26 is the last non-zero
                               # one and is what a shot leaves along ($80:ED54)
                               # and what the player is drawn facing ($80:D526,
-                              # $80:D743, $80:ECD8). --twin-stick patches here
+                              # $80:D743, $80:ECD8). Twin-stick aiming patches
+                              # here — see src/twinstick.h
 $80:ED30  player_fire          # spends one BCD round, files $30/$32/$26/$0C as
                               # the shot's x/y/direction/side, and thread_spawns
                               # the weapon's own body off the table at $80:ED8C.

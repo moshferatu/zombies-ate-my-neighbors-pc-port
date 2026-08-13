@@ -159,6 +159,14 @@
 // about sixty cycles against the frame's 1,364,000. Nothing else changes: with
 // both words zero the stub is byte for byte the routine that was there.
 //
+// That paragraph is why this is on by default rather than asked for. A centred
+// stick is a zero word, a zero word is the game unmodified, and the keyboard
+// never writes one — so the cost of the default to a player who wants none of
+// it is sixty cycles and no behaviour. The control for that claim is a
+// 4,600-frame movie rendering to the same PNG with the patch installed and
+// without, and `--no-twin-stick` is the way to leave the cartridge alone
+// entirely.
+//
 // It shares the pad at `$80:FF68` with `--level`'s bonus-room stub, which sits at
 // `$FF68`..`$FF72` and is checked for the same way. The two regions do not
 // overlap and each refuses unless its own bytes are still `$FF`, so the flags

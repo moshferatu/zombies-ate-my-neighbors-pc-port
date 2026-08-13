@@ -93,7 +93,9 @@ reaches the game while the chord is down, so a quit thought better of leaves
 nothing behind. `--no-pads` turns the whole thing off. The reasoning, and the
 measurements the deadzone came from, are in `src/pad.h`.
 
-The **right stick does nothing** unless you ask for it — `--twin-stick`, below.
+The **right stick aims and fires** — twin-stick shooting, on by default and
+described below. `--no-twin-stick` gives it back to the stock game, which reads
+no second stick at all.
 
 It starts **fullscreen**, with the mouse cursor hidden — there is no mouse input
 in this game, so the pointer is only ever something on top of the picture. F11
@@ -277,16 +279,30 @@ game over — `$80:8514` branches back to `$80:84B1`, so a game over puts you on
 your level rather than on level 1, which is what a flag for looking at level 30
 should do.
 
-### `--twin-stick`
+### Twin-stick shooting, and `--no-twin-stick`
 
 ```
-build\zamn.exe --twin-stick
+build\zamn.exe                    # right stick aims and fires
+build\zamn.exe --no-twin-stick    # right stick does nothing, as on the console
 ```
 
 The right stick fires the held weapon in the direction it is pushed, and the left
-stick goes on steering. Off by default: it changes what the game is rather than
-how it looks, and this game counts every shot, so a stick that fires is asked for
-rather than assumed. Needs a controller — the keyboard has one D-pad.
+stick goes on steering — so you can walk one way and shoot the other. It needs a
+controller; the keyboard has one D-pad and is unaffected either way.
+
+**On by default**, which widescreen is not, and the difference is what each one
+takes away. Widescreen draws columns the console never drew, so it is on screen
+whether or not anyone wanted it. This claims a stick the stock game does not read
+at all: leave it centred and the cartridge is byte for byte the one that shipped
+— a 4,600-frame movie renders to the same PNG patched and unpatched — and the
+keyboard never writes an aim. So the player who wants none of it pays sixty
+cycles a frame and no behaviour, and does not have to know the flag exists.
+`--no-twin-stick` skips the patch entirely.
+
+`--twin-stick` still parses, and it is not a synonym for the default: asking for
+it makes a cartridge that cannot take the patch an error, where the default
+settles for a note on stderr and starts the game anyway. A default has no
+business refusing to run a ROM it was never told to change.
 
 **The game already separates walking from facing**, which is what makes this one
 word rather than a rewrite. The NMI puts the D-pad nibble through a sixteen-byte
@@ -1045,9 +1061,9 @@ build\zamn_cosim.exe verify "Zombies Ate My Neighbors.sfc" -m movies\level21-spi
 ```
 
 `--twin-aim <period>[,<from>]` is a probe rather than a way to play: it patches
-the cartridge for `--twin-stick`, arms the port the same way, holds fire and
-cycles the aim through left, right and centred. `--twin-stick` is the one thing
-in the project implemented **twice** — nine bytes of 65816 for the stock path and
+the cartridge the way twin-stick aiming does, arms the port the same way, holds
+fire and cycles the aim through left, right and centred. Twin-stick is the one
+thing in the project implemented **twice** — nine bytes of 65816 for the stock path and
 the same decision in `src/port/player.c` for the substituted one — and `verify`
 is the instrument for asking whether two implementations of a routine agree.
 Without it the halves can only be checked apart, which is how the first version
@@ -1088,7 +1104,7 @@ src/present.h         ...and the SDL that carries that out
 src/pad.h             Game controllers: the deadzone, the eight-way snap and the
                               button table — the half of it that decides how the
                               game feels, and is arithmetic
-src/twinstick.h       `--twin-stick`: what the right stick becomes — an aim
+src/twinstick.h       Twin-stick shooting: what the right stick becomes — an aim
                               direction, and nine bytes of 65816 at `$80:D250`
 src/pace.h            Frame cadence: measuring how evenly frames arrive, and
                               the deadline clock and audio rate control that
