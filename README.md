@@ -69,7 +69,8 @@ build\zamn.exe "Zombies Ate My Neighbors.sfc"
 ```
 Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=Select · Esc=Quit
 · **F1 = toggle native substitution** · **F2 = cycle scaling**
-· **F3 = toggle aspect** · **F11 / Alt+Enter = fullscreen**
+· **F3 = toggle aspect** · **F4 = cycle widescreen**
+· **F11 / Alt+Enter = fullscreen**
 
 **Game controllers** work too, and are the way to actually play it: any pad SDL
 recognises — which is most of them, and a `gamecontrollerdb.txt` beside the
@@ -154,6 +155,206 @@ frame, which is the only way to judge it. At 3840x2160:
 | whole buffer, square pixels | 2304x2160, 144px of it blank top and bottom | 56% |
 | cropped, square pixels (8:7) | 2468x2160 | 64% |
 | cropped, 4:3 (default) | **2880x2160** | **75%** |
+
+### `--widescreen`
+
+`off` (default), `16:9` or `16:10`. **F4** cycles them while the game runs.
+
+Not a stretch and not a crop: the PPU draws columns either side of the
+console's 256, so a wider screen shows *more of the level* at the same size.
+That is possible because almost nothing had to move to allow it. The game's
+coordinates are untouched — column 0 is still column 0 — and the three things
+that would normally break turn out already to be in the port's favour:
+
+* **The map is already there.** BG2's tilemap is 64 tiles across, twice the
+  screen, and the streamer keeps the columns around the camera valid rather
+  than only the visible ones. 16:9 wants 43 columns a side and the ring has 128.
+* **The actors are already alive.** `actor_cull` keeps anything from 128 px
+  behind the camera to 383 px ahead of it (`src/port/oam.c`) — a 512-pixel
+  window around a 256-pixel screen, which is twice what 16:9 asks for. So
+  nothing pops in at the new edges and no culling, animation or collision code
+  changed at all. Checked rather than assumed: dumping the display list through
+  `zamn_headless --records` on level 29 catches a monster walking from world x
+  905 to 1007 across twenty frames while the camera sits at 737 — from inside
+  the console's 256 to 14 pixels beyond it — still listed, still flagged to
+  draw, still moving. Being alive is not the same as being drawn, though; see
+  *the sprites the game throws away* below.
+* **The sprites can reach.** OAM's X is nine bits spent as −256..255, so a
+  sprite at 256 is one hanging off the *left* edge. Widescreen moves that wrap
+  point out to the new right edge and leaves everything past it wrapping, which
+  is what keeps a sprite walking off one side doing so.
+
+A game pixel is 7:6 — 256 across a 4:3 frame over 224 rows — so 224 rows want
+`ratio × 192` columns: 4:3 gives back exactly 256, 16:9 wants 342 and 16:10
+wants 308. `src/scale.h` states the pixel shape once and derives all three,
+which is why the 4:3 cases pinned in `tools/test_scale.c` did not move.
+
+**The status panel moves to the edges.** It is drawn on BG3, whose tilemap is
+32 tiles wide — one screen exactly — so continuing it into the margins could
+only repeat it, and it did: a second health bar at each edge. But the panel is
+already two half-width halves, player 1 in the left sixteen columns and player 2
+in the right sixteen, so the answer is to pin each half to its own edge and
+leave the gap between them empty. That is `ppu_wideAnchor`, and it needs no
+change to the shadow tilemap the co-simulation checks byte for byte.
+
+The same layer carries the title, the password screen and the story cards, and
+those must *not* be torn in half. What tells them apart is the layer next door:
+a level sets BG2's tilemap to 64 tiles wide because the world scrolls, and every
+fixed screen leaves it at 32. That sentence, the map's own width and the sprites
+below are the whole of what `src/widescreen.h` knows about this game, and no
+screen is named anywhere in it.
+
+**Everything else runs on `ppu_wideAuto`, which asks the layer.** Its default
+answer is the honest one: draw what the hardware would have drawn if the
+scanline were longer. A background is a tilemap and a scroll, both defined at
+any x; the console stops at 256 because it runs out of time, not because the map
+runs out. Three things take a layer off that default, and they are asked in
+this order.
+
+**Has it anything at the console's edges at all?** A layer whose outermost
+columns are entirely transparent is a picture composed to be seen at one place —
+a logo, a card, a screenful of legal text — and the margins beside it belong to
+whatever is behind it, which is what its own edge column is already showing.
+Those are clipped. The test is made in *pixels*, not in tilemap words, and that
+distinction is the whole of it: two different blank tiles are two different
+words and the same nothing, and this game uses both. The LucasArts logo layer
+pads its edges with palette 2's blank tile and the legal screen pads its edges
+with palette 7's, so a test that compared words called them textured and
+repeated them — which is how a screenful of legal text came to be printed three
+times.
+
+That same test is what stops the LucasArts caption repeating. The wall and the
+words are not one layer after all: the wall is BG3 and the logo with its
+"LucasArts Entertainment Company" line is BG1, whose edge columns are blank. The
+wall fills the margins and the caption stays where it was written, once.
+
+**Is its map 64 columns with only 32 maintained?** Then reading further along it
+reads whatever that VRAM was last used for — the LucasArts wall came out
+shredded that way — so those repeat the 256 columns the game does maintain. A
+level's world is 64 columns *and* maintained, and is told to stretch from
+outside rather than reaching this.
+
+**Has the game ever scrolled it sideways?** This one only matters for a map that
+is 256 pixels across, the width of the console exactly, where "carry on reading"
+means "wrap". That is right for a layer the game scrolls, because then the
+console is already wrapping it in plain sight and its seam is one an artist has
+had to make look right: the stone wall drifting diagonally behind the LucasArts
+logo, the wallpaper behind the character select. It is wrong for a layer that
+has sat still since the screen went up — the card that announces the level does
+exactly that, `hScroll` nailed to 0 while `vScroll` runs, and wrapping it
+printed the tail of its last line down both sides of the picture. Those are
+clipped. The answer is latched per screen and cleared behind the forced blank
+every screen change goes through, so a wall that moves one pixel every fourth
+frame does not flicker between the two.
+
+So: Konami's white field, LucasArts' stone wall, the character select's monster
+wallpaper and the title's spiral all reach the edges of a 16:9 frame; the legal
+text, the story card and the level card keep their black, because black is what
+their background is out there.
+
+**Off by default, and every measurement in this file is made without it.** At
+zero margins each widened expression reduces to the one the vendored core
+always had: same 2048-byte rows, same 32-sprite and 34-tile ceilings, same
+window edges. The check is that `zamn_headless` renders a byte-identical PNG
+against a build of the commit before any of this existed — both the boot frame
+and 2,400 frames of level 1 — and that `zamn_cosim` is unmoved: `run -r none`
+still identical at all 2,389 passes of level 1, `verify` still 206,755 calls and
+none diverged.
+
+**The margins hold the map, and getting there took one more step.** BG2's
+tilemap ring is 64 columns but the game only ever *maintains* 32 of them: it
+writes one fresh column at the leading edge each time the camera crosses an
+eight-pixel boundary and never touches the rest. A ring slot therefore holds the
+right map column only where the camera has already been — correct behind it,
+stale ahead of it. Level 29's camera wanders, so its margins were right by
+accident; level 1 walks steadily east and showed a band of leftover tiles at its
+leading edge.
+
+Those columns are not recoverable by looking harder, because they were never
+written. So `src/widescreen.h` writes them, each frame, from the same map and by
+the same priority rule the ROM's own column copy uses — into ring slots the game
+does not read, does not write, and will overwrite with exactly these values if
+the camera ever carries them into view. It is not a change to the game's tilemap;
+it is the rest of the tilemap.
+
+**At the ends of a level the margins go somewhere else instead.** The camera
+stops at the edges of the map, because it was written for a 256-pixel window and
+that window is all the game thinks is on screen; hang 43 more pixels off each
+side and the picture leaves the world, with nothing to fill it and no actors out
+there to draw. Blacking that out is what the first attempt did, and it was one
+of the two reasons the extra width looked like it was *removing* enemies — at
+the west end of a level the whole left margin was outside the map, so everything
+in it was correctly, uselessly, culled to the backdrop. (The other reason is
+below, and it was the larger one.)
+
+The fix is to stop insisting the two margins be equal. The picture is always the
+same width; when the left margin cannot have its 43 pixels the right margin
+takes the remainder. Walking west, the view slides to a stop against the world's
+edge while the player carries on to it — which is what every game with a camera
+does at the end of a level, and it costs only the picture no longer being
+centred on a camera that was never centred on the player either. No camera
+limit moved and no actor was culled differently; the window simply stays inside
+the world.
+
+Nothing in the game was touched for any of this. No ported routine changed, no
+co-simulated constant moved, and `verify` and `run` are unaware of it.
+
+### The sprites the game throws away
+
+The cull is generous and was never the problem. The last thing that happens to a
+record is. `sprite_emit` (`$80:BA51`, and its three flipped twins) works out
+where each 16x16 piece lands and then does this:
+
+```
+CMP #$0100 : BCC keep      ; on screen
+CMP #$FFF1 : BCC drop      ; ...or off it, and there is no third case
+```
+
+A piece whose screen X is 256 or more, or 16 or more to the left of zero, is
+dropped on the floor — not parked, not clipped, never written to OAM at all,
+because the console cannot show it and OAM is 128 entries the game has better
+uses for. That band is exactly what widening turns into picture, which is why a
+zombie vanished a body's width before the edge of a widescreen frame while
+walking about quite happily in the game's own memory.
+
+`src/widescreen.h` puts them back. At the top of each frame — after the game's
+vblank, before a line is drawn — it walks the same visible list the game's own
+pass walked, reads the same records and metasprites, composes them exactly as
+`sprite_emit` does, and keeps the pieces the ROM dropped for being outside the
+console's 256 and inside the widened picture. They go into OAM entries the
+game's pass left parked, so nothing it placed moves, and not one byte of WRAM is
+written. The one thing it will not do is guess at graphics: a piece is drawn
+only if its frame is resident in the sprite cache, never with whatever happens
+to be in that VRAM slot.
+
+Measured: across level 1 and level 25, 676 frames of ordinary play have at least
+one such piece, and the busiest puts six back — a plant the console shows a
+sliver of at the left edge stands there whole instead. And the console's own 256
+columns are untouched by any of it. Comparing a 16:9 level frame against a 4:3
+one of the same input, pixel for pixel, **every row outside the status panel
+differs in exactly one column**, and that column is the next section.
+
+### The one that was a real emulation bug
+
+The left margin came out a shade darker than the picture it was continuing, in
+every level, and that one was not a widescreen policy at all. This game switches
+colour maths *off* by pointing both windows at the single column `0..0` and
+asking for maths *inside* them. The first version of the widened window test
+treated each edge on its own — a window starting at 0 starts at the left of the
+screen — which turned that degenerate window 43 pixels wide and subtracted the
+fixed colour from the entire left margin. Only a window covering the console's
+whole line means "everywhere"; a window with one edge at 0 and the other in the
+middle is a *place*, and places stay put.
+
+Fixing that left one column of it. A window from 0 to 0 does contain column 0,
+so the console really does subtract the fixed colour there — one column, at the
+extreme left of a picture no television showed the extreme left of. Widen the
+frame and it is 43 pixels in from the edge, in plain view, as a thin dark line
+down the left of every level. So a window one column wide sitting on either edge
+of the console is read as what it is, a parked window, and only when there are
+margins: at 4:3 the column stays dark, because that is what the hardware does.
+Measured across the seam on level 1, the column read 36.2 against neighbours at
+74–75; it now reads 64.8, which is what the grass either side of it reads.
 
 ### `--filter`
 

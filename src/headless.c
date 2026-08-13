@@ -45,16 +45,24 @@
 #include <stdint.h>
 #include <string.h>
 
+#include "ppu.h"
 #include "snes.h"
 
 #include "analysis/movie_apply.h"
+#include "scale.h"
+#include "widescreen.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-// The core renders into a 512x480 (line-doubled) RGBX buffer, 2048-byte pitch.
-#define FB_W 512
+// The core renders into a 512x480 (line-doubled) RGBX buffer, 2048-byte pitch —
+// unless the picture has been widened, in which case the width and the pitch
+// grow with it and everything here reads `fb_w` instead. `FB_W` stays as the
+// widest it can be, because the buffers are allocated once and the option is
+// parsed after them.
+#define FB_W (PPU_MAX_WIDTH * 2)
 #define FB_H 480
+static int fb_w = 512;
 
 static uint8_t* read_file(const char* path, int* out_len) {
   FILE* f = fopen(path, "rb");
@@ -76,17 +84,18 @@ static uint8_t* read_file(const char* path, int* out_len) {
 // Pull the core's framebuffer out as a PNG. Shared by the `--at` snapshots and
 // the final frame, which are the same operation at different times.
 static bool write_png(Snes* snes, const char* path) {
-  uint8_t* fb = (uint8_t*)malloc(FB_W * FB_H * 4);
-  uint8_t* rgb = (uint8_t*)malloc(FB_W * FB_H * 3);
+  uint8_t* fb = (uint8_t*)malloc((size_t)FB_W * FB_H * 4);
+  uint8_t* rgb = (uint8_t*)malloc((size_t)FB_W * FB_H * 3);
   if (!fb || !rgb) { free(fb); free(rgb); return false; }
   snes_setPixels(snes, fb);
-  // Convert XRGB(=[B,G,R,X]) -> packed RGB for the PNG.
-  for (int i = 0; i < FB_W * FB_H; i++) {
+  // Convert XRGB(=[B,G,R,X]) -> packed RGB for the PNG. The core packs its rows
+  // at the live width, so this is a straight run of `fb_w * FB_H` pixels.
+  for (int i = 0; i < fb_w * FB_H; i++) {
     rgb[i * 3 + 0] = fb[i * 4 + 2]; // R
     rgb[i * 3 + 1] = fb[i * 4 + 1]; // G
     rgb[i * 3 + 2] = fb[i * 4 + 0]; // B
   }
-  bool ok = stbi_write_png(path, FB_W, FB_H, 3, rgb, FB_W * 3) != 0;
+  bool ok = stbi_write_png(path, fb_w, FB_H, 3, rgb, fb_w * 3) != 0;
   free(fb);
   free(rgb);
   return ok;
@@ -180,8 +189,14 @@ static void print_player_pos(Snes* snes, int n) {
 // through `ACTOR_NEXT` rather than over the 32 slots, so a record that appears
 // here is one the game considers live.
 // LoROM: bank `$80` is the first half of the file, mirrored from `$8000`.
-static uint16_t rom_word(const uint8_t* rom, int rom_len, uint8_t bank,
-                         uint16_t addr) {
+//
+// Named for the file rather than for the cartridge because `assets/rom.h`
+// already has a `rom_word`, which takes a decoded `Rom` and a 24-bit address.
+// This one predates that and reads the bytes as they came off disk; two
+// functions of the same name and different signatures compiled quietly until
+// this file came to include a header that declares the other.
+static uint16_t rom_file_word(const uint8_t* rom, int rom_len, uint8_t bank,
+                              uint16_t addr) {
   int o = ((bank & 0x7f) << 15) | (addr - 0x8000);
   if (o < 0 || o + 1 >= rom_len) return 0;
   return (uint16_t)(rom[o] | (rom[o + 1] << 8));
@@ -211,7 +226,7 @@ static void print_records(Snes* snes, const uint8_t* rom, int rom_len,
            wram16(snes, (uint16_t)(rec + ACTOR_REC_X)),
            wram16(snes, (uint16_t)(rec + ACTOR_REC_Y)),
            wram16(snes, (uint16_t)(rec + ACTOR_REC_ID)), slot,
-           rom_word(rom, rom_len, THREAD_DP_TABLE_BANK,
+           rom_file_word(rom, rom_len, THREAD_DP_TABLE_BANK,
                     (uint16_t)(THREAD_DP_TABLE_ADDR + slot)),
            wram16(snes, (uint16_t)(W_THREAD_HANDLER_BANK + slot)) & 0xff,
            wram16(snes, (uint16_t)(W_THREAD_HANDLER + slot)));
@@ -225,12 +240,14 @@ int main(int argc, char** argv) {
     fprintf(stderr,
             "usage: %s <rom.sfc> <out.png> [frames] [-m movie] [--at f,f,...]\n"
             "       [--pos first[,last[,step]]] [--records first[,last[,step]]]\n"
-            "       [--watch addr[,first[,last[,step]]]]...\n",
+            "       [--watch addr[,first[,last[,step]]]]...\n"
+            "       [--widescreen off|16:9|16:10]\n",
             argv[0]);
     return 2;
   }
   const char* rom_path = argv[1];
   const char* out_path = argv[2];
+  WideMode wide = WIDE_OFF;
   int frames = 180;
   const char* movie_path = NULL;
   int snap_at[MAX_SNAPSHOTS];
@@ -302,6 +319,11 @@ int main(int argc, char** argv) {
         watch_last = v[1];
         watch_step = v[2] > 0 ? v[2] : 1;
       }
+    } else if (!strcmp(argv[i], "--widescreen") && has_next) {
+      if (!wide_parse(argv[++i], &wide)) {
+        fprintf(stderr, "error: --widescreen wants off, 16:9 or 16:10\n");
+        return 2;
+      }
     } else if (argv[i][0] != '-') {
       frames = atoi(argv[i]);
     } else {
@@ -322,6 +344,15 @@ int main(int argc, char** argv) {
     snes_free(snes);
     return 1;
   }
+  // Widen the picture before the first frame is drawn. `fb_w` is what the core
+  // will pack its rows at from here on, and every buffer above was allocated at
+  // the widest it could be. The hook then does the per-frame half of it, at the
+  // top of each frame rather than from here — see `SnesFrameHook`.
+  snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
+  fb_w = snes_pixelWidth(snes);
+  static Widescreen ws;
+  widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
+  if (wide != WIDE_OFF) printf("Widescreen %s: %d columns\n", wide_name(wide), fb_w / 2);
   // XRGB layout: framebuffer bytes per pixel are [B, G, R, X].
   snes_setPixelFormat(snes, pixelFormatXRGB);
   snes_reset(snes, true);
@@ -397,7 +428,7 @@ int main(int argc, char** argv) {
     free(rom); snes_free(snes);
     return 1;
   }
-  printf("Wrote %s (%dx%d)\n", out_path, FB_W, FB_H);
+  printf("Wrote %s (%dx%d)\n", out_path, fb_w, FB_H);
 
   if (have_movie) movie_free(&movie);
   free(rom);

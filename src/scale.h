@@ -106,9 +106,68 @@ static inline bool aspect_parse(const char* s, AspectMode* out) {
 }
 
 // The ratio to hand `scale_plan`, given the source's own dimensions.
+//
+// `ASPECT_43` is not the constant 4:3 it looks like it should be, and the
+// difference is what makes widescreen work. What the console fixes is not the
+// shape of the frame but the shape of a *pixel*: 256 of them across a frame a
+// television showed at 4:3, over 224 rows, makes one pixel 7:6. Stating it that
+// way gives 4:3 back exactly at 256 columns — 3584:2688 reduces to 4:3, and
+// every case pinned in `tools/test_scale.c` is unmoved — and gives the honest
+// shape of a wider picture at any other width, without the intended ratio being
+// written down a second time where it could disagree with the first.
 static inline void aspect_ratio(AspectMode m, int sw, int sh, int* aw, int* ah) {
   if (m == ASPECT_SQUARE) { *aw = sw; *ah = sh; return; }
-  *aw = 4; *ah = 3;
+  *aw = sw * 7; *ah = sh * 6;
+}
+
+// ## Widescreen
+//
+// How wide the picture is, as the display shape it is aiming at. This decides a
+// number of *game* pixels, which the PPU then draws either side of the
+// console's 256 — see `ppu_setWidescreen`. The game's coordinates do not move,
+// so this is a question about how much of the world is shown rather than about
+// how it is shown, which is why it lives next to the aspect and not inside it.
+typedef enum {
+  WIDE_OFF,    // 256 columns: the console, and the default
+  WIDE_16_9,
+  WIDE_16_10,
+  WIDE_MODE_COUNT,  // what F4 cycles through; keep last
+} WideMode;
+
+static inline const char* wide_name(WideMode m) {
+  switch (m) {
+    case WIDE_16_9:  return "16:9";
+    case WIDE_16_10: return "16:10";
+    default:         return "off";
+  }
+}
+
+static inline bool wide_parse(const char* s, WideMode* out) {
+  if (!strcmp(s, "off") || !strcmp(s, "4:3")) { *out = WIDE_OFF;   return true; }
+  if (!strcmp(s, "16:9"))                     { *out = WIDE_16_9;  return true; }
+  if (!strcmp(s, "16:10"))                    { *out = WIDE_16_10; return true; }
+  return false;
+}
+
+// Extra game pixels *per side*.
+//
+// A game pixel is 7:6, so 224 rows at a display ratio of `a` want `a * 192`
+// columns: 4:3 gives back exactly 256, 16:9 wants 341.3 and 16:10 wants 307.2.
+// Both round up to an even total so the two margins can be equal — the camera
+// centres the players, and an off-centre picture would put them off-centre with
+// it — which costs a third of a percent of ratio and buys symmetry.
+static inline int wide_margin(WideMode m) {
+  switch (m) {
+    case WIDE_16_9:  return 43;  // 342 columns
+    case WIDE_16_10: return 26;  // 308 columns
+    default:         return 0;
+  }
+}
+
+// The source width the frontend then works in: output pixels, two per game
+// pixel across, matching `snes_pixelWidth`.
+static inline int wide_source_width(WideMode m) {
+  return (256 + 2 * wide_margin(m)) * 2;
 }
 
 typedef struct { int x, y, w, h; } ScaleRect;

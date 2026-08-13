@@ -7,6 +7,13 @@
 
 typedef struct Snes Snes;
 
+// Called at (0,0), after the vblank the frame follows and before its first
+// line is drawn. That is the only moment at which the machine's state is the
+// state this frame will be drawn from: the game's vblank has uploaded its
+// tilemaps and DMA'd its OAM, and nothing has been rendered yet. Anything that
+// wants to add to the picture rather than change the game belongs here.
+typedef void (*SnesFrameHook)(Snes* snes, void* ctx);
+
 #include "cpu.h"
 #include "apu.h"
 #include "dma.h"
@@ -59,6 +66,9 @@ struct Snes {
   // misc
   bool fastMem;
   uint8_t openBus;
+  // called at the top of every frame, before any of it is drawn
+  SnesFrameHook frameHook;
+  void* frameHookCtx;
 };
 
 Snes* snes_init(void);
@@ -88,6 +98,21 @@ bool snes_loadRom(Snes* snes, const uint8_t* data, int length);
 void snes_setButtonState(Snes* snes, int player, int button, bool pressed);
 void snes_setPixelFormat(Snes* snes, int pixelFormat);
 void snes_setPixels(Snes* snes, uint8_t* pixelData);
+// Widescreen. `left`/`right` are extra *game* pixels either side of the
+// console's 256; 0,0 is the console. `snes_pixelWidth` is the width of what
+// `snes_setPixels` then writes, in output pixels, and its row pitch is that
+// times four bytes. See `ppu_setWidescreen`.
+void snes_setWidescreen(Snes* snes, int left, int right);
+void snes_setLayerWide(Snes* snes, int layer, int policy);
+bool snes_bgTilemapWider(const Snes* snes, int layer);
+void snes_setWideClamp(Snes* snes, int lo, int hi);
+void snes_writeVramWord(Snes* snes, uint16_t wordAdr, uint16_t val);
+void snes_setSprite(Snes* snes, int slot, int x, int y, uint16_t tileAttr,
+                    bool large);
+int snes_freeSprite(const Snes* snes, int from);
+int snes_pixelWidth(const Snes* snes);
+// See `SnesFrameHook`. Pass NULL to remove it.
+void snes_setFrameHook(Snes* snes, SnesFrameHook hook, void* ctx);
 void snes_setSamples(Snes* snes, int16_t* sampleData, int samplesPerFrame);
 int snes_saveBattery(Snes* snes, uint8_t* data);
 bool snes_loadBattery(Snes* snes, uint8_t* data, int size);

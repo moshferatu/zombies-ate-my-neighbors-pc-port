@@ -144,8 +144,47 @@ void snes_setPixelFormat(Snes* snes, int pixelFormat) {
 }
 
 void snes_setPixels(Snes* snes, uint8_t* pixelData) {
-  // size is 4 (rgba) * 512 (w) * 480 (h)
+  // size is 4 (rgba) * snes_pixelWidth (w) * 480 (h), and that width is 512
+  // unless the picture has been widened
   ppu_putPixels(snes->ppu, pixelData);
+}
+
+void snes_setWidescreen(Snes* snes, int left, int right) {
+  ppu_setWidescreen(snes->ppu, left, right);
+}
+
+void snes_setLayerWide(Snes* snes, int layer, int policy) {
+  ppu_setLayerWide(snes->ppu, layer, policy);
+}
+
+bool snes_bgTilemapWider(const Snes* snes, int layer) {
+  return ppu_bgTilemapWider(snes->ppu, layer);
+}
+
+void snes_setWideClamp(Snes* snes, int lo, int hi) {
+  ppu_setWideClamp(snes->ppu, lo, hi);
+}
+
+void snes_writeVramWord(Snes* snes, uint16_t wordAdr, uint16_t val) {
+  ppu_writeVramWord(snes->ppu, wordAdr, val);
+}
+
+void snes_setSprite(Snes* snes, int slot, int x, int y, uint16_t tileAttr,
+                    bool large) {
+  ppu_setSprite(snes->ppu, slot, x, y, tileAttr, large);
+}
+
+int snes_freeSprite(const Snes* snes, int from) {
+  return ppu_freeSprite(snes->ppu, from);
+}
+
+int snes_pixelWidth(const Snes* snes) {
+  return ppu_outputWidth(snes->ppu);
+}
+
+void snes_setFrameHook(Snes* snes, SnesFrameHook hook, void* ctx) {
+  snes->frameHook = hook;
+  snes->frameHookCtx = ctx;
 }
 
 void snes_setSamples(Snes* snes, int16_t* sampleData, int samplesPerFrame) {

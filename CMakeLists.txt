@@ -29,7 +29,10 @@ endif()
 add_executable(zamn_headless src/headless.c)
 # zamn_analysis, defined below, is for the movie replayer: `-m` makes this the
 # fast way to see where a candidate input script actually gets to.
-target_link_libraries(zamn_headless PRIVATE snescore zamn_analysis)
+# zamn_assets_lib, defined below, is for `src/widescreen.h`: the margins of a
+# widened picture are drawn from the same metasprites and the same VRAM cache
+# geometry the game draws from.
+target_link_libraries(zamn_headless PRIVATE snescore zamn_analysis zamn_assets_lib)
 target_include_directories(zamn_headless PRIVATE third_party/stb)
 if(MSVC)
   target_compile_definitions(zamn_headless PRIVATE _CRT_SECURE_NO_WARNINGS)

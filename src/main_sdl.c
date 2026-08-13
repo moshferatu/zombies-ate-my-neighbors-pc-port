@@ -61,6 +61,7 @@
 #include "pace.h"
 #include "pad.h"
 #include "present.h"
+#include "widescreen.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -69,8 +70,13 @@
 #include <windows.h>
 #endif
 
-#define FB_W 512
+// The buffer the core hands over is 512 wide unless the picture has been
+// widened, in which case it is 2 output pixels per game column and everything
+// here reads `fb_w`. `FB_W_MAX` is what gets allocated, once, at the widest the
+// PPU will ever go — see `ppu_setWidescreen`.
+#define FB_W_MAX (PPU_MAX_WIDTH * 2)
 #define FB_H 480
+static int fb_w = 512;
 // The live part of it. `ppu_putPixels` doubles the game's 224 scanlines into
 // rows 16..463 and zeroes the sixteen above and below, so a third of a
 // megapixel of every frame is blank by construction. Scaling that with the rest
@@ -145,17 +151,17 @@ static uint8_t* read_file(const char* path, int* out_len) {
 // from +1, and getting that wrong is not a crash but a picture in the wrong
 // palette — green grass comes out brown — which is what it did first time.
 static bool write_png(Snes* snes, const char* path) {
-  uint8_t* fb = (uint8_t*)malloc(FB_W * FB_H * 4);
-  uint8_t* rgb = (uint8_t*)malloc(FB_W * FB_H * 3);
+  uint8_t* fb = (uint8_t*)malloc((size_t)FB_W_MAX * FB_H * 4);
+  uint8_t* rgb = (uint8_t*)malloc((size_t)FB_W_MAX * FB_H * 3);
   if (!fb || !rgb) { free(fb); free(rgb); return false; }
   snes_setPixels(snes, fb);
   const int c = ZAMN_PIXEL_FORMAT;  // 0 for [B,G,R,X], 1 for [X,B,G,R]
-  for (int i = 0; i < FB_W * FB_H; i++) {
+  for (int i = 0; i < fb_w * FB_H; i++) {
     rgb[i * 3 + 0] = fb[i * 4 + c + 2];  // R
     rgb[i * 3 + 1] = fb[i * 4 + c + 1];  // G
     rgb[i * 3 + 2] = fb[i * 4 + c + 0];  // B
   }
-  bool ok = stbi_write_png(path, FB_W, FB_H, 3, rgb, FB_W * 3) != 0;
+  bool ok = stbi_write_png(path, fb_w, FB_H, 3, rgb, fb_w * 3) != 0;
   free(fb); free(rgb);
   return ok;
 }
@@ -170,7 +176,23 @@ static bool write_png(Snes* snes, const char* path) {
 static void present_frame(Present* p, Snes* snes, int dim) {
   void* pixels; int pitch;
   if (SDL_LockTexture(p->frame, NULL, &pixels, &pitch) == 0) {
-    snes_setPixels(snes, (uint8_t*)pixels);
+    // The core packs its rows tightly at the live width, so it can only write
+    // straight into the texture when SDL agrees about the pitch. It always has
+    // — the width is a multiple of four pixels — but "always has" is not a
+    // guarantee SDL makes, and the failure would be a sheared picture rather
+    // than anything that says what went wrong.
+    if (pitch == fb_w * 4) {
+      snes_setPixels(snes, (uint8_t*)pixels);
+    } else {
+      static uint8_t* scratch = NULL;
+      if (!scratch) scratch = (uint8_t*)malloc((size_t)FB_W_MAX * FB_H * 4);
+      if (scratch) {
+        snes_setPixels(snes, scratch);
+        for (int y = 0; y < FB_H; y++)
+          memcpy((uint8_t*)pixels + (size_t)y * pitch,
+                 scratch + (size_t)y * fb_w * 4, (size_t)fb_w * 4);
+      }
+    }
     SDL_UnlockTexture(p->frame);
   }
   present_draw(p);
@@ -332,6 +354,10 @@ static void usage(void) {
     "  --aspect <how>  4:3 (default) is the shape the game was composed for and\n"
     "                  what every emulator shows it in; square is 8:7, the\n"
     "                  framebuffer's own shape, narrower by 11%%. F3 toggles.\n"
+    "  --widescreen <r> off (default), 16:9 or 16:10. Draws columns either side\n"
+    "                  of the console's 256 rather than stretching them: more\n"
+    "                  level is visible, and the status panels move to the two\n"
+    "                  edges. F4 cycles.\n"
     "  --filter <how>  How to fill a window that is not a whole multiple:\n"
     "                    sharp   (default) nearest up to the next whole\n"
     "                            multiple, then one bilinear step down. Uniform\n"
@@ -340,7 +366,8 @@ static void usage(void) {
     "                    linear  one bilinear step from 512x480. The blurry one.\n\n"
     "Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
     "          F1 = toggle native substitution   F2 = cycle scaling\n"
-    "          F3 = toggle aspect ratio          F11/Alt+Enter = fullscreen\n"
+    "          F3 = toggle aspect ratio          F4 = cycle widescreen\n"
+    "          F11/Alt+Enter = fullscreen\n"
     "          Esc = quit\n\n"
     "Controllers: any pad SDL recognises, hot-pluggable, first two take the two\n"
     "          SNES ports. Face buttons are positional — the bottom one is B,\n"
@@ -372,6 +399,10 @@ int main(int argc, char** argv) {
   // shape every emulator shows it in. Square pixels are 8:7 — visibly narrow,
   // and about 11% less screen.
   AspectMode aspect_mode = ASPECT_43;
+  // Off by default. Widescreen is the PPU drawing columns the console never
+  // drew, and however good it looks it is not what the game is — so it is asked
+  // for, and every measurement this project makes is made without it.
+  WideMode wide = WIDE_OFF;
   int window_scale = 1;
   // Fullscreen is what playing it looks like, so it is the default and the flags
   // below are the ways of saying "not now". `--windowed` is the explicit one;
@@ -408,6 +439,14 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--aspect") && i + 1 < argc) {
       if (!aspect_parse(argv[++i], &aspect_mode)) {
         fprintf(stderr, "error: unknown aspect '%s' — want 4:3 or square\n\n",
+                argv[i]);
+        usage();
+        return 2;
+      }
+    }
+    else if (!strcmp(a, "--widescreen") && i + 1 < argc) {
+      if (!wide_parse(argv[++i], &wide)) {
+        fprintf(stderr, "error: unknown widescreen '%s' — want off, 16:9 or 16:10\n\n",
                 argv[i]);
         usage();
         return 2;
@@ -503,6 +542,14 @@ int main(int argc, char** argv) {
   }
 
   snes_setPixelFormat(snes, ZAMN_PIXEL_FORMAT);
+  // Before the window is sized, because the window is sized from the picture.
+  snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
+  fb_w = snes_pixelWidth(snes);
+  // ...and the per-frame half of it runs at the top of each frame, from the
+  // machine itself, because that is the only moment the game's vblank is over
+  // and none of the picture has been drawn yet. See `SnesFrameHook`.
+  Widescreen ws;
+  widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
   snes_reset(snes, true);
 
   Uint32 init_flags = SDL_INIT_VIDEO | (want_audio ? SDL_INIT_AUDIO : 0);
@@ -529,10 +576,10 @@ int main(int argc, char** argv) {
   // picture, so at 4:3 the frontend would letterbox its own window and then
   // shrink the game below 1:1 to fit the leftover, which is a blurrier picture
   // than 1x from a window that never claimed to be scaling at all.
-  int win_h = FB_LIVE_H * window_scale, win_w = FB_W * window_scale;
+  int win_h = FB_LIVE_H * window_scale, win_w = fb_w * window_scale;
   {
     int aw = 0, ah = 0;
-    aspect_ratio(aspect_mode, FB_W, FB_LIVE_H, &aw, &ah);
+    aspect_ratio(aspect_mode, fb_w, FB_LIVE_H, &aw, &ah);
     // Rounded *up*. Rounding down leaves the window fractionally too narrow for
     // the picture it was sized for, so the fit becomes width-constrained and
     // the height comes back a pixel short — at `--scale 1` that was a 597x447
@@ -574,8 +621,8 @@ int main(int argc, char** argv) {
   // of `Present` is about choosing that factor deliberately. The letterboxing
   // it did is reproduced exactly, in output pixels, by `present_frame`.
   Present present;
-  const SDL_Rect live = {0, FB_TOP, FB_W, FB_LIVE_H};
-  if (!present_init(&present, ren, FB_W, FB_H, live, scale_mode, aspect_mode)) {
+  SDL_Rect live = {0, FB_TOP, fb_w, FB_LIVE_H};
+  if (!present_init(&present, ren, fb_w, FB_H, live, scale_mode, aspect_mode)) {
     fprintf(stderr, "error: cannot create the frame texture: %s\n", SDL_GetError());
     return 1;
   }
@@ -657,8 +704,8 @@ int main(int argc, char** argv) {
          "          triggers=L/R, left stick or D-pad steers, Start+Select\n"
          "          held for a second quits.\n"
          "          F1=toggle native substitution  F2=cycle scaling\n"
-         "          F3=toggle aspect ratio         F11 or Alt+Enter=fullscreen\n"
-         "          Esc=Quit\n");
+         "          F3=toggle aspect ratio         F4=cycle widescreen\n"
+         "          F11 or Alt+Enter=fullscreen    Esc=Quit\n");
   {
     // What the picture is actually being drawn into, which fullscreen makes a
     // question worth answering: the display's size, not the window size asked
@@ -667,15 +714,15 @@ int main(int argc, char** argv) {
     int ow = 0, oh = 0;
     SDL_GetRendererOutputSize(ren, &ow, &oh);
     int aw = 0, ah = 0;
-    aspect_ratio(aspect_mode, FB_W, FB_LIVE_H, &aw, &ah);
-    const ScalePlan plan = scale_plan(scale_mode, FB_W, FB_LIVE_H, aw, ah, ow,
+    aspect_ratio(aspect_mode, fb_w, FB_LIVE_H, &aw, &ah);
+    const ScalePlan plan = scale_plan(scale_mode, fb_w, FB_LIVE_H, aw, ah, ow,
                                       oh, present.can_target);
     printf("Display: %s, %dx%d, scaling %s, aspect %s\n",
            fullscreen ? "fullscreen" : "windowed", ow, oh,
            scale_name(scale_mode), aspect_name(aspect_mode));
     printf("Picture: %dx%d at %d,%d from %dx%d live pixels (%.0f%% of the"
            " screen)%s\n",
-           plan.dst.w, plan.dst.h, plan.dst.x, plan.dst.y, FB_W, FB_LIVE_H,
+           plan.dst.w, plan.dst.h, plan.dst.x, plan.dst.y, fb_w, FB_LIVE_H,
            ow > 0 && oh > 0
                ? 100.0 * plan.dst.w * plan.dst.h / ((double)ow * oh)
                : 0.0,
@@ -800,6 +847,34 @@ int main(int argc, char** argv) {
             present.aspect =
                 (AspectMode)((present.aspect + 1) % ASPECT_MODE_COUNT);
             printf("Aspect: %s\n", aspect_name(present.aspect));
+            fflush(stdout);
+          }
+          continue;
+        }
+        if (e.key.keysym.sym == SDLK_F4) {
+          // Widescreen, for the same reason F3 exists: how much wider 16:9 is
+          // than the console is not a thing anyone can judge from two runs.
+          //
+          // This one costs a texture, because the picture changes *size* rather
+          // than shape, and the frame texture and its offscreen stage were both
+          // made at the old width. Between frames, so nothing is half-drawn at
+          // one width and finished at the other.
+          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+            wide = (WideMode)((wide + 1) % WIDE_MODE_COUNT);
+            snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
+            ws.margin = wide_margin(wide);
+            fb_w = snes_pixelWidth(snes);
+            const ScaleMode m = present.mode;
+            const AspectMode a = present.aspect;
+            present_free(&present);
+            live.w = fb_w;
+            if (!present_init(&present, ren, fb_w, FB_H, live, m, a)) {
+              fprintf(stderr, "error: cannot resize the frame texture: %s\n",
+                      SDL_GetError());
+              running = false;
+              continue;
+            }
+            printf("Widescreen: %s (%d columns)\n", wide_name(wide), fb_w / 2);
             fflush(stdout);
           }
           continue;

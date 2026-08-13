@@ -36,6 +36,10 @@ Snes* snes_init(void) {
   snes->input1 = input_init(snes);
   snes->input2 = input_init(snes);
   snes->palTiming = false;
+  // Not in `snes_reset`: a hook is a property of the frontend that installed
+  // it, not of the machine, and a reset does not uninstall the frontend.
+  snes->frameHook = NULL;
+  snes->frameHookCtx = NULL;
   return snes;
 }
 
@@ -169,6 +173,7 @@ static void snes_runCycle(Snes* snes) {
       // end of vblank
       snes->inVblank = false;
       snes->inNmi = false;
+      if(snes->frameHook) snes->frameHook(snes, snes->frameHookCtx);
       ppu_handleFrameStart(snes->ppu);
     } else if(snes->vPos == 225) {
       // ask the ppu if we start vblank now or at vPos 240 (overscan)

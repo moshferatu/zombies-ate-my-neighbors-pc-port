@@ -71,11 +71,26 @@ static int ppu_getPixelForMode7(Ppu* ppu, int x, int layer, bool priority);
 static bool ppu_getWindowState(Ppu* ppu, int layer, int x);
 static void ppu_evaluateSprites(Ppu* ppu, int line);
 static uint16_t ppu_getVramRemap(Ppu* ppu);
+static bool ppu_wideMapX(const Ppu* ppu, int layer, int* x);
+static bool ppu_windowTest(const Ppu* ppu, int x, int left, int right);
 
 Ppu* ppu_init(Snes* snes) {
   Ppu* ppu = malloc(sizeof(Ppu));
   ppu->snes = snes;
   ppu_setPixelOutputFormat(ppu, ppu_pixelOutputFormatBGRX);
+  // Set here and not in `ppu_reset`, because the width of the picture belongs
+  // to whoever is displaying it and a game resetting itself is not a reason to
+  // take it back to 256.
+  ppu->extraLeft = 0;
+  ppu->extraRight = 0;
+  for(int i = 0; i < 5; i++) ppu->layerWide[i] = ppu_wideAuto;
+  for(int i = 0; i < 4; i++) {
+    ppu->layerEdgeEmpty[i] = 0;
+    ppu->layerScrolled[i] = 0;
+    ppu->lastHScroll[i] = 0;
+  }
+  ppu->wideClampLo = -PPU_EXTRA_MAX;
+  ppu->wideClampHi = 255 + PPU_EXTRA_MAX;
   return ppu;
 }
 
@@ -253,22 +268,120 @@ void ppu_handleVblank(Ppu* ppu) {
   ppu->frameInterlace = ppu->interlace; // set if we have a interlaced frame
 }
 
+// The tilemap word covering layer coordinates (x, y) -- the same address
+// `ppu_getPixelForBgLayer` works out, without the pixel.
+static uint16_t ppu_tilemapWord(const Ppu* ppu, int layer, int x, int y) {
+  bool wideTiles = ppu->bgLayer[layer].bigTiles || ppu->mode == 5 || ppu->mode == 6;
+  int tileBitsX = wideTiles ? 4 : 3;
+  int tileHighBitX = wideTiles ? 0x200 : 0x100;
+  int tileBitsY = ppu->bgLayer[layer].bigTiles ? 4 : 3;
+  int tileHighBitY = ppu->bgLayer[layer].bigTiles ? 0x200 : 0x100;
+  x &= 0x3ff;
+  y &= 0x3ff;
+  uint16_t adr = ppu->bgLayer[layer].tilemapAdr + (((y >> tileBitsY) & 0x1f) << 5 | ((x >> tileBitsX) & 0x1f));
+  if((x & tileHighBitX) && ppu->bgLayer[layer].tilemapWider) adr += 0x400;
+  if((y & tileHighBitY) && ppu->bgLayer[layer].tilemapHigher) adr += ppu->bgLayer[layer].tilemapWider ? 0x800 : 0x400;
+  return ppu->vram[adr & 0x7fff];
+}
+
+// Is this character all zeroes -- eight rows of nothing, whatever palette the
+// tilemap word that names it asks for? Colour zero is transparent on a
+// background layer, so a character of nothing but zeroes draws nothing.
+static bool ppu_charEmpty(const Ppu* ppu, int layer, int tileNum, int bitDepth) {
+  const int words = 4 * bitDepth;
+  const uint16_t base = (uint16_t)(ppu->bgLayer[layer].tileAdr + (tileNum & 0x3ff) * words);
+  for(int i = 0; i < words; i++) {
+    if(ppu->vram[(base + i) & 0x7fff] != 0) return false;
+  }
+  return true;
+}
+
+// Does this layer draw anything at all in the tilemap column under screen
+// pixel `sx`?
+//
+// This is the question that decides what a layer does with the margins, and it
+// is deliberately about *pixels* rather than about tilemap words. Two different
+// blank tiles -- the same character in two palettes -- are two different words
+// and the same nothing, and the game uses both: the LucasArts logo layer pads
+// its edges with palette 2's blank tile and the legal screen pads its edges
+// with palette 7's. A test that compared words would call those layers textured
+// and repeat them into the margins, which is how a screenful of legal text came
+// to be printed three times.
+static bool ppu_columnEmpty(const Ppu* ppu, int layer, int sx) {
+  int actMode = ppu->mode == 1 && ppu->bg3priority ? 8 : ppu->mode;
+  const int bitDepth = bitDepthsPerMode[actMode][layer];
+  // 5 and 7 are the table's markers for a layer this mode does not have.
+  if(bitDepth != 2 && bitDepth != 4 && bitDepth != 8) return false;
+  const bool big = ppu->bgLayer[layer].bigTiles;
+  const int step = big ? 16 : 8;
+  const int x = sx + ppu->bgLayer[layer].hScroll;
+  const int top = ppu->bgLayer[layer].vScroll;
+  // Every tile row the 224-line display touches, plus one for the row the
+  // scroll leaves half on screen.
+  for(int y = top; y < top + 224 + step; y += step) {
+    const int n = ppu_tilemapWord(ppu, layer, x, y) & 0x3ff;
+    if(!ppu_charEmpty(ppu, layer, n, bitDepth)) return false;
+    // A 16x16 tilemap entry is four characters: the named one, the one after
+    // it, and the two a row of sixteen below.
+    if(big && (!ppu_charEmpty(ppu, layer, n + 1, bitDepth) ||
+               !ppu_charEmpty(ppu, layer, n + 0x10, bitDepth) ||
+               !ppu_charEmpty(ppu, layer, n + 0x11, bitDepth))) return false;
+  }
+  return true;
+}
+
 void ppu_handleFrameStart(Ppu* ppu) {
   // called at (0, 0)
   ppu->mosaicStartLine = 1;
   ppu->rangeOver = false;
   ppu->timeOver = false;
   ppu->evenFrame = !ppu->evenFrame;
+  // Once a frame, and only when there are margins to fill: which of the
+  // backgrounds have nothing at the console's edges, and so nothing to say
+  // beyond them. Done here because the answer has to hold for the whole frame
+  // -- a layer that changed its mind halfway down would tear -- and because by
+  // line 0 this frame's tilemap uploads are in, having gone up during the
+  // vblank just past.
+  // Which layers the game is scrolling. Latched for as long as the screen
+  // stands, and cleared when it is taken down -- every screen in this game is
+  // built behind a forced blank or a faded-out one -- so the answer is "has
+  // this layer moved on this screen" rather than "did it move since last
+  // frame". Tracked whether or not there are margins, because the answer has to
+  // be right on the first frame after widescreen is switched on.
+  for(int i = 0; i < 4; i++) {
+    if(ppu->forcedBlank || ppu->brightness == 0) {
+      ppu->layerScrolled[i] = 0;
+    } else if(ppu->bgLayer[i].hScroll != ppu->lastHScroll[i]) {
+      // Horizontally, and only horizontally: it is the vertical seam of the
+      // tilemap that the margins would repeat, and a card whose text slides up
+      // the screen has never crossed it. The level-name card is exactly that --
+      // `hScroll` nailed to 0 while `vScroll` runs -- and reading its motion as
+      // permission to wrap printed the end of its last line down both sides.
+      ppu->layerScrolled[i] = 1;
+    }
+    ppu->lastHScroll[i] = ppu->bgLayer[i].hScroll;
+  }
+  if(ppu->extraLeft != 0 || ppu->extraRight != 0) {
+    for(int i = 0; i < 4; i++) {
+      ppu->layerEdgeEmpty[i] = (ppu->mode != 7 &&
+                                ppu->layerWide[i] == ppu_wideAuto &&
+                                ppu_columnEmpty(ppu, i, 0) &&
+                                ppu_columnEmpty(ppu, i, 255));
+    }
+  }
 }
 
 void ppu_runLine(Ppu* ppu, int line) {
   // called for lines 1-224/239
   // evaluate sprites
-  memset(ppu->objPixelBuffer, 0, sizeof(ppu->objPixelBuffer));
+  memset(ppu->objPixelBuffer, 0, (size_t)ppu_gameWidth(ppu));
   if(!ppu->forcedBlank) ppu_evaluateSprites(ppu, line - 1);
   // actual line
   if(ppu->mode == 7) ppu_calculateMode7Starts(ppu, line);
-  for(int x = 0; x < 256; x++) {
+  // Widescreen runs the same loop over a wider range of the same coordinate:
+  // column 0 is where it always was, and the margins are columns the console
+  // computed the scroll for and then had no time to draw.
+  for(int x = -ppu->extraLeft; x < 256 + ppu->extraRight; x++) {
     ppu_handlePixel(ppu, x, line);
   }
 }
@@ -331,12 +444,16 @@ static void ppu_handlePixel(Ppu* ppu, int x, int y) {
     }
   }
   int row = (y - 1) + (ppu->evenFrame ? 0 : 239);
-  ppu->pixelBuffer[row * 2048 + x * 8 + 0 + ppu->pixelOutputFormat] = ((b2 << 3) | (b2 >> 2)) * ppu->brightness / 15;
-  ppu->pixelBuffer[row * 2048 + x * 8 + 1 + ppu->pixelOutputFormat] = ((g2 << 3) | (g2 >> 2)) * ppu->brightness / 15;
-  ppu->pixelBuffer[row * 2048 + x * 8 + 2 + ppu->pixelOutputFormat] = ((r2 << 3) | (r2 >> 2)) * ppu->brightness / 15;
-  ppu->pixelBuffer[row * 2048 + x * 8 + 4 + ppu->pixelOutputFormat] = ((b << 3) | (b >> 2)) * ppu->brightness / 15;
-  ppu->pixelBuffer[row * 2048 + x * 8 + 5 + ppu->pixelOutputFormat] = ((g << 3) | (g >> 2)) * ppu->brightness / 15;
-  ppu->pixelBuffer[row * 2048 + x * 8 + 6 + ppu->pixelOutputFormat] = ((r << 3) | (r >> 2)) * ppu->brightness / 15;
+  // The buffer is indexed from the left edge of the *picture*, which widescreen
+  // moves left of column 0. At zero margins this is `x` and the row is the
+  // 2048 bytes it always was.
+  const int col = x + ppu->extraLeft;
+  ppu->pixelBuffer[row * PPU_ROW_BYTES + col * 8 + 0 + ppu->pixelOutputFormat] = ((b2 << 3) | (b2 >> 2)) * ppu->brightness / 15;
+  ppu->pixelBuffer[row * PPU_ROW_BYTES + col * 8 + 1 + ppu->pixelOutputFormat] = ((g2 << 3) | (g2 >> 2)) * ppu->brightness / 15;
+  ppu->pixelBuffer[row * PPU_ROW_BYTES + col * 8 + 2 + ppu->pixelOutputFormat] = ((r2 << 3) | (r2 >> 2)) * ppu->brightness / 15;
+  ppu->pixelBuffer[row * PPU_ROW_BYTES + col * 8 + 4 + ppu->pixelOutputFormat] = ((b << 3) | (b >> 2)) * ppu->brightness / 15;
+  ppu->pixelBuffer[row * PPU_ROW_BYTES + col * 8 + 5 + ppu->pixelOutputFormat] = ((g << 3) | (g >> 2)) * ppu->brightness / 15;
+  ppu->pixelBuffer[row * PPU_ROW_BYTES + col * 8 + 6 + ppu->pixelOutputFormat] = ((r << 3) | (r >> 2)) * ppu->brightness / 15;
 }
 
 static int ppu_getPixel(Ppu* ppu, int x, int y, bool sub, int* r, int* g, int* b) {
@@ -349,20 +466,25 @@ static int ppu_getPixel(Ppu* ppu, int x, int y, bool sub, int* r, int* g, int* b
   for(int i = 0; i < layerCountPerMode[actMode]; i++) {
     int curLayer = layersPerMode[actMode][i];
     int curPriority = prioritysPerMode[actMode][i];
+    // Which column of this layer belongs at this column of the picture. The
+    // two differ only for a layer that does not stretch, and such a layer has
+    // columns it declines outright -- the gap in the middle of an anchored one.
+    int layerX = x;
+    if(!ppu_wideMapX(ppu, curLayer, &layerX)) continue;
     bool layerActive = false;
     if(!sub) {
       layerActive = ppu->layer[curLayer].mainScreenEnabled && (
-        !ppu->layer[curLayer].mainScreenWindowed || !ppu_getWindowState(ppu, curLayer, x)
+        !ppu->layer[curLayer].mainScreenWindowed || !ppu_getWindowState(ppu, curLayer, layerX)
       );
     } else {
       layerActive = ppu->layer[curLayer].subScreenEnabled && (
-        !ppu->layer[curLayer].subScreenWindowed || !ppu_getWindowState(ppu, curLayer, x)
+        !ppu->layer[curLayer].subScreenWindowed || !ppu_getWindowState(ppu, curLayer, layerX)
       );
     }
     if(layerActive) {
       if(curLayer < 4) {
         // bg layer
-        int lx = x;
+        int lx = layerX;
         int ly = y;
         if(ppu->bgLayer[curLayer].mosaicEnabled && ppu->mosaicSize > 1) {
           lx -= lx % ppu->mosaicSize;
@@ -392,7 +514,8 @@ static int ppu_getPixel(Ppu* ppu, int x, int y, bool sub, int* r, int* g, int* b
       } else {
         // get a pixel from the sprite buffer
         pixel = 0;
-        if(ppu->objPriorityBuffer[x] == curPriority) pixel = ppu->objPixelBuffer[x];
+        const int oc = layerX + ppu->extraLeft;
+        if(ppu->objPriorityBuffer[oc] == curPriority) pixel = ppu->objPixelBuffer[oc];
       }
     }
     if(pixel > 0) {
@@ -559,20 +682,127 @@ static int ppu_getPixelForMode7(Ppu* ppu, int x, int layer, bool priority) {
   return pixel;
 }
 
+// One window's range test at a screen column.
+//
+// Widescreen: a window covering the console's entire line is how a game says
+// "everywhere", and everywhere on a wider line is wider. Nothing else moves.
+//
+// The temptation is to treat each edge separately -- to say that a window
+// starting at 0 starts at the left of the screen, whatever its other end is
+// doing -- and it is wrong in a way that is easy to ship and hard to see. This
+// game turns colour maths off by pointing both windows at the single column
+// `0..0` and asking for maths everywhere *outside* them. Read 0 as "the left
+// edge" and that degenerate window becomes 43 pixels wide, so the whole left
+// margin of every level got the fixed colour subtracted from it and came out a
+// shade darker than the picture it was supposed to be continuing.
+static bool ppu_windowTest(const Ppu* ppu, int x, int left, int right) {
+  if(ppu->extraLeft != 0 || ppu->extraRight != 0) {
+    if(left == 0 && right == 255) {
+      return x >= -ppu->extraLeft && x <= 255 + ppu->extraRight;
+    }
+    // ...and a window one column wide sitting on either edge of the console is
+    // a window that has been parked. This game switches colour maths off by
+    // pointing both of them at column `0..0` and asking for maths inside them,
+    // which on the console leaves maths applying to column 0 and nothing else:
+    // one column of fixed colour subtracted, at the extreme left of a picture
+    // that no television showed the extreme left of. Widen the picture and that
+    // column is 43 pixels in from the edge, in plain view, as a dark line down
+    // the left of every level. Read as parked it goes away, and nothing else
+    // moves: no window the game aims at anything keeps both ends on one column
+    // of the screen edge.
+    if(left == right && (left == 0 || left == 255)) return false;
+  }
+  return x >= left && x <= right;
+}
+
+// Where `layer` reads from, given a column of the picture that may be outside
+// the console's 256, and whether it has anything to say there at all. See the
+// `ppu_wide*` policies in the header.
+static bool ppu_wideMapX(const Ppu* ppu, int layer, int* x) {
+  if(ppu->extraLeft == 0 && ppu->extraRight == 0) return true;
+  int policy = ppu->layerWide[layer];
+  if(policy == ppu_wideAuto) {
+    if(layer > 3) {
+      // Objects have no tilemap to ask about. In a level they are world things
+      // and the margins are simply more of the same world, which is what
+      // `ppu_wideStretch` says; on a fixed screen they are composed for the
+      // console's 256 and whoever set the policy will have said `ppu_wideClip`.
+      policy = ppu_wideStretch;
+    } else if(ppu->layerEdgeEmpty[layer]) {
+      // Nothing at the edge of the console means nothing beyond it. The margins
+      // show whatever is behind this layer, which is what the console's own
+      // edge column is already showing.
+      policy = ppu_wideClip;
+    } else if(ppu->mode != 7 && ppu->bgLayer[layer].tilemapWider) {
+      // A 64-column map, of which the game maintains the 32 the console shows:
+      // the other 32 hold whatever that VRAM was last used for, and reading
+      // them is how a stone wall comes out shredded. Repeat the 32 it does
+      // maintain. (A level's world is 64 columns *and* maintained, and is given
+      // `ppu_wideStretch` from outside rather than reaching this.)
+      policy = ppu_wideTile;
+    } else if(ppu->mode == 7 || ppu->bgLayer[layer].bigTiles ||
+              ppu->layerScrolled[layer]) {
+      // Otherwise draw what the hardware would have drawn if the line were
+      // longer, which is honest in three cases and only three. A map of 16x16
+      // tiles is 512 pixels across, so the margins are real map the console had
+      // no room for. Mode 7 is a transform, defined at any x. And a 256-pixel
+      // map the game *scrolls* is one the console already wraps in plain sight,
+      // so its seam is one an artist has had to make look right -- the stone
+      // wall drifting diagonally behind the LucasArts logo, the wallpaper
+      // behind the character select.
+      policy = ppu_wideStretch;
+    } else {
+      // What is left is a 256-pixel map that has not moved since the screen
+      // went up. Its seam has never been seen by anyone, and repeating it
+      // prints the tail of a line of text down the far side of the picture --
+      // which is exactly what the card naming a level did. Clip.
+      policy = ppu_wideClip;
+    }
+  }
+  switch(policy) {
+    case ppu_wideClip:
+      return *x >= 0 && *x < 256;
+    case ppu_wideClampEdge:
+      if(*x < 0) *x = 0;
+      if(*x > 255) *x = 255;
+      return true;
+    case ppu_wideTile:
+      // Two's complement does the wrap for negatives as well, which is the
+      // whole reason the console's width is a power of two.
+      *x &= 255;
+      return true;
+    case ppu_wideStretch:
+      // The only policy the world clamp applies to. A layer that is being
+      // continued into the margins can only be continued as far as there is
+      // something to continue; past that the picture is outside the map and
+      // the backdrop is the honest thing to show.
+      return *x >= ppu->wideClampLo && *x <= ppu->wideClampHi;
+    case ppu_wideAnchor:
+      // The left half keeps its distance from the left edge and the right half
+      // its distance from the right, so the two move apart by exactly the width
+      // that was added and nothing inside either half is stretched or moved.
+      if(*x < 128 - ppu->extraLeft) { *x += ppu->extraLeft; return true; }
+      if(*x > 127 + ppu->extraRight) { *x -= ppu->extraRight; return true; }
+      return false;
+    default:
+      return true;
+  }
+}
+
 static bool ppu_getWindowState(Ppu* ppu, int layer, int x) {
   if(!ppu->windowLayer[layer].window1enabled && !ppu->windowLayer[layer].window2enabled) {
     return false;
   }
   if(ppu->windowLayer[layer].window1enabled && !ppu->windowLayer[layer].window2enabled) {
-    bool test = x >= ppu->window1left && x <= ppu->window1right;
+    bool test = ppu_windowTest(ppu, x, ppu->window1left, ppu->window1right);
     return ppu->windowLayer[layer].window1inversed ? !test : test;
   }
   if(!ppu->windowLayer[layer].window1enabled && ppu->windowLayer[layer].window2enabled) {
-    bool test = x >= ppu->window2left && x <= ppu->window2right;
+    bool test = ppu_windowTest(ppu, x, ppu->window2left, ppu->window2right);
     return ppu->windowLayer[layer].window2inversed ? !test : test;
   }
-  bool test1 = x >= ppu->window1left && x <= ppu->window1right;
-  bool test2 = x >= ppu->window2left && x <= ppu->window2right;
+  bool test1 = ppu_windowTest(ppu, x, ppu->window1left, ppu->window1right);
+  bool test2 = ppu_windowTest(ppu, x, ppu->window2left, ppu->window2right);
   if(ppu->windowLayer[layer].window1inversed) test1 = !test1;
   if(ppu->windowLayer[layer].window2inversed) test2 = !test2;
   switch(ppu->windowLayer[layer].maskLogic) {
@@ -584,12 +814,35 @@ static bool ppu_getWindowState(Ppu* ppu, int layer, int x) {
   return false;
 }
 
+// A sprite's X, out of the 8 bits in OAM and the 9th in high OAM.
+//
+// Nine bits is a range of 512 and the console spends it as -256..255, so an X
+// of 256 or more is a sprite hanging off the *left* edge. Widescreen has to
+// move that wrap point: with a right margin of 71 the columns 256..326 are now
+// on screen, and a sprite there must appear there rather than 512 pixels to the
+// left of it. Everything past the widened right edge still wraps, which is what
+// keeps a sprite walking off the left edge doing so.
+static int ppu_spriteX(const Ppu* ppu, uint8_t index) {
+  int x = ppu->oam[index] & 0xff;
+  x |= ((ppu->highOam[index >> 3] >> (index & 7)) & 1) << 8;
+  if(x > 255 + ppu->extraRight) x -= 512;
+  return x;
+}
+
 static void ppu_evaluateSprites(Ppu* ppu, int line) {
   // TODO: rectangular sprites, wierdness with sprites at -256
   uint8_t index = ppu->objPriority ? (ppu->oamAdr & 0xfe) : 0;
   int spritesFound = 0;
   int tilesFound = 0;
-  uint8_t foundSprites[32] = {};
+  const int width = ppu_gameWidth(ppu);
+  // The ceilings of 32 sprites and 34 tile slivers a line are a statement about
+  // how much fetching time a scanline had, and a wider line is proportionally
+  // more of it. Holding them at the console's numbers would make widescreen
+  // *drop* sprites the console managed to draw, which is the opposite of what
+  // widening is for. At zero margins these are 32 and 34 exactly.
+  const int spriteLimit = 32 * width / 256;
+  const int tileLimit = 34 * width / 256;
+  uint8_t foundSprites[32 * PPU_MAX_WIDTH / 256] = {};
   // iterate over oam to find sprites in range
   for(int i = 0; i < 128; i++) {
     uint8_t y = ppu->oam[index] >> 8;
@@ -599,16 +852,14 @@ static void ppu_evaluateSprites(Ppu* ppu, int line) {
     int spriteHeight = ppu->objInterlace ? spriteSize / 2 : spriteSize;
     if(row < spriteHeight) {
       // in y-range, get the x location, using the high bit as well
-      int x = ppu->oam[index] & 0xff;
-      x |= ((ppu->highOam[index >> 3] >> (index & 7)) & 1) << 8;
-      if(x > 255) x -= 512;
+      int x = ppu_spriteX(ppu, index);
       // if in x-range, record
-      if(x > -spriteSize) {
+      if(x > -spriteSize - ppu->extraLeft) {
         // break if we found 32 sprites already
         spritesFound++;
-        if(spritesFound > 32) {
+        if(spritesFound > spriteLimit) {
           ppu->rangeOver = true;
-          spritesFound = 32;
+          spritesFound = spriteLimit;
           break;
         }
         foundSprites[spritesFound - 1] = index;
@@ -622,10 +873,8 @@ static void ppu_evaluateSprites(Ppu* ppu, int line) {
     uint8_t y = ppu->oam[index] >> 8;
     uint8_t row = line - y;
     int spriteSize = spriteSizes[ppu->objSize][(ppu->highOam[index >> 3] >> ((index & 7) + 1)) & 1];
-    int x = ppu->oam[index] & 0xff;
-    x |= ((ppu->highOam[index >> 3] >> (index & 7)) & 1) << 8;
-    if(x > 255) x -= 512;
-    if(x > -spriteSize) {
+    int x = ppu_spriteX(ppu, index);
+    if(x > -spriteSize - ppu->extraLeft) {
       // update row according to obj-interlace
       if(ppu->objInterlace) row = row * 2 + (ppu->evenFrame ? 0 : 1);
       // get some data for the sprite and y-flip row if needed
@@ -635,10 +884,10 @@ static void ppu_evaluateSprites(Ppu* ppu, int line) {
       if(ppu->oam[index + 1] & 0x8000) row = spriteSize - 1 - row;
       // fetch all tiles in x-range
       for(int col = 0; col < spriteSize; col += 8) {
-        if(col + x > -8 && col + x < 256) {
+        if(col + x > -8 - ppu->extraLeft && col + x < 256 + ppu->extraRight) {
           // break if we found > 34 8*1 slivers already
           tilesFound++;
-          if(tilesFound > 34) {
+          if(tilesFound > tileLimit) {
             ppu->timeOver = true;
             break;
           }
@@ -656,15 +905,15 @@ static void ppu_evaluateSprites(Ppu* ppu, int line) {
             pixel |= ((plane2 >> shift) & 1) << 2;
             pixel |= ((plane2 >> (8 + shift)) & 1) << 3;
             // draw it in the buffer if there is a pixel here
-            int screenCol = col + x + px;
-            if(pixel > 0 && screenCol >= 0 && screenCol < 256) {
+            int screenCol = col + x + px + ppu->extraLeft;
+            if(pixel > 0 && screenCol >= 0 && screenCol < width) {
               ppu->objPixelBuffer[screenCol] = 0x80 + 16 * palette + pixel;
               ppu->objPriorityBuffer[screenCol] = (ppu->oam[index + 1] & 0x3000) >> 12;
             }
           }
         }
       }
-      if(tilesFound > 34) break; // break out of sprite-loop if max tiles found
+      if(tilesFound > tileLimit) break; // break out of sprite-loop if max tiles found
     }
   }
 }
@@ -1089,7 +1338,70 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
   }
 }
 
+int ppu_gameWidth(const Ppu* ppu) {
+  return 256 + ppu->extraLeft + ppu->extraRight;
+}
+
+int ppu_outputWidth(const Ppu* ppu) {
+  return ppu_gameWidth(ppu) * 2;
+}
+
+void ppu_setWidescreen(Ppu* ppu, int left, int right) {
+  if(left < 0) left = 0;
+  if(right < 0) right = 0;
+  if(left > PPU_EXTRA_MAX) left = PPU_EXTRA_MAX;
+  if(right > PPU_EXTRA_MAX) right = PPU_EXTRA_MAX;
+  ppu->extraLeft = left;
+  ppu->extraRight = right;
+}
+
+void ppu_setLayerWide(Ppu* ppu, int layer, int policy) {
+  if(layer < 0 || layer > 4) return;
+  ppu->layerWide[layer] = (uint8_t) policy;
+}
+
+bool ppu_bgTilemapWider(const Ppu* ppu, int layer) {
+  if(layer < 0 || layer > 3) return false;
+  return ppu->bgLayer[layer].tilemapWider;
+}
+
+void ppu_setSprite(Ppu* ppu, int slot, int x, int y, uint16_t tileAttr,
+                   bool large) {
+  if(slot < 0 || slot >= 128) return;
+  const int i = slot * 2;
+  ppu->oam[i] = (uint16_t)(((y & 0xff) << 8) | (x & 0xff));
+  ppu->oam[i + 1] = tileAttr;
+  const int bit = i & 7;
+  const uint8_t mask = (uint8_t)(3 << bit);
+  const uint8_t val = (uint8_t)((((x >> 8) & 1) << bit) | ((large ? 1 : 0) << (bit + 1)));
+  ppu->highOam[i >> 3] = (uint8_t)((ppu->highOam[i >> 3] & ~mask) | val);
+}
+
+int ppu_freeSprite(const Ppu* ppu, int from) {
+  for(int slot = from; slot < 128; slot++) {
+    const int y = ppu->oam[slot * 2] >> 8;
+    // $E0..$F0 is the gap between the bottom of the screen and the rows a
+    // sprite hanging off the top would use, so nothing the game draws lands
+    // there and anything that does is parked.
+    if(y >= 0xe0 && y <= 0xf0) return slot;
+  }
+  return 128;
+}
+
+void ppu_setWideClamp(Ppu* ppu, int lo, int hi) {
+  ppu->wideClampLo = lo;
+  ppu->wideClampHi = hi;
+}
+
+void ppu_writeVramWord(Ppu* ppu, uint16_t wordAdr, uint16_t val) {
+  ppu->vram[wordAdr & 0x7fff] = val;
+}
+
 void ppu_putPixels(Ppu* ppu, uint8_t* pixels) {
+  // The destination is packed at whatever width the picture currently is, and
+  // the source row starts at its own byte 0 -- `ppu_handlePixel` already shifted
+  // the leftmost column there. At zero margins both pitches are 2048.
+  const int dpitch = ppu_outputWidth(ppu) * 4;
   for(int y = 0; y < (ppu->frameOverscan ? 239 : 224); y++) {
     int dest = y * 2 + (ppu->frameOverscan ? 2 : 16);
     int y1 = y, y2 = y + 239;
@@ -1097,13 +1409,13 @@ void ppu_putPixels(Ppu* ppu, uint8_t* pixels) {
       y1 = y + (ppu->evenFrame ? 0 : 239);
       y2 = y1;
     }
-    memcpy(pixels + (dest * 2048), &ppu->pixelBuffer[y1 * 2048], 2048);
-    memcpy(pixels + ((dest + 1) * 2048), &ppu->pixelBuffer[y2 * 2048], 2048);
+    memcpy(pixels + (dest * dpitch), &ppu->pixelBuffer[y1 * PPU_ROW_BYTES], dpitch);
+    memcpy(pixels + ((dest + 1) * dpitch), &ppu->pixelBuffer[y2 * PPU_ROW_BYTES], dpitch);
   }
   // clear top 2 lines, and following 14 and last 16 lines if not overscanning
-  memset(pixels, 0, 2048 * 2);
+  memset(pixels, 0, dpitch * 2);
   if(!ppu->frameOverscan) {
-    memset(pixels + (2 * 2048), 0, 2048 * 14);
-    memset(pixels + (464 * 2048), 0, 2048 * 16);
+    memset(pixels + (2 * dpitch), 0, dpitch * 14);
+    memset(pixels + (464 * dpitch), 0, dpitch * 16);
   }
 }
