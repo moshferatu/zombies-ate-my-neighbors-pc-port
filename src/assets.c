@@ -720,6 +720,14 @@ static void print_header(const LevelHeader* h, int level) {
 // thing that has been wrong. The colour a reader needs there is not "you can get
 // here", which is true, but "the floor moves", which decides whether the plan
 // through it survives contact.
+//
+// It overrides reached and it does *not* override solid. Levels place belt tiles
+// under scenery as freely as any other tile -- record 11 has 86 down-belt cells
+// and record 35 has 39, and not one of the 125 is a floor anybody can stand on
+// -- and painting those white puts a conveyor on the picture at a pixel `probe`
+// calls blocked. The census the caller prints still counts every placed cell,
+// because that is the number a tile table can be checked against; the picture
+// shows the ones that are a floor.
 static bool render_level(const LevelHeader* h, const uint16_t* map, const Rom* rom,
                          const char* path, const uint8_t* reach) {
   uint32_t avail = 0;
@@ -3118,16 +3126,31 @@ typedef struct {
 // they are not the same fact: a hundred frames on a leftward belt walked
 // leftward is a hundred pixels of *help*, and a hundred across one is a hundred
 // pixels out of the lane the rest of the plan was drawn in.
+//
+// `aborted` is the frame the walk stopped on. The floor runs first, so that
+// frame's push has already happened and is already in the displacement -- but
+// `frames` counts frames the plan *completed*, so it does not include it. The
+// first draft printed both numbers against each other and could say "7 of those
+// 6 frames", which is not a thing. The floor's denominator is the frames the
+// floor ran on, and on a blocked walk that is one more.
 static void route_walk_floor_report(const char* pre, int frames, int belt_frames,
                                     int belt_dx, int belt_dy, int belt_refused,
-                                    int harm_frames) {
+                                    int harm_frames, bool aborted) {
+  const int ran = frames + (aborted ? 1 : 0);
+  // On a belt and moved by it are not the same count -- a refused push is a
+  // frame he stood on a conveyor and went nowhere -- so the frames are added up
+  // and the displacement is reported separately rather than derived from them.
   if (belt_frames || belt_refused)
-    printf("%sfloor: %d of those %d frames were on a conveyor, worth (%+d,%+d)"
-           " pixels the plan did not ask for%s.\n",
-           pre, belt_frames, frames, belt_dx, belt_dy,
-           belt_refused ? " -- and the rightward one was refused by terrain on"
-                          " some of them, which is the only direction that can be"
-                        : "");
+    printf("%sfloor: %d of those %d frames%s were on a conveyor, worth (%+d,%+d)"
+           " pixels the plan did not ask for.\n",
+           pre, belt_frames + belt_refused, ran,
+           aborted ? " (the last of them the one the walk could not finish)" : "",
+           belt_dx, belt_dy);
+  if (belt_refused)
+    printf("%s       On %d of them the rightward push met terrain and was"
+           " refused, which is\n%s       the only direction `floor_effect` asks"
+           " about before it moves him.\n",
+           pre, belt_refused, pre);
   if (harm_frames)
     printf("%sfloor: %d frames on a harmful tile. `floor_effect` starts the harm"
            " once per\n%s       cooldown rather than once per frame, so that is"
@@ -3201,7 +3224,7 @@ static void route_walk_check(const LevelWalk* lw, Wram* w, int x0, int y0,
         // wrong lane, and a belt is one of the two things that move a player
         // sideways without asking.
         route_walk_floor_report(pre, frames, belt_frames, belt_dx, belt_dy,
-                                belt_refused, harm_frames);
+                                belt_refused, harm_frames, true);
         return;
       }
       x = nx;
@@ -3215,7 +3238,7 @@ static void route_walk_check(const LevelWalk* lw, Wram* w, int x0, int y0,
                " land on an odd distance, and the lane is whatever the start was"
              : "");
   route_walk_floor_report(pre, frames, belt_frames, belt_dx, belt_dy,
-                          belt_refused, harm_frames);
+                          belt_refused, harm_frames, false);
 }
 
 // --- and ending the last leg where the caller asked, not where the grid did --
@@ -3362,11 +3385,19 @@ static int cmd_route(int argc, char** argv) {
         const bool wet = route_water(&lw, cx, cy);
         RouteFloor f;
         const bool belt = route_floor(&lw, cx, cy, &f) && (f.dx || f.dy);
-        reach[i] = belt         ? 7
+        const bool open = route_open(&lw, cx, cy);
+        // White overrides reached, but it must not override *solid*. A level
+        // places belt tiles under its scenery as freely as any other tile, and
+        // the first draft of this let those paint white over the red -- so the
+        // picture showed a conveyor at (957,180) on record 11 that `probe` calls
+        // blocked. The census below still counts every placed cell, because that
+        // is the number the tile tables can be checked against; the picture
+        // shows only the ones that are a floor to somebody.
+        reach[i] = belt && open ? 7
                    : prev[i] != -2 ? (wet ? 6 : 1)
-                   : route_open(&lw, cx, cy) ? 4
-                   : wet                     ? 5
-                                             : 0;
+                   : open ? 4
+                   : wet  ? 5
+                          : 0;
       }
       // Split by direction, because they are not one hazard. A belt along a
       // corridor is a moving walkway and costs a plan its frame counts; one
@@ -3376,17 +3407,17 @@ static int cmd_route(int argc, char** argv) {
       // eight pixels at x=944..951" is. One box per direction is enough for the
       // levels that have two of them facing each other; the ones that carpet a
       // whole floor in belts are legible from the picture instead.
-      uint32_t belts = 0, n[4] = {0, 0, 0, 0};
+      uint32_t belts = 0, standable = 0, n[4] = {0, 0, 0, 0}, s[4] = {0, 0, 0, 0};
       int lo_x[4], hi_x[4], lo_y[4], hi_y[4];
       for (int k = 0; k < 4; k++) { lo_x[k] = lo_y[k] = 1 << 30; hi_x[k] = hi_y[k] = -1; }
       for (uint32_t i = 0; i < cells; i++) {
-        if (reach[i] != 7) continue;
         const int cx = (int)(i % cols), cy = (int)(i / cols);
         RouteFloor f;
-        route_floor(&lw, cx, cy, &f);
+        if (!route_floor(&lw, cx, cy, &f) || (!f.dx && !f.dy)) continue;
         const int k = f.dy < 0 ? 0 : f.dy > 0 ? 1 : f.dx < 0 ? 2 : 3;
         belts++;
         n[k]++;
+        if (reach[i] == 7) { standable++; s[k]++; }
         const int px = route_pixel_x(cx), py = route_pixel_y(cy);
         if (px < lo_x[k]) lo_x[k] = px;
         if (px > hi_x[k]) hi_x[k] = px;
@@ -3395,12 +3426,13 @@ static int cmd_route(int argc, char** argv) {
       }
       if (belts) {
         static const char* dirname[4] = {"up", "down", "left", "right"};
-        printf("%u of level %d's %u cells are conveyor, in white.\n", belts, level,
-               cells);
+        printf("%u of level %d's %u cells are conveyor; %u of those are a floor\n"
+               "the player can stand on, and only those are drawn in white.\n",
+               belts, level, cells, standable);
         for (int k = 0; k < 4; k++)
           if (n[k])
-            printf("  %-5s %5u cells, x %d..%d, y %d..%d\n", dirname[k], n[k],
-                   lo_x[k], hi_x[k], lo_y[k], hi_y[k]);
+            printf("  %-5s %5u cells, %5u standable, x %d..%d, y %d..%d\n",
+                   dirname[k], n[k], s[k], lo_x[k], hi_x[k], lo_y[k], hi_y[k]);
       }
       reach[(uint32_t)sy * cols + (uint32_t)sx] = 2;
       if (gy >= 0 && (uint32_t)gy < rows && gx >= 0 && (uint32_t)gx < cols)
@@ -3803,8 +3835,9 @@ static void usage(void) {
           "      water, which the player does and walking routes do not; the\n"
           "      legs are then real but the frame counts are not. --reach tints\n"
           "      the map: green reached, orange open but cut off, red solid,\n"
-          "      magenta water, pink water the route swims, yellow the start,\n"
-          "      blue the goal. Orange says where a missing route wants a door.\n\n"
+          "      magenta water, pink water the route swims, white a conveyor\n"
+          "      the player can stand on, yellow the start, blue the goal.\n"
+          "      Orange says where a missing route wants a door.\n\n"
           "  zamn_assets probe <rom.sfc> <level> <x> <y> [--to <x> <y>]\n"
           "      Ask $80:AE14 itself whether the player can stand at a point:\n"
           "      the six tiles it reads, their attributes, and the verdict out\n"

@@ -28,10 +28,16 @@ replay per leg, which is a few seconds each.
 Prints a complete .zmv -- the prefix, then the route -- on stdout, and says on
 stderr whether it arrived.
 
-**Level 25 starts on an escalator, and `probe` now says so to the tile.** At the
-spawn point (1303,488) the upper row of the collision box is plain floor and the
-lower row is three tiles of `$0108`, and the tile `floor_effect` actually reads
--- `x>>3, y>>3`, which is neither of the box's corners -- is one of the three.
+**Level 25 starts on an escalator, and `probe` now says so to the tile.** The
+spawn is (1297,546) -- the first frame `movies/level25.zmv` has a live player,
+2492 -- and all six tiles of the collision box there are `$0108`. He is moving
+on that frame, one pixel a frame northward, before any input is read.
+
+The pixel this file used to call the spawn, (1303,488), is fifty-eight pixels
+further up the same ride, and it is worth keeping for a different reason: there
+the upper row of the box is plain floor and the lower row is three tiles of
+`$0108`, so it shows that the tile `floor_effect` reads -- `x>>3, y>>3`, which
+is neither of the box's corners -- is one of the three.
 
 Two things this file used to say about that are now measured and both were
 wrong. It said the no-progress guard "nudges sideways forever"; the guard could
@@ -40,8 +46,8 @@ not have run at all. A conveyor moves the player one pixel **every frame**, so
 fired, every leg burned its whole hold, and `landed == pos` was never true
 either, so the unstick queue was retired unused on every leg. And it said the
 loop "cannot cross an escalator": it can, and could before any of this round's
-changes. From the spawn point above to (917,941), straight down the up
-escalator, it arrives in **7 legs**. The 40, 53 and 48-leg runs recorded here
+changes. From (1303,488) to (917,941), straight down the up escalator, it
+arrives in **7 legs**. The 40, 53 and 48-leg runs recorded here
 predate `STALL`, `ARRIVED = 7` and the three-length `STUCK_NUDGE`, and none of
 those is what this round changed.
 
@@ -53,7 +59,14 @@ against one is a pixel a frame rather than two. Measured on the two routes
 across level 25's escalators, that is **7 legs to 5 and 6 legs to 4**, arriving
 on the same pixel at the same frame both times: the legs it drops are re-issues
 of a direction already held, which a truncated hold had forced the loop to
-re-plan. Fewer legs is fewer replays and not a shorter movie. Nothing has yet
+re-plan. Fewer legs is fewer replays and not a shorter movie.
+
+Those two runs are `... 26 1303 488 917 941 2550` and `... 26 977 744 917 941
+4700`. The last argument is not decoration: it has to be a frame at which the
+game really has the player on the given pixel. 2681 also has him at x=1303 and
+one pixel away, standing still, and it yields 18 legs instead of 5 -- because
+that one pixel is the difference between the belt's row and the plain floor
+above it. Nothing has yet
 been routed across records 31 or 37, which carpet a tenth of the level in belts
 and are where guards that were passing by luck would stop doing so.
 

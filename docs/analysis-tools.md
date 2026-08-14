@@ -556,8 +556,13 @@ crosses, **white** a conveyor, yellow the start, blue the goal. Orange is the
 whole point of the picture; magenta is the one the picture used to get wrong
 twice, and *What the search calls a wall and the player calls a lake* below is
 why. White is the newest and it overrides green rather than sitting beside it —
-a belt cell is reachable open ground, which is exactly what made it invisible;
-see *The floor moves, and the search was pricing it as if it did not* below. Level 17's `$81:D704` creature stands at (563,513) and the
+a belt cell is reachable open ground, which is exactly what made it invisible.
+It does *not* override red: a level places belt tiles under its scenery like any
+other tile, and the first draft painted those white as well, which put a
+conveyor on the picture at a pixel `probe` calls blocked. See *The floor moves,
+and the search was pricing it as if it did not* below.
+
+Level 17's `$81:D704` creature stands at (563,513) and the
 search says no route; what `--reach` says is that it stands in one of two sealed
 alcoves —
 
@@ -1131,7 +1136,8 @@ box and always the same one of the six — the middle of the lower row,
 slides left and it becomes index 5. Cell centres are `8cx+13`, never a multiple
 of eight.
 
-Level 25's own spawn point is the demonstration. `probe` at (1303,488):
+A point on level 25's first escalator is the demonstration, and it is a good one
+precisely because the box straddles the belt's edge. `probe` at (1303,488):
 
 ```
   col  row  entry  tile  attr
@@ -1144,39 +1150,100 @@ Level 25's own spawn point is the demonstration. `probe` at (1303,488):
 ```
 
 The upper row of the box is plain floor and the lower row is an up escalator, and
-index 4 — col 162, row 61 — is `1303>>3, 488>>3` exactly. **The player spawns
-standing on a conveyor**, which is what `tools/fit_route.py` has said in prose
-since it was written and what nothing had ever pointed at a tile for.
+index 4 — col 162, row 61 — is `1303>>3, 488>>3` exactly. Three of the six tiles
+say "escalator" and the one the floor reads is one of them: that is the whole
+arithmetic in one probe.
+
+**The player does spawn standing on a conveyor**, which is what
+`tools/fit_route.py` has said in prose since it was written and what nothing had
+ever pointed at a tile for — but the pixel is **(1297,546)**, not the one above.
+That is where `movies/level25.zmv` first has a live player, at frame 2492, and
+`probe` there returns all six tiles `$0108` with no plain floor anywhere in the
+box. (1303,488) is fifty-eight pixels further up the same ride; an earlier round
+labelled it the spawn and it is not one.
+
+And the running game says the same thing. `zamn_headless -m movies/level25.zmv
+--pos 2490,2690,1` steps the movie a frame at a time from before the level is
+live, and the belt is visible in the position column with nothing else in it
+(abridged at the `...`):
+
+```
+   2491     --,--            no live player yet
+   2492   1297,546      <- spawns here, and is already moving
+   2493   1297,545
+   2494   1297,544
+   ...                       one pixel a frame, all the way up
+   2540   1303,498
+   2550   1303,488
+   2560   1303,487
+   ...                       (held at 487 for the next 120 frames)
+   2680   1303,487
+   2690   1303,497      <- ten frames, ten pixels, holding Down
+```
+
+He is moving on the first frame he exists, at **one pixel a frame, which is the
+belt on its own** — the number `floor_effect` writes and the static walk assumes.
+The rate is the proof rather than an assumption about the controller: on an up
+belt, holding Up would give three pixels a frame and holding Down would give one
+the other way, so minus one is only reachable with no vertical input at all.
+
+He stops dead at 487 because `487>>3` is row 60, which the table above shows as
+`$0000` — one pixel off the belt is plain floor and plain floor does nothing.
+And when the movie later holds Down he leaves at one pixel a frame again, this
+time two from the controller against one from the floor.
+
+Three speeds — 1 with it, 0 off it, 1 against 2 — all switching at the pixel
+`probe` names, measured off the emulator rather than the static walk.
 
 #### Six level records out of fifty-six
 
+Counted two ways, because they are two different questions. The first column is
+every cell the level *places* a belt tile on, which is the number a tile table
+can be checked against; the second is how many of those are a floor the player
+can stand on, which is the number a route cares about.
+
 ```
-record  cells           up   down   left  right
-     4    90 of 16320   45     45      0      0
-    11  1198 of 23296    0     86      0   1112
-    26   252 of 26496  126    126      0      0
-    31  2233 of 25536    0    444    880    909
-    35   725 of 24320    0     39      0    686
-    37  2486 of 25536    0    479   1002   1005
+record  placed          standable    up   down   left  right
+     4    90 of 16320      30       45     45      0      0
+    11  1198 of 23296     848        0     86      0   1112
+    26   252 of 26496      84      126    126      0      0
+    31  2233 of 25536    1267        0    444    880    909
+    35   725 of 24320     495        0     39      0    686
+    37  2486 of 25536    1453        0    479   1002   1005
+
+    standable, by direction:
+     4     15 up, 15 down          26     42 up, 42 down
+    11      0 down, 848 right      31    187 down, 611 left, 469 right
+    35      0 down, 495 right      37    230 down, 707 left, 516 right
 ```
 
 Records 4 and 26 are escalators and nothing else: equal counts of up and down, in
 facing pairs. Record 4's is a single pair sixteen pixels apart — up at x 653..669,
 down at x 685..701, both spanning y 556..668. Record 26's 126 of each are spread
-over x 653..1341, which is the mall's several floors.
+over x 653..1341, which is the mall's several floors. **Exactly a third of each
+is standable** — 15 of 45, 42 of 126, in both directions on both levels. An
+escalator is three tiles wide and so is `$80:AE14`'s box, so only the middle
+column of one clears on both sides; the two rails are belt tiles the player can
+look at and never touch.
 
 The other four are carpets rather than pairs. Records 31 and 37 put belts under
 nearly a tenth of the level with left and right almost exactly balanced — 880
 against 909, 1002 against 1005 — and record 11 runs 1,112 rightward cells across
 x 13..1469.
 
-**Everything walked below is a vertical belt**, because those four levels are
-compartmented and the flood connects almost none of their actors to each other:
-every pair tried in records 11 and 37 comes back "no dry route". The left and
-right cases go through the same predicate and the same frame loop, and the
-rightward one is the only direction with a terrain test in front of it, so it is
-also the only one that can be refused — none of which has yet been walked end to
-end. That is a gap in the evidence and not a claim about the code.
+And **records 11 and 35 place down-belts the player can never reach**: 86 cells
+and 39 cells, and not one of either is standable. Those are scenery that happens
+to be made of conveyor tiles. Nothing reads them, nothing can; they are in the
+placed column and they are not a hazard. Splitting the census in two is what made
+them visible — under one number they looked like 125 cells of belt that no route
+had ever had to explain.
+
+**This was written up once with only vertical belts walked**, on the grounds that
+records 11, 31 and 37 are compartmented and every actor pair tried in them comes
+back "no dry route". That was the wrong place to look: the endpoints do not have
+to be actors. `--reach` draws the belts, and two points picked off the picture
+route between themselves perfectly well. The lateral cases below are walked with
+endpoints read straight out of the map.
 
 **This agrees with a count taken from the other end, four rounds earlier.** *What
 the search calls a wall and the player calls a lake* records that six levels — 4,
@@ -1230,6 +1297,93 @@ it is a draft that says so: on that route it emits `4700 Left`, `4736 Down`,
 directly beneath it naming the thirty-eight. A belt-free route prints neither
 line, because a report that fires on every level is a report nobody reads.
 
+#### Sideways, on record 11, where the ratio comes out exact
+
+Record 11's 1,112 rightward cells are not one belt but many. The largest is a
+carpet three cells deep and a thousand pixels wide, rows y 500..516 running
+x 149..1149, open at every point `probe` was asked about. The one walked here is
+a smaller patch further north, y 188..204, chosen because it runs into a wall at
+its east end — which is what the next section needs and the carpet does not
+have. Ninety-six pixels of it, the same distance the escalator table walks, from
+(861,196) and back:
+
+| leg | the plan | walked | frames on the belt |
+| --- | --- | --- | --- |
+| east, with the belt | 48 | **32** | 32 |
+| west, against it | 48 | **95** | 95 |
+
+Thirty-two is 96/3 and ninety-five is 96/1 one frame short of the odd pixel, so
+the lateral case gives the ratio *exactly* where the escalator only gave it
+approximately. The difference is that every frame of both these legs is on the
+belt, and the escalator's were not: its 96 pixels are 60 of belt and 36 of plain
+floor, which is 20 belt frames plus 18 ordinary ones going down (38) and 59 plus
+18 coming back (77). The same eighteen plain frames both ways — that is what the
+escalator table's "wrong by sixty per cent" was measuring around.
+
+The plan says forty-eight both ways, and it is wrong by sixteen frames one way
+and forty-seven the other.
+
+#### Losing the lane, and the one push the ROM refuses
+
+Crossing a belt is the other half, and on record 11 it can be shown in eight
+pixels. `route 11 949 196 949 188` plans one leg, `Up`, eight pixels of clear
+vertical corridor in the lane x=949:
+
+```
+  Up    to (949,188)   8 px
+
+  walk: 4 frames from (949,196) to (952,188), which is not the last waypoint
+  floor: 4 of those 4 frames were on a conveyor, worth (+3,+0) pixels the
+         plan did not ask for.
+         On 1 of them the rightward push met terrain and was refused, which is
+         the only direction `floor_effect` asks about before it moves him.
+```
+
+He arrives three pixels east of the lane he was planned in, on a leg two pixels a
+frame prices at four frames of pure vertical. Take the same corridor two cells further
+and the drift is fatal rather than annoying — `route 11 949 204 949 188` is
+sixteen pixels straight up and the walk reports `blocked on leg 1 at (956,192)`,
+into col 120 row 22, attribute `$0003`. **A leg the search drew down the middle
+of an open corridor walks into a wall**, because the floor carried the player
+seven pixels sideways while he did it.
+
+That one also printed `7 of those 6 frames were on a conveyor`, which is not a
+thing. The floor runs first and the walk second, so on the frame the walk is
+blocked the push has already happened and is already in the displacement — but
+`frames` counts frames the plan *completed*, and that one did not. Two counts of
+the same frame, disagreeing. The floor's denominator is now the frames the floor
+ran on, which on a blocked walk is one more, and the line says so. The same pass
+made the numerator honest in the other direction: a refused push is a frame he
+stood on a conveyor and went nowhere, so it belongs in "frames on a conveyor"
+even though it contributes nothing to the pixels.
+
+The refused push is the last branch of `floor_effect` that had never been
+exercised, and finding a witness took some arithmetic. `$80:AE14`'s box for the
+player's own pixel is columns `(x-9)/8 .. +2`, and the box it tests for the push
+is `(x-8)/8 .. +2`. Those are the *same three columns* unless `x` is a multiple
+of eight, so for every other pixel "he can stand here" already implies "he can be
+pushed one right" and the test cannot fail. On `x ≡ 0 (mod 8)` the second box
+slides one column east, and the refusal becomes possible — and that is exactly
+the case where the floor tile is `probe_tiles` index 5 rather than 4, which is
+the same edge the top of this section had to carve out. One arithmetic quirk,
+showing up twice.
+
+So the refusal lives on single pixels. On record 11 there is one at (952,188):
+`probe` says open, and (953,188) says blocked. It is three pixels east of the
+nearest waypoint, because a cell centre sits five pixels into its tile while the
+refusal sits at pixel zero of the next one, and the cell centred on *that* tile
+is itself blocked — the wall is inside its box. Which means **a leg
+running along a belt can never trigger it**, since the search's own waypoints
+stop three pixels short of the only pixel where it fires. It takes a leg going
+*across*, whose break test watches the other axis and lets the drift run.
+
+Counting the places it *can* fire means counting rightward belt cells with a
+solid tile immediately east, which `probe` reports as index 5 of the same six it
+already prints: 23 on record 11, 198 on record 31, 16 on record 35 and 124 on
+record 37. Every one of them is a cell the search calls blocked — necessarily,
+since the wall is inside the box — so they are never waypoints and only ever
+pixels a crossing leg drifts through.
+
 #### The fitter's account of the same thing was wrong twice
 
 `tools/fit_route.py` has carried a paragraph since it was written saying it
@@ -1245,7 +1399,7 @@ every leg. The guard did not thrash; it could not run. What actually happened is
 that every leg burned its whole hold and re-planned from wherever the floor had
 dragged him, which is slow rather than fatal.
 
-And it is not fatal. From level 25's own spawn point on the escalator to
+And it is not fatal. From (1303,488), partway up level 25's first escalator, to
 (917,941), straight down the up one, the **unchanged** fitter arrives in 7 legs;
 from where `movies/level25.zmv` ends, 6. The 40, 53 and 48-leg failures recorded
 in that paragraph predate `STALL`, `ARRIVED = 7` and the three-length
@@ -1257,10 +1411,22 @@ The round's actual change is three lines of arithmetic: both guards now measure
 progress **along the leg** instead of "the position moved", and `first_leg` asks
 `route` whether the path crosses a conveyor and doubles the hold when it does.
 
-| route | legs before | legs after | landing | last frame |
-| --- | --- | --- | --- | --- |
-| spawn (1303,488) -> (917,941) | 7 | 5 | (919,942) | 3093 |
-| (977,744) -> (917,941) | 6 | 4 | (919,942) | 4947 |
+| route | start frame | legs before | legs after | landing | last frame |
+| --- | --- | --- | --- | --- | --- |
+| (1303,488) -> (917,941) | 2550 | 7 | 5 | (919,942) | 3093 |
+| (977,744) -> (917,941) | 4700 | 6 | 4 | (919,942) | 4947 |
+
+The start frame is part of the measurement and was left out of the first draft of
+this table, which cost three re-runs to recover. It is the fitter's last argument
+and it has to be a frame where the game actually has the player at the given
+pixel: 2550 is the one frame `movies/level25.zmv` has him at (1303,488), riding
+up. Frame 0 is the title screen and the loop stops after 51 legs having never
+moved him. Frame 2681 looks right — same x, one pixel away, the player standing
+still — and gives 18 legs and frame 3308, because one pixel is the difference
+between row 61 and row 60 and the whole of this section is about what that pixel
+does. **The first row above is not a spawn point**, which is what the round that
+made it called it; it is a point partway up the escalator, and the movie passes
+through it for exactly one frame.
 
 Same pixel, same frame, two fewer legs each — and the legs it drops are re-issues
 of a direction already held, which a hold cut in half had forced the loop to
@@ -1268,6 +1434,17 @@ re-plan. **This is a cheaper fit and not a shorter movie**, and it is worth bein
 plain about which: two fewer headless replays per route. Nothing has yet been
 routed across records 31 or 37, which carpet a tenth of the level in belts and
 are where guards that have been passing by luck would stop.
+
+**And it cannot be, without writing a movie first — which is why the fitter's
+evidence is vertical-only and the static walk's is not.** `route` needs the ROM
+and nothing else, so it walks every belt in the game; `fit_route.py` needs a
+prefix `.zmv` that has already got the player into the level. The movies in
+`movies/` land on levels 1, 5, 9 ... 53, a stride of four, and the six records
+carrying belts are levels 3, 10, 25, 30, 34 and 36. **Only level 25 is on both
+lists**, and it is an escalator level. Every lateral belt measured above was
+measured by the static walk for exactly that reason. The gap is a missing movie,
+not a missing capability, and it closes the day something drives the player into
+level 10, 30, 34 or 36.
 
 ## `native_share.py`, and the denominator the routine count never had
 
