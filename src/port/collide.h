@@ -1675,6 +1675,56 @@ bool enemy_990b_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 // $81:9633. Always true: it reads two words and may write one.
 void enemy_990b_stagger(Wram* w, uint16_t dp, ActorHandlerRegs* r);
 
+// --- $81:96E4 ---------------------------------------------------------------
+//
+// **Seven instructions, and the shortest route from a census line to a port
+// this project has had.** `$81:9643` — the body the stagger parks in `$12` —
+// opens by swapping the collision handler out for this one and spinning; this
+// is what answers for the creature while it spins, and `movies/level29-990b.zmv`
+// made the ROM ask for it 430 times.
+//
+//     $81:96E4  CMP #$005C
+//     $81:96E7  BCS $96EB
+//     $81:96E9  CLC : RTL
+//     $81:96EB  JML $818506
+//
+// That is the whole routine. The ignore half is `enemy_990b_collide`'s own first
+// four bytes for the twelfth time; the other half is a bare `JML` into
+// `enemy_survived_react` with **nothing in front of it** — no id parked at
+// `$2E`, no mask, no damage table, no health. A creature in the spin takes no
+// damage from anything and flashes at everything.
+//
+// So the two pools stop draining for the length of the spin, and the flash keeps
+// arriving.
+//
+// **The last round guessed this routine was what `d990b_stagger_already` was
+// waiting on, and that guess is now measured and wrong.** It is ported, it runs
+// 1,918 times on `movies/level29-990b.zmv`, and the site is still zero. What the
+// bytes around it say instead is that the site has a *fifteen-hit floor*:
+//
+//     $81:9652  LDA #$000F : STA $4A     ; at the top of the spin
+//     ...
+//     $81:96D2  LDA #$000F : STA $4A     ; and again at the bottom
+//     $81:96D7  LDA #$990B : JSL $808475 ; two instructions later, the swap back
+//
+// The stagger meter is refilled at **both** ends of the spin, and the second
+// refill is two instructions in front of the handler being swapped back — so the
+// instant `$81:990B` is answering again, `$4A` is exactly `$000F`. A guard that
+// wants the pool emptied inside a two-tick flash cannot be reached by the hit
+// that follows a stagger, or the fourteen after it. It needs the fifteenth to
+// land inside a flash that one of the fourteen before it installed, and over 121
+// staggers no input has yet put one there.
+//
+// `$81:96EF  CLC : RTL` sits under the `JML` and nothing reaches it. Two dead
+// bytes, of the same shape as the two live ones four instructions up, which is
+// what a copied exit looks like after the copy stopped needing it.
+#define ENEMY_990B_SPIN_ENTRY 0x8196e4u
+
+// Always true, and it cannot decline: the far side of its one branch has been
+// ported since the level-53 round.
+bool enemy_990b_spin_collide(Wram* w, uint16_t dp, uint16_t arg,
+                             ActorHandlerRegs* r);
+
 // ---------------------------------------------------------------------------
 // $81:845E  actor_845e_collide — thirty-two bytes and **no stores at all**
 // ---------------------------------------------------------------------------

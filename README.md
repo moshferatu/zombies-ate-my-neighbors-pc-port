@@ -19,7 +19,7 @@ lists, the sprite/OAM path and the audio upload path all reimplemented in C and
 
 Phase 3 is the logic port. The co-simulation harness is built, eighty-two routines
 are through it — including **the whole per-frame sprite pass**, the collision
-dispatch and the twenty-five actor handlers it routes to, the game's **random
+dispatch and the twenty-six actor handlers it routes to, the game's **random
 number generator**, the two searches every enemy uses to pick who to chase
 and to ask what is in its way, and **the whole of the movement step validator**:
 where a mover wants to go, and all four tests that decide whether it may — what
@@ -29,14 +29,16 @@ routine that suspends inside the thread scheduler does it at an explicit resume
 point, with its parked state as plain copyable data. `zamn_cosim verify` checks
 the C against the
 ROM's own code on every call the game makes — 128 KB of WRAM plus registers — and
-passes **14,353,960 of 14,353,960 across the whole movie corpus**, thirteen levels
-deep. Across all forty-seven movies the ROM is asked to run exactly one routine
-the port does not have — `$81:96E4` — and it took an input written on purpose to
-make it ask. `tools/verify_corpus.ps1 -Coverage` prints that census, and it was
-**empty** one round ago: nothing in the corpus had ever shot the creature that
-installs it. Two movies that stand and fight took it from empty to 430 declines
-against that one address. Which is the point of the thing: a census is a work
-list, and a work list is only as good as the inputs that run it.
+passes **14,355,670 of 14,355,670 across the whole movie corpus**, thirteen levels
+deep. Across all forty-seven movies the ROM is **never** asked to run a routine
+the port does not have. `tools/verify_corpus.ps1 -Coverage` prints that census,
+and the round before last it was empty for a much weaker reason: nothing in the
+corpus had ever shot the creature that swaps in `$81:96E4`. Two movies written to
+stand and fight took it to 430 declines against that one address, and porting the
+eleven bytes behind it took it back to nothing. That is the loop the census
+exists for: it is a work list, it is only as good as the inputs that run it, and
+an empty one means something different depending on which of the two you moved
+last.
 
 `zamn_cosim run` goes further and substitutes the C for real, diffing two whole
 machines every scheduler pass, and **finds no byte of live game state differing
@@ -52,12 +54,13 @@ like a divergence in the port.
 
 The port also reports **which of its own branches an input actually reached**,
 because a branch no movie takes is one the diff agrees with the ROM about for
-the wrong reason. 107 of 549 are still untaken by every input, and they are the
+the wrong reason. 109 of 551 are still untaken by every input, and they are the
 backlog — a list that grows when a routine is ported and shrinks only when an
-input is written. The two measures disagree on purpose, and the last round moved
-both: an input that reaches code the port lacks puts a line in the census *and*
-takes sites off the untaken list, including the two sites whose only job is to
-say a handler was missing.
+input is written. The two measures disagree on purpose, and the last two rounds
+moved both in opposite directions: an input that reaches code the port lacks puts
+a line in the census *and* lights up the two sites whose only job is to say a
+handler was missing, and porting that code empties the census *and* puts both
+sites back in the backlog.
 
 See **`docs/cosim.md`** for the harness and what coverage measures that the diff
 cannot, **`docs/threads.md`** for how a ported routine suspends,

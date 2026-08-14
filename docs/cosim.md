@@ -12832,3 +12832,155 @@ is not established.
 `$81:96E4` is now the top of the queue by every measure the harness has: it is
 the only line in the census, it is worth 430 declines on one movie, and one of
 the four sites still untaken is behind it.
+
+## Seven instructions, and the census goes quiet again (2026-08-14)
+
+`$81:96E4` was the top of the queue by every measure the harness has: the only
+line on the decline census, worth 430 declines on one movie, and the thing one
+untaken site was written down as waiting for. It is eleven bytes of code.
+
+```
+$81:96E4  CMP #$005C
+$81:96E7  BCS $96EB
+$81:96E9  CLC : RTL
+$81:96EB  JML $818506
+$81:96EF  CLC : RTL        <- nothing reaches this
+```
+
+The ignore half is `enemy_990b_collide`'s own first four bytes for the twelfth
+time. The other half is a bare `JML` into `enemy_survived_react` with **nothing
+in front of it** -- no id parked at `$2E`, no mask, no damage table, no health
+read. A creature in the spin takes no damage from anything and flashes at
+everything, and `$81:9643` installs this over `$81:990B` for exactly as long as
+the spin lasts. The two bytes under the `JML` are a copied exit the copy stopped
+needing.
+
+### It needed two registrations, and the first one looked like enough
+
+The registry entry went in, the build came up, and `verify` said:
+
+```
+enemy_990b_spin   430   -   430   430   0   0   2   84..880, mean 271   OK
+```
+
+430 calls offered, 430 checked, 430 passed, nothing diverged. And the census
+still said `handler $81:96E4 430`, unchanged, on the same run.
+
+**The registry and the port's own dispatcher are two different tables, and only
+one of them was told.** `zamn_cosim verify` finds the routine by entry PC and
+offers it every call the ROM makes there, which is what the 430/430 measures.
+`thread_call_handler` finds it by the address in the actor's record and runs an
+`else if` chain of twenty-six entries in `port/collide.c`, and a handler missing
+from *that* is a decline no matter how exactly the C matches. The file has this
+written down already, in the comment over `monster_collide`: `$81:C4A6` was
+registered and undispatched for a whole round, passed 1,138 calls, and declined
+every one of them a level up. The note ends "a routine reached directly is
+checked, and the same routine reached through a caller that does not know about
+it is a decline." Reading that note is not the same as remembering it while the
+build is running.
+
+Adding the arm cost one `else if` and closed it. The size of what the first
+registration was missing is legible in one number:
+
+```
+level29-990b.zmv   302790 -> 304500 checked,   1280 -> 0 declined
+```
+
+**+1,710, which is 430 + 1,280 exactly.** Every call the ROM used to hand back is
+now checked, plus the 430 the harness was already offering at the entry, and not
+one call anywhere else in the corpus moved -- the whole-corpus total went
+14,353,960 -> 14,355,670, the same +1,710.
+
+### The number last round could not close
+
+That arithmetic also settles the thing the last round wrote down as unresolved:
+a `decl.` column of **1,280** against a census of **430**, with the observation
+that 430 x 3 = 1,290 and that "ten of these dispatches were handed back one time
+fewer, and what is different about those ten is not established."
+
+Nothing is different about those ten, because the two numbers were never meant to
+be a multiple of each other. The census counts **addresses noted**, once per
+dispatch that reached `guard_thread_call_handler` with an unported handler. The
+`decl.` column sums the per-routine table's decline count over **every routine in
+it**, at every depth the same call passes through. The near-3 ratio was a
+coincidence of how many registered routines sit between the dispatch and the
+hole on this particular movie, which the round had already guessed -- and then
+went looking for a remainder in it. There was no remainder. Both columns are zero
+now and the calls they were counting are all accounted for.
+
+### The prediction that was wrong
+
+The last round closed with `d990b_stagger_already` "waiting on `$81:96E4` rather
+than on an input." That is now measured, and it is wrong. The routine is ported,
+it runs 1,918 times on `movies/level29-990b.zmv`, and the site is still zero.
+
+What the bytes around it say instead is that the site has a **fifteen-hit
+floor**:
+
+```
+$81:9652  LDA #$000F : STA $4A       ; at the top of the spin
+   ...
+$81:96D2  LDA #$000F : STA $4A       ; and again at the bottom
+$81:96D7  LDA #$990B : JSL $808475   ; two instructions later, the swap back
+```
+
+The stagger meter is refilled at **both** ends of the spin, and the second refill
+is two instructions in front of the handler being swapped back. So the instant
+`$81:990B` is answering for the creature again, `$4A` is exactly `$000F`. A guard
+that needs the pool emptied *inside* a two-tick flash cannot be reached by the
+hit after a stagger, or by the fourteen after that: with the squirt gun's damage
+of 1 it needs the fifteenth, landing inside a flash that one of the fourteen
+before it installed.
+
+The window is not imaginary. On the same movie `react_already` fires **774 times
+against 438 splices** -- most reactions this creature has already find the flash
+on, because the spin's own handler is firing them too. What no input has yet done
+is put one of those on the fifteenth hit: `d990b_stagger_already` is 0 over 121
+staggers.
+
+That is a better answer than the one it replaces, and it is worse news. The site
+is not waiting on a port, it is waiting on an input with the timing to land the
+pool-emptying hit two ticks behind the one before it -- and holding the button
+down, which is what this movie does, is the rhythm least likely to produce it.
+A burst that stops on fourteen and resumes has not been tried.
+
+### The untaken list grew, and this time the number was predictable
+
+```
+Branch coverage, union over the corpus: 442 of 551 taken, 109 untaken by every input.
+```
+
+549 sites became 551 and 107 untaken became 109, which is the inversion this file
+has now recorded three times -- **the untaken list grows when a routine is ported
+and shrinks only when an input is written** -- with every term of it visible at
+once for the first time:
+
+* the two new sites, `d990b_spin_ignore` and `d990b_spin_hit`, are **taken on
+  arrival**, 900 and 1,018, by an input that already existed. A port whose sites
+  are covered by the corpus it was written against costs the untaken list
+  nothing;
+* `handler_unported` and `collide_unported` go back on it. Their whole job is to
+  fire when the port is missing a handler, and it is not missing one any more.
+  They were taken for one round, by the one movie that could find a hole, and
+  they are dark again for the best reason available.
+
+Net +2 untaken and net 0 taken, which is what the sentence predicts if you read
+it carefully enough before running the corpus.
+
+### The corpus
+
+```
+14,355,670 calls checked across 47 movies, 0 diverged.
+Branch coverage, union over the corpus: 442 of 551 taken, 109 untaken by every input.
+```
+
+No "Declined to" section at all: **over all forty-seven movies the ROM is never
+asked to run a routine the port does not have.** That claim was true two rounds
+ago because nothing in the corpus had ever shot the creature, false one round ago
+because something finally did, and is true again now for the only reason worth
+having -- the routine it was asking for exists. All twenty-five cost models are
+refresh-exact, and `enemy_990b`'s own model was re-priced on the way past: 92
+cycles was measured over 35 calls that were all ignores, and the note under it
+said in as many words that "the eight branches behind the first comparison are
+priced by nobody." They are priced now, over 938 calls, and the answer is 152
+with a ceiling of 1,312 where it used to be 124.

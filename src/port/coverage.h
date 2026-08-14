@@ -255,6 +255,8 @@
   X(d990b_survived,   "enemy_990b_collide",  "...or it did not, and the ordinary survivor's splice runs") \
   X(d990b_stagger_already, "enemy_990b_stagger", "already flashing, so the emptied pool posts nothing at all") \
   X(d990b_stagger_posted,  "enemy_990b_stagger", "...or it is not, and $81:9643 is parked in $12 for the body to find") \
+  X(d990b_spin_ignore,"enemy_990b_spin_collide", "the same id test again, from the handler that answers during the spin") \
+  X(d990b_spin_hit,   "enemy_990b_spin_collide", "...or a weapon shot, which flashes it and takes nothing off either pool") \
                                                                                 \
   /* $81:9B6B enemy_9b6b_collide — level 21's, and the sixth copy of $81:8888. */ \
   X(d9b6b_ignore,     "enemy_9b6b_collide",  "an id below a weapon shot's, which it ignores outright") \

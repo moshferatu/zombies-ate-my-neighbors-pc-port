@@ -1608,6 +1608,28 @@ static void shim_enemy_990b_collide(Wram* w, const Rom* rom,
 }
 
 // ---------------------------------------------------------------------------
+// $81:96E4  enemy_990b_spin_collide — the census line, answered
+// ---------------------------------------------------------------------------
+//
+// The entry above put an address on the decline census the round it was written,
+// and said in advance which one: `$81:9643` installs this as the collision
+// handler for the length of the spin, so anything that staggers the creature
+// then touches it is asking for a routine the port did not have. It is the
+// second entry in the registry to arrive by that route — name predicted first,
+// bytes read second — and the shortest of the two by a factor of thirteen.
+//
+// No `rom`, because there is no damage table on this path: the routine that
+// looks one up is the one this replaces.
+
+static void shim_enemy_990b_spin_collide(Wram* w, const Rom* rom,
+                                         const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_990b_spin_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
 // $81:845E  actor_845e_collide — no WRAM at all, so no `w` and no guard body
 // ---------------------------------------------------------------------------
 
@@ -5291,14 +5313,36 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_enemy_990b_collide,
         // No guard: nothing it can be handed makes it decline. See above.
         .supported = NULL,
-        // Measured 84..124, mean 92, over the 35 calls
-        // `movies/level29-item.zmv` makes — and **all thirty-five of them are
-        // ignores**, which is why the spread is 40 cycles wide instead of the
-        // family's usual several hundred. The number is honest about what it
-        // measured and no wider: nothing in the corpus has yet handed this
-        // routine a weapon shot, so the eight branches behind the first
-        // comparison are priced by nobody.
-        .cycles = 92,
+        // Measured 84..1312, mean 152, over the 938 calls
+        // `movies/level29-990b.zmv` makes. **The 92 this said before was priced
+        // by 35 calls that were all ignores**, and the note under it said so —
+        // "the eight branches behind the first comparison are priced by nobody."
+        // They are priced now, and it cost 60 cycles a call: the ceiling went
+        // from 124 to 1312, which is what a splice into a parked stack costs
+        // when somebody finally shoots the thing.
+        .cycles = 152,
+        .stack_bytes = 2,
+    },
+    {
+        .name = "enemy_990b_spin",
+        .symbol = "$81:96E4",
+        .entry = 0x8196e4,
+        // `$81:96EA`, the ignore path's `RTL` after its own `CLC` — and this
+        // routine's only reachable one. The `RTL` two instructions below it is
+        // behind a `JML` and nothing arrives there.
+        .ret_op = 0x8196ea,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_990b_spin_collide,
+        // No guard: `enemy_survived_react` has been ported since the level-53
+        // round, so the one branch this routine has cannot give up.
+        .supported = NULL,
+        // Measured 84..880, mean 271, over the 430 calls
+        // `movies/level29-990b.zmv` makes. The floor is the family's bare
+        // `CMP : BCS : CLC : RTL` to the cycle; the ceiling is the splice, and
+        // there is nothing in between — seven instructions and no third path.
+        // The mean sits high because more than half of these calls are hits:
+        // the spin is short and the player was holding the button down.
+        .cycles = 271,
         .stack_bytes = 2,
     },
     {

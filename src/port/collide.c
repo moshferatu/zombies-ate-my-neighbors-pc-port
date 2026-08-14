@@ -1378,6 +1378,13 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
     served = enemy_e6e4_collide(w, rom, dp, arg, &r, NULL);
   } else if (entry == ENEMY_990B_COLLIDE_ENTRY) {
     served = enemy_990b_collide(w, rom, dp, arg, &r, NULL);
+  } else if (entry == ENEMY_990B_SPIN_ENTRY) {
+    // The line above and this one are the same creature at two different
+    // moments, which is what a swapped handler *is*: `$81:9643` writes this
+    // address over the one before it for the length of the spin and writes it
+    // back after. Both have to be here or the dispatcher answers for the
+    // creature only when it is standing still.
+    served = enemy_990b_spin_collide(w, dp, arg, &r);
   } else if (entry == ACTOR_845E_COLLIDE_ENTRY) {
     served = actor_845e_collide(arg, &r);
   } else if (entry == ACTOR_DEEB_COLLIDE_ENTRY) {
@@ -1406,9 +1413,10 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
   } else if (entry == OBJECT_COLLIDE_ENTRY) {
     served = object_collide(w, dp, arg, &r);
   } else {
-    // Twenty-six addresses are handled above. Anything else is a routine that has
-    // not been written yet, and saying so by address is what makes the remaining
-    // work countable instead of vague — which is what `unported` carries out.
+    // Twenty-seven addresses are handled above. Anything else is a routine
+    // that has not been written yet, and saying so by address is what makes the
+    // remaining work countable instead of vague — which is what `unported`
+    // carries out.
     PORT_COVER(handler_unported);
     out->unported = entry;
     return false;
@@ -2836,6 +2844,34 @@ bool enemy_990b_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // `$81:9941  JML $81:8506` — a jump, so the reaction's registers are this
   // routine's.
   PORT_COVER(d990b_survived);
+  return enemy_survived_react(w, dp, r);
+}
+
+// ---------------------------------------------------------------------------
+// $81:96E4  enemy_990b_spin_collide — who answers while it spins
+// ---------------------------------------------------------------------------
+
+bool enemy_990b_spin_collide(Wram* w, uint16_t dp, uint16_t arg,
+                             ActorHandlerRegs* r) {
+  r->a = arg;
+
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `$81:96E4  CMP #$005C : BCS : CLC : RTL`, byte for byte with
+    // `enemy_990b_collide`'s own opening — and it writes nothing either.
+    PORT_COVER(d990b_spin_ignore);
+    uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:96EB  JML $81:8506` — a jump, so the reaction's registers are this
+  // routine's, and there is nothing between the comparison and it. **No id is
+  // parked at `$2E`, no mask is taken, and neither pool is read.** A shot that
+  // lands during the spin costs the creature nothing and still buys the flash,
+  // which is the whole difference between this handler and the one it replaced.
+  PORT_COVER(d990b_spin_hit);
   return enemy_survived_react(w, dp, r);
 }
 
