@@ -48,6 +48,12 @@
 // Asking that function is not a second opinion about the game's box — it is the
 // box, and `route` had been carrying a third version of it that was wrong.
 #include "port/terrain.h"
+// And for `floor_effect`'s four conveyor words, which are the other half of the
+// same question: `terrain_blocked` says where the player may stand, and this
+// says what happens to him once he is standing there. `route` had been asking
+// only the first, which is why every plan it printed through an escalator was
+// a plan the player rides back down.
+#include "port/floor.h"
 #include "port/wram.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -695,9 +701,9 @@ static void print_header(const LevelHeader* h, int level) {
 //
 // `reach`, when it is not NULL, is one byte per grid cell: 0 solid, 1 reached,
 // 2 the start, 3 the goal, 4 open but cut off from the start, 5 water not
-// reached, 6 water reached. It is tinted over the map rather than drawn instead
-// of it, because what a route needs is not "which cells are open" but *which
-// opening is the way in*, and that is a question about the picture.
+// reached, 6 water reached, 7 a conveyor. It is tinted over the map rather than
+// drawn instead of it, because what a route needs is not "which cells are open"
+// but *which opening is the way in*, and that is a question about the picture.
 //
 // **Solid, cut-off and water are different colours on purpose.** A search that
 // answers "no route" has said nothing about which of the three it hit, and they
@@ -707,6 +713,13 @@ static void print_header(const LevelHeader* h, int level) {
 // open ground with no way into it, and one picture says so; level 1's lake reads
 // as a wall on the same picture and is not one. Under `--swim` the water the
 // route actually uses comes back pink, so the wet legs are visible as such.
+//
+// **White is a conveyor, and it overrides reached rather than sitting beside
+// it.** A belt cell is green on every one of these maps ever rendered -- it is
+// open ground and the flood walks straight over it -- and green is exactly the
+// thing that has been wrong. The colour a reader needs there is not "you can get
+// here", which is true, but "the floor moves", which decides whether the plan
+// through it survives contact.
 static bool render_level(const LevelHeader* h, const uint16_t* map, const Rom* rom,
                          const char* path, const uint8_t* reach) {
   uint32_t avail = 0;
@@ -765,10 +778,10 @@ static bool render_level(const LevelHeader* h, const uint16_t* map, const Rom* r
   // overlay needs no scaling. A cell's *world* row is eight pixels below its
   // grid row (`ROUTE_Y_BIAS`), which is why the tint is drawn one tile down.
   if (reach) {
-    static const uint8_t tint[7][3] = {{160, 0, 0},   {0, 200, 0},
+    static const uint8_t tint[8][3] = {{160, 0, 0},   {0, 200, 0},
                                        {255, 255, 0}, {0, 128, 255},
                                        {220, 110, 0}, {190, 0, 190},
-                                       {255, 150, 230}};
+                                       {255, 150, 230}, {255, 255, 255}};
     for (uint32_t ty = 0; ty + 1 < tile_rows; ty++) {
       for (uint32_t tx = 0; tx < tile_cols; tx++) {
         const uint8_t* t = tint[reach[ty * tile_cols + tx]];
@@ -2890,6 +2903,74 @@ static bool route_swimmable(const LevelWalk* lw, int cx, int cy) {
   return true;
 }
 
+// --- what the floor does once he is standing on it ---------------------------
+//
+// Everything above is `$80:AE14`'s question: six tiles, and is any of them
+// solid. A conveyor is a different routine asking about a different tile, and
+// the search has never asked it. `floor_effect` -- `$80:E86D`, ported in
+// `src/port/floor.c` and diffed against the ROM on every call the corpus makes
+// -- reads **one** attribute word through `tile_attrs_at_pixel`, masks it with
+// `#$FF7F`, and for four values moves the player one pixel:
+//
+//     $0108  up      $0208  left
+//     $0408  down    $0028  right, and only this one asks the terrain first
+//
+// It is called from `$80:D1FF` *before the controller is read*, so the push
+// lands every frame whether a button is down or not. That is what a plan drawn
+// on this grid has been leaving out: not "is there a wall" but "how long does
+// this leg take", and on a belt the honest answer is one pixel a frame against
+// and three with.
+//
+// **The two lookups do not use the same arithmetic, and that is why this is a
+// separate predicate rather than a seventh field on `ProbeTile`.** The box is
+// columns `(x-9)/8 .. +2` and rows `(y-8)/8 .. +1`; the floor tile is `x>>3,
+// y>>3`, with no bias at all. Work the two through against each other and the
+// floor tile is always *inside* the box and always the same one of the six: the
+// middle of the lower row, `probe_tiles` index 4 -- except where x is a multiple
+// of eight, where the box slides left and it becomes index 5. Cell centres are
+// `8cx+13`, never a multiple of eight, so a waypoint's floor is index 4. Nothing
+// here relies on that; it takes pixels and shifts them, the way the ROM does.
+//
+// The harm floors come back too. They do not move the player, so they cannot
+// invalidate a plan the way a belt can, but a route that walks four hundred
+// pixels across one is a route that arrives with no health, and until now
+// nothing said so.
+typedef struct {
+  int dx, dy;      // the pixel the belt adds, per frame
+  bool harm;       // ...or `$4000`/`$0400`, which take health instead
+  uint16_t attr;   // the masked word that said so, for reporting
+} RouteFloor;
+
+static bool route_floor_at(const LevelWalk* lw, int px, int py, RouteFloor* out) {
+  memset(out, 0, sizeof *out);
+  if (px < 0 || py < 0) return false;
+  const ProbeTile t = probe_tile(lw, px >> TILE_ATTRS_PIXEL_SHIFT,
+                                 py >> TILE_ATTRS_PIXEL_SHIFT);
+  if (!t.on_map || !t.known) return false;
+  const uint16_t a = (uint16_t)(t.attr & FLOOR_ATTR_MASK);
+  out->attr = a;
+  switch (a) {
+    case FLOOR_ATTR_BELT_UP: out->dy = -1; return true;
+    case FLOOR_ATTR_BELT_DOWN: out->dy = +1; return true;
+    case FLOOR_ATTR_BELT_LEFT: out->dx = -1; return true;
+    case FLOOR_ATTR_BELT_RIGHT: out->dx = +1; return true;
+    // `$4000` is gated on the player's weapon and `$1E`, and a static search
+    // knows neither, so it is reported as harm and `attr` carries which of the
+    // two words it was for a caller that wants to say. Being wrong about the
+    // gated one costs a sentence in a report, not a route.
+    case FLOOR_ATTR_HARM:
+    case FLOOR_ATTR_HARM_GATED: out->harm = true; return true;
+    default: out->attr = 0; return false;
+  }
+}
+
+// The same, for a grid cell, asked at the pixel the search would put a waypoint
+// on -- because a cell is eight pixels wide and the answer is a property of the
+// pixel, not of the cell.
+static bool route_floor(const LevelWalk* lw, int cx, int cy, RouteFloor* out) {
+  return route_floor_at(lw, route_pixel_x(cx), route_pixel_y(cy), out);
+}
+
 // **A route to an object's own coordinate asks the wrong question**, and this is
 // the answer to the right one.
 //
@@ -3008,10 +3089,51 @@ static bool probe_point(const LevelWalk* lw, Wram* w, int x, int y,
 // it was planned for and on no other, and a leg that ends a pixel off-lane
 // invalidates every leg after it. A check that snapped would pass routes the
 // movie cannot walk, which is the check nobody needs.
+//
+// **And the floor moves too.** `floor_effect` runs at the top of `$80:D1FF`
+// before the controller is read, so each frame here is the belt's pixel and then
+// the walk's two, in that order. That is what makes this an answer about
+// escalators rather than a plan with escalators left out of it: a leg walked
+// against one covers a pixel a frame instead of two, a leg walked across one
+// leaves the lane it was planned in, and both now show up in the landing rather
+// than in a movie three rounds later.
+//
+// It always terminates. The leg's own axis moves by two, or by one or three
+// where the belt is on that axis, and never by zero -- the only way a frame
+// makes no progress along the leg is a wall, and a wall returns. Nor can a
+// three-pixel frame step over the waypoint: the window the loop breaks on is
+// `want-1 .. want+1`, three pixels wide, and a jump of three from outside it
+// lands inside it whatever the residue.
 typedef struct {
   int dx, dy;  // the direction held, one axis
   int tx, ty;  // ...and the waypoint it is held to
 } RouteLeg;
+
+// What the floor did, said once at the end rather than per frame. Silent when
+// the walk never met one, which is most levels -- a report that prints "0
+// conveyor frames" on every route is a report nobody reads.
+//
+// The two numbers worth having are separate on purpose. `belt_frames` is how
+// long the player was on a belt and the displacement is where it put him, and
+// they are not the same fact: a hundred frames on a leftward belt walked
+// leftward is a hundred pixels of *help*, and a hundred across one is a hundred
+// pixels out of the lane the rest of the plan was drawn in.
+static void route_walk_floor_report(const char* pre, int frames, int belt_frames,
+                                    int belt_dx, int belt_dy, int belt_refused,
+                                    int harm_frames) {
+  if (belt_frames || belt_refused)
+    printf("%sfloor: %d of those %d frames were on a conveyor, worth (%+d,%+d)"
+           " pixels the plan did not ask for%s.\n",
+           pre, belt_frames, frames, belt_dx, belt_dy,
+           belt_refused ? " -- and the rightward one was refused by terrain on"
+                          " some of them, which is the only direction that can be"
+                        : "");
+  if (harm_frames)
+    printf("%sfloor: %d frames on a harmful tile. `floor_effect` starts the harm"
+           " once per\n%s       cooldown rather than once per frame, so that is"
+           " an upper bound on the\n%s       hits and not a count of them.\n",
+           pre, harm_frames, pre, pre);
+}
 
 // `pre` is what each line opens with, and in `--frames` mode it is `# ` -- that
 // output is a .zmv to paste, and a report in the middle of one is a movie the
@@ -3025,6 +3147,7 @@ static void route_walk_check(const LevelWalk* lw, Wram* w, int x0, int y0,
     printf("\n%swalk: (%d,%d) is not a place the player can stand.\n", pre, x, y);
     return;
   }
+  int belt_frames = 0, belt_dx = 0, belt_dy = 0, belt_refused = 0, harm_frames = 0;
   for (int i = 0; i < nlegs; i++) {
     const int want = legs[i].dx ? legs[i].tx : legs[i].ty;
     for (;;) {
@@ -3032,6 +3155,30 @@ static void route_walk_check(const LevelWalk* lw, Wram* w, int x0, int y0,
       // One step short of the waypoint on an odd distance, which is a real
       // thing at two pixels a frame and not a rounding to hide.
       if (abs(want - at) < ROUTE_SPEED) break;
+      // A frame, in the ROM's order: the floor, and then the walk. A belt
+      // writes `$30` or `$32` outright in three of its four directions, so this
+      // pushes into walls without a terrain test the way `floor_effect` does --
+      // only the rightward one checks, and `port/floor.h` says in as many words
+      // that the asymmetry is the ROM's and not worth rounding off.
+      RouteFloor f;
+      if (route_floor_at(lw, x, y, &f)) {
+        if (f.harm) harm_frames++;
+        if (f.dx > 0) {
+          if (probe_point(lw, w, x + 1, y, t, &first)) {
+            belt_refused++;
+          } else {
+            x += 1;
+            belt_dx += 1;
+            belt_frames++;
+          }
+        } else if (f.dx || f.dy) {
+          x += f.dx;
+          y += f.dy;
+          belt_dx += f.dx;
+          belt_dy += f.dy;
+          belt_frames++;
+        }
+      }
       const int nx = x + legs[i].dx * ROUTE_SPEED, ny = y + legs[i].dy * ROUTE_SPEED;
       if (probe_point(lw, w, nx, ny, t, &first)) {
         // The waterline is not a wall, and after `--swim` this routine will meet
@@ -3049,6 +3196,12 @@ static void route_walk_check(const LevelWalk* lw, Wram* w, int x0, int y0,
         else if (first >= 0)
           printf(" -- col %d row %d, off the map", t[first].col, t[first].row);
         printf(".\n");
+        // Said here too, and here it is the likelier explanation: a leg that
+        // walks into a wall it was planned around is a leg that arrived in the
+        // wrong lane, and a belt is one of the two things that move a player
+        // sideways without asking.
+        route_walk_floor_report(pre, frames, belt_frames, belt_dx, belt_dy,
+                                belt_refused, harm_frames);
         return;
       }
       x = nx;
@@ -3061,6 +3214,8 @@ static void route_walk_check(const LevelWalk* lw, Wram* w, int x0, int y0,
              ? ", which is not the last waypoint -- two pixels a frame cannot"
                " land on an odd distance, and the lane is whatever the start was"
              : "");
+  route_walk_floor_report(pre, frames, belt_frames, belt_dx, belt_dy,
+                          belt_refused, harm_frames);
 }
 
 // --- and ending the last leg where the caller asked, not where the grid did --
@@ -3205,10 +3360,47 @@ static int cmd_route(int argc, char** argv) {
         // green, because in `--swim` the interesting thing about a route is
         // exactly which part of it the player is swimming.
         const bool wet = route_water(&lw, cx, cy);
-        reach[i] = prev[i] != -2 ? (wet ? 6 : 1)
+        RouteFloor f;
+        const bool belt = route_floor(&lw, cx, cy, &f) && (f.dx || f.dy);
+        reach[i] = belt         ? 7
+                   : prev[i] != -2 ? (wet ? 6 : 1)
                    : route_open(&lw, cx, cy) ? 4
                    : wet                     ? 5
                                              : 0;
+      }
+      // Split by direction, because they are not one hazard. A belt along a
+      // corridor is a moving walkway and costs a plan its frame counts; one
+      // across it is an escalator and costs the plan its lane.
+      // ...and with the box each direction lives in, in pixels, because "there
+      // is an escalator on this level" is not actionable and "the up one is the
+      // eight pixels at x=944..951" is. One box per direction is enough for the
+      // levels that have two of them facing each other; the ones that carpet a
+      // whole floor in belts are legible from the picture instead.
+      uint32_t belts = 0, n[4] = {0, 0, 0, 0};
+      int lo_x[4], hi_x[4], lo_y[4], hi_y[4];
+      for (int k = 0; k < 4; k++) { lo_x[k] = lo_y[k] = 1 << 30; hi_x[k] = hi_y[k] = -1; }
+      for (uint32_t i = 0; i < cells; i++) {
+        if (reach[i] != 7) continue;
+        const int cx = (int)(i % cols), cy = (int)(i / cols);
+        RouteFloor f;
+        route_floor(&lw, cx, cy, &f);
+        const int k = f.dy < 0 ? 0 : f.dy > 0 ? 1 : f.dx < 0 ? 2 : 3;
+        belts++;
+        n[k]++;
+        const int px = route_pixel_x(cx), py = route_pixel_y(cy);
+        if (px < lo_x[k]) lo_x[k] = px;
+        if (px > hi_x[k]) hi_x[k] = px;
+        if (py < lo_y[k]) lo_y[k] = py;
+        if (py > hi_y[k]) hi_y[k] = py;
+      }
+      if (belts) {
+        static const char* dirname[4] = {"up", "down", "left", "right"};
+        printf("%u of level %d's %u cells are conveyor, in white.\n", belts, level,
+               cells);
+        for (int k = 0; k < 4; k++)
+          if (n[k])
+            printf("  %-5s %5u cells, x %d..%d, y %d..%d\n", dirname[k], n[k],
+                   lo_x[k], hi_x[k], lo_y[k], hi_y[k]);
       }
       reach[(uint32_t)sy * cols + (uint32_t)sx] = 2;
       if (gy >= 0 && (uint32_t)gy < rows && gx >= 0 && (uint32_t)gx < cols)
@@ -3300,6 +3492,25 @@ static int cmd_route(int argc, char** argv) {
                "per two, then one per two climbing out -- never %d.\n",
                wetcells, ROUTE_SPEED);
     }
+    // Said before the legs rather than after them, because it changes what the
+    // reader should do with the legs. The walk below reports what the belt
+    // actually cost; this reports that there is one, which is the part worth
+    // knowing before pasting a route into a movie.
+    uint32_t beltcells = 0;
+    for (int i = 0; i < n; i++) {
+      RouteFloor f;
+      if (route_floor(&lw, (int)((uint32_t)path[i] % cols),
+                      (int)((uint32_t)path[i] / cols), &f) &&
+          (f.dx || f.dy))
+        beltcells++;
+    }
+    if (beltcells)
+      printf("%u of them are conveyor. `floor_effect` moves the player one pixel a\n"
+             "frame there, before the controller is read, so a leg along one runs at\n"
+             "three pixels a frame and a leg against it at one -- and a leg *across*\n"
+             "one ends in a different lane from the one it was planned in. The\n"
+             "walk below is where the frame count is; the pixel counts are not it.\n",
+             beltcells);
     printf("\n");
     // Collected before anything is printed, because the last one is still going
     // to move: `route_anchor_last` needs the whole plan and the game's own

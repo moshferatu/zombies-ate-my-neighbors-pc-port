@@ -28,16 +28,44 @@ replay per leg, which is a few seconds each.
 Prints a complete .zmv -- the prefix, then the route -- on stdout, and says on
 stderr whether it arrived.
 
-**It cannot cross an escalator, and level 25 starts on one.** The loop's whole
-method is press, release, measure -- and an escalator moves the player while the
-button is up, so the measurement lands back where the leg began and the
-no-progress guard nudges sideways forever. Three runs of 40, 53 and 48 legs
-finished 0, 200 and 46 pixels from where they started. `zamn_assets route` is no
-help either: its 2x2-clear grid treats escalator tiles as walkable in both
-directions, and both of its routes south through level 25 go through one.
-`movies/level25-boss.zmv` is hand-written for that reason -- render the map with
-`zamn_assets level <rom> <n> map.png`, mark the start and the target, and tune
-nine legs against `--pos`.
+**Level 25 starts on an escalator, and `probe` now says so to the tile.** At the
+spawn point (1303,488) the upper row of the collision box is plain floor and the
+lower row is three tiles of `$0108`, and the tile `floor_effect` actually reads
+-- `x>>3, y>>3`, which is neither of the box's corners -- is one of the three.
+
+Two things this file used to say about that are now measured and both were
+wrong. It said the no-progress guard "nudges sideways forever"; the guard could
+not have run at all. A conveyor moves the player one pixel **every frame**, so
+`p != prev` was true on every frame of the window, the stall detector never
+fired, every leg burned its whole hold, and `landed == pos` was never true
+either, so the unstick queue was retired unused on every leg. And it said the
+loop "cannot cross an escalator": it can, and could before any of this round's
+changes. From the spawn point above to (917,941), straight down the up
+escalator, it arrives in **7 legs**. The 40, 53 and 48-leg runs recorded here
+predate `STALL`, `ARRIVED = 7` and the three-length `STUCK_NUDGE`, and none of
+those is what this round changed.
+
+What did change is that both guards now measure progress **along the leg**
+rather than "the position changed" -- the same test on ordinary ground and the
+right one on a belt -- and that `first_leg` asks `zamn_assets route` whether the
+path crosses a conveyor and doubles the hold when it does, because walking
+against one is a pixel a frame rather than two. Measured on the two routes
+across level 25's escalators, that is **7 legs to 5 and 6 legs to 4**, arriving
+on the same pixel at the same frame both times: the legs it drops are re-issues
+of a direction already held, which a truncated hold had forced the loop to
+re-plan. Fewer legs is fewer replays and not a shorter movie. Nothing has yet
+been routed across records 31 or 37, which carpet a tenth of the level in belts
+and are where guards that were passing by luck would stop doing so.
+
+`zamn_assets route` knows about them now as well -- `route_floor_at` in
+`src/assets.c` reads the same four attribute words `floor_effect` does, the
+printed route says how many of its cells are conveyor, its walk check applies
+the push frame by frame in the ROM's order, and `--reach` paints them white.
+What it still does *not* do is refuse to plan through one: the flood treats a
+belt as open ground, because it is open ground. `movies/level25-boss.zmv` is
+hand-written from before any of this -- render the map with `zamn_assets level
+<rom> <n> map.png`, mark the start and the target, and tune nine legs against
+`--pos`.
 
 `--fire` holds Y down the whole way, which turns a walk into a fighting retreat.
 Some objects are **contested**: `$80:CAEE` lets collision id $0004 -- the monster
@@ -102,13 +130,21 @@ SIGN = {"Left": -1, "Right": 1, "Up": -1, "Down": 1}
 
 
 def first_leg(rom, level, x0, y0, x1, y1):
-    """The first turn of a route, or None if there is no route at all."""
+    """The first turn of a route, or None if there is no route at all.
+
+    The fourth value is whether the route crosses a conveyor, which changes how
+    long a leg has to be held for: walking against a belt is one pixel a frame
+    rather than two. It is a property of the whole path and not of the first leg
+    -- being generous costs replay time and no movie frames, because the leg
+    ends at the first frame the target is passed and not at the end of the hold.
+    """
     out = subprocess.run([ASSETS, "route", rom, str(level), str(x0), str(y0),
                           str(x1), str(y1)], capture_output=True, text=True).stdout
     m = re.search(r"^\s+(\w+)\s+to \((\d+),(\d+)\)", out, re.M)
     if not m:
         return None
-    return m.group(1), int(m.group(2)), int(m.group(3))
+    belt = re.search(r"^\d+ of them are conveyor", out, re.M) is not None
+    return m.group(1), int(m.group(2)), int(m.group(3)), belt
 
 
 def positions(rom, movie, first, last):
@@ -165,9 +201,11 @@ def main():
                 sys.stderr.write("no route from (%d,%d) to (%d,%d)\n"
                                  % (pos[0], pos[1], x1, y1))
                 return 1
-            direction, tx, ty = leg
+            direction, tx, ty, belt = leg
             target = tx if AXIS[direction] == 0 else ty
-            hold = abs(target - pos[AXIS[direction]]) // 2 + 40
+            # Two pixels a frame, or one where the floor is taking one back.
+            dist = abs(target - pos[AXIS[direction]])
+            hold = (dist if belt else dist // 2) + 40
 
         end = frame + hold
         write(movie, prefix, legs + [(frame, direction)], end, fire)
@@ -192,25 +230,43 @@ def main():
             # frames were spent standing still**, in blocks of 103, 43 and 43 at
             # the ends of legs whose `hold` had 40 frames of padding left on it.
             # Cutting them is not a better route, it is the same route sooner.
-            last_change, prev = frame, seen.get(frame)
+            # **Progress along the leg, not "the position changed".** Those are
+            # the same thing on ordinary ground and they are not on a conveyor,
+            # which moves the player one pixel every frame whether a button is
+            # down or not. `p != prev` is true on every frame of a belt, so this
+            # guard never fired there, the leg burned its whole hold, and the
+            # loop re-planned from wherever the floor had dragged him -- which is
+            # the escalator failure the docstring describes, and the mechanism is
+            # the opposite of what it says. The no-progress guard did not thrash;
+            # it never ran. `route_floor_at` in `src/assets.c` is the other end.
+            axis, sign = AXIS[direction], SIGN[direction]
+            last_change = frame
+            best = seen.get(frame, pos)[axis] * sign
             for fr in range(frame + 1, end + 1):
                 p = seen.get(fr)
-                if p is not None and p != prev:
-                    last_change, prev = fr, p
+                if p is not None and p[axis] * sign > best:
+                    last_change, best = fr, p[axis] * sign
             done = last_change if end - last_change >= STALL else end - 2
         landed = seen.get(done, pos)
 
-        if landed == pos and target is not None and not unstick:
-            # Not one pixel of progress. Try a lane either side before giving up
-            # on the route; if neither helps, the loop's own no-progress guard
-            # below stops it.
+        gained = ((landed[AXIS[direction]] - pos[AXIS[direction]])
+                  * SIGN[direction])
+        if gained <= 0 and target is not None and not unstick:
+            # Not one pixel of progress *along the leg*. That is `landed == pos`
+            # on ordinary ground and is not the same test on a belt, where a leg
+            # can end somewhere else entirely and no nearer. Try a lane either
+            # side before giving up on the route; if neither helps, the loop's
+            # own no-progress guard below stops it.
             both = ["Up", "Down"] if AXIS[direction] == 0 else ["Left", "Right"]
             unstick = [(d, n) for n in STUCK_NUDGE for d in both]
             continue
 
         legs.append((frame, direction))
         frame = done + 2
-        if landed != pos:
+        # Same correction as the guard above: on a belt `landed != pos` is true
+        # every leg, which would retire the nudge queue without any of the
+        # nudges having achieved anything.
+        if gained > 0:
             unstick = []
         pos = landed
 
