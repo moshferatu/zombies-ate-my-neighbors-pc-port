@@ -551,10 +551,10 @@ build\zamn_assets.exe route "Zombies Ate My Neighbors.sfc" 18 284 420 563 513 --
 ```
 
 The map, tinted per grid cell: **green** reached, **orange** open but cut off from
-the start, **red** solid, **magenta** water, yellow the start, blue the goal.
-Orange is the whole point of the picture; magenta is the one the picture used to
-get wrong, and *What the search calls a wall and the player calls a lake* below
-is why. Level 17's `$81:D704` creature stands at (563,513) and the
+the start, **red** solid, **magenta** water, **pink** water a `--swim` route
+crosses, yellow the start, blue the goal. Orange is the whole point of the
+picture; magenta is the one the picture used to get wrong twice, and *What the
+search calls a wall and the player calls a lake* below is why. Level 17's `$81:D704` creature stands at (563,513) and the
 search says no route; what `--reach` says is that it stands in one of two sealed
 alcoves —
 
@@ -622,9 +622,7 @@ frame is the whole story:
 ```
 
 `zamn_headless --at 3975` draws him mid-pond with only his head and arms above
-the surface, and the direction word on his own thread page goes to zero at frame
-3962 while he is still moving, so this is not walking and it is not his input
-driving it.
+the surface, so this is not walking.
 
 **The ROM names water in one comparison.** When the walk is refused, `$80:DEDE`
 takes the attribute word `terrain_blocked` handed back, undoes that routine's
@@ -645,28 +643,86 @@ magenta is the pool and the ponds, to the tile. Six levels (4, 11, 14, 25, 26,
 `port/floor.h` — and seven more (18, 31, 37, 50, 53, 54, 56) have no bit-8 tile
 at all. The other 43 have water.
 
-**The search still refuses to swim, on purpose.** Crossing is not free movement:
-`$80:DD0D` hands the player to a scripted behaviour with its own byte script at
-`$80:DD41`, and a destination is latched on the entry frame — (1214,657) for the
-crossing above, which is where he arrives and stops. Until that destination rule
-is read out, a grid that flooded through water would print legs nobody can walk,
-and this tool's whole value is that the legs it prints are legs and the routes it
-refuses are claims. So it stops at the shore and says so:
+This is also where `probe`'s one unexplained reading went: level 21's
+(415,1190), flagged as the one measurement that could not be accounted for, is
+tile `$1BF` attribute `$0103` — the same water as level 1's pool, and the player
+was swimming in it.
+
+#### The trace above stops because the movie stops
+
+The round that got this far concluded that the search should keep treating water
+as wall. The argument was that crossing is not free movement: `$80:DD0D` hands
+the player to a scripted behaviour with a byte script at `$80:DD41`, a
+destination is latched on the entry frame, and (1214,657) is where he *arrives
+and stops*. So a grid that flooded through water would print legs nobody can
+walk.
+
+**That was wrong, and the trace above is why it looked right.**
+`movies/level1-keys.zmv` releases `Up` at frame 3960. The stop at y=657 is the
+input ending. Cut the movie's tail so `Up` is held instead, and the rest of the
+crossing appears:
+
+```
+3939..3954   sixteen frames stalled at the near shore, y=687
+3955..3986   in, at eight pixels every nine frames, to y=655
+4016..4040   swimming under his own input, three pixels every two
+4041..4053   thirteen frames stalled at the far shore, y=616
+4054..4086   climbing out, one pixel every two, to y=601
+4087..4109   walking again at two, until ordinary scenery stops him
+```
+
+He crosses the pond and gets out the other side. The latched destination is real
+but it is only the **entry** — thirty-two pixels off the shore — and after that
+he steers. `probe` on that column agrees: the water runs from row 79 to row 86,
+he is stalled at 687 on the near edge and at 616 on the far one, and y=545 is
+where the ordinary scenery starts that finally stops him at 552.
+
+**So water is passable, and the refusal was a claim about the game that the game
+does not make.** What survives from the old argument is the timing: none of those
+speeds is `ROUTE_SPEED`, and the two stalls are twenty-nine frames between them.
+That is a reason to keep wet routes out of the default, not to deny they exist —
+so it is a flag:
 
 ```
 > zamn_assets route rom.sfc 22 258 2836 415 1190
-no route from (258,2836) to (415,1190) through level 22.
-...
-but 354 reachable cells are on the edge of water, which this
-search treats as wall and the player does not -- so this answer
-is only as good as the assumption that he stays dry.
+no dry route from (258,2836) to (415,1190) through level 22.
+the 2x2-clear grid does not connect them, so either the target is
+inside scenery or the way in is a door rather than a gap.
+
+354 reachable cells are on the edge of water, and swimming connects them:
+rerun with --swim for the route. The legs it prints are real, but its
+frame counts are not -- see `route_swimmable` for what a crossing
+actually costs.
 ```
 
-**Every "no route" printed before this said nothing about water**, and that line
-is the retraction. It is also where `probe`'s one unexplained reading went:
-level 21's (415,1190), flagged as the one measurement that could not be
-accounted for, is tile `$1BF` attribute `$0103` — the same water as level 1's
-pool, and the player was swimming in it.
+A failure now runs the wet grid itself and reports which kind of failure it was,
+because "nowhere to go" and "nowhere to go on foot" are different answers and the
+caller cannot tell them apart from a warning. `--swim` then prints the route,
+counts the cells that are wet, and refuses to pretend about the clock:
+
+```
+> zamn_assets route rom.sfc 22 258 2836 415 1190 --swim
+level 22: (258,2836) -> (415,1190), 226 cells
+52 of them are in water. The legs are real and the frame counts
+are not: a crossing stalls sixteen frames going in and thirteen
+coming out, and runs at eight pixels per nine frames, then three
+per two, then one per two climbing out -- never 2.
+...
+  walk: reached the waterline on leg 14 at (412,1632) after 679 frames
+        -- col 50 row 202, tile $1BF, attribute $0103.
+```
+
+The walk check is the same `terrain_blocked` replay as ever and it still cannot
+swim, so it names the waterline instead of calling it a wall. Run the same way on
+the pond that was actually measured, it stops at (1214,689) after 8 frames —
+which is the frame the emulator trace above begins its sixteen-frame stall on, to
+the pixel.
+
+**Every "no route" printed before this round said nothing about water, and every
+one printed in the round before said the wrong thing about it.** Level 22 is the
+retraction that matters: the reachability note in `docs/cosim.md` describing it
+as one room with a single 64-pixel opening was measured on the dry grid, and the
+goal is reachable — by swimming, in 226 cells, 52 of them wet.
 
 ### Where a fitted route's slack actually was
 

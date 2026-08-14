@@ -694,18 +694,19 @@ static void print_header(const LevelHeader* h, int level) {
 // 9 bits even though the hardware field is 10.
 //
 // `reach`, when it is not NULL, is one byte per grid cell: 0 solid, 1 reached,
-// 2 the start, 3 the goal, 4 open but cut off from the start, 5 water. It is tinted over
-// the map rather than drawn instead of it, because what a route needs is not
-// "which cells are open" but *which opening is the way in*, and that is a
-// question about the picture.
+// 2 the start, 3 the goal, 4 open but cut off from the start, 5 water not
+// reached, 6 water reached. It is tinted over the map rather than drawn instead
+// of it, because what a route needs is not "which cells are open" but *which
+// opening is the way in*, and that is a question about the picture.
 //
 // **Solid, cut-off and water are different colours on purpose.** A search that
 // answers "no route" has said nothing about which of the three it hit, and they
 // want opposite things: a solid target is a target to give up on, a cut-off one
-// is a door to find, and a magenta one is a shore -- the player crosses that,
-// and it is this search that cannot. Level 17's `$81:D7F6` creature lives in a
-// pen that is open ground with no way into it, and one picture says so; level
-// 1's lake reads as a wall on the same picture and is not one.
+// is a door to find, and a magenta one is a shore -- which the player swims and
+// `route_open` will not. Level 17's `$81:D7F6` creature lives in a pen that is
+// open ground with no way into it, and one picture says so; level 1's lake reads
+// as a wall on the same picture and is not one. Under `--swim` the water the
+// route actually uses comes back pink, so the wet legs are visible as such.
 static bool render_level(const LevelHeader* h, const uint16_t* map, const Rom* rom,
                          const char* path, const uint8_t* reach) {
   uint32_t avail = 0;
@@ -764,9 +765,10 @@ static bool render_level(const LevelHeader* h, const uint16_t* map, const Rom* r
   // overlay needs no scaling. A cell's *world* row is eight pixels below its
   // grid row (`ROUTE_Y_BIAS`), which is why the tint is drawn one tile down.
   if (reach) {
-    static const uint8_t tint[6][3] = {{160, 0, 0},   {0, 200, 0},
+    static const uint8_t tint[7][3] = {{160, 0, 0},   {0, 200, 0},
                                        {255, 255, 0}, {0, 128, 255},
-                                       {220, 110, 0}, {190, 0, 190}};
+                                       {220, 110, 0}, {190, 0, 190},
+                                       {255, 150, 230}};
     for (uint32_t ty = 0; ty + 1 < tile_rows; ty++) {
       for (uint32_t tx = 0; tx < tile_cols; tx++) {
         const uint8_t* t = tint[reach[ty * tile_cols + tx]];
@@ -2833,29 +2835,59 @@ static bool route_open(const LevelWalk* lw, int cx, int cy) {
   return true;
 }
 
-// Is this cell closed by *water*? -- one of the six carrying `LEVEL_ATTR_WATER`,
+// Is this cell touching *water*? -- one of the six carrying `LEVEL_ATTR_WATER`,
 // which is the same six and the same order, so a cell can be both this and
 // blocked by ordinary scenery and the answer here is only about the water.
 //
-// **Water stays closed to the search, and that is a decision rather than an
-// omission.** `terrain_blocked` refuses it, so the player never walks into it;
-// what he does instead is `$80:DEDE`'s branch, which stops him at the edge and
-// hands him to a scripted crossing that lands him at a point the ROM picks --
-// `movies/level1-keys.zmv` enters level 1's lake at (1214,687) and arrives at
-// (1214,657) with the direction on his own page already zeroed. Until that
-// destination rule is read out of `$80:DD41`'s script, a search that flooded
-// through water would print legs the player cannot walk, which is worse than
-// one that stops: the whole point of this grid is that a route it refuses is a
-// claim about the game.
-//
-// So it stops, and *says which kind of edge it stopped at*, the same argument
-// that made solid and cut-off different colours below.
+// Used for the tint and the shore count. Passability is `route_swimmable`
+// below, and the two are deliberately different questions: this one says "there
+// is water in the box", that one says "the box is water and nothing worse".
 static bool route_water(const LevelWalk* lw, int cx, int cy) {
   ProbeTile t[ROUTE_BOX_W * ROUTE_BOX_H];
   probe_tiles(lw, cx, cy, t);
   for (int i = 0; i < ROUTE_BOX_W * ROUTE_BOX_H; i++)
     if (t[i].on_map && t[i].known && t[i].water) return true;
   return false;
+}
+
+// The same box, with water allowed through -- **because the player swims it**.
+//
+// The round that found `LEVEL_ATTR_WATER` got the consequence wrong. It read
+// `$80:DEDE`'s branch into a scripted crossing, watched `movies/level1-keys.zmv`
+// enter level 1's lake at (1214,687) and stop at (1214,657), and concluded that
+// the ROM picks the destination and the player has no say -- so a search that
+// flooded through water would print legs nobody can walk. That was measured on
+// a movie which *releases Up at frame 3960*, and the stop at 657 was the input
+// ending, not the game deciding.
+//
+// Held down instead (`--pos` on the same movie with the tail cut), the whole
+// shape comes out, and none of it is scripted past the first thirty-two pixels:
+//
+//     3939..3954   sixteen frames stalled at the near shore, y=687
+//     3955..3986   in, at eight pixels every nine frames, to y=655
+//     4016..4040   swimming under his own input, three pixels every two
+//     4041..4053   thirteen frames stalled at the far shore, y=616
+//     4054..4086   climbing out, one pixel every two, to y=601
+//     4087..4109   walking again at two, until ordinary scenery stops him
+//
+// He crosses the pond and gets out the other side. So water is passable, the
+// previous round's refusal was wrong about the game, and the only true part of
+// it is the timing: none of those speeds is `ROUTE_SPEED`, and the two stalls
+// are worth twenty-nine frames between them. That is why this is a *separate*
+// predicate behind `--swim` rather than a change to `route_open` -- a dry route
+// is one `tools/fit_route.py` can time and `route_walk_check` can verify, and a
+// wet one is neither until swimming is ported. Three speeds and two stalls, and
+// not one of them is two pixels a frame.
+static bool route_swimmable(const LevelWalk* lw, int cx, int cy) {
+  ProbeTile t[ROUTE_BOX_W * ROUTE_BOX_H];
+  probe_tiles(lw, cx, cy, t);
+  for (int i = 0; i < ROUTE_BOX_W * ROUTE_BOX_H; i++) {
+    if (!t[i].on_map || !t[i].known) return false;
+    // Solid *and not water* is scenery, and scenery closes the cell however much
+    // water is in the box beside it.
+    if (t[i].solid && !t[i].water) return false;
+  }
+  return true;
 }
 
 // --- and the same level as the game's own routine wants it -------------------
@@ -2959,8 +2991,15 @@ static void route_walk_check(const LevelWalk* lw, Wram* w, int x0, int y0,
       if (abs(want - at) < ROUTE_SPEED) break;
       const int nx = x + legs[i].dx * ROUTE_SPEED, ny = y + legs[i].dy * ROUTE_SPEED;
       if (probe_point(lw, w, nx, ny, t, &first)) {
-        printf("\n%swalk: blocked on leg %d at (%d,%d) after %d frames", pre,
-               i + 1, x, y, frames);
+        // The waterline is not a wall, and after `--swim` this routine will meet
+        // it on purpose. `terrain_blocked` cannot be taught to swim without
+        // porting the crossing, so it stops here and says which kind of stop it
+        // was -- the caller can walk this far and the rest is a swim.
+        const bool at_water = first >= 0 && t[first].on_map && t[first].known &&
+                              t[first].water;
+        printf("\n%swalk: %s on leg %d at (%d,%d) after %d frames", pre,
+               at_water ? "reached the waterline" : "blocked", i + 1, x, y,
+               frames);
         if (first >= 0 && t[first].on_map && t[first].known)
           printf(" -- col %d row %d, tile $%03X, attribute $%04X", t[first].col,
                  t[first].row, t[first].index, t[first].attr);
@@ -2981,11 +3020,41 @@ static void route_walk_check(const LevelWalk* lw, Wram* w, int x0, int y0,
              : "");
 }
 
+// Breadth-first from (sx,sy) to exhaustion rather than stopped at the goal.
+// Every `prev` is set once and in the same order either way, so the path printed
+// is the path that was always printed; what the extra cells buy is `--reach`,
+// and twelve thousand of them cost nothing.
+//
+// `prev` must arrive filled with -2. Run twice per invocation when the dry grid
+// fails, which is what lets the failure say whether water was the thing in the
+// way -- so it takes the predicate as a flag rather than hard-coding one.
+static void route_flood(const LevelWalk* lw, int32_t* prev, int32_t* queue,
+                        int sx, int sy, bool swim) {
+  const uint32_t cols = lw->cols, rows = lw->rows;
+  int32_t head = 0, tail = 0;
+  prev[(uint32_t)sy * cols + (uint32_t)sx] = -1;
+  queue[tail++] = (int32_t)((uint32_t)sy * cols + (uint32_t)sx);
+  const int dxs[4] = {1, -1, 0, 0}, dys[4] = {0, 0, 1, -1};
+  while (head < tail) {
+    int32_t cur = queue[head++];
+    int cx = (int)((uint32_t)cur % cols), cy = (int)((uint32_t)cur / cols);
+    for (int k = 0; k < 4; k++) {
+      int nx = cx + dxs[k], ny = cy + dys[k];
+      if (nx < 0 || ny < 0 || (uint32_t)nx >= cols || (uint32_t)ny >= rows) continue;
+      uint32_t ni = (uint32_t)ny * cols + (uint32_t)nx;
+      if (prev[ni] != -2) continue;
+      if (!(swim ? route_swimmable(lw, nx, ny) : route_open(lw, nx, ny))) continue;
+      prev[ni] = cur;
+      queue[tail++] = (int32_t)ni;
+    }
+  }
+}
+
 static int cmd_route(int argc, char** argv) {
   if (argc < 6) {
     fprintf(stderr,
             "usage: zamn_assets route <rom.sfc> <level 1-56> <x0> <y0> <x1> <y1>"
-            " [--frames <start>] [--reach <out.png>]\n");
+            " [--frames <start>] [--reach <out.png>] [--swim]\n");
     return 2;
   }
   int rom_len = 0;
@@ -2997,7 +3066,10 @@ static int cmd_route(int argc, char** argv) {
   int x1 = atoi(argv[4]), y1 = atoi(argv[5]);
   int frame0 = -1;
   const char* reach_path = NULL;
-  for (int i = 6; i + 1 < argc; i++) {
+  bool swim = false;
+  for (int i = 6; i < argc; i++) {
+    if (!strcmp(argv[i], "--swim")) swim = true;
+    if (i + 1 >= argc) continue;
     if (!strcmp(argv[i], "--frames")) frame0 = atoi(argv[i + 1]);
     if (!strcmp(argv[i], "--reach")) reach_path = argv[i + 1];
   }
@@ -3032,37 +3104,21 @@ static int cmd_route(int argc, char** argv) {
     free(prev); free(queue); level_walk_free(&lw); free(rom_data);
     return 1;
   }
-  int32_t head = 0, tail = 0;
-  prev[(uint32_t)sy * cols + (uint32_t)sx] = -1;
-  queue[tail++] = (int32_t)((uint32_t)sy * cols + (uint32_t)sx);
-  const int dxs[4] = {1, -1, 0, 0}, dys[4] = {0, 0, 1, -1};
-  // Flooded to exhaustion rather than stopped at the goal. Breadth-first sets
-  // every `prev` once and in the same order either way, so the path printed is
-  // the path that was always printed; what the extra cells buy is `--reach`,
-  // and twelve thousand of them cost nothing.
-  while (head < tail) {
-    int32_t cur = queue[head++];
-    int cx = (int)((uint32_t)cur % cols), cy = (int)((uint32_t)cur / cols);
-    for (int k = 0; k < 4; k++) {
-      int nx = cx + dxs[k], ny = cy + dys[k];
-      if (nx < 0 || ny < 0 || (uint32_t)nx >= cols || (uint32_t)ny >= rows) continue;
-      uint32_t ni = (uint32_t)ny * cols + (uint32_t)nx;
-      if (prev[ni] != -2) continue;
-      if (!route_open(&lw, nx, ny)) continue;
-      prev[ni] = cur;
-      queue[tail++] = (int32_t)ni;
-    }
-  }
+  route_flood(&lw, prev, queue, sx, sy, swim);
 
   if (reach_path) {
     uint8_t* reach = (uint8_t*)calloc(cells, 1);
     if (reach) {
       for (uint32_t i = 0; i < cells; i++) {
         int cx = (int)(i % cols), cy = (int)(i / cols);
-        reach[i] = prev[i] != -2          ? 1
+        // Reached-and-wet gets its own colour rather than collapsing into
+        // green, because in `--swim` the interesting thing about a route is
+        // exactly which part of it the player is swimming.
+        const bool wet = route_water(&lw, cx, cy);
+        reach[i] = prev[i] != -2 ? (wet ? 6 : 1)
                    : route_open(&lw, cx, cy) ? 4
-                   : route_water(&lw, cx, cy) ? 5
-                                              : 0;
+                   : wet                     ? 5
+                                             : 0;
       }
       reach[(uint32_t)sy * cols + (uint32_t)sx] = 2;
       if (gy >= 0 && (uint32_t)gy < rows && gx >= 0 && (uint32_t)gx < cols)
@@ -3074,14 +3130,17 @@ static int cmd_route(int argc, char** argv) {
 
   int rc = 0;
   if (prev[(uint32_t)gy * cols + (uint32_t)gx] == -2) {
-    printf("no route from (%d,%d) to (%d,%d) through level %d.\n", x0, y0, x1, y1, level);
+    printf("no %sroute from (%d,%d) to (%d,%d) through level %d.\n",
+           swim ? "" : "dry ", x0, y0, x1, y1, level);
     printf("the 2x2-clear grid does not connect them, so either the target is\n");
     printf("inside scenery or the way in is a door rather than a gap.\n");
     // ...or it is neither, and the answer is not to be trusted. A cell that the
     // flood reached and that has water next to it is a shore, and the player
-    // walks off shores -- `route_water` above says why the search does not. So
-    // count them and say so, because "no route" is the one thing this tool is
-    // asked to be believed about.
+    // swims off shores. Count them -- and then, rather than leave the caller
+    // with a warning and no way to act on it, *run the wet grid and say*. "No
+    // route" is the one thing this tool is asked to be believed about, and the
+    // difference between "nowhere to go" and "nowhere to go on foot" is the
+    // whole answer.
     uint32_t shore = 0;
     for (uint32_t i = 0; i < cells; i++) {
       if (prev[i] == -2) continue;
@@ -3093,11 +3152,24 @@ static int cmd_route(int argc, char** argv) {
         if (route_water(&lw, nx, ny)) { shore++; break; }
       }
     }
-    if (shore)
-      printf("\nbut %u reachable cells are on the edge of water, which this\n"
-             "search treats as wall and the player does not -- so this answer\n"
-             "is only as good as the assumption that he stays dry. --reach\n"
-             "tints the water magenta.\n", shore);
+    if (shore && !swim) {
+      printf("\n%u reachable cells are on the edge of water", shore);
+      int32_t* wet = (int32_t*)malloc(cells * sizeof(int32_t));
+      if (wet) {
+        for (uint32_t i = 0; i < cells; i++) wet[i] = -2;
+        route_flood(&lw, wet, queue, sx, sy, true);
+        if (wet[(uint32_t)gy * cols + (uint32_t)gx] != -2)
+          printf(", and swimming connects them:\nrerun with --swim for the route."
+                 " The legs it prints are real, but its\nframe counts are not --"
+                 " see `route_swimmable` for what a crossing\nactually costs.\n");
+        else
+          printf(", but swimming does not reach\n(%d,%d) either -- so the water"
+                 " is not what is in the way here.\n", x1, y1);
+        free(wet);
+      } else {
+        printf(".\n");
+      }
+    }
     rc = 1;
   } else {
     // Walk the chain back, then collapse it into axis-aligned runs -- which is
@@ -3106,7 +3178,21 @@ static int cmd_route(int argc, char** argv) {
     int n = 0;
     for (int32_t at = (int32_t)((uint32_t)gy * cols + (uint32_t)gx); at >= 0; at = prev[at])
       path[n++] = at;
-    printf("level %d: (%d,%d) -> (%d,%d), %d cells\n\n", level, x0, y0, x1, y1, n);
+    printf("level %d: (%d,%d) -> (%d,%d), %d cells\n", level, x0, y0, x1, y1, n);
+    if (swim) {
+      uint32_t wetcells = 0;
+      for (int i = 0; i < n; i++)
+        if (route_water(&lw, (int)((uint32_t)path[i] % cols),
+                        (int)((uint32_t)path[i] / cols)))
+          wetcells++;
+      if (wetcells)
+        printf("%u of them are in water. The legs are real and the frame counts\n"
+               "are not: a crossing stalls sixteen frames going in and thirteen\n"
+               "coming out, and runs at eight pixels per nine frames, then three\n"
+               "per two, then one per two climbing out -- never %d.\n",
+               wetcells, ROUTE_SPEED);
+    }
+    printf("\n");
     int frame = frame0;
     int px = x0, py = y0;
     // Collected as well as printed, so the walk below can be the same legs
@@ -3387,13 +3473,14 @@ static void usage(void) {
           "      Spell every password out of the ROM's own tables, or read one\n"
           "      back to the level and victim count it means.\n\n"
           "  zamn_assets route <rom.sfc> <level> <x0> <y0> <x1> <y1> [--frames f]\n"
-          "                    [--reach out.png]\n"
+          "                    [--reach out.png] [--swim]\n"
           "      Breadth-first a walkable path through a level and print the\n"
-          "      turns, or .zmv lines with --frames. --reach tints the map:\n"
-          "      green reached, orange open but cut off, red solid, magenta\n"
-          "      water, yellow the start, blue the goal. Orange says where a\n"
-          "      missing route wants a door; magenta says the player can cross\n"
-          "      what this search cannot.\n\n"
+          "      turns, or .zmv lines with --frames. --swim lets the flood cross\n"
+          "      water, which the player does and walking routes do not; the\n"
+          "      legs are then real but the frame counts are not. --reach tints\n"
+          "      the map: green reached, orange open but cut off, red solid,\n"
+          "      magenta water, pink water the route swims, yellow the start,\n"
+          "      blue the goal. Orange says where a missing route wants a door.\n\n"
           "  zamn_assets probe <rom.sfc> <level> <x> <y> [--to <x> <y>]\n"
           "      Ask $80:AE14 itself whether the player can stand at a point:\n"
           "      the six tiles it reads, their attributes, and the verdict out\n"

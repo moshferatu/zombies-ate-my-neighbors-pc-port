@@ -101,11 +101,20 @@
 // ahead with `terrain_point_bit8` and `$80:DF05  JMP $DD0D` hands him to a
 // scripted behaviour with its own byte script at `$80:DD41`.
 //
-// Measured on `movies/level1-keys.zmv`, which crosses level 1's lake at x=1214:
+// Measured on `movies/level1-keys.zmv`, which enters level 1's lake at x=1214:
 // he walks north at two pixels a frame to y=687, stops dead for sixteen frames,
 // and then travels **eight pixels every nine frames** to y=657 — the swimming
-// sprite, and still moving after the direction on his own page has gone to
-// zero. `zamn_headless --at 3975` is the picture.
+// sprite. `zamn_headless --at 3975` is the picture.
+//
+// That movie releases `Up` at frame 3960 and so ends there, which is why the
+// round that found this bit first read y=657 as a destination the ROM had
+// picked. It is not one. **Held down, he swims the pond and gets out the far
+// side** — the thirty-two pixels to 657 are the entry, after which he is under
+// his own input again: three pixels every two frames to y=616, a thirteen-frame
+// stall at the far shore, one pixel every two while climbing out to y=601, and
+// then walking at two again. Water is passable, and `--swim` in `zamn_assets
+// route` is the search that knows it. What none of those speeds is, is two, so
+// a wet route's *frame* counts are worth nothing until swimming is ported.
 //
 // **Thirty-eight tile indices in the cartridge carry bit 8 at all**, across the
 // five attribute tables the 56 levels share between them, and they are two
