@@ -1,0 +1,219 @@
+# `$81:990B`'s `$5D` path, which is the one branch in the family that reaches
+# off its own page: `LDX $40 : CPX #$FFFF : BEQ +` and then `STA $000E,X`,
+# clearing a *peer* record's `ACTOR_COLLIDE_ID` before the freeze runs.
+#
+# It needs the ice weapon and the type $1E actor at (921,794) on the same level,
+# and `movies/level29-ice.zmv` already proved level 29 is the level that has
+# both — it walks the whole map west with `$5D` to reach an `$81:D704`. This
+# movie keeps the first 4,113 frames of that route, which is everything up to
+# and including the pickup, and then stops going west:
+#
+#     4145   -          the last leg of the ice movie's route, dropped
+#     4160   B          `$7E:1CBC` $0000 -> $0001 at 4162
+#     4200   Down+Y
+#
+# The `B` is 481 frames after the pickup (`$7E:1CCE` $0000 -> $0099 at 3679),
+# which clears the 460-frame lockout that movie had to pay for the same reason.
+# What is different here is that it does not have to walk anywhere afterwards:
+# the creature closes the 157 pixels itself, and the fight is a stand rather
+# than a retreat.
+#
+# **It freezes at about 4290 and then nothing moves again.** The record's
+# collision id goes `$03` -> `$36` and its position stops changing for the rest
+# of the run — 924,630 on every sampled frame from 4300 on, and still 924,630
+# 800 frames later if the movie is allowed to run — with the peer parked beside
+# it at 909,615. That is why 4,600 frames is enough.
+#
+# What it buys:
+#
+#     d990b_freeze_peer  715
+#     d990b_freeze_alone  10
+#
+# Ten is the interesting number, and it is ten because of thirteen frames.
+# `--watch 0440` says `$40` holds `$FFFF` at 4200 and `$1A3E` from 4213, and
+# never changes again for the rest of the run: the companion record does not
+# exist when the shooting starts and is allocated once, thirteen frames in. So
+# `d990b_freeze_alone` is not a rare case of a normal fight, it is the opening
+# of one — and the only reason both sides of the branch are in the same movie is
+# that the first shot was fired before the creature was finished assembling
+# itself. Both sides of a test that only exists because this copy of `$81:8888`
+# looks at another actor's page.
+#
+# The census is empty over this run: nothing staggers, so nothing asks for
+# `$81:96E4`. `movies/level29-990b.zmv` is where that happens.
+
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   A
+1440   -
+1448   Right
+1456   -
+1464   Right
+1472   -
+1480   Right
+1488   -
+1496   Right
+1504   -
+1512   A
+1520   -
+1528   Left
+1536   -
+1544   Left
+1552   -
+1560   Down
+1568   -
+1576   Down
+1584   -
+1592   A
+1600   -
+1608   Up
+1616   -
+1624   Up
+1632   -
+1640   A
+1648   -
+1656   Right
+1664   -
+1672   Right
+1680   -
+1688   Right
+1696   -
+1704   Right
+1712   -
+1720   Down
+1728   -
+1736   Down
+1744   -
+1752   A
+1760   -
+1908   Start
+1918   -
+1938   Start
+1948   -
+1968   Start
+1978   -
+1998   Start
+2008   -
+2028   Start
+2038   -
+2058   Start
+2068   -
+2148   -
+2560   Right
+2647   Down
+2667   Down
+2671   Right
+2935   Up
+3002   Left
+3089   Up
+3094   Right
+3101   Up
+3259   Left
+3267   Up
+3281   Left
+3284   Up
+3298   Left
+3313   Up
+3327   Left
+3330   Up
+3344   Left
+3430   Up
+3494   Down
+3498   Right
+3534   Up
+3624   Right
+3672   Down
+3730   Left
+3752   Up
+3766   Left
+3769   Up
+3783   Left
+3786   Up
+3800   Left
+3822   Down
+3891   Right
+3970   Up
+4069   Right
+4113   Up
+4145   -
+4160   B
+4172   -
+4200   Down+Y
+4560   -

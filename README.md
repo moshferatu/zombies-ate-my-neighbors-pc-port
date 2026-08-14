@@ -29,15 +29,14 @@ routine that suspends inside the thread scheduler does it at an explicit resume
 point, with its parked state as plain copyable data. `zamn_cosim verify` checks
 the C against the
 ROM's own code on every call the game makes — 128 KB of WRAM plus registers — and
-passes **13,780,475 of 13,780,475 across the whole movie corpus**, thirteen levels
-deep. Across all forty-five movies the ROM is not asked to run a single routine
-the port does not have — the decline census is empty, and
-`tools/verify_corpus.ps1 -Coverage` is the command that says so. It last said
-otherwise at forty-four movies, when `movies/level29-item.zmv` arrived declining
-35 times to `$81:990B`; that claim then sat here wrong for two commits, because a
-census is only a work list if something runs it. Porting that one routine took
-that movie from 141 declines to 1 and the corpus from 143 to 3, and all three
-that remain are handlers the port *has*, declining a level further down.
+passes **14,353,960 of 14,353,960 across the whole movie corpus**, thirteen levels
+deep. Across all forty-seven movies the ROM is asked to run exactly one routine
+the port does not have — `$81:96E4` — and it took an input written on purpose to
+make it ask. `tools/verify_corpus.ps1 -Coverage` prints that census, and it was
+**empty** one round ago: nothing in the corpus had ever shot the creature that
+installs it. Two movies that stand and fight took it from empty to 430 declines
+against that one address. Which is the point of the thing: a census is a work
+list, and a work list is only as good as the inputs that run it.
 
 `zamn_cosim run` goes further and substitutes the C for real, diffing two whole
 machines every scheduler pass, and **finds no byte of live game state differing
@@ -53,11 +52,12 @@ like a divergence in the port.
 
 The port also reports **which of its own branches an input actually reached**,
 because a branch no movie takes is one the diff agrees with the ROM about for
-the wrong reason. 115 of 549 are still untaken by every input, and they are the
+the wrong reason. 107 of 549 are still untaken by every input, and they are the
 backlog — a list that grows when a routine is ported and shrinks only when an
-input is written. The two measures disagree on purpose: an empty census says the
-ROM never had to run code the port lacks, and 115 untaken sites say the port has
-plenty of code no input has ever run.
+input is written. The two measures disagree on purpose, and the last round moved
+both: an input that reaches code the port lacks puts a line in the census *and*
+takes sites off the untaken list, including the two sites whose only job is to
+say a handler was missing.
 
 See **`docs/cosim.md`** for the harness and what coverage measures that the diff
 cannot, **`docs/threads.md`** for how a ported routine suspends,

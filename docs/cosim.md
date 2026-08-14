@@ -12647,3 +12647,188 @@ after every leg and measures where the player actually *is* -- and
 `movies/level29-fighting.zmv`'s header already says so in one line that reads
 differently now: "`--fire` is free to the fitter". It is free to the fitter and
 it is not free to the movie.
+
+## The two movies that shoot back, and the address they make the census say (2026-08-14)
+
+The round that ported `$81:990B` closed owing exactly one thing, and said so in
+its own words: an input that fires a weapon at whatever `movies/level29-item.zmv`
+is walking past 35 times. There are now two, because the creature answers to two
+ids and no single weapon can produce both:
+
+```
+movies/level29-990b.zmv          the squirt gun, and the stagger meter
+movies/level29-990b-freeze.zmv   the ice weapon, and the peer record at $40
+```
+
+### It did not need `fit_route.py --fire`, and the reason is a property of the actor
+
+The last round measured the cheap version failing -- `+Y` appended to every leg
+of `movies/level29-item.zmv` puts the player at (911,1025) on frame 4290 where
+the walking movie puts him at (563,223) -- and concluded the input wanted
+`tools/fit_route.py --fire` re-planned per leg from the level 29 spawn. That
+conclusion was right about the fitter and wrong about the problem.
+
+**The type $1E actor placed at (921,794) chases.** `movies/level29-item.zmv`
+climbs north past it, and it follows in the same column, thirty to eighty pixels
+behind, for hundreds of frames:
+
+```
+  frame 3624   creature 919,752   player 919,721
+  frame 3672   creature 931,715   player 931,643
+  frame 3704   creature 928,660   player 929,581
+```
+
+So the input is not a fitted fighting route. It is the walking route, unaltered
+through its last leg, and then one line:
+
+```
+3624   Down+Y
+```
+
+He turns round and shoots the thing that has been following him. Nothing before
+frame 3624 is touched, and that is what makes the fitter unnecessary: `--fire` is
+needed because firing changes what a *planned* frame means, and after 3624 there
+are no planned frames left to change.
+
+The general form is worth keeping, because the corpus will want it again. **A
+chasing actor turns a positional problem into a temporal one.** Route to where it
+will follow you, stop, and turn round. The forty-one legs `fit_route.py` once
+spent on level 29's chicane were spent getting *to* this creature; none of them
+were needed to fight it.
+
+### 151 against 150
+
+`d990b_died` is not a routing problem either, and the arithmetic closes it before
+any input is tried. The squirt gun is collision id `$5C`, whose
+`ENEMY_DAMAGE_TABLE` entry is 1. The creature's `$2A` starts at `$0097` -- 151.
+The player starts level 29 with `$7E:1CCC = $0150`, which is 150 rounds in BCD.
+**One short, before a single shot is allowed to miss.** By frame 5150 `$7E:1CCC`
+is at 72 and `$2A` is at 71: 78 rounds spent for 80 points, which is already
+better than one for one -- some shots register on several consecutive frames --
+and still leaves 71 health to find with 72 rounds in hand.
+
+He also loses first. He arrives on 7 health, the creature takes one point every
+90 frames while they are touching, and `$7E:1CB8` reaches zero at 4262. The
+movie stops at 5150 on his second life.
+
+The table says there is no second option here, and it is legible as a table
+because the index is the inventory *slot*: the id is `$5C + slot`, the index is
+`(id - $5C)`, so `$81:8561` reads straight off as a price list -- squirt 1, ice
+0, bubble 0, then 1, 4, 20, 3, 2, 2, 2, 3, 4, 1, 100. This creature wants slot 5
+(eight hits) or slot 13 (two). Nothing in the corpus has brought either of those
+to this creature -- `d990b_died` reads zero over every input there is.
+
+### The other id, and the ten frames before the peer exists
+
+`movies/level29-990b-freeze.zmv` is `$5D`, which is the branch that made this
+copy of `$81:8888` worth a header: `LDX $40 : CPX #$FFFF : BEQ +` and then
+`STA $000E,X`, clearing another record's `ACTOR_COLLIDE_ID` before the freeze
+runs. It needs the ice weapon and this actor on the same level, and
+`movies/level29-ice.zmv` had already established that level 29 is the one level
+that has both -- so the movie keeps that route's first 4,113 frames, which end
+with the ice in the inventory, presses `B`, and stands still. The creature closes
+the last 157 pixels itself.
+
+It gets both sides:
+
+```
+d990b_freeze_peer   715
+d990b_freeze_alone   10
+```
+
+and the ten are not a rare case of a normal fight. `--watch 0440` says `$40` holds
+`$FFFF` at frame 4200 and `$1A3E` from 4213, and never changes again for the rest
+of the run. **The companion record does not exist when the shooting starts and is
+allocated once, thirteen frames in.** Both sides of the test are in one movie
+because the first shots were fired before the creature had finished assembling
+itself; a movie that walks up to this actor instead of opening fire as it arrives
+would only ever see `freeze_peer`.
+
+### The site that 121 staggers cannot reach
+
+`d990b_stagger_already` is still zero, and it is the most interesting zero in the
+round.
+
+It reads `ACTOR_ATTR_SET` off `$08`'s record. `enemy_survived_react`'s guard reads
+the same bit, at the same offset, on the same record -- and in the same movie it
+fires 41 times. So the bit is up often enough. It is never up on any of the 121
+hits that empty the pool.
+
+They are not independent draws that happened to miss. The flash is installed by
+the splice a *survivor* posts; a hit that empties the pool posts `$81:9643`
+instead and installs nothing. Survive-and-flash and stagger-and-post are the two
+arms of one `BMI`, so the state this guard is looking for can only have been put
+there by a hit that took the other arm, and the two arms alternate rather than
+overlap. 315 hits, 41 of them inside somebody's flash, 121 of them staggering,
+and nothing in both sets.
+
+If it is reachable, the flash has to arrive from somewhere that is not this
+routine -- and the obvious candidate is `$81:96E4`, which is unported, so the
+corpus cannot yet see what it writes.
+
+### The census says the address the round predicted, 430 times
+
+```
+reached from     address      declines
+---------------- ---------- ----------
+handler          $81:96E4          430
+```
+
+That section did not print at all one round ago, over the whole corpus. It prints
+now off one movie, for the reason the round wrote down in advance: `$81:9643`
+installs `$81:96E4` as the collision handler for the length of the spin, and
+nothing in the corpus had ever staggered this creature. `movies/level29-990b.zmv`
+staggers it 121 times.
+
+**The empty census was never a statement about the port. It was a statement about
+the corpus**, and 5,200 frames of one movie was the whole distance between them.
+
+### The corpus, and last round's inversion running backwards
+
+```
+14,353,960 calls checked across 47 movies, 0 diverged.
+Branch coverage, union over the corpus: 442 of 549 taken, 107 untaken.
+
+Declined to, summed over the corpus:
+  $81:96E4        430
+```
+
+Last round wrote down that **the untaken list grows when a routine is ported and
+shrinks only when an input is written**, and this is the same sentence read from
+the other end. 115 became 107, and only six of the eight are the sites these two
+movies were written for. The other two are `handler_unported` and
+`collide_unported`, which went untaken a round ago for the best possible reason
+-- nothing in the corpus could find a missing handler through any door any more
+-- and are taken again now, for exactly as good a reason: something can. An input
+that reaches a routine the port lacks lights up the sites whose whole job is to
+say so.
+
+`player_unported` is still untaken, and still means what it meant: no id in the
+player's jump table has ever gone unhandled.
+
+One number on the per-movie row does not resolve. `movies/level29-990b.zmv`
+reports a `decl.` column of **1,280** against a census of **430**, and 430 x 3 is
+1,290. The corridors-to-rooms ratio was exactly 4 on `movies/level29-item.zmv`
+and is nearly exactly 3 here -- a different depth of registered routine between
+the dispatch and the hole, which is expected -- but ten of these dispatches were
+handed back one time fewer than the rest, and what is different about those ten
+is not established.
+
+### What these two do not buy, and which of it is an input
+
+* **`d990b_died`** wants a weapon this level has not been shown to place. It is
+  the one remaining site with a plausible input and no route to it.
+* **`d990b_bubble`** wants `$5E` on this actor. Whether level 29 places a bubble
+  gun is not established here; nothing in the corpus has carried one to it.
+* **`d990b_no_damage`** wants an id at or above `$5C` whose table entry is zero
+  and which is neither `$5D` nor `$5E`, both of which are intercepted first. The
+  only other zeros in the table are `$71`, `$72` and `$73`, and the ids a player
+  weapon can produce stop at `$69` -- fourteen inventory slots from `$5C`. **No
+  player weapon can take this branch.** If it is reachable at all it is from
+  something that is not a player.
+* **`d990b_stagger_already`** is the one above, and it is waiting on `$81:96E4`
+  rather than on an input.
+
+`$81:96E4` is now the top of the queue by every measure the harness has: it is
+the only line in the census, it is worth 430 declines on one movie, and one of
+the four sites still untaken is behind it.

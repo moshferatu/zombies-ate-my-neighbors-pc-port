@@ -1,0 +1,216 @@
+# The input `$81:990B` was ported without, and the one the round that ported it
+# said it owed: *"an input that fires a weapon at whatever
+# `movies/level29-item.zmv` is walking past 35 times, and the census will name
+# `$81:96E4` on the frame it staggers."* It does, 430 times.
+#
+# **The thing being walked past is the type $1E actor placed at (921,794)** —
+# `zamn_assets actors <rom> 29`, entry 6 — and it chases. That is the whole
+# trick: `movies/level29-item.zmv` climbs north past it and the creature follows
+# a fixed 30 to 80 pixels behind, directly south, in the same column. So this
+# movie keeps 3,597 frames of that route unchanged and then turns around. One
+# line does it:
+#
+#     3624   Down+Y
+#
+# Nothing else is added and nothing before it is touched, which is the only way
+# a route survives a change of intent: `tools/fit_route.py`'s note that "firing
+# changes what those frames mean" is about legs planned *under* fire, and this
+# fires after the last leg has been walked.
+#
+# **It cannot kill it, and the arithmetic says so before the route does.** From
+# `--watch`, the creature's `$2A` starts at `$0097` — 151 — and the squirt gun
+# is collision id `$5C`, whose `ENEMY_DAMAGE_TABLE` entry is 1. The player
+# starts level 29 with `$7E:1CCC = $0150`, which is 150 rounds in BCD. **One
+# short**, before a single shot is allowed to miss.
+#
+# The player loses first anyway. He arrives on 7 health, the creature takes one
+# point every 90 frames while they are touching, and `$7E:1CB8` reaches zero at
+# 4262. He respawns on 10 at 4540 and goes back to it; the movie stops at 5150,
+# on that second life, with `$2A` at 71 of 151.
+#
+# What it buys, against the nine sites that had never been reached:
+#
+#     d990b_hit            315
+#     d990b_survived       194
+#     d990b_staggered      121
+#     d990b_stagger_posted 121
+#     react_already         41   — off `enemy_survived_react`, not this family
+#
+# and the census, which was empty over the whole corpus one round ago:
+#
+#     handler          $81:96E4          430
+#
+# **`d990b_stagger_already` is still zero, and the reason is worth keeping.** It
+# reads `ACTOR_ATTR_SET` off `$08`'s record — the same bit, at the same offset,
+# on the same record that `enemy_survived_react`'s guard reads, and that guard
+# fires 41 times here. So the bit is up often enough. It is never up on a hit
+# that empties the pool, across 121 of them: the flash is installed by the
+# splice a *survivor* posts, and a hit that staggers posts `$81:9643` instead
+# and installs nothing. The two guards are not independent, they are exclusive,
+# and no amount of the same shooting will cross them.
+#
+# `movies/level29-990b-freeze.zmv` is the other half: `$5D` on the same
+# creature, which is the only other id it answers to that an input can produce.
+
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   A
+1440   -
+1448   Right
+1456   -
+1464   Right
+1472   -
+1480   Right
+1488   -
+1496   Right
+1504   -
+1512   A
+1520   -
+1528   Left
+1536   -
+1544   Left
+1552   -
+1560   Down
+1568   -
+1576   Down
+1584   -
+1592   A
+1600   -
+1608   Up
+1616   -
+1624   Up
+1632   -
+1640   A
+1648   -
+1656   Right
+1664   -
+1672   Right
+1680   -
+1688   Right
+1696   -
+1704   Right
+1712   -
+1720   Down
+1728   -
+1736   Down
+1744   -
+1752   A
+1760   -
+1908   Start
+1918   -
+1938   Start
+1948   -
+1968   Start
+1978   -
+1998   Start
+2008   -
+2028   Start
+2038   -
+2058   Start
+2068   -
+2148   -
+2600   Right
+2691   Down
+2711   Right
+2717   Right
+2977   Up
+3128   Left
+3182   Up
+3246   Right
+3323   Up
+3336   Left
+3342   Up
+3368   Right
+3390   Up
+3460   Left
+3468   Up
+3492   Left
+3496   Up
+3501   Left
+3526   Up
+3540   Left
+3568   Left
+3572   Up
+3579   Left
+3584   Up
+3592   Left
+3597   Up
+3624   Down+Y
+5150   -

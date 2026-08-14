@@ -48,6 +48,15 @@ measures where the player *is*, so it does not matter that a shot changes the
 board. Patching `+Y` onto a movie the fitter has already finished does not work
 and was tried -- the trajectory diverges within a leg or two and every turn after
 it is aimed at the wrong place.
+
+**Appending fire after the last leg is a different thing and it does work**, and
+it is worth reaching for first, because a fight often does not need a route at
+all. `movies/level29-990b.zmv` is `movies/level29-item.zmv` unchanged through its
+final turn plus one line, `3624 Down+Y`: the actor it shoots *chases*, so the
+walking route had already delivered the player to it and left it following thirty
+pixels behind. There are no planned frames after the last leg, so there is
+nothing for firing to invalidate. Route to where a chaser will follow you, stop,
+and turn round -- and save `--fire` for the objects that have to be walked to.
 """
 
 import os
