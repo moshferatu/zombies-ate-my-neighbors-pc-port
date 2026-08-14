@@ -1587,6 +1587,27 @@ static void shim_enemy_e6e4_collide(Wram* w, const Rom* rom,
 }
 
 // ---------------------------------------------------------------------------
+// $81:990B  enemy_990b_collide — the eleventh copy, and the one the census
+//                                asked for by name
+// ---------------------------------------------------------------------------
+//
+// No `supported` guard, for `enemy_e6e4_collide`'s reason: `$5E` goes to
+// `enemy_bubble_react` and `$5D` to `enemy_freeze` through a store of its own,
+// and both have been ported since the level-49 round, so nothing this routine
+// can be handed makes it give up.
+//
+// `$81:9633` gets no registry entry of its own. It is reached by `JSR` from one
+// branch of one caller and never by `JSL`, so the harness has no call to offer
+// it — the four instructions are checked as part of this entry or not at all.
+
+static void shim_enemy_990b_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_990b_collide(w, rom, in->d, in->a, &r, NULL);
+  handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
 // $81:845E  actor_845e_collide — no WRAM at all, so no `w` and no guard body
 // ---------------------------------------------------------------------------
 
@@ -5256,6 +5277,28 @@ static const CosimRoutine ROUTINES[] = {
         // before any comparison happens. A guard costs every caller, including
         // the ones it does not refuse.
         .cycles = 192,
+        .stack_bytes = 2,
+    },
+    {
+        .name = "enemy_990b",
+        .symbol = "$81:990B",
+        .entry = 0x81990b,
+        // `$81:9911`, the ignore path's `RTL` after its own `CLC` — the same
+        // choice `enemy_e6e4` makes and for the same reason. This routine has
+        // three other `RTL`s and two of them arrive with carry set.
+        .ret_op = 0x819911,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_990b_collide,
+        // No guard: nothing it can be handed makes it decline. See above.
+        .supported = NULL,
+        // Measured 84..124, mean 92, over the 35 calls
+        // `movies/level29-item.zmv` makes — and **all thirty-five of them are
+        // ignores**, which is why the spread is 40 cycles wide instead of the
+        // family's usual several hundred. The number is honest about what it
+        // measured and no wider: nothing in the corpus has yet handed this
+        // routine a weapon shot, so the eight branches behind the first
+        // comparison are priced by nobody.
+        .cycles = 92,
         .stack_bytes = 2,
     },
     {

@@ -1586,6 +1586,96 @@ bool enemy_e6e4_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                         ActorHandlerRegs* r, uint32_t* unported);
 
 // ---------------------------------------------------------------------------
+// $81:990B  enemy_990b_collide — the eleventh copy, and the only one that
+// subtracts the same damage twice
+// ---------------------------------------------------------------------------
+//
+// Found the same way `enemy_e6e4_collide` was: it is the one address on the
+// decline census, put there by `movies/level29-item.zmv` 35 times, and it went
+// on the census the moment that movie joined the corpus. The README claim that
+// the ROM is never asked to run a routine the port does not have was true at
+// forty-three movies and false at forty-four, and nothing noticed for two
+// commits because nobody re-ran the census.
+//
+// **It is not in `analysis/bank_81.asm`.** Not one byte of it — the tracer never
+// saw this creature hit, so all ninety-four bytes are `.db`, and this is the
+// sixth time `tools/dis816.py` has had to go to the ROM for something four banks
+// of grepping said did not exist.
+//
+// Two things make it the eleventh spelling rather than a duplicate:
+//
+// **There are two damage pools and one subtraction feeds both.** Every other
+// copy takes the `ENEMY_DAMAGE_TABLE` entry out of one health word and is done.
+// This one takes it out of `$2A`, and then — having already decided the creature
+// lived — takes *the same entry* out of `$4A` as well:
+//
+//     $81:9934  STA $2A                 ; health, and it survived
+//     $81:9936  LDA $4A : SEC
+//     $81:9939  SBC $818561,X           ; the same damage again
+//     $81:993D  STA $4A
+//     $81:993F  BMI $9962               ; the second pool is what ran out
+//
+// So the creature has a health bar and a **stagger meter**, both draining at the
+// same rate, and the meter is the shorter of the two: `$81:9652  LDA #$000F :
+// STA $4A` refills it to 15 every time it empties. What emptying it buys is at
+// `$81:9643` — `LDA #$96E4 : LDY #$0081 : JSL $80:8475` swaps in a *different*
+// collision handler, `LDA #$0006 : STA $7E`, and then eight metasprite loads out
+// of `$81:96F1` two `thread_yield`s apart. A spin, with someone else answering
+// for it while it spins.
+//
+// **Its death path decrements nothing.** Seven copies of this family end a death
+// with a `DEC` of some word on the page, and five of those words —
+// `B41C_DP_COUNTER_0A`, `D9B6B_DP_COUNTER_26`, `D9063_DP_COUNTER_2E`,
+// `DAC92_DP_COUNTER_10`, `E6E4_DP_COUNTER_0A` — are named for where they are
+// because nothing in reach reads them. `$81:9945  STA $2A : STZ $7E : SEC : RTL`
+// is three instructions and no counter at all, which makes it the shortest death
+// in the family and settles nothing about what the other five words are for.
+#define ENEMY_990B_COLLIDE_ENTRY 0x81990bu
+#define D990B_DP_HEALTH 0x2a
+#define D990B_DP_HIT_ID 0x2e
+
+// The second pool, drained by the same damage as the health word above and
+// refilled to `$000F` by `$81:9652` when it empties. Named for what the code
+// does with it and no more: nothing in reach calls it a stagger meter, but
+// nothing in reach reads it for any other purpose either.
+#define D990B_DP_STAGGER 0x4a
+
+// A **second display record's address**, kept on this page, and the `$5D` path
+// is the only thing that touches it:
+//
+//     $81:994F  PHA
+//     $81:9950  LDX $40 : CPX #$FFFF : BEQ +
+//     $81:9957  LDA #$0000 : STA $000E,X
+//     $81:995D  + PLA : JML $81:847E
+//
+// `$000E` off a record is `ACTOR_COLLIDE_ID` (`port/oam.h`), so freezing this
+// creature switches something *else* off — and `$FFFF` is the page saying it has
+// no companion right now, which is why the guard is there at all. No other copy
+// of `$81:8888` reaches outside its own page on the way into `enemy_freeze`.
+#define D990B_DP_PEER 0x40
+#define D990B_PEER_NONE 0xffff
+
+// $81:9633, the four instructions the emptied stagger meter runs.
+//
+// It is `enemy_survived_react`'s guard with the splice replaced by a store:
+// `LDY $08 : LDA $0000,Y : AND #$0010 : BNE <RTS>` is `$81:8506`'s first four
+// instructions verbatim — already flashing, so do nothing — and what stands
+// where the stack surgery would be is `LDA #$9643 : STA $12`, an address parked
+// in `ACTOR_DP_DEATH_REQ` for the enemy body's own `LDA $12 : BEQ <loop>` to
+// find on its next pass. A request to leave the main loop, not a death.
+#define ENEMY_990B_STAGGER_ENTRY 0x819633u
+#define D990B_STAGGER_BODY 0x9643
+
+// The handler. Both `JML` ids are served — `$5E` is `enemy_bubble_react` and
+// `$5D` is `enemy_freeze` behind the peer store above — so `unported` is carried
+// for the family's signature and never written.
+bool enemy_990b_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported);
+
+// $81:9633. Always true: it reads two words and may write one.
+void enemy_990b_stagger(Wram* w, uint16_t dp, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
 // $81:845E  actor_845e_collide — thirty-two bytes and **no stores at all**
 // ---------------------------------------------------------------------------
 //

@@ -243,6 +243,19 @@
   X(e6e4_no_damage,   "enemy_e6e4_collide",  "a hit whose damage-table entry is zero") \
   X(e6e4_survived,    "enemy_e6e4_collide",  "one it lived through, and the only path that stores health") \
                                                                                 \
+  /* $81:990B enemy_990b_collide — the eleventh copy, and the two-pool one. */   \
+  X(d990b_ignore,     "enemy_990b_collide",  "an id below a weapon shot's, which it ignores outright") \
+  X(d990b_hit,        "enemy_990b_collide",  "a weapon shot, with the id parked at $2E") \
+  X(d990b_bubble,     "enemy_990b_collide",  "id $5E, which JMLs to $81:83C6 with nothing in front of it") \
+  X(d990b_freeze_peer,"enemy_990b_collide",  "id $5D with a companion record at $40, whose collision id is cleared") \
+  X(d990b_freeze_alone,"enemy_990b_collide", "...or $40 is $FFFF, and the freeze touches only this page") \
+  X(d990b_died,       "enemy_990b_collide",  "a hit that took its last health — the one death in the family that decrements nothing") \
+  X(d990b_no_damage,  "enemy_990b_collide",  "a hit whose damage-table entry is zero, so neither pool moves") \
+  X(d990b_staggered,  "enemy_990b_collide",  "it lived, and the same damage emptied the second pool at $4A") \
+  X(d990b_survived,   "enemy_990b_collide",  "...or it did not, and the ordinary survivor's splice runs") \
+  X(d990b_stagger_already, "enemy_990b_stagger", "already flashing, so the emptied pool posts nothing at all") \
+  X(d990b_stagger_posted,  "enemy_990b_stagger", "...or it is not, and $81:9643 is parked in $12 for the body to find") \
+                                                                                \
   /* $81:9B6B enemy_9b6b_collide — level 21's, and the sixth copy of $81:8888. */ \
   X(d9b6b_ignore,     "enemy_9b6b_collide",  "an id below a weapon shot's, which it ignores outright") \
   X(d9b6b_hit,        "enemy_9b6b_collide",  "a weapon shot, with the id parked at $30") \

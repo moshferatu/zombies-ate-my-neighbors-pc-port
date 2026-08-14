@@ -1,0 +1,207 @@
+# **Level 25's item slot 1 object, collected and spent** — the `$0A` at
+# (128,694) that `zamn_assets route` refused for a dozen rounds, walked to in
+# the emulator rather than in the tool.
+#
+# **It is not what took `psn_t3_expired`.** That was `movies/level29-item.zmv`,
+# in the round that corrected the search's box; this fires it a second time, at
+# frame 4551, and reaches 208 of the 538 branch sites on its own. Whether any of
+# those 208 is new to the corpus is a question for `verify_corpus.ps1`, not for
+# this header. What it is for is the other claim. Two rounds of route work
+# ended with `route`
+# printing a walk to (127,700) and calling this object reachable, and that was
+# the search's own terrain test agreeing with itself. This is the game agreeing.
+#
+# **The prefix is `movies/level25-boss.zmv` through frame 2872**, where the
+# player stands at (1017,644), off the escalator and before that movie's
+# north-plaza detour. The escalator is why nothing can start at the spawn:
+# `tools/fit_route.py` plans a leg, releases, and measures itself back where it
+# began, because an escalator moves the player while the button is up. From
+# 2872 the route is **184 cells in 11 legs and 732 frames**, against the
+# 231 cells in 12 legs and 921 frames the spawn costs.
+#
+# **The fitter still could not walk it.** Sixty legs, the last forty of them
+# 8-frame unstick nudges that moved nothing, stopped at (119,696) — nine pixels
+# short. The reason is worth the movie on its own:
+#
+# **A direction change does not take effect on the frame it is pressed.** The
+# player finishes the step he is already in, and where that lands him decides
+# whether the new leg is walkable at all. Standing at (119,696) and pressing
+# Right puts him at (119,694) and then nowhere for 100 frames, because
+# `$80:AE14` calls (121,694) **blocked** — col 16, row 85, tile `$0E9`,
+# attribute `$0003`, the wall this object is tucked under. Walking *down*
+# through (111,696) and turning Right on that frame carries him to y=702
+# instead, and the same eastward leg is clear for forty pixels. Same button,
+# same pixel, two lanes, and only one of them is a route. `zamn_assets probe
+# 26 119 694` and `probe 26 121 694` are the two commands that say so.
+#
+# So the last two legs are tuned by hand and the tuning is one frame wide:
+# `Right` at 3632, while the Down leg is still running, then `Up` at 3640, which
+# stops against that same wall at **(127,696)** — one and two pixels from the
+# object, inside `actor_overlap_pass`'s box on both axes.
+#
+# The tail, from `--watch`:
+#
+#     3643  $1D0E 0 -> 1                 he walks onto the object
+#     3682  $1CC0 7 -> 1                 A cycles the selection onto it
+#     3702  $54 = $8000, $56 = 849, with $1D0E back to 0 and $1CC0 back to 7:
+#           X spends it, the slot empties, and the selection moves off
+#     4551  $56 -> 0 and $54 -> 0 in the same frame — the branch
+#
+# 849 frames of countdown and not one of them interrupted, spent standing where
+# the walk ended.
+#
+# `zamn_cosim verify -f 4600` checks 270,527 calls with nothing diverged.
+
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   A
+1440   -
+1448   Right
+1456   -
+1464   Down
+1472   -
+1480   Down
+1488   -
+1496   A
+1504   -
+1512   Right
+1520   -
+1528   Right
+1536   -
+1544   Right
+1552   -
+1560   Up
+1568   -
+1576   Up
+1584   -
+1592   A
+1600   -
+1608   Right
+1616   -
+1624   A
+1632   -
+1640   Right
+1648   -
+1656   Down
+1664   -
+1672   Down
+1680   -
+1688   A
+1696   -
+1844   Start
+1854   -
+1874   Start
+1884   -
+1904   Start
+1914   -
+1934   Start
+1944   -
+1964   Start
+1974   -
+1994   Start
+2004   -
+2084   -
+2580   Down
+2730   Left
+2870   Up
+2872   Left
+3053   Up
+3098   Right
+3104   Up
+3165   Left
+3273   Left
+3381   Down
+3391   Left
+3444   Down
+3469   Right
+3475   Down
+3505   Left
+3523   Down
+3551   Right
+3561   Down
+3566   Left
+3572   Down
+3632   Right
+3640   Up
+3660   -
+3680   A
+3688   -
+3700   X
+3708   -

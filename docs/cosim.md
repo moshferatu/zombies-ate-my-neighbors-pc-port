@@ -12193,9 +12193,13 @@ So the branch hangs on the object at (553,212) in level 29.
 > three pixels outside the box. `route` now scans the touch box on every
 > failure, names the point, and walks the last leg onto it rather than onto the
 > centre of the cell holding it; see `docs/analysis-tools.md`. The branch
-> does not hang on level 29 — and level 29 is no longer the one to write. Its
-> route is 375 cells in 36 legs and 1493 frames, and the paragraph below is about
-> the drift that cost. Level 25's is **231 cells in 12 legs and 921 frames**, and
+> does not hang on level 29 — though level 29 is what paid it: the round that
+> corrected the box also cut `movies/level29-item.zmv`, 47 legs of
+> `tools/fit_route.py` from that spawn, and `psn_t3_expired` has been taken
+> since. What the other two levels buy now is cheapness, not the site. Level
+> 29's route is 375 cells in 36 legs and 1493 frames, and the paragraph below is
+> about the drift that cost. Level 25's is **231 cells in 12 legs and 921
+> frames**, and
 > its walk check reaches the last leg with nothing to report but the odd pixel
 > two-pixel steps cannot land on. A third of the legs is a third of the places
 > drift can start.
@@ -12217,6 +12221,19 @@ it was deleted rather than committed.
 > collectable, and it is why an arrival can now be trusted to a pixel or two.
 > The legs in between are still aimed at cell centres, so the drift described
 > above is the drift there still is.
+
+> **And a round later there is a mechanism for it.** `movies/level25-item.zmv`
+> is the first movie cut from an anchored route, and the fitter could not walk
+> it: 60 legs to nine pixels short, on a plan of 11. The player does not stop on
+> the frame the button comes up — he finishes the step he is in, up to six more
+> pixels along the old axis, and *that* is the lane the next leg is walked in.
+> An `Up` leg released at (119,700) rests at (119,694); `$80:AE14` calls
+> (121,700) open and (121,694) blocked, and the route was planned in the first.
+> So "the legs drift" is not slop accumulating over a route — it is one tile row
+> of coast at every turn, decided after the follower has measured. See
+> `docs/analysis-tools.md`. The movie collects and spends the item with its last
+> two legs tuned by hand, and takes `psn_t3_expired` a second time at frame
+> 4551.
 
 ## Two things about the tools that cost time
 
@@ -12479,3 +12496,154 @@ boot**, so it covers more game and less boot for the same N and reads higher --
 40.1% against 23.6% on `level1`, both correct about different stretches. Only
 runs of the same kind belong side by side, and the offline tool follows the
 tracer, which counts PPU frames.
+
+## $81:990B, the one address the census was asking for by name (2026-08-13)
+
+The decline census is this project's work list: `zamn_cosim verify -c` prints
+every address the ROM went to because the port stepped aside, and for two
+rounds it printed nothing at all. README said so in its headline -- across all
+forty-three movies the ROM is no longer asked to run a single routine the port
+does not have.
+
+That stopped being true at forty-four. `movies/level29-item.zmv` joined the
+corpus in `5f83761`, and it declines 35 times to `$81:990B`. Nobody re-ran the
+census, so the claim survived two commits after it was falsified. **A census is
+only a work list if something runs it**, and the thing that runs it is
+`tools/verify_corpus.ps1 -Coverage`, which is not what a round reaches for when
+it is cutting a movie.
+
+### It is not in the listing, for the sixth time
+
+Not one of the ninety-four bytes:
+
+```
+$81:990C  .db $5C,$00,$B0,$02,$18,$6B,$85,$2E,...  ;  ?
+$81:963C  .db $05,$A9,$43,$96,$85,$12,$60,...      ;  ?
+```
+
+`?` in `analysis/bank_81.asm` is the tracer's "never touched", and the tracer
+never saw this creature hit. `tools/dis816.py` has now gone to the ROM six times
+for a routine four banks of grepping said did not exist, and its own docstring
+is the list.
+
+### The eleventh copy of $81:8888, and two things are new
+
+Ten copies of the enemy collision handler were already ported and no two of them
+answer id `$5E` the same way. This one adds two spellings nobody else has.
+
+**Two damage pools, one subtraction.** Every other copy takes the
+`ENEMY_DAMAGE_TABLE` entry out of one health word and is finished. This one --
+*after* deciding the creature lived -- takes the same entry out of a second word
+as well:
+
+```
+$81:9934  STA $2A                 ; health, and it survived
+$81:9936  LDA $4A : SEC
+$81:9939  SBC $818561,X           ; the same damage again
+$81:993D  STA $4A
+$81:993F  BMI $9962               ; the second pool is what ran out
+```
+
+A health bar and a shorter meter beside it, draining at the same rate. Emptying
+the meter runs `$81:9633` -- which is `enemy_survived_react`'s guard with the
+stack surgery replaced by `LDA #$9643 : STA $12`, a request the creature's own
+body reads on its next pass -- and `$81:9643` refills the meter to `$000F`,
+sets `$7E` to 6, and plays eight metasprite loads two `thread_yield`s apart.
+A spin.
+
+**A `$5D` that reaches outside its own page.** Every other copy hands the freeze
+gun straight to `$81:847E`. This one stops on the way:
+
+```
+$81:9950  LDX $40 : CPX #$FFFF : BEQ +
+$81:9957  LDA #$0000 : STA $000E,X
+```
+
+`$000E` off a display record is `ACTOR_COLLIDE_ID`, so freezing this creature
+switches a *companion* record's collisions off, and `$FFFF` is the page saying
+it currently has no companion.
+
+Its death path, by contrast, is the shortest in the family: `STA $2A : STZ $7E :
+SEC : RTL`, with none of the `DEC` of an unread counter that five of the other
+copies end on.
+
+### Result, and the part of it that is not a result
+
+```
+routine       calls  yields  checked  passed  int.  decl.  stack  ROM cycles         result
+enemy_990b       35       -       35      35     0      0      0  84..124, mean 92   OK
+```
+
+35 calls checked, 0 diverged, and the census line is gone.
+
+**All thirty-five are ignores.** Every one of those calls handed the routine an
+id below `COLLIDE_ID_PLAYER`, which is two instructions and a `CLC : RTL`; the
+40-cycle spread is the giveaway, where the rest of the family measures several
+hundred wide. Nine of the eleven coverage sites this round added have never been
+reached, including both pools, both `JML` ids and `enemy_990b_stagger` entirely.
+
+So the round cleared a census line and proved two instructions, and those are
+different things. **A decline census names a routine, not a branch** -- it
+counts the calls the ROM had to serve, and a routine can be unported on paths
+nothing has ever asked for. `port/coverage.h` is the instrument that says so,
+and this is the first time the two have disagreed this loudly about the same
+address.
+
+### One routine, 140 declines, and the corpus union went *down*
+
+```
+13,780,475 calls checked across 45 movies, 0 diverged.
+Branch coverage, union over the corpus: 434 of 549 taken, 115 untaken.
+```
+
+No census section printed at all, which is the empty one.
+
+`movies/level29-item.zmv` went from **141 declines to 1**, and the corpus from
+143 to 3. The arithmetic is exact: `141 = 35 x 4 + 1`. Thirty-five collisions,
+each of them declined at four places, and a leftover 1 that was never about this
+routine -- the same kind `movies/level1-keys.zmv` and `movies/level25-item.zmv`
+still carry, a handler the port has giving up a level further down.
+
+Which four is not established here, only that there are four: a call whose
+handler is missing is handed back by every registered routine it passed through,
+and each hands it back where *it* stands. **The `decl.` column counts corridors
+and the census counts rooms**, and the ratio between them on this movie is 4.
+
+The union is the surprise. Eleven sites were added and one of them is taken, so
+435 should have become 436; it became **434**. Two sites that forty-five movies
+used to reach are now unreachable by any of them -- `handler_unported`,
+`collide_unported` and `player_unported` are all three untaken now, where two of
+them were taken before. Nothing in the corpus can find a missing handler through
+any door any more.
+
+That is a coverage report going backwards for a good reason, and it is worth
+saying out loud because the number is otherwise the wrong way round: **the
+untaken list grows when a routine is ported and shrinks only when an input is
+written.** Porting adds branches nobody has run and deletes the sites that only
+existed to say something was missing. A round that ports well and writes no movie
+will always make this figure look worse.
+
+### What is already visible behind it
+
+`$81:9643` installs `$81:96E4` as the collision handler for the length of the
+spin, and `$81:96E4` is not ported. Three sites install `$81:990B` itself --
+`$81:9313`, `$81:96D7` and `$81:9865`, the middle one at the end of the spin
+putting the ordinary handler back -- so the pair swap in and out around a state
+this creature enters by being shot enough times.
+
+None of that is reachable from the corpus as it stands. The next thing this owes
+is an input that fires a weapon at whatever `movies/level29-item.zmv` is walking
+past 35 times, and the census will name `$81:96E4` on the frame it staggers.
+
+**The cheap version of that input does not work, and it is worth knowing why.**
+Taking `movies/level29-item.zmv` and appending `+Y` to each of its legs -- same
+frames, same directions, fire held -- does not produce the same walk with shots
+on it. The walking movie stands at (563,223) on frame 4290; the same movie with
+`+Y` stands at **(911,1025)**, three hundred pixels and a different part of the
+level away, and `enemy_990b` is not reached even once. A route is a list of
+frames at which a direction was released, and firing changes what those frames
+mean. `tools/fit_route.py --fire` exists for exactly this reason -- it re-plans
+after every leg and measures where the player actually *is* -- and
+`movies/level29-fighting.zmv`'s header already says so in one line that reads
+differently now: "`--fire` is free to the fitter". It is free to the fitter and
+it is not free to the movie.

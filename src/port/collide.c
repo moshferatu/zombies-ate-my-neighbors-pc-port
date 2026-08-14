@@ -1376,6 +1376,8 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
     served = enemy_ac92_collide(w, rom, dp, arg, &r, NULL);
   } else if (entry == ENEMY_E6E4_COLLIDE_ENTRY) {
     served = enemy_e6e4_collide(w, rom, dp, arg, &r, NULL);
+  } else if (entry == ENEMY_990B_COLLIDE_ENTRY) {
+    served = enemy_990b_collide(w, rom, dp, arg, &r, NULL);
   } else if (entry == ACTOR_845E_COLLIDE_ENTRY) {
     served = actor_845e_collide(arg, &r);
   } else if (entry == ACTOR_DEEB_COLLIDE_ENTRY) {
@@ -1404,7 +1406,7 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
   } else if (entry == OBJECT_COLLIDE_ENTRY) {
     served = object_collide(w, dp, arg, &r);
   } else {
-    // Twenty-five addresses are handled above. Anything else is a routine that has
+    // Twenty-six addresses are handled above. Anything else is a routine that has
     // not been written yet, and saying so by address is what makes the remaining
     // work countable instead of vague — which is what `unported` carries out.
     PORT_COVER(handler_unported);
@@ -2682,6 +2684,158 @@ bool enemy_e6e4_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 
   PORT_COVER(e6e4_survived);
   wram_w16(w, (uint32_t)dp + E6E4_DP_HEALTH, left);
+  return enemy_survived_react(w, dp, r);
+}
+
+// ---------------------------------------------------------------------------
+// $81:9633  enemy_990b_stagger — the guard, with a store where the splice goes
+// ---------------------------------------------------------------------------
+
+void enemy_990b_stagger(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+  // `$81:9633  LDY $08 : LDA $0000,Y : AND #$0010 : BNE $9642`. Four
+  // instructions shared with `enemy_survived_react` and `enemy_bubble_react`,
+  // reading the same `ACTOR_ATTR_SET` off the same `$08`, and Y is an output on
+  // both paths because nothing below writes it.
+  uint16_t record = wram_r16(w, (uint32_t)dp + VICTIM_DP_RECORD);
+  uint16_t flags = wram_r16(w, record);
+  r->y = record;
+
+  if (flags & ACTOR_ATTR_SET) {
+    // `$81:9642  RTS`, with the `AND`'s flags standing — the third routine in
+    // this file to decline a reaction because the creature is already flashing,
+    // and the first to decline it *silently*: the caller's `CLC : RTL` is two
+    // instructions further on either way, so from the outside an emptied
+    // stagger meter that lands inside the flash window looks like nothing
+    // happened at all.
+    PORT_COVER(d990b_stagger_already);
+    r->a = ACTOR_ATTR_SET;
+    r->n = false;
+    r->z = false;
+    return;
+  }
+
+  // `$81:963D  LDA #$9643 : STA $12`. Not a death and not a splice: the body's
+  // own `LDA $12 : BEQ <loop>` reads it on the next pass and leaves the main
+  // loop for the address parked here.
+  PORT_COVER(d990b_stagger_posted);
+  wram_w16(w, (uint32_t)dp + ACTOR_DP_DEATH_REQ, D990B_STAGGER_BODY);
+  r->a = D990B_STAGGER_BODY;
+  r->n = (D990B_STAGGER_BODY & 0x8000) != 0;
+  r->z = false;
+}
+
+// ---------------------------------------------------------------------------
+// $81:990B  enemy_990b_collide
+// ---------------------------------------------------------------------------
+
+bool enemy_990b_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r, uint32_t* unported) {
+  (void)unported;  // both of its two `JML`s are served — see the header
+  r->a = arg;
+
+  if (arg < COLLIDE_ID_PLAYER) {
+    // `$81:990B  CMP #$005C : BCS : CLC : RTL`, writing nothing — the same
+    // four bytes `enemy_9b6b_collide` and `enemy_9063_collide` open with.
+    PORT_COVER(d990b_ignore);
+    uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
+    r->n = (diff & 0x8000) != 0;
+    r->z = false;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:9912  STA $2E : AND #$7FFF`.
+  PORT_COVER(d990b_hit);
+  wram_w16(w, (uint32_t)dp + D990B_DP_HIT_ID, arg);
+  uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+  r->a = id;
+
+  if (id == ENEMY_HIT_SPECIAL_A) {
+    // `CMP #$005E : BEQ $994B`, and `$81:994B  JML $81:83C6` — bare, like nine
+    // of the ten before it and unlike `enemy_9b6b_collide`, which counts the
+    // bubble first.
+    PORT_COVER(d990b_bubble);
+    return enemy_bubble_react(w, dp, r);
+  }
+
+  if (id == ENEMY_HIT_SPECIAL_B) {
+    // `CMP #$005D : BEQ $994F`, and `$81:994F` is the family's one detour
+    // outside its own page before `enemy_freeze`: `LDX $40 : CPX #$FFFF : BEQ`,
+    // then `LDA #$0000 : STA $000E,X` — a companion record's
+    // `ACTOR_COLLIDE_ID`, cleared.
+    uint16_t peer = wram_r16(w, (uint32_t)dp + D990B_DP_PEER);
+    r->x = peer;
+    if (peer != D990B_PEER_NONE) {
+      PORT_COVER(d990b_freeze_peer);
+      wram_w16(w, (uint32_t)(uint16_t)(peer + ACTOR_COLLIDE_ID), 0);
+    } else {
+      PORT_COVER(d990b_freeze_alone);
+    }
+    // `PLA : JML $81:847E`. The `PHA` two instructions up is why the id
+    // survives the detour, and `enemy_freeze` sets every flag it returns.
+    return enemy_freeze(w, dp, r);
+  }
+
+  // `SEC : SBC #$005C : ASL A : TAX`, then `SEC : LDA $2A : SBC $818561,X` —
+  // the same arithmetic against the same table for the eleventh time.
+  uint16_t index = (uint16_t)((id - COLLIDE_ID_PLAYER) * 2);
+  uint16_t damage = rom_word(rom, ENEMY_DAMAGE_TABLE + (uint32_t)index);
+  uint16_t health = wram_r16(w, (uint32_t)dp + D990B_DP_HEALTH);
+  uint16_t left = (uint16_t)(health - damage);
+  r->x = index;
+
+  if (left & 0x8000) {
+    // `$81:9945  STA $2A : STZ $7E : SEC : RTL`. No award and no counter — the
+    // shortest death in the family — so the `SBC` two instructions back is the
+    // last thing to set N and Z, and it went negative.
+    PORT_COVER(d990b_died);
+    wram_w16(w, (uint32_t)dp + D990B_DP_HEALTH, left);
+    // `STZ $7E`, transcribed for the same reason the other copies transcribe
+    // it: the word is already zero unless `enemy_freeze` has been counting into
+    // it, and this creature's `$5D` path is the only writer that ever makes it
+    // non-zero.
+    wram_w16(w, (uint32_t)dp + ACTOR_DP_SCRATCH_7E, 0);
+    r->a = left;
+    r->n = true;
+    r->z = false;
+    r->c = true;
+    return true;
+  }
+
+  if (left == health) {
+    // `$81:9930  CMP $2A : BEQ $9967` — the damage-table entry was zero, so the
+    // second pool is never touched either. `CLC : RTL` with the `CMP`'s flags.
+    PORT_COVER(d990b_no_damage);
+    r->a = left;
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+
+  // `$81:9934  STA $2A`, and then the thing no other copy does: the same
+  // damage again, out of a second word.
+  wram_w16(w, (uint32_t)dp + D990B_DP_HEALTH, left);
+  uint16_t stagger = wram_r16(w, (uint32_t)dp + D990B_DP_STAGGER);
+  uint16_t stagger_left = (uint16_t)(stagger - damage);
+  wram_w16(w, (uint32_t)dp + D990B_DP_STAGGER, stagger_left);
+
+  if (stagger_left & 0x8000) {
+    // `$81:9962  INC $7E : JSR $9633 : CLC : RTL`. The `STA $4A` between the
+    // `SBC` and the `BMI` sets no flags, so it is the *second* subtraction the
+    // branch is reading — and `enemy_990b_stagger` overwrites A, Y, N and Z
+    // before the `CLC` gets to the carry.
+    PORT_COVER(d990b_staggered);
+    wram_w16(w, (uint32_t)dp + ACTOR_DP_SCRATCH_7E,
+             (uint16_t)(wram_r16(w, (uint32_t)dp + ACTOR_DP_SCRATCH_7E) + 1));
+    enemy_990b_stagger(w, dp, r);
+    r->c = false;
+    return true;
+  }
+
+  // `$81:9941  JML $81:8506` — a jump, so the reaction's registers are this
+  // routine's.
+  PORT_COVER(d990b_survived);
   return enemy_survived_react(w, dp, r);
 }
 

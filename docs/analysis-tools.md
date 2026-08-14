@@ -1013,6 +1013,49 @@ So `STUCK_NUDGE` is `(14, 28, 56)` now, tried shortest first, which is the same
 fix without the hand-walking. It reproduces the level-5 route byte for byte —
 nine legs, same frames — because a route that never gets stuck never reaches it.
 
+### A leg does not stop where the button is released
+
+The nudge above is the right shape of fix for the wrong reason, and level 25's
+item is what showed it. `zamn_assets route` plans **184 cells in 11 legs** from
+(1017,644) to the `$0A` object at (128,694), and `tools/fit_route.py` spent
+**60 legs** on it — the last forty of them 8-frame unstick nudges that moved
+nothing — before stopping at (119,696), nine pixels short.
+
+**The player does not stop on the frame the button comes up.** He finishes the
+step he is in, and that is up to six more pixels along the axis he was already
+on. An `Up` leg released at (119,700) rests at **(119,694)**, and it rests there
+whatever the next button is: pressing `Right` on the release frame, or forty
+frames later from a dead stop, moves him not one pixel for a hundred frames.
+
+Nothing is wrong with `$80:AE14` in that, and that is the point:
+
+    zamn_assets probe rom.sfc 26 121 700     open
+    zamn_assets probe rom.sfc 26 121 694     blocked
+      14  85  $087A  $07A  $0000
+      15  85  $0882  $082  $0000
+      16  85  $00E9  $0E9  $0003  solid
+
+Six pixels of coast is one tile row, and one tile row is the difference between
+the corridor the route was planned in and the wall the object is tucked under.
+The plan is right about y=700 and the game is right about y=694; what is wrong
+is the assumption in between, that a leg ends where the follower last measured
+it. Walk *down* through (111,696) and turn `Right` on that frame instead and he
+coasts to y=702, where the same eastward leg is clear for forty pixels.
+
+So this is the mechanism under two things that were only described before. It is
+**the perpendicular residual** of the section above — one leg moves on one axis
+and the lane it moves in is whatever the leg before it left, and now there is a
+number for how much it leaves: up to six pixels, decided after the follower has
+already measured. And it is why a fitted route thrashes rather than fails: the
+nudge is 28 pixels looking for a lane that is 6 away, so it steps over the lane
+it wants in both directions, forever.
+
+`movies/level25-item.zmv` is that route with its last two legs tuned by hand
+around it — `Right` at 3632 while the `Down` leg is still running, then `Up` at
+3640 — which puts the player at (127,696), one and two pixels from the object.
+Whether `route` should plan in lanes the player can actually rest in, rather
+than leaving the follower to find them, is the next thing this owes.
+
 ### A pickup locks the player out for 460 frames
 
 Collecting a weapon parks `$7E:1CBC` at `$000F` — not a slot index; the array is
