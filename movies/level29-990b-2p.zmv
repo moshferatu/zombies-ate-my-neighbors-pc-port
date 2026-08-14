@@ -1,0 +1,277 @@
+# Two squirt guns, one frame apart. `movies/level29-990b.zmv` staggered this
+# creature 121 times and `d990b_stagger_already` read zero every time; the round
+# that ported `$81:96E4` left that as an input problem and guessed at the rhythm
+# — *"a burst that stops on fourteen and resumes has not been tried."*
+#
+# **The guess was the wrong shape, and one measurement says why: the gun fires
+# every twelve frames and the flash lasts two.** On `movies/level29-990b.zmv`
+# the creature's stagger meter at `$7E:024A` steps down at 3665, 3677, 3689,
+# 3701, 3713 — twelve apart, thirty-six when a shot misses, never anything else
+# — and its record's `ACTOR_ATTR_SET` goes up on the hit frame and comes back
+# down two frames later:
+#
+#     watch $7E:1AA2  frame  3665  $8011      <- hit, and flashing
+#     watch $7E:1AA2  frame  3667  $8001      <- and not, two frames on
+#
+# So no rhythm one player can play reaches the site. Holding the button down is
+# *already* the fastest the gun goes; every burst is slower, and a hit that
+# lands ten frames outside the flash and a hit that lands thirty do the same
+# nothing. `d990b_stagger_already` does not want timing from one player. It
+# wants a **second** one, one frame out of phase.
+#
+# ## The route is `movies/level29-990b.zmv`'s, given to both ports verbatim
+#
+# Port 2 presses Start in the player-select window and is then handed the same
+# twenty-six route lines, frame for frame. That works because of something worth
+# keeping: **two players walking the same input converge.** They enter the level
+# 23 pixels apart and are within one pixel of each other by frame 2700, because
+# the level 29 chicane is narrow enough that both are held against the same
+# walls:
+#
+#     frame 2580   p1 277,1435   p2 300,1435
+#     frame 2700   p1 455,1451   p2 456,1451
+#     frame 3600   p1 919,769    p2 926,775
+#
+# Only the last line differs, and only by one frame:
+#
+#     3624   Down+Y
+#     2:3625 Down+Y
+#
+# That is the whole input. Both turn round on the `$81:990B` creature that has
+# followed them up the level, and neither moves again.
+#
+# ## What one frame of skew does to the meter
+#
+# Hits now arrive in pairs a frame apart instead of singly every twelve, so the
+# pool empties on the second of a pair while the first is still flashing:
+#
+#     watch $7E:054A  frame  3740  $0003
+#     watch $7E:054A  frame  3741  $0002
+#     watch $7E:054A  frame  3742  $0001
+#     watch $7E:054A  frame  3743  $0000
+#     watch $7E:054A  frame  3744  $FFFF      <- emptied, one frame behind
+#
+# `d990b_stagger_already` fires 13 times over the run. (The creature is on page
+# `$0500` here rather than `$0200`: a second player shifts the thread slots, so
+# a watch address copied from the one-player movie reads somebody else.)
+#
+# ## And it kills it, which was the other open site
+#
+# `d990b_died` was written down as wanting "a weapon this level has not been
+# shown to place", off arithmetic that is exact: the squirt gun's damage-table
+# entry is 1, the creature's `$2A` starts at `$0097` — 151 — and a player starts
+# level 29 with `$7E:1CCC = $0150`, 150 rounds. **One short, and the cheapest
+# answer to being one round short is a second identical gun.** Two players bring
+# 300 rounds to 151 health. It dies at frame 4839, and the movie ends 61 frames
+# later.
+#
+# (The level does place bigger guns — see `docs/cosim.md`, which corrects that
+# entry: it was read off record 29's object list and this level is record 30.
+# Slot 5, twenty damage, is at (351,540) on open ground. This movie does not go
+# there, because a second player is 26 route lines of copy-paste and that detour
+# is 576 frames.)
+#
+# 322,347 calls checked, 0 diverged, nothing declined — and two sites that no
+# input in forty-seven movies had reached.
+#
+# Retune by watching the meter and the health:
+#   zamn_headless <rom> shot.png 4900 -m movies\level29-990b-2p.zmv --watch 054a,3600,4900,1
+#   zamn_headless <rom> shot.png 4900 -m movies\level29-990b-2p.zmv --watch 052a,3600,4900,1
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Down
+1408   -
+1416   Down
+1424   -
+1432   A
+1440   -
+1448   Right
+1456   -
+1464   Right
+1472   -
+1480   Right
+1488   -
+1496   Right
+1504   -
+1512   A
+1520   -
+1528   Left
+1536   -
+1544   Left
+1552   -
+1560   Down
+1568   -
+1576   Down
+1584   -
+1592   A
+1600   -
+1608   Up
+1616   -
+1624   Up
+1632   -
+1640   A
+1648   -
+1656   Right
+1664   -
+1672   Right
+1680   -
+1688   Right
+1696   -
+1704   Right
+1712   -
+1720   Down
+1728   -
+1736   Down
+1744   -
+1752   A
+1760   -
+2:1858   Start
+2:1868   -
+2:1888   Start
+2:1898   -
+2:1918   Start
+2:1928   -
+2:1948   Start
+2:1958   -
+1908   Start
+1918   -
+1938   Start
+1948   -
+1968   Start
+1978   -
+1998   Start
+2008   -
+2028   Start
+2038   -
+2058   Start
+2068   -
+2148   -
+2600   Right
+2:2600   Right
+2691   Down
+2:2691   Down
+2711   Right
+2:2711   Right
+2717   Right
+2:2717   Right
+2977   Up
+2:2977   Up
+3128   Left
+2:3128   Left
+3182   Up
+2:3182   Up
+3246   Right
+2:3246   Right
+3323   Up
+2:3323   Up
+3336   Left
+2:3336   Left
+3342   Up
+2:3342   Up
+3368   Right
+2:3368   Right
+3390   Up
+2:3390   Up
+3460   Left
+2:3460   Left
+3468   Up
+2:3468   Up
+3492   Left
+2:3492   Left
+3496   Up
+2:3496   Up
+3501   Left
+2:3501   Left
+3526   Up
+2:3526   Up
+3540   Left
+2:3540   Left
+3568   Left
+2:3568   Left
+3572   Up
+2:3572   Up
+3579   Left
+2:3579   Left
+3584   Up
+2:3584   Up
+3592   Left
+2:3592   Left
+3597   Up
+2:3597   Up
+3624   Down+Y
+2:3625   Down+Y
+4900   -
+2:4900   -

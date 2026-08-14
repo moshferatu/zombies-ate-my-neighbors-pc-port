@@ -12984,3 +12984,201 @@ cycles was measured over 35 calls that were all ignores, and the note under it
 said in as many words that "the eight branches behind the first comparison are
 priced by nobody." They are priced now, over 938 calls, and the answer is 152
 with a ceiling of 1,312 where it used to be 124.
+
+## The gun fires every twelve frames and the flash lasts two (2026-08-14)
+
+The round above closed with `d990b_stagger_already` "waiting on an input with
+the timing to land the pool-emptying hit two ticks behind the one before it",
+and offered the shape of that input in one line: *"a burst that stops on
+fourteen and resumes has not been tried."*
+
+It has now, and it cannot work. The reason is two numbers that were never
+measured together, and measuring them takes one movie the corpus already had.
+
+### The two numbers
+
+`movies/level29-990b.zmv` holds `Y` down from frame 3624 and never lets go, and
+the creature's stagger meter at `$7E:024A` steps down like this:
+
+```
+  watch $7E:024A  frame  3665  $000D      watch $7E:024A  frame  3773  $0006
+  watch $7E:024A  frame  3677  $000C      watch $7E:024A  frame  3785  $0005
+  watch $7E:024A  frame  3689  $000B      watch $7E:024A  frame  3797  $0004
+  watch $7E:024A  frame  3701  $000A      watch $7E:024A  frame  3809  $0003
+  watch $7E:024A  frame  3713  $0009      watch $7E:024A  frame  3845  $0002
+  watch $7E:024A  frame  3749  $0008      watch $7E:024A  frame  3857  $0001
+  watch $7E:024A  frame  3761  $0007      watch $7E:024A  frame  3869  $0000
+```
+
+**Twelve frames apart, or thirty-six when a shot misses, and never anything
+else** — right through the staggers that follow and up to the refill at 4038.
+That is the squirt gun's whole cadence with the button held.
+
+The other number is the flash, on the same movie, on the record the guard
+reads:
+
+```
+  watch $7E:1AA2  frame  3665  $8011      <- ACTOR_ATTR_SET, on the hit frame
+  watch $7E:1AA2  frame  3667  $8001      <- and off again, two frames later
+```
+
+Twelve against two. **No rhythm one player can play reaches this site**, and
+the burst was the wrong idea in the most complete way available: holding the
+button down is *already* the fastest the gun goes, so every burst is slower,
+and a hit ten frames outside the flash and a hit thirty frames outside it do
+the same nothing. The site does not want timing. It wants a **second shooter**.
+
+That generalises past this creature, and it is worth having in one sentence
+because four routines in `port/collide.c` share that guard verbatim — `LDY $08 :
+LDA $0000,Y : AND #$0010 : BNE` — and every one of them has a site behind it:
+**a site that needs two damaging hits inside one flash needs two guns, because
+one gun's minimum spacing is six times the window.**
+
+### `movies/level29-990b-2p.zmv`, which is the same route given to both ports
+
+Port 2 presses Start in the player-select window and is then handed
+`movies/level29-990b.zmv`'s twenty-six route lines, frame for frame, with no
+route-finding at all. That works because of something the corpus had not
+needed to know: **two players walking the same input converge.**
+
+```
+  frame 2580   p1 277,1435   p2 300,1435
+  frame 2700   p1 455,1451   p2 456,1451
+  frame 3600   p1 919,769    p2 926,775
+```
+
+Twenty-three pixels apart at the start of the route and one pixel apart 120
+frames later, because level 29's chicane is narrow enough to hold both against
+the same walls. A second player is free on any route tight enough to steer
+itself, which is most of the ones the fitter produces.
+
+Only the last line differs, and only by one frame:
+
+```
+  3624   Down+Y
+  2:3625 Down+Y
+```
+
+### One frame of skew, and the meter empties on the wrong side of it
+
+Hits arrive in pairs a frame apart instead of singly every twelve, so the pool
+runs out on the second of a pair while the first one's flash is still up:
+
+```
+  watch $7E:054A  frame  3740  $0003
+  watch $7E:054A  frame  3741  $0002
+  watch $7E:054A  frame  3742  $0001
+  watch $7E:054A  frame  3743  $0000
+  watch $7E:054A  frame  3744  $FFFF      <- emptied, one frame behind a hit
+```
+
+`d990b_stagger_already` fires **13 times**. (The meter is at `$054A` and not
+`$024A`: a second player shifts the thread slots, so the creature's page moves
+from `$0200` to `$0500` and a watch address copied from the one-player movie
+reads somebody else's word. Worth saying because it cost a confused ten
+minutes.)
+
+### It also kills it, and that closes the other site with the same second gun
+
+`d990b_died` was left "wanting a weapon this level has not been shown to
+place", off arithmetic that is exactly right and was read one step short:
+squirt damage 1, the creature's `$2A` at `$0097` — 151 — and a player who
+starts level 29 with `$7E:1CCC = $0150`, 150 rounds. One short.
+
+**The cheapest answer to being one round short is a second identical gun**, and
+it costs nothing here because the second player is already standing on the
+creature. Two players bring 300 rounds to 151 health. The creature dies
+at frame 4839 and `d990b_died` reads 11, because a dead creature goes on being
+shot — `$2A` reads `$FFFE` at 4839 and `$FFF9` at 4840 — and every hit after
+the first re-takes the same branch until the record is released at 4996.
+
+### The bigger gun does exist, and the round before asked the wrong record
+
+`d990b_died` was written down as wanting a weapon "this level has not been shown
+to place", off `zamn_assets actors <rom> 29`. **The level under these movies is
+record 30**, and `zamn_assets verify-actors` says so by replaying the movie and
+diffing the live lists against the ROM's rather than by counting from a
+password:
+
+```
+  object count                             OK  $1EC4[22] = $C000 (want $C000)
+  object positions and types (22)          OK
+  Level record $9F:A55A: 45 actors, 10 victims, 22 objects decoded.
+```
+
+Twenty-two objects at `$9F:A55A`. Record 29 is a different record — `$9F:C7A2`,
+twenty-one objects — and its list is the one the last round read. The
+identification is not a matter of taste: the twenty-two words the loader leaves
+at `$7E:6D02` are record 30's x column in order, 52, 374, 374, 511, 537, …, and
+two of its objects are visible in the display list at frame 3300 by id (`$28` at
+(1021,1172), the key `$21` at (950,1076)).
+
+Read the right record through `$80:CA30` and `$80:F87B` and the level is
+carrying most of a gun shop:
+
+| type | id | slot | at | rounds | damage |
+| --- | --- | --- | --- | --- | --- |
+| `$26` | `$11` | 5 | (351,540) | 5 | **20** |
+| `$24` | `$10` | 4 | (1017,188) | 30 | 4 |
+| `$16` | `$12` | 6 | (400,1285), (114,621) | 20 | 3 |
+| `$06` | `$0F` | 3 | (570,1091) | 300 | 1 |
+| `$02` | `$0D` | 1 | (756,730) | 99 | 0 (ice) |
+| `$00` | `$0C` | 0 | (537,765), (176,1421) | 99 | 1 |
+
+Slot 5 is the "eight hits" weapon the last round named, it is at (351,540), and
+**`probe` calls that cell open and `route` walks to it in twelve legs and 576
+frames** from where this movie's route ends. The `no route to it` half of that
+entry was wrong for the same reason as the first half.
+
+It does not on its own kill the creature, which is the part the amount table
+adds: `$80:F8AC` gives slot 5 **five** rounds, so 100 of the 151. What kills it
+is any two of these, or one squirt refill — the shortfall was exactly one round,
+and `$00` is worth 99. So the site had at least three one-player answers and the
+round that wrote it up had none, because it read the object list of the level
+next door.
+
+The bubble gun is the one thing on the list that is not on the list: no type
+`$04` in record 30's twenty-two, which is the subject of the last section.
+
+### The corpus
+
+```
+14,678,017 calls checked across 48 movies, 0 diverged.
+Branch coverage, union over the corpus: 444 of 551 taken, 107 untaken by every input.
+```
+
+No "Declined to" section, which is the empty one: over all forty-eight movies
+the ROM is never asked to run a routine the port does not have.
+
+Every term is the movie's own and nothing else moved. 14,355,670 + 322,347 =
+14,678,017 exactly, so no other movie's call count shifted; 442 taken became
+444 and 109 untaken became 107, which is the two sites and no third.
+
+That is the inversion this file has recorded three times, running the other way
+for the first time. **The untaken list grows when a routine is ported and
+shrinks only when an input is written** — three rounds have shown the first
+clause and this is the second one on its own, with nothing ported, no site
+added, and the whole movement in one movie.
+
+### What the two that are left are waiting for
+
+`d990b_no_damage` is where it was and where it will stay: it wants an id at or
+above `$5C` whose damage-table entry is zero and which is neither `$5D` nor
+`$5E`, and no player weapon can produce one.
+
+`d990b_bubble` wants id `$5E`, which is inventory slot 2, which is object type
+`$04`. Every record in the cartridge was asked, and there are eight of them:
+
+```
+  record  1  (696,441)     record 42  (1044,599)
+  record  8  (755,328)     record 50  (105,86)
+  record 22  (485,1340)    record 51  (308,556)
+  record 29  (815,517)     record 52  (696,441)
+```
+
+**Record 30 is not one of them**, so the site is not an input on this level at
+any price. It is the same shape as the question `movies/level29-ice.zmv`
+answered — the ice weapon and this creature had to be on one level, and level 29
+was it — asked about a weapon that is on eight levels and, so far as this round
+knows, none of the eight is one this creature stands on. That is the next thing
+to check and it is a scan rather than a route.

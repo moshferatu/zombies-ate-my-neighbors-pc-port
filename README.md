@@ -29,10 +29,11 @@ routine that suspends inside the thread scheduler does it at an explicit resume
 point, with its parked state as plain copyable data. `zamn_cosim verify` checks
 the C against the
 ROM's own code on every call the game makes — 128 KB of WRAM plus registers — and
-passes **14,355,670 of 14,355,670 across the whole movie corpus**, thirteen levels
-deep. Across all forty-seven movies the ROM is **never** asked to run a routine
+passes **14,678,017 of 14,678,017 across the whole movie corpus**, thirteen levels
+deep. Across all forty-eight movies the ROM is **never** asked to run a routine
 the port does not have. `tools/verify_corpus.ps1 -Coverage` prints that census,
-and the round before last it was empty for a much weaker reason: nothing in the
+and before `movies/level29-990b.zmv` was cut it was empty for a much weaker
+reason: nothing in the
 corpus had ever shot the creature that swaps in `$81:96E4`. Two movies written to
 stand and fight took it to 430 declines against that one address, and porting the
 eleven bytes behind it took it back to nothing. That is the loop the census
@@ -54,13 +55,16 @@ like a divergence in the port.
 
 The port also reports **which of its own branches an input actually reached**,
 because a branch no movie takes is one the diff agrees with the ROM about for
-the wrong reason. 109 of 551 are still untaken by every input, and they are the
+the wrong reason. 107 of 551 are still untaken by every input, and they are the
 backlog — a list that grows when a routine is ported and shrinks only when an
-input is written. The two measures disagree on purpose, and the last two rounds
+input is written. The two measures disagree on purpose, and three rounds
 moved both in opposite directions: an input that reaches code the port lacks puts
 a line in the census *and* lights up the two sites whose only job is to say a
 handler was missing, and porting that code empties the census *and* puts both
-sites back in the backlog.
+sites back in the backlog. The clause about inputs is the one that had never been
+shown on its own, and `movies/level29-990b-2p.zmv` is it: nothing ported, no site
+added, two taken — a second player one frame out of phase with the first, because
+the squirt gun fires every twelve frames and the flash a hit leaves lasts two.
 
 See **`docs/cosim.md`** for the harness and what coverage measures that the diff
 cannot, **`docs/threads.md`** for how a ported routine suspends,
