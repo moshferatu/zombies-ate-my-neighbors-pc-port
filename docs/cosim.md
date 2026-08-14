@@ -13404,3 +13404,177 @@ gives the same 322,347 calls and the same zero divergences.
 What is still owed is the other half: `verify-actors` diffs the ROM's victim
 array and its object array, and there is no third check yet for what `$81:81F6`
 spawned. The tail is read out of the ROM here, not out of the running game.
+
+## The third reader, and the placement that comes back (2026-08-14)
+
+The section above ended by naming what it still owed. `verify-actors` diffs the
+victim array and the object array against the ROM's own parsers, and had no
+check at all for what `$81:81F6` spawned: the tail was read out of the
+cartridge and never once out of the running game. Writing that check meant
+reading the routine properly rather than far enough, and read properly it is
+not the routine the section above described.
+
+### It does not stop at the terminator, it wraps at it
+
+The section above said `$81:81F6` "reads `+$0`, the x coordinate, and quits
+only at zero". The first half is right and the second is wrong in a way that
+changes what the list *is*:
+
+```
+  $81:81FD  STZ $10                       <- index := 0
+  $81:81FF  LDA #$0003 : JSL $808353         sleep three frames
+  $81:8207  LDA $1B6A : ADC #$0080 : STA $1A  camera x + $80 — screen centre
+  $81:8213  LDA $1B6C : ADC #$0070 : STA $1C  camera y + $70
+  $81:8218  LDX $10 : LDA $7E605A,X
+  $81:821E  AND #$0080 : BNE $8267        <- retired: skip, next index
+  $81:8223  TXA : ASL : ASL : STA $0A : ASL : CLC : ADC $0A : TAY    stride 12
+  $81:822D  LDA ($0C),Y : BEQ $81FD       <- x = 0: back to the top
+  $81:8233  SEC : SBC $1A : ... : CMP #$00A0 : BCS $826B   |dx| >= $A0: too far
+  $81:8247  SEC : SBC $1C : ... : CMP #$00A0 : BCS $826B   |dy| >= $A0: too far
+  $81:8255  LDA $7E605A,X : AND #$00FF : BNE $8267         already live: skip
+  $81:8260  JSR $81A2 : INC $10 : BRA $81FF                spawn it
+```
+
+`BEQ $81FD` does not leave the loop — `$81:81FD` is the top of the loop, and it
+zeroes the index. **The zero at `+$0` is the end of the array, not the end of
+the walk.** `$81:81F6` is a thread that lives as long as the level does,
+sweeping the list three frames at a time and spawning whatever has come within
+`$A0` of the screen centre in both axes.
+
+That is a different kind of object from the two parsers either side of it.
+`$82:DB46` and `$80:C9A5` run once, at load, and leave an array behind them.
+This one leaves nothing behind and never finishes.
+
+### The state byte, and who is allowed to retire a placement
+
+`$7E:605A,X` is one byte per list entry and it has three values:
+
+```
+  $00  idle — eligible to spawn when the camera comes close
+  $01  live — the thread handle is in $7E:609A,X
+  $80  retired — $81:8221 skips it forever
+```
+
+The path at `$81:826B` is the one worth naming, because nothing in this file
+had guessed it was there. When a *live* entry falls outside the `$A0` box it
+puts the state back to `$00`, loads the handle from `$7E:609A,X` and calls
+`$80:8480` with `Y = $00FF` — it kills the thread:
+
+```
+  $81:826B  LDX $10 : LDA $7E605A,X : AND #$00FF : BEQ $8267   not live: skip
+  $81:8276  SEP #$20 : LDA #$00 : STA $7E605A,X                idle again
+  $81:8280  LDA $7E609A,X : AND #$00FF : TAX : LDY #$00FF : JSL $808480
+```
+
+Idle again, and eligible again. **An entry the level does not retire respawns
+every time you walk back to it.** That is the monster generator this file went
+looking for two rounds ago and did not find, and the reason it did not find it
+is that there is no generator: there is a placement, and a walker that keeps
+noticing it.
+
+Retiring is the spawned body's own doing. `$81:8191` takes a placement index in
+A and writes `$80`:
+
+```
+  $81:8191  CMP #$FFFF : BEQ $81A1 : TAX : SEP #$20 : LDA #$80 : STA $7E605A,X
+```
+
+Sixteen routines call it, and almost every one of them is a body retiring its
+own placement — `$81:A492` inside the body at `$81:A455`, `$82:EF38` inside
+`$82:EF36`, `$83:B560` inside `$83:B55E`, and so on down the list of bodies the
+tail names. Nine are in bank `$83`, which is where every one of the game's
+eleven neighbour bodies lives (`$83:9699`, `$83:9776`, `$83:993D` and the rest;
+all 560 victim placements in the cartridge point into that bank). A rescued
+neighbour retires itself, which is why it does not reappear when you come back
+through the room.
+
+**Where in the body the call sits is the whole difference**, and the tail bodies
+split three ways on it.
+
+`$81:983A` calls it at init, on the straight line, before it has installed
+anything:
+
+```
+  $81:9849  JSR $972F
+  $81:9851  JSR $9215
+  $81:9854  LDA $06 : JSL $818191                    <- retire my own placement
+  $81:9865  LDA #$990B : LDY #$0081 : JSL $808475    <- and now install the handler
+```
+
+Eleven instructions before `$81:990B` exists, the placement that made it is
+already spent. **The creature is one encounter per level load** — not one per
+kill, one per load. Walking away and back does not bring it back.
+
+`$81:D2F1` and `$81:D2F9` — the two commonest tail bodies, 49 placements
+between them — are two-instruction stubs that set `$0A` to `$1400` and `$0800`
+and jump into a shared body at `$81:D28C`, and that body's call is on the
+**death** path, past a `BPL` and after `$80:C7D9` and `INC $1F84`:
+
+```
+  $81:D2BA  JSL $80C7D9 : INC $1F84                  <- it died
+  $81:D2C1  LDA #$D2E1 : JSL $81832C
+  $81:D2C8  LDA $06 : JSL $818191                    <- and only now retire it
+```
+
+Those respawn until you kill them, and then stop. And `$82:DD52`, twenty-five
+placements, never calls `$81:8191` at all on any path — it respawns whatever
+you do to it. Three bodies, three answers, one mechanism.
+
+`$81:81A2` gates on `+$6` as well, and the other way round from the counter: an
+index above `$1D50` is passed to `$81:8191` and disabled rather than ending the
+walk. No shipped record takes that path. All one hundred and thirty-five tail
+entries carry index 0, and every level's ten victims are 1 to 9 and 16 — never
+10 — so `$1D50 = $0010` is an exact match on the last one and `BEQ` keeps it.
+Every entry of every list in the cartridge spawns.
+
+### The check, which had to be an event
+
+There is no array to diff, so `verify-actors` stops at the `JSL` that spawns
+instead. At `$81:81D7` the record has been fully unpacked into registers and
+scratch: `$81:81A2` has copied the position to `$00`/`$02` and the list index to
+`$06`, and the `PLA` on the previous instruction has put the `+$8` word in A
+with the `+$A` bank in Y. Compare all four against the entry `actors_read`
+decoded at that index and the stride, the terminator, the two halves of the
+list and the 24-bit pointer are all checked at once, by the routine that
+actually spawns.
+
+Two things about the shape of it. The scratch is direct-page relative and every
+game thread has its own page, so these reads go through D — `$10` in `$81:81F6`
+is `$10` in *that thread's* page, and the fixed-address reads the other two
+checks use would have been reading somebody else's frame. And the command no
+longer stops as soon as both parsers have reported: they finish during the
+load, and `$81:81F6` spawns for as long as the movie keeps walking, so a
+placement the camera never approaches is a placement this never sees. That is a
+real limit and the check reports it rather than hiding it — the count is "of",
+not "all".
+
+```
+  movie                    entries seen   events   tail
+  level29-990b   (3600f)   3 of 13        3        1
+  level29-990b-2p(4900f)   3 of 13        4        1
+  level1-rescue  (4900f)   3 of 10        3        0
+  level13        (4900f)   2 of 12        5        0
+  level45-bonus  (4900f)   2 of 10        2        0
+```
+
+Five checks, nothing failed, on every one of them. And the third column is the
+respawn, measured rather than disassembled: `level13` spawns two distinct
+entries five times between them, and `level29-990b-2p` spawns three entries
+four times. Those extra events are `$81:826B` letting go of a neighbour as the
+players walk off and `$81:8260` picking it up again on the way back.
+
+The tail entry in the first two rows is `(967,810) $81:983A` on record 30 — the
+creature, matched on position and on all twenty-four bits of its pointer,
+against the game that spawned it. That is the thing the section above said it
+owed, and it is now the only one of the three checks that sees past
+`$82:DB46`'s terminator.
+
+### What it costs the movie that is still not written
+
+Nothing about the route changes: the level 25 password, three completions, the
+type `$04` object at (815,517) on level 28, and then record 30. What changes is
+the margin. `$81:983A` retiring itself at spawn means the run gets **one**
+pass at `d990b_bubble` — arrive on level 29 with slot 2 empty and the encounter
+is spent, with no way to have it again short of losing the level. The plan was
+already to arrive with the gun; it is now the only version of the plan that
+works.

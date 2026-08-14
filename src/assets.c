@@ -1213,7 +1213,7 @@ static int cmd_actors(int argc, char** argv) {
 }
 
 // ---------------------------------------------------------------------------
-// verify-actors: diff the victim and object lists against the ROM's parsers
+// verify-actors: diff the placement lists against the ROM's own readers
 // ---------------------------------------------------------------------------
 
 // The two placement parsers build flat working arrays in WRAM. Stopping right
@@ -1222,6 +1222,30 @@ static int cmd_actors(int argc, char** argv) {
 // and is left to Phase 3, so only victims and objects are checked here.
 #define VICTIMS_PARSE_DONE 0x82db8b  // loop exit of $82:DB46
 #define OBJECTS_PARSE_DONE 0x80c9d6  // just after $80:C9A5 writes the $C000 sentinel
+
+// And the third reader of the `+$1E` list, which is not a parser at all.
+//
+// `$81:81F6` never builds an array to diff, because it never finishes: it walks
+// the twelve-byte records from the top, sleeps three frames every step
+// (`$81:81FF  LDA #$0003 : JSL $808353`), restarts at index 0 when it reaches
+// the `x == 0` terminator, and spawns a placement only while the camera centre
+// is within `$A0` of it in both axes. When a spawned placement leaves that box
+// `$81:826B` kills its thread and clears the entry's state byte, so walking away
+// and back **respawns it**. `$7E:605A,X` is that state — `$00` idle, `$01` live
+// with the thread handle in `$7E:609A,X`, `$80` retired for good by `$81:8191`,
+// which is how a rescued neighbour stops coming back.
+//
+// So the check for this one is an event, not a snapshot: stop at the `JSL` that
+// spawns and compare its arguments against the record `actors_read` decoded at
+// the same index. It is the only check here that sees the tail — `$82:DB46`
+// stops before it and `$80:C9A5` is a different list.
+#define SPAWN_ARGS 0x8181d7  // $81:81A2's `JSL $80825E`: A = +$8, Y = +$A
+
+// `$81:81A2` gates on +$6 as well, but the other way round from the counter:
+// an index above `$1D50` is handed to `$81:8191` and disabled rather than
+// ending the walk. No shipped record takes that path — all 135 tail entries
+// carry index 0, and every level's victims are 1..9 and 16 — so every entry of
+// every list spawns, and any index this check sees should be one we decoded.
 
 // Where each parser leaves its results (bank $7E, offsets from $0000).
 #define WRAM_VICTIM_COUNT 0x6e30  // $82:DB46: how many victims it kept
@@ -1239,6 +1263,10 @@ static struct {
   uint32_t record;
   ActorLists al;
   int checks, failures;
+  int spawn_events, tail_events;  // every $81:81A2 spawn, respawns included
+  uint8_t seen[VICTIM_LIST_MAX + SPAWN_LIST_MAX];  // which entries ever spawned
+  bool spawn_bad;
+  char spawn_detail[128];
 } ac;
 
 static void ac_check(const char* what, bool ok, const char* detail) {
@@ -1246,6 +1274,17 @@ static void ac_check(const char* what, bool ok, const char* detail) {
   if (!ok) ac.failures++;
   printf("  %-40s %s%s%s\n", what, ok ? "OK" : "FAIL",
          detail && *detail ? "  " : "", detail ? detail : "");
+}
+
+// A thread's scratch is direct-page relative and every game thread has its own
+// direct page, so this cannot read a fixed address the way the two parser
+// checks above do — `$10` in `$81:81F6` is `$10` in that thread's page.
+static uint16_t dp_word(Snes* snes, uint16_t off) {
+  uint32_t lo = 0, hi = 0;
+  uint16_t d = snes->cpu->dp;
+  if (!snes_to_wram((uint16_t)(d + off), &lo) ||
+      !snes_to_wram((uint16_t)(d + off + 1), &hi)) return 0;
+  return (uint16_t)(snes->ram[lo] | ((uint16_t)snes->ram[hi] << 8));
 }
 
 static void actors_on_victims(Snes* snes) {
@@ -1312,11 +1351,53 @@ static void actors_on_objects(Snes* snes) {
   ac_check(label, ok, detail);
 }
 
+// One spawn, caught with its arguments in the registers. `$81:81A2` has already
+// copied the record's position to `$00`/`$02` and its index to `$06`; the `PLA`
+// on the previous instruction put the `+$8` word in A and the `+$A` word in Y.
+static void actors_on_spawn(Snes* snes) {
+  Cpu* cpu = snes->cpu;
+  int i = (int)dp_word(snes, 0x06);
+  uint16_t x = dp_word(snes, 0x00), y = dp_word(snes, 0x02);
+  uint32_t behavior = (uint32_t)(cpu->a & 0xffff) | ((uint32_t)(cpu->y & 0xff) << 16);
+
+  ac.spawn_events++;
+  int total = ac.al.victim_count + ac.al.spawn_count;
+  if (i >= ac.al.victim_count) ac.tail_events++;
+  if (i >= 0 && i < (int)sizeof ac.seen) ac.seen[i] = 1;
+  if (ac.spawn_bad) return;  // the first difference is the one worth naming
+
+  if (i < 0 || i >= total) {
+    snprintf(ac.spawn_detail, sizeof ac.spawn_detail,
+             "the ROM spawned entry %d and the list decodes %d", i, total);
+    ac.spawn_bad = true;
+    return;
+  }
+  uint16_t ex, ey;
+  uint32_t eb;
+  if (i < ac.al.victim_count) {
+    const VictimPlacement* v2 = &ac.al.victims[i];
+    ex = v2->x; ey = v2->y; eb = v2->behavior;
+  } else {
+    const SpawnPlacement* s = &ac.al.spawns[i - ac.al.victim_count];
+    ex = s->x; ey = s->y; eb = s->behavior;
+  }
+  if (x != ex || y != ey || behavior != eb) {
+    char want[16];
+    snprintf(want, sizeof want, "%s", addr_str(eb));
+    snprintf(ac.spawn_detail, sizeof ac.spawn_detail,
+             "entry %d: ROM (%u, %u) %s, ours (%u, %u) %s", i, x, y,
+             addr_str(behavior), ex, ey, want);
+    ac.spawn_bad = true;
+  }
+}
+
 static void actors_step(Snes* snes) {
   Cpu* cpu = snes->cpu;
   if (!cpu->resetWanted && !cpu->stopped && !cpu->waiting && !cpu->intWanted) {
     uint32_t pc = ((uint32_t)cpu->k << 16) | cpu->pc;
-    if (pc == LEVEL_LOAD_ARGS && !ac.have_args) {
+    if (pc == SPAWN_ARGS && ac.have_args) {
+      actors_on_spawn(snes);
+    } else if (pc == LEVEL_LOAD_ARGS && !ac.have_args) {
       ac.record = 0x9f0000u | (cpu->x & 0xffff);
       ac.have_args = true;
       LevelHeader h;
@@ -1383,7 +1464,10 @@ static int cmd_verify_actors(int argc, char** argv) {
   printf("Replaying %d frames of '%s' and diffing the victim and object lists.\n\n",
          frames, movie_path ? movie_path : "(no input)");
 
-  for (int frame = 0; frame < frames && !(ac.victims_done && ac.objects_done); frame++) {
+  // All the way to the end, even once both parsers have reported. They finish
+  // during the load; `$81:81F6` spawns for as long as the movie walks around,
+  // and a placement the camera never approaches is one this never sees.
+  for (int frame = 0; frame < frames; frame++) {
     if (have_movie) {
       movie_apply(&movie, snes, frame);
     }
@@ -1400,6 +1484,23 @@ static int cmd_verify_actors(int argc, char** argv) {
            ac.al.spawn_count, ac.al.object_count);
     if (!ac.victims_done) ac_check("victim list reached", false, "parser never ran");
     if (!ac.objects_done) ac_check("object list reached", false, "parser never ran");
+
+    int total = ac.al.victim_count + ac.al.spawn_count, entries = 0, tail_entries = 0;
+    for (int i = 0; i < total && i < (int)sizeof ac.seen; i++) {
+      if (ac.seen[i]) { entries++; if (i >= ac.al.victim_count) tail_entries++; }
+    }
+    char label[96];
+    snprintf(label, sizeof label, "$81:81F6 spawns (%d of %d entries, %d tail)",
+             entries, total, tail_entries);
+    if (ac.spawn_events == 0) {
+      ac_check("$81:81F6 spawns", false, "the walker never spawned anything");
+    } else {
+      char detail[160];
+      snprintf(detail, sizeof detail, "%s%s%d spawn events, %d from the tail",
+               ac.spawn_detail, *ac.spawn_detail ? "; " : "", ac.spawn_events,
+               ac.tail_events);
+      ac_check(label, !ac.spawn_bad, detail);
+    }
     printf("%d check%s, %d failed.\n", ac.checks, ac.checks == 1 ? "" : "s", ac.failures);
     rc = ac.failures > 0 ? 1 : 0;
   }

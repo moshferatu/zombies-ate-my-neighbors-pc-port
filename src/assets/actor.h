@@ -63,11 +63,29 @@ typedef struct {
 // to say. The loader hands `+$1E` to *two* readers, and they stop on different
 // fields: `$80:87A8` gives it to `$82:DB46`, which gates on +6 as above, and
 // `$80:8791` gives it to `$81:81F6`, which walks the same twelve-byte stride
-// (`$81:8223  TXA : ASL : ASL : STA $0A : ASL : CLC : ADC $0A`) and quits only
-// when +0 is zero (`$81:822D  LDA ($0C),Y : BEQ $81FD`). `$81:81F6` is the one
-// that spawns +$8. So everything between the two terminators is a placement that
-// spawns and is not a neighbour, and the terminator `$82:DB46` sees is the end
-// of the count, not the end of the list.
+// (`$81:8223  TXA : ASL : ASL : STA $0A : ASL : CLC : ADC $0A`) and reads +0
+// instead. `$81:81F6` is the one that spawns +$8. So everything between the two
+// terminators is a placement that spawns and is not a neighbour, and the
+// terminator `$82:DB46` sees is the end of the count, not the end of the list.
+//
+// **`$81:81F6` does not stop at its terminator, it wraps at it.** `$81:822D
+// LDA ($0C),Y : BEQ $81FD` branches to `$81:81FD  STZ $10`, which resets the
+// index and scans the list again, three frames at a time, forever. A zero +0 is
+// the end of the array; it is not the end of the walk. What decides whether an
+// entry spawns on a given pass is the camera — `$81:8221` skips it unless the
+// screen centre is within `$A0` of it in both axes — and `$7E:605A,X`, one state
+// byte per entry: `$00` idle, `$01` live with the thread handle at `$7E:609A,X`,
+// `$80` retired. Leaving the box kills the thread and puts the entry back to
+// `$00` (`$81:826B`), so **an entry the level does not retire respawns every
+// time you walk back to it**. Retiring is the body's own doing: `$81:8191` sets
+// `$80`, and sixteen routines call it — the neighbours of bank `$83` when they
+// are rescued or eaten, and `$81:983A` at `$81:9854`, before it has even
+// installed its handler. The `$81:990B` creature is one encounter per level
+// load. This is why the tail is worth decoding rather than skipping: it is where
+// the levels put the population that comes back.
+//
+// The record layout is the same either way, which is what makes one loop over
+// both halves correct; only the terminator each reader honours differs.
 //
 // Every one of the 56 records holds exactly ten victims; 28 of them carry a tail
 // as well, 135 placements over ten bodies. `$81:983A` — the `$81:990B` creature
