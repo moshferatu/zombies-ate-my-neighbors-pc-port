@@ -694,16 +694,18 @@ static void print_header(const LevelHeader* h, int level) {
 // 9 bits even though the hardware field is 10.
 //
 // `reach`, when it is not NULL, is one byte per grid cell: 0 solid, 1 reached,
-// 2 the start, 3 the goal, 4 open but cut off from the start. It is tinted over
+// 2 the start, 3 the goal, 4 open but cut off from the start, 5 water. It is tinted over
 // the map rather than drawn instead of it, because what a route needs is not
 // "which cells are open" but *which opening is the way in*, and that is a
 // question about the picture.
 //
-// **Solid and cut-off are different colours on purpose.** A search that answers
-// "no route" has said nothing about which of the two it hit, and the two want
-// opposite things: a solid target is a target to give up on, and a cut-off one
-// is a door to find. Level 17's `$81:D7F6` creature lives in a pen that is
-// open ground with no way into it, and one picture says so.
+// **Solid, cut-off and water are different colours on purpose.** A search that
+// answers "no route" has said nothing about which of the three it hit, and they
+// want opposite things: a solid target is a target to give up on, a cut-off one
+// is a door to find, and a magenta one is a shore -- the player crosses that,
+// and it is this search that cannot. Level 17's `$81:D7F6` creature lives in a
+// pen that is open ground with no way into it, and one picture says so; level
+// 1's lake reads as a wall on the same picture and is not one.
 static bool render_level(const LevelHeader* h, const uint16_t* map, const Rom* rom,
                          const char* path, const uint8_t* reach) {
   uint32_t avail = 0;
@@ -762,9 +764,9 @@ static bool render_level(const LevelHeader* h, const uint16_t* map, const Rom* r
   // overlay needs no scaling. A cell's *world* row is eight pixels below its
   // grid row (`ROUTE_Y_BIAS`), which is why the tint is drawn one tile down.
   if (reach) {
-    static const uint8_t tint[5][3] = {{160, 0, 0},   {0, 200, 0},
+    static const uint8_t tint[6][3] = {{160, 0, 0},   {0, 200, 0},
                                        {255, 255, 0}, {0, 128, 255},
-                                       {220, 110, 0}};
+                                       {220, 110, 0}, {190, 0, 190}};
     for (uint32_t ty = 0; ty + 1 < tile_rows; ty++) {
       for (uint32_t tx = 0; tx < tile_cols; tx++) {
         const uint8_t* t = tint[reach[ty * tile_cols + tx]];
@@ -2788,6 +2790,7 @@ typedef struct {
   bool known;      // ...and whether that index is inside the attribute table
   uint16_t attr;
   bool solid;
+  bool water;  // ...and blocking for a reason the player walks straight into
 } ProbeTile;
 
 static ProbeTile probe_tile(const LevelWalk* lw, int col, int row) {
@@ -2804,6 +2807,7 @@ static ProbeTile probe_tile(const LevelWalk* lw, int col, int row) {
   if (!t.known) return t;
   t.attr = lw->attrs[t.index];
   t.solid = (t.attr & LEVEL_ATTR_SOLID) != 0;
+  t.water = (t.attr & LEVEL_ATTR_WATER_MASK) == LEVEL_ATTR_WATER;
   return t;
 }
 
@@ -2827,6 +2831,31 @@ static bool route_open(const LevelWalk* lw, int cx, int cy) {
     if (!t[i].on_map || !t[i].known || t[i].solid) return false;
   }
   return true;
+}
+
+// Is this cell closed by *water*? -- one of the six carrying `LEVEL_ATTR_WATER`,
+// which is the same six and the same order, so a cell can be both this and
+// blocked by ordinary scenery and the answer here is only about the water.
+//
+// **Water stays closed to the search, and that is a decision rather than an
+// omission.** `terrain_blocked` refuses it, so the player never walks into it;
+// what he does instead is `$80:DEDE`'s branch, which stops him at the edge and
+// hands him to a scripted crossing that lands him at a point the ROM picks --
+// `movies/level1-keys.zmv` enters level 1's lake at (1214,687) and arrives at
+// (1214,657) with the direction on his own page already zeroed. Until that
+// destination rule is read out of `$80:DD41`'s script, a search that flooded
+// through water would print legs the player cannot walk, which is worse than
+// one that stops: the whole point of this grid is that a route it refuses is a
+// claim about the game.
+//
+// So it stops, and *says which kind of edge it stopped at*, the same argument
+// that made solid and cut-off different colours below.
+static bool route_water(const LevelWalk* lw, int cx, int cy) {
+  ProbeTile t[ROUTE_BOX_W * ROUTE_BOX_H];
+  probe_tiles(lw, cx, cy, t);
+  for (int i = 0; i < ROUTE_BOX_W * ROUTE_BOX_H; i++)
+    if (t[i].on_map && t[i].known && t[i].water) return true;
+  return false;
 }
 
 // --- and the same level as the game's own routine wants it -------------------
@@ -3028,12 +3057,13 @@ static int cmd_route(int argc, char** argv) {
   if (reach_path) {
     uint8_t* reach = (uint8_t*)calloc(cells, 1);
     if (reach) {
-      for (uint32_t i = 0; i < cells; i++)
-        reach[i] = prev[i] != -2
-                       ? 1
-                       : (route_open(&lw, (int)(i % cols), (int)(i / cols))
-                              ? 4
-                              : 0);
+      for (uint32_t i = 0; i < cells; i++) {
+        int cx = (int)(i % cols), cy = (int)(i / cols);
+        reach[i] = prev[i] != -2          ? 1
+                   : route_open(&lw, cx, cy) ? 4
+                   : route_water(&lw, cx, cy) ? 5
+                                              : 0;
+      }
       reach[(uint32_t)sy * cols + (uint32_t)sx] = 2;
       if (gy >= 0 && (uint32_t)gy < rows && gx >= 0 && (uint32_t)gx < cols)
         reach[(uint32_t)gy * cols + (uint32_t)gx] = 3;
@@ -3047,6 +3077,27 @@ static int cmd_route(int argc, char** argv) {
     printf("no route from (%d,%d) to (%d,%d) through level %d.\n", x0, y0, x1, y1, level);
     printf("the 2x2-clear grid does not connect them, so either the target is\n");
     printf("inside scenery or the way in is a door rather than a gap.\n");
+    // ...or it is neither, and the answer is not to be trusted. A cell that the
+    // flood reached and that has water next to it is a shore, and the player
+    // walks off shores -- `route_water` above says why the search does not. So
+    // count them and say so, because "no route" is the one thing this tool is
+    // asked to be believed about.
+    uint32_t shore = 0;
+    for (uint32_t i = 0; i < cells; i++) {
+      if (prev[i] == -2) continue;
+      int cx = (int)(i % cols), cy = (int)(i / cols);
+      const int dxs4[4] = {1, -1, 0, 0}, dys4[4] = {0, 0, 1, -1};
+      for (int k = 0; k < 4; k++) {
+        int nx = cx + dxs4[k], ny = cy + dys4[k];
+        if (nx < 0 || ny < 0 || (uint32_t)nx >= cols || (uint32_t)ny >= rows) continue;
+        if (route_water(&lw, nx, ny)) { shore++; break; }
+      }
+    }
+    if (shore)
+      printf("\nbut %u reachable cells are on the edge of water, which this\n"
+             "search treats as wall and the player does not -- so this answer\n"
+             "is only as good as the assumption that he stays dry. --reach\n"
+             "tints the water magenta.\n", shore);
     rc = 1;
   } else {
     // Walk the chain back, then collapse it into axis-aligned runs -- which is
@@ -3152,8 +3203,9 @@ static void probe_print_tiles(const ProbeTile t[ROUTE_BOX_W * ROUTE_BOX_H]) {
              t[i].col, t[i].row, t[i].entry, t[i].index);
       continue;
     }
-    printf("  %3d  %3d  $%04X  $%03X  $%04X%s\n", t[i].col, t[i].row, t[i].entry,
-           t[i].index, t[i].attr, t[i].solid ? "  solid" : "");
+    printf("  %3d  %3d  $%04X  $%03X  $%04X%s%s\n", t[i].col, t[i].row,
+           t[i].entry, t[i].index, t[i].attr, t[i].solid ? "  solid" : "",
+           t[i].water ? "  water" : "");
   }
 }
 
@@ -3338,9 +3390,10 @@ static void usage(void) {
           "                    [--reach out.png]\n"
           "      Breadth-first a walkable path through a level and print the\n"
           "      turns, or .zmv lines with --frames. --reach tints the map:\n"
-          "      green reached, orange open but cut off, red solid, yellow the\n"
-          "      start, blue the goal. Orange is the one that says where a\n"
-          "      missing route wants a door.\n\n"
+          "      green reached, orange open but cut off, red solid, magenta\n"
+          "      water, yellow the start, blue the goal. Orange says where a\n"
+          "      missing route wants a door; magenta says the player can cross\n"
+          "      what this search cannot.\n\n"
           "  zamn_assets probe <rom.sfc> <level> <x> <y> [--to <x> <y>]\n"
           "      Ask $80:AE14 itself whether the player can stand at a point:\n"
           "      the six tiles it reads, their attributes, and the verdict out\n"

@@ -371,8 +371,8 @@ build\zamn_assets.exe route "Zombies Ate My Neighbors.sfc" 2 350 585 251 302
 ```
 level 2: (350,585) -> (251,302), 49 cells
 
-  Left  to (252,588)   98 px
-  Up    to (252,300)   288 px
+  Left  to (253,588)   97 px
+  Up    to (253,300)   288 px
 ```
 
 That is `movies/level1-pickups.zmv`'s first two lines, which were cut by hand
@@ -551,8 +551,10 @@ build\zamn_assets.exe route "Zombies Ate My Neighbors.sfc" 18 284 420 563 513 --
 ```
 
 The map, tinted per grid cell: **green** reached, **orange** open but cut off from
-the start, **red** solid, yellow the start, blue the goal. Orange is the whole
-point of the picture. Level 17's `$81:D704` creature stands at (563,513) and the
+the start, **red** solid, **magenta** water, yellow the start, blue the goal.
+Orange is the whole point of the picture; magenta is the one the picture used to
+get wrong, and *What the search calls a wall and the player calls a lake* below
+is why. Level 17's `$81:D704` creature stands at (563,513) and the
 search says no route; what `--reach` says is that it stands in one of two sealed
 alcoves —
 
@@ -601,6 +603,70 @@ is a real thing to find in this ROM** — that entry is in the level's own list,
 the coordinate came from the game and not from a typo. And every reachability
 claim in `docs/cosim.md` rests on this predicate, so a way for it to say "yes"
 spuriously is worse than a way for it to say "no".
+
+### What the search calls a wall and the player calls a lake
+
+That last paragraph is the standard this section has to meet, and water broke it
+in the other direction: a way for the search to say **"no"** spuriously.
+
+Level 1 has a swimming pool and five ponds. Every tile of them carries
+attribute bit 0, so `terrain_blocked` refuses them, so the grid calls them wall
+— and `movies/level1-keys.zmv` swims straight across one. `--pos` frame by
+frame is the whole story:
+
+```
+3931  1214,703      two pixels a frame, walking north
+3939  1214,687      the water's edge, and he stops
+3955  1214,686      sixteen frames later he starts again
+3987  1214,657      ...at eight pixels every nine
+```
+
+`zamn_headless --at 3975` draws him mid-pond with only his head and arms above
+the surface, and the direction word on his own thread page goes to zero at frame
+3962 while he is still moving, so this is not walking and it is not his input
+driving it.
+
+**The ROM names water in one comparison.** When the walk is refused, `$80:DEDE`
+takes the attribute word `terrain_blocked` handed back, undoes that routine's
+`LSR` with an `ASL`, and asks:
+
+```
+$80:DEE0  ASL A : AND #$8B38 : CMP #$0100 : BNE away
+$80:DEFF  JSL $80:B05F                     ; bit 8, one step ahead
+$80:DF05  JMP $DD0D                        ; ...and off he goes
+```
+
+So the tile that stopped him has to carry bit 8 and none of bits 3, 4, 5, 9, 11
+or 15 — `(attr & $8B39) == $0101` once bit 0 is put back. That test picks out
+**thirty-one tile indices** across the five attribute tables the 56 levels share,
+and `--reach` now tints exactly them and nothing else: run it on level 1 and the
+magenta is the pool and the ponds, to the tile. Six levels (4, 11, 14, 25, 26,
+35) have bit 8 without the rest of the test — those are the up-conveyors in
+`port/floor.h` — and seven more (18, 31, 37, 50, 53, 54, 56) have no bit-8 tile
+at all. The other 43 have water.
+
+**The search still refuses to swim, on purpose.** Crossing is not free movement:
+`$80:DD0D` hands the player to a scripted behaviour with its own byte script at
+`$80:DD41`, and a destination is latched on the entry frame — (1214,657) for the
+crossing above, which is where he arrives and stops. Until that destination rule
+is read out, a grid that flooded through water would print legs nobody can walk,
+and this tool's whole value is that the legs it prints are legs and the routes it
+refuses are claims. So it stops at the shore and says so:
+
+```
+> zamn_assets route rom.sfc 22 258 2836 415 1190
+no route from (258,2836) to (415,1190) through level 22.
+...
+but 354 reachable cells are on the edge of water, which this
+search treats as wall and the player does not -- so this answer
+is only as good as the assumption that he stays dry.
+```
+
+**Every "no route" printed before this said nothing about water**, and that line
+is the retraction. It is also where `probe`'s one unexplained reading went:
+level 21's (415,1190), flagged as the one measurement that could not be
+accounted for, is tile `$1BF` attribute `$0103` — the same water as level 1's
+pool, and the player was swimming in it.
 
 ### Where a fitted route's slack actually was
 

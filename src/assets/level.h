@@ -87,6 +87,38 @@
 #define LEVEL_ATTR_BIT2 0x0004
 #define LEVEL_ATTR_BIT8 0x0100
 
+// **Bit 8 on a blocking tile is water**, and the ROM says so in one comparison.
+// When `$80:E4C1`'s walk is refused, `$80:DEDE` takes the attribute word
+// `terrain_blocked` handed back, undoes that routine's `LSR` with an `ASL`, and
+// asks
+//
+//     $80:DEE0  ASL A : AND #$8B38 : CMP #$0100 : BNE away
+//
+// — so the tile that stopped the walk has to carry bit 8 and *none* of bits 3,
+// 4, 5, 9, 11 or 15. Bit 0 is already known set, and the `ASL` drops it, which
+// is why the mask below carries it and the ROM's does not. Match, and the
+// player stops walking and starts across: `$80:DEFF` re-reads a point one step
+// ahead with `terrain_point_bit8` and `$80:DF05  JMP $DD0D` hands him to a
+// scripted behaviour with its own byte script at `$80:DD41`.
+//
+// Measured on `movies/level1-keys.zmv`, which crosses level 1's lake at x=1214:
+// he walks north at two pixels a frame to y=687, stops dead for sixteen frames,
+// and then travels **eight pixels every nine frames** to y=657 — the swimming
+// sprite, and still moving after the direction on his own page has gone to
+// zero. `zamn_headless --at 3975` is the picture.
+//
+// **Thirty-eight tile indices in the cartridge carry bit 8 at all**, across the
+// five attribute tables the 56 levels share between them, and they are two
+// different things. Thirty-one of the thirty-two that also block are water by
+// the test above — `$0101`, `$0103` and `$0107`, in the three tables that 43
+// levels use. The other seven are all in one table, the one levels 4, 11, 14,
+// 25, 26 and 35 read: six `$0108` and one `$010B`, which carry bit 3 as well
+// and are the up-conveyor `port/floor.h` already documents. The `CMP` above
+// refuses them by that bit, so those six levels have no water. Nor do the
+// seven whose table has no bit-8 tile at all: 18, 31, 37, 50, 53, 54 and 56.
+#define LEVEL_ATTR_WATER_MASK 0x8b39
+#define LEVEL_ATTR_WATER 0x0101
+
 // **Bit 3 is not terrain at all, it is a trigger.** Only 223 of its 410 tiles
 // block anything, and its reader — `$80:B03B`, called from `$80:E861` on the
 // tile a mover has just stepped onto — arms a ten-frame countdown ending in a
