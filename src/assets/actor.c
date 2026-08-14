@@ -43,22 +43,35 @@ int actors_read(const Rom* rom, const LevelHeader* h, ActorLists* out) {
     }
   }
 
-  // Victims — 12-byte records, ended by a zero index. `$82:DB46` keys the list
-  // on +6 and copies +0/+2 into its working arrays.
+  // Victims and the tail behind them — 12-byte records either way. Two readers
+  // walk this one list and stop on different fields, so this loop runs to
+  // `$81:81F6`'s terminator (+0 zero) and hands over to `spawns` at the point
+  // `$82:DB46`'s gate on +6 would have stopped. See `assets/actor.h`.
   p = list_ptr(rom, h->list_1e, &avail, &present);
   if (present) {
     if (!p) return ACTOR_ERR_ADDRESS;
+    bool counting = true;  // $82:DB46 is still walking alongside us
     for (uint32_t off = 0;; off += 12) {
       if (off + 12 > avail) return ACTOR_ERR_ADDRESS;
+      if (rd16(p + off + 0) == 0) break;  // x 0 terminates, as $81:81F6
       uint16_t index = rd16(p + off + 6);
-      if (index == 0 || index > VICTIM_INDEX_MAX) break;  // gate, as $82:DB46
-      if (out->victim_count >= VICTIM_LIST_MAX) return ACTOR_ERR_OVERFLOW;
-      VictimPlacement* vv = &out->victims[out->victim_count++];
-      vv->x = rd16(p + off + 0);
-      vv->y = rd16(p + off + 2);
-      vv->field4 = rd16(p + off + 4);
-      vv->index = index;
-      vv->behavior = (uint32_t)rd16(p + off + 8) | ((uint32_t)p[off + 10] << 16);
+      if (index == 0 || index > VICTIM_INDEX_MAX) counting = false;
+      if (counting) {
+        if (out->victim_count >= VICTIM_LIST_MAX) return ACTOR_ERR_OVERFLOW;
+        VictimPlacement* vv = &out->victims[out->victim_count++];
+        vv->x = rd16(p + off + 0);
+        vv->y = rd16(p + off + 2);
+        vv->field4 = rd16(p + off + 4);
+        vv->index = index;
+        vv->behavior = (uint32_t)rd16(p + off + 8) | ((uint32_t)p[off + 10] << 16);
+      } else {
+        if (out->spawn_count >= SPAWN_LIST_MAX) return ACTOR_ERR_OVERFLOW;
+        SpawnPlacement* s = &out->spawns[out->spawn_count++];
+        s->x = rd16(p + off + 0);
+        s->y = rd16(p + off + 2);
+        s->field4 = rd16(p + off + 4);
+        s->behavior = (uint32_t)rd16(p + off + 8) | ((uint32_t)p[off + 10] << 16);
+      }
     }
   }
 

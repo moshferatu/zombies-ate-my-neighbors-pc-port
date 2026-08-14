@@ -29,6 +29,7 @@
 // these counts; they only bound the parse so a malformed record can't run away.
 #define ACTOR_LIST_MAX 128
 #define VICTIM_LIST_MAX 32
+#define SPAWN_LIST_MAX 32
 #define OBJECT_LIST_MAX 128
 
 // A 10-byte actor record, as `$81:80EC` reads it (stride 10, `LDA ($0C),Y`):
@@ -56,8 +57,22 @@ typedef struct {
 
 // The victim parser (`$82:DB46`) stops at the first record whose index is 0 or
 // exceeds `$1D50`, and `$1D50` is a fixed `$0010` set at every level load
-// (`$80:85E7`). So the list runs while `0 < index <= 16`; the record just past
-// the last victim is padding whose index reads as garbage above the gate.
+// (`$80:85E7`). So the list runs while `0 < index <= 16`.
+//
+// **The record just past the last victim is not padding**, which this file used
+// to say. The loader hands `+$1E` to *two* readers, and they stop on different
+// fields: `$80:87A8` gives it to `$82:DB46`, which gates on +6 as above, and
+// `$80:8791` gives it to `$81:81F6`, which walks the same twelve-byte stride
+// (`$81:8223  TXA : ASL : ASL : STA $0A : ASL : CLC : ADC $0A`) and quits only
+// when +0 is zero (`$81:822D  LDA ($0C),Y : BEQ $81FD`). `$81:81F6` is the one
+// that spawns +$8. So everything between the two terminators is a placement that
+// spawns and is not a neighbour, and the terminator `$82:DB46` sees is the end
+// of the count, not the end of the list.
+//
+// Every one of the 56 records holds exactly ten victims; 28 of them carry a tail
+// as well, 135 placements over ten bodies. `$81:983A` — the `$81:990B` creature
+// — is thirty of those and appears in no other list, which is how
+// `docs/cosim.md` came to ask this question.
 #define VICTIM_INDEX_MAX 0x10
 
 // A 12-byte victim record, as `$82:DB46` reads it (stride 12): +0 x, +2 y,
@@ -71,6 +86,15 @@ typedef struct {
   uint32_t behavior;  // +8/+10  24-bit far pointer to the victim routine
 } VictimPlacement;
 
+// The tail of the `+$1E` list: same twelve bytes, read by `$81:81F6` alone. +6
+// is zero — that is what ended the count — so only the position and the far
+// pointer mean anything, and the pointer is an actor body, not a victim routine.
+typedef struct {
+  uint16_t x, y;      // +0/+2  spawn position
+  uint16_t field4;    // +4  always $0000 in the shipped data
+  uint32_t behavior;  // +8/+10  24-bit far pointer to the actor body
+} SpawnPlacement;
+
 // A 5-byte object record, as `$80:C9A5` reads it: +0 x, +2 y, +4 a type byte.
 // +0 == 0 terminates the list. No behavior pointer — the type byte selects it.
 typedef struct {
@@ -83,6 +107,8 @@ typedef struct {
   int actor_count;
   VictimPlacement victims[VICTIM_LIST_MAX];
   int victim_count;
+  SpawnPlacement spawns[SPAWN_LIST_MAX];
+  int spawn_count;
   ObjectPlacement objects[OBJECT_LIST_MAX];
   int object_count;
 } ActorLists;

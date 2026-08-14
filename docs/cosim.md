@@ -13182,3 +13182,225 @@ answered — the ice weapon and this creature had to be on one level, and level 
 was it — asked about a weapon that is on eight levels and, so far as this round
 knows, none of the eight is one this creature stands on. That is the next thing
 to check and it is a scan rather than a route.
+
+## The scan the last section asked for, and the level boundary it ends at (2026-08-14)
+
+The section above closed by naming the next thing to do and calling it cheap:
+"that is the next thing to check and it is a scan rather than a route." It was
+cheap, it took no movie, and it answers something larger than it was asked.
+
+It needed two things this file did not have. The first is **which body is this
+creature**, and the second is **where the game writes it down**, which turned out
+to be a list the tooling has been dropping on the floor for every level in the
+cartridge.
+
+### `$81:983A`, the body behind the handler
+
+Bank `$81` holds thirty-seven actor bodies, each opening `CLC : LDA $00DE : ADC
+#$xx : STA $00DE`, and one of them starts at `$81:983A`:
+
+```
+  $81:983A  18 AD DE 00 69 1C 00   CLC : LDA $00DE : ADC #$001C : STA $00DE
+  ...
+  $81:9865  A9 0B 99 A0 81 00      LDA #$990B : LDY #$0081
+  $81:986B  22 75 84 80            JSL $808475
+```
+
+Forty-three bytes in, before its first `thread_yield`, it installs `$81:990B` as
+its own collision handler. That is the third of the three `LDA #$990B` sites this
+file has been counting since `$81:96E4` was ported, and it is the one that says
+whose handler it is. **`$81:983A` is the creature.**
+
+### The victim list has a tail, and the tail is monsters
+
+`zamn_assets actors` prints "victims (10)" for record 30 and "victims (10)" for
+every other record in the cartridge, which is a suspiciously round number
+fifty-six times in a row. It is round because the tool stops where the *counter*
+stops, and the ROM does not.
+
+The loader hands the `+$1E` list to two different readers:
+
+```
+  $80:8791  LDA $9F001E,X : STA $00 : ... : LDA #$81F6 : LDY #$0081 : JSL $80825E
+  $80:87A8  LDA $9F001E,X : TAX     : ... : JSL $82DB46
+```
+
+Both walk twelve-byte records, and **they stop on different fields**. `$82:DB46`
+— the one `src/assets/actor.h` is written from — reads `+$6`, the neighbour
+index, and quits at zero or above `$1D50`:
+
+```
+  $82:DB54  LDY #$0006 : LDA [$28],Y : BEQ $DB8B : CMP $001D50 : BEQ : BCS $DB8B
+```
+
+`$81:81F6` reads `+$0`, the x coordinate, and quits only at zero:
+
+```
+  $81:8223  TXA : ASL : ASL : STA $0A : ASL : CLC : ADC $0A : TAY   ; stride 12
+  $81:822D  LDA ($0C),Y : BEQ $81FD                                 ; x = 0 ends it
+```
+
+And `$81:81F6` is the one that spawns the far pointer at `+$8`. So everything
+between the two terminators is a placement that spawns and is not a neighbour.
+Record 30 has three of them, and the list lands exactly where it should:
+
+```
+  $9F:A796  ten victims, (708,76) idx 1 through (423,251) idx 16
+  $9F:A80E  (120,243)  idx 0  $81:D2F1
+  $9F:A81A  (230,443)  idx 0  $81:983A
+  $9F:A826  (967,810)  idx 0  $81:983A
+  $9F:A832  $0000                        <- x = 0, and $9F:A834 is the object list
+```
+
+Thirteen records of twelve bytes from `$9F:A796` reach `$9F:A832` and stop two
+bytes short of the object list. Every one of the fifty-six levels has exactly ten
+victims; **twenty-eight of them carry a tail, one hundred and thirty-five
+placements in all**, over ten distinct bodies — `$81:D2F9` thirty-five times,
+`$81:983A` thirty, `$82:DD52` twenty-five, and six more.
+
+The creature the corpus already shoots is the third entry. Page `$0200` enters
+the display list at frame 3420 of `movies/level29-990b.zmv` at **(967,810)** with
+its handler still `$00:0000`, and by 3500 it is answering as `$81:990B` in two
+records at once, which is the peer at `$40` this file already knows about. The
+one at (230,443) has never been met by any input.
+
+### Nine records, and eight, and no record in both
+
+Walking every level's `+$1E` list the way `$81:81F6` does finds thirty `$81:983A`
+placements on nine records:
+
+```
+  record  5 (level  4)  7      record 32 (level 31)  2
+  record 14 (level 13)  2      record 35 (level 34)  7
+  record 16 (level 15)  1      record 37 (level 36)  1
+  record 25 (level 24)  1      record 47 (level 46)  7
+  record 30 (level 29)  2
+```
+
+The eight records that place object type `$04` are the ones the section above
+listed: 1, 8, 22, 29, 42, 50, 51 and 52. That the type is the bubble gun and
+nothing else is worth one line, because the whole result rests on it: `$80:CA30`
+is a word table indexed by object type, it reads `$000C, $000D, $000E, $000F` for
+types `$00, $02, $04, $06`, `slot = id - $0C` makes type `$04` slot 2, and `$5C +
+2` is `$5E`. The seven weapon slots have exactly seven object types between them
+— `$00, $02, $04, $06, $24, $26, $16` — so an object list is the only place a gun
+can come from.
+
+**The two sets do not intersect.** The last section's finding was "record 30 is
+not one of them"; the finding is really that **no record in the cartridge is one
+of both**. `d990b_bubble` is not an input on any single level, and no route, no
+second player and no amount of movie length changes that.
+
+### Except that the inventory outlives the level
+
+There is exactly one place where the two lists come within one level of each
+other, and it is the pair the corpus is already standing on:
+
+```
+  record 29  (level 28)   type $04 at (815,517)
+  record 30  (level 29)   $81:983A at (967,810) and (230,443)
+```
+
+Nothing else is adjacent — not 1 and 2, not 8 and 9, not 22 and 23, not 42, 50,
+51 or 52. So the question stops being "which level" and becomes "does a gun
+survive the walk through the exit", and the game thread answers it in its shape:
+
+```
+  $80:8160  LDA #$84B1 : LDY #$0080 : JSL $80825E   ; the game thread is spawned
+
+  $80:84B1  JSL $8085CF
+  $80:84B5  JSL $809126
+  $80:84B9  JSL $8088A9
+  $80:84BD  JSL $808618      <- lives := $000A, $1CCC/$1CEC := $0150
+  $80:84C1  JSL $80885B      <- and the loop starts here
+  $80:84C5  JSL $808849
+  $80:84C9  JSL $808632
+  $80:84CD  JSL $8086A2      <- load the level
+  $80:84D1  JSL $808516      <- play it
+  ...
+  $80:84F6  JSL $808909      ; $1E7C := $1E7C + 1, wrapping at $9F:8000 = 50
+  $80:84FA  BRA $84C1        <- back past the seed
+```
+
+**The seed is one instruction outside the loop.** `$80:8618` walks both players
+through `$80:8874`, which writes ten lives to `$1CB8,X` and `$0150` squirt rounds
+to `$1CCC`, and the level loop re-enters at `$84C1`, four bytes past it. It is
+the same fact from both ends: lives have to survive a level, so the inventory
+does too, and the ROM keeps them by seeding neither more than once.
+
+That was worth reading rather than assuming, because the seed is gated on
+`$1E88,X` and `$1E88` is not a one-shot — it reads `$0001` from frame 1910 of
+`movies/level29-990b.zmv` and never moves again. Had the loop closed at `$84B1`
+instead of `$84C1`, every level would hand the player a fresh squirt gun and ten
+lives, and this site would be shut for good.
+
+### What the movie would cost, which is why this section is not one
+
+Passwords exist for every fourth level — 5, 9, 13, 17, 21, 25, 29, 33, 37, 41,
+45, 49, 53 — so **level 28 cannot be started directly**. The cheapest opening is
+the level 25 password the corpus already uses, and then:
+
+```
+  level 25   complete
+  level 26   complete
+  level 27   complete
+  level 28   collect the type $04 object at (815,517), then complete
+  level 29   the route movies/level29-990b.zmv already walks, with slot 2 filled
+```
+
+Four completions, and a completion is not a door. `$80:8516` runs the level until
+`$7E:1D52` reaches zero, and `$1D52` is the neighbour counter the password
+table's columns walk: it reads `$0010` on level 29 and does not move once in
+2,700 frames of `movies/level29-990b.zmv`, and it steps `16 -> 9` on frame 1966
+of `movies/level1-rescue.zmv` when the first neighbour is saved. So each of those
+four lines is a full sweep of a level's ten victims, rescued or eaten.
+
+That is a movie several times longer than anything in the corpus, and it is the
+next round's, not this one's. What this section changes is that `d990b_bubble` is
+no longer a scan waiting to be done or a site waiting on luck. It is a route with
+a known start, a known length, and a reason to work that was read rather than
+hoped for.
+
+### And the blind alley from the round before was one level out, not wrong
+
+The last round fitted a six-leg route to the type-`$04` object at (815,517),
+walked it, watched the inventory not change, and wrote the object off as being on
+the wrong record. **The route was right and the level was early.** (815,517) is
+on record 29, which is game level 28 — the level immediately *before* the one
+those movies play. The same off-by-one the last round caught in `d990b_died` was
+sitting underneath its own dead end, pointing the other way: the object it could
+not reach is the object the next movie has to collect, and the route to it is
+already fitted.
+
+### The tool now says it, so the scan is a command and not a script
+
+`src/assets/actor.h` modelled the `+$1E` list as ending at the first zero index,
+because that is what `$82:DB46` does, and `zamn_assets actors` printed it that
+way — right about the neighbour counter and short by one hundred and thirty-five
+placements about what the level puts on the floor. `actors_read` now walks to
+`$81:81F6`'s terminator and hands over to a `spawns` list at the point
+`$82:DB46`'s gate would have stopped, so both readers are modelled and neither
+count is guessed:
+
+```
+  zamn_assets actors "Zombies Ate My Neighbors.sfc" 30
+
+    victims (10)  idx  x     y     behavior
+       ...
+       9         16  423   251   $83:9776
+
+    spawns (3)   x     y     behavior   (victim list tail)
+       0       120   243   $81:D2F1
+       1       230   443   $81:983A
+       2       967   810   $81:983A
+```
+
+Every figure in this section is that command over all 56 records: 135 tail
+entries on 28 of them, 30 of those `$81:983A`, on the nine records listed above.
+`verify-actors` is unchanged and still passes — its victim count is `$82:DB46`'s
+and always was — and re-running `movies/level29-990b-2p.zmv` after the rebuild
+gives the same 322,347 calls and the same zero divergences.
+
+What is still owed is the other half: `verify-actors` diffs the ROM's victim
+array and its object array, and there is no third check yet for what `$81:81F6`
+spawned. The tail is read out of the ROM here, not out of the running game.

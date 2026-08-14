@@ -1155,6 +1155,16 @@ static void print_actor_lists(const ActorLists* al) {
     printf("    %2d        %3u  %-5u %-5u %s\n", i, vv->index, vv->x, vv->y,
            addr_str(vv->behavior));
   }
+  // The same list as the victims above, past the point the neighbour counter
+  // stops reading it. `$81:81F6` spawns these; `$82:DB46` never sees them.
+  if (al->spawn_count > 0) {
+    printf("\n  spawns (%d)   x     y     behavior   (victim list tail)\n",
+           al->spawn_count);
+    for (int i = 0; i < al->spawn_count; i++) {
+      const SpawnPlacement* s = &al->spawns[i];
+      printf("    %2d       %-5u %-5u %s\n", i, s->x, s->y, addr_str(s->behavior));
+    }
+  }
   printf("\n  objects (%d)  type  x     y\n", al->object_count);
   for (int i = 0; i < al->object_count; i++) {
     const ObjectPlacement* o = &al->objects[i];
@@ -1385,9 +1395,9 @@ static int cmd_verify_actors(int argc, char** argv) {
     printf("The movie never reached a level load — nothing was verified.\n");
     rc = 1;
   } else {
-    printf("\nLevel record %s: %d actors, %d victims, %d objects decoded.\n",
+    printf("\nLevel record %s: %d actors, %d victims (+%d spawns), %d objects decoded.\n",
            addr_str(ac.record), ac.al.actor_count, ac.al.victim_count,
-           ac.al.object_count);
+           ac.al.spawn_count, ac.al.object_count);
     if (!ac.victims_done) ac_check("victim list reached", false, "parser never ran");
     if (!ac.objects_done) ac_check("object list reached", false, "parser never ran");
     printf("%d check%s, %d failed.\n", ac.checks, ac.checks == 1 ? "" : "s", ac.failures);
