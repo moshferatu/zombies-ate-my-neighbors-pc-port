@@ -2890,6 +2890,49 @@ static bool route_swimmable(const LevelWalk* lw, int cx, int cy) {
   return true;
 }
 
+// **A route to an object's own coordinate asks the wrong question**, and this is
+// the answer to the right one.
+//
+// An object is picked up by *touching* it, not by standing on it, and the touch
+// test is `actor_overlap_pass` (`$80:BEE1`, ported in `src/port/oam.c`): one
+// subtraction per axis, re-biased by 8, taken unsigned. So a pair collides when
+// each axis differs by -8..+7 -- and the sign there is the pair's order in the
+// visible list, which a static search does not know, so the box this scans is
+// the order-independent -7..+7 inside it.
+//
+// Why it matters: an object placed against a wall has scenery in its own 3x2
+// box, so `route` refuses it, and the refusal has been read as the object being
+// unreachable. Two of the three item-slot-1 objects in `docs/cosim.md` were
+// written off exactly that way, and both are collectable. Level 25's at
+// (128,694) needs no more than the route this prints: the walk lands at
+// (125,700), three and six pixels off. Level 41's at (1590,123) is the case
+// worth knowing about -- the topmost reachable row there spans y=128..135, the
+// box wants y<=130, and a leg aimed at the row's centre stops at 133 and misses
+// by three. `$80:AE14` calls (1590,129) open, so the route is not wrong, only
+// its last leg, which is the wall-anchoring `docs/cosim.md` already owes.
+//
+// `prev` is the flood that already ran, so this costs 225 lookups and no second
+// search.
+static bool route_touch_point(const LevelWalk* lw, const int32_t* prev,
+                              int x1, int y1, int* out_x, int* out_y) {
+  int best = -1;
+  for (int dy = -7; dy <= 7; dy++) {
+    for (int dx = -7; dx <= 7; dx++) {
+      const int px = x1 + dx, py = y1 + dy;
+      const int cx = route_cell_x(px), cy = route_cell_y(py);
+      if (cx < 0 || cy < 0 || (uint32_t)cx >= lw->cols || (uint32_t)cy >= lw->rows)
+        continue;
+      if (prev[(uint32_t)cy * lw->cols + (uint32_t)cx] == -2) continue;
+      const int d = dx * dx + dy * dy;
+      if (best >= 0 && d >= best) continue;
+      best = d;
+      *out_x = px;
+      *out_y = py;
+    }
+  }
+  return best >= 0;
+}
+
 // --- and the same level as the game's own routine wants it -------------------
 //
 // Everything above is an array lookup off `level_expand`. `terrain_blocked` --
@@ -3020,6 +3063,53 @@ static void route_walk_check(const LevelWalk* lw, Wram* w, int x0, int y0,
              : "");
 }
 
+// --- and ending the last leg where the caller asked, not where the grid did --
+//
+// Every waypoint above is a cell *centre*, because the centre is the only pixel
+// the search ever asks about, and for all but the last leg that is right: the
+// centre is what the next leg turns from. The last leg is the one the caller
+// cares about the position of, and there the centre is an answer to nobody's
+// question -- a goal is a pixel, and the cell holding it is eight wide.
+//
+// Level 41's item is the case that cost a round. The topmost standable row
+// there spans y=128..135, its centre is 132, `actor_overlap_pass` wants y<=130,
+// and the walk stopped at 133 and missed the object by three pixels -- with
+// `probe` calling 129 open the whole time. So the last leg is pushed along its
+// own axis toward the caller's coordinate, one pixel at a time, for as long as
+// `$80:AE14` calls the player's box open. The game's answer, not this file's.
+//
+// It only ever pushes *forward*: never back past the waypoint the search
+// proved, never beyond the goal. A route that already ended on its goal is the
+// route it always was, which is why the levels documented in
+// `docs/analysis-tools.md` print what they printed.
+//
+// The perpendicular axis is left alone and has to be. One leg moves on one
+// axis, and the lane it moves in is whatever the legs before it left; closing
+// that residual means anchoring the whole search on walls rather than on cell
+// counts, which is the debt `docs/cosim.md` names for every routed movie.
+// `route_walk_check` prints the landing, and the landing is the thing to
+// believe.
+static void route_anchor_last(const LevelWalk* lw, Wram* w, RouteLeg* legs,
+                              int nlegs, int x1, int y1) {
+  if (nlegs <= 0) return;
+  RouteLeg* leg = &legs[nlegs - 1];
+  const int step = leg->dx ? leg->dx : leg->dy;
+  const int want = leg->dx ? x1 : y1;
+  int at = leg->dx ? leg->tx : leg->ty;
+  if (!step || (want - at) * step <= 0) return;
+  ProbeTile t[ROUTE_BOX_W * ROUTE_BOX_H];
+  int first = -1;
+  for (int p = at + step; (want - p) * step >= 0; p += step) {
+    if (probe_point(lw, w, leg->dx ? p : leg->tx, leg->dx ? leg->ty : p, t, &first))
+      break;
+    at = p;
+  }
+  if (leg->dx)
+    leg->tx = at;
+  else
+    leg->ty = at;
+}
+
 // Breadth-first from (sx,sy) to exhaustion rather than stopped at the goal.
 // Every `prev` is set once and in the same order either way, so the path printed
 // is the path that was always printed; what the extra cells buy is `--reach`,
@@ -3134,6 +3224,20 @@ static int cmd_route(int argc, char** argv) {
            swim ? "" : "dry ", x0, y0, x1, y1, level);
     printf("the 2x2-clear grid does not connect them, so either the target is\n");
     printf("inside scenery or the way in is a door rather than a gap.\n");
+    // Before blaming the level, check whether the *goal* was the mistake. If
+    // anything the flood reached is inside the game's own touch box, an object
+    // sitting here is collectable and only the coordinate was unwalkable -- so
+    // say so, and hand back a target that works.
+    int tx = 0, ty = 0;
+    const bool touchable = route_touch_point(&lw, prev, x1, y1, &tx, &ty);
+    if (touchable)
+      printf("\nbut (%d,%d) is reached, and the two are within the 16x16 box\n"
+             "`actor_overlap_pass` tests -- so an *object* at (%d,%d) is\n"
+             "collectable from there. Route to (%d,%d): the last leg is walked\n"
+             "onto that coordinate rather than onto its cell's centre, but the\n"
+             "axis that leg does not move on is whatever lane the legs before\n"
+             "it left, so the landing is the thing to believe, not the plan.\n",
+             tx, ty, x1, y1, tx, ty);
     // ...or it is neither, and the answer is not to be trusted. A cell that the
     // flood reached and that has water next to it is a shore, and the player
     // swims off shores. Count them -- and then, rather than leave the caller
@@ -3152,6 +3256,10 @@ static int cmd_route(int argc, char** argv) {
         if (route_water(&lw, nx, ny)) { shore++; break; }
       }
     }
+    // Both, when both are true. They answer different questions -- one is "an
+    // object here is collectable from dry land", the other "the player can get
+    // *to* here" -- and a caller who wanted the second is not served by being
+    // told only the first. Level 22 is the case that has both.
     if (shore && !swim) {
       printf("\n%u reachable cells are on the edge of water", shore);
       int32_t* wet = (int32_t*)malloc(cells * sizeof(int32_t));
@@ -3193,10 +3301,9 @@ static int cmd_route(int argc, char** argv) {
                wetcells, ROUTE_SPEED);
     }
     printf("\n");
-    int frame = frame0;
-    int px = x0, py = y0;
-    // Collected as well as printed, so the walk below can be the same legs
-    // rather than a second reading of them. At most one per cell.
+    // Collected before anything is printed, because the last one is still going
+    // to move: `route_anchor_last` needs the whole plan and the game's own
+    // terrain test before the first line of it is true. At most one per cell.
     RouteLeg* legs = (RouteLeg*)malloc((size_t)n * sizeof(RouteLeg));
     int nlegs = 0;
     for (int i = n - 1; i > 0;) {
@@ -3210,17 +3317,28 @@ static int cmd_route(int argc, char** argv) {
         if ((int)((uint32_t)path[j - 1] / cols) - ay != ddy) break;
         j--;
       }
-      int tx = route_pixel_x((int)((uint32_t)path[j] % cols));
-      int ty = route_pixel_y((int)((uint32_t)path[j] / cols));
-      const char* dir = ddx > 0 ? "Right" : ddx < 0 ? "Left" : ddy > 0 ? "Down" : "Up";
-      int dist = ddx ? abs(tx - px) : abs(ty - py);
       if (legs) {
         legs[nlegs].dx = ddx > 0 ? 1 : ddx < 0 ? -1 : 0;
         legs[nlegs].dy = ddy > 0 ? 1 : ddy < 0 ? -1 : 0;
-        legs[nlegs].tx = tx;
-        legs[nlegs].ty = ty;
+        legs[nlegs].tx = route_pixel_x((int)((uint32_t)path[j] % cols));
+        legs[nlegs].ty = route_pixel_y((int)((uint32_t)path[j] / cols));
         nlegs++;
       }
+      i = j;
+    }
+    // The plan, walked. Terrain only: this knows nothing about the objects,
+    // actors and tether the other three of `$80:E4C1`'s tests ask about, and a
+    // creature standing in a corridor will stop a movie that passes here.
+    Wram* w = legs ? level_walk_wram(&lw) : NULL;
+    if (w) route_anchor_last(&lw, w, legs, nlegs, x1, y1);
+    int frame = frame0;
+    int px = x0, py = y0;
+    for (int i = 0; i < nlegs; i++) {
+      const char* dir = legs[i].dx > 0   ? "Right"
+                        : legs[i].dx < 0 ? "Left"
+                        : legs[i].dy > 0 ? "Down"
+                                         : "Up";
+      const int dist = legs[i].dx ? abs(legs[i].tx - px) : abs(legs[i].ty - py);
       if (frame0 >= 0) {
         printf("%d   %s\n", frame, dir);
         // Two pixels a frame and six frames of slack. That is a *first draft*
@@ -3231,16 +3349,11 @@ static int cmd_route(int argc, char** argv) {
         // the closed loop this open one needs.
         frame += dist / ROUTE_SPEED + 6;
       } else {
-        printf("  %-5s to (%d,%d)   %d px\n", dir, tx, ty, dist);
+        printf("  %-5s to (%d,%d)   %d px\n", dir, legs[i].tx, legs[i].ty, dist);
       }
-      px = tx; py = ty;
-      i = j;
+      px = legs[i].tx; py = legs[i].ty;
     }
     if (frame0 >= 0) printf("%d   -\n", frame);
-    // The plan, walked. Terrain only: this knows nothing about the objects,
-    // actors and tether the other three of `$80:E4C1`'s tests ask about, and a
-    // creature standing in a corridor will stop a movie that passes here.
-    Wram* w = legs ? level_walk_wram(&lw) : NULL;
     if (w) {
       route_walk_check(&lw, w, x0, y0, legs, nlegs, frame0 >= 0 ? "# " : "  ");
       free(w);

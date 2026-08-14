@@ -12181,6 +12181,25 @@ their movies' own start positions with its standard verdict, that the target is
 either inside scenery or behind a door; which of the two it is was not chased.
 So the branch hangs on the object at (553,212) in level 29.
 
+> **Corrected two rounds later: all three have a route.** Chasing "which of the
+> two it is" is what found it. Both refused targets are inside scenery — and so
+> is the player, if he stands there, which is the wrong thing to have asked. An
+> object is collected by *touching* it, on `actor_overlap_pass`'s 16×16 box, and
+> both sit against a wall with standable ground inside that box. Level 25's
+> at (128,694) is reached from (128,696), and the walk lands at (127,700), one
+> and six pixels off it. Level 41's at (1590,123) is reached from (1590,128),
+> and the walk lands at (1588,129), two and six pixels off it — that one took a
+> further round, because a waypoint is a cell centre and its row's centre is
+> three pixels outside the box. `route` now scans the touch box on every
+> failure, names the point, and walks the last leg onto it rather than onto the
+> centre of the cell holding it; see `docs/analysis-tools.md`. The branch
+> does not hang on level 29 — and level 29 is no longer the one to write. Its
+> route is 375 cells in 36 legs and 1493 frames, and the paragraph below is about
+> the drift that cost. Level 25's is **231 cells in 12 legs and 921 frames**, and
+> its walk check reaches the last leg with nothing to report but the odd pixel
+> two-pixel steps cannot land on. A third of the legs is a third of the places
+> drift can start.
+
 **The route drifts and the movie was not kept.** `zamn_assets route 30` returns
 375 cells in 37 legs, and replaying them puts the player at (899,1217) when the
 route wants (876,1228) -- the BFS grid calls that cell walkable and the player's
@@ -12191,6 +12210,13 @@ for the rest of the movie. That is the failure mode every routed movie in
 the legs on walls instead of on cell counts. A movie whose header described
 reaching the item while ending nowhere near it would be worse than no movie, so
 it was deleted rather than committed.
+
+> **Part-paid two rounds later.** The *last* leg is now anchored -- walked onto
+> the caller's own coordinate rather than onto the centre of the cell holding
+> it, as far as `$80:AE14` allows. That is what makes level 41's item
+> collectable, and it is why an arrival can now be trusted to a pixel or two.
+> The legs in between are still aimed at cell centres, so the drift described
+> above is the drift there still is.
 
 ## Two things about the tools that cost time
 

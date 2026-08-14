@@ -689,11 +689,20 @@ no dry route from (258,2836) to (415,1190) through level 22.
 the 2x2-clear grid does not connect them, so either the target is
 inside scenery or the way in is a door rather than a gap.
 
+but (408,1183) is reached, and the two are within the 16x16 box
+`actor_overlap_pass` tests -- so an *object* at (415,1190) is
+collectable from there. Route to (408,1183), and believe the walk's
+landing rather than the waypoint: a leg that stops on a cell's
+centre can still be a few pixels outside the box.
+
 354 reachable cells are on the edge of water, and swimming connects them:
 rerun with --swim for the route. The legs it prints are real, but its
 frame counts are not -- see `route_swimmable` for what a crossing
 actually costs.
 ```
+
+The middle paragraph is a later round's and is described below; what the water
+work added is the last one.
 
 A failure now runs the wet grid itself and reports which kind of failure it was,
 because "nowhere to go" and "nowhere to go on foot" are different answers and the
@@ -720,9 +729,95 @@ the pixel.
 
 **Every "no route" printed before this round said nothing about water, and every
 one printed in the round before said the wrong thing about it.** Level 22 is the
-retraction that matters: the reachability note in `docs/cosim.md` describing it
-as one room with a single 64-pixel opening was measured on the dry grid, and the
-goal is reachable — by swimming, in 226 cells, 52 of them wet.
+retraction that matters: the goal is reachable, by swimming, in 226 cells, 52 of
+them wet.
+
+### The other way a route asks the wrong question
+
+Water was a wrong answer. This is a wrong *question*, and it was in every
+reachability claim the project has made about an object.
+
+**An object is picked up by touching it, not by standing on it.**
+`actor_overlap_pass` at `$80:BEE1` does one subtraction per axis, re-biases by 8
+and takes the result unsigned — `(b - a + 8) < $10` — so two records collide when
+each axis differs by −8..+7. Which end of that range you get is the pair's order
+in the visible list, which a static search cannot know, so the box worth
+searching is the −7..+7 both orders agree on.
+
+Routing to an object's own coordinate therefore asks whether the player can
+stand *on* the object, and an object placed against a wall has scenery in its own
+3×2 box. The search says no, correctly, to a question nobody meant to ask. So a
+failure now scans the touch box over the flood that already ran — 225 lookups, no
+second search — and says when the goal was the mistake:
+
+```
+> zamn_assets route rom.sfc 26 1303 518 128 694
+no dry route from (1303,518) to (128,694) through level 26.
+...
+but (128,696) is reached, and the two are within the 16x16 box
+`actor_overlap_pass` tests -- so an *object* at (128,694) is
+collectable from there. Route to (128,696): the last leg is walked
+onto that coordinate rather than onto its cell's centre, but the
+axis that leg does not move on is whatever lane the legs before
+it left, so the landing is the thing to believe, not the plan.
+```
+
+Level 26's rerouted walk lands at (127,700), one and six pixels off the object,
+and is done. Level 42's took another round, and it is the next section.
+
+### The last leg was aimed at the wrong pixel
+
+A waypoint is a cell *centre*, because a centre is the only pixel the search ever
+asks about. For every leg but the last that is right — the centre is what the
+next leg turns from. For the last leg it is an answer to nobody's question: the
+caller named a pixel, and the cell holding it is eight wide.
+
+Level 42's item is what that cost. The topmost standable row beside it spans
+y = 128..135, the centre is 132, the touch box wants y ≤ 130, and the walk
+stopped at 133 — four pixels for the centre and one more for two-pixel steps
+landing where they land. Three pixels outside a box `probe` had been calling open
+at 129 the whole time.
+
+So the last leg is now pushed along its own axis toward the caller's coordinate,
+one pixel at a time, for as long as `$80:AE14` calls the player's box open — the
+game's verdict, not the search's. It only ever pushes forward, never back past
+the waypoint the search proved and never beyond the goal, which is why every
+route documented above prints what it printed:
+
+```
+> zamn_assets route rom.sfc 42 1656 703 1590 128
+level 42: (1656,703) -> (1590,128), 336 cells
+...
+  Right to (1589,140)   120 px
+  Up    to (1589,128)   12 px
+
+  walk: 1337 frames from (1656,703) to (1588,129), which is not the last
+  waypoint -- two pixels a frame cannot land on an odd distance, and the lane
+  is whatever the start was.
+```
+
+Two and six pixels off the object at (1590,123). **Both of `docs/cosim.md`'s
+refused items are now not just routable but walked to, end to end.**
+
+Across 583 reaching routes on levels 26 and 42, the anchor moves the last
+waypoint on 252 of them, by at most 4 px — half a cell, which is the most it can
+be. It costs nothing: 2,888 routes over levels 22, 26, 30 and 42 produce no
+blocked walk and no disagreement between the search's box and `$80:AE14`.
+
+What it does not fix is the other axis. One leg moves on one axis, and the lane
+it moves in is whatever the legs before it left; level 22's touch point is 9 and 8
+pixels from its object for that reason, and closing it means anchoring the whole
+search on walls rather than on cell counts — the debt `docs/cosim.md` names for
+every routed movie. `route`'s walk line prints the landing, and the landing is
+the thing to believe.
+
+**What this cost:** `docs/cosim.md` read three refusals as three levels, and two
+of them were this. The three "no" verdicts in the same document's level-25
+weapons table survive it: asked again with the box in place, `route` prints no
+touch line for any of the three, and sweeping outwards puts the nearest reached
+ground at 40 px, 40 px, and nothing within 48. Those were measured as distances
+to reachable ground rather than as routes to a coordinate, which is why they were
+right the first time — and it is the same distinction, written out by hand.
 
 ### Where a fitted route's slack actually was
 
