@@ -701,7 +701,8 @@ static void print_header(const LevelHeader* h, int level) {
 //
 // `reach`, when it is not NULL, is one byte per grid cell: 0 solid, 1 reached,
 // 2 the start, 3 the goal, 4 open but cut off from the start, 5 water not
-// reached, 6 water reached, 7 a conveyor. It is tinted over the map rather than
+// reached, 6 water reached, 7 a conveyor, 8 a door. It is tinted over the map
+// rather than
 // drawn instead of it, because what a route needs is not "which cells are open"
 // but *which opening is the way in*, and that is a question about the picture.
 //
@@ -786,10 +787,11 @@ static bool render_level(const LevelHeader* h, const uint16_t* map, const Rom* r
   // overlay needs no scaling. A cell's *world* row is eight pixels below its
   // grid row (`ROUTE_Y_BIAS`), which is why the tint is drawn one tile down.
   if (reach) {
-    static const uint8_t tint[8][3] = {{160, 0, 0},   {0, 200, 0},
+    static const uint8_t tint[9][3] = {{160, 0, 0},   {0, 200, 0},
                                        {255, 255, 0}, {0, 128, 255},
                                        {220, 110, 0}, {190, 0, 190},
-                                       {255, 150, 230}, {255, 255, 255}};
+                                       {255, 150, 230}, {255, 255, 255},
+                                       {0, 230, 230}};
     for (uint32_t ty = 0; ty + 1 < tile_rows; ty++) {
       for (uint32_t tx = 0; tx < tile_cols; tx++) {
         const uint8_t* t = tint[reach[ty * tile_cols + tx]];
@@ -2935,6 +2937,11 @@ typedef struct {
   uint16_t* map;  // level_map_entries(&h) entries, the expanded tilemap
   uint16_t attrs[LEVEL_BG_TILES];
   uint32_t cols, rows;
+  // One byte per 8x8-tile block: does anything in it carry `LEVEL_ATTR_DOOR`?
+  // `route_doorable` reads it, and the reason it is per block rather than per
+  // tile is written up there.
+  uint8_t* door_block;
+  uint32_t block_cols, block_rows;
 } LevelWalk;
 
 static bool level_walk_load(const Rom* rom, int level, LevelWalk* out) {
@@ -2973,12 +2980,35 @@ static bool level_walk_load(const Rom* rom, int level, LevelWalk* out) {
     out->attrs[i] = (uint16_t)(attr_src[i * 2] | (attr_src[i * 2 + 1] << 8));
   out->cols = level_tile_cols(&out->h);
   out->rows = level_tile_rows(&out->h);
+
+  // Mark the door blocks once, here, rather than re-deriving them per cell: the
+  // flood asks about six tiles per cell and there are twenty-five thousand
+  // cells. A block is marked if *any* of its 64 tiles carries bit 6, because
+  // what opens is the whole block whichever of its tiles was walked into --
+  // measured on record 23, and written up at `route_doorable`.
+  out->block_cols = out->h.cols;
+  out->block_rows = out->h.rows;
+  out->door_block = (uint8_t*)calloc((size_t)out->block_cols * out->block_rows, 1);
+  if (out->door_block) {
+    for (uint32_t r = 0; r < out->rows; r++) {
+      for (uint32_t c = 0; c < out->cols; c++) {
+        const uint32_t index = out->map[r * out->cols + c] & ROUTE_TILE_MASK;
+        if (index >= LEVEL_BG_TILES) continue;
+        if (!(out->attrs[index] & LEVEL_ATTR_DOOR)) continue;
+        const uint32_t bc = c / LEVEL_BLOCK_TILES, br = r / LEVEL_BLOCK_TILES;
+        if (bc < out->block_cols && br < out->block_rows)
+          out->door_block[br * out->block_cols + bc] = 1;
+      }
+    }
+  }
   return true;
 }
 
 static void level_walk_free(LevelWalk* lw) {
   free(lw->map);
   lw->map = NULL;
+  free(lw->door_block);
+  lw->door_block = NULL;
 }
 
 // Position to grid cell and back. Integer division truncates toward zero rather
@@ -3000,6 +3030,7 @@ typedef struct {
   uint16_t attr;
   bool solid;
   bool water;  // ...and blocking for a reason the player walks straight into
+  bool door;   // ...or for a reason a key removes
 } ProbeTile;
 
 static ProbeTile probe_tile(const LevelWalk* lw, int col, int row) {
@@ -3017,6 +3048,7 @@ static ProbeTile probe_tile(const LevelWalk* lw, int col, int row) {
   t.attr = lw->attrs[t.index];
   t.solid = (t.attr & LEVEL_ATTR_SOLID) != 0;
   t.water = (t.attr & LEVEL_ATTR_WATER_MASK) == LEVEL_ATTR_WATER;
+  t.door = (t.attr & LEVEL_ATTR_DOOR) != 0;
   return t;
 }
 
@@ -3095,6 +3127,79 @@ static bool route_swimmable(const LevelWalk* lw, int cx, int cy) {
     if (t[i].solid && !t[i].water) return false;
   }
   return true;
+}
+
+// The same box again, with **doors** allowed through -- because a key opens
+// them and the player walks on.
+//
+// **The unit is the block, not the tile, and that is the whole difficulty.**
+// The first draft of this let a bit-6 tile through and connected nothing, which
+// is worth keeping because the reason is the interesting part. Record 23's
+// doorway is five tile rows deep, and only three of them carry bit 6:
+//
+//     row 129  $0053  bits 0 and 6      row 131  $0053
+//     row 130  $0013 / $0003            row 132  $0053
+//
+// Row 130 is ordinary scenery by every bit this file knows, and it sits in the
+// middle of a door the player walks straight through. So the bit does not mark
+// the passable tiles; it marks *that there is a door here*, and what opens is
+// bigger than the mark.
+//
+// How much bigger is measured, not read. Walk record 23's first doorway at x=461
+// and then push west: the player moves four pixels and stops at x=457, which is
+// tile column 55. Columns 56..63 have gone and 48..55 have not, and 55/56 is a
+// block boundary -- eight tiles of eight pixels. **A door opens one block.**
+//
+// `$81:92D6` is a routine that performs exactly that edit -- `LSR` six times per
+// axis for block coordinates, `$80:ACF6` for the block-map address, then `LDA
+// [$28],Y : EOR #$0001`, so an open block is the closed one with bit 0 of its
+// index flipped -- and both of `$80:B0BB`'s callers reach it through `$81:92C2`.
+// It is *not* the path the player takes: it also does `INC $1FC2` and spawns a
+// thread bodied at `$81:990B`, and on a movie that opens two of record 23's
+// doors `$1FC2` never leaves zero and no `$81:990B` reaches the display list.
+// Something else edits the same block map the same way. The measurement above is
+// what this predicate rests on.
+//
+// So the predicate is: every solid tile in the box must belong to a block that
+// has a bit-6 tile somewhere in it. `route_door_blocks` marks them once per
+// level and this reads the mark.
+//
+// It stays a separate predicate rather than a relaxation of `route_open` for the
+// blunt reason that `route_open` is the port's answer to `$80:AE14` and has to
+// keep agreeing with it. A door tile blocks, and the map this walks is the one
+// with the door still shut. The cosim harness would be right to fail a
+// `route_open` that said otherwise.
+static bool route_doorable(const LevelWalk* lw, int cx, int cy) {
+  ProbeTile t[ROUTE_BOX_W * ROUTE_BOX_H];
+  probe_tiles(lw, cx, cy, t);
+  for (int i = 0; i < ROUTE_BOX_W * ROUTE_BOX_H; i++) {
+    if (!t[i].on_map || !t[i].known) return false;
+    if (!t[i].solid) continue;
+    const uint32_t bc = (uint32_t)t[i].col / LEVEL_BLOCK_TILES;
+    const uint32_t br = (uint32_t)t[i].row / LEVEL_BLOCK_TILES;
+    if (!lw->door_block || !lw->door_block[br * lw->block_cols + bc]) return false;
+  }
+  return true;
+}
+
+// Is there a door in the box? For the tint and the count, the way `route_water`
+// is for water -- "there is a door here", not "this cell is passable".
+//
+// It asks for *solid scenery inside a door block* rather than for bit 6 itself,
+// so the picture shows the thing a key removes rather than the three rows of it
+// that happen to carry the mark. Row 130 of record 23's doorway is the case: it
+// is as much in the way as the rows above and below it and carries nothing.
+static bool route_door(const LevelWalk* lw, int cx, int cy) {
+  if (!lw->door_block) return false;
+  ProbeTile t[ROUTE_BOX_W * ROUTE_BOX_H];
+  probe_tiles(lw, cx, cy, t);
+  for (int i = 0; i < ROUTE_BOX_W * ROUTE_BOX_H; i++) {
+    if (!t[i].on_map || !t[i].known || !t[i].solid) continue;
+    const uint32_t bc = (uint32_t)t[i].col / LEVEL_BLOCK_TILES;
+    const uint32_t br = (uint32_t)t[i].row / LEVEL_BLOCK_TILES;
+    if (lw->door_block[br * lw->block_cols + bc]) return true;
+  }
+  return false;
 }
 
 // --- what the floor does once he is standing on it ---------------------------
@@ -3479,11 +3584,26 @@ static void route_anchor_last(const LevelWalk* lw, Wram* w, RouteLeg* legs,
 // is the path that was always printed; what the extra cells buy is `--reach`,
 // and twelve thousand of them cost nothing.
 //
-// `prev` must arrive filled with -2. Run twice per invocation when the dry grid
-// fails, which is what lets the failure say whether water was the thing in the
-// way -- so it takes the predicate as a flag rather than hard-coding one.
+// `prev` must arrive filled with -2. Run more than once per invocation when the
+// dry grid fails, which is what lets the failure say whether water or a door was
+// the thing in the way -- so it takes the predicate as a mode rather than
+// hard-coding one.
+typedef enum {
+  ROUTE_MODE_DRY = 0,  // `$80:AE14` exactly: six tiles, none of them solid
+  ROUTE_MODE_SWIM,     // ...water allowed through, because he swims it
+  ROUTE_MODE_DOORS,    // ...doors allowed through, because a key opens them
+} RouteMode;
+
+static bool route_passable(const LevelWalk* lw, int cx, int cy, RouteMode mode) {
+  switch (mode) {
+    case ROUTE_MODE_SWIM: return route_swimmable(lw, cx, cy);
+    case ROUTE_MODE_DOORS: return route_doorable(lw, cx, cy);
+    default: return route_open(lw, cx, cy);
+  }
+}
+
 static void route_flood(const LevelWalk* lw, int32_t* prev, int32_t* queue,
-                        int sx, int sy, bool swim) {
+                        int sx, int sy, RouteMode mode) {
   const uint32_t cols = lw->cols, rows = lw->rows;
   int32_t head = 0, tail = 0;
   prev[(uint32_t)sy * cols + (uint32_t)sx] = -1;
@@ -3497,7 +3617,7 @@ static void route_flood(const LevelWalk* lw, int32_t* prev, int32_t* queue,
       if (nx < 0 || ny < 0 || (uint32_t)nx >= cols || (uint32_t)ny >= rows) continue;
       uint32_t ni = (uint32_t)ny * cols + (uint32_t)nx;
       if (prev[ni] != -2) continue;
-      if (!(swim ? route_swimmable(lw, nx, ny) : route_open(lw, nx, ny))) continue;
+      if (!route_passable(lw, nx, ny, mode)) continue;
       prev[ni] = cur;
       queue[tail++] = (int32_t)ni;
     }
@@ -3508,7 +3628,7 @@ static int cmd_route(int argc, char** argv) {
   if (argc < 6) {
     fprintf(stderr,
             "usage: zamn_assets route <rom.sfc> <level 1-56> <x0> <y0> <x1> <y1>"
-            " [--frames <start>] [--reach <out.png>] [--swim]\n");
+            " [--frames <start>] [--reach <out.png>] [--swim] [--doors]\n");
     return 2;
   }
   int rom_len = 0;
@@ -3520,9 +3640,10 @@ static int cmd_route(int argc, char** argv) {
   int x1 = atoi(argv[4]), y1 = atoi(argv[5]);
   int frame0 = -1;
   const char* reach_path = NULL;
-  bool swim = false;
+  bool swim = false, doors = false;
   for (int i = 6; i < argc; i++) {
     if (!strcmp(argv[i], "--swim")) swim = true;
+    if (!strcmp(argv[i], "--doors")) doors = true;
     if (i + 1 >= argc) continue;
     if (!strcmp(argv[i], "--frames")) frame0 = atoi(argv[i + 1]);
     if (!strcmp(argv[i], "--reach")) reach_path = argv[i + 1];
@@ -3558,7 +3679,14 @@ static int cmd_route(int argc, char** argv) {
     free(prev); free(queue); level_walk_free(&lw); free(rom_data);
     return 1;
   }
-  route_flood(&lw, prev, queue, sx, sy, swim);
+  // `--swim` wins the tie, because it is the older flag and the one a caller
+  // reaches for when the answer is a shore; nothing in the ROM needs both at
+  // once, and a grid that quietly did two things would be the wrong thing to
+  // believe a "no route" from.
+  const RouteMode mode = swim    ? ROUTE_MODE_SWIM
+                         : doors ? ROUTE_MODE_DOORS
+                                 : ROUTE_MODE_DRY;
+  route_flood(&lw, prev, queue, sx, sy, mode);
 
   if (reach_path) {
     uint8_t* reach = (uint8_t*)calloc(cells, 1);
@@ -3579,11 +3707,17 @@ static int cmd_route(int argc, char** argv) {
         // blocked. The census below still counts every placed cell, because that
         // is the number the tile tables can be checked against; the picture
         // shows only the ones that are a floor to somebody.
+        // A door gets its own colour and takes it over green, for the reason
+        // white does: a cell the flood walked through under `--doors` is
+        // reached, which is true and is not the thing the reader needs. What
+        // decides whether the plan survives is that this one costs a key.
+        const bool door = route_door(&lw, cx, cy);
         reach[i] = belt && open ? 7
+                   : door          ? 8
                    : prev[i] != -2 ? (wet ? 6 : 1)
-                   : open ? 4
-                   : wet  ? 5
-                          : 0;
+                   : open          ? 4
+                   : wet           ? 5
+                                   : 0;
       }
       // Split by direction, because they are not one hazard. A belt along a
       // corridor is a moving walkway and costs a plan its frame counts; one
@@ -3670,12 +3804,29 @@ static int cmd_route(int argc, char** argv) {
     // object here is collectable from dry land", the other "the player can get
     // *to* here" -- and a caller who wanted the second is not served by being
     // told only the first. Level 22 is the case that has both.
+    // The same courtesy for doors, and on this cartridge it is the commoner
+    // answer of the two. A level whose spawn is walled in with its own keys --
+    // record 23 is one -- fails the dry grid from the first cell, and "no route"
+    // there is a statement about a locked door and not about the level.
+    if (!swim && !doors) {
+      int32_t* thru = (int32_t*)malloc(cells * sizeof(int32_t));
+      if (thru) {
+        for (uint32_t i = 0; i < cells; i++) thru[i] = -2;
+        route_flood(&lw, thru, queue, sx, sy, ROUTE_MODE_DOORS);
+        if (thru[(uint32_t)gy * cols + (uint32_t)gx] != -2)
+          printf("\nDoors connect them: rerun with --doors for the route. Each"
+                 " doorway it\ncrosses is one key spent -- `$80:B0BB`, tile"
+                 " attribute bit 6 -- and the\nlevel's own supply is its `$08`"
+                 " objects, which `actors` lists.\n");
+        free(thru);
+      }
+    }
     if (shore && !swim) {
       printf("\n%u reachable cells are on the edge of water", shore);
       int32_t* wet = (int32_t*)malloc(cells * sizeof(int32_t));
       if (wet) {
         for (uint32_t i = 0; i < cells; i++) wet[i] = -2;
-        route_flood(&lw, wet, queue, sx, sy, true);
+        route_flood(&lw, wet, queue, sx, sy, ROUTE_MODE_SWIM);
         if (wet[(uint32_t)gy * cols + (uint32_t)gx] != -2)
           printf(", and swimming connects them:\nrerun with --swim for the route."
                  " The legs it prints are real, but its\nframe counts are not --"
@@ -3709,6 +3860,50 @@ static int cmd_route(int argc, char** argv) {
                "coming out, and runs at eight pixels per nine frames, then three\n"
                "per two, then one per two climbing out -- never %d.\n",
                wetcells, ROUTE_SPEED);
+    }
+    if (doors) {
+      // Cells are not doorways -- a doorway is several cells deep and the walk
+      // crosses all of them for one key. So the cells are grouped into the runs
+      // the route actually passes through, in walking order, and it is the
+      // number of *runs* that is the key count. `path` is built goal-first, so
+      // walking order is backwards through it.
+      //
+      // Each run is reported at the pixel the walk meets it and the pixel it
+      // comes out at, because those are the two numbers the next step needs:
+      // the fitter is aimed at the near one, and restarted from the far one.
+      // It cannot do the middle -- opening a door is a leg held into a wall,
+      // which is what the stall guard gives up on.
+      uint32_t doorcells = 0, patches = 0;
+      int enter = -1;
+      for (int i = n - 1; i >= 0; i--) {
+        const int cx = (int)((uint32_t)path[i] % cols);
+        const int cy = (int)((uint32_t)path[i] / cols);
+        const bool in = route_door(&lw, cx, cy);
+        if (in) {
+          doorcells++;
+          if (enter < 0) {
+            enter = i;
+            patches++;
+            if (patches == 1)
+              printf("%s", "the walk crosses a door. Each one is a key spent"
+                           " (`$7E:1D0C` for\nplayer 1) and a line no fitter"
+                           " will write for you:\n\n");
+            printf("  door %u  enter (%d,%d)", patches,
+                   route_pixel_x(cx), route_pixel_y(cy));
+          }
+        } else if (enter >= 0) {
+          printf("  leave (%d,%d)  %d cells\n",
+                 route_pixel_x((int)((uint32_t)path[i] % cols)),
+                 route_pixel_y((int)((uint32_t)path[i] / cols)), enter - i);
+          enter = -1;
+        }
+      }
+      if (enter >= 0) printf("  and the goal is inside it, %d cells\n", enter + 1);
+      if (patches)
+        printf("\n%u door%s, %u cell%s of them, so %u key%s -- and the level's own\n"
+               "supply is its `$08` objects, which `actors` lists.\n",
+               patches, patches == 1 ? "" : "s", doorcells,
+               doorcells == 1 ? "" : "s", patches, patches == 1 ? "" : "s");
     }
     // Said before the legs rather than after them, because it changes what the
     // reader should do with the legs. The walk below reports what the belt
@@ -3791,6 +3986,337 @@ static int cmd_route(int argc, char** argv) {
     free(path);
   }
   free(prev); free(queue); level_walk_free(&lw); free(rom_data);
+  return rc;
+}
+
+// ---------------------------------------------------------------------------
+// keys
+// ---------------------------------------------------------------------------
+//
+// `route --doors` answers "is there a way through", and on a level built out of
+// locked chambers that is the smaller half of the question. Record 25 is the
+// case that forced this: the walk from the start to the `$81:983A` spawn at
+// (239,715) is 103 cells and crosses seven doors, the level carries nine `$08`
+// keys, and *none of that says whether it can be done* -- because the keys are
+// themselves behind the doors, and two of the seven are past a chamber that
+// holds none. Seven keys needed and nine on the map is not an answer when the
+// eighth one is on the far side of the door it was meant to open.
+//
+// So this is the search the route is not: over *states of the level* rather
+// than positions in it. A state is the set of doors already opened, which is
+// all the history that matters -- an opened block is gone for good, and keys
+// are a count in `$7E:1D0C` with no identity, so how the player came to be
+// holding two is irrelevant to what two will buy. From a state:
+//
+//   reach   = flood from the start over cells whose doors are all opened
+//   held    = the `$08` objects inside reach, minus the doors already opened
+//   moves   = the doors on reach's frontier, if `held` covers one
+//
+// Breadth-first over that, so the first solution found opens the fewest doors,
+// and a state is visited once. What comes out is not a path but an order: which
+// keys to have before which door, which is what a movie has to be written in.
+//
+// The pessimism worth naming: this trusts `route_doorable` for what a key
+// opens, so it inherits the block-granularity model measured on record 23. If
+// that model is wrong the answer is wrong in the direction of "reachable", not
+// "not" -- a search that thinks doors are wider than they are will plan a walk
+// the game refuses. Every plan it prints still has to be walked to be believed.
+#define KEY_DOOR_MAX 128
+#define KEY_STATE_MAX 60000
+
+typedef struct { uint64_t w[KEY_DOOR_MAX / 64]; } DoorSet;
+
+static bool door_has(const DoorSet* s, int id) {
+  return (s->w[id >> 6] >> (id & 63)) & 1;
+}
+static void door_add(DoorSet* s, int id) { s->w[id >> 6] |= (uint64_t)1 << (id & 63); }
+static bool door_subset(const DoorSet* a, const DoorSet* b) {  // a within b
+  for (int i = 0; i < KEY_DOOR_MAX / 64; i++)
+    if (a->w[i] & ~b->w[i]) return false;
+  return true;
+}
+static bool door_same(const DoorSet* a, const DoorSet* b) {
+  for (int i = 0; i < KEY_DOOR_MAX / 64; i++)
+    if (a->w[i] != b->w[i]) return false;
+  return true;
+}
+static int door_count(const DoorSet* s) {
+  int n = 0;
+  for (int i = 0; i < KEY_DOOR_MAX / 64; i++)
+    for (uint64_t v = s->w[i]; v; v &= v - 1) n++;
+  return n;
+}
+
+// One breadth-first state: the doors opened to get here, and the single door
+// that got here from `parent`, so the plan can be walked back at the end.
+typedef struct {
+  DoorSet opened;
+  int parent;
+  int door;    // the door id opened by the step into this state, -1 at the root
+  int keycell; // the cell that door was met at, for the pixel to aim a leg at
+} KeyState;
+
+// The doors a cell needs opened before the player may stand in it. Empty for a
+// cell `route_open` already allows, and the whole point for the rest: a cell
+// can want two blocks at once where a doorway meets a corner, and then it costs
+// two keys and there is no way to spend one usefully.
+static bool key_cell_doors(const LevelWalk* lw, const int* block_id, int cx, int cy,
+                           DoorSet* need) {
+  memset(need, 0, sizeof *need);
+  ProbeTile t[ROUTE_BOX_W * ROUTE_BOX_H];
+  probe_tiles(lw, cx, cy, t);
+  for (int i = 0; i < ROUTE_BOX_W * ROUTE_BOX_H; i++) {
+    if (!t[i].on_map || !t[i].known) return false;
+    if (!t[i].solid) continue;
+    const uint32_t bc = (uint32_t)t[i].col / LEVEL_BLOCK_TILES;
+    const uint32_t br = (uint32_t)t[i].row / LEVEL_BLOCK_TILES;
+    const int id = block_id[br * lw->block_cols + bc];
+    if (id < 0) return false;  // solid scenery that no key removes
+    door_add(need, id);
+  }
+  return true;
+}
+
+static int cmd_keys(int argc, char** argv) {
+  if (argc < 6) {
+    fprintf(stderr,
+            "usage: zamn_assets keys <rom.sfc> <level 1-56> <x0> <y0> <x1> <y1>\n");
+    return 2;
+  }
+  int rom_len = 0;
+  uint8_t* rom_data = read_file(argv[0], &rom_len);
+  if (!rom_data) return 1;
+  Rom rom = {rom_data, (uint32_t)rom_len};
+  const int level = atoi(argv[1]);
+  const int x0 = atoi(argv[2]), y0 = atoi(argv[3]);
+  const int x1 = atoi(argv[4]), y1 = atoi(argv[5]);
+
+  LevelWalk lw;
+  if (!level_walk_load(&rom, level, &lw)) { free(rom_data); return 1; }
+  const uint32_t cols = lw.cols, rows = lw.rows, cells = cols * rows;
+  const int sx = route_cell_x(x0), sy = route_cell_y(y0);
+  const int gx = route_cell_x(x1), gy = route_cell_y(y1);
+  if (sx < 0 || sy < 0 || (uint32_t)sx >= cols || (uint32_t)sy >= rows ||
+      gx < 0 || gy < 0 || (uint32_t)gx >= cols || (uint32_t)gy >= rows) {
+    printf("(%d,%d) or (%d,%d) is off level %d's %u x %u map.\n", x0, y0, x1, y1,
+           level, cols, rows);
+    level_walk_free(&lw); free(rom_data);
+    return 1;
+  }
+
+  // Number the door blocks. `door_block` is a flag per block; the search needs
+  // an identity per door so a state can say which ones are spent.
+  const uint32_t blocks = lw.block_cols * lw.block_rows;
+  int* block_id = (int*)malloc(blocks * sizeof(int));
+  int ndoors = 0;
+  for (uint32_t i = 0; i < blocks; i++) {
+    block_id[i] = -1;
+    if (lw.door_block && lw.door_block[i] && ndoors < KEY_DOOR_MAX)
+      block_id[i] = ndoors++;
+  }
+
+  // Per cell, once: the doors it needs, and whether it is walkable at all. The
+  // flood below runs thousands of times and must not re-probe six tiles a cell.
+  DoorSet* need = (DoorSet*)calloc(cells, sizeof(DoorSet));
+  uint8_t* walkable = (uint8_t*)calloc(cells, 1);
+  for (uint32_t cy = 0; cy < rows; cy++)
+    for (uint32_t cx = 0; cx < cols; cx++) {
+      const uint32_t i = cy * cols + cx;
+      walkable[i] = key_cell_doors(&lw, block_id, (int)cx, (int)cy, &need[i]);
+    }
+
+  // Where the keys are. `$80:CA30` maps object type `$08` to collision id `$21`,
+  // which `src/port/collide.c` has known to be keys since `movies/level1-keys.zmv`.
+  ActorLists al;
+  actors_read(&rom, &lw.h, &al);
+  int keycell[OBJECT_LIST_MAX], nkeys = 0, unreachable_keys = 0;
+  for (int i = 0; i < al.object_count; i++) {
+    if (al.objects[i].type != 0x08) continue;
+    const int kx = route_cell_x(al.objects[i].x), ky = route_cell_y(al.objects[i].y);
+    if (kx < 0 || ky < 0 || (uint32_t)kx >= cols || (uint32_t)ky >= rows) continue;
+    if (!walkable[(uint32_t)ky * cols + (uint32_t)kx]) { unreachable_keys++; continue; }
+    keycell[nkeys++] = (int)((uint32_t)ky * cols + (uint32_t)kx);
+  }
+
+  printf("level %d: (%d,%d) -> (%d,%d)\n", level, x0, y0, x1, y1);
+  printf("  %d door block%s on the map, %d key%s standing on ground the player"
+         " can reach\n", ndoors, ndoors == 1 ? "" : "s", nkeys,
+         nkeys == 1 ? "" : "s");
+  if (unreachable_keys)
+    printf("  %d more key%s inside scenery no key opens, which is not a supply\n",
+           unreachable_keys, unreachable_keys == 1 ? "" : "s");
+
+  KeyState* st = (KeyState*)calloc(KEY_STATE_MAX, sizeof(KeyState));
+  int32_t* q = (int32_t*)malloc(cells * sizeof(int32_t));
+  uint8_t* seen = (uint8_t*)malloc(cells);
+  const int dxs[4] = {1, -1, 0, 0}, dys[4] = {0, 0, 1, -1};
+
+  // Is it a lock at all? Flood with every door on the level already open, which
+  // is the most generous map there is. A goal the player cannot reach on *that*
+  // is behind scenery rather than behind a key, and saying "no key order
+  // reaches it" about a wall would be true and useless.
+  memset(seen, 0, cells);
+  {
+    int qh = 0, qt = 0;
+    seen[(uint32_t)sy * cols + (uint32_t)sx] = 1;
+    q[qt++] = (int32_t)((uint32_t)sy * cols + (uint32_t)sx);
+    while (qh < qt) {
+      const int32_t at = q[qh++];
+      const int cx = (int)((uint32_t)at % cols), cy = (int)((uint32_t)at / cols);
+      for (int k = 0; k < 4; k++) {
+        const int nx = cx + dxs[k], ny = cy + dys[k];
+        if (nx < 0 || ny < 0 || (uint32_t)nx >= cols || (uint32_t)ny >= rows) continue;
+        const uint32_t ni = (uint32_t)ny * cols + (uint32_t)nx;
+        if (seen[ni] || !walkable[ni]) continue;
+        seen[ni] = 1;
+        q[qt++] = (int32_t)ni;
+      }
+    }
+  }
+  if (!seen[(uint32_t)gy * cols + (uint32_t)gx]) {
+    printf("\n(%d,%d) is not reachable with every door on the level already"
+           " open, so\nno key order will do it. That is scenery and not a lock"
+           " -- ask `route`.\n", x1, y1);
+    free(st); free(q); free(seen); free(need); free(walkable); free(block_id);
+    level_walk_free(&lw); free(rom_data);
+    return 1;
+  }
+
+  int nst = 0, head = 0, found = -1, capped = 0;
+  memset(&st[0], 0, sizeof st[0]);
+  st[0].parent = -1;
+  st[0].door = -1;
+  nst = 1;
+  while (head < nst && found < 0) {
+    const int cur = head++;
+    const DoorSet opened = st[cur].opened;
+    // Flood this state. A neighbour whose doors are not all open is not entered
+    // -- it is remembered as a move instead.
+    memset(seen, 0, cells);
+    int qh = 0, qt = 0;
+    seen[(uint32_t)sy * cols + (uint32_t)sx] = 1;
+    q[qt++] = (int32_t)((uint32_t)sy * cols + (uint32_t)sx);
+    int frontier[512], nfront = 0;
+    while (qh < qt) {
+      const int32_t at = q[qh++];
+      const int cx = (int)((uint32_t)at % cols), cy = (int)((uint32_t)at / cols);
+      for (int k = 0; k < 4; k++) {
+        const int nx = cx + dxs[k], ny = cy + dys[k];
+        if (nx < 0 || ny < 0 || (uint32_t)nx >= cols || (uint32_t)ny >= rows) continue;
+        const uint32_t ni = (uint32_t)ny * cols + (uint32_t)nx;
+        if (seen[ni] || !walkable[ni]) continue;
+        if (door_subset(&need[ni], &opened)) {
+          seen[ni] = 1;
+          q[qt++] = (int32_t)ni;
+        } else if (nfront < 512) {
+          frontier[nfront++] = (int)ni;
+        }
+      }
+    }
+    if (seen[(uint32_t)gy * cols + (uint32_t)gx]) { found = cur; break; }
+    int held = -door_count(&opened);
+    for (int i = 0; i < nkeys; i++)
+      if (seen[keycell[i]]) held++;
+    if (held <= 0) continue;
+    for (int i = 0; i < nfront && !capped; i++) {
+      // The cost of a frontier cell is the doors of it still shut. Two at once
+      // happens at a corner and is refused rather than half-paid.
+      DoorSet next = opened;
+      int cost = 0, first = -1;
+      for (int d = 0; d < ndoors; d++) {
+        if (!door_has(&need[frontier[i]], d) || door_has(&opened, d)) continue;
+        door_add(&next, d);
+        if (first < 0) first = d;
+        cost++;
+      }
+      if (cost == 0 || cost > held) continue;
+      int dup = 0;
+      for (int s = 0; s < nst; s++)
+        if (door_same(&st[s].opened, &next)) { dup = 1; break; }
+      if (dup) continue;
+      if (nst >= KEY_STATE_MAX) { capped = 1; break; }
+      st[nst].opened = next;
+      st[nst].parent = cur;
+      st[nst].door = first;
+      st[nst].keycell = frontier[i];
+      nst++;
+    }
+  }
+
+  int rc = 0;
+  if (found < 0) {
+    printf("\nno key order reaches (%d,%d)%s. %d state%s of the level searched"
+           " -- the\ndoors the player can afford do not open onto enough keys to"
+           " open the rest.\n", x1, y1, capped ? " within the state cap" : "",
+           nst, nst == 1 ? "" : "s");
+    rc = 1;
+  } else {
+    int order[KEY_DOOR_MAX], n = 0;
+    for (int s = found; s > 0; s = st[s].parent) order[n++] = s;
+    printf("\n%d door%s, in this order, and the walk is a sequence and not a"
+           " route:\n\n", n, n == 1 ? "" : "s");
+    // Replay the plan forwards, reporting at each step what the player must be
+    // holding and what opening it puts within reach -- which is the part a
+    // movie is written from, not the door list.
+    DoorSet opened;
+    memset(&opened, 0, sizeof opened);
+    uint8_t* had = (uint8_t*)calloc((size_t)(nkeys ? nkeys : 1), 1);
+    int spent = 0;
+    for (int step = 0; step <= n; step++) {
+      memset(seen, 0, cells);
+      int qh = 0, qt = 0;
+      seen[(uint32_t)sy * cols + (uint32_t)sx] = 1;
+      q[qt++] = (int32_t)((uint32_t)sy * cols + (uint32_t)sx);
+      while (qh < qt) {
+        const int32_t at = q[qh++];
+        const int cx = (int)((uint32_t)at % cols), cy = (int)((uint32_t)at / cols);
+        for (int k = 0; k < 4; k++) {
+          const int nx = cx + dxs[k], ny = cy + dys[k];
+          if (nx < 0 || ny < 0 || (uint32_t)nx >= cols || (uint32_t)ny >= rows)
+            continue;
+          const uint32_t ni = (uint32_t)ny * cols + (uint32_t)nx;
+          if (seen[ni] || !walkable[ni] || !door_subset(&need[ni], &opened)) continue;
+          seen[ni] = 1;
+          q[qt++] = (int32_t)ni;
+        }
+      }
+      int fresh = 0, avail = 0;
+      for (int i = 0; i < nkeys; i++) {
+        if (!seen[keycell[i]]) continue;
+        avail++;
+        if (!had[i]) { had[i] = 1; fresh++; }
+      }
+      if (fresh) {
+        printf("     collect %d key%s first:", fresh, fresh == 1 ? "" : "s");
+        for (int i = 0; i < nkeys; i++)
+          if (had[i] == 1) {
+            printf(" (%d,%d)", route_pixel_x(keycell[i] % (int)cols),
+                   route_pixel_y(keycell[i] / (int)cols));
+            had[i] = 2;
+          }
+        printf("\n");
+      }
+      if (step == n) {
+        printf("     and (%d,%d) is now walkable, with %d key%s left over.\n",
+               x1, y1, avail - spent, avail - spent == 1 ? "" : "s");
+        break;
+      }
+      const int s = order[n - 1 - step];
+      printf("  %2d  open the door at (%d,%d)   %d key%s in hand\n", step + 1,
+             route_pixel_x(st[s].keycell % (int)cols),
+             route_pixel_y(st[s].keycell / (int)cols), avail - spent,
+             avail - spent == 1 ? "" : "s");
+      opened = st[s].opened;
+      spent = door_count(&opened);
+    }
+    free(had);
+    printf("\nEach step is `route` from where the last one left the player to the"
+           " door,\nthen a leg held into it by hand -- the fitter's stall guard"
+           " gives up on\nexactly that.\n");
+  }
+
+  free(st); free(q); free(seen); free(need); free(walkable); free(block_id);
+  level_walk_free(&lw); free(rom_data);
   return rc;
 }
 
@@ -4015,15 +4541,22 @@ static void usage(void) {
           "      Spell every password out of the ROM's own tables, or read one\n"
           "      back to the level and victim count it means.\n\n"
           "  zamn_assets route <rom.sfc> <level> <x0> <y0> <x1> <y1> [--frames f]\n"
-          "                    [--reach out.png] [--swim]\n"
+          "                    [--reach out.png] [--swim] [--doors]\n"
           "      Breadth-first a walkable path through a level and print the\n"
           "      turns, or .zmv lines with --frames. --swim lets the flood cross\n"
           "      water, which the player does and walking routes do not; the\n"
-          "      legs are then real but the frame counts are not. --reach tints\n"
-          "      the map: green reached, orange open but cut off, red solid,\n"
-          "      magenta water, pink water the route swims, white a conveyor\n"
-          "      the player can stand on, yellow the start, blue the goal.\n"
-          "      Orange says where a missing route wants a door.\n\n"
+          "      legs are then real but the frame counts are not. --doors lets\n"
+          "      it cross attribute bit 6, which a key opens, and counts what\n"
+          "      the route spends. --reach tints the map: green reached, orange\n"
+          "      open but cut off, red solid, magenta water, pink water the\n"
+          "      route swims, cyan a door, white a conveyor the player can\n"
+          "      stand on, yellow the start, blue the goal.\n\n"
+          "  zamn_assets keys <rom.sfc> <level> <x0> <y0> <x1> <y1>\n"
+          "      Search the order rather than the path: which of the level's $08\n"
+          "      keys to have before which door, on a map whose keys are behind\n"
+          "      its doors. Breadth-first over sets of opened doors, so the plan\n"
+          "      it prints opens the fewest, and \"no key order reaches it\" is an\n"
+          "      answer route --doors cannot give.\n\n"
           "  zamn_assets probe <rom.sfc> <level> <x> <y> [--to <x> <y>]\n"
           "      Ask $80:AE14 itself whether the player can stand at a point:\n"
           "      the six tiles it reads, their attributes, and the verdict out\n"
@@ -4066,6 +4599,7 @@ int main(int argc, char** argv) {
   if (!strcmp(cmd, "level")) return cmd_level(argc - 2, argv + 2);
   if (!strcmp(cmd, "actors")) return cmd_actors(argc - 2, argv + 2);
   if (!strcmp(cmd, "route")) return cmd_route(argc - 2, argv + 2);
+  if (!strcmp(cmd, "keys")) return cmd_keys(argc - 2, argv + 2);
   if (!strcmp(cmd, "probe")) return cmd_probe(argc - 2, argv + 2);
   if (!strcmp(cmd, "verify-actors")) return cmd_verify_actors(argc - 2, argv + 2);
   if (!strcmp(cmd, "sprite")) return cmd_sprite(argc - 2, argv + 2);

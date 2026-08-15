@@ -142,7 +142,58 @@
 // validator built around it the way `$80:E4C1` is built around bit 0.
 #define LEVEL_ATTR_BIT12 0x1000
 
-// The remaining nine bits are still unidentified. All of them are set on
+// **Bit 6 is a door**, and it is the one bit here that a route has to know
+// about, because a tile carrying it blocks and is passable anyway.
+//
+// `$80:B0BB` is the reader, and it does not ask "is this tile a door" so much as
+// *which way is one*. It takes a point in X/Y and reads four tiles around it
+// through `tile_attrs_at_pixel`, in a fixed order, masking each with `#$0040`:
+//
+//     $80:B0D2  (x, y-$10)   up      $3C = 1
+//     $80:B0E9  (x+$10, y)   right   $3C = 3
+//     $80:B0FD  (x, y+1)     down    $3C = 5
+//     $80:B112  (x-$10, y)   left    $3C = 7
+//
+// The first that matches leaves its code in `$3C`, and `$80:B11F  LDA $3C : PLD
+// : RTL` hands it back. Two routines call it — `$81:9243` and `$81:92B2` — and
+// nothing else in the cartridge reads bit 6 at all.
+//
+// 122 tiles carry it across the five attribute tables and 115 of those block, so
+// it is a small deliberate set rather than a bit that fell out of the artwork.
+// Level 23 is the level that makes the point: its spawn at (541,1095) is sealed
+// into a grass yard by `$0053` tiles — bit 0 and bit 6 — with two `$08` objects
+// in the yard with it, and `$80:CA30` says type `$08` is collision id `$21`,
+// which is keys. Walk into the door holding one and `$7E:1D0C` goes 2 -> 1 and
+// the wall is not there any more.
+//
+// **What opens is one 8x8-tile block**, and that is measured rather than read.
+// Record 23's first doorway spans tile columns 54..58; walk through it at x=461
+// and then push west, and the player moves four pixels and stops at x=457 —
+// column 55, which is the last column of the block *next* to the one that
+// opened. Columns 56..63 are gone and 48..55 are not, and 55/56 is a block
+// boundary. So the unit is the block, and `route_doorable` marks whole blocks.
+//
+// `$81:92D6` is a routine that performs exactly that edit — `LSR` six times on
+// each axis to get block coordinates, `$80:ACF6` for the block-map address, then
+// `LDA [$28],Y : EOR #$0001`, so the open block is the closed one with bit 0 of
+// its index flipped — and it is reached from both `$80:B0BB` callers through
+// `$81:92C2`. **It is not the path the player takes**, which is worth saying
+// because the shape is so persuasive: it also does `INC $1FC2` and spawns a
+// thread bodied at `$81:990B`, and on a movie that opens two of record 23's
+// doors `$1FC2` never leaves zero and no `$81:990B` ever appears in the display
+// list. Something else edits the same block map the same way for the player.
+// Finding it would settle where the key is actually spent — and `$81:92D6`'s
+// own path is worth chasing for a different reason, since a door that spawns an
+// `$81:990B` is the creature `$81:983A` is otherwise the only source of.
+//
+// So a door is scenery that a key spends, and a search that treats it as a wall
+// calls half this cartridge impossible. `zamn_assets route --doors` is the grid
+// that knows, and it is a separate predicate from `route_open` for the same
+// reason `--swim` is: the legs are real, and they cost something the plan cannot
+// see.
+#define LEVEL_ATTR_DOOR 0x0040
+
+// The remaining eight bits are still unidentified. All of them are set on
 // somewhere between 55 and 1,429 tiles, so none of them is dead.
 
 // The 54-byte level record. Offsets are the ones `$80:86A2` indexes.

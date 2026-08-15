@@ -235,12 +235,57 @@ static void print_records(Snes* snes, const uint8_t* rom, int rom_len,
   if (n == 0) printf("    (empty)\n");
 }
 
+// A saved machine, plus the frame it was saved on. The frame is the point: a
+// movie is a list of inputs indexed by frame number, so a state that does not
+// know its own frame cannot be replayed into.
+//
+// The reason this exists is arithmetic. `tools/fit_route.py` replays the whole
+// movie once per leg, and a movie that has already finished three levels is ten
+// thousand frames of that before the leg being fitted even starts — 53 seconds
+// a leg, against about two seconds of the part anybody is fitting. Level 24's
+// walk is forty-odd legs. Saving the machine at the level load turns each of
+// those replays into the part that changes.
+#define STATE_MAGIC 0x314e4d5au  // 'ZMN1'
+
+static bool state_save(Snes* snes, const char* path, int frame) {
+  const int size = snes_saveState(snes, NULL);
+  uint8_t* data = (uint8_t*)malloc((size_t)size);
+  if (!data) return false;
+  snes_saveState(snes, data);
+  FILE* f = fopen(path, "wb");
+  if (!f) { free(data); return false; }
+  const uint32_t head[3] = {STATE_MAGIC, (uint32_t)frame, (uint32_t)size};
+  bool ok = fwrite(head, sizeof head, 1, f) == 1 &&
+            fwrite(data, (size_t)size, 1, f) == 1;
+  fclose(f);
+  free(data);
+  return ok;
+}
+
+static bool state_load(Snes* snes, const char* path, int* frame) {
+  FILE* f = fopen(path, "rb");
+  if (!f) return false;
+  uint32_t head[3] = {0, 0, 0};
+  if (fread(head, sizeof head, 1, f) != 1 || head[0] != STATE_MAGIC) {
+    fclose(f);
+    return false;
+  }
+  uint8_t* data = (uint8_t*)malloc(head[2]);
+  bool ok = data && fread(data, head[2], 1, f) == 1 &&
+            snes_loadState(snes, data, (int)head[2]);
+  fclose(f);
+  free(data);
+  if (ok) *frame = (int)head[1];
+  return ok;
+}
+
 int main(int argc, char** argv) {
   if (argc < 3) {
     fprintf(stderr,
             "usage: %s <rom.sfc> <out.png> [frames] [-m movie] [--at f,f,...]\n"
             "       [--pos first[,last[,step]]] [--records first[,last[,step]]]\n"
             "       [--watch addr[,first[,last[,step]]]]...\n"
+            "       [--save frame,file] [--load file]\n"
             "       [--widescreen off|16:9|16:10]\n",
             argv[0]);
     return 2;
@@ -262,6 +307,9 @@ int main(int argc, char** argv) {
   int watch_prev[MAX_WATCH];
   int watch_count = 0;
   int watch_first = 0, watch_last = -1, watch_step = 1;
+  const char* save_path = NULL;
+  const char* load_path = NULL;
+  int save_frame = -1;
 
   for (int i = 3; i < argc; i++) {
     bool has_next = i + 1 < argc;
@@ -319,6 +367,13 @@ int main(int argc, char** argv) {
         watch_last = v[1];
         watch_step = v[2] > 0 ? v[2] : 1;
       }
+    } else if (!strcmp(argv[i], "--save") && has_next) {
+      const char* p = argv[++i];
+      save_frame = atoi(p);
+      while (*p && *p != ',') p++;
+      if (*p == ',') save_path = p + 1;
+    } else if (!strcmp(argv[i], "--load") && has_next) {
+      load_path = argv[++i];
     } else if (!strcmp(argv[i], "--widescreen") && has_next) {
       if (!wide_parse(argv[++i], &wide)) {
         fprintf(stderr, "error: --widescreen wants off, 16:9 or 16:10\n");
@@ -370,6 +425,17 @@ int main(int argc, char** argv) {
            movie_uses_port(&movie, 1) ? " (two controllers)" : "");
   }
 
+  int start = 0;
+  if (load_path) {
+    if (!state_load(snes, load_path, &start)) {
+      fprintf(stderr, "error: cannot load state '%s'\n", load_path);
+      if (have_movie) movie_free(&movie);
+      free(rom); snes_free(snes);
+      return 1;
+    }
+    printf("Loaded state '%s' at frame %d\n", load_path, start);
+  }
+
   printf("Running %d frames...\n", frames);
   if (pos_first >= 0) {
     if (pos_last < 0) pos_last = frames;
@@ -377,7 +443,7 @@ int main(int argc, char** argv) {
   }
   if (rec_first >= 0 && rec_last < 0) rec_last = frames;
   int next_snap = 0;
-  for (int i = 0; i < frames; i++) {
+  for (int i = start; i < frames; i++) {
     if (have_movie) {
       movie_apply(&movie, snes, i);
     }
@@ -406,6 +472,15 @@ int main(int argc, char** argv) {
         (i + 1 - rec_first) % rec_step == 0) {
       print_records(snes, rom, rom_len, i + 1);
     }
+    if (save_path && i + 1 == save_frame) {
+      if (!state_save(snes, save_path, i + 1)) {
+        fprintf(stderr, "error: cannot write state '%s'\n", save_path);
+        if (have_movie) movie_free(&movie);
+        free(rom); snes_free(snes);
+        return 1;
+      }
+      printf("Saved state at frame %d -> %s\n", i + 1, save_path);
+    }
     if (watch_count > 0 && i + 1 >= watch_first &&
         (watch_last < 0 || i + 1 <= watch_last) &&
         (i + 1 - watch_first) % watch_step == 0) {
@@ -420,7 +495,7 @@ int main(int argc, char** argv) {
     }
   }
   printf("Ran %u frames (core reports %u), %llu cpu cycles\n",
-         frames, snes->frames, (unsigned long long)snes->cycles);
+         frames - start, snes->frames, (unsigned long long)snes->cycles);
 
   if (!write_png(snes, out_path)) {
     fprintf(stderr, "error: failed to write '%s'\n", out_path);

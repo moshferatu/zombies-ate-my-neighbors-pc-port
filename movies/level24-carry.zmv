@@ -1,0 +1,311 @@
+# Level 21 by password VXBB, the bubble gun, and then three levels finished in a
+# row: 21 -> 22 -> 23 -> 24, arriving with the weapon still in inventory slot 2.
+#
+# This is the movie the last six rounds of route arithmetic were for. `$81:983A`
+# stands at (239,715) on record 25 and no record places both it and a gun, so the
+# creature has to be met carrying one collected earlier. It had never been shown
+# that a weapon survives *any* level transition. It survives three.
+#
+#   1885  level 21, `$1D50` = `$0001` -- VXBB is variant 1, one neighbour
+#   3643  the bubble gun. `$7E:1CD0` = `$0040`
+#   4238  rescue     4604  exit      5026  level 22
+#   5866  door one   6078  door two
+#   6897  rescue     7442  exit      7864  level 23
+#   9197  rescue     9443  exit      9833  level 24, `$7E:1CD0` still `$0040`
+#
+# **The gun costs eight frames.** The climb up level 21's x=504 column passes
+# (504,1340) at frame 3635 and the type `$04` object is at (485,1340), nineteen
+# pixels west on a row the route already crosses. `movies/level21-bubble.zmv`
+# spends a whole climb on the same weapon.
+#
+# **Level 22 spawns the player in a locked yard.** The record says (541,1095);
+# the walls read `$0053`, which is attribute bit 6, which is a door (`$80:B0BB`),
+# and the two `$08` objects in the yard are keys (`$80:CA30`: type `$08` -> id
+# `$21`). `zamn_assets route` called the level impossible until it learned the
+# bit; `route --doors` plans it in 239 cells.
+#
+#   5660  key at (299,1094), straight off the walk west
+#   5763  key at (290,1079), eight frames of Up
+#   5866  door at (461,1070). `$1D0C` 2 -> 1 and one 8x8-tile block is gone
+#   6078  door at (365,830).  `$1D0C` 1 -> 0
+#
+# The two pushes are hand-written and have to be: opening a door is a leg held
+# into a wall, which is what `fit_route.py`'s stall guard exists to abandon.
+# `--doors` plans the far side; fit up to the doorway, cut the movie at the
+# *arrival* frame, push by hand, restart the loop.
+#
+# **An exit door needs somewhere to go.** `$82:F7D2` tries eight offsets around
+# the player and takes the first `$80:AE14` accepts. Level 22's rescue finishes
+# at (567,137) in a two-tile corridor under the top of the map, and all eight are
+# refused -- no door, for seven hundred frames, with both of `$80:8544`'s
+# conditions already true. Walking 238 pixels west to (329,137) puts one at
+# (439,169). The step onto it releases Right at 7255 and not 7257: x=439 is the
+# open column and x=443 is four pixels into a wall.
+#
+# Level 23 wanted none of that. Thirty fitted legs from its own declared spawn
+# (403,508) to the victim at (887,526), and its exit door spawns at (911,556) --
+# thirty-six pixels directly below the player, which is what the same eight-offset
+# search looks like when there is room around it.
+#
+# Level 24 loads at (50,81) with the gate at `$0001`. The creature is at
+# (239,715), the walk to it is 80 cells with 38 of them inside doors, and the
+# level carries nine `$08` keys. That leg is not in this movie yet.
+0   -
+180   Start
+188   -
+204   Start
+212   -
+228   Start
+236   -
+252   Start
+260   -
+276   Start
+284   -
+300   Start
+308   -
+324   Start
+332   -
+348   Start
+356   -
+372   Start
+380   -
+396   Start
+404   -
+420   Start
+428   -
+444   Start
+452   -
+468   Start
+476   -
+492   Start
+500   -
+516   Start
+524   -
+540   Start
+548   -
+564   Start
+572   -
+588   Start
+596   -
+612   Start
+620   -
+636   Start
+644   -
+660   Start
+668   -
+684   Start
+692   -
+708   Start
+716   -
+732   Start
+740   -
+756   Start
+764   -
+780   Start
+788   -
+804   Start
+812   -
+828   Start
+836   -
+852   Start
+860   -
+876   Start
+884   -
+900   Start
+908   -
+924   Start
+932   -
+948   Start
+956   -
+972   Start
+980   -
+996   Start
+1004   -
+1200   Down
+1208   -
+1260   Start
+1268   -
+1400   Right
+1408   -
+1416   Right
+1424   -
+1432   Right
+1440   -
+1448   Right
+1456   -
+1464   Right
+1472   -
+1480   Down
+1488   -
+1496   Down
+1504   -
+1512   Down
+1520   -
+1528   A
+1536   -
+1544   Left
+1552   -
+1560   Left
+1568   -
+1576   Left
+1584   -
+1592   Left
+1600   -
+1608   Left
+1616   -
+1624   Down
+1632   -
+1640   A
+1648   -
+1656   Right
+1664   -
+1672   Right
+1680   -
+1688   Right
+1696   -
+1704   Up
+1712   -
+1720   Up
+1728   -
+1736   Up
+1744   -
+1752   A
+1760   -
+1768   A
+1776   -
+1784   Right
+1792   -
+1800   Right
+1808   -
+1816   Right
+1824   -
+1832   Down
+1840   -
+1848   Down
+1856   -
+1864   Down
+1872   -
+1880   A
+1888   -
+2036   Start
+2046   -
+2066   Start
+2076   -
+2096   Start
+2106   -
+2126   Start
+2136   -
+2156   Start
+2166   -
+2186   Start
+2196   -
+2276   -
+2684   Right
+2705   Up
+2878   Left
+2885   Up
+2914   Right
+2929   Up
+2935   Left
+2942   Up
+2955   Right
+2966   Right
+2978   Up
+2986   Right
+3004   Up
+3170   Left
+3177   Up
+3366   Right
+3437   Up
+3635   Left
+3655   -
+3690   Right
+3712   Up
+3734   Up
+3786   Left
+3795   Up
+3803   Up
+3805   Up
+3807   Down
+3809   Up
+3811   Down
+3813   Up
+3815   Down
+3817   Left
+3881   Left
+3918   Left
+3934   Up
+4139   Right
+4146   Up
+4154   Left
+4161   Up
+4190   Right
+4221   Up
+4234   Left
+4283   -
+4400   Up
+4416   Right
+4446   -
+5540   Left
+5720   -
+5740   Up
+5752   -
+5760   Right
+5850   -
+5860   Up
+6020   Left
+6072   Up
+6220   -
+6240   Right
+6399   Up
+6529   Left
+6607   Up
+6619   Left
+6630   Down
+6637   Left
+6710   Up
+6767   Right
+6777   Up
+6789   Right
+6823   Up
+6855   Right
+6941   -
+6960   Left
+7160   -
+7200   Right
+7255   -
+7264   Down
+7305   -
+8340   Right
+8439   Up
+8476   Left
+8482   Up
+8531   Right
+8609   Up
+8629   Right
+8635   Up
+8643   Right
+8665   Right
+8705   Up
+8729   Right
+8735   Up
+8743   Right
+8765   Right
+8825   Down
+9008   Left
+9014   Down
+9026   Right
+9032   Down
+9066   Left
+9076   Down
+9084   Left
+9093   Down
+9102   Right
+9108   Down
+9126   Left
+9136   Left
+9172   Up
+9202   Right
+9249   -
+9260   Down
+9300   -

@@ -23,7 +23,11 @@ and becomes just the position the next search starts from. It costs one headless
 replay per leg, which is a few seconds each.
 
     python tools/fit_route.py <rom> <prefix.zmv> <level> <x0> <y0> <x1> <y1> <start>
-                             [--fire]
+                             [--fire] [--doors] [--state saved.state]
+
+`--state` is a machine saved by `zamn_headless --save <frame>,<file>` at or
+before `<start>`, and on a movie with a long prefix it is what makes the loop
+affordable at all -- see `positions` below.
 
 Prints a complete .zmv -- the prefix, then the route -- on stdout, and says on
 stderr whether it arrived.
@@ -142,7 +146,7 @@ AXIS = {"Left": 0, "Right": 0, "Up": 1, "Down": 1}
 SIGN = {"Left": -1, "Right": 1, "Up": -1, "Down": 1}
 
 
-def first_leg(rom, level, x0, y0, x1, y1):
+def first_leg(rom, level, x0, y0, x1, y1, doors=False):
     """The first turn of a route, or None if there is no route at all.
 
     The fourth value is whether the route crosses a conveyor, which changes how
@@ -150,9 +154,19 @@ def first_leg(rom, level, x0, y0, x1, y1):
     rather than two. It is a property of the whole path and not of the first leg
     -- being generous costs replay time and no movie frames, because the leg
     ends at the first frame the target is passed and not at the end of the hold.
+
+    `doors` passes `--doors` through, which lets the plan cross a door block --
+    scenery a key removes. **The loop cannot open one.** A door is opened by
+    walking into it holding a key, and the leg that does it looks to this loop
+    like a leg that stalled against a wall, so a fitted route with `--doors` on
+    is a plan to be walked *up to* each doorway rather than through it. What the
+    flag buys is the legs on the far side, once a hand-written push has opened
+    the way and the loop is restarted from the pixel it came out on.
     """
-    out = subprocess.run([ASSETS, "route", rom, str(level), str(x0), str(y0),
-                          str(x1), str(y1)], capture_output=True, text=True).stdout
+    cmd = [ASSETS, "route", rom, str(level), str(x0), str(y0), str(x1), str(y1)]
+    if doors:
+        cmd.append("--doors")
+    out = subprocess.run(cmd, capture_output=True, text=True).stdout
     m = re.search(r"^\s+(\w+)\s+to \((\d+),(\d+)\)", out, re.M)
     if not m:
         return None
@@ -160,13 +174,25 @@ def first_leg(rom, level, x0, y0, x1, y1):
     return m.group(1), int(m.group(2)), int(m.group(3)), belt
 
 
-def positions(rom, movie, first, last):
-    """frame -> (x, y) for every frame in the range, from the game itself."""
+def positions(rom, movie, first, last, state=None):
+    """frame -> (x, y) for every frame in the range, from the game itself.
+
+    `state` is a `--save`d machine to start from instead of the reset vector,
+    and on a long prefix it is the difference between a usable loop and an
+    unusable one. Fitting level 24 means replaying levels 21 to 23 first, every
+    leg, for nothing: 10,350 frames of movie that cannot change, at 42 seconds,
+    to measure the 200 frames that can. From a state saved at the level load the
+    same leg is 0.76 seconds, and `zamn_headless` was checked frame by frame
+    against a full replay before this was allowed to matter -- identical
+    positions, identical watched words.
+    """
     fd, png = tempfile.mkstemp(suffix=".png")
     os.close(fd)
-    out = subprocess.run([HEADLESS, rom, png, str(last), "-m", movie,
-                          "--pos", "%d,%d,1" % (first, last)],
-                         capture_output=True, text=True).stdout
+    cmd = [HEADLESS, rom, png, str(last), "-m", movie,
+           "--pos", "%d,%d,1" % (first, last)]
+    if state:
+        cmd += ["--load", state]
+    out = subprocess.run(cmd, capture_output=True, text=True).stdout
     os.unlink(png)
     got = {}
     for m in re.finditer(r"^\s+(\d+)\s+(\d+),(\d+)", out, re.M):
@@ -185,6 +211,12 @@ def write(path, prefix, legs, end, fire=False):
 def main():
     argv = [a for a in sys.argv if not a.startswith("--")]
     fire = "--fire" in sys.argv
+    doors = "--doors" in sys.argv
+    state = None
+    for i, a in enumerate(sys.argv):
+        if a == "--state" and i + 1 < len(sys.argv):
+            state = sys.argv[i + 1]
+            argv = [v for v in argv if v != state]
     if len(argv) < 9:
         sys.stderr.write(__doc__)
         return 2
@@ -209,7 +241,7 @@ def main():
             # the whole reason this loop re-plans rather than corrects.
             (direction, hold), target = unstick.pop(0), None
         else:
-            leg = first_leg(rom, level, pos[0], pos[1], x1, y1)
+            leg = first_leg(rom, level, pos[0], pos[1], x1, y1, doors)
             if leg is None:
                 sys.stderr.write("no route from (%d,%d) to (%d,%d)\n"
                                  % (pos[0], pos[1], x1, y1))
@@ -222,7 +254,7 @@ def main():
 
         end = frame + hold
         write(movie, prefix, legs + [(frame, direction)], end, fire)
-        seen = positions(rom, movie, frame, end)
+        seen = positions(rom, movie, frame, end, state)
 
         done = None
         if target is not None:

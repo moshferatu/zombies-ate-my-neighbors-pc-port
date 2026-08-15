@@ -552,7 +552,8 @@ build\zamn_assets.exe route "Zombies Ate My Neighbors.sfc" 18 284 420 563 513 --
 
 The map, tinted per grid cell: **green** reached, **orange** open but cut off from
 the start, **red** solid, **magenta** water, **pink** water a `--swim` route
-crosses, **white** a conveyor, yellow the start, blue the goal. Orange is the
+crosses, **cyan** a door a `--doors` route opens, **white** a conveyor, yellow
+the start, blue the goal. Orange is the
 whole point of the picture; magenta is the one the picture used to get wrong
 twice, and *What the search calls a wall and the player calls a lake* below is
 why. White is the newest and it overrides green rather than sitting beside it —
@@ -611,6 +612,176 @@ is a real thing to find in this ROM** — that entry is in the level's own list,
 the coordinate came from the game and not from a typo. And every reachability
 claim in `docs/cosim.md` rests on this predicate, so a way for it to say "yes"
 spuriously is worse than a way for it to say "no".
+
+### The door the picture kept pointing at
+
+The section above has said "a door to find" since it was written, and for six
+rounds finding one meant looking at the orange and guessing. `--doors` is the
+search that knows what a door is, and the bit it reads is one of the nine
+`src/assets/level.h` used to list as unidentified.
+
+**Attribute bit 6 is a door.** Its reader is `$80:B0BB`, which does not ask "is
+this a door" but *which way is one*: four `tile_attrs_at_pixel` calls around a
+point, up, right, down and left, each masked with `#$0040`, and the first that
+matches leaves 1, 3, 5 or 7 in `$3C` for the caller. Two routines call it,
+`$81:9243` and `$81:92B2`, and nothing else in the cartridge reads the bit at
+all. 122 tiles carry it across the five attribute tables and 115 of those block.
+
+Record 23 is the level that makes the case, because it is unroutable without
+this and the failure looks like a broken tool rather than a locked door. Its
+own record names the spawn --
+
+```
+  start positions  (541, 1095) and (560, 1095)
+```
+
+-- and from there the dry grid reaches a strip of grass 260 pixels wide and
+stops. Not the victim, not the mid-map, not the object 184 pixels along the same
+row. `probe --to` walks that row in 130 frames, so the two instruments disagreed
+about ground the player crosses, which is the shape of a bug and was not one:
+the yard is walled in, and the two `$08` objects lying in it are the way out.
+`$80:CA30` maps object type `$08` to collision id `$21`, which is keys. Walk into
+the wall holding one and `$7E:1D0C` steps 2 -> 1 and the wall is gone.
+
+**The unit is the block, not the tile.** The first draft of `--doors` let bit-6
+tiles through and connected nothing, which is worth recording because the reason
+is the whole design. Record 23's doorway is five tile rows deep and only three of
+them carry the bit:
+
+```
+  row 129  $0053   bit 0 and bit 6
+  row 130  $0013 / $0003   ...nothing
+  row 131  $0053
+  row 132  $0053
+```
+
+Row 130 is as much in the way as the rows around it and is marked with nothing at
+all. What settles it is a measurement rather than a listing: walk that doorway at
+x=461, then push west. The player moves four pixels and stops at x=457 -- tile
+column 55. Columns 56..63 are gone and 48..55 are not, and 55/56 is a block
+boundary. **A door opens one 8x8-tile block.** So the predicate marks every block
+holding a bit-6 tile and lets solid scenery through inside one, and the tint
+paints the same thing rather than the three marked rows.
+
+`$81:92D6` is a routine that does exactly that edit -- `LSR` six times per axis
+for block coordinates, `$80:ACF6` for the block-map address, then `LDA [$28],Y :
+EOR #$0001`, so an open block is the closed one with bit 0 of its index flipped
+-- and both of `$80:B0BB`'s callers reach it through `$81:92C2`. **It is not the
+path the player takes.** It also does `INC $1FC2` and spawns a thread bodied at
+`$81:990B`, and on the movie that opens both of record 23's doors `$1FC2` never
+leaves zero and no `$81:990B` ever reaches the display list. Something else edits
+the same block map the same way for the player, and finding it is where the key
+is actually spent. Worth chasing for a second reason as well: a door that spawns
+an `$81:990B` would be a source of that creature which is not `$81:983A`, and
+`docs/cosim.md` has spent three rounds pricing routes on the assumption that it
+is the only one.
+
+```
+> zamn_assets route rom.sfc 23 541 1095 527 131
+no dry route from (541,1095) to (527,131) through level 23.
+the 2x2-clear grid does not connect them, so either the target is
+inside scenery or the way in is a door rather than a gap.
+
+Doors connect them: rerun with --doors for the route. Each doorway it
+crosses is one key spent -- `$80:B0BB`, tile attribute bit 6 -- and the
+level's own supply is its `$08` objects, which `actors` lists.
+
+> zamn_assets route rom.sfc 23 541 1095 527 131 --doors
+level 23: (541,1095) -> (527,131), 239 cells
+10 of them are inside a door: the walk through one spends a key
+(`$7E:1D0C` for player 1) and the block is then gone.
+```
+
+**The loop cannot open a door and `tools/fit_route.py` says so.** `--doors` is
+wired through to the planner there, and what it buys is the legs on the *far*
+side. Opening one is a leg held into a wall, which is exactly what the stall
+guard is built to give up on, so the way to use it is: fit up to the doorway, cut
+the movie at the arrival frame, hand-write the push, and restart the loop from
+the pixel that comes out. Both of record 23's doors took one line each --
+`6072 Up` is the second of them, and the key goes at 6078 with the player 220
+pixels further north six seconds later.
+
+What `--doors` does **not** do is tell you how many keys a level has spare. It
+counts what a route spends and leaves the supply to `actors`; record 23 has eight
+`$08` objects and the route above spends two, which is comfortable, and nothing
+in the tool would have said so if it were not.
+
+One trap in that: **the fitter reports the frame it passes the target, not the
+frame its movie stops holding the leg.** `arrived at (365,841) ... last frame
+6071` is a movie whose last event is at 6111, and replaying it leaves the player
+at (279,841), eighty-six pixels past the doorway against the far wall. Cut at the
+arrival frame before appending, or the hand-written push starts somewhere else.
+
+### `keys`, for the levels where the path is not the question
+
+The paragraph above — *"what `--doors` does not do is tell you how many keys a
+level has spare"* — was written about a level with eight of them and two doors
+to open, where the arithmetic is a glance. Record 25 is not that level, and it
+is where the glance stops working.
+
+`route --doors` plans the walk from its start to the `$81:983A` spawn at
+(239,715) in 103 cells. Seven of the crossings are doorways. The level carries
+nine `$08` objects. Seven against nine looks like room to spare and is not an
+answer at all, because **the keys are behind the doors**: two are loose at the
+start, two more sit in the chamber past the first pair of doorways, and the
+chamber past the second pair holds none. Spend the first two on doors one and
+two, the next two on doors three and four, and the player is standing at
+(237,470) with three doors to go, no keys, and no way back to any he has not
+already taken. Nine is enough only if the order works, and nothing in the tools
+could say whether it did.
+
+So `zamn_assets keys` searches the order rather than the path. Its state is not
+a position but a **set of opened doors**, which is all the history that matters:
+an opened block is gone for good, and `$7E:1D0C` is a count with no identity, so
+how the player came to be holding two is irrelevant to what two will buy. From
+a state it floods the map over cells whose doors are all open, counts the `$08`
+objects inside that flood, subtracts the doors already spent, and takes as its
+moves the doorways on the flood's frontier it can still afford. Breadth-first
+over that, one visit per state, so the plan it prints opens the fewest doors
+there is a plan for.
+
+The cross-check is record 23, whose two doors were worked out by hand over a
+round and are written into `movies/level24-carry.zmv` at frames 5866 and 6078:
+
+```
+> zamn_assets keys rom.sfc 23 541 1095 527 131
+  16 door blocks on the map, 7 keys standing on ground the player can reach
+  1 more key inside scenery no key opens, which is not a supply
+
+2 doors, in this order, and the walk is a sequence and not a route:
+
+     collect 1 key first: (301,1092)
+   1  open the door at (501,1076)   1 key in hand
+     collect 1 key first: (597,748)
+   2  open the door at (373,828)   1 key in hand
+```
+
+The same two doorways, the same first key, found from the tile tables alone —
+and one thing the hand-worked version did not notice, which is that one of
+record 23's eight keys is inside scenery no key opens and was never a supply.
+
+On record 25 the answer is that the level is passable and the route was aimed at
+the wrong side of it:
+
+```
+     collect 2 keys first: (597,60) (829,364)
+   1  open the door at (781,468)   2 keys in hand
+   2  open the door at (781,532)   1 key in hand
+     and (239,715) is now walkable, with 3 keys left over.
+```
+
+**Two doors, not seven.** The seven-door path is the one that is shortest in
+cells, which is what `route` minimises and is the wrong currency here: the two
+doorways are stacked one above the other on x=781, on the far east side, and
+reaching them is 227 cells of walking that the cell-counting search had no
+reason to prefer. A route planner that could count keys would not have needed
+this tool; what it would have needed is to be told that a key is a resource and
+not a distance, and that is the thing `route` is not.
+
+One deliberate refusal in the output. A goal the player cannot reach *with every
+door on the level already open* is behind scenery rather than behind a key, and
+saying "no key order reaches it" about a wall would be true and useless, so the
+search checks that first and says which kind of "no" it means.
 
 ### What the search calls a wall and the player calls a lake
 
@@ -873,6 +1044,37 @@ fifteen to shoot to, which is the difference between `$80:FACF` storing three
 health and clamping at ten, and between 44 marked branches and 51. Firing turns on
 `enemy_collide`, `shot_collide` and every id a bullet can touch — including an
 object, which is how `object_ignore` was finally reached.
+
+### The prefix the loop was replaying for nothing
+
+Everything above costs one headless replay per leg, and for most of this
+project's life that was a few seconds and not worth a paragraph. It stopped
+being a few seconds when the movies started finishing levels.
+`movies/level24-carry.zmv` is ten thousand frames of levels 21, 22 and 23
+before level 24 begins, and the loop replayed every one of them to measure the
+two hundred frames of the leg it was fitting: **42 seconds a leg**, of which
+about two seconds was the part that could change. Level 24's walk is forty-odd
+legs, and the first attempt at it spent fifty minutes to die twice.
+
+The core has had save states all along — `snes_saveState` / `snes_loadState`,
+straight out of LakeSnes — and `zamn_headless` now exposes them:
+
+```
+zamn_headless rom.sfc out.png 10360 -m movie.zmv --save 10350,level24.state
+zamn_headless rom.sfc out.png 11000 -m movie.zmv --load level24.state --pos ...
+```
+
+The file carries the frame number in its own header, because a movie is a list
+of inputs indexed by frame and a state that does not know its own frame cannot
+be replayed into. `--load` starts the loop at that frame; `movie_state` walks
+its cursor forward on the first call, so the inputs line up with no other
+change. `fit_route.py --state <file>` passes it through, and the same leg goes
+from 42 seconds to **0.76**.
+
+A speedup like that is only worth having if it is the same run, so it was
+checked before it was used: every frame from 10352 to 10545, positions and
+watched words, full replay against loaded state — **identical**. Anything less
+and the loop would be fitting a trajectory the corpus would not reproduce.
 
 ### Starting somewhere other than level 1
 

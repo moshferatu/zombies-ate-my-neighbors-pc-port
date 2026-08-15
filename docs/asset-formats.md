@@ -167,9 +167,26 @@ Fields `$18`,`$1A`,`$28` are still unidentified.
   indexed by the tile from the expanded map, never the block map (`$80:AE43`
   tests bit 0 with `LSR A / BCS`).
 
+  Bit 0 is not the only bit anyone reads. `src/assets/level.h` has the census;
+  the one that matters to a *route* is **bit 6, which marks a door** — 122 tiles
+  across the five tables, 115 of them blocking, read by `$80:B0BB` and nothing
+  else. A door blocks until a key is spent on it and then does not, so a search
+  that treats the attribute table as terrain calls levels impossible that are
+  merely locked. `zamn_assets route --doors` is the grid that knows.
+
 ### Expansion
 
-The loader does not keep the block map. It **expands** it once into a full
+The loader does not keep the block map — or so this section has said, and a
+door is a reason to look again. Opening one edits the level in **block**
+coordinates: measured on record 23, the gap is tile columns 56..63 with 55 still
+solid, which is one 8×8 block exactly. `$81:92D6` does that edit by shifting a
+point right six times per axis, taking an address from `$80:ACF6`, and flipping
+bit 0 of the entry it finds — which is an entry in something block-indexed that
+outlives the load. Whether that is the block map kept after all, or a second
+structure, is not settled here, and `$81:92D6` is not even the path the player
+takes (see `docs/cosim.md`). The expansion below is still what the camera reads.
+
+It **expands** the block map once into a full
 tilemap in WRAM bank `$7F` — one 16-bit entry per 8×8 tile, row stride
 `cols × 16` bytes — and everything afterwards (the camera row/column streamers
 at `$80:A462`/`$80:A5E5`/`$80:A61D`) reads only that. `level_expand()`

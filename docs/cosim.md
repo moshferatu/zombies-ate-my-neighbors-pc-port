@@ -13825,3 +13825,451 @@ re-plan from where the game actually is, and each is short enough that there is
 no room to drift a row. That is the same two-tile-lane lesson this file recorded
 on level 45's route, in its wetter form: the loop repairs lane snapping between
 legs, and cannot repair it inside one.
+
+## The bit that was keeping half the cartridge unroutable (2026-08-14)
+
+The section above priced the route at a password, three single rescues and a walk
+to (239,715), and set off to walk it. It got one level further and stopped
+against something older and larger than the route: **`zamn_assets route` could
+not plan a path through record 23 at all**, and had not been able to plan one
+through a great many levels, and the reason was a tile attribute bit this project
+had listed as unidentified since Phase 2.
+
+### The gun costs eight frames, not a leg
+
+The first leg was cheap enough to be worth saying so. `movies/level21-exit.zmv`
+climbs the x=504 column from y=1710 to y=1210, and the type `$04` object — the
+bubble gun, inventory slot 2, weapon `$5E` — sits at (485,1340), nineteen pixels
+west of that column on a row the climb already crosses. At frame 3635 the player
+is at exactly (504,1340).
+
+```
+  3635  Left        eight frames
+  3643  $7E:1CD0 = $0040
+```
+
+Eight frames of input for the weapon that `movies/level21-bubble.zmv` spends a
+whole climb on, because this route was already going past it. The rest of the
+level re-fits from the gun's pixel — five hops back onto the staircase, the
+victim at (417,818) rescued at 4238, the door at (384,780) — and the door is
+*ten pixels* from where the last round found it, at (374,780). It is not a fixed
+place. `$82:F79E` reads the player's own coordinates (`$0002,Y` and `$0006,Y`)
+and asks `$80:AE14` about them, so **the exit door spawns where the player is
+standing when the counter reaches zero**, which is worth knowing before hunting
+for one by eye a second time.
+
+### Record 23 spawns the player in a walled yard
+
+Level 22 loads, and the level's own record says where:
+
+```
+  start positions  (541, 1095) and (560, 1095)
+```
+
+From there the dry grid reaches a strip of grass 260 pixels wide and nothing
+else. Not the victim at (527,131), not the mid-map, not the object 184 pixels
+along the same row. And `probe --to` walks that row in 130 frames. Two
+instruments that are supposed to agree, disagreeing about ground the player
+crosses — which is the shape of a bug in one of them and turned out to be a fact
+about the level.
+
+The yard is walled in. The two `$08` objects lying in it are the way out:
+`$80:CA30` maps object type `$08` to collision id `$21`, and `src/port/collide.c`
+has known since `movies/level1-keys.zmv` that `$21` is keys. Walk into the wall
+holding one and `$7E:1D0C` steps 2 -> 1 and the wall is gone.
+
+### Attribute bit 6 is a door
+
+The wall tiles read `$0053` where the ordinary ones around them read `$0003`, and
+the difference is bit 6. Its reader is `$80:B0BB`, which does not ask "is this a
+door" so much as *which way is one*:
+
+```
+  $80:B0D2  (x, y-$10)   up      $3C = 1
+  $80:B0E9  (x+$10, y)   right   $3C = 3
+  $80:B0FD  (x, y+1)     down    $3C = 5
+  $80:B112  (x-$10, y)   left    $3C = 7
+```
+
+Four `tile_attrs_at_pixel` calls around a point, each masked with `#$0040`, and
+the first that matches leaves its direction code in `$3C` for `$80:B11F  LDA $3C
+: PLD : RTL` to hand back. Two routines call it, `$81:9243` and `$81:92B2`, and
+nothing else in the cartridge reads the bit at all. 122 tiles carry it across the
+five attribute tables and 115 of those block, so it is a small deliberate set
+rather than a bit that fell out of the artwork.
+
+`src/assets/level.h` has said since Phase 2 that "the remaining nine bits are
+still unidentified". It is eight now.
+
+### What opens is a block, and the first draft got that wrong
+
+Letting bit-6 tiles through the flood connected nothing, and the reason is the
+part worth keeping. Record 23's doorway is five tile rows deep and only three of
+them carry the mark:
+
+```
+  row 129  $0053   bit 0 and bit 6
+  row 130  $0013 / $0003   ...nothing
+  row 131  $0053
+  row 132  $0053
+```
+
+Row 130 is as much in the way as the rows around it and is marked with nothing.
+So the bit does not mark the passable tiles — it marks *that there is a door
+here*, and what opens is bigger than the mark.
+
+How much bigger is a measurement. Walk that doorway at x=461, then push west: the
+player moves four pixels and stops at x=457, tile column 55. Columns 56..63 have
+gone and 48..55 have not, and 55/56 is a block boundary. **A door opens one
+8x8-tile block** — one of the units the level is drawn out of. So `--doors` marks
+every block holding a bit-6 tile, lets solid scenery through inside one, and
+paints the same thing in cyan rather than the three rows that carry the bit.
+
+```
+> zamn_assets route rom.sfc 23 541 1095 527 131
+no dry route from (541,1095) to (527,131) through level 23.
+...
+Doors connect them: rerun with --doors for the route.
+
+> zamn_assets route rom.sfc 23 541 1095 527 131 --doors
+level 23: (541,1095) -> (527,131), 239 cells
+10 of them are inside a door
+```
+
+**`$81:92D6` is a routine that does exactly that edit and is not the one the
+player uses.** `LSR` six times per axis for block coordinates, `$80:ACF6` for the
+block-map address, then `LDA [$28],Y : EOR #$0001` — an open block is the closed
+one with bit 0 of its index flipped — and both `$80:B0BB` callers reach it
+through `$81:92C2`. It also does `INC $1FC2` and spawns a thread bodied at
+**`$81:990B`**. On the movie that opens both of record 23's doors, `$1FC2` never
+leaves zero and no `$81:990B` ever reaches the display list. Something else edits
+the same block map the same way for the player, and that is where the key is
+actually spent.
+
+The `$81:990B` half of that is a thread this file should chase before it prices
+another route. Three rounds of arithmetic here rest on `$81:983A` being the only
+source of that creature — thirty placements, one per level load. A *door* that
+spawns one would be a second source, and record 23 has eight keys.
+
+### The loop cannot open a door, and says so
+
+`--doors` is wired through `tools/fit_route.py`, and what it buys is the legs on
+the far side. Opening a door is a leg held into a wall, which is exactly what the
+stall guard exists to give up on. The shape that works is: fit up to the doorway,
+cut the movie at the arrival frame, hand-write the push, restart the loop from
+the pixel that comes out. Both of record 23's doors took one line each.
+
+One trap in that, and it cost an attempt: **the fitter reports the frame it
+passes the target, not the frame its movie stops holding the leg.** `arrived at
+(365,841) ... last frame 6071` is a movie whose last event is at 6111, and
+replaying it leaves the player at (279,841) — eighty-six pixels past the doorway,
+against the far wall. Cut at the arrival frame before appending.
+
+### Where the run actually stands, and the thing that stopped it
+
+Through record 23's two doors and thirteen fitted legs, the victim at (527,131)
+is rescued at frame 6897, with `$7E:1CD0` still `$0040`: **the bubble gun
+survives a level transition**, which the route depends on and nothing had
+measured.
+
+And then the run stopped, on what looked like a wall in the game rather than in
+the route. **No exit door appeared.** `$1D52` was zero, `$1F9C` was one, both of
+`$80:8544`'s conditions held, and seven hundred frames later there was no `$37`
+in the display list and `$1FB8` was still zero — where on level 21 it is set 204
+frames after the rescue. Id `$37` cannot come from an object list (`$80:CA30`
+ends at `$30`), so it is the completion path or nothing.
+
+The completion path is fussier than the section above made it sound. It does not
+put the door *at* the player:
+
+```
+  $82:F7D2  LDA $0072,X : ASL : STA $0E     a direction index
+  $82:F7D8  LDA #$0008  : STA $0C           eight tries
+  $82:F7E2  LDA $0002,Y : ADC $F8B1,X       the player's x, plus an offset
+  $82:F7EB  LDA $0006,Y : ADC ...           and his y
+```
+
+**Eight offsets around the player, and the door goes in the first one that will
+take it.** Level 21's route happened to finish in a room; level 22's finished at
+(567,137), a corridor two tiles tall with the top of the map above it, and all
+eight were refused. Nothing was wrong and nothing was waiting — there was simply
+nowhere to put a door.
+
+Walking 238 pixels west settles it. At (329,137) the door appears at (439,169),
+and the movie steps onto it:
+
+```
+  7200  Right, released at 7255 — x=439 and not x=443, which is four pixels
+        into a wall the column below does not have
+  7442  $1D52 reseeded to $0001
+  7864  $1E7C  22 -> 23
+  8328  $1F9C cleared
+```
+
+Level 23 loads at its own declared spawn, (403,508), with the gate at `$0001`
+and `$7E:1CD0` still `$0040`. **The bubble gun has now survived two level
+transitions**, which is the assumption every route in this file has been built on
+and had never been run past one.
+
+So the rule to carry forward is: *finish a level somewhere with room*. It costs
+nothing to walk to open ground before the counter reaches zero, and it is the
+difference between a level that ends and a level that looks broken.
+
+### Three levels, one run, and the weapon still in slot 2
+
+Level 23 has no doors and wanted nothing clever: thirty fitted legs from its
+own declared spawn (403,508) to the victim at (887,526), rescued at 9197. Its
+exit door spawned at (911,556), thirty-six pixels **directly below** the player
+— which is what the eight-offset search looks like when there is room — and one
+`Down` at 9260 took it.
+
+```
+  1885  level 21   $1D50 = $0001 by password VXBB
+  3643  the bubble gun, $7E:1CD0 = $0040
+  4238  rescue      4604  exit      5026  level 22
+  5866  door one    6078  door two
+  6897  rescue      7442  exit      7864  level 23
+  9197  rescue      9443  exit      9833  level 24
+```
+
+Level 24 loads at (50,81) with the gate at `$0001`, and `$7E:1CD0` has not been
+written since frame 3643. **The bubble gun survives three level transitions.**
+Every route this file has priced across six rounds assumes a weapon collected on
+one level is in hand on another, and until this run nothing had carried one past
+a single transition. The inventory lives at `$7E:1CCC`, below the `$1F8A`..`$1FFB`
+block `$80:8947` clears per level, which is why — but the reason is worth less
+than the measurement.
+
+What is left is one level, and `--doors` has already drawn it. `$81:983A` stands
+at (239,715) on record 25, the walk is 80 cells from inside the spawn region,
+and **38 of those cells are inside doors** against nine `$08` keys.
+
+That ratio was worth distrusting -- `route_doorable` opens a whole block when
+any one of its 64 tiles carries bit 6, so a level that scatters the bit would
+over-connect and plan a walk nobody can take. It is not scattering it. Probing
+the block the plan crosses at (181,208) finds `$0043` tiles interleaved with
+`$0003` and `$0007` in one structure, which is record 23's doorway again: a
+door several rows deep, only some of them marked.
+
+Bisecting the dry grid against the door grid gives the shape of the level, and
+it is a chain rather than a corridor:
+
+```
+  spawn (50,81)      reaches the key at (600,57), and no other
+  doorway 1          x=181, between y=200 and y=220
+  past it            reaches the key at (664,361) -- and (600,57) no longer
+  doorway 2          x=237, immediately below y=396
+  past it            still no dry route to (239,715), so at least a third
+```
+
+One key per door, each behind the last, and the key you needed first is not
+reachable once you have used it. So the leg is a sequence and not a route, which
+is what the eight unreached `$08` objects are for.
+
+The first step of it was tried and it thrashed: `fit_route.py` aimed straight at
+(600,57), 142 cells from the spawn, spent 45 legs and stopped at (328,103). That
+is the level 21 staircase again in a drier form -- the closed loop repairs lane
+snapping *between* legs and cannot repair it inside one, so a route this long
+wants breaking into hops short enough that there is no room to drift. Recorded
+so the next attempt starts from hops rather than from hope.
+
+### And the movie that finished a level was never in the corpus
+
+One thing this round found by accident, and it corrects the section above.
+
+That section ended by declining to update README's "across all forty-eight
+movies ... 14,678,017 of 14,678,017", on the grounds that adding a
+forty-ninth made the figure stale. It did not, and the reason is worse than a
+stale figure: **`tools/verify_corpus.ps1` walks a hand-maintained hashtable of
+movie -> frame count, not `movies/*.zmv`.** A movie that is not in that table is
+not in the corpus. `movies/` held fifty files and the run said forty-eight, and
+the two it had never seen were `level21-exit.zmv` -- the one that finishes a
+level -- and this round's `level24-carry.zmv`.
+
+So the numbers were never stale; they were true of a set that had quietly
+stopped being all the movies. `$82:F958`, which last round put on the declined
+list with some ceremony, had never once been through the standing check. Both are
+in the table now, at 7000 and 7100 frames.
+
+The lesson is the one this file keeps relearning in different clothes: a
+corpus-wide claim is only as wide as whatever enumerates the corpus, and this one
+was enumerating a list somebody has to remember to edit.
+
+With both in it the standing check reads
+
+```
+15801281 calls checked across 50 movies, 0 diverged.
+Branch coverage, union over the corpus: 447 of 551 taken, 104 untaken.
+
+Declined to, summed over the corpus:
+  $82:F958         53
+  $80:FAF0          4
+  $82:F330          2
+```
+
+-- against 14,678,017 across 48 and 444 of 551 before, so the two movies are
+worth 1.1 million calls and three branches nothing else takes. `level24-carry`
+alone reaches **228 of 551**, which is the highest of any single movie in the
+corpus; the next is `level21-exit` at 213 and nothing else clears 200. Movies
+that cross levels are worth more per frame than movies that explore one, which
+is not surprising and had never been true of anything here before.
+
+The census is no longer empty, and the three addresses in it are worth reading as
+a work list. `$82:F958` is the exit-door handler, 53 calls. `$80:FAF0` is the
+player id table. `$82:F330` is the one that had nothing to do with leaving a
+level: it is installed by `$82:F25D`, which is **record 23's victim-list tail
+entry at (293,430)** -- a tail spawn no input had ever walked near. It takes an
+id in A and answers to `$5C`, `$5D`, `$62`, `$65` and `$FF`, four of which are
+weapons, so it is a body that reacts to being shot and the movie found it by
+walking past it. What
+this round leaves behind it is a tool that can plan the rest of it once it can —
+and the observation that `--doors` was not a detour from the route so much as the
+reason the route was mispriced. Level 24's own walk to (239,715) is 103 cells and
+**38 of them are inside doors**, which is not a level anything could have planned
+a week ago.
+
+## The third currency, and the level that charges in it (2026-08-15)
+
+The section above ends by saying the walk to (239,715) is 103 cells with 38 of
+them inside doors, and sets off to walk it. It did not get there. What it found
+instead is that **the route had been priced in two currencies and the level
+charges in a third**, and that one of the two prices was wrong as well.
+
+### Seven doors is not the number, and cells are the wrong thing to minimise
+
+`route --doors` counted door *cells* and said so honestly — "a doorway is
+several cells deep, so this is not the key count". Counting the doorways instead
+is four lines of grouping, and it turns the count into a plan:
+
+```
+> zamn_assets route rom.sfc 25 50 81 239 715 --doors
+level 25: (50,81) -> (239,715), 103 cells
+  door 1  enter (181,212)  leave (181,252)  5 cells
+  door 2  enter (181,276)  leave (181,316)  5 cells
+  ...
+  door 7  enter (237,668)  leave (237,716)  6 cells
+
+7 doors, 38 cells of them, so 7 keys
+```
+
+Seven keys against the level's nine `$08` objects looks survivable and is not,
+because **the keys are behind the doors**. Two are loose at the start. Two more
+are in the chamber past doorways one and two. The chamber past three and four
+holds none, and there the player stands with three doorways left, no keys, and
+nothing unspent behind him. The arithmetic that matters is not seven against
+nine, it is *in what order*, and no tool here could answer that.
+
+`zamn_assets keys` is that search, and the state it searches is not a position
+but a **set of opened doors** — an opened block is gone for good, and `$7E:1D0C`
+is a count with no identity, so how the player came to hold two is irrelevant to
+what two will buy. Flood from the start over cells whose doors are all open,
+count the `$08` objects inside the flood, subtract the doors already spent, and
+the affordable doorways on the frontier are the moves. Breadth-first, one visit
+per state.
+
+The cross-check is record 23, whose two doors took a round to work out by hand:
+
+```
+> zamn_assets keys rom.sfc 23 541 1095 527 131
+  16 door blocks on the map, 7 keys standing on ground the player can reach
+  1 more key inside scenery no key opens, which is not a supply
+
+     collect 1 key first: (301,1092)
+   1  open the door at (501,1076)   1 key in hand
+     collect 1 key first: (597,748)
+   2  open the door at (373,828)   1 key in hand
+```
+
+The same two doorways, the same first key, out of the tile tables alone — and
+one thing the hand-worked version missed, which is that one of record 23's eight
+keys is inside scenery no key opens and was never a supply.
+
+On record 25 the answer is that the route was aimed at the wrong side of the
+level:
+
+```
+     collect 2 keys first: (597,60) (829,364)
+   1  open the door at (781,468)   2 keys in hand
+   2  open the door at (781,532)   1 key in hand
+     and (239,715) is now walkable, with 3 keys left over.
+```
+
+**Two doors, not seven.** The two doorways are stacked one above the other on
+x=781 on the far east side, and reaching them is 227 cells of walking that a
+search minimising *cells* had no reason to prefer. Both plans are legal walks;
+only one of them is a walk this player can pay for. A key is a resource and not
+a distance, and `route` is the wrong instrument for a resource.
+
+### Ten thousand frames of prefix, replayed once a leg
+
+Walking any of it meant `tools/fit_route.py`, and the loop had quietly become
+unaffordable. It replays the whole movie once per leg, and the movie now
+finishes three levels first: **42 seconds a leg**, of which about two seconds is
+the part that can change. The first serious attempt at level 24 spent fifty
+minutes to die twice.
+
+The core has had save states all along. `zamn_headless --save 10350,f.state`
+writes one with its frame number in the header — a movie is inputs indexed by
+frame, and a state that does not know its frame cannot be replayed into — and
+`--load` starts the run there. `fit_route.py --state` passes it through. The
+same leg is now **0.76 seconds**, fifty-five times faster, and it was checked
+frame by frame before it was believed: positions and watched words from 10352 to
+10545, full replay against loaded state, identical. Fourteen legs that had cost
+fifty minutes cost eighteen seconds.
+
+### The third currency
+
+With the doors priced and the loop fast, the walk still did not happen, four
+times:
+
+```
+  top row, no kit          died at (520,123), 47 legs, no key
+  lower row, no kit        first key at 2 health, died at (784,259)
+  fine waypoints, no kit   first key at 2 health
+  lower row, kit at once   first key at 3 health, and the kit already spent
+```
+
+**Level 24 costs about thirteen health and the player can hold ten.** He arrives
+from three finished levels with five, and the measured price of the first
+142 cells of a 329-cell walk — spawn to the first key — is seven.
+Nothing about that is visible in a route, in a key count, or in a cell count,
+and six rounds of arithmetic here never mentioned it.
+
+Three things the ROM says about that, all of them measured this round:
+
+* **The player is given a first-aid kit and never picked it up.** `$7E:1D1A`
+  — item slot 7 — goes 0 to 1 on frame 2175, which is the frame level 21 loads
+  and health goes 0 to 10, and it is still 1 at level 24 having crossed three
+  level transitions unspent. `$1CC0` already points at it, so the whole cost of
+  using it is one X press.
+* **`$80:EB2F` sets health to ten outright.** `LDA #$000A : STA $1CB8,X`, not an
+  increment; it refuses only when health is already ten. Using it at five wastes
+  five and using it at one wastes nothing.
+* **It cannot be spent while being hit.** `$80:EAEC` gates `item_use` on `LDA
+  $4E : ORA $70 : BNE`, and the measurement is what that costs: X pressed at one
+  health in the middle of a fight does nothing at all — `$1D1A` stays one, health
+  stays one, and the player dies holding the kit — while the same press in a
+  quiet frame heals. So it has to be spent early, which is to say partly wasted,
+  and the obvious play of saving it for the moment of need is not available.
+
+So the level is walkable with twenty health and not with ten, and the way to
+twenty is the *second* kit. Record 22 — level 21, where the gun comes from — has
+two `$1E` objects still on its map at (122,105) and (43,2374), because the one
+the player carries was never picked up. `keys` prices the second of those at one
+door and one key, both near the level 21 spawn. That is the next round's first
+job, and it is a re-fit of everything after frame 3643 rather than an
+append, which is why it is not in this one.
+
+### What is in the corpus and what is not
+
+Nothing was added to `movies/`. The level 24 walk is four dead runs and a live
+one that stops three health short of the second key, and a movie that dies is
+not a test of anything. `movies/level24-carry.zmv` stands exactly as the last
+round left it, at 15,801,281 calls across 50 movies with 0 diverged, and the
+work this round leaves behind is two instruments and a price:
+
+* `zamn_assets keys`, which answers a question `route` cannot ask;
+* `--save`/`--load`, which makes the next forty legs cost what one used to;
+* and the fact that the last two hundred cells of this route are not blocked by
+  geometry or by keys but by ten points of health, which is a thing to plan
+  around rather than a thing to discover again.

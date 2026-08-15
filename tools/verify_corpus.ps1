@@ -94,6 +94,17 @@ $corpus = [ordered]@{
     "level49-corner.zmv"     = 5700
     "level53.zmv"            = 3700
     "level53-bonus.zmv"      = 3500
+    # The two movies that leave a level, and they run long because most of
+    # what they are for happens after the transition. Neither was in this
+    # list before, which is why the corpus said 48 movies while `movies/`
+    # held 50 -- and why `$82:F958`, put on the declined list with some
+    # ceremony a round ago, had never been through the standing check.
+    #
+    # `level24-carry` finishes three levels and needs 10600: the last one
+    # loads at 9833 and there is no point verifying a transition and then
+    # stopping before the level it lands in has run.
+    "level21-exit.zmv"       = 7000
+    "level24-carry.zmv"      = 10600
 }
 
 $movies = @($corpus.Keys | Where-Object { $Only -eq "" -or $_ -like $Only })

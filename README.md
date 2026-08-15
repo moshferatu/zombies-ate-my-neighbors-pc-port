@@ -29,11 +29,14 @@ routine that suspends inside the thread scheduler does it at an explicit resume
 point, with its parked state as plain copyable data. `zamn_cosim verify` checks
 the C against the
 ROM's own code on every call the game makes — 128 KB of WRAM plus registers — and
-passes **14,678,017 of 14,678,017 across the whole movie corpus**, thirteen levels
-deep. Across all forty-eight movies the ROM is **never** asked to run a routine
-the port does not have. `tools/verify_corpus.ps1 -Coverage` prints that census,
-and before `movies/level29-990b.zmv` was cut it was empty for a much weaker
-reason: nothing in the
+passes **15,801,281 of 15,801,281 across the whole movie corpus**, thirteen levels
+deep. `tools/verify_corpus.ps1 -Coverage` prints the census of what the ROM was
+asked to run and the port did not have, and it stands at **fifty-nine declines
+against three addresses** — all of them reached by the two movies that finish a
+level, because until an input did that the exit door and everything past it were
+code no test could get to. The census has been empty twice and the two emptinesses
+are not worth the same. Before `movies/level29-990b.zmv` was cut it was empty for
+the weak reason: nothing in the
 corpus had ever shot the creature that swaps in `$81:96E4`. Two movies written to
 stand and fight took it to 430 declines against that one address, and porting the
 eleven bytes behind it took it back to nothing. That is the loop the census
