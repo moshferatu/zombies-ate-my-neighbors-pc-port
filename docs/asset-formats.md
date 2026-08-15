@@ -307,12 +307,29 @@ flat array the ROM built against the one `actors_read()` decoded from the record
 build\zamn_assets.exe verify-actors "Zombies Ate My Neighbors.sfc" -m movies\level1.zmv -f 2400
 ```
 
-On `level1.zmv` (record `$9F:9060`) all four checks pass: the victim count
+On `level1.zmv` (record `$9F:9060`) all four array checks pass: the victim count
 (`$7E:6E30`) and all 10 victim positions match `$82:DB46`'s arrays, and the
 object count (proven by the `$C000` sentinel landing exactly at our count) and
 all 9 object positions **and** types match `$80:C9A5`'s. The tool exits non-zero
 if any diff fails or a list is never reached, so it doubles as a regression
-test. The **actor** list (`$81:80EC`) spreads its work across frames as the
+test.
+
+Two further checks are events rather than diffs, because the `+$1E` list's third
+reader never builds an array to diff (`docs/cosim.md` → *The third reader*). They
+watch both ways out of `$81:81A2`'s gate:
+
+* **`$81:81F6` spawns** — stop at the `JSL` that spawns (`$81:81D7`) and compare
+  the position and the full 24-bit behavior pointer against the record decoded at
+  the same index. This is the only check that sees the list's tail.
+* **`$81:81A2` disables** — stop at `$81:81EF`, where an entry whose index is
+  above `$1D50` is struck off instead, and check that we agree about the index.
+  Only levels entered with fewer than ten neighbours left take that path.
+
+Both report coverage rather than claiming it: a placement the camera never
+approaches is one the movie never showed. Across the 47-movie corpus that is
+**226 spawn events, 45 of them from the tail, 0 failed**.
+
+The **actor** list (`$81:80EC`) spreads its work across frames as the
 camera scrolls rather than building a flat array at load, so its runtime check
 belongs with the Phase 3 spawner; `actors_read()` decodes it here (backed by the
 `$81:80EC` disassembly) and all 56 levels' lists parse without error.

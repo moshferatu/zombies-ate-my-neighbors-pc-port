@@ -1243,9 +1243,20 @@ static int cmd_actors(int argc, char** argv) {
 
 // `$81:81A2` gates on +$6 as well, but the other way round from the counter:
 // an index above `$1D50` is handed to `$81:8191` and disabled rather than
-// ending the walk. No shipped record takes that path — all 135 tail entries
-// carry index 0, and every level's victims are 1..9 and 16 — so every entry of
-// every list spawns, and any index this check sees should be one we decoded.
+// ending the walk. **That path is how a level with fewer than ten neighbours
+// left gets rid of the other nine**, and it is the common case rather than the
+// dead one this file first called it. `$1D50` is only `$0010` on a fresh game;
+// every level after the first is seeded from the rescue counts (`$80:867F
+// LDA $1F9C : SED : ADC $1F9E : STA $1D50 : STA $1D52`), and a password sets it
+// outright. Enter level 21 with `VXBB` and the gate is `$0001`: `$82:DB46` keeps
+// one victim and the walker disables the nine placements above it, one at a
+// time, as the camera reaches each.
+#define SPAWN_DISABLE 0x8181ef  // $81:81EF's `LDA $06 : JSL $818191`
+
+// The top of the walk, which is what tells "no placement came near the camera"
+// apart from "the hook never fired". `$81:81F6` falls into it and the `x == 0`
+// terminator branches back to it, so this counts sweeps of the list.
+#define SPAWN_LOOP_TOP 0x8181fd  // $81:81FD's `STZ $10`
 
 // Where each parser leaves its results (bank $7E, offsets from $0000).
 #define WRAM_VICTIM_COUNT 0x6e30  // $82:DB46: how many victims it kept
@@ -1267,6 +1278,12 @@ static struct {
   uint8_t seen[VICTIM_LIST_MAX + SPAWN_LIST_MAX];  // which entries ever spawned
   bool spawn_bad;
   char spawn_detail[128];
+  int loop_passes;     // sweeps of the list, counted at $81:81FD
+  int disable_events;  // the other way out of $81:81A2's gate
+  uint8_t retired[VICTIM_LIST_MAX + SPAWN_LIST_MAX];
+  bool disable_bad;
+  char disable_detail[128];
+  uint16_t gate_seen;  // $1D50 as the walker read it
 } ac;
 
 static void ac_check(const char* what, bool ok, const char* detail) {
@@ -1391,12 +1408,47 @@ static void actors_on_spawn(Snes* snes) {
   }
 }
 
+// The other way out of the gate: an index above `$1D50` never spawns at all, it
+// is handed to `$81:8191` and struck off for the rest of the level. What this
+// can check is that we agree with the ROM about *which* index the entry carries,
+// which is the one field of a victim record neither parser check reads back.
+static void actors_on_disable(Snes* snes) {
+  int i = (int)dp_word(snes, 0x06);
+  uint16_t gate = wram_word(snes, WRAM_VICTIM_GATE);
+
+  ac.disable_events++;
+  ac.gate_seen = gate;
+  int total = ac.al.victim_count + ac.al.spawn_count;
+  if (i >= 0 && i < (int)sizeof ac.retired) ac.retired[i] = 1;
+  if (ac.disable_bad) return;
+
+  if (i < 0 || i >= total) {
+    snprintf(ac.disable_detail, sizeof ac.disable_detail,
+             "the ROM disabled entry %d and the list decodes %d", i, total);
+    ac.disable_bad = true;
+    return;
+  }
+  // Tail entries carry index 0 and can never be above the gate; a victim gets
+  // here exactly when its index is. Both are `$81:81C4  CMP $001D50 : BCS`.
+  uint16_t idx = i < ac.al.victim_count ? ac.al.victims[i].index : 0;
+  if (idx <= gate) {
+    snprintf(ac.disable_detail, sizeof ac.disable_detail,
+             "entry %d disabled at gate $%04X, but we decode index $%04X", i,
+             gate, idx);
+    ac.disable_bad = true;
+  }
+}
+
 static void actors_step(Snes* snes) {
   Cpu* cpu = snes->cpu;
   if (!cpu->resetWanted && !cpu->stopped && !cpu->waiting && !cpu->intWanted) {
     uint32_t pc = ((uint32_t)cpu->k << 16) | cpu->pc;
     if (pc == SPAWN_ARGS && ac.have_args) {
       actors_on_spawn(snes);
+    } else if (pc == SPAWN_DISABLE && ac.have_args) {
+      actors_on_disable(snes);
+    } else if (pc == SPAWN_LOOP_TOP && ac.have_args) {
+      ac.loop_passes++;
     } else if (pc == LEVEL_LOAD_ARGS && !ac.have_args) {
       ac.record = 0x9f0000u | (cpu->x & 0xffff);
       ac.have_args = true;
@@ -1492,14 +1544,37 @@ static int cmd_verify_actors(int argc, char** argv) {
     char label[96];
     snprintf(label, sizeof label, "$81:81F6 spawns (%d of %d entries, %d tail)",
              entries, total, tail_entries);
-    if (ac.spawn_events == 0) {
-      ac_check("$81:81F6 spawns", false, "the walker never spawned anything");
+    char detail[160];
+    if (ac.loop_passes == 0) {
+      // The walker is spawned by the level load itself, so no sweeps at all
+      // means the hook is wrong or the level never started — a real failure.
+      ac_check("$81:81F6 spawns", false, "the walker never ran");
+    } else if (ac.spawn_events == 0) {
+      // It ran and nothing came close. That is a fact about the movie's route,
+      // not about the game, so it is reported rather than failed.
+      snprintf(detail, sizeof detail, "nothing came within range in %d sweeps",
+               ac.loop_passes);
+      ac_check("$81:81F6 spawns (0 of 0 entries)", true, detail);
     } else {
-      char detail[160];
       snprintf(detail, sizeof detail, "%s%s%d spawn events, %d from the tail",
                ac.spawn_detail, *ac.spawn_detail ? "; " : "", ac.spawn_events,
                ac.tail_events);
       ac_check(label, !ac.spawn_bad, detail);
+    }
+
+    // The gate's other side. Only levels entered with fewer than ten neighbours
+    // left take it, so most movies report nothing here.
+    if (ac.disable_events > 0) {
+      int off = 0;
+      for (int i = 0; i < total && i < (int)sizeof ac.retired; i++) {
+        if (ac.retired[i]) off++;
+      }
+      snprintf(label, sizeof label, "$81:81A2 disables (%d of %d entries)", off,
+               total);
+      snprintf(detail, sizeof detail, "%s%s%d above gate $%04X",
+               ac.disable_detail, *ac.disable_detail ? "; " : "",
+               ac.disable_events, ac.gate_seen);
+      ac_check(label, !ac.disable_bad, detail);
     }
     printf("%d check%s, %d failed.\n", ac.checks, ac.checks == 1 ? "" : "s", ac.failures);
     rc = ac.failures > 0 ? 1 : 0;

@@ -56,8 +56,24 @@ typedef struct {
 } ActorPlacement;
 
 // The victim parser (`$82:DB46`) stops at the first record whose index is 0 or
-// exceeds `$1D50`, and `$1D50` is a fixed `$0010` set at every level load
-// (`$80:85E7`). So the list runs while `0 < index <= 16`.
+// exceeds `$1D50`. **`$1D50` is not a constant**, which this file used to say by
+// pointing at `$80:85E7`; that store sits beside `STA $1E7C = 1` and is new-game
+// init, run once. Every level after the first is seeded at `$80:866F`, on all
+// three of the game loop's level-exit paths:
+//
+//     $80:867F  LDA $1F9C : SED : ADC $1F9E : STA $1D50 : STA $1D52 : CLD
+//
+// — the two players' rescue counts for the level just finished, added in BCD.
+// Per level, because `$80:8947` clears `$1F8A`..`$1FFB` from the top of the game
+// loop (`$84C9`) one call before the load. A
+// level places as many neighbours as you saved on the one before, which is why
+// the index field is **BCD** and why every level's ten run 1..9 and then `$10`
+// rather than `$0A`. A password writes the same pair outright (`$82:B0C6`), so
+// its second half is a neighbour count: `VXBB` starts level 21 with `$0001`, and
+// `$82:DB46` keeps exactly one victim of the ten in the record.
+//
+// So the list runs while `0 < index <= $1D50`, and the shipped indices are
+// chosen so that a full ten (`$0010`) keeps all of them.
 //
 // **The record just past the last victim is not padding**, which this file used
 // to say. The loader hands `+$1E` to *two* readers, and they stop on different
@@ -77,7 +93,11 @@ typedef struct {
 // byte per entry: `$00` idle, `$01` live with the thread handle at `$7E:609A,X`,
 // `$80` retired. Leaving the box kills the thread and puts the entry back to
 // `$00` (`$81:826B`), so **an entry the level does not retire respawns every
-// time you walk back to it**. Retiring is the body's own doing: `$81:8191` sets
+// time you walk back to it**. It is also where a victim above the gate goes: the
+// walker reads `+$6` too (`$81:81C4  CMP $001D50 : BCS $81EF`) and strikes an
+// out-of-gate placement off instead of spawning it, which is how a level entered
+// with three neighbours left disposes of the other seven — one at a time, as the
+// camera reaches each. Retiring is the body's own doing: `$81:8191` sets
 // `$80`, and sixteen routines call it — the neighbours of bank `$83` when they
 // are rescued or eaten, and `$81:983A` at `$81:9854`, before it has even
 // installed its handler. The `$81:990B` creature is one encounter per level

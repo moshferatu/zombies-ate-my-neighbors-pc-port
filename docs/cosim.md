@@ -13578,3 +13578,250 @@ pass at `d990b_bubble` — arrive on level 29 with slot 2 empty and the encounte
 is spent, with no way to have it again short of losing the level. The plan was
 already to arrive with the gun; it is now the only version of the plan that
 works.
+
+## The gate is not a constant, and the route is three levels earlier (2026-08-14)
+
+The section above closed by pricing the movie it had not written: the level 25
+password, three completions, the gun on level 28, and then record 30. Every one
+of those four lines was a full sweep of a level's ten neighbours, and that is
+what made it a next round rather than this one's.
+
+It is the wrong route, and the thing that makes it wrong is one instruction this
+file had been reading past since the password page was written.
+
+### `$80:866F`, and why a victim index counts 1 to 9 and then 16
+
+`src/assets/actor.h` said `$1D50` was "a fixed `$0010` set at every level load
+(`$80:85E7`)". `$80:85E7` does store `$0010` there, and it is not a level load —
+three instructions later it stores `$0001` into `$1E7C`, which is the level
+number. That is new-game init and it runs once.
+
+What runs between levels is `$80:866F`, called on each of the game loop's three
+exits from `$80:8516` — `$84D7`, `$84EC` and `$8504` — and once more at
+`$80:9B9C`:
+
+```
+  $80:867F  LDA $1F9C      player 1's rescues this level
+  $80:8682  SED
+  $80:8683  ADC $1F9E      plus player 2's
+  $80:8686  STA $1D50      -> the gate the victim parser stops at
+  $80:8689  STA $1D52      -> and the counter the level ends on
+  $80:868C  CLD
+```
+
+**The next level places as many neighbours as you saved on this one.** The list
+in the cartridge always holds ten; how many of them `$82:DB46` keeps is how well
+the last level went. `movies/level1-rescue.zmv` shows the two halves of that from
+the inside — at frame 1970 `$1D52` steps `$0010 -> $0009` and `$1F9C` steps
+`0 -> 1`, the counter down in BCD and the rescue count up.
+
+And the `SED` is the answer to a question this file has asked twice and shrugged
+at both times: **why every level's ten victims are indexed 1 to 9 and then 16.**
+They are not indexed 16. They are indexed `$10`, and the compare that gates them
+is a BCD compare against a BCD sum. Ten neighbours is `$0010` because ten in BCD
+is `$10`. The oddity was the encoding, and it was visible in the data for six
+rounds before the instruction that reads it turned up.
+
+### Which makes the second half of a password a neighbour count
+
+`docs/password.md` had this from the other end and did not connect it either:
+`$82:B0BE` writes the variant into `$1D50` and `$1D52`, "and only the tenth
+variant of each group is a level as it starts". That is the same pair of
+addresses. A password's second half is not a save slot, it is **how many
+neighbours are still out there**, and the ten variants are the ten counts.
+
+So a variant-1 password starts its level with one neighbour. `VXBB` is level 21
+variant 1, and `zamn_assets verify-actors` says so against the ROM's own parser:
+
+```
+  victim count      OK  ROM kept 1 of 10 (gate $1D50 = $0001)
+  victim positions (1)  OK
+```
+
+One victim placed, out of the ten the record holds. The level ends when that one
+is rescued.
+
+### The path this file called dead, which is the path most play takes
+
+The section above wrote, of `$81:81A2`'s other gate on `+$6`:
+
+> No shipped record takes that path — all 135 tail entries carry index 0, and
+> every level's victims are 1..9 and 16 — so every entry of every list spawns.
+
+That is true of a level entered with all ten, and a level entered with all ten is
+the first one and no other. With the gate at `$0001` the nine victims above it
+are not spawned and not skipped: they are handed to `$81:8191` and struck off.
+
+```
+  $81:81C0  LDA ($0C),Y          the record's +$6
+  $81:81C2  BMI $81CC            negative: spawn regardless
+  $81:81C4  CMP $001D50
+  $81:81C8  BEQ $81CC            equal: spawn
+  $81:81CA  BCS $81EF            above the gate: disable
+  ...
+  $81:81EF  LDA $06 : JSL $818191 : RTS
+```
+
+`verify-actors` now stops there too, and checks the one field of a victim record
+that neither parser check reads back: the index. If the ROM disables an entry,
+we have to agree it was above the gate. On the `VXBB` prefix, standing still:
+
+```
+  $81:81F6 spawns (0 of 0 entries)     OK  nothing came within range in 439 sweeps
+  $81:81A2 disables (1 of 10 entries)  OK  1 above gate $0001
+```
+
+One, rather than nine, because the disable is not a sweep of the list either —
+it is inside `$81:81A2`, past the proximity test, so an out-of-gate placement is
+struck off only when the camera reaches where it would have stood. That is
+visible directly: the same password walked from the level 21 spawn up to
+(504,1196), most of the height of the map, reports
+
+```
+  $81:81F6 spawns (0 of 0 entries)     OK  nothing came within range in 356 sweeps
+  $81:81A2 disables (4 of 10 entries)  OK  4 above gate $0001
+```
+
+— four of the nine struck off, one for each place the walk went past, and the
+tenth entry still un-spawned because the one victim inside the gate is further up
+than the route has yet reached. It is a nice piece of economy: the game never has
+to walk the list to prune it, and a neighbour you were never going to meet costs
+nothing until you are standing where it would have been.
+
+### And a check that was calling a standing-still movie a failure
+
+Running the new check over the whole corpus rather than the five movies it was
+written against turned up its own bug. `level17-2p-freeze`, `level25-2p` and
+`level33` never bring the camera near a placement, and the check reported **FAIL,
+the walker never spawned anything** on all three — which is a true sentence about
+the movie and a false one about the game.
+
+The fix is to hook the top of the walk (`$81:81FD  STZ $10`) and count sweeps, so
+the check can tell the two apart: no sweeps at all means the hook is wrong or the
+level never started, and is still a failure; sweeps with no spawns is a fact
+about the route and is reported as one.
+
+Over the whole corpus that is **47 movies, 0 failed, 226 spawn events and 45 of
+them from the tail**. The tail is not a rarity: 44 of the 47 movies spawn
+something through `$81:81F6`, and `level49-bubble` alone reaches six tail entries
+of the thirty-six its record holds. Five movies was enough to write the check and
+not enough to test it.
+
+### What that costs the route
+
+The gun and the creature are still disjoint — no record places both — so the
+shape of the plan is unchanged: reach a level that places `$81:983A` carrying a
+weapon collected on an earlier one. What changes is the arithmetic. Sweeping
+every record for both, and pricing each creature level from the best password
+start behind it:
+
+```
+  creature level   gun level   password   completions
+        13              7          5           8
+        15              7          5          10
+        24             21         21           3
+        29             28         25           4
+        31             28         25           6
+        34             28         25           9
+        36             28         25          11
+        46             41         41           5
+```
+
+**Level 21 carries a bubble gun and is itself a password level.** Level 24 places
+one `$81:983A`, at (239,715). That is three completions rather than four, and the
+first leg is not a leg at all — `movies/level21-bubble.zmv` already starts on
+level 21 by password and already collects the type `$04` object at (485,1340),
+which is inventory slot 2 and weapon `$5E`. It is the movie that put `$81:9BA2`
+into the port and emptied a census that had been stuck for five rounds.
+
+And a variant-1 password makes **every one** of those completions one rescue
+rather than ten, because the rescue counts are per level. They are cleared at the
+top of the level loop, one call before the load, by the zero-propagating fill at
+`$80:8947`:
+
+```
+  $80:8947  LDA #$0000 : STA $1F8A
+  $80:894D  LDA #$0070 : LDX #$1F8A : LDY #$1F8B : MVN $00,$00
+```
+
+`$1F8A` through `$1FFB`, which takes in `$1F9C` and `$1F9E` both. `$80:8632`
+calls it at `$80:8636`, and the game loop calls `$80:8632` at `$84C9` — the
+instruction before `JSL $8086A2` loads the level. So the pair really does mean
+"rescues on the level just played", the seed at `$80:866F` really is last level's
+score, and the gate stays at 1 for as long as you keep saving exactly one.
+
+Which prices the route at a password, three single rescues and a walk to
+(239,715) — against the four full ten-neighbour sweeps the section above budgeted
+for.
+
+### The first movie that finishes a level
+
+`movies/level21-exit.zmv` is the first input in this project to complete a level
+and cross into the next one, and it was written to measure one word.
+
+Level 21 by `VXBB`, one neighbour at (417,818), rescued at frame 4250. Then:
+
+```
+  frame 4250   $1D52 $0001 -> $0000, $1F9C 0 -> 1     the rescue
+  frame 4675   $1D52 $0000 -> $0001                   $80:866F seeds the next
+  frame 4950   $1E7C $0015 -> $0016                   level 22
+  frame 5450   $1F9C 1 -> 0                           $80:8947 clears it
+  level 22     $1D50 = $0001, $7E:6E30 = 1            one victim of the ten
+```
+
+Every claim in this section, from the outside and in order. The gate carried the
+score of the level just played; the clear happened one call before the load and
+not a frame earlier; and `$82:DB46` kept one victim out of the ten in record 23.
+`verify-actors` on the level 21 half is 6 checks, 0 failed — one spawn and four
+disables against a gate of `$0001` — and `zamn_cosim verify` is **421,585 calls
+checked, 0 routines diverged**.
+
+Two things cost an attempt each and neither was in any file here.
+
+**The level does not end when the counter reaches zero.** `$80:853F  LDA $1D52 :
+BNE $8528` leaves the loop, and then an exit door spawns and waits: id `$37`,
+handler `$82:F958`, at (374,780) on this level. The player has to walk onto it.
+Standing still after the last rescue does not finish the level, it times out into
+the attract mode — which is what the first two attempts did, and what made the
+transition look broken when it was merely unfinished.
+
+**And tile (51,148) is water.** Row y=1190 is wet from x=414 to x=432, row y=1180
+is dry the whole way across, and `zamn_assets route` will not plan from a wet
+cell — "no dry route". The staircase out of (504,1196) has to be crossed a row
+high, in hops short enough that a 47-pixel leg cannot overshoot into the gap.
+Five hops of three to fifteen legs each did it where one hop of seventy cells
+failed three times.
+
+The last step into the door is **hand-written, not fitted**, and that is worth
+knowing before anyone edits this movie. `fit_route.py` cannot land on it: aimed
+at (374,780) it spent 51 legs oscillating and gave up at (366,782), having walked
+through the door's column twice without triggering it. Two pixels of row decide
+it. What works is four lines by hand from (438,772) — `Down` for six frames to
+reach y=784, then `Left` for thirty-six — and the closed loop is the wrong tool
+for a target whose whole purpose is to stop being a place you can stand.
+
+The exit door also puts `$82:F958` on the declined list, thirteen calls in this
+one run — an unported routine that no input in the corpus could reach before,
+for the plain reason that no input had ever finished a level.
+
+Fitting that movie cost three attempts and the reason is worth recording, because
+it is one tile. `tools/fit_route.py` walked the level 21 spawn (258,2836) up to
+(414,1190) and gave up: **no dry route from (414,1190) to (417,818)**. Nine
+pixels left there is one — (405,1190) plans in 57 cells, and so do (414,1180),
+(437,1172) and everything else around it. The dead cell is tile **(51,148)**, and
+it is water.
+
+What makes it bite is that the corridor out of (504,1196) is a staircase, and the
+planned path crosses column 51 at y=1172, a row above the water. The closed loop
+walks the legs it is given, ends two pixels low, and lands in the one tile the
+search will not start from — so every leg planned afterwards is planned from
+nowhere. Moving the target did not help (the second attempt failed at the same
+pixel on the way to a different waypoint) because the snap happens before either
+target is reached.
+
+The fix is to stop asking the loop to cross the staircase in one go. Five short
+hops — (493,1188), (445,1180), (437,1172), (373,1172), then the victim — each
+re-plan from where the game actually is, and each is short enough that there is
+no room to drift a row. That is the same two-tile-lane lesson this file recorded
+on level 45's route, in its wetter form: the loop repairs lane snapping between
+legs, and cannot repair it inside one.
