@@ -1388,6 +1388,11 @@ bool ppu_bgTilemapWider(const Ppu* ppu, int layer) {
   return ppu->bgLayer[layer].tilemapWider;
 }
 
+bool ppu_bgOnMainScreen(const Ppu* ppu, int layer) {
+  if(layer < 0 || layer > 3) return false;
+  return ppu->layer[layer].mainScreenEnabled;
+}
+
 void ppu_setSprite(Ppu* ppu, int slot, int x, int y, uint16_t tileAttr,
                    bool large) {
   if(slot < 0 || slot >= 128) return;

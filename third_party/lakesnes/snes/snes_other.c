@@ -161,6 +161,10 @@ bool snes_bgTilemapWider(const Snes* snes, int layer) {
   return ppu_bgTilemapWider(snes->ppu, layer);
 }
 
+bool snes_bgOnMainScreen(const Snes* snes, int layer) {
+  return ppu_bgOnMainScreen(snes->ppu, layer);
+}
+
 void snes_setWideClamp(Snes* snes, int lo, int hi) {
   ppu_setWideClamp(snes->ppu, lo, hi);
 }

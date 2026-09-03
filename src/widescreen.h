@@ -20,9 +20,28 @@
 // The same layer carries the title, the password screen and the story cards,
 // and those must not be torn in half and flung at the edges. What tells the two
 // apart is the layer next door: a level scrolls, so `$80:9E5C` sets BG2's
-// tilemap to 64 tiles across, and every fixed screen leaves it at the 32 the
-// boot code set. No symbol, no WRAM read, and no list of screens to fall out of
-// date as more of the game is ported.
+// tilemap to 64 tiles across, and a fixed screen does not. No symbol, no WRAM
+// read, and no list of screens to fall out of date as more of the game is
+// ported.
+//
+// **A tilemap's width outlives the screen that asked for it**, though, and that
+// is half the test rather than all of it. `$80:9E5C` runs when a level loads;
+// nothing puts BG2SC back to 32 when the level ends, so the card that tallies a
+// finished level and the card that names the next one are drawn with a 64-column
+// BG2 still configured behind them, and asking only about the width calls them
+// levels. They were: every fixed screen up to the first level came out centred
+// and every card after one was jammed against the left edge of the picture,
+// because a fixed screen leaves `$1B6A` at zero, and at camera x zero the
+// sliding margins below hand the left margin's whole share to the right one.
+//
+// The other half is that a fixed screen also switches BG2 *off the main screen*
+// (`$212C`), and a level leaves it on for as long as the level lasts -- through
+// the map screen, through a boss, through both players, through a bonus room.
+// Measured over all 49 movies in the corpus: BG2 is wide-but-unshown in exactly
+// the two that finish a level (`level21-exit`, one crossing; `level24-carry`,
+// three) and in neither of them for a frame that is not a card. So the question
+// is asked of both registers, and the answer is about the picture being drawn
+// rather than about a register left over from the last one.
 //
 // ## The world only reaches so far, and the game only draws 256 of it
 //
@@ -553,7 +572,11 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
 static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   const uint8_t* mem = ws->mem;
   const int margin = ws->margin;
-  const bool in_level = snes_bgTilemapWider(snes, 1);
+  // Both halves, and see the note at the top of this file on why the width
+  // alone is not enough: BG2SC keeps its 64 columns across the cards between
+  // two levels, and only `$212C` says the world has stopped being drawn.
+  const bool in_level =
+      snes_bgTilemapWider(snes, 1) && snes_bgOnMainScreen(snes, 1);
   // BG3 is the status panel in a level and everything else outside one.
   snes_setLayerWide(snes, 2, in_level ? ppu_wideAnchor : ppu_wideAuto);
   // BG2 is the scrolling world, and its margins are filled below, so it is the

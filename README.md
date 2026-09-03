@@ -544,10 +544,29 @@ change to the shadow tilemap the co-simulation checks byte for byte.
 
 The same layer carries the title, the password screen and the story cards, and
 those must *not* be torn in half. What tells them apart is the layer next door:
-a level sets BG2's tilemap to 64 tiles wide because the world scrolls, and every
-fixed screen leaves it at 32. That sentence, the map's own width and the sprites
-below are the whole of what `src/widescreen.h` knows about this game, and no
-screen is named anywhere in it.
+a level sets BG2's tilemap to 64 tiles wide because the world scrolls, and a
+fixed screen does not. That sentence, the map's own width and the sprites below
+are the whole of what `src/widescreen.h` knows about this game, and no screen is
+named anywhere in it.
+
+**A tilemap's width outlives the screen that asked for it**, though, which is
+why that is half the test rather than all of it. `$80:9E5C` sets BG2SC when a
+level loads and nothing puts it back to 32 when the level ends, so the LEVEL
+COMPLETE tally and the card naming the next level are drawn with a 64-column BG2
+still configured behind them. Asking only about the width called them levels,
+and a fixed screen leaves `$1B6A` at zero, where the sliding margins below give
+the left margin's whole share to the right one: the first card of a run was
+centred and every card after the first completed level was jammed against the
+left edge of a 16:9 frame. The other half of the test is that a fixed screen
+also switches BG2 off the *main screen* (`$212C`) while a level leaves it on --
+through the map screen, through a boss, through every frame of all 49 movies in
+the corpus, where BG2 is wide-but-unshown in exactly the two movies that finish
+a level and only across their cards. So both registers are asked, and the answer
+is about the picture being drawn rather than about a register left over from the
+last one. At 4:3 nothing moves: the same seven frames of `level21-exit.zmv`
+render byte-identical either side of the change, and at 16:9 so does every frame
+outside the 665 the cards occupy -- including the last frame of level 21 and two
+from level 22.
 
 **Everything else runs on `ppu_wideAuto`, which asks the layer.** Its default
 answer is the honest one: draw what the hardware would have drawn if the

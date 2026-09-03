@@ -105,6 +105,7 @@ void snes_setPixels(Snes* snes, uint8_t* pixelData);
 void snes_setWidescreen(Snes* snes, int left, int right);
 void snes_setLayerWide(Snes* snes, int layer, int policy);
 bool snes_bgTilemapWider(const Snes* snes, int layer);
+bool snes_bgOnMainScreen(const Snes* snes, int layer);
 void snes_setWideClamp(Snes* snes, int lo, int hi);
 void snes_writeVramWord(Snes* snes, uint16_t wordAdr, uint16_t val);
 void snes_setSprite(Snes* snes, int slot, int x, int y, uint16_t tileAttr,

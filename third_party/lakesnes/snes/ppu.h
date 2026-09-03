@@ -276,6 +276,10 @@ void ppu_setLayerWide(Ppu* ppu, int layer, int policy);
 // outside because it is the one piece of PPU state that says whether the game
 // is showing a scrolling world or a fixed screen.
 bool ppu_bgTilemapWider(const Ppu* ppu, int layer);
+// Is this background layer switched on to the main screen? The companion to the
+// question above, and needed with it: a tilemap's width outlives the screen
+// that asked for it, so the two together say what one of them cannot.
+bool ppu_bgOnMainScreen(const Ppu* ppu, int layer);
 // Restrict the stretched layers to these columns of the picture, in game pixels
 // with 0 the console's left edge. Anything outside shows the backdrop. Wide
 // open unless something knows better; the anchored layers ignore it, because a
