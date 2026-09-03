@@ -36,6 +36,7 @@
 
 #include "analysis/movie_apply.h"
 #include "cosim/cosim.h"
+#include "poke.h"
 #include "port/player.h"  // player_set_aim, for --twin-aim
 #include "twinstick.h"
 
@@ -82,6 +83,13 @@ typedef struct {
   // `zamn_headless`.
   int twin_aim;
   int twin_from;  // ...and the frame it starts arming on
+  // `--poke <frame>[+]:<addr>=<value>[.b]`: assert a word of WRAM rather than
+  // playing the game into it. See `src/poke.h` for what that does and does not
+  // prove; the short version is that `verify` diffs the port against the ROM on
+  // whatever state exists at the call, and neither of them can tell how the
+  // state got there. It is how a branch that needs a rare *state* gets taken
+  // without a movie that needs a rare *sequence*.
+  PokeList pokes;
 } Options;
 
 static uint8_t* read_file(const char* path, int* out_len) {
@@ -150,6 +158,8 @@ static bool parse_options(int argc, char** argv, Options* o) {
                         "       counts and the period above 0\n");
         return false;
       }
+    } else if (!strcmp(argv[i], "--poke") && has_next) {
+      if (!poke_parse(&o->pokes, argv[++i])) return false;
     } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
       o->verbose = true;
     } else if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--coverage")) {
@@ -263,6 +273,7 @@ static int cmd_verify(const Options* o) {
          "against the ROM's own, call by call.\n",
          o->frames, o->movie_path ? o->movie_path : "(no input)",
          have_movie && movie_uses_port(&movie, 1) ? " (two controllers)" : "");
+  poke_report(&o->pokes);
 
   if (o->twin_aim)
     printf("--twin-aim: the cartridge is patched and the port armed, flipping\n"
@@ -275,6 +286,10 @@ static int cmd_verify(const Options* o) {
     if (have_movie) {
       movie_apply(&movie, snes, frame);
     }
+    // Before the frame runs and after its inputs are set, so the game reads the
+    // asserted value for the whole frame. Both engines read the same WRAM, so
+    // this moves the ROM and the port together and the diff stays a diff.
+    poke_apply(&o->pokes, snes->ram, frame);
     // Not before `TWIN_AIM_FROM`: a movie's boot half is 1,004 frames of
     // mashing Start through the logos and the menu, and holding fire through
     // that lands somewhere the movie was not written for — the first run of
@@ -320,6 +335,16 @@ static int cmd_verify(const Options* o) {
 }
 
 static int cmd_run(const Options* o) {
+  // Refused rather than ignored. `run` drives two cores and compares all of
+  // WRAM between them; a poke that reached one and not the other would show up
+  // as exactly the thing this pass exists to detect, and silently dropping it
+  // would make a poked `run` read like a clean one.
+  if (o->pokes.count > 0) {
+    fprintf(stderr, "error: --poke is a verify-only flag. `run` compares two\n"
+                    "       timelines, and asserting into one of them is not a\n"
+                    "       comparison.\n");
+    return 2;
+  }
   int rom_len = 0;
   uint8_t* rom_data = read_file(o->rom_path, &rom_len);
   if (!rom_data) return 1;
@@ -346,7 +371,11 @@ static void usage(void) {
          "         -x routine to run everything but that one (repeatable,\n"
          "         and not combinable with -r),\n"
          "         -c full branch-coverage table (untaken branches are always\n"
-         "         listed, with or without it).\n");
+         "         listed, with or without it),\n"
+         "         --poke <frame>[+]:<addr>=<value>[.b] to assert a word of\n"
+         "         WRAM rather than play the game into it (verify only,\n"
+         "         repeatable). A branch taken this way is checked against the\n"
+         "         ROM on a state nothing proved reachable — see src/poke.h.\n");
 }
 
 int main(int argc, char** argv) {

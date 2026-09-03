@@ -49,6 +49,7 @@
 #include "snes.h"
 
 #include "analysis/movie_apply.h"
+#include "poke.h"
 #include "scale.h"
 #include "widescreen.h"
 
@@ -286,6 +287,7 @@ int main(int argc, char** argv) {
             "       [--pos first[,last[,step]]] [--records first[,last[,step]]]\n"
             "       [--watch addr[,first[,last[,step]]]]...\n"
             "       [--save frame,file] [--load file]\n"
+            "       [--poke frame[+]:addr=value[.b]]...\n"
             "       [--widescreen off|16:9|16:10]\n",
             argv[0]);
     return 2;
@@ -298,6 +300,7 @@ int main(int argc, char** argv) {
   int snap_at[MAX_SNAPSHOTS];
   int snap_count = 0;
   int pos_first = -1, pos_last = -1, pos_step = 10;
+  PokeList pokes = {{{0}}, 0};
   int rec_first = -1, rec_last = -1, rec_step = 10;
   // `--watch` may be given more than once. One word is the usual question; the
   // question that produced this option was "which of the twenty-four thread
@@ -367,6 +370,10 @@ int main(int argc, char** argv) {
         watch_last = v[1];
         watch_step = v[2] > 0 ? v[2] : 1;
       }
+    } else if (!strcmp(argv[i], "--poke") && has_next) {
+      // The same flag `zamn_cosim verify` takes, so a state worked out with
+      // pictures here transfers to the run that checks it verbatim.
+      if (!poke_parse(&pokes, argv[++i])) return 2;
     } else if (!strcmp(argv[i], "--save") && has_next) {
       const char* p = argv[++i];
       save_frame = atoi(p);
@@ -447,6 +454,7 @@ int main(int argc, char** argv) {
     if (have_movie) {
       movie_apply(&movie, snes, i);
     }
+    poke_apply(&pokes, snes->ram, i);
     snes_runFrame(snes);
     // `--at` frames are requested in whatever order they were typed, but they
     // are almost always ascending; walking a cursor keeps the common case free

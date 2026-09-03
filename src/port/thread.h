@@ -50,9 +50,13 @@ void thread_tick_waits(Wram* w);
 int vbl_queue_a_add(Wram* w, uint16_t addr, uint16_t bank);
 int vbl_queue_b_add(Wram* w, uint16_t addr, uint16_t bank);
 
-// The three flags either adder leaves, given the queue it worked on and whether
-// the job went in. Carry is the return value — set means refused — and the
-// comment in `src/cosim/routines.c` says what leaving it unclaimed cost.
+// The three flags either adder leaves, given the queue it worked on, the Y it
+// was called with, and whether the job went in. Carry is the return value — set
+// means refused — and the comment in `src/cosim/routines.c` says what leaving it
+// unclaimed cost.
+//
+// `y_in` is only read on the refused path, where the exit is `PLY : RTL` and so
+// N and Z belong to the caller's own Y rather than to the compare that refused.
 //
 // This is here rather than in the shim that used to own it because `$80:C07F`
 // ends `JML $8083AE` and so returns these same three flags as its own. Two
@@ -61,7 +65,7 @@ typedef struct {
   bool n, z, c;
 } VblQueueFlags;
 
-void vbl_queue_flags(const Wram* w, uint32_t count_at, uint16_t cap, bool added,
+void vbl_queue_flags(const Wram* w, uint32_t count_at, uint16_t y_in, bool added,
                      VblQueueFlags* out);
 
 // --- $80:825E ---------------------------------------------------------------

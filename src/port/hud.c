@@ -582,7 +582,9 @@ void hud_refresh(Wram* w, const Rom* rom, uint16_t dp, HudRefreshRegs* io) {
   // same three `shim_vbl_queue_a_add` publishes, from the same function.
   const int slot = vbl_queue_a_add(w, HUD_UPLOAD_JOB, HUD_UPLOAD_JOB_BANK);
   VblQueueFlags f;
-  vbl_queue_flags(w, W_VBL_QUEUE_A_COUNT, W_VBL_QUEUE_A_SLOTS, slot >= 0, &f);
+  // The tail jump sets Y to the job's bank, so that is the Y the refused path's
+  // `PLY` pulls back and takes its N and Z from.
+  vbl_queue_flags(w, W_VBL_QUEUE_A_COUNT, HUD_UPLOAD_JOB_BANK, slot >= 0, &f);
   // The tail jump's cost is this call's, so the queue adder's search is priced
   // here too. `slot` is the ROM's X, counted down from `$0038` in fours: a zero
   // means the scan found nothing free and took slot 0 anyway, which is a

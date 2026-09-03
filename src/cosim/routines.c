@@ -209,10 +209,10 @@ static void shim_thread_tick_waits(Wram* w, const Rom* rom, const CosimRegs* in,
 // The three lines that decide it now live in `port/thread.c`, because
 // `$80:C07F` ends `JML $8083AE` and hands the same three flags back as its own
 // — see `port/hud.c`. What stays here is which of them this shim claims.
-static void queue_flags(Wram* w, uint32_t count_at, uint16_t cap, bool added,
+static void queue_flags(Wram* w, uint32_t count_at, uint16_t y_in, bool added,
                         CosimRegs* out) {
   VblQueueFlags f;
-  vbl_queue_flags(w, count_at, cap, added, &f);
+  vbl_queue_flags(w, count_at, y_in, added, &f);
   out->n = f.n;
   out->z = f.z;
   out->c = f.c;
@@ -227,7 +227,7 @@ static void shim_vbl_queue_a_add(Wram* w, const Rom* rom, const CosimRegs* in,
     out->a = in->a;
     out->x = in->x;
     out->y = in->y;
-    queue_flags(w, W_VBL_QUEUE_A_COUNT, W_VBL_QUEUE_A_SLOTS, false, out);
+    queue_flags(w, W_VBL_QUEUE_A_COUNT, in->y, false, out);
     return;
   }
   // `DEC A : TAY` leaves the stored address in both A and Y, and X is the slot
@@ -235,7 +235,7 @@ static void shim_vbl_queue_a_add(Wram* w, const Rom* rom, const CosimRegs* in,
   out->a = (uint16_t)(in->a - 1);
   out->y = out->a;
   out->x = (uint16_t)slot;
-  queue_flags(w, W_VBL_QUEUE_A_COUNT, W_VBL_QUEUE_A_SLOTS, true, out);
+  queue_flags(w, W_VBL_QUEUE_A_COUNT, in->y, true, out);
 }
 
 static void shim_vbl_queue_b_add(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -251,7 +251,7 @@ static void shim_vbl_queue_b_add(Wram* w, const Rom* rom, const CosimRegs* in,
     out->a = in->a;
     out->x = in->x;
     out->y = in->y;
-    queue_flags(w, W_VBL_QUEUE_B_COUNT, W_VBL_QUEUE_B_SLOTS, false, out);
+    queue_flags(w, W_VBL_QUEUE_B_COUNT, in->y, false, out);
     return;
   }
   // The bank is pulled back off the stack into A *after* the address is stored,
@@ -259,7 +259,7 @@ static void shim_vbl_queue_b_add(Wram* w, const Rom* rom, const CosimRegs* in,
   out->a = in->y;
   out->x = (uint16_t)slot;
   out->y = slot == 0 ? probe : 0;
-  queue_flags(w, W_VBL_QUEUE_B_COUNT, W_VBL_QUEUE_B_SLOTS, true, out);
+  queue_flags(w, W_VBL_QUEUE_B_COUNT, in->y, true, out);
 }
 
 // ---------------------------------------------------------------------------

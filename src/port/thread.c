@@ -49,10 +49,10 @@ int vbl_queue_b_add(Wram* w, uint16_t addr, uint16_t bank) {
                        0x1c, addr, bank);
 }
 
-void vbl_queue_flags(const Wram* w, uint32_t count_at, uint16_t cap, bool added,
+void vbl_queue_flags(const Wram* w, uint32_t count_at, uint16_t y_in, bool added,
                      VblQueueFlags* out) {
-  const uint16_t count = wram_r16(w, count_at);
   if (added) {
+    const uint16_t count = wram_r16(w, count_at);
     // The `INC` of the count is the last thing to run, and it leaves carry
     // alone — which means clear, from the `CPY` that let the job through.
     out->n = (count & 0x8000u) != 0;
@@ -60,10 +60,14 @@ void vbl_queue_flags(const Wram* w, uint32_t count_at, uint16_t cap, bool added,
     out->c = false;
     return;
   }
-  // Refused: N and Z are what the `CPY #$0008` that refused produced.
-  const uint16_t diff = (uint16_t)(count - cap);
-  out->n = (diff & 0x8000u) != 0;
-  out->z = diff == 0;
+  // Refused, and both adders leave by `PLY : RTL` — `$80:83D3` and `$80:8438`.
+  // **`PLY` sets N and Z**, so the compare's flags never reach the caller: what
+  // does is the Y the opening `PHY` pushed, which is the job's bank. This read
+  // as the `CPY`'s flags until a `--poke` of the count first reached the branch
+  // and the ROM answered Z clear where the port said set — with a full queue
+  // the difference `count - cap` is zero, and a bank is not.
+  out->n = (y_in & 0x8000u) != 0;
+  out->z = y_in == 0;
   out->c = true;
 }
 
