@@ -3,7 +3,119 @@
 Cross-session status for the ZAMN native-port project. Update this whenever a
 milestone lands. See `PLAN.md` for the full multi-phase plan.
 
-## Current status: **Phase 3 underway** 🔨 (2026-08-03)
+## Current status: **Phase 3 underway** 🔨 (2026-09-15)
+
+### Smoothing, second attempt: the picture taken apart (2026-09-15)
+
+The 240 Hz smoothing looked worse than the plain 60, and it jittered. Measured
+rather than argued, with a probe over `level1`, `level25-boss`, `level9-weapons`
+and a movie that sits on the character select:
+
+- **A whole pixel is the floor.** Per-tick motion is 1 or 2 px: the camera
+  moves (0,±1) or (±2,0) a tick depending on the level, walkers 1 px with a
+  second step on masked ticks, the character select's film strips (0,1) every
+  tick. `smooth_step` rounds to whole pixels, so a 1 px/tick move at 240 Hz
+  steps at the second picture and holds for three -- the 60 Hz cadence with a
+  phase shift, i.e. nothing. A 2 px move steps at pictures 1 and 3. **Different
+  speeds step at different phases**, so a player (1 px) on a scrolling floor
+  (2 px) is drawn moving against the floor, then with it, four times a tick.
+  That is the jitter.
+- **Matching sprites by looks was wrong 5% of the time** against ground truth
+  from the display list (re-running the emitters per record): 2% of
+  sprite-ticks were shown with a wrong delta, a one-pixel wobble on some sprite
+  every few ticks; 1.3% found no predecessor and stepped at the tick boundary
+  while their actor's other pieces eased -- tearing.
+- **`ppu_renderFrame` costs 2.0-3.6 ms** on this machine, three times a tick,
+  against a 4.17 ms refresh: the loop's `waiting` was 0.00 ms -- no headroom.
+
+The fix is `src/layers.h`: take the frame apart once per tick (planes per
+background and priority, the backdrop, sprites as cells in an atlas -- with
+fixed-colour maths, brightness and the maths window baked in), and draw the
+pictures as a *draw list* with the GPU (`src/present_layers.h`) on a target
+several times the console's size, so a quarter pixel is a target pixel. The
+sub screen is added where the console adds it by a masked additive blend on a
+scratch target (`DST_ALPHA` factor). Sprites are moved by their *record*: the
+port's `sprite_build_oam` now publishes `sprite_oam_owners` (record and origin
+per OAM slot, with a serial so a stale table is not trusted); `--stock` falls
+back to `smooth_match`.
+
+Checked by `tools/test_layers.c` over the corpus: every movie, zero frames
+differing by more than one; "within one" only where the sub screen is added
+(five-bit add on the console, eight-bit on the GPU). Frames the list cannot
+express -- forced blank, a sub-screen fade, mid-frame writes, mode 7 -- are
+shown as the PPU drew them and counted. `--dump-pictures` read the renderer's
+output back and found it pixel-identical to the software render on Direct3D 9
+and 11 -- after it found the sub screen's mask op naming itself (a macro
+argument evaluated after the op counter moved).
+
+Two more things learned on the way. The PPU evaluates sprites for `line - 1`,
+so OAM y lands on picture row y, one below where a background's line 1 lands
+(593 pixels of the title's "START / PASSWORD" said so). And sprites hide each
+other by OAM index regardless of priority bits; a draw list per priority
+cannot say that, so the hidden pixels are removed from the hinder sprite's cell
+at the tick's positions (`layers_occlude`) -- 37 frames of `level21`, 40 of
+`level37`, 13 of `level5`, 5 of `level41` were differing before that and none
+after.
+
+Measured at 240 Hz, `level1.zmv --frames 1500 --paced`: 98.7% of pictures
+within 1 ms of the 4.167 ms period, the loop now idle 1.3 ms a picture on
+average, taking a tick apart 1.24 ms on the emulation thread. The one long
+arrival (215 ms) is the level load, a 226 ms tick; the plain loop has it too,
+at 500 ms.
+
+**The first play-test still jittered, on walkers only**, and the movie tests
+could not see it because they compare each tick's own picture, not the path
+between ticks. `zamn_test_layers --track` prints where each piece is put in
+each picture; one zombie's piece went 151, 154, 157, 160 | 166, 168, 170, 172
+| 171, 174, ... -- a jump of six and then minus one at the tick boundaries.
+The pieces were eased from the actor's origin delta, and a walk cycle's frames
+put their pieces at different offsets from the origin, so every frame change
+moved the start of the ease by a pixel. Now a piece is eased from the nearest
+piece of the same record in the last tick (the origin delta only as the
+fallback), and the same trace reads 151, 154, ... 172, 174, 176, 178, 180,
+183, 186 with no seam. Also from that session: the frontend was not DPI-aware
+(3072x1728 backbuffer on a 3840x2160 panel at 125%, stretched by Windows),
+fixed with `SDL_HINT_WINDOWS_DPI_AWARENESS`; `--fullscreen` after `--frames`
+lets a bounded run measure fullscreen; and the report prints the compositor's
+dropped/missed counts when it composited anything, which fullscreen does not.
+
+**The second play-test still jittered, in widescreen**, which no movie check
+had run: the whole screen near a map's edge, items and weapons and neighbours
+against a steady floor, zombies giving chase. Three causes, each measured with
+`zamn_test_layers --widescreen 16:9` and its new pairing line:
+
+- **The owner table is a tick ahead of the picture.** A frame of the core ends
+  as vblank begins and the pass's buffer is DMA'd *in* that vblank, so the
+  frame shows the pass before. Paired with the same tick's table, a piece was
+  tagged with whatever record had its slot a tick later -- wrong whenever the
+  slots shifted, which is what a crowd crossing in depth does. Holding the
+  table a tick took the pieces with no near predecessor in their own record
+  from 4,018 to 1,105 on `level25-boss`, and those paired with nothing from
+  966 to 416. (`--no-hold` reproduces the old pairing, to measure against.)
+- **Widescreen's own sprites have no record.** The pieces the pass drops for
+  being outside the console's 256, and the items, weapons and neighbours on
+  the ground with no actor, are put into parked OAM entries by
+  `src/widescreen.h`. They were not eased at all, so they stepped once a tick
+  against a floor that slid. They are now paired by looks among the last
+  tick's recordless sprites -- 7,921 sprite-ticks on that movie.
+- **At the ends of a map the margins trade width**, so the picture's origin
+  moves up to two pixels a tick while the view stands still. The scroll was
+  eased regardless: the whole screen slid back a pixel and a half and forward
+  again, every tick. `dExtraLeft` now goes into every delta that lives in the
+  console's coordinates -- the world planes read `+0` through frames 2824-2834
+  of that movie, where they read `+6` -- and not into a layer pinned to the
+  picture's edges (the status panel).
+
+**Seen on the way, not chased:** with the port substituted (the default), a
+movie that presses Start once at 1150 and then holds nothing leaves the
+character select by itself around frame 1280 and is on the level card by 1400;
+`--stock`, and the bare core in `zamn_headless`, sit on the select screen until
+the next Start. Repro:
+
+    build\zamn.exe "Zombies Ate My Neighbors.sfc" -m sel.zmv --frames 1400 --shot a.png
+    build\zamn.exe "Zombies Ate My Neighbors.sfc" -m sel.zmv --frames 1400 --shot b.png --stock
+
+with `sel.zmv` the standard Start-mashing boot half, `1150 Start`, `1158 -`.
 
 ### ...and the level 29 route, which is not a route-following problem (2026-08-03)
 

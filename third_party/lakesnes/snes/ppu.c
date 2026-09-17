@@ -73,6 +73,7 @@ static void ppu_evaluateSprites(Ppu* ppu, int line);
 static uint16_t ppu_getVramRemap(Ppu* ppu);
 static bool ppu_wideMapX(const Ppu* ppu, int layer, int* x);
 static bool ppu_windowTest(const Ppu* ppu, int x, int left, int right);
+static int ppu_spriteX(const Ppu* ppu, uint8_t index);
 
 Ppu* ppu_init(Snes* snes) {
   Ppu* ppu = malloc(sizeof(Ppu));
@@ -93,6 +94,9 @@ Ppu* ppu_init(Snes* snes) {
   }
   ppu->wideClampLo = -PPU_EXTRA_MAX;
   ppu->wideClampHi = 255 + PPU_EXTRA_MAX;
+  memset(ppu->lineHScroll, 0, sizeof(ppu->lineHScroll));
+  memset(ppu->lineVScroll, 0, sizeof(ppu->lineVScroll));
+  ppu->midFrameWrite = false;
   return ppu;
 }
 
@@ -338,6 +342,7 @@ void ppu_handleFrameStart(Ppu* ppu) {
   ppu->rangeOver = false;
   ppu->timeOver = false;
   ppu->evenFrame = !ppu->evenFrame;
+  ppu->midFrameWrite = false;
   // Once a frame, and only when there are margins to fill: which of the
   // backgrounds have nothing at the console's edges, and so nothing to say
   // beyond them. Done here because the answer has to hold for the whole frame
@@ -378,6 +383,14 @@ void ppu_handleFrameStart(Ppu* ppu) {
 
 void ppu_runLine(Ppu* ppu, int line) {
   // called for lines 1-224/239
+  // Where the backgrounds are scrolled to as this line is drawn -- the value
+  // in force now, whether it was set in vblank or a moment ago by HDMA.
+  if(line >= 0 && line < PPU_LINES) {
+    for(int i = 0; i < 4; i++) {
+      ppu->lineHScroll[i][line] = ppu->bgLayer[i].hScroll;
+      ppu->lineVScroll[i][line] = ppu->bgLayer[i].vScroll;
+    }
+  }
   // evaluate sprites
   memset(ppu->objPixelBuffer, 0, (size_t)ppu_gameWidth(ppu));
   if(!ppu->forcedBlank) ppu_evaluateSprites(ppu, line - 1);
@@ -393,6 +406,67 @@ void ppu_runLine(Ppu* ppu, int line) {
 
 void ppu_setPixelOutputFormat(Ppu* ppu, int pixelOutputFormat) {
   ppu->pixelOutputFormat = pixelOutputFormat;
+}
+
+void ppu_renderFrame(Ppu* ppu, const uint16_t (*hScroll)[PPU_LINES],
+                     const uint16_t (*vScroll)[PPU_LINES]) {
+  // The same lines the machine drew, in the same order, into the same rows:
+  // `ppu_handlePixel` picks the half of the buffer from `evenFrame`, which
+  // has not changed since the frame started, and `ppu_putPixels` reads the
+  // same half back. Sprites are evaluated against the OAM as it stands, so a
+  // caller that has moved them sees them moved.
+  const int last = ppu->frameOverscan ? 239 : 224;
+  for(int line = 1; line <= last; line++) {
+    for(int i = 0; i < 4; i++) {
+      if(hScroll) ppu->bgLayer[i].hScroll = hScroll[i][line];
+      if(vScroll) ppu->bgLayer[i].vScroll = vScroll[i][line];
+    }
+    ppu_runLine(ppu, line);
+  }
+}
+
+bool ppu_frameStatic(const Ppu* ppu) {
+  return !ppu->midFrameWrite && ppu->mode != 7;
+}
+
+int ppu_layerPixel(Ppu* ppu, int layer, int x, int line, bool sub, int* priority) {
+  int layerX = x;
+  if(!ppu_wideMapX(ppu, layer, &layerX)) return 0;
+  const bool windowed = sub ? ppu->layer[layer].subScreenWindowed
+                            : ppu->layer[layer].mainScreenWindowed;
+  if(windowed && ppu_getWindowState(ppu, layer, layerX)) return 0;
+  const int last = ppu->frameOverscan ? 239 : 224;
+  const int l = line < 1 ? 1 : line > last ? last : line;
+  const int lx = layerX + ppu->lineHScroll[layer][l];
+  const int ly = line + ppu->lineVScroll[layer][l];
+  int pixel = ppu_getPixelForBgLayer(ppu, lx & 0x3ff, ly & 0x3ff, layer, false);
+  *priority = 0;
+  if(pixel == 0) {
+    pixel = ppu_getPixelForBgLayer(ppu, lx & 0x3ff, ly & 0x3ff, layer, true);
+    *priority = 1;
+  }
+  return pixel;
+}
+
+bool ppu_mathAllowedAt(Ppu* ppu, int x) {
+  const bool cw = ppu_getWindowState(ppu, 5, x);
+  return !(ppu->preventMathMode == 3 || (ppu->preventMathMode == 2 && cw) ||
+           (ppu->preventMathMode == 1 && !cw));
+}
+
+bool ppu_clippedAt(Ppu* ppu, int x) {
+  const bool cw = ppu_getWindowState(ppu, 5, x);
+  return ppu->clipMode == 3 || (ppu->clipMode == 2 && cw) ||
+         (ppu->clipMode == 1 && !cw);
+}
+
+int ppu_spriteSize(const Ppu* ppu, int slot) {
+  const int index = slot * 2;
+  return spriteSizes[ppu->objSize][(ppu->highOam[index >> 3] >> ((index & 7) + 1)) & 1];
+}
+
+int ppu_spriteXOf(const Ppu* ppu, int slot) {
+  return ppu_spriteX(ppu, (uint8_t)(slot * 2));
 }
 
 static void ppu_handlePixel(Ppu* ppu, int x, int y) {
@@ -1066,6 +1140,11 @@ uint8_t ppu_read(Ppu* ppu, uint8_t adr) {
 }
 
 void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
+  // A write while a line is being drawn -- the same test `snes_runCycle`
+  // uses to decide whether a line is -- to anything but a scroll register
+  // ($210D-$2114, which are recorded per line). See `midFrameWrite`.
+  if(!ppu->snes->inVblank && ppu->snes->vPos > 0 && (adr < 0x0d || adr > 0x14))
+    ppu->midFrameWrite = true;
   switch(adr) {
     case 0x00: {
       // TODO: oam address reset when written on first line of vblank, (and when forced blank is disabled?)

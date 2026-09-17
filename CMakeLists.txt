@@ -71,6 +71,28 @@ if(MSVC)
   target_compile_definitions(zamn_test_scale PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# `src/smooth.h` is the arithmetic of showing a picture between two of the
+# game's frames — where a sprite or a scroll is part of the way from one tick to
+# the next, and when it is not the same thing at all — and `pace_lock_k` is how
+# many such pictures a display has room for. Neither needs SDL, a PPU or a ROM.
+add_executable(zamn_test_smooth tools/test_smooth.c)
+target_include_directories(zamn_test_smooth PRIVATE src)
+if(MSVC)
+  target_compile_definitions(zamn_test_smooth PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+# `src/layers.h` takes a frame apart into planes and sprites so that the
+# frontend can draw the pictures between two ticks a fraction of a pixel apart.
+# Its claim -- the list drawn unmoved is the frame the PPU drew -- can only be
+# checked against frames, so this one runs a movie: hand it the cartridge and
+# a movie and it reports, frame by frame, identical or not and why not.
+add_executable(zamn_test_layers tools/test_layers.c)
+target_link_libraries(zamn_test_layers PRIVATE zamn_cosim_lib)
+target_include_directories(zamn_test_layers PRIVATE src third_party/stb)
+if(MSVC)
+  target_compile_definitions(zamn_test_layers PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # `src/twinstick.h` is the other half of the controller work and is a ROM patch,
 # so it is checked the way a ROM patch has to be: exact bytes, against a
 # synthetic cartridge built to the header's own description. No SDL and no ROM —
@@ -200,6 +222,10 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
   # zamn_cosim_lib pulls in snescore, zamn_port and zamn_analysis transitively:
   # the core to run on, the port to substitute, and the movie reader for `-m`.
   target_link_libraries(zamn PRIVATE zamn_cosim_lib SDL2::SDL2 SDL2::SDL2main)
+  if(WIN32)
+    # The desktop compositor's frame statistics, for the cadence report.
+    target_link_libraries(zamn PRIVATE dwmapi)
+  endif()
   target_include_directories(zamn PRIVATE third_party/lakesnes/snes third_party/stb)
   if(MSVC)
     target_compile_definitions(zamn PRIVATE _CRT_SECURE_NO_WARNINGS)

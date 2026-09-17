@@ -88,7 +88,7 @@ build\zamn.exe "Zombies Ate My Neighbors.sfc"
 ```
 Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=Select · Esc=Quit
 · **F1 = toggle native substitution** · **F2 = cycle scaling**
-· **F3 = toggle aspect** · **F4 = cycle widescreen**
+· **F3 = toggle aspect** · **F4 = cycle widescreen** · **F5 = toggle smoothing**
 · **F11 / Alt+Enter = fullscreen**
 
 **Game controllers** work too, and are the way to actually play it: any pad SDL
@@ -1058,6 +1058,150 @@ build\zamn_headless.exe "Zombies Ate My Neighbors.sfc" shot.png 7600 ^
     -m movies\level25-boss.zmv --watch 083C,3900,7580,1
 ```
 
+### Smoothing, and `--no-smooth`
+
+The game moves at 60.0988 ticks a second and nothing in it can move faster: a
+thread sleeps for a whole number of ticks, a walker covers a pixel a tick and
+takes a second step on the ticks a mask picks out, the camera drifts a pixel a
+tick after the players. A 240 Hz display shows each of those pictures four
+times, and the three repeats between one tick and the next are refreshes the
+console never had anything to put on. **Smoothing puts something on them**: the
+pictures in between show every background and every sprite part of the way
+back toward where it was a tick ago. At 240 Hz that is four distinct pictures
+per game frame; at 120 Hz two. On by default wherever the display is a whole
+multiple of the console's rate, F5 toggles it, `--no-smooth` starts without it,
+and on a 60 Hz or a 144 Hz panel it is off because there is nothing for it to
+fill.
+
+**The game is not touched.** It runs at exactly its own rate, tick for tick, on
+the same inputs; `zamn_cosim`, `zamn_headless` and the whole movie corpus never
+see any of this, and neither does the ROM. What changes is only what is put on
+the refreshes between two of its frames.
+
+**The picture is taken apart and put back a fraction of a pixel over.** The
+first version of this moved the PPU's own sprites and scroll registers and had
+the PPU draw the frame again, and it looked worse than no smoothing at all, for
+two reasons that are worth recording. The PPU draws in whole pixels, so a thing
+that moves a pixel a tick -- the camera on most levels, a walking player, the
+film strips on the character select -- cannot be shown anywhere between one
+pixel and the next: at 240 Hz it stepped once and stood still for three
+refreshes, exactly as it did at 60. And things moving at different speeds
+rounded to different phases: a two-pixel move stepped at the first and third
+picture of a tick and a one-pixel move at the second, so a player walking
+across a scrolling floor was drawn moving *against* the floor and then with it,
+four times a tick. That was the jitter. (A redraw also cost the PPU three
+milliseconds, three times a tick, which at a four-millisecond refresh was the
+whole budget.)
+
+So `src/layers.h` asks the PPU what the frame is made of instead -- one plane
+of pixels per background and priority, the backdrop, every sprite as its own
+little bitmap -- once per tick, on the emulation thread, and hands the frontend
+a *draw list*: this plane here, that sprite there, this one added on top.
+`src/present_layers.h` draws the list with the GPU onto a target several times
+the console's size -- four times at 240 Hz on a 4K panel, six at 1080p in 4:3
+-- so a quarter of a game pixel is a whole pixel of the target, and the eye
+sees a sprite move by a quarter of a pixel. Building a list costs microseconds.
+
+**What moves is what the game moved.** A background moves by the change in its
+scroll since the last tick. A sprite moves by the change in its *actor's*
+position: the port's sprite pass leaves beside the OAM buffer which display
+record each entry came from and where that record was drawn
+(`sprite_oam_owners`), so every piece of a zombie moves with the zombie and two
+zombies standing close do not trade pieces -- which the old matching-by-looks
+did on 2% of sprite-ticks, measured, and which is a shimmer. The record says
+*which* actor; where a piece is eased *from* is where the nearest piece of
+that actor actually was, not the actor's origin moved back, because an
+animation frame puts its pieces at their own offsets and a walker whose frame
+just changed has pieces a pixel from where the last frame's were. Eased from
+the origin alone, every walker jumped a pixel at every frame of its walk
+cycle -- found by tracing one zombie's piece through twenty pictures: 151,
+154, 157, 160, then 166 -- and that was the jitter the first play-test still
+saw. Under `--stock` the pass runs in the ROM and sprites are matched by
+looks as before. Two details took a play-test in widescreen to find. The
+pass's table describes the OAM buffer the game has just built, and the picture
+on screen was drawn from the one before it, so the table is held a tick before
+it is believed. And a widened picture has sprites of the frontend's own in its
+margins -- the pieces the pass drops outside the console's 256, the items and
+neighbours with no actor behind them -- which have no record and are paired
+with the nearest recordless sprite of the same looks; and at the ends of a
+map its margins trade width, which moves the picture's origin under everything
+and has to be counted in every delta. A move
+further than a tick could carry a thing is a cut and is not eased, so a spawn
+does not slide across the screen to where it was put. Which tiles, which
+palette, which animation frame, what the text says: those are the newer frame's.
+
+**What is checked.** `zamn_test_layers` runs a movie and, on every frame, draws
+the list in software, unmoved and at the console's own size, and compares it
+with the frame the PPU drew:
+
+```
+build\zamn_test_layers.exe "Zombies Ate My Neighbors.sfc" movies\level1.zmv 1 3000
+  as a draw list:  2451 identical to the PPU, 112 within one of it, 0 differing
+  not a draw list: 437 frames
+    forced blank                             393
+    sub screen in a fade                     44
+```
+
+"Within one" is the character select and the level card behind it, where the
+console adds the sub screen to the wallpaper in five bits per channel and the
+GPU adds it in eight: a difference of one, everywhere the film strips are.
+Every movie in the corpus comes out with zero frames differing. "Not a draw
+list" is a frame the list has no op for -- forced blank, a fade while the sub
+screen is being added, anything written mid-frame (the map screen's HDMA), mode
+7 -- and such a frame is shown as the PPU drew it, as many times as there are
+refreshes, with easing resuming on the next. `--dump-pictures prefix,frame`
+writes the four pictures of one tick as the renderer drew them and as
+`layers_render` draws them, which is how the GPU path was found to be
+pixel-identical to the software one on both Direct3D 9 and 11 -- and how a
+draw list that named the wrong mask was found.
+
+**The menus move too.** The character select scrolls its film strips a pixel a
+tick on one background and adds them, translucent, onto the wallpaper on
+another; the list eases both, and the strips now advance a quarter of a pixel
+per refresh at 240 Hz where before they stepped once per tick. The title
+logo's sweep is a raster effect -- a scroll rewritten every line -- and is
+drawn as the console drew it, unmoved.
+
+**What it costs.** Taking a tick apart is about 1.3 ms, on the emulation
+thread, which has a whole period to spare; drawing a picture is a few dozen
+renderer calls. The machine still runs one tick ahead on its own thread, so
+the latency is as it was: input read at the start of one period is fully on
+screen at the end of the next, roughly a frame more than the plain loop. The
+audio holds one more frame in its queue while smoothing is on, as before.
+
+Measured, `--frames 1500 --paced` on `level1.zmv` at 240 Hz, windowed
+(`--fullscreen` after `--frames` measures the screen as played; a fullscreen
+run at 3840x2160 came out at 99.1% within a millisecond):
+
+```
+1500 frames in 25.3 s (59.4 fps).
+  shown as 5997 pictures (4.00 per frame, 237.3 per second).
+  394 ticks were shown as the PPU drew them, 1106 as layers; taking a tick apart took 1.24 ms (max 4.51).
+  arrival  mean   4.21   min   2.07  p50   4.25  p90   4.75  p99   5.25  max 215.28 ms
+  waiting  mean   1.25   min   0.00  p50   0.25  p90   4.25  p99   4.25  max   4.55 ms
+  within 1 ms of the period: 98.7%   (100% is a perfectly even cadence)
+```
+
+The loop now idles between pictures (`waiting`), where the redraw used to fill
+the period to the brim. The one 215 ms arrival is the level load, a single tick
+of 226 ms on the emulation thread; the plain loop has the same stall on the
+same frame, at 500 ms, so it is the game's and not the smoothing's.
+
+Two more things were found by measuring on the screen rather than in a
+window. The frontend was not DPI-aware, so on a 3840x2160 panel at 125%
+scaling it rendered at 3072x1728 and Windows stretched that up; it now asks
+for per-monitor DPI awareness and renders at the panel's size. And fullscreen
+on Windows 10 and later is flipped straight to the panel rather than
+composited, which the compositor line in the report says by staying silent.
+
+Two things the list does not reproduce, on purpose. The console drops sprites
+past 32 on a line and 34 tile slivers, and the list draws them all -- the same
+choice widescreen already made, and no frame in the corpus trips it. And where
+a sprite of one priority sits behind (in OAM order) a sprite of another, the
+console hides it by OAM order alone; the list takes those pixels out of the
+hinder sprite at the tick's own positions, so between ticks the hole can sit a
+fraction of a pixel off. On the tick itself it is exact.
+
 ## Analyse
 ```
 build\zamn_trace.exe  "Zombies Ate My Neighbors.sfc" -o analysis -f 2400 -m movies\level1.zmv
@@ -1155,6 +1299,13 @@ src/twinstick.h       Twin-stick shooting: what the right stick becomes — an a
 src/pace.h            Frame cadence: measuring how evenly frames arrive, and
                               the deadline clock and audio rate control that
                               make them arrive evenly. No SDL either
+src/layers.h          The frame taken apart -- planes, backdrop, sprites -- and
+                              the draw list that puts it back a fraction of a
+                              pixel from where the game left it. No SDL; draws
+                              its own list in software for the test
+src/present_layers.h  ...and the renderer that draws that list
+src/smooth.h          What is left of the first smoothing: the ring arithmetic
+                              and matching sprites by looks, for `--stock`
 src/analysis/         Phase 1: 65816 table, CDL format, input movies (shared)
 src/trace.c           Phase 1: instruction-level tracer -> CDL, memory map, call graph
 src/disasm.c          Phase 1: CDL-driven annotated disassembler
@@ -1204,6 +1355,10 @@ tools/test_pad.c      Sweeps the circle a tenth of a degree at a time, and drive
                               the device layer through a virtual controller — the
                               only way to check a quit chord or a pad unplugged
                               mid-press
+tools/test_layers.c   Runs a movie and asks, on every frame, whether the draw
+                              list drawn unmoved is the frame the PPU drew, and
+                              if not why -- so the fallback rate is a number.
+                              Needs the ROM and a movie
 tools/test_twinstick.c Nine stick positions becoming nine direction codes, and
                               the ROM patch as exact bytes against a synthetic
                               cartridge — including that every refusal writes

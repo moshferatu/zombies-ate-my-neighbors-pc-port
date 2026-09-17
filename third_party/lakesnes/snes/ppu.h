@@ -31,6 +31,10 @@ typedef struct Ppu Ppu;
 // pixel, and at zero margins the first 2048 of them are the row this core
 // always had.
 #define PPU_ROW_BYTES (PPU_MAX_WIDTH * 8)
+// Rows a frame can have, including the overscan ones. `ppu_runLine` is called
+// for lines 1..224 or 1..239, so a per-line table is indexed straight by line
+// and row 0 goes unused.
+#define PPU_LINES 240
 
 // How many times a background's horizontal scroll has to change within one
 // frame before the layer is read as a raster effect rather than as a scroll.
@@ -249,6 +253,27 @@ struct Ppu {
   // whatever the tilemap ring was last used for
   int wideClampLo;
   int wideClampHi;
+  // --- Drawing a frame again -------------------------------------------
+  //
+  // Where each background was scrolled to as each line of the frame was drawn.
+  // A game that scrolls sets a layer's scroll once, in vblank, and every line
+  // reads the same value; one drawing a raster effect -- the title logo's
+  // sweep -- rewrites it before every line, and the picture is a function of
+  // all 224 values rather than of the last one. Recording them as they are
+  // used is what lets `ppu_renderFrame` redraw either kind of frame, and lets a
+  // frontend move either kind a fraction of a tick: see `src/smooth.h`.
+  uint16_t lineHScroll[4][PPU_LINES];
+  uint16_t lineVScroll[4][PPU_LINES];
+  // ...and whether anything *other* than a scroll register was written while
+  // the picture was being drawn. Scroll is recorded line by line, so a scroll
+  // rewritten mid-frame -- by HDMA or by a CPU loop -- is a raster effect like
+  // any other; brightness, colour math, a window edge, VRAM or OAM written
+  // mid-frame are not recorded, and a frame that had them cannot be drawn
+  // again from its end state. Two things in this game do it: the HDMA on the
+  // map screen and a vblank so full that the NMI is still uploading, behind
+  // forced blank, when the first lines are due -- which the console shows as
+  // a black band at the top of the picture. Cleared at the top of each frame.
+  bool midFrameWrite;
 };
 
 enum { ppu_pixelOutputFormatXBGR = 0, ppu_pixelOutputFormatBGRX = 1 };
@@ -261,6 +286,39 @@ bool ppu_checkOverscan(Ppu* ppu);
 void ppu_handleVblank(Ppu* ppu);
 void ppu_handleFrameStart(Ppu* ppu);
 void ppu_runLine(Ppu* ppu, int line);
+// Draw the whole picture again from the PPU's state as it stands now -- every
+// line `ppu_runLine` drew this frame, into the same half of the pixel buffer,
+// so `ppu_putPixels` afterwards hands out the redrawn picture. `hScroll` and
+// `vScroll`, if given, are per-layer, per-line scroll tables in the shape of
+// `lineHScroll`, applied before each line is drawn; NULL keeps the registers
+// as they are. Only faithful for a frame `ppu_frameStatic` says it can be.
+void ppu_renderFrame(Ppu* ppu, const uint16_t (*hScroll)[PPU_LINES],
+                     const uint16_t (*vScroll)[PPU_LINES]);
+// Was the frame just drawn a function of the state the PPU is in at the end
+// of it, plus the per-line scroll record? False if something the record does
+// not cover was written while the picture was being drawn, or in mode 7,
+// whose scroll lives in the matrix registers and is not recorded.
+bool ppu_frameStatic(const Ppu* ppu);
+// --- Taking the picture apart ------------------------------------------
+//
+// What `src/layers.h` needs to draw the frame as separate layers: one
+// background's pixel at a column of the picture on a given line, as the PPU
+// would have read it -- through the widescreen mapping, the layer's window and
+// the scroll in force on that line -- with which of the two priorities the
+// tile carries; whether colour maths is allowed at a column; and a sprite's
+// size and nine-bit x. Nothing here draws.
+//
+// `line` may lie outside 1..224: a margin above or below the picture is read
+// with the scroll of the nearest drawn line, which is what a layer eased a
+// few pixels past its edge needs. Returns the CGRAM index, 0 for transparent.
+int ppu_layerPixel(Ppu* ppu, int layer, int x, int line, bool sub, int* priority);
+// Colour maths, as gated by the colour window and the prevent mode, at column
+// `x` of the picture. Whether a *layer* has maths on is `mathEnabled[]`.
+bool ppu_mathAllowedAt(Ppu* ppu, int x);
+// The colour window's clip-to-black, likewise.
+bool ppu_clippedAt(Ppu* ppu, int x);
+int ppu_spriteSize(const Ppu* ppu, int slot);
+int ppu_spriteXOf(const Ppu* ppu, int slot);
 uint8_t ppu_read(Ppu* ppu, uint8_t adr);
 void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val);
 void ppu_putPixels(Ppu* ppu, uint8_t* pixels);

@@ -500,9 +500,18 @@ static int draw_args(const Wram* w, uint16_t rec, DrawArgs* d,
   return 2;
 }
 
+SpriteOamOwners sprite_oam_owners;
+
 bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp,
                               SpriteBuildWork* work) {
   memset(work, 0, sizeof *work);
+  // Built here and published at the end, only if the pass completes -- see
+  // the note on `SpriteOamOwners`.
+  SpriteOamOwners owners;
+  for (int i = 0; i < SPRITE_OAM_SPRITES; i++) {
+    owners.rec[i] = -1;
+    owners.ox[i] = owners.oy[i] = 0;
+  }
   actor_depth_sort_counted(w, &work->sort);
   actor_cull_counted(w, &work->cull);
   oam_buffer_clear(w);
@@ -571,8 +580,15 @@ bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp,
 
             SpriteEmitTrace t;
             SpriteEmitWork ew;
+            const int first_slot = oam.index / 4;
             sprite_emit_counted(&oam, &meta, d.flip, d.ox, d.oy, d.attr_or,
                                 d.attr_and, frame_tile, &tiles, &t, &ew);
+            for (int s = first_slot; s < oam.index / 4 && s < SPRITE_OAM_SPRITES;
+                 s++) {
+              owners.rec[s] = (int16_t)rec;
+              owners.ox[s] = d.ox;
+              owners.oy[s] = d.oy;
+            }
             for (int i = 0; i < EMIT_BLOCK_COUNT; i++)
               work->emit[d.flip & 7][i] += ew.blocks[i];
             wram_w16(w, W_SPRITE_PIECES_LEFT, (uint16_t)(meta.count - t.walked));
@@ -631,6 +647,8 @@ bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp,
   uint16_t phase = wram_r16(w, (uint32_t)((dp + SPRITE_PASS_PHASE_DP) & 0xffff));
   wram_w16(w, W_SPRITE_PASS_PHASE,
            (uint16_t)(rom_word(rom, SPRITE_PASS_PHASE_TABLE + (phase & 3)) & 0xff));
+  owners.serial = sprite_oam_owners.serial + 1;
+  sprite_oam_owners = owners;
   return true;
 }
 

@@ -45,7 +45,8 @@
 // Usage: zamn [rom.sfc] [--stock] [-r routine]... [-m movie.zmv]
 //             [--frames N] [--shot out.png] [--no-audio] [--no-pads]
 //             [--windowed] [--scale N] [--filter sharp|integer|linear]
-//             [--level N] [--no-twin-stick]
+//             [--level N] [--no-twin-stick] [--no-smooth]
+//             [--dump-pictures prefix,frame]
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -62,9 +63,13 @@
 // For `player_set_aim` alone: `$80:D1FF` is substituted, so twin-stick aiming
 // has to reach the port as well as the cartridge. See `src/twinstick.h`.
 #include "port/player.h"
+#include "layers.h"
 #include "pace.h"
 #include "pad.h"
+#include "port/oam.h"
 #include "present.h"
+#include "present_layers.h"
+#include "smooth.h"
 #include "twinstick.h"
 #include "widescreen.h"
 
@@ -73,7 +78,39 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <dwmapi.h>
 #endif
+
+// What the desktop compositor says it put on the screen: how many of the
+// frames handed to it were displayed, dropped, or missed their refresh. The
+// frontend can time its own presents to the microsecond and still not know
+// whether the picture reached the panel on the refresh it was meant for; this
+// is the one report from the other side of that gap, and it is desktop-wide
+// rather than per window, so it is read as a difference over the run with
+// nothing else animating.
+typedef struct {
+  bool ok;
+  unsigned long long frames, displayed, dropped, missed, refreshes;
+} DwmStats;
+
+static DwmStats dwm_stats(void) {
+  DwmStats st;
+  memset(&st, 0, sizeof st);
+#ifdef _WIN32
+  DWM_TIMING_INFO ti;
+  memset(&ti, 0, sizeof ti);
+  ti.cbSize = sizeof ti;
+  if (DwmGetCompositionTimingInfo(NULL, &ti) == S_OK) {
+    st.ok = true;
+    st.frames = ti.cFrame;
+    st.displayed = ti.cFramesDisplayed;
+    st.dropped = ti.cFramesDropped;
+    st.missed = ti.cFramesMissed;
+    st.refreshes = ti.cRefreshesDisplayed;
+  }
+#endif
+  return st;
+}
 
 // The buffer the core hands over is 512 wide unless the picture has been
 // widened, in which case it is 2 output pixels per game column and everything
@@ -171,14 +208,34 @@ static bool write_png(Snes* snes, const char* path) {
   return ok;
 }
 
-// This frame, from the core to the screen. The scaling lives in `src/scale.h`
+// This frame, from a PPU to the screen. The scaling lives in `src/scale.h`
 // (where it goes and how) and `src/present.h` (the SDL that does it), both so
 // that `zamn_test_scale` and `zamn_test_present` can check them without a
 // window between them.
+// `ppu` is the machine's own; `ppu_putPixels` is what `snes_setPixels` is.
 // `dim` is 0..255 of black laid over the finished picture, which is how the quit
 // chord shows itself — see `pad_quit` for the gesture and `present_dim` for what
 // draws it.
-static void present_frame(Present* p, Snes* snes, int dim) {
+static void present_finish(Present* p, int dim) {
+  present_dim(p, dim);
+  SDL_RenderPresent(p->ren);
+}
+
+// The same, from a picture already taken out of a PPU (`LayersFrame.fb`):
+// what the smoothing shows on a frame it cannot draw as layers, where the
+// machine itself is busy with the next tick. Does not present.
+static void present_pixels(Present* p, const uint8_t* fb, int width) {
+  void* pixels; int pitch;
+  if (SDL_LockTexture(p->frame, NULL, &pixels, &pitch) == 0) {
+    for (int y = 0; y < FB_H; y++)
+      memcpy((uint8_t*)pixels + (size_t)y * pitch, fb + (size_t)y * width * 4,
+             (size_t)width * 4);
+    SDL_UnlockTexture(p->frame);
+  }
+  present_draw(p);
+}
+
+static void present_frame(Present* p, Ppu* ppu, int dim) {
   void* pixels; int pitch;
   if (SDL_LockTexture(p->frame, NULL, &pixels, &pitch) == 0) {
     // The core packs its rows tightly at the live width, so it can only write
@@ -187,12 +244,12 @@ static void present_frame(Present* p, Snes* snes, int dim) {
     // guarantee SDL makes, and the failure would be a sheared picture rather
     // than anything that says what went wrong.
     if (pitch == fb_w * 4) {
-      snes_setPixels(snes, (uint8_t*)pixels);
+      ppu_putPixels(ppu, (uint8_t*)pixels);
     } else {
       static uint8_t* scratch = NULL;
       if (!scratch) scratch = (uint8_t*)malloc((size_t)FB_W_MAX * FB_H * 4);
       if (scratch) {
-        snes_setPixels(snes, scratch);
+        ppu_putPixels(ppu, scratch);
         for (int y = 0; y < FB_H; y++)
           memcpy((uint8_t*)pixels + (size_t)y * pitch,
                  scratch + (size_t)y * fb_w * 4, (size_t)fb_w * 4);
@@ -201,8 +258,109 @@ static void present_frame(Present* p, Snes* snes, int dim) {
     SDL_UnlockTexture(p->frame);
   }
   present_draw(p);
-  present_dim(p, dim);
-  SDL_RenderPresent(p->ren);
+  present_finish(p, dim);
+}
+
+// --- Pictures between ticks: the frontend's half of `src/layers.h` ----------
+//
+// The arithmetic is in the header. This holds two of its frames, alternating:
+// the tick just finished and the one before it. The emulation thread takes a
+// tick's picture apart the moment the tick is done, while the machine is
+// stopped and before it is told to go again -- so the planes are read from
+// the PPU by the thread that owns it, and the main thread never touches the
+// machine. The main thread then links the new frame to the old one, uploads
+// its planes once, and draws the list once per refresh.
+//
+// Two frames and not three, because a frame carries everything its pictures
+// need from the one before it (`layers_link`): once linked, the older frame
+// can be overwritten by the next tick while this one is being shown.
+typedef struct {
+  LayersFrame* frame[2];
+  int cur;          // which of the two holds the latest tick
+  LayersOp* ops;
+  // The port's owner table as it stood at the end of the *last* tick, and
+  // whether a pass had written it during that tick. Held for a tick because
+  // the table describes the OAM buffer the game has just built, and the
+  // picture being taken apart was drawn from the one before it -- see the
+  // note on `SpriteOamOwners`.
+  SpriteOamOwners held;
+  bool held_fresh;
+  uint32_t serial;  // the table's serial, as of the last capture
+} Layers;
+
+static bool layers_init(Layers* s) {
+  memset(s, 0, sizeof *s);
+  s->frame[0] = (LayersFrame*)calloc(1, sizeof(LayersFrame));
+  s->frame[1] = (LayersFrame*)calloc(1, sizeof(LayersFrame));
+  s->ops = (LayersOp*)malloc(sizeof(LayersOp) * LAYERS_MAX_OPS);
+  return s->frame[0] && s->frame[1] && s->ops;
+}
+
+static void layers_free(Layers* s) {
+  free(s->frame[0]);
+  free(s->frame[1]);
+  free(s->ops);
+  memset(s, 0, sizeof *s);
+}
+
+// The machine has just finished a tick: take its picture apart, into the
+// frame that is not the current one. Called with the emulation stopped. The
+// port's owner table is passed along only if its pass ran this tick, which
+// its serial says.
+static void layers_take(Layers* s, Ppu* ppu) {
+  layers_capture(s->frame[s->cur ^ 1], ppu, s->held_fresh ? s->held.rec : NULL,
+                 s->held_fresh ? s->held.ox : NULL,
+                 s->held_fresh ? s->held.oy : NULL);
+  s->held_fresh = sprite_oam_owners.serial != s->serial;
+  s->serial = sprite_oam_owners.serial;
+  s->held = sprite_oam_owners;
+}
+
+// ...and make that frame the current one, linked to the last. Main thread,
+// between ticks.
+static void layers_advance(Layers* s) {
+  s->cur ^= 1;
+  layers_link(s->frame[s->cur], s->frame[s->cur ^ 1]);
+}
+
+// The thread that runs the machine while the pictures are being shown.
+//
+// One tick takes about four milliseconds here and a 240 Hz refresh is four
+// and a sixth, so a loop that emulated and then drew four pictures would miss
+// the first refresh of every tick and show the cadence it was built to remove.
+// The machine runs one tick ahead instead: told to go as soon as the last tick
+// has been captured, and waited for when its pictures have all been shown.
+// Nothing else touches the machine while it runs — the input is written before
+// `go`, the audio is read after `done`, and the pictures come from the copy.
+typedef struct {
+  Cosim* cosim;
+  Snes* snes;
+  Layers* layers;
+  SDL_sem* go;
+  SDL_sem* done;
+  bool quit;
+  bool capture;    // take the tick's picture apart when it is done
+  double last_ms;  // how long the last tick took, for the report
+  double take_ms;  // ...and how long taking it apart took
+} EmuThread;
+
+static int emu_thread_main(void* arg) {
+  EmuThread* t = (EmuThread*)arg;
+  const double freq = (double)SDL_GetPerformanceFrequency();
+  for (;;) {
+    SDL_SemWait(t->go);
+    if (t->quit) return 0;
+    const Uint64 t0 = SDL_GetPerformanceCounter();
+    cosim_frame(t->cosim);
+    const Uint64 t1 = SDL_GetPerformanceCounter();
+    t->last_ms = (double)(t1 - t0) * 1000.0 / freq;
+    t->take_ms = 0.0;
+    if (t->capture) {
+      layers_take(t->layers, t->snes->ppu);
+      t->take_ms = (double)(SDL_GetPerformanceCounter() - t1) * 1000.0 / freq;
+    }
+    SDL_SemPost(t->done);
+  }
 }
 
 // A WIN32-subsystem binary has no console of its own, so `printf` goes nowhere
@@ -513,6 +671,69 @@ static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads) 
 // Push `bytes` of silence at the device. Used to establish the backlog at
 // startup and to refill it if it ever collapses — in both cases the alternative
 // is not "no silence", it is the device running dry and repeating or clicking.
+// Everything the game reads at the top of a tick, written into the machine:
+// the movie's frame, or the pads and the keyboard and the twin-stick aim.
+// Returns false when the pad quit chord has been held long enough.
+//
+// Movies are indexed by the loop's own frame counter, which is what
+// `zamn_headless` does — and headless is the tool the corpus was fitted
+// against, so matching it is what makes a movie land in the same place here.
+// (`cosim_lockstep` indexes by `snes->frames` instead, and has to: its two
+// cores keep separate clocks, and a substituted routine returns on a cycle
+// budget rather than by executing the ROM's instructions, so their PPU frame
+// counts drift apart. There is one core here, so there is nothing to drift
+// from and the simpler counter is also the more faithful one — keying off
+// `snes->frames` put this frontend one frame away from headless at 2400.)
+static bool tick_input(Snes* snes, Movie* movie, bool have_movie, long frame,
+                       PadSet* pads, uint16_t key_held, bool twin_stick,
+                       int* quit_chord) {
+  if (have_movie) {
+    movie_apply(movie, snes, (int)frame);
+    return true;
+  }
+  // Both controllers, from both kinds of input, written once. The keyboard
+  // is port 1 only; a pad takes the lowest free port, so one pad plays
+  // alone, two play together, and a pad plus the keyboard is a two-player
+  // game with one of each. Writing the whole 12-bit state every frame — the
+  // same thing `movie_apply` does — is what makes an unplugged pad release
+  // its buttons rather than leave them held.
+  uint16_t held[PAD_MAX];
+  pad_poll(pads, held);
+  // Start+Select on a pad is Esc, and `pad_quit` takes those two bits back
+  // out of `held` before the game can see them. Checked before the keyboard
+  // is folded in, so the chord is a pad gesture and Enter+RShift is not one.
+  *quit_chord = pad_quit(pads, held);
+  const bool keep_going = *quit_chord < PAD_QUIT_FRAMES;
+  held[0] |= key_held;
+  // The right stick, unless it was turned off: an aim direction into the
+  // cartridge for the stub at `$80:D250` to pick up, and `Y` — this game's
+  // fire button — pressed for as long as the stick is out. Written before
+  // the frame that reads it, like every other input here, and left at zero
+  // for a port with no pad, which hands `$26` straight back to the game.
+  //
+  // **Both places, because there are two of them.** `$80:D1FF` is a
+  // substituted routine, so the nine patched bytes at `$80:D250` are the
+  // path `--stock` and F1 take and `player_set_aim` is the path the default
+  // build takes. Arming one and not the other is a flag that works in one
+  // mode and silently does nothing in the other, which is worse than a flag
+  // that does not work at all.
+  if (twin_stick) {
+    uint16_t aim[PAD_MAX];
+    pad_aim(pads, aim);
+    for (int p = 0; p < MOVIE_PORTS; p++) {
+      held[p] |= twin_apply(snes->cart->rom, p, aim[p]);
+      // Read back rather than worked out again, so the two paths cannot
+      // disagree: the port is armed with the exact word the 65816 would
+      // have fetched. The player index is doubled, as the routine's own is.
+      player_set_aim((uint16_t)(p * 2), twin_aim_of(snes->cart->rom, p));
+    }
+  }
+  for (int p = 0; p < MOVIE_PORTS; p++)
+    for (int b = 0; b < 12; b++)
+      snes_setButtonState(snes, p + 1, b, (held[p] >> b) & 1);
+  return keep_going;
+}
+
 static void queue_silence(SDL_AudioDeviceID dev, long bytes) {
   int16_t zeros[512];
   memset(zeros, 0, sizeof zeros);
@@ -554,6 +775,22 @@ static void usage(void) {
     "                  is pushed while the left one goes on steering, so you can\n"
     "                  walk one way and shoot the other. A pad-only feature —\n"
     "                  the keyboard has one D-pad and is unaffected either way.\n"
+    "  --no-smooth     Show each of the game's frames as many times as the\n"
+    "                  display refreshes per frame, as the console did. On by\n"
+    "                  default on a display that is a whole multiple of 60 Hz,\n"
+    "                  the frames in between are drawn with the scrolling and\n"
+    "                  the sprites eased part of the way from the last frame to\n"
+    "                  this one — four distinct pictures per frame at 240 Hz —\n"
+    "                  at the cost of showing each frame up to three refreshes\n"
+    "                  late. The game itself runs at exactly its own speed\n"
+    "                  either way. F5 toggles. See src/layers.h.\n"
+    "  --dump-pictures <prefix,frame[,last]>\n"
+    "                  Write the pictures of a frame, or a range, as PNGs, twice: as the\n"
+    "                  renderer drew them, read back, and as src/layers.h\n"
+    "                  draws the same list in software. Smoothing must be on.\n"
+    "  --fullscreen    Fullscreen even for a --frames or --scale run, which\n"
+    "                  otherwise open a window: how to measure the screen as\n"
+    "                  it is played.\n"
     "  --windowed      Start in a window. The default is fullscreen; F11 or\n"
     "                  Alt+Enter moves between them at any time.\n"
     "  --scale <N>     Size the window at N times 512x480, and start in it.\n"
@@ -574,7 +811,7 @@ static void usage(void) {
     "Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
     "          F1 = toggle native substitution   F2 = cycle scaling\n"
     "          F3 = toggle aspect ratio          F4 = cycle widescreen\n"
-    "          F11/Alt+Enter = fullscreen\n"
+    "          F5 = toggle smoothing             F11/Alt+Enter = fullscreen\n"
     "          Esc = quit\n\n"
     "Controllers: any pad SDL recognises, hot-pluggable, first two take the two\n"
     "          SNES ports. Face buttons are positional — the bottom one is B,\n"
@@ -594,6 +831,12 @@ int main(int argc, char** argv) {
   const char* rom_path = NULL;
   const char* movie_path = NULL;
   const char* shot_path = NULL;
+  // `--dump-pictures prefix,frame`: the pictures of one tick, read back from
+  // the renderer after they were drawn, and the same list drawn in software
+  // at the same scale, as PNGs -- the check that the GPU draws the list the
+  // way `layers_render` does, which no headless test can make.
+  const char* dump_prefix = NULL;
+  long dump_first = -1, dump_last = -1;
   // Room for every routine in the registry and then some. It was 32, which
   // was more than the registry held when it was written and is not any more:
   // past the cap the `-r` was dropped and its argument fell through to the
@@ -620,6 +863,8 @@ int main(int argc, char** argv) {
   // test or a throughput measurement — which has no business seizing the display
   // of whoever started it.
   bool fullscreen = true;
+  bool fullscreen_asked = false;
+  bool frames_given = false;
   // `--frames N` means "run N and stop", and it turns pacing off because a
   // throughput measurement wants to finish rather than to be watched. Those are
   // two decisions in one flag, and measuring the *cadence* needs the first
@@ -644,6 +889,11 @@ int main(int argc, char** argv) {
   // for a warning, because a default has no business refusing to start a ROM it
   // was never told to change.
   bool twin_asked = false;
+  // On by default, like twin stick, and for the same reason: it changes what
+  // is shown and not what the game does, the machine runs at its own rate to
+  // the tick, and it costs nothing on a display that cannot use it. The flag
+  // is for the player who would rather see each frame the moment it exists.
+  bool smooth = true;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
@@ -652,10 +902,15 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--no-audio")) want_audio = false;
     else if (!strcmp(a, "--no-pads")) want_pads = false;
     else if (!strcmp(a, "--windowed")) fullscreen = false;
+    // ...and the way to measure a bounded run on the screen as it is played:
+    // `--frames` and `--scale` say windowed, and this, given after them, says
+    // fullscreen after all.
+    else if (!strcmp(a, "--fullscreen")) fullscreen_asked = true;
     else if (!strcmp(a, "--skip-intro")) skip_the_intro = true;
     else if (!strcmp(a, "--paced")) force_pacing = true;
     else if (!strcmp(a, "--no-twin-stick")) twin_stick = false;
     else if (!strcmp(a, "--twin-stick")) twin_stick = twin_asked = true;
+    else if (!strcmp(a, "--no-smooth")) smooth = false;
     else if (!strcmp(a, "-r") && i + 1 < argc) {
       if (only_count == (int)(sizeof only / sizeof *only)) {
         fprintf(stderr, "error: at most %d -r options\n\n",
@@ -717,16 +972,32 @@ int main(int argc, char** argv) {
     }
     else if (!strcmp(a, "-m") && i + 1 < argc) movie_path = argv[++i];
     else if (!strcmp(a, "--shot") && i + 1 < argc) shot_path = argv[++i];
+    else if (!strcmp(a, "--dump-pictures") && i + 1 < argc) {
+      static char dump_buf[512];
+      snprintf(dump_buf, sizeof dump_buf, "%s", argv[++i]);
+      // prefix,frame or prefix,first,last
+      char* comma = strchr(dump_buf, ',');
+      if (comma) {
+        *comma = 0;
+        dump_first = dump_last = atol(comma + 1);
+        char* comma2 = strchr(comma + 1, ',');
+        if (comma2) dump_last = atol(comma2 + 1);
+      }
+      dump_prefix = dump_buf;
+    }
     else if (!strcmp(a, "--frames") && i + 1 < argc) {
       frame_limit = atol(argv[++i]);
       fullscreen = false;
+      frames_given = true;
     }
     else if (a[0] == '-') {
       fprintf(stderr, "error: unknown option '%s'\n\n", a); usage(); return 2;
     }
     else if (!rom_path) rom_path = a;
     else { fprintf(stderr, "error: unexpected argument '%s'\n\n", a); usage(); return 2; }
-  }
+  }  if (fullscreen_asked) fullscreen = true;
+  (void)frames_given;
+
   if (!rom_path) rom_path = "Zombies Ate My Neighbors.sfc";
   // A movie is indexed from reset and carries its own boot half — the same
   // Start mashing `skip_intro` performs — so doing both would run the logos
@@ -825,6 +1096,13 @@ int main(int argc, char** argv) {
   snes_reset(snes, true);
 
   Uint32 init_flags = SDL_INIT_VIDEO | (want_audio ? SDL_INIT_AUDIO : 0);
+  // Per-monitor DPI awareness, so that on a scaled desktop the window and the
+  // backbuffer are the panel's own pixels. Without it a 3840x2160 panel at 125%
+  // gives a 3072x1728 backbuffer that Windows stretches back up, which blurs
+  // every picture and makes the sharp scaling's arithmetic about the wrong
+  // pixels. The window already asks for `SDL_WINDOW_ALLOW_HIGHDPI`; on Windows
+  // SDL needs this hint too before it will honour it.
+  SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
   if (SDL_Init(init_flags) != 0) {
     fprintf(stderr, "SDL_Init failed: %s\n", SDL_GetError());
     return 1;
@@ -898,6 +1176,12 @@ int main(int argc, char** argv) {
     fprintf(stderr, "error: cannot create the frame texture: %s\n", SDL_GetError());
     return 1;
   }
+  {
+    SDL_RendererInfo rinfo;
+    if (SDL_GetRendererInfo(ren, &rinfo) == 0)
+      printf("Renderer: %s%s\n", rinfo.name,
+             (rinfo.flags & SDL_RENDERER_PRESENTVSYNC) ? ", vsync" : "");
+  }
   if (scale_mode == SCALE_SHARP && !present.can_target)
     printf("note: this renderer cannot draw into a texture, so --filter sharp\n"
            "      falls back to nearest on a fractional window size.\n");
@@ -938,7 +1222,17 @@ int main(int argc, char** argv) {
   // Three frames of slack in front of the device. Enough that an ordinary
   // scheduling hiccup cannot empty it, small enough that the added latency is
   // under the frame period the game already costs.
-  const long audio_target = (long)bytes_per_frame * 3;
+  const long audio_target_base = (long)bytes_per_frame * 3;
+  // ...and one frame more while smoothing is on. Smoothing shows a tick about
+  // a frame later than the plain loop does — the tick is emulated a period
+  // ahead and its last picture lands three refreshes after its first — and
+  // the sound of it was going to be heard at the old time, a frame before the
+  // picture. Holding a frame more of it puts the two back together, and is a
+  // frame of slack against the dips that the plain loop used to get for free
+  // by queueing its audio four milliseconds after the deadline rather than on
+  // it. Measured: without this the backlog bottomed at 13 ms and refilled six
+  // times in fifteen seconds; the plain loop's floor was 18.
+  long audio_target = audio_target_base;
   // ...and a ceiling, for the case rate control cannot fix: a display whose
   // refresh has no relationship to the console's rate at all. Half a percent
   // per frame cannot absorb that, and unbounded growth would end as seconds of
@@ -977,7 +1271,8 @@ int main(int argc, char** argv) {
          "          held for a second quits.\n"
          "          F1=toggle native substitution  F2=cycle scaling\n"
          "          F3=toggle aspect ratio         F4=cycle widescreen\n"
-         "          F11 or Alt+Enter=fullscreen    Esc=Quit\n");
+         "          F5=toggle smoothing            F11 or Alt+Enter=fullscreen\n"
+         "          Esc=Quit\n");
   {
     // What the picture is actually being drawn into, which fullscreen makes a
     // question worth answering: the display's size, not the window size asked
@@ -1067,10 +1362,60 @@ int main(int argc, char** argv) {
 
   const Uint64 perf_freq = SDL_GetPerformanceFrequency();
   const bool paced = frame_limit == 0 || force_pacing;
+
+  // Pictures between ticks — see `src/smooth.h`, and `Smooth` above for the
+  // frontend's half. Possible only when the display is a whole multiple of the
+  // console's rate (`lock_k`), and only in a paced run: an uncapped one is a
+  // throughput measurement with no refresh to fill. `sub_count` is how many
+  // pictures each tick is shown as right now; F5 changes it, between ticks.
+  const int lock_k = pace_lock_k(refresh_hz, content_hz);
+  const bool smooth_possible = paced && lock_k > 1;
+  int sub_count = smooth_possible && smooth ? lock_k : 1;
+  if (sub_count > 1) audio_target = audio_target_base + (long)bytes_per_frame;
+  // Paced per picture rather than per tick — at 240 Hz that is one refresh —
+  // so that each picture lands on its own refresh instead of four being
+  // released together.
+  pacer_init(&pacer, target_frame_ms / sub_count);
+  pacer.slack = target_frame_ms;
+  Layers lay;
+  PresentLayers plyr;
+  memset(&lay, 0, sizeof lay);
+  memset(&plyr, 0, sizeof plyr);
+  EmuThread emu;
+  memset(&emu, 0, sizeof emu);
+  SDL_Thread* emu_thread = NULL;
+  if (smooth_possible) {
+    emu.cosim = &cosim;
+    emu.snes = snes;
+    emu.layers = &lay;
+    emu.go = SDL_CreateSemaphore(0);
+    emu.done = SDL_CreateSemaphore(0);
+    if (!layers_init(&lay) || !present_layers_init(&plyr, ren) || !emu.go || !emu.done ||
+        !(emu_thread = SDL_CreateThread(emu_thread_main, "emulate", &emu))) {
+      fprintf(stderr, "error: cannot set up smoothing: %s\n", SDL_GetError());
+      return 1;
+    }
+    if (!plyr.blends_ok)
+      printf("note: this renderer has no custom blend modes, so a frame that adds\n"
+             "      the sub screen (the character select) is shown as the PPU drew it.\n");
+  }
+  if (smooth_possible)
+    printf("Smoothing: %s (F5 toggles; %d pictures per frame at %d Hz when on)\n",
+           smooth ? "on" : "off", lock_k, refresh_hz);
+  else if (!paced)
+    printf("Smoothing: off (--frames runs uncapped)\n");
+  else if (lock_k == 1)
+    printf("Smoothing: off (a %d Hz display shows every frame once already)\n",
+           refresh_hz);
+  else
+    printf("Smoothing: off (%d Hz is not a whole multiple of the console's"
+           " %.4f)\n", refresh_hz, content_hz);
+  fflush(stdout);
   // Not const: `--skip-intro` runs a few seconds of emulation before the loop,
   // and folding that into the elapsed time would report the session at 44 fps
   // when every frame of it arrived on cadence. The clock starts when play does.
   Uint64 started = SDL_GetPerformanceCounter();
+  const DwmStats dwm0 = dwm_stats();
 
   // What the loop spends each frame on, and — the point of the exercise — how
   // evenly the frames come out the far end. See `src/pace.h` for why the mean
@@ -1089,10 +1434,14 @@ int main(int argc, char** argv) {
   }
   if (audio) queue_silence(audio, audio_target);
 
-  PaceHist h_interval, h_wait, h_emulate, h_draw, h_audio;
+  PaceHist h_interval, h_wait, h_emulate, h_draw, h_audio, h_take;
   pace_reset(&h_interval); pace_reset(&h_wait);
   pace_reset(&h_emulate);  pace_reset(&h_draw);
   pace_reset(&h_audio);
+  pace_reset(&h_take);
+  // Ticks the smoothing had to show as the PPU drew them, because the frame
+  // was not one a draw list can express — see `layers_unexpressible`.
+  long unlayered = 0;
   Uint64 last_arrival = 0;
   #define PACE_MS(a, b) ((double)((b) - (a)) * 1000.0 / (double)perf_freq)
 
@@ -1108,6 +1457,13 @@ int main(int argc, char** argv) {
   // has faded. Declared out here because the frame is drawn well below where the
   // input is read.
   int quit_chord = 0;
+  // Which picture of the current tick the next pass of the loop shows, 0 being
+  // the pass that takes a new tick; whether the emulation thread is working on
+  // one; and how many pictures have been shown, which is more than `frame`
+  // by exactly the smoothing.
+  int sub = 0;
+  bool in_flight = false;
+  long pictures = 0;
   while (running && (frame_limit == 0 || frame < frame_limit)) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
@@ -1177,6 +1533,21 @@ int main(int argc, char** argv) {
           }
           continue;
         }
+        if (e.key.keysym.sym == SDLK_F5) {
+          // Smoothing, on a key for the same reason the others are: the only
+          // way to judge it is to flip it on the same scene. Takes effect at
+          // the next tick, which is where the pacer is re-armed.
+          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+            smooth = !smooth;
+            if (smooth_possible)
+              printf("Smoothing: %s\n", smooth ? "on" : "off");
+            else
+              printf("Smoothing: %s, but not possible on this display\n",
+                     smooth ? "on" : "off");
+            fflush(stdout);
+          }
+          continue;
+        }
         if (e.key.keysym.sym == SDLK_F2) {
           // Cycling rather than a set of three keys, because the only way to
           // judge these is to watch one turn into the next on the same frame.
@@ -1241,98 +1612,153 @@ int main(int argc, char** argv) {
     const Uint64 t_wait1 = SDL_GetPerformanceCounter();
     pace_add(&h_wait, PACE_MS(t_wait0, t_wait1));
 
-    // Movies are indexed by this loop's own frame counter, which is what
-    // `zamn_headless` does — and headless is the tool the corpus was fitted
-    // against, so matching it is what makes a movie land in the same place here.
-    // (`cosim_lockstep` indexes by `snes->frames` instead, and has to: its two
-    // cores keep separate clocks, and a substituted routine returns on a cycle
-    // budget rather than by executing the ROM's instructions, so their PPU frame
-    // counts drift apart. There is one core here, so there is nothing to drift
-    // from and the simpler counter is also the more faithful one — keying off
-    // `snes->frames` put this frontend one frame away from headless at 2400.)
-    if (have_movie) {
-      movie_apply(&movie, snes, (int)frame);
-    } else {
-      // Both controllers, from both kinds of input, written once. The keyboard
-      // is port 1 only; a pad takes the lowest free port, so one pad plays
-      // alone, two play together, and a pad plus the keyboard is a two-player
-      // game with one of each. Writing the whole 12-bit state every frame — the
-      // same thing `movie_apply` does — is what makes an unplugged pad release
-      // its buttons rather than leave them held.
-      uint16_t held[PAD_MAX];
-      pad_poll(&pads, held);
-      // Start+Select on a pad is Esc, and `pad_quit` takes those two bits back
-      // out of `held` before the game can see them. Checked before the keyboard
-      // is folded in, so the chord is a pad gesture and Enter+RShift is not one.
-      quit_chord = pad_quit(&pads, held);
-      if (quit_chord >= PAD_QUIT_FRAMES) {
-        printf("Quit: Start+Select held on a controller.\n");
-        fflush(stdout);
-        running = false;
+    if (sub == 0) {
+      // A tick: collected from the emulation thread if it has one, run right
+      // here if not. Either way the machine is stopped from this point until
+      // it is told to go again, and everything that touches it — the audio it
+      // made, the copy of its picture, the input for its next tick — happens
+      // in between.
+      bool taken = false;  // has this tick's picture been taken apart already
+      if (in_flight) {
+        SDL_SemWait(emu.done);
+        in_flight = false;
+        pace_add(&h_emulate, emu.last_ms);
+        pace_add(&h_take, emu.take_ms);
+        taken = emu.capture;
+      } else {
+        if (!tick_input(snes, &movie, have_movie, frame, &pads, key_held,
+                        twin_stick, &quit_chord)) {
+          printf("Quit: Start+Select held on a controller.\n");
+          fflush(stdout);
+          running = false;
+        }
+        // The substitution seam. Identical to `snes_runFrame` when the mask
+        // is clear; when it is not, a registered routine's entry PC hands the
+        // call to the C port, which runs against the core's own WRAM and
+        // returns through the routine's own RTS/RTL.
+        const Uint64 t0 = SDL_GetPerformanceCounter();
+        cosim_frame(&cosim);
+        pace_add(&h_emulate, PACE_MS(t0, SDL_GetPerformanceCounter()));
       }
-      held[0] |= key_held;
-      // The right stick, unless it was turned off: an aim direction into the
-      // cartridge for the stub at `$80:D250` to pick up, and `Y` — this game's
-      // fire button — pressed for as long as the stick is out. Written before
-      // the frame that reads it, like every other input here, and left at zero
-      // for a port with no pad, which hands `$26` straight back to the game.
-      //
-      // **Both places, because there are two of them.** `$80:D1FF` is a
-      // substituted routine, so the nine patched bytes at `$80:D250` are the
-      // path `--stock` and F1 take and `player_set_aim` is the path the default
-      // build takes. Arming one and not the other is a flag that works in one
-      // mode and silently does nothing in the other, which is worse than a flag
-      // that does not work at all.
-      if (twin_stick) {
-        uint16_t aim[PAD_MAX];
-        pad_aim(&pads, aim);
-        for (int p = 0; p < MOVIE_PORTS; p++) {
-          held[p] |= twin_apply(snes->cart->rom, p, aim[p]);
-          // Read back rather than worked out again, so the two paths cannot
-          // disagree: the port is armed with the exact word the 65816 would
-          // have fetched. The player index is doubled, as the routine's own is.
-          player_set_aim((uint16_t)(p * 2), twin_aim_of(snes->cart->rom, p));
+      frame++;
+
+      // This frame's audio, resampled by however much it takes to hold the
+      // queue at `audio_target`. `dsp_getSamples` already resamples the DSP's
+      // native 534 samples per frame to whatever is asked for, so the count
+      // *is* the rate-control knob and asking for 802 instead of 800 costs
+      // nothing.
+      if (audio) {
+        long queued = (long)SDL_GetQueuedAudioSize(audio);
+        pace_add(&h_audio, (double)queued / audio_bytes_per_ms);
+        if (queued < audio_floor) {
+          queue_silence(audio, audio_target - queued);
+          queued = audio_target;
+          audio_refills++;
+        }
+        if (queued < audio_ceiling) {
+          const int want_samples = pace_audio_samples(
+              SAMPLES_PER_FRAME, queued, audio_target, 4, AUDIO_MAX_ADJUST);
+          snes_setSamples(snes, audio_buf, want_samples);
+          SDL_QueueAudio(audio, audio_buf,
+                         (Uint32)want_samples * 2 * sizeof(int16_t));
+        }
+        // Over the ceiling, this frame's sound is dropped rather than
+        // deepening a backlog that is already past what rate control can pull
+        // back. It is audible, and it is the lesser of the two.
+      }
+
+      // How many pictures this tick is shown as. Asked again every tick
+      // because F5 changes it, and acted on only here, between ticks, where
+      // the pacer can be re-armed at the new period with nothing in flight.
+      const int want = smooth_possible && smooth ? lock_k : 1;
+      if (want != sub_count) {
+        sub_count = want;
+        pacer_init(&pacer, target_frame_ms / sub_count);
+        pacer.slack = target_frame_ms;
+        if (smooth_possible) lay.frame[0]->valid = lay.frame[1]->valid = false;
+        // Rate control walks the queue to the new depth at four samples a
+        // frame, which is a few seconds and inaudible.
+        audio_target = audio_target_base +
+                       (sub_count > 1 ? (long)bytes_per_frame : 0);
+      }
+      if (sub_count > 1) {
+        // This tick's picture, taken apart -- by the thread as the tick
+        // ended, or here if the tick ran here -- becomes the current frame,
+        // and its planes go to the renderer once for all its pictures.
+        if (!taken) {
+          const Uint64 t0 = SDL_GetPerformanceCounter();
+          layers_take(&lay, snes->ppu);
+          pace_add(&h_take, PACE_MS(t0, SDL_GetPerformanceCounter()));
+        }
+        layers_advance(&lay);
+        if (lay.frame[lay.cur]->layered) present_layers_upload(&plyr, lay.frame[lay.cur]);
+        else unlayered++;
+        // ...and the next tick starts now, so that it is done by the time this
+        // one's pictures have all been shown. Not past the frame limit, so a
+        // bounded run's screenshot is of the frame it asked for.
+        if (running && (frame_limit == 0 || frame < frame_limit)) {
+          if (!tick_input(snes, &movie, have_movie, frame, &pads, key_held,
+                          twin_stick, &quit_chord)) {
+            printf("Quit: Start+Select held on a controller.\n");
+            fflush(stdout);
+            running = false;
+          } else {
+            emu.capture = true;
+            SDL_SemPost(emu.go);
+            in_flight = true;
+          }
         }
       }
-      for (int p = 0; p < MOVIE_PORTS; p++)
-        for (int b = 0; b < 12; b++)
-          snes_setButtonState(snes, p + 1, b, (held[p] >> b) & 1);
-    }
-
-    // The substitution seam. Identical to `snes_runFrame` when the mask is
-    // clear; when it is not, a registered routine's entry PC hands the call to
-    // the C port, which runs against the core's own WRAM and returns through the
-    // routine's own RTS/RTL.
-    cosim_frame(&cosim);
-    frame++;
-
-    // This frame's audio, resampled by however much it takes to hold the queue
-    // at `audio_target`. `dsp_getSamples` already resamples the DSP's native
-    // 534 samples per frame to whatever is asked for, so the count *is* the
-    // rate-control knob and asking for 802 instead of 800 costs nothing.
-    if (audio) {
-      long queued = (long)SDL_GetQueuedAudioSize(audio);
-      pace_add(&h_audio, (double)queued / audio_bytes_per_ms);
-      if (queued < audio_floor) {
-        queue_silence(audio, audio_target - queued);
-        queued = audio_target;
-        audio_refills++;
-      }
-      if (queued < audio_ceiling) {
-        const int want_samples = pace_audio_samples(
-            SAMPLES_PER_FRAME, queued, audio_target, 4, AUDIO_MAX_ADJUST);
-        snes_setSamples(snes, audio_buf, want_samples);
-        SDL_QueueAudio(audio, audio_buf,
-                       (Uint32)want_samples * 2 * sizeof(int16_t));
-      }
-      // Over the ceiling, this frame's sound is dropped rather than deepening a
-      // backlog that is already past what rate control can pull back. It is
-      // audible, and it is the lesser of the two.
     }
     const Uint64 t_emul = SDL_GetPerformanceCounter();
-    pace_add(&h_emulate, PACE_MS(t_wait1, t_emul));
 
-    present_frame(&present, snes, pad_quit_dim(quit_chord));
+    // The picture: the machine's own, or the one `sub + 1` parts in
+    // `sub_count` of the way from the last tick to this one — the last of
+    // which is this tick exactly — drawn as layers on a target the window's
+    // size; or, for a frame that cannot be drawn that way, the PPU's own
+    // picture of it, as many times as there are refreshes.
+    if (sub_count > 1) {
+      const LayersFrame* f = lay.frame[lay.cur];
+      bool drawn = false;
+      if (f->valid && f->layered) {
+        ScalePlan plan;
+        int sx, sy;
+        bool exact;
+        if (present_layers_plan(&present, f->width, &plan, &sx, &sy, &exact)) {
+          const int n = layers_list(f, sub + 1, sub_count, sx, sy, lay.ops);
+          drawn = present_layers_draw(&present, &plyr, &plan, sx, sy, exact,
+                                      lay.ops, n, f->width);
+          if (drawn && dump_prefix && frame >= dump_first && frame <= dump_last) {
+            const int tw = f->width * sx, th = LAYERS_LINES * sy;
+            uint8_t* gpu = (uint8_t*)malloc((size_t)plan.dst.w * plan.dst.h * 3);
+            uint8_t* sw = (uint8_t*)malloc((size_t)tw * th * 3);
+            char path[600];
+            const SDL_Rect r = {plan.dst.x, plan.dst.y, plan.dst.w, plan.dst.h};
+            if (gpu && SDL_RenderReadPixels(ren, &r, SDL_PIXELFORMAT_RGB24, gpu, r.w * 3) == 0) {
+              snprintf(path, sizeof path, "%s.%ld.%d.gpu.png", dump_prefix, frame, sub + 1);
+              stbi_write_png(path, r.w, r.h, 3, gpu, r.w * 3);
+            }
+            if (sw) {
+              layers_render(f, lay.ops, n, sw, tw, th);
+              snprintf(path, sizeof path, "%s.%ld.%d.sw.png", dump_prefix, frame, sub + 1);
+              stbi_write_png(path, tw, th, 3, sw, tw * 3);
+            }
+            int ow = 0, oh = 0;
+            SDL_GetRendererOutputSize(ren, &ow, &oh);
+            printf("dumped picture %d of frame %ld: %dx%d on a %dx%d output, list at %dx%d (%s)\n",
+                   sub + 1, frame, plan.dst.w, plan.dst.h, ow, oh, tw, th, exact ? "exact" : "resampled");
+            fflush(stdout);
+            free(gpu);
+            free(sw);
+          }
+        }
+      }
+      if (!drawn && f->valid) present_pixels(&present, f->fb, f->fbWidth);
+      present_finish(&present, pad_quit_dim(quit_chord));
+    } else {
+      present_frame(&present, snes->ppu, pad_quit_dim(quit_chord));
+    }
+    pictures++;
 
     // Measured after `SDL_RenderPresent` has returned, which is the moment the
     // frame is the screen's problem rather than ours — so `arrival` is the
@@ -1344,7 +1770,7 @@ int main(int argc, char** argv) {
 
     // The status the window can carry without a console. Twice a second is
     // often enough to read and rare enough not to matter.
-    if (frame % 30 == 0) {
+    if (sub == 0 && frame % 30 == 0) {
       long served, declined;
       substitution_totals(&cosim, &served, &declined);
       char share[64];
@@ -1359,8 +1785,15 @@ int main(int argc, char** argv) {
                  "Zombies Ate My Neighbors — stock (emulated; F1 for native)");
       SDL_SetWindowTitle(win, title);
     }
+    sub = (sub + 1) % sub_count;
   }
 
+  // A tick the thread was still running is finished before anything reads
+  // the machine — the screenshot, the reports, the teardown.
+  if (in_flight) {
+    SDL_SemWait(emu.done);
+    in_flight = false;
+  }
   double secs = (double)(SDL_GetPerformanceCounter() - started) / (double)perf_freq;
   if (shot_path && !write_png(snes, shot_path))
     fprintf(stderr, "error: cannot write '%s'\n", shot_path);
@@ -1379,10 +1812,36 @@ int main(int argc, char** argv) {
   // that. The census names any handler a guard declined, which is the work list.
   printf("\n%ld frames in %.1f s (%.1f fps).\n", frame, secs,
          secs > 0 ? frame / secs : 0.0);
+  if (pictures != frame) {
+    printf("  shown as %ld pictures (%.2f per frame, %.1f per second).\n",
+           pictures, frame > 0 ? (double)pictures / (double)frame : 0.0,
+           secs > 0 ? pictures / secs : 0.0);
+    printf("  %ld ticks were shown as the PPU drew them, %ld as layers;"
+           " taking a tick apart took %.2f ms (max %.2f).\n",
+           unlayered, frame - unlayered, pace_mean(&h_take), h_take.max);
+  }
   // ...and the line above is exactly the statistic that cannot see a stutter,
-  // so it is immediately followed by the one that can.
+  // so it is immediately followed by the one that can. The period is the
+  // pacer's own, which is a picture's and not a frame's when smoothing is on.
   pace_report(&h_interval, &h_wait, &h_emulate, &h_draw, &h_audio,
-              target_frame_ms, (double)audio_target / audio_bytes_per_ms, paced);
+              pacer.period, (double)audio_target / audio_bytes_per_ms, paced);
+  {
+    const DwmStats dwm1 = dwm_stats();
+    // Silent when the compositor never touched the frames -- fullscreen on
+    // Windows 10 and later flips the picture straight to the panel.
+    if (dwm0.ok && dwm1.ok && dwm1.refreshes > dwm0.refreshes)
+      printf("  compositor: %llu frames composed, %llu displayed, %llu dropped,"
+             " %llu missed, over %llu refreshes\n",
+             dwm1.frames - dwm0.frames, dwm1.displayed - dwm0.displayed,
+             dwm1.dropped - dwm0.dropped, dwm1.missed - dwm0.missed,
+             dwm1.refreshes - dwm0.refreshes);
+  }
+  // Time the pacer gave up on. Every millisecond here is a millisecond the
+  // game stood still, which `fps` above rounds away.
+  if (paced && pacer.lost_count > 0)
+    printf("  time written off: %ld stall%s, %.1f ms in all (%.2f%% of the run)\n",
+           pacer.lost_count, pacer.lost_count == 1 ? "" : "s", pacer.lost_ms,
+           secs > 0 ? 100.0 * pacer.lost_ms / (secs * 1000.0) : 0.0);
   // One refill is the device starting up. More than that, in a run of any
   // length, means rate control is losing and the sound is being patched with
   // silence to cover it — which is worth saying out loud rather than leaving to
@@ -1399,6 +1858,17 @@ int main(int argc, char** argv) {
   cosim_share_report(&cosim);
   cosim_census_report();
 
+  if (emu_thread) {
+    emu.quit = true;
+    SDL_SemPost(emu.go);
+    SDL_WaitThread(emu_thread, NULL);
+  }
+  if (emu.go) SDL_DestroySemaphore(emu.go);
+  if (emu.done) SDL_DestroySemaphore(emu.done);
+  if (smooth_possible) {
+    layers_free(&lay);
+    present_layers_free(&plyr);
+  }
   if (have_movie) movie_free(&movie);
   cosim_free(&cosim);
   snes_free(snes);

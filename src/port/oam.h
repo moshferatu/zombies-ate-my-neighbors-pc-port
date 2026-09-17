@@ -418,6 +418,41 @@ void oam_buffer_clear(Wram* w);
 // and only keeps the result if it comes back true.
 bool sprite_build_oam(Wram* w, const Rom* rom, uint16_t dp);
 
+// Which record each OAM entry came from, and where that record was drawn.
+//
+// The pass knows this and the buffer does not: an OAM entry is four bytes of
+// position, tile and attribute, and nothing in it says which actor it is a
+// piece of. The frontend's between-tick pictures (`src/layers.h`) need exactly
+// that -- a sprite is moved a fraction of the way from where its *actor* was a
+// tick ago, so every piece of an actor moves together and two zombies standing
+// close do not trade pieces. So the pass leaves it here, beside the buffer it
+// belongs to. `rec` is the record's WRAM offset, or -1 for an entry the pass
+// parked; `ox`/`oy` are the origin the record's pieces were placed from, the
+// game's `$8E`/`$90`, camera already out.
+//
+// **The table is a tick ahead of the picture.** A frame of the core ends as
+// vblank begins, and the buffer this pass fills is DMA'd to OAM *in* that
+// vblank, so the picture drawn during a frame shows the pass before this one.
+// A reader pairing this table with the PPU's OAM has to hold it for a tick
+// first; `src/main_sdl.c` and `tools/test_layers.c` both do.
+//
+// `serial` steps once per pass that ran to completion, so a reader can tell a
+// table written this tick from one left over: a pass the ROM ran instead (a
+// declined call, or `--stock`) leaves the serial where it was. Written only
+// when the pass returns true, for the same reason the harness only keeps `w`
+// then -- a pass that declined has been run on a scratch copy and its table
+// describes nothing that is on screen.
+//
+// Port code: libc only. It is a global because the pass has no caller-supplied
+// context to put it in and the harness calls it through a fixed signature.
+typedef struct {
+  uint32_t serial;
+  int16_t rec[SPRITE_OAM_SPRITES];
+  int16_t ox[SPRITE_OAM_SPRITES];
+  int16_t oy[SPRITE_OAM_SPRITES];
+} SpriteOamOwners;
+extern SpriteOamOwners sprite_oam_owners;
+
 // The pass's own walk, `$80:BD30`..`$80:BDCB`, counted for `cosim_cost`.
 //
 // This is the last of the five parts, and the one that finally makes the other
