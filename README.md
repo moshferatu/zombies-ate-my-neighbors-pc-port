@@ -89,7 +89,7 @@ build\zamn.exe "Zombies Ate My Neighbors.sfc"
 Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=Select · Esc=Quit
 · **F1 = toggle native substitution** · **F2 = cycle scaling**
 · **F3 = toggle aspect** · **F4 = cycle widescreen** · **F5 = toggle smoothing**
-· **F11 / Alt+Enter = fullscreen**
+· **F6 = toggle even motion** · **F11 / Alt+Enter = fullscreen**
 
 **Game controllers** work too, and are the way to actually play it: any pad SDL
 recognises — which is most of them, and a `gamecontrollerdb.txt` beside the
@@ -936,7 +936,8 @@ within 1 ms of the period: 0.0%
 A flawless 60.3 fps in which **not one frame of 599 arrived on cadence** — about
 23 visible updates a second. The clock is now a deadline on the high-resolution
 timer, at a period locked to the display refresh where the display is a sensible
-multiple of the console's rate (60.0988 Hz NTSC, which no monitor offers), and
+multiple of the console's rate (60.0988 Hz NTSC, which no monitor offers) -- or,
+with smoothing on, any rate above it, see below -- and
 the audio is corrected to *that* by resampling each frame by up to half a percent
 — the same dynamic rate control emulator frontends use. Same machine, same movie:
 
@@ -1068,10 +1069,47 @@ times, and the three repeats between one tick and the next are refreshes the
 console never had anything to put on. **Smoothing puts something on them**: the
 pictures in between show every background and every sprite part of the way
 back toward where it was a tick ago. At 240 Hz that is four distinct pictures
-per game frame; at 120 Hz two. On by default wherever the display is a whole
-multiple of the console's rate, F5 toggles it, `--no-smooth` starts without it,
-and on a 60 Hz or a 144 Hz panel it is off because there is nothing for it to
-fill.
+per game frame; at 120 Hz two. On by default on any display faster than the
+game, F5 toggles it, `--no-smooth` starts without it, and on a 60 Hz panel it
+is off because there is nothing for it to fill.
+
+**The display need not be a whole multiple of 60.** Every refresh is a picture
+of its own, and the game is a fixed fraction of a tick further on in each than
+in the last -- 1/4 at 240 Hz, 5/12 at 144, 4/11 at 165, 4/5 at 75
+(`pace_lock_ratio`). A new tick is taken whenever that sum passes one, so at
+144 Hz a tick is shown as two pictures or as three, and each is drawn where
+its own moment falls between the two ticks rather than at a quarter or a
+half. Motion is as even as at 240; what differs is only that the game's own
+changes -- an animation frame, a colour -- land on refreshes 2 or 3 apart. The
+tick rate is locked to the display as it is at a whole multiple (60.000 a
+second at 144 Hz) and the audio corrected to that. `--refresh <hz>` overrides
+the rate the system reports, which is how 144, 165 and 75 were measured on a
+240 Hz panel: 2.40, 2.75 and 1.25 pictures per frame, 59.3-59.5 frames a
+second over a run with four level loads in it.
+
+**Uneven steps are evened out**, and F6 or `--no-even` turns that off. The
+game keeps positions in whole pixels and moves things at speeds that are not:
+the player walks a pixel and a half a tick, which comes out as 2, 1, 2, 1, and
+a zombie giving chase is moved on every other tick, 2, 0, 2, 0. Eased straight
+from tick to tick that is a speed that changes by a third, or stops dead,
+thirty times a second -- and the pictures in between are what make it
+visible: the floor shimmers under a walking player, a chasing zombie moves for
+four pictures and stands for four, and on a diagonal both axes do it together.
+Averaging the last two ticks cures it and shows everything half a tick late;
+that was built first, and the delay was felt at once. What is drawn instead is
+the steady line those steps stand either side of, *now*: each thing sits
+`(d - q) / 4` pixels back from where it is, `d` being this tick's move and `q`
+the one before -- a quarter pixel for the walk, half for the chase. That is
+exactly where it is for anything moving steadily, so there is no delay, and it
+cancels a two-tick alternation entirely (`zamn_test_layers --track` on a
+diagonal chase: one target pixel per picture, every picture, where it was 2,
+2, 2, 2, 0, 0, 0, 0 -- and ending each tick half a pixel either side of the
+truth rather than a pixel behind it). The cost is that a change of speed is a
+quarter answered late: a thing that stops from 2 a tick is drawn half a pixel
+past its stop for one tick. A change of more than 4 is taken for a jump and
+left alone. A thing at rest is
+exactly where it is. `zamn_test_layers --motion first last` prints the moves
+themselves, tick by tick, which is how the patterns were found.
 
 **The game is not touched.** It runs at exactly its own rate, tick for tick, on
 the same inputs; `zamn_cosim`, `zamn_headless` and the whole movie corpus never

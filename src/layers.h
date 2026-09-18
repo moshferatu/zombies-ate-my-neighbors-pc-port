@@ -52,6 +52,34 @@
 // matched to its predecessor by looks, with `smooth_match`. A move further
 // than `SMOOTH_SNAP` is a cut and is not eased, as before.
 //
+// ## Evening the motion out
+//
+// The game keeps positions in whole pixels and moves things at speeds that
+// are not: the player walks a pixel and a half a tick, which comes out as 2,
+// 1, 2, 1; a zombie giving chase is moved on every other tick, 2, 0, 2, 0.
+// At sixty pictures a second that is what motion looks like. Eased straight
+// from one tick to the next it is a speed that changes by a third -- or
+// stops dead -- thirty times a second, which the pictures in between make
+// *visible*: the floor shimmers under a walking player and a chasing zombie
+// stutters, and on a diagonal both axes do it at once.
+//
+// Averaging two ticks cures that and shows everything half a tick late, which
+// was tried and was felt. What is wanted is the steady line the uneven steps
+// stand either side of, *now*, not the midpoint of where things have been.
+// The steps of 2, 1, 2, 1 land a quarter of a pixel ahead of that line after
+// the long one and a quarter behind after the short, and in general by
+// `(d - q) / 4`, where `d` is this tick's move and `q` the one before. So by
+// default (`even`) a thing is drawn that far back from where it is:
+//
+//     shown(t) = p(t) - (d - q) / 4  =  (3 p(t) + 2 p(t-1) - p(t-2)) / 4
+//
+// which is exactly `p(t)` for anything moving steadily -- no delay -- and
+// exactly nothing for a two-tick alternation, the one pattern the game makes.
+// What it costs is that a change of speed is a quarter answered late: a
+// thing that stops from 2 a tick is shown half a pixel past where it stopped
+// for one tick and then where it is. A change of more than `LAYERS_EVEN_MAX`
+// is a jump and not a rounding, and is left alone.
+//
 // It is a header of static inline functions with no SDL in it. The draw list
 // is data, `layers_render` draws it in software for the tests, and
 // `src/present.h` draws the same list with the renderer.
@@ -136,6 +164,10 @@ typedef struct {
   // not be found, and such a sprite is drawn where it is.
   bool known;
   int16_t px, py;
+  // For `even`: how far back from where it is this sprite is drawn at the end
+  // of this tick, in quarters of a pixel (`c`), and was at the end of the last
+  // (`b`), which is where this tick's pictures start from.
+  int8_t cx, cy, bx, by;
   // Which display record the pass drew it from, and from what origin, when
   // the port's pass ran -- see `SpriteOamOwners`.
   int16_t rec, ox, oy;
@@ -174,6 +206,10 @@ typedef struct {
   // screen by that much as well as by whatever the game moved it.
   int dExtraLeft;
   bool anchored[4];
+  // For `even`, per background as per sprite: how far back from where it is
+  // it is drawn at the end of this tick and was at the end of the last, in
+  // quarters of a pixel. Zero where the tick before was not eased.
+  int cScrollX[4], cScrollY[4], bScrollX[4], bScrollY[4];
   // How the sprites were paired with their predecessors, for the test:
   // by the nearest piece of the same record, by the record's origin alone,
   // by looks (no record), or not at all.
@@ -540,6 +576,15 @@ static inline int layers_delta(int from, int to, int bits) {
   return d > SMOOTH_SNAP || d < -SMOOTH_SNAP ? 0 : d;
 }
 
+// How far back from where it is `even` draws a thing that moved `d` this tick
+// and `q` the tick before, in quarters of a pixel -- see "Evening the motion
+// out". Nothing for a change of speed too large to be a rounding.
+#define LAYERS_EVEN_MAX 4
+static inline int layers_even(int d, int q) {
+  const int c = d - q;
+  return c > LAYERS_EVEN_MAX || c < -LAYERS_EVEN_MAX ? 0 : c;
+}
+
 // What `cur` needs to know about `prev` to be eased back toward it: whether
 // it can be at all, how far each background scrolled, and where each sprite
 // was -- by record when the port's pass ran on both ticks, by looks otherwise.
@@ -548,18 +593,47 @@ static inline int layers_delta(int from, int to, int bits) {
 static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
   cur->ease = prev->valid && prev->layered && cur->layered && !prev->dark &&
               !cur->dark && prev->width == cur->width;
+  const bool prevEased = cur->ease && prev->ease;
   for (int l = 0; l < 4; l++) {
     cur->dScrollX[l] = cur->dScrollY[l] = 0;
+    cur->cScrollX[l] = cur->cScrollY[l] = cur->bScrollX[l] = cur->bScrollY[l] = 0;
     if (!cur->ease || cur->raster[l] || prev->raster[l]) continue;
     cur->dScrollX[l] = layers_delta(prev->scrollX[l], cur->scrollX[l], 10);
     cur->dScrollY[l] = layers_delta(prev->scrollY[l], cur->scrollY[l], 10);
   }
   cur->dExtraLeft = cur->ease ? cur->extraLeft - prev->extraLeft : 0;
+  // `even`, for the backgrounds: each one's move on the picture -- its scroll
+  // less the origin's, as `layers_list` has it -- against its move before.
+  if (prevEased)
+    for (int l = 0; l < 4; l++) {
+      if (cur->raster[l] || prev->raster[l]) continue;
+      const int dx = cur->dScrollX[l] - (cur->anchored[l] ? 0 : cur->dExtraLeft);
+      const int qx = prev->dScrollX[l] - (prev->anchored[l] ? 0 : prev->dExtraLeft);
+      cur->cScrollX[l] = layers_even(dx, qx);
+      cur->cScrollY[l] = layers_even(cur->dScrollY[l], prev->dScrollY[l]);
+      cur->bScrollX[l] = prev->cScrollX[l];
+      cur->bScrollY[l] = prev->cScrollY[l];
+    }
+  // `even`, for a sprite whose predecessor was sprite `j` of the last tick --
+  // once `px`, `py` are set. One with no move before this one to compare with
+  // is drawn where it is.
+  #define LAYERS_LINK_BEFORE(c, j)                                             \
+    do {                                                                       \
+      const LayersSprite* b_ = &prev->spr[j];                                  \
+      if (prevEased && b_->known) {                                            \
+        (c)->cx = (int8_t)layers_even((c)->x - (c)->px + cur->dExtraLeft,      \
+                                      b_->x - b_->px + prev->dExtraLeft);      \
+        (c)->cy = (int8_t)layers_even((c)->y - (c)->py, b_->y - b_->py);       \
+        (c)->bx = b_->cx;                                                      \
+        (c)->by = b_->cy;                                                      \
+      }                                                                        \
+    } while (0)
   cur->linkNear = cur->linkOrigin = cur->linkLooks = cur->linkNone = 0;
   const bool byRecord = cur->ownersFresh && prev->ownersFresh;
   for (int i = 0; i < LAYERS_SPRITES; i++) {
     LayersSprite* c = &cur->spr[i];
     c->known = false;
+    c->cx = c->cy = c->bx = c->by = 0;
     if (!c->drawn) continue;
     if (byRecord && c->rec >= 0) {
       // The record says which actor this piece belongs to, and the actor's
@@ -603,6 +677,9 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
           c->py = (int16_t)expectY;
           cur->linkOrigin++;
         }
+        // The nearest piece of the actor stands for the actor's last move
+        // even when it is too far to be this piece's own predecessor.
+        if (best >= 0) LAYERS_LINK_BEFORE(c, best);
         continue;
       }
     }
@@ -634,6 +711,7 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
         c->known = true;
         c->px = prev->spr[best].x;
         c->py = prev->spr[best].y;
+        LAYERS_LINK_BEFORE(c, best);
         cur->linkLooks++;
       } else {
         cur->linkNone++;
@@ -647,8 +725,10 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
     c->known = true;
     c->px = (int16_t)(c->x - smooth_wrap(sm.x - p.x, 9));
     c->py = (int16_t)(c->y - smooth_wrap(sm.y - p.y, 8));
+    LAYERS_LINK_BEFORE(c, j);
     cur->linkLooks++;
   }
+  #undef LAYERS_LINK_BEFORE
 }
 
 // ---------------------------------------------------------------------------
@@ -665,13 +745,32 @@ static inline int layers_part(int d, int num, int den, int scale) {
   return scaled >= 0 ? (scaled + den / 2) / den : -((-scaled + den / 2) / den);
 }
 
+// The same for `even`: the picture runs from where the last tick's ended,
+// `b` quarters of a pixel back from where the thing then was, to `c` quarters
+// back from where it is now. Odd in (d, b, c) like `layers_part`, so that a
+// sprite standing on a background gets the background's own offset and the
+// two cannot part by a rounding.
+static inline int layers_part_even(int d, int b, int c, int num, int den, int scale) {
+  if (den <= 0) return 0;
+  if (num > den) num = den;
+  if (num < 0) num = 0;
+  const int scaled = ((den - num) * (4 * d + b) + num * c) * scale;
+  const int by = 4 * den;
+  return scaled >= 0 ? (scaled + by / 2) / by : -((-scaled + by / 2) / by);
+}
+
+static inline int layers_back(int d, int b, int c, int num, int den, int scale, bool even) {
+  return even ? layers_part_even(d, b, c, num, den, scale) : layers_part(d, num, den, scale);
+}
+
 // The ops that draw `cur` `num/den` of the way from the tick before it, on a
-// target `sx` by `sy` times the console; at `num == den`, `cur` exactly as
-// it stands. Returns the number of ops, or 0 if `cur` is not layered.
+// target `sx` by `sy` times the console; at `num == den` and not `even`,
+// `cur` exactly as it stands. Returns the number of ops, or 0 if `cur` is not
+// layered.
 static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
-                              int sy, LayersOp* ops) {
+                              int sy, bool even, LayersOp* ops) {
   if (!cur->valid || !cur->layered) return 0;
-  const bool ease = cur->ease && num < den;
+  const bool ease = cur->ease && (even || num < den);
   int n = 0;
   int layer[12], prio[12];
   const int depth = layers_stack(cur->mode, cur->bg3prio, layer, prio);
@@ -684,8 +783,14 @@ static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
     // ...less however far the picture's own origin moved under it, for a
     // layer that lives in the console's coordinates.
     const int dOrigin = cur->anchored[l] ? 0 : cur->dExtraLeft;
-    offX[l] = ease ? layers_part(cur->dScrollX[l] - dOrigin, num, den, sx) : 0;
-    offY[l] = ease ? layers_part(cur->dScrollY[l], num, den, sy) : 0;
+    offX[l] = ease ? layers_back(cur->dScrollX[l] - dOrigin, cur->bScrollX[l], cur->cScrollX[l], num, den, sx, even) : 0;
+    offY[l] = ease ? layers_back(cur->dScrollY[l], cur->bScrollY[l], cur->cScrollY[l], num, den, sy, even) : 0;
+    // No further than the margin the plane was drawn with, which a move just
+    // short of a cut and a pixel of `even` could otherwise exceed.
+    if (offX[l] > M * sx) offX[l] = M * sx;
+    if (offX[l] < -M * sx) offX[l] = -M * sx;
+    if (offY[l] > M * sy) offY[l] = M * sy;
+    if (offY[l] < -M * sy) offY[l] = -M * sy;
   }
 
   // A plane, eased by (ox, oy) target pixels.
@@ -728,8 +833,8 @@ static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
         if (!sp->drawn || sp->prio != p) continue;
         int ox = 0, oy = 0;
         if (ease && sp->known) {
-          ox = -layers_part(sp->x - sp->px + cur->dExtraLeft, num, den, sx);
-          oy = -layers_part(sp->y - sp->py, num, den, sy);
+          ox = -layers_back(sp->x - sp->px + cur->dExtraLeft, sp->bx, sp->cx, num, den, sx, even);
+          oy = -layers_back(sp->y - sp->py, sp->by, sp->cy, num, den, sy, even);
         }
         // Once where it is, and once 256 lines up for the wrap. The PPU
         // evaluates sprites for `line - 1`, so a sprite at OAM y lands on

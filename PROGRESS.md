@@ -3,7 +3,49 @@
 Cross-session status for the ZAMN native-port project. Update this whenever a
 milestone lands. See `PLAN.md` for the full multi-phase plan.
 
-## Current status: **Phase 3 underway** 🔨 (2026-09-15)
+## Current status: **Phase 3 underway** 🔨 (2026-09-17)
+
+### Smoothing at any refresh rate, and the game's own uneven steps (2026-09-17)
+
+The third play-test: much better, two things left. It should not need a
+display that is a whole multiple of 60 (144 Hz), and diagonals still jittered
+a little -- the player's, and a zombie's giving chase.
+
+- **Any refresh rate.** The loop no longer counts `k` pictures per tick. Each
+  refresh adds `p/q` of a tick to a phase (`pace_lock_ratio`: 1/4 at 240, 5/12
+  at 144, 4/11 at 165, 4/5 at 75), a tick is taken when the phase passes one,
+  and the picture is drawn `phase/q` of the way along -- `layers_list` always
+  took a fraction, so nothing in `src/layers.h` changed for this. The tick
+  rate is locked to the display (60.000 at 144 Hz) and the pacer's slack is a
+  tick, as before. `--refresh <hz>` pretends a rate: 2.40, 2.75 and 1.25
+  pictures per frame at 144, 165 and 75, all at 59.3-59.5 fps over a run with
+  four level loads.
+- **The diagonal jitter was the game's.** `zamn_test_layers --motion` prints
+  every tick's moves: the player walks **2, 1, 2, 1** on each axis (1.5 px a
+  tick, and a diagonal is both axes at once, in phase, not normalised), the
+  camera follows exactly, and a chasing zombie moves **2, 0, 2, 0**. Eased
+  tick to tick, that is a speed that changes 30 times a second, which a 60 Hz
+  picture hides and a 240 Hz one draws.
+- **First cure, rejected in play: average two ticks.** Pictures run between
+  the midpoints of the last two moves. Perfectly even, and half a tick late on
+  everything that moves -- noticed immediately, and not wanted.
+- **Second cure: subtract the rounding, not the time.** The uneven steps stand
+  a quarter pixel either side of a steady line (half, for 2, 0, 2, 0), so each
+  thing is drawn `(d - q) / 4` back from where it is (`layers_even`,
+  `layers_part_even`; F6, `--no-even`) -- as a filter, `(3p(t) + 2p(t-1) -
+  p(t-2)) / 4`, which passes a steady speed with no delay and has a zero at the
+  two-tick alternation. The chasing zombie's trace is 1 target pixel every
+  picture as with the average, but ends each tick half a pixel ahead of or
+  behind the truth in turn instead of a pixel behind it. The price is
+  overshoot on a change of speed, a quarter of the change for one tick; more
+  than 4 px of change is a jump and gets none. Each thing carries its own
+  correction and the last tick's (`cx`/`bx`, `cScroll*`/`bScroll*`), the latter
+  being where this tick's pictures start, so ticks join without a step; a
+  sprite with no move-before-last is drawn where it is.
+- The draw list unmoved is still the PPU's frame: `level1`, `level21-spin`,
+  `level25-boss` in 16:9, 0 differing. (The test runs to the frame it is
+  given, not to the movie's end -- `0 99999` is four processes that never
+  finish.)
 
 ### Smoothing, second attempt: the picture taken apart (2026-09-15)
 

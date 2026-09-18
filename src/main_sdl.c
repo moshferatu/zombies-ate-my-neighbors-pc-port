@@ -45,7 +45,7 @@
 // Usage: zamn [rom.sfc] [--stock] [-r routine]... [-m movie.zmv]
 //             [--frames N] [--shot out.png] [--no-audio] [--no-pads]
 //             [--windowed] [--scale N] [--filter sharp|integer|linear]
-//             [--level N] [--no-twin-stick] [--no-smooth]
+//             [--level N] [--no-twin-stick] [--no-smooth] [--no-even]
 //             [--dump-pictures prefix,frame]
 
 #include <stdio.h>
@@ -775,19 +775,32 @@ static void usage(void) {
     "                  is pushed while the left one goes on steering, so you can\n"
     "                  walk one way and shoot the other. A pad-only feature —\n"
     "                  the keyboard has one D-pad and is unaffected either way.\n"
-    "  --no-smooth     Show each of the game's frames as many times as the\n"
-    "                  display refreshes per frame, as the console did. On by\n"
-    "                  default on a display that is a whole multiple of 60 Hz,\n"
-    "                  the frames in between are drawn with the scrolling and\n"
-    "                  the sprites eased part of the way from the last frame to\n"
-    "                  this one — four distinct pictures per frame at 240 Hz —\n"
-    "                  at the cost of showing each frame up to three refreshes\n"
-    "                  late. The game itself runs at exactly its own speed\n"
-    "                  either way. F5 toggles. See src/layers.h.\n"
+    "  --no-smooth     Show the game's frames only, as the console did. On by\n"
+    "                  default on any display faster than the game, every\n"
+    "                  refresh is a picture of its own, with the scrolling and\n"
+    "                  the sprites eased to where that refresh falls between\n"
+    "                  the last frame and this one — four pictures per frame at\n"
+    "                  240 Hz, twelve per five frames at 144 — at the cost of\n"
+    "                  showing each frame about one frame late. The game itself\n"
+    "                  runs at its own speed either way. F5 toggles. See\n"
+    "                  src/layers.h.\n"
+    "  --no-even       Ease the pictures straight from one frame to the next.\n"
+    "                  By default uneven steps are evened out, because the game\n"
+    "                  moves in whole pixels at speeds that are not — a walk of\n"
+    "                  2, 1, 2, 1 pixels, a chase of 2, 0, 2, 0 — and eased\n"
+    "                  straight that is a speed that changes thirty times a\n"
+    "                  second, which shows as a shimmer, worst on diagonals.\n"
+    "                  Each thing is drawn up to half a pixel from where it is,\n"
+    "                  on the steady line its steps stand either side of. Adds\n"
+    "                  no delay; a thing that stops settles by that half pixel\n"
+    "                  one frame later. F6 toggles.\n"
     "  --dump-pictures <prefix,frame[,last]>\n"
     "                  Write the pictures of a frame, or a range, as PNGs, twice: as the\n"
     "                  renderer drew them, read back, and as src/layers.h\n"
     "                  draws the same list in software. Smoothing must be on.\n"
+    "  --refresh <hz>  Believe this refresh rate rather than the one the system\n"
+    "                  reports, for a display it reports wrongly — and for\n"
+    "                  trying the pacing of a display that is not attached.\n"
     "  --fullscreen    Fullscreen even for a --frames or --scale run, which\n"
     "                  otherwise open a window: how to measure the screen as\n"
     "                  it is played.\n"
@@ -864,6 +877,7 @@ int main(int argc, char** argv) {
   // of whoever started it.
   bool fullscreen = true;
   bool fullscreen_asked = false;
+  int refresh_asked = 0;
   bool frames_given = false;
   // `--frames N` means "run N and stop", and it turns pacing off because a
   // throughput measurement wants to finish rather than to be watched. Those are
@@ -894,6 +908,7 @@ int main(int argc, char** argv) {
   // the tick, and it costs nothing on a display that cannot use it. The flag
   // is for the player who would rather see each frame the moment it exists.
   bool smooth = true;
+  bool even = true;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
@@ -906,11 +921,13 @@ int main(int argc, char** argv) {
     // `--frames` and `--scale` say windowed, and this, given after them, says
     // fullscreen after all.
     else if (!strcmp(a, "--fullscreen")) fullscreen_asked = true;
+    else if (!strcmp(a, "--refresh") && i + 1 < argc) refresh_asked = atoi(argv[++i]);
     else if (!strcmp(a, "--skip-intro")) skip_the_intro = true;
     else if (!strcmp(a, "--paced")) force_pacing = true;
     else if (!strcmp(a, "--no-twin-stick")) twin_stick = false;
     else if (!strcmp(a, "--twin-stick")) twin_stick = twin_asked = true;
     else if (!strcmp(a, "--no-smooth")) smooth = false;
+    else if (!strcmp(a, "--no-even")) even = false;
     else if (!strcmp(a, "-r") && i + 1 < argc) {
       if (only_count == (int)(sizeof only / sizeof *only)) {
         fprintf(stderr, "error: at most %d -r options\n\n",
@@ -1260,6 +1277,7 @@ int main(int argc, char** argv) {
     if (idx >= 0 && SDL_GetCurrentDisplayMode(idx, &mode) == 0)
       refresh_hz = mode.refresh_rate;
   }
+  if (refresh_asked > 0) refresh_hz = refresh_asked;
   const double content_hz = snes->palTiming ? PACE_FPS_PAL : PACE_FPS_NTSC;
   const double target_frame_ms = pace_period_ms(refresh_hz, content_hz);
   Pacer pacer;
@@ -1271,7 +1289,8 @@ int main(int argc, char** argv) {
          "          held for a second quits.\n"
          "          F1=toggle native substitution  F2=cycle scaling\n"
          "          F3=toggle aspect ratio         F4=cycle widescreen\n"
-         "          F5=toggle smoothing            F11 or Alt+Enter=fullscreen\n"
+         "          F5=toggle smoothing            F6=toggle even motion\n"
+         "          F11 or Alt+Enter=fullscreen\n"
          "          Esc=Quit\n");
   {
     // What the picture is actually being drawn into, which fullscreen makes a
@@ -1363,20 +1382,34 @@ int main(int argc, char** argv) {
   const Uint64 perf_freq = SDL_GetPerformanceFrequency();
   const bool paced = frame_limit == 0 || force_pacing;
 
-  // Pictures between ticks — see `src/smooth.h`, and `Smooth` above for the
-  // frontend's half. Possible only when the display is a whole multiple of the
-  // console's rate (`lock_k`), and only in a paced run: an uncapped one is a
-  // throughput measurement with no refresh to fill. `sub_count` is how many
-  // pictures each tick is shown as right now; F5 changes it, between ticks.
-  const int lock_k = pace_lock_k(refresh_hz, content_hz);
-  const bool smooth_possible = paced && lock_k > 1;
-  int sub_count = smooth_possible && smooth ? lock_k : 1;
-  if (sub_count > 1) audio_target = audio_target_base + (long)bytes_per_frame;
-  // Paced per picture rather than per tick — at 240 Hz that is one refresh —
-  // so that each picture lands on its own refresh instead of four being
-  // released together.
-  pacer_init(&pacer, target_frame_ms / sub_count);
-  pacer.slack = target_frame_ms;
+  // Pictures between ticks — see `src/layers.h`, and `Layers` above for the
+  // frontend's half. Possible on any display faster than the game
+  // (`pace_lock_ratio`), and only in a paced run: an uncapped one is a
+  // throughput measurement with no refresh to fill. Every refresh is one
+  // picture, and the game is `pic_p / pic_q` of a tick further on in each than
+  // in the last — 1/4 at 240 Hz, 5/12 at 144, and 1/1 when smoothing is off or
+  // impossible, which is the plain loop. `phase` is how far through the
+  // current tick the last picture was, in `pic_q`-ths; F5 changes the fraction,
+  // between ticks.
+  int lock_p = 1, lock_q = 1;
+  const bool smooth_possible =
+      paced && pace_lock_ratio(refresh_hz, content_hz, &lock_p, &lock_q);
+  // Paced per picture rather than per tick — one refresh — so that each
+  // picture lands on its own refresh instead of several being released
+  // together; and the tick is then however many refreshes the fraction says,
+  // which locks the game to the display at any refresh rate as
+  // `pace_period_ms` does at a whole multiple.
+  const double smooth_picture_ms = refresh_hz > 0 ? 1000.0 / refresh_hz : target_frame_ms;
+  const double smooth_tick_ms = smooth_picture_ms * lock_q / lock_p;
+  int pic_p = 1, pic_q = 1;
+  if (smooth_possible && smooth) {
+    pic_p = lock_p;
+    pic_q = lock_q;
+  }
+  int phase = pic_q;
+  if (pic_q > 1) audio_target = audio_target_base + (long)bytes_per_frame;
+  pacer_init(&pacer, pic_q > 1 ? smooth_picture_ms : target_frame_ms);
+  pacer.slack = pic_q > 1 ? smooth_tick_ms : target_frame_ms;
   Layers lay;
   PresentLayers plyr;
   memset(&lay, 0, sizeof lay);
@@ -1399,17 +1432,22 @@ int main(int argc, char** argv) {
       printf("note: this renderer has no custom blend modes, so a frame that adds\n"
              "      the sub screen (the character select) is shown as the PPU drew it.\n");
   }
-  if (smooth_possible)
-    printf("Smoothing: %s (F5 toggles; %d pictures per frame at %d Hz when on)\n",
-           smooth ? "on" : "off", lock_k, refresh_hz);
+  if (smooth_possible && lock_p == 1)
+    printf("Smoothing: %s (F5 toggles; %d pictures per frame at %d Hz when on;"
+           " motion %s, F6)\n",
+           smooth ? "on" : "off", lock_q, refresh_hz,
+           even ? "evened" : "eased frame to frame");
+  else if (smooth_possible)
+    printf("Smoothing: %s (F5 toggles; %d pictures per %d frames at %d Hz when"
+           " on, the game at %.3f fps; motion %s, F6)\n",
+           smooth ? "on" : "off", lock_q, lock_p, refresh_hz,
+           1000.0 / smooth_tick_ms,
+           even ? "evened" : "eased frame to frame");
   else if (!paced)
     printf("Smoothing: off (--frames runs uncapped)\n");
-  else if (lock_k == 1)
-    printf("Smoothing: off (a %d Hz display shows every frame once already)\n",
-           refresh_hz);
   else
-    printf("Smoothing: off (%d Hz is not a whole multiple of the console's"
-           " %.4f)\n", refresh_hz, content_hz);
+    printf("Smoothing: off (a %d Hz display has no refreshes between the game's"
+           " frames to fill)\n", refresh_hz);
   fflush(stdout);
   // Not const: `--skip-intro` runs a few seconds of emulation before the loop,
   // and folding that into the elapsed time would report the session at 44 fps
@@ -1457,11 +1495,8 @@ int main(int argc, char** argv) {
   // has faded. Declared out here because the frame is drawn well below where the
   // input is read.
   int quit_chord = 0;
-  // Which picture of the current tick the next pass of the loop shows, 0 being
-  // the pass that takes a new tick; whether the emulation thread is working on
-  // one; and how many pictures have been shown, which is more than `frame`
-  // by exactly the smoothing.
-  int sub = 0;
+  // Whether the emulation thread is working on a tick; and how many pictures
+  // have been shown, which is more than `frame` by exactly the smoothing.
   bool in_flight = false;
   long pictures = 0;
   while (running && (frame_limit == 0 || frame < frame_limit)) {
@@ -1548,6 +1583,18 @@ int main(int argc, char** argv) {
           }
           continue;
         }
+        if (e.key.keysym.sym == SDLK_F6) {
+          // ...and how the pictures are placed, for the same reason. No more
+          // than a flag the next picture reads: both placements are made from
+          // the same two ticks.
+          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+            even = !even;
+            printf("Motion: %s\n", even ? "evened"
+                                        : "eased frame to frame");
+            fflush(stdout);
+          }
+          continue;
+        }
         if (e.key.keysym.sym == SDLK_F2) {
           // Cycling rather than a set of three keys, because the only way to
           // judge these is to watch one turn into the next on the same frame.
@@ -1612,7 +1659,12 @@ int main(int argc, char** argv) {
     const Uint64 t_wait1 = SDL_GetPerformanceCounter();
     pace_add(&h_wait, PACE_MS(t_wait0, t_wait1));
 
-    if (sub == 0) {
+    // This picture is `pic_p / pic_q` of a tick on from the last, and when
+    // that passes the end of the tick being shown, the next one is taken.
+    phase += pic_p;
+    const bool tick = phase > pic_q;
+    if (tick) {
+      phase -= pic_q;
       // A tick: collected from the emulation thread if it has one, run right
       // here if not. Either way the machine is stopped from this point until
       // it is told to go again, and everything that touches it — the audio it
@@ -1670,18 +1722,19 @@ int main(int argc, char** argv) {
       // How many pictures this tick is shown as. Asked again every tick
       // because F5 changes it, and acted on only here, between ticks, where
       // the pacer can be re-armed at the new period with nothing in flight.
-      const int want = smooth_possible && smooth ? lock_k : 1;
-      if (want != sub_count) {
-        sub_count = want;
-        pacer_init(&pacer, target_frame_ms / sub_count);
-        pacer.slack = target_frame_ms;
+      const bool want = smooth_possible && smooth;
+      if (want != (pic_q > 1)) {
+        pic_p = want ? lock_p : 1;
+        pic_q = want ? lock_q : 1;
+        phase = pic_p;
+        pacer_init(&pacer, want ? smooth_picture_ms : target_frame_ms);
+        pacer.slack = want ? smooth_tick_ms : target_frame_ms;
         if (smooth_possible) lay.frame[0]->valid = lay.frame[1]->valid = false;
         // Rate control walks the queue to the new depth at four samples a
         // frame, which is a few seconds and inaudible.
-        audio_target = audio_target_base +
-                       (sub_count > 1 ? (long)bytes_per_frame : 0);
+        audio_target = audio_target_base + (want ? (long)bytes_per_frame : 0);
       }
-      if (sub_count > 1) {
+      if (pic_q > 1) {
         // This tick's picture, taken apart -- by the thread as the tick
         // ended, or here if the tick ran here -- becomes the current frame,
         // and its planes go to the renderer once for all its pictures.
@@ -1712,12 +1765,11 @@ int main(int argc, char** argv) {
     }
     const Uint64 t_emul = SDL_GetPerformanceCounter();
 
-    // The picture: the machine's own, or the one `sub + 1` parts in
-    // `sub_count` of the way from the last tick to this one — the last of
-    // which is this tick exactly — drawn as layers on a target the window's
-    // size; or, for a frame that cannot be drawn that way, the PPU's own
-    // picture of it, as many times as there are refreshes.
-    if (sub_count > 1) {
+    // The picture: the machine's own, or the one `phase` parts in `pic_q` of
+    // the way from the last tick to this one, drawn as layers on a target the
+    // window's size; or, for a frame that cannot be drawn that way, the PPU's
+    // own picture of it, as many times as there are refreshes.
+    if (pic_q > 1) {
       const LayersFrame* f = lay.frame[lay.cur];
       bool drawn = false;
       if (f->valid && f->layered) {
@@ -1725,7 +1777,7 @@ int main(int argc, char** argv) {
         int sx, sy;
         bool exact;
         if (present_layers_plan(&present, f->width, &plan, &sx, &sy, &exact)) {
-          const int n = layers_list(f, sub + 1, sub_count, sx, sy, lay.ops);
+          const int n = layers_list(f, phase, pic_q, sx, sy, even, lay.ops);
           drawn = present_layers_draw(&present, &plyr, &plan, sx, sy, exact,
                                       lay.ops, n, f->width);
           if (drawn && dump_prefix && frame >= dump_first && frame <= dump_last) {
@@ -1735,18 +1787,18 @@ int main(int argc, char** argv) {
             char path[600];
             const SDL_Rect r = {plan.dst.x, plan.dst.y, plan.dst.w, plan.dst.h};
             if (gpu && SDL_RenderReadPixels(ren, &r, SDL_PIXELFORMAT_RGB24, gpu, r.w * 3) == 0) {
-              snprintf(path, sizeof path, "%s.%ld.%d.gpu.png", dump_prefix, frame, sub + 1);
+              snprintf(path, sizeof path, "%s.%ld.%d.gpu.png", dump_prefix, frame, phase);
               stbi_write_png(path, r.w, r.h, 3, gpu, r.w * 3);
             }
             if (sw) {
               layers_render(f, lay.ops, n, sw, tw, th);
-              snprintf(path, sizeof path, "%s.%ld.%d.sw.png", dump_prefix, frame, sub + 1);
+              snprintf(path, sizeof path, "%s.%ld.%d.sw.png", dump_prefix, frame, phase);
               stbi_write_png(path, tw, th, 3, sw, tw * 3);
             }
             int ow = 0, oh = 0;
             SDL_GetRendererOutputSize(ren, &ow, &oh);
             printf("dumped picture %d of frame %ld: %dx%d on a %dx%d output, list at %dx%d (%s)\n",
-                   sub + 1, frame, plan.dst.w, plan.dst.h, ow, oh, tw, th, exact ? "exact" : "resampled");
+                   phase, frame, plan.dst.w, plan.dst.h, ow, oh, tw, th, exact ? "exact" : "resampled");
             fflush(stdout);
             free(gpu);
             free(sw);
@@ -1770,7 +1822,7 @@ int main(int argc, char** argv) {
 
     // The status the window can carry without a console. Twice a second is
     // often enough to read and rare enough not to matter.
-    if (sub == 0 && frame % 30 == 0) {
+    if (tick && frame % 30 == 0) {
       long served, declined;
       substitution_totals(&cosim, &served, &declined);
       char share[64];
@@ -1785,7 +1837,6 @@ int main(int argc, char** argv) {
                  "Zombies Ate My Neighbors — stock (emulated; F1 for native)");
       SDL_SetWindowTitle(win, title);
     }
-    sub = (sub + 1) % sub_count;
   }
 
   // A tick the thread was still running is finished before anything reads

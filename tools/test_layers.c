@@ -56,7 +56,10 @@ static uint8_t* read_file(const char* path, int* out_len) {
 
 int main(int argc, char** argv) {
   if (argc < 5) {
-    fprintf(stderr, "usage: %s <rom.sfc> <movie.zmv> <first> <last> [--png prefix frame]\n", argv[0]);
+    fprintf(stderr, "usage: %s <rom.sfc> <movie.zmv> <first> <last> [--png prefix frame]\n"
+                    "       [--track first last] [--motion first last] [--widescreen off|16:9|16:10]\n"
+                    "       [--no-even] [--no-hold]\n"
+                    "  <last> is a frame number, and the run goes on to it past the movie's end.\n", argv[0]);
     return 2;
   }
   int rom_len;
@@ -77,10 +80,20 @@ int main(int argc, char** argv) {
   // is wrong by a tick (see `SpriteOamOwners`) and is kept so that the
   // difference can be measured rather than remembered.
   bool hold = true;
+  // `--no-even` traces and draws the pictures eased straight from tick to
+  // tick, as the frontend does under `--no-even`.
+  bool even = true;
+  // `--motion first last`: one line a tick of how far the view and each
+  // record moved, on the screen and (adding the view's move back) in the
+  // world -- the numbers the pictures between ticks are made from, which is
+  // where a motion that is uneven in the game itself shows up.
+  int motion_first = -1, motion_last = -1;
   for (int i = 5; i < argc; i++) {
     if (!strcmp(argv[i], "--no-hold")) { hold = false; continue; }
+    if (!strcmp(argv[i], "--no-even")) { even = false; continue; }
     if (!strcmp(argv[i], "--png") && i + 2 < argc) { png = argv[i + 1]; png_frame = atoi(argv[i + 2]); i += 2; }
     else if (!strcmp(argv[i], "--track") && i + 2 < argc) { track_first = atoi(argv[i + 1]); track_last = atoi(argv[i + 2]); i += 2; }
+    else if (!strcmp(argv[i], "--motion") && i + 2 < argc) { motion_first = atoi(argv[i + 1]); motion_last = atoi(argv[i + 2]); i += 2; }
     else if (!strcmp(argv[i], "--widescreen") && i + 1 < argc) {
       if (!wide_parse(argv[++i], &wide)) { fprintf(stderr, "error: --widescreen wants off, 16:9 or 16:10\n"); return 2; }
     }
@@ -146,7 +159,7 @@ int main(int argc, char** argv) {
       if (r == reasons && reasons < MAX_REASONS) { reason[reasons] = f->why; reason_count[reasons] = 0; reasons++; }
       if (r < reasons) reason_count[r]++;
     } else {
-      const int n = layers_list(f, 1, 1, 1, 1, ops);
+      const int n = layers_list(f, 1, 1, 1, 1, false, ops);
       const int W = f->width;
       layers_render(f, ops, n, rgb, W, LAYERS_LINES);
       int maxd = 0; long off = 0;
@@ -194,18 +207,40 @@ int main(int argc, char** argv) {
         sprites_drawn++;
         if (f->spr[s].known) sprites_known++;
       }
+      if (motion_first >= 0 && frame >= motion_first && frame <= motion_last) {
+        printf("  frame %d%s: view %+d,%+d;", frame, f->ease ? "" : " (not eased)", f->dScrollX[1], f->dScrollY[1]);
+        int last_rec = -2;
+        for (int s = 0; s < LAYERS_SPRITES; s++) {
+          const LayersSprite* sp = &f->spr[s];
+          if (!sp->drawn || !sp->known || sp->rec == last_rec) continue;
+          last_rec = sp->rec;
+          // A record's own origin where it has one, which an animation frame
+          // changing the pieces does not move; the piece itself where not.
+          int dx = sp->x - sp->px + f->dExtraLeft, dy = sp->y - sp->py;
+          if (sp->rec >= 0)
+            for (int q = 0; q < LAYERS_SPRITES; q++)
+              if (prev->spr[q].drawn && prev->spr[q].rec == sp->rec) {
+                dx = sp->ox - prev->spr[q].ox;
+                dy = sp->oy - prev->spr[q].oy;
+                break;
+              }
+          printf(" %04x screen %+d,%+d world %+d,%+d;", sp->rec & 0xffff, dx, dy, dx + f->dScrollX[1],
+                 dy + f->dScrollY[1]);
+        }
+        printf("\n");
+      }
       if (track_first >= 0 && frame >= track_first && frame <= track_last) {
         // Where each drawn sprite is put in each of the four pictures of this
         // tick, at four times the console: a sprite eased right advances four
         // target pixels per picture per game pixel of motion. Printed per
         // record so that an actor's pieces can be read together.
         for (int k = 1; k <= 4; k++) {
-          const int m = layers_list(f, k, 4, 4, 4, ops);
+          const int m = layers_list(f, k, 4, 4, 4, even, ops);
           printf("  frame %d picture %d (left margin %d, moved %+d; planes", frame, k, f->extraLeft,
                  f->dExtraLeft);
           for (int o = 0; o < m; o++)
             if (ops[o].kind == LAYERS_OP_PLANE)
-              printf(" %d:%+d", ops[o].plane, ops[o].dx + LAYERS_MARGIN * 4);
+              printf(" %d:%+d,%+d", ops[o].plane, ops[o].dx + LAYERS_MARGIN * 4, ops[o].dy + LAYERS_MARGIN * 4);
           printf("):");
           int shown = 0;
           for (int o = 0; o < m && shown < 12; o++) {
@@ -234,7 +269,7 @@ int main(int argc, char** argv) {
         const int S = 4;
         uint8_t* big = (uint8_t*)malloc((size_t)W * S * LAYERS_LINES * S * 3);
         for (int k = 1; k <= 4; k++) {
-          const int m = layers_list(f, k, 4, S, S, ops);
+          const int m = layers_list(f, k, 4, S, S, even, ops);
           layers_render(f, ops, m, big, W * S, LAYERS_LINES * S);
           char path[512];
           snprintf(path, sizeof path, "%s.%d.%d.png", png, frame, k);

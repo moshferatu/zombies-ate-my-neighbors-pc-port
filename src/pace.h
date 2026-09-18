@@ -204,6 +204,48 @@ static inline int pace_lock_k(int refresh_hz, double content_hz) {
   return k;
 }
 
+// The same relationship for a display that is *not* a whole multiple: how many
+// game ticks go by per refresh, as a fraction `p/q` in lowest terms -- 1/4 at
+// 240 Hz, 5/12 at 144, 4/11 at 165, 4/5 at 75. The pictures between ticks
+// (`src/layers.h`) do not need the multiple to be whole: every refresh shows
+// the game `p/q` of a tick further on than the last, and a new tick is taken
+// whenever that sum passes one, so at 144 Hz a tick is shown as two pictures
+// or as three, each placed where its own moment falls, and motion is as even
+// as at 240. What it does need is the tick rate locked to the display, as
+// above, and the rate to lock to is the one the audio is cut to -- a whole
+// number of ticks a second, 60 for the console's 60.0988.
+//
+// The refresh rate comes from the system as a whole number and the truth is
+// often not one (143.86 reported as 143 or as 144), so the smallest `q` that
+// lands within a percent is preferred to the exact fraction of the number as
+// given; failing that, the number is believed. False when there is nothing to
+// fill: a display no faster than the game.
+static inline bool pace_lock_ratio(int refresh_hz, double content_hz, int* p, int* q) {
+  if (refresh_hz <= 0 || content_hz <= 0.0) return false;
+  const int k = pace_lock_k(refresh_hz, content_hz);
+  if (k >= 1) {
+    *p = 1;
+    *q = k;
+    return k > 1;
+  }
+  const int target = (int)(content_hz + 0.5);
+  if (target < 1 || refresh_hz <= target) return false;
+  for (int den = 2; den <= 32; den++) {
+    const int num = (int)((double)target * den / refresh_hz + 0.5);
+    if (num < 1 || num >= den) continue;
+    const double hz = (double)refresh_hz * num / den;
+    if (hz < target * 0.99 || hz > target * 1.01) continue;
+    *p = num;
+    *q = den;
+    return true;
+  }
+  int a = target, b = refresh_hz;
+  while (b) { const int t = a % b; a = b; b = t; }
+  *p = target / a;
+  *q = refresh_hz / a;
+  return true;
+}
+
 // The period to aim for, in ms, given the display's refresh rate. Falls back to
 // the console's own rate when the panel is not a sensible multiple of it — see
 // `pace_lock_k` for which are.
