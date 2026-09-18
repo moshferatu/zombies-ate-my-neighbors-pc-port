@@ -236,7 +236,7 @@ static void present_pixels(Present* p, const uint8_t* fb, int width) {
   present_draw(p);
 }
 
-static void present_frame(Present* p, Ppu* ppu, int dim) {
+static void present_frame(Present* p, Ppu* ppu) {
   void* pixels; int pitch;
   if (SDL_LockTexture(p->frame, NULL, &pixels, &pitch) == 0) {
     // The core packs its rows tightly at the live width, so it can only write
@@ -259,7 +259,20 @@ static void present_frame(Present* p, Ppu* ppu, int dim) {
     SDL_UnlockTexture(p->frame);
   }
   present_draw(p);
-  present_finish(p, dim);
+}
+
+// Capture the actual output before presenting, including plain frames and
+// frames that fall back from the layer renderer during a fade.
+static void dump_output(Present* p, const char* prefix, long frame, int phase) {
+  int w, h;
+  if (SDL_GetRendererOutputSize(p->ren, &w, &h) != 0 || w <= 0 || h <= 0) return;
+  uint8_t* pixels = (uint8_t*)malloc((size_t)w * h * 3);
+  if (pixels && SDL_RenderReadPixels(p->ren, NULL, SDL_PIXELFORMAT_RGB24, pixels, w * 3) == 0) {
+    char path[600];
+    snprintf(path, sizeof path, "%s.%ld.%d.gpu.png", prefix, frame, phase);
+    stbi_write_png(path, w, h, 3, pixels, w * 3);
+  }
+  free(pixels);
 }
 
 // --- Pictures between ticks: the frontend's half of `src/layers.h` ----------
@@ -798,7 +811,11 @@ static void usage(void) {
     "  --dump-pictures <prefix,frame[,last]>\n"
     "                  Write the pictures of a frame, or a range, as PNGs, twice: as the\n"
     "                  renderer drew them, read back, and as src/layers.h\n"
-    "                  draws the same list in software. Smoothing must be on.\n"
+    "                  draws the same list in software. With smoothing off or\n"
+    "                  during a fallback, writes only the rendered output.\n"
+    "  --trace-frames <csv>\n"
+    "                  Log presentation times, emulation times, core frame\n"
+    "                  numbers and BG1 scroll without capturing screenshots.\n"
     "  --refresh <hz>  Believe this refresh rate rather than the one the system\n"
     "                  reports, for a display it reports wrongly — and for\n"
     "                  trying the pacing of a display that is not attached.\n"
@@ -915,6 +932,7 @@ int main(int argc, char** argv) {
   // is for the player who would rather see each frame the moment it exists.
   bool smooth = true;
   bool even = true;
+  const char* trace_frames_path = NULL;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
@@ -934,6 +952,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--twin-stick")) twin_stick = twin_asked = true;
     else if (!strcmp(a, "--no-smooth")) smooth = false;
     else if (!strcmp(a, "--no-even")) even = false;
+    else if (!strcmp(a, "--trace-frames") && i + 1 < argc) trace_frames_path = argv[++i];
     else if (!strcmp(a, "-r") && i + 1 < argc) {
       if (only_count == (int)(sizeof only / sizeof *only)) {
         fprintf(stderr, "error: at most %d -r options\n\n",
@@ -1387,6 +1406,15 @@ int main(int argc, char** argv) {
   fflush(stdout);
 
   const Uint64 perf_freq = SDL_GetPerformanceFrequency();
+  FILE* trace_frames = trace_frames_path ? fopen(trace_frames_path, "w") : NULL;
+  if (trace_frames_path && !trace_frames) perror(trace_frames_path);
+  if (trace_frames) {
+    setvbuf(trace_frames, NULL, _IOFBF, 65536);
+    fprintf(trace_frames, "frame,phase,core_frame,scroll_y,present_ms,emulate_ms\n");
+  }
+  uint32_t trace_core_frame = 0;
+  int trace_scroll_y = 0;
+  double trace_emulate_ms = 0;
   const bool paced = frame_limit == 0 || force_pacing;
 
   // Pictures between ticks — see `src/layers.h`, and `Layers` above for the
@@ -1682,6 +1710,7 @@ int main(int argc, char** argv) {
         SDL_SemWait(emu.done);
         in_flight = false;
         pace_add(&h_emulate, emu.last_ms);
+        trace_emulate_ms = emu.last_ms;
         pace_add(&h_take, emu.take_ms);
         taken = emu.capture;
       } else {
@@ -1698,8 +1727,11 @@ int main(int argc, char** argv) {
         // returns through the routine's own RTS/RTL.
         const Uint64 t0 = SDL_GetPerformanceCounter();
         cosim_frame(&cosim);
-        pace_add(&h_emulate, PACE_MS(t0, SDL_GetPerformanceCounter()));
+        trace_emulate_ms = PACE_MS(t0, SDL_GetPerformanceCounter());
+        pace_add(&h_emulate, trace_emulate_ms);
       }
+      trace_core_frame = snes->frames;
+      trace_scroll_y = snes->ppu->lineVScroll[0][1];
       frame++;
 
       // This frame's audio, resampled by however much it takes to hold the
@@ -1819,9 +1851,15 @@ int main(int argc, char** argv) {
         }
       }
       if (!drawn && f->valid) present_pixels(&present, f->fb, f->fbWidth);
+      if (!drawn && f->valid && dump_prefix && frame >= dump_first && frame <= dump_last) {
+        dump_output(&present, dump_prefix, frame, phase);
+      }
       present_finish(&present, pad_quit_dim(quit_chord));
     } else {
-      present_frame(&present, snes->ppu, pad_quit_dim(quit_chord));
+      present_frame(&present, snes->ppu);
+      if (dump_prefix && frame >= dump_first && frame <= dump_last)
+        dump_output(&present, dump_prefix, frame, phase);
+      present_finish(&present, pad_quit_dim(quit_chord));
     }
     pictures++;
 
@@ -1829,6 +1867,9 @@ int main(int argc, char** argv) {
     // frame is the screen's problem rather than ours — so `arrival` is the
     // cadence a player sees, not the cadence the loop intended.
     const Uint64 t_drawn = SDL_GetPerformanceCounter();
+    if (trace_frames)
+      fprintf(trace_frames, "%ld,%d,%u,%d,%.3f,%.3f\n", frame, phase,
+              trace_core_frame, trace_scroll_y, PACE_MS(started, t_drawn), trace_emulate_ms);
     pace_add(&h_draw, PACE_MS(t_emul, t_drawn));
     if (last_arrival) pace_add(&h_interval, PACE_MS(last_arrival, t_drawn));
     last_arrival = t_drawn;
@@ -1859,6 +1900,7 @@ int main(int argc, char** argv) {
     in_flight = false;
   }
   double secs = (double)(SDL_GetPerformanceCounter() - started) / (double)perf_freq;
+  if (trace_frames) fclose(trace_frames);
   if (shot_path && !write_png(snes, shot_path))
     fprintf(stderr, "error: cannot write '%s'\n", shot_path);
 

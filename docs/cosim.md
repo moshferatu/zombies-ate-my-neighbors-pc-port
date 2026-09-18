@@ -4,6 +4,30 @@ How a ZAMN routine gets replaced by C without anyone having to take it on
 trust. This is the Phase 3 machinery: `src/cosim/` (the harness),
 `src/port/` (the native game logic it drives) and `zamn_cosim` (the driver).
 
+## Returning video frames during native work
+
+A native cycle budget must pause at video boundaries as well as interrupts.
+With NMI disabled, `lzss_decompress` previously consumed 76 video frames inside
+one `cosim_frame` call immediately after the level title's last raised frame.
+The frontend held that raised picture for 334 ms, then displayed the resting
+position. Comparing the returned pictures against Snes9x missed the defect:
+the positions matched, but the time each picture stayed on screen did not.
+
+`burn_spend` now leaves its remaining budget parked when vblank changes or the
+core frame counter advances. The next call resumes it without raising an
+interrupt or publishing the routine's deferred results early. A fullscreen run
+with smoothing disabled measured 16.5 ms for the same final step after the fix.
+
+The title regression checks that no video frames disappear in that interval:
+
+```powershell
+.\build\zamn_test_layers.exe 'Zombies Ate My Neighbors.sfc' movies/level1.zmv 1250 1620 --check-frame-step
+```
+
+Add `--widescreen 16:9` to check the widened presentation. For live timing,
+`zamn --trace-frames path.csv` records presentation timestamps, emulation costs,
+core frame numbers and BG1 scroll without the stalls caused by PNG capture.
+
 Phase 2 built this pattern five times over without naming it. Each
 `zamn_assets verify-*` command plays a movie under the reference core,
 intercepts one ROM routine, re-runs the C port on the arguments the ROM was

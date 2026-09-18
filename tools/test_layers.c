@@ -21,6 +21,14 @@
 //
 // `--png` writes the four pictures of one tick at four times the console's
 // size, for looking at what the easing does with the eye.
+// Picture 0 is the unmodified PPU frame at the same size. `--png-range`
+// captures a sequence; `--stock` runs the ROM without native substitutions.
+// `--check-frame-step` also fails if a frontend tick skips video frames in the
+// selected interval. This catches the title's decompression stall, which a
+// pixel comparison alone misses: all returned pictures were correct, but the
+// previous picture stayed on screen while 75 unreturned frames were rendered.
+// Use a title interval (e.g. level1.zmv 1250 1620); other intervals can include
+// the core's separate, atomic DMA transfers that also span video boundaries.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,6 +66,7 @@ static uint8_t* read_file(const char* path, int* out_len) {
 int main(int argc, char** argv) {
   if (argc < 5) {
     fprintf(stderr, "usage: %s <rom.sfc> <movie.zmv> <first> <last> [--png prefix frame]\n"
+                    "       [--png-range prefix first last] [--stock] [--check-frame-step]\n"
                     "       [--track first last] [--motion first last] [--widescreen off|16:9|16:10]\n"
                     "       [--no-even] [--no-hold] [--poke frame[+]:addr=value[.b]]...\n"
                     "  <last> is a frame number, and the run goes on to it past the movie's end.\n", argv[0]);
@@ -74,7 +83,9 @@ int main(int argc, char** argv) {
   if (!movie_load(&movie, argv[2])) { fprintf(stderr, "error: cannot load movie '%s'\n", argv[2]); return 1; }
   const int first = atoi(argv[3]), last = atoi(argv[4]);
   const char* png = NULL;
-  int png_frame = -1;
+  int png_frame = -1, png_last = -1;
+  bool stock = false;
+  bool check_frame_step = false;
   int track_first = -1, track_last = -1;
   PokeList pokes = {{{0}}, 0};
   WideMode wide = WIDE_OFF;
@@ -91,6 +102,11 @@ int main(int argc, char** argv) {
   // where a motion that is uneven in the game itself shows up.
   int motion_first = -1, motion_last = -1;
   for (int i = 5; i < argc; i++) {
+    if (!strcmp(argv[i], "--stock")) { stock = true; continue; }
+    if (!strcmp(argv[i], "--check-frame-step")) { check_frame_step = true; continue; }
+    if (!strcmp(argv[i], "--png-range") && i + 3 < argc) {
+      png = argv[++i]; png_frame = atoi(argv[++i]); png_last = atoi(argv[++i]); continue;
+    }
     if (!strcmp(argv[i], "--no-hold")) { hold = false; continue; }
     if (!strcmp(argv[i], "--no-even")) { even = false; continue; }
     if (!strcmp(argv[i], "--poke") && i + 1 < argc) { if (!poke_parse(&pokes, argv[++i])) return 2; continue; }
@@ -116,7 +132,7 @@ int main(int argc, char** argv) {
 
   Cosim cosim;
   cosim_init(&cosim, snes, COSIM_NATIVE);
-  cosim_enable_all(&cosim);
+  if (!stock) cosim_enable_all(&cosim);
 
   LayersFrame* frames[2];
   frames[0] = (LayersFrame*)calloc(1, sizeof(LayersFrame));
@@ -130,6 +146,7 @@ int main(int argc, char** argv) {
   long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, link_jump = 0, origin_moved = 0, window_held = 0, steps_spread = 0, bg3_anchored = 0, bg3_mask = 0;
 
   long tested = 0, identical = 0, within_one = 0, differing = 0, unexpressible = 0, dropped = 0;
+  long skipped_frames = 0;
   long eased_ticks = 0, sprites_known = 0, sprites_drawn = 0, owners_fresh = 0;
   const char* reason[MAX_REASONS]; long reason_count[MAX_REASONS]; int reasons = 0;
   int worst_diff = 0; long worst_frame = -1;
@@ -137,7 +154,17 @@ int main(int argc, char** argv) {
   for (int i = 0; i < last; i++) {
     movie_apply(&movie, snes, i);
     poke_apply(&pokes, snes->ram, i);
+    const uint32_t before_frame = snes->frames;
     cosim_frame(&cosim);
+    // Native calls must return each video frame even while NMI is disabled.
+    // Otherwise the last bouncing title frame stays up while decompression
+    // silently renders the entire stationary hold in one frontend tick.
+    const uint32_t advanced = snes->frames - before_frame;
+    if (i + 1 >= first && advanced > 1) {
+      skipped_frames += advanced - 1;
+      if (check_frame_step)
+        fprintf(stderr, "frame %d: skipped %u video frames\n", i + 1, advanced - 1);
+    }
     if (i + 1 < first) continue;
     const int frame = i + 1;
     Ppu* ppu = snes->ppu;
@@ -248,7 +275,7 @@ int main(int argc, char** argv) {
         printf(" bg");
         for (int l = 0; l < 4; l++) {
           if (!f->main[l] && !f->sub[l]) { printf(" -"); continue; }
-          printf(" %+d,%+d%s", f->dScrollX[l], f->dScrollY[l], f->raster[l] ? "r" : "");
+          printf(" %+d,%+d%s[%u,%u]", f->dScrollX[l], f->dScrollY[l], f->raster[l] ? "r" : "", f->scrollX[l], f->scrollY[l]);
           if (f->stepK[l]) printf("(step %+d,%+d %d/%d)", f->stepDX[l], f->stepDY[l], f->stepI[l], f->stepK[l]);
         }
         printf(";");
@@ -303,7 +330,7 @@ int main(int argc, char** argv) {
           printf("\n");
         }
       }
-      if (png && frame == png_frame) {
+      if (png && frame >= png_frame && frame <= (png_last < 0 ? png_frame : png_last)) {
         printf("  frame %d: mode %d bg3prio %d width %d; main %d%d%d%d sub %d%d%d%d raster %d%d%d%d;"
                " subAdd %d subLayer %d mathMain %d%d%d%d%d%d; cell %d; %d ops\n",
                frame, f->mode, f->bg3prio, f->width, f->main[0], f->main[1], f->main[2], f->main[3],
@@ -351,6 +378,15 @@ int main(int argc, char** argv) {
                  ops[k].dw, ops[k].dh, ops[k].mask);
         const int S = 4;
         uint8_t* big = (uint8_t*)malloc((size_t)W * S * LAYERS_LINES * S * 3);
+        for (int y = 0; y < LAYERS_LINES * S; y++)
+          for (int x = 0; x < W * S; x++) {
+            const uint8_t* p = layers_fb_pixel(f, x / S, y / S);
+            uint8_t* out = big + ((size_t)y * W * S + x) * 3;
+            out[0] = p[2]; out[1] = p[1]; out[2] = p[0];
+          }
+        char raw_path[512];
+        snprintf(raw_path, sizeof raw_path, "%s.%d.0.png", png, frame);
+        stbi_write_png(raw_path, W * S, LAYERS_LINES * S, 3, big, W * S * 3);
         for (int k = 1; k <= 4; k++) {
           const int m = layers_list(f, k, 4, S, S, even, ops);
           layers_render(f, ops, m, big, W * S, LAYERS_LINES * S);
@@ -383,8 +419,9 @@ int main(int argc, char** argv) {
   if (bg3_anchored) printf("  BG3 was anchored to the picture's edges on %ld frames\n", bg3_anchored);
   if (bg3_mask) printf("  BG3 carried the game over mask on %ld frames\n", bg3_mask);
   if (steps_spread) printf("  a background stepping every few ticks had its step spread on %ld background-ticks\n", steps_spread);
-  const bool ok = differing == 0;
-  printf(ok ? "OK\n" : "FAIL: %ld frames differ by more than one\n", differing);
+  const bool ok = differing == 0 && (!check_frame_step || skipped_frames == 0);
+  printf("  skipped video frames: %ld\n", skipped_frames);
+  printf(ok ? "OK\n" : "FAIL: %ld differing frames, %ld skipped video frames\n", differing, skipped_frames);
   cosim_free(&cosim);
   movie_free(&movie);
   snes_free(snes);

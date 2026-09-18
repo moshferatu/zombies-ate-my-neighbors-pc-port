@@ -61,6 +61,8 @@ typedef struct {
 // loop, and `RTI`s back to the entry instruction, where the rest of the budget
 // is spent. Nothing about this is specific to long routines; it is the same
 // code path for a 92-cycle one, which simply never stops early.
+// Video boundaries also stop the budget, even with NMI disabled, so the caller
+// of `cosim_frame` can present each completed picture before continuing it.
 //
 // The same argument applies to one kind of *write*, and that is what `commit`
 // is. A routine which publishes work to the NMI by writing a queue count last
@@ -858,7 +860,11 @@ static void commit_publish(Cosim* c, CosimCommit* k) {
 }
 
 // Spend as much of the innermost budget as can be spent without standing in the
-// way of an interrupt. True when the budget is gone and the call has returned.
+// way of an interrupt or the frame boundary the frontend is waiting for.
+// NMI can be disabled during decompression: waiting only for an interrupt then
+// consumes dozens of video frames in one call and freezes the previous picture
+// on screen. Keep the remaining budget parked across a video boundary too.
+// True when the budget is gone and the call has returned.
 //
 // The `intWanted` store is the one liberty this takes with the core, and it is
 // the honest one: the ROM's version of this routine was executing instructions,
@@ -868,7 +874,10 @@ static void commit_publish(Cosim* c, CosimCommit* k) {
 static bool burn_spend(Cosim* c) {
   CosimBurn* b = &c->priv->burn[c->priv->burn_depth - 1];
   const uint64_t before = c->snes->cycles;
-  while (b->left > 0 && !interrupt_due(c->snes)) {
+  const uint32_t frame = c->snes->frames;
+  const bool vblank = c->snes->inVblank;
+  while (b->left > 0 && !interrupt_due(c->snes) &&
+         c->snes->frames == frame && c->snes->inVblank == vblank) {
     const int piece = b->left < b->piece ? b->left : b->piece;
     burn_slice(c, piece);
     b->left -= piece;
@@ -876,9 +885,11 @@ static bool burn_spend(Cosim* c) {
   c->work.cycles_native += c->snes->cycles - before;
 
   if (b->left > 0) {
-    c->work.burns_parked++;
-    c->snes->cpu->intWanted = true;
-    snes_runCpuCycle(c->snes);  // the core takes it, from the entry instruction
+    if (interrupt_due(c->snes)) {
+      c->work.burns_parked++;
+      c->snes->cpu->intWanted = true;
+      snes_runCpuCycle(c->snes);  // the core takes it, from the entry instruction
+    }
     return false;
   }
   commit_publish(c, &b->commit);
@@ -889,9 +900,8 @@ static bool burn_spend(Cosim* c) {
 
 // Owe a substituted call its cycles, and start paying.
 //
-// Nothing is deferred in the common case: a budget that no interrupt interrupts
-// is spent here in full and the routine returns before this does, which is what
-// it did before there was a stack of these at all.
+// Nothing is deferred in the common case: a budget that reaches neither an
+// interrupt nor a video boundary is spent here in full.
 static void burn_begin(Cosim* c, const CosimRoutine* r, const CosimRegs* out,
                        CosimCommit* commit) {
   if (c->priv->burn_depth >= COSIM_MAX_DEPTH) {
@@ -1288,7 +1298,7 @@ static void cosim_step_inner(Cosim* c) {
   // read the CPU sitting on it as a fresh call. See `CosimBurn`.
   if (burn_parked(c)) {
     burn_spend(c);
-    return;  // either the call returned or the core took an interrupt
+    return;  // returned, took an interrupt, or reached a video boundary
   }
 
   if (at_instruction(snes)) {
