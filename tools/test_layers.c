@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
   uint32_t last_serial = sprite_oam_owners.serial;
   static SpriteOamOwners held;
   bool held_fresh = false;
-  long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, link_jump = 0, origin_moved = 0, window_held = 0;
+  long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, link_jump = 0, origin_moved = 0, window_held = 0, steps_spread = 0;
 
   long tested = 0, identical = 0, within_one = 0, differing = 0, unexpressible = 0, dropped = 0;
   long eased_ticks = 0, sprites_known = 0, sprites_drawn = 0, owners_fresh = 0;
@@ -227,6 +227,7 @@ int main(int argc, char** argv) {
         link_near += f->linkNear; link_origin += f->linkOrigin;
         link_looks += f->linkLooks; link_none += f->linkNone; link_jump += f->linkJump;
         window_held += f->mathHeld;
+        for (int l = 0; l < 4; l++) if (f->stepK[l]) steps_spread++;
         if (f->dExtraLeft != 0) origin_moved++;
       }
       for (int s = 0; s < LAYERS_SPRITES; s++) {
@@ -236,6 +237,15 @@ int main(int argc, char** argv) {
       }
       if (motion_first >= 0 && frame >= motion_first && frame <= motion_last) {
         printf("  frame %d%s: view %+d,%+d;", frame, f->ease ? "" : " (not eased)", f->dScrollX[1], f->dScrollY[1]);
+        // Every background's scroll from the last tick, with the ones scrolled
+        // per line (which the draw list cannot move) marked.
+        printf(" bg");
+        for (int l = 0; l < 4; l++) {
+          if (!f->main[l] && !f->sub[l]) { printf(" -"); continue; }
+          printf(" %+d,%+d%s", f->dScrollX[l], f->dScrollY[l], f->raster[l] ? "r" : "");
+          if (f->stepK[l]) printf("(step %+d,%+d %d/%d)", f->stepDX[l], f->stepDY[l], f->stepI[l], f->stepK[l]);
+        }
+        printf(";");
         for (int r = 0; r < f->mathRects; r++)
           printf(" maths %d,%d %dx%d shown %d,%d %dx%d;", f->mathRect[r].x, f->mathRect[r].y, f->mathRect[r].w,
                  f->mathRect[r].h, f->mathShown[r].x, f->mathShown[r].y, f->mathShown[r].w, f->mathShown[r].h);
@@ -344,6 +354,7 @@ int main(int argc, char** argv) {
          " moved;  the picture's origin moved on %ld ticks\n",
          link_near, link_origin, link_looks, link_none, link_jump, origin_moved);
   if (window_held) printf("  the maths window's rectangles were held where they wandered on %ld ticks\n", window_held);
+  if (steps_spread) printf("  a background stepping every few ticks had its step spread on %ld background-ticks\n", steps_spread);
   const bool ok = differing == 0;
   printf(ok ? "OK\n" : "FAIL: %ld frames differ by more than one\n", differing);
   cosim_free(&cosim);

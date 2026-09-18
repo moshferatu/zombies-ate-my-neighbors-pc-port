@@ -80,6 +80,20 @@
 // for one tick and then where it is. A change of more than `LAYERS_EVEN_MAX`
 // is a jump and not a rounding, and is left alone.
 //
+// Some things the game moves only every few ticks: the LucasArts screen's
+// textured backdrop a pixel diagonally every fourth tick, the character
+// select's wallpaper every fifth, the title's backdrop round a circle eleven
+// pixels at a time every fourth. Eased from tick to tick that is a step over
+// one tick and three or four standing still -- motion at fifteen pictures a
+// second, whatever the display does. A background that has stepped at the
+// same interval twice running (`LAYERS_STEP_MIN` to `LAYERS_STEP_MAX` ticks
+// apart) is taken to be stepping, and each step is *spread*: shown over the
+// ticks up to the next, arriving exactly as it lands (`stepK`, `stepI`).
+// That shows the backdrop a few ticks late, which on a backdrop nobody
+// steers is not felt, and it is only backgrounds: a sprite's motion is the
+// game's, at its rate. Ends at once on a step that breaks the interval, or on
+// the screen changing.
+//
 // It is a header of static inline functions with no SDL in it. The draw list
 // is data, `layers_render` draws it in software for the tests, and
 // `src/present.h` draws the same list with the renderer.
@@ -232,6 +246,12 @@ typedef struct {
   // it is drawn at the end of this tick and was at the end of the last, in
   // quarters of a pixel. Zero where the tick before was not eased.
   int cScrollX[4], cScrollY[4], bScrollX[4], bScrollY[4];
+  // For a background stepping every few ticks -- see "Evening the motion
+  // out": ticks since it last moved, the interval between its last two
+  // moves, and the step being spread, if any: the move, over `stepK` ticks,
+  // of which this is tick `stepI` (from 0). `stepK` is 0 when none.
+  int still[4], lastGap[4];
+  int stepDX[4], stepDY[4], stepK[4], stepI[4];
   // How the sprites were paired with their predecessors, for the test:
   // by the nearest piece of the same record, by the record's origin alone,
   // by looks (no record), or not at all.
@@ -684,6 +704,12 @@ static inline int layers_delta(int from, int to, int bits) {
 // How far a maths-window rectangle's top or bottom may wander from tick to
 // tick and still be the same rectangle, held where it was -- see `mathShown`.
 #define LAYERS_WINDOW_WANDER 3
+// A background that moves every this many ticks, twice running, is stepping,
+// and its steps are spread over the interval -- see "Evening the motion
+// out". Not two: a two-tick alternation is what `even` is for, and a delay of
+// two ticks on the world would be felt.
+#define LAYERS_STEP_MIN 3
+#define LAYERS_STEP_MAX 8
 static inline int layers_even(int d, int q) {
   const int c = d - q;
   return c > LAYERS_EVEN_MAX || c < -LAYERS_EVEN_MAX ? 0 : c;
@@ -737,6 +763,35 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
       cur->bScrollX[l] = prev->cScrollX[l];
       cur->bScrollY[l] = prev->cScrollY[l];
     }
+  // A background stepping every few ticks, and the step being spread.
+  for (int l = 0; l < 4; l++) {
+    cur->still[l] = cur->lastGap[l] = 0;
+    cur->stepDX[l] = cur->stepDY[l] = cur->stepK[l] = cur->stepI[l] = 0;
+    if (!prevEased || cur->raster[l] || prev->raster[l]) continue;
+    const int dx = cur->dScrollX[l] - (cur->anchored[l] ? 0 : cur->dExtraLeft);
+    const int dy = cur->dScrollY[l];
+    if (dx == 0 && dy == 0) {
+      cur->still[l] = prev->still[l] + 1;
+      cur->lastGap[l] = prev->lastGap[l];
+      if (prev->stepK[l] && prev->stepI[l] + 1 < prev->stepK[l]) {
+        cur->stepDX[l] = prev->stepDX[l];
+        cur->stepDY[l] = prev->stepDY[l];
+        cur->stepK[l] = prev->stepK[l];
+        cur->stepI[l] = prev->stepI[l] + 1;
+      }
+      continue;
+    }
+    const int gap = prev->still[l] + 1;
+    cur->still[l] = 0;
+    cur->lastGap[l] = gap;
+    if (gap >= LAYERS_STEP_MIN && gap <= LAYERS_STEP_MAX && gap == prev->lastGap[l] &&
+        dx <= LAYERS_MARGIN && dx >= -LAYERS_MARGIN && dy <= LAYERS_MARGIN && dy >= -LAYERS_MARGIN) {
+      cur->stepDX[l] = dx;
+      cur->stepDY[l] = dy;
+      cur->stepK[l] = gap;
+      cur->stepI[l] = 0;
+    }
+  }
   // For a sprite whose predecessor was sprite `j` of the last tick, once
   // `px`, `py` are set: whether it *moved* there at all, and `even`.
   //
@@ -914,6 +969,18 @@ static inline int layers_back(int d, int b, int c, int num, int den, int scale, 
   return even ? layers_part_even(d, b, c, num, den, scale) : layers_part(d, num, den, scale);
 }
 
+// How far back a background is drawn whose step `d` is being spread over `k`
+// ticks, `num / den` of the way through tick `i` of them: the part of the
+// step not yet shown, `(k - i - num / den) / k` of it, in target pixels.
+static inline int layers_spread(int d, int k, int i, int num, int den, int scale) {
+  if (den <= 0 || k <= 0) return 0;
+  if (num > den) num = den;
+  if (num < 0) num = 0;
+  const int scaled = d * ((k - i) * den - num) * scale;
+  const int by = k * den;
+  return scaled >= 0 ? (scaled + by / 2) / by : -((-scaled + by / 2) / by);
+}
+
 // The ops that draw `cur` `num/den` of the way from the tick before it, on a
 // target `sx` by `sy` times the console; at `num == den` and not `even`,
 // `cur` exactly as it stands. Returns the number of ops, or 0 if `cur` is not
@@ -934,8 +1001,14 @@ static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
     // ...less however far the picture's own origin moved under it, for a
     // layer that lives in the console's coordinates.
     const int dOrigin = cur->anchored[l] ? 0 : cur->dExtraLeft;
-    offX[l] = ease ? layers_back(cur->dScrollX[l] - dOrigin, cur->bScrollX[l], cur->cScrollX[l], num, den, sx, even) : 0;
-    offY[l] = ease ? layers_back(cur->dScrollY[l], cur->bScrollY[l], cur->cScrollY[l], num, den, sy, even) : 0;
+    if (ease && even && cur->stepK[l]) {
+      // A step being spread over the ticks to the next -- see `stepK`.
+      offX[l] = layers_spread(cur->stepDX[l], cur->stepK[l], cur->stepI[l], num, den, sx);
+      offY[l] = layers_spread(cur->stepDY[l], cur->stepK[l], cur->stepI[l], num, den, sy);
+    } else {
+      offX[l] = ease ? layers_back(cur->dScrollX[l] - dOrigin, cur->bScrollX[l], cur->cScrollX[l], num, den, sx, even) : 0;
+      offY[l] = ease ? layers_back(cur->dScrollY[l], cur->bScrollY[l], cur->cScrollY[l], num, den, sy, even) : 0;
+    }
     // No further than the margin the plane was drawn with, which a move just
     // short of a cut and a pixel of `even` could otherwise exceed.
     if (offX[l] > M * sx) offX[l] = M * sx;

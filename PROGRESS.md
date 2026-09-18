@@ -88,6 +88,20 @@ a little -- the player's, and a zombie's giving chase.
   line. `mathShown` holds a rectangle within `LAYERS_WINDOW_WANDER` (3)
   lines of the last tick's, under `even` only, so the exactness test is
   untouched; 155 of 341 radar ticks held.
+- **The logo, title and select screens were layered and exact and not
+  smooth.** `--motion` now prints every background's move per tick, and
+  showed the LucasArts backdrop (BG3) at +1,+1 every fourth tick, the
+  select screen's wallpaper (BG3) every fifth, and the title's backdrop
+  (BG3) round a circle 11 px every fourth -- motion at 15 Hz whatever the
+  smoothing does per tick. A background stepping at the same interval twice
+  running (3..8 ticks) has each step spread over the interval
+  (`stepK`/`stepI`/`layers_spread`, `even` only, backgrounds only), landing
+  exactly as the next step does; `--track` shows the title's plane at
+  -41,-39,-36,... ,0 target pixels across the 16 pictures of a step. A few
+  ticks of delay on a backdrop nobody steers; it never fires in a level
+  (`level1`, `level25-boss`: spread ticks only on the title and select
+  screens), and exactness is unchanged on `boot`, `level1`, `level25-boss`
+  and the select movie (0 differing).
 - The draw list unmoved is still the PPU's frame: `level1`, `level21-spin`,
   `level25-boss` in 16:9, 0 differing. (The test runs to the frame it is
   given, not to the movie's end -- `0 99999` is four processes that never

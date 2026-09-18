@@ -1249,7 +1249,25 @@ flickering in and out of the dimming. With `even` on, a rectangle that
 differs from the last tick's by no more than `LAYERS_WINDOW_WANDER` (3)
 lines at either edge is held where it was (`mathShown`); the console's own
 frame is unchanged, so the exactness test still compares against it. 155 of
-the radar movie's 341 ticks are held. `--dump-pictures prefix,frame`
+the radar movie's 341 ticks are held.
+
+**Backdrops that step every few ticks.** The screens before the game are
+layered and exact, and were not smooth: the LucasArts screen's textured
+backdrop moves a pixel diagonally every *fourth* tick, the character
+select's wallpaper every fifth, and the title's backdrop goes round a circle
+eleven pixels at a time every fourth (`zamn_test_layers --motion` prints
+every background's move per tick now, marked `r` where it is scrolled per
+line). Eased from tick to tick that is a step over one tick and three or
+four standing still -- fifteen pictures a second, on any display. A
+background that has stepped at the same interval twice running
+(`LAYERS_STEP_MIN` 3 to `LAYERS_STEP_MAX` 8 ticks) is taken to be stepping,
+and each step is spread over the ticks up to the next (`stepK`, `stepI`,
+`layers_spread`), arriving exactly as the next one lands: the title's
+backdrop moves 2.75 pixels a picture at 240 Hz instead of 11 and then
+nothing. That shows the backdrop a few ticks late, which on a backdrop
+nobody steers is not felt; it is under `even` (F6), it is only backgrounds,
+and it never fires in a level: over `level1` and `level25-boss` the only
+spread ticks are on the title and the select screen. `--dump-pictures prefix,frame`
 writes the four pictures of one tick as the renderer drew them and as
 `layers_render` draws them, which is how the GPU path was found to be
 pixel-identical to the software one on both Direct3D 9 and 11 -- and how a
