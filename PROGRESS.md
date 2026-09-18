@@ -42,6 +42,52 @@ a little -- the player's, and a zombie's giving chase.
   correction and the last tick's (`cx`/`bx`, `cScroll*`/`bScroll*`), the latter
   being where this tick's pictures start, so ticks join without a step; a
   sprite with no move-before-last is drawn where it is.
+- **The survivor radar fell back to the PPU's picture**, the whole time it
+  was up (it is a toggle), because its box is the colour-maths window with
+  its edges rewritten at line ~50 and ~108 -- `--motion` on an unlayered
+  frame now prints the first mid-frame register and line, which is how that
+  took a minute rather than an evening. Window edges are recorded per line
+  (`lineWindow`, `windowRaster`, $2126-9 exempt from `midFrameWrite`), the
+  maths gate is read per line, and a plane the maths applies to is baked
+  twice (`LAYERS_MATHED`, 18 planes) with the mathed twin drawn clipped to
+  the window's rectangles (`mathRect`, `LayersOp.clipped`,
+  `SDL_RenderSetClipRect`). The box stays put on the target while the world
+  eases under it. 341 of 341 radar frames identical to the PPU in 4:3 and
+  16:9; GPU and software pictures agree.
+- **...and then its markers swept the box.** One OAM entry (slot 0, record
+  `1a16`) is placed on a different survivor every tick -- multiplexing --
+  and the pairing, by the record, eased it between them: 252,248 to 284,260
+  to 278,204 to 352,252 in four ticks. `LAYERS_LINK_BEFORE` now refuses a
+  move that differs from the move before by more than `LAYERS_JUMP_MAX`
+  (6 px; 4 refused the first tick of every 6 px/tick shot) on either axis,
+  judged on the actor's origin (`mx`, `my`) rather than the piece so that an
+  animation frame's shift does not count. The test's pairing line says how
+  many were "placed, not moved" and `--motion` lists them: 44 on
+  `level25-boss`, 43 of them recordless margin sprites paired by looks.
+- **In widescreen the dimmed box sat 43 columns right of its frame.** Not
+  the list's fault -- it matched the PPU's picture exactly -- but the
+  widened PPU's: the frame is on BG3, anchored to the picture's edges, and
+  the window stayed in console coordinates. `ppu_windowTest` now maps a
+  window's edges as `ppu_wideAnchor` maps columns whenever any layer is
+  anchored (left-half edge from the picture's left, right-half from its
+  right). Found by the fix a second bug: the rectangle scan used -1 as "no
+  run open" and a run starting in the left margin (a negative column) kept
+  restarting until column 0 -- 30 columns wide instead of 51. A flag now.
+  `--png` prints the maths gate column by column on line 80, which is what
+  showed the gate right and the scan wrong. Radar movie exact in 4:3 and
+  16:9 again; `level1`, `level21-spin`, `level25-boss` unchanged.
+- **The markers were 43 columns right of the box, and the box's foot
+  flickered.** The markers are sprites of a screen-space record, drawn as
+  world things by widescreen; `ws_anchor_screen_sprites` now flags their
+  OAM entries anchored (`Ppu.spriteAnchored`, `snes_setSpriteAnchored`,
+  applied in `ppu_spriteX`) from the owner table, whose serial at the top
+  of a frame describes the OAM just DMA'd. `zamn_headless` links
+  `zamn_port` now, because `widescreen.h` reads the table. The flicker is
+  the game's: `--motion` printed the box's rectangle at y 49..52, h 57..59
+  from tick to tick -- the window-edge interrupt lands on a wandering
+  line. `mathShown` holds a rectangle within `LAYERS_WINDOW_WANDER` (3)
+  lines of the last tick's, under `even` only, so the exactness test is
+  untouched; 155 of 341 radar ticks held.
 - The draw list unmoved is still the PPU's frame: `level1`, `level21-spin`,
   `level25-boss` in 16:9, 0 differing. (The test runs to the frame it is
   given, not to the movie's end -- `0 99999` is four processes that never

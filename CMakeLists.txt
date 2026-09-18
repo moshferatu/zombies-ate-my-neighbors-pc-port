@@ -32,7 +32,9 @@ add_executable(zamn_headless src/headless.c)
 # zamn_assets_lib, defined below, is for `src/widescreen.h`: the margins of a
 # widened picture are drawn from the same metasprites and the same VRAM cache
 # geometry the game draws from.
-target_link_libraries(zamn_headless PRIVATE snescore zamn_analysis zamn_assets_lib)
+# ...and the port, because `src/widescreen.h` reads the sprite pass's owner
+# table to anchor the sprites of a screen-space record.
+target_link_libraries(zamn_headless PRIVATE snescore zamn_analysis zamn_assets_lib zamn_port)
 target_include_directories(zamn_headless PRIVATE third_party/stb)
 if(MSVC)
   target_compile_definitions(zamn_headless PRIVATE _CRT_SECURE_NO_WARNINGS)

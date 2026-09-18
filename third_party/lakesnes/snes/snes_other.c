@@ -157,6 +157,11 @@ void snes_setLayerWide(Snes* snes, int layer, int policy) {
   ppu_setLayerWide(snes->ppu, layer, policy);
 }
 
+void snes_setSpriteAnchored(Snes* snes, int slot, bool anchored) {
+  if(slot < 0 || slot >= 128) return;
+  snes->ppu->spriteAnchored[slot] = anchored;
+}
+
 bool snes_bgTilemapWider(const Snes* snes, int layer) {
   return ppu_bgTilemapWider(snes->ppu, layer);
 }

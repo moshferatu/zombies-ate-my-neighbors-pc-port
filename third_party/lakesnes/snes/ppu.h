@@ -234,6 +234,12 @@ struct Ppu {
   int extraLeft;
   int extraRight;
   uint8_t layerWide[5];
+  // ...and per sprite, whether it goes with an anchored layer rather than
+  // with the world: drawn where an anchored layer's column of the same
+  // number is drawn, that many in from the picture's edge. Set from outside
+  // for the sprites of a screen-space record -- the survivor radar's markers
+  // -- which the game lays out over the status panel.
+  bool spriteAnchored[128];
   // ...whether each background is empty at both edges, recomputed once a frame
   uint8_t layerEdgeEmpty[4];
   // ...whether the game has scrolled it sideways since this screen was put up,
@@ -264,16 +270,33 @@ struct Ppu {
   // frontend move either kind a fraction of a tick: see `src/smooth.h`.
   uint16_t lineHScroll[4][PPU_LINES];
   uint16_t lineVScroll[4][PPU_LINES];
+  // ...and where the two windows' edges were ($2126-$2129, as W1L W1R W2L
+  // W2R) as each line was drawn, for the same reason: a window is a pair of
+  // columns, and a game that wants a box moves the edges on the lines where
+  // the box begins and ends -- this one's survivor radar does, through the
+  // colour-maths window, for as long as the radar is up.
+  uint8_t lineWindow[PPU_LINES][4];
+  // Whether the window edges were rewritten while the picture was being
+  // drawn. Kept apart from `midFrameWrite` because a frame that only did that
+  // *can* be drawn again, from the per-line edges, where nothing but the
+  // maths gate looks at them.
+  bool windowRaster;
   // ...and whether anything *other* than a scroll register was written while
   // the picture was being drawn. Scroll is recorded line by line, so a scroll
   // rewritten mid-frame -- by HDMA or by a CPU loop -- is a raster effect like
-  // any other; brightness, colour math, a window edge, VRAM or OAM written
-  // mid-frame are not recorded, and a frame that had them cannot be drawn
-  // again from its end state. Two things in this game do it: the HDMA on the
-  // map screen and a vblank so full that the NMI is still uploading, behind
-  // forced blank, when the first lines are due -- which the console shows as
-  // a black band at the top of the picture. Cleared at the top of each frame.
+  // any other, and the window edges are recorded the same way (`lineWindow`,
+  // `windowRaster`); brightness, colour math, VRAM or OAM written mid-frame
+  // are not recorded, and a frame that had them cannot be drawn again from
+  // its end state. Two things in this game do it: the HDMA on the map screen
+  // and a vblank so full that the NMI is still uploading, behind forced
+  // blank, when the first lines are due -- which the console shows as a black
+  // band at the top of the picture. Cleared at the top of each frame.
   bool midFrameWrite;
+  // ...and which register it was, on which line, how many times -- so that a
+  // frame a frontend cannot draw again can say what it was that stopped it.
+  uint8_t midFrameAdr;
+  uint16_t midFrameLine;
+  int midFrameWrites;
 };
 
 enum { ppu_pixelOutputFormatXBGR = 0, ppu_pixelOutputFormatBGRX = 1 };
@@ -314,7 +337,9 @@ bool ppu_frameStatic(const Ppu* ppu);
 int ppu_layerPixel(Ppu* ppu, int layer, int x, int line, bool sub, int* priority);
 // Colour maths, as gated by the colour window and the prevent mode, at column
 // `x` of the picture. Whether a *layer* has maths on is `mathEnabled[]`.
-bool ppu_mathAllowedAt(Ppu* ppu, int x);
+// `line` as `ppu_layerPixel` takes it: the window edges are the ones in force
+// on that line.
+bool ppu_mathAllowedAt(Ppu* ppu, int x, int line);
 // The colour window's clip-to-black, likewise.
 bool ppu_clippedAt(Ppu* ppu, int x);
 int ppu_spriteSize(const Ppu* ppu, int slot);

@@ -1187,7 +1187,69 @@ Every movie in the corpus comes out with zero frames differing. "Not a draw
 list" is a frame the list has no op for -- forced blank, a fade while the sub
 screen is being added, anything written mid-frame (the map screen's HDMA), mode
 7 -- and such a frame is shown as the PPU drew it, as many times as there are
-refreshes, with easing resuming on the next. `--dump-pictures prefix,frame`
+refreshes, with easing resuming on the next.
+
+**The survivor radar is a window, and windows are drawn as clips.** The box a
+shoulder button brings up is the colour-maths window: inside it the game
+subtracts a fixed grey from the world and the backdrop, and since a window is
+only a pair of columns, it moves the edges on the line where the box starts
+and again where it ends -- a register written mid-frame, which made every
+frame with the radar up "not a draw list", and the radar is a toggle that
+stays up. The PPU now records the window edges per line as it does the
+scroll, and a frame that moved only those is drawable: each plane the maths
+applies to is baked twice, plain and mathed, and the mathed twin is drawn
+over the plain one clipped to the rectangles where the window allows maths
+(`mathRect`, one for the box). Clipping is on the target, so the box stays
+put while the world eases under it, which baking the window into the plane
+could not have done. Exact over the radar movie in 4:3 and 16:9, 341 frames
+of 341. A window that moved on more lines than `LAYERS_MAX_MATH_RECTS` can
+hold, or that gates a layer or the sprites rather than the maths, still
+falls back.
+
+**The radar's markers are one sprite.** The console draws every survivor's
+marker with a single OAM entry, placed on a different survivor each tick, so
+that six markers flash in turn -- and eased from one tick to the next that
+one sprite swept the box. A sprite is now eased only if this tick's move
+continues the last: a move that differs from the move before by more than
+`LAYERS_JUMP_MAX` (6 px) on either axis is a placement, and the sprite is
+drawn where it is for that tick. The move judged is the actor's origin where
+the port's pass knows it, because a piece's own move has the animation in it.
+Over `level25-boss` in 16:9 that refuses 44 of some 100,000 paired
+sprite-ticks, 43 of them margin sprites paired by looks at seven pixels or
+more; the markers still flash as the console flashes them, but each stays
+where the game put it.
+
+**And in widescreen the box was 43 columns right of its frame** -- the PPU's
+own doing, not the list's, which is why the list matched it to the pixel.
+The frame is on the status layer, which `ppu_wideAnchor` pins to the edges
+of the wider picture, while the window kept the console's coordinates, and
+console column 22 is picture column 65. `ppu_windowTest` now moves a window's
+edges the way the anchored layer's columns moved whenever a layer is
+anchored: an edge in the left half is that many columns from the picture's
+left edge, one in the right half that many from its right. Off a level
+nothing is anchored and nothing is windowed but the parked pair, so nothing
+else changes; the radar movie is exact in both aspects.
+
+**The markers go with the panel too.** They are sprites, and in a level
+widescreen draws every sprite as a world thing, in the console's coordinates
+-- so they sat 43 columns right of the box as the box had sat right of its
+frame. The record they are drawn from is a *screen-space* record
+(`ACTOR_SCREEN_SPACE`: the game lays it out on the screen, not in the
+world), and the pass's owner table says which OAM entries came from it, so
+`widescreen_frame` flags those entries anchored (`snes_setSpriteAnchored`)
+and the PPU draws them where an anchored layer's column of the same number
+goes. A flag rather than a moved X, so a frame the game did not redraw is
+not moved twice.
+
+**And the box's edges wander.** The game moves the window's edges from an
+interrupt whose line is not the same from one tick to the next: the box
+began on line 49, 50, 51 or 52 and ended on 107 to 110, tick by tick, which
+at sixty pictures a second is a line of the world at the foot of the box
+flickering in and out of the dimming. With `even` on, a rectangle that
+differs from the last tick's by no more than `LAYERS_WINDOW_WANDER` (3)
+lines at either edge is held where it was (`mathShown`); the console's own
+frame is unchanged, so the exactness test still compares against it. 155 of
+the radar movie's 341 ticks are held. `--dump-pictures prefix,frame`
 writes the four pictures of one tick as the renderer drew them and as
 `layers_render` draws them, which is how the GPU path was found to be
 pixel-identical to the software one on both Direct3D 9 and 11 -- and how a

@@ -69,6 +69,7 @@ static void ppu_handleOPT(Ppu* ppu, int layer, int* lx, int* ly);
 static void ppu_calculateMode7Starts(Ppu* ppu, int y);
 static int ppu_getPixelForMode7(Ppu* ppu, int x, int layer, bool priority);
 static bool ppu_getWindowState(Ppu* ppu, int layer, int x);
+static bool ppu_getWindowStateOnLine(Ppu* ppu, int layer, int x, int line);
 static void ppu_evaluateSprites(Ppu* ppu, int line);
 static uint16_t ppu_getVramRemap(Ppu* ppu);
 static bool ppu_wideMapX(const Ppu* ppu, int layer, int* x);
@@ -85,6 +86,7 @@ Ppu* ppu_init(Snes* snes) {
   ppu->extraLeft = 0;
   ppu->extraRight = 0;
   for(int i = 0; i < 5; i++) ppu->layerWide[i] = ppu_wideAuto;
+  memset(ppu->spriteAnchored, 0, sizeof(ppu->spriteAnchored));
   for(int i = 0; i < 4; i++) {
     ppu->layerEdgeEmpty[i] = 0;
     ppu->layerScrolled[i] = 0;
@@ -97,6 +99,8 @@ Ppu* ppu_init(Snes* snes) {
   memset(ppu->lineHScroll, 0, sizeof(ppu->lineHScroll));
   memset(ppu->lineVScroll, 0, sizeof(ppu->lineVScroll));
   ppu->midFrameWrite = false;
+  ppu->midFrameWrites = 0;
+  ppu->windowRaster = false;
   return ppu;
 }
 
@@ -343,6 +347,8 @@ void ppu_handleFrameStart(Ppu* ppu) {
   ppu->timeOver = false;
   ppu->evenFrame = !ppu->evenFrame;
   ppu->midFrameWrite = false;
+  ppu->midFrameWrites = 0;
+  ppu->windowRaster = false;
   // Once a frame, and only when there are margins to fill: which of the
   // backgrounds have nothing at the console's edges, and so nothing to say
   // beyond them. Done here because the answer has to hold for the whole frame
@@ -390,6 +396,10 @@ void ppu_runLine(Ppu* ppu, int line) {
       ppu->lineHScroll[i][line] = ppu->bgLayer[i].hScroll;
       ppu->lineVScroll[i][line] = ppu->bgLayer[i].vScroll;
     }
+    ppu->lineWindow[line][0] = ppu->window1left;
+    ppu->lineWindow[line][1] = ppu->window1right;
+    ppu->lineWindow[line][2] = ppu->window2left;
+    ppu->lineWindow[line][3] = ppu->window2right;
   }
   // evaluate sprites
   memset(ppu->objPixelBuffer, 0, (size_t)ppu_gameWidth(ppu));
@@ -434,9 +444,9 @@ int ppu_layerPixel(Ppu* ppu, int layer, int x, int line, bool sub, int* priority
   if(!ppu_wideMapX(ppu, layer, &layerX)) return 0;
   const bool windowed = sub ? ppu->layer[layer].subScreenWindowed
                             : ppu->layer[layer].mainScreenWindowed;
-  if(windowed && ppu_getWindowState(ppu, layer, layerX)) return 0;
   const int last = ppu->frameOverscan ? 239 : 224;
   const int l = line < 1 ? 1 : line > last ? last : line;
+  if(windowed && ppu_getWindowStateOnLine(ppu, layer, layerX, l)) return 0;
   const int lx = layerX + ppu->lineHScroll[layer][l];
   const int ly = line + ppu->lineVScroll[layer][l];
   int pixel = ppu_getPixelForBgLayer(ppu, lx & 0x3ff, ly & 0x3ff, layer, false);
@@ -448,8 +458,10 @@ int ppu_layerPixel(Ppu* ppu, int layer, int x, int line, bool sub, int* priority
   return pixel;
 }
 
-bool ppu_mathAllowedAt(Ppu* ppu, int x) {
-  const bool cw = ppu_getWindowState(ppu, 5, x);
+bool ppu_mathAllowedAt(Ppu* ppu, int x, int line) {
+  const int last = ppu->frameOverscan ? 239 : 224;
+  const int l = line < 1 ? 1 : line > last ? last : line;
+  const bool cw = ppu_getWindowStateOnLine(ppu, 5, x, l);
   return !(ppu->preventMathMode == 3 || (ppu->preventMathMode == 2 && cw) ||
            (ppu->preventMathMode == 1 && !cw));
 }
@@ -790,6 +802,22 @@ static bool ppu_windowTest(const Ppu* ppu, int x, int left, int right) {
     // moves: no window the game aims at anything keeps both ends on one column
     // of the screen edge.
     if(left == right && (left == 0 || left == 255)) return false;
+    // A window the game aims at something is aimed at the console's 256, and
+    // in a level the something is the status panel, which `ppu_wideAnchor`
+    // has split and pinned to the two edges of the wider picture. The window
+    // goes with it: an edge in the left half is that many columns in from the
+    // picture's left edge, one in the right half that many from its right --
+    // exactly where the anchored layer's own columns went. Without this the
+    // survivor radar's dimmed box sat 43 columns to the right of its frame.
+    // Off a level nothing is anchored and nothing is windowed but the parked
+    // pair above, so the console's own coordinates stand.
+    bool anchored = false;
+    for(int l = 0; l < 4; l++) anchored |= ppu->layerWide[l] == ppu_wideAnchor;
+    if(anchored) {
+      const int l2 = left < 128 ? left - ppu->extraLeft : left + ppu->extraRight;
+      const int r2 = right < 128 ? right - ppu->extraLeft : right + ppu->extraRight;
+      return x >= l2 && x <= r2;
+    }
   }
   return x >= left && x <= right;
 }
@@ -903,6 +931,21 @@ static bool ppu_getWindowState(Ppu* ppu, int layer, int x) {
   return false;
 }
 
+// The same, with the edges the two windows had on `line` rather than the
+// ones they have now -- which differ only in a frame that moved them.
+static bool ppu_getWindowStateOnLine(Ppu* ppu, int layer, int x, int line) {
+  const uint8_t w1l = ppu->window1left, w1r = ppu->window1right;
+  const uint8_t w2l = ppu->window2left, w2r = ppu->window2right;
+  ppu->window1left = ppu->lineWindow[line][0];
+  ppu->window1right = ppu->lineWindow[line][1];
+  ppu->window2left = ppu->lineWindow[line][2];
+  ppu->window2right = ppu->lineWindow[line][3];
+  const bool state = ppu_getWindowState(ppu, layer, x);
+  ppu->window1left = w1l; ppu->window1right = w1r;
+  ppu->window2left = w2l; ppu->window2right = w2r;
+  return state;
+}
+
 // A sprite's X, out of the 8 bits in OAM and the 9th in high OAM.
 //
 // Nine bits is a range of 512 and the console spends it as -256..255, so an X
@@ -915,6 +958,10 @@ static int ppu_spriteX(const Ppu* ppu, uint8_t index) {
   int x = ppu->oam[index] & 0xff;
   x |= ((ppu->highOam[index >> 3] >> (index & 7)) & 1) << 8;
   if(x > 255 + ppu->extraRight) x -= 512;
+  // An anchored sprite: with the picture widened, where `ppu_wideAnchor`
+  // puts a layer's column of the same number.
+  if(ppu->spriteAnchored[index >> 1] && (ppu->extraLeft != 0 || ppu->extraRight != 0))
+    x += x < 128 ? -ppu->extraLeft : ppu->extraRight;
   return x;
 }
 
@@ -1143,8 +1190,17 @@ void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
   // A write while a line is being drawn -- the same test `snes_runCycle`
   // uses to decide whether a line is -- to anything but a scroll register
   // ($210D-$2114, which are recorded per line). See `midFrameWrite`.
-  if(!ppu->snes->inVblank && ppu->snes->vPos > 0 && (adr < 0x0d || adr > 0x14))
+  if(!ppu->snes->inVblank && ppu->snes->vPos > 0 && adr >= 0x26 && adr <= 0x29)
+    ppu->windowRaster = true;
+  else if(!ppu->snes->inVblank && ppu->snes->vPos > 0 && (adr < 0x0d || adr > 0x14)) {
+    if(!ppu->midFrameWrite) {
+      ppu->midFrameAdr = adr;
+      ppu->midFrameLine = ppu->snes->vPos;
+      ppu->midFrameWrites = 0;
+    }
     ppu->midFrameWrite = true;
+    ppu->midFrameWrites++;
+  }
   switch(adr) {
     case 0x00: {
       // TODO: oam address reset when written on first line of vblank, (and when forced blank is disabled?)

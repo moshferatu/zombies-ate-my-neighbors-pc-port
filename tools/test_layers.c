@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
   uint32_t last_serial = sprite_oam_owners.serial;
   static SpriteOamOwners held;
   bool held_fresh = false;
-  long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, origin_moved = 0;
+  long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, link_jump = 0, origin_moved = 0, window_held = 0;
 
   long tested = 0, identical = 0, within_one = 0, differing = 0, unexpressible = 0, dropped = 0;
   long eased_ticks = 0, sprites_known = 0, sprites_drawn = 0, owners_fresh = 0;
@@ -158,6 +158,32 @@ int main(int argc, char** argv) {
       for (; r < reasons; r++) if (!strcmp(reason[r], f->why)) break;
       if (r == reasons && reasons < MAX_REASONS) { reason[reasons] = f->why; reason_count[reasons] = 0; reasons++; }
       if (r < reasons) reason_count[r]++;
+      if (motion_first >= 0 && frame >= motion_first && frame <= motion_last) {
+        printf("  frame %d: %s", frame, f->why);
+        if (ppu->midFrameWrite)
+          printf(" -- first $21%02x on line %d, %d writes", ppu->midFrameAdr, ppu->midFrameLine,
+                 ppu->midFrameWrites);
+        printf("\n");
+        if (frame == motion_first) {
+          // The windowing and maths registers as the frame ended, once, for
+          // working out what a screen that cannot be a draw list is doing.
+          printf("    w1 %d..%d w2 %d..%d clip %d preventMath %d addSub %d subtract %d half %d fixed %d,%d,%d\n",
+                 ppu->window1left, ppu->window1right, ppu->window2left, ppu->window2right, ppu->clipMode,
+                 ppu->preventMathMode, ppu->addSubscreen, ppu->subtractColor, ppu->halfColor,
+                 ppu->fixedColorR, ppu->fixedColorG, ppu->fixedColorB);
+          for (int l = 0; l < 6; l++)
+            printf("    %s: w1 %d%s w2 %d%s logic %d%s\n",
+                   l < 4 ? (const char*[]){"bg1", "bg2", "bg3", "bg4"}[l] : l == 4 ? "sprites" : "colour",
+                   ppu->windowLayer[l].window1enabled, ppu->windowLayer[l].window1inversed ? " inv" : "",
+                   ppu->windowLayer[l].window2enabled, ppu->windowLayer[l].window2inversed ? " inv" : "",
+                   ppu->windowLayer[l].maskLogic, l < 4 && ppu->layer[l].mainScreenEnabled ? " main" : "");
+          for (int l = 0; l < 4; l++)
+            printf("    bg%d: main %d sub %d mainWindowed %d subWindowed %d math %d\n", l + 1,
+                   ppu->layer[l].mainScreenEnabled, ppu->layer[l].subScreenEnabled,
+                   ppu->layer[l].mainScreenWindowed, ppu->layer[l].subScreenWindowed, ppu->mathEnabled[l]);
+          printf("    sprites math %d backdrop math %d\n", ppu->mathEnabled[4], ppu->mathEnabled[5]);
+        }
+      }
     } else {
       const int n = layers_list(f, 1, 1, 1, 1, false, ops);
       const int W = f->width;
@@ -199,7 +225,8 @@ int main(int argc, char** argv) {
       if (f->ease) eased_ticks++;
       if (f->ease) {
         link_near += f->linkNear; link_origin += f->linkOrigin;
-        link_looks += f->linkLooks; link_none += f->linkNone;
+        link_looks += f->linkLooks; link_none += f->linkNone; link_jump += f->linkJump;
+        window_held += f->mathHeld;
         if (f->dExtraLeft != 0) origin_moved++;
       }
       for (int s = 0; s < LAYERS_SPRITES; s++) {
@@ -209,6 +236,9 @@ int main(int argc, char** argv) {
       }
       if (motion_first >= 0 && frame >= motion_first && frame <= motion_last) {
         printf("  frame %d%s: view %+d,%+d;", frame, f->ease ? "" : " (not eased)", f->dScrollX[1], f->dScrollY[1]);
+        for (int r = 0; r < f->mathRects; r++)
+          printf(" maths %d,%d %dx%d shown %d,%d %dx%d;", f->mathRect[r].x, f->mathRect[r].y, f->mathRect[r].w,
+                 f->mathRect[r].h, f->mathShown[r].x, f->mathShown[r].y, f->mathShown[r].w, f->mathShown[r].h);
         int last_rec = -2;
         for (int s = 0; s < LAYERS_SPRITES; s++) {
           const LayersSprite* sp = &f->spr[s];
@@ -227,6 +257,10 @@ int main(int argc, char** argv) {
           printf(" %04x screen %+d,%+d world %+d,%+d;", sp->rec & 0xffff, dx, dy, dx + f->dScrollX[1],
                  dy + f->dScrollY[1]);
         }
+        for (int s = 0; s < LAYERS_SPRITES; s++)
+          if (f->spr[s].placed)
+            printf("    placed: rec %04x slot %d at %d,%d moved %+d,%+d\n", f->spr[s].rec & 0xffff, s,
+                   f->spr[s].x, f->spr[s].y, f->spr[s].mx, f->spr[s].my);
         printf("\n");
       }
       if (track_first >= 0 && frame >= track_first && frame <= track_last) {
@@ -260,6 +294,19 @@ int main(int argc, char** argv) {
                f->sub[0], f->sub[1], f->sub[2], f->sub[3], f->raster[0], f->raster[1], f->raster[2],
                f->raster[3], f->subAdd, f->subLayer, f->mathMain[0], f->mathMain[1], f->mathMain[2],
                f->mathMain[3], f->mathMain[4], f->mathMain[5], f->cell, n);
+        if (f->mathGated) {
+          // The maths gate column by column on one line of the window, with
+          // the edges that line had, for when a rectangle is not the box.
+          printf("    line 80: windows %d..%d %d..%d, wide policy %d%d%d%d, gate from column %d:", ppu->lineWindow[80][0],
+                 ppu->lineWindow[80][1], ppu->lineWindow[80][2], ppu->lineWindow[80][3], ppu->layerWide[0],
+                 ppu->layerWide[1], ppu->layerWide[2], ppu->layerWide[3], -ppu->extraLeft);
+          for (int x = -ppu->extraLeft; x < 256 + ppu->extraRight; x++) printf("%c", ppu_mathAllowedAt(ppu, x, 80) ? '#' : '.');
+          printf("\n");
+        }
+        if (f->mathGated)
+          for (int r = 0; r < f->mathRects; r++)
+            printf("    maths window rectangle %d: %d,%d %dx%d\n", r, f->mathRect[r].x, f->mathRect[r].y,
+                   f->mathRect[r].w, f->mathRect[r].h);
         for (int k = 0; k < n && k < 24; k++)
           printf("    op %2d: %s %s plane %d slot %d src %d,%d %dx%d dst %d,%d %dx%d mask %d\n", k,
                  ops[k].kind == LAYERS_OP_PLANE ? "plane " : "sprite",
@@ -293,8 +340,10 @@ int main(int argc, char** argv) {
          " %ld had a known last position;  owner table fresh on %ld ticks\n",
          eased_ticks, sprites_drawn, sprites_known, owners_fresh);
   printf("  pairing, over eased ticks: %ld by the nearest piece of the same record, %ld by the"
-         " record's origin, %ld by looks, %ld not at all;  the picture's origin moved on %ld ticks\n",
-         link_near, link_origin, link_looks, link_none, origin_moved);
+         " record's origin, %ld by looks, %ld not at all, and %ld of those paired were placed, not"
+         " moved;  the picture's origin moved on %ld ticks\n",
+         link_near, link_origin, link_looks, link_none, link_jump, origin_moved);
+  if (window_held) printf("  the maths window's rectangles were held where they wandered on %ld ticks\n", window_held);
   const bool ok = differing == 0;
   printf(ok ? "OK\n" : "FAIL: %ld frames differ by more than one\n", differing);
   cosim_free(&cosim);

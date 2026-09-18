@@ -103,10 +103,21 @@
 #define LAYERS_MARGIN SMOOTH_SNAP
 #define LAYERS_PLANE_W (PPU_MAX_WIDTH + 2 * LAYERS_MARGIN)
 #define LAYERS_PLANE_H (LAYERS_LINES + 2 * LAYERS_MARGIN)
-// Planes: two priorities for each of four backgrounds, and the backdrop.
-#define LAYERS_PLANES 9
+// Planes: two priorities for each of four backgrounds, and the backdrop --
+// and a twin of each with the fixed-colour maths applied, used only when the
+// maths is gated by the colour window (`mathGated`): the plain plane is
+// drawn whole and the twin on top of it, clipped to where the window allows
+// maths. Baking the window into one plane would work unmoved and then move
+// the window with the layer; the survivor radar is a box that stays put
+// while the world scrolls under it.
+#define LAYERS_PLANES 18
 #define LAYERS_BACKDROP 8
 #define LAYERS_PLANE_OF(layer, prio) ((layer) * 2 + (prio))
+#define LAYERS_MATHED(plane) ((plane) + 9)
+// Where the maths window allows maths, as rectangles of the picture: the
+// edges of a window are per line, so a box is one rectangle, and a window
+// that moved on more lines than this is too busy to draw this way.
+#define LAYERS_MAX_MATH_RECTS 16
 // The sprite atlas: 128 cells in a 16 by 8 grid, each `cell` pixels square,
 // `cell` being the larger of the two sprite sizes the PPU is set to.
 #define LAYERS_SPRITES 128
@@ -121,13 +132,16 @@
 #define LAYERS_FB_H 480
 // A draw list is at most every plane, every sprite drawn twice (once wrapped),
 // and a sub-screen pass after each of the planes it can follow.
-#define LAYERS_MAX_OPS (LAYERS_PLANES * 3 + LAYERS_SPRITES * 6)
+#define LAYERS_MAX_OPS (LAYERS_PLANES * 3 + LAYERS_SPRITES * 6 + LAYERS_MAX_MATH_RECTS * 9)
 
 typedef enum {
   LAYERS_BLEND_COPY = 0,  // alpha test: opaque pixels replace, clear ones do not
   LAYERS_BLEND_ADD,       // opaque pixels are added, saturating
   LAYERS_BLEND_SUB,       // ...subtracted, saturating at zero
 } LayersBlend;
+
+// A rectangle of the picture, in game pixels.
+typedef struct { int x, y, w, h; } LayersRect;
 
 typedef enum {
   LAYERS_OP_PLANE = 0,
@@ -145,6 +159,9 @@ typedef struct {
   uint8_t slot;   // LAYERS_OP_SPRITE: which cell
   int sx, sy, sw, sh;
   int dx, dy, dw, dh;
+  // Drawn only inside this rectangle of the target, if `clipped`.
+  bool clipped;
+  int cx, cy, cw, ch;
   // For an additive or subtractive op: the index of the op it is confined to,
   // or -1. The console adds the sub screen only where the topmost pixel is a
   // maths layer's, so the sub screen is added right after such a layer is
@@ -168,6 +185,11 @@ typedef struct {
   // of this tick, in quarters of a pixel (`c`), and was at the end of the last
   // (`b`), which is where this tick's pictures start from.
   int8_t cx, cy, bx, by;
+  // The move of the thing this sprite belongs to: its record's origin where
+  // it has one, the sprite itself where not. What a placement is judged by
+  // (`LAYERS_LINK_BEFORE`), as a piece's own move has the animation in it.
+  int8_t mx, my;
+  bool placed;  // paired, and then not eased for having been placed
   // Which display record the pass drew it from, and from what origin, when
   // the port's pass ran -- see `SpriteOamOwners`.
   int16_t rec, ox, oy;
@@ -214,9 +236,25 @@ typedef struct {
   // by the nearest piece of the same record, by the record's origin alone,
   // by looks (no record), or not at all.
   int linkNear, linkOrigin, linkLooks, linkNone;
+  // ...and how many paired sprites were then not eased after all, for having
+  // been put somewhere rather than moved (`LAYERS_JUMP_MAX`).
+  int linkJump;
   // Which planes have anything in them, so an empty one is neither uploaded
   // nor drawn.
   bool planeUsed[LAYERS_PLANES];
+  // The maths gated by the colour window (`preventMathMode`): the twins are
+  // in use and are drawn inside these rectangles, in picture pixels.
+  bool mathGated;
+  int mathRects;
+  LayersRect mathRect[LAYERS_MAX_MATH_RECTS];
+  // ...and the rectangles as they are shown under `even`: held from the
+  // last tick where they differ from it by no more than a few lines. The
+  // game moves the window's edges from an interrupt whose line wanders --
+  // the radar's box began on line 49, 50, 51 or 52 from one tick to the
+  // next and ended on 107 to 110 -- and at 60 pictures a second that is a
+  // line of the box flickering at its foot. Set by `layers_link`.
+  LayersRect mathShown[LAYERS_MAX_MATH_RECTS];
+  int mathHeld;  // how many of them were held this tick, for the test
   // Colour maths: which of the main-screen layers (0-3 backgrounds, 4 sprites
   // with palettes 4-7, 5 backdrop) get the sub screen added or subtracted, and
   // which one background the sub screen consists of. Fixed-colour maths is
@@ -317,6 +355,16 @@ static inline const char* layers_unexpressible(const Ppu* ppu) {
   if (ppu->pseudoHires || ppu->interlace || ppu->frameOverscan) return "hires/interlace/overscan";
   if (ppu->directColor) return "direct colour";
   if (ppu->clipMode != 0) return "colour window clips";
+  // The window edges moved during the frame: fine for the maths gate, which
+  // is read per line, and for nothing else, which is read as the frame ended.
+  if (ppu->windowRaster) {
+    for (int l = 0; l < 4; l++)
+      if ((ppu->layer[l].mainScreenEnabled && ppu->layer[l].mainScreenWindowed) ||
+          (ppu->layer[l].subScreenEnabled && ppu->layer[l].subScreenWindowed))
+        return "layer window written mid-frame";
+    if (ppu->layer[4].mainScreenWindowed || ppu->layer[4].subScreenWindowed)
+      return "sprite window written mid-frame";
+  }
   for (int l = 0; l < 4; l++)
     if (ppu->bgLayer[l].mosaicEnabled && ppu->mosaicSize > 1 &&
         (ppu->layer[l].mainScreenEnabled || ppu->layer[l].subScreenEnabled))
@@ -371,7 +419,7 @@ static inline void layers_sprite_cell(LayersFrame* f, const Ppu* ppu, int slot,
   const bool math = palette >= 4 && ppu->mathEnabled[4] && !ppu->addSubscreen;
   const int cx = (slot % LAYERS_ATLAS_COLS) * f->cell;
   const int cy = (slot / LAYERS_ATLAS_COLS) * f->cell;
-  const int x0 = f->spr[slot].x;
+  const int x0 = f->spr[slot].x, y0 = f->spr[slot].y;
   for (int row = 0; row < size; row++) {
     const int srow = vFlip ? size - 1 - row : row;
     for (int col = 0; col < size; col += 8) {
@@ -388,7 +436,7 @@ static inline void layers_sprite_cell(LayersFrame* f, const Ppu* ppu, int slot,
         pixel |= ((plane2 >> (8 + shift)) & 1) << 3;
         uint8_t* out = f->atlas[cy + row][cx + col + px];
         if (pixel == 0) { out[0] = out[1] = out[2] = out[3] = 0; continue; }
-        const bool m = math && (mathAllowedAll || ppu_mathAllowedAt((Ppu*)ppu, x0 + col + px));
+        const bool m = math && (mathAllowedAll || ppu_mathAllowedAt((Ppu*)ppu, x0 + col + px, y0 + row + 1));
         layers_rgba(ppu, 0x80 + 16 * palette + pixel, m, out);
       }
     }
@@ -478,6 +526,44 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
   // gated by a window nowhere, the per-column test can be skipped.
   const bool fixedMath = anyMath && !ppu->addSubscreen;
   const bool allowedEverywhere = ppu->preventMathMode == 0;
+  // Gated by the window: the plain plane and its mathed twin, and the
+  // rectangles where the twin shows. Found first, so that a window too busy
+  // for the list is known before the planes are built.
+  f->mathGated = fixedMath && !allowedEverywhere;
+  f->mathRects = 0;
+  if (f->mathGated && f->layered) {
+    // Each line's columns with maths allowed as runs; a run that continues
+    // the same columns as the line above extends that rectangle.
+    for (int line = 1; line <= LAYERS_LINES && f->layered; line++) {
+      // Columns left of the console's 0 are negative, so "no run open" is a
+      // flag and not a sentinel column.
+      int runStart = 0;
+      bool inRun = false;
+      for (int x = -ppu->extraLeft; x <= 256 + ppu->extraRight; x++) {
+        const bool m = x < 256 + ppu->extraRight && ppu_mathAllowedAt(ppu, x, line);
+        if (m && !inRun) { runStart = x; inRun = true; }
+        if (!m && inRun) {
+          const int px = runStart + ppu->extraLeft, pw = x - runStart, py = line - 1;
+          int r = 0;
+          for (; r < f->mathRects; r++)
+            if (f->mathRect[r].x == px && f->mathRect[r].w == pw &&
+                f->mathRect[r].y + f->mathRect[r].h == py)
+              break;
+          if (r < f->mathRects) f->mathRect[r].h++;
+          else if (f->mathRects < LAYERS_MAX_MATH_RECTS) {
+            f->mathRect[f->mathRects].x = px; f->mathRect[f->mathRects].y = py;
+            f->mathRect[f->mathRects].w = pw; f->mathRect[f->mathRects].h = 1;
+            f->mathRects++;
+          } else {
+            f->why = "maths window too busy";
+            f->layered = false;
+            break;
+          }
+          inRun = false;
+        }
+      }
+    }
+  }
 
   // The backgrounds, and the backdrop as a plane of its own so that the
   // maths window can vary it by column like anything else.
@@ -510,10 +596,21 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
         uint8_t* out1 = f->plane[LAYERS_PLANE_OF(l, 1)][r][c];
         out0[0] = out0[1] = out0[2] = out0[3] = 0;
         out1[0] = out1[1] = out1[2] = out1[3] = 0;
+        uint8_t* tw0 = f->plane[LAYERS_MATHED(LAYERS_PLANE_OF(l, 0))][r][c];
+        uint8_t* tw1 = f->plane[LAYERS_MATHED(LAYERS_PLANE_OF(l, 1))][r][c];
+        if (math && f->mathGated) {
+          tw0[0] = tw0[1] = tw0[2] = tw0[3] = 0;
+          tw1[0] = tw1[1] = tw1[2] = tw1[3] = 0;
+        }
         if (pixel == 0) continue;
-        const bool m = math && (allowedEverywhere || ppu_mathAllowedAt(ppu, x));
-        layers_rgba(ppu, pixel, m, prio ? out1 : out0);
+        // Maths everywhere is baked into the plane; maths through a window
+        // goes into the twin, and the plane stays plain.
+        layers_rgba(ppu, pixel, math && allowedEverywhere, prio ? out1 : out0);
         f->planeUsed[LAYERS_PLANE_OF(l, prio)] = true;
+        if (math && f->mathGated) {
+          layers_rgba(ppu, pixel, true, prio ? tw1 : tw0);
+          f->planeUsed[LAYERS_MATHED(LAYERS_PLANE_OF(l, prio))] = true;
+        }
       }
     }
   }
@@ -525,11 +622,12 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
     for (int r = 0; r < LAYERS_PLANE_H; r++) {
       for (int x = x0; x < x1; x++) {
         const int c = x + ppu->extraLeft + LAYERS_MARGIN;
-        const bool m = math && (allowedEverywhere || ppu_mathAllowedAt(ppu, x));
-        memcpy(f->plane[LAYERS_BACKDROP][r][c], m ? mathed : plain, 4);
+        memcpy(f->plane[LAYERS_BACKDROP][r][c], math && allowedEverywhere ? mathed : plain, 4);
+        if (math && f->mathGated) memcpy(f->plane[LAYERS_MATHED(LAYERS_BACKDROP)][r][c], mathed, 4);
       }
     }
     f->planeUsed[LAYERS_BACKDROP] = true;
+    if (math && f->mathGated) f->planeUsed[LAYERS_MATHED(LAYERS_BACKDROP)] = true;
   }
 
   // The sprites.
@@ -580,6 +678,12 @@ static inline int layers_delta(int from, int to, int bits) {
 // and `q` the tick before, in quarters of a pixel -- see "Evening the motion
 // out". Nothing for a change of speed too large to be a rounding.
 #define LAYERS_EVEN_MAX 4
+// How much a sprite's move may differ from its last before it is a placement
+// and not a move -- see `LAYERS_LINK_BEFORE`.
+#define LAYERS_JUMP_MAX 6
+// How far a maths-window rectangle's top or bottom may wander from tick to
+// tick and still be the same rectangle, held where it was -- see `mathShown`.
+#define LAYERS_WINDOW_WANDER 3
 static inline int layers_even(int d, int q) {
   const int c = d - q;
   return c > LAYERS_EVEN_MAX || c < -LAYERS_EVEN_MAX ? 0 : c;
@@ -602,6 +706,25 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
     cur->dScrollY[l] = layers_delta(prev->scrollY[l], cur->scrollY[l], 10);
   }
   cur->dExtraLeft = cur->ease ? cur->extraLeft - prev->extraLeft : 0;
+  // The maths window's rectangles, held where they wander -- see `mathShown`.
+  cur->mathHeld = 0;
+  for (int r = 0; r < cur->mathRects; r++) {
+    cur->mathShown[r] = cur->mathRect[r];
+    if (!cur->ease || !prev->mathGated) continue;
+    for (int q = 0; q < prev->mathRects; q++) {
+      const int dy = cur->mathRect[r].y - prev->mathShown[q].y;
+      const int db = cur->mathRect[r].y + cur->mathRect[r].h -
+                     (prev->mathShown[q].y + prev->mathShown[q].h);
+      if (cur->mathRect[r].x != prev->mathShown[q].x || cur->mathRect[r].w != prev->mathShown[q].w)
+        continue;
+      if (dy > LAYERS_WINDOW_WANDER || dy < -LAYERS_WINDOW_WANDER ||
+          db > LAYERS_WINDOW_WANDER || db < -LAYERS_WINDOW_WANDER)
+        continue;
+      cur->mathShown[r] = prev->mathShown[q];
+      cur->mathHeld++;
+      break;
+    }
+  }
   // `even`, for the backgrounds: each one's move on the picture -- its scroll
   // less the origin's, as `layers_list` has it -- against its move before.
   if (prevEased)
@@ -614,26 +737,48 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
       cur->bScrollX[l] = prev->cScrollX[l];
       cur->bScrollY[l] = prev->cScrollY[l];
     }
-  // `even`, for a sprite whose predecessor was sprite `j` of the last tick --
-  // once `px`, `py` are set. One with no move before this one to compare with
-  // is drawn where it is.
+  // For a sprite whose predecessor was sprite `j` of the last tick, once
+  // `px`, `py` are set: whether it *moved* there at all, and `even`.
+  //
+  // A sprite that walked from where it was is eased; one that was put
+  // somewhere is not, and the difference is whether this move continues the
+  // last. The survivor radar shows every survivor with one sprite, placed on
+  // a different survivor each tick -- the console's way of drawing six
+  // markers with one entry -- and eased between them that marker swept the
+  // box. A move that differs from the move before by more than
+  // `LAYERS_JUMP_MAX` on either axis is a placement, and the sprite is drawn
+  // where it is; a walker's moves differ by a pixel or two, a turn at 2 a
+  // tick by four. One with no move before to compare with is eased if its
+  // move is within the same bound of standing still. The move judged is the
+  // actor's (`mx`, `my`), not the piece's, which has the animation in it.
   #define LAYERS_LINK_BEFORE(c, j)                                             \
     do {                                                                       \
       const LayersSprite* b_ = &prev->spr[j];                                  \
-      if (prevEased && b_->known) {                                            \
-        (c)->cx = (int8_t)layers_even((c)->x - (c)->px + cur->dExtraLeft,      \
-                                      b_->x - b_->px + prev->dExtraLeft);      \
-        (c)->cy = (int8_t)layers_even((c)->y - (c)->py, b_->y - b_->py);       \
+      const bool had_ = prevEased && b_->known;                                \
+      const int dx_ = (c)->x - (c)->px + cur->dExtraLeft, dy_ = (c)->y - (c)->py; \
+      const int qx_ = had_ ? b_->x - b_->px + prev->dExtraLeft : 0;            \
+      const int qy_ = had_ ? b_->y - b_->py : 0;                               \
+      const int jx_ = (c)->mx - (had_ ? b_->mx : 0);                           \
+      const int jy_ = (c)->my - (had_ ? b_->my : 0);                           \
+      if (jx_ > LAYERS_JUMP_MAX || jx_ < -LAYERS_JUMP_MAX ||                   \
+          jy_ > LAYERS_JUMP_MAX || jy_ < -LAYERS_JUMP_MAX) {                   \
+        (c)->known = false;                                                    \
+        (c)->placed = true;                                                     \
+        cur->linkJump++;                                                       \
+      } else if (had_) {                                                       \
+        (c)->cx = (int8_t)layers_even(dx_, qx_);                               \
+        (c)->cy = (int8_t)layers_even(dy_, qy_);                               \
         (c)->bx = b_->cx;                                                      \
         (c)->by = b_->cy;                                                      \
       }                                                                        \
     } while (0)
-  cur->linkNear = cur->linkOrigin = cur->linkLooks = cur->linkNone = 0;
+  cur->linkNear = cur->linkOrigin = cur->linkLooks = cur->linkNone = cur->linkJump = 0;
   const bool byRecord = cur->ownersFresh && prev->ownersFresh;
   for (int i = 0; i < LAYERS_SPRITES; i++) {
     LayersSprite* c = &cur->spr[i];
     c->known = false;
-    c->cx = c->cy = c->bx = c->by = 0;
+    c->cx = c->cy = c->bx = c->by = c->mx = c->my = 0;
+    c->placed = false;
     if (!c->drawn) continue;
     if (byRecord && c->rec >= 0) {
       // The record says which actor this piece belongs to, and the actor's
@@ -656,6 +801,8 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
         if (!any) {
           const int dx = c->ox - p->ox, dy = c->oy - p->oy;
           if (dx > SMOOTH_SNAP || dx < -SMOOTH_SNAP || dy > SMOOTH_SNAP || dy < -SMOOTH_SNAP) break;
+          c->mx = (int8_t)dx;
+          c->my = (int8_t)dy;
           expectX = c->x - dx;
           expectY = c->y - dy;
           any = true;
@@ -711,6 +858,8 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
         c->known = true;
         c->px = prev->spr[best].x;
         c->py = prev->spr[best].y;
+        c->mx = (int8_t)(c->x - c->px + cur->dExtraLeft);
+        c->my = (int8_t)(c->y - c->py);
         LAYERS_LINK_BEFORE(c, best);
         cur->linkLooks++;
       } else {
@@ -725,6 +874,8 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
     c->known = true;
     c->px = (int16_t)(c->x - smooth_wrap(sm.x - p.x, 9));
     c->py = (int16_t)(c->y - smooth_wrap(sm.y - p.y, 8));
+    c->mx = (int8_t)(c->x - c->px + cur->dExtraLeft);
+    c->my = (int8_t)(c->y - c->py);
     LAYERS_LINK_BEFORE(c, j);
     cur->linkLooks++;
   }
@@ -802,6 +953,22 @@ static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
       o->sx = 0; o->sy = 0; o->sw = W + 2 * M; o->sh = H + 2 * M;              \
       o->dx = -M * sx + (ox); o->dy = -M * sy + (oy);                          \
       o->dw = o->sw * sx; o->dh = o->sh * sy;                                  \
+      o->clipped = false; o->cx = o->cy = o->cw = o->ch = 0;                   \
+    } while (0)
+  // The mathed twin of plane `p`, over it, inside each rectangle the window
+  // allows maths in.
+  #define LAYERS_TWIN_OPS(p, ox, oy)                                           \
+    do {                                                                       \
+      if (cur->mathGated && cur->planeUsed[LAYERS_MATHED(p)])                  \
+        for (int r_ = 0; r_ < cur->mathRects; r_++) {                          \
+          LAYERS_PLANE_OP(LAYERS_MATHED(p), ox, oy, LAYERS_BLEND_COPY, -1);    \
+          LayersOp* o = &ops[n - 1];                                           \
+          o->clipped = true;                                                   \
+          o->cx = (even ? cur->mathShown : cur->mathRect)[r_].x * sx;         \
+          o->cy = (even ? cur->mathShown : cur->mathRect)[r_].y * sy;         \
+          o->cw = (even ? cur->mathShown : cur->mathRect)[r_].w * sx;         \
+          o->ch = (even ? cur->mathShown : cur->mathRect)[r_].h * sy;         \
+        }                                                                      \
     } while (0)
   // The sub screen, added on top of the maths layer drawn by op `mk`.
   #define LAYERS_SUB_OPS(mk)                                                   \
@@ -818,12 +985,14 @@ static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
     } while (0)
 
   LAYERS_PLANE_OP(LAYERS_BACKDROP, 0, 0, LAYERS_BLEND_COPY, -1);
+  LAYERS_TWIN_OPS(LAYERS_BACKDROP, 0, 0);
   if (cur->mathMain[5]) LAYERS_SUB_OPS(n - 1);
   for (int i = depth - 1; i >= 0; i--) {
     const int l = layer[i], p = prio[i];
     if (l < 4) {
       if (!cur->main[l] || !cur->planeUsed[LAYERS_PLANE_OF(l, p)]) continue;
       LAYERS_PLANE_OP(LAYERS_PLANE_OF(l, p), offX[l], offY[l], LAYERS_BLEND_COPY, -1);
+      LAYERS_TWIN_OPS(LAYERS_PLANE_OF(l, p), offX[l], offY[l]);
       if (cur->mathMain[l]) LAYERS_SUB_OPS(n - 1);
     } else {
       // Sprites of this priority, the lowest OAM index drawn last so that it
@@ -851,6 +1020,7 @@ static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
           o->dx = (sp->x + cur->extraLeft) * sx + ox;
           o->dy = y * sy + oy;
           o->dw = sp->w * sx; o->dh = sp->h * sy;
+          o->clipped = false; o->cx = o->cy = o->cw = o->ch = 0;
           // A sprite in palettes 4-7 is a maths layer of its own.
           if (cur->mathMain[4] && sp->math) LAYERS_SUB_OPS(n - 1);
         }
@@ -858,6 +1028,7 @@ static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
     }
   }
   #undef LAYERS_SUB_OPS
+  #undef LAYERS_TWIN_OPS
   #undef LAYERS_PLANE_OP
   return n;
 }
@@ -890,6 +1061,12 @@ static inline void layers_render(const LayersFrame* f, const LayersOp* ops, int 
     const LayersOp* mask = o->mask >= 0 ? &ops[o->mask] : NULL;
     int y0 = o->dy < 0 ? 0 : o->dy, y1 = o->dy + o->dh > th ? th : o->dy + o->dh;
     int x0 = o->dx < 0 ? 0 : o->dx, x1 = o->dx + o->dw > tw ? tw : o->dx + o->dw;
+    if (o->clipped) {
+      if (x0 < o->cx) x0 = o->cx;
+      if (y0 < o->cy) y0 = o->cy;
+      if (x1 > o->cx + o->cw) x1 = o->cx + o->cw;
+      if (y1 > o->cy + o->ch) y1 = o->cy + o->ch;
+    }
     for (int y = y0; y < y1; y++) {
       uint8_t* out = rgb + ((size_t)y * tw + x0) * 3;
       for (int x = x0; x < x1; x++, out += 3) {

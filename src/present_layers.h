@@ -142,7 +142,12 @@ static inline void present_layers_op(PresentLayers* L, SDL_Renderer* ren,
     static bool said = false;
     if (!said) { printf("blend mode %#x refused: %s\n", (unsigned)blend, SDL_GetError()); fflush(stdout); said = true; }
   }
+  if (o->clipped) {
+    const SDL_Rect clip = {o->cx, o->cy, o->cw, o->ch};
+    SDL_RenderSetClipRect(ren, &clip);
+  }
   SDL_RenderCopy(ren, t, &src, &dst);
+  if (o->clipped) SDL_RenderSetClipRect(ren, NULL);
 }
 
 // Where the picture goes and at what scale a list for it should be built:

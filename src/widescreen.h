@@ -563,6 +563,24 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
   ws_object_sprites(snes, ws, slot, left, right);
 }
 
+// The sprites of a screen-space record go with the status panel, not the
+// world: the survivor radar's markers are laid out over its box, and the box
+// is on BG3, which `ppu_wideAnchor` has pinned to the picture's edges. The
+// pass says which OAM entries came from which record (`sprite_oam_owners`),
+// and at the top of a frame that table describes the OAM the vblank just
+// DMA'd; the record's flags are read from `ws->mem` for the same reason. A
+// flag per slot rather than a moved X, so that a frame the game did not
+// redraw is not moved twice.
+static inline void ws_anchor_screen_sprites(Snes* snes, Widescreen* ws, bool in_level) {
+  const uint8_t* mem = ws->mem;
+  for (int s = 0; s < OAM_ENTRIES; s++) {
+    const int rec = sprite_oam_owners.rec[s];
+    const bool anchored =
+        in_level && rec >= 0 && (ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS) & ACTOR_SCREEN_SPACE) != 0;
+    snes_setSpriteAnchored(snes, s, anchored);
+  }
+}
+
 // Called at the top of every frame, before any of it is drawn — see
 // `SnesFrameHook`. At that moment the game's vblank has finished: this frame's
 // tilemap columns are in VRAM, its OAM has been DMA'd, and the picture is fixed
@@ -592,6 +610,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
     // Nothing outside a level has a map to run off the end of.
     snes_setWidescreen(snes, margin, margin);
     snes_setWideClamp(snes, -PPU_EXTRA_MAX, 255 + PPU_EXTRA_MAX);
+    ws_anchor_screen_sprites(snes, ws, false);
     return;
   }
 
@@ -688,6 +707,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   }
 
   ws_margin_sprites(snes, ws, left, right);
+  ws_anchor_screen_sprites(snes, ws, true);
 }
 
 // Move the neighbour spawner's window out to the edges of the picture that is
