@@ -103,6 +103,14 @@ enum {
   // than a hard cut to the backdrop, which is what a logo centred on a solid
   // panel wants.
   ppu_wideClampEdge,
+  // A 256-wide layer that is a whole screen rather than furniture at its two
+  // edges: the game over's mask, "GAME OVER" cut out of a solid field. Put
+  // its middle at the middle of the widened picture, wherever the console's
+  // 256 fall in it -- at the end of a map the two margins are not the same
+  // width, and drawn in the console's place the mask sat off to one side --
+  // and carry its outermost columns out to the edges as `ppu_wideClampEdge`
+  // does, so the field reaches the whole picture.
+  ppu_wideCentre,
   // Repeat the console's 256 columns outward, so the margins show the same
   // field again. For a 32-tile tilemap this is what the hardware does anyway --
   // its map wraps every 256 pixels -- and for a wider one it is the point:
@@ -242,6 +250,20 @@ struct Ppu {
   bool spriteAnchored[128];
   // ...whether each background is empty at both edges, recomputed once a frame
   uint8_t layerEdgeEmpty[4];
+  // ...and for `ppu_wideCentre`, per background and side, where its margin
+  // is filled from on the line last asked about: a column and a line of the
+  // layer, or a column of -1 for a line with nothing to fill from. One
+  // search per line and side, keyed by the line and the scroll it was
+  // searched at. See the policy's case in `ppu_wideMapX`.
+  int16_t centreFillCol[4][2], centreFillFrom[4][2];
+  int16_t centreFillLine[4][2];
+  uint16_t centreFillH[4][2], centreFillV[4][2];
+  uint8_t centreFillWrap[4][2];
+  // ...and the last line of the frame on which the layer is opaque from
+  // column 0 to 255 -- the foot of the mask's solid field, below which its
+  // drips hang -- or -1 for none; found once per scroll.
+  int16_t centreLastFull[4];
+  uint16_t centreLastFullH[4], centreLastFullV[4];
   // ...whether the game has scrolled it sideways since this screen was put up,
   // and the scroll it was at last frame, which is how that is noticed
   uint8_t layerScrolled[4];
@@ -340,6 +362,11 @@ int ppu_layerPixel(Ppu* ppu, int layer, int x, int line, bool sub, int* priority
 // `line` as `ppu_layerPixel` takes it: the window edges are the ones in force
 // on that line.
 bool ppu_mathAllowedAt(Ppu* ppu, int x, int line);
+// Whether column `sx` of background `layer` (0-255, at the layer's current
+// scroll) has no opaque pixel on any line of the frame -- `ppu_columnEmpty`
+// for callers outside: the status panel has nothing in the middle columns and
+// the game over's mask has something in all of them.
+bool ppu_columnEmptyAt(const Ppu* ppu, int layer, int sx);
 // The colour window's clip-to-black, likewise.
 bool ppu_clippedAt(Ppu* ppu, int x);
 int ppu_spriteSize(const Ppu* ppu, int slot);

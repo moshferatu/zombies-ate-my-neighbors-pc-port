@@ -72,7 +72,7 @@ static bool ppu_getWindowState(Ppu* ppu, int layer, int x);
 static bool ppu_getWindowStateOnLine(Ppu* ppu, int layer, int x, int line);
 static void ppu_evaluateSprites(Ppu* ppu, int line);
 static uint16_t ppu_getVramRemap(Ppu* ppu);
-static bool ppu_wideMapX(const Ppu* ppu, int layer, int* x);
+static bool ppu_wideMapX(Ppu* ppu, int layer, int* x, int* y);
 static bool ppu_windowTest(const Ppu* ppu, int x, int left, int right);
 static int ppu_spriteX(const Ppu* ppu, uint8_t index);
 
@@ -87,6 +87,12 @@ Ppu* ppu_init(Snes* snes) {
   ppu->extraRight = 0;
   for(int i = 0; i < 5; i++) ppu->layerWide[i] = ppu_wideAuto;
   memset(ppu->spriteAnchored, 0, sizeof(ppu->spriteAnchored));
+  for(int i = 0; i < 4; i++) for(int j = 0; j < 2; j++) {
+    ppu->centreFillCol[i][j] = -1; ppu->centreFillLine[i][j] = -1; ppu->centreFillFrom[i][j] = -1;
+    ppu->centreFillWrap[i][j] = 0; ppu->centreLastFull[i] = -2;
+    ppu->centreLastFullH[i] = ppu->centreLastFullV[i] = 0;
+    ppu->centreFillH[i][j] = ppu->centreFillV[i][j] = 0;
+  }
   for(int i = 0; i < 4; i++) {
     ppu->layerEdgeEmpty[i] = 0;
     ppu->layerScrolled[i] = 0;
@@ -440,15 +446,15 @@ bool ppu_frameStatic(const Ppu* ppu) {
 }
 
 int ppu_layerPixel(Ppu* ppu, int layer, int x, int line, bool sub, int* priority) {
-  int layerX = x;
-  if(!ppu_wideMapX(ppu, layer, &layerX)) return 0;
+  int layerX = x, layerLine = line;
+  if(!ppu_wideMapX(ppu, layer, &layerX, &layerLine)) return 0;
   const bool windowed = sub ? ppu->layer[layer].subScreenWindowed
                             : ppu->layer[layer].mainScreenWindowed;
   const int last = ppu->frameOverscan ? 239 : 224;
-  const int l = line < 1 ? 1 : line > last ? last : line;
+  const int l = layerLine < 1 ? 1 : layerLine > last ? last : layerLine;
   if(windowed && ppu_getWindowStateOnLine(ppu, layer, layerX, l)) return 0;
   const int lx = layerX + ppu->lineHScroll[layer][l];
-  const int ly = line + ppu->lineVScroll[layer][l];
+  const int ly = layerLine + ppu->lineVScroll[layer][l];
   int pixel = ppu_getPixelForBgLayer(ppu, lx & 0x3ff, ly & 0x3ff, layer, false);
   *priority = 0;
   if(pixel == 0) {
@@ -456,6 +462,10 @@ int ppu_layerPixel(Ppu* ppu, int layer, int x, int line, bool sub, int* priority
     *priority = 1;
   }
   return pixel;
+}
+
+bool ppu_columnEmptyAt(const Ppu* ppu, int layer, int sx) {
+  return ppu_columnEmpty(ppu, layer, sx);
 }
 
 bool ppu_mathAllowedAt(Ppu* ppu, int x, int line) {
@@ -560,8 +570,8 @@ static int ppu_getPixel(Ppu* ppu, int x, int y, bool sub, int* r, int* g, int* b
     // Which column of this layer belongs at this column of the picture. The
     // two differ only for a layer that does not stretch, and such a layer has
     // columns it declines outright -- the gap in the middle of an anchored one.
-    int layerX = x;
-    if(!ppu_wideMapX(ppu, curLayer, &layerX)) continue;
+    int layerX = x, layerY = y;
+    if(!ppu_wideMapX(ppu, curLayer, &layerX, &layerY)) continue;
     bool layerActive = false;
     if(!sub) {
       layerActive = ppu->layer[curLayer].mainScreenEnabled && (
@@ -576,7 +586,7 @@ static int ppu_getPixel(Ppu* ppu, int x, int y, bool sub, int* r, int* g, int* b
       if(curLayer < 4) {
         // bg layer
         int lx = layerX;
-        int ly = y;
+        int ly = layerY;
         if(ppu->bgLayer[curLayer].mosaicEnabled && ppu->mosaicSize > 1) {
           lx -= lx % ppu->mosaicSize;
           ly -= (ly - ppu->mosaicStartLine) % ppu->mosaicSize;
@@ -825,7 +835,7 @@ static bool ppu_windowTest(const Ppu* ppu, int x, int left, int right) {
 // Where `layer` reads from, given a column of the picture that may be outside
 // the console's 256, and whether it has anything to say there at all. See the
 // `ppu_wide*` policies in the header.
-static bool ppu_wideMapX(const Ppu* ppu, int layer, int* x) {
+static bool ppu_wideMapX(Ppu* ppu, int layer, int* x, int* y) {
   if(ppu->extraLeft == 0 && ppu->extraRight == 0) return true;
   int policy = ppu->layerWide[layer];
   if(policy == ppu_wideAuto) {
@@ -883,6 +893,101 @@ static bool ppu_wideMapX(const Ppu* ppu, int layer, int* x) {
       if(*x < 0) *x = 0;
       if(*x > 255) *x = 255;
       return true;
+    case ppu_wideCentre: {
+      // The picture runs from -extraLeft to 255 + extraRight; its middle is
+      // half their difference right of the console's, and the layer goes
+      // there with it. Rounded toward the left as the picture's own width is.
+      *x -= (ppu->extraRight - ppu->extraLeft) / 2;
+      if(*x >= 0 && *x <= 255) return true;
+      // Beyond the layer's edge. The mask is a solid field with the letters
+      // cut out of its upper part and a row of drips hanging from its foot,
+      // and its margins are drawn in two ways. Beside the field and the
+      // letters the margin is the field: the edge column's pixel, carried out
+      // as `ppu_wideClampEdge` carries it, or where that pixel is a gap, the
+      // edge column a few lines into the nearest run of opaque pixels at or
+      // above -- past a drip's outline, which is one pixel thick and dark.
+      // Beside the drips the margin is more drips: the layer's own 256
+      // columns repeated, as a 32-tile map repeats on the hardware, so that
+      // the curtain goes on to the edge of the picture instead of turning
+      // into a slab. A line is beside the drips when it is below the last
+      // line on which the layer is opaque all the way across (the foot of
+      // the field) and is a gap within 16 columns of both edges -- the
+      // letters, which are also below a solid line now and then as the mask
+      // scrolls, keep more field than that at both sides. A line with
+      // nothing opaque on it at all is below the mask, and shows what is
+      // behind. One search per line and side, cached by the line and its
+      // scroll; the foot of the field once per scroll.
+      const int side = *x < 0 ? 0 : 1;
+      const int edge = side ? 255 : 0;
+      const int last = ppu->frameOverscan ? 239 : 224;
+      const int l = *y < 1 ? 1 : *y > last ? last : *y;
+      const uint16_t hs = ppu->lineHScroll[layer][l], vs = ppu->lineVScroll[layer][l];
+      if(ppu->centreLastFullH[layer] != hs || ppu->centreLastFullV[layer] != vs ||
+         ppu->centreLastFull[layer] == -2) {
+        int full = -1;
+        for(int r = last; r >= 1 && full < 0; r--) {
+          const int ry = (r + vs) & 0x3ff;
+          bool solid = true;
+          for(int c = 0; c < 256 && solid; c++) {
+            const int rx = (c + hs) & 0x3ff;
+            solid = ppu_getPixelForBgLayer(ppu, rx, ry, layer, false) ||
+                    ppu_getPixelForBgLayer(ppu, rx, ry, layer, true);
+          }
+          if(solid) full = r;
+        }
+        ppu->centreLastFull[layer] = (int16_t)full;
+        ppu->centreLastFullH[layer] = hs;
+        ppu->centreLastFullV[layer] = vs;
+      }
+      if(ppu->centreFillLine[layer][side] != l || ppu->centreFillH[layer][side] != hs ||
+         ppu->centreFillV[layer][side] != vs) {
+        const int ly = (l + vs) & 0x3ff;
+        // How far in from each edge the line is opaque, and whether it has
+        // anything opaque at all.
+        int runL = 0, runR = 0, found = -1, from = l;
+        while(runL < 256) {
+          const int lx = (runL + hs) & 0x3ff;
+          if(!(ppu_getPixelForBgLayer(ppu, lx, ly, layer, false) ||
+               ppu_getPixelForBgLayer(ppu, lx, ly, layer, true))) break;
+          runL++;
+        }
+        while(runR < 256 - runL) {
+          const int lx = (255 - runR + hs) & 0x3ff;
+          if(!(ppu_getPixelForBgLayer(ppu, lx, ly, layer, false) ||
+               ppu_getPixelForBgLayer(ppu, lx, ly, layer, true))) break;
+          runR++;
+        }
+        if(side ? runR > 0 : runL > 0) found = edge;
+        else
+          for(int c = side ? 255 : 0, n = 0; n < 256; n++, c += side ? -1 : 1) {
+            const int lx = (c + hs) & 0x3ff;
+            if(ppu_getPixelForBgLayer(ppu, lx, ly, layer, false) ||
+               ppu_getPixelForBgLayer(ppu, lx, ly, layer, true)) { found = c; break; }
+          }
+        const bool wrap = found >= 0 && l > ppu->centreLastFull[layer] && runL < 16 && runR < 16;
+        if(found >= 0 && !wrap) {
+          int run = 0;
+          for(int r = l; r >= 1 && run < 4; r--) {
+            const int rx = (edge + ppu->lineHScroll[layer][r]) & 0x3ff;
+            const int ry = (r + ppu->lineVScroll[layer][r]) & 0x3ff;
+            if(ppu_getPixelForBgLayer(ppu, rx, ry, layer, false) ||
+               ppu_getPixelForBgLayer(ppu, rx, ry, layer, true)) { found = edge; from = r; run++; }
+            else if(run) break;
+          }
+        }
+        ppu->centreFillLine[layer][side] = (int16_t)l;
+        ppu->centreFillH[layer][side] = hs;
+        ppu->centreFillV[layer][side] = vs;
+        ppu->centreFillCol[layer][side] = (int16_t)found;
+        ppu->centreFillFrom[layer][side] = (int16_t)from;
+        ppu->centreFillWrap[layer][side] = wrap;
+      }
+      if(ppu->centreFillCol[layer][side] < 0) return false;
+      if(ppu->centreFillWrap[layer][side]) { *x &= 255; return true; }
+      *x = ppu->centreFillCol[layer][side];
+      *y = ppu->centreFillFrom[layer][side];
+      return true;
+    }
     case ppu_wideTile:
       // Two's complement does the wrap for negatives as well, which is the
       // whole reason the console's width is a power of two.

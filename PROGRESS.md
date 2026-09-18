@@ -102,6 +102,61 @@ a little -- the player's, and a zombie's giving chase.
   (`level1`, `level25-boss`: spread ticks only on the title and select
   screens), and exactness is unchanged on `boot`, `level1`, `level25-boss`
   and the select movie (0 differing).
+- **The game over screen was missing its middle third in widescreen.** The
+  mask ("GAME OVER" cut out of purple, the level through the letters -- the
+  console's own look, checked in 4:3) is on BG3, which a level anchors as
+  the split status panel; the gap between the halves was the bare band.
+  `$80:8A00` scrolls the mask in by counting BG3's vertical scroll shadow
+  (`$136A`) down, and the panel never scrolls, so `widescreen_frame` gives
+  BG3 `ppu_wideClampEdge` while that shadow is non-zero in a level
+  (`W_BG3_VSCROLL_SHADOW`). Reached with the new `--poke` option of
+  `zamn_test_layers` (health held at 0 from frame 1330 of a stand-still
+  movie: death at 1594, mask up from ~2300, top scores at 3170); the
+  policy fires on 799 frames of that movie and on none of `level1`,
+  `level1-2p`, `level25-boss` or the radar movie, all still 0 differing.
+- **...and then it was off-centre, with a line across the lower right.**
+  `ppu_wideClampEdge` keeps the console's place, and at the end of a map
+  the margins are 0 and 86 rather than 43 and 43 (pinned with
+  `--poke 2000+:1B6A=0000`), so the mask sat left; and the mask's foot is a
+  row of drips, and where a gap between two of them met the edge column the
+  margin showed the level as a streak, and where an outline did, a dark
+  line. New policy `ppu_wideCentre` (ppu.h/ppu.c): the layer's middle at
+  the picture's middle, and a margin line filled from the edge column a
+  few lines into the nearest opaque run at or above it, nothing on a line
+  with nothing opaque. `ppu_wideMapX` takes the line now and may redirect
+  it. `zamn.exe` takes `--poke` too, and its GPU picture at frame 2700 of
+  the pinned game over matches the software one. All movies still 0
+  differing; the policy fires only on the game over.
+- **...and the next game's panel was centred, and the margins were a
+  slab.** The BG3 scroll shadow stays at its game over value into the next
+  game, so that game's panel got `ppu_wideCentre`: health bar off the left
+  edge, half of it again on the right. The layer's own columns were tried
+  next (panel: 112-143 empty in 2P, 112-255 in 1P; mask: none) and missed
+  the mask's first ~100 frames, whose drips enter at columns 96-103 and
+  216-223. What works is the game's `hud_panel_on` (`$1E88`, per side,
+  `W_HUD_PANEL_ON`): 1 in play, 0 0 from before the mask's first drip to
+  the top scores, 1 again in the next game -- `zamn_test_layers --png`
+  prints it with BG3's empty columns now. And the margins beside the drips
+  are the layer's own columns repeated (the 32-tile map's wrap) below the
+  last fully-opaque line where both edge runs are under 16, the field
+  carried out everywhere else: the curtain continues instead of a purple
+  slab. 831 mask frames on the game over movie, none on five level movies,
+  panel anchored again in a movie that starts a new game after (go2.zmv:
+  Start every 32 frames from 3700). All 0 differing.
+- **The panel was still off, and the exactness test could not have said.**
+  The third `ppu_wideCentre` patch replaced the policy switch from that
+  case to `default:` by index -- which took the `ppu_wideTile`,
+  `ppu_wideStretch` and `ppu_wideAnchor` cases with it. Every anchored and
+  stretched layer fell to `default: return true`: drawn in the console's
+  place with the tilemap's own wrap, which is the panel 43 columns right
+  and the health bar again at the right edge, in every level. The test
+  reported 0 differing throughout, because it compares the draw list
+  against the same PPU. Restored from `git show HEAD:` and looked at: the
+  panel is at the left edge again in the test's render and in the
+  frontend's own picture (`--dump-pictures` prints the panel flags and
+  BG3's policy for the dumped frame now). Lesson: after any PPU change,
+  look at a level frame in widescreen with the eye, since nothing else
+  checks the margins.
 - The draw list unmoved is still the PPU's frame: `level1`, `level21-spin`,
   `level25-boss` in 16:9, 0 differing. (The test runs to the frame it is
   given, not to the movie's end -- `0 99999` is four processes that never

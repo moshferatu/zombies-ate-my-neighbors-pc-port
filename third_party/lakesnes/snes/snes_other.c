@@ -170,6 +170,10 @@ bool snes_bgOnMainScreen(const Snes* snes, int layer) {
   return ppu_bgOnMainScreen(snes->ppu, layer);
 }
 
+bool snes_bgColumnEmpty(const Snes* snes, int layer, int x) {
+  return ppu_columnEmptyAt(snes->ppu, layer, x);
+}
+
 void snes_setWideClamp(Snes* snes, int lo, int hi) {
   ppu_setWideClamp(snes->ppu, lo, hi);
 }

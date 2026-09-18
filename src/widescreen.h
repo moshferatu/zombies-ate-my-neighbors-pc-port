@@ -595,8 +595,27 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // two levels, and only `$212C` says the world has stopped being drawn.
   const bool in_level =
       snes_bgTilemapWider(snes, 1) && snes_bgOnMainScreen(snes, 1);
-  // BG3 is the status panel in a level and everything else outside one.
-  snes_setLayerWide(snes, 2, in_level ? ppu_wideAnchor : ppu_wideAuto);
+  // BG3 is the status panel in a level and everything else outside one --
+  // except at a game over, when the game scrolls a 256-wide mask over the
+  // panel's map: "GAME OVER" cut out of a purple field, the level showing
+  // through the letters (`$80:8A00`). Split like the panel, the mask left the
+  // middle third of the picture bare; centred in the picture and carried to
+  // its edges instead (`ppu_wideCentre`) it is whole. Centred, not left in
+  // the console's place: at the end of a map the margins are not the same
+  // width, and there the console's place is off to one side. Which of the two
+  // BG3 is carrying is what the game says about the panel: `hud_panel_on`,
+  // one word per side, is whether that player is in the game, and both are
+  // zero through a game over -- from before the mask's first drip comes in
+  // until the next game starts, when the panel is put up again. (Not the
+  // scroll the game over counts down, `$136A`: that stays where it stopped
+  // into the next game, and the panel of that game was centred and carried
+  // out to the edges, half a health bar and all. And not the layer's own
+  // columns: the panel keeps the middle empty, but the mask's first drips
+  // come in over the panel's own columns, and the curtain was split for its
+  // first hundred frames.)
+  const bool bg3_mask = in_level && ws_r16(mem, W_HUD_PANEL_ON) == 0 &&
+                        ws_r16(mem, W_HUD_PANEL_ON + 2) == 0;
+  snes_setLayerWide(snes, 2, !in_level ? ppu_wideAuto : bg3_mask ? ppu_wideCentre : ppu_wideAnchor);
   // BG2 is the scrolling world, and its margins are filled below, so it is the
   // one layer whose continuation is known rather than guessed at.
   snes_setLayerWide(snes, 1, in_level ? ppu_wideStretch : ppu_wideAuto);

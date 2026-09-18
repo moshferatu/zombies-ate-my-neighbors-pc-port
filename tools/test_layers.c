@@ -31,6 +31,7 @@
 
 #include "analysis/movie_apply.h"
 #include "layers.h"
+#include "poke.h"
 #include "port/oam.h"
 #include "cosim/cosim.h"
 #include "scale.h"
@@ -58,7 +59,7 @@ int main(int argc, char** argv) {
   if (argc < 5) {
     fprintf(stderr, "usage: %s <rom.sfc> <movie.zmv> <first> <last> [--png prefix frame]\n"
                     "       [--track first last] [--motion first last] [--widescreen off|16:9|16:10]\n"
-                    "       [--no-even] [--no-hold]\n"
+                    "       [--no-even] [--no-hold] [--poke frame[+]:addr=value[.b]]...\n"
                     "  <last> is a frame number, and the run goes on to it past the movie's end.\n", argv[0]);
     return 2;
   }
@@ -75,6 +76,7 @@ int main(int argc, char** argv) {
   const char* png = NULL;
   int png_frame = -1;
   int track_first = -1, track_last = -1;
+  PokeList pokes = {{{0}}, 0};
   WideMode wide = WIDE_OFF;
   // `--no-hold` pairs the owner table with the picture of the same tick, which
   // is wrong by a tick (see `SpriteOamOwners`) and is kept so that the
@@ -91,6 +93,7 @@ int main(int argc, char** argv) {
   for (int i = 5; i < argc; i++) {
     if (!strcmp(argv[i], "--no-hold")) { hold = false; continue; }
     if (!strcmp(argv[i], "--no-even")) { even = false; continue; }
+    if (!strcmp(argv[i], "--poke") && i + 1 < argc) { if (!poke_parse(&pokes, argv[++i])) return 2; continue; }
     if (!strcmp(argv[i], "--png") && i + 2 < argc) { png = argv[i + 1]; png_frame = atoi(argv[i + 2]); i += 2; }
     else if (!strcmp(argv[i], "--track") && i + 2 < argc) { track_first = atoi(argv[i + 1]); track_last = atoi(argv[i + 2]); i += 2; }
     else if (!strcmp(argv[i], "--motion") && i + 2 < argc) { motion_first = atoi(argv[i + 1]); motion_last = atoi(argv[i + 2]); i += 2; }
@@ -124,7 +127,7 @@ int main(int argc, char** argv) {
   uint32_t last_serial = sprite_oam_owners.serial;
   static SpriteOamOwners held;
   bool held_fresh = false;
-  long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, link_jump = 0, origin_moved = 0, window_held = 0, steps_spread = 0;
+  long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, link_jump = 0, origin_moved = 0, window_held = 0, steps_spread = 0, bg3_anchored = 0, bg3_mask = 0;
 
   long tested = 0, identical = 0, within_one = 0, differing = 0, unexpressible = 0, dropped = 0;
   long eased_ticks = 0, sprites_known = 0, sprites_drawn = 0, owners_fresh = 0;
@@ -133,6 +136,7 @@ int main(int argc, char** argv) {
 
   for (int i = 0; i < last; i++) {
     movie_apply(&movie, snes, i);
+    poke_apply(&pokes, snes->ram, i);
     cosim_frame(&cosim);
     if (i + 1 < first) continue;
     const int frame = i + 1;
@@ -227,6 +231,8 @@ int main(int argc, char** argv) {
         link_near += f->linkNear; link_origin += f->linkOrigin;
         link_looks += f->linkLooks; link_none += f->linkNone; link_jump += f->linkJump;
         window_held += f->mathHeld;
+        if (f->anchored[2]) bg3_anchored++;
+        if (ppu->layerWide[2] == ppu_wideCentre) bg3_mask++;
         for (int l = 0; l < 4; l++) if (f->stepK[l]) steps_spread++;
         if (f->dExtraLeft != 0) origin_moved++;
       }
@@ -313,6 +319,17 @@ int main(int argc, char** argv) {
           for (int x = -ppu->extraLeft; x < 256 + ppu->extraRight; x++) printf("%c", ppu_mathAllowedAt(ppu, x, 80) ? '#' : '.');
           printf("\n");
         }
+        // Which of BG3's columns are empty on every line, as runs -- what
+        // `widescreen_frame` tells the status panel from the game over's
+        // mask by.
+        printf("    hud_panel_on: %d %d; BG3 empty columns:", snes->ram[0x1e88] | (snes->ram[0x1e89] << 8),
+               snes->ram[0x1e8a] | (snes->ram[0x1e8b] << 8));
+        for (int c = 0, from = -1; c <= 256; c++) {
+          const bool empty = c < 256 && ppu_columnEmptyAt(ppu, 2, c);
+          if (empty && from < 0) from = c;
+          if (!empty && from >= 0) { printf(" %d-%d", from, c - 1); from = -1; }
+        }
+        printf("\n");
         if (f->mathGated)
           for (int r = 0; r < f->mathRects; r++)
             printf("    maths window rectangle %d: %d,%d %dx%d\n", r, f->mathRect[r].x, f->mathRect[r].y,
@@ -354,6 +371,8 @@ int main(int argc, char** argv) {
          " moved;  the picture's origin moved on %ld ticks\n",
          link_near, link_origin, link_looks, link_none, link_jump, origin_moved);
   if (window_held) printf("  the maths window's rectangles were held where they wandered on %ld ticks\n", window_held);
+  if (bg3_anchored) printf("  BG3 was anchored to the picture's edges on %ld frames\n", bg3_anchored);
+  if (bg3_mask) printf("  BG3 carried the game over mask on %ld frames\n", bg3_mask);
   if (steps_spread) printf("  a background stepping every few ticks had its step spread on %ld background-ticks\n", steps_spread);
   const bool ok = differing == 0;
   printf(ok ? "OK\n" : "FAIL: %ld frames differ by more than one\n", differing);

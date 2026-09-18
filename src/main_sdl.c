@@ -59,6 +59,7 @@
 
 #include "analysis/movie.h"
 #include "analysis/movie_apply.h"
+#include "poke.h"
 #include "cosim/cosim.h"
 // For `player_set_aim` alone: `$80:D1FF` is substituted, so twin-stick aiming
 // has to reach the port as well as the cartridge. See `src/twinstick.h`.
@@ -804,6 +805,8 @@ static void usage(void) {
     "  --fullscreen    Fullscreen even for a --frames or --scale run, which\n"
     "                  otherwise open a window: how to measure the screen as\n"
     "                  it is played.\n"
+    "  --poke <spec>   frame[+]:addr=value[.b], as zamn_headless takes it: write\n"
+    "                  a WRAM word (or byte) at a frame, or from it on with +.\n"
     "  --windowed      Start in a window. The default is fullscreen; F11 or\n"
     "                  Alt+Enter moves between them at any time.\n"
     "  --scale <N>     Size the window at N times 512x480, and start in it.\n"
@@ -850,6 +853,9 @@ int main(int argc, char** argv) {
   // way `layers_render` does, which no headless test can make.
   const char* dump_prefix = NULL;
   long dump_first = -1, dump_last = -1;
+  // `--poke`, as the headless tool has it: a way to a state -- a game over --
+  // that no movie in the corpus reaches, for looking at how it is drawn.
+  PokeList pokes = {{{0}}, 0};
   // Room for every routine in the registry and then some. It was 32, which
   // was more than the registry held when it was written and is not any more:
   // past the cap the `-r` was dropped and its argument fell through to the
@@ -988,6 +994,7 @@ int main(int argc, char** argv) {
       start_level = (int)v;
     }
     else if (!strcmp(a, "-m") && i + 1 < argc) movie_path = argv[++i];
+    else if (!strcmp(a, "--poke") && i + 1 < argc) { if (!poke_parse(&pokes, argv[++i])) return 2; }
     else if (!strcmp(a, "--shot") && i + 1 < argc) shot_path = argv[++i];
     else if (!strcmp(a, "--dump-pictures") && i + 1 < argc) {
       static char dump_buf[512];
@@ -1684,6 +1691,7 @@ int main(int argc, char** argv) {
           fflush(stdout);
           running = false;
         }
+        poke_apply(&pokes, snes->ram, (int)frame);
         // The substitution seam. Identical to `snes_runFrame` when the mask
         // is clear; when it is not, a registered routine's entry PC hands the
         // call to the C port, which runs against the core's own WRAM and
@@ -1756,6 +1764,7 @@ int main(int argc, char** argv) {
             fflush(stdout);
             running = false;
           } else {
+            poke_apply(&pokes, snes->ram, (int)frame);
             emu.capture = true;
             SDL_SemPost(emu.go);
             in_flight = true;
@@ -1788,6 +1797,10 @@ int main(int argc, char** argv) {
             const SDL_Rect r = {plan.dst.x, plan.dst.y, plan.dst.w, plan.dst.h};
             if (gpu && SDL_RenderReadPixels(ren, &r, SDL_PIXELFORMAT_RGB24, gpu, r.w * 3) == 0) {
               snprintf(path, sizeof path, "%s.%ld.%d.gpu.png", dump_prefix, frame, phase);
+              printf("dump frame %ld: hud_panel_on ws.mem %d %d, ram %d %d; BG3 policy %d; in_level %d\n", frame,
+                     ws.mem[0x1e88] | (ws.mem[0x1e89] << 8), ws.mem[0x1e8a] | (ws.mem[0x1e8b] << 8),
+                     snes->ram[0x1e88] | (snes->ram[0x1e89] << 8), snes->ram[0x1e8a] | (snes->ram[0x1e8b] << 8),
+                     snes->ppu->layerWide[2], snes_bgTilemapWider(snes, 1) && snes_bgOnMainScreen(snes, 1));
               stbi_write_png(path, r.w, r.h, 3, gpu, r.w * 3);
             }
             if (sw) {

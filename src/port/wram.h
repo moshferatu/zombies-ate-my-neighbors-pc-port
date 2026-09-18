@@ -163,6 +163,11 @@ static inline void wram_w16(Wram* w, uint32_t off, uint16_t v) {
 
 // --- Screen ---
 #define W_BRIGHTNESS_SHADOW 0x136c  // NMI restores this into INIDISP
+// The scroll shadow just above it: 12 bytes, BG1H, BG1V, BG2H, BG2V, BG3H,
+// BG3V, each restored into its register by the NMI. BG3's vertical one is
+// what the game over scrolls its mask with (`$80:8A00`) -- and it is left
+// where it stopped, so it does not say whether the mask is up.
+#define W_BG3_VSCROLL_SHADOW 0x136a
 
 // --- Per-player state (2 x u16, indexed by a player number already doubled) ---
 //

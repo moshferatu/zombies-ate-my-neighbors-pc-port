@@ -109,6 +109,9 @@ void snes_setLayerWide(Snes* snes, int layer, int policy);
 void snes_setSpriteAnchored(Snes* snes, int slot, bool anchored);
 bool snes_bgTilemapWider(const Snes* snes, int layer);
 bool snes_bgOnMainScreen(const Snes* snes, int layer);
+// Whether column `x` (0-255) of background `layer` is empty on every line of
+// the frame, at its current scroll -- see `ppu_columnEmptyAt`.
+bool snes_bgColumnEmpty(const Snes* snes, int layer, int x);
 void snes_setWideClamp(Snes* snes, int lo, int hi);
 void snes_writeVramWord(Snes* snes, uint16_t wordAdr, uint16_t val);
 void snes_setSprite(Snes* snes, int slot, int x, int y, uint16_t tileAttr,

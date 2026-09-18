@@ -1267,7 +1267,47 @@ backdrop moves 2.75 pixels a picture at 240 Hz instead of 11 and then
 nothing. That shows the backdrop a few ticks late, which on a backdrop
 nobody steers is not felt; it is under `even` (F6), it is only backgrounds,
 and it never fires in a level: over `level1` and `level25-boss` the only
-spread ticks are on the title and the select screen. `--dump-pictures prefix,frame`
+spread ticks are on the title and the select screen.
+
+**The game over mask.** A game over scrolls a 256-wide mask up over the
+level on BG3 -- "GAME OVER" cut out of a purple field, the level showing
+through the letters, which is the game's own look and not a transparency
+bug -- and in a level BG3 is the status panel, split down the middle and
+pinned to the picture's edges. Split, the mask left the middle third of a
+16:9 picture bare. `widescreen_frame` tells the two apart by what the game
+says about the panel: `hud_panel_on` (`W_HUD_PANEL_ON`, one word per side)
+is whether that player is in the game, and both are zero through a game
+over, from before the mask's first drip until the next game puts the panel
+up again. (Two other tells were tried and were wrong: the scroll the game
+over counts BG3 down with, `$136A`, stays where it stopped into the next
+game, whose panel was then centred and carried out to the edges, half a
+health bar and all; and the layer's own columns -- the panel keeps the
+middle empty, the mask fills it -- missed the mask's first hundred frames,
+whose drips come in over the panel's own columns.) While the mask is up
+BG3 gets `ppu_wideCentre`, a policy of its own because neither of the old
+ones was right for a whole screen: carried out from the console's place
+(`ppu_wideClampEdge`) the mask sat off to one side wherever the two margins
+were not the same width, which is at either end of a map, so
+`ppu_wideCentre` puts the layer's middle at the picture's middle. Its
+margins are drawn two ways. Beside the field and the letters they are the
+field: the edge column carried out, or where the edge pixel is a gap, the
+edge column a few lines into the nearest run of opaque pixels at or above
+(the field the drips hang from, past a drip's dark outline). Beside the
+drips at the mask's foot they are more drips -- the layer's 256 columns
+repeated, as a 32-tile map repeats on the hardware -- so that the curtain
+goes on to the edge of the picture rather than turning into a slab; a line
+is beside the drips when it is below the last line the layer is opaque all
+the way across and is a gap within 16 columns of both edges, which the
+letters never are. A line with nothing opaque on it is below the mask and
+shows what is behind. The test counts the frames the policy fires on: 831
+of the poked game over movie, from the first drip to the top scores, and
+none of `level1`, `level1-2p`, `level21-spin`, `level25-boss` or the radar
+movie; a movie that mashes Start into a new game after the game over has
+the panel anchored again. To reach a game over without playing one,
+`zamn_test_layers` and `zamn.exe` take `--poke` now
+(`--poke 1330+:1CB8=0000` holds the player's health at zero from frame 1330;
+adding `--poke 2000+:1B6A=0000` pins the camera to the map's left edge, the
+uneven-margins case). `--dump-pictures prefix,frame`
 writes the four pictures of one tick as the renderer drew them and as
 `layers_render` draws them, which is how the GPU path was found to be
 pixel-identical to the software one on both Direct3D 9 and 11 -- and how a
