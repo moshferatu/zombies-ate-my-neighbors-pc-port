@@ -1236,10 +1236,10 @@ widescreen draws every sprite as a world thing, in the console's coordinates
 frame. The record they are drawn from is a *screen-space* record
 (`ACTOR_SCREEN_SPACE`: the game lays it out on the screen, not in the
 world), and the pass's owner table says which OAM entries came from it, so
-`widescreen_frame` flags those entries anchored (`snes_setSpriteAnchored`)
-and the PPU draws them where an anchored layer's column of the same number
-goes. A flag rather than a moved X, so a frame the game did not redraw is
-not moved twice.
+`widescreen_frame` places those entries with the panel (`snes_setSpritePlace`,
+`ppu_spriteAnchored`) and the PPU draws them where an anchored layer's
+column of the same number goes. A place per slot rather than a moved X, so a
+frame the game did not redraw is not moved twice.
 
 **And the box's edges wander.** The game moves the window's edges from an
 interrupt whose line is not the same from one tick to the next: the box
@@ -1312,6 +1312,28 @@ writes the four pictures of one tick as the renderer drew them and as
 `layers_render` draws them, which is how the GPU path was found to be
 pixel-identical to the software one on both Direct3D 9 and 11 -- and how a
 draw list that named the wrong mask was found.
+
+**The drips are sprites.** With the mask centred and its margins right, the
+drips still went wrong: trunks that ended flat instead of in a drop, and
+drops hanging in the air 43 columns from any trunk. Compared column by
+column with the 4:3 picture, the mask's own columns differed in five-column
+strips 64 lines tall, present in one and 43 columns away in the other --
+which is what anchoring does to a sprite. The mask on BG3 draws only the
+upper part of each drip; the hanging part and the drop at its end are
+sprites of screen-space records, the same kind as the radar's markers, and
+`widescreen_frame` was anchoring them with the panel while the mask they
+hang from was centred. `ws_place_screen_sprites` (`ws_anchor_screen_sprites`
+before) now places a screen-space sprite with whatever BG3 is carrying:
+`ppu_spriteAnchored` with the panel, `ppu_spriteCentred` with the mask. A
+centred sprite is drawn where the centred layer's column of the same number
+is drawn, clipped to the layer's 256 columns, and again 256 columns either
+side, clipped to that margin -- the margins repeat the layer's columns, so
+the drips they repeat get their ends too (`ppu_evaluateSprites` finds such a
+sprite up to three times, the draw list emits it up to three times with a
+clip, and the exactness test holds). In 16:9 the mask's 256 columns now
+match the 4:3 picture pixel for pixel in purple, and the margins match the
+wrapped columns but for a world sprite's pixel, which rightly does not
+repeat.
 
 **The menus move too.** The character select scrolls its film strips a pixel a
 tick on one background and adds them, translucent, onto the wallpaper on

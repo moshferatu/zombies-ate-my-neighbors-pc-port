@@ -330,6 +330,15 @@ int main(int argc, char** argv) {
           if (!empty && from >= 0) { printf(" %d-%d", from, c - 1); from = -1; }
         }
         printf("\n");
+        {
+          int anchored = 0, centred = 0;
+          for (int s = 0; s < LAYERS_SPRITES; s++) {
+            if (!f->spr[s].drawn) continue;
+            anchored += f->spr[s].place == ppu_spriteAnchored;
+            centred += f->spr[s].place == ppu_spriteCentred;
+          }
+          printf("    sprites placed: %d anchored, %d centred\n", anchored, centred);
+        }
         if (f->mathGated)
           for (int r = 0; r < f->mathRects; r++)
             printf("    maths window rectangle %d: %d,%d %dx%d\n", r, f->mathRect[r].x, f->mathRect[r].y,

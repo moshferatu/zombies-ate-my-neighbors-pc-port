@@ -144,9 +144,10 @@
 // as layers: its output width at two bytes... four bytes a pixel, line doubled.
 #define LAYERS_FB_W (PPU_MAX_WIDTH * 2)
 #define LAYERS_FB_H 480
-// A draw list is at most every plane, every sprite drawn twice (once wrapped),
+// A draw list is at most every plane, every sprite drawn six times (once
+// wrapped down, and each of those three times across for a centred one),
 // and a sub-screen pass after each of the planes it can follow.
-#define LAYERS_MAX_OPS (LAYERS_PLANES * 3 + LAYERS_SPRITES * 6 + LAYERS_MAX_MATH_RECTS * 9)
+#define LAYERS_MAX_OPS (LAYERS_PLANES * 3 + LAYERS_SPRITES * 18 + LAYERS_MAX_MATH_RECTS * 9)
 
 typedef enum {
   LAYERS_BLEND_COPY = 0,  // alpha test: opaque pixels replace, clear ones do not
@@ -189,6 +190,7 @@ typedef struct {
   uint8_t w, h;        // both the sprite's size
   uint8_t prio;        // 0..3, the OAM attribute's
   bool math;           // palettes 4-7: the sprites colour maths applies to
+  uint8_t place;       // where it goes in a widened picture, `Ppu.spritePlace`
   bool drawn;          // false for a parked or empty one
   // Where this sprite was a tick ago, in whole pixels, if that is known:
   // `known` is false for one that has just appeared or whose predecessor could
@@ -666,6 +668,7 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
     sp->w = sp->h = (uint8_t)size;
     sp->prio = (uint8_t)((ppu->oam[s * 2 + 1] & 0x3000) >> 12);
     sp->math = ((ppu->oam[s * 2 + 1] & 0xe00) >> 9) >= 4;
+    sp->place = ppu->spritePlace[s];
     sp->known = false;
     sp->px = sp->py = 0;
     sp->rec = f->ownersFresh ? ownerRec[s] : -1;
@@ -1080,22 +1083,38 @@ static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
         }
         // Once where it is, and once 256 lines up for the wrap. The PPU
         // evaluates sprites for `line - 1`, so a sprite at OAM y lands on
-        // picture row y, one below where a background's line 1 lands.
+        // picture row y, one below where a background's line 1 lands. And a
+        // sprite placed with a centred layer (`ppu_spriteCentred`) is drawn
+        // where it is, clipped to the layer's own 256 columns, and again 256
+        // columns either side, clipped to that margin, as the PPU draws it;
+        // the clip stays where the margin is while the sprite is eased.
+        const bool centred = sp->place == ppu_spriteCentred && W != 256;
+        const int extraRight = W - 256 - cur->extraLeft;
+        const int mid = (extraRight - cur->extraLeft) / 2 + cur->extraLeft;
         for (int wrap = 0; wrap < 2; wrap++) {
           const int y = sp->y - wrap * 256;
           if (y + sp->h <= 0 || y >= H) continue;
-          LayersOp* o = &ops[n++];
-          o->kind = LAYERS_OP_SPRITE; o->blend = LAYERS_BLEND_COPY;
-          o->plane = 0; o->slot = (uint8_t)s; o->mask = -1;
-          o->sx = (s % LAYERS_ATLAS_COLS) * cur->cell;
-          o->sy = (s / LAYERS_ATLAS_COLS) * cur->cell;
-          o->sw = sp->w; o->sh = sp->h;
-          o->dx = (sp->x + cur->extraLeft) * sx + ox;
-          o->dy = y * sy + oy;
-          o->dw = sp->w * sx; o->dh = sp->h * sy;
-          o->clipped = false; o->cx = o->cy = o->cw = o->ch = 0;
-          // A sprite in palettes 4-7 is a maths layer of its own.
-          if (cur->mathMain[4] && sp->math) LAYERS_SUB_OPS(n - 1);
+          for (int k = centred ? -1 : 0; k <= (centred ? 1 : 0); k++) {
+            // The sprite's left edge and the clip, in columns of the picture
+            // from its left edge.
+            const int x = sp->x + k * 256 + cur->extraLeft;
+            const int lo = !centred ? 0 : k < 0 ? 0 : k > 0 ? mid + 256 : mid;
+            const int hi = !centred ? W : k < 0 ? mid : k > 0 ? W : mid + 256;
+            if (x + sp->w <= lo || x >= hi) continue;
+            LayersOp* o = &ops[n++];
+            o->kind = LAYERS_OP_SPRITE; o->blend = LAYERS_BLEND_COPY;
+            o->plane = 0; o->slot = (uint8_t)s; o->mask = -1;
+            o->sx = (s % LAYERS_ATLAS_COLS) * cur->cell;
+            o->sy = (s / LAYERS_ATLAS_COLS) * cur->cell;
+            o->sw = sp->w; o->sh = sp->h;
+            o->dx = x * sx + ox;
+            o->dy = y * sy + oy;
+            o->dw = sp->w * sx; o->dh = sp->h * sy;
+            o->clipped = centred;
+            o->cx = lo * sx; o->cy = 0; o->cw = (hi - lo) * sx; o->ch = H * sy;
+            // A sprite in palettes 4-7 is a maths layer of its own.
+            if (cur->mathMain[4] && sp->math) LAYERS_SUB_OPS(n - 1);
+          }
         }
       }
     }

@@ -120,6 +120,22 @@ enum {
   ppu_wideTile,
 };
 
+// Where a sprite goes when the picture is widened -- `Ppu.spritePlace`.
+enum {
+  // With the world: the console's own coordinates, and past the console's
+  // edges where the picture is wider.
+  ppu_spriteWorld = 0,
+  // With an anchored layer: drawn where `ppu_wideAnchor` draws a column of
+  // the same number, that many in from the picture's edge.
+  ppu_spriteAnchored,
+  // With a centred layer: drawn where `ppu_wideCentre` draws a column of the
+  // same number, clipped to the layer's own 256 columns, and again 256
+  // columns either side, clipped to that margin -- the policy repeats the
+  // layer's columns in its margins, and a sprite laid out over them is
+  // repeated with them.
+  ppu_spriteCentred,
+};
+
 typedef struct BgLayer {
   uint16_t hScroll;
   uint16_t vScroll;
@@ -242,12 +258,11 @@ struct Ppu {
   int extraLeft;
   int extraRight;
   uint8_t layerWide[5];
-  // ...and per sprite, whether it goes with an anchored layer rather than
-  // with the world: drawn where an anchored layer's column of the same
-  // number is drawn, that many in from the picture's edge. Set from outside
-  // for the sprites of a screen-space record -- the survivor radar's markers
-  // -- which the game lays out over the status panel.
-  bool spriteAnchored[128];
+  // ...and per sprite, where it goes (`ppu_spriteWorld` and the others
+  // above). Set from outside for the sprites of a screen-space record: the
+  // survivor radar's markers, which the game lays out over the status panel,
+  // and the game over's hanging drips, which it lays out over the mask.
+  uint8_t spritePlace[128];
   // ...whether each background is empty at both edges, recomputed once a frame
   uint8_t layerEdgeEmpty[4];
   // ...and for `ppu_wideCentre`, per background and side, where its margin

@@ -563,21 +563,24 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
   ws_object_sprites(snes, ws, slot, left, right);
 }
 
-// The sprites of a screen-space record go with the status panel, not the
-// world: the survivor radar's markers are laid out over its box, and the box
-// is on BG3, which `ppu_wideAnchor` has pinned to the picture's edges. The
-// pass says which OAM entries came from which record (`sprite_oam_owners`),
-// and at the top of a frame that table describes the OAM the vblank just
-// DMA'd; the record's flags are read from `ws->mem` for the same reason. A
-// flag per slot rather than a moved X, so that a frame the game did not
-// redraw is not moved twice.
-static inline void ws_anchor_screen_sprites(Snes* snes, Widescreen* ws, bool in_level) {
+// The sprites of a screen-space record go with whatever BG3 is carrying,
+// not with the world: the survivor radar's markers are laid out over its
+// box, which is on the panel that `ppu_wideAnchor` pins to the picture's
+// edges, and the drips hanging from the game over mask's foot are sprites
+// of such records too, laid out over the trunks the mask draws for them --
+// anchored with the panel while the mask was centred, they hung 43 columns
+// from their trunks, which ended flat. The pass says which OAM entries came
+// from which record (`sprite_oam_owners`), and at the top of a frame that
+// table describes the OAM the vblank just DMA'd; the record's flags are read
+// from `ws->mem` for the same reason. A place per slot rather than a moved
+// X, so that a frame the game did not redraw is not moved twice.
+static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, int place) {
   const uint8_t* mem = ws->mem;
   for (int s = 0; s < OAM_ENTRIES; s++) {
     const int rec = sprite_oam_owners.rec[s];
-    const bool anchored =
-        in_level && rec >= 0 && (ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS) & ACTOR_SCREEN_SPACE) != 0;
-    snes_setSpriteAnchored(snes, s, anchored);
+    const bool screen =
+        rec >= 0 && (ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS) & ACTOR_SCREEN_SPACE) != 0;
+    snes_setSpritePlace(snes, s, screen ? place : ppu_spriteWorld);
   }
 }
 
@@ -616,6 +619,8 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   const bool bg3_mask = in_level && ws_r16(mem, W_HUD_PANEL_ON) == 0 &&
                         ws_r16(mem, W_HUD_PANEL_ON + 2) == 0;
   snes_setLayerWide(snes, 2, !in_level ? ppu_wideAuto : bg3_mask ? ppu_wideCentre : ppu_wideAnchor);
+  // (The sprites laid out over BG3 -- the radar's markers, the mask's drips
+  // -- go the same way: `ws_place_screen_sprites`, at the end.)
   // BG2 is the scrolling world, and its margins are filled below, so it is the
   // one layer whose continuation is known rather than guessed at.
   snes_setLayerWide(snes, 1, in_level ? ppu_wideStretch : ppu_wideAuto);
@@ -629,7 +634,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
     // Nothing outside a level has a map to run off the end of.
     snes_setWidescreen(snes, margin, margin);
     snes_setWideClamp(snes, -PPU_EXTRA_MAX, 255 + PPU_EXTRA_MAX);
-    ws_anchor_screen_sprites(snes, ws, false);
+    ws_place_screen_sprites(snes, ws, ppu_spriteWorld);
     return;
   }
 
@@ -726,7 +731,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   }
 
   ws_margin_sprites(snes, ws, left, right);
-  ws_anchor_screen_sprites(snes, ws, true);
+  ws_place_screen_sprites(snes, ws, bg3_mask ? ppu_spriteCentred : ppu_spriteAnchored);
 }
 
 // Move the neighbour spawner's window out to the edges of the picture that is

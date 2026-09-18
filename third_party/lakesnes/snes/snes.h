@@ -104,9 +104,10 @@ void snes_setPixels(Snes* snes, uint8_t* pixelData);
 // times four bytes. See `ppu_setWidescreen`.
 void snes_setWidescreen(Snes* snes, int left, int right);
 void snes_setLayerWide(Snes* snes, int layer, int policy);
-// Whether OAM sprite `slot` is drawn with the anchored layers rather than with
-// the world -- see `Ppu.spriteAnchored`.
-void snes_setSpriteAnchored(Snes* snes, int slot, bool anchored);
+// Where OAM sprite `slot` is drawn when the picture is widened: with the
+// world, with the anchored layers or with a centred one -- one of the
+// `ppu_sprite*` places, see `Ppu.spritePlace`.
+void snes_setSpritePlace(Snes* snes, int slot, int place);
 bool snes_bgTilemapWider(const Snes* snes, int layer);
 bool snes_bgOnMainScreen(const Snes* snes, int layer);
 // Whether column `x` (0-255) of background `layer` is empty on every line of

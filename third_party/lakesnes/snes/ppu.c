@@ -86,7 +86,7 @@ Ppu* ppu_init(Snes* snes) {
   ppu->extraLeft = 0;
   ppu->extraRight = 0;
   for(int i = 0; i < 5; i++) ppu->layerWide[i] = ppu_wideAuto;
-  memset(ppu->spriteAnchored, 0, sizeof(ppu->spriteAnchored));
+  memset(ppu->spritePlace, 0, sizeof(ppu->spritePlace));
   for(int i = 0; i < 4; i++) for(int j = 0; j < 2; j++) {
     ppu->centreFillCol[i][j] = -1; ppu->centreFillLine[i][j] = -1; ppu->centreFillFrom[i][j] = -1;
     ppu->centreFillWrap[i][j] = 0; ppu->centreLastFull[i] = -2;
@@ -1062,10 +1062,19 @@ static bool ppu_getWindowStateOnLine(Ppu* ppu, int layer, int x, int line) {
 static int ppu_spriteX(const Ppu* ppu, uint8_t index) {
   int x = ppu->oam[index] & 0xff;
   x |= ((ppu->highOam[index >> 3] >> (index & 7)) & 1) << 8;
+  const int place = ppu->spritePlace[index >> 1];
+  if(place == ppu_spriteCentred) {
+    // A sprite laid out over a centred layer: the console's own wrap, since
+    // the layer's columns are the console's 256 and the margins repeat
+    // them (`ppu_evaluateSprites` draws the copies), then the layer's
+    // shift, which is `ppu_wideCentre`'s.
+    if(x > 255) x -= 512;
+    return x + (ppu->extraRight - ppu->extraLeft) / 2;
+  }
   if(x > 255 + ppu->extraRight) x -= 512;
   // An anchored sprite: with the picture widened, where `ppu_wideAnchor`
   // puts a layer's column of the same number.
-  if(ppu->spriteAnchored[index >> 1] && (ppu->extraLeft != 0 || ppu->extraRight != 0))
+  if(place == ppu_spriteAnchored && (ppu->extraLeft != 0 || ppu->extraRight != 0))
     x += x < 128 ? -ppu->extraLeft : ppu->extraRight;
   return x;
 }
@@ -1084,8 +1093,18 @@ static void ppu_evaluateSprites(Ppu* ppu, int line) {
   const int spriteLimit = 32 * width / 256;
   const int tileLimit = 34 * width / 256;
   uint8_t foundSprites[32 * PPU_MAX_WIDTH / 256] = {};
+  // ...and for each, how far it is shifted and which picture columns it is
+  // clipped to (`foundLo` to `foundHi`, exclusive, in the console's
+  // coordinates): a sprite placed with a centred layer is found up to three
+  // times, 256 columns apart, each clipped to the layer's columns or to one
+  // margin -- see `ppu_spriteCentred`.
+  int16_t foundShift[32 * PPU_MAX_WIDTH / 256] = {};
+  int16_t foundLo[32 * PPU_MAX_WIDTH / 256] = {};
+  int16_t foundHi[32 * PPU_MAX_WIDTH / 256] = {};
+  const int mid = (ppu->extraRight - ppu->extraLeft) / 2;
+  bool over = false;
   // iterate over oam to find sprites in range
-  for(int i = 0; i < 128; i++) {
+  for(int i = 0; i < 128 && !over; i++) {
     uint8_t y = ppu->oam[index] >> 8;
     // check if the sprite is on this line and get the sprite size
     uint8_t row = line - y;
@@ -1094,16 +1113,26 @@ static void ppu_evaluateSprites(Ppu* ppu, int line) {
     if(row < spriteHeight) {
       // in y-range, get the x location, using the high bit as well
       int x = ppu_spriteX(ppu, index);
-      // if in x-range, record
-      if(x > -spriteSize - ppu->extraLeft) {
+      const bool centred = ppu->spritePlace[index >> 1] == ppu_spriteCentred &&
+                           (ppu->extraLeft != 0 || ppu->extraRight != 0);
+      for(int k = centred ? -1 : 0; k <= (centred ? 1 : 0); k++) {
+        const int sx = x + k * 256;
+        const int lo = !centred ? -ppu->extraLeft : k < 0 ? -ppu->extraLeft : k > 0 ? mid + 256 : mid;
+        const int hi = !centred ? 256 + ppu->extraRight : k < 0 ? mid : k > 0 ? 256 + ppu->extraRight : mid + 256;
+        // if in x-range, record
+        if(sx + spriteSize <= lo || (centred && sx >= hi)) continue;
         // break if we found 32 sprites already
         spritesFound++;
         if(spritesFound > spriteLimit) {
           ppu->rangeOver = true;
           spritesFound = spriteLimit;
+          over = true;
           break;
         }
         foundSprites[spritesFound - 1] = index;
+        foundShift[spritesFound - 1] = (int16_t)(k * 256);
+        foundLo[spritesFound - 1] = (int16_t)lo;
+        foundHi[spritesFound - 1] = (int16_t)hi;
       }
     }
     index += 2;
@@ -1111,10 +1140,11 @@ static void ppu_evaluateSprites(Ppu* ppu, int line) {
   // iterate over found sprites backwards to fetch max 34 tile slivers
   for(int i = spritesFound; i > 0; i--) {
     index = foundSprites[i - 1];
+    const int lo = foundLo[i - 1], hi = foundHi[i - 1];
     uint8_t y = ppu->oam[index] >> 8;
     uint8_t row = line - y;
     int spriteSize = spriteSizes[ppu->objSize][(ppu->highOam[index >> 3] >> ((index & 7) + 1)) & 1];
-    int x = ppu_spriteX(ppu, index);
+    int x = ppu_spriteX(ppu, index) + foundShift[i - 1];
     if(x > -spriteSize - ppu->extraLeft) {
       // update row according to obj-interlace
       if(ppu->objInterlace) row = row * 2 + (ppu->evenFrame ? 0 : 1);
@@ -1145,9 +1175,11 @@ static void ppu_evaluateSprites(Ppu* ppu, int line) {
             pixel |= ((plane1 >> (8 + shift)) & 1) << 1;
             pixel |= ((plane2 >> shift) & 1) << 2;
             pixel |= ((plane2 >> (8 + shift)) & 1) << 3;
-            // draw it in the buffer if there is a pixel here
+            // draw it in the buffer if there is a pixel here, and inside
+            // the clip
             int screenCol = col + x + px + ppu->extraLeft;
-            if(pixel > 0 && screenCol >= 0 && screenCol < width) {
+            if(pixel > 0 && screenCol >= 0 && screenCol < width && col + x + px >= lo &&
+               col + x + px < hi) {
               ppu->objPixelBuffer[screenCol] = 0x80 + 16 * palette + pixel;
               ppu->objPriorityBuffer[screenCol] = (ppu->oam[index + 1] & 0x3000) >> 12;
             }

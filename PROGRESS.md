@@ -157,6 +157,24 @@ a little -- the player's, and a zombie's giving chase.
   BG3's policy for the dumped frame now). Lesson: after any PPU change,
   look at a level frame in widescreen with the eye, since nothing else
   checks the margins.
+- **The drips ended flat, and drops hung in the air.** Not the mask: a
+  purple-only diff of the 16:9 render against the 4:3 one, column by
+  column, found five-column strips 64 lines tall in the mask's own columns
+  that were 43 columns apart between the two -- the hanging parts of the
+  drips and their drops are sprites of screen-space records, anchored with
+  the panel (`ws_anchor_screen_sprites`) while the mask was centred.
+  `Ppu.spriteAnchored` is `Ppu.spritePlace` now (`ppu_spriteWorld`,
+  `ppu_spriteAnchored`, `ppu_spriteCentred`; `snes_setSpritePlace`), and
+  `ws_place_screen_sprites` gives a screen-space sprite the place of what
+  BG3 is carrying. A centred sprite is drawn clipped to the layer's 256
+  columns and again 256 columns either side, clipped to that margin, in
+  `ppu_evaluateSprites` and in `layers_list` alike, so the drips the
+  margins repeat end in drops too. Frame 2600 of the game over movie in
+  16:9: the mask's columns match 4:3 in purple to the pixel, the margins
+  match the wrap but for a world sprite's pixel; every movie still 0
+  differing; the panel and the radar's marker are where they were; the
+  frontend's own GPU picture shows every drip with its drop. `--png` prints
+  how many sprites are anchored and centred.
 - The draw list unmoved is still the PPU's frame: `level1`, `level21-spin`,
   `level25-boss` in 16:9, 0 differing. (The test runs to the frame it is
   given, not to the movie's end -- `0 99999` is four processes that never
