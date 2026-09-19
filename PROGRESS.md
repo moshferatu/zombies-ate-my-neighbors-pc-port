@@ -27,6 +27,21 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### Quick save on F5, quick load on F9; smoothing moves to F6 (2026-09-19)
+
+Asked for in play-testing: one save, the latest. `src/quicksave.h` writes
+`<rom>.quicksave`: the core's save state plus what the core does not have
+-- the widescreen's books (its work RAM copy, the borrowed sprite slots it
+owes back) and the sprite pass's owner tables. Saved only on a tick the
+harness ends clean (`cosim_idle`, new), and a load makes it forget its
+calls (`cosim_forget_calls`). Done in the tick block, where the emulation
+thread is known to be stopped; the smoothing cuts its link across a load;
+the top scores are not rolled back. SAVED / LOADED shows at the top right
+(`notice_draw`). Verified with `--quick-at`: a save from level 1 loaded into
+the middle of another run's logos is byte-identical 100 ticks on (threaded
+16:9, unthreaded 16:9, `--stock` 4:3). The even-motion key is gone (F6 is
+the smoothing toggle now); `--no-even` stays.
+
 ### `--skip-intro` bypasses the logos instead of running them (2026-09-19)
 
 Asked for in play-testing: the skip took several seconds (5.4 s, 1,150 real

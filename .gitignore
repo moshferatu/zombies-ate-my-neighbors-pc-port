@@ -16,6 +16,9 @@ build/
 # The player's top scores, kept beside the ROM by the frontend (src/hiscore.h).
 *.hiscore
 *.hiscore.tmp
+# The latest quick save, kept beside the ROM by the frontend (src/quicksave.h).
+*.quicksave
+*.quicksave.tmp
 
 # Music / audio output; never commit copyrighted content.
 *.spc

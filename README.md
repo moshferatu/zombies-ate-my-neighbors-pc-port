@@ -88,8 +88,8 @@ build\zamn.exe "Zombies Ate My Neighbors.sfc"
 ```
 Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=Select · Esc=Quit
 · **F1 = toggle native substitution** · **F2 = cycle scaling**
-· **F3 = toggle aspect** · **F4 = cycle widescreen** · **F5 = toggle smoothing**
-· **F6 = toggle even motion** · **F11 / Alt+Enter = fullscreen**
+· **F3 = toggle aspect** · **F4 = cycle widescreen** · **F5 = quick save**
+· **F6 = toggle smoothing** · **F9 = quick load** · **F11 / Alt+Enter = fullscreen**
 
 **Game controllers** work too, and are the way to actually play it: any pad SDL
 recognises — which is most of them, and a `gamecontrollerdb.txt` beside the
@@ -414,6 +414,52 @@ that matters is the pass that would have missed by a pixel), the first kill
 of `level1-rescue` two frames sooner, and in `level9-weapons` the first
 kill lands at frame 3,484, where at 100 there is none until 5,368.
 The rescue in `level1-rescue` lands on the same frame at both.
+
+### Quick save and quick load: F5 and F9
+
+F5 saves the game where it stands and F9 goes back to it. There is one save,
+the latest: `<rom>.quicksave` beside the ROM (400 KB), so it is still there
+the next time the game is started. The word SAVED, LOADED, NO SAVE or SAVE
+FAILED shows at the top right for a moment -- five-by-seven letters out of
+rectangles, drawn last on whatever drew the picture -- because a save
+changes nothing on screen and the console is behind a fullscreen window.
+
+The core could already save and load a machine (`snes_saveState`). What is
+played here is more than the core, and `src/quicksave.h` carries the rest:
+
+  * **The harness.** A substituted routine whose cycle budget is part spent
+    when a frame ends is resumed by the harness, and a save state knows
+    nothing of it. A save waits for a tick that `cosim_idle` says ends clean,
+    which nearly all do, and a load makes the harness forget what it held.
+  * **The widescreen's books** -- its tick-old copy of work RAM, and the
+    sprite cache slots it has borrowed and owes back. The saved video memory
+    has the borrowed graphics in it; with the list restored, the next frame's
+    hook returns them as it always does.
+  * **The sprite pass's owner tables**, which the smoothing pairs sprites by
+    and the widescreen places the radar's and the game over's sprites by.
+
+A key only asks. The machine may be running its next tick on the emulation
+thread when the key comes, so both are done in the tick block, after the
+last tick has been collected and before the next is started. The smoothing
+does not ease across a load: the tick that was on screen is marked as
+nothing to ease from when the first loaded tick comes to be linked to it.
+What belongs to the launch is not in the file -- the patches in the
+cartridge's copy (`--level`, `--red-blood`, the logo bypass), the margin,
+the scaling -- so a save made in 4:3 loads in 16:9. The top scores are not
+rolled back: after a load the file's table is put over the machine's. A
+file that is not a save of this ROM by this build loads nothing, and both
+keys are off while a movie plays.
+
+Checked with `--quick-at frame:save|load[:file]`, which presses the keys
+from the command line. `level1.zmv` saved at frame 1,900 and again at 2,000;
+a second run, of a movie that presses nothing, loads the first save at frame
+300 -- in the middle of the Konami logo -- and saves at 400. The two later
+saves are the same 407,448 bytes, which is the core, the widescreen's books
+and the owner tables all at once: in 16:9 with the smoothing on and the
+machine on its thread, in 16:9 without, and in 4:3 with `--stock`. The
+pictures either side of that load are the logo and then the level, with no
+picture between that is both. A `--stock` 4:3 save of `level9-weapons` loads
+into a native 16:9 `--red-blood` run and plays on.
 
 ### The top scores are kept, and `--no-high-scores`
 
@@ -1216,7 +1262,7 @@ console never had anything to put on. **Smoothing puts something on them**: the
 pictures in between show every background and every sprite part of the way
 back toward where it was a tick ago. At 240 Hz that is four distinct pictures
 per game frame; at 120 Hz two. On by default on any display faster than the
-game, F5 toggles it, `--no-smooth` starts without it, and on a 60 Hz panel it
+game, F6 toggles it, `--no-smooth` starts without it, and on a 60 Hz panel it
 is off because there is nothing for it to fill.
 
 **The display need not be a whole multiple of 60.** Every refresh is a picture
@@ -1233,7 +1279,8 @@ the rate the system reports, which is how 144, 165 and 75 were measured on a
 240 Hz panel: 2.40, 2.75 and 1.25 pictures per frame, 59.3-59.5 frames a
 second over a run with four level loads in it.
 
-**Uneven steps are evened out**, and F6 or `--no-even` turns that off. The
+**Uneven steps are evened out**, and `--no-even` turns that off (it had a
+key, F6, which is the smoothing's now). The
 game keeps positions in whole pixels and moves things at speeds that are not:
 the player walks a pixel and a half a tick, which comes out as 2, 1, 2, 1, and
 a zombie giving chase is moved on every other tick, 2, 0, 2, 0. Eased straight
@@ -1411,7 +1458,7 @@ and each step is spread over the ticks up to the next (`stepK`, `stepI`,
 `layers_spread`), arriving exactly as the next one lands: the title's
 backdrop moves 2.75 pixels a picture at 240 Hz instead of 11 and then
 nothing. That shows the backdrop a few ticks late, which on a backdrop
-nobody steers is not felt; it is under `even` (F6), it is only backgrounds,
+nobody steers is not felt; it is under `even` (`--no-even`), it is only backgrounds,
 and it never fires in a level: over `level1` and `level25-boss` the only
 spread ticks are on the title and the select screen.
 

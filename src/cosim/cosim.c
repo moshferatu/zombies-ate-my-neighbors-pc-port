@@ -1495,6 +1495,20 @@ void cosim_frame(Cosim* c) {
   c->frames++;
 }
 
+// Nothing of the harness's own is in flight: no call being verified and no
+// substituted routine's budget part spent. Then the whole of the machine is
+// in the core, and the core's save state is a save state of this too.
+bool cosim_idle(const Cosim* c) {
+  return c->priv->depth == 0 && c->priv->burn_depth == 0;
+}
+
+// The machine has been replaced under the harness (a state was loaded): what
+// was in flight belonged to the machine that is gone.
+void cosim_forget_calls(Cosim* c) {
+  c->priv->depth = 0;
+  c->priv->burn_depth = 0;
+}
+
 bool cosim_failed(const Cosim* c) {
   for (int i = 0; i < c->stat_count; i++)
     if (cosim_mask_get(&c->enabled, i) && c->stats[i].failed) return true;

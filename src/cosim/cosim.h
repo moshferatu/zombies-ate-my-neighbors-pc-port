@@ -725,6 +725,13 @@ void cosim_step(Cosim* c);
 // Step to the end of the current frame, as the reference core defines a frame.
 void cosim_frame(Cosim* c);
 
+// True between frames when the harness holds nothing of its own -- no call on
+// its stack, no budget part burned -- so that `snes_saveState` has the lot.
+// And, for the other direction, forgetting whatever it holds: after
+// `snes_loadState` that belonged to a machine that is gone.
+bool cosim_idle(const Cosim* c);
+void cosim_forget_calls(Cosim* c);
+
 // True if any enabled routine has diverged.
 bool cosim_failed(const Cosim* c);
 

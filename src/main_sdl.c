@@ -48,7 +48,7 @@
 //             [--level N] [--no-twin-stick] [--no-smooth] [--no-even]
 //             [--dump-pictures prefix,frame]
 //             [--no-high-scores] [--high-scores file] [--hitbox percent]
-//             [--red-blood]
+//             [--red-blood] [--quick-at frame:save|load[:file]]...
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -77,6 +77,7 @@
 #include "twinstick.h"
 #include "widescreen.h"
 #include "skipintro.h"
+#include "quicksave.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -221,8 +222,71 @@ static bool write_png(Snes* snes, const char* path) {
 // `dim` is 0..255 of black laid over the finished picture, which is how the quit
 // chord shows itself — see `pad_quit` for the gesture and `present_dim` for what
 // draws it.
+//
+// And a word over it for a moment -- SAVED, LOADED -- because a quick save
+// changes nothing on screen and the console is behind a fullscreen window.
+// Five-by-seven letters out of filled rectangles, only the ones the four
+// messages use; drawn last, on whatever the picture was drawn with.
+static struct {
+  const char* text;
+  Uint64 until;
+  Uint8 r, g, b;
+} g_notice;
+
+static void notice_show(const char* text, Uint8 r, Uint8 g, Uint8 b) {
+  g_notice.text = text;
+  g_notice.until = SDL_GetPerformanceCounter() + SDL_GetPerformanceFrequency() * 5 / 4;
+  g_notice.r = r; g_notice.g = g; g_notice.b = b;
+}
+
+static const uint8_t* notice_glyph(char ch) {
+  static const struct { char ch; uint8_t rows[7]; } glyphs[] = {
+    {'A', {0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11}},
+    {'D', {0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e}},
+    {'E', {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f}},
+    {'F', {0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10}},
+    {'I', {0x0e, 0x04, 0x04, 0x04, 0x04, 0x04, 0x0e}},
+    {'L', {0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0x1f}},
+    {'N', {0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11}},
+    {'O', {0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e}},
+    {'S', {0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e}},
+    {'V', {0x11, 0x11, 0x11, 0x11, 0x11, 0x0a, 0x04}},
+  };
+  for (size_t i = 0; i < sizeof glyphs / sizeof glyphs[0]; i++)
+    if (glyphs[i].ch == ch) return glyphs[i].rows;
+  return NULL;  // a space
+}
+
+static void notice_draw(SDL_Renderer* ren) {
+  if (!g_notice.text || SDL_GetPerformanceCounter() >= g_notice.until) return;
+  int ow = 0, oh = 0;
+  if (SDL_GetRendererOutputSize(ren, &ow, &oh) != 0) return;
+  int px = oh / 300;  // 7 px at 2160 lines, 3 at 1080
+  if (px < 2) px = 2;
+  const int len = (int)strlen(g_notice.text);
+  const int x0 = ow - (len * 6 + 3) * px, y0 = 4 * px;
+  SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_NONE);
+  for (int pass = 0; pass < 2; pass++) {
+    // A black copy a pixel down and right first, so it reads on any scene.
+    if (pass == 0) SDL_SetRenderDrawColor(ren, 0, 0, 0, 255);
+    else SDL_SetRenderDrawColor(ren, g_notice.r, g_notice.g, g_notice.b, 255);
+    const int off = pass == 0 ? px : 0;
+    for (int i = 0; i < len; i++) {
+      const uint8_t* rows = notice_glyph(g_notice.text[i]);
+      if (!rows) continue;
+      for (int y = 0; y < 7; y++)
+        for (int x = 0; x < 5; x++)
+          if (rows[y] & (0x10 >> x)) {
+            const SDL_Rect r = {x0 + (i * 6 + x) * px + off, y0 + y * px + off, px, px};
+            SDL_RenderFillRect(ren, &r);
+          }
+    }
+  }
+}
+
 static void present_finish(Present* p, int dim) {
   present_dim(p, dim);
+  notice_draw(p->ren);
   SDL_RenderPresent(p->ren);
 }
 
@@ -821,7 +885,7 @@ static void usage(void) {
     "                  the last frame and this one — four pictures per frame at\n"
     "                  240 Hz, twelve per five frames at 144 — at the cost of\n"
     "                  showing each frame about one frame late. The game itself\n"
-    "                  runs at its own speed either way. F5 toggles. See\n"
+    "                  runs at its own speed either way. F6 toggles. See\n"
     "                  src/layers.h.\n"
     "  --no-even       Ease the pictures straight from one frame to the next.\n"
     "                  By default uneven steps are evened out, because the game\n"
@@ -832,7 +896,7 @@ static void usage(void) {
     "                  Each thing is drawn up to half a pixel from where it is,\n"
     "                  on the steady line its steps stand either side of. Adds\n"
     "                  no delay; a thing that stops settles by that half pixel\n"
-    "                  one frame later. F6 toggles.\n"
+    "                  one frame later.\n"
     "  --dump-pictures <prefix,frame[,last]>\n"
     "                  Write the pictures of a frame, or a range, as PNGs, twice: as the\n"
     "                  renderer drew them, read back, and as src/layers.h\n"
@@ -849,6 +913,9 @@ static void usage(void) {
     "                  it is played.\n"
     "  --poke <spec>   frame[+]:addr=value[.b], as zamn_headless takes it: write\n"
     "                  a WRAM word (or byte) at a frame, or from it on with +.\n"
+    "  --quick-at <frame:save|load[:file]>\n"
+    "                  F5 or F9 from the command line, at a frame, to a file of\n"
+    "                  its own if one is named. For testing; up to 8.\n"
     "  --red-blood     The game over's curtain of purple slime is red, and blood,\n"
     "                  as it is on the Mega Drive. Nothing else changes colour.\n"
     "  --hitbox <pct>  How far a player reaches for a pickup or a neighbour, and\n"
@@ -881,7 +948,8 @@ static void usage(void) {
     "Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
     "          F1 = toggle native substitution   F2 = cycle scaling\n"
     "          F3 = toggle aspect ratio          F4 = cycle widescreen\n"
-    "          F5 = toggle smoothing             F11/Alt+Enter = fullscreen\n"
+    "          F5 = quick save                   F9 = quick load\n"
+    "          F6 = toggle smoothing             F11/Alt+Enter = fullscreen\n"
     "          Esc = quit\n\n"
     "Controllers: any pad SDL recognises, hot-pluggable, first two take the two\n"
     "          SNES ports. Face buttons are positional — the bottom one is B,\n"
@@ -910,6 +978,11 @@ int main(int argc, char** argv) {
   // `--poke`, as the headless tool has it: a way to a state -- a game over --
   // that no movie in the corpus reaches, for looking at how it is drawn.
   PokeList pokes = {{{0}}, 0};
+  // `--quick-at frame:save|load[:file]`: F5 or F9 pressed by the command line
+  // at a frame, to a file of its own if one is named. For testing the quick
+  // save without a keyboard, and the one way to it under a movie.
+  struct { long frame; bool load; const char* file; } quick_at[8];
+  int quick_ats = 0;
   // The top scores, kept from run to run -- see hiscore.h.
   // `--hitbox`: see `actor_overlap_reach` in port/oam.h. 0 is "not said".
   int hitbox_pct = 0;
@@ -1058,6 +1131,20 @@ int main(int argc, char** argv) {
     }
     else if (!strcmp(a, "-m") && i + 1 < argc) movie_path = argv[++i];
     else if (!strcmp(a, "--poke") && i + 1 < argc) { if (!poke_parse(&pokes, argv[++i])) return 2; }
+    else if (!strcmp(a, "--quick-at") && i + 1 < argc) {
+      char* end = NULL;
+      const long at = strtol(argv[++i], &end, 10);
+      const bool save = end && !strncmp(end, ":save", 5), load = end && !strncmp(end, ":load", 5);
+      if (quick_ats == 8 || at <= 0 || !(save || load) || (end[5] != 0 && end[5] != ':')) {
+        fprintf(stderr, "error: --quick-at wants frame:save or frame:load, and a :file if any (8 at most), got '%s'\n\n", argv[i]);
+        usage();
+        return 2;
+      }
+      quick_at[quick_ats].frame = at;
+      quick_at[quick_ats].load = load;
+      quick_at[quick_ats].file = end[5] == ':' ? end + 6 : NULL;
+      quick_ats++;
+    }
     else if (!strcmp(a, "--hitbox") && i + 1 < argc) {
       char* end = NULL;
       const long v = strtol(argv[++i], &end, 10);
@@ -1402,7 +1489,8 @@ int main(int argc, char** argv) {
          "          held for a second quits.\n"
          "          F1=toggle native substitution  F2=cycle scaling\n"
          "          F3=toggle aspect ratio         F4=cycle widescreen\n"
-         "          F5=toggle smoothing            F6=toggle even motion\n"
+         "          F5=quick save                  F9=quick load\n"
+         "          F6=toggle smoothing\n"
          "          F11 or Alt+Enter=fullscreen\n"
          "          Esc=Quit\n");
   {
@@ -1511,7 +1599,7 @@ int main(int argc, char** argv) {
   // picture, and the game is `pic_p / pic_q` of a tick further on in each than
   // in the last — 1/4 at 240 Hz, 5/12 at 144, and 1/1 when smoothing is off or
   // impossible, which is the plain loop. `phase` is how far through the
-  // current tick the last picture was, in `pic_q`-ths; F5 changes the fraction,
+  // current tick the last picture was, in `pic_q`-ths; F6 changes the fraction,
   // between ticks.
   int lock_p = 1, lock_q = 1;
   const bool smooth_possible =
@@ -1555,13 +1643,13 @@ int main(int argc, char** argv) {
              "      the sub screen (the character select) is shown as the PPU drew it.\n");
   }
   if (smooth_possible && lock_p == 1)
-    printf("Smoothing: %s (F5 toggles; %d pictures per frame at %d Hz when on;"
-           " motion %s, F6)\n",
+    printf("Smoothing: %s (F6 toggles; %d pictures per frame at %d Hz when on;"
+           " motion %s)\n",
            smooth ? "on" : "off", lock_q, refresh_hz,
            even ? "evened" : "eased frame to frame");
   else if (smooth_possible)
-    printf("Smoothing: %s (F5 toggles; %d pictures per %d frames at %d Hz when"
-           " on, the game at %.3f fps; motion %s, F6)\n",
+    printf("Smoothing: %s (F6 toggles; %d pictures per %d frames at %d Hz when"
+           " on, the game at %.3f fps; motion %s)\n",
            smooth ? "on" : "off", lock_q, lock_p, refresh_hz,
            1000.0 / smooth_tick_ms,
            even ? "evened" : "eased frame to frame");
@@ -1623,6 +1711,14 @@ int main(int argc, char** argv) {
   // have been shown, which is more than `frame` by exactly the smoothing.
   bool in_flight = false;
   long pictures = 0;
+  // Quick save (F5) and quick load (F9): `src/quicksave.h`. A key only asks;
+  // the tick block does it, with the machine stopped.
+  enum { QUICK_NOTHING, QUICK_SAVE, QUICK_LOAD } quick_want = QUICK_NOTHING;
+  int quick_waited = 0;
+  static QuickSave quick;
+  quicksave_init(&quick, rom_path, rom, (size_t)rom_len);
+  uint32_t owners_serial = sprite_oam_owners.serial;
+  int lay_cut = 0;
   while (running && (frame_limit == 0 || frame < frame_limit)) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
@@ -1692,7 +1788,22 @@ int main(int argc, char** argv) {
           }
           continue;
         }
-        if (e.key.keysym.sym == SDLK_F5) {
+        if (e.key.keysym.sym == SDLK_F5 || e.key.keysym.sym == SDLK_F9) {
+          // Quick save and quick load. Only asked for here: the machine may be
+          // running its next tick on the emulation thread at this moment, and
+          // both are done where it is known to be stopped (see `quick_want`).
+          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+            if (have_movie) {
+              printf("Quick save and load are off while a movie plays.\n");
+              fflush(stdout);
+            } else {
+              quick_want = e.key.keysym.sym == SDLK_F5 ? QUICK_SAVE : QUICK_LOAD;
+              quick_waited = 0;
+            }
+          }
+          continue;
+        }
+        if (e.key.keysym.sym == SDLK_F6) {
           // Smoothing, on a key for the same reason the others are: the only
           // way to judge it is to flip it on the same scene. Takes effect at
           // the next tick, which is where the pacer is re-armed.
@@ -1703,18 +1814,6 @@ int main(int argc, char** argv) {
             else
               printf("Smoothing: %s, but not possible on this display\n",
                      smooth ? "on" : "off");
-            fflush(stdout);
-          }
-          continue;
-        }
-        if (e.key.keysym.sym == SDLK_F6) {
-          // ...and how the pictures are placed, for the same reason. No more
-          // than a flag the next picture reads: both placements are made from
-          // the same two ticks.
-          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-            even = !even;
-            printf("Motion: %s\n", even ? "evened"
-                                        : "eased frame to frame");
             fflush(stdout);
           }
           continue;
@@ -1849,8 +1948,78 @@ int main(int argc, char** argv) {
         // back. It is audible, and it is the lesser of the two.
       }
 
+      // The port's sprite pass: did it run in the tick that has just ended?
+      // Its serial says. (What `Layers.held_fresh` is, kept here as well
+      // because a quick save needs it whether or not the smoothing is on.)
+      const bool owners_fresh = sprite_oam_owners.serial != owners_serial;
+      owners_serial = sprite_oam_owners.serial;
+
+      for (int k = 0; k < quick_ats; k++)
+        if (quick_at[k].frame == frame) {
+          quick_want = quick_at[k].load ? QUICK_LOAD : QUICK_SAVE;
+          quick_waited = 0;
+          if (quick_at[k].file) snprintf(quick.path, sizeof quick.path, "%s", quick_at[k].file);
+        }
+      // A quick save or load that was asked for, here because the machine is
+      // stopped: its last tick has been collected and its next not started.
+      if (quick_want != QUICK_NOTHING) {
+        uint8_t fresh = owners_fresh ? 1 : 0;
+        const QuickPart parts[] = {
+          {ws.mem, sizeof ws.mem}, {&ws.have_mem, sizeof ws.have_mem},
+          {ws.lent_frame, sizeof ws.lent_frame}, {ws.lent_slot, sizeof ws.lent_slot},
+          {&ws.lent_count, sizeof ws.lent_count},
+          {ws.back_slot, sizeof ws.back_slot}, {&ws.back_count, sizeof ws.back_count},
+          {ws.slot_drawn, sizeof ws.slot_drawn},
+          {&sprite_oam_owners, sizeof sprite_oam_owners},
+          {sprite_oam_history, sizeof sprite_oam_history},
+          {&fresh, sizeof fresh},
+        };
+        const int part_count = (int)(sizeof parts / sizeof parts[0]);
+        if (quick_want == QUICK_SAVE) {
+          // Not while the harness is part way through a routine of its own:
+          // wait for a tick that ends clean, which is nearly all of them.
+          if (cosim_idle(&cosim)) {
+            const bool ok = quicksave_write(&quick, snes, parts, part_count);
+            printf(ok ? "Quick save: '%s'.\n" : "Quick save: cannot write '%s'.\n", quick.path);
+            if (ok) notice_show("SAVED", 120, 255, 120);
+            else notice_show("SAVE FAILED", 255, 90, 90);
+            quick_want = QUICK_NOTHING;
+          } else if (++quick_waited > 300) {
+            printf("Quick save: the machine did not come to rest; not saved.\n");
+            notice_show("SAVE FAILED", 255, 90, 90);
+            quick_want = QUICK_NOTHING;
+          }
+        } else {
+          const QuickLoad got = quicksave_read(&quick, snes, parts, part_count);
+          if (got == QUICKLOAD_OK) {
+            cosim_forget_calls(&cosim);
+            // The smoothing: the tick being shown and the first one after the
+            // load are not neighbours, so the link between them is cut when it
+            // comes to be made (`lay_cut`), and the owner table the next
+            // picture is taken apart with is the restored one.
+            lay.held = sprite_oam_owners;
+            lay.held_fresh = fresh != 0;
+            lay.serial = owners_serial = sprite_oam_owners.serial;
+            lay_cut = 2;
+            // The top scores are not rolled back: the file's table goes over
+            // the machine's, as after a boot.
+            hiscore.restored = false;
+            key_held = 0;
+            printf("Quick load: '%s'.\n", quick.path);
+            notice_show("LOADED", 120, 200, 255);
+          } else {
+            printf(got == QUICKLOAD_NONE ? "Quick load: there is no '%s'.\n"
+                                         : "Quick load: '%s' is not a save of this ROM by this build.\n",
+                   quick.path);
+            notice_show(got == QUICKLOAD_NONE ? "NO SAVE" : "LOAD FAILED", 255, 90, 90);
+          }
+          quick_want = QUICK_NOTHING;
+        }
+        fflush(stdout);
+      }
+
       // How many pictures this tick is shown as. Asked again every tick
-      // because F5 changes it, and acted on only here, between ticks, where
+      // because F6 changes it, and acted on only here, between ticks, where
       // the pacer can be re-armed at the new period with nothing in flight.
       const bool want = smooth_possible && smooth;
       if (want != (pic_q > 1)) {
@@ -1873,6 +2042,10 @@ int main(int argc, char** argv) {
           layers_take(&lay, snes->ppu);
           pace_add(&h_take, PACE_MS(t0, SDL_GetPerformanceCounter()));
         }
+        // After a quick load, the tick that was on screen is no neighbour of
+        // the first one loaded: by the time they come to be linked it has been
+        // shown, and is marked as nothing to ease from.
+        if (lay_cut && --lay_cut == 0) lay.frame[lay.cur]->valid = false;
         layers_advance(&lay);
         if (lay.frame[lay.cur]->layered) present_layers_upload(&plyr, lay.frame[lay.cur]);
         else unlayered++;
