@@ -526,7 +526,11 @@ static inline void layers_sprite_cell(LayersFrame* f, const Ppu* ppu, int slot,
         uint8_t* out = f->atlas[cy + row][cx + col + px];
         if (pixel == 0) { out[0] = out[1] = out[2] = out[3] = 0; continue; }
         const bool m = math && (mathAllowedAll || ppu_mathAllowedAt((Ppu*)ppu, x0 + col + px, y0 + row + 1));
-        layers_rgba(ppu, 0x80 + 16 * palette + pixel, m, out);
+        // `Ppu.objRemap`: a sprite in colours of the frontend's (the game
+        // over's drips under `--red-blood`), as `ppu_evaluateSprites` has it.
+        const int colour = ppu->objRemapOn[slot] && ppu->objRemap[pixel]
+                               ? ppu->objRemap[pixel] : 0x80 + 16 * palette + pixel;
+        layers_rgba(ppu, colour, m, out);
       }
     }
   }

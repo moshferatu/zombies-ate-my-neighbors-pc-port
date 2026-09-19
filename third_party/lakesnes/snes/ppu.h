@@ -205,6 +205,12 @@ struct Ppu {
   uint8_t objSize;
   uint8_t objPixelBuffer[PPU_MAX_WIDTH]; // line buffers
   uint8_t objPriorityBuffer[PPU_MAX_WIDTH];
+  // zamn: a sprite drawn in colours of the frontend's. For an OAM entry with
+  // `objRemapOn` set, a pixel whose `objRemap` is not zero takes that CGRAM
+  // index in place of its palette's. Both are the frontend's to set, from the
+  // frame hook, and are all zero otherwise (`src/blood.h` is the one user).
+  bool objRemapOn[0x80];
+  uint8_t objRemap[16];
   bool timeOver;
   bool rangeOver;
   bool objInterlace;

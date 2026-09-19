@@ -69,7 +69,7 @@ int main(int argc, char** argv) {
                     "       [--png-range prefix first last] [--stock] [--check-frame-step]\n"
                     "       [--track first last] [--motion first last] [--widescreen off|16:9|16:10]\n"
                     "       [--no-even] [--no-hold] [--poke frame[+]:addr=value[.b]]...\n"
-                    "       [--hitbox percent] [--watch addr]...\n"
+                    "       [--hitbox percent] [--watch addr]... [--red-blood]\n"
                     "  <last> is a frame number, and the run goes on to it past the movie's end.\n", argv[0]);
     return 2;
   }
@@ -90,6 +90,7 @@ int main(int argc, char** argv) {
   int track_first = -1, track_last = -1;
   PokeList pokes = {{{0}}, 0};
   int watch[8], watches = 0, watched[8] = {0};
+  bool red_blood = false;
   WideMode wide = WIDE_OFF;
   // `--no-hold` pairs the owner table with the picture of the same tick, which
   // is wrong by a tick (see `SpriteOamOwners`) and is kept so that the
@@ -111,6 +112,8 @@ int main(int argc, char** argv) {
     }
     if (!strcmp(argv[i], "--no-hold")) { hold = false; continue; }
     if (!strcmp(argv[i], "--no-even")) { even = false; continue; }
+    // `--red-blood`, as the frontend has it (`src/blood.h`).
+    if (!strcmp(argv[i], "--red-blood")) { red_blood = true; continue; }
     // `--hitbox pct`, as the frontend has it (`actor_overlap_reach`), and
     // `--watch addr`: a line whenever that WRAM word changes -- between them,
     // the frame a pickup lands on at one reach and at another.
@@ -141,6 +144,15 @@ int main(int argc, char** argv) {
   if (wide != WIDE_OFF) {
     snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
     widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
+  }
+  if (red_blood) {
+    // The hook is the widescreen's, which the frontend installs at any width.
+    if (wide == WIDE_OFF) widescreen_install(snes, &ws, rom, rom_len, 0);
+    if (!blood_patch_rom(snes->cart->rom, (size_t)snes->cart->romSize)) {
+      fprintf(stderr, "error: --red-blood does not know this ROM's game over\n");
+      return 1;
+    }
+    ws.blood.on = true;
   }
 
   Cosim cosim;
@@ -415,6 +427,16 @@ int main(int argc, char** argv) {
           snprintf(vpath, sizeof vpath, "%s.%d.wram.bin", png, frame);
           vf = fopen(vpath, "wb");
           if (vf) { fwrite(snes->ram, 1, 0x20000, vf); fclose(vf); }
+          // ...and the colours and the sprite table: 512 bytes of CGRAM, 512 of
+          // OAM and its 32 high bytes.
+          snprintf(vpath, sizeof vpath, "%s.%d.cgram.bin", png, frame);
+          vf = fopen(vpath, "wb");
+          if (vf) {
+            fwrite(ppu->cgram, sizeof ppu->cgram[0], 0x100, vf);
+            fwrite(ppu->oam, sizeof ppu->oam[0], 0x100, vf);
+            fwrite(ppu->highOam, 1, 0x20, vf);
+            fclose(vf);
+          }
           printf("    maps:");
           for (int l = 0; l < 4; l++)
             printf(" %04x%s%s%s/%04x", ppu->bgLayer[l].tilemapAdr, ppu->bgLayer[l].tilemapWider ? "w" : "",
@@ -477,6 +499,7 @@ int main(int argc, char** argv) {
     printf("  screen-space sprites: the pass on screen was not the newest on %ld frames, and none of those kept on %ld\n",
            ws.place_behind, ws.place_unmatched);
   if (bg3_mask) printf("  BG3 carried the game over mask on %ld frames\n", bg3_mask);
+  if (red_blood) printf("  the game over's drips were drawn red on %ld frames\n", ws.blood.frames);
   if (lines_moved)
     printf("  a background waved a line at a time: %ld line-ticks eased, %ld of a step being spread\n",
            lines_moved, lines_spread);

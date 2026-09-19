@@ -281,6 +281,7 @@
 #include "ppu.h"
 #include "snes.h"
 
+#include "blood.h"
 #include "assets/rom.h"
 #include "assets/sprite.h"
 #include "port/camera.h"
@@ -324,6 +325,9 @@ typedef struct {
   // How `ws_place_screen_sprites` found the pass that is on screen: frames it
   // was not the newest one, and frames it was none of those kept.
   long place_behind, place_unmatched;
+  // `--red-blood` (`src/blood.h`), here because this is the frame hook and
+  // there is one: it marks the game over's drips after the sprites are placed.
+  Blood blood;
 } Widescreen;
 
 // WRAM as a flat 128 KB, the way `src/port/wram.h` numbers it: bank `$7E` is
@@ -838,6 +842,7 @@ static inline void widescreen_hook(Snes* snes, void* ctx) {
     ws_return_slots(snes, ws);
     widescreen_frame(snes, ws);
   }
+  blood_frame(snes, &ws->blood);
   memcpy(ws->mem, snes->ram, sizeof ws->mem);
   ws->have_mem = true;
 }

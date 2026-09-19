@@ -139,6 +139,8 @@ void ppu_reset(Ppu* ppu) {
   ppu->objSize = 0;
   memset(ppu->objPixelBuffer, 0, sizeof(ppu->objPixelBuffer));
   memset(ppu->objPriorityBuffer, 0, sizeof(ppu->objPriorityBuffer));
+  memset(ppu->objRemapOn, 0, sizeof(ppu->objRemapOn));
+  memset(ppu->objRemap, 0, sizeof(ppu->objRemap));
   ppu->timeOver = false;
   ppu->rangeOver = false;
   ppu->objInterlace = false;
@@ -1214,7 +1216,9 @@ static void ppu_evaluateSprites(Ppu* ppu, int line) {
             int screenCol = col + x + px + ppu->extraLeft;
             if(pixel > 0 && screenCol >= 0 && screenCol < width && col + x + px >= lo &&
                col + x + px < hi) {
-              ppu->objPixelBuffer[screenCol] = 0x80 + 16 * palette + pixel;
+              // zamn: `objRemap`, a sprite in colours of the frontend's
+              ppu->objPixelBuffer[screenCol] = ppu->objRemapOn[index >> 1] && ppu->objRemap[pixel]
+                  ? ppu->objRemap[pixel] : 0x80 + 16 * palette + pixel;
               ppu->objPriorityBuffer[screenCol] = (ppu->oam[index + 1] & 0x3000) >> 12;
             }
           }

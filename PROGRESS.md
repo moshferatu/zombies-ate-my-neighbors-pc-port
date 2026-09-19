@@ -27,6 +27,23 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### The game over's blood is red with `--red-blood` (2026-09-19)
+
+Asked for in play-testing, after romhacking.net hack 4306 (only its
+description was read). The mask on BG3 takes its three colours from six
+immediates in the vblank job `$80:8B82` (CGRAM 25-27), patched in the
+cartridge's copy of the image. The drips are sprites (`$8F:E9A7`, frames
+`$A63`-`$A65`, palette 5, colours 9/11/12) and share their purple with a
+spider and much else, so they are recoloured a sprite at a time:
+`src/blood.h` marks their OAM entries from the frame hook by the frame
+cache's tile numbers, and `Ppu.objRemap` (new; honoured by
+`ppu_evaluateSprites` and `layers_sprite_cell`) sends the three pixels to
+CGRAM `$C0/$D0/$E0`, colour 0 of palettes 4-6, which nothing reads. Stock
+against red on the poked `level1.zmv`: every purple pixel is red, none
+left, nothing else differs, 4:3 and 16:9, from the mask's first frame; the
+frontend's GPU picture is red too. Off by default; allowed under `-m`.
+`zamn_test_layers --png` also writes `prefix.frame.cgram.bin`.
+
 ### Pickups and weapons reach half as far again (2026-09-19)
 
 Asked for in play-testing, with the DX hack as the example: bigger sprite

@@ -48,6 +48,7 @@
 //             [--level N] [--no-twin-stick] [--no-smooth] [--no-even]
 //             [--dump-pictures prefix,frame]
 //             [--no-high-scores] [--high-scores file] [--hitbox percent]
+//             [--red-blood]
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -826,6 +827,8 @@ static void usage(void) {
     "                  it is played.\n"
     "  --poke <spec>   frame[+]:addr=value[.b], as zamn_headless takes it: write\n"
     "                  a WRAM word (or byte) at a frame, or from it on with +.\n"
+    "  --red-blood     The game over's curtain of purple slime is red, and blood,\n"
+    "                  as it is on the Mega Drive. Nothing else changes colour.\n"
     "  --hitbox <pct>  How far a player reaches for a pickup or a neighbour, and\n"
     "                  a weapon for a creature, as a percentage of the game's\n"
     "                  own 16-pixel box: 100 to 200, default 150 (100 under -m,\n"
@@ -888,6 +891,8 @@ int main(int argc, char** argv) {
   // The top scores, kept from run to run -- see hiscore.h.
   // `--hitbox`: see `actor_overlap_reach` in port/oam.h. 0 is "not said".
   int hitbox_pct = 0;
+  // `--red-blood`: see `src/blood.h`.
+  bool red_blood = false;
   bool hiscore_on = true;
   const char* hiscore_path = NULL;
   // Room for every routine in the registry and then some. It was 32, which
@@ -1041,6 +1046,7 @@ int main(int argc, char** argv) {
       }
       hitbox_pct = (int)v;
     }
+    else if (!strcmp(a, "--red-blood")) red_blood = true;
     else if (!strcmp(a, "--no-high-scores")) hiscore_on = false;
     else if (!strcmp(a, "--high-scores") && i + 1 < argc) hiscore_path = argv[++i];
     else if (!strcmp(a, "--shot") && i + 1 < argc) shot_path = argv[++i];
@@ -1184,6 +1190,17 @@ int main(int argc, char** argv) {
   // — see `widescreen.h` on why the margins are drawn from a tick-old memory.
   static Widescreen ws;
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
+  // The game over's blood: the mask's colours in the cartridge's copy of the
+  // image, and the drips from the frame hook. Only the picture, so a movie
+  // may have it too.
+  if (red_blood) {
+    if (blood_patch_rom(snes->cart->rom, (size_t)snes->cart->romSize)) {
+      ws.blood.on = true;
+      printf("Blood: the game over's is red.\n");
+    } else {
+      printf("note : --red-blood does not know this ROM's game over, and is off.\n");
+    }
+  }
   snes_reset(snes, true);
 
   Uint32 init_flags = SDL_INIT_VIDEO | (want_audio ? SDL_INIT_AUDIO : 0);

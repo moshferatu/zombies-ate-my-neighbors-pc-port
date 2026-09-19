@@ -298,6 +298,50 @@ game over — `$80:8514` branches back to `$80:84B1`, so a game over puts you on
 your level rather than on level 1, which is what a flag for looking at level 30
 should do.
 
+### The game over's blood, and `--red-blood`
+
+On the Super NES the game over is "GAME OVER" cut out of a curtain of purple
+slime; on the Mega Drive the curtain is red. `--red-blood` makes it red here,
+after the ROM hack *Bloody Disgusting Edition* (romhacking.net, hack 4306),
+of which only the description was read. It is off unless asked for, changes
+the picture and nothing else, and so may be given with `-m` too.
+
+The curtain is two things, and they are reddened two ways (`src/blood.h`):
+
+  * **The mask on BG3.** Its colours are in no palette: `$80:8B82`, a vblank
+    job the game over installs, writes CGRAM 25-27 every frame from six
+    immediates -- `$5953`, `$348A`, `$1C26`. The six operands are rewritten
+    in the cartridge's copy of the image when the machine is built (never
+    the file; and only if each `LDA #` and each operand is this ROM's).
+  * **The drips, which are sprites**: the metasprite `$8F:E9A7`, frames
+    `$A63`-`$A65` in sprite palette 5, using its colours 9, 11 and 12 -- the
+    same three words. Those are other things' purple too (a scan of the
+    metasprite banks finds them in 183 of the 209 frames drawn in palette
+    5; `$B31`-`$B34` are a spider), so
+    reddening the palette would redden whatever walked behind the letters,
+    and palette 5 has no blood red of its own to repaint the tiles in. So
+    the drips are recoloured a sprite at a time. `blood_frame`, from the
+    frame hook, marks the OAM entries that are palette 5 with a tile the
+    frame cache (`W_FRAME_SLOT`) says holds one of the three frames; for a
+    marked entry `Ppu.objRemap` sends pixels 9, 11 and 12 to CGRAM `$C0`,
+    `$D0` and `$E0`, and `blood_frame` puts the reds there. Those are colour
+    0 of sprite palettes 4-6, which is transparent, so no pixel ever reads
+    them. `ppu_evaluateSprites` and the draw list's sprite atlas both honour
+    the remap, so the pictures between ticks are red as well.
+
+The red is one function for both (`blood_red`): the larger of red and blue
+becomes the red, times 13/8, and the green is halved -- `$348A` (10,4,13)
+comes out (21,2,2). Measured on `level1.zmv` with the player's health poked
+to zero (`--poke 1900+:1CB8=0000`), stock against `--red-blood`: of the
+1,705 pictures of frames 2,560-2,900 (16:9 to 2,760, 4:3 after) 1,610 differ,
+from frame 2,579 on, and of 455 more at frames 3,200-3,290 all do; in every
+one of them each pixel that was one of the three purples is its red, no
+purple is left, and no other pixel differs -- the zombies in the margins
+are as they were. The drips were marked on 394 frames. `zamn_test_layers` takes
+`--red-blood` and still finds the draw list's pictures equal to the PPU's,
+and `--png` now also writes `prefix.frame.cgram.bin` (CGRAM, OAM and its
+high table), which is how the colours were found.
+
 ### A longer reach for pickups and weapons, and `--hitbox`
 
 The game decides who is touching whom with a 16x16 box: two records touch
