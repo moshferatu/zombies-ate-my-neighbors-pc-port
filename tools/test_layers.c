@@ -143,7 +143,7 @@ int main(int argc, char** argv) {
   uint32_t last_serial = sprite_oam_owners.serial;
   static SpriteOamOwners held;
   bool held_fresh = false;
-  long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, link_jump = 0, origin_moved = 0, window_held = 0, steps_spread = 0, steps_cut = 0, bg3_anchored = 0, bg3_mask = 0;
+  long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, link_jump = 0, origin_moved = 0, window_held = 0, steps_spread = 0, steps_cut = 0, lines_moved = 0, lines_spread = 0, bg3_anchored = 0, bg3_mask = 0;
 
   long tested = 0, identical = 0, within_one = 0, differing = 0, unexpressible = 0, dropped = 0;
   long skipped_frames = 0;
@@ -261,6 +261,8 @@ int main(int argc, char** argv) {
         if (f->anchored[2]) bg3_anchored++;
         if (ppu->layerWide[2] == ppu_wideCentre) bg3_mask++;
         for (int l = 0; l < 4; l++) if (f->stepK[l]) steps_spread++;
+        lines_moved += f->linesMoved;
+        lines_spread += f->linesSpread;
         // A spread that a move arrived in the middle of was a wrong guess,
         // and shows as a crawl and a leap.
         for (int l = 0; l < 4; l++)
@@ -381,6 +383,16 @@ int main(int argc, char** argv) {
           snprintf(vpath, sizeof vpath, "%s.%d.vram.bin", png, frame);
           FILE* vf = fopen(vpath, "wb");
           if (vf) { fwrite(ppu->vram, sizeof ppu->vram[0], 0x8000, vf); fclose(vf); }
+          // ...the scroll of every line of a background that has a raster
+          // effect on it, one "line h v" a row...
+          for (int l = 0; l < 4; l++) {
+            if (!f->raster[l]) continue;
+            snprintf(vpath, sizeof vpath, "%s.%d.scroll%d.txt", png, frame, l);
+            vf = fopen(vpath, "w");
+            if (!vf) continue;
+            for (int y = 1; y <= 224; y++) fprintf(vf, "%d %d %d" "\n", y, ppu->lineHScroll[l][y], ppu->lineVScroll[l][y]);
+            fclose(vf);
+          }
           // ...and work RAM, for finding where the game keeps something.
           snprintf(vpath, sizeof vpath, "%s.%d.wram.bin", png, frame);
           vf = fopen(vpath, "wb");
@@ -447,6 +459,9 @@ int main(int argc, char** argv) {
     printf("  screen-space sprites: the pass on screen was not the newest on %ld frames, and none of those kept on %ld\n",
            ws.place_behind, ws.place_unmatched);
   if (bg3_mask) printf("  BG3 carried the game over mask on %ld frames\n", bg3_mask);
+  if (lines_moved)
+    printf("  a background waved a line at a time: %ld line-ticks eased, %ld of a step being spread\n",
+           lines_moved, lines_spread);
   if (steps_spread) printf("  a background stepping every few ticks had its step spread on %ld background-ticks, %ld spreads cut short by a move\n", steps_spread, steps_cut);
   const bool ok = differing == 0 && (!check_frame_step || skipped_frames == 0);
   printf("  skipped video frames: %ld\n", skipped_frames);

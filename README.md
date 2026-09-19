@@ -1475,6 +1475,29 @@ and its fade-out likewise; the frontend's own pictures through the fade-in
 ramp 17, 34 ... 255 as the PPU's did and differ picture to picture within
 every tick from the second.
 
+**The title's logo is eased a line at a time.** The logo is BG1, and the
+game waves it in: `$80:9570` fills an HDMA table at `$7E:8000` with a sine a
+line -- 127 pixels of it, four degrees a line, the phase a degree on every
+tick -- until Start is pressed or it settles from the foot up. A background
+whose scroll is rewritten down the frame was a raster effect, baked into
+its plane and not eased at all, so the logo moved sixty times a second at
+best. And mostly not that: the top third of the table changes every tick
+and the rest only every fourth (the same on the stock ROM), so most of the
+logo moved at 15 Hz, in steps of up to 9 pixels. Now a background whose
+scroll varies *across only* is eased with each line a background of its own
+(`LayersFrame.lineX`, `lineEase`): the plane already holds every line as
+its scroll left it, a line drawn a little to one side is that line at a
+scroll a little different, so the list draws the plane in strips, each back
+by the part of its own move not yet made -- and a line that steps every few
+ticks has its step spread like a stepping backdrop's. Strips that come out
+the same are one op; a picture of the title is 40 to 150 ops. Not for a
+layer with the sub screen added to it or a maths twin, which are drawn
+against a whole plane's op. Unmoved it is still the PPU's frame (1145 of
+1145 title frames identical, 4:3 and 16:9), and an edge of the logo
+followed through 64 pictures now moves two target pixels a picture on a
+line of the top third and one to three on a line of the rest, where it was
+eight every fourth picture and twenty-eight every sixteenth.
+
 **The menus move too.** The character select scrolls its film strips a pixel a
 tick on one background and adds them, translucent, onto the wallpaper on
 another; the list eases both, and the strips now advance a quarter of a pixel

@@ -27,6 +27,25 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### The title's logo, eased a line at a time (2026-09-19)
+
+Asked for in play-testing: the ZOMBIES ATE MY NEIGHBORS logo should move
+more smoothly. It is BG1 waved by an HDMA sine (`$80:9570`, table at
+`$7E:8000`, per-line BG1HOFS only), which made it a raster layer: baked,
+never eased. Worse, only the first ~84 lines of the table change every
+tick; the rest change every 4th (stock ROM too), so most of the logo ran at
+15 Hz in steps of up to 9 px. `src/layers.h` now eases a background whose
+scroll varies across only, line by line (`lineX`, `dLineX`, `lineEase`,
+per-line step spreading; `LAYERS_LINE_OPS` draws the plane in strips).
+Title frames 1145/1145 identical in 4:3 and 16:9; a logo edge tracked over
+64 pictures moves 2 target px a picture up top and 1-3 below (was 8 every
+4th and 28 every 16th); the frontend's GPU pictures match the software
+ones. After Start the logo snaps to rest and nothing on the menu moves but
+the backdrop, which was already spread. `zamn_test_layers --png` writes
+`prefix.frame.scrollN.txt` for a raster background, which is how the table
+was read. Not done: the first step of a lower line after the screen goes
+up is drawn as it comes (it teaches the interval).
+
 ### The radar flashed the player's head beside him (16:9) (2026-09-19)
 
 Play-testing: the radar coming up flashed Zeke's head to the left of Zeke,

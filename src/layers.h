@@ -169,7 +169,10 @@
 // A draw list is at most every plane, every sprite drawn six times (once
 // wrapped down, and each of those three times across for a centred one),
 // and a sub-screen pass after each of the planes it can follow.
-#define LAYERS_MAX_OPS (LAYERS_PLANES * 3 + LAYERS_SPRITES * 18 + LAYERS_MAX_MATH_RECTS * 9)
+// ...and a background eased line by line (`lineEase`) is a strip a line, of
+// each of its two planes.
+#define LAYERS_MAX_OPS (LAYERS_PLANES * 3 + LAYERS_SPRITES * 18 + LAYERS_MAX_MATH_RECTS * 9 + \
+                        4 * 2 * LAYERS_LINES)
 
 typedef enum {
   LAYERS_BLEND_COPY = 0,  // alpha test: opaque pixels replace, clear ones do not
@@ -284,6 +287,26 @@ typedef struct {
   // ...and whether it has not moved since the screen went up.
   bool fresh[4];
   int stepDX[4], stepDY[4], stepK[4], stepI[4];
+  // A background whose *horizontal* scroll alone is rewritten down the frame
+  // -- the title's logo, which the game waves with a sine a line (`$80:9570`,
+  // an HDMA table at `$7E:8000`) -- is a raster effect that can still be
+  // eased: its plane holds each line as that line's scroll left it, and a
+  // line drawn a little to one side is that line at a scroll a little
+  // different. So each line is a background of its own: `lineX` its scroll
+  // (index = line, 1 up), and from `layers_link`, `lineEase` whether the
+  // layer is drawn that way this tick, `dLineX` each line's move, and the
+  // stepping state of "Evening the motion out" a line at a time -- the title
+  // rewrites the top third of its table every tick and the rest only every
+  // fourth, so most of the logo moves at 15 Hz in steps of up to 9 pixels.
+  bool rasterX[4];
+  bool lineEase[4];
+  int16_t lineX[4][LAYERS_LINES + 1];
+  int8_t dLineX[4][LAYERS_LINES + 1];
+  uint8_t lineStill[4][LAYERS_LINES + 1], lineGap[4][LAYERS_LINES + 1];
+  uint8_t lineFresh[4][LAYERS_LINES + 1];
+  int8_t lineStepD[4][LAYERS_LINES + 1];
+  uint8_t lineStepK[4][LAYERS_LINES + 1], lineStepI[4][LAYERS_LINES + 1];
+  int linesMoved, linesSpread;  // for the test: lines eased, lines mid-spread
   // How the sprites were paired with their predecessors, for the test:
   // by the nearest piece of the same record, by the record's origin alone,
   // by looks (no record), or not at all.
@@ -651,6 +674,12 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
         f->raster[l] = true;
         break;
       }
+    // ...across only, and the lines can be eased one by one -- see `lineX`.
+    f->rasterX[l] = f->raster[l] && !ppu->frameOverscan;
+    for (int y = 1; y <= LAYERS_LINES; y++) {
+      if (ppu->lineVScroll[l][y] != f->scrollY[l]) f->rasterX[l] = false;
+      f->lineX[l][y] = (int16_t)((ppu->lineHScroll[l][y] - ppu_layerShiftX(ppu, l, y)) & 0x3ff);
+    }
     // A layer the widened picture draws shifted (`ppu_wideSweep`) moves by its
     // scroll and by the shift's change, and it is the motion this is kept for.
     f->scrollX[l] = (uint16_t)((f->scrollX[l] - ppu_layerShiftX(ppu, l, 1)) & 0x3ff);
@@ -853,6 +882,53 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
       cur->stepDY[l] = dy;
       cur->stepK[l] = gap;
       cur->stepI[l] = 0;
+    }
+  }
+  // The same a line at a time, for a background that is a raster effect
+  // across only -- see `lineX`. Not one with the sub screen added to it or
+  // made of it, nor one with a twin: those are drawn against the op of a
+  // whole plane.
+  cur->linesMoved = cur->linesSpread = 0;
+  for (int l = 0; l < 4; l++) {
+    const bool lines = cur->ease && cur->rasterX[l] && prev->rasterX[l] &&
+                       cur->scrollY[l] == prev->scrollY[l] && !cur->mathGated &&
+                       !(cur->subAdd && (cur->subLayer == l || cur->mathMain[l]));
+    cur->lineEase[l] = lines;
+    const bool decor = !cur->world && !prev->world;
+    for (int y = 1; y <= LAYERS_LINES; y++) {
+      cur->dLineX[l][y] = 0;
+      cur->lineStill[l][y] = cur->lineGap[l][y] = 0;
+      cur->lineStepD[l][y] = 0;
+      cur->lineStepK[l][y] = cur->lineStepI[l][y] = 0;
+      cur->lineFresh[l][y] = !(lines && prev->lineEase[l]);
+      if (!lines) continue;
+      const int d = layers_delta(prev->lineX[l][y], cur->lineX[l][y], 10);
+      cur->dLineX[l][y] = (int8_t)d;
+      if (d == 0) {
+        const int still = prev->lineStill[l][y] + 1;
+        cur->lineStill[l][y] = (uint8_t)(still > 250 ? 250 : still);
+        cur->lineGap[l][y] = prev->lineGap[l][y];
+        cur->lineFresh[l][y] = prev->lineEase[l] ? prev->lineFresh[l][y] : 1;
+        if (prev->lineStepK[l][y] && prev->lineStepI[l][y] + 1 < prev->lineStepK[l][y]) {
+          cur->lineStepD[l][y] = prev->lineStepD[l][y];
+          cur->lineStepK[l][y] = prev->lineStepK[l][y];
+          cur->lineStepI[l][y] = (uint8_t)(prev->lineStepI[l][y] + 1);
+          cur->linesSpread++;
+        }
+        continue;
+      }
+      cur->linesMoved++;
+      const bool first = !prev->lineEase[l] || prev->lineFresh[l][y];
+      const int gap = prev->lineStill[l][y] + 1;
+      cur->lineGap[l][y] = (uint8_t)(first ? 0 : gap);
+      const int lastGap = prev->lineGap[l][y];
+      const bool known = lastGap >= LAYERS_STEP_MIN && lastGap <= LAYERS_STEP_MAX;
+      if (gap >= LAYERS_STEP_MIN && gap <= LAYERS_STEP_MAX &&
+          (gap == lastGap || (decor && !known && !first))) {
+        cur->lineStepD[l][y] = (int8_t)d;
+        cur->lineStepK[l][y] = (uint8_t)gap;
+        cur->linesSpread++;
+      }
     }
   }
   // For a sprite whose predecessor was sprite `j` of the last tick, once
@@ -1120,6 +1196,33 @@ static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
       }                                                                        \
     } while (0)
 
+  // Plane `p` of background `l` a line at a time -- see `lineX`: each line
+  // back by the part of its own move not yet made, lines that come out the
+  // same drawn as one strip. (`layers_link` keeps this to a layer with no
+  // twin and no sub screen, so there is nothing to draw against it.)
+  #define LAYERS_LINE_OPS(p, l)                                                \
+    do {                                                                       \
+      int from_ = 1, offFrom_ = 0;                                             \
+      for (int y_ = 1; y_ <= H + 1; y_++) {                                    \
+        int off_ = 0;                                                          \
+        if (y_ <= H) {                                                         \
+          off_ = even && cur->lineStepK[l][y_]                                 \
+                     ? layers_spread(cur->lineStepD[l][y_], cur->lineStepK[l][y_], \
+                                     cur->lineStepI[l][y_], num, den, sx)      \
+                     : layers_part(cur->dLineX[l][y_], num, den, sx);          \
+          if (off_ > M * sx) off_ = M * sx;                                    \
+          if (off_ < -M * sx) off_ = -M * sx;                                  \
+        }                                                                      \
+        if (y_ == 1) offFrom_ = off_;                                          \
+        if (y_ <= H && off_ == offFrom_) continue;                             \
+        LAYERS_PLANE_OP(p, offFrom_, 0, LAYERS_BLEND_COPY, -1);                \
+        LayersOp* o = &ops[n - 1];                                             \
+        o->sy = from_ - 1 + M; o->sh = y_ - from_;                             \
+        o->dy = (from_ - 1) * sy; o->dh = o->sh * sy;                          \
+        from_ = y_; offFrom_ = off_;                                           \
+      }                                                                        \
+    } while (0)
+
   LAYERS_PLANE_OP(LAYERS_BACKDROP, 0, 0, LAYERS_BLEND_COPY, -1);
   LAYERS_TWIN_OPS(LAYERS_BACKDROP, 0, 0);
   if (cur->mathMain[5]) LAYERS_SUB_OPS(n - 1);
@@ -1127,6 +1230,10 @@ static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
     const int l = layer[i], p = prio[i];
     if (l < 4) {
       if (!cur->main[l] || !cur->planeUsed[LAYERS_PLANE_OF(l, p)]) continue;
+      if (ease && cur->lineEase[l]) {
+        LAYERS_LINE_OPS(LAYERS_PLANE_OF(l, p), l);
+        continue;
+      }
       LAYERS_PLANE_OP(LAYERS_PLANE_OF(l, p), offX[l], offY[l], LAYERS_BLEND_COPY, -1);
       LAYERS_TWIN_OPS(LAYERS_PLANE_OF(l, p), offX[l], offY[l]);
       if (cur->mathMain[l]) LAYERS_SUB_OPS(n - 1);
