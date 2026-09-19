@@ -118,6 +118,19 @@ enum {
   // whatever was last in that VRAM, and reading those is how a stone wall comes
   // out shredded. This can only ever show columns the game has actually drawn.
   ppu_wideTile,
+  // A layer that is swept across the console from the left: its map begins at
+  // column 0, and the game scrolls it from 256 down to 0, so that the map's
+  // first 256 columns come in from the left edge and what is at column 256 --
+  // the Konami logo's star, with the line behind it -- leaves by the right one.
+  // The sweep is the console's width long and the picture is wider, so drawn
+  // in place the star would appear inside the picture and stop short of its
+  // edge. Instead the layer is drawn shifted by an amount that runs from the
+  // left margin's width leftward, with nothing swept in, to the right
+  // margin's width rightward, with all of it: the star crosses the whole
+  // picture in the time it crossed the console. And left of the map's column
+  // 0, where the console never looks, the map is read as column 0 -- the line
+  // goes on to the picture's edge, as it went on to the console's.
+  ppu_wideSweep,
 };
 
 // Where a sprite goes when the picture is widened -- `Ppu.spritePlace`.
@@ -382,6 +395,14 @@ bool ppu_mathAllowedAt(Ppu* ppu, int x, int line);
 // for callers outside: the status panel has nothing in the middle columns and
 // the game over's mask has something in all of them.
 bool ppu_columnEmptyAt(const Ppu* ppu, int layer, int sx);
+// ...and whether it has something in every tile down that column: the edge of
+// a field, as against the edge of a card with something written on it.
+bool ppu_columnFilledAt(const Ppu* ppu, int layer, int sx);
+// How far right of its place on the console background `layer` is drawn on
+// `line` -- `ppu_wideSweep`'s shift, and 0 for every other policy. A caller
+// following the layer's motion from one frame to the next wants its scroll
+// less this.
+int ppu_layerShiftX(const Ppu* ppu, int layer, int line);
 // The colour window's clip-to-black, likewise.
 bool ppu_clippedAt(Ppu* ppu, int x);
 int ppu_spriteSize(const Ppu* ppu, int slot);

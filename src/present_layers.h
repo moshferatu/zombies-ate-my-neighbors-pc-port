@@ -174,7 +174,7 @@ static inline bool present_layers_plan(Present* p, int game_w, ScalePlan* plan,
 static inline bool present_layers_draw(Present* p, PresentLayers* L,
                                        const ScalePlan* plan, int sx, int sy,
                                        bool exact, const LayersOp* ops, int n,
-                                       int game_w) {
+                                       int game_w, int dim) {
   if (!present_layers_targets(L, p->ren, game_w * sx, LAYERS_LINES * sy))
     return false;
   for (int i = 0; i < n; i++)
@@ -214,6 +214,9 @@ static inline bool present_layers_draw(Present* p, PresentLayers* L,
   SDL_SetRenderDrawColor(p->ren, 0, 0, 0, 255);
   SDL_RenderClear(p->ren);
   SDL_SetTextureScaleMode(L->target, exact ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
+  // Brightness left out of the planes -- `LayersFrame.dim` -- goes on here.
+  const Uint8 level = (Uint8)(dim >= 15 ? 255 : dim <= 0 ? 0 : 255 * dim / 15);
+  SDL_SetTextureColorMod(L->target, level, level, level);
   SDL_RenderCopy(p->ren, L->target, NULL, &dst);
   return true;
 }

@@ -1269,6 +1269,36 @@ nobody steers is not felt; it is under `even` (F6), it is only backgrounds,
 and it never fires in a level: over `level1` and `level25-boss` the only
 spread ticks are on the title and the select screen.
 
+Twice running is what a level needs -- there the background is the view,
+and a player who stands five ticks and then walks has not stepped -- but it
+cost every one of those screens its first fifth of a second: the LucasArts
+backdrop stepped three times (twelve ticks) before it was believed, the
+title's likewise, seen each time the screen came up. Outside a level
+(`world`: BG2 a 64-column map on the main screen, the test `widescreen.h`
+uses) a move after a rest of the right length is a step at once, unless the
+interval before it is known and was different. Not the first move since
+the screen went up (`fresh`): its rest is only how long the picture has
+been there, and the card naming a level rests two ticks in sight and then
+scrolls sixteen pixels a tick -- spread, its first tick crawled and its
+second leapt. So in general a screen's first step is drawn as it comes and
+its second is spread -- and that was still a delay one could see. But the
+backdrops in question are all BG3, and outside a level the game moves BG3
+one way only: on a counter, every fourth tick on the LucasArts screen
+(`$80:938E`, `$38 & 3`) and the title (`$80:953B`, `sched_tick & 3`),
+every fifth on the character select (`$80:9A1B`, `$5C`). So BG3's first
+move since the screen went up is a step whatever came before it
+(`LAYERS_BACKDROP_BG`), spread over `LAYERS_STEP_FIRST` (4) ticks at least,
+its rest being the picture's age and not the interval. On the movies the
+LucasArts backdrop is spread from its first step (frame 729, was 737), the
+title's from its first (1159, was 1167) and the select's from its first
+(1084, was 1094; that one takes four ticks of a five-tick interval and
+waits one, a quarter of a pixel's worth). In the frontend as played
+(`--widescreen 16:9 --skip-intro`), measured from its own pictures, the
+title's backdrop stands for the three ticks before the game first moves
+it and from then moves the same distance in every picture.
+`zamn_test_layers` counts spreads that a move arrived in the middle of --
+a wrong guess, which shows -- and names the frame.
+
 **The game over mask.** A game over scrolls a 256-wide mask up over the
 level on BG3 -- "GAME OVER" cut out of a purple field, the level showing
 through the letters, which is the game's own look and not a transparency
@@ -1334,6 +1364,67 @@ clip, and the exactness test holds). In 16:9 the mask's 256 columns now
 match the 4:3 picture pixel for pixel in purple, and the margins match the
 wrapped columns but for a world sprite's pixel, which rightly does not
 repeat.
+
+**The Konami star.** The first thing on the screen is a star drawn across it
+with a line behind, and that is BG1: 16x16 tiles, a 64-column map, whose
+second row is sixteen tiles of line, the star (its tile animated), and
+black; the game scrolls it from 256 down to 0. `ppu_wideAuto` takes a
+64-column map outside a level for one of which the game maintains the 32
+the console shows, and repeats the console's 256: the right margin had a
+second line through it from the start and a second star at the end, and the
+left margin the black from the console's right, so the line began 43
+columns in. The map itself is no better -- it has the line for the left
+margin but nothing left of column 0 once the sweep ends, and its star stops
+at column 256, short of a wider picture's edge. `ppu_wideSweep`, which
+`widescreen_frame` sets on BG1 when the map's second row is that row
+(`ws_konami_sweep`; it is in video memory from before the screen is lit
+until the logo is gone), draws the layer shifted: by the left margin's
+width leftward when nothing has been swept in, by the right margin's
+rightward when all of it has, in proportion between
+(`ppu_layerShiftX`). The star enters at the picture's left edge and leaves
+by its right in the time it crossed the console, 10.75 pixels a tick in
+16:9 rather than 8, and left of the map's column 0 the map is read as
+column 0, so the line reaches the picture's edge as it reached the
+console's. The draw list follows the layer by its scroll less the shift, so
+the star is eased at the speed it is drawn at: 2.7 pixels a picture at
+240 Hz. Off the widescreen the shift is 0 and nothing changes.
+
+**The wallpaper is there from the first frame.** `ppu_wideAuto` continues a
+256-pixel map into the margins only once it has seen the game scroll it --
+a map that has never moved has a seam nobody has seen, and the card naming
+a level printed the end of its last line down the far side. The character
+select's wallpaper (BG3) comes up at scroll 0 and first steps on its fifth
+tick, so for the first five ticks of the fade-in both margins were the flat
+colour behind it, lighter than the wallpaper: a flash down both edges, on
+frames drawn by the PPU (a faded sub screen is not a draw list), which is
+why no picture of the list showed it. Outside a level, a BG3 with
+something in every tile down both of the console's edge columns
+(`ppu_columnFilledAt`) is a field and not a card with writing on it, and
+`widescreen_frame` gives it `ppu_wideTile` from the first frame. The
+LucasArts backdrop's first four ticks are covered the same way; the
+title's spiral is not a field at its edges and is left to `ppu_wideAuto`,
+as is the level card, which is BG1. Found by playing a movie made the way
+a player gets there (idle to the title, then Start -- `level1.zmv` mashes
+Start through the intro and the select comes up differently) in the
+frontend itself, with `--dump-pictures` across the fade.
+
+**A fade with the sub screen in it is a draw list too.** The character
+select adds its film strips to the wallpaper through the sub screen, and
+fades in over fifteen ticks. The console adds in five bits, clamps, and
+then applies brightness; planes with the brightness baked in, added, clamp
+at white instead of at the dimmed white and come out too bright wherever
+the sum clamps -- so such a frame was refused ("sub screen in a fade") and
+shown as the PPU drew it. That was the select's whole fade-in, a quarter of
+a second at sixty pictures a second with nothing eased, and then the
+smoothing cut in: the delay at the start of that screen that outlived the
+step-spreading fixes above. Now such a frame is composed at full brightness
+and the finished picture is dimmed (`layers_dim_late`, `LayersFrame.dim`:
+a multiply at the end of `layers_render`, a colour modulation on the
+target's last copy in `present_layers_draw`), which is the console's order.
+The select is a draw list from its first lit frame, eased from its second,
+and its fade-out likewise; the frontend's own pictures through the fade-in
+ramp 17, 34 ... 255 as the PPU's did and differ picture to picture within
+every tick from the second.
 
 **The menus move too.** The character select scrolls its film strips a pixel a
 tick on one background and adds them, translucent, onto the wallpaper on

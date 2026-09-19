@@ -464,8 +464,33 @@ int ppu_layerPixel(Ppu* ppu, int layer, int x, int line, bool sub, int* priority
   return pixel;
 }
 
+int ppu_layerShiftX(const Ppu* ppu, int layer, int line) {
+  if(layer < 0 || layer > 3 || ppu->layerWide[layer] != ppu_wideSweep) return 0;
+  if(ppu->extraLeft == 0 && ppu->extraRight == 0) return 0;
+  // How much of the map has been swept in, of 256.
+  const int hs = ppu->lineHScroll[layer][line] & 0x3ff;
+  const int in = hs > 256 ? 0 : 256 - hs;
+  return (in * (ppu->extraLeft + ppu->extraRight) + 128) / 256 - ppu->extraLeft;
+}
+
 bool ppu_columnEmptyAt(const Ppu* ppu, int layer, int sx) {
   return ppu_columnEmpty(ppu, layer, sx);
+}
+
+bool ppu_columnFilledAt(const Ppu* ppu, int layer, int sx) {
+  if(layer < 0 || layer > 3) return false;
+  int actMode = ppu->mode == 1 && ppu->bg3priority ? 8 : ppu->mode;
+  const int bitDepth = bitDepthsPerMode[actMode][layer];
+  if(bitDepth != 2 && bitDepth != 4 && bitDepth != 8) return false;
+  const bool big = ppu->bgLayer[layer].bigTiles;
+  const int step = big ? 16 : 8;
+  const int x = sx + ppu->bgLayer[layer].hScroll;
+  const int top = ppu->bgLayer[layer].vScroll;
+  for(int y = top; y < top + 224 + step; y += step) {
+    const int n = ppu_tilemapWord(ppu, layer, x, y) & 0x3ff;
+    if(ppu_charEmpty(ppu, layer, n, bitDepth)) return false;
+  }
+  return true;
 }
 
 bool ppu_mathAllowedAt(Ppu* ppu, int x, int line) {
@@ -993,6 +1018,15 @@ static bool ppu_wideMapX(Ppu* ppu, int layer, int* x, int* y) {
       // whole reason the console's width is a power of two.
       *x &= 255;
       return true;
+    case ppu_wideSweep: {
+      const int last = ppu->frameOverscan ? 239 : 224;
+      const int l = *y < 1 ? 1 : *y > last ? last : *y;
+      *x -= ppu_layerShiftX(ppu, layer, l);
+      // Left of the map's first column is more of the first column.
+      const int hs = ppu->lineHScroll[layer][l] & 0x3ff;
+      if(hs <= 256 && *x + hs < 0) *x = -hs;
+      return true;
+    }
     case ppu_wideStretch:
       // The only policy the world clamp applies to. A layer that is being
       // continued into the margins can only be continued as far as there is

@@ -94,6 +94,28 @@
 // game's, at its rate. Ends at once on a step that breaks the interval, or on
 // the screen changing.
 //
+// Twice running is what a level asks (`world`), where the background is the
+// view and follows the player: standing five ticks and then walking is not a
+// step, and spreading it would be the view answering late. Outside a level
+// nothing is steered, and waiting for two intervals was a fifth of a second
+// of stepping at the start of every one of those screens, seen each time.
+// There a move after a rest of the right length is taken for a step at once,
+// unless the interval before it is known and was another. Not the first move
+// since the screen went up, though (`fresh`): its rest is only how long the
+// picture has been there, and the card naming a level rests two ticks in
+// sight and then scrolls sixteen pixels a tick -- spread, its first tick
+// crawled and its second leapt. The first step of a screen is drawn as it
+// comes, teaches no interval, and the second is spread.
+//
+// Except on BG3, where even that is a step too many to show. Outside a level
+// BG3 is the backdrop of the LucasArts screen, the title and the character
+// select, and the game moves it one way only: on a counter, every fourth tick
+// (`$80:938E`, `$80:953B`) or every fifth (`$80:9A1B`). So its first move
+// since the screen went up is a step whatever came before it, and is spread
+// over `LAYERS_STEP_FIRST` ticks at least -- the rest before it is the
+// picture's age, not the interval -- and those screens are smooth from their
+// first picture.
+//
 // It is a header of static inline functions with no SDL in it. The draw list
 // is data, `layers_render` draws it in software for the tests, and
 // `src/present.h` draws the same list with the renderer.
@@ -219,6 +241,9 @@ typedef struct {
   bool layered;    // ...and expressible as a draw list; else `fb` is the frame
   const char* why; // ...and if not, in a few words, why
   bool dark;       // forced blank or brightness 0: nothing to ease toward
+  // The brightness to apply to the finished picture, of 15 -- 15 when it is
+  // in the planes already, which is nearly always. See `layers_dim_late`.
+  int dim;
   int width;       // game pixels across, `ppu_gameWidth`
   int extraLeft;   // ...of which this many are left of the console's column 0
   int mode;
@@ -243,6 +268,9 @@ typedef struct {
   // that is not pinned to the picture's edges (`anchored`) -- moved on the
   // screen by that much as well as by whatever the game moved it.
   int dExtraLeft;
+  // In a level, as `widescreen.h` tells it: BG2 a 64-column map and on the
+  // main screen. The backgrounds are the view there -- see `stepK`.
+  bool world;
   bool anchored[4];
   // For `even`, per background as per sprite: how far back from where it is
   // it is drawn at the end of this tick and was at the end of the last, in
@@ -253,6 +281,8 @@ typedef struct {
   // moves, and the step being spread, if any: the move, over `stepK` ticks,
   // of which this is tick `stepI` (from 0). `stepK` is 0 when none.
   int still[4], lastGap[4];
+  // ...and whether it has not moved since the screen went up.
+  bool fresh[4];
   int stepDX[4], stepDY[4], stepK[4], stepI[4];
   // How the sprites were paired with their predecessors, for the test:
   // by the nearest piece of the same record, by the record's origin alone,
@@ -315,9 +345,26 @@ static inline uint8_t layers_channel(int c, int brightness) {
   return (uint8_t)(((c << 3) | (c >> 2)) * brightness / 15);
 }
 
+// Whether brightness is left out of the planes and applied to the finished
+// picture instead (`LayersFrame.dim`). The console adds the sub screen in five
+// bits, clamps, and then applies brightness; planes dimmed beforehand and then
+// added clamp at white instead of at the dimmed white, and come out too bright
+// wherever the sum clamps. So a frame that adds the sub screen while faded is
+// composed at full brightness and dimmed whole, which is the console's order.
+// (It used to be refused -- "sub screen in a fade" -- and the whole of the
+// character select's fade-in was the PPU's picture, a quarter of a second of
+// sixty pictures a second at the start of a screen that is smooth after.)
+static inline bool layers_dim_late(const Ppu* ppu) {
+  if (ppu->brightness >= 15 || !ppu->addSubscreen) return false;
+  for (int l = 0; l < 6; l++)
+    if (ppu->mathEnabled[l]) return true;
+  return false;
+}
+
 // A CGRAM colour as RGBA, with fixed-colour maths applied if `math`.
 static inline void layers_rgba(const Ppu* ppu, int index, bool math,
                                uint8_t out[4]) {
+  const int brightness = layers_dim_late(ppu) ? 15 : ppu->brightness;
   const uint16_t color = ppu->cgram[index & 0xff];
   int r = color & 0x1f, g = (color >> 5) & 0x1f, b = (color >> 10) & 0x1f;
   if (math) {
@@ -334,9 +381,9 @@ static inline void layers_rgba(const Ppu* ppu, int index, bool math,
       b = b < 0 ? -((-b) >> 1) : b >> 1;
     }
   }
-  out[0] = layers_channel(r, ppu->brightness);
-  out[1] = layers_channel(g, ppu->brightness);
-  out[2] = layers_channel(b, ppu->brightness);
+  out[0] = layers_channel(r, brightness);
+  out[1] = layers_channel(g, brightness);
+  out[2] = layers_channel(b, brightness);
   out[3] = 255;
 }
 
@@ -409,11 +456,8 @@ static inline const char* layers_unexpressible(const Ppu* ppu) {
     if (subs == 1 && (ppu->fixedColorR || ppu->fixedColorG || ppu->fixedColorB))
       return "sub screen with a fixed colour";
     if (ppu->halfColor) return "half colour with the sub screen";
-    // The console adds in five bits, clamps, and then applies brightness;
-    // the list adds two already-dimmed colours and clamps at white, which is
-    // the same at full brightness and up to a channel's worth of the fixed
-    // colour out during a fade.
-    if (ppu->brightness < 15) return "sub screen in a fade";
+    // (In a fade the planes are left at full brightness and the picture is
+    // dimmed whole -- `layers_dim_late`.)
     // ...and the maths window would have to gate the additive draw per column.
     if (ppu->preventMathMode != 0) return "sub screen through a window";
   }
@@ -525,11 +569,13 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
   f->valid = true;
   f->width = ppu_gameWidth(ppu);
   f->extraLeft = ppu->extraLeft;
+  f->world = ppu->bgLayer[1].tilemapWider && ppu->layer[1].mainScreenEnabled;
   f->fbWidth = ppu_outputWidth(ppu);
   ppu_putPixels(ppu, f->fb);
   f->mode = ppu->mode;
   f->bg3prio = ppu->bg3priority;
   f->dark = ppu->forcedBlank || ppu->brightness == 0;
+  f->dim = layers_dim_late(ppu) ? ppu->brightness : 15;
   f->why = layers_unexpressible(ppu);
   f->layered = f->why == NULL;
   memcpy(f->oam, ppu->oam, sizeof f->oam);
@@ -605,6 +651,9 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
         f->raster[l] = true;
         break;
       }
+    // A layer the widened picture draws shifted (`ppu_wideSweep`) moves by its
+    // scroll and by the shift's change, and it is the motion this is kept for.
+    f->scrollX[l] = (uint16_t)((f->scrollX[l] - ppu_layerShiftX(ppu, l, 1)) & 0x3ff);
     if (!f->main[l] && !(f->sub[l] && f->subAdd)) continue;
     const bool math = fixedMath && f->mathMain[l] && f->main[l];
     const bool onSubOnly = !f->main[l];
@@ -713,6 +762,8 @@ static inline int layers_delta(int from, int to, int bits) {
 // two ticks on the world would be felt.
 #define LAYERS_STEP_MIN 3
 #define LAYERS_STEP_MAX 8
+#define LAYERS_STEP_FIRST 4
+#define LAYERS_BACKDROP_BG 2
 static inline int layers_even(int d, int q) {
   const int c = d - q;
   return c > LAYERS_EVEN_MAX || c < -LAYERS_EVEN_MAX ? 0 : c;
@@ -770,12 +821,14 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
   for (int l = 0; l < 4; l++) {
     cur->still[l] = cur->lastGap[l] = 0;
     cur->stepDX[l] = cur->stepDY[l] = cur->stepK[l] = cur->stepI[l] = 0;
-    if (!prevEased || cur->raster[l] || prev->raster[l]) continue;
+    cur->fresh[l] = !cur->ease;
+    if (!cur->ease || cur->raster[l] || prev->raster[l]) continue;
     const int dx = cur->dScrollX[l] - (cur->anchored[l] ? 0 : cur->dExtraLeft);
     const int dy = cur->dScrollY[l];
     if (dx == 0 && dy == 0) {
       cur->still[l] = prev->still[l] + 1;
       cur->lastGap[l] = prev->lastGap[l];
+      cur->fresh[l] = prev->fresh[l];
       if (prev->stepK[l] && prev->stepI[l] + 1 < prev->stepK[l]) {
         cur->stepDX[l] = prev->stepDX[l];
         cur->stepDY[l] = prev->stepDY[l];
@@ -784,10 +837,17 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
       }
       continue;
     }
-    const int gap = prev->still[l] + 1;
+    const bool decor = !cur->world && !prev->world;
+    const bool first = prev->fresh[l];
+    const bool backdrop = decor && l == LAYERS_BACKDROP_BG;
+    int gap = prev->still[l] + 1;
+    if (first && backdrop && gap < LAYERS_STEP_FIRST) gap = LAYERS_STEP_FIRST;
     cur->still[l] = 0;
-    cur->lastGap[l] = gap;
-    if (gap >= LAYERS_STEP_MIN && gap <= LAYERS_STEP_MAX && gap == prev->lastGap[l] &&
+    cur->lastGap[l] = first ? 0 : gap;
+    const int lastGap = prev->lastGap[l];
+    const bool known = lastGap >= LAYERS_STEP_MIN && lastGap <= LAYERS_STEP_MAX;
+    if (gap >= LAYERS_STEP_MIN && gap <= LAYERS_STEP_MAX &&
+        (gap == lastGap || (decor && !known && (!first || backdrop))) &&
         dx <= LAYERS_MARGIN && dx >= -LAYERS_MARGIN && dy <= LAYERS_MARGIN && dy >= -LAYERS_MARGIN) {
       cur->stepDX[l] = dx;
       cur->stepDY[l] = dy;
@@ -1178,6 +1238,8 @@ static inline void layers_render(const LayersFrame* f, const LayersOp* ops, int 
       }
     }
   }
+  if (f->dim < 15)
+    for (size_t i = 0; i < (size_t)tw * th * 3; i++) rgb[i] = (uint8_t)(rgb[i] * f->dim / 15);
 }
 
 #endif

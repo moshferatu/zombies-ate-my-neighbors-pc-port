@@ -587,6 +587,23 @@ static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, int place
 // Called at the top of every frame, before any of it is drawn — see
 // `SnesFrameHook`. At that moment the game's vblank has finished: this frame's
 // tilemap columns are in VRAM, its OAM has been DMA'd, and the picture is fixed
+// The Konami logo's first act is a star drawn across the screen with a line
+// behind it, and it is BG1: a map of 16x16 tiles, 64 columns of them, whose
+// second row is sixteen tiles of line, the star, and then black; the game
+// scrolls it from 256 to 0 and the star crosses the console. `ppu_wideAuto`
+// takes a 64-column map outside a level for one the game maintains 32 columns
+// of and repeats the console's 256 -- so the right margin had a second line
+// running through it, and at the end a second star, while the left margin had
+// the black from the console's right. It is told by what the map holds, which
+// is in video memory from before the screen is lit until the logo is gone.
+static inline bool ws_konami_sweep(const Snes* snes) {
+  const Ppu* ppu = snes->ppu;
+  const BgLayer* bg = &ppu->bgLayer[0];
+  if (ppu->mode != 1 || !bg->bigTiles || !bg->tilemapWider) return false;
+  const uint16_t* row = &ppu->vram[(bg->tilemapAdr + 32) & 0x7fe0];
+  return (row[0] & 0x3ff) == 0x004 && (row[15] & 0x3ff) == 0x004 && (row[17] & 0x3ff) == 0x002;
+}
+
 // but for the columns the console never had. Everything read here comes from
 // `ws->mem`, the memory that picture was composed from, which is a tick behind
 // the memory the game is running on now.
@@ -618,7 +635,18 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // first hundred frames.)
   const bool bg3_mask = in_level && ws_r16(mem, W_HUD_PANEL_ON) == 0 &&
                         ws_r16(mem, W_HUD_PANEL_ON + 2) == 0;
-  snes_setLayerWide(snes, 2, !in_level ? ppu_wideAuto : bg3_mask ? ppu_wideCentre : ppu_wideAnchor);
+  // Outside a level BG3 is the wallpaper behind the LucasArts logo, the title
+  // and the character select, which the game steps along every few ticks --
+  // and `ppu_wideAuto` continues a 256-pixel map into the margins only once it
+  // has seen it move. The select's comes up at scroll 0 and first steps on its
+  // fifth tick, so for the first five ticks of the fade-in the margins were the
+  // flat colour behind it, lighter than the wallpaper: a flash down both edges.
+  // A BG3 filled down both of the console's edge columns is a field, not a card
+  // with writing on it, and is repeated from the first frame.
+  const bool bg3_field = !in_level && ppu_columnFilledAt(snes->ppu, 2, 0) &&
+                         ppu_columnFilledAt(snes->ppu, 2, 255);
+  snes_setLayerWide(snes, 2, bg3_field ? ppu_wideTile
+                             : !in_level ? ppu_wideAuto : bg3_mask ? ppu_wideCentre : ppu_wideAnchor);
   // (The sprites laid out over BG3 -- the radar's markers, the mask's drips
   // -- go the same way: `ws_place_screen_sprites`, at the end.)
   // BG2 is the scrolling world, and its margins are filled below, so it is the
@@ -629,6 +657,8 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // relies on that edge to hide them; widening the picture without saying this
   // shows the trick, as the same words a second time at both edges.
   snes_setLayerWide(snes, 4, in_level ? ppu_wideStretch : ppu_wideClip);
+  // The one background that is neither: see `ws_konami_sweep`.
+  snes_setLayerWide(snes, 0, !in_level && ws_konami_sweep(snes) ? ppu_wideSweep : ppu_wideAuto);
 
   if (!in_level || margin <= 0) {
     // Nothing outside a level has a map to run off the end of.

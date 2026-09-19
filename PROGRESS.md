@@ -175,6 +175,84 @@ a little -- the player's, and a zombie's giving chase.
   differing; the panel and the radar's marker are where they were; the
   frontend's own GPU picture shows every drip with its drop. `--png` prints
   how many sprites are anchored and centred.
+- **The level card's text "dropped" after its bounce -- in time, not in
+  place.** Fixed in `14c079f` (not by me; three attempts here measured where
+  each picture was and found every one where the console has it). The
+  card's last throw is 2 up, and with NMI off the native `lzss_decompress`
+  burned 76 video frames inside one `cosim_frame`, so that picture stood
+  for 334 ms and then the text came down. `burn_spend` parks at video
+  boundaries now. The lesson is in the tools: `zamn --trace-frames` and
+  `zamn_test_layers --check-frame-step` measure how long a picture stays
+  up, which no picture dump can.
+- **The Konami star drew two lines in 16:9.** BG1 is a 64-column map of
+  16x16 tiles (row 1: sixteen of line, the star, black) scrolled 256 -> 0;
+  `ppu_wideAuto` called it a half-maintained wide map and tiled the
+  console's 256, so the right margin repeated the line and, at the end, the
+  star, and the left margin was black. New policy `ppu_wideSweep`, set by
+  `ws_konami_sweep` on that map's signature: the layer is shifted from
+  -extraLeft to +extraRight in proportion to how much has been swept in
+  (`ppu_layerShiftX`), and the map left of column 0 reads as column 0.
+  `layers_capture` keeps the scroll less the shift so the easing follows
+  what is drawn. `boot` 1-300 in 16:9: 0 differing; the star's leading edge
+  advances 43 quarter-pixels a tick in steps of 10-12; the frontend's GPU
+  pictures 187-232 have one unbroken lit run from column 0 to the star in
+  every picture. `--png` writes the frame's video memory
+  (`prefix.frame.vram.bin`) and prints each background's map and tile
+  addresses, which is how the map was read.
+- **The pre-game backdrops were choppy for their first fifth of a second.**
+  Step spreading waited for two equal intervals: LucasArts stepped at 729,
+  733 and was spread from 737; the title 1159, 1163, from 1167. Outside a
+  level (`world` false) a move after a rest of 3-8 ticks is a step unless
+  a different interval is known -- but not the first move since the screen
+  went up (`fresh`), whose rest is only the picture's age: tried, and the
+  level card (two ticks in sight, then 16 px a tick) crawled a tick and
+  leapt. So in general from the second step -- which the user could still
+  see. The backdrops are all BG3, and outside a level the game steps BG3
+  on a counter and nothing else (`$80:938E` and `$80:953B` every 4th tick,
+  `$80:9A1B` every 5th), so BG3's first move since screen-up is spread too
+  (`LAYERS_BACKDROP_BG`, over `LAYERS_STEP_FIRST` = 4 ticks at least): now
+  from 729, 1159 and, on the select, 1084. Frontend pictures on the user's
+  path (`--widescreen 16:9 --skip-intro`, backdrop shift measured picture to
+  picture): still for ticks 1-3, then the same shift in every picture from
+  the first step at tick 4. In a level the rule is the old one: the
+  background is the view there, and standing then walking is not a step.
+  The test counts spreads cut short by a move and names the frame.
+  **Open:** that counter shows the old rule misfiring *in* levels --
+  `level21` and its kin, 1 to 45 a movie, `level25-2p` 2: BG1 there is a
+  decoration stepping every 4th tick while the view stands, it is spread,
+  and when the view starts to move the spread is dropped and the layer
+  leaps up to three quarters of a step. Not new (the in-level rule is
+  unchanged) and not fixed here.
+- **The character select's edges flashed as it faded in (16:9).** Its
+  wallpaper (BG3) comes up at scroll 0 and first steps on tick 5;
+  `ppu_wideAuto` wraps a 256 map only once it has moved, so for five ticks
+  the margins were the flat colour behind it, lighter than the wallpaper.
+  Those frames are PPU pictures (sub screen in a fade), so the list's
+  pictures never showed it; a movie made the way a player arrives (idle to
+  the title, Start at 1300, 1420, 1540; select fades in 1469-1483) played
+  in the frontend with `--dump-pictures` did. Outside a level a BG3 filled
+  down both console edge columns (`ppu_columnFilledAt`) gets `ppu_wideTile`
+  from the first frame. After: wallpaper in both margins from 1469. (A
+  first guess -- "it comes up already scrolled", from `level1.zmv`, where
+  it does -- was wrong for this path and is not in the tree.) The dump of a
+  fallback frame is 2109 rows tall with the picture in rows 698-1409: the
+  readback's size, not the picture's.
+- **...and the select still started unsmoothed, because its fade-in was not
+  a draw list at all.** "sub screen in a fade" refused every frame of it
+  (1469-1482 on the player's-path movie): fifteen ticks of the PPU's
+  picture, then smoothing. The refusal was about order -- the console adds,
+  clamps, then dims; dimmed planes added clamp too late -- so the list now
+  does it in the console's order: planes at full brightness when
+  `layers_dim_late` (sub screen added, brightness < 15), and
+  `LayersFrame.dim` applied to the finished picture, in `layers_render` and
+  as a colour modulation in `present_layers_draw`. Layered from 1469, eased
+  from 1470, wallpaper spread from its first step at 1474 over its true
+  five ticks; fade-out layered too; 0 differing, 28 more frames within one.
+  Frontend pictures 1467-1490: maxima 17, 34 ... 255, and all four pictures
+  of every tick from 1470 differ. The step-spreading work before this was
+  real but was not what was being seen on this screen: the first question
+  on "not smooth at the start" is whether those frames are draw lists
+  (`--motion` names the refusal).
 - The draw list unmoved is still the PPU's frame: `level1`, `level21-spin`,
   `level25-boss` in 16:9, 0 differing. (The test runs to the frame it is
   given, not to the movie's end -- `0 99999` is four processes that never

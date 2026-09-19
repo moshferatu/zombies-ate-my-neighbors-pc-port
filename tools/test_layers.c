@@ -143,7 +143,7 @@ int main(int argc, char** argv) {
   uint32_t last_serial = sprite_oam_owners.serial;
   static SpriteOamOwners held;
   bool held_fresh = false;
-  long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, link_jump = 0, origin_moved = 0, window_held = 0, steps_spread = 0, bg3_anchored = 0, bg3_mask = 0;
+  long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, link_jump = 0, origin_moved = 0, window_held = 0, steps_spread = 0, steps_cut = 0, bg3_anchored = 0, bg3_mask = 0;
 
   long tested = 0, identical = 0, within_one = 0, differing = 0, unexpressible = 0, dropped = 0;
   long skipped_frames = 0;
@@ -261,6 +261,14 @@ int main(int argc, char** argv) {
         if (f->anchored[2]) bg3_anchored++;
         if (ppu->layerWide[2] == ppu_wideCentre) bg3_mask++;
         for (int l = 0; l < 4; l++) if (f->stepK[l]) steps_spread++;
+        // A spread that a move arrived in the middle of was a wrong guess,
+        // and shows as a crawl and a leap.
+        for (int l = 0; l < 4; l++)
+          if (f->ease && prev->stepK[l] && prev->stepI[l] + 1 < prev->stepK[l] && (f->dScrollX[l] - (f->anchored[l] ? 0 : f->dExtraLeft) || f->dScrollY[l])) {
+            steps_cut++;
+            printf("  frame %d: background %d moved %d ticks into a step spread over %d\n", frame, l + 1,
+                   prev->stepI[l] + 1, prev->stepK[l]);
+          }
         if (f->dExtraLeft != 0) origin_moved++;
       }
       for (int s = 0; s < LAYERS_SPRITES; s++) {
@@ -366,6 +374,20 @@ int main(int argc, char** argv) {
           }
           printf("    sprites placed: %d anchored, %d centred\n", anchored, centred);
         }
+        {
+          // Video memory as it stands, and where each background's map is in
+          // it -- for asking what a map holds beyond the console's 256.
+          char vpath[600];
+          snprintf(vpath, sizeof vpath, "%s.%d.vram.bin", png, frame);
+          FILE* vf = fopen(vpath, "wb");
+          if (vf) { fwrite(ppu->vram, sizeof ppu->vram[0], 0x8000, vf); fclose(vf); }
+          printf("    maps:");
+          for (int l = 0; l < 4; l++)
+            printf(" %04x%s%s%s/%04x", ppu->bgLayer[l].tilemapAdr, ppu->bgLayer[l].tilemapWider ? "w" : "",
+                   ppu->bgLayer[l].tilemapHigher ? "h" : "", ppu->bgLayer[l].bigTiles ? "b" : "",
+                   ppu->bgLayer[l].tileAdr);
+          printf("\n");
+        }
         if (f->mathGated)
           for (int r = 0; r < f->mathRects; r++)
             printf("    maths window rectangle %d: %d,%d %dx%d\n", r, f->mathRect[r].x, f->mathRect[r].y,
@@ -418,7 +440,7 @@ int main(int argc, char** argv) {
   if (window_held) printf("  the maths window's rectangles were held where they wandered on %ld ticks\n", window_held);
   if (bg3_anchored) printf("  BG3 was anchored to the picture's edges on %ld frames\n", bg3_anchored);
   if (bg3_mask) printf("  BG3 carried the game over mask on %ld frames\n", bg3_mask);
-  if (steps_spread) printf("  a background stepping every few ticks had its step spread on %ld background-ticks\n", steps_spread);
+  if (steps_spread) printf("  a background stepping every few ticks had its step spread on %ld background-ticks, %ld spreads cut short by a move\n", steps_spread, steps_cut);
   const bool ok = differing == 0 && (!check_frame_step || skipped_frames == 0);
   printf("  skipped video frames: %ld\n", skipped_frames);
   printf(ok ? "OK\n" : "FAIL: %ld differing frames, %ld skipped video frames\n", differing, skipped_frames);

@@ -1820,7 +1820,7 @@ int main(int argc, char** argv) {
         if (present_layers_plan(&present, f->width, &plan, &sx, &sy, &exact)) {
           const int n = layers_list(f, phase, pic_q, sx, sy, even, lay.ops);
           drawn = present_layers_draw(&present, &plyr, &plan, sx, sy, exact,
-                                      lay.ops, n, f->width);
+                                      lay.ops, n, f->width, f->dim);
           if (drawn && dump_prefix && frame >= dump_first && frame <= dump_last) {
             const int tw = f->width * sx, th = LAYERS_LINES * sy;
             uint8_t* gpu = (uint8_t*)malloc((size_t)plan.dst.w * plan.dst.h * 3);
