@@ -137,10 +137,40 @@ build\zamn.exe --skip-intro
 
 Konami, LucasArts, a story screen and then the title: **19.2 seconds** before the
 menu is up, which is a long time to sit through once and an absurd one to sit
-through on every launch of a build you are testing. `--skip-intro` runs those
-frames as fast as the machine can — 3.55 s here, so about 5x — and hands over
-with START/PASSWORD on screen and no button held.
+through on every launch of a build you are testing. `--skip-intro` used to run
+those frames as fast as the machine can, which had become 5.4 s of a black
+window (1,150 frames at about 210 a second in 16:9).
 
+**Now it does not run them: the game has its own way past its logos**
+(`src/skipintro.h`). The main thread is a loop -- the opening, a game, the
+game over, and round again -- and the opening, `$80:9126`, shows the logos
+only the first time round: `$80:9136  LDA $7C : BNE $9152` jumps the region
+check, Konami, LucasArts and the story screen and lands on the title, which is
+how a game over comes back to the title and not to Konami. `intro_bypass`
+makes that `BNE` a `BRA` in the cartridge's copy of the image (never the
+file), so the first time round is like every other. What the jumped calls do
+is presentation -- each decompresses its own pictures, fades up, waits and
+fades out -- and the title sets up all it uses, since its other way in is
+from a level.
+
+What is left of the boot is what the game does with the screen off: clearing
+memory (17 frames), sending the sound driver to the audio processor (64), and
+two more uploads of music and samples (45 and 89). Those 222 frames are
+run at full speed, **0.6 s**, and the hand-over is the first frame the game turns the
+screen on -- so what comes up in the window is the title fading in, logo
+waving, as it does on the console. A whole windowed launch is 1.1 s. No
+button is pressed and nothing is kept on disk.
+
+Checked two ways with `zamn_test_layers --bypass-logos`, which makes the
+same boot. With no input, the 500 pictures from the title's first lit frame
+are the same files as the 500 from a boot that was left alone (frame 222
+against frame 1,156). And a movie that mashes Start from frame 260 is in
+level 1 by frame 471 with full health, walks and fires, and the draw-list
+test passes over all 1,700 frames.
+
+For a ROM whose `$80:9136` is not that test the older way is still there:
+run the whole intro at full speed with Start mashed, and hand over with
+START/PASSWORD on screen and no button held.
 The input is a rule rather than a recorded table, which is worth saying because
 it looked like a table for years: every movie in `movies/` mashes Start at frame
 180 and every 24 frames after, held 8 and released 16, up to frame 1004. Checked
@@ -154,8 +184,8 @@ margin is wide (the menu is drawn by 1050 and still sitting there at 1600) and
 it is verified rather than assumed: a single Start at exactly 1150 takes you to
 the player-select screen.
 
-The intro runs through the same substitution the game does, so those frames
-count toward the figures reported at exit. `--skip-intro` cannot be combined
+The frames that are run go through the same substitution the game does, so
+they count toward the figures reported at exit. `--skip-intro` cannot be combined
 with `-m`: a movie is indexed from reset and carries its own boot half, so doing
 both would run the logos twice.
 

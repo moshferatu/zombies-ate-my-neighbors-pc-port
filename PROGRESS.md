@@ -27,6 +27,22 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### `--skip-intro` bypasses the logos instead of running them (2026-09-19)
+
+Asked for in play-testing: the skip took several seconds (5.4 s, 1,150 real
+frames). A save state cached beside the ROM was built first and made it
+0.16 s, and was thrown away: the user did not want a first run and a file.
+Instead `src/skipintro.h` takes the game's own way past its logos --
+`$80:9136  LDA $7C : BNE $9152`, how a game over returns to the title --
+by making the `BNE` a `BRA` in the cartridge's copy. Left are 222 frames of
+sound upload with the screen off (0.6 s at full speed); hand-over is the
+first frame the screen is on, so the title fades in. The title's first 500
+pictures equal an untouched boot's, and a Start-mashing movie plays level 1
+from it (`zamn_test_layers --bypass-logos`). Not drawing lines during the
+skip was tried and saves 0.1 s, so the core was left alone; the rest is the
+65816 and the SPC700 talking, which only a high-level upload would remove.
+The old rule (mash Start, stop at 1,150) stays as the fallback.
+
 ### The game over's blood is red with `--red-blood` (2026-09-19)
 
 Asked for in play-testing, after romhacking.net hack 4306 (only its

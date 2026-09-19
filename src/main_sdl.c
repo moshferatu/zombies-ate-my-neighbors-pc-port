@@ -76,6 +76,7 @@
 #include "smooth.h"
 #include "twinstick.h"
 #include "widescreen.h"
+#include "skipintro.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -626,8 +627,19 @@ static bool start_at_level(Snes* snes, int level) {
 // The intro is Konami, LucasArts, a story screen and then the title — about
 // nineteen seconds before the menu is up, which is a long time to sit through
 // once and an absurd one to sit through on every launch of a build you are
-// testing. `--skip-intro` runs those frames as fast as the machine can and
-// hands over with START/PASSWORD on screen.
+// testing.
+//
+// **`--skip-intro` does not show them, and mostly does not run them either.**
+// The game has a way past its own logos -- it is how a game over comes back
+// to the title -- and `intro_bypass` (`src/skipintro.h`) takes it from the
+// first boot. What is left is the game loading its sound with the screen off,
+// about 220 frames, which are run as fast as the machine can; the hand-over
+// is the first frame the game turns the screen on, so what comes up in the
+// window is the title fading in.
+//
+// What follows is the older way, kept for a ROM whose opening is not the one
+// `intro_bypass` knows: run all of the intro at full speed with Start mashed,
+// and hand over with START/PASSWORD on screen.
 //
 // The input is not a recorded table but a rule, which is worth stating because
 // it looked like a table for a long time: every movie in `movies/` mashes Start
@@ -646,16 +658,26 @@ static bool start_at_level(Snes* snes, int level) {
 // frontend and the movie generator cannot drift apart about when the menu is
 // ready for input.
 #define INTRO_TITLE_FRAME  1150
+// With the logos bypassed: the screen is off until the title (222 here), and
+// is not looked at before the boot's memory clear is over; and a machine that
+// never turns it on is handed over anyway.
+#define INTRO_BYPASS_FIRST 30
+#define INTRO_BYPASS_LIMIT 900
 
 // Runs the intro through `cosim_frame`, exactly as the main loop would, rather
 // than through a bare core. Two reasons: the frames genuinely execute, so they
 // belong in the substitution figures; and ported routines keep state, so
 // booting stock and then switching to native would hand the port a machine it
 // had not been watching.
-static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads) {
+static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads,
+                       bool* bypassed) {
   long f = 0;
-  for (; f < INTRO_TITLE_FRAME; f++) {
-    const bool down =
+  *bypassed = intro_bypass(snes->cart);
+  const long last = *bypassed ? INTRO_BYPASS_LIMIT : INTRO_TITLE_FRAME;
+  for (; f < last; f++) {
+    // The title, about to fade in: the game has turned the screen on.
+    if (*bypassed && f >= INTRO_BYPASS_FIRST && !snes->ppu->forcedBlank) break;
+    const bool down = !*bypassed &&
         f >= INTRO_FIRST_PRESS && f <= INTRO_LAST_PRESS &&
         (f - INTRO_FIRST_PRESS) % INTRO_PRESS_PERIOD < INTRO_PRESS_HOLD;
     snes_setButtonState(snes, 1, BTN_START, down);
@@ -1563,10 +1585,12 @@ int main(int argc, char** argv) {
   // is about to be fed rather than one about to sit idle for a few seconds.
   if (skip_the_intro) {
     const Uint64 t0 = SDL_GetPerformanceCounter();
-    const long ran = skip_intro(&cosim, snes, win, &pads);
-    printf("Skipped the intro: %ld frames (%.1f s of game) in %.2f s.\n", ran,
+    bool bypassed = false;
+    const long ran = skip_intro(&cosim, snes, win, &pads, &bypassed);
+    printf("Skipped the intro: %ld frames (%.1f s of game) in %.2f s%s.\n", ran,
            ran / 60.0,
-           (double)(SDL_GetPerformanceCounter() - t0) / (double)perf_freq);
+           (double)(SDL_GetPerformanceCounter() - t0) / (double)perf_freq,
+           bypassed ? ", the logos bypassed" : "");
     fflush(stdout);
     started = SDL_GetPerformanceCounter();
   }

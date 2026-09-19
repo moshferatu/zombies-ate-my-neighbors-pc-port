@@ -44,6 +44,7 @@
 #include "cosim/cosim.h"
 #include "scale.h"
 #include "widescreen.h"
+#include "skipintro.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -70,6 +71,7 @@ int main(int argc, char** argv) {
                     "       [--track first last] [--motion first last] [--widescreen off|16:9|16:10]\n"
                     "       [--no-even] [--no-hold] [--poke frame[+]:addr=value[.b]]...\n"
                     "       [--hitbox percent] [--watch addr]... [--red-blood]\n"
+                    "       [--bypass-logos]\n"
                     "  <last> is a frame number, and the run goes on to it past the movie's end.\n", argv[0]);
     return 2;
   }
@@ -90,7 +92,7 @@ int main(int argc, char** argv) {
   int track_first = -1, track_last = -1;
   PokeList pokes = {{{0}}, 0};
   int watch[8], watches = 0, watched[8] = {0};
-  bool red_blood = false;
+  bool red_blood = false, bypass_logos = false;
   WideMode wide = WIDE_OFF;
   // `--no-hold` pairs the owner table with the picture of the same tick, which
   // is wrong by a tick (see `SpriteOamOwners`) and is kept so that the
@@ -114,6 +116,9 @@ int main(int argc, char** argv) {
     if (!strcmp(argv[i], "--no-even")) { even = false; continue; }
     // `--red-blood`, as the frontend has it (`src/blood.h`).
     if (!strcmp(argv[i], "--red-blood")) { red_blood = true; continue; }
+    // `--bypass-logos`: the boot `--skip-intro` makes (`src/skipintro.h`). The
+    // movie is then one made against that boot, not one of the corpus's.
+    if (!strcmp(argv[i], "--bypass-logos")) { bypass_logos = true; continue; }
     // `--hitbox pct`, as the frontend has it (`actor_overlap_reach`), and
     // `--watch addr`: a line whenever that WRAM word changes -- between them,
     // the frame a pickup lands on at one reach and at another.
@@ -144,6 +149,10 @@ int main(int argc, char** argv) {
   if (wide != WIDE_OFF) {
     snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
     widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
+  }
+  if (bypass_logos && !intro_bypass(snes->cart)) {
+    fprintf(stderr, "error: --bypass-logos does not know this ROM's opening\n");
+    return 1;
   }
   if (red_blood) {
     // The hook is the widescreen's, which the frontend installs at any width.
