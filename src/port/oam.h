@@ -301,6 +301,40 @@ bool actor_collide_notify_counted(Wram* w, const Rom* rom, uint16_t a,
 // the scratch words above.
 bool actor_overlap_pass(Wram* w, const Rom* rom);
 
+// **A longer reach for the pairs a player wants to touch.** The ROM's box is 8
+// pixels either way on both axes for every pair alike, which is tight for
+// walking over a first aid kit and for a shot that visibly clips a zombie.
+// `actor_overlap_reach` is that 8 for the pairs below and the ROM's 8 for every
+// other; at `OVERLAP_REACH_STOCK`, which is how it starts and how every tool
+// but the frontend leaves it, this pass is the ROM's to the byte.
+//
+//   * a player (`$05`, `$06`) and something to pick up -- the thirty ids of
+//     `$80:CA30`, the table that turns an object's type into its collision id;
+//   * a player and a neighbour (`$01`, `$02`): a rescue;
+//   * a player's weapon (`$5C` and up under the mask, `COLLIDE_ID_PLAYER`) and
+//     a creature, which is whatever is none of the above.
+//
+// Not a creature and a player, nor a creature and a neighbour: a box widened
+// for every pair (which is what patching the two constants at `$80:BEF8` and
+// `$80:BF06` does) also lets a zombie touch the player from half as far again.
+// Nor a player carried off by a spider (`$38`), who picks nothing up.
+//
+// A weapon finds a creature a second way, and mostly that way: `$80:BF1B`,
+// "who is in this box", which a shot asks about the 16x16 around itself every
+// tick (`$80:D413`) and a weapon held in the hand about a box in front of the
+// player (`$80:F055`). There the box is grown by the same number of pixels on every
+// side -- `actor_overlap_reach - 8` -- for a creature and for nobody else, when
+// the asker's id is a weapon's. (Of the first kill in `level1-rescue.zmv`, not
+// one tick went through the overlap pass.)
+//
+// The ROM's own routines are not changed, so a call the port declines is run
+// by the ROM at 8 for that frame. Set by the frontend before the machine runs.
+#define OVERLAP_REACH_STOCK 8
+#define OVERLAP_REACH_MAX 16
+#define OVERLAP_PICKUP_IDS 0x80ca30u
+#define OVERLAP_PICKUP_COUNT 30
+extern int actor_overlap_reach;
+
 // The straight-line runs of `$80:BEC9`, one per branch outcome, as
 // `ActorCullBlock` is for the cull. Two nested walks and five decisions.
 typedef enum {

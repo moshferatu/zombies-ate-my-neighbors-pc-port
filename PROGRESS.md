@@ -27,6 +27,24 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### Pickups and weapons reach half as far again (2026-09-19)
+
+Asked for in play-testing, with the DX hack as the example: bigger sprite
+hitboxes so pickups and hits are more consistent. DX patches the 8/16 in
+`$80:BEF1`, for every pair. Here `actor_overlap_reach` (`src/port/oam.c`,
+`--hitbox <100..200>`, default 150, 100 under `-m`) is only for
+player x pickup, player x neighbour and weapon x creature, so nothing reaches
+the *player* any further than it did. Ids sorted from a log of every
+dispatched pair over the corpus (players 5/6, neighbours 1/2, pickups the
+table at `$80:CA30`, weapons >= `$5C`, `$38` a carried player, `$36` a
+bubbled creature). Weapons mostly hit through `$80:BF1B` (shots:
+`$80:D413`, a 16x16 box a tick; melee: `$80:F055`), so `actor_notify_box`
+grows the box for creatures when a weapon asks. ROM untouched; tools stay
+at 8. `zamn_test_layers` has `--hitbox` and `--watch addr`: pickups two
+frames sooner, first kill two frames sooner, and a miss at 100 that hits
+at 150 in `level9-weapons`. Movies desync at any reach but 100, as they
+must.
+
 ### The title's logo, eased a line at a time (2026-09-19)
 
 Asked for in play-testing: the ZOMBIES ATE MY NEIGHBORS logo should move

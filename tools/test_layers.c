@@ -69,6 +69,7 @@ int main(int argc, char** argv) {
                     "       [--png-range prefix first last] [--stock] [--check-frame-step]\n"
                     "       [--track first last] [--motion first last] [--widescreen off|16:9|16:10]\n"
                     "       [--no-even] [--no-hold] [--poke frame[+]:addr=value[.b]]...\n"
+                    "       [--hitbox percent] [--watch addr]...\n"
                     "  <last> is a frame number, and the run goes on to it past the movie's end.\n", argv[0]);
     return 2;
   }
@@ -88,6 +89,7 @@ int main(int argc, char** argv) {
   bool check_frame_step = false;
   int track_first = -1, track_last = -1;
   PokeList pokes = {{{0}}, 0};
+  int watch[8], watches = 0, watched[8] = {0};
   WideMode wide = WIDE_OFF;
   // `--no-hold` pairs the owner table with the picture of the same tick, which
   // is wrong by a tick (see `SpriteOamOwners`) and is kept so that the
@@ -109,6 +111,17 @@ int main(int argc, char** argv) {
     }
     if (!strcmp(argv[i], "--no-hold")) { hold = false; continue; }
     if (!strcmp(argv[i], "--no-even")) { even = false; continue; }
+    // `--hitbox pct`, as the frontend has it (`actor_overlap_reach`), and
+    // `--watch addr`: a line whenever that WRAM word changes -- between them,
+    // the frame a pickup lands on at one reach and at another.
+    if (!strcmp(argv[i], "--hitbox") && i + 1 < argc) {
+      actor_overlap_reach = (OVERLAP_REACH_STOCK * atoi(argv[++i]) + 50) / 100;
+      continue;
+    }
+    if (!strcmp(argv[i], "--watch") && i + 1 < argc && watches < 8) {
+      watch[watches++] = (int)strtol(argv[++i], NULL, 16) & 0x1fffe;
+      continue;
+    }
     if (!strcmp(argv[i], "--poke") && i + 1 < argc) { if (!poke_parse(&pokes, argv[++i])) return 2; continue; }
     if (!strcmp(argv[i], "--png") && i + 2 < argc) { png = argv[i + 1]; png_frame = atoi(argv[i + 2]); i += 2; }
     else if (!strcmp(argv[i], "--track") && i + 2 < argc) { track_first = atoi(argv[i + 1]); track_last = atoi(argv[i + 2]); i += 2; }
@@ -156,6 +169,11 @@ int main(int argc, char** argv) {
     poke_apply(&pokes, snes->ram, i);
     const uint32_t before_frame = snes->frames;
     cosim_frame(&cosim);
+    for (int k = 0; k < watches; k++) {
+      const int v = snes->ram[watch[k]] | (snes->ram[watch[k] + 1] << 8);
+      if (v != watched[k]) printf("  watch %05x: frame %d: %04x -> %04x\n", watch[k], i + 1, watched[k], v);
+      watched[k] = v;
+    }
     // Native calls must return each video frame even while NMI is disabled.
     // Otherwise the last bouncing title frame stays up while decompression
     // silently renders the entire stationary hold in one frontend tick.

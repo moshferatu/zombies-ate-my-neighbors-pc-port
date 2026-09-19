@@ -298,6 +298,49 @@ game over — `$80:8514` branches back to `$80:84B1`, so a game over puts you on
 your level rather than on level 1, which is what a flag for looking at level 30
 should do.
 
+### A longer reach for pickups and weapons, and `--hitbox`
+
+The game decides who is touching whom with a 16x16 box: two records touch
+when they are within 8 pixels on both axes (`$80:BEC9`, the overlap pass, at
+`$80:BEF1`), and that is tight for walking over a first aid kit and for a
+shot that visibly clips a zombie. The frontend plays at **150%** of it by
+default -- 12 pixels -- and `--hitbox <100..200>` says otherwise; 100 is the
+game's own, and is the default under `-m`, since every movie was made at it
+and picks things up a step sooner at any other.
+
+*Zombies Ate My Neighbors DX* does this by patching the two constants in
+`$80:BEF1`, which widens the box for every pair there is -- so a zombie also
+touches the player, and a neighbour, from half as far again. Here the longer
+reach (`actor_overlap_reach`, `src/port/oam.h`) is for the pairs a player
+wants to touch and the rest keep the game's 8:
+
+  * a player (`$05`, `$06`) and a pickup -- the thirty collision ids of
+    `$80:CA30`, the table that makes an object's type its id;
+  * a player and a neighbour (`$01`, `$02`);
+  * a player's weapon (`$5C` and up, under the `$7FFF` mask) and a creature,
+    which is whatever is none of the above.
+
+The ids were sorted by logging every pair the overlap pass dispatched over
+the fifty movies. And the overlap pass turned out not to be how a weapon
+usually finds a creature: a shot asks `$80:BF1B` who is in the 16x16 box
+around it every tick (`$80:D413`), and a weapon held in the hand asks about
+a box in front of the player (`$80:F055`) -- the first kill of
+`level1-rescue.zmv` never goes through the overlap pass at all. So in
+`actor_notify_box`, when the asker is a weapon, a *creature* is tested
+against the box grown by the same number of pixels on every side, and
+anybody else against the box as asked for.
+
+It lives in the port's two routines and the ROM's are untouched: `--stock`
+plays at 100, a call the port declines is the ROM's at 8 for that frame,
+and every tool but the frontend leaves the reach at 8, where both routines
+are the ROM's to the byte (`verify_corpus.ps1` unchanged). Measured with
+`zamn_test_layers --hitbox <pct> --watch <addr>`: in `level1-pickups` both
+pickups land two frames sooner at 150 (walking straight at them; the gain
+that matters is the pass that would have missed by a pixel), the first kill
+of `level1-rescue` two frames sooner, and in `level9-weapons` the first
+kill lands at frame 3,484, where at 100 there is none until 5,368.
+The rescue in `level1-rescue` lands on the same frame at both.
+
 ### The top scores are kept, and `--no-high-scores`
 
 The cartridge has no save RAM (header type `$00`, size 0), so on the console

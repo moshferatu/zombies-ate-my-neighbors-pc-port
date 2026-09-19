@@ -47,7 +47,7 @@
 //             [--windowed] [--scale N] [--filter sharp|integer|linear]
 //             [--level N] [--no-twin-stick] [--no-smooth] [--no-even]
 //             [--dump-pictures prefix,frame]
-//             [--no-high-scores] [--high-scores file]
+//             [--no-high-scores] [--high-scores file] [--hitbox percent]
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -826,6 +826,11 @@ static void usage(void) {
     "                  it is played.\n"
     "  --poke <spec>   frame[+]:addr=value[.b], as zamn_headless takes it: write\n"
     "                  a WRAM word (or byte) at a frame, or from it on with +.\n"
+    "  --hitbox <pct>  How far a player reaches for a pickup or a neighbour, and\n"
+    "                  a weapon for a creature, as a percentage of the game's\n"
+    "                  own 16-pixel box: 100 to 200, default 150 (100 under -m,\n"
+    "                  where the movie was made at 100). Creatures reach for\n"
+    "                  players and neighbours as far as they ever did.\n"
     "  --no-high-scores  Do not keep the top scores from run to run. They are\n"
     "                  kept by default, beside the ROM as <rom name>.hiscore,\n"
     "                  which the cartridge could not do. Not under -m.\n"
@@ -881,6 +886,8 @@ int main(int argc, char** argv) {
   // that no movie in the corpus reaches, for looking at how it is drawn.
   PokeList pokes = {{{0}}, 0};
   // The top scores, kept from run to run -- see hiscore.h.
+  // `--hitbox`: see `actor_overlap_reach` in port/oam.h. 0 is "not said".
+  int hitbox_pct = 0;
   bool hiscore_on = true;
   const char* hiscore_path = NULL;
   // Room for every routine in the registry and then some. It was 32, which
@@ -1024,6 +1031,16 @@ int main(int argc, char** argv) {
     }
     else if (!strcmp(a, "-m") && i + 1 < argc) movie_path = argv[++i];
     else if (!strcmp(a, "--poke") && i + 1 < argc) { if (!poke_parse(&pokes, argv[++i])) return 2; }
+    else if (!strcmp(a, "--hitbox") && i + 1 < argc) {
+      char* end = NULL;
+      const long v = strtol(argv[++i], &end, 10);
+      if (end == argv[i] || *end || v < 100 || v > 200) {
+        fprintf(stderr, "error: --hitbox wants 100..200, got '%s'\n\n", argv[i]);
+        usage();
+        return 2;
+      }
+      hitbox_pct = (int)v;
+    }
     else if (!strcmp(a, "--no-high-scores")) hiscore_on = false;
     else if (!strcmp(a, "--high-scores") && i + 1 < argc) hiscore_path = argv[++i];
     else if (!strcmp(a, "--shot") && i + 1 < argc) shot_path = argv[++i];
@@ -1141,6 +1158,17 @@ int main(int argc, char** argv) {
   // played yesterday, and its scores are not the player's. Unless a file is
   // named, which is asking for it -- and is the only way to test this with a
   // game over that was not played by hand.
+  // A longer reach for pickups, rescues and the player's weapons. Not under a
+  // movie unless asked for: every movie there is was made at the game's own
+  // reach, and picks things up a step sooner at any other.
+  if (hitbox_pct == 0) hitbox_pct = have_movie ? 100 : 150;
+  actor_overlap_reach = (OVERLAP_REACH_STOCK * hitbox_pct + 50) / 100;
+  if (!native && hitbox_pct != 100)
+    printf("note : --stock runs the ROM's own collision pass; --hitbox has no effect.\n");
+  else if (hitbox_pct != 100)
+    printf("Hitboxes: pickups, rescues and the players' weapons reach %d px (the game's 8).\n",
+           actor_overlap_reach);
+
   static Hiscore hiscore;
   hiscore_init(&hiscore, rom_path, hiscore_path);
   hiscore.enabled = hiscore_on && (!have_movie || hiscore_path);

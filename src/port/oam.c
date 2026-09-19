@@ -282,9 +282,35 @@ bool actor_collide_notify(Wram* w, const Rom* rom, uint16_t a, uint16_t b,
 
 // The 16x16 box test, on one axis, exactly as `$80:BEE1` does it: subtract,
 // re-bias by 8, and take it as one unsigned range. Signed or not, the two
-// records are within 8 pixels of each other.
-static bool within_8px(uint16_t a, uint16_t b) {
-  return (uint16_t)(b - a + 8) < 0x0010;
+// records are within 8 pixels of each other -- or within `reach`, for a pair
+// the frontend has given a longer one (`actor_overlap_reach`).
+static bool within_reach(uint16_t a, uint16_t b, int reach) {
+  return (uint16_t)(b - a + reach) < (uint16_t)(2 * reach);
+}
+
+int actor_overlap_reach = OVERLAP_REACH_STOCK;
+
+typedef enum { OVL_KIND_CREATURE, OVL_KIND_PLAYER, OVL_KIND_NEIGHBOUR,
+               OVL_KIND_PICKUP, OVL_KIND_WEAPON } OverlapKind;
+
+static OverlapKind overlap_kind(const Rom* rom, uint16_t id) {
+  id &= 0x7fff;  // bit 15 is whose weapon it was, not what it is
+  if (id >= 0x5c) return OVL_KIND_WEAPON;
+  if (id == 0x05 || id == 0x06) return OVL_KIND_PLAYER;
+  if (id == 0x01 || id == 0x02) return OVL_KIND_NEIGHBOUR;
+  for (int i = 0; i < OVERLAP_PICKUP_COUNT; i++)
+    if (rom_word(rom, OVERLAP_PICKUP_IDS + 2 * (uint32_t)i) == id) return OVL_KIND_PICKUP;
+  return OVL_KIND_CREATURE;
+}
+
+// The reach for this pair: see `actor_overlap_reach`.
+static int overlap_reach(const Rom* rom, uint16_t a_id, uint16_t b_id) {
+  if (actor_overlap_reach == OVERLAP_REACH_STOCK) return OVERLAP_REACH_STOCK;
+  OverlapKind a = overlap_kind(rom, a_id), b = overlap_kind(rom, b_id);
+  if (a > b) { OverlapKind t = a; a = b; b = t; }
+  const bool helped = (a == OVL_KIND_PLAYER && (b == OVL_KIND_NEIGHBOUR || b == OVL_KIND_PICKUP)) ||
+                      (a == OVL_KIND_CREATURE && b == OVL_KIND_WEAPON);
+  return helped ? actor_overlap_reach : OVERLAP_REACH_STOCK;
 }
 
 bool actor_overlap_pass_counted(Wram* w, const Rom* rom,
@@ -340,11 +366,12 @@ bool actor_overlap_pass_counted(Wram* w, const Rom* rom,
         if (b_id != 0)
           work->blocks[b_id == id ? OVL_BLK_SAME_ID : OVL_BLK_DIFF_ID]++;
         if (b_id != 0 && b_id != id) {
-          bool near_x = within_8px(ox, wram_r16(w, (uint32_t)b + ACTOR_X));
+          const int reach = overlap_reach(rom, id, b_id);
+          bool near_x = within_reach(ox, wram_r16(w, (uint32_t)b + ACTOR_X), reach);
           work->blocks[near_x ? OVL_BLK_X_NEAR : OVL_BLK_X_FAR]++;
           if (near_x) {
             PORT_COVER(overlap_near_x);
-            bool near_y = within_8px(oy, wram_r16(w, (uint32_t)b + ACTOR_Y));
+            bool near_y = within_reach(oy, wram_r16(w, (uint32_t)b + ACTOR_Y), reach);
             work->blocks[near_y ? OVL_BLK_Y_NEAR : OVL_BLK_Y_FAR]++;
             if (near_y) {
               // `$80:BF0D  PHY : JSR $BE8F : PLY`. Carry is clear here by
@@ -1217,8 +1244,16 @@ bool actor_notify_box_counted(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
   work->blocks[NOTIFY_BLK_WALK]++;
 
   uint16_t id = wram_r16(w, NOTIFY_BOX_DP_ID);
-  uint16_t x0 = wram_r16(w, NOTIFY_BOX_DP_X0), x1 = wram_r16(w, NOTIFY_BOX_DP_X1);
-  uint16_t y0 = wram_r16(w, NOTIFY_BOX_DP_Y0), y1 = wram_r16(w, NOTIFY_BOX_DP_Y1);
+  const uint16_t bx0 = wram_r16(w, NOTIFY_BOX_DP_X0), bx1 = wram_r16(w, NOTIFY_BOX_DP_X1);
+  const uint16_t by0 = wram_r16(w, NOTIFY_BOX_DP_Y0), by1 = wram_r16(w, NOTIFY_BOX_DP_Y1);
+  // `actor_overlap_reach`, for the other way a weapon finds a creature: a
+  // player's shot asks this routine who is in a 16x16 box about it
+  // (`$80:D413`) and a weapon held in the hand who is in a box in front of
+  // him (`$80:F055`), and neither goes through the overlap pass. The box a
+  // *creature* is tested against is that many pixels larger on every side;
+  // a neighbour, a player or a pickup is tested against the box as asked for.
+  const int grow = overlap_kind(rom, id) == OVL_KIND_WEAPON
+                       ? actor_overlap_reach - OVERLAP_REACH_STOCK : 0;
 
   // A, X and the carry are whatever the *last* record examined left behind, so
   // they are carried through the walk rather than reconstructed at the end.
@@ -1239,6 +1274,13 @@ bool actor_notify_box_counted(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
       out->c = true;                       // `CMP $40` equal, so C is set
     } else {
       out->c = rec_id >= id;
+      uint16_t x0 = bx0, x1 = bx1, y0 = by0, y1 = by1;
+      if (grow > 0 && overlap_kind(rom, rec_id) == OVL_KIND_CREATURE) {
+        x0 = (uint16_t)(x0 > grow ? x0 - grow : 0);  // clamped as `$80:BF23` clamps
+        y0 = (uint16_t)(y0 > grow ? y0 - grow : 0);
+        x1 = (uint16_t)(x1 + grow);
+        y1 = (uint16_t)(y1 + grow);
+      }
       uint16_t rx = wram_r16(w, (uint32_t)rec + ACTOR_X);
       out->a = rx;
       out->c = rx >= x0;
