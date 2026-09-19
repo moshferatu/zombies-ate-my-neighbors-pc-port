@@ -545,6 +545,26 @@ Two awards fell out of the diff and are worth having written down: a victim
 rescued is `$1000` and an enemy killed is `$0100`, both BCD, both constants in
 their callers (`$83:A1D5` and `$81:8727`).
 
+## The top scores — `$7E:2064`, `$7E:20FA`, and the flag at `$7E:2124`
+
+Ten rows of 15 bytes at `$7E:2064`: fourteen characters (the name, `/` for a
+space, the score's digits right-aligned) and a terminating 0. `$82:B9FD` is the
+table of the ten rows' addresses. Ten scores at `$7E:20FA`, best first, in the
+live score's encoding: 32-bit BCD, low word first. `$7E:2124` is non-zero once
+the table exists: `$80:85F6` tests it on the way into the title and, if zero,
+has `$82:BB0D` copy the rows from `$82:BB2E` and the scores from `$82:BBC4` and
+sets it -- so a soft reset keeps the table and a power-on does not, there being
+no save RAM in the cartridge.
+
+`$82:BBED` (from `$80:8508`, the game over) compares each side's score with the
+tenth and returns carry set if either was filed. `$82:BC41` files one: the name
+entry `$82:B232` (300 polls four ticks apart, reset by any input -- twenty
+seconds untouched and it gives up with an empty name), the row built at
+`$7E:1EA0` with zeros turned to `/`, a search up the table, two `MVP`s to move
+scores and rows down, and the stores. The attract mode's game over
+(`$80:9B87` -> `$80:8516`, then `$82:BA11` from `$80:9BA9`) shows the table and
+never calls `$82:BBED`. `src/hiscore.h` keeps these 190 bytes in a file.
+
 ## The status panel — `$7E:1E88`, `$7E:1E7A`, and the two buffers
 
 `$7E:1E88` and `$7E:1E8A` say whether each player's half of the HUD is drawn at

@@ -381,6 +381,10 @@ int main(int argc, char** argv) {
           snprintf(vpath, sizeof vpath, "%s.%d.vram.bin", png, frame);
           FILE* vf = fopen(vpath, "wb");
           if (vf) { fwrite(ppu->vram, sizeof ppu->vram[0], 0x8000, vf); fclose(vf); }
+          // ...and work RAM, for finding where the game keeps something.
+          snprintf(vpath, sizeof vpath, "%s.%d.wram.bin", png, frame);
+          vf = fopen(vpath, "wb");
+          if (vf) { fwrite(snes->ram, 1, 0x20000, vf); fclose(vf); }
           printf("    maps:");
           for (int l = 0; l < 4; l++)
             printf(" %04x%s%s%s/%04x", ppu->bgLayer[l].tilemapAdr, ppu->bgLayer[l].tilemapWider ? "w" : "",
@@ -439,6 +443,9 @@ int main(int argc, char** argv) {
          link_near, link_origin, link_looks, link_none, link_jump, origin_moved);
   if (window_held) printf("  the maths window's rectangles were held where they wandered on %ld ticks\n", window_held);
   if (bg3_anchored) printf("  BG3 was anchored to the picture's edges on %ld frames\n", bg3_anchored);
+  if (wide != WIDE_OFF)
+    printf("  screen-space sprites: the pass on screen was not the newest on %ld frames, and none of those kept on %ld\n",
+           ws.place_behind, ws.place_unmatched);
   if (bg3_mask) printf("  BG3 carried the game over mask on %ld frames\n", bg3_mask);
   if (steps_spread) printf("  a background stepping every few ticks had its step spread on %ld background-ticks, %ld spreads cut short by a move\n", steps_spread, steps_cut);
   const bool ok = differing == 0 && (!check_frame_step || skipped_frames == 0);

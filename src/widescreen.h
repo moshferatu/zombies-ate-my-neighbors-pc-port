@@ -321,6 +321,9 @@ typedef struct {
   int back_slot[WS_LENT_MAX];  // ...of those, the ones that have to be put back
   int back_count;
   uint8_t slot_drawn[SPRITE_SLOTS];  // slots this frame's own sprites read from
+  // How `ws_place_screen_sprites` found the pass that is on screen: frames it
+  // was not the newest one, and frames it was none of those kept.
+  long place_behind, place_unmatched;
 } Widescreen;
 
 // WRAM as a flat 128 KB, the way `src/port/wram.h` numbers it: bank `$7E` is
@@ -570,14 +573,54 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
 // of such records too, laid out over the trunks the mask draws for them --
 // anchored with the panel while the mask was centred, they hung 43 columns
 // from their trunks, which ended flat. The pass says which OAM entries came
-// from which record (`sprite_oam_owners`), and at the top of a frame that
-// table describes the OAM the vblank just DMA'd; the record's flags are read
-// from `ws->mem` for the same reason. A place per slot rather than a moved
+// from which record, and the record's flags are read from `ws->mem`, the
+// memory the picture was composed from. A place per slot rather than a moved
 // X, so that a frame the game did not redraw is not moved twice.
+//
+// **Which pass is on screen has to be read off the OAM.** This runs at line 0.
+// The vblank just ended DMA'd the pass's buffer -- and the game began its next
+// tick straight after that NMI, still inside vblank, so by line 0 the pass has
+// usually run *again* and `sprite_oam_owners` describes sprites that are a
+// frame from being shown. While the same records keep the same slots nobody
+// can tell. When they do not -- the radar coming up puts its marker in slot 0
+// and moves everything else along one, and the marker is one slot multiplexed
+// over the survivors -- the entry that had become the marker's was still a
+// piece of a zombie or of the player on screen, and was pinned to the panel
+// for a frame: 43 columns to the left of the rest of him, the player's head
+// beside the player. And the marker, in an entry the table still called the
+// world's, 43 to the right of its box. So the pass is identified by its bytes
+// (`sprite_oam_history`): the newest whose owned entries are what the PPU
+// holds. None matching -- a pass the ROM ran, a screen between levels -- is
+// the newest table, as before.
+static inline const SpriteOamOwners* ws_pass_on_screen(const Snes* snes, Widescreen* ws) {
+  const uint32_t newest = sprite_oam_owners.serial;
+  for (uint32_t back = 0; back < SPRITE_OAM_HISTORY && back < newest; back++) {
+    const SpriteOamPass* pass = &sprite_oam_history[(newest - back) % SPRITE_OAM_HISTORY];
+    if (pass->owners.serial != newest - back) continue;
+    bool same = true;
+    for (int s = 0; s < OAM_ENTRIES && same; s++) {
+      if (pass->owners.rec[s] < 0) continue;
+      const uint8_t* b = &pass->low[s * 4];
+      same = snes->ppu->oam[s * 2] == (uint16_t)(b[0] | (b[1] << 8)) &&
+             snes->ppu->oam[s * 2 + 1] == (uint16_t)(b[2] | (b[3] << 8));
+    }
+    if (!same) continue;
+    if (back > 0) ws->place_behind++;
+    return &pass->owners;
+  }
+  if (newest > 0) ws->place_unmatched++;
+  return &sprite_oam_owners;
+}
+
 static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, int place) {
   const uint8_t* mem = ws->mem;
+  if (place == ppu_spriteWorld) {
+    for (int s = 0; s < OAM_ENTRIES; s++) snes_setSpritePlace(snes, s, ppu_spriteWorld);
+    return;
+  }
+  const SpriteOamOwners* owners = ws_pass_on_screen(snes, ws);
   for (int s = 0; s < OAM_ENTRIES; s++) {
-    const int rec = sprite_oam_owners.rec[s];
+    const int rec = owners->rec[s];
     const bool screen =
         rec >= 0 && (ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS) & ACTOR_SCREEN_SPACE) != 0;
     snes_setSpritePlace(snes, s, screen ? place : ppu_spriteWorld);

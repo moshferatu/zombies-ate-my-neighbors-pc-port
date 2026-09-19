@@ -453,6 +453,24 @@ typedef struct {
 } SpriteOamOwners;
 extern SpriteOamOwners sprite_oam_owners;
 
+// The last few passes, each with the low table it wrote -- for a reader that
+// has the PPU's OAM in front of it and needs to know *which* pass that is.
+// "Hold the table for a tick" answers that for a reader at the end of a frame.
+// It does not for one at the top of a frame (`src/widescreen.h`): the game
+// starts its next tick inside vblank, straight after the NMI that DMA'd the
+// buffer, and whether this pass has run again by line 0 depends on how much
+// the tick had to do first. So the table there is sometimes the one on screen
+// and usually the one after it, and the only thing that says which is the
+// bytes. `sprite_oam_history[serial % SPRITE_OAM_HISTORY]` is the pass with
+// that serial, for as long as it is one of the last SPRITE_OAM_HISTORY.
+// Eight: the pass runs twice a tick in a level, and a slow tick is two frames.
+#define SPRITE_OAM_HISTORY 8
+typedef struct {
+  SpriteOamOwners owners;
+  uint8_t low[SPRITE_OAM_LOW_BYTES];
+} SpriteOamPass;
+extern SpriteOamPass sprite_oam_history[SPRITE_OAM_HISTORY];
+
 // The pass's own walk, `$80:BD30`..`$80:BDCB`, counted for `cosim_cost`.
 //
 // This is the last of the five parts, and the one that finally makes the other

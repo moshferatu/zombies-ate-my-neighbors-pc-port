@@ -501,6 +501,7 @@ static int draw_args(const Wram* w, uint16_t rec, DrawArgs* d,
 }
 
 SpriteOamOwners sprite_oam_owners;
+SpriteOamPass sprite_oam_history[SPRITE_OAM_HISTORY];
 
 bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp,
                               SpriteBuildWork* work) {
@@ -649,6 +650,10 @@ bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp,
            (uint16_t)(rom_word(rom, SPRITE_PASS_PHASE_TABLE + (phase & 3)) & 0xff));
   owners.serial = sprite_oam_owners.serial + 1;
   sprite_oam_owners = owners;
+  SpriteOamPass* pass = &sprite_oam_history[owners.serial % SPRITE_OAM_HISTORY];
+  pass->owners = owners;
+  for (int i = 0; i < SPRITE_OAM_LOW_BYTES; i++)
+    pass->low[i] = wram_r8(w, (uint32_t)W_OAM_BUFFER + (uint32_t)i);
   return true;
 }
 

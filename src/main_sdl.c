@@ -47,6 +47,7 @@
 //             [--windowed] [--scale N] [--filter sharp|integer|linear]
 //             [--level N] [--no-twin-stick] [--no-smooth] [--no-even]
 //             [--dump-pictures prefix,frame]
+//             [--no-high-scores] [--high-scores file]
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -60,6 +61,7 @@
 #include "analysis/movie.h"
 #include "analysis/movie_apply.h"
 #include "poke.h"
+#include "hiscore.h"
 #include "cosim/cosim.h"
 // For `player_set_aim` alone: `$80:D1FF` is substituted, so twin-stick aiming
 // has to reach the port as well as the cartridge. See `src/twinstick.h`.
@@ -824,6 +826,11 @@ static void usage(void) {
     "                  it is played.\n"
     "  --poke <spec>   frame[+]:addr=value[.b], as zamn_headless takes it: write\n"
     "                  a WRAM word (or byte) at a frame, or from it on with +.\n"
+    "  --no-high-scores  Do not keep the top scores from run to run. They are\n"
+    "                  kept by default, beside the ROM as <rom name>.hiscore,\n"
+    "                  which the cartridge could not do. Not under -m.\n"
+    "  --high-scores <file>  Keep them in this file instead -- under -m too,\n"
+    "                  which is how the feature is tested.\n"
     "  --windowed      Start in a window. The default is fullscreen; F11 or\n"
     "                  Alt+Enter moves between them at any time.\n"
     "  --scale <N>     Size the window at N times 512x480, and start in it.\n"
@@ -873,6 +880,9 @@ int main(int argc, char** argv) {
   // `--poke`, as the headless tool has it: a way to a state -- a game over --
   // that no movie in the corpus reaches, for looking at how it is drawn.
   PokeList pokes = {{{0}}, 0};
+  // The top scores, kept from run to run -- see hiscore.h.
+  bool hiscore_on = true;
+  const char* hiscore_path = NULL;
   // Room for every routine in the registry and then some. It was 32, which
   // was more than the registry held when it was written and is not any more:
   // past the cap the `-r` was dropped and its argument fell through to the
@@ -1014,6 +1024,8 @@ int main(int argc, char** argv) {
     }
     else if (!strcmp(a, "-m") && i + 1 < argc) movie_path = argv[++i];
     else if (!strcmp(a, "--poke") && i + 1 < argc) { if (!poke_parse(&pokes, argv[++i])) return 2; }
+    else if (!strcmp(a, "--no-high-scores")) hiscore_on = false;
+    else if (!strcmp(a, "--high-scores") && i + 1 < argc) hiscore_path = argv[++i];
     else if (!strcmp(a, "--shot") && i + 1 < argc) shot_path = argv[++i];
     else if (!strcmp(a, "--dump-pictures") && i + 1 < argc) {
       static char dump_buf[512];
@@ -1124,6 +1136,14 @@ int main(int argc, char** argv) {
     }
     have_movie = true;
   }
+
+  // Not under a movie: what a movie shows should not depend on what was
+  // played yesterday, and its scores are not the player's. Unless a file is
+  // named, which is asking for it -- and is the only way to test this with a
+  // game over that was not played by hand.
+  static Hiscore hiscore;
+  hiscore_init(&hiscore, rom_path, hiscore_path);
+  hiscore.enabled = hiscore_on && (!have_movie || hiscore_path);
 
   snes_setPixelFormat(snes, ZAMN_PIXEL_FORMAT);
   // Before the window is sized, because the window is sized from the picture.
@@ -1720,6 +1740,7 @@ int main(int argc, char** argv) {
           fflush(stdout);
           running = false;
         }
+        hiscore_tick(&hiscore, snes->ram);
         poke_apply(&pokes, snes->ram, (int)frame);
         // The substitution seam. Identical to `snes_runFrame` when the mask
         // is clear; when it is not, a registered routine's entry PC hands the
@@ -1796,6 +1817,7 @@ int main(int argc, char** argv) {
             fflush(stdout);
             running = false;
           } else {
+            hiscore_tick(&hiscore, snes->ram);
             poke_apply(&pokes, snes->ram, (int)frame);
             emu.capture = true;
             SDL_SemPost(emu.go);

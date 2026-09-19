@@ -298,6 +298,35 @@ game over — `$80:8514` branches back to `$80:84B1`, so a game over puts you on
 your level rather than on level 1, which is what a flag for looking at level 30
 should do.
 
+### The top scores are kept, and `--no-high-scores`
+
+The cartridge has no save RAM (header type `$00`, size 0), so on the console
+the top scores are the ten developers' again at every power-on. The frontend
+keeps them: `<rom name>.hiscore` beside the ROM, 198 bytes, written the tick
+the game files a score and put back at the next launch.
+
+The table is work RAM and nothing else -- ten 15-byte rows of text at
+`$7E:2064` (name, `/` padding, the score's digits, a 0), ten 32-bit BCD scores
+at `$7E:20FA`, and a word at `$7E:2124` that `$80:85F6` tests on the way into
+the title: zero, and `$82:BB0D` copies the table out of the ROM and sets it.
+`$82:BBED` is the game over asking whether a score beats the tenth, `$82:BC41`
+the name entry and the insertion. `src/hiscore.h` works between ticks with the
+machine stopped and the game is not told: once the flag is up the saved table
+goes over the game's (after the game's own copy, never before it, and once a
+run), and from then on a table that differs from the file is written -- beside
+itself and moved over, so a killed run leaves the old table. Only what the
+game could have made is read or written: fourteen characters and a 0 a row,
+scores BCD and in order; a file that fails that is reported and left.
+
+Off under `-m` -- a movie's picture should not depend on yesterday's play, nor
+its scores join the player's -- unless `--high-scores <file>` names a file,
+which is the test: `-m movies/level1.zmv --poke 1900+:1CB8=0000` (health held at
+zero) with the score poked to 7,654,321 reaches the real game over, waits out
+the name entry and saves at about frame 5,000; the next launch prints
+`Top scores: restored ... (best 07654321)`. Holding health at zero on a movie
+that only sits on the menus kills the *attract mode's* player, and that game
+over (`$80:9B87`) goes to the top scores without asking `$82:BBED` anything.
+
 ### Twin-stick shooting, and `--no-twin-stick`
 
 ```
@@ -1364,6 +1393,26 @@ clip, and the exactness test holds). In 16:9 the mask's 256 columns now
 match the 4:3 picture pixel for pixel in purple, and the margins match the
 wrapped columns but for a world sprite's pixel, which rightly does not
 repeat.
+
+**Which sprites those are is read off the OAM, not assumed.** Bringing the
+radar up flashed the player's head 43 columns to his left for a frame, and
+now and then a marker 43 columns to the right of the box. The places are
+given out at line 0 from the sprite pass's table of which record owns which
+OAM entry, on the understanding that the table describes the OAM the vblank
+just DMA'd. It mostly does not: the game starts its next tick straight
+after that NMI, inside vblank, and by line 0 the pass has usually run
+*again* -- on 497 of the 585 level frames of the radar movie the table was
+a tick ahead of the screen. Nobody can tell while the same records keep the
+same entries. The radar's marker takes entry 0 and moves everything else
+along one, and is itself one entry multiplexed over the survivors, so for a
+frame the entry the table called the marker's was still a piece of the
+player on screen, pinned to the panel, and the marker was in an entry the
+table still called the world's. The pass now keeps its last eight tables
+with the bytes each wrote (`sprite_oam_history`, `src/port/oam.h`), and
+`ws_pass_on_screen` takes the newest whose owned entries are what the PPU
+holds; none matching is the newest, as before. `zamn_test_layers` reports
+how often it was not the newest and how often none matched (0 over the
+corpus in a level).
 
 **The Konami star.** The first thing on the screen is a star drawn across it
 with a line behind, and that is BG1: 16x16 tiles, a 64-column map, whose

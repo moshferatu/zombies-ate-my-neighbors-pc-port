@@ -3,7 +3,47 @@
 Cross-session status for the ZAMN native-port project. Update this whenever a
 milestone lands. See `PLAN.md` for the full multi-phase plan.
 
-## Current status: **Phase 3 underway** 🔨 (2026-09-17)
+## Current status: **Phase 3 underway** 🔨 (2026-09-19)
+
+### The top scores survive a relaunch (2026-09-18)
+
+Asked for in play-testing: scores were gone at every launch. That is the
+console's behaviour -- no save RAM in the header, table rebuilt from the ROM
+when `$7E:2124` is zero (`$80:85F6` -> `$82:BB0D`) -- and the frontend now does
+what the cartridge could not. `src/hiscore.h`: the 190 bytes at
+`$7E:2064-$2121` (ten text rows, ten BCD scores) are restored once the game
+has set its table up and written to `<rom name>.hiscore` whenever they change
+and are well-formed; `--no-high-scores`, `--high-scores <file>`, off under
+`-m` unless a file is named. Checked in `zamn.exe` itself: a real game over
+under `level1.zmv` with health held at zero and the score poked saves
+`///////7654321` at the head of the table, and a `--skip-intro` relaunch
+restores it; an untouched run writes no file; a junk file is reported and
+ignored. `zamn_test_layers --png` now writes work RAM beside video memory,
+which is how the table was found.
+
+- **A forced game over on a menu-sitting movie is the attract mode's.** A long
+  detour went on "the game never files the score": `go.zmv` never starts a
+  game, the demo does, and the demo's level loop (`$80:9B87` calls `$80:8516`
+  too) goes from its game over to the top scores without `$82:BBED`. A PC log
+  in the core for one build found it in one run; reading the routine did not.
+
+### The radar flashed the player's head beside him (16:9) (2026-09-19)
+
+Play-testing: the radar coming up flashed Zeke's head to the left of Zeke,
+and sometimes a yellow marker to the right of the box. 43 columns both ways,
+which is a sprite given the wrong place for a frame.
+`ws_place_screen_sprites` runs at line 0 and read `sprite_oam_owners` as the
+table of the OAM just DMA'd; the game starts its next tick inside vblank and
+the pass has usually run again by then (497 of 585 level frames on the radar
+movie), so the table was a tick ahead and it showed whenever entries changed
+hands -- the marker takes entry 0 and shifts the rest, and is multiplexed.
+Found with a throwaway check in the hook that printed owned entries whose
+PPU words differed from the shadow buffer: every one was the shadow a tick
+on. Fix: the pass keeps eight tables with their low-table bytes
+(`sprite_oam_history`), `ws_pass_on_screen` picks the newest that matches the
+PPU's OAM. Old against new over frames 1803-1840 of a movie that opens the
+radar in play: one frame differs, a piece of a zombie moved 43 columns.
+All movies 0 differing, 0 frames with no matching pass.
 
 ### Smoothing at any refresh rate, and the game's own uneven steps (2026-09-17)
 
