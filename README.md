@@ -86,6 +86,10 @@ SDL2 is fetched and built automatically the first time.
 ```
 build\zamn.exe "Zombies Ate My Neighbors.sfc"
 ```
+The ROM's path, how the picture is shown and every key and pad binding can be
+set once in **`zamn.ini`** -- see [the settings file](#the-settings-file-zamnini)
+below. The controls that follow are the defaults.
+
 Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=Select · Esc=Quit
 · **F1 = toggle native substitution** · **F2 = cycle scaling**
 · **F3 = toggle aspect** · **F4 = cycle widescreen** · **F5 = quick save**
@@ -94,8 +98,9 @@ Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=
 **Game controllers** work too, and are the way to actually play it: any pad SDL
 recognises — which is most of them, and a `gamecontrollerdb.txt` beside the
 executable covers the rest — hot-pluggable, with the first two taking the two
-SNES ports. So two pads is two players, and a pad plus the keyboard is also two
-players. Face buttons are positional: the bottom one is B, the right one A, the
+SNES ports. So two pads is two players. The keyboard plays port 1 alongside
+the first pad, and port 2 as well once `[keyboard player 2]` in `zamn.ini` has
+keys in it, which makes a pad and a keyboard two players. Face buttons are positional: the bottom one is B, the right one A, the
 left one Y, the top one X. Worth knowing before you start rather than after,
 because it is not where a modern game would put it: **Y is this game's fire
 button**, and it is held rather than tapped — B and A cycle weapons and items, X
@@ -128,6 +133,91 @@ window at N times the picture (1–8) and starts in it; and `--frames N`, becaus
 batch run is a smoke test or a throughput measurement and has no business
 seizing the display of whoever started it. Whichever way, `--scale` is also the
 size F11 comes back to.
+
+### The settings file: `zamn.ini`
+
+Every setting had a flag first, and a flag is the wrong place for the ones a
+player sets once. `src/config.h` reads them from a file, and **an option on
+the command line beats the file**: the file is how this player plays, an
+option is how this run differs.
+
+It is `--config <file>` if one is named, otherwise `zamn.ini` in the
+directory the game is started from, otherwise `zamn.ini` beside the
+executable. When there is none, the first start writes one where it was
+started, with every setting at its default and a comment on each (a movie or
+a `--frames` run writes nothing; `--no-config` reads and writes nothing). A
+path in the file that is not absolute is taken from the file's directory.
+Nothing in the file can stop the game starting: a line that cannot be read is
+reported with its line number and the setting keeps its default. `/zamn.ini`
+is in `.gitignore`, since it names the player's ROM.
+
+| Section | Settings |
+|---|---|
+| `[game]` | `rom`, `skip_intro`, `level` (off, 0-55), `hitbox` (100-200), `blood` (purple, red), `high_scores`, `high_scores_file` |
+| `[video]` | `fullscreen`, `widescreen` (off, 16:9, 16:10), `aspect` (4:3, square), `filter` (sharp, integer, linear), `window_scale` (1-8), `smoothing`, `refresh` (auto, Hz) |
+| `[audio]` | `enabled`, `volume` (0-100) |
+| `[controller]` | `enabled`, `twin_stick`, `deadzone` (5-90, percent), `move_stick` and `aim_stick` (left, right, off) |
+| `[controller buttons]` | the twelve SNES buttons, as lists of pad inputs, for both pads |
+| `[controller hotkeys]` | what the frontend does, from the pad; nothing is bound by default |
+| `[keyboard]`, `[keyboard player 2]` | the twelve SNES buttons, as lists of keys; player 2's are unbound by default |
+| `[hotkeys]` | `quit`, `toggle_native`, `cycle_filter`, `toggle_aspect`, `cycle_widescreen`, `quick_save`, `quick_load`, `toggle_smoothing`, `fullscreen` |
+
+A binding is a list of up to four, separated by commas, and nothing after the
+`=` binds nothing:
+
+```ini
+[keyboard]
+y = Space, Left Ctrl
+
+[controller buttons]
+y = west, r2
+
+[controller hotkeys]
+quick_save = paddle1
+quick_load = paddle2
+```
+
+Keys are named as SDL names them, which is the legend on the key (`A`, `F5`,
+`Up`, `Return`, `Left Ctrl`, `Keypad 1`), with `Enter`, `Esc`, `RShift` and
+the like read too, and `Comma`, `Semicolon` and `Hash` for the three the format
+uses itself -- which is also why there are no comments at the end of a line.
+Pad inputs are named by position, since that is what is the same from pad to
+pad: `south east west north`, `l1 r1` (shoulders), `l2 r2` (triggers), `l3 r3`
+(stick clicks), `dpup dpdown dpleft dpright`, `start`, `select`, `guide`,
+`touchpad`, `misc1`, `paddle1`-`paddle4`. SDL's own names and the usual others
+(`cross`, `lb`, `rt`, `share`, `options`) are read as well. A key bound twice
+does the first thing only, a hotkey before a button, and the game says so as
+it starts. The banner at startup lists what is actually bound.
+
+Three of the file's settings are not applied under `-m`: `skip_intro`, `level`
+and `hitbox`. A movie was recorded from reset against the game as it shipped.
+The options that say no to the file for one run are `--no-skip-intro`,
+`--smooth`, `--no-red-blood`, `--pads`, `--audio` and the existing
+`--windowed`, `--widescreen off` and the rest; `--volume N` is new with the
+setting.
+
+What changed underneath: the pad's button `switch` became `PadMap`, a table
+`pad_poll` reads, whose default is built from the old `switch` so that an
+untouched table plays exactly as before; the triggers are inputs in it like any
+other; a pad hotkey is reported on the press and not while held. The
+keyboard's `switch` became `Config.key`, and what is held is tracked a bit per
+key rather than per button, so Select on two keys is held until both are let
+go (it used to be let go with the first). The function keys became named
+actions, noted in the event loop and done once below it, which is what lets a
+pad button do them too.
+
+Checked by `zamn_test_config`: the file that is written reads back as exactly
+the defaults (so the two cannot drift), every setting sets, 19 bad lines
+are each reported and change nothing, lists and unbinding and the three
+worded keys, keys bound twice, the two-keys-one-button hold, and paths.
+`zamn_test_pad` gained a rebound table on its virtual controller: an unbound
+button, fire on a trigger, the sticks exchanged and turned off, a wider
+deadzone, and an action that fires once per press across two overlapping
+inputs. And through the real event loop with `--key-at frame:key`, which
+puts key events on SDL's queue: with `start = T` in the file, T starts the
+game from the title and gives the same picture at frame 900 as Return does
+with the defaults, Return then does nothing, and a hotkey moved to F8 works
+there and no longer on F3.
 
 ### Skipping the intro
 
@@ -1823,6 +1913,9 @@ src/present.h         ...and the SDL that carries that out
 src/pad.h             Game controllers: the deadzone, the eight-way snap and the
                               button table — the half of it that decides how the
                               game feels, and is arithmetic
+src/config.h          The player's `zamn.ini`: the settings that had only flags,
+                              and every key and pad binding; the file it writes
+                              when there is none
 src/twinstick.h       Twin-stick shooting: what the right stick becomes — an aim
                               direction, and nine bytes of 65816 at `$80:D250`
 src/pace.h            Frame cadence: measuring how evenly frames arrive, and
@@ -1884,6 +1977,8 @@ tools/test_pad.c      Sweeps the circle a tenth of a degree at a time, and drive
                               the device layer through a virtual controller — the
                               only way to check a quit chord or a pad unplugged
                               mid-press
+tools/test_config.c   Holds `src/config.h` to its header: above all that the
+                              file it writes reads back as exactly the defaults
 tools/test_layers.c   Runs a movie and asks, on every frame, whether the draw
                               list drawn unmoved is the frame the PPU drew, and
                               if not why -- so the fallback rate is a number.

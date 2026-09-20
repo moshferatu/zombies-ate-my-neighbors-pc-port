@@ -256,6 +256,19 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
     target_compile_definitions(zamn_test_pad PRIVATE _CRT_SECURE_NO_WARNINGS)
   endif()
 
+  # `src/config.h` is the player's `zamn.ini`: settings and every binding. It is
+  # parsing, and this holds it to the one thing parsing must not get wrong --
+  # the file the frontend writes reads back as exactly the defaults -- and to
+  # the rest of what its header says. SDL for the names of keys and buttons
+  # only; no subsystem is started. Give it a scratch path and it also writes
+  # the file and reads it back through the file system.
+  add_executable(zamn_test_config tools/test_config.c)
+  target_link_libraries(zamn_test_config PRIVATE SDL2::SDL2 SDL2::SDL2main)
+  target_include_directories(zamn_test_config PRIVATE src)
+  if(MSVC)
+    target_compile_definitions(zamn_test_config PRIVATE _CRT_SECURE_NO_WARNINGS)
+  endif()
+
   # SDL2 builds as a DLL; place it next to the executable so zamn.exe runs.
   if(TARGET SDL2::SDL2)
     add_custom_command(TARGET zamn POST_BUILD

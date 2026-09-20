@@ -416,6 +416,96 @@ static void test_devices(void) {
   move(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, TRIGGER_RELEASED);
   if (poll1(&s, 0) != 0) fail("releasing the triggers left %03x held", poll1(&s, 0));
 
+  // A table that is not the default one, which is what a player's `zamn.ini`
+  // makes of `PadSet.map`. Everything above ran on the table `pad_init` built
+  // from `pad_button`, so it has already shown that the default plays as it did
+  // before there was a table; this is the other half, that the table is what
+  // is read and not decoration.
+  {
+    const PadMap was = s.map;
+    // Fire on the right trigger and nowhere else; the bottom face button does
+    // nothing; the sticks change places; quick save (action 5, say) on the left
+    // stick's click and on the left trigger.
+    pad_map_clear(s.map.game[BTN_Y]);
+    pad_map_add(s.map.game[BTN_Y], PAD_IN_RTRIGGER);
+    pad_map_clear(s.map.game[BTN_R]);
+    pad_map_clear(s.map.game[BTN_B]);
+    pad_map_clear(s.map.game[BTN_L]);
+    s.map.move_stick = PAD_STICK_RIGHT;
+    s.map.aim_stick = PAD_STICK_LEFT;
+    pad_map_add(s.map.hot[5], SDL_CONTROLLER_BUTTON_LEFTSTICK);
+    pad_map_add(s.map.hot[5], PAD_IN_LTRIGGER);
+    if (pad_map_add(s.map.hot[5], PAD_IN_LTRIGGER)) fail("an input was added to a list twice");
+
+    press(gc, SDL_CONTROLLER_BUTTON_X, 1);
+    if (poll1(&s, 0) != 0) fail("the left face button still fires after being unbound: %03x", poll1(&s, 0));
+    press(gc, SDL_CONTROLLER_BUTTON_X, 0);
+    press(gc, SDL_CONTROLLER_BUTTON_A, 1);
+    if (poll1(&s, 0) != 0) fail("an unbound button held %03x", poll1(&s, 0));
+    press(gc, SDL_CONTROLLER_BUTTON_A, 0);
+    move(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 30000);
+    if (poll1(&s, 0) != (1u << BTN_Y)) fail("the right trigger, bound to Y, gave %03x", poll1(&s, 0));
+    move(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, TRIGGER_RELEASED);
+
+    uint16_t aim[PAD_MAX];
+    move(gc, SDL_CONTROLLER_AXIS_RIGHTX, 30000);
+    pad_aim(&s, aim);
+    if (poll1(&s, 0) != (1u << BTN_RIGHT) || aim[0] != 0)
+      fail("the right stick, steering now, walked %03x and aimed %03x", poll1(&s, 0), aim[0]);
+    move(gc, SDL_CONTROLLER_AXIS_RIGHTX, 0);
+    move(gc, SDL_CONTROLLER_AXIS_LEFTY, -30000);
+    pad_aim(&s, aim);
+    if (poll1(&s, 0) != 0 || aim[0] != (1u << BTN_UP))
+      fail("the left stick, aiming now, walked %03x and aimed %03x", poll1(&s, 0), aim[0]);
+    s.map.aim_stick = PAD_STICK_NONE;
+    pad_aim(&s, aim);
+    if (aim[0] != 0) fail("a stick that is off aimed %03x", aim[0]);
+    move(gc, SDL_CONTROLLER_AXIS_LEFTY, 0);
+
+    // The deadzone is the table's: 20,000 is well out at the default gate and
+    // is nothing at a gate of 24,000.
+    s.map.enter = 24000;
+    s.map.leave = 18000;
+    move(gc, SDL_CONTROLLER_AXIS_RIGHTX, 20000);
+    if (poll1(&s, 0) != 0) fail("a stick inside a wide deadzone walked %03x", poll1(&s, 0));
+    move(gc, SDL_CONTROLLER_AXIS_RIGHTX, 26000);
+    if (poll1(&s, 0) != (1u << BTN_RIGHT)) fail("a stick outside a wide deadzone gave %03x", poll1(&s, 0));
+    move(gc, SDL_CONTROLLER_AXIS_RIGHTX, 0);
+    poll1(&s, 0);
+
+    // An action is a press, not a hold: once when it goes down, not again
+    // while it stays down, again after it has come up; and two inputs of one
+    // action overlapping are one press.
+    s.hot_pressed = 0;
+    poll1(&s, 0);
+    if (s.hot_pressed) fail("an action was pressed by nobody: %x", s.hot_pressed);
+    press(gc, SDL_CONTROLLER_BUTTON_LEFTSTICK, 1);
+    poll1(&s, 0);
+    if (s.hot_pressed != (1u << 5)) fail("the action's button gave %x", s.hot_pressed);
+    s.hot_pressed = 0;
+    for (int i = 0; i < 10; i++) poll1(&s, 0);
+    if (s.hot_pressed) fail("a held action repeated: %x", s.hot_pressed);
+    move(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT, 30000);
+    poll1(&s, 0);
+    if (s.hot_pressed) fail("a second input of a held action pressed it again: %x", s.hot_pressed);
+    if (poll1(&s, 0) != 0) fail("an action's input reached the game: %03x", poll1(&s, 0));
+    press(gc, SDL_CONTROLLER_BUTTON_LEFTSTICK, 0);
+    move(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT, TRIGGER_RELEASED);
+    poll1(&s, 0);
+    move(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT, 30000);
+    poll1(&s, 0);
+    if (s.hot_pressed != (1u << 5)) fail("the action's trigger, pressed again, gave %x", s.hot_pressed);
+    move(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT, TRIGGER_RELEASED);
+    poll1(&s, 0);
+    s.hot_pressed = 0;
+
+    s.map = was;
+    press(gc, SDL_CONTROLLER_BUTTON_X, 1);
+    if (poll1(&s, 0) != (1u << BTN_Y)) fail("the default table, put back, gave %03x", poll1(&s, 0));
+    press(gc, SDL_CONTROLLER_BUTTON_X, 0);
+    if (poll1(&s, 0) != 0 || s.hot_pressed) fail("the default table has an action bound");
+  }
+
   // The quit chord. Three things have to be true and each of them is a way the
   // gesture could be wrong rather than merely absent: it must not fire early, it
   // must not let Start or Select through to the game while it is counting, and

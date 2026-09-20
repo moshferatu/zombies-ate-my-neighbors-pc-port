@@ -49,6 +49,11 @@
 //             [--dump-pictures prefix,frame]
 //             [--no-high-scores] [--high-scores file] [--hitbox percent]
 //             [--red-blood] [--quick-at frame:save|load[:file]]...
+//             [--config file] [--no-config] [--volume N]
+//             [--key-at frame:key[:frames]]...
+//
+// The settings a player sets once, and every key and pad binding, are read
+// from `zamn.ini` (`src/config.h`); an option here beats the file.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -79,6 +84,7 @@
 #include "skipintro.h"
 #include "maskline.h"
 #include "quicksave.h"
+#include "config.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -146,32 +152,15 @@ static int fb_w = 512;
 // does, but a shorter buffer still means a shallower queue and lower latency.
 #define AUDIO_DEVICE_SAMPLES 512
 
-// Keyboard -> SNES button bit. The `BTN_*` names are `analysis/movie.h`'s, which
-// is where they belong now that this file replays movies too: one definition of
-// the controller's bit order, shared by everything that drives one — the movie
-// reader, `src/pad.h`, and this.
+// The player's settings and bindings, from `zamn.ini` or the defaults: see
+// `src/config.h`. The keyboard's table was here once, as a `switch`; it is
+// `Config.key` now, the `BTN_*` names it is indexed by are still
+// `analysis/movie.h`'s, and it has a second port's worth that is empty unless
+// the player fills it.
 //
-// The keyboard drives port 1 only. Port 2 is reachable from a movie or from a
-// second pad, and a second set of keys for it would be a set of keys nobody has
-// asked for on a keyboard two people cannot comfortably share.
-static int key_to_button(SDL_Keycode k) {
-  switch (k) {
-    case SDLK_UP:        return BTN_UP;
-    case SDLK_DOWN:      return BTN_DOWN;
-    case SDLK_LEFT:      return BTN_LEFT;
-    case SDLK_RIGHT:     return BTN_RIGHT;
-    case SDLK_z:         return BTN_B;
-    case SDLK_x:         return BTN_A;
-    case SDLK_a:         return BTN_Y;
-    case SDLK_s:         return BTN_X;
-    case SDLK_q:         return BTN_L;
-    case SDLK_w:         return BTN_R;
-    case SDLK_RETURN:    return BTN_START;
-    case SDLK_RSHIFT:    return BTN_SELECT;
-    case SDLK_BACKSPACE: return BTN_SELECT;
-    default:             return -1;
-  }
-}
+// File-wide because the intro skip reads the quit key out of it as well as the
+// main loop, and static because it carries two paths and every table.
+static Config g_cfg;
 
 static uint8_t* read_file(const char* path, int* out_len) {
   FILE* f = fopen(path, "rb");
@@ -749,7 +738,7 @@ static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads,
     cosim_frame(cosim);
     // Nothing is drawn — the whole point is not to see it — but the window
     // still has to answer the compositor, or a few seconds of not pumping gets
-    // the process marked unresponsive and greyed out. Esc still aborts, which
+    // the process marked unresponsive and greyed out. The quit key still aborts, which
     // matters most on a machine slow enough for this to take a while.
     if ((f & 63) == 0) {
       SDL_Event e;
@@ -759,7 +748,8 @@ static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads,
         // queue and never seen again.
         pad_event(pads, &e);
         if (e.type == SDL_QUIT ||
-            (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_ESCAPE)) {
+            (e.type == SDL_KEYDOWN &&
+             config_hotkey_of(&g_cfg, e.key.keysym.sym) == ACT_QUIT)) {
           snes_setButtonState(snes, 1, BTN_START, false);
           return f;
         }
@@ -789,16 +779,16 @@ static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads,
 // from and the simpler counter is also the more faithful one — keying off
 // `snes->frames` put this frontend one frame away from headless at 2400.)
 static bool tick_input(Snes* snes, Movie* movie, bool have_movie, long frame,
-                       PadSet* pads, uint16_t key_held, bool twin_stick,
-                       int* quit_chord) {
+                       PadSet* pads, const uint16_t key_held[MOVIE_PORTS],
+                       bool twin_stick, int* quit_chord) {
   if (have_movie) {
     movie_apply(movie, snes, (int)frame);
     return true;
   }
   // Both controllers, from both kinds of input, written once. The keyboard
-  // is port 1 only; a pad takes the lowest free port, so one pad plays
-  // alone, two play together, and a pad plus the keyboard is a two-player
-  // game with one of each. Writing the whole 12-bit state every frame — the
+  // is port 1 unless the player has bound keys for port 2 as well; a pad takes
+  // the lowest free port, so one pad plays alone, two play together, and a
+  // pad plus the keyboard share port 1. Writing the whole 12-bit state every frame — the
   // same thing `movie_apply` does — is what makes an unplugged pad release
   // its buttons rather than leave them held.
   uint16_t held[PAD_MAX];
@@ -808,7 +798,7 @@ static bool tick_input(Snes* snes, Movie* movie, bool have_movie, long frame,
   // is folded in, so the chord is a pad gesture and Enter+RShift is not one.
   *quit_chord = pad_quit(pads, held);
   const bool keep_going = *quit_chord < PAD_QUIT_FRAMES;
-  held[0] |= key_held;
+  for (int p = 0; p < MOVIE_PORTS; p++) held[p] |= key_held[p];
   // The right stick, unless it was turned off: an aim direction into the
   // cartridge for the stub at `$80:D250` to pick up, and `Y` — this game's
   // fire button — pressed for as long as the stick is out. Written before
@@ -852,6 +842,14 @@ static void usage(void) {
   printf(
     "zamn — Zombies Ate My Neighbors, with the C port substituted in\n\n"
     "  zamn [rom.sfc] [options]\n\n"
+    "  --config <file> Read the settings and the bindings from this file and not\n"
+    "                  from zamn.ini, which is looked for here and then beside\n"
+    "                  the executable, and written with the defaults when there\n"
+    "                  is none. An option beats the file. See src/config.h.\n"
+    "  --no-config     Read no file and write none: the defaults and the options.\n"
+    "  --no-skip-intro --smooth --no-red-blood --pads --audio\n"
+    "                  No to what the file says, for this run.\n"
+    "  --volume <N>    0 to 100, default 100.\n"
     "  --stock         Do not substitute; run the ROM under the core, as the\n"
     "                  Phase 0b baseline did. F1 still toggles at runtime.\n"
     "  -r <routine>    Substitute only this one. Repeatable; default is every\n"
@@ -917,6 +915,10 @@ static void usage(void) {
     "  --quick-at <frame:save|load[:file]>\n"
     "                  F5 or F9 from the command line, at a frame, to a file of\n"
     "                  its own if one is named. For testing; up to 8.\n"
+    "  --key-at <frame:key[:frames]>\n"
+    "                  A key from the command line, down at a frame and up 8\n"
+    "                  frames later unless said, through SDL's event queue and\n"
+    "                  so through the bindings. For testing; up to 64.\n"
     "  --red-blood     The game over's curtain of purple slime is red, and blood,\n"
     "                  as it is on the Mega Drive. Nothing else changes colour.\n"
     "  --hitbox <pct>  How far a player reaches for a pickup or a neighbour, and\n"
@@ -946,7 +948,9 @@ static void usage(void) {
     "                            pixels, no shimmer, and the window is filled.\n"
     "                    integer only whole multiples; letterbox the remainder.\n"
     "                    linear  one bilinear step from 512x480. The blurry one.\n\n"
-    "Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
+    "Controls, unless zamn.ini binds them otherwise, which it can for every one\n"
+    "of them, pad inputs included:\n"
+    "          Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
     "          F1 = toggle native substitution   F2 = cycle scaling\n"
     "          F3 = toggle aspect ratio          F4 = cycle widescreen\n"
     "          F5 = quick save                   F9 = quick load\n"
@@ -967,6 +971,26 @@ static void usage(void) {
 int main(int argc, char** argv) {
   attach_parent_console();
 
+  // The player's settings (`src/config.h`), read before the options so that
+  // every option below starts from what the file says and overrules it.
+  const char* config_asked = NULL;
+  bool config_off = false, config_found = false;
+  for (int i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "--no-config")) config_off = true;
+    else if (!strcmp(argv[i], "--config") && i + 1 < argc) config_asked = argv[++i];
+  }
+  config_defaults(&g_cfg);
+  {
+    char config_path[CONFIG_PATH_MAX];
+    if (!config_off && config_locate(config_asked, config_path, sizeof config_path)) {
+      config_found = config_load(&g_cfg, config_path);
+      if (!config_found) {
+        fprintf(stderr, "error: cannot read the config '%s'\n", config_path);
+        return 1;
+      }
+    }
+  }
+
   const char* rom_path = NULL;
   const char* movie_path = NULL;
   const char* shot_path = NULL;
@@ -984,12 +1008,18 @@ int main(int argc, char** argv) {
   // save without a keyboard, and the one way to it under a movie.
   struct { long frame; bool load; const char* file; } quick_at[8];
   int quick_ats = 0;
+  // `--key-at frame:key[:frames]`: a key pressed by the command line at a
+  // frame and let go some frames later (8 unless said), put on SDL's own event
+  // queue -- so it goes through everything a real key does: the event loop,
+  // the bindings, the actions. How the bindings are tested without a hand.
+  struct { long frame, hold; SDL_Keycode key; int state; } key_at[64];
+  int key_ats = 0;
   // The top scores, kept from run to run -- see hiscore.h.
   // `--hitbox`: see `actor_overlap_reach` in port/oam.h. 0 is "not said".
   int hitbox_pct = 0;
   // `--red-blood`: see `src/blood.h`.
-  bool red_blood = false;
-  bool hiscore_on = true;
+  bool red_blood = g_cfg.red_blood;
+  bool hiscore_on = g_cfg.high_scores;
   const char* hiscore_path = NULL;
   // Room for every routine in the registry and then some. It was 32, which
   // was more than the registry held when it was written and is not any more:
@@ -999,33 +1029,36 @@ int main(int argc, char** argv) {
   const char* only[128];
   int only_count = 0;
   long frame_limit = 0;
-  bool native = true, want_audio = true, want_pads = true;
-  ScaleMode scale_mode = SCALE_SHARP;
+  bool native = true, want_audio = g_cfg.audio, want_pads = g_cfg.pads;
+  int volume = g_cfg.volume;
+  ScaleMode scale_mode = g_cfg.filter;
   // 4:3 by default, because that is the shape the game was composed for and the
   // shape every emulator shows it in. Square pixels are 8:7 — visibly narrow,
   // and about 11% less screen.
-  AspectMode aspect_mode = ASPECT_43;
+  AspectMode aspect_mode = g_cfg.aspect;
   // Off by default. Widescreen is the PPU drawing columns the console never
   // drew, and however good it looks it is not what the game is — so it is asked
   // for, and every measurement this project makes is made without it.
-  WideMode wide = WIDE_OFF;
-  int window_scale = 1;
+  WideMode wide = g_cfg.widescreen;
+  int window_scale = g_cfg.window_scale;
   // Fullscreen is what playing it looks like, so it is the default and the flags
   // below are the ways of saying "not now". `--windowed` is the explicit one;
   // `--scale N` is asking for a window of a particular size, which is not a
   // request one can honour fullscreen; and `--frames N` is a batch run — a smoke
   // test or a throughput measurement — which has no business seizing the display
   // of whoever started it.
-  bool fullscreen = true;
+  bool fullscreen = g_cfg.fullscreen;
   bool fullscreen_asked = false;
-  int refresh_asked = 0;
+  int refresh_asked = g_cfg.refresh;
   bool frames_given = false;
   // `--frames N` means "run N and stop", and it turns pacing off because a
   // throughput measurement wants to finish rather than to be watched. Those are
   // two decisions in one flag, and measuring the *cadence* needs the first
   // without the second: a bounded run, at real speed, that exits with a report.
   bool force_pacing = false;
-  bool skip_the_intro = false;
+  // The file's `skip_intro` is looked at after the options, because under a
+  // movie it is ignored where the option is an error.
+  bool skip_the_intro = false, skip_intro_refused = false;
   // -1, not 0: 0 is a level — the bonus room the BCDF password loads — so it
   // cannot double as "not asked for". Without the flag the ROM is left exactly
   // as it came off disk.
@@ -1038,7 +1071,7 @@ int main(int argc, char** argv) {
   // same PNG with it and without — and the keyboard never reaches it. So the
   // player who does not want it pays nothing and need say nothing, and the flag
   // is the way to say no.
-  bool twin_stick = true;
+  bool twin_stick = g_cfg.twin_stick;
   // ...but `--twin-stick` still parses, and it is not a synonym. Asking for it
   // makes a cartridge that cannot take the patch an error; the default settles
   // for a warning, because a default has no business refusing to start a ROM it
@@ -1048,16 +1081,27 @@ int main(int argc, char** argv) {
   // is shown and not what the game does, the machine runs at its own rate to
   // the tick, and it costs nothing on a display that cannot use it. The flag
   // is for the player who would rather see each frame the moment it exists.
-  bool smooth = true;
+  bool smooth = g_cfg.smoothing;
   bool even = true;
   const char* trace_frames_path = NULL;
 
   for (int i = 1; i < argc; i++) {
     const char* a = argv[i];
     if (!strcmp(a, "--help") || !strcmp(a, "-h")) { usage(); return 0; }
+    else if (!strcmp(a, "--no-config")) {}
+    else if (!strcmp(a, "--config") && i + 1 < argc) i++;  // both read above
     else if (!strcmp(a, "--stock")) native = false;
     else if (!strcmp(a, "--no-audio")) want_audio = false;
+    else if (!strcmp(a, "--audio")) want_audio = true;
+    else if (!strcmp(a, "--volume") && i + 1 < argc) {
+      if (!config_int(argv[++i], 0, 100, &volume)) {
+        fprintf(stderr, "error: --volume wants 0..100, got '%s'\n\n", argv[i]);
+        usage();
+        return 2;
+      }
+    }
     else if (!strcmp(a, "--no-pads")) want_pads = false;
+    else if (!strcmp(a, "--pads")) want_pads = true;
     else if (!strcmp(a, "--windowed")) fullscreen = false;
     // ...and the way to measure a bounded run on the screen as it is played:
     // `--frames` and `--scale` say windowed, and this, given after them, says
@@ -1065,10 +1109,12 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--fullscreen")) fullscreen_asked = true;
     else if (!strcmp(a, "--refresh") && i + 1 < argc) refresh_asked = atoi(argv[++i]);
     else if (!strcmp(a, "--skip-intro")) skip_the_intro = true;
+    else if (!strcmp(a, "--no-skip-intro")) skip_intro_refused = true;
     else if (!strcmp(a, "--paced")) force_pacing = true;
     else if (!strcmp(a, "--no-twin-stick")) twin_stick = false;
     else if (!strcmp(a, "--twin-stick")) twin_stick = twin_asked = true;
     else if (!strcmp(a, "--no-smooth")) smooth = false;
+    else if (!strcmp(a, "--smooth")) smooth = true;
     else if (!strcmp(a, "--no-even")) even = false;
     else if (!strcmp(a, "--trace-frames") && i + 1 < argc) trace_frames_path = argv[++i];
     else if (!strcmp(a, "-r") && i + 1 < argc) {
@@ -1146,6 +1192,27 @@ int main(int argc, char** argv) {
       quick_at[quick_ats].file = end[5] == ':' ? end + 6 : NULL;
       quick_ats++;
     }
+    else if (!strcmp(a, "--key-at") && i + 1 < argc) {
+      char spec[96];
+      snprintf(spec, sizeof spec, "%s", argv[++i]);
+      char* colon = strchr(spec, ':');
+      char* colon2 = colon ? strchr(colon + 1, ':') : NULL;
+      if (colon) *colon = 0;
+      if (colon2) *colon2 = 0;
+      const long at = atol(spec), hold = colon2 ? atol(colon2 + 1) : 8;
+      const SDL_Keycode k = colon ? config_key(colon + 1) : SDLK_UNKNOWN;
+      if (key_ats == (int)(sizeof key_at / sizeof *key_at) || at <= 0 || hold <= 0 || k == SDLK_UNKNOWN) {
+        fprintf(stderr, "error: --key-at wants frame:key or frame:key:frames (%d at most), got '%s'\n\n",
+                (int)(sizeof key_at / sizeof *key_at), argv[i]);
+        usage();
+        return 2;
+      }
+      key_at[key_ats].frame = at;
+      key_at[key_ats].hold = hold;
+      key_at[key_ats].key = k;
+      key_at[key_ats].state = 0;
+      key_ats++;
+    }
     else if (!strcmp(a, "--hitbox") && i + 1 < argc) {
       char* end = NULL;
       const long v = strtol(argv[++i], &end, 10);
@@ -1157,6 +1224,7 @@ int main(int argc, char** argv) {
       hitbox_pct = (int)v;
     }
     else if (!strcmp(a, "--red-blood")) red_blood = true;
+    else if (!strcmp(a, "--no-red-blood")) red_blood = false;
     else if (!strcmp(a, "--no-high-scores")) hiscore_on = false;
     else if (!strcmp(a, "--high-scores") && i + 1 < argc) hiscore_path = argv[++i];
     else if (!strcmp(a, "--shot") && i + 1 < argc) shot_path = argv[++i];
@@ -1184,9 +1252,39 @@ int main(int argc, char** argv) {
     else if (!rom_path) rom_path = a;
     else { fprintf(stderr, "error: unexpected argument '%s'\n\n", a); usage(); return 2; }
   }  if (fullscreen_asked) fullscreen = true;
-  (void)frames_given;
 
-  if (!rom_path) rom_path = "Zombies Ate My Neighbors.sfc";
+  // What the file says and no option did. Paths out of the file are taken
+  // from the file's directory. Three of its settings are for playing and not
+  // for a movie, which was recorded against the game as it shipped and from
+  // reset: the intro skip, the starting level and (below) the hitbox; and its
+  // top scores file is not a way to ask for top scores under one.
+  static char rom_from_config[CONFIG_PATH_MAX], hiscore_from_config[CONFIG_PATH_MAX];
+  if (!rom_path) {
+    config_resolve(&g_cfg, g_cfg.rom, rom_from_config, sizeof rom_from_config);
+    rom_path = rom_from_config;
+  }
+  if (!movie_path) {
+    if (g_cfg.skip_intro && !skip_intro_refused) skip_the_intro = true;
+    if (start_level < 0) start_level = g_cfg.level;
+    if (!hiscore_path && g_cfg.high_scores_file[0]) {
+      config_resolve(&g_cfg, g_cfg.high_scores_file, hiscore_from_config, sizeof hiscore_from_config);
+      hiscore_path = hiscore_from_config;
+    }
+  }
+  if (skip_intro_refused) skip_the_intro = false;
+  // No file anywhere: write the one to edit. Not for a test -- a movie or a
+  // bounded run -- which should leave nothing behind it.
+  if (config_found)
+    printf("Config: %s%s\n", g_cfg.path,
+           g_cfg.warnings ? " (with the lines above left at their defaults)" : "");
+  else if (config_off)
+    printf("Config: none read (--no-config)\n");
+  else if (movie_path || frames_given)
+    printf("Config: none found; the defaults\n");
+  else if (config_write_default(CONFIG_FILE))
+    printf("Config: none found, so %s was written here with the defaults. Edit it to taste.\n", CONFIG_FILE);
+  else
+    printf("Config: none found, and %s could not be written here; the defaults\n", CONFIG_FILE);
   // A movie is indexed from reset and carries its own boot half — the same
   // Start mashing `skip_intro` performs — so doing both would run the logos
   // twice and land the movie 1150 frames into a game it thinks has not begun.
@@ -1199,7 +1297,12 @@ int main(int argc, char** argv) {
 
   int rom_len = 0;
   uint8_t* rom = read_file(rom_path, &rom_len);
-  if (!rom) { fprintf(stderr, "error: cannot read ROM '%s'\n", rom_path); return 1; }
+  if (!rom) {
+    fprintf(stderr, "error: cannot read ROM '%s'\n"
+                    "       Name it on the command line, or as rom = in %s.\n",
+            rom_path, g_cfg.path[0] ? g_cfg.path : CONFIG_FILE);
+    return 1;
+  }
 
   Snes* snes = snes_init();
   if (!snes_loadRom(snes, rom, rom_len)) {
@@ -1277,7 +1380,7 @@ int main(int argc, char** argv) {
   // A longer reach for pickups, rescues and the player's weapons. Not under a
   // movie unless asked for: every movie there is was made at the game's own
   // reach, and picks things up a step sooner at any other.
-  if (hitbox_pct == 0) hitbox_pct = have_movie ? 100 : 150;
+  if (hitbox_pct == 0) hitbox_pct = have_movie ? 100 : g_cfg.hitbox;
   actor_overlap_reach = (OVERLAP_REACH_STOCK * hitbox_pct + 50) / 100;
   if (!native && hitbox_pct != 100)
     printf("note : --stock runs the ROM's own collision pass; --hitbox has no effect.\n");
@@ -1489,16 +1592,8 @@ int main(int argc, char** argv) {
   Pacer pacer;
   pacer_init(&pacer, target_frame_ms);
 
-  printf("Controls: Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
-         "          A pad: bottom=B right=A left=Y (fire) top=X, shoulders and\n"
-         "          triggers=L/R, left stick or D-pad steers, Start+Select\n"
-         "          held for a second quits.\n"
-         "          F1=toggle native substitution  F2=cycle scaling\n"
-         "          F3=toggle aspect ratio         F4=cycle widescreen\n"
-         "          F5=quick save                  F9=quick load\n"
-         "          F6=toggle smoothing\n"
-         "          F11 or Alt+Enter=fullscreen\n"
-         "          Esc=Quit\n");
+  // What is bound, which is the player's to say now: `src/config.h`.
+  config_print(&g_cfg);
   {
     // What the picture is actually being drawn into, which fullscreen makes a
     // question worth answering: the display's size, not the window size asked
@@ -1532,10 +1627,12 @@ int main(int argc, char** argv) {
   // would have nothing to do but be listed.
   PadSet pads;
   memset(&pads, 0, sizeof pads);
-  if (!want_pads) printf("Controllers: disabled (--no-pads)\n");
+  if (!want_pads) printf("Controllers: disabled (--no-pads, or the config)\n");
   else if (have_movie) printf("Controllers: not read (a movie is driving)\n");
   else if (pad_init(&pads) && pad_count(&pads) == 0)
     printf("Controllers: none attached — keyboard, or plug one in at any time\n");
+  // The player's bindings over the default table `pad_init` made.
+  pads.map = g_cfg.pad;
   if (pad_ignored(&pads))
     printf("Controllers: %d more attached than the SNES has ports; ignored\n",
            pad_ignored(&pads));
@@ -1576,7 +1673,7 @@ int main(int argc, char** argv) {
   if (twin_stick)
     printf("Twin stick: on (right stick aims and fires%s)\n",
            have_movie          ? ", but a movie is driving"
-           : !want_pads        ? ", but --no-pads"
+           : !want_pads        ? ", but the controllers are off"
                                : "");
   else
     printf("Twin stick: off (right stick does nothing)\n");
@@ -1708,7 +1805,11 @@ int main(int argc, char** argv) {
   // state. The core is written once a frame from this ORed with what the pads
   // report, because a pad cannot be read from key events and a keyboard cannot
   // be polled — see `src/pad.h` for why the pad half has to be the polled one.
-  uint16_t key_held = 0;
+  // A bit per *key* and not per button, so that a button on two keys is held
+  // until both are let go: `ConfigKeys`.
+  ConfigKeys keys;
+  memset(&keys, 0, sizeof keys);
+  uint16_t key_held[MOVIE_PORTS] = {0};
   // Frames the pad quit chord has been held, which is also how far the picture
   // has faded. Declared out here because the frame is drawn well below where the
   // input is read.
@@ -1726,7 +1827,23 @@ int main(int argc, char** argv) {
   uint32_t owners_serial = sprite_oam_owners.serial;
   int lay_cut = 0;
   while (running && (frame_limit == 0 || frame < frame_limit)) {
+    // What the frontend has been asked to do since the last time round, a bit
+    // per `ConfigAction`, by a key or by a pad.
+    uint32_t actions = 0;
     SDL_Event e;
+    // `--key-at`: down at its frame, up `hold` frames on, once each.
+    for (int k = 0; k < key_ats; k++) {
+      const bool press = key_at[k].state == 0 && frame >= key_at[k].frame;
+      const bool release = key_at[k].state == 1 && frame >= key_at[k].frame + key_at[k].hold;
+      if (!press && !release) continue;
+      key_at[k].state++;
+      memset(&e, 0, sizeof e);
+      e.type = press ? SDL_KEYDOWN : SDL_KEYUP;
+      e.key.state = press ? SDL_PRESSED : SDL_RELEASED;
+      e.key.keysym.sym = key_at[k].key;
+      e.key.keysym.scancode = SDL_GetScancodeFromKey(key_at[k].key);
+      SDL_PushEvent(&e);
+    }
     while (SDL_PollEvent(&e)) {
       pad_event(&pads, &e);
       if (e.type == SDL_QUIT) running = false;
@@ -1736,139 +1853,125 @@ int main(int argc, char** argv) {
       // place a release can go missing and the one place it has to be forced.
       else if (e.type == SDL_WINDOWEVENT &&
                e.window.event == SDL_WINDOWEVENT_FOCUS_LOST)
-        key_held = 0;
+        memset(&keys, 0, sizeof keys);
       else if (e.type == SDL_KEYDOWN || e.type == SDL_KEYUP) {
-        if (e.key.keysym.sym == SDLK_ESCAPE) { running = false; continue; }
-        if (e.key.keysym.sym == SDLK_F1) {
-          // Only on the press, and only between frames. Turning the mask off
-          // stops *new* calls being intercepted; a resumable routine that is
-          // parked mid-call still resumes through the port, because `cosim_step`
-          // matches a suspension by its resume address rather than by the mask.
-          // Finishing what was started is the correct behaviour and it is why
-          // the toggle is safe to hit at any moment.
-          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-            native = !native;
-            if (native) cosim.enabled = selected;
-            else cosim_mask_none(&cosim.enabled);
-            printf("Substitution %s\n", native ? "on" : "off (stock)");
-            fflush(stdout);
-          }
+        // A key is an action of the frontend's, or a button of the game's, or
+        // nothing, and `g_cfg` says which. An action is only noted here and is
+        // done below, once, where a pad's press of the same thing is done too.
+        //
+        // Fullscreen is also the Alt+Enter that every emulator has had since
+        // DOS. That spelling has to be recognised before the key is looked up,
+        // because Enter on its own is Start by default, and toggling the
+        // display should not also press it.
+        const SDL_Keycode sym = e.key.keysym.sym;
+        const bool down = e.type == SDL_KEYDOWN;
+        const bool alt_enter = sym == SDLK_RETURN && (e.key.keysym.mod & KMOD_ALT) != 0;
+        const int act = alt_enter ? (int)ACT_FULLSCREEN : config_hotkey_of(&g_cfg, sym);
+        // A release is always a release: Enter pressed as Start and let go
+        // with Alt down by then must not leave Start held.
+        if (!down) config_key_event(&g_cfg, &keys, sym, false);
+        if (act >= 0) {
+          if (down && !e.key.repeat) actions |= 1u << act;
           continue;
-        }
-        if (e.key.keysym.sym == SDLK_F3) {
-          // Aspect, on its own key, because the only honest way to judge it is
-          // to flip between the two on the same frame of the same scene.
-          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-            present.aspect =
-                (AspectMode)((present.aspect + 1) % ASPECT_MODE_COUNT);
-            printf("Aspect: %s\n", aspect_name(present.aspect));
-            fflush(stdout);
-          }
-          continue;
-        }
-        if (e.key.keysym.sym == SDLK_F4) {
-          // Widescreen, for the same reason F3 exists: how much wider 16:9 is
-          // than the console is not a thing anyone can judge from two runs.
-          //
-          // This one costs a texture, because the picture changes *size* rather
-          // than shape, and the frame texture and its offscreen stage were both
-          // made at the old width. Between frames, so nothing is half-drawn at
-          // one width and finished at the other.
-          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-            wide = (WideMode)((wide + 1) % WIDE_MODE_COUNT);
-            snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
-            ws.margin = wide_margin(wide);
-            fb_w = snes_pixelWidth(snes);
-            const ScaleMode m = present.mode;
-            const AspectMode a = present.aspect;
-            present_free(&present);
-            live.w = fb_w;
-            if (!present_init(&present, ren, fb_w, FB_H, live, m, a)) {
-              fprintf(stderr, "error: cannot resize the frame texture: %s\n",
-                      SDL_GetError());
-              running = false;
-              continue;
-            }
-            printf("Widescreen: %s (%d columns)\n", wide_name(wide), fb_w / 2);
-            fflush(stdout);
-          }
-          continue;
-        }
-        if (e.key.keysym.sym == SDLK_F5 || e.key.keysym.sym == SDLK_F9) {
-          // Quick save and quick load. Only asked for here: the machine may be
-          // running its next tick on the emulation thread at this moment, and
-          // both are done where it is known to be stopped (see `quick_want`).
-          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-            if (have_movie) {
-              printf("Quick save and load are off while a movie plays.\n");
-              fflush(stdout);
-            } else {
-              quick_want = e.key.keysym.sym == SDLK_F5 ? QUICK_SAVE : QUICK_LOAD;
-              quick_waited = 0;
-            }
-          }
-          continue;
-        }
-        if (e.key.keysym.sym == SDLK_F6) {
-          // Smoothing, on a key for the same reason the others are: the only
-          // way to judge it is to flip it on the same scene. Takes effect at
-          // the next tick, which is where the pacer is re-armed.
-          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-            smooth = !smooth;
-            if (smooth_possible)
-              printf("Smoothing: %s\n", smooth ? "on" : "off");
-            else
-              printf("Smoothing: %s, but not possible on this display\n",
-                     smooth ? "on" : "off");
-            fflush(stdout);
-          }
-          continue;
-        }
-        if (e.key.keysym.sym == SDLK_F2) {
-          // Cycling rather than a set of three keys, because the only way to
-          // judge these is to watch one turn into the next on the same frame.
-          if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-            present.mode = (ScaleMode)((present.mode + 1) % SCALE_MODE_COUNT);
-            printf("Scaling: %s\n", scale_name(present.mode));
-            fflush(stdout);
-          }
-          continue;
-        }
-        // Fullscreen on F11, and on the Alt+Enter that every emulator has had
-        // since DOS. That second spelling has to be recognised here rather than
-        // in `key_to_button`, because Enter on its own is Start — and it has to
-        // be matched *before* the key reaches that mapping, or toggling the
-        // display would also press Start.
-        {
-          const bool alt_enter = e.key.keysym.sym == SDLK_RETURN &&
-                                 (e.key.keysym.mod & KMOD_ALT) != 0;
-          if (e.key.keysym.sym == SDLK_F11 || alt_enter) {
-            if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-              const bool want = !fullscreen;
-              if (SDL_SetWindowFullscreen(
-                      win, want ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) != 0) {
-                // Report it and keep the flag on what is actually on screen. A
-                // toggle that silently believed it had worked would put the key
-                // out of phase with the display for the rest of the session.
-                fprintf(stderr, "cannot change display mode: %s\n", SDL_GetError());
-              } else {
-                fullscreen = want;
-                printf("Display: %s\n", fullscreen ? "fullscreen" : "windowed");
-              }
-              fflush(stdout);
-            }
-            continue;
-          }
         }
         // A movie is driving the controller; the keyboard would fight it.
-        if (!have_movie) {
-          const int b = key_to_button(e.key.keysym.sym);
-          if (b >= 0) {
-            if (e.type == SDL_KEYDOWN) key_held |= (uint16_t)(1u << b);
-            else key_held &= (uint16_t)~(1u << b);
-          }
-        }
+        if (down && !have_movie) config_key_event(&g_cfg, &keys, sym, true);
       }
+    }
+    config_keys_held(&keys, key_held);
+    // ...and what the pads pressed, which `pad_poll` noted during the last tick.
+    actions |= pads.hot_pressed;
+    pads.hot_pressed = 0;
+
+    if (actions & (1u << ACT_QUIT)) running = false;
+    if (running && (actions & (1u << ACT_TOGGLE_NATIVE))) {
+      // Only between frames. Turning the mask off stops *new* calls being
+      // intercepted; a resumable routine that is parked mid-call still resumes
+      // through the port, because `cosim_step` matches a suspension by its
+      // resume address rather than by the mask. Finishing what was started is
+      // the correct behaviour and it is why the toggle is safe at any moment.
+      native = !native;
+      if (native) cosim.enabled = selected;
+      else cosim_mask_none(&cosim.enabled);
+      printf("Substitution %s\n", native ? "on" : "off (stock)");
+      fflush(stdout);
+    }
+    if (running && (actions & (1u << ACT_TOGGLE_ASPECT))) {
+      // Aspect, on its own key, because the only honest way to judge it is to
+      // flip between the two on the same frame of the same scene.
+      present.aspect = (AspectMode)((present.aspect + 1) % ASPECT_MODE_COUNT);
+      printf("Aspect: %s\n", aspect_name(present.aspect));
+      fflush(stdout);
+    }
+    if (running && (actions & (1u << ACT_CYCLE_WIDESCREEN))) {
+      // Widescreen, for the same reason: how much wider 16:9 is than the
+      // console is not a thing anyone can judge from two runs.
+      //
+      // This one costs a texture, because the picture changes *size* rather
+      // than shape, and the frame texture and its offscreen stage were both
+      // made at the old width. Between frames, so nothing is half-drawn at one
+      // width and finished at the other.
+      wide = (WideMode)((wide + 1) % WIDE_MODE_COUNT);
+      snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
+      ws.margin = wide_margin(wide);
+      fb_w = snes_pixelWidth(snes);
+      const ScaleMode m = present.mode;
+      const AspectMode a = present.aspect;
+      present_free(&present);
+      live.w = fb_w;
+      if (!present_init(&present, ren, fb_w, FB_H, live, m, a)) {
+        fprintf(stderr, "error: cannot resize the frame texture: %s\n",
+                SDL_GetError());
+        running = false;
+      } else {
+        printf("Widescreen: %s (%d columns)\n", wide_name(wide), fb_w / 2);
+        fflush(stdout);
+      }
+    }
+    if (running && (actions & ((1u << ACT_QUICK_SAVE) | (1u << ACT_QUICK_LOAD)))) {
+      // Quick save and quick load. Only asked for here: the machine may be
+      // running its next tick on the emulation thread at this moment, and both
+      // are done where it is known to be stopped (see `quick_want`).
+      if (have_movie) {
+        printf("Quick save and load are off while a movie plays.\n");
+        fflush(stdout);
+      } else {
+        quick_want = (actions & (1u << ACT_QUICK_SAVE)) ? QUICK_SAVE : QUICK_LOAD;
+        quick_waited = 0;
+      }
+    }
+    if (running && (actions & (1u << ACT_TOGGLE_SMOOTHING))) {
+      // Smoothing, on a key for the same reason the others are: the only way
+      // to judge it is to flip it on the same scene. Takes effect at the next
+      // tick, which is where the pacer is re-armed.
+      smooth = !smooth;
+      if (smooth_possible)
+        printf("Smoothing: %s\n", smooth ? "on" : "off");
+      else
+        printf("Smoothing: %s, but not possible on this display\n",
+               smooth ? "on" : "off");
+      fflush(stdout);
+    }
+    if (running && (actions & (1u << ACT_CYCLE_FILTER))) {
+      // Cycling rather than a set of three keys, because the only way to
+      // judge these is to watch one turn into the next on the same frame.
+      present.mode = (ScaleMode)((present.mode + 1) % SCALE_MODE_COUNT);
+      printf("Scaling: %s\n", scale_name(present.mode));
+      fflush(stdout);
+    }
+    if (running && (actions & (1u << ACT_FULLSCREEN))) {
+      const bool want = !fullscreen;
+      if (SDL_SetWindowFullscreen(
+              win, want ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0) != 0) {
+        // Report it and keep the flag on what is actually on screen. A toggle
+        // that silently believed it had worked would put the key out of phase
+        // with the display for the rest of the session.
+        fprintf(stderr, "cannot change display mode: %s\n", SDL_GetError());
+      } else {
+        fullscreen = want;
+        printf("Display: %s\n", fullscreen ? "fullscreen" : "windowed");
+      }
+      fflush(stdout);
     }
     if (!running) break;
 
@@ -1946,6 +2049,9 @@ int main(int argc, char** argv) {
           const int want_samples = pace_audio_samples(
               SAMPLES_PER_FRAME, queued, audio_target, 4, AUDIO_MAX_ADJUST);
           snes_setSamples(snes, audio_buf, want_samples);
+          if (volume != 100)
+            for (int i = 0; i < want_samples * 2; i++)
+              audio_buf[i] = (int16_t)(audio_buf[i] * volume / 100);
           SDL_QueueAudio(audio, audio_buf,
                          (Uint32)want_samples * 2 * sizeof(int16_t));
         }
@@ -2010,7 +2116,8 @@ int main(int argc, char** argv) {
             // The top scores are not rolled back: the file's table goes over
             // the machine's, as after a boot.
             hiscore.restored = false;
-            key_held = 0;
+            memset(&keys, 0, sizeof keys);
+            memset(key_held, 0, sizeof key_held);
             printf("Quick load: '%s'.\n", quick.path);
             notice_show("LOADED", 120, 200, 255);
           } else {

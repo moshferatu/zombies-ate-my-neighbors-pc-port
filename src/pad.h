@@ -110,6 +110,21 @@
 // calls this and the stick does nothing, which is what the stock game does with
 // a stick it cannot read.
 //
+// ## Bindings
+//
+// Everything above is the *default*, and `PadMap` is what is actually read: for
+// each SNES button a short list of pad inputs, any of which holds it; the same
+// for a handful of frontend actions ("hot" inputs -- quick save on a paddle,
+// say), which are bound to nothing unless the player binds them, for the reason
+// given at `pad_button`; which stick steers and which aims; and the deadzone.
+// `pad_map_default` builds the table from `pad_button` and the two triggers, so
+// a frontend that never touches `PadSet.map` plays exactly as it did before
+// there was one. `src/config.h` fills it from the player's `zamn.ini`.
+//
+// A trigger is an input like any other in that table, read through the same
+// hysteresis it always was. A hot input is reported on the press and not while
+// held: `PadSet.hot_pressed` collects the presses and the frontend takes them.
+//
 // ## Devices
 //
 // SDL 2.30 knows several thousand controllers by GUID and this program adds
@@ -161,6 +176,17 @@
 #define PAD_QUIT_MASK ((uint16_t)((1u << BTN_START) | (1u << BTN_SELECT)))
 #define PAD_QUIT_FRAMES 60
 
+// A pad input, as the binding table names one: an `SDL_GameControllerButton`,
+// or one of the two triggers, which SDL has as axes and a player has as buttons.
+#define PAD_IN_NONE (-1)
+#define PAD_IN_LTRIGGER 100
+#define PAD_IN_RTRIGGER 101
+// Inputs per SNES button or per action, and how many actions a frontend may
+// have. Four is two more than the default ever uses (shoulder and trigger).
+#define PAD_BIND_MAX 4
+#define PAD_HOT_MAX 16
+enum { PAD_STICK_NONE, PAD_STICK_LEFT, PAD_STICK_RIGHT };
+
 // --- the arithmetic, which is the part `tools/test_pad.c` checks -------------
 
 // A stick position as D-pad bits (`1 << BTN_UP` and friends), with `*live`
@@ -172,9 +198,9 @@
 // magnitude of a stick at full deflection on both axes is 2,147,352,578, which
 // is thirty-two bits with 1,069 to spare, and the octant comparison then
 // multiplies that by 14,645,929.
-static inline uint16_t pad_stick(int x, int y, bool* live) {
+static inline uint16_t pad_stick_gated(int x, int y, bool* live, int enter, int leave) {
   const long long m2 = (long long)x * x + (long long)y * y;
-  const long long gate = *live ? PAD_LEAVE : PAD_ENTER;
+  const long long gate = *live ? leave : enter;
   if (m2 <= gate * gate) { *live = false; return 0; }
   *live = true;
   const long long ax = (long long)(x < 0 ? -x : x) * PAD_OCT_DEN;
@@ -185,6 +211,11 @@ static inline uint16_t pad_stick(int x, int y, bool* live) {
   if (ax * ax > t2) bits |= (uint16_t)(1u << (x > 0 ? BTN_RIGHT : BTN_LEFT));
   if (ay * ay > t2) bits |= (uint16_t)(1u << (y > 0 ? BTN_DOWN : BTN_UP));
   return bits;
+}
+
+// ...at the gates the header comment measures, which are the default.
+static inline uint16_t pad_stick(int x, int y, bool* live) {
+  return pad_stick_gated(x, y, live, PAD_ENTER, PAD_LEAVE);
 }
 
 // The same hysteresis on one axis, for the triggers.
@@ -218,14 +249,55 @@ static inline int pad_button(SDL_GameControllerButton b) {
   }
 }
 
+// --- the bindings -----------------------------------------------------------
+
+// What is read, for every pad alike: see "Bindings" in the header comment.
+typedef struct {
+  int16_t game[12][PAD_BIND_MAX];          // by `BTN_*`; `PAD_IN_NONE` ends a list
+  int16_t hot[PAD_HOT_MAX][PAD_BIND_MAX];  // by the frontend's action number
+  int move_stick, aim_stick;               // `PAD_STICK_*`
+  int enter, leave;                        // the sticks' deadzone, in counts
+} PadMap;
+
+// Add an input to a list. False when the list is full or has it already.
+static inline bool pad_map_add(int16_t list[PAD_BIND_MAX], int in) {
+  for (int i = 0; i < PAD_BIND_MAX; i++) {
+    if (list[i] == in) return false;
+    if (list[i] == PAD_IN_NONE) { list[i] = (int16_t)in; return true; }
+  }
+  return false;
+}
+
+static inline void pad_map_clear(int16_t list[PAD_BIND_MAX]) {
+  for (int i = 0; i < PAD_BIND_MAX; i++) list[i] = PAD_IN_NONE;
+}
+
+// The table the header comment describes: `pad_button`, both triggers on L and
+// R, the left stick steering and the right one aiming, no action bound.
+static inline void pad_map_default(PadMap* m) {
+  for (int b = 0; b < 12; b++) pad_map_clear(m->game[b]);
+  for (int a = 0; a < PAD_HOT_MAX; a++) pad_map_clear(m->hot[a]);
+  for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) {
+    const int snes = pad_button((SDL_GameControllerButton)b);
+    if (snes >= 0) pad_map_add(m->game[snes], b);
+  }
+  pad_map_add(m->game[BTN_L], PAD_IN_LTRIGGER);
+  pad_map_add(m->game[BTN_R], PAD_IN_RTRIGGER);
+  m->move_stick = PAD_STICK_LEFT;
+  m->aim_stick = PAD_STICK_RIGHT;
+  m->enter = PAD_ENTER;
+  m->leave = PAD_LEAVE;
+}
+
 // --- the devices ------------------------------------------------------------
 
 typedef struct {
   SDL_GameController* gc;
   SDL_JoystickID id;
-  bool stick;            // left stick was out of the deadzone last frame
-  bool aim;              // ...and the right one, which no SNES pad has
+  bool stick;            // the steering stick was out of the deadzone last frame
+  bool aim;              // ...and the aiming one, which no SNES pad has
   bool trig_l, trig_r;   // ...and the triggers, same hysteresis
+  uint32_t hot_down;     // the actions whose inputs were down last frame
   char name[64];
 } Pad;
 
@@ -233,6 +305,10 @@ typedef struct {
   Pad pad[PAD_MAX];
   int quit_held;  // consecutive frames the quit chord has been down
   bool ready;     // the subsystem came up
+  PadMap map;     // what is read; `pad_init` makes it the default
+  // Actions pressed since the frontend last looked, a bit each. Only ever
+  // added to here: whoever acts on them clears them.
+  uint32_t hot_pressed;
 } PadSet;
 
 static inline int pad_count(const PadSet* s) {
@@ -356,6 +432,7 @@ static inline void pad_close(PadSet* s, SDL_JoystickID id) {
 // run — it is a reason to say so and read the keyboard.
 static inline bool pad_init(PadSet* s) {
   memset(s, 0, sizeof *s);
+  pad_map_default(&s->map);
   if (SDL_InitSubSystem(SDL_INIT_GAMECONTROLLER) != 0) {
     printf("Controllers: unavailable (%s)\n", SDL_GetError());
     return false;
@@ -395,7 +472,33 @@ static inline void pad_event(PadSet* s, const SDL_Event* e) {
   else if (e->type == SDL_CONTROLLERDEVICEREMOVED) pad_close(s, e->cdevice.which);
 }
 
-// What every pad is holding, as one 12-bit SNES mask per port.
+// Whether any input of a list is down. The triggers are read from the pad's
+// own hysteresis bits, which `pad_poll` has just brought up to date.
+static inline bool pad_list_down(const Pad* p, const int16_t list[PAD_BIND_MAX]) {
+  for (int i = 0; i < PAD_BIND_MAX && list[i] != PAD_IN_NONE; i++) {
+    const int in = list[i];
+    if (in == PAD_IN_LTRIGGER) { if (p->trig_l) return true; }
+    else if (in == PAD_IN_RTRIGGER) { if (p->trig_r) return true; }
+    else if (in >= 0 && in < SDL_CONTROLLER_BUTTON_MAX &&
+             SDL_GameControllerGetButton(p->gc, (SDL_GameControllerButton)in))
+      return true;
+  }
+  return false;
+}
+
+// One stick of a pad as eight-way bits, at the map's deadzone; nothing for
+// `PAD_STICK_NONE`.
+static inline uint16_t pad_stick_of(const PadMap* m, Pad* p, int which, bool* live) {
+  if (which != PAD_STICK_LEFT && which != PAD_STICK_RIGHT) { *live = false; return 0; }
+  const bool left = which == PAD_STICK_LEFT;
+  return pad_stick_gated(
+      SDL_GameControllerGetAxis(p->gc, left ? SDL_CONTROLLER_AXIS_LEFTX : SDL_CONTROLLER_AXIS_RIGHTX),
+      SDL_GameControllerGetAxis(p->gc, left ? SDL_CONTROLLER_AXIS_LEFTY : SDL_CONTROLLER_AXIS_RIGHTY),
+      live, m->enter, m->leave);
+}
+
+// What every pad is holding, as one 12-bit SNES mask per port -- and, on the
+// way past, which of the frontend's actions were pressed (`hot_pressed`).
 static inline void pad_poll(PadSet* s, uint16_t held[PAD_MAX]) {
   for (int i = 0; i < PAD_MAX; i++) held[i] = 0;
   if (!s->ready) return;
@@ -403,22 +506,18 @@ static inline void pad_poll(PadSet* s, uint16_t held[PAD_MAX]) {
   for (int i = 0; i < PAD_MAX; i++) {
     Pad* p = &s->pad[i];
     if (!p->gc) continue;
+    pad_trigger(SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT), &p->trig_l);
+    pad_trigger(SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT), &p->trig_r);
     uint16_t m = 0;
-    for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) {
-      const int snes = pad_button((SDL_GameControllerButton)b);
-      if (snes >= 0 && SDL_GameControllerGetButton(p->gc, (SDL_GameControllerButton)b))
-        m |= (uint16_t)(1u << snes);
-    }
-    m |= pad_stick(SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_LEFTX),
-                   SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_LEFTY),
-                   &p->stick);
-    if (pad_trigger(SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT),
-                    &p->trig_l))
-      m |= (uint16_t)(1u << BTN_L);
-    if (pad_trigger(SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT),
-                    &p->trig_r))
-      m |= (uint16_t)(1u << BTN_R);
+    for (int b = 0; b < 12; b++)
+      if (pad_list_down(p, s->map.game[b])) m |= (uint16_t)(1u << b);
+    m |= pad_stick_of(&s->map, p, s->map.move_stick, &p->stick);
     held[i] = m;
+    uint32_t hot = 0;
+    for (int a = 0; a < PAD_HOT_MAX; a++)
+      if (pad_list_down(p, s->map.hot[a])) hot |= 1u << a;
+    s->hot_pressed |= hot & ~p->hot_down;
+    p->hot_down = hot;
   }
 }
 
@@ -439,9 +538,7 @@ static inline void pad_aim(PadSet* s, uint16_t aim[PAD_MAX]) {
   for (int i = 0; i < PAD_MAX; i++) {
     Pad* p = &s->pad[i];
     if (!p->gc) continue;
-    aim[i] = pad_stick(SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_RIGHTX),
-                       SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_RIGHTY),
-                       &p->aim);
+    aim[i] = pad_stick_of(&s->map, p, s->map.aim_stick, &p->aim);
   }
 }
 

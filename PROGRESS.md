@@ -3,7 +3,7 @@
 Cross-session status for the ZAMN native-port project. Update this whenever a
 milestone lands. See `PLAN.md` for the full multi-phase plan.
 
-## Current status: **Phase 3 underway** 🔨 (2026-09-19)
+## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
 ### The top scores survive a relaunch (2026-09-18)
 
@@ -26,6 +26,24 @@ which is how the table was found.
   game, the demo does, and the demo's level loop (`$80:9B87` calls `$80:8516`
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
+
+### A settings file, and every binding in it (2026-09-20)
+
+Asked for in play-testing. `src/config.h` reads `zamn.ini` (here, then beside
+the executable; `--config`, `--no-config`; written with the defaults and a
+comment on each when there is none): the ROM's path, skip intro, level,
+hitbox, blood, top scores; fullscreen, widescreen, aspect, filter, window
+scale, smoothing, refresh; audio and a new volume; pads, twin stick, deadzone,
+which stick steers and which aims; and lists of keys or pad inputs for the
+twelve SNES buttons (two players' worth of keys) and for the frontend's nine
+actions, from keyboard or pad. An option beats the file; `skip_intro`, `level`
+and `hitbox` from the file are not applied under `-m`. `src/pad.h`'s button
+`switch` became a table (`PadMap`) whose default is built from it; the
+function keys became actions done below the event loop. One fix on the way:
+a button on two keys (Select) is now held until both are up. Checked by
+`zamn_test_config` (the written file reads back as exactly the defaults),
+more of `zamn_test_pad`, and `--key-at`, which presses keys through SDL's
+queue: a rebound Start starts the game and the old key does nothing.
 
 ### The flash along the bottom as the game over begins (2026-09-19)
 
