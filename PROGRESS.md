@@ -27,6 +27,18 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### The flash along the bottom as the game over begins (2026-09-19)
+
+Reported in play-testing. One frame, the last line of the picture, orange
+edge to edge; the game's own (`--stock` 4:3 has it), and in a television's
+overscan. `$80:8A78` gives BG3 the mask's map (`$8B2B`) two frames before it
+starts the job that scrolls it (`$8B70`), and at the panel's scroll of 0 the
+mask's top edge is the screen's last line. `src/maskline.h` exchanges the two
+`LDA` operands in the cartridge's copy, so the scroll is set first; the
+panel's map is blank by then, so nothing else shows. Found by logging BG3's
+map and scroll on line 224; of 1,105 pictures around it only frame 2,559's
+change, in their last line.
+
 ### Quick save on F5, quick load on F9; smoothing moves to F6 (2026-09-19)
 
 Asked for in play-testing: one save, the latest. `src/quicksave.h` writes

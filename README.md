@@ -328,6 +328,28 @@ game over — `$80:8514` branches back to `$80:84B1`, so a game over puts you on
 your level rather than on level 1, which is what a flag for looking at level 30
 should do.
 
+### The line along the bottom as the game over begins
+
+Reported in play-testing: the bottom of the screen flashes as the game over
+comes up. It is one frame, one line -- the last of the 224, orange from edge
+to edge -- and it is the game's own: `--stock` in 4:3 draws it too. The
+game over's mask is a second tilemap for BG3, and `$80:8A78` sets it up a
+vblank job a frame: the map, then BG3's map register and the tiles
+(`$8B2B`), then the rest of the map, then the job that writes BG3's scroll
+(`$8B70`, to -32), then the colours. Between the second and the fourth, BG3
+is the mask's map at the status panel's scroll of 0, where the screen ends
+one line into row 28 of it -- the top edge of the mask's field, in the
+panel's colours. A television of 1993 had that line in its overscan.
+
+`maskline_fix` (`src/maskline.h`) exchanges the operands of those two
+`LDA`s in the cartridge's copy of the image, so the scroll job is running
+before BG3 is given the mask's map. There is nothing for the early scroll
+to move: the panel's own map is blank by then, every word of it. The same
+five jobs run on the same five frames. Always on in the frontend;
+`zamn_test_layers --mask-line` makes the same change, and over frames
+2,540-2,760 of the poked game over in 16:9 (1,105 pictures) the only ones
+that differ are the five of frame 2,559, in their last line.
+
 ### The game over's blood, and `--red-blood`
 
 On the Super NES the game over is "GAME OVER" cut out of a curtain of purple

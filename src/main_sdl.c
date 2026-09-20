@@ -77,6 +77,7 @@
 #include "twinstick.h"
 #include "widescreen.h"
 #include "skipintro.h"
+#include "maskline.h"
 #include "quicksave.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -1299,6 +1300,11 @@ int main(int argc, char** argv) {
   // — see `widescreen.h` on why the margins are drawn from a tick-old memory.
   static Widescreen ws;
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
+  // The flash along the bottom edge as the game over begins (`src/maskline.h`):
+  // the game's own, and only ever hidden by a television's overscan. The same
+  // jobs on the same frames in another order, so a movie plays the same.
+  if (!maskline_fix(snes->cart))
+    printf("note : this ROM's game over is not the one known; its first frames are left as they are.\n");
   // The game over's blood: the mask's colours in the cartridge's copy of the
   // image, and the drips from the frame hook. Only the picture, so a movie
   // may have it too.
