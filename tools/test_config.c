@@ -49,6 +49,7 @@ static void test_default_text(void) {
   memset(got.key, 0, sizeof got.key);
   memset(got.hotkey, 0, sizeof got.hotkey);
   for (int b = 0; b < 12; b++) pad_map_clear(got.pad.game[b]);
+  for (int k = 0; k < PAD_CYCLE_COUNT; k++) pad_map_clear(got.pad.cycle[k]);
   got.hitbox = 123; got.volume = 5; got.fullscreen = false; got.smoothing = false;
   got.pads = false; got.twin_stick = false; got.audio = false; got.high_scores = false;
   got.pad.move_stick = got.pad.aim_stick = PAD_STICK_NONE;
@@ -217,6 +218,8 @@ static void test_bindings(void) {
     "r = RightShoulder\n"
     "b = cross, a\n"              // the same button twice, by two of its names
     "x = Triangle, paddle1, touchpad, misc1\n"
+    "next weapon = paddle3\n"
+    "prev_item = none\n"
     "[controller hotkeys]\n"
     "quick_save = paddle2\n"
     "quick_load = L3, r3\n");
@@ -238,6 +241,20 @@ static void test_bindings(void) {
   if (c.pad.game[BTN_Y][0] != PAD_IN_RTRIGGER || c.pad.game[BTN_Y][1] != PAD_IN_NONE) fail("y = r2");
   if (c.pad.game[BTN_L][0] != SDL_CONTROLLER_BUTTON_LEFTSHOULDER || c.pad.game[BTN_L][1] != PAD_IN_NONE) fail("l = L1");
   if (c.pad.game[BTN_R][0] != SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) fail("r = RightShoulder");
+  if (c.pad.cycle[PAD_CYCLE_NEXT_WEAPON][0] != SDL_CONTROLLER_BUTTON_PADDLE3 ||
+      c.pad.cycle[PAD_CYCLE_NEXT_WEAPON][1] != PAD_IN_NONE) fail("next weapon = paddle3");
+  if (c.pad.cycle[PAD_CYCLE_PREV_ITEM][0] != PAD_IN_NONE) fail("prev_item = none");
+  if (c.pad.cycle[PAD_CYCLE_PREV_WEAPON][0] != PAD_IN_LTRIGGER ||
+      c.pad.cycle[PAD_CYCLE_NEXT_ITEM][0] != SDL_CONTROLLER_BUTTON_RIGHTSHOULDER)
+    fail("a selection the file left alone lost its default");
+  // `l = L1` is the file from before the shoulders selected, and here L1 no
+  // longer does (`prev_item = none`), so only `r = RightShoulder` is in two
+  // places -- which is said, once.
+  {
+    const int before = c.warnings;
+    config_check_pad(&c, "test");
+    if (c.warnings != before + 1) fail("an input in two places was complained about %d times, want 1", c.warnings - before);
+  }
   if (c.pad.game[BTN_B][0] != SDL_CONTROLLER_BUTTON_A || c.pad.game[BTN_B][1] != PAD_IN_NONE) fail("b = cross, a");
   if (c.pad.game[BTN_X][0] != SDL_CONTROLLER_BUTTON_Y || c.pad.game[BTN_X][1] != SDL_CONTROLLER_BUTTON_PADDLE1 ||
       c.pad.game[BTN_X][2] != SDL_CONTROLLER_BUTTON_TOUCHPAD || c.pad.game[BTN_X][3] != SDL_CONTROLLER_BUTTON_MISC1)

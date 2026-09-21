@@ -222,6 +222,92 @@ void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
   out->c = sfx.c;
 }
 
+// ---------------------------------------------------------------------------
+// The same two searches, backwards. Not the ROM's: see `port/player.h`.
+// ---------------------------------------------------------------------------
+
+static void select_prev(Wram* w, const Rom* rom, uint16_t dp, bool weapon,
+                        WeaponSelectRegs* out) {
+  const uint16_t player = wram_r16(w, (uint32_t)dp + ACTOR_DP_PLAYER);
+  const uint16_t base = weapon ? rom_word(rom, PLAYER_INVENTORY_BASES + player)
+                               : wram_r16(w, (uint32_t)dp + PLAYER_DP_ITEMS);
+  const uint16_t slots = weapon ? WEAPON_SCAN_WRAP / 2 : ITEM_SCAN_WRAP / 2;
+  const uint32_t held_at = (weapon ? W_PLAYER_WEAPON : W_PLAYER_ITEM) + player;
+  const uint16_t held = wram_r16(w, held_at);
+
+  // Holding nothing starts at the last slot; holding something starts at the
+  // slot before it. Every slot gets one look, the held one last, so a player
+  // with one thing comes back to it and a player with nothing finds nothing --
+  // which is what the forward search's one spare try is for as well.
+  uint16_t slot = (held & 0x8000) || held == 0 || held >= slots ? (uint16_t)(slots - 1)
+                                                                : (uint16_t)(held - 1);
+  uint16_t found = weapon ? WEAPON_NONE : ITEM_NONE;
+  for (uint16_t n = 0; n < slots; n++) {
+    if (bank80_word(w, rom, (uint16_t)(base + slot * 2)) != 0) {
+      found = slot;
+      break;
+    }
+    slot = slot == 0 ? (uint16_t)(slots - 1) : (uint16_t)(slot - 1);
+  }
+
+  if (found == held) {
+    out->a = found;
+    out->x = player;
+    out->y = (uint16_t)(slot * 2);
+    out->n = false;
+    out->z = true;
+    out->c = true;
+    return;
+  }
+
+  wram_w16(w, held_at, found);
+  if (weapon) weapon_apply(w, rom, dp, found);
+
+  ApuSfxRegs sfx;
+  apu_play_sfx(w, weapon ? WEAPON_SFX_SWITCH : ITEM_SFX_SWITCH, dp, &sfx);
+  out->a = sfx.a;
+  out->x = sfx.x;
+  out->y = sfx.y;
+  out->n = sfx.n;
+  out->z = sfx.z;
+  out->c = sfx.c;
+}
+
+void weapon_select_prev(Wram* w, const Rom* rom, uint16_t dp,
+                        WeaponSelectRegs* out) {
+  select_prev(w, rom, dp, true, out);
+}
+
+void item_select_prev(Wram* w, const Rom* rom, uint16_t dp,
+                      WeaponSelectRegs* out) {
+  select_prev(w, rom, dp, false, out);
+}
+
+// What a frontend has asked for and the player's frame has not yet done: steps
+// waiting per player and per list, signed, and how long they have left.
+static int8_t psn_cycle[2][2];
+static uint8_t psn_cycle_ttl[2];
+
+void player_cycle_request(uint16_t player, int which, int dir) {
+  const unsigned p = (player >> 1) & 1u;
+  int v = psn_cycle[p][which & 1] + (dir < 0 ? -1 : 1);
+  if (v > PSN_CYCLE_QUEUE) v = PSN_CYCLE_QUEUE;
+  if (v < -PSN_CYCLE_QUEUE) v = -PSN_CYCLE_QUEUE;
+  psn_cycle[p][which & 1] = (int8_t)v;
+  psn_cycle_ttl[p] = PSN_CYCLE_TTL;
+}
+
+void player_cycle_age(void) {
+  for (int p = 0; p < 2; p++) {
+    if (psn_cycle_ttl[p] == 0 || --psn_cycle_ttl[p] != 0) continue;
+    psn_cycle[p][PSN_CYCLE_WEAPON] = psn_cycle[p][PSN_CYCLE_ITEM] = 0;
+  }
+}
+
+int player_cycle_pending(uint16_t player, int which) {
+  return psn_cycle[(player >> 1) & 1u][which & 1];
+}
+
 // --- $80:D1FF  player_state_normal ------------------------------------------
 
 // `--twin-stick`, one word per player. Zero until a frontend arms it, and zero
@@ -424,6 +510,26 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
     PORT_COVER(psn_press_item);
     WeaponSelectRegs r;
     item_select_next(w, rom, dp, &r);
+    out->a = r.a;
+    out->x = r.x;
+    out->y = r.y;
+    out->n = r.n;
+    out->z = r.z;
+    out->c = r.c;
+  }
+
+  // ...and the selections a frontend asked for, one step of each a frame. Not
+  // the ROM's and not through the button word, so fire being held does not
+  // stand in the way: see `player_cycle_request`. Not marked for coverage, as
+  // the aim is not: nothing in the corpus asks.
+  for (int which = 0; which < 2; which++) {
+    int8_t* steps = &psn_cycle[(player >> 1) & 1u][which];
+    if (*steps == 0) continue;
+    const bool back = *steps < 0;
+    *steps = (int8_t)(*steps + (back ? 1 : -1));
+    WeaponSelectRegs r;
+    if (which == PSN_CYCLE_WEAPON) (back ? weapon_select_prev : weapon_select_next)(w, rom, dp, &r);
+    else (back ? item_select_prev : item_select_next)(w, rom, dp, &r);
     out->a = r.a;
     out->x = r.x;
     out->y = r.y;

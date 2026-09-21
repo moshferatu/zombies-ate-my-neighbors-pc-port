@@ -27,6 +27,28 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### Shoulders and triggers select weapons and items, both ways (2026-09-21)
+
+Asked for in play-testing. R1/L1 are the next item and the one before, R2/L2
+the next weapon and the one before; the radar (SNES L and R) moved to the
+touchpad's click and L3. All six are `[controller buttons]` settings. Not
+SNES buttons, because the cartridge has no backwards and -- found on the way,
+and now a test -- cannot change weapon while a loaded one fires
+(`player_state_normal` clears B from `$1A` under a held Y). `pad_poll` reports
+presses by port (`PadSet.cycle_pressed`), the frontend calls
+`player_cycle_request`, and `player_state_normal` takes one step a frame
+beside its B and A edges: `weapon_select_next`/`item_select_next` forwards,
+`weapon_select_prev`/`item_select_prev` (the same search backwards) the other
+way. Requests expire after 12 frames unanswered. With none pending the
+routine is what it was, so the corpus is untouched. Does nothing under
+`--stock`/F1, where the 65816 runs the routine. An input bound to a selection
+is not also a SNES button, and `config_check_pad` says so: an old `zamn.ini`
+with `l = l1, l2` selects and has no radar until edited. Checked by
+`zamn_test_twinstick` (against the cartridge), `zamn_test_pad`,
+`zamn_test_config`, and in `zamn.exe` on level 1 with requests injected:
+weapon 0, 7, 3, 0, item 7 to 4, HUD following. Not checked with a real pad
+from here. No keyboard bindings for these.
+
 ### Seams across the slimes while they attack (2026-09-21)
 
 Reported in play-testing on level 9: horizontal lines through a slime during

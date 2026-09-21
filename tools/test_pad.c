@@ -237,6 +237,11 @@ static void test_buttons(void) {
     {SDL_CONTROLLER_BUTTON_START, BTN_START, "start"},
     {SDL_CONTROLLER_BUTTON_BACK, BTN_SELECT, "back -> select"},
     {SDL_CONTROLLER_BUTTON_DPAD_UP, BTN_UP, "d-pad up"},
+    {SDL_CONTROLLER_BUTTON_TOUCHPAD, BTN_L, "touchpad -> L (the radar)"},
+    {SDL_CONTROLLER_BUTTON_LEFTSTICK, BTN_R, "L3 -> R (the radar)"},
+    // Not SNES buttons: they select, which the SNES pad cannot say.
+    {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, -1, "L1 is not a SNES button"},
+    {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, -1, "R1 is not a SNES button"},
   };
   for (int i = 0; i < (int)(sizeof m / sizeof *m); i++)
     if (pad_button(m[i].b) != m[i].want)
@@ -326,8 +331,9 @@ static void test_devices(void) {
     {SDL_CONTROLLER_BUTTON_Y, BTN_X},
     {SDL_CONTROLLER_BUTTON_START, BTN_START},
     {SDL_CONTROLLER_BUTTON_BACK, BTN_SELECT},
-    {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, BTN_L},
-    {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, BTN_R},
+    // (The touchpad is L, which `test_buttons` has; SDL's invented pad has no
+    // touchpad to press.)
+    {SDL_CONTROLLER_BUTTON_LEFTSTICK, BTN_R},
     {SDL_CONTROLLER_BUTTON_DPAD_UP, BTN_UP},
     {SDL_CONTROLLER_BUTTON_DPAD_DOWN, BTN_DOWN},
     {SDL_CONTROLLER_BUTTON_DPAD_LEFT, BTN_LEFT},
@@ -395,7 +401,10 @@ static void test_devices(void) {
     if (poll1(&s, 0) != 0) fail("centring both sticks left %03x held", poll1(&s, 0));
   }
 
-  // Triggers reach L and R, alongside the shoulders that already do.
+  // The shoulders and the triggers select: the next item and the one before,
+  // the next weapon and the one before. None of the four is a SNES button, each
+  // is reported once for a press and not again while it is held, and they are
+  // the port's own.
   //
   // A released trigger is -32768 and not 0, which is worth stating because
   // writing 0 here is the obvious thing and it holds the button down. SDL maps a
@@ -407,14 +416,58 @@ static void test_devices(void) {
   move(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT, TRIGGER_RELEASED);
   move(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, TRIGGER_RELEASED);
   if (poll1(&s, 0) != 0) fail("released triggers held %03x", poll1(&s, 0));
+  if (s.cycle_pressed[0] || s.cycle_pressed[1]) fail("a selection was pressed by nobody");
   move(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 30000);
-  if (poll1(&s, 0) != (1u << BTN_R)) fail("right trigger gave %03x", poll1(&s, 0));
+  if (poll1(&s, 0) != 0) fail("the right trigger held %03x", poll1(&s, 0));
+  if (s.cycle_pressed[0] != (1u << PAD_CYCLE_NEXT_WEAPON))
+    fail("the right trigger selected %x", s.cycle_pressed[0]);
+  s.cycle_pressed[0] = 0;
+  for (int i = 0; i < 10; i++) poll1(&s, 0);
+  if (s.cycle_pressed[0]) fail("a held trigger selected again: %x", s.cycle_pressed[0]);
   move(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT, 30000);
-  if (poll1(&s, 0) != ((1u << BTN_R) | (1u << BTN_L)))
-    fail("both triggers gave %03x", poll1(&s, 0));
+  if (poll1(&s, 0) != 0) fail("both triggers held %03x", poll1(&s, 0));
+  if (s.cycle_pressed[0] != (1u << PAD_CYCLE_PREV_WEAPON))
+    fail("the left trigger selected %x", s.cycle_pressed[0]);
+  s.cycle_pressed[0] = 0;
   move(gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT, TRIGGER_RELEASED);
   move(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, TRIGGER_RELEASED);
   if (poll1(&s, 0) != 0) fail("releasing the triggers left %03x held", poll1(&s, 0));
+  press(gc, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 1);
+  press(gc, SDL_CONTROLLER_BUTTON_LEFTSHOULDER, 1);
+  if (poll1(&s, 0) != 0) fail("the shoulders held %03x", poll1(&s, 0));
+  if (s.cycle_pressed[0] != ((1u << PAD_CYCLE_NEXT_ITEM) | (1u << PAD_CYCLE_PREV_ITEM)))
+    fail("the shoulders selected %x", s.cycle_pressed[0]);
+  if (s.cycle_pressed[1]) fail("port 1's shoulders selected for port 2: %x", s.cycle_pressed[1]);
+  s.cycle_pressed[0] = 0;
+  press(gc, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 0);
+  press(gc, SDL_CONTROLLER_BUTTON_LEFTSHOULDER, 0);
+  poll1(&s, 0);
+  press(gc, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 1);
+  poll1(&s, 0);
+  if (s.cycle_pressed[0] != (1u << PAD_CYCLE_NEXT_ITEM))
+    fail("a shoulder pressed again selected %x", s.cycle_pressed[0]);
+  s.cycle_pressed[0] = 0;
+  press(gc, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 0);
+  poll1(&s, 0);
+
+  // A `zamn.ini` from before the shoulders selected says `r = r1, r2`. An input
+  // in both places selects and does not also bring up the radar.
+  {
+    const PadMap was = s.map;
+    pad_map_add(s.map.game[BTN_R], SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+    pad_map_add(s.map.game[BTN_R], PAD_IN_RTRIGGER);
+    press(gc, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 1);
+    move(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, 30000);
+    if (poll1(&s, 0) != 0) fail("an input that selects was a SNES button as well: %03x", poll1(&s, 0));
+    press(gc, SDL_CONTROLLER_BUTTON_LEFTSTICK, 1);
+    if (poll1(&s, 0) != (1u << BTN_R)) fail("...and took the rest of its list with it: %03x", poll1(&s, 0));
+    press(gc, SDL_CONTROLLER_BUTTON_LEFTSTICK, 0);
+    press(gc, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, 0);
+    move(gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT, TRIGGER_RELEASED);
+    poll1(&s, 0);
+    s.cycle_pressed[0] = 0;
+    s.map = was;
+  }
 
   // A table that is not the default one, which is what a player's `zamn.ini`
   // makes of `PadSet.map`. Everything above ran on the table `pad_init` built
@@ -425,7 +478,8 @@ static void test_devices(void) {
     const PadMap was = s.map;
     // Fire on the right trigger and nowhere else; the bottom face button does
     // nothing; the sticks change places; quick save (action 5, say) on the left
-    // stick's click and on the left trigger.
+    // stick's click and on the left trigger; nothing selects.
+    for (int c = 0; c < PAD_CYCLE_COUNT; c++) pad_map_clear(s.map.cycle[c]);
     pad_map_clear(s.map.game[BTN_Y]);
     pad_map_add(s.map.game[BTN_Y], PAD_IN_RTRIGGER);
     pad_map_clear(s.map.game[BTN_R]);

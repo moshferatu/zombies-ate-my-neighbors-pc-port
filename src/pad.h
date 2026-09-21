@@ -40,14 +40,29 @@
 // Worth knowing before playing rather than after: **`Y` is this game's fire
 // button** and it is held, not tapped — `src/port/player.h` has it from the ROM,
 // `PSN_BTN_FIRE 0x4000`, gating the empty-weapon check every frame. `B` cycles
-// weapons, `A` cycles items, `X` uses one, `L`/`R` are an edge-triggered pair.
+// weapons, `A` cycles items, `X` uses one, and `L` and `R` both bring up the
+// survivor radar.
 // So the button under the left thumb-position is the one held down all game.
 // That is the standard mapping's doing and not a choice made here; the point of
 // saying it is that "fire is Square" is surprising for about ten seconds and
 // then is not.
 //
-// Both shoulders and both triggers reach L/R, since the SNES's L and R *are*
-// shoulder buttons and a modern pad has four things in that corner.
+// ## The four things in the top corners
+//
+// They were L and R, since the SNES's L and R *are* shoulder buttons -- four
+// inputs for one radar. They are now the thing a modern pad has them for:
+// **R1 is the next item and L1 the one before, R2 the next weapon and L2 the
+// one before**. Backwards is not something the cartridge can do, and neither is
+// changing weapon while firing, so these are not SNES buttons and do not reach
+// the port as buttons: `pad_poll` reports the presses, per pad, in
+// `PadSet.cycle_pressed`, and the frontend hands them to
+// `player_cycle_request` (`src/port/player.h`).
+//
+// The radar moved to the **touchpad's click**, which is where a PlayStation
+// game keeps its map, and to **L3** for a pad that has no touchpad. The radar
+// is a picture over the game that goes away again, so the argument below
+// against binding the touchpad -- a palm, and a session lost to it -- is not
+// one against this.
 //
 // ## Quitting
 //
@@ -117,13 +132,14 @@
 // for a handful of frontend actions ("hot" inputs -- quick save on a paddle,
 // say), which are bound to nothing unless the player binds them, for the reason
 // given at `pad_button`; which stick steers and which aims; and the deadzone.
-// `pad_map_default` builds the table from `pad_button` and the two triggers, so
-// a frontend that never touches `PadSet.map` plays exactly as it did before
-// there was one. `src/config.h` fills it from the player's `zamn.ini`.
+// `pad_map_default` builds the table from `pad_button` and the four selections,
+// so a frontend that never touches `PadSet.map` plays as the header comment
+// says. `src/config.h` fills it from the player's `zamn.ini`.
 //
 // A trigger is an input like any other in that table, read through the same
 // hysteresis it always was. A hot input is reported on the press and not while
 // held: `PadSet.hot_pressed` collects the presses and the frontend takes them.
+// The selections are reported the same way, by port: `PadSet.cycle_pressed`.
 //
 // ## Devices
 //
@@ -161,8 +177,8 @@
 // of a real pad, and the gap between the two numbers is what stops a chatter.
 #define PAD_ENTER 8000
 #define PAD_LEAVE 6000
-// Triggers are one-sided, 0..32767, and are only ever L/R here — so the gate can
-// be the same pair of numbers without anyone having to think about it.
+// Triggers are one-sided, 0..32767, and are only ever buttons here — so the gate
+// can be the same pair of numbers without anyone having to think about it.
 #define PAD_TRIG_ENTER 8000
 #define PAD_TRIG_LEAVE 6000
 
@@ -182,9 +198,18 @@
 #define PAD_IN_LTRIGGER 100
 #define PAD_IN_RTRIGGER 101
 // Inputs per SNES button or per action, and how many actions a frontend may
-// have. Four is two more than the default ever uses (shoulder and trigger).
+// have.
 #define PAD_BIND_MAX 4
 #define PAD_HOT_MAX 16
+// The selections, which are a pad's and not the SNES's: see "The four things
+// in the top corners". Bit 0 of the number is the direction and bit 1 the list.
+enum {
+  PAD_CYCLE_NEXT_WEAPON,
+  PAD_CYCLE_PREV_WEAPON,
+  PAD_CYCLE_NEXT_ITEM,
+  PAD_CYCLE_PREV_ITEM,
+  PAD_CYCLE_COUNT
+};
 enum { PAD_STICK_NONE, PAD_STICK_LEFT, PAD_STICK_RIGHT };
 
 // --- the arithmetic, which is the part `tools/test_pad.c` checks -------------
@@ -232,19 +257,21 @@ static inline int pad_button(SDL_GameControllerButton b) {
     case SDL_CONTROLLER_BUTTON_B:             return BTN_A;
     case SDL_CONTROLLER_BUTTON_X:             return BTN_Y;
     case SDL_CONTROLLER_BUTTON_Y:             return BTN_X;
-    case SDL_CONTROLLER_BUTTON_LEFTSHOULDER:  return BTN_L;
-    case SDL_CONTROLLER_BUTTON_RIGHTSHOULDER: return BTN_R;
+    // The radar, twice: see "The four things in the top corners".
+    case SDL_CONTROLLER_BUTTON_TOUCHPAD:      return BTN_L;
+    case SDL_CONTROLLER_BUTTON_LEFTSTICK:     return BTN_R;
     case SDL_CONTROLLER_BUTTON_START:         return BTN_START;
     case SDL_CONTROLLER_BUTTON_BACK:          return BTN_SELECT;
     case SDL_CONTROLLER_BUTTON_DPAD_UP:       return BTN_UP;
     case SDL_CONTROLLER_BUTTON_DPAD_DOWN:     return BTN_DOWN;
     case SDL_CONTROLLER_BUTTON_DPAD_LEFT:     return BTN_LEFT;
     case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:    return BTN_RIGHT;
-    // Guide, touchpad, the Edge's paddles and misc buttons. Deliberately not
-    // bound, and not made into hotkeys either: a single button that quit the
-    // game or toggled substitution would fire the first time somebody rested a
-    // palm on the touchpad. The one gesture the frontend does claim — see
-    // `pad_quit` — is two buttons held for a second, which a palm cannot do.
+    // Guide, the Edge's paddles and misc buttons. Deliberately not bound, and
+    // not made into hotkeys either: a single button that quit the game or
+    // toggled substitution would fire the first time somebody rested a palm on
+    // one. The one gesture the frontend does claim — see `pad_quit` — is two
+    // buttons held for a second, which a palm cannot do. The shoulders are not
+    // here because they are not SNES buttons any more: `pad_map_default`.
     default:                                  return -1;
   }
 }
@@ -255,6 +282,7 @@ static inline int pad_button(SDL_GameControllerButton b) {
 typedef struct {
   int16_t game[12][PAD_BIND_MAX];          // by `BTN_*`; `PAD_IN_NONE` ends a list
   int16_t hot[PAD_HOT_MAX][PAD_BIND_MAX];  // by the frontend's action number
+  int16_t cycle[PAD_CYCLE_COUNT][PAD_BIND_MAX];  // by `PAD_CYCLE_*`
   int move_stick, aim_stick;               // `PAD_STICK_*`
   int enter, leave;                        // the sticks' deadzone, in counts
 } PadMap;
@@ -272,17 +300,32 @@ static inline void pad_map_clear(int16_t list[PAD_BIND_MAX]) {
   for (int i = 0; i < PAD_BIND_MAX; i++) list[i] = PAD_IN_NONE;
 }
 
-// The table the header comment describes: `pad_button`, both triggers on L and
-// R, the left stick steering and the right one aiming, no action bound.
+// Whether an input is one of the selections'. Such an input is not also a SNES
+// button, whatever the table says: a thing in two places does the first thing
+// only, as a key does, and a `zamn.ini` written when the shoulders were L and R
+// still says they are.
+static inline bool pad_map_cycles(const PadMap* m, int in) {
+  for (int c = 0; c < PAD_CYCLE_COUNT; c++)
+    for (int i = 0; i < PAD_BIND_MAX && m->cycle[c][i] != PAD_IN_NONE; i++)
+      if (m->cycle[c][i] == in) return true;
+  return false;
+}
+
+// The table the header comment describes: `pad_button`, the shoulders and the
+// triggers selecting, the left stick steering and the right one aiming, no
+// action bound.
 static inline void pad_map_default(PadMap* m) {
   for (int b = 0; b < 12; b++) pad_map_clear(m->game[b]);
   for (int a = 0; a < PAD_HOT_MAX; a++) pad_map_clear(m->hot[a]);
+  for (int c = 0; c < PAD_CYCLE_COUNT; c++) pad_map_clear(m->cycle[c]);
   for (int b = 0; b < SDL_CONTROLLER_BUTTON_MAX; b++) {
     const int snes = pad_button((SDL_GameControllerButton)b);
     if (snes >= 0) pad_map_add(m->game[snes], b);
   }
-  pad_map_add(m->game[BTN_L], PAD_IN_LTRIGGER);
-  pad_map_add(m->game[BTN_R], PAD_IN_RTRIGGER);
+  pad_map_add(m->cycle[PAD_CYCLE_NEXT_ITEM], SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
+  pad_map_add(m->cycle[PAD_CYCLE_PREV_ITEM], SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
+  pad_map_add(m->cycle[PAD_CYCLE_NEXT_WEAPON], PAD_IN_RTRIGGER);
+  pad_map_add(m->cycle[PAD_CYCLE_PREV_WEAPON], PAD_IN_LTRIGGER);
   m->move_stick = PAD_STICK_LEFT;
   m->aim_stick = PAD_STICK_RIGHT;
   m->enter = PAD_ENTER;
@@ -298,6 +341,7 @@ typedef struct {
   bool aim;              // ...and the aiming one, which no SNES pad has
   bool trig_l, trig_r;   // ...and the triggers, same hysteresis
   uint32_t hot_down;     // the actions whose inputs were down last frame
+  uint8_t cycle_down;    // ...and the selections, a bit per `PAD_CYCLE_*`
   char name[64];
 } Pad;
 
@@ -309,6 +353,9 @@ typedef struct {
   // Actions pressed since the frontend last looked, a bit each. Only ever
   // added to here: whoever acts on them clears them.
   uint32_t hot_pressed;
+  // The same for the selections, which are a player's and so are kept by port:
+  // a bit per `PAD_CYCLE_*`.
+  uint8_t cycle_pressed[PAD_MAX];
 } PadSet;
 
 static inline int pad_count(const PadSet* s) {
@@ -486,6 +533,16 @@ static inline bool pad_list_down(const Pad* p, const int16_t list[PAD_BIND_MAX])
   return false;
 }
 
+// A SNES button's list, less whatever of it selects: `pad_map_cycles`.
+static inline bool pad_game_down(const PadMap* m, const Pad* p, int b) {
+  int16_t list[PAD_BIND_MAX];
+  int n = 0;
+  for (int i = 0; i < PAD_BIND_MAX && m->game[b][i] != PAD_IN_NONE; i++)
+    if (!pad_map_cycles(m, m->game[b][i])) list[n++] = m->game[b][i];
+  if (n < PAD_BIND_MAX) list[n] = PAD_IN_NONE;
+  return pad_list_down(p, list);
+}
+
 // One stick of a pad as eight-way bits, at the map's deadzone; nothing for
 // `PAD_STICK_NONE`.
 static inline uint16_t pad_stick_of(const PadMap* m, Pad* p, int which, bool* live) {
@@ -510,7 +567,7 @@ static inline void pad_poll(PadSet* s, uint16_t held[PAD_MAX]) {
     pad_trigger(SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT), &p->trig_r);
     uint16_t m = 0;
     for (int b = 0; b < 12; b++)
-      if (pad_list_down(p, s->map.game[b])) m |= (uint16_t)(1u << b);
+      if (pad_game_down(&s->map, p, b)) m |= (uint16_t)(1u << b);
     m |= pad_stick_of(&s->map, p, s->map.move_stick, &p->stick);
     held[i] = m;
     uint32_t hot = 0;
@@ -518,6 +575,11 @@ static inline void pad_poll(PadSet* s, uint16_t held[PAD_MAX]) {
       if (pad_list_down(p, s->map.hot[a])) hot |= 1u << a;
     s->hot_pressed |= hot & ~p->hot_down;
     p->hot_down = hot;
+    uint8_t cyc = 0;
+    for (int c = 0; c < PAD_CYCLE_COUNT; c++)
+      if (pad_list_down(p, s->map.cycle[c])) cyc |= (uint8_t)(1u << c);
+    s->cycle_pressed[i] |= (uint8_t)(cyc & ~p->cycle_down);
+    p->cycle_down = cyc;
   }
 }
 

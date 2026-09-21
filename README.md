@@ -104,9 +104,39 @@ keys in it, which makes a pad and a keyboard two players. Face buttons are posit
 left one Y, the top one X. Worth knowing before you start rather than after,
 because it is not where a modern game would put it: **Y is this game's fire
 button**, and it is held rather than tapped — B and A cycle weapons and items, X
-uses one. Shoulders and triggers are both L and R; the left stick steers as well
-as the D-pad, snapped to eight ways with a deadzone that has to be crossed
-further to enter than to leave.
+uses one. The left stick steers as well as the D-pad, snapped to eight ways
+with a deadzone that has to be crossed further to enter than to leave.
+
+**The shoulders and the triggers select, both ways**: R1 is the next item and
+L1 the one before, R2 the next weapon and L2 the one before. The cartridge
+only goes forwards -- thirteen presses of B to reach the weapon just passed --
+and it cannot change weapon at all while a loaded one is firing, because the
+player's frame clears B out of the button word for as long as fire is held.
+So these are not SNES buttons. `pad_poll` reports the presses by port, the
+frontend asks the port for a step (`player_cycle_request`, in
+`src/port/player.h`), and `player_state_normal` takes one step a frame where
+it handles B and A: forwards with the game's own search, backwards with the
+same search walked the other way, the same store, weapon data and sound, and
+the same silence when there is nothing else to select. A request the player's
+frame does not come round for within twelve frames -- paused, or not on their
+feet -- is dropped. They work while firing, which with the right stick firing
+is most of the time. `--stock` and F1 hand that routine back to the 65816,
+which knows none of this, and there they do nothing.
+
+**The radar moved** to make room: the SNES's L and R, which both bring it up,
+are the touchpad's click -- where a PlayStation game keeps its map -- and L3.
+All of it is `[controller buttons]` in `zamn.ini`: `l`, `r`, `next_weapon`,
+`previous_weapon`, `next_item`, `previous_item`. An input bound to a selection
+is not also a SNES button, so a `zamn.ini` from before this, which still says
+`l = l1, l2` and `r = r1, r2`, selects with all four, says so as it starts,
+and has no radar until `l` and `r` are given something else.
+Checked by `zamn_test_twinstick`, which drives `player_state_normal` against
+the cartridge (backwards, wrapping, two queued presses, one weapon, none, the
+items, a request expiring, and that B under a held fire button does nothing
+where a request does), by `zamn_test_pad` (one press per press, by port, and
+an input in both places) and `zamn_test_config`; and in `zamn.exe` on level 1
+with requests put in by hand: weapon 0 to 7 to 3 to 0, item 7 to 4, and the
+HUD following.
 
 **Start and Select held together for a second quits** — Options and Share on a
 DualSense — because a pad has no Esc. Held rather than pressed, since both are

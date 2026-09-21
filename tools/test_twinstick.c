@@ -30,6 +30,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "port/collide.h"  // ACTOR_DP_RECORD
+#include "port/oam.h"      // ACTOR_META_BANK
 #include "port/player.h"
 #include "port/wram.h"
 #include "twinstick.h"
@@ -467,6 +469,109 @@ static void test_port(const uint8_t* rom_bytes, uint32_t rom_size) {
   free(w);
 }
 
+// --- the other thing the port does that the cartridge does not --------------
+//
+// The next weapon or item and the one before, asked for by a frontend and done
+// in the player's frame: `player_cycle_request`, in `src/port/player.h`. Here
+// because this is the test that drives `player_state_normal`, and against the
+// cartridge because the weapon search reads its bases and its data out of it.
+static void test_cycle(const uint8_t* rom_bytes, uint32_t rom_size) {
+  Wram* w = (Wram*)calloc(1, sizeof *w);
+  const Rom rom = {rom_bytes, rom_size};
+  const uint16_t dp = 0x0100;
+  PlayerStateRegs r;
+  player_set_aim(0, 0);
+  wram_w16(w, dp + PSN_DP_PLAYER, 0);
+  wram_w16(w, dp + ACTOR_DP_RECORD, 0x1ab6);
+  wram_w16(w, dp + PLAYER_DP_ITEMS, W_PLAYER_ITEMS);
+  wram_w16(w, dp + PSN_DP_INVENTORY, W_PLAYER_INVENTORY);
+  #define WEAPON() wram_r16(w, W_PLAYER_WEAPON)
+  #define ITEM() wram_r16(w, W_PLAYER_ITEM)
+
+  // Weapons 0, 3 and 7; holding 3.
+  wram_w16(w, W_PLAYER_INVENTORY + 0 * 2, 0x0099);
+  wram_w16(w, W_PLAYER_INVENTORY + 3 * 2, 0x0005);
+  wram_w16(w, W_PLAYER_INVENTORY + 7 * 2, 0x0001);
+  wram_w16(w, W_PLAYER_WEAPON, 3);
+  wram_w16(w, W_PLAYER_ITEM, ITEM_NONE);
+
+  player_state_normal(w, &rom, dp, &r);
+  if (WEAPON() != 3) fail("cycle: nothing asked for and the weapon became %u", WEAPON());
+
+  player_cycle_request(0, PSN_CYCLE_WEAPON, -1);
+  player_state_normal(w, &rom, dp, &r);
+  if (WEAPON() != 0) fail("cycle: the weapon before 3 is 0, not %u", WEAPON());
+  if (wram_r16(w, 0x1ab6 + ACTOR_META_BANK) != WEAPON_META_BANK)
+    fail("cycle: going backwards did not look the weapon's data up");
+  player_state_normal(w, &rom, dp, &r);
+  if (WEAPON() != 0) fail("cycle: one request was answered twice (%u)", WEAPON());
+  player_cycle_request(0, PSN_CYCLE_WEAPON, -1);
+  player_state_normal(w, &rom, dp, &r);
+  if (WEAPON() != 7) fail("cycle: the weapon before 0 wraps to 7, not %u", WEAPON());
+  player_cycle_request(0, PSN_CYCLE_WEAPON, +1);
+  player_state_normal(w, &rom, dp, &r);
+  if (WEAPON() != 0) fail("cycle: the weapon after 7 wraps to 0, not %u", WEAPON());
+
+  // Two presses before the player's frame comes round are two steps, a frame
+  // each; and it is player 1's alone.
+  player_cycle_request(0, PSN_CYCLE_WEAPON, +1);
+  player_cycle_request(0, PSN_CYCLE_WEAPON, +1);
+  if (player_cycle_pending(2, PSN_CYCLE_WEAPON)) fail("cycle: player 1's request reached player 2");
+  player_state_normal(w, &rom, dp, &r);
+  if (WEAPON() != 3) fail("cycle: the first of two steps gave %u", WEAPON());
+  player_state_normal(w, &rom, dp, &r);
+  if (WEAPON() != 7) fail("cycle: the second of two steps gave %u", WEAPON());
+
+  // The claim the header makes: with fire held on a weapon that is not empty,
+  // B does nothing -- and a request does.
+  wram_w16(w, W_JOY_RAW, PSN_BTN_FIRE | PSN_BTN_WEAPON);
+  wram_w16(w, dp + PSN_DP_PREV, PSN_BTN_FIRE);
+  player_state_normal(w, &rom, dp, &r);
+  if (WEAPON() != 7) fail("cycle: B changed weapon under a held fire button (%u), which the header says it cannot", WEAPON());
+  wram_w16(w, W_JOY_RAW, PSN_BTN_FIRE);
+  player_cycle_request(0, PSN_CYCLE_WEAPON, -1);
+  player_state_normal(w, &rom, dp, &r);
+  if (WEAPON() != 3) fail("cycle: a request under a held fire button gave %u", WEAPON());
+  wram_w16(w, W_JOY_RAW, 0);
+
+  // One weapon comes back to itself, and none finds none.
+  wram_w16(w, W_PLAYER_INVENTORY + 0 * 2, 0);
+  wram_w16(w, W_PLAYER_INVENTORY + 7 * 2, 0);
+  player_cycle_request(0, PSN_CYCLE_WEAPON, -1);
+  player_state_normal(w, &rom, dp, &r);
+  if (WEAPON() != 3) fail("cycle: the only weapon became %u", WEAPON());
+  wram_w16(w, W_PLAYER_INVENTORY + 3 * 2, 0);
+  player_cycle_request(0, PSN_CYCLE_WEAPON, -1);
+  player_state_normal(w, &rom, dp, &r);
+  if (WEAPON() != WEAPON_NONE) fail("cycle: no weapons at all left %u selected", WEAPON());
+
+  // Items 2 and 11, holding nothing: backwards starts from the top.
+  wram_w16(w, W_PLAYER_ITEMS + 2 * 2, 0x0001);
+  wram_w16(w, W_PLAYER_ITEMS + 11 * 2, 0x0002);
+  player_cycle_request(0, PSN_CYCLE_ITEM, -1);
+  player_state_normal(w, &rom, dp, &r);
+  if (ITEM() != 11) fail("cycle: the item before none is 11, not %u", ITEM());
+  player_cycle_request(0, PSN_CYCLE_ITEM, -1);
+  player_state_normal(w, &rom, dp, &r);
+  if (ITEM() != 2) fail("cycle: the item before 11 is 2, not %u", ITEM());
+  player_cycle_request(0, PSN_CYCLE_ITEM, +1);
+  player_state_normal(w, &rom, dp, &r);
+  if (ITEM() != 11) fail("cycle: the item after 2 is 11, not %u", ITEM());
+  if (WEAPON() != WEAPON_NONE) fail("cycle: an item request moved the weapon");
+
+  // A request nobody answers goes away.
+  player_cycle_request(0, PSN_CYCLE_ITEM, -1);
+  for (int i = 0; i < PSN_CYCLE_TTL - 1; i++) player_cycle_age();
+  if (player_cycle_pending(0, PSN_CYCLE_ITEM) != -1) fail("cycle: a request expired early");
+  player_cycle_age();
+  if (player_cycle_pending(0, PSN_CYCLE_ITEM) != 0) fail("cycle: a request outlived its welcome");
+  player_state_normal(w, &rom, dp, &r);
+  if (ITEM() != 11) fail("cycle: an expired request was answered (%u)", ITEM());
+  #undef WEAPON
+  #undef ITEM
+  free(w);
+}
+
 // --- and the same thing against the cartridge, if there is one ---------------
 
 static void test_real_rom(const char* path) {
@@ -502,6 +607,7 @@ static void test_real_rom(const char* path) {
     printf("twin-stick: installed against '%s' (%ld bytes).\n", path, n);
 
   test_port(rom, (uint32_t)n);
+  test_cycle(rom, (uint32_t)n);
   free(rom);
 }
 

@@ -811,6 +811,18 @@ static bool tick_input(Snes* snes, Movie* movie, bool have_movie, long frame,
   // is folded in, so the chord is a pad gesture and Enter+RShift is not one.
   *quit_chord = pad_quit(pads, held);
   const bool keep_going = *quit_chord < PAD_QUIT_FRAMES;
+  // The next weapon or item and the one before, which are not buttons the
+  // SNES has: asked of the port, which does them in the player's own frame
+  // (`player_cycle_request`). A request nothing answers is let go of.
+  player_cycle_age();
+  for (int p = 0; p < MOVIE_PORTS; p++) {
+    const uint8_t pressed = pads->cycle_pressed[p];
+    pads->cycle_pressed[p] = 0;
+    for (int c = 0; c < PAD_CYCLE_COUNT; c++)
+      if (pressed & (1u << c))
+        player_cycle_request((uint16_t)(p * 2), c >> 1 ? PSN_CYCLE_ITEM : PSN_CYCLE_WEAPON,
+                             c & 1 ? -1 : +1);
+  }
   for (int p = 0; p < MOVIE_PORTS; p++) held[p] |= key_held[p];
   // The right stick, unless it was turned off: an aim direction into the
   // cartridge for the stub at `$80:D250` to pick up, and `Y` — this game's
@@ -971,8 +983,10 @@ static void usage(void) {
     "          Esc = quit\n\n"
     "Controllers: any pad SDL recognises, hot-pluggable, first two take the two\n"
     "          SNES ports. Face buttons are positional — the bottom one is B,\n"
-    "          the left one is Y, which is this game's fire button. Shoulders\n"
-    "          and triggers are L and R; left stick or D-pad steers.\n"
+    "          the left one is Y, which is this game's fire button. R1 and L1\n"
+    "          are the next item and the one before, R2 and L2 the next weapon\n"
+    "          and the one before; the touchpad's click or L3 brings up the\n"
+    "          radar (the SNES's L and R). Left stick or D-pad steers.\n"
     "          Start+Select held for a second quits (Options+Share on a\n"
     "          DualSense); the picture fades to black as you hold it. The right\n"
     "          stick aims and fires while the left one still steers, unless\n"

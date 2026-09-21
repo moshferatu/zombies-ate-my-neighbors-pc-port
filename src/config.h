@@ -50,7 +50,11 @@
 //     (`a`, `leftshoulder`, `back`...) and the usual others (`cross`, `lb`,
 //     `rt`, `share`, `options`) are read too.
 //
-// `[keyboard]` and `[controller buttons]` bind the twelve SNES buttons;
+// `[keyboard]` and `[controller buttons]` bind the twelve SNES buttons, and
+// `[controller buttons]` four things more that no SNES button does --
+// `next_weapon`, `previous_weapon`, `next_item`, `previous_item` (`src/pad.h`,
+// "The four things in the top corners"). A pad input bound to one of those is
+// not also a SNES button, and `config_check` says so when a file has it as both;
 // `[hotkeys]` and `[controller hotkeys]` bind what the frontend does -- quick
 // save, fullscreen and the rest. One pad table serves both pads. The keyboard
 // plays port 1, and `[keyboard player 2]`, which is empty unless the player
@@ -107,6 +111,14 @@ typedef enum {
 static const char* const config_action_names[ACT_COUNT] = {
   "quit", "toggle_native", "cycle_filter", "toggle_aspect", "cycle_widescreen",
   "quick_save", "quick_load", "toggle_smoothing", "fullscreen",
+};
+
+// By `PAD_CYCLE_*`; `[controller buttons]` has these beside the SNES buttons.
+static const char* const config_cycle_names[PAD_CYCLE_COUNT] = {
+  "next_weapon", "previous_weapon", "next_item", "previous_item",
+};
+static const char* const config_cycle_short[PAD_CYCLE_COUNT] = {
+  "next_weapon", "prev_weapon", "next_item", "prev_item",
 };
 
 // By `BTN_*`, which is the order of the bits in the SNES pad's word.
@@ -220,7 +232,7 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "; touchpad, misc1, paddle1 paddle2 paddle3 paddle4.\n"
   ";\n"
   "; The SNES buttons, for both pads. In this game Y fires, B changes weapon,\n"
-  "; A changes item and X uses the item.\n"
+  "; A changes item, X uses the item, and L and R both bring up the radar.\n"
   "[controller buttons]\n"
   "up = dpup\n"
   "down = dpdown\n"
@@ -230,10 +242,16 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "a = east\n"
   "y = west\n"
   "x = north\n"
-  "l = l1, l2\n"
-  "r = r1, r2\n"
+  "l = touchpad\n"
+  "r = l3\n"
   "start = start\n"
   "select = select\n"
+  "; Not SNES buttons: B and A only go forwards. These go either way, and\n"
+  "; work while firing. An input bound here is not also a button above.\n"
+  "next_weapon = r2\n"
+  "previous_weapon = l2\n"
+  "next_item = r1\n"
+  "previous_item = l1\n"
   "\n"
   "; What the frontend does, from the pad. Unbound by default: these fire on a\n"
   "; single press. (Start and Select held together for a second always quits.)\n"
@@ -596,7 +614,13 @@ static inline bool config_set(Config* c, const char* name, int line,
     const bool hot = !strcmp(section, "hotkeys") || !strcmp(section, "keyboard_hotkeys");
     if (pad_buttons || keys1 || keys2) {
       const int b = config_name_index(key, config_button_names, 12);
-      if (b < 0) return false;
+      if (b < 0) {
+        int k = config_name_index(key, config_cycle_names, PAD_CYCLE_COUNT);
+        if (k < 0) k = config_name_index(key, config_cycle_short, PAD_CYCLE_COUNT);
+        if (k < 0 || !pad_buttons) return false;
+        config_pad_list(c, name, line, c->pad.cycle[k], v);
+        return true;
+      }
       if (pad_buttons) config_pad_list(c, name, line, c->pad.game[b], v);
       else config_key_list(c, name, line, c->key[keys2 ? 1 : 0][b], v);
     } else if (pad_hot || hot) {
@@ -688,6 +712,21 @@ static inline void config_check(Config* c, const char* name) {
   }
 }
 
+// ...and a pad input that selects is not also a SNES button. Said once per
+// input, because a file from before the shoulders selected has two of them.
+static inline void config_check_pad(Config* c, const char* name) {
+  for (int b = 0; b < 12; b++)
+    for (int i = 0; i < PAD_BIND_MAX && c->pad.game[b][i] != PAD_IN_NONE; i++) {
+      const int in = c->pad.game[b][i];
+      for (int k = 0; k < PAD_CYCLE_COUNT; k++)
+        for (int j = 0; j < PAD_BIND_MAX && c->pad.cycle[k][j] != PAD_IN_NONE; j++)
+          if (c->pad.cycle[k][j] == in)
+            config_warn(c, name, 0, "the pad's %s is %s and %s; it will only be %s",
+                        config_pad_input_name(in), config_cycle_names[k],
+                        config_button_names[b], config_cycle_names[k]);
+    }
+}
+
 // --- files -----------------------------------------------------------------------
 
 static inline bool config_exists(const char* path) {
@@ -730,6 +769,7 @@ static inline bool config_load(Config* c, const char* path) {
   free(text);
   snprintf(c->path, sizeof c->path, "%s", path);
   config_check(c, path);
+  config_check_pad(c, path);
   return true;
 }
 
@@ -799,6 +839,7 @@ static inline void config_print(const Config* c) {
   config_print_keys("  Hotkeys:   ", config_action_names, ACT_COUNT, NULL, c->hotkey);
   printf("             Alt+Return=fullscreen\n");
   config_print_pad("  Pad:       ", config_button_names, 12, order, c->pad.game);
+  config_print_pad("             ", config_cycle_names, PAD_CYCLE_COUNT, NULL, c->pad.cycle);
   config_print_pad("  Pad hotkeys: ", config_action_names, ACT_COUNT, NULL, c->pad.hot);
   printf("             move stick=%s  aim stick=%s  Start+Select held for a second quits\n",
          stick[c->pad.move_stick], stick[c->pad.aim_stick]);

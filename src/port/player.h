@@ -287,6 +287,56 @@ void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
 // `player` is the doubled index the routine already carries, so 0 and 2.
 void player_set_aim(uint16_t player, uint16_t dir);
 
+// --- Selecting backwards, and from a button that is not B or A ----------------
+//
+// The second thing in this file that is not the ROM's. The cartridge has one
+// button for the weapons and one for the items and both only go forwards, which
+// with fourteen weapons is thirteen presses to reach the one just passed. A
+// modern pad has four things in its top corners, so a frontend gives them two
+// directions each: `player_cycle_request`.
+//
+// **Asked for here and done in `player_state_normal`**, for the reason
+// `player_set_aim` is: the selection needs the player's own direct page -- the
+// inventory base, the display record whose metasprite bank a new weapon
+// rewrites -- and the routine is where that is in hand. A request waits for the
+// player's next ordinary frame, one step a frame, and is dropped if none comes
+// within `PSN_CYCLE_TTL` frames (`player_cycle_age`): a press made while
+// paused or while the player is being carried off should not change weapon
+// seconds later.
+//
+// Forwards is `weapon_select_next` and `item_select_next`, the game's own.
+// Backwards is the same search walked the other way, `weapon_select_prev` and
+// `item_select_prev`: the nearest non-empty slot below the one held, wrapping,
+// the same store, the same weapon data, the same sound, and the same silence
+// when the search comes back to where it began.
+//
+// **It does not go through the button word**, and that is a difference a
+// player can feel. The routine clears bit 15 -- which is B -- out of `$1A` for
+// as long as fire is held on a weapon that is not empty, so the cartridge
+// cannot change weapon while shooting; a request can. The game changes weapon
+// under a held fire button itself, whenever one runs dry, so nothing
+// downstream is surprised.
+//
+// Nothing in the corpus asks, so with nothing pending the routine is bit for
+// bit what it was. `--stock` and F1 hand the routine back to the 65816, which
+// knows nothing of this: there the requests expire unanswered.
+#define PSN_CYCLE_WEAPON 0
+#define PSN_CYCLE_ITEM 1
+#define PSN_CYCLE_TTL 12   // frames a request waits for the player's frame
+#define PSN_CYCLE_QUEUE 3  // presses remembered, either way
+
+// `player` is the doubled index, 0 or 2; `dir` is +1 or -1.
+void player_cycle_request(uint16_t player, int which, int dir);
+// Once a frame, by whoever makes requests.
+void player_cycle_age(void);
+// What is waiting, signed; for a test.
+int player_cycle_pending(uint16_t player, int which);
+
+void weapon_select_prev(Wram* w, const Rom* rom, uint16_t dp,
+                        WeaponSelectRegs* out);
+void item_select_prev(Wram* w, const Rom* rom, uint16_t dp,
+                      WeaponSelectRegs* out);
+
 // A, X and Y all differ by exit; there is no `PHD`, so N and Z are whichever
 // of the four countdowns the routine stopped on rather than anything to do
 // with the input.
