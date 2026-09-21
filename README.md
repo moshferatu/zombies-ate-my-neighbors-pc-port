@@ -1705,6 +1705,37 @@ lines at either edge is held where it was (`mathShown`); the console's own
 frame is unchanged, so the exactness test still compares against it. 155 of
 the radar movie's 341 ticks are held.
 
+**It was not the game's interrupt, and three lines was not enough.**
+Reported again in play-testing: the dimmed box visibly moving and flashing
+under the radar's frame, badly on levels 7 and 8. The game has no such
+interrupt. The box is a window opened and closed by HDMA from a table in ROM
+(`$82:E691`: 48 lines shut, 58 open), the same on every frame, and with
+`--stock` it is on the same lines on every tick. Substituted, its top was on
+lines 49 to 51 on level 1, which the hold above was papering over, and
+anywhere from 49 to 67 on level 7, which it could not.
+
+The core does a scanline's HDMA from `dma_handleDma`, which every CPU access
+calls, on a request that is a single bool raised once a line. A substituted
+routine's time is burned without CPU accesses (`burn_slice`), and the
+frontend burns each budget in one piece: a budget spanning twelve lines got
+one line's transfer and the table was eleven lines behind for the rest of
+the frame. Busy levels have the long budgets. There was a second door into
+the same hole: `dma_handleDma` runs the clock on to the end of "the access
+it interrupted", whose length it is given, and it was given the whole
+budget. While any channel is doing HDMA, `burn_slice` now spends its slice a
+scanline at a time, each piece ending just past the point where the core
+raises the request, and hands `dma_handleDma` a real access's twelve cycles.
+With no HDMA on it does exactly what it did, so the timing of everything
+else is to the cycle what it was.
+
+Counted in the core on levels 7 and 1 with the radar up, 1,095 ticks each:
+requests overwritten before they were answered were 2,434 on level 1 with
+only the first of the two mended, and are none on either level with both;
+the box is on lines 48 to 105, the `--stock` lines, on every tick of both. The draw-list test is exact on the radar movie in
+4:3 and 16:9 and on `level1` and `level25-lane`. The
+one number that moved is the logos' wave, 1,114 line-ticks eased to 1,113:
+that is HDMA too.
+
 **Backdrops that step every few ticks.** The screens before the game are
 layered and exact, and were not smooth: the LucasArts screen's textured
 backdrop moves a pixel diagonally every *fourth* tick, the character

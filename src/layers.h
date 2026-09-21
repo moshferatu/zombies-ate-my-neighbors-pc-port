@@ -323,11 +323,14 @@ typedef struct {
   int mathRects;
   LayersRect mathRect[LAYERS_MAX_MATH_RECTS];
   // ...and the rectangles as they are shown under `even`: held from the
-  // last tick where they differ from it by no more than a few lines. The
-  // game moves the window's edges from an interrupt whose line wanders --
-  // the radar's box began on line 49, 50, 51 or 52 from one tick to the
-  // next and ended on 107 to 110 -- and at 60 pictures a second that is a
-  // line of the box flickering at its foot. Set by `layers_link`.
+  // last tick where they differ from it by no more than a few lines. This
+  // was written for the radar's box, which began on line 49, 50, 51 or 52
+  // from one tick to the next, and the game was blamed for it. It was not
+  // the game: the box is HDMA off a table in ROM and does not move, and the
+  // substitution was losing scanlines of HDMA (`burn_slice` in
+  // `cosim/cosim.c`). With that mended nothing is known to wander and this
+  // holds nothing; it stays for a window that really is moved by hand. Set
+  // by `layers_link`.
   LayersRect mathShown[LAYERS_MAX_MATH_RECTS];
   int mathHeld;  // how many of them were held this tick, for the test
   // Colour maths: which of the main-screen layers (0-3 backgrounds, 4 sprites

@@ -27,6 +27,20 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### The radar's dimmed box sliding under its frame (2026-09-20)
+
+Reported again, worst on levels 7 and 8. Not the game's "wandering
+interrupt" of the 09-19 entry: the box is HDMA off a ROM table and under
+`--stock` never moves. `burn_slice` spent a substituted routine's whole
+budget in one call, the core's HDMA request is one bool a line, and every
+line after the first in a budget went without its transfer (top of the box
+at 49-51 on level 1, 49-67 on level 7); `dma_handleDma` was also handed the
+budget as the length of the access to finish, and ran on for it. Now a
+scanline at a time, with a 12-cycle access, while any HDMA channel is on,
+and unchanged otherwise. Levels 7 and 1, radar up, 1,095 ticks each: no
+request lost, box on the stock lines on every tick. Draw-list test
+exact on the radar movie, `level1`, `level25-lane`.
+
 ### Neighbours dying out of sight: the window follows the picture (2026-09-20)
 
 Reported in play-testing. A neighbour is mortal wherever she exists (monsters

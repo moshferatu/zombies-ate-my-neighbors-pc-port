@@ -674,9 +674,54 @@ static void native_return(Cosim* c, const CosimRoutine* r, const CosimRegs* out)
 // clock the burn does, exactly as it does under the CPU. The cost of HDMA lands
 // in `cycles_native` alongside the budget, which is where the ROM would have put
 // it too — it is time the game spent and did not choose to spend.
+//
+// **...and one call to it is one scanline's HDMA, however long the slice.** A
+// budget spent in one piece (`burn_plan`, whenever the cost is the routine's
+// fixed one, which is always in the frontend) can span a dozen scanlines, and
+// the request it is answering is that same single bool: every line after the
+// first went without its transfer, and the table fell that many lines behind
+// for the rest of the frame. Reported in play-testing as the survivor radar's
+// dimmed box sliding down out of its frame and flashing, worse on busy levels:
+// the box is a window HDMA opens and shuts from a table in ROM (`$82:E691`,
+// 48 lines shut and 58 open), the same every frame, and under `--stock` it is
+// on picture lines 48 to 105 on every tick. Substituted, on level 7, its top
+// was anywhere from line 49 to line 67.
+//
+// So while any channel is doing HDMA the slice is spent a scanline at a time,
+// each piece ending just past the point in the line where the core raises the
+// request (`hPos` 1104), with the transfer done between pieces -- which is
+// where the console does it, the CPU being stopped for it wherever it is.
+// With no HDMA on, nothing is different: one piece, as before, so the timing
+// of everything that does not use HDMA is to the cycle what it was.
+#define COSIM_HDMA_AT 1104
+#define COSIM_LINE_CYCLES 1364
+// The longest a real 65816 access takes: see `COSIM_BURN_PIECE`, below.
+#define COSIM_ACCESS_CYCLES 12
+static bool hdma_on(const Dma* dma) {
+  for (int i = 0; i < 8; i++)
+    if (dma->channel[i].hdmaActive) return true;
+  return false;
+}
+
 static void burn_slice(Cosim* c, int cycles) {
-  dma_handleDma(c->snes->dma, cycles);
-  snes_runCycles(c->snes, cycles);
+  Snes* snes = c->snes;
+  // What `dma_handleDma` is given is the length of the CPU access it is
+  // interrupting, and it runs the clock on to the end of that access when the
+  // transfer is done. Handed a whole budget it ran on for a whole budget, inside
+  // the transfer, over any number of lines: the same hole by another door.
+  dma_handleDma(snes->dma, hdma_on(snes->dma) ? COSIM_ACCESS_CYCLES : cycles);
+  while (cycles > 0 && hdma_on(snes->dma)) {
+    int piece = COSIM_HDMA_AT - (int)snes->hPos;
+    // The core looks at where the beam is *before* it moves it, so standing
+    // on the point is still before it.
+    if (piece < 0) piece += COSIM_LINE_CYCLES;
+    piece += 4;  // past it, not onto it
+    if (piece >= cycles) break;
+    snes_runCycles(snes, piece);
+    cycles -= piece;
+    dma_handleDma(snes->dma, COSIM_ACCESS_CYCLES);
+  }
+  snes_runCycles(snes, cycles);
 }
 
 // Burn a substituted routine's cycle budget, and remember that we did.
