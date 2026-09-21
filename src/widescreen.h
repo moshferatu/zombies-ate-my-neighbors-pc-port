@@ -224,8 +224,11 @@
 //
 // Which is the whole shape of the problem, and says what to do about it. The
 // window is not wrong; the window is 256 pixels wide because the picture was.
-// So this one is not drawn from outside the game at all. `ws_widen_window`
-// writes `#$00A0 + 2 * margin` over that immediate, and the spawner goes on
+// So this one is not drawn from outside the game at all. The window is two
+// immediates, its middle (`ADC #$0080` to the camera's column, at `$81:820A`)
+// and its reach either side of that (`CMP #$00A0`), and `ws_widen_window`
+// writes both: the middle of the picture as it stands this frame, and half the
+// picture and the same 32 pixels. The spawner goes on
 // doing exactly what it always did -- one comparison, against the picture that
 // is actually being drawn. She is spawned before she reaches the edge of it and
 // taken away 32 pixels past the other one, which is the relationship the stock
@@ -242,6 +245,25 @@
 // That is the same fact as her being visible and animated, seen from the other
 // side, and there is no version of one without the other.
 //
+// **It was the reach alone at first, and that was unfair.** The middle was left
+// at the camera's and the reach was made `#$00A0 + 2 * margin`, twice the
+// margin because the picture is not always centred on the camera: at the end
+// of a map one margin is all of it (the sliding margins, below), and a window
+// with a fixed middle has to reach the widest either can get. The reason given
+// here for not moving the middle was that nothing should spawn and unspawn as
+// the margins trade. They trade a pixel at a time, as the camera closes on the
+// map's end -- the picture's left edge in the world is `max(cam_x - margin,
+// 0)` -- so a window that follows the picture moves no faster than the
+// console's follows the camera, and the reason was not one. What the wide
+// reach cost was reported in play-testing: neighbours dying where they cannot
+// be seen. A monster touches anything in the visible list, which `actor_cull`
+// fills from 128 pixels behind the camera to 383 ahead of it, so a neighbour
+// is mortal wherever she exists. On a console that is 32 pixels she cannot be
+// seen in, either side. With the reach alone it was 75 either side in 16:9,
+// and 118 on the short side at the end of a map. With the middle moved as well
+// it is the console's 32 everywhere, and she is still a neighbour in every
+// column that is drawn. (Above and below it is 48 rows, stock, and untouched.)
+//
 // She also holds an actor slot for longer. `$80:825E` already returns
 // empty-handed when there is no slot and `$81:81A2` already gives up quietly
 // when it does, so the failure mode there is the one the game shipped with.
@@ -251,7 +273,7 @@
 // can already be drawn from its list exactly, and changing the game to put a
 // record behind it would only be changing the game. The vertical half of the
 // neighbours' own test at `$81:8250` keeps its `#$00A0` as well, no rows having
-// been added. At margin zero the stock figure goes back and the game is the game
+// been added. At margin zero the stock figures go back and the game is the game
 // again, which is what makes `--widescreen off` still byte-identical; and the
 // co-simulation never sees any of it, because it does not include this file.
 //
@@ -407,8 +429,15 @@
 // capture margin, `LAYERS_MARGIN` in `layers.h`, which this file does not see.
 #define WS_BOSS_SLACK 16
 
-// A word in the ROM file that is a distance from the console's edge or its
-// middle and has to be one from the picture's: the byte before it that says
+// The neighbours' window (`$81:8207`, and the header): `ADC #$0080` to the
+// camera's column is its middle and `CMP #$00A0` its reach either side.
+#define WS_WINDOW_MIDDLE_OPCODE 0x0820au
+#define WS_WINDOW_MIDDLE_STOCK 0x0080
+#define WS_WINDOW_REACH_OPCODE 0x0823cu
+#define WS_WINDOW_REACH_STOCK 0x00a0
+
+// A word in the ROM file that is a distance from the console's edge and has to
+// be one from the widest the picture gets: the byte before it that says
 // the file is this ROM (the opcode, or for a table the `RTS` it follows),
 // what the cartridge has there, and how many margins go on it. LoROM: bank
 // `$81` is file offset `$08000` and bank `$82` is `$10000`.
@@ -421,8 +450,6 @@ typedef struct {
 } WsRomWord;
 
 static const WsRomWord WS_ROM_WORDS[] = {
-    // The neighbours' window: `CMP #$00A0` at `$81:823C`.
-    {0x0823cu, 0xc9, 0x0823du, 0x00a0, 2},
     // The football player. Where he is put down, `$81:C7B9 SBC #$0008` and
     // `$81:C7C7 ADC #$0148`; where he may stand while he gets set,
     // `$81:C746 SBC #$0008` and then `$81:C751 ADC #$0150` on top of that, so
@@ -868,6 +895,23 @@ static inline void ws_boss_plane(Snes* snes, const Widescreen* ws, int left, int
   }
 }
 
+// How the extra width is shared between the two sides: equally, until the
+// world ends sooner on one of them, and then the other takes what is left.
+// See "Where the extra width goes" in `widescreen_frame`.
+static inline void ws_split_margins(int cam_x, int map_cols, int margin, int* left_out, int* right_out) {
+  const int room_left = cam_x;
+  const int room_right = map_cols * 8 - (cam_x + 256);
+  int left = margin < room_left ? margin : room_left;
+  int right = 2 * margin - left;
+  if (right > room_right) {
+    right = room_right > 0 ? room_right : 0;
+    left = 2 * margin - right;
+  }
+  if (left < 0) left = 0;
+  *left_out = left;
+  *right_out = right;
+}
+
 static inline bool ws_konami_sweep(const Snes* snes) {
   const Ppu* ppu = snes->ppu;
   const BgLayer* bg = &ppu->bgLayer[0];
@@ -973,15 +1017,8 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // camera does at the end of a level, and it costs nothing but the picture no
   // longer being centred on a camera that was never centred on the player
   // either.
-  const int room_left = cam_x;
-  const int room_right = map_cols * 8 - (cam_x + 256);
-  int left = margin < room_left ? margin : room_left;
-  int right = 2 * margin - left;
-  if (right > room_right) {
-    right = room_right > 0 ? room_right : 0;
-    left = 2 * margin - right;
-  }
-  if (left < 0) left = 0;
+  int left, right;
+  ws_split_margins(cam_x, map_cols, margin, &left, &right);
   snes_setWidescreen(snes, left, right);
   // ...and if the map is narrower than the whole picture, neither margin can be
   // filled and the total has to stay put or the framebuffer would change size
@@ -1042,30 +1079,46 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
 }
 
 // Move the game's own distances from the console's edges out to the edges of
-// the picture that is actually being drawn: the neighbour spawner's window,
-// and the wings some monsters come on from (`WS_ROM_WORDS`, and the header).
-// Idempotent, and applied every frame because `F4` can change the margin
-// between two of them; at margin zero it writes the stock figures back and the
-// game is the game again.
+// the picture that is actually being drawn. Idempotent, and applied every frame
+// because `F4` can change the margin between two of them and the camera can
+// change how it is shared; at margin zero it writes the stock figures back and
+// the game is the game again. Each word is guarded by the opcode in front of
+// it, which is not what gets written, so the guard stays true after a patch
+// and is false for any ROM that does not have this code there.
 //
-// Twice the margin, not the margin. The two margins slide -- at the end of a
-// map the side with no world left to show gives its pixels to the other one --
-// so either of them can be the whole `2 * margin` at once, and each of these is
-// a single distance. Sizing it to the widest one margin can get is the only
-// figure that is right at both edges of every map, and it does not move, so
-// nothing spawns and unspawns as the two margins trade.
+// The neighbours' window follows the picture: its middle is the picture's and
+// its reach is half the picture and the console's 32 pixels, so it ends 32
+// past each edge that is drawn wherever the two margins are -- see the header
+// for why. The margins are worked out from the machine's memory as it stands,
+// not `ws->mem`: this is for the tick about to run, not the picture just made.
+//
+// The wings (`WS_ROM_WORDS`) are moved by twice the margin, not the margin.
+// The two margins slide -- at the end of a map the side with no world left to
+// show gives its pixels to the other one -- so either of them can be the whole
+// `2 * margin` at once. A monster put down that far out is out of sight
+// wherever the margins are, and all it costs him is a longer run.
+static inline void ws_rom_word(Cart* cart, uint32_t guard_at, uint8_t guard, uint32_t word_at, uint16_t want) {
+  if (cart->romSize <= word_at + 1 || cart->rom[guard_at] != guard) return;
+  cart->rom[word_at] = (uint8_t)want;
+  cart->rom[word_at + 1] = (uint8_t)(want >> 8);
+}
+
 static inline void ws_widen_window(Snes* snes, int margin) {
   Cart* cart = snes->cart;
   if (!cart || !cart->rom) return;
+  int left = 0, right = 0;
+  if (margin > 0) {
+    const uint8_t* mem = snes->ram;
+    ws_split_margins(ws_r16(mem, W_CAMERA_X), ws_r16(mem, W_TILEMAP_ROW_BYTES) >> 1, margin, &left, &right);
+  }
+  // `left + right` is `2 * margin`, so their difference is even.
+  ws_rom_word(cart, WS_WINDOW_MIDDLE_OPCODE, 0x69, WS_WINDOW_MIDDLE_OPCODE + 1,
+              (uint16_t)(WS_WINDOW_MIDDLE_STOCK + (right - left) / 2));
+  ws_rom_word(cart, WS_WINDOW_REACH_OPCODE, 0xc9, WS_WINDOW_REACH_OPCODE + 1,
+              (uint16_t)(WS_WINDOW_REACH_STOCK + (left + right) / 2));
   for (size_t i = 0; i < sizeof WS_ROM_WORDS / sizeof WS_ROM_WORDS[0]; i++) {
     const WsRomWord* w = &WS_ROM_WORDS[i];
-    if (cart->romSize <= w->word_at + 1) continue;
-    // The guard is not what gets written, so this stays true after a patch
-    // and is false for any ROM that does not have this code there.
-    if (cart->rom[w->guard_at] != w->guard) continue;
-    const uint16_t want = (uint16_t)(w->stock + w->margins * margin);
-    cart->rom[w->word_at] = (uint8_t)want;
-    cart->rom[w->word_at + 1] = (uint8_t)(want >> 8);
+    ws_rom_word(cart, w->guard_at, w->guard, w->word_at, (uint16_t)(w->stock + w->margins * margin));
   }
 }
 

@@ -1107,6 +1107,8 @@ comparison, against the picture that is actually being drawn. Twice the margin
 because the two margins slide: at the end of a map the side with no world left
 gives its pixels to the other, so either can be the whole 86 at once, and one
 figure that covers the worst case is a figure that does not move as they trade.
+(That was the first version, and it was unfair to her: see *The window follows
+the picture* below for what it cost and what replaced it.)
 She is spawned before she reaches the edge of the picture and taken away 32
 pixels past the other one, which is the stock game's relationship to its own edge
 to the pixel. Her thread runs the whole time she is in view, so she animates
@@ -1280,6 +1282,38 @@ arrives at -94 and 414 and still reaches the player. The creature at
 `$82:EAC5` has not been reached by anything here and has not been seen. The
 draw-list test passes on `level1` (16:9 and 4:3), `level21` and
 `level25-lane` (16:9) and `level49` (16:10).
+
+### The window follows the picture
+
+Reported in play-testing: neighbours dying where they cannot be seen, on many
+levels. Some of that is the game. A monster touches anything in the visible
+list, which `actor_cull` fills from 128 pixels behind the camera to 383 ahead
+of it, and a neighbour exists 32 pixels past either edge of the console's
+screen (48 rows past the top and bottom), so on a console there is a strip she
+can be taken in unseen. But the first widened window made the strip much
+bigger. It left the window's middle at the camera's and made its reach
+`#$00A0 + 2 * margin`, to cover a margin that is all on one side at the end of
+a map, so in 16:9 she existed 75 pixels past each edge of a centred picture
+and 118 past the short edge at the end of a map.
+
+The reason given for not moving the middle, that nothing should spawn and
+unspawn as the margins trade, was not one: they trade a pixel at a time as the
+camera closes on the map's end, so a window that follows the picture moves no
+faster than the console's follows the camera. The window is two immediates,
+`ADC #$0080` at `$81:820A` for the middle and `CMP #$00A0` for the reach, and
+`ws_widen_window` now writes both every frame: the middle of the picture as it
+stands (from the machine's memory as it is, since it is for the tick about to
+run) and half the picture plus the same 32. The strip is the console's 32
+wherever the margins are, and she is still a neighbour in every column drawn.
+
+Measured in the hook on every frame of `level1` and `level25-lane` in 16:9,
+old rule against new, from the game's own table of which neighbours have a
+thread: the furthest outside the picture any was alive falls from 73 and 71
+pixels to 2 and 37 (32 and the few ticks the spawner takes to come round), and
+on neither movie, under either rule, was one without a thread more than 16
+pixels inside the picture -- with each margin at its full 86 during
+`level25-lane`. The draw-list test passes on `level1` (16:9 and 4:3),
+`level25-lane` (16:9) and `level1-rescue` (16:10).
 
 ### The one that was a real emulation bug
 

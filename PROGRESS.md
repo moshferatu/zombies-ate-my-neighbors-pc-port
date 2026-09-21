@@ -27,6 +27,18 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### Neighbours dying out of sight: the window follows the picture (2026-09-20)
+
+Reported in play-testing. A neighbour is mortal wherever she exists (monsters
+touch the whole visible list, 128 behind the camera to 383 ahead), and the
+first widened window -- stock middle, reach `#$00A0 + 2 * margin` -- had her
+existing 75 pixels past each edge of a 16:9 picture and 118 at a map's end,
+against the console's 32. `ws_widen_window` now writes the window's middle
+(`ADC #$0080` at `$81:820A`) as well as its reach, every frame, from the live
+camera: the picture's middle and half the picture plus 32. Measured on
+`level1` and `level25-lane`: furthest alive outside the picture 73/71 before,
+2/37 after; none missing inside it. Draw-list test OK on three movies.
+
 ### Football players appearing in the widescreen margin (2026-09-20)
 
 Reported in play-testing, level 12. The football player's thread (`$81:C87B`)
