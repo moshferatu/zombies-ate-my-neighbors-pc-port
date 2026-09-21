@@ -27,6 +27,35 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### Pickups flickering in the widescreen margins while walking (2026-09-21)
+
+Reported in play-testing: with the camera moving, keys and other items in the
+margins flicker for an instant, and never in the middle of the screen. They
+were never missing -- a check on every frame of three level 1 movies found
+every listed object's sprite in OAM exactly where the list and the camera put
+it. It was the pictures between ticks. A sprite is eased from where it was,
+and found there by its owner; the sprites `src/widescreen.h` puts into the
+margins had none, and were paired only with other ownerless sprites. A piece
+crossing column 256 changed from the one kind to the other, had no last
+position for a tick, and was drawn a camera's step ahead of the ground for
+three pictures out of four. `Widescreen` now keeps the record and origin of
+every piece it places (`ws_owners`), both readers of the owner table merge it
+in (`layers_take` in `src/main_sdl.c`, `tools/test_layers.c`), and
+`layers_link` pairs an ownerless sprite with one whose record has gone from
+the tick, which is what a pickup's does as the camera leaves it.
+`level1-pickups` in 16:9: unpaired sprites 149 to 78, all first appearances;
+pairings by looks 1,919 to 41. The draw-list comparison is unchanged.
+
+That helped and the keys of level 7 still flashed. The second cause was a
+sprite that really was missing, for one tick, as a pickup came in from the left
+margin: the level's list drew it only outside the console's 256 columns, and
+the spawner, which looks every fourth tick, had not yet given it a record at
+column -15. Reproduced in the frontend (`--level 7`, sixty `--key-at` walks
+left and right beside a pickup) with a check that every listed object in the
+picture has its sprite in OAM: missing on 7 ticks of 1,414, one per pass,
+and on none with `ws_object_sprites` drawing a recordless thing anywhere in
+the picture (`inside`, at `ws_emit_meta`).
+
 ### The radar's dimmed box sliding under its frame (2026-09-20)
 
 Reported again, worst on levels 7 and 8. Not the game's "wandering

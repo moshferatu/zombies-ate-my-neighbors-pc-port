@@ -1032,21 +1032,32 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
       }
     }
     if (byRecord) {
-      // No record: a sprite the game's pass did not draw. With the picture
-      // widened that is everything in the margins -- the pieces the pass
-      // dropped for being outside the console's 256, and the items, weapons
-      // and neighbours lying on the ground with no actor behind them -- put
-      // into parked OAM entries by `src/widescreen.h`, in whatever entries
-      // are free and from whatever VRAM slot it could borrow, so neither the
-      // entry nor the tile number says which is which. What does is where it
-      // is: such a thing moves by the camera and its own walk, a few pixels,
-      // so it is the nearest of the last tick's recordless sprites of the
-      // same size, palette and flip.
+      // No record, or none it had a tick ago. With the picture widened the
+      // first is the things lying on the ground in the margins with no actor
+      // behind them -- the items, the weapons and the neighbours, drawn from
+      // the level's list by `src/widescreen.h` into whatever OAM entries are
+      // free and from whatever VRAM slot it could borrow, so neither the
+      // entry nor the tile number says which is which. (The pieces the pass
+      // dropped for being outside the console's 256 are put back there too,
+      // and those do have a record: `ws_owners`.) What says which is which is
+      // where it is: such a thing moves by the camera, a few pixels, so it is
+      // the nearest of the last tick's sprites of the same size, palette and
+      // flip -- the recordless ones, and the ones whose record has gone from
+      // this tick altogether, because the thing on the ground is given a
+      // record as the camera comes up to it and loses it as the camera leaves
+      // (`object_spawner_body`), and is the same thing in the same place.
       int best = -1, bestDist = 0;
       const uint16_t look = (uint16_t)(cur->oam[i * 2 + 1] & 0xfe00);
       for (int j = 0; j < LAYERS_SPRITES; j++) {
         const LayersSprite* p = &prev->spr[j];
-        if (!p->drawn || p->rec >= 0 || p->w != c->w) continue;
+        if (!p->drawn || p->w != c->w) continue;
+        if (p->rec >= 0) {
+          if (c->rec >= 0) continue;
+          bool still = false;
+          for (int k = 0; k < LAYERS_SPRITES && !still; k++)
+            still = cur->spr[k].drawn && cur->spr[k].rec == p->rec;
+          if (still) continue;
+        }
         if ((uint16_t)(prev->oam[j * 2 + 1] & 0xfe00) != look) continue;
         const int d = smooth_abs(p->x - c->x) + smooth_abs(p->y - c->y);
         if (d > 8) continue;

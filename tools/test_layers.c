@@ -223,8 +223,9 @@ int main(int argc, char** argv) {
     // the table as it stood a tick ago.
     const SpriteOamOwners* own = hold ? &held : &sprite_oam_owners;
     const bool own_fresh = hold ? held_fresh : fresh;
-    layers_capture(f, ppu, own_fresh ? own->rec : NULL, own_fresh ? own->ox : NULL,
-                   own_fresh ? own->oy : NULL);
+    SpriteOamOwners with;
+    own = ws_owners(wide != WIDE_OFF ? &ws : NULL, own_fresh ? own : NULL, &with);
+    layers_capture(f, ppu, own ? own->rec : NULL, own ? own->ox : NULL, own ? own->oy : NULL);
     held = sprite_oam_owners;
     held_fresh = fresh;
     if (f->ownersFresh) owners_fresh++;

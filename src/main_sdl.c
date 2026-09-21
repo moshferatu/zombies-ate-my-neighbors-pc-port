@@ -358,6 +358,8 @@ typedef struct {
   SpriteOamOwners held;
   bool held_fresh;
   uint32_t serial;  // the table's serial, as of the last capture
+  // The widened picture's own sprites, which have owners too: `ws_owners`.
+  const Widescreen* ws;
 } Layers;
 
 static bool layers_init(Layers* s) {
@@ -380,9 +382,10 @@ static void layers_free(Layers* s) {
 // port's owner table is passed along only if its pass ran this tick, which
 // its serial says.
 static void layers_take(Layers* s, Ppu* ppu) {
-  layers_capture(s->frame[s->cur ^ 1], ppu, s->held_fresh ? s->held.rec : NULL,
-                 s->held_fresh ? s->held.ox : NULL,
-                 s->held_fresh ? s->held.oy : NULL);
+  SpriteOamOwners with;
+  const SpriteOamOwners* own = ws_owners(s->ws, s->held_fresh ? &s->held : NULL, &with);
+  layers_capture(s->frame[s->cur ^ 1], ppu, own ? own->rec : NULL, own ? own->ox : NULL,
+                 own ? own->oy : NULL);
   s->held_fresh = sprite_oam_owners.serial != s->serial;
   s->serial = sprite_oam_owners.serial;
   s->held = sprite_oam_owners;
@@ -1741,6 +1744,7 @@ int main(int argc, char** argv) {
       fprintf(stderr, "error: cannot set up smoothing: %s\n", SDL_GetError());
       return 1;
     }
+    lay.ws = &ws;
     if (!plyr.blends_ok)
       printf("note: this renderer has no custom blend modes, so a frame that adds\n"
              "      the sub screen (the character select) is shown as the PPU drew it.\n");

@@ -485,6 +485,12 @@ typedef struct {
   int back_slot[WS_LENT_MAX];  // ...of those, the ones that have to be put back
   int back_count;
   uint8_t slot_drawn[SPRITE_SLOTS];  // slots this frame's own sprites read from
+  // Whose the sprites put into the margins are: for each OAM entry filled
+  // here, the record it was composed from and that record's origin on the
+  // screen, as `SpriteOamOwners` has them for the game's own -- see
+  // `ws_owners`. -1 for an entry that is not one of these, and for a thing on
+  // the ground drawn from the level's list, which has no record.
+  int16_t owner_rec[OAM_ENTRIES], owner_ox[OAM_ENTRIES], owner_oy[OAM_ENTRIES];
   // How `ws_place_screen_sprites` found the pass that is on screen: frames it
   // was not the newest one, and frames it was none of those kept.
   long place_behind, place_unmatched;
@@ -590,10 +596,27 @@ static inline int ws_lend_slot(Snes* snes, Widescreen* ws, uint16_t frame) {
 // means something different and just as necessary: nothing drawn from outside
 // the game may put a pixel where the console puts one, because there the
 // console is right and this is not.
-static inline int ws_emit_meta(Snes* snes, Widescreen* ws, int slot,
+//
+// **...except in the four ticks the console is late.** `inside` draws the
+// pieces within the console's 256 as well, and is for the things on the ground
+// alone. The spawner that gives such a thing its record looks every fourth
+// tick, and its window reaches sixteen pixels past the console's edge, which a
+// camera at two pixels a tick crosses in eight: with the tick the picture is
+// behind by, a thing can be inside the console's columns and still have no
+// record. On the console that is a sliver at the edge of the glass turning up
+// a moment late. In a widened picture the thing had been in plain sight in the
+// margin, drawn from the list, and at column -15 the list stopped drawing it
+// and nothing else had started: it went out for a tick and came back, once
+// for every pass of the camera. Reported in play-testing as the keys of
+// level 7 flashing while walking from side to side with them in the margin,
+// and measured there as one tick missing in every 84. A thing with no record
+// is where the list says it is on either side of column 256, so it is drawn
+// there; if the record has come since the memory this reads was copied, the
+// game has drawn the same sprite in the same place and this one is under it.
+static inline int ws_emit_meta(Snes* snes, Widescreen* ws, int slot, int rec,
                                const SpriteMeta* meta, int16_t ox, int16_t oy,
                                uint16_t attr_or, uint16_t attr_and, bool flip_x,
-                               bool flip_y, int left, int right) {
+                               bool flip_y, int left, int right, bool inside) {
   const uint16_t flip_eor =
       (uint16_t)((flip_x ? 0x4000 : 0) | (flip_y ? 0x8000 : 0));
 
@@ -611,7 +634,7 @@ static inline int ws_emit_meta(Snes* snes, Widescreen* ws, int slot,
     if (flip_x) sx = ws_mirror(sx);
     sx = (uint16_t)(sx + (uint16_t)ox);
     const int x = (int16_t)sx;
-    if (x > -16 && x < 256) continue;
+    if (!inside && x > -16 && x < 256) continue;
     // A 16-wide piece at `x` covers `x..x+15`, so it is worth drawing while any
     // of that is inside the widened picture.
     if (x >= 0 ? x > 255 + right : x < -15 - left) continue;
@@ -621,6 +644,9 @@ static inline int ws_emit_meta(Snes* snes, Widescreen* ws, int slot,
     const uint16_t word =
         (uint16_t)(((uint16_t)tile | (p->attr & attr_and) | attr_or) ^ flip_eor);
     snes_setSprite(snes, slot, x & 0x1ff, sy & 0xff, word, true);
+    ws->owner_rec[slot] = (int16_t)rec;
+    ws->owner_ox[slot] = ox;
+    ws->owner_oy[slot] = oy;
     slot = snes_freeSprite(snes, slot + 1);
   }
   return slot;
@@ -658,10 +684,10 @@ static inline int ws_object_sprites(Snes* snes, Widescreen* ws, int slot,
     // flag it sets is `ACTOR_DRAW`. So there is no flip, no forced palette and
     // no raised priority to work out -- an object is drawn one way.
     slot = ws_emit_meta(
-        snes, ws, slot, &meta,
+        snes, ws, slot, -1, &meta,
         (int16_t)(ws_r16(mem, W_OBJECT_X + (uint32_t)i * 2) - cam_x),
         (int16_t)(ws_r16(mem, W_OBJECT_Y + (uint32_t)i * 2) - cam_y), 0x2000,
-        0xffff, false, false, left, right);
+        0xffff, false, false, left, right, true);
   }
   return slot;
 }
@@ -676,6 +702,7 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
   const uint16_t cam_y = ws_r16(mem, W_CAMERA_Y);
   int slot = snes_freeSprite(snes, 0);
   ws->lent_count = 0;
+  memset(ws->owner_rec, 0xff, sizeof ws->owner_rec);
 
   // Which cache slots the picture already on its way to the screen is reading
   // from. Every sprite the game emits is a whole 16x16 frame, so an entry's
@@ -722,9 +749,9 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
         SPRITE_OK)
       continue;
 
-    slot = ws_emit_meta(snes, ws, slot, &meta, ox, oy, attr_or, attr_and,
+    slot = ws_emit_meta(snes, ws, slot, rec, &meta, ox, oy, attr_or, attr_and,
                         (flags & SPRITE_FLIP_X) != 0,
-                        (flags & SPRITE_FLIP_Y) != 0, left, right);
+                        (flags & SPRITE_FLIP_Y) != 0, left, right, false);
   }
 
   // ...and then the ones with no record to have been dropped from. Last because
@@ -777,6 +804,40 @@ static inline const SpriteOamOwners* ws_pass_on_screen(const Snes* snes, Widescr
   }
   if (newest > 0) ws->place_unmatched++;
   return &sprite_oam_owners;
+}
+
+// The owner table of the picture on screen with the margins' sprites in it,
+// for whoever moves sprites between ticks (`layers_link` in `layers.h`).
+//
+// **A sprite in a margin belongs to somebody too.** The pictures between two
+// ticks ease each sprite from where it was, and find where it was by whose it
+// is: the record it was drawn from, and how far that record's origin moved.
+// The game's pass says so for the sprites it places. The ones put back here
+// said nothing, and were paired by standing nearest to a sprite of the last
+// tick that had said nothing either -- so a piece crossing the console's edge,
+// a record's on one side and nobody's on the other, had no last place at all
+// and was drawn for a tick where it had got to, while the ground under it was
+// still being eased there. With the camera moving that is a jump ahead of the
+// ground and back on to it, at the inner edge of a margin, once for every
+// thing that crosses it: reported in play-testing as the keys and the other
+// pickups flickering in the margins while walking, and never in the middle of
+// the screen. A walker's pieces did it again at each change of animation
+// frame, which moves a piece further than "nearest" was allowed to look.
+//
+// `held` is the game's table for this picture, or NULL if its pass did not
+// run. Nothing is said then either: a picture with no table is paired by the
+// look of its sprites, all of them.
+static inline const SpriteOamOwners* ws_owners(const Widescreen* ws, const SpriteOamOwners* held,
+                                               SpriteOamOwners* out) {
+  if (!held || !ws || ws->margin <= 0) return held;
+  *out = *held;
+  for (int s = 0; s < OAM_ENTRIES; s++) {
+    if (ws->owner_rec[s] < 0) continue;
+    out->rec[s] = ws->owner_rec[s];
+    out->ox[s] = ws->owner_ox[s];
+    out->oy[s] = ws->owner_oy[s];
+  }
+  return out;
 }
 
 static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, int place) {
@@ -981,6 +1042,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
                              : ws_konami_sweep(snes) ? ppu_wideSweep : ppu_wideAuto);
 
   if (!in_level || margin <= 0) {
+    memset(ws->owner_rec, 0xff, sizeof ws->owner_rec);
     // Nothing outside a level has a map to run off the end of.
     snes_setWidescreen(snes, margin, margin);
     snes_setWideClamp(snes, -PPU_EXTRA_MAX, 255 + PPU_EXTRA_MAX);

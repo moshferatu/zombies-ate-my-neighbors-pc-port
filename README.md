@@ -1617,7 +1617,52 @@ margins -- the pieces the pass drops outside the console's 256, the items and
 neighbours with no actor behind them -- which have no record and are paired
 with the nearest recordless sprite of the same looks; and at the ends of a
 map its margins trade width, which moves the picture's origin under everything
-and has to be counted in every delta. A move
+and has to be counted in every delta.
+
+**The margins' sprites have owners too, and had to say so.** Paired by looks
+alone, a piece crossing the console's edge had nobody to be paired with: it was
+a record's sprite on one side of column 256 and nobody's on the other, and the
+recordless were only ever looked for among the recordless. So for one tick it
+was drawn where it had got to while the ground under it was still being eased
+there -- a jump ahead of the ground and back on to it, at the inner edge of a
+margin, once for every thing that crossed. Reported in play-testing as the keys
+and the other pickups flickering in the margins while walking, and never in the
+middle of the screen; a thing on the ground shows it best because it has no
+motion of its own to hide it in. A walker out there did it again at every
+change of animation frame, which moves a piece further than "nearest" was
+allowed to look. `src/widescreen.h` composes those pieces from the record and
+knows whose each one is, so it now keeps that (`ws_owners`), and the table the
+picture is taken apart with is the game's with the margins' entries added: a
+piece is a record's wherever it is drawn. What is left to pair by looks is the
+things on the ground that have no record, and those are paired with a sprite
+whose record has *gone* as well as with the recordless, because the spawner
+gives such a thing a record as the camera comes up to it and takes it away as
+the camera leaves, and it is the same thing in the same place. Over
+`level1-pickups` in 16:9, 1,776 eased ticks: sprites with no last position 149
+before and 78 after, every one of the 78 a first appearance -- none now within
+eight pixels of where a sprite of the same looks had just been, which 17 were
+-- and pairings by looks 1,919 before and 41 after.
+
+**And one tick in which a key was nobody's at all.** That helped and did not
+finish it: the keys of level 7 still flashed, walking from side to side with
+one in a margin. This time the sprite really was missing. A thing on the
+ground with no record is drawn from the level's list, but only outside the
+console's 256 columns, because inside them the console's picture was taken to
+be right. The spawner that gives the thing its record looks every fourth tick,
+and its window reaches sixteen pixels past the console's edge, which a camera
+at two pixels a tick crosses in eight -- so, with the picture a tick behind the
+memory, a pickup can be at column -15 with no record yet. The list had stopped
+drawing it and the game had not started: out for a tick and back, once for
+every pass of the camera, in plain sight because the margin had been showing
+it all along. On the console the same tick is a sliver at the edge of the
+glass turning up late. `ws_object_sprites` now draws a thing with no record
+wherever in the picture it is. Walking level 7 from side to side with a
+pickup at the left margin's inner edge, 1,414 ticks, run twice each way: it
+was missing on 7 of them before, one in every 84, and on none after.
+A pickup rocked across the right margin's inner edge in the same way was
+never missing, before or after.
+
+A move
 further than a tick could carry a thing is a cut and is not eased, so a spawn
 does not slide across the screen to where it was put. Which tiles, which
 palette, which animation frame, what the text says: those are the newer frame's.
