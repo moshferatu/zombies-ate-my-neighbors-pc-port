@@ -185,6 +185,7 @@ int main(int argc, char** argv) {
   uint32_t last_serial = sprite_oam_owners.serial;
   static SpriteOamOwners held;
   bool held_fresh = false;
+  long pieces_apart = 0, pieces_apart_frame = -1, link_together = 0;
   long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, link_jump = 0, origin_moved = 0, window_held = 0, steps_spread = 0, steps_cut = 0, lines_moved = 0, lines_spread = 0, bg3_anchored = 0, bg3_mask = 0;
 
   long tested = 0, identical = 0, within_one = 0, differing = 0, unexpressible = 0, dropped = 0;
@@ -223,8 +224,16 @@ int main(int argc, char** argv) {
     // the table as it stood a tick ago.
     const SpriteOamOwners* own = hold ? &held : &sprite_oam_owners;
     const bool own_fresh = hold ? held_fresh : fresh;
+    // ...or, for a picture the pass did not run for, with the last one used,
+    // if its sprites are still the ones on screen -- as `layers_take` has it.
+    static SpriteOamOwners used;
+    static bool used_ok;
+    const SpriteOamOwners* game =
+        own_fresh ? own : used_ok && layers_owners_stand(prev, ppu, used.rec) ? &used : NULL;
+    if (game && game != &used) used = *game;
+    used_ok = game != NULL;
     SpriteOamOwners with;
-    own = ws_owners(wide != WIDE_OFF ? &ws : NULL, own_fresh ? own : NULL, &with);
+    own = ws_owners(wide != WIDE_OFF ? &ws : NULL, game, &with);
     layers_capture(f, ppu, own ? own->rec : NULL, own ? own->ox : NULL, own ? own->oy : NULL);
     held = sprite_oam_owners;
     held_fresh = fresh;
@@ -305,6 +314,7 @@ int main(int argc, char** argv) {
       if (f->ease) {
         link_near += f->linkNear; link_origin += f->linkOrigin;
         link_looks += f->linkLooks; link_none += f->linkNone; link_jump += f->linkJump;
+        link_together += f->linkTogether;
         window_held += f->mathHeld;
         if (f->anchored[2]) bg3_anchored++;
         if (ppu->layerWide[2] == ppu_wideCentre) bg3_mask++;
@@ -320,6 +330,25 @@ int main(int argc, char** argv) {
                    prev->stepI[l] + 1, prev->stepK[l]);
           }
         if (f->dExtraLeft != 0) origin_moved++;
+        // A record's pieces have to be taken back together, by the same
+        // amount, or the thing comes apart along their joins in the pictures
+        // between two ticks: each piece against the first of its record.
+        for (int s = 0; s < LAYERS_SPRITES; s++) {
+          const LayersSprite* a = &f->spr[s];
+          if (!a->drawn || a->rec < 0) continue;
+          for (int t = 0; t < s; t++) {
+            const LayersSprite* b = &f->spr[t];
+            if (!b->drawn || b->rec != a->rec) continue;
+            const bool apart = a->known != b->known ||
+                               (a->known && (a->x - a->px != b->x - b->px || a->y - a->py != b->y - b->py ||
+                                             a->cx != b->cx || a->cy != b->cy || a->bx != b->bx || a->by != b->by));
+            if (apart) {
+              if (!pieces_apart) pieces_apart_frame = frame;
+              pieces_apart++;
+            }
+            break;
+          }
+        }
       }
       for (int s = 0; s < LAYERS_SPRITES; s++) {
         if (!f->spr[s].drawn) continue;
@@ -511,6 +540,10 @@ int main(int argc, char** argv) {
          " record's origin, %ld by looks, %ld not at all, and %ld of those paired were placed, not"
          " moved;  the picture's origin moved on %ld ticks\n",
          link_near, link_origin, link_looks, link_none, link_jump, origin_moved);
+  printf("  pieces taken back by their record's move and not their own: %ld;  by a different amount from"
+         " the first of their record: %ld", link_together, pieces_apart);
+  if (pieces_apart) printf(" (first on frame %ld)", pieces_apart_frame);
+  printf("\n");
   if (window_held) printf("  the maths window's rectangles were held where they wandered on %ld ticks\n", window_held);
   if (bg3_anchored) printf("  BG3 was anchored to the picture's edges on %ld frames\n", bg3_anchored);
   if (wide != WIDE_OFF)
@@ -522,9 +555,10 @@ int main(int argc, char** argv) {
     printf("  a background waved a line at a time: %ld line-ticks eased, %ld of a step being spread\n",
            lines_moved, lines_spread);
   if (steps_spread) printf("  a background stepping every few ticks had its step spread on %ld background-ticks, %ld spreads cut short by a move\n", steps_spread, steps_cut);
-  const bool ok = differing == 0 && (!check_frame_step || skipped_frames == 0);
+  const bool ok = differing == 0 && pieces_apart == 0 && (!check_frame_step || skipped_frames == 0);
   printf("  skipped video frames: %ld\n", skipped_frames);
-  printf(ok ? "OK\n" : "FAIL: %ld differing frames, %ld skipped video frames\n", differing, skipped_frames);
+  printf(ok ? "OK\n" : "FAIL: %ld differing frames, %ld pieces apart from their record, %ld skipped video frames\n",
+         differing, pieces_apart, skipped_frames);
   cosim_free(&cosim);
   movie_free(&movie);
   snes_free(snes);

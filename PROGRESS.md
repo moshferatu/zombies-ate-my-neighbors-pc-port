@@ -27,6 +27,29 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### Seams across the slimes while they attack (2026-09-21)
+
+Reported in play-testing on level 9: horizontal lines through a slime during
+its attack animation. The pictures between ticks again, and not only slimes:
+`layers_link` eased each piece of a record from where that piece's own
+predecessor had been, so a frame of animation that moves the pieces by
+different amounts pulled them apart at the joins for three pictures in four,
+and `even` kept pieces a quarter of a pixel apart on the tick after their
+moves had differed. Now a record's pieces are all taken back by the move most
+of them made (the origin's on a tie), and the move before, `even` and the
+placement test are judged once per record. `zamn_test_layers` has a new count
+and fails on it: pieces eased by a different amount from the first of their
+record, 2,271 over `level9` in 16:9 before and 0 after; 646 of 35,634 paired
+pieces now go by their record's move. The draw-list comparison is unchanged.
+The new count then failed `level25-lane` on 21 pieces, all on the two ticks
+after a tick too slow for its frame, when there was no owner table and pieces
+were paired by looks one at a time. The last table now stands for a picture
+the pass did not run for, if the sprites it accounts for are unchanged
+(`layers_owners_stand`, used by `layers_take` and the test): 0 there, and 0
+in `level25-heavy`.
+The movie was not checked for a slime's attack in particular; the count covers
+every record in it.
+
 ### Pickups flickering in the widescreen margins while walking (2026-09-21)
 
 Reported in play-testing: with the camera moving, keys and other items in the

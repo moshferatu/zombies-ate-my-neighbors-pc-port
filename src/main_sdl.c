@@ -360,6 +360,11 @@ typedef struct {
   uint32_t serial;  // the table's serial, as of the last capture
   // The widened picture's own sprites, which have owners too: `ws_owners`.
   const Widescreen* ws;
+  // The game's table the last picture was taken apart with, which stands for
+  // a picture the pass did not run for if its sprites are the same ones:
+  // `layers_owners_stand`.
+  SpriteOamOwners used;
+  bool used_ok;
 } Layers;
 
 static bool layers_init(Layers* s) {
@@ -383,7 +388,12 @@ static void layers_free(Layers* s) {
 // its serial says.
 static void layers_take(Layers* s, Ppu* ppu) {
   SpriteOamOwners with;
-  const SpriteOamOwners* own = ws_owners(s->ws, s->held_fresh ? &s->held : NULL, &with);
+  const SpriteOamOwners* game =
+      s->held_fresh ? &s->held
+      : s->used_ok && layers_owners_stand(s->frame[s->cur], ppu, s->used.rec) ? &s->used : NULL;
+  if (game && game != &s->used) s->used = *game;
+  s->used_ok = game != NULL;
+  const SpriteOamOwners* own = ws_owners(s->ws, game, &with);
   layers_capture(s->frame[s->cur ^ 1], ppu, own ? own->rec : NULL, own ? own->ox : NULL,
                  own ? own->oy : NULL);
   s->held_fresh = sprite_oam_owners.serial != s->serial;
@@ -2116,6 +2126,7 @@ int main(int argc, char** argv) {
             lay.held = sprite_oam_owners;
             lay.held_fresh = fresh != 0;
             lay.serial = owners_serial = sprite_oam_owners.serial;
+            lay.used_ok = false;
             lay_cut = 2;
             // The top scores are not rolled back: the file's table goes over
             // the machine's, as after a boot.

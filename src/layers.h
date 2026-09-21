@@ -314,6 +314,9 @@ typedef struct {
   // ...and how many paired sprites were then not eased after all, for having
   // been put somewhere rather than moved (`LAYERS_JUMP_MAX`).
   int linkJump;
+  // ...and how many pieces were taken back by their record's move instead of
+  // their own, so that the record stays in one piece.
+  int linkTogether;
   // Which planes have anything in them, so an empty one is neither uploaded
   // nor drawn.
   bool planeUsed[LAYERS_PLANES];
@@ -771,6 +774,31 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
   layers_occlude(f);
 }
 
+// Whether the owner table the last picture was taken apart with still says
+// whose the sprites are: `rec` is that table (the game's, before anything is
+// added to it) and `last` that picture.
+//
+// A tick the game cannot finish in a frame leaves a frame on which its pass did
+// not run, so there is no table for the picture after it -- and the one after
+// *that* has nothing to be paired with by record either. Both fell back to
+// pairing by looks, a piece at a time, which is how a record comes apart at
+// the joins (`layers_link`, at the vote): two ticks of seams for every slow
+// one, in exactly the busy moments that have the most to show them on. But
+// the picture after a tick that did not finish is the picture before it. The
+// console is sent the same sprites again, and if every entry the table
+// accounts for is still what it was, the table still accounts for them.
+static inline bool layers_owners_stand(const LayersFrame* last, const Ppu* ppu, const int16_t* rec) {
+  if (!last->valid) return false;
+  for (int s = 0; s < LAYERS_SPRITES; s++) {
+    if (rec[s] < 0) continue;
+    const int bit = (s & 3) * 2;
+    if (ppu->oam[s * 2] != last->oam[s * 2] || ppu->oam[s * 2 + 1] != last->oam[s * 2 + 1] ||
+        ((ppu->highOam[s >> 2] ^ last->highOam[s >> 2]) >> bit) & 3)
+      return false;
+  }
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Where things were a tick ago
 // ---------------------------------------------------------------------------
@@ -974,9 +1002,14 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
       }                                                                        \
     } while (0)
   cur->linkNear = cur->linkOrigin = cur->linkLooks = cur->linkNone = cur->linkJump = 0;
+  cur->linkTogether = 0;
   const bool byRecord = cur->ownersFresh && prev->ownersFresh;
+  // For each sprite paired by its record: the first of the last tick's
+  // sprites of that record, which stands for the record's last move.
+  int16_t firstOf[LAYERS_SPRITES];
   for (int i = 0; i < LAYERS_SPRITES; i++) {
     LayersSprite* c = &cur->spr[i];
+    firstOf[i] = -1;
     c->known = false;
     c->cx = c->cy = c->bx = c->by = c->mx = c->my = 0;
     c->placed = false;
@@ -1006,6 +1039,7 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
           c->my = (int8_t)dy;
           expectX = c->x - dx;
           expectY = c->y - dy;
+          firstOf[i] = (int16_t)j;
           any = true;
         }
         const int d = smooth_abs(p->x - expectX) + smooth_abs(p->y - expectY);
@@ -1025,9 +1059,8 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
           c->py = (int16_t)expectY;
           cur->linkOrigin++;
         }
-        // The nearest piece of the actor stands for the actor's last move
-        // even when it is too far to be this piece's own predecessor.
-        if (best >= 0) LAYERS_LINK_BEFORE(c, best);
+        // (What it moved by before, and `even`, are the record's and not the
+        // piece's: below, once every piece of it has been found.)
         continue;
       }
     }
@@ -1091,6 +1124,57 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
     LAYERS_LINK_BEFORE(c, j);
     cur->linkLooks++;
   }
+  // **A record's pieces go back together or the thing comes apart.** Each
+  // piece above was taken back to where *its* predecessor was, which is right
+  // for a piece and wrong for a body: when a frame of animation moves the
+  // pieces by different amounts -- a blob rearing up to strike, its top going
+  // one way and its foot staying put -- two pieces that join on both ticks do
+  // not join in the pictures between them, and the ground shows through the
+  // join. `even` did the same on a smaller scale, a quarter of a pixel between
+  // pieces whose last moves had differed, which at nine times the console's
+  // size is a line two pixels thick. Reported in play-testing as horizontal
+  // seams across the slimes of level 9 while they attack.
+  //
+  // So the record votes: the move most of its pieces made is the move all of
+  // them are taken back by (the origin's breaking a tie), and the pieces that
+  // did something else are where the new frame puts them from the first
+  // picture of the tick, which is when the console changes the frame too. A
+  // walker whose whole frame shifts by a pixel still has every piece eased
+  // from where it was -- the jitter the nearest-piece rule was written for --
+  // because there the vote is unanimous. And the move before, `even` and
+  // whether this is a placement are judged once, against one sprite of the
+  // last tick's, and are the same for every piece.
+  if (byRecord)
+    for (int i = 0; i < LAYERS_SPRITES; i++) {
+      if (firstOf[i] < 0) continue;
+      const int rec = cur->spr[i].rec, before = firstOf[i];
+      int moveX = 0, moveY = 0, votes = 0;
+      for (int k = i; k < LAYERS_SPRITES; k++) {
+        const LayersSprite* a = &cur->spr[k];
+        if (firstOf[k] < 0 || a->rec != rec) continue;
+        const int dx = a->x - a->px, dy = a->y - a->py;
+        int n = 0;
+        for (int m = i; m < LAYERS_SPRITES; m++) {
+          const LayersSprite* b = &cur->spr[m];
+          if (firstOf[m] >= 0 && b->rec == rec && b->x - b->px == dx && b->y - b->py == dy) n++;
+        }
+        const bool origin = dx == a->mx && dy == a->my;
+        if (n > votes || (n == votes && origin)) {
+          votes = n;
+          moveX = dx;
+          moveY = dy;
+        }
+      }
+      for (int k = i; k < LAYERS_SPRITES; k++) {
+        LayersSprite* a = &cur->spr[k];
+        if (firstOf[k] < 0 || a->rec != rec) continue;
+        firstOf[k] = -1;
+        if (a->x - a->px != moveX || a->y - a->py != moveY) cur->linkTogether++;
+        a->px = (int16_t)(a->x - moveX);
+        a->py = (int16_t)(a->y - moveY);
+        LAYERS_LINK_BEFORE(a, before);
+      }
+    }
   #undef LAYERS_LINK_BEFORE
 }
 

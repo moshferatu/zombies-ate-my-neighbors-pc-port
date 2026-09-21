@@ -1662,6 +1662,39 @@ was missing on 7 of them before, one in every 84, and on none after.
 A pickup rocked across the right margin's inner edge in the same way was
 never missing, before or after.
 
+**A record's pieces go back together, or the thing comes apart.** Easing each
+piece from where its own predecessor was is right for a piece and wrong for a
+body. When a frame of animation moves the pieces by different amounts -- a
+slime rearing up to strike, its top going one way while its foot stays put --
+two pieces that join on this tick and joined on the last do not join in the
+pictures between them, and the ground shows through: reported in play-testing
+as horizontal seams across the slimes of level 9 while they attack. `even` did
+it too, on a smaller scale: a quarter of a pixel between two pieces whose
+*last* moves had differed, which at nine times the console's size is a line
+two pixels thick.
+So the record votes. The move most of its pieces made is the move every piece
+is taken back by, the origin's breaking a tie; the pieces that did something
+else are where the new frame puts them from the tick's first picture, which is
+when the console changes the frame as well. A walker whose whole frame shifts
+by a pixel is still eased piece by piece from where it was, because there the
+vote is unanimous, so the jitter the nearest-piece rule was written for stays
+gone. What the record moved by before, `even`, and whether the move is a
+placement are judged once for the record, against one sprite of the last tick.
+`zamn_test_layers` counts the pieces taken back by a different amount from the
+first of their record and fails on any: over `level9` in 16:9 there were 2,271
+and there are none, with 646 pieces of 35,634 moved by their record's vote
+instead of their own.
+
+The count found one more way apart, in `level25-lane`. A tick the game cannot
+finish in a frame leaves a frame its pass did not run for, so the picture after
+it had no owner table, and the picture after that nothing to be paired with by
+record: two ticks of pairing by looks, a piece at a time, for every slow tick,
+in the busiest moments a level has. But the picture after a tick that did not
+finish is the picture before it -- the console is sent the same sprites again
+-- so the table the last picture was taken apart with stands for this one too,
+if every entry it accounts for is unchanged (`layers_owners_stand`). 21 pieces
+apart in that movie before, none after, and none in `level25-heavy`.
+
 A move
 further than a tick could carry a thing is a cut and is not eased, so a spawn
 does not slide across the screen to where it was put. Which tiles, which
