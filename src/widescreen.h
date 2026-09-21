@@ -254,6 +254,57 @@
 // again, which is what makes `--widescreen off` still byte-identical; and the
 // co-simulation never sees any of it, because it does not include this file.
 //
+// ## A boss too big for sprites is a background, and the game parks it
+//
+// The giant baby and the flying saucer are not sprites (`port/bossbg.h`): each
+// is a figure of tiles written into BG1's map, and BG1 is scrolled to where
+// the figure stands. In every level BG1 is a 64x64 map -- a plane 512 pixels
+// square -- and it holds the figure in its first 14 or 20 columns and nothing
+// else: looked at a few seconds into each of the 48 levels, where it is blank
+// from corner to corner on the 44 without a big figure (8, 12, 21 and 25
+// have one). Two things went wrong with it in the margins,
+// and they are the two halves of one report.
+//
+// **The policy.** BG1 was left to `ppu_wideAuto`, which has to guess, and
+// both of its guesses were wrong here. With nothing in the console's edge
+// columns it clips the layer to the console's 256, so a figure standing
+// across the edge was cut off flat at it. With something in them it takes a
+// 64-column map for one the game maintains only half of and repeats the
+// console's 256 columns outward -- so the half of the baby at the console's
+// left edge was drawn a second time in the right margin, and the margin it
+// was actually standing in stayed empty. Neither guess is needed: the plane is
+// the game's and all of it is maintained (any 256 of its 512 columns are on
+// the console at some scroll). In a level BG1 is `ppu_wideStretch`, like the
+// world.
+//
+// **The plane comes round.** It is 512 pixels and then it repeats, which the
+// console never sees: the game keeps the figure's origin within 255 columns
+// of the console's left edge either way, and 255 + 256 is one short of 512.
+// The picture is wider than that by its margins. With the origin 214 or more
+// columns off to the left -- the baby long gone that way -- the right margin
+// was reading the plane's *next* lap, and the baby's bottle and arm stood in
+// it: a figure flashing at the side of the screen as the boss walked about
+// off the other one. So in that band `ws_boss_plane` parks the plane itself,
+// where the game would have had the console been that wide. Both decisions
+// are taken from where the figure is in its plane (`ws_boss_extent`) and
+// against 16 columns more than the picture, since the smoothing captures that
+// much of every plane and slides it into view as it eases a scroll.
+//
+// **The parking.** The job that scrolls BG1 (`$82:8209`, every vblank) takes
+// the camera from the plane's world origin (`$1E6E`, `$1E70`) and, when the
+// origin is 256 or more to the right of the console's left edge (or 256 or
+// more to the left of it, or as far off vertically), writes `$0100` to both
+// scrolls instead: the blank quarter of the plane. That is right for the
+// console and it is the sprite cull over again -- a figure whose left edge
+// is in the right margin is one the game has put away. (To the left it parks
+// only a figure that is already past the widest margin.) So when the scroll
+// is the parked one and the origin is inside the right margin, `ws_boss_plane`
+// writes the scroll the job would have written had the console been that
+// wide, from the same two words and the same camera (which copy of them, and
+// why the register is read with ten bits, is at the routine). The PPU's
+// registers only, which the game writes again at the next vblank and never
+// reads.
+//
 // ## Everything above happens one tick late
 //
 // The frame the console is about to draw was composed during the *previous*
@@ -304,6 +355,15 @@
 // `CMP #$00A0` at `$81:823C`, in the ROM file: bank `$81` is LoROM offset
 // `$08000`, so the operand of that compare is two bytes at `$0823D`. See the
 // header for what it is and why this is the one thing here that is written.
+// The big figure's plane: where its origin is in the world (the two words
+// `$82:8209` takes the camera from), and the scroll that job parks it at.
+#define WS_BOSS_PLANE_X 0x1e6eu
+#define WS_BOSS_PLANE_Y 0x1e70u
+#define WS_BOSS_PARKED 0x0100
+// How far past the picture's edges a plane is still looked at: the smoothing's
+// capture margin, `LAYERS_MARGIN` in `layers.h`, which this file does not see.
+#define WS_BOSS_SLACK 16
+
 #define WS_WINDOW_OPCODE 0x0823cu
 #define WS_WINDOW_OPERAND 0x0823du
 #define WS_WINDOW_STOCK 0x00a0
@@ -643,6 +703,95 @@ static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, int place
 // running through it, and at the end a second star, while the left margin had
 // the black from the console's right. It is told by what the map holds, which
 // is in video memory from before the screen is lit until the logo is gone.
+// Which columns of its plane the big figure is in, in pixels: `[*x0, *x1)`.
+// The figure is written into the plane's first screen and is 20 tiles at its
+// widest and tallest, so the screen's last word is the blank one. False for a
+// plane with nothing in it.
+static inline bool ws_boss_extent(const Snes* snes, int* x0, int* x1) {
+  const Ppu* ppu = snes->ppu;
+  const uint16_t base = ppu->bgLayer[0].tilemapAdr;
+  const uint16_t blank = ppu->vram[(base + 0x3ff) & 0x7fff] & 0x3ff;
+  int c0 = 32, c1 = -1;
+  for (int r = 0; r < 32; r++)
+    for (int c = 0; c < 32; c++)
+      if ((ppu->vram[(base + r * 32 + c) & 0x7fff] & 0x3ff) != blank) {
+        if (c < c0) c0 = c;
+        if (c > c1) c1 = c;
+      }
+  if (c1 < 0) return false;
+  *x0 = c0 * 8;
+  *x1 = (c1 + 1) * 8;
+  return true;
+}
+
+// The big figure's plane, parked where the game did not park it and put back
+// where it did, for a picture wider than the one the game parks it for. See
+// the header. `$82:8209`'s own tests are
+//
+//     LDA $1B6A : SEC : SBC $1E6E : CMP #$0100 : BCC use
+//     CMP #$FF01 : BCC park       ; and #$FF21 for the other axis
+//
+// and these are the same two decisions taken against what can be shown: the
+// picture, and `WS_BOSS_SLACK` columns either side of it, which the smoothing
+// captures with each plane and slides into view when it eases a scroll
+// (`LAYERS_MARGIN`). A figure, or a lap of one, left in those columns is one
+// that flickers at the picture's edge as the boss walks.
+static inline void ws_boss_plane(Snes* snes, const Widescreen* ws, int left, int right) {
+  BgLayer* bg = &snes->ppu->bgLayer[0];
+  int x0, x1;
+  if (!ws_boss_extent(snes, &x0, &x1)) return;  // a level with no big figure
+  const int lo = -left - WS_BOSS_SLACK, hi = 256 + right + WS_BOSS_SLACK;
+
+  if ((bg->hScroll & 0x3ff) != WS_BOSS_PARKED || (bg->vScroll & 0x3ff) != WS_BOSS_PARKED) {
+    // Not parked. The origin's column, off the register: all ten bits of it,
+    // because the register is not always the job's. On a frame the game is
+    // late for, the job does not run and the register still holds what was
+    // written here the frame before, for an origin past 255 -- which nine
+    // bits, the plane's 512, read as one far off to the *left*, and parked:
+    // the figure gone from the margin for a frame whenever the game dropped
+    // one. The job's own origins are -255..255. Once the figure is out of
+    // sight to the left and its next lap, 512 further right, is not, the plane
+    // is parked as the job parks it.
+    int sx = (1024 - (bg->hScroll & 0x3ff)) & 0x3ff;
+    if (sx >= 512) sx -= 1024;
+    if (sx + x1 <= lo && sx + 512 + x0 < hi) bg->hScroll = bg->vScroll = WS_BOSS_PARKED;
+    return;
+  }
+  // Parked. Where the job would have put it is worked out from the words it
+  // read, and there are two sets of those to try. It ran in the vblank that
+  // has just ended, and nearly always the game's tick was over by then, so
+  // the machine's memory as it stands is what it read: on `level25-lane`, of
+  // 4,491 frames with the plane on the console the scroll is the live words'
+  // on 4,446 (and the tick-old copy's on 1,591, the ones where nothing
+  // moved). But now and then the tick that follows has already moved the
+  // figure by line 0 -- it turns round, and its origin jumps -- and the live
+  // words then say "on the console" of a plane the job parked, which cannot
+  // be what it read. That was the figure gone from the margin for one frame
+  // in every few hundred. So: the first of the two that agrees with the job
+  // having parked it.
+  for (int pass = 0; pass < 2; pass++) {
+    const uint8_t* mem = pass ? ws->mem : snes->ram;
+    const uint16_t dx = (uint16_t)(ws_r16(mem, W_CAMERA_X) - ws_r16(mem, WS_BOSS_PLANE_X));
+    const uint16_t dy = (uint16_t)(ws_r16(mem, W_CAMERA_Y) - ws_r16(mem, WS_BOSS_PLANE_Y));
+    const bool job_kept_x = dx < 0x0100 || dx >= 0xff01;
+    const bool job_kept_y = dy < 0x0100 || dy >= 0xff21;
+    if (job_kept_x && job_kept_y) continue;  // not what the job read
+    // The origin's screen column is `-dx`. The game keeps -255..255; this is
+    // for an origin further right whose figure still reaches what can be
+    // shown -- and whose *last* lap, 512 to the left, does not: at the end of
+    // a map the whole of both margins is on the right, and the saucer is wide
+    // enough for its far end to come round onto the console's first columns
+    // before its near end has left the margin. Then it stays parked; a ghost
+    // is worse than a figure that arrives a few columns in.
+    const int sx = -(int)(int16_t)dx;
+    if (sx < 256 || sx + x0 >= hi || sx - 512 + x1 > lo) return;
+    if (!job_kept_y) return;  // off the top or the bottom: parked is right
+    bg->hScroll = dx & 0x3ff;
+    bg->vScroll = dy & 0x3ff;
+    return;
+  }
+}
+
 static inline bool ws_konami_sweep(const Snes* snes) {
   const Ppu* ppu = snes->ppu;
   const BgLayer* bg = &ppu->bgLayer[0];
@@ -704,8 +853,12 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // relies on that edge to hide them; widening the picture without saying this
   // shows the trick, as the same words a second time at both edges.
   snes_setLayerWide(snes, 4, in_level ? ppu_wideStretch : ppu_wideClip);
-  // The one background that is neither: see `ws_konami_sweep`.
-  snes_setLayerWide(snes, 0, !in_level && ws_konami_sweep(snes) ? ppu_wideSweep : ppu_wideAuto);
+  // BG1 outside a level is the one background that is neither: see
+  // `ws_konami_sweep`. In a level it is the big figure's plane, 512 pixels of
+  // the game's own with a boss in one corner of it or nothing at all, and it
+  // goes on into the margins as the world does -- see the header.
+  snes_setLayerWide(snes, 0, in_level ? (snes_bgTilemapWider(snes, 0) ? ppu_wideStretch : ppu_wideAuto)
+                             : ws_konami_sweep(snes) ? ppu_wideSweep : ppu_wideAuto);
 
   if (!in_level || margin <= 0) {
     // Nothing outside a level has a map to run off the end of.
@@ -807,6 +960,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
     }
   }
 
+  if (snes_bgTilemapWider(snes, 0)) ws_boss_plane(snes, ws, left, right);
   ws_margin_sprites(snes, ws, left, right);
   ws_place_screen_sprites(snes, ws, bg3_mask ? ppu_spriteCentred : ppu_spriteAnchored);
 }

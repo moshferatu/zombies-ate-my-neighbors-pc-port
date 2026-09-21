@@ -1166,6 +1166,80 @@ spawner window, so that the only difference left is how much of it is drawn,
 three movies, both aspects each against its own reference — and that column is the
 next section.
 
+### The bosses that are backgrounds
+
+Reported in play-testing: the giant baby and the flying saucer are cut in
+half at the margins and turn up on the other side of the screen. Neither is
+a sprite. A figure that size is tiles written into BG1's map
+(`src/port/bossbg.h`), and BG1 is scrolled to where it stands; in every
+level BG1 is a 64x64 map, 512 pixels square, with the figure in its first 14
+or 20 columns and nothing else. Two things were wrong, and the report is
+both of them.
+
+BG1 was left to `ppu_wideAuto`, which guesses, and guessed wrong both ways.
+With nothing in the console's edge columns it clipped the layer at the
+console's 256, so a figure across the edge was cut off flat. With something
+in them it took the 64-column map for one the game half maintains and
+repeated the console's columns outward: the half of the baby at the left
+edge drawn again in the right margin, and nothing in the margin he was
+standing in. In a level BG1 is now `ppu_wideStretch`, as the world is: the
+plane is the game's own and all of it is maintained.
+
+And the game parks it. The vblank job that scrolls BG1 (`$82:8209`) writes
+`$0100` to both scrolls, the blank quarter of the plane, once the plane's
+origin is 256 or more right of the console's left edge. That is the sprite
+cull again: a baby whose left edge is in the right margin has been put
+away. `ws_boss_plane` writes the scroll the job would have written, from the
+same words (`$1E6E`, `$1E70`, the camera), when the scroll is the parked one
+and the origin is inside the right margin. To the left the game only parks a
+figure already past the widest margin. PPU registers only; the game writes
+them again at the next vblank and never reads them.
+
+That much left him flashing at the sides, reported again, and it was two
+more things, with a third found on the way to them.
+
+  * **The plane comes round.** It repeats every 512 pixels, which the console
+    never sees, because the game keeps the figure's origin within 255 columns
+    of the console's left edge and 255 + 256 is one short of 512. The picture
+    is wider by its margins: with the baby 214 or more columns off to the
+    left, the right margin was reading the plane's next lap, and his bottle
+    and arm stood in it while he walked about off the other side. In that band
+    `ws_boss_plane` parks the plane itself.
+  * **The job reads what the tick left, and sometimes the tick has moved on.**
+    Putting the plane back needs the words the job read. Nearly always those
+    are the machine's memory as it stands at line 0 (4,446 of 4,491 frames on
+    `level25-lane`), but when the figure turns round its origin jumps, and
+    now and then the next tick has already made that jump: the live words say
+    "on the console" of a plane the job parked. The figure was gone from the
+    margin for one frame in every few hundred. It is the first of the live
+    words and the tick-old copy that agrees with the job having parked it.
+  * **A frame the game drops.** The job does not run, and the register still
+    holds what was written here the frame before, for an origin past 255. Read
+    with the plane's nine bits that is an origin far off to the left, which
+    the first of these fixes would park: gone for a frame whenever the game
+    was late while he stood in the margin. Caught by the check below before
+    it was ever played; the register is read with all ten bits.
+
+Both decisions are made from where the figure is in its plane
+(`ws_boss_extent`) and against 16 columns more than the picture, which is
+what the smoothing captures of every plane and slides into view as it eases
+a scroll.
+
+Checked on every frame of four level 25 movies, in the hook, by asking which
+columns of the picture the plane has a tile in. With the routine off the
+figure is somewhere it is not standing on 44 to 107 frames of each; with it
+on, on none. The frames with nothing between two frames with something are
+down to four, all the same and all the game's own, inside the console's
+columns: the figure coming on over the top or bottom edge, 16 columns, none,
+then 24. On `level25-lane` in 16:9 the frame of the first
+report (5,300) has the whole baby standing in the left margin and no second
+one; frame 2,506, which had his bottle in the right margin with him off to
+the left, has not, in the frontend's own picture; and he walks in from the
+picture's right edge (frames 3,992 on) where he used to appear at the
+console's. The draw-list test passes on the boss movies in 16:9, 16:10 and
+4:3. The saucer's levels have no movie; it is the same plane, job and rule,
+and the rule measures the figure rather than assuming the baby's width.
+
 ### The one that was a real emulation bug
 
 The left margin came out a shade darker than the picture it was continuing, in

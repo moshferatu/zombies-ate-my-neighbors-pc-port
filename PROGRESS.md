@@ -27,6 +27,35 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### The baby and the saucer in the widescreen margins (2026-09-20)
+
+Reported in play-testing: cut in half at the margin, and a copy on the other
+side. They are BG1, not sprites: a 512-pixel plane with the figure in one
+corner, scrolled into place. `ppu_wideAuto` either clipped it at the console's
+256 or repeated the console's columns outward; in a level BG1 is now
+`ppu_wideStretch`. And `$82:8209` parks the plane (`$0100`, `$0100`) once its
+origin is 256 right of the console's left edge, so `ws_boss_plane` writes the
+scroll it would have written while the origin is inside the right margin --
+from the live words, which is what the job read (4,446 of 4,491 frames match
+live, 1,591 the tick-old copy). Frame 5,300 of `level25-lane` is whole; he
+walks in from the picture's edge; draw-list test OK on the boss movies.
+
+Reported again: still flashing at the sides. Two more causes, and a trap in
+fixing the first. The plane
+repeats every 512 pixels, and with the baby 214 or more columns off to the
+left the right margin read its next lap (his bottle and arm, standing there):
+parked in that band. At a turn-round the next tick has sometimes moved the
+origin by line 0, so the live words disagree with a plane the job parked
+(gone from the margin for one frame): the first of live and tick-old that
+agrees with the parking is used. The trap: on a frame the game drops the
+register still holds the value written here, which nine bits read as far off
+to the left, to be parked; all ten are read. Decisions are made from the figure's
+measured extent and 16 columns past the picture (the smoothing's capture
+margin). Checked in the hook on every frame of four level 25 movies: the
+figure somewhere it is not standing on 44-107 frames with the routine off, 0
+with it on, and the only single-frame gaps left are four of the game's own
+(the figure coming on over the top or bottom edge).
+
 ### A settings file, and every binding in it (2026-09-20)
 
 Asked for in play-testing. `src/config.h` reads `zamn.ini` (here, then beside
