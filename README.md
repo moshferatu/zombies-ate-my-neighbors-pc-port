@@ -1240,6 +1240,47 @@ console's. The draw-list test passes on the boss movies in 16:9, 16:10 and
 4:3. The saucer's levels have no movie; it is the same plane, job and rule,
 and the rule measures the figure rather than assuming the baby's width.
 
+### The monsters that come on from the wings
+
+Reported in play-testing: on level 12 the football players can be seen
+appearing on the field. Most monsters are started at whichever of the
+level's spawn points is nearest a player and come out of the ground or a
+door, and being seen arriving is what they do. The football player is not
+one of those. His thread (`$81:C87B`) throws the spawn point's column away
+and puts him down in the wings instead, 8 pixels left of the console or 72
+right of it, facing in; he gets set there, and charges across. Eight pixels
+left of the console is 35 pixels inside a 16:9 picture, so he appeared out
+of the air in the left margin and stood in it.
+
+It is the neighbours' problem over again and gets the neighbours' answer: a
+thread cannot be drawn from outside the game, and the columns are not wrong,
+only the console's. `ws_widen_window` is now a table of words in the ROM
+image, each moved out by twice the margin (twice, because at the end of a map
+either margin can be all of it) and each put back at margin zero. The
+football player has five: the two wings, the two sides of the window he may
+stand in while he gets set, and how far from the player he may run before he
+is taken away, which has to grow with the wings or the far one is outside it.
+
+Looking for the idiom rather than the monster (every read of the camera's
+column in the four code banks, 38 of them) found two more. The purple
+tentacle of the bonus rooms (`$82:990F`) picks a wing at random from a table
+that is the same two numbers, and a creature at `$82:EAC5` runs off and is
+taken away 4 pixels past the console's left edge. Both are in the table. The
+rest of the 38 are the camera's own arithmetic, the two windows already dealt
+with, the bosses' plane, two monsters that come on over the top edge, where
+there is no margin, and one test that only decides whether to play a sound.
+
+Measured on level 12, walking to the middle of the field with `--key-at` and
+logging every football player's first position against the camera. Before:
+32 arrivals, ten at column -8 or -6 and 22 at 328. After, in 16:9: 35
+arrivals, twelve at -92 to -98 and 23 at 414 to 418, against a picture that
+is never wider than -86 to 342, and a frame taken while one was waiting in
+the wings shows only the ones already running. The tentacle, on record 51,
+arrives at -94 and 414 and still reaches the player. The creature at
+`$82:EAC5` has not been reached by anything here and has not been seen. The
+draw-list test passes on `level1` (16:9 and 4:3), `level21` and
+`level25-lane` (16:9) and `level49` (16:10).
+
 ### The one that was a real emulation bug
 
 The left margin came out a shade darker than the picture it was continuing, in

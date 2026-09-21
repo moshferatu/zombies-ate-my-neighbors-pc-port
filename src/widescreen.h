@@ -233,8 +233,9 @@
 // in view, so she animates because she is animating: nothing here follows her
 // poses, remembers them, or replays them.
 //
-// This is the one thing in this file that changes what the game does rather
-// than what it draws, and it is worth being plain about the cost. A neighbour
+// This is the one kind of thing in this file that changes what the game does
+// rather than what it draws (the wings, below, are the rest of the kind), and
+// it is worth being plain about the cost. A neighbour
 // in the margin is now a neighbour: she can be rescued out there, and a monster
 // standing next to her can reach her out there, where on a console she would
 // have been lifted out of the world and been safe until the camera came back.
@@ -245,14 +246,59 @@
 // empty-handed when there is no slot and `$81:81A2` already gives up quietly
 // when it does, so the failure mode there is the one the game shipped with.
 //
-// Nothing else is written, and the pickups' `#$0090` in particular is left
-// alone: the same byte would work there and would buy nothing, because a pickup
+// Of the windows nothing else is written, and the pickups' `#$0090` in
+// particular is left alone: the same byte would work there and would buy nothing, because a pickup
 // can already be drawn from its list exactly, and changing the game to put a
 // record behind it would only be changing the game. The vertical half of the
 // neighbours' own test at `$81:8250` keeps its `#$00A0` as well, no rows having
 // been added. At margin zero the stock figure goes back and the game is the game
 // again, which is what makes `--widescreen off` still byte-identical; and the
 // co-simulation never sees any of it, because it does not include this file.
+//
+// ## Some monsters come on from the wings, and the wings are the console's
+//
+// Reported in play-testing: on level 12 the football players can be seen
+// appearing on the field. Most monsters are started by `$81:80EC` at whichever
+// of the level's spawn points is nearest a player, wherever that is, and come
+// out of the ground or a door; being seen arriving is what they do. The
+// football player is not one of those. His thread (`$81:C87B`) throws away
+// the spawn point's column and takes one of two of its own (`$81:C7A5`):
+//
+//     LDA $00 : SEC : SBC $1B6A : CMP #$00A0 : BCS right
+//     LDA $1B6A : SEC : SBC #$0008 : ...     ; 8 left of the console
+//     right: LDA $1B6A : CLC : ADC #$0148    ; 72 right of it
+//
+// He is put down in the wings, facing in, gets set, and charges across. While
+// he is getting set `$81:C742` takes him away again if the camera leaves him
+// outside those same two columns (`SBC #$0008`, then `ADC #$0150` for the
+// other one), and once he is running `$81:C850` takes him away when he is
+// `#$0140` from the nearer player. Eight pixels left of the console is 35
+// pixels inside a 16:9 picture: he appeared out of the air in the left margin
+// and stood there. Measured on level 12 from the middle of the field: 32
+// arrivals, ten at column -8 (or -6, a tick on) and 22 at 328.
+//
+// It is the neighbours' problem and it gets the neighbours' answer, for the
+// neighbours' reasons: the columns are not wrong, they are the console's, and
+// a thread cannot be drawn from outside. `ws_widen_window` moves each of them
+// out by twice the margin -- twice because either margin can be all of it --
+// and the reach from the player by as much, so that a wing further out is
+// still inside it. He arrives 8 pixels past the widest the picture gets on
+// that side instead of 8 past the console, and a moment later: on the same
+// walk in 16:9, 35 arrivals, twelve at -92 to -98 and 23 at 414 to 418.
+//
+// Two more routines were found by looking for the idiom (every read of the
+// camera's column in the four code banks, 38 of them) and get the same. One
+// is the purple tentacle of the bonus rooms (`$82:990F`, records 0, 49 and
+// 51), which picks a wing at random from a two-word table at `$82:990B` that
+// is `-8` and `$0148` again and gives up `#$00D0` from the player: on record
+// 51 in 16:9 it now arrives at -94 and 414, and still finds the player. The
+// other is a creature at `$82:EAC5` that runs off and is taken away outside
+// `-4` and `$0144`; nothing here has reached it and it has not been seen, but
+// the words are the same kind and are moved the same way. The
+// rest of the 38 are the camera's own arithmetic, the two spawners' windows
+// (above), the big figure's plane (below), two that come on over the *top*
+// edge, where there is no margin, and one that only decides whether to play a
+// sound.
 //
 // ## A boss too big for sprites is a background, and the game parks it
 //
@@ -352,9 +398,6 @@
 #define OBJECT_META_TABLE 0x80ca6cu
 #define OBJECT_TYPE_COUNT 30
 
-// `CMP #$00A0` at `$81:823C`, in the ROM file: bank `$81` is LoROM offset
-// `$08000`, so the operand of that compare is two bytes at `$0823D`. See the
-// header for what it is and why this is the one thing here that is written.
 // The big figure's plane: where its origin is in the world (the two words
 // `$82:8209` takes the camera from), and the scroll that job parks it at.
 #define WS_BOSS_PLANE_X 0x1e6eu
@@ -364,9 +407,42 @@
 // capture margin, `LAYERS_MARGIN` in `layers.h`, which this file does not see.
 #define WS_BOSS_SLACK 16
 
-#define WS_WINDOW_OPCODE 0x0823cu
-#define WS_WINDOW_OPERAND 0x0823du
-#define WS_WINDOW_STOCK 0x00a0
+// A word in the ROM file that is a distance from the console's edge or its
+// middle and has to be one from the picture's: the byte before it that says
+// the file is this ROM (the opcode, or for a table the `RTS` it follows),
+// what the cartridge has there, and how many margins go on it. LoROM: bank
+// `$81` is file offset `$08000` and bank `$82` is `$10000`.
+typedef struct {
+  uint32_t guard_at;
+  uint8_t guard;
+  uint32_t word_at;
+  uint16_t stock;
+  int margins;
+} WsRomWord;
+
+static const WsRomWord WS_ROM_WORDS[] = {
+    // The neighbours' window: `CMP #$00A0` at `$81:823C`.
+    {0x0823cu, 0xc9, 0x0823du, 0x00a0, 2},
+    // The football player. Where he is put down, `$81:C7B9 SBC #$0008` and
+    // `$81:C7C7 ADC #$0148`; where he may stand while he gets set,
+    // `$81:C746 SBC #$0008` and then `$81:C751 ADC #$0150` on top of that, so
+    // that one moves twice; and how far from the player he may run,
+    // `$81:C850 LDA #$0140`.
+    {0x0c7b9u, 0xe9, 0x0c7bau, 0x0008, 2},
+    {0x0c7c7u, 0x69, 0x0c7c8u, 0x0148, 2},
+    {0x0c746u, 0xe9, 0x0c747u, 0x0008, 2},
+    {0x0c751u, 0x69, 0x0c752u, 0x0150, 4},
+    {0x0c850u, 0xa9, 0x0c851u, 0x0140, 2},
+    // The tentacle's (`$82:990F`) two wings, a table after the `RTS` at `$82:990A`, and its
+    // reach, `$82:97A9 LDA #$00D0`.
+    {0x1190au, 0x60, 0x1190bu, 0xfff8, -2},
+    {0x1190au, 0x60, 0x1190du, 0x0148, 2},
+    {0x117a9u, 0xa9, 0x117aau, 0x00d0, 2},
+    // `$82:EAC5`: `ADC #$0004` to the creature's column against the camera's,
+    // and `ADC #$0144` to the camera's against the creature's.
+    {0x16ac7u, 0x69, 0x16ac8u, 0x0004, 2},
+    {0x16ad3u, 0x69, 0x16ad4u, 0x0144, 2},
+};
 
 // Everything the hook needs: where the ROM is, because metasprites and sprite
 // graphics are read from it, how wide the margins are, the memory the picture
@@ -965,26 +1041,32 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   ws_place_screen_sprites(snes, ws, bg3_mask ? ppu_spriteCentred : ppu_spriteAnchored);
 }
 
-// Move the neighbour spawner's window out to the edges of the picture that is
-// actually being drawn. Idempotent, and applied every frame because `F4` can
-// change the margin between two of them; at margin zero it writes the stock
-// figure back and the game is the game again.
+// Move the game's own distances from the console's edges out to the edges of
+// the picture that is actually being drawn: the neighbour spawner's window,
+// and the wings some monsters come on from (`WS_ROM_WORDS`, and the header).
+// Idempotent, and applied every frame because `F4` can change the margin
+// between two of them; at margin zero it writes the stock figures back and the
+// game is the game again.
 //
 // Twice the margin, not the margin. The two margins slide -- at the end of a
 // map the side with no world left to show gives its pixels to the other one --
-// so either of them can be the whole `2 * margin` at once, and the window is a
-// single distance either side of the middle. Sizing it to the widest one margin
-// can get is the only figure that is right at both edges of every map, and it
-// does not move, so nothing spawns and unspawns as the two margins trade.
+// so either of them can be the whole `2 * margin` at once, and each of these is
+// a single distance. Sizing it to the widest one margin can get is the only
+// figure that is right at both edges of every map, and it does not move, so
+// nothing spawns and unspawns as the two margins trade.
 static inline void ws_widen_window(Snes* snes, int margin) {
   Cart* cart = snes->cart;
-  if (!cart || !cart->rom || cart->romSize <= WS_WINDOW_OPERAND + 1) return;
-  // The opcode is not what gets written, so this stays true after a patch and
-  // is false for any ROM whose `$81:823C` is not that compare.
-  if (cart->rom[WS_WINDOW_OPCODE] != 0xc9) return;
-  const uint16_t want = (uint16_t)(WS_WINDOW_STOCK + 2 * margin);
-  cart->rom[WS_WINDOW_OPERAND] = (uint8_t)want;
-  cart->rom[WS_WINDOW_OPERAND + 1] = (uint8_t)(want >> 8);
+  if (!cart || !cart->rom) return;
+  for (size_t i = 0; i < sizeof WS_ROM_WORDS / sizeof WS_ROM_WORDS[0]; i++) {
+    const WsRomWord* w = &WS_ROM_WORDS[i];
+    if (cart->romSize <= w->word_at + 1) continue;
+    // The guard is not what gets written, so this stays true after a patch
+    // and is false for any ROM that does not have this code there.
+    if (cart->rom[w->guard_at] != w->guard) continue;
+    const uint16_t want = (uint16_t)(w->stock + w->margins * margin);
+    cart->rom[w->word_at] = (uint8_t)want;
+    cart->rom[w->word_at + 1] = (uint8_t)(want >> 8);
+  }
 }
 
 static inline void widescreen_hook(Snes* snes, void* ctx) {

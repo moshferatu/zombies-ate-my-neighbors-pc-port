@@ -27,6 +27,20 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### Football players appearing in the widescreen margin (2026-09-20)
+
+Reported in play-testing, level 12. The football player's thread (`$81:C87B`)
+ignores its spawn point's column and puts him down 8 pixels left of the
+console or 72 right of it, where he gets set before he charges: 8 left of the
+console is inside a 16:9 picture. `ws_widen_window` is now a table of ROM
+words moved out by twice the margin, the neighbours' `#$00A0` and ten more:
+his two wings, the window he may wait in (`$81:C742`), his reach from the
+player, and the same idiom in the bonus rooms' tentacle (`$82:990F`) and a
+creature at `$82:EAC5`, found by reading every use of the camera's column in
+the code banks. Level 12, logged: arrivals at -8/-6 and 328 before, at -92 to
+-98 and 414 to 418 after; the tentacle at -94 and 414 on record 51. The
+`$82:EAC5` creature has not been seen. Draw-list test OK on four movies.
+
 ### The baby and the saucer in the widescreen margins (2026-09-20)
 
 Reported in play-testing: cut in half at the margin, and a copy on the other
