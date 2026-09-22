@@ -1822,6 +1822,28 @@ first of their record and fails on any: over `level9` in 16:9 there were 2,271
 and there are none, with 646 pieces of 35,634 moved by their record's vote
 instead of their own.
 
+**A unanimous vote is not always a walk.** The potion's monster stands still
+and its second punch frame draws the whole body three pixels lower; its first
+walking frame is two pixels from its standing one, and walking down, its
+frames bob the body two pixels every fourth tick. Every piece moves by the
+same amount, so the vote was carried, and the body slid there over the tick
+and, under `even`, overshot by three quarters of a pixel and came back --
+where the console swaps the frame in one step, and where the player, whose
+frames move their pieces by different amounts, is placed by the tie. Reported
+in play-testing as the monster not animating as smoothly as the rest. The
+actor's own move says which it is: a frame that shifts by a pixel about it is
+the jitter the nearest-piece rule eases, and a shift further than that
+(`LAYERS_POSE_MAX`) is a new pose, placed where the frame puts it by taking
+the actor's move instead. On a movie that drinks the potion, the monster's
+eased ticks over its punches went from 33 to none, over its first steps from 3
+to none, and over four directions of walking from 27 to 9 -- the nine being
+the pixel shifts still eased on purpose. It reaches other actors too: a walker
+whose frames shift its body by exactly two pixels now snaps between frames as
+the console does rather than sliding -- 266 records over 2,200 ticks of
+`level1`, 356 over `level25-boss` -- and the pictures at the ends of ticks are
+unchanged, so `zamn_test_layers` still finds every frame identical to the
+PPU's. It counts the records placed this way.
+
 The count found one more way apart, in `level25-lane`. A tick the game cannot
 finish in a frame leaves a frame its pass did not run for, so the picture after
 it had no owner table, and the picture after that nothing to be paired with by

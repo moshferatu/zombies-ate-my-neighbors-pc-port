@@ -317,6 +317,9 @@ typedef struct {
   // ...and how many pieces were taken back by their record's move instead of
   // their own, so that the record stays in one piece.
   int linkTogether;
+  // ...and how many records whose pieces all moved as one, but further from
+  // the actor's own move than a frame's shift, were placed as a new pose.
+  int linkPose;
   // Which planes have anything in them, so an empty one is neither uploaded
   // nor drawn.
   bool planeUsed[LAYERS_PLANES];
@@ -817,6 +820,10 @@ static inline int layers_delta(int from, int to, int bits) {
 // How much a sprite's move may differ from its last before it is a placement
 // and not a move -- see `LAYERS_LINK_BEFORE`.
 #define LAYERS_JUMP_MAX 6
+// How far a record's pieces may all move together beyond the actor's own
+// move and still be a frame's shift, eased; further is a new pose, placed --
+// see the vote below `LAYERS_LINK_BEFORE`.
+#define LAYERS_POSE_MAX 1
 // How far a maths-window rectangle's top or bottom may wander from tick to
 // tick and still be the same rectangle, held where it was -- see `mathShown`.
 #define LAYERS_WINDOW_WANDER 3
@@ -1002,7 +1009,7 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
       }                                                                        \
     } while (0)
   cur->linkNear = cur->linkOrigin = cur->linkLooks = cur->linkNone = cur->linkJump = 0;
-  cur->linkTogether = 0;
+  cur->linkTogether = cur->linkPose = 0;
   const bool byRecord = cur->ownersFresh && prev->ownersFresh;
   // For each sprite paired by its record: the first of the last tick's
   // sprites of that record, which stands for the record's last move.
@@ -1163,6 +1170,27 @@ static inline void layers_link(LayersFrame* cur, const LayersFrame* prev) {
           votes = n;
           moveX = dx;
           moveY = dy;
+        }
+      }
+      // A unanimous vote is not always a walk. The potion's monster stands
+      // still and its second punch frame draws the whole body three pixels
+      // lower; its first walking frame is two pixels from its standing one.
+      // Every piece moves by the same amount, the vote is carried, and the
+      // body slid there over the tick and, under `even`, bounced back --
+      // where the console swaps frames in one step, and where the player,
+      // whose frames move their pieces by different amounts, is placed by the
+      // tie above. The actor's own move (`mx`, `my`) says which it is: a
+      // frame that shifts by a pixel about it is the jitter the nearest-piece
+      // rule eases, and anything further is a new pose, which is placed where
+      // the frame puts it by taking the actor's move instead.
+      {
+        const LayersSprite* a = &cur->spr[i];
+        const int sx = moveX - a->mx, sy = moveY - a->my;
+        if (sx > LAYERS_POSE_MAX || sx < -LAYERS_POSE_MAX ||
+            sy > LAYERS_POSE_MAX || sy < -LAYERS_POSE_MAX) {
+          moveX = a->mx;
+          moveY = a->my;
+          cur->linkPose++;
         }
       }
       for (int k = i; k < LAYERS_SPRITES; k++) {

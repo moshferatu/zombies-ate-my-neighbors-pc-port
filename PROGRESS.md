@@ -27,6 +27,28 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### The monster's pose changes are placed, not slid (2026-09-21)
+
+Play-testing: the potion's monster did not animate as smoothly as the rest,
+walking or punching. Measured with `zamn_test_layers --track` on a movie that
+drinks the potion: the monster's second punch frame draws the body three
+pixels lower and its walking frames shift it by two, every piece by the same
+amount, so the pairing vote in `src/layers.h` carried it as motion and the
+body slid over the tick and bounced under `even`, where the console swaps
+frames in one step and the player, whose frames move pieces by different
+amounts, is placed by the tie. Now a unanimous shift further than a pixel
+from the actor's own move (`LAYERS_POSE_MAX`) is a new pose and the pieces
+are placed by the actor's move (README -> *Smoothing*). The monster's eased
+ticks: punches 33 -> 0, first steps 3 -> 0, four directions 27 -> 9 (the nine
+are pixel shifts, kept). Also reaches walkers whose frames shift the body by
+exactly two pixels, which now snap as the console does: 266 records over
+2,200 ticks of `level1`, 356 over `level25-boss`; end-of-tick pictures
+unchanged over six corpus movies. `zamn_test_layers` counts the records
+placed as a pose. Not tried by hand at 240 Hz. Noticed on the way: the
+layers test over `level1` 2400-4600, `level9` 3000-5000, `level21-spin`,
+`level29-fighting` and `level17-weapon` fails on one to four pieces apart
+from their record before and after this change alike; not looked into.
+
 ### The monster aims with the right stick too (2026-09-21)
 
 Play-testing: a player turned into the monster by the potion punched only the

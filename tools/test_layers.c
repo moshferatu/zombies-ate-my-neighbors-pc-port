@@ -185,7 +185,7 @@ int main(int argc, char** argv) {
   uint32_t last_serial = sprite_oam_owners.serial;
   static SpriteOamOwners held;
   bool held_fresh = false;
-  long pieces_apart = 0, pieces_apart_frame = -1, link_together = 0;
+  long pieces_apart = 0, pieces_apart_frame = -1, link_together = 0, link_pose = 0;
   long link_near = 0, link_origin = 0, link_looks = 0, link_none = 0, link_jump = 0, origin_moved = 0, window_held = 0, steps_spread = 0, steps_cut = 0, lines_moved = 0, lines_spread = 0, bg3_anchored = 0, bg3_mask = 0;
 
   long tested = 0, identical = 0, within_one = 0, differing = 0, unexpressible = 0, dropped = 0;
@@ -315,6 +315,7 @@ int main(int argc, char** argv) {
         link_near += f->linkNear; link_origin += f->linkOrigin;
         link_looks += f->linkLooks; link_none += f->linkNone; link_jump += f->linkJump;
         link_together += f->linkTogether;
+        link_pose += f->linkPose;
         window_held += f->mathHeld;
         if (f->anchored[2]) bg3_anchored++;
         if (ppu->layerWide[2] == ppu_wideCentre) bg3_mask++;
@@ -544,6 +545,7 @@ int main(int argc, char** argv) {
          " the first of their record: %ld", link_together, pieces_apart);
   if (pieces_apart) printf(" (first on frame %ld)", pieces_apart_frame);
   printf("\n");
+  printf("  records placed as a new pose, their pieces having moved as one beyond the actor's move: %ld\n", link_pose);
   if (window_held) printf("  the maths window's rectangles were held where they wandered on %ld ticks\n", window_held);
   if (bg3_anchored) printf("  BG3 was anchored to the picture's edges on %ld frames\n", bg3_anchored);
   if (wide != WIDE_OFF)
