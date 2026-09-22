@@ -332,6 +332,11 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
 // The two tails that are counters. `$80:FA26` bumps one per player with nothing
 // stopping it; `$80:FA4A` bumps a different one and refuses past 5. Named for
 // where they are: no trace has seen either read.
+//
+// (The second has since been read, for `--infinite-lives`: it is the **lives**.
+// `$80:8882` starts it at two, `$80:CEC5  DEC $1D4C,X : BMI` is a death and the
+// game over, and so `$80:FA4A` is an extra life, of which five can be held.
+// The name is left, being in the coverage table. See `src/cheats.h`.)
 #define W_PLAYER_SPAWN_COUNT 0x1ff0
 #define W_PLAYER_CAPPED_COUNT 0x1d4c
 #define PLAYER_CAPPED_MAX 0x0005

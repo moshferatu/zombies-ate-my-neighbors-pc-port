@@ -632,6 +632,89 @@ the name entry and saves at about frame 5,000; the next launch prints
 that only sits on the menus kills the *attract mode's* player, and that game
 over (`$80:9B87`) goes to the top scores without asking `$82:BBED` anything.
 
+### Cheats
+
+Six, each a flag of its own and off unless asked for (`src/cheats.h`):
+
+| flag | what it does |
+| --- | --- |
+| `--invincible` | Nothing hurts a player: no flinch, no sound, no health lost. |
+| `--invincible-neighbors` | Nothing hurts a neighbour, and the tourists do not turn into werewolves. They can still be rescued. (`--invincible-neighbours` is the same flag.) |
+| `--infinite-ammo` | Weapons and items are never used up, keys included, and the HUD always shows the most the game lets anybody carry: 999 of a weapon, 99 of an item. It gives nothing: a weapon not held stays not held. |
+| `--infinite-lives` | Dying does not cost a life. |
+| `--give-all` | All fourteen weapons and ten items, 999 and 99 of them, when a game starts and when a quick save is loaded. Once: they run out unless `--infinite-ammo` is on as well. |
+| `--always-run` | The running shoes, always. |
+
+**Three kinds of thing, chosen by who runs the code.** A routine the port has
+taken over is C and no longer reads the cartridge's instructions; one it has
+not is the 65816's in a native run as much as under `--stock`. So most of a
+cheat is what a cheat cartridge does -- a byte or two of the *loaded* image,
+checked against what this ROM has before any is touched, all or none -- or a
+word of WRAM written once a tick where `--poke` writes. Two routines are the
+port's own, a neighbour's collision handlers and one entry of the player's,
+and for those there is a flag in the port (`src/port/cheat.h`) beside the patch
+to the cartridge's copy, so F1 and `--stock` play the same.
+
+* **Invincible.** Every way a collision hurts a player but two opens with
+  `LDA $52 : BPL <rts>`, the recovery timer a hit sets to `$40`: `$80:F950`
+  (ids 3, 4, 9), `$80:F979` (a Martian's bubble), `$80:DC09` and the floor's
+  `$80:F935`. Nothing else reads it -- it is not what makes a hurt player
+  flash -- so it is held at `$40` and no hit ever lands. The two that do not
+  ask, `$80:F9BE` and `$80:F999`, lose a `STA` and become an `RTS`. Health is
+  held at ten besides, for a potion that turns out to be poison.
+* **Neighbours.** `$83:A364` latches a neighbour's fate from the first
+  collision to reach it: 5 and 6 are the players, `$FF` clears it away, and 3,
+  4, 9, `$0B` and `$34` are its deaths. Those five fall through to the
+  routine's own `CLC : RTL`; the same for a bubbled neighbour's handler at
+  `$83:A264`; and `$83:A012`, the tourists' `BNE` on the moon, goes.
+* **Ammo.** The game spends in five places, all `SED : SEC : SBC #$0001 : STA`
+  and none of them the port's -- a weapon fired, an item used (twice), a key
+  and a skeleton key. Each `#$0001` becomes `#$0000`, so nothing is ever spent
+  and the HUD never sees a count dip; once a tick what is held is raised to
+  `$0999` or `$0099`, the ceilings the pickups themselves keep.
+* **Lives.** `$80:CEC5  DEC $1D4C,X` goes. `$7E:1D4C` is the lives, two at the
+  start and counted down to a `BMI`.
+* **Give all.** Two of the twelve item slots are left out, 6 and 11 -- an
+  orange flask and a thing with an aerial. They have icons, no id that picks
+  them up (`$27` and `$2C` are the first-aid pickup and a dead player's keys)
+  and a bare `RTS` for a use. Given the tick a player's inventory is exactly a
+  new game's (`$80:8874`: a squirt gun of 150 and a first-aid kit), and the
+  first tick a player is on the board after the start or a quick load.
+* **Always run.** `$54 = $8000` on the player's page is the shoes and `$56`
+  their countdown; a `$54` of zero is set every tick and the countdown left at
+  nothing. `$C000` is the monster a potion makes, and is left.
+
+A player's page is found from `$D2`/`$D4` (their display record, zero when
+they are off the board), the record's thread at `+$0C` and the table of pages
+at `$80:82DE`, and believed only if `$0E`, `$64` and `$66` there say it is
+that player's.
+
+**The demo is left alone.** The title's demo is a recording played into a real
+level and it ends when the last neighbour is gone -- eaten, most of them. With
+the neighbours safe it ran until a button was pressed (16,000 frames and
+counting, against 12,113). So while the job that plays the recording is filed
+(`$9CB1`/`$0080` in the eight at `$7E:12E0`) the patches come back out, the
+port is told nothing and no word is held, and what `--give-all` owes is kept
+for the game that follows.
+
+**The top scores are read and not written** while any cheat is on, and a movie
+played with one says that it will not meet the game it was made against.
+
+Checked by `zamn_test_cheats` -- the patches into an image and byte for byte
+back out of it, a wrong image refused whole, every hold and every thing a tick
+must leave alone, the demo, and the port's handlers with the flag on and off,
+against a cartridge built to the header's description and against the real
+one -- and in play, under the stock core (`zamn_headless` takes the same six
+flags, for `--watch`) and natively: `level5` with `--invincible` never sees
+`$1CB8` leave ten where the plain run loses three lives; with
+`--infinite-lives` it dies five times on two lives; `level9` loses a neighbour
+at frame 4224 and `level21-bubble` one at 2869, and neither does with the
+cheat, while `level1-rescue` still rescues; the squirt gun reads 999 from the
+tick the game is dealt and never moves; and with the shoes `level1`'s player
+is at x 114 by frame 1800 where the plain run's is at 232. `verify` on
+`player_collide`, `victim_collide` and `victim_a264` still finds nothing, the
+flags being off.
+
 ### Twin-stick shooting, and `--no-twin-stick`
 
 ```
@@ -2204,6 +2287,9 @@ src/pad.h             Game controllers: the deadzone, the eight-way snap and the
 src/config.h          The player's `zamn.ini`: the settings that had only flags,
                               and every key and pad binding; the file it writes
                               when there is none
+src/cheats.h          The six cheats: patches to the loaded image, words held
+                              in WRAM once a tick, and two flags in the port
+                              (`src/port/cheat.h`)
 src/twinstick.h       Twin-stick shooting: what the right stick becomes — an aim
                               direction, and nine bytes of 65816 at `$80:D250`
 src/pace.h            Frame cadence: measuring how evenly frames arrive, and
@@ -2271,6 +2357,10 @@ tools/test_layers.c   Runs a movie and asks, on every frame, whether the draw
                               list drawn unmoved is the frame the PPU drew, and
                               if not why -- so the fallback rate is a number.
                               Needs the ROM and a movie
+tools/test_cheats.c   The cheats' patches into an image and back out, what a
+                              tick holds and what it must not, the demo, and the
+                              port's handlers with the flag on and off. No SDL;
+                              the ROM if it is there
 tools/test_twinstick.c Nine stick positions becoming nine direction codes, and
                               the ROM patch as exact bytes against a synthetic
                               cartridge — including that every refusal writes

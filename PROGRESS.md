@@ -27,6 +27,33 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### Cheats, behind six flags (2026-09-21)
+
+Asked for in play-testing: `--invincible`, `--invincible-neighbors`,
+`--infinite-ammo`, `--infinite-lives`, `--give-all`, `--always-run`
+(`src/cheats.h`; README -> *Cheats*). Made of three things, by who runs the
+code: patches to the loaded image, checked first and all or none (the five
+`SBC #$0001`s that spend ammo, items and keys; `DEC $1D4C,X`, which is the
+lives; a neighbour's five fatal ids in `$83:A364`, two in `$83:A264`, and the
+tourists' werewolf `BNE`; the two player hits that do not ask the recovery
+timer); words held once a tick where `--poke` writes (the recovery timer `$52`
+at `$40`, health at ten, counts raised to `$0999`/`$0099`, `$54 = $8000` for
+the shoes, and the inventory given when it is exactly a new game's or a save
+has just been loaded); and `port_cheats` (`src/port/cheat.h`) for the routines
+that are the port's own -- `victim_collide`, `victim_a264_collide`, and
+`player_collide`'s id `$0A`. Works under `--stock` and F1 for that reason.
+Found on the way: `$7E:1D4C` is the lives (collide.h had it as a counter
+nobody read), `$7E:1D52` the neighbours left, item slots 6 and 11 have icons
+and cannot be had, and the demo ends by its neighbours being eaten -- so with
+them safe it never ended, and the cheats now stand down while the demo's job
+(`$9CB1`) is filed at `$7E:12E0`. The top scores are read and not written
+while a cheat is on. `zamn_headless` takes the same flags, for `--watch`.
+Checked by `zamn_test_cheats` (synthetic image and the cartridge), under the
+stock core and natively on `level5`, `level9`, `level21-bubble`,
+`level1-rescue` and `level1`, and by `verify` still passing with the flags
+off. Flags only: no `zamn.ini` settings, and no hotkeys to switch them in
+play. Not tried: two players, a boss, or a whole level by hand.
+
 ### Shoulders and triggers select weapons and items, both ways (2026-09-21)
 
 Asked for in play-testing. R1/L1 are the next item and the one before, R2/L2

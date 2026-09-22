@@ -4,6 +4,7 @@
 
 #include "port/apu.h"
 #include "port/bcd.h"
+#include "port/cheat.h"
 #include "port/coverage.h"
 // For `weapon_select_next`: a pickup by a player holding nothing tail-calls
 // into the weapon selector, which is not collision code and lives on its own.
@@ -18,6 +19,9 @@
 #include "port/rng.h"
 #include "port/score.h"
 #include "port/thread.h"
+
+// `src/cheats.h`. Both false unless a frontend sets them.
+PortCheats port_cheats;
 
 // ---------------------------------------------------------------------------
 // $80:F950  the player's hit path
@@ -589,7 +593,11 @@ bool player_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
         break;
       }
       PORT_COVER(player_queue_next);
-      wram_w16(w, (uint32_t)dp + PLAYER_DP_NEXT, PLAYER_QUEUE_NEXT);
+      // `--invincible` takes this store out, here and -- as two `NOP`s -- in
+      // the cartridge's copy. It is the one hit in this routine that does not
+      // ask the recovery timer first.
+      if (!port_cheats.invincible)
+        wram_w16(w, (uint32_t)dp + PLAYER_DP_NEXT, PLAYER_QUEUE_NEXT);
       // `LDA #$F9D0` is the last instruction to set a flag; the `STA` sets none.
       r->a = PLAYER_QUEUE_NEXT;
       r->n = (PLAYER_QUEUE_NEXT & 0x8000) != 0;
@@ -1125,7 +1133,13 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
     return true;
   }
 
-  switch (arg) {
+  // `--invincible-neighbors`: the five ids that are a neighbour's death are ids
+  // it has no reaction to, which is what the cartridge's copy is patched to
+  // say as well (`src/cheats.h`). Zero is the first of the ids nothing here
+  // tests for.
+  const bool spared = port_cheats.neighbors && arg != VICTIM_ID_CLAIM_A &&
+                      arg != VICTIM_ID_CLAIM_B && arg != VICTIM_ID_EVENT_FF;
+  switch (spared ? 0 : arg) {
     case VICTIM_ID_CLAIM_A:
       // `$83:A392  BRA $A397`, skipping the `LDA #$8000`. What reaches `STA
       // $18` is the accumulator the dispatcher arrived with, which is the id —
@@ -2357,8 +2371,10 @@ bool victim_a264_collide(Wram* w, uint16_t dp, uint16_t arg,
                          ActorHandlerRegs* r) {
   r->a = arg;
 
-  if (arg == A264_ID_GIVE_UP_FF || arg == A264_ID_GIVE_UP_A ||
-      arg == A264_ID_GIVE_UP_B) {
+  // `--invincible-neighbors` leaves `$FF` and takes the other two out, as it
+  // does in `victim_collide`; they go on to the ignore at the bottom.
+  if (arg == A264_ID_GIVE_UP_FF ||
+      (!port_cheats.neighbors && (arg == A264_ID_GIVE_UP_A || arg == A264_ID_GIVE_UP_B))) {
     // `$83:A2A5  LDA $06 : JSL $81:8191 : LDA #$0003 : STA $1E : SEC : RTL`.
     PORT_COVER(a264_give_up);
     a264_flag_set(w, dp, r);

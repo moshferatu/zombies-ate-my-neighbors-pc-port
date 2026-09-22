@@ -64,6 +64,7 @@ static const char hiscore_magic[8] = {'Z', 'A', 'M', 'N', 'H', 'S', '1', '\n'};
 
 typedef struct {
   bool enabled;
+  bool read_only;  // put the file's table in place, and write nothing: a cheat is on
   bool restored;  // the file has been looked at and, if good, put in place
   char path[1024];
   uint8_t saved[HISCORE_BYTES];  // what is on disk, as far as is known
@@ -168,6 +169,7 @@ static inline void hiscore_tick(Hiscore* h, uint8_t* ram) {
     return;
   }
   if (h->have_saved && !memcmp(h->saved, table, HISCORE_BYTES)) return;
+  if (h->read_only) return;
   if (!hiscore_valid(table)) return;
   if (hiscore_write(h, table)) {
     memcpy(h->saved, table, HISCORE_BYTES);

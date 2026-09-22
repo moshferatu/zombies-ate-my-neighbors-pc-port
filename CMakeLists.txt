@@ -110,6 +110,16 @@ if(MSVC)
   target_compile_definitions(zamn_test_twinstick PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# The cheats (src/cheats.h): the flags, the patches into an image and back out
+# of it, what a tick holds, the demo, and the port's two handlers -- against a
+# cartridge built to the header's description, and the real one if it is there.
+add_executable(zamn_test_cheats tools/test_cheats.c)
+target_include_directories(zamn_test_cheats PRIVATE src)
+target_link_libraries(zamn_test_cheats PRIVATE zamn_port)
+if(MSVC)
+  target_compile_definitions(zamn_test_cheats PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # ---------------------------------------------------------------------------
 # The branch-coverage instrument (src/port/coverage.h). Port code marks its
 # decision points; this holds the counters the harness reads. It is separate

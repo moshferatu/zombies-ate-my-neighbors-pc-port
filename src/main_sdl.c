@@ -49,6 +49,8 @@
 //             [--dump-pictures prefix,frame]
 //             [--no-high-scores] [--high-scores file] [--hitbox percent]
 //             [--red-blood] [--quick-at frame:save|load[:file]]...
+//             [--invincible] [--invincible-neighbors] [--infinite-ammo]
+//             [--infinite-lives] [--give-all] [--always-run]
 //             [--config file] [--no-config] [--volume N]
 //             [--key-at frame:key[:frames]]...
 //
@@ -67,6 +69,7 @@
 #include "analysis/movie.h"
 #include "analysis/movie_apply.h"
 #include "poke.h"
+#include "cheats.h"
 #include "hiscore.h"
 #include "cosim/cosim.h"
 // For `player_set_aim` alone: `$80:D1FF` is substituted, so twin-stick aiming
@@ -973,6 +976,20 @@ static void usage(void) {
     "                            pixels, no shimmer, and the window is filled.\n"
     "                    integer only whole multiples; letterbox the remainder.\n"
     "                    linear  one bilinear step from 512x480. The blurry one.\n\n"
+    "Cheats, each a flag of its own and off unless asked for. They work under\n"
+    "--stock as well. While any is on the top scores are read and not written.\n"
+    "  --invincible    Nothing hurts a player: no flinch, no health lost.\n"
+    "  --invincible-neighbors  Nothing hurts a neighbour, and the tourists do\n"
+    "                  not turn into werewolves. They can still be rescued.\n"
+    "  --infinite-ammo Weapons and items are never used up -- keys too -- and\n"
+    "                  the HUD shows the most the game lets anybody carry, 999\n"
+    "                  and 99. Gives nothing: a weapon not held stays not held.\n"
+    "  --infinite-lives  Dying does not cost a life.\n"
+    "  --give-all      Every weapon and every item, 999 and 99 of them, when a\n"
+    "                  game starts and when a quick save is loaded. Once: they\n"
+    "                  run out unless --infinite-ammo is on as well.\n"
+    "  --always-run    The running shoes, always.\n"
+    "                  See src/cheats.h.\n\n"
     "Controls, unless zamn.ini binds them otherwise, which it can for every one\n"
     "of them, pad inputs included:\n"
     "          Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
@@ -1030,6 +1047,9 @@ int main(int argc, char** argv) {
   // `--poke`, as the headless tool has it: a way to a state -- a game over --
   // that no movie in the corpus reaches, for looking at how it is drawn.
   PokeList pokes = {{{0}}, 0};
+  // `--invincible` and the rest: see `src/cheats.h`.
+  Cheats cheats;
+  cheats_init(&cheats);
   // `--quick-at frame:save|load[:file]`: F5 or F9 pressed by the command line
   // at a frame, to a file of its own if one is named. For testing the quick
   // save without a keyboard, and the one way to it under a movie.
@@ -1252,6 +1272,7 @@ int main(int argc, char** argv) {
     }
     else if (!strcmp(a, "--red-blood")) red_blood = true;
     else if (!strcmp(a, "--no-red-blood")) red_blood = false;
+    else if (cheats_flag(&cheats, a)) {}
     else if (!strcmp(a, "--no-high-scores")) hiscore_on = false;
     else if (!strcmp(a, "--high-scores") && i + 1 < argc) hiscore_path = argv[++i];
     else if (!strcmp(a, "--shot") && i + 1 < argc) shot_path = argv[++i];
@@ -1364,6 +1385,17 @@ int main(int argc, char** argv) {
     if (twin_asked) return 1;
     twin_stick = false;
   }
+  // The cheats, which are asked for by name and so are an error if they cannot
+  // be had. All of them or none: a cartridge that is not the one known is not
+  // half changed.
+  if (!cheats_install(&cheats, snes->cart->rom, (size_t)snes->cart->romSize)) {
+    const CheatId which = cheats_rom_check(&cheats, snes->cart->rom, (size_t)snes->cart->romSize);
+    fprintf(stderr,
+            "error: --%s: '%s' is not a cartridge this can change -- the code\n"
+            "       the cheat rewrites is not where this ROM has it. See src/cheats.h.\n",
+            cheat_flags[which], rom_path);
+    return 1;
+  }
 
   // Attach the harness before the reset, exactly as `cosim_lockstep` does: it
   // hooks the program counter rather than the machine's state, so it neither
@@ -1418,6 +1450,9 @@ int main(int argc, char** argv) {
   static Hiscore hiscore;
   hiscore_init(&hiscore, rom_path, hiscore_path);
   hiscore.enabled = hiscore_on && (!have_movie || hiscore_path);
+  // A score made with a cheat on is not one for the file: the table is put in
+  // place as ever, and nothing is written back.
+  hiscore.read_only = cheats_any(&cheats);
 
   snes_setPixelFormat(snes, ZAMN_PIXEL_FORMAT);
   // Before the window is sized, because the window is sized from the picture.
@@ -1678,6 +1713,11 @@ int main(int argc, char** argv) {
          native ? "on" : "off (stock)", routine_count,
          routine_count == 1 ? "" : "s",
          have_movie ? ", replaying a movie" : "");
+  cheats_print(&cheats);
+  if (cheats_any(&cheats)) {
+    if (hiscore.enabled) printf("Cheats: the top scores are read and not written while one is on.\n");
+    if (have_movie) printf("note : a movie was recorded without cheats, and will not meet the game it was made against.\n");
+  }
   // Announced because it is the one option here that changes what the *game*
   // does rather than how it is shown, and a run that starts on level 30 should
   // say so in its own log rather than leave somebody wondering.
@@ -2047,6 +2087,7 @@ int main(int argc, char** argv) {
         }
         hiscore_tick(&hiscore, snes->ram);
         poke_apply(&pokes, snes->ram, (int)frame);
+        cheats_tick(&cheats, snes->ram, snes->cart->rom);
         // The substitution seam. Identical to `snes_runFrame` when the mask
         // is clear; when it is not, a registered routine's entry PC hands the
         // call to the C port, which runs against the core's own WRAM and
@@ -2145,6 +2186,8 @@ int main(int argc, char** argv) {
             // The top scores are not rolled back: the file's table goes over
             // the machine's, as after a boot.
             hiscore.restored = false;
+            // ...and a save from before `--give-all` is given what a start is.
+            cheats_loaded(&cheats);
             memset(&keys, 0, sizeof keys);
             memset(key_held, 0, sizeof key_held);
             printf("Quick load: '%s'.\n", quick.path);
@@ -2203,6 +2246,7 @@ int main(int argc, char** argv) {
           } else {
             hiscore_tick(&hiscore, snes->ram);
             poke_apply(&pokes, snes->ram, (int)frame);
+            cheats_tick(&cheats, snes->ram, snes->cart->rom);
             emu.capture = true;
             SDL_SemPost(emu.go);
             in_flight = true;

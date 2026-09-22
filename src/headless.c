@@ -50,6 +50,7 @@
 
 #include "analysis/movie_apply.h"
 #include "poke.h"
+#include "cheats.h"
 #include "scale.h"
 #include "widescreen.h"
 
@@ -288,7 +289,9 @@ int main(int argc, char** argv) {
             "       [--watch addr[,first[,last[,step]]]]...\n"
             "       [--save frame,file] [--load file]\n"
             "       [--poke frame[+]:addr=value[.b]]...\n"
-            "       [--widescreen off|16:9|16:10]\n",
+            "       [--widescreen off|16:9|16:10]\n"
+            "       [--invincible] [--invincible-neighbors] [--infinite-ammo]\n"
+            "       [--infinite-lives] [--give-all] [--always-run]\n",
             argv[0]);
     return 2;
   }
@@ -301,6 +304,8 @@ int main(int argc, char** argv) {
   int snap_count = 0;
   int pos_first = -1, pos_last = -1, pos_step = 10;
   PokeList pokes = {{{0}}, 0};
+  Cheats cheats;
+  cheats_init(&cheats);
   int rec_first = -1, rec_last = -1, rec_step = 10;
   // `--watch` may be given more than once. One word is the usual question; the
   // question that produced this option was "which of the twenty-four thread
@@ -370,6 +375,10 @@ int main(int argc, char** argv) {
         watch_last = v[1];
         watch_step = v[2] > 0 ? v[2] : 1;
       }
+    } else if (cheats_flag(&cheats, argv[i])) {
+      // The frontend's cheats (`src/cheats.h`), here so that `--watch` can be
+      // aimed at what they hold -- and under the stock core, which is the half
+      // of them the frontend's own runs do not show.
     } else if (!strcmp(argv[i], "--poke") && has_next) {
       // The same flag `zamn_cosim verify` takes, so a state worked out with
       // pictures here transfers to the run that checks it verbatim.
@@ -417,6 +426,11 @@ int main(int argc, char** argv) {
   if (wide != WIDE_OFF) printf("Widescreen %s: %d columns\n", wide_name(wide), fb_w / 2);
   // XRGB layout: framebuffer bytes per pixel are [B, G, R, X].
   snes_setPixelFormat(snes, pixelFormatXRGB);
+  if (!cheats_install(&cheats, snes->cart->rom, (size_t)snes->cart->romSize)) {
+    fprintf(stderr, "error: this is not a cartridge the cheats know how to change\n");
+    return 1;
+  }
+  cheats_print(&cheats);
   snes_reset(snes, true);
 
   Movie movie;
@@ -455,6 +469,7 @@ int main(int argc, char** argv) {
       movie_apply(&movie, snes, i);
     }
     poke_apply(&pokes, snes->ram, i);
+    cheats_tick(&cheats, snes->ram, snes->cart->rom);
     snes_runFrame(snes);
     // `--at` frames are requested in whatever order they were typed, but they
     // are almost always ascending; walking a cursor keeps the common case free
