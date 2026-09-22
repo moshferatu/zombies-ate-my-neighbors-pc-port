@@ -12398,8 +12398,8 @@ table says each of them worked; it cannot say what fraction of the game that
 *is*, and it cannot tell a 17-byte leaf from a 2 KB state machine. That question
 had one answer -- `tools/native_share.py`, offline, over a traced profile -- and
 it could not be asked of the thing anybody actually does with the port, which is
-play it. So the harness now measures it as it runs, and `zamn.exe` and
-`zamn_cosim run` both print it when they exit.
+play it. So the harness now measures it as it runs, and `zamn_cosim run`
+prints it when it exits, as does `zamn.exe` under `--verbose` or `--frames`.
 
 Two rows, because there are two honest questions:
 

@@ -102,15 +102,8 @@ bool snes_loadRom(Snes* snes, const uint8_t* data, int length) {
     }
     test *= 2;
   }
-  // load it
-  const char* typeNames[4] = {"(none)", "LoROM", "HiROM", "ExHiROM"};
-  printf("Loaded %s rom (%s)\n", typeNames[headers[used].cartType], headers[used].pal ? "PAL" : "NTSC");
-  printf("\"%s\"\n", headers[used].name);
-  int bankSize = used >= 2 ? 0x10000 : 0x8000; // 0, 1: LoROM, else HiROM
-  printf(
-    "%s banks: %d, ramsize: %d\n",
-    bankSize == 0x8000 ? "32K" : "64K", newLength / bankSize, headers[used].chips > 0 ? headers[used].ramSize : 0
-  );
+  // load it. Silently: what was loaded is the caller's to report, or not --
+  // the cartridge keeps the type and the size for it to say so.
   cart_load(
     snes->cart, headers[used].cartType,
     newData, newLength, headers[used].chips > 0 ? headers[used].ramSize : 0

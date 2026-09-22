@@ -27,6 +27,38 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### The console is quiet unless asked (2026-09-22)
+
+Play-testing: quitting the game scrolled some 200 lines past the prompt -- the
+banner, the bindings, the cadence, the per-routine table, the native share and
+its prose. `src/main_sdl.c` now prints, for a played session, the controller,
+the cheats, the starting level, anything that could not be had or went wrong,
+and one line at exit; `--verbose` restores all of it, and a `--frames` or `-m`
+run has it by default, being a measurement. The core's own three lines at the
+load (`snes_other.c`) are gone, and the frontend says the ROM's type and size
+under `--verbose` instead; `src/hiscore.h` announces a restore or a save only
+when told to. README, `docs/cosim.md` and `tools/native_share.py` say where
+the report went.
+
+### Give-all gives only to a player who is in the game (2026-09-21)
+
+Play-testing under `--give-all --infinite-ammo`: the ghost potion turned the
+weapon icon into its blue flame and left 999 under it, where the console
+blanks the count. `$80:DACB` selects weapon 17 and item 15 for the flames,
+past both inventories; the HUD blanks a count for a selection past the end,
+but only redraws it when the word it reads changes, and for 17 that word is
+player two's second weapon slot through player one's table. The game seeds
+player two's inventory in a one-player game and give-all filled it, so the
+word was 999 like the count already drawn and nothing was redrawn. Now
+`src/cheats.h` gives only to a player whose HUD panel flag (`$7E:1E88`/`$1E8A`)
+is up; it is raised at the character select before the seeding, so a new game
+is still given to before the title card goes. Reproduced under the stock core
+with the six flags and natively in 4:3 and 16:9; `zamn_test_cheats` covers
+the flag. On the way, the trampoline: it is background tiles, and the flame
+passing under its top edge and over the rest is the camera's rule forcing BG
+priority on for tile indices under the level's threshold (`$70` there); the
+layers test finds every picture over the shot identical to the PPU's.
+
 ### The monster's pose changes are placed, not slid (2026-09-21)
 
 Play-testing: the potion's monster did not animate as smoothly as the rest,

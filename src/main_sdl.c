@@ -452,9 +452,11 @@ static int emu_thread_main(void* arg) {
 }
 
 // A WIN32-subsystem binary has no console of its own, so `printf` goes nowhere
-// even when it was launched from one. Borrowing the parent's is what makes the
-// substitution report at exit readable; when there is no parent console — a
-// double-click — nothing happens and the title bar carries the status instead.
+// even when it was launched from one. Borrowing the parent's is what makes
+// anything this prints readable -- and it prints little unless `--verbose` asks
+// for the whole banner and the report at exit; when there is no parent console
+// — a double-click — nothing happens and the title bar carries the status
+// instead.
 static void attach_parent_console(void) {
 #ifdef _WIN32
   // Only when there is nothing there already. A caller that redirected us to a
@@ -886,6 +888,14 @@ static void usage(void) {
     "  --frames <N>    Run N frames and exit, uncapped rather than paced at 60 Hz.\n"
     "  --paced         Keep 60 Hz pacing under --frames. Turns a bounded run\n"
     "                  from a throughput measurement into a cadence one.\n"
+    "  --verbose       Say everything: the ROM, the renderer, every binding,\n"
+    "                  the display, the pacing, the audio device and the\n"
+    "                  substitution at the start, the top scores file as it\n"
+    "                  is read and written, and the frame cadence, the\n"
+    "                  per-routine table and the native share at exit.\n"
+    "                  Without it the console carries what changes the game\n"
+    "                  or went wrong, and one line at exit. On by itself\n"
+    "                  under --frames and -m, which are measurements.\n"
     "  --shot <a.png>  Write the final frame as a PNG on the way out.\n"
     "  --no-audio      Skip the audio device (and pace off a timer instead).\n"
     "  --no-pads       Ignore game controllers and read only the keyboard.\n"
@@ -1103,6 +1113,10 @@ int main(int argc, char** argv) {
   // two decisions in one flag, and measuring the *cadence* needs the first
   // without the second: a bounded run, at real speed, that exits with a report.
   bool force_pacing = false;
+  // The whole banner and the whole report, or a console that says only what
+  // changes the game or went wrong. Off unless asked for, and on by itself for
+  // a bounded run or a movie, which are measurements and want the figures.
+  bool verbose = false;
   // The file's `skip_intro` is looked at after the options, because under a
   // movie it is ignored where the option is an error.
   bool skip_the_intro = false, skip_intro_refused = false;
@@ -1158,6 +1172,7 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--skip-intro")) skip_the_intro = true;
     else if (!strcmp(a, "--no-skip-intro")) skip_intro_refused = true;
     else if (!strcmp(a, "--paced")) force_pacing = true;
+    else if (!strcmp(a, "--verbose")) verbose = true;
     else if (!strcmp(a, "--no-twin-stick")) twin_stick = false;
     else if (!strcmp(a, "--twin-stick")) twin_stick = twin_asked = true;
     else if (!strcmp(a, "--no-smooth")) smooth = false;
@@ -1300,6 +1315,7 @@ int main(int argc, char** argv) {
     else if (!rom_path) rom_path = a;
     else { fprintf(stderr, "error: unexpected argument '%s'\n\n", a); usage(); return 2; }
   }  if (fullscreen_asked) fullscreen = true;
+  if (frames_given || movie_path) verbose = true;
 
   // What the file says and no option did. Paths out of the file are taken
   // from the file's directory. Three of its settings are for playing and not
@@ -1322,14 +1338,15 @@ int main(int argc, char** argv) {
   if (skip_intro_refused) skip_the_intro = false;
   // No file anywhere: write the one to edit. Not for a test -- a movie or a
   // bounded run -- which should leave nothing behind it.
-  if (config_found)
-    printf("Config: %s%s\n", g_cfg.path,
-           g_cfg.warnings ? " (with the lines above left at their defaults)" : "");
-  else if (config_off)
-    printf("Config: none read (--no-config)\n");
-  else if (movie_path || frames_given)
-    printf("Config: none found; the defaults\n");
-  else if (config_write_default(CONFIG_FILE))
+  if (config_found) {
+    if (verbose || g_cfg.warnings)
+      printf("Config: %s%s\n", g_cfg.path,
+             g_cfg.warnings ? " (with the lines above left at their defaults)" : "");
+  } else if (config_off) {
+    if (verbose) printf("Config: none read (--no-config)\n");
+  } else if (movie_path || frames_given) {
+    if (verbose) printf("Config: none found; the defaults\n");
+  } else if (config_write_default(CONFIG_FILE))
     printf("Config: none found, so %s was written here with the defaults. Edit it to taste.\n", CONFIG_FILE);
   else
     printf("Config: none found, and %s could not be written here; the defaults\n", CONFIG_FILE);
@@ -1356,6 +1373,12 @@ int main(int argc, char** argv) {
   if (!snes_loadRom(snes, rom, rom_len)) {
     fprintf(stderr, "error: core rejected ROM '%s'\n", rom_path);
     return 1;
+  }
+  if (verbose) {
+    static const char* const cart_types[4] = {"(none)", "LoROM", "HiROM", "ExHiROM"};
+    printf("ROM: '%s', %s %s, %u KB\n", rom_path,
+           cart_types[snes->cart->type < 4 ? snes->cart->type : 0],
+           snes->palTiming ? "PAL" : "NTSC", (unsigned)(snes->cart->romSize / 1024));
   }
   // After the load, not before it: `cart_load` mallocs its own copy and memcpys
   // into it, so the buffer read off disk is not the one the 65816 fetches from.
@@ -1443,13 +1466,14 @@ int main(int argc, char** argv) {
   actor_overlap_reach = (OVERLAP_REACH_STOCK * hitbox_pct + 50) / 100;
   if (!native && hitbox_pct != 100)
     printf("note : --stock runs the ROM's own collision pass; --hitbox has no effect.\n");
-  else if (hitbox_pct != 100)
+  else if (verbose && hitbox_pct != 100)
     printf("Hitboxes: pickups, rescues and the players' weapons reach %d px (the game's 8).\n",
            actor_overlap_reach);
 
   static Hiscore hiscore;
   hiscore_init(&hiscore, rom_path, hiscore_path);
   hiscore.enabled = hiscore_on && (!have_movie || hiscore_path);
+  hiscore.verbose = verbose;
   // A score made with a cheat on is not one for the file: the table is put in
   // place as ever, and nothing is written back.
   hiscore.read_only = cheats_any(&cheats);
@@ -1476,7 +1500,7 @@ int main(int argc, char** argv) {
   if (red_blood) {
     if (blood_patch_rom(snes->cart->rom, (size_t)snes->cart->romSize)) {
       ws.blood.on = true;
-      printf("Blood: the game over's is red.\n");
+      if (verbose) printf("Blood: the game over's is red.\n");
     } else {
       printf("note : --red-blood does not know this ROM's game over, and is off.\n");
     }
@@ -1566,7 +1590,7 @@ int main(int argc, char** argv) {
   }
   {
     SDL_RendererInfo rinfo;
-    if (SDL_GetRendererInfo(ren, &rinfo) == 0)
+    if (verbose && SDL_GetRendererInfo(ren, &rinfo) == 0)
       printf("Renderer: %s%s\n", rinfo.name,
              (rinfo.flags & SDL_RENDERER_PRESENTVSYNC) ? ", vsync" : "");
   }
@@ -1655,8 +1679,8 @@ int main(int argc, char** argv) {
   pacer_init(&pacer, target_frame_ms);
 
   // What is bound, which is the player's to say now: `src/config.h`.
-  config_print(&g_cfg);
-  {
+  if (verbose) config_print(&g_cfg);
+  if (verbose) {
     // What the picture is actually being drawn into, which fullscreen makes a
     // question worth answering: the display's size, not the window size asked
     // for. `SDL_GetRendererOutputSize` is the same call `present_draw` scales
@@ -1689,8 +1713,8 @@ int main(int argc, char** argv) {
   // would have nothing to do but be listed.
   PadSet pads;
   memset(&pads, 0, sizeof pads);
-  if (!want_pads) printf("Controllers: disabled (--no-pads, or the config)\n");
-  else if (have_movie) printf("Controllers: not read (a movie is driving)\n");
+  if (!want_pads) { if (verbose) printf("Controllers: disabled (--no-pads, or the config)\n"); }
+  else if (have_movie) { if (verbose) printf("Controllers: not read (a movie is driving)\n"); }
   else if (pad_init(&pads) && pad_count(&pads) == 0)
     printf("Controllers: none attached — keyboard, or plug one in at any time\n");
   // The player's bindings over the default table `pad_init` made.
@@ -1698,21 +1722,29 @@ int main(int argc, char** argv) {
   if (pad_ignored(&pads))
     printf("Controllers: %d more attached than the SNES has ports; ignored\n",
            pad_ignored(&pads));
-  printf("Pacing: %.3f ms/frame (%.2f fps)%s, display %d Hz, content %.4f Hz\n",
-         target_frame_ms, 1000.0 / target_frame_ms,
-         target_frame_ms == 1000.0 / content_hz ? " from the console"
-                                                : " locked to the display",
-         refresh_hz, content_hz);
-  if (audio)
-    printf("Audio: %d Hz, %d-sample device buffer, backlog target %.0f ms\n",
-           AUDIO_FREQ, AUDIO_DEVICE_SAMPLES,
-           (double)audio_target / audio_bytes_per_ms);
-  else
+  if (verbose)
+    printf("Pacing: %.3f ms/frame (%.2f fps)%s, display %d Hz, content %.4f Hz\n",
+           target_frame_ms, 1000.0 / target_frame_ms,
+           target_frame_ms == 1000.0 / content_hz ? " from the console"
+                                                  : " locked to the display",
+           refresh_hz, content_hz);
+  // A device that would not open is worth a line whether or not anybody asked
+  // for the banner: it is the run with no sound and no explanation otherwise.
+  if (audio) {
+    if (verbose)
+      printf("Audio: %d Hz, %d-sample device buffer, backlog target %.0f ms\n",
+             AUDIO_FREQ, AUDIO_DEVICE_SAMPLES,
+             (double)audio_target / audio_bytes_per_ms);
+  } else if (verbose || want_audio) {
     printf("Audio: none%s\n", want_audio ? " (device would not open)" : "");
-  printf("Substitution: %s (%d routine%s registered)%s\n",
-         native ? "on" : "off (stock)", routine_count,
-         routine_count == 1 ? "" : "s",
-         have_movie ? ", replaying a movie" : "");
+  }
+  // ...and so is `--stock`, which is the one way to run this and have the port
+  // do nothing.
+  if (verbose || !native)
+    printf("Substitution: %s (%d routine%s registered)%s\n",
+           native ? "on" : "off (stock)", routine_count,
+           routine_count == 1 ? "" : "s",
+           have_movie ? ", replaying a movie" : "");
   cheats_print(&cheats);
   if (cheats_any(&cheats)) {
     if (hiscore.enabled) printf("Cheats: the top scores are read and not written while one is on.\n");
@@ -1733,16 +1765,17 @@ int main(int argc, char** argv) {
       printf("Start level: %d (--level; %son to %d from there)\n", start_level,
              start_level == 0 ? "a bonus room, " : "", plan.next);
   }
-  // Both ways round, unlike `--level`, because this one is on unless told
-  // otherwise: a session that has it should say so, and a session where it was
-  // turned off — or could not be installed — should say that rather than look
-  // like a pad that has stopped working.
-  if (twin_stick)
-    printf("Twin stick: on (right stick aims and fires%s)\n",
-           have_movie          ? ", but a movie is driving"
-           : !want_pads        ? ", but the controllers are off"
-                               : "");
-  else
+  // Both ways round under `--verbose`, and the off way round without it: this
+  // one is on unless told otherwise, so a session where it was turned off — or
+  // could not be installed — should say that rather than look like a pad that
+  // has stopped working.
+  if (twin_stick) {
+    if (verbose)
+      printf("Twin stick: on (right stick aims and fires%s)\n",
+             have_movie          ? ", but a movie is driving"
+             : !want_pads        ? ", but the controllers are off"
+                                 : "");
+  } else
     printf("Twin stick: off (right stick does nothing)\n");
   // Redirected to a file, this is block-buffered, and everything above it
   // describes the session that is about to start — so it wants to be readable
@@ -1813,7 +1846,8 @@ int main(int argc, char** argv) {
       printf("note: this renderer has no custom blend modes, so a frame that adds\n"
              "      the sub screen (the character select) is shown as the PPU drew it.\n");
   }
-  if (smooth_possible && lock_p == 1)
+  if (!verbose) {}
+  else if (smooth_possible && lock_p == 1)
     printf("Smoothing: %s (F6 toggles; %d pictures per frame at %d Hz when on;"
            " motion %s)\n",
            smooth ? "on" : "off", lock_q, refresh_hz,
@@ -1846,10 +1880,11 @@ int main(int argc, char** argv) {
     const Uint64 t0 = SDL_GetPerformanceCounter();
     bool bypassed = false;
     const long ran = skip_intro(&cosim, snes, win, &pads, &bypassed);
-    printf("Skipped the intro: %ld frames (%.1f s of game) in %.2f s%s.\n", ran,
-           ran / 60.0,
-           (double)(SDL_GetPerformanceCounter() - t0) / (double)perf_freq,
-           bypassed ? ", the logos bypassed" : "");
+    if (verbose)
+      printf("Skipped the intro: %ld frames (%.1f s of game) in %.2f s%s.\n", ran,
+             ran / 60.0,
+             (double)(SDL_GetPerformanceCounter() - t0) / (double)perf_freq,
+             bypassed ? ", the logos bypassed" : "");
     fflush(stdout);
     started = SDL_GetPerformanceCounter();
   }
@@ -2366,9 +2401,12 @@ int main(int argc, char** argv) {
   // would have filled in — there is no reference core here to compare against,
   // so the `checked` column means "substituted" and nothing is claimed beyond
   // that. The census names any handler a guard declined, which is the work list.
+  // All of it under `--verbose` and for a measurement; a session that was
+  // played gets the one line, and the two below it that say something went
+  // wrong, so that quitting the game does not scroll a report past it.
   printf("\n%ld frames in %.1f s (%.1f fps).\n", frame, secs,
          secs > 0 ? frame / secs : 0.0);
-  if (pictures != frame) {
+  if (verbose && pictures != frame) {
     printf("  shown as %ld pictures (%.2f per frame, %.1f per second).\n",
            pictures, frame > 0 ? (double)pictures / (double)frame : 0.0,
            secs > 0 ? pictures / secs : 0.0);
@@ -2379,9 +2417,10 @@ int main(int argc, char** argv) {
   // ...and the line above is exactly the statistic that cannot see a stutter,
   // so it is immediately followed by the one that can. The period is the
   // pacer's own, which is a picture's and not a frame's when smoothing is on.
-  pace_report(&h_interval, &h_wait, &h_emulate, &h_draw, &h_audio,
-              pacer.period, (double)audio_target / audio_bytes_per_ms, paced);
-  {
+  if (verbose)
+    pace_report(&h_interval, &h_wait, &h_emulate, &h_draw, &h_audio,
+                pacer.period, (double)audio_target / audio_bytes_per_ms, paced);
+  if (verbose) {
     const DwmStats dwm1 = dwm_stats();
     // Silent when the compositor never touched the frames -- fullscreen on
     // Windows 10 and later flips the picture straight to the panel.
@@ -2405,14 +2444,17 @@ int main(int argc, char** argv) {
   if (audio_refills > 1)
     printf("  audio backlog refilled %ld times — rate control is not keeping up\n",
            audio_refills);
-  cosim_report(&cosim);
-  // The two percentages the table cannot give: 82 rows of `OK` say each ported
-  // routine worked, and say nothing at all about what fraction of the game that
-  // is. This does, for the session that was just played, and it is measured
-  // over the whole run — including any stretch spent stock, because F1 toggling
-  // to the emulator and back is exactly a stretch where the port ran nothing.
-  cosim_share_report(&cosim);
-  cosim_census_report();
+  if (verbose) {
+    cosim_report(&cosim);
+    // The two percentages the table cannot give: 82 rows of `OK` say each
+    // ported routine worked, and say nothing at all about what fraction of the
+    // game that is. This does, for the session that was just played, and it is
+    // measured over the whole run — including any stretch spent stock, because
+    // F1 toggling to the emulator and back is exactly a stretch where the port
+    // ran nothing.
+    cosim_share_report(&cosim);
+    cosim_census_report();
+  }
 
   if (emu_thread) {
     emu.quit = true;

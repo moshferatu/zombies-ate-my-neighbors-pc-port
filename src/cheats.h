@@ -74,7 +74,14 @@
 // exactly what `$80:8874` hands a new game -- a squirt gun of 150 and one
 // first-aid kit -- and the first tick a player is on the board after the
 // program starts or a quick save is loaded. Once, so without `--infinite-ammo`
-// they run out.
+// they run out. And only to a player who is in the game, which the HUD's
+// panel flags (`$7E:1E88`/`$1E8A`) say: the game seeds player two's inventory
+// whether or not anybody is playing them, and the ghost potion's HUD trick
+// (`$80:DACB` selects weapon 17 and item 15, past both inventories, to draw
+// its blue flames) reads player two's second weapon slot through player one's
+// table. The HUD only redraws a count when that word changes, so a 999 put
+// there was the old count staying under the flame, where the console, reading
+// a nought, blanks it. Found in play-testing.
 //
 // **Always run.** The shoes are `$54 = $8000` on the player's page with a
 // countdown beside it at `$56` (`$80:EB23`); `$80:E4BA  BIT $54 : BPL` moves
@@ -271,6 +278,7 @@ static inline bool cheats_install(Cheats* c, uint8_t* rom, size_t size) {
 #define CHEAT_W_INVENTORY 0x1cccu      // 14 words, and $20 further on for player 2
 #define CHEAT_W_ITEMS 0x1d0cu          // 12 words, likewise
 #define CHEAT_W_PLAYER_RECORD 0x00d2u  // by player, doubled
+#define CHEAT_W_PANEL_ON 0x1e88u       // by player, doubled: is this player in the game
 #define CHEAT_W_ACTOR_SLOTS 0x185eu
 #define CHEAT_ACTOR_SLOTS_END (CHEAT_W_ACTOR_SLOTS + 32 * 0x14)
 #define CHEAT_ACTOR_THREAD 0x0c
@@ -359,9 +367,13 @@ static inline void cheats_tick(Cheats* c, uint8_t* ram, uint8_t* rom) {
       // card has gone and the player is on the board, so that the HUD's first
       // count is not the squirt gun's 150. Anything else -- a save, or a game
       // that was running when the cheat's first tick came -- waits for a player
-      // to give to.
+      // to give to. Either way only a player who is in the game: the panel
+      // flag is raised at the character select, before `$80:8874` seeds the
+      // inventories, and player two's is seeded in a one-player game too --
+      // see the header for what filling it did to the ghost potion's HUD.
+      const bool in_game = cheat_r16(ram, CHEAT_W_PANEL_ON + (uint32_t)p * 2) != 0;
       const bool seeded = cheat_seeded(ram, p);
-      if (seeded || (c->owed[p] && dp)) {
+      if (in_game && (seeded || (c->owed[p] && dp))) {
         c->owed[p] = false;
         for (int s = 0; s < CHEAT_WEAPON_SLOTS; s++) cheat_w16(ram, weapons + s * 2, CHEAT_WEAPON_MAX);
         for (int s = 0; s < CHEAT_ITEM_SLOTS; s++)

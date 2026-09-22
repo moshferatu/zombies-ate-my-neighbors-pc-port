@@ -164,6 +164,15 @@ batch run is a smoke test or a throughput measurement and has no business
 seizing the display of whoever started it. Whichever way, `--scale` is also the
 size F11 comes back to.
 
+The console is quiet. A session that is played prints the controller it found,
+the cheats and the starting level if any, a line for anything that could not be
+had or went wrong, and at exit one line with the frames and the rate.
+`--verbose` says everything: the ROM, the renderer, every binding, the display,
+the pacing, the audio device and the substitution at the start, the top scores
+file as it is read and written, and the frame cadence, the per-routine table and
+the native share at exit. A `--frames` or `-m` run is a measurement and prints
+all of that without being asked.
+
 ### The settings file: `zamn.ini`
 
 Every setting had a flag first, and a flag is the wrong place for the ones a
@@ -217,7 +226,7 @@ pad: `south east west north`, `l1 r1` (shoulders), `l2 r2` (triggers), `l3 r3`
 `touchpad`, `misc1`, `paddle1`-`paddle4`. SDL's own names and the usual others
 (`cross`, `lb`, `rt`, `share`, `options`) are read as well. A key bound twice
 does the first thing only, a hotkey before a button, and the game says so as
-it starts. The banner at startup lists what is actually bound.
+it starts. `--verbose` lists at startup what is actually bound.
 
 Three of the file's settings are not applied under `-m`: `skip_intro`, `level`
 and `hitbox`. A movie was recorded from reset against the game as it shipped.
@@ -679,7 +688,17 @@ to the cartridge's copy, so F1 and `--stock` play the same.
   them up (`$27` and `$2C` are the first-aid pickup and a dead player's keys)
   and a bare `RTS` for a use. Given the tick a player's inventory is exactly a
   new game's (`$80:8874`: a squirt gun of 150 and a first-aid kit), and the
-  first tick a player is on the board after the start or a quick load.
+  first tick a player is on the board after the start or a quick load -- and
+  only to a player who is in the game, by the HUD's panel flags
+  (`$7E:1E88`/`$1E8A`, raised at the character select, before the seeding).
+  The game seeds player two's inventory in a one-player game too, and filling
+  it reached the HUD: the ghost potion (`$80:DACB`) selects weapon 17 and item
+  15, past both inventories, to draw its blue flames, and the count the HUD
+  then tests for the weapon is player two's second weapon slot read through
+  player one's table. The HUD redraws a count only when that word changes, so
+  a 999 there left the old 999 under the flame, where the console reads a
+  nought and blanks it. Reported in play-testing; `zamn_test_cheats` covers
+  the flag.
 * **Always run.** `$54 = $8000` on the player's page is the shoes and `$56`
   their countdown; a `$54` of zero is set every tick and the countdown left at
   nothing. `$C000` is left: `$80:D3A8` sets it in the state one of the mystery
@@ -1532,7 +1551,8 @@ arrival  mean 16.66  p50 16.75  p90 16.75  max 19.60 ms
 within 1 ms of the period: 98.7%
 ```
 
-Every run prints this at exit; `--paced` keeps 60 Hz pacing under `--frames` so a
+Every `--frames` or `-m` run prints this at exit, and a played one under
+`--verbose`; `--paced` keeps 60 Hz pacing under `--frames` so a
 bounded run measures cadence instead of throughput. `src/pace.h` has the details,
 including why the audio backlog is reported alongside — video no longer depends
 on it, so nothing but the correction stops it drifting, and a `min` near zero is

@@ -185,7 +185,13 @@ static void test_tick(const uint8_t* pristine, size_t size, const char* what) {
   if (cheat_player_dp(ram, rom, 0) != dp) fail("%s: player 1's page is $%04X, not $%04X", what, cheat_player_dp(ram, rom, 0), dp);
   if (cheat_player_dp(ram, rom, 1) != 0) fail("%s: player 2 is not on the board and has a page", what);
 
+  // On the board but not yet in the game, as the HUD's panel flag has it:
+  // what is owed is kept, and nothing is given.
+  cheats_tick(&c, ram, rom);
+  if (cheat_r16(ram, CHEAT_W_INVENTORY) != 0) fail("%s: a player not in the game was given to", what);
+
   // Invincible and the shoes. Owed at the start, so give all as well.
+  cheat_w16(ram, CHEAT_W_PANEL_ON, 1);
   cheat_w16(ram, CHEAT_W_HEALTH, 7);
   cheats_tick(&c, ram, rom);
   if (cheat_r16(ram, dp + CHEAT_DP_HURT_TIMER) != CHEAT_HURT_TIMER) fail("%s: the recovery timer is not held", what);
@@ -210,8 +216,10 @@ static void test_tick(const uint8_t* pristine, size_t size, const char* what) {
   cheats_tick(&c, ram, rom);
   if (cheat_r16(ram, CHEAT_W_INVENTORY + 2) != 0 || cheat_r16(ram, CHEAT_W_INVENTORY + 4) != 0x0123)
     fail("%s: give all gave twice", what);
-  // ...until a save is loaded, or a new game is dealt -- to player 2 as well,
-  // and with nobody on the board yet.
+  // ...until a save is loaded, or a new game is dealt -- with nobody on the
+  // board yet, and to player 2 only once they are in the game: the game seeds
+  // their inventory either way, and a filled one is what the ghost potion's
+  // HUD reads for its count.
   cheats_loaded(&c);
   cheats_tick(&c, ram, rom);
   if (cheat_r16(ram, CHEAT_W_INVENTORY + 2) != CHEAT_WEAPON_MAX) fail("%s: a load was not given to", what);
@@ -219,9 +227,13 @@ static void test_tick(const uint8_t* pristine, size_t size, const char* what) {
   seed(ram, 0);
   seed(ram, 1);
   cheats_tick(&c, ram, rom);
-  if (cheat_r16(ram, CHEAT_W_INVENTORY + 2) != CHEAT_WEAPON_MAX || cheat_r16(ram, CHEAT_W_INVENTORY + 0x20 + 26) != CHEAT_WEAPON_MAX ||
-      cheat_r16(ram, CHEAT_W_ITEMS + 0x20 + 18) != CHEAT_ITEM_MAX)
-    fail("%s: a new game was not given to", what);
+  if (cheat_r16(ram, CHEAT_W_INVENTORY + 2) != CHEAT_WEAPON_MAX) fail("%s: a new game was not given to", what);
+  if (cheat_r16(ram, CHEAT_W_INVENTORY + 0x20) != CHEAT_SEED_WEAPON_0 || cheat_r16(ram, CHEAT_W_INVENTORY + 0x20 + 26) != 0)
+    fail("%s: player 2, who is not in the game, was given a new game's", what);
+  cheat_w16(ram, CHEAT_W_PANEL_ON + 2, 1);
+  cheats_tick(&c, ram, rom);
+  if (cheat_r16(ram, CHEAT_W_INVENTORY + 0x20 + 26) != CHEAT_WEAPON_MAX || cheat_r16(ram, CHEAT_W_ITEMS + 0x20 + 18) != CHEAT_ITEM_MAX)
+    fail("%s: player 2, once in the game, was not given to", what);
 
   // Ammo: what is held is raised, what is not is not.
   cheats_patch(&c, rom, false);
@@ -243,6 +255,7 @@ static void test_tick(const uint8_t* pristine, size_t size, const char* what) {
   memset(ram, 0, 0x20000);
   seed(ram, 0);
   dp = put_player(ram, rom, 0, 5);
+  cheat_w16(ram, CHEAT_W_PANEL_ON, 1);
   cheat_w16(ram, CHEAT_W_HEALTH, 4);
   cheat_w16(ram, CHEAT_W_JOBS + 5 * 4, CHEAT_DEMO_JOB);
   cheat_w16(ram, CHEAT_W_JOBS + 5 * 4 + 2, CHEAT_DEMO_JOB_BANK);

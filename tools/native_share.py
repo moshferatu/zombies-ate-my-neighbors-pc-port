@@ -421,7 +421,8 @@ def load_ported(path='src/cosim/routines.c'):
     Conflating the two is what this function used to do, and it made this tool
     disagree with the running game by a factor of two and a half for a reason
     that was entirely bookkeeping. Both numbers are now reported, and the second
-    is the one to compare against what `zamn.exe` prints when you quit it.
+    is the one to compare against what `zamn.exe --verbose` prints when you
+    quit it.
 
     There is now a third set, and it is the mirror of the second. A `run_only`
     routine is **substituted and never checked per call**, because `verify`

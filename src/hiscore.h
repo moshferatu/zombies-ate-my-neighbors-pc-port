@@ -65,6 +65,7 @@ static const char hiscore_magic[8] = {'Z', 'A', 'M', 'N', 'H', 'S', '1', '\n'};
 typedef struct {
   bool enabled;
   bool read_only;  // put the file's table in place, and write nothing: a cheat is on
+  bool verbose;    // say when the table is restored and when it is saved
   bool restored;  // the file has been looked at and, if good, put in place
   char path[1024];
   uint8_t saved[HISCORE_BYTES];  // what is on disk, as far as is known
@@ -158,8 +159,10 @@ static inline void hiscore_tick(Hiscore* h, uint8_t* ram) {
     if (hiscore_read(h, h->saved)) {
       h->have_saved = true;
       memcpy(table, h->saved, HISCORE_BYTES);
-      printf("Top scores: restored from '%s' (best %08x).\n", h->path, (unsigned)hiscore_score(table, 0));
-      fflush(stdout);
+      if (h->verbose) {
+        printf("Top scores: restored from '%s' (best %08x).\n", h->path, (unsigned)hiscore_score(table, 0));
+        fflush(stdout);
+      }
     } else if (hiscore_valid(table)) {
       // Nothing to restore. The game's own table is what a file would hold,
       // so it is not written until somebody earns a place in it.
@@ -174,7 +177,7 @@ static inline void hiscore_tick(Hiscore* h, uint8_t* ram) {
   if (hiscore_write(h, table)) {
     memcpy(h->saved, table, HISCORE_BYTES);
     h->have_saved = true;
-    printf("Top scores: saved to '%s'.\n", h->path);
+    if (h->verbose) printf("Top scores: saved to '%s'.\n", h->path);
   } else {
     fprintf(stderr, "error: cannot write top scores to '%s'\n", h->path);
     h->enabled = false;  // once, not sixty times a second
