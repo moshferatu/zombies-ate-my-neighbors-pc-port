@@ -27,6 +27,30 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### The monster aims with the right stick too (2026-09-21)
+
+Play-testing: a player turned into the monster by the potion punched only the
+way the D-pad last pointed, twin stick or not. The monster is player state 1
+(`$80:D2EA`, entered by `$80:D9A3`), which shares state 0's idle and walk code
+and `$26` but has its own copy of the direction latch at `$80:D2FD` -- eleven
+bytes, the nine at `$80:D250` plus a `BRA +0` -- and the stub had only been
+put under state 0's, that state having run zero times in the profiles. Now
+both latches `JSR` the one stub (`src/twinstick.h`; README -> *Twin-stick
+shooting*). State 1 is the 65816's in every build, so the patch is the whole
+fix. `zamn_headless` grew `--twin-stick` and `--aim frame[+]:dirs` to drive the
+stub under the stock core; checked on a movie that drinks the potion under
+`--give-all` (standing: faces right then up with the stick, and punches that
+way; walking right with the stick up: `$24 = $06`, `$26 = $02`), and natively
+through a temporary hook, frame for frame the same. `zamn_test_twinstick`
+covers the second latch and refuses a cartridge without it. Asked on the way:
+the two punch sounds are the game's own -- `$80:EF67` (standing) plays `$23`,
+and `$80:D6DC` (walking) plays `$15` at the top of each walk cycle, the sound
+the thrown weapons' shots make (`$81:F56B`, `$81:F812`); the squirt gun's is
+`$0B`. Also found: `--always-run` gives the monster the shoes too, since
+`$80:D9A3` clears `$54`, and `$C000` is the mystery potion's wandering state
+(`$80:DB42`), not the monster -- the cheat's notes said otherwise, and are
+fixed.
+
 ### Cheats, behind six flags (2026-09-21)
 
 Asked for in play-testing: `--invincible`, `--invincible-neighbors`,

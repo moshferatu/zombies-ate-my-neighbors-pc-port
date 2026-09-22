@@ -127,16 +127,32 @@
 // `tools/test_twinstick.c` drives `player_state_normal` directly so that the
 // path the game actually takes is the path something checks.
 //
-// ## One state, and only one
+// ## Two states: the player, and the monster the potion makes of them
 //
-// `$80:D1EF` is eight player states and two of them latch the direction: state 0
-// — `player_state_normal`, where 26,972 of the routine's 27,698 entries land and
-// the only one that walks and shoots — and state 1 at `$80:D2FD`, which has
-// **executed zero times in all ten profiles** and which the tracer has therefore
-// never disassembled. Patching a second site to match would be unverifiable code
-// standing next to verified code, so it is left alone: state 0 aims, and if
-// anything ever does reach state 1 it inherits whatever `$26` was last set to,
-// which is where a twin-stick aim already is.
+// `$80:D1EF` is eight player states and most of them latch the direction. Two
+// of them attack on a button, and those two are patched. State 0 is
+// `player_state_normal`, where 26,972 of the routine's 27,698 entries land.
+// State 1, at `$80:D2EA`, is the **monster**: `$80:D9A3` makes one of a player
+// who drinks the monster potion (or draws that from the mystery potion), and
+// it sets `$6A`, `$70 = 2`, faces them down and jumps into the same idle at
+// `$80:D4E9` that state 0 uses — so the idle and walk code, the resume routines
+// and `$28` are all shared. What differs is the frame itself: state 1 reads no
+// weapon, and latches `Y`, `B`, `A` and `X` into `$6C` instead, which
+// `$80:D51F` (standing) and `$80:D678` (walking) turn into a punch — `$80:EF67`
+// and `$80:D6DC`, both of which draw and hit from `$26`.
+//
+// Its latch, at `$80:D2FD`, is the same nine bytes with two more after them —
+// `BEQ +4 : STA $26 : BRA +0` — and they become the same `JSR` and eight
+// `NOP`s, calling the same stub: `X` is the doubled player index in both,
+// `$24` and `$26` mean the same, and the re-entry the stub asks for is the
+// idle both states park in. Before this the monster punched only the way the
+// D-pad last pointed: the stick pressed `Y`, `$6C` saw it, and `$26` was
+// whatever the walk had left there. State 1 had executed zero times in all ten
+// profiles, which is why it was left the first time round; it has since been
+// reached in play.
+//
+// The other latches are left. State 5 (`$80:D404`) runs state 0 by `JSR` and
+// is covered by it, and states 2, 3, 4 and 6 neither fire nor punch.
 //
 // ## The aim word lives in the cartridge
 //
@@ -227,6 +243,18 @@ static const uint8_t twin_latch_was[TWIN_LATCH_LEN] = {
     0xf0, 0x02,        // BEQ +2
     0x85, 0x26};       // STA $26
 
+// `$80:D2FD`, the monster's copy of it: the same nine bytes, a `BEQ` that skips
+// two more, and the two — a `BRA +0`, which does nothing. All eleven go, so
+// that nothing of the old latch is left after the `JSR`.
+#define TWIN_LATCH1 0x052fdu
+#define TWIN_LATCH1_LEN 11
+static const uint8_t twin_latch1_was[TWIN_LATCH1_LEN] = {
+    0xbd, 0x72, 0x00,  // LDA $0072,X
+    0x85, 0x24,        // STA $24
+    0xf0, 0x04,        // BEQ +4
+    0x85, 0x26,        // STA $26
+    0x80, 0x00};       // BRA +0
+
 // The D-pad bits `pad_stick` produces, as the nibble `$80:81C3` builds: the low
 // four bits of `$4218`'s high byte, which are up, down, left, right in that
 // order.
@@ -242,12 +270,13 @@ static inline uint16_t twin_dir(const uint8_t* rom, uint16_t dpad) {
   return rom[TWIN_DIR_TABLE + twin_nibble(dpad)];
 }
 
-// Install the stub. False — and nothing written — unless `$80:D250` is the
-// latch this knows and both pad regions are still pad, so a refusal leaves the
-// cartridge as it came off disk.
+// Install the stub. False — and nothing written — unless `$80:D250` and
+// `$80:D2FD` are the latches this knows and both pad regions are still pad, so
+// a refusal leaves the cartridge as it came off disk.
 static inline bool twin_install(uint8_t* rom, uint32_t rom_size) {
   if (!rom || rom_size < TWIN_ROM_MIN) return false;
   if (memcmp(rom + TWIN_LATCH, twin_latch_was, TWIN_LATCH_LEN) != 0) return false;
+  if (memcmp(rom + TWIN_LATCH1, twin_latch1_was, TWIN_LATCH1_LEN) != 0) return false;
   // `$80:D4E9  LDA $24`. The stub sends the state machine here, so being wrong
   // about it is not a feature that fails to work, it is a jump into the middle
   // of something.
@@ -293,6 +322,11 @@ static inline bool twin_install(uint8_t* rom, uint32_t rom_size) {
   rom[TWIN_LATCH + 1] = (uint8_t)TWIN_STUB_ADDR;
   rom[TWIN_LATCH + 2] = (uint8_t)(TWIN_STUB_ADDR >> 8);
   for (int i = 3; i < TWIN_LATCH_LEN; i++) rom[TWIN_LATCH + i] = 0xea;  // NOP
+  // ...and the monster's, which calls the same stub.
+  rom[TWIN_LATCH1] = 0x20;                           // JSR $FF80
+  rom[TWIN_LATCH1 + 1] = (uint8_t)TWIN_STUB_ADDR;
+  rom[TWIN_LATCH1 + 2] = (uint8_t)(TWIN_STUB_ADDR >> 8);
+  for (int i = 3; i < TWIN_LATCH1_LEN; i++) rom[TWIN_LATCH1 + i] = 0xea;  // NOP
   // Centred, until somebody pushes something. The pad was `$FF`, which is not a
   // direction the table can produce and would be read as one.
   memset(rom + TWIN_AIM, 0, TWIN_AIM_LEN);

@@ -67,6 +67,7 @@ static uint8_t* make_rom(void) {
   uint8_t* rom = (uint8_t*)calloc(ROM_SIZE, 1);
   memcpy(rom + TWIN_DIR_TABLE, dir_table, sizeof dir_table);
   memcpy(rom + TWIN_LATCH, twin_latch_was, TWIN_LATCH_LEN);
+  memcpy(rom + TWIN_LATCH1, twin_latch1_was, TWIN_LATCH1_LEN);
   // `$80:D4E9  LDA $24`, the state re-entry the stub sends the player to.
   rom[TWIN_REENTER] = 0xa5;
   rom[TWIN_REENTER + 1] = 0x24;
@@ -150,6 +151,13 @@ static void test_install(void) {
   expect(rom, TWIN_LATCH + 2, (uint8_t)(TWIN_STUB_ADDR >> 8), "JSR high");
   for (uint32_t i = 3; i < TWIN_LATCH_LEN; i++)
     expect(rom, TWIN_LATCH + i, 0xea, "NOP");
+  // The monster's latch calls the same stub, and all eleven of its bytes go:
+  // a `BRA +0` left behind would be harmless, but a `STA $26` would not.
+  expect(rom, TWIN_LATCH1 + 0, 0x20, "monster JSR");
+  expect(rom, TWIN_LATCH1 + 1, (uint8_t)TWIN_STUB_ADDR, "monster JSR low");
+  expect(rom, TWIN_LATCH1 + 2, (uint8_t)(TWIN_STUB_ADDR >> 8), "monster JSR high");
+  for (uint32_t i = 3; i < TWIN_LATCH1_LEN; i++)
+    expect(rom, TWIN_LATCH1 + i, 0xea, "monster NOP");
 
   // The stub: the nine displaced bytes, verbatim...
   if (memcmp(rom + TWIN_STUB, twin_latch_was, TWIN_LATCH_LEN) != 0)
@@ -218,6 +226,7 @@ static void test_install(void) {
   // pad, which is where `--level` puts its own stub.
   for (uint32_t i = 0; i < ROM_SIZE; i++) {
     const bool mine = (i >= TWIN_LATCH && i < TWIN_LATCH + TWIN_LATCH_LEN) ||
+                      (i >= TWIN_LATCH1 && i < TWIN_LATCH1 + TWIN_LATCH1_LEN) ||
                       (i >= TWIN_STUB && i < TWIN_STUB + TWIN_STUB_LEN) ||
                       (i >= TWIN_AIM && i < TWIN_AIM + TWIN_AIM_LEN);
     if (!mine && rom[i] != was[i]) {
@@ -258,6 +267,8 @@ static void test_refusals(void) {
   } cases[] = {
       {"a latch that is not the latch", TWIN_LATCH, 0x22, ROM_SIZE},
       {"a latch storing somewhere else", TWIN_LATCH + 8, 0x28, ROM_SIZE},
+      {"a monster whose latch is not the latch", TWIN_LATCH1 + 9, 0x60, ROM_SIZE},
+      {"a monster whose latch stores somewhere else", TWIN_LATCH1 + 8, 0x28, ROM_SIZE},
       {"a state that re-enters somewhere else", TWIN_REENTER, 0x4c, ROM_SIZE},
       {"a pad with code in it", TWIN_STUB + 4, 0x60, ROM_SIZE},
       {"a pad whose last byte is taken", TWIN_STUB + TWIN_STUB_LEN - 1, 0x00,

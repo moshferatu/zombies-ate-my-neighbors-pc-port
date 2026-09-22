@@ -682,7 +682,9 @@ to the cartridge's copy, so F1 and `--stock` play the same.
   first tick a player is on the board after the start or a quick load.
 * **Always run.** `$54 = $8000` on the player's page is the shoes and `$56`
   their countdown; a `$54` of zero is set every tick and the countdown left at
-  nothing. `$C000` is the monster a potion makes, and is left.
+  nothing. `$C000` is left: `$80:D3A8` sets it in the state one of the mystery
+  potion's draws puts a player in (`$80:DB42`), which is not the shoes. The
+  monster itself (`$80:D9A3`) clears `$54`, and so runs too.
 
 A player's page is found from `$D2`/`$D4` (their display record, zero when
 they are off the board), the record's thread at `+$0C` and the table of pages
@@ -848,6 +850,24 @@ The first run of that probe **failed**, and on one bit: the stub compared with
 Z without touching carry, and a `PHA`/`PLA` around it puts A and N/Z back to the
 aim on every path out. Two engines that agree except in the flags do not agree,
 and nothing but this check was ever going to say so.
+
+**The monster punches where the stick points as well.** The monster potion (and
+the mystery potion, one draw in eight) puts the player in state 1 of the eight
+at `$80:D1EF`, `$80:D2EA`: the same idle and walk code as state 0, sharing `$28`,
+`$24` and `$26`, but a frame that reads no weapon and latches `Y`, `B`, `A` and
+`X` into `$6C` instead, which `$80:D51F` and `$80:D678` make a punch of --
+`$80:EF67` standing, `$80:D6DC` walking, both drawn and landed from `$26`. Its
+latch at `$80:D2FD` is the nine bytes above with a `BRA +0` after them, and now
+they become a `JSR` to the same stub and eight `NOP`s. Before this the stick
+pressed `Y`, the monster punched, and it punched the way the D-pad had last
+pointed. State 1 runs on the 65816 in every build -- `$80:D1FF` is the one
+player state the port has -- so the cartridge patch is the whole of it, and
+`zamn_headless --aim frame[+]:dirs` now drives the stub under the stock core.
+On a movie that drinks the potion under `--give-all`, the monster stands facing
+down (`$26 = $0A`) until the stick goes right at frame 2960, faces right on 2961
+and punches that way, faces up on 3105 when the stick does, and walking right
+into the hedge with the stick up keeps `$24` at `$06` and `$26` at `$02`. The
+frontend, fed the same stick, agrees frame for frame.
 
 ### Standing still, the pose is drawn once
 
@@ -1615,6 +1635,10 @@ Three options make it the movie-authoring loop rather than a screenshot tool:
 `--pos` prints where each player is, `--records` prints the whole display list
 with the fields that decide a collision, and `--watch <addr>[,first[,last[,step]]]`
 prints one WRAM word whenever it changes. `--watch` may be repeated.
+`--twin-stick` installs the aiming stub (`src/twinstick.h`), and
+`--aim frame[+]:dirs` pushes port 1's right stick -- `U`, `D`, `L` and `R` in
+any combination, or `-` for centred, `+` holding it from that frame on -- which
+presses `Y` for as long as it is out, as the frontend's stick does.
 
 `--records` also names the **collision handler** each thing on the board is
 running, and the direct page it runs on — so the display list doubles as a map

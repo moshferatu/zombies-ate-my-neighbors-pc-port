@@ -196,13 +196,13 @@ static void test_tick(const uint8_t* pristine, size_t size, const char* what) {
   for (int s = 0; s < CHEAT_ITEM_SLOTS; s++)
     if (cheat_r16(ram, CHEAT_W_ITEMS + s * 2) != (CHEAT_ITEM_UNUSED(s) ? 0 : CHEAT_ITEM_MAX)) fail("%s: item %d: %04x", what, s, cheat_r16(ram, CHEAT_W_ITEMS + s * 2));
   if (cheat_r16(ram, CHEAT_W_INVENTORY + 0x20) != 0) fail("%s: player 2, who is not there, was given something", what);
-  // Health of nought is a player on the way down, and the monster's $C000 is
-  // not the shoes.
+  // Health of nought is a player on the way down, and the $C000 one of the
+  // mystery potion's draws sets (`$80:D3A8`) is not the shoes.
   cheat_w16(ram, CHEAT_W_HEALTH, 0);
   cheat_w16(ram, dp + CHEAT_DP_SHOES, 0xc000);
   cheats_tick(&c, ram, rom);
   if (cheat_r16(ram, CHEAT_W_HEALTH) != 0) fail("%s: a dead player was given health", what);
-  if (cheat_r16(ram, dp + CHEAT_DP_SHOES) != 0xc000) fail("%s: the potion's monster lost its $C000", what);
+  if (cheat_r16(ram, dp + CHEAT_DP_SHOES) != 0xc000) fail("%s: the potion's $C000 was taken for the shoes", what);
 
   // Given once: what is spent stays spent...
   cheat_w16(ram, CHEAT_W_INVENTORY + 2, 0);

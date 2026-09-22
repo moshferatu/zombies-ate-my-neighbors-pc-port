@@ -80,7 +80,9 @@
 // countdown beside it at `$56` (`$80:EB23`); `$80:E4BA  BIT $54 : BPL` moves
 // the player twice a tick and `$80:D72D` steps the animation to match. A `$54`
 // of zero is set to `$8000` every tick, with no countdown, so there is nothing
-// to run out. `$C000` is left alone: that is the monster a potion makes.
+// to run out. `$C000` is left alone: `$80:D3A8` sets it in the state one of the
+// mystery potion's draws puts a player in (`$80:DB42`), which is not the shoes.
+// The monster (`$80:D9A3`) clears `$54`, and so runs too.
 //
 // ## Finding a player's page
 //

@@ -52,6 +52,7 @@
 #include "poke.h"
 #include "cheats.h"
 #include "scale.h"
+#include "twinstick.h"
 #include "widescreen.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -105,6 +106,57 @@ static bool write_png(Snes* snes, const char* path) {
 
 #define MAX_SNAPSHOTS 64
 #define MAX_WATCH 32  // one per thread page, which is what the option is for
+
+// `--aim frame[+]:dirs` — the right stick, for the stub `src/twinstick.h`
+// installs, which is the half of twin-stick aiming that runs on the 65816 and
+// so the half this tool can show. `dirs` is any of U, D, L and R, or `-` for
+// centred; `+` holds it from that frame on, and without it the stick is out
+// for that one frame. Port 1 only, and given in ascending order. It presses
+// `Y` for as long as it is out, as the frontend's stick does, on top of
+// whatever the movie holds. Asking for one installs the patch; `--twin-stick`
+// installs it without asking for an aim.
+#define MAX_AIMS 32
+typedef struct {
+  int frame;
+  bool hold;
+  uint16_t dpad;
+} AimSpec;
+
+static bool aim_parse(const char* s, AimSpec* out) {
+  char* end;
+  const long f = strtol(s, &end, 10);
+  if (end == s || f < 0) return false;
+  out->frame = (int)f;
+  out->hold = false;
+  if (*end == '+') {
+    out->hold = true;
+    end++;
+  }
+  if (*end++ != ':') return false;
+  out->dpad = 0;
+  if (!strcmp(end, "-")) return true;
+  if (!*end) return false;
+  for (; *end; end++) {
+    switch (*end | 0x20) {
+      case 'u': out->dpad |= (uint16_t)(1u << BTN_UP); break;
+      case 'd': out->dpad |= (uint16_t)(1u << BTN_DOWN); break;
+      case 'l': out->dpad |= (uint16_t)(1u << BTN_LEFT); break;
+      case 'r': out->dpad |= (uint16_t)(1u << BTN_RIGHT); break;
+      default: return false;
+    }
+  }
+  return true;
+}
+
+// What the stick holds on `frame`: the latest spec at or before it, if that
+// one holds or is for this very frame; centred otherwise.
+static uint16_t aim_at(const AimSpec* a, int n, int frame) {
+  int best = -1;
+  for (int i = 0; i < n; i++)
+    if (a[i].frame <= frame) best = i;
+  if (best < 0) return 0;
+  return (a[best].hold || a[best].frame == frame) ? a[best].dpad : 0;
+}
 
 // An actor's state is its thread's own 128-byte direct page, and the 24 of them
 // tile `$7E:0100-$7E:0CFF` (`docs/wram-map.md`). Which page is a player's is not
@@ -289,6 +341,7 @@ int main(int argc, char** argv) {
             "       [--watch addr[,first[,last[,step]]]]...\n"
             "       [--save frame,file] [--load file]\n"
             "       [--poke frame[+]:addr=value[.b]]...\n"
+            "       [--twin-stick] [--aim frame[+]:U|D|L|R...|-]...\n"
             "       [--widescreen off|16:9|16:10]\n"
             "       [--invincible] [--invincible-neighbors] [--infinite-ammo]\n"
             "       [--infinite-lives] [--give-all] [--always-run]\n",
@@ -306,6 +359,9 @@ int main(int argc, char** argv) {
   PokeList pokes = {{{0}}, 0};
   Cheats cheats;
   cheats_init(&cheats);
+  AimSpec aims[MAX_AIMS];
+  int aim_count = 0;
+  bool twin = false;
   int rec_first = -1, rec_last = -1, rec_step = 10;
   // `--watch` may be given more than once. One word is the usual question; the
   // question that produced this option was "which of the twenty-four thread
@@ -383,6 +439,19 @@ int main(int argc, char** argv) {
       // The same flag `zamn_cosim verify` takes, so a state worked out with
       // pictures here transfers to the run that checks it verbatim.
       if (!poke_parse(&pokes, argv[++i])) return 2;
+    } else if (!strcmp(argv[i], "--twin-stick")) {
+      twin = true;
+    } else if (!strcmp(argv[i], "--aim") && has_next) {
+      if (aim_count == MAX_AIMS) {
+        fprintf(stderr, "error: at most %d --aim specs\n", MAX_AIMS);
+        return 2;
+      }
+      if (!aim_parse(argv[++i], &aims[aim_count])) {
+        fprintf(stderr, "error: --aim wants frame[+]:dirs, dirs being U, D, L, R or -\n");
+        return 2;
+      }
+      aim_count++;
+      twin = true;
     } else if (!strcmp(argv[i], "--save") && has_next) {
       const char* p = argv[++i];
       save_frame = atoi(p);
@@ -431,6 +500,13 @@ int main(int argc, char** argv) {
     return 1;
   }
   cheats_print(&cheats);
+  if (twin) {
+    if (!twin_install(snes->cart->rom, snes->cart->romSize)) {
+      fprintf(stderr, "error: this is not a cartridge twin stick knows how to change\n");
+      return 1;
+    }
+    printf("Twin stick: the right stick is --aim's, and it presses Y.\n");
+  }
   snes_reset(snes, true);
 
   Movie movie;
@@ -470,6 +546,12 @@ int main(int argc, char** argv) {
     }
     poke_apply(&pokes, snes->ram, i);
     cheats_tick(&cheats, snes->ram, snes->cart->rom);
+    if (twin) {
+      // Written after the movie, so the `Y` lands on top of it and is not
+      // taken back by the next frame's replay only if the stick is still out.
+      const uint16_t y = twin_apply(snes->cart->rom, 0, aim_at(aims, aim_count, i));
+      if (y) snes_setButtonState(snes, 1, BTN_Y, 1);
+    }
     snes_runFrame(snes);
     // `--at` frames are requested in whatever order they were typed, but they
     // are almost always ascending; walking a cursor keeps the common case free
