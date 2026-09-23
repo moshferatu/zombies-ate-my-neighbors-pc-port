@@ -213,6 +213,45 @@ int main(void) {
     }
   }
 
+  // `auto`: the width that fills each display best, at the 448 rows the
+  // frontend shows.
+  static const struct { AspectMode a; int ow, oh; WideMode want; } wides[] = {
+      {ASPECT_43,     3840, 2160, WIDE_16_9},
+      {ASPECT_43,     1920, 1080, WIDE_16_9},
+      {ASPECT_43,     2560, 1600, WIDE_16_10},
+      {ASPECT_43,     1920, 1200, WIDE_16_10},
+      {ASPECT_43,     1024,  768, WIDE_OFF},
+      {ASPECT_43,     1280, 1024, WIDE_OFF},
+      {ASPECT_43,     3440, 1440, WIDE_16_9},   // ultrawide: the widest there is
+      {ASPECT_SQUARE, 3840, 2160, WIDE_16_9},
+      {ASPECT_SQUARE, 1024,  768, WIDE_16_10},  // 616x448 is nearer 4:3 than 512x448
+      {ASPECT_43,        0,    0, WIDE_OFF},
+  };
+  for (int i = 0; i < (int)(sizeof wides / sizeof *wides); i++) {
+    const WideMode got = wide_for_display(wides[i].a, 448, wides[i].ow, wides[i].oh);
+    if (got != wides[i].want) {
+      printf("FAIL wide_for_display %s at %dx%d: got %s, want %s\n",
+             aspect_name(wides[i].a), wides[i].ow, wides[i].oh, wide_name(got),
+             wide_name(wides[i].want));
+      failures++;
+    }
+  }
+  {
+    WideMode w = WIDE_OFF;
+    if (!wide_setting_parse("auto", &w) || w != WIDE_AUTO) {
+      printf("FAIL the setting does not take auto\n");
+      failures++;
+    }
+    if (wide_parse("auto", &w)) {
+      printf("FAIL a width took auto\n");
+      failures++;
+    }
+    if (wide_margin(WIDE_AUTO) != 0) {
+      printf("FAIL auto has a margin of its own\n");
+      failures++;
+    }
+  }
+
   if (failures) {
     printf("\n%d failure%s.\n", failures, failures == 1 ? "" : "s");
     return 1;

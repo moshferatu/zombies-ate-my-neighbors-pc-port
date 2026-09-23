@@ -976,10 +976,11 @@ static void usage(void) {
     "  --aspect <how>  4:3 (default) is the shape the game was composed for and\n"
     "                  what every emulator shows it in; square is 8:7, the\n"
     "                  framebuffer's own shape, narrower by 11%%. F3 toggles.\n"
-    "  --widescreen <r> off (default), 16:9 or 16:10. Draws columns either side\n"
-    "                  of the console's 256 rather than stretching them: more\n"
-    "                  level is visible, and the status panels move to the two\n"
-    "                  edges. F4 cycles.\n"
+    "  --widescreen <r> off (default), 16:9, 16:10 or auto. Draws columns either\n"
+    "                  side of the console's 256 rather than stretching them:\n"
+    "                  more level is visible, and the status panels move to\n"
+    "                  the two edges. auto is whichever fits the display when\n"
+    "                  fullscreen, and off in a window. F4 cycles.\n"
     "  --filter <how>  How to fill a window that is not a whole multiple:\n"
     "                    sharp   (default) nearest up to the next whole\n"
     "                            multiple, then one bilinear step down. Uniform\n"
@@ -1095,8 +1096,9 @@ int main(int argc, char** argv) {
   AspectMode aspect_mode = g_cfg.aspect;
   // Off by default. Widescreen is the PPU drawing columns the console never
   // drew, and however good it looks it is not what the game is — so it is asked
-  // for, and every measurement this project makes is made without it.
-  WideMode wide = g_cfg.widescreen;
+  // for, and every measurement this project makes is made without it. This is
+  // the setting, which may be `auto`; `wide`, further down, is the width.
+  WideMode wide_setting = g_cfg.widescreen;
   int window_scale = g_cfg.window_scale;
   // Fullscreen is what playing it looks like, so it is the default and the flags
   // below are the ways of saying "not now". `--windowed` is the explicit one;
@@ -1197,8 +1199,8 @@ int main(int argc, char** argv) {
       }
     }
     else if (!strcmp(a, "--widescreen") && i + 1 < argc) {
-      if (!wide_parse(argv[++i], &wide)) {
-        fprintf(stderr, "error: unknown widescreen '%s' — want off, 16:9 or 16:10\n\n",
+      if (!wide_setting_parse(argv[++i], &wide_setting)) {
+        fprintf(stderr, "error: unknown widescreen '%s' — want off, 16:9, 16:10 or auto\n\n",
                 argv[i]);
         usage();
         return 2;
@@ -1480,6 +1482,12 @@ int main(int argc, char** argv) {
 
   snes_setPixelFormat(snes, ZAMN_PIXEL_FORMAT);
   // Before the window is sized, because the window is sized from the picture.
+  // `auto` starts off, which is what it is in a window and so the size the
+  // window comes back to; fullscreen, the loop widens it before the first
+  // frame, once the display can be asked.
+  WideMode wide = wide_setting == WIDE_AUTO ? WIDE_OFF : wide_setting;
+  WideMode wide_shown = wide;  // the width the console last reported
+  bool wide_told = false;      // past the first pass of the loop
   snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
   fb_w = snes_pixelWidth(snes);
   // ...and the per-frame half of it runs at the top of each frame, from the
@@ -2006,31 +2014,12 @@ int main(int argc, char** argv) {
       printf("Aspect: %s\n", aspect_name(present.aspect));
       fflush(stdout);
     }
-    if (running && (actions & (1u << ACT_CYCLE_WIDESCREEN))) {
-      // Widescreen, for the same reason: how much wider 16:9 is than the
-      // console is not a thing anyone can judge from two runs.
-      //
-      // This one costs a texture, because the picture changes *size* rather
-      // than shape, and the frame texture and its offscreen stage were both
-      // made at the old width. Between frames, so nothing is half-drawn at one
-      // width and finished at the other.
-      wide = (WideMode)((wide + 1) % WIDE_MODE_COUNT);
-      snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
-      ws.margin = wide_margin(wide);
-      fb_w = snes_pixelWidth(snes);
-      const ScaleMode m = present.mode;
-      const AspectMode a = present.aspect;
-      present_free(&present);
-      live.w = fb_w;
-      if (!present_init(&present, ren, fb_w, FB_H, live, m, a)) {
-        fprintf(stderr, "error: cannot resize the frame texture: %s\n",
-                SDL_GetError());
-        running = false;
-      } else {
-        printf("Widescreen: %s (%d columns)\n", wide_name(wide), fb_w / 2);
-        fflush(stdout);
-      }
-    }
+    // Widescreen, for the same reason: how much wider 16:9 is than the
+    // console is not a thing anyone can judge from two runs. The key moves
+    // the setting on; the width it comes to is settled below, after the
+    // display key, because `auto` asks what the picture is drawn into.
+    const bool wide_cycled = running && (actions & (1u << ACT_CYCLE_WIDESCREEN));
+    if (wide_cycled) wide_setting = (WideMode)((wide_setting + 1) % WIDE_MODE_COUNT);
     if (running && (actions & ((1u << ACT_QUICK_SAVE) | (1u << ACT_QUICK_LOAD)))) {
       // Quick save and quick load. Only asked for here: the machine may be
       // running its next tick on the emulation thread at this moment, and both
@@ -2075,6 +2064,52 @@ int main(int argc, char** argv) {
         printf("Display: %s\n", fullscreen ? "fullscreen" : "windowed");
       }
       fflush(stdout);
+    }
+    if (running) {
+      // The width the setting comes to. For `auto` that is asked every frame
+      // and not only when a key is pressed, because the display can change
+      // under it: F11 takes effect when the system gets round to it, and a
+      // fullscreen window can be sent to another monitor. The output size is
+      // the one `present_frame` fits the picture to.
+      WideMode want = wide_setting;
+      if (want == WIDE_AUTO) {
+        int ow = 0, oh = 0;
+        want = fullscreen && SDL_GetRendererOutputSize(ren, &ow, &oh) == 0
+                   ? wide_for_display(present.aspect, FB_LIVE_H, ow, oh)
+                   : WIDE_OFF;
+      }
+      if (want != wide) {
+        // This one costs a texture, because the picture changes *size* rather
+        // than shape, and the frame texture and its offscreen stage were both
+        // made at the old width. Between frames, so nothing is half-drawn at
+        // one width and finished at the other.
+        wide = want;
+        snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
+        ws.margin = wide_margin(wide);
+        fb_w = snes_pixelWidth(snes);
+        const ScaleMode m = present.mode;
+        const AspectMode a = present.aspect;
+        present_free(&present);
+        live.w = fb_w;
+        if (!present_init(&present, ren, fb_w, FB_H, live, m, a)) {
+          fprintf(stderr, "error: cannot resize the frame texture: %s\n",
+                  SDL_GetError());
+          running = false;
+        }
+      }
+      if (running && (wide_cycled || wide != wide_shown)) {
+        // Not on the first pass, unless asked: `auto` settling on the display
+        // it started on is not news to a quiet console.
+        if (wide_cycled || wide_told || verbose) {
+          if (wide_setting == WIDE_AUTO)
+            printf("Widescreen: auto, %s (%d columns)\n", wide_name(wide), fb_w / 2);
+          else
+            printf("Widescreen: %s (%d columns)\n", wide_name(wide), fb_w / 2);
+          fflush(stdout);
+        }
+        wide_shown = wide;
+      }
+      wide_told = true;
     }
     if (!running) break;
 

@@ -27,6 +27,21 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### Widescreen can follow the display (2026-09-23)
+
+`--widescreen auto` (and `widescreen = auto` in `zamn.ini`): fullscreen, the
+width whose picture covers the most of the display at the current aspect
+(`wide_for_display`, `src/scale.h`); in a window, off. `WIDE_AUTO` is a fourth
+value of `WideMode` that only the frontend's setting ever holds, so F4 now
+cycles off, 16:9, 16:10, auto. `wide_parse` still refuses it, which keeps it
+out of `zamn_headless` and `zamn_test_layers`, which have no display;
+`wide_setting_parse` takes it. The frontend settles the width once per frame
+after the display key, from `SDL_GetRendererOutputSize`, with the texture
+rebuild F4 always did; the start is quiet unless `--verbose`. Checked on the
+3840x2160 panel: fullscreen gives 342 columns, `--windowed` 256, F11 out and
+back gives off and then 16:9 again, and F4 walks off, 16:9, 16:10 from there.
+`zamn_test_scale` pins ten displays.
+
 ### The game over mask is whole on the neighbours-lost path too (2026-09-22)
 
 Play-testing under `--invincible`: a game over on level 13 had the middle

@@ -193,7 +193,7 @@ is in `.gitignore`, since it names the player's ROM.
 | Section | Settings |
 |---|---|
 | `[game]` | `rom`, `skip_intro`, `level` (off, 0-55), `hitbox` (100-200), `blood` (purple, red), `high_scores`, `high_scores_file` |
-| `[video]` | `fullscreen`, `widescreen` (off, 16:9, 16:10), `aspect` (4:3, square), `filter` (sharp, integer, linear), `window_scale` (1-8), `smoothing`, `refresh` (auto, Hz) |
+| `[video]` | `fullscreen`, `widescreen` (off, 16:9, 16:10, auto), `aspect` (4:3, square), `filter` (sharp, integer, linear), `window_scale` (1-8), `smoothing`, `refresh` (auto, Hz) |
 | `[audio]` | `enabled`, `volume` (0-100) |
 | `[controller]` | `enabled`, `twin_stick`, `deadzone` (5-90, percent), `move_stick` and `aim_stick` (left, right, off) |
 | `[controller buttons]` | the twelve SNES buttons, as lists of pad inputs, for both pads |
@@ -959,7 +959,20 @@ frame, which is the only way to judge it. At 3840x2160:
 
 ### `--widescreen`
 
-`off` (default), `16:9` or `16:10`. **F4** cycles them while the game runs.
+`off` (default), `16:9`, `16:10` or `auto`. **F4** cycles them while the game
+runs.
+
+`auto` is whichever of the three fills the display best while fullscreen, and
+off in a window: 16:9 on a 16:9 panel, 16:10 on a 16:10 one, off on a 4:3 one,
+and 16:9 on anything wider (`wide_for_display` in `src/scale.h`, pinned in
+`tools/test_scale.c`). It is asked every frame, so F11 takes the picture to
+the console's 256 columns on the way into a window and back out to the edges
+on the way into fullscreen, and a fullscreen window sent to another monitor
+takes that monitor's shape. A window stays at 256 because it is sized from the
+picture, so following its shape would only follow itself. Mind that the width
+changes the game a little as well as the picture (a neighbour in the margin
+is real; see *The sprites the game throws away* below), so a movie played
+under `auto` plays at whatever width the display gives it.
 
 Not a stretch and not a crop: the PPU draws columns either side of the
 console's 256, so a wider screen shows *more of the level* at the same size.

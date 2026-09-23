@@ -131,6 +131,11 @@ typedef enum {
   WIDE_OFF,    // 256 columns: the console, and the default
   WIDE_16_9,
   WIDE_16_10,
+  // Not a width but a way of choosing one: fullscreen, whichever of the three
+  // fills the display best (`wide_for_display`); in a window, off. Only the
+  // frontend's setting is ever this. What the PPU is given never is, and
+  // `wide_margin` would call it off.
+  WIDE_AUTO,
   WIDE_MODE_COUNT,  // what F4 cycles through; keep last
 } WideMode;
 
@@ -138,15 +143,23 @@ static inline const char* wide_name(WideMode m) {
   switch (m) {
     case WIDE_16_9:  return "16:9";
     case WIDE_16_10: return "16:10";
+    case WIDE_AUTO:  return "auto";
     default:         return "off";
   }
 }
 
+// A width, and nothing else: what the tools that have no display take.
 static inline bool wide_parse(const char* s, WideMode* out) {
   if (!strcmp(s, "off") || !strcmp(s, "4:3")) { *out = WIDE_OFF;   return true; }
   if (!strcmp(s, "16:9"))                     { *out = WIDE_16_9;  return true; }
   if (!strcmp(s, "16:10"))                    { *out = WIDE_16_10; return true; }
   return false;
+}
+
+// A width or `auto`: what the frontend and its file take.
+static inline bool wide_setting_parse(const char* s, WideMode* out) {
+  if (!strcmp(s, "auto")) { *out = WIDE_AUTO; return true; }
+  return wide_parse(s, out);
 }
 
 // Extra game pixels *per side*.
@@ -168,6 +181,27 @@ static inline int wide_margin(WideMode m) {
 // pixel across, matching `snes_pixelWidth`.
 static inline int wide_source_width(WideMode m) {
   return (256 + 2 * wide_margin(m)) * 2;
+}
+
+// What `auto` picks for a display `ow` by `oh`: the width whose picture, at
+// this aspect and `live_h` rows, covers the most of it. A picture narrower
+// than the display is pillarboxed and a wider one letterboxed, so the share
+// covered is the smaller of the two ratios over the larger, and the best is
+// the one nearest the display's shape. 16:9 on a 16:9 panel, 16:10 on a
+// 16:10 one, off on a 4:3 one, and 16:9 on anything wider, being the widest
+// there is.
+static inline WideMode wide_for_display(AspectMode a, int live_h, int ow, int oh) {
+  WideMode best = WIDE_OFF;
+  double best_share = 0;
+  if (ow <= 0 || oh <= 0) return best;
+  for (int m = WIDE_OFF; m < WIDE_AUTO; m++) {
+    int aw = 0, ah = 0;
+    aspect_ratio(a, wide_source_width((WideMode)m), live_h, &aw, &ah);
+    const double picture = (double)aw / ah, display = (double)ow / oh;
+    const double share = picture < display ? picture / display : display / picture;
+    if (share > best_share) { best_share = share; best = (WideMode)m; }
+  }
+  return best;
 }
 
 typedef struct { int x, y, w, h; } ScaleRect;

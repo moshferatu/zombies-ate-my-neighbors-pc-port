@@ -193,6 +193,7 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "[video]\n"
   "fullscreen = on\n"
   "; off, 16:9 or 16:10: draw more of the level either side, not a stretch.\n"
+  "; auto: fullscreen, whichever fits the display; in a window, off.\n"
   "widescreen = off\n"
   "; 4:3, the shape the game was drawn for, or square pixels (8:7).\n"
   "aspect = 4:3\n"
@@ -582,7 +583,7 @@ static inline bool config_set(Config* c, const char* name, int line,
     else return false;
   } else if (!strcmp(section, "video")) {
     if (!strcmp(key, "fullscreen")) { if (!config_bool(v, &c->fullscreen)) CONFIG_BAD("on or off"); }
-    else if (!strcmp(key, "widescreen")) { if (!wide_parse(v, &c->widescreen)) CONFIG_BAD("off, 16:9 or 16:10"); }
+    else if (!strcmp(key, "widescreen")) { if (!wide_setting_parse(v, &c->widescreen)) CONFIG_BAD("off, 16:9, 16:10 or auto"); }
     else if (!strcmp(key, "aspect")) { if (!aspect_parse(v, &c->aspect)) CONFIG_BAD("4:3 or square"); }
     else if (!strcmp(key, "filter")) { if (!scale_parse(v, &c->filter)) CONFIG_BAD("sharp, integer or linear"); }
     else if (!strcmp(key, "window_scale")) { if (!config_int(v, 1, SCALE_MAX_STAGE, &c->window_scale)) CONFIG_BAD("1 to 8"); }
