@@ -1616,16 +1616,18 @@ static void draw(void) {
   if (!draw_logo(&tw)) {
     text(ui.ren, &ui.title, L(MARGIN), L(18), "ZOMBIES ATE MY NEIGHBORS", C_GREEN);
     tw = text_width(&ui.title, "ZOMBIES ATE MY NEIGHBORS");
-    sy = L(18) + ui.title.ascent - ui.small.ascent;
+    sy = L(18) + ui.title.ascent - ui.body.ascent;
   } else {
-    sy = (L(HEADER_H) - ui.small.height) / 2;
+    sy = (L(HEADER_H) - ui.body.height) / 2;
   }
-  const float room = W - L(MARGIN) * 2 - tw - L(24);
+  // Just after the heading: "Config File:" whole, and as much of the path's
+  // end as fits after it.
+  static const char label[] = "Config File: ";
+  const float lx = L(MARGIN) + tw + L(24), lw = text_width(&ui.body, label);
+  const float room = W - L(MARGIN) - lx - lw;
   if (room > L(60)) {
-    const char* shown = ui.ini;
-    const float sw = text_width(&ui.small, shown);
-    const float sx = W - L(MARGIN) - (sw < room ? sw : room);
-    text_tail(&ui.small, sx, sy, room, shown, C_DIM);
+    text(ui.ren, &ui.body, lx, sy, label, C_TEXT);
+    text_tail(&ui.body, lx + lw, sy, room, ui.ini, C_DIM);
   }
 
   // The tabs.
