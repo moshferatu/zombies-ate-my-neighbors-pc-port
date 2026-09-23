@@ -92,6 +92,7 @@
 #define CONFIG_KEYS_MAX 4
 #define CONFIG_PATH_MAX 1024
 #define CONFIG_HITBOX_DEFAULT 150
+#define CONFIG_CHEATS 6
 
 // What the frontend does, as opposed to what the SNES pad does. The numbers are
 // also the bits of `PadSet.hot_pressed` and the rows of `PadMap.hot`.
@@ -126,6 +127,12 @@ static const char* const config_button_names[12] = {
   "b", "y", "select", "start", "up", "down", "left", "right", "a", "x", "l", "r",
 };
 
+// [cheats], in the order of `CheatId` (`src/cheats.h`, which `src/main_sdl.c`
+// holds this to): each the flag's name with underscores.
+static const char* const config_cheat_names[CONFIG_CHEATS] = {
+  "invincible", "invincible_neighbors", "infinite_ammo", "infinite_lives", "give_all", "always_run",
+};
+
 typedef struct {
   // [game]
   char rom[CONFIG_PATH_MAX];
@@ -151,6 +158,9 @@ typedef struct {
   bool twin_stick;
   int deadzone;  // about a percent of the stick's travel; see `config_deadzone`
   PadMap pad;
+  // [cheats], by `config_cheat_names`. Not under a movie, like the flags'
+  // other settings that change the game.
+  bool cheat[CONFIG_CHEATS];
   // [keyboard], [keyboard player 2], [hotkeys]. `SDLK_UNKNOWN` ends a list.
   SDL_Keycode key[MOVIE_PORTS][12][CONFIG_KEYS_MAX];
   SDL_Keycode hotkey[ACT_COUNT][CONFIG_KEYS_MAX];
@@ -313,7 +323,24 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "quick_save = F5\n"
   "toggle_smoothing = F6\n"
   "quick_load = F9\n"
-  "fullscreen = F11\n";
+  "fullscreen = F11\n"
+  "\n"
+  "; Each off unless turned on here or by its option, --invincible and the\n"
+  "; rest. While any is on the top scores are read and not written.\n"
+  "[cheats]\n"
+  "; Nothing hurts a player.\n"
+  "invincible = off\n"
+  "; Nothing hurts a neighbour, and the tourists do not turn into werewolves.\n"
+  "invincible_neighbors = off\n"
+  "; Weapons and items are never used up. Gives nothing.\n"
+  "infinite_ammo = off\n"
+  "; Dying does not cost a life.\n"
+  "infinite_lives = off\n"
+  "; Every weapon and every item when a game starts and when a quick save is\n"
+  "; loaded. Once: they run out unless infinite_ammo is on as well.\n"
+  "give_all = off\n"
+  "; The running shoes, always.\n"
+  "always_run = off\n";
 
 // --- small things -------------------------------------------------------------
 
@@ -607,6 +634,11 @@ static inline bool config_set(Config* c, const char* name, int line,
     else if (!strcmp(key, "move_stick")) { if (!config_stick(v, &c->pad.move_stick)) CONFIG_BAD("left, right or off"); }
     else if (!strcmp(key, "aim_stick")) { if (!config_stick(v, &c->pad.aim_stick)) CONFIG_BAD("left, right or off"); }
     else return false;
+  } else if (!strcmp(section, "cheats")) {
+    int k = config_name_index(key, config_cheat_names, CONFIG_CHEATS);
+    if (k < 0 && !strcmp(key, "invincible_neighbours")) k = 1;
+    if (k < 0) return false;
+    if (!config_bool(v, &c->cheat[k])) CONFIG_BAD("on or off");
   } else {
     const bool pad_buttons = !strcmp(section, "controller_buttons");
     const bool pad_hot = !strcmp(section, "controller_hotkeys");
@@ -638,7 +670,7 @@ static inline bool config_set(Config* c, const char* name, int line,
 static inline bool config_section_known(const char* s) {
   static const char* const known[] = {
     "game", "video", "audio", "controller", "controller_buttons", "controller_hotkeys",
-    "keyboard", "keyboard_player_1", "keyboard_player_2", "hotkeys", "keyboard_hotkeys",
+    "keyboard", "keyboard_player_1", "keyboard_player_2", "hotkeys", "keyboard_hotkeys", "cheats",
   };
   return config_name_index(s, known, (int)(sizeof known / sizeof *known)) >= 0;
 }
@@ -847,6 +879,7 @@ static const char* const config_section_heads[][2] = {
   {"game", "game"}, {"video", "video"}, {"audio", "audio"}, {"controller", "controller"},
   {"controller_buttons", "controller buttons"}, {"controller_hotkeys", "controller hotkeys"},
   {"keyboard", "keyboard"}, {"keyboard_player_2", "keyboard player 2"}, {"hotkeys", "hotkeys"},
+  {"cheats", "cheats"},
 };
 
 // The two sections with a second name, and the cycle keys with a short one,
@@ -862,6 +895,7 @@ static inline const char* config_key_canonical(const char* section, const char* 
     const int k = config_name_index(folded, config_cycle_short, PAD_CYCLE_COUNT);
     if (k >= 0) return config_cycle_names[k];
   }
+  if (!strcmp(section, "cheats") && !strcmp(folded, "invincible_neighbours")) return config_cheat_names[1];
   return folded;
 }
 
@@ -930,6 +964,7 @@ static inline void config_each_value(const Config* c, ConfigValueFn fn, void* ct
     config_key_list_text(c->hotkey[a], v, sizeof v);
     fn(ctx, "hotkeys", config_action_names[a], v);
   }
+  for (int k = 0; k < CONFIG_CHEATS; k++) fn(ctx, "cheats", config_cheat_names[k], c->cheat[k] ? "on" : "off");
 }
 
 // A string that grows. `failed` once an allocation has not been had, after

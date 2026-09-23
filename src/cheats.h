@@ -141,6 +141,8 @@ typedef enum {
 
 typedef struct {
   bool on[CHEAT_COUNT];
+  // Named by a flag, on or off, which beats `zamn.ini`'s [cheats].
+  bool asked[CHEAT_COUNT];
   // The image has the patches in it and the port has been told. False during
   // the demo.
   bool installed;
@@ -176,7 +178,7 @@ static inline bool cheats_flag(Cheats* c, const char* arg) {
   if (!strncmp(arg, "no-", 3)) { to = false; arg += 3; }
   if (!strcmp(arg, "invincible-neighbours")) arg = cheat_flags[CHEAT_NEIGHBORS];
   for (int i = 0; i < CHEAT_COUNT; i++)
-    if (!strcmp(arg, cheat_flags[i])) { c->on[i] = to; return true; }
+    if (!strcmp(arg, cheat_flags[i])) { c->on[i] = to; c->asked[i] = true; return true; }
   return false;
 }
 

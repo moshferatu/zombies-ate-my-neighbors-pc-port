@@ -202,6 +202,7 @@ is in `.gitignore`, since it names the player's ROM.
 | `[controller hotkeys]` | what the frontend does, from the pad; nothing is bound by default |
 | `[keyboard]`, `[keyboard player 2]` | the twelve SNES buttons, as lists of keys; player 2's are unbound by default |
 | `[hotkeys]` | `quit`, `toggle_native`, `cycle_filter`, `toggle_aspect`, `cycle_widescreen`, `quick_save`, `quick_load`, `toggle_smoothing`, `fullscreen` |
+| `[cheats]` | `invincible`, `invincible_neighbors`, `infinite_ammo`, `infinite_lives`, `give_all`, `always_run`; all off by default ([cheats](#cheats)) |
 
 A binding is a list of up to four, separated by commas, and nothing after the
 `=` binds nothing:
@@ -264,7 +265,7 @@ there and no longer on F3.
 
 A window for `zamn.ini`, for the player who would rather not open a text
 file, and a Play button. It ships beside `zamn.exe` and holds exactly the
-file's settings, no more: six tabs (Game, Video, Audio, Controller, Keyboard,
+file's settings, no more: seven tabs (Game, Video, Audio, Controller, Keyboard,
 Hotkeys), drawn on black at the display's scale in the system's font.
 
 - **The file** is found the way the game finds it (`--config <file>`, then
@@ -312,7 +313,7 @@ takes `--press <keys>` and `--screenshot <file.png>` to be driven without a
 window. That is how it was checked: a value changed and saved touches that
 line alone, a key is captured (F5 included, which would otherwise play),
 added, removed and shown red where a hotkey wins, a first start with no file
-writes the 149-line default in CRLF, and Play from another folder, against a
+writes the 169-line default in CRLF, and Play from another folder, against a
 stand-in `zamn.exe`, saved first and then started it in the launcher's folder
 with `--config` and the file's full path. `zamn.exe` reads the file the
 launcher wrote without a complaint.
@@ -702,7 +703,10 @@ over (`$80:9B87`) goes to the top scores without asking `$82:BBED` anything.
 
 ### Cheats
 
-Six, each a flag of its own and off unless asked for (`src/cheats.h`):
+Six, each off unless asked for by its flag or by `zamn.ini`'s `[cheats]`, where
+the name is the flag's with underscores (`src/cheats.h`). A flag beats the file,
+and `--no-<flag>` turns one off that the file has on. The launcher's Cheats tab
+is the same six. The file's are not taken under a movie:
 
 | flag | what it does |
 | --- | --- |

@@ -86,6 +86,7 @@ enum {
   S_ROM, S_SKIP_INTRO, S_LEVEL, S_HITBOX, S_BLOOD, S_HIGH_SCORES, S_HISCORE_FILE,
   S_FULLSCREEN, S_WIDESCREEN, S_ASPECT, S_FILTER, S_WINDOW_SCALE, S_SMOOTHING, S_REFRESH,
   S_AUDIO, S_VOLUME, S_PADS, S_TWIN_STICK, S_DEADZONE, S_MOVE_STICK, S_AIM_STICK,
+  S_CHEAT,  // and the five after it, by `config_cheat_names`
 };
 
 // A binding row's list, as a group and an index into it.
@@ -121,9 +122,9 @@ static const int refresh_presets[] = {0, 50, 60, 75, 90, 100, 120, 144, 165, 170
                                       240, 280, 300, 360, 480, 500};
 #define COUNT(a) ((int)(sizeof(a) / sizeof *(a)))
 
-enum { TAB_GAME, TAB_VIDEO, TAB_AUDIO, TAB_CONTROLLER, TAB_KEYBOARD, TAB_HOTKEYS, TAB_COUNT };
+enum { TAB_GAME, TAB_VIDEO, TAB_AUDIO, TAB_CONTROLLER, TAB_KEYBOARD, TAB_HOTKEYS, TAB_CHEATS, TAB_COUNT };
 static const char* const tab_names[TAB_COUNT] = {"Game", "Video", "Audio", "Controller",
-                                                 "Keyboard", "Hotkeys"};
+                                                 "Keyboard", "Hotkeys", "Cheats"};
 #define ROWS_MAX 64
 static Row rows[TAB_COUNT][ROWS_MAX];
 static int row_count[TAB_COUNT];
@@ -163,6 +164,18 @@ static const struct { int act; const char* label; const char* help; } hot_rows[A
 static const struct { int k; const char* label; } cycle_rows[PAD_CYCLE_COUNT] = {
   {PAD_CYCLE_NEXT_WEAPON, "Next weapon"}, {PAD_CYCLE_PREV_WEAPON, "Previous weapon"},
   {PAD_CYCLE_NEXT_ITEM, "Next item"}, {PAD_CYCLE_PREV_ITEM, "Previous item"},
+};
+
+static const struct { const char* label; const char* help; } cheat_rows[CONFIG_CHEATS] = {
+  {"Invincible", "Nothing hurts a player: no flinch, no health lost."},
+  {"Invincible neighbours", "Nothing hurts a neighbour, and the tourists do not turn into "
+      "werewolves. They can still be rescued."},
+  {"Infinite ammo", "Weapons and items are never used up, keys too. Gives nothing: a weapon "
+      "not held stays not held."},
+  {"Infinite lives", "Dying does not cost a life."},
+  {"Give all", "Every weapon and every item, 999 and 99 of them, when a game starts and when "
+      "a quick save is loaded. Once: they run out unless infinite ammo is on as well."},
+  {"Always run", "The running shoes, always."},
 };
 
 static void build_rows(void) {
@@ -246,6 +259,11 @@ static void build_rows(void) {
       "Start and Select held together for a second always quits.");
   for (int i = 0; i < ACT_COUNT; i++)
     add(TAB_HOTKEYS, (Row){K_PADS, BIND(G_PAD_HOT, hot_rows[i].act), hot_rows[i].label, hot_rows[i].help});
+
+  add_head(TAB_CHEATS, "Cheats",
+      "Each off unless turned on here. While any is on, the top scores are read and not written.");
+  for (int i = 0; i < CONFIG_CHEATS; i++)
+    add_choice(TAB_CHEATS, S_CHEAT + i, cheat_rows[i].label, on_off, 2, cheat_rows[i].help);
 }
 
 static int setting_get(const Config* c, int id) {
@@ -269,7 +287,8 @@ static int setting_get(const Config* c, int id) {
     case S_DEADZONE:     return c->deadzone;
     case S_MOVE_STICK:   return c->pad.move_stick;
     case S_AIM_STICK:    return c->pad.aim_stick;
-    default:             return 0;
+    default:
+      return id >= S_CHEAT && id < S_CHEAT + CONFIG_CHEATS ? c->cheat[id - S_CHEAT] : 0;
   }
 }
 
@@ -294,7 +313,9 @@ static void setting_set(Config* c, int id, int v) {
     case S_DEADZONE:     c->deadzone = v; config_deadzone(&c->pad, v); break;
     case S_MOVE_STICK:   c->pad.move_stick = v; break;
     case S_AIM_STICK:    c->pad.aim_stick = v; break;
-    default: break;
+    default:
+      if (id >= S_CHEAT && id < S_CHEAT + CONFIG_CHEATS) c->cheat[id - S_CHEAT] = v != 0;
+      break;
   }
 }
 

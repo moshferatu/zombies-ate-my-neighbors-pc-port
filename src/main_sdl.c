@@ -987,7 +987,7 @@ static void usage(void) {
     "                            pixels, no shimmer, and the window is filled.\n"
     "                    integer only whole multiples; letterbox the remainder.\n"
     "                    linear  one bilinear step from 512x480. The blurry one.\n\n"
-    "Cheats, each a flag of its own and off unless asked for. They work under\n"
+    "Cheats, each off unless asked for here or in zamn.ini's [cheats]. They work under\n"
     "--stock as well. While any is on the top scores are read and not written.\n"
     "  --invincible    Nothing hurts a player: no flinch, no health lost.\n"
     "  --invincible-neighbors  Nothing hurts a neighbour, and the tourists do\n"
@@ -1058,7 +1058,9 @@ int main(int argc, char** argv) {
   // `--poke`, as the headless tool has it: a way to a state -- a game over --
   // that no movie in the corpus reaches, for looking at how it is drawn.
   PokeList pokes = {{{0}}, 0};
-  // `--invincible` and the rest: see `src/cheats.h`.
+  // `--invincible` and the rest: see `src/cheats.h`. And `zamn.ini`'s [cheats],
+  // which are in the same order.
+  _Static_assert(CONFIG_CHEATS == CHEAT_COUNT, "[cheats] is not the cheats");
   Cheats cheats;
   cheats_init(&cheats);
   // `--quick-at frame:save|load[:file]`: F5 or F9 pressed by the command line
@@ -1322,8 +1324,9 @@ int main(int argc, char** argv) {
   // What the file says and no option did. Paths out of the file are taken
   // from the file's directory. Three of its settings are for playing and not
   // for a movie, which was recorded against the game as it shipped and from
-  // reset: the intro skip, the starting level and (below) the hitbox; and its
-  // top scores file is not a way to ask for top scores under one.
+  // reset: the intro skip, the starting level, the cheats and (below) the
+  // hitbox; and its top scores file is not a way to ask for top scores under
+  // one.
   static char rom_from_config[CONFIG_PATH_MAX], hiscore_from_config[CONFIG_PATH_MAX];
   if (!rom_path) {
     config_resolve(&g_cfg, g_cfg.rom, rom_from_config, sizeof rom_from_config);
@@ -1332,6 +1335,8 @@ int main(int argc, char** argv) {
   if (!movie_path) {
     if (g_cfg.skip_intro && !skip_intro_refused) skip_the_intro = true;
     if (start_level < 0) start_level = g_cfg.level;
+    for (int i = 0; i < CHEAT_COUNT; i++)
+      if (!cheats.asked[i]) cheats.on[i] = g_cfg.cheat[i];
     if (!hiscore_path && g_cfg.high_scores_file[0]) {
       config_resolve(&g_cfg, g_cfg.high_scores_file, hiscore_from_config, sizeof hiscore_from_config);
       hiscore_path = hiscore_from_config;
@@ -1415,10 +1420,13 @@ int main(int argc, char** argv) {
   // half changed.
   if (!cheats_install(&cheats, snes->cart->rom, (size_t)snes->cart->romSize)) {
     const CheatId which = cheats_rom_check(&cheats, snes->cart->rom, (size_t)snes->cart->romSize);
+    char named[64];
+    if (cheats.asked[which]) snprintf(named, sizeof named, "--%s", cheat_flags[which]);
+    else snprintf(named, sizeof named, "%s = on in [cheats]", config_cheat_names[which]);
     fprintf(stderr,
-            "error: --%s: '%s' is not a cartridge this can change -- the code\n"
+            "error: %s: '%s' is not a cartridge this can change -- the code\n"
             "       the cheat rewrites is not where this ROM has it. See src/cheats.h.\n",
-            cheat_flags[which], rom_path);
+            named, rom_path);
     return 1;
   }
 

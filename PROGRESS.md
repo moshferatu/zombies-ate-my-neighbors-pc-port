@@ -27,6 +27,20 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### The cheats in zamn.ini and the launcher (2026-09-23)
+
+Asked for in play-testing: the cheats, each on or off, in the launcher.
+`zamn.ini` gains `[cheats]`, the six flags' names with underscores, all off
+(`config_cheat_names` in `src/config.h`, in `CheatId`'s order, which
+`main_sdl.c` asserts). A flag beats the file, `--no-<flag>` included, since
+`cheats_flag` now marks what it was asked; the file's are not taken under a
+movie, like the intro skip and the level. An image that cannot take one
+names `[cheats]` rather than a flag it was not given. The launcher has a
+seventh tab, Cheats. `zamn_test_config` reads the section, with the other
+spelling of neighbours, and round-trips all six on. Checked natively: a file
+with invincible and give all runs with both; `--no-invincible --always-run`
+over it runs with give all and always run.
+
 ### A launcher for zamn.ini (2026-09-23)
 
 `zamn_launcher.exe` (`src/launcher.c`): the file's settings in six tabs, on

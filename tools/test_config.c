@@ -140,6 +140,14 @@ static void test_settings(void) {
   if (c.twin_stick) fail("twin_stick");
   if (c.pad.enter != 10000 || c.pad.leave != 7500) fail("deadzone 30 is %d/%d", c.pad.enter, c.pad.leave);
   if (c.pad.move_stick != PAD_STICK_RIGHT || c.pad.aim_stick != PAD_STICK_NONE) fail("sticks");
+  for (int k = 0; k < CONFIG_CHEATS; k++)
+    if (c.cheat[k]) fail("cheat %s is on without being asked for", config_cheat_names[k]);
+
+  parse(&c, "[Cheats]\ninvincible = on\nInvincible Neighbours = yes\ninfinite-ammo = 1\n"
+            "give_all = on\n");
+  if (c.warnings) fail("the cheats were complained about %d times", c.warnings);
+  if (!c.cheat[0] || !c.cheat[1] || !c.cheat[2] || c.cheat[3] || !c.cheat[4] || c.cheat[5])
+    fail("cheats read as %d%d%d%d%d%d", c.cheat[0], c.cheat[1], c.cheat[2], c.cheat[3], c.cheat[4], c.cheat[5]);
 
   parse(&c, "[game]\nlevel = off\n[video]\nrefresh = auto\n");
   if (c.level != -1 || c.refresh != 0) fail("level off / refresh auto: %d, %d", c.level, c.refresh);
@@ -417,6 +425,7 @@ static void test_writing(void) {
   c.key[1][BTN_B][0] = SDLK_KP_1;
   memset(c.hotkey[ACT_QUIT], 0, sizeof c.hotkey[ACT_QUIT]);
   c.hotkey[ACT_FULLSCREEN][1] = SDLK_f;
+  for (int k = 0; k < CONFIG_CHEATS; k++) c.cheat[k] = true;
 
   // Into the default file as Windows writes it: every line still ends CRLF.
   char* dos = crlf(CONFIG_DEFAULT_TEXT);
