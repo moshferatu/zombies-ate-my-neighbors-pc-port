@@ -27,6 +27,14 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### The launcher comes back when the game closes (2026-09-23)
+
+Asked for in play-testing. Play used to start the game and close the
+launcher. Now the launcher keeps the game's process, hides, and drops its
+own input while the game runs, so a button pressed in the game is not one
+pressed here. When the process ends the window shows again, with "The game
+has closed." or the exit code if it was not 0.
+
 ### The cheats in zamn.ini and the launcher (2026-09-23)
 
 Asked for in play-testing: the cheats, each on or off, in the launcher.

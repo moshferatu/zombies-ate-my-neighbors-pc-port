@@ -273,10 +273,11 @@ Hotkeys), drawn on black at the display's scale in the system's font.
   launcher from the default text if there is none. Save writes each value
   where it stands (`config_update_text` in `src/config.h`), so a player's
   own comments, spellings and line endings survive; nothing is written until
-  Save or Play. **Play** saves, starts `zamn.exe --config <that file>` from
-  the launcher's folder, and closes, so the game cannot read a different
-  file. It will not start the game while the cartridge is missing, and says
-  where it looked.
+  Save or Play. **Play** saves and starts `zamn.exe --config <that file>`
+  from the launcher's folder, so the game cannot read a different file. The
+  launcher hides while the game runs and comes back when it closes. It will
+  not start the game while the cartridge is missing, and says where it
+  looked.
 - **Values** change with Left and Right, a click on the arrows, or a drag on
   the three sliders. The cartridge and the top scores file are typed after
   Enter, chosen with Browse, or the cartridge dropped on the window. Browse

@@ -17,6 +17,9 @@
 // default here, like it does in the game, and a save writes that default in.
 // Nothing is written until Save or Play.
 //
+// Play saves and starts the game, and the launcher waits out of sight until
+// the game closes, then comes back.
+//
 // ## The screen
 //
 // SDL, as the game is, drawn by hand on black with the system's font through
@@ -73,6 +76,7 @@
 #else
 #include <limits.h>
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #define GAME_EXE "zamn"
 #define SEP '/'
@@ -797,6 +801,32 @@ static bool save(void) {
   return true;
 }
 
+// The game that Play started, while it runs.
+#ifdef _WIN32
+static HANDLE game;
+#else
+static pid_t game;
+#endif
+
+// True once that game has closed, with its exit code.
+static bool game_closed(int* code) {
+#ifdef _WIN32
+  if (WaitForSingleObject(game, 0) != WAIT_OBJECT_0) return false;
+  DWORD c = 0;
+  GetExitCodeProcess(game, &c);
+  CloseHandle(game);
+  game = NULL;
+  *code = (int)c;
+#else
+  int st;
+  if (waitpid(game, &st, WNOHANG) != game) return false;
+  game = 0;
+  *code = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+#endif
+  return true;
+}
+
+// Never the launcher's end: it waits for the game, out of sight.
 static bool launch(void) {
   char rom[CONFIG_PATH_MAX];
   if (!rom_found(rom, sizeof rom)) {
@@ -823,7 +853,7 @@ static bool launch(void) {
     return false;
   }
   CloseHandle(pi.hThread);
-  CloseHandle(pi.hProcess);
+  game = pi.hProcess;
 #else
   const pid_t pid = fork();
   if (pid == 0) {
@@ -832,8 +862,12 @@ static bool launch(void) {
     _exit(127);
   }
   if (pid < 0) { say(true, "Could not start %s", exe); return false; }
+  game = pid;
 #endif
-  return true;
+  ui.held_dir = 0;
+  ui.quit_armed = false;
+  SDL_HideWindow(ui.win);
+  return false;
 }
 
 // A file chosen in the system's dialog. Windows only; elsewhere the path is
@@ -1899,16 +1933,33 @@ int main(int argc, char** argv) {
     return ok ? 0 : 1;
   }
   SDL_RenderPresent(ui.ren);
-  SDL_ShowWindow(ui.win);
+  if (!game) SDL_ShowWindow(ui.win);
 
   while (!done) {
     SDL_Event e;
+    if (game) {
+      // What comes while the game runs is dropped, so that a button pressed
+      // in the game is not one pressed here.
+      if (SDL_WaitEventTimeout(&e, 250)) {
+        do done |= e.type == SDL_QUIT; while (SDL_PollEvent(&e));
+      }
+      int code;
+      if (!done && game_closed(&code)) {
+        if (code) say(true, "The game stopped with exit code %d.", code);
+        else say(false, "The game has closed.");
+        draw();
+        SDL_RenderPresent(ui.ren);
+        SDL_ShowWindow(ui.win);
+        SDL_RaiseWindow(ui.win);
+      }
+      continue;
+    }
     // Asleep until something happens, but awake for a countdown or a held
     // direction, which happen without an event.
     const int wait = ui.held_dir ? 16 : ui.capturing ? 100 : 1000;
     if (SDL_WaitEventTimeout(&e, wait)) {
       done = handle(&e);
-      while (!done && SDL_PollEvent(&e)) done = handle(&e);
+      while (!done && !game && SDL_PollEvent(&e)) done = handle(&e);
     }
     const Uint32 now = SDL_GetTicks();
     if (ui.capturing && (Sint32)(now - ui.capture_end) >= 0) ui.capturing = false;
