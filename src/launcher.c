@@ -28,6 +28,9 @@
 //
 //   * Up and Down move between rows, Left and Right change a value, and past
 //     the last row are the buttons. Tab, or L1 and R1, turn the tabs.
+//   * A setting with a fixed list of values is a dropdown: Enter, South or a
+//     click opens it, Up and Down choose, Enter, South or a click takes the
+//     choice, and Escape, East or a click elsewhere closes it unchanged.
 //   * A binding is set by pressing it. Enter (or South) waits for the next key
 //     or pad input and adds it to the row; Backspace (or West) takes the last
 //     one off, and a chip's x takes that one. Every key can be bound, Escape
@@ -122,6 +125,26 @@ static const Choice filter_choices[] = {
   {SCALE_SHARP, "Sharp"}, {SCALE_INTEGER, "Integer"}, {SCALE_LINEAR, "Linear"}};
 static const Choice stick_choices[] = {
   {PAD_STICK_LEFT, "Left"}, {PAD_STICK_RIGHT, "Right"}, {PAD_STICK_NONE, "Off"}};
+// What each record's card calls it, read off the cards. By `--level` number:
+// 1 to 48 the levels, 49 the credits, 0 and 50 to 55 the bonus rooms.
+static const char* const level_names[56] = {
+  "Day of the Tentacle", "Zombie Panic", "Evening of the Undead", "Terror in Aisle Five",
+  "Chainsaw Hedgemaze Mayhem", "Weird Kids on the Block", "Pyramid of Fear",
+  "Dr. Tongue's Castle of Terror", "Titanic Toddler", "Toxic Terrors", "No Assembly Required",
+  "Weeds Gone Bad", "Mars Needs Cheerleaders", "Chopping Mall", "Seven Meals for Seven Zombies",
+  "Dinner on Monster Island", "Ants", "Office of the Doomed", "Squidmen of the Deep",
+  "Nightmare on Terror Street", "Invasion of the Snakeoids", "The Day the Earth Ran Away",
+  "Revenge of Dr. Tongue", "The Caves of Mystery", "Warehouse of the Evil Dolls",
+  "Look Who's Shopping", "Where the Red Fern Growls", "Dances with Werewolves",
+  "Mark of the Vampire", "Zombie House Party", "The Horror of Floor Thirteen",
+  "Look Who's Coming to Dinner", "Giant Ant Farm", "Fish and Crypts", "I Was a Chainsaw Maniac",
+  "Boardwalk of Terrors", "Monster Phobia", "Labyrinth of Horrors", "Monsters of the Blue Lagoon",
+  "Destroy All Vampires", "Pyramid of Fear 2", "Martians Go Home!", "Spikes",
+  "Super Fund Cleanup Site", "The Curse of Dr. Tongue", "Danger in Picnic Park",
+  "Day of the Chainsaw", "Gridiron Terror", "Curse of the Tongue", "Monsters Among Us",
+  "The Son of Dr. Tongue", "Day of the Tentacle", "Someplace Very Warm", "Curse of the Pharaohs",
+  "Mushroom Men", "Cheerleaders vs. the Monsters",
+};
 static const int refresh_presets[] = {0, 50, 60, 75, 90, 100, 120, 144, 165, 170, 180, 200,
                                       240, 280, 300, 360, 480, 500};
 #define COUNT(a) ((int)(sizeof(a) / sizeof *(a)))
@@ -189,8 +212,8 @@ static void build_rows(void) {
   add_choice(TAB_GAME, S_SKIP_INTRO, "Skip the intro", on_off, 2,
       "On: start at the title menu instead of the logos and the story.");
   add_range(TAB_GAME, S_LEVEL, "Starting level", -1, 55, 1, false,
-      "The level a new game starts on. Off is the game's own first. 1 to 48 are the numbered "
-      "levels, 0 and 50 to 55 the bonus rooms, 49 the credits.");
+      "The level a new game starts on. Off is the game's own first. After the 48 levels come "
+      "the credits and the seven bonus rooms, each named as its card names it.");
   add_range(TAB_GAME, S_HITBOX, "Reach", 100, 200, 5, true,
       "How far a player reaches for a pickup or a neighbour, and a weapon for a creature, as a "
       "percentage of the game's own.");
@@ -360,10 +383,10 @@ static int bind_count(const int16_t* l) {
 static void range_text(const Row* r, int v, char* out, size_t size) {
   switch (r->id) {
     case S_LEVEL:
-      if (v < 0) snprintf(out, size, "Off");
-      else if (v == 0 || v >= 50) snprintf(out, size, "%d (bonus room)", v);
-      else if (v == 49) snprintf(out, size, "49 (the credits)");
-      else snprintf(out, size, "Level %d", v);
+      if (v < 0 || v > 55) snprintf(out, size, "Off");
+      else if (v == 0 || v >= 50) snprintf(out, size, "Bonus room %d (%s)", v, level_names[v]);
+      else if (v == 49) snprintf(out, size, "Credits (%s)", level_names[v]);
+      else snprintf(out, size, "Level %d (%s)", v, level_names[v]);
       break;
     case S_WINDOW_SCALE: snprintf(out, size, "%dx (%d x %d)", v, 512 * v, 480 * v); break;
     case S_REFRESH:
@@ -374,19 +397,9 @@ static void range_text(const Row* r, int v, char* out, size_t size) {
   }
 }
 
-// The next value along. A value the file had that is not on the steps (a
-// hitbox of 123, a refresh of 239) is shown as it is and left for the step
-// either side of it.
+// A slider's next value along. A value the file had that is not on the steps
+// (a hitbox of 123) is shown as it is and left for the step either side of it.
 static int range_step(const Row* r, int v, int dir) {
-  if (r->id == S_REFRESH) {
-    int best = v;
-    for (int i = 0; i < COUNT(refresh_presets); i++) {
-      const int p = refresh_presets[i];
-      if (dir > 0 && p > v && (best == v || p < best)) best = p;
-      if (dir < 0 && p < v && (best == v || p > best)) best = p;
-    }
-    return best;
-  }
   int n;
   if (dir > 0) n = r->lo + ((v - r->lo) / r->step + 1) * r->step;
   else n = r->lo + ((v - r->lo + r->step - 1) / r->step - 1) * r->step;
@@ -531,7 +544,7 @@ static unsigned char* load_font(bool bold) {
 
 // --- the launcher's state ---------------------------------------------------------
 
-typedef enum { P_ROW, P_PREV, P_NEXT, P_SLIDER, P_FIELD, P_BROWSE, P_CHIP, P_ADD, P_TAB, P_BUTTON } Part;
+typedef enum { P_ROW, P_DROP, P_OPTION, P_SLIDER, P_FIELD, P_BROWSE, P_CHIP, P_ADD, P_TAB, P_BUTTON } Part;
 
 typedef struct {
   SDL_Rect r;
@@ -574,6 +587,10 @@ static struct {
   int capture_row;
   Uint32 capture_end;
   int dragging;
+  // The open dropdown's row (-1: none), the option lit in it, the first one
+  // in sight, and where its box was drawn.
+  int drop_row, drop_sel, drop_first, drop_shown;
+  float drop_x, drop_y, drop_w, drop_h;
   Hot hot[512];
   int nhot;
   char status[CONFIG_PATH_MAX + 128];
@@ -752,6 +769,7 @@ static bool rom_found(char* resolved, size_t size) {
 }
 
 static void commit_edit(void);
+static void drop_close(void);
 
 static bool save(void) {
   if (ui.editing) commit_edit();
@@ -866,6 +884,7 @@ static bool launch(void) {
 #endif
   ui.held_dir = 0;
   ui.quit_armed = false;
+  drop_close();
   SDL_HideWindow(ui.win);
   return false;
 }
@@ -1027,11 +1046,111 @@ static void move_focus(int d) {
 
 static void set_tab(int t) {
   if (ui.editing) commit_edit();
+  drop_close();
   ui.capturing = false;
   ui.tab = (t + TAB_COUNT) % TAB_COUNT;
   ui.focus = first_row();
   ui.scroll = 0;
   ui.on_buttons = false;
+}
+
+// --- dropdowns -------------------------------------------------------------------------
+
+#define OPTIONS_MAX 64
+#define DROP_SHOWN 10
+
+// The values of a row with a fixed list, in the order the list shows them;
+// 0 for a row with none. The starting level puts Off and the 48 levels
+// first, then the credits and the bonus rooms. A refresh rate the file had
+// that is not a preset is in the list in its place.
+static int row_options(const Row* r, int* out) {
+  int n = 0;
+  if (r->kind == K_CHOICE) {
+    for (int i = 0; i < r->count; i++) out[n++] = r->choices[i].value;
+    return n;
+  }
+  if (r->kind != K_RANGE || r->slider) return 0;
+  if (r->id == S_LEVEL) {
+    out[n++] = -1;
+    for (int v = 1; v <= 49; v++) out[n++] = v;
+    out[n++] = 0;
+    for (int v = 50; v <= 55; v++) out[n++] = v;
+  } else if (r->id == S_REFRESH) {
+    const int cur = setting_get(&ui.cfg, r->id);
+    bool have = false;
+    for (int i = 0; i < COUNT(refresh_presets); i++) {
+      if (!have && cur < refresh_presets[i]) { out[n++] = cur; have = true; }
+      if (cur == refresh_presets[i]) have = true;
+      out[n++] = refresh_presets[i];
+    }
+    if (!have) out[n++] = cur;
+  } else {
+    for (int v = r->lo; v <= r->hi && n < OPTIONS_MAX; v += r->step) out[n++] = v;
+  }
+  return n;
+}
+
+static void option_text(const Row* r, int v, char* out, size_t size) {
+  if (r->kind == K_CHOICE) {
+    out[0] = 0;
+    for (int k = 0; k < r->count; k++)
+      if (r->choices[k].value == v) snprintf(out, size, "%s", r->choices[k].label);
+  } else {
+    range_text(r, v, out, size);
+  }
+}
+
+static int option_index(const int* opts, int n, int v) {
+  for (int i = 0; i < n; i++)
+    if (opts[i] == v) return i;
+  return 0;
+}
+
+static void drop_reveal(int n) {
+  if (ui.drop_sel < ui.drop_first) ui.drop_first = ui.drop_sel;
+  if (ui.drop_sel >= ui.drop_first + ui.drop_shown) ui.drop_first = ui.drop_sel - ui.drop_shown + 1;
+  if (ui.drop_first > n - ui.drop_shown) ui.drop_first = n - ui.drop_shown;
+  if (ui.drop_first < 0) ui.drop_first = 0;
+}
+
+static void drop_open(int i) {
+  if (ui.editing) commit_edit();
+  const Row* r = row_at(i);
+  int opts[OPTIONS_MAX];
+  const int n = r ? row_options(r, opts) : 0;
+  if (!n) return;
+  ui.focus = i;
+  ui.on_buttons = false;
+  reveal(i);
+  ui.drop_row = i;
+  ui.drop_sel = option_index(opts, n, setting_get(&ui.cfg, r->id));
+  // The value in the middle of what shows, where there is room.
+  ui.drop_shown = DROP_SHOWN;
+  ui.drop_first = ui.drop_sel - DROP_SHOWN / 2;
+  drop_reveal(n);
+}
+
+static void drop_close(void) { ui.drop_row = -1; }
+
+static void drop_move(int d) {
+  int opts[OPTIONS_MAX];
+  const int n = row_options(row_at(ui.drop_row), opts);
+  ui.drop_sel += d;
+  if (ui.drop_sel < 0) ui.drop_sel = 0;
+  if (ui.drop_sel >= n) ui.drop_sel = n - 1;
+  drop_reveal(n);
+}
+
+static void drop_pick(void) {
+  const Row* r = row_at(ui.drop_row);
+  int opts[OPTIONS_MAX];
+  const int n = row_options(r, opts);
+  drop_close();
+  if (ui.drop_sel < 0 || ui.drop_sel >= n) return;
+  if (opts[ui.drop_sel] != setting_get(&ui.cfg, r->id)) {
+    setting_set(&ui.cfg, r->id, opts[ui.drop_sel]);
+    changed();
+  }
 }
 
 static void change(int d) {
@@ -1043,11 +1162,14 @@ static void change(int d) {
   if (!r) return;
   const int v = setting_get(&ui.cfg, r->id);
   int nv = v;
-  if (r->kind == K_CHOICE) {
-    int at = 0;
-    for (int i = 0; i < r->count; i++)
-      if (r->choices[i].value == v) at = i;
-    nv = r->choices[(at + d + r->count) % r->count].value;
+  int opts[OPTIONS_MAX];
+  const int n = row_options(r, opts);
+  if (n) {
+    // A choice goes round; a list of numbers stops at its ends.
+    int to = option_index(opts, n, v) + d;
+    if (r->kind == K_CHOICE) to = (to + n) % n;
+    else to = to < 0 ? 0 : to >= n ? n - 1 : to;
+    nv = opts[to];
   } else if (r->kind == K_RANGE) {
     nv = range_step(r, v, d);
   }
@@ -1078,11 +1200,13 @@ static bool press_button(int b) {
 }
 
 static bool activate(bool from_pad) {
+  if (ui.drop_row >= 0) { drop_pick(); return false; }
   if (ui.on_buttons) return press_button(ui.button);
   const Row* r = row_at(ui.focus);
   if (!r) return false;
   switch (r->kind) {
-    case K_CHOICE: change(1); break;
+    case K_CHOICE:
+    case K_RANGE: drop_open(ui.focus); break;
     case K_PATH: {
       char path[CONFIG_PATH_MAX];
       if (from_pad) { if (browse(r->id, path, sizeof path)) set_path(r->id, path); }
@@ -1186,13 +1310,14 @@ static void outline(float x, float y, float w, float h, float t, SDL_Color c) {
   fill(x + w - t, y, t, h, c);
 }
 
-static void triangle(float cx, float cy, float size, int dir, SDL_Color c) {
+// Pointing down, or up when `up`.
+static void chevron(float cx, float cy, float size, bool up, SDL_Color c) {
   SDL_Vertex v[3];
   memset(v, 0, sizeof v);
-  const float hw = size * 0.55f, hh = size;
-  v[0].position = (SDL_FPoint){cx + dir * hw, cy};
-  v[1].position = (SDL_FPoint){cx - dir * hw, cy - hh};
-  v[2].position = (SDL_FPoint){cx - dir * hw, cy + hh};
+  const float hw = size, hh = size * 0.55f, dir = up ? -1.0f : 1.0f;
+  v[0].position = (SDL_FPoint){cx, cy + dir * hh};
+  v[1].position = (SDL_FPoint){cx - hw, cy - dir * hh};
+  v[2].position = (SDL_FPoint){cx + hw, cy - dir * hh};
   for (int i = 0; i < 3; i++) v[i].color = c;
   SDL_RenderGeometry(ui.ren, NULL, v, 3, NULL, 0);
 }
@@ -1200,7 +1325,7 @@ static void triangle(float cx, float cy, float size, int dir, SDL_Color c) {
 static void hot(float x, float y, float w, float h, Part part, int row, int index) {
   if (ui.nhot >= COUNT(ui.hot)) return;
   // Only what can be seen of a row in the list can be clicked.
-  if (part != P_TAB && part != P_BUTTON) {
+  if (part != P_TAB && part != P_BUTTON && part != P_OPTION) {
     const float top = list_top(), bottom = top + list_h();
     if (y < top) { h -= top - y; y = top; }
     if (y + h > bottom) h = bottom - y;
@@ -1249,28 +1374,74 @@ static float wrap(const Font* f, float x, float y, float w, const char* s, SDL_C
   return wrap_lines(f, x, y, w, s, c, max_lines, false) * f->height;
 }
 
-static void draw_stepper(int i, const Row* r, float x, float y, float w, float h, bool focused) {
+// On is green and Off dim, as they always were; anything else is text.
+static SDL_Color option_color(const Row* r, int v) {
+  if (r->choices == on_off) return v ? C_GREEN : C_DIM;
+  return C_TEXT;
+}
+
+static void draw_dropdown(int i, const Row* r, float x, float y, float w, float h, bool focused) {
   const int v = setting_get(&ui.cfg, r->id);
-  char label[64] = "";
-  bool bright = true;
-  if (r->kind == K_CHOICE) {
-    for (int k = 0; k < r->count; k++)
-      if (r->choices[k].value == v) snprintf(label, sizeof label, "%s", r->choices[k].label);
-    if (r->choices == on_off) bright = v != 0;
-  } else {
-    range_text(r, v, label, sizeof label);
+  const bool open = ui.drop_row == i;
+  char label[128];
+  option_text(r, v, label, sizeof label);
+  fill(x, y, w, h, open ? (SDL_Color){18, 18, 18, 255} : C_BLACK);
+  outline(x, y, w, h, L(1), open ? C_GREEN : focused ? C_DIM : C_FAINT);
+  text_tail(&ui.body, x + L(14), y + (h - ui.body.height) / 2, w - L(54), label, option_color(r, v));
+  chevron(x + w - L(22), y + h / 2, L(6), open, focused || open ? C_GREEN : C_DIM);
+  hot(x, y, w, h, P_DROP, i, 0);
+  if (open) {
+    ui.drop_x = x;
+    ui.drop_y = y;
+    ui.drop_w = w;
+    ui.drop_h = h;
   }
-  outline(x, y, w, h, L(1), focused ? C_DIM : C_FAINT);
-  const bool wraps = r->kind == K_CHOICE;
-  const bool can_down = wraps || range_step(r, v, -1) != v;
-  const bool can_up = wraps || range_step(r, v, 1) != v;
-  triangle(x + L(18), y + h / 2, L(6), -1, can_down ? (focused ? C_GREEN : C_DIM) : C_FAINT);
-  triangle(x + w - L(18), y + h / 2, L(6), 1, can_up ? (focused ? C_GREEN : C_DIM) : C_FAINT);
-  const float tw = text_width(&ui.body, label);
-  SDL_Color col = r->choices == on_off && bright ? C_GREEN : bright ? C_TEXT : C_DIM;
-  text(ui.ren, &ui.body, x + (w - tw) / 2, y + (h - ui.body.height) / 2, label, col);
-  hot(x, y, L(40), h, P_PREV, i, 0);
-  hot(x + L(40), y, w - L(40), h, P_NEXT, i, 0);
+}
+
+// The open list, over everything else: below its box, or above it when there
+// is more room there.
+static void draw_drop_list(void) {
+  const Row* r = row_at(ui.drop_row);
+  int opts[OPTIONS_MAX];
+  const int n = r ? row_options(r, opts) : 0;
+  if (!n) { drop_close(); return; }
+  const float ih = L(34), pad = L(4);
+  const float below = ui.h - L(8) - (ui.drop_y + ui.drop_h);
+  const float above = ui.drop_y - L(8);
+  int shown = n < DROP_SHOWN ? n : DROP_SHOWN;
+  const bool up = shown * ih + pad * 2 > below && above > below;
+  const int fits = (int)(((up ? above : below) - pad * 2) / ih);
+  if (shown > fits) shown = fits < 1 ? 1 : fits;
+  if (shown != ui.drop_shown) {
+    ui.drop_shown = shown;
+    drop_reveal(n);
+  }
+  if (ui.drop_first > n - shown) ui.drop_first = n - shown;
+  if (ui.drop_first < 0) ui.drop_first = 0;
+  const float lh = shown * ih + pad * 2;
+  const float lx = ui.drop_x, lw = ui.drop_w;
+  const float ly = up ? ui.drop_y - lh + L(1) : ui.drop_y + ui.drop_h - L(1);
+  fill(lx, ly, lw, lh, (SDL_Color){18, 18, 18, 255});
+  outline(lx, ly, lw, lh, L(1), C_GREEN);
+  const int cur = setting_get(&ui.cfg, r->id);
+  for (int k = 0; k < shown; k++) {
+    const int o = ui.drop_first + k;
+    const float iy = ly + pad + k * ih;
+    if (o == ui.drop_sel) {
+      fill(lx + L(1), iy, lw - L(2), ih, (SDL_Color){40, 40, 40, 255});
+      fill(lx + L(1), iy, L(4), ih, C_GREEN);
+    }
+    char label[128];
+    option_text(r, opts[o], label, sizeof label);
+    SDL_Color c = opts[o] == cur ? C_GREEN : o == ui.drop_sel ? C_TEXT : (SDL_Color){205, 205, 205, 255};
+    text_tail(&ui.body, lx + L(14), iy + (ih - ui.body.height) / 2, lw - L(34), label, c);
+    hot(lx, iy, lw, ih, P_OPTION, ui.drop_row, o);
+  }
+  if (n > shown) {
+    const float track = lh - pad * 2;
+    const float bar_h = track * shown / n, bar_y = ly + pad + track * ui.drop_first / n;
+    fill(lx + lw - L(8), bar_y, L(3), bar_h, C_DIM);
+  }
 }
 
 static void draw_slider(int i, const Row* r, float x, float y, float w, float h, bool focused) {
@@ -1445,10 +1616,10 @@ static void draw(void) {
     text(ui.ren, &ui.body, L(MARGIN), y + (h - ui.body.height) / 2, r->label, focused ? C_TEXT : (SDL_Color){205, 205, 205, 255});
     const float cy = y + L(6), ch = h - L(12);
     switch (r->kind) {
-      case K_CHOICE: draw_stepper(i, r, cx, cy, cw, ch, focused); break;
+      case K_CHOICE: draw_dropdown(i, r, cx, cy, cw, ch, focused); break;
       case K_RANGE:
         if (r->slider) draw_slider(i, r, cx, cy, cw, ch, focused);
-        else draw_stepper(i, r, cx, cy, cw, ch, focused);
+        else draw_dropdown(i, r, cx, cy, cw, ch, focused);
         break;
       case K_PATH: draw_path(i, r, cx, cy, cw_full, ch, focused); break;
       default: draw_bindings(i, r, cx, cy, cw_full, ch, focused); break;
@@ -1524,6 +1695,8 @@ static void draw(void) {
   if (sw > L(40) && status[0])
     text_tail(&ui.small, sx, by + (bh - ui.small.height) / 2, sw, status, ui.status_bad ? C_RED : C_DIM);
 
+  if (ui.drop_row >= 0) draw_drop_list();
+
 }
 
 // --- scale ------------------------------------------------------------------------
@@ -1585,6 +1758,16 @@ static void slide_to(int i, int mx) {
 static bool click(int mx, int my) {
   const Hot* h = hit(mx, my);
   if (ui.editing && !(h && h->part == P_FIELD && h->row == ui.edit_row)) commit_edit();
+  // An open list takes the click: a choice, or anywhere else to close it.
+  if (ui.drop_row >= 0) {
+    if (h && h->part == P_OPTION) {
+      ui.drop_sel = h->index;
+      drop_pick();
+    } else {
+      drop_close();
+    }
+    return false;
+  }
   if (!h) return false;
   if (h->row >= 0) {
     ui.focus = h->row;
@@ -1596,8 +1779,7 @@ static bool click(int mx, int my) {
       ui.on_buttons = true;
       ui.button = h->index;
       return press_button(h->index);
-    case P_PREV: change(-1); break;
-    case P_NEXT: change(1); break;
+    case P_DROP: drop_open(h->row); break;
     case P_SLIDER: ui.dragging = h->row; slide_to(h->row, mx); break;
     case P_FIELD:
       if (!ui.editing) begin_edit(h->row);
@@ -1618,6 +1800,10 @@ static bool click(int mx, int my) {
 enum { DIR_NONE, DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT };
 
 static void go(int dir) {
+  if (ui.drop_row >= 0) {
+    if (dir == DIR_UP || dir == DIR_DOWN) drop_move(dir == DIR_UP ? -1 : 1);
+    return;
+  }
   switch (dir) {
     case DIR_UP: move_focus(-1); break;
     case DIR_DOWN: move_focus(1); break;
@@ -1688,6 +1874,10 @@ static bool handle(const SDL_Event* e) {
     case SDL_MOUSEMOTION: {
       if (ui.dragging >= 0) { slide_to(ui.dragging, e->motion.x); return false; }
       const Hot* h = hit(e->motion.x, e->motion.y);
+      if (ui.drop_row >= 0) {
+        if (h && h->part == P_OPTION) ui.drop_sel = h->index;
+        return false;
+      }
       ui.hover = h && h->row >= 0 ? h->row : -1;
       return false;
     }
@@ -1698,6 +1888,11 @@ static bool handle(const SDL_Event* e) {
       ui.dragging = -1;
       return false;
     case SDL_MOUSEWHEEL:
+      if (ui.drop_row >= 0) {
+        ui.drop_first -= e->wheel.y * 3;  // `draw_drop_list` keeps it in range
+        if (ui.drop_first < 0) ui.drop_first = 0;
+        return false;
+      }
       ui.scroll -= e->wheel.y * L(ROW_H) * 1.5f;
       clamp_scroll();
       return false;
@@ -1725,6 +1920,7 @@ static bool handle(const SDL_Event* e) {
         case SDL_CONTROLLER_BUTTON_DPAD_LEFT: hold(DIR_LEFT); break;
         case SDL_CONTROLLER_BUTTON_DPAD_RIGHT: hold(DIR_RIGHT); break;
         case SDL_CONTROLLER_BUTTON_A: return activate(true);
+        case SDL_CONTROLLER_BUTTON_B: drop_close(); break;
         case SDL_CONTROLLER_BUTTON_X:
           if (!ui.on_buttons) remove_binding(ui.focus, -1);
           break;
@@ -1791,6 +1987,23 @@ static bool handle(const SDL_Event* e) {
           case SDLK_a:
             if (ctrl) { ui.edit[0] = 0; ui.caret = 0; }
             break;
+          default: break;
+        }
+        return false;
+      }
+      if (ui.drop_row >= 0) {
+        switch (k) {
+          case SDLK_UP: drop_move(-1); break;
+          case SDLK_DOWN: drop_move(1); break;
+          case SDLK_PAGEUP: drop_move(-(DROP_SHOWN - 1)); break;
+          case SDLK_PAGEDOWN: drop_move(DROP_SHOWN - 1); break;
+          case SDLK_HOME: drop_move(-OPTIONS_MAX); break;
+          case SDLK_END: drop_move(OPTIONS_MAX); break;
+          case SDLK_RETURN:
+          case SDLK_KP_ENTER:
+          case SDLK_SPACE: drop_pick(); break;
+          case SDLK_ESCAPE:
+          case SDLK_TAB: drop_close(); break;
           default: break;
         }
         return false;
@@ -1886,6 +2099,7 @@ int main(int argc, char** argv) {
   load(asked);
   ui.hover = -1;
   ui.dragging = -1;
+  ui.drop_row = -1;
   ui.button = UI_PLAY;
   ui.focus = first_row();
 

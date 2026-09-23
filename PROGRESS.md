@@ -27,6 +27,20 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### Dropdowns in the launcher, and the levels by name (2026-09-23)
+
+Asked for in play-testing: a list to choose from in place of the values
+that went round under Left and Right. Every setting with a fixed list is
+now a dropdown: the choices, the starting level, the window size and the
+refresh rate (the presets, and a rate the file had that is not one of them,
+in its place). The mouse, the keyboard and a controller all open, move
+through and close it, and Left and Right still step the value shut. The
+three sliders are as they were. The starting level lists Off and levels 1
+to 48, then the credits and the seven bonus rooms, each with its card's
+title in parentheses. The titles were read off the 56 cards by rendering
+each record with `--level`, since the cards' text is tile codes whose
+letter shapes do not decode to one letter apiece.
+
 ### The launcher comes back when the game closes (2026-09-23)
 
 Asked for in play-testing. Play used to start the game and close the

@@ -278,8 +278,10 @@ Hotkeys), drawn on black at the display's scale in the system's font.
   launcher hides while the game runs and comes back when it closes. It will
   not start the game while the cartridge is missing, and says where it
   looked.
-- **Values** change with Left and Right, a click on the arrows, or a drag on
-  the three sliders. The cartridge and the top scores file are typed after
+- **Values** with a fixed list are dropdowns: Enter, South or a click opens
+  one, Up and Down choose, and Escape or East closes it unchanged. Left and
+  Right change the value without opening it. The starting level's list names
+  every level as its card does. The three sliders are dragged. The cartridge and the top scores file are typed after
   Enter, chosen with Browse, or the cartridge dropped on the window. Browse
   stores a path under the file's folder relative to it.
 - **Bindings are set by pressing them.** Enter, a click on `+`, or South waits
