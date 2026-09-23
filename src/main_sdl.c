@@ -2314,7 +2314,8 @@ int main(int argc, char** argv) {
             const SDL_Rect r = {plan.dst.x, plan.dst.y, plan.dst.w, plan.dst.h};
             if (gpu && SDL_RenderReadPixels(ren, &r, SDL_PIXELFORMAT_RGB24, gpu, r.w * 3) == 0) {
               snprintf(path, sizeof path, "%s.%ld.%d.gpu.png", dump_prefix, frame, phase);
-              printf("dump frame %ld: hud_panel_on ws.mem %d %d, ram %d %d; BG3 policy %d; in_level %d\n", frame,
+              printf("dump frame %ld: main thread at $%06X, game over %d; hud_panel_on ws.mem %d %d, ram %d %d; BG3 policy %d; in_level %d\n", frame,
+                     ws_main_thread_at(ws.mem), ws_game_over(ws.mem),
                      ws.mem[0x1e88] | (ws.mem[0x1e89] << 8), ws.mem[0x1e8a] | (ws.mem[0x1e8b] << 8),
                      snes->ram[0x1e88] | (snes->ram[0x1e89] << 8), snes->ram[0x1e8a] | (snes->ram[0x1e8b] << 8),
                      snes->ppu->layerWide[2], snes_bgTilemapWider(snes, 1) && snes_bgOnMainScreen(snes, 1));

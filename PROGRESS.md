@@ -27,6 +27,28 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### The game over mask is whole on the neighbours-lost path too (2026-09-22)
+
+Play-testing under `--invincible`: a game over on level 13 had the middle
+third of the 16:9 picture bare again. It was the other way into the game
+over. The level loop `$80:8516` returns game over when both panel flags are
+down (a player's last life clears theirs, `$80:CEDA`) and also when the last
+neighbour is lost with none rescued -- and then the player's flag stays up,
+so the panel-flag tell from 2026-09-18 kept BG3 split. Under `--invincible`
+that is the only way in. `src/widescreen.h` now reads where the main game
+thread (`$80:84B1`, slot 23 in practice, found by its entry) is parked, off
+its own stack under the scheduler's frame (`ws_main_thread_at`), and calls
+BG3 the mask while that is inside `$80:8A00`'s waits from the mask's upload
+on and the scroll shadow is set (`ws_game_over`). Reproduced on the stock
+core with `level13.zmv --poke 3000:1D52=0000`; the layers test now carries
+the mask on 782 frames there and 782 on the poked death movie (831 before:
+the 30-tick wait before the upload is left out on purpose, since the live
+panel is still up then), 0 differing pictures on both, none of the mask on
+five level movies, and the next game's panel anchored after either kind
+(the death one on `go2.zmv`, the neighbours one by a quick save at its top
+scores and Start mashed from a load). `--png` and `--dump-pictures` print
+the parked place and the verdict.
+
 ### The console is quiet unless asked (2026-09-22)
 
 Play-testing: quitting the game scrolled some 200 lines past the prompt -- the

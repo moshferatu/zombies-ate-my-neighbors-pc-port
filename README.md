@@ -2046,16 +2046,27 @@ level on BG3 -- "GAME OVER" cut out of a purple field, the level showing
 through the letters, which is the game's own look and not a transparency
 bug -- and in a level BG3 is the status panel, split down the middle and
 pinned to the picture's edges. Split, the mask left the middle third of a
-16:9 picture bare. `widescreen_frame` tells the two apart by what the game
-says about the panel: `hud_panel_on` (`W_HUD_PANEL_ON`, one word per side)
-is whether that player is in the game, and both are zero through a game
-over, from before the mask's first drip until the next game puts the panel
-up again. (Two other tells were tried and were wrong: the scroll the game
-over counts BG3 down with, `$136A`, stays where it stopped into the next
-game, whose panel was then centred and carried out to the edges, half a
-health bar and all; and the layer's own columns -- the panel keeps the
-middle empty, the mask fills it -- missed the mask's first hundred frames,
-whose drips come in over the panel's own columns.) While the mask is up
+16:9 picture bare. `widescreen_frame` tells the two apart by what the main
+game thread is doing (`ws_game_over`): the thread that runs a level
+(`$80:84B1`, whose spawn the entry table records as `$84B0`) parks in the
+scheduler's wait, `$80:8353`, which pushes B, P and D over the `JSL`'s
+return address and keeps the stack pointer in `thread_sp`; so the return
+address read off that stack says where the thread is, and inside the game
+over routine `$80:8A00` -- from the wait after the mask's tilemap has gone
+up (`$8A11`) to the 300-tick wait with the mask fully up (`$8A45`), with
+the scroll shadow `$136A` non-zero -- BG3 is the mask. There are two ways
+into that routine, and the level loop `$80:8516` takes them differently: a
+player's last life clears their panel flag (`hud_panel_on`, `$80:CEDA`) and
+the loop returns when both are down; the last neighbour lost with none
+rescued returns too, and the player's flag stays up. The flags were the
+tell at first, and the second way -- the only one open under
+`--invincible` -- split the mask again, found in play-testing on level 13.
+(Two other tells were tried before that and were wrong: the scroll shadow
+alone, which stays where it stopped into the next game, whose panel was
+then centred and carried out to the edges, half a health bar and all; and
+the layer's own columns -- the panel keeps the middle empty, the mask fills
+it -- which missed the mask's first hundred frames, whose drips come in
+over the panel's own columns.) While the mask is up
 BG3 gets `ppu_wideCentre`, a policy of its own because neither of the old
 ones was right for a whole screen: carried out from the console's place
 (`ppu_wideClampEdge`) the mask sat off to one side wherever the two margins
@@ -2071,15 +2082,19 @@ goes on to the edge of the picture rather than turning into a slab; a line
 is beside the drips when it is below the last line the layer is opaque all
 the way across and is a gap within 16 columns of both edges, which the
 letters never are. A line with nothing opaque on it is below the mask and
-shows what is behind. The test counts the frames the policy fires on: 831
-of the poked game over movie, from the first drip to the top scores, and
-none of `level1`, `level1-2p`, `level21-spin`, `level25-boss` or the radar
-movie; a movie that mashes Start into a new game after the game over has
-the panel anchored again. To reach a game over without playing one,
+shows what is behind. The test counts the frames the policy fires on: 782
+of the poked game over movie, from the mask's upload to the fade, 782 of a
+level 13 run whose last neighbour is taken at frame 3000, and none of
+`level1`, `level1-2p`, `level21-spin`, `level25-boss` or the radar movie; a
+movie that mashes Start into a new game after either game over has the
+panel anchored again. To reach a game over without playing one,
 `zamn_test_layers` and `zamn.exe` take `--poke` now
 (`--poke 1330+:1CB8=0000` holds the player's health at zero from frame 1330;
-adding `--poke 2000+:1B6A=0000` pins the camera to the map's left edge, the
-uneven-margins case). `--dump-pictures prefix,frame`
+`--poke 3000:1D52=0000` on `level13` takes the last neighbour, with none
+rescued, for the other way in; adding `--poke 2000+:1B6A=0000` pins the
+camera to the map's left edge, the uneven-margins case). The test's `--png`
+prints where the main thread is parked and whether that is the game over,
+and so does `--dump-pictures prefix,frame`, which
 writes the four pictures of one tick as the renderer drew them and as
 `layers_render` draws them, which is how the GPU path was found to be
 pixel-identical to the software one on both Direct3D 9 and 11 -- and how a

@@ -511,6 +511,48 @@ static inline uint16_t ws_mirror(uint16_t v) {
   return (uint16_t)(((uint16_t)~v) - 0x000f);
 }
 
+// Where the main game thread is parked: the address `$80:8353` will hand it
+// back to when its wait is up, read off the thread's own stack. That thread is
+// `$80:84B1` -- the one that runs a level (`$80:8516`), then the game over
+// (`$80:8A00`), then the top scores -- and the entry table names it by the
+// address its spawn recorded, `$84B0`, the byte before. `$80:8353` pushes B, P
+// and D over the `JSL`'s return address and parks the stack pointer in
+// `thread_sp`, so from the parked pointer up the frame is D (a word), P, B and
+// then the return's low, high and bank bytes; the return is one past the
+// address pushed. Stale while the thread is running -- the table is written
+// when it parks -- which is the last place it waited, and so still the right
+// routine. 0 when there is no such thread, as there is not on the title.
+#define WS_MAIN_THREAD_ENTRY 0x84b0u
+static inline uint32_t ws_main_thread_at(const uint8_t* mem) {
+  for (uint32_t s = 0; s < WRAM_THREAD_SLOTS; s++) {
+    if (ws_r16(mem, W_THREAD_ENTRY + s * 2) != WS_MAIN_THREAD_ENTRY ||
+        ws_r16(mem, W_THREAD_ENTRY_BANK + s * 2) != 0x80)
+      continue;
+    const uint32_t sp = ws_r16(mem, W_THREAD_SP + s * 2);
+    return (((uint32_t)mem[(sp + 7) & 0x1ffff] << 16) | ws_r16(mem, sp + 5)) + 1;
+  }
+  return 0;
+}
+
+// The game over: `$80:8A00`, from the wait after the mask's tilemap has gone
+// up over the panel's (`$80:8A78`; the `JSL $808353` at `$80:8A0D` returns to
+// `$8A11`) to the 300-tick wait with the mask fully up (`$80:8A41`, returning
+// to `$8A45`), whose return stays on the stack through the fade that follows.
+// The 30-tick wait before the upload (`$8A03`, returning to `$8A07`) is left
+// out on purpose: the panel is still on BG3 then, and live, and centring it
+// for half a second would be a jump. The scroll shadow tells the two waits
+// apart as well -- `$80:8A84` sets it just before the upload, and a level
+// never scrolls the panel -- and is checked with the range rather than
+// instead of it: it stays where it stopped into the next game.
+#define WS_GAME_OVER_FIRST 0x8a11u
+#define WS_GAME_OVER_LAST 0x8a45u
+static inline bool ws_game_over(const uint8_t* mem) {
+  const uint32_t at = ws_main_thread_at(mem);
+  return (at >> 16) == 0x80 && (at & 0xffff) >= WS_GAME_OVER_FIRST &&
+         (at & 0xffff) <= WS_GAME_OVER_LAST &&
+         ws_r16(mem, W_BG3_VSCROLL_SHADOW) != 0;
+}
+
 // Put a 16x16 frame into a cache slot's VRAM, which is what the DMA `$80:B960`
 // queues would have done: the first 64 bytes are the slot's two top tiles and
 // the second 64 the two below them, one VRAM row of 32 words further on.
@@ -1000,18 +1042,20 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // its edges instead (`ppu_wideCentre`) it is whole. Centred, not left in
   // the console's place: at the end of a map the margins are not the same
   // width, and there the console's place is off to one side. Which of the two
-  // BG3 is carrying is what the game says about the panel: `hud_panel_on`,
-  // one word per side, is whether that player is in the game, and both are
-  // zero through a game over -- from before the mask's first drip comes in
-  // until the next game starts, when the panel is put up again. (Not the
-  // scroll the game over counts down, `$136A`: that stays where it stopped
-  // into the next game, and the panel of that game was centred and carried
-  // out to the edges, half a health bar and all. And not the layer's own
-  // columns: the panel keeps the middle empty, but the mask's first drips
-  // come in over the panel's own columns, and the curtain was split for its
-  // first hundred frames.)
-  const bool bg3_mask = in_level && ws_r16(mem, W_HUD_PANEL_ON) == 0 &&
-                        ws_r16(mem, W_HUD_PANEL_ON + 2) == 0;
+  // BG3 is carrying is what the main game thread is doing: parked inside the
+  // game over routine with the mask's scroll under way (`ws_game_over`), it
+  // is the mask. There are two ways into that routine, and the level loop
+  // (`$80:8516`) takes them differently: a player's last life clears their
+  // panel flag (`hud_panel_on`, `$80:CEDA`) and the loop returns when both
+  // are down; the last neighbour lost with none rescued returns too, and the
+  // player's flag stays up. The flags were the tell before, and the second
+  // way -- the only one open under `--invincible` -- split the mask again.
+  // (Two more tells were tried and were wrong: the scroll shadow alone,
+  // `$136A`, which stays where it stopped into the next game, whose panel was
+  // then centred and carried out to the edges, half a health bar and all; and
+  // the layer's own columns, which the mask's first drips come in over, so
+  // the curtain was split for its first hundred frames.)
+  const bool bg3_mask = in_level && ws_game_over(mem);
   // Outside a level BG3 is the wallpaper behind the LucasArts logo, the title
   // and the character select, which the game steps along every few ticks --
   // and `ppu_wideAuto` continues a 256-pixel map into the margins only once it

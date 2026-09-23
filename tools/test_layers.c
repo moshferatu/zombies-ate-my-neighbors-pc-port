@@ -437,8 +437,9 @@ int main(int argc, char** argv) {
         // Which of BG3's columns are empty on every line, as runs -- what
         // `widescreen_frame` tells the status panel from the game over's
         // mask by.
-        printf("    hud_panel_on: %d %d; BG3 empty columns:", snes->ram[0x1e88] | (snes->ram[0x1e89] << 8),
-               snes->ram[0x1e8a] | (snes->ram[0x1e8b] << 8));
+        printf("    main thread at $%06X, BG3 scroll shadow $%04X, game over %d; hud_panel_on: %d %d; BG3 empty columns:",
+               ws_main_thread_at(snes->ram), snes->ram[0x136a] | (snes->ram[0x136b] << 8), ws_game_over(snes->ram),
+               snes->ram[0x1e88] | (snes->ram[0x1e89] << 8), snes->ram[0x1e8a] | (snes->ram[0x1e8b] << 8));
         for (int c = 0, from = -1; c <= 256; c++) {
           const bool empty = c < 256 && ppu_columnEmptyAt(ppu, 2, c);
           if (empty && from < 0) from = c;
