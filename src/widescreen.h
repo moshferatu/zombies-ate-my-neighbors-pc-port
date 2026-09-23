@@ -88,8 +88,9 @@
 //
 // The cull the ROM runs first (`actor_cull`, `$80:BCE2`) is generous: it keeps
 // every record within 128 pixels behind the camera and 383 ahead of it, which
-// is far more than a 43-pixel margin needs, and it is not the problem. The
-// problem is the last thing that happens to a record. `sprite_emit`
+// is far more than a 43-pixel margin needs, and it is not the problem. (It is
+// not always enough for 21:9's: see the section on it below.) The problem is
+// the last thing that happens to a record. `sprite_emit`
 // (`$80:BA51` and its three flipped twins) works out where each 16x16 piece
 // lands and then does this:
 //
@@ -373,6 +374,31 @@
 // registers only, which the game writes again at the next vblank and never
 // reads.
 //
+// ## 21:9 is wider than the game's own reach
+//
+// 16:9 fits inside every distance the game keeps: 43 a side, and 86 on one
+// side at the end of a map. 21:9 is 96 a side and 192 on one, and two things
+// that were slack for 16:9 run out.
+//
+// **The cull.** `actor_cull`'s 128 behind and 383 ahead are words in the
+// ROM (`$80:BCF8` and `$80:BCFD`, the horizontal test; the vertical one
+// after it is left alone). At the right-hand end of a map the picture's left
+// edge is 192 behind the camera, and a record between 128 and 192 behind it
+// was not in the visible list: not drawn, since the margins' sprites are
+// drawn from that list, and out of the reach of every monster, since that
+// list is also what they touch. `ws_widen_window` moves each word out to 32
+// past the picture's edge when the edge has gone past it, the same 32 the
+// neighbours' window keeps, so a neighbour is in the list everywhere she can
+// exist. That never happens at 16:9, whose edges stop 42 short, so 16:9 and
+// off keep the stock words.
+//
+// **The ring.** The world's tilemap is a ring of 64 columns, and the margins
+// were filled to the widest either one can get, on both sides at once: at
+// 21:9 that is 24 columns each side of the game's 32, 80 in all, and the far
+// end of one side came round onto the other. Only what the picture reaches
+// is filled now, with the smoothing's 16 columns either side of it, which is
+// 62 at most.
+//
 // ## Everything above happens one tick late
 //
 // The frame the console is about to draw was composed during the *previous*
@@ -427,7 +453,7 @@
 #define WS_BOSS_PARKED 0x0100
 // How far past the picture's edges a plane is still looked at: the smoothing's
 // capture margin, `LAYERS_MARGIN` in `layers.h`, which this file does not see.
-#define WS_BOSS_SLACK 16
+#define WS_CAPTURE_SLACK 16
 
 // The neighbours' window (`$81:8207`, and the header): `ADC #$0080` to the
 // camera's column is its middle and `CMP #$00A0` its reach either side.
@@ -435,6 +461,15 @@
 #define WS_WINDOW_MIDDLE_STOCK 0x0080
 #define WS_WINDOW_REACH_OPCODE 0x0823cu
 #define WS_WINDOW_REACH_STOCK 0x00a0
+
+// `actor_cull`'s horizontal window (`$80:BCF7 CMP #$FF80` and `$80:BCFC
+// CMP #$0180`), and how far past the picture's edge it is made to reach once
+// the edge has passed it. See "21:9 is wider than the game's own reach".
+#define WS_CULL_BEHIND_OPCODE 0x03cf7u
+#define WS_CULL_BEHIND_STOCK 0x0080
+#define WS_CULL_AHEAD_OPCODE 0x03cfcu
+#define WS_CULL_AHEAD_STOCK 0x0180
+#define WS_CULL_SLACK 32
 
 // A word in the ROM file that is a distance from the console's edge and has to
 // be one from the widest the picture gets: the byte before it that says
@@ -938,7 +973,7 @@ static inline bool ws_boss_extent(const Snes* snes, int* x0, int* x1) {
 //     CMP #$FF01 : BCC park       ; and #$FF21 for the other axis
 //
 // and these are the same two decisions taken against what can be shown: the
-// picture, and `WS_BOSS_SLACK` columns either side of it, which the smoothing
+// picture, and `WS_CAPTURE_SLACK` columns either side of it, which the smoothing
 // captures with each plane and slides into view when it eases a scroll
 // (`LAYERS_MARGIN`). A figure, or a lap of one, left in those columns is one
 // that flickers at the picture's edge as the boss walks.
@@ -946,7 +981,7 @@ static inline void ws_boss_plane(Snes* snes, const Widescreen* ws, int left, int
   BgLayer* bg = &snes->ppu->bgLayer[0];
   int x0, x1;
   if (!ws_boss_extent(snes, &x0, &x1)) return;  // a level with no big figure
-  const int lo = -left - WS_BOSS_SLACK, hi = 256 + right + WS_BOSS_SLACK;
+  const int lo = -left - WS_CAPTURE_SLACK, hi = 256 + right + WS_CAPTURE_SLACK;
 
   if ((bg->hScroll & 0x3ff) != WS_BOSS_PARKED || (bg->vScroll & 0x3ff) != WS_BOSS_PARKED) {
     // Not parked. The origin's column, off the register: all ten bits of it,
@@ -1133,15 +1168,19 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // at `-cam_x` and the last map pixel at the far end of the last column.
   snes_setWideClamp(snes, -(int)cam_x, map_cols * 8 - 1 - (int)cam_x);
 
-  // Whole tiles, rounded up, and enough for the widest either margin can get —
-  // one side takes the other's share at the edges of a map, so both are filled
-  // to the full width rather than to the width they happen to have this frame.
-  const int cols = (2 * margin + 7) / 8;
+  // The columns either side of the game's 32 that the picture reaches, and
+  // `WS_CAPTURE_SLACK` past its edges for the smoothing. No more: the ring is
+  // 64 columns, and at 21:9 the widest either margin can get, filled on both
+  // sides, comes round onto the other side. See the header.
+  const int lo = (int)cam_x - left - WS_CAPTURE_SLACK;
+  const int cols_left = cam_tx - (lo >= 0 ? lo / 8 : -((7 - lo) / 8));
+  const int cols_right = ((int)cam_x + 255 + right + WS_CAPTURE_SLACK) / 8 -
+                         (cam_tx + CAMERA_WINDOW_TILES_X - 1);
   // The camera shows 28 rows and a fraction, and the fraction is a row.
   const int rows = CAMERA_WINDOW_TILES_Y + 1;
 
   for (int side = 0; side < 2; side++) {
-    for (int i = 0; i < cols; i++) {
+    for (int i = 0; i < (side ? cols_right : cols_left); i++) {
       // Left of the window, then right of it. `CAMERA_WINDOW_TILES_X` is where
       // the game's own 32 columns end and these begin.
       const int col =
@@ -1226,6 +1265,13 @@ static inline void ws_widen_window(Snes* snes, int margin) {
     const WsRomWord* w = &WS_ROM_WORDS[i];
     ws_rom_word(cart, w->guard_at, w->guard, w->word_at, (uint16_t)(w->stock + w->margins * margin));
   }
+  // The cull, only where the picture's edge has passed it: 21:9 at the end of
+  // a map. Stock everywhere else.
+  int behind = left + WS_CULL_SLACK, ahead = 256 + right + WS_CULL_SLACK;
+  if (behind < WS_CULL_BEHIND_STOCK) behind = WS_CULL_BEHIND_STOCK;
+  if (ahead < WS_CULL_AHEAD_STOCK) ahead = WS_CULL_AHEAD_STOCK;
+  ws_rom_word(cart, WS_CULL_BEHIND_OPCODE, 0xc9, WS_CULL_BEHIND_OPCODE + 1, (uint16_t)(0x10000 - behind));
+  ws_rom_word(cart, WS_CULL_AHEAD_OPCODE, 0xc9, WS_CULL_AHEAD_OPCODE + 1, (uint16_t)ahead);
 }
 
 static inline void widescreen_hook(Snes* snes, void* ctx) {

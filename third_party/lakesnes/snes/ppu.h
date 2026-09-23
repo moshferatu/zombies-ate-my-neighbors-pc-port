@@ -23,7 +23,15 @@ typedef struct Ppu Ppu;
 // to the original one at zero -- the margins only ever enter as `+ 0` or as a
 // loop bound that is still 256 -- which is what lets the co-simulation corpus
 // go on meaning what it meant.
-#define PPU_EXTRA_MAX 128
+//
+// The most either side can have. The frontend's widest is 21:9, 96 a side,
+// and at the end of a map one side takes both: 192. That is also about as
+// wide as this can go. A sprite's X is nine bits, one lap of 512, and the
+// picture and a sprite's 16 hanging off its edge have to fit in one lap
+// (`ppu_spriteX`): 256 + 192 + 16 is 464. The game's planes are 512 across
+// as well, and a picture wider than one comes round onto itself. So 32:9,
+// 684 columns, would need more than a bigger number here.
+#define PPU_EXTRA_MAX 192
 #define PPU_MAX_WIDTH (256 + 2 * PPU_EXTRA_MAX)
 // One row of the pixel buffer, in bytes. Every game pixel is written as two
 // side-by-side output pixels of four bytes, because `ppu_handlePixel` fills a

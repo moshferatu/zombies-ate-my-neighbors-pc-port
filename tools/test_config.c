@@ -173,7 +173,7 @@ static void test_bad_lines(void) {
     "[video\n"                    // no ]
     "fullscreen = off\n"
     "[video]\n"
-    "widescreen = 21:9\n"
+    "widescreen = 32:9\n"
     "window_scale = 9\n"
     "[audio]\n"
     "volume = 101\n"

@@ -976,8 +976,8 @@ static void usage(void) {
     "  --aspect <how>  4:3 (default) is the shape the game was composed for and\n"
     "                  what every emulator shows it in; square is 8:7, the\n"
     "                  framebuffer's own shape, narrower by 11%%. F3 toggles.\n"
-    "  --widescreen <r> off (default), 16:9, 16:10 or auto. Draws columns either\n"
-    "                  side of the console's 256 rather than stretching them:\n"
+    "  --widescreen <r> off (default), 16:9, 16:10, 21:9 or auto. Draws columns\n"
+    "                  either side of the console's 256 instead of stretching them:\n"
     "                  more level is visible, and the status panels move to\n"
     "                  the two edges. auto is whichever fits the display when\n"
     "                  fullscreen, and off in a window. F4 cycles.\n"
@@ -1202,7 +1202,7 @@ int main(int argc, char** argv) {
     }
     else if (!strcmp(a, "--widescreen") && i + 1 < argc) {
       if (!wide_setting_parse(argv[++i], &wide_setting)) {
-        fprintf(stderr, "error: unknown widescreen '%s' — want off, 16:9, 16:10 or auto\n\n",
+        fprintf(stderr, "error: unknown widescreen '%s' — want off, 16:9, 16:10, 21:9 or auto\n\n",
                 argv[i]);
         usage();
         return 2;

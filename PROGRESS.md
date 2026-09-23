@@ -27,6 +27,26 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### 21:9 widescreen (2026-09-23)
+
+Asked for in play-testing: ultrawide, 21:9 and 32:9. 32:9 was dropped: at
+684 columns it is wider than one lap of a sprite's nine-bit X and of the
+game's 512-pixel planes. 21:9 is 448 columns, 96 a side (`WIDE_21_9` in
+`src/scale.h`), in the config, `--widescreen`, the launcher's dropdown, F4's
+cycle and `auto`, which now picks it on an ultrawide or anything wider.
+Three things were only big enough for 16:9. `PPU_EXTRA_MAX` goes from 128 to
+192, since one side takes both margins at the end of a map. The ring fill in
+`widescreen_frame` filled the widest either margin can get on both sides, 80
+of a 64-column ring at 21:9, so it fills what the picture reaches plus the
+smoothing's 16 either side. And `actor_cull`'s horizontal words
+(`$80:BCF8`, `$80:BCFD`) are moved out to 32 past the picture's edge when the
+edge passes 128 behind or 383 ahead, which only 21:9 at a map's end does.
+Checked: 200 frames over five movies at 16:9 byte-identical to the build
+before; the same frames at 21:9 looked over, the map's left end with the
+whole 192 on the right among them; `zamn_test_scale` updated for `auto`
+(3440x1440 and square pixels at 3840x2160 now pick 21:9), and
+`zamn_test_config`'s bad widescreen value is now 32:9.
+
 ### The title's logo as the launcher's heading (2026-09-23)
 
 Asked for in play-testing: the logo in place of the text heading. Laid out

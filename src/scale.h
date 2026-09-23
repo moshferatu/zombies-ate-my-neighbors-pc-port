@@ -131,7 +131,8 @@ typedef enum {
   WIDE_OFF,    // 256 columns: the console, and the default
   WIDE_16_9,
   WIDE_16_10,
-  // Not a width but a way of choosing one: fullscreen, whichever of the three
+  WIDE_21_9,   // the widest: see `PPU_EXTRA_MAX` on why there is no 32:9
+  // Not a width but a way of choosing one: fullscreen, whichever of the four
   // fills the display best (`wide_for_display`); in a window, off. Only the
   // frontend's setting is ever this. What the PPU is given never is, and
   // `wide_margin` would call it off.
@@ -143,6 +144,7 @@ static inline const char* wide_name(WideMode m) {
   switch (m) {
     case WIDE_16_9:  return "16:9";
     case WIDE_16_10: return "16:10";
+    case WIDE_21_9:  return "21:9";
     case WIDE_AUTO:  return "auto";
     default:         return "off";
   }
@@ -153,6 +155,7 @@ static inline bool wide_parse(const char* s, WideMode* out) {
   if (!strcmp(s, "off") || !strcmp(s, "4:3")) { *out = WIDE_OFF;   return true; }
   if (!strcmp(s, "16:9"))                     { *out = WIDE_16_9;  return true; }
   if (!strcmp(s, "16:10"))                    { *out = WIDE_16_10; return true; }
+  if (!strcmp(s, "21:9"))                     { *out = WIDE_21_9;  return true; }
   return false;
 }
 
@@ -165,14 +168,15 @@ static inline bool wide_setting_parse(const char* s, WideMode* out) {
 // Extra game pixels *per side*.
 //
 // A game pixel is 7:6, so 224 rows at a display ratio of `a` want `a * 192`
-// columns: 4:3 gives back exactly 256, 16:9 wants 341.3 and 16:10 wants 307.2.
-// Both round up to an even total so the two margins can be equal — the camera
+// columns: 4:3 gives back exactly 256, 16:9 wants 341.3, 16:10 wants 307.2
+// and 21:9 exactly 448. The first two round up to an even total so the two margins can be equal — the camera
 // centres the players, and an off-centre picture would put them off-centre with
 // it — which costs a third of a percent of ratio and buys symmetry.
 static inline int wide_margin(WideMode m) {
   switch (m) {
     case WIDE_16_9:  return 43;  // 342 columns
     case WIDE_16_10: return 26;  // 308 columns
+    case WIDE_21_9:  return 96;  // 448 columns
     default:         return 0;
   }
 }
@@ -188,8 +192,8 @@ static inline int wide_source_width(WideMode m) {
 // than the display is pillarboxed and a wider one letterboxed, so the share
 // covered is the smaller of the two ratios over the larger, and the best is
 // the one nearest the display's shape. 16:9 on a 16:9 panel, 16:10 on a
-// 16:10 one, off on a 4:3 one, and 16:9 on anything wider, being the widest
-// there is.
+// 16:10 one, off on a 4:3 one, 21:9 on an ultrawide, and 21:9 on anything
+// wider still, being the widest there is.
 static inline WideMode wide_for_display(AspectMode a, int live_h, int ow, int oh) {
   WideMode best = WIDE_OFF;
   double best_share = 0;

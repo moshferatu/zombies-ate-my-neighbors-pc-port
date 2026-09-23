@@ -124,7 +124,7 @@ typedef struct {
 static const Choice on_off[] = {{0, "Off"}, {1, "On"}};
 static const Choice blood_choices[] = {{0, "Purple"}, {1, "Red"}};
 static const Choice wide_choices[] = {
-  {WIDE_OFF, "Off"}, {WIDE_16_9, "16:9"}, {WIDE_16_10, "16:10"}, {WIDE_AUTO, "Auto"}};
+  {WIDE_OFF, "Off"}, {WIDE_16_9, "16:9"}, {WIDE_16_10, "16:10"}, {WIDE_21_9, "21:9"}, {WIDE_AUTO, "Auto"}};
 static const Choice aspect_choices[] = {{ASPECT_43, "4:3"}, {ASPECT_SQUARE, "Square pixels"}};
 static const Choice filter_choices[] = {
   {SCALE_SHARP, "Sharp"}, {SCALE_INTEGER, "Integer"}, {SCALE_LINEAR, "Linear"}};
@@ -186,7 +186,7 @@ static const struct { int act; const char* label; const char* help; } hot_rows[A
   {ACT_QUICK_SAVE, "Quick Save", "Keep the game as it is this moment, beside the ROM."},
   {ACT_QUICK_LOAD, "Quick Load", "Go back to the last quick save."},
   {ACT_FULLSCREEN, "Fullscreen", "Between fullscreen and a window. Alt+Enter always does this as well."},
-  {ACT_CYCLE_WIDESCREEN, "Cycle Widescreen", "Off, 16:9, 16:10 and auto, in turn."},
+  {ACT_CYCLE_WIDESCREEN, "Cycle Widescreen", "Off, 16:9, 16:10, 21:9 and auto, in turn."},
   {ACT_TOGGLE_ASPECT, "Toggle Aspect", "4:3 or square pixels."},
   {ACT_CYCLE_FILTER, "Cycle Filter", "Sharp, integer and linear, in turn."},
   {ACT_TOGGLE_SMOOTHING, "Toggle Smoothing", "Pictures eased between the game's frames, or the frames only."},
@@ -231,7 +231,7 @@ static void build_rows(void) {
 
   add_choice(TAB_VIDEO, S_FULLSCREEN, "Fullscreen", on_off, 2,
       "Start fullscreen, or in a window. F11 or Alt+Enter changes it while playing.");
-  add_choice(TAB_VIDEO, S_WIDESCREEN, "Widescreen", wide_choices, 4,
+  add_choice(TAB_VIDEO, S_WIDESCREEN, "Widescreen", wide_choices, 5,
       "Draw more of the level either side, not a stretch. Auto: fullscreen, whichever fits the "
       "display; in a window, off.");
   add_choice(TAB_VIDEO, S_ASPECT, "Aspect", aspect_choices, 2,

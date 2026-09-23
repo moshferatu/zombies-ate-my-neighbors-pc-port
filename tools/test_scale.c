@@ -222,8 +222,10 @@ int main(void) {
       {ASPECT_43,     1920, 1200, WIDE_16_10},
       {ASPECT_43,     1024,  768, WIDE_OFF},
       {ASPECT_43,     1280, 1024, WIDE_OFF},
-      {ASPECT_43,     3440, 1440, WIDE_16_9},   // ultrawide: the widest there is
-      {ASPECT_SQUARE, 3840, 2160, WIDE_16_9},
+      {ASPECT_43,     3440, 1440, WIDE_21_9},   // ultrawide
+      {ASPECT_43,     2560, 1080, WIDE_21_9},
+      {ASPECT_43,     5120, 1440, WIDE_21_9},   // 32:9: the widest there is
+      {ASPECT_SQUARE, 3840, 2160, WIDE_21_9},   // 896x448 covers 89%, 684x448 86%
       {ASPECT_SQUARE, 1024,  768, WIDE_16_10},  // 616x448 is nearer 4:3 than 512x448
       {ASPECT_43,        0,    0, WIDE_OFF},
   };

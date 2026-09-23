@@ -342,7 +342,7 @@ int main(int argc, char** argv) {
             "       [--save frame,file] [--load file]\n"
             "       [--poke frame[+]:addr=value[.b]]...\n"
             "       [--twin-stick] [--aim frame[+]:U|D|L|R...|-]...\n"
-            "       [--widescreen off|16:9|16:10]\n"
+            "       [--widescreen off|16:9|16:10|21:9]\n"
             "       [--invincible] [--invincible-neighbors] [--infinite-ammo]\n"
             "       [--infinite-lives] [--give-all] [--always-run]\n",
             argv[0]);
@@ -461,7 +461,7 @@ int main(int argc, char** argv) {
       load_path = argv[++i];
     } else if (!strcmp(argv[i], "--widescreen") && has_next) {
       if (!wide_parse(argv[++i], &wide)) {
-        fprintf(stderr, "error: --widescreen wants off, 16:9 or 16:10\n");
+        fprintf(stderr, "error: --widescreen wants off, 16:9, 16:10 or 21:9\n");
         return 2;
       }
     } else if (argv[i][0] != '-') {

@@ -195,7 +195,7 @@ is in `.gitignore`, since it names the player's ROM.
 | Section | Settings |
 |---|---|
 | `[game]` | `rom`, `skip_intro`, `level` (off, 0-55), `hitbox` (100-200), `blood` (purple, red), `high_scores`, `high_scores_file` |
-| `[video]` | `fullscreen`, `widescreen` (off, 16:9, 16:10, auto), `aspect` (4:3, square), `filter` (sharp, integer, linear), `window_scale` (1-8), `smoothing`, `refresh` (auto, Hz) |
+| `[video]` | `fullscreen`, `widescreen` (off, 16:9, 16:10, 21:9, auto), `aspect` (4:3, square), `filter` (sharp, integer, linear), `window_scale` (1-8), `smoothing`, `refresh` (auto, Hz) |
 | `[audio]` | `enabled`, `volume` (0-100) |
 | `[controller]` | `enabled`, `twin_stick`, `deadzone` (5-90, percent), `move_stick` and `aim_stick` (left, right, off) |
 | `[controller buttons]` | the twelve SNES buttons, as lists of pad inputs, for both pads |
@@ -1033,12 +1033,13 @@ frame, which is the only way to judge it. At 3840x2160:
 
 ### `--widescreen`
 
-`off` (default), `16:9`, `16:10` or `auto`. **F4** cycles them while the game
-runs.
+`off` (default), `16:9`, `16:10`, `21:9` or `auto`. **F4** cycles them while
+the game runs.
 
-`auto` is whichever of the three fills the display best while fullscreen, and
+`auto` is whichever of the four fills the display best while fullscreen, and
 off in a window: 16:9 on a 16:9 panel, 16:10 on a 16:10 one, off on a 4:3 one,
-and 16:9 on anything wider (`wide_for_display` in `src/scale.h`, pinned in
+21:9 on an ultrawide, and 21:9 on anything wider (`wide_for_display` in
+`src/scale.h`, pinned in
 `tools/test_scale.c`). It is asked every frame, so F11 takes the picture to
 the console's 256 columns on the way into a window and back out to the edges
 on the way into fullscreen, and a fullscreen window sent to another monitor
@@ -1057,9 +1058,12 @@ that would normally break turn out already to be in the port's favour:
 * **The map is already there.** BG2's tilemap is 64 tiles across, twice the
   screen, and the streamer keeps the columns around the camera valid rather
   than only the visible ones. 16:9 wants 43 columns a side and the ring has 128.
+  21:9 wants 96, and 192 on one side at the end of a map, which still fits
+  once only what the picture reaches is filled (see *21:9* below).
 * **The actors are already alive.** `actor_cull` keeps anything from 128 px
   behind the camera to 383 px ahead of it (`src/port/oam.c`) — a 512-pixel
-  window around a 256-pixel screen, which is twice what 16:9 asks for. So
+  window around a 256-pixel screen, which is twice what 16:9 asks for (21:9
+  asks for more at the end of a map; see *21:9* below). So
   nothing pops in at the new edges and no culling, animation or collision code
   changed at all. Checked rather than assumed: dumping the display list through
   `zamn_headless --records` on level 29 catches a monster walking from world x
@@ -1073,9 +1077,24 @@ that would normally break turn out already to be in the port's favour:
   is what keeps a sprite walking off one side doing so.
 
 A game pixel is 7:6 — 256 across a 4:3 frame over 224 rows — so 224 rows want
-`ratio × 192` columns: 4:3 gives back exactly 256, 16:9 wants 342 and 16:10
-wants 308. `src/scale.h` states the pixel shape once and derives all three,
-which is why the 4:3 cases pinned in `tools/test_scale.c` did not move.
+`ratio × 192` columns: 4:3 gives back exactly 256, 16:9 wants 342, 16:10
+wants 308 and 21:9 exactly 448. `src/scale.h` states the pixel shape once and
+derives them all, which is why the 4:3 cases pinned in `tools/test_scale.c` did
+not move.
+
+**21:9** is 96 columns a side, and it is the widest there is. At the end of a
+map one side takes both margins, 192, so `PPU_EXTRA_MAX` is 192 rather than
+128. Two of the game's distances that were slack for 16:9 run out there, and
+`src/widescreen.h` moves them ("21:9 is wider than the game's own reach"). The
+world's tilemap ring is 64 columns, and filling the widest either margin can
+get on both sides at once came to 80, so only what the picture reaches is
+filled now, with the smoothing's 16 columns either side: 62 at most. And
+`actor_cull`'s 128 behind the camera stopped short of a picture whose left edge
+was 192 behind it, so its two horizontal words in the ROM are moved out to 32
+past the picture's edge when the edge passes them. 16:9 never reaches them, and
+200 frames over five movies at 16:9 are byte-identical to the build before.
+32:9 would be 684 columns, wider than one lap of a sprite's nine-bit X and of
+the game's 512-pixel planes, so it would take more than a bigger number.
 
 **The status panel moves to the edges.** It is drawn on BG3, whose tilemap is
 32 tiles wide — one screen exactly — so continuing it into the margins could
