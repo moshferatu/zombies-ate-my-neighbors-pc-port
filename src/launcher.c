@@ -37,8 +37,8 @@
 //     included, so a wait for a key is ended by a click or by five seconds.
 //   * A path is typed after Enter or a click, or chosen with Browse (Windows),
 //     or a cartridge dropped on the window.
-//   * Ctrl+S saves; Ctrl+Enter, F5 or Start plays; Escape quits, and asks
-//     again when there is something unsaved.
+//   * Ctrl+S saves; Ctrl+Enter, F5 or Start plays; Escape quits at once,
+//     unsaved changes or not.
 //
 // For checking it without a window: `--press Tab,Down,Right,Ctrl+S` hands it
 // keys, by their names in the file, as if they had been pressed, and
@@ -602,7 +602,7 @@ static struct {
   int nhot;
   char status[CONFIG_PATH_MAX + 128];
   bool status_bad;
-  bool dirty, quit_armed;
+  bool dirty;
   int pad_style;
   int held_dir, stick_x, stick_y;
   Uint32 held_next;
@@ -616,10 +616,7 @@ static void say(bool bad, const char* fmt, ...) {
   ui.status_bad = bad;
 }
 
-static void changed(void) {
-  ui.dirty = true;
-  ui.quit_armed = false;
-}
+static void changed(void) { ui.dirty = true; }
 
 static const Row* row_at(int i) {
   return i >= 0 && i < row_count[ui.tab] ? &rows[ui.tab][i] : NULL;
@@ -894,7 +891,6 @@ static bool launch(void) {
   game = pid;
 #endif
   ui.held_dir = 0;
-  ui.quit_armed = false;
   drop_close();
   SDL_HideWindow(ui.win);
   return false;
@@ -1199,13 +1195,7 @@ static bool press_button(int b) {
       return false;
     case UI_SAVE: save(); return false;
     case UI_PLAY: return launch();
-    case UI_QUIT:
-      if (ui.dirty && !ui.quit_armed) {
-        ui.quit_armed = true;
-        say(true, "There are unsaved changes. Quit again to leave without them.");
-        return false;
-      }
-      return true;
+    case UI_QUIT: return true;
     default: return false;
   }
 }
@@ -1897,13 +1887,7 @@ static bool handle(const SDL_Event* e) {
   }
 
   switch (e->type) {
-    case SDL_QUIT:
-      if (ui.dirty && !ui.quit_armed) {
-        ui.quit_armed = true;
-        say(true, "There are unsaved changes. Close again to leave without them.");
-        return false;
-      }
-      return true;
+    case SDL_QUIT: return true;
     case SDL_WINDOWEVENT:
       if (e->window.event == SDL_WINDOWEVENT_DISPLAY_CHANGED || e->window.event == SDL_WINDOWEVENT_SIZE_CHANGED) {
         const float s = display_scale();

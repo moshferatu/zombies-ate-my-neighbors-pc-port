@@ -295,7 +295,7 @@ Hotkeys), drawn on black at the display's scale in the system's font.
   otherwise. The file always gets positions.
 - **Keyboard or controller:** Up and Down move, Tab or L1/R1 turn the tabs,
   past the last row are the buttons; Ctrl+S saves; Ctrl+Enter, F5 or Start
-  plays; Escape quits, and asks again when something is unsaved.
+  plays; Escape quits at once, unsaved changes or not.
 
 **Its icon is the title screen** as the logo comes to rest, before START and
 PASSWORD appear: `zamn_icon` (`tools/make_icon.c`) boots the cartridge in the
