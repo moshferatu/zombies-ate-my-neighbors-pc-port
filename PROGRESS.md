@@ -27,6 +27,24 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### The title's logo as the launcher's heading (2026-09-23)
+
+Asked for in play-testing: the logo in place of the text heading. Laid out
+in a line it was too spread out, all three lines side by side or ZOMBIES
+beside the other two, so it is as it is on the title, and the header is
+122 points high for it rather than 74. `tools/make_logo.c` (`zamn_logo`) boots the cartridge to frame
+2180, the icon's still, where the logo is BG1 alone (the spiral is BG3).
+It draws the last frame twice with every other layer off and the backdrop
+black and then white, and a pixel that is the same in both is the logo's,
+so its black outline is kept with no colour keyed out. Its five pieces
+(ZOMBIES, ATE, MY, NEIGHBORS, TM) are found by what touches what and
+checked against the three lines by height, and the picture is cut to them:
+210x173. It is a header made
+at build time from `ZAMN_ICON_ROM`, never kept, and without a cartridge
+the heading is the text it was. The launcher draws it 104 points high,
+blown up by whole pixels past that and smoothed down, so it stays sharp at
+any display scale.
+
 ### Dropdowns in the launcher, and the levels by name (2026-09-23)
 
 Asked for in play-testing: a list to choose from in place of the values

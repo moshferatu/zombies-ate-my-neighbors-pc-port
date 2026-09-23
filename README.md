@@ -306,6 +306,14 @@ built, since nothing of the cartridge's is kept in the repository.
 `ZAMN_ICON_ROM` in CMake names the cartridge and defaults to the one in the
 source root. Without it the launcher builds without an icon.
 
+**Its heading is the title's logo**, laid out as on the title: `zamn_logo`
+(`tools/make_logo.c`) takes the same frame with only BG1, the logo's layer,
+drawn over a black backdrop and then a white one, and keeps the pixels that
+are the same in both. The launcher draws it 104 points high, in a header
+made taller for it, blown up by whole pixels before being smoothed down so they stay
+sharp. It comes from the cartridge at build time as the icon does. Without
+one the heading is text.
+
 Checked by `zamn_test_config`: the defaults written into the default file do
 not change a byte of it; every setting off its default, written into the
 CRLF default file and into an empty one, reads back as itself, with every line
@@ -2485,6 +2493,8 @@ tools/symbols/        Symbol names for the disassembler
 third_party/lakesnes  Vendored SNES core (MIT) — reference emulator + PPU/APU
 third_party/stb       stb_image_write.h, stb_truetype.h (public domain or MIT)
 tools/make_icon.c     zamn_icon: the launcher's icon, the title screen drawn
+                              from the cartridge at build time
+tools/make_logo.c     zamn_logo: the launcher's heading, the title's logo,
                               from the cartridge at build time
 tools/build.ps1       Sets up MSVC env, configures + builds with Ninja
 tools/verify_corpus.ps1  Runs `verify` over every movie — or `run`, with

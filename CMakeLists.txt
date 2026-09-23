@@ -53,6 +53,16 @@ if(UNIX)
   target_link_libraries(zamn_icon PRIVATE m)
 endif()
 
+# The launcher's heading (tools/make_logo.c): the title screen's logo, drawn
+# by the core from the player's cartridge and cut from the title, as a C
+# header. The launcher target below runs it when there is a cartridge to run.
+add_executable(zamn_logo tools/make_logo.c)
+target_link_libraries(zamn_logo PRIVATE snescore)
+target_include_directories(zamn_logo PRIVATE third_party/stb)
+if(MSVC)
+  target_compile_definitions(zamn_logo PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # ---------------------------------------------------------------------------
 # Phase 1: analysis toolchain. `analysis` holds the pieces the tracer and the
 # disassembler share (the 65816 instruction table, the CDL format, movie
@@ -306,11 +316,23 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
   if(MSVC)
     target_compile_definitions(zamn_launcher PRIVATE _CRT_SECURE_NO_WARNINGS)
   endif()
-  # Its icon is the title screen, made from the cartridge at build time, since
-  # nothing of the cartridge's is kept in the repository. Without one the
-  # launcher builds without an icon.
+  # Its icon is the title screen and its heading the title's logo, made from
+  # the cartridge at build time, since nothing of the cartridge's is kept in
+  # the repository. Without one the launcher builds without an icon, and its
+  # heading is text.
   set(ZAMN_ICON_ROM "${CMAKE_CURRENT_SOURCE_DIR}/Zombies Ate My Neighbors.sfc"
-      CACHE FILEPATH "The cartridge the launcher's icon is drawn from")
+      CACHE FILEPATH "The cartridge the launcher's icon and heading are drawn from")
+  if(EXISTS "${ZAMN_ICON_ROM}")
+    set(ZAMN_LOGO "${CMAKE_CURRENT_BINARY_DIR}/zamn_logo.h")
+    add_custom_command(OUTPUT "${ZAMN_LOGO}"
+      COMMAND zamn_logo "${ZAMN_ICON_ROM}" "${ZAMN_LOGO}"
+      DEPENDS zamn_logo "${ZAMN_ICON_ROM}"
+      COMMENT "Drawing the launcher's heading from the title's logo"
+      VERBATIM)
+    target_sources(zamn_launcher PRIVATE "${ZAMN_LOGO}")
+    target_include_directories(zamn_launcher PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+    target_compile_definitions(zamn_launcher PRIVATE ZAMN_LOGO)
+  endif()
   if(WIN32 AND EXISTS "${ZAMN_ICON_ROM}")
     set(ZAMN_ICON "${CMAKE_CURRENT_BINARY_DIR}/zamn_launcher.ico")
     add_custom_command(OUTPUT "${ZAMN_ICON}"

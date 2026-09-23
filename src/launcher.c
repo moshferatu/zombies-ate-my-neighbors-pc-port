@@ -48,11 +48,13 @@
 // A key bound in two places does the first thing only (`config_check`); the
 // chip that loses is drawn red, and the row says what wins.
 //
-// ## The icon
+// ## The icon and the heading
 //
-// The title screen, drawn from the player's cartridge by `tools/make_icon.c`
-// when this is built. Without a cartridge at build time the launcher builds
-// without one.
+// The icon is the title screen, drawn from the player's cartridge by
+// `tools/make_icon.c` when this is built, and the heading is the title's
+// logo, cut from it by `tools/make_logo.c` the same way. Without a
+// cartridge at build time the launcher builds without an icon, and its
+// heading is text.
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -64,6 +66,9 @@
 #include <SDL_syswm.h>
 
 #include "config.h"
+#ifdef ZAMN_LOGO
+#include "zamn_logo.h"
+#endif
 
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "stb_truetype.h"
@@ -173,55 +178,55 @@ static void add_head(int tab, const char* label, const char* help) {
 // The SNES buttons in the order the file has them, with what they do here.
 static const struct { int btn; const char* label; } snes_rows[12] = {
   {BTN_UP, "Up"}, {BTN_DOWN, "Down"}, {BTN_LEFT, "Left"}, {BTN_RIGHT, "Right"},
-  {BTN_B, "B (change weapon)"}, {BTN_A, "A (change item)"}, {BTN_Y, "Y (fire)"},
-  {BTN_X, "X (use item)"}, {BTN_L, "L (radar)"}, {BTN_R, "R (radar)"},
+  {BTN_B, "B (Change Weapon)"}, {BTN_A, "A (Change Item)"}, {BTN_Y, "Y (Fire)"},
+  {BTN_X, "X (Use Item)"}, {BTN_L, "L (Radar)"}, {BTN_R, "R (Radar)"},
   {BTN_START, "Start"}, {BTN_SELECT, "Select"},
 };
 static const struct { int act; const char* label; const char* help; } hot_rows[ACT_COUNT] = {
-  {ACT_QUICK_SAVE, "Quick save", "Keep the game as it is this moment, beside the ROM."},
-  {ACT_QUICK_LOAD, "Quick load", "Go back to the last quick save."},
+  {ACT_QUICK_SAVE, "Quick Save", "Keep the game as it is this moment, beside the ROM."},
+  {ACT_QUICK_LOAD, "Quick Load", "Go back to the last quick save."},
   {ACT_FULLSCREEN, "Fullscreen", "Between fullscreen and a window. Alt+Enter always does this as well."},
-  {ACT_CYCLE_WIDESCREEN, "Cycle widescreen", "Off, 16:9, 16:10 and auto, in turn."},
-  {ACT_TOGGLE_ASPECT, "Toggle aspect", "4:3 or square pixels."},
-  {ACT_CYCLE_FILTER, "Cycle filter", "Sharp, integer and linear, in turn."},
-  {ACT_TOGGLE_SMOOTHING, "Toggle smoothing", "Pictures eased between the game's frames, or the frames only."},
-  {ACT_TOGGLE_NATIVE, "Native routines", "The C port's routines, or the cartridge's own in their place."},
+  {ACT_CYCLE_WIDESCREEN, "Cycle Widescreen", "Off, 16:9, 16:10 and auto, in turn."},
+  {ACT_TOGGLE_ASPECT, "Toggle Aspect", "4:3 or square pixels."},
+  {ACT_CYCLE_FILTER, "Cycle Filter", "Sharp, integer and linear, in turn."},
+  {ACT_TOGGLE_SMOOTHING, "Toggle Smoothing", "Pictures eased between the game's frames, or the frames only."},
+  {ACT_TOGGLE_NATIVE, "Native Routines", "The C port's routines, or the cartridge's own in their place."},
   {ACT_QUIT, "Quit", "Leave the game."},
 };
 static const struct { int k; const char* label; } cycle_rows[PAD_CYCLE_COUNT] = {
-  {PAD_CYCLE_NEXT_WEAPON, "Next weapon"}, {PAD_CYCLE_PREV_WEAPON, "Previous weapon"},
-  {PAD_CYCLE_NEXT_ITEM, "Next item"}, {PAD_CYCLE_PREV_ITEM, "Previous item"},
+  {PAD_CYCLE_NEXT_WEAPON, "Next Weapon"}, {PAD_CYCLE_PREV_WEAPON, "Previous Weapon"},
+  {PAD_CYCLE_NEXT_ITEM, "Next Item"}, {PAD_CYCLE_PREV_ITEM, "Previous Item"},
 };
 
 static const struct { const char* label; const char* help; } cheat_rows[CONFIG_CHEATS] = {
-  {"Invincible", "Nothing hurts a player: no flinch, no health lost."},
-  {"Invincible neighbours", "Nothing hurts a neighbour, and the tourists do not turn into "
+  {"Invincibility", "Nothing hurts a player: no flinch, no health lost."},
+  {"Invincible Neighbors", "Nothing hurts a neighbor, and the tourists do not turn into "
       "werewolves. They can still be rescued."},
-  {"Infinite ammo", "Weapons and items are never used up, keys too. Gives nothing: a weapon "
+  {"Infinite Lives", "Dying does not cost a life."},
+  {"Infinite Ammo", "Weapons and items are never used up, keys too. Gives nothing: a weapon "
       "not held stays not held."},
-  {"Infinite lives", "Dying does not cost a life."},
-  {"Give all", "Every weapon and every item, 999 and 99 of them, when a game starts and when "
+  {"Give All Weapons / Items", "Every weapon and every item, 999 and 99 of them, when a game starts and when "
       "a quick save is loaded. Once: they run out unless infinite ammo is on as well."},
-  {"Always run", "The running shoes, always."},
+  {"Always Run", "The running shoes, always."},
 };
 
 static void build_rows(void) {
-  add(TAB_GAME, (Row){K_PATH, S_ROM, "Cartridge",
+  add(TAB_GAME, (Row){K_PATH, S_ROM, "ROM File",
       "The cartridge image, a .sfc file. A path that is not absolute is taken from the folder "
       "zamn.ini is in. Browse, type it after Enter, or drop the file on this window."});
-  add_choice(TAB_GAME, S_SKIP_INTRO, "Skip the intro", on_off, 2,
+  add_choice(TAB_GAME, S_SKIP_INTRO, "Skip Intro", on_off, 2,
       "On: start at the title menu instead of the logos and the story.");
-  add_range(TAB_GAME, S_LEVEL, "Starting level", -1, 55, 1, false,
+  add_range(TAB_GAME, S_LEVEL, "Starting Level", -1, 55, 1, false,
       "The level a new game starts on. Off is the game's own first. After the 48 levels come "
       "the credits and the seven bonus rooms, each named as its card names it.");
-  add_range(TAB_GAME, S_HITBOX, "Reach", 100, 200, 5, true,
-      "How far a player reaches for a pickup or a neighbour, and a weapon for a creature, as a "
+  add_range(TAB_GAME, S_HITBOX, "Hitbox Size", 100, 200, 5, true,
+      "How far a player reaches for a pickup or a neighbor, and a weapon for a creature, as a "
       "percentage of the game's own.");
-  add_choice(TAB_GAME, S_BLOOD, "Game over curtain", blood_choices, 2,
+  add_choice(TAB_GAME, S_BLOOD, "Game Over Blood Color", blood_choices, 2,
       "The game over's curtain: purple, as the cartridge has it, or red.");
-  add_choice(TAB_GAME, S_HIGH_SCORES, "Keep top scores", on_off, 2,
+  add_choice(TAB_GAME, S_HIGH_SCORES, "Save High Scores", on_off, 2,
       "Keep the top scores from one run to the next.");
-  add(TAB_GAME, (Row){K_PATH, S_HISCORE_FILE, "Top scores file",
+  add(TAB_GAME, (Row){K_PATH, S_HISCORE_FILE, "High Scores File",
       "Where the top scores are kept. Empty: beside the ROM."});
 
   add_choice(TAB_VIDEO, S_FULLSCREEN, "Fullscreen", on_off, 2,
@@ -234,25 +239,25 @@ static void build_rows(void) {
   add_choice(TAB_VIDEO, S_FILTER, "Filter", filter_choices, 3,
       "How the picture is scaled to the screen. Sharp: nearest to a whole multiple, then one "
       "smooth step. Integer: whole multiples only, with a border. Linear: smooth all the way.");
-  add_range(TAB_VIDEO, S_WINDOW_SCALE, "Window size", 1, SCALE_MAX_STAGE, 1, false,
+  add_range(TAB_VIDEO, S_WINDOW_SCALE, "Window Size", 1, SCALE_MAX_STAGE, 1, false,
       "The size of the window when not fullscreen, in multiples of 512x480.");
   add_choice(TAB_VIDEO, S_SMOOTHING, "Smoothing", on_off, 2,
       "On: a picture for every refresh of a fast display, eased between the game's sixty a "
       "second. Off: the game's frames only.");
-  add_range(TAB_VIDEO, S_REFRESH, "Refresh rate", 0, 1000, 1, false,
+  add_range(TAB_VIDEO, S_REFRESH, "Refresh Rate", 0, 1000, 1, false,
       "Auto, or the display's refresh rate when the system reports it wrong.");
 
   add_choice(TAB_AUDIO, S_AUDIO, "Sound", on_off, 2, "Music and sound effects.");
   add_range(TAB_AUDIO, S_VOLUME, "Volume", 0, 100, 5, true, "0 to 100.");
 
   add_choice(TAB_CONTROLLER, S_PADS, "Controllers", on_off, 2, "Play with game controllers.");
-  add_choice(TAB_CONTROLLER, S_TWIN_STICK, "Twin stick", on_off, 2,
+  add_choice(TAB_CONTROLLER, S_TWIN_STICK, "Twin Stick", on_off, 2,
       "On: the aiming stick fires the held weapon the way it is pushed, while the other one "
       "goes on steering.");
   add_range(TAB_CONTROLLER, S_DEADZONE, "Deadzone", 5, 90, 1, true,
       "How far a stick moves before it counts, as a percentage of its travel.");
-  add_choice(TAB_CONTROLLER, S_MOVE_STICK, "Move stick", stick_choices, 3, "The stick that steers.");
-  add_choice(TAB_CONTROLLER, S_AIM_STICK, "Aim stick", stick_choices, 3,
+  add_choice(TAB_CONTROLLER, S_MOVE_STICK, "Move Stick", stick_choices, 3, "The stick that steers.");
+  add_choice(TAB_CONTROLLER, S_AIM_STICK, "Aim Stick", stick_choices, 3,
       "The stick that aims, when twin stick is on.");
   static const char pad_help[] =
       "For both controllers. Enter or South waits for an input to add; Backspace or West takes "
@@ -571,6 +576,8 @@ static struct {
   float scale, mouse_scale;
   unsigned char* ttf[2];
   Font body, small, bold, title;
+  SDL_Texture* logo;  // the heading, when there is one, `logo_n` times the game's size
+  int logo_n;
   Config cfg, def;
   char ini[CONFIG_PATH_MAX];      // absolute
   char ini_dir[CONFIG_PATH_MAX];  // with its separator
@@ -621,7 +628,11 @@ static const Row* row_at(int i) {
 // --- layout -------------------------------------------------------------------------
 
 #define L(v) ((v) * ui.scale)
+#ifdef ZAMN_LOGO
+#define HEADER_H 122  // the logo is LOGO_H of it
+#else
 #define HEADER_H 74
+#endif
 #define TABS_H 48
 #define ROW_H 44
 #define HEAD_H 58
@@ -1553,6 +1564,44 @@ static void draw_bindings(int i, const Row* r, float x, float y, float w, float 
   (void)w;
 }
 
+// The title's logo as the heading, if the launcher was built with it, LOGO_H
+// high. It is blown up by whole pixels to the next size past that and then
+// drawn smoothly down, so that its pixels stay square and sharp at any
+// scale. Its width is put in `w`.
+#define LOGO_H 104
+static bool draw_logo(float* w) {
+#ifdef ZAMN_LOGO
+  const float k = L(LOGO_H) / ZAMN_LOGO_H;
+  const int n = k <= 1 ? 1 : (int)k + ((float)(int)k < k);
+  if (ui.logo_n != n) {
+    if (ui.logo) SDL_DestroyTexture(ui.logo);
+    ui.logo_n = 0;
+    const int tw = ZAMN_LOGO_W * n, th = ZAMN_LOGO_H * n;
+    ui.logo = SDL_CreateTexture(ui.ren, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, tw, th);
+    uint32_t* big = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)tw * th);
+    if (!ui.logo || !big) {
+      free(big);
+      return false;
+    }
+    for (int y = 0; y < th; y++)
+      for (int x = 0; x < tw; x++) big[(size_t)y * tw + x] = zamn_logo[(y / n) * ZAMN_LOGO_W + x / n];
+    SDL_UpdateTexture(ui.logo, NULL, big, tw * 4);
+    free(big);
+    SDL_SetTextureBlendMode(ui.logo, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureScaleMode(ui.logo, SDL_ScaleModeLinear);
+    ui.logo_n = n;
+  }
+  const int h = (int)(L(LOGO_H) + 0.5f);
+  const SDL_Rect to = {(int)L(MARGIN), (int)((L(HEADER_H) - h) / 2), (int)(ZAMN_LOGO_W * k + 0.5f), h};
+  SDL_RenderCopy(ui.ren, ui.logo, NULL, &to);
+  *w = (float)to.w;
+  return true;
+#else
+  (void)w;
+  return false;
+#endif
+}
+
 static void draw(void) {
   SDL_GetRendererOutputSize(ui.ren, &ui.w, &ui.h);
   layout();
@@ -1563,14 +1612,20 @@ static void draw(void) {
   const float W = (float)ui.w, H = (float)ui.h;
 
   // The heading, and the file this is.
-  text(ui.ren, &ui.title, L(MARGIN), L(18), "ZOMBIES ATE MY NEIGHBORS", C_GREEN);
-  const float tw = text_width(&ui.title, "ZOMBIES ATE MY NEIGHBORS");
+  float tw, sy;
+  if (!draw_logo(&tw)) {
+    text(ui.ren, &ui.title, L(MARGIN), L(18), "ZOMBIES ATE MY NEIGHBORS", C_GREEN);
+    tw = text_width(&ui.title, "ZOMBIES ATE MY NEIGHBORS");
+    sy = L(18) + ui.title.ascent - ui.small.ascent;
+  } else {
+    sy = (L(HEADER_H) - ui.small.height) / 2;
+  }
   const float room = W - L(MARGIN) * 2 - tw - L(24);
   if (room > L(60)) {
     const char* shown = ui.ini;
     const float sw = text_width(&ui.small, shown);
     const float sx = W - L(MARGIN) - (sw < room ? sw : room);
-    text_tail(&ui.small, sx, L(18) + ui.title.ascent - ui.small.ascent, room, shown, C_DIM);
+    text_tail(&ui.small, sx, sy, room, shown, C_DIM);
   }
 
   // The tabs.
@@ -2191,6 +2246,7 @@ int main(int argc, char** argv) {
   font_free(&ui.small);
   font_free(&ui.bold);
   font_free(&ui.title);
+  if (ui.logo) SDL_DestroyTexture(ui.logo);
   free(ui.ttf[0]);
   free(ui.ttf[1]);
   SDL_DestroyRenderer(ui.ren);
