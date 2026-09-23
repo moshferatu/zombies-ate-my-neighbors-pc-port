@@ -40,6 +40,19 @@ if(MSVC)
   target_compile_definitions(zamn_headless PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# The launcher's icon (tools/make_icon.c): the title screen, drawn by the core
+# from the player's cartridge, as a Windows .ico. The launcher target below
+# runs it when there is a cartridge to run.
+add_executable(zamn_icon tools/make_icon.c)
+target_link_libraries(zamn_icon PRIVATE snescore)
+target_include_directories(zamn_icon PRIVATE third_party/stb)
+if(MSVC)
+  target_compile_definitions(zamn_icon PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+if(UNIX)
+  target_link_libraries(zamn_icon PRIVATE m)
+endif()
+
 # ---------------------------------------------------------------------------
 # Phase 1: analysis toolchain. `analysis` holds the pieces the tracer and the
 # disassembler share (the 65816 instruction table, the CDL format, movie
@@ -277,6 +290,41 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
   target_include_directories(zamn_test_config PRIVATE src)
   if(MSVC)
     target_compile_definitions(zamn_test_config PRIVATE _CRT_SECURE_NO_WARNINGS)
+  endif()
+
+  # The launcher (src/launcher.c): zamn.ini with a face on it, and a Play
+  # button. It ships beside zamn.exe and starts it. SDL as the game is, and
+  # `src/config.h` for the reading and the writing; stb_truetype draws the
+  # system's font.
+  add_executable(zamn_launcher WIN32 src/launcher.c)
+  target_link_libraries(zamn_launcher PRIVATE SDL2::SDL2 SDL2::SDL2main)
+  target_include_directories(zamn_launcher PRIVATE src third_party/stb)
+  if(WIN32)
+    # The file dialog behind Browse.
+    target_link_libraries(zamn_launcher PRIVATE comdlg32)
+  endif()
+  if(MSVC)
+    target_compile_definitions(zamn_launcher PRIVATE _CRT_SECURE_NO_WARNINGS)
+  endif()
+  # Its icon is the title screen, made from the cartridge at build time, since
+  # nothing of the cartridge's is kept in the repository. Without one the
+  # launcher builds without an icon.
+  set(ZAMN_ICON_ROM "${CMAKE_CURRENT_SOURCE_DIR}/Zombies Ate My Neighbors.sfc"
+      CACHE FILEPATH "The cartridge the launcher's icon is drawn from")
+  if(WIN32 AND EXISTS "${ZAMN_ICON_ROM}")
+    set(ZAMN_ICON "${CMAKE_CURRENT_BINARY_DIR}/zamn_launcher.ico")
+    add_custom_command(OUTPUT "${ZAMN_ICON}"
+      COMMAND zamn_icon "${ZAMN_ICON_ROM}" "${ZAMN_ICON}"
+      DEPENDS zamn_icon "${ZAMN_ICON_ROM}"
+      COMMENT "Drawing the launcher's icon from the title screen"
+      VERBATIM)
+    file(CONFIGURE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/zamn_launcher.rc"
+         CONTENT "1 ICON \"${ZAMN_ICON}\"\n")
+    target_sources(zamn_launcher PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/zamn_launcher.rc")
+    set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/zamn_launcher.rc"
+      PROPERTIES OBJECT_DEPENDS "${ZAMN_ICON}")
+  elseif(WIN32)
+    message(STATUS "No cartridge at ${ZAMN_ICON_ROM}: the launcher is built without its icon")
   endif()
 
   # SDL2 builds as a DLL; place it next to the executable so zamn.exe runs.

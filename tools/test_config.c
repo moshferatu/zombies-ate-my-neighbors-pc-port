@@ -17,7 +17,10 @@
 //     format needs for itself can still be bound by their words;
 //   * a key in two places is reported, and the first thing it is wins;
 //   * one button on two keys is held until *both* are let go;
-//   * a path in the file is taken from the file's directory.
+//   * a path in the file is taken from the file's directory;
+//   * what the launcher writes reads back as what it wrote, into the default
+//     file without changing a byte of it, and into a file of the player's
+//     own without losing its comments, its names or its line endings.
 
 #include <stdio.h>
 #include <string.h>
@@ -365,6 +368,97 @@ static void test_round_trip(const char* path) {
   if (memcmp(&want, &none, sizeof want)) fail("a failed load did not leave the defaults");
 }
 
+// The launcher's half: a `Config` written into a file that may already say
+// things of its own.
+static char* crlf(const char* text) {
+  char* out = (char*)malloc(strlen(text) * 2 + 1);
+  char* o = out;
+  for (const char* p = text; *p; p++) {
+    if (*p == '\n') *o++ = '\r';
+    *o++ = *p;
+  }
+  *o = 0;
+  return out;
+}
+
+static bool reads_as(const char* text, const Config* want, const char* what) {
+  Config got;
+  config_defaults(&got);
+  parse(&got, text);
+  if (got.warnings) { fail("%s: the written file was complained about %d times", what, got.warnings); return false; }
+  if (memcmp(want, &got, sizeof got)) { fail("%s: the written file does not read back as what was written", what); return false; }
+  return true;
+}
+
+static void test_writing(void) {
+  Config def;
+  config_defaults(&def);
+  char* same = config_update_text(CONFIG_DEFAULT_TEXT, &def);
+  if (!same || strcmp(same, CONFIG_DEFAULT_TEXT)) fail("writing the defaults changed the default file");
+  free(same);
+
+  // Everything off its default, the keys the format needs words for among it.
+  Config c = def;
+  snprintf(c.rom, sizeof c.rom, "roms/zamn (usa).sfc");
+  c.skip_intro = true; c.level = 0; c.hitbox = 175; c.red_blood = true; c.high_scores = false;
+  snprintf(c.high_scores_file, sizeof c.high_scores_file, "C:\\scores\\zamn.hiscore");
+  c.fullscreen = false; c.widescreen = WIDE_AUTO; c.aspect = ASPECT_SQUARE; c.filter = SCALE_LINEAR;
+  c.window_scale = 3; c.smoothing = false; c.refresh = 144; c.audio = false; c.volume = 35;
+  c.pads = false; c.twin_stick = false; c.deadzone = 40;
+  config_deadzone(&c.pad, c.deadzone);
+  c.pad.move_stick = PAD_STICK_RIGHT; c.pad.aim_stick = PAD_STICK_NONE;
+  pad_map_clear(c.pad.game[BTN_Y]);
+  pad_map_add(c.pad.game[BTN_Y], SDL_CONTROLLER_BUTTON_X);
+  pad_map_add(c.pad.game[BTN_Y], SDL_CONTROLLER_BUTTON_PADDLE2);
+  pad_map_clear(c.pad.cycle[PAD_CYCLE_NEXT_ITEM]);
+  pad_map_add(c.pad.hot[ACT_QUICK_SAVE], SDL_CONTROLLER_BUTTON_PADDLE1);
+  c.key[0][BTN_START][0] = SDLK_SPACE; c.key[0][BTN_START][1] = SDLK_COMMA;
+  c.key[0][BTN_START][2] = SDLK_SEMICOLON; c.key[0][BTN_START][3] = SDLK_HASH;
+  c.key[1][BTN_B][0] = SDLK_KP_1;
+  memset(c.hotkey[ACT_QUIT], 0, sizeof c.hotkey[ACT_QUIT]);
+  c.hotkey[ACT_FULLSCREEN][1] = SDLK_f;
+
+  // Into the default file as Windows writes it: every line still ends CRLF.
+  char* dos = crlf(CONFIG_DEFAULT_TEXT);
+  char* text = config_update_text(dos, &c);
+  if (!text) fail("no text came back");
+  else {
+    reads_as(text, &c, "every setting");
+    for (const char* p = text; *p; p++)
+      if (*p == '\n' && (p == text || p[-1] != '\r')) { fail("a line lost its CR"); break; }
+    if (!strstr(text, "start = Space, Comma, Semicolon, Hash\r\n")) fail("the start keys were not written by their words");
+    if (strstr(text, "[game]") != strstr(text, "[game]\r\n")) fail("a section heading moved");
+    free(text);
+  }
+  free(dos);
+
+  // Into nothing: every section is made.
+  text = config_update_text("", &c);
+  if (text) reads_as(text, &c, "an empty file");
+  free(text);
+
+  // Into a file of the player's own: their names for things, their comments
+  // and their spacing are kept, and nothing is said twice.
+  text = config_update_text("; mine\n[Keyboard Player 1]\nB=Space\n; still mine\n"
+                            "[controller buttons]\nprev_weapon = r1\n[video]\nfullscreen=on", &def);
+  if (text) {
+    reads_as(text, &def, "a file of the player's");
+    if (!strstr(text, "; mine\n[Keyboard Player 1]\nB = Z\n")) fail("the player's keyboard section was not kept");
+    if (!strstr(text, "; still mine\n")) fail("a comment was lost");
+    if (strstr(text, "[keyboard]")) fail("a second keyboard section was made");
+    if (!strstr(text, "prev_weapon = l2\n") || strstr(text, "previous_weapon")) fail("the short cycle name was not kept");
+    if (!strstr(text, "fullscreen=on\n")) fail("a line whose value did not change was rewritten");
+    if (strstr(text, "fullscreen=onwidescreen") || strstr(text, "fullscreen=on widescreen"))
+      fail("a line was added onto the end of the last one");
+  }
+  free(text);
+
+  char name[64];
+  if (!config_key_name(SDLK_COMMA, name, sizeof name) || strcmp(name, "Comma")) fail("the comma key is not 'Comma'");
+  if (config_key_name(SDLK_KP_COMMA, name, sizeof name)) fail("'%s' was called writable", name);
+  if (config_key_name(SDLK_UNKNOWN, name, sizeof name)) fail("no key was called writable");
+}
+
 int main(int argc, char** argv) {
   test_default_text();
   test_settings();
@@ -373,6 +467,7 @@ int main(int argc, char** argv) {
   test_duplicates();
   test_held();
   test_paths();
+  test_writing();
   if (argc > 1) test_round_trip(argv[1]);
   else printf("note: no scratch file named, so the file round trip was skipped.\n");
   if (failures) { printf("%d FAILED\n", failures); return 1; }

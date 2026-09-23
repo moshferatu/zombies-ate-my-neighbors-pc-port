@@ -88,7 +88,9 @@ build\zamn.exe "Zombies Ate My Neighbors.sfc"
 ```
 The ROM's path, how the picture is shown and every key and pad binding can be
 set once in **`zamn.ini`** -- see [the settings file](#the-settings-file-zamnini)
-below. The controls that follow are the defaults.
+below -- or in **`zamn_launcher.exe`**, which ships beside the game and edits
+the same file ([the launcher](#the-launcher-zamn_launcherexe)). The controls
+that follow are the defaults.
 
 Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=Select · Esc=Quit
 · **F1 = toggle native substitution** · **F2 = cycle scaling**
@@ -257,6 +259,63 @@ puts key events on SDL's queue: with `start = T` in the file, T starts the
 game from the title and gives the same picture at frame 900 as Return does
 with the defaults, Return then does nothing, and a hotkey moved to F8 works
 there and no longer on F3.
+
+### The launcher: `zamn_launcher.exe`
+
+A window for `zamn.ini`, for the player who would rather not open a text
+file, and a Play button. It ships beside `zamn.exe` and holds exactly the
+file's settings, no more: six tabs (Game, Video, Audio, Controller, Keyboard,
+Hotkeys), drawn on black at the display's scale in the system's font.
+
+- **The file** is found the way the game finds it (`--config <file>`, then
+  the working directory, then beside the executable), or made beside the
+  launcher from the default text if there is none. Save writes each value
+  where it stands (`config_update_text` in `src/config.h`), so a player's
+  own comments, spellings and line endings survive; nothing is written until
+  Save or Play. **Play** saves, starts `zamn.exe --config <that file>` from
+  the launcher's folder, and closes, so the game cannot read a different
+  file. It will not start the game while the cartridge is missing, and says
+  where it looked.
+- **Values** change with Left and Right, a click on the arrows, or a drag on
+  the three sliders. The cartridge and the top scores file are typed after
+  Enter, chosen with Browse, or the cartridge dropped on the window. Browse
+  stores a path under the file's folder relative to it.
+- **Bindings are set by pressing them.** Enter, a click on `+`, or South waits
+  five seconds for the next key or pad input and adds it to the row. Every key
+  can be bound, Escape included, so a wait for a key ends with a click or the
+  timeout. Backspace or West removes the last one, and a chip's x removes that
+  one. Four at most, as in the file. A key or pad input that loses to another
+  row, in the order the game decides it (`config_check`), is drawn red, and
+  the row says what wins. Pad inputs are named for the pad last touched:
+  Cross and Circle on a DualSense, A and B on an Xbox pad, positions
+  otherwise. The file always gets positions.
+- **Keyboard or controller:** Up and Down move, Tab or L1/R1 turn the tabs,
+  past the last row are the buttons; Ctrl+S saves; Ctrl+Enter, F5 or Start
+  plays; Escape quits, and asks again when something is unsaved.
+
+**Its icon is the title screen** as the logo comes to rest, before START and
+PASSWORD appear: `zamn_icon` (`tools/make_icon.c`) boots the cartridge in the
+core and takes frame 2180, which has the whole logo and no menu. The picture
+is 4:3 with transparent bars, averaged in linear light at 16, 24, 32, 48, 64,
+128 and 256. It is drawn from the player's own cartridge when the launcher is
+built, since nothing of the cartridge's is kept in the repository.
+`ZAMN_ICON_ROM` in CMake names the cartridge and defaults to the one in the
+source root. Without it the launcher builds without an icon.
+
+Checked by `zamn_test_config`: the defaults written into the default file do
+not change a byte of it; every setting off its default, written into the
+CRLF default file and into an empty one, reads back as itself, with every line
+still CRLF; a file of the player's own keeps its comments, its
+`[Keyboard Player 1]` and `prev_weapon` spellings, a `fullscreen=on` whose
+value did not change, and a last line with no ending. The launcher itself
+takes `--press <keys>` and `--screenshot <file.png>` to be driven without a
+window. That is how it was checked: a value changed and saved touches that
+line alone, a key is captured (F5 included, which would otherwise play),
+added, removed and shown red where a hotkey wins, a first start with no file
+writes the 149-line default in CRLF, and Play from another folder, against a
+stand-in `zamn.exe`, saved first and then started it in the launcher's folder
+with `--config` and the file's full path. `zamn.exe` reads the file the
+launcher wrote without a complaint.
 
 ### Skipping the intro
 
@@ -2380,7 +2439,9 @@ src/pad.h             Game controllers: the deadzone, the eight-way snap and the
                               game feels, and is arithmetic
 src/config.h          The player's `zamn.ini`: the settings that had only flags,
                               and every key and pad binding; the file it writes
-                              when there is none
+                              when there is none, and the values written back
+                              into one that is there
+src/launcher.c        zamn_launcher: zamn.ini in a window, and a Play button
 src/cheats.h          The six cheats: patches to the loaded image, words held
                               in WRAM once a tick, and two flags in the port
                               (`src/port/cheat.h`)
@@ -2415,7 +2476,9 @@ movies/               Reproducible input scripts driving the tracer and harness
 docs/                 Co-simulation, frame skeleton, WRAM map, asset formats, tools
 tools/symbols/        Symbol names for the disassembler
 third_party/lakesnes  Vendored SNES core (MIT) — reference emulator + PPU/APU
-third_party/stb       stb_image_write.h (public domain)
+third_party/stb       stb_image_write.h, stb_truetype.h (public domain or MIT)
+tools/make_icon.c     zamn_icon: the launcher's icon, the title screen drawn
+                              from the cartridge at build time
 tools/build.ps1       Sets up MSVC env, configures + builds with Ninja
 tools/verify_corpus.ps1  Runs `verify` over every movie — or `run`, with
                               -Lockstep; owns the frame counts
@@ -2471,3 +2534,4 @@ tools/perturb.py      Breaks one line of the port on purpose, rebuilds, runs
 - SNES core: [LakeSnes](https://github.com/elzo-d/LakeSnes) (MIT)
 - ZAMN data-format reverse engineering: [Necrofy](https://github.com/Piranhaplant/Necrofy)
 - Architecture model: [zelda3](https://github.com/snesrev/zelda3)
+- PNG writing and font rendering: [stb](https://github.com/nothings/stb) (public domain or MIT)

@@ -27,6 +27,25 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### A launcher for zamn.ini (2026-09-23)
+
+`zamn_launcher.exe` (`src/launcher.c`): the file's settings in six tabs, on
+black, and a Play button that saves and starts `zamn.exe --config <file>`.
+SDL like the game, drawn by hand with the system's font through
+`stb_truetype.h`, which is new in `third_party/stb`. Mouse, keyboard and
+controller all work it, and bindings are set by pressing them. The writing
+half is `config_update_text` in `src/config.h`: each value is set where it
+stands, a missing one goes after its section's last setting, and a missing
+section goes on the end. So the player's comments and spellings survive,
+and `zamn_test_config` holds it to changing no byte of the default file and
+to reading back whatever it writes. The icon is the title screen at frame
+2180, where the logo has landed and the menu's sprites have not come up.
+`zamn_icon` (`tools/make_icon.c`) draws it from the cartridge at build time
+into a 7-size `.ico`, and CMake puts it in the launcher's resources when a
+cartridge is there. Checked through `--press` and `--screenshot`, which
+drive it without a window: save touches one line, capture, removal,
+conflicts drawn red, a fresh file, and Play against a stand-in `zamn.exe`.
+
 ### Widescreen can follow the display (2026-09-23)
 
 `--widescreen auto` (and `widescreen = auto` in `zamn.ini`): fullscreen, the

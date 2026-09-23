@@ -796,6 +796,282 @@ static inline void config_resolve(const Config* c, const char* rel, char* out, s
   snprintf(out, size, "%.*s%s", (int)(slash - c->path + 1), c->path, rel);
 }
 
+// --- writing ----------------------------------------------------------------------
+//
+// The other direction, for the launcher (`src/launcher.c`): a `Config` put
+// back into a file. Not by writing the file afresh -- it is the player's, and
+// may have their own comments in it -- but by setting each value where it is.
+// A line that sets it is rewritten in place, one that is missing is added
+// after the last setting of its section, and a missing section goes on the
+// end of the file. Everything else, comments and line endings included, stays
+// as it was. `tools/test_config.c` holds this to two things: the defaults
+// written into the default file change not one byte of it, and whatever is
+// written reads back as what was written.
+
+// A key's name as the file spells it. False for a key the file cannot hold:
+// one with no name, or one whose name does not read back as the same key.
+// `Keypad ,` is one, because a list would split it in two.
+static inline bool config_key_name(SDL_Keycode k, char* out, size_t size) {
+  const char* name = k == SDLK_COMMA ? "Comma" : k == SDLK_SEMICOLON ? "Semicolon"
+                   : k == SDLK_HASH ? "Hash" : SDL_GetKeyName(k);
+  snprintf(out, size, "%s", name);
+  return k != SDLK_UNKNOWN && *name && !strchr(name, ',') && config_key(name) == k;
+}
+
+static inline void config_join(char* out, size_t size, size_t* n, const char* name) {
+  if (*n >= size) return;
+  const int wrote = snprintf(out + *n, size - *n, "%s%s", *n ? ", " : "", name);
+  if (wrote > 0) *n += (size_t)wrote;
+}
+
+static inline void config_key_list_text(const SDL_Keycode list[CONFIG_KEYS_MAX], char* out, size_t size) {
+  size_t n = 0;
+  out[0] = 0;
+  for (int i = 0; i < CONFIG_KEYS_MAX && list[i] != SDLK_UNKNOWN; i++) {
+    char name[64];
+    if (config_key_name(list[i], name, sizeof name)) config_join(out, size, &n, name);
+  }
+}
+
+static inline void config_pad_list_text(const int16_t list[PAD_BIND_MAX], char* out, size_t size) {
+  size_t n = 0;
+  out[0] = 0;
+  for (int i = 0; i < PAD_BIND_MAX && list[i] != PAD_IN_NONE; i++) {
+    const char* name = config_pad_input_name(list[i]);
+    if (strcmp(name, "?")) config_join(out, size, &n, name);
+  }
+}
+
+// The sections as the parser folds them, and as a new one is headed.
+static const char* const config_section_heads[][2] = {
+  {"game", "game"}, {"video", "video"}, {"audio", "audio"}, {"controller", "controller"},
+  {"controller_buttons", "controller buttons"}, {"controller_hotkeys", "controller hotkeys"},
+  {"keyboard", "keyboard"}, {"keyboard_player_2", "keyboard player 2"}, {"hotkeys", "hotkeys"},
+};
+
+// The two sections with a second name, and the cycle keys with a short one,
+// as the names the writer uses.
+static inline const char* config_section_canonical(const char* folded) {
+  if (!strcmp(folded, "keyboard_player_1")) return "keyboard";
+  if (!strcmp(folded, "keyboard_hotkeys")) return "hotkeys";
+  return folded;
+}
+
+static inline const char* config_key_canonical(const char* section, const char* folded) {
+  if (!strcmp(section, "controller_buttons")) {
+    const int k = config_name_index(folded, config_cycle_short, PAD_CYCLE_COUNT);
+    if (k >= 0) return config_cycle_names[k];
+  }
+  return folded;
+}
+
+// Every value in `c`, as `section`, `key` and the text the file gives it, in
+// the order the default file has them.
+typedef void (*ConfigValueFn)(void* ctx, const char* section, const char* key, const char* value);
+
+static inline void config_each_value(const Config* c, ConfigValueFn fn, void* ctx) {
+  static const int buttons[12] = {BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_B, BTN_A,
+                                  BTN_Y, BTN_X, BTN_L, BTN_R, BTN_START, BTN_SELECT};
+  static const int pad_hot[ACT_COUNT] = {
+    ACT_QUICK_SAVE, ACT_QUICK_LOAD, ACT_TOGGLE_SMOOTHING, ACT_CYCLE_WIDESCREEN, ACT_TOGGLE_ASPECT,
+    ACT_CYCLE_FILTER, ACT_FULLSCREEN, ACT_TOGGLE_NATIVE, ACT_QUIT,
+  };
+  static const char* const stick[] = {"off", "left", "right"};
+  char v[CONFIG_PATH_MAX];
+  #define CONFIG_ON(b) ((b) ? "on" : "off")
+  fn(ctx, "game", "rom", c->rom);
+  fn(ctx, "game", "skip_intro", CONFIG_ON(c->skip_intro));
+  if (c->level < 0) snprintf(v, sizeof v, "off");
+  else snprintf(v, sizeof v, "%d", c->level);
+  fn(ctx, "game", "level", v);
+  snprintf(v, sizeof v, "%d", c->hitbox);
+  fn(ctx, "game", "hitbox", v);
+  fn(ctx, "game", "blood", c->red_blood ? "red" : "purple");
+  fn(ctx, "game", "high_scores", CONFIG_ON(c->high_scores));
+  fn(ctx, "game", "high_scores_file", c->high_scores_file);
+  fn(ctx, "video", "fullscreen", CONFIG_ON(c->fullscreen));
+  fn(ctx, "video", "widescreen", wide_name(c->widescreen));
+  fn(ctx, "video", "aspect", aspect_name(c->aspect));
+  fn(ctx, "video", "filter", scale_name(c->filter));
+  snprintf(v, sizeof v, "%d", c->window_scale);
+  fn(ctx, "video", "window_scale", v);
+  fn(ctx, "video", "smoothing", CONFIG_ON(c->smoothing));
+  if (c->refresh <= 0) snprintf(v, sizeof v, "auto");
+  else snprintf(v, sizeof v, "%d", c->refresh);
+  fn(ctx, "video", "refresh", v);
+  fn(ctx, "audio", "enabled", CONFIG_ON(c->audio));
+  snprintf(v, sizeof v, "%d", c->volume);
+  fn(ctx, "audio", "volume", v);
+  fn(ctx, "controller", "enabled", CONFIG_ON(c->pads));
+  fn(ctx, "controller", "twin_stick", CONFIG_ON(c->twin_stick));
+  snprintf(v, sizeof v, "%d", c->deadzone);
+  fn(ctx, "controller", "deadzone", v);
+  fn(ctx, "controller", "move_stick", stick[c->pad.move_stick]);
+  fn(ctx, "controller", "aim_stick", stick[c->pad.aim_stick]);
+  #undef CONFIG_ON
+  for (int i = 0; i < 12; i++) {
+    config_pad_list_text(c->pad.game[buttons[i]], v, sizeof v);
+    fn(ctx, "controller_buttons", config_button_names[buttons[i]], v);
+  }
+  for (int k = 0; k < PAD_CYCLE_COUNT; k++) {
+    config_pad_list_text(c->pad.cycle[k], v, sizeof v);
+    fn(ctx, "controller_buttons", config_cycle_names[k], v);
+  }
+  for (int i = 0; i < ACT_COUNT; i++) {
+    config_pad_list_text(c->pad.hot[pad_hot[i]], v, sizeof v);
+    fn(ctx, "controller_hotkeys", config_action_names[pad_hot[i]], v);
+  }
+  for (int p = 0; p < MOVIE_PORTS; p++)
+    for (int i = 0; i < 12; i++) {
+      config_key_list_text(c->key[p][buttons[i]], v, sizeof v);
+      fn(ctx, p ? "keyboard_player_2" : "keyboard", config_button_names[buttons[i]], v);
+    }
+  for (int a = 0; a < ACT_COUNT; a++) {
+    config_key_list_text(c->hotkey[a], v, sizeof v);
+    fn(ctx, "hotkeys", config_action_names[a], v);
+  }
+}
+
+// A string that grows. `failed` once an allocation has not been had, after
+// which nothing more is added.
+typedef struct {
+  char* s;
+  size_t n, cap;
+  bool failed;
+} ConfigText;
+
+static inline void config_text_put(ConfigText* t, const char* s, size_t n) {
+  if (t->failed) return;
+  if (t->n + n + 1 > t->cap) {
+    size_t cap = t->cap ? t->cap * 2 : 1024;
+    while (cap < t->n + n + 1) cap *= 2;
+    char* grown = (char*)realloc(t->s, cap);
+    if (!grown) { t->failed = true; return; }
+    t->s = grown;
+    t->cap = cap;
+  }
+  memcpy(t->s + t->n, s, n);
+  t->n += n;
+  t->s[t->n] = 0;
+}
+
+static inline void config_text_puts(ConfigText* t, const char* s) { config_text_put(t, s, strlen(s)); }
+
+// `text` with `section`'s `key` set to `value`, as a new string for the
+// caller to free, or NULL when there was no memory for it. A line whose value
+// is already `value` is left exactly as it was written.
+static inline char* config_text_set(const char* text, const char* section, const char* key,
+                                    const char* value) {
+  const char* nl = strstr(text, "\r\n") ? "\r\n" : "\n";
+  ConfigText out = {0};
+  config_text_puts(&out, "");
+  char current[64] = "";
+  bool found = false;
+  size_t insert_at = (size_t)-1;  // just after the section's last setting, or its heading
+  for (const char* p = text; *p;) {
+    const char* eol = strchr(p, '\n');
+    const char* next = eol ? eol + 1 : p + strlen(p);
+    const char* end = eol ? eol : next;
+    if (end > p && end[-1] == '\r') end--;
+    char buf[CONFIG_PATH_MAX + 128];
+    const char* from = p == text && !strncmp(p, "\xef\xbb\xbf", 3) ? p + 3 : p;
+    const size_t len = (size_t)(end - from) < sizeof buf - 1 ? (size_t)(end - from) : sizeof buf - 1;
+    memcpy(buf, from, len);
+    buf[len] = 0;
+    char* s = config_trim(buf);
+    bool mine = false, setting = false;
+    if (*s == '[') {
+      char* close = strchr(s, ']');
+      current[0] = 0;
+      if (close) {
+        *close = 0;
+        char* sec = config_trim(s + 1);
+        config_fold(sec);
+        snprintf(current, sizeof current, "%s", config_section_canonical(sec));
+      }
+    } else if (*s && *s != ';' && *s != '#' && strchr(s, '=')) {
+      setting = true;
+      char* eq = strchr(s, '=');
+      *eq = 0;
+      char* k = config_trim(s);
+      char written[128];
+      snprintf(written, sizeof written, "%s", k);
+      config_fold(k);
+      if (!strcmp(current, section) && !strcmp(config_key_canonical(current, k), key)) {
+        mine = true;
+        found = true;
+        if (strcmp(config_trim(eq + 1), value)) {
+          // The indent and the key as they were written; the value as it is now.
+          const char* indent_end = from;
+          while (indent_end < end && (*indent_end == ' ' || *indent_end == '\t')) indent_end++;
+          config_text_put(&out, p, (size_t)(indent_end - p));
+          config_text_puts(&out, written);
+          config_text_puts(&out, *value ? " = " : " =");
+          config_text_puts(&out, value);
+          config_text_put(&out, end, (size_t)(next - end));
+        } else {
+          config_text_put(&out, p, (size_t)(next - p));
+        }
+      }
+    }
+    if (!mine) config_text_put(&out, p, (size_t)(next - p));
+    if (!strcmp(current, section) && (setting || *s == '[')) insert_at = out.n;
+    p = next;
+  }
+  if (!found) {
+    ConfigText line = {0};
+    if (insert_at == (size_t)-1) {
+      // No such section: one on the end, after a blank line.
+      const char* head = section;
+      for (int i = 0; i < (int)(sizeof config_section_heads / sizeof *config_section_heads); i++)
+        if (!strcmp(config_section_heads[i][0], section)) head = config_section_heads[i][1];
+      if (out.n && out.s[out.n - 1] != '\n') config_text_puts(&line, nl);
+      if (out.n) config_text_puts(&line, nl);
+      config_text_puts(&line, "[");
+      config_text_puts(&line, head);
+      config_text_puts(&line, "]");
+      config_text_puts(&line, nl);
+      insert_at = out.n;
+    } else if (insert_at && out.s[insert_at - 1] != '\n') {
+      // The section's last setting is the file's last line, with no ending.
+      config_text_puts(&line, nl);
+    }
+    config_text_puts(&line, key);
+    config_text_puts(&line, *value ? " = " : " =");
+    config_text_puts(&line, value);
+    config_text_puts(&line, nl);
+    ConfigText joined = {0};
+    config_text_put(&joined, out.s, insert_at);
+    config_text_put(&joined, line.s ? line.s : "", line.n);
+    config_text_put(&joined, out.s + insert_at, out.n - insert_at);
+    joined.failed = joined.failed || line.failed;
+    free(line.s);
+    free(out.s);
+    out = joined;
+  }
+  if (out.failed) { free(out.s); return NULL; }
+  return out.s;
+}
+
+static inline void config_update_one(void* ctx, const char* section, const char* key, const char* value) {
+  char** text = (char**)ctx;
+  if (!*text) return;
+  char* next = config_text_set(*text, section, key, value);
+  free(*text);
+  *text = next;
+}
+
+// `text` with every value in `c` set in it; a new string for the caller to
+// free, or NULL when there was no memory for it.
+static inline char* config_update_text(const char* text, const Config* c) {
+  const size_t len = strlen(text);
+  char* copy = (char*)malloc(len + 1);
+  if (!copy) return NULL;
+  memcpy(copy, text, len + 1);
+  config_each_value(c, config_update_one, &copy);
+  return copy;
+}
+
 // --- saying ------------------------------------------------------------------------
 
 // What is bound, for the banner the frontend prints as it starts: the truth
