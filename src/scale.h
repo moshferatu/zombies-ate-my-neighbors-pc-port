@@ -55,8 +55,9 @@
 // less screen than it should have. snes9x reports 4:3 to RetroArch for exactly
 // this reason, which is why the same game looks wider there.
 //
-// So `scale_plan` takes the intended display aspect as a ratio, and the shape of
-// the source no longer decides the shape of the output. This does fight sharp
+// So `scale_plan` takes the intended display shape as a ratio, and the shape of
+// the source no longer decides the shape of the output. There is no choice of
+// it: square pixels used to be one, and 4:3 is the only shape shown now. This does fight sharp
 // upscaling, and the fight is the interesting part: at 4:3 the horizontal and
 // vertical magnifications are different numbers, so a single whole-multiple
 // intermediate cannot serve both axes. `stage_x` and `stage_y` are therefore
@@ -86,37 +87,18 @@ typedef enum {
 // 32,768 pixels wide that has to be killed from a task manager.
 #define SCALE_MAX_STAGE 8
 
-// How the picture should be shaped on screen, independent of how many pixels
-// the source happens to have.
-typedef enum {
-  ASPECT_43,      // what a CRT showed, and what snes9x reports to RetroArch
-  ASPECT_SQUARE,  // square pixels: the source's own shape, 8:7 once cropped
-  ASPECT_MODE_COUNT,  // what F3 cycles through; keep last
-} AspectMode;
-
-static inline const char* aspect_name(AspectMode m) {
-  return m == ASPECT_SQUARE ? "square" : "4:3";
-}
-
-static inline bool aspect_parse(const char* s, AspectMode* out) {
-  if (!strcmp(s, "4:3"))    { *out = ASPECT_43;     return true; }
-  if (!strcmp(s, "square")) { *out = ASPECT_SQUARE; return true; }
-  if (!strcmp(s, "1:1"))    { *out = ASPECT_SQUARE; return true; }
-  return false;
-}
-
-// The ratio to hand `scale_plan`, given the source's own dimensions.
+// The ratio to hand `scale_plan`, given the source's own dimensions: the shape
+// a CRT showed, and what snes9x reports to RetroArch.
 //
-// `ASPECT_43` is not the constant 4:3 it looks like it should be, and the
-// difference is what makes widescreen work. What the console fixes is not the
+// It is not the constant 4:3 it looks like it should be, and the difference
+// is what makes widescreen work. What the console fixes is not the
 // shape of the frame but the shape of a *pixel*: 256 of them across a frame a
 // television showed at 4:3, over 224 rows, makes one pixel 7:6. Stating it that
 // way gives 4:3 back exactly at 256 columns — 3584:2688 reduces to 4:3, and
 // every case pinned in `tools/test_scale.c` is unmoved — and gives the honest
 // shape of a wider picture at any other width, without the intended ratio being
 // written down a second time where it could disagree with the first.
-static inline void aspect_ratio(AspectMode m, int sw, int sh, int* aw, int* ah) {
-  if (m == ASPECT_SQUARE) { *aw = sw; *ah = sh; return; }
+static inline void aspect_ratio(int sw, int sh, int* aw, int* ah) {
   *aw = sw * 7; *ah = sh * 6;
 }
 
@@ -188,19 +170,19 @@ static inline int wide_source_width(WideMode m) {
 }
 
 // What `auto` picks for a display `ow` by `oh`: the width whose picture, at
-// this aspect and `live_h` rows, covers the most of it. A picture narrower
+// `live_h` rows, covers the most of it. A picture narrower
 // than the display is pillarboxed and a wider one letterboxed, so the share
 // covered is the smaller of the two ratios over the larger, and the best is
 // the one nearest the display's shape. 16:9 on a 16:9 panel, 16:10 on a
 // 16:10 one, off on a 4:3 one, 21:9 on an ultrawide, and 21:9 on anything
 // wider still, being the widest there is.
-static inline WideMode wide_for_display(AspectMode a, int live_h, int ow, int oh) {
+static inline WideMode wide_for_display(int live_h, int ow, int oh) {
   WideMode best = WIDE_OFF;
   double best_share = 0;
   if (ow <= 0 || oh <= 0) return best;
   for (int m = WIDE_OFF; m < WIDE_AUTO; m++) {
     int aw = 0, ah = 0;
-    aspect_ratio(a, wide_source_width((WideMode)m), live_h, &aw, &ah);
+    aspect_ratio(wide_source_width((WideMode)m), live_h, &aw, &ah);
     const double picture = (double)aw / ah, display = (double)ow / oh;
     const double share = picture < display ? picture / display : display / picture;
     if (share > best_share) { best_share = share; best = (WideMode)m; }
@@ -274,7 +256,7 @@ static inline ScalePlan scale_plan(ScaleMode mode, int sw, int sh, int aw,
 
   p.dst = fit;
   // `integer` means whole multiples of the source on both axes, which forces
-  // square pixels and therefore ignores the requested aspect. That is the
+  // square pixels and therefore ignores the requested shape. That is the
   // honest reading of the request: a whole multiple of a 512x448 image is a
   // 512x448-shaped image, and stretching one to 4:3 would put it back exactly
   // where the fractional factors it exists to avoid live.

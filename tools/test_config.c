@@ -105,7 +105,7 @@ static void test_settings(void) {
     "[VIDEO]\r\n"
     "fullscreen = off\r\n"
     "widescreen = 16:9\r\n"
-    "aspect = square\r\n"
+    "aspect = square\r\n"  // retired: taken and ignored, not complained about
     "filter = integer\r\n"
     "window.scale = 4\r\n"
     "smoothing = false\r\n"
@@ -129,10 +129,15 @@ static void test_settings(void) {
   if (strcmp(c.high_scores_file, "scores.bin")) fail("high_scores_file '%s'", c.high_scores_file);
   if (c.fullscreen) fail("fullscreen");
   if (c.widescreen != WIDE_16_9) fail("widescreen %d", (int)c.widescreen);
-  if (c.aspect == ASPECT_43) fail("aspect");
   if (c.filter != SCALE_INTEGER) fail("filter");
   if (c.window_scale != 4) fail("window_scale %d", c.window_scale);
   if (c.smoothing) fail("smoothing");
+
+  // The aspect's hotkey is retired with it, and a file from before still has it.
+  Config h;
+  config_defaults(&h);
+  parse(&h, "[hotkeys]\ntoggle_aspect = F3\n[controller hotkeys]\ntoggle_aspect =\n");
+  if (h.warnings) fail("a retired toggle_aspect was complained about %d times", h.warnings);
   if (c.refresh != 240) fail("refresh %d", c.refresh);
   if (c.audio) fail("audio");
   if (c.volume != 35) fail("volume %d", c.volume);
@@ -410,7 +415,7 @@ static void test_writing(void) {
   snprintf(c.rom, sizeof c.rom, "roms/zamn (usa).sfc");
   c.skip_intro = true; c.level = 0; c.hitbox = 175; c.red_blood = true; c.high_scores = false;
   snprintf(c.high_scores_file, sizeof c.high_scores_file, "C:\\scores\\zamn.hiscore");
-  c.fullscreen = false; c.widescreen = WIDE_AUTO; c.aspect = ASPECT_SQUARE; c.filter = SCALE_LINEAR;
+  c.fullscreen = false; c.widescreen = WIDE_AUTO; c.filter = SCALE_LINEAR;
   c.window_scale = 3; c.smoothing = false; c.refresh = 144; c.audio = false; c.volume = 35;
   c.pads = false; c.twin_stick = false; c.deadzone = 40;
   config_deadzone(&c.pad, c.deadzone);

@@ -190,11 +190,14 @@ static bool measure_ex(ScaleMode mode, int ow, int oh, bool allow_target,
 
   Present p;
   const SDL_Rect live = {0, SRC_TOP, SRC_W, SRC_LIVE_H};
-  if (!present_init(&p, ren, SRC_W, SRC_H, live, mode, ASPECT_SQUARE)) {
+  if (!present_init(&p, ren, SRC_W, SRC_H, live, mode)) {
     fail("present_init: %s", SDL_GetError());
     SDL_DestroyRenderer(ren); SDL_DestroyWindow(win);
     return false;
   }
+  // Square, so that an exact 2x is exact on both axes and a row's blocks are
+  // all one width.
+  p.square = true;
   // Pretending the renderer cannot hold an intermediate is how the degraded
   // path gets exercised; it is the only difference between `sharp` and plain
   // nearest, so it is the comparison that says what the mode buys.
@@ -203,7 +206,7 @@ static bool measure_ex(ScaleMode mode, int ow, int oh, bool allow_target,
   present_draw(&p);
 
   int aw = 0, ah = 0;
-  aspect_ratio(ASPECT_SQUARE, SRC_W, SRC_LIVE_H, &aw, &ah);
+  present_ratio(&p, &aw, &ah);
   ScalePlan plan =
       scale_plan(mode, SRC_W, SRC_LIVE_H, aw, ah, ow, oh, p.can_target);
   *out_stage = plan.stage_x;
@@ -254,7 +257,7 @@ static bool measure_dim(int amount, double* out_mean) {
   Present p;
   const SDL_Rect live = {0, SRC_TOP, SRC_W, SRC_LIVE_H};
   bool ok = false;
-  if (!present_init(&p, ren, SRC_W, SRC_H, live, SCALE_INTEGER, ASPECT_SQUARE)) {
+  if (!present_init(&p, ren, SRC_W, SRC_H, live, SCALE_INTEGER)) {
     fail("present_init: %s", SDL_GetError());
   } else {
     fill_source(&p);

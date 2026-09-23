@@ -973,9 +973,6 @@ static void usage(void) {
     "                  Alt+Enter moves between them at any time.\n"
     "  --scale <N>     Size the window at N times 512x480, and start in it.\n"
     "                  Default 1, which is also the size F11 returns to.\n"
-    "  --aspect <how>  4:3 (default) is the shape the game was composed for and\n"
-    "                  what every emulator shows it in; square is 8:7, the\n"
-    "                  framebuffer's own shape, narrower by 11%%. F3 toggles.\n"
     "  --widescreen <r> off (default), 16:9, 16:10, 21:9 or auto. Draws columns\n"
     "                  either side of the console's 256 instead of stretching them:\n"
     "                  more level is visible, and the status panels move to\n"
@@ -1005,10 +1002,9 @@ static void usage(void) {
     "of them, pad inputs included:\n"
     "          Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
     "          F1 = toggle native substitution   F2 = cycle scaling\n"
-    "          F3 = toggle aspect ratio          F4 = cycle widescreen\n"
-    "          F5 = quick save                   F9 = quick load\n"
-    "          F6 = toggle smoothing             F11/Alt+Enter = fullscreen\n"
-    "          Esc = quit\n\n"
+    "          F4 = cycle widescreen             F5 = quick save\n"
+    "          F6 = toggle smoothing             F9 = quick load\n"
+    "          F11/Alt+Enter = fullscreen        Esc = quit\n\n"
     "Controllers: any pad SDL recognises, hot-pluggable, first two take the two\n"
     "          SNES ports. Face buttons are positional — the bottom one is B,\n"
     "          the left one is Y, which is this game's fire button. R1 and L1\n"
@@ -1092,10 +1088,6 @@ int main(int argc, char** argv) {
   bool native = true, want_audio = g_cfg.audio, want_pads = g_cfg.pads;
   int volume = g_cfg.volume;
   ScaleMode scale_mode = g_cfg.filter;
-  // 4:3 by default, because that is the shape the game was composed for and the
-  // shape every emulator shows it in. Square pixels are 8:7 — visibly narrow,
-  // and about 11% less screen.
-  AspectMode aspect_mode = g_cfg.aspect;
   // Off by default. Widescreen is the PPU drawing columns the console never
   // drew, and however good it looks it is not what the game is — so it is asked
   // for, and every measurement this project makes is made without it. This is
@@ -1191,14 +1183,6 @@ int main(int argc, char** argv) {
         return 2;
       }
       only[only_count++] = argv[++i];
-    }
-    else if (!strcmp(a, "--aspect") && i + 1 < argc) {
-      if (!aspect_parse(argv[++i], &aspect_mode)) {
-        fprintf(stderr, "error: unknown aspect '%s' — want 4:3 or square\n\n",
-                argv[i]);
-        usage();
-        return 2;
-      }
     }
     else if (!strcmp(a, "--widescreen") && i + 1 < argc) {
       if (!wide_setting_parse(argv[++i], &wide_setting)) {
@@ -1549,7 +1533,7 @@ int main(int argc, char** argv) {
   Uint32 win_flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI;
   if (fullscreen) win_flags |= SDL_WINDOW_FULLSCREEN_DESKTOP;
   // `--scale N` means N times the *picture*, which is 448 rows and whatever
-  // width the chosen aspect makes of them — not N times the 512x480 buffer.
+  // width 4:3 pixels make of them — not N times the 512x480 buffer.
   // Sizing from the buffer would ask for a window 480N tall to show a 448N-tall
   // picture, so at 4:3 the frontend would letterbox its own window and then
   // shrink the game below 1:1 to fit the leftover, which is a blurrier picture
@@ -1557,7 +1541,7 @@ int main(int argc, char** argv) {
   int win_h = FB_LIVE_H * window_scale, win_w = fb_w * window_scale;
   {
     int aw = 0, ah = 0;
-    aspect_ratio(aspect_mode, fb_w, FB_LIVE_H, &aw, &ah);
+    aspect_ratio(fb_w, FB_LIVE_H, &aw, &ah);
     // Rounded *up*. Rounding down leaves the window fractionally too narrow for
     // the picture it was sized for, so the fit becomes width-constrained and
     // the height comes back a pixel short — at `--scale 1` that was a 597x447
@@ -1600,7 +1584,7 @@ int main(int argc, char** argv) {
   // it did is reproduced exactly, in output pixels, by `present_frame`.
   Present present;
   SDL_Rect live = {0, FB_TOP, fb_w, FB_LIVE_H};
-  if (!present_init(&present, ren, fb_w, FB_H, live, scale_mode, aspect_mode)) {
+  if (!present_init(&present, ren, fb_w, FB_H, live, scale_mode)) {
     fprintf(stderr, "error: cannot create the frame texture: %s\n", SDL_GetError());
     return 1;
   }
@@ -1704,12 +1688,12 @@ int main(int argc, char** argv) {
     int ow = 0, oh = 0;
     SDL_GetRendererOutputSize(ren, &ow, &oh);
     int aw = 0, ah = 0;
-    aspect_ratio(aspect_mode, fb_w, FB_LIVE_H, &aw, &ah);
+    aspect_ratio(fb_w, FB_LIVE_H, &aw, &ah);
     const ScalePlan plan = scale_plan(scale_mode, fb_w, FB_LIVE_H, aw, ah, ow,
                                       oh, present.can_target);
-    printf("Display: %s, %dx%d, scaling %s, aspect %s\n",
+    printf("Display: %s, %dx%d, scaling %s\n",
            fullscreen ? "fullscreen" : "windowed", ow, oh,
-           scale_name(scale_mode), aspect_name(aspect_mode));
+           scale_name(scale_mode));
     printf("Picture: %dx%d at %d,%d from %dx%d live pixels (%.0f%% of the"
            " screen)%s\n",
            plan.dst.w, plan.dst.h, plan.dst.x, plan.dst.y, fb_w, FB_LIVE_H,
@@ -2015,14 +1999,7 @@ int main(int argc, char** argv) {
       printf("Substitution %s\n", native ? "on" : "off (stock)");
       fflush(stdout);
     }
-    if (running && (actions & (1u << ACT_TOGGLE_ASPECT))) {
-      // Aspect, on its own key, because the only honest way to judge it is to
-      // flip between the two on the same frame of the same scene.
-      present.aspect = (AspectMode)((present.aspect + 1) % ASPECT_MODE_COUNT);
-      printf("Aspect: %s\n", aspect_name(present.aspect));
-      fflush(stdout);
-    }
-    // Widescreen, for the same reason: how much wider 16:9 is than the
+    // Widescreen, on its own key, because how much wider 16:9 is than the
     // console is not a thing anyone can judge from two runs. The key moves
     // the setting on; the width it comes to is settled below, after the
     // display key, because `auto` asks what the picture is drawn into.
@@ -2083,7 +2060,7 @@ int main(int argc, char** argv) {
       if (want == WIDE_AUTO) {
         int ow = 0, oh = 0;
         want = fullscreen && SDL_GetRendererOutputSize(ren, &ow, &oh) == 0
-                   ? wide_for_display(present.aspect, FB_LIVE_H, ow, oh)
+                   ? wide_for_display(FB_LIVE_H, ow, oh)
                    : WIDE_OFF;
       }
       if (want != wide) {
@@ -2096,10 +2073,9 @@ int main(int argc, char** argv) {
         ws.margin = wide_margin(wide);
         fb_w = snes_pixelWidth(snes);
         const ScaleMode m = present.mode;
-        const AspectMode a = present.aspect;
         present_free(&present);
         live.w = fb_w;
-        if (!present_init(&present, ren, fb_w, FB_H, live, m, a)) {
+        if (!present_init(&present, ren, fb_w, FB_H, live, m)) {
           fprintf(stderr, "error: cannot resize the frame texture: %s\n",
                   SDL_GetError());
           running = false;

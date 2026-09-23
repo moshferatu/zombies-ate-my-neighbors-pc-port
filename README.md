@@ -94,7 +94,7 @@ that follow are the defaults.
 
 Controls: Arrows = D-pad · Z=B X=A A=Y S=X · Q=L W=R · Enter=Start · RShift=Select · Esc=Quit
 · **F1 = toggle native substitution** · **F2 = cycle scaling**
-· **F3 = toggle aspect** · **F4 = cycle widescreen** · **F5 = quick save**
+· **F4 = cycle widescreen** · **F5 = quick save**
 · **F6 = toggle smoothing** · **F9 = quick load** · **F11 / Alt+Enter = fullscreen**
 
 **Game controllers** work too, and are the way to actually play it: any pad SDL
@@ -195,13 +195,13 @@ is in `.gitignore`, since it names the player's ROM.
 | Section | Settings |
 |---|---|
 | `[game]` | `rom`, `skip_intro`, `level` (off, 0-55), `hitbox` (100-200), `blood` (purple, red), `high_scores`, `high_scores_file` |
-| `[video]` | `fullscreen`, `widescreen` (off, 16:9, 16:10, 21:9, auto), `aspect` (4:3, square), `filter` (sharp, integer, linear), `window_scale` (1-8), `smoothing`, `refresh` (auto, Hz) |
+| `[video]` | `fullscreen`, `widescreen` (off, 16:9, 16:10, 21:9, auto), `filter` (sharp, integer, linear), `window_scale` (1-8), `smoothing`, `refresh` (auto, Hz) |
 | `[audio]` | `enabled`, `volume` (0-100) |
 | `[controller]` | `enabled`, `twin_stick`, `deadzone` (5-90, percent), `move_stick` and `aim_stick` (left, right, off) |
 | `[controller buttons]` | the twelve SNES buttons, as lists of pad inputs, for both pads |
 | `[controller hotkeys]` | what the frontend does, from the pad; nothing is bound by default |
 | `[keyboard]`, `[keyboard player 2]` | the twelve SNES buttons, as lists of keys; player 2's are unbound by default |
-| `[hotkeys]` | `quit`, `toggle_native`, `cycle_filter`, `toggle_aspect`, `cycle_widescreen`, `quick_save`, `quick_load`, `toggle_smoothing`, `fullscreen` |
+| `[hotkeys]` | `quit`, `toggle_native`, `cycle_filter`, `cycle_widescreen`, `quick_save`, `quick_load`, `toggle_smoothing`, `fullscreen` |
 | `[cheats]` | `invincible`, `invincible_neighbors`, `infinite_ammo`, `infinite_lives`, `give_all`, `always_run`; all off by default ([cheats](#cheats)) |
 
 A binding is a list of up to four, separated by commas, and nothing after the
@@ -1021,15 +1021,16 @@ drawn.
 
 Those 448 rows are not square pixels either. The console puts 256 across a frame
 a television showed at 4:3, so the game is composed for 4:3 and square pixels
-make it 8:7 — visibly narrow, and 11% less screen. `--aspect` picks, **4:3 by
-default**, `square` for the framebuffer's own shape; F3 toggles them on the same
-frame, which is the only way to judge it. At 3840x2160:
+make it 8:7 — visibly narrow, and 11% less screen. So the picture is always
+shown at 4:3. Square pixels used to be a choice, `--aspect square` and F3, and
+were taken out as not worth having; `aspect` and `toggle_aspect` in an old
+`zamn.ini` are read and ignored. At 3840x2160:
 
 | | picture | of the screen |
 | --- | --- | --- |
 | whole buffer, square pixels | 2304x2160, 144px of it blank top and bottom | 56% |
 | cropped, square pixels (8:7) | 2468x2160 | 64% |
-| cropped, 4:3 (default) | **2880x2160** | **75%** |
+| cropped, 4:3 | **2880x2160** | **75%** |
 
 ### `--widescreen`
 
@@ -1603,7 +1604,7 @@ fullscreen usually is not:
 | `--filter` | what it does | trade |
 | --- | --- | --- |
 | `sharp` (default) | nearest up to the next whole multiple offscreen, then one bilinear step down to fit | uniform pixels, fills the window, a sub-pixel seam at each block edge |
-| `integer` | only whole multiples, letterbox the rest — and therefore square pixels, so it ignores `--aspect` | perfectly uniform; 1920x1080 fits 2x and leaves 17% of the height black |
+| `integer` | only whole multiples, letterbox the rest — and therefore square pixels, so it is not 4:3 | perfectly uniform; 1920x1080 fits 2x and leaves 17% of the height black |
 | `linear` | one bilinear step from 512x448 | blurry — kept so the difference can be seen rather than argued |
 
 Nearest-neighbour on its own is **not** one of the options, because on its own

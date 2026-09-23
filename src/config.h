@@ -100,7 +100,6 @@ typedef enum {
   ACT_QUIT,
   ACT_TOGGLE_NATIVE,
   ACT_CYCLE_FILTER,
-  ACT_TOGGLE_ASPECT,
   ACT_CYCLE_WIDESCREEN,
   ACT_QUICK_SAVE,
   ACT_QUICK_LOAD,
@@ -110,7 +109,7 @@ typedef enum {
 } ConfigAction;
 
 static const char* const config_action_names[ACT_COUNT] = {
-  "quit", "toggle_native", "cycle_filter", "toggle_aspect", "cycle_widescreen",
+  "quit", "toggle_native", "cycle_filter", "cycle_widescreen",
   "quick_save", "quick_load", "toggle_smoothing", "fullscreen",
 };
 
@@ -145,7 +144,6 @@ typedef struct {
   // [video]
   bool fullscreen;
   WideMode widescreen;
-  AspectMode aspect;
   ScaleMode filter;
   int window_scale;
   bool smoothing;
@@ -205,8 +203,6 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "; off, 16:9, 16:10 or 21:9: draw more of the level either side, not a stretch.\n"
   "; auto: fullscreen, whichever fits the display; in a window, off.\n"
   "widescreen = off\n"
-  "; 4:3, the shape the game was drawn for, or square pixels (8:7).\n"
-  "aspect = 4:3\n"
   "; sharp, integer or linear: how the picture is scaled to the window.\n"
   "filter = sharp\n"
   "; The size of the window when not fullscreen, in multiples of 512x480: 1 to 8.\n"
@@ -271,7 +267,6 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "quick_load =\n"
   "toggle_smoothing =\n"
   "cycle_widescreen =\n"
-  "toggle_aspect =\n"
   "cycle_filter =\n"
   "fullscreen =\n"
   "toggle_native =\n"
@@ -318,7 +313,6 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "; The C port's routines, or the cartridge's own in their place.\n"
   "toggle_native = F1\n"
   "cycle_filter = F2\n"
-  "toggle_aspect = F3\n"
   "cycle_widescreen = F4\n"
   "quick_save = F5\n"
   "toggle_smoothing = F6\n"
@@ -501,7 +495,6 @@ static inline void config_defaults(Config* c) {
   c->high_scores = true;
   c->fullscreen = true;
   c->widescreen = WIDE_OFF;
-  c->aspect = ASPECT_43;
   c->filter = SCALE_SHARP;
   c->window_scale = 1;
   c->smoothing = true;
@@ -524,7 +517,6 @@ static inline void config_defaults(Config* c) {
   c->hotkey[ACT_QUIT][0] = SDLK_ESCAPE;
   c->hotkey[ACT_TOGGLE_NATIVE][0] = SDLK_F1;
   c->hotkey[ACT_CYCLE_FILTER][0] = SDLK_F2;
-  c->hotkey[ACT_TOGGLE_ASPECT][0] = SDLK_F3;
   c->hotkey[ACT_CYCLE_WIDESCREEN][0] = SDLK_F4;
   c->hotkey[ACT_QUICK_SAVE][0] = SDLK_F5;
   c->hotkey[ACT_TOGGLE_SMOOTHING][0] = SDLK_F6;
@@ -611,7 +603,9 @@ static inline bool config_set(Config* c, const char* name, int line,
   } else if (!strcmp(section, "video")) {
     if (!strcmp(key, "fullscreen")) { if (!config_bool(v, &c->fullscreen)) CONFIG_BAD("on or off"); }
     else if (!strcmp(key, "widescreen")) { if (!wide_setting_parse(v, &c->widescreen)) CONFIG_BAD("off, 16:9, 16:10, 21:9 or auto"); }
-    else if (!strcmp(key, "aspect")) { if (!aspect_parse(v, &c->aspect)) CONFIG_BAD("4:3 or square"); }
+    // Retired: square pixels were a choice once, and 4:3 is the only shape now.
+    // Still taken, and ignored, so that a file from before does not complain.
+    else if (!strcmp(key, "aspect")) {}
     else if (!strcmp(key, "filter")) { if (!scale_parse(v, &c->filter)) CONFIG_BAD("sharp, integer or linear"); }
     else if (!strcmp(key, "window_scale")) { if (!config_int(v, 1, SCALE_MAX_STAGE, &c->window_scale)) CONFIG_BAD("1 to 8"); }
     else if (!strcmp(key, "smoothing")) { if (!config_bool(v, &c->smoothing)) CONFIG_BAD("on or off"); }
@@ -657,6 +651,7 @@ static inline bool config_set(Config* c, const char* name, int line,
       if (pad_buttons) config_pad_list(c, name, line, c->pad.game[b], v);
       else config_key_list(c, name, line, c->key[keys2 ? 1 : 0][b], v);
     } else if (pad_hot || hot) {
+      if (!strcmp(key, "toggle_aspect")) return true;  // retired, as `aspect` is
       const int a = config_name_index(key, config_action_names, ACT_COUNT);
       if (a < 0) return false;
       if (pad_hot) config_pad_list(c, name, line, c->pad.hot[a], v);
@@ -907,7 +902,7 @@ static inline void config_each_value(const Config* c, ConfigValueFn fn, void* ct
   static const int buttons[12] = {BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_B, BTN_A,
                                   BTN_Y, BTN_X, BTN_L, BTN_R, BTN_START, BTN_SELECT};
   static const int pad_hot[ACT_COUNT] = {
-    ACT_QUICK_SAVE, ACT_QUICK_LOAD, ACT_TOGGLE_SMOOTHING, ACT_CYCLE_WIDESCREEN, ACT_TOGGLE_ASPECT,
+    ACT_QUICK_SAVE, ACT_QUICK_LOAD, ACT_TOGGLE_SMOOTHING, ACT_CYCLE_WIDESCREEN,
     ACT_CYCLE_FILTER, ACT_FULLSCREEN, ACT_TOGGLE_NATIVE, ACT_QUIT,
   };
   static const char* const stick[] = {"off", "left", "right"};
@@ -925,7 +920,6 @@ static inline void config_each_value(const Config* c, ConfigValueFn fn, void* ct
   fn(ctx, "game", "high_scores_file", c->high_scores_file);
   fn(ctx, "video", "fullscreen", CONFIG_ON(c->fullscreen));
   fn(ctx, "video", "widescreen", wide_name(c->widescreen));
-  fn(ctx, "video", "aspect", aspect_name(c->aspect));
   fn(ctx, "video", "filter", scale_name(c->filter));
   snprintf(v, sizeof v, "%d", c->window_scale);
   fn(ctx, "video", "window_scale", v);

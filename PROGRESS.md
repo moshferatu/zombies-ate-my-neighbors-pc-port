@@ -27,6 +27,18 @@ which is how the table was found.
   too) goes from its game over to the top scores without `$82:BBED`. A PC log
   in the core for one build found it in one run; reading the routine did not.
 
+### No more aspect setting (2026-09-23)
+
+Asked for in play-testing: the setting was not wanted. The picture is always
+4:3 pixels now. `aspect`, `--aspect`, F3's `toggle_aspect` and the launcher's
+Aspect dropdown and hotkey row are gone, and `wide_for_display` no longer
+takes a shape. An old `zamn.ini`'s `aspect` and `toggle_aspect` lines are
+taken and ignored rather than warned about, which `zamn_test_config` checks.
+Square pixels stay only as `Present.square`, which `zamn_test_present` sets
+so that an exact 2x is exact on both axes; `zamn_test_scale` still sweeps
+`scale_plan` at both shapes, and lost the two `auto` cases that were about
+square pixels. `integer` is unchanged: it was always square.
+
 ### 21:9 widescreen (2026-09-23)
 
 Asked for in play-testing: ultrawide, 21:9 and 32:9. 32:9 was dropped: at

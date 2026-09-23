@@ -33,8 +33,17 @@ typedef struct {
   SDL_Rect src;
   bool can_target;     // can this renderer draw into a texture at all
   ScaleMode mode;
-  AspectMode aspect;
+  // Square pixels rather than 4:3. Nothing in the game sets it: it is for
+  // `tools/test_present.c`, which needs a whole multiple to be one on both
+  // axes at once.
+  bool square;
 } Present;
+
+// The shape `scale_plan` is asked for.
+static inline void present_ratio(const Present* p, int* aw, int* ah) {
+  if (p->square) { *aw = p->src.w; *ah = p->src.h; }
+  else aspect_ratio(p->src.w, p->src.h, aw, ah);
+}
 
 // The offscreen target `sharp` needs, at `nx` by `ny` times the source. Kept
 // between frames and rebuilt only when the multiples change — which happens
@@ -80,12 +89,10 @@ static inline void present_dim(Present* p, int amount) {
 }
 
 static inline bool present_init(Present* p, SDL_Renderer* ren, int tex_w,
-                                int tex_h, SDL_Rect src, ScaleMode mode,
-                                AspectMode aspect) {
+                                int tex_h, SDL_Rect src, ScaleMode mode) {
   memset(p, 0, sizeof *p);
   p->ren = ren;
   p->mode = mode;
-  p->aspect = aspect;
   p->src = src;
 
   SDL_RendererInfo info;
@@ -119,7 +126,7 @@ static inline void present_draw(Present* p) {
   int ow = 0, oh = 0;
   SDL_GetRendererOutputSize(p->ren, &ow, &oh);
   int aw = 0, ah = 0;
-  aspect_ratio(p->aspect, p->src.w, p->src.h, &aw, &ah);
+  present_ratio(p, &aw, &ah);
   ScalePlan plan =
       scale_plan(p->mode, p->src.w, p->src.h, aw, ah, ow, oh, p->can_target);
   if (plan.dst.w <= 0 || plan.dst.h <= 0) return;  // minimised, or not up yet

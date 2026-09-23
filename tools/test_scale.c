@@ -14,7 +14,9 @@
 //     exactly the blur it exists to avoid. This one only became reachable when
 //     aspect correction made the two axes scale by different amounts;
 //   * nothing may be off-centre, spill out of the window, or come out the wrong
-//     shape, in any mode, at any size, in either aspect.
+//     shape, in any mode, at any size, at 4:3 or with square pixels. The game
+//     shows only 4:3, but `scale_plan` takes any shape, and square is the one
+//     `tools/test_present.c` measures it at.
 //
 // It is arithmetic with no SDL in it, so it runs anywhere and in no time:
 //
@@ -40,17 +42,27 @@ static int failures;
 // rest.
 #define FAIL_SHOW 20
 
-static void fail(const char* what, int ow, int oh, ScaleMode m, AspectMode a) {
+// The two shapes asked of `scale_plan`, by name for the messages.
+typedef enum { SHAPE_43, SHAPE_SQUARE, SHAPE_COUNT } Shape;
+
+static const char* shape_name(Shape a) { return a == SHAPE_SQUARE ? "square" : "4:3"; }
+
+static void shape_ratio(Shape a, int* aw, int* ah) {
+  if (a == SHAPE_SQUARE) { *aw = FB_W; *ah = FB_H; }
+  else aspect_ratio(FB_W, FB_H, aw, ah);
+}
+
+static void fail(const char* what, int ow, int oh, ScaleMode m, Shape a) {
   if (failures < FAIL_SHOW)
-    printf("FAIL %-46s  %s/%s at %dx%d\n", what, scale_name(m), aspect_name(a),
+    printf("FAIL %-46s  %s/%s at %dx%d\n", what, scale_name(m), shape_name(a),
            ow, oh);
   else if (failures == FAIL_SHOW)
     printf("... and more; only the first %d are shown.\n", FAIL_SHOW);
   failures++;
 }
 
-// The invariants that hold for every mode, every aspect, every size.
-static void check_common(ScaleMode m, AspectMode a, int aw, int ah, int ow,
+// The invariants that hold for every mode, every shape, every size.
+static void check_common(ScaleMode m, Shape a, int aw, int ah, int ow,
                          int oh, ScalePlan p) {
   if (p.dst.w <= 0 || p.dst.h <= 0) {
     fail("empty rectangle", ow, oh, m, a);
@@ -98,10 +110,10 @@ int main(void) {
   // 5K display, and crosses every whole multiple on both axes on the way.
   for (int ow = 1; ow <= 3000; ow += 1) {
     for (int oh = 1; oh <= 3000; oh += 7) {  // coprime with the multiples
-      for (int ai = 0; ai < ASPECT_MODE_COUNT; ai++) {
-        const AspectMode a = (AspectMode)ai;
+      for (int ai = 0; ai < SHAPE_COUNT; ai++) {
+        const Shape a = (Shape)ai;
         int aw = 0, ah = 0;
-        aspect_ratio(a, FB_W, FB_H, &aw, &ah);
+        shape_ratio(a, &aw, &ah);
         for (int mi = 0; mi < SCALE_MODE_COUNT; mi++) {
           const ScaleMode m = (ScaleMode)mi;
           const ScalePlan p =
@@ -152,52 +164,52 @@ int main(void) {
   // A renderer with no render-target support must degrade rather than break.
   for (int ow = 600; ow <= 2000; ow += 37) {
     int aw = 0, ah = 0;
-    aspect_ratio(ASPECT_43, FB_W, FB_H, &aw, &ah);
+    shape_ratio(SHAPE_43, &aw, &ah);
     const ScalePlan p =
         scale_plan(SCALE_SHARP, FB_W, FB_H, aw, ah, ow, ow, false);
     if (p.stage_x || p.stage_y)
       fail("built an intermediate without target support", ow, ow, SCALE_SHARP,
-           ASPECT_43);
-    check_common(SCALE_SHARP, ASPECT_43, aw, ah, ow, ow, p);
+           SHAPE_43);
+    check_common(SCALE_SHARP, SHAPE_43, aw, ah, ow, ow, p);
   }
 
   // ...and the named cases, spelled out, because a sweep proves the properties
   // and these say what the answers actually are.
   struct Case {
     ScaleMode m;
-    AspectMode a;
+    Shape a;
     int ow, oh, x, y, w, h, sx, sy;
     bool linear;
   };
   const struct Case cases[] = {
       // 4K, the resolution fullscreen actually lands on here.
-      {SCALE_SHARP, ASPECT_43,     3840, 2160,  480,   0, 2880, 2160, 6, 5, true},
-      {SCALE_SHARP, ASPECT_SQUARE, 3840, 2160,  686,   0, 2468, 2160, 5, 5, true},
+      {SCALE_SHARP, SHAPE_43,      3840, 2160,  480,   0, 2880, 2160, 6, 5, true},
+      {SCALE_SHARP, SHAPE_SQUARE,  3840, 2160,  686,   0, 2468, 2160, 5, 5, true},
       // 1080p and 1440p.
-      {SCALE_SHARP, ASPECT_43,     1920, 1080,  240,   0, 1440, 1080, 3, 3, true},
-      {SCALE_SHARP, ASPECT_43,     2560, 1440,  320,   0, 1920, 1440, 4, 4, true},
+      {SCALE_SHARP, SHAPE_43,      1920, 1080,  240,   0, 1440, 1080, 3, 3, true},
+      {SCALE_SHARP, SHAPE_43,      2560, 1440,  320,   0, 1920, 1440, 4, 4, true},
       // The laptop panel that is a multiple of nothing.
-      {SCALE_SHARP, ASPECT_43,     1366,  768,  171,   0, 1024,  768, 2, 2, true},
+      {SCALE_SHARP, SHAPE_43,      1366,  768,  171,   0, 1024,  768, 2, 2, true},
       // Pixel-exact 4:3: 7 source widths by 6 source heights is exactly 4:3, so
       // this one needs no filtering at all despite the pixels being oblong.
       // That is the property `stage_x != stage_y` was introduced to allow.
-      {SCALE_SHARP, ASPECT_43,     3584, 2688,    0,   0, 3584, 2688, 0, 0, false},
+      {SCALE_SHARP, SHAPE_43,      3584, 2688,    0,   0, 3584, 2688, 0, 0, false},
       // Pixel-exact square, for comparison: 4x on both axes.
-      {SCALE_SHARP, ASPECT_SQUARE, 2048, 1792,    0,   0, 2048, 1792, 0, 0, false},
+      {SCALE_SHARP, SHAPE_SQUARE,  2048, 1792,    0,   0, 2048, 1792, 0, 0, false},
       // ...and the same window asked for 4:3, which is exact across and not
       // down, so it stages on both and shrinks only the vertical.
-      {SCALE_SHARP, ASPECT_43,     2048, 1792,    0, 128, 2048, 1536, 4, 4, true},
-      // `integer` ignores the aspect and letterboxes to whole multiples.
-      {SCALE_INTEGER, ASPECT_43,   1920, 1080,  448,  92, 1024,  896, 0, 0, false},
+      {SCALE_SHARP, SHAPE_43,      2048, 1792,    0, 128, 2048, 1536, 4, 4, true},
+      // `integer` ignores the shape and letterboxes to whole multiples.
+      {SCALE_INTEGER, SHAPE_43,    1920, 1080,  448,  92, 1024,  896, 0, 0, false},
       // Smaller than the source: every mode reduces, and reduces smoothly.
-      {SCALE_SHARP, ASPECT_43,      256,  240,    0,  24,  256,  192, 0, 0, true},
+      {SCALE_SHARP, SHAPE_43,       256,  240,    0,  24,  256,  192, 0, 0, true},
       // Past the cap: nearest, and no 10x intermediate.
-      {SCALE_SHARP, ASPECT_43,     5000, 5000,    0, 625, 5000, 3750, 0, 0, false},
+      {SCALE_SHARP, SHAPE_43,      5000, 5000,    0, 625, 5000, 3750, 0, 0, false},
   };
   for (int i = 0; i < (int)(sizeof cases / sizeof *cases); i++) {
     const struct Case* c = &cases[i];
     int aw = 0, ah = 0;
-    aspect_ratio(c->a, FB_W, FB_H, &aw, &ah);
+    shape_ratio(c->a, &aw, &ah);
     const ScalePlan p =
         scale_plan(c->m, FB_W, FB_H, aw, ah, c->ow, c->oh, true);
     if (p.dst.x != c->x || p.dst.y != c->y || p.dst.w != c->w ||
@@ -205,7 +217,7 @@ int main(void) {
         p.linear != c->linear) {
       printf("FAIL %s/%s at %dx%d: got %d,%d %dx%d stage %dx%d %s;"
              " want %d,%d %dx%d stage %dx%d %s\n",
-             scale_name(c->m), aspect_name(c->a), c->ow, c->oh, p.dst.x, p.dst.y,
+             scale_name(c->m), shape_name(c->a), c->ow, c->oh, p.dst.x, p.dst.y,
              p.dst.w, p.dst.h, p.stage_x, p.stage_y,
              p.linear ? "linear" : "nearest", c->x, c->y, c->w, c->h, c->sx,
              c->sy, c->linear ? "linear" : "nearest");
@@ -215,25 +227,23 @@ int main(void) {
 
   // `auto`: the width that fills each display best, at the 448 rows the
   // frontend shows.
-  static const struct { AspectMode a; int ow, oh; WideMode want; } wides[] = {
-      {ASPECT_43,     3840, 2160, WIDE_16_9},
-      {ASPECT_43,     1920, 1080, WIDE_16_9},
-      {ASPECT_43,     2560, 1600, WIDE_16_10},
-      {ASPECT_43,     1920, 1200, WIDE_16_10},
-      {ASPECT_43,     1024,  768, WIDE_OFF},
-      {ASPECT_43,     1280, 1024, WIDE_OFF},
-      {ASPECT_43,     3440, 1440, WIDE_21_9},   // ultrawide
-      {ASPECT_43,     2560, 1080, WIDE_21_9},
-      {ASPECT_43,     5120, 1440, WIDE_21_9},   // 32:9: the widest there is
-      {ASPECT_SQUARE, 3840, 2160, WIDE_21_9},   // 896x448 covers 89%, 684x448 86%
-      {ASPECT_SQUARE, 1024,  768, WIDE_16_10},  // 616x448 is nearer 4:3 than 512x448
-      {ASPECT_43,        0,    0, WIDE_OFF},
+  static const struct { int ow, oh; WideMode want; } wides[] = {
+      {3840, 2160, WIDE_16_9},
+      {1920, 1080, WIDE_16_9},
+      {2560, 1600, WIDE_16_10},
+      {1920, 1200, WIDE_16_10},
+      {1024,  768, WIDE_OFF},
+      {1280, 1024, WIDE_OFF},
+      {3440, 1440, WIDE_21_9},   // ultrawide
+      {2560, 1080, WIDE_21_9},
+      {5120, 1440, WIDE_21_9},   // 32:9: the widest there is
+      {   0,    0, WIDE_OFF},
   };
   for (int i = 0; i < (int)(sizeof wides / sizeof *wides); i++) {
-    const WideMode got = wide_for_display(wides[i].a, 448, wides[i].ow, wides[i].oh);
+    const WideMode got = wide_for_display(448, wides[i].ow, wides[i].oh);
     if (got != wides[i].want) {
-      printf("FAIL wide_for_display %s at %dx%d: got %s, want %s\n",
-             aspect_name(wides[i].a), wides[i].ow, wides[i].oh, wide_name(got),
+      printf("FAIL wide_for_display at %dx%d: got %s, want %s\n",
+             wides[i].ow, wides[i].oh, wide_name(got),
              wide_name(wides[i].want));
       failures++;
     }

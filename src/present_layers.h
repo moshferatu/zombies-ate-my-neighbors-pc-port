@@ -159,7 +159,7 @@ static inline bool present_layers_plan(Present* p, int game_w, ScalePlan* plan,
   int ow = 0, oh = 0;
   SDL_GetRendererOutputSize(p->ren, &ow, &oh);
   int aw = 0, ah = 0;
-  aspect_ratio(p->aspect, p->src.w, p->src.h, &aw, &ah);
+  present_ratio(p, &aw, &ah);
   *plan = scale_plan(p->mode, p->src.w, p->src.h, aw, ah, ow, oh, p->can_target);
   if (plan->dst.w <= 0 || plan->dst.h <= 0) return false;
   present_layers_scale(plan, p->mode, game_w, sx, sy, exact);

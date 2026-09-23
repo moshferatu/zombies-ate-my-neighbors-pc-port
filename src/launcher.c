@@ -96,7 +96,7 @@ typedef enum { K_HEAD, K_CHOICE, K_RANGE, K_PATH, K_KEYS, K_PADS } Kind;
 
 enum {
   S_ROM, S_SKIP_INTRO, S_LEVEL, S_HITBOX, S_BLOOD, S_HIGH_SCORES, S_HISCORE_FILE,
-  S_FULLSCREEN, S_WIDESCREEN, S_ASPECT, S_FILTER, S_WINDOW_SCALE, S_SMOOTHING, S_REFRESH,
+  S_FULLSCREEN, S_WIDESCREEN, S_FILTER, S_WINDOW_SCALE, S_SMOOTHING, S_REFRESH,
   S_AUDIO, S_VOLUME, S_PADS, S_TWIN_STICK, S_DEADZONE, S_MOVE_STICK, S_AIM_STICK,
   S_CHEAT,  // and the five after it, by `config_cheat_names`
 };
@@ -125,7 +125,6 @@ static const Choice on_off[] = {{0, "Off"}, {1, "On"}};
 static const Choice blood_choices[] = {{0, "Purple"}, {1, "Red"}};
 static const Choice wide_choices[] = {
   {WIDE_OFF, "Off"}, {WIDE_16_9, "16:9"}, {WIDE_16_10, "16:10"}, {WIDE_21_9, "21:9"}, {WIDE_AUTO, "Auto"}};
-static const Choice aspect_choices[] = {{ASPECT_43, "4:3"}, {ASPECT_SQUARE, "Square pixels"}};
 static const Choice filter_choices[] = {
   {SCALE_SHARP, "Sharp"}, {SCALE_INTEGER, "Integer"}, {SCALE_LINEAR, "Linear"}};
 static const Choice stick_choices[] = {
@@ -187,7 +186,6 @@ static const struct { int act; const char* label; const char* help; } hot_rows[A
   {ACT_QUICK_LOAD, "Quick Load", "Go back to the last quick save."},
   {ACT_FULLSCREEN, "Fullscreen", "Between fullscreen and a window. Alt+Enter always does this as well."},
   {ACT_CYCLE_WIDESCREEN, "Cycle Widescreen", "Off, 16:9, 16:10, 21:9 and auto, in turn."},
-  {ACT_TOGGLE_ASPECT, "Toggle Aspect", "4:3 or square pixels."},
   {ACT_CYCLE_FILTER, "Cycle Filter", "Sharp, integer and linear, in turn."},
   {ACT_TOGGLE_SMOOTHING, "Toggle Smoothing", "Pictures eased between the game's frames, or the frames only."},
   {ACT_TOGGLE_NATIVE, "Native Routines", "The C port's routines, or the cartridge's own in their place."},
@@ -234,8 +232,6 @@ static void build_rows(void) {
   add_choice(TAB_VIDEO, S_WIDESCREEN, "Widescreen", wide_choices, 5,
       "Draw more of the level either side, not a stretch. Auto: fullscreen, whichever fits the "
       "display; in a window, off.");
-  add_choice(TAB_VIDEO, S_ASPECT, "Aspect", aspect_choices, 2,
-      "4:3, the shape the game was drawn for, or square pixels (8:7).");
   add_choice(TAB_VIDEO, S_FILTER, "Filter", filter_choices, 3,
       "How the picture is scaled to the screen. Sharp: nearest to a whole multiple, then one "
       "smooth step. Integer: whole multiples only, with a border. Linear: smooth all the way.");
@@ -307,7 +303,6 @@ static int setting_get(const Config* c, int id) {
     case S_HIGH_SCORES:  return c->high_scores;
     case S_FULLSCREEN:   return c->fullscreen;
     case S_WIDESCREEN:   return (int)c->widescreen;
-    case S_ASPECT:       return (int)c->aspect;
     case S_FILTER:       return (int)c->filter;
     case S_WINDOW_SCALE: return c->window_scale;
     case S_SMOOTHING:    return c->smoothing;
@@ -333,7 +328,6 @@ static void setting_set(Config* c, int id, int v) {
     case S_HIGH_SCORES:  c->high_scores = v != 0; break;
     case S_FULLSCREEN:   c->fullscreen = v != 0; break;
     case S_WIDESCREEN:   c->widescreen = (WideMode)v; break;
-    case S_ASPECT:       c->aspect = (AspectMode)v; break;
     case S_FILTER:       c->filter = (ScaleMode)v; break;
     case S_WINDOW_SCALE: c->window_scale = v; break;
     case S_SMOOTHING:    c->smoothing = v != 0; break;
