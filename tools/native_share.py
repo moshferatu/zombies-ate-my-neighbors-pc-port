@@ -14,6 +14,17 @@ executed rather than bytes touched.
     build/zamn_trace.exe <rom> -o analysis/prof/level1 -f 6100 -m movies/level1.zmv
     python tools/native_share.py analysis/prof/*
 
+**`--residue` reads the other kind of profile**, the one the game writes with
+`zamn.exe --profile <dir>`: the same three files, counted while the port was
+substituted, so what is in them is only what the 65816 still executed. There
+is nothing to infer there -- no closure, no call weighting -- and no share
+either, because the port's own work never reached the counters. What it does
+give is the ranking, from real play on any level, which the traced corpus
+cannot: eleven movies over ten of the fifty-six level records.
+
+    build/zamn.exe --profile analysis/residue/playtest ...
+    python tools/native_share.py --residue analysis/residue/playtest
+
 **Attribution is by nearest preceding subroutine entry**, which is what a
 sampling profiler does with a symbol table and carries the same caveat: code
 entered only by a jump is credited to the routine above it. That is usually the
@@ -33,6 +44,7 @@ Two numbers come out, and they answer different questions:
     one that says whether the next routine is worth the round.
 """
 
+import glob
 import os
 import re
 import struct
@@ -181,6 +193,23 @@ JUMP_ENTRIES = {
     # its own, which is where it belongs -- but note it is still not portable,
     # for the reason the paragraph above gives. Nothing calls it.
     0x81BEE3: 'the monster chase state, entered by computed RTS through $12',
+    # The five handlers in the word table at $80:D74F, reached through it by
+    # `JMP $F300` and never called. Found the same way as the vblank jobs
+    # queued by JML (see VBL_JOBS): a residue profile charged 110,349
+    # instructions to `step_propose`, whose every call the port had served,
+    # and the traced corpus had been counting all 991,403 of $80:E4BA's as
+    # native for the same reason -- it opens `JSR $E450`, which is
+    # `step_propose`, and it sits right below it.
+    0x80E4BA: 'a handler from the table at $80:D74F; what the ranking credited to step_propose',
+    0x80E595: 'a handler from the table at $80:D74F',
+    0x80E5FF: 'a handler from the table at $80:D74F',
+    0x80E653: 'a handler from the table at $80:D74F',
+    0x80E6C2: 'a handler from the table at $80:D74F',
+    # A state that `$81:AF9A`, `$81:B193` and `$81:B221` install with `LDA
+    # #$AEA6 : STA $0E`, and `$81:B164` jumps to. Nothing calls it, and the
+    # 56-record residue charged its 836,345 instructions to `enemy_ac92`, a
+    # ported routine the port had served on every call.
+    0x81AEA6: 'a state installed through $0E; what the residue credited to enemy_ac92',
 }
 
 BLOCKED = {
@@ -293,6 +322,15 @@ VBL_JOBS = frozenset((
     0x82A9D1, 0x82A9E5, 0x82AE44, 0x82AEB4, 0x82B1F9, 0x82B82E,
     0x82B9B6, 0x82D88C, 0x82DAA0, 0x82DADE, 0x82DC0C, 0x82E076,
     0x838255, 0x83B0EC, 0x83B100, 0x83C949, 0x83C95D,
+    # ...and four the idiom above does not match, because the registration is
+    # the routine's last act and so a tail jump: `LDA #<addr> : LDY #$00<bank>
+    # : JML $8083AE` (or `$808418`). Found by the first residue profile, which
+    # charged 206,138 instructions to `terrain_out_of_bounds` after the port had
+    # served every one of its calls: they were `$80:B947`, the OAM upload
+    # `$80:C049` queues each frame, credited to the ported routine above it and
+    # so counted native in the traced corpus too, at 0.63% of every instruction
+    # there. `$80:A937` is the queue-B thunk JUMP_ENTRIES already names.
+    0x80A937, 0x80B947, 0x80C34A, 0x82DC4F,
 ))
 
 # `$80:9E7B vram_queue_flush` is the one exception in the fifty-nine, and it is
@@ -511,7 +549,102 @@ def load_extra_entries(path):
     return out
 
 
-def main(dirs, extra=None):
+# What kind of thing a blocked row is, for the residue's summary by family:
+# the first words of its `BLOCKED` entry, which say it already.
+def family_of(why):
+    if why is None:
+        return 'callable -- an ordinary per-call port'
+    if why.startswith('a thread body'):
+        return 'thread bodies -- resumed by RTL, never called'
+    if why.startswith('a vblank job'):
+        return 'vblank jobs -- reached by RTL from a queue'
+    if 'unregisterable' in why:
+        return 'sound handshakes -- the SPC700 uploads'
+    return 'the frame -- NMI, reset, scheduler, dispatchers'
+
+
+def residue_report(label, exec_by_routine, total_exec, total_call, idx,
+                   entries, ported_offsets, verify_only, top):
+    # The waits, charged back to the routine each sits in, as the share report
+    # does below: a spin cannot buy its way up a list of what to port.
+    wait_rows = []
+    wait_by_routine = collections.Counter()
+    for addr, span, what in load_wait_sites():
+        off = snes_to_rom(addr)
+        if off is None:
+            continue
+        n = int(total_exec[off:off + span].sum())
+        if n:
+            wait_rows.append((n, addr, what))
+        for b in range(off, off + span):
+            if total_exec[b] and idx[b] >= 0:
+                wait_by_routine[int(entries[idx[b]])] += int(total_exec[b])
+    tot_exec = int(total_exec.sum())
+    wait_total = sum(n for n, _, _ in wait_rows)
+    work = tot_exec - wait_total
+    pct = lambda a, b: 100.0 * a / max(b, 1)
+    print('\n%s' % ('=' * 66))
+    print('RESIDUE -- what the 65816 executed with the port substituted')
+    print('=' * 66)
+    print('  %14s instructions, of which %s (%.1f%%) are the %d wait loops'
+          % ('{:,}'.format(tot_exec), '{:,}'.format(wait_total),
+             pct(wait_total, tot_exec), len(load_wait_sites())))
+    print('  %14s instructions of work left, ranked below. The share of the'
+          % '{:,}'.format(work))
+    print('  whole this is, the game prints at exit; this cannot know it,'
+          ' because\n  what the port ran never reached the counters.')
+
+    rows = [(v - wait_by_routine.get(e, 0), e) for e, v in exec_by_routine.items()]
+    rows = [r for r in rows if r[0] > 0]
+    rows.sort(reverse=True)
+
+    fam = collections.Counter()
+    fam_rows = collections.Counter()
+    for v, e in rows:
+        f = family_of(BLOCKED.get(rom_to_snes(e)))
+        fam[f] += v
+        fam_rows[f] += 1
+    print('\n  by family:')
+    for f, v in fam.most_common():
+        print('    %5.1f%%  %-50s %4d routine%s'
+              % (pct(v, work), f, fam_rows[f], '' if fam_rows[f] == 1 else 's'))
+
+    print('\n  %-34s %12s %6s %8s %8s' % ('routine', 'work', 'share', 'cumul.', 'calls'))
+    run = 0
+    for v, e in rows[:top]:
+        run += v
+        a = rom_to_snes(e)
+        why = BLOCKED.get(a)
+        mark = '!' if why else ('v' if a in verify_only else
+                                ('p' if e in ported_offsets else ' '))
+        print(' %s%-34s %12s %5.1f%% %7.1f%% %8s'
+              % (mark, label(e), '{:,}'.format(v), pct(v, work), pct(run, work),
+                 '{:,}'.format(int(total_call[e]))))
+    # A substituted routine hands back at its own return instruction, so a
+    # registered row that the port served costs about one instruction a call
+    # here. Much more than that is not the routine: it is code below it that
+    # nothing calls and nothing declares, which is how $80:B947 and $80:E4BA
+    # were found. Said out loud, because otherwise it reads as a guard problem.
+    suspect = [(v, e) for v, e in rows
+               if e in ported_offsets and rom_to_snes(e) not in verify_only
+               and v > 4 * max(int(total_call[e]), 1)
+               and v > 0.001 * work]
+    for v, e in suspect:
+        print('\n  %s is registered and was charged %s instructions over %s'
+              ' calls.\n  Either a guard declined it, which the census the game'
+              ' prints at exit\n  names, or a routine start below it is not'
+              ' declared anywhere: check\n  with tools/hotbytes.py, and add'
+              ' one to JUMP_ENTRIES, VBL_JOBS or\n  THREAD_BODIES.'
+              % (label(e), '{:,}'.format(v), '{:,}'.format(int(total_call[e]))))
+
+    print('\n  "cumul." is the share of the residue taken if every row down to'
+          ' that one\n  were ported. ! cannot pass through per-call substitution'
+          ' (see BLOCKED);\n  v is written and verify_only; p is registered and'
+          ' ran anyway, which\n  is a guard declining -- `--verbose` at exit'
+          ' prints the census of why.')
+
+
+def main(dirs, extra=None, residue=False, top=40):
     ported, verify_only, run_only = load_ported()
     symbols = load_symbols()
     extra_entries = load_extra_entries(extra) if extra else set()
@@ -538,6 +671,23 @@ def main(dirs, extra=None):
 
     if total_exec is None:
         raise SystemExit('no profile.bin found in: %s' % ', '.join(dirs))
+
+    # A residue profile knows fewer routine starts than a trace does, and not
+    # by accident: a substituted routine's own callees are never called, so
+    # nothing marks them, and everything after a ported entry is filed under
+    # it down to the next start the session happened to see. The first run of
+    # this charged 210,300 instructions to `terrain_out_of_bounds`, which had
+    # executed none -- the port served all 4,162 of its calls. So the traced
+    # corpus lends its starts. Only its boundaries: nothing it counted is added.
+    corpus_entries = 0
+    if residue:
+        for d in sorted(glob.glob(os.path.join('analysis', 'prof', '*'))):
+            cdl = os.path.join(d, 'zamn.cdl')
+            if os.path.exists(cdl):
+                f = load_cdl(cdl)
+                if len(f) == len(flags):
+                    flags = flags | (f & CDL_SUB)
+                    corpus_entries += 1
 
     size = len(total_exec)
     ported_offsets = {off for a in ported
@@ -675,6 +825,17 @@ def main(dirs, extra=None):
         nm = ported.get(a) or symbols.get(a)
         return '%s %s' % (s, nm) if nm else s
 
+    if residue:
+        print('Profiled %d session director%s, %s instructions total;'
+              ' routine starts from them\nand from %d traced profile%s under'
+              ' analysis/prof'
+              % (len(per_movie), 'y' if len(per_movie) == 1 else 'ies',
+                 '{:,}'.format(int(total_exec.sum())), corpus_entries,
+                 '' if corpus_entries == 1 else 's'))
+        residue_report(label, exec_by_routine, total_exec, total_call, idx,
+                       entries, ported_offsets, verify_only, top)
+        return
+
     print('Traced %d movie(s), %s instructions total\n'
           % (len(per_movie), '{:,}'.format(tot_exec)))
     for name, n in per_movie:
@@ -766,6 +927,15 @@ def main(dirs, extra=None):
             if total_exec[b] and idx[b] >= 0:
                 wait_by_routine[int(entries[idx[b]])] += int(total_exec[b])
     wait_total = sum(n for n, _, _ in wait_rows)
+    # A wait can sit inside a routine counted native, and since `$80:CCCC` it
+    # does: `apu_send` is written, so its spin was in every numerator below
+    # while the same instructions were taken out of the denominator, and the
+    # "written" lines read ten points high over the 56-record sweep. Out of
+    # both, then. The substituted line never had the problem -- `apu_send` is
+    # verify_only and was never in `run_native` -- but it gets the same rule.
+    nat_wait = sum(n for e, n in wait_by_routine.items() if e in native)
+    weighted_wait = sum(n * frac.get(e, 0.0) for e, n in wait_by_routine.items())
+    run_wait = sum(n for e, n in wait_by_routine.items() if e in run_native)
     if wait_rows:
         print('\n  of the %s instructions above, this many are a CPU waiting'
               ' rather than working:' % '{:,}'.format(tot_exec))
@@ -777,9 +947,9 @@ def main(dirs, extra=None):
               ' a spin, so the' % pct(wait_total, tot_exec))
         print('             honest denominator is the one with it removed:')
         print('\n  dynamic share, waits out of the denominator: %5.1f%%'
-              % pct(nat_exec, tot_exec - wait_total))
+              % pct(nat_exec - nat_wait, tot_exec - wait_total))
         print('  best estimate, likewise:                     %5.1f%%'
-              % pct(weighted_exec, tot_exec - wait_total))
+              % pct(weighted_exec - weighted_wait, tot_exec - wait_total))
         # The one number that has a counterpart measured a completely different
         # way. `zamn.exe` and `zamn_cosim run` report the same quantity live,
         # from the substitution seam and in SNES cycles rather than from a
@@ -788,7 +958,7 @@ def main(dirs, extra=None):
         # decimal: a cycle is not an instruction, and the live numerator is a
         # per-routine mean budget where this is a per-instruction count.
         print('  ...substituted only, likewise:               %5.1f%%   <- what'
-              ' the game reports' % pct(run_exec, tot_exec - wait_total))
+              ' the game reports' % pct(run_exec - run_wait, tot_exec - wait_total))
     print('\n  %d routine entries used for attribution; %s instructions (%.1f%%)'
           % (len(entries), '{:,}'.format(unattributed_exec),
              pct(unattributed_exec, tot_exec)))
@@ -821,7 +991,8 @@ def main(dirs, extra=None):
         note = '  (+%s waiting)' % '{:,}'.format(waited) if waited else ''
         print(' %s%-34s %12s %5.1f%% %7.1f%% %8s%s'
               % ('!' if why else ' ', label(e), '{:,}'.format(v),
-                 100.0 * v / tot_work, 100.0 * (nat_exec + run) / tot_work,
+                 100.0 * v / tot_work,
+                 100.0 * (nat_exec - nat_wait + run) / tot_work,
                  '{:,}'.format(int(total_call[e])), note))
     print('\n  "cumul." is the native share this run would reach if every routine'
           '\n  down to that row were ported and nothing else changed.')
@@ -860,6 +1031,13 @@ if __name__ == '__main__':
         i = args.index('--entries')
         extra = args[i + 1]
         del args[i:i + 2]
+    top = 40
+    if '--top' in args:
+        i = args.index('--top')
+        top = int(args[i + 1])
+        del args[i:i + 2]
+    residue = '--residue' in args
+    args = [a for a in args if a != '--residue']
     if not args:
         raise SystemExit(__doc__)
-    main(args, extra)
+    main(args, extra, residue, top)

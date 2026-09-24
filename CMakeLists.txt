@@ -215,6 +215,7 @@ target_link_libraries(zamn_port PUBLIC zamn_assets_lib)
 # goes away in Phase 4 when the reference is cut loose.
 add_library(zamn_cosim_lib STATIC
   src/cosim/cosim.c
+  src/cosim/profile.c
   src/cosim/routines.c)
 target_include_directories(zamn_cosim_lib PUBLIC src)
 target_link_libraries(zamn_cosim_lib PUBLIC snescore zamn_port zamn_analysis)

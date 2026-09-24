@@ -12433,10 +12433,12 @@ Two kinds of cycle are not work and neither is in it:
     lockstep synchronises on. The CPU is executing nothing, waiting for the NMI
     that starts the next frame. This is not a small correction: on level 1 at
     2,400 frames it is 485,200,770 cycles against 282,329,364 of work.
-  * **Spinning.** The ten loops in `src/cosim/waits.h`. Porting a spin gives a
-    spin -- the C would have to wait on the same flag -- so counting them would
-    make the port's share look smaller than it is for no reason anyone could
-    act on.
+  * **Spinning.** The eleven loops in `src/cosim/waits.h`. Porting a spin gives
+    a spin -- the C would have to wait on the same flag -- so counting them
+    would make the port's share look smaller than it is for no reason anyone
+    could act on. The eleventh, `$80:CCCC`, is `apu_send` holding for the
+    SPC700 to acknowledge a command, and it is the largest of them: 10.4% of
+    every instruction in the traced corpus, 94% of `apu_send`'s own.
 
 That table used to live in `tools/native_share.py` and now lives in C, because
 the offline tool and the running game must not disagree about a denominator.

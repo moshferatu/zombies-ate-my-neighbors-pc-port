@@ -24,6 +24,11 @@
 //         --png <file>       write the final frame, to eyeball where the movie got to
 //         --stats-from <f>   ignore memory accesses before frame <f>, so a boot
 //                            sequence does not swamp a gameplay memory map
+//         --level <n>        a new game starts on record <n> (0..55), exactly
+//                            as `zamn --level` does it: see src/levelstart.h.
+//                            The movie still has to press Start to begin one;
+//                            this is how the corpus reaches the forty-odd
+//                            records no password does
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -36,6 +41,7 @@
 #include "analysis/cdl.h"
 #include "analysis/movie_apply.h"
 #include "analysis/w65816.h"
+#include "levelstart.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -830,7 +836,7 @@ int main(int argc, char** argv) {
   if (argc < 2) {
     fprintf(stderr,
             "usage: %s <rom.sfc> [-o dir] [-f frames] [-m movie]\n"
-            "          [--trace-reset n] [--trace-nmi frame]\n",
+            "          [--trace-reset n] [--trace-nmi frame] [--level n]\n",
             argv[0]);
     return 2;
   }
@@ -840,6 +846,7 @@ int main(int argc, char** argv) {
   const char* png_path = NULL;
   int frames = 600;
   int64_t trace_reset = 0;
+  int start_level = -1;
   g.nmi_trace_frame = -1;
 
   for (int i = 2; i < argc; i++) {
@@ -852,6 +859,13 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--trace-nmi") && has_next) g.nmi_trace_frame = atoi(argv[++i]);
     else if (!strcmp(a, "--png") && has_next) png_path = argv[++i];
     else if (!strcmp(a, "--stats-from") && has_next) g.stats_from = atoi(argv[++i]);
+    else if (!strcmp(a, "--level") && has_next) {
+      start_level = atoi(argv[++i]);
+      if (start_level < LEVEL_FIRST || start_level > LEVEL_LAST) {
+        fprintf(stderr, "error: --level wants %d..%d\n", LEVEL_FIRST, LEVEL_LAST);
+        return 2;
+      }
+    }
     else { fprintf(stderr, "error: unknown option '%s'\n", a); return 2; }
   }
 
@@ -867,6 +881,10 @@ int main(int argc, char** argv) {
   g.snes = snes;
   g.rom = snes->cart->rom;
   g.rom_size = snes->cart->romSize;
+  if (start_level >= 0 && !start_at_level(snes, start_level)) {
+    fprintf(stderr, "error: --level: this is not a cartridge it can change\n");
+    return 1;
+  }
 
   Movie movie;
   bool have_movie = false;

@@ -60,6 +60,15 @@ static const CosimWaitSite cosim_wait_sites[] = {
     // remaining byte count, reaches zero: 2,149,252 of its 2,149,592
     // instructions, 99.98%, leaving 34 a call that are real.
     {0x809F5C, 4, "LDA $C6 : BNE     -- waiting for a queued VRAM upload to drain"},
+    // The IPL rows above, once the sound driver is running. `$80:CCC8 apu_send`
+    // is eleven instructions and every command the game sends goes through it:
+    // it holds on `$2143` until the SPC700 has echoed the last command's count,
+    // then writes the next. Over the eleven profiles that is 34,682,404 of its
+    // 36,739,316 instructions, 94.4%, and 257,114 calls of real work around
+    // it. This is the one wait the rows above did not have, and it was the
+    // single biggest row in the ranking: 12 points of the denominator that the
+    // 65816 spends doing nothing while another processor catches up.
+    {0x80CCCC, 5, "CPY $2143 : BNE   -- the SPC700 driver, acknowledging a command"},
 };
 
 #define COSIM_WAIT_SITE_COUNT \

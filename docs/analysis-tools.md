@@ -2015,6 +2015,50 @@ level load, and a movie is mostly gameplay only if it is long. Ranking by share 
 *per frame of play* points at the game. Both are in the table, and which one
 matters depends on whether the goal is a faster loader or a native game.
 
+### The residue: ranking from what the game actually played
+
+The ranking above is only as wide as the corpus, and the corpus was eleven
+movies over ten of the fifty-six level records. Two things widen it.
+
+**`zamn_trace --level N`** starts a new game on record N the same way
+`zamn --level` does; the patch lives in `src/levelstart.h` and both use it.
+The movie still has to press Start. A sweep of all 56 records, each booted
+like `level1.zmv` and then walking a square with Y held for about 75 seconds,
+executed 24,151 distinct code bytes where the eleven movies executed 19,551.
+
+**`zamn --profile <dir>`** counts what the 65816 still executes while the port
+is substituted, in the tracer's three formats, and adds it to whatever `<dir>`
+already holds. What the port served never ran, so it is not in there. That
+makes the profile the residue itself, measured rather than inferred, from any
+session: a play-test, a `--level` run, a movie.
+`python tools/native_share.py --residue <dir>...` ranks it by work and sums it
+by family: the frame, thread bodies, vblank jobs, the sound handshakes, and
+the ordinary callable routines that are all per-call porting can reach.
+
+A residue profile sees fewer routine starts than a trace, because a
+substituted routine's callees are never called. So `--residue` borrows the
+starts from every traced profile under `analysis/prof`. It also names any
+registered row that was charged far more than one instruction a call. The
+port hands back at the routine's own return instruction, so more than that is
+code below it that nothing calls and no table declares.
+
+**The first residue found two of those, and both had been counted native in
+the traced corpus too.** `$80:B947 sprite_upload_flush` is a vblank job queued
+by `LDA #$B947 : LDY #$0080 : JML $8083AE`. A tail jump, so the `JSL` idiom
+that finds the other fifty-nine missed it, along with `$80:C34A`, `$82:DC4F` and
+the queue-B thunk `$80:A937`. It sat under `terrain_out_of_bounds`, which the
+port serves, and it is 0.63% of the traced corpus. `$80:E4BA` is the first of
+five handlers in the word table at `$80:D74F`, reached by `JMP $F300`, and it
+sat under `step_propose`: 0.30%. Declaring them took the game's figure over the
+traced corpus from 75.4% to 74.1%. That is the number getting more accurate,
+not the port getting smaller.
+
+A wait inside a routine counted native has to leave the numerator as well as
+the denominator. `$80:CCCC` is the first such wait, in `apu_send`, which is
+written and `verify_only`. Until the tool took it out of both, the "written"
+lines read ten points high over the 56-record sweep. The substituted line,
+which is the one the game prints, was never affected.
+
 ## `hotbytes.py`, the check to run before believing a row
 
 `native_share.py` says *which* routines cost the most. This says **where inside

@@ -5,6 +5,61 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Measuring what is left, from every level and from real play (2026-09-24)
+
+The first step of the Devil's Crush path: fix the instrument before chasing
+the number. Three changes, no routine ported.
+
+**The SPC700 wait in `apu_send` is a wait.** `$80:CCCC  CPY $2143 : BNE` holds
+for the sound chip to acknowledge each command. It is 94% of `apu_send` and was
+the biggest row in the ranking at 12 points, and the three IPL spins beside it
+were already in `src/cosim/waits.h`. It is the eleventh row there now. Over
+all 56 level records played live, the game's figure goes from **58.6% to
+66.4%**. The work done natively did not change. The denominator lost 4 billion
+cycles of waiting.
+
+**`zamn --profile <dir>` writes what the 65816 still ran**, and
+`tools/native_share.py --residue <dir>` ranks it. The files are the tracer's
+three formats, counted under substitution, so the residue is measured rather
+than inferred, from any session. The directory accumulates, so play-tests can
+be collected into one. `src/cosim/profile.c`.
+
+**`zamn_trace --level N`** starts a game on any record, with the same patch as
+`zamn --level`, which moved into `src/levelstart.h`. Traced over all 56
+records, the game's figure is **72.4%**. The eleven-movie corpus gives 73.7%.
+
+The residue found starts the ranking had been missing, and the traced corpus
+had been counting all of them as native:
+
+  * `$80:B947 sprite_upload_flush` and three more vblank jobs queued by a tail
+    `JML $8083AE` rather than the `JSL` the scan matches.
+  * `$80:E4BA`, first of five handlers in the table at `$80:D74F`.
+  * `$81:AEA6`, a state installed through `$0E`.
+
+Declared, they take the traced corpus from 75.4% to 74.0%. A wait inside a
+written routine also has to leave the numerator: the "written" lines read ten
+points high until it did.
+
+What is left, from the live residue of all 56 records. The points are
+approximate, because the residue counts instructions and the share counts
+cycles:
+
+| Family | Share of residue | About |
+|---|---|---|
+| The frame: `thread_yield`, both dispatchers, NMI, reset | 43.1% | 14.5 points |
+| Callable routines, including `apu_send`'s own work | 22.2% | 7.5 |
+| Thread bodies | 15.8% | 5.3 |
+| Sound uploads: `apu_ipl_upload`, `apu_load_set`, `apu_boot` | 12.6% | 4.2 |
+| Vblank jobs | 6.3% | 2.1 |
+
+One callable item is new and cheap. Eight collision handlers are unported.
+When one comes up, a guard declines, and that frame's whole sprite pass runs
+on the 65816. The records that decline are 0, 12, 20, 31, 36, 39, 40, 47, 48
+and 51.
+The handlers are `$82:9A6D` with 2,482 declines, `$82:AA2E` 1,888,
+`$82:F330` 61, `$82:EFF0` 61, `$81:B95F` 58, `$82:84AC` 24, `$81:C8C3` 2 and
+`$81:A638` 1. They cost about 2% of the residue.
+
 ### The launcher's first click only brought it forward (2026-09-24)
 
 Reported in play-testing: with the launcher behind another window, a click

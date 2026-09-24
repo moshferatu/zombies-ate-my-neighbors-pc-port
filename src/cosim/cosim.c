@@ -8,6 +8,8 @@
 #include "dma.h"
 
 #include "analysis/movie_apply.h"
+#include "analysis/w65816.h"
+#include "cosim/profile.h"
 #include "cosim/waits.h"
 #include "port/apu.h"
 #include "port/coverage.h"
@@ -1515,10 +1517,19 @@ void cosim_step(Cosim* c) {
   // entry instruction without executing it, and if that instruction happens to
   // be a `JSR` this would count one call per interrupt it waits out. The call
   // was already counted when the ROM's caller reached it.
+  // Where the CPU is about to go without being called: an interrupt vector or
+  // reset. Only the profile wants to know, as an entry for attribution.
+  const bool vectoring = !halted && (snes->cpu->intWanted || snes->cpu->resetWanted);
+  const uint64_t native_before = c->work.cycles_native;
+  int opcode = -1;
+  bool mf = false, xf = false;
   if (!halted && !burn_parked(c) && at_instruction(snes)) {
     pc = cpu_pc24(snes);
     spinning = cosim_is_wait_site(pc);
-    switch (opcode_at(c, pc)) {
+    opcode = opcode_at(c, pc);
+    mf = snes->cpu->mf;
+    xf = snes->cpu->xf;
+    switch (opcode) {
       case 0x20:  // JSR abs
       case 0x22:  // JSL long
       case 0xFC:  // JSR (abs,X)
@@ -1545,6 +1556,24 @@ void cosim_step(Cosim* c) {
   // execute at all, so a routine that used to contribute its own call plus six
   // of its callees' now contributes one — and that one is served.
   if (counted_call) c->work.calls_total++;
+
+  // The residue, for `--profile`: an instruction the core really executed, and
+  // not the step that burned a substituted routine's budget at its entry, which
+  // is the one case where the PC was at an instruction and none of it ran.
+  if (c->profile) {
+    const bool burned = c->work.cycles_native != native_before;
+    if (opcode >= 0 && !burned) {
+      uint32_t avail = 0;
+      const uint8_t* p = rom_ptr(&c->rom, pc, &avail);
+      if (p) {
+        cosim_profile_exec(c->profile, (uint32_t)(p - c->rom.data), pc,
+                           w65816_len((uint8_t)opcode, mf, xf));
+        if (counted_call) cosim_profile_call(c->profile, pc, cpu_pc24(snes));
+      }
+    } else if (vectoring) {
+      cosim_profile_entry(c->profile, cpu_pc24(snes));
+    }
+  }
 }
 
 void cosim_frame(Cosim* c) {

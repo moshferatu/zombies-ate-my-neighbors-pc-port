@@ -701,6 +701,11 @@ typedef struct {
   long frames;
   bool stop_on_fail;
   bool verbose;
+
+  // Counters for what the core itself executed, when someone asked for them:
+  // see `src/cosim/profile.h`. NULL, and then free, unless set; the caller owns
+  // it, allocates it, saves it and frees it.
+  struct CosimProfile* profile;
 } Cosim;
 
 // Reduce `c->work` to shares. Safe with an empty run: everything reads 0.

@@ -1727,6 +1727,13 @@ ground checked before a button is, the held weapon against how much of it is
 left, and the four button edges that cycle a weapon, cycle an item or open the
 map. Phase 4 is where that inverts.
 
+**What is left to port, from any session.** `--profile <dir>` counts what the
+65816 still executes while the port is substituted and adds it to the profile
+in `<dir>` at exit, so one directory can collect a week of play-tests. Rank it
+with `python tools\native_share.py --residue <dir>`. The tracer takes `--level
+N` as well, so the offline corpus can reach every record, not only the ones a
+password starts. See `docs/analysis-tools.md`.
+
 Other options — `-m <movie.zmv>` replays a recorded movie instead of reading the
 keyboard, `--frames N` runs N frames uncapped and exits, `--shot out.png` writes
 the final frame, `--no-audio` skips the audio device, `--no-pads` ignores game
@@ -2539,11 +2546,13 @@ tools/make_spin_probe.py Rewrites a probe movie's tail as short legs, so the
 tools/native_share.py What share of the work the game does runs natively, and a
                               ranking of what is left by the same measure — reads
                               `profile.bin` from the tracer, and discounts the
-                              busy-waits, which are 10.9% of the instruction count
+                              busy-waits, which are 23.9% of the instruction count
                               and none of the work. Reports "written" and
                               "actually substituted" separately, because a
                               `verify_only` routine is the first and not the
-                              second; the second is what the game itself prints
+                              second; the second is what the game itself prints.
+                              `--residue` ranks a profile the game wrote with
+                              `--profile` instead: what is left, from real play
 tools/hotbytes.py     Where inside a routine the instructions went. Run it on a
                               row of that ranking before porting it: a routine's
                               first byte is its entry, so nothing in a loop-free
