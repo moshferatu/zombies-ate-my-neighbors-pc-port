@@ -196,16 +196,18 @@ static const struct { int k; const char* label; } cycle_rows[PAD_CYCLE_COUNT] = 
   {PAD_CYCLE_NEXT_ITEM, "Next Item"}, {PAD_CYCLE_PREV_ITEM, "Previous Item"},
 };
 
-static const struct { const char* label; const char* help; } cheat_rows[CONFIG_CHEATS] = {
-  {"Invincibility", "Nothing hurts a player: no flinch, no health lost."},
-  {"Invincible Neighbors", "Nothing hurts a neighbor, and the tourists do not turn into "
+// In the order they are shown, which is not `config_cheat_names`'s: each names
+// its key there, and the row sets that one.
+static const struct { const char* key; const char* label; const char* help; } cheat_rows[CONFIG_CHEATS] = {
+  {"invincible", "Invincibility", "Nothing hurts a player: no flinch, no health lost."},
+  {"invincible_neighbors", "Invincible Neighbors", "Nothing hurts a neighbor, and the tourists do not turn into "
       "werewolves. They can still be rescued."},
-  {"Infinite Lives", "Dying does not cost a life."},
-  {"Infinite Ammo", "Weapons and items are never used up, keys too. Gives nothing: a weapon "
+  {"infinite_lives", "Infinite Lives", "Dying does not cost a life."},
+  {"infinite_ammo", "Infinite Ammo / Uses", "Weapons and items are never used up, keys too. Gives nothing: a weapon "
       "not held stays not held."},
-  {"Give All Weapons / Items", "Every weapon and every item, 999 and 99 of them, when a game starts and when "
+  {"give_all", "Give All Weapons / Items", "Every weapon and every item, 999 and 99 of them, when a game starts and when "
       "a quick save is loaded. Once: they run out unless infinite ammo is on as well."},
-  {"Always Run", "The running shoes, always."},
+  {"always_run", "Always Run", "The running shoes, always."},
 };
 
 static void build_rows(void) {
@@ -291,7 +293,9 @@ static void build_rows(void) {
   add_head(TAB_CHEATS, "Cheats",
       "Each off unless turned on here. While any is on, the top scores are read and not written.");
   for (int i = 0; i < CONFIG_CHEATS; i++)
-    add_choice(TAB_CHEATS, S_CHEAT + i, cheat_rows[i].label, on_off, 2, cheat_rows[i].help);
+    for (int k = 0; k < CONFIG_CHEATS; k++)
+      if (!strcmp(cheat_rows[i].key, config_cheat_names[k]))
+        add_choice(TAB_CHEATS, S_CHEAT + k, cheat_rows[i].label, on_off, 2, cheat_rows[i].help);
 }
 
 static int setting_get(const Config* c, int id) {

@@ -769,14 +769,44 @@ static inline int ws_object_sprites(Snes* snes, Widescreen* ws, int slot,
   return slot;
 }
 
+// How a visible record is drawn: its metasprite, its origin on the screen and
+// what is done to each piece's attributes -- `draw_args` in `src/port/oam.c`,
+// which is `$80:BD46`..`$80:BD9F`. False for a record that draws nothing.
+static inline bool ws_record_draw(const Widescreen* ws, uint16_t rec, SpriteMeta* meta,
+                                  int16_t* ox, int16_t* oy, uint16_t* attr_or,
+                                  uint16_t* attr_and, uint16_t* flags_out) {
+  const uint8_t* mem = ws->mem;
+  const uint16_t flags = ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS);
+  if (!(flags & ACTOR_DRAW)) return false;
+
+  *attr_or = (flags & ACTOR_PRIORITY_TOP) ? 0x3000 : 0x2000;
+  *attr_and = 0xffff;
+  if (flags & ACTOR_ATTR_SET) {
+    *attr_or |= ws_r16(mem, (uint32_t)rec + ACTOR_ATTR);
+    *attr_and = 0xf1ff;
+  }
+  if (flags & ACTOR_SCREEN_SPACE) {
+    *ox = (int16_t)ws_r16(mem, (uint32_t)rec + ACTOR_X);
+    *oy = (int16_t)ws_r16(mem, (uint32_t)rec + ACTOR_Y);
+  } else {
+    *ox = (int16_t)(ws_r16(mem, (uint32_t)rec + ACTOR_X) - ws_r16(mem, W_CAMERA_X));
+    *oy = (int16_t)(ws_r16(mem, (uint32_t)rec + ACTOR_Y) -
+                    ws_r16(mem, (uint32_t)rec + ACTOR_Z) - ws_r16(mem, W_CAMERA_Y));
+  }
+  const uint16_t ptr = ws_r16(mem, (uint32_t)rec + ACTOR_META);
+  if (ptr < 0x8000) return false;
+  const uint16_t bank = ws_r16(mem, (uint32_t)rec + ACTOR_META_BANK);
+  if (bank < SPRITE_META_BANK_LO || bank > SPRITE_META_BANK_HI) return false;
+  *flags_out = flags;
+  return sprite_meta_read(&ws->rom, ((uint32_t)bank << 16) | ptr, meta) == SPRITE_OK;
+}
+
 // The pieces `sprite_emit` dropped for being outside the console's 256, drawn
 // into the OAM entries the game's own pass left parked. See the header.
 static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
                                      int right) {
   const uint8_t* mem = ws->mem;
   const uint16_t count = ws_r16(mem, W_VISIBLE_ACTOR_COUNT);
-  const uint16_t cam_x = ws_r16(mem, W_CAMERA_X);
-  const uint16_t cam_y = ws_r16(mem, W_CAMERA_Y);
   int slot = snes_freeSprite(snes, 0);
   ws->lent_count = 0;
   memset(ws->owner_rec, 0xff, sizeof ws->owner_rec);
@@ -798,33 +828,10 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
 
   for (uint16_t cur = 0; cur < count && slot < OAM_ENTRIES; cur += 2) {
     const uint16_t rec = ws_r16(mem, W_VISIBLE_ACTORS + cur);
-    const uint16_t flags = ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS);
-    if (!(flags & ACTOR_DRAW)) continue;
-
-    // `draw_args` in `src/port/oam.c`, which is `$80:BD46`..`$80:BD9F`.
-    uint16_t attr_or = (flags & ACTOR_PRIORITY_TOP) ? 0x3000 : 0x2000;
-    uint16_t attr_and = 0xffff;
-    if (flags & ACTOR_ATTR_SET) {
-      attr_or |= ws_r16(mem, (uint32_t)rec + ACTOR_ATTR);
-      attr_and = 0xf1ff;
-    }
-    int16_t ox, oy;
-    if (flags & ACTOR_SCREEN_SPACE) {
-      ox = (int16_t)ws_r16(mem, (uint32_t)rec + ACTOR_X);
-      oy = (int16_t)ws_r16(mem, (uint32_t)rec + ACTOR_Y);
-    } else {
-      ox = (int16_t)(ws_r16(mem, (uint32_t)rec + ACTOR_X) - cam_x);
-      oy = (int16_t)(ws_r16(mem, (uint32_t)rec + ACTOR_Y) -
-                     ws_r16(mem, (uint32_t)rec + ACTOR_Z) - cam_y);
-    }
-    const uint16_t ptr = ws_r16(mem, (uint32_t)rec + ACTOR_META);
-    if (ptr < 0x8000) continue;
-    const uint16_t bank = ws_r16(mem, (uint32_t)rec + ACTOR_META_BANK);
-    if (bank < SPRITE_META_BANK_LO || bank > SPRITE_META_BANK_HI) continue;
     SpriteMeta meta;
-    if (sprite_meta_read(&ws->rom, ((uint32_t)bank << 16) | ptr, &meta) !=
-        SPRITE_OK)
-      continue;
+    int16_t ox, oy;
+    uint16_t attr_or, attr_and, flags;
+    if (!ws_record_draw(ws, rec, &meta, &ox, &oy, &attr_or, &attr_and, &flags)) continue;
 
     slot = ws_emit_meta(snes, ws, slot, rec, &meta, ox, oy, attr_or, attr_and,
                         (flags & SPRITE_FLIP_X) != 0,
@@ -861,8 +868,18 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
 // beside the player. And the marker, in an entry the table still called the
 // world's, 43 to the right of its box. So the pass is identified by its bytes
 // (`sprite_oam_history`): the newest whose owned entries are what the PPU
-// holds. None matching -- a pass the ROM ran, a screen between levels -- is
-// the newest table, as before.
+// holds.
+//
+// **None matching is a pass the ROM ran**, and then no table says anything
+// about this OAM. That is any tick with a record whose handler the port does
+// not have yet -- the port hands the whole actor pass back, the sprites with
+// it -- and every tick after F1. It was the newest table, the last the port's
+// pass wrote, and that could be a table from seconds before: reported in
+// play-testing on level 15, where something by a fire has such a handler, as
+// Zeke's head and the top of the fire drawn 43 columns from where they were,
+// for as long as the player stood there. Entry 0 was Zeke's head and the old
+// table said it was the radar's marker. So an unmatched OAM is read by its
+// look instead (`ws_screen_by_look`), and NULL says so.
 static inline const SpriteOamOwners* ws_pass_on_screen(const Snes* snes, Widescreen* ws) {
   const uint32_t newest = sprite_oam_owners.serial;
   for (uint32_t back = 0; back < SPRITE_OAM_HISTORY && back < newest; back++) {
@@ -880,7 +897,57 @@ static inline const SpriteOamOwners* ws_pass_on_screen(const Snes* snes, Widescr
     return &pass->owners;
   }
   if (newest > 0) ws->place_unmatched++;
-  return &sprite_oam_owners;
+  return NULL;
+}
+
+// Which OAM entries a screen-space record drew, found without a table: each
+// such record in the visible list is composed as `sprite_emit` composes it,
+// from the memory the picture was made from, and an entry is its piece if it
+// is that piece -- the same column, row and attributes, and the same tile
+// wherever the cache map says which tile that is. The cache map is asked both
+// as it was and as it is, since the pass that drew this OAM may have loaded
+// the frame after the copy was taken; a frame in neither is matched on the
+// rest. Entries the margins filled are theirs, as with a table.
+static inline void ws_screen_by_look(const Snes* snes, const Widescreen* ws, bool screen[OAM_ENTRIES]) {
+  memset(screen, 0, OAM_ENTRIES * sizeof screen[0]);
+  const uint8_t* mem = ws->mem;
+  const uint16_t count = ws_r16(mem, W_VISIBLE_ACTOR_COUNT);
+  for (uint16_t cur = 0; cur < count; cur += 2) {
+    const uint16_t rec = ws_r16(mem, W_VISIBLE_ACTORS + cur);
+    if (!(ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS) & ACTOR_SCREEN_SPACE)) continue;
+    SpriteMeta meta;
+    int16_t ox, oy;
+    uint16_t attr_or, attr_and, flags;
+    if (!ws_record_draw(ws, rec, &meta, &ox, &oy, &attr_or, &attr_and, &flags)) continue;
+    const bool flip_x = (flags & SPRITE_FLIP_X) != 0, flip_y = (flags & SPRITE_FLIP_Y) != 0;
+    const uint16_t flip_eor = (uint16_t)((flip_x ? 0x4000 : 0) | (flip_y ? 0x8000 : 0));
+
+    for (int i = 0; i < meta.count; i++) {
+      const SpritePiece* p = &meta.pieces[i];
+      uint16_t sy = (uint16_t)p->y;
+      if (flip_y) sy = ws_mirror(sy);
+      sy = (uint16_t)(sy + (uint16_t)oy);
+      uint16_t sx = (uint16_t)p->x;
+      if (flip_x) sx = ws_mirror(sx);
+      sx = (uint16_t)(sx + (uint16_t)ox);
+      const uint16_t attrs = (uint16_t)((((p->attr & attr_and) | attr_or) ^ flip_eor) & 0xfe00);
+      int tiles[2], tile_count = 0;
+      const uint16_t was = ws_r16(mem, W_FRAME_SLOT + (uint32_t)p->frame * 2);
+      const uint16_t now = ws_r16(snes->ram, W_FRAME_SLOT + (uint32_t)p->frame * 2);
+      if (!(was & 0x8000)) tiles[tile_count++] = sprite_slot_tile(was / 2);
+      if (!(now & 0x8000)) tiles[tile_count++] = sprite_slot_tile(now / 2);
+
+      for (int e = 0; e < OAM_ENTRIES; e++) {
+        if (screen[e] || ws->owner_rec[e] >= 0) continue;
+        const uint16_t lo = snes->ppu->oam[e * 2], word = snes->ppu->oam[e * 2 + 1];
+        const int x = (lo & 0xff) | ((snes->ppu->highOam[e >> 2] >> ((e & 3) * 2)) & 1) << 8;
+        if (x != (sx & 0x1ff) || (lo >> 8) != (sy & 0xff) || (word & 0xfe00) != attrs) continue;
+        bool tile_ok = tile_count == 0;
+        for (int t = 0; t < tile_count; t++) tile_ok |= (word & 0x1ff) == tiles[t];
+        if (tile_ok) screen[e] = true;
+      }
+    }
+  }
 }
 
 // The owner table of the picture on screen with the margins' sprites in it,
@@ -924,10 +991,12 @@ static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, int place
     return;
   }
   const SpriteOamOwners* owners = ws_pass_on_screen(snes, ws);
+  bool by_look[OAM_ENTRIES];
+  if (!owners) ws_screen_by_look(snes, ws, by_look);
   for (int s = 0; s < OAM_ENTRIES; s++) {
-    const int rec = owners->rec[s];
-    const bool screen =
-        rec >= 0 && (ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS) & ACTOR_SCREEN_SPACE) != 0;
+    const int rec = owners ? owners->rec[s] : -1;
+    const bool screen = owners ? rec >= 0 && (ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS) & ACTOR_SCREEN_SPACE) != 0
+                               : by_look[s];
     snes_setSpritePlace(snes, s, screen ? place : ppu_spriteWorld);
   }
 }

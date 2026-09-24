@@ -5,6 +5,36 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Zeke's head on the radar's panel, on level 15 (2026-09-24)
+
+Reported in play-testing, with a quick save: by the fire in the top left of
+level 15, Zeke's head and the top of the fire drawn away from where they
+were in 16:9, until an item by the fire was picked up. Not in 4:3. The
+actor pass declines there on every tick (`$82:F330`, a handler the port
+does not have), so the ROM draws the sprites and no owner table is written.
+`ws_pass_on_screen` then fell back to the newest table, the port's last,
+which said entry 0 was the radar's marker; entry 0 was Zeke's head, and it
+was anchored with the panel, 43 columns left. An OAM no recorded pass
+matches is now read by its look (`ws_screen_by_look`): each screen-space
+record in the visible list is composed and its pieces are matched against
+the entries. On the save, 898 ticks drawn by the ROM: an entry pinned on
+every one before, none after, and the picture right. On `radar11` with F1
+pressed once the radar was up, 199 ticks drawn by the ROM and the marker
+found on each, inside its box. `zamn_test_layers` in 16:9 on `level1`,
+`level25-lane` and `level9-weapons` still OK. Porting `$82:F330` is left
+for its own change.
+
+### The launcher's ammo and lives rows were swapped (2026-09-24)
+
+Found in play-testing, after infinite ammo seemed to stop working partway
+through a game: it had never been on. The Cheats tab's labels listed
+Infinite Lives before Infinite Ammo, and row `S_CHEAT + i` sets the `i`th of
+`config_cheat_names`, which has ammo first. So the row called Infinite Ammo
+wrote `infinite_lives` and the other way round. Each row now names its key
+in `config_cheat_names`, so the order shown is free: Infinite Lives, then
+Infinite Ammo / Uses. Checked by turning on each of the two rows in a scratch
+config with `--press` and saving: only its own key comes on.
+
 ### The launcher draws only when something changes (2026-09-24)
 
 Asked for in play-testing, after the same fault in another launcher: every
