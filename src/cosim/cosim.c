@@ -155,10 +155,11 @@ static void apu_record(void* ctx, uint8_t seq, uint8_t cmd, uint8_t param) {
 
 // ...and the one `run` installs: do it for real, including the wait.
 //
-// **In practice the wait does not happen, and that is load-bearing rather than
-// lucky.** Every substituted caller of this is a sound effect, and a sound effect
-// finds the SPC caught up from sounds ago: the first read already matches and the
-// loop body is never entered. The one path that *would* enter it — a data-set
+// **Mostly the wait does not happen.** A sound effect usually finds the SPC
+// caught up from sounds ago: the first read already matches and the loop body
+// is never entered. Not always: on level 11, with the weed whacker going and
+// plants being cut, the SPC is still busy and the wait runs for dozens of
+// scanlines. The one path that enters it for far longer — a data-set
 // upload's 23,820 back-to-back commands — is why `$80:CCC8` is registered
 // `verify_only`, because no amount of care in here makes a substituted spin work.
 // See `CosimRoutine::verify_only` for the measurement and the argument.
@@ -174,10 +175,25 @@ static void apu_record(void* ctx, uint8_t seq, uint8_t cmd, uint8_t param) {
 // the ROM would have run here are the two this loop stands in for. That it is
 // *still* not enough for an upload is exactly the finding.
 //
+// HDMA fires only if something answers it. The core raises a request once a
+// scanline, as one bool, and each of the ROM's reads answers it through
+// `dma_handleDma`; `snes_runCycles` alone does not. So a wait across many lines
+// did one line's transfer and dropped the rest, and the table fell behind for
+// the rest of the frame: the survivor radar's dimmed box slid down under its
+// frame and flashed. It did on every frame a sound effect had to wait, 94 of 6,996
+// ticks of level 11 with the radar up and the weed whacker cutting plants, up
+// to 46 lines lost, where now the box is on the stock lines on all of them. The
+// same hole `burn_slice` closes, below. Each piece of the wait now answers
+// whatever came due in it, as the read that ends it would, and a piece is
+// shorter than a scanline so none is missed. A request is set in the horizontal
+// blank, and 32 cycles late is still inside it.
+//
 // The bound keeps a wedged SPC from hanging the harness rather than failing it,
 // and it is generous on purpose: `verify` measured the ROM's own worst case at
 // 85,450 master cycles, a frame and a half.
 #define APU_SPIN_LIMIT 262144
+// The longest a real 65816 access takes: see `COSIM_BURN_PIECE`, below.
+#define COSIM_ACCESS_CYCLES 12
 static void apu_drive(void* ctx, uint8_t seq, uint8_t cmd, uint8_t param) {
   Snes* snes = (Snes*)ctx;
   if (g_apu_dry) return;
@@ -186,8 +202,10 @@ static void apu_drive(void* ctx, uint8_t seq, uint8_t cmd, uint8_t param) {
   for (int spun = 0;
        spun < APU_SPIN_LIMIT &&
        snes_readBBus(snes, APU_PORT_SEQ & 0xff) != seq;
-       spun += 32)
+       spun += 32) {
     snes_runCycles(snes, 32);
+    dma_handleDma(snes->dma, COSIM_ACCESS_CYCLES);
+  }
   snes_writeBBus(snes, APU_PORT_CMD & 0xff, cmd);
   snes_writeBBus(snes, APU_PORT_PARAM & 0xff, param);
   snes_writeBBus(snes, APU_PORT_SEQ & 0xff, (uint8_t)(seq + 1));
@@ -695,8 +713,6 @@ static void native_return(Cosim* c, const CosimRoutine* r, const CosimRegs* out)
 // of everything that does not use HDMA is to the cycle what it was.
 #define COSIM_HDMA_AT 1104
 #define COSIM_LINE_CYCLES 1364
-// The longest a real 65816 access takes: see `COSIM_BURN_PIECE`, below.
-#define COSIM_ACCESS_CYCLES 12
 static bool hdma_on(const Dma* dma) {
   for (int i = 0; i < 8; i++)
     if (dma->channel[i].hdmaActive) return true;

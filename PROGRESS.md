@@ -5,6 +5,20 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The radar's box sliding again, on level 11 (2026-09-24)
+
+Reported in play-testing: the dimmed box flashing below the radar's frame on
+level 11, with the weed whacker cutting plants and the player moving. A third
+way into the hole of the 09-20 entry. `apu_drive`, the port's wait for the
+SPC before a sound effect, ran the clock without answering HDMA requests. The
+SPC is nearly always ready, so the wait almost never happens, but the weed
+whacker keeps it busy. Found by counting unanswered requests in the core: all
+were inside `$80:CC3B`, none under `--stock`. Each piece of the wait now
+calls `dma_handleDma`. `zamn_test_layers` on a level 11 movie in 16:9 with the
+cheats, radar up and weed whacker cutting, 6,996 ticks: 94 with the box off
+its lines before, none after. `level1`, `level25-lane`, `level9-weapons`
+still OK.
+
 ### The top scores survive a relaunch (2026-09-18)
 
 Asked for in play-testing: scores were gone at every launch. That is the

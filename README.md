@@ -2100,6 +2100,20 @@ the box is on lines 48 to 105, the `--stock` lines, on every tick of both. The d
 one number that moved is the logos' wave, 1,114 line-ticks eased to 1,113:
 that is HDMA too.
 
+**And a third door: the wait for the sound chip.** Reported again, on
+level 11 with the weed whacker cutting plants. `apu_play_sfx` (`$80:CC3B`)
+is ported, and before it sends a sound effect it waits for the SPC to take
+the last one. The port's wait (`apu_drive`) ran the clock with
+`snes_runCycles` and answered no HDMA request, where each of the ROM's
+`CPY $2143` reads answers one. The SPC is nearly always ready, so the wait
+nearly never happens. With the weed whacker going it is not, and the wait
+ran for dozens of lines. Each piece of the wait now calls `dma_handleDma`
+as a read would. It changes nothing when there is no wait. Measured with the
+draw-list test on 6,996 ticks of level 11 in 16:9, radar up, weed whacker
+cutting: the box was off its lines on 94 ticks before, pushed down or
+stretched as far as 94 lines tall, and is at line 48, 58 lines high, on all
+of them now.
+
 **Backdrops that step every few ticks.** The screens before the game are
 layered and exact, and were not smooth: the LucasArts screen's textured
 backdrop moves a pixel diagonally every *fourth* tick, the character
