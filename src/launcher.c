@@ -2157,6 +2157,9 @@ int main(int argc, char** argv) {
   }
   SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
   SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "linear");
+  // SDL drops the click that brings the window forward; a click on a row or
+  // a button behind another window should do what it says the first time.
+  SDL_SetHint(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1");
   if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) != 0) {
     fprintf(stderr, "error: %s\n", SDL_GetError());
     return 1;

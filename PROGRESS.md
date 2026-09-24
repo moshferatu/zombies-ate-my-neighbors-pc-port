@@ -5,6 +5,15 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The launcher's first click only brought it forward (2026-09-24)
+
+Reported in play-testing: with the launcher behind another window, a click
+on a row or a button only brought it forward, and it took a second click to
+do anything. That is SDL on Windows, which drops the click that activates a
+window unless `SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH` is on
+(`WIN_ShouldIgnoreFocusClick` in `SDL_windowsevents.c`). The launcher now
+sets it.
+
 ### Zeke's head on the radar's panel, on level 15 (2026-09-24)
 
 Reported in play-testing, with a quick save: by the fire in the top left of
