@@ -5,6 +5,21 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The launcher draws only when something changes (2026-09-24)
+
+Asked for in play-testing, after the same fault in another launcher: every
+batch of events was drawn and presented, so a moving mouse kept the launcher
+redrawing at the display's rate, and so did a controller's stick drifting in
+its dead zone. `handle` now says in `ui.redraw` whether the event can have
+changed the screen: a mouse move only when it changes the hovered row or the
+lit option in an open list, or drags a slider; the left stick only when it
+starts or ends a direction; a button or key release and events nothing reads,
+never. The countdown for a binding is drawn when its second changes. Measured
+by moving the cursor over the window about 8,000 times a second for 3
+seconds: 359 ms of CPU within one row and 516 ms across rows before, 94 and
+109 after, about what it uses sitting still. The scripted `--press` and
+`--screenshot` run draws as before.
+
 ### The radar's box sliding again, on level 11 (2026-09-24)
 
 Reported in play-testing: the dimmed box flashing below the radar's frame on

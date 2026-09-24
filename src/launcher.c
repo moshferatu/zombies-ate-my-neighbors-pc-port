@@ -587,6 +587,7 @@ static struct {
   bool capturing;
   int capture_row;
   Uint32 capture_end;
+  int capture_shown;  // the countdown's seconds as last drawn
   int dragging;
   // The open dropdown's row (-1: none), the option lit in it, the first one
   // in sight, and where its box was drawn.
@@ -600,6 +601,12 @@ static struct {
   int pad_style;
   int held_dir, stick_x, stick_y;
   Uint32 held_next;
+  // Whether the event just handled can have changed what is on screen. A
+  // mouse moving within a row, a stick drifting inside its dead zone and the
+  // events nothing here reads do not, and drawing and presenting on every
+  // one of them kept the launcher redrawing at the display's rate while the
+  // mouse moved.
+  bool redraw;
 } ui;
 
 static void say(bool bad, const char* fmt, ...) {
@@ -975,6 +982,10 @@ static void set_path(int id, const char* path) {
     changed();
   }
 }
+
+// The whole seconds left to press something, rounded up, as the countdown
+// shows them.
+static int capture_left(void) { return (int)((ui.capture_end - SDL_GetTicks() + 999) / 1000); }
 
 static void start_capture(int i) {
   const Row* r = row_at(i);
@@ -1529,7 +1540,8 @@ static void draw_bindings(int i, const Row* r, float x, float y, float w, float 
     }
   }
   if (ui.capturing && ui.capture_row == i) {
-    const int left = (int)((ui.capture_end - SDL_GetTicks() + 999) / 1000);
+    const int left = capture_left();
+    ui.capture_shown = left;
     char msg[64];
     snprintf(msg, sizeof msg, r->kind == K_KEYS ? "Press a key... %d" : "Press a button... %d", left);
     const float cw = text_width(&ui.body, msg) + L(20);
@@ -1860,9 +1872,11 @@ static void hold(int dir) {
   go(dir);
 }
 
-// True when the launcher is done.
+// True when the launcher is done. Says in `ui.redraw` whether it needs drawing.
 static bool handle(const SDL_Event* e) {
-  // A binding being waited for takes what comes first.
+  ui.redraw = true;
+  // A binding being waited for takes what comes first. Its countdown is
+  // drawn by the loop, so only its end is a reason to draw here.
   if (ui.capturing) {
     const Row* r = row_at(ui.capture_row);
     if (e->type == SDL_MOUSEBUTTONDOWN) { ui.capturing = false; return false; }
@@ -1877,7 +1891,10 @@ static bool handle(const SDL_Event* e) {
         if (e->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) capture_pad(PAD_IN_RTRIGGER);
       }
     }
-    if (e->type != SDL_QUIT) return false;
+    if (e->type != SDL_QUIT) {
+      ui.redraw = !ui.capturing;
+      return false;
+    }
   }
 
   switch (e->type) {
@@ -1910,10 +1927,14 @@ static bool handle(const SDL_Event* e) {
       if (ui.dragging >= 0) { slide_to(ui.dragging, e->motion.x); return false; }
       const Hot* h = hit(e->motion.x, e->motion.y);
       if (ui.drop_row >= 0) {
+        const int was = ui.drop_sel;
         if (h && h->part == P_OPTION) ui.drop_sel = h->index;
+        ui.redraw = ui.drop_sel != was;
         return false;
       }
+      const int was = ui.hover;
       ui.hover = h && h->row >= 0 ? h->row : -1;
+      ui.redraw = ui.hover != was;
       return false;
     }
     case SDL_MOUSEBUTTONDOWN:
@@ -1921,6 +1942,7 @@ static bool handle(const SDL_Event* e) {
       return false;
     case SDL_MOUSEBUTTONUP:
       ui.dragging = -1;
+      ui.redraw = false;
       return false;
     case SDL_MOUSEWHEEL:
       if (ui.drop_row >= 0) {
@@ -1969,9 +1991,12 @@ static bool handle(const SDL_Event* e) {
     case SDL_CONTROLLERBUTTONUP:
       if (e->cbutton.button >= SDL_CONTROLLER_BUTTON_DPAD_UP && e->cbutton.button <= SDL_CONTROLLER_BUTTON_DPAD_RIGHT)
         ui.held_dir = DIR_NONE;
+      ui.redraw = false;
       return false;
     case SDL_CONTROLLERAXISMOTION: {
-      // The left stick as a D-pad, with the same repeat.
+      // The left stick as a D-pad, with the same repeat. Only a move that
+      // starts or ends a direction is drawn: `hold` moves the focus.
+      ui.redraw = false;
       if (e->caxis.axis == SDL_CONTROLLER_AXIS_LEFTX) ui.stick_x = e->caxis.value;
       else if (e->caxis.axis == SDL_CONTROLLER_AXIS_LEFTY) ui.stick_y = e->caxis.value;
       else return false;
@@ -1984,6 +2009,7 @@ static bool handle(const SDL_Event* e) {
       if (dir != ui.held_dir) {
         if (dir) hold(dir);
         else ui.held_dir = DIR_NONE;
+        ui.redraw = true;
       }
       return false;
     }
@@ -2067,7 +2093,9 @@ static bool handle(const SDL_Event* e) {
       }
       return false;
     }
-    default: return false;
+    // Joystick events beside the controller's own, touchpad, key releases and
+    // the rest: nothing here reads them.
+    default: ui.redraw = false; return false;
   }
 }
 
@@ -2205,18 +2233,29 @@ int main(int argc, char** argv) {
     }
     // Asleep until something happens, but awake for a countdown or a held
     // direction, which happen without an event.
+    // Drawn only when something on screen may have changed.
     const int wait = ui.held_dir ? 16 : ui.capturing ? 100 : 1000;
+    bool redraw = false;
     if (SDL_WaitEventTimeout(&e, wait)) {
       done = handle(&e);
-      while (!done && !game && SDL_PollEvent(&e)) done = handle(&e);
+      redraw |= ui.redraw;
+      while (!done && !game && SDL_PollEvent(&e)) {
+        done = handle(&e);
+        redraw |= ui.redraw;
+      }
     }
     const Uint32 now = SDL_GetTicks();
-    if (ui.capturing && (Sint32)(now - ui.capture_end) >= 0) ui.capturing = false;
+    if (ui.capturing && (Sint32)(now - ui.capture_end) >= 0) {
+      ui.capturing = false;
+      redraw = true;
+    }
+    if (ui.capturing && capture_left() != ui.capture_shown) redraw = true;
     if (ui.held_dir && (Sint32)(now - ui.held_next) >= 0) {
       go(ui.held_dir);
       ui.held_next = now + 70;
+      redraw = true;
     }
-    if (!done) {
+    if (!done && redraw) {
       draw();
       SDL_RenderPresent(ui.ren);
     }
