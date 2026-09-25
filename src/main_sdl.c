@@ -1315,6 +1315,8 @@ int main(int argc, char** argv) {
   // — see `widescreen.h` on why the margins are drawn from a tick-old memory.
   static Widescreen ws;
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
+  cosim_watch(&cosim, WS_PASS_DONE_AT, widescreen_pass_done, &ws);
+  cosim_watch(&cosim, WS_OAM_SENT_AT, widescreen_oam_sent, &ws);
   // The flash along the bottom edge as the game over begins (`src/maskline.h`):
   // the game's own, and only ever hidden by a television's overscan. The same
   // jobs on the same frames in another order, so a movie plays the same.
@@ -2054,6 +2056,7 @@ int main(int argc, char** argv) {
           const QuickLoad got = quicksave_read(&quick, snes, parts, part_count);
           if (got == QUICKLOAD_OK) {
             cosim_forget_calls(&cosim);
+            widescreen_forget_passes(&ws);
             // The smoothing: the tick being shown and the first one after the
             // load are not neighbours, so the link between them is cut when it
             // comes to be made (`lay_cut`), and the owner table the next

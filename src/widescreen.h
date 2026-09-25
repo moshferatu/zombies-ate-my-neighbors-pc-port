@@ -514,6 +514,21 @@ typedef struct {
   int margin;  // game pixels per side, 0 when widescreen is off
   uint8_t mem[0x20000];
   bool have_mem;
+  // ...and the memory the *sprites* on screen were composed from, which is not
+  // the same thing. `mem` is copied at the top of the picture, and on a tick
+  // the game runs long that lands part way through it: the camera moved and
+  // the records not yet, or the other way about. The margins' sprites were
+  // drawn from that, so on those ticks they stood a step away from the
+  // console's, and how far depended on how long the tick had taken to get
+  // there. `pass_mem` is copied when the sprite pass ends and `sprite_mem`
+  // from it when the NMI sends the OAM that pass built, so the margins and the
+  // middle are drawn from the same moment whatever the timing. See
+  // `widescreen_pass_done`.
+  uint8_t pass_mem[0x20000];
+  uint8_t sprite_mem[0x20000];
+  bool have_sprite_mem;
+  bool pass_new;    // a pass has ended since the last OAM was sent
+  int sends_stale;  // OAM sent since then, with no pass ended in between
   uint16_t lent_frame[WS_LENT_MAX];
   int lent_slot[WS_LENT_MAX];
   int lent_count;
@@ -538,6 +553,12 @@ typedef struct {
 // `$00000-$0FFFF` and bank `$7F` is `$10000-$1FFFF`.
 static inline uint16_t ws_r16(const uint8_t* mem, uint32_t off) {
   return (uint16_t)(mem[off & 0x1ffff] | (mem[(off + 1) & 0x1ffff] << 8));
+}
+
+// What the sprite code reads: the pass's own memory once there is one, and the
+// top-of-picture copy until then (the first frames, and after a quick load).
+static inline const uint8_t* ws_sprite_mem(const Widescreen* ws) {
+  return ws->have_sprite_mem ? ws->sprite_mem : ws->mem;
 }
 
 // `EOR #$FFFF : SEC : SBC #$000F`, the mirror the flipped emitters apply to a
@@ -632,7 +653,7 @@ static inline void ws_return_slots(Snes* snes, Widescreen* ws) {
 // Either way the game's own tables are not touched: it is not told that a slot
 // has changed, because by the time it could look, it has not.
 static inline int ws_lend_slot(Snes* snes, Widescreen* ws, uint16_t frame) {
-  const uint16_t entry = ws_r16(ws->mem, W_FRAME_SLOT + (uint32_t)frame * 2);
+  const uint16_t entry = ws_r16(ws_sprite_mem(ws), W_FRAME_SLOT + (uint32_t)frame * 2);
   if (!(entry & 0x8000)) return sprite_slot_tile(entry / 2);
 
   for (int i = 0; i < ws->lent_count; i++)
@@ -735,7 +756,7 @@ static inline int ws_emit_meta(Snes* snes, Widescreen* ws, int slot, int rec,
 // what the states mean.
 static inline int ws_object_sprites(Snes* snes, Widescreen* ws, int slot,
                                     int left, int right) {
-  const uint8_t* mem = ws->mem;
+  const uint8_t* mem = ws_sprite_mem(ws);
   const uint16_t cam_x = ws_r16(mem, W_CAMERA_X);
   const uint16_t cam_y = ws_r16(mem, W_CAMERA_Y);
 
@@ -775,7 +796,7 @@ static inline int ws_object_sprites(Snes* snes, Widescreen* ws, int slot,
 static inline bool ws_record_draw(const Widescreen* ws, uint16_t rec, SpriteMeta* meta,
                                   int16_t* ox, int16_t* oy, uint16_t* attr_or,
                                   uint16_t* attr_and, uint16_t* flags_out) {
-  const uint8_t* mem = ws->mem;
+  const uint8_t* mem = ws_sprite_mem(ws);
   const uint16_t flags = ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS);
   if (!(flags & ACTOR_DRAW)) return false;
 
@@ -805,7 +826,7 @@ static inline bool ws_record_draw(const Widescreen* ws, uint16_t rec, SpriteMeta
 // into the OAM entries the game's own pass left parked. See the header.
 static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
                                      int right) {
-  const uint8_t* mem = ws->mem;
+  const uint8_t* mem = ws_sprite_mem(ws);
   const uint16_t count = ws_r16(mem, W_VISIBLE_ACTOR_COUNT);
   int slot = snes_freeSprite(snes, 0);
   ws->lent_count = 0;
@@ -910,7 +931,7 @@ static inline const SpriteOamOwners* ws_pass_on_screen(const Snes* snes, Widescr
 // rest. Entries the margins filled are theirs, as with a table.
 static inline void ws_screen_by_look(const Snes* snes, const Widescreen* ws, bool screen[OAM_ENTRIES]) {
   memset(screen, 0, OAM_ENTRIES * sizeof screen[0]);
-  const uint8_t* mem = ws->mem;
+  const uint8_t* mem = ws_sprite_mem(ws);
   const uint16_t count = ws_r16(mem, W_VISIBLE_ACTOR_COUNT);
   for (uint16_t cur = 0; cur < count; cur += 2) {
     const uint16_t rec = ws_r16(mem, W_VISIBLE_ACTORS + cur);
@@ -985,7 +1006,7 @@ static inline const SpriteOamOwners* ws_owners(const Widescreen* ws, const Sprit
 }
 
 static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, int place) {
-  const uint8_t* mem = ws->mem;
+  const uint8_t* mem = ws_sprite_mem(ws);
   if (place == ppu_spriteWorld) {
     for (int s = 0; s < OAM_ENTRIES; s++) snes_setSpritePlace(snes, s, ppu_spriteWorld);
     return;
@@ -1129,7 +1150,9 @@ static inline bool ws_konami_sweep(const Snes* snes) {
 
 // but for the columns the console never had. Everything read here comes from
 // `ws->mem`, the memory that picture was composed from, which is a tick behind
-// the memory the game is running on now.
+// the memory the game is running on now. The sprites read the sprite pass's
+// own copy instead (`ws_sprite_mem`), which is the same thing on a tick that
+// finished in time and the right thing on one that did not.
 static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   const uint8_t* mem = ws->mem;
   const int margin = ws->margin;
@@ -1355,6 +1378,52 @@ static inline void widescreen_hook(Snes* snes, void* ctx) {
   blood_frame(snes, &ws->blood);
   memcpy(ws->mem, snes->ram, sizeof ws->mem);
   ws->have_mem = true;
+}
+
+// The two moments the sprites on screen are fixed at, both the game's own, and
+// both heard through `cosim_watch` so that the ROM's pass and the port's are
+// heard alike: the `RTL` that ends `sprite_build_oam`, and the vblank job's
+// OAM transfer (`$80:B99B STZ $2102`, which every NMI reaches, the tile
+// uploads above it or not). The pass's memory is what its buffer was built
+// from, and the transfer is when that buffer becomes the picture; a pass the
+// NMI cuts into is not sent until it has ended, so the copy sent is always the
+// newest pass to have finished.
+#define WS_PASS_DONE_AT 0x80bde2u
+#define WS_OAM_SENT_AT 0x80b99bu
+
+static inline void widescreen_pass_done(Snes* snes, void* ctx) {
+  Widescreen* ws = (Widescreen*)ctx;
+  memcpy(ws->pass_mem, snes->ram, sizeof ws->pass_mem);
+  ws->pass_new = true;
+}
+
+// A tick the game runs long sends the same OAM again, so a send with no pass
+// behind it keeps the copy it has. Only for a few: anything that ever built
+// OAM without `sprite_build_oam` would otherwise leave the margins drawn from
+// a moment that had stopped moving, and the top-of-picture copy is the older
+// behaviour and a safe one.
+#define WS_PASS_STALE_SENDS 8
+
+static inline void widescreen_oam_sent(Snes* snes, void* ctx) {
+  (void)snes;
+  Widescreen* ws = (Widescreen*)ctx;
+  if (!ws->pass_new) {
+    if (++ws->sends_stale >= WS_PASS_STALE_SENDS) ws->have_sprite_mem = false;
+    return;
+  }
+  ws->pass_new = false;
+  ws->sends_stale = 0;
+  memcpy(ws->sprite_mem, ws->pass_mem, sizeof ws->sprite_mem);
+  ws->have_sprite_mem = true;
+}
+
+// After a quick load: both copies belong to the machine that is gone, and the
+// top-of-picture copy stands in until the next pass is sent. They are not in
+// the save, so a save made before them still loads.
+static inline void widescreen_forget_passes(Widescreen* ws) {
+  ws->have_sprite_mem = false;
+  ws->pass_new = false;
+  ws->sends_stale = 0;
 }
 
 // Hang the above off the machine's frame start. `ws` must outlive `snes`.

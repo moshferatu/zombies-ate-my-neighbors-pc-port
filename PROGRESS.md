@@ -5,6 +5,48 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Margin sprites from the pass on screen, and why level 25 parts (2026-09-25)
+
+**The margins' sprites are drawn from the memory the sprite pass on screen
+was built from.** They used to be drawn from a copy of work RAM taken at the
+top of the picture. On a tick the game runs long, that copy lands part way
+through the tick, so a thing in the margin could stand a step from where the
+console drew its neighbours for one frame. A key in the margin showed it as
+a one-frame jump of a pixel or two. How far depended on how long the tick had
+taken, so stock and native disagreed there too.
+
+Now the widescreen copies work RAM when `sprite_build_oam` returns, at
+`$80:BDE2`, and promotes that copy when the NMI's job sends OAM, at
+`$80:B99B`. Both are the game's own events. A new harness call,
+`cosim_watch`, reports them the same way whether the ROM ran the routine or
+the port did. Eight sends with no pass behind them fall back to the old copy,
+so nothing can freeze the margins. A quick load forgets both copies. They are
+not in the save file, so existing quick saves still load.
+
+* **Checked.** The stock-against-native picture compare in widescreen:
+  `level25-lane` frames 5,000 to 5,600 goes from 3 differing frames to 0, in
+  16:9 and in 21:9. `level25-heavy` frames 2,600 to 4,400 goes from 6 to 3 in 16:9 and from 8 to
+  4 in 21:9. What is left there is the top few rows, and OAM is identical in
+  both runs on every frame. On `level25-heavy` the port's pictures did not
+  change at all: stock's moved to meet them. Levels 1, 21 and 45 still match
+  exactly. The fallback fired only during boot and level loads, where there
+  is no pass. `zamn_test_layers` gives output identical to the
+  last commit's on `level1-keys`, `level1-rescue`, `level21-spin`,
+  `level45-bonus`, `level25-heavy` and `level25-lane`, in 16:9 and 21:9.
+  `level1.zmv`'s frame-step check passes in 4:3 and 16:9.
+
+**Level 25 still parts between stock and native, and that is being left.**
+`level25-boss.zmv` plays the same until frame 3,126 and parts at 3,129, with
+widescreen off too. The game state is never wrong, and with nothing
+substituted the two runs match through 4,400 frames. What parts them is the
+cycle budgets: 54 routines still burn a measured mean, HDMA realigns as if
+every access were 12 cycles, and an NMI during a budget is taken at a
+12-cycle slice rather than at an instruction's end. The last two cannot be
+made exact while routines are substituted into the emulator, and all three go
+away when the game runs outside it. Until then, a picture compare on level 25
+is expected to part, and to show a few rows of tearing at different lines
+first. See `docs/cosim.md`, "Why native and stock part on level 25".
+
 ### Four thread bodies and the reset's WRAM clear (2026-09-25)
 
 Step three of the Devil's Crush path, first half. Four thread bodies are

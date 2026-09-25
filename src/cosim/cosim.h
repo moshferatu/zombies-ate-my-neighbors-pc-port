@@ -736,6 +736,16 @@ typedef struct {
 
 // (`cosim_share` and `cosim_share_report` are declared below `Cosim`.)
 
+// An instruction of the ROM's that something outside the harness wants to know
+// the machine has reached -- see `cosim_watch`.
+typedef void (*CosimWatchFn)(Snes* snes, void* ctx);
+typedef struct {
+  uint32_t pc;
+  CosimWatchFn fn;
+  void* ctx;
+} CosimWatch;
+#define COSIM_MAX_WATCHES 4
+
 typedef struct {
   Snes* snes;
   Rom rom;
@@ -767,6 +777,10 @@ typedef struct {
   // see `src/cosim/profile.h`. NULL, and then free, unless set; the caller owns
   // it, allocates it, saves it and frees it.
   struct CosimProfile* profile;
+
+  // See `cosim_watch`.
+  CosimWatch watches[COSIM_MAX_WATCHES];
+  int watch_count;
 } Cosim;
 
 // Reduce `c->work` to shares. Safe with an empty run: everything reads 0.
@@ -790,6 +804,18 @@ void cosim_step(Cosim* c);
 
 // Step to the end of the current frame, as the reference core defines a frame.
 void cosim_frame(Cosim* c);
+
+// Call `fn` whenever the CPU is about to execute the instruction at `pc`. False
+// if there is no room for another.
+//
+// It fires the same in every mode, and for a substituted routine's `ret_op`
+// that is the point: the core still executes that instruction, once the budget
+// is spent, so a watch on it hears the routine end at the moment the ROM's
+// version would have, with its results in memory. It is how the widescreen
+// learns when the sprite pass has finished and when the NMI sends its OAM
+// (`widescreen_pass_done`), which are the game's own events and not the
+// frame's, so what it copies does not depend on how long anything took.
+bool cosim_watch(Cosim* c, uint32_t pc, CosimWatchFn fn, void* ctx);
 
 // True between frames when the harness holds nothing of its own -- no call on
 // its stack, no budget part burned -- so that `snes_saveState` has the lot.

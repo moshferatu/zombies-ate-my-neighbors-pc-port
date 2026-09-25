@@ -1286,6 +1286,20 @@ it against the OAM entry it actually produced, in order, and **13,641 pieces
 over 926 frames match to the word** — position, tile, palette, priority and
 flip. Against the live memory, 7,629 of them did not.
 
+**...except on a tick the game runs long.** The frame-start copy is right when
+the tick before it has finished by then, and on a busy stretch of level 25 it
+has not: the copy lands part way through, with the camera moved and the records
+not yet, or a record turned and not yet moved. The margins' sprites were drawn
+from that, a step from the console's, for one frame. A key in the margin
+jumped a pixel or two, and a spider across the console's edge showed two poses.
+How far off it was depended on how long the tick had taken, so stock and the
+port disagreed about it as well. So the sprites have a copy of their own:
+taken when `sprite_build_oam` returns, and made current when the NMI's job
+sends the OAM that pass built (`$80:B99B`). Both are the game's own moments,
+heard through `cosim_watch` whichever side ran the pass, so the margins are
+drawn from exactly what the middle was drawn from. The backgrounds keep the
+frame-start copy.
+
 **The graphics are not loaded, because nothing asked for them.** A 16x16 frame
 is only in VRAM if something drew it: the lookup that resolves a frame to a tile
 (`$80:B9D6`) is what uploads it, and a piece dropped by the test above never

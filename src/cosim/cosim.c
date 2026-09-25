@@ -1478,6 +1478,9 @@ static void cosim_step_inner(Cosim* c) {
   if (at_instruction(snes)) {
     uint32_t pc = cpu_pc24(snes);
 
+    for (int i = 0; i < c->watch_count; i++)
+      if (c->watches[i].pc == pc) c->watches[i].fn(snes, c->watches[i].ctx);
+
     // The ROM is about to put a command on the APU's ports. Logged only inside
     // an interception, because that is the only window anything compares. Since
     // `apu_send` was registered, a data-set upload's 23,820 commands each arrive
@@ -1691,6 +1694,12 @@ void cosim_step(Cosim* c) {
       cosim_profile_entry(c->profile, cpu_pc24(snes));
     }
   }
+}
+
+bool cosim_watch(Cosim* c, uint32_t pc, CosimWatchFn fn, void* ctx) {
+  if (c->watch_count == COSIM_MAX_WATCHES) return false;
+  c->watches[c->watch_count++] = (CosimWatch){pc, fn, ctx};
+  return true;
 }
 
 void cosim_frame(Cosim* c) {

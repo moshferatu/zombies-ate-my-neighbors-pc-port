@@ -14433,3 +14433,58 @@ every call. Lockstep is unchanged from the last pass on 49 movies, to the
 cycle, the level-25 partings included. The fiftieth is `level21-exit.zmv`,
 which hung last time and compared nothing. It now runs 4,088 passes without
 parting, and why has not been looked into.
+
+## Why native and stock part on level 25, and why that is left (2026-09-25)
+
+`zamn.exe` and `zamn.exe --stock` play `movies/level25-boss.zmv` identically
+until frame 3,126. At frame 3,129 the two pictures part for good, with
+widescreen off as well as on. Nothing the port computes is wrong: `verify` on
+the movie is clean, and no byte of game state differs before 3,126. With
+nothing substituted, the two runs match byte for byte through all 4,400
+frames, so the comparison is sound.
+
+What parts them is time. A substituted routine is paid for with a cycle
+budget, and three things keep that budget from being the ROM's to the cycle.
+The instrument that shows them is the beam position when the CPU reaches the
+scheduler's `WAI`, frame by frame, in both runs. Where the two differ, a log
+of every call and return in that frame names the routine.
+
+1. **Declared means.** 54 routines the movie reaches still burn the mean
+   `verify` measured, not a count. Their drift over 3,200 frames nets to
+   -2.64 frames, and one frame's worth of it is enough to change whether a
+   busy tick overruns its vblank. Handing all 54 back to the ROM moves the
+   parting from 3,129 to about 3,916. It does not remove it, because of the
+   other two.
+2. **HDMA.** When a line's HDMA falls inside a CPU access, the core
+   realigns afterwards to that access's length. `burn_slice` has no access
+   to offer and passes 12, and the ROM's accesses are mostly 6 or 8.
+   `wave_hdma_build`, the level's wave, spans about 120 lines of HDMA and
+   came back 982 cycles late at frame 989. Passing 8 makes it 470 and 6
+   makes it 228. No constant makes it 0, because the right figure is the
+   length of whichever ROM instruction would have been running.
+3. **Interrupts.** A budget takes an NMI at the end of a 12-cycle slice,
+   and the ROM takes it at the end of an instruction. The handler starts 4
+   to 40 cycles apart on the frames this happens. The budget itself is not
+   disturbed, and the next `WAI` puts the two back in step, but a handler
+   that runs past vblank does its late writes at a different beam position.
+   The baby's top three rows at frame 2,792 differ that way, with the game
+   state identical on both sides.
+
+The first is fixable one model at a time, and the other two are not while
+routines are substituted into the emulator: both need the instruction
+boundaries of code that is not running. They go away when the game runs
+outside the emulator. Until then, **a stock-against-native picture compare
+on level 25 is expected to part, and to show a few rows of tearing at
+different lines before it does.** The movies compared on levels 1, 21 and 45
+did not part.
+
+Two smaller findings from the same measurements:
+
+* **`lzss_decompress`'s model is exact.** Measured against the ROM's own
+  instructions on all five calls `level25-boss.zmv` makes, the error is
+  48,040, 184,160, 285,240, 390,000 and 736,240 cycles: each a whole number
+  of DRAM refreshes, the model's intended residue.
+* **Lockstep parts at pass 1,024 (frame 212) with `lzss_decompress` in, and
+  not with it out.** `zamn.exe` does not: its two runs never differ in the
+  core's frame count. So this parting is lockstep's own, and why has not
+  been looked into.

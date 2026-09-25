@@ -175,6 +175,8 @@ int main(int argc, char** argv) {
   Cosim cosim;
   cosim_init(&cosim, snes, COSIM_NATIVE);
   if (!stock) cosim_enable_all(&cosim);
+  cosim_watch(&cosim, WS_PASS_DONE_AT, widescreen_pass_done, &ws);
+  cosim_watch(&cosim, WS_OAM_SENT_AT, widescreen_oam_sent, &ws);
 
   LayersFrame* frames[2];
   frames[0] = (LayersFrame*)calloc(1, sizeof(LayersFrame));
