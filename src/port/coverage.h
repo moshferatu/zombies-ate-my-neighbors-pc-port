@@ -335,6 +335,49 @@
   X(boss_died,        "boss_9660_collide",   "the hit that took its last health, which ends its thread's loop") \
   X(boss_no_damage,   "boss_9660_collide",   "a hit whose damage-table entry is zero") \
   X(boss_survived,    "boss_9660_collide",   "one it lived through, and the only path that stores health") \
+  /* $82:AA2E boss_aa2e_collide — records 20, 40 and 47. */                      \
+  X(aa2e_invulnerable,"boss_aa2e_collide",   "its own record wearing id $00 or $09, which refuses every hit") \
+  X(aa2e_flashing,    "boss_aa2e_collide",   "...or $4C still running from the last hit") \
+  X(aa2e_ignore,      "boss_aa2e_collide",   "an id below a weapon shot's, which it ignores") \
+  X(aa2e_immune,      "boss_aa2e_collide",   "id $60, parked and then refused") \
+  X(aa2e_toss_cheap,  "boss_aa2e_collide",   "id $70 or $5F on a tick with the low two bits clear, answered as $5C") \
+  X(aa2e_toss_dear,   "boss_aa2e_collide",   "...and on any other tick, answered as $5D") \
+  X(aa2e_as_5c,       "boss_aa2e_collide",   "id $6F or $62, always answered as $5C") \
+  X(aa2e_remap_61,    "boss_aa2e_collide",   "id $61, always answered as $66") \
+  X(aa2e_hit,         "boss_aa2e_collide",   "a hit that reached the damage path, whatever it then did") \
+  X(aa2e_died,        "boss_aa2e_collide",   "the hit that took its last health: DEC $46, health not stored") \
+  X(aa2e_no_damage,   "boss_aa2e_collide",   "a hit whose damage-table entry is zero") \
+  X(aa2e_survived,    "boss_aa2e_collide",   "one it lived through, and the only path that stores health") \
+  /* The last six handlers the dispatcher declined on. */                         \
+  X(f330_counted,     "actor_f330_collide",  "id $5D, $62, $5C or $65, which DECs $10 and sets carry") \
+  X(f330_park,        "actor_f330_collide",  "id $FF, which sets carry and nothing else") \
+  X(f330_ignore,      "actor_f330_collide",  "anything else") \
+  X(a638_park,        "actor_a638_collide",  "id $FF, which DECs $2A and sets carry") \
+  X(a638_ignore,      "actor_a638_collide",  "anything else") \
+  X(a84ac_ignore,     "actor_84ac_collide",  "an id below a weapon shot's") \
+  X(a84ac_other,      "actor_84ac_collide",  "a shot other than $62, whose parked id is cleared again") \
+  X(a84ac_running,    "actor_84ac_collide",  "id $62 while $32 is not negative") \
+  X(a84ac_took,       "actor_84ac_collide",  "id $62 with $32 negative: $32 = 4, DEC $30, carry set") \
+  X(b95f_ignore,      "enemy_b95f_collide",  "an id below a weapon shot's") \
+  X(b95f_fatal_id,    "enemy_b95f_collide",  "id $5D, which reaches the death tail without subtracting") \
+  X(b95f_died,        "enemy_b95f_collide",  "a hit that took its last health") \
+  X(b95f_no_damage,   "enemy_b95f_collide",  "a hit whose damage-table entry is zero") \
+  X(b95f_survived,    "enemy_b95f_collide",  "one it lived through, into $81:8506") \
+  X(eff0_ignore,      "enemy_eff0_collide",  "an id below a weapon shot's") \
+  X(eff0_bubble,      "enemy_eff0_collide",  "id $5E, into $81:83C6") \
+  X(eff0_freeze,      "enemy_eff0_collide",  "id $5D, into $81:847E") \
+  X(eff0_toss_5c,     "enemy_eff0_collide",  "id $70 on an odd tick, answered as $5C") \
+  X(eff0_toss_5d,     "enemy_eff0_collide",  "...and on an even one, answered as $5D") \
+  X(eff0_hit,         "enemy_eff0_collide",  "a hit, stored however low it goes, into $81:8506") \
+  X(c8c3_player,      "actor_c8c3_collide",  "raw id $05 or $06, a player, into $81:C6EC") \
+  X(c8c3_bubble,      "actor_c8c3_collide",  "id $5E, into $81:83C6") \
+  X(c8c3_freeze,      "actor_c8c3_collide",  "id $5D, into $81:847E") \
+  X(c8c3_61,          "actor_c8c3_collide",  "id $61, which DECs $22") \
+  X(c8c3_68,          "actor_c8c3_collide",  "id $68, which counts at $1FC4 and turns to face the shot") \
+  X(c8c3_face_left,   "actor_c8c3_collide",  "...with the other record left of $0C, so the mirror bit is set") \
+  X(c8c3_face_right,  "actor_c8c3_collide",  "...or not, so it is cleared") \
+  X(c8c3_ignore,      "actor_c8c3_collide",  "a masked id below a weapon shot's") \
+  X(c8c3_shot,        "actor_c8c3_collide",  "any other shot, into $81:C6EC") \
                                                                                 \
   /* $81:847E enemy_freeze — where every copy of $81:8888 sends id $5D. */       \
   X(enemy_hit_freeze, "enemy_collide",       "id $5D, the ice weapon — served by enemy_freeze") \

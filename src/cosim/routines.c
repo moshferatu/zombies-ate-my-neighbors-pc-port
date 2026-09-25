@@ -1864,6 +1864,62 @@ static void shim_boss_9660_collide(Wram* w, const Rom* rom, const CosimRegs* in,
   handler_regs(&r, out);
 }
 
+// $82:AA2E  boss_aa2e_collide — the same shape again, and no guard.
+static void shim_boss_aa2e_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  boss_aa2e_collide(w, rom, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+// The last six handlers the dispatcher declined on. None declares a guard:
+// every routine they reach is ported or inlined.
+static void shim_actor_f330_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  actor_f330_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+static void shim_actor_a638_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  actor_a638_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+static void shim_actor_84ac_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  actor_84ac_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+static void shim_enemy_b95f_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_b95f_collide(w, rom, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+static void shim_enemy_eff0_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  enemy_eff0_collide(w, rom, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
+static void shim_actor_c8c3_collide(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
+  actor_c8c3_collide(w, in->d, in->a, &r);
+  handler_regs(&r, out);
+}
+
 // ---------------------------------------------------------------------------
 // $81:FE0E  shot_collide — the same argument again, on a weapon shot's page
 // ---------------------------------------------------------------------------
@@ -5237,6 +5293,22 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 2,
     },
     {
+        // `$81:D7F6`'s sixty-four bytes again, one bank over — see
+        // `ENEMY_9A6D_COLLIDE_ENTRY`. Same port, same guard and same shim; its
+        // own entry so `verify` offers it the calls made to this address.
+        .name = "enemy_9a6d",
+        .symbol = "$82:9A6D",
+        .entry = 0x829a6d,
+        .ret_op = 0x829a73,  // the ignore path's bare `RTL`, as above
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_d7f6_collide,
+        .supported = guard_enemy_d7f6_collide,
+        // Measured 84..1196, mean 95, over the 829 calls a sweep of record 0
+        // makes (`zamn_cosim verify --level 0`).
+        .cycles = 95,
+        .stack_bytes = 2,
+    },
+    {
         .name = "enemy_9b6b",
         .symbol = "$81:9B6B",
         .entry = 0x819b6b,
@@ -5601,6 +5673,81 @@ static const CosimRoutine ROUTINES[] = {
         // of the 10,112 marks land there.
         .cycles = 264,
         .stack_bytes = 0,  // it calls nothing and pushes nothing
+    },
+    {
+        .name = "boss_aa2e",
+        .symbol = "$82:AA2E",
+        .entry = 0x82aa2e,
+        // `$82:AA48`, the refusals' `CLC : RTL`, for `boss_9660`'s reason.
+        .ret_op = 0x82aa48,
+        .ret_kind = COSIM_RTL,
+        .run = shim_boss_aa2e_collide,
+        // Measured 234..868, mean 274, over 3,978 calls on records 20, 40 and
+        // 47. The spread is `boss_9660`'s: refusals against the long read of
+        // `ENEMY_DAMAGE_TABLE`.
+        .cycles = 274,
+        .stack_bytes = 0,  // it calls nothing and pushes nothing
+    },
+    {
+        .name = "actor_f330",
+        .symbol = "$82:F330",
+        .entry = 0x82f330,
+        .ret_op = 0x82f34f,  // the `CLC : RTL`'s bare `RTL`
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_f330_collide,
+        .cycles = 253,  // measured 250..262 over 20 calls, records 31 and 36
+        .stack_bytes = 0,
+    },
+    {
+        .name = "actor_a638",
+        .symbol = "$81:A638",
+        .entry = 0x81a638,
+        .ret_op = 0x81a63e,
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_a638_collide,
+        .cycles = 143,  // measured 140..146 over the 2 calls record 48 makes
+        .stack_bytes = 0,
+    },
+    {
+        .name = "actor_84ac",
+        .symbol = "$82:84AC",
+        .entry = 0x8284ac,
+        .ret_op = 0x8284c0,
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_84ac_collide,
+        .cycles = 102,  // measured 102 over the 5 calls record 12 makes
+        .stack_bytes = 0,
+    },
+    {
+        .name = "enemy_b95f",
+        .symbol = "$81:B95F",
+        .entry = 0x81b95f,
+        .ret_op = 0x81b965,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_b95f_collide,
+        .cycles = 92,  // measured 84..124 over the 15 calls record 36 makes
+        .stack_bytes = 0,  // a survivor leaves through `$81:8506`, which pushes nothing
+    },
+    {
+        .name = "enemy_eff0",
+        .symbol = "$82:EFF0",
+        .entry = 0x82eff0,
+        .ret_op = 0x82eff6,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_eff0_collide,
+        .cycles = 109,  // measured 84..1180 over the 648 calls record 39 makes
+        .stack_bytes = 0,
+    },
+    {
+        .name = "actor_c8c3",
+        .symbol = "$81:C8C3",
+        .entry = 0x81c8c3,
+        .ret_op = 0x81c8fa,
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_c8c3_collide,
+        .cycles = 295,  // measured 228..444 over 28 calls, records 12 and 47
+        // `JSR $C6EC` pushes 2; id `$68`'s `JSL $80:9D6A` pushes 3.
+        .stack_bytes = 3,
     },
     {
         .name = "shot_collide",

@@ -5,6 +5,35 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Every collision handler the records install (2026-09-24)
+
+The eight handlers the residue named are ported, so a sweep of all 56 records
+no longer sends a sprite pass back to the ROM for a missing handler. See
+`docs/cosim.md`, "Every handler the records install".
+
+* **`$82:9A6D` is `$81:D7F6`, byte for byte**, and both addresses route to
+  `enemy_d7f6_collide`. It was 2,482 of the declines.
+* **`$82:AA2E` is a boss on records 20, 40 and 47**, `$82:9660`'s shape with
+  its own offsets, one immune id and five rewrites. It was 1,888.
+* `$82:F330`, `$82:EFF0`, `$81:B95F`, `$82:84AC`, `$81:C8C3` and `$81:A638`
+  are the other 207 declines. None of the eight declares a guard.
+
+**`zamn_cosim verify --level N`** starts a game on any record, so routines no
+movie reaches can be checked. Driven by the sweep movie, all 56 records
+verify: **23,368,681 calls, 0 diverged**. The only decline left in that sweep
+is `$80:F999` in the player's id table, 5 times.
+
+**It found an old bug.** `enemy_b41c_collide` and `enemy_collide` left X
+unset on the path that jumps to `$81:8506`, where the ROM leaves the damage
+index. `verify` on record 36 failed 25 of 359 calls on `X`. It was invisible
+to the game, because the dispatcher's `PLX` restores X, and to the corpus,
+because no movie hits either creature while it is still flashing. Fixed.
+
+Live, over all 56 records, the game's figure goes from **66.4% to 66.8%**.
+Records 0 and 51 gain 8.2 points each, record 40 3.2 and record 20 2.9. The
+corpus is 15,801,285 calls across 50 movies with 0 diverged, and `$82:F330`
+has left its decline census.
+
 ### Measuring what is left, from every level and from real play (2026-09-24)
 
 The first step of the Devil's Crush path: fix the instrument before chasing

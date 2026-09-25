@@ -256,6 +256,16 @@ $82:F4C6  actor_f4ef_poll      # LDA $18 : BEQ $F4AF — the body waiting to be 
 $81:C440  monster_c440_collide # $81:C4A6 one stage earlier: same page, $81:8506 and $81:847E instead
 $81:C321  monster_c440_body    # installs it, then JMP $C3B5 into the body that installs $81:C4A6
 $81:D7F6  enemy_d7f6_collide   # level 17's; health $0C = 1, $5E kills outright, death is DEC $0A
+$82:9A6D  enemy_9a6d_collide   # $81:D7F6's 64 bytes again, byte for byte; records 0 and 51
+$82:AA2E  boss_aa2e_collide    # $82:9660's shape: health $48 = 75, $4C flash, $60 immune, DEC $46 dies
+$82:F330  actor_f330_collide   # $5D/$62/$5C/$65 DEC $10 and set carry, $FF sets carry
+$81:A638  actor_a638_collide   # $FF DECs $2A and sets carry
+$82:84AC  actor_84ac_collide   # only $62: a negative $32 goes back to 4 and DECs $30
+$81:B95F  enemy_b95f_collide   # $81:D7F6 with $5D, not $5E, as the fatal id; parked id $5A
+$82:EFF0  enemy_eff0_collide   # health $32 with no death test: stored and into $81:8506
+$81:C8C3  actor_c8c3_collide   # players and shots set $0A = $C6F2; $68 tallies $1FC4 and turns
+$81:C6EC  actor_c8c3_touched   # LDA #$C6F2 : STA $0A : RTS
+$81:C6A7  actor_c8c3_face      # $0A = $C6CA, and ACTOR_FLIP's mirror bit toward $0076's X
 $81:D6B0  enemy_d7f6_body      # seeds $0C=1 and $0A=0, then registers the handler
 $81:D72B  enemy_d7f6_die       # what DEC $0A wakes: award $0050 if $20 is set, then free the slot
 $81:EDAA  shot_edaa_collide    # one byte, RTL: the $61 shot reacts to nothing it hits

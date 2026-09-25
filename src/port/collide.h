@@ -1225,6 +1225,19 @@ bool monster_c440_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
 bool enemy_d7f6_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                         ActorHandlerRegs* r, uint32_t* unported);
 
+// **`$82:9A6D` is the same sixty-four bytes, one bank over.** Byte for byte:
+// every branch is relative and every jump out is a long one to bank `$81`, so
+// nothing in the copy means anything different from the original, and the
+// port serves both with one function. Its body is `$82:98DA`, a different
+// creature, and records 0 and 51 place it. Until it was routed here it was the
+// handler `thread_call_handler` declined most often — 2,482 times over one
+// pass of every record — and each decline sent that frame's whole sprite pass
+// back to the ROM.
+//
+// The coverage sites are `enemy_d7f6_collide`'s, so they do not say which of
+// the two copies took a branch. Nothing needs them to: the two cannot differ.
+#define ENEMY_9A6D_COLLIDE_ENTRY 0x829a6du
+
 // ---------------------------------------------------------------------------
 // $81:CDDE  enemy_cdde_collide — and this one is *not* the same routine again
 // ---------------------------------------------------------------------------
@@ -2099,6 +2112,161 @@ typedef struct {
 bool boss_9660_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
                                uint16_t arg, ActorHandlerRegs* r,
                                BossCollideWork* work);
+
+// ---------------------------------------------------------------------------
+// $82:AA2E  boss_aa2e_collide — records 20, 40 and 47, and `$82:9660`'s sibling
+// ---------------------------------------------------------------------------
+//
+// Named for its address, like `boss_9660_collide`, and a boss for the same
+// reasons: its body at `$82:A87E` draws through the `$1E6A`/`$1E6C` boss draw
+// words, seeds 75 health, and installs this with `LDA #$AA2E : LDY #$0082 :
+// JSL thread_set_handler`. It was the second most frequent decline in
+// `thread_call_handler`, 1,888 over one pass of every record.
+//
+// The shape is `$82:9660`'s, and the details all differ:
+//
+// | | `boss_9660` | this |
+// | --- | --- | --- |
+// | its own record's id refuses a hit at | `$09` | `$00` or `$09` |
+// | flash guard | `LDX $40` | `LDX $4C` |
+// | parked id | `$42`, cleared on every refusal | `$4E`, never cleared |
+// | id refused after parking | none | `$60` |
+// | rewrites | `$62`, `$70`, `$61`, `$6F` | `$70`, `$5F`, `$6F`, `$61`, `$62` |
+// | counted on every hit | `DEC $3E : DEC $44` | `DEC $4A` |
+// | health | `$3C`, 70 | `$48`, 75 |
+// | dead flag | `DEC $3A` | `DEC $46` |
+//
+// There is no `JML`, no `JSR` and no id handed back, so it declares no guard.
+#define BOSS_AA2E_COLLIDE_ENTRY 0x82aa2eu
+
+// `LDY $0078 : LDX $000E,Y` and two `CPX`: its own record's
+// `ACTOR_COLLIDE_ID`, which the boss clears or sets to `$09` while it will not
+// be hit.
+#define BOSS_AA2E_ID_OFF 0x0000
+#define BOSS_AA2E_ID_INVULNERABLE 0x0009
+
+// This thread's own page. `$82:A89A  STZ $4C`, `STZ $4A`, `STZ $46` and
+// `LDA #$004B : STA $48` seed all four at the top of the body.
+#define BOSS_AA2E_DP_FLASH 0x4c      // `LDX $4C : BNE` refuses the hit
+#define BOSS_AA2E_DP_HIT_ID 0x4e     // the raw id, bit 15 and all
+#define BOSS_AA2E_DP_HEALTH 0x48
+#define BOSS_AA2E_DP_HIT_COUNT 0x4a  // `DEC $4A` on every hit that is scored
+#define BOSS_AA2E_DP_DEAD 0x46       // `DEC $46` when health would go negative
+
+// The id it parks and then refuses, `CMP #$0060 : BEQ` into the `CLC : RTL`.
+#define BOSS_AA2E_ID_IMMUNE 0x0060
+
+// The rewrites, applied before the id becomes an `ENEMY_DAMAGE_TABLE` index.
+// `$70` and `$5F` are decided by `LDA $0020 : BIT #$0003`, the low bits of the
+// scheduler tick: three ticks in four answer as `$5D` and one as `$5C`.
+#define BOSS_AA2E_ID_TOSS_A 0x0070
+#define BOSS_AA2E_ID_TOSS_B 0x005f
+#define BOSS_AA2E_ID_AS_5C_A 0x006f  // always answers as `$5C`
+#define BOSS_AA2E_ID_AS_5C_B 0x0062  // ...and so does this one
+#define BOSS_AA2E_ID_REMAP_61 0x0061 // always answers as `$66`
+#define BOSS_AA2E_ID_61_AS 0x0066
+#define BOSS_AA2E_ID_CHEAP 0x005c
+#define BOSS_AA2E_ID_DEAR 0x005d
+
+// The handler. Always true.
+bool boss_aa2e_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                       ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// The last six handlers `thread_call_handler` declined on, one pass of every
+// record
+// ---------------------------------------------------------------------------
+//
+// Each is small. Every routine any of them reaches is either already ported
+// (`$81:8506`, `$81:83C6`, `$81:847E`) or short enough to inline here
+// (`$81:C6EC`, `$81:C6A7`, `$80:9D6A`), so none declares a guard. With these
+// the dispatcher has an answer for every handler the 56 records install in
+// the sweep.
+
+// --- $82:F330  actor_f330_collide — records 31 and 36 -------------------------
+//
+// `STA $16 : AND #$7FFF`, then four ids that `DEC $10` and set carry, and
+// `$FF`, which sets carry without the `DEC`. Anything else is `CLC : RTL`.
+#define ACTOR_F330_COLLIDE_ENTRY 0x82f330u
+#define F330_DP_HIT_ID 0x16
+#define F330_DP_COUNT 0x10
+#define F330_ID_A 0x005d
+#define F330_ID_B 0x0062
+#define F330_ID_C 0x005c
+#define F330_ID_D 0x0065
+#define F330_ID_PARK 0x00ff
+bool actor_f330_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// --- $81:A638  actor_a638_collide — record 48 -------------------------------
+//
+// Eleven bytes: `$FF` is `DEC $2A : SEC : RTL`, anything else `CLC : RTL`.
+#define ACTOR_A638_COLLIDE_ENTRY 0x81a638u
+#define A638_DP_COUNT 0x2a
+#define A638_ID_PARK 0x00ff
+bool actor_a638_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// --- $82:84AC  actor_84ac_collide — record 12 --------------------------------
+//
+// Only id `$62` does anything. The raw id is parked at `$34` and cleared again
+// for every other shot. For `$62`, a negative `$32` is reset to 4 and `$30` is
+// decremented, with carry set.
+#define ACTOR_84AC_COLLIDE_ENTRY 0x8284acu
+#define A84AC_DP_HIT_ID 0x34
+#define A84AC_DP_TIMER 0x32
+#define A84AC_DP_COUNT 0x30
+#define A84AC_ID 0x0062
+#define A84AC_TIMER_RESET 0x0004
+bool actor_84ac_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// --- $81:B95F  enemy_b95f_collide — record 36, and another `$81:8888` -------
+//
+// `enemy_d7f6_collide` with its id `$5E` test replaced by `$5D`: health at
+// `$0C`, the raw id parked at `$5A`, `$5D` straight into the death tail, and
+// every other shot through `ENEMY_DAMAGE_TABLE`. There is no `STZ $7E` in the
+// death tail, and `$5E` is just another row of the table.
+#define ENEMY_B95F_COLLIDE_ENTRY 0x81b95fu
+#define B95F_DP_HEALTH 0x0c
+#define B95F_DP_HIT_ID 0x5a
+#define B95F_DP_DEAD 0x0a
+bool enemy_b95f_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r);
+
+// --- $82:EFF0  enemy_eff0_collide — record 39 -------------------------------
+//
+// The family again, with the health at `$32` and the parked id at `$34`. It has
+// **no death test at all**: `SBC $818561,X : STA $32 : JML $81:8506`, so the
+// health is stored however far below zero it goes, and the body decides. `$5E`
+// and `$5D` go to the bubble and the freeze. `$70` is a coin toss on bit 0 of
+// the scheduler tick, clear answering as `$5D` and set as `$5C`.
+#define ENEMY_EFF0_COLLIDE_ENTRY 0x82eff0u
+#define EFF0_DP_HEALTH 0x32
+#define EFF0_DP_HIT_ID 0x34
+#define EFF0_ID_TOSS 0x0070
+bool enemy_eff0_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r);
+
+// --- $81:C8C3  actor_c8c3_collide — records 20 and 47 ------------------------
+//
+// It answers the two players by raw id, `$05` and `$06`, and every shot from
+// `$5C` up by the same `JSR $C6EC`, which is `LDA #$C6F2 : STA $0A : RTS`:
+// the address of the body's next routine. `$5E` and `$5D` go to the bubble
+// and the freeze, `$61` is `DEC $22`, and `$68` counts a tally at `$1FC4` for
+// the shooter's score slot and runs `$81:C6A7`, which turns it to face the
+// shot: bit 1 of its record's flags, `ACTOR_FLIP`'s mirror in X, is set when
+// the other record's X is left of `$0C` and cleared when it is not.
+#define ACTOR_C8C3_COLLIDE_ENTRY 0x81c8c3u
+#define C8C3_ID_P1 0x0005
+#define C8C3_ID_P2 0x0006
+#define C8C3_ID_61 0x0061
+#define C8C3_ID_68 0x0068
+#define C8C3_DP_NEXT 0x0a      // `$81:C6EC` and `$81:C6A7` both store here
+#define C8C3_DP_COUNT_22 0x22  // `DEC $22` on id `$61`
+#define C8C3_DP_X 0x0c         // what `$81:C6A7` compares the other's X with
+#define C8C3_NEXT_TOUCHED 0xc6f2
+#define C8C3_NEXT_68 0xc6ca
+#define W_C8C3_TALLY 0x1fc4    // two words, indexed by score slot
+#define C8C3_FLAG_MIRROR 0x0002
+bool actor_c8c3_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 
 // ---------------------------------------------------------------------------
 // $81:D301  enemy_d301_collide — level 9's, and the copy whose counter has a

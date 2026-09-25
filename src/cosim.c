@@ -21,8 +21,8 @@
 // Usage:
 //   zamn_cosim list
 //   zamn_cosim verify <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v]
-//                               [--twin-aim <period>[,<from>]]
-//   zamn_cosim run    <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v]
+//                               [--twin-aim <period>[,<from>]] [--level n]
+//   zamn_cosim run   <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v]
 //
 // `-x routine` is the inverse of `-r`: run everything the registry has
 // except the named ones.
@@ -36,6 +36,7 @@
 
 #include "analysis/movie_apply.h"
 #include "cosim/cosim.h"
+#include "levelstart.h"
 #include "poke.h"
 #include "port/player.h"  // player_set_aim, for --twin-aim
 #include "twinstick.h"
@@ -90,6 +91,11 @@ typedef struct {
   // state got there. It is how a branch that needs a rare *state* gets taken
   // without a movie that needs a rare *sequence*.
   PokeList pokes;
+  // `--level <n>`: a new game starts on record `n`, patched exactly as `zamn
+  // --level` and `zamn_trace --level` patch it (src/levelstart.h). Most of the
+  // game's records have no movie of their own, and a handler that only one of
+  // them places is otherwise out of `verify`'s reach. -1 when absent.
+  int level;
 } Options;
 
 static uint8_t* read_file(const char* path, int* out_len) {
@@ -113,6 +119,7 @@ static uint8_t* read_file(const char* path, int* out_len) {
 static bool parse_options(int argc, char** argv, Options* o) {
   memset(o, 0, sizeof *o);
   o->frames = 2400;
+  o->level = -1;
   if (argc < 1) {
     fprintf(stderr, "error: a ROM path is required\n");
     return false;
@@ -160,6 +167,12 @@ static bool parse_options(int argc, char** argv, Options* o) {
       }
     } else if (!strcmp(argv[i], "--poke") && has_next) {
       if (!poke_parse(&o->pokes, argv[++i])) return false;
+    } else if (!strcmp(argv[i], "--level") && has_next) {
+      o->level = atoi(argv[++i]);
+      if (o->level < LEVEL_FIRST || o->level > LEVEL_LAST) {
+        fprintf(stderr, "error: --level wants %d..%d\n", LEVEL_FIRST, LEVEL_LAST);
+        return false;
+      }
     } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
       o->verbose = true;
     } else if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--coverage")) {
@@ -243,6 +256,10 @@ static int cmd_verify(const Options* o) {
 
   if (o->twin_aim && !twin_install(snes->cart->rom, snes->cart->romSize)) {
     fprintf(stderr, "error: --twin-aim: this cartridge cannot take the patch\n");
+    return 1;
+  }
+  if (o->level >= 0 && !start_at_level(snes, o->level)) {
+    fprintf(stderr, "error: --level: this is not a cartridge it can change\n");
     return 1;
   }
 
@@ -345,6 +362,12 @@ static int cmd_run(const Options* o) {
                     "       comparison.\n");
     return 2;
   }
+  // Refused for now rather than ignored: `cosim_lockstep` builds both of its
+  // cores from the file, so there is no one cartridge here to patch.
+  if (o->level >= 0) {
+    fprintf(stderr, "error: --level is a verify-only flag for now.\n");
+    return 2;
+  }
   int rom_len = 0;
   uint8_t* rom_data = read_file(o->rom_path, &rom_len);
   if (!rom_data) return 1;
@@ -375,7 +398,9 @@ static void usage(void) {
          "         --poke <frame>[+]:<addr>=<value>[.b] to assert a word of\n"
          "         WRAM rather than play the game into it (verify only,\n"
          "         repeatable). A branch taken this way is checked against the\n"
-         "         ROM on a state nothing proved reachable — see src/poke.h.\n");
+         "         ROM on a state nothing proved reachable — see src/poke.h.\n"
+         "         --level <n> to start a new game on record n (0..55), as\n"
+         "         `zamn --level` does (verify only).\n");
 }
 
 int main(int argc, char** argv) {

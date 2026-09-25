@@ -1732,7 +1732,8 @@ map. Phase 4 is where that inverts.
 in `<dir>` at exit, so one directory can collect a week of play-tests. Rank it
 with `python tools\native_share.py --residue <dir>`. The tracer takes `--level
 N` as well, so the offline corpus can reach every record, not only the ones a
-password starts. See `docs/analysis-tools.md`.
+password starts. See `docs/analysis-tools.md`. So does `zamn_cosim verify`,
+which is how a routine only one record reaches gets checked against the ROM.
 
 Other options — `-m <movie.zmv>` replays a recorded movie instead of reading the
 keyboard, `--frames N` runs N frames uncapped and exits, `--shot out.png` writes

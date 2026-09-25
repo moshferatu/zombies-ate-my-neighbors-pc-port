@@ -14299,3 +14299,51 @@ work this round leaves behind is two instruments and a price:
 * and the fact that the last two hundred cells of this route are not blocked by
   geometry or by keys but by ten points of health, which is a thing to plan
   around rather than a thing to discover again.
+
+## Every handler the records install (2026-09-24)
+
+The residue from one live pass of all 56 records named eight collision handlers
+that `thread_call_handler` did not have. Each decline sends that frame's whole
+sprite pass back to the ROM, so a handler that declines a thousand times costs
+far more than its own few instructions. All eight are ported now.
+
+| handler | records | declines before | what it is |
+| --- | --- | --- | --- |
+| `$82:9A6D` | 0, 51 | 2,482 | `$81:D7F6`'s 64 bytes, byte for byte |
+| `$82:AA2E` | 20, 40, 47 | 1,888 | a boss, `$82:9660`'s shape |
+| `$82:F330` | 31, 36 | 61 | four ids `DEC $10`, `$FF` parks |
+| `$82:EFF0` | 39 | 61 | the family, with no death test |
+| `$81:B95F` | 36 | 58 | `$81:D7F6` with `$5D` as the fatal id |
+| `$82:84AC` | 12 | 24 | only `$62` does anything |
+| `$81:C8C3` | 20, 47 | 2 | players and shots swap its next routine |
+| `$81:A638` | 48 | 1 | eleven bytes |
+
+**`$82:9A6D` is a copy.** Every branch in `$81:D7F6` is relative and both
+jumps out are long ones into bank `$81`, so the same bytes in bank `$82` mean
+the same thing, and the dispatcher routes both addresses to
+`enemy_d7f6_collide`. The first thing to try on any unported handler is a byte
+compare against the ported ones.
+
+**None of the eight declares a guard.** Everything they reach is either
+already ported (`$81:8506`, `$81:83C6`, `$81:847E`) or small enough to inline:
+`$81:C6EC` is three instructions, `$81:C6A7` fourteen and `$80:9D6A` six.
+
+**`zamn_cosim verify --level N` is how they were checked**, since no movie in
+the corpus reaches seven of them. It takes the same patch as `zamn --level`
+and `zamn_trace --level` (`src/levelstart.h`). `run` refuses it, because
+`cosim_lockstep` builds its two cores from the file. Driven by a movie that
+boots, starts a game and walks a square holding fire, all 56 records verify:
+23,368,681 calls, 0 diverged.
+
+**It found an old bug on the first pass.** `enemy_b41c_collide` failed 25 of
+359 calls on record 36 with `X: ROM $0000, port $0020`. The survive path is
+`SBC $818561,X : ... : JML $81:8506`, and when `$81:8506` finds the creature
+already flashing it returns without writing X, so X is still the damage
+index. The port never set it. `enemy_collide` had the same gap. No movie in
+the corpus hits either creature twice inside its flash, and the dispatcher's
+`PLX` hides X from the game, so nothing but a direct `verify` could see it.
+
+What the sweep does not reach: the boss's death, its rewrites and a
+zero-damage hit (`aa2e_died`, `aa2e_toss_*`, `aa2e_remap_61`,
+`aa2e_no_damage`, `aa2e_invulnerable`), which are the same branches
+`boss_9660` is still waiting on, and most of the smaller six's special ids.
