@@ -193,6 +193,11 @@ void snes_setFrameHook(Snes* snes, SnesFrameHook hook, void* ctx) {
   snes->frameHookCtx = ctx;
 }
 
+void snes_setWriteHook(Snes* snes, SnesWriteHook hook, void* ctx) {
+  snes->writeHook = hook;
+  snes->writeHookCtx = ctx;
+}
+
 void snes_setSamples(Snes* snes, int16_t* sampleData, int samplesPerFrame) {
   // size is 2 (int16) * 2 (stereo) * samplesPerFrame
   // sets samples in the sampleData

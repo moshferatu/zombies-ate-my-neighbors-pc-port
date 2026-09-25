@@ -37,6 +37,7 @@
 #include "port/terrain.h"
 #include "port/thread.h"
 #include "port/trig.h"
+#include "port/vblank.h"
 
 // ---------------------------------------------------------------------------
 // $80:B9D6  sprite_frame_tile — A = frame number, A = OAM tile word
@@ -5549,6 +5550,108 @@ static const uint32_t TILE_ANIM_YIELD_EXITS[] = {TILE_ANIM_YIELD_PC};
 static const uint32_t TILE_ANIM_RESUME_EXITS[] = {
     TILE_ANIM_YIELD_PC, TILE_ANIM_QUEUE_CALL_PC, TILE_ANIM_END_PC};
 
+// ---------------------------------------------------------------------------
+// Vblank jobs — see `port/vblank.h`
+// ---------------------------------------------------------------------------
+//
+// `tools/cycles816.py`'s prices, each run less the writes it ends on: an
+// absolute store is three fetches, and then 6 for each byte it writes to a
+// register, which `cosim_hw` adds. The tables are in low WRAM, 8 a byte
+// whatever the data bank. Every job runs on page zero.
+static const CosimRun VBL_COST[VBL_BLOCK_COUNT] = {
+    [VBL_STORE] = {18, 3, 0},
+    [VBL_TAKEN] = {6, 0, 0},
+    [VBL_LOAD] = {58, 6, 0},
+    [VBL_GO] = {48, 7, 0},
+    [VBL_NEXT] = {82, 8, 1},
+    [VQ_HEAD] = {40, 4, 1},
+    [VQ_BUSY] = {60, 2, 0},
+    [VQ_EMPTY] = {112, 7, 1},
+    [VQ_START] = {76, 10, 1},
+    [VQ_FIRST] = {18, 3, 0},
+    [VQ_VMAIN] = {68, 8, 0},
+    [VQ_SIZE] = {76, 8, 0},
+    [VQ_DONE] = {214, 17, 4},
+    [SU_HEAD] = {76, 10, 1},
+    [SU_EMPTY] = {46, 4, 1},
+    [SU_VMAIN] = {48, 7, 0},
+    [SU_INIT] = {54, 8, 0},
+    [SU_VADDR2] = {94, 11, 0},
+    [SU_CLEAR] = {28, 2, 1},
+    [SU_OAM_IMM] = {36, 6, 0},
+    [SU_OAM_LAST] = {54, 8, 0},
+    [SU_TAIL] = {54, 2, 0},
+    [B2_H] = {100, 10, 0},
+    [B2_V] = {118, 12, 0},
+    [B2_BASE] = {142, 16, 0},
+    [B2_TAIL] = {60, 3, 0},
+    [CS_DX] = {110, 12, 0},
+    [CS_NEG] = {30, 5, 0},
+    [CS_WRITE] = {66, 7, 0},
+    [CS_DY] = {128, 14, 0},
+    [CS_PARK] = {48, 7, 0},
+    [CS_TAIL] = {72, 4, 0},
+    [SS_FIRST] = {62, 8, 0},
+    [SS_NEXT] = {44, 6, 0},
+    [SS_TAIL] = {72, 4, 0},
+    [BB_HEAD] = {48, 7, 0},
+    [BB_MODE] = {54, 8, 0},
+    [BB_COUNT] = {46, 5, 0},
+    [BB_EMPTY] = {54, 2, 0},
+    [BB_FIRST] = {24, 2, 0},
+    [BB_NEXT] = {54, 6, 0},
+    [BB_DONE] = {88, 5, 0},
+};
+
+// The dispatcher and the NMI both leave 16-bit registers, page zero and a data
+// bank that sees low WRAM.
+static bool accepts_vbl_job(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && in->d == 0 && bank_sees_low_wram(in->db);
+}
+
+// Both queue walks run until the index equals the count, so an odd count would
+// never end, and one past the tables would read the next table as this one.
+static bool accepts_vram_queue_flush(const Wram* w, const CosimRegs* in) {
+  const uint16_t n = wram_r16(w, W_VRAM_QUEUE_COUNT);
+  return accepts_vbl_job(w, in) && (n & 1) == 0 && n <= 0x30;
+}
+
+static bool accepts_sprite_upload_flush(const Wram* w, const CosimRegs* in) {
+  const uint16_t n = wram_r16(w, W_SPRITE_UPLOAD_COUNT);
+  return accepts_vbl_job(w, in) && (n & 1) == 0 && n <= 0x80;
+}
+
+// This one walks down to zero with `BPL`, so an odd count would start it on
+// the wrong word of every table rather than never ending, which is as wrong.
+static bool accepts_boss_bg_dma(const Wram* w, const CosimRegs* in) {
+  const uint16_t n = wram_r16(w, W_BG_DMA_CURSOR);
+  return accepts_vbl_job(w, in) && (n & 1) == 0 && n <= 0x40;
+}
+
+// One trace at a time, and 16 KB, so not on the stack.
+static HwTrace g_vbl_trace;
+
+#define VBL_SHIM(name)                                                      \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,    \
+                          CosimRegs* out) {                                \
+    (void)rom;                                                             \
+    PortCpu c;                                                             \
+    cpu_from(in, &c);                                                      \
+    g_vbl_trace.n = 0;                                                     \
+    g_vbl_trace.full = false;                                              \
+    name(w, &c, &g_vbl_trace);                                             \
+    cpu_to(&c, out);                                                       \
+    cosim_hw(&g_vbl_trace, VBL_COST, fetch_fast(in));                      \
+  }
+
+VBL_SHIM(vram_queue_flush)
+VBL_SHIM(sprite_upload_flush)
+VBL_SHIM(bg2_scroll_job)
+VBL_SHIM(camera_scroll_job)
+VBL_SHIM(scroll_shadow_job)
+VBL_SHIM(boss_bg_dma)
+
 // The count is the table's length by construction, so it cannot drift from it.
 #define COSIM_COMMIT(tbl) \
   .commit = (tbl), .commit_count = (int)(sizeof(tbl) / sizeof((tbl)[0]))
@@ -7802,6 +7905,81 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(TILE_ANIM_YIELD_EXITS),
         .uncalled = true,
         .cycles = 18,
+    },
+    // Vblank jobs, which write the PPU. See `port/vblank.h`. Each prices
+    // itself through `cosim_hw`, so `.cycles` is only what a refused trace
+    // would fall back to. The NMI calls the first; the dispatcher reaches the
+    // other three by `RTL`.
+    {
+        .name = "vram_queue_flush",
+        .symbol = "$80:9E7B",
+        .entry = 0x809e7b,
+        .ret_op = 0x809ecd,  // the busy path has its own; either returns alike
+        .ret_kind = COSIM_RTL,
+        .run = shim_vram_queue_flush,
+        .accepts = accepts_vram_queue_flush,
+        .hw = true,
+        .cycles = 1000,
+    },
+    {
+        .name = "sprite_upload_flush",
+        .symbol = "$80:B947",
+        .entry = 0x80b947,
+        .ret_op = 0x80b9c6,
+        .ret_kind = COSIM_RTL,
+        .run = shim_sprite_upload_flush,
+        .accepts = accepts_sprite_upload_flush,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 1000,
+    },
+    {
+        .name = "bg2_scroll_job",
+        .symbol = "$80:9E3E",
+        .entry = 0x809e3e,
+        .ret_op = 0x809e6c,
+        .ret_kind = COSIM_RTL,
+        .run = shim_bg2_scroll_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 486,
+    },
+    {
+        .name = "camera_scroll_job",
+        .symbol = "$82:8209",
+        .entry = 0x828209,
+        .ret_op = 0x828244,  // the parked path has its own; either returns alike
+        .ret_kind = COSIM_RTL,
+        .run = shim_camera_scroll_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 514,
+    },
+    {
+        .name = "scroll_shadow_job",
+        .symbol = "$80:9BFC",
+        .entry = 0x809bfc,
+        .ret_op = 0x809c49,
+        .ret_kind = COSIM_RTL,
+        .run = shim_scroll_shadow_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 690,
+    },
+    {
+        .name = "boss_bg_dma",
+        .symbol = "$82:81C9",
+        .entry = 0x8281c9,
+        .ret_op = 0x828208,
+        .ret_kind = COSIM_RTL,
+        .run = shim_boss_bg_dma,
+        .accepts = accepts_boss_bg_dma,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 2000,
     },
 };
 

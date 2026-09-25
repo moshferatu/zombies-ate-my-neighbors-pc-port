@@ -1382,14 +1382,19 @@ static inline void widescreen_hook(Snes* snes, void* ctx) {
 
 // The two moments the sprites on screen are fixed at, both the game's own, and
 // both heard through `cosim_watch` so that the ROM's pass and the port's are
-// heard alike: the `RTL` that ends `sprite_build_oam`, and the vblank job's
-// OAM transfer (`$80:B99B STZ $2102`, which every NMI reaches, the tile
-// uploads above it or not). The pass's memory is what its buffer was built
-// from, and the transfer is when that buffer becomes the picture; a pass the
-// NMI cuts into is not sent until it has ended, so the copy sent is always the
-// newest pass to have finished.
+// heard alike: the `RTL` that ends `sprite_build_oam`, and the vblank job that
+// sends OAM (`sprite_upload_flush`, every NMI). The pass's memory is what its
+// buffer was built from, and the transfer is when that buffer becomes the
+// picture; a pass the NMI cuts into is not sent until it has ended, so the copy
+// sent is always the newest pass to have finished.
+//
+// The job is heard at its entry. The transfer itself is `$80:B99B`, and the
+// ROM reaches it from there with nothing between but the frames' uploads, but
+// the port stands in for the whole job, so under `run` nothing ever executes
+// that instruction. Its entry is reached either way, and no pass can end
+// between the two inside one NMI.
 #define WS_PASS_DONE_AT 0x80bde2u
-#define WS_OAM_SENT_AT 0x80b99bu
+#define WS_OAM_SENT_AT 0x80b947u
 
 static inline void widescreen_pass_done(Snes* snes, void* ctx) {
   Widescreen* ws = (Widescreen*)ctx;

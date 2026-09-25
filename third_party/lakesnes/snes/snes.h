@@ -14,6 +14,12 @@ typedef struct Snes Snes;
 // wants to add to the picture rather than change the game belongs here.
 typedef void (*SnesFrameHook)(Snes* snes, void* ctx);
 
+// Called after every write the CPU makes, with `cpuClock` the CPU's own clock
+// (see `stolenCycles`) as it stood when the access began. The write has
+// happened by then. DMA's writes are not the CPU's and do not call it.
+typedef void (*SnesWriteHook)(Snes* snes, uint32_t adr, uint8_t val,
+                              uint64_t cpuClock, void* ctx);
+
 #include "cpu.h"
 #include "apu.h"
 #include "dma.h"
@@ -69,6 +75,15 @@ struct Snes {
   // called at the top of every frame, before any of it is drawn
   SnesFrameHook frameHook;
   void* frameHookCtx;
+  // Cycles the CPU did not spend on its own accesses: the DRAM refresh, and
+  // every DMA and HDMA transfer with the alignment around it. So `cycles -
+  // stolenCycles` is a clock that moves only while the CPU is executing, and
+  // an instruction costs the same on it wherever it lands. Only differences
+  // of it mean anything, so it is not part of a saved state.
+  uint64_t stolenCycles;
+  bool inDma;  // inside `dma_handleDma`, whose refreshes it counts itself
+  SnesWriteHook writeHook;
+  void* writeHookCtx;
 };
 
 Snes* snes_init(void);
@@ -121,6 +136,8 @@ int snes_freeSprite(const Snes* snes, int from);
 int snes_pixelWidth(const Snes* snes);
 // See `SnesFrameHook`. Pass NULL to remove it.
 void snes_setFrameHook(Snes* snes, SnesFrameHook hook, void* ctx);
+// See `SnesWriteHook`. Pass NULL to remove it.
+void snes_setWriteHook(Snes* snes, SnesWriteHook hook, void* ctx);
 void snes_setSamples(Snes* snes, int16_t* sampleData, int samplesPerFrame);
 int snes_saveBattery(Snes* snes, uint8_t* data);
 bool snes_loadBattery(Snes* snes, uint8_t* data, int size);

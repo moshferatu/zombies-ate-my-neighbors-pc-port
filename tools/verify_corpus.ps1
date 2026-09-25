@@ -198,9 +198,14 @@ if ($Lockstep) {
         }
         # The verdict this pass exists for. "clean" is the whole of it: every
         # byte that differed was inside a stack or a declared scratch byte.
+        # ...and the PPU's memory and scroll, which ported routines that write
+        # the hardware can get wrong with every byte of WRAM right.
         $state = "clean"
         if ($text -match "Up to (\d+) byte") {
             $state = "$($Matches[1]) UNEXPLAINED"
+            $dirty++
+        } elseif ($text -match "or the scroll differed on (\d+)") {
+            $state = "VIDEO on $($Matches[1])"
             $dirty++
         } elseif (-not ($text -match "No byte of live game state ever differed")) {
             $state = "NOTHING COMPARED"

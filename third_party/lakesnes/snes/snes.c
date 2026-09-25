@@ -40,6 +40,10 @@ Snes* snes_init(void) {
   // it, not of the machine, and a reset does not uninstall the frontend.
   snes->frameHook = NULL;
   snes->frameHookCtx = NULL;
+  snes->writeHook = NULL;
+  snes->writeHookCtx = NULL;
+  snes->stolenCycles = 0;
+  snes->inDma = false;
   return snes;
 }
 
@@ -134,6 +138,7 @@ void snes_runCycles(Snes* snes, int cycles) {
   if(snes->hPos + cycles >= 536 && snes->hPos < 536) {
     // if we go past 536, add 40 cycles for dram refersh
     cycles += 40;
+    if(!snes->inDma) snes->stolenCycles += 40;
   }
   for(int i = 0; i < cycles; i += 2) {
     snes_runCycle(snes);
@@ -536,10 +541,12 @@ uint8_t snes_cpuRead(void* mem, uint32_t adr) {
 
 void snes_cpuWrite(void* mem, uint32_t adr, uint8_t val) {
   Snes* snes = (Snes*) mem;
+  const uint64_t cpuClock = snes->cycles - snes->stolenCycles;
   int cycles = snes_getAccessTime(snes, adr);
   dma_handleDma(snes->dma, cycles);
   snes_runCycles(snes, cycles);
   snes_write(snes, adr, val);
+  if(snes->writeHook) snes->writeHook(snes, adr, val, cpuClock, snes->writeHookCtx);
 }
 
 // debugging

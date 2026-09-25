@@ -49,6 +49,7 @@
 
 #include "assets/rom.h"
 #include "port/coroutine.h"
+#include "port/hw.h"
 #include "port/wram.h"
 
 // ---------------------------------------------------------------------------
@@ -477,6 +478,19 @@ typedef struct {
   bool uncalled;
   // Optional, and asked before `supported`. See `CosimAccepts`.
   CosimAccepts accepts;
+
+  // --- Routines that write the hardware ----------------------------------------
+  //
+  // The port records its register writes in a trace (`port/hw.h`) and the shim
+  // hands it over priced, with `cosim_hw`. Under `run` each write is made on its
+  // own cycle while the budget is spent, by the same bus access the ROM's store
+  // makes, so a DMA it starts runs where the ROM's did and holds the CPU as long.
+  // Under `verify` every register write the ROM made inside the call is compared
+  // with the port's, address, value and cycle, and the cost model is held to the
+  // CPU's own cycles exactly, with refresh and DMA taken out.
+  //
+  // The APU's ports are left out of both. Their traffic has its own log.
+  bool hw;
 } CosimRoutine;
 
 // The registry. Every routine `src/port/` has replaced, in the order they were
@@ -582,6 +596,32 @@ static inline int cosim_run_cycles(const CosimRun* r, bool fastrom) {
   return cosim_run_cycles_dp(r, fastrom, false);
 }
 
+// One register write, or one bare access, at a cycle of a routine's budget.
+// `at` is counted from the routine's entry in the CPU's own cycles, with no
+// refresh or DMA in it, which is how a cost model counts too.
+//
+// A bare access is what follows a write to `$420B`. The core starts a DMA two
+// accesses after the write that asks for it, and lines the CPU up again on the
+// length of the second, so those two have to be accesses of the lengths the
+// ROM's next instruction makes, not a slice of the budget. Every instruction
+// opens with two program fetches or with a fetch and an idle, and the jobs'
+// instruction after each `STA $420B` is `REP #$20`, two fetches.
+typedef struct {
+  int at;
+  uint16_t addr;
+  uint8_t val;
+  uint8_t len;
+  bool write;
+} CosimHwEvent;
+
+// Price a trace and hand it over: each `HW_RUN` costs `runs[block]`, each
+// write the access its register takes, and the total is reported as
+// `cosim_cost` would report it. A trace that overflowed is refused: the shim
+// gets `false`, nothing is handed over, and the harness keeps the routine's
+// declared `cycles` and makes no writes -- so a guard has to keep that from
+// happening, and the ones here bound the lists they walk.
+bool cosim_hw(const HwTrace* t, const CosimRun* runs, bool fastrom);
+
 // What one routine did over a run.
 typedef struct {
   const CosimRoutine* routine;
@@ -626,6 +666,12 @@ typedef struct {
   long modelled, model_refresh_exact, model_hdma;
   long model_err_min, model_err_max;
   double model_err_mean;
+  // Register writes compared, for a routine that makes them (`hw`). For one
+  // that does not, the writes the ROM made inside its calls anyway: a port
+  // that computes a product itself, say, where the ROM used the multiplier.
+  // Nothing checks those, which is why they are counted where they can be seen.
+  long hw_writes;
+  long hw_unmodelled;
   // What a substituted run would have *paid* for these calls, less what the ROM
   // actually spent on them. Positive is over-payment: a native core reaching the
   // same point in the game later than a stock one.
@@ -721,6 +767,11 @@ typedef struct {
   // otherwise have been dropped or handed over late. Zero on a session made
   // only of short calls, and that is the correct answer there.
   uint64_t burns_parked;
+  // ...of `cycles_native`, the DMA a substituted routine started, which the
+  // core runs inside the burn (`CosimRoutine::hw`). Under the ROM the same
+  // transfers are in the work denominator and not in the numerator, so the
+  // report says what the share is without them.
+  uint64_t cycles_native_dma;
 } CosimWork;
 
 // The same, reduced to the two percentages and their denominators.

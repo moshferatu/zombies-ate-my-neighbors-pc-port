@@ -47,6 +47,10 @@ typedef struct {
   // ends when the ROM reaches one, whatever the stack pointer says, and the
   // port writes the stack itself, so nothing is waived as dead stack.
   bool jump;
+  // The CPU's own clock at entry (`Snes::stolenCycles`), and where the ROM's
+  // register writes stood in `CosimPriv::hw_rom`. See `compare_hw`.
+  uint64_t cpu0;
+  int hw_mark;
 } CosimCall;
 
 #define COSIM_MAX_DEPTH 8
@@ -93,7 +97,22 @@ typedef struct {
   int piece;       // how finely to spend them — see cycles_burn_modelled()
   CosimCommit commit;  // ...and the WRAM words, published with them
   bool jump;  // leaves by `out.pc`, not by the routine's `ret_op`
+  // The register writes to make on the way, for a routine that makes them
+  // (`CosimRoutine::hw`), and how far through them and the budget it is.
+  // `spent` counts the budget as the trace does, from the entry. The buffer
+  // belongs to the slot and outlives the burn.
+  CosimHwEvent* ev;
+  int ev_n, ev_cap, ev_i;
+  int spent;
 } CosimBurn;
+
+// One register write the ROM made inside a call being verified, with the CPU's
+// own clock as its access began.
+typedef struct {
+  uint64_t clock;
+  uint16_t addr;
+  uint8_t val;
+} CosimHwWrite;
 
 // `thread_yield`, `$80:8353`. Reaching it is how a segment ends; see
 // `docs/threads.md`.
@@ -219,6 +238,8 @@ static void apu_drive(void* ctx, uint8_t seq, uint8_t cmd, uint8_t param) {
 }
 
 static void run_native_segment(Cosim* c, CosimCall* call);
+static void hw_on_write(Snes* snes, uint32_t adr, uint8_t val, uint64_t clock,
+                        void* ctx);
 
 struct CosimPriv {
   CosimCall stack[COSIM_MAX_DEPTH];
@@ -244,6 +265,11 @@ struct CosimPriv {
   // registered routine, whose own budget is spent before the outer one resumes.
   CosimBurn burn[COSIM_MAX_DEPTH];
   int burn_depth;
+  // Verify only: the ROM's register writes while a call is being checked, in
+  // order. Emptied whenever a call starts with none around it. See
+  // `hw_on_write`.
+  CosimHwWrite* hw_rom;
+  int hw_rom_n, hw_rom_cap;
 };
 
 // ---------------------------------------------------------------------------
@@ -418,11 +444,18 @@ void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
   c->priv->apu.send = mode == COSIM_VERIFY ? apu_record : apu_drive;
   c->priv->apu.ctx = snes;
   apu_attach(&c->priv->apu);
+
+  // Under `verify` the ROM's register writes are what the port's are compared
+  // with, so the core tells the harness about each one.
+  if (mode == COSIM_VERIFY) snes_setWriteHook(snes, hw_on_write, c);
 }
 
 void cosim_free(Cosim* c) {
   if (!c->priv) return;
   apu_attach(NULL);  // the hook lives in `priv`, which is about to go
+  if (c->mode == COSIM_VERIFY) snes_setWriteHook(c->snes, NULL, NULL);
+  free(c->priv->hw_rom);
+  for (int i = 0; i < COSIM_MAX_DEPTH; i++) free(c->priv->burn[i].ev);
   free(c->priv->scratch);
   free(c->priv->guard);
   free(c->priv->stale);
@@ -595,6 +628,123 @@ static void compare_jump(CosimStat* s, const CosimCall* call, const Wram* ours,
     note(s, "D: ROM $%04X, port $%04X", rom_regs->d, our_regs->d);
   else if (our_regs->db != rom_regs->db)
     note(s, "DB: ROM $%02X, port $%02X", rom_regs->db, our_regs->db);
+}
+
+// ---------------------------------------------------------------------------
+// The hardware registers: what the ROM wrote, and what the port says it wrote
+// ---------------------------------------------------------------------------
+
+// The priced trace the last shim handed over with `cosim_hw`. A global for the
+// reason `g_cosim_cost` is one, and emptied beside it before every run.
+static CosimHwEvent* g_hw;
+static int g_hw_n, g_hw_cap;
+
+static void hw_event_add(CosimHwEvent** ev, int* n, int* cap,
+                         const CosimHwEvent* e) {
+  if (*n == *cap) {
+    *cap = *cap ? *cap * 2 : 256;
+    *ev = (CosimHwEvent*)realloc(*ev, (size_t)*cap * sizeof **ev);
+  }
+  (*ev)[(*n)++] = *e;
+}
+
+// How long the CPU's write to a register takes: `snes_getAccessTime` over the
+// addresses a trace can name. `$4000-$41FF` is the one slow page.
+static int hw_access_cycles(uint16_t reg) {
+  return reg >= 0x4000 && reg < 0x4200 ? 12 : 6;
+}
+
+bool cosim_hw(const HwTrace* t, const CosimRun* runs, bool fastrom) {
+  g_hw_n = 0;
+  if (t->full) return false;
+  const int fetch = fastrom ? 6 : 8;
+  int at = 0;
+  for (int i = 0; i < t->n; i++) {
+    const HwStep* st = &t->step[i];
+    if (st->kind == HW_RUN) {
+      at += cosim_run_cycles(&runs[st->arg], fastrom);
+      continue;
+    }
+    const CosimHwEvent w = {at, st->arg, st->val,
+                            (uint8_t)hw_access_cycles(st->arg), true};
+    hw_event_add(&g_hw, &g_hw_n, &g_hw_cap, &w);
+    at += w.len;
+    // The two accesses that start the DMA are the next instruction's first two,
+    // so they are inside the next run's price and add nothing here.
+    if (st->arg == 0x420b && st->val != 0) {
+      const CosimHwEvent a = {at, 0, 0, (uint8_t)fetch, false};
+      const CosimHwEvent b = {at + fetch, 0, 0, (uint8_t)fetch, false};
+      hw_event_add(&g_hw, &g_hw_n, &g_hw_cap, &a);
+      hw_event_add(&g_hw, &g_hw_n, &g_hw_cap, &b);
+    }
+  }
+  cosim_cost(at);
+  return true;
+}
+
+// Which of the CPU's writes are a register's. The APU's four ports and their
+// mirrors are not: `ApuLog` watches those, by the instruction that sends.
+static bool hw_register(uint32_t adr) {
+  const uint8_t bank = (uint8_t)(adr >> 16);
+  const uint16_t a = (uint16_t)adr;
+  if (!(bank < 0x40 || (bank >= 0x80 && bank < 0xc0))) return false;
+  if (a >= 0x2140 && a < 0x2180) return false;
+  return (a >= 0x2100 && a < 0x2200) || a == 0x4016 ||
+         (a >= 0x4200 && a < 0x4220) || (a >= 0x4300 && a < 0x4380);
+}
+
+// The core's write hook, under `verify`. A write is logged while the innermost
+// call is running, which is while some call's window is open; a suspended one
+// is not running, and the rest of the game writes the PPU every frame.
+static void hw_on_write(Snes* snes, uint32_t adr, uint8_t val, uint64_t clock,
+                        void* ctx) {
+  (void)snes;
+  Cosim* c = (Cosim*)ctx;
+  CosimPriv* p = c->priv;
+  if (p->depth == 0 || p->stack[p->depth - 1].suspended) return;
+  if (!hw_register(adr)) return;
+  if (p->hw_rom_n == p->hw_rom_cap) {
+    p->hw_rom_cap = p->hw_rom_cap ? p->hw_rom_cap * 2 : 1024;
+    p->hw_rom = (CosimHwWrite*)realloc(p->hw_rom,
+                                       (size_t)p->hw_rom_cap * sizeof *p->hw_rom);
+  }
+  p->hw_rom[p->hw_rom_n++] = (CosimHwWrite){clock, (uint16_t)adr, val};
+}
+
+// Diff the register writes. For a routine that makes none of its own, only
+// count what the ROM wrote: see `CosimStat::hw_unmodelled`.
+static void compare_hw(const Cosim* c, CosimStat* s, const CosimCall* call) {
+  const CosimPriv* p = c->priv;
+  const int theirs = p->hw_rom_n - call->hw_mark;
+  if (!s->routine->hw) {
+    s->hw_unmodelled += theirs;
+    return;
+  }
+  int k = 0;
+  for (int i = 0; i < g_hw_n; i++) {
+    const CosimHwEvent* e = &g_hw[i];
+    if (!e->write) continue;
+    if (k == theirs) {
+      note(s, "hardware: the ROM wrote %d register byte%s, the port more",
+           theirs, theirs == 1 ? "" : "s");
+      return;
+    }
+    const CosimHwWrite* w = &p->hw_rom[call->hw_mark + k];
+    const long at = (long)(w->clock - call->cpu0);
+    if (w->addr != e->addr || w->val != e->val || at != e->at) {
+      note(s,
+           "hardware write %d: ROM $%04X = $%02X at cycle %ld, port $%04X = "
+           "$%02X at %d",
+           k, w->addr, w->val, at, e->addr, e->val, e->at);
+      return;
+    }
+    k++;
+  }
+  if (k != theirs) {
+    note(s, "hardware: the ROM wrote %d register bytes, the port %d", theirs, k);
+    return;
+  }
+  s->hw_writes += k;
 }
 
 static bool is_exit(const CosimRoutine* r, uint32_t pc) {
@@ -1013,6 +1163,31 @@ static void commit_publish(Cosim* c, CosimCommit* k) {
 // and one of them would have run `cpu_checkInt` and latched exactly this. Every
 // other part of taking the interrupt — the pushes, the vector, the handler, the
 // `RTI` — is the core's own, unmodelled.
+// Make the next register write, or the next bare access, as the CPU makes it:
+// `snes_cpuWrite` is the core's own write, access time and DMA and all.
+static void burn_event(Cosim* c, CosimBurn* b) {
+  const CosimHwEvent* e = &b->ev[b->ev_i++];
+  const uint64_t stolen = c->snes->stolenCycles;
+  if (e->write) {
+    snes_cpuWrite(c->snes, e->addr, e->val);
+  } else {
+    dma_handleDma(c->snes->dma, e->len);
+    snes_runCycles(c->snes, e->len);
+  }
+  b->left -= e->len;
+  b->spent += e->len;
+  c->work.cycles_native_dma += c->snes->stolenCycles - stolen;
+}
+
+// Take over what the shim handed over, into the burn's own buffer.
+static void burn_take_events(CosimBurn* b) {
+  b->ev_n = 0;
+  b->ev_i = 0;
+  b->spent = 0;
+  for (int i = 0; i < g_hw_n; i++)
+    hw_event_add(&b->ev, &b->ev_n, &b->ev_cap, &g_hw[i]);
+}
+
 static bool burn_spend(Cosim* c) {
   CosimBurn* b = &c->priv->burn[c->priv->burn_depth - 1];
   const uint64_t before = c->snes->cycles;
@@ -1020,10 +1195,24 @@ static bool burn_spend(Cosim* c) {
   const bool vblank = c->snes->inVblank;
   while (b->left > 0 && !interrupt_due(c->snes) &&
          c->snes->frames == frame && c->snes->inVblank == vblank) {
-    const int piece = b->left < b->piece ? b->left : b->piece;
+    int piece = b->left < b->piece ? b->left : b->piece;
+    // A slice stops at the next write, so the write lands on its own cycle.
+    if (b->ev_i < b->ev_n) {
+      const int to = b->ev[b->ev_i].at - b->spent;
+      if (to <= 0) {
+        burn_event(c, b);
+        continue;
+      }
+      if (to < piece) piece = to;
+    }
     burn_slice(c, piece);
     b->left -= piece;
+    b->spent += piece;
   }
+  // A model short of the ROM's would leave writes over. They are still the
+  // routine's, and `verify` is what says the model was short.
+  if (b->left <= 0)
+    while (b->ev_i < b->ev_n) burn_event(c, b);
   c->work.cycles_native += c->snes->cycles - before;
 
   if (b->left > 0) {
@@ -1066,6 +1255,7 @@ static void burn_begin(Cosim* c, const CosimRoutine* r, const CosimRegs* out,
   b->entry = r->entry;
   b->commit = *commit;
   b->jump = jump;
+  burn_take_events(b);
   burn_plan(c, r, tail, &b->left, &b->piece);
   burn_spend(c);
 }
@@ -1173,6 +1363,7 @@ static bool guard_allows(Cosim* c, const CosimRoutine* r) {
   port_cover_save(before);
   g_apu_dry = true;  // nothing a dry run asks for reaches the APU — see apu_record
   bool ok = r->supported(c->priv->guard, &c->rom, &in);
+  g_hw_n = 0;
   g_apu_dry = false;
   if (ok) port_cover_restore(before);
   return ok;
@@ -1204,10 +1395,15 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
     return true;
   }
 
+  // A budget spent on the spot has nowhere to keep its writes. Only at an
+  // absurd depth, and then the ROM makes them itself.
+  if (r->hw && c->priv->burn_depth >= COSIM_MAX_DEPTH) return false;
+
   CosimRegs in, out;
   regs_capture(snes, &in);
   out = in;
   g_cosim_cost = -1;
+  g_hw_n = 0;
   CosimCommit commit;
   commit_capture(c, r, &commit);
   r->run((Wram*)snes->ram, &c->rom, &in, &out);
@@ -1236,6 +1432,14 @@ static void segment_start(Cosim* c, CosimCall* call) {
   call->hdma = hdma_armed(c->snes);
   call->segment_spoiled = false;
   call->apu_mark = g_apu_rom.count;
+  // Everything the log holds belongs to calls that have ended or are asleep,
+  // unless one around this one is still running.
+  bool open = false;
+  for (int i = 0; i < c->priv->depth; i++)
+    if (&c->priv->stack[i] != call && !c->priv->stack[i].suspended) open = true;
+  if (!open) c->priv->hw_rom_n = 0;
+  call->hw_mark = c->priv->hw_rom_n;
+  call->cpu0 = c->snes->cycles - c->snes->stolenCycles;
   regs_capture(c->snes, &call->in);
   memcpy(call->before, c->snes->ram, sizeof(Wram));
 }
@@ -1269,6 +1473,7 @@ static PortStep verify_segment(Cosim* c, CosimCall* call, CosimRegs* out,
   out->flags = 0;
   out->regs = COSIM_REG_ALL;
   g_cosim_cost = -1;
+  g_hw_n = 0;
   if (!r->run_yield) {
     r->run(c->priv->scratch, &c->rom, &call->in, out);
     return PORT_RETURNED;
@@ -1286,10 +1491,17 @@ static void record_segment(Cosim* c, CosimCall* call, CosimStat* s) {
   s->checked++;
   const long actual = (long)(c->snes->cycles - call->cycles);
   record_cycles(s, actual);
+  // A routine that starts DMA is priced on the CPU's own clock, because the
+  // transfers are the core's to time, under `run` as under the ROM. On that
+  // clock there is no refresh and no HDMA either, so the model has to be exact.
+  const bool hw = c->stats[call->index].routine->hw;
+  const long priced =
+      hw ? (long)(c->snes->cycles - c->snes->stolenCycles - call->cpu0) : actual;
   // Sampled at both ends, because a channel armed at any point in the window
   // will have transferred somewhere inside it.
-  record_model(s, actual, &call->in, call->hdma || hdma_armed(c->snes));
-  record_budget(s, c->stats[call->index].routine, actual);
+  record_model(s, priced, &call->in,
+               !hw && (call->hdma || hdma_armed(c->snes)));
+  record_budget(s, c->stats[call->index].routine, priced);
   int waived = call->jump ? 0 : (int)(call->entry_sp - call->min_sp);
   if (waived > s->stack_waived) s->stack_waived = waived;
 }
@@ -1386,6 +1598,7 @@ static void end_verify(Cosim* c, CosimCall* call) {
          call->segment, ticks);
   else
     compare(s, call, c->priv->scratch, (const Wram*)c->snes->ram, &rom_regs, &out);
+  if (!s->failed) compare_hw(c, s, call);
 
   if (!s->failed) s->passed++;
   report_first(c, s, was_failed);
@@ -1407,6 +1620,7 @@ static void end_jump_verify(Cosim* c, CosimCall* call) {
   record_segment(c, call, s);
   compare_jump(s, call, c->priv->scratch, (const Wram*)c->snes->ram, &rom_regs,
                &out);
+  if (!s->failed) compare_hw(c, s, call);
 
   if (!s->failed) s->passed++;
   report_first(c, s, was_failed);
@@ -1860,6 +2074,27 @@ static void drift_report(const Cosim* c) {
          run_only == 1 ? " is" : "s are");
 }
 
+// The register writes: how many were compared, for the routines that make
+// them, and how many the ROM made where no port was asked to.
+static void hw_report(const Cosim* c) {
+  bool any = false;
+  for (int i = 0; i < c->stat_count; i++)
+    if (cosim_mask_get(&c->enabled, i) &&
+        (c->stats[i].hw_writes > 0 || c->stats[i].hw_unmodelled > 0))
+      any = true;
+  if (!any) return;
+  printf("\nregister writes (compared: address, value and cycle; unmodelled: the\n"
+         "ROM wrote them inside a call whose port writes none)\n\n");
+  printf("  %-20s %12s %12s\n", "routine", "compared", "unmodelled");
+  for (int i = 0; i < c->stat_count; i++) {
+    if (!cosim_mask_get(&c->enabled, i)) continue;
+    const CosimStat* s = &c->stats[i];
+    if (s->hw_writes == 0 && s->hw_unmodelled == 0) continue;
+    printf("  %-20s %12ld %12ld\n", s->routine->name, s->hw_writes,
+           s->hw_unmodelled);
+  }
+}
+
 int cosim_report(const Cosim* c) {
   printf("\n%-20s %8s %7s %8s %8s %6s %6s %6s  %-20s %s\n", "routine", "calls",
          "yields", "checked", "passed", "int.", "decl.", "stack", "ROM cycles",
@@ -1897,6 +2132,7 @@ int cosim_report(const Cosim* c) {
   }
 
   cost_model_report(c);
+  if (c->mode == COSIM_VERIFY) hw_report(c);
   if (c->mode == COSIM_VERIFY) drift_report(c);
   return failures;
 }
@@ -1992,6 +2228,13 @@ void cosim_share_report(const Cosim* c) {
            fmt_u64(s.calls_declined));
   else
     printf(". Nothing was declined.\n");
+  if (c->work.cycles_native_dma && s.cycles_work)
+    printf("\n  %s of the work cycles are DMA that ported vblank jobs started,\n"
+           "  which the core runs inside their budgets. Under the ROM they are\n"
+           "  work the port did not do, so counted that way the share is %.1f%%.\n",
+           fmt_u64(c->work.cycles_native_dma),
+           100.0 * (double)(s.cycles_native - c->work.cycles_native_dma) /
+               (double)s.cycles_work);
   if (c->work.burns_parked)
     printf("\n  %s substituted call%s had an interrupt fall due part-way through\n"
            "  the cycle budget. Each was stopped there, the core took it from the\n"
@@ -2240,6 +2483,65 @@ static bool accounted_for(const Cosim* c, uint32_t off) {
   return false;
 }
 
+// Is an HDMA channel writing this B-bus register, on either core? Then what
+// it holds at the `WAI` is the last line the table reached before the CPU got
+// there, which is where the beam was and not what the game computed.
+static bool hdma_writes(const Snes* s, uint8_t reg) {
+  for (int i = 0; i < 8; i++) {
+    const DmaChannel* ch = &s->dma->channel[i];
+    if (ch->hdmaActive && !ch->fromB && reg >= ch->bAdr && reg <= ch->bAdr + 3)
+      return true;
+  }
+  return false;
+}
+
+// What a register write leaves in the PPU: VRAM, CGRAM, OAM and the four
+// layers' scroll. WRAM is the game's state and the PPU's is the picture's, and
+// a port that writes registers can get the second wrong with the first right.
+// False when the two agree; otherwise the first difference, in `buf`.
+static bool video_differs(const Snes* ref, const Snes* nat, char* buf,
+                          int size) {
+  const Ppu* a = ref->ppu;
+  const Ppu* b = nat->ppu;
+  for (int i = 0; i < 0x8000; i++)
+    if (a->vram[i] != b->vram[i]) {
+      snprintf(buf, size, "VRAM word $%04X: stock $%04X, native $%04X", i,
+               a->vram[i], b->vram[i]);
+      return true;
+    }
+  for (int i = 0; i < 0x100; i++)
+    if (a->cgram[i] != b->cgram[i]) {
+      snprintf(buf, size, "CGRAM word $%02X: stock $%04X, native $%04X", i,
+               a->cgram[i], b->cgram[i]);
+      return true;
+    }
+  for (int i = 0; i < 0x100; i++)
+    if (a->oam[i] != b->oam[i]) {
+      snprintf(buf, size, "OAM word $%02X: stock $%04X, native $%04X", i,
+               a->oam[i], b->oam[i]);
+      return true;
+    }
+  for (int i = 0; i < 0x20; i++)
+    if (a->highOam[i] != b->highOam[i]) {
+      snprintf(buf, size, "OAM high byte $%02X: stock $%02X, native $%02X", i,
+               a->highOam[i], b->highOam[i]);
+      return true;
+    }
+  for (int l = 0; l < 4; l++) {
+    const uint8_t hreg = (uint8_t)(0x0d + 2 * l), vreg = (uint8_t)(hreg + 1);
+    const bool h = !hdma_writes(ref, hreg) && !hdma_writes(nat, hreg);
+    const bool v = !hdma_writes(ref, vreg) && !hdma_writes(nat, vreg);
+    if ((h && a->bgLayer[l].hScroll != b->bgLayer[l].hScroll) ||
+        (v && a->bgLayer[l].vScroll != b->bgLayer[l].vScroll)) {
+      snprintf(buf, size, "BG%d scroll: stock %u,%u, native %u,%u", l + 1,
+               a->bgLayer[l].hScroll, a->bgLayer[l].vScroll,
+               b->bgLayer[l].hScroll, b->bgLayer[l].vScroll);
+      return true;
+    }
+  }
+  return false;
+}
+
 static bool side_start(Side* s, const uint8_t* rom_data, int rom_len,
                        CosimMode mode, const char* movie_path) {
   memset(s, 0, sizeof *s);
@@ -2319,7 +2621,8 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
   }
 
   printf("Running %d frames twice — stock, and with the port substituted —\n"
-         "and comparing all %d KB of WRAM once per scheduler pass.\n\n",
+         "and comparing all %d KB of WRAM, and VRAM, CGRAM, OAM and the\n"
+         "scroll, once per scheduler pass.\n\n",
          frames, WRAM_SIZE / 1024);
 
   // Boot happens before there is a scheduler to synchronise on, so the two
@@ -2379,6 +2682,9 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
     long jump_pass, n;
   } steady = {0, 0, 0, -1, 0};
   uint32_t worst = 0, last_differ = 0, worst_unexplained = 0;
+  // Passes on which the PPU's memory or scroll differed, and the first one.
+  long video_passes = 0, video_first = -1;
+  char video_what[96] = "";
   uint32_t worst_unexplained_at[8];
   // The values as they stood *at that pass*. Reading them back out of the cores
   // when the run ends prints whatever the game has since written there, which
@@ -2548,6 +2854,17 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
     }
     explained_only += (differ > 0 && unexplained == 0) ? 1 : 0;
 
+    char vbuf[96];
+    if (video_differs(ref.snes, nat.snes, vbuf, sizeof vbuf)) {
+      if (video_first < 0) {
+        video_first = pass;
+        memcpy(video_what, vbuf, sizeof video_what);
+        printf("First video difference at pass %ld: %s\n", pass, vbuf);
+      }
+      video_passes++;
+      rc = 1;
+    }
+
     uint32_t ref_sp = ref.snes->ram[W_NMI_SAVED_SP] |
                       (uint32_t)ref.snes->ram[W_NMI_SAVED_SP + 1] << 8;
     uint32_t nat_sp = nat.snes->ram[W_NMI_SAVED_SP] |
@@ -2641,6 +2958,12 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
                worst_unexplained_ref[i], worst_unexplained_nat[i]);
     }
   }
+  if (video_passes == 0)
+    printf("VRAM, CGRAM, OAM and the scroll agreed on every compared pass.\n");
+  else
+    printf("VRAM, CGRAM, OAM or the scroll differed on %ld of %ld compared\n"
+           "passes, first at pass %ld: %s\n",
+           video_passes, compared, video_first, video_what);
   if (parted_at >= 0)
     printf("Comparison stopped at pass %ld of %d, where the timelines parted.\n",
            parted_at, frames);

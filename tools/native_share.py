@@ -355,8 +355,21 @@ VBL_JOBS = frozenset((
 # the call graph, which is how it was found.
 VBL_JOB_CALLED = frozenset({0x809E7B})
 
+# ...and since the jobs that write the PPU are ported (`src/port/vblank.h`),
+# any job can be: the harness substitutes at any instruction the ROM reaches,
+# and a job's `RTL` back to the dispatcher is an ordinary return. These are the
+# ones that are. They stay in the vblank family, and are not blocked.
+PORTED_JOBS = frozenset((
+    0x80B947,  # sprite_upload_flush
+    0x809E3E,  # bg2_scroll_job
+    0x828209,  # camera_scroll_job
+    0x809BFC,  # scroll_shadow_job
+    0x8281C9,  # boss_bg_dma
+))
+
 BLOCKED.update({a: 'a vblank job -- reached by RTL from a queue, never called'
-                for a in VBL_JOBS - VBL_JOB_CALLED if a not in BLOCKED})
+                for a in VBL_JOBS - VBL_JOB_CALLED - PORTED_JOBS
+                if a not in BLOCKED})
 
 
 # Every thread body in the ROM, and the second family of "runs and is never
@@ -582,6 +595,8 @@ def load_extra_entries(path):
 def family_of(why, addr=None):
     if addr in BODY_STRETCHES:
         return 'thread bodies -- resumed by RTL, never called'
+    if addr in PORTED_JOBS:
+        return 'vblank jobs -- reached by RTL from a queue'
     if why is None:
         return 'callable -- an ordinary per-call port'
     if why.startswith('a thread body'):

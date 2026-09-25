@@ -14488,3 +14488,89 @@ Two smaller findings from the same measurements:
   not with it out.** `zamn.exe` does not: its two runs never differ in the
   core's frame count. So this parting is lockstep's own, and why has not
   been looked into.
+
+## Routines that write the hardware, and the vblank jobs (2026-09-25)
+
+Step three of the path, second half. The vblank jobs were 14.3% of the live
+residue, and a job's work is register writes: `$80:B947` fills in DMA
+channel 0 and starts it once per sprite frame, then sends all of OAM, and
+nearly every instruction in it is a store to `$21xx` or `$43xx`. Until now a
+port could not write a register at all. The NMI was split around its
+hardware accesses so the ROM could make them, and a job is nothing else.
+
+**How a port writes one.** It does not touch the machine. It records a trace
+(`src/port/hw.h`): the runs of the ROM's instructions it went through, by
+block number, and each byte it stored to a register, in order. The shim
+hands the trace to `cosim_hw` with the table of run prices. That prices each
+write's cycle from the routine's entry, adds the write's own access, and
+reports the total as `cosim_cost` does.
+
+* **Under `run`** the burn stops a slice at each write's cycle and makes it
+  with `snes_cpuWrite`, the core's own CPU write, so the access time, any
+  HDMA it answers and the DMA it starts are the core's. A write to `$420B`
+  starts the DMA two accesses later and re-aligns the CPU on the second
+  one's length, so each is followed by two bare accesses of the next
+  instruction's fetch length before the budget goes on in slices. Every job
+  follows `STA $420B` with `REP #$20`, two fetches.
+* **Under `verify`** the core calls a write hook, and every register write the
+  ROM makes while a call is being checked is logged with the CPU's clock. At
+  the end of the call the port's writes are compared with the ROM's:
+  address, value and cycle. The APU's ports are left out. `ApuLog` watches
+  those.
+
+**The CPU's own clock.** `Snes::stolenCycles` counts the cycles the CPU did
+not spend: the DRAM refresh, and everything `dma_handleDma` runs, DMA and
+HDMA and the alignment around them. `cycles - stolenCycles` then moves only
+while the CPU executes, and an instruction costs the same on it wherever it
+lands. A routine with `.hw` set is priced on that clock, so its model is held
+to exactly zero error on every call, under HDMA or not. The DMA it starts is
+the core's to time on both sides.
+
+**Lockstep compares the picture's memory too.** WRAM is the game's state and
+the PPU's is the picture's, and a port that writes registers can get the
+second wrong with the first right. So each compared pass also compares VRAM,
+CGRAM, OAM and the four layers' scroll. A scroll register an HDMA channel is
+writing is skipped: what it holds at the `WAI` is the line the table reached
+before the CPU got there. On every movie in the corpus BG1's scroll differed
+on three passes of the intro for that reason before the rule went in.
+
+**Six jobs.** `vram_queue_flush` at `$80:9E7B`, which the NMI calls, and five
+the dispatcher reaches: `sprite_upload_flush` at `$80:B947`, `bg2_scroll_job`
+at `$80:9E3E`, `camera_scroll_job` at `$82:8209`, `scroll_shadow_job` at
+`$80:9BFC` and `boss_bg_dma` at `$82:81C9`. See `src/port/vblank.h`. The three
+that are left in the family are small: `level_tile_anim_job` at `$82:D88C`
+calls `dma_to_vram` and writes WRAM through a pointer.
+
+**The widescreen's OAM watch moved.** It was on `$80:B99B`, the instruction
+in `sprite_upload_flush` that starts the OAM transfer. With the job
+substituted nothing executes that instruction, so the watch is on the job's
+entry, which both sides reach. Nothing between the two can end a sprite pass.
+
+**Checked.** The corpus verifies at 20,937,412 calls across 50 movies with 0
+diverged, and all 56 records at 33,063,209. Every job's model is exact on
+the CPU's clock on every call, and every register write matches the ROM's in
+address, value and cycle: 40,744 of them for `sprite_upload_flush` on
+`level1.zmv` alone. No other ported routine's calls contain a register
+write the ROM makes, on the three movies counted. Lockstep matches the run
+with the six jobs left to the ROM on 49 movies, to the cycle: the same drift,
+the same partings, the same unexplained bytes. `zamn_test_layers` is
+unchanged on six movies in 16:9 and 21:9. One branch is untaken: a
+`vram_queue_flush` held back by `$26` bit 14.
+
+**The share the game prints counts the jobs' DMA.** A transfer runs inside
+the budget of the job that started it, so its cycles are in the numerator,
+where under the ROM they were work the port did not do. `cosim_share_report`
+now says how many, and what the share is without them. Over all 56 records
+it is 6.6% of the work cycles: the game prints 88.1%, up from 80.1%, and
+without the transfers it is 81.5%. What the port runs itself grew 1.4
+points. A DMA is the CPU stopped while another device works, like the waits
+in `waits.h`, so the principled figure takes it out of both sides. That is
+not done here.
+
+`level21-exit.zmv` hangs under lockstep again, as it did two rounds ago, and
+with the last commit's build too.
+
+**Two video differences, and neither is new.** With the six jobs left to the
+ROM, `level25-2p` differs in one VRAM word at pass 1,231, beside its four
+known WRAM bytes, and `level25-lane` in BG1's scroll at pass 3,496. The
+substituted runs show the same two, at the same passes.

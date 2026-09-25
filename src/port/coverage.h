@@ -93,6 +93,17 @@
   X(tile_anim_stopped, "tile_anim_resume", "a sequence ran out with $FFFE and its slot stopped") \
   X(tile_anim_upload, "tile_anim_resume",  "a frame changed, so the upload job is queued") \
   X(tile_anim_ended,  "tile_anim_resume",  "every slot stopped, and the thread ends by RTL") \
+  /* Vblank jobs, which write the PPU. */                                      \
+  X(vram_flush_held,  "vram_queue_flush",  "$26 bit 14 set: the queue held back a frame") \
+  X(vram_flush_empty, "vram_queue_flush",  "nothing queued")                   \
+  X(vram_flush_sent,  "vram_queue_flush",  "the queue sent and emptied")       \
+  X(upload_frames,    "sprite_upload_flush", "sprite frames sent ahead of OAM") \
+  X(upload_oam_only,  "sprite_upload_flush", "no frames queued: OAM alone")    \
+  X(boss_plane_shown, "camera_scroll_job", "the big figure's plane in reach: both scrolls written") \
+  X(boss_plane_x_out, "camera_scroll_job", "x out of reach: both scrolls parked") \
+  X(boss_plane_y_out, "camera_scroll_job", "y out of reach: x written, then both parked") \
+  X(boss_bg_dma_empty, "boss_bg_dma",      "queued with no rows left to send") \
+  X(boss_bg_dma_sent, "boss_bg_dma",       "the big figure's rows sent and the queue emptied") \
                                                                                 \
   /* $80:BC7F actor_depth_sort. */                                             \
   X(sort_key_first,   "actor_depth_sort",   "ACTOR_SORT_FIRST decided the order") \

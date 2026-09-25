@@ -1295,7 +1295,7 @@ jumped a pixel or two, and a spider across the console's edge showed two poses.
 How far off it was depended on how long the tick had taken, so stock and the
 port disagreed about it as well. So the sprites have a copy of their own:
 taken when `sprite_build_oam` returns, and made current when the NMI's job
-sends the OAM that pass built (`$80:B99B`). Both are the game's own moments,
+that sends the OAM that pass built starts (`$80:B947`). Both are the game's own moments,
 heard through `cosim_watch` whichever side ran the pass, so the margins are
 drawn from exactly what the middle was drawn from. The backgrounds keep the
 frame-start copy.

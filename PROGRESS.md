@@ -5,6 +5,49 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The vblank jobs, and ports that write the PPU (2026-09-25)
+
+Step three of the Devil's Crush path, second half. A port can now write the
+hardware registers, and six vblank jobs are ported with it, in
+`src/port/vblank.c`: `vram_queue_flush`, `sprite_upload_flush`,
+`bg2_scroll_job`, `camera_scroll_job`, `scroll_shadow_job` and
+`boss_bg_dma`. See `docs/cosim.md`, "Routines that write the hardware".
+
+A port records its register writes in order, between the runs of the ROM's
+instructions it went through (`src/port/hw.h`). The harness prices the runs
+and makes each write on the ROM's cycle with the core's own CPU write, so a
+DMA starts where the ROM's did. `verify` compares every write the ROM made,
+address, value and cycle. The core counts the cycles the CPU does not spend,
+refresh and DMA, so these models are held to the CPU's own clock and are
+exact to the cycle. Lockstep now compares VRAM, CGRAM, OAM and the scroll
+too. The registry is 158 entries.
+
+* **Checked.** The corpus verifies at 20,937,412 calls across 50 movies with 0
+  diverged. `verify --level` over all 56 records gives 33,063,209 calls with
+  0 diverged. Every register write matches the ROM's. Lockstep matches the
+  run with the six left to the ROM on 49 movies to the cycle, video included.
+  `zamn_test_layers` is unchanged on six movies in 16:9 and 21:9.
+* **The live figure counts the jobs' DMA.** Over all 56 records the game
+  prints **88.1%**, from 80.1%, and every record gains between 4.9 and 11.6
+  points. But 6.6 points of that is DMA the jobs start, which now runs inside
+  their budgets. Without it the figure is **81.5%**. The game's report says
+  both. A DMA is the CPU stopped for another device, like the waits, and
+  taking it out of both sides is the principled fix. It is not done.
+* **The residue** goes from 124.8 to 107.6 million instructions. Vblank jobs
+  go from 14.3% of it to 2.1%. What is left, by family: callable routines
+  57.6%, the SPC700 uploads 33.3%, thread bodies 5.4%, vblank jobs 2.1%, the
+  frame 1.5%.
+* **The widescreen hears the OAM send at `$80:B947`**, the job's entry. With
+  the job substituted nothing executes `$80:B99B`.
+* **Two video differences are older than this.** `level25-2p` differs in a VRAM
+  word at pass 1,231 and `level25-lane` in BG1's scroll at pass 3,496, with the
+  six jobs left to the ROM as well.
+* **`level21-exit.zmv` hangs under lockstep again**, with the last commit's
+  build too. Last round it ran to the end. Not looked into.
+* **`level1.zmv`'s frame-step check** skips video frames at 735 and 895, in
+  the level load, on the last commit's build too. From frame 1,000 it passes
+  in 4:3 and 16:9.
+
 ### Margin sprites from the pass on screen, and why level 25 parts (2026-09-25)
 
 **The margins' sprites are drawn from the memory the sprite pass on screen

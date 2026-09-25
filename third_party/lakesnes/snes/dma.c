@@ -355,19 +355,23 @@ static void dma_transferByte(Dma* dma, uint16_t aAdr, uint8_t aBank, uint8_t bAd
 }
 
 void dma_handleDma(Dma* dma, int cpuCycles) {
+  // Everything this runs is time the CPU did not spend, refreshes included.
+  Snes* snes = dma->snes;
+  const uint64_t before = snes->cycles;
+  snes->inDma = true;
   // if hdma triggered, do it, except if dmastate indicates dma will be done now
   // (it will be done as part of the dma in that case)
   if(dma->hdmaInitRequested && dma->dmaState != 2) dma_initHdma(dma, true, cpuCycles);
   if(dma->hdmaRunRequested && dma->dmaState != 2) dma_doHdma(dma, true, cpuCycles);
   if(dma->dmaState == 1) {
     dma->dmaState = 2;
-    return;
-  }
-  if(dma->dmaState == 2) {
+  } else if(dma->dmaState == 2) {
     // do dma
     dma_doDma(dma, cpuCycles);
     dma->dmaState = 0;
   }
+  snes->inDma = false;
+  snes->stolenCycles += snes->cycles - before;
 }
 
 void dma_startDma(Dma* dma, uint8_t val, bool hdma) {
