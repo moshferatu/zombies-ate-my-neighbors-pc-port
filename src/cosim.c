@@ -44,8 +44,10 @@
 // Room for every routine in the registry and then some. It was 32, chosen when
 // that was more than the registry held, and "run everything except one" — which
 // is how a divergence gets pinned on a routine or cleared of it — needs one
-// more than there are entries.
-#define MAX_SELECTED 128
+// more than there are entries. It was 128, a copy of `COSIM_MAX_ROUTINES`
+// that did not move when that did, and `-x` stopped working at the 129th
+// routine. It is that constant now.
+#define MAX_SELECTED COSIM_MAX_ROUTINES
 
 // Where `--twin-aim` starts arming, unless told otherwise. Holding fire before
 // the level is up drives a movie somewhere it was not written for — every one of

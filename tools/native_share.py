@@ -270,10 +270,19 @@ BLOCKED = {
     # so it inherits both problems. 1 call, 1 interrupted, on the same two
     # movies.
     0x80CB1A: 'unregisterable: it calls $80:CB61 and inherits both of its problems',
-    0x808353: 'the coroutine primitive the harness measures passes against',
-    0x8083E0: 'a dispatcher -- RTLs into any of 13 jobs held in WRAM',
-    0x80843D: 'a dispatcher -- the same, for the one job queue B carries',
-    0x80816C: 'the NMI entry point, which is not called and cannot be shimmed',
+    # $80:8353 thread_yield and the two dispatchers at $80:83E0 and $80:843D
+    # were here, as "the coroutine primitive" and "a dispatcher -- RTLs into
+    # any of 13 jobs". Neither returns, and that was the whole objection: the
+    # harness substituted calls. It now also takes a routine that leaves by a
+    # jump of its own (`CosimRoutine::exits`), entered at any instruction, so
+    # they are registry entries -- with `$80:8401`, `$80:845E`, `$80:8372`,
+    # `$80:8380` and their `$00` twins -- and off this list.
+    #
+    # The NMI's handler went the same way, in four pieces between its hardware
+    # accesses. What is left under this row is the bank $00 trampoline, the
+    # `LDA $4210`/`STA $2100` pair either side of the queues, and the
+    # auto-joypad wait.
+    0x80816C: 'the NMI trampoline and its hardware accesses, which stay the ROM\'s',
     0x8080AE: 'the reset vector, which is not called and cannot be shimmed',
 }
 

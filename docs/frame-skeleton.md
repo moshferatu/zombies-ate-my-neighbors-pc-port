@@ -98,6 +98,15 @@ live counter, stopping at `$8000` so an expired thread stays runnable.
 Threads live in two parallel 24-entry tables — `thread_wait` at `$7E:1180` and
 `thread_sp` at `$7E:11B0` — with each thread's stack somewhere in `$7E:10xx-$12xx`.
 
+**A thread ends in bank `$00`.** `thread_spawn` builds the return address under
+a new thread's first frame with a bank of zero, so a body's final `RTL` lands on
+`$00:833E`, `thread_exit` through the slow mirror. It frees the slot and
+branches into the scan above, still in bank `$00`, and if no later thread is
+ready the frame ends on `$00:8371` rather than `$80:8371`. The whole next
+frame's housekeeping then runs there too, until a thread's `JSL $808353`. The
+scheduler, the dispatchers and the NMI are ported; see `docs/threads.md`, "The
+scheduler itself".
+
 ## The NMI handler (`$80:8179`)
 
 The vector at `$00:816C` is only a trampoline:

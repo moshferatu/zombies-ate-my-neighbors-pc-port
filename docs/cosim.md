@@ -14347,3 +14347,68 @@ What the sweep does not reach: the boss's death, its rewrites and a
 zero-damage hit (`aa2e_died`, `aa2e_toss_*`, `aa2e_remap_61`,
 `aa2e_no_damage`, `aa2e_invulnerable`), which are the same branches
 `boss_9660` is still waiting on, and most of the smaller six's special ids.
+
+## The frame's own machinery (2026-09-24)
+
+Step two of the path `PROGRESS.md` laid out: `thread_yield`, the scan after
+each frame, both vblank dispatchers and the NMI handler. They were the largest
+family in the live residue, 44% of what the 65816 still ran over all 56 level
+records. The design is in `docs/threads.md`, "The scheduler itself". What
+changed in the harness:
+
+* **`CosimRoutine::exits`.** A routine may leave by one of its own
+  instructions rather than by returning. The shim fills every register,
+  including `S`, `D`, `DB` and the whole status byte `P`, and names the exit in
+  `CosimRegs::pc`. `verify` ends the call when the ROM reaches any exit and
+  compares all of that, plus WRAM with no dead-stack allowance, because the
+  port writes the stack as the ROM does. `run` publishes everything but the
+  program counter at once, spends the budget parked on the entry, and moves
+  the program counter when the budget is spent. The budget stops on arriving
+  at the exit, so nothing is taken off for a tail instruction.
+* **`CosimRoutine::accepts`**, a guard that only looks. It reads live WRAM
+  and the registers and copies nothing, where `supported` copies 128 KB first.
+  `thread_yield` is asked several times a frame.
+* **`CosimRoutine::uncalled`**, so an entry reached by `RTL` or by falling into
+  it is not counted as a call served.
+* **`CosimRegs::joy`**, the auto-joypad latch, an input for `nmi_input`.
+
+Fourteen entries, all of them pricing themselves exactly: `thread_yield`,
+`thread_exit`, `sched_wake`, `sched_rescan` and the last two again in bank
+`$00`, `vbl_queue_a_run`, `vbl_queue_a_resume`, the same two for queue B, and
+`nmi_enter`, `nmi_stack`, `nmi_input` and `nmi_leave`.
+
+**Checked.** The corpus verifies at 19,493,013 calls across 50 movies with 0
+diverged. `verify --level` over all 56 records gives 29,940,213 calls with 0
+diverged. Every cost model is exact to the DRAM refresh on every call outside
+HDMA. The tick's carry into `$22` and the random number generator held by
+`$1EB4` were forced with `--poke` and pass. The one site nothing reaches is an
+NMI arriving while one is already running. Lockstep over the corpus is clean
+on 49 movies, `level24-carry`'s three level changes among them. `level25-2p`'s four unaccounted bytes, and the level-25
+partings, are at the same passes with the fourteen left to the ROM, and the
+drift per pass is the same or smaller. `level21-exit.zmv` hangs under
+lockstep between frames 3,000 and 4,500 with or without the fourteen. It had
+never been run that way before; `verify` on it is clean.
+
+**Three findings on the way.**
+
+* **A thread ends in bank `$00`.** `thread_exit` was registered at
+  `$80:833E` and `verify` saw no call to it on any record, although every
+  traced profile executes it. `thread_spawn` gives a thread's exit return
+  address a bank of zero, so the scheduler runs on in the slow mirror after a
+  thread ends. The port now takes its bank from the entry, prices bank `$00`
+  fetches slow, and has entries for both banks. `at_sync_point` matched only
+  the `$80` `WAI`, and now takes either. The bank `$00` wake-up and rescan
+  were reached 8 times in the corpus, never on the level sweep.
+* **`nmi_input` was 8 cycles long whenever `$420D` was clear**, on 6,270 of
+  247,601 calls. `tools/cycles816.py`'s byte count for a run already includes
+  the ROM data it reads through bank `$80`, and the model added the table's
+  four bytes a second time.
+* **`zamn_cosim -x` stopped working at the 129th routine.** The CLI kept its
+  own copy of the registry's cap, as did `zamn.exe`'s `-r` list. Both are
+  `COSIM_MAX_ROUTINES` now, which is 192.
+
+Live, over all 56 records, the game's figure goes from **66.8% to 75.4%**, and
+every record gains between 5.7 and 11.9 points. In the residue the frame
+family goes from 44.1% to 5.2%. What is left of it is the boot-time WRAM clear
+at `$80:8116`, the NMI trampoline in bank `$00`, the instructions that touch
+the hardware, and the exit instructions themselves, which the core executes.

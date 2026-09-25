@@ -129,6 +129,9 @@ $80:8002  init_ppu_regs        # blanks the screen and clears every PPU/DMA regi
 # --- Code: NMI ---------------------------------------------------------------
 $80:816C  nmi_entry            # the NMI vector; trampolines through [$0000]
 $80:8179  nmi_main
+$80:8199  nmi_stack            # after the blank: park S in $04, move to NMI's stack
+$80:81BB  nmi_input            # after the auto-read wait: both pads, raw and as directions
+$80:81E4  nmi_leave            # after queue B: the rng tick, S back, the pulls, RTL
 
 # --- Code: cooperative thread scheduler --------------------------------------
 $80:825E  thread_spawn         # A:Y = far entry; builds the nine-byte parked frame a
@@ -140,6 +143,8 @@ $002032  thread_entry_bank
 $000006  thread_count         # live threads; $80:8271 is the only writer traced
 $80:8353  thread_yield         # A = ticks to sleep; returns when the wait expires
 $80:8371  scheduler_idle       # WAI, then per-frame housekeeping, then re-scan
+$80:8372  sched_wake           # the instruction after the WAI: tick, and the stack to $125F
+$80:8380  sched_rescan         # JSR thread_tick_waits, then the scan from slot 0
 $80:8398  thread_tick_waits    # decrement every live thread's wait counter
 $80:833E  thread_exit          # where a thread's own RTL lands; frees the slot
 $80:8475  thread_set_handler   # A = handler address, Y = bank; stores at sched_cur_task
@@ -150,8 +155,10 @@ $80:82DE  thread_dp_table      # 24 x u16: each thread's direct page, $0100..$0C
 $80:83AE  vbl_queue_a_add
 $80:83D5  vbl_queue_a_remove
 $80:83E0  vbl_queue_a_run
+$80:8401  vbl_queue_a_resume   # where a queue A job's RTL comes back to; C set keeps it
 $80:8418  vbl_queue_b_add
 $80:843D  vbl_queue_b_run
+$80:845E  vbl_queue_b_resume   # the same, for queue B
 
 # --- Code: screen ------------------------------------------------------------
 $80:891A  fade_in              # ramps brightness_shadow 0->15, yielding each step

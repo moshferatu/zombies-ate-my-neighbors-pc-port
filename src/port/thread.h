@@ -2,13 +2,13 @@
 //
 // ZAMN's frame is driven by a 24-slot cooperative thread scheduler and two
 // queues of jobs that NMI runs — see `docs/frame-skeleton.md`. The scheduler
-// itself cannot be ported as a C function, because `thread_yield` suspends its
-// caller mid-routine and resumes it later on a parked stack; that is the whole
-// coroutine problem Phase 3 has to solve, and it is not solved here.
+// itself is not a function that returns, because `thread_yield` leaves into
+// another thread on another stack. It is in `port/sched.h`, written over the
+// whole register set, with the two dispatchers and the NMI handler.
 //
-// What *can* be ported now is the bookkeeping around it: the routines that walk
-// these tables without ever yielding. They are leaves, they are pure WRAM, and
-// porting them is how the harness gets exercised against both return kinds —
+// What is here is the bookkeeping around it: the routines that walk these
+// tables and return. They are leaves, they are pure WRAM, and porting them is
+// how the harness got exercised against both return kinds —
 // `thread_tick_waits` returns with `RTS`, the two queue adders with `RTL`.
 //
 // Port code: libc only.

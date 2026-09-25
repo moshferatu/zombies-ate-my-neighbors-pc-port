@@ -43,6 +43,10 @@ typedef struct {
   // out of its caller's comparison — the caller's window simply also contains
   // them, exactly as its own sends would be.
   uint32_t apu_mark;
+  // A routine that leaves by one of its `exits` rather than by returning. It
+  // ends when the ROM reaches one, whatever the stack pointer says, and the
+  // port writes the stack itself, so nothing is waived as dead stack.
+  bool jump;
 } CosimCall;
 
 #define COSIM_MAX_DEPTH 8
@@ -88,6 +92,7 @@ typedef struct {
   int left;        // cycles still owed
   int piece;       // how finely to spend them — see cycles_burn_modelled()
   CosimCommit commit;  // ...and the WRAM words, published with them
+  bool jump;  // leaves by `out.pc`, not by the routine's `ret_op`
 } CosimBurn;
 
 // `thread_yield`, `$80:8353`. Reaching it is how a segment ends; see
@@ -267,6 +272,11 @@ static void regs_capture(Snes* snes, CosimRegs* r) {
   r->db = cpu->db;
   r->s = cpu->sp;
   r->fastrom = snes->fastMem;
+  r->p = (uint8_t)(cpu->n << 7 | cpu->v << 6 | cpu->mf << 5 | cpu->xf << 4 |
+                   cpu->d << 3 | cpu->i << 2 | cpu->z << 1 | cpu->c);
+  r->pc = ((uint32_t)cpu->k << 16) | cpu->pc;
+  r->joy[0] = snes->portAutoRead[0];
+  r->joy[1] = snes->portAutoRead[1];
   r->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
   r->regs = COSIM_REG_ALL;
 }
@@ -482,6 +492,7 @@ static void note(CosimStat* s, const char* fmt, ...) {
 // pushed nothing gets an empty window and no leeway at all, and nothing outside
 // the few bytes a routine actually touched is ever waved through.
 static bool dead_stack(const CosimCall* call, uint32_t off) {
+  if (call->jump) return false;
   return off > (uint32_t)call->min_sp && off <= (uint32_t)call->entry_sp;
 }
 
@@ -556,6 +567,40 @@ static void compare(CosimStat* s, const CosimCall* call, const Wram* ours,
     note(s, "flag C: ROM %d, port %d", rom_regs->c, our_regs->c);
   else if ((our_regs->flags & COSIM_FLAG_V) && our_regs->v != rom_regs->v)
     note(s, "flag V: ROM %d, port %d", rom_regs->v, our_regs->v);
+}
+
+// ...and for a routine that leaves by a jump, every register there is: where
+// it went, the stack it left on, the page and bank, and the status byte whole.
+static void compare_jump(CosimStat* s, const CosimCall* call, const Wram* ours,
+                         const Wram* theirs, const CosimRegs* rom_regs,
+                         const CosimRegs* our_regs) {
+  compare_wram(s, call, ours, theirs);
+  if (s->failed) return;
+  compare_apu(s, call);
+  if (s->failed) return;
+
+  if (our_regs->pc != rom_regs->pc)
+    note(s, "exit: ROM $%06X, port $%06X", rom_regs->pc, our_regs->pc);
+  else if (our_regs->a != rom_regs->a)
+    note(s, "A: ROM $%04X, port $%04X", rom_regs->a, our_regs->a);
+  else if (our_regs->x != rom_regs->x)
+    note(s, "X: ROM $%04X, port $%04X", rom_regs->x, our_regs->x);
+  else if (our_regs->y != rom_regs->y)
+    note(s, "Y: ROM $%04X, port $%04X", rom_regs->y, our_regs->y);
+  else if (our_regs->p != rom_regs->p)
+    note(s, "P: ROM $%02X, port $%02X", rom_regs->p, our_regs->p);
+  else if (our_regs->s != rom_regs->s)
+    note(s, "S: ROM $%04X, port $%04X", rom_regs->s, our_regs->s);
+  else if (our_regs->d != rom_regs->d)
+    note(s, "D: ROM $%04X, port $%04X", rom_regs->d, our_regs->d);
+  else if (our_regs->db != rom_regs->db)
+    note(s, "DB: ROM $%02X, port $%02X", rom_regs->db, our_regs->db);
+}
+
+static bool is_exit(const CosimRoutine* r, uint32_t pc) {
+  for (int i = 0; i < r->exit_count; i++)
+    if (r->exits[i] == pc) return true;
+  return false;
 }
 
 static void record_cycles(CosimStat* s, long cycles) {
@@ -679,6 +724,36 @@ static void native_return(Cosim* c, const CosimRoutine* r, const CosimRegs* out)
   cpu->pc = (uint16_t)r->ret_op;
 }
 
+// Everything a jump hands over except where to: that waits for the budget. The
+// status byte goes in the way `PLP` puts it, so an 8-bit index width takes the
+// high bytes of X and Y with it.
+static void jump_publish(Cosim* c, const CosimRegs* out) {
+  Cpu* cpu = c->snes->cpu;
+  cpu->a = out->a;
+  cpu->x = out->x;
+  cpu->y = out->y;
+  cpu->sp = out->s;
+  cpu->dp = out->d;
+  cpu->db = out->db;
+  cpu->n = out->p & 0x80;
+  cpu->v = out->p & 0x40;
+  cpu->mf = out->p & 0x20;
+  cpu->xf = out->p & 0x10;
+  cpu->d = out->p & 0x08;
+  cpu->i = out->p & 0x04;
+  cpu->z = out->p & 0x02;
+  cpu->c = out->p & 0x01;
+  if (cpu->xf) {
+    cpu->x &= 0xff;
+    cpu->y &= 0xff;
+  }
+}
+
+static void jump_go(Cosim* c, const CosimRegs* out) {
+  c->snes->cpu->k = (uint8_t)(out->pc >> 16);
+  c->snes->cpu->pc = (uint16_t)out->pc;
+}
+
 // Advance the machine by a slice of a budget, the way a busy CPU advances it.
 //
 // **`snes_runCycles` on its own is not what the ROM does with its time.** Every
@@ -782,6 +857,9 @@ static void cycles_burn_modelled(Cosim* c, int cycles) {
 typedef enum {
   COSIM_TAIL_RETURN,  // native_return: the `RTS`/`RTL` at `ret_op`
   COSIM_TAIL_YIELD,   // native_yield: the `JSL thread_yield` at `yield_op`
+  // A jump's exit is outside the window `verify` measures, which ends on
+  // arriving at it, so there is nothing to take off.
+  COSIM_TAIL_NONE,
 } CosimTail;
 
 // What that instruction will cost, so the budget can stop short of it.
@@ -808,6 +886,7 @@ typedef enum {
 #define COSIM_STACK_CYCLES 8  // bank 0 below $2000, which is where the stack is
 
 static int tail_cycles(const Snes* snes, const CosimRoutine* r, CosimTail tail) {
+  if (tail == COSIM_TAIL_NONE) return 0;
   const uint32_t op = tail == COSIM_TAIL_YIELD ? r->yield_op : r->ret_op;
   // A code fetch, at whichever speed the FastROM bit currently says. Every entry
   // in the registry is in a ROM bank at $8000 or above, so that is the only case
@@ -956,7 +1035,8 @@ static bool burn_spend(Cosim* c) {
     return false;
   }
   commit_publish(c, &b->commit);
-  native_return(c, b->routine, &b->out);
+  if (b->jump) jump_go(c, &b->out);
+  else native_return(c, b->routine, &b->out);
   c->priv->burn_depth--;
   return true;
 }
@@ -967,13 +1047,17 @@ static bool burn_spend(Cosim* c) {
 // interrupt nor a video boundary is spent here in full.
 static void burn_begin(Cosim* c, const CosimRoutine* r, const CosimRegs* out,
                        CosimCommit* commit) {
+  const bool jump = r->exit_count > 0;
+  const CosimTail tail = jump ? COSIM_TAIL_NONE : COSIM_TAIL_RETURN;
+  if (jump) jump_publish(c, out);
   if (c->priv->burn_depth >= COSIM_MAX_DEPTH) {
     // Nowhere to park it. Spending it immediately is the old behaviour and is
     // wrong only in the way the old behaviour was wrong, which beats losing the
     // cycles altogether.
-    cycles_burn_now(c, r, COSIM_TAIL_RETURN);
+    cycles_burn_now(c, r, tail);
     commit_publish(c, commit);
-    native_return(c, r, out);
+    if (jump) jump_go(c, out);
+    else native_return(c, r, out);
     return;
   }
   CosimBurn* b = &c->priv->burn[c->priv->burn_depth++];
@@ -981,7 +1065,8 @@ static void burn_begin(Cosim* c, const CosimRoutine* r, const CosimRegs* out,
   b->out = *out;
   b->entry = r->entry;
   b->commit = *commit;
-  burn_plan(c, r, COSIM_TAIL_RETURN, &b->left, &b->piece);
+  b->jump = jump;
+  burn_plan(c, r, tail, &b->left, &b->piece);
   burn_spend(c);
 }
 
@@ -1068,9 +1153,13 @@ static void run_native_segment(Cosim* c, CosimCall* call) {
 // about to happen. Read-only as far as the game is concerned: the guard works
 // on a copy, which is what lets it answer by running the port and looking.
 static bool guard_allows(Cosim* c, const CosimRoutine* r) {
+  CosimRegs in;
+  if (r->accepts) {
+    regs_capture(c->snes, &in);
+    if (!r->accepts((const Wram*)c->snes->ram, &in)) return false;
+  }
   if (!r->supported) return true;
   memcpy(c->priv->guard, c->snes->ram, sizeof(Wram));
-  CosimRegs in;
   regs_capture(c->snes, &in);
 
   // The guard answers by running the port, so it trips branch-coverage marks —
@@ -1132,7 +1221,7 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
   s->calls++;
   s->checked++;
   s->passed++;
-  c->work.calls_native++;
+  if (!r->uncalled) c->work.calls_native++;
   return true;
 }
 
@@ -1163,6 +1252,7 @@ static void begin_verify(Cosim* c, int index, const CosimRoutine* r, CosimStat* 
   call->suspended = false;
   call->resume_pc = 0;
   call->segment = 0;
+  call->jump = r->exit_count > 0;
   if (r->run_yield) memset(call->ctx, 0, (size_t)r->ctx_size);
   segment_start(c, call);
 }
@@ -1200,7 +1290,7 @@ static void record_segment(Cosim* c, CosimCall* call, CosimStat* s) {
   // will have transferred somewhere inside it.
   record_model(s, actual, &call->in, call->hdma || hdma_armed(c->snes));
   record_budget(s, c->stats[call->index].routine, actual);
-  int waived = (int)(call->entry_sp - call->min_sp);
+  int waived = call->jump ? 0 : (int)(call->entry_sp - call->min_sp);
   if (waived > s->stack_waived) s->stack_waived = waived;
 }
 
@@ -1301,6 +1391,27 @@ static void end_verify(Cosim* c, CosimCall* call) {
   report_first(c, s, was_failed);
 }
 
+// ...and a routine that leaves by a jump has reached one of its exits. The ROM
+// is standing on the exit instruction and has not executed it, which is where
+// the port stopped too.
+static void end_jump_verify(Cosim* c, CosimCall* call) {
+  CosimStat* s = &c->stats[call->index];
+  bool was_failed = s->failed;
+
+  CosimRegs rom_regs;
+  regs_capture(c->snes, &rom_regs);
+
+  CosimRegs out;
+  uint16_t ticks = 0;
+  verify_segment(c, call, &out, &ticks);
+  record_segment(c, call, s);
+  compare_jump(s, call, c->priv->scratch, (const Wram*)c->snes->ram, &rom_regs,
+               &out);
+
+  if (!s->failed) s->passed++;
+  report_first(c, s, was_failed);
+}
+
 // The innermost in-flight call that is parked inside `thread_yield` and is
 // waiting for exactly this address, or NULL. The stack-pointer test is what
 // distinguishes a genuine resumption from the many other times execution
@@ -1396,6 +1507,12 @@ static void cosim_step_inner(Cosim* c) {
     while (c->priv->depth > 0) {
       CosimCall* call = &c->priv->stack[c->priv->depth - 1];
       const CosimRoutine* r = c->stats[call->index].routine;
+      if (call->jump) {
+        if (!is_exit(r, pc)) break;
+        c->priv->depth--;
+        end_jump_verify(c, call);
+        continue;
+      }
       if (call->suspended) break;  // parked; it cannot be returning
       if (pc != call->ret_pc ||
           snes->cpu->sp != return_sp(call->entry_sp, r->ret_kind))
@@ -2052,9 +2169,16 @@ typedef struct {
 // counter one past it, and the CPU stopped until NMI. A frame whose work
 // overran and left the CPU somewhere else simply does not get compared, which
 // is reported rather than papered over.
+//
+// **In either bank.** A thread body's final `RTL` returns through `$00:833E`,
+// because `thread_spawn` builds that return address with a bank of zero, and
+// the scheduler then runs on in the slow mirror: when no thread after it is
+// ready this tick, the `WAI` it reaches is `$00:8371`. Matching only `$80`
+// counted every such frame as one where "a side never came back to the WAI".
 static bool at_sync_point(const Cosim* c) {
   const Cpu* cpu = c->snes->cpu;
-  return cpu->waiting && cpu_pc24(c->snes) == SCHEDULER_IDLE_WAI + 1;
+  return cpu->waiting && cpu->pc == (uint16_t)(SCHEDULER_IDLE_WAI + 1) &&
+         (cpu->k == 0x80 || cpu->k == 0x00);
 }
 
 

@@ -257,3 +257,81 @@ an exit like any other.**
   existing over-count of the `RTS`/`RTL` for leaf routines, it is about 24 master
   cycles inside a ~57,000-cycle frame, and it stops mattering in Phase 4 when the
   reference is cut loose.
+
+## The scheduler itself (2026-09-24)
+
+Everything above ports routines that *call* `thread_yield`. This ports
+`thread_yield`, and with it the rest of the frame's machinery: the scan after
+each frame, the two vblank dispatchers and the NMI handler. Together they were
+the largest family in the live residue, 44% of what the 65816 still ran over
+all 56 level records. The code is `src/port/sched.c`.
+
+**None of them returns, and that was the whole obstacle.** The harness
+substituted a routine at its entry and handed the core its `RTS` or `RTL`.
+`thread_yield` leaves into another thread, on another stack. A dispatcher
+leaves into a job by pushing an address and executing `RTL`, and the job comes
+back to an address in the middle of the dispatcher. So a routine may now name
+its **exits**, the instructions of its own that control leaves it by
+(`CosimRoutine::exits`). The port runs from the entry to one of them over the
+whole register set: A, X, Y, the status byte, the stack pointer, the direct
+page, the data bank, and which exit. The core then executes the exit
+instruction, exactly as it executes `ret_op`.
+
+An entry no longer has to be a subroutine's. `$80:8401` is where a queue A job
+returns to. `$80:8372` is the instruction after the scheduler's `WAI`. Any
+instruction the ROM reaches is an entry the harness can take:
+
+| Entry | Name | Leaves by |
+|---|---|---|
+| `$80:8353` | `thread_yield` | `RTL` into the thread picked at `$8397`, or the `WAI` at `$8371` |
+| `$00:833E` | `thread_exit` | the same two, in bank `$00` |
+| `$80:8372`, `$00:8372` | `sched_wake` | the `JSL sprite_build_oam` at `$837C` |
+| `$80:8380`, `$00:8380` | `sched_rescan` | `$8397` or `$8371` |
+| `$80:83E0`, `$80:8401` | `vbl_queue_a_run`, `_resume` | the `RTL` into a job at `$8400`, or the `RTS` at `$8417` |
+| `$80:843D`, `$80:845E` | `vbl_queue_b_run`, `_resume` | `$845D`, or `$8474` |
+| `$80:8179` | `nmi_enter` | `$818F`, before `LDA $4210`; or `$81F8` when an NMI is already running |
+| `$80:8199` | `nmi_stack` | the `JSL vram_queue_flush` at `$81A2` |
+| `$80:81BB` | `nmi_input` | the `JSR vbl_queue_b_run` at `$81E1` |
+| `$80:81E4` | `nmi_leave` | the `RTL` at `$81F8` |
+
+**The stack is WRAM, and the port writes it.** Every push the ROM makes is
+made, including the ones dead the moment they land, such as `PEA $0000 : PLD`.
+So `verify` compares these with no dead-stack allowance at all, where every
+other routine is allowed the bytes under its own pushes. Under `run` nothing is
+left stale.
+
+**The instructions that touch the hardware stay the ROM's.** The NMI is cut in
+four around them: `LDA $4210`, both `STA $2100`s, and the wait for the
+auto-joypad read. The pads are the exception. `LDA $4218` reads a latch, so the
+harness hands the two words in with the registers (`CosimRegs::joy`).
+
+### Bank `$00`
+
+`thread_exit` was registered at `$80:833E` first and `verify` saw no call to it
+on any of the 56 records, although every traced profile executes it. The
+reason is in `thread_spawn`. The second return address it builds under a new
+thread, the one the body's own `RTL` goes to, has a bank of zero, so a thread
+ends through `$00:833E`. That is the same code through the slow mirror, and the
+scheduler goes on running there: the scan leaves by `$00:8397`, and when no
+later thread is ready, by the `WAI` at `$00:8371`. The next frame's wake-up and
+rescan then run in bank `$00` as well, until some thread's `JSL $808353`.
+
+So the port takes its bank from where it was entered, every `PHK` pushes that
+bank, and code fetched through `$00` is priced slow whatever `$420D` says. The
+lockstep sync point was matching only the `$80` `WAI`, and now takes either.
+
+### Interrupts while the budget is spent
+
+A substituted call spends its budget with the CPU parked on its entry, and an
+interrupt that falls due is taken from there. For a jump, everything but the
+program counter is published before the budget starts. An NMI that lands while
+`thread_yield` is paying therefore pushes its frame below the stack the
+routine left, after the thread's status, page and bank are parked, which is
+where the ROM's own instructions would have met it. Publishing at the end
+instead would have let the NMI's pushes overwrite them.
+
+It also keeps the one timing effect of the scan that the game can see. If the
+NMI falls due while the scheduler is scanning an empty table, the `WAI` it then
+reaches waits for the *next* one, and a frame is lost. That happens under
+substitution for the same reason it happens on the console: the budget is the
+scan's own cost.

@@ -60,6 +60,20 @@
   X(wait_empty,       "thread_tick_waits",  "an unused scheduler slot")         \
   X(queue_full,       "vbl_queue_add",      "a vblank queue rejected a job (carry set)")   X(spawn_took,       "thread_spawn",       "a free scheduler slot turned into a running thread")   X(spawn_full,       "thread_spawn",       "all 24 slots live, so the spawn failed") \
                                                                                 \
+  /* $80:8353 the scheduler, and the two vblank dispatchers. */                 \
+  X(sched_switch,     "thread_yield",      "a ready thread found, and its stack switched to") \
+  X(sched_idle,       "thread_yield",      "no thread ready: the scan ran off the end to the WAI") \
+  X(sched_thread_ended, "thread_exit",       "a thread body's RTL freed its slot") \
+  X(sched_tick_carry, "sched_wake",        "the tick at $20 wrapped into $22")  \
+  X(vbl_run_idle,     "vbl_queue_run",     "a queue with nothing in it")        \
+  X(vbl_run_job,      "vbl_queue_run",     "a job reached by RTL")              \
+  X(vbl_run_kept,     "vbl_queue_run",     "a job came back with carry set and stays") \
+  X(vbl_run_dropped,  "vbl_queue_run",     "a one-shot came back and its slot was freed") \
+  X(nmi_reentered,    "nmi_enter",         "an NMI while one was already running: straight back out") \
+  X(nmi_rng_tick,     "nmi_leave",         "$1EB4 clear, so the random number state stepped") \
+  X(nmi_rng_held,     "nmi_leave",         "...or set, and it did not")         \
+  X(vbl_run_last_dropped, "vbl_queue_run",     "...and it was the last one, so the walk stopped") \
+                                                                                \
   /* $80:BC7F actor_depth_sort. */                                             \
   X(sort_key_first,   "actor_depth_sort",   "ACTOR_SORT_FIRST decided the order") \
   X(sort_key_y,       "actor_depth_sort",   "the Y key decided the order")      \

@@ -5,6 +5,44 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The scheduler, the vblank dispatchers and the NMI (2026-09-24)
+
+Step two of the Devil's Crush path. `thread_yield`, the scan after each frame,
+both vblank dispatchers and the NMI handler are ported, in
+`src/port/sched.c`. None of them returns, so the harness learned a second way
+to leave: a routine may name its **exits**, the instructions of its own that
+control leaves it by, and the port hands over the whole register set and which
+exit. See `docs/threads.md`, "The scheduler itself", and `docs/cosim.md`, "The
+frame's own machinery".
+
+Live, over all 56 records, the game's figure goes from **66.8% to 75.4%**.
+Every record gains between 5.7 and 11.9 points. The frame family's share of the
+residue goes from 44.1% to 5.2%.
+
+* **Fourteen entries.** `thread_yield`, `thread_exit`, `sched_wake` and
+  `sched_rescan`, the last two in both banks; the run and resume halves of
+  each dispatcher; and the NMI in four stretches between its hardware
+  accesses. The pads come in with the registers.
+* **Checked.** The corpus verifies at 19,493,013 calls across 50 movies with 0
+  diverged. `verify --level` over all 56 records gives 29,940,213 calls with 0
+  diverged. Every cost model is exact to the refresh. Lockstep over the corpus
+  is clean on 49 movies, `level24-carry`'s three level changes among them.
+  `level25-2p`'s four unaccounted bytes and the level-25 partings are the same
+  with the fourteen left to the ROM.
+* **A thread ends in bank `$00`.** `thread_spawn` builds the exit return
+  address with a bank of zero, so the scheduler runs on in the slow mirror
+  after a thread ends. `thread_exit` is at `$00:833E`, and lockstep's sync
+  point now accepts the `WAI` in either bank.
+* **Fixed on the way:** `nmi_input` counted its table bytes twice when
+  `$420D` was clear. `zamn_cosim -x` and `zamn.exe -r` had their own copy of
+  the registry cap, 128, which the registry had passed.
+
+**Found, and not fixed: lockstep hangs on `level21-exit.zmv`**, between frames
+3,000 and 4,500, with the fourteen left to the ROM as well. It joined the
+corpus list after the last lockstep pass, so this is the first time it has
+been run that way. `verify` on it is clean, including the bank `$00` wake-up
+and rescan.
+
 ### Every collision handler the records install (2026-09-24)
 
 The eight handlers the residue named are ported, so a sweep of all 56 records

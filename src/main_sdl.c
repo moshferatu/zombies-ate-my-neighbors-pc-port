@@ -900,8 +900,9 @@ int main(int argc, char** argv) {
   // was more than the registry held when it was written and is not any more:
   // past the cap the `-r` was dropped and its argument fell through to the
   // positional check, so asking for "everything except two" failed with
-  // `unexpected argument 'enemy_cdde'` and no hint that a limit existed.
-  const char* only[128];
+  // `unexpected argument 'enemy_cdde'` and no hint that a limit existed. Then
+  // it was 128, which the registry passed too; it is the registry's own cap now.
+  const char* only[COSIM_MAX_ROUTINES];
   int only_count = 0;
   long frame_limit = 0;
   bool native = true, want_audio = g_cfg.audio, want_pads = g_cfg.pads;

@@ -202,6 +202,7 @@ add_library(zamn_port STATIC
   src/port/oam.c
   src/port/player.c
   src/port/rng.c
+  src/port/sched.c
   src/port/score.c
   src/port/sprite_cache.c
   src/port/step.c

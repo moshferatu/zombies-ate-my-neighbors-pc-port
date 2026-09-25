@@ -29,6 +29,7 @@
 #include "port/oam.h"
 #include "port/player.h"
 #include "port/rng.h"
+#include "port/sched.h"
 #include "port/score.h"
 #include "port/sprite_cache.h"
 #include "port/step.h"
@@ -5020,6 +5021,330 @@ static const CosimCommitSpan COMMIT_BOSS_BG[] = {
     {W_VBL_QUEUE_A_COUNT, 2, true},
 };
 
+// ---------------------------------------------------------------------------
+// The scheduler and the vblank dispatchers — routines that leave by a jump
+// ---------------------------------------------------------------------------
+//
+// See `port/sched.h`. The shim's whole job here is to move the register set
+// in and out; the port decides everything, the exit included.
+
+static void cpu_from(const CosimRegs* in, PortCpu* c) {
+  c->a = in->a;
+  c->x = in->x;
+  c->y = in->y;
+  c->s = in->s;
+  c->d = in->d;
+  c->db = in->db;
+  c->p = in->p;
+  c->pc = in->pc;
+}
+
+// Code fetched through bank `$00` is slow whatever `$420D` says, and the
+// scheduler runs there after a thread ends -- see `port/sched.h`. Nothing in
+// these runs reads ROM as data except `nmi_input`, which is always in `$80`.
+static bool fetch_fast(const CosimRegs* in) {
+  return in->fastrom && (in->pc >> 16) >= 0x80;
+}
+
+static void cpu_to(const PortCpu* c, CosimRegs* out) {
+  out->a = c->a;
+  out->x = c->x;
+  out->y = c->y;
+  out->s = c->s;
+  out->d = c->d;
+  out->db = c->db;
+  out->p = c->p;
+  out->pc = c->pc;
+  out->n = (c->p & PORT_P_N) != 0;
+  out->v = (c->p & PORT_P_V) != 0;
+  out->z = (c->p & PORT_P_Z) != 0;
+  out->c = (c->p & PORT_P_C) != 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
+  out->regs = COSIM_REG_ALL;
+}
+
+// Each run's price, from `tools/cycles816.py` over the listing, with branches
+// taken or not as the run's name says. Nothing here depends on the direct page:
+// every one of these runs on page zero, which the guards insist on where the
+// ROM does not install it itself.
+static const CosimRun SCHED_COST[SCHED_BLOCK_COUNT] = {
+    [SCHED_PARK] = {338, 23, 0},
+    [SCHED_EXIT] = {292, 21, 0},
+    [SCHED_STEP] = {60, 7, 0},
+    [SCHED_WRAP] = {54, 7, 0},
+    [SCHED_EMPTY] = {58, 5, 0},
+    [SCHED_ASLEEP] = {82, 8, 0},
+    [SCHED_RESUME] = {242, 17, 0},
+    [SCHED_WAKE] = {98, 8, 0},
+    [SCHED_WAKE_CARRY] = {142, 10, 0},
+    [SCHED_TICK_HEAD] = {58, 6, 0},
+    [SCHED_TICK_EMPTY] = {58, 5, 0},
+    [SCHED_TICK_DONE] = {88, 10, 0},
+    [SCHED_TICK_STEP] = {134, 14, 0},
+    [SCHED_TICK_NEXT] = {42, 4, 0},
+    [SCHED_TICK_TAIL] = {94, 8, 0},
+};
+
+static int sched_cycles(const SchedWork* k, bool fast) {
+  int cycles = 0;
+  for (int i = 0; i < SCHED_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles(&SCHED_COST[i], fast);
+  return cycles;
+}
+
+// The same two dispatchers, so one table.
+static const CosimRun VBL_RUN_COST[VBL_RUN_BLOCK_COUNT] = {
+    [VBL_RUN_EMPTY_QUEUE] = {46, 4, 0},
+    [VBL_RUN_HEAD] = {86, 9, 0},
+    [VBL_RUN_FREE_SLOT] = {58, 5, 0},
+    [VBL_RUN_JOB] = {290, 23, 0},
+    [VBL_RUN_KEPT] = {46, 4, 0},
+    [VBL_RUN_DROPPED] = {198, 14, 0},
+    [VBL_RUN_DROPPED_OUT] = {18, 2, 0},
+    [VBL_RUN_DROPPED_ON] = {12, 2, 0},
+    [VBL_RUN_NEXT] = {66, 6, 0},
+    [VBL_RUN_END] = {60, 6, 0},
+};
+
+static int vbl_run_cycles(const VblRunWork* k, bool fast) {
+  int cycles = 0;
+  for (int i = 0; i < VBL_RUN_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles(&VBL_RUN_COST[i], fast);
+  return cycles;
+}
+
+// What every one of these assumes and the ROM does not check, because on its
+// own paths it is always so: a stack in low WRAM, and the bank the tables are
+// read through showing low WRAM too — `$00-$3F` and `$80-$BF` mirror it, and
+// `$7E` is it.
+static bool low_stack(const CosimRegs* in) {
+  return in->s >= 0x0010 && in->s < 0x2000;
+}
+
+static bool bank_sees_low_wram(uint8_t db) {
+  return (db & 0x40) == 0 || db == 0x7e;
+}
+
+// ...and the slot the scheduler is on, which it indexes two tables with.
+static bool cur_task_ok(const Wram* w) {
+  const uint16_t x = wram_r16(w, W_SCHED_CUR_TASK);
+  return x < WRAM_THREAD_SLOTS * 2 && (x & 1) == 0;
+}
+
+static bool wide(const CosimRegs* in) {
+  return (in->p & (PORT_P_M | PORT_P_X)) == 0;
+}
+
+// $80:8353  thread_yield — A = ticks to sleep. `PHB : PHP : REP #$30` comes
+// before anything width-dependent, so any caller's widths will do.
+static bool accepts_thread_yield(const Wram* w, const CosimRegs* in) {
+  return low_stack(in) && cur_task_ok(w);
+}
+
+static void shim_thread_yield(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  SchedWork k = {0};
+  cpu_from(in, &c);
+  thread_yield_port(w, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(sched_cycles(&k, fetch_fast(in)));
+}
+
+// $80:833E  thread_exit — where a thread body's own `RTL` goes.
+static bool accepts_thread_exit(const Wram* w, const CosimRegs* in) {
+  return wide(in) && low_stack(in) && cur_task_ok(w);
+}
+
+static void shim_thread_exit(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  SchedWork k = {0};
+  cpu_from(in, &c);
+  thread_exit_port(w, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(sched_cycles(&k, fetch_fast(in)));
+}
+
+// $80:8372 and $80:8380 — after the `WAI`, and after `sprite_build_oam`.
+static bool accepts_sched_wake(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && in->d == 0;
+}
+
+static void shim_sched_wake(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  SchedWork k = {0};
+  cpu_from(in, &c);
+  sched_wake(w, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(sched_cycles(&k, fetch_fast(in)));
+}
+
+static bool accepts_sched_rescan(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && in->d == 0 && low_stack(in) && bank_sees_low_wram(in->db);
+}
+
+static void shim_sched_rescan(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  SchedWork k = {0};
+  cpu_from(in, &c);
+  sched_rescan(w, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(sched_cycles(&k, fetch_fast(in)));
+}
+
+// $80:83E0 / $80:843D, and the two addresses a job returns to. A job that came
+// back 8-bit, or on another page, would be read wrongly by the ROM too; the
+// port declines it rather than agree.
+static bool accepts_vbl_run(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && in->d == 0 && low_stack(in) && bank_sees_low_wram(in->db);
+}
+
+static void vbl_run_shim(Wram* w, const VblQueueDesc* q, bool resumed,
+                         const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  VblRunWork k = {0};
+  cpu_from(in, &c);
+  vbl_queue_run(w, q, resumed, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(vbl_run_cycles(&k, in->fastrom));
+}
+
+static void shim_vbl_queue_a_run(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  vbl_run_shim(w, &VBL_QUEUE_A_DESC, false, in, out);
+}
+
+static void shim_vbl_queue_a_resume(Wram* w, const Rom* rom, const CosimRegs* in,
+                                    CosimRegs* out) {
+  (void)rom;
+  vbl_run_shim(w, &VBL_QUEUE_A_DESC, true, in, out);
+}
+
+static void shim_vbl_queue_b_run(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  vbl_run_shim(w, &VBL_QUEUE_B_DESC, false, in, out);
+}
+
+static void shim_vbl_queue_b_resume(Wram* w, const Rom* rom, const CosimRegs* in,
+                                    CosimRegs* out) {
+  (void)rom;
+  vbl_run_shim(w, &VBL_QUEUE_B_DESC, true, in, out);
+}
+
+// $80:8179 and on — the NMI handler, between its hardware accesses.
+//
+// `nmi_input`'s two table reads are ROM words through bank $80, so they cost
+// what program bytes do. `tools/cycles816.py` already counts them: its 42 is
+// 38 program bytes and those 4. The first version added the 4 again and was 8
+// cycles long on every call made with `$420D` clear, 6,270 of them over the
+// corpus. The `$4218`/`$421A` reads are I/O at 6 cycles whatever `$420D` says.
+static const CosimRun NMI_COST[NMI_BLOCK_COUNT] = {
+    [NMI_ENTER] = {356, 22, 0},
+    [NMI_ENTER_BUSY] = {524, 27, 0},
+    [NMI_STACK_RUN] = {88, 9, 0},
+    [NMI_INPUT_RUN] = {394, 42, 0},
+    [NMI_LEAVE] = {322, 18, 0},
+    [NMI_LEAVE_TICK] = {366, 20, 0},
+};
+
+static int nmi_cycles(const NmiWork* k, bool fast) {
+  int cycles = 0;
+  for (int i = 0; i < NMI_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles(&NMI_COST[i], fast);
+  return cycles;
+}
+
+// The first stretch pushes onto whatever stack the interrupt found, and the
+// rest run on page zero, which the first installs.
+static bool accepts_nmi_enter(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return low_stack(in);
+}
+
+static bool accepts_nmi(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return in->d == 0 && low_stack(in) && bank_sees_low_wram(in->db);
+}
+
+// `nmi_leave` pulls five registers at 16 bits, which the dispatcher before it
+// leaves set.
+static bool accepts_nmi_leave(const Wram* w, const CosimRegs* in) {
+  return wide(in) && accepts_nmi(w, in);
+}
+
+static void shim_nmi_enter(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  NmiWork k = {0};
+  cpu_from(in, &c);
+  nmi_enter(w, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(nmi_cycles(&k, in->fastrom));
+}
+
+static void shim_nmi_stack(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  NmiWork k = {0};
+  cpu_from(in, &c);
+  nmi_stack(w, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(nmi_cycles(&k, in->fastrom));
+}
+
+static void shim_nmi_input(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  PortCpu c;
+  NmiWork k = {0};
+  cpu_from(in, &c);
+  nmi_input(w, rom, &c, in->joy[0], in->joy[1], &k);
+  cpu_to(&c, out);
+  cosim_cost(nmi_cycles(&k, in->fastrom));
+}
+
+static void shim_nmi_leave(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  NmiWork k = {0};
+  cpu_from(in, &c);
+  nmi_leave(w, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(nmi_cycles(&k, in->fastrom));
+}
+
+static const uint32_t NMI_ENTER_EXITS[] = {NMI_BLANK_PC, NMI_RETURN_PC};
+static const uint32_t NMI_STACK_EXITS[] = {NMI_FLUSH_PC};
+static const uint32_t NMI_INPUT_EXITS[] = {NMI_QUEUE_B_PC};
+static const uint32_t NMI_LEAVE_EXITS[] = {NMI_RETURN_PC};
+
+static const uint32_t SCHED_EXITS[] = {SCHED_RESUME_PC, SCHED_WAI_PC};
+static const uint32_t SCHED_WAKE_EXITS[] = {SCHED_OAM_PC};
+// ...and the same three exits through bank `$00`, where a thread's end leaves
+// the scheduler running. See `port/sched.h`.
+static const uint32_t SCHED_EXITS_00[] = {SCHED_RESUME_PC & 0xffffu,
+                                          SCHED_WAI_PC & 0xffffu};
+static const uint32_t SCHED_WAKE_EXITS_00[] = {SCHED_OAM_PC & 0xffffu};
+static const uint32_t VBL_A_EXITS[] = {0x808400u, 0x808417u};
+static const uint32_t VBL_B_EXITS[] = {0x80845du, 0x808474u};
+
+#define COSIM_EXITS(tbl) \
+  .exits = (tbl), .exit_count = (int)(sizeof(tbl) / sizeof((tbl)[0]))
+
 // The count is the table's length by construction, so it cannot drift from it.
 #define COSIM_COMMIT(tbl) \
   .commit = (tbl), .commit_count = (int)(sizeof(tbl) / sizeof((tbl)[0]))
@@ -6986,6 +7311,146 @@ static const CosimRoutine ROUTINES[] = {
         // takes the `PEA`'s back and the one at `$AD90` takes the `PHD`'s.
         .stack_bytes = 4,
         .run_only = true,
+    },
+    // The frame's own machinery, and none of it returns. See `port/sched.h`
+    // and `CosimRoutine::exits`. `.cycles` is never used: every call prices
+    // itself. It is the mean `verify` measured over the corpus, for scale.
+    {
+        .name = "thread_yield",
+        .symbol = "$80:8353",
+        .entry = 0x808353,
+        .run = shim_thread_yield,
+        .accepts = accepts_thread_yield,
+        COSIM_EXITS(SCHED_EXITS),
+        .cycles = 700,
+    },
+    {
+        .name = "thread_exit",
+        .symbol = "$00:833E",
+        .entry = 0x00833e,
+        .run = shim_thread_exit,
+        .accepts = accepts_thread_exit,
+        COSIM_EXITS(SCHED_EXITS_00),
+        .uncalled = true,
+        .cycles = 700,
+    },
+    {
+        .name = "sched_wake",
+        .symbol = "$80:8372",
+        .entry = 0x808372,
+        .run = shim_sched_wake,
+        .accepts = accepts_sched_wake,
+        COSIM_EXITS(SCHED_WAKE_EXITS),
+        .uncalled = true,
+        .cycles = 98,
+    },
+    {
+        .name = "sched_rescan",
+        .symbol = "$80:8380",
+        .entry = 0x808380,
+        .run = shim_sched_rescan,
+        .accepts = accepts_sched_rescan,
+        COSIM_EXITS(SCHED_EXITS),
+        .cycles = 2000,
+    },
+    {
+        .name = "sched_wake_00",
+        .symbol = "$00:8372",
+        .entry = 0x008372,
+        .run = shim_sched_wake,
+        .accepts = accepts_sched_wake,
+        COSIM_EXITS(SCHED_WAKE_EXITS_00),
+        .uncalled = true,
+        .cycles = 98,
+    },
+    {
+        .name = "sched_rescan_00",
+        .symbol = "$00:8380",
+        .entry = 0x008380,
+        .run = shim_sched_rescan,
+        .accepts = accepts_sched_rescan,
+        COSIM_EXITS(SCHED_EXITS_00),
+        .cycles = 2000,
+    },
+    {
+        .name = "vbl_queue_a_run",
+        .symbol = "$80:83E0",
+        .entry = 0x8083e0,
+        .run = shim_vbl_queue_a_run,
+        .accepts = accepts_vbl_run,
+        COSIM_EXITS(VBL_A_EXITS),
+        .cycles = 500,
+    },
+    {
+        .name = "vbl_queue_a_resume",
+        .symbol = "$80:8401",
+        .entry = 0x808401,
+        .run = shim_vbl_queue_a_resume,
+        .accepts = accepts_vbl_run,
+        COSIM_EXITS(VBL_A_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+    },
+    {
+        .name = "vbl_queue_b_run",
+        .symbol = "$80:843D",
+        .entry = 0x80843d,
+        .run = shim_vbl_queue_b_run,
+        .accepts = accepts_vbl_run,
+        COSIM_EXITS(VBL_B_EXITS),
+        .cycles = 500,
+    },
+    {
+        .name = "vbl_queue_b_resume",
+        .symbol = "$80:845E",
+        .entry = 0x80845e,
+        .run = shim_vbl_queue_b_resume,
+        .accepts = accepts_vbl_run,
+        COSIM_EXITS(VBL_B_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+    },
+    // Entered by `JML [$0000]` from the trampoline in bank $00, and then by
+    // the instructions after each hardware access.
+    {
+        .name = "nmi_enter",
+        .symbol = "$80:8179",
+        .entry = 0x808179,
+        .run = shim_nmi_enter,
+        .accepts = accepts_nmi_enter,
+        COSIM_EXITS(NMI_ENTER_EXITS),
+        .uncalled = true,
+        .cycles = 356,
+    },
+    {
+        .name = "nmi_stack",
+        .symbol = "$80:8199",
+        .entry = 0x808199,
+        .run = shim_nmi_stack,
+        .accepts = accepts_nmi,
+        COSIM_EXITS(NMI_STACK_EXITS),
+        .uncalled = true,
+        .cycles = 88,
+    },
+    {
+        .name = "nmi_input",
+        .symbol = "$80:81BB",
+        .entry = 0x8081bb,
+        .run = shim_nmi_input,
+        .accepts = accepts_nmi,
+        COSIM_EXITS(NMI_INPUT_EXITS),
+        .uncalled = true,
+        .cycles = 394,
+    },
+    {
+        .name = "nmi_leave",
+        .symbol = "$80:81E4",
+        .entry = 0x8081e4,
+        .run = shim_nmi_leave,
+        .accepts = accepts_nmi_leave,
+        COSIM_EXITS(NMI_LEAVE_EXITS),
+        .uncalled = true,
+        .cycles = 366,
     },
 };
 

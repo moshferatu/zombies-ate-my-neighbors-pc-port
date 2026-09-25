@@ -84,8 +84,9 @@ enum {
 //
 // It was 64 until the registry reached 65, at which point that assert did its
 // job and said so instead of quietly measuring nothing. The mask is now a small
-// bitset rather than a machine word, so the next raise is this line alone.
-#define COSIM_MAX_ROUTINES 128
+// bitset rather than a machine word, so the next raise is this line alone. It
+// was 128 until the scheduler, the dispatchers and the NMI took it to 138.
+#define COSIM_MAX_ROUTINES 192
 #define COSIM_MASK_WORDS ((COSIM_MAX_ROUTINES + 63) / 64)
 
 // Which routines are switched on. A struct rather than a `uint64_t` so it keeps
@@ -165,6 +166,19 @@ typedef struct {
   // `$80:C139` were measured at 86 cycles and at 98, and the difference is
   // exactly 2 per byte of program the run fetches.
   bool fastrom;
+  // The whole status byte, as `PHP` would push it, and where to go on at.
+  // Both are for the routines that leave by a jump rather than a return (see
+  // `CosimRoutine::exits`): on the way in `p` is what the CPU held, which the
+  // first two above repeat in part; on the way out it is the status byte to
+  // install, widths and all, and `pc` is the exit to continue at. Every other
+  // routine leaves both alone.
+  uint8_t p;
+  uint32_t pc;
+  // The auto-joypad latch, `$4218` and `$421A`. Inputs only, for the one
+  // stretch of the NMI that reads them: a latch rather than a bus access, so
+  // reading it here has no effect on the machine, and it holds still from the
+  // end of the auto-read to the next vblank.
+  uint16_t joy[2];
 } CosimRegs;
 
 // How the routine gets back to its caller — which decides how many bytes of
@@ -214,6 +228,13 @@ typedef void (*CosimShim)(Wram* w, const Rom* rom, const CosimRegs* in,
 // enumerated condition the routine's own code detects and reports, never a
 // fallback for "the diff failed". Every one of them is printed.
 typedef bool (*CosimGuard)(Wram* scratch, const Rom* rom, const CosimRegs* in);
+
+// A guard that only has to *look*: at the registers, or at a word of WRAM,
+// never by running the port. It reads live WRAM and costs nothing, which is
+// what a routine the scheduler calls twenty times a frame needs; `CosimGuard`
+// copies all 128 KB first. Asked before `supported`, and a `false` is a
+// decline like any other.
+typedef bool (*CosimAccepts)(const Wram* live, const CosimRegs* in);
 
 // The same, for a routine that suspends — see `src/port/coroutine.h` and
 // `docs/threads.md`.
@@ -416,6 +437,46 @@ typedef struct {
   // Spans are in the order the ROM writes them.
   const CosimCommitSpan* commit;
   int commit_count;
+
+  // --- Routines that do not return ---------------------------------------------
+  //
+  // `thread_yield` is entered by one thread and leaves into another, by an
+  // `RTL` through a stack that is not the one it was called on. A vblank
+  // dispatcher leaves into a job by pushing an address and executing `RTL`,
+  // and the job comes back to an address inside it. Neither ends where its
+  // caller's return address says, so neither fits `ret_op`.
+  //
+  // So a routine may name its **exits** instead: the instructions of its own
+  // that control leaves it by. The port stops on one and says which in
+  // `CosimRegs::pc`, and hands over the whole register set -- the stack
+  // pointer, the direct page, the data bank and the status byte as well as A,
+  // X and Y -- because an exit like that can change all of them. The core then
+  // executes the exit instruction itself, the same as `ret_op`.
+  //
+  // The entry does not have to be a subroutine's. `$80:8401` is where a job
+  // returns into the dispatcher; `$80:8372` is the instruction after the
+  // scheduler's `WAI`. Any instruction the ROM reaches is an entry the harness
+  // can take, and for these it is the only kind there is.
+  //
+  // What it means for the other two instruments:
+  //
+  //   * `verify` ends the call when the ROM reaches any of the exits, and
+  //     compares every register as well as WRAM and the exit taken. The port
+  //     writes the stack as the ROM does, so no dead stack is waived at all.
+  //   * `run` publishes everything but the program counter at once, spends the
+  //     budget parked on the entry, and moves the program counter to the exit
+  //     when the budget is spent. An interrupt taken while parked is taken on
+  //     the stack the routine left, which is how the ROM's own instructions
+  //     would have met it: after the pushes.
+  //
+  // No `commit`: nothing that publishes to the NMI is written this way.
+  const uint32_t* exits;
+  int exit_count;
+  // Reached by an `RTL` or by falling into it, never by a `JSR`/`JSL`, so
+  // serving it serves no call. Only the call share cares.
+  bool uncalled;
+  // Optional, and asked before `supported`. See `CosimAccepts`.
+  CosimAccepts accepts;
 } CosimRoutine;
 
 // The registry. Every routine `src/port/` has replaced, in the order they were
