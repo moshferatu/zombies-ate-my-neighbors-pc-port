@@ -347,6 +347,21 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
         c += (IDLE if dp_unaligned else 0) + 3 * SLOW
         at = access(ind & 0xFFFF, ind >> 16)
         fast = fast_rom(ind & 0xFFFF, ind >> 16)
+    elif mode in (IDP, IDPY):
+        # `LDA ($0C),Y`: the same with a two-byte pointer, whose bank is the
+        # data bank's. `cpu_adrIdy` adds an internal cycle for a write, for
+        # 16-bit index registers and for a page crossing, so with 8-bit ones
+        # it is data again. The thread bodies at `$81:80EC` and `$81:81F6`
+        # walk level lists in bank `$9F` this way.
+        if ind is None:
+            raise Unpriced("%s (dp): pass --ind=BANK:ADDR for where it points" % name)
+        c += (IDLE if dp_unaligned else 0) + 2 * SLOW
+        if mode == IDPY:
+            if x and name not in STORES:
+                raise Unpriced("%s (dp),Y with 8-bit index: the page crossing decides" % name)
+            c += IDLE
+        at = access(ind & 0xFFFF, ind >> 16)
+        fast = fast_rom(ind & 0xFFFF, ind >> 16)
     else:
         raise Unpriced("addressing mode %d is not priced" % mode)
 

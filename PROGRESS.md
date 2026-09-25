@@ -5,6 +5,56 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Four thread bodies and the reset's WRAM clear (2026-09-25)
+
+Step three of the Devil's Crush path, first half. Four thread bodies are
+ported as stretches that leave by their own exits, in `src/port/bodies.c`:
+the victims' starter at `$81:81F6`, the objects at `$80:C8F6`, the actor list
+at `$81:80EC` and the animated tiles at `$82:D7CF`. A stretch runs from where
+the scheduler resumes a body, or where one of its calls returns, to its next
+yield or call. The call stays the ROM's, and the routine it reaches is
+substituted or not on its own terms. See `docs/threads.md`, "Thread bodies".
+
+The reset's two WRAM-clearing block moves went in too, as `reset_clear` at
+`$80:80C1`. The 65816 helpers `sched.c` had to itself are in
+`src/port/cpu.h` now, for both files. `tools/cycles816.py` prices `(dp)` and
+`(dp),Y`. The registry is 152 entries.
+
+Live, over all 56 records, the game's figure goes from **75.4% to 80.1%**, and
+every record gains between 2.2 and 7.6 points. The work left in the residue
+goes from 171.1 to 124.8 million instructions. Thread bodies go from 26.2% of
+it to 4.7%.
+
+* **Checked.** The corpus verifies at 20,047,706 calls across 50 movies with 0
+  diverged. `verify --level` over all 56 records gives 31,325,781 calls with 0
+  diverged. Every new cost model is exact to the refresh on every call,
+  `reset_clear` included at 6.2 million cycles a call. Lockstep matches last
+  round's to the cycle on 49 movies, the level-25 partings included, so the
+  new routines add no drift at all.
+* **`level21-exit.zmv` no longer hangs under lockstep.** Last round it compared
+  nothing. It now runs 4,088 passes and never parts. Why it changed has not
+  been looked into.
+* **One branch untaken:** `reset_warm`, the reset that finds the top-scores
+  table already in WRAM. Nothing in the corpus soft-resets.
+* **Neighbours popped into view in widescreen, and that is fixed.** The first
+  cut of `victims_resume` wrote the window's `$0080` and `$00A0` in as
+  constants. Widescreen rewrites those two words in the ROM every frame so the
+  window follows the picture, so the port started neighbours only once they
+  were inside the margin. It reads all four of the window's immediates from
+  the cartridge now. `actor_cull` had the same fault from the start, with the
+  window widescreen widens for 21:9 and the map ends, and reads its four from
+  the cartridge too. `verify` against a copy of the ROM with those words
+  widened, on `level1-rescue.zmv`, starts 19 neighbours where stock starts 3,
+  and 0 calls diverge. No other ported routine spans a word that widescreen,
+  the blood, the level start or the twin stick write.
+* **`$81:81F6` is the neighbours.** Its list is the one `victim_list_parse`
+  reads, at level record offset `$1E`, and the gate it holds is `victim_gate`.
+
+What is left, by family: callable routines 51.0%, the SPC700 uploads 28.7%,
+vblank jobs 14.3%, thread bodies 4.7%, the frame 1.3%. The top portable rows are
+the vblank jobs, which are DMA and need the port to be able to write hardware
+registers, and `$80:E4BA`, a movement handler reached through a jump table.
+
 ### The scheduler, the vblank dispatchers and the NMI (2026-09-24)
 
 Step two of the Devil's Crush path. `thread_yield`, the scan after each frame,

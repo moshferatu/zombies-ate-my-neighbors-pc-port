@@ -123,6 +123,7 @@ $001E84  score_slot_side       # 2 x u16: the side (0 or 2) owning each score sl
 
 # --- Code: boot --------------------------------------------------------------
 $80:80AE  reset_entry          # the RESET vector; switches to native mode, JMLs to bank $80
+$80:80C1  reset_clear          # its WRAM clear, both banks by MVN; port/sched.h
 $80:80B6  reset_main
 $80:8002  init_ppu_regs        # blanks the screen and clears every PPU/DMA register
 
@@ -362,6 +363,19 @@ $81:80EC  actor_list_spawn     # camera-driven spawner for the +$1C actor list;
                                # picks the eligible point nearest a player, with
                                # $81:8024, and sleeps a frame at a time on
                                # $80:9D5B until the census has room
+$81:8113  actors_checked       # ...its stretches, each an entry: after JSL $80:9D5B,
+$81:814B  actors_measured      # after JSR $8024,
+$81:817C  actors_started       # and after JSR $807E. See port/bodies.h
+$81:81F6  victims_body         # a thread: starts each victim's thread near the camera
+$81:8206  victims_resume       # ...its stretches: after its JSL thread_yield,
+$81:8263  victims_started      # after JSR $81A2,
+$81:828F  victims_stopped      # and after JSL thread_call_handler
+$80:C911  object_resume        # object_spawner_body's stretches: after its yield,
+$80:C918  object_polled        # after JSR $CABF,
+$80:C967  object_given         # after JSR object_spawn,
+$80:C971  object_freed         # and after JSR $CAA8
+$82:D881  tile_anim_resume     # level_tile_anim's stretches: after its yield,
+$82:D87A  tile_anim_queued     # and after JSL vbl_queue_a_add
 $80:84B1  thread_handler_body  # a thread, one byte past thread_call_handler's RTL
 $80:ED8C  thread_spawn_table   # 8 records of (addr, bank, param), read at $80:ED74
 $82:C209  boss_thread_table    # 12 records of (addr, bank), read at $82:C0ED/$C131

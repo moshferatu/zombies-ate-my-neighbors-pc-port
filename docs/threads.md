@@ -335,3 +335,47 @@ NMI falls due while the scheduler is scanning an empty table, the `WAI` it then
 reaches waits for the *next* one, and a frame is lost. That happens under
 substitution for the same reason it happens on the console: the budget is the
 scan's own cost.
+
+## Thread bodies (2026-09-25)
+
+A thread body is the code the scheduler resumes. Nothing calls it, so until
+the scheduler's round nothing could substitute it, and `native_share.py`
+blocked all of them. With exits it is ported the way the scheduler is: as
+stretches over the whole register set, each from an address control arrives
+at to the next place control leaves. The code is `src/port/bodies.c`, and the
+65816 pieces it shares with `sched.c` are in `src/port/cpu.h`.
+
+**A stretch stops at every call, not only at its yields.** The `JSR` or `JSL`
+is the stretch's exit and stays the ROM's, like every exit. The routine it
+reaches is the harness's business, and most of them are registered routines
+of their own. The instruction after the call is the next stretch's entry. So
+no stretch contains another routine's stack traffic, `verify` compares them
+with no dead-stack allowance, and a body never has to know whether what it
+calls is the port's or the ROM's. The cost is one ROM instruction per call,
+and the bodies ported here were chosen because they loop between calls.
+
+| Body | Entries | What it does |
+|---|---|---|
+| `$81:81F6` the victims | `$81F6`, `$8206`, `$8263`, `$828F` | starts each neighbour's thread when the camera comes within `$A0`, and stops it when the camera leaves |
+| `$80:C8F6` the objects | `$C911`, `$C918`, `$C967`, `$C971` | every fourth frame, gives an object in range an actor and frees one out of range |
+| `$81:80EC` the actor list | `$8113`, `$814B`, `$817C` | steps one entry a frame, and starts the nearest ready one at the end of each pass |
+| `$82:D7CF` animated tiles | `$D881`, `$D87A` | counts down up to eight tile sequences and queues their upload |
+
+An entry reached by a branch from inside another stretch is fine. `$80:C918`
+is where `JSR $CABF` returns, and also where `$80:C911` branches when there is
+nothing to serve. Under `verify` the ROM reaches it inside the first stretch's
+window, the harness starts a second check there, and both end at the same exit.
+So a stretch that runs on into another names that one's exits as well as its
+own.
+
+Two of the bodies read level lists in bank `$9F` through `($0C),Y`, and the
+tile body reads its sequences through `[$00],Y` and a bit table through the
+data bank. The runs are priced as if every such byte were fast ROM, and the
+port counts the bytes it actually read. A byte that was not fast ROM costs 2
+more whatever `$420D` says. `tools/cycles816.py` learned `(dp)` and `(dp),Y`
+for this.
+
+The reset's WRAM clear went in with them, as `reset_clear` at `$80:80C1`, from
+where `JSR init_ppu_regs` returns to just before `STA $4200` turns the NMI on.
+It is two block moves, 131,071 bytes on a cold start, and every byte is an
+instruction. Nothing interrupts it, so `verify` checks it like any call.

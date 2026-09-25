@@ -28,28 +28,10 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/player.h"
 #include "port/rng.h"
 #include "port/wram.h"
-
-// The status register's bits, as `PHP` pushes them.
-#define PORT_P_C 0x01
-#define PORT_P_Z 0x02
-#define PORT_P_I 0x04
-#define PORT_P_D 0x08
-#define PORT_P_X 0x10  // 8-bit index registers
-#define PORT_P_M 0x20  // 8-bit accumulator
-#define PORT_P_V 0x40
-#define PORT_P_N 0x80
-
-// The whole CPU, in and out. `pc` is the entry on the way in and, on the way
-// out, the 24-bit address of the instruction the core is to execute next,
-// which is always one of the ROM's and always in the entry's bank.
-typedef struct {
-  uint16_t a, x, y, s, d;
-  uint8_t db, p;
-  uint32_t pc;
-} PortCpu;
 
 // --- The scheduler ------------------------------------------------------------
 //
@@ -238,5 +220,40 @@ void nmi_stack(Wram* w, PortCpu* c, NmiWork* k);
 void nmi_input(Wram* w, const Rom* rom, PortCpu* c, uint16_t joy1,
                uint16_t joy2, NmiWork* k);
 void nmi_leave(Wram* w, PortCpu* c, NmiWork* k);
+
+// --- The reset's WRAM clear -----------------------------------------------------
+//
+// `$80:80C1`, where `JSR init_ppu_regs` returns, to the `SEP #$20` before
+// `STA $4200` turns the NMI on. Both banks of WRAM cleared by `MVN`, a byte an
+// instruction -- 131,071 instructions on a cold start, which is why the reset
+// vector was 4.3% of what the ROM still ran with the frame ported.
+//
+// A warm start keeps `$7E:2000-$2127`, the top-scores table (see
+// `src/hiscore.h`), and it knows one by four magic words in it: `$A675` at
+// `$2000`, `$98A3` at `$2062`, `$4102` at `$2122` and `$2217` at `$2126`. A
+// cold start clears everything and writes them. Either way the second move
+// then copies bank `$7E` over `$7F`, so the table is in both.
+
+#define RESET_CLEAR_PC 0x8080c1u
+#define RESET_NMI_ON_PC 0x808152u  // `SEP #$20 : LDA #$81 : STA $4200`
+
+enum {
+  RESET_HEAD,    // LDA #0 : STA $7E0000 : LDA $7E2000 : CMP : BNE
+  RESET_CHECK,   // LDA $7E2xxx : CMP : BNE, the other three magic words
+  RESET_TAKEN,   // ...one of them wrong: the BNE to the cold start
+  RESET_SETUP,   // LDA : LDX : LDY before either first move
+  RESET_WARM,    // $80F8-$8105, between the warm start's two moves
+  RESET_BRA,     // BRA $8135
+  RESET_MAGIC,   // $8119-$8131, the cold start's four stores
+  RESET_TAIL,    // $8135-$814F, less the move in it
+  RESET_BLOCK_COUNT
+};
+
+typedef struct {
+  uint16_t blocks[RESET_BLOCK_COUNT];
+  uint32_t moved;  // bytes `MVN` moved, each one an instruction
+} ResetWork;
+
+void reset_clear(Wram* w, PortCpu* c, ResetWork* k);
 
 #endif

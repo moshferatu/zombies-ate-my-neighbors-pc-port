@@ -179,7 +179,7 @@ uint16_t actor_depth_sort_counted(Wram* w, ActorSortWork* work);
 // Nothing bounds the output, and nothing needs to: 32 records at two bytes each
 // is 64 bytes, and `visible_actors` at `$7E:137E` is followed immediately by
 // `oam_buffer` at `$7E:13BE`. The array is exactly as long as the list can be.
-void actor_cull(Wram* w);
+void actor_cull(Wram* w, const Rom* rom);
 
 // The straight-line runs of `$80:BCE2`, one per branch outcome.
 //
@@ -232,7 +232,7 @@ typedef struct {
 
 // The same pass, reporting what it did. `actor_cull` is this with the counts
 // thrown away, and is what the rest of the port calls.
-void actor_cull_counted(Wram* w, ActorCullWork* work);
+void actor_cull_counted(Wram* w, const Rom* rom, ActorCullWork* work);
 
 // --- $80:BE8F ---------------------------------------------------------------
 

@@ -283,7 +283,11 @@ BLOCKED = {
     # `LDA $4210`/`STA $2100` pair either side of the queues, and the
     # auto-joypad wait.
     0x80816C: 'the NMI trampoline and its hardware accesses, which stay the ROM\'s',
-    0x8080AE: 'the reset vector, which is not called and cannot be shimmed',
+    # The reset vector's work was the two block moves that clear WRAM, and
+    # those are `$80:80C1 reset_clear` now, entered where `init_ppu_regs`
+    # returns. What stays is the mode switch, the stack, and the hardware on
+    # either side.
+    0x8080AE: 'the reset vector\'s hardware setup, around reset_clear at $80:80C1',
 }
 
 # ...and every vblank job, for the same reason as the NMI entry: the dispatcher
@@ -437,11 +441,26 @@ THREAD_BODIES = frozenset((
     0x81C1FB,
 ))
 
-# Nothing in the ROM calls a thread body, so none of them can be a registry
-# entry and all of them are blocked -- unlike `VBL_JOBS`, which had one
-# exception. They stay in the denominator because the work is real.
+# Nothing in the ROM calls a thread body, so none of them could be a registry
+# entry and all of them were blocked. They stay in the denominator because the
+# work is real.
+#
+# Since the scheduler's round a body can be ported all the same: a registry
+# entry may be any instruction the ROM reaches and may leave by a jump
+# (`CosimRoutine::exits`), so a body is registered as stretches, each from
+# where the scheduler resumes it or one of its calls returns to its next yield
+# or call. These are those entries. They are not blocked, and the residue
+# files them with the bodies they belong to rather than with the callables.
+BODY_STRETCHES = frozenset((
+    0x8181F6, 0x818206, 0x818263, 0x81828F,  # $81:81F6, the victims
+    0x80C911, 0x80C918, 0x80C967, 0x80C971,  # $80:C8F6, the objects
+    0x818113, 0x81814B, 0x81817C,            # $81:80EC, the actor list
+    0x82D881, 0x82D87A,                      # $82:D7CF, animated tiles
+))
+
 BLOCKED.update({a: 'a thread body -- resumed by RTL from a parked frame, never called'
-                for a in THREAD_BODIES if a not in BLOCKED})
+                for a in THREAD_BODIES
+                if a not in BLOCKED and a not in BODY_STRETCHES})
 
 def rom_to_snes(off):
     return ((0x80 + off // BANK_SIZE) << 16) | (0x8000 + off % BANK_SIZE)
@@ -560,7 +579,9 @@ def load_extra_entries(path):
 
 # What kind of thing a blocked row is, for the residue's summary by family:
 # the first words of its `BLOCKED` entry, which say it already.
-def family_of(why):
+def family_of(why, addr=None):
+    if addr in BODY_STRETCHES:
+        return 'thread bodies -- resumed by RTL, never called'
     if why is None:
         return 'callable -- an ordinary per-call port'
     if why.startswith('a thread body'):
@@ -610,7 +631,7 @@ def residue_report(label, exec_by_routine, total_exec, total_call, idx,
     fam = collections.Counter()
     fam_rows = collections.Counter()
     for v, e in rows:
-        f = family_of(BLOCKED.get(rom_to_snes(e)))
+        f = family_of(BLOCKED.get(rom_to_snes(e)), rom_to_snes(e))
         fam[f] += v
         fam_rows[f] += 1
     print('\n  by family:')

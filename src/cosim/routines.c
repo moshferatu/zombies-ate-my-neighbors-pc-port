@@ -29,6 +29,7 @@
 #include "port/oam.h"
 #include "port/player.h"
 #include "port/rng.h"
+#include "port/bodies.h"
 #include "port/sched.h"
 #include "port/score.h"
 #include "port/sprite_cache.h"
@@ -499,7 +500,7 @@ static void shim_actor_cull(Wram* w, const Rom* rom, const CosimRegs* in,
                             CosimRegs* out) {
   (void)rom;
   ActorCullWork work;
-  actor_cull_counted(w, &work);
+  actor_cull_counted(w, rom, &work);
 
   // `LDA $00,X`, `LDA $02,X`, `LDA $06,X`, `LDA $12,X` and `STY $9C` each cost
   // one extra internal cycle when the direct page is not page-aligned, and the
@@ -5327,6 +5328,44 @@ static void shim_nmi_leave(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(nmi_cycles(&k, in->fastrom));
 }
 
+// $80:80C1  the reset's WRAM clear. Each byte `MVN` moves is the instruction
+// again, three program bytes and all, so it is priced a byte at a time.
+static const CosimRun RESET_COST[RESET_BLOCK_COUNT] = {
+    [RESET_HEAD] = {128, 16, 0},
+    [RESET_CHECK] = {70, 9, 0},
+    [RESET_TAKEN] = {6, 0, 0},
+    [RESET_SETUP] = {54, 9, 0},
+    [RESET_WARM] = {112, 16, 0},
+    [RESET_BRA] = {18, 2, 0},
+    [RESET_MAGIC] = {232, 28, 0},
+    [RESET_TAIL] = {262, 26, 2},
+};
+static const CosimRun RESET_MOVE_BYTE = {46, 3, 0};
+
+// `init_ppu_regs` leaves page zero and 16-bit registers, and the stack at
+// `$01FF` from the `TXS` before it.
+static bool accepts_reset_clear(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && in->d == 0 && low_stack(in);
+}
+
+static void shim_reset_clear(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  ResetWork k = {0};
+  cpu_from(in, &c);
+  reset_clear(w, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  int cycles = (int)k.moved * cosim_run_cycles(&RESET_MOVE_BYTE, fast);
+  for (int i = 0; i < RESET_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles(&RESET_COST[i], fast);
+  cosim_cost(cycles);
+}
+
+static const uint32_t RESET_EXITS[] = {RESET_NMI_ON_PC};
+
 static const uint32_t NMI_ENTER_EXITS[] = {NMI_BLANK_PC, NMI_RETURN_PC};
 static const uint32_t NMI_STACK_EXITS[] = {NMI_FLUSH_PC};
 static const uint32_t NMI_INPUT_EXITS[] = {NMI_QUEUE_B_PC};
@@ -5344,6 +5383,171 @@ static const uint32_t VBL_B_EXITS[] = {0x80845du, 0x808474u};
 
 #define COSIM_EXITS(tbl) \
   .exits = (tbl), .exit_count = (int)(sizeof(tbl) / sizeof((tbl)[0]))
+
+// ---------------------------------------------------------------------------
+// Thread bodies — see `port/bodies.h`
+// ---------------------------------------------------------------------------
+//
+// Stretches like the scheduler's, stopping at every yield and every call. The
+// prices are `tools/cycles816.py`'s with `--db 9F --ind=9F:8000`, branches not
+// taken, and a taken one is the block `*_TAKEN` on top. `LDA ($0C),Y` is
+// priced for a data byte from fast ROM, which the level lists in `$9F` are;
+// the port counts the bytes it actually read, and one that was not fast ROM
+// costs 2 more whatever `$420D` says.
+
+static const CosimRun VICTIMS_COST[VICTIMS_BLOCK_COUNT] = {
+    [VICTIMS_START] = {126, 7, 3},
+    [VICTIMS_STZ] = {28, 2, 1},
+    [VICTIMS_TICKS] = {18, 3, 0},
+    [VICTIMS_HEAD] = {184, 18, 2},
+    [VICTIMS_FLAG] = {98, 11, 1},
+    [VICTIMS_INDEX] = {186, 14, 3},
+    [VICTIMS_DX] = {80, 7, 2},
+    [VICTIMS_DY] = {150, 11, 3},
+    [VICTIMS_NEG] = {30, 4, 0},
+    [VICTIMS_CMP] = {30, 5, 0},
+    [VICTIMS_NEXT] = {68, 4, 1},
+    [VICTIMS_NEXT_JMP] = {68, 5, 1},
+    [VICTIMS_STOP] = {168, 21, 0},
+    [VICTIMS_TAKEN] = {6, 0, 0},
+};
+
+static const CosimRun OBJECT_COST[OBJECT_BLOCK_COUNT] = {
+    [OBJECT_POLL] = {40, 4, 1},
+    [OBJECT_TICK] = {64, 8, 0},
+    [OBJECT_TICKS] = {18, 3, 0},
+    [OBJECT_STZ] = {28, 2, 1},
+    [OBJECT_HEAD] = {184, 18, 2},
+    [OBJECT_SCAN] = {80, 7, 1},
+    [OBJECT_LIVE] = {12, 2, 0},
+    [OBJECT_D] = {92, 9, 1},
+    [OBJECT_NEG] = {30, 4, 0},
+    [OBJECT_CMP] = {30, 5, 0},
+    [OBJECT_STATE] = {52, 5, 0},
+    [OBJECT_STEP] = {118, 6, 2},
+    [OBJECT_BRA] = {18, 2, 0},
+    [OBJECT_TAKEN] = {6, 0, 0},
+};
+
+static const CosimRun ACTORS_COST[ACTORS_BLOCK_COUNT] = {
+    [ACTORS_CHECK] = {12, 2, 0},
+    [ACTORS_TICKS] = {18, 3, 0},
+    [ACTORS_COUNT] = {98, 11, 1},
+    [ACTORS_TICK] = {98, 11, 0},
+    [ACTORS_NEXT] = {68, 4, 1},
+    [ACTORS_INDEX] = {144, 11, 3},
+    [ACTORS_TYPE] = {76, 7, 1},
+    [ACTORS_XY] = {184, 11, 4},
+    [ACTORS_BEST] = {40, 4, 1},
+    [ACTORS_NEW_BEST] = {84, 6, 3},
+    [ACTORS_END] = {58, 7, 1},
+    [ACTORS_RESET] = {74, 7, 2},
+    [ACTORS_PICK] = {156, 12, 3},
+    [ACTORS_ARM] = {132, 13, 1},
+    [ACTORS_BACK] = {18, 2, 0},
+    [ACTORS_TAKEN] = {6, 0, 0},
+};
+
+static const CosimRun TANIM_COST[TANIM_BLOCK_COUNT] = {
+    [TANIM_HEAD] = {40, 4, 1},
+    [TANIM_START] = {18, 3, 0},
+    [TANIM_SLOT] = {70, 6, 1},
+    [TANIM_IDLE] = {30, 5, 0},
+    [TANIM_BRA] = {18, 2, 0},
+    [TANIM_COUNT] = {68, 4, 1},
+    // Six of the run's bytes are data -- the two sequence words and the bit
+    // table -- and `BodyWork` counts them, so they are not in this column.
+    [TANIM_FRAME] = {530, 41, 5},
+    [TANIM_WRAP] = {30, 5, 0},
+    [TANIM_RESTART] = {66, 5, 1},
+    [TANIM_NEXT] = {110, 8, 2},
+    [TANIM_END] = {102, 6, 2},
+    [TANIM_DONE] = {46, 5, 0},
+    [TANIM_QUEUE] = {36, 6, 0},
+    [TANIM_TICKS] = {18, 3, 0},
+    [TANIM_TAKEN] = {6, 0, 0},
+};
+
+static int body_cycles(const BodyWork* k, const CosimRun* cost, int count,
+                       const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < count; i++)
+    cycles += k->blocks[i] * cosim_run_cycles_dp(&cost[i], fast, unaligned);
+  // The lists' own bytes: priced fast in the blocks, 2 more for each that was
+  // not, and 2 more for the ones that were while `$420D` is clear.
+  cycles += 2 * k->slow_data + (in->fastrom ? 0 : 2 * k->fast_data);
+  return cycles;
+}
+
+// What all of them assume: 16-bit registers, binary mode, a thread's own page
+// in low WRAM, and a stack there.
+static bool body_ok(const CosimRegs* in) {
+  return wide(in) && (in->p & PORT_P_D) == 0 && in->d < 0x1f00 &&
+         low_stack(in);
+}
+
+// ...and the ones that read `$1B6A` and the like through the data bank.
+static bool accepts_body_low(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && bank_sees_low_wram(in->db);
+}
+
+static bool accepts_body(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in);
+}
+
+// ...and the two that walk a level list through `($0C),Y`, which is in ROM
+// through a bank that also shows low WRAM. Nothing else has been seen there.
+static bool accepts_body_list(const Wram* w, const CosimRegs* in) {
+  return accepts_body_low(w, in) && in->db >= 0x80 && in->db < 0xc0 &&
+         wram_r16(w, (uint16_t)(in->d + 0x0c)) >= 0x8000;
+}
+
+#define BODY_SHIM(name, call, table)                                        \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,     \
+                          CosimRegs* out) {                                 \
+    (void)rom;                                                              \
+    PortCpu c;                                                              \
+    BodyWork k = {0};                                                       \
+    cpu_from(in, &c);                                                       \
+    call;                                                                   \
+    cpu_to(&c, out);                                                        \
+    cosim_cost(body_cycles(&k, table,                                       \
+                           (int)(sizeof(table) / sizeof((table)[0])), in)); \
+  }
+
+BODY_SHIM(victims_start, victims_start(w, &c, &k), VICTIMS_COST)
+BODY_SHIM(victims_resume, victims_resume(w, rom, &c, &k), VICTIMS_COST)
+BODY_SHIM(victims_started, victims_started(w, &c, &k), VICTIMS_COST)
+BODY_SHIM(victims_stopped, victims_stopped(w, &c, &k), VICTIMS_COST)
+BODY_SHIM(object_resume, object_resume(w, &c, &k), OBJECT_COST)
+BODY_SHIM(object_polled, object_polled(w, &c, &k), OBJECT_COST)
+BODY_SHIM(object_acted, object_acted(w, &c, &k), OBJECT_COST)
+BODY_SHIM(actors_checked, actors_checked(w, rom, &c, &k), ACTORS_COST)
+BODY_SHIM(actors_measured, actors_measured(w, &c, &k), ACTORS_COST)
+BODY_SHIM(actors_started, actors_started(w, &c, &k), ACTORS_COST)
+BODY_SHIM(tile_anim_resume, tile_anim_resume(w, rom, &c, &k), TANIM_COST)
+BODY_SHIM(tile_anim_queued, tile_anim_queued(w, &c, &k), TANIM_COST)
+
+static const uint32_t VICTIMS_YIELD_EXITS[] = {VICTIMS_YIELD_PC};
+static const uint32_t VICTIMS_RESUME_EXITS[] = {
+    VICTIMS_YIELD_PC, VICTIMS_START_CALL_PC, VICTIMS_STOP_CALL_PC};
+static const uint32_t OBJECT_YIELD_EXITS[] = {OBJECT_YIELD_PC};
+// `object_resume` runs on into `object_polled`, so its exits are those and one.
+static const uint32_t OBJECT_POLLED_EXITS[] = {
+    OBJECT_YIELD_PC, OBJECT_GIVE_CALL_PC, OBJECT_FREE_CALL_PC};
+static const uint32_t OBJECT_RESUME_EXITS[] = {
+    OBJECT_YIELD_PC, OBJECT_GIVE_CALL_PC, OBJECT_FREE_CALL_PC,
+    OBJECT_POLL_CALL_PC};
+static const uint32_t ACTORS_YIELD_EXITS[] = {ACTORS_YIELD_PC};
+static const uint32_t ACTORS_CHECKED_EXITS[] = {
+    ACTORS_YIELD_PC, ACTORS_MEASURE_CALL_PC, ACTORS_START_CALL_PC};
+static const uint32_t TILE_ANIM_YIELD_EXITS[] = {TILE_ANIM_YIELD_PC};
+static const uint32_t TILE_ANIM_RESUME_EXITS[] = {
+    TILE_ANIM_YIELD_PC, TILE_ANIM_QUEUE_CALL_PC, TILE_ANIM_END_PC};
 
 // The count is the table's length by construction, so it cannot drift from it.
 #define COSIM_COMMIT(tbl) \
@@ -7451,6 +7655,153 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(NMI_LEAVE_EXITS),
         .uncalled = true,
         .cycles = 366,
+    },
+    // Where `JSR init_ppu_regs` returns, to just before the NMI is turned on.
+    // Nothing interrupts it, and `verify` checks it like any other call. The
+    // cost is a cold start's, about seventeen frames of `MVN`.
+    {
+        .name = "reset_clear",
+        .symbol = "$80:80C1",
+        .entry = 0x8080c1,
+        .run = shim_reset_clear,
+        .accepts = accepts_reset_clear,
+        COSIM_EXITS(RESET_EXITS),
+        .uncalled = true,
+        .cycles = 6031452,
+    },
+    // Thread bodies, between one yield or call and the next. See
+    // `port/bodies.h`. `.cycles` is never used; every call prices itself.
+    // The entries are written out rather than named, because
+    // `tools/native_share.py` reads them from here.
+    {
+        .name = "victims_start",
+        .symbol = "$81:81F6",
+        .entry = 0x8181f6,
+        .run = shim_victims_start,
+        .accepts = accepts_body,
+        COSIM_EXITS(VICTIMS_YIELD_EXITS),
+        .uncalled = true,
+        .cycles = 172,
+    },
+    {
+        .name = "victims_resume",
+        .symbol = "$81:8206",
+        .entry = 0x818206,
+        .run = shim_victims_resume,
+        .accepts = accepts_body_list,
+        COSIM_EXITS(VICTIMS_RESUME_EXITS),
+        .uncalled = true,
+        .cycles = 5000,
+    },
+    {
+        .name = "victims_started",
+        .symbol = "$81:8263",
+        .entry = 0x818263,
+        .run = shim_victims_started,
+        .accepts = accepts_body,
+        COSIM_EXITS(VICTIMS_YIELD_EXITS),
+        .uncalled = true,
+        .cycles = 86,
+    },
+    {
+        .name = "victims_stopped",
+        .symbol = "$81:828F",
+        .entry = 0x81828f,
+        .run = shim_victims_stopped,
+        .accepts = accepts_body,
+        COSIM_EXITS(VICTIMS_YIELD_EXITS),
+        .uncalled = true,
+        .cycles = 86,
+    },
+    {
+        .name = "object_resume",
+        .symbol = "$80:C911",
+        .entry = 0x80c911,
+        .run = shim_object_resume,
+        .accepts = accepts_body_low,
+        COSIM_EXITS(OBJECT_RESUME_EXITS),
+        .uncalled = true,
+        .cycles = 1000,
+    },
+    {
+        .name = "object_polled",
+        .symbol = "$80:C918",
+        .entry = 0x80c918,
+        .run = shim_object_polled,
+        .accepts = accepts_body_low,
+        COSIM_EXITS(OBJECT_POLLED_EXITS),
+        .uncalled = true,
+        .cycles = 1000,
+    },
+    {
+        .name = "object_given",
+        .symbol = "$80:C967",
+        .entry = 0x80c967,
+        .run = shim_object_acted,
+        .accepts = accepts_body,
+        COSIM_EXITS(OBJECT_YIELD_EXITS),
+        .uncalled = true,
+        .cycles = 154,
+    },
+    {
+        .name = "object_freed",
+        .symbol = "$80:C971",
+        .entry = 0x80c971,
+        .run = shim_object_acted,
+        .accepts = accepts_body,
+        COSIM_EXITS(OBJECT_YIELD_EXITS),
+        .uncalled = true,
+        .cycles = 154,
+    },
+    {
+        .name = "actors_checked",
+        .symbol = "$81:8113",
+        .entry = 0x818113,
+        .run = shim_actors_checked,
+        .accepts = accepts_body_list,
+        COSIM_EXITS(ACTORS_CHECKED_EXITS),
+        .uncalled = true,
+        .cycles = 300,
+    },
+    {
+        .name = "actors_measured",
+        .symbol = "$81:814B",
+        .entry = 0x81814b,
+        .run = shim_actors_measured,
+        .accepts = accepts_body,
+        COSIM_EXITS(ACTORS_YIELD_EXITS),
+        .uncalled = true,
+        .cycles = 200,
+    },
+    {
+        .name = "actors_started",
+        .symbol = "$81:817C",
+        .entry = 0x81817c,
+        .run = shim_actors_started,
+        .accepts = accepts_body,
+        COSIM_EXITS(ACTORS_YIELD_EXITS),
+        .uncalled = true,
+        .cycles = 110,
+    },
+    {
+        .name = "tile_anim_resume",
+        .symbol = "$82:D881",
+        .entry = 0x82d881,
+        .run = shim_tile_anim_resume,
+        .accepts = accepts_body_low,
+        COSIM_EXITS(TILE_ANIM_RESUME_EXITS),
+        .uncalled = true,
+        .cycles = 900,
+    },
+    {
+        .name = "tile_anim_queued",
+        .symbol = "$82:D87A",
+        .entry = 0x82d87a,
+        .run = shim_tile_anim_queued,
+        .accepts = accepts_body,
+        COSIM_EXITS(TILE_ANIM_YIELD_EXITS),
+        .uncalled = true,
+        .cycles = 18,
     },
 };
 

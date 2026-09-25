@@ -189,6 +189,7 @@ target_include_directories(zamn_assets PRIVATE third_party/stb)
 # ---------------------------------------------------------------------------
 add_library(zamn_port STATIC
   src/port/apu.c
+  src/port/bodies.c
   src/port/boss.c
   src/port/bossbg.c
   src/port/collide.c

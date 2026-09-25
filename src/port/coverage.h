@@ -73,6 +73,26 @@
   X(nmi_rng_tick,     "nmi_leave",         "$1EB4 clear, so the random number state stepped") \
   X(nmi_rng_held,     "nmi_leave",         "...or set, and it did not")         \
   X(vbl_run_last_dropped, "vbl_queue_run",     "...and it was the last one, so the walk stopped") \
+  X(reset_cold,       "reset_clear",       "no top-scores table in WRAM: every byte cleared") \
+  X(reset_warm,       "reset_clear",       "the four magic words found, so $7E:2000-$2127 survive") \
+  /* Thread bodies, between one yield and the next. */                        \
+  X(victims_retired,   "victims_resume",     "a victim retired for good, stepped over") \
+  X(victims_list_end,  "victims_resume",     "the victim list ran out: next frame starts at the top") \
+  X(victims_start_one, "victims_resume",     "a victim came into range and its thread is started") \
+  X(victims_stop_one,  "victims_resume",     "a live victim went out of range and its thread is stopped") \
+  X(object_requests,  "object_resume",     "the object thread's handler left requests to serve") \
+  X(object_list_end,  "object_polled",     "the object list ran out: next walk starts at the top") \
+  X(object_give,      "object_polled",     "an object came into range and is given an actor") \
+  X(object_free,      "object_polled",     "an object went out of range and its actor is freed") \
+  X(actors_held,      "actors_checked",    "$80:9D5B said wait, so no entry this frame") \
+  X(actors_nearer,    "actors_measured",   "an entry nearer than any this pass") \
+  X(actors_none_near, "actors_checked",    "a pass ended with nobody within $100") \
+  X(actors_pick,      "actors_checked",    "a pass ended and the nearest entry is started") \
+  X(tile_anim_stepped, "tile_anim_resume", "a slot's count ran out and its next frame was read") \
+  X(tile_anim_looped, "tile_anim_resume",  "a sequence ran out with $FFFF and started over") \
+  X(tile_anim_stopped, "tile_anim_resume", "a sequence ran out with $FFFE and its slot stopped") \
+  X(tile_anim_upload, "tile_anim_resume",  "a frame changed, so the upload job is queued") \
+  X(tile_anim_ended,  "tile_anim_resume",  "every slot stopped, and the thread ends by RTL") \
                                                                                 \
   /* $80:BC7F actor_depth_sort. */                                             \
   X(sort_key_first,   "actor_depth_sort",   "ACTOR_SORT_FIRST decided the order") \

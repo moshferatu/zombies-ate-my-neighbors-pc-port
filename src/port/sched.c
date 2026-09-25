@@ -3,20 +3,8 @@
 #include "port/coverage.h"
 
 // ---------------------------------------------------------------------------
-// The 65816 pieces every stretch here is made of
+// The 65816 pieces every stretch here is made of: `port/cpu.h`, and one more
 // ---------------------------------------------------------------------------
-
-static void set_nz16(PortCpu* c, uint16_t v) {
-  c->p = (uint8_t)(c->p & ~(PORT_P_N | PORT_P_Z));
-  if (v & 0x8000u) c->p |= PORT_P_N;
-  if (v == 0) c->p |= PORT_P_Z;
-}
-
-static void set_nz8(PortCpu* c, uint8_t v) {
-  c->p = (uint8_t)(c->p & ~(PORT_P_N | PORT_P_Z));
-  if (v & 0x80u) c->p |= PORT_P_N;
-  if (v == 0) c->p |= PORT_P_Z;
-}
 
 // An address in the bank this stretch is running in. The scheduler runs in
 // two: `$80` from `thread_yield`, and `$00` from `thread_exit`, whose return
@@ -25,42 +13,6 @@ static void set_nz8(PortCpu* c, uint8_t v) {
 // `pc` holds the entry until the exit is chosen.
 static uint32_t here(const PortCpu* c, uint32_t addr) {
   return (c->pc & 0xff0000u) | (addr & 0xffffu);
-}
-
-static void set_c(PortCpu* c, bool on) {
-  c->p = (uint8_t)(on ? c->p | PORT_P_C : c->p & ~PORT_P_C);
-}
-
-// The stack is in bank 0 below $2000 for every thread, the scheduler and NMI,
-// which is WRAM's first 8 KB: `S` is a WRAM offset as it stands.
-static void push8(Wram* w, PortCpu* c, uint8_t v) {
-  wram_w8(w, c->s, v);
-  c->s = (uint16_t)(c->s - 1);
-}
-
-static void push16(Wram* w, PortCpu* c, uint16_t v) {
-  push8(w, c, (uint8_t)(v >> 8));
-  push8(w, c, (uint8_t)v);
-}
-
-static uint8_t pull8(const Wram* w, PortCpu* c) {
-  c->s = (uint16_t)(c->s + 1);
-  return wram_r8(w, c->s);
-}
-
-static uint16_t pull16(const Wram* w, PortCpu* c) {
-  uint16_t lo = pull8(w, c);
-  return (uint16_t)(lo | (pull8(w, c) << 8));
-}
-
-// `PLP`. Setting the index-width bit truncates X and Y on the spot, as the
-// hardware does; the accumulator keeps its high byte either way.
-static void set_p(PortCpu* c, uint8_t p) {
-  c->p = p;
-  if (p & PORT_P_X) {
-    c->x &= 0x00ffu;
-    c->y &= 0x00ffu;
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -485,4 +437,109 @@ void nmi_leave(Wram* w, PortCpu* c, NmiWork* k) {
   wram_w16(w, W_NMI_FLAGS, (uint16_t)(flags & ~c->a));
   nmi_pull_all(w, c);
   c->pc = NMI_RETURN_PC;
+}
+
+// ---------------------------------------------------------------------------
+// The reset's WRAM clear
+// ---------------------------------------------------------------------------
+
+// `MVN`, with A+1 bytes from X in `src` to Y in `dst`, one at a time and in
+// order: every block move here overlaps its own destination by one byte, which
+// is how it fills. X and Y wrap inside their banks; the data bank ends as the
+// destination's.
+static void mvn(Wram* w, PortCpu* c, uint8_t dst, uint8_t src, ResetWork* k) {
+  const uint32_t from = (uint32_t)(src - 0x7e) << 16;
+  const uint32_t to = (uint32_t)(dst - 0x7e) << 16;
+  do {
+    wram_w8(w, to | c->y, wram_r8(w, from | c->x));
+    c->x = (uint16_t)(c->x + 1);
+    c->y = (uint16_t)(c->y + 1);
+    k->moved++;
+  } while (c->a-- != 0);
+  c->db = dst;
+}
+
+static void lda(PortCpu* c, uint16_t v) {
+  c->a = v;
+  set_nz16(c, v);
+}
+
+static void ldx(PortCpu* c, uint16_t v) {
+  c->x = v;
+  set_nz16(c, v);
+}
+
+static void ldy(PortCpu* c, uint16_t v) {
+  c->y = v;
+  set_nz16(c, v);
+}
+
+void reset_clear(Wram* w, PortCpu* c, ResetWork* k) {
+  static const struct {
+    uint16_t at, magic;
+  } MAGIC[] = {{0x2000, 0xa675}, {0x2062, 0x98a3}, {0x2122, 0x4102},
+               {0x2126, 0x2217}};
+
+  lda(c, 0x0000);
+  wram_w16(w, 0x0000, c->a);
+  bool warm = true;
+  for (int i = 0; i < 4 && warm; i++) {
+    lda(c, wram_r16(w, MAGIC[i].at));
+    cmp16(c, c->a, MAGIC[i].magic);
+    k->blocks[i == 0 ? RESET_HEAD : RESET_CHECK]++;
+    if (c->a != MAGIC[i].magic) warm = false;
+  }
+
+  if (warm) {
+    // $80EC: $0000-$1FFF, then $2128 to the end of the bank
+    PORT_COVER(reset_warm);
+    lda(c, 0x1ffe);
+    ldx(c, 0x0000);
+    ldy(c, 0x0001);
+    k->blocks[RESET_SETUP]++;
+    mvn(w, c, 0x7e, 0x7e, k);
+    lda(c, 0x0000);
+    wram_w16(w, 0x2128, c->a);
+    lda(c, 0xded5);
+    ldx(c, 0x2128);
+    ldy(c, 0x2129);
+    k->blocks[RESET_WARM]++;
+    mvn(w, c, 0x7e, 0x7e, k);
+    k->blocks[RESET_BRA]++;
+  } else {
+    // $810D: the whole bank, then the magic
+    PORT_COVER(reset_cold);
+    k->blocks[RESET_TAKEN]++;
+    lda(c, 0xfffe);
+    ldx(c, 0x0000);
+    ldy(c, 0x0001);
+    k->blocks[RESET_SETUP]++;
+    mvn(w, c, 0x7e, 0x7e, k);
+    for (int i = 0; i < 4; i++) {
+      lda(c, MAGIC[i].magic);
+      wram_w16(w, MAGIC[i].at, c->a);
+    }
+    k->blocks[RESET_MAGIC]++;
+  }
+
+  // $8135: bank $7E over bank $7F
+  lda(c, 0x0000);
+  ldx(c, c->a);
+  ldy(c, c->a);
+  lda(c, (uint16_t)(c->a - 1));
+  mvn(w, c, 0x7f, 0x7e, k);
+  // PHK : PLB : REP #$30
+  push8(w, c, (uint8_t)(c->pc >> 16));
+  c->db = pull8(w, c);
+  set_nz8(c, c->db);
+  c->p = (uint8_t)(c->p & ~(PORT_P_M | PORT_P_X));
+  // The NMI's vector at $00, and the screen's brightness at $136C.
+  lda(c, 0x8179);
+  wram_w16(w, 0x0000, c->a);
+  lda(c, 0x0080);
+  wram_w16(w, 0x0002, c->a);
+  lda(c, 0x0080);
+  wram_w16(w, 0x136c, c->a);
+  k->blocks[RESET_TAIL]++;
+  c->pc = RESET_NMI_ON_PC;
 }

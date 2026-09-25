@@ -14412,3 +14412,24 @@ every record gains between 5.7 and 11.9 points. In the residue the frame
 family goes from 44.1% to 5.2%. What is left of it is the boot-time WRAM clear
 at `$80:8116`, the NMI trampoline in bank `$00`, the instructions that touch
 the hardware, and the exit instructions themselves, which the core executes.
+
+## Thread bodies, ported (2026-09-25)
+
+The exits mechanism took four thread bodies and the reset's WRAM clear without
+a change to the harness. A body is registered as stretches, each ending at its
+next yield or call, so every entry is one the ROM reaches by `RTL`, `RTS` or a
+branch. See `docs/threads.md`, "Thread bodies".
+
+One behaviour of `verify` those stretches depend on is worth stating. When the
+ROM reaches a registered entry inside another jump routine's window, a second
+check starts there, nested, and both end when the ROM reaches an exit they
+share. `object_resume` at `$80:C911` branches to `object_polled` at `$80:C918`
+whenever there is nothing to serve, so both are checked on those calls, and
+`object_resume` names `object_polled`'s exits among its own.
+
+Corpus: 20,047,706 calls across 50 movies, 0 diverged. `verify --level` over 56
+records: 31,325,781 calls, 0 diverged. Every new model is refresh-exact on
+every call. Lockstep is unchanged from the last pass on 49 movies, to the
+cycle, the level-25 partings included. The fiftieth is `level21-exit.zmv`,
+which hung last time and compared nothing. It now runs 4,088 passes without
+parting, and why has not been looked into.

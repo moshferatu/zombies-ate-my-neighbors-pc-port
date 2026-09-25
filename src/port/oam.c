@@ -140,13 +140,26 @@ typedef enum {
   CULL_WINDOW_OUT,
 } CullWindow;
 
-static CullWindow window_of(uint16_t delta) {
-  if (delta >= 0xff80) return CULL_WINDOW_HIGH;
-  return delta < 0x0180 ? CULL_WINDOW_LOW : CULL_WINDOW_OUT;
+// The two immediates are read from the cartridge, per axis. Widescreen
+// rewrites the X pair in the ROM every frame to reach past the picture's edges
+// (`widescreen_frame` in `widescreen.h`), and a port holding the stock figures
+// would drop actors the margins still draw.
+#define CULL_X_BEHIND_AT 0x80bcf8u  // `CMP #$FF80` at `$80:BCF7`
+#define CULL_X_AHEAD_AT 0x80bcfdu   // `CMP #$0180` at `$80:BCFC`
+#define CULL_Y_BEHIND_AT 0x80bd08u  // `CMP #$FF80` at `$80:BD07`
+#define CULL_Y_AHEAD_AT 0x80bd0du   // `CMP #$0180` at `$80:BD0C`
+
+static CullWindow window_of(uint16_t delta, uint16_t behind, uint16_t ahead) {
+  if (delta >= behind) return CULL_WINDOW_HIGH;
+  return delta < ahead ? CULL_WINDOW_LOW : CULL_WINDOW_OUT;
 }
 
-void actor_cull_counted(Wram* w, ActorCullWork* work) {
+void actor_cull_counted(Wram* w, const Rom* rom, ActorCullWork* work) {
   memset(work, 0, sizeof(*work));
+  const uint16_t x_behind = rom_word(rom, CULL_X_BEHIND_AT);
+  const uint16_t x_ahead = rom_word(rom, CULL_X_AHEAD_AT);
+  const uint16_t y_behind = rom_word(rom, CULL_Y_BEHIND_AT);
+  const uint16_t y_ahead = rom_word(rom, CULL_Y_AHEAD_AT);
 
   uint16_t camera_x = wram_r16(w, W_CAMERA_X);
   uint16_t camera_y = wram_r16(w, W_CAMERA_Y);
@@ -178,7 +191,8 @@ void actor_cull_counted(Wram* w, ActorCullWork* work) {
       work->blocks[CULL_BLK_WORLD]++;
 
       CullWindow wx =
-          window_of((uint16_t)(wram_r16(w, (uint32_t)rec + ACTOR_X) - camera_x));
+          window_of((uint16_t)(wram_r16(w, (uint32_t)rec + ACTOR_X) - camera_x),
+                    x_behind, x_ahead);
       work->blocks[wx == CULL_WINDOW_HIGH ? CULL_BLK_X_HIGH : CULL_BLK_X_TEST]++;
       if (wx != CULL_WINDOW_HIGH)
         work->blocks[wx == CULL_WINDOW_LOW ? CULL_BLK_X_IN : CULL_BLK_X_OUT]++;
@@ -188,7 +202,8 @@ void actor_cull_counted(Wram* w, ActorCullWork* work) {
       }
 
       CullWindow wy =
-          window_of((uint16_t)(wram_r16(w, (uint32_t)rec + ACTOR_Y) - camera_y));
+          window_of((uint16_t)(wram_r16(w, (uint32_t)rec + ACTOR_Y) - camera_y),
+                    y_behind, y_ahead);
       work->blocks[wy == CULL_WINDOW_HIGH ? CULL_BLK_Y_HIGH : CULL_BLK_Y_TEST]++;
       if (wy != CULL_WINDOW_HIGH)
         work->blocks[wy == CULL_WINDOW_LOW ? CULL_BLK_Y_IN : CULL_BLK_Y_OUT]++;
@@ -214,9 +229,9 @@ void actor_cull_counted(Wram* w, ActorCullWork* work) {
   wram_w16(w, W_VISIBLE_ACTOR_COUNT, count);
 }
 
-void actor_cull(Wram* w) {
+void actor_cull(Wram* w, const Rom* rom) {
   ActorCullWork work;
-  actor_cull_counted(w, &work);
+  actor_cull_counted(w, rom, &work);
 }
 
 // ---------------------------------------------------------------------------
@@ -541,7 +556,7 @@ bool sprite_build_oam_counted(Wram* w, const Rom* rom, uint16_t dp,
     owners.ox[i] = owners.oy[i] = 0;
   }
   actor_depth_sort_counted(w, &work->sort);
-  actor_cull_counted(w, &work->cull);
+  actor_cull_counted(w, rom, &work->cull);
   oam_buffer_clear(w);
   wram_w16(w, W_SPRITE_TICK, wram_r16(w, W_SCHED_TICK));
   work->blocks[BUILD_BLK_EPILOGUE]++;
