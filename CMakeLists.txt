@@ -153,6 +153,16 @@ if(MSVC)
   target_compile_definitions(zamn_test_sfx_overlay PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# `src/radar.h`: the survivor radar with every square drawn, against the
+# console's one at a time -- the same machine, and a picture changed only
+# where the squares are.
+add_executable(zamn_test_radar tools/test_radar.c)
+target_link_libraries(zamn_test_radar PRIVATE zamn_cosim_lib)
+target_include_directories(zamn_test_radar PRIVATE src)
+if(MSVC)
+  target_compile_definitions(zamn_test_radar PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # ---------------------------------------------------------------------------
 # The branch-coverage instrument (src/port/coverage.h). Port code marks its
 # decision points; this holds the counters the harness reads. It is separate

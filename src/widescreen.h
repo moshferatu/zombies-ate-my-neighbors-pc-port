@@ -427,6 +427,7 @@
 #include "snes.h"
 
 #include "blood.h"
+#include "radar.h"
 #include "assets/rom.h"
 #include "assets/sprite.h"
 #include "port/camera.h"
@@ -547,6 +548,11 @@ typedef struct {
   // `--red-blood` (`src/blood.h`), here because this is the frame hook and
   // there is one: it marks the game over's drips after the sprites are placed.
   Blood blood;
+  // The survivor radar's squares (`src/radar.h`), drawn from here for the
+  // same reason, and where this frame put the sprites laid out over the
+  // panel, which the squares go with.
+  Radar radar;
+  int screen_place;
 } Widescreen;
 
 // WRAM as a flat 128 KB, the way `src/port/wram.h` numbers it: bank `$7E` is
@@ -1217,7 +1223,8 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
     // Nothing outside a level has a map to run off the end of.
     snes_setWidescreen(snes, margin, margin);
     snes_setWideClamp(snes, -PPU_EXTRA_MAX, 255 + PPU_EXTRA_MAX);
-    ws_place_screen_sprites(snes, ws, ppu_spriteWorld);
+    ws->screen_place = ppu_spriteWorld;
+    ws_place_screen_sprites(snes, ws, ws->screen_place);
     return;
   }
 
@@ -1312,7 +1319,8 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
 
   if (snes_bgTilemapWider(snes, 0)) ws_boss_plane(snes, ws, left, right);
   ws_margin_sprites(snes, ws, left, right);
-  ws_place_screen_sprites(snes, ws, bg3_mask ? ppu_spriteCentred : ppu_spriteAnchored);
+  ws->screen_place = bg3_mask ? ppu_spriteCentred : ppu_spriteAnchored;
+  ws_place_screen_sprites(snes, ws, ws->screen_place);
 }
 
 // Move the game's own distances from the console's edges out to the edges of
@@ -1371,9 +1379,11 @@ static inline void widescreen_hook(Snes* snes, void* ctx) {
   ws_widen_window(snes, ws->margin);
   // The first frame has no tick before it to have been composed from, and the
   // game has drawn nothing yet either.
+  radar_return(snes, &ws->radar);
   if (ws->have_mem) {
     ws_return_slots(snes, ws);
     widescreen_frame(snes, ws);
+    radar_frame(snes, &ws->radar, &ws->rom, ws_sprite_mem(ws), ws->screen_place);
   }
   blood_frame(snes, &ws->blood);
   memcpy(ws->mem, snes->ram, sizeof ws->mem);
@@ -1439,6 +1449,7 @@ static inline void widescreen_install(Snes* snes, Widescreen* ws,
   ws->rom.data = rom;
   ws->rom.size = (uint32_t)rom_len;
   ws->margin = margin;
+  ws->radar.steady = true;
   snes_setFrameHook(snes, widescreen_hook, ws);
 }
 

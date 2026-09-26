@@ -48,7 +48,7 @@
 //             [--level N] [--no-twin-stick] [--no-smooth] [--no-even]
 //             [--dump-pictures prefix,frame]
 //             [--no-high-scores] [--high-scores file] [--hitbox percent]
-//             [--red-blood] [--quick-at frame:save|load[:file]]...
+//             [--red-blood] [--flashing-radar] [--quick-at frame:save|load[:file]]...
 //             [--invincible] [--invincible-neighbors] [--infinite-ammo]
 //             [--infinite-lives] [--give-all] [--always-run]
 //             [--config file] [--no-config] [--volume N] [--no-effect-overlay]
@@ -785,6 +785,10 @@ static void usage(void) {
     "                  accumulates across sessions. See src/cosim/profile.h.\n"
     "  --red-blood     The game over's curtain of purple slime is red, and blood,\n"
     "                  as it is on the Mega Drive. Nothing else changes colour.\n"
+    "  --flashing-radar\n"
+    "                  The survivor radar shows one neighbour at a time, in turn,\n"
+    "                  as the console does, instead of all of them at once.\n"
+    "                  --steady-radar is the other way. See src/radar.h.\n"
     "  --hitbox <pct>  How far a player reaches for a pickup or a neighbour, and\n"
     "                  a weapon for a creature, as a percentage of the game's\n"
     "                  own 16-pixel box: 100 to 200, default 150 (100 under -m,\n"
@@ -901,6 +905,8 @@ int main(int argc, char** argv) {
   int hitbox_pct = 0;
   // `--red-blood`: see `src/blood.h`.
   bool red_blood = g_cfg.red_blood;
+  // `--flashing-radar`: see `src/radar.h`.
+  bool radar_flash = g_cfg.radar_flash;
   bool hiscore_on = g_cfg.high_scores;
   const char* hiscore_path = NULL;
   // Room for every routine in the registry and then some. It was 32, which
@@ -1107,6 +1113,8 @@ int main(int argc, char** argv) {
     }
     else if (!strcmp(a, "--red-blood")) red_blood = true;
     else if (!strcmp(a, "--no-red-blood")) red_blood = false;
+    else if (!strcmp(a, "--flashing-radar")) radar_flash = true;
+    else if (!strcmp(a, "--steady-radar")) radar_flash = false;
     else if (cheats_flag(&cheats, a)) {}
     else if (!strcmp(a, "--no-high-scores")) hiscore_on = false;
     else if (!strcmp(a, "--high-scores") && i + 1 < argc) hiscore_path = argv[++i];
@@ -1327,6 +1335,9 @@ int main(int argc, char** argv) {
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
   cosim_watch(&cosim, WS_PASS_DONE_AT, widescreen_pass_done, &ws);
   cosim_watch(&cosim, WS_OAM_SENT_AT, widescreen_oam_sent, &ws);
+  // The survivor radar's squares, all of them or the console's one at a time
+  // (`src/radar.h`). Only the picture, so a movie may have either.
+  ws.radar.steady = !radar_flash;
   // The flash along the bottom edge as the game over begins (`src/maskline.h`):
   // the game's own, and only ever hidden by a television's overscan. The same
   // jobs on the same frames in another order, so a movie plays the same.

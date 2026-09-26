@@ -5,6 +5,52 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The radar shows every neighbour at once (2026-09-26)
+
+Asked for in play-testing: the radar's squares flash, which smoothing makes
+worse. The console has one sprite for all of them. `$82:D8DB` moves its
+marker to the next neighbour in reach every second tick, so with five in
+reach each is lit two ticks in ten. `src/radar.h` draws a square for every
+neighbour the thread's loop would stop on, from the frame hook, into parked
+OAM entries, with the marker's entry as the pattern, and parks the marker.
+Nothing of the game's is written. `radar = flashing`, `--flashing-radar` or
+the launcher's Radar row gives the console's.
+
+The first version lost every square one tick in ten. On a frame the game
+sends no OAM, the last frame's entries are still there, and a square whose
+entry the game's marker had since landed on, exactly, was taken for one of
+this code's and put back, marker and all. What was written is now put back
+only when the whole of OAM is as the last frame left it. `zamn_test_radar` on
+`level1-map`, in 4:3 and in 16:9: the machines identical, five squares on
+all 320 ticks the console shows its marker, one of them on the marker, and
+no pixel changed away from them.
+
+Then, in play: squares still flashed on level 1, but only for neighbours
+close together, such as the griller and the tourists, or the two
+cheerleaders. The first square went into the marker's own entry, just parked,
+and the pass's owner table still gave that entry to the marker's record. The
+smoothing moves a record's pieces by the record's move, so that square slid
+along the marker's hop. A hop between two far neighbours is taken for a
+placement and nothing slid; between two close ones it was taken for a move.
+The squares now start after the marker's entry. `zamn_test_layers` never saw
+it, because in 4:3 it did not install the frame hook the frontend always
+installs. Now it does, and it fails on a square eased from more than a
+pixel: 58 on `level1-map` before, in either aspect, and none after. It is OK
+on `level1`, `level1-2p`, `level25-lane` and `level9-weapons` in 4:3 and 16:9.
+
+And a neighbour standing where a square fell was drawn over it. On the
+console a sprite hides every sprite in a later entry, and the squares are in
+entries after the game's own. Moving entries would have broken the tables
+kept per entry: the pass's owners, the widened picture's places and the
+margins. So the PPU has a flag per entry, `objFront`. `ppu_evaluateSprites`
+looks for the marked entries first on each line, and the draw list draws
+them last in their priority and lets them hide the others (`layers_ahead`).
+`zamn_test_radar` draws the frame again with the squares alone and with no
+sprites, and checks the squares' pixels are theirs in the picture. On
+`level1-map`, with the box's middle poked over the player: 128 squares
+overlapped him, with 896 pixels covered on 28 ticks before and none after.
+`zamn_test_layers` is exact on the same poke.
+
 ### The tourists in bonus room 50 turn again under the neighbour cheat (2026-09-25)
 
 Reported in play-testing, with a quick save: in the bonus room off level 22

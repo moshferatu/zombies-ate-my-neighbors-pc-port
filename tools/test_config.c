@@ -110,6 +110,7 @@ static void test_settings(void) {
     "window.scale = 4\r\n"
     "smoothing = false\r\n"
     "refresh = 240\r\n"
+    "radar = Flashing\r\n"
     "[audio]\r\n"
     "enabled = 0\r\n"
     "volume = 35\r\n"
@@ -139,6 +140,7 @@ static void test_settings(void) {
   parse(&h, "[hotkeys]\ntoggle_aspect = F3\n[controller hotkeys]\ntoggle_aspect =\n");
   if (h.warnings) fail("a retired toggle_aspect was complained about %d times", h.warnings);
   if (c.refresh != 240) fail("refresh %d", c.refresh);
+  if (!c.radar_flash) fail("radar");
   if (c.audio) fail("audio");
   if (c.volume != 35) fail("volume %d", c.volume);
   if (c.pads) fail("controller enabled");
@@ -416,7 +418,7 @@ static void test_writing(void) {
   c.skip_intro = true; c.level = 0; c.hitbox = 175; c.red_blood = true; c.high_scores = false;
   snprintf(c.high_scores_file, sizeof c.high_scores_file, "C:\\scores\\zamn.hiscore");
   c.fullscreen = false; c.widescreen = WIDE_AUTO; c.filter = SCALE_LINEAR;
-  c.window_scale = 3; c.smoothing = false; c.refresh = 144; c.audio = false; c.volume = 35;
+  c.window_scale = 3; c.smoothing = false; c.refresh = 144; c.radar_flash = true; c.audio = false; c.volume = 35;
   c.pads = false; c.twin_stick = false; c.deadzone = 40;
   config_deadzone(&c.pad, c.deadzone);
   c.pad.move_stick = PAD_STICK_RIGHT; c.pad.aim_stick = PAD_STICK_NONE;

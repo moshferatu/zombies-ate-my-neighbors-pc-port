@@ -148,6 +148,7 @@ typedef struct {
   int window_scale;
   bool smoothing;
   int refresh;  // 0: what the system reports
+  bool radar_flash;  // the console's one-at-a-time radar; src/radar.h
   // [audio]
   bool audio;
   int volume;   // percent, 0..100
@@ -213,6 +214,9 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "smoothing = on\n"
   "; auto, or the display's refresh rate in Hz when the system reports it wrong.\n"
   "refresh = auto\n"
+  "; steady: the radar shows every neighbour at once. flashing: one at a time,\n"
+  "; in turn, as the console does.\n"
+  "radar = steady\n"
   "\n"
   "[audio]\n"
   "enabled = on\n"
@@ -618,6 +622,11 @@ static inline bool config_set(Config* c, const char* name, int line,
       if (config_same(v, "auto")) c->refresh = 0;
       else if (!config_int(v, 24, 1000, &c->refresh)) CONFIG_BAD("auto or a rate in Hz");
     }
+    else if (!strcmp(key, "radar")) {
+      if (config_same(v, "flashing")) c->radar_flash = true;
+      else if (config_same(v, "steady")) c->radar_flash = false;
+      else CONFIG_BAD("steady or flashing");
+    }
     else return false;
   } else if (!strcmp(section, "audio")) {
     if (!strcmp(key, "enabled")) { if (!config_bool(v, &c->audio)) CONFIG_BAD("on or off"); }
@@ -933,6 +942,7 @@ static inline void config_each_value(const Config* c, ConfigValueFn fn, void* ct
   if (c->refresh <= 0) snprintf(v, sizeof v, "auto");
   else snprintf(v, sizeof v, "%d", c->refresh);
   fn(ctx, "video", "refresh", v);
+  fn(ctx, "video", "radar", c->radar_flash ? "flashing" : "steady");
   fn(ctx, "audio", "enabled", CONFIG_ON(c->audio));
   snprintf(v, sizeof v, "%d", c->volume);
   fn(ctx, "audio", "volume", v);

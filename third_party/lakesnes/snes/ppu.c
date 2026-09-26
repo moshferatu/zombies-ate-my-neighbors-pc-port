@@ -141,6 +141,7 @@ void ppu_reset(Ppu* ppu) {
   memset(ppu->objPriorityBuffer, 0, sizeof(ppu->objPriorityBuffer));
   memset(ppu->objRemapOn, 0, sizeof(ppu->objRemapOn));
   memset(ppu->objRemap, 0, sizeof(ppu->objRemap));
+  memset(ppu->objFront, 0, sizeof(ppu->objFront));
   ppu->timeOver = false;
   ppu->rangeOver = false;
   ppu->objInterlace = false;
@@ -1117,7 +1118,8 @@ static int ppu_spriteX(const Ppu* ppu, uint8_t index) {
 
 static void ppu_evaluateSprites(Ppu* ppu, int line) {
   // TODO: rectangular sprites, wierdness with sprites at -256
-  uint8_t index = ppu->objPriority ? (ppu->oamAdr & 0xfe) : 0;
+  const uint8_t first = ppu->objPriority ? (ppu->oamAdr & 0xfe) : 0;
+  uint8_t index = first;
   int spritesFound = 0;
   int tilesFound = 0;
   const int width = ppu_gameWidth(ppu);
@@ -1139,8 +1141,15 @@ static void ppu_evaluateSprites(Ppu* ppu, int line) {
   int16_t foundHi[32 * PPU_MAX_WIDTH / 256] = {};
   const int mid = (ppu->extraRight - ppu->extraLeft) / 2;
   bool over = false;
-  // iterate over oam to find sprites in range
-  for(int i = 0; i < 128 && !over; i++) {
+  // iterate over oam to find sprites in range -- zamn: twice, the entries
+  // marked `objFront` on the first pass and the rest on the second, so that
+  // the marked ones are found first and so drawn in front.
+  bool anyFront = false;
+  for(int i = 0; i < 128 && !anyFront; i++) anyFront = ppu->objFront[i];
+  for(int pass = anyFront ? 0 : 1; pass < 2 && !over; pass++) {
+  index = first;
+  for(int i = 0; i < 128 && !over; i++, index += 2) {
+    if(ppu->objFront[index >> 1] != (pass == 0)) continue;
     uint8_t y = ppu->oam[index] >> 8;
     // check if the sprite is on this line and get the sprite size
     uint8_t row = line - y;
@@ -1171,7 +1180,7 @@ static void ppu_evaluateSprites(Ppu* ppu, int line) {
         foundHi[spritesFound - 1] = (int16_t)hi;
       }
     }
-    index += 2;
+  }
   }
   // iterate over found sprites backwards to fetch max 34 tile slivers
   for(int i = spritesFound; i > 0; i--) {

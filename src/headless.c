@@ -342,7 +342,7 @@ int main(int argc, char** argv) {
             "       [--save frame,file] [--load file]\n"
             "       [--poke frame[+]:addr=value[.b]]...\n"
             "       [--twin-stick] [--aim frame[+]:U|D|L|R...|-]...\n"
-            "       [--widescreen off|16:9|16:10|21:9]\n"
+            "       [--widescreen off|16:9|16:10|21:9] [--flashing-radar]\n"
             "       [--invincible] [--invincible-neighbors] [--infinite-ammo]\n"
             "       [--infinite-lives] [--give-all] [--always-run]\n",
             argv[0]);
@@ -351,6 +351,7 @@ int main(int argc, char** argv) {
   const char* rom_path = argv[1];
   const char* out_path = argv[2];
   WideMode wide = WIDE_OFF;
+  bool radar_flash = false;  // src/radar.h
   int frames = 180;
   const char* movie_path = NULL;
   int snap_at[MAX_SNAPSHOTS];
@@ -464,6 +465,8 @@ int main(int argc, char** argv) {
         fprintf(stderr, "error: --widescreen wants off, 16:9, 16:10 or 21:9\n");
         return 2;
       }
+    } else if (!strcmp(argv[i], "--flashing-radar")) {
+      radar_flash = true;
     } else if (argv[i][0] != '-') {
       frames = atoi(argv[i]);
     } else {
@@ -492,6 +495,7 @@ int main(int argc, char** argv) {
   fb_w = snes_pixelWidth(snes);
   static Widescreen ws;
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
+  ws.radar.steady = !radar_flash;
   if (wide != WIDE_OFF) printf("Widescreen %s: %d columns\n", wide_name(wide), fb_w / 2);
   // XRGB layout: framebuffer bytes per pixel are [B, G, R, X].
   snes_setPixelFormat(snes, pixelFormatXRGB);

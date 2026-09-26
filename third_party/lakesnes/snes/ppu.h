@@ -219,6 +219,12 @@ struct Ppu {
   // frame hook, and are all zero otherwise (`src/blood.h` is the one user).
   bool objRemapOn[0x80];
   uint8_t objRemap[16];
+  // zamn: OAM entries drawn in front of every entry without it, as if they
+  // came first in OAM, and in their own order among themselves. The
+  // frontend's to set from the frame hook, all false otherwise
+  // (`src/radar.h`, whose squares are in entries after the sprites they
+  // must cover).
+  bool objFront[0x80];
   bool timeOver;
   bool rangeOver;
   bool objInterlace;

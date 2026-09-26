@@ -96,7 +96,7 @@ typedef enum { K_HEAD, K_CHOICE, K_RANGE, K_PATH, K_KEYS, K_PADS } Kind;
 
 enum {
   S_ROM, S_SKIP_INTRO, S_LEVEL, S_HITBOX, S_BLOOD, S_HIGH_SCORES, S_HISCORE_FILE,
-  S_FULLSCREEN, S_WIDESCREEN, S_FILTER, S_WINDOW_SCALE, S_SMOOTHING, S_REFRESH,
+  S_FULLSCREEN, S_WIDESCREEN, S_FILTER, S_WINDOW_SCALE, S_SMOOTHING, S_REFRESH, S_RADAR,
   S_AUDIO, S_VOLUME, S_EFFECT_OVERLAY,
   S_PADS, S_TWIN_STICK, S_DEADZONE, S_MOVE_STICK, S_AIM_STICK,
   S_CHEAT,  // and the five after it, by `config_cheat_names`
@@ -124,6 +124,7 @@ typedef struct {
 
 static const Choice on_off[] = {{0, "Off"}, {1, "On"}};
 static const Choice blood_choices[] = {{0, "Purple"}, {1, "Red"}};
+static const Choice radar_choices[] = {{0, "Steady"}, {1, "Flashing"}};
 static const Choice wide_choices[] = {
   {WIDE_OFF, "Off"}, {WIDE_16_9, "16:9"}, {WIDE_16_10, "16:10"}, {WIDE_21_9, "21:9"}, {WIDE_AUTO, "Auto"}};
 static const Choice filter_choices[] = {
@@ -245,6 +246,9 @@ static void build_rows(void) {
       "second. Off: the game's frames only.");
   add_range(TAB_VIDEO, S_REFRESH, "Refresh Rate", 0, 1000, 1, false,
       "Auto, or the display's refresh rate when the system reports it wrong.");
+  add_choice(TAB_VIDEO, S_RADAR, "Radar", radar_choices, 2,
+      "Steady: the radar shows every neighbour at once. Flashing: one at a time, in turn, as "
+      "the console does.");
 
   add_choice(TAB_AUDIO, S_AUDIO, "Sound", on_off, 2, "Music and sound effects.");
   add_range(TAB_AUDIO, S_VOLUME, "Volume", 0, 100, 5, true, "0 to 100.");
@@ -315,6 +319,7 @@ static int setting_get(const Config* c, int id) {
     case S_WINDOW_SCALE: return c->window_scale;
     case S_SMOOTHING:    return c->smoothing;
     case S_REFRESH:      return c->refresh;
+    case S_RADAR:        return c->radar_flash;
     case S_AUDIO:        return c->audio;
     case S_VOLUME:       return c->volume;
     case S_EFFECT_OVERLAY: return c->effect_overlay;
@@ -341,6 +346,7 @@ static void setting_set(Config* c, int id, int v) {
     case S_WINDOW_SCALE: c->window_scale = v; break;
     case S_SMOOTHING:    c->smoothing = v != 0; break;
     case S_REFRESH:      c->refresh = v; break;
+    case S_RADAR:        c->radar_flash = v != 0; break;
     case S_AUDIO:        c->audio = v != 0; break;
     case S_VOLUME:       c->volume = v; break;
     case S_EFFECT_OVERLAY: c->effect_overlay = v != 0; break;

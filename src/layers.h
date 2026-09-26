@@ -217,6 +217,7 @@ typedef struct {
   bool math;           // palettes 4-7: the sprites colour maths applies to
   uint8_t place;       // where it goes in a widened picture, `Ppu.spritePlace`
   bool drawn;          // false for a parked or empty one
+  bool front;          // `Ppu.objFront`: in front of every sprite without it
   // Where this sprite was a tick ago, in whole pixels, if that is known:
   // `known` is false for one that has just appeared or whose predecessor could
   // not be found, and such a sprite is drawn where it is.
@@ -556,14 +557,22 @@ static inline void layers_sprite_cell(LayersFrame* f, const Ppu* ppu, int slot,
 // hole may sit a fraction off; on the tick itself it is exact, which is what
 // the test measures. Sprites of the same priority need nothing: drawing the
 // lower index last is the rule already.
+//
+// "Lower" is in the order the PPU finds them, where an entry marked `front`
+// comes before every entry that is not (`Ppu.objFront`).
+static inline bool layers_ahead(const LayersFrame* f, int j, int i) {
+  if (f->spr[j].front != f->spr[i].front) return f->spr[j].front;
+  return j < i;
+}
+
 static inline void layers_occlude(LayersFrame* f) {
-  for (int i = 1; i < LAYERS_SPRITES; i++) {
+  for (int i = 0; i < LAYERS_SPRITES; i++) {
     LayersSprite* a = &f->spr[i];
     if (!a->drawn) continue;
     const int acx = (i % LAYERS_ATLAS_COLS) * f->cell, acy = (i / LAYERS_ATLAS_COLS) * f->cell;
-    for (int j = 0; j < i; j++) {
+    for (int j = 0; j < LAYERS_SPRITES; j++) {
       const LayersSprite* b = &f->spr[j];
-      if (!b->drawn || b->prio == a->prio) continue;
+      if (j == i || !layers_ahead(f, j, i) || !b->drawn || b->prio == a->prio) continue;
       const int bcx = (j % LAYERS_ATLAS_COLS) * f->cell, bcy = (j / LAYERS_ATLAS_COLS) * f->cell;
       // A sprite's y is eight bits and wraps: one at 250 shows its bottom
       // rows at the top of the picture, where it can overlap one at 2. So
@@ -760,6 +769,7 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
     sp->prio = (uint8_t)((ppu->oam[s * 2 + 1] & 0x3000) >> 12);
     sp->math = ((ppu->oam[s * 2 + 1] & 0xe00) >> 9) >= 4;
     sp->place = ppu->spritePlace[s];
+    sp->front = ppu->objFront[s];
     sp->known = false;
     sp->px = sp->py = 0;
     sp->rec = f->ownersFresh ? ownerRec[s] : -1;
@@ -1369,10 +1379,12 @@ static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
       if (cur->mathMain[l]) LAYERS_SUB_OPS(n - 1);
     } else {
       // Sprites of this priority, the lowest OAM index drawn last so that it
-      // lands in front, as the PPU's line buffer has it.
-      for (int s = LAYERS_SPRITES - 1; s >= 0; s--) {
+      // lands in front, as the PPU's line buffer has it -- and the ones
+      // marked `front` after all the others (`layers_ahead`).
+      for (int t = 0; t < 2 * LAYERS_SPRITES; t++) {
+        const int s = LAYERS_SPRITES - 1 - t % LAYERS_SPRITES;
         const LayersSprite* sp = &cur->spr[s];
-        if (!sp->drawn || sp->prio != p) continue;
+        if (!sp->drawn || sp->prio != p || sp->front != (t >= LAYERS_SPRITES)) continue;
         int ox = 0, oy = 0;
         if (ease && sp->known) {
           ox = -layers_back(sp->x - sp->px + cur->dExtraLeft, sp->bx, sp->cx, num, den, sx, even);

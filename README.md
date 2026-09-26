@@ -195,7 +195,7 @@ is in `.gitignore`, since it names the player's ROM.
 | Section | Settings |
 |---|---|
 | `[game]` | `rom`, `skip_intro`, `level` (off, 0-55), `hitbox` (100-200), `blood` (purple, red), `high_scores`, `high_scores_file` |
-| `[video]` | `fullscreen`, `widescreen` (off, 16:9, 16:10, 21:9, auto), `filter` (sharp, integer, linear), `window_scale` (1-8), `smoothing`, `refresh` (auto, Hz) |
+| `[video]` | `fullscreen`, `widescreen` (off, 16:9, 16:10, 21:9, auto), `filter` (sharp, integer, linear), `window_scale` (1-8), `smoothing`, `refresh` (auto, Hz), `radar` (steady, flashing: [the radar](#the-survivor-radar-and---flashing-radar)) |
 | `[audio]` | `enabled`, `volume` (0-100), `effect_overlay` ([lost sound effects](#lost-sound-effects-and---no-effect-overlay)) |
 | `[controller]` | `enabled`, `twin_stick`, `deadzone` (5-90, percent), `move_stick` and `aim_stick` (left, right, off) |
 | `[controller buttons]` | the twelve SNES buttons, as lists of pad inputs, for both pads |
@@ -593,6 +593,55 @@ are as they were. The drips were marked on 394 frames. `zamn_test_layers` takes
 `--red-blood` and still finds the draw list's pictures equal to the PPU's,
 and `--png` now also writes `prefix.frame.cgram.bin` (CGRAM, OAM and its
 high table), which is how the colours were found.
+
+### The survivor radar, and `--flashing-radar`
+
+Asked for in play-testing: the radar's yellow squares flash, and smoothed
+they look worse. The console draws every square with one sprite. The radar's
+thread (`$82:D8DB`) has one display record for its marker and moves it to
+the next neighbour in reach every second tick. A neighbour is skipped if it
+is rescued or dead (`$7E:605A`), or `$180` or more from the player on either
+axis. With five neighbours in reach each square is lit two ticks in ten.
+
+`src/radar.h` draws all of them instead. From the frame hook, for each radar
+that is up, it places a square for every neighbour the loop would stop on,
+where the loop would put the marker (`($0C, $0E)` on the thread's page, less
+a sixteenth of the distance). The squares use the marker's own OAM entry as
+the pattern and go into entries the game's pass left parked, as the widened
+picture's margins do, placed with the panel in widescreen. The marker itself
+is parked: it is where the loop put it up to two ticks ago, and beside the
+square drawn now it would be a doubled square once the player has moved.
+Only the PPU's OAM is written, and the game sends all of that again every
+vblank, so a movie, the harness and a quick save are the same either way.
+What it wrote over is put back when the game sends no OAM. The squares are
+in later entries than the marker's, and on the console a sprite hides every
+sprite in a later entry, so a neighbour standing where a square fell was
+drawn over it. Each square is marked in `Ppu.objFront`, a flag of the
+port's: the PPU looks for marked entries first on every line, which is what
+puts an entry in front, and the draw list and its occlusion order sprites
+the same way (`layers_ahead`). None goes in the marker's
+own entry: the pass's owner table still gives that entry to the marker's
+record, and the smoothing would slide a square there along the marker's hop.
+
+It is on by default. `--flashing-radar`, `radar = flashing` in `zamn.ini`, or
+"Radar" in the launcher's Video tab gives the console's radar.
+`zamn_test_radar [rom] [movie] [frames] [--widescreen 16:9] [--poke ...]`
+replays a movie with each. The machines must be identical every tick, a
+square must be wherever the console's marker is, and no pixel may change
+more than a sprite's width from a square or the marker. The frame is also
+drawn again with the squares alone and with no sprites, and every pixel of a
+square must be the square's in the real picture. Nothing in `level1-map`
+stands on a square, so `--poke 1700+:080C=008C --poke 1700+:080E=006E` moves
+the box's middle, on the radar thread's page, over the player: 128 squares
+overlap him and none is covered. Without the flag, 896 pixels were. On `level1-map` in 4:3 and 16:9
+the radar is up for 340 ticks: the console shows its marker on 320, and there
+are five squares on each of those 320. The other 20 are the radar coming up,
+with nothing shown either way. `zamn_test_layers` now installs the frame
+hook at every width, as the frontend does, takes `--flashing-radar`, and
+fails if a square is eased from more than a pixel away. A square moves a
+sixteenth of the player's move, so anything further was eased from somewhere
+else. It passes on that movie, and on `level1`, `level1-2p`, `level25-lane`
+and `level9-weapons`, in 4:3 and 16:9.
 
 ### A longer reach for pickups and weapons, and `--hitbox`
 
@@ -2098,7 +2147,8 @@ the port's pass knows it, because a piece's own move has the animation in it.
 Over `level25-boss` in 16:9 that refuses 44 of some 100,000 paired
 sprite-ticks, 43 of them margin sprites paired by looks at seven pixels or
 more; the markers still flash as the console flashes them, but each stays
-where the game put it.
+where the game put it. (They flash only under `--flashing-radar` now: see
+[the survivor radar](#the-survivor-radar-and---flashing-radar).)
 
 **And in widescreen the box was 43 columns right of its frame** -- the PPU's
 own doing, not the list's, which is why the list matched it to the pixel.
@@ -2562,6 +2612,8 @@ src/twinstick.h       Twin-stick shooting: what the right stick becomes — an a
 src/sfx_overlay.h     Sound effects the driver drops or cuts short, played
                               through a second APU that plays only effects,
                               muted wherever the real one is playing them
+src/radar.h           The survivor radar with every neighbour's square drawn at
+                              once, where the console lights one at a time
 src/pace.h            Frame cadence: measuring how evenly frames arrive, and
                               the deadline clock and audio rate control that
                               make them arrive evenly. No SDL either
@@ -2641,6 +2693,10 @@ tools/test_sfx_overlay.c A movie twice, with the sound effect overlay and
                               without: the machines identical every tick, and
                               sound added only where the driver lost some.
                               Needs the ROM
+tools/test_radar.c    A movie twice, with the console's radar and with every
+                              square: the machines identical, a square wherever
+                              the console's marker is, and nothing else in the
+                              picture changed. Needs the ROM
 tools/test_twinstick.c Nine stick positions becoming nine direction codes, and
                               the ROM patch as exact bytes against a synthetic
                               cartridge — including that every refusal writes

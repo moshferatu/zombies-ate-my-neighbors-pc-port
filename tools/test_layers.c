@@ -72,6 +72,7 @@ int main(int argc, char** argv) {
                     "       [--track first last] [--motion first last] [--widescreen off|16:9|16:10]\n"
                     "       [--no-even] [--no-hold] [--poke frame[+]:addr=value[.b]]...\n"
                     "       [--hitbox percent] [--watch addr]... [--red-blood]\n"
+                    "       [--flashing-radar]\n"
                     "       [--bypass-logos] [--mask-line]\n"
                     "  <last> is a frame number, and the run goes on to it past the movie's end.\n", argv[0]);
     return 2;
@@ -93,7 +94,7 @@ int main(int argc, char** argv) {
   int track_first = -1, track_last = -1;
   PokeList pokes = {{{0}}, 0};
   int watch[8], watches = 0, watched[8] = {0};
-  bool red_blood = false, bypass_logos = false, mask_line = false;
+  bool red_blood = false, bypass_logos = false, mask_line = false, radar_flash = false;
   WideMode wide = WIDE_OFF;
   // `--no-hold` pairs the owner table with the picture of the same tick, which
   // is wrong by a tick (see `SpriteOamOwners`) and is kept so that the
@@ -117,6 +118,7 @@ int main(int argc, char** argv) {
     if (!strcmp(argv[i], "--no-even")) { even = false; continue; }
     // `--red-blood`, as the frontend has it (`src/blood.h`).
     if (!strcmp(argv[i], "--red-blood")) { red_blood = true; continue; }
+    if (!strcmp(argv[i], "--flashing-radar")) { radar_flash = true; continue; }
     // `--bypass-logos`: the boot `--skip-intro` makes (`src/skipintro.h`). The
     // movie is then one made against that boot, not one of the corpus's.
     if (!strcmp(argv[i], "--bypass-logos")) { bypass_logos = true; continue; }
@@ -150,10 +152,11 @@ int main(int argc, char** argv) {
   // frontend's own into OAM and moves the picture's origin at the ends of a
   // map -- two things the pictures between ticks have to follow.
   static Widescreen ws;
-  if (wide != WIDE_OFF) {
-    snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
-    widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
-  }
+  // Installed at any width, as the frontend installs it: the hook also draws
+  // the survivor radar's squares (`src/radar.h`).
+  snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
+  widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
+  ws.radar.steady = !radar_flash;
   if (mask_line && !maskline_fix(snes->cart)) {
     fprintf(stderr, "error: --mask-line does not know this ROM's game over\n");
     return 1;
@@ -163,8 +166,6 @@ int main(int argc, char** argv) {
     return 1;
   }
   if (red_blood) {
-    // The hook is the widescreen's, which the frontend installs at any width.
-    if (wide == WIDE_OFF) widescreen_install(snes, &ws, rom, rom_len, 0);
     if (!blood_patch_rom(snes->cart->rom, (size_t)snes->cart->romSize)) {
       fprintf(stderr, "error: --red-blood does not know this ROM's game over\n");
       return 1;
@@ -192,6 +193,7 @@ int main(int argc, char** argv) {
 
   long tested = 0, identical = 0, within_one = 0, differing = 0, unexpressible = 0, dropped = 0;
   long skipped_frames = 0;
+  long squares_slid = 0, squares_slid_frame = -1;
   long eased_ticks = 0, sprites_known = 0, sprites_drawn = 0, owners_fresh = 0;
   const char* reason[MAX_REASONS]; long reason_count[MAX_REASONS]; int reasons = 0;
   int worst_diff = 0; long worst_frame = -1;
@@ -235,12 +237,22 @@ int main(int argc, char** argv) {
     if (game && game != &used) used = *game;
     used_ok = game != NULL;
     SpriteOamOwners with;
-    own = ws_owners(wide != WIDE_OFF ? &ws : NULL, game, &with);
+    own = ws_owners(&ws, game, &with);
     layers_capture(f, ppu, own ? own->rec : NULL, own ? own->ox : NULL, own ? own->oy : NULL);
     held = sprite_oam_owners;
     held_fresh = fresh;
     if (f->ownersFresh) owners_fresh++;
     layers_link(f, prev);
+    // The radar's squares (`src/radar.h`) move a sixteenth of the player's
+    // move, so under a pixel a tick: one eased further was eased from
+    // something else's place.
+    for (int k = 0; k < ws.radar.written; k++) {
+      const LayersSprite* sq = &f->spr[ws.radar.slot[k]];
+      if (!sq->drawn || !sq->known) continue;
+      const int dx = sq->x - sq->px + f->dExtraLeft, dy = sq->y - sq->py;
+      if (dx >= -1 && dx <= 1 && dy >= -1 && dy <= 1) continue;
+      if (squares_slid++ == 0) squares_slid_frame = i + 1;
+    }
     tested++;
     if (!f->layered) {
       unexpressible++;
@@ -560,10 +572,17 @@ int main(int argc, char** argv) {
     printf("  a background waved a line at a time: %ld line-ticks eased, %ld of a step being spread\n",
            lines_moved, lines_spread);
   if (steps_spread) printf("  a background stepping every few ticks had its step spread on %ld background-ticks, %ld spreads cut short by a move\n", steps_spread, steps_cut);
-  const bool ok = differing == 0 && pieces_apart == 0 && (!check_frame_step || skipped_frames == 0);
+  const bool ok = differing == 0 && pieces_apart == 0 && squares_slid == 0 &&
+                  (!check_frame_step || skipped_frames == 0);
+  if (ws.radar.frames)
+    printf("  radar squares: %ld on %ld frames, and eased from further than a pixel %ld times", ws.radar.squares,
+           ws.radar.frames, squares_slid);
+  if (squares_slid) printf(" (first on frame %ld)", squares_slid_frame);
+  if (ws.radar.frames) printf("\n");
   printf("  skipped video frames: %ld\n", skipped_frames);
-  printf(ok ? "OK\n" : "FAIL: %ld differing frames, %ld pieces apart from their record, %ld skipped video frames\n",
-         differing, pieces_apart, skipped_frames);
+  printf(ok ? "OK\n" : "FAIL: %ld differing frames, %ld pieces apart from their record, %ld radar squares slid,"
+                       " %ld skipped video frames\n",
+         differing, pieces_apart, squares_slid, skipped_frames);
   cosim_free(&cosim);
   movie_free(&movie);
   snes_free(snes);
