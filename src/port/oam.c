@@ -6,6 +6,7 @@
 #include "assets/sprite.h"
 #include "port/collide.h"
 #include "port/coverage.h"
+#include "port/cpu.h"  // add16_overflows
 #include "port/sprite_cache.h"
 #include "port/thread.h"
 
@@ -1508,6 +1509,13 @@ const uint16_t OBSTACLE_ID_SKIP[OBSTACLE_ID_SKIP_COUNT] = {
     0x0005, 0x0006, 0x0007, 0x0008, 0x0002, 0x0001, 0x0037,
 };
 
+// `ADC #$0006` just left the window offset in A: the overflow it set.
+static void obstacle_axis_v(ObstacleRegs* out) {
+  out->v_set = true;
+  out->v = add16_overflows((uint16_t)(out->a - AT_POINT_HALF_WINDOW),
+                           AT_POINT_HALF_WINDOW);
+}
+
 void actor_obstacle_at_point_counted(Wram* w, uint16_t a_in, uint16_t x,
                                      uint16_t y, ObstacleRegs* out,
                                      ObstacleWork* work) {
@@ -1523,6 +1531,8 @@ void actor_obstacle_at_point_counted(Wram* w, uint16_t a_in, uint16_t x,
   out->a = a_in;
   out->y = y;
   out->blocked = false;
+  out->v_set = false;
+  out->v = false;
 
   uint16_t count = wram_r16(w, W_VISIBLE_ACTOR_COUNT);
   if (count == 0) {
@@ -1615,13 +1625,17 @@ void actor_obstacle_at_point_counted(Wram* w, uint16_t a_in, uint16_t x,
     // The same six-pixel window as `actor_at_point`, down to sharing the
     // helper: `$80:C021`-`$80:C03E` is `$80:BFA0`-`$80:BFBD` byte for byte
     // except for the branch targets.
-    if (!at_point_axis(wram_r16(w, rec + ACTOR_X), x, &out->a)) {
+    const bool near_x = at_point_axis(wram_r16(w, rec + ACTOR_X), x, &out->a);
+    obstacle_axis_v(out);
+    if (!near_x) {
       PORT_COVER(obstacle_far_x);
       work->blocks[OBST_BLK_FAR_X]++;
       goto next;
     }
     work->blocks[OBST_BLK_NEAR_X]++;
-    if (!at_point_axis(wram_r16(w, rec + ACTOR_Y), y, &out->a)) {
+    const bool near_y = at_point_axis(wram_r16(w, rec + ACTOR_Y), y, &out->a);
+    obstacle_axis_v(out);
+    if (!near_y) {
       PORT_COVER(obstacle_far_y);
       work->blocks[OBST_BLK_FAR_Y]++;
       goto next;

@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "port/coverage.h"
+#include "port/cpu.h"  // add16_overflows
 
 // The six probes, as byte offsets from the tile the point lands on. The lower
 // row is `LDY $B2`, then `INY : INY`, then `LDA $B2 : CLC : ADC #$0004 : TAY` —
@@ -51,7 +52,9 @@ static bool terrain_footprint(Wram* w, uint16_t x, uint16_t y, uint16_t mask,
                              TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
   uint16_t col = (uint16_t)(((uint16_t)(x - TERRAIN_ORIGIN_X) >>
                              TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
-  uint16_t map = (uint16_t)(col + wram_r16(w, W_TILE_ROW_BASE + row));
+  const uint16_t base = wram_r16(w, W_TILE_ROW_BASE + row);
+  uint16_t map = (uint16_t)(col + base);
+  out->v = add16_overflows(col, base);
 
   wram_w16(w, TERRAIN_DP_MAP, map);
   wram_w16(w, TERRAIN_DP_MAP_BANK, TERRAIN_MAP_BANK);
@@ -66,6 +69,8 @@ static bool terrain_footprint(Wram* w, uint16_t x, uint16_t y, uint16_t mask,
 
   for (int i = 0; i < TERRAIN_PROBE_COUNT; i++) {
     uint16_t tile = 0;
+    if (i == TERRAIN_PROBE_COUNT - 1)  // `LDA $B2 : CLC : ADC #$0004`
+      out->v = add16_overflows(wram_r16(w, W_TILEMAP_ROW_BYTES), 4);
     out->a = probe_attrs(w, map, probe_offset(w, i), &tile);
     out->y = tile;
     if (out->a & mask) {

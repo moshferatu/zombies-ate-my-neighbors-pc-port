@@ -1248,6 +1248,9 @@ extern const uint16_t OBSTACLE_ID_SKIP[OBSTACLE_ID_SKIP_COUNT];
 typedef struct {
   uint16_t a, x, y;
   bool blocked;  // the carry: `SEC` at $80:C040, `CLC` at $80:C047
+  // Overflow, from the last `ADC #$0006` of the box test, if any record got
+  // that far. Otherwise nothing wrote it and the caller's stands.
+  bool v_set, v;
 } ObstacleRegs;
 
 void actor_obstacle_at_point(Wram* w, uint16_t a_in, uint16_t x, uint16_t y,

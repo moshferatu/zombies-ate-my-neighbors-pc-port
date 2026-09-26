@@ -94,6 +94,11 @@ typedef struct {
   uint16_t x;  // the row index, from the `TAX` on the way in
   uint16_t y;  // the doubled tile number of the probe that decided
   bool blocked;
+  // Overflow, from the last `ADC`: the tilemap address on the first five
+  // probes, `$B2 + 4` on the sixth. It is not a constant. A tilemap row
+  // based under `$8000` whose tile lies past it sets it, which happens on
+  // the big maps of levels 19 and 25.
+  bool v;
 } TerrainRegs;
 
 // `$80:AE14`. Carry set means at least one of the six tiles has attribute bit 0.

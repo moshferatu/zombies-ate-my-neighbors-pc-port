@@ -108,6 +108,13 @@ static inline uint16_t adc16(PortCpu* c, uint16_t a, uint16_t m) {
   return (uint16_t)r;
 }
 
+// Would a 16-bit `CLC : ADC` of these two set overflow? For the callable
+// ports, which have no `PortCpu` but still owe the caller V.
+static inline bool add16_overflows(uint16_t a, uint16_t b) {
+  const uint16_t sum = (uint16_t)(a + b);
+  return ((a ^ sum) & (b ^ sum) & 0x8000u) != 0;
+}
+
 static inline uint16_t sbc16(PortCpu* c, uint16_t a, uint16_t m) {
   return adc16(c, a, (uint16_t)~m);
 }

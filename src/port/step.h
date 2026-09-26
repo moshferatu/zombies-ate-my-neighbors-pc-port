@@ -136,6 +136,7 @@
 typedef struct {
   uint16_t a, x, y;
   bool n, z, c;
+  bool v;  // from the last `ADC`, y's
 } StepProposeRegs;
 
 // `$34`/`$36` = `$30`/`$32` plus this frame's delta. `dp` is the mover's page.
@@ -161,6 +162,10 @@ void step_propose(Wram* w, const Rom* rom, uint16_t dp, StepProposeRegs* out);
 typedef struct {
   uint16_t a, x, y;
   bool blocked;
+  // Overflow, from the last `ADC` the path ran: `ADC #$00B0` inside the
+  // window, `ADC $38` on the far path. The one-player exit runs none and
+  // leaves the caller's, which `v_set` says.
+  bool v_set, v;
 } TetherRegs;
 
 // `x`/`y` are the candidate position, passed in X and Y exactly as `$80:E4D3`

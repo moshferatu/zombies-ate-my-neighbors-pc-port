@@ -409,15 +409,15 @@ its `RTS` or to where its rare path starts, and that path is the ROM's.
 **A stretch may be entered by a call and not only by a return.** Those four
 are called, so they serve a call, and they are not `uncalled` in the registry.
 The movement handler at `$80:E4BA` is entered by the frame's `RTS`, the
-return address its own `RTS` goes back to already pushed. So it is stretches
-as well, fourteen of them, its entry and one after each call it makes, and it
-is `uncalled`.
-`$80:E739`, the tile reaction it calls on solid ground, is one more.
+return address its own `RTS` goes back to already pushed. To the harness that
+is a routine like any called one, and it is ported as one: `port/walk.h`, in
+readable C, which asks the four tests as C functions. It is `uncalled`. It
+was fourteen stretches for one round, and `$80:E739` a fifteenth.
 
 **A stretch may leave before a path it does not port.** Everything no input
 has taken, or that belongs to another subsystem, is left by naming its first
-instruction as an exit: the double step at `$E4BE`, the event request at
-`$D02D`, the level's end at `$CE2A`, a death at `$CE7A`, and the six tile
-reactions after their `BNE`s. The ROM carries on from there with the
+instruction as an exit: the event request at `$D02D`, the level's end at
+`$CE2A` and a death at `$CE7A`. The ROM carries on from there with the
 registers the stretch leaves. That is the same move as leaving by a call, and
-it needs no guard.
+it needs no guard. The walk, which is not stretches, declines its two instead:
+the double step and a tile with a reaction of its own.

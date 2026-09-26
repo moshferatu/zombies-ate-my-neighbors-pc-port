@@ -14732,3 +14732,42 @@ What the new rows are still charged is their exits: each `JSR`, `JSL` and
 a frame at `$CDF7` and one or two in each of the walk's. It is the cost of the
 rule that no stretch contains another routine's stack traffic, and it is
 roughly what is left of these routines in the residue.
+
+## The walk in readable C (2026-09-26)
+
+The player's walk, `$80:E4BA`, is the first piece of the port in readable C:
+`src/port/walk.c`, about 170 lines. It asks where the pad takes the player,
+then tries across and then up or down, and each axis is refused by solid
+ground, the other player's leash, someone standing there unless someone is
+standing where the player is too, or the map's edge. It calls
+`step_propose` and the four tests as C functions, so none of the ROM runs
+between `$E4BA` and its `RTS`. It replaces the fifteen transliterated
+stretches from the round before, which are gone from `port/bodies.c`.
+
+What it still owes the emulator is kept out of the game logic. Only carry
+and overflow outlive the call, because `thread_yield`'s `PHP` parks them in
+the thread's status byte. Small adapters around each test record them, and
+what was asked, in a `WalkLog`. The harness prices the call from that log.
+Two paths are declined to the ROM: the double step, which no input takes,
+and solid tiles with a reaction of their own, such as doors.
+
+* **Checked.** `verify -r player_walk` passes every call it checks: 95,378
+  across the corpus and 186,503 across all 56 level records, with 459 and
+  2,323 declined. Lockstep over the corpus never parts where it did not
+  before, on all 49 movies that finish. The four level-25 partings are
+  lag-frame splits as before, and `level25-2p`'s moved from pass 1,263 to
+  1,838. `level21-exit.zmv` still hangs.
+* **Overflow was not clear, as the first version assumed.** Levels 19 and 25
+  failed on half their walks. On those big maps the tilemap address
+  `terrain_blocked` adds up crosses `$8000` and sets V. The terrain,
+  tether, obstacle and proposal ports now report V from their last add, the
+  way they already reported N, Z and C. The old stretches had the same
+  error unseen, because the tests never published V and the corpus never
+  reaches those maps.
+* **The cost model is not exact.** It is the tests' own registry budgets
+  plus the walk's instructions, priced exactly, and three of those budgets
+  are means. Per call it is off by -1,941 to +2,067 cycles against the ROM.
+  The lockstep clocks moved from last round's by at most 10,348 cycles
+  over a movie, about 0.03 of a frame.
+* **zamn.exe runs it.** On `level1-2p.zmv` the game served all 4,087 walks
+  natively.

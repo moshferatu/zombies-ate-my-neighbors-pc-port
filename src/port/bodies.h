@@ -276,6 +276,8 @@ void tile_anim_queued(Wram* w, PortCpu* c, BodyWork* k);
 // The five with nothing between a call's return and the next call -- `$CDF4`,
 // `$CDFE`, `$CE01`, `$CE16` and `$CE20` -- have no stretch: the ROM executes
 // the next `JSR` itself, as it executes every call these make.
+//
+// The movement handler on ordinary ground, `$80:E4BA`, is `port/walk.h`.
 
 #define PLAYER_TICKS_PC 0x80cdf7u    // after `JSR $D13A`, once
 #define PLAYER_STATE_PC 0x80ce04u    // after `JSR $D01B`
@@ -333,113 +335,5 @@ void player_branch(Wram* w, PortCpu* c, BodyWork* k);
 void player_hurt(Wram* w, PortCpu* c, BodyWork* k);
 void player_won(Wram* w, PortCpu* c, BodyWork* k);
 void player_dead(Wram* w, PortCpu* c, BodyWork* k);
-
-// --- $80:E4BA  player_walk ----------------------------------------------------
-//
-// The movement handler for ordinary ground: the first, fourth, sixth and
-// eighth words of the table at `$80:D74F`, which `$80:D65B` indexes by `$70`
-// and stores at `$2A`. The other four, `$E595`, `$E5FF`, `$E653` and `$E6C2`,
-// have never run in any input.
-//
-// `$80:E450 step_propose` puts where the player wants to be at `$34`/`$36`,
-// and the rest tries the move one axis at a time, x and then y. For each axis
-// it asks four routines in turn, every one of them ported:
-//
-//   `$80:AE14 terrain_blocked`         is the ground there solid?
-//   `$80:A8B3 step_tether_blocked`     too far from the other player?
-//   `$80:BFC8 actor_obstacle_at_point` something standing there?
-//   `$80:B422 terrain_out_of_bounds`   off the map?
-//
-// and the first to set carry stops that axis. Only if none does is the new
-// coordinate taken: `$34` into `$30` for x, `$36` into `$32` for y. Solid
-// ground is not always the end of it: `JSR $E739` reads the tile's attribute
-// word and may still let the step through, carry clear, or may act on it.
-//
-// `$BFC8` saying yes is not the end either: it is asked again about where the
-// player stands now, and if something is standing there too the step goes
-// ahead, so two actors that already overlap can walk apart.
-//
-// One path is the ROM's. Bit 15 of `$54` runs the whole thing twice, by
-// `JSR $E4C1` from inside it. No input has taken it, so the stretch that
-// reaches it leaves there.
-//
-// Like the body, it is stretches between the calls: every call stays the
-// ROM's, and so do the routines they reach, ported or not.
-//
-// `$80:E739`, what solid ground does, is one more stretch. `$AE14` leaves the
-// tile's attribute word in A, and `ASL : AND #$CB38` keeps the bits that name
-// a reaction: `$0100`, `$0200`, `$0010`, `$0020`, `$0800` and `$8008` each
-// have their own, and those are the ROM's. Anything else is only solid,
-// `SEC : RTS`, and that is 98% of the calls in play.
-
-#define WALK_PC 0x80e4bau               // `$80:E4BA`, by the body's `RTS`
-#define WALK_PROPOSED_PC 0x80e4c4u      // after `JSR $E450`
-#define WALK_X_TERRAIN_PC 0x80e4ccu     // after `JSL $80AE14`, x
-#define WALK_X_REACTED_PC 0x80e4d1u     // after `JSR $E739`, x
-#define WALK_X_TETHER_PC 0x80e4dbu      // after `JSL $80A8B3`, x
-#define WALK_X_OBSTACLE_PC 0x80e4e7u    // after `JSL $80BFC8`, x
-#define WALK_X_ASKED_PC 0x80e4f3u       // after the second `JSL $80BFC8`, x
-#define WALK_X_BOUNDS_PC 0x80e4fdu      // after `JSL $80B422`, x
-#define WALK_Y_TERRAIN_PC 0x80e50bu     // ...and the same six for y
-#define WALK_Y_REACTED_PC 0x80e510u
-#define WALK_Y_TETHER_PC 0x80e51au
-#define WALK_Y_OBSTACLE_PC 0x80e526u
-#define WALK_Y_ASKED_PC 0x80e532u
-#define WALK_Y_BOUNDS_PC 0x80e53cu
-#define WALK_SOLID_PC 0x80e739u         // `$80:E739`, by `JSR`
-// Where they leave.
-#define WALK_TWICE_PC 0x80e4beu         // `JSR $E4C1`: the ROM's
-#define WALK_PROPOSE_CALL_PC 0x80e4c1u  // `JSR $E450`
-#define WALK_X_TERRAIN_CALL_PC 0x80e4c8u
-#define WALK_X_REACT_CALL_PC 0x80e4ceu
-#define WALK_X_TETHER_CALL_PC 0x80e4d7u
-#define WALK_X_OBSTACLE_CALL_PC 0x80e4e3u
-#define WALK_X_ASK_CALL_PC 0x80e4efu    // the second `JSL $80BFC8`
-#define WALK_X_BOUNDS_CALL_PC 0x80e4f9u
-#define WALK_Y_TERRAIN_CALL_PC 0x80e507u
-#define WALK_Y_REACT_CALL_PC 0x80e50du
-#define WALK_Y_TETHER_CALL_PC 0x80e516u
-#define WALK_Y_OBSTACLE_CALL_PC 0x80e522u
-#define WALK_Y_ASK_CALL_PC 0x80e52eu
-#define WALK_Y_BOUNDS_CALL_PC 0x80e538u
-#define WALK_RTS_PC 0x80e542u
-#define WALK_SOLID_RTS_PC 0x80e78fu     // only solid: `SEC` and this `RTS`
-// ...and the six reactions, one after each `CMP : BNE` that finds its value.
-#define WALK_SOLID_REACTIONS 6
-extern const uint16_t WALK_SOLID_VALUE[WALK_SOLID_REACTIONS];
-extern const uint32_t WALK_SOLID_REACT_PC[WALK_SOLID_REACTIONS];
-
-enum {
-  WALK_BOOST,   // BIT $54 : BPL
-  WALK_AT_X,    // LDX $34 : LDY $32, the new x at the old y
-  WALK_AT_Y,    // LDX $30 : LDY $36, the x it has at the new y
-  WALK_BRANCH,  // BCC or BCS on what a call said
-  WALK_SELF_X,  // LDA $08 : LDX $34 : LDY $32
-  WALK_SELF_Y,  // LDA $08 : LDX $30 : LDY $36
-  WALK_SELF_HERE,  // LDA $08 : LDX $30 : LDY $32, where it stands
-  WALK_TAKE_X,  // LDA $34 : STA $30
-  WALK_TAKE_Y,  // LDA $36 : STA $32
-  WALK_SOLID_HEAD,  // ASL : AND #$CB38 : CMP #$0100 : BNE
-  WALK_SOLID_NEXT,  // CMP #imm : BNE, the other five
-  WALK_SOLID_SEC,   // SEC
-  WALK_TAKEN,   // a branch taken
-  WALK_BLOCK_COUNT
-};
-
-void walk_start(Wram* w, PortCpu* c, BodyWork* k);
-void walk_proposed(Wram* w, PortCpu* c, BodyWork* k);
-void walk_x_terrain(Wram* w, PortCpu* c, BodyWork* k);
-void walk_x_reacted(Wram* w, PortCpu* c, BodyWork* k);
-void walk_x_tether(Wram* w, PortCpu* c, BodyWork* k);
-void walk_x_obstacle(Wram* w, PortCpu* c, BodyWork* k);
-void walk_x_asked(Wram* w, PortCpu* c, BodyWork* k);
-void walk_x_bounds(Wram* w, PortCpu* c, BodyWork* k);
-void walk_y_terrain(Wram* w, PortCpu* c, BodyWork* k);
-void walk_y_reacted(Wram* w, PortCpu* c, BodyWork* k);
-void walk_y_tether(Wram* w, PortCpu* c, BodyWork* k);
-void walk_y_obstacle(Wram* w, PortCpu* c, BodyWork* k);
-void walk_y_asked(Wram* w, PortCpu* c, BodyWork* k);
-void walk_y_bounds(Wram* w, PortCpu* c, BodyWork* k);
-void walk_solid(PortCpu* c, BodyWork* k);
 
 #endif

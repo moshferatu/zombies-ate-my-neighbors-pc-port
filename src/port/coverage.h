@@ -99,20 +99,13 @@
   X(player_recovered, "player_hurt",       "the hit recovery count ran out and was held at $FFFF") \
   X(player_level_won, "player_won",        "no neighbours left, and the ROM ends the level") \
   X(player_died,      "player_dead",       "no health left, and the ROM has the player die") \
-  X(walk_twice,       "walk_start",        "$54 bit 15: the ROM walks twice") \
-  X(walk_x_solid,     "walk_x_terrain",    "solid ground across, so $E739 reads the tile") \
-  X(walk_x_stopped,   "walk_x_reacted",    "$E739 stopped the step across") \
-  X(walk_x_tethered,  "walk_x_tether",     "too far from the other player to step across") \
-  X(walk_x_obstacle,  "walk_x_obstacle",   "something standing where the step across lands") \
-  X(walk_x_overlap,   "walk_x_asked",      "...and where the player stands too, so the step goes ahead") \
-  X(walk_x_off_map,   "walk_x_bounds",     "a step across off the map") \
-  X(walk_y_solid,     "walk_y_terrain",    "solid ground up or down, so $E739 reads the tile") \
-  X(walk_y_stopped,   "walk_y_reacted",    "$E739 stopped the step up or down") \
-  X(walk_y_tethered,  "walk_y_tether",     "too far from the other player to step up or down") \
-  X(walk_y_obstacle,  "walk_y_obstacle",   "something standing where the step up or down lands") \
-  X(walk_y_overlap,   "walk_y_asked",      "...and where the player stands too, so the step goes ahead") \
-  X(walk_y_off_map,   "walk_y_bounds",     "a step up or down off the map") \
-  X(walk_solid_reacts, "walk_solid",       "a solid tile with a reaction of its own, handed to the ROM") \
+  X(walk_twice,       "player_walk",       "$54 bit 15: the ROM walks twice") \
+  X(walk_solid,       "player_walk",       "solid ground where the step lands") \
+  X(walk_reaction,    "player_walk",       "...with a reaction of its own, so the ROM walks") \
+  X(walk_tethered,    "player_walk",       "too far from the other player to step there") \
+  X(walk_obstructed,  "player_walk",       "someone standing where the step lands") \
+  X(walk_overlapping, "player_walk",       "...and where the player stands too, so the step goes ahead") \
+  X(walk_off_map,     "player_walk",       "a step off the map") \
   /* Vblank jobs, which write the PPU. */                                      \
   X(vram_flush_held,  "vram_queue_flush",  "$26 bit 14 set: the queue held back a frame") \
   X(vram_flush_empty, "vram_queue_flush",  "nothing queued")                   \

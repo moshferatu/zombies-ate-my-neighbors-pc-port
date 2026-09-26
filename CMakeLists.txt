@@ -230,7 +230,8 @@ add_library(zamn_port STATIC
   src/port/terrain.c
   src/port/thread.c
   src/port/trig.c
-  src/port/vblank.c)
+  src/port/vblank.c
+  src/port/walk.c)
 target_include_directories(zamn_port PUBLIC src)
 target_link_libraries(zamn_port PUBLIC zamn_assets_lib)
 

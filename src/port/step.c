@@ -3,6 +3,7 @@
 #include "port/step.h"
 
 #include "port/coverage.h"
+#include "port/cpu.h"  // add16_overflows
 #include "port/oam.h"  // ACTOR_X / ACTOR_Y, the record layout the tether reads
 #include "port/terrain.h"  // ...and the two tests $81:9BF3 puts a step through
 
@@ -14,10 +15,13 @@
 //
 // `CLC : ADC` both times — the ROM never chains the carry between the two adds,
 // which is what makes a double step exactly two single ones.
-static uint16_t step_axis(uint16_t base, uint16_t delta, bool twice, bool* c) {
+static uint16_t step_axis(uint16_t base, uint16_t delta, bool twice, bool* c,
+                          bool* ovf) {
   uint32_t sum = (uint32_t)delta + base;
   uint16_t v = (uint16_t)sum;
+  if (ovf) *ovf = add16_overflows(delta, base);
   if (twice) {
+    if (ovf) *ovf = add16_overflows(v, delta);
     sum = (uint32_t)v + delta;
     v = (uint16_t)sum;
   }
@@ -48,8 +52,9 @@ void step_propose(Wram* w, const Rom* rom, uint16_t dp, StepProposeRegs* out) {
 
   bool cy;
   wram_w16(w, dp + STEP_DP_NEXT_X,
-           step_axis(wram_r16(w, dp + STEP_DP_X), dx, twice != 0, NULL));
-  uint16_t ny = step_axis(wram_r16(w, dp + STEP_DP_Y), dy, twice != 0, &cy);
+           step_axis(wram_r16(w, dp + STEP_DP_X), dx, twice != 0, NULL, NULL));
+  uint16_t ny =
+      step_axis(wram_r16(w, dp + STEP_DP_Y), dy, twice != 0, &cy, &out->v);
   wram_w16(w, dp + STEP_DP_NEXT_Y, ny);
 
   out->a = ny;
@@ -104,10 +109,13 @@ void step_tether_blocked(Wram* w, uint16_t x, uint16_t y, TetherRegs* out) {
 
   out->x = x;
   out->blocked = false;
+  out->v_set = true;
 
   if (ref == 0) {
     // Nobody to be tethered to, which is every frame of a one-player game.
     PORT_COVER(tether_alone);
+    out->v_set = false;
+    out->v = false;
     out->a = 0;  // the `LDA #$0000` that set the direct page, still in A
     out->y = 0;
     return;
@@ -118,9 +126,9 @@ void step_tether_blocked(Wram* w, uint16_t x, uint16_t y, TetherRegs* out) {
   uint16_t wx = (uint16_t)((uint16_t)(x - wram_r16(w, (uint16_t)(ref + ACTOR_X))) +
                            TETHER_BIAS_X);
   if (wx < TETHER_SPAN_X) {
-    uint16_t wy =
-        (uint16_t)((uint16_t)(y - wram_r16(w, (uint16_t)(ref + ACTOR_Y))) +
-                   TETHER_BIAS_Y);
+    const uint16_t dy = (uint16_t)(y - wram_r16(w, (uint16_t)(ref + ACTOR_Y)));
+    uint16_t wy = (uint16_t)(dy + TETHER_BIAS_Y);
+    out->v = add16_overflows(dy, TETHER_BIAS_Y);
     if (wy < TETHER_SPAN_Y) {
       PORT_COVER(tether_inside);
       out->a = wy;  // the `CMP` left the biased offset in A
@@ -143,9 +151,10 @@ void step_tether_blocked(Wram* w, uint16_t x, uint16_t y, TetherRegs* out) {
   uint16_t apart_x = abs_diff(w, wram_r16(w, (uint16_t)(a_rec + ACTOR_X)), b_rec,
                               ACTOR_X);
   wram_w16(w, TETHER_DP_Y, apart_x);
-  uint16_t apart = (uint16_t)(apart_x +
-                              abs_diff(w, wram_r16(w, (uint16_t)(a_rec + ACTOR_Y)),
-                                       b_rec, ACTOR_Y));
+  const uint16_t apart_y =
+      abs_diff(w, wram_r16(w, (uint16_t)(a_rec + ACTOR_Y)), b_rec, ACTOR_Y);
+  uint16_t apart = (uint16_t)(apart_x + apart_y);
+  out->v = add16_overflows(apart_y, apart_x);  // `CLC : ADC $38`
 
   out->x = a_rec;
   out->y = b_rec;

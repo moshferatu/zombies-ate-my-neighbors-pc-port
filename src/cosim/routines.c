@@ -34,6 +34,7 @@
 #include "port/score.h"
 #include "port/sprite_cache.h"
 #include "port/step.h"
+#include "port/walk.h"
 #include "port/terrain.h"
 #include "port/thread.h"
 #include "port/trig.h"
@@ -5420,22 +5421,6 @@ static const CosimRun PBODY_COST[PBODY_BLOCK_COUNT] = {
     [PBODY_TAKEN] = {6, 0, 0},
 };
 
-static const CosimRun WALK_COST[WALK_BLOCK_COUNT] = {
-    [WALK_BOOST] = {40, 4, 1},
-    [WALK_AT_X] = {56, 4, 2},
-    [WALK_AT_Y] = {56, 4, 2},
-    [WALK_BRANCH] = {12, 2, 0},
-    [WALK_SELF_X] = {84, 6, 3},
-    [WALK_SELF_Y] = {84, 6, 3},
-    [WALK_SELF_HERE] = {84, 6, 3},
-    [WALK_TAKE_X] = {56, 4, 2},
-    [WALK_TAKE_Y] = {56, 4, 2},
-    [WALK_SOLID_HEAD] = {60, 9, 0},
-    [WALK_SOLID_NEXT] = {30, 5, 0},
-    [WALK_SOLID_SEC] = {12, 1, 0},
-    [WALK_TAKEN] = {6, 0, 0},
-};
-
 static int body_cycles(const BodyWork* k, const CosimRun* cost, int count,
                        const CosimRegs* in) {
   const bool fast = fetch_fast(in);
@@ -5508,21 +5493,111 @@ BODY_SHIM(player_branch, player_branch(w, &c, &k), PBODY_COST)
 BODY_SHIM(player_hurt, player_hurt(w, &c, &k), PBODY_COST)
 BODY_SHIM(player_won, player_won(w, &c, &k), PBODY_COST)
 BODY_SHIM(player_dead, player_dead(w, &c, &k), PBODY_COST)
-BODY_SHIM(walk_start, walk_start(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_proposed, walk_proposed(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_x_terrain, walk_x_terrain(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_x_reacted, walk_x_reacted(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_x_tether, walk_x_tether(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_x_obstacle, walk_x_obstacle(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_x_asked, walk_x_asked(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_x_bounds, walk_x_bounds(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_y_terrain, walk_y_terrain(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_y_reacted, walk_y_reacted(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_y_tether, walk_y_tether(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_y_obstacle, walk_y_obstacle(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_y_asked, walk_y_asked(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_y_bounds, walk_y_bounds(w, &c, &k), WALK_COST)
-BODY_SHIM(walk_solid, walk_solid(&c, &k), WALK_COST)
+
+// ---------------------------------------------------------------------------
+// $80:E4BA  player_walk -- see `port/walk.h`
+// ---------------------------------------------------------------------------
+//
+// The walk is readable C: it calls the four tests and `step_propose` as C
+// functions, and none of the ROM's instructions between `$E4BA` and the `RTS`
+// run. So its price is everything the ROM would have run in that window,
+// built from what the walk's log says it asked.
+//
+// Around each question the ROM loads the point, calls, returns and branches
+// on the answer. Those are priced here from `tools/cycles816.py`, with the
+// branch not taken. `WALK_BRANCH_ON_YES` says which answer takes it, for 6
+// more. The tests themselves cost what their own registry entries charge, so
+// a walk costs what the fifteen stretches it replaced and the calls between
+// them did.
+static const CosimRun WALK_AROUND[WALK_ASK_COUNT] = {
+    // LDX $34 : LDY $32, JSL $80AE14, the RTL, BCC.
+    [WALK_ASK_GROUND] = {56 + 54 + 42 + 12, 4 + 4 + 1 + 2, 2},
+    // JSR $E739; ASL : AND #$CB38, six CMP : BNE taken, SEC, RTS; BCS.
+    [WALK_ASK_REACTION] = {40 + 60 + 5 * 30 + 6 * 6 + 12 + 40 + 12,
+                           3 + 9 + 5 * 5 + 1 + 1 + 2, 0},
+    // LDX : LDY, JSL $80A8B3, the RTL, BCS.
+    [WALK_ASK_TETHER] = {56 + 54 + 42 + 12, 4 + 4 + 1 + 2, 2},
+    // LDA $08 : LDX : LDY, JSL $80BFC8, the RTL, BCC.
+    [WALK_ASK_THERE] = {84 + 54 + 42 + 12, 6 + 4 + 1 + 2, 3},
+    [WALK_ASK_HERE] = {84 + 54 + 42 + 12, 6 + 4 + 1 + 2, 3},
+    // LDX : LDY, JSL $80B422, the RTL, BCS.
+    [WALK_ASK_MAP] = {56 + 54 + 42 + 12, 4 + 4 + 1 + 2, 2},
+};
+static const bool WALK_BRANCH_ON_YES[WALK_ASK_COUNT] = {
+    [WALK_ASK_REACTION] = true, [WALK_ASK_TETHER] = true,
+    [WALK_ASK_MAP] = true};
+static const CosimRun WALK_TAKEN_BRANCH = {6, 0, 0};
+// BIT $54 : BPL taken, JSR $E450, and its RTS.
+static const CosimRun WALK_OPENING = {40 + 6 + 40 + 40, 4 + 3 + 1, 1};
+// LDA $34 : STA $30, or LDA $36 : STA $32.
+static const CosimRun WALK_TAKE = {56, 4, 2};
+
+// What a test's own registry entry charges a substituted call.
+static int registry_cycles(const char* name, int* cache) {
+  if (*cache < 0) {
+    const CosimRoutine* r = cosim_find(name);
+    *cache = r ? r->cycles : 0;
+  }
+  return *cache;
+}
+
+static int walk_cycles(const WalkLog* log, const CosimRegs* in) {
+  static int propose = -1, ground = -1, tether = -1, map = -1;
+  static const char* const TEST[WALK_ASK_COUNT] = {
+      [WALK_ASK_GROUND] = "terrain_blocked",
+      [WALK_ASK_TETHER] = "step_tether_blocked",
+      [WALK_ASK_MAP] = "terrain_out_of_bounds"};
+  int* const cache[WALK_ASK_COUNT] = {
+      [WALK_ASK_GROUND] = &ground, [WALK_ASK_TETHER] = &tether,
+      [WALK_ASK_MAP] = &map};
+
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = cosim_run_cycles_dp(&WALK_OPENING, fast, unaligned) +
+               registry_cycles("step_propose", &propose);
+  for (int q = 0; q < WALK_ASK_COUNT; q++) {
+    for (int yes = 0; yes < 2; yes++) {
+      const int n = log->asked[q][yes];
+      if (n == 0) continue;
+      int each = cosim_run_cycles_dp(&WALK_AROUND[q], fast, unaligned);
+      if (WALK_BRANCH_ON_YES[q] == (yes != 0))
+        each += cosim_run_cycles(&WALK_TAKEN_BRANCH, fast);
+      if (TEST[q]) each += registry_cycles(TEST[q], cache[q]);
+      cycles += n * each;
+    }
+  }
+  cycles += log->taken * cosim_run_cycles_dp(&WALK_TAKE, fast, unaligned);
+  return cycles + obstacle_cycles(&log->obstacle, in->fastrom);
+}
+
+// The tests put their scratch on page zero, so a player's page there would
+// have them writing its fields. A player's page is never there.
+static bool accepts_player_walk(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->d >= 0x0100;
+}
+
+static bool supported_player_walk(Wram* scratch, const Rom* rom,
+                                  const CosimRegs* in) {
+  return walk_supported(scratch, rom, in->d);
+}
+
+// Of the registers, only carry and overflow outlive the frame: nothing reads
+// A, X, Y, N or Z before `thread_yield`, and its `PHP` keeps the other two in
+// the thread's parked status byte. Carry is the last test's answer, overflow
+// the last add's. This said overflow was always clear, until levels 19 and 25
+// set it on half their walks: a tilemap row based under `$8000` whose tile
+// lies past it.
+static void shim_player_walk(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  WalkLog log = {0};
+  player_walk(w, rom, in->d, &log);
+  cosim_cost(walk_cycles(&log, in));
+  out->c = log.last_yes;
+  out->v = log.overflow;
+  out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
+  out->regs = 0;
+}
 
 static const uint32_t VICTIMS_YIELD_EXITS[] = {VICTIMS_YIELD_PC};
 static const uint32_t VICTIMS_RESUME_EXITS[] = {
@@ -5561,36 +5636,6 @@ static const uint32_t PLAYER_WON_EXITS[] = {
     PLAYER_WON_RTS_PC, PLAYER_WON_END_PC};
 static const uint32_t PLAYER_DEAD_EXITS[] = {
     PLAYER_DEAD_RTS_PC, PLAYER_DEAD_END_PC};
-static const uint32_t WALK_START_EXITS[] = {
-    WALK_TWICE_PC, WALK_PROPOSE_CALL_PC};
-static const uint32_t WALK_PROPOSED_EXITS[] = {WALK_X_TERRAIN_CALL_PC};
-static const uint32_t WALK_X_TERRAIN_EXITS[] = {
-    WALK_X_REACT_CALL_PC, WALK_X_TETHER_CALL_PC};
-static const uint32_t WALK_X_REACTED_EXITS[] = {
-    WALK_X_TETHER_CALL_PC, WALK_Y_TERRAIN_CALL_PC};
-static const uint32_t WALK_X_TETHER_EXITS[] = {
-    WALK_Y_TERRAIN_CALL_PC, WALK_X_OBSTACLE_CALL_PC};
-static const uint32_t WALK_X_OBSTACLE_EXITS[] = {
-    WALK_X_BOUNDS_CALL_PC, WALK_X_ASK_CALL_PC};
-static const uint32_t WALK_X_ASKED_EXITS[] = {
-    WALK_Y_TERRAIN_CALL_PC, WALK_X_BOUNDS_CALL_PC};
-static const uint32_t WALK_X_BOUNDS_EXITS[] = {WALK_Y_TERRAIN_CALL_PC};
-static const uint32_t WALK_Y_TERRAIN_EXITS[] = {
-    WALK_Y_REACT_CALL_PC, WALK_Y_TETHER_CALL_PC};
-static const uint32_t WALK_Y_REACTED_EXITS[] = {
-    WALK_RTS_PC, WALK_Y_TETHER_CALL_PC};
-static const uint32_t WALK_Y_TETHER_EXITS[] = {
-    WALK_RTS_PC, WALK_Y_OBSTACLE_CALL_PC};
-static const uint32_t WALK_Y_OBSTACLE_EXITS[] = {
-    WALK_Y_BOUNDS_CALL_PC, WALK_Y_ASK_CALL_PC};
-static const uint32_t WALK_Y_ASKED_EXITS[] = {
-    WALK_RTS_PC, WALK_Y_BOUNDS_CALL_PC};
-static const uint32_t WALK_Y_BOUNDS_EXITS[] = {WALK_RTS_PC};
-// `WALK_SOLID_REACT_PC` and the `RTS`, written out: an initializer here has to
-// be constant.
-static const uint32_t WALK_SOLID_EXITS[] = {
-    0x80e742u, 0x80e74fu, 0x80e760u, 0x80e76au,
-    0x80e774u, 0x80e789u, WALK_SOLID_RTS_PC};
 
 // ---------------------------------------------------------------------------
 // Vblank jobs — see `port/vblank.h`
@@ -8243,154 +8288,25 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(PLAYER_DEAD_EXITS),
         .cycles = 80,
     },
+    // The first routine in readable C. See `port/walk.h`. Entered by the
+    // frame's `RTS` with the frame's return address already pushed, so it is
+    // a routine like any other to the harness. It declines the double step
+    // and the tiles with a reaction of their own, and the ROM walks those.
     {
-        .name = "walk_start",
+        .name = "player_walk",
         .symbol = "$80:E4BA",
-        .entry = 0x80e4ba,
-        .run = shim_walk_start,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_START_EXITS),
+        .entry = PLAYER_WALK_PC,
+        .ret_op = PLAYER_WALK_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_walk,
+        .accepts = accepts_player_walk,
+        .supported = supported_player_walk,
         .uncalled = true,
-        .cycles = 46,
-    },
-    {
-        .name = "walk_proposed",
-        .symbol = "$80:E4C4",
-        .entry = 0x80e4c4,
-        .run = shim_walk_proposed,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_PROPOSED_EXITS),
-        .uncalled = true,
-        .cycles = 56,
-    },
-    {
-        .name = "walk_x_terrain",
-        .symbol = "$80:E4CC",
-        .entry = 0x80e4cc,
-        .run = shim_walk_x_terrain,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_X_TERRAIN_EXITS),
-        .uncalled = true,
-        .cycles = 74,
-    },
-    {
-        .name = "walk_x_reacted",
-        .symbol = "$80:E4D1",
-        .entry = 0x80e4d1,
-        .run = shim_walk_x_reacted,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_X_REACTED_EXITS),
-        .uncalled = true,
-        .cycles = 74,
-    },
-    {
-        .name = "walk_x_tether",
-        .symbol = "$80:E4DB",
-        .entry = 0x80e4db,
-        .run = shim_walk_x_tether,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_X_TETHER_EXITS),
-        .uncalled = true,
-        .cycles = 96,
-    },
-    {
-        .name = "walk_x_obstacle",
-        .symbol = "$80:E4E7",
-        .entry = 0x80e4e7,
-        .run = shim_walk_x_obstacle,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_X_OBSTACLE_EXITS),
-        .uncalled = true,
-        .cycles = 74,
-    },
-    {
-        .name = "walk_x_asked",
-        .symbol = "$80:E4F3",
-        .entry = 0x80e4f3,
-        .run = shim_walk_x_asked,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_X_ASKED_EXITS),
-        .uncalled = true,
-        .cycles = 74,
-    },
-    {
-        .name = "walk_x_bounds",
-        .symbol = "$80:E4FD",
-        .entry = 0x80e4fd,
-        .run = shim_walk_x_bounds,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_X_BOUNDS_EXITS),
-        .uncalled = true,
-        .cycles = 124,
-    },
-    {
-        .name = "walk_y_terrain",
-        .symbol = "$80:E50B",
-        .entry = 0x80e50b,
-        .run = shim_walk_y_terrain,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_Y_TERRAIN_EXITS),
-        .uncalled = true,
-        .cycles = 74,
-    },
-    {
-        .name = "walk_y_reacted",
-        .symbol = "$80:E510",
-        .entry = 0x80e510,
-        .run = shim_walk_y_reacted,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_Y_REACTED_EXITS),
-        .uncalled = true,
-        .cycles = 74,
-    },
-    {
-        .name = "walk_y_tether",
-        .symbol = "$80:E51A",
-        .entry = 0x80e51a,
-        .run = shim_walk_y_tether,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_Y_TETHER_EXITS),
-        .uncalled = true,
-        .cycles = 96,
-    },
-    {
-        .name = "walk_y_obstacle",
-        .symbol = "$80:E526",
-        .entry = 0x80e526,
-        .run = shim_walk_y_obstacle,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_Y_OBSTACLE_EXITS),
-        .uncalled = true,
-        .cycles = 74,
-    },
-    {
-        .name = "walk_y_asked",
-        .symbol = "$80:E532",
-        .entry = 0x80e532,
-        .run = shim_walk_y_asked,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_Y_ASKED_EXITS),
-        .uncalled = true,
-        .cycles = 74,
-    },
-    {
-        .name = "walk_y_bounds",
-        .symbol = "$80:E53C",
-        .entry = 0x80e53c,
-        .run = shim_walk_y_bounds,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_Y_BOUNDS_EXITS),
-        .uncalled = true,
-        .cycles = 68,
-    },
-    {
-        .name = "walk_solid",
-        .symbol = "$80:E739",
-        .entry = 0x80e739,
-        .run = shim_walk_solid,
-        .accepts = accepts_body,
-        COSIM_EXITS(WALK_SOLID_EXITS),
-        .cycles = 252,
+        // Never charged: the shim prices every call it serves.
+        .cycles = 6000,
+        // The deepest the ROM goes: a `JSL`, then `terrain_blocked`'s `PHD`
+        // and `PHA`, or `actor_obstacle_at_point`'s `PHD` and `PEA`.
+        .stack_bytes = 7,
     },
     // Vblank jobs, which write the PPU. See `port/vblank.h`. Each prices
     // itself through `cosim_hw`, so `.cycles` is only what a refused trace
