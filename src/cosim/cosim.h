@@ -326,38 +326,13 @@ typedef struct {
   // the row with `verify only` where a verdict would go, so the exclusion is
   // visible rather than silent.
   //
-  // Exactly one routine needs this, and what it needs it for is a property of the
-  // routine rather than a gap in the port: **`$80:CCC8`'s body is a bus
-  // handshake, and the thing that performs a handshake is the CPU.** Eight of its
-  // eleven instructions are `CPY $2143 : BNE`, a spin that ends when the SPC700
-  // echoes the last sequence number back. The port computes the routine's memory
-  // effect and its register contract exactly — 23,997 calls on one movie, every
-  // one passing — and `apu_drive` can put the right bytes on the right ports.
-  // What neither can do is *wait*, because substitution's whole mechanism is to
-  // stop the 65816 executing, and during a driver upload the SPC does not answer
-  // until the CPU has been round that loop a while. Advancing the machine from
-  // inside the hook without running opcodes is not a substitute for it: the SPC
-  // was measured running 12,959 of its own cycles inside one such wait — still in
-  // the driver's RAM-clear init loop — where the ROM's own spin at the same point
-  // took about a thousand.
+  // The first routine that needed this was `$80:CCC8 apu_send`, whose body is
+  // a bus handshake: it spins on `$2143` until the SPC700 echoes the last
+  // command back, and substituting it used to mean not waiting at all. The
+  // trace can wait now (`HW_WAIT8`), read by read on the ROM's cycles, so it
+  // is substituted, and so is the uploader above it.
   //
-  // `apu_play_sfx` sits directly on top of it and *is* substituted, which is not
-  // an inconsistency but the same fact from the other side: a lone sound effect
-  // finds the SPC caught up from sounds ago, so its wait is satisfied by the first
-  // read and no spin happens. It is the uploader's 23,820 back-to-back commands
-  // that need the wait to be real.
-  //
-  // The uploader itself, `$80:CC7C`, would have needed this too — and does not
-  // appear in the registry at all, because a call that runs for eight frames
-  // cannot be verified either. See the note where its entry would be.
-  //
-  // And this is a statement about the harness, not about Phase 4. The finished
-  // port owns its own main loop and can spin on `$2143` exactly as the ROM does.
-  // What it cannot do is spin while impersonating one instruction inside somebody
-  // else's core.
-  //
-  // **The second reason a routine lands here is call volume, and it is a
-  // different argument with the same shape.** `cycles` is one constant standing
+  // **The reason a routine lands here now is call volume.** `cycles` is one constant standing
   // in for a distribution — `lzss_read_byte` really costs anywhere from 98 to
   // 298 — and that is harmless while the errors are independent and few. The two
   // LZSS leaves are neither: they are called 1,071,108 times across the corpus,
@@ -489,8 +464,23 @@ typedef struct {
   // with the port's, address, value and cycle, and the cost model is held to the
   // CPU's own cycles exactly, with refresh and DMA taken out.
   //
-  // The APU's ports are left out of both. Their traffic has its own log.
+  // The APU's ports are in the trace too, reads as well as writes, for the
+  // sound routines that wait on the SPC700 (`HW_WAIT8`). For every other
+  // routine their traffic has its own log, `ApuLog`.
   bool hw;
+  // A call that runs for frames, so an interrupt lands inside nearly every
+  // one: the sound uploads. `verify` abandons a call an interrupt lands in,
+  // because the handler changes WRAM the port knows nothing about. A routine
+  // with this set is not abandoned. The handler's stretch is set aside
+  // instead, from the vector to the `RTI` that comes back to the routine: its
+  // cycles come off the call's clock, its register accesses are not the
+  // call's, and each byte of WRAM it changed is left out of the call's diff,
+  // and out of the diff of any call around it that has this set too. A call
+  // around it without it is counted as interrupted, as before.
+  // `CosimStat::irq_waived` counts the bytes that differed at the end and were
+  // let off this way, and `irq_waived_ours` those the port had also written,
+  // which are the ones nothing checked.
+  bool through_interrupts;
 } CosimRoutine;
 
 // The registry. Every routine `src/port/` has replaced, in the order they were
@@ -580,11 +570,28 @@ void cosim_cost(int cycles);
 // `$7E:0100-$7E:0CFF` at stride `$80` — so twelve of the twenty-four threads
 // run unaligned and twelve do not. A handler model that ignored this would be
 // right on half the actors in the game.
+//
+// `ins`, when a run has it, is the same run an instruction at a time, for a
+// burn that has to take an interrupt where the ROM would. See `CosimInsn`.
+typedef struct CosimInsn CosimInsn;
 typedef struct {
   int cycles;
   int bytes;
   int dp;
+  const CosimInsn* ins;
+  int ins_count;
 } CosimRun;
+
+// One instruction of a run: its cycles and FastROM bytes, counted as
+// `CosimRun` counts them, and the length of its last bus cycle. The core polls
+// for an interrupt just before that cycle, on every instruction these runs are
+// made of, and takes it after the instruction if the poll saw it. `last` is 0
+// for a store cut off before its write, because the write is an event of its
+// own and the poll comes before it.
+struct CosimInsn {
+  uint8_t cycles, bytes, last;
+  bool last_fast;  // ...and that last cycle reads a FastROM byte
+};
 
 static inline int cosim_run_cycles_dp(const CosimRun* r, bool fastrom,
                                       bool dp_unaligned) {
@@ -596,9 +603,10 @@ static inline int cosim_run_cycles(const CosimRun* r, bool fastrom) {
   return cosim_run_cycles_dp(r, fastrom, false);
 }
 
-// One register write, or one bare access, at a cycle of a routine's budget.
-// `at` is counted from the routine's entry in the CPU's own cycles, with no
-// refresh or DMA in it, which is how a cost model counts too.
+// One register write, one bare access or one wait, at a cycle of a routine's
+// budget. `at` is counted from the routine's entry in the CPU's own cycles,
+// with no refresh or DMA in it, which is how a cost model counts too, and as
+// if every wait before it ended on its first read.
 //
 // A bare access is what follows a write to `$420B`. The core starts a DMA two
 // accesses after the write that asks for it, and lines the CPU up again on the
@@ -606,13 +614,39 @@ static inline int cosim_run_cycles(const CosimRun* r, bool fastrom) {
 // ROM's next instruction makes, not a slice of the budget. Every instruction
 // opens with two program fetches or with a fetch and an idle, and the jobs'
 // instruction after each `STA $420B` is `REP #$20`, two fetches.
+//
+// A wait is `port/hw.h`'s: the compare's `pre` cycles of fetches, its reads,
+// `len` cycles of them, and `post` for the branch falling through. A read that
+// does not match takes the branch instead, one idle longer, and goes round
+// again, so each costs `pre + len + post + 6` more than the event's price.
+//
+// A stack event takes no time. It says where the ROM's stack pointer is from
+// `at` on, `val`, for an interrupt that lands in the burn: see `HW_STACK`.
+//
+// A run event is a run with `CosimRun::ins`: block `addr`, `val` times over.
+// Its cycles are the ones between it and the next event.
+typedef enum {
+  COSIM_HW_WRITE,
+  COSIM_HW_ACCESS,
+  COSIM_HW_WAIT8,
+  COSIM_HW_WAIT16,
+  COSIM_HW_STACK,
+  COSIM_HW_RUN,
+} CosimHwKind;
+
 typedef struct {
   int at;
   uint16_t addr;
-  uint8_t val;
+  uint16_t val;
+  uint8_t kind;
   uint8_t len;
-  bool write;
+  uint8_t pre, post;
 } CosimHwEvent;
+
+// What a wait costs each time round that does not end it.
+static inline int cosim_hw_spin(const CosimHwEvent* e) {
+  return e->pre + e->len + e->post + 6;
+}
 
 // Price a trace and hand it over: each `HW_RUN` costs `runs[block]`, each
 // write the access its register takes, and the total is reported as
@@ -672,6 +706,14 @@ typedef struct {
   // Nothing checks those, which is why they are counted where they can be seen.
   long hw_writes;
   long hw_unmodelled;
+  // ...and for the sound routines, the waits compared, and how many times
+  // round their loops the ROM went beyond the first read of each.
+  long hw_waits, hw_spins;
+  // `CosimRoutine::through_interrupts`: the interrupts set aside, counted
+  // against the innermost call they landed in; the bytes that differed at the
+  // end of a call and were let off because one had changed them; and of those,
+  // the ones the port wrote as well.
+  long irq_windows, irq_waived, irq_waived_ours;
   // What a substituted run would have *paid* for these calls, less what the ROM
   // actually spent on them. Positive is over-payment: a native core reaching the
   // same point in the game later than a stock one.

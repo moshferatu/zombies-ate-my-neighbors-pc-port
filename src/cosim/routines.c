@@ -817,30 +817,6 @@ static void shim_player_collide(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
-// $80:CCC8  apu_send — X = the command, A = its parameter
-// ---------------------------------------------------------------------------
-
-// The one routine in the registry with two kinds of caller that disagree about
-// register width, and the reason it took this long to register: 8 bits from the
-// data-set uploader, 16 from `apu_play_sfx`. `port/apu.h` argues why that turns
-// out not to need a width field in `CosimRegs` — the routine's own opening `SEP
-// #$30` normalises it — and this is where the argument gets tested, on both
-// widths at once.
-static void shim_apu_send(Wram* w, const Rom* rom, const CosimRegs* in,
-                          CosimRegs* out) {
-  (void)rom;
-  ApuSendRegs r;
-  apu_send(w, in->a, in->x, &r);
-  out->a = r.a;
-  out->x = r.x;
-  out->y = r.y;
-  out->n = r.n;
-  out->z = r.z;
-  out->c = r.c;
-  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
-}
-
-// ---------------------------------------------------------------------------
 // $80:CC3B  apu_play_sfx — A = the sound effect id
 // ---------------------------------------------------------------------------
 
@@ -889,21 +865,6 @@ static void shim_apu_next_byte(Wram* w, const Rom* rom, const CosimRegs* in,
   out->z = r.z;
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
 }
-
-// ---------------------------------------------------------------------------
-// $80:CC7C  apu_load_set — written, and with no shim
-// ---------------------------------------------------------------------------
-//
-// The other two APU routines' caller, and the reason they are called a quarter
-// of a million times each. `apu_load_set()` exists in `port/apu.c` and is the
-// largest single item the ranking still offers — 1.25M instructions over the
-// six profiled movies, 0.7% of everything the game does.
-//
-// It cannot be checked. A call is about 104,000 instructions, which is some
-// eight frames, and the harness abandons any call an interrupt lands inside;
-// every one of them does. There is no shim here because a `static` function
-// nothing references is a warning, and no registry entry because the row would
-// read `not reached` forever. The registry section below says the rest.
 
 // ---------------------------------------------------------------------------
 // $80:9D5B  spawn_has_room — nothing in, carry out
@@ -4935,35 +4896,6 @@ static void shim_hud_refresh(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
-// $80:CB61 and $80:CB1A — the SPC700 upload, and why neither is registered
-// ---------------------------------------------------------------------------
-//
-// `$80:CB61 apu_ipl_upload` is the largest registerable-looking row the ranking
-// has left: 4,351,919 instructions over eleven calls, 1.5%, with another
-// 6,496,644 of the machine waiting inside it. `$80:CB1A apu_boot` is the `MVN`
-// pair and the four port writes around it, and it calls `$CB61`.
-//
-// Neither is here, and there are two independent reasons — one measured, one
-// structural.
-//
-// **Measured.** Both were registered temporarily against an empty shim, which
-// is enough to read the harness's own verdict because `$80:CB61` writes no WRAM
-// at all: `1 call, 1 interrupted, 0 checked` on `boot.zmv`, where the screen is
-// off and NMI has the best chance of being disabled, and the same on
-// `level25-lane`. About 986,000 instructions per call is many frames, and an
-// interrupt lands in every one.
-//
-// **Structural, and the one that would still apply if the frame problem went
-// away.** The routine's entire observable effect is on the SPC700, through
-// `$2140`-`$2143`, one byte at a time and gated on the SPC's replies. There is
-// nothing in WRAM for a diff to compare, and a substituted port would have to
-// drive the real handshake through the host — which is what `apu_send` does,
-// and why `apu_send` is `verify_only` and can never be substituted. `$80:CB61`
-// could at best be the same, on a call the harness cannot reach the end of.
-//
-// `tools/native_share.py` carries both verdicts in `BLOCKED`.
-
-// ---------------------------------------------------------------------------
 // The registry
 // ---------------------------------------------------------------------------
 
@@ -5629,8 +5561,9 @@ static bool accepts_boss_bg_dma(const Wram* w, const CosimRegs* in) {
   return accepts_vbl_job(w, in) && (n & 1) == 0 && n <= 0x40;
 }
 
-// One trace at a time, and 16 KB, so not on the stack.
-static HwTrace g_vbl_trace;
+// One trace at a time, and 24 KB, so not on the stack.
+static HwStep g_vbl_steps[HW_TRACE_MAX];
+static HwTrace g_vbl_trace = {0, HW_TRACE_MAX, false, g_vbl_steps};
 
 #define VBL_SHIM(name)                                                      \
   static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,    \
@@ -5651,6 +5584,195 @@ VBL_SHIM(bg2_scroll_job)
 VBL_SHIM(camera_scroll_job)
 VBL_SHIM(scroll_shadow_job)
 VBL_SHIM(boss_bg_dma)
+
+// ---------------------------------------------------------------------------
+// The sound routines — `apu_send`, `apu_load_set` and `apu_boot`
+// ---------------------------------------------------------------------------
+//
+// See `port/apu.h`, "The uploads, traced". Each run's price, from
+// `tools/cycles816.py` over the listing, branches as the run's name says. The
+// data an `LDA [$18]` reads is priced by where it is: the IPL image is in WRAM
+// at `$7F:0000`, and every data set is in fast ROM.
+//
+// And each run an instruction at a time (`CosimInsn`), because these calls
+// have the NMI land in them and the SPC700 is listening. Taken at the end of
+// a 12-cycle slice rather than of an instruction, it moved the next command:
+// on `level1.zmv` call 16,265 of the set upload starts 30 cycles before
+// vblank, and from there on every call ended one spin early or late. Stepped
+// this way all 23,834 start and end on the ROM's cycle. An instruction's last
+// bus cycle is what the core polls in front of:
+// an idle (`I`), low WRAM or the stack (`W`), a FastROM program or data byte
+// (`F`), or nothing, for a store whose write is its own event (`C`).
+#define I(c, b) {c, b, 6, false}
+#define W(c, b) {c, b, 8, false}
+#define F(c, b) {c, b, 6, true}
+#define C(c, b) {c, b, 0, false}
+static const CosimInsn AS_HEAD_I[] = {I(18, 2), W(20, 2)};        // SEP : LDY dp
+static const CosimInsn AS_STORE_I[] = {C(18, 3)};                 // STx abs
+static const CosimInsn AS_INY_I[] = {I(12, 1), C(18, 3)};         // INY : STY abs
+static const CosimInsn AS_TAIL_I[] = {W(20, 2)};                  // STY dp
+static const CosimInsn APU_JSR_I[] = {W(40, 3)};
+static const CosimInsn APU_RTS_I[] = {I(40, 1)};
+static const CosimInsn NB_READ_FAST_I[] = {F(42, 3)};             // LDA [dp]
+static const CosimInsn NB_READ_SLOW_I[] = {W(44, 2)};
+static const CosimInsn NB_STEP_I[] = {W(34, 2), I(18, 2)};        // INC : BNE
+static const CosimInsn NB_CARRY_I[] = {W(34, 2), F(12, 2), W(34, 2)};
+static const CosimInsn LS_HEAD_I[] = {
+    I(18, 2), F(18, 3), I(12, 1), I(12, 1), I(12, 1),  // REP AND ASL ASL TAX
+    F(36, 6), W(28, 2), F(36, 6), W(28, 2), I(18, 2),  // LDA STA LDA STA SEP
+};
+static const CosimInsn LS_LO_I[] = {W(20, 2)};
+static const CosimInsn LS_HI_I[] = {W(20, 2), W(20, 2)};
+static const CosimInsn LS_END_I[] = {F(12, 2)};
+static const CosimInsn LS_BLOCK_I[] = {I(18, 2), F(12, 2)};
+static const CosimInsn LS_BYTE_I[] = {F(12, 2)};
+static const CosimInsn LS_COUNT_I[] = {W(20, 2), I(18, 2)};
+static const CosimInsn LS_BORROW_I[] = {W(20, 2), F(12, 2), W(34, 2)};
+static const CosimInsn LS_DEC_I[] = {W(34, 2), W(20, 2), W(20, 2)};
+static const CosimInsn LS_MORE_I[] = {I(18, 2)};
+static const CosimInsn LS_NEXT_I[] = {F(12, 2), F(18, 3)};
+static const CosimInsn AB_HEAD_I[] = {I(18, 2), W(20, 1), F(18, 3), F(18, 3),
+                                      F(18, 3)};
+static const CosimInsn AB_MVN_I[] = {I(44, 4)};
+static const CosimInsn AB_MID_I[] = {F(18, 3), F(18, 3)};
+static const CosimInsn AB_POINT_I[] = {
+    W(26, 1), I(18, 2), I(18, 2), F(12, 2), W(20, 2),  // PLB SEP REP LDA STA
+    F(30, 5), W(20, 2), F(30, 5), W(20, 2),            // LDA STA LDA STA
+    F(30, 5), W(20, 2), W(40, 3),                      // LDA STA JSR
+};
+static const CosimInsn AB_ZERO_I[] = {F(12, 2), C(18, 3)};
+static const CosimInsn AB_REP_I[] = {I(18, 2)};
+static const CosimInsn IP_HEAD_I[] = {W(20, 1), I(18, 2), I(18, 2), F(18, 3),
+                                      F(18, 3)};
+static const CosimInsn IP_START_I[] = {I(18, 2), F(12, 2), I(18, 2)};
+static const CosimInsn IP_HDR_I[] = {
+    W(20, 1), I(18, 2), W(52, 2), I(12, 1), I(12, 1),  // PHA REP LDA INY INY
+    I(12, 1), W(52, 2), I(12, 1), I(12, 1), C(18, 3),  // TAX LDA INY INY STA
+};
+static const CosimInsn IP_FLAG_I[] = {I(18, 2), F(18, 3), F(12, 2), I(12, 1),
+                                      C(18, 3)};
+static const CosimInsn IP_KICK_I[] = {F(12, 2), W(26, 1), C(18, 3)};
+static const CosimInsn IP_FIRST_I[] = {
+    I(18, 2), W(44, 2), I(12, 1), I(18, 1),  // BVS LDA INY XBA
+    F(12, 2), I(18, 2), I(18, 2), C(18, 3),  // LDA BRA REP STA
+};
+static const CosimInsn IP_NEXT_I[] = {I(18, 2), I(12, 1), I(18, 2), I(18, 1),
+                                      W(44, 2), I(12, 1), I(18, 1)};
+static const CosimInsn IP_SEND_I[] = {I(12, 1), I(18, 2), C(18, 3)};
+static const CosimInsn IP_ENDB_I[] = {I(18, 2), I(12, 1), F(12, 2)};
+static const CosimInsn IP_ADC_I[] = {F(12, 2)};
+static const CosimInsn IP_BEQ_T_I[] = {I(18, 2)};
+static const CosimInsn IP_BEQ_N_I[] = {F(12, 2)};
+static const CosimInsn IP_DONE_I[] = {F(12, 2), W(26, 1), I(40, 1)};
+#undef I
+#undef W
+#undef F
+#undef C
+
+#define APU_RUN(cycles, bytes, dp, ins) \
+  {cycles, bytes, dp, ins, (int)(sizeof ins / sizeof ins[0])}
+static const CosimRun APU_COST[APU_BLOCK_COUNT] = {
+    [AS_HEAD] = APU_RUN(38, 4, 1, AS_HEAD_I),
+    [AS_STORE] = APU_RUN(18, 3, 0, AS_STORE_I),
+    [AS_INY] = APU_RUN(30, 4, 0, AS_INY_I),
+    [AS_TAIL] = APU_RUN(20, 2, 1, AS_TAIL_I),
+    [APU_JSR] = APU_RUN(40, 3, 0, APU_JSR_I),
+    [APU_RTS] = APU_RUN(40, 1, 0, APU_RTS_I),
+    [NB_READ_FAST] = APU_RUN(42, 3, 1, NB_READ_FAST_I),
+    [NB_READ_SLOW] = APU_RUN(44, 2, 1, NB_READ_SLOW_I),
+    [NB_STEP] = APU_RUN(52, 4, 1, NB_STEP_I),
+    [NB_CARRY] = APU_RUN(80, 6, 2, NB_CARRY_I),
+    [LS_HEAD] = APU_RUN(218, 26, 2, LS_HEAD_I),
+    [LS_LO] = APU_RUN(20, 2, 1, LS_LO_I),
+    [LS_HI] = APU_RUN(40, 4, 2, LS_HI_I),
+    [LS_END] = APU_RUN(12, 2, 0, LS_END_I),
+    [LS_BLOCK] = APU_RUN(30, 4, 0, LS_BLOCK_I),
+    [LS_BYTE] = APU_RUN(12, 2, 0, LS_BYTE_I),
+    [LS_COUNT] = APU_RUN(38, 4, 1, LS_COUNT_I),
+    [LS_BORROW] = APU_RUN(66, 6, 2, LS_BORROW_I),
+    [LS_DEC] = APU_RUN(74, 6, 3, LS_DEC_I),
+    [LS_MORE] = APU_RUN(18, 2, 0, LS_MORE_I),
+    [LS_NEXT] = APU_RUN(30, 5, 0, LS_NEXT_I),
+    [AB_HEAD] = APU_RUN(92, 12, 0, AB_HEAD_I),
+    // Three program bytes fetched again for every byte moved, the source byte
+    // from fast ROM in `$91` or `$95`, the destination in WRAM, two idles.
+    [AB_MVN] = APU_RUN(44, 4, 0, AB_MVN_I),
+    [AB_MID] = APU_RUN(36, 6, 0, AB_MID_I),
+    [AB_POINT] = APU_RUN(284, 33, 4, AB_POINT_I),
+    [AB_ZERO] = APU_RUN(30, 5, 0, AB_ZERO_I),
+    [AB_REP] = APU_RUN(18, 2, 0, AB_REP_I),
+    [IP_HEAD] = APU_RUN(92, 11, 0, IP_HEAD_I),
+    [IP_START] = APU_RUN(48, 6, 0, IP_START_I),
+    [IP_HDR] = APU_RUN(220, 15, 2, IP_HDR_I),
+    [IP_FLAG] = APU_RUN(78, 11, 0, IP_FLAG_I),
+    [IP_KICK] = APU_RUN(56, 6, 0, IP_KICK_I),
+    [IP_FIRST] = APU_RUN(158, 15, 1, IP_FIRST_I),
+    [IP_NEXT] = APU_RUN(140, 10, 1, IP_NEXT_I),
+    [IP_SEND] = APU_RUN(48, 6, 0, IP_SEND_I),
+    [IP_ENDB] = APU_RUN(42, 5, 0, IP_ENDB_I),
+    [IP_ADC] = APU_RUN(12, 2, 0, IP_ADC_I),
+    [IP_BEQ_T] = APU_RUN(18, 2, 0, IP_BEQ_T_I),
+    [IP_BEQ_N] = APU_RUN(12, 2, 0, IP_BEQ_N_I),
+    [IP_DONE] = APU_RUN(78, 4, 0, IP_DONE_I),
+};
+#undef APU_RUN
+
+// All three read `$1E` and the cursor on direct page zero, reach the APU's
+// ports through the data bank, and the two uploads push onto the stack. The
+// IPL upload's `ADC`s are binary.
+static bool accepts_apu(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return in->d == 0 && (in->db & 0x40) == 0 && !(in->p & PORT_P_D) &&
+         low_stack(in);
+}
+
+// ...and a set has to fit the trace, at 23 steps a byte. The largest in the
+// table is 9,280 bytes. The cursor carries into its high byte and never
+// into the bank, so the walk wraps the way `apu_next_byte` does.
+#define APU_SET_MAX_BYTES 10000
+static bool supported_apu_load_set(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  if (!accepts_apu(scratch, in)) return false;
+  const uint32_t index = (in->a & 0xffu) * 4u;
+  const uint32_t bank = (uint32_t)(rom_word(rom, APU_SET_TABLE + 2u + index) &
+                                   0xffu) << 16;
+  uint16_t at = rom_word(rom, APU_SET_TABLE + index);
+  uint32_t bytes = 0;
+  for (int blocks = 0;; blocks++) {
+    const uint16_t n = (uint16_t)(bus_r8(scratch, rom, bank | at) |
+                                  bus_r8(scratch, rom, bank | (uint16_t)(at + 1))
+                                      << 8);
+    if (n == 0) return true;
+    bytes += n;
+    if (bytes > APU_SET_MAX_BYTES || blocks > 256) return false;
+    at = (uint16_t)(at + 2u + n);
+  }
+}
+
+// One trace at a time, and 1.5 MB, so not on the stack.
+static HwStep g_apu_steps[APU_TRACE_MAX];
+static HwTrace g_apu_trace = {0, APU_TRACE_MAX, false, g_apu_steps};
+
+#define APU_SHIM(name, call)                                                \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,    \
+                          CosimRegs* out) {                                \
+    (void)rom;                                                             \
+    PortCpu c;                                                             \
+    cpu_from(in, &c);                                                      \
+    g_apu_trace.n = 0;                                                     \
+    g_apu_trace.full = false;                                              \
+    call;                                                                  \
+    cpu_to(&c, out);                                                       \
+    cosim_hw(&g_apu_trace, APU_COST, fetch_fast(in));                      \
+  }
+
+APU_SHIM(apu_send, apu_send_traced(w, &c, &g_apu_trace))
+APU_SHIM(apu_load_set, apu_load_set_traced(w, rom, &c, &g_apu_trace))
+APU_SHIM(apu_boot, apu_boot_traced(w, rom, &c, &g_apu_trace))
+
+static const uint32_t APU_SEND_EXITS[] = {APU_SEND_EXIT};
+static const uint32_t APU_LOAD_SET_EXITS[] = {APU_LOAD_SET_EXIT};
+static const uint32_t APU_BOOT_EXITS[] = {APU_BOOT_EXIT};
 
 // The count is the table's length by construction, so it cannot drift from it.
 #define COSIM_COMMIT(tbl) \
@@ -6427,22 +6549,24 @@ static const CosimRoutine ROUTINES[] = {
         // Before `apu_play_sfx`, because it is that routine's callee: the
         // registry reads callees-first so the report reads the way the call
         // chain does.
+        //
+        // `verify_only` for a long time, because substituting it meant not
+        // waiting for the SPC700, and a data-set upload's commands come back
+        // to back. The wait is in the trace now (`HW_WAIT8`), made read by
+        // read on the ROM's cycles, so it is substituted. It leaves by its
+        // `RTS` so that the widths its `SEP #$30` sets go back with it: the
+        // caller at `$80:CBC6` does `STZ $1E` next, eight bits wide.
         .name = "apu_send",
         .symbol = "$80:CCC8",
         .entry = 0x80ccc8,
-        .ret_op = 0x80ccdd,  // RTS
-        .ret_kind = COSIM_RTS,
         .run = shim_apu_send,
-        // Never substituted, so this budget is never spent — see
-        // `CosimRoutine::verify_only`, which is where the whole argument lives.
-        // The measured distribution is 218..85,184 with a mean of 2,615..2,649
-        // across the four movies, and the reason no figure in it is usable is that
-        // the spread *is* the SPC700 deciding how long the 65816 waits. 218 is
-        // what a call that did not wait at all costs, which is the only part of
-        // the routine a budget could honestly stand for.
-        .cycles = 218,
-        .stack_bytes = 0,   // it pushes nothing at all
-        .verify_only = true
+        .accepts = accepts_apu,
+        COSIM_EXITS(APU_SEND_EXITS),
+        .cycles = 178,  // a call that did not wait, to the RTS
+        .hw = true,
+        // An upload's commands wait long enough that the NMI lands in one
+        // call in a hundred.
+        .through_interrupts = true,
     },
     {
         .name = "apu_play_sfx",
@@ -6484,20 +6608,34 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 0,   // no pushes; five instructions and four of them are
                             // a byte-wide increment
     },
-    // `$80:CC7C apu_load_set` would go here, after the two routines it calls,
-    // and it is written — `port/apu.h`, `apu_load_set()` — but there is no
-    // entry for it and no shim. **Every call to it is interrupted.** It sends
-    // about 23,800 commands per set and spends roughly 104,000 instructions
-    // doing it, which is eight frames or so, and an NMI lands inside all of
-    // them: 5 calls / 5 interrupted / 0 checked on `level25-lane`, and 3/3/0 on
-    // `boot.zmv`, where the screen is off and the load happens before the title.
-    // A routine that outlives a frame cannot be verified per call, so
-    // registering it would add a row that says `not reached` on every movie in
-    // the corpus and check nothing.
-    //
-    // The C stands, unverified, exactly as `sprite_cache_init` does; the
-    // address is declared in `tools/native_share.py`'s `BLOCKED` so the ranking
-    // stops offering it. See `docs/cosim.md`.
+    {
+        // After the two routines it calls. Reached by `JSR` from `$80:CBEE`
+        // and by falling out of `$80:CC6F`, which sends command 8 first; the
+        // second is not a call, and is counted as one served. A handful a
+        // level.
+        .name = "apu_load_set",
+        .symbol = "$80:CC7C",
+        .entry = 0x80cc7c,
+        .run = shim_apu_load_set,
+        .supported = supported_apu_load_set,
+        COSIM_EXITS(APU_LOAD_SET_EXITS),
+        .cycles = 100000,
+        .hw = true,
+        .through_interrupts = true,
+    },
+    {
+        // `$80:CB1A`, with the IPL upload at `$80:CB61` inside it, its only
+        // caller. Once a boot, from the reset at `$80:815B`.
+        .name = "apu_boot",
+        .symbol = "$80:CB1A",
+        .entry = 0x80cb1a,
+        .run = shim_apu_boot,
+        .accepts = accepts_apu,
+        COSIM_EXITS(APU_BOOT_EXITS),
+        .cycles = 2000000,
+        .hw = true,
+        .through_interrupts = true,
+    },
     {
         .name = "spawn_has_room",
         .symbol = "$80:9D5B",

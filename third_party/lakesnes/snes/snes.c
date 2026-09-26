@@ -42,6 +42,8 @@ Snes* snes_init(void) {
   snes->frameHookCtx = NULL;
   snes->writeHook = NULL;
   snes->writeHookCtx = NULL;
+  snes->readHook = NULL;
+  snes->readHookCtx = NULL;
   snes->stolenCycles = 0;
   snes->inDma = false;
   return snes;
@@ -533,10 +535,13 @@ void snes_cpuIdle(void* mem, bool waiting) {
 
 uint8_t snes_cpuRead(void* mem, uint32_t adr) {
   Snes* snes = (Snes*) mem;
+  const uint64_t cpuClock = snes->cycles - snes->stolenCycles;
   int cycles = snes_getAccessTime(snes, adr);
   dma_handleDma(snes->dma, cycles);
   snes_runCycles(snes, cycles);
-  return snes_read(snes, adr);
+  uint8_t val = snes_read(snes, adr);
+  if(snes->readHook) snes->readHook(snes, adr, val, cpuClock, snes->readHookCtx);
+  return val;
 }
 
 void snes_cpuWrite(void* mem, uint32_t adr, uint8_t val) {

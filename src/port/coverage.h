@@ -687,12 +687,15 @@
   X(apu_src_step,     "apu_next_byte",       "the low byte advanced without carrying, which is 255 calls in 256") \
   X(apu_src_wrap,     "apu_next_byte",       "...and the 256th, where the second INC runs and takes over the flags") \
                                                                                    \
-  /* $80:CC7C apu_load_set has four branches and **no sites**, because it has no  \
-     shim: every call to it outlives a frame, so nothing in this harness ever     \
-     executes the C. Sites for it would sit in the corpus report's "untaken by    \
-     every input" list forever, and that list means "an input is missing" --      \
-     which would be a lie about four branches no input can reach. The branches    \
-     are described in `port/apu.c` instead. */                                    \
+  /* $80:CC7C apu_load_set -- a count, a block, and the bytes under it. */         \
+  X(apu_set_end,      "apu_load_set",        "a count of zero, which ends the set") \
+  X(apu_set_block,    "apu_load_set",        "...or not, and command $0A announces a block") \
+  X(apu_set_count,    "apu_load_set",        "a byte sent with the count's low byte still nonzero") \
+  X(apu_set_borrow,   "apu_load_set",        "...or zero, so the high byte is decremented first") \
+                                                                                   \
+  /* $80:CB1A apu_boot, and the IPL upload at $80:CB61 inside it. */              \
+  X(ipl_block,        "apu_boot",            "a block of the driver goes over byte by byte") \
+  X(ipl_done,         "apu_boot",            "the size of zero, and the jump into the driver") \
                                                                                    \
   /* $80:9D5B spawn_has_room — the two ceilings every spawn in the game clears. */ \
   X(spawn_load_full,  "spawn_has_room",      "the weighted census is at 138 or past it, so the spawner sleeps a frame") \

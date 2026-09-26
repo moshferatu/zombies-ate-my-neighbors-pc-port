@@ -242,13 +242,9 @@ BLOCKED = {
     # routine at all. It is registered `run_only`, priced by counting rather
     # than by measurement, and checked by `run`'s per-pass comparison of all
     # 128 KB instead of per call. See `CosimRoutine::run_only`.
-    # ...and the fourth, which is the largest and the one that hurts. $80:CC7C
-    # is the sound-data uploader: about 23,800 SPC commands and 104,000
-    # instructions per call, some eight frames, and every call is interrupted --
-    # 5 of 5 on level25-lane, 3 of 3 on boot.zmv, where the screen is off. It is
-    # written (`port/apu.h`) and it would have needed `verify_only` even if it
-    # could be registered, because every command it sends waits on the SPC700.
-    0x80CC7C: 'written, unregisterable: it outlives a frame -- 23,800 SPC commands',
+    # $80:CC7C, the sound-data uploader, was here as "written, unregisterable:
+    # it outlives a frame". It is registered now, with its waits in the trace
+    # and its interrupts set aside (`CosimRoutine::through_interrupts`).
     # $80:CDF4 is already a JUMP_ENTRIES line above, because it is the real
     # start of what the ranking used to credit to lzss_write_byte. Declaring it
     # made it visible and also made it obvious what it is: `JSR $D13A : LDA
@@ -257,19 +253,10 @@ BLOCKED = {
     # returns, and the profile agrees: 651,060 instructions and zero calls in
     # eleven movies.
     0x80CDF4: 'a thread body, and a loop with no exit -- nothing calls it',
-    # $80:CB61 is the biggest row this list has left -- 1.5%, plus 1.95% of the
-    # machine waiting inside it -- and it is out on two independent grounds.
-    # Measured: registered against an empty shim (it writes no WRAM, so that is
-    # a clean probe) it reports 1 call, 1 interrupted, 0 checked on boot.zmv,
-    # where the screen is off, and the same on level25-lane. Structural: its
-    # whole effect is on the SPC700 through $2140-$2143, one byte at a time,
-    # gated on the SPC's replies -- there is nothing in WRAM to diff, so it
-    # could at best be verify_only like apu_send, and never substituted.
-    0x80CB61: 'unregisterable: a per-byte SPC handshake, and every call is interrupted',
-    # ...and its caller, which is the two MVN blocks plus a JSR into the above,
-    # so it inherits both problems. 1 call, 1 interrupted, on the same two
-    # movies.
-    0x80CB1A: 'unregisterable: it calls $80:CB61 and inherits both of its problems',
+    # $80:CB61, the IPL upload, and $80:CB1A, its caller, were here as a
+    # per-byte SPC handshake that every call is interrupted in. `apu_boot` is
+    # registered at $80:CB1A with the upload inside it, for the same reasons
+    # as $80:CC7C above.
     # $80:8353 thread_yield and the two dispatchers at $80:83E0 and $80:843D
     # were here, as "the coroutine primitive" and "a dispatcher -- RTLs into
     # any of 13 jobs". Neither returns, and that was the whole objection: the
@@ -494,8 +481,8 @@ def load_ported(path='src/cosim/routines.c'):
     never substituted** -- `CosimRoutine::verify_only` has the argument for each
     of the three. So it counts towards how much of the game has been *written*
     and not at all towards how much of a run executes as C, and on some movies
-    that is not a rounding difference: `$80:CCC8 apu_send` alone is 23.8% of
-    every instruction level 1 executes.
+    that is not a rounding difference: while it was `verify_only`, `$80:CCC8
+    apu_send` alone was 23.8% of every instruction level 1 executes.
 
     Conflating the two is what this function used to do, and it made this tool
     disagree with the running game by a factor of two and a half for a reason
@@ -603,8 +590,6 @@ def family_of(why, addr=None):
         return 'thread bodies -- resumed by RTL, never called'
     if why.startswith('a vblank job'):
         return 'vblank jobs -- reached by RTL from a queue'
-    if 'unregisterable' in why:
-        return 'sound handshakes -- the SPC700 uploads'
     return 'the frame -- NMI, reset, scheduler, dispatchers'
 
 

@@ -5,6 +5,52 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The sound uploads, and a port that waits on the SPC700 (2026-09-25)
+
+Step four of the Devil's Crush path. `apu_send`, `apu_load_set` and
+`apu_boot`, with the IPL upload inside it, are substituted now. They were a
+third of what the 65816 still ran. See `docs/cosim.md`, "The sound uploads".
+
+A port's hardware trace can now wait: `hw_wait8` records a `CMP : BNE` loop
+by its register and the value that ends it, and the burn makes the reads on
+the ROM's cycles with the core's own read, so the SPC700 answers as it did
+for the ROM. `verify` logs the ROM's reads of the APU's ports as well as its
+writes and holds every one to the cycle. A routine marked
+`through_interrupts` is not abandoned when the NMI lands in it: the handler
+is set aside, its cycles and accesses taken out, and the WRAM it changed left
+out of the diff. The registry is 160 entries.
+
+* **Checked.** The corpus verifies at 21,045,696 calls across 50 movies with 0
+  diverged, and `verify --level` over all 56 records at 33,074,432. Every
+  sound model is exact on every call: 1,209,912 `apu_send`, 256 set uploads,
+  50 boots. Lockstep matches the same harness with the three left to the ROM
+  on 43 of 49 movies to the cycle. The other six end 10 to 256 cycles apart,
+  with nothing unexplained and no new parting. `zamn_test_layers` is
+  unchanged on six movies in 16:9 and 21:9.
+* **Two things had to be exact for that, and were not.** The NMI now lands at
+  the ROM's stack depth, because the pointer it saves is copied into a
+  thread's page at boot (`hw_stack`). And a burn in these routines now takes
+  an interrupt where the core polls for it, just before an instruction's last
+  bus cycle, not at the end of a 12-cycle slice (`CosimInsn`). A command
+  stored a few cycles late is seen a spin late, and on `level1.zmv` every
+  call after the 16,265th ended a spin early or late.
+* **`apu_boot` is not quite exact under `run`.** Alone on `boot.zmv` it ends 56
+  cycles apart over the 64 NMIs that land in it, and the SPC700 can round
+  that up to one pass of its polling loop, about 2,500 cycles. Why the 56
+  has not been found. It is the six movies above.
+* **Lockstep budgeted a pass in steps, and now in cycles.** Stock ran out of
+  its 4,000,000 steps on a level load where native did not, and every level
+  movie read as parted at its first load on cores that agreed to the cycle.
+  The loads both sides used to run out on are compared now.
+* **Live, over all 56 records, 88.1% becomes 92.3%**, and every record gains
+  2.6 to 6.5 points. Without the vblank jobs' DMA it is **85.7%**, from 81.5%.
+* **The residue** goes from 107.6 to 60.3 million instructions of work, and
+  the sound uploads leave it. By family: callable routines 83.8%, thread
+  bodies 9.7%, vblank jobs 3.8%, the frame 2.7%. The top rows are
+  `$80:E4BA` at 8.1%, `$80:CDF4` at 5.4% and the NMI's own instructions.
+* **`level21-exit.zmv` still hangs under lockstep.** Stopped after 25 minutes.
+  The step budget was not the cause.
+
 ### The vblank jobs, and ports that write the PPU (2026-09-25)
 
 Step three of the Devil's Crush path, second half. A port can now write the

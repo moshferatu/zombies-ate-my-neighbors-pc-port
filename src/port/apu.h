@@ -56,6 +56,8 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
+#include "port/hw.h"
 #include "port/wram.h"
 
 // The three ports `$80:CCC8` uses, named here as well as in `assets/music.h`
@@ -202,17 +204,15 @@ void apu_next_byte(Wram* w, const Rom* rom, uint16_t in_a, ApuNextRegs* out);
 //
 // A count of zero ends the set — there is no size in front of it and no
 // terminator beyond that zero — and each block is announced with command `$0A`
-// before its bytes go out one at a time under command `$06`. Twelve calls over
-// six movies, about 23,800 commands each, which is what makes this a 104,000
-// instruction call and everything else in this file a leaf.
+// before its bytes go out one at a time under command `$06`. Fifteen sets in
+// the table at `$80:CCDE`, 1.7 to 9.3 KB each, so a call sends up to 9,300
+// commands and runs for several frames.
 //
 // The block boundary is not a length the SPC is told. `$0A` is sent with a
 // parameter that is `$1C ORA $1D` — **the two count bytes ORed together**, not
 // the count and not either half of it. Any nonzero count produces a nonzero
 // parameter and that is all the value can mean; it is the accumulator the `BNE`
 // three instructions earlier happened to leave, spent rather than computed.
-// The port sends the same byte because the SPC is the other side of a hook and
-// the port does not get to decide what it makes of it.
 //
 // ## Everything is eight bits wide, including the loop counter
 //
@@ -230,26 +230,6 @@ void apu_next_byte(Wram* w, const Rom* rom, uint16_t in_a, ApuNextRegs* out);
 // words at `$80:CCDE`. **`$1A` is written 16 bits wide and read 8**, which is
 // where the junk high byte `apu_send` preserves in A comes from — see the note
 // on `ApuSendRegs`.
-//
-// ## It is written and it is not checked
-//
-// **This is the second routine in the port that the harness structurally cannot
-// verify**, after `sprite_cache_init`, and for the same reason: 104,000
-// instructions is roughly eight frames, and an NMI lands inside every call.
-// Measured, not assumed — 5 calls and 5 interrupted on `level25-lane`, 3 and 3
-// on `boot.zmv`, where the load happens with the screen off and before the
-// title. There is no registry entry and no shim; `tools/native_share.py` has
-// the address in `BLOCKED` so the ranking stops offering it.
-//
-// It would have needed `verify_only` as well if it could be registered, because
-// it spins: every one of those 23,800 commands goes through `apu_send`'s
-// `CPY $2143 : BNE`, so the routine's duration is the SPC700's to decide and
-// not the port's. Two independent reasons, and either one alone is enough.
-//
-// What the code below is *for*, then, is Phase 4 rather than the harness. It is
-// the bookkeeping — the cursor, the counter, the order of the bytes — written
-// out where the disassembly can be checked against it by eye, and the day the
-// port owns its own main loop it is the routine that loads the music.
 #define APU_LOAD_SET_ENTRY 0x80cc7cu
 
 // Pairs of words: address then bank, indexed by `id * 4`.
@@ -258,25 +238,97 @@ void apu_next_byte(Wram* w, const Rom* rom, uint16_t in_a, ApuNextRegs* out);
 #define APU_CMD_BLOCK 0x0a
 #define APU_CMD_BYTE 0x06
 
-// What it leaves. A's high byte is the junk from the table read that `SEP #$20`
-// hid and nothing since has written; its low byte is the zero count that ended
-// the set. X is `APU_CMD_BYTE` on any set that had a block in it and the low
-// byte of `id * 4` on one that did not. Y is `W_APU_SEQ` after the last command,
-// one byte wide.
+// --- The uploads, traced ------------------------------------------------------
 //
-// N and Z are the final `ORA $1C`'s, so they are always clear and set — the
-// routine cannot return any other way. Carry is the last `apu_send`'s, which is
-// its wait's, so it is set unless no command was ever sent; on that path it is
-// whatever the caller arrived with, and so is Y with its high byte cleared.
-typedef struct {
-  uint16_t a, x, y;
-  bool n, z, c;
-} ApuLoadRegs;
+// For three rounds `apu_load_set` was written here and could not be checked,
+// and the IPL upload at `$80:CB61` could not be written at all. Two reasons,
+// either enough: every call runs for frames, so an interrupt lands in all of
+// them and `verify` abandoned each one; and all they do is talk to the
+// SPC700, one byte at a time and waiting on each reply, which a port that
+// only writes WRAM cannot do. `port/hw.h` now lets a port wait, and `verify`
+// sets an interrupt aside instead of giving up on the call
+// (`CosimRoutine::through_interrupts`), so these are the whole routines, from
+// entry to the instruction that leaves.
+//
+// Each takes the CPU as it arrived and leaves it as the ROM does at its exit,
+// stack and all: the return addresses the `JSR`s push and the byte `PHP` and
+// `PHA` leave are written where the ROM writes them. What it records in the
+// trace is every access to the APU's ports, in order, with the runs of code
+// between them named from the table below.
 
-// Upload sound data set `id`. `in_y` and `in_c` are wanted only for a set whose
-// very first count is zero, which sends nothing and leaves both alone. `out`
-// may be NULL.
-void apu_load_set(Wram* w, const Rom* rom, uint16_t id, uint16_t in_y,
-                  bool in_c, ApuLoadRegs* out);
+// The runs. The prices are `tools/cycles816.py`'s, in `routines.c`.
+enum {
+  // `$80:CCC8 apu_send`.
+  AS_HEAD,      // SEP #$30 : LDY $1E
+  AS_STORE,     // an absolute store's three fetches
+  AS_INY,       // INY, and STY $2143's fetches
+  AS_TAIL,      // STY $1E
+  // `JSR abs` and `RTS`, around each call `apu_load_set` makes.
+  APU_JSR,
+  APU_RTS,
+  // `$80:CCBF apu_next_byte`, by whether the byte is in fast ROM.
+  NB_READ_FAST, // LDA [$18]
+  NB_READ_SLOW,
+  NB_STEP,      // INC $18 : BNE, taken
+  NB_CARRY,     // INC $18 : BNE, not taken : INC $19
+  // `$80:CC7C apu_load_set`.
+  LS_HEAD,      // REP #$30 ... SEP #$30
+  LS_LO,        // STA $1C
+  LS_HI,        // STA $1D : ORA $1C
+  LS_END,       // BNE, not taken: the set is over
+  LS_BLOCK,     // BNE, taken : LDX #$0A
+  LS_BYTE,      // LDX #$06
+  LS_COUNT,     // LDA $1C : BNE, taken
+  LS_BORROW,    // LDA $1C : BNE, not taken : DEC $1D
+  LS_DEC,       // DEC $1C : LDA $1C : ORA $1D
+  LS_MORE,      // BNE, taken
+  LS_NEXT,      // BNE, not taken : JMP $CC92
+  // `$80:CB1A apu_boot`.
+  AB_HEAD,      // REP #$30 : PHB : LDA : LDX : LDY
+  AB_MVN,       // one byte of `MVN $7F,$91` or `$7F,$95`
+  AB_MID,       // LDA #$1A85 : LDX #$BA3D
+  AB_POINT,     // PLB ... JSR $CB61
+  AB_ZERO,      // LDA #$00, and STA $2140's fetches
+  AB_REP,       // REP #$30
+  // `$80:CB61 apu_ipl_upload`.
+  IP_HEAD,      // PHP : REP : REP : LDY #0 : LDA #$BBAA
+  IP_START,     // SEP #$20 : LDA #$CC : BRA
+  IP_HDR,       // PHA ... STA $2142's fetches
+  IP_FLAG,      // SEP #$20 : CPX #1 : LDA #0 : ROL, and STA $2141's fetches
+  IP_KICK,      // ADC #$7F : PLA, and STA $2140's fetches
+  IP_FIRST,     // BVS, taken ... STA $2140's fetches
+  IP_NEXT,      // SEP #$20 : DEX : BNE, taken : XBA : LDA [$18],Y : INY : XBA
+  IP_SEND,      // INC : REP #$20, and STA $2140's fetches
+  IP_ENDB,      // SEP #$20 : DEX : BNE, not taken
+  IP_ADC,       // ADC #$03
+  IP_BEQ_T,     // BEQ, taken
+  IP_BEQ_N,     // BEQ, not taken
+  IP_DONE,      // BVS, not taken : PLP : RTS
+  APU_BLOCK_COUNT
+};
+
+// The instruction each leaves by, which the core then executes.
+#define APU_SEND_EXIT 0x80ccddu      // RTS
+#define APU_LOAD_SET_EXIT 0x80cca0u  // RTS
+#define APU_BOOT_EXIT 0x80cb60u      // RTL
+
+// The most steps any of them records: the IPL upload's 39,546 bytes at five
+// each, with room over.
+#define APU_TRACE_MAX (1 << 18)
+
+// `$80:CCC8`. The same routine as `apu_send` above, for the caller that is the
+// ROM: the wait and the three stores go in the trace rather than to the hook.
+void apu_send_traced(Wram* w, PortCpu* c, HwTrace* t);
+
+// `$80:CC7C`, the set in A.
+void apu_load_set_traced(Wram* w, const Rom* rom, PortCpu* c, HwTrace* t);
+
+// `$80:CB1A apu_boot`, and `$80:CB61 apu_ipl_upload`, its only caller's
+// callee. Copies the driver out of `$91:8000` and `$95:BA3D` into `$7F:0000`
+// with two `MVN`s, points `$18` at it, and hands it to the SPC700's boot ROM
+// block by block: size and destination, then each byte against the counter the
+// SPC echoes back. A size of zero ends it with a jump to the destination, and
+// the routine clears the four ports on the way out.
+void apu_boot_traced(Wram* w, const Rom* rom, PortCpu* c, HwTrace* t);
 
 #endif

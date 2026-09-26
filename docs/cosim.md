@@ -14574,3 +14574,105 @@ with the last commit's build too.
 ROM, `level25-2p` differs in one VRAM word at pass 1,231, beside its four
 known WRAM bytes, and `level25-lane` in BG1's scroll at pass 3,496. The
 substituted runs show the same two, at the same passes.
+
+## The sound uploads, and a port that waits on the SPC700 (2026-09-25)
+
+Step four of the path. The SPC700 uploads were a third of what the 65816
+still ran over all 56 level records: `$80:CB61 apu_ipl_upload` 20.6% of the
+residue, `$80:CC7C apu_load_set` 10.6% and `$80:CCC8 apu_send` 9.4%. They
+were out for two reasons, either enough. All they do is talk to the SPC700,
+one byte at a time, each waiting on the SPC's reply, and a substituted
+routine could not wait. And every upload runs for frames, so an interrupt
+lands in each call and `verify` abandoned all of them. Both are answered now,
+and three routines are registered: `apu_send`, `apu_load_set`, and
+`apu_boot` at `$80:CB1A`, with the IPL upload inside it. See `port/apu.h`,
+"The uploads, traced".
+
+**A trace can wait.** `hw_wait8` and `hw_wait16` in `port/hw.h` record a
+`CMP abs : BNE` loop by its register and the value that ends it. What comes
+after a wait does not depend on how long it took, so the port knows the
+whole trace up front and only the timing is left open. The harness prices a
+wait as if it ended on its first read. Under `run` the burn makes the reads
+with the core's own `snes_cpuRead`, which catches the SPC700 up to that
+cycle, and every read that does not match adds one more time round the loop
+and moves everything after it by the same. Those cycles count as waiting,
+as the ROM's loop does in `waits.h`, not as native. Under `verify` the core
+now reports the CPU's reads as well as its writes, and the APU's ports are
+logged both ways. Each of the ROM's reads has to fall where the model puts
+it, given the reads before it, and each write too, so every access is held
+to the cycle however long the SPC took. The model's price for a call is the
+trace's plus the loops the ROM's reads say it went round, and that is exact
+on every call.
+
+**A call that runs through interrupts.** `CosimRoutine::through_interrupts`
+says `verify` should not abandon a call an interrupt lands in. The handler is
+set aside instead, from the vector to the `RTI` that comes back. Its cycles
+come off the call's clocks, its register accesses are logged at a level of
+their own and are not the call's, and each byte of WRAM it changed is left
+out of the call's diff. A call nested inside it that is not set up the same
+way is counted as interrupted, as before. The report counts the bytes let off
+this way that differed at the end, and of those the ones the port had also
+written, which are the ones nothing checked. Over all 56 level records that
+is 64,868 bytes let off, and none the port wrote.
+
+**Where the stack is when the NMI lands.** Natively the CPU waits out a burn
+parked on the routine's entry, so the NMI pushes its frame and saves the
+stack pointer where the entry left it. In the ROM it lands a `JSR` or a
+`PHP` deeper. `thread_spawn` copies the spawning code's direct page into the
+new thread's, and at boot that page holds the NMI's saved stack pointer, so
+`$7E:0C04` came out three different. `hw_stack` records the stack pointer
+after each push and pull, and a burn that stops for an interrupt puts it
+there first. The frame's dead bytes below the stack are marked stale, as a
+substituted call's own pushes are.
+
+**Where the interrupt is taken.** The core polls for an interrupt just before
+an instruction's last bus cycle and takes it after the instruction. A burn
+used to take it at the end of whichever 12-cycle slice it was in. For most
+routines that is a few cycles nobody sees. With the SPC700 listening it is
+not: a command stored a few cycles later is seen a spin later. On
+`level1.zmv` call 16,265 of the set upload starts 30 cycles before vblank,
+and from there every call ended a spin early or late. So a run in the sound
+routines' table carries its instructions (`CosimInsn`), with each one's
+cycles and last bus cycle, and a burn steps them one at a time and polls
+where the core polls. A wait's compare and branch are polled the same way.
+Stepped like this, all 23,834 calls on `level1.zmv` start and end on the
+ROM's cycle, and so does every idle `WAI` to the end of the movie. A table's
+instructions have to add up to its runs, which `cosim_hw` checks on first
+use.
+
+**Lockstep budgeted a pass in steps.** Each side had 4,000,000 steps to get
+from one `WAI` to the next. A level load is about 500 frames, and stock ran
+out on it where native, a step per substituted call, did not. The two fell a
+pass apart, and every level movie read as parted at its first load, on cores
+that had reached every `WAI` on the same cycle. A pass is now budgeted in
+cycles, 1,000 frames of them. The level loads that both sides used to run out
+on are compared now: `level1.zmv` compares 2,399 passes where it compared
+2,389.
+
+**Checked.** The corpus verifies at 21,045,696 calls across 50 movies with 0
+diverged. Every model is exact on the CPU's clock on every call: 1,209,912
+`apu_send`, 256 set uploads and 50 boots. On `boot.zmv` alone the IPL upload
+compared 79,108 writes and 39,550 waits read by read, and those waits went
+round 255,801 extra times. Every new site is taken. `verify --level` over
+all 56 records gives 33,074,432 calls with 0 diverged.
+
+Lockstep over the corpus matches the same harness with the three left to
+the ROM, to the cycle, on 43 of 49 movies. The other six end 10 to 256
+cycles apart over the whole movie, with nothing unexplained and no pass
+parted that did not part before. That is `apu_boot`, the one of the three
+that is not exact under `run`: alone on `boot.zmv` it ends 56 cycles apart,
+over the 64 NMIs that land in it, and the SPC700's polling can round that up
+to one pass of its own loop, about 2,500 cycles, once. Why the 56 has not
+been found. `level25`'s partings and its two video differences are where
+they were. `level21-exit.zmv` still hangs under lockstep, stopped after 25
+minutes, so the step budget was not what hung it. `zamn_test_layers` is
+unchanged on six movies in 16:9 and 21:9.
+
+Live, over all 56 records, the game prints **92.3%**, from 88.1%, and every
+record gains between 2.6 and 6.5 points. Without the vblank jobs' DMA it is
+**85.7%**, from 81.5%. The residue goes from 107.6 to 60.3 million
+instructions of work, and the SPC700 uploads leave it entirely. The wait
+loops the 65816 still runs go from 319.7 to 113.8 million instructions.
+What is left, by family: callable routines 83.8%, thread bodies 9.7%,
+vblank jobs 3.8%, the frame 2.7%. The top rows are `$80:E4BA` at 8.1%,
+`$80:CDF4` at 5.4% and the NMI's own instructions.

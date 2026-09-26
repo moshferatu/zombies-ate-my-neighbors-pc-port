@@ -20,6 +20,10 @@ typedef void (*SnesFrameHook)(Snes* snes, void* ctx);
 typedef void (*SnesWriteHook)(Snes* snes, uint32_t adr, uint8_t val,
                               uint64_t cpuClock, void* ctx);
 
+// ...and after every read the CPU makes, with the value it got. Same clock.
+// DMA's reads do not call it either.
+typedef SnesWriteHook SnesReadHook;
+
 #include "cpu.h"
 #include "apu.h"
 #include "dma.h"
@@ -84,6 +88,8 @@ struct Snes {
   bool inDma;  // inside `dma_handleDma`, whose refreshes it counts itself
   SnesWriteHook writeHook;
   void* writeHookCtx;
+  SnesReadHook readHook;
+  void* readHookCtx;
 };
 
 Snes* snes_init(void);
@@ -138,6 +144,8 @@ int snes_pixelWidth(const Snes* snes);
 void snes_setFrameHook(Snes* snes, SnesFrameHook hook, void* ctx);
 // See `SnesWriteHook`. Pass NULL to remove it.
 void snes_setWriteHook(Snes* snes, SnesWriteHook hook, void* ctx);
+// See `SnesReadHook`. Pass NULL to remove it.
+void snes_setReadHook(Snes* snes, SnesReadHook hook, void* ctx);
 void snes_setSamples(Snes* snes, int16_t* sampleData, int samplesPerFrame);
 int snes_saveBattery(Snes* snes, uint8_t* data);
 bool snes_loadBattery(Snes* snes, uint8_t* data, int size);
