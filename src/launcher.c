@@ -294,7 +294,7 @@ static void build_rows(void) {
     add(TAB_HOTKEYS, (Row){K_KEYS, BIND(G_KEY_HOT, hot_rows[i].act), hot_rows[i].label, hot_rows[i].help});
   add_head(TAB_HOTKEYS, "Controller",
       "The same, from a controller: unbound unless bound here, and a single press fires them. "
-      "Start and Select held together for a second always quits.");
+      "Start and Select together always quits.");
   for (int i = 0; i < ACT_COUNT; i++)
     add(TAB_HOTKEYS, (Row){K_PADS, BIND(G_PAD_HOT, hot_rows[i].act), hot_rows[i].label, hot_rows[i].help});
 

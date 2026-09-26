@@ -140,14 +140,11 @@ an input in both places) and `zamn_test_config`; and in `zamn.exe` on level 1
 with requests put in by hand: weapon 0 to 7 to 3 to 0, item 7 to 4, and the
 HUD following.
 
-**Start and Select held together for a second quits** — Options and Share on a
-DualSense — because a pad has no Esc. Held rather than pressed, since both are
-buttons the game itself uses and an instant quit on the pair is a session lost to
-a thumb that bridged them; the picture fades to black while you hold it, so the
-second is visible rather than a button that appears not to work. Neither button
-reaches the game while the chord is down, so a quit thought better of leaves
-nothing behind. `--no-pads` turns the whole thing off. The reasoning, and the
-measurements the deadzone came from, are in `src/pad.h`.
+**Start and Select pressed together quit** — Options and Share on a DualSense —
+because a pad has no Esc. Neither button reaches the game on the frame the chord
+is down, so quitting does not open the map behind it. `--no-pads` turns the
+whole thing off. The reasoning, and the measurements the deadzone came from, are
+in `src/pad.h`.
 
 The **right stick aims and fires** — twin-stick shooting, on by default and
 described below. `--no-twin-stick` gives it back to the stock game, which reads

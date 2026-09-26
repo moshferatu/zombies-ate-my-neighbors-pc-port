@@ -66,25 +66,18 @@
 //
 // ## Quitting
 //
-// A pad has no Esc, so **Start and Select held together for one second** quits.
-// On a DualSense that is Options and Share, which SDL reports as `start` and
-// `back` like everything else does, so the one binding covers both spellings.
+// A pad has no Esc, so **Start and Select pressed together** quit, the moment
+// both are down. On a DualSense that is Options and Share, which SDL reports as
+// `start` and `back` like everything else does, so the one binding covers both
+// spellings.
 //
-// Held, rather than pressed, and that is the whole of the design. These are two
-// buttons the game itself uses — Start opens the map — so an instant quit on the
-// pair is a session lost to a thumb that bridged them, and this game has
-// passwords rather than save states. A second is long enough that it cannot
-// happen by accident and short enough not to feel like a menu.
+// Pressed, not held. It was a one-second hold with the picture fading to black,
+// on the argument that both are buttons the game uses and a thumb bridging them
+// would lose the session; in play the wait read as a quit that had not
+// happened, and the pair is not one a thumb lands on by accident.
 //
-// It needs to be visible while it is happening, or a second of nothing reads as
-// a broken button rather than as a countdown, so the frontend dims the picture
-// in proportion: hold and the screen fades to black, let go and it comes
-// straight back. That is `pad_quit`'s return value, which is a frame count for
-// exactly that reason.
-//
-// While the chord is held neither button reaches the game. Pressing them is a
-// gesture aimed at the frontend, and an abandoned quit that leaves the map open
-// behind it would be the frontend making a mess and walking away.
+// While the chord is down neither button reaches the game, so the frame it
+// quits on does not open the map behind it.
 //
 // ## Deadzone
 //
@@ -186,11 +179,8 @@
 #define PAD_OCT_NUM 3827
 #define PAD_OCT_DEN 10000
 
-// The quit gesture, and how long it has to be held. Sixty frames is one second
-// at the rate this game runs, and the frontend measures it in frames because
-// that is what it dims the picture by.
+// The quit gesture: these two, together, on any pad.
 #define PAD_QUIT_MASK ((uint16_t)((1u << BTN_START) | (1u << BTN_SELECT)))
-#define PAD_QUIT_FRAMES 60
 
 // A pad input, as the binding table names one: an `SDL_GameControllerButton`,
 // or one of the two triggers, which SDL has as axes and a player has as buttons.
@@ -270,7 +260,7 @@ static inline int pad_button(SDL_GameControllerButton b) {
     // not made into hotkeys either: a single button that quit the game or
     // toggled substitution would fire the first time somebody rested a palm on
     // one. The one gesture the frontend does claim — see `pad_quit` — is two
-    // buttons held for a second, which a palm cannot do. The shoulders are not
+    // buttons at once, which a palm resting on one cannot do. The shoulders are not
     // here because they are not SNES buttons any more: `pad_map_default`.
     default:                                  return -1;
   }
@@ -347,7 +337,6 @@ typedef struct {
 
 typedef struct {
   Pad pad[PAD_MAX];
-  int quit_held;  // consecutive frames the quit chord has been down
   bool ready;     // the subsystem came up
   PadMap map;     // what is read; `pad_init` makes it the default
   // Actions pressed since the frontend last looked, a bit each. Only ever
@@ -604,21 +593,18 @@ static inline void pad_aim(PadSet* s, uint16_t aim[PAD_MAX]) {
   }
 }
 
-// Start and Select together, on any pad, held. Call once a frame with what
-// `pad_poll` just returned; the answer is how many consecutive frames the chord
-// has been down, so `PAD_QUIT_FRAMES` or more means quit and anything between
-// says how far through the player is — which is what the frontend fades the
-// picture by.
+// Start and Select together, on any pad. Call once a frame with what
+// `pad_poll` just returned; true means quit.
 //
 // It takes `held` by pointer and not by value because it strips the two bits on
-// the way past. Both are buttons the game uses, and a quit that was thought
-// better of should not leave the map open behind it.
+// the way past. Both are buttons the game uses, and the frame the frontend quits
+// on should not open the map.
 //
 // Deliberately *not* also checking the keyboard's copy of those two buttons. The
 // keyboard has Esc, this exists because a pad does not, and Enter and RShift are
 // close enough together to make the chord a real hazard on a keyboard in a way
 // it is not on a pad.
-static inline int pad_quit(PadSet* s, uint16_t held[PAD_MAX]) {
+static inline bool pad_quit(PadSet* s, uint16_t held[PAD_MAX]) {
   bool down = false;
   for (int i = 0; i < PAD_MAX; i++) {
     if (!s->pad[i].gc) continue;
@@ -626,18 +612,7 @@ static inline int pad_quit(PadSet* s, uint16_t held[PAD_MAX]) {
     down = true;
     held[i] = (uint16_t)(held[i] & ~PAD_QUIT_MASK);
   }
-  s->quit_held = down ? s->quit_held + 1 : 0;
-  return s->quit_held;
-}
-
-// How black the picture should be, 0..255, for a quit that is `frames` in. The
-// fade is the only feedback the gesture has, so it starts on the first frame the
-// chord is down rather than after a grace period: a player who taps the pair
-// sees a flicker and knows the button did something.
-static inline int pad_quit_dim(int frames) {
-  if (frames <= 0) return 0;
-  if (frames >= PAD_QUIT_FRAMES) return 255;
-  return 255 * frames / PAD_QUIT_FRAMES;
+  return down;
 }
 
 #endif

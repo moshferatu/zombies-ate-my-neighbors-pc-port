@@ -269,7 +269,7 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "previous_item = l1\n"
   "\n"
   "; What the frontend does, from the pad. Unbound by default: these fire on a\n"
-  "; single press. (Start and Select held together for a second always quits.)\n"
+  "; single press. (Start and Select together always quits.)\n"
   "[controller hotkeys]\n"
   "quick_save =\n"
   "quick_load =\n"
@@ -1164,7 +1164,7 @@ static inline void config_print(const Config* c) {
   config_print_pad("  Pad:       ", config_button_names, 12, order, c->pad.game);
   config_print_pad("             ", config_cycle_names, PAD_CYCLE_COUNT, NULL, c->pad.cycle);
   config_print_pad("  Pad hotkeys: ", config_action_names, ACT_COUNT, NULL, c->pad.hot);
-  printf("             move stick=%s  aim stick=%s  Start+Select held for a second quits\n",
+  printf("             move stick=%s  aim stick=%s  Start+Select quits\n",
          stick[c->pad.move_stick], stick[c->pad.aim_stick]);
 }
 

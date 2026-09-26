@@ -241,45 +241,6 @@ static bool measure(ScaleMode mode, int ow, int oh, double* out_purity,
   return measure_ex(mode, ow, oh, true, out_purity, out_lo, out_hi, out_stage);
 }
 
-// Mean brightness of the whole output after a dim of `amount`.
-//
-// `present_dim` is the quit gesture's only feedback, and its interesting failure
-// is not "nothing happens" but "everything happens at once": with the blend mode
-// left at the renderer's default, every amount from 1 to 255 paints opaque
-// black, so the fade becomes a cut and looks fine in any single frame. A mean
-// taken at three amounts separates those two behaviours in one number.
-static bool measure_dim(int amount, double* out_mean) {
-  const int ow = SRC_W, oh = SRC_LIVE_H;
-  SDL_Window* win = SDL_CreateWindow("t", 0, 0, ow, oh, SDL_WINDOW_HIDDEN);
-  if (!win) { fail("no window: %s", SDL_GetError()); return false; }
-  SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_SOFTWARE);
-  if (!ren) { fail("no renderer: %s", SDL_GetError()); SDL_DestroyWindow(win); return false; }
-  Present p;
-  const SDL_Rect live = {0, SRC_TOP, SRC_W, SRC_LIVE_H};
-  bool ok = false;
-  if (!present_init(&p, ren, SRC_W, SRC_H, live, SCALE_INTEGER)) {
-    fail("present_init: %s", SDL_GetError());
-  } else {
-    fill_source(&p);
-    present_draw(&p);
-    present_dim(&p, amount);
-    uint32_t* px = readback(ren, ow, oh);
-    if (px) {
-      double sum = 0.0;
-      for (int i = 0; i < ow * oh; i++)
-        sum += ((px[i] >> 24) & 0xff) + ((px[i] >> 16) & 0xff) +
-               ((px[i] >> 8) & 0xff);
-      *out_mean = sum / (3.0 * ow * oh);
-      free(px);
-      ok = true;
-    }
-    present_free(&p);
-  }
-  SDL_DestroyRenderer(ren);
-  SDL_DestroyWindow(win);
-  return ok;
-}
-
 // `argc`/`argv` rather than `void`: on Windows SDL redefines `main` as its own
 // `SDL_main`, which is declared with a parameter list, and a `void` definition
 // disagrees with it (MSVC C4026).
@@ -379,27 +340,6 @@ int main(int argc, char** argv) {
       fail("sharp (%.1f%%) is indistinguishable from plain nearest (%.1f%%) —"
            " the intermediate is not being used",
            100.0 * pur_sharp, 100.0 * pur_fallback);
-  }
-
-  // The quit fade.
-  {
-    double m0 = 0, m_half = 0, m_full = 0;
-    if (measure_dim(0, &m0) && measure_dim(128, &m_half) &&
-        measure_dim(255, &m_full)) {
-      printf("  quit fade           mean brightness %.1f -> %.1f -> %.1f"
-             " (dim 0, 128, 255)\n", m0, m_half, m_full);
-      if (m0 <= 1.0)
-        fail("the undimmed pattern is already black (%.1f) — nothing to fade",
-             m0);
-      if (m_full > 0.5)
-        fail("a full dim left the picture at %.1f, want black", m_full);
-      // The point of the whole check: half must be *half*, not black. A blend
-      // mode left unset makes this equal to the line above and nothing else in
-      // this file would notice.
-      if (m_half < 0.25 * m0 || m_half > 0.75 * m0)
-        fail("a half dim gave %.1f from %.1f, want about half — the fade is a"
-             " cut, not a fade", m_half, m0);
-    }
   }
 
   SDL_Quit();

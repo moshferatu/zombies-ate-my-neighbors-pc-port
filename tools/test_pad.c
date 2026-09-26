@@ -30,9 +30,8 @@
 // mapping, the port assignment, the deadzone, the button table — with nothing
 // plugged in and nobody pressing anything.
 //
-// It is the only way to check the quit chord, too, which is a gesture spread
-// over sixty frames and two buttons and cannot be tried by hand without either
-// quitting or proving nothing.
+// It is the only way to check the quit chord, too, which cannot be tried by hand
+// without quitting.
 //
 // It is also the only way to check the thing the polled design exists for. A
 // pad unplugged mid-press sends no release, and the claim in `src/pad.h` is that
@@ -560,42 +559,29 @@ static void test_devices(void) {
     if (poll1(&s, 0) != 0 || s.hot_pressed) fail("the default table has an action bound");
   }
 
-  // The quit chord. Three things have to be true and each of them is a way the
-  // gesture could be wrong rather than merely absent: it must not fire early, it
-  // must not let Start or Select through to the game while it is counting, and
-  // it must forget everything the moment either button comes up — a chord that
-  // accumulated across separate presses would quit on its own eventually.
+  // The quit chord. It must not fire on one button, must fire on the first
+  // frame both are down, must not let Start or Select through to the game on
+  // that frame, and must let go the moment either comes up.
   press(gc, SDL_CONTROLLER_BUTTON_START, 1);
   {
     uint16_t held[PAD_MAX];
     pad_poll(&s, held);
-    if (pad_quit(&s, held) != 0) fail("Start alone started the quit countdown");
+    if (pad_quit(&s, held)) fail("Start alone quit");
     if (held[0] != (1u << BTN_START)) fail("Start alone was eaten (%03x)", held[0]);
   }
   press(gc, SDL_CONTROLLER_BUTTON_BACK, 1);
-  for (int f = 1; f <= PAD_QUIT_FRAMES; f++) {
+  {
     uint16_t held[PAD_MAX];
     pad_poll(&s, held);
-    const int got = pad_quit(&s, held);
-    if (got != f) fail("frame %d of the quit chord counted %d", f, got);
-    if (held[0] != 0)
-      fail("the quit chord leaked %03x to the game on frame %d", held[0], f);
-    // The fade has to move, and has to be black exactly when the chord is done.
-    const int dim = pad_quit_dim(got);
-    if (f < PAD_QUIT_FRAMES && (dim <= 0 || dim >= 255))
-      fail("frame %d of %d faded to %d, want strictly between 0 and 255", f,
-           PAD_QUIT_FRAMES, dim);
-    if (f == PAD_QUIT_FRAMES && dim != 255)
-      fail("the finished chord faded to %d, want 255", dim);
+    if (!pad_quit(&s, held)) fail("Start+Select did not quit on the first frame");
+    if (held[0] != 0) fail("the quit chord leaked %03x to the game", held[0]);
   }
-  // Releasing one of the two resets it, rather than pausing it.
   press(gc, SDL_CONTROLLER_BUTTON_BACK, 0);
   {
     uint16_t held[PAD_MAX];
     pad_poll(&s, held);
-    if (pad_quit(&s, held) != 0) fail("releasing Select did not reset the chord");
-    if (pad_quit_dim(0) != 0) fail("an idle chord still dimmed the picture");
-    if (held[0] != (1u << BTN_START)) fail("Start was eaten after the reset");
+    if (pad_quit(&s, held)) fail("releasing Select did not end the chord");
+    if (held[0] != (1u << BTN_START)) fail("Start was eaten after the chord");
   }
   press(gc, SDL_CONTROLLER_BUTTON_START, 0);
   if (poll1(&s, 0) != 0) fail("the quit chord left %03x held", poll1(&s, 0));
@@ -618,13 +604,13 @@ static void test_devices(void) {
       if (held[1] != (1u << BTN_B)) fail("port 2's button gave %03x", held[1]);
       press(s.pad[1].gc, SDL_CONTROLLER_BUTTON_A, 0);
 
-      // Either player can quit, so the chord counts on port 2 as well — and it
+      // Either player can quit, so the chord works on port 2 as well — and it
       // must strip the bits from the pad that pressed it and not from port 1.
       press(s.pad[1].gc, SDL_CONTROLLER_BUTTON_START, 1);
       press(s.pad[1].gc, SDL_CONTROLLER_BUTTON_BACK, 1);
       press(gc, SDL_CONTROLLER_BUTTON_START, 1);
       pad_poll(&s, held);
-      if (pad_quit(&s, held) != 1) fail("the quit chord did not count on port 2");
+      if (!pad_quit(&s, held)) fail("the quit chord did not quit on port 2");
       if (held[1] != 0) fail("port 2's quit chord leaked %03x", held[1]);
       if (held[0] != (1u << BTN_START))
         fail("port 2's chord ate port 1's Start (%03x)", held[0]);
