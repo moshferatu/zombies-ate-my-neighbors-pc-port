@@ -143,6 +143,16 @@ if(MSVC)
   target_compile_definitions(zamn_test_cheats PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# The sound effect overlay (src/sfx_overlay.h): a movie run with it and without
+# it, which must leave the machine identical and add sound only where the
+# driver lost some. Needs the cartridge; skips without it.
+add_executable(zamn_test_sfx_overlay tools/test_sfx_overlay.c)
+target_include_directories(zamn_test_sfx_overlay PRIVATE src)
+target_link_libraries(zamn_test_sfx_overlay PRIVATE snescore zamn_analysis)
+if(MSVC)
+  target_compile_definitions(zamn_test_sfx_overlay PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # ---------------------------------------------------------------------------
 # The branch-coverage instrument (src/port/coverage.h). Port code marks its
 # decision points; this holds the counters the harness reads. It is separate

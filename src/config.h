@@ -151,6 +151,7 @@ typedef struct {
   // [audio]
   bool audio;
   int volume;   // percent, 0..100
+  bool effect_overlay;  // src/sfx_overlay.h
   // [controller]
   bool pads;
   bool twin_stick;
@@ -217,6 +218,9 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "enabled = on\n"
   "; 0 to 100.\n"
   "volume = 100\n"
+  "; on: sound effects the game's sound driver drops or cuts short when too\n"
+  "; much is playing are heard anyway. off: as the console plays them.\n"
+  "effect_overlay = on\n"
   "\n"
   "[controller]\n"
   "enabled = on\n"
@@ -500,6 +504,7 @@ static inline void config_defaults(Config* c) {
   c->smoothing = true;
   c->audio = true;
   c->volume = 100;
+  c->effect_overlay = true;
   c->pads = true;
   c->twin_stick = true;
   c->deadzone = 24;
@@ -617,6 +622,7 @@ static inline bool config_set(Config* c, const char* name, int line,
   } else if (!strcmp(section, "audio")) {
     if (!strcmp(key, "enabled")) { if (!config_bool(v, &c->audio)) CONFIG_BAD("on or off"); }
     else if (!strcmp(key, "volume")) { if (!config_int(v, 0, 100, &c->volume)) CONFIG_BAD("0 to 100"); }
+    else if (!strcmp(key, "effect_overlay")) { if (!config_bool(v, &c->effect_overlay)) CONFIG_BAD("on or off"); }
     else return false;
   } else if (!strcmp(section, "controller")) {
     if (!strcmp(key, "enabled")) { if (!config_bool(v, &c->pads)) CONFIG_BAD("on or off"); }
@@ -930,6 +936,7 @@ static inline void config_each_value(const Config* c, ConfigValueFn fn, void* ct
   fn(ctx, "audio", "enabled", CONFIG_ON(c->audio));
   snprintf(v, sizeof v, "%d", c->volume);
   fn(ctx, "audio", "volume", v);
+  fn(ctx, "audio", "effect_overlay", CONFIG_ON(c->effect_overlay));
   fn(ctx, "controller", "enabled", CONFIG_ON(c->pads));
   fn(ctx, "controller", "twin_stick", CONFIG_ON(c->twin_stick));
   snprintf(v, sizeof v, "%d", c->deadzone);

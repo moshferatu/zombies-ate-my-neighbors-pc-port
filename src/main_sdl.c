@@ -51,7 +51,7 @@
 //             [--red-blood] [--quick-at frame:save|load[:file]]...
 //             [--invincible] [--invincible-neighbors] [--infinite-ammo]
 //             [--infinite-lives] [--give-all] [--always-run]
-//             [--config file] [--no-config] [--volume N]
+//             [--config file] [--no-config] [--volume N] [--no-effect-overlay]
 //             [--key-at frame:key[:frames]]... [--profile dir]
 //
 // The settings a player sets once, and every key and pad binding, are read
@@ -90,6 +90,7 @@
 #include "maskline.h"
 #include "quicksave.h"
 #include "config.h"
+#include "sfx_overlay.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -425,6 +426,7 @@ static void layers_advance(Layers* s) {
 typedef struct {
   Cosim* cosim;
   Snes* snes;
+  SfxOverlay* sfx;
   Layers* layers;
   SDL_sem* go;
   SDL_sem* done;
@@ -442,6 +444,7 @@ static int emu_thread_main(void* arg) {
     if (t->quit) return 0;
     const Uint64 t0 = SDL_GetPerformanceCounter();
     cosim_frame(t->cosim);
+    sfx_overlay_tick(t->sfx);
     const Uint64 t1 = SDL_GetPerformanceCounter();
     t->last_ms = (double)(t1 - t0) * 1000.0 / freq;
     t->take_ms = 0.0;
@@ -711,6 +714,10 @@ static void usage(void) {
     "                  under --frames and -m, which are measurements.\n"
     "  --shot <a.png>  Write the final frame as a PNG on the way out.\n"
     "  --no-audio      Skip the audio device (and pace off a timer instead).\n"
+    "  --no-effect-overlay\n"
+    "                  Let the sound driver drop and cut short sound effects when\n"
+    "                  too much is playing, as the console does. --effect-overlay\n"
+    "                  is the other way. See src/sfx_overlay.h.\n"
     "  --no-pads       Ignore game controllers and read only the keyboard.\n"
     "  --skip-intro    Run the logos and the story screen at full speed and\n"
     "                  hand over at the title menu. Cannot be combined with -m:\n"
@@ -907,6 +914,7 @@ int main(int argc, char** argv) {
   long frame_limit = 0;
   bool native = true, want_audio = g_cfg.audio, want_pads = g_cfg.pads;
   int volume = g_cfg.volume;
+  bool effect_overlay = g_cfg.effect_overlay;
   ScaleMode scale_mode = g_cfg.filter;
   // Off by default. Widescreen is the PPU drawing columns the console never
   // drew, and however good it looks it is not what the game is — so it is asked
@@ -971,6 +979,8 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--stock")) native = false;
     else if (!strcmp(a, "--no-audio")) want_audio = false;
     else if (!strcmp(a, "--audio")) want_audio = true;
+    else if (!strcmp(a, "--no-effect-overlay")) effect_overlay = false;
+    else if (!strcmp(a, "--effect-overlay")) effect_overlay = true;
     else if (!strcmp(a, "--volume") && i + 1 < argc) {
       if (!config_int(argv[++i], 0, 100, &volume)) {
         fprintf(stderr, "error: --volume wants 0..100, got '%s'\n\n", argv[i]);
@@ -1335,6 +1345,12 @@ int main(int argc, char** argv) {
   }
   snes_reset(snes, true);
 
+  // The sound effects the driver drops or cuts short (`src/sfx_overlay.h`). It
+  // watches the machine from here on and takes its copy of the APU once the
+  // driver is running.
+  static SfxOverlay sfx;
+  sfx_overlay_init(&sfx, snes, want_audio && effect_overlay);
+
   Uint32 init_flags = SDL_INIT_VIDEO | (want_audio ? SDL_INIT_AUDIO : 0);
   // Per-monitor DPI awareness, so that on a scaled desktop the window and the
   // backbuffer are the panel's own pixels. Without it a 3840x2160 panel at 125%
@@ -1661,6 +1677,7 @@ int main(int argc, char** argv) {
   if (smooth_possible) {
     emu.cosim = &cosim;
     emu.snes = snes;
+    emu.sfx = &sfx;
     emu.layers = &lay;
     emu.go = SDL_CreateSemaphore(0);
     emu.done = SDL_CreateSemaphore(0);
@@ -1976,6 +1993,7 @@ int main(int argc, char** argv) {
         // returns through the routine's own RTS/RTL.
         const Uint64 t0 = SDL_GetPerformanceCounter();
         cosim_frame(&cosim);
+        sfx_overlay_tick(&sfx);
         trace_emulate_ms = PACE_MS(t0, SDL_GetPerformanceCounter());
         pace_add(&h_emulate, trace_emulate_ms);
       }
@@ -2000,6 +2018,7 @@ int main(int argc, char** argv) {
           const int want_samples = pace_audio_samples(
               SAMPLES_PER_FRAME, queued, audio_target, 4, AUDIO_MAX_ADJUST);
           snes_setSamples(snes, audio_buf, want_samples);
+          sfx_overlay_mix(&sfx, audio_buf, want_samples);
           if (volume != 100)
             for (int i = 0; i < want_samples * 2; i++)
               audio_buf[i] = (int16_t)(audio_buf[i] * volume / 100);
@@ -2056,6 +2075,7 @@ int main(int argc, char** argv) {
           const QuickLoad got = quicksave_read(&quick, snes, parts, part_count);
           if (got == QUICKLOAD_OK) {
             cosim_forget_calls(&cosim);
+            sfx_overlay_resync(&sfx);
             widescreen_forget_passes(&ws);
             // The smoothing: the tick being shown and the first one after the
             // load are not neighbours, so the link between them is cut when it
@@ -2293,6 +2313,11 @@ int main(int argc, char** argv) {
   if (audio_refills > 1)
     printf("  audio backlog refilled %ld times — rate control is not keeping up\n",
            audio_refills);
+  if (verbose && sfx.enabled)
+    printf("  sound effects: the driver dropped %ld and lost %ld notes and %ld voices;\n"
+           "                 the overlay opened %ld voices, and took its copy %ld times\n",
+           sfx.effects_dropped, sfx.notes_dropped, sfx.voices_stolen, sfx.voices_opened,
+           sfx.resyncs);
   if (verbose) {
     cosim_report(&cosim);
     // The two percentages the table cannot give: 82 rows of `OK` say each
@@ -2326,6 +2351,7 @@ int main(int argc, char** argv) {
     cosim.profile = NULL;
   }
   cosim_free(&cosim);
+  sfx_overlay_free(&sfx);
   snes_free(snes);
   free(rom);
   return 0;

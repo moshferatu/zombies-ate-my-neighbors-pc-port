@@ -97,7 +97,8 @@ typedef enum { K_HEAD, K_CHOICE, K_RANGE, K_PATH, K_KEYS, K_PADS } Kind;
 enum {
   S_ROM, S_SKIP_INTRO, S_LEVEL, S_HITBOX, S_BLOOD, S_HIGH_SCORES, S_HISCORE_FILE,
   S_FULLSCREEN, S_WIDESCREEN, S_FILTER, S_WINDOW_SCALE, S_SMOOTHING, S_REFRESH,
-  S_AUDIO, S_VOLUME, S_PADS, S_TWIN_STICK, S_DEADZONE, S_MOVE_STICK, S_AIM_STICK,
+  S_AUDIO, S_VOLUME, S_EFFECT_OVERLAY,
+  S_PADS, S_TWIN_STICK, S_DEADZONE, S_MOVE_STICK, S_AIM_STICK,
   S_CHEAT,  // and the five after it, by `config_cheat_names`
 };
 
@@ -247,6 +248,9 @@ static void build_rows(void) {
 
   add_choice(TAB_AUDIO, S_AUDIO, "Sound", on_off, 2, "Music and sound effects.");
   add_range(TAB_AUDIO, S_VOLUME, "Volume", 0, 100, 5, true, "0 to 100.");
+  add_choice(TAB_AUDIO, S_EFFECT_OVERLAY, "Lost Effects", on_off, 2,
+      "On: sound effects the console drops or cuts short when too much is playing are "
+      "heard anyway. Off: as the console plays them.");
 
   add_choice(TAB_CONTROLLER, S_PADS, "Controllers", on_off, 2, "Play with game controllers.");
   add_choice(TAB_CONTROLLER, S_TWIN_STICK, "Twin Stick", on_off, 2,
@@ -313,6 +317,7 @@ static int setting_get(const Config* c, int id) {
     case S_REFRESH:      return c->refresh;
     case S_AUDIO:        return c->audio;
     case S_VOLUME:       return c->volume;
+    case S_EFFECT_OVERLAY: return c->effect_overlay;
     case S_PADS:         return c->pads;
     case S_TWIN_STICK:   return c->twin_stick;
     case S_DEADZONE:     return c->deadzone;
@@ -338,6 +343,7 @@ static void setting_set(Config* c, int id, int v) {
     case S_REFRESH:      c->refresh = v; break;
     case S_AUDIO:        c->audio = v != 0; break;
     case S_VOLUME:       c->volume = v; break;
+    case S_EFFECT_OVERLAY: c->effect_overlay = v != 0; break;
     case S_PADS:         c->pads = v != 0; break;
     case S_TWIN_STICK:   c->twin_stick = v != 0; break;
     case S_DEADZONE:     c->deadzone = v; config_deadzone(&c->pad, v); break;

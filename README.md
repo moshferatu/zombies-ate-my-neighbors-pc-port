@@ -196,7 +196,7 @@ is in `.gitignore`, since it names the player's ROM.
 |---|---|
 | `[game]` | `rom`, `skip_intro`, `level` (off, 0-55), `hitbox` (100-200), `blood` (purple, red), `high_scores`, `high_scores_file` |
 | `[video]` | `fullscreen`, `widescreen` (off, 16:9, 16:10, 21:9, auto), `filter` (sharp, integer, linear), `window_scale` (1-8), `smoothing`, `refresh` (auto, Hz) |
-| `[audio]` | `enabled`, `volume` (0-100) |
+| `[audio]` | `enabled`, `volume` (0-100), `effect_overlay` ([lost sound effects](#lost-sound-effects-and---no-effect-overlay)) |
 | `[controller]` | `enabled`, `twin_stick`, `deadzone` (5-90, percent), `move_stick` and `aim_stick` (left, right, off) |
 | `[controller buttons]` | the twelve SNES buttons, as lists of pad inputs, for both pads |
 | `[controller hotkeys]` | what the frontend does, from the pad; nothing is bound by default |
@@ -711,6 +711,47 @@ the name entry and saves at about frame 5,000; the next launch prints
 `Top scores: restored ... (best 07654321)`. Holding health at zero on a movie
 that only sits on the menus kills the *attract mode's* player, and that game
 over (`$80:9B87`) goes to the top scores without asking `$82:BBED` anything.
+
+### Lost sound effects, and `--no-effect-overlay`
+
+Reported in play: in a busy fight the weapon's sound sometimes cuts off, or
+does not play. The console does that. The SPC700 program is David Warhol's
+1992 driver. It plays the song and every sound effect as sequences, which
+share four slots and the DSP's eight voices, and it loses effects two ways:
+
+* **An effect is not started.** The song holds one slot, so with three effects
+  already playing a fourth is dropped (`$0B8A` gives up at `$0B9B`).
+  `level9-weapons.zmv` drops 140.
+* **A note loses its voice.** With all eight voices busy, a new note takes the
+  least recently used voice of no higher priority (`$0D60`). The song's lead
+  channels are priority `$78` and effects `$64`, so the music takes voices
+  from the effects, and effects take them from each other.
+
+`src/sfx_overlay.h` runs a second APU beside the real one: a copy taken once
+the driver is running, sent every command the game sends except "play the
+song". It plays the effects, with all four slots and all eight voices to
+itself. Its voices run all the time but are muted while the real APU plays the
+same note, and a voice is heard when the real driver drops its effect, drops
+its note, or takes its voice. The voice has been running in step, so the sound
+carries on from where the console's stopped. It is Devil's Crush's music voice
+overlay turned round. It only reads the machine, so the game, the harness and
+save states are the same with it on or off. A copy that falls out of step
+after a quick load or a reset is taken again.
+
+An effect already heard three times between the two is not brought back:
+three is as many as the console plays with nothing else going. A weapon that
+fires faster than its sound ends, and fills the driver with itself, sounds as
+it always did.
+
+It is on by default. `--no-effect-overlay`, `effect_overlay = off` in
+`zamn.ini`, or "Lost Effects" in the launcher gives the console's sound.
+`--verbose` counts what the driver lost and what the overlay opened, and
+`zamn_test_sfx_overlay [rom] [movie] [frames] [folder]` replays a movie
+twice, with the overlay and without. Every tick the machines must be
+identical, the overlay must add nothing until the first loss, and a voice it
+has opened must be heard while it sounds. Given a folder it writes
+`original.wav`, `overlay.wav` and `added.wav`. It passes on `level9-weapons`,
+`level13`, `level17-weapon`, `level25-heavy` and `level29-fighting`.
 
 ### Cheats
 
@@ -2518,6 +2559,9 @@ src/cheats.h          The six cheats: patches to the loaded image, words held
                               (`src/port/cheat.h`)
 src/twinstick.h       Twin-stick shooting: what the right stick becomes — an aim
                               direction, and nine bytes of 65816 at `$80:D250`
+src/sfx_overlay.h     Sound effects the driver drops or cuts short, played
+                              through a second APU that plays only effects,
+                              muted wherever the real one is playing them
 src/pace.h            Frame cadence: measuring how evenly frames arrive, and
                               the deadline clock and audio rate control that
                               make them arrive evenly. No SDL either
@@ -2593,6 +2637,10 @@ tools/test_cheats.c   The cheats' patches into an image and back out, what a
                               tick holds and what it must not, the demo, and the
                               port's handlers with the flag on and off. No SDL;
                               the ROM if it is there
+tools/test_sfx_overlay.c A movie twice, with the sound effect overlay and
+                              without: the machines identical every tick, and
+                              sound added only where the driver lost some.
+                              Needs the ROM
 tools/test_twinstick.c Nine stick positions becoming nine direction codes, and
                               the ROM patch as exact bytes against a synthetic
                               cartridge — including that every refusal writes
