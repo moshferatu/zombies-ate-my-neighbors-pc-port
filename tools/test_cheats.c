@@ -50,6 +50,9 @@ static uint8_t* synthetic_rom(void) {
   const size_t entry = cheat_rom_offset(0x80f808) + 0x0a * 2;
   rom[entry] = (uint8_t)PLAYER_COLLIDE_QUEUE;
   rom[entry + 1] = (uint8_t)(PLAYER_COLLIDE_QUEUE >> 8);
+  const size_t room = cheat_rom_offset(CHEAT_LEVEL_TABLE) + CHEAT_ROOM_TOURISTS_TURN * 2;
+  rom[room] = 0x83;
+  rom[room + 1] = 0xd0;
   return rom;
 }
 
@@ -276,6 +279,48 @@ static void test_tick(const uint8_t* pristine, size_t size, const char* what) {
   free(rom);
 }
 
+// Bonus room 50: the tourists' patch is out for as long as it is the level
+// loaded, and only that one; anywhere else, or before any level, it is in.
+static void test_room(const uint8_t* pristine, size_t size, const char* what) {
+  uint8_t* rom = (uint8_t*)malloc(size);
+  memcpy(rom, pristine, size);
+  uint8_t* ram = (uint8_t*)calloc(1, 0x20000);
+  const size_t turn = cheat_rom_offset(CHEAT_TOURIST_TURN);
+  const size_t other = cheat_rom_offset(0x83a372);
+  const size_t at = cheat_rom_offset(CHEAT_LEVEL_TABLE) + CHEAT_ROOM_TOURISTS_TURN * 2;
+  const uint16_t room = (uint16_t)(rom[at] | rom[at + 1] << 8);
+  Cheats c;
+  cheats_init(&c);
+  c.on[CHEAT_NEIGHBORS] = true;
+  cheats_install(&c, rom, size);
+
+  cheats_tick(&c, ram, rom);
+  if (rom[turn] != 0xea) fail("%s: with no level loaded the tourists can turn", what);
+  cheat_w16(ram, CHEAT_W_LEVEL_RECORD, room);
+  cheats_tick(&c, ram, rom);
+  if (memcmp(rom + turn, pristine + turn, 2) != 0) fail("%s: in room 50 the tourists cannot turn", what);
+  if (rom[other] != 0xc9 || rom[other + 1] != 0xff || !port_cheats.neighbors)
+    fail("%s: in room 50 the rest of the cheat went too", what);
+  cheat_w16(ram, CHEAT_W_LEVEL_RECORD, (uint16_t)(room ^ 0x0100));
+  cheats_tick(&c, ram, rom);
+  if (rom[turn] != 0xea) fail("%s: after room 50 the tourists can still turn", what);
+  cheats_patch(&c, rom, false);
+  if (memcmp(rom, pristine, size) != 0) fail("%s: taking the patches out after room 50 did not give the image back", what);
+
+  // With the cheat off the room writes nothing.
+  cheats_init(&c);
+  c.on[CHEAT_AMMO] = true;
+  cheats_install(&c, rom, size);
+  cheat_w16(ram, CHEAT_W_LEVEL_RECORD, room);
+  cheats_tick(&c, ram, rom);
+  cheat_w16(ram, CHEAT_W_LEVEL_RECORD, 0);
+  cheats_tick(&c, ram, rom);
+  if (memcmp(rom + turn, pristine + turn, 2) != 0) fail("%s: room 50 wrote the tourists' patch with the cheat off", what);
+  cheats_patch(&c, rom, false);
+  free(ram);
+  free(rom);
+}
+
 // The port's half. `victim_collide` and its sibling need no ROM; the player's
 // entry is reached through the jump table, which the image here has one word of.
 static void test_port(const uint8_t* rom_bytes, size_t size, const char* what) {
@@ -347,6 +392,7 @@ int main(int argc, char** argv) {
   uint8_t* synth = synthetic_rom();
   test_patches(synth, ROM_SIZE, "synthetic");
   test_tick(synth, ROM_SIZE, "synthetic");
+  test_room(synth, ROM_SIZE, "synthetic");
   test_port(synth, ROM_SIZE, "synthetic");
   free(synth);
 
@@ -363,7 +409,11 @@ int main(int argc, char** argv) {
     else {
       test_patches(rom, (size_t)n, "cartridge");
       test_tick(rom, (size_t)n, "cartridge");
+      test_room(rom, (size_t)n, "cartridge");
       test_port(rom, (size_t)n, "cartridge");
+      // Room 50's record, as `zamn_assets level` reports it.
+      const size_t room = cheat_rom_offset(CHEAT_LEVEL_TABLE) + CHEAT_ROOM_TOURISTS_TURN * 2;
+      if (rom[room] != 0x83 || rom[room + 1] != 0xd0) fail("record 50 is not at $9F:D083");
       // The ceilings give all and infinite ammo use are the pickups' own.
       if (rom[cheat_rom_offset(0x80f896)] != 0x99 || rom[cheat_rom_offset(0x80f897)] != 0x09)
         fail("$80:F895 does not cap a weapon at $0999");

@@ -5,6 +5,27 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The tourists in bonus room 50 turn again under the neighbour cheat (2026-09-25)
+
+Reported in play-testing, with a quick save: in the bonus room off level 22
+an older couple could not be rescued. They are the tourists, and the room's
+victim list puts them at (22,653), in a pocket no walk reaches even with
+every door open (`zamn_assets route` and `keys`). Without cheats the moon
+comes up and they turn into two werewolves that walk out. The neighbour
+cheat takes out the tourists' `LDA $1F94 : BNE` at `$83:A012`, so they stayed
+where nobody could touch them. Touching them still rescues them.
+
+Turning does cost a neighbour, which is why the patch exists: the turn at
+`$83:A086` retires the entry and counts down the neighbours left, as a death
+does, and never reaches `$80:C81F`, the call that puts a rescue on the saved
+list. So the patch stays everywhere but this room. `cheats_tick` takes it out
+while the loaded record is room 50's, read from `$7E:0C10`, where `$80:8871
+STA $10` leaves it on the game thread's page. It matches the ROM's own
+record table entry and holds from one load to the next on every movie
+watched. `zamn_test_cheats` checks the switch and the record's address. On a
+copy of the save, with every cheat on, the couple turn at the same frame as
+with none.
+
 ### The sound uploads, and a port that waits on the SPC700 (2026-09-25)
 
 Step four of the Devil's Crush path. `apu_send`, `apu_load_set` and

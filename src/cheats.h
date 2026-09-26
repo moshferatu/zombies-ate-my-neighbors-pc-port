@@ -49,7 +49,18 @@
 // and 4 in the handler a bubbled neighbour has (`$83:A264`), which only a save
 // from before the cheat can reach. And the tourists, who turn into werewolves
 // when the moon comes up (`$83:A00F  LDA $1F94 : BNE`), do not: that is a
-// neighbour lost like any other.
+// neighbour lost like any other. The turn (`$83:A086`) retires the entry
+// (`$81:8191`) and counts down the neighbours left (`$80:C863`), which a death
+// does too, and never reaches `$80:C81F`, which puts a rescued one on the
+// saved list the next level's gate is read from.
+//
+// **Except in bonus room 50**, off level 22, where the tourists are placed at
+// (22,653) in a pocket no walk reaches, even with every door open (`zamn_assets
+// route` and `keys`), and turning is how they come out. There they must turn,
+// or the room keeps a neighbour nobody can rescue; found in play-testing. So
+// that one patch is taken back out while the loaded level record is room 50's,
+// which `$80:8871  STA $10` leaves on the game thread's page at `$7E:0C10`
+// from the load to the next one, and put back in anywhere else.
 //
 // **Ammo.** The game spends in five places, every one of them `SED : SEC :
 // SBC #$0001 : STA`, and none of them the port's: `$80:ED46` a weapon fired,
@@ -348,6 +359,28 @@ static inline bool cheat_demo(const uint8_t* ram) {
   return false;
 }
 
+// The tourists' `BNE`, and the room where it has to stay the cartridge's. The
+// room's record is looked up in the game's own table (`$80:886D  LDA
+// $9F8002,X`) rather than written down.
+#define CHEAT_TOURIST_TURN 0x83a012u
+#define CHEAT_LEVEL_TABLE 0x9f8002u
+#define CHEAT_W_LEVEL_RECORD 0x0c10u
+#define CHEAT_ROOM_TOURISTS_TURN 50
+
+// Is the level being played bonus room 50?
+static inline bool cheat_tourists_turn(const uint8_t* ram, const uint8_t* rom) {
+  const size_t at = cheat_rom_offset(CHEAT_LEVEL_TABLE) + CHEAT_ROOM_TOURISTS_TURN * 2;
+  return cheat_r16(ram, CHEAT_W_LEVEL_RECORD) == (uint16_t)(rom[at] | rom[at + 1] << 8);
+}
+
+// Put the tourists' patch in or take it out, on its own.
+static inline void cheat_tourists_patch(uint8_t* rom, bool in) {
+  for (int i = 0; i < CHEAT_PATCH_COUNT; i++) {
+    const CheatPatch* p = &cheat_patches[i];
+    if (p->addr == CHEAT_TOURIST_TURN) memcpy(rom + cheat_rom_offset(p->addr), in ? p->now : p->was, p->len);
+  }
+}
+
 // A quick load has put another game in the machine: it is owed what a start is.
 static inline void cheats_loaded(Cheats* c) { c->owed[0] = c->owed[1] = true; }
 
@@ -359,6 +392,7 @@ static inline void cheats_tick(Cheats* c, uint8_t* ram, uint8_t* rom) {
   const bool demo = cheat_demo(ram);
   if (demo == c->installed) cheats_patch(c, rom, !demo);
   if (demo) return;
+  if (c->on[CHEAT_NEIGHBORS]) cheat_tourists_patch(rom, !cheat_tourists_turn(ram, rom));
   for (int p = 0; p < 2; p++) {
     const uint32_t weapons = CHEAT_W_INVENTORY + (uint32_t)p * 0x20;
     const uint32_t items = CHEAT_W_ITEMS + (uint32_t)p * 0x20;
