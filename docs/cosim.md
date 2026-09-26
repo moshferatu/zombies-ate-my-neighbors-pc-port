@@ -14676,3 +14676,59 @@ loops the 65816 still runs go from 319.7 to 113.8 million instructions.
 What is left, by family: callable routines 83.8%, thread bodies 9.7%,
 vblank jobs 3.8%, the frame 2.7%. The top rows are `$80:E4BA` at 8.1%,
 `$80:CDF4` at 5.4% and the NMI's own instructions.
+
+## The player's frame and the walk (2026-09-26)
+
+Step five of the path: the callable tail, ranked from the live residue of all
+56 records. Its top two rows were `$80:E4BA` at 8.1% and `$80:CDF4` at 5.4%,
+and they turned out to be one piece of the game: the movement handler, and the
+frame that calls it. `$80:CDF4` is the player's frame, not the level's main
+body, as the round that declared it said. It runs once per player. See
+`docs/threads.md`, "The player's frame".
+
+Twenty-four entries, all stretches, in `port/bodies.c`: five in the frame, the
+four routines it calls that were not ported (`$D1EA`, `$D01B`, `$CE25`,
+`$CE72`), fourteen in `$80:E4BA`, and `$80:E739`. Every call they make stays the ROM's, and every routine
+those calls reach was already registered: `step_propose`, `terrain_blocked`,
+`step_tether_blocked`, `actor_obstacle_at_point`, `terrain_out_of_bounds`,
+`actor_publish_pos` and `player_state_normal`.
+
+**`hotbytes.py` said what to port and what to leave.** Over the 56 records,
+`$80:E4BA` ran 135,507 times at 35 instructions a call, and its callees
+nothing, since they were substituted. The four sibling handlers in the
+table at `$80:D74F`, for other ground, ran zero times. In `$80:D01B` the
+event request in `$50` never fired, and in `$CE25` and `$CE72` the level
+never ended and nobody died. The live sweep plays invincible, so the corpus
+is what reaches those. They are left to the ROM by exits, and the corpus
+takes every one but the double step: the event request, the level's end, a
+death and the special tiles each hand over and verify.
+
+`$BFC8` saying yes looked like one of those, and was not. The x axis reached
+`$E4E7` 103,815 times and `$E4F5` only 98,738. The difference is the second
+question, where the player stands now, which lets two actors that already
+overlap walk apart. It is ported, as `walk_x_asked` and `walk_y_asked`, and
+the sweep checks it 4,732 and 2,877 times.
+
+**Checked.** The corpus verifies at 23,084,444 calls across 50 movies with 0
+diverged, and `verify --level` over all 56 records at 37,228,038. Every new
+cost model is exact to the refresh on every call. The declines are last
+round's. Lockstep over the corpus, run twice, once with the 24 left to the ROM
+and once substituted, ends on the same cycle on each of the 49 movies that
+finish. The four level-25 partings are at the same passes, and `level25-2p`'s
+VRAM word and `level25-lane`'s BG1 scroll are the same two video differences.
+`level21-exit.zmv` still hangs in both. `zamn_test_layers` is unchanged on
+six movies in 16:9 and 21:9. Coverage over the corpus is 506 of 659 sites. Of the 20 new ones, `player_no_recovery` and `walk_twice` are untaken.
+
+Live, over all 56 records, the game prints **93.1%**, from 92.3%, and every
+record gains 0.5 to 1.2 points. Without the vblank jobs' DMA it is **86.5%**,
+from 85.7%. The residue goes from 60.3 to 51.8 million instructions of work.
+What is left, by family: callable routines 85.0%, thread bodies 7.4%, vblank
+jobs 4.5%, the frame 3.1%. The top rows are the NMI's own instructions at
+`$80:8199` and `$80:816C`, then `$81:BEE3 monster_chase` at 2.5%, `$81:8A5C`
+at 2.4% and `$80:D4F4` at 2.0%.
+
+What the new rows are still charged is their exits: each `JSR`, `JSL` and
+`RTS` between two stretches is an instruction the ROM executes. That is three
+a frame at `$CDF7` and one or two in each of the walk's. It is the cost of the
+rule that no stretch contains another routine's stack traffic, and it is
+roughly what is left of these routines in the residue.

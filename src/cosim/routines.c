@@ -5401,6 +5401,41 @@ static const CosimRun TANIM_COST[TANIM_BLOCK_COUNT] = {
     [TANIM_TAKEN] = {6, 0, 0},
 };
 
+// The player's frame, `$80:CDF4`, and the movement handler at `$80:E4BA`.
+// Nothing here reads outside the page but `$1D52` and `$1CB8,X`, low WRAM.
+static const CosimRun PBODY_COST[PBODY_BLOCK_COUNT] = {
+    [PBODY_TICKS] = {18, 3, 0},
+    [PBODY_STATE] = {102, 7, 1},
+    [PBODY_MOVE] = {40, 4, 1},
+    [PBODY_MOVE_CALL] = {74, 5, 0},
+    [PBODY_BUTTONS] = {56, 4, 2},
+    [PBODY_BRA] = {18, 2, 0},
+    [PBODY_BRANCH] = {28, 2, 1},
+    [PBODY_EVENT] = {40, 4, 1},
+    [PBODY_SKIP] = {40, 4, 1},
+    [PBODY_RECOVER] = {62, 4, 1},
+    [PBODY_RECOVERED] = {46, 5, 1},
+    [PBODY_WON] = {46, 5, 0},
+    [PBODY_DEAD] = {80, 7, 1},
+    [PBODY_TAKEN] = {6, 0, 0},
+};
+
+static const CosimRun WALK_COST[WALK_BLOCK_COUNT] = {
+    [WALK_BOOST] = {40, 4, 1},
+    [WALK_AT_X] = {56, 4, 2},
+    [WALK_AT_Y] = {56, 4, 2},
+    [WALK_BRANCH] = {12, 2, 0},
+    [WALK_SELF_X] = {84, 6, 3},
+    [WALK_SELF_Y] = {84, 6, 3},
+    [WALK_SELF_HERE] = {84, 6, 3},
+    [WALK_TAKE_X] = {56, 4, 2},
+    [WALK_TAKE_Y] = {56, 4, 2},
+    [WALK_SOLID_HEAD] = {60, 9, 0},
+    [WALK_SOLID_NEXT] = {30, 5, 0},
+    [WALK_SOLID_SEC] = {12, 1, 0},
+    [WALK_TAKEN] = {6, 0, 0},
+};
+
 static int body_cycles(const BodyWork* k, const CosimRun* cost, int count,
                        const CosimRegs* in) {
   const bool fast = fetch_fast(in);
@@ -5464,6 +5499,30 @@ BODY_SHIM(actors_measured, actors_measured(w, &c, &k), ACTORS_COST)
 BODY_SHIM(actors_started, actors_started(w, &c, &k), ACTORS_COST)
 BODY_SHIM(tile_anim_resume, tile_anim_resume(w, rom, &c, &k), TANIM_COST)
 BODY_SHIM(tile_anim_queued, tile_anim_queued(w, &c, &k), TANIM_COST)
+BODY_SHIM(player_ticks, player_ticks(&c, &k), PBODY_COST)
+BODY_SHIM(player_state, player_state(w, &c, &k), PBODY_COST)
+BODY_SHIM(player_move, player_move(w, &c, &k), PBODY_COST)
+BODY_SHIM(player_buttons, player_buttons(w, &c, &k), PBODY_COST)
+BODY_SHIM(player_loop, player_loop(&c, &k), PBODY_COST)
+BODY_SHIM(player_branch, player_branch(w, &c, &k), PBODY_COST)
+BODY_SHIM(player_hurt, player_hurt(w, &c, &k), PBODY_COST)
+BODY_SHIM(player_won, player_won(w, &c, &k), PBODY_COST)
+BODY_SHIM(player_dead, player_dead(w, &c, &k), PBODY_COST)
+BODY_SHIM(walk_start, walk_start(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_proposed, walk_proposed(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_x_terrain, walk_x_terrain(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_x_reacted, walk_x_reacted(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_x_tether, walk_x_tether(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_x_obstacle, walk_x_obstacle(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_x_asked, walk_x_asked(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_x_bounds, walk_x_bounds(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_y_terrain, walk_y_terrain(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_y_reacted, walk_y_reacted(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_y_tether, walk_y_tether(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_y_obstacle, walk_y_obstacle(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_y_asked, walk_y_asked(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_y_bounds, walk_y_bounds(w, &c, &k), WALK_COST)
+BODY_SHIM(walk_solid, walk_solid(&c, &k), WALK_COST)
 
 static const uint32_t VICTIMS_YIELD_EXITS[] = {VICTIMS_YIELD_PC};
 static const uint32_t VICTIMS_RESUME_EXITS[] = {
@@ -5481,6 +5540,57 @@ static const uint32_t ACTORS_CHECKED_EXITS[] = {
 static const uint32_t TILE_ANIM_YIELD_EXITS[] = {TILE_ANIM_YIELD_PC};
 static const uint32_t TILE_ANIM_RESUME_EXITS[] = {
     TILE_ANIM_YIELD_PC, TILE_ANIM_QUEUE_CALL_PC, TILE_ANIM_END_PC};
+
+// `$80:CE72` indexes `$1CB8` by the page's `$0E`, which is 0 or 2; anything
+// that would reach past low WRAM is not a player's page.
+static bool accepts_player_dead(const Wram* w, const CosimRegs* in) {
+  return accepts_body_low(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + 0x0e)) < 0x2000 - W_PLAYER_HEALTH - 1;
+}
+
+static const uint32_t PLAYER_TICKS_EXITS[] = {PLAYER_YIELD_PC};
+static const uint32_t PLAYER_STATE_EXITS[] = {PLAYER_STATE_CALL_PC};
+static const uint32_t PLAYER_MOVE_EXITS[] = {
+    PLAYER_MOVE_CALL_PC, PLAYER_PUBLISH_PC};
+static const uint32_t PLAYER_BUTTONS_EXITS[] = {PLAYER_WON_CALL_PC};
+static const uint32_t PLAYER_LOOP_EXITS[] = {PLAYER_YIELD_PC};
+static const uint32_t PLAYER_BRANCH_EXITS[] = {PLAYER_BRANCH_JMP_PC};
+static const uint32_t PLAYER_HURT_EXITS[] = {
+    PLAYER_HURT_EVENT_PC, PLAYER_HURT_RTS_PC, PLAYER_HURT_RESET_RTS_PC};
+static const uint32_t PLAYER_WON_EXITS[] = {
+    PLAYER_WON_RTS_PC, PLAYER_WON_END_PC};
+static const uint32_t PLAYER_DEAD_EXITS[] = {
+    PLAYER_DEAD_RTS_PC, PLAYER_DEAD_END_PC};
+static const uint32_t WALK_START_EXITS[] = {
+    WALK_TWICE_PC, WALK_PROPOSE_CALL_PC};
+static const uint32_t WALK_PROPOSED_EXITS[] = {WALK_X_TERRAIN_CALL_PC};
+static const uint32_t WALK_X_TERRAIN_EXITS[] = {
+    WALK_X_REACT_CALL_PC, WALK_X_TETHER_CALL_PC};
+static const uint32_t WALK_X_REACTED_EXITS[] = {
+    WALK_X_TETHER_CALL_PC, WALK_Y_TERRAIN_CALL_PC};
+static const uint32_t WALK_X_TETHER_EXITS[] = {
+    WALK_Y_TERRAIN_CALL_PC, WALK_X_OBSTACLE_CALL_PC};
+static const uint32_t WALK_X_OBSTACLE_EXITS[] = {
+    WALK_X_BOUNDS_CALL_PC, WALK_X_ASK_CALL_PC};
+static const uint32_t WALK_X_ASKED_EXITS[] = {
+    WALK_Y_TERRAIN_CALL_PC, WALK_X_BOUNDS_CALL_PC};
+static const uint32_t WALK_X_BOUNDS_EXITS[] = {WALK_Y_TERRAIN_CALL_PC};
+static const uint32_t WALK_Y_TERRAIN_EXITS[] = {
+    WALK_Y_REACT_CALL_PC, WALK_Y_TETHER_CALL_PC};
+static const uint32_t WALK_Y_REACTED_EXITS[] = {
+    WALK_RTS_PC, WALK_Y_TETHER_CALL_PC};
+static const uint32_t WALK_Y_TETHER_EXITS[] = {
+    WALK_RTS_PC, WALK_Y_OBSTACLE_CALL_PC};
+static const uint32_t WALK_Y_OBSTACLE_EXITS[] = {
+    WALK_Y_BOUNDS_CALL_PC, WALK_Y_ASK_CALL_PC};
+static const uint32_t WALK_Y_ASKED_EXITS[] = {
+    WALK_RTS_PC, WALK_Y_BOUNDS_CALL_PC};
+static const uint32_t WALK_Y_BOUNDS_EXITS[] = {WALK_RTS_PC};
+// `WALK_SOLID_REACT_PC` and the `RTS`, written out: an initializer here has to
+// be constant.
+static const uint32_t WALK_SOLID_EXITS[] = {
+    0x80e742u, 0x80e74fu, 0x80e760u, 0x80e76au,
+    0x80e774u, 0x80e789u, WALK_SOLID_RTS_PC};
 
 // ---------------------------------------------------------------------------
 // Vblank jobs — see `port/vblank.h`
@@ -8043,6 +8153,244 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(TILE_ANIM_YIELD_EXITS),
         .uncalled = true,
         .cycles = 18,
+    },
+    // The player's frame and the movement handler, the same way. The four the
+    // body calls are called, so they serve a call; the rest are reached by a
+    // return or by the body's `RTS` into a handler.
+    {
+        .name = "player_ticks",
+        .symbol = "$80:CDF7",
+        .entry = 0x80cdf7,
+        .run = shim_player_ticks,
+        .accepts = accepts_body,
+        COSIM_EXITS(PLAYER_TICKS_EXITS),
+        .uncalled = true,
+        .cycles = 18,
+    },
+    {
+        .name = "player_state",
+        .symbol = "$80:CE04",
+        .entry = 0x80ce04,
+        .run = shim_player_state,
+        .accepts = accepts_body,
+        COSIM_EXITS(PLAYER_STATE_EXITS),
+        .uncalled = true,
+        .cycles = 102,
+    },
+    {
+        .name = "player_move",
+        .symbol = "$80:CE0C",
+        .entry = 0x80ce0c,
+        .run = shim_player_move,
+        .accepts = accepts_body,
+        COSIM_EXITS(PLAYER_MOVE_EXITS),
+        .uncalled = true,
+        .cycles = 114,
+    },
+    {
+        .name = "player_buttons",
+        .symbol = "$80:CE19",
+        .entry = 0x80ce19,
+        .run = shim_player_buttons,
+        .accepts = accepts_body,
+        COSIM_EXITS(PLAYER_BUTTONS_EXITS),
+        .uncalled = true,
+        .cycles = 56,
+    },
+    {
+        .name = "player_loop",
+        .symbol = "$80:CE23",
+        .entry = 0x80ce23,
+        .run = shim_player_loop,
+        .accepts = accepts_body,
+        COSIM_EXITS(PLAYER_LOOP_EXITS),
+        .uncalled = true,
+        .cycles = 36,
+    },
+    {
+        .name = "player_branch",
+        .symbol = "$80:D1EA",
+        .entry = 0x80d1ea,
+        .run = shim_player_branch,
+        .accepts = accepts_body,
+        COSIM_EXITS(PLAYER_BRANCH_EXITS),
+        .cycles = 28,
+    },
+    {
+        .name = "player_hurt",
+        .symbol = "$80:D01B",
+        .entry = 0x80d01b,
+        .run = shim_player_hurt,
+        .accepts = accepts_body,
+        COSIM_EXITS(PLAYER_HURT_EXITS),
+        .cycles = 148,
+    },
+    {
+        .name = "player_won",
+        .symbol = "$80:CE25",
+        .entry = 0x80ce25,
+        .run = shim_player_won,
+        .accepts = accepts_body_low,
+        COSIM_EXITS(PLAYER_WON_EXITS),
+        .cycles = 52,
+    },
+    {
+        .name = "player_dead",
+        .symbol = "$80:CE72",
+        .entry = 0x80ce72,
+        .run = shim_player_dead,
+        .accepts = accepts_player_dead,
+        COSIM_EXITS(PLAYER_DEAD_EXITS),
+        .cycles = 80,
+    },
+    {
+        .name = "walk_start",
+        .symbol = "$80:E4BA",
+        .entry = 0x80e4ba,
+        .run = shim_walk_start,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_START_EXITS),
+        .uncalled = true,
+        .cycles = 46,
+    },
+    {
+        .name = "walk_proposed",
+        .symbol = "$80:E4C4",
+        .entry = 0x80e4c4,
+        .run = shim_walk_proposed,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_PROPOSED_EXITS),
+        .uncalled = true,
+        .cycles = 56,
+    },
+    {
+        .name = "walk_x_terrain",
+        .symbol = "$80:E4CC",
+        .entry = 0x80e4cc,
+        .run = shim_walk_x_terrain,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_X_TERRAIN_EXITS),
+        .uncalled = true,
+        .cycles = 74,
+    },
+    {
+        .name = "walk_x_reacted",
+        .symbol = "$80:E4D1",
+        .entry = 0x80e4d1,
+        .run = shim_walk_x_reacted,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_X_REACTED_EXITS),
+        .uncalled = true,
+        .cycles = 74,
+    },
+    {
+        .name = "walk_x_tether",
+        .symbol = "$80:E4DB",
+        .entry = 0x80e4db,
+        .run = shim_walk_x_tether,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_X_TETHER_EXITS),
+        .uncalled = true,
+        .cycles = 96,
+    },
+    {
+        .name = "walk_x_obstacle",
+        .symbol = "$80:E4E7",
+        .entry = 0x80e4e7,
+        .run = shim_walk_x_obstacle,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_X_OBSTACLE_EXITS),
+        .uncalled = true,
+        .cycles = 74,
+    },
+    {
+        .name = "walk_x_asked",
+        .symbol = "$80:E4F3",
+        .entry = 0x80e4f3,
+        .run = shim_walk_x_asked,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_X_ASKED_EXITS),
+        .uncalled = true,
+        .cycles = 74,
+    },
+    {
+        .name = "walk_x_bounds",
+        .symbol = "$80:E4FD",
+        .entry = 0x80e4fd,
+        .run = shim_walk_x_bounds,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_X_BOUNDS_EXITS),
+        .uncalled = true,
+        .cycles = 124,
+    },
+    {
+        .name = "walk_y_terrain",
+        .symbol = "$80:E50B",
+        .entry = 0x80e50b,
+        .run = shim_walk_y_terrain,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_Y_TERRAIN_EXITS),
+        .uncalled = true,
+        .cycles = 74,
+    },
+    {
+        .name = "walk_y_reacted",
+        .symbol = "$80:E510",
+        .entry = 0x80e510,
+        .run = shim_walk_y_reacted,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_Y_REACTED_EXITS),
+        .uncalled = true,
+        .cycles = 74,
+    },
+    {
+        .name = "walk_y_tether",
+        .symbol = "$80:E51A",
+        .entry = 0x80e51a,
+        .run = shim_walk_y_tether,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_Y_TETHER_EXITS),
+        .uncalled = true,
+        .cycles = 96,
+    },
+    {
+        .name = "walk_y_obstacle",
+        .symbol = "$80:E526",
+        .entry = 0x80e526,
+        .run = shim_walk_y_obstacle,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_Y_OBSTACLE_EXITS),
+        .uncalled = true,
+        .cycles = 74,
+    },
+    {
+        .name = "walk_y_asked",
+        .symbol = "$80:E532",
+        .entry = 0x80e532,
+        .run = shim_walk_y_asked,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_Y_ASKED_EXITS),
+        .uncalled = true,
+        .cycles = 74,
+    },
+    {
+        .name = "walk_y_bounds",
+        .symbol = "$80:E53C",
+        .entry = 0x80e53c,
+        .run = shim_walk_y_bounds,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_Y_BOUNDS_EXITS),
+        .uncalled = true,
+        .cycles = 68,
+    },
+    {
+        .name = "walk_solid",
+        .symbol = "$80:E739",
+        .entry = 0x80e739,
+        .run = shim_walk_solid,
+        .accepts = accepts_body,
+        COSIM_EXITS(WALK_SOLID_EXITS),
+        .cycles = 252,
     },
     // Vblank jobs, which write the PPU. See `port/vblank.h`. Each prices
     // itself through `cosim_hw`, so `.cycles` is only what a refused trace

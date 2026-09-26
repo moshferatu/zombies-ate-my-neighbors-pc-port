@@ -5,6 +5,54 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The player's frame and the walk (2026-09-26)
+
+Step five of the Devil's Crush path: the callable tail, ranked from play. The
+top two rows of the live residue were one thing. `$80:CDF4` is the player's
+frame, and `$80:E4BA` is the movement handler it calls through `$2A` on
+ordinary ground. Both are ported now as stretches between their calls, in
+`src/port/bodies.c`, with the four small routines the frame calls and the
+tile reaction the walk calls. See `docs/threads.md`, "The player's frame".
+
+`$80:CDF4` was filed as the level's main body. It is the player's. It runs
+once per player, calls `actor_publish_pos` and reads that player's health at
+`$1CB8`. Each pass it yields a tick and makes seven calls: the state machine,
+the hit recovery count, the state handler at `$28`, the movement handler at
+`$2A`, the position, and two checks, neighbours left and health left. Between
+them it does almost nothing.
+
+`$80:E4BA` asks `step_propose` where the player wants to be and then tries
+each axis against four routines that were already ported: solid ground, the
+other player's leash, an actor standing there, the map's edge. The first to
+say no stops that axis. `$80:E739`, what solid ground does, keeps six
+attribute values with reactions of their own and says blocked to the rest.
+
+The rare paths go back to the ROM from inside a stretch: an event request in
+`$50`, the level's end, a player's death, the six tile reactions, and the
+double step `$54` asks for. The registry is 184 entries.
+
+* **Checked.** The corpus verifies at 23,084,444 calls across 50 movies with 0
+  diverged, and `verify --level` over all 56 records at 37,228,038. Every new
+  cost model is exact to the refresh on every call. Lockstep with the 24 left
+  to the ROM and with them substituted ends on the same cycle on all 49
+  movies that finish, with the same four level-25 partings and the same two
+  video differences. So the new routines add no drift at all. 18 of the 20
+  new coverage sites are taken. The two that are not are `$6A` holding the
+  recovery count and the double step. `zamn_test_layers` is unchanged on six
+  movies in 16:9 and 21:9.
+* **Live, over all 56 records, 92.3% becomes 93.1%**, and every record gains
+  0.5 to 1.2 points. Without the vblank jobs' DMA it is **86.5%**, from 85.7%.
+* **The residue** goes from 60.3 to 51.8 million instructions of work. By
+  family: callable routines 85.0%, thread bodies 7.4%, vblank jobs 4.5%, the
+  frame 3.1%. The top rows now are the NMI's own instructions,
+  `$81:BEE3 monster_chase` at 2.5% and `$81:8A5C` at 2.4%.
+* **What a stretch still costs the ROM** is its exits: the calls and returns
+  between stretches. The frame's are three a pass at `$CDF7`. They are most of
+  what the residue still charges to the new rows, and they are the price of
+  never having one routine hold another's stack.
+* **`level21-exit.zmv` still hangs under lockstep**, in both configurations.
+  Stopped at 40 minutes.
+
 ### The radar shows every neighbour at once (2026-09-26)
 
 Asked for in play-testing: the radar's squares flash, which smoothing makes

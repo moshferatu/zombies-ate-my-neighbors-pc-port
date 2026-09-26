@@ -622,3 +622,350 @@ void tile_anim_resume(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k) {
   k->blocks[TANIM_QUEUE]++;
   c->pc = TILE_ANIM_QUEUE_CALL_PC;
 }
+
+// ---------------------------------------------------------------------------
+// $80:CDF4  player_body
+// ---------------------------------------------------------------------------
+
+// `$80:CDF7  LDA #$0001`, and the `JSL thread_yield` after it.
+void player_ticks(PortCpu* c, BodyWork* k) {
+  lda(c, 0x0001);
+  k->blocks[PBODY_TICKS]++;
+  c->pc = PLAYER_YIELD_PC;
+}
+
+// `$80:CE23  BRA $CDF7`: the frame is done.
+void player_loop(PortCpu* c, BodyWork* k) {
+  k->blocks[PBODY_BRA]++;
+  player_ticks(c, k);
+}
+
+// `$80:CE04  PEA $CE0B : LDA $28 : DEC : PHA`, and the `RTS` after it calls
+// the state handler, which comes back to `$CE0C`.
+void player_state(Wram* w, PortCpu* c, BodyWork* k) {
+  push16(w, c, 0xce0b);
+  lda(c, (uint16_t)(dp_r16(w, c, 0x28) - 1));
+  push16(w, c, c->a);
+  k->blocks[PBODY_STATE]++;
+  c->pc = PLAYER_STATE_CALL_PC;
+}
+
+// `$80:CE0C  LDA $2A : BEQ $CE16`, and the movement handler the same way. It
+// comes back to `$CE16`, the `JSR $F327` a zero goes straight to.
+void player_move(Wram* w, PortCpu* c, BodyWork* k) {
+  lda(c, dp_r16(w, c, 0x2a));
+  k->blocks[PBODY_MOVE]++;
+  if (c->a == 0) {
+    PORT_COVER(player_still);
+    k->blocks[PBODY_TAKEN]++;
+    c->pc = PLAYER_PUBLISH_PC;
+    return;
+  }
+  push16(w, c, 0xce15);
+  lda(c, (uint16_t)(c->a - 1));
+  push16(w, c, c->a);
+  k->blocks[PBODY_MOVE_CALL]++;
+  c->pc = PLAYER_MOVE_CALL_PC;
+}
+
+// `$80:CE19  LDA $1A : STA $1C`: this frame's buttons are next frame's last.
+void player_buttons(Wram* w, PortCpu* c, BodyWork* k) {
+  lda(c, dp_r16(w, c, 0x1a));
+  dp_w16(w, c, 0x1c, c->a);
+  k->blocks[PBODY_BUTTONS]++;
+  c->pc = PLAYER_WON_CALL_PC;
+}
+
+// `$80:D1EA  LDX $70`, in front of `JMP ($D1EF,X)`.
+void player_branch(Wram* w, PortCpu* c, BodyWork* k) {
+  c->x = dp_r16(w, c, 0x70);
+  set_nz16(c, c->x);
+  k->blocks[PBODY_BRANCH]++;
+  c->pc = PLAYER_BRANCH_JMP_PC;
+}
+
+// `$80:D01B`. Bit 15 of `$50` is an event request, and what it does is the
+// ROM's. Otherwise, unless `$6A` is set, the hit recovery count at `$52` steps
+// down, and once it is negative it is held at `$FFFF`.
+void player_hurt(Wram* w, PortCpu* c, BodyWork* k) {
+  bit16(c, dp_r16(w, c, 0x50));
+  k->blocks[PBODY_EVENT]++;
+  if (flag(c, PORT_P_N)) {
+    PORT_COVER(player_event);
+    k->blocks[PBODY_TAKEN]++;
+    c->pc = PLAYER_HURT_EVENT_PC;
+    return;
+  }
+  lda(c, dp_r16(w, c, 0x6a));
+  k->blocks[PBODY_SKIP]++;
+  if (c->a != 0) {
+    PORT_COVER(player_no_recovery);
+    k->blocks[PBODY_TAKEN]++;
+    c->pc = PLAYER_HURT_RTS_PC;
+    return;
+  }
+  const uint16_t left = (uint16_t)(dp_r16(w, c, 0x52) - 1);
+  dp_w16(w, c, 0x52, left);
+  set_nz16(c, left);
+  k->blocks[PBODY_RECOVER]++;
+  if (!(left & 0x8000u)) {
+    k->blocks[PBODY_TAKEN]++;
+    c->pc = PLAYER_HURT_RTS_PC;
+    return;
+  }
+  PORT_COVER(player_recovered);
+  lda(c, 0xffff);
+  dp_w16(w, c, 0x52, c->a);
+  k->blocks[PBODY_RECOVERED]++;
+  c->pc = PLAYER_HURT_RESET_RTS_PC;
+}
+
+// `$80:CE25  LDA $1D52 : BNE $CE6D`. With no neighbours left the level is
+// over, and ending it is the ROM's.
+void player_won(Wram* w, PortCpu* c, BodyWork* k) {
+  lda(c, wram_r16(w, W_NEIGHBOURS_LEFT));
+  k->blocks[PBODY_WON]++;
+  if (c->a != 0) {
+    k->blocks[PBODY_TAKEN]++;
+    c->pc = PLAYER_WON_RTS_PC;
+    return;
+  }
+  PORT_COVER(player_level_won);
+  c->pc = PLAYER_WON_END_PC;
+}
+
+// `$80:CE72  LDX $0E : LDA $1CB8,X : BEQ $CE7A`. With no health left the
+// player dies, and that is the ROM's.
+void player_dead(Wram* w, PortCpu* c, BodyWork* k) {
+  c->x = dp_r16(w, c, 0x0e);
+  set_nz16(c, c->x);
+  lda(c, wram_r16(w, (uint16_t)(W_PLAYER_HEALTH + c->x)));
+  k->blocks[PBODY_DEAD]++;
+  if (c->a != 0) {
+    c->pc = PLAYER_DEAD_RTS_PC;
+    return;
+  }
+  PORT_COVER(player_died);
+  k->blocks[PBODY_TAKEN]++;
+  c->pc = PLAYER_DEAD_END_PC;
+}
+
+// ---------------------------------------------------------------------------
+// $80:E4BA  player_walk
+// ---------------------------------------------------------------------------
+
+// `LDX dp : LDY dp`, the point the next call is asked about.
+static void walk_point(Wram* w, PortCpu* c, uint8_t x, uint8_t y) {
+  c->x = dp_r16(w, c, x);
+  set_nz16(c, c->x);
+  c->y = dp_r16(w, c, y);
+  set_nz16(c, c->y);
+}
+
+// `LDA $08` first, for `$BFC8`: the player's own record, which it skips.
+static void walk_self(Wram* w, PortCpu* c, uint8_t x, uint8_t y) {
+  lda(c, dp_r16(w, c, 0x08));
+  walk_point(w, c, x, y);
+}
+
+// A `BCC` or `BCS` on what the last call said, and whether it was taken.
+static bool walk_branch(PortCpu* c, BodyWork* k, bool on_carry) {
+  k->blocks[WALK_BRANCH]++;
+  const bool taken = flag(c, PORT_P_C) == on_carry;
+  if (taken) k->blocks[WALK_TAKEN]++;
+  return taken;
+}
+
+// `$E4D3`, `$E4F5`, `$E503`, `$E512` and `$E534`: the next question.
+static void walk_x_ask(Wram* w, PortCpu* c, BodyWork* k, uint32_t call) {
+  walk_point(w, c, 0x34, 0x32);
+  k->blocks[WALK_AT_X]++;
+  c->pc = call;
+}
+
+static void walk_y_ask(Wram* w, PortCpu* c, BodyWork* k, uint32_t call) {
+  walk_point(w, c, 0x30, 0x36);
+  k->blocks[WALK_AT_Y]++;
+  c->pc = call;
+}
+
+// `$E503`: x is settled one way or the other, and y starts.
+static void walk_to_y(Wram* w, PortCpu* c, BodyWork* k) {
+  walk_y_ask(w, c, k, WALK_Y_TERRAIN_CALL_PC);
+}
+
+void walk_start(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E4BA  BIT $54 : BPL $E4C1
+  bit16(c, dp_r16(w, c, 0x54));
+  k->blocks[WALK_BOOST]++;
+  if (flag(c, PORT_P_N)) {
+    PORT_COVER(walk_twice);
+    c->pc = WALK_TWICE_PC;
+    return;
+  }
+  k->blocks[WALK_TAKEN]++;
+  c->pc = WALK_PROPOSE_CALL_PC;
+}
+
+void walk_proposed(Wram* w, PortCpu* c, BodyWork* k) {
+  walk_x_ask(w, c, k, WALK_X_TERRAIN_CALL_PC);
+}
+
+void walk_x_terrain(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E4CC  BCC $E4D3
+  if (walk_branch(c, k, false)) {
+    walk_x_ask(w, c, k, WALK_X_TETHER_CALL_PC);
+    return;
+  }
+  PORT_COVER(walk_x_solid);
+  c->pc = WALK_X_REACT_CALL_PC;
+}
+
+void walk_x_reacted(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E4D1  BCS $E503
+  if (walk_branch(c, k, true)) {
+    PORT_COVER(walk_x_stopped);
+    walk_to_y(w, c, k);
+    return;
+  }
+  walk_x_ask(w, c, k, WALK_X_TETHER_CALL_PC);
+}
+
+void walk_x_tether(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E4DB  BCS $E503
+  if (walk_branch(c, k, true)) {
+    PORT_COVER(walk_x_tethered);
+    walk_to_y(w, c, k);
+    return;
+  }
+  walk_self(w, c, 0x34, 0x32);
+  k->blocks[WALK_SELF_X]++;
+  c->pc = WALK_X_OBSTACLE_CALL_PC;
+}
+
+void walk_x_obstacle(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E4E7  BCC $E4F5
+  if (walk_branch(c, k, false)) {
+    walk_x_ask(w, c, k, WALK_X_BOUNDS_CALL_PC);
+    return;
+  }
+  PORT_COVER(walk_x_obstacle);
+  walk_self(w, c, 0x30, 0x32);
+  k->blocks[WALK_SELF_HERE]++;
+  c->pc = WALK_X_ASK_CALL_PC;
+}
+
+void walk_x_asked(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E4F3  BCC $E503
+  if (walk_branch(c, k, false)) {
+    walk_to_y(w, c, k);
+    return;
+  }
+  PORT_COVER(walk_x_overlap);
+  walk_x_ask(w, c, k, WALK_X_BOUNDS_CALL_PC);
+}
+
+void walk_x_bounds(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E4FD  BCS $E503
+  if (walk_branch(c, k, true)) {
+    PORT_COVER(walk_x_off_map);
+    walk_to_y(w, c, k);
+    return;
+  }
+  lda(c, dp_r16(w, c, 0x34));
+  dp_w16(w, c, 0x30, c->a);
+  k->blocks[WALK_TAKE_X]++;
+  walk_to_y(w, c, k);
+}
+
+void walk_y_terrain(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E50B  BCC $E512
+  if (walk_branch(c, k, false)) {
+    walk_y_ask(w, c, k, WALK_Y_TETHER_CALL_PC);
+    return;
+  }
+  PORT_COVER(walk_y_solid);
+  c->pc = WALK_Y_REACT_CALL_PC;
+}
+
+void walk_y_reacted(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E510  BCS $E542
+  if (walk_branch(c, k, true)) {
+    PORT_COVER(walk_y_stopped);
+    c->pc = WALK_RTS_PC;
+    return;
+  }
+  walk_y_ask(w, c, k, WALK_Y_TETHER_CALL_PC);
+}
+
+void walk_y_tether(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E51A  BCS $E542
+  if (walk_branch(c, k, true)) {
+    PORT_COVER(walk_y_tethered);
+    c->pc = WALK_RTS_PC;
+    return;
+  }
+  walk_self(w, c, 0x30, 0x36);
+  k->blocks[WALK_SELF_Y]++;
+  c->pc = WALK_Y_OBSTACLE_CALL_PC;
+}
+
+void walk_y_obstacle(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E526  BCC $E534
+  if (walk_branch(c, k, false)) {
+    walk_y_ask(w, c, k, WALK_Y_BOUNDS_CALL_PC);
+    return;
+  }
+  PORT_COVER(walk_y_obstacle);
+  walk_self(w, c, 0x30, 0x32);
+  k->blocks[WALK_SELF_HERE]++;
+  c->pc = WALK_Y_ASK_CALL_PC;
+}
+
+void walk_y_asked(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E532  BCC $E542
+  if (walk_branch(c, k, false)) {
+    c->pc = WALK_RTS_PC;
+    return;
+  }
+  PORT_COVER(walk_y_overlap);
+  walk_y_ask(w, c, k, WALK_Y_BOUNDS_CALL_PC);
+}
+
+void walk_y_bounds(Wram* w, PortCpu* c, BodyWork* k) {
+  // $E53C  BCS $E542
+  if (walk_branch(c, k, true)) {
+    PORT_COVER(walk_y_off_map);
+    c->pc = WALK_RTS_PC;
+    return;
+  }
+  lda(c, dp_r16(w, c, 0x36));
+  dp_w16(w, c, 0x32, c->a);
+  k->blocks[WALK_TAKE_Y]++;
+  c->pc = WALK_RTS_PC;
+}
+
+// `$80:E739`, what solid ground does.
+const uint16_t WALK_SOLID_VALUE[WALK_SOLID_REACTIONS] = {
+    0x0100, 0x0200, 0x0010, 0x0020, 0x0800, 0x8008};
+const uint32_t WALK_SOLID_REACT_PC[WALK_SOLID_REACTIONS] = {
+    0x80e742u, 0x80e74fu, 0x80e760u, 0x80e76au, 0x80e774u, 0x80e789u};
+
+void walk_solid(PortCpu* c, BodyWork* k) {
+  c->a = asl16(c, c->a);
+  lda(c, (uint16_t)(c->a & 0xcb38u));
+  k->blocks[WALK_SOLID_HEAD]++;
+  for (int i = 0; i < WALK_SOLID_REACTIONS; i++) {
+    if (i) k->blocks[WALK_SOLID_NEXT]++;
+    cmp16(c, c->a, WALK_SOLID_VALUE[i]);
+    if (c->a == WALK_SOLID_VALUE[i]) {
+      PORT_COVER(walk_solid_reacts);
+      c->pc = WALK_SOLID_REACT_PC[i];
+      return;
+    }
+    k->blocks[WALK_TAKEN]++;
+  }
+  set_c(c, true);
+  k->blocks[WALK_SOLID_SEC]++;
+  c->pc = WALK_SOLID_RTS_PC;
+}

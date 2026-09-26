@@ -251,7 +251,9 @@ BLOCKED = {
     # #$0001 : JSL thread_yield : ... : BRA $CDF7`. It is a **loop with a yield
     # in it and no exit** -- the level's main body. Nothing calls it, it never
     # returns, and the profile agrees: 651,060 instructions and zero calls in
-    # eleven movies.
+    # eleven movies. It is the player's frame, not the level's, and since the
+    # step-five round its stretches are ported (BODY_STRETCHES below). What
+    # stays here is the entry itself, one `JSR $D13A` a level.
     0x80CDF4: 'a thread body, and a loop with no exit -- nothing calls it',
     # $80:CB61, the IPL upload, and $80:CB1A, its caller, were here as a
     # per-byte SPC handshake that every call is interrupted in. `apu_boot` is
@@ -456,6 +458,10 @@ BODY_STRETCHES = frozenset((
     0x80C911, 0x80C918, 0x80C967, 0x80C971,  # $80:C8F6, the objects
     0x818113, 0x81814B, 0x81817C,            # $81:80EC, the actor list
     0x82D881, 0x82D87A,                      # $82:D7CF, animated tiles
+    # $80:CDF4, the player's frame. The movement handler it calls through $2A,
+    # $80:E4BA, is stretches too, but it is reached by a call's RTS and is
+    # filed with the callables.
+    0x80CDF7, 0x80CE04, 0x80CE0C, 0x80CE19, 0x80CE23,
 ))
 
 BLOCKED.update({a: 'a thread body -- resumed by RTL from a parked frame, never called'

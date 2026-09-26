@@ -360,6 +360,7 @@ and the bodies ported here were chosen because they loop between calls.
 | `$80:C8F6` the objects | `$C911`, `$C918`, `$C967`, `$C971` | every fourth frame, gives an object in range an actor and frees one out of range |
 | `$81:80EC` the actor list | `$8113`, `$814B`, `$817C` | steps one entry a frame, and starts the nearest ready one at the end of each pass |
 | `$82:D7CF` animated tiles | `$D881`, `$D87A` | counts down up to eight tile sequences and queues their upload |
+| `$80:CDF4` the player's frame | `$CDF7`, `$CE04`, `$CE0C`, `$CE19`, `$CE23` | yields a tick, then makes the seven calls that are a player's frame |
 
 An entry reached by a branch from inside another stretch is fine. `$80:C918`
 is where `JSR $CABF` returns, and also where `$80:C911` branches when there is
@@ -379,3 +380,44 @@ The reset's WRAM clear went in with them, as `reset_clear` at `$80:80C1`, from
 where `JSR init_ppu_regs` returns to just before `STA $4200` turns the NMI on.
 It is two block moves, 131,071 bytes on a cold start, and every byte is an
 instruction. Nothing interrupts it, so `verify` checks it like any call.
+
+## The player's frame (2026-09-26)
+
+`$80:CDF4` was taken for the level's main body when it was first declared. It
+is the player's frame. Each player's thread runs it, it calls
+`actor_publish_pos`, and it reads the player's health at `$1CB8` by the
+doubled index at `$0E`. After `JSR $D13A` builds the page, each pass yields a
+tick and then calls, in order:
+
+| Call | What it is |
+|---|---|
+| `JSR $D1EA` | `LDX $70 : JMP ($D1EF,X)`: the state machine, whose first entry is `player_state_normal` |
+| `JSR $D01B` | the hit recovery count at `$52`, unless `$6A` holds it, and an event request in bit 15 of `$50` |
+| `($28)` | the state handler, by `PEA : LDA : DEC : PHA : RTS` |
+| `($2A)` | the movement handler the same way, when there is one |
+| `JSR $F327` | `actor_publish_pos` |
+| `JSR $CE25` | `LDA $1D52 : BNE`: any neighbours left? |
+| `JSR $CE72` | `LDA $1CB8,X : BEQ`: any health left? |
+
+The only work of its own is `$1C = $1A`, this frame's buttons kept as the next
+frame's last. So it is five stretches, at each place a call comes back to
+that has something before the next call. The other five return points go
+straight into the next `JSR`, and the ROM executes that itself. `$D1EA`,
+`$D01B`, `$CE25` and `$CE72` are stretches too, entered by `JSR`. Each runs to
+its `RTS` or to where its rare path starts, and that path is the ROM's.
+
+**A stretch may be entered by a call and not only by a return.** Those four
+are called, so they serve a call, and they are not `uncalled` in the registry.
+The movement handler at `$80:E4BA` is entered by the frame's `RTS`, the
+return address its own `RTS` goes back to already pushed. So it is stretches
+as well, fourteen of them, its entry and one after each call it makes, and it
+is `uncalled`.
+`$80:E739`, the tile reaction it calls on solid ground, is one more.
+
+**A stretch may leave before a path it does not port.** Everything no input
+has taken, or that belongs to another subsystem, is left by naming its first
+instruction as an exit: the double step at `$E4BE`, the event request at
+`$D02D`, the level's end at `$CE2A`, a death at `$CE7A`, and the six tile
+reactions after their `BNE`s. The ROM carries on from there with the
+registers the stretch leaves. That is the same move as leaving by a call, and
+it needs no guard.
