@@ -3115,6 +3115,11 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
   int rc = 0;
   bool reported = false, reported_bad = false;
   long compared = 0, unsynced = 0, diverged_frames = 0, explained_only = 0;
+  // Where a pass first failed to come back to the `WAI`, which ends the run,
+  // and where each core was when it gave up.
+  long unsynced_at = -1;
+  uint32_t unsynced_pc_ref = 0, unsynced_pc_nat = 0;
+  bool unsynced_one_side = false, unsynced_stock = false;
   // How often the two cores' last NMI landed at different call depths. Waived
   // by accounted_for() and counted here rather than either failed on or hidden:
   // it is the only visible symptom of the cycle budget being an estimate.
@@ -3174,7 +3179,29 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
     // are now at the same point in the *game*, which is what the diff is about.
     bool ref_ok = side_pass(&ref, LOCKSTEP_PASS_CYCLES);
     bool nat_ok = side_pass(&nat, LOCKSTEP_PASS_CYCLES);
-    if (!ref_ok || !nat_ok) { unsynced++; continue; }
+    // A pass that does not come back to the `WAI` within 1,000 frames ends
+    // the run. The game has left the scheduler, and every further pass would
+    // cost another 1,000 frames on each core to find that out again.
+    //
+    // `level21-exit.zmv` is why. After its level ends, the game sits in
+    // `$80:89D3`'s loop polling both pads for Start, which the movie never
+    // presses. Both cores stayed there, and the run used to spend 2,900
+    // passes of 2,000 frames each in it, which is the hang every write-up
+    // since 2026-09-24 reported.
+    //
+    // Both sides stuck is the game waiting for something. One side stuck
+    // while the other came back, on timelines still together, is the port
+    // having taken the game somewhere the ROM did not, and that fails.
+    if (!ref_ok || !nat_ok) {
+      unsynced++;
+      unsynced_at = pass;
+      unsynced_pc_ref = (uint32_t)ref.snes->cpu->k << 16 | ref.snes->cpu->pc;
+      unsynced_pc_nat = (uint32_t)nat.snes->cpu->k << 16 | nat.snes->cpu->pc;
+      unsynced_one_side = ref_ok != nat_ok && parted_at < 0;
+      unsynced_stock = !ref_ok;
+      if (unsynced_one_side) rc = 1;
+      break;
+    }
 
     // Positive means the substituted core has spent more time reaching the same
     // point in the game — the budgets over-paying — and negative means the
@@ -3457,9 +3484,23 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
   if (booted > 0)
     printf("%ld pass%s spent booting, before there was a scheduler to sync on.\n",
            booted, booted == 1 ? "" : "es");
-  if (unsynced > 0)
-    printf("%ld pass%s not compared — a side never came back to the WAI.\n",
-           unsynced, unsynced == 1 ? " was" : "es were");
+  if (unsynced_at >= 0 && unsynced_one_side)
+    printf("Run stopped at pass %ld of %d: the %s core never came back to the\n"
+           "WAI within 1,000 frames, and the other did. It was at $%02X:%04X.\n"
+           "The port took the game somewhere the ROM did not.\n",
+           unsynced_at, frames, unsynced_stock ? "stock" : "native",
+           (unsigned)((unsynced_stock ? unsynced_pc_ref : unsynced_pc_nat) >> 16),
+           (unsigned)((unsynced_stock ? unsynced_pc_ref : unsynced_pc_nat) &
+                      0xffff));
+  else if (unsynced_at >= 0)
+    printf("Run stopped at pass %ld of %d: neither core came back to the WAI\n"
+           "within 1,000 frames. The game had left the scheduler, stock at\n"
+           "$%02X:%04X and native at $%02X:%04X, most likely waiting for input\n"
+           "the movie never gives.\n",
+           unsynced_at, frames, (unsigned)(unsynced_pc_ref >> 16),
+           (unsigned)(unsynced_pc_ref & 0xffff),
+           (unsigned)(unsynced_pc_nat >> 16),
+           (unsigned)(unsynced_pc_nat & 0xffff));
   cosim_report(&nat.cosim);
   // ...and what fraction of the run that table represents. The native side is
   // the one to ask: the reference side has an empty mask by construction, so

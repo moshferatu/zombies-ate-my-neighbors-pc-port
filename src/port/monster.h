@@ -174,7 +174,7 @@ void monster_anim(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
 //
 // so three of the four decide where to go with `$81:BB75` and the carrying one
 // uses `$81:BBA4`. The chase itself, at `$81:BEE3`, is a fifth body and is not
-// built this way; it is not ported this round.
+// built this way. It is in readable C in `port/chase.h`.
 //
 // ## The state word, and the `JMP` that is really a `JSR`'s tail
 //
@@ -200,7 +200,7 @@ void monster_anim(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
 // **A is `$BEE3` on that path**, which is a real output: the caller does not
 // read it, but it is the only exit of the four that leaves the high bit set.
 #define MONSTER_STATE_STUB 0x81bedau
-// `LDA #$BEE3` — the chase, at `$81:BEE3`, which this round does not port.
+// `LDA #$BEE3` — the chase, at `$81:BEE3`; see `port/chase.h`.
 #define MONSTER_STATE_CHASE 0xbee3u
 
 // --- $81:BB75  monster_seek -------------------------------------------------

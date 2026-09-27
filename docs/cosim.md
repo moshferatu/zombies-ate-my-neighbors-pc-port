@@ -14771,3 +14771,54 @@ and solid tiles with a reaction of their own, such as doors.
   over a movie, about 0.03 of a frame.
 * **zamn.exe runs it.** On `level1-2p.zmv` the game served all 4,087 walks
   natively.
+
+## The monster's chase in readable C (2026-09-26)
+
+The monster's chase, `$81:BEE3`, is the second piece of the port in readable
+C: `src/port/chase.c`, about 250 lines. It was the biggest row of game logic
+left in the residue, at 2.5%. Like the walk, it is reached by a computed
+`RTS` and was long thought unportable for that reason.
+
+Each frame it finds the nearest of the actors `actor_nearest` knows about.
+With nothing within `$B4` it gives up and wanders off in a random straight
+line. Otherwise it steps towards the target. If the target lies straight up,
+down, left or right, it steps that way. On a diagonal it first closes the
+smaller gap, which lines it up. On about half its frames the step is two
+pixels. Someone standing in the way makes it wait. Solid ground makes it
+look for a tile to leap. The leap is its own state and is declined to the
+ROM.
+
+* **Only V can outlive it, and only after giving up.** The thread follows
+  the chase with `monster_seek` or `monster_deliver`, and both set N, Z and C
+  first. `monster_seek`'s scan sets V too whenever it matches someone, which
+  after a step it always does. So the shim claims no register on a step and
+  the random number generator's V on a give-up.
+* **Checked.** `verify -r monster_chase`: 22,659 calls over the 11 corpus
+  movies that reach it, and 24,102 over all 56 level records, with 0
+  diverged and 15 declined. The six levels with the monster are the only
+  ones that reach it. Every branch is taken, the leap 16 times.
+* **The cost model is close but not exact.** The per-call residual is +1.9
+  to +103 cycles against a chase of about 16,000. Three of its callees are
+  priced at their registry means.
+* **Lockstep** on the 11 movies matches the round before, with one
+  exception. `level25-item` no longer parts at pass 1,612, so for the first
+  time passes past it are compared, and on passes 1,624 to 1,626 one byte
+  differs: `$7E:0A1A`, field `$1A` of another thread's page, by 2. With only
+  the chase substituted the same movie is clean through those passes, so
+  this is timing that the parting used to hide, not the chase's logic. It is
+  not explained yet.
+* **zamn.exe runs it.** On `level45-carried.zmv` the game served 3,687
+  chases natively and declined one leap.
+
+**`level21-exit.zmv` no longer hangs under lockstep.** After its level ends
+the game sits in `$80:89D3`, polling both pads for a Start the movie never
+presses. Neither core came back to the scheduler's `WAI`, and each of the
+2,900 remaining passes cost 1,000 frames on each core to find that out again.
+A pass that does not come back now ends the run. When both cores are stuck
+it says the game left the scheduler. When only one is, on timelines still
+together, that is a failure. The movie finishes in 81 seconds, clean over
+its 4,088 passes.
+
+**`tools/verify_corpus.ps1` runs four movies at a time** (`-Jobs`). The whole
+lockstep pass takes about half an hour. Its first run, on the build before
+the chase, matched the round before on all 50 movies.

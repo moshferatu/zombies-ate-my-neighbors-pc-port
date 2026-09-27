@@ -35,6 +35,7 @@
 #include "port/sprite_cache.h"
 #include "port/step.h"
 #include "port/walk.h"
+#include "port/chase.h"
 #include "port/terrain.h"
 #include "port/thread.h"
 #include "port/trig.h"
@@ -5599,6 +5600,140 @@ static void shim_player_walk(Wram* w, const Rom* rom, const CosimRegs* in,
   out->regs = 0;
 }
 
+// ---------------------------------------------------------------------------
+// $81:BEE3  monster_chase -- see `port/chase.h`
+// ---------------------------------------------------------------------------
+//
+// Priced the walk's way: what the ROM would have run between `$BEE3` and the
+// `RTS`, from what the log says happened. Each run of the chase's own
+// instructions is from `tools/cycles816.py` with the data bank at `$81`,
+// branches not taken, and a taken branch adds 6. The calls cost a `JSL` here
+// and their callee's own figure, which includes its `RTL`: the counted models
+// for the scan and the actor test, the registry's means for the rest.
+static void chase_add(CosimRun* t, int cycles, int bytes, int dp) {
+  t->cycles += cycles;
+  t->bytes += bytes;
+  t->dp += dp;
+}
+
+static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
+  static int snap = -1, bearing = -1, rng = -1, ground = -1, tile = -1;
+  const int TAKEN = 6;
+  CosimRun own = {0, 0, 0};
+  int calls = nearest_cycles(&log->nearest, in->fastrom);
+
+  // LDX $0A : LDY $0C : JSL actor_nearest : CMP #$00B4 : BCC.
+  chase_add(&own, 140, 13, 2);
+  if (log->gave_up) {
+    // JMP $BF99 : JMP $BCE1, JSL rng_next : AND : ASL ASL INC INC : STA $14 :
+    // JMP $BE0E, LDA #$BE14 : STA $12 : RTS.
+    chase_add(&own, 18 + 18 + 166 + 86, 3 + 3 + 16 + 6, 2);
+    calls += registry_cycles("rng_next", &rng);
+    return calls + cosim_run_cycles_dp(&own, fetch_fast(in),
+                                       (in->d & 0x00ffu) != 0);
+  }
+  own.cycles += TAKEN;
+
+  // STX $24 : TXY : LDX $08 : JSL actor_snap_to : JSL actor_bearing, then
+  // PHA, the record's X and Y into $0A/$0C, PLA : STA $18 : AND #1 : BNE.
+  chase_add(&own, 176 + 284, 13 + 21, 2 + 4);
+  calls += registry_cycles("actor_snap_to", &snap) +
+           registry_cycles("actor_bearing", &bearing);
+  if (log->straight) {
+    own.cycles += TAKEN;
+  } else {
+    // Both gaps and their halves, each negated when it was negative; a gap
+    // that was not skips the `EOR : INC` on a taken `BPL`.
+    chase_add(&own, 408, 36, 7);
+    if (!log->gap_x_negative) chase_add(&own, TAKEN - 30, -4, 0);
+    if (!log->gap_y_negative) chase_add(&own, TAKEN - 30, -4, 0);
+    // CMP $0E : BCC, then LDY #n : LDA $34 or $36 : BMI, and the other
+    // `LDY` when the `BMI` is not taken.
+    chase_add(&own, 40 + 18 + 28 + 12, 4 + 3 + 2 + 2, 2);
+    const bool took_bmi = log->across ? log->gap_x_negative : log->gap_y_negative;
+    if (!log->across) own.cycles += TAKEN;
+    if (took_bmi) own.cycles += TAKEN;
+    else chase_add(&own, 18 + (log->across ? 12 + TAKEN : 0),
+                   3 + (log->across ? 2 : 0), 0);  // ...and `BRA` after #3
+    chase_add(&own, 28, 2, 1);  // STY $18
+  }
+
+  // LDA $18 : ASL : STA $14 : ASL : STA $18 : JSL rng_next : AND #2 : BEQ,
+  // and on a fast frame LDA #$B9B5 : STA $38.
+  chase_add(&own, 162 + 30, 12 + 5, 3);
+  calls += registry_cycles("rng_next", &rng);
+  if (log->fast) chase_add(&own, 46, 5, 1);
+  else own.cycles += TAKEN;
+
+  // The point, the JSR to `$BC05`, and there the ground test.
+  chase_add(&own, 348 + 168, 27 + 15, 8 + 3);
+  calls += registry_cycles("terrain_blocked_enemy", &ground);
+  if (log->asked_actors) {
+    chase_add(&own, 200, 14, 4);
+    calls += at_point_cycles(&log->at_point, in->fastrom);
+    if (log->outcome != CHASE_STEPPED) own.cycles += TAKEN;
+  } else {
+    own.cycles += TAKEN;
+  }
+  chase_add(&own, 40 + 12, 1 + 2, 0);  // RTS, BCS
+  if (log->outcome == CHASE_STEPPED) {
+    // The commit and the `RTS`.
+    chase_add(&own, 316, 21, 7);
+  } else {
+    own.cycles += TAKEN;
+    chase_add(&own, 40, 4, 1);  // LDA $32 : BNE
+    if (log->outcome == CHASE_MET_SOMEONE) {
+      own.cycles += TAKEN;
+    } else {
+      // JSR $BC3D, a probe or two, and the landing if one had bit 13.
+      chase_add(&own, 40 + 368, 3 + 35, 5);
+      calls += registry_cycles("tile_attrs_at_pixel", &tile);
+      if (log->leap_probes == 2) {
+        chase_add(&own, 392, 37, 5);
+        calls += registry_cycles("tile_attrs_at_pixel", &tile);
+      }
+      if (log->leap_found) {
+        own.cycles += TAKEN;
+        chase_add(&own, 294 + TAKEN, 28, 3);
+        calls += registry_cycles("terrain_blocked_enemy", &ground);
+      }
+      chase_add(&own, 52 + 12 + TAKEN, 2 + 2, 0);  // SEC : RTS, BCS taken
+    }
+    chase_add(&own, 96, 5, 2);  // LDA $3A : STA $38 : RTS
+  }
+  return calls + cosim_run_cycles_dp(&own, fetch_fast(in),
+                                     (in->d & 0x00ffu) != 0);
+}
+
+// The tests put their scratch on page zero, as for the walk, and the tables
+// are read through the data bank, which is the thread's own.
+static bool accepts_monster_chase(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != CHASE_BANK) return false;
+  // The step table is read through `$38`, so it has to be in the cartridge.
+  return wram_r16(w, (uint16_t)(in->d + CHASE_DP_STEPS)) >= 0x8000u &&
+         wram_r16(w, (uint16_t)(in->d + CHASE_DP_USUAL_STEPS)) >= 0x8000u;
+}
+
+static bool supported_monster_chase(Wram* scratch, const Rom* rom,
+                                    const CosimRegs* in) {
+  return chase_supported(scratch, rom, in->d);
+}
+
+// Nothing it leaves in a register is read, except V after giving up. See
+// `port/chase.h`, "Its contract with the ROM".
+static void shim_monster_chase(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  ChaseLog log = {0};
+  monster_chase(w, rom, in->d, &log);
+  cosim_cost(chase_cycles(&log, in));
+  out->regs = 0;
+  out->flags = 0;
+  if (log.gave_up) {
+    out->v = log.overflow;
+    out->flags = COSIM_FLAG_V;
+  }
+}
+
 static const uint32_t VICTIMS_YIELD_EXITS[] = {VICTIMS_YIELD_PC};
 static const uint32_t VICTIMS_RESUME_EXITS[] = {
     VICTIMS_YIELD_PC, VICTIMS_START_CALL_PC, VICTIMS_STOP_CALL_PC};
@@ -8307,6 +8442,25 @@ static const CosimRoutine ROUTINES[] = {
         // The deepest the ROM goes: a `JSL`, then `terrain_blocked`'s `PHD`
         // and `PHA`, or `actor_obstacle_at_point`'s `PHD` and `PEA`.
         .stack_bytes = 7,
+    },
+    // The second, and the same arrangement: see `port/chase.h`. Entered by
+    // the monster thread's computed `RTS`. It declines the leap, and the ROM
+    // chases then.
+    {
+        .name = "monster_chase",
+        .symbol = "$81:BEE3",
+        .entry = MONSTER_CHASE_PC,
+        .ret_op = MONSTER_CHASE_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_monster_chase,
+        .accepts = accepts_monster_chase,
+        .supported = supported_monster_chase,
+        .uncalled = true,
+        // Never charged: the shim prices every call it serves.
+        .cycles = 12000,
+        // The `JSR` to the leap test, its `JSL`, and `tile_attrs_at_pixel`'s
+        // own thirteen.
+        .stack_bytes = 18,
     },
     // Vblank jobs, which write the PPU. See `port/vblank.h`. Each prices
     // itself through `cosim_hw`, so `.cycles` is only what a refused trace

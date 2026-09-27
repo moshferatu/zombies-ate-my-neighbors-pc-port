@@ -772,6 +772,15 @@
   X(monster_nothing_near,"monster_deliver",  "the shared tail: nothing inside $B4, so the state stands") \
   X(monster_gives_chase,"monster_deliver",   "...or something is, and $12 gets $BEE3 whatever is still being carried") \
                                                                                    \
+  /* $81:BEE3 monster_chase, in readable C. */                                     \
+  X(chase_gave_up,    "monster_chase",       "nothing within $B4, so it wanders off in a random straight line") \
+  X(chase_straight,   "monster_chase",       "the target straight up, down, left or right") \
+  X(chase_diagonal,   "monster_chase",       "...or on a diagonal, so it closes the smaller gap first") \
+  X(chase_stepped,    "monster_chase",       "the step taken") \
+  X(chase_met_someone,"monster_chase",       "an actor where the step lands, so it waits") \
+  X(chase_met_ground, "monster_chase",       "solid ground and nothing to leap, so it waits") \
+  X(chase_leapt,      "monster_chase",       "...or something to leap, so the ROM chases") \
+                                                                                   \
   /* $80:BE0C, $80:BE41 — a record's two ends. */                                   \
   X(slot_alloc_scan,  "actor_slot_alloc",    "this slot is taken, so try the one below it") \
   X(slot_alloc_took,  "actor_slot_alloc",    "...or it is free, and gets $0001 and the head of the list") \

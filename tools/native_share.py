@@ -190,8 +190,9 @@ JUMP_ENTRIES = {
     # is almost all $81:BEE3, the monster's chase: `LDX $0A : LDY $0C : JSL
     # actor_nearest` and then two hundred bytes of steering. Declaring it makes
     # the installer's row the size of an installer and gives the chase a row of
-    # its own, which is where it belongs -- but note it is still not portable,
-    # for the reason the paragraph above gives. Nothing calls it.
+    # its own, which is where it belongs. Nothing calls it, which once meant it
+    # could not be ported; it is now, as `monster_chase` in src/port/chase.c,
+    # entered at the address the thread's `RTS` lands on as the walk is.
     0x81BEE3: 'the monster chase state, entered by computed RTS through $12',
     # The five handlers in the word table at $80:D74F, reached through it by
     # `JMP $F300` and never called. Found the same way as the vblank jobs

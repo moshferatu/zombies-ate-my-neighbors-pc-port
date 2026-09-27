@@ -17,6 +17,10 @@
 # compares all of WRAM once per scheduler pass -- a stronger claim over fewer
 # calls, and about forty seconds a movie against one.
 #
+# Movies run `-Jobs` at a time, four unless told otherwise, and the rows come
+# out in corpus order when all of them have finished. The whole lockstep pass
+# takes about half an hour.
+#
 # Exits non-zero if any movie diverges.
 
 param(
@@ -33,7 +37,11 @@ param(
     # totals below then say how many movies they are totals over, because a
     # figure from a subset that reads like a figure from the corpus is worse
     # than no figure.
-    [string]$Only = ""
+    [string]$Only = "",
+    # How many movies run at once. Each is its own process and they share
+    # nothing. Four keeps the machine usable while the corpus runs; one per
+    # core does not.
+    [int]$Jobs = 4
 )
 
 $ErrorActionPreference = "Stop"
@@ -121,6 +129,49 @@ if ($Only -ne "") {
     ""
 }
 
+# Run `zamn_cosim <command>` on every movie, $Jobs at a time, and hand back
+# each one's output and exit code. The rows are printed afterwards, in corpus
+# order, so the report reads the same however the runs interleaved.
+function Invoke-Corpus([string]$command, [string[]]$extra) {
+    $dir = Join-Path ([IO.Path]::GetTempPath()) ("zamn-corpus-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory $dir | Out-Null
+    $exe = Join-Path $root "build\zamn_cosim.exe"
+    $pending = New-Object System.Collections.Queue
+    foreach ($m in $movies) { $pending.Enqueue($m) }
+    $live = @{}
+    $done = @{}
+    try {
+        while ($pending.Count -gt 0 -or $live.Count -gt 0) {
+            while ($pending.Count -gt 0 -and $live.Count -lt [Math]::Max(1, $Jobs)) {
+                $m = $pending.Dequeue()
+                # Start-Process joins its arguments with spaces and quotes
+                # nothing, and the ROM's name has three in it.
+                $argv = @($command, "`"$Rom`"", "-m", "`"movies\$m`"", "-f", "$($corpus[$m])") + $extra
+                $p = Start-Process -FilePath $exe -ArgumentList $argv -NoNewWindow -PassThru `
+                    -RedirectStandardOutput (Join-Path $dir "$m.out") `
+                    -RedirectStandardError (Join-Path $dir "$m.err")
+                # Windows PowerShell only fills in ExitCode for a process
+                # whose handle was taken while it was still running.
+                $null = $p.Handle
+                $live[$m] = $p
+            }
+            foreach ($m in @($live.Keys)) {
+                $p = $live[$m]
+                if (-not $p.HasExited) { continue }
+                $p.WaitForExit()
+                $lines = @(Get-Content (Join-Path $dir "$m.out")) + @(Get-Content (Join-Path $dir "$m.err"))
+                $done[$m] = @{ Lines = $lines; Code = $p.ExitCode }
+                $live.Remove($m)
+            }
+            if ($live.Count -gt 0) { Start-Sleep -Milliseconds 250 }
+        }
+    } finally {
+        foreach ($p in $live.Values) { if (-not $p.HasExited) { $p.Kill() } }
+        Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
+    }
+    return $done
+}
+
 # The lockstep pass.
 #
 # `verify` asks each call whether the port's answer matches the ROM's. `run`
@@ -156,15 +207,15 @@ if ($Lockstep) {
     }
     ""
     $row = "{0,-24} {1,6} {2,8} {3,7} {4,9} {5,8} {6,7}  {7}"
+    $results = Invoke-Corpus "run" $flags
     $row -f "movie", "frames", "passes", "parted", "drift", "worst", "mean", "state"
     $partedAll = @()
     $passTotal = 0
     $dirty = 0
     foreach ($movie in $movies) {
         $frames = $corpus[$movie]
-        $runArgs = @("run", $Rom, "-m", "movies\$movie", "-f", "$frames") + $flags
-        $text = (& "build\zamn_cosim.exe" @runArgs 2>&1 | Out-String)
-        $code = $LASTEXITCODE
+        $text = $results[$movie].Lines | Out-String
+        $code = $results[$movie].Code
         $passes = 0
         $parted = "-"
         $drift = ""
@@ -215,6 +266,12 @@ if ($Lockstep) {
             $state = "EXIT $code"
             $dirty++
         }
+        # The game left the scheduler before the movie's frames ran out, on
+        # both cores, and the run stopped there. `level21-exit` does, waiting
+        # for a Start the movie never presses.
+        if ($text -match "neither core came back to the WAI") {
+            $state += ", left the scheduler"
+        }
         $passTotal += $passes
         $row -f $movie, $frames, $passes, $parted, $drift, $worst, $mean, $state
     }
@@ -243,13 +300,12 @@ $censusAll = @{}
 $pricedAll = @{}
 $exactAll = @{}
 $hdmaAll = @{}
+$results = Invoke-Corpus "verify" $(if ($Coverage) { @("-c") } else { @() })
 "{0,-24} {1,6} {2,10} {3,7} {4,6}  {5}" -f "movie", "frames", "checked", "decl.", "sites", "census"
 foreach ($movie in $movies) {
     $frames = $corpus[$movie]
-    $args = @("verify", $Rom, "-m", "movies\$movie", "-f", "$frames")
-    if ($Coverage) { $args += "-c" }
-    $out = & "build\zamn_cosim.exe" @args 2>&1
-    $ok = $LASTEXITCODE -eq 0
+    $out = $results[$movie].Lines
+    $ok = $results[$movie].Code -eq 0
     $checked = 0
     $m = ($out | Select-String -Pattern "^(\d+) calls checked")
     if ($m) { $checked = [int]$m.Matches[0].Groups[1].Value }
