@@ -3013,6 +3013,8 @@ static bool side_start(Side* s, const uint8_t* rom_data, int rom_len,
   memset(s, 0, sizeof *s);
   s->snes = snes_init();
   if (!snes_loadRom(s->snes, rom_data, rom_len)) return false;
+  // The comparison reads the PPU's memory and scroll, never its picture.
+  s->snes->ppu->noPixels = true;
   cosim_init(&s->cosim, s->snes, mode);
   // Each side replays the movie against its own frame counter. That is the
   // point of driving by scheduler pass rather than by PPU frame: the two cores

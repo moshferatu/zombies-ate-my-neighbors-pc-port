@@ -17,9 +17,9 @@
 # compares all of WRAM once per scheduler pass -- a stronger claim over fewer
 # calls, and about forty seconds a movie against one.
 #
-# Movies run `-Jobs` at a time, four unless told otherwise, and the rows come
+# Movies run `-Jobs` at a time, twelve unless told otherwise, and the rows come
 # out in corpus order when all of them have finished. The whole lockstep pass
-# takes about half an hour.
+# takes about three and a half minutes.
 #
 # Exits non-zero if any movie diverges.
 
@@ -39,9 +39,9 @@ param(
     # than no figure.
     [string]$Only = "",
     # How many movies run at once. Each is its own process and they share
-    # nothing. Four keeps the machine usable while the corpus runs; one per
+    # nothing. Twelve keeps the machine usable while the corpus runs; one per
     # core does not.
-    [int]$Jobs = 4
+    [int]$Jobs = 12
 )
 
 $ErrorActionPreference = "Stop"

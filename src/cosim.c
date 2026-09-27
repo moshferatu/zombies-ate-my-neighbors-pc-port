@@ -255,6 +255,8 @@ static int cmd_verify(const Options* o) {
     fprintf(stderr, "error: core rejected ROM\n");
     return 1;
   }
+  // Nothing here looks at the picture.
+  snes->ppu->noPixels = true;
 
   if (o->twin_aim && !twin_install(snes->cart->rom, snes->cart->romSize)) {
     fprintf(stderr, "error: --twin-aim: this cartridge cannot take the patch\n");

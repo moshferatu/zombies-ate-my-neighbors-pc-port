@@ -52,9 +52,12 @@ it says the game left the scheduler. When only one is, on timelines still
 together, that is a failure. The movie finishes in 81 seconds, clean over
 its 4,088 passes.
 
-**`tools/verify_corpus.ps1` runs four movies at a time** (`-Jobs`). The whole
-lockstep pass takes about half an hour. Its first run, on the build before
-the chase, matched the round before on all 50 movies.
+**`tools/verify_corpus.ps1` runs twelve movies at a time** (`-Jobs`). The
+whole lockstep pass takes 201 seconds, against 486 at four at a time. Both
+figures are with `run` and `verify` no longer drawing the picture: the PPU's new `noPixels` skips the pixel loop, which writes
+only the frame buffer. On one movie that took lockstep from 63 seconds to 26
+and `verify` from 48 to 35, and every row of the corpus came out identical to
+the runs before it, digit for digit.
 
 ### The walk in readable C (2026-09-26)
 
