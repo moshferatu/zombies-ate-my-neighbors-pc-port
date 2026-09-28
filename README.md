@@ -14,18 +14,27 @@ some additions for a modern PC:
 * Skip the intro, or start the game on any level
 * Optional cheats: invincibility, infinite ammo, infinite lives and more
 
-> **You need your own copy of the game.** No game data is included. Supply a
-> legally obtained ROM named `Zombies Ate My Neighbors.sfc`.
+## ROM (Required)
 
-## Disclaimers
+No game data is included.
 
-### Generative AI Usage
+You will need to obtain a copy of the original ROM:
+
+| | |
+| --- | --- |
+| Region | USA |
+| Size | 1,048,576 bytes |
+| MD5 | `23c2af7897d9384c4791189b68c142eb` |
+| SHA-1 | `1be79496d7a38b293d6a5d9fba0e16f3cb37d5ff` |
+| SHA-256 | `b27e2e957fa760f4f483e2af30e03062034a6c0066984f2e284cc2cb430b2059` |
+
+## Generative AI Usage
 
 This port is exclusively developed using Claude Code and Codex.
 
 I usually select the latest or largest model for each, but set to medium reasoning in order to save on token usage.
 
-### Port Progress
+## Port Progress
 
 This port is very much a work in progress.
 
