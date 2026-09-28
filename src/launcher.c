@@ -201,35 +201,29 @@ static const struct { int k; const char* label; } cycle_rows[PAD_CYCLE_COUNT] = 
 // In the order they are shown, which is not `config_cheat_names`'s: each names
 // its key there, and the row sets that one.
 static const struct { const char* key; const char* label; const char* help; } cheat_rows[CONFIG_CHEATS] = {
-  {"invincible", "Invincibility", "Nothing hurts a player: no flinch, no health lost."},
-  {"invincible_neighbors", "Invincible Neighbors", "Nothing hurts a neighbor, and the tourists do not turn into "
-      "werewolves. They can still be rescued."},
+  {"invincible", "Invincibility", "Nothing hurts a player."},
+  {"invincible_neighbors", "Invincible Neighbors", "Nothing hurts a neighbor."},
   {"infinite_lives", "Infinite Lives", "Dying does not cost a life."},
-  {"infinite_ammo", "Infinite Ammo / Uses", "Weapons and items are never used up, keys too. Gives nothing: a weapon "
-      "not held stays not held."},
-  {"give_all", "Give All Weapons / Items", "Every weapon and every item, 999 and 99 of them, when a game starts and when "
-      "a quick save is loaded. Once: they run out unless infinite ammo is on as well."},
-  {"always_run", "Always Run", "The running shoes, always."},
+  {"infinite_ammo", "Infinite Ammo / Uses", "Weapons and items never consume ammo or uses."},
+  {"give_all", "Give All Weapons / Items", "Grants every weapon and every item (999 / 99 uses respectively)."},
+  {"always_run", "Always Run", "Grants the running shoes effect always."},
 };
 
 static void build_rows(void) {
-  add(TAB_GAME, (Row){K_PATH, S_ROM, "ROM File",
-      "The cartridge image, a .sfc file. A path that is not absolute is taken from the folder "
-      "zamn.ini is in. Browse, type it after Enter, or drop the file on this window."});
+  add(TAB_GAME, (Row){K_PATH, S_ROM, "ROM",
+      "The original game ROM file."});
   add_choice(TAB_GAME, S_SKIP_INTRO, "Skip Intro", on_off, 2,
-      "On: start at the title menu instead of the logos and the story.");
+      "Launch the game directly into the title menu.");
   add_range(TAB_GAME, S_LEVEL, "Starting Level", -1, 55, 1, false,
-      "The level a new game starts on. Off is the game's own first. After the 48 levels come "
-      "the credits and the seven bonus rooms, each named as its card names it.");
+      "Whether to start a new game on a specific level.");
   add_range(TAB_GAME, S_HITBOX, "Hitbox Size", 100, 200, 5, true,
-      "How far a player reaches for a pickup or a neighbor, and a weapon for a creature, as a "
-      "percentage of the game's own.");
-  add_choice(TAB_GAME, S_BLOOD, "Game Over Blood Color", blood_choices, 2,
-      "The game over's curtain: purple, as the cartridge has it, or red.");
+      "How far a player reaches for a pickup or a neighbor as a percentage of the original game.");
+  add_choice(TAB_GAME, S_BLOOD, "Game Over Blood", blood_choices, 2,
+      "The color of the game over's blood on the screen.");
   add_choice(TAB_GAME, S_HIGH_SCORES, "Save High Scores", on_off, 2,
-      "Keep the top scores from one run to the next.");
+      "Whether to save the top scores from one run to the next.");
   add(TAB_GAME, (Row){K_PATH, S_HISCORE_FILE, "High Scores File",
-      "Where the top scores are kept. Empty: beside the ROM."});
+      "Where the top scores are kept."});
 
   add_choice(TAB_VIDEO, S_FULLSCREEN, "Fullscreen", on_off, 2,
       "Start fullscreen, or in a window. F11 or Alt+Enter changes it while playing.");
