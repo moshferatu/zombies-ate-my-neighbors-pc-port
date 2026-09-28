@@ -238,9 +238,15 @@ void monster_anim(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
 #define MONSTER_SEEK_ENTRY 0x81bb75u
 // `CMP #$00B4` — inside this, start chasing.
 #define MONSTER_SEEK_NEAR 0x00b4u
-// `CMP #$00D0` — outside this, ask whether either player is still about, and
-// the same word is the range that question is asked at.
+// `CMP #$00D0` — outside this, ask whether either player is still about.
 #define MONSTER_SEEK_FAR 0x00d0u
+// ...and `LDA #$00D0` at `$81:BB93`, the range that question is asked at: the
+// same number, but a different word, and read from the cartridge rather than
+// written here. Widescreen moves it out by the margins (`WS_ROM_WORDS` in
+// `widescreen.h`) so that a creature does not give up on the players and
+// leave while it is still in the picture, and a port that kept the stock
+// `$00D0` would take it away there anyway.
+#define MONSTER_SEEK_REACH_AT 0x81bb94u
 
 typedef struct {
   uint16_t a, x, y;
@@ -249,7 +255,7 @@ typedef struct {
 
 // `dp` is the thread's direct page. Nothing arrives in a register: the entry
 // instruction is `STZ $24` and the point comes out of `$0A`/`$0C`.
-void monster_seek(Wram* w, uint16_t dp, MonsterSeekRegs* out);
+void monster_seek(Wram* w, const Rom* rom, uint16_t dp, MonsterSeekRegs* out);
 
 // --- $81:BBA4  monster_deliver ----------------------------------------------
 //

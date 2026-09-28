@@ -118,6 +118,16 @@ if(MSVC)
   target_compile_definitions(zamn_test_layers PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# A movie as video: the same pictures, drawn in software at any size, as raw
+# frames for ffmpeg, and the sound as a WAV. How a trailer is made at 4K on a
+# display that is not 4K.
+add_executable(zamn_record tools/record.c)
+target_link_libraries(zamn_record PRIVATE zamn_cosim_lib)
+target_include_directories(zamn_record PRIVATE src)
+if(MSVC)
+  target_compile_definitions(zamn_record PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # `src/twinstick.h` is the other half of the controller work and is a ROM patch,
 # so it is checked the way a ROM patch has to be: exact bytes, against a
 # synthetic cartridge built to the header's own description. No SDL and no ROM —

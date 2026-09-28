@@ -1207,9 +1207,8 @@ static void shim_monster_anim(Wram* w, const Rom* rom, const CosimRegs* in,
 // routine does the job; see `port/monster.h`.
 static void shim_monster_seek(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
-  (void)rom;
   MonsterSeekRegs r;
-  monster_seek(w, in->d, &r);
+  monster_seek(w, rom, in->d, &r);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;

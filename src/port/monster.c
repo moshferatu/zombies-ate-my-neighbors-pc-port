@@ -138,7 +138,7 @@ static void monster_take_target(Wram* w, uint16_t dp, MonsterSeekRegs* out) {
   out->c = false;
 }
 
-void monster_seek(Wram* w, uint16_t dp, MonsterSeekRegs* out) {
+void monster_seek(Wram* w, const Rom* rom, uint16_t dp, MonsterSeekRegs* out) {
   wram_w16(w, (uint16_t)(dp + MONSTER_DP_TARGET), 0);
 
   const uint16_t x = wram_r16(w, (uint16_t)(dp + MONSTER_DP_X));
@@ -151,7 +151,7 @@ void monster_seek(Wram* w, uint16_t dp, MonsterSeekRegs* out) {
   if (dist >= MONSTER_SEEK_FAR) {
     PORT_COVER(monster_board_far);
     PlayerPickRegs p;
-    player_in_range(w, MONSTER_SEEK_FAR, x, y, &p);
+    player_in_range(w, rom_word(rom, MONSTER_SEEK_REACH_AT), x, y, &p);
 
     out->y = p.y;
     out->c = p.c;

@@ -323,6 +323,44 @@
 // edge, where there is no margin, and one that only decides whether to play a
 // sound.
 //
+// ## ...and most of them go home when the players are out of sight
+//
+// Reported in play-testing: zombies in the left margin sinking away the moment
+// they had risen, and zombies walking off that side vanishing with most of a
+// body still showing. That search could not have found this, because it looks
+// at the camera and this does not. A zombie's thread asks, every frame, whether
+// either player is within `$D0` of it (`$81:8716`, through `player_bearing` at
+// `$80:B2A5`), and when neither is it takes itself away:
+//
+//     LDA #$00D0 : LDX $16 : LDY $18 : JSL $80B2A5 : TAX : BNE + : DEC $12
+//
+// 208 pixels is a distance from the *player*, and it is the console's edge in
+// disguise: the camera keeps a player well inside the 256, so 208 from one is
+// past the edge on either side. The quick save that showed it has the player at
+// column 162 and a zombie leaving at -47 -- 46 pixels off the console, and four
+// inside a 16:9 picture with the zombie's other half still to come.
+//
+// So it gets the wings' answer, twice the margin on the reach, for the same
+// reason: either margin can be the whole `2 * margin` at the end of a map, and
+// the player can be that much further from the picture's edge than from the
+// console's. Looking for the idiom -- a reach loaded, `$80:B2A5` or its
+// sibling `player_in_range` at `$80:B26B`, and the thread's leaving flag
+// decremented or incremented when it comes back empty -- finds seventeen of them
+// (`WS_ROM_WORDS`, below): both of the zombie's threads (`$81:87F8`, walking,
+// and `$81:88CA`, rising), the creature's `monster_seek` (`$81:BB93`; see
+// `port/monster.h`, which reads the word back out of the cartridge because it
+// is ported), and fourteen more monsters' copies of the same three lines, all
+// `$00D0` but one `$0140` and one `$00F0`. The calls that load a reach and do
+// something *else* with the answer -- start a chase, wait for the players to
+// come near -- are left alone; being seen is not what they are about.
+//
+// It is the same trade as the neighbours' window. A monster in the margin
+// stays a monster, holding its slot and its share of `W_SPAWN_LOAD` for as long
+// as it can be seen, where on a console it would have gone home. And the reach
+// is a square, not a pair of columns, so it grows above and below as well,
+// where no picture was added: a zombie can follow the players 86 pixels further
+// off the top or bottom of a 16:9 picture before it gives up.
+//
 // ## A boss too big for sprites is a background, and the game parks it
 //
 // The giant baby and the flying saucer are not sprites (`port/bossbg.h`): each
@@ -505,6 +543,28 @@ static const WsRomWord WS_ROM_WORDS[] = {
     // and `ADC #$0144` to the camera's against the creature's.
     {0x16ac7u, 0x69, 0x16ac8u, 0x0004, 2},
     {0x16ad3u, 0x69, 0x16ad4u, 0x0144, 2},
+    // How far from both players a monster may be before it leaves: the
+    // `LDA #$00D0` before each `JSL $80B2A5` or `$80B26B` whose empty answer
+    // sets the thread's leaving flag. The zombie's two threads first,
+    // `$81:8716` walking and `$81:8B46` rising; the creature's
+    // `monster_seek`, `$81:BB93`; then the rest in address order.
+    {0x08716u, 0xa9, 0x08717u, 0x00d0, 2},
+    {0x08b46u, 0xa9, 0x08b47u, 0x00d0, 2},
+    {0x0bb93u, 0xa9, 0x0bb94u, 0x00d0, 2},
+    {0x09d6eu, 0xa9, 0x09d6fu, 0x00d0, 2},
+    {0x09dbbu, 0xa9, 0x09dbcu, 0x00d0, 2},
+    {0x0aedbu, 0xa9, 0x0aedcu, 0x00d0, 2},
+    {0x0b7b6u, 0xa9, 0x0b7b7u, 0x00d0, 2},
+    {0x0cad1u, 0xa9, 0x0cad2u, 0x0140, 2},
+    {0x0d5b2u, 0xa9, 0x0d5b3u, 0x00d0, 2},
+    {0x0d90fu, 0xa9, 0x0d910u, 0x00d0, 2},
+    {0x0da32u, 0xa9, 0x0da33u, 0x00d0, 2},
+    {0x0dd69u, 0xa9, 0x0dd6au, 0x00d0, 2},
+    {0x0de89u, 0xa9, 0x0de8au, 0x00d0, 2},
+    {0x0deddu, 0xa9, 0x0dedeu, 0x00d0, 2},
+    {0x0df5cu, 0xa9, 0x0df5du, 0x00d0, 2},
+    {0x0e610u, 0xa9, 0x0e611u, 0x00d0, 2},
+    {0x1b430u, 0xa9, 0x1b431u, 0x00f0, 2},
 };
 
 // Everything the hook needs: where the ROM is, because metasprites and sprite
