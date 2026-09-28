@@ -1,21 +1,41 @@
-# Zombies Ate My Neighbors - Native PC Port
+# Zombies Ate My Neighbors PC Port
 
-A native Windows version of the 1993 SNES game *Zombies Ate My Neighbors*. The
-game's logic is being rewritten in C, checked against the original, while the
-SNES graphics and sound chips are emulated. It plays like the cartridge, with
+An unofficial PC port of the 1993 SNES game *[Zombies Ate My Neighbors](https://en.wikipedia.org/wiki/Zombies_Ate_My_Neighbors)*, currently a work in progress.
+
+It plays like the original game, with
 some additions for a modern PC:
 
-- Fullscreen at any resolution, with optional widescreen (16:9, 16:10, 21:9)
-- Smooth motion on high refresh rate displays (120 Hz, 144 Hz, 240 Hz)
-- Controller support for one or two players, with twin-stick aiming on the right stick
-- Weapon and item switching in both directions on the shoulders and triggers
-- Quick save and quick load
-- The top scores are saved between sessions
-- Skip the intro, or start on any level
-- Optional cheats: invincibility, infinite ammo, infinite lives and more
+* Widescreen support (16:9, 16:10, and 21:9)
+* Smoother motion on high refresh rate displays (120 Hz, 144 Hz, 240 Hz)
+* USB controller support for one or two players, with twin-stick aiming on the right stick
+* Item and weapon switching in both directions on the shoulders and triggers
+* Quick save and quick load
+* Top scores are saved between sessions
+* Skip the intro, or start the game on any level
+* Optional cheats: invincibility, infinite ammo, infinite lives and more
 
 > **You need your own copy of the game.** No game data is included. Supply a
 > legally obtained ROM named `Zombies Ate My Neighbors.sfc`.
+
+## Disclaimers
+
+### Generative AI Usage
+
+This port is exclusively developed using Claude Code and Codex.
+
+I usually select the latest or largest model for each, but set to medium reasoning in order to save on token usage.
+
+### Port Progress
+
+This port is very much a work in progress.
+
+The game's logic is being rewritten in C and validated against original ROM execution.
+
+Some of the game (~15%) is still being emulated, and only a very small portion of what is running natively has been translated into "readable" C.
+
+My more immediate goal was to have an enjoyable, playable version of the game that I could run on my desktop with some additional modern features.
+
+Longer term, I would love to see this port "completed" by becoming fully translated, but I'm not committing to completing it myself. I plan to work on it occasionally, though, so long as I find it enjoyable.
 
 ## Installation
 
