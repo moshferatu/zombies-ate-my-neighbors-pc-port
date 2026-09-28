@@ -7,11 +7,13 @@ some additional features:
 
 * Widescreen support (16:9, 16:10, and 21:9)
 * Smoother motion on high refresh rate displays (120 Hz, 144 Hz, 240 Hz)
-* USB controller support for one or two players, with twin-stick aiming on the right stick
+* USB controller support for one or two players, with twin-stick aiming and firing on the right stick
 * Item and weapon switching in both directions on the shoulders and triggers
+* Increased hitbox sizes for neighbors and items
 * Quick save and quick load
 * Top scores are saved between sessions
 * Skip the intro, or start the game on any level
+* Sound effects that get cut off in the original game during busy gameplay now play
 * Optional cheats: invincibility, give all weapons / items, infinite ammo / uses, and more
 
 ## ROM (Required)
@@ -44,7 +46,7 @@ Some of the game is still being emulated, and only a very small portion of what 
 
 My more immediate goal was to have an enjoyable, playable version of the game that I could run on my desktop with some additional modern features.
 
-Longer term, I would love to see this port "completed" by becoming fully translated, but I'm not committing to completing it myself. I plan to work on it occasionally, though, so long as I find it enjoyable.
+Longer term, I would love to see this port completed by becoming fully translated, but I'm not committing to that up front. I plan to work on it occasionally, but only for as long as I find it enjoyable. It already meets 
 
 ## Playing
 
@@ -55,6 +57,8 @@ After extracting, run **`zamn_launcher.exe`**.
 Choose your ROM file under game settings, change any other setting you like, then press **Play**. 
 
 The launcher saves your settings to `zamn.ini`.
+
+Be warned that playing in widescreen makes the neighbors more vulnerable as they are exposed sooner and can remain visible for longer on the screen.
 
 ### Files Created Beside the ROM
 
