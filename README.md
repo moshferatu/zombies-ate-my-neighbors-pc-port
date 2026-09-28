@@ -3,7 +3,7 @@
 An unofficial PC port of the 1993 SNES game *[Zombies Ate My Neighbors](https://en.wikipedia.org/wiki/Zombies_Ate_My_Neighbors)*, currently a work in progress.
 
 It plays like the original game, with
-some additions for a modern PC:
+some additional features:
 
 * Widescreen support (16:9, 16:10, and 21:9)
 * Smoother motion on high refresh rate displays (120 Hz, 144 Hz, 240 Hz)
@@ -12,7 +12,7 @@ some additions for a modern PC:
 * Quick save and quick load
 * Top scores are saved between sessions
 * Skip the intro, or start the game on any level
-* Optional cheats: invincibility, infinite ammo, infinite lives and more
+* Optional cheats: invincibility, give all weapons / items, infinite ammo / uses, and more
 
 ## ROM (Required)
 
@@ -48,7 +48,7 @@ Longer term, I would love to see this port "completed" by becoming fully transla
 
 ## Installation
 
-There are no prebuilt downloads yet, so the port is built from source. This
+There are no prebuilt downloads yet (coming soon, though), so the port is built from source. This
 takes a few minutes.
 
 1. Install [Visual Studio 2022](https://visualstudio.microsoft.com/) (the free
