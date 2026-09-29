@@ -2119,8 +2119,9 @@ static void cosim_step_inner(Cosim* c) {
         snes->cpu->sp == c->priv->irq_sp)
       irq_close(c);
 
-    for (int i = 0; i < c->watch_count; i++)
-      if (c->watches[i].pc == pc) c->watches[i].fn(snes, c->watches[i].ctx);
+    if (c->watch_filter[(pc >> 5) & 7] >> (pc & 31) & 1)
+      for (int i = 0; i < c->watch_count; i++)
+        if (c->watches[i].pc == pc) c->watches[i].fn(snes, c->watches[i].ctx);
 
     // The ROM is about to put a command on the APU's ports. Logged only inside
     // an interception, because that is the only window anything compares. Since
@@ -2357,6 +2358,7 @@ void cosim_step(Cosim* c) {
 bool cosim_watch(Cosim* c, uint32_t pc, CosimWatchFn fn, void* ctx) {
   if (c->watch_count == COSIM_MAX_WATCHES) return false;
   c->watches[c->watch_count++] = (CosimWatch){pc, fn, ctx};
+  c->watch_filter[(pc >> 5) & 7] |= 1u << (pc & 31);
   return true;
 }
 

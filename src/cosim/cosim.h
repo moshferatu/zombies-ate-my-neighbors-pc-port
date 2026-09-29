@@ -837,7 +837,7 @@ typedef struct {
   CosimWatchFn fn;
   void* ctx;
 } CosimWatch;
-#define COSIM_MAX_WATCHES 4
+#define COSIM_MAX_WATCHES 16
 
 typedef struct {
   Snes* snes;
@@ -874,6 +874,9 @@ typedef struct {
   // See `cosim_watch`.
   CosimWatch watches[COSIM_MAX_WATCHES];
   int watch_count;
+  // One bit per low byte of a watched `pc`, so that an instruction nobody
+  // watches costs one test however many watches there are.
+  uint32_t watch_filter[8];
 } Cosim;
 
 // Reduce `c->work` to shares. Safe with an empty run: everything reads 0.
@@ -907,7 +910,9 @@ void cosim_frame(Cosim* c);
 // version would have, with its results in memory. It is how the widescreen
 // learns when the sprite pass has finished and when the NMI sends its OAM
 // (`widescreen_pass_done`), which are the game's own events and not the
-// frame's, so what it copies does not depend on how long anything took.
+// frame's, so what it copies does not depend on how long anything took. The
+// monster sounds of other sample sets (`src/bank_sfx.h`) watch eleven checks
+// and `apu_send`'s store the same way.
 bool cosim_watch(Cosim* c, uint32_t pc, CosimWatchFn fn, void* ctx);
 
 // True between frames when the harness holds nothing of its own -- no call on

@@ -1,20 +1,19 @@
 # Zombies Ate My Neighbors PC Port
 
-An unofficial PC port of the 1993 SNES game *[Zombies Ate My Neighbors](https://en.wikipedia.org/wiki/Zombies_Ate_My_Neighbors)*, currently a work in progress.
+An unofficial PC port of the 1993 SNES game *[Zombies Ate My Neighbors](https://en.wikipedia.org/wiki/Zombies_Ate_My_Neighbors)*.
 
-It plays like the original game, with
-some additional features:
+It plays like the original game, with some additional features:
 
 * Widescreen support (16:9, 16:10, and 21:9)
-* Smoother motion on high refresh rate displays (e.g., 120 Hz, 144 Hz, 240 Hz)
-* USB controller support for one or two players, with twin-stick aiming and firing on the right stick
+* Smoother motion on high refresh rate displays
+* USB controller support with twin-stick movement and aiming
 * Item and weapon switching in both directions using the controller shoulders and triggers
 * Increased hitbox sizes for neighbors and items
 * Quick saving and quick loading
 * Top scores are saved between sessions
 * Skip the intro, or start the game on any level
-* Sound effects that get cut off in the original game during busy gameplay now play
-* Optional cheats: invincibility, give all weapons / items, infinite ammo / uses, and more
+* Sound effects that are not played or get cut off in the original game can now be heard
+* Optional cheats: invincibility, all weapons / items, infinite ammo / uses, and more
 
 ## ROM (Required)
 
@@ -62,8 +61,6 @@ The game's logic is being rewritten in C and validated against original ROM exec
 Some of the game is still being emulated, and only a very small portion of what is running natively has been translated into what could be called "readable" C.
 
 Long term, I would love for the port to be fully translated, but I'm not committing to that at this time.
-
-My short-term goal was to have a version of the original game that I could run on my desktop with some modern enhancements. I believe the port currently qualifies.
 
 ## Credits
 

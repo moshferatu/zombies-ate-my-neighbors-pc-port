@@ -153,6 +153,7 @@ typedef struct {
   bool audio;
   int volume;   // percent, 0..100
   bool effect_overlay;  // src/sfx_overlay.h
+  bool all_monster_sounds;  // src/bank_sfx.h
   // [controller]
   bool pads;
   bool twin_stick;
@@ -225,6 +226,10 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "; on: sound effects the game's sound driver drops or cuts short when too\n"
   "; much is playing are heard anyway. off: as the console plays them.\n"
   "effect_overlay = on\n"
+  "; on: monster sounds the game leaves out when the level has another\n"
+  "; monster's samples loaded are heard anyway, such as the chainsaw maniacs\n"
+  "; on Monster Phobia. off: as the console plays them.\n"
+  "all_monster_sounds = off\n"
   "\n"
   "[controller]\n"
   "enabled = on\n"
@@ -509,6 +514,7 @@ static inline void config_defaults(Config* c) {
   c->audio = true;
   c->volume = 100;
   c->effect_overlay = true;
+  c->all_monster_sounds = false;
   c->pads = true;
   c->twin_stick = true;
   c->deadzone = 24;
@@ -632,6 +638,7 @@ static inline bool config_set(Config* c, const char* name, int line,
     if (!strcmp(key, "enabled")) { if (!config_bool(v, &c->audio)) CONFIG_BAD("on or off"); }
     else if (!strcmp(key, "volume")) { if (!config_int(v, 0, 100, &c->volume)) CONFIG_BAD("0 to 100"); }
     else if (!strcmp(key, "effect_overlay")) { if (!config_bool(v, &c->effect_overlay)) CONFIG_BAD("on or off"); }
+    else if (!strcmp(key, "all_monster_sounds")) { if (!config_bool(v, &c->all_monster_sounds)) CONFIG_BAD("on or off"); }
     else return false;
   } else if (!strcmp(section, "controller")) {
     if (!strcmp(key, "enabled")) { if (!config_bool(v, &c->pads)) CONFIG_BAD("on or off"); }
@@ -947,6 +954,7 @@ static inline void config_each_value(const Config* c, ConfigValueFn fn, void* ct
   snprintf(v, sizeof v, "%d", c->volume);
   fn(ctx, "audio", "volume", v);
   fn(ctx, "audio", "effect_overlay", CONFIG_ON(c->effect_overlay));
+  fn(ctx, "audio", "all_monster_sounds", CONFIG_ON(c->all_monster_sounds));
   fn(ctx, "controller", "enabled", CONFIG_ON(c->pads));
   fn(ctx, "controller", "twin_stick", CONFIG_ON(c->twin_stick));
   snprintf(v, sizeof v, "%d", c->deadzone);

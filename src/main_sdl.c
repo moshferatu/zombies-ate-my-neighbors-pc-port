@@ -52,6 +52,7 @@
 //             [--invincible] [--invincible-neighbors] [--infinite-ammo]
 //             [--infinite-lives] [--give-all] [--always-run]
 //             [--config file] [--no-config] [--volume N] [--no-effect-overlay]
+//             [--all-monster-sounds]
 //             [--key-at frame:key[:frames]]... [--profile dir]
 //
 // The settings a player sets once, and every key and pad binding, are read
@@ -91,6 +92,7 @@
 #include "quicksave.h"
 #include "config.h"
 #include "sfx_overlay.h"
+#include "bank_sfx.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -423,6 +425,7 @@ typedef struct {
   Cosim* cosim;
   Snes* snes;
   SfxOverlay* sfx;
+  BankSfx* bank;
   Layers* layers;
   SDL_sem* go;
   SDL_sem* done;
@@ -441,6 +444,7 @@ static int emu_thread_main(void* arg) {
     const Uint64 t0 = SDL_GetPerformanceCounter();
     cosim_frame(t->cosim);
     sfx_overlay_tick(t->sfx);
+    bank_sfx_tick(t->bank);
     const Uint64 t1 = SDL_GetPerformanceCounter();
     t->last_ms = (double)(t1 - t0) * 1000.0 / freq;
     t->take_ms = 0.0;
@@ -713,6 +717,12 @@ static void usage(void) {
     "                  Let the sound driver drop and cut short sound effects when\n"
     "                  too much is playing, as the console does. --effect-overlay\n"
     "                  is the other way. See src/sfx_overlay.h.\n"
+    "  --all-monster-sounds\n"
+    "                  Play the monster sounds the game leaves out when the\n"
+    "                  level has another monster's samples loaded: the chainsaw\n"
+    "                  maniacs and werewolves on Monster Phobia, the dolls on\n"
+    "                  their own warehouse. --no-all-monster-sounds leaves them\n"
+    "                  out, as the console does. See src/bank_sfx.h.\n"
     "  --no-pads       Ignore game controllers and read only the keyboard.\n"
     "  --skip-intro    Run the logos and the story screen at full speed and\n"
     "                  hand over at the title menu. Cannot be combined with -m:\n"
@@ -915,6 +925,7 @@ int main(int argc, char** argv) {
   bool native = true, want_audio = g_cfg.audio, want_pads = g_cfg.pads;
   int volume = g_cfg.volume;
   bool effect_overlay = g_cfg.effect_overlay;
+  bool all_monster_sounds = g_cfg.all_monster_sounds;
   ScaleMode scale_mode = g_cfg.filter;
   // Off by default. Widescreen is the PPU drawing columns the console never
   // drew, and however good it looks it is not what the game is — so it is asked
@@ -981,6 +992,8 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--audio")) want_audio = true;
     else if (!strcmp(a, "--no-effect-overlay")) effect_overlay = false;
     else if (!strcmp(a, "--effect-overlay")) effect_overlay = true;
+    else if (!strcmp(a, "--all-monster-sounds")) all_monster_sounds = true;
+    else if (!strcmp(a, "--no-all-monster-sounds")) all_monster_sounds = false;
     else if (!strcmp(a, "--volume") && i + 1 < argc) {
       if (!config_int(argv[++i], 0, 100, &volume)) {
         fprintf(stderr, "error: --volume wants 0..100, got '%s'\n\n", argv[i]);
@@ -1355,6 +1368,21 @@ int main(int argc, char** argv) {
   // driver is running.
   static SfxOverlay sfx;
   sfx_overlay_init(&sfx, snes, want_audio && effect_overlay);
+  // The monster sounds the game skips when the level has another sample set
+  // loaded (`src/bank_sfx.h`): the checks are watched from here on, and the
+  // copies holding the other sets are built once the driver is running.
+  static BankSfx bank;
+  bank_sfx_init(&bank, snes, snes->cart->rom, (int)snes->cart->romSize,
+                want_audio && all_monster_sounds);
+  if (bank.enabled) {
+    bool watched = cosim_watch(&cosim, BSFX_SEND_AT, bank_sfx_at, &bank);
+    for (int k = 0; k < bank.sites && watched; k++)
+      watched = cosim_watch(&cosim, bank.site_at[k], bank_sfx_at, &bank);
+    if (!watched) {
+      printf("note : no room to watch the monster sounds' checks; --all-monster-sounds is off.\n");
+      bank.enabled = false;
+    }
+  }
 
   Uint32 init_flags = SDL_INIT_VIDEO | (want_audio ? SDL_INIT_AUDIO : 0);
   // Per-monitor DPI awareness, so that on a scaled desktop the window and the
@@ -1683,6 +1711,7 @@ int main(int argc, char** argv) {
     emu.cosim = &cosim;
     emu.snes = snes;
     emu.sfx = &sfx;
+    emu.bank = &bank;
     emu.layers = &lay;
     emu.go = SDL_CreateSemaphore(0);
     emu.done = SDL_CreateSemaphore(0);
@@ -1995,6 +2024,7 @@ int main(int argc, char** argv) {
         const Uint64 t0 = SDL_GetPerformanceCounter();
         cosim_frame(&cosim);
         sfx_overlay_tick(&sfx);
+        bank_sfx_tick(&bank);
         trace_emulate_ms = PACE_MS(t0, SDL_GetPerformanceCounter());
         pace_add(&h_emulate, trace_emulate_ms);
       }
@@ -2020,6 +2050,7 @@ int main(int argc, char** argv) {
               SAMPLES_PER_FRAME, queued, audio_target, 4, AUDIO_MAX_ADJUST);
           snes_setSamples(snes, audio_buf, want_samples);
           sfx_overlay_mix(&sfx, audio_buf, want_samples);
+          bank_sfx_mix(&bank, audio_buf, want_samples);
           if (volume != 100)
             for (int i = 0; i < want_samples * 2; i++)
               audio_buf[i] = (int16_t)(audio_buf[i] * volume / 100);
@@ -2319,6 +2350,11 @@ int main(int argc, char** argv) {
            "                 the overlay opened %ld voices, and took its copy %ld times\n",
            sfx.effects_dropped, sfx.notes_dropped, sfx.voices_stolen, sfx.voices_opened,
            sfx.resyncs);
+  if (verbose && bank.enabled)
+    printf("  monster sounds: %ld asked for with another sample set loaded; played %ld,\n"
+           "                 %ld, %ld and %ld on the copies holding sets 0 to 3%s\n",
+           bank.wanted, bank.set[0].played, bank.set[1].played, bank.set[2].played,
+           bank.set[3].played, bank.failed ? " (one or more could not be built)" : "");
   if (verbose) {
     cosim_report(&cosim);
     // The two percentages the table cannot give: 82 rows of `OK` say each
@@ -2353,6 +2389,7 @@ int main(int argc, char** argv) {
   }
   cosim_free(&cosim);
   sfx_overlay_free(&sfx);
+  bank_sfx_free(&bank);
   snes_free(snes);
   free(rom);
   return 0;

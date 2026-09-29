@@ -163,6 +163,17 @@ if(MSVC)
   target_compile_definitions(zamn_test_sfx_overlay PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
+# The monster sounds of the other sample sets (src/bank_sfx.h): the checks where
+# they were surveyed, a movie run watched and not, which must leave the machine
+# identical and play every failed check, and each copy against the real APU on
+# a level with its set. Needs the cartridge; skips without it.
+add_executable(zamn_test_bank_sfx tools/test_bank_sfx.c)
+target_include_directories(zamn_test_bank_sfx PRIVATE src)
+target_link_libraries(zamn_test_bank_sfx PRIVATE zamn_cosim_lib)
+if(MSVC)
+  target_compile_definitions(zamn_test_bank_sfx PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
 # `src/radar.h`: the survivor radar with every square drawn, against the
 # console's one at a time -- the same machine, and a picture changed only
 # where the squares are.
