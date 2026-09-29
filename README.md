@@ -6,11 +6,11 @@ It plays like the original game, with
 some additional features:
 
 * Widescreen support (16:9, 16:10, and 21:9)
-* Smoother motion on high refresh rate displays (120 Hz, 144 Hz, 240 Hz)
+* Smoother motion on high refresh rate displays (e.g., 120 Hz, 144 Hz, 240 Hz)
 * USB controller support for one or two players, with twin-stick aiming and firing on the right stick
-* Item and weapon switching in both directions on the shoulders and triggers
+* Item and weapon switching in both directions using the controller shoulders and triggers
 * Increased hitbox sizes for neighbors and items
-* Quick save and quick load
+* Quick saving and quick loading
 * Top scores are saved between sessions
 * Skip the intro, or start the game on any level
 * Sound effects that get cut off in the original game during busy gameplay now play
@@ -55,15 +55,15 @@ I usually select the largest model available in each, but set reasoning to mediu
 
 ## Port Progress
 
-This port is very much a work in progress.
+The port is fully playable, but very much a work in progress.
 
 The game's logic is being rewritten in C and validated against original ROM execution.
 
-Some of the game is still being emulated, and only a very small portion of what is running natively has been translated into "readable" C.
+Some of the game is still being emulated, and only a very small portion of what is running natively has been translated into what could be called "readable" C.
 
-Long term, I would love for the port to be fully translated, but I'm not committing to that.
+Long term, I would love for the port to be fully translated, but I'm not committing to that at this time.
 
-My goal was to have an playable, enjoyable version of the game that I could run on my desktop with some enhancements.
+My short-term goal was to have a version of the original game that I could run on my desktop with some modern enhancements. I believe the port currently qualifies.
 
 ## Credits
 
