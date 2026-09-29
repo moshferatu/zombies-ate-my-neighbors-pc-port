@@ -675,6 +675,17 @@ static inline bool ws_game_over(const uint8_t* mem) {
          ws_r16(mem, W_BG3_VSCROLL_SHADOW) != 0;
 }
 
+// Something on BG3 in the console's middle four tile columns, 14 to 17: a
+// line written across the picture rather than the status panel. Player 1's
+// half of the panel is columns 2 to 13 and player 2's 18 to 29, in both
+// games of one player and of two, so between them the middle is bare. See
+// `widescreen_frame`.
+static inline bool ws_bg3_across(const Snes* snes) {
+  for (int x = 14 * 8; x < 18 * 8; x += 8)
+    if (!ppu_columnEmptyAt(snes->ppu, 2, x)) return true;
+  return false;
+}
+
 // Put a 16x16 frame into a cache slot's VRAM, which is what the DMA `$80:B960`
 // queues would have done: the first 64 bytes are the slot's two top tiles and
 // the second 64 the two below them, one VRAM row of 32 words further on.
@@ -1248,7 +1259,22 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // then centred and carried out to the edges, half a health bar and all; and
   // the layer's own columns, which the mask's first drips come in over, so
   // the curtain was split for its first hundred frames.)
-  const bool bg3_mask = in_level && ws_game_over(mem);
+  //
+  // The credit level puts a third thing there: what each of the developers
+  // says as a player walks into them, two lines of writing across the
+  // middle of the console, over the panel's rows, on a band the maths
+  // window darkens (the window at 0..255 on those lines, which the widened
+  // picture already reads as its whole width). Split, it read "WELCOME TO
+  // LU" at one edge and "CASARTS GAMES" at the other. The panel never has
+  // anything in the console's middle columns and the writing always does
+  // (`ws_bg3_across`), so it is centred -- and clipped, not carried out as
+  // the mask is: carried out, its outermost letters were repeated down both
+  // margins. Something across the middle that reaches the console's edge
+  // column is the mask's field, though, and is the mask: the last thirty
+  // ticks of its fade-out are past `ws_game_over`'s waits.
+  const bool bg3_mask = in_level && (ws_game_over(mem) ||
+                                    (ws_bg3_across(snes) && !ppu_columnEmptyAt(snes->ppu, 2, 0)));
+  const bool bg3_writing = in_level && !bg3_mask && ws_bg3_across(snes);
   // Outside a level BG3 is the wallpaper behind the LucasArts logo, the title
   // and the character select, which the game steps along every few ticks --
   // and `ppu_wideAuto` continues a 256-pixel map into the margins only once it
@@ -1260,7 +1286,8 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   const bool bg3_field = !in_level && ppu_columnFilledAt(snes->ppu, 2, 0) &&
                          ppu_columnFilledAt(snes->ppu, 2, 255);
   snes_setLayerWide(snes, 2, bg3_field ? ppu_wideTile
-                             : !in_level ? ppu_wideAuto : bg3_mask ? ppu_wideCentre : ppu_wideAnchor);
+                             : !in_level ? ppu_wideAuto : bg3_mask ? ppu_wideCentre
+                             : bg3_writing ? ppu_wideCentreClip : ppu_wideAnchor);
   // (The sprites laid out over BG3 -- the radar's markers, the mask's drips
   // -- go the same way: `ws_place_screen_sprites`, at the end.)
   // BG2 is the scrolling world, and its margins are filled below, so it is the

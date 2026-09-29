@@ -139,6 +139,12 @@ enum {
   // 0, where the console never looks, the map is read as column 0 -- the line
   // goes on to the picture's edge, as it went on to the console's.
   ppu_wideSweep,
+  // `ppu_wideCentre` without the margins: the layer's 256 columns at the
+  // middle of the widened picture and nothing either side of them. Writing
+  // across the console rather than a field -- the credit level's lines, on
+  // a band the maths window darkens the whole width of -- has nothing at its
+  // edges to carry out, and beside it is whatever is behind it.
+  ppu_wideCentreClip,
 };
 
 // Where a sprite goes when the picture is widened -- `Ppu.spritePlace`.

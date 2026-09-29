@@ -1018,6 +1018,9 @@ static bool ppu_wideMapX(Ppu* ppu, int layer, int* x, int* y) {
       *y = ppu->centreFillFrom[layer][side];
       return true;
     }
+    case ppu_wideCentreClip:
+      *x -= (ppu->extraRight - ppu->extraLeft) / 2;
+      return *x >= 0 && *x < 256;
     case ppu_wideTile:
       // Two's complement does the wrap for negatives as well, which is the
       // whole reason the console's width is a power of two.
