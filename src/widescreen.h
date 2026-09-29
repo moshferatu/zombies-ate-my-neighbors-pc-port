@@ -76,6 +76,10 @@
 // So objects get `ppu_wideClip` outside a level and `ppu_wideStretch` inside
 // one, on the same test as the other two.
 //
+// The one screen outside a level whose sprites do want the margins is the
+// Winner screen's fireworks, which go up either side of the word and are
+// spread out to the picture's edges: see `ws_firework_sprites`.
+//
 // (The card that announces how much worse this level is than the last one does
 // the same thing with a background instead, and that one is not settled here:
 // `ppu_wideAuto` clips it, because it is a 256-pixel tilemap the game never
@@ -760,7 +764,10 @@ static inline int ws_lend_slot(Snes* snes, Widescreen* ws, uint16_t frame) {
 // One metasprite's pieces, composed exactly as `sprite_emit` composes them and
 // placed in the OAM entries the game's own pass left parked, for the pieces
 // that fall outside the console's 256 and inside the widened picture. Returns
-// the next free entry.
+// the next free entry. `shift` moves the pieces that along once they are
+// chosen, for a record whose sprites are drawn somewhere other than where
+// the game put them (`Ppu.spriteShift`): which pieces the ROM dropped is a
+// question about where it put them.
 //
 // The one test worth reading twice is the one that decides which pieces those
 // are. `x > -16 && x < 256` is the console's own picture: a 16-wide piece with
@@ -791,7 +798,8 @@ static inline int ws_lend_slot(Snes* snes, Widescreen* ws, uint16_t frame) {
 static inline int ws_emit_meta(Snes* snes, Widescreen* ws, int slot, int rec,
                                const SpriteMeta* meta, int16_t ox, int16_t oy,
                                uint16_t attr_or, uint16_t attr_and, bool flip_x,
-                               bool flip_y, int left, int right, bool inside) {
+                               bool flip_y, int left, int right, bool inside,
+                               int shift) {
   const uint16_t flip_eor =
       (uint16_t)((flip_x ? 0x4000 : 0) | (flip_y ? 0x8000 : 0));
 
@@ -810,17 +818,18 @@ static inline int ws_emit_meta(Snes* snes, Widescreen* ws, int slot, int rec,
     sx = (uint16_t)(sx + (uint16_t)ox);
     const int x = (int16_t)sx;
     if (!inside && x > -16 && x < 256) continue;
-    // A 16-wide piece at `x` covers `x..x+15`, so it is worth drawing while any
-    // of that is inside the widened picture.
-    if (x >= 0 ? x > 255 + right : x < -15 - left) continue;
+    // A 16-wide piece at `at` covers `at..at+15`, so it is worth drawing while
+    // any of that is inside the widened picture.
+    const int at = x + shift;
+    if (at >= 0 ? at > 255 + right : at < -15 - left) continue;
 
     const int tile = ws_lend_slot(snes, ws, p->frame);
     if (tile < 0) continue;
     const uint16_t word =
         (uint16_t)(((uint16_t)tile | (p->attr & attr_and) | attr_or) ^ flip_eor);
-    snes_setSprite(snes, slot, x & 0x1ff, sy & 0xff, word, true);
+    snes_setSprite(snes, slot, at & 0x1ff, sy & 0xff, word, true);
     ws->owner_rec[slot] = (int16_t)rec;
-    ws->owner_ox[slot] = ox;
+    ws->owner_ox[slot] = (int16_t)(ox + shift);
     ws->owner_oy[slot] = oy;
     slot = snes_freeSprite(snes, slot + 1);
   }
@@ -862,7 +871,7 @@ static inline int ws_object_sprites(Snes* snes, Widescreen* ws, int slot,
         snes, ws, slot, -1, &meta,
         (int16_t)(ws_r16(mem, W_OBJECT_X + (uint32_t)i * 2) - cam_x),
         (int16_t)(ws_r16(mem, W_OBJECT_Y + (uint32_t)i * 2) - cam_y), 0x2000,
-        0xffff, false, false, left, right, true);
+        0xffff, false, false, left, right, true, 0);
   }
   return slot;
 }
@@ -899,19 +908,12 @@ static inline bool ws_record_draw(const Widescreen* ws, uint16_t rec, SpriteMeta
   return sprite_meta_read(&ws->rom, ((uint32_t)bank << 16) | ptr, meta) == SPRITE_OK;
 }
 
-// The pieces `sprite_emit` dropped for being outside the console's 256, drawn
-// into the OAM entries the game's own pass left parked. See the header.
-static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
-                                     int right) {
-  const uint8_t* mem = ws_sprite_mem(ws);
-  const uint16_t count = ws_r16(mem, W_VISIBLE_ACTOR_COUNT);
-  int slot = snes_freeSprite(snes, 0);
+// Which cache slots the picture already on its way to the screen is reading
+// from, for `ws_lend_slot`, and none lent yet. Every sprite the game emits is
+// a whole 16x16 frame, so an entry's tile number is a slot's tile number and
+// the map back is exact.
+static inline void ws_mark_drawn(const Snes* snes, Widescreen* ws) {
   ws->lent_count = 0;
-  memset(ws->owner_rec, 0xff, sizeof ws->owner_rec);
-
-  // Which cache slots the picture already on its way to the screen is reading
-  // from. Every sprite the game emits is a whole 16x16 frame, so an entry's
-  // tile number is a slot's tile number and the map back is exact.
   memset(ws->slot_drawn, 0, sizeof ws->slot_drawn);
   for (int e = 0; e < OAM_ENTRIES; e++) {
     // Parked is `$E0` exactly, and the emitters can reach neither it nor the
@@ -923,6 +925,17 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
     const int s = (tile / 32) * SPRITE_SLOTS_PER_ROW + (tile % 32) / 2;
     if (s < SPRITE_SLOTS) ws->slot_drawn[s] = 1;
   }
+}
+
+// The pieces `sprite_emit` dropped for being outside the console's 256, drawn
+// into the OAM entries the game's own pass left parked. See the header.
+static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
+                                     int right) {
+  const uint8_t* mem = ws_sprite_mem(ws);
+  const uint16_t count = ws_r16(mem, W_VISIBLE_ACTOR_COUNT);
+  int slot = snes_freeSprite(snes, 0);
+  memset(ws->owner_rec, 0xff, sizeof ws->owner_rec);
+  ws_mark_drawn(snes, ws);
 
   for (uint16_t cur = 0; cur < count && slot < OAM_ENTRIES; cur += 2) {
     const uint16_t rec = ws_r16(mem, W_VISIBLE_ACTORS + cur);
@@ -933,7 +946,7 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
 
     slot = ws_emit_meta(snes, ws, slot, rec, &meta, ox, oy, attr_or, attr_and,
                         (flags & SPRITE_FLIP_X) != 0,
-                        (flags & SPRITE_FLIP_Y) != 0, left, right, false);
+                        (flags & SPRITE_FLIP_Y) != 0, left, right, false, 0);
   }
 
   // ...and then the ones with no record to have been dropped from. Last because
@@ -998,7 +1011,8 @@ static inline const SpriteOamOwners* ws_pass_on_screen(const Snes* snes, Widescr
   return NULL;
 }
 
-// Which OAM entries a screen-space record drew, found without a table: each
+// Which OAM entries a screen-space record drew, and which record, found
+// without a table (-1 for none of them): each
 // such record in the visible list is composed as `sprite_emit` composes it,
 // from the memory the picture was made from, and an entry is its piece if it
 // is that piece -- the same column, row and attributes, and the same tile
@@ -1006,8 +1020,8 @@ static inline const SpriteOamOwners* ws_pass_on_screen(const Snes* snes, Widescr
 // as it was and as it is, since the pass that drew this OAM may have loaded
 // the frame after the copy was taken; a frame in neither is matched on the
 // rest. Entries the margins filled are theirs, as with a table.
-static inline void ws_screen_by_look(const Snes* snes, const Widescreen* ws, bool screen[OAM_ENTRIES]) {
-  memset(screen, 0, OAM_ENTRIES * sizeof screen[0]);
+static inline void ws_screen_by_look(const Snes* snes, const Widescreen* ws, int16_t owner[OAM_ENTRIES]) {
+  memset(owner, 0xff, OAM_ENTRIES * sizeof owner[0]);
   const uint8_t* mem = ws_sprite_mem(ws);
   const uint16_t count = ws_r16(mem, W_VISIBLE_ACTOR_COUNT);
   for (uint16_t cur = 0; cur < count; cur += 2) {
@@ -1036,13 +1050,13 @@ static inline void ws_screen_by_look(const Snes* snes, const Widescreen* ws, boo
       if (!(now & 0x8000)) tiles[tile_count++] = sprite_slot_tile(now / 2);
 
       for (int e = 0; e < OAM_ENTRIES; e++) {
-        if (screen[e] || ws->owner_rec[e] >= 0) continue;
+        if (owner[e] >= 0 || ws->owner_rec[e] >= 0) continue;
         const uint16_t lo = snes->ppu->oam[e * 2], word = snes->ppu->oam[e * 2 + 1];
         const int x = (lo & 0xff) | ((snes->ppu->highOam[e >> 2] >> ((e & 3) * 2)) & 1) << 8;
         if (x != (sx & 0x1ff) || (lo >> 8) != (sy & 0xff) || (word & 0xfe00) != attrs) continue;
         bool tile_ok = tile_count == 0;
         for (int t = 0; t < tile_count; t++) tile_ok |= (word & 0x1ff) == tiles[t];
-        if (tile_ok) screen[e] = true;
+        if (tile_ok) owner[e] = (int16_t)rec;
       }
     }
   }
@@ -1089,14 +1103,114 @@ static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, int place
     return;
   }
   const SpriteOamOwners* owners = ws_pass_on_screen(snes, ws);
-  bool by_look[OAM_ENTRIES];
+  int16_t by_look[OAM_ENTRIES];
   if (!owners) ws_screen_by_look(snes, ws, by_look);
   for (int s = 0; s < OAM_ENTRIES; s++) {
     const int rec = owners ? owners->rec[s] : -1;
     const bool screen = owners ? rec >= 0 && (ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS) & ACTOR_SCREEN_SPACE) != 0
-                               : by_look[s];
+                               : by_look[s] >= 0;
     snes_setSpritePlace(snes, s, screen ? place : ppu_spriteWorld);
   }
+}
+
+// The Winner screen, after the last level (`$80:8BBB`). Five threads at
+// `$82:DF6B` set off a firework each, over and over: a screen-space record
+// at a random row and a random column, the column picked again until it is
+// outside `$50..$9F` -- the middle, where the word and the tally are -- so
+// the bursts go up either side of them. A burst near the console's edge is
+// cut off by it, and that was all a widened picture had of them: the
+// sprites were clipped to the console's 256 as on any screen outside a
+// level, and the pieces over the edge were never emitted.
+//
+// So while those threads are running, the two bands the game picks the
+// column from are stretched out to the picture's edges -- `$00..$4F` over
+// the left margin as well, `$A0..$FF` over the right -- and each burst is
+// moved as its band is stretched at its column (`ws_firework_shift`): one at
+// the console's edge goes up at the picture's, one at the band's inner end
+// where it did, and the bursts are as far apart as they were across the
+// width they now have. The record is not touched. Its sprites are drawn
+// further out (`Ppu.spriteShift`), and the pieces the emitter dropped are
+// put back where the moved burst has them.
+#define WS_FIREWORK_ENTRY 0xdf6au  // the byte before, as the table files it
+#define WS_FIREWORK_BANK 0x82u
+// `$82:DF82  CMP #$0050 : BCC use : CMP #$00A0 : BCS use`
+#define WS_FIREWORK_LEFT_END 0x50
+#define WS_FIREWORK_RIGHT_START 0xa0
+// `$82:DF7A  STA $08`: the thread's record, on its own page. The thread
+// waits before it takes one, and until then `$08` is the word it was
+// spawned with, the spawner's -- so a record is only a firework once it has
+// the flags the thread gives it (`$82:DFCA  LDA #$C018 : ORA`).
+#define WS_FIREWORK_RECORD 0x08
+#define WS_FIREWORK_FLAGS 0xc018u
+// `THREAD_DP_TABLE` in `port/thread.h`: the page each slot runs on.
+#define WS_THREAD_DP_TABLE 0x8082deu
+#define WS_THREAD_LIVE 0x8000u  // `W_THREAD_WAIT`'s top bit
+
+// How many columns along a burst at column `x` goes up in a picture with
+// these margins.
+static inline int ws_firework_shift(int x, int left, int right) {
+  if (x < WS_FIREWORK_LEFT_END) return -left * (WS_FIREWORK_LEFT_END - x) / WS_FIREWORK_LEFT_END;
+  if (x >= WS_FIREWORK_RIGHT_START)
+    return right * (x - WS_FIREWORK_RIGHT_START) / (256 - WS_FIREWORK_RIGHT_START);
+  return 0;
+}
+
+// The records of the fireworks going up, from the memory the sprites were
+// composed from. Returns how many.
+static inline int ws_fireworks(const Widescreen* ws, uint16_t recs[WRAM_THREAD_SLOTS]) {
+  const uint8_t* mem = ws_sprite_mem(ws);
+  int n = 0;
+  for (uint32_t s = 0; s < WRAM_THREAD_SLOTS; s++) {
+    if (!(ws_r16(mem, W_THREAD_WAIT + s * 2) & WS_THREAD_LIVE) ||
+        ws_r16(mem, W_THREAD_ENTRY + s * 2) != WS_FIREWORK_ENTRY ||
+        ws_r16(mem, W_THREAD_ENTRY_BANK + s * 2) != WS_FIREWORK_BANK)
+      continue;
+    const uint16_t dp = rom_word(&ws->rom, WS_THREAD_DP_TABLE + s * 2);
+    const uint16_t rec = ws_r16(mem, (uint32_t)dp + WS_FIREWORK_RECORD);
+    if ((ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS) & WS_FIREWORK_FLAGS) == WS_FIREWORK_FLAGS)
+      recs[n++] = rec;
+  }
+  return n;
+}
+
+// Move the fireworks' sprites out and put back the pieces of them the emitter
+// dropped. False, and nothing done, when there are none. See above.
+static inline bool ws_firework_sprites(Snes* snes, Widescreen* ws, int left, int right) {
+  uint16_t recs[WRAM_THREAD_SLOTS];
+  const int n = ws_fireworks(ws, recs);
+  if (n == 0) return false;
+  const uint8_t* mem = ws_sprite_mem(ws);
+
+  // The game's own entries, found as `ws_place_screen_sprites` finds the
+  // radar's, and said to be where they are drawn for whoever eases them.
+  const SpriteOamOwners* owners = ws_pass_on_screen(snes, ws);
+  int16_t by_look[OAM_ENTRIES];
+  if (!owners) ws_screen_by_look(snes, ws, by_look);
+  for (int s = 0; s < OAM_ENTRIES; s++) {
+    const int rec = owners ? owners->rec[s] : by_look[s];
+    int i = 0;
+    while (i < n && recs[i] != rec) i++;
+    if (rec < 0 || i == n) continue;
+    const int16_t ox = (int16_t)ws_r16(mem, (uint32_t)rec + ACTOR_X);
+    const int shift = ws_firework_shift(ox, left, right);
+    snes_setSpriteShift(snes, s, shift);
+    ws->owner_rec[s] = (int16_t)rec;
+    ws->owner_ox[s] = (int16_t)(ox + shift);
+    ws->owner_oy[s] = (int16_t)ws_r16(mem, (uint32_t)rec + ACTOR_Y);
+  }
+
+  ws_mark_drawn(snes, ws);
+  int slot = snes_freeSprite(snes, 0);
+  for (int i = 0; i < n && slot < OAM_ENTRIES; i++) {
+    SpriteMeta meta;
+    int16_t ox, oy;
+    uint16_t attr_or, attr_and, flags;
+    if (!ws_record_draw(ws, recs[i], &meta, &ox, &oy, &attr_or, &attr_and, &flags)) continue;
+    slot = ws_emit_meta(snes, ws, slot, recs[i], &meta, ox, oy, attr_or, attr_and,
+                        (flags & SPRITE_FLIP_X) != 0, (flags & SPRITE_FLIP_Y) != 0,
+                        left, right, false, ws_firework_shift(ox, left, right));
+  }
+  return true;
 }
 
 // Called at the top of every frame, before any of it is drawn — see
@@ -1233,6 +1347,7 @@ static inline bool ws_konami_sweep(const Snes* snes) {
 static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   const uint8_t* mem = ws->mem;
   const int margin = ws->margin;
+  for (int s = 0; s < OAM_ENTRIES; s++) snes_setSpriteShift(snes, s, 0);
   // Both halves, and see the note at the top of this file on why the width
   // alone is not enough: BG2SC keeps its 64 columns across the cards between
   // two levels, and only `$212C` says the world has stopped being drawn.
@@ -1310,6 +1425,9 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
     // Nothing outside a level has a map to run off the end of.
     snes_setWidescreen(snes, margin, margin);
     snes_setWideClamp(snes, -PPU_EXTRA_MAX, 255 + PPU_EXTRA_MAX);
+    // The Winner screen's fireworks, spread out to the picture's edges.
+    if (!in_level && margin > 0 && ws_firework_sprites(snes, ws, margin, margin))
+      snes_setLayerWide(snes, 4, ppu_wideStretch);
     ws->screen_place = ppu_spriteWorld;
     ws_place_screen_sprites(snes, ws, ws->screen_place);
     return;

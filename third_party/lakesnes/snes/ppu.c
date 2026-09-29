@@ -88,6 +88,7 @@ Ppu* ppu_init(Snes* snes) {
   ppu->extraRight = 0;
   for(int i = 0; i < 5; i++) ppu->layerWide[i] = ppu_wideAuto;
   memset(ppu->spritePlace, 0, sizeof(ppu->spritePlace));
+  memset(ppu->spriteShift, 0, sizeof(ppu->spriteShift));
   for(int i = 0; i < 4; i++) for(int j = 0; j < 2; j++) {
     ppu->centreFillCol[i][j] = -1; ppu->centreFillLine[i][j] = -1; ppu->centreFillFrom[i][j] = -1;
     ppu->centreFillWrap[i][j] = 0; ppu->centreLastFull[i] = -2;
@@ -1118,7 +1119,7 @@ static int ppu_spriteX(const Ppu* ppu, uint8_t index) {
   // puts a layer's column of the same number.
   if(place == ppu_spriteAnchored && (ppu->extraLeft != 0 || ppu->extraRight != 0))
     x += x < 128 ? -ppu->extraLeft : ppu->extraRight;
-  return x;
+  return x + ppu->spriteShift[index >> 1];
 }
 
 static void ppu_evaluateSprites(Ppu* ppu, int line) {

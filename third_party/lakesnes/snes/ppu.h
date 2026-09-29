@@ -306,6 +306,10 @@ struct Ppu {
   // survivor radar's markers, which the game lays out over the status panel,
   // and the game over's hanging drips, which it lays out over the mask.
   uint8_t spritePlace[128];
+  // ...and how many columns along from there, for a sprite drawn somewhere
+  // other than where the game put it: the Winner screen's fireworks, spread
+  // out to the edges of a widened picture. Zero is where the game put it.
+  int16_t spriteShift[128];
   // ...whether each background is empty at both edges, recomputed once a frame
   uint8_t layerEdgeEmpty[4];
   // ...and for `ppu_wideCentre`, per background and side, where its margin

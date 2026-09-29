@@ -129,6 +129,8 @@ void snes_setLayerWide(Snes* snes, int layer, int policy);
 // world, with the anchored layers or with a centred one -- one of the
 // `ppu_sprite*` places, see `Ppu.spritePlace`.
 void snes_setSpritePlace(Snes* snes, int slot, int place);
+// ...and `shift` columns along from there -- see `Ppu.spriteShift`.
+void snes_setSpriteShift(Snes* snes, int slot, int shift);
 bool snes_bgTilemapWider(const Snes* snes, int layer);
 bool snes_bgOnMainScreen(const Snes* snes, int layer);
 // Whether column `x` (0-255) of background `layer` is empty on every line of

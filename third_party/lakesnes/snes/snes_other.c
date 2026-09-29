@@ -155,6 +155,11 @@ void snes_setSpritePlace(Snes* snes, int slot, int place) {
   snes->ppu->spritePlace[slot] = (uint8_t)place;
 }
 
+void snes_setSpriteShift(Snes* snes, int slot, int shift) {
+  if(slot < 0 || slot >= 128) return;
+  snes->ppu->spriteShift[slot] = (int16_t)shift;
+}
+
 bool snes_bgTilemapWider(const Snes* snes, int layer) {
   return ppu_bgTilemapWider(snes->ppu, layer);
 }

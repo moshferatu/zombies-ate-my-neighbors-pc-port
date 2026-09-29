@@ -7,7 +7,7 @@ It plays like the original game, with some additional features:
 * Widescreen support (16:9, 16:10, and 21:9)
 * Smoother motion on high refresh rate displays
 * USB controller support with twin-stick movement and aiming
-* Item and weapon switching in both directions using the controller shoulders and triggers
+* Item and weapon cycling in both directions
 * Increased hitbox sizes for neighbors and items
 * Quick saving and quick loading
 * Top scores are saved between sessions
@@ -46,19 +46,17 @@ Be warned that playing in widescreen makes the game much more difficult, as the 
 - `<ROM Name>.hiscore` contains the top scores.
 - `<ROM Name>.quicksave` contains the quick save. There is only one save slot.
 
-## Generative AI Usage
+## Generative AI Usage Disclaimer
 
-Every line of code in this port has been generated using Claude Code and Codex.
+Every line of code in this port has been generated using either Claude Code or Codex.
 
 ## Port Progress
 
-The port is fully playable, but very much a work in progress.
+The port is fully playable, but is very much a work in progress.
 
 The game's logic is being rewritten in C and validated against original ROM execution.
 
 Some of the game is still being emulated, and only a very small portion of what is running natively has been translated into what could be called "readable" C.
-
-Long term, I would love for the port to be fully translated, but I'm not committing to that at this time.
 
 ## Credits
 
