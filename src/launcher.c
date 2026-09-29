@@ -185,10 +185,7 @@ static const struct { int act; const char* label; const char* help; } hot_rows[A
   {ACT_QUICK_SAVE, "Quick Save", "Keep the game as it is this moment, beside the ROM."},
   {ACT_QUICK_LOAD, "Quick Load", "Go back to the last quick save."},
   {ACT_FULLSCREEN, "Fullscreen", "Between fullscreen and a window. Alt+Enter always does this as well."},
-  {ACT_CYCLE_WIDESCREEN, "Cycle Widescreen", "Off, 16:9, 16:10, 21:9 and auto, in turn."},
-  {ACT_CYCLE_FILTER, "Cycle Filter", "Sharp, integer and linear, in turn."},
   {ACT_TOGGLE_SMOOTHING, "Toggle Smoothing", "Pictures eased between the game's frames, or the frames only."},
-  {ACT_TOGGLE_NATIVE, "Native Routines", "The C port's routines, or the cartridge's own in their place."},
   {ACT_QUIT, "Quit", "Leave the game."},
 };
 static const struct { int k; const char* label; } cycle_rows[PAD_CYCLE_COUNT] = {

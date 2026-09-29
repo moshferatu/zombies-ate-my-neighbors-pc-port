@@ -134,11 +134,13 @@ static void test_settings(void) {
   if (c.window_scale != 4) fail("window_scale %d", c.window_scale);
   if (c.smoothing) fail("smoothing");
 
-  // The aspect's hotkey is retired with it, and a file from before still has it.
+  // The aspect's hotkey is retired with it, and the widescreen, filter and
+  // native-routine ones after it, and a file from before still has them.
   Config h;
   config_defaults(&h);
-  parse(&h, "[hotkeys]\ntoggle_aspect = F3\n[controller hotkeys]\ntoggle_aspect =\n");
-  if (h.warnings) fail("a retired toggle_aspect was complained about %d times", h.warnings);
+  parse(&h, "[hotkeys]\ntoggle_aspect = F3\ntoggle_native = F1\ncycle_filter = F2\n"
+            "cycle_widescreen = F4\n[controller hotkeys]\ntoggle_aspect =\ncycle_filter = l3\n");
+  if (h.warnings) fail("a retired hotkey was complained about %d times", h.warnings);
   if (!c.radar_flash) fail("radar");
   if (c.audio) fail("audio");
   if (c.volume != 35) fail("volume %d", c.volume);

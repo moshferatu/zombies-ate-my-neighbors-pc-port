@@ -23,7 +23,7 @@
 // difference is that it steps through `cosim_step`, which watches the program
 // counter and hands a registered routine to the C port instead of letting the
 // 65816 execute it. So `--stock` is not a different code path, it is this one
-// with the enable mask cleared, and F1 moves between them at a frame boundary.
+// with the enable mask cleared.
 //
 // ## What it does not mean
 //
@@ -652,7 +652,7 @@ static bool tick_input(Snes* snes, Movie* movie, bool have_movie, long frame,
   //
   // **Both places, because there are two of them.** `$80:D1FF` is a
   // substituted routine, so the nine patched bytes at `$80:D250` are the
-  // path `--stock` and F1 take and `player_set_aim` is the path the default
+  // path `--stock` takes and `player_set_aim` is the path the default
   // build takes. Arming one and not the other is a flag that works in one
   // mode and silently does nothing in the other, which is worse than a flag
   // that does not work at all.
@@ -696,7 +696,7 @@ static void usage(void) {
     "                  No to what the file says, for this run.\n"
     "  --volume <N>    0 to 100, default 100.\n"
     "  --stock         Do not substitute; run the ROM under the core, as the\n"
-    "                  Phase 0b baseline did. F1 still toggles at runtime.\n"
+    "                  Phase 0b baseline did.\n"
     "  -r <routine>    Substitute only this one. Repeatable; default is every\n"
     "                  routine `zamn_cosim list` reports.\n"
     "  -m <movie.zmv>  Replay a recorded movie instead of reading the keyboard.\n"
@@ -812,7 +812,7 @@ static void usage(void) {
     "                  either side of the console's 256 instead of stretching them:\n"
     "                  more level is visible, and the status panels move to\n"
     "                  the two edges. auto is whichever fits the display when\n"
-    "                  fullscreen, and off in a window. F4 cycles.\n"
+    "                  fullscreen, and off in a window.\n"
     "  --filter <how>  How to fill a window that is not a whole multiple:\n"
     "                    sharp   (default) nearest up to the next whole\n"
     "                            multiple, then one bilinear step down. Uniform\n"
@@ -836,9 +836,7 @@ static void usage(void) {
     "Controls, unless zamn.ini binds them otherwise, which it can for every one\n"
     "of them, pad inputs included:\n"
     "          Arrows=D-pad  Z=B X=A A=Y S=X  Q=L W=R  Enter=Start RShift=Select\n"
-    "          F1 = toggle native substitution   F2 = cycle scaling\n"
-    "          F4 = cycle widescreen             F5 = quick save\n"
-    "          F6 = toggle smoothing             F9 = quick load\n"
+    "          F5 = quick save   F9 = quick load   F6 = toggle smoothing\n"
     "          F11/Alt+Enter = fullscreen        Esc = quit\n\n"
     "Controllers: any pad SDL recognises, hot-pluggable, first two take the two\n"
     "          SNES ports. Face buttons are positional — the bottom one is B,\n"
@@ -1282,8 +1280,8 @@ int main(int argc, char** argv) {
       }
     }
   }
-  // The selection is remembered so F1 can put it back; `enabled` is what the
-  // engine reads, and clearing it is the whole of running stock.
+  // `enabled` is what the engine reads, and clearing it is the whole of
+  // running stock.
   const CosimMask selected = cosim.enabled;
   int routine_count = 0;
   for (int i = 0; i < cosim.stat_count; i++)
@@ -1862,24 +1860,6 @@ int main(int argc, char** argv) {
     pads.hot_pressed = 0;
 
     if (actions & (1u << ACT_QUIT)) running = false;
-    if (running && (actions & (1u << ACT_TOGGLE_NATIVE))) {
-      // Only between frames. Turning the mask off stops *new* calls being
-      // intercepted; a resumable routine that is parked mid-call still resumes
-      // through the port, because `cosim_step` matches a suspension by its
-      // resume address rather than by the mask. Finishing what was started is
-      // the correct behaviour and it is why the toggle is safe at any moment.
-      native = !native;
-      if (native) cosim.enabled = selected;
-      else cosim_mask_none(&cosim.enabled);
-      printf("Substitution %s\n", native ? "on" : "off (stock)");
-      fflush(stdout);
-    }
-    // Widescreen, on its own key, because how much wider 16:9 is than the
-    // console is not a thing anyone can judge from two runs. The key moves
-    // the setting on; the width it comes to is settled below, after the
-    // display key, because `auto` asks what the picture is drawn into.
-    const bool wide_cycled = running && (actions & (1u << ACT_CYCLE_WIDESCREEN));
-    if (wide_cycled) wide_setting = (WideMode)((wide_setting + 1) % WIDE_MODE_COUNT);
     if (running && (actions & ((1u << ACT_QUICK_SAVE) | (1u << ACT_QUICK_LOAD)))) {
       // Quick save and quick load. Only asked for here: the machine may be
       // running its next tick on the emulation thread at this moment, and both
@@ -1902,13 +1882,6 @@ int main(int argc, char** argv) {
       else
         printf("Smoothing: %s, but not possible on this display\n",
                smooth ? "on" : "off");
-      fflush(stdout);
-    }
-    if (running && (actions & (1u << ACT_CYCLE_FILTER))) {
-      // Cycling rather than a set of three keys, because the only way to
-      // judge these is to watch one turn into the next on the same frame.
-      present.mode = (ScaleMode)((present.mode + 1) % SCALE_MODE_COUNT);
-      printf("Scaling: %s\n", scale_name(present.mode));
       fflush(stdout);
     }
     if (running && (actions & (1u << ACT_FULLSCREEN))) {
@@ -1956,10 +1929,10 @@ int main(int argc, char** argv) {
           running = false;
         }
       }
-      if (running && (wide_cycled || wide != wide_shown)) {
+      if (running && wide != wide_shown) {
         // Not on the first pass, unless asked: `auto` settling on the display
         // it started on is not news to a quiet console.
-        if (wide_cycled || wide_told || verbose) {
+        if (wide_told || verbose) {
           if (wide_setting == WIDE_AUTO)
             printf("Widescreen: auto, %s (%d columns)\n", wide_name(wide), fb_w / 2);
           else
@@ -2274,7 +2247,7 @@ int main(int argc, char** argv) {
                  share, routine_count, served, declined);
       else
         snprintf(title, sizeof title,
-                 "Zombies Ate My Neighbors — stock (emulated; F1 for native)");
+                 "Zombies Ate My Neighbors — stock (emulated)");
       SDL_SetWindowTitle(win, title);
     }
   }
@@ -2360,9 +2333,7 @@ int main(int argc, char** argv) {
     // The two percentages the table cannot give: 82 rows of `OK` say each
     // ported routine worked, and say nothing at all about what fraction of the
     // game that is. This does, for the session that was just played, and it is
-    // measured over the whole run — including any stretch spent stock, because
-    // F1 toggling to the emulator and back is exactly a stretch where the port
-    // ran nothing.
+    // measured over the whole run.
     cosim_share_report(&cosim);
     cosim_census_report();
   }

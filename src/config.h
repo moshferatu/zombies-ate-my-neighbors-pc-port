@@ -98,9 +98,6 @@
 // also the bits of `PadSet.hot_pressed` and the rows of `PadMap.hot`.
 typedef enum {
   ACT_QUIT,
-  ACT_TOGGLE_NATIVE,
-  ACT_CYCLE_FILTER,
-  ACT_CYCLE_WIDESCREEN,
   ACT_QUICK_SAVE,
   ACT_QUICK_LOAD,
   ACT_TOGGLE_SMOOTHING,
@@ -109,8 +106,7 @@ typedef enum {
 } ConfigAction;
 
 static const char* const config_action_names[ACT_COUNT] = {
-  "quit", "toggle_native", "cycle_filter", "cycle_widescreen",
-  "quick_save", "quick_load", "toggle_smoothing", "fullscreen",
+  "quit", "quick_save", "quick_load", "toggle_smoothing", "fullscreen",
 };
 
 // By `PAD_CYCLE_*`; `[controller buttons]` has these beside the SNES buttons.
@@ -276,10 +272,7 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "quick_save =\n"
   "quick_load =\n"
   "toggle_smoothing =\n"
-  "cycle_widescreen =\n"
-  "cycle_filter =\n"
   "fullscreen =\n"
-  "toggle_native =\n"
   "quit =\n"
   "\n"
   "; Keys, by the name printed on them: A, 5, F5, Up, Space, Return, Tab,\n"
@@ -320,10 +313,6 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "; fullscreen as well.)\n"
   "[hotkeys]\n"
   "quit = Escape\n"
-  "; The C port's routines, or the cartridge's own in their place.\n"
-  "toggle_native = F1\n"
-  "cycle_filter = F2\n"
-  "cycle_widescreen = F4\n"
   "quick_save = F5\n"
   "toggle_smoothing = F6\n"
   "quick_load = F9\n"
@@ -527,9 +516,6 @@ static inline void config_defaults(Config* c) {
   for (int i = 0; i < (int)(sizeof keys / sizeof *keys); i++)
     for (int j = 0; j < 2; j++) c->key[0][keys[i].btn][j] = keys[i].k[j];
   c->hotkey[ACT_QUIT][0] = SDLK_ESCAPE;
-  c->hotkey[ACT_TOGGLE_NATIVE][0] = SDLK_F1;
-  c->hotkey[ACT_CYCLE_FILTER][0] = SDLK_F2;
-  c->hotkey[ACT_CYCLE_WIDESCREEN][0] = SDLK_F4;
   c->hotkey[ACT_QUICK_SAVE][0] = SDLK_F5;
   c->hotkey[ACT_TOGGLE_SMOOTHING][0] = SDLK_F6;
   c->hotkey[ACT_QUICK_LOAD][0] = SDLK_F9;
@@ -669,7 +655,13 @@ static inline bool config_set(Config* c, const char* name, int line,
       if (pad_buttons) config_pad_list(c, name, line, c->pad.game[b], v);
       else config_key_list(c, name, line, c->key[keys2 ? 1 : 0][b], v);
     } else if (pad_hot || hot) {
-      if (!strcmp(key, "toggle_aspect")) return true;  // retired, as `aspect` is
+      // Retired, as `aspect` is, and still in a file from before: the aspect's
+      // hotkey, and the widescreen, filter and native-routine ones, which are
+      // the launcher's and the command line's to choose now.
+      static const char* const retired[] = {
+        "toggle_aspect", "toggle_native", "cycle_filter", "cycle_widescreen",
+      };
+      if (config_name_index(key, retired, (int)(sizeof retired / sizeof *retired)) >= 0) return true;
       const int a = config_name_index(key, config_action_names, ACT_COUNT);
       if (a < 0) return false;
       if (pad_hot) config_pad_list(c, name, line, c->pad.hot[a], v);
@@ -920,8 +912,7 @@ static inline void config_each_value(const Config* c, ConfigValueFn fn, void* ct
   static const int buttons[12] = {BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_B, BTN_A,
                                   BTN_Y, BTN_X, BTN_L, BTN_R, BTN_START, BTN_SELECT};
   static const int pad_hot[ACT_COUNT] = {
-    ACT_QUICK_SAVE, ACT_QUICK_LOAD, ACT_TOGGLE_SMOOTHING, ACT_CYCLE_WIDESCREEN,
-    ACT_CYCLE_FILTER, ACT_FULLSCREEN, ACT_TOGGLE_NATIVE, ACT_QUIT,
+    ACT_QUICK_SAVE, ACT_QUICK_LOAD, ACT_TOGGLE_SMOOTHING, ACT_FULLSCREEN, ACT_QUIT,
   };
   static const char* const stick[] = {"off", "left", "right"};
   char v[CONFIG_PATH_MAX];

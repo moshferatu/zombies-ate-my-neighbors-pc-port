@@ -48,9 +48,7 @@ Be warned that playing in widescreen makes the game much more difficult, as the 
 
 ## Generative AI Usage
 
-This port is developed using Claude Code and Codex.
-
-I usually select the largest model available in each, but set reasoning to medium in order to save on token usage.
+Every line of code in this port has been generated using Claude Code and Codex.
 
 ## Port Progress
 
@@ -64,7 +62,9 @@ Long term, I would love for the port to be fully translated, but I'm not committ
 
 ## Credits
 
-- SNES core: [LakeSnes](https://github.com/elzo-d/LakeSnes) (MIT)
-- ZAMN data format reverse engineering: [Necrofy](https://github.com/Piranhaplant/Necrofy)
-- Architecture model: [zelda3](https://github.com/snesrev/zelda3)
-- PNG writing and font rendering: [stb](https://github.com/nothings/stb) (public domain or MIT)
+* [zelda3](https://github.com/snesrev/zelda3) - reference for SNES port architecture
+* [LakeSnes](https://github.com/elzo-d/LakeSnes) - used to emulate the original hardware and validate the port
+* [Necrofy](https://github.com/Piranhaplant/Necrofy) - reference for ROM data format
+* [Zombies Ate My Neighbors DX](https://github.com/JamesIV4/zombies-ate-my-neighbors-dx) - the inspiration for twin-stick controls and hitbox changes
+* [Bloody Disgusting ROM Hack](https://www.romhacking.net/hacks/4306/) - inspiration for game over blood color setting
+* [Reverse Inventory Cycling ROM Hack](https://www.romhacking.net/hacks/4318/) - inspiration for inventory cycling setting

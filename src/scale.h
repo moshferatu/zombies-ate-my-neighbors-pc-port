@@ -76,7 +76,7 @@ typedef enum {
   SCALE_SHARP,    // nearest to a whole multiple, then one bilinear step down
   SCALE_INTEGER,  // nearest, largest whole multiple that fits, letterboxed
   SCALE_LINEAR,   // straight bilinear from the source size
-  SCALE_MODE_COUNT,  // what F2 cycles through; keep last
+  SCALE_MODE_COUNT,  // keep last
 } ScaleMode;
 
 // How large an offscreen target `sharp` will build, as a multiple of the
@@ -119,7 +119,7 @@ typedef enum {
   // frontend's setting is ever this. What the PPU is given never is, and
   // `wide_margin` would call it off.
   WIDE_AUTO,
-  WIDE_MODE_COUNT,  // what F4 cycles through; keep last
+  WIDE_MODE_COUNT,  // keep last
 } WideMode;
 
 static inline const char* wide_name(WideMode m) {
