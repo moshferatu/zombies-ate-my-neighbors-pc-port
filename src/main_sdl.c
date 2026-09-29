@@ -941,7 +941,7 @@ int main(int argc, char** argv) {
   // of whoever started it.
   bool fullscreen = g_cfg.fullscreen;
   bool fullscreen_asked = false;
-  int refresh_asked = g_cfg.refresh;
+  int refresh_asked = 0;
   bool frames_given = false;
   // `--frames N` means "run N and stop", and it turns pacing off because a
   // throughput measurement wants to finish rather than to be watched. Those are

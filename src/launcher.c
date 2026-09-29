@@ -96,7 +96,7 @@ typedef enum { K_HEAD, K_CHOICE, K_RANGE, K_PATH, K_KEYS, K_PADS } Kind;
 
 enum {
   S_ROM, S_SKIP_INTRO, S_LEVEL, S_HITBOX, S_BLOOD, S_HIGH_SCORES, S_HISCORE_FILE,
-  S_FULLSCREEN, S_WIDESCREEN, S_FILTER, S_WINDOW_SCALE, S_SMOOTHING, S_REFRESH, S_RADAR,
+  S_FULLSCREEN, S_WIDESCREEN, S_FILTER, S_WINDOW_SCALE, S_SMOOTHING, S_RADAR,
   S_AUDIO, S_VOLUME, S_EFFECT_OVERLAY, S_ALL_MONSTER_SOUNDS,
   S_PADS, S_TWIN_STICK, S_DEADZONE, S_MOVE_STICK, S_AIM_STICK,
   S_CHEAT,  // and the five after it, by `config_cheat_names`
@@ -151,13 +151,11 @@ static const char* const level_names[56] = {
   "The Son of Dr. Tongue", "Day of the Tentacle", "Someplace Very Warm", "Curse of the Pharaohs",
   "Mushroom Men", "Cheerleaders vs. the Monsters",
 };
-static const int refresh_presets[] = {0, 50, 60, 75, 90, 100, 120, 144, 165, 170, 180, 200,
-                                      240, 280, 300, 360, 480, 500};
 #define COUNT(a) ((int)(sizeof(a) / sizeof *(a)))
 
-enum { TAB_GAME, TAB_VIDEO, TAB_AUDIO, TAB_CONTROLLER, TAB_KEYBOARD, TAB_HOTKEYS, TAB_CHEATS, TAB_COUNT };
+enum { TAB_GAME, TAB_VIDEO, TAB_AUDIO, TAB_CONTROLLER, TAB_KEYBOARD, TAB_CHEATS, TAB_COUNT };
 static const char* const tab_names[TAB_COUNT] = {"Game", "Video", "Audio", "Controller",
-                                                 "Keyboard", "Hotkeys", "Cheats"};
+                                                 "Keyboard", "Cheats"};
 #define ROWS_MAX 64
 static Row rows[TAB_COUNT][ROWS_MAX];
 static int row_count[TAB_COUNT];
@@ -219,7 +217,7 @@ static void build_rows(void) {
   add_range(TAB_GAME, S_HITBOX, "Hitbox Size", 100, 200, 5, true,
       "How far a player reaches for a pickup or a neighbor as a percentage of the original game.");
   add_choice(TAB_GAME, S_BLOOD, "Game Over Blood", blood_choices, 2,
-      "The color of the game over's blood on the screen.");
+      "The color of the blood on the game over screen.");
   add_choice(TAB_GAME, S_HIGH_SCORES, "Save High Scores", on_off, 2,
       "Whether to save the top scores from one run to the next.");
   add(TAB_GAME, (Row){K_PATH, S_HISCORE_FILE, "High Scores File",
@@ -238,8 +236,6 @@ static void build_rows(void) {
   add_choice(TAB_VIDEO, S_SMOOTHING, "Smoothing", on_off, 2,
       "On: a picture for every refresh of a fast display, eased between the game's sixty a "
       "second. Off: the game's frames only.");
-  add_range(TAB_VIDEO, S_REFRESH, "Refresh Rate", 0, 1000, 1, false,
-      "Auto, or the display's refresh rate when the system reports it wrong.");
   add_choice(TAB_VIDEO, S_RADAR, "Radar", radar_choices, 2,
       "Steady: the radar shows every neighbour at once. Flashing: one at a time, in turn, as "
       "the console does.");
@@ -261,8 +257,7 @@ static void build_rows(void) {
   add_choice(TAB_CONTROLLER, S_AIM_STICK, "Aim Stick", stick_choices, 3,
       "The stick that aims, when twin stick is on.");
   static const char pad_help[] =
-      "For both controllers. Enter or South waits for an input to add; Backspace or West takes "
-      "the last one off. Four at most.";
+      "Binds the selected action to a controller button.";
   add_head(TAB_CONTROLLER, "Buttons", pad_help);
   for (int i = 0; i < 12; i++)
     add(TAB_CONTROLLER, (Row){K_PADS, BIND(G_PAD_GAME, snes_rows[i].btn), snes_rows[i].label, pad_help});
@@ -272,26 +267,25 @@ static void build_rows(void) {
   add_head(TAB_CONTROLLER, "Weapons and items", cycle_help);
   for (int i = 0; i < PAD_CYCLE_COUNT; i++)
     add(TAB_CONTROLLER, (Row){K_PADS, BIND(G_PAD_CYCLE, cycle_rows[i].k), cycle_rows[i].label, cycle_help});
+  add_head(TAB_CONTROLLER, "Hotkeys",
+      "What the game's window does, from a controller: unbound unless bound here, and a single "
+      "press fires them. Start and Select together always quits.");
+  for (int i = 0; i < ACT_COUNT; i++)
+    add(TAB_CONTROLLER, (Row){K_PADS, BIND(G_PAD_HOT, hot_rows[i].act), hot_rows[i].label, hot_rows[i].help});
 
   static const char key_help[] =
-      "Enter waits for a key to add; Backspace takes the last one off. Every key can be bound, "
-      "Escape too, so click or wait five seconds to stop waiting.";
+      "Binds the selected action to a key.";
   add_head(TAB_KEYBOARD, "Player 1", key_help);
   for (int i = 0; i < 12; i++)
     add(TAB_KEYBOARD, (Row){K_KEYS, BIND(G_KEY_1, snes_rows[i].btn), snes_rows[i].label, key_help});
-  static const char key2_help[] = "For two at one keyboard. Unbound unless bound here.";
+  static const char key2_help[] = "Binds the selected action for player 2 on the same keyboard.";
   add_head(TAB_KEYBOARD, "Player 2", key2_help);
   for (int i = 0; i < 12; i++)
     add(TAB_KEYBOARD, (Row){K_KEYS, BIND(G_KEY_2, snes_rows[i].btn), snes_rows[i].label, key2_help});
 
-  add_head(TAB_HOTKEYS, "Keyboard", "What the game's window does, from the keyboard.");
+  add_head(TAB_KEYBOARD, "Hotkeys", "What the game's window does, from the keyboard.");
   for (int i = 0; i < ACT_COUNT; i++)
-    add(TAB_HOTKEYS, (Row){K_KEYS, BIND(G_KEY_HOT, hot_rows[i].act), hot_rows[i].label, hot_rows[i].help});
-  add_head(TAB_HOTKEYS, "Controller",
-      "The same, from a controller: unbound unless bound here, and a single press fires them. "
-      "Start and Select together always quits.");
-  for (int i = 0; i < ACT_COUNT; i++)
-    add(TAB_HOTKEYS, (Row){K_PADS, BIND(G_PAD_HOT, hot_rows[i].act), hot_rows[i].label, hot_rows[i].help});
+    add(TAB_KEYBOARD, (Row){K_KEYS, BIND(G_KEY_HOT, hot_rows[i].act), hot_rows[i].label, hot_rows[i].help});
 
   add_head(TAB_CHEATS, "Cheats",
       "Each off unless turned on here. While any is on, the top scores are read and not written.");
@@ -313,7 +307,6 @@ static int setting_get(const Config* c, int id) {
     case S_FILTER:       return (int)c->filter;
     case S_WINDOW_SCALE: return c->window_scale;
     case S_SMOOTHING:    return c->smoothing;
-    case S_REFRESH:      return c->refresh;
     case S_RADAR:        return c->radar_flash;
     case S_AUDIO:        return c->audio;
     case S_VOLUME:       return c->volume;
@@ -341,7 +334,6 @@ static void setting_set(Config* c, int id, int v) {
     case S_FILTER:       c->filter = (ScaleMode)v; break;
     case S_WINDOW_SCALE: c->window_scale = v; break;
     case S_SMOOTHING:    c->smoothing = v != 0; break;
-    case S_REFRESH:      c->refresh = v; break;
     case S_RADAR:        c->radar_flash = v != 0; break;
     case S_AUDIO:        c->audio = v != 0; break;
     case S_VOLUME:       c->volume = v; break;
@@ -401,10 +393,6 @@ static void range_text(const Row* r, int v, char* out, size_t size) {
       else snprintf(out, size, "Level %d (%s)", v, level_names[v]);
       break;
     case S_WINDOW_SCALE: snprintf(out, size, "%dx (%d x %d)", v, 512 * v, 480 * v); break;
-    case S_REFRESH:
-      if (v <= 0) snprintf(out, size, "Auto");
-      else snprintf(out, size, "%d Hz", v);
-      break;
     default: snprintf(out, size, "%d%%", v); break;
   }
 }
@@ -609,7 +597,6 @@ static struct {
   Hot hot[512];
   int nhot;
   char status[CONFIG_PATH_MAX + 128];
-  bool status_bad;
   bool dirty;
   int pad_style;
   int held_dir, stick_x, stick_y;
@@ -622,12 +609,12 @@ static struct {
   bool redraw;
 } ui;
 
-static void say(bool bad, const char* fmt, ...) {
+// What went wrong, beside the buttons. What went right is not said.
+static void say(const char* fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   vsnprintf(ui.status, sizeof ui.status, fmt, ap);
   va_end(ap);
-  ui.status_bad = bad;
 }
 
 static void changed(void) { ui.dirty = true; }
@@ -774,11 +761,8 @@ static void load(const char* asked) {
       free(text);
     }
     if (ui.cfg.warnings)
-      say(true, "%d line%s of %s could not be read. They keep their defaults, and Save writes those in.",
+      say("%d line%s of %s could not be read. They keep their defaults, and Save writes those in.",
           ui.cfg.warnings, ui.cfg.warnings == 1 ? "" : "s", base_name(ui.ini));
-    else say(false, "Read %s", base_name(ui.ini));
-  } else {
-    say(false, "There is no %s yet. Save or Play makes one here.", CONFIG_FILE);
   }
   if (!ui.cfg.rom[0]) snprintf(ui.cfg.rom, sizeof ui.cfg.rom, "%s", CONFIG_ROM_DEFAULT);
   snprintf(ui.cfg.path, sizeof ui.cfg.path, "%s", ui.ini);
@@ -818,7 +802,7 @@ static bool save(void) {
   char* text = from ? config_update_text(from, &ui.cfg) : NULL;
   free(old);
   free(fresh);
-  if (!text) { say(true, "Out of memory writing %s", base_name(ui.ini)); return false; }
+  if (!text) { say("Out of memory writing %s", base_name(ui.ini)); return false; }
   char tmp[CONFIG_PATH_MAX + 8];
   snprintf(tmp, sizeof tmp, "%s.tmp", ui.ini);
   FILE* f = fopen(tmp, "wb");
@@ -832,12 +816,12 @@ static bool save(void) {
 #endif
   if (!ok) {
     remove(tmp);
-    say(true, "Could not write %s", base_name(ui.ini));
+    say("Could not write %s", base_name(ui.ini));
     return false;
   }
   ui.ini_exists = true;
   ui.dirty = false;
-  say(false, "Saved %s", base_name(ui.ini));
+  ui.status[0] = 0;
   return true;
 }
 
@@ -874,12 +858,12 @@ static bool launch(void) {
     ui.on_buttons = false;
     ui.focus = 0;
     ui.scroll = 0;
-    say(true, "The cartridge is not at %s. Choose it here first.", rom);
+    say("The cartridge is not at %s. Choose it here first.", rom);
     return false;
   }
   char exe[CONFIG_PATH_MAX + 16];
   snprintf(exe, sizeof exe, "%s%s", ui.base, GAME_EXE);
-  if (!file_exists(exe)) { say(true, "%s is not beside the launcher, in %s", GAME_EXE, ui.base); return false; }
+  if (!file_exists(exe)) { say("%s is not beside the launcher, in %s", GAME_EXE, ui.base); return false; }
   if (!save()) return false;
 #ifdef _WIN32
   char cmd[CONFIG_PATH_MAX * 2 + 64];
@@ -889,7 +873,7 @@ static bool launch(void) {
   ZeroMemory(&si, sizeof si);
   si.cb = sizeof si;
   if (!CreateProcessA(exe, cmd, NULL, NULL, FALSE, 0, NULL, ui.base, &si, &pi)) {
-    say(true, "Could not start %s (error %lu)", exe, (unsigned long)GetLastError());
+    say("Could not start %s (error %lu)", exe, (unsigned long)GetLastError());
     return false;
   }
   CloseHandle(pi.hThread);
@@ -901,7 +885,7 @@ static bool launch(void) {
     execl(exe, exe, "--config", ui.ini, (char*)NULL);
     _exit(127);
   }
-  if (pid < 0) { say(true, "Could not start %s", exe); return false; }
+  if (pid < 0) { say("Could not start %s", exe); return false; }
   game = pid;
 #endif
   ui.held_dir = 0;
@@ -972,7 +956,7 @@ static void commit_edit(void) {
   // "Copy as path" puts quotes round it.
   size_t n = strlen(t);
   if (n >= 2 && t[0] == '"' && t[n - 1] == '"') { t[n - 1] = 0; t++; }
-  if (r->id == S_ROM && !*t) { say(true, "The cartridge needs a path; it is as it was."); return; }
+  if (r->id == S_ROM && !*t) { say("The cartridge needs a path; it is as it was."); return; }
   char* dst = path_of(&ui.cfg, r->id);
   if (strcmp(dst, t)) {
     snprintf(dst, CONFIG_PATH_MAX, "%s", t);
@@ -1003,7 +987,7 @@ static int capture_left(void) { return (int)((ui.capture_end - SDL_GetTicks() + 
 static void start_capture(int i) {
   const Row* r = row_at(i);
   const int n = r->kind == K_KEYS ? key_count(keys_of(&ui.cfg, r->id)) : bind_count(pads_of(&ui.cfg, r->id));
-  if (n >= CONFIG_KEYS_MAX) { say(true, "Four at most. Take one off first."); return; }
+  if (n >= CONFIG_KEYS_MAX) { say("Four at most. Take one off first."); return; }
   ui.capturing = true;
   ui.capture_row = i;
   ui.capture_end = SDL_GetTicks() + 5000;
@@ -1037,11 +1021,11 @@ static void capture_key(SDL_Keycode k) {
   const Row* r = row_at(ui.capture_row);
   ui.capturing = false;
   char name[64];
-  if (!config_key_name(k, name, sizeof name)) { say(true, "That key has no name zamn.ini can hold."); return; }
+  if (!config_key_name(k, name, sizeof name)) { say("That key has no name zamn.ini can hold."); return; }
   SDL_Keycode* l = keys_of(&ui.cfg, r->id);
   const int n = key_count(l);
   for (int i = 0; i < n; i++)
-    if (l[i] == k) { say(false, "%s is already here.", name); return; }
+    if (l[i] == k) return;
   if (n < CONFIG_KEYS_MAX) { l[n] = k; changed(); }
 }
 
@@ -1050,7 +1034,6 @@ static void capture_pad(int in) {
   ui.capturing = false;
   if (!strcmp(config_pad_input_name(in), "?")) return;
   if (pad_map_add(pads_of(&ui.cfg, r->id), in)) changed();
-  else say(false, "That is already here.");
 }
 
 static void move_focus(int d) {
@@ -1086,8 +1069,7 @@ static void set_tab(int t) {
 
 // The values of a row with a fixed list, in the order the list shows them;
 // 0 for a row with none. The starting level puts Off and the 48 levels
-// first, then the credits and the bonus rooms. A refresh rate the file had
-// that is not a preset is in the list in its place.
+// first, then the credits and the bonus rooms.
 static int row_options(const Row* r, int* out) {
   int n = 0;
   if (r->kind == K_CHOICE) {
@@ -1100,15 +1082,6 @@ static int row_options(const Row* r, int* out) {
     for (int v = 1; v <= 49; v++) out[n++] = v;
     out[n++] = 0;
     for (int v = 50; v <= 55; v++) out[n++] = v;
-  } else if (r->id == S_REFRESH) {
-    const int cur = setting_get(&ui.cfg, r->id);
-    bool have = false;
-    for (int i = 0; i < COUNT(refresh_presets); i++) {
-      if (!have && cur < refresh_presets[i]) { out[n++] = cur; have = true; }
-      if (cur == refresh_presets[i]) have = true;
-      out[n++] = refresh_presets[i];
-    }
-    if (!have) out[n++] = cur;
   } else {
     for (int v = r->lo; v <= r->hi && n < OPTIONS_MAX; v += r->step) out[n++] = v;
   }
@@ -1209,7 +1182,6 @@ static bool press_button(int b) {
     case UI_DEFAULTS:
       for (int i = 0; i < row_count[ui.tab]; i++) row_copy(&ui.cfg, &ui.def, &rows[ui.tab][i]);
       changed();
-      say(false, "%s is back to its defaults. Nothing is written until Save or Play.", tab_names[ui.tab]);
       return false;
     case UI_SAVE: save(); return false;
     case UI_PLAY: return launch();
@@ -1755,11 +1727,9 @@ static void draw(void) {
          play ? C_BLACK : f ? C_TEXT : (SDL_Color){205, 205, 205, 255});
     hot(bx[b], by, bw[b], bh, P_BUTTON, -1, b);
   }
-  char status[sizeof ui.status + 4];
-  snprintf(status, sizeof status, "%s%s", ui.dirty && !ui.status[0] ? "Unsaved changes" : ui.status, "");
   const float sx = bx[UI_SAVE] + bw[UI_SAVE] + L(20), sw = bx[UI_QUIT] - L(20) - sx;
-  if (sw > L(40) && status[0])
-    text_tail(&ui.small, sx, by + (bh - ui.small.height) / 2, sw, status, ui.status_bad ? C_RED : C_DIM);
+  if (sw > L(40) && ui.status[0])
+    text_tail(&ui.small, sx, by + (bh - ui.small.height) / 2, sw, ui.status, C_RED);
 
   if (ui.drop_row >= 0) draw_drop_list();
 
@@ -1930,9 +1900,9 @@ static bool handle(const SDL_Event* e) {
         if (ui.editing) end_edit();
         relative_to_ini(path, rel, sizeof rel);
         set_path(S_ROM, rel);
-        say(false, "The cartridge is %s", rel);
+        ui.status[0] = 0;
       } else {
-        say(true, "That is not a .sfc or .smc file.");
+        say("That is not a .sfc or .smc file.");
       }
       return false;
     }
@@ -2238,8 +2208,7 @@ int main(int argc, char** argv) {
       }
       int code;
       if (!done && game_closed(&code)) {
-        if (code) say(true, "The game stopped with exit code %d.", code);
-        else say(false, "The game has closed.");
+        if (code) say("The game stopped with exit code %d.", code);
         draw();
         SDL_RenderPresent(ui.ren);
         SDL_ShowWindow(ui.win);
