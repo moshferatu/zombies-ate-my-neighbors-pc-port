@@ -30,11 +30,28 @@ You will need to obtain a copy of the original ROM:
 | SHA-1 | `1be79496d7a38b293d6a5d9fba0e16f3cb37d5ff` |
 | SHA-256 | `b27e2e957fa760f4f483e2af30e03062034a6c0066984f2e284cc2cb430b2059` |
 
+## Playing
+
+Download the latest release. (COMING SOON!)
+
+After extracting, run **`zamn_launcher.exe`**.
+
+Choose your ROM file under game settings, change any other setting you like, then press **Play**. 
+
+The launcher saves settings to `zamn.ini`.
+
+Be warned that playing in widescreen makes the game much more difficult, as the neighbors are exposed sooner and can remain visible for longer on the screen.
+
+### Files Created Beside the ROM
+
+- `<ROM Name>.hiscore` contains the top scores.
+- `<ROM Name>.quicksave` contains the quick save. There is only one save slot.
+
 ## Generative AI Usage
 
-This port is exclusively developed using Claude Code and Codex.
+This port is developed using Claude Code and Codex.
 
-I usually select the latest or largest model for each, but set to medium reasoning in order to save on token usage.
+I usually select the largest model available in each, but set reasoning to medium in order to save on token usage.
 
 ## Port Progress
 
@@ -44,26 +61,9 @@ The game's logic is being rewritten in C and validated against original ROM exec
 
 Some of the game is still being emulated, and only a very small portion of what is running natively has been translated into "readable" C.
 
-My more immediate goal was to have an enjoyable, playable version of the game that I could run on my desktop with some additional modern features.
+Long term, I would love for the port to be fully translated, but I'm not committing to that.
 
-Longer term, I would love to see this port completed by becoming fully translated, but I'm not committing to that up front. I plan to work on it occasionally, but only for as long as I find it enjoyable. It already meets 
-
-## Playing
-
-Download the latest release. (COMING SOON!)
-
-After extracting, run **`zamn_launcher.exe`**.
-
-Choose your ROM file under game settings, change any other setting you like, then press **Play**. 
-
-The launcher saves your settings to `zamn.ini`.
-
-Be warned that playing in widescreen makes the neighbors more vulnerable as they are exposed sooner and can remain visible for longer on the screen.
-
-### Files Created Beside the ROM
-
-- `*.hiscore` holds the top scores.
-- `*.quicksave` holds the quick save. There is one save slot, and F5 overwrites it.
+My goal was to have an playable, enjoyable version of the game that I could run on my desktop with some enhancements.
 
 ## Credits
 
