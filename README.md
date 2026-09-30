@@ -35,7 +35,7 @@ You will need to obtain a copy of the original ROM:
 
 ## Playing
 
-Download the [latest release](https://github.com/moshferatu/zombies-ate-my-neighbors-pc-port/releases).
+Download the [latest release](https://github.com/moshferatu/zombies-ate-my-neighbors-pc-port/releases/latest).
 
 After extracting, run `zamn_launcher.exe`.
 
