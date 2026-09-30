@@ -413,5 +413,44 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
               $<TARGET_FILE:SDL2::SDL2> "${CMAKE_CURRENT_BINARY_DIR}")
   endif()
+
+  # `cmake --build build --target zamn_release` zips what a player needs: the
+  # launcher, the game, SDL2.dll, and the licences of the code inside them
+  # (LakeSnes is MIT, which asks for its notice in every copy; SDL2 is zlib,
+  # which only appreciates one). Never the ROM. Not part of the default build.
+  if(TARGET SDL2::SDL2)
+    if(sdl2_SOURCE_DIR)
+      set(ZAMN_SDL_LICENSE_DEFAULT "${sdl2_SOURCE_DIR}/LICENSE.txt")
+    else()
+      set(ZAMN_SDL_LICENSE_DEFAULT "")
+    endif()
+    set(ZAMN_SDL_LICENSE "${ZAMN_SDL_LICENSE_DEFAULT}" CACHE FILEPATH
+        "SDL2's LICENSE.txt, for the release zip (found by itself when SDL2 is fetched)")
+    set(ZAMN_RELEASE_DIR "${CMAKE_CURRENT_BINARY_DIR}/release")
+    set(ZAMN_RELEASE_ZIP "${CMAKE_CURRENT_BINARY_DIR}/zamn.zip")
+    if(ZAMN_SDL_LICENSE AND EXISTS "${ZAMN_SDL_LICENSE}")
+      # The zip takes only the files it names, so a stale file here is harmless.
+      file(MAKE_DIRECTORY "${ZAMN_RELEASE_DIR}")
+      add_custom_target(zamn_release
+        COMMAND ${CMAKE_COMMAND} -E copy
+                $<TARGET_FILE:zamn_launcher> $<TARGET_FILE:zamn> $<TARGET_FILE:SDL2::SDL2>
+                "${ZAMN_RELEASE_DIR}"
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lakesnes/LICENSE.txt"
+                "${ZAMN_RELEASE_DIR}/LakeSnes-LICENSE.txt"
+        COMMAND ${CMAKE_COMMAND} -E copy "${ZAMN_SDL_LICENSE}"
+                "${ZAMN_RELEASE_DIR}/SDL2-LICENSE.txt"
+        COMMAND ${CMAKE_COMMAND} -E rm -f "${ZAMN_RELEASE_ZIP}"
+        COMMAND ${CMAKE_COMMAND} -E tar cf "${ZAMN_RELEASE_ZIP}" --format=zip
+                zamn_launcher.exe zamn.exe $<TARGET_FILE_NAME:SDL2::SDL2>
+                LakeSnes-LICENSE.txt SDL2-LICENSE.txt
+        WORKING_DIRECTORY "${ZAMN_RELEASE_DIR}"
+        DEPENDS zamn zamn_launcher
+        COMMENT "Zipping the release into ${ZAMN_RELEASE_ZIP}"
+        VERBATIM)
+    else()
+      message(STATUS "No SDL2 LICENSE.txt known (set ZAMN_SDL_LICENSE): no 'zamn_release' target")
+    endif()
+  endif()
   message(STATUS "Interactive 'zamn' target enabled")
 endif()

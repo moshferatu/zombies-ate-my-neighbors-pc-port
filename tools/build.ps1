@@ -6,7 +6,8 @@
 #
 #   pwsh tools/build.ps1            # configure (if needed) + build
 #   pwsh tools/build.ps1 -Clean     # wipe build/ first
-param([switch]$Clean)
+#   pwsh tools/build.ps1 -Release   # also zip a release into build/zamn.zip
+param([switch]$Clean, [switch]$Release)
 $ErrorActionPreference = 'Stop'
 
 $root  = Split-Path -Parent $PSScriptRoot
@@ -27,7 +28,9 @@ if (-not (Test-Path $build)) { New-Item -ItemType Directory $build | Out-Null }
 $inner = "`"$vcvars`" && " +
          "cmake -S `"$root`" -B `"$build`" -G Ninja -DCMAKE_BUILD_TYPE=Release && " +
          "cmake --build `"$build`""
+if ($Release) { $inner += " && cmake --build `"$build`" --target zamn_release" }
 
 cmd /c $inner
 if ($LASTEXITCODE -ne 0) { throw "build failed (exit $LASTEXITCODE)" }
 Write-Host "`nBuild OK. zamn.exe and zamn_launcher.exe in: $root; the rest in: $build" -ForegroundColor Green
+if ($Release) { Write-Host "Release: $(Join-Path $build 'zamn.zip')" -ForegroundColor Green }
