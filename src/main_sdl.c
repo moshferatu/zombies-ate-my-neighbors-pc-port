@@ -601,7 +601,6 @@ static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads,
 // is not "no silence", it is the device running dry and repeating or clicking.
 // Everything the game reads at the top of a tick, written into the machine:
 // the movie's frame, or the pads and the keyboard and the twin-stick aim.
-// Returns false when the pad quit chord is down.
 //
 // Movies are indexed by the loop's own frame counter, which is what
 // `zamn_headless` does — and headless is the tool the corpus was fitted
@@ -612,12 +611,12 @@ static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads,
 // counts drift apart. There is one core here, so there is nothing to drift
 // from and the simpler counter is also the more faithful one — keying off
 // `snes->frames` put this frontend one frame away from headless at 2400.)
-static bool tick_input(Snes* snes, Movie* movie, bool have_movie, long frame,
+static void tick_input(Snes* snes, Movie* movie, bool have_movie, long frame,
                        PadSet* pads, const uint16_t key_held[MOVIE_PORTS],
                        bool twin_stick) {
   if (have_movie) {
     movie_apply(movie, snes, (int)frame);
-    return true;
+    return;
   }
   // Both controllers, from both kinds of input, written once. The keyboard
   // is port 1 unless the player has bound keys for port 2 as well; a pad takes
@@ -626,11 +625,9 @@ static bool tick_input(Snes* snes, Movie* movie, bool have_movie, long frame,
   // same thing `movie_apply` does — is what makes an unplugged pad release
   // its buttons rather than leave them held.
   uint16_t held[PAD_MAX];
+  // A pad's hotkeys, quit's Start+Select among them, are noted on the way
+  // past, and a chord held has already been taken out of `held`.
   pad_poll(pads, held);
-  // Start+Select on a pad is Esc, and `pad_quit` takes those two bits back
-  // out of `held` before the game can see them. Checked before the keyboard
-  // is folded in, so the chord is a pad gesture and Enter+RShift is not one.
-  const bool keep_going = !pad_quit(pads, held);
   // The next weapon or item and the one before, which are not buttons the
   // SNES has: asked of the port, which does them in the player's own frame
   // (`player_cycle_request`). A request nothing answers is let go of.
@@ -670,7 +667,6 @@ static bool tick_input(Snes* snes, Movie* movie, bool have_movie, long frame,
   for (int p = 0; p < MOVIE_PORTS; p++)
     for (int b = 0; b < 12; b++)
       snes_setButtonState(snes, p + 1, b, (held[p] >> b) & 1);
-  return keep_going;
 }
 
 static void queue_silence(SDL_AudioDeviceID dev, long bytes) {
@@ -845,7 +841,8 @@ static void usage(void) {
     "          are the next item and the one before, R2 and L2 the next weapon\n"
     "          and the one before; the touchpad's click or L3 brings up the\n"
     "          radar (the SNES's L and R). Left stick or D-pad steers.\n"
-    "          Start+Select quits (Options+Share on a DualSense). The right\n"
+    "          Start+Select quits (Options+Share on a DualSense) unless\n"
+    "          zamn.ini rebinds it. The right\n"
     "          stick aims and fires while the left one still steers, unless\n"
     "          --no-twin-stick takes that back. Drop a\n"
     "          gamecontrollerdb.txt beside the executable for anything SDL maps\n"
@@ -1982,12 +1979,7 @@ int main(int argc, char** argv) {
         pace_add(&h_take, emu.take_ms);
         taken = emu.capture;
       } else {
-        if (!tick_input(snes, &movie, have_movie, frame, &pads, key_held,
-                        twin_stick)) {
-          printf("Quit: Start+Select on a controller.\n");
-          fflush(stdout);
-          running = false;
-        }
+        tick_input(snes, &movie, have_movie, frame, &pads, key_held, twin_stick);
         hiscore_tick(&hiscore, snes->ram);
         poke_apply(&pokes, snes->ram, (int)frame);
         cheats_tick(&cheats, snes->ram, snes->cart->rom);
@@ -2147,19 +2139,13 @@ int main(int argc, char** argv) {
         // one's pictures have all been shown. Not past the frame limit, so a
         // bounded run's screenshot is of the frame it asked for.
         if (running && (frame_limit == 0 || frame < frame_limit)) {
-          if (!tick_input(snes, &movie, have_movie, frame, &pads, key_held,
-                          twin_stick)) {
-            printf("Quit: Start+Select on a controller.\n");
-            fflush(stdout);
-            running = false;
-          } else {
-            hiscore_tick(&hiscore, snes->ram);
-            poke_apply(&pokes, snes->ram, (int)frame);
-            cheats_tick(&cheats, snes->ram, snes->cart->rom);
-            emu.capture = true;
-            SDL_SemPost(emu.go);
-            in_flight = true;
-          }
+          tick_input(snes, &movie, have_movie, frame, &pads, key_held, twin_stick);
+          hiscore_tick(&hiscore, snes->ram);
+          poke_apply(&pokes, snes->ram, (int)frame);
+          cheats_tick(&cheats, snes->ram, snes->cart->rom);
+          emu.capture = true;
+          SDL_SemPost(emu.go);
+          in_flight = true;
         }
       }
     }

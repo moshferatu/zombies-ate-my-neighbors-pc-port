@@ -69,6 +69,9 @@ static void test_default_text(void) {
   memset(&plain, 0, sizeof plain);
   pad_map_default(&plain);
   PadMap from_config = want.pad;
+  // ...but for quit's Start+Select, which is the config's: pad.h has no
+  // actions of its own.
+  pad_map_clear(from_config.hot[ACT_QUIT]);
   if (memcmp(&plain, &from_config, sizeof plain)) fail("the default pad table is not pad_map_default's");
   // Every button and every action has a line in the file, so a player can see
   // what there is to bind.
@@ -141,6 +144,40 @@ static void test_settings(void) {
   parse(&h, "[hotkeys]\ntoggle_aspect = F3\ntoggle_native = F1\ncycle_filter = F2\n"
             "cycle_widescreen = F4\n[controller hotkeys]\ntoggle_aspect =\ncycle_filter = l3\n");
   if (h.warnings) fail("a retired hotkey was complained about %d times", h.warnings);
+
+  // Quit's default on a pad is Start and Select together, and a chord reads in
+  // either order, with spaces, and writes back the one way. Only a hotkey can
+  // be one.
+  {
+    const int chord = pad_chord(SDL_CONTROLLER_BUTTON_START, SDL_CONTROLLER_BUTTON_BACK);
+    Config q;
+    config_defaults(&q);
+    if (q.pad.hot[ACT_QUIT][0] != chord || q.pad.hot[ACT_QUIT][1] != PAD_IN_NONE)
+      fail("quit's pad default is not start+select");
+    char text[64];
+    config_pad_list_text(q.pad.hot[ACT_QUIT], text, sizeof text);
+    if (strcmp(text, "start+select")) fail("quit's pad default is written '%s'", text);
+    parse(&q, "[controller hotkeys]\nquit = select + start, r2+l2\nfullscreen = start+start, north+nothing\n"
+              "[controller buttons]\nb = south+east\n");
+    if (q.pad.hot[ACT_QUIT][0] != chord ||
+        q.pad.hot[ACT_QUIT][1] != pad_chord(PAD_IN_RTRIGGER, PAD_IN_LTRIGGER))
+      fail("quit = select + start, r2+l2");
+    config_pad_list_text(q.pad.hot[ACT_QUIT], text, sizeof text);
+    if (strcmp(text, "start+select, r2+l2")) fail("quit's chords are written '%s'", text);
+    if (q.pad.hot[ACT_FULLSCREEN][0] != PAD_IN_NONE) fail("a chord of one input, or of a nothing, was read");
+    if (q.pad.game[BTN_B][0] != PAD_IN_NONE) fail("a SNES button was bound to a chord");
+    if (q.warnings != 3) fail("%d complaints about chords, want 3", q.warnings);
+    // An empty `quit =` is a file from before, and keeps the default; `none`
+    // clears it, and is what an empty list is written as.
+    parse(&q, "[controller hotkeys]\nquit =\n");
+    if (q.pad.hot[ACT_QUIT][0] != chord || q.pad.hot[ACT_QUIT][2] != PAD_IN_NONE)
+      fail("an empty quit = changed quit");
+    parse(&q, "[controller hotkeys]\nquit = none\n");
+    if (q.pad.hot[ACT_QUIT][0] != PAD_IN_NONE) fail("quit = none left quit bound");
+    char* out = config_update_text("[controller hotkeys]\nquit = start+select\n", &q);
+    if (!out || !strstr(out, "quit = none")) fail("an unbound pad quit is written '%s'", out ? out : "(null)");
+    free(out);
+  }
   if (!c.radar_flash) fail("radar");
   if (c.audio) fail("audio");
   if (c.volume != 35) fail("volume %d", c.volume);
@@ -281,7 +318,10 @@ static void test_bindings(void) {
   if (c.pad.hot[ACT_QUICK_SAVE][0] != SDL_CONTROLLER_BUTTON_PADDLE2) fail("quick_save = paddle2");
   if (c.pad.hot[ACT_QUICK_LOAD][0] != SDL_CONTROLLER_BUTTON_LEFTSTICK ||
       c.pad.hot[ACT_QUICK_LOAD][1] != SDL_CONTROLLER_BUTTON_RIGHTSTICK) fail("quick_load = L3, r3");
-  if (c.pad.hot[ACT_QUIT][0] != PAD_IN_NONE) fail("a pad action is bound that nobody bound");
+  if (c.pad.hot[ACT_QUIT][0] != pad_chord(SDL_CONTROLLER_BUTTON_START, SDL_CONTROLLER_BUTTON_BACK) ||
+      c.pad.hot[ACT_QUIT][1] != PAD_IN_NONE)
+    fail("quit, not in the file, is not its default");
+  if (c.pad.hot[ACT_FULLSCREEN][0] != PAD_IN_NONE) fail("a pad action is bound that nobody bound");
 
   // The name that is printed for an input is a name that is read.
   for (int in = 0; in < SDL_CONTROLLER_BUTTON_MAX; in++)

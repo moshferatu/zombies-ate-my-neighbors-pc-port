@@ -266,14 +266,15 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "next_item = r1\n"
   "previous_item = l1\n"
   "\n"
-  "; What the frontend does, from the pad. Unbound by default: these fire on a\n"
-  "; single press. (Start and Select together always quits.)\n"
+  "; What the frontend does, from the pad. Only quit is bound by default: the\n"
+  "; others would fire on a single press. Two inputs joined by + are one held\n"
+  "; together, and while they are neither reaches the game.\n"
   "[controller hotkeys]\n"
   "quick_save =\n"
   "quick_load =\n"
   "toggle_smoothing =\n"
   "fullscreen =\n"
-  "quit =\n"
+  "quit = start+select\n"
   "\n"
   "; Keys, by the name printed on them: A, 5, F5, Up, Space, Return, Tab,\n"
   "; Backspace, Left Shift, Right Ctrl, Keypad 1... and Comma, Semicolon and\n"
@@ -478,6 +479,20 @@ static inline const char* config_pad_input_name(int in) {
   }
 }
 
+// ...and either of those, or two of them held together, as the file writes it:
+// `start+select`. Empty for an input that has no name.
+static inline void config_pad_input_text(int in, char* out, size_t size) {
+  if (pad_is_chord(in)) {
+    const char* a = config_pad_input_name(pad_chord_first(in));
+    const char* b = config_pad_input_name(pad_chord_second(in));
+    snprintf(out, size, "%s+%s", a, b);
+    if (!strcmp(a, "?") || !strcmp(b, "?")) out[0] = 0;
+  } else {
+    const char* a = config_pad_input_name(in);
+    snprintf(out, size, "%s", strcmp(a, "?") ? a : "");
+  }
+}
+
 static inline int config_name_index(const char* key, const char* const* names, int count) {
   for (int i = 0; i < count; i++)
     if (!strcmp(key, names[i])) return i;
@@ -516,6 +531,7 @@ static inline void config_defaults(Config* c) {
   for (int i = 0; i < (int)(sizeof keys / sizeof *keys); i++)
     for (int j = 0; j < 2; j++) c->key[0][keys[i].btn][j] = keys[i].k[j];
   c->hotkey[ACT_QUIT][0] = SDLK_ESCAPE;
+  pad_map_add(c->pad.hot[ACT_QUIT], pad_chord(SDL_CONTROLLER_BUTTON_START, SDL_CONTROLLER_BUTTON_BACK));
   c->hotkey[ACT_QUICK_SAVE][0] = SDLK_F5;
   c->hotkey[ACT_TOGGLE_SMOOTHING][0] = SDLK_F6;
   c->hotkey[ACT_QUICK_LOAD][0] = SDLK_F9;
@@ -549,16 +565,28 @@ static inline void config_key_list(Config* c, const char* name, int line,
   }
 }
 
+// A list of pad inputs. `chords` for the hotkeys, the one list where two
+// inputs joined by + can be one.
 static inline void config_pad_list(Config* c, const char* name, int line,
-                                   int16_t out[PAD_BIND_MAX], char* value) {
+                                   int16_t out[PAD_BIND_MAX], char* value, bool chords) {
   pad_map_clear(out);
   for (char* tok = value; tok && *tok;) {
     char* comma = strchr(tok, ',');
     if (comma) *comma = 0;
     char* t = config_trim(tok);
     if (*t && !config_same(t, "none")) {
-      const int in = config_pad_input(t);
-      if (in == PAD_IN_NONE) config_warn(c, name, line, "'%s' is not a pad input this knows the name of", t);
+      int in;
+      char* plus = strchr(t, '+');
+      if (plus) {
+        *plus = 0;
+        const int a = config_pad_input(config_trim(t)), b = config_pad_input(config_trim(plus + 1));
+        *plus = '+';
+        in = a == PAD_IN_NONE || b == PAD_IN_NONE || a == b ? PAD_IN_NONE : pad_chord(a, b);
+      } else {
+        in = config_pad_input(t);
+      }
+      if (plus && !chords) config_warn(c, name, line, "'%s': only a hotkey can be two inputs at once", t);
+      else if (in == PAD_IN_NONE) config_warn(c, name, line, "'%s' is not a pad input this knows the name of", t);
       else if (!pad_map_add(out, in)) {
         bool have = false;
         for (int i = 0; i < PAD_BIND_MAX; i++) have = have || out[i] == in;
@@ -649,10 +677,10 @@ static inline bool config_set(Config* c, const char* name, int line,
         int k = config_name_index(key, config_cycle_names, PAD_CYCLE_COUNT);
         if (k < 0) k = config_name_index(key, config_cycle_short, PAD_CYCLE_COUNT);
         if (k < 0 || !pad_buttons) return false;
-        config_pad_list(c, name, line, c->pad.cycle[k], v);
+        config_pad_list(c, name, line, c->pad.cycle[k], v, false);
         return true;
       }
-      if (pad_buttons) config_pad_list(c, name, line, c->pad.game[b], v);
+      if (pad_buttons) config_pad_list(c, name, line, c->pad.game[b], v, false);
       else config_key_list(c, name, line, c->key[keys2 ? 1 : 0][b], v);
     } else if (pad_hot || hot) {
       // Retired, as `aspect` is, and still in a file from before: the aspect's
@@ -664,7 +692,11 @@ static inline bool config_set(Config* c, const char* name, int line,
       if (config_name_index(key, retired, (int)(sizeof retired / sizeof *retired)) >= 0) return true;
       const int a = config_name_index(key, config_action_names, ACT_COUNT);
       if (a < 0) return false;
-      if (pad_hot) config_pad_list(c, name, line, c->pad.hot[a], v);
+      // A pad's `quit =` with nothing after it is a file from when Start and
+      // Select always quit and this line only added to them, so it keeps
+      // them; `quit = none` is the one that takes them away.
+      if (pad_hot && a == ACT_QUIT && !*config_trim(v)) return true;
+      if (pad_hot) config_pad_list(c, name, line, c->pad.hot[a], v, true);
       else config_key_list(c, name, line, c->hotkey[a], v);
     } else return false;
   }
@@ -874,8 +906,9 @@ static inline void config_pad_list_text(const int16_t list[PAD_BIND_MAX], char* 
   size_t n = 0;
   out[0] = 0;
   for (int i = 0; i < PAD_BIND_MAX && list[i] != PAD_IN_NONE; i++) {
-    const char* name = config_pad_input_name(list[i]);
-    if (strcmp(name, "?")) config_join(out, size, &n, name);
+    char name[32];
+    config_pad_input_text(list[i], name, sizeof name);
+    if (name[0]) config_join(out, size, &n, name);
   }
 }
 
@@ -956,6 +989,7 @@ static inline void config_each_value(const Config* c, ConfigValueFn fn, void* ct
   }
   for (int i = 0; i < ACT_COUNT; i++) {
     config_pad_list_text(c->pad.hot[pad_hot[i]], v, sizeof v);
+    if (pad_hot[i] == ACT_QUIT && !v[0]) snprintf(v, sizeof v, "none");
     fn(ctx, "controller_hotkeys", config_action_names[pad_hot[i]], v);
   }
   for (int p = 0; p < MOVIE_PORTS; p++)
@@ -1136,8 +1170,11 @@ static inline void config_print_pad(const char* label, const char* const* names,
     const int r = order ? order[n] : n;
     if (lists[r][0] == PAD_IN_NONE) continue;
     printf("%s%s=", any ? "  " : label, names[r]);
-    for (int i = 0; i < PAD_BIND_MAX && lists[r][i] != PAD_IN_NONE; i++)
-      printf("%s%s", i ? "/" : "", config_pad_input_name(lists[r][i]));
+    for (int i = 0; i < PAD_BIND_MAX && lists[r][i] != PAD_IN_NONE; i++) {
+      char in[32];
+      config_pad_input_text(lists[r][i], in, sizeof in);
+      printf("%s%s", i ? "/" : "", in);
+    }
     any = true;
   }
   if (any) printf("\n");
@@ -1156,7 +1193,7 @@ static inline void config_print(const Config* c) {
   config_print_pad("  Pad:       ", config_button_names, 12, order, c->pad.game);
   config_print_pad("             ", config_cycle_names, PAD_CYCLE_COUNT, NULL, c->pad.cycle);
   config_print_pad("  Pad hotkeys: ", config_action_names, ACT_COUNT, NULL, c->pad.hot);
-  printf("             move stick=%s  aim stick=%s  Start+Select quits\n",
+  printf("             move stick=%s  aim stick=%s\n",
          stick[c->pad.move_stick], stick[c->pad.aim_stick]);
 }
 

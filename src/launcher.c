@@ -259,8 +259,8 @@ static void build_rows(void) {
   for (int i = 0; i < PAD_CYCLE_COUNT; i++)
     add(TAB_CONTROLLER, (Row){K_PADS, BIND(G_PAD_CYCLE, cycle_rows[i].k), cycle_rows[i].label, cycle_help});
   add_head(TAB_CONTROLLER, "Hotkeys",
-      "What the game's window does, from a controller: unbound unless bound here, and a single "
-      "press fires them. Start and Select together always quits.");
+      "What the game's window does, from a controller. Hold two buttons together to bind both "
+      "as one, as Start and Select are for quitting; while they are held, neither reaches the game.");
   for (int i = 0; i < ACT_COUNT; i++)
     add(TAB_CONTROLLER, (Row){K_PADS, BIND(G_PAD_HOT, hot_rows[i].act), hot_rows[i].label, hot_rows[i].help});
 
@@ -578,6 +578,7 @@ static struct {
   char edit[CONFIG_PATH_MAX], edit_was[CONFIG_PATH_MAX];
   bool capturing;
   int capture_row;
+  int capture_in[2], capture_n;  // a hotkey's inputs held so far
   Uint32 capture_end;
   int capture_shown;  // the countdown's seconds as last drawn
   int dragging;
@@ -981,6 +982,7 @@ static void start_capture(int i) {
   if (n >= CONFIG_KEYS_MAX) { say("Four at most. Take one off first."); return; }
   ui.capturing = true;
   ui.capture_row = i;
+  ui.capture_n = 0;
   ui.capture_end = SDL_GetTicks() + 5000;
   ui.status[0] = 0;
 }
@@ -1023,8 +1025,23 @@ static void capture_key(SDL_Keycode k) {
 static void capture_pad(int in) {
   const Row* r = row_at(ui.capture_row);
   ui.capturing = false;
-  if (!strcmp(config_pad_input_name(in), "?")) return;
+  char name[32];
+  config_pad_input_text(in, name, sizeof name);
+  if (!name[0]) return;
   if (pad_map_add(pads_of(&ui.cfg, r->id), in)) changed();
+}
+
+// A pad input going down while a binding is waited for. A hotkey waits for a
+// second one, and is the two together if it comes before the first is let go
+// (`capture_pad_up`); anything else is bound at once.
+static void capture_pad_down(int in) {
+  if ((row_at(ui.capture_row)->id >> 8) != G_PAD_HOT) { capture_pad(in); return; }
+  if (ui.capture_n == 1 && ui.capture_in[0] != in) capture_pad(pad_chord(ui.capture_in[0], in));
+  else if (ui.capture_n == 0) ui.capture_in[ui.capture_n++] = in;
+}
+
+static void capture_pad_up(int in) {
+  if (ui.capture_n == 1 && ui.capture_in[0] == in) capture_pad(in);
 }
 
 static void move_focus(int d) {
@@ -1259,6 +1276,14 @@ static const char* pad_label(int in) {
                                     "L3", "R3", "L1", "R1", "D-pad up", "D-pad down", "D-pad left",
                                     "D-pad right", "Misc", "Paddle 1", "Paddle 2", "Paddle 3",
                                     "Paddle 4", "Touchpad"};
+  if (pad_is_chord(in)) {
+    // Two at a time can be asked for in one sentence, so two to write into.
+    static char both[2][48];
+    static int turn;
+    char* out = both[turn ^= 1];
+    snprintf(out, sizeof both[0], "%s + %s", pad_label(pad_chord_first(in)), pad_label(pad_chord_second(in)));
+    return out;
+  }
   if (in == PAD_IN_LTRIGGER) return ui.pad_style == STYLE_XBOX ? "LT" : "L2";
   if (in == PAD_IN_RTRIGGER) return ui.pad_style == STYLE_XBOX ? "RT" : "R2";
   if (in < 0 || in >= COUNT(pos)) return "?";
@@ -1519,7 +1544,11 @@ static void draw_bindings(int i, const Row* r, float x, float y, float w, float 
     const int left = capture_left();
     ui.capture_shown = left;
     char msg[64];
-    snprintf(msg, sizeof msg, r->kind == K_KEYS ? "Press a key... %d" : "Press a button... %d", left);
+    snprintf(msg, sizeof msg,
+             r->kind == K_KEYS ? "Press a key... %d"
+             : (r->id >> 8) == G_PAD_HOT ? "Press a button, or two together... %d"
+                                         : "Press a button... %d",
+             left);
     const float cw = text_width(&ui.body, msg) + L(20);
     outline(cx, y, cw, h, L(2), C_GREEN);
     text(ui.ren, &ui.body, cx + L(10), y + (h - ui.body.height) / 2, msg, C_GREEN);
@@ -1845,10 +1874,13 @@ static bool handle(const SDL_Event* e) {
       else if (e->type == SDL_CONTROLLERBUTTONDOWN) ui.capturing = false;
     } else {
       if (e->type == SDL_KEYDOWN && e->key.keysym.sym == SDLK_ESCAPE) ui.capturing = false;
-      else if (e->type == SDL_CONTROLLERBUTTONDOWN) capture_pad(e->cbutton.button);
-      else if (e->type == SDL_CONTROLLERAXISMOTION && e->caxis.value > 16000) {
-        if (e->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT) capture_pad(PAD_IN_LTRIGGER);
-        if (e->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT) capture_pad(PAD_IN_RTRIGGER);
+      else if (e->type == SDL_CONTROLLERBUTTONDOWN) capture_pad_down(e->cbutton.button);
+      else if (e->type == SDL_CONTROLLERBUTTONUP) capture_pad_up(e->cbutton.button);
+      else if (e->type == SDL_CONTROLLERAXISMOTION) {
+        const int in = e->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERLEFT ? PAD_IN_LTRIGGER
+                     : e->caxis.axis == SDL_CONTROLLER_AXIS_TRIGGERRIGHT ? PAD_IN_RTRIGGER : PAD_IN_NONE;
+        if (in != PAD_IN_NONE && e->caxis.value > 16000) capture_pad_down(in);
+        else if (in != PAD_IN_NONE && e->caxis.value < 8000) capture_pad_up(in);
       }
     }
     if (e->type != SDL_QUIT) {

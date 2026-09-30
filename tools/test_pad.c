@@ -276,6 +276,15 @@ static uint16_t poll1(PadSet* s, int port) {
   return held[port];
 }
 
+// The frontend's quit action (`ACT_QUIT` in src/config.h), and whether it was
+// pressed since last asked, as the frontend asks.
+enum { QUIT = 0 };
+static bool quit_pressed(PadSet* s) {
+  const bool was = (s->hot_pressed & (1u << QUIT)) != 0;
+  s->hot_pressed = 0;
+  return was;
+}
+
 // A virtual gamepad's buttons and axes are its SDL_GameController indices, so
 // these take the same names the mapping does.
 static void press(SDL_GameController* gc, SDL_GameControllerButton b, int on) {
@@ -559,28 +568,34 @@ static void test_devices(void) {
     if (poll1(&s, 0) != 0 || s.hot_pressed) fail("the default table has an action bound");
   }
 
-  // The quit chord. It must not fire on one button, must fire on the first
+  // The quit chord, bound as zamn.ini binds it by default: a hotkey of two
+  // inputs at once. It must not fire on one button, must fire on the first
   // frame both are down, must not let Start or Select through to the game on
   // that frame, and must let go the moment either comes up.
+  pad_map_add(s.map.hot[QUIT], pad_chord(SDL_CONTROLLER_BUTTON_START, SDL_CONTROLLER_BUTTON_BACK));
+  if (pad_chord(SDL_CONTROLLER_BUTTON_START, SDL_CONTROLLER_BUTTON_BACK) !=
+      pad_chord(SDL_CONTROLLER_BUTTON_BACK, SDL_CONTROLLER_BUTTON_START))
+    fail("a chord depends on the order it is written in");
   press(gc, SDL_CONTROLLER_BUTTON_START, 1);
   {
     uint16_t held[PAD_MAX];
     pad_poll(&s, held);
-    if (pad_quit(&s, held)) fail("Start alone quit");
+    if (quit_pressed(&s)) fail("Start alone quit");
     if (held[0] != (1u << BTN_START)) fail("Start alone was eaten (%03x)", held[0]);
   }
   press(gc, SDL_CONTROLLER_BUTTON_BACK, 1);
   {
     uint16_t held[PAD_MAX];
     pad_poll(&s, held);
-    if (!pad_quit(&s, held)) fail("Start+Select did not quit on the first frame");
+    if (!quit_pressed(&s)) fail("Start+Select did not quit on the first frame");
     if (held[0] != 0) fail("the quit chord leaked %03x to the game", held[0]);
   }
   press(gc, SDL_CONTROLLER_BUTTON_BACK, 0);
   {
     uint16_t held[PAD_MAX];
     pad_poll(&s, held);
-    if (pad_quit(&s, held)) fail("releasing Select did not end the chord");
+    if (quit_pressed(&s)) fail("releasing Select quit again");
+    if (s.pad[0].hot_down & (1u << QUIT)) fail("releasing Select did not end the chord");
     if (held[0] != (1u << BTN_START)) fail("Start was eaten after the chord");
   }
   press(gc, SDL_CONTROLLER_BUTTON_START, 0);
@@ -610,7 +625,7 @@ static void test_devices(void) {
       press(s.pad[1].gc, SDL_CONTROLLER_BUTTON_BACK, 1);
       press(gc, SDL_CONTROLLER_BUTTON_START, 1);
       pad_poll(&s, held);
-      if (!pad_quit(&s, held)) fail("the quit chord did not quit on port 2");
+      if (!quit_pressed(&s)) fail("the quit chord did not quit on port 2");
       if (held[1] != 0) fail("port 2's quit chord leaked %03x", held[1]);
       if (held[0] != (1u << BTN_START))
         fail("port 2's chord ate port 1's Start (%03x)", held[0]);
@@ -618,7 +633,7 @@ static void test_devices(void) {
       press(s.pad[1].gc, SDL_CONTROLLER_BUTTON_START, 0);
       press(s.pad[1].gc, SDL_CONTROLLER_BUTTON_BACK, 0);
       pad_poll(&s, held);
-      pad_quit(&s, held);
+      quit_pressed(&s);
 
       press(s.pad[1].gc, SDL_CONTROLLER_BUTTON_A, 1);
       pad_poll(&s, held);

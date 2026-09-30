@@ -71,13 +71,17 @@
 // `start` and `back` like everything else does, so the one binding covers both
 // spellings.
 //
+// It is the quit hotkey's default and not a gesture of its own: a hotkey can be
+// two inputs at once (`pad_chord`), written `start+select`, and one so bound
+// can be rebound or cleared like any other.
+//
 // Pressed, not held. It was a one-second hold with the picture fading to black,
 // on the argument that both are buttons the game uses and a thumb bridging them
 // would lose the session; in play the wait read as a quit that had not
 // happened, and the pair is not one a thumb lands on by accident.
 //
-// While the chord is down neither button reaches the game, so the frame it
-// quits on does not open the map behind it.
+// While a chord is down neither of its inputs reaches the game, so the frame
+// it quits on does not open the map behind it.
 //
 // ## Deadzone
 //
@@ -179,14 +183,30 @@
 #define PAD_OCT_NUM 3827
 #define PAD_OCT_DEN 10000
 
-// The quit gesture: these two, together, on any pad.
-#define PAD_QUIT_MASK ((uint16_t)((1u << BTN_START) | (1u << BTN_SELECT)))
-
 // A pad input, as the binding table names one: an `SDL_GameControllerButton`,
-// or one of the two triggers, which SDL has as axes and a player has as buttons.
+// or one of the two triggers, which SDL has as axes and a player has as buttons,
+// or two of those held together (`pad_chord`).
 #define PAD_IN_NONE (-1)
 #define PAD_IN_LTRIGGER 100
 #define PAD_IN_RTRIGGER 101
+#define PAD_IN_CHORD 0x4000
+
+// Two inputs at once, as one input: seven bits each under `PAD_IN_CHORD`, the
+// larger first, so that `select+start` and `start+select` are the same one.
+static inline int pad_chord(int a, int b) {
+  if (a < b) { const int t = a; a = b; b = t; }
+  return PAD_IN_CHORD | a << 7 | b;
+}
+static inline bool pad_is_chord(int in) { return in >= PAD_IN_CHORD; }
+static inline int pad_chord_first(int in) { return in >> 7 & 127; }
+static inline int pad_chord_second(int in) { return in & 127; }
+
+// A single input as a bit, for saying which a held chord has taken.
+static inline uint32_t pad_input_bit(int in) {
+  if (in == PAD_IN_LTRIGGER) return 1u << 30;
+  if (in == PAD_IN_RTRIGGER) return 1u << 31;
+  return in >= 0 && in < 30 ? 1u << in : 0;
+}
 // Inputs per SNES button or per action, and how many actions a frontend may
 // have.
 #define PAD_BIND_MAX 4
@@ -259,8 +279,8 @@ static inline int pad_button(SDL_GameControllerButton b) {
     // Guide, the Edge's paddles and misc buttons. Deliberately not bound, and
     // not made into hotkeys either: a single button that quit the game or
     // toggled substitution would fire the first time somebody rested a palm on
-    // one. The one gesture the frontend does claim — see `pad_quit` — is two
-    // buttons at once, which a palm resting on one cannot do. The shoulders are not
+    // one. The quit hotkey's default — see "Quitting" — is two buttons at
+    // once, which a palm resting on one cannot do. The shoulders are not
     // here because they are not SNES buttons any more: `pad_map_default`.
     default:                                  return -1;
   }
@@ -508,28 +528,38 @@ static inline void pad_event(PadSet* s, const SDL_Event* e) {
   else if (e->type == SDL_CONTROLLERDEVICEREMOVED) pad_close(s, e->cdevice.which);
 }
 
-// Whether any input of a list is down. The triggers are read from the pad's
-// own hysteresis bits, which `pad_poll` has just brought up to date.
-static inline bool pad_list_down(const Pad* p, const int16_t list[PAD_BIND_MAX]) {
-  for (int i = 0; i < PAD_BIND_MAX && list[i] != PAD_IN_NONE; i++) {
-    const int in = list[i];
-    if (in == PAD_IN_LTRIGGER) { if (p->trig_l) return true; }
-    else if (in == PAD_IN_RTRIGGER) { if (p->trig_r) return true; }
-    else if (in >= 0 && in < SDL_CONTROLLER_BUTTON_MAX &&
-             SDL_GameControllerGetButton(p->gc, (SDL_GameControllerButton)in))
-      return true;
-  }
+// Whether an input is down. The triggers are read from the pad's own
+// hysteresis bits, which `pad_poll` has just brought up to date.
+static inline bool pad_input_down(const Pad* p, int in) {
+  if (pad_is_chord(in))
+    return pad_input_down(p, pad_chord_first(in)) && pad_input_down(p, pad_chord_second(in));
+  if (in == PAD_IN_LTRIGGER) return p->trig_l;
+  if (in == PAD_IN_RTRIGGER) return p->trig_r;
+  return in >= 0 && in < SDL_CONTROLLER_BUTTON_MAX &&
+         SDL_GameControllerGetButton(p->gc, (SDL_GameControllerButton)in);
+}
+
+// Whether any input of a list is down, leaving out the single inputs in
+// `taken` (`pad_input_bit`).
+static inline bool pad_list_down_but(const Pad* p, const int16_t list[PAD_BIND_MAX], uint32_t taken) {
+  for (int i = 0; i < PAD_BIND_MAX && list[i] != PAD_IN_NONE; i++)
+    if (!(pad_input_bit(list[i]) & taken) && pad_input_down(p, list[i])) return true;
   return false;
 }
 
-// A SNES button's list, less whatever of it selects: `pad_map_cycles`.
-static inline bool pad_game_down(const PadMap* m, const Pad* p, int b) {
+static inline bool pad_list_down(const Pad* p, const int16_t list[PAD_BIND_MAX]) {
+  return pad_list_down_but(p, list, 0);
+}
+
+// A SNES button's list, less whatever of it selects (`pad_map_cycles`) and
+// whatever a held chord has taken.
+static inline bool pad_game_down(const PadMap* m, const Pad* p, int b, uint32_t taken) {
   int16_t list[PAD_BIND_MAX];
   int n = 0;
   for (int i = 0; i < PAD_BIND_MAX && m->game[b][i] != PAD_IN_NONE; i++)
     if (!pad_map_cycles(m, m->game[b][i])) list[n++] = m->game[b][i];
   if (n < PAD_BIND_MAX) list[n] = PAD_IN_NONE;
-  return pad_list_down(p, list);
+  return pad_list_down_but(p, list, taken);
 }
 
 // One stick of a pad as eight-way bits, at the map's deadzone; nothing for
@@ -554,19 +584,27 @@ static inline void pad_poll(PadSet* s, uint16_t held[PAD_MAX]) {
     if (!p->gc) continue;
     pad_trigger(SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_TRIGGERLEFT), &p->trig_l);
     pad_trigger(SDL_GameControllerGetAxis(p->gc, SDL_CONTROLLER_AXIS_TRIGGERRIGHT), &p->trig_r);
-    uint16_t m = 0;
-    for (int b = 0; b < 12; b++)
-      if (pad_game_down(&s->map, p, b)) m |= (uint16_t)(1u << b);
-    m |= pad_stick_of(&s->map, p, s->map.move_stick, &p->stick);
-    held[i] = m;
-    uint32_t hot = 0;
+    // The actions first, because a chord among them that is held takes its two
+    // inputs from the game and the selections for as long as it is.
+    uint32_t hot = 0, taken = 0;
     for (int a = 0; a < PAD_HOT_MAX; a++)
-      if (pad_list_down(p, s->map.hot[a])) hot |= 1u << a;
+      for (int k = 0; k < PAD_BIND_MAX && s->map.hot[a][k] != PAD_IN_NONE; k++) {
+        const int in = s->map.hot[a][k];
+        if (!pad_input_down(p, in)) continue;
+        hot |= 1u << a;
+        if (pad_is_chord(in))
+          taken |= pad_input_bit(pad_chord_first(in)) | pad_input_bit(pad_chord_second(in));
+      }
     s->hot_pressed |= hot & ~p->hot_down;
     p->hot_down = hot;
+    uint16_t m = 0;
+    for (int b = 0; b < 12; b++)
+      if (pad_game_down(&s->map, p, b, taken)) m |= (uint16_t)(1u << b);
+    m |= pad_stick_of(&s->map, p, s->map.move_stick, &p->stick);
+    held[i] = m;
     uint8_t cyc = 0;
     for (int c = 0; c < PAD_CYCLE_COUNT; c++)
-      if (pad_list_down(p, s->map.cycle[c])) cyc |= (uint8_t)(1u << c);
+      if (pad_list_down_but(p, s->map.cycle[c], taken)) cyc |= (uint8_t)(1u << c);
     s->cycle_pressed[i] |= (uint8_t)(cyc & ~p->cycle_down);
     p->cycle_down = cyc;
   }
@@ -591,28 +629,6 @@ static inline void pad_aim(PadSet* s, uint16_t aim[PAD_MAX]) {
     if (!p->gc) continue;
     aim[i] = pad_stick_of(&s->map, p, s->map.aim_stick, &p->aim);
   }
-}
-
-// Start and Select together, on any pad. Call once a frame with what
-// `pad_poll` just returned; true means quit.
-//
-// It takes `held` by pointer and not by value because it strips the two bits on
-// the way past. Both are buttons the game uses, and the frame the frontend quits
-// on should not open the map.
-//
-// Deliberately *not* also checking the keyboard's copy of those two buttons. The
-// keyboard has Esc, this exists because a pad does not, and Enter and RShift are
-// close enough together to make the chord a real hazard on a keyboard in a way
-// it is not on a pad.
-static inline bool pad_quit(PadSet* s, uint16_t held[PAD_MAX]) {
-  bool down = false;
-  for (int i = 0; i < PAD_MAX; i++) {
-    if (!s->pad[i].gc) continue;
-    if ((held[i] & PAD_QUIT_MASK) != PAD_QUIT_MASK) continue;
-    down = true;
-    held[i] = (uint16_t)(held[i] & ~PAD_QUIT_MASK);
-  }
-  return down;
 }
 
 #endif
