@@ -586,6 +586,9 @@ static struct {
   // button comes up: opened on the press, the dialog takes the release, SDL
   // still thinks the button is down, and the next click never arrives.
   int browse_row;
+  // Whether a missing cartridge is shown in red yet: not when the launcher
+  // opens, only once Play has wanted it or the path has been changed.
+  bool rom_checked;
   // The open dropdown's row (-1: none), the option lit in it, the first one
   // in sight, and where its box was drawn.
   int drop_row, drop_sel, drop_first, drop_shown;
@@ -773,6 +776,11 @@ static bool rom_found(char* resolved, size_t size) {
 static void commit_edit(void);
 static void drop_close(void);
 
+// True when the cartridge is missing and that is to be shown.
+static bool rom_missing(char* resolved, size_t size) {
+  return !rom_found(resolved, size) && ui.rom_checked;
+}
+
 static bool save(void) {
   if (ui.editing) commit_edit();
   char* old = ui.ini_exists ? (char*)read_all(ui.ini, NULL) : NULL;
@@ -850,11 +858,13 @@ static bool game_closed(int* code) {
 static bool launch(void) {
   char rom[CONFIG_PATH_MAX];
   if (!rom_found(rom, sizeof rom)) {
+    // The ROM row, focused, says where it looked: nothing beside the buttons.
     ui.tab = TAB_GAME;
     ui.on_buttons = false;
-    ui.focus = 0;
+    ui.focus = first_row();
     ui.scroll = 0;
-    say("The cartridge is not at %s. Choose it here first.", rom);
+    ui.rom_checked = true;
+    ui.status[0] = 0;
     return false;
   }
   char exe[CONFIG_PATH_MAX + 16];
@@ -958,6 +968,7 @@ static void commit_edit(void) {
     snprintf(dst, CONFIG_PATH_MAX, "%s", t);
     changed();
   }
+  if (r->id == S_ROM) ui.rom_checked = true;
 }
 
 static void edit_insert(const char* s) {
@@ -974,6 +985,7 @@ static void set_path(int id, const char* path) {
     snprintf(dst, CONFIG_PATH_MAX, "%s", path);
     changed();
   }
+  if (id == S_ROM) ui.rom_checked = true;
 }
 
 // The whole seconds left to press something, rounded up, as the countdown
@@ -1482,7 +1494,7 @@ static void draw_path(int i, const Row* r, float x, float y, float w, float h, b
   bool bad = false;
   if (r->id == S_ROM && !editing) {
     char resolved[CONFIG_PATH_MAX];
-    bad = !rom_found(resolved, sizeof resolved);
+    bad = rom_missing(resolved, sizeof resolved);
   }
   fill(x, y, fw, h, (SDL_Color){14, 14, 14, 255});
   outline(x, y, fw, h, L(1), editing ? C_GREEN : bad ? C_RED : focused ? C_DIM : C_FAINT);
@@ -1698,7 +1710,7 @@ static void draw(void) {
     char warn[CONFIG_PATH_MAX + 128] = "";
     if (r->kind == K_PATH && r->id == S_ROM) {
       char resolved[CONFIG_PATH_MAX];
-      if (!rom_found(resolved, sizeof resolved)) snprintf(warn, sizeof warn, "Not found: %s", resolved);
+      if (rom_missing(resolved, sizeof resolved)) snprintf(warn, sizeof warn, "Not found: %s", resolved);
     } else if (r->kind == K_KEYS) {
       const SDL_Keycode* l = keys_of(&ui.cfg, r->id);
       for (int k = 0; k < key_count(l) && !warn[0]; k++) {
