@@ -17,7 +17,7 @@ It plays like the original game, with some additional features:
 
 ## Gameplay Video
 
-[![Zombies Ate My Neighbors Gameplay Video](images/title_screen.png)](https://www.youtube.com/watch?v=TKhkuG_RmUo)
+[![Zombies Ate My Neighbors PC Port Gameplay Video](images/video_preview.png)](https://www.youtube.com/watch?v=_3O_KTd8S2Y)
 
 ## ROM (Required)
 
