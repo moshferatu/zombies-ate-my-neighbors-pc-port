@@ -182,10 +182,10 @@ static const struct { int btn; const char* label; } snes_rows[12] = {
   {BTN_START, "Start"}, {BTN_SELECT, "Select"},
 };
 static const struct { int act; const char* label; const char* help; } hot_rows[ACT_COUNT] = {
-  {ACT_QUICK_SAVE, "Quick Save", "Keep the game as it is this moment, in zamn.quicksave."},
-  {ACT_QUICK_LOAD, "Quick Load", "Go back to the last quick save."},
-  {ACT_FULLSCREEN, "Fullscreen", "Between fullscreen and a window. Alt+Enter always does this as well."},
-  {ACT_TOGGLE_SMOOTHING, "Toggle Smoothing", "Pictures eased between the game's frames, or the frames only."},
+  {ACT_QUICK_SAVE, "Quick Save", "Saves the game to zamn.quicksave."},
+  {ACT_QUICK_LOAD, "Quick Load", "Loads the most recent quick save."},
+  {ACT_FULLSCREEN, "Fullscreen", "Toggle between fullscreen and windowed mode."},
+  {ACT_TOGGLE_SMOOTHING, "Toggle Smoothing", "Toggle smoothing on or off for comparison."},
   {ACT_QUIT, "Quit", "Leave the game."},
 };
 static const struct { int k; const char* label; } cycle_rows[PAD_CYCLE_COUNT] = {
@@ -221,21 +221,17 @@ static void build_rows(void) {
       "Where the top scores are kept."});
 
   add_choice(TAB_VIDEO, S_FULLSCREEN, "Fullscreen", on_off, 2,
-      "Start fullscreen, or in a window. F11 or Alt+Enter changes it while playing.");
+      "Start the game in fullscreen or in a window.");
   add_choice(TAB_VIDEO, S_WIDESCREEN, "Widescreen", wide_choices, 5,
-      "Draw more of the level either side, not a stretch. Auto: fullscreen, whichever fits the "
-      "display; in a window, off.");
+      "Render the game in widescreen.");
   add_choice(TAB_VIDEO, S_FILTER, "Filter", filter_choices, 3,
-      "How the picture is scaled to the screen. Sharp: nearest to a whole multiple, then one "
-      "smooth step. Integer: whole multiples only, with a border. Linear: smooth all the way.");
+      "How to upscale the game's visuals.");
   add_range(TAB_VIDEO, S_WINDOW_SCALE, "Window Size", 1, SCALE_MAX_STAGE, 1, false,
-      "The size of the window when not fullscreen, in multiples of 512x480.");
+      "The size of the window when not fullscreen.");
   add_choice(TAB_VIDEO, S_SMOOTHING, "Smoothing", on_off, 2,
-      "On: a picture for every refresh of a fast display, eased between the game's sixty a "
-      "second. Off: the game's frames only.");
+      "Whether to enable smoothing for the game's visuals.");
   add_choice(TAB_VIDEO, S_RADAR, "Radar", radar_choices, 2,
-      "Steady: the radar shows every neighbour at once. Flashing: one at a time, in turn, as "
-      "the console does.");
+      "Whether survivors flash on the radar. If using smoothing, Steady will look better.");
 
   add_choice(TAB_AUDIO, S_AUDIO, "Sound", on_off, 2, "Whether to enable sound.");
   add_range(TAB_AUDIO, S_VOLUME, "Volume", 0, 100, 5, true, "The volume level.");
@@ -244,23 +240,21 @@ static void build_rows(void) {
   add_choice(TAB_AUDIO, S_ALL_MONSTER_SOUNDS, "All Monster Sounds", on_off, 2,
       "Plays monster sounds the original game skips on some levels.");
 
-  add_choice(TAB_CONTROLLER, S_PADS, "Controllers", on_off, 2, "Play with game controllers.");
+  add_choice(TAB_CONTROLLER, S_PADS, "Controllers", on_off, 2, "Whether controllers are enabled.");
   add_choice(TAB_CONTROLLER, S_TWIN_STICK, "Twin Stick", on_off, 2,
-      "On: the aiming stick fires the held weapon the way it is pushed, while the other one "
-      "goes on steering.");
+      "Whether twin stick controls are enabled.");
   add_range(TAB_CONTROLLER, S_DEADZONE, "Deadzone", 5, 90, 1, true,
-      "How far a stick moves before it counts, as a percentage of its travel.");
+      "How far a stick moves before it registers as a percentage of its travel.");
   add_choice(TAB_CONTROLLER, S_MOVE_STICK, "Move Stick", stick_choices, 3, "The stick that steers.");
   add_choice(TAB_CONTROLLER, S_AIM_STICK, "Aim Stick", stick_choices, 3,
-      "The stick that aims, when twin stick is on.");
+      "The stick that aims when twin stick is on.");
   static const char pad_help[] =
       "Binds the selected action to a controller button.";
   add_head(TAB_CONTROLLER, "Buttons", pad_help);
   for (int i = 0; i < 12; i++)
     add(TAB_CONTROLLER, (Row){K_PADS, BIND(G_PAD_GAME, snes_rows[i].btn), snes_rows[i].label, pad_help});
   static const char cycle_help[] =
-      "Not SNES buttons: B and A only go forwards. These go either way, and work while firing. "
-      "An input bound here is not also a button above.";
+      "Binds a cycling action to a controller button.";
   add_head(TAB_CONTROLLER, "Weapons and items", cycle_help);
   for (int i = 0; i < PAD_CYCLE_COUNT; i++)
     add(TAB_CONTROLLER, (Row){K_PADS, BIND(G_PAD_CYCLE, cycle_rows[i].k), cycle_rows[i].label, cycle_help});
@@ -1589,24 +1583,10 @@ static void draw(void) {
   SDL_RenderClear(ui.ren);
   const float W = (float)ui.w, H = (float)ui.h;
 
-  // The heading, and the file this is.
-  float tw, sy;
-  if (!draw_logo(&tw)) {
+  // The heading.
+  float tw;
+  if (!draw_logo(&tw))
     text(ui.ren, &ui.title, L(MARGIN), L(18), "ZOMBIES ATE MY NEIGHBORS", C_GREEN);
-    tw = text_width(&ui.title, "ZOMBIES ATE MY NEIGHBORS");
-    sy = L(18) + ui.title.ascent - ui.body.ascent;
-  } else {
-    sy = (L(HEADER_H) - ui.body.height) / 2;
-  }
-  // Just after the heading: "Config File:" whole, and as much of the path's
-  // end as fits after it.
-  static const char label[] = "Config File: ";
-  const float lx = L(MARGIN) + tw + L(24), lw = text_width(&ui.body, label);
-  const float room = W - L(MARGIN) - lx - lw;
-  if (room > L(60)) {
-    text(ui.ren, &ui.body, lx, sy, label, C_TEXT);
-    text_tail(&ui.body, lx + lw, sy, room, ui.ini, C_DIM);
-  }
 
   // The tabs.
   float x = L(MARGIN) - L(12);

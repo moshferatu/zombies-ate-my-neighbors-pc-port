@@ -88,7 +88,7 @@
 #include "scale.h"
 
 #define CONFIG_FILE "zamn.ini"
-#define CONFIG_ROM_DEFAULT "Zombies Ate My Neighbors.sfc"
+#define CONFIG_ROM_DEFAULT "Zombies Ate My Neighbors (USA).sfc"
 #define CONFIG_KEYS_MAX 4
 #define CONFIG_PATH_MAX 1024
 #define CONFIG_HITBOX_DEFAULT 150
@@ -222,7 +222,7 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "; on: monster sounds the game leaves out when the level has another\n"
   "; monster's samples loaded are heard anyway, such as the chainsaw maniacs\n"
   "; on Monster Phobia. off: as the console plays them.\n"
-  "all_monster_sounds = off\n"
+  "all_monster_sounds = on\n"
   "\n"
   "[controller]\n"
   "enabled = on\n"
@@ -500,7 +500,7 @@ static inline void config_defaults(Config* c) {
   c->audio = true;
   c->volume = 100;
   c->effect_overlay = true;
-  c->all_monster_sounds = false;
+  c->all_monster_sounds = true;
   c->pads = true;
   c->twin_stick = true;
   c->deadzone = 24;

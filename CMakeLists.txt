@@ -430,8 +430,10 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
     set(ZAMN_RELEASE_ZIP "${CMAKE_CURRENT_BINARY_DIR}/zamn.zip")
     if(ZAMN_SDL_LICENSE AND EXISTS "${ZAMN_SDL_LICENSE}")
       # The zip takes only the files it names, so a stale file here is harmless.
-      file(MAKE_DIRECTORY "${ZAMN_RELEASE_DIR}")
+      # The folder is made on every run, and the zip made from inside it only
+      # after that, so a deleted build/release comes back instead of failing.
       add_custom_target(zamn_release
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${ZAMN_RELEASE_DIR}"
         COMMAND ${CMAKE_COMMAND} -E copy
                 $<TARGET_FILE:zamn_launcher> $<TARGET_FILE:zamn> $<TARGET_FILE:SDL2::SDL2>
                 "${ZAMN_RELEASE_DIR}"
@@ -441,10 +443,10 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
         COMMAND ${CMAKE_COMMAND} -E copy "${ZAMN_SDL_LICENSE}"
                 "${ZAMN_RELEASE_DIR}/SDL2-LICENSE.txt"
         COMMAND ${CMAKE_COMMAND} -E rm -f "${ZAMN_RELEASE_ZIP}"
-        COMMAND ${CMAKE_COMMAND} -E tar cf "${ZAMN_RELEASE_ZIP}" --format=zip
+        COMMAND ${CMAKE_COMMAND} -E chdir "${ZAMN_RELEASE_DIR}"
+                ${CMAKE_COMMAND} -E tar cf "${ZAMN_RELEASE_ZIP}" --format=zip
                 zamn_launcher.exe zamn.exe $<TARGET_FILE_NAME:SDL2::SDL2>
                 LakeSnes-LICENSE.txt SDL2-LICENSE.txt
-        WORKING_DIRECTORY "${ZAMN_RELEASE_DIR}"
         DEPENDS zamn zamn_launcher
         COMMENT "Zipping the release into ${ZAMN_RELEASE_ZIP}"
         VERBATIM)
