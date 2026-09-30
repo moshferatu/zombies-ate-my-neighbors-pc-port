@@ -396,11 +396,22 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
     message(STATUS "No cartridge at ${ZAMN_ICON_ROM}: the launcher is built without its icon")
   endif()
 
-  # SDL2 builds as a DLL; place it next to the executable so zamn.exe runs.
+  # The game and the launcher go in the repository root, beside the ROM,
+  # zamn.ini and the save files. The generator expression keeps a
+  # multi-config generator from adding a Release/ or Debug/ of its own.
+  set_target_properties(zamn zamn_launcher PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "$<1:${CMAKE_CURRENT_SOURCE_DIR}>")
+  # Play starts the zamn.exe beside the launcher, and building it copies SDL2.
+  add_dependencies(zamn_launcher zamn)
+
+  # SDL2 builds as a DLL; place it next to the game and the launcher, and next
+  # to the tests left in the build directory, so all of them run.
   if(TARGET SDL2::SDL2)
     add_custom_command(TARGET zamn POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
-              $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:zamn>)
+              $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:zamn>
+      COMMAND ${CMAKE_COMMAND} -E copy_if_different
+              $<TARGET_FILE:SDL2::SDL2> "${CMAKE_CURRENT_BINARY_DIR}")
   endif()
   message(STATUS "Interactive 'zamn' target enabled")
 endif()

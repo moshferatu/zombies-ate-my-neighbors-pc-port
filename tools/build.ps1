@@ -30,4 +30,4 @@ $inner = "`"$vcvars`" && " +
 
 cmd /c $inner
 if ($LASTEXITCODE -ne 0) { throw "build failed (exit $LASTEXITCODE)" }
-Write-Host "`nBuild OK. Binaries in: $build" -ForegroundColor Green
+Write-Host "`nBuild OK. zamn.exe and zamn_launcher.exe in: $root; the rest in: $build" -ForegroundColor Green

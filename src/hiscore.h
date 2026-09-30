@@ -93,22 +93,14 @@ static inline bool hiscore_valid(const uint8_t* table) {
   return true;
 }
 
-// The file beside the ROM, with its extension swapped: the ROM is the one
-// thing whose whereabouts the player has already decided.
-static inline void hiscore_init(Hiscore* h, const char* rom_path, const char* path) {
+// `path`, or HISCORE_FILE in the working directory, which the launcher makes
+// its own directory.
+#define HISCORE_FILE "zamn.hiscore"
+
+static inline void hiscore_init(Hiscore* h, const char* path) {
   memset(h, 0, sizeof *h);
   h->enabled = true;
-  if (path) {
-    snprintf(h->path, sizeof h->path, "%s", path);
-    return;
-  }
-  snprintf(h->path, sizeof h->path - 8, "%s", rom_path);
-  char* dot = strrchr(h->path, '.');
-  const char* slash = strrchr(h->path, '/');
-  const char* back = strrchr(h->path, '\\');
-  if (back && (!slash || back > slash)) slash = back;
-  if (dot && (!slash || dot > slash)) *dot = 0;
-  strcat(h->path, ".hiscore");
+  snprintf(h->path, sizeof h->path, "%s", path ? path : HISCORE_FILE);
 }
 
 static inline bool hiscore_read(Hiscore* h, uint8_t* table) {

@@ -22,7 +22,7 @@ either, because the port's own work never reached the counters. What it does
 give is the ranking, from real play on any level, which the traced corpus
 cannot: eleven movies over ten of the fifty-six level records.
 
-    build/zamn.exe --profile analysis/residue/playtest ...
+    ./zamn.exe --profile analysis/residue/playtest ...
     python tools/native_share.py --residue analysis/residue/playtest
 
 **Attribution is by nearest preceding subroutine entry**, which is what a

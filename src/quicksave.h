@@ -29,7 +29,7 @@
 // A save made in 16:9 loads in 4:3. And the top scores are not rolled back:
 // after a load the file's table is put over the machine's, as after a boot.
 //
-// The file is `<rom>.quicksave` beside the ROM: a head (magic, the ROM's
+// The file is QUICKSAVE_FILE in the working directory: a head (magic, the ROM's
 // CRC-32, the two sizes), the core's state, the parts above in order. It is
 // read whole and checked before the machine is touched, and written to a
 // neighbour and moved over, so a bad file loads nothing and a failed save
@@ -75,10 +75,11 @@ static inline uint32_t quicksave_crc(const uint8_t* data, size_t len) {
 }
 
 // `rom` is the image as read from the file, before anything is patched.
-static inline void quicksave_init(QuickSave* q, const char* rom_path,
-                                  const uint8_t* rom, size_t rom_len) {
+#define QUICKSAVE_FILE "zamn.quicksave"
+
+static inline void quicksave_init(QuickSave* q, const uint8_t* rom, size_t rom_len) {
   memset(q, 0, sizeof *q);
-  snprintf(q->path, sizeof q->path - 8, "%s.quicksave", rom_path);
+  snprintf(q->path, sizeof q->path, "%s", QUICKSAVE_FILE);
   q->rom_crc = quicksave_crc(rom, rom_len);
 }
 

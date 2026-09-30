@@ -4,7 +4,7 @@ An unofficial PC port of the 1993 SNES game *[Zombies Ate My Neighbors](https://
 
 It plays like the original game, with some additional features:
 
-* Widescreen support (16:9, 16:10, and 21:9)
+* Widescreen support for 16:9, 16:10, and 21:9
 * Smoother motion on high refresh rate displays
 * USB controller support with twin-stick movement and aiming
 * Item and weapon cycling in both directions
@@ -41,10 +41,10 @@ The launcher saves settings to `zamn.ini`.
 
 Be warned that playing in widescreen makes the game much more difficult, as the neighbors are exposed sooner and can remain visible for longer on the screen.
 
-### Files Created Beside the ROM
+### Files Created in the Working Directory
 
-- `<ROM Name>.hiscore` contains the top scores.
-- `<ROM Name>.quicksave` contains the quick save. There is only one save slot.
+- `zamn.hiscore` contains the top scores.
+- `zamn.quicksave` contains the quick save. There is only one save slot.
 
 ## Generative AI Usage Disclaimer
 

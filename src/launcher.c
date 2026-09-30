@@ -182,7 +182,7 @@ static const struct { int btn; const char* label; } snes_rows[12] = {
   {BTN_START, "Start"}, {BTN_SELECT, "Select"},
 };
 static const struct { int act; const char* label; const char* help; } hot_rows[ACT_COUNT] = {
-  {ACT_QUICK_SAVE, "Quick Save", "Keep the game as it is this moment, beside the ROM."},
+  {ACT_QUICK_SAVE, "Quick Save", "Keep the game as it is this moment, in zamn.quicksave."},
   {ACT_QUICK_LOAD, "Quick Load", "Go back to the last quick save."},
   {ACT_FULLSCREEN, "Fullscreen", "Between fullscreen and a window. Alt+Enter always does this as well."},
   {ACT_TOGGLE_SMOOTHING, "Toggle Smoothing", "Pictures eased between the game's frames, or the frames only."},
@@ -1479,7 +1479,7 @@ static void draw_path(int i, const Row* r, float x, float y, float w, float h, b
   } else if (*value) {
     text_tail(&ui.body, tx, ty, tw, value, bad ? C_RED : C_TEXT);
   } else {
-    text(ui.ren, &ui.body, tx, ty, r->id == S_HISCORE_FILE ? "Beside the ROM" : "", C_DIM);
+    text(ui.ren, &ui.body, tx, ty, r->id == S_HISCORE_FILE ? "zamn.hiscore" : "", C_DIM);
   }
   SDL_RenderSetClipRect(ui.ren, &list);
   hot(x, y, fw, h, P_FIELD, i, 0);

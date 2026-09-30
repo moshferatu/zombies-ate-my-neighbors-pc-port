@@ -13,10 +13,10 @@ build/
 *.sfc
 *.smc
 
-# The player's top scores, kept beside the ROM by the frontend (src/hiscore.h).
+# The player's top scores, kept in the working directory by the frontend (src/hiscore.h).
 *.hiscore
 *.hiscore.tmp
-# The latest quick save, kept beside the ROM by the frontend (src/quicksave.h).
+# The latest quick save, kept in the working directory by the frontend (src/quicksave.h).
 *.quicksave
 *.quicksave.tmp
 

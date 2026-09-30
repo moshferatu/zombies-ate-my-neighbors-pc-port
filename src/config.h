@@ -136,7 +136,7 @@ typedef struct {
   int hitbox;   // percent, 100..200
   bool red_blood;
   bool high_scores;
-  char high_scores_file[CONFIG_PATH_MAX];  // empty: beside the ROM
+  char high_scores_file[CONFIG_PATH_MAX];  // empty: zamn.hiscore in the working directory
   // [video]
   bool fullscreen;
   WideMode widescreen;
@@ -191,7 +191,7 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "hitbox = 150\n"
   "; The game over's curtain: purple, as the cartridge has it, or red.\n"
   "blood = purple\n"
-  "; Keep the top scores from one run to the next, beside the ROM unless a\n"
+  "; Keep the top scores from one run to the next, in zamn.hiscore unless a\n"
   "; file is named.\n"
   "high_scores = on\n"
   "high_scores_file =\n"

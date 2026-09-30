@@ -800,8 +800,9 @@ static void usage(void) {
     "                  where the movie was made at 100). Creatures reach for\n"
     "                  players and neighbours as far as they ever did.\n"
     "  --no-high-scores  Do not keep the top scores from run to run. They are\n"
-    "                  kept by default, beside the ROM as <rom name>.hiscore,\n"
-    "                  which the cartridge could not do. Not under -m.\n"
+    "                  kept by default in zamn.hiscore in the working\n"
+    "                  directory, which the cartridge could not do. Not\n"
+    "                  under -m.\n"
     "  --high-scores <file>  Keep them in this file instead -- under -m too,\n"
     "                  which is how the feature is tested.\n"
     "  --windowed      Start in a window. The default is fullscreen; F11 or\n"
@@ -1314,7 +1315,7 @@ int main(int argc, char** argv) {
            actor_overlap_reach);
 
   static Hiscore hiscore;
-  hiscore_init(&hiscore, rom_path, hiscore_path);
+  hiscore_init(&hiscore, hiscore_path);
   hiscore.enabled = hiscore_on && (!have_movie || hiscore_path);
   hiscore.verbose = verbose;
   // A score made with a cheat on is not one for the file: the table is put in
@@ -1799,7 +1800,7 @@ int main(int argc, char** argv) {
   enum { QUICK_NOTHING, QUICK_SAVE, QUICK_LOAD } quick_want = QUICK_NOTHING;
   int quick_waited = 0;
   static QuickSave quick;
-  quicksave_init(&quick, rom_path, rom, (size_t)rom_len);
+  quicksave_init(&quick, rom, (size_t)rom_len);
   uint32_t owners_serial = sprite_oam_owners.serial;
   int lay_cut = 0;
   while (running && (frame_limit == 0 || frame < frame_limit)) {
