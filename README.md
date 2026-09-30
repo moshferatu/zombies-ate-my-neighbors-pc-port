@@ -35,15 +35,11 @@ You will need to obtain a copy of the original ROM:
 
 ## Playing
 
-Download the latest release. (COMING SOON!)
+Download the [latest release](https://github.com/moshferatu/zombies-ate-my-neighbors-pc-port/releases).
 
 After extracting, run `zamn_launcher.exe`.
 
-Choose your ROM file under game settings, change any other setting you like, then press **Play**. 
-
-The launcher saves settings to `zamn.ini`.
-
-Be warned that playing in widescreen makes the game much more difficult, as the neighbors are exposed sooner and can remain visible for longer on the screen.
+Choose your ROM file under game settings, change any other setting you like, then press **Play**.
 
 ## Generative AI Usage Disclaimer
 
