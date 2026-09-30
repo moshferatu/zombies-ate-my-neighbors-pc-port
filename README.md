@@ -15,6 +15,10 @@ It plays like the original game, with some additional features:
 * Sound effects that are not played or get cut off in the original game can now be heard
 * Optional cheats: invincibility, all weapons / items, infinite ammo / uses, and more
 
+## Gameplay Video
+
+[![Zombies Ate My Neighbors Gameplay Video](images/title_screen.png)](https://www.youtube.com/watch?v=TKhkuG_RmUo)
+
 ## ROM (Required)
 
 No game data is included.
@@ -33,18 +37,13 @@ You will need to obtain a copy of the original ROM:
 
 Download the latest release. (COMING SOON!)
 
-After extracting, run **`zamn_launcher.exe`**.
+After extracting, run `zamn_launcher.exe`.
 
 Choose your ROM file under game settings, change any other setting you like, then press **Play**. 
 
 The launcher saves settings to `zamn.ini`.
 
 Be warned that playing in widescreen makes the game much more difficult, as the neighbors are exposed sooner and can remain visible for longer on the screen.
-
-### Files Created in the Working Directory
-
-- `zamn.hiscore` contains the top scores.
-- `zamn.quicksave` contains the quick save. There is only one save slot.
 
 ## Generative AI Usage Disclaimer
 

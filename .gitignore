@@ -8,6 +8,8 @@ build/
 
 # Headless frame-dump scratch
 *.png
+# ...but the README's pictures are kept.
+!/images/*.png
 
 # The ROM is user-supplied; never commit copyrighted content.
 *.sfc
