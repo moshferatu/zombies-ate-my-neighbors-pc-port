@@ -582,6 +582,10 @@ static struct {
   Uint32 capture_end;
   int capture_shown;  // the countdown's seconds as last drawn
   int dragging;
+  // The row whose Browse was pressed (-1: none). Its dialog opens when the
+  // button comes up: opened on the press, the dialog takes the release, SDL
+  // still thinks the button is down, and the next click never arrives.
+  int browse_row;
   // The open dropdown's row (-1: none), the option lit in it, the first one
   // in sight, and where its box was drawn.
   int drop_row, drop_sel, drop_first, drop_shown;
@@ -1826,11 +1830,7 @@ static bool click(int mx, int my) {
     case P_FIELD:
       if (!ui.editing) begin_edit(h->row);
       break;
-    case P_BROWSE: {
-      char path[CONFIG_PATH_MAX];
-      if (browse(row_at(h->row)->id, path, sizeof path)) set_path(row_at(h->row)->id, path);
-      break;
-    }
+    case P_BROWSE: ui.browse_row = h->row; break;
     case P_CHIP: remove_binding(h->row, h->index); break;
     case P_ADD: start_capture(h->row); break;
     default: break;
@@ -1934,6 +1934,15 @@ static bool handle(const SDL_Event* e) {
       return false;
     case SDL_MOUSEBUTTONUP:
       ui.dragging = -1;
+      if (ui.browse_row >= 0 && e->button.button == SDL_BUTTON_LEFT) {
+        const int row = ui.browse_row;
+        ui.browse_row = -1;
+        const Hot* h = hit(e->button.x, e->button.y);
+        char path[CONFIG_PATH_MAX];
+        if (h && h->part == P_BROWSE && h->row == row && browse(row_at(row)->id, path, sizeof path))
+          set_path(row_at(row)->id, path);
+        return false;
+      }
       ui.redraw = false;
       return false;
     case SDL_MOUSEWHEEL:
@@ -2157,6 +2166,7 @@ int main(int argc, char** argv) {
   load(asked);
   ui.hover = -1;
   ui.dragging = -1;
+  ui.browse_row = -1;
   ui.drop_row = -1;
   ui.button = UI_PLAY;
   ui.focus = first_row();
