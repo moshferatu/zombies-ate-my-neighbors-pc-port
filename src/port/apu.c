@@ -1,5 +1,7 @@
 #include "port/apu.h"
 
+#include <stddef.h>
+
 #include "port/coverage.h"
 
 // The one APU. See the header for why this is a file-scope pointer and not a

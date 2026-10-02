@@ -63,7 +63,6 @@
 #include <string.h>
 
 #include <SDL.h>
-#include <SDL_syswm.h>
 
 #include "config.h"
 #ifdef ZAMN_LOGO
@@ -79,6 +78,8 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <commdlg.h>
+// Only here: elsewhere it brings in X11, whose `Font` is not the one below.
+#include <SDL_syswm.h>
 #define GAME_EXE "zamn.exe"
 #define SEP '\\'
 #else

@@ -3681,7 +3681,7 @@ static void shim_player_state_normal(Wram* w, const Rom* rom,
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
-static bool guard_player_state_normal(const Wram* w, const Rom* rom,
+static bool guard_player_state_normal(Wram* w, const Rom* rom,
                                       const CosimRegs* in) {
   (void)rom;
   return player_state_normal_supported(w, in->d);

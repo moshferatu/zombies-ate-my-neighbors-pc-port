@@ -8,6 +8,12 @@ if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release)
 endif()
 
+# The maths library is its own library on Unix, and the port, the frontend and
+# several tests use it.
+if(UNIX)
+  link_libraries(m)
+endif()
+
 # ---------------------------------------------------------------------------
 # Vendored SNES core (LakeSnes, MIT). Serves as both the reference emulator for
 # the co-simulation diff harness and the emulated PPU/APU the finished port

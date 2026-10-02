@@ -23,6 +23,7 @@
 //   zamn_assets gfx          <rom.sfc> <bank:addr> <out.png> [options]
 //   zamn_assets palette      <rom.sfc> <bank:addr> <out.png> [-n colors]
 
+#include <ctype.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>

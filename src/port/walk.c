@@ -2,6 +2,8 @@
 
 #include "port/walk.h"
 
+#include <stddef.h>
+
 #include "port/coverage.h"
 #include "port/step.h"
 #include "port/terrain.h"

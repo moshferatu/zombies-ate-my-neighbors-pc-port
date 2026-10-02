@@ -1,5 +1,6 @@
 #include "movie.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -9,10 +10,17 @@ static const char* kButtonNames[12] = {
     "Left", "Right", "A", "X", "L", "R",
 };
 
+// True when the first `len` characters of `name` spell `want`, in any case.
+static bool same_name(const char* want, const char* name, int len) {
+  if ((int)strlen(want) != len) return false;
+  for (int i = 0; i < len; i++)
+    if (tolower((unsigned char)want[i]) != tolower((unsigned char)name[i])) return false;
+  return true;
+}
+
 static int button_index(const char* name, int len) {
   for (int i = 0; i < 12; i++) {
-    if ((int)strlen(kButtonNames[i]) == len &&
-        _strnicmp(kButtonNames[i], name, (size_t)len) == 0) {
+    if (same_name(kButtonNames[i], name, len)) {
       return i;
     }
   }

@@ -1,5 +1,7 @@
 #include "assets/rom.h"
 
+#include <stddef.h>
+
 const uint8_t* rom_ptr(const Rom* rom, uint32_t addr24, uint32_t* out_avail) {
   uint32_t bank = (addr24 >> 16) & 0xff;
   uint32_t addr = addr24 & 0xffff;

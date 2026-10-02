@@ -2,6 +2,8 @@
 
 #include "port/chase.h"
 
+#include <stddef.h>
+
 #include "port/coverage.h"
 #include "port/monster.h"
 #include "port/rng.h"

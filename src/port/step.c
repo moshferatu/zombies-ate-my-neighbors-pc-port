@@ -2,6 +2,8 @@
 
 #include "port/step.h"
 
+#include <stddef.h>
+
 #include "port/coverage.h"
 #include "port/cpu.h"  // add16_overflows
 #include "port/oam.h"  // ACTOR_X / ACTOR_Y, the record layout the tether reads
