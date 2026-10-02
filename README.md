@@ -8,7 +8,7 @@ It plays like the original game, with some additional features:
 * Smoother motion on high refresh rate displays
 * USB controller support with twin-stick movement and aiming
 * Item and weapon cycling in both directions
-* Increased hitbox sizes for neighbors and items
+* Optional larger hitboxes for neighbors and items
 * Quick saving and quick loading
 * Top scores are saved between sessions
 * Skip the intro, or start the game on any level

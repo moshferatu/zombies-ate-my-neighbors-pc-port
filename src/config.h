@@ -91,7 +91,7 @@
 #define CONFIG_ROM_DEFAULT "Zombies Ate My Neighbors (USA).sfc"
 #define CONFIG_KEYS_MAX 4
 #define CONFIG_PATH_MAX 1024
-#define CONFIG_HITBOX_DEFAULT 150
+#define CONFIG_HITBOX_DEFAULT 100
 #define CONFIG_CHEATS 6
 
 // What the frontend does, as opposed to what the SNES pad does. The numbers are
@@ -188,7 +188,7 @@ static const char CONFIG_DEFAULT_TEXT[] =
   "level = off\n"
   "; How far a player reaches for a pickup or a neighbour, and a weapon for a\n"
   "; creature, as a percentage of the game's own: 100 to 200.\n"
-  "hitbox = 150\n"
+  "hitbox = 100\n"
   "; The game over's curtain: purple, as the cartridge has it, or red.\n"
   "blood = purple\n"
   "; Keep the top scores from one run to the next, in zamn.hiscore unless a\n"
