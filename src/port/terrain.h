@@ -99,6 +99,9 @@ typedef struct {
   // based under `$8000` whose tile lies past it sets it, which happens on
   // the big maps of levels 19 and 25.
   bool v;
+  // How many of the six probes ran: the first that found the bit is the last,
+  // and all six when none did. For the harness, which prices the call by it.
+  int probes;
 } TerrainRegs;
 
 // `$80:AE14`. Carry set means at least one of the six tiles has attribute bit 0.

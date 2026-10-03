@@ -86,9 +86,11 @@ static uint16_t random_byte(Chase* k, bool carry_in) {
   return r.a;
 }
 
-static bool ground_is_solid(const Chase* k, Point p) {
+static bool ground_is_solid(Chase* k, Point p) {
   TerrainRegs r;
   terrain_blocked_enemy(k->w, p.x, p.y, &r);
+  if (k->log && k->log->grounds < CHASE_MAX_GROUNDS)
+    k->log->ground_tiles[k->log->grounds++] = r.probes;
   return r.blocked;
 }
 

@@ -5,6 +5,75 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The zombies in readable C (2026-10-03)
+
+The zombies are the third piece of the port in readable C: `src/port/zombie.c`,
+about 420 lines, which serves ten routines. They were the biggest thing left in
+the live residue. Over twelve corpus movies profiled under `zamn --profile`,
+their rows came to about 20% of it: `$81:8A5C` at 5.0%, `$81:85EB` at 4.6%,
+`$85D3`, `$8B30`, `$89FD`, `$8736` and `$8706`.
+
+There are two kinds. The slow kind is `$81:87F8`, every enemy on level 1. The
+fast kind is `$81:88CA`, and `$81:8C17` with four hits of health and its own
+frames. Each frame a zombie decides, runs one of three state bodies, and
+animates.
+
+* **It walks straight on** a pixel a step, or two, until solid ground stops it.
+  It waits for someone in the way rather than turning.
+* **At a wall it turns and follows it.** Each step it tries the heading it
+  turned from first, which rounds corners, and turns again when blocked. The
+  slow kind turns a quarter clockwise. The fast kind turns by `$2C`, which
+  nothing writes: `thread_spawn` copies five words into a new thread's page
+  and leaves the rest as the last thread left it. With a multiple of 16 there
+  it does not turn at all, and stands at the wall until something comes near.
+  On twelve movies `$81:8A72` ran 55,422 times without a step.
+* **It chases what comes near**: `$41` for the slow kind, `$A0` for the fast.
+  It snaps into line, asks the bearing and steps two pixels. The slow kind
+  takes two one-pixel steps. The fast kind takes one that slides along a wall.
+  It gives up at `$46` or `$B4`, or when stuck, and walks off on a random
+  heading.
+* **With neither player within reach it leaves.** The reach is read from the
+  cartridge, so widescreen's wider reach still holds.
+
+The two kinds are the same code at two addresses, apart from the turn and the
+chase, so one file serves both through a table of what differs. The state
+bodies are entered by the thread's computed `RTS`, like the chase.
+
+* **Carry and overflow outlive a state body.** The animation leaves overflow
+  alone and carry three frames in four, and `thread_yield`'s `PHP` parks both.
+  Every path ends on a test or a turn, so the shims claim C and V from those.
+  `actor_at_point` now reports the overflow its window test leaves, as
+  `actor_obstacle_at_point` already did, and the two share the helper.
+* **Checked.** The corpus verifies at 22,398,922 calls across 50 movies with 0
+  diverged, 118,061 of them zombie calls. `verify --level` over all 56 records
+  gives 35,874,842 calls with 0 diverged, 217,510 of them zombie calls, and
+  both kinds on every routine. 12 of the 13 new coverage sites are
+  taken. The one that is not is the fast kind's `$24` counting down past
+  32,768. Only a chase resets it, so that takes nine to eighteen minutes of a
+  fast zombie that never gives chase. It then stops looking for anyone, and
+  stops leaving, for as long again.
+* **Cost models.** The walks, the wall-follows and the animations are exact to
+  the refresh on every call. That took pricing `terrain_blocked_enemy` per call
+  for the first time, by how many of its six probes ran, and it is exact on all
+  197,170 of its own calls. The chases and decisions are off by a few hundred
+  cycles, because `actor_snap_to`, `actor_bearing` and `player_bearing` are
+  still priced at their means.
+* **The chase's price is closer too.** `$80:9D39` is registered as `rng`, not
+  `rng_next`, and the chase looked up the wrong name, so it charged nothing for
+  the generator. It also prices its ground tests per call now. On
+  `level24-carry.zmv` its error went from -197..+649 cycles to +183..+471,
+  which is about the refresh a call that long collects.
+* **Lockstep** over the corpus is the same with the zombies as without them:
+  the same four level-25 partings at the same passes and the same two video
+  differences. The drift moved on 17 movies, by at most 288 cycles over a movie.
+* **Live**, on the same twelve movies, level 1 goes from **92.7% to 96.5%**.
+  Every level with zombies gains 1.4 to 3.8 points, and the rest are
+  unchanged. The residue goes from 58.8 to 45.6 million instructions of work.
+  `zamn.exe` served 504,941 zombie calls and declined none.
+* **What is left of them** is the threads' own loops: the yield, the three
+  `JSR`s and the computed `RTS`, about 2.1 million instructions over the twelve
+  movies.
+
 ### The monster's chase in readable C (2026-09-26)
 
 The monster's chase, `$81:BEE3`, is the second piece of the port in readable

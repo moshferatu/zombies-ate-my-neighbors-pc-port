@@ -1376,9 +1376,11 @@ bool actor_notify_box(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
 
 // `LDA $0002,Y : SEC : SBC $3A : CLC : ADC #$0006 : CMP #$000C : BCS`.
 // Returns the value the ROM leaves in A as well as the verdict, because the
-// skip paths exit with it still there.
-static bool at_point_axis(uint16_t pos, uint16_t target, uint16_t* a) {
-  *a = (uint16_t)(pos - target + AT_POINT_HALF_WINDOW);
+// skip paths exit with it still there, and the overflow the `ADC` set.
+static bool at_point_axis(uint16_t pos, uint16_t target, uint16_t* a, bool* v) {
+  const uint16_t offset = (uint16_t)(pos - target);
+  *a = (uint16_t)(offset + AT_POINT_HALF_WINDOW);
+  *v = add16_overflows(offset, AT_POINT_HALF_WINDOW);
   return *a < AT_POINT_WINDOW;
 }
 
@@ -1394,6 +1396,8 @@ void actor_at_point_counted(Wram* w, uint16_t self, uint16_t x, uint16_t y,
   out->a = self;  // `STA $38` does not disturb it
   out->y = y;
   out->found = false;
+  out->v_set = false;
+  out->v = false;
 
   uint16_t count = wram_r16(w, W_VISIBLE_ACTOR_COUNT);
   if (count == 0) {
@@ -1457,13 +1461,14 @@ void actor_at_point_counted(Wram* w, uint16_t self, uint16_t x, uint16_t y,
     }
     work->blocks[AT_BLK_NAME_MISS]++;
 
-    if (!at_point_axis(wram_r16(w, rec + ACTOR_X), x, &out->a)) {
+    out->v_set = true;
+    if (!at_point_axis(wram_r16(w, rec + ACTOR_X), x, &out->a, &out->v)) {
       PORT_COVER(at_point_far_x);
       work->blocks[AT_BLK_FAR_X]++;
       goto next;
     }
     work->blocks[AT_BLK_NEAR_X]++;
-    if (!at_point_axis(wram_r16(w, rec + ACTOR_Y), y, &out->a)) {
+    if (!at_point_axis(wram_r16(w, rec + ACTOR_Y), y, &out->a, &out->v)) {
       PORT_COVER(at_point_far_y);
       work->blocks[AT_BLK_FAR_Y]++;
       goto next;
@@ -1508,13 +1513,6 @@ void actor_at_point(Wram* w, uint16_t self, uint16_t x, uint16_t y,
 const uint16_t OBSTACLE_ID_SKIP[OBSTACLE_ID_SKIP_COUNT] = {
     0x0005, 0x0006, 0x0007, 0x0008, 0x0002, 0x0001, 0x0037,
 };
-
-// `ADC #$0006` just left the window offset in A: the overflow it set.
-static void obstacle_axis_v(ObstacleRegs* out) {
-  out->v_set = true;
-  out->v = add16_overflows((uint16_t)(out->a - AT_POINT_HALF_WINDOW),
-                           AT_POINT_HALF_WINDOW);
-}
 
 void actor_obstacle_at_point_counted(Wram* w, uint16_t a_in, uint16_t x,
                                      uint16_t y, ObstacleRegs* out,
@@ -1625,16 +1623,17 @@ void actor_obstacle_at_point_counted(Wram* w, uint16_t a_in, uint16_t x,
     // The same six-pixel window as `actor_at_point`, down to sharing the
     // helper: `$80:C021`-`$80:C03E` is `$80:BFA0`-`$80:BFBD` byte for byte
     // except for the branch targets.
-    const bool near_x = at_point_axis(wram_r16(w, rec + ACTOR_X), x, &out->a);
-    obstacle_axis_v(out);
+    out->v_set = true;
+    const bool near_x =
+        at_point_axis(wram_r16(w, rec + ACTOR_X), x, &out->a, &out->v);
     if (!near_x) {
       PORT_COVER(obstacle_far_x);
       work->blocks[OBST_BLK_FAR_X]++;
       goto next;
     }
     work->blocks[OBST_BLK_NEAR_X]++;
-    const bool near_y = at_point_axis(wram_r16(w, rec + ACTOR_Y), y, &out->a);
-    obstacle_axis_v(out);
+    const bool near_y =
+        at_point_axis(wram_r16(w, rec + ACTOR_Y), y, &out->a, &out->v);
     if (!near_y) {
       PORT_COVER(obstacle_far_y);
       work->blocks[OBST_BLK_FAR_Y]++;

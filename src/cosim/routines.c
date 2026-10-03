@@ -36,6 +36,7 @@
 #include "port/step.h"
 #include "port/walk.h"
 #include "port/chase.h"
+#include "port/zombie.h"
 #include "port/terrain.h"
 #include "port/thread.h"
 #include "port/trig.h"
@@ -3114,11 +3115,34 @@ static void shim_terrain_blocked(Wram* w, const Rom* rom, const CosimRegs* in,
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
+// `$80:AE97`'s price, from `tools/cycles816.py` with both indirections in
+// WRAM: the prologue to `STA $2A`, each probe to its `BNE`, and the
+// `PLD : CLC : RTL` or `PLD : SEC : RTL`, which a probe that found the bit
+// reaches by the taken branch. Nothing after `TCD` pays for the caller's
+// direct page, and nothing before it uses one.
+static const CosimRun TERRAIN_ENEMY_PROLOGUE = {426, 40, 0};
+static const CosimRun TERRAIN_ENEMY_PROBE[TERRAIN_PROBE_COUNT] = {
+    {176, 14, 0}, {194, 17, 0}, {194, 17, 0},
+    {204, 16, 0}, {228, 18, 0}, {246, 21, 0},
+};
+static const CosimRun TERRAIN_ENEMY_EXIT = {88, 3, 0};
+static const CosimRun TERRAIN_ENEMY_TAKEN = {6, 0, 0};
+
+static int terrain_enemy_cycles(const TerrainRegs* r, bool fast) {
+  int cycles = cosim_run_cycles(&TERRAIN_ENEMY_PROLOGUE, fast) +
+               cosim_run_cycles(&TERRAIN_ENEMY_EXIT, fast);
+  for (int i = 0; i < r->probes; i++)
+    cycles += cosim_run_cycles(&TERRAIN_ENEMY_PROBE[i], fast);
+  if (r->blocked) cycles += cosim_run_cycles(&TERRAIN_ENEMY_TAKEN, fast);
+  return cycles;
+}
+
 static void shim_terrain_blocked_enemy(Wram* w, const Rom* rom,
                                        const CosimRegs* in, CosimRegs* out) {
   (void)rom;
   TerrainRegs r;
   terrain_blocked_enemy(w, in->x, in->y, &r);
+  cosim_cost(terrain_enemy_cycles(&r, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -5608,7 +5632,8 @@ static void shim_player_walk(Wram* w, const Rom* rom, const CosimRegs* in,
 // instructions is from `tools/cycles816.py` with the data bank at `$81`,
 // branches not taken, and a taken branch adds 6. The calls cost a `JSL` here
 // and their callee's own figure, which includes its `RTL`: the counted models
-// for the scan and the actor test, the registry's means for the rest.
+// for the scan, the actor test and the ground test, the registry's means for
+// the rest.
 static void chase_add(CosimRun* t, int cycles, int bytes, int dp) {
   t->cycles += cycles;
   t->bytes += bytes;
@@ -5616,7 +5641,7 @@ static void chase_add(CosimRun* t, int cycles, int bytes, int dp) {
 }
 
 static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
-  static int snap = -1, bearing = -1, rng = -1, ground = -1, tile = -1;
+  static int snap = -1, bearing = -1, rng = -1, tile = -1;
   const int TAKEN = 6;
   CosimRun own = {0, 0, 0};
   int calls = nearest_cycles(&log->nearest, in->fastrom);
@@ -5627,7 +5652,7 @@ static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
     // JMP $BF99 : JMP $BCE1, JSL rng_next : AND : ASL ASL INC INC : STA $14 :
     // JMP $BE0E, LDA #$BE14 : STA $12 : RTS.
     chase_add(&own, 18 + 18 + 166 + 86, 3 + 3 + 16 + 6, 2);
-    calls += registry_cycles("rng_next", &rng);
+    calls += registry_cycles("rng", &rng);
     return calls + cosim_run_cycles_dp(&own, fetch_fast(in),
                                        (in->d & 0x00ffu) != 0);
   }
@@ -5660,13 +5685,16 @@ static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
   // LDA $18 : ASL : STA $14 : ASL : STA $18 : JSL rng_next : AND #2 : BEQ,
   // and on a fast frame LDA #$B9B5 : STA $38.
   chase_add(&own, 162 + 30, 12 + 5, 3);
-  calls += registry_cycles("rng_next", &rng);
+  calls += registry_cycles("rng", &rng);
   if (log->fast) chase_add(&own, 46, 5, 1);
   else own.cycles += TAKEN;
 
   // The point, the JSR to `$BC05`, and there the ground test.
   chase_add(&own, 348 + 168, 27 + 15, 8 + 3);
-  calls += registry_cycles("terrain_blocked_enemy", &ground);
+  // The step's ground test, which refused it unless the actor test ran.
+  const TerrainRegs step = {.blocked = !log->asked_actors,
+                            .probes = log->ground_tiles[0]};
+  calls += terrain_enemy_cycles(&step, in->fastrom);
   if (log->asked_actors) {
     chase_add(&own, 200, 14, 4);
     calls += at_point_cycles(&log->at_point, in->fastrom);
@@ -5694,7 +5722,9 @@ static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
       if (log->leap_found) {
         own.cycles += TAKEN;
         chase_add(&own, 294 + TAKEN, 28, 3);
-        calls += registry_cycles("terrain_blocked_enemy", &ground);
+        const TerrainRegs landing = {.blocked = log->outcome != CHASE_LEAPT,
+                                     .probes = log->ground_tiles[1]};
+        calls += terrain_enemy_cycles(&landing, in->fastrom);
       }
       chase_add(&own, 52 + 12 + TAKEN, 2 + 2, 0);  // SEC : RTS, BCS taken
     }
@@ -5732,6 +5762,429 @@ static void shim_monster_chase(Wram* w, const Rom* rom, const CosimRegs* in,
     out->flags = COSIM_FLAG_V;
   }
 }
+
+// ---------------------------------------------------------------------------
+// The zombies -- see `port/zombie.h`
+// ---------------------------------------------------------------------------
+//
+// Ten entries, priced the chase's way: what the ROM would have run, from what
+// the log says happened. Each run is from `tools/cycles816.py` with the data
+// bank at `$81`, branches not taken, and a taken branch adds 6. A run that
+// ends in a `JSR` or `JSL` includes it. The callees cost what their own
+// entries charge, which includes their return: the counted models for the
+// scan and the actor test, the registry's means for the rest.
+//
+// The two kinds are the same code at two addresses, instruction for
+// instruction but for `ADC #$0004` against `ADC $2C`, the fast kind's
+// `DEC $24`, and the chases, so most runs serve both.
+typedef struct {
+  CosimRun walk_point;    // the step, to `JSL terrain_blocked_enemy : BCC`
+  CosimRun walk_actor;    // `LDA $08 : LDX : LDY : JSL actor_at_point : BCS`
+  CosimRun commit;        // the step taken, and the `RTS`
+  CosimRun turn;          // the turn, the new state and the `RTS`
+  CosimRun follow_back;   // to the first `JSR $85D3`
+  CosimRun follow_ahead;  // to the second `JSR $85D3 : BCS`
+  CosimRun wander;        // `JSL rng_next` to the walk's state
+  CosimRun chase_near;    // the scan and the range test
+  CosimRun chase_head;    // the heading, to the first step
+  CosimRun chase_step;    // a step, to its `JSR` and `BCS`
+  CosimRun chase_commit;  // ...taken, to the end of the step
+  CosimRun decide_near;   // the scan and the range test
+  CosimRun decide_reach;  // `LDA #$00D0` to `TAX : BNE`
+} ZombieRuns;
+
+static const ZombieRuns ZOMBIE_RUNS[ZOMBIE_KINDS] = {
+    [ZOMBIE_SLOW] =
+        {
+            .walk_point = {382, 34, 7},        // $8600-$861D
+            .walk_actor = {150, 12, 3},        // $8621-$862C
+            .commit = {260, 17, 5},            // $862D-$863D
+            .turn = {256, 24, 3},              // $863E-$8655
+            .follow_back = {424, 40, 6},       // $8656-$8679
+            .follow_ahead = {312, 29, 5},      // $8680-$8698
+            .wander = {212, 21, 2},            // $85EB-$85FF
+            .chase_near = {168, 15, 3},        // $86B3-$86C1, with `STX $2E`
+            .chase_head = {120, 9, 2},         // $86D0-$86D8, `JSR $86D9`
+            .chase_step = {316, 29, 6},        // $86D9-$86F1
+            .chase_commit = {260, 17, 5},      // $86F2-$8702
+            .decide_near = {140, 13, 2},       // $8706-$8712
+            .decide_reach = {152, 14, 2},      // $8716-$8723
+        },
+    [ZOMBIE_FAST] =
+        {
+            .walk_point = {382, 34, 7},        // $89BF-$89DC
+            .walk_actor = {150, 12, 3},        // $89E0-$89EB
+            .commit = {260, 17, 5},            // $89EC-$89FC
+            .turn = {180 + 86, 17 + 6, 3 + 1}, // $8A4B-$8A5B, $8A6C-$8A71
+            .follow_back = {484, 41, 8},       // $8A72-$8A96, with `DEC $24`
+            .follow_ahead = {312, 29, 5},      // $8A9D-$8AB5
+            .wander = {166 + 46, 16 + 5, 1 + 1},  // $8A5C-$8A6B, $89BA-$89BE
+            .chase_near = {140, 13, 2},        // $8AD8-$8AE4
+            .chase_head = {126, 11, 3},        // $8AF3-$8AFD, and `$2A`
+            .chase_step = {316, 29, 6},        // $8AFE-$8B16, `JSR $89FD`
+            .chase_commit = {226 + 40, 16 + 1, 4},  // $8B17-$8B27
+            .decide_near = {140, 13, 2},       // $8B36-$8B42
+            .decide_reach = {152, 14, 2},      // $8B46-$8B53
+        },
+};
+
+static const CosimRun ZOMBIE_TAKEN = {6, 0, 0};
+static const CosimRun ZOMBIE_JMP = {18, 3, 0};
+static const CosimRun ZOMBIE_RTS = {40, 1, 0};
+// $85D3: `LDX $1A : LDY $1C : JSL terrain_blocked_enemy : BCS`, and the actor
+// test after it, as the walk has them inline.
+static const CosimRun ZOMBIE_PROBE_GROUND = {122, 10, 2};
+static const CosimRun ZOMBIE_PROBE_ACTOR = {150, 12, 3};
+// The follow's first `BCS`, and `LDA $10 : STA $0E` when the way back is open.
+static const CosimRun ZOMBIE_FOLLOW_BCS = {12, 2, 0};
+static const CosimRun ZOMBIE_FOLLOW_TAKE = {56, 4, 2};
+// The chase's `TXY : LDX $08 : JSL actor_snap_to : JSL actor_bearing : TAX :
+// BEQ`, the same in both.
+static const CosimRun ZOMBIE_BEARING = {172, 14, 1};
+// $8B28: `LDA #$0000 : STA $24 : JMP $8B2D`.
+static const CosimRun ZOMBIE_STUCK = {64, 8, 1};
+// $89FD, the fast chase's step: each axis is a ground test and an actor test
+// and a store, then two `LDA : CMP` and the exit.
+static const CosimRun ZOMBIE_SLIDE_X_GROUND = {234, 18, 6};  // with $26/$28
+static const CosimRun ZOMBIE_SLIDE_Y_GROUND = {122, 10, 2};
+static const CosimRun ZOMBIE_SLIDE_ACTOR = {150, 12, 3};
+static const CosimRun ZOMBIE_SLIDE_TAKE = {56, 4, 2};
+static const CosimRun ZOMBIE_SLIDE_CMP = {68, 6, 2};
+static const CosimRun ZOMBIE_SLIDE_MOVED = {80, 4, 1};   // STZ $24 : CLC : RTS
+static const CosimRun ZOMBIE_SLIDE_STILL = {52, 2, 0};   // SEC : RTS
+// The decisions' other runs: the fast kind's `DEC $24 : LDA $24 : BPL`, the
+// `JMP` to the chase's state and its `LDA : STA : RTS`, and `DEC $12`.
+static const CosimRun ZOMBIE_QUIET = {90, 6, 2};
+static const CosimRun ZOMBIE_NOTICE = {18 + 86, 3 + 6, 1};
+static const CosimRun ZOMBIE_LEAVE = {50, 2, 1};
+// The animation: `DEC $0A : BNE`, the new leg to `CPX #$0030 : BCS`, and
+// either flag store with its `RTS`.
+static const CosimRun ZOMBIE_ANIM_TICK = {62, 4, 1};
+static const CosimRun ZOMBIE_ANIM_LEG = {428, 42, 6};
+static const CosimRun ZOMBIE_ANIM_FLAGS = {138, 10, 0};
+
+typedef struct {
+  CosimRun own;
+  int calls;
+  const CosimRegs* in;
+} ZombieBill;
+
+static void zombie_add(ZombieBill* b, const CosimRun* r) {
+  b->own.cycles += r->cycles;
+  b->own.bytes += r->bytes;
+  b->own.dp += r->dp;
+}
+
+static int zombie_total(const ZombieBill* b) {
+  return b->calls + cosim_run_cycles_dp(&b->own, fetch_fast(b->in),
+                                        (b->in->d & 0x00ffu) != 0);
+}
+
+static void zombie_ground(ZombieBill* b, const ZombieProbe* p) {
+  const TerrainRegs r = {.blocked = p->ground, .probes = p->tiles};
+  b->calls += terrain_enemy_cycles(&r, b->in->fastrom);
+}
+
+// `JSR $85D3`'s body, the probe the follow and the slow chase make.
+static void zombie_probe(ZombieBill* b, const ZombieProbe* p) {
+  zombie_add(b, &ZOMBIE_PROBE_GROUND);
+  zombie_ground(b, p);
+  if (p->ground) {
+    zombie_add(b, &ZOMBIE_TAKEN);
+  } else {
+    zombie_add(b, &ZOMBIE_PROBE_ACTOR);
+    if (p->someone) zombie_add(b, &ZOMBIE_TAKEN);
+  }
+  zombie_add(b, &ZOMBIE_RTS);
+}
+
+// A turn, reached by its `JMP`.
+static void zombie_turn(ZombieBill* b, ZombieKind kind) {
+  zombie_add(b, &ZOMBIE_JMP);
+  zombie_add(b, &ZOMBIE_RUNS[kind].turn);
+}
+
+// The walk, from its first instruction, with its one probe at `*next`.
+static void zombie_walk_bill(ZombieBill* b, ZombieKind kind,
+                             const ZombieLog* log, int* next) {
+  const ZombieRuns* r = &ZOMBIE_RUNS[kind];
+  const ZombieProbe* p = &log->probe[(*next)++];
+  zombie_add(b, &r->walk_point);
+  zombie_ground(b, p);
+  if (p->ground) {
+    zombie_turn(b, kind);
+    return;
+  }
+  zombie_add(b, &ZOMBIE_TAKEN);
+  zombie_add(b, &r->walk_actor);
+  if (p->someone) {
+    zombie_add(b, &ZOMBIE_TAKEN);
+    zombie_add(b, &ZOMBIE_RTS);
+  } else {
+    zombie_add(b, &r->commit);
+  }
+}
+
+static void zombie_wander_bill(ZombieBill* b, ZombieKind kind,
+                               const ZombieLog* log, int* next) {
+  static int rng = -1;
+  zombie_add(b, &ZOMBIE_RUNS[kind].wander);
+  b->calls += registry_cycles("rng", &rng);
+  zombie_walk_bill(b, kind, log, next);
+}
+
+static void zombie_follow_bill(ZombieBill* b, ZombieKind kind,
+                               const ZombieLog* log) {
+  const ZombieRuns* r = &ZOMBIE_RUNS[kind];
+  zombie_add(b, &r->follow_back);
+  zombie_probe(b, &log->probe[0]);
+  zombie_add(b, &ZOMBIE_FOLLOW_BCS);
+  const bool back_open = !log->probe[0].ground && !log->probe[0].someone;
+  if (back_open) zombie_add(b, &ZOMBIE_FOLLOW_TAKE);
+  else zombie_add(b, &ZOMBIE_TAKEN);
+  zombie_add(b, &r->follow_ahead);
+  zombie_probe(b, &log->probe[1]);
+  if (log->turned) {
+    zombie_add(b, &ZOMBIE_TAKEN);
+    zombie_turn(b, kind);
+  } else {
+    zombie_add(b, &r->commit);
+  }
+}
+
+// `$89FD`, from two probes: across, then up or down.
+static void zombie_slide_bill(ZombieBill* b, const ZombieLog* log, int first) {
+  for (int axis = 0; axis < 2; axis++) {
+    const ZombieProbe* p = &log->probe[first + axis];
+    zombie_add(b, axis == 0 ? &ZOMBIE_SLIDE_X_GROUND : &ZOMBIE_SLIDE_Y_GROUND);
+    zombie_ground(b, p);
+    if (p->ground) {
+      zombie_add(b, &ZOMBIE_TAKEN);
+      continue;
+    }
+    zombie_add(b, &ZOMBIE_SLIDE_ACTOR);
+    if (p->someone) zombie_add(b, &ZOMBIE_TAKEN);
+    else zombie_add(b, &ZOMBIE_SLIDE_TAKE);
+  }
+  // `LDA $26 : CMP $16 : BNE`, and the Y pair only when X did not change.
+  zombie_add(b, &ZOMBIE_SLIDE_CMP);
+  if (log->moved_across) {
+    zombie_add(b, &ZOMBIE_TAKEN);
+    zombie_add(b, &ZOMBIE_SLIDE_MOVED);
+    return;
+  }
+  zombie_add(b, &ZOMBIE_SLIDE_CMP);
+  if (log->stuck) {
+    zombie_add(b, &ZOMBIE_TAKEN);
+    zombie_add(b, &ZOMBIE_SLIDE_STILL);
+  } else {
+    zombie_add(b, &ZOMBIE_SLIDE_MOVED);
+  }
+}
+
+static void zombie_chase_bill(ZombieBill* b, ZombieKind kind,
+                              const ZombieLog* log) {
+  static int snap = -1, bearing = -1;
+  const ZombieRuns* r = &ZOMBIE_RUNS[kind];
+  int next = 0;
+  zombie_add(b, &r->chase_near);
+  b->calls += nearest_cycles(&log->nearest, b->in->fastrom);
+  if (log->lost && !log->on_top) {
+    zombie_add(b, &ZOMBIE_TAKEN);
+    zombie_add(b, &ZOMBIE_JMP);
+    zombie_wander_bill(b, kind, log, &next);
+    return;
+  }
+  zombie_add(b, &ZOMBIE_BEARING);
+  b->calls += registry_cycles("actor_snap_to", &snap) +
+              registry_cycles("actor_bearing", &bearing);
+  if (log->on_top) {
+    zombie_add(b, &ZOMBIE_TAKEN);
+    zombie_add(b, &ZOMBIE_JMP);
+    zombie_wander_bill(b, kind, log, &next);
+    return;
+  }
+  zombie_add(b, &r->chase_head);
+
+  if (kind == ZOMBIE_SLOW) {
+    for (; next < 2; next++) {
+      const ZombieProbe* p = &log->probe[next];
+      zombie_add(b, &r->chase_step);
+      zombie_probe(b, p);
+      if (p->ground || p->someone) {
+        zombie_add(b, &ZOMBIE_TAKEN);
+        zombie_add(b, &ZOMBIE_RTS);
+      } else {
+        zombie_add(b, &r->chase_commit);
+      }
+    }
+    return;
+  }
+
+  zombie_add(b, &r->chase_step);
+  zombie_slide_bill(b, log, 0);
+  if (log->stuck) {
+    next = 2;
+    zombie_add(b, &ZOMBIE_TAKEN);
+    zombie_add(b, &ZOMBIE_STUCK);
+    zombie_add(b, &ZOMBIE_JMP);
+    zombie_wander_bill(b, kind, log, &next);
+    return;
+  }
+  zombie_add(b, &r->chase_commit);
+}
+
+static void zombie_decide_bill(ZombieBill* b, ZombieKind kind,
+                               const ZombieLog* log) {
+  static int bearing = -1;
+  const ZombieRuns* r = &ZOMBIE_RUNS[kind];
+  if (kind == ZOMBIE_FAST) {
+    zombie_add(b, &ZOMBIE_QUIET);
+    if (log->quiet) {
+      zombie_add(b, &ZOMBIE_TAKEN);
+      zombie_add(b, &ZOMBIE_RTS);
+      return;
+    }
+  }
+  zombie_add(b, &r->decide_near);
+  b->calls += nearest_cycles(&log->nearest, b->in->fastrom);
+  if (!log->far) {
+    zombie_add(b, &ZOMBIE_NOTICE);
+    return;
+  }
+  zombie_add(b, &ZOMBIE_TAKEN);
+  zombie_add(b, &r->decide_reach);
+  b->calls += registry_cycles("player_bearing", &bearing);
+  if (log->nobody) zombie_add(b, &ZOMBIE_LEAVE);
+  else zombie_add(b, &ZOMBIE_TAKEN);
+  zombie_add(b, &ZOMBIE_RTS);
+}
+
+static void zombie_animate_bill(ZombieBill* b, const ZombieLog* log) {
+  zombie_add(b, &ZOMBIE_ANIM_TICK);
+  if (!log->new_leg) {
+    zombie_add(b, &ZOMBIE_TAKEN);
+    zombie_add(b, &ZOMBIE_RTS);
+    return;
+  }
+  zombie_add(b, &ZOMBIE_ANIM_LEG);
+  if (log->mirrored) zombie_add(b, &ZOMBIE_TAKEN);
+  zombie_add(b, &ZOMBIE_ANIM_FLAGS);
+}
+
+// The tests put their scratch on page zero, so a zombie's page there would
+// have them writing its fields, and the tables are read through the data bank.
+static bool zombie_page_ok(const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == ZOMBIE_BANK;
+}
+
+// A heading off the page indexes the step table, which must stay in the
+// cartridge: `ADC $85AF,X` through a data bank of `$81` reads WRAM under
+// `$8000`. Every heading the game writes is 2 to 17.
+static bool zombie_heading_ok(const Wram* w, const CosimRegs* in,
+                              ZombieKind kind, uint16_t at) {
+  const uint16_t h = wram_r16(w, (uint16_t)(in->d + at));
+  return h < 0x40 && zombie_step_at(kind, h) >= 0x8000u;
+}
+
+static bool zombie_slow_ok(const Wram* w, const CosimRegs* in) {
+  return zombie_page_ok(in) &&
+         zombie_heading_ok(w, in, ZOMBIE_SLOW, ZOMBIE_DP_HEADING);
+}
+
+static bool zombie_fast_ok(const Wram* w, const CosimRegs* in) {
+  return zombie_page_ok(in) &&
+         zombie_heading_ok(w, in, ZOMBIE_FAST, ZOMBIE_DP_HEADING);
+}
+
+// The chase and the decision take no heading off the page, and every heading
+// a turn makes is masked into range whatever `$2C` holds.
+static bool zombie_any_ok(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return zombie_page_ok(in);
+}
+
+static void zombie_flags_out(const ZombieLog* log, CosimRegs* out) {
+  out->regs = 0;
+  out->c = log->carry;
+  out->v = log->overflow;
+  out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
+}
+
+#define ZOMBIE_STATE_SHIM(name, call, bill)                                  \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    ZombieLog log = {0};                                                     \
+    call;                                                                    \
+    ZombieBill b = {{0, 0, 0}, 0, in};                                       \
+    bill;                                                                    \
+    b.calls += at_point_cycles(&log.at_point, in->fastrom);                  \
+    cosim_cost(zombie_total(&b));                                            \
+    zombie_flags_out(&log, out);                                             \
+  }
+
+static void zombie_walk_state_bill(ZombieBill* b, ZombieKind kind,
+                                   const ZombieLog* log) {
+  int next = 0;
+  zombie_walk_bill(b, kind, log, &next);
+}
+
+ZOMBIE_STATE_SHIM(zombie_slow_walk,
+                  zombie_walk(w, rom, in->d, ZOMBIE_SLOW, &log),
+                  zombie_walk_state_bill(&b, ZOMBIE_SLOW, &log))
+ZOMBIE_STATE_SHIM(zombie_fast_walk,
+                  zombie_walk(w, rom, in->d, ZOMBIE_FAST, &log),
+                  zombie_walk_state_bill(&b, ZOMBIE_FAST, &log))
+ZOMBIE_STATE_SHIM(zombie_slow_follow,
+                  zombie_follow_wall(w, rom, in->d, ZOMBIE_SLOW, &log),
+                  zombie_follow_bill(&b, ZOMBIE_SLOW, &log))
+ZOMBIE_STATE_SHIM(zombie_fast_follow,
+                  zombie_follow_wall(w, rom, in->d, ZOMBIE_FAST, &log),
+                  zombie_follow_bill(&b, ZOMBIE_FAST, &log))
+ZOMBIE_STATE_SHIM(zombie_slow_chase,
+                  zombie_chase(w, rom, in->d, ZOMBIE_SLOW, &log),
+                  zombie_chase_bill(&b, ZOMBIE_SLOW, &log))
+ZOMBIE_STATE_SHIM(zombie_fast_chase,
+                  zombie_chase(w, rom, in->d, ZOMBIE_FAST, &log),
+                  zombie_chase_bill(&b, ZOMBIE_FAST, &log))
+
+// Nothing the decision leaves is read: every state body sets A, X, Y, carry
+// and overflow before it reads them.
+#define ZOMBIE_DECIDE_SHIM(name, kind)                                       \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    ZombieLog log = {0};                                                     \
+    zombie_decide(w, rom, in->d, kind, &log);                                \
+    ZombieBill b = {{0, 0, 0}, 0, in};                                       \
+    zombie_decide_bill(&b, kind, &log);                                      \
+    cosim_cost(zombie_total(&b));                                            \
+    out->regs = 0;                                                           \
+    out->flags = 0;                                                          \
+  }
+
+ZOMBIE_DECIDE_SHIM(zombie_slow_decide, ZOMBIE_SLOW)
+ZOMBIE_DECIDE_SHIM(zombie_fast_decide, ZOMBIE_FAST)
+
+// The animation leaves overflow alone, and carry too unless the walk cycle
+// moved on, when it is the `CPX #$0030`'s.
+#define ZOMBIE_ANIMATE_SHIM(name, frames)                                    \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    ZombieLog log = {0};                                                     \
+    zombie_animate(w, rom, in->d, frames, &log);                             \
+    ZombieBill b = {{0, 0, 0}, 0, in};                                       \
+    zombie_animate_bill(&b, &log);                                           \
+    cosim_cost(zombie_total(&b));                                            \
+    out->regs = 0;                                                           \
+    out->flags = 0;                                                          \
+    if (log.new_leg) {                                                       \
+      out->c = log.carry;                                                    \
+      out->flags = COSIM_FLAG_C;                                             \
+    }                                                                        \
+  }
+
+ZOMBIE_ANIMATE_SHIM(zombie_animate, ZOMBIE_FRAMES)
+ZOMBIE_ANIMATE_SHIM(zombie_animate_8c17, ZOMBIE_FRAMES_8C17)
 
 static const uint32_t VICTIMS_YIELD_EXITS[] = {VICTIMS_YIELD_PC};
 static const uint32_t VICTIMS_RESUME_EXITS[] = {
@@ -8461,6 +8914,56 @@ static const CosimRoutine ROUTINES[] = {
         // own thirteen.
         .stack_bytes = 18,
     },
+    // The zombies, all ten of their per-frame routines: see `port/zombie.h`.
+    // The state bodies are entered by the thread's computed `RTS`, the rest
+    // by `JSR`. Each prices every call it serves, so `.cycles` is never
+    // charged. The deepest any goes is a `JSR` to a probe or a step, its
+    // `JSL`, and the actor test's `PHD` and `PEA`, or a `JSL` to
+    // `player_bearing` and its six.
+#define ZOMBIE_ENTRY(n, sym, pc, rts, shim, ok, called, stack)               \
+    {                                                                        \
+        .name = n,                                                           \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .ret_op = rts,                                                       \
+        .ret_kind = COSIM_RTS,                                               \
+        .run = shim,                                                         \
+        .accepts = ok,                                                       \
+        .uncalled = !(called),                                               \
+        .cycles = 3000,                                                      \
+        .stack_bytes = stack,                                                \
+    }
+    ZOMBIE_ENTRY("zombie_slow_walk", "$81:8600", ZOMBIE_SLOW_WALK_PC,
+                 ZOMBIE_SLOW_WALK_RTS_PC, shim_zombie_slow_walk,
+                 zombie_slow_ok, false, 7),
+    ZOMBIE_ENTRY("zombie_slow_follow", "$81:8656", ZOMBIE_SLOW_FOLLOW_PC,
+                 ZOMBIE_SLOW_FOLLOW_RTS_PC, shim_zombie_slow_follow,
+                 zombie_slow_ok, false, 9),
+    ZOMBIE_ENTRY("zombie_slow_chase", "$81:86B3", ZOMBIE_SLOW_CHASE_PC,
+                 ZOMBIE_SLOW_CHASE_RTS_PC, shim_zombie_slow_chase,
+                 zombie_any_ok, false, 11),
+    ZOMBIE_ENTRY("zombie_slow_decide", "$81:8706", ZOMBIE_SLOW_DECIDE_PC,
+                 ZOMBIE_SLOW_DECIDE_RTS_PC, shim_zombie_slow_decide,
+                 zombie_any_ok, true, 9),
+    ZOMBIE_ENTRY("zombie_animate", "$81:8736", ZOMBIE_SLOW_ANIMATE_PC,
+                 ZOMBIE_SLOW_ANIMATE_RTS_PC, shim_zombie_animate,
+                 zombie_slow_ok, true, 0),
+    ZOMBIE_ENTRY("zombie_fast_walk", "$81:89BF", ZOMBIE_FAST_WALK_PC,
+                 ZOMBIE_FAST_WALK_RTS_PC, shim_zombie_fast_walk,
+                 zombie_fast_ok, false, 7),
+    ZOMBIE_ENTRY("zombie_fast_follow", "$81:8A72", ZOMBIE_FAST_FOLLOW_PC,
+                 ZOMBIE_FAST_FOLLOW_RTS_PC, shim_zombie_fast_follow,
+                 zombie_fast_ok, false, 9),
+    ZOMBIE_ENTRY("zombie_fast_chase", "$81:8AD8", ZOMBIE_FAST_CHASE_PC,
+                 ZOMBIE_FAST_CHASE_RTS_PC, shim_zombie_fast_chase,
+                 zombie_any_ok, false, 9),
+    ZOMBIE_ENTRY("zombie_fast_decide", "$81:8B30", ZOMBIE_FAST_DECIDE_PC,
+                 ZOMBIE_FAST_DECIDE_RTS_PC, shim_zombie_fast_decide,
+                 zombie_any_ok, true, 9),
+    ZOMBIE_ENTRY("zombie_animate_8c17", "$81:8B57", ZOMBIE_FAST_ANIMATE_PC,
+                 ZOMBIE_FAST_ANIMATE_RTS_PC, shim_zombie_animate_8c17,
+                 zombie_slow_ok, true, 0),
+#undef ZOMBIE_ENTRY
     // Vblank jobs, which write the PPU. See `port/vblank.h`. Each prices
     // itself through `cosim_hw`, so `.cycles` is only what a refused trace
     // would fall back to. The NMI calls the first; the dispatcher reaches the

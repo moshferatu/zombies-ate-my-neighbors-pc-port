@@ -1141,6 +1141,9 @@ bool actor_notify_box_counted(Wram* w, const Rom* rom, uint16_t a_in, bool c_in,
 typedef struct {
   uint16_t a, x, y;
   bool found;  // the carry: set by `SEC` at $80:BFBF, cleared at $80:BFC6
+  // Overflow, from the last `ADC #$0006` of the window test, if any entry got
+  // that far. Otherwise nothing wrote it and the caller's stands.
+  bool v_set, v;
 } AtPointRegs;
 
 void actor_at_point(Wram* w, uint16_t self, uint16_t x, uint16_t y,

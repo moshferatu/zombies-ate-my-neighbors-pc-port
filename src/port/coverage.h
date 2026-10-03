@@ -781,6 +781,21 @@
   X(chase_met_ground, "monster_chase",       "solid ground and nothing to leap, so it waits") \
   X(chase_leapt,      "monster_chase",       "...or something to leap, so the ROM chases") \
                                                                                    \
+  /* The zombies, in readable C: port/zombie.h. Both kinds share each site. */      \
+  X(zombie_walked,    "zombie_*_walk",       "a step straight ahead") \
+  X(zombie_waited,    "zombie_*_walk",       "someone standing in the way, so it waits") \
+  X(zombie_turned,    "zombie_*_walk",       "solid ground ahead, so it turns and follows the wall") \
+  X(zombie_rounded_corner, "zombie_*_follow", "the wall gave way, so it turns back towards it") \
+  X(zombie_followed_wall, "zombie_*_follow", "a step along the wall") \
+  X(zombie_chased,    "zombie_*_chase",      "a step towards whoever is nearest") \
+  X(zombie_lost_target, "zombie_*_chase",    "the target too far away, so it gives up") \
+  X(zombie_on_top,    "zombie_*_chase",      "...or right on top of it, likewise") \
+  X(zombie_chase_stuck, "zombie_fast_chase", "a fast chase's step that went nowhere") \
+  X(zombie_wandered,  "zombie_*_chase",      "a random straight heading, and a walk along it") \
+  X(zombie_noticed,   "zombie_*_decide",     "something near enough, so it gives chase") \
+  X(zombie_left,      "zombie_*_decide",     "neither player within reach, so it leaves") \
+  X(zombie_quiet,     "zombie_fast_decide",  "$24 not negative, so it does not look") \
+                                                                                   \
   /* $80:BE0C, $80:BE41 — a record's two ends. */                                   \
   X(slot_alloc_scan,  "actor_slot_alloc",    "this slot is taken, so try the one below it") \
   X(slot_alloc_took,  "actor_slot_alloc",    "...or it is free, and gets $0001 and the head of the list") \

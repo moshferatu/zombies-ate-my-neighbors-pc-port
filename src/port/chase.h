@@ -92,6 +92,7 @@
 
 // For the harness, and only for it: what the chase did, which is what it
 // takes to price the ROM's instructions around the calls.
+#define CHASE_MAX_GROUNDS 2
 typedef enum {
   CHASE_STEPPED,       // the step was taken
   CHASE_MET_SOMEONE,   // an actor stood where it landed
@@ -114,6 +115,10 @@ typedef struct {
   int leap_probes;     // 0, 1 or 2 tiles looked at for something to leap
   bool leap_found;     // ...and one had bit 13, so the landing was tested
   bool overflow;       // V as the give-up path leaves it
+  // How many of its six probes each ground test ran: the step's, and the
+  // landing's when there was one.
+  int ground_tiles[CHASE_MAX_GROUNDS];
+  int grounds;
 } ChaseLog;
 
 // Would the port chase this frame the way the ROM does? False when the

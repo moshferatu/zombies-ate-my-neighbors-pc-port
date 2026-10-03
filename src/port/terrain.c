@@ -73,6 +73,7 @@ static bool terrain_footprint(Wram* w, uint16_t x, uint16_t y, uint16_t mask,
       out->v = add16_overflows(wram_r16(w, W_TILEMAP_ROW_BYTES), 4);
     out->a = probe_attrs(w, map, probe_offset(w, i), &tile);
     out->y = tile;
+    out->probes = i + 1;
     if (out->a & mask) {
       // Which probe decided is worth a site of its own: the lower row is only
       // ever reached by three tiles of clear terrain above it, and the sixth is

@@ -14825,3 +14825,110 @@ figures are with `run` and `verify` no longer drawing the picture: the PPU's new
 only the frame buffer. On one movie that took lockstep from 63 seconds to 26
 and `verify` from 48 to 35, and every row of the corpus came out identical to
 the runs before it, digit for digit.
+
+## The zombies in readable C (2026-10-03)
+
+The third piece in readable C is `src/port/zombie.c`, which serves ten
+routines: three state bodies, a decision and an animation, for each of two
+kinds of zombie. See `port/zombie.h` for what they do.
+
+**Found from the live residue, not the traced corpus.** Twelve corpus movies
+played under `zamn --profile` and ranked with `native_share.py --residue`
+put the zombie at about 20% of the 58.8 million instructions of work left.
+The rows were `$81:8A5C` at 5.0%, `$81:85EB` at 4.6%, `$81:85D3` 2.6%,
+`$81:8B30` 2.3%, `$81:89FD` 2.0%, `$81:8736` 1.9% and `$81:8706` 1.4%. None
+of those addresses is an entry the game calls. The residue charges each
+instruction to the nearest start below it, so the state bodies were filed
+under the `JSR` targets that sit beside them. The July profiles under
+`analysis/prof` put the same code at 0.29%, because their movies barely
+reach it.
+
+`hotbytes.py` over the twelve movies gave the call count of every branch,
+and two things came of it.
+
+* **A fast zombie at a wall can stand still for good.** `$81:8A72` ran 55,422
+  times and never once took a step. It turns by `$2C`, and nothing writes
+  `$2C`: not the zombie's code, and not `thread_spawn`, which copies five words
+  into the new page and leaves the rest as the last thread left them. A
+  multiple of 16 is no turn at all, so the zombie tries the same heading every
+  frame until something comes within `$A0`.
+* **`$24` never stops the decision in play.** Its `BPL` is untaken over the
+  twelve movies and over all 56 records. The setup writes `$FFFF` there and
+  a chase writes zero, and the decision decrements it before testing, so it
+  is negative until 32,768 decrements without a chase have passed.
+
+**Ten entries, in two shapes.** The state bodies are entered by the thread's
+computed `RTS` and registered `uncalled` with `ret_op` at one of their own
+`RTS`s, as the walk and the chase are. A state body can also be reached by
+falling in: `$81:85EB` and `$81:8A5C` pick a random heading and run straight
+on into the walk, and the threads' setup `JSR`s to them. The harness takes
+the entry by its address however it is reached. The decisions and animations
+are ordinary `JSR` targets.
+
+**Registers.** Carry and overflow outlive a state body. The animation after it
+writes carry only on the frames it changes the picture (`CPX #$0030`), and
+never overflow. `thread_yield`'s `PHP` then parks both. Every path through a
+state body ends on a ground or actor test, or on the turn's `CLC : ADC`, so
+the shims claim C and V and no register. Following that back needed
+`actor_at_point`'s overflow, which it now reports as `actor_obstacle_at_point`
+does, from the last `ADC #$0006` of the window test. The two now share one
+helper for it. Nothing the decision leaves is read: every state body sets A,
+X, Y, C and V before reading any.
+
+**Prices.** Each shim walks the ROM's control flow from what the log says was
+asked and answered, as `chase_cycles` does, with every straight run from
+`tools/cycles816.py --db 81`. Two things were needed to make that exact.
+
+* **The actor test has to be billed.** The first build left it out, and every
+  model was short by the 2,000 to 3,800 cycles it costs.
+* **`terrain_blocked_enemy` had to be priced per call.** It stops at the first
+  of its six probes that finds bit 1, and its registry mean of 1,578 sits
+  between 696 and 1,842. Priced from its listing (a 426-cycle prologue to
+  `STA $2A`, the probes at 176, 194, 194, 204, 228 and 246 to their `BNE`s,
+  and the 88-cycle exit, plus 6 when a probe hits), it is now refresh-exact on
+  all 197,170 of its own corpus calls. `TerrainRegs::probes` says how many
+  ran.
+
+With both, the walks, wall-follows and animations of both kinds are
+refresh-exact on every call in the corpus. The chases and decisions are not,
+because `actor_snap_to`, `actor_bearing` and `player_bearing` are still priced
+at their means. Per call that is a few hundred cycles. `player_bearing` is
+most of the decisions' spread, at 1,026 to 1,636 cycles against a mean of
+1,548. It would take a counted model of `player_pick`'s two `actor_gap` calls
+and its four exits.
+
+**The chase charged nothing for the generator.** `$80:9D39` is registered as
+`rng`, and `chase_cycles` looked up `rng_next`, which `cosim_find` does not
+know, so `registry_cycles` returned 0. Fixed there and in the zombies. The
+chase also prices its ground tests per call now. On `level24-carry.zmv` its
+error went from -197..+649 to +183..+471, which is about the refresh a
+14,600-cycle call collects.
+
+**Checked.** The corpus verifies at 22,398,922 calls across 50 movies with 0
+diverged. 118,061 are zombie calls: slow walk 11,259, wall-follow 14,188,
+chase 5,309, decision 30,448, animation 37,178, and fast walk 2,343,
+wall-follow 2,427, chase 4,928, decision 8,333, `$81:8C17`'s animation 1,648.
+`verify --level` over all 56 records gives 35,874,842 calls with 0 diverged,
+217,510 of them zombie calls. Coverage over the corpus is 518 of 672 sites.
+Of the 13 new ones only `zombie_quiet` is untaken, which is `$24` above.
+
+**Lockstep** with the zombies substituted and with them left to the ROM gives
+the same table: 46 of 50 movies never part, the four level-25 partings are at
+the same passes, and `level25-2p`'s and `level25-lane`'s live bytes are the
+same. Drift moved on 17 movies, by at most 288 cycles over a movie
+(`level1-2p-rescue.zmv`). `level25-item.zmv` parts at pass 1,612 in both. The
+chase round had seen that parting move, and it came back before this round
+began.
+
+**Live.** On the same twelve movies, under `zamn.exe`, level 1 goes from
+92.7% to 96.5%. Levels 13, 17, 29, 37 and 53 gain 1.4 to 2.8 points, and the
+levels whose movies meet no zombies are unchanged to a tenth. The residue goes
+from 58.8 to 45.6 million instructions of work. The game served 504,941
+zombie calls and declined none, and each routine's count is the call count
+`hotbytes.py` gave its entry under the ROM.
+
+**What is left of them** is their threads' own loops, about 2.1 million
+instructions over the twelve movies: the yield, the computed `RTS` and the
+`JSR`s, and the `RTS` each substituted call still executes at its `ret_op`.
+The top rows now are the NMI's own instructions, `$81:AEA6 b41c_body` and
+`$80:D4F4`.
