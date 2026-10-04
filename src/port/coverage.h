@@ -894,6 +894,41 @@
   X(bystander_one_drawn, "bystander_frame", "one record on screen, which is not looked at") \
   X(bystander_ended, "bystander_frame", "told to end") \
                                                                                    \
+  /* $80:C872, $80:C8B8, $80:A084, $80:A09E, $82:D88C -- DMA and its jobs. */       \
+  X(dma_to_cgram, "dma_to_cgram", "colours sent") \
+  X(dma_to_vram, "dma_to_vram", "bytes sent to VRAM") \
+  X(palette_job, "palette_job", "all 256 colours sent") \
+  X(background_job, "background_job", "the background's second copy sent") \
+  X(tile_anim_job_sent, "tile_anim_job", "an animated tile's frame sent") \
+                                                                                   \
+  /* $80:A0C1, $80:A236, $80:A27D, $80:A106, $80:A180 -- the colour animations. */  \
+  X(palcycle_turn_stepped, "palcycle_turn_*", "the run turned a place") \
+  X(palcycle_turn_wrapped, "palcycle_turn_*", "...and the counter started over") \
+  X(palcycle_pulse_between, "palcycle_pulse", "the green between its ends") \
+  X(palcycle_pulse_top, "palcycle_pulse", "at the top, so the step turns down") \
+  X(palcycle_pulse_floor, "palcycle_pulse", "back at the bottom, so it turns up") \
+  X(palcycle_figure_stepped, "palcycle_figure", "the next arrangement") \
+  X(palcycle_figure_restarted, "palcycle_figure", "the tenth, and back to the first") \
+                                                                                   \
+  /* $80:9CB2 -- the demo's playback. */                                           \
+  X(demo_job_held, "demo_job", "the recording's pad held another frame") \
+  X(demo_job_read_pair, "demo_job", "...or its frames ran out, and the next pair read") \
+  X(demo_job_ended, "demo_job", "a real pad pressed, and the demo over") \
+                                                                                   \
+  /* $83:8255, $80:953B -- two jobs of the screens outside a level. */             \
+  X(intro_screen_job, "intro_screen_job", "the logo screens' colours, scrolls and tile sent") \
+  X(backdrop_drift_waited, "backdrop_drift_job", "not a fourth frame") \
+  X(backdrop_drift_stepped, "backdrop_drift_job", "the backdrop moved a step along its path") \
+  X(backdrop_drift_wrapped, "backdrop_drift_job", "...the last, and back to the first") \
+                                                                                   \
+  /* $81:810F -- a frame of the level's spawn list. */                             \
+  X(spawnlist_held, "spawnlist_frame", "no room on the board") \
+  X(spawnlist_rested, "spawnlist_frame", "the place was resting, and counted down") \
+  X(spawnlist_nearer, "spawnlist_frame", "a ready place, the nearest so far") \
+  X(spawnlist_farther, "spawnlist_frame", "...or no nearer than the nearest") \
+  X(spawnlist_none_near, "spawnlist_frame", "the end of the list, with nothing within 256") \
+  X(spawnlist_started, "spawnlist_frame", "...or the nearest set resting, to be started") \
+                                                                                   \
   /* $80:BE0C, $80:BE41 — a record's two ends. */                                   \
   X(slot_alloc_scan,  "actor_slot_alloc",    "this slot is taken, so try the one below it") \
   X(slot_alloc_took,  "actor_slot_alloc",    "...or it is free, and gets $0001 and the head of the list") \

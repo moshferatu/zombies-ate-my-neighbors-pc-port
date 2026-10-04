@@ -1,0 +1,6 @@
+# Boot with no input, sit through the title into the demo, and end it with B.
+# The only movie in which the demo's playback job runs: the recording's pad
+# held, the next pair read, and a real button ending it.
+0   -
+6000   B
+6010   -

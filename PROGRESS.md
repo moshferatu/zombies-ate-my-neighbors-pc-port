@@ -5,6 +5,54 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The DMA jobs, the colour animations, the demo and the spawn list (2026-10-04)
+
+Fourteen more entries in readable C, most of them things that run every
+frame of every level. Live, `level33` goes from 94.1% to **95.8%**, `level5` from 95.5% to 96.5%, `level13` from 95.4% to 96.4%, `level37` from 95.3% to 96.3%, `level9` from 95.7% to 96.6%, `level41` from 95.1% to 96.0%, `level21` from 94.5% to 95.3%, `level29-fighting` from 96.4% to 97.2%, `level49` from 96.5% to 96.8%, `level53` from 97.0% to 97.3%, `level1` from 97.7% to 97.9% and `level17` from 97.8% to 97.9%. The residue over the twelve movies goes from
+25.2 to **21.6** million instructions of work, and the game registers
+222 routines.
+
+* **DMA and its jobs**, `src/port/dma.c`. `dma_to_cgram` and `dma_to_vram`,
+  the two palette jobs at `$80:A084` and `$80:A09E`, and the animated tiles'
+  job at `$82:D88C`, which gives each tile that changed its frame's
+  attributes and sends its picture. They record their register writes in
+  `port/hw.h`'s trace, as the scroll jobs do. 1.45 million instructions.
+* **The colour animations**, `src/port/palcycle.c`. Five threads that levels
+  list: three that turn a run of colours round, one that pulses a colour's
+  green, and one that steps the big figure's row through ten arrangements.
+  One waking of each. 0.6 million.
+* **The demo's playback**, `src/port/demo.c`. The vblank job at `$80:9CB2`
+  that feeds a recorded pad to the game while the demo runs, and ends it on
+  any real button. 0.6 million, on the six movies that sit through a demo.
+* **Two jobs of the screens outside a level**, `src/port/frontend.c`: the
+  logo screens' job at `$83:8255` and the backdrop's drift at `$80:953B`.
+  0.4 million.
+* **The spawn list**, `src/port/spawnlist.c`. One frame of the thread that
+  brings a level's creatures in, `$81:810F`: ask for room, then count a
+  resting place down, measure a ready one, or at the end of the list set the
+  nearest resting and leave at the `JSR` that starts it. `bodies.c` had it as
+  three stretches with two calls between them; they stay registered for the
+  frames this declines.
+
+* **Checked.** The corpus verifies at 23,819,697 calls across 50 movies
+  with 0 diverged, and 617 of 778 coverage sites. All 25 new sites are taken. The corpus is 51 movies now: `movies/demo-end.zmv` sits through the title into the demo and ends it with a button, and is the only one in which the demo's job runs. `palcycle_turn_seven` is on one level record and no movie; the sweep checks it.
+  `verify --level` over all 56 records, 37,537,913 calls, 0 diverged.
+  None of the new entries declines a call on any record. The sweep is what found a guard too tight: the spawn list's declined all 5,299 frames of record 53, whose list is empty, because the thread never clears the field for the nearest place and the guard read it every frame. It reads it now only once something has been measured near enough.
+* **Prices.** Every call priced is exact, on the corpus and on the sweep: 124,741 and 295,434 frames of the spawn list, 41,438 and 66,310 calls of `dma_to_cgram`, 4,322 and 11,905 of the tile job, 13,499 and 22,470 of the pulse, and so on down. The demo's job is 1,653 on the corpus and, before the movie was added, 41,039 over seven runs of 20,000 frames.
+* **Lockstep** over the corpus: 47 of 51 never part, the same four level-25 movies as before. `level25-2p` runs 617 passes further than it did, to pass 1838. At pass 1221, where it used to part, it now shows four bytes the tool cannot account for, on that pass only: the count of queue A and one slot of it, with a HUD upload queued on one side and already run on the other, and one word of VRAM with them. With `spawnlist_frame` left to the ROM it parts at 1221 as before, so this is the same event and the frame's timing decides which way it shows. It is not explained further than that. `level25-item` has its one byte, as before.
+* **What the round taught.** A job that writes hardware is no harder than one
+  that does not: all six traced entries passed `verify` on the first build,
+  writes compared by address, value and cycle. The pads' latch is already in
+  `CosimRegs`, for the NMI, and a job can read it. And a frame can price a
+  callee the registry charges a mean for by reading what it was given after
+  the fact: `nearest_player_dist`'s players have not moved when the frame
+  ends.
+* **Next.** The frame's own instructions are a third of what is left, and
+  most of them touch the hardware or are single calls between native
+  stretches. Then the big figure of level 21 (`$82:84CE`, `$82:87E8`,
+  `$82:873C`), the creatures at `$81:DC24`, `$81:9107`, `$81:A74D` and
+  `$81:E1A3`, and the level loaders at `$80:98EA` and `$80:96B9`.
+
 ### A colour fade, a player stuck in slime, and two small ones (2026-10-04)
 
 Four more pieces in readable C and one spin taken out of the count.

@@ -15497,3 +15497,118 @@ sleeps inside the call. Two creatures of levels 13 and 41 at `$81:DC24`,
 `$81:9107`, `$81:A74D` and `$81:E1A3`, and one of level 21 at `$81:C51F`
 and `$81:C824`. Then `dma_to_cgram` and `dma_to_vram`, which write the
 hardware.
+
+## DMA jobs, colour animations, the demo and the spawn list (2026-10-04)
+
+| Entry | Where | What | Shape |
+|---|---|---|---|
+| `dma_to_cgram` | `$80:C872` | bytes of colours by DMA | called, traced |
+| `dma_to_vram` | `$80:C8B8` | bytes to VRAM by DMA | called, traced |
+| `palette_job` | `$80:A084` | all 256 colours | vblank job, traced |
+| `background_job` | `$80:A09E` | the background's shown copy | vblank job, traced |
+| `tile_anim_job` | `$82:D88C` | the animated tiles that changed | vblank job, traced |
+| `palcycle_turn_six` | `$80:A0C1` | colours 57-62 turn a place | whole frame |
+| `palcycle_turn_five` | `$80:A236` | colours 104-108 | whole frame |
+| `palcycle_turn_seven` | `$80:A27D` | colours 97-103, at random intervals | whole frame |
+| `palcycle_pulse` | `$80:A106` | colour 90's green up and down | whole frame |
+| `palcycle_figure` | `$80:A180` | the big figure's row | whole frame |
+| `demo_job` | `$80:9CB2` | the demo's recorded pad | vblank job |
+| `intro_screen_job` | `$83:8255` | the logo screens | vblank job, traced |
+| `backdrop_drift_job` | `$80:953B` | the backdrop's wander | vblank job |
+| `spawnlist_frame` | `$81:810F` | a frame of the level's spawn list | whole frame, two exits |
+
+### DMA
+
+`src/port/dma.c`. Nothing here writes the machine. Each routine records its
+stores in a `HwTrace`, between numbered runs of the ROM's instructions, and
+`cosim_hw` prices the runs and makes the writes on the ROM's cycles. `verify`
+compares every write, address, value and cycle.
+
+**A job is its caller's instructions and then the routine's.** `palette_job`
+is `PJ_HEAD`, `dma_to_cgram`, `PJ_TAIL`, in one trace. The called entries are
+for the callers still in the ROM, which are the level loaders.
+
+**`dma_to_vram` takes its bank from the stack.** Its caller pushes a word
+and the routine reads it with `LDA $04,S`, so the shim reads `s + 4`, and A
+comes back with that word's high byte.
+
+**The tile job's attributes are in the cartridge.** `[$BE],Y` is the level's
+own table, which the loader copies to `$7E:611A`. The job reads the first
+and writes the second. The guard declines a table anywhere else, which
+nothing has shown.
+
+**Its bits are shifted out.** `ASL $1F56 : BCC`, eight times from slot 7
+down. The port reads the word once and writes it shifted eight, which is the
+same thing.
+
+### The colour animations
+
+`src/port/palcycle.c`. Five loops, each an entry from where `thread_yield`
+returns to the next `JSL` to it, and each ending on `JSR $A093`, which asks
+for `background_job` on queue A.
+
+**The three that turn share `$7E:5728`.** It counts down by two and wraps to
+the run's last colour. The guard declines a counter that is odd or past the
+run, where the ROM's `CPX : BNE` would never wrap.
+
+**They run on page zero with `$7E` in the data bank**, set by the thread's
+first instructions. So their price is from `--db=7E` and has no direct-page
+term.
+
+**The seven's sleep is a draw.** `JSL rng : AND #$0007 : INC`, with the
+carry the queue adder left going into the draw. Its carry and overflow at
+the exit are the draw's.
+
+**The pulse compares the whole colour, not its green.** See the header. The
+port keeps the comparison as the ROM has it.
+
+**The figure's overflow is always clear**: its one `ADC` adds 14 to a row's
+place in the table.
+
+### The demo
+
+`src/port/demo.c`. `LDA $4218 : ORA $421A` reads the pads' latch, which is
+`CosimRegs::joy`. The job runs after the NMI's own read, so the latch is
+still.
+
+The job writes its frame count over the random state every frame. That is
+what makes a demo play back the same way twice.
+
+### The frontend's two
+
+`src/port/frontend.c`. `intro_screen_job` is `dma_to_cgram` and eleven more
+writes, its runs numbered on from `port/dma.h`'s so one cost table prices
+both. `backdrop_drift_job` writes no hardware: it adds a step of a path in
+the cartridge to BG3's scroll shadow every fourth frame.
+
+### The spawn list
+
+`src/port/spawnlist.c`. Before this the loop was `actors_checked`,
+`actors_measured` and `actors_started`, with the core running `JSL
+spawn_has_room` and `JSR nearest_player_dist` between them. Now a frame is
+one entry.
+
+**Two calls priced after the fact.** `spawn_has_room` is one compare or two,
+and which is plain from the load it compared. `nearest_player_dist` is priced
+by `nearest_player_bill`, which reads the point the frame left on the page
+and the players' records and takes the routine's branches again. The same
+function gives the overflow the routine's last `SBC` leaves.
+
+**The start is the ROM's.** At the end of a list with something near enough,
+the frame sets the place resting and exits at `JSR $807E` with A, X and Y as
+the ROM has them.
+
+### Checked
+
+The corpus: 23,819,697 calls across 50 movies, 0 diverged, 617 of
+778 sites. All 25 new sites are taken. The corpus is 51 movies now: `movies/demo-end.zmv` sits through the title into the demo and ends it with a button, and is the only one in which the demo's job runs. `palcycle_turn_seven` is on one level record and no movie; the sweep checks it. The sweep: 37,537,913 calls over 56
+records, 0 diverged. None of the new entries declines a call on any record. The sweep is what found a guard too tight: the spawn list's declined all 5,299 frames of record 53, whose list is empty, because the thread never clears the field for the nearest place and the guard read it every frame. It reads it now only once something has been measured near enough. Lockstep: 47 of 51 never part, the same four level-25 movies as before. `level25-2p` runs 617 passes further than it did, to pass 1838. At pass 1221, where it used to part, it now shows four bytes the tool cannot account for, on that pass only: the count of queue A and one slot of it, with a HUD upload queued on one side and already run on the other, and one word of VRAM with them. With `spawnlist_frame` left to the ROM it parts at 1221 as before, so this is the same event and the frame's timing decides which way it shows. It is not explained further than that. `level25-item` has its one byte, as before.
+
+**Prices**: Every call priced is exact, on the corpus and on the sweep: 124,741 and 295,434 frames of the spawn list, 41,438 and 66,310 calls of `dma_to_cgram`, 4,322 and 11,905 of the tile job, 13,499 and 22,470 of the pulse, and so on down. The demo's job is 1,653 on the corpus and, before the movie was added, 41,039 over seven runs of 20,000 frames.
+
+**Live**: Live, `level33` goes from 94.1% to **95.8%**, `level5` from 95.5% to 96.5%, `level13` from 95.4% to 96.4%, `level37` from 95.3% to 96.3%, `level9` from 95.7% to 96.6%, `level41` from 95.1% to 96.0%, `level21` from 94.5% to 95.3%, `level29-fighting` from 96.4% to 97.2%, `level49` from 96.5% to 96.8%, `level53` from 97.0% to 97.3%, `level1` from 97.7% to 97.9% and `level17` from 97.8% to 97.9%. The residue over the twelve movies is 21.6 million
+instructions, from 25.2.
+
+**What is left.** `nmi_stack`, `nmi_entry`, `sched_rescan` and `nmi_enter`
+lead, as before. Then the big figure of level 21, the creatures of levels 13
+and 41, and the level loaders.

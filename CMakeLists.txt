@@ -273,7 +273,12 @@ add_library(zamn_port STATIC
   src/port/squirt.c
   src/port/stuck.c
   src/port/figure_colours.c
-  src/port/bystander.c)
+  src/port/bystander.c
+  src/port/dma.c
+  src/port/palcycle.c
+  src/port/demo.c
+  src/port/frontend.c
+  src/port/spawnlist.c)
 target_include_directories(zamn_port PUBLIC src)
 target_link_libraries(zamn_port PUBLIC zamn_assets_lib)
 

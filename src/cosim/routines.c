@@ -25,11 +25,13 @@
 #include "port/fade.h"
 #include "port/figure_colours.h"
 #include "port/floor.h"
+#include "port/frontend.h"
 #include "port/hud.h"
 #include "port/levelmap.h"
 #include "port/lzss.h"
 #include "port/mainloop.h"
 #include "port/monster.h"
+#include "port/palcycle.h"
 #include "port/palfade.h"
 #include "port/pause.h"
 #include "port/pose.h"
@@ -41,6 +43,7 @@
 #include "port/score.h"
 #include "port/martian.h"
 #include "port/slime.h"
+#include "port/spawnlist.h"
 #include "port/spider.h"
 #include "port/sprite_cache.h"
 #include "port/squirt.h"
@@ -48,6 +51,8 @@
 #include "port/step.h"
 #include "port/walk.h"
 #include "port/chase.h"
+#include "port/demo.h"
+#include "port/dma.h"
 #include "port/doll.h"
 #include "port/zombie.h"
 #include "port/terrain.h"
@@ -9299,6 +9304,608 @@ VBL_SHIM(scroll_shadow_job)
 VBL_SHIM(boss_bg_dma)
 
 // ---------------------------------------------------------------------------
+// DMA to the picture hardware, and three jobs -- see `port/dma.h`
+// ---------------------------------------------------------------------------
+//
+// Priced as the jobs above are: each run less the writes it ends on. The
+// tile job's long run reads the level's attributes through `[$BE],Y`, a word
+// of the cartridge at 6 a byte, which the tool prices as WRAM at 8.
+// The intro's screen job, `port/frontend.h`, numbers its runs on from these,
+// so its are here too.
+static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
+    [IS_VMAIN] = {48, 7, 0},
+    [IS_SCROLL] = {44, 6, 0},
+    [IS_VADDR] = {54, 8, 0},
+    [IS_TILE] = {56, 7, 1},
+    [IS_TAIL] = {72, 4, 0},
+    [DMA_STORE] = {18, 3, 0},
+    [DMA_IMM] = {30, 5, 0},
+    [DMA_TAKEN] = {6, 0, 0},
+    [DMA_RTL] = {60, 3, 0},
+    [DC_HEAD] = {54, 7, 0},
+    [DV_HEAD] = {36, 5, 0},
+    [DV_BANK] = {70, 7, 0},
+    [PJ_HEAD] = {108, 13, 0},
+    [PJ_TAIL] = {54, 2, 0},
+    [TJ_HEAD] = {48, 7, 0},
+    [TJ_START] = {36, 5, 0},
+    [TJ_TEST] = {68, 5, 0},
+    [TJ_SEND] = {570, 40, 2},
+    [TJ_SENT] = {68, 2, 0},
+    [TJ_NEXT] = {36, 4, 0},
+    [TJ_TAIL] = {54, 2, 0},
+};
+
+static HwTrace* dma_trace(void) {
+  g_vbl_trace.n = 0;
+  g_vbl_trace.full = false;
+  return &g_vbl_trace;
+}
+
+// What every one of these leaves: 16-bit registers, and the flags of the last
+// `LDA #$01` or of the last `DEX`, with carry where a job clears it.
+static void dma_out(CosimRegs* out, uint16_t a, uint16_t x, uint16_t y, bool n,
+                    uint8_t flags) {
+  out->a = a;
+  out->x = x;
+  out->y = y;
+  out->n = n;
+  out->z = false;
+  out->c = false;
+  out->flags = flags;
+  out->regs = COSIM_REG_ALL;
+}
+
+static uint16_t low_byte_one(uint16_t a) { return (uint16_t)((a & 0xff00u) | 1); }
+
+static bool dma_to_cgram_ok(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in);
+}
+
+static void shim_dma_to_cgram(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  dma_to_cgram(t, (uint8_t)in->a, in->x, in->y);
+  dma_out(out, low_byte_one(in->a), in->x, in->y, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// The bank is the word its caller pushed, above the `JSL`'s three bytes.
+static bool dma_to_vram_ok(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && low_stack(in);
+}
+
+static void shim_dma_to_vram(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  const uint16_t pushed = wram_r16(w, (uint16_t)(in->s + 4));
+  HwTrace* t = dma_trace();
+  dma_to_vram(t, (uint8_t)pushed, in->a, in->x, in->y);
+  dma_out(out, low_byte_one(pushed), in->x, in->y, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_palette_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  palette_job(t);
+  dma_out(out, 0x0001, PALETTE_AT, PALETTE_BYTES, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_background_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  background_job(t);
+  dma_out(out, 0x0001, PALETTE_SHOWN_AT, PALETTE_SHOWN_BYTES, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static bool tile_anim_job_ok(const Wram* w, const CosimRegs* in) {
+  return accepts_vbl_job(w, in) && low_stack(in) && tile_anim_job_supported(w);
+}
+
+static void shim_tile_anim_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  const uint16_t bank_word = wram_r16(w, W_TILE_ANIM_SOURCE_BANK);
+  HwTrace* t = dma_trace();
+  const int sent = tile_anim_job(w, rom, t);
+  // With nothing sent A is still the job's own `LDA #$80`, eight bits of it.
+  dma_out(out, sent ? bank_word : (uint16_t)((in->a & 0xff00u) | 0x80),
+          0xfffe, sent ? TILE_ANIM_BYTES : in->y, true,
+          COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// ---------------------------------------------------------------------------
+// The colour animations -- see `port/palcycle.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py`, branches not taken, and a taken
+// branch adds 6. The three that turn run on page zero with `$7E` in the data
+// bank, `--db=7E`; the pulse and the figure on their thread's page.
+static const CosimRun PALCYCLE_RUN_TAKEN = {6, 0, 0};
+static const CosimRun PALCYCLE_RUN_ASK = {130, 11, 0};       // $A093 LDA LDY JSL RTS
+static const CosimRun PALCYCLE_RUN_T_HEAD = {70, 7, 0};      // LDA $5728 DEC DEC BPL
+static const CosimRun PALCYCLE_RUN_T_WRAP = {18, 3, 0};      // LDA #
+static const CosimRun PALCYCLE_RUN_T_START = {64, 7, 0};     // STA TAX LDY #0
+static const CosimRun PALCYCLE_RUN_T_COLOUR = {134, 13, 0};  // LDA,X STA,Y INX INX CPX BNE
+static const CosimRun PALCYCLE_RUN_T_XWRAP = {18, 3, 0};     // LDX #0
+static const CosimRun PALCYCLE_RUN_T_NEXT = {54, 7, 0};      // INY INY CPY BNE
+static const CosimRun PALCYCLE_RUN_T_TAIL = {52, 5, 0};      // JSR : BRA
+static const CosimRun PALCYCLE_RUN_T_SLEEP = {18, 3, 0};     // LDA #$0005
+static const CosimRun PALCYCLE_RUN_T_DRAW = {84, 8, 0};      // JSL rng : AND : INC
+static const CosimRun PALCYCLE_RUN_G_HEAD = {262, 24, 5};    // $A106-$A11D
+static const CosimRun PALCYCLE_RUN_G_BCS = {12, 2, 0};
+static const CosimRun PALCYCLE_RUN_G_UP = {58, 7, 1};        // LDA # : STA $04 : BRA
+static const CosimRun PALCYCLE_RUN_G_TOP = {30, 5, 0};       // CMP #$03E0 : BCC
+static const CosimRun PALCYCLE_RUN_G_DOWN = {46, 5, 1};      // LDA # : STA $04
+static const CosimRun PALCYCLE_RUN_G_TAIL = {52, 5, 0};      // JSR : BRA
+static const CosimRun PALCYCLE_RUN_G_SLEEP = {18, 3, 0};     // LDA #$0004
+static const CosimRun PALCYCLE_RUN_F_BRA = {12, 2, 0};
+static const CosimRun PALCYCLE_RUN_F_HEAD = {280, 27, 4};    // $A139-$A151
+static const CosimRun PALCYCLE_RUN_F_COLOUR = {272, 26, 3};  // $A152-$A169
+static const CosimRun PALCYCLE_RUN_F_ROW = {70, 8, 1};       // LDA $00 INC CMP BNE
+static const CosimRun PALCYCLE_RUN_F_ROW0 = {18, 3, 0};      // LDA #0
+static const CosimRun PALCYCLE_RUN_F_TAIL = {96, 7, 2};      // STA $00 : JSR : LDA $02
+
+// The `JSR $A093`'s own instructions and the queue adder's.
+static void palcycle_ask_bill(CosimRun* run, const PalcycleLog* log) {
+  run_add(run, &PALCYCLE_RUN_ASK, 1);
+  palfade_queue_bill(run, log->queue_slot);
+}
+
+// Every one of them ends with the tick count just loaded into A, carry the
+// queue adder's unless something later set it, and overflow as `v` says.
+static void palcycle_exit(const Wram* w, const CosimRegs* in, CosimRegs* out,
+                          uint32_t pc, uint16_t ticks, bool c, uint8_t clear,
+                          bool v) {
+  (void)w;
+  out->pc = pc;
+  out->a = ticks;
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | clear));
+  if (ticks & 0x8000u) out->p |= PORT_P_N;
+  if (ticks == 0) out->p |= PORT_P_Z;
+  if (c) out->p |= PORT_P_C;
+  if (v) out->p |= PORT_P_V;
+}
+
+static bool palcycle_queue_carry(const Wram* w, const PalcycleLog* log) {
+  VblQueueFlags f;
+  vbl_queue_flags(w, W_VBL_QUEUE_A_COUNT, PALCYCLE_JOB_BANK,
+                  log->queue_slot >= 0, &f);
+  return f.c;
+}
+
+static bool palcycle_turn_ok(const Wram* w, const CosimRegs* in,
+                             const PalcycleTurn* turn) {
+  return wide(in) && (in->p & PORT_P_D) == 0 && low_stack(in) && in->d == 0 &&
+         in->db == 0x7e && palcycle_turn_supported(w, turn);
+}
+
+static void palcycle_turn_shim(Wram* w, const CosimRegs* in, CosimRegs* out,
+                               const PalcycleTurn* turn, bool drawn) {
+  PalcycleLog log;
+  palcycle_turn(w, turn, &log);
+  const bool queue_c = palcycle_queue_carry(w, &log);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &PALCYCLE_RUN_T_HEAD, 1);
+  run_add(&run, log.wrapped ? &PALCYCLE_RUN_T_WRAP : &PALCYCLE_RUN_TAKEN, 1);
+  run_add(&run, &PALCYCLE_RUN_T_START, 1);
+  run_add(&run, &PALCYCLE_RUN_T_COLOUR, turn->colours);
+  run_add(&run, &PALCYCLE_RUN_TAKEN, turn->colours - 1);  // all but the wrap
+  run_add(&run, &PALCYCLE_RUN_T_XWRAP, 1);
+  run_add(&run, &PALCYCLE_RUN_T_NEXT, turn->colours);
+  run_add(&run, &PALCYCLE_RUN_TAKEN, turn->colours - 1);
+  run_add(&run, &PALCYCLE_RUN_T_TAIL, 1);
+  run_add(&run, &PALCYCLE_RUN_TAKEN, 1);
+  palcycle_ask_bill(&run, &log);
+
+  if (!drawn) {
+    run_add(&run, &PALCYCLE_RUN_T_SLEEP, 1);
+    cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), false));
+    palcycle_exit(w, in, out, turn->yield_pc, PALCYCLE_TURN_TICKS, queue_c, 0,
+                  false);
+    return;
+  }
+  RngResult draw;
+  const uint16_t ticks = palcycle_turn_seven_ticks(w, queue_c, &draw);
+  run_add(&run, &PALCYCLE_RUN_T_DRAW, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), false) +
+             rng_cycles(draw.v, in->fastrom));
+  palcycle_exit(w, in, out, turn->yield_pc, ticks, draw.c, PORT_P_V, draw.v);
+}
+
+#define PALCYCLE_TURN_SHIM(name, turn, drawn)                               \
+  static bool name##_ok(const Wram* w, const CosimRegs* in) {               \
+    return palcycle_turn_ok(w, in, &turn);                                  \
+  }                                                                         \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,     \
+                          CosimRegs* out) {                                 \
+    (void)rom;                                                              \
+    palcycle_turn_shim(w, in, out, &turn, drawn);                           \
+  }                                                                         \
+  static const uint32_t name##_EXITS[] = {turn##_YIELD};
+
+#define PALCYCLE_TURN_SIX_YIELD 0x80a0bdu
+#define PALCYCLE_TURN_FIVE_YIELD 0x80a232u
+#define PALCYCLE_TURN_SEVEN_YIELD 0x80a279u
+PALCYCLE_TURN_SHIM(palcycle_turn_six, PALCYCLE_TURN_SIX, false)
+PALCYCLE_TURN_SHIM(palcycle_turn_five, PALCYCLE_TURN_FIVE, false)
+PALCYCLE_TURN_SHIM(palcycle_turn_seven, PALCYCLE_TURN_SEVEN, true)
+#undef PALCYCLE_TURN_SHIM
+
+// The queue is reached through the data bank; the colour by a long address.
+static bool palcycle_pulse_ok(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db);
+}
+
+static void shim_palcycle_pulse(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  PalcycleLog log;
+  palcycle_pulse(w, in->d, &log);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &PALCYCLE_RUN_G_HEAD, 1);
+  if (log.at_floor) {
+    run_add(&run, &PALCYCLE_RUN_TAKEN, 1);  // the `BEQ`
+    run_add(&run, &PALCYCLE_RUN_G_UP, 1);
+    run_add(&run, &PALCYCLE_RUN_TAKEN, 1);
+  } else if (!log.past_floor) {
+    run_add(&run, &PALCYCLE_RUN_G_BCS, 1);
+    run_add(&run, &PALCYCLE_RUN_G_UP, 1);
+    run_add(&run, &PALCYCLE_RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &PALCYCLE_RUN_G_BCS, 1);
+    run_add(&run, &PALCYCLE_RUN_TAKEN, 1);
+    run_add(&run, &PALCYCLE_RUN_G_TOP, 1);
+    run_add(&run, log.at_top ? &PALCYCLE_RUN_G_DOWN : &PALCYCLE_RUN_TAKEN, 1);
+  }
+  run_add(&run, &PALCYCLE_RUN_G_TAIL, 1);
+  run_add(&run, &PALCYCLE_RUN_TAKEN, 1);
+  palcycle_ask_bill(&run, &log);
+  run_add(&run, &PALCYCLE_RUN_G_SLEEP, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+
+  palcycle_exit(w, in, out, PALCYCLE_PULSE_YIELD_PC, PALCYCLE_PULSE_TICKS,
+                palcycle_queue_carry(w, &log), PORT_P_V, log.v);
+}
+
+static const uint32_t PALCYCLE_PULSE_EXITS[] = {PALCYCLE_PULSE_YIELD_PC};
+
+// The table is read through the data bank.
+static bool palcycle_figure_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == 0x80 &&
+         palcycle_figure_supported(w, in->d);
+}
+
+static void shim_palcycle_figure(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  PalcycleLog log;
+  const uint16_t ticks = palcycle_figure(w, rom, in->d, &log);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &PALCYCLE_RUN_F_BRA, 1);
+  run_add(&run, &PALCYCLE_RUN_TAKEN, 1);
+  run_add(&run, &PALCYCLE_RUN_F_HEAD, 1);
+  run_add(&run, &PALCYCLE_RUN_F_COLOUR, PALCYCLE_FIGURE_COLOURS);
+  run_add(&run, &PALCYCLE_RUN_TAKEN, PALCYCLE_FIGURE_COLOURS - 1);
+  run_add(&run, &PALCYCLE_RUN_F_ROW, 1);
+  run_add(&run, log.wrapped ? &PALCYCLE_RUN_F_ROW0 : &PALCYCLE_RUN_TAKEN, 1);
+  run_add(&run, &PALCYCLE_RUN_F_TAIL, 1);
+  palcycle_ask_bill(&run, &log);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+
+  // The one `ADC` adds 14 to a row's place in the table, and never overflows.
+  palcycle_exit(w, in, out, PALCYCLE_FIGURE_YIELD_PC, ticks,
+                palcycle_queue_carry(w, &log), PORT_P_V, false);
+}
+
+static const uint32_t PALCYCLE_FIGURE_EXITS[] = {PALCYCLE_FIGURE_YIELD_PC};
+
+// ---------------------------------------------------------------------------
+// The demo's playback -- see `port/demo.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=80 --ind=9F:8000`, branches not
+// taken, and a taken branch adds 6. The pads are read from the hardware's
+// latch, which is in `CosimRegs` for the NMI and holds still through vblank.
+static const CosimRun DEMO_RUN_HEAD = {196, 17, 0};   // $9CB2-$9CC2
+static const CosimRun DEMO_RUN_ENDED = {234, 15, 2};  // $9CC3-$9CD1
+static const CosimRun DEMO_RUN_LEFT = {46, 5, 0};     // LDA $1EC0 : BNE
+static const CosimRun DEMO_RUN_READ = {404, 34, 4};   // $9CD7-$9CF4
+static const CosimRun DEMO_RUN_PLAY = {302, 25, 2};   // $9CF5-$9D0B
+static const CosimRun DEMO_RUN_TAKEN = {6, 0, 0};
+
+// The table of directions is read through the data bank.
+static bool demo_job_ok(const Wram* w, const CosimRegs* in) {
+  return accepts_vbl_job(w, in) && in->db == 0x80 &&
+         demo_job_supported(w, in->joy[0], in->joy[1]);
+}
+
+static void shim_demo_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                          CosimRegs* out) {
+  DemoLog log;
+  demo_job(w, rom, in->joy[0], in->joy[1], in->y, &log);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &DEMO_RUN_HEAD, 1);
+  if (log.ended) {
+    run_add(&run, &DEMO_RUN_ENDED, 1);
+  } else {
+    run_add(&run, &DEMO_RUN_TAKEN, 1);
+    run_add(&run, &DEMO_RUN_LEFT, 1);
+    run_add(&run, log.read_pair ? &DEMO_RUN_READ : &DEMO_RUN_TAKEN, 1);
+    run_add(&run, &DEMO_RUN_PLAY, 1);
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), false));
+
+  out->a = log.a;
+  out->x = in->x;
+  out->y = log.y;
+  out->n = log.n;
+  out->z = log.z;
+  out->c = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  out->regs = COSIM_REG_ALL;
+}
+
+// ---------------------------------------------------------------------------
+// Two jobs of the screens outside a level -- see `port/frontend.h`
+// ---------------------------------------------------------------------------
+static void shim_intro_screen_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  intro_screen_job(w, t);
+  // `LDA #$4030`, and then eight bits of `LDA $3C`.
+  const uint8_t tile = wram_r8(w, INTRO_SCREEN_DP_TILE);
+  out->a = (uint16_t)((INTRO_SCREEN_TILE_AT & 0xff00u) | tile);
+  out->x = PALETTE_SHOWN_AT;
+  out->y = INTRO_SCREEN_COLOUR_BYTES;
+  out->n = (tile & 0x80u) != 0;
+  out->z = tile == 0;
+  out->c = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  out->regs = COSIM_REG_ALL;
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// Each run is from `tools/cycles816.py`, branches not taken, and a taken
+// branch adds 6. The path is read by a long address, from fast ROM.
+static const CosimRun DRIFT_RUN_HEAD = {82, 11, 0};    // $953B-$9545
+static const CosimRun DRIFT_RUN_MOVE = {344, 38, 0};   // $9546-$9567
+static const CosimRun DRIFT_RUN_WRAP = {18, 3, 0};     // LDX #$0000
+static const CosimRun DRIFT_RUN_STORE = {34, 3, 0};    // STX $1F88
+static const CosimRun DRIFT_RUN_TAIL = {54, 2, 0};     // SEC : RTL
+static const CosimRun DRIFT_RUN_TAKEN = {6, 0, 0};
+
+static bool backdrop_drift_job_ok(const Wram* w, const CosimRegs* in) {
+  return accepts_vbl_job(w, in) && backdrop_drift_job_supported(w);
+}
+
+static void shim_backdrop_drift_job(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  BackdropDriftLog log;
+  backdrop_drift_job(w, rom, in->x, &log);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &DRIFT_RUN_HEAD, 1);
+  if (log.moved) {
+    run_add(&run, &DRIFT_RUN_MOVE, 1);
+    run_add(&run, log.wrapped ? &DRIFT_RUN_WRAP : &DRIFT_RUN_TAKEN, 1);
+    run_add(&run, &DRIFT_RUN_STORE, 1);
+  } else {
+    run_add(&run, &DRIFT_RUN_TAKEN, 1);
+  }
+  run_add(&run, &DRIFT_RUN_TAIL, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), false));
+
+  out->a = log.a;
+  out->x = log.x;
+  out->y = in->y;
+  out->n = log.n;
+  out->z = log.z;
+  out->c = true;
+  out->v = log.v;
+  // Overflow is the second add's, on a frame that moved.
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C |
+               (log.moved ? COSIM_FLAG_V : 0);
+  out->regs = COSIM_REG_ALL;
+}
+
+// ---------------------------------------------------------------------------
+// The spawn list's frame -- see `port/spawnlist.h`
+// ---------------------------------------------------------------------------
+//
+// The loop's own runs are `ACTORS_COST`'s, which the three stretches of
+// `port/bodies.h` were priced with. What a whole frame adds is its two calls,
+// priced here by the path each took.
+static const CosimRun SPAWNLIST_RUN_JSL = {54, 4, 0};
+static const CosimRun SPAWNLIST_RUN_JSR = {40, 3, 0};
+static const CosimRun SPAWNLIST_RUN_TAKEN = {6, 0, 0};
+// `$80:9D5B  spawn_has_room`.
+static const CosimRun ROOM_RUN_LOAD = {64, 8, 0};     // LDA $00DE : CMP : BCS
+static const CosimRun ROOM_RUN_THREADS = {52, 6, 0};  // LDA $0006 : CMP
+static const CosimRun ROOM_RUN_RTL = {42, 1, 0};
+// `$81:8024  nearest_player_dist`.
+static const CosimRun NEAR_RUN_HEAD = {120, 12, 2};   // LDA # STA STA LDX BEQ
+static const CosimRun NEAR_RUN_AXIS = {92, 8, 1};     // LDA abs,X SEC SBC BPL
+static const CosimRun NEAR_RUN_NEGATE = {30, 4, 0};   // EOR # : INC
+static const CosimRun NEAR_RUN_STORE = {28, 2, 1};    // STA dp
+static const CosimRun NEAR_RUN_LARGER = {40, 4, 1};   // CMP dp : BCC
+static const CosimRun NEAR_RUN_SECOND = {46, 5, 0};   // LDX $00D4 : BEQ
+static const CosimRun NEAR_RUN_TAIL = {68, 6, 2};     // LDA $1E CMP $20 BCC
+static const CosimRun NEAR_RUN_LAST = {28, 2, 1};     // LDA $20
+static const CosimRun NEAR_RUN_RTS = {40, 1, 0};
+
+// The list's bytes are priced fast in the runs, and cost 2 more each while
+// `$420D` is clear. A run of nothing but bytes says how many.
+static void spawnlist_data_bill(CosimRun* run, int bytes) {
+  const CosimRun data = {0, bytes, 0};
+  run_add(run, &data, 1);
+}
+
+static void spawn_has_room_bill(const Wram* w, CosimRun* run) {
+  run_add(run, &ROOM_RUN_LOAD, 1);
+  if (wram_r16(w, W_SPAWN_LOAD) >= SPAWN_LOAD_MAX) {
+    run_add(run, &SPAWNLIST_RUN_TAKEN, 1);
+  } else {
+    run_add(run, &ROOM_RUN_THREADS, 1);
+  }
+  run_add(run, &ROOM_RUN_RTL, 1);
+}
+
+// One axis of one player: the distance, and the overflow its `SBC` leaves.
+static uint16_t nearest_axis_bill(CosimRun* run, uint16_t at, uint16_t point,
+                                  bool* v) {
+  const uint16_t d = (uint16_t)(at - point);
+  *v = ((at ^ point) & (at ^ d) & 0x8000u) != 0;
+  run_add(run, &NEAR_RUN_AXIS, 1);
+  if ((d & 0x8000u) == 0) {
+    run_add(run, &SPAWNLIST_RUN_TAKEN, 1);
+    return d;
+  }
+  run_add(run, &NEAR_RUN_NEGATE, 1);
+  return (uint16_t)(0u - d);
+}
+
+// The routine's price for the point on `page`, from the players it was
+// measured against, who have not moved. `v` is left as it was with no player
+// on the board.
+static void nearest_player_bill(const Wram* w, uint16_t page, CosimRun* run,
+                                bool* v) {
+  const uint16_t x = wram_r16(w, (uint16_t)(page + NEAREST_PLAYER_DP_X));
+  const uint16_t y = wram_r16(w, (uint16_t)(page + NEAREST_PLAYER_DP_Y));
+  const uint16_t records[2] = {wram_r16(w, W_PLAYER_A_RECORD),
+                               wram_r16(w, W_PLAYER_B_RECORD)};
+  uint16_t distance[2] = {NEAREST_PLAYER_NONE, NEAREST_PLAYER_NONE};
+
+  run_add(run, &NEAR_RUN_HEAD, 1);
+  for (int player = 0; player < 2; player++) {
+    if (player == 1) run_add(run, &NEAR_RUN_SECOND, 1);
+    const uint16_t record = records[player];
+    if (record == 0) {
+      run_add(run, &SPAWNLIST_RUN_TAKEN, 1);
+      continue;
+    }
+    const uint16_t dx = nearest_axis_bill(
+        run, wram_r16(w, (uint16_t)(record + ACTOR_X)), x, v);
+    run_add(run, &NEAR_RUN_STORE, 1);
+    const uint16_t dy = nearest_axis_bill(
+        run, wram_r16(w, (uint16_t)(record + ACTOR_Y)), y, v);
+    run_add(run, &NEAR_RUN_LARGER, 1);
+    if (dy < dx) {
+      run_add(run, &SPAWNLIST_RUN_TAKEN, 1);
+      distance[player] = dx;
+    } else {
+      run_add(run, &NEAR_RUN_STORE, 1);
+      distance[player] = dy;
+    }
+  }
+  run_add(run, &NEAR_RUN_TAIL, 1);
+  run_add(run, distance[0] < distance[1] ? &SPAWNLIST_RUN_TAKEN : &NEAR_RUN_LAST,
+          1);
+  run_add(run, &NEAR_RUN_RTS, 1);
+}
+
+// The list is read through the data bank, and so are the players' records.
+static bool spawnlist_frame_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         spawnlist_frame_supported(w, in->d, in->db);
+}
+
+static void shim_spawnlist_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  SpawnlistLog log;
+  const SpawnlistFate fate = spawnlist_frame(w, rom, in->d, in->db, &log);
+
+  // Overflow is the index's `ADC` on any frame that reads the list, which
+  // never overflows, and then the last `SBC` of a measurement.
+  bool v = (in->p & PORT_P_V) != 0;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SPAWNLIST_RUN_JSL, 1);
+  spawn_has_room_bill(w, &run);
+  run_add(&run, &ACTORS_COST[ACTORS_CHECK], 1);
+  if (log.held) {
+    run_add(&run, &SPAWNLIST_RUN_TAKEN, 1);
+    run_add(&run, &ACTORS_COST[ACTORS_TICKS], 1);
+  } else if (log.rested) {
+    run_add(&run, &ACTORS_COST[ACTORS_COUNT], 1);
+    run_add(&run, &ACTORS_COST[ACTORS_TICK], 1);
+    run_add(&run, &ACTORS_COST[ACTORS_NEXT], 1);
+    run_add(&run, &ACTORS_COST[ACTORS_TICKS], 1);
+  } else {
+    v = false;
+    run_add(&run, &ACTORS_COST[ACTORS_COUNT], 1);
+    run_add(&run, &SPAWNLIST_RUN_TAKEN, 1);
+    run_add(&run, &ACTORS_COST[ACTORS_INDEX], 1);
+    run_add(&run, &ACTORS_COST[ACTORS_TYPE], 1);
+    spawnlist_data_bill(&run, 2);
+    if (log.measured) {
+      run_add(&run, &ACTORS_COST[ACTORS_XY], 1);
+      spawnlist_data_bill(&run, 4);
+      run_add(&run, &SPAWNLIST_RUN_JSR, 1);
+      nearest_player_bill(w, in->d, &run, &v);
+      run_add(&run, &ACTORS_COST[ACTORS_BEST], 1);
+      run_add(&run,
+              log.nearer ? &ACTORS_COST[ACTORS_NEW_BEST] : &SPAWNLIST_RUN_TAKEN,
+              1);
+      run_add(&run, &ACTORS_COST[ACTORS_NEXT], 1);
+      run_add(&run, &ACTORS_COST[ACTORS_TICKS], 1);
+    } else {
+      run_add(&run, &SPAWNLIST_RUN_TAKEN, 1);
+      run_add(&run, &ACTORS_COST[ACTORS_END], 1);
+      if (log.none_near) {
+        run_add(&run, &SPAWNLIST_RUN_TAKEN, 1);
+        run_add(&run, &ACTORS_COST[ACTORS_RESET], 1);
+        run_add(&run, &ACTORS_COST[ACTORS_TICKS], 1);
+      } else {
+        run_add(&run, &ACTORS_COST[ACTORS_PICK], 1);
+        run_add(&run, &ACTORS_COST[ACTORS_ARM], 1);
+        spawnlist_data_bill(&run, 2);
+      }
+    }
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (v) out->p |= PORT_P_V;
+  if (fate == SPAWNLIST_STARTS) {
+    out->pc = SPAWNLIST_START_PC;
+    out->a = log.rest;
+    out->x = log.place;
+    out->y = log.place_at;
+    out->regs = COSIM_REG_ALL;
+    if (log.rest == 0) out->p |= PORT_P_Z;
+    return;
+  }
+  out->pc = SPAWNLIST_YIELD_PC;
+  out->a = 0x0001;
+  out->regs = COSIM_REG_A;
+  if (log.c) out->p |= PORT_P_C;
+}
+
+static const uint32_t SPAWNLIST_FRAME_EXITS[] = {SPAWNLIST_YIELD_PC,
+                                                 SPAWNLIST_START_PC};
+
+// ---------------------------------------------------------------------------
 // The sound routines — `apu_send`, `apu_load_set` and `apu_boot`
 // ---------------------------------------------------------------------------
 //
@@ -12268,6 +12875,142 @@ static const CosimRoutine ROUTINES[] = {
         .hw = true,
         .uncalled = true,
         .cycles = 2000,
+    },
+    // The colour animations, each a waking of its thread. See
+    // `port/palcycle.h`. The stack is the `JSR` to the asking, its `JSL` and
+    // the queue adder's `PHY`.
+#define PALCYCLE_ENTRY(n, sym, pc, ok, exits)                 \
+  {                                                           \
+      .name = #n,                                             \
+      .symbol = sym,                                          \
+      .entry = pc,                                            \
+      .run = shim_##n,                                        \
+      .accepts = ok,                                          \
+      COSIM_EXITS(exits),                                     \
+      .uncalled = true,                                       \
+      .cycles = 2400,                                         \
+      .stack_bytes = 8,                                       \
+  }
+    PALCYCLE_ENTRY(palcycle_turn_six, "$80:A0C1", 0x80a0c1u,
+                   palcycle_turn_six_ok, palcycle_turn_six_EXITS),
+    PALCYCLE_ENTRY(palcycle_turn_five, "$80:A236", 0x80a236u,
+                   palcycle_turn_five_ok, palcycle_turn_five_EXITS),
+    PALCYCLE_ENTRY(palcycle_turn_seven, "$80:A27D", 0x80a27du,
+                   palcycle_turn_seven_ok, palcycle_turn_seven_EXITS),
+    PALCYCLE_ENTRY(palcycle_pulse, "$80:A106", PALCYCLE_PULSE_PC,
+                   palcycle_pulse_ok, PALCYCLE_PULSE_EXITS),
+    PALCYCLE_ENTRY(palcycle_figure, "$80:A180", PALCYCLE_FIGURE_PC,
+                   palcycle_figure_ok, PALCYCLE_FIGURE_EXITS),
+#undef PALCYCLE_ENTRY
+    {
+        .name = "demo_job",
+        .symbol = "$80:9CB2",
+        .entry = DEMO_JOB_PC,
+        .ret_op = DEMO_JOB_RTL_PC,  // the ended path has its own
+        .ret_kind = COSIM_RTL,
+        .run = shim_demo_job,
+        .accepts = demo_job_ok,
+        .uncalled = true,
+        .cycles = 560,
+    },
+    // Two jobs of the screens outside a level. See `port/frontend.h`.
+    {
+        .name = "intro_screen_job",
+        .symbol = "$83:8255",
+        .entry = INTRO_SCREEN_JOB_PC,
+        .ret_op = INTRO_SCREEN_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_intro_screen_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 1200,
+        .stack_bytes = 3,  // the `JSL`
+    },
+    {
+        .name = "backdrop_drift_job",
+        .symbol = "$80:953B",
+        .entry = BACKDROP_DRIFT_JOB_PC,
+        .ret_op = BACKDROP_DRIFT_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_backdrop_drift_job,
+        .accepts = backdrop_drift_job_ok,
+        .uncalled = true,
+        .cycles = 200,
+    },
+    {
+        .name = "spawnlist_frame",
+        .symbol = "$81:810F",
+        .entry = SPAWNLIST_FRAME_PC,
+        .run = shim_spawnlist_frame,
+        .accepts = spawnlist_frame_ok,
+        COSIM_EXITS(SPAWNLIST_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 900,
+        .stack_bytes = 3,  // the `JSL` to the asking, or the `JSR` to measure
+    },
+    // DMA, and the jobs that are little more. See `port/dma.h`.
+    {
+        .name = "dma_to_cgram",
+        .symbol = "$80:C872",
+        .entry = DMA_TO_CGRAM_PC,
+        .ret_op = DMA_TO_CGRAM_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_dma_to_cgram,
+        .accepts = dma_to_cgram_ok,
+        .hw = true,
+        .cycles = 300,
+    },
+    {
+        .name = "dma_to_vram",
+        .symbol = "$80:C8B8",
+        .entry = DMA_TO_VRAM_PC,
+        .ret_op = DMA_TO_VRAM_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_dma_to_vram,
+        .accepts = dma_to_vram_ok,
+        .hw = true,
+        .cycles = 352,
+    },
+    {
+        .name = "palette_job",
+        .symbol = "$80:A084",
+        .entry = PALETTE_JOB_PC,
+        .ret_op = PALETTE_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_palette_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 462,
+        .stack_bytes = 3,  // the `JSL`
+    },
+    {
+        .name = "background_job",
+        .symbol = "$80:A09E",
+        .entry = BACKGROUND_JOB_PC,
+        .ret_op = BACKGROUND_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_background_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 462,
+        .stack_bytes = 3,
+    },
+    {
+        .name = "tile_anim_job",
+        .symbol = "$82:D88C",
+        .entry = TILE_ANIM_JOB_PC,
+        .ret_op = TILE_ANIM_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_tile_anim_job,
+        .accepts = tile_anim_job_ok,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 2000,
+        // The saved slot, the bank and the tile's address, and the `JSL`.
+        .stack_bytes = 9,
     },
 };
 
