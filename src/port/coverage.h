@@ -872,6 +872,28 @@
   X(spider_ran_twice, "spider_frame", "...of two steps") \
   X(spider_left, "spider_frame", "nobody about and neither player near, so it leaves") \
                                                                                    \
+  /* $82:ABBD -- the colour fade's frame. */                                        \
+  X(palfade_row_moved, "palfade_frame", "a row with a colour not yet its target's") \
+  X(palfade_background_spared, "palfade_frame", "the background's eighth row, which is left alone") \
+  X(palfade_swept, "palfade_frame", "the eighth row of a sweep that moved something: send the colours") \
+  X(palfade_over, "palfade_frame", "...or of one that moved nothing, and the thread ends") \
+  X(palfade_slept_sooner, "palfade_frame", "it sleeps a tick less from now on") \
+                                                                                   \
+  /* $80:D468 -- a player stuck fast. */                                           \
+  X(stuck_frame, "stuck", "a frame of being stuck") \
+  X(stuck_hurt, "stuck", "the hurt timer had run out, so they are hit again") \
+  X(stuck_shook, "stuck", "right after left or left after right: a shake") \
+  X(stuck_turned, "stuck", "a direction held, which they turn to face") \
+                                                                                   \
+  /* $82:8138 -- the big figure's colours. */                                      \
+  X(figure_colours_set, "figure_colours_set", "sixteen colours into the background's eighth row") \
+                                                                                   \
+  /* $82:DD5C -- the bystander's frame. */                                         \
+  X(bystander_slept, "bystander_frame", "no player in the box") \
+  X(bystander_met, "bystander_frame", "a player in the box") \
+  X(bystander_one_drawn, "bystander_frame", "one record on screen, which is not looked at") \
+  X(bystander_ended, "bystander_frame", "told to end") \
+                                                                                   \
   /* $80:BE0C, $80:BE41 — a record's two ends. */                                   \
   X(slot_alloc_scan,  "actor_slot_alloc",    "this slot is taken, so try the one below it") \
   X(slot_alloc_took,  "actor_slot_alloc",    "...or it is free, and gets $0001 and the head of the list") \

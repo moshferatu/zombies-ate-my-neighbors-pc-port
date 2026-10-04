@@ -18,16 +18,19 @@
 #include "port/apu.h"
 #include "port/boss.h"
 #include "port/bossbg.h"
+#include "port/bystander.h"
 #include "port/camera.h"
 #include "port/clone.h"
 #include "port/collide.h"
 #include "port/fade.h"
+#include "port/figure_colours.h"
 #include "port/floor.h"
 #include "port/hud.h"
 #include "port/levelmap.h"
 #include "port/lzss.h"
 #include "port/mainloop.h"
 #include "port/monster.h"
+#include "port/palfade.h"
 #include "port/pause.h"
 #include "port/pose.h"
 #include "port/oam.h"
@@ -41,6 +44,7 @@
 #include "port/spider.h"
 #include "port/sprite_cache.h"
 #include "port/squirt.h"
+#include "port/stuck.h"
 #include "port/step.h"
 #include "port/walk.h"
 #include "port/chase.h"
@@ -7833,6 +7837,462 @@ static void shim_spider_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 static const uint32_t SPIDER_FRAME_EXITS[] = {SPIDER_YIELD_PC, SPIDER_FATE_PC};
 
 // ---------------------------------------------------------------------------
+// The colour fade -- see `port/palfade.h`
+// ---------------------------------------------------------------------------
+//
+// Priced as the spiders are: each run from `tools/cycles816.py`, branches not
+// taken, a taken branch and every `BRA` adding 6. The thread's own loop runs
+// on its page; the two row routines and the step they call put page zero in D
+// and `$7E` in the data bank, so theirs are a second sum that never pays for
+// an unaligned page. The colours being faded to are read from the cartridge,
+// `--ind=9F:8000`, and the colours on screen from WRAM, `--db=7E`.
+static const CosimRun PALFADE_RUN_ROW = {136, 11, 3};         // $ABBD-$ABC7, $ABCA-$ABD4
+static const CosimRun PALFADE_RUN_INC = {50, 2, 1};           // $ABC8 INC $0A
+static const CosimRun PALFADE_RUN_ADVANCE = {88, 11, 1};      // $ABD7-$ABE1
+static const CosimRun PALFADE_RUN_DONE_TEST = {40, 4, 1};     // $ABE2 LDA $0A : BEQ
+static const CosimRun PALFADE_RUN_UPLOAD = {136, 15, 1};      // $ABE6-$ABF4
+static const CosimRun PALFADE_RUN_STORE = {86, 9, 2};         // $ABF5-$ABFD
+static const CosimRun PALFADE_RUN_SOONER = {52, 5, 1};        // $ABFE DEC : STA : BRA
+static const CosimRun PALFADE_RUN_SLEEP = {28, 2, 1};         // $ABB7 LDA $0E
+static const CosimRun PALFADE_RUN_TAKEN = {6, 0, 0};
+static const CosimRun PALFADE_RUN_BG_HEAD = {262, 19, 2};     // $AB19-$AB2B
+static const CosimRun PALFADE_RUN_BG_SETUP = {110, 10, 2};    // $AB2C-$AB35
+static const CosimRun PALFADE_RUN_BG_COLOUR = {152, 13, 1};   // $AB36-$AB40
+static const CosimRun PALFADE_RUN_BG_STORE = {130, 8, 1};     // $AB41-$AB48
+static const CosimRun PALFADE_RUN_SPR_HEAD = {342, 24, 4};    // $AB5B-$AB72
+static const CosimRun PALFADE_RUN_SPR_COLOUR = {152, 13, 1};  // $AB73-$AB7D
+static const CosimRun PALFADE_RUN_SPR_STORE = {90, 5, 1};     // $AB7E-$AB82
+static const CosimRun PALFADE_RUN_ROW_NEXT = {64, 6, 1};      // INY INY CPY BCC
+static const CosimRun PALFADE_RUN_ROW_TAIL = {40, 4, 1};      // LDA $38 : BEQ
+static const CosimRun PALFADE_RUN_ROW_SEC = {24, 3, 0};       // SEC : BRA
+static const CosimRun PALFADE_RUN_ROW_CLC = {12, 1, 0};
+static const CosimRun PALFADE_RUN_ROW_RET = {126, 4, 0};      // PLB PLD PLB RTS
+static const CosimRun PALFADE_RUN_STEP_HEAD = {68, 6, 2};     // $AAB7 STX CMP BEQ
+static const CosimRun PALFADE_RUN_STEP_SAME = {52, 2, 0};     // $AB17 CLC RTS
+static const CosimRun PALFADE_RUN_STEP_SPLIT = {250, 23, 7};  // $AABD-$AAD3
+static const CosimRun PALFADE_RUN_BLUE_TEST = {86, 9, 2};     // $AAD4-$AADC
+static const CosimRun PALFADE_RUN_WIDE_TEST = {114, 11, 3};   // $AAE9-$AAF3, $AB00-$AB0A
+static const CosimRun PALFADE_RUN_BCS = {12, 2, 0};
+static const CosimRun PALFADE_RUN_WIDE_UP = {42, 6, 0};       // CLC ADC BRA
+static const CosimRun PALFADE_RUN_WIDE_DOWN = {30, 4, 0};     // SEC SBC
+static const CosimRun PALFADE_RUN_RED_UP = {24, 3, 0};        // INC BRA
+static const CosimRun PALFADE_RUN_RED_DOWN = {12, 1, 0};      // DEC
+static const CosimRun PALFADE_RUN_STEP_TAIL = {108, 6, 2};    // $AB11-$AB16
+static const CosimRun PALFADE_RUN_QUEUE_HEAD = {92, 9, 0};    // $80:83AE-$83B6
+static const CosimRun PALFADE_RUN_QUEUE_FULL = {76, 2, 0};    // $80:83D3 PLY RTL
+static const CosimRun PALFADE_RUN_QUEUE_FIRST = {18, 3, 0};   // $80:83B7 LDX #$0038
+static const CosimRun PALFADE_RUN_QUEUE_TEST = {52, 5, 0};    // $80:83BA LDY : BEQ
+static const CosimRun PALFADE_RUN_QUEUE_NEXT = {60, 6, 0};    // $80:83BF DEX x4 : BNE
+static const CosimRun PALFADE_RUN_QUEUE_STORE = {248, 14, 0}; // $80:83C5-$83D2
+
+#define PALFADE_QUEUE_FIRST_SLOT 0x38
+#define PALFADE_QUEUE_SLOT_BYTES 4
+
+// A channel of the colours that moved: its test, and which of three ways out.
+static void palfade_channel_bill(CosimRun* zero, const PalfadeChannelWork* c,
+                              const CosimRun* test, const CosimRun* up,
+                              const CosimRun* down) {
+  const int moved = c->kept + c->raised + c->lowered;
+  run_add(zero, test, moved);
+  run_add(zero, &PALFADE_RUN_TAKEN, c->kept);  // the `BEQ` round both
+  run_add(zero, &PALFADE_RUN_BCS, c->raised + c->lowered);
+  run_add(zero, up, c->raised);
+  run_add(zero, &PALFADE_RUN_TAKEN, c->raised);  // ...its `BRA`
+  run_add(zero, &PALFADE_RUN_TAKEN, c->lowered);  // ...or the `BCS`
+  run_add(zero, down, c->lowered);
+}
+
+// A row routine, the step it calls sixteen times included.
+static void palfade_row_bill(CosimRun* zero, const PalfadeRowWork* r,
+                          const CosimRun* head, const CosimRun* setup,
+                          const CosimRun* colour, const CosimRun* store) {
+  run_add(zero, head, 1);
+  if (!r->ran) {  // `CPX #$00E0 : BCS` to the `CLC`
+    run_add(zero, &PALFADE_RUN_TAKEN, 1);
+    run_add(zero, &PALFADE_RUN_ROW_CLC, 1);
+    run_add(zero, &PALFADE_RUN_ROW_RET, 1);
+    return;
+  }
+  const int moved = PALFADE_ROW_COLOURS - r->settled;
+  if (setup != NULL) run_add(zero, setup, 1);
+  run_add(zero, colour, PALFADE_ROW_COLOURS);
+  run_add(zero, &PALFADE_RUN_STEP_HEAD, PALFADE_ROW_COLOURS);
+  // One already there: the step's `BEQ`, its `CLC : RTS`, the row's `BCC`.
+  run_add(zero, &PALFADE_RUN_STEP_SAME, r->settled);
+  run_add(zero, &PALFADE_RUN_TAKEN, 2 * r->settled);
+  run_add(zero, &PALFADE_RUN_STEP_SPLIT, moved);
+  palfade_channel_bill(zero, &r->blue, &PALFADE_RUN_BLUE_TEST, &PALFADE_RUN_WIDE_UP,
+                    &PALFADE_RUN_WIDE_DOWN);
+  palfade_channel_bill(zero, &r->green, &PALFADE_RUN_WIDE_TEST, &PALFADE_RUN_WIDE_UP,
+                    &PALFADE_RUN_WIDE_DOWN);
+  palfade_channel_bill(zero, &r->red, &PALFADE_RUN_WIDE_TEST, &PALFADE_RUN_RED_UP,
+                    &PALFADE_RUN_RED_DOWN);
+  run_add(zero, &PALFADE_RUN_STEP_TAIL, moved);
+  run_add(zero, store, moved);
+  run_add(zero, &PALFADE_RUN_ROW_NEXT, PALFADE_ROW_COLOURS);
+  run_add(zero, &PALFADE_RUN_TAKEN, PALFADE_ROW_COLOURS - 1);
+  run_add(zero, &PALFADE_RUN_ROW_TAIL, 1);
+  if (moved != 0) {
+    run_add(zero, &PALFADE_RUN_ROW_SEC, 1);
+    run_add(zero, &PALFADE_RUN_TAKEN, 1);  // its `BRA`
+  } else {
+    run_add(zero, &PALFADE_RUN_TAKEN, 1);
+    run_add(zero, &PALFADE_RUN_ROW_CLC, 1);
+  }
+  run_add(zero, &PALFADE_RUN_ROW_RET, 1);
+}
+
+// `$80:83AE`, by where the job went. The search comes down from slot 14 and
+// takes slot 0 without testing it.
+static void palfade_queue_bill(CosimRun* zero, int slot) {
+  run_add(zero, &PALFADE_RUN_QUEUE_HEAD, 1);
+  if (slot < 0) {
+    run_add(zero, &PALFADE_RUN_TAKEN, 1);
+    run_add(zero, &PALFADE_RUN_QUEUE_FULL, 1);
+    return;
+  }
+  const int busy = (PALFADE_QUEUE_FIRST_SLOT - slot) / PALFADE_QUEUE_SLOT_BYTES;
+  run_add(zero, &PALFADE_RUN_QUEUE_FIRST, 1);
+  run_add(zero, &PALFADE_RUN_QUEUE_TEST, busy);
+  run_add(zero, &PALFADE_RUN_QUEUE_NEXT, busy);
+  if (slot != 0) {
+    run_add(zero, &PALFADE_RUN_TAKEN, busy);  // each `BNE` back
+    run_add(zero, &PALFADE_RUN_QUEUE_TEST, 1);
+    run_add(zero, &PALFADE_RUN_TAKEN, 1);  // the `BEQ` out
+  } else {
+    run_add(zero, &PALFADE_RUN_TAKEN, busy - 1);  // the last `BNE` falls through
+  }
+  run_add(zero, &PALFADE_RUN_QUEUE_STORE, 1);
+}
+
+// The rows put page zero in D themselves, and the queue is reached through
+// the data bank.
+static bool palfade_frame_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         palfade_frame_supported(w, in->d);
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or at the two
+// instructions that end the thread, with the sweep's count of zero in A.
+static void shim_palfade_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  PalfadeLog log = {0};
+  const bool stays = palfade_frame(w, rom, in->d, &log);
+
+  CosimRun own = {0, 0, 0}, zero = {0, 0, 0};
+  run_add(&own, &PALFADE_RUN_ROW, 2);
+  palfade_row_bill(&zero, &log.background, &PALFADE_RUN_BG_HEAD, &PALFADE_RUN_BG_SETUP,
+                &PALFADE_RUN_BG_COLOUR, &PALFADE_RUN_BG_STORE);
+  palfade_row_bill(&zero, &log.sprites, &PALFADE_RUN_SPR_HEAD, NULL,
+                &PALFADE_RUN_SPR_COLOUR, &PALFADE_RUN_SPR_STORE);
+  const bool background_moved =
+      log.background.ran && log.background.settled < PALFADE_ROW_COLOURS;
+  const bool sprites_moved = log.sprites.settled < PALFADE_ROW_COLOURS;
+  run_add(&own, background_moved ? &PALFADE_RUN_INC : &PALFADE_RUN_TAKEN, 1);
+  run_add(&own, sprites_moved ? &PALFADE_RUN_INC : &PALFADE_RUN_TAKEN, 1);
+  run_add(&own, &PALFADE_RUN_ADVANCE, 1);
+  if (!log.swept) {
+    run_add(&own, &PALFADE_RUN_TAKEN, 1);
+  } else {
+    run_add(&own, &PALFADE_RUN_DONE_TEST, 1);
+    if (log.over) {
+      run_add(&own, &PALFADE_RUN_TAKEN, 1);
+    } else {
+      run_add(&own, &PALFADE_RUN_UPLOAD, 1);
+      palfade_queue_bill(&zero, log.queue_slot);
+    }
+  }
+  if (stays) {
+    run_add(&own, &PALFADE_RUN_STORE, 1);
+    if (log.sooner) {
+      run_add(&own, &PALFADE_RUN_SOONER, 1);
+    }
+    run_add(&own, &PALFADE_RUN_TAKEN, 1);  // the `BCC`, or the `BRA`
+    run_add(&own, &PALFADE_RUN_SLEEP, 1);
+  }
+  cosim_cost(cosim_run_cycles_dp(&zero, fetch_fast(in), false) +
+             cosim_run_cycles_dp(&own, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+
+  out->pc = stays ? PALFADE_YIELD_PC : PALFADE_OVER_PC;
+  out->a = stays ? log.ticks : 0;
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (out->a == 0) out->p |= PORT_P_Z;
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+}
+
+static const uint32_t PALFADE_FRAME_EXITS[] = {PALFADE_YIELD_PC, PALFADE_OVER_PC};
+
+// ---------------------------------------------------------------------------
+// A player stuck fast -- see `port/stuck.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=80`, branches not taken, and a
+// taken branch adds 6. The handler calls nothing, so the sum is the price.
+static const CosimRun STUCK_RUN_HEAD = {40, 4, 1};       // $D468 LDA $52 : BPL
+static const CosimRun STUCK_RUN_HURT = {92, 10, 2};      // $D46C-$D475
+static const CosimRun STUCK_RUN_SHOW = {442, 41, 6};     // $D476-$D49C
+static const CosimRun STUCK_RUN_WAS = {58, 7, 1};        // LDA $24 : CMP : BNE
+static const CosimRun STUCK_RUN_INC = {50, 2, 1};        // INC $5A
+static const CosimRun STUCK_RUN_LEFT = {70, 8, 0};       // $D4A6-$D4AD
+static const CosimRun STUCK_RUN_COUNT = {58, 7, 1};      // $D4B7-$D4BD
+static const CosimRun STUCK_RUN_FREE = {46, 5, 1};       // $D4BE LDA #1 : STA $56
+static const CosimRun STUCK_RUN_LATCH = {148, 12, 2};    // $D4C3-$D4CE
+static const CosimRun STUCK_RUN_FACING = {28, 2, 1};     // $D4CF STA $26
+static const CosimRun STUCK_RUN_TIMER = {40, 4, 1};      // $D4D1 LDA $16 : BEQ
+static const CosimRun STUCK_RUN_DEC = {50, 2, 1};        // $D4D5 DEC $16
+static const CosimRun STUCK_RUN_LAST = {40, 4, 1};       // $D4D7 LDA $56 : BEQ
+static const CosimRun STUCK_RUN_COUNTDOWN = {62, 4, 1};  // $D4DB DEC $56 : BNE
+static const CosimRun STUCK_RUN_RTS = {40, 1, 0};
+static const CosimRun STUCK_RUN_TAKEN = {6, 0, 0};
+
+static void stuck_bill(CosimRun* own, const StuckLog* log) {
+  run_add(own, &STUCK_RUN_HEAD, 1);
+  run_add(own, log->hurt ? &STUCK_RUN_HURT : &STUCK_RUN_TAKEN, 1);
+  run_add(own, &STUCK_RUN_SHOW, 1);
+  if (log->held_right) {
+    run_add(own, &STUCK_RUN_WAS, 1);
+    run_add(own, log->shook ? &STUCK_RUN_INC : &STUCK_RUN_TAKEN, 1);
+  } else {
+    run_add(own, &STUCK_RUN_TAKEN, 1);
+  }
+  run_add(own, &STUCK_RUN_LEFT, 1);
+  if (log->held_left) {
+    run_add(own, &STUCK_RUN_WAS, 1);
+    run_add(own, log->shook ? &STUCK_RUN_INC : &STUCK_RUN_TAKEN, 1);
+  } else {
+    run_add(own, &STUCK_RUN_TAKEN, 1);
+  }
+  run_add(own, &STUCK_RUN_COUNT, 1);
+  run_add(own, log->third_shake ? &STUCK_RUN_FREE : &STUCK_RUN_TAKEN, 1);
+  run_add(own, &STUCK_RUN_LATCH, 1);
+  run_add(own, log->turned ? &STUCK_RUN_FACING : &STUCK_RUN_TAKEN, 1);
+  run_add(own, &STUCK_RUN_TIMER, 1);
+  run_add(own, log->timer_ran ? &STUCK_RUN_DEC : &STUCK_RUN_TAKEN, 1);
+  run_add(own, &STUCK_RUN_LAST, 1);
+  if (log->counting) run_add(own, &STUCK_RUN_COUNTDOWN, 1);
+  run_add(own, &STUCK_RUN_TAKEN, 1);  // the `BEQ`, or the `BNE`
+  run_add(own, &STUCK_RUN_RTS, 1);
+}
+
+// The pad and the pictures are read through the data bank, and both records
+// have to be in the WRAM that bank mirrors.
+static bool stuck_ok(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->db != STUCK_BANK) return false;
+  return wram_r16(w, (uint16_t)(in->d + STUCK_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + STUCK_DP_COVER)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + STUCK_DP_PLAYER)) < 4 &&
+         stuck_supported(w, in->d);
+}
+
+static void shim_stuck(Wram* w, const Rom* rom, const CosimRegs* in,
+                       CosimRegs* out) {
+  StuckLog log = {0};
+  stuck(w, rom, in->d, &log);
+
+  CosimRun own = {0, 0, 0};
+  stuck_bill(&own, &log);
+  cosim_cost(cosim_run_cycles_dp(&own, fetch_fast(in), (in->d & 0x00ffu) != 0));
+
+  out->a = log.a;
+  out->x = log.x;
+  out->y = log.y;
+  out->n = log.n;
+  out->z = log.z;
+  out->c = log.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// The big figure's colours -- see `port/figure_colours.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py`, branches not taken, and a taken
+// branch adds 6. The loop's `LDA $0000,Y` reads the cartridge, so its two
+// bytes are in the count of those FastROM makes cheap.
+static const CosimRun FIGURE_COLOURS_RUN_HEAD = {132, 11, 0};  // $8138-$8142
+static const CosimRun FIGURE_COLOURS_RUN_LOOP = {194, 22, 0};  // $8143-$8156
+static const CosimRun FIGURE_COLOURS_RUN_TAIL = {116, 11, 0};  // $8157-$8161
+static const CosimRun FIGURE_COLOURS_RUN_RTL = {42, 1, 0};
+static const CosimRun QUEUE_B_RUN_HEAD = {92, 9, 0};    // $80:8418-$8420
+static const CosimRun QUEUE_B_RUN_FULL = {76, 2, 0};    // $80:843B PLY RTL
+static const CosimRun QUEUE_B_RUN_FIRST = {18, 3, 0};   // $80:8421 LDX #$001C
+static const CosimRun QUEUE_B_RUN_TEST = {52, 5, 0};    // $80:8424 LDY : BEQ
+static const CosimRun QUEUE_B_RUN_NEXT = {60, 6, 0};    // $80:8429 DEX x4 : BNE
+static const CosimRun QUEUE_B_RUN_STORE = {224, 12, 0}; // $80:842F-$843A
+static const CosimRun QUEUE_RUN_TAKEN = {6, 0, 0};
+
+#define QUEUE_B_FIRST_SLOT 0x1c
+#define QUEUE_SLOT_BYTES 4
+
+// `$80:8418`, by where the job went. The search comes down from slot 7 and
+// takes slot 0 without testing it.
+static void queue_b_bill(CosimRun* run, int slot) {
+  run_add(run, &QUEUE_B_RUN_HEAD, 1);
+  if (slot < 0) {
+    run_add(run, &QUEUE_RUN_TAKEN, 1);
+    run_add(run, &QUEUE_B_RUN_FULL, 1);
+    return;
+  }
+  const int busy = (QUEUE_B_FIRST_SLOT - slot) / QUEUE_SLOT_BYTES;
+  run_add(run, &QUEUE_B_RUN_FIRST, 1);
+  run_add(run, &QUEUE_B_RUN_TEST, busy);
+  run_add(run, &QUEUE_B_RUN_NEXT, busy);
+  if (slot != 0) {
+    run_add(run, &QUEUE_RUN_TAKEN, busy);  // each `BNE` back
+    run_add(run, &QUEUE_B_RUN_TEST, 1);
+    run_add(run, &QUEUE_RUN_TAKEN, 1);  // the `BEQ` out
+  } else {
+    run_add(run, &QUEUE_RUN_TAKEN, busy - 1);  // the last `BNE` falls through
+  }
+  run_add(run, &QUEUE_B_RUN_STORE, 1);
+}
+
+static int figure_colours_cycles(int slot, bool fast) {
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &FIGURE_COLOURS_RUN_HEAD, 1);
+  run_add(&run, &FIGURE_COLOURS_RUN_LOOP, FIGURE_COLOURS_COUNT);
+  run_add(&run, &QUEUE_RUN_TAKEN, FIGURE_COLOURS_COUNT - 1);
+  run_add(&run, &FIGURE_COLOURS_RUN_TAIL, 1);
+  queue_b_bill(&run, slot);
+  run_add(&run, &FIGURE_COLOURS_RUN_RTL, 1);
+  return cosim_run_cycles_dp(&run, fast, false);
+}
+
+// The colours are read through the bank in Y, and the queue through the
+// caller's data bank.
+static bool figure_colours_ok(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && low_stack(in) && bank_sees_low_wram(in->db) &&
+         figure_colours_supported(in->a, (uint8_t)in->y);
+}
+
+static void shim_figure_colours_set(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  // What `vbl_queue_b_add` leaves in Y: the last word its search read.
+  const uint16_t probe = wram_r16(w, W_VBL_QUEUE_B + 4);
+  const int slot = figure_colours_set(w, rom, in->a, (uint8_t)in->y);
+  cosim_cost(figure_colours_cycles(slot, fetch_fast(in)));
+
+  if (slot < 0) {  // full: the job's address and bank, as they were loaded
+    out->a = FIGURE_COLOURS_JOB;
+    out->x = 2 * FIGURE_COLOURS_COUNT;
+    out->y = FIGURE_COLOURS_JOB_BANK;
+    queue_flags(w, W_VBL_QUEUE_B_COUNT, FIGURE_COLOURS_JOB_BANK, false, out);
+    return;
+  }
+  out->a = FIGURE_COLOURS_JOB_BANK;
+  out->x = (uint16_t)slot;
+  out->y = slot == 0 ? probe : 0;
+  queue_flags(w, W_VBL_QUEUE_B_COUNT, FIGURE_COLOURS_JOB_BANK, true, out);
+}
+
+// ---------------------------------------------------------------------------
+// The bystander -- see `port/bystander.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=82`, branches not taken, and a
+// taken branch adds 6. The search calls nothing, so the sum is the price.
+static const CosimRun BYSTANDER_RUN_HEAD = {46, 5, 0};    // $DD6E LDY $009C : BEQ
+static const CosimRun BYSTANDER_RUN_HEAD2 = {36, 4, 0};   // $DD73 DEY DEY BEQ
+static const CosimRun BYSTANDER_RUN_LOAD = {92, 8, 0};    // $DD77-$DD7E
+static const CosimRun BYSTANDER_RUN_IS = {30, 5, 0};      // CMP # : BEQ, or BNE
+static const CosimRun BYSTANDER_RUN_NEAR = {80, 7, 1};    // LDA abs,X : CMP dp : BCC
+static const CosimRun BYSTANDER_RUN_FAR = {40, 4, 1};     // CMP dp : BCS
+static const CosimRun BYSTANDER_RUN_FOUND = {52, 2, 0};   // SEC RTS
+static const CosimRun BYSTANDER_RUN_NEXT = {36, 4, 0};    // DEY DEY BPL
+static const CosimRun BYSTANDER_RUN_NONE = {52, 2, 0};    // CLC RTS
+static const CosimRun BYSTANDER_RUN_CALL = {52, 5, 0};    // $DD5C JSR : BCC
+static const CosimRun BYSTANDER_RUN_ENDED = {40, 4, 1};   // $DD64 LDA $12 : BEQ
+static const CosimRun BYSTANDER_RUN_SLEEP = {18, 3, 0};   // $DD55 LDA #$0005
+static const CosimRun BYSTANDER_RUN_TAKEN = {6, 0, 0};
+
+static void bystander_search_bill(CosimRun* own, const BystanderLog* log,
+                                  bool met) {
+  run_add(own, &BYSTANDER_RUN_HEAD, 1);
+  if (log->none_drawn) {
+    run_add(own, &BYSTANDER_RUN_TAKEN, 1);
+    run_add(own, &BYSTANDER_RUN_NONE, 1);
+    return;
+  }
+  run_add(own, &BYSTANDER_RUN_HEAD2, 1);
+  if (log->one_drawn) {
+    run_add(own, &BYSTANDER_RUN_TAKEN, 1);
+    run_add(own, &BYSTANDER_RUN_NONE, 1);
+    return;
+  }
+  const int players = log->first_players + log->second_players;
+  const int past_left = players - log->left_of;
+  const int past_right = past_left - log->right_of;
+  const int past_top = past_right - log->above;
+  run_add(own, &BYSTANDER_RUN_LOAD, log->looked);
+  run_add(own, &BYSTANDER_RUN_TAKEN, log->not_colliding);
+  run_add(own, &BYSTANDER_RUN_IS, log->looked - log->not_colliding);
+  run_add(own, &BYSTANDER_RUN_TAKEN, log->first_players);
+  run_add(own, &BYSTANDER_RUN_IS, log->others + log->second_players);
+  run_add(own, &BYSTANDER_RUN_TAKEN, log->others);
+  run_add(own, &BYSTANDER_RUN_NEAR, players);
+  run_add(own, &BYSTANDER_RUN_TAKEN, log->left_of);
+  run_add(own, &BYSTANDER_RUN_FAR, past_left);
+  run_add(own, &BYSTANDER_RUN_TAKEN, log->right_of);
+  run_add(own, &BYSTANDER_RUN_NEAR, past_right);
+  run_add(own, &BYSTANDER_RUN_TAKEN, log->above);
+  run_add(own, &BYSTANDER_RUN_FAR, past_top);
+  run_add(own, &BYSTANDER_RUN_TAKEN, log->below);
+  if (met) {
+    run_add(own, &BYSTANDER_RUN_NEXT, log->looked - 1);
+    run_add(own, &BYSTANDER_RUN_TAKEN, log->looked - 1);
+    run_add(own, &BYSTANDER_RUN_FOUND, 1);
+  } else {
+    run_add(own, &BYSTANDER_RUN_NEXT, log->looked);
+    run_add(own, &BYSTANDER_RUN_TAKEN, log->looked - 1);  // the last falls out
+    run_add(own, &BYSTANDER_RUN_NONE, 1);
+  }
+}
+
+// The list and its records are read through the data bank.
+static bool bystander_frame_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         bystander_frame_supported(w);
+}
+
+static void shim_bystander_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  BystanderLog log = {0};
+  const BystanderFate fate = bystander_frame(w, in->d, &log);
+
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &BYSTANDER_RUN_CALL, 1);
+  bystander_search_bill(&own, &log, fate == BYSTANDER_MET);
+  if (fate != BYSTANDER_MET) {
+    run_add(&own, &BYSTANDER_RUN_TAKEN, 1);
+    run_add(&own, &BYSTANDER_RUN_ENDED, 1);
+  }
+  if (fate == BYSTANDER_SLEEPS) {
+    run_add(&own, &BYSTANDER_RUN_TAKEN, 1);
+    run_add(&own, &BYSTANDER_RUN_SLEEP, 1);
+  }
+  cosim_cost(cosim_run_cycles_dp(&own, fetch_fast(in), (in->d & 0x00ffu) != 0));
+
+  out->pc = fate == BYSTANDER_MET    ? BYSTANDER_MET_PC
+            : fate == BYSTANDER_ENDS ? BYSTANDER_END_PC
+                                     : BYSTANDER_YIELD_PC;
+  out->a = log.a;
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C));
+  if (log.n) out->p |= PORT_P_N;
+  if (log.z) out->p |= PORT_P_Z;
+  if (fate == BYSTANDER_MET) out->p |= PORT_P_C;
+}
+
+static const uint32_t BYSTANDER_FRAME_EXITS[] = {
+    BYSTANDER_YIELD_PC, BYSTANDER_MET_PC, BYSTANDER_END_PC};
+
+// ---------------------------------------------------------------------------
 // The player's poses -- see `port/pose.h`
 // ---------------------------------------------------------------------------
 //
@@ -11665,6 +12125,54 @@ static const CosimRoutine ROUTINES[] = {
         // The computed `RTS`'s two words, two `JSR`s, and the `JSL` down to
         // the tests a step makes, and theirs.
         .stack_bytes = 32,
+    },
+    {
+        .name = "palfade_frame",
+        .symbol = "$82:ABBD",
+        .entry = PALFADE_FRAME_PC,
+        .run = shim_palfade_frame,
+        .accepts = palfade_frame_ok,
+        COSIM_EXITS(PALFADE_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 12000,
+        // A `JSR` to a row, its five bytes of saved bank and page, and the
+        // `JSR` to the step; or the `JSL` to the queue and its `PHY`.
+        .stack_bytes = 16,
+    },
+    {
+        .name = "stuck",
+        .symbol = "$80:D468",
+        .entry = STUCK_PC,
+        .ret_op = STUCK_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_stuck,
+        .accepts = stuck_ok,
+        .uncalled = true,
+        .cycles = 1100,
+    },
+    {
+        .name = "figure_colours_set",
+        .symbol = "$82:8138",
+        .entry = FIGURE_COLOURS_PC,
+        .ret_op = FIGURE_COLOURS_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_figure_colours_set,
+        .accepts = figure_colours_ok,
+        .cycles = 3900,
+        // Its own `PHB` and one-byte `PHY`, or the `JSL` to the queue and
+        // that routine's `PHY`.
+        .stack_bytes = 5,
+    },
+    {
+        .name = "bystander_frame",
+        .symbol = "$82:DD5C",
+        .entry = BYSTANDER_FRAME_PC,
+        .run = shim_bystander_frame,
+        .accepts = bystander_frame_ok,
+        COSIM_EXITS(BYSTANDER_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 1500,
+        .stack_bytes = 2,  // the `JSR` to the search
     },
 #define POSE_ENTRY(n, sym, pc, rts)                                          \
     {                                                                        \

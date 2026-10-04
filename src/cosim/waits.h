@@ -55,6 +55,10 @@ static const CosimWaitSite cosim_wait_sites[] = {
     // either loop would replace a spin with a spin.
     {0x80923A, 8, "CMP #$000F : BNE  -- a screen fading in, counted by a VBL job"},
     {0x80924C, 8, "AND #$0080 : BEQ  -- ...and the same screen fading back out"},
+    // `$80:9AB0` does the same after `JSR $9C72`, between two levels: 613,311
+    // instructions over six calls on the twelve profiled movies, all but 78 a
+    // call of them this loop.
+    {0x809B94, 8, "AND #$0080 : BEQ  -- ...and a level fading out the same way"},
     // The same story one row down. `$80:9F29` queues the vblank job `$80:9ED0`
     // to push a tilemap into VRAM and then holds here until `$C6`, the job's
     // remaining byte count, reaches zero: 2,149,252 of its 2,149,592

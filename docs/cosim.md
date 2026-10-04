@@ -15401,3 +15401,99 @@ priced exactly cost the same.
 
 **Live**: `level17` goes from 96.5% to 97.8%. With the martians, the residue
 over the twelve movies is 27.3 million instructions, from 29.9.
+
+## A colour fade, a stuck player, a palette row and a bystander (2026-10-04)
+
+Four entries, and one address added to the waits.
+
+| Entry | Where | What | Shape |
+|---|---|---|---|
+| `palfade_frame` | `$82:ABBD` | a waking of the colour-fade thread | whole frame, two exits |
+| `stuck` | `$80:D468` | a frame of player state `$0C` | uncalled, ends at an `RTS` |
+| `figure_colours_set` | `$82:8138` | sixteen colours into the big figure's row | called |
+| `bystander_frame` | `$82:DD5C` | a pass of the level-49 thread's loop | whole frame, three exits |
+
+### The fade
+
+`src/port/palfade.c`. The thread is `$82:AB95`, which 19 level records list with
+a pointer to two palettes. A waking fades one row of each and the port ends
+at the `JSL thread_yield`, or at `$82:AC03` when a whole sweep moved nothing.
+The ROM runs those last two instructions, `INC $1F94 : RTL`.
+
+**Page zero.** The two row routines put zero in D and `$7E` in the data
+bank, and leave their working in `$28` to `$4A`. The port writes the same
+words. A colour that is already its target's leaves only `$4A`.
+
+**Two sums.** The loop's direct-page instructions pay for an unaligned page
+and the rows' never do, so the price is two `CosimRun`s added up apart.
+
+**The queue is priced by its slot.** `vbl_queue_a_add` comes down from slot
+14 and takes slot 0 untested, so where the job went says how many turns the
+search made. The registry charges that routine a mean; a frame that calls it
+cannot.
+
+**`--db=7E`.** The first price was short by 4 cycles a colour and 8 a colour
+moved: `tools/cycles816.py` reads `--db=7E` and ignores `--db 7E`, so
+`$5428,Y` was priced as a register and not as WRAM. With it, every waking is exact.
+
+### Stuck
+
+`src/port/stuck.c`. `$80:DC1E` puts a player in state `$0C` with `$186` in
+`$56`. Of the corpus only the three levels with slimes reach it.
+
+The state's handler begins `JSR $E86D`, `floor_effect`, which is its own
+entry at a mean price. So the port starts at the instruction after, as an
+uncalled entry that ends at the handler's `RTS`, and its price is exact with
+nothing nested in it.
+
+It claims every register: A is the countdown as it was loaded, X the player
+and Y the cover's record, carry is `CMP #$0003` against the shakes, and zero
+and negative are the countdown's `DEC`, or its `LDA` when it was zero.
+
+The frame the countdown ends on jumps to `$80:DC70`. The guard reads the
+shakes and the countdown and declines that one.
+
+### The big figure's colours
+
+`src/port/figure_colours.c`. `$82:8138` copies sixteen colours to
+`$7E:5508` and `$7E:5708` and ends on `JSL vbl_queue_b_add`, so its
+registers are that routine's. The colours are read through the bank in Y's
+low byte, and the port takes them from the cartridge only.
+
+`LDA $0000,Y` is priced by the tool as low WRAM. It reads the cartridge, so
+the run was corrected by hand: 4 cycles less and two more FastROM bytes.
+
+### The bystander
+
+`src/port/bystander.c`. The loop is four instructions round a search,
+`$82:DD6E`, of the records being drawn for a player inside a box. The port
+writes nothing.
+
+**A lone record is skipped.** `LDY $009C : BEQ : DEY : DEY : BEQ` leaves
+when the list has one entry as it does when it has none.
+
+Three exits: the yield, the `JSR $DDA7` with a player found, and `$82:DD68`
+with the thread told to end.
+
+### The wait
+
+`$80:9B94  LDA $136C : AND #$0080 : BEQ` is in `src/cosim/waits.h`. It is
+the same spin as `$80:924C` two rows above it, after the same `JSR $9C72`.
+The residue tool and the game's own figure both read that file, so both
+change.
+
+### Checked
+
+The corpus: 22,945,464 calls across 50 movies, 0 diverged, 591 of
+753 sites. Twelve of the fourteen new ones are taken. No movie shakes free of a slime, and none has the bystander alone on screen, so `stuck_shook` and `bystander_one_drawn` are unchecked. The sweep: 37,016,157 calls over 56
+records, 0 diverged. The fade is on 19 records, the figure's colours on 8, the stuck state on 4 and the bystander on 1. Lockstep: 46 of 50 never part, the same four level-25 movies as before. Mean drift on the six level-21 movies fell by about 30 cycles each, and no other row moved by more than a cycle.
+
+**Live**: Live, `level41` goes from 94.5% to **95.1%**, `level21` from 94.0% to **94.5%**, `level13` from 95.0% to 95.4%, `level49` from 96.1% to 96.5%, `level29-fighting` from 96.1% to 96.4% and `level9` from 95.6% to 95.7%. The other six are unchanged. The residue over the twelve movies is 25.2 million
+instructions, from 27.3; 0.6 million of the drop is the wait.
+
+**What is left.** The big figure of level 21: the thread `$82:873C`, its
+loop at `$82:87AA`, four states from `$82:8505`, and `$82:839C`, which
+sleeps inside the call. Two creatures of levels 13 and 41 at `$81:DC24`,
+`$81:9107`, `$81:A74D` and `$81:E1A3`, and one of level 21 at `$81:C51F`
+and `$81:C824`. Then `dma_to_cgram` and `dma_to_vram`, which write the
+hardware.

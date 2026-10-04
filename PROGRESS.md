@@ -5,6 +5,51 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### A colour fade, a player stuck in slime, and two small ones (2026-10-04)
+
+Four more pieces in readable C and one spin taken out of the count.
+Live, `level41` goes from 94.5% to **95.1%**, `level21` from 94.0% to **94.5%**, `level13` from 95.0% to 95.4%, `level49` from 96.1% to 96.5%, `level29-fighting` from 96.1% to 96.4% and `level9` from 95.6% to 95.7%. The other six are unchanged. The residue over the twelve movies goes from 27.3 to **25.2**
+million instructions of work. 0.6 million of that drop is the wait, which
+was never work.
+
+* **The colour fade**, `src/port/palfade.c`. A thread levels list,
+  `$82:AB95`, that moves a level's colours to another set: a row of sixteen
+  of the background and of the sprites each time it wakes, each channel one
+  step nearer, sleeping a tick less each time. One entry, `palfade_frame`.
+  It was `$82:AAB7`, `$82:AB19` and `$82:AB5B`, 0.57 million instructions.
+* **A player stuck in slime**, `src/port/stuck.c`. The player's state `$0C`:
+  390 frames, or three shakes left and right, and hurt again every `$B0`.
+  One entry, `stuck`, from where the state's `JSR floor_effect` comes back.
+  The row was filed under `$80:D343`, 0.43 million. The frame it ends on is
+  the ROM's.
+* **The big figure's colours**, `src/port/figure_colours.c`. `$82:8138`
+  sets the background's eighth row, which is the palette of a boss drawn as
+  a background. 0.33 million on level 21.
+* **The bystander**, `src/port/bystander.c`. A level-49 thread that waits
+  for a player to walk up to it, `$82:DD52`. One entry, `bystander_frame`,
+  0.2 million.
+* **`$80:9AB0` was a wait.** 613,311 instructions over six calls, all but 78
+  a call of them `LDA $136C : AND #$0080 : BEQ`, a level fading out with the
+  CPU held against a vblank job. It is in `src/cosim/waits.h` now, with its
+  two twins.
+
+* **Checked.** The corpus verifies at 22,945,464 calls across 50 movies
+  with 0 diverged, and 591 of 753 coverage sites. Twelve of the fourteen new ones are taken. No movie shakes free of a slime, and none has the bystander alone on screen, so `stuck_shook` and `bystander_one_drawn` are unchecked.
+  `verify --level` over all 56 records, 37,016,157 calls, 0 diverged.
+  The fade is on 19 records, the figure's colours on 8, the stuck state on 4 and the bystander on 1.
+* **Prices.** Every call priced is exact, on the corpus and on the sweep: 1,863 and 2,248 wakings of the fade, 1,352 and 5,103 stuck frames, 2,757 and 1,937 sets of the figure's colours, 2,630 and 1,740 passes of the bystander.
+* **Lockstep** over the corpus: 46 of 50 never part, the same four level-25 movies as before. Mean drift on the six level-21 movies fell by about 30 cycles each, and no other row moved by more than a cycle.
+* **Three things the tools taught.** `cycles816.py` takes `--db=7E` and
+  ignores `--db 7E`, which showed as a fade priced 4 cycles a colour short.
+  A row in the residue is a span, not a routine: `$80:D343` was `$80:D465`,
+  and `$80:D4F4` is the `RTS`s the core runs for the ported poses. And
+  `src/port/fade.c` already existed, the screen's fade-in, which is why the
+  new file is `palfade.c`.
+* **Next.** The big figure of level 21, a thread at `$82:873C` with four
+  states, 0.5 million. Its picture's routine sleeps inside the call on about
+  one pass in four. Then `$81:DC24`, `$81:9107`, `$81:A74D` and `$81:E1A3`
+  on levels 13 and 41, and `$81:C51F` and `$81:C824` on level 21.
+
 ### The spiders in readable C (2026-10-03)
 
 The red spiders of level 17, `src/port/spider.c`. `$83:B3E9`, `$83:B2D0`,
