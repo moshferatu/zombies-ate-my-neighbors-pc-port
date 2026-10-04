@@ -15242,3 +15242,162 @@ four, leaves by whatever overflow that call left. Both need doing before the
 martian's frame can be exact. After them: `$83:B2D0`-`$83:B50D` on level 17,
 `$82:AAB7`-`$82:AB5B` on four levels, and `dma_to_cgram` and `dma_to_vram`,
 which every level calls and which write the hardware.
+
+## The martians in readable C (2026-10-03)
+
+`src/port/martian.c` and `martian.h`: the martians of level 21. Two entries,
+both whole frames, one for each loop the thread can run. They share the C.
+
+| Entry | Address | What it is |
+|---|---|---|
+| `martian_frame` | `$81:99F6` | a pass of the loop of one that began on the ground |
+| `martian_arrival_frame` | `$81:9A5A` | a pass of the loop of one that came in over the top |
+
+The rows they replace were `$81:9C99`, `$81:9981`, `$81:9D2A`, `$81:9C8F`,
+`$81:9D1F` and `$81:9DB1`, 1.3 of the 5.3 million instructions level 21's
+movie left.
+
+### What had to come first
+
+`actor_aligned`, `$80:B379`, is asked every pass. It was charged its mean,
+and its port did not say what overflow it left.
+
+* **The price.** `ActorAlignedRegs` now counts the slots dismissed at each of
+  the three tests, the candidates by which id they wore, and those lined up
+  on neither axis. `aligned_cycles` makes the path from that. 29,079 calls
+  over the corpus, every one exact.
+* **Overflow.** Clear when nothing matched, from the loop counter's
+  `SBC #$0014`. On a match it is the `SBC` that decided the direction.
+
+### A guard that runs the pass
+
+A shot is `$81:9981`. With the cooldown at zero it starts the shot's thread
+and then calls `thread_yield` for twelve ticks, in the middle of the state
+body. That pass cannot be one native call, and neither can the one that
+wakes at `$81:99C9`.
+
+A walker fires when something is lined up, which WRAM says. One arriving
+also fires on a draw under `$1E`. So, as for the slimes, `supported` runs the
+pass on the scratch copy and reads `MartianLog::declined`. It also declines a
+look whose target is no record: `actor_nearest` hands back whatever its last
+search left when it finds nothing.
+
+### A direction nobody chose
+
+`verify --level 41` declined 314 of 681 passes. The direction in `$28` was
+`$06A7` on one martian and `$04F4` on another, and the guard wanted an even
+number up to 16.
+
+The thread's setup clears eight fields and `$28` is not one of them. The
+first look sets it, unless that look finds its target `$E0` or more away,
+when it returns early. For the sixty passes until the next look the martian
+steps by `$81:9C62,X` with X in the thousands, which is code and other
+tables, and shows the picture `$81:9CD7,X` names.
+
+That is what the ROM does, and all of it is read from the cartridge. The
+guard now allows any direction up to `$1800`, which keeps both reads inside
+bank `$81`. The 311 passes verify.
+
+### Carry and overflow
+
+Followed on every path but one.
+
+* **Walking** ends on the picture, whose `CPX #$000A` leaves carry as whether
+  it faces left. Overflow is the step's: the last of its tests that wrote
+  one, or on a rest whatever came before, which is `actor_aligned`'s or the
+  look's.
+* **Arriving** ends on the step. Carry is clear on a rest, from the `ASL`
+  that doubles the direction, and otherwise says the second axis was refused.
+  A picture that moves on clears it again. Overflow on a rest is the
+  subtraction that measured how far above its target it is.
+* **`player_bearing`** leaves an overflow the port does not follow. It
+  matters on the two passes that end straight after it: a walker standing
+  too far away, and an arrival that turns walker. Those claim the thread's
+  own, and no call in the corpus or the sweep has shown that wrong.
+
+### Prices
+
+Exact on every call: 17,413 passes of `martian_frame` and 11,517 of
+`martian_arrival_frame` over the corpus, and 18,287 more over the level
+sweep. The price is the path plus `actor_aligned`, `actor_nearest`,
+`actor_snap_to`, `actor_bearing`, `player_bearing`, `rng`,
+`terrain_blocked_enemy`, `terrain_out_of_bounds` and `actor_at_point`, each
+by its own model. They were right the first time they ran.
+
+### Checked
+
+The corpus: 22,934,307 calls across 50 movies, 0 diverged, 570 of 730 sites.
+The sweep: 56 records, 0 diverged, martians on records 12, 21 and 41.
+Lockstep: 46 of 50 never part, the four level-25 movies as before.
+
+Drift is where the per-call price shows. Mean drift on the level-21 movies:
+
+| Movie | Before | After |
+|---|---|---|
+| `level21` | 8,520 | 2,000 |
+| `level21-spin` | 3,676 | 2,167 |
+| `level21-bubble` | 9,300 | 1,167 |
+| `level21-p2-bubble` | 10,737 | 1,612 |
+| `level21-rescue` | 10,594 | 1,020 |
+| `level21-p2-rescue` | 10,258 | 612 |
+| `level21-exit` | 7,199 | 1,842 |
+
+`level29-990b`, `level41` and `level24-carry` fell too, from 3,520, 5,413 and
+5,912 to 1,908, 1,584 and 1,544. Their lockstep runs ask `actor_aligned` over
+a thousand times each, and `level41`'s has a martian in it for 4,658 passes.
+
+**Live**, the twelve movies under `zamn.exe --profile`, 20,000 frames each:
+`level21` goes from 92.1% to 94.0%, and the other eleven are unchanged. The
+residue goes from 29.9 to 28.6 million instructions of work.
+
+**What is left.** `$82:AAB7`, 0.2 million on four levels. On level 21
+itself the shot's own thread at `$81:F380`, and the level's opening,
+`$82:8138` and `$82:84CE`. Then `dma_to_cgram` and `dma_to_vram`, which
+every level calls and which write the hardware.
+
+## The spiders in readable C (2026-10-03)
+
+`src/port/spider.c` and `spider.h`: the red spiders of level 17. One entry,
+`spider_frame` at `$83:B299`, a whole pass of the thread's loop.
+
+The rows it replaces were `$83:B3E9`, `$83:B2D0`, `$83:B50D`, `$83:B457`,
+`$83:B277`, `$83:B3BE`, `$83:B3A6` and `$83:B41E`, 1.2 of the 2.8 million
+instructions level 17's movie left.
+
+### Nothing to refuse
+
+Three states, wandering, feeling along a wall and running at a target, and
+none of them calls anything that sleeps. So there is an `accepts` and no
+`supported`, and no pass was declined anywhere.
+
+### The same search twice
+
+A look that finds someone under `$B4` away jumps to the routine that takes
+aim, `$83:B4C4`, which begins by calling `actor_nearest` again from the same
+spot. The port calls it twice too, and the log keeps both works, because the
+price is two searches of 32 slots.
+
+### Carry and overflow
+
+Followed on every path.
+
+* **Wandering and feeling** end on a step's two tests, or on the turn's
+  `CLC : ADC #$0004` when the step was refused.
+* **Running** ends on the second axis's tests. A pass that takes aim ends on
+  the `ASL` that doubles the direction, or on `CMP #$00DC` when it gives up.
+* **The picture**, one pass in three, overwrites both: `CPX #$0018` is
+  whether it faces left.
+
+A running spider's draw begins from the thread's own carry, as it woke with
+it, so `spider_frame` takes that as an argument, as the slime's does.
+
+### Checked
+
+The corpus: 22,936,862 calls across 50 movies, 0 diverged, 579 of 739 sites.
+The sweep: 37,005,129 calls over 56 records, 0 diverged, spiders on records
+17 and 30. Every pass priced is exact. Lockstep: 46 of 50, and the table is
+the martians' round's to the digit, since a pass the ROM ran and a pass
+priced exactly cost the same.
+
+**Live**: `level17` goes from 96.5% to 97.8%. With the martians, the residue
+over the twelve movies is 27.3 million instructions, from 29.9.

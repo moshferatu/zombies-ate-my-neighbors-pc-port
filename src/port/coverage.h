@@ -846,6 +846,32 @@
   X(slime_glob_turned, "slime_glob_frame", "the top of its rise: moved across, to fall") \
   X(slime_glob_landed, "slime_glob_frame", "on the ground, so the splash is next") \
                                                                                    \
+  /* $81:99F6, $81:9A5A -- the martians' frame. */                                 \
+  X(martian_walked, "martian_frame", "a pass of walking") \
+  X(martian_arrived, "martian_frame", "a pass of coming in across the top") \
+  X(martian_held_fire, "martian_frame", "something lined up with it while it cooled") \
+  X(martian_fired, "martian_frame", "...or with nothing to wait for: the ROM's, so the pass was declined") \
+  X(martian_backed_off, "martian_frame", "a look that found its target too close") \
+  X(martian_lined_up, "martian_frame", "...or near enough to line up with") \
+  X(martian_approached, "martian_frame", "...or far enough to come closer to") \
+  X(martian_left, "martian_frame", "...or out of sight, with neither player near, so it leaves") \
+  X(martian_rested, "martian_frame", "the pass in four on which it does not step") \
+  X(martian_step_refused, "martian_frame", "a step whose second axis was not allowed") \
+  X(martian_came_down, "martian_frame", "arriving: a player above it, so it walks from now") \
+  X(martian_climbed, "martian_frame", "...too near above its target: up on a slant, two steps") \
+  X(martian_dropped, "martian_frame", "...too far above: down on one") \
+                                                                                   \
+  /* $83:B299 -- the spiders' frame. */                                            \
+  X(spider_wandered, "spider_frame", "a pass of going straight on") \
+  X(spider_felt, "spider_frame", "a pass of feeling along what turned it") \
+  X(spider_turned_back, "spider_frame", "...where the way back round was clear, and taken") \
+  X(spider_turned, "spider_frame", "a step refused, so a quarter turn") \
+  X(spider_took_aim, "spider_frame", "someone near enough to run at") \
+  X(spider_gave_up, "spider_frame", "...or too far by the time it aimed again, so it wanders") \
+  X(spider_ran, "spider_frame", "a pass of running at its target") \
+  X(spider_ran_twice, "spider_frame", "...of two steps") \
+  X(spider_left, "spider_frame", "nobody about and neither player near, so it leaves") \
+                                                                                   \
   /* $80:BE0C, $80:BE41 — a record's two ends. */                                   \
   X(slot_alloc_scan,  "actor_slot_alloc",    "this slot is taken, so try the one below it") \
   X(slot_alloc_took,  "actor_slot_alloc",    "...or it is free, and gets $0001 and the head of the list") \

@@ -266,7 +266,9 @@ add_library(zamn_port STATIC
   src/port/pose.c
   src/port/clone.c
   src/port/mainloop.c
+  src/port/martian.c
   src/port/slime.c
+  src/port/spider.c
   src/port/squirt.c)
 target_include_directories(zamn_port PUBLIC src)
 target_link_libraries(zamn_port PUBLIC zamn_assets_lib)

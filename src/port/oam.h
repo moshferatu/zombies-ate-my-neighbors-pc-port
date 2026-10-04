@@ -657,9 +657,20 @@ uint16_t actor_nearest(Wram* w, uint16_t x, uint16_t y, uint16_t* dist);
 // the no-match exit, from the `CPX` that ended the loop. N and Z belong to the
 // caller's direct page, off the closing `PLD` — the caller re-derives Z from A
 // with its own `TAX`.
+//
+// Overflow is the same `SBC`'s on a match. On the no-match exit it is clear:
+// the last arithmetic was the loop counter's `SBC #$0014`, which cannot
+// overflow.
+//
+// The counts are for the harness, which prices the call by its path: how
+// many slots were dismissed at each test, how many candidates wore each of
+// the three ids, the one that matched among them, and how many of those were
+// lined up on neither axis.
 typedef struct {
   uint16_t a, x;
-  bool c;
+  bool c, v;
+  int undrawn, inactive, wrong_id, off;
+  int by_id[3];  // `ALIGNED_ID_PLAYER_A`, `ALIGNED_ID_PLAYER_B`, `ALIGNED_ID_D`
 } ActorAlignedRegs;
 
 void actor_aligned(Wram* w, uint16_t x, uint16_t y, ActorAlignedRegs* out);

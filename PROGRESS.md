@@ -5,6 +5,95 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The spiders in readable C (2026-10-03)
+
+The red spiders of level 17, `src/port/spider.c`. `$83:B3E9`, `$83:B2D0`,
+`$83:B50D` and five more rows, 1.2 million instructions and over a third of
+that level's residue. Live, level 17 goes from 96.5% to **97.8%**. With the
+martians below, the residue over the twelve movies goes from 29.9 to **27.3**
+million instructions of work.
+
+* **It wanders in a straight line** until the ground or somebody stops it,
+  turns a quarter clockwise, and then follows the wall it met, as a slime
+  does.
+* **It looks every pass.** Anyone under `$B4` away and it takes aim. Nobody
+  within `$F0`, and neither player either, and it leaves.
+* **Taking aim** it faces its target, or one turn of eight wide of them, and
+  runs for up to seven passes before it aims again. Both are one draw.
+* **Running, it steps once or twice a pass**, by a draw each pass, three
+  pixels an axis, and slides along what it runs into.
+
+One entry, `spider_frame`, a whole pass of the thread's loop. Nothing in a
+pass sleeps, so there is no pass it has to refuse: 0 declined.
+
+* **Checked.** The corpus verifies at 22,936,862 calls across 50 movies with 0
+  diverged, and 579 of 739 coverage sites: all nine new ones are taken.
+  `verify --level` over all 56 records, 37,005,129 calls, 0 diverged, with
+  spiders on records 17 and 30.
+* **Prices.** Every pass is exact: 2,555 on the corpus, 806 on the sweep, and
+  7,885 on 12,000 frames of `level17`.
+* **Lockstep** over the corpus: 46 of 50 never part, and no row of the table
+  moved from the martians' round.
+* **What it is** was settled by a picture: a copy of the ROM with the
+  creature's sixteen pictures made one, and the two screenshots compared.
+* **Next.** `$82:AAB7` on four levels, the martian's shot at `$81:F380`, and
+  the level's opening, `$82:8138` and `$82:84CE`. Then `dma_to_cgram` and
+  `dma_to_vram`, which write the hardware.
+
+### The martians in readable C (2026-10-03)
+
+The martians of level 21, `src/port/martian.c`. They were the largest
+cluster left anywhere: `$81:9C99`, `$81:9981`, `$81:9D2A` and three more
+rows, a quarter of that level's residue. Live, level 21 goes from 92.1% to
+**94.0%**. The residue over the twelve movies goes from 29.9 to **28.6**
+million instructions of work.
+
+* **It shoots along rows and columns.** Every pass it asks whether anything
+  is within a tile of its row or its column, and fires that way unless it
+  fired in the last sixty passes.
+* **Walking, it keeps its distance.** Once in sixty passes it looks for
+  whoever is nearest. Under `$3C` away it backs off. Under `$50` it lines up
+  with them, along whichever axis it is nearer on. Under `$E0` it comes
+  closer. Beyond that it stands, and leaves if neither player is near.
+* **Arriving, it stays above them.** One that comes in over the top keeps
+  between `$60` and `$78` above its target, going across, and climbs or drops
+  on a slant at two steps a pass to get there. It fires downwards at random.
+  When a player is above it, it becomes a walker.
+* **A step** is two pixels on each axis, three passes in four, each axis
+  tested by itself against the ground, the level's edges and whoever is
+  there.
+
+Two entries, `martian_frame` and `martian_arrival_frame`, one for each of the
+thread's two loops. Both are whole frames and both run the same C.
+
+**A direction nobody chose.** The thread's setup does not clear the
+direction. A martian whose first look finds everything too far away returns
+without choosing one, and for sixty passes steps by whatever the tables hold
+far past their ends. The first guard refused those passes, 46% of one level
+record's. The port now reads the same words from the cartridge, and they
+verify like any other.
+
+**`actor_aligned` is priced by its path.** It was charged its mean, 4,576
+cycles, for a call that takes between 758 and 7,386. It now counts how many
+of the 32 slots it dismissed at each test. It also says what overflow it
+leaves, which a martian's frame hands on to its thread on the pass in four
+that it rests.
+
+* **Checked.** The corpus verifies at 22,934,307 calls across 50 movies with 0
+  diverged, and 570 of 730 coverage sites: all thirteen new ones are taken.
+  `verify --level` over all 56 records reaches the martians on three, 18,287
+  passes with 0 diverged.
+* **Prices.** Every pass of both entries and every call of `actor_aligned` is
+  exact, on the corpus and on the sweep.
+* **Lockstep** over the corpus: 46 of 50 movies never part, the same four of
+  level 25 as before, at the same passes. On the six movies of level 21 the
+  mean drift fell from between 3,676 and 10,737 cycles to between 612 and
+  2,167.
+* **Not here:** the shot. It sleeps twelve ticks inside the call that fires
+  it, so the pass that fires and the pass that wakes from it are the ROM's,
+  about one in a hundred. The death is the ROM's too.
+* **Next** were the spiders of level 17, above.
+
 ### The slimes in readable C (2026-10-03)
 
 The red blobs of levels 9, 29 and 41, `src/port/slime.c`. Their code was the

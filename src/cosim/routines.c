@@ -36,7 +36,9 @@
 #include "port/bodies.h"
 #include "port/sched.h"
 #include "port/score.h"
+#include "port/martian.h"
 #include "port/slime.h"
+#include "port/spider.h"
 #include "port/sprite_cache.h"
 #include "port/squirt.h"
 #include "port/step.h"
@@ -4325,11 +4327,64 @@ static void shim_camera_follow(Wram* w, const Rom* rom, const CosimRegs* in,
 // Y is the argument, untouched.
 //
 // No guard: it reads 32 fixed records out of WRAM and cannot fail.
+// `$80:B379` by its path. Each slot is dismissed at one of three tests or is
+// a candidate, by one of three ids, tested in the order `by_id` counts them.
+// A candidate is measured on X and then, if that is not it, on Y. Every slot
+// that did not match goes round by a taken `BCS`, but the 32nd. It runs on
+// page zero, which it installs itself.
+static const CosimRun ALIGNED_RUN_HEAD = {132, 12, 2};   // $B379-$B384
+static const CosimRun ALIGNED_RUN_DRAWN = {52, 5, 0};    // $B385 LDA : BPL
+static const CosimRun ALIGNED_RUN_ACTIVE = {24, 3, 0};   // $B38A LSR : BCC
+static const CosimRun ALIGNED_RUN_ID = {70, 8, 0};       // $B38D LDA : CMP : BEQ
+static const CosimRun ALIGNED_RUN_ID_NEXT = {30, 5, 0};  // $B395, $B39A
+static const CosimRun ALIGNED_RUN_WINDOW = {140, 15, 1}; // $B39F-$B3AD, $B3C0-$B3CE
+static const CosimRun ALIGNED_RUN_SIGN = {92, 8, 1};     // $B3AE LDA SEC SBC BMI
+static const CosimRun ALIGNED_RUN_ANSWER = {94, 5, 0};   // LDA : PLD : RTL
+static const CosimRun ALIGNED_RUN_NEXT = {84, 11, 0};    // $B3E1-$B3EB
+static const CosimRun ALIGNED_RUN_TAKEN = {6, 0, 0};
+
+static void run_add(CosimRun* to, const CosimRun* r, int times) {
+  to->cycles += r->cycles * times;
+  to->bytes += r->bytes * times;
+  to->dp += r->dp * times;
+}
+
+static int aligned_cycles(const ActorAlignedRegs* r, bool fast) {
+  const int candidates = r->by_id[0] + r->by_id[1] + r->by_id[2];
+  const int active = candidates + r->wrong_id;
+  const int drawn = active + r->inactive;
+  const int slots = drawn + r->undrawn;
+  const bool matched = r->a != ALIGNED_NONE;
+  const bool on_x = r->a == ALIGNED_UP || r->a == ALIGNED_DOWN;
+  const bool negative = r->a == ALIGNED_UP || r->a == ALIGNED_LEFT;
+  const int went_round = slots - (matched ? 1 : 0);
+  const int measured_y = candidates - (matched && on_x ? 1 : 0);
+
+  CosimRun run = ALIGNED_RUN_HEAD;
+  run_add(&run, &ALIGNED_RUN_DRAWN, slots);
+  run_add(&run, &ALIGNED_RUN_ACTIVE, drawn);
+  run_add(&run, &ALIGNED_RUN_ID, active);
+  run_add(&run, &ALIGNED_RUN_ID_NEXT, active - r->by_id[0]);
+  run_add(&run, &ALIGNED_RUN_ID_NEXT, active - r->by_id[0] - r->by_id[1]);
+  run_add(&run, &ALIGNED_RUN_WINDOW, candidates + measured_y);
+  run_add(&run, &ALIGNED_RUN_NEXT, went_round);
+  // The one exit of five that falls out of the loop is the same three
+  // instructions as the four that leave it.
+  run_add(&run, &ALIGNED_RUN_ANSWER, 1);
+  if (matched) run_add(&run, &ALIGNED_RUN_SIGN, 1);
+  run_add(&run, &ALIGNED_RUN_TAKEN,
+          r->undrawn + r->inactive + r->by_id[0] + r->by_id[1] + r->wrong_id +
+              measured_y + r->off + (matched ? went_round : went_round - 1) +
+              (matched && negative ? 1 : 0));
+  return cosim_run_cycles(&run, fast);
+}
+
 static void shim_actor_aligned(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
   (void)rom;
   ActorAlignedRegs r;
   actor_aligned(w, in->x, in->y, &r);
+  cosim_cost(aligned_cycles(&r, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = in->y;
@@ -7131,6 +7186,651 @@ static void shim_slime_glob_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t SLIME_GLOB_FRAME_EXITS[] = {SLIME_GLOB_YIELD_PC,
                                                  SLIME_GLOB_LANDED_PC};
+
+// ---------------------------------------------------------------------------
+// The martians -- see `port/martian.h`
+// ---------------------------------------------------------------------------
+//
+// Two entries, one for each loop, and each a whole pass of it. Priced the
+// slimes' way: each run is from `tools/cycles816.py --db 81`, branches not
+// taken; a taken branch and every `BRA` adds 6. The picture's is with its
+// list in the cartridge, where `$14` points.
+static const CosimRun MARTIAN_RUN_ENTER = {142, 8, 1};        // $99F6-$99FD
+static const CosimRun MARTIAN_RUN_FATE = {40, 4, 1};          // $99FE LDA $26 : BEQ
+static const CosimRun MARTIAN_RUN_TICKS = {18, 3, 0};         // $99EF LDA #$0001
+static const CosimRun MARTIAN_RUN_RTS = {40, 1, 0};
+static const CosimRun MARTIAN_RUN_NEGATE = {30, 4, 0};        // EOR : INC
+static const CosimRun MARTIAN_RUN_TAKEN = {6, 0, 0};
+// The shot, while it cools.
+static const CosimRun MARTIAN_RUN_SHOOT_JSR = {40, 3, 0};     // $9D3B JSR $9D1F
+static const CosimRun MARTIAN_RUN_SHOOT_VIA = {154, 10, 1};   // $9D1F-$9D28
+static const CosimRun MARTIAN_RUN_SHOOT_HEAD = {226, 19, 7};  // $9981-$9993
+static const CosimRun MARTIAN_RUN_SHOOT_WAIT = {90, 3, 1};    // $99CA DEC $24 : RTS
+// Walking.
+static const CosimRun MARTIAN_RUN_WALK_ALIGN = {134, 11, 2};  // $9D30-$9D3A
+static const CosimRun MARTIAN_RUN_WALK_TIMER = {62, 4, 1};    // $9D3E DEC $2A : BPL
+static const CosimRun MARTIAN_RUN_WALK_LOOK = {394, 34, 8};   // $9D42-$9D63
+static const CosimRun MARTIAN_RUN_BAND = {30, 5, 0};          // CMP : BCC
+static const CosimRun MARTIAN_RUN_WALK_GONE = {152, 14, 2};   // $9D6E-$9D7B
+static const CosimRun MARTIAN_RUN_LEAVE = {50, 2, 1};         // DEC $26
+static const CosimRun MARTIAN_RUN_WALK_FAR = {176, 14, 2};    // $9D7F-$9D8C
+static const CosimRun MARTIAN_RUN_WALK_CLOSE = {242, 23, 2};  // $9D8D-$9DA1
+static const CosimRun MARTIAN_RUN_WALK_MID = {40, 3, 0};      // $9DA2 JSR $9BC0
+static const CosimRun MARTIAN_RUN_WALK_FACE = {40, 3, 1};     // $9DA5 ASL : STA $28
+static const CosimRun MARTIAN_RUN_MOVE = {148, 9, 1};         // $9DA8-$9DB0, $9E40-$9E48
+// Lining up.
+static const CosimRun MARTIAN_RUN_LINE_X = {40, 4, 1};        // $9BC0 LDA $1C : BPL
+static const CosimRun MARTIAN_RUN_LINE_Y = {68, 6, 2};        // $9BC8-$9BCD
+static const CosimRun MARTIAN_RUN_LINE_CMP = {40, 4, 1};      // $9BD2 CMP $20 : BCC
+static const CosimRun MARTIAN_RUN_LINE_PICK = {40, 4, 1};     // LDA : BEQ
+static const CosimRun MARTIAN_RUN_LINE_SIGN = {12, 2, 0};     // BPL
+static const CosimRun MARTIAN_RUN_LINE_ANSWER = {58, 4, 0};   // LDA # : RTS
+// The step. Both axes are the same instructions.
+static const CosimRun MARTIAN_RUN_STEP_HEAD = {88, 10, 0};    // $9BF3-$9BFC
+static const CosimRun MARTIAN_RUN_STEP_TRY = {208, 20, 4};    // $9BFD-$9C0C
+static const CosimRun MARTIAN_RUN_STEP_GROUND = {122, 10, 2}; // LDX LDY JSL BCS
+static const CosimRun MARTIAN_RUN_STEP_EDGE = {122, 10, 2};
+static const CosimRun MARTIAN_RUN_STEP_ACTOR = {150, 12, 3};  // LDA LDX LDY JSL BCS
+static const CosimRun MARTIAN_RUN_STEP_TAKE = {56, 4, 2};     // LDA : STA
+static const CosimRun MARTIAN_RUN_STEP_PUBLISH = {204, 13, 3};// $9C55-$9C61
+// The pictures.
+static const CosimRun MARTIAN_RUN_PICTURE = {178, 12, 2};     // $9C8F-$9C98
+static const CosimRun MARTIAN_RUN_SHOW_PICK = {158, 17, 2};   // $9C99-$9CA7
+static const CosimRun MARTIAN_RUN_SHOW_CAP = {18, 3, 0};      // $9CA8 LDA #$0008
+static const CosimRun MARTIAN_RUN_SHOW_SET = {40, 3, 0};      // $9CAB JSR $9C8F
+static const CosimRun MARTIAN_RUN_SHOW_FLAGS = {126, 12, 2};  // $9CAE-$9CB9
+static const CosimRun MARTIAN_RUN_SHOW_PLAIN = {30, 5, 0};    // $9CBA AND : BRA
+static const CosimRun MARTIAN_RUN_SHOW_MIRROR = {18, 3, 0};   // $9CBF ORA
+static const CosimRun MARTIAN_RUN_SHOW_STORE = {102, 7, 1};   // $9CC2-$9CC8
+static const CosimRun MARTIAN_RUN_SHOW_NEXT = {132, 13, 3};   // $9CC9-$9CD5
+static const CosimRun MARTIAN_RUN_CYCLE_TIMER = {62, 4, 1};   // $9E8D DEC $2E : BPL
+static const CosimRun MARTIAN_RUN_CYCLE_NEXT = {232, 23, 3};  // $9E91-$9EA5
+// Arriving.
+static const CosimRun MARTIAN_RUN_ARRIVE_HEAD = {152, 14, 2};    // $9DBB-$9DC8
+static const CosimRun MARTIAN_RUN_ARRIVE_ABOVE = {52, 5, 0};     // $9DCB JSR : BCS
+static const CosimRun MARTIAN_RUN_ABOVE_PLAYER = {46, 5, 0};     // LDY $00D2 : BEQ
+static const CosimRun MARTIAN_RUN_ABOVE_COMPARE = {80, 7, 1};    // LDA CMP BCC
+static const CosimRun MARTIAN_RUN_ABOVE_ANSWER = {52, 2, 0};     // CLC : RTS
+static const CosimRun MARTIAN_RUN_ARRIVE_DESCEND = {74, 7, 2};   // $9E49-$9E4F
+static const CosimRun MARTIAN_RUN_BECOME_WALKER = {86, 6, 1};    // $9D2A-$9D2F
+static const CosimRun MARTIAN_RUN_ARRIVE_ALIGN = {134, 11, 2};   // $9DD0-$9DDA
+static const CosimRun MARTIAN_RUN_ARRIVE_SHOOT = {52, 5, 0};     // $9DDB JSR : BRA
+static const CosimRun MARTIAN_RUN_ARRIVE_DRAW = {84, 9, 0};      // $9DE0-$9DE8
+static const CosimRun MARTIAN_RUN_ARRIVE_FIRE = {58, 6, 0};      // $9DE9 LDA : JSR
+static const CosimRun MARTIAN_RUN_ARRIVE_TIMER = {62, 4, 1};     // $9DEF DEC $34 : BPL
+static const CosimRun MARTIAN_RUN_ARRIVE_LOOK = {270, 24, 6};    // $9DF3-$9E0A
+static const CosimRun MARTIAN_RUN_ARRIVE_FAR = {164, 12, 2};     // $9E0B-$9E16
+static const CosimRun MARTIAN_RUN_ARRIVE_CLOSE = {242, 23, 2};   // $9E50-$9E64
+static const CosimRun MARTIAN_RUN_ARRIVE_SIDE = {48, 8, 0};      // $9E17-$9E1E
+static const CosimRun MARTIAN_RUN_ARRIVE_SIDE_LEFT = {18, 3, 0}; // LDY #
+static const CosimRun MARTIAN_RUN_ARRIVE_SIDE_SET = {28, 2, 1};  // $9E22 STY $36
+static const CosimRun MARTIAN_RUN_ARRIVE_HEIGHT = {176, 14, 4};  // $9E24-$9E31
+static const CosimRun MARTIAN_RUN_ARRIVE_SLANT = {76, 10, 1};    // $9E65-$9E6E
+static const CosimRun MARTIAN_RUN_ARRIVE_TWICE = {80, 7, 1};     // $9E72-$9E78
+
+// The ROM's own instructions in `own`, and what its calls cost in `calls`.
+typedef struct {
+  CosimRun own;
+  int calls;
+  const MartianLog* log;
+  const CosimRegs* in;
+} MartianBill;
+
+static void martian_add(MartianBill* b, const CosimRun* r) {
+  run_add(&b->own, r, 1);
+}
+
+static void martian_taken(MartianBill* b) {
+  martian_add(b, &MARTIAN_RUN_TAKEN);
+}
+
+// A shot that only counted one off. `through_pointer` is by `$81:9D1F`,
+// which calls whatever `$22` names and has an `RTS` of its own.
+static void martian_shoot_bill(MartianBill* b, bool through_pointer) {
+  if (through_pointer) martian_add(b, &MARTIAN_RUN_SHOOT_VIA);
+  martian_add(b, &MARTIAN_RUN_SHOOT_HEAD);
+  martian_taken(b);
+  martian_add(b, &MARTIAN_RUN_SHOOT_WAIT);
+  if (through_pointer) martian_add(b, &MARTIAN_RUN_RTS);
+}
+
+static void martian_bearing_bill(MartianBill* b) {
+  b->calls += actor_snap_cycles(&b->log->snap, b->in->fastrom) +
+              actor_bearing_cycles(&b->log->bearing, b->in->fastrom);
+}
+
+// One axis of a step: each test that let it by is followed by the next.
+static void martian_axis_bill(MartianBill* b, const MartianProbe* p) {
+  martian_add(b, &MARTIAN_RUN_STEP_GROUND);
+  b->calls += terrain_enemy_cycles(&p->ground, b->in->fastrom);
+  if (p->ground.blocked) {
+    martian_taken(b);
+    return;
+  }
+  martian_add(b, &MARTIAN_RUN_STEP_EDGE);
+  b->calls += bounds_cycles(p->edge, b->in->fastrom);
+  if (p->outside) {
+    martian_taken(b);
+    return;
+  }
+  martian_add(b, &MARTIAN_RUN_STEP_ACTOR);
+  if (p->someone)
+    martian_taken(b);
+  else
+    martian_add(b, &MARTIAN_RUN_STEP_TAKE);
+}
+
+static void martian_step_bill(MartianBill* b, const MartianStep* s) {
+  martian_add(b, &MARTIAN_RUN_STEP_HEAD);
+  if (s->rested) {
+    martian_taken(b);
+    martian_add(b, &MARTIAN_RUN_RTS);
+    return;
+  }
+  martian_add(b, &MARTIAN_RUN_STEP_TRY);
+  martian_axis_bill(b, &s->axis[0]);
+  martian_axis_bill(b, &s->axis[1]);
+  martian_add(b, &MARTIAN_RUN_STEP_PUBLISH);
+}
+
+static void martian_line_up_bill(MartianBill* b) {
+  const MartianLog* log = b->log;
+  martian_add(b, &MARTIAN_RUN_LINE_X);
+  martian_add(b, log->gap_x_negative ? &MARTIAN_RUN_NEGATE : &MARTIAN_RUN_TAKEN);
+  martian_add(b, &MARTIAN_RUN_LINE_Y);
+  martian_add(b, log->gap_y_negative ? &MARTIAN_RUN_NEGATE : &MARTIAN_RUN_TAKEN);
+  martian_add(b, &MARTIAN_RUN_LINE_CMP);
+  if (log->along_y) martian_taken(b);
+  martian_add(b, &MARTIAN_RUN_LINE_PICK);
+  if (log->lesser_sign == 0) {
+    martian_taken(b);
+    martian_add(b, &MARTIAN_RUN_RTS);
+    return;
+  }
+  martian_add(b, &MARTIAN_RUN_LINE_SIGN);
+  if (log->lesser_sign > 0) martian_taken(b);
+  martian_add(b, &MARTIAN_RUN_LINE_ANSWER);
+}
+
+static void martian_show_bill(MartianBill* b) {
+  const MartianLog* log = b->log;
+  martian_add(b, &MARTIAN_RUN_SHOW_PICK);
+  martian_add(b, log->capped ? &MARTIAN_RUN_SHOW_CAP : &MARTIAN_RUN_TAKEN);
+  martian_add(b, &MARTIAN_RUN_SHOW_SET);
+  martian_add(b, &MARTIAN_RUN_PICTURE);
+  martian_add(b, &MARTIAN_RUN_SHOW_FLAGS);
+  martian_add(b, log->mirrored ? &MARTIAN_RUN_SHOW_MIRROR
+                               : &MARTIAN_RUN_SHOW_PLAIN);
+  martian_taken(b);  // the `BCS` to the mirror, or the `BRA` round it
+  martian_add(b, &MARTIAN_RUN_SHOW_STORE);
+  martian_add(b, log->new_picture ? &MARTIAN_RUN_SHOW_NEXT : &MARTIAN_RUN_TAKEN);
+  martian_add(b, &MARTIAN_RUN_RTS);
+}
+
+static void martian_walk_bill(MartianBill* b) {
+  const MartianLog* log = b->log;
+  const bool fast = b->in->fastrom;
+  martian_add(b, &MARTIAN_RUN_WALK_ALIGN);
+  b->calls += aligned_cycles(&log->aligned, fast);
+  if (log->held_fire) {
+    martian_add(b, &MARTIAN_RUN_SHOOT_JSR);
+    martian_shoot_bill(b, true);
+  } else {
+    martian_taken(b);
+  }
+
+  martian_add(b, &MARTIAN_RUN_WALK_TIMER);
+  if (log->look == MARTIAN_LOOK_NONE) {
+    martian_taken(b);
+  } else {
+    martian_add(b, &MARTIAN_RUN_WALK_LOOK);
+    b->calls += nearest_cycles(&log->nearest, fast);
+    switch (log->look) {
+      case MARTIAN_LOOK_BACK_OFF:
+        martian_taken(b);
+        martian_add(b, &MARTIAN_RUN_WALK_CLOSE);
+        martian_taken(b);
+        martian_bearing_bill(b);
+        break;
+      case MARTIAN_LOOK_LINE_UP:
+        martian_add(b, &MARTIAN_RUN_BAND);
+        martian_taken(b);
+        martian_add(b, &MARTIAN_RUN_WALK_MID);
+        martian_line_up_bill(b);
+        break;
+      case MARTIAN_LOOK_APPROACH:
+        martian_add(b, &MARTIAN_RUN_BAND);
+        martian_add(b, &MARTIAN_RUN_BAND);
+        martian_taken(b);
+        martian_add(b, &MARTIAN_RUN_WALK_FAR);
+        martian_taken(b);
+        martian_bearing_bill(b);
+        break;
+      default:
+        martian_add(b, &MARTIAN_RUN_BAND);
+        martian_add(b, &MARTIAN_RUN_BAND);
+        martian_add(b, &MARTIAN_RUN_WALK_GONE);
+        b->calls += player_bearing_cycles(&log->players, fast);
+        martian_add(b, log->look == MARTIAN_LOOK_LEAVE ? &MARTIAN_RUN_LEAVE
+                                                       : &MARTIAN_RUN_TAKEN);
+        martian_add(b, &MARTIAN_RUN_RTS);
+        return;
+    }
+    martian_add(b, &MARTIAN_RUN_WALK_FACE);
+  }
+
+  martian_add(b, &MARTIAN_RUN_MOVE);
+  martian_step_bill(b, &log->step[0]);
+  martian_show_bill(b);
+}
+
+// `$81:9EAF`: each player there is, compared, until one is above.
+static void martian_above_bill(MartianBill* b) {
+  const MartianLog* log = b->log;
+  for (int i = 0; i < 2; i++) {
+    martian_add(b, &MARTIAN_RUN_ABOVE_PLAYER);
+    if (!log->player[i]) {
+      martian_taken(b);
+      continue;
+    }
+    martian_add(b, &MARTIAN_RUN_ABOVE_COMPARE);
+    if (log->player_above[i]) {
+      martian_taken(b);
+      break;
+    }
+  }
+  martian_add(b, &MARTIAN_RUN_ABOVE_ANSWER);
+}
+
+static void martian_arrive_bill(MartianBill* b) {
+  const MartianLog* log = b->log;
+  const bool fast = b->in->fastrom;
+  martian_add(b, &MARTIAN_RUN_ARRIVE_HEAD);
+  b->calls += player_bearing_cycles(&log->players, fast);
+  martian_add(b, log->nobody ? &MARTIAN_RUN_LEAVE : &MARTIAN_RUN_TAKEN);
+  martian_add(b, &MARTIAN_RUN_ARRIVE_ABOVE);
+  martian_above_bill(b);
+  if (log->came_down) {
+    martian_taken(b);
+    martian_add(b, &MARTIAN_RUN_ARRIVE_DESCEND);
+    martian_add(b, &MARTIAN_RUN_BECOME_WALKER);
+    return;
+  }
+
+  martian_add(b, &MARTIAN_RUN_ARRIVE_ALIGN);
+  b->calls += aligned_cycles(&log->aligned, fast);
+  if (log->held_fire) {
+    martian_add(b, &MARTIAN_RUN_ARRIVE_SHOOT);
+    martian_taken(b);
+    martian_shoot_bill(b, true);
+  } else {
+    martian_taken(b);
+    martian_add(b, &MARTIAN_RUN_ARRIVE_DRAW);
+    b->calls += rng_cycles(log->drew_overflow, fast);
+    if (log->drew_fire) {
+      martian_add(b, &MARTIAN_RUN_ARRIVE_FIRE);
+      martian_shoot_bill(b, false);
+    } else {
+      martian_taken(b);
+    }
+  }
+
+  martian_add(b, &MARTIAN_RUN_ARRIVE_TIMER);
+  if (log->picked_side) {
+    martian_add(b, &MARTIAN_RUN_ARRIVE_LOOK);
+    b->calls += nearest_cycles(&log->nearest, fast);
+    if (log->target_close) {
+      martian_taken(b);
+      martian_add(b, &MARTIAN_RUN_ARRIVE_CLOSE);
+      martian_taken(b);
+    } else {
+      martian_add(b, &MARTIAN_RUN_ARRIVE_FAR);
+    }
+    martian_bearing_bill(b);
+    martian_add(b, &MARTIAN_RUN_ARRIVE_SIDE);
+    martian_add(b, log->side_left ? &MARTIAN_RUN_ARRIVE_SIDE_LEFT
+                                  : &MARTIAN_RUN_TAKEN);
+    martian_add(b, &MARTIAN_RUN_ARRIVE_SIDE_SET);
+  } else {
+    martian_taken(b);
+  }
+
+  martian_add(b, &MARTIAN_RUN_ARRIVE_HEIGHT);
+  martian_add(b, log->height_negative ? &MARTIAN_RUN_NEGATE : &MARTIAN_RUN_TAKEN);
+  martian_add(b, &MARTIAN_RUN_BAND);
+  if (log->height != MARTIAN_HEIGHT_CLIMB) martian_add(b, &MARTIAN_RUN_BAND);
+  if (log->height != MARTIAN_HEIGHT_KEEP) {
+    martian_taken(b);
+    martian_add(b, &MARTIAN_RUN_ARRIVE_SLANT);
+    martian_add(b, log->slant_left ? &MARTIAN_RUN_ARRIVE_SIDE_LEFT
+                                   : &MARTIAN_RUN_TAKEN);
+    martian_add(b, &MARTIAN_RUN_ARRIVE_TWICE);
+    martian_taken(b);
+  }
+  for (int i = 0; i < log->steps; i++) {
+    martian_add(b, &MARTIAN_RUN_MOVE);
+    martian_step_bill(b, &log->step[i]);
+    martian_add(b, &MARTIAN_RUN_CYCLE_TIMER);
+    if (log->step[i].new_picture) {
+      martian_add(b, &MARTIAN_RUN_CYCLE_NEXT);
+      martian_add(b, &MARTIAN_RUN_PICTURE);
+    } else {
+      martian_taken(b);
+    }
+    martian_add(b, &MARTIAN_RUN_RTS);
+  }
+}
+
+// The tests put their scratch on page zero, and the tables and the list of
+// pictures are read through the data bank. So are the record and whoever it
+// found, which have to be in the WRAM bank `$81` mirrors.
+//
+// A walker reads its target only on a pass that looks for one, so what it has
+// beforehand is no matter.
+static bool martian_frame_ok(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != MARTIAN_BANK) return false;
+  const bool walking =
+      wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_STATE)) == MARTIAN_STATE_WALK;
+  return wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_RECORD)) < 0x1f00 &&
+         (walking ||
+          wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_TARGET)) < 0x1f00) &&
+         wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_PICTURES)) >= 0x8000 &&
+         martian_frame_supported(w, in->d);
+}
+
+// Two things only running the pass can find. It fired, which is the ROM's.
+// Or it looked, and what `actor_nearest` gave it is no record: with nothing
+// to find, that hands back whatever its last search left.
+static bool guard_martian_frame(Wram* scratch, const Rom* rom,
+                                const CosimRegs* in) {
+  MartianLog log = {0};
+  martian_frame(scratch, rom, in->d, &log);
+  if (log.declined) return false;
+  const bool looked = log.look != MARTIAN_LOOK_NONE || log.picked_side;
+  return !looked ||
+         wram_r16(scratch, (uint16_t)(in->d + MARTIAN_DP_TARGET)) < 0x1f00;
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or past the
+// test of its fate with that in A.
+static void martian_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out, uint32_t yield_pc,
+                              uint32_t fate_pc) {
+  MartianLog log = {0};
+  const bool stays = martian_frame(w, rom, in->d, &log);
+
+  MartianBill b = {{0, 0, 0}, 0, &log, in};
+  martian_add(&b, &MARTIAN_RUN_ENTER);
+  if (log.state == MARTIAN_STATE_WALK)
+    martian_walk_bill(&b);
+  else
+    martian_arrive_bill(&b);
+  martian_add(&b, &MARTIAN_RUN_FATE);
+  if (stays) {
+    martian_taken(&b);
+    martian_add(&b, &MARTIAN_RUN_TICKS);
+  }
+  b.calls += at_point_cycles(&log.at_point, in->fastrom);
+  cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
+                                           (in->d & 0x00ffu) != 0));
+
+  out->pc = stays ? yield_pc : fate_pc;
+  out->a = stays ? MARTIAN_YIELD_TICKS
+                 : wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_FATE));
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V));
+}
+
+static void shim_martian_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  martian_frame_run(w, rom, in, out, MARTIAN_WALKER_YIELD_PC,
+                    MARTIAN_WALKER_FATE_PC);
+}
+
+static void shim_martian_arrival_frame(Wram* w, const Rom* rom,
+                                       const CosimRegs* in, CosimRegs* out) {
+  martian_frame_run(w, rom, in, out, MARTIAN_ARRIVAL_YIELD_PC,
+                    MARTIAN_ARRIVAL_FATE_PC);
+}
+
+static const uint32_t MARTIAN_FRAME_EXITS[] = {MARTIAN_WALKER_YIELD_PC,
+                                               MARTIAN_WALKER_FATE_PC};
+static const uint32_t MARTIAN_ARRIVAL_FRAME_EXITS[] = {MARTIAN_ARRIVAL_YIELD_PC,
+                                                       MARTIAN_ARRIVAL_FATE_PC};
+
+// ---------------------------------------------------------------------------
+// The spiders -- see `port/spider.h`
+// ---------------------------------------------------------------------------
+//
+// One entry, a whole pass of the loop, priced the slimes' way. Each run is
+// from `tools/cycles816.py --db 83`, branches not taken; a taken branch, a
+// `BRA` and nothing else adds 6.
+static const CosimRun SPIDER_RUN_ENTER = {142, 8, 1};         // $B299-$B2A0
+static const CosimRun SPIDER_RUN_SHOW_CALL = {40, 3, 0};      // $B2A1 JSR $B2D0
+static const CosimRun SPIDER_RUN_FATE = {40, 4, 1};           // $B2A4 LDA $20 : BEQ
+static const CosimRun SPIDER_RUN_SLEEP = {46, 5, 1};          // $B290 STZ $24 : LDA #$0002
+static const CosimRun SPIDER_RUN_RTS = {40, 1, 0};
+static const CosimRun SPIDER_RUN_JMP = {18, 3, 0};
+static const CosimRun SPIDER_RUN_TAKEN = {6, 0, 0};
+static const CosimRun SPIDER_RUN_SHOW_TIMER = {62, 4, 1};     // $B2D0 DEC $1E : BPL
+static const CosimRun SPIDER_RUN_SHOW_NEXT = {370, 36, 5};    // $B2D4-$B2F5
+static const CosimRun SPIDER_RUN_SHOW_MIRROR = {30, 5, 0};    // $B2F6 ORA : BRA
+static const CosimRun SPIDER_RUN_SHOW_PLAIN = {18, 3, 0};     // $B2FB AND
+static const CosimRun SPIDER_RUN_SHOW_STORE = {40, 3, 0};     // $B2FE STA $0000,Y
+static const CosimRun SPIDER_RUN_SHOW_PUBLISH = {204, 13, 3}; // $B301-$B30D
+static const CosimRun SPIDER_RUN_CLEAR_GROUND = {122, 10, 2}; // LDX LDY JSL BCS
+static const CosimRun SPIDER_RUN_CLEAR_ACTOR = {150, 12, 3};  // LDA LDX LDY JSL BCS
+static const CosimRun SPIDER_RUN_BACK = {436, 42, 6};         // $B3BE-$B3E3
+static const CosimRun SPIDER_RUN_TAKE = {56, 4, 2};           // LDA : STA
+static const CosimRun SPIDER_RUN_LOOK = {140, 13, 2};         // $B41E-$B42A
+static const CosimRun SPIDER_RUN_LOOK_BAND = {30, 5, 0};      // $B42B CMP : BCC
+static const CosimRun SPIDER_RUN_LOOK_GONE = {152, 14, 2};    // $B430-$B43D
+static const CosimRun SPIDER_RUN_LEAVE = {50, 2, 1};          // $B43E DEC $20
+static const CosimRun SPIDER_RUN_TURN = {170, 18, 2};         // $B445-$B456
+static const CosimRun SPIDER_RUN_SET_STATE = {86, 6, 1};      // LDA # : STA $1A : RTS
+static const CosimRun SPIDER_RUN_JSR = {40, 3, 0};            // $B46B JSR $B41E
+static const CosimRun SPIDER_RUN_TRY = {312, 29, 5};          // $B46E-$B486, $B49F-$B4B7
+static const CosimRun SPIDER_RUN_MOVE = {152, 9, 4};          // $B487-$B48F, $B4B8-$B4C0
+static const CosimRun SPIDER_RUN_AIM = {214, 20, 4};          // $B4C4-$B4D7
+static const CosimRun SPIDER_RUN_AIM_PICK = {418, 34, 6};     // $B4DB-$B4FC
+static const CosimRun SPIDER_RUN_RUN_HEAD = {62, 4, 1};       // $B4FD DEC $18 : BMI
+static const CosimRun SPIDER_RUN_RUN_DRAW = {84, 9, 0};       // $B501-$B509
+static const CosimRun SPIDER_RUN_RUN_STEP = {340, 28, 5};     // $B50D-$B524
+
+// The ROM's own instructions in `own`, and what its calls cost in `calls`.
+typedef struct {
+  CosimRun own;
+  int calls;
+  const SpiderLog* log;
+  const CosimRegs* in;
+} SpiderBill;
+
+static void spider_add(SpiderBill* b, const CosimRun* r) {
+  run_add(&b->own, r, 1);
+}
+
+static void spider_taken(SpiderBill* b) { spider_add(b, &SPIDER_RUN_TAKEN); }
+
+// `$83:B3A6`: is the way clear? True when it was not. Both of its `BCS`s go
+// to an `RTS`, and the second to the one on the next line.
+static bool spider_clear_bill(SpiderBill* b, const SpiderProbe* p) {
+  spider_add(b, &SPIDER_RUN_CLEAR_GROUND);
+  b->calls += terrain_enemy_cycles(&p->ground, b->in->fastrom);
+  if (p->ground.blocked) {
+    spider_taken(b);
+  } else {
+    spider_add(b, &SPIDER_RUN_CLEAR_ACTOR);
+    if (p->someone) spider_taken(b);
+  }
+  spider_add(b, &SPIDER_RUN_RTS);
+  return p->ground.blocked || p->someone;
+}
+
+// One axis of a running step: taken unless either test says no.
+static void spider_axis_bill(SpiderBill* b, const SpiderProbe* p) {
+  spider_add(b, &SPIDER_RUN_CLEAR_GROUND);
+  b->calls += terrain_enemy_cycles(&p->ground, b->in->fastrom);
+  if (p->ground.blocked) {
+    spider_taken(b);
+    return;
+  }
+  spider_add(b, &SPIDER_RUN_CLEAR_ACTOR);
+  if (p->someone)
+    spider_taken(b);
+  else
+    spider_add(b, &SPIDER_RUN_TAKE);
+}
+
+static void spider_aim_bill(SpiderBill* b) {
+  const SpiderLog* log = b->log;
+  spider_add(b, &SPIDER_RUN_AIM);
+  b->calls += nearest_cycles(&log->aim_nearest, b->in->fastrom);
+  if (log->gave_up) {
+    spider_add(b, &SPIDER_RUN_JMP);
+    spider_add(b, &SPIDER_RUN_SET_STATE);
+    return;
+  }
+  spider_taken(b);
+  spider_add(b, &SPIDER_RUN_AIM_PICK);
+  b->calls += actor_bearing_cycles(&log->bearing, b->in->fastrom) +
+              rng_cycles(log->aim_overflow, b->in->fastrom);
+}
+
+static void spider_look_bill(SpiderBill* b) {
+  const SpiderLog* log = b->log;
+  spider_add(b, &SPIDER_RUN_LOOK);
+  b->calls += nearest_cycles(&log->nearest, b->in->fastrom);
+  if (log->look == SPIDER_LOOK_NEAR) {
+    spider_taken(b);
+    spider_add(b, &SPIDER_RUN_JMP);
+    spider_aim_bill(b);
+    return;
+  }
+  spider_add(b, &SPIDER_RUN_LOOK_BAND);
+  if (log->look == SPIDER_LOOK_MIDDLE) {
+    spider_taken(b);
+  } else {
+    spider_add(b, &SPIDER_RUN_LOOK_GONE);
+    b->calls += player_bearing_cycles(&log->players, b->in->fastrom);
+    spider_add(b, log->look == SPIDER_LOOK_LEAVE ? &SPIDER_RUN_LEAVE
+                                                 : &SPIDER_RUN_TAKEN);
+  }
+  spider_add(b, &SPIDER_RUN_RTS);
+}
+
+// How wandering and feeling end: the step, or a turn.
+static void spider_step_bill(SpiderBill* b) {
+  spider_add(b, &SPIDER_RUN_TRY);
+  if (spider_clear_bill(b, &b->log->ahead)) {
+    spider_taken(b);
+    spider_add(b, &SPIDER_RUN_JMP);
+    spider_add(b, &SPIDER_RUN_TURN);
+    spider_add(b, &SPIDER_RUN_SET_STATE);
+  } else {
+    spider_add(b, &SPIDER_RUN_MOVE);
+  }
+}
+
+static void spider_state_bill(SpiderBill* b) {
+  const SpiderLog* log = b->log;
+  switch (log->state) {
+    case SPIDER_STATE_WANDER:
+      spider_add(b, &SPIDER_RUN_JSR);
+      spider_look_bill(b);
+      spider_step_bill(b);
+      break;
+    case SPIDER_STATE_FEEL:
+      spider_add(b, &SPIDER_RUN_JSR);
+      spider_add(b, &SPIDER_RUN_JSR);
+      spider_look_bill(b);
+      spider_add(b, &SPIDER_RUN_BACK);
+      spider_clear_bill(b, &log->back);
+      spider_add(b, log->turned_back ? &SPIDER_RUN_TAKE : &SPIDER_RUN_TAKEN);
+      spider_add(b, &SPIDER_RUN_RTS);
+      spider_step_bill(b);
+      break;
+    default:
+      spider_add(b, &SPIDER_RUN_RUN_HEAD);
+      if (!log->ran) {
+        spider_taken(b);
+        spider_aim_bill(b);
+        break;
+      }
+      spider_add(b, &SPIDER_RUN_RUN_DRAW);
+      b->calls += rng_cycles(log->run_overflow, b->in->fastrom);
+      spider_add(b, log->steps == 1 ? &SPIDER_RUN_TAKEN : &SPIDER_RUN_JSR);
+      for (int i = 0; i < log->steps; i++) {
+        spider_add(b, &SPIDER_RUN_RUN_STEP);
+        spider_axis_bill(b, &log->step[i][0]);
+        spider_axis_bill(b, &log->step[i][1]);
+        spider_add(b, &SPIDER_RUN_RTS);
+      }
+      break;
+  }
+}
+
+static void spider_show_bill(SpiderBill* b) {
+  const SpiderLog* log = b->log;
+  spider_add(b, &SPIDER_RUN_SHOW_TIMER);
+  if (log->new_picture) {
+    spider_add(b, &SPIDER_RUN_SHOW_NEXT);
+    spider_add(b, log->mirrored ? &SPIDER_RUN_SHOW_MIRROR
+                                : &SPIDER_RUN_SHOW_PLAIN);
+    spider_taken(b);  // the `BCC` round the mirror, or the `BRA` out of it
+    spider_add(b, &SPIDER_RUN_SHOW_STORE);
+  } else {
+    spider_taken(b);
+  }
+  spider_add(b, &SPIDER_RUN_SHOW_PUBLISH);
+}
+
+// The tests put their scratch on page zero, and the tables are read through
+// the data bank. So is the record, which has to be in the WRAM bank `$83`
+// mirrors.
+static bool spider_frame_ok(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != SPIDER_BANK) return false;
+  return wram_r16(w, (uint16_t)(in->d + SPIDER_DP_RECORD)) < 0x1f00 &&
+         spider_frame_supported(w, in->d);
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or past the
+// test of its fate with that in A.
+static void shim_spider_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  SpiderLog log = {0};
+  const bool stays =
+      spider_frame(w, rom, in->d, (in->p & PORT_P_C) != 0, &log);
+
+  SpiderBill b = {{0, 0, 0}, 0, &log, in};
+  spider_add(&b, &SPIDER_RUN_ENTER);
+  spider_state_bill(&b);
+  spider_add(&b, &SPIDER_RUN_SHOW_CALL);
+  spider_show_bill(&b);
+  spider_add(&b, &SPIDER_RUN_FATE);
+  if (stays) {
+    spider_taken(&b);
+    spider_add(&b, &SPIDER_RUN_SLEEP);
+  }
+  b.calls += at_point_cycles(&log.at_point, in->fastrom);
+  cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
+                                           (in->d & 0x00ffu) != 0));
+
+  out->pc = stays ? SPIDER_YIELD_PC : SPIDER_FATE_PC;
+  out->a = stays ? SPIDER_YIELD_TICKS
+                 : wram_r16(w, (uint16_t)(in->d + SPIDER_DP_FATE));
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V));
+}
+
+static const uint32_t SPIDER_FRAME_EXITS[] = {SPIDER_YIELD_PC, SPIDER_FATE_PC};
 
 // ---------------------------------------------------------------------------
 // The player's poses -- see `port/pose.h`
@@ -10926,6 +11626,45 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 500,
         // The `PEA` and `PHA` its computed `RTS` leaves behind.
         .stack_bytes = 4,
+    },
+    {
+        .name = "martian_frame",
+        .symbol = "$81:99F6",
+        .entry = MARTIAN_WALKER_FRAME_PC,
+        .run = shim_martian_frame,
+        .accepts = martian_frame_ok,
+        .supported = guard_martian_frame,
+        COSIM_EXITS(MARTIAN_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 6000,
+        // The computed `RTS`'s two words, a `JSR`, and the `JSL` down to the
+        // tests a step makes, and theirs.
+        .stack_bytes = 32,
+    },
+    {
+        .name = "martian_arrival_frame",
+        .symbol = "$81:9A5A",
+        .entry = MARTIAN_ARRIVAL_FRAME_PC,
+        .run = shim_martian_arrival_frame,
+        .accepts = martian_frame_ok,
+        .supported = guard_martian_frame,
+        COSIM_EXITS(MARTIAN_ARRIVAL_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        .stack_bytes = 32,
+    },
+    {
+        .name = "spider_frame",
+        .symbol = "$83:B299",
+        .entry = SPIDER_FRAME_PC,
+        .run = shim_spider_frame,
+        .accepts = spider_frame_ok,
+        COSIM_EXITS(SPIDER_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        // The computed `RTS`'s two words, two `JSR`s, and the `JSL` down to
+        // the tests a step makes, and theirs.
+        .stack_bytes = 32,
     },
 #define POSE_ENTRY(n, sym, pc, rts)                                          \
     {                                                                        \

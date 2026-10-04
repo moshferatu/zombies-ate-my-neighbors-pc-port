@@ -821,12 +821,17 @@ static bool aligned_within(uint16_t rec, uint16_t point) {
 // `SEC : SBC` again, on the other axis, from scratch -- the ROM does not reuse
 // the difference the window test just computed. `BMI` reads the sign, and the
 // carry it leaves is what the direction exits hand back.
-static bool aligned_negative(uint16_t rec, uint16_t point, bool* out_carry) {
+static bool aligned_negative(uint16_t rec, uint16_t point, bool* out_carry,
+                             bool* out_overflow) {
+  const uint16_t diff = (uint16_t)(rec - point);
   *out_carry = rec >= point;
-  return (int16_t)(uint16_t)(rec - point) < 0;
+  *out_overflow = ((rec ^ point) & (rec ^ diff) & 0x8000u) != 0;
+  return (diff & 0x8000u) != 0;
 }
 
 void actor_aligned(Wram* w, uint16_t x, uint16_t y, ActorAlignedRegs* out) {
+  out->undrawn = out->inactive = out->wrong_id = out->off = 0;
+  out->by_id[0] = out->by_id[1] = out->by_id[2] = 0;
   wram_w16(w, ALIGNED_DP_X, x);
   wram_w16(w, ALIGNED_DP_Y, y);
 
@@ -838,39 +843,49 @@ void actor_aligned(Wram* w, uint16_t x, uint16_t y, ActorAlignedRegs* out) {
     uint16_t flags = wram_r16(w, rec + ACTOR_FLAGS);
     if (!(flags & ACTOR_DRAW)) {
       PORT_COVER(aligned_undrawn);
+      out->undrawn++;
       continue;
     }
     if (!(flags & ACTOR_ACTIVE)) {
       PORT_COVER(aligned_inactive);
+      out->inactive++;
       continue;
     }
     uint16_t id = wram_r16(w, rec + ACTOR_COLLIDE_ID);
     if (id != ALIGNED_ID_PLAYER_A && id != ALIGNED_ID_PLAYER_B &&
         id != ALIGNED_ID_D) {
       PORT_COVER(aligned_wrong_id);
+      out->wrong_id++;
       continue;
     }
+    // In the order the ROM tests for them.
+    out->by_id[id == ALIGNED_ID_PLAYER_A ? 0 : id == ALIGNED_ID_PLAYER_B ? 1 : 2]++;
 
-    bool carry;
+    bool carry, overflow;
     // X is tested first and returns, so a record inside the window on both
     // axes is reported as up or down and never as left or right.
     if (aligned_within(wram_r16(w, rec + ACTOR_X), x)) {
-      bool up = aligned_negative(wram_r16(w, rec + ACTOR_Y), y, &carry);
+      bool up = aligned_negative(wram_r16(w, rec + ACTOR_Y), y, &carry,
+                                 &overflow);
       PORT_COVER_IF(up, aligned_up, aligned_down);
       out->a = up ? ALIGNED_UP : ALIGNED_DOWN;
       out->x = (uint16_t)rec;
       out->c = carry;
+      out->v = overflow;
       return;
     }
     if (aligned_within(wram_r16(w, rec + ACTOR_Y), y)) {
-      bool left = aligned_negative(wram_r16(w, rec + ACTOR_X), x, &carry);
+      bool left = aligned_negative(wram_r16(w, rec + ACTOR_X), x, &carry,
+                                   &overflow);
       PORT_COVER_IF(left, aligned_left, aligned_right);
       out->a = left ? ALIGNED_LEFT : ALIGNED_RIGHT;
       out->x = (uint16_t)rec;
       out->c = carry;
+      out->v = overflow;
       return;
     }
     PORT_COVER(aligned_off);
+    out->off++;
   }
 
   // $80:B3EC. X is the loop counter one stride past the bottom of the table,
@@ -880,6 +895,7 @@ void actor_aligned(Wram* w, uint16_t x, uint16_t y, ActorAlignedRegs* out) {
   out->a = ALIGNED_NONE;
   out->x = (uint16_t)(W_ACTOR_SLOTS - ACTOR_SLOT_STRIDE);
   out->c = false;
+  out->v = false;
 }
 
 // ---------------------------------------------------------------------------
