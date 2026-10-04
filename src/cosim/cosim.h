@@ -87,7 +87,7 @@ enum {
 // job and said so instead of quietly measuring nothing. The mask is now a small
 // bitset rather than a machine word, so the next raise is this line alone. It
 // was 128 until the scheduler, the dispatchers and the NMI took it to 138.
-#define COSIM_MAX_ROUTINES 192
+#define COSIM_MAX_ROUTINES 256
 #define COSIM_MASK_WORDS ((COSIM_MAX_ROUTINES + 63) / 64)
 
 // Which routines are switched on. A struct rather than a `uint64_t` so it keeps
@@ -175,6 +175,13 @@ typedef struct {
   // routine leaves both alone.
   uint8_t p;
   uint32_t pc;
+  // For those routines too: the bits of `p` the shim does not claim, which
+  // stay as the CPU has them and go unchecked. Zero unless the shim says
+  // otherwise. A stretch that runs a whole enemy frame ends on registers the
+  // game overwrites before reading, and on an overflow some callee left that
+  // the port does not follow; `regs` says which of A, X and Y it claims, as it
+  // does for every other routine.
+  uint8_t p_keep;
   // The auto-joypad latch, `$4218` and `$421A`. Inputs only, for the one
   // stretch of the NMI that reads them: a latch rather than a bus access, so
   // reading it here has no effect on the machine, and it holds still from the
@@ -321,6 +328,11 @@ typedef struct {
   // measured — it is the `stack` column `verify` prints, which is derived from
   // how deep the stack pointer actually went. Native mode uses it to know which
   // bytes it is *expected* to leave stale, since the port pushes nothing.
+  //
+  // A routine with `exits` writes the stack itself and normally declares
+  // none. One that does declare some is a stretch with calls inside it, made
+  // as C calls: what the ROM pushed under them is waived as it is for any
+  // other routine.
   int stack_bytes;
   // Checked per call by `verify`, never substituted by `run`. The report prints
   // the row with `verify only` where a verdict would go, so the exclusion is

@@ -716,6 +716,9 @@ typedef struct {
   bool n, z;
   bool c;
   bool has_c;
+  // For the harness, which prices the call by its path: which of the two
+  // differences were negative, and so went through `EOR #$FFFF : INC`.
+  bool dx_negative, dy_negative;
 } ActorGapRegs;
 
 // **How far is this record from the point, measured as the wider axis?**
@@ -891,9 +894,22 @@ void actor_bearing_point(Wram* w, const Rom* rom, uint16_t rec, uint16_t x,
 // at each.
 //
 // N and Z are the closing `PLD`'s in both, as everywhere in this family.
+typedef enum {
+  PICK_B_NEARER,  // B within the limit, and nearer than A
+  PICK_A_NEARER,  // B within it, and A no further
+  PICK_A_ONLY,    // B outside it, A within
+  PICK_NEITHER,
+} PlayerPickExit;
+
 typedef struct {
   uint16_t a, x, y;
   bool c;
+  // For the harness, which prices the call by its path: the two gaps as
+  // measured, player A's first, and the exit. `player_bearing` adds whether
+  // the chosen player was level with the point on each axis.
+  ActorGapRegs gap[2];
+  PlayerPickExit exit;
+  bool same_x, same_y;
 } PlayerPickRegs;
 
 // **Which player is nearer, if either is within `limit`?**
@@ -978,6 +994,9 @@ void player_bearing(Wram* w, const Rom* rom, uint16_t limit, uint16_t x,
 typedef struct {
   uint16_t a;
   bool n, z, c;
+  // For the harness, which prices the call by its path: on X and then Y, was
+  // the difference negative, and did the axis snap.
+  bool negative[2], snapped[2];
 } ActorSnapRegs;
 
 void actor_snap_to(Wram* w, uint16_t rec, uint16_t onto, ActorSnapRegs* out);

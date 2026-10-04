@@ -720,3 +720,25 @@ void camera_follow(Wram* w, const Rom* rom, uint16_t x, uint16_t y,
   out->x = rx;
   out->y = ry;
 }
+
+// ---------------------------------------------------------------------------
+// $80:A937  camera_scroll
+// ---------------------------------------------------------------------------
+
+bool camera_scroll_supported(Wram* scratch, const Rom* rom, uint16_t x,
+                             uint16_t y) {
+  CameraFollowRegs r = {0, x, y};
+  for (int i = 0; i < CAMERA_SCROLL_CALLS; i++) {
+    if (!camera_follow_supported(scratch)) return false;
+    camera_follow(scratch, rom, r.x, r.y, &r);
+  }
+  return true;
+}
+
+void camera_scroll(Wram* w, const Rom* rom, uint16_t x, uint16_t y,
+                   CameraFollowRegs* out) {
+  out->x = x;
+  out->y = y;
+  for (int i = 0; i < CAMERA_SCROLL_CALLS; i++)
+    camera_follow(w, rom, out->x, out->y, out);
+}

@@ -102,6 +102,8 @@ typedef enum {
 
 typedef struct {
   ActorNearestWork nearest;
+  ActorSnapRegs snap;  // what the snap and the bearing did, when it chased
+  ActorBearingRegs bearing;
   bool gave_up;        // nothing within range
   // The rest is for a chase that did not give up.
   bool straight;       // the target was straight up, down, left or right
@@ -114,7 +116,8 @@ typedef struct {
   AtPointWork at_point;
   int leap_probes;     // 0, 1 or 2 tiles looked at for something to leap
   bool leap_found;     // ...and one had bit 13, so the landing was tested
-  bool overflow;       // V as the give-up path leaves it
+  bool overflow;       // V as its one random draw left it, which the give-up
+                       // path hands back, and which says what the draw cost
   // How many of its six probes each ground test ran: the step's, and the
   // landing's when there was one.
   int ground_tiles[CHASE_MAX_GROUNDS];

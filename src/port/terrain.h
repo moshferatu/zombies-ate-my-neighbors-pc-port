@@ -102,6 +102,10 @@ typedef struct {
   // How many of the six probes ran: the first that found the bit is the last,
   // and all six when none did. For the harness, which prices the call by it.
   int probes;
+  // `terrain_point_bit2` only, and for the harness likewise: the point was
+  // off the level, and which exit of the bounds test (a `BoundsExit`) said.
+  bool outside;
+  int bounds_exit;
 } TerrainRegs;
 
 // `$80:AE14`. Carry set means at least one of the six tiles has attribute bit 0.
@@ -249,9 +253,19 @@ void terrain_blocked_wide_counted(Wram* w, uint16_t x, uint16_t y,
 
 // N, Z and C all have to be published here, because none of them is a constant
 // and none survives from anywhere but the exit that produced it.
+typedef enum {
+  BOUNDS_X_NEGATIVE,
+  BOUNDS_X_LOW,
+  BOUNDS_X_HIGH,
+  BOUNDS_Y_NEGATIVE,
+  BOUNDS_Y_LOW,
+  BOUNDS_LAST_COMPARE,  // inside, or past the bottom
+} BoundsExit;
+
 typedef struct {
   uint16_t a;
   bool n, z, c;  // c set means the point is outside
+  BoundsExit exit;  // for the harness, which prices the call by it
 } BoundsRegs;
 
 void terrain_out_of_bounds(Wram* w, uint16_t x, uint16_t y, BoundsRegs* out);

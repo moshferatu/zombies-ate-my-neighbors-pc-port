@@ -19,13 +19,17 @@
 #include "port/boss.h"
 #include "port/bossbg.h"
 #include "port/camera.h"
+#include "port/clone.h"
 #include "port/collide.h"
 #include "port/fade.h"
 #include "port/floor.h"
 #include "port/hud.h"
 #include "port/levelmap.h"
 #include "port/lzss.h"
+#include "port/mainloop.h"
 #include "port/monster.h"
+#include "port/pause.h"
+#include "port/pose.h"
 #include "port/oam.h"
 #include "port/player.h"
 #include "port/rng.h"
@@ -33,9 +37,11 @@
 #include "port/sched.h"
 #include "port/score.h"
 #include "port/sprite_cache.h"
+#include "port/squirt.h"
 #include "port/step.h"
 #include "port/walk.h"
 #include "port/chase.h"
+#include "port/doll.h"
 #include "port/zombie.h"
 #include "port/terrain.h"
 #include "port/thread.h"
@@ -597,9 +603,30 @@ static void shim_oam_buffer_clear(Wram* w, const Rom* rom, const CosimRegs* in,
 // itself rather than something on it: its last act is to copy five words off
 // that page onto the new thread's, so `in->d` is an input in the same way
 // `player_collide`'s is, and for a completely different reason.
+// `$80:825E` by the slot it took, doubled, or -1 for a full board. The
+// search runs down from slot 23 at 94 cycles a live slot, and the rest is
+// straight-line. It runs on two direct pages of the new thread's: its stack,
+// which is never page-aligned, for seven instructions, and its page, which is
+// aligned for half the slots, for the five that copy the arguments.
+static int thread_spawn_cycles(int slot, const Rom* rom, bool fast) {
+  static const CosimRun HEAD = {86, 6, 0};       // PHD : DEC : PHA : LDX #$2E
+  static const CosimRun LIVE = {94, 10, 0};      // LDA : BPL : DEX : DEX : BPL
+  static const CosimRun FOUND = {58, 6, 0};      // LDA : BPL, taken
+  static const CosimRun BODY = {1374, 107, 0};   // $8271-$82D7, the stack's 42 in
+  static const CosimRun FULL = {18 + 128 - 6, 9, 0};  // JMP : PLA : PLD : LDA : RTL
+  int cycles = cosim_run_cycles(&HEAD, fast);
+  const int searched = slot < 0 ? 24 : (0x2e - slot) / 2;
+  for (int i = 0; i < searched; i++) cycles += cosim_run_cycles(&LIVE, fast);
+  if (slot < 0) return cycles + cosim_run_cycles(&FULL, fast);
+  cycles += cosim_run_cycles(&FOUND, fast) + cosim_run_cycles(&BODY, fast);
+  if (rom_word(rom, THREAD_DP_TABLE + (uint32_t)slot) & 0x00ffu) cycles += 5 * 6;
+  return cycles;
+}
+
 static void shim_thread_spawn(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
   int slot = thread_spawn(w, rom, in->a, in->y, in->d);
+  cosim_cost(thread_spawn_cycles(slot, rom, in->fastrom));
 
   // `TXA : RTL` on success, `LDA #$0000 : RTL` when the board is full — and the
   // ROM cannot tell those two apart either, because slot 0 doubled is also 0.
@@ -1720,11 +1747,19 @@ static void shim_enemy_bubble_react(Wram* w, const Rom* rom,
 // $80:9D39  rng_next — no arguments, and one of them is the caller's carry
 // ---------------------------------------------------------------------------
 
+// Straight-line but for one `BVC`, which taken skips the second `INC $0025`.
+// So a draw costs one of two prices, and its overflow says which.
+static int rng_cycles(bool counted_twice, bool fast) {
+  static const CosimRun ONCE = {338, 31, 0}, TWICE = {372, 34, 0};
+  return cosim_run_cycles(counted_twice ? &TWICE : &ONCE, fast);
+}
+
 static void shim_rng_next(Wram* w, const Rom* rom, const CosimRegs* in,
                           CosimRegs* out) {
   (void)rom;
   RngResult rng;
   rng_next(w, in->c, &rng);
+  cosim_cost(rng_cycles(rng.v, in->fastrom));
   out->a = rng.a;
   // X and Y are never mentioned between the entry and the `RTL`.
   out->x = in->x;
@@ -2763,11 +2798,110 @@ static void shim_actor_nearest(Wram* w, const Rom* rom, const CosimRegs* in,
 // `out->flags` is per call precisely so a shim can decline.
 //
 // X is untouched; Y is the record, and the routine never writes either.
+// `$80:B3F1` by its path, priced with every instruction run. On each axis a
+// difference that was not negative took its `BPL` past the negation, and one
+// too wide to snap took its `BCS` past the `LDA : STA`.
+static int actor_snap_cycles(const ActorSnapRegs* r, bool fast) {
+  CosimRun run = {530, 49, 0};  // $80:B3F1-$B421
+  for (int axis = 0; axis < 2; axis++) {
+    if (!r->negative[axis]) {
+      run.cycles += 6 - 30;
+      run.bytes -= 4;
+    }
+    if (!r->snapped[axis]) {
+      run.cycles += 6 - 80;
+      run.bytes -= 6;
+    }
+  }
+  return cosim_run_cycles(&run, fast);
+}
+
+// `$80:B22A` by its path, priced with every instruction run. The index it
+// leaves in X says which axes the two records shared: each of those took a
+// `BEQ` past its sum. It runs on page zero, which it installs itself.
+static int actor_bearing_cycles(const ActorBearingRegs* r, bool fast) {
+  CosimRun run = {610, 55, 0};  // $80:B22A-$B25E
+  if ((r->x >> 2) == 0) {
+    run.cycles += 6 - 66;
+    run.bytes -= 7;
+  }
+  if ((r->x & 3) == 0) {
+    run.cycles += 6 - 42;
+    run.bytes -= 5;
+  }
+  return cosim_run_cycles(&run, fast);
+}
+
+// `$80:B093` by its path. It is priced with every instruction run; a
+// difference that was not negative took its `BPL` past the negation, and a Y
+// gap that kept the answer took the `BCS` past `LDA $3C`. Both callers have
+// the direct page at zero, so there is no unaligned price.
+static int actor_gap_cycles(const ActorGapRegs* g, bool fast) {
+  static const CosimRun ABSENT = {88, 7, 0};  // TYA : BEQ : LDA #$FFFF : RTS
+  if (!g->has_c) return cosim_run_cycles(&ABSENT, fast);
+  CosimRun run = {404, 36, 0};  // $80:B093-$B0B6
+  const int positive = !g->dx_negative + !g->dy_negative;
+  run.cycles += positive * (6 - 30);
+  run.bytes -= positive * 4;
+  if (g->c) {
+    run.cycles += 6 - 28;
+    run.bytes -= 2;
+  }
+  return cosim_run_cycles(&run, fast);
+}
+
+// The selection `player_in_range` and `player_bearing` share: the same
+// instructions at two addresses, down to the two `JSR $B093`s, and then one
+// of four ways out.
+static int player_pick_cycles(const PlayerPickRegs* r, bool fast) {
+  static const CosimRun HEAD = {412, 29, 0};  // to `CMP $42 : BCS`
+  return cosim_run_cycles(&HEAD, fast) + actor_gap_cycles(&r->gap[0], fast) +
+         actor_gap_cycles(&r->gap[1], fast);
+}
+
+// `$80:B26B` from there: the compares that chose, and `LDA : LDX : PLD : RTL`
+// or `LDA #$0000 : PLD : RTL`.
+static int player_in_range_cycles(const PlayerPickRegs* r, bool fast) {
+  static const CosimRun EXIT[] = {
+      [PICK_B_NEARER] = {178, 10, 0},
+      [PICK_A_NEARER] = {190, 12, 0},
+      [PICK_A_ONLY] = {212, 12, 0},
+      [PICK_NEITHER] = {168, 11, 0},
+  };
+  return player_pick_cycles(r, fast) + cosim_run_cycles(&EXIT[r->exit], fast);
+}
+
+// `$80:B2A5` from there: the compares, `PEI : LDY` for the player chosen, and
+// the direction lookup, which skips a sum for each axis the player is level
+// on.
+static int player_bearing_cycles(const PlayerPickRegs* r, bool fast) {
+  static const CosimRun NEITHER = {168, 11, 0};
+  static const CosimRun CHOSE[] = {
+      [PICK_B_NEARER] = {46 + 72, 4 + 4, 0},
+      [PICK_A_NEARER] = {58 + 90, 6 + 6, 0},
+      [PICK_A_ONLY] = {80 + 90, 6 + 6, 0},
+  };
+  const int pick = player_pick_cycles(r, fast);
+  if (r->exit == PICK_NEITHER) return pick + cosim_run_cycles(&NEITHER, fast);
+  CosimRun lookup = {482, 39, 0};  // $80:B2DD-$B301
+  if (r->same_y) {
+    lookup.cycles += 6 - 42;
+    lookup.bytes -= 5;
+  }
+  if (r->same_x) {
+    lookup.cycles += 6 - 18;
+    lookup.bytes -= 3;
+  }
+  return pick + cosim_run_cycles(&CHOSE[r->exit], fast) +
+         cosim_run_cycles(&lookup, fast);
+}
+
 static void shim_actor_gap(Wram* w, const Rom* rom, const CosimRegs* in,
                            CosimRegs* out) {
   (void)rom;
   ActorGapRegs r;
   actor_gap(w, in->y, &r);
+  cosim_cost(actor_gap_cycles(&r, in->fastrom));
   out->a = r.a;
   out->x = in->x;
   out->y = in->y;
@@ -2817,6 +2951,7 @@ static void shim_actor_bearing(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
   ActorBearingRegs r;
   actor_bearing(w, rom, in->x, in->y, &r);
+  cosim_cost(actor_bearing_cycles(&r, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = in->y;
@@ -2860,6 +2995,7 @@ static void shim_player_in_range(Wram* w, const Rom* rom, const CosimRegs* in,
   (void)rom;
   PlayerPickRegs r;
   player_in_range(w, in->a, in->x, in->y, &r);
+  cosim_cost(player_in_range_cycles(&r, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -2886,6 +3022,7 @@ static void shim_player_bearing(Wram* w, const Rom* rom, const CosimRegs* in,
                                 CosimRegs* out) {
   PlayerPickRegs r;
   player_bearing(w, rom, in->a, in->x, in->y, &r);
+  cosim_cost(player_bearing_cycles(&r, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -3170,11 +3307,27 @@ static void shim_terrain_blocked_enemy(Wram* w, const Rom* rom,
 //
 // Reading the routine's final instruction — which is `CMP $00B4` — and
 // publishing that everywhere would be right on one path in six.
+// `$80:B422` by its exit: straight-line to whichever test stopped it, and
+// then `SEC : RTL`, or a bare `RTL` after the two compares that are the
+// answer themselves.
+static int bounds_cycles(BoundsExit exit, bool fast) {
+  static const CosimRun EXIT[] = {
+      [BOUNDS_X_NEGATIVE] = {84, 5, 0},
+      [BOUNDS_X_LOW] = {138, 12, 0},
+      [BOUNDS_X_HIGH] = {208, 19, 0},
+      [BOUNDS_Y_NEGATIVE] = {244, 23, 0},
+      [BOUNDS_Y_LOW] = {310, 31, 0},
+      [BOUNDS_LAST_COMPARE] = {350, 35, 0},
+  };
+  return cosim_run_cycles(&EXIT[exit], fast);
+}
+
 static void shim_terrain_out_of_bounds(Wram* w, const Rom* rom,
                                        const CosimRegs* in, CosimRegs* out) {
   (void)rom;
   BoundsRegs r;
   terrain_out_of_bounds(w, in->x, in->y, &r);
+  cosim_cost(bounds_cycles(r.exit, in->fastrom));
   out->a = r.a;
   out->x = in->x;  // `TXA`/`TYA` read them and nothing writes either
   out->y = in->y;
@@ -3288,11 +3441,24 @@ static void shim_terrain_blocked_wide(Wram* w, const Rom* rom,
 // zero, which says nothing carry did not. And `$80:AF2C` has a fifth exit
 // before any of that — `JSL $80B422` deciding the point is off the map, with A
 // the bounds test's own and X and Y never touched.
+// `$80:AF2C` by its path: the bounds test it calls, and then either straight
+// out, or one tile's attributes and whether bit 2 was there. It installs page
+// zero itself before it touches the direct page.
+static int terrain_bit2_cycles(const TerrainRegs* r, bool fast) {
+  static const CosimRun OUTSIDE = {188, 10, 0};  // PHD : JSL : BCS, PLD : SEC : RTL
+  static const CosimRun CLEAR = {696, 55, 0};    // $80:AF2C-$AF62
+  static const CosimRun HIT = {702, 55, 0};      // ...the BNE taken to $AF63
+  return bounds_cycles((BoundsExit)r->bounds_exit, fast) +
+         cosim_run_cycles(r->outside ? &OUTSIDE : r->blocked ? &HIT : &CLEAR,
+                          fast);
+}
+
 static void shim_terrain_point_bit2(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   (void)rom;
   TerrainRegs r;
   terrain_point_bit2(w, in->x, in->y, &r);
+  cosim_cost(terrain_bit2_cycles(&r, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -4318,6 +4484,7 @@ static void shim_actor_snap_to(Wram* w, const Rom* rom, const CosimRegs* in,
   (void)rom;
   ActorSnapRegs r;
   actor_snap_to(w, in->x, in->y, &r);
+  cosim_cost(actor_snap_cycles(&r, in->fastrom));
   out->a = r.a;
   out->x = in->x;  // both are indices; neither is written
   out->y = in->y;
@@ -5641,7 +5808,7 @@ static void chase_add(CosimRun* t, int cycles, int bytes, int dp) {
 }
 
 static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
-  static int snap = -1, bearing = -1, rng = -1, tile = -1;
+  static int tile = -1;
   const int TAKEN = 6;
   CosimRun own = {0, 0, 0};
   int calls = nearest_cycles(&log->nearest, in->fastrom);
@@ -5652,7 +5819,7 @@ static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
     // JMP $BF99 : JMP $BCE1, JSL rng_next : AND : ASL ASL INC INC : STA $14 :
     // JMP $BE0E, LDA #$BE14 : STA $12 : RTS.
     chase_add(&own, 18 + 18 + 166 + 86, 3 + 3 + 16 + 6, 2);
-    calls += registry_cycles("rng", &rng);
+    calls += rng_cycles(log->overflow, in->fastrom);
     return calls + cosim_run_cycles_dp(&own, fetch_fast(in),
                                        (in->d & 0x00ffu) != 0);
   }
@@ -5661,8 +5828,8 @@ static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
   // STX $24 : TXY : LDX $08 : JSL actor_snap_to : JSL actor_bearing, then
   // PHA, the record's X and Y into $0A/$0C, PLA : STA $18 : AND #1 : BNE.
   chase_add(&own, 176 + 284, 13 + 21, 2 + 4);
-  calls += registry_cycles("actor_snap_to", &snap) +
-           registry_cycles("actor_bearing", &bearing);
+  calls += actor_snap_cycles(&log->snap, in->fastrom) +
+           actor_bearing_cycles(&log->bearing, in->fastrom);
   if (log->straight) {
     own.cycles += TAKEN;
   } else {
@@ -5685,7 +5852,7 @@ static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
   // LDA $18 : ASL : STA $14 : ASL : STA $18 : JSL rng_next : AND #2 : BEQ,
   // and on a fast frame LDA #$B9B5 : STA $38.
   chase_add(&own, 162 + 30, 12 + 5, 3);
-  calls += registry_cycles("rng", &rng);
+  calls += rng_cycles(log->overflow, in->fastrom);
   if (log->fast) chase_add(&own, 46, 5, 1);
   else own.cycles += TAKEN;
 
@@ -5841,7 +6008,7 @@ static const CosimRun ZOMBIE_FOLLOW_TAKE = {56, 4, 2};
 // The chase's `TXY : LDX $08 : JSL actor_snap_to : JSL actor_bearing : TAX :
 // BEQ`, the same in both.
 static const CosimRun ZOMBIE_BEARING = {172, 14, 1};
-// $8B28: `LDA #$0000 : STA $24 : JMP $8B2D`.
+// $8B28: `LDA #$0000 : STA $24`, and the `JMP $8A5C` at `$8B2D`.
 static const CosimRun ZOMBIE_STUCK = {64, 8, 1};
 // $89FD, the fast chase's step: each axis is a ground test and an actor test
 // and a store, then two `LDA : CMP` and the exit.
@@ -5927,9 +6094,8 @@ static void zombie_walk_bill(ZombieBill* b, ZombieKind kind,
 
 static void zombie_wander_bill(ZombieBill* b, ZombieKind kind,
                                const ZombieLog* log, int* next) {
-  static int rng = -1;
   zombie_add(b, &ZOMBIE_RUNS[kind].wander);
-  b->calls += registry_cycles("rng", &rng);
+  b->calls += rng_cycles(log->drew_overflow, b->in->fastrom);
   zombie_walk_bill(b, kind, log, next);
 }
 
@@ -5984,7 +6150,6 @@ static void zombie_slide_bill(ZombieBill* b, const ZombieLog* log, int first) {
 
 static void zombie_chase_bill(ZombieBill* b, ZombieKind kind,
                               const ZombieLog* log) {
-  static int snap = -1, bearing = -1;
   const ZombieRuns* r = &ZOMBIE_RUNS[kind];
   int next = 0;
   zombie_add(b, &r->chase_near);
@@ -5996,8 +6161,8 @@ static void zombie_chase_bill(ZombieBill* b, ZombieKind kind,
     return;
   }
   zombie_add(b, &ZOMBIE_BEARING);
-  b->calls += registry_cycles("actor_snap_to", &snap) +
-              registry_cycles("actor_bearing", &bearing);
+  b->calls += actor_snap_cycles(&log->snap, b->in->fastrom) +
+              actor_bearing_cycles(&log->bearing, b->in->fastrom);
   if (log->on_top) {
     zombie_add(b, &ZOMBIE_TAKEN);
     zombie_add(b, &ZOMBIE_JMP);
@@ -6026,8 +6191,7 @@ static void zombie_chase_bill(ZombieBill* b, ZombieKind kind,
   if (log->stuck) {
     next = 2;
     zombie_add(b, &ZOMBIE_TAKEN);
-    zombie_add(b, &ZOMBIE_STUCK);
-    zombie_add(b, &ZOMBIE_JMP);
+    zombie_add(b, &ZOMBIE_STUCK);  // its `JMP` to the wander included
     zombie_wander_bill(b, kind, log, &next);
     return;
   }
@@ -6036,7 +6200,6 @@ static void zombie_chase_bill(ZombieBill* b, ZombieKind kind,
 
 static void zombie_decide_bill(ZombieBill* b, ZombieKind kind,
                                const ZombieLog* log) {
-  static int bearing = -1;
   const ZombieRuns* r = &ZOMBIE_RUNS[kind];
   if (kind == ZOMBIE_FAST) {
     zombie_add(b, &ZOMBIE_QUIET);
@@ -6054,7 +6217,7 @@ static void zombie_decide_bill(ZombieBill* b, ZombieKind kind,
   }
   zombie_add(b, &ZOMBIE_TAKEN);
   zombie_add(b, &r->decide_reach);
-  b->calls += registry_cycles("player_bearing", &bearing);
+  b->calls += player_bearing_cycles(&log->players, b->in->fastrom);
   if (log->nobody) zombie_add(b, &ZOMBIE_LEAVE);
   else zombie_add(b, &ZOMBIE_TAKEN);
   zombie_add(b, &ZOMBIE_RTS);
@@ -6185,6 +6348,1272 @@ ZOMBIE_DECIDE_SHIM(zombie_fast_decide, ZOMBIE_FAST)
 
 ZOMBIE_ANIMATE_SHIM(zombie_animate, ZOMBIE_FRAMES)
 ZOMBIE_ANIMATE_SHIM(zombie_animate_8c17, ZOMBIE_FRAMES_8C17)
+
+// A whole frame of either loop: the pieces above, and the loop's own
+// instructions between them. The state body's bill includes the actor tests,
+// as its own shim's does.
+static const CosimRun ZOMBIE_FRAME_JSR = {40, 3, 0};
+static const CosimRun ZOMBIE_FRAME_DISPATCH = {142, 8, 1};  // PEA LDA DEC PHA RTS
+static const CosimRun ZOMBIE_FRAME_LEAVING = {40, 4, 1};    // LDA $12 : BEQ
+static const CosimRun ZOMBIE_FRAME_TICKS = {18, 3, 0};      // LDA #$0002
+static const CosimRun ZOMBIE_FRAME_UNMARK_TEST = {40, 4, 1};  // LDA $22 : BEQ
+static const CosimRun ZOMBIE_FRAME_UNMARK = {172, 15, 2};   // $890F-$891D, BRA taken
+
+static bool zombie_frame_ok(const Wram* w, const CosimRegs* in,
+                            ZombieThread thread) {
+  return zombie_page_ok(in) &&
+         zombie_heading_ok(w, in, zombie_thread_kind(thread),
+                           ZOMBIE_DP_HEADING) &&
+         zombie_frame_supported(w, in->d, thread);
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or for the
+// loop's way out with `$12` there. X and Y are whatever the last piece left,
+// and the loop reads neither. Carry and overflow are the state body's, and
+// carry the animation's when the walk cycle moved on.
+static void zombie_frame_shim(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out, ZombieThread thread,
+                              uint32_t yield_pc, uint32_t leave_pc) {
+  const ZombieKind kind = zombie_thread_kind(thread);
+  const bool checks_unmark = thread == ZOMBIE_THREAD_88CA;
+  ZombieFrameLog log = {0};
+  const bool stays = zombie_frame(w, rom, in->d, thread, &log);
+
+  ZombieBill b = {{0, 0, 0}, 0, in};
+  if (checks_unmark) zombie_add(&b, &ZOMBIE_FRAME_UNMARK_TEST);
+  if (log.unmarked) {
+    zombie_add(&b, &ZOMBIE_FRAME_UNMARK);
+  } else {
+    if (checks_unmark) zombie_add(&b, &ZOMBIE_TAKEN);
+    zombie_add(&b, &ZOMBIE_FRAME_JSR);
+    zombie_decide_bill(&b, kind, &log.decide);
+  }
+  zombie_add(&b, &ZOMBIE_FRAME_DISPATCH);
+  switch (log.state) {
+    case ZOMBIE_WALKING: zombie_walk_state_bill(&b, kind, &log.act); break;
+    case ZOMBIE_FOLLOWING: zombie_follow_bill(&b, kind, &log.act); break;
+    case ZOMBIE_CHASING: zombie_chase_bill(&b, kind, &log.act); break;
+  }
+  b.calls += at_point_cycles(&log.act.at_point, in->fastrom);
+  zombie_add(&b, &ZOMBIE_FRAME_JSR);
+  zombie_animate_bill(&b, &log.animate);
+  zombie_add(&b, &ZOMBIE_FRAME_LEAVING);
+  if (stays) {
+    zombie_add(&b, &ZOMBIE_TAKEN);
+    zombie_add(&b, &ZOMBIE_FRAME_TICKS);
+  }
+  cosim_cost(zombie_total(&b));
+
+  out->a = stays ? ZOMBIE_YIELD_TICKS
+                 : wram_r16(w, (uint16_t)(in->d + ZOMBIE_DP_LEAVE));
+  out->regs = COSIM_REG_A;
+  out->pc = stays ? yield_pc : leave_pc;
+  const bool carry = log.animate.new_leg ? log.animate.carry : log.act.carry;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (carry) out->p |= PORT_P_C;
+  if (log.act.overflow) out->p |= PORT_P_V;
+}
+
+#define ZOMBIE_FRAME_SHIM(name, thread)                                      \
+  static const uint32_t ZOMBIE_##thread##_FRAME_EXITS[] = {                  \
+      ZOMBIE_##thread##_YIELD_PC, ZOMBIE_##thread##_LEAVE_PC};               \
+  static bool name##_ok(const Wram* w, const CosimRegs* in) {                \
+    return zombie_frame_ok(w, in, ZOMBIE_THREAD_##thread);                   \
+  }                                                                          \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    zombie_frame_shim(w, rom, in, out, ZOMBIE_THREAD_##thread,               \
+                      ZOMBIE_##thread##_YIELD_PC,                            \
+                      ZOMBIE_##thread##_LEAVE_PC);                           \
+  }
+
+ZOMBIE_FRAME_SHIM(zombie_87f8_frame, 87F8)
+ZOMBIE_FRAME_SHIM(zombie_88ca_frame, 88CA)
+ZOMBIE_FRAME_SHIM(zombie_8c17_frame, 8C17)
+
+// ---------------------------------------------------------------------------
+// $80:A937  camera_scroll — four calls of `camera_follow`, by two thunks
+// ---------------------------------------------------------------------------
+//
+// The last of the four returns to whoever queued the job, so its exit is the
+// thunk's: the same `PLD : SEC : RTL`, the same leftovers in A, X and Y. Like
+// `camera_follow` it is charged a mean, four of that routine's and the three
+// `JSL`s between them: what a call costs is how far the view scrolled.
+static bool guard_camera_scroll(Wram* scratch, const Rom* rom,
+                                const CosimRegs* in) {
+  if (camera_scroll_supported(scratch, rom, in->x, in->y)) return true;
+  cosim_census_note("tilemap arena exhausted", CAMERA_SCROLL_ENTRY);
+  return false;
+}
+
+static void shim_camera_scroll(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  CameraFollowRegs r;
+  camera_scroll(w, rom, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = (in->d & 0x8000u) != 0;  // the closing `PLD`
+  out->z = in->d == 0;
+  out->c = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:89B0  the pause check — see `port/pause.h`
+// ---------------------------------------------------------------------------
+//
+// The port's are the frames nobody is pausing on, which write nothing. A is
+// pad one, and the flags are the compare with Select alone. Its `BNE` goes to
+// the next instruction, so it costs 6 more when it is taken and changes
+// nothing else.
+static bool accepts_pause_check(const Wram* w, const CosimRegs* in) {
+  return wide(in) && bank_sees_low_wram(in->db) && !pause_wanted(w);
+}
+
+static void shim_pause_check(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  static const CosimRun TEST = {98 + 6, 11, 0};  // LDA : ORA : BIT : BEQ, taken
+  static const CosimRun REST = {106, 9, 0};      // LDA : CMP : BNE : RTL
+  const uint16_t pad = pause_pad_one(w);
+  cosim_cost(cosim_run_cycles(&TEST, in->fastrom) +
+             cosim_run_cycles(&REST, in->fastrom) +
+             (pad != PAUSE_PAD_SELECT ? 6 : 0));
+  out->a = pad;
+  out->regs = COSIM_REG_A;
+  const uint16_t diff = (uint16_t)(pad - PAUSE_PAD_SELECT);
+  out->n = (diff & 0x8000u) != 0;
+  out->z = diff == 0;
+  out->c = pad >= PAUSE_PAD_SELECT;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// ---------------------------------------------------------------------------
+// $80:852F  the level's main loop -- see `port/mainloop.h`
+// ---------------------------------------------------------------------------
+//
+// A whole pass: the pause check, which on these frames does nothing, the HUD
+// refresh, and the loop's two questions. It is priced as its pieces are: the
+// pause check's two runs, the HUD's counted blocks, and the loop's own
+// instructions, none of which touches the direct page.
+//
+// The yield takes only A. The two other ways out go on to code that may read
+// what the HUD refresh left, so those hand over all three registers. The
+// refresh leaves an overflow the port does not follow, as its own entry does.
+static bool accepts_mainloop_frame(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && bank_sees_low_wram(in->db) && !pause_wanted(w);
+}
+
+static void shim_mainloop_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  static const CosimRun JSL = {54, 4, 0};
+  static const CosimRun PAUSE_TEST = {98 + 6, 11, 0};  // as `shim_pause_check`
+  static const CosimRun PAUSE_REST = {106, 9, 0};
+  static const CosimRun PLAYERS = {80, 8, 0};    // LDA $1E88 : ORA $1E8A : BEQ
+  static const CosimRun NEIGHBOURS = {46, 5, 0};  // LDA $1D52 : BNE
+  static const CosimRun TICKS = {18, 3, 0};       // LDA #$0002
+  static int hud_mean = -1;
+
+  const uint16_t pad = pause_pad_one(w);
+  HudWork work = {0};
+  HudRefreshRegs hud = {.x = in->x, .y = in->y, .c = pad >= PAUSE_PAD_SELECT,
+                        .work = &work};
+  const MainLoopNext next = mainloop_frame(w, rom, in->d, &hud);
+
+  const bool fast = fetch_fast(in);
+  int cycles = 2 * cosim_run_cycles(&JSL, fast) +
+               cosim_run_cycles(&PAUSE_TEST, in->fastrom) +
+               cosim_run_cycles(&PAUSE_REST, in->fastrom) +
+               (pad != PAUSE_PAD_SELECT ? 6 : 0) +
+               cosim_run_cycles(&PLAYERS, fast);
+  // The HUD prices itself only from an aligned page and a low data bank; see
+  // `hud_report_cost`.
+  cycles += (in->d & 0xff) == 0 && in->db < 0x80
+                ? hud_cycles(&work, in->fastrom)
+                : registry_cycles("hud_refresh", &hud_mean);
+  if (next == MAINLOOP_NO_PLAYERS) {
+    cycles += 6;
+  } else {
+    cycles += cosim_run_cycles(&NEIGHBOURS, fast);
+    if (next == MAINLOOP_GOES_ON) cycles += 6 + cosim_run_cycles(&TICKS, fast);
+  }
+  cosim_cost(cycles);
+
+  out->x = hud.x;
+  out->y = hud.y;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C));
+  if (hud.c) out->p |= PORT_P_C;
+  out->p_keep = PORT_P_V;
+  if (next == MAINLOOP_GOES_ON) {
+    out->pc = MAINLOOP_YIELD_PC;
+    out->a = MAINLOOP_YIELD_TICKS;
+    out->regs = COSIM_REG_A;
+  } else {
+    // The `LDA` or `ORA` that came up zero.
+    out->pc = next == MAINLOOP_NO_PLAYERS ? MAINLOOP_NO_PLAYERS_PC
+                                          : MAINLOOP_NO_NEIGHBOURS_PC;
+    out->a = 0;
+    out->p |= PORT_P_Z;
+    out->regs = COSIM_REG_ALL;
+  }
+}
+
+static const uint32_t MAINLOOP_FRAME_EXITS[] = {
+    MAINLOOP_YIELD_PC, MAINLOOP_NO_PLAYERS_PC, MAINLOOP_NO_NEIGHBOURS_PC};
+
+// ---------------------------------------------------------------------------
+// $81:FD11  the squirt gun's water in flight -- see `port/squirt.h`
+// ---------------------------------------------------------------------------
+//
+// A whole frame of the flight loop. It leaves by the `JSL thread_yield` with
+// the tick count in A, or for the splash at `$81:FD22`, whose first
+// instruction loads A. Carry is the tile test's. The overflow its sum leaves
+// is not followed, here or at that routine's own entry.
+static bool accepts_squirt_flight(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         wram_r16(w, (uint16_t)(in->d + SQUIRT_DP_RECORD)) < 0x1f00;
+}
+
+static void shim_squirt_flight(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  static const CosimRun TO_TEST = {162, 13, 2};  // JSR : LDX : LDY : JSL : BCS
+  static const CosimRun MOVE = {340, 23, 7};     // $81:FDF7-$FE0D
+  static const CosimRun COUNT = {62, 4, 1};      // DEC $42 : BNE
+  static const CosimRun TICKS = {18, 3, 0};      // LDA #$0001
+  TerrainRegs ground;
+  const SquirtNext next = squirt_flight_frame(w, in->d, &ground);
+
+  CosimRun own = TO_TEST;
+  own.cycles += MOVE.cycles;
+  own.bytes += MOVE.bytes;
+  own.dp += MOVE.dp;
+  if (next == SQUIRT_HIT_GROUND) {
+    own.cycles += 6;
+  } else {
+    own.cycles += COUNT.cycles;
+    own.bytes += COUNT.bytes;
+    own.dp += COUNT.dp;
+    if (next == SQUIRT_FLIES) {
+      own.cycles += 6 + TICKS.cycles;
+      own.bytes += TICKS.bytes;
+    }
+  }
+  cosim_cost(terrain_bit2_cycles(&ground, in->fastrom) +
+             cosim_run_cycles_dp(&own, fetch_fast(in), (in->d & 0x00ffu) != 0));
+
+  const bool flies = next == SQUIRT_FLIES;
+  out->pc = flies ? SQUIRT_YIELD_PC : SQUIRT_END_PC;
+  out->a = SQUIRT_YIELD_TICKS;
+  out->regs = flies ? COSIM_REG_A : 0;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C));
+  if (ground.blocked) out->p |= PORT_P_C;
+  out->p_keep = (uint8_t)(PORT_P_V | (flies ? 0 : PORT_P_N | PORT_P_Z));
+}
+
+static const uint32_t SQUIRT_FLIGHT_EXITS[] = {SQUIRT_YIELD_PC, SQUIRT_END_PC};
+
+// ---------------------------------------------------------------------------
+// The clones -- see `port/clone.h`
+// ---------------------------------------------------------------------------
+//
+// One entry, a whole frame of the loop, priced the dolls' way. Each run is
+// from `tools/cycles816.py --db 81`, branches not taken; a taken branch and
+// every `BRA` adds 6. The record is reached through `($08),Y`, which is low
+// WRAM, and the pictures through `($2A),Y`, which is the cartridge.
+static const CosimRun CLONE_RUN_LEAVE_TEST = {40, 4, 1};     // $8EA8 LDA $2E : BNE
+static const CosimRun CLONE_RUN_ANIMATE_CALL = {80, 7, 1};   // $8EAC JSR : LDA $24 : BNE
+static const CosimRun CLONE_RUN_CHASE_CALL = {80, 7, 1};     // $8EB3 JSR : LDA $0E : BEQ
+static const CosimRun CLONE_RUN_BRA = {12 + 6, 2, 0};        // $8EBA
+static const CosimRun CLONE_RUN_COPY_CALL = {40, 3, 0};      // $8EBC JSR $8E7E
+static const CosimRun CLONE_RUN_COUNT = {62, 4, 1};          // $8EBF DEC $26 : BNE
+static const CosimRun CLONE_RUN_TICKS = {18, 3, 0};          // $8EA1 LDA #$0001
+static const CosimRun CLONE_RUN_CHANGE = {186 + 6, 18, 3};   // $8EC3-$8ED4, its BRA taken
+static const CosimRun CLONE_RUN_ANIM_TEST = {62, 4, 1};      // $8E41 DEC $0A : BNE
+static const CosimRun CLONE_RUN_ANIM_PICTURE = {236 + 46 + 108, 21 + 4 + 6, 5 + 1 + 1};  // $8E45-$8E61
+static const CosimRun CLONE_RUN_RTS = {40, 1, 0};
+static const CosimRun CLONE_RUN_BEAR = {334, 28, 7};         // $8E62-$8E7D
+static const CosimRun CLONE_RUN_COPY = {126, 11, 2};         // $8E7E-$8E88
+static const CosimRun CLONE_RUN_STEP_ACROSS = {470, 41, 8};  // $8DA1-$8DC5
+static const CosimRun CLONE_RUN_STEP_DOWN = {122, 10, 2};    // $8DDA-$8DE3
+static const CosimRun CLONE_RUN_STEP_ACTOR = {150, 12, 3};   // $8DC6-$8DD1, and $8DE4
+static const CosimRun CLONE_RUN_STEP_TAKE = {112, 8, 4};     // $8DD2-$8DD9, and $8DF0
+static const CosimRun CLONE_RUN_STEP_PLACE = {250, 21, 5};   // $8DF8-$8E0C
+static const CosimRun CLONE_RUN_STEP_FLAGS = {146, 8, 2};    // $8E0D or $8E15, to the RTS
+static const CosimRun CLONE_RUN_TAKEN = {6, 0, 0};
+
+static void clone_add(CosimRun* own, const CosimRun* r) {
+  own->cycles += r->cycles;
+  own->bytes += r->bytes;
+  own->dp += r->dp;
+}
+
+static int clone_frame_cycles(const CloneLog* log, bool stays,
+                              const CosimRegs* in) {
+  CosimRun own = {0, 0, 0};
+  int calls = 0;
+  clone_add(&own, &CLONE_RUN_LEAVE_TEST);
+  if (log->told_to_leave) {
+    clone_add(&own, &CLONE_RUN_TAKEN);
+    return cosim_run_cycles_dp(&own, fetch_fast(in), (in->d & 0x00ffu) != 0);
+  }
+
+  clone_add(&own, &CLONE_RUN_ANIMATE_CALL);
+  clone_add(&own, &CLONE_RUN_ANIM_TEST);
+  if (log->new_picture) {
+    clone_add(&own, &CLONE_RUN_ANIM_PICTURE);
+  } else {
+    clone_add(&own, &CLONE_RUN_TAKEN);
+    clone_add(&own, &CLONE_RUN_RTS);
+  }
+
+  if (log->copying) {
+    clone_add(&own, &CLONE_RUN_TAKEN);
+    clone_add(&own, &CLONE_RUN_COPY_CALL);
+    clone_add(&own, &CLONE_RUN_COPY);
+  } else {
+    clone_add(&own, &CLONE_RUN_CHASE_CALL);
+    clone_add(&own, &CLONE_RUN_BEAR);
+    calls += player_bearing_cycles(&log->players, in->fastrom);
+  }
+
+  // The step: each axis a ground test, and an actor test when that was clear.
+  for (int axis = 0; axis < 2; axis++) {
+    const CloneProbe* p = &log->probe[axis];
+    const TerrainRegs ground = {.blocked = p->ground, .probes = p->tiles};
+    clone_add(&own, axis == 0 ? &CLONE_RUN_STEP_ACROSS : &CLONE_RUN_STEP_DOWN);
+    calls += terrain_enemy_cycles(&ground, in->fastrom);
+    if (p->ground) {
+      clone_add(&own, &CLONE_RUN_TAKEN);
+      continue;
+    }
+    clone_add(&own, &CLONE_RUN_STEP_ACTOR);
+    clone_add(&own, p->someone ? &CLONE_RUN_TAKEN : &CLONE_RUN_STEP_TAKE);
+  }
+  calls += at_point_cycles(&log->at_point, in->fastrom);
+  clone_add(&own, &CLONE_RUN_STEP_PLACE);
+  if (!log->mirrored) clone_add(&own, &CLONE_RUN_TAKEN);
+  clone_add(&own, &CLONE_RUN_STEP_FLAGS);
+
+  if (!log->copying) clone_add(&own, log->nobody ? &CLONE_RUN_TAKEN : &CLONE_RUN_BRA);
+  if (stays) {
+    clone_add(&own, &CLONE_RUN_COUNT);
+    if (log->mode_changed) {
+      clone_add(&own, &CLONE_RUN_CHANGE);
+      calls += rng_cycles(log->drew_overflow, in->fastrom);
+    } else {
+      clone_add(&own, &CLONE_RUN_TAKEN);
+    }
+    clone_add(&own, &CLONE_RUN_TICKS);
+  }
+  return calls + cosim_run_cycles_dp(&own, fetch_fast(in),
+                                     (in->d & 0x00ffu) != 0);
+}
+
+// The tests put their scratch on page zero, and the tables are read through
+// the data bank, as for the zombies. So is the record, which has to be in the
+// WRAM bank `$81` mirrors, and the picture table, which has to be in the
+// cartridge. The direction and the walk cycle index it.
+static bool clone_frame_ok(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != CLONE_BANK) return false;
+  const uint16_t d = in->d;
+  const uint16_t pictures = wram_r16(w, (uint16_t)(d + CLONE_DP_PICTURES));
+  const uint16_t player = wram_r16(w, (uint16_t)(d + CLONE_DP_PLAYER));
+  return wram_r16(w, (uint16_t)(d + CLONE_DP_RECORD)) < 0x1f00 &&
+         pictures >= 0x8000u && pictures < 0xff00u &&
+         wram_r16(w, (uint16_t)(d + CLONE_DP_DIRECTION)) <= 8 &&
+         wram_r16(w, (uint16_t)(d + CLONE_DP_CYCLE)) < 4 &&
+         (player == 0 || player == 2);
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or for the
+// loop's way out, whose first two instructions load A and X. Carry and
+// overflow are the frame's where it wrote them and the thread's own where it
+// did not.
+static void shim_clone_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  CloneLog log = {0};
+  const bool stays = clone_frame(w, rom, in->d, &log);
+  cosim_cost(clone_frame_cycles(&log, stays, in));
+
+  out->pc = stays ? CLONE_YIELD_PC : CLONE_LEAVE_PC;
+  out->a = CLONE_YIELD_TICKS;
+  out->regs = stays ? COSIM_REG_A : 0;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V) |
+                          (stays ? 0 : PORT_P_N | PORT_P_Z));
+}
+
+static const uint32_t CLONE_FRAME_EXITS[] = {CLONE_YIELD_PC, CLONE_LEAVE_PC};
+
+// ---------------------------------------------------------------------------
+// The player's poses -- see `port/pose.h`
+// ---------------------------------------------------------------------------
+//
+// Three handlers, priced the dolls' way: each run from `tools/cycles816.py`
+// with the data bank at `$80`, branches not taken, a taken branch and every
+// `BRA` adding 6. The picture and the weapon's hiding are the same runs
+// whoever calls them, so they are billed at the end from the log's counts.
+static const CosimRun POSE_RUN_CHANGED = {68, 6, 2};  // $80:D53D-$D542
+static const CosimRun POSE_RUN_STAND_DELAY = {40, 4, 1};  // $80:D543-$D546
+static const CosimRun POSE_RUN_STAND_FIRE = {40, 4, 1};  // $80:D547-$D54A
+static const CosimRun POSE_RUN_STAND_SPECIAL = {68, 6, 2};  // $80:D54B-$D550
+static const CosimRun POSE_RUN_JMP = {18, 3, 0};  // $80:D551-$D553
+static const CosimRun POSE_RUN_RTS = {40, 1, 0};  // $80:D557-$D557
+static const CosimRun POSE_RUN_AGAIN = {40, 4, 1};  // $80:D4E9-$D4EC
+static const CosimRun POSE_RUN_SB_HEAD = {298, 27, 7};  // $80:D4F4-$D50C
+static const CosimRun POSE_RUN_SB_FIRING = {58, 7, 1};  // $80:D50D-$D513
+static const CosimRun POSE_RUN_SB_BAND_B = {40, 4, 1};  // $80:D514-$D517
+static const CosimRun POSE_RUN_SB_DELAY = {40, 4, 1};  // $80:D518-$D51B
+static const CosimRun POSE_RUN_SB_6C = {40, 4, 1};  // $80:D51F-$D522
+static const CosimRun POSE_RUN_SB_PLAIN = {46, 5, 1};  // $80:D526-$D52A
+static const CosimRun POSE_RUN_SB_SHOW = {178, 15, 3};  // $80:D52B-$D539
+static const CosimRun POSE_RUN_SHOW_HEAD = {98, 9, 2};  // $80:F300-$F306
+static const CosimRun POSE_RUN_SHOW_ORA = {92, 8, 0};  // $80:F307-$F30E
+static const CosimRun POSE_RUN_SHOW_AND = {80, 6, 0};  // $80:F30F-$F314
+static const CosimRun POSE_RUN_SHOW_TAIL = {278, 22, 2};  // $80:F315-$F326
+static const CosimRun POSE_RUN_WEAPON_OUT = {40, 4, 1};  // $80:ECD4-$ECD7
+static const CosimRun POSE_RUN_WEAPON_FACING = {40, 4, 1};  // $80:ECD8-$ECDB
+static const CosimRun POSE_RUN_WEAPON_PICTURE = {96, 11, 0};  // $80:ECDC-$ECE4
+static const CosimRun POSE_RUN_WEAPON_SHOW = {304, 23, 3};  // $80:ECE5-$ECF9
+static const CosimRun POSE_RUN_HIDE_TEST = {58, 7, 1};  // $80:ECFD-$ED03
+static const CosimRun POSE_RUN_HIDE = {126, 11, 1};  // $80:ED04-$ED0E
+static const CosimRun POSE_RUN_WB_HEAD = {316, 29, 7};  // $80:D65B-$D673
+static const CosimRun POSE_RUN_WB_FIRING = {40, 4, 1};  // $80:D674-$D677
+static const CosimRun POSE_RUN_WB_6C = {40, 4, 1};  // $80:D678-$D67B
+static const CosimRun POSE_RUN_WB_PLAIN = {48, 8, 0};  // $80:D67C-$D683
+static const CosimRun POSE_RUN_WB_SET = {40, 4, 1};  // $80:D684-$D687
+static const CosimRun POSE_RUN_WB_BAND_B = {48, 8, 0};  // $80:D688-$D68F
+static const CosimRun POSE_RUN_WB_6C_SET = {94, 13, 1};  // $80:D690-$D69C
+static const CosimRun POSE_RUN_WB_FIRING_SET = {36, 6, 0};  // $80:D69D-$D6A2
+static const CosimRun POSE_RUN_WB_END = {96, 5, 2};  // $80:D6A3-$D6A7
+static const CosimRun POSE_RUN_WALK_TIMER = {40, 4, 1};  // $80:D6AE-$D6B1
+static const CosimRun POSE_RUN_WALK_STEP = {58, 6, 0};  // $80:D6B2-$D6B7
+static const CosimRun POSE_RUN_STEP_PACE = {58, 7, 1};  // $80:D72A-$D730
+static const CosimRun POSE_RUN_STEP_SLOW = {30, 5, 0};  // $80:D731-$D735
+static const CosimRun POSE_RUN_STEP_FAST = {18, 3, 0};  // $80:D736-$D738
+static const CosimRun POSE_RUN_STEP_SHOW = {248, 22, 5};  // $80:D739-$D74E
+static const CosimRun POSE_RUN_WF_CHANGED = {40, 4, 1};  // $80:D720-$D723
+static const CosimRun POSE_RUN_JSR = {40, 3, 0};  // $80:D724-$D726
+static const CosimRun POSE_RUN_WF_DELAY = {40, 4, 1};  // $80:D70A-$D70D
+static const CosimRun POSE_RUN_WF_TIMER = {40, 4, 1};  // $80:D711-$D714
+static const CosimRun POSE_RUN_WF_STEP = {104, 11, 1};  // $80:D715-$D71F
+static const CosimRun POSE_RUN_TAKEN = {6, 0, 0};
+
+typedef struct {
+  CosimRun own;
+  const PoseLog* log;
+} PoseBill;
+
+static void pose_add(PoseBill* b, const CosimRun* r) {
+  b->own.cycles += r->cycles;
+  b->own.bytes += r->bytes;
+  b->own.dp += r->dp;
+}
+
+static void pose_add_n(PoseBill* b, const CosimRun* r, int n) {
+  for (int i = 0; i < n; i++) pose_add(b, r);
+}
+
+static void pose_taken(PoseBill* b) { pose_add(b, &POSE_RUN_TAKEN); }
+
+// `$80:ECD4`, reached by `JMP`. Every way of not showing the weapon is a
+// branch to the `JMP $ECFD` that hides it.
+static void pose_weapon_bill(PoseBill* b) {
+  static const CosimRun* const TESTS[] = {
+      &POSE_RUN_WEAPON_OUT, &POSE_RUN_WEAPON_FACING, &POSE_RUN_WEAPON_PICTURE};
+  static const PoseWeapon FAILS[] = {
+      POSE_WEAPON_NOT_OUT, POSE_WEAPON_NO_FACING, POSE_WEAPON_NO_PICTURE};
+  for (int i = 0; i < 3; i++) {
+    pose_add(b, TESTS[i]);
+    if (b->log->weapon == FAILS[i]) {
+      pose_taken(b);
+      pose_add(b, &POSE_RUN_JMP);
+      return;
+    }
+  }
+  pose_add(b, &POSE_RUN_WEAPON_SHOW);
+}
+
+// `$80:D4F4`.
+static void pose_stand_begin_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_SB_HEAD);
+  if (log->stand_firing) {
+    pose_add(b, &POSE_RUN_SB_FIRING);
+    pose_taken(b);  // its `BRA`
+  } else {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_SB_BAND_B);
+    if (log->stand_band_b) pose_add(b, &POSE_RUN_SB_DELAY);
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_SB_6C);
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_SB_PLAIN);
+  }
+  pose_add(b, &POSE_RUN_SB_SHOW);
+  pose_add(b, &POSE_RUN_JMP);
+  pose_weapon_bill(b);
+}
+
+// `$80:D65B`.
+static void pose_walk_begin_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_WB_HEAD);
+  if (log->walk_band_b) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_WB_SET);
+    if (log->walk == POSE_WALK_6C) {
+      pose_taken(b);
+      pose_add(b, &POSE_RUN_WB_6C_SET);
+    } else {
+      pose_add(b, &POSE_RUN_WB_BAND_B);
+    }
+    pose_taken(b);  // either's `BRA`
+  } else {
+    pose_add(b, &POSE_RUN_WB_FIRING);
+    if (log->walk == POSE_WALK_FIRING) {
+      pose_taken(b);
+      pose_add(b, &POSE_RUN_WB_FIRING_SET);
+    } else {
+      pose_add(b, &POSE_RUN_WB_6C);
+      if (log->walk == POSE_WALK_6C) {
+        pose_taken(b);
+        pose_add(b, &POSE_RUN_WB_6C_SET);
+      } else {
+        pose_add(b, &POSE_RUN_WB_PLAIN);
+      }
+      pose_taken(b);  // either's `BRA`
+    }
+  }
+  pose_add(b, &POSE_RUN_WB_END);
+}
+
+// The buttons changed: the `BNE` to `JMP $D4E9`, and the pose it starts.
+static void pose_again_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_JMP);
+  pose_add(b, &POSE_RUN_AGAIN);
+  if (b->log->moving) {
+    pose_add(b, &POSE_RUN_JMP);
+    pose_walk_begin_bill(b);
+  } else {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_JMP);
+    pose_stand_begin_bill(b);
+  }
+}
+
+// `$80:D72A`, reached by `JSR`; it ends in `$80:F300`'s `RTS`.
+static void pose_step_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_STEP_PACE);
+  if (b->log->pace == 4) {
+    pose_taken(b);
+  } else {
+    pose_add(b, &POSE_RUN_STEP_SLOW);
+    if (b->log->pace == 6) pose_taken(b);
+    else pose_add(b, &POSE_RUN_STEP_FAST);
+  }
+  pose_add(b, &POSE_RUN_STEP_SHOW);
+}
+
+static void pose_stand_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_CHANGED);
+  if (log->changed) {
+    pose_taken(b);
+    pose_again_bill(b);
+    return;
+  }
+  pose_add(b, &POSE_RUN_STAND_DELAY);
+  if (!log->delayed) {
+    pose_add(b, &POSE_RUN_STAND_FIRE);
+    pose_add(b, &POSE_RUN_STAND_SPECIAL);
+    if (log->restood) {
+      pose_add(b, &POSE_RUN_JMP);
+      pose_stand_begin_bill(b);
+      return;
+    }
+  }
+  pose_taken(b);
+  pose_add(b, &POSE_RUN_RTS);
+}
+
+static void pose_walk_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_CHANGED);
+  if (log->changed) {
+    pose_taken(b);
+    pose_again_bill(b);
+    return;
+  }
+  pose_add(b, &POSE_RUN_WALK_TIMER);
+  if (log->waiting) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_RTS);
+    return;
+  }
+  pose_add(b, &POSE_RUN_WALK_STEP);
+  pose_step_bill(b);
+}
+
+static void pose_walk_firing_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_CHANGED);
+  if (log->changed) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_WF_CHANGED);
+    if (log->hid_first) pose_add(b, &POSE_RUN_JSR);
+    else pose_taken(b);
+    pose_again_bill(b);
+    return;
+  }
+  pose_add(b, &POSE_RUN_WF_DELAY);
+  pose_taken(b);
+  pose_add(b, &POSE_RUN_WF_TIMER);
+  if (log->waiting) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_RTS);
+    return;
+  }
+  pose_add(b, &POSE_RUN_WF_STEP);
+  pose_step_bill(b);
+  pose_weapon_bill(b);
+}
+
+static int pose_total(PoseBill* b, const CosimRegs* in) {
+  const PoseLog* log = b->log;
+  // `$80:F300`: the `BMI` taken to the `AND`, or the `ORA` and its `BRA`.
+  pose_add_n(b, &POSE_RUN_SHOW_HEAD, log->frames);
+  pose_add_n(b, &POSE_RUN_SHOW_TAIL, log->frames);
+  pose_add_n(b, &POSE_RUN_SHOW_AND, log->frames_masked);
+  pose_add_n(b, &POSE_RUN_SHOW_ORA, log->frames - log->frames_masked);
+  pose_add_n(b, &POSE_RUN_TAKEN, log->frames);
+  // `$80:ECFD`: the `BEQ` taken past the store in the state that keeps it.
+  pose_add_n(b, &POSE_RUN_HIDE_TEST, log->hides);
+  pose_add_n(b, &POSE_RUN_RTS, log->hides);
+  pose_add_n(b, &POSE_RUN_TAKEN, log->hides_kept);
+  pose_add_n(b, &POSE_RUN_HIDE, log->hides - log->hides_kept);
+  return cosim_run_cycles_dp(&b->own, fetch_fast(in), (in->d & 0x00ffu) != 0);
+}
+
+// The tables are read through the data bank, and so are the two display
+// records and the three tables the page points at: the records have to be in
+// the WRAM bank `$80` mirrors, and the tables in the cartridge. The facing
+// and the state index tables too. Then the frame has to be one the port has.
+static bool pose_ok(Wram* scratch, const Rom* rom, const CosimRegs* in,
+                    uint16_t handler) {
+  if (!body_ok(in) || in->db != POSE_BANK) return false;
+  const uint16_t d = in->d;
+  const uint16_t facing = wram_r16(scratch, (uint16_t)(d + PSN_DP_DIR_HELD));
+  if (wram_r16(scratch, (uint16_t)(d + POSE_DP_RECORD)) >= 0x1f00 ||
+      wram_r16(scratch, (uint16_t)(d + POSE_DP_WEAPON)) >= 0x1f00 ||
+      wram_r16(scratch, (uint16_t)(d + POSE_DP_PICTURES)) < 0x8000u ||
+      wram_r16(scratch, (uint16_t)(d + POSE_DP_WEAPON_PICTURES)) < 0x8000u ||
+      wram_r16(scratch, (uint16_t)(d + POSE_DP_FRAMES)) < 0x8000u ||
+      wram_r16(scratch, (uint16_t)(d + POSE_DP_STATE)) >= 0x40 ||
+      wram_r16(scratch, (uint16_t)(d + POSE_DP_PICTURES_SET)) >= 0x10 ||
+      wram_r16(scratch, (uint16_t)(d + POSE_DP_PICTURES_ROW)) >= 0x40 ||
+      facing < 2 || facing > 0x12)
+    return false;
+  return pose_supported(scratch, rom, d, handler);
+}
+
+#define POSE_SHIM(name, handler)                                             \
+  static bool guard_##name(Wram* scratch, const Rom* rom,                    \
+                           const CosimRegs* in) {                            \
+    return pose_ok(scratch, rom, in, handler);                               \
+  }                                                                          \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    PoseLog log = {0};                                                       \
+    name(w, rom, in->d, &log);                                               \
+    PoseBill b = {{0, 0, 0}, &log};                                          \
+    name##_bill(&b);                                                         \
+    cosim_cost(pose_total(&b, in));                                          \
+    out->regs = 0;                                                           \
+    out->flags = 0;                                                          \
+    out->c = log.c;                                                          \
+    out->v = log.v;                                                          \
+    if (log.c_set) out->flags |= COSIM_FLAG_C;                               \
+    if (log.v_set) out->flags |= COSIM_FLAG_V;                               \
+  }
+
+POSE_SHIM(pose_stand, POSE_HANDLER_STAND)
+POSE_SHIM(pose_walk, POSE_HANDLER_WALK)
+POSE_SHIM(pose_walk_firing, POSE_HANDLER_WALK_FIRING)
+
+// ---------------------------------------------------------------------------
+// The evil dolls -- see `port/doll.h`
+// ---------------------------------------------------------------------------
+//
+// Six entries, priced the zombies' way: what the ROM would have run, from what
+// the log says happened. Each run is from `tools/cycles816.py --db 81`, with
+// branches not taken; a taken branch adds 6, and so does every `BRA`, which
+// the tool also counts as not taken. A run that ends in a `JSR`, `JSL` or
+// `RTS` includes it. The callees cost what their own entries charge.
+//
+// The small subroutines every state shares -- the picture, the walk cycle,
+// the aim and the facing -- are each the same run whoever calls them, so
+// they are billed in one go at the end from the log's counts.
+static const CosimRun DOLL_RUN_SEEK_BEGIN = {234, 20, 5};    // $81:AEA6-$AEB9
+static const CosimRun DOLL_RUN_SEEK_HIDE = {166, 15, 2};     // $AEBA-$AEC8
+static const CosimRun DOLL_RUN_SEEK_HIT = {46, 5, 1};        // $AEC9-$AECD
+static const CosimRun DOLL_RUN_SEEK_NEAR = {140, 13, 2};     // $AECE-$AEDA
+static const CosimRun DOLL_RUN_SEEK_FAR = {152, 14, 2};      // $AEDB-$AEE8
+static const CosimRun DOLL_RUN_SEEK_LEAVE = {90, 3, 1};      // $AEE9-$AEEB
+static const CosimRun DOLL_RUN_SEEK_GAPS = {386, 37, 6};     // $AEEC-$AF10
+static const CosimRun DOLL_RUN_NEG_SEEK = {30, 4, 0};        // $AEF6-$AEF9
+static const CosimRun DOLL_RUN_SEEK_CLOSE_Y = {58, 7, 1};    // $AF11-$AF17
+static const CosimRun DOLL_RUN_SEEK_SUM = {80, 7, 2};        // $AF18-$AF1E
+static const CosimRun DOLL_RUN_SEEK_CMP = {40, 4, 1};        // $AF1F-$AF22
+static const CosimRun DOLL_RUN_SEEK_DIAG = {68, 6, 2};       // $AF27-$AF2C
+static const CosimRun DOLL_RUN_SEEK_RNG = {102, 12, 0};      // $AF2D-$AF38
+static const CosimRun DOLL_RUN_JMP = {18, 3, 0};
+static const CosimRun DOLL_RUN_JSR = {40, 3, 0};
+static const CosimRun DOLL_RUN_RTS = {40, 1, 0};
+static const CosimRun DOLL_RUN_TAKEN = {6, 0, 0};
+static const CosimRun DOLL_RUN_KNOCK_FACE = {58, 7, 1};      // $AF4E-$AF54
+static const CosimRun DOLL_RUN_KNOCK_GROUND = {366, 30, 2};  // $AF55-$AF6E
+static const CosimRun DOLL_RUN_KNOCK_EDGE = {190, 10, 0};    // $AF6F-$AF78
+static const CosimRun DOLL_RUN_KNOCK_FLY = {240, 19, 4};     // $AF79-$AF8B
+static const CosimRun DOLL_RUN_FLY_TO = {456, 44, 8};        // $B470-$B49B
+static const CosimRun DOLL_RUN_NEG_FLY = {48, 7, 0};         // $B478-$B47E
+static const CosimRun DOLL_RUN_SWING_TEST = {40, 4, 1};      // $B04C-$B04F
+static const CosimRun DOLL_RUN_SWING = {502, 48, 6};         // $B050-$B07B
+static const CosimRun DOLL_RUN_WRAP = {18, 3, 0};            // $B07C-$B07E
+static const CosimRun DOLL_RUN_SWING_SHOW = {108, 8, 2};     // $B07F-$B086
+static const CosimRun DOLL_RUN_SWING_END = {86, 6, 1};       // $B087-$B08C
+static const CosimRun DOLL_RUN_SHOW_HEAD = {122, 11, 2};     // $B1A1-$B1A9
+static const CosimRun DOLL_RUN_SHOW_ORA = {92, 8, 0};        // $B1AA-$B1B1
+static const CosimRun DOLL_RUN_SHOW_AND = {80, 6, 0};        // $B1B2-$B1B7
+static const CosimRun DOLL_RUN_SHOW_TAIL = {268, 23, 1};     // $B1B8-$B1CA
+static const CosimRun DOLL_RUN_STEP_TEST = {40, 4, 1};       // $B09D-$B0A0
+static const CosimRun DOLL_RUN_STEP_AIM = {204, 15, 3};      // $B0A2-$B0B0
+static const CosimRun DOLL_RUN_STEP_ORDER = {96, 8, 3};      // $B0B1-$B0B8
+static const CosimRun DOLL_RUN_STEP_X = {230, 18, 5};        // $B0B9-$B0CA
+static const CosimRun DOLL_RUN_STEP_INC = {50, 2, 1};        // $B0CB-$B0CC
+static const CosimRun DOLL_RUN_STEP_Y = {230, 18, 5};        // $B0CD-$B0DE
+static const CosimRun DOLL_RUN_STEP_TRIED = {40, 4, 1};      // $B0DF-$B0E2
+static const CosimRun DOLL_RUN_STEP_GO = {70, 8, 0};         // $B0E4-$B0EB
+static const CosimRun DOLL_RUN_STEP_COMMIT = {182, 16, 5};   // $B0EC-$B0FB
+static const CosimRun DOLL_RUN_STEP_SHOW = {86, 8, 2};       // $B0FF-$B106
+static const CosimRun DOLL_RUN_AIM = {492, 49, 8};           // $B24D-$B27D
+static const CosimRun DOLL_RUN_DEX = {12, 1, 0};             // $B257
+static const CosimRun DOLL_RUN_NEG_AIM = {48, 7, 0};         // $B25A-$B260
+static const CosimRun DOLL_RUN_FACE = {408, 40, 5};          // $B27E-$B2A3
+static const CosimRun DOLL_RUN_FACE_DOWN = {66, 7, 0};       // $B287-$B28D
+static const CosimRun DOLL_RUN_FACE_ACROSS = {42, 5, 0};     // $B294-$B298
+static const CosimRun DOLL_RUN_THROW_TEST = {40, 4, 1};      // $AFB3-$AFB6
+static const CosimRun DOLL_RUN_THROW_AIM = {362, 28, 8};     // $AFB7-$AFD2
+static const CosimRun DOLL_RUN_THROW_SHOW = {256, 22, 6};    // $AFD3-$AFE8
+static const CosimRun DOLL_RUN_THROW_SPAWN = {182, 20, 2};   // $AFE9-$AFFC
+static const CosimRun DOLL_RUN_LAND_AIM = {316, 23, 7};      // $AFFE-$B014
+static const CosimRun DOLL_RUN_LAND_CMP = {68, 6, 2};        // $B015-$B01A
+static const CosimRun DOLL_RUN_LAND_ACROSS = {96, 8, 3};     // $B01B-$B022
+static const CosimRun DOLL_RUN_LAND_DOWN = {84, 6, 3};       // $B023-$B028
+static const CosimRun DOLL_RUN_LAND_SHOW = {144, 14, 2};     // $B029-$B036
+static const CosimRun DOLL_RUN_LAND_SPAWN = {222, 21, 2};    // $B037-$B04B
+static const CosimRun DOLL_RUN_DASH_START = {326, 27, 4};    // $B108-$B122
+static const CosimRun DOLL_RUN_DASH_SET = {98, 9, 2};        // $B123-$B12B
+static const CosimRun DOLL_RUN_DASH_TEST = {62, 4, 1};       // $B12C-$B12F
+static const CosimRun DOLL_RUN_DASH_STEP = {282, 22, 6};     // $B133-$B148
+static const CosimRun DOLL_RUN_DASH_MOVE = {112, 8, 4};      // $B149-$B150
+static const CosimRun DOLL_RUN_DASH_CYCLE = {70, 8, 1};      // $B151-$B158
+static const CosimRun DOLL_RUN_DASH_SHOW = {86, 8, 2};       // $B15C-$B163
+static const CosimRun DOLL_RUN_KNOCKED = {160, 13, 1};       // $AF8C-$AF98
+static const CosimRun DOLL_RUN_KNOCKED_LAND = {64, 8, 1};    // $AF9A-$AFA1
+static const CosimRun DOLL_RUN_RISE = {256, 20, 4};          // $B4D3-$B4E6
+static const CosimRun DOLL_RUN_RISE_SLOW = {50, 2, 1};       // $B4E7-$B4E8
+static const CosimRun DOLL_RUN_FLY_HEAD = {68, 5, 2};        // $B49C-$B4A0
+static const CosimRun DOLL_RUN_FLY_CMP = {30, 5, 0};         // $B4A1-$B4A5
+static const CosimRun DOLL_RUN_FLY_ITER = {162, 15, 3};      // $B4A6-$B4B4
+static const CosimRun DOLL_RUN_FLY_MID = {96, 7, 3};         // $B4B5-$B4BB
+static const CosimRun DOLL_RUN_FLY_END = {68, 3, 1};         // $B4D0-$B4D2
+static const CosimRun DOLL_RUN_LEAP_TEST = {40, 4, 1};       // $B203-$B206
+static const CosimRun DOLL_RUN_LEAP_SHOW = {114, 10, 2};     // $B207-$B210
+static const CosimRun DOLL_RUN_LEAP_FLY = {160, 13, 1};      // $B211-$B21D
+static const CosimRun DOLL_RUN_LEAP_BMI = {12, 2, 0};        // $B21E-$B21F
+static const CosimRun DOLL_RUN_LEAP_LAND = {222, 23, 2};     // $B221-$B237
+static const CosimRun DOLL_RUN_HANDLER = {168, 11, 0};       // $80:8475-$847F
+static const CosimRun DOLL_RUN_TICK_TEST = {40, 4, 1};       // $B377-$B37A
+static const CosimRun DOLL_RUN_TICK_THROW = {40, 3, 1};      // $B37B-$B37D
+static const CosimRun DOLL_RUN_TICK_STEP = {62, 4, 1};       // $B37E-$B381
+static const CosimRun DOLL_RUN_TICK_RESET = {56, 4, 2};      // $B382-$B385
+static const CosimRun DOLL_RUN_TICK_MOVE = {204, 13, 3};     // $B386-$B392
+
+typedef struct {
+  CosimRun own;
+  int calls;
+  const CosimRegs* in;
+  const DollLog* log;
+  int next;  // the next probe
+  const Rom* rom;
+} DollBill;
+
+static void doll_add(DollBill* b, const CosimRun* r) {
+  b->own.cycles += r->cycles;
+  b->own.bytes += r->bytes;
+  b->own.dp += r->dp;
+}
+
+static void doll_add_n(DollBill* b, const CosimRun* r, int n) {
+  for (int i = 0; i < n; i++) doll_add(b, r);
+}
+
+static void doll_ground(DollBill* b) {
+  const DollProbe* p = &b->log->probe[b->next++];
+  const TerrainRegs r = {.blocked = p->blocked, .probes = p->tiles};
+  b->calls += terrain_enemy_cycles(&r, b->in->fastrom);
+}
+
+// The runs whose count the log keeps, whoever called them.
+static void doll_shared_bill(DollBill* b) {
+  const DollLog* log = b->log;
+  // `$81:B1A1`: the `BMI` taken to the `AND`, or the `ORA` and its `BRA`.
+  const int ored = log->frames - log->frames_masked;
+  doll_add_n(b, &DOLL_RUN_SHOW_HEAD, log->frames);
+  doll_add_n(b, &DOLL_RUN_SHOW_TAIL, log->frames);
+  doll_add_n(b, &DOLL_RUN_SHOW_AND, log->frames_masked);
+  doll_add_n(b, &DOLL_RUN_TAKEN, log->frames_masked);
+  doll_add_n(b, &DOLL_RUN_SHOW_ORA, ored);
+  doll_add_n(b, &DOLL_RUN_TAKEN, ored);
+  // The walk cycle: `LDA #$0000` when it wraps, the `BCC` taken when not.
+  doll_add_n(b, &DOLL_RUN_WRAP, log->wraps);
+  doll_add_n(b, &DOLL_RUN_TAKEN, log->strides - log->wraps);
+  // `$81:B24D`, priced with both `DEX`s and both negations run. An axis that
+  // was positive took the `BNE` and the `BPL`; negative, the `BNE`; zero, the
+  // `BPL`.
+  const int axes = 2 * log->aims;
+  const int positive = axes - log->aims_negated - log->aims_level;
+  doll_add_n(b, &DOLL_RUN_AIM, log->aims);
+  b->own.cycles -= axes * (DOLL_RUN_DEX.cycles + DOLL_RUN_NEG_AIM.cycles);
+  b->own.bytes -= axes * (DOLL_RUN_DEX.bytes + DOLL_RUN_NEG_AIM.bytes);
+  doll_add_n(b, &DOLL_RUN_TAKEN, 2 * positive);
+  doll_add_n(b, &DOLL_RUN_TAKEN, log->aims_negated);
+  doll_add_n(b, &DOLL_RUN_NEG_AIM, log->aims_negated);
+  doll_add_n(b, &DOLL_RUN_TAKEN, log->aims_level);
+  doll_add_n(b, &DOLL_RUN_DEX, log->aims_level);
+  // `$81:B27E`, priced with both sums run; a `BEQ` taken skips each.
+  doll_add_n(b, &DOLL_RUN_FACE, log->faced);
+  b->own.cycles -= log->faced * (DOLL_RUN_FACE_DOWN.cycles + DOLL_RUN_FACE_ACROSS.cycles);
+  b->own.bytes -= log->faced * (DOLL_RUN_FACE_DOWN.bytes + DOLL_RUN_FACE_ACROSS.bytes);
+  doll_add_n(b, &DOLL_RUN_FACE_DOWN, log->faced_down);
+  doll_add_n(b, &DOLL_RUN_FACE_ACROSS, log->faced_across);
+  doll_add_n(b, &DOLL_RUN_TAKEN, 2 * log->faced - log->faced_down - log->faced_across);
+}
+
+// `$81:B470`, priced with both negations run.
+static void doll_fly_to_bill(DollBill* b) {
+  doll_add(b, &DOLL_RUN_FLY_TO);
+  b->own.cycles -= 2 * DOLL_RUN_NEG_FLY.cycles;
+  b->own.bytes -= 2 * DOLL_RUN_NEG_FLY.bytes;
+  doll_add_n(b, &DOLL_RUN_NEG_FLY, b->log->flights_negated);
+  doll_add_n(b, &DOLL_RUN_TAKEN, 2 - b->log->flights_negated);
+}
+
+// `$81:B4D3` and `$81:B49C`, each reached by a `JSR` its caller's run has.
+static void doll_flight_bill(DollBill* b) {
+  const DollLog* log = b->log;
+  doll_add(b, &DOLL_RUN_RISE);
+  doll_add(b, log->slowed ? &DOLL_RUN_RISE_SLOW : &DOLL_RUN_TAKEN);
+  doll_add(b, &DOLL_RUN_RTS);
+  // Each loop is a `CMP : BCC` per pixel and one more, taken, to leave.
+  const int pixels[2] = {log->flight_x, log->flight_y};
+  doll_add(b, &DOLL_RUN_FLY_HEAD);
+  for (int i = 0; i < 2; i++) {
+    doll_add_n(b, &DOLL_RUN_FLY_CMP, pixels[i] + 1);
+    doll_add_n(b, &DOLL_RUN_FLY_ITER, pixels[i]);
+    doll_add_n(b, &DOLL_RUN_TAKEN, pixels[i] + 1);  // the `BRA`s, and the exit
+    doll_add(b, i == 0 ? &DOLL_RUN_FLY_MID : &DOLL_RUN_FLY_END);
+  }
+}
+
+static void doll_swing_bill(DollBill* b) {
+  doll_add(b, &DOLL_RUN_SWING_TEST);
+  if (b->log->swing_waited) {
+    doll_add(b, &DOLL_RUN_TAKEN);
+  } else {
+    doll_add(b, &DOLL_RUN_SWING);
+    doll_add(b, &DOLL_RUN_SWING_SHOW);
+  }
+  doll_add(b, &DOLL_RUN_SWING_END);
+}
+
+static void doll_spawn_bill(DollBill* b) {
+  b->calls += thread_spawn_cycles(b->log->axe_slot, b->rom, b->in->fastrom);
+}
+
+// `$81:AFB3`, reached by `JSR` or `JMP`, ending in its `RTS`.
+static void doll_throw_bill(DollBill* b) {
+  doll_add(b, &DOLL_RUN_THROW_TEST);
+  if (b->log->threw) {
+    doll_add(b, &DOLL_RUN_THROW_AIM);
+    doll_add(b, &DOLL_RUN_THROW_SHOW);
+    doll_add(b, &DOLL_RUN_THROW_SPAWN);
+    doll_spawn_bill(b);
+  } else {
+    doll_add(b, &DOLL_RUN_TAKEN);
+  }
+  doll_add(b, &DOLL_RUN_RTS);
+}
+
+// `$81:B09D`, the probes in the order the step made them.
+static void doll_step_bill(DollBill* b) {
+  const DollLog* log = b->log;
+  doll_add(b, &DOLL_RUN_STEP_TEST);
+  if (log->step_waited) {
+    doll_add(b, &DOLL_RUN_RTS);
+    return;
+  }
+  doll_add(b, &DOLL_RUN_TAKEN);
+  doll_add(b, &DOLL_RUN_STEP_AIM);
+  doll_add(b, &DOLL_RUN_STEP_ORDER);
+  if (!log->across_first) doll_add(b, &DOLL_RUN_TAKEN);
+  bool across = log->across_first, tried = false;
+  for (;;) {
+    if (across) {
+      doll_add(b, &DOLL_RUN_STEP_X);
+      const bool blocked = log->probe[b->next].blocked;
+      doll_ground(b);
+      if (!blocked) break;
+      doll_add(b, &DOLL_RUN_STEP_INC);
+      tried = true;
+    }
+    doll_add(b, &DOLL_RUN_STEP_Y);
+    const bool blocked = log->probe[b->next].blocked;
+    doll_ground(b);
+    if (!blocked) break;
+    doll_add(b, &DOLL_RUN_STEP_TRIED);
+    if (tried) {
+      doll_add(b, &DOLL_RUN_RTS);
+      return;
+    }
+    doll_add(b, &DOLL_RUN_TAKEN);
+    across = true;
+  }
+  // The `BCC` taken to the step.
+  doll_add(b, &DOLL_RUN_TAKEN);
+  doll_add(b, &DOLL_RUN_STEP_GO);
+  if (log->facing_none) {
+    doll_add(b, &DOLL_RUN_TAKEN);
+    doll_add(b, &DOLL_RUN_RTS);
+    return;
+  }
+  doll_add(b, &DOLL_RUN_STEP_COMMIT);
+  doll_add(b, &DOLL_RUN_STEP_SHOW);
+}
+
+// `$81:B12C`'s body, entered or fallen into.
+static void doll_dash_bill(DollBill* b) {
+  doll_add(b, &DOLL_RUN_DASH_TEST);
+  if (b->log->dash_spent) {
+    doll_add(b, &DOLL_RUN_TAKEN);
+    doll_add(b, &DOLL_RUN_JMP);
+    doll_add(b, &DOLL_RUN_SEEK_BEGIN);
+    return;
+  }
+  doll_add(b, &DOLL_RUN_JSR);
+  for (int i = 0; i < 2; i++) {
+    doll_add(b, &DOLL_RUN_DASH_STEP);
+    const bool blocked = b->log->probe[b->next].blocked;
+    doll_ground(b);
+    doll_add(b, blocked ? &DOLL_RUN_TAKEN : &DOLL_RUN_DASH_MOVE);
+    doll_add(b, &DOLL_RUN_DASH_CYCLE);
+    doll_add(b, &DOLL_RUN_DASH_SHOW);
+  }
+}
+
+static void doll_dash_start_bill(DollBill* b) {
+  doll_add(b, &DOLL_RUN_DASH_START);
+  if (b->log->dash_short) {
+    doll_add(b, &DOLL_RUN_TAKEN);
+    doll_add(b, &DOLL_RUN_JMP);
+    doll_add(b, &DOLL_RUN_SEEK_BEGIN);
+    return;
+  }
+  doll_add(b, &DOLL_RUN_DASH_SET);
+  doll_dash_bill(b);
+}
+
+// `$81:AF4E`, reached by `JMP`.
+static void doll_knock_bill(DollBill* b) {
+  const DollKnock k = b->log->knock;
+  doll_add(b, &DOLL_RUN_KNOCK_FACE);
+  if (k != DOLL_KNOCK_FACELESS) {
+    doll_add(b, &DOLL_RUN_KNOCK_GROUND);
+    doll_ground(b);
+    if (k != DOLL_KNOCK_GROUND) {
+      doll_add(b, &DOLL_RUN_KNOCK_EDGE);
+      b->calls += bounds_cycles(b->log->knock_edge, b->in->fastrom);
+      if (k == DOLL_KNOCK_FLEW) {
+        doll_add(b, &DOLL_RUN_KNOCK_FLY);
+        doll_fly_to_bill(b);
+        return;
+      }
+    }
+  }
+  doll_add(b, &DOLL_RUN_TAKEN);
+  doll_add(b, &DOLL_RUN_RTS);
+}
+
+static void doll_seek_bill(DollBill* b) {
+  const DollLog* log = b->log;
+  const DollSeek s = log->seek;
+  doll_add(b, &DOLL_RUN_SEEK_HIDE);
+  if (s == DOLL_KNOCKED_BACK) {
+    doll_add(b, &DOLL_RUN_SEEK_HIT);
+    doll_knock_bill(b);
+    return;
+  }
+  doll_add(b, &DOLL_RUN_TAKEN);
+  doll_add(b, &DOLL_RUN_SEEK_NEAR);
+  b->calls += nearest_cycles(&log->nearest, b->in->fastrom);
+  if (log->far) {
+    doll_add(b, &DOLL_RUN_SEEK_FAR);
+    b->calls += player_in_range_cycles(&log->players, b->in->fastrom);
+    if (s == DOLL_LEFT) {
+      doll_add(b, &DOLL_RUN_SEEK_LEAVE);
+      return;
+    }
+  }
+  doll_add(b, &DOLL_RUN_TAKEN);
+  // Both gaps, priced with both negations run.
+  doll_add(b, &DOLL_RUN_SEEK_GAPS);
+  b->own.cycles -= 2 * DOLL_RUN_NEG_SEEK.cycles;
+  b->own.bytes -= 2 * DOLL_RUN_NEG_SEEK.bytes;
+  doll_add_n(b, &DOLL_RUN_NEG_SEEK, log->gaps_negated);
+  doll_add_n(b, &DOLL_RUN_TAKEN, 2 - log->gaps_negated);
+
+  if (log->near_across) {
+    doll_add(b, &DOLL_RUN_SEEK_CLOSE_Y);
+    if (s == DOLL_SWUNG) {
+      doll_add(b, &DOLL_RUN_TAKEN);
+      doll_add(b, &DOLL_RUN_JMP);
+      doll_swing_bill(b);
+      return;
+    }
+  } else {
+    doll_add(b, &DOLL_RUN_TAKEN);
+  }
+  doll_add(b, &DOLL_RUN_SEEK_SUM);
+  if (s == DOLL_SWUNG_ON_TOP) {
+    doll_add(b, &DOLL_RUN_TAKEN);
+    doll_add(b, &DOLL_RUN_JMP);
+    doll_swing_bill(b);
+    return;
+  }
+  doll_add(b, &DOLL_RUN_SEEK_CMP);
+  if (s != DOLL_DASHED_DOWN) doll_add(b, &DOLL_RUN_SEEK_CMP);
+  if (s == DOLL_DASHED_DOWN || s == DOLL_DASHED_ACROSS) {
+    doll_add(b, &DOLL_RUN_TAKEN);
+    doll_add(b, &DOLL_RUN_JMP);
+    doll_dash_start_bill(b);
+    return;
+  }
+  doll_add(b, &DOLL_RUN_SEEK_DIAG);
+  if (s == DOLL_THREW_DIAGONAL) {
+    doll_add(b, &DOLL_RUN_TAKEN);
+    doll_add(b, &DOLL_RUN_JSR);
+    doll_throw_bill(b);
+    doll_add(b, &DOLL_RUN_JMP);
+    doll_step_bill(b);
+    return;
+  }
+  doll_add(b, &DOLL_RUN_SEEK_RNG);
+  b->calls += rng_cycles(log->drew_overflow, b->in->fastrom);
+  if (s == DOLL_THREW_AT_RANDOM) {
+    doll_add(b, &DOLL_RUN_TAKEN);
+    doll_add(b, &DOLL_RUN_JMP);
+    doll_throw_bill(b);
+    return;
+  }
+  doll_add(b, &DOLL_RUN_JMP);
+  doll_step_bill(b);
+}
+
+static void doll_knocked_bill(DollBill* b) {
+  const DollLog* log = b->log;
+  doll_add(b, &DOLL_RUN_KNOCKED);
+  doll_flight_bill(b);
+  if (!log->landed) {
+    doll_add(b, &DOLL_RUN_RTS);
+    return;
+  }
+  doll_add(b, &DOLL_RUN_TAKEN);
+  doll_add(b, &DOLL_RUN_KNOCKED_LAND);
+  // `$81:AFFE`, the throw on landing.
+  doll_add(b, &DOLL_RUN_LAND_AIM);
+  doll_add(b, &DOLL_RUN_LAND_CMP);
+  if (log->landing_across) {
+    doll_add(b, &DOLL_RUN_LAND_ACROSS);
+    doll_add(b, &DOLL_RUN_TAKEN);  // its `BRA`
+  } else {
+    doll_add(b, &DOLL_RUN_TAKEN);
+    doll_add(b, &DOLL_RUN_LAND_DOWN);
+  }
+  doll_add(b, &DOLL_RUN_LAND_SHOW);
+  doll_add(b, &DOLL_RUN_LAND_SPAWN);
+  doll_spawn_bill(b);
+}
+
+static void doll_leap_out_bill(DollBill* b) {
+  const DollLog* log = b->log;
+  doll_add(b, &DOLL_RUN_LEAP_TEST);
+  doll_add(b, log->showed ? &DOLL_RUN_LEAP_SHOW : &DOLL_RUN_TAKEN);
+  doll_add(b, &DOLL_RUN_LEAP_FLY);
+  doll_flight_bill(b);
+  if (log->landed && !log->landed_below) {
+    doll_add(b, &DOLL_RUN_TAKEN);
+  } else {
+    doll_add(b, &DOLL_RUN_LEAP_BMI);
+    if (!log->landed) {
+      doll_add(b, &DOLL_RUN_RTS);
+      return;
+    }
+    doll_add(b, &DOLL_RUN_TAKEN);
+  }
+  doll_add(b, &DOLL_RUN_LEAP_LAND);
+  doll_add(b, &DOLL_RUN_HANDLER);
+  doll_add(b, &DOLL_RUN_RTS);
+}
+
+static void doll_tick_bill(DollBill* b) {
+  doll_add(b, &DOLL_RUN_TICK_TEST);
+  doll_add(b, b->log->tick_threw ? &DOLL_RUN_TICK_THROW : &DOLL_RUN_TAKEN);
+  doll_add(b, &DOLL_RUN_TICK_STEP);
+  doll_add(b, b->log->tick_reset ? &DOLL_RUN_TICK_RESET : &DOLL_RUN_TAKEN);
+  doll_add(b, &DOLL_RUN_TICK_MOVE);
+}
+
+static int doll_total(DollBill* b) {
+  doll_shared_bill(b);
+  return b->calls + cosim_run_cycles_dp(&b->own, fetch_fast(b->in),
+                                        (b->in->d & 0x00ffu) != 0);
+}
+
+// The tests put their scratch on page zero, as for the zombies, and the
+// tables are read through the data bank. So are the doll's two records, which
+// have to be in the WRAM that bank `$81` mirrors.
+static bool doll_page_ok(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != DOLL_BANK) return false;
+  return wram_r16(w, (uint16_t)(in->d + DOLL_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + DOLL_DP_AXE)) < 0x1f00;
+}
+
+// The animation table `$16` names is read through the data bank too, so it
+// has to be in the cartridge, and what indexes it has to stay there.
+static bool doll_pictures_ok(const Wram* w, const CosimRegs* in) {
+  const uint16_t frames = wram_r16(w, (uint16_t)(in->d + DOLL_DP_FRAMES));
+  return doll_page_ok(w, in) && frames >= 0x8000u && frames < 0xff00u &&
+         wram_r16(w, (uint16_t)(in->d + DOLL_DP_FACING)) < 0x40 &&
+         wram_r16(w, (uint16_t)(in->d + DOLL_DP_STRIDE)) < 0x10;
+}
+
+// Landing from a knock-back aims at the target the page names.
+static bool doll_knocked_ok(const Wram* w, const CosimRegs* in) {
+  return doll_pictures_ok(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + DOLL_DP_TARGET)) < 0x1f00;
+}
+
+static void doll_flags_out(const DollLog* log, CosimRegs* out) {
+  out->regs = 0;
+  out->flags = 0;
+  out->c = log->c;
+  out->v = log->v;
+  if (log->c_set) out->flags |= COSIM_FLAG_C;
+  if (log->v_set) out->flags |= COSIM_FLAG_V;
+}
+
+#define DOLL_STATE_SHIM(name, call, bill)                                    \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    DollLog log = {0};                                                       \
+    call(w, rom, in->d, &log);                                               \
+    DollBill b = {{0, 0, 0}, 0, in, &log, 0, rom};                                \
+    bill(&b);                                                                \
+    cosim_cost(doll_total(&b));                                              \
+    doll_flags_out(&log, out);                                               \
+  }
+
+static void doll_seek_begin_bill(DollBill* b) { doll_add(b, &DOLL_RUN_SEEK_BEGIN); }
+
+DOLL_STATE_SHIM(doll_seek_begin, doll_seek_begin, doll_seek_begin_bill)
+DOLL_STATE_SHIM(doll_seek, doll_seek, doll_seek_bill)
+DOLL_STATE_SHIM(doll_dash, doll_dash, doll_dash_bill)
+DOLL_STATE_SHIM(doll_knocked, doll_knocked, doll_knocked_bill)
+DOLL_STATE_SHIM(doll_leap_out, doll_leap_out, doll_leap_out_bill)
+
+// The tick leaves A holding the doll's Y, from its last `LDA`, and Y its
+// record. Carry and overflow are the state body's, which it passes through.
+static void shim_doll_tick(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  DollLog log = {0};
+  doll_tick(w, in->d, &log);
+  DollBill b = {{0, 0, 0}, 0, in, &log, 0, rom};
+  doll_tick_bill(&b);
+  cosim_cost(doll_total(&b));
+  out->a = wram_r16(w, (uint16_t)(in->d + DOLL_DP_Y));
+  out->x = in->x;
+  out->y = wram_r16(w, (uint16_t)(in->d + DOLL_DP_RECORD));
+  out->regs = COSIM_REG_A | COSIM_REG_Y;
+  out->n = (out->a & 0x8000u) != 0;
+  out->z = out->a == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+}
+
+// A whole frame of the doll's loop: the state body by computed `RTS`, the
+// tick, and `STZ $5A : LDA #$0001` back to the yield. One log serves both
+// pieces, since the tick shares none of the state bodies' counts.
+static const CosimRun DOLL_RUN_FRAME_DISPATCH = {142, 8, 1};  // $B2DF-$B2E6
+static const CosimRun DOLL_RUN_FRAME_TICK = {80, 7, 1};       // JSR : LDA $0A : BEQ
+static const CosimRun DOLL_RUN_FRAME_AGAIN = {46, 5, 1};      // STZ $5A : LDA #1
+
+static bool doll_frame_ok(const Wram* w, const CosimRegs* in) {
+  return doll_knocked_ok(w, in) && doll_frame_supported(w, in->d);
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or for the
+// loop's way out with `$0A` there. Carry and overflow are the state body's
+// where it wrote them, and the thread's own where it did not.
+static void shim_doll_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  DollLog log = {0};
+  const bool stays = doll_frame(w, rom, in->d, &log);
+
+  DollBill b = {{0, 0, 0}, 0, in, &log, 0, rom};
+  doll_add(&b, &DOLL_RUN_FRAME_DISPATCH);
+  switch (log.state) {
+    case DOLL_STATE_SEEK_BEGIN: doll_seek_begin_bill(&b); break;
+    case DOLL_STATE_SEEK: doll_seek_bill(&b); break;
+    case DOLL_STATE_DASH: doll_dash_bill(&b); break;
+    case DOLL_STATE_KNOCKED: doll_knocked_bill(&b); break;
+    default: doll_leap_out_bill(&b); break;
+  }
+  doll_add(&b, &DOLL_RUN_FRAME_TICK);
+  doll_tick_bill(&b);
+  if (stays) {
+    doll_add(&b, &DOLL_RUN_TAKEN);
+    doll_add(&b, &DOLL_RUN_FRAME_AGAIN);
+  }
+  cosim_cost(doll_total(&b));
+
+  out->a = stays ? DOLL_YIELD_TICKS
+                 : wram_r16(w, (uint16_t)(in->d + DOLL_DP_LEAVE));
+  out->regs = COSIM_REG_A;
+  out->pc = stays ? DOLL_FRAME_YIELD_PC : DOLL_FRAME_LEAVE_PC;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V));
+}
+
+static const uint32_t DOLL_FRAME_EXITS[] = {DOLL_FRAME_YIELD_PC,
+                                            DOLL_FRAME_LEAVE_PC};
 
 static const uint32_t VICTIMS_YIELD_EXITS[] = {VICTIMS_YIELD_PC};
 static const uint32_t VICTIMS_RESUME_EXITS[] = {
@@ -8228,6 +9657,30 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 14,
     },
     {
+        .name = "camera_scroll",
+        .symbol = "$80:A937",
+        .entry = CAMERA_SCROLL_ENTRY,
+        .ret_op = 0x80a9cb,  // `camera_follow`'s, which the fourth call ends on
+        .ret_kind = COSIM_RTL,
+        .run = shim_camera_scroll,
+        .supported = guard_camera_scroll,
+        .uncalled = true,  // a vblank job, reached by the dispatcher's `RTL`
+        .cycles = 4 * 1062 + 3 * 54,
+        // Two thunks' return addresses, and `camera_follow`'s own 14.
+        .stack_bytes = 20,
+    },
+    {
+        .name = "pause_check",
+        .symbol = "$80:89B0",
+        .entry = PAUSE_CHECK_PC,
+        .ret_op = PAUSE_CHECK_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_pause_check,
+        .accepts = accepts_pause_check,
+        .cycles = 216,
+        .stack_bytes = 0,
+    },
+    {
         .name = "actor_aligned",
         .symbol = "$80:B379",
         .entry = 0x80b379,
@@ -8964,6 +10417,128 @@ static const CosimRoutine ROUTINES[] = {
                  ZOMBIE_FAST_ANIMATE_RTS_PC, shim_zombie_animate_8c17,
                  zombie_slow_ok, true, 0),
 #undef ZOMBIE_ENTRY
+    // The zombies' and the dolls' loops, a frame at a time: entered where
+    // `thread_yield` returns, and left by the next `JSL` to it or by the
+    // loop's way out. The calls inside are C calls, so the stack the ROM
+    // pushes under them is waived.
+#define ZOMBIE_FRAME_ENTRY(n, sym, thread)                                   \
+    {                                                                        \
+        .name = #n,                                                          \
+        .symbol = sym,                                                       \
+        .entry = ZOMBIE_##thread##_FRAME_PC,                                 \
+        .run = shim_##n,                                                     \
+        .accepts = n##_ok,                                                   \
+        COSIM_EXITS(ZOMBIE_##thread##_FRAME_EXITS),                          \
+        .uncalled = true,                                                    \
+        .cycles = 9000,                                                      \
+        .stack_bytes = 16,                                                   \
+    }
+    ZOMBIE_FRAME_ENTRY(zombie_87f8_frame, "$81:8834", 87F8),
+    ZOMBIE_FRAME_ENTRY(zombie_88ca_frame, "$81:890B", 88CA),
+    ZOMBIE_FRAME_ENTRY(zombie_8c17_frame, "$81:8C58", 8C17),
+#undef ZOMBIE_FRAME_ENTRY
+    {
+        .name = "doll_frame",
+        .symbol = "$81:B2DF",
+        .entry = DOLL_FRAME_PC,
+        .run = shim_doll_frame,
+        .accepts = doll_frame_ok,
+        COSIM_EXITS(DOLL_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        .stack_bytes = 16,
+    },
+#define DOLL_ENTRY(n, sym, pc, rts, shim, ok, called, stack)                 \
+    {                                                                        \
+        .name = n,                                                           \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .ret_op = rts,                                                       \
+        .ret_kind = COSIM_RTS,                                               \
+        .run = shim,                                                         \
+        .accepts = ok,                                                       \
+        .uncalled = !(called),                                               \
+        .cycles = 3000,                                                      \
+        .stack_bytes = stack,                                                \
+    }
+    // The evil dolls' state bodies, entered by the thread's computed `RTS`,
+    // and the tick its loop calls after each. See `port/doll.h`.
+    DOLL_ENTRY("doll_seek_begin", "$81:AEA6", DOLL_SEEK_BEGIN_PC,
+               DOLL_SEEK_BEGIN_RTS_PC, shim_doll_seek_begin, doll_page_ok,
+               false, 0),
+    DOLL_ENTRY("doll_seek", "$81:AEBA", DOLL_SEEK_PC, DOLL_SEEK_RTS_PC,
+               shim_doll_seek, doll_pictures_ok, false, 12),
+    DOLL_ENTRY("doll_dash", "$81:B12C", DOLL_DASH_PC, DOLL_DASH_RTS_PC,
+               shim_doll_dash, doll_pictures_ok, false, 10),
+    DOLL_ENTRY("doll_knocked", "$81:AF8C", DOLL_KNOCKED_PC,
+               DOLL_KNOCKED_RTS_PC, shim_doll_knocked, doll_knocked_ok, false,
+               10),
+    DOLL_ENTRY("doll_leap_out", "$81:B203", DOLL_LEAP_OUT_PC,
+               DOLL_LEAP_OUT_RTS_PC, shim_doll_leap_out, doll_pictures_ok,
+               false, 6),
+    DOLL_ENTRY("doll_tick", "$81:B377", DOLL_TICK_PC, DOLL_TICK_RTS_PC,
+               shim_doll_tick, doll_page_ok, true, 0),
+#undef DOLL_ENTRY
+    // The level's main loop, a pass at a time. Its HUD refresh publishes to
+    // queue A as `hud_refresh` does, and nothing the loop does after it
+    // writes anything.
+    {
+        .name = "mainloop_frame",
+        COSIM_COMMIT(COMMIT_VBL_A),
+        .symbol = "$80:852F",
+        .entry = MAINLOOP_FRAME_PC,
+        .run = shim_mainloop_frame,
+        .accepts = accepts_mainloop_frame,
+        COSIM_EXITS(MAINLOOP_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 2000,
+        .stack_bytes = 16,
+    },
+    // The squirt gun's water, a frame of flight at a time. See
+    // `port/squirt.h`.
+    {
+        .name = "squirt_flight",
+        .symbol = "$81:FD11",
+        .entry = SQUIRT_FLIGHT_PC,
+        .run = shim_squirt_flight,
+        .accepts = accepts_squirt_flight,
+        COSIM_EXITS(SQUIRT_FLIGHT_EXITS),
+        .uncalled = true,
+        .cycles = 1700,
+        .stack_bytes = 16,
+    },
+    // The clones' loop, a frame at a time. See `port/clone.h`.
+    {
+        .name = "clone_frame",
+        .symbol = "$81:8EA8",
+        .entry = CLONE_FRAME_PC,
+        .run = shim_clone_frame,
+        .accepts = clone_frame_ok,
+        COSIM_EXITS(CLONE_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 5000,
+        .stack_bytes = 16,
+    },
+#define POSE_ENTRY(n, sym, pc, rts)                                          \
+    {                                                                        \
+        .name = #n,                                                          \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .ret_op = rts,                                                       \
+        .ret_kind = COSIM_RTS,                                               \
+        .run = shim_##n,                                                     \
+        .supported = guard_##n,                                              \
+        .uncalled = true,                                                    \
+        .cycles = 400,                                                       \
+        .stack_bytes = 2,                                                    \
+    }
+    // The player's pose handlers, entered by the thread's computed `RTS`. See
+    // `port/pose.h`.
+    POSE_ENTRY(pose_stand, "$80:D53D", POSE_STAND_PC, POSE_STAND_RTS_PC),
+    POSE_ENTRY(pose_walk, "$80:D6A8", POSE_WALK_PC, POSE_WALK_RTS_PC),
+    POSE_ENTRY(pose_walk_firing, "$80:D704", POSE_WALK_FIRING_PC,
+               POSE_WALK_FIRING_RTS_PC),
+#undef POSE_ENTRY
     // Vblank jobs, which write the PPU. See `port/vblank.h`. Each prices
     // itself through `cosim_hw`, so `.cycles` is only what a refused trace
     // would fall back to. The NMI calls the first; the dispatcher reaches the

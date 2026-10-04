@@ -152,12 +152,16 @@ typedef struct {
   AtPointWork at_point;  // summed over every probe that asked
   ActorNearestWork nearest;
   bool asked_nearest;
+  PlayerPickRegs players;  // decide: what `player_bearing` did, when asked
+  ActorSnapRegs snap;      // chase: what the snap and the bearing did
+  ActorBearingRegs bearing;
   bool far;          // decide: nothing near enough to chase
   bool lost;         // chase: the target too far, or right on top of it
   bool on_top;       // ...the second
   bool stuck;        // fast chase: the step went nowhere
   bool moved_across; // ...or its X changed
   bool wandered;     // picked a random heading and walked
+  bool drew_overflow;  // ...on a draw that overflowed, which costs more
   bool turned;       // ended with a turn at a wall
   bool quiet;        // fast decide: `$24` said not to look
   bool nobody;       // decide: neither player within reach, so it leaves
@@ -183,6 +187,64 @@ void zombie_decide(Wram* w, const Rom* rom, uint16_t page, ZombieKind kind,
 // The walk cycle, drawn from `frames` in bank `$81`.
 void zombie_animate(Wram* w, const Rom* rom, uint16_t page, uint16_t frames,
                     ZombieLog* log);
+
+// --- A whole frame -----------------------------------------------------------
+//
+// The three threads' loops, from where `thread_yield` returns to the next
+// yield:
+//
+//     $81:8834  `$87F8`: JSR decide, the state body by computed RTS, JSR animate
+//     $81:890B  `$88CA`: the same with the fast kind's, after a look at `$22`
+//     $81:8C58  `$8C17`: the fast kind's again, and its own frames
+//
+// and then `LDA $12 : BEQ` back to `LDA #$0002 : JSL thread_yield`. A zombie
+// with `$12` set is leaving, and the loop goes on to free its record instead.
+//
+// A `$88CA` zombie with `$22` set drops bit 4 of its record's flags, clears
+// `$22`, and does not decide that frame. Nothing ported sets `$22`.
+//
+// Only the frames whose state body is one of the three here are the port's.
+// A zombie in any other state, one a hit installs, say, is the ROM's for that
+// frame, piece by piece as before.
+typedef enum {
+  ZOMBIE_THREAD_87F8,
+  ZOMBIE_THREAD_88CA,
+  ZOMBIE_THREAD_8C17,
+  ZOMBIE_THREADS
+} ZombieThread;
+
+#define ZOMBIE_87F8_FRAME_PC 0x818834u
+#define ZOMBIE_87F8_YIELD_PC 0x818830u  // `JSL thread_yield`, A already 2
+#define ZOMBIE_87F8_LEAVE_PC 0x818846u
+#define ZOMBIE_88CA_FRAME_PC 0x81890bu
+#define ZOMBIE_88CA_YIELD_PC 0x818907u
+#define ZOMBIE_88CA_LEAVE_PC 0x818930u
+#define ZOMBIE_8C17_FRAME_PC 0x818c58u
+#define ZOMBIE_8C17_YIELD_PC 0x818c54u
+#define ZOMBIE_8C17_LEAVE_PC 0x818c6au
+
+#define ZOMBIE_YIELD_TICKS 2
+#define ZOMBIE_DP_UNMARK 0x22    // fast: nonzero drops the record's bit 4
+#define ZOMBIE_RECORD_MARK 0x0010
+
+typedef enum { ZOMBIE_WALKING, ZOMBIE_FOLLOWING, ZOMBIE_CHASING } ZombieState;
+
+// For the harness: the three pieces' logs, and which state body ran.
+typedef struct {
+  ZombieLog decide, act, animate;
+  ZombieState state;
+  bool unmarked;  // fast: `$22` was set, so it did not decide
+} ZombieFrameLog;
+
+// Which kind of zombie a thread runs.
+ZombieKind zombie_thread_kind(ZombieThread thread);
+
+// Is the state `$14` names one of the three here?
+bool zombie_frame_supported(const Wram* w, uint16_t page, ZombieThread thread);
+
+// One frame. False when the zombie is leaving. `log` may be NULL.
+bool zombie_frame(Wram* w, const Rom* rom, uint16_t page, ZombieThread thread,
+                  ZombieFrameLog* log);
 
 // The address of a heading's step in a kind's table, in bank `$81`. The
 // heading comes off the page, so the harness checks it lands in the cartridge.

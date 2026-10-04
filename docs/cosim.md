@@ -14932,3 +14932,226 @@ instructions over the twelve movies: the yield, the computed `RTS` and the
 `JSR`s, and the `RTS` each substituted call still executes at its `ret_op`.
 The top rows now are the NMI's own instructions, `$81:AEA6 b41c_body` and
 `$80:D4F4`.
+
+## The dolls, the clones, whole frames and the player's poses (2026-10-03)
+
+Eighteen new entries, which makes 199: six for the dolls, seven whole frames,
+three pose handlers, the pause check and `camera_scroll`. See `port/doll.h`,
+`port/clone.h`, `port/zombie.h`, `port/pose.h`, `port/squirt.h`,
+`port/mainloop.h` and `port/pause.h` for what each does.
+
+**What `$81:AEA6` was.** The residue's biggest row that was not the frame's
+own, a thread at `$81:B2B0` that 120 spawn records in bank `$9F` name, and
+nothing tying it to a sprite. Its pictures are the 48 metasprite pointers at
+`$81:ACD8`. A scratch copy of the cartridge with all 48 pointing at a zombie's
+first frame, run on level 49, turned the doll with the axe into a zombie.
+That is quicker than reading sprite data, and it answers the question the
+header needs answered.
+
+The same trick named `$81:8D5A`, the next row down. Its thread takes its
+pictures from one of two tables at `$81:8FA3`, picked by which players are in
+the game. With both tables pointing at a zombie, everything on level 5 that
+looked like the player was a zombie, including one standing exactly on the
+player: a clone, in the mode where it reads the player's own pad.
+
+### Carry and overflow, again
+
+The dolls' loop is `STZ $5A : LDA #1 : JSL thread_yield`, the state body by
+computed `RTS`, `JSR $B377`, `LDA $0A : BEQ`. The tick at `$B377` writes
+neither carry nor overflow, so what a state body leaves is what the yield's
+`PHP` parks. The zombies' bodies all end on a test or a turn. The dolls' do
+not: `seek_begin` writes neither, a charge that has run out writes neither,
+and a wait for the step timer leaves the last compare's. So `DollLog` says
+whether each was written at all, and the shim claims only those. Unclaimed,
+the CPU's own passes through, which is what the ROM does.
+
+`port/flags.h` is that bookkeeping: `flags_add`, `flags_sub`, `flags_at_least`
+and the rest do the ROM's arithmetic and remember the two flags. `doll.c` and
+`pose.c` wrap them in `plus`, `minus` and `at_least`, so the game logic reads
+as arithmetic.
+
+One path leaves overflow to `actor_nearest` or `player_in_range`, whose
+overflow the port does not follow: the one that leaves the level. The loop
+goes from there to `SEC : LDA $00DE : SBC #$18`, which writes it before
+anything can read it.
+
+### Whole frames
+
+A zombie's frame was three substituted calls, each ending on an `RTS` the core
+executes, with thirteen interpreted instructions of the thread's loop between
+them. `zombie_frame` and `doll_frame` are the whole pass: entered where
+`thread_yield` returns, left by the next `JSL thread_yield` with the tick
+count in A, or by the loop's way out when the leave word is set.
+
+| Entry | Name | Leaves by |
+|---|---|---|
+| `$81:8834` | `zombie_87f8_frame` | the `JSL` at `$8830`, or `$8846` |
+| `$81:890B` | `zombie_88ca_frame` | `$8907`, or `$8930` |
+| `$81:8C58` | `zombie_8c17_frame` | `$8C54`, or `$8C6A` |
+| `$81:B2DF` | `doll_frame` | `$B2DB`, or `$B2EE` |
+| `$81:8EA8` | `clone_frame` | `$8EA4`, or `$8ED5` |
+| `$81:FD11` | `squirt_flight` | `$FD0D`, or the splash at `$FD22` |
+| `$80:852F` | `mainloop_frame` | `$852B`, `$85B5` with no players, or `$8544` |
+
+A frame is the port's only when the state the page names is one it has. The
+zombies' three are; a state a hit installs is not, and that frame runs as
+before, piece by piece. The doll's opening animation is not, because its
+script yields in the middle.
+
+The clone and the shot have no entries but their frames, so nothing inside
+them owes anyone a register. That is the simplest shape a port can have here:
+one C function for the pass, and a shim that says where it left and with what
+carry.
+
+`mainloop_frame` is the level's own loop: `JSL pause_check : JSL hud_refresh`
+and two tests. It declines a frame somebody pauses on. It carries
+`hud_refresh`'s commit, because the HUD's upload is queued inside it and the
+loop writes nothing afterwards.
+
+The harness changed in two places for this.
+
+* **`CosimRegs::p_keep`, and `regs` for an exit.** A routine with `exits` had
+  to hand over every register. A frame ends on X and Y nothing reads, and
+  sometimes on an overflow the port does not follow. `regs` now says which of
+  A, X and Y an exit claims, as it does for a return, and `p_keep` names the
+  status bits it leaves as the CPU has them. `verify` compares what is
+  claimed. Every existing exit claims everything, through `cpu_to`.
+* **`stack_bytes` on an exit.** Such a routine writes the stack itself, and
+  `verify` waived none of it. A frame's calls are C calls, so what the ROM
+  pushed under them is dead and differs. A routine with `exits` that declares
+  `stack_bytes` gets the same window any other routine has: from the deepest
+  the stack pointer went, up to where it started.
+
+`COSIM_MAX_ROUTINES` is 256 now. The registry passed 192.
+
+### Prices
+
+Each shim walks the ROM's control flow from the log, as the zombies' do. The
+dolls needed more of it priced per call than was, and each callee below is now
+exact on every call in the corpus, in its own row and inside its callers.
+
+| Routine | What its price turns on |
+|---|---|
+| `rng` | one `BVC`: the draw's overflow, which the port already reported |
+| `actor_gap` | no record; each difference's sign; which gap was wider |
+| `player_in_range` | two `actor_gap`s and four ways out |
+| `player_bearing` | the same, and an axis the player is level on |
+| `thread_spawn` | how many slots it searched, and whether the new page is aligned |
+| `terrain_out_of_bounds` | six ways out |
+| `terrain_point_bit2` | its bounds test's exit, and whether the tile had the bit |
+| `actor_snap_to` | each axis: the difference's sign, and whether it snapped |
+| `actor_bearing` | the axes the two records share, which the index in X says |
+
+`thread_spawn` runs on the new thread's stack as its direct page for seven
+instructions, and on its page for five. The stacks are never page-aligned.
+The pages are, for slots 0 and 13 to 23.
+
+With those, every zombie, doll, clone, pose and shot entry is refresh-exact
+on every call, the zombies' chases and decisions included, which the last
+round left at means. Three things turned up on the way.
+
+* **The fast chase's stuck path charged a `JMP` twice.** `ZOMBIE_STUCK`
+  already had the `JMP $8A5C` at `$8B2D` in it. 18 cycles, on 235 of 756
+  chases on `level13.zmv`.
+* **`tools/cycles816.py` counts `BRA` as not taken.** Its 12 is a branch's
+  price, and a `BRA` always costs 18. Every run here that ends in one adds 6.
+* **A byte count only shows with FastROM off.** The shot's first run was
+  entered as 12 bytes for 13. Every movie agreed but the two on level 49 that
+  fire, where `$420D` is clear and each byte costs 2 more.
+
+`camera_scroll` is charged a mean, four of `camera_follow`'s and three
+`JSL`s, because `camera_follow` is. `tools/verify_corpus.ps1 -Lockstep`
+leaves it to the ROM with `camera_follow`, for the reason given there.
+
+Still at means: `monster_chase`, where `tile_attrs_at_pixel` is, and
+`player_walk`.
+
+### The poses
+
+`$80:D4F4` was 4.5% of the residue: the player's pose handlers, entered by
+the loop's computed `RTS` through `$28`. `$80:D53D`, the standing one, ran
+118,000 times over the twelve movies and returned having done nothing on
+nearly all of them. `pose.c` has it, the plain walk at `$80:D6A8`, the walk
+with a hand weapon out at `$80:D704`, and what they jump to when the buttons
+change.
+
+Firing is the ROM's: `$80:ED30` takes a round and spawns a shot. A frame that
+would fire is declined, by running the handler on a copy and seeing whether
+it got there (`pose_supported`). So are the two rarer walks and the poses at
+`$80:EE82` and `$80:EF67`.
+
+A, X and Y are dead at a handler's `RTS`. The loop's next instruction is
+`LDA $2A`. Then a movement handler runs, and each of the five opens with
+`BIT $54` or `JSR $E450`, which load all three. Or none does, and the loop
+goes through `$80:F327`, `$80:CE25` and `$80:CE72` to the yield, which between
+them load A and X and never read Y. Overflow is not dead on that second way:
+nothing on it writes it. Carry is written only by two compares in `$80:CE25`,
+which returns before them when `$1D52`, `$1F9C` or `$1F9E` is set.
+
+### Checked
+
+The corpus verifies at 22,896,500 calls across 50 movies with 0 diverged, and
+541 of 701 coverage sites. The whole frames: zombies 38,826, dolls 16,800,
+clones 5,381, the shot 43,242, the main loop 60,075. The poses: 22,299
+standing, 43,256 walking, 45,457 walking with a weapon out. `pause_check`
+60,578.
+
+`verify --level` over all 56 records gives 36,970,793 calls with 0 diverged.
+It reaches `doll_knocked`, 200 calls on three levels, which no corpus movie
+does, and declines 12,620 pose frames, the ones that fire.
+
+Untaken by everything: `doll_knock_faceless`, `doll_dash_short` and
+`doll_knock_edge`. The first two look unreachable. Nothing leaves `$46` at 16:
+a step whose facing came out that way is not taken, and a charge starts only
+on a straight line. A charge too short to make needs the target within 16 on
+the axis it is lined up on, and a doll that close swings.
+
+**Lockstep.** 46 of 50 movies never part, and the four that do are on
+level 25, as before. On the 46 the drift over a movie moved by at most 1,058
+cycles against the last round's table, all of it from the prices. Adding the
+poses and the pause check, whose prices are exact, moved it on no movie.
+
+**Level 25.** With the first eight prices exact and nothing else changed,
+`level25-item.zmv` stopped parting and `level25-lane.zmv` started, at pass
+6,058. Level 25 has no dolls: `verify` reaches none of their entries on
+either movie, and both do the same with all six left to the ROM. Pricing
+`terrain_point_bit2` then moved `level25-2p.zmv`'s parting from pass 1,838 to
+1,221, and it parts there too with that routine, the shot, the clones and the
+main loop all left to the ROM. At pass 1,221 stock is on frame 410 and native
+on 409: one side overran vblank on a pass of 1.3 frames and the other did not.
+No byte of game state differed on any pass before it. The level-25 partings
+have always been timing, and this is a few cycles of it.
+
+**Live**, the twelve movies under `zamn.exe --profile`, 20,000 frames each:
+
+| Movie | Before | After |
+|---|---|---|
+| `level1` | 96.5% | 97.7% |
+| `level5` | 91.1% | 95.5% |
+| `level9` | 92.9% | 94.5% |
+| `level13` | 94.1% | 94.9% |
+| `level17` | 95.5% | 96.5% |
+| `level21` | 91.6% | 92.1% |
+| `level29-fighting` | 94.5% | 95.6% |
+| `level33` | 93.0% | 94.1% |
+| `level37` | 93.1% | 95.3% |
+| `level41` | 92.9% | 93.5% |
+| `level49` | 92.5% | 96.1% |
+| `level53` | 95.7% | 97.0% |
+
+The residue goes from 45.6 to 31.7 million instructions of work. The game
+builds to the repository root: `build/zamn.exe` is a stale file from
+September, and profiling it gave the round before last's numbers.
+
+**What is left.** The frame's own instructions lead: `nmi_stack`,
+`nmi_entry`, `sched_rescan` and `nmi_enter` are 20% between them, mostly
+instructions that touch the hardware and the exits the core executes. Then
+the tile animation job at `$82:D88C`, `$80:9AB0`, `$81:CD33`, `$81:9C99` and
+`$80:D343`, none above 2%. The tail is long: the top 22 rows are 45%.
+
+**What is still a transliteration.** `collide.c`, `bodies.c`, `sched.c` and
+`player.c`. Rewriting one means finding, routine by routine, which registers
+its callers read. A whole-frame entry is the way round that for anything a
+thread's loop calls, since inside a frame only what reaches the yield
+matters: the clone and the shot have no register bookkeeping at all beyond
+carry.

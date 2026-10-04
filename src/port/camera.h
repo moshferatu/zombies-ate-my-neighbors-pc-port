@@ -517,4 +517,22 @@ bool camera_follow_supported(const Wram* w);
 void camera_follow(Wram* w, const Rom* rom, uint16_t x, uint16_t y,
                    CameraFollowRegs* out);
 
+// --- $80:A937  camera_scroll — up to four pixels of following a frame --------
+//
+// A vblank job, and a thunk: `JSL $80A93B`, which is `JSL camera_follow`, and
+// each of the two falls through into what it called once that returns. So one
+// pass through it is four calls of `camera_follow`, each handed the registers
+// the last one left, which is how the view catches up by as much as four
+// pixels a frame.
+#define CAMERA_SCROLL_ENTRY 0x80a937u
+#define CAMERA_SCROLL_CALLS 4
+
+// Would all four calls have room for their strips? It runs them to find out,
+// so `scratch` is a copy.
+bool camera_scroll_supported(Wram* scratch, const Rom* rom, uint16_t x,
+                             uint16_t y);
+
+void camera_scroll(Wram* w, const Rom* rom, uint16_t x, uint16_t y,
+                   CameraFollowRegs* out);
+
 #endif  // PORT_CAMERA_H

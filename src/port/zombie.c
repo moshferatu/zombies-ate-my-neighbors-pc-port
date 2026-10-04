@@ -173,6 +173,7 @@ static bool player_about(Zombie* z) {
   PlayerPickRegs r;
   player_bearing(z->w, z->rom, rom_word(z->rom, KINDS[z->kind].reach_at), me.x,
                  me.y, &r);
+  if (z->log) z->log->players = r;
   return r.a != 0;
 }
 
@@ -238,7 +239,10 @@ static void wander(Zombie* z, bool carry) {
   rng_next(z->w, carry, &r);
   set_field(z, ZOMBIE_DP_HEADING, (uint16_t)((r.a & 3) * 4 + 2));
   set_state(z, KINDS[z->kind].walk);
-  if (z->log) z->log->wandered = true;
+  if (z->log) {
+    z->log->wandered = true;
+    z->log->drew_overflow = r.v;
+  }
   walk(z);
 }
 
@@ -319,6 +323,10 @@ static void chase(Zombie* z) {
   actor_snap_to(z->w, z->record, target, &snapped);
   ActorBearingRegs bearing;
   actor_bearing(z->w, z->rom, z->record, target, &bearing);
+  if (z->log) {
+    z->log->snap = snapped;
+    z->log->bearing = bearing;
+  }
   if (bearing.a == 0) {
     PORT_COVER(zombie_on_top);
     if (z->log) z->log->lost = z->log->on_top = true;
@@ -431,4 +439,75 @@ void zombie_animate(Wram* w, const Rom* rom, uint16_t page, uint16_t frames,
                     ZombieLog* log) {
   Zombie z = zombie(w, rom, page, ZOMBIE_SLOW, log);
   animate(&z, frames);
+}
+
+// ---------------------------------------------------------------------------
+// A whole frame
+// ---------------------------------------------------------------------------
+
+// Which of the three state bodies `$14` names, or false for any other.
+static bool state_of(const Zombie* z, ZombieState* state) {
+  const Kind* k = &KINDS[z->kind];
+  const uint16_t body = field(z, ZOMBIE_DP_STATE);
+  if (body == k->walk) *state = ZOMBIE_WALKING;
+  else if (body == k->follow_wall) *state = ZOMBIE_FOLLOWING;
+  else if (body == k->chase) *state = ZOMBIE_CHASING;
+  else return false;
+  return true;
+}
+
+// What tells the three threads' loops apart.
+typedef struct {
+  ZombieKind kind;
+  uint16_t frames;     // the animation's frame table
+  bool checks_unmark;  // looks at `$22` before deciding
+} Thread;
+
+static const Thread THREADS[ZOMBIE_THREADS] = {
+    [ZOMBIE_THREAD_87F8] = {ZOMBIE_SLOW, ZOMBIE_FRAMES, false},
+    [ZOMBIE_THREAD_88CA] = {ZOMBIE_FAST, ZOMBIE_FRAMES, true},
+    [ZOMBIE_THREAD_8C17] = {ZOMBIE_FAST, ZOMBIE_FRAMES_8C17, false},
+};
+
+ZombieKind zombie_thread_kind(ZombieThread thread) {
+  return THREADS[thread].kind;
+}
+
+bool zombie_frame_supported(const Wram* w, uint16_t page, ZombieThread thread) {
+  // Reading only, through a struct that could write.
+  const Zombie z = zombie((Wram*)w, NULL, page, THREADS[thread].kind, NULL);
+  ZombieState state;
+  return state_of(&z, &state);
+}
+
+bool zombie_frame(Wram* w, const Rom* rom, uint16_t page, ZombieThread thread,
+                  ZombieFrameLog* log) {
+  const Thread* t = &THREADS[thread];
+  ZombieFrameLog scratch = {0};
+  if (!log) log = &scratch;
+  Zombie z = zombie(w, rom, page, t->kind, &log->decide);
+
+  log->unmarked = t->checks_unmark && field(&z, ZOMBIE_DP_UNMARK) != 0;
+  if (log->unmarked) {
+    const uint16_t flags = wram_r16(w, (uint16_t)(z.record + ACTOR_FLAGS));
+    wram_w16(w, (uint16_t)(z.record + ACTOR_FLAGS),
+             (uint16_t)(flags & ~ZOMBIE_RECORD_MARK));
+    set_field(&z, ZOMBIE_DP_UNMARK, 0);
+  } else {
+    decide(&z);
+  }
+
+  // The decision may have just made it a chase.
+  z.log = &log->act;
+  log->state = ZOMBIE_WALKING;
+  state_of(&z, &log->state);
+  switch (log->state) {
+    case ZOMBIE_WALKING: walk(&z); break;
+    case ZOMBIE_FOLLOWING: follow_wall(&z); break;
+    case ZOMBIE_CHASING: chase(&z); break;
+  }
+
+  z.log = &log->animate;
+  animate(&z, t->frames);
+  return field(&z, ZOMBIE_DP_LEAVE) == 0;
 }

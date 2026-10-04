@@ -890,9 +890,10 @@ void actor_aligned(Wram* w, uint16_t x, uint16_t y, ActorAlignedRegs* out) {
 // difference where `nearest_abs` above tests the borrow, so `$8000` comes back
 // as itself here and as `$8000` there too -- the two agree everywhere, and they
 // are still two different instructions and stay that way.
-static uint16_t gap_abs(uint16_t a, uint16_t b) {
+static uint16_t gap_abs(uint16_t a, uint16_t b, bool* negative) {
   uint16_t d = (uint16_t)(a - b);
-  return (d & 0x8000u) ? (uint16_t)(~d + 1u) : d;
+  *negative = (d & 0x8000u) != 0;
+  return *negative ? (uint16_t)(~d + 1u) : d;
 }
 
 void actor_gap(Wram* w, uint16_t rec, ActorGapRegs* out) {
@@ -904,15 +905,18 @@ void actor_gap(Wram* w, uint16_t rec, ActorGapRegs* out) {
     out->n = true;
     out->z = false;
     out->has_c = false;
+    out->dx_negative = out->dy_negative = false;
     return;
   }
   out->has_c = true;
 
   const uint16_t x = wram_r16(w, GAP_DP_X);
   const uint16_t y = wram_r16(w, GAP_DP_Y);
-  const uint16_t dx = gap_abs(wram_r16(w, (uint32_t)rec + ACTOR_X), x);
+  const uint16_t dx =
+      gap_abs(wram_r16(w, (uint32_t)rec + ACTOR_X), x, &out->dx_negative);
   wram_w16(w, GAP_DP_DX, dx);
-  const uint16_t dy = gap_abs(wram_r16(w, (uint32_t)rec + ACTOR_Y), y);
+  const uint16_t dy =
+      gap_abs(wram_r16(w, (uint32_t)rec + ACTOR_Y), y, &out->dy_negative);
 
   // `CMP $3C : BCS` -- the Y gap keeps the answer on a tie, and the flags the
   // caller sees are that comparison's rather than the distance's.
@@ -1066,17 +1070,17 @@ void actor_bearing_point(Wram* w, const Rom* rom, uint16_t rec, uint16_t x,
 // Returns the chosen record, or zero when neither is close enough, and reports
 // the carry the exit it took was reached with.
 static uint16_t player_pick(Wram* w, uint16_t limit, uint16_t* dist,
-                            bool* carry) {
-  ActorGapRegs g;
+                            bool* carry, PlayerPickRegs* out) {
+  out->same_x = out->same_y = false;
 
   const uint16_t rec_a = wram_r16(w, W_PLAYER_A_RECORD);
-  actor_gap(w, rec_a, &g);
-  const uint16_t da = g.a;
+  actor_gap(w, rec_a, &out->gap[0]);
+  const uint16_t da = out->gap[0].a;
   wram_w16(w, PICK_DP_DIST_A, da);
 
   const uint16_t rec_b = wram_r16(w, W_PLAYER_B_RECORD);
-  actor_gap(w, rec_b, &g);
-  const uint16_t db = g.a;
+  actor_gap(w, rec_b, &out->gap[1]);
+  const uint16_t db = out->gap[1].a;
   wram_w16(w, PICK_DP_DIST_B, db);
 
   // `CMP $42 : BCS` -- player B first, and out of range for B sends the whole
@@ -1084,6 +1088,7 @@ static uint16_t player_pick(Wram* w, uint16_t limit, uint16_t* dist,
   if (db < limit) {
     if (db < da) {
       PORT_COVER(pick_b_nearer);
+      out->exit = PICK_B_NEARER;
       *dist = db;
       *carry = false;
       return rec_b;
@@ -1092,17 +1097,20 @@ static uint16_t player_pick(Wram* w, uint16_t limit, uint16_t* dist,
     // further than B and B is inside the limit, so A is inside it too and the
     // routine does not re-check.
     PORT_COVER(pick_a_nearer);
+    out->exit = PICK_A_NEARER;
     *dist = da;
     *carry = true;
     return rec_a;
   }
   if (da < limit) {
     PORT_COVER(pick_a_only);
+    out->exit = PICK_A_ONLY;
     *dist = da;
     *carry = false;
     return rec_a;
   }
   PORT_COVER(pick_neither);
+  out->exit = PICK_NEITHER;
   *dist = 0;
   *carry = true;
   return 0;
@@ -1116,7 +1124,7 @@ void player_in_range(Wram* w, uint16_t limit, uint16_t x, uint16_t y,
 
   uint16_t dist = 0;
   bool carry = false;
-  const uint16_t rec = player_pick(w, limit, &dist, &carry);
+  const uint16_t rec = player_pick(w, limit, &dist, &carry, out);
 
   out->a = rec;
   // `LDX $3E`/`LDX $40` on the two found exits; the zero exit never loads X at
@@ -1135,7 +1143,7 @@ void player_bearing(Wram* w, const Rom* rom, uint16_t limit, uint16_t x,
 
   uint16_t dist = 0;
   bool carry = false;
-  const uint16_t rec = player_pick(w, limit, &dist, &carry);
+  const uint16_t rec = player_pick(w, limit, &dist, &carry, out);
   if (rec == 0) {
     // $80:B2CE. A is zero, which is how every caller reads "nobody in range",
     // and X and Y are the leftovers the selection stopped on.
@@ -1150,6 +1158,8 @@ void player_bearing(Wram* w, const Rom* rom, uint16_t limit, uint16_t x,
   const uint16_t ry = wram_r16(w, (uint32_t)rec + ACTOR_Y);
   const int index = 4 * bearing_axis(ry, y) + bearing_axis(rx, x);
   PORT_COVER_IF(index == 0, player_bearing_same, player_bearing_off);
+  out->same_x = rx == x;
+  out->same_y = ry == y;
 
   // A word table, so the index is doubled -- and that `ASL` is also the last
   // thing on this path to write carry. Ten shifted left is not enough to shift
@@ -1173,11 +1183,13 @@ void player_bearing(Wram* w, const Rom* rom, uint16_t limit, uint16_t x,
 // while N and Z describe that difference minus two. The two have to be carried
 // separately, which is why `flags_src` is not just `*out_a`.
 static bool snap_axis(Wram* w, uint16_t rec, uint16_t onto, uint16_t field,
-                      uint16_t* out_a, uint16_t* flags_src, bool* carry) {
+                      uint16_t* out_a, uint16_t* flags_src, bool* carry,
+                      bool* negative) {
   uint16_t mine = wram_r16(w, (uint32_t)rec + field);
   uint16_t theirs = wram_r16(w, (uint32_t)onto + field);
   uint16_t diff = (uint16_t)(mine - theirs);
-  if (diff & 0x8000u) diff = (uint16_t)(~diff + 1u);
+  *negative = (diff & 0x8000u) != 0;
+  if (*negative) diff = (uint16_t)(~diff + 1u);
 
   if (diff >= SNAP_WINDOW) {
     *out_a = diff;                                   // untouched by the CMP
@@ -1196,10 +1208,14 @@ void actor_snap_to(Wram* w, uint16_t rec, uint16_t onto, ActorSnapRegs* out) {
   uint16_t a, flags;
   bool c;
   // X first, then Y, and only Y's registers and flags survive.
-  bool x_snapped = snap_axis(w, rec, onto, ACTOR_X, &a, &flags, &c);
+  bool x_snapped =
+      snap_axis(w, rec, onto, ACTOR_X, &a, &flags, &c, &out->negative[0]);
   PORT_COVER_IF(x_snapped, snap_x_took, snap_x_left);
-  bool y_snapped = snap_axis(w, rec, onto, ACTOR_Y, &a, &flags, &c);
+  bool y_snapped =
+      snap_axis(w, rec, onto, ACTOR_Y, &a, &flags, &c, &out->negative[1]);
   PORT_COVER_IF(y_snapped, snap_y_took, snap_y_left);
+  out->snapped[0] = x_snapped;
+  out->snapped[1] = y_snapped;
 
   out->a = a;
   out->n = (flags & 0x8000u) != 0;

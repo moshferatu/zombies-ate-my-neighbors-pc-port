@@ -212,6 +212,10 @@ static void chase(Chase* k) {
   actor_snap_to(k->w, k->record, target, &snapped);
   ActorBearingRegs bearing;
   actor_bearing(k->w, k->rom, k->record, target, &bearing);
+  if (k->log) {
+    k->log->snap = snapped;
+    k->log->bearing = bearing;
+  }
   const Point me = where_is(k, k->record);
   set_field(k, MONSTER_DP_X, me.x);
   set_field(k, MONSTER_DP_Y, me.y);

@@ -243,6 +243,7 @@ void terrain_out_of_bounds(Wram* w, uint16_t x, uint16_t y, BoundsRegs* out) {
   if (x & 0x8000u) {
     // $80:B423. A negative coordinate is off the map before any arithmetic.
     PORT_COVER(bounds_x_negative);
+    out->exit = BOUNDS_X_NEGATIVE;
     from_move(out, x);
     return;
   }
@@ -250,6 +251,7 @@ void terrain_out_of_bounds(Wram* w, uint16_t x, uint16_t y, BoundsRegs* out) {
   out->a = cx;
   if (cx < TERRAIN_BOUNDS_MIN_X) {
     PORT_COVER(bounds_x_low);
+    out->exit = BOUNDS_X_LOW;
     from_cmp(out, cx, TERRAIN_BOUNDS_MIN_X);
     out->c = true;  // the `SEC` at $80:B445, after the compare that branched
     return;
@@ -261,6 +263,7 @@ void terrain_out_of_bounds(Wram* w, uint16_t x, uint16_t y, BoundsRegs* out) {
     // $80:B432. This one branches straight to the `RTL` and keeps the compare's
     // own carry, rather than going by way of the `SEC`.
     PORT_COVER(bounds_x_high);
+    out->exit = BOUNDS_X_HIGH;
     from_cmp(out, hx, stride);
     return;
   }
@@ -268,6 +271,7 @@ void terrain_out_of_bounds(Wram* w, uint16_t x, uint16_t y, BoundsRegs* out) {
   out->a = y;
   if (y & 0x8000u) {
     PORT_COVER(bounds_y_negative);
+    out->exit = BOUNDS_Y_NEGATIVE;
     from_move(out, y);
     return;
   }
@@ -275,6 +279,7 @@ void terrain_out_of_bounds(Wram* w, uint16_t x, uint16_t y, BoundsRegs* out) {
   out->a = cy;
   if (cy < TERRAIN_BOUNDS_MIN_Y) {
     PORT_COVER(bounds_y_low);
+    out->exit = BOUNDS_Y_LOW;
     from_cmp(out, cy, TERRAIN_BOUNDS_MIN_Y);
     out->c = true;
     return;
@@ -283,6 +288,7 @@ void terrain_out_of_bounds(Wram* w, uint16_t x, uint16_t y, BoundsRegs* out) {
   out->a = hy;
   // $80:B441. The last compare is the answer: no branch, straight into the
   // `RTL`, so an inside point leaves carry clear and an outside one sets it.
+  out->exit = BOUNDS_LAST_COMPARE;
   from_cmp(out, hy, wram_r16(w, W_TILEMAP_ROWS));
   if (out->c) {
     PORT_COVER(bounds_y_high);
@@ -369,6 +375,8 @@ void terrain_point_bit2(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out) {
   // rejected here comes back with the caller's own arguments in both.
   BoundsRegs bounds;
   terrain_out_of_bounds(w, x, y, &bounds);
+  out->outside = bounds.c;
+  out->bounds_exit = bounds.exit;
   if (bounds.c) {
     PORT_COVER(bit2_outside);
     out->a = bounds.a;

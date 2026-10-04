@@ -32,7 +32,7 @@ param(
     # `-Without none` excludes nothing: PowerShell's -File does not evaluate
     # `@()` on the command line, and "none" is the spelling `zamn_cosim -r`
     # already uses for an empty selection.
-    [string[]]$Without = @("lzss_decompress", "camera_follow"),
+    [string[]]$Without = @("lzss_decompress", "camera_follow", "camera_scroll"),
     # A wildcard over the corpus, for when one movie is the question. The
     # totals below then say how many movies they are totals over, because a
     # figure from a subset that reads like a figure from the corpus is worse
@@ -191,6 +191,9 @@ function Invoke-Corpus([string]$command, [string[]]$extra) {
 # compared passes. `-Without none` runs the plain configuration, which is what
 # that is four and a half times more than. See "What actually ends a lockstep
 # run" in docs/cosim.md.
+#
+# `camera_scroll` is the thunk that calls `camera_follow` four times a frame,
+# and is left to the ROM with it.
 #
 # The three drift columns are the *steady state*, which on a movie that parts
 # means the parting pass is left out: that pass is a level load worth 400,000

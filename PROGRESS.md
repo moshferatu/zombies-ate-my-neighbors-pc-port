@@ -5,6 +5,93 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The dolls, the clones, whole frames and the player's poses (2026-10-03)
+
+Six new pieces in readable C, and the zombies made whole. Over the same
+twelve movies as the last round every level gains: level 1 goes from 96.5% to
+**97.7%**, level 5 from 91.1% to **95.5%**, level 49 from 92.5% to **96.1%**,
+and the residue from 45.6 to **31.7** million instructions of work.
+
+**The evil dolls**, `src/port/doll.c`. `$81:AEA6` was the biggest row left
+that was not the frame's own, and nothing said what it was: its collision
+handler has been `enemy_b41c_collide` since July. A copy of the cartridge with
+its pictures swapped for a zombie's settled it. On level 49 the doll with the
+axe turned into a zombie.
+
+* **It climbs out of a toy box**, a twenty-frame jump down onto the floor.
+  Only on landing does it install its collision handler.
+* **It closes in** on whoever is nearest within `$D0`, a pixel every fourth
+  frame, the smaller gap first, which lines it up.
+* **Within 16 pixels it swings its axe**, a second display record shown beside
+  it on the frames it swings.
+* **Lined up, it charges** two pixels a frame until about 16 short.
+* **It throws**: exactly on a diagonal, and on one frame in 256 otherwise, with
+  36 frames between throws.
+* **A hit knocks it back** in an arc, the opposite way to its facing, unless
+  solid ground or the edge of the level is there. It throws again on landing.
+
+**The clones**, `src/port/clone.c`, found the same way: on level 5, swapping
+two picture tables turned everything that looked like the player into a
+zombie. A clone alternates between two modes for random stretches. In one it
+moves as its player moves, reading the same pad word the player's thread
+reads. In the other it comes for the nearer player. A random stretch of zero
+frames is 65,536, because the count is decremented before it is tested.
+
+**The player's poses**, `src/port/pose.c`: standing, walking, and walking with
+a hand weapon out. A handler waits for the buttons to change or the pose
+timer to run out, and then shows the next picture. Firing stays the ROM's, and
+`pose_supported` says which frames those are.
+
+**Whole frames.** A zombie's frame was three native calls with the thread's own
+loop interpreted between them. Now it is one: `zombie_frame` runs the
+decision, the state body and the animation, from where `thread_yield` returns
+to the next `JSL` to it. All three zombie threads have one. So do the dolls,
+the clones, the squirt gun's water in flight (`src/port/squirt.c`) and the
+level's main loop (`src/port/mainloop.c`), which was the pause check, the HUD
+refresh and two questions. The harness needed two things for it, both in
+`CosimRoutine`'s comments: a routine that leaves by an exit may now claim less
+than every register, and may declare dead stack under the calls it makes.
+
+**Two small ones.** The pause check, `$80:89B0`, which does nothing on a frame
+nobody is pausing on (`src/port/pause.c`), and `camera_scroll`, the thunk at
+`$80:A937` that calls `camera_follow` four times a frame.
+
+**Carry and overflow** outlive every one of these bodies, through
+`thread_yield`'s `PHP`. `src/port/flags.h` holds that bookkeeping now, so the
+game code reads as arithmetic: `plus`, `minus`, `at_least`.
+
+**Prices.** Nine routines are priced per call for the first time: `rng`,
+`actor_gap`, `player_in_range`, `player_bearing`, `thread_spawn`,
+`terrain_out_of_bounds`, `terrain_point_bit2`, `actor_snap_to` and
+`actor_bearing`. Through them every zombie, doll, clone,
+pose and shot entry is exact on every call, the zombies' chases and decisions
+included, which the last round left a few hundred cycles off. Getting there
+found the fast chase's stuck path charged one `JMP` twice.
+
+* **Checked.** The corpus verifies at 22,896,500 calls across 50 movies with 0
+  diverged, and 541 of 701 coverage sites. `verify --level` over all 56
+  records gives 36,970,793 calls with 0 diverged. That sweep is what reaches the
+  dolls' knock-back, which no corpus movie does.
+* **Lockstep** over the corpus: 46 of 50 movies never part, as before, and the four that do are
+  level 25's. On the rest, drift over a movie moved by at most 1,058 cycles
+  against the last round.
+* **Level 25's partings moved, and not because of the new code.** With the
+  prices exact, `level25-item.zmv` runs to the end, `level25-lane.zmv` parts
+  at pass 6,058, and `level25-2p.zmv` parts at pass 1,221 instead of 1,838.
+  Each does the same with the new entries left to the ROM. It is the prices'
+  few cycles, on a level already known to part on timing: at each parting one
+  side overran vblank on a heavy pass and the other did not, with no byte of
+  game state differing before it.
+* **Not reached by any input:** a doll knocked back with no facing, and a
+  charge begun inside 16 pixels. Both look unreachable: nothing leaves the
+  facing unset, and a doll that close swings instead. A knock-back at the edge
+  of the level is reachable and unreached.
+* **Still not readable.** `collide.c`, `bodies.c`, `sched.c` and `player.c`
+  are the transliterations they were. Rewriting one means finding, routine by
+  routine, which registers its callers really read. The whole-frame entries
+  are the way round that for anything a thread's loop calls: inside a frame
+  only what reaches the yield matters.
+
 ### The zombies in readable C (2026-10-03)
 
 The zombies are the third piece of the port in readable C: `src/port/zombie.c`,

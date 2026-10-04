@@ -348,6 +348,7 @@ static void regs_capture(Snes* snes, CosimRegs* r) {
   r->joy[1] = snes->portAutoRead[1];
   r->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
   r->regs = COSIM_REG_ALL;
+  r->p_keep = 0;
 }
 
 // Where a routine will return to, from the return address its caller pushed.
@@ -575,8 +576,9 @@ static void note(CosimStat* s, const char* fmt, ...) {
 // stack pointer got during the call up to where it started. A routine that
 // pushed nothing gets an empty window and no leeway at all, and nothing outside
 // the few bytes a routine actually touched is ever waved through.
-static bool dead_stack(const CosimCall* call, uint32_t off) {
-  if (call->jump) return false;
+static bool dead_stack(const CosimRoutine* r, const CosimCall* call,
+                       uint32_t off) {
+  if (call->jump && r->stack_bytes == 0) return false;
   return off > (uint32_t)call->min_sp && off <= (uint32_t)call->entry_sp;
 }
 
@@ -588,7 +590,7 @@ static void compare_wram(CosimStat* s, const CosimCall* call, const Wram* ours,
   char buf[32];
   for (uint32_t off = 0; off < WRAM_SIZE; off++) {
     if (ours->bytes[off] == theirs->bytes[off]) continue;
-    if (excluded(r, off) || dead_stack(call, off)) continue;
+    if (excluded(r, off) || dead_stack(r, call, off)) continue;
     if (call->waived && call->waive[off]) {
       s->irq_waived++;
       if (ours->bytes[off] != call->before->bytes[off]) s->irq_waived_ours++;
@@ -668,16 +670,18 @@ static void compare_jump(CosimStat* s, const CosimCall* call, const Wram* ours,
   if (!s->routine->hw) compare_apu(s, call);
   if (s->failed) return;
 
+  const uint8_t claimed = (uint8_t)~our_regs->p_keep;
   if (our_regs->pc != rom_regs->pc)
     note(s, "exit: ROM $%06X, port $%06X", rom_regs->pc, our_regs->pc);
-  else if (our_regs->a != rom_regs->a)
+  else if ((our_regs->regs & COSIM_REG_A) && our_regs->a != rom_regs->a)
     note(s, "A: ROM $%04X, port $%04X", rom_regs->a, our_regs->a);
-  else if (our_regs->x != rom_regs->x)
+  else if ((our_regs->regs & COSIM_REG_X) && our_regs->x != rom_regs->x)
     note(s, "X: ROM $%04X, port $%04X", rom_regs->x, our_regs->x);
-  else if (our_regs->y != rom_regs->y)
+  else if ((our_regs->regs & COSIM_REG_Y) && our_regs->y != rom_regs->y)
     note(s, "Y: ROM $%04X, port $%04X", rom_regs->y, our_regs->y);
-  else if (our_regs->p != rom_regs->p)
-    note(s, "P: ROM $%02X, port $%02X", rom_regs->p, our_regs->p);
+  else if ((our_regs->p & claimed) != (rom_regs->p & claimed))
+    note(s, "P: ROM $%02X, port $%02X (of the bits $%02X)", rom_regs->p,
+         our_regs->p, claimed);
   else if (our_regs->s != rom_regs->s)
     note(s, "S: ROM $%04X, port $%04X", rom_regs->s, our_regs->s);
   else if (our_regs->d != rom_regs->d)
@@ -1137,20 +1141,26 @@ static void native_return(Cosim* c, const CosimRoutine* r, const CosimRegs* out)
 // high bytes of X and Y with it.
 static void jump_publish(Cosim* c, const CosimRegs* out) {
   Cpu* cpu = c->snes->cpu;
-  cpu->a = out->a;
-  cpu->x = out->x;
-  cpu->y = out->y;
+  // What the shim does not claim stays as the CPU has it.
+  const uint8_t held =
+      (uint8_t)(cpu->n << 7 | cpu->v << 6 | cpu->mf << 5 | cpu->xf << 4 |
+                cpu->d << 3 | cpu->i << 2 | cpu->z << 1 | cpu->c);
+  const uint8_t p =
+      (uint8_t)((out->p & ~out->p_keep) | (held & out->p_keep));
+  if (out->regs & COSIM_REG_A) cpu->a = out->a;
+  if (out->regs & COSIM_REG_X) cpu->x = out->x;
+  if (out->regs & COSIM_REG_Y) cpu->y = out->y;
   cpu->sp = out->s;
   cpu->dp = out->d;
   cpu->db = out->db;
-  cpu->n = out->p & 0x80;
-  cpu->v = out->p & 0x40;
-  cpu->mf = out->p & 0x20;
-  cpu->xf = out->p & 0x10;
-  cpu->d = out->p & 0x08;
-  cpu->i = out->p & 0x04;
-  cpu->z = out->p & 0x02;
-  cpu->c = out->p & 0x01;
+  cpu->n = p & 0x80;
+  cpu->v = p & 0x40;
+  cpu->mf = p & 0x20;
+  cpu->xf = p & 0x10;
+  cpu->d = p & 0x08;
+  cpu->i = p & 0x04;
+  cpu->z = p & 0x02;
+  cpu->c = p & 0x01;
   if (cpu->xf) {
     cpu->x &= 0xff;
     cpu->y &= 0xff;

@@ -795,6 +795,38 @@
   X(zombie_noticed,   "zombie_*_decide",     "something near enough, so it gives chase") \
   X(zombie_left,      "zombie_*_decide",     "neither player within reach, so it leaves") \
   X(zombie_quiet,     "zombie_fast_decide",  "$24 not negative, so it does not look") \
+  /* The evil dolls, in readable C: port/doll.h. */                              \
+  X(doll_left, "doll_seek", "nobody within reach, so it leaves") \
+  X(doll_swung, "doll_seek", "within 16 on both axes, so it swings its axe") \
+  X(doll_swing_waited, "doll_seek", "...on a frame the step timer had not run out") \
+  X(doll_on_diagonal, "doll_seek", "exactly on a diagonal, so it throws and steps") \
+  X(doll_threw, "doll_seek", "an axe thrown") \
+  X(doll_throw_waited, "doll_seek", "...or not, the last throw too recent") \
+  X(doll_stepped_across, "doll_seek", "a step across") \
+  X(doll_stepped_down, "doll_seek", "a step up or down") \
+  X(doll_step_blocked, "doll_seek", "both ways blocked by solid ground") \
+  X(doll_dashed, "doll_seek", "lined up, so it charges") \
+  X(doll_dash_short, "doll_seek", "...too close to be worth a charge") \
+  X(doll_dash_spent, "doll_dash", "a charge run out") \
+  X(doll_knocked_back, "doll_seek", "hit, and knocked back") \
+  X(doll_knock_faceless, "doll_seek", "...not, with no facing to be knocked back from") \
+  X(doll_knock_ground, "doll_seek", "...not, solid ground where it would land") \
+  X(doll_knock_edge, "doll_seek", "...not, the edge of the level there") \
+  X(doll_landed, "doll_knocked", "down from a knock-back") \
+  X(doll_threw_on_landing, "doll_knocked", "...and an axe thrown on landing") \
+  X(doll_leapt_out, "doll_leap_out", "out of the toy box and on the floor") \
+  /* The player's poses, in readable C: port/pose.h. */                          \
+  X(pose_changed, "pose_*", "the buttons changed, so the pose starts again") \
+  X(pose_stood, "pose_*", "a stand started") \
+  X(pose_walked, "pose_*", "a walk started") \
+  X(pose_stepped, "pose_walk*", "the walk cycle moved on") \
+  X(pose_weapon_shown, "pose_*", "the hand weapon shown, the way the player faces") \
+  /* The clones, in readable C: port/clone.h. */                                 \
+  X(clone_copied, "clone_frame", "a frame of moving as its player moves") \
+  X(clone_chased, "clone_frame", "a frame of coming for the nearer player") \
+  X(clone_left, "clone_frame", "chasing with neither player near enough, so it leaves") \
+  X(clone_new_picture, "clone_frame", "the walk cycle moved on") \
+  X(clone_changed_mode, "clone_frame", "the mode ran out, and a random time of the other began") \
                                                                                    \
   /* $80:BE0C, $80:BE41 — a record's two ends. */                                   \
   X(slot_alloc_scan,  "actor_slot_alloc",    "this slot is taken, so try the one below it") \
