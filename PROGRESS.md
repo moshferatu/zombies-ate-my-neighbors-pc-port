@@ -5,6 +5,16 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The logos come up at once (2026-10-03)
+
+A launch that keeps the intro sat on a black window for three seconds before
+Konami. Those are 187 frames the game spends with the screen off, clearing
+memory and sending the sound driver. They now run at full speed, about a third
+of a second, and the window's first picture is the logo fading in. Nothing is
+patched and nothing is pressed: it is `skip_intro`'s loop with `keep_logos`,
+stopping at the first lit frame. A movie and a `--frames` run boot as before,
+because both count their frames from reset.
+
 ### The dolls, the clones, whole frames and the player's poses (2026-10-03)
 
 Six new pieces in readable C, and the zombies made whole. Over the same

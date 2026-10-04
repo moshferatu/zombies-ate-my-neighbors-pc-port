@@ -557,15 +557,23 @@ static void share_summary(const Cosim* c, char* out, size_t n) {
 // belong in the substitution figures; and ported routines keep state, so
 // booting stock and then switching to native would hand the port a machine it
 // had not been watching.
+//
+// **Without `--skip-intro` the dark part is still not sat through.** Before
+// Konami the game clears memory and sends the sound driver with the screen
+// off, a second and more of black window. `keep_logos` runs just that at full
+// speed, with nothing patched and nothing pressed, and hands over on the first
+// lit frame, which is the Konami logo fading in.
 static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads,
-                       bool* bypassed) {
+                       bool keep_logos, bool* bypassed) {
   long f = 0;
-  *bypassed = intro_bypass(snes->cart);
-  const long last = *bypassed ? INTRO_BYPASS_LIMIT : INTRO_TITLE_FRAME;
+  *bypassed = !keep_logos && intro_bypass(snes->cart);
+  const bool to_first_light = *bypassed || keep_logos;
+  const long last = to_first_light ? INTRO_BYPASS_LIMIT : INTRO_TITLE_FRAME;
   for (; f < last; f++) {
-    // The title, about to fade in: the game has turned the screen on.
-    if (*bypassed && f >= INTRO_BYPASS_FIRST && !snes->ppu->forcedBlank) break;
-    const bool down = !*bypassed &&
+    // The title or the first logo, about to fade in: the game has turned the
+    // screen on.
+    if (to_first_light && f >= INTRO_BYPASS_FIRST && !snes->ppu->forcedBlank) break;
+    const bool down = !to_first_light &&
         f >= INTRO_FIRST_PRESS && f <= INTRO_LAST_PRESS &&
         (f - INTRO_FIRST_PRESS) % INTRO_PRESS_PERIOD < INTRO_PRESS_HOLD;
     snes_setButtonState(snes, 1, BTN_START, down);
@@ -588,7 +596,8 @@ static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads,
           return f;
         }
       }
-      SDL_SetWindowTitle(win, "Zombies Ate My Neighbors — skipping the intro…");
+      if (!keep_logos)
+        SDL_SetWindowTitle(win, "Zombies Ate My Neighbors — skipping the intro…");
     }
   }
   // Never hand the player a held button.
@@ -1752,13 +1761,19 @@ int main(int argc, char** argv) {
   // Last thing before the loop, so the frames it burns are not paced, not
   // drawn and not heard — and so the audio priming below lands on a device that
   // is about to be fed rather than one about to sit idle for a few seconds.
-  if (skip_the_intro) {
+  //
+  // A launch that keeps the logos still runs the dark frames before them at
+  // full speed. Not under a movie, which counts its frames from reset, and not
+  // in a bounded run, which is a test and counts them too.
+  const bool boot_dark_fast = !skip_the_intro && !have_movie && frame_limit == 0;
+  if (skip_the_intro || boot_dark_fast) {
     const Uint64 t0 = SDL_GetPerformanceCounter();
     bool bypassed = false;
-    const long ran = skip_intro(&cosim, snes, win, &pads, &bypassed);
+    const long ran = skip_intro(&cosim, snes, win, &pads, boot_dark_fast, &bypassed);
     if (verbose)
-      printf("Skipped the intro: %ld frames (%.1f s of game) in %.2f s%s.\n", ran,
-             ran / 60.0,
+      printf("%s: %ld frames (%.1f s of game) in %.2f s%s.\n",
+             boot_dark_fast ? "Ran the dark start of the boot" : "Skipped the intro",
+             ran, ran / 60.0,
              (double)(SDL_GetPerformanceCounter() - t0) / (double)perf_freq,
              bypassed ? ", the logos bypassed" : "");
     fflush(stdout);
