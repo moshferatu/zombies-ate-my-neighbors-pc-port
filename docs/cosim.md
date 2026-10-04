@@ -15155,3 +15155,90 @@ its callers read. A whole-frame entry is the way round that for anything a
 thread's loop calls, since inside a frame only what reaches the yield
 matters: the clone and the shot have no register bookkeeping at all beyond
 carry.
+
+## The slimes in readable C (2026-10-03)
+
+`src/port/slime.c` and `slime.h`: the red blobs of levels 9, 29 and 41. Two
+entries, both whole frames.
+
+| Entry | Address | What it is |
+|---|---|---|
+| `slime_frame` | `$81:CCE8` | a pass of the slime's loop: the state body, the touch, the picture |
+| `slime_glob_frame` | `$81:CF2A` | a pass of the thrown glob's flight |
+
+The rows they replace were `$81:CD33`, `$81:C94E`, `$81:CAA6`, `$81:CC4F`,
+`$81:CF10`, `$81:CE82`, `$81:CAF5`, `$81:CA39` and `$81:C9E4`, 1.7 of the 8.8
+million instructions the three levels' movies left.
+
+### The exits have to be places only one path reaches
+
+The loop ends `JSR $CD33 : LDA $0A : BEQ loop`. The first attempt named
+`$81:CCF3`, the `LDA`, as the exit for a slime whose fate is no longer zero.
+`verify` failed every call: the ROM passes that instruction on both paths, so
+it always stopped there. The exit is `$81:CCF7`, past the `BEQ`, with the
+fate in A and N from it.
+
+### A guard that runs the pass
+
+`$81:CBA0`, the attack state, draws a number and only attacks under `$23`.
+The attack calls `$81:832C` twice, which plays an animation and yields inside
+the call, so a frame that attacks cannot be one native call. Nothing in WRAM
+says beforehand which way the draw will go.
+
+So `slime_frame` has both kinds of guard. `accepts` looks at the state, the
+direction and the two records. `supported` then runs the pass on the scratch
+copy, and `SlimeLog::declined` says whether an attack began or the touch met
+`actor_notify_box`'s decline. With the attack state left to the ROM whole,
+9% of passes were declined. With it, 1%.
+
+The draw begins from the thread's own carry, as it woke with it, so
+`slime_frame` takes that as an argument and the shim passes `in->p`'s.
+
+### Carry and overflow
+
+Nothing to follow through the state bodies. The picture routine runs last on
+every pass and ends on `CLC : ADC $1A` and `CMP #$0005`, so carry is whether
+the lunge ended and overflow is clear. On a pass spent flashing it returns at
+once and the state body is a `DEC` and a branch, so both are the thread's
+own, which `p_keep` says.
+
+The glob's are the `CLC : ADC` that moved it, and the thread's own on the
+pass that finds it already down.
+
+### Prices
+
+Exact on every call: 5,520 passes of `slime_frame` and 3,310 of
+`slime_glob_frame` over the corpus, and 15,243 more over the level sweep.
+The slime's price is its path plus `terrain_blocked_enemy`, `actor_at_point`,
+`actor_nearest`, `rng`, `actor_bearing`, `player_bearing` and
+`actor_notify_box`, each by the model it already had. One thing was missed
+at first: `$81:C94B` is `BCS` to the next line, taken when somebody is
+standing there, 6 cycles on two calls in 1,300.
+
+### Checked
+
+The corpus: 22,905,377 calls across 50 movies, 0 diverged, 557 of 717 sites.
+Lockstep: 46 of 50 never part, the four level-25 movies as before, and the
+table differs from the last round's only in the mean of the two level-9
+movies. Drift is the same to the cycle on all fifty.
+
+**Live**, the twelve movies under `zamn.exe --profile`, 20,000 frames each:
+
+| Movie | Before | After |
+|---|---|---|
+| `level9` | 94.5% | 95.6% |
+| `level13` | 94.9% | 95.0% |
+| `level29-fighting` | 95.6% | 96.1% |
+| `level41` | 93.5% | 94.5% |
+
+The other eight are unchanged. The residue goes from 31.7 to 29.9 million
+instructions of work.
+
+**What is left.** The martians of level 21: `$81:9C99`, `$81:9981`,
+`$81:9D2A`, `$81:9C8F`, `$81:9D1F` and `$81:9DB1`, 1.3 million between them.
+Their walking state asks `actor_aligned` every frame, which is priced at its
+mean and whose port does not follow overflow. A frame that rests, one in
+four, leaves by whatever overflow that call left. Both need doing before the
+martian's frame can be exact. After them: `$83:B2D0`-`$83:B50D` on level 17,
+`$82:AAB7`-`$82:AB5B` on four levels, and `dma_to_cgram` and `dma_to_vram`,
+which every level calls and which write the hardware.

@@ -828,6 +828,24 @@
   X(clone_new_picture, "clone_frame", "the walk cycle moved on") \
   X(clone_changed_mode, "clone_frame", "the mode ran out, and a random time of the other began") \
                                                                                    \
+  /* $81:CCE8 -- the slimes' frame. */                                             \
+  X(slime_crawled, "slime_frame", "a pass of going straight on") \
+  X(slime_felt, "slime_frame", "a pass of feeling along what turned it") \
+  X(slime_turned_back, "slime_frame", "...where the way back round was clear, and taken") \
+  X(slime_met_ground, "slime_frame", "solid ground where the lunge would end") \
+  X(slime_met_someone, "slime_frame", "...or somebody standing there") \
+  X(slime_faced, "slime_frame", "a turn towards whoever is nearest") \
+  X(slime_faced_diagonal, "slime_frame", "...who was on a diagonal, so the table chose the axis") \
+  X(slime_chose_attack, "slime_frame", "thinking: the draw said attack") \
+  X(slime_chose_face, "slime_frame", "...or turn to face") \
+  X(slime_set_off, "slime_frame", "an attack thought better of: a random way instead") \
+  X(slime_attacked, "slime_frame", "...or begun, which is the ROM's, so the pass was declined") \
+  X(slime_left, "slime_frame", "...or carry on, with neither player near, so it leaves") \
+  X(slime_flash_ended, "slime_frame", "the last pass of a hit's flash") \
+  X(slime_lunge_ended, "slime_frame", "the fifth picture, and the record moved up") \
+  X(slime_glob_turned, "slime_glob_frame", "the top of its rise: moved across, to fall") \
+  X(slime_glob_landed, "slime_glob_frame", "on the ground, so the splash is next") \
+                                                                                   \
   /* $80:BE0C, $80:BE41 — a record's two ends. */                                   \
   X(slot_alloc_scan,  "actor_slot_alloc",    "this slot is taken, so try the one below it") \
   X(slot_alloc_took,  "actor_slot_alloc",    "...or it is free, and gets $0001 and the head of the list") \

@@ -36,6 +36,7 @@
 #include "port/bodies.h"
 #include "port/sched.h"
 #include "port/score.h"
+#include "port/slime.h"
 #include "port/sprite_cache.h"
 #include "port/squirt.h"
 #include "port/step.h"
@@ -6751,6 +6752,387 @@ static void shim_clone_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 static const uint32_t CLONE_FRAME_EXITS[] = {CLONE_YIELD_PC, CLONE_LEAVE_PC};
 
 // ---------------------------------------------------------------------------
+// The slimes -- see `port/slime.h`
+// ---------------------------------------------------------------------------
+//
+// One entry, a whole pass of the loop, priced the dolls' way. Each run is
+// from `tools/cycles816.py --db 81`, branches not taken; a taken branch and
+// every `BRA` adds 6. The record is reached through `$0002,Y`, which is low
+// WRAM, and the tables through the data bank, which is the cartridge.
+static const CosimRun SLIME_RUN_ENTER = {142, 8, 1};          // $CCE8-$CCEF
+static const CosimRun SLIME_RUN_SHOW_CALL = {40, 3, 0};       // $CCF0 JSR $CD33
+static const CosimRun SLIME_RUN_FATE = {40, 4, 1};            // $CCF3 LDA $0A : BEQ
+static const CosimRun SLIME_RUN_SLEEP = {46, 5, 1};           // $CCDF STZ $22 : LDA #4
+static const CosimRun SLIME_RUN_CRAWL_GROUND = {382, 34, 7};  // $C9FA-$CA17
+static const CosimRun SLIME_RUN_JMP = {18, 3, 0};             // $CA18, and $CB55
+static const CosimRun SLIME_RUN_STEP_ACTOR = {150, 12, 3};    // $CA1B-$CA26, and $CB58
+static const CosimRun SLIME_RUN_STEP_MET = {58, 6, 0};        // $CA27-$CA2C, and $CB64
+static const CosimRun SLIME_RUN_STEP_TAKE = {192, 12, 4};     // $CA2D-$CA38, and $CB6A
+static const CosimRun SLIME_RUN_TURN = {256, 24, 3};          // $CA39-$CA50
+static const CosimRun SLIME_RUN_FEEL_HEAD = {436, 42, 6};     // $CA51-$CA76
+static const CosimRun SLIME_RUN_FEEL_TAKE = {56, 4, 2};       // $CA77-$CA7A
+static const CosimRun SLIME_RUN_FEEL_AHEAD = {312, 29, 5};    // $CA7B-$CA93
+static const CosimRun SLIME_RUN_FEEL_MOVE = {192, 12, 4};     // $CA94-$CA9F
+static const CosimRun SLIME_RUN_FEEL_TURN = {58, 6, 0};       // $CAA0-$CAA5
+static const CosimRun SLIME_RUN_CLEAR_GROUND = {122, 10, 2};  // $C937-$C940
+static const CosimRun SLIME_RUN_CLEAR_ACTOR = {150, 12, 3};   // $C941-$C94C
+static const CosimRun SLIME_RUN_RTS = {40, 1, 0};
+static const CosimRun SLIME_RUN_THINK_FIRST = {142, 10, 3};   // $CAA6-$CAAF
+static const CosimRun SLIME_RUN_THINK_PHASE = {40, 4, 1};     // $CAB0 LDA $20 : BEQ
+static const CosimRun SLIME_RUN_THINK_DRAW = {222, 19, 3};    // $CAB4-$CAC6
+static const CosimRun SLIME_RUN_THINK_BAND = {30, 5, 0};      // $CAC7, and $CACC
+static const CosimRun SLIME_RUN_THINK_NEAR = {152, 14, 2};    // $CAD1-$CADE
+static const CosimRun SLIME_RUN_THINK_LEAVE = {50, 2, 1};     // $CADF DEC $0A
+static const CosimRun SLIME_RUN_THINK_CHOSE = {58, 6, 0};     // $CAE2-$CAE7, and $CAE8
+static const CosimRun SLIME_RUN_THINK_RESUME = {136, 7, 2};   // $CAEE-$CAF4
+static const CosimRun SLIME_RUN_SET_STATE = {86, 6, 1};       // $CAF5-$CAFA, and $CB9A
+static const CosimRun SLIME_RUN_FACE_HEAD = {168, 15, 3};     // $CAFB-$CB09
+static const CosimRun SLIME_RUN_FACE_GAP = {120, 10, 2};      // $CB0A-$CB13, and $CB18
+static const CosimRun SLIME_RUN_NEGATE = {30, 4, 0};          // $CB14, and $CB22
+static const CosimRun SLIME_RUN_FACE_PICK = {184, 16, 4};     // $CB26-$CB33
+static const CosimRun SLIME_RUN_FACE_GROUND = {422, 37, 8};   // $CB34-$CB54
+static const CosimRun SLIME_RUN_ATTACK_DRAW = {84, 9, 0};     // $CBA0 JSL : CMP : BCS
+static const CosimRun SLIME_RUN_ATTACK_WORD = {64, 8, 0};     // $CBA9 LDA $0006 : CMP : BCS
+static const CosimRun SLIME_RUN_SET_OFF = {270, 25, 2};       // $CBE7 JMP, and $C9E4-$C9F9
+static const CosimRun SLIME_RUN_FLASH_COUNT = {62, 4, 1};     // $CC2F DEC $24 : BEQ
+static const CosimRun SLIME_RUN_FLASH_END = {326, 27, 4};     // $CC34-$CC4E
+static const CosimRun SLIME_RUN_SHOW_FLASHING = {40, 4, 1};   // $CD33 LDA $24 : BNE
+static const CosimRun SLIME_RUN_SHOW_ARMED = {62, 4, 1};      // $CD37 DEC $1E : BMI
+static const CosimRun SLIME_RUN_SHOW_TOUCH = {40, 3, 0};      // $CD3B JSR $C94E
+static const CosimRun SLIME_RUN_SHOW_PICTURE = {392, 37, 6};  // $CD3E-$CD60
+static const CosimRun SLIME_RUN_SHOW_PLAIN = {30 + 6, 5, 0};  // $CD61 AND : BRA
+static const CosimRun SLIME_RUN_SHOW_MIRROR = {18, 3, 0};     // $CD66 ORA
+static const CosimRun SLIME_RUN_SHOW_PHASE = {110, 11, 1};    // $CD69-$CD73
+static const CosimRun SLIME_RUN_SHOW_LAND = {154, 13, 2};     // $CD74-$CD80
+static const CosimRun SLIME_RUN_SHOW_END = {68, 3, 1};        // $CD81 STA $20 : RTS
+static const CosimRun SLIME_RUN_TOUCH_PHASE = {40, 4, 1};     // $C94E LDA $20 : BNE
+static const CosimRun SLIME_RUN_TOUCH_MEASURE = {556, 51, 6}; // $C952-$C97C
+static const CosimRun SLIME_RUN_TOUCH_TELL = {394, 31, 4};    // $C97D-$C99B
+static const CosimRun SLIME_RUN_TAKEN = {6, 0, 0};
+
+// The ROM's own instructions in `own`, and what its calls cost in `calls`.
+typedef struct {
+  CosimRun own;
+  int calls;
+  const SlimeLog* log;
+  const CosimRegs* in;
+} SlimeBill;
+
+static void slime_add(SlimeBill* b, const CosimRun* r) {
+  b->own.cycles += r->cycles;
+  b->own.bytes += r->bytes;
+  b->own.dp += r->dp;
+}
+
+static void slime_ground_bill(SlimeBill* b, const SlimeProbe* p) {
+  b->calls += terrain_enemy_cycles(&p->ground, b->in->fastrom);
+}
+
+// How every state but feeling ends: the ground's answer, then who is there.
+static void slime_lunge_bill(SlimeBill* b) {
+  const SlimeProbe* p = &b->log->probe[0];
+  slime_ground_bill(b, p);
+  if (p->ground.blocked) {
+    slime_add(b, &SLIME_RUN_JMP);
+    slime_add(b, &SLIME_RUN_TURN);
+    return;
+  }
+  slime_add(b, &SLIME_RUN_TAKEN);
+  slime_add(b, &SLIME_RUN_STEP_ACTOR);
+  if (p->someone) {
+    slime_add(b, &SLIME_RUN_STEP_MET);
+    slime_add(b, &SLIME_RUN_TURN);
+  } else {
+    slime_add(b, &SLIME_RUN_TAKEN);
+    slime_add(b, &SLIME_RUN_STEP_TAKE);
+  }
+  slime_add(b, &SLIME_RUN_THINK_FIRST);
+}
+
+// `$81:C937`: is the way clear? True when it was not.
+static bool slime_clear_bill(SlimeBill* b, const SlimeProbe* p) {
+  slime_add(b, &SLIME_RUN_CLEAR_GROUND);
+  slime_ground_bill(b, p);
+  if (p->ground.blocked) {
+    slime_add(b, &SLIME_RUN_TAKEN);
+  } else {
+    // ...which ends on a `BCS` to the next line, taken on someone there.
+    slime_add(b, &SLIME_RUN_CLEAR_ACTOR);
+    if (p->someone) slime_add(b, &SLIME_RUN_TAKEN);
+  }
+  slime_add(b, &SLIME_RUN_RTS);
+  return p->ground.blocked || p->someone;
+}
+
+static void slime_feel_bill(SlimeBill* b) {
+  slime_add(b, &SLIME_RUN_FEEL_HEAD);
+  slime_clear_bill(b, &b->log->probe[0]);
+  slime_add(b, b->log->took_other_way ? &SLIME_RUN_FEEL_TAKE : &SLIME_RUN_TAKEN);
+  slime_add(b, &SLIME_RUN_FEEL_AHEAD);
+  if (slime_clear_bill(b, &b->log->probe[1])) {
+    slime_add(b, &SLIME_RUN_TAKEN);
+    slime_add(b, &SLIME_RUN_FEEL_TURN);
+    slime_add(b, &SLIME_RUN_TURN);
+  } else {
+    slime_add(b, &SLIME_RUN_FEEL_MOVE);
+  }
+  slime_add(b, &SLIME_RUN_THINK_FIRST);
+}
+
+static void slime_face_bill(SlimeBill* b) {
+  slime_add(b, &SLIME_RUN_FACE_HEAD);
+  b->calls += actor_bearing_cycles(&b->log->bearing, b->in->fastrom);
+  if (b->log->diagonal) {
+    slime_add(b, &SLIME_RUN_FACE_GAP);
+    slime_add(b, &SLIME_RUN_FACE_GAP);
+    for (int axis = 0; axis < 2; axis++)
+      slime_add(b, axis < b->log->gaps_negated ? &SLIME_RUN_NEGATE
+                                               : &SLIME_RUN_TAKEN);
+    slime_add(b, &SLIME_RUN_FACE_PICK);
+  } else {
+    slime_add(b, &SLIME_RUN_TAKEN);
+  }
+  slime_add(b, &SLIME_RUN_FACE_GROUND);
+  slime_lunge_bill(b);
+}
+
+static void slime_state_bill(SlimeBill* b) {
+  switch (b->log->state) {
+    case SLIME_STATE_CRAWL:
+      slime_add(b, &SLIME_RUN_CRAWL_GROUND);
+      slime_lunge_bill(b);
+      break;
+    case SLIME_STATE_FEEL: slime_feel_bill(b); break;
+    case SLIME_STATE_FACE: slime_face_bill(b); break;
+    case SLIME_STATE_ATTACK:
+      slime_add(b, &SLIME_RUN_ATTACK_DRAW);
+      if (b->log->attack_wanted) slime_add(b, &SLIME_RUN_ATTACK_WORD);
+      slime_add(b, &SLIME_RUN_TAKEN);
+      slime_add(b, &SLIME_RUN_SET_OFF);
+      b->calls += rng_cycles(b->log->draws_overflowed[0], b->in->fastrom) +
+                  rng_cycles(b->log->draws_overflowed[1], b->in->fastrom);
+      break;
+    case SLIME_STATE_FLASH:
+      slime_add(b, &SLIME_RUN_FLASH_COUNT);
+      if (b->log->flash_ended) {
+        slime_add(b, &SLIME_RUN_TAKEN);
+        slime_add(b, &SLIME_RUN_FLASH_END);
+      } else {
+        slime_add(b, &SLIME_RUN_RTS);
+      }
+      break;
+    default: break;
+  }
+}
+
+static void slime_think_bill(SlimeBill* b) {
+  const SlimeLog* log = b->log;
+  slime_add(b, &SLIME_RUN_THINK_PHASE);
+  if (log->thought == SLIME_THOUGHT_RESUMED) {
+    slime_add(b, &SLIME_RUN_TAKEN);
+    slime_add(b, &SLIME_RUN_THINK_RESUME);
+    slime_state_bill(b);
+    return;
+  }
+  slime_add(b, &SLIME_RUN_THINK_DRAW);
+  b->calls += nearest_cycles(&log->nearest, b->in->fastrom) +
+              rng_cycles(log->drew_overflow, b->in->fastrom);
+  if (log->thought != SLIME_THOUGHT_ATTACK_LOW)
+    slime_add(b, &SLIME_RUN_THINK_BAND);
+  if (log->thought != SLIME_THOUGHT_ATTACK_LOW &&
+      log->thought != SLIME_THOUGHT_FACE)
+    slime_add(b, &SLIME_RUN_THINK_BAND);
+  switch (log->thought) {
+    case SLIME_THOUGHT_ATTACK_LOW:
+    case SLIME_THOUGHT_FACE:
+    case SLIME_THOUGHT_ATTACK:
+      slime_add(b, &SLIME_RUN_TAKEN);
+      slime_add(b, &SLIME_RUN_THINK_CHOSE);
+      slime_add(b, &SLIME_RUN_SET_STATE);
+      slime_add(b, &SLIME_RUN_THINK_FIRST);
+      break;
+    default:
+      slime_add(b, &SLIME_RUN_THINK_NEAR);
+      b->calls += player_bearing_cycles(&log->players, b->in->fastrom);
+      slime_add(b, log->thought == SLIME_THOUGHT_LEAVE ? &SLIME_RUN_THINK_LEAVE
+                                                       : &SLIME_RUN_TAKEN);
+      slime_add(b, &SLIME_RUN_RTS);
+      break;
+  }
+}
+
+// False when the touch entered a handler with no cost table.
+static bool slime_show_bill(SlimeBill* b) {
+  const SlimeLog* log = b->log;
+  slime_add(b, &SLIME_RUN_SHOW_FLASHING);
+  if (log->flashing) {
+    slime_add(b, &SLIME_RUN_TAKEN);
+    slime_add(b, &SLIME_RUN_RTS);
+    return true;
+  }
+  slime_add(b, &SLIME_RUN_SHOW_ARMED);
+  if (log->touched) {
+    slime_add(b, &SLIME_RUN_SHOW_TOUCH);
+    slime_add(b, &SLIME_RUN_TOUCH_PHASE);
+    slime_add(b, log->measured ? &SLIME_RUN_TOUCH_MEASURE : &SLIME_RUN_TAKEN);
+    slime_add(b, &SLIME_RUN_TOUCH_TELL);
+    int told;
+    if (!notify_box_cycles(&log->touch, b->in, &told)) return false;
+    b->calls += told;
+  } else {
+    slime_add(b, &SLIME_RUN_TAKEN);
+  }
+  slime_add(b, &SLIME_RUN_SHOW_PICTURE);
+  if (!log->lunge_began) slime_add(b, &SLIME_RUN_TAKEN);  // `BNE` to the next line
+  if (log->mirrored) {
+    slime_add(b, &SLIME_RUN_TAKEN);
+    slime_add(b, &SLIME_RUN_SHOW_MIRROR);
+  } else {
+    slime_add(b, &SLIME_RUN_SHOW_PLAIN);
+  }
+  slime_add(b, &SLIME_RUN_SHOW_PHASE);
+  slime_add(b, log->lunge_ended ? &SLIME_RUN_SHOW_LAND : &SLIME_RUN_TAKEN);
+  slime_add(b, &SLIME_RUN_SHOW_END);
+  return true;
+}
+
+// The tests put their scratch on page zero, and the tables are read through
+// the data bank, as for the zombies. So are the record and whoever it found,
+// which have to be in the WRAM bank `$81` mirrors.
+static bool slime_frame_ok(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != SLIME_BANK) return false;
+  return wram_r16(w, (uint16_t)(in->d + SLIME_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + SLIME_DP_TARGET)) < 0x1f00 &&
+         slime_frame_supported(w, in->d);
+}
+
+// Two things only running the pass can find. An attack began, which is the
+// ROM's. Or the touch, which tells whoever is in the box through their
+// collision handlers, met `actor_notify_box`'s decline: a handler the port
+// does not have.
+static bool guard_slime_frame(Wram* scratch, const Rom* rom,
+                              const CosimRegs* in) {
+  SlimeLog log = {0};
+  slime_frame(scratch, rom, in->d, (in->p & PORT_P_C) != 0, &log);
+  return !log.declined;
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or past the
+// test of its fate with that in A. Carry and overflow are the
+// picture's, and the thread's own on a pass spent flashing.
+static void shim_slime_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  SlimeLog log = {0};
+  const bool stays =
+      slime_frame(w, rom, in->d, (in->p & PORT_P_C) != 0, &log);
+
+  SlimeBill b = {{0, 0, 0}, 0, &log, in};
+  slime_add(&b, &SLIME_RUN_ENTER);
+  if (log.thought != SLIME_THOUGHT_NONE)
+    slime_think_bill(&b);
+  else
+    slime_state_bill(&b);
+  slime_add(&b, &SLIME_RUN_SHOW_CALL);
+  const bool priced = slime_show_bill(&b);
+  slime_add(&b, &SLIME_RUN_FATE);
+  if (stays) {
+    slime_add(&b, &SLIME_RUN_TAKEN);
+    slime_add(&b, &SLIME_RUN_SLEEP);
+  }
+  b.calls += at_point_cycles(&log.at_point, in->fastrom);
+  if (priced)
+    cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
+                                             (in->d & 0x00ffu) != 0));
+
+  out->pc = stays ? SLIME_YIELD_PC : SLIME_FATE_PC;
+  out->a = stays ? SLIME_YIELD_TICKS
+                 : wram_r16(w, (uint16_t)(in->d + SLIME_DP_FATE));
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)(log.flags_set ? 0 : PORT_P_C | PORT_P_V);
+}
+
+static const uint32_t SLIME_FRAME_EXITS[] = {SLIME_YIELD_PC, SLIME_FATE_PC};
+
+// The glob a slime throws, a pass of its flight. No calls, so the price is
+// the path alone.
+static const CosimRun GLOB_RUN_ENTER = {142, 8, 1};       // $CF2A-$CF31
+static const CosimRun GLOB_RUN_RISE = {210, 15, 3};        // $CE88-$CE96
+static const CosimRun GLOB_RUN_TURN = {268, 21, 4};        // $CE97 JMP, $CE9B-$CEAC
+static const CosimRun GLOB_RUN_FALL = {130, 9, 2};        // $CEAD-$CEB5
+static const CosimRun GLOB_RUN_LAND = {90, 3, 1};        // $CEC2 DEC $0C : RTS
+static const CosimRun GLOB_RUN_LOWER = {52, 5, 1};       // $CEB6 CLC : ADC : BPL
+static const CosimRun GLOB_RUN_GROUND = {18, 3, 0};      // $CEBB LDA #$0000
+static const CosimRun GLOB_RUN_STORE = {80, 4, 0};       // $CEBE STA : RTS
+static const CosimRun GLOB_RUN_LANDED = {40, 4, 1};      // $CF32 LDA $0C : BEQ
+static const CosimRun GLOB_RUN_TICKS = {18, 3, 0};       // $CF23 LDA #$0002
+
+static bool slime_glob_frame_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         wram_r16(w, (uint16_t)(in->d + SLIME_GLOB_DP_RECORD)) < 0x1f00 &&
+         slime_glob_frame_supported(w, in->d);
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or for the
+// splash with what says it has landed there. Carry and overflow are the sum
+// that moved it, and the thread's own on the pass it finds itself down.
+static void shim_slime_glob_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  SlimeGlobLog log = {0};
+  const bool flies = slime_glob_frame(w, in->d, &log);
+
+  SlimeBill b = {{0, 0, 0}, 0, NULL, in};
+  slime_add(&b, &GLOB_RUN_ENTER);
+  switch (log.pass) {
+    case SLIME_GLOB_ROSE:
+      slime_add(&b, &GLOB_RUN_RISE);
+      slime_add(&b, &SLIME_RUN_TAKEN);
+      slime_add(&b, &SLIME_RUN_RTS);
+      break;
+    case SLIME_GLOB_TURNED:
+      slime_add(&b, &GLOB_RUN_RISE);
+      slime_add(&b, &GLOB_RUN_TURN);
+      break;
+    case SLIME_GLOB_LANDED:
+      slime_add(&b, &GLOB_RUN_FALL);
+      slime_add(&b, &SLIME_RUN_TAKEN);
+      slime_add(&b, &GLOB_RUN_LAND);
+      break;
+    default:
+      slime_add(&b, &GLOB_RUN_FALL);
+      slime_add(&b, &GLOB_RUN_LOWER);
+      slime_add(&b, log.pass == SLIME_GLOB_FELL ? &SLIME_RUN_TAKEN
+                                                : &GLOB_RUN_GROUND);
+      slime_add(&b, &GLOB_RUN_STORE);
+      break;
+  }
+  slime_add(&b, &GLOB_RUN_LANDED);
+  if (flies) {
+    slime_add(&b, &SLIME_RUN_TAKEN);
+    slime_add(&b, &GLOB_RUN_TICKS);
+  }
+  cosim_cost(cosim_run_cycles_dp(&b.own, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+
+  out->pc = flies ? SLIME_GLOB_YIELD_PC : SLIME_GLOB_LANDED_PC;
+  out->a = flies ? SLIME_GLOB_YIELD_TICKS
+                 : wram_r16(w, (uint16_t)(in->d + SLIME_GLOB_DP_LANDED));
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)(log.flags_set ? 0 : PORT_P_C | PORT_P_V);
+}
+
+static const uint32_t SLIME_GLOB_FRAME_EXITS[] = {SLIME_GLOB_YIELD_PC,
+                                                 SLIME_GLOB_LANDED_PC};
+
+// ---------------------------------------------------------------------------
 // The player's poses -- see `port/pose.h`
 // ---------------------------------------------------------------------------
 //
@@ -10518,6 +10900,32 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 5000,
         .stack_bytes = 16,
+    },
+    // The slimes' loop, a pass at a time. See `port/slime.h`.
+    {
+        .name = "slime_frame",
+        .symbol = "$81:CCE8",
+        .entry = SLIME_FRAME_PC,
+        .run = shim_slime_frame,
+        .accepts = slime_frame_ok,
+        .supported = guard_slime_frame,
+        COSIM_EXITS(SLIME_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 6000,
+        // Two `JSR`s and the `JSL` down to `actor_notify_box`, and its own.
+        .stack_bytes = 32,
+    },
+    {
+        .name = "slime_glob_frame",
+        .symbol = "$81:CF2A",
+        .entry = SLIME_GLOB_FRAME_PC,
+        .run = shim_slime_glob_frame,
+        .accepts = slime_glob_frame_ok,
+        COSIM_EXITS(SLIME_GLOB_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+        // The `PEA` and `PHA` its computed `RTS` leaves behind.
+        .stack_bytes = 4,
     },
 #define POSE_ENTRY(n, sym, pc, rts)                                          \
     {                                                                        \

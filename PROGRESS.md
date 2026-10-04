@@ -5,6 +5,55 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The slimes in readable C (2026-10-03)
+
+The red blobs of levels 9, 29 and 41, `src/port/slime.c`. Their code was the
+biggest thing left on those levels that was not the frame's own: `$81:CD33`,
+`$81:C94E`, `$81:CAA6` and six more rows, 19% of the three levels' residue.
+Live, level 9 goes from 94.5% to **95.6%**, level 29 from 95.6% to **96.1%**
+and level 41 from 93.5% to **94.5%**. The residue over the twelve movies goes
+from 31.7 to **29.9** million instructions of work.
+
+* **It moves in lunges.** The thread keeps where the lunge will end. The
+  record on screen stays where it began, and five pictures stretch the body
+  from one to the other. A lunge is 14 pixels up or down and 24 across.
+* **It turns when it cannot go on**, a quarter clockwise, and then feels its
+  way: each pass it tries the turn back first, so it follows the wall it met.
+* **Between lunges it thinks.** About three times in ten it turns to face
+  whoever is nearest, one in five it thinks of attacking, and with neither
+  player within `$140` it leaves the level.
+* **It attacks less than it thinks of it.** A second draw has to come in under
+  `$23`, about one in seven. Otherwise it sets off a random way.
+* **It hurts by touch**, a box around its body told to `actor_notify_box`
+  once a pass.
+* **The glob it throws** goes straight up, is moved across at the top to above
+  where it was aimed, and falls. That is a second entry, `slime_glob_frame`.
+
+Both are whole frames, one native call from where `thread_yield` returns to
+the next yield.
+
+**A pass that only running it can refuse.** Whether a pass begins an attack
+is down to a random draw inside it, and the attack sleeps in the middle of a
+call, which a whole frame cannot do. So the guard runs the pass on the
+harness's scratch copy and declines if an attack began. The touch reaching a
+collision handler the port lacks is declined the same way. About one pass in
+a hundred goes back to the ROM.
+
+* **Checked.** The corpus verifies at 22,905,377 calls across 50 movies with 0
+  diverged, and 557 of 717 coverage sites: all sixteen new ones are taken.
+  `verify --level` over all 56 records reaches the slimes on six, 15,243
+  passes with 0 diverged.
+* **Prices.** Every pass of both entries is exact, on the corpus and on the
+  sweep.
+* **Lockstep** over the corpus: 46 of 50 movies never part, the same four of
+  level 25 as before, at the same passes. Drift moved on no movie.
+* **Not here:** the attack itself, the splash the glob lands with, and the
+  slime's death. Each plays an animation that sleeps inside `$81:832C`.
+* **Next.** The martians of level 21 are the largest cluster left, about a
+  quarter of that level's residue. They ask `actor_aligned` every frame,
+  which has no per-call price and no overflow in its port, and both are
+  needed first.
+
 ### The logos come up at once (2026-10-03)
 
 A launch that keeps the intro sat on a black window for three seconds before
