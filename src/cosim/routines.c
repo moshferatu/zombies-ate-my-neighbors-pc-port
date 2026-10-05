@@ -20,11 +20,13 @@
 #include "port/bossbg.h"
 #include "port/bystander.h"
 #include "port/camera.h"
+#include "port/chainsaw.h"
 #include "port/clone.h"
 #include "port/collide.h"
 #include "port/fade.h"
 #include "port/figure_colours.h"
 #include "port/floor.h"
+#include "port/football.h"
 #include "port/frontend.h"
 #include "port/hud.h"
 #include "port/levelmap.h"
@@ -36,6 +38,7 @@
 #include "port/palfade.h"
 #include "port/pause.h"
 #include "port/pose.h"
+#include "port/werewolf.h"
 #include "port/oam.h"
 #include "port/player.h"
 #include "port/player_frame.h"
@@ -51,6 +54,7 @@
 #include "port/sprite_cache.h"
 #include "port/squirt.h"
 #include "port/stuck.h"
+#include "port/fishman.h"
 #include "port/step.h"
 #include "port/walk.h"
 #include "port/chase.h"
@@ -9479,6 +9483,1500 @@ static const uint32_t PLAYERS_SCREEN_FRAME_EXITS[] = {PLAYERS_SCREEN_YIELD_PC,
                                                       PLAYERS_SCREEN_OVER_PC};
 
 // ---------------------------------------------------------------------------
+// The chainsaw maniac -- see `port/chainsaw.h`
+// ---------------------------------------------------------------------------
+//
+// One entry, a whole pass of the loop. Each run is from `tools/cycles816.py
+// --db=81`, branches not taken; a taken branch, a `BRA` and nothing else
+// adds 6.
+static const CosimRun CHAINSAW_RUN_ENTER = {142, 8, 1};  // $9878 PEA : LDA $12 : DEC : PHA : RTS
+static const CosimRun CHAINSAW_RUN_FATE = {40, 4, 1};  // $9883 LDA $2A : BPL
+static const CosimRun CHAINSAW_RUN_TICKS = {18, 3, 0};  // $9871 LDA #$0002
+static const CosimRun CHAINSAW_RUN_RTS = {40, 1, 0};  // any RTS
+static const CosimRun CHAINSAW_RUN_JSR = {40, 3, 0};  // any JSR
+static const CosimRun CHAINSAW_RUN_JMP = {18, 3, 0};  // any JMP
+static const CosimRun CHAINSAW_RUN_SET_STATE = {86, 6, 1};  // LDA # : STA $12 : RTS
+static const CosimRun CHAINSAW_RUN_SHOW_HEAD = {62, 4, 1};  // $977D DEC $0A : BNE
+static const CosimRun CHAINSAW_RUN_SHOW_NEXT = {416, 41, 6};  // $9781-$97A7, to CPX #$0030 : BCS
+static const CosimRun CHAINSAW_RUN_SHOW_PLAIN = {110, 11, 0};  // $97A8-$97B2, the BRA not counted taken
+static const CosimRun CHAINSAW_RUN_SHOW_MIRROR = {98, 9, 0};  // $97B3-$97BB
+static const CosimRun CHAINSAW_RUN_SHOW_PLACE = {204, 13, 3};  // $97BC-$97C8, the RTS too
+static const CosimRun CHAINSAW_RUN_GROUND = {122, 10, 2};  // LDX : LDY : JSL : BCS
+static const CosimRun CHAINSAW_RUN_ACTOR = {150, 12, 3};  // LDA $08 : LDX : LDY : JSL : BCS
+static const CosimRun CHAINSAW_RUN_OPENING_HEAD = {442, 40, 7};  // $90C8-$90EB
+static const CosimRun CHAINSAW_RUN_OPENING_TAKE = {56, 4, 2};  // $9102 LDA $10 : STA $0E
+static const CosimRun CHAINSAW_RUN_STEP_HEAD = {142, 12, 4};  // $9107-$9112
+static const CosimRun CHAINSAW_RUN_STEP_TAKE = {162, 10, 5};  // $9129-$9132, and $9149-$9152
+static const CosimRun CHAINSAW_RUN_STEP_MOVED = {120, 10, 3};  // $9153-$915C, to the BPL
+static const CosimRun CHAINSAW_RUN_NEGATE = {30, 4, 0};  // EOR : INC
+static const CosimRun CHAINSAW_RUN_STEP_TAIL = {114, 8, 2};  // $9161-$9168, the RTS too
+static const CosimRun CHAINSAW_RUN_TURN = {202, 15, 3};  // $9169-$9177, the RTS too
+static const CosimRun CHAINSAW_RUN_RANDOM_HEAD = {102, 12, 0};  // $9178-$9183, to AND #$0002 : BNE
+static const CosimRun CHAINSAW_RUN_RANDOM_RIGHT = {18, 3, 0};  // $9184 LDX #$0004
+static const CosimRun CHAINSAW_RUN_RANDOM_TAIL = {86, 8, 1};  // $9187 STX $38 : JSR $9169 : JMP $922F
+static const CosimRun CHAINSAW_RUN_TRY = {364, 32, 7};  // $9195-$91B0, and $91F0-$920B
+static const CosimRun CHAINSAW_RUN_CHARGE_COUNT = {40, 4, 1};  // $91D8 LDA $30 : BPL
+static const CosimRun CHAINSAW_RUN_CHARGE_TAKE = {264, 17, 8};  // $91C7-$91D7, the RTS too
+static const CosimRun CHAINSAW_RUN_STRIDE_HEAD = {64, 8, 0};  // $91E5 LDA $0020 : AND #$0003 : BEQ
+static const CosimRun CHAINSAW_RUN_BRANCH = {12, 2, 0};  // a branch by itself
+static const CosimRun CHAINSAW_RUN_WANDER_HEAD = {140, 13, 2};  // $921B-$9227, to CMP #$012C : BCC
+static const CosimRun CHAINSAW_RUN_TURNED_HEAD = {62, 4, 1};  // $9235 DEC $30 : BPL
+static const CosimRun CHAINSAW_RUN_HEDGE_ASK = {140, 13, 2};  // $923F-$924B, and $92AE-$92BA
+static const CosimRun CHAINSAW_RUN_BEGIN_CUT = {254, 20, 4};  // $92C2-$92D5, the RTS too
+static const CosimRun CHAINSAW_RUN_SWING_HEAD = {84, 9, 0};  // $9530 JSL : CMP #$00D7 : BCS
+static const CosimRun CHAINSAW_RUN_SWING_NEAR = {140, 13, 2};  // $9539-$9545, to CMP #$0020 : BCC
+static const CosimRun CHAINSAW_RUN_CHASE_LOOK = {140, 13, 2};  // $9259-$9265, to CMP #$00FA : BCS
+static const CosimRun CHAINSAW_RUN_CHASE_BEARING = {172, 14, 1};  // $9266-$9273, to TAX : BEQ
+static const CosimRun CHAINSAW_RUN_CHASE_AIM = {120, 9, 2};  // $9274-$927C, the JSR too
+static const CosimRun CHAINSAW_RUN_CHASE_TRY = {368, 32, 8};  // $927D-$9298
+static const CosimRun CHAINSAW_RUN_CHASE_MOVED = {58, 7, 1};  // $929E LDA $28 : CMP #$0002 : BCS
+static const CosimRun CHAINSAW_RUN_CHASE_COUNT = {108, 9, 2};  // $92A5-$92AD, to CMP #$0078 : BCS
+static const CosimRun CHAINSAW_RUN_HANDLER = {168, 11, 0};  // $80:8475, all of it
+static const CosimRun CHAINSAW_RUN_HEDGE_HEAD = {198, 14, 3};  // $80:B0BB-$B0C8
+static const CosimRun CHAINSAW_RUN_HEDGE_ABOVE = {182, 18, 2};  // $80:B0C9-$B0DA, to AND #$0040 : BNE
+static const CosimRun CHAINSAW_RUN_HEDGE_RIGHT = {228, 23, 3};  // $80:B0DB-$B0F1
+static const CosimRun CHAINSAW_RUN_HEDGE_BELOW = {210, 20, 3};  // $80:B0F2-$B105
+static const CosimRun CHAINSAW_RUN_HEDGE_LEFT = {228, 23, 3};  // $80:B106-$B11C
+static const CosimRun CHAINSAW_RUN_HEDGE_NONE = {76, 2, 0};  // $80:B11D PLD : RTL
+static const CosimRun CHAINSAW_RUN_HEDGE_FOUND = {104, 4, 1};  // $80:B11F LDA $3C : PLD : RTL
+static const CosimRun CHAINSAW_RUN_TAKEN = {6, 0, 0};
+
+// The ROM's own instructions in `own`, and what its calls cost in `calls`.
+typedef struct {
+  CosimRun own;
+  int calls;
+  const ChainsawLog* log;
+  const CosimRegs* in;
+} ChainsawBill;
+
+static void chainsaw_add(ChainsawBill* b, const CosimRun* r) {
+  run_add(&b->own, r, 1);
+}
+
+static void chainsaw_taken(ChainsawBill* b) {
+  chainsaw_add(b, &CHAINSAW_RUN_TAKEN);
+}
+
+// May it stand there: the ground, and then whoever is there. True when
+// neither branch out was taken.
+static bool chainsaw_probe_bill(ChainsawBill* b, const ChainsawProbe* p) {
+  chainsaw_add(b, &CHAINSAW_RUN_GROUND);
+  if (p->blocked) {
+    chainsaw_taken(b);
+    return false;
+  }
+  chainsaw_add(b, &CHAINSAW_RUN_ACTOR);
+  if (p->someone) {
+    chainsaw_taken(b);
+    return false;
+  }
+  return true;
+}
+
+// `$81:9107`.
+static void chainsaw_step_bill(ChainsawBill* b, const ChainsawStep* s) {
+  chainsaw_add(b, &CHAINSAW_RUN_STEP_HEAD);
+  for (int axis = 0; axis < 2; axis++)
+    if (chainsaw_probe_bill(b, &s->axis[axis]))
+      chainsaw_add(b, &CHAINSAW_RUN_STEP_TAKE);
+  chainsaw_add(b, &CHAINSAW_RUN_STEP_MOVED);
+  chainsaw_add(b, s->backwards ? &CHAINSAW_RUN_NEGATE : &CHAINSAW_RUN_TAKEN);
+  chainsaw_add(b, &CHAINSAW_RUN_STEP_TAIL);
+}
+
+// `$81:91E5`, its `RTS` too.
+static void chainsaw_stride_bill(ChainsawBill* b, const ChainsawStride* s) {
+  chainsaw_add(b, &CHAINSAW_RUN_STRIDE_HEAD);
+  if (s->turn_asked) {
+    chainsaw_add(b, &CHAINSAW_RUN_JSR);
+    chainsaw_add(b, &CHAINSAW_RUN_OPENING_HEAD);
+    if (chainsaw_probe_bill(b, &s->turn))
+      chainsaw_add(b, &CHAINSAW_RUN_OPENING_TAKE);
+    chainsaw_add(b, &CHAINSAW_RUN_RTS);
+  } else {
+    chainsaw_taken(b);
+  }
+  chainsaw_add(b, &CHAINSAW_RUN_TRY);
+  chainsaw_add(b, &CHAINSAW_RUN_JSR);
+  chainsaw_step_bill(b, &s->step);
+  chainsaw_add(b, &CHAINSAW_RUN_BRANCH);
+  if (s->turned_back) {
+    chainsaw_add(b, &CHAINSAW_RUN_JSR);
+    chainsaw_add(b, &CHAINSAW_RUN_TURN);
+  } else {
+    chainsaw_taken(b);
+  }
+  chainsaw_add(b, &CHAINSAW_RUN_RTS);
+}
+
+// The question of a hedge and what is done with the answer, up to the `RTS`
+// that follows either. `$80:B0BB` and `$80:8475` run on page zero.
+static void chainsaw_hedge_bill(ChainsawBill* b, const ChainsawHedge* h) {
+  static const CosimRun* const SIDES[] = {
+      &CHAINSAW_RUN_HEDGE_ABOVE, &CHAINSAW_RUN_HEDGE_RIGHT,
+      &CHAINSAW_RUN_HEDGE_BELOW, &CHAINSAW_RUN_HEDGE_LEFT};
+  const bool fast = b->in->fastrom;
+  chainsaw_add(b, &CHAINSAW_RUN_HEDGE_ASK);
+
+  CosimRun asked = {0, 0, 0};
+  run_add(&asked, &CHAINSAW_RUN_HEDGE_HEAD, 1);
+  for (int i = 0; i < h->tiles; i++) run_add(&asked, SIDES[i], 1);
+  if (h->found) run_add(&asked, &CHAINSAW_RUN_TAKEN, 1);
+  run_add(&asked, h->found ? &CHAINSAW_RUN_HEDGE_FOUND : &CHAINSAW_RUN_HEDGE_NONE,
+          1);
+  b->calls += cosim_run_cycles_dp(&asked, fast, false) +
+              h->tiles * cosim_run_cycles(&TILE_ATTRS_RUN, fast);
+
+  if (!h->found) {
+    chainsaw_taken(b);
+    return;
+  }
+  chainsaw_add(b, &CHAINSAW_RUN_JSR);
+  chainsaw_add(b, &CHAINSAW_RUN_BEGIN_CUT);
+  b->calls += cosim_run_cycles_dp(&CHAINSAW_RUN_HANDLER, fast, false);
+}
+
+static void chainsaw_charge_bill(ChainsawBill* b) {
+  const ChainsawLog* log = b->log;
+  chainsaw_add(b, &CHAINSAW_RUN_TRY);
+  if (chainsaw_probe_bill(b, &log->ahead)) {
+    chainsaw_add(b, &CHAINSAW_RUN_CHARGE_TAKE);
+    return;
+  }
+  if (!log->ahead.blocked) {
+    chainsaw_add(b, &CHAINSAW_RUN_RTS);
+    return;
+  }
+  chainsaw_add(b, &CHAINSAW_RUN_CHARGE_COUNT);
+  if (log->count_negative) {
+    chainsaw_add(b, &CHAINSAW_RUN_JSR);
+    chainsaw_add(b, &CHAINSAW_RUN_TURN);
+    chainsaw_add(b, &CHAINSAW_RUN_JMP);
+  } else {
+    chainsaw_taken(b);
+    chainsaw_add(b, &CHAINSAW_RUN_JMP);
+    chainsaw_add(b, &CHAINSAW_RUN_RANDOM_HEAD);
+    chainsaw_add(b, log->turned_left ? &CHAINSAW_RUN_TAKEN
+                                     : &CHAINSAW_RUN_RANDOM_RIGHT);
+    chainsaw_add(b, &CHAINSAW_RUN_RANDOM_TAIL);
+    chainsaw_add(b, &CHAINSAW_RUN_TURN);
+  }
+  chainsaw_add(b, &CHAINSAW_RUN_SET_STATE);
+}
+
+static void chainsaw_wander_bill(ChainsawBill* b) {
+  chainsaw_add(b, &CHAINSAW_RUN_WANDER_HEAD);
+  if (b->log->someone_near) {
+    chainsaw_taken(b);
+    chainsaw_add(b, &CHAINSAW_RUN_JMP);
+    chainsaw_add(b, &CHAINSAW_RUN_SET_STATE);
+    return;
+  }
+  chainsaw_add(b, &CHAINSAW_RUN_JSR);
+  chainsaw_stride_bill(b, &b->log->stride);
+  chainsaw_add(b, &CHAINSAW_RUN_RTS);
+}
+
+static void chainsaw_turned_bill(ChainsawBill* b) {
+  chainsaw_add(b, &CHAINSAW_RUN_TURNED_HEAD);
+  if (b->log->time_up) {
+    chainsaw_add(b, &CHAINSAW_RUN_JMP);
+    chainsaw_add(b, &CHAINSAW_RUN_SET_STATE);
+    return;
+  }
+  chainsaw_taken(b);
+  chainsaw_add(b, &CHAINSAW_RUN_JSR);
+  chainsaw_stride_bill(b, &b->log->stride);
+  chainsaw_hedge_bill(b, &b->log->hedge);
+  chainsaw_add(b, &CHAINSAW_RUN_RTS);
+}
+
+static void chainsaw_chase_bill(ChainsawBill* b) {
+  const ChainsawLog* log = b->log;
+  chainsaw_add(b, &CHAINSAW_RUN_JSR);
+  chainsaw_add(b, &CHAINSAW_RUN_SWING_HEAD);
+  if (!log->swing_drawn) {
+    chainsaw_taken(b);
+    chainsaw_add(b, &CHAINSAW_RUN_RTS);
+  } else {
+    chainsaw_add(b, &CHAINSAW_RUN_SWING_NEAR);
+    if (log->swung) {
+      chainsaw_taken(b);
+      chainsaw_add(b, &CHAINSAW_RUN_JMP);
+      chainsaw_add(b, &CHAINSAW_RUN_SET_STATE);
+    } else {
+      chainsaw_add(b, &CHAINSAW_RUN_RTS);
+    }
+  }
+
+  chainsaw_add(b, &CHAINSAW_RUN_CHASE_LOOK);
+  if (!log->nobody) chainsaw_add(b, &CHAINSAW_RUN_CHASE_BEARING);
+  if (log->nobody || log->on_them) {
+    chainsaw_taken(b);
+    chainsaw_add(b, &CHAINSAW_RUN_JMP);
+    chainsaw_add(b, &CHAINSAW_RUN_SET_STATE);
+    return;
+  }
+  chainsaw_add(b, &CHAINSAW_RUN_CHASE_AIM);
+  for (int i = 0; i < log->chase_steps; i++) {
+    const ChainsawChaseStep* s = &log->chase[i];
+    chainsaw_add(b, &CHAINSAW_RUN_CHASE_TRY);
+    chainsaw_add(b, &CHAINSAW_RUN_JSR);
+    chainsaw_step_bill(b, &s->step);
+    chainsaw_add(b, &CHAINSAW_RUN_BRANCH);
+    if (!s->step.refused) {
+      chainsaw_taken(b);
+      chainsaw_add(b, &CHAINSAW_RUN_RTS);
+      continue;
+    }
+    chainsaw_add(b, &CHAINSAW_RUN_CHASE_MOVED);
+    if (s->short_of) {
+      chainsaw_add(b, &CHAINSAW_RUN_CHASE_COUNT);
+      if (s->gave_up) {
+        chainsaw_taken(b);
+        chainsaw_add(b, &CHAINSAW_RUN_JMP);
+        chainsaw_add(b, &CHAINSAW_RUN_SET_STATE);
+        continue;
+      }
+    } else {
+      chainsaw_taken(b);
+    }
+    chainsaw_hedge_bill(b, &s->hedge);
+    chainsaw_add(b, &CHAINSAW_RUN_RTS);
+  }
+}
+
+// `$81:977D`.
+static void chainsaw_show_bill(ChainsawBill* b) {
+  const ChainsawLog* log = b->log;
+  chainsaw_add(b, &CHAINSAW_RUN_SHOW_HEAD);
+  if (!log->new_picture) {
+    chainsaw_taken(b);
+  } else {
+    chainsaw_add(b, &CHAINSAW_RUN_SHOW_NEXT);
+    chainsaw_taken(b);  // the `BCS` to the mirror, or the `BRA` round it
+    chainsaw_add(b, log->mirrored ? &CHAINSAW_RUN_SHOW_MIRROR
+                                  : &CHAINSAW_RUN_SHOW_PLAIN);
+  }
+  chainsaw_add(b, &CHAINSAW_RUN_SHOW_PLACE);
+}
+
+// The tests put their scratch on page zero, and the tables are read through
+// the data bank. So is its record, which has to be in the WRAM bank `$81`
+// mirrors.
+static bool chainsaw_frame_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == CHAINSAW_BANK &&
+         wram_r16(w, (uint16_t)(in->d + CHAINSAW_DP_RECORD)) < 0x1f00 &&
+         chainsaw_frame_supported(w, in->d);
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or past the
+// test of its health with that in A.
+static void shim_chainsaw_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  ChainsawLog log;
+  const bool stays = chainsaw_frame(w, rom, in->d, (in->p & PORT_P_C) != 0,
+                                    &log) == CHAINSAW_SLEEPS;
+
+  const bool fast = in->fastrom;
+  ChainsawBill b = {{0, 0, 0}, 0, &log, in};
+  chainsaw_add(&b, &CHAINSAW_RUN_ENTER);
+  switch (log.state) {
+    case CHAINSAW_STATE_CHARGE:
+      chainsaw_charge_bill(&b);
+      break;
+    case CHAINSAW_STATE_WANDER:
+      chainsaw_wander_bill(&b);
+      break;
+    case CHAINSAW_STATE_TURNED:
+      chainsaw_turned_bill(&b);
+      break;
+    default:
+      chainsaw_chase_bill(&b);
+      break;
+  }
+  chainsaw_add(&b, &CHAINSAW_RUN_JSR);
+  chainsaw_show_bill(&b);
+  chainsaw_add(&b, &CHAINSAW_RUN_FATE);
+  if (stays) {
+    chainsaw_taken(&b);
+    chainsaw_add(&b, &CHAINSAW_RUN_TICKS);
+  }
+
+  b.calls += nearest_cycles(&log.nearest, fast) +
+             at_point_cycles(&log.at_point, fast) +
+             log.draws * rng_cycles(log.draw_overflow, fast);
+  for (int i = 0; i < log.grounds && i < CHAINSAW_MAX_GROUNDS; i++)
+    b.calls += terrain_enemy_cycles(&log.ground[i], fast);
+  if (log.bearing_asked)
+    b.calls += actor_snap_cycles(&log.snap, fast) +
+               actor_bearing_cycles(&log.bearing, fast);
+  cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
+                                           (in->d & 0x00ffu) != 0));
+
+  out->pc = stays ? CHAINSAW_YIELD_PC : CHAINSAW_DEAD_PC;
+  out->a = stays ? CHAINSAW_YIELD_TICKS
+                 : wram_r16(w, (uint16_t)(in->d + CHAINSAW_DP_HEALTH));
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V));
+}
+
+static const uint32_t CHAINSAW_FRAME_EXITS[] = {CHAINSAW_YIELD_PC,
+                                                CHAINSAW_DEAD_PC};
+
+// ---------------------------------------------------------------------------
+// The fishman -- see `port/fishman.h`
+// ---------------------------------------------------------------------------
+//
+// Two entries, a whole pass of either loop, and one bill for both: the loops
+// are the same instructions at two addresses. Each run is from
+// `tools/cycles816.py --db=81`, branches not taken; a taken branch, a `BRA`
+// and nothing else adds 6.
+static const CosimRun FISHMAN_RUN_ENTER = {142, 8, 1};  // $E558 PEA : LDA $1C : DEC : PHA : RTS
+static const CosimRun FISHMAN_RUN_FATE = {40, 4, 1};  // $E563 LDA $0A : BEQ
+static const CosimRun FISHMAN_RUN_SLEEP = {56, 4, 2};  // $E550 STZ $22 : LDA $40
+static const CosimRun FISHMAN_RUN_RTS = {40, 1, 0};  // any RTS
+static const CosimRun FISHMAN_RUN_JSR = {40, 3, 0};  // any JSR
+static const CosimRun FISHMAN_RUN_JMP = {18, 3, 0};  // any JMP
+static const CosimRun FISHMAN_RUN_BRANCH = {12, 2, 0};  // a branch by itself, or a BRA less its 6
+static const CosimRun FISHMAN_RUN_SET_STATE = {86, 6, 1};  // LDA # : STA $1C : RTS
+static const CosimRun FISHMAN_RUN_LEAVE = {50, 2, 1};  // DEC $0A
+static const CosimRun FISHMAN_RUN_PLAYERS = {152, 14, 2};  // LDA #$00D0 : LDX $10 : LDY $12 : JSL : TAX : BNE
+static const CosimRun FISHMAN_RUN_LOOK_HEAD = {140, 13, 2};  // $DD57-$DD63, to CMP #$0080 : BCC
+static const CosimRun FISHMAN_RUN_LOOK_NEAR = {46, 5, 1};  // $DD7A STX $24 : JMP, and $DED3
+static const CosimRun FISHMAN_RUN_BAND = {30, 5, 0};  // CMP # : BCC
+static const CosimRun FISHMAN_RUN_LOOK_ABOUT = {84, 9, 0};  // $DDA1 JSL : CMP #$0005 : BCC
+static const CosimRun FISHMAN_RUN_LEAP_DRAW = {84, 9, 0};  // $E007 JSL : CMP #$007D : BCS
+static const CosimRun FISHMAN_RUN_LEAP_NEAR = {140, 13, 2};  // $E010-$E01C, to CMP #$00C8 : BCS
+static const CosimRun FISHMAN_RUN_LEAP_SPOT = {640, 58, 5};  // $E01D-$E054, to the BCS after the bounds
+static const CosimRun FISHMAN_RUN_LEAP_LAND = {108, 9, 2};  // $E055 LDX : LDY : JSR $E1D6 : BCS
+static const CosimRun FISHMAN_RUN_ACTOR_ASK = {150, 12, 3};  // LDA $08 : LDX : LDY : JSL : BCS
+static const CosimRun FISHMAN_RUN_WATER_ASK = {108, 9, 2};  // LDX : LDY : JSR $DC24 : BCS
+static const CosimRun FISHMAN_RUN_WATER_HEAD = {426, 40, 2};  // $DC24-$DC4B
+static const CosimRun FISHMAN_RUN_WATER_TILE_1 = {176, 14, 2};  // each tile to its BEQ
+static const CosimRun FISHMAN_RUN_WATER_TILE_2 = {194, 17, 2};  //
+static const CosimRun FISHMAN_RUN_WATER_TILE_3 = {194, 17, 2};  //
+static const CosimRun FISHMAN_RUN_WATER_TILE_4 = {204, 16, 3};  //
+static const CosimRun FISHMAN_RUN_WATER_TILE_5 = {228, 18, 3};  //
+static const CosimRun FISHMAN_RUN_WATER_TILE_6 = {246, 21, 3};  //
+static const CosimRun FISHMAN_RUN_WATER_WET = {86, 3, 0};  // PLD : CLC : RTS
+static const CosimRun FISHMAN_RUN_LAND_HEAD = {426, 40, 2};  // $E1D6-$E1FD
+static const CosimRun FISHMAN_RUN_LAND_TILE_1 = {212, 20, 2};  // each tile to its BNE
+static const CosimRun FISHMAN_RUN_LAND_TILE_2 = {230, 23, 2};  //
+static const CosimRun FISHMAN_RUN_LAND_TILE_3 = {230, 23, 2};  //
+static const CosimRun FISHMAN_RUN_LAND_TILE_4 = {240, 22, 3};  //
+static const CosimRun FISHMAN_RUN_LAND_TILE_5 = {264, 24, 3};  //
+static const CosimRun FISHMAN_RUN_LAND_TILE_6 = {282, 27, 3};  //
+static const CosimRun FISHMAN_RUN_OPENING_HEAD = {384, 37, 6};  // $DCD0-$DCF0
+static const CosimRun FISHMAN_RUN_OPENING_TAKE = {56, 4, 2};  // $DD06 LDA $1A : STA $18
+static const CosimRun FISHMAN_RUN_TRY = {260, 24, 5};  // $DE08-$DE1B, and $DE41, $DEFD
+static const CosimRun FISHMAN_RUN_COMMIT = {112, 8, 4};  // LDA $14 : STA $10 : LDA $16 : STA $12
+static const CosimRun FISHMAN_RUN_TURN_AT_WALL = {170, 18, 2};  // $DD7F-$DD90, the JMP too
+static const CosimRun FISHMAN_RUN_SLIDE_HEAD = {96, 8, 3};  // $DD0B STZ $32 : LDA $14 : CMP $10 : BEQ
+static const CosimRun FISHMAN_RUN_SLIDE_TAKE = {106, 6, 3};  // INC $32 : LDA : STA
+static const CosimRun FISHMAN_RUN_SLIDE_MID = {68, 6, 2};  // $DD2E LDA $16 : CMP $12 : BEQ
+static const CosimRun FISHMAN_RUN_SLIDE_TAIL = {40, 4, 1};  // $DD4F LDA $32 : BNE
+static const CosimRun FISHMAN_RUN_SLIDE_ANSWER = {52, 2, 0};  // SEC : RTS, or CLC : RTS
+static const CosimRun FISHMAN_RUN_CLOSE_HEAD = {140, 13, 2};  // $DE77-$DE83, to CMP #$0018 : BCC
+static const CosimRun FISHMAN_RUN_CLOSE_DRAW = {112, 11, 1};  // $DE9D STX $24 : JSL : AND #$0003 : BEQ
+static const CosimRun FISHMAN_RUN_CLOSE_STEP = {436, 37, 7};  // $DEAB-$DECB
+static const CosimRun FISHMAN_RUN_REVERSE = {88, 11, 1};  // $DF16-$DF20, to the BNE
+static const CosimRun FISHMAN_RUN_REVERSE_WRAP = {18, 3, 0};  // $DF21 LDA #$0010
+static const CosimRun FISHMAN_RUN_REVERSE_STORE = {28, 2, 1};  // $DF24 STA $18
+static const CosimRun FISHMAN_RUN_PATROL_NEAR = {140, 13, 2};  // $DF2B-$DF37, to CMP #$0018 : BCC
+static const CosimRun FISHMAN_RUN_PATROL_GAP_X = {120, 10, 2};  // $DF38-$DF41, to the BPL
+static const CosimRun FISHMAN_RUN_NEGATE = {30, 4, 0};  // EOR : INC
+static const CosimRun FISHMAN_RUN_PATROL_GAP_Y = {92, 8, 1};  // $DF4B-$DF52, to the BPL
+static const CosimRun FISHMAN_RUN_LINE_UP_SET = {132, 11, 2};  // $DF79-$DF83, the RTS too
+static const CosimRun FISHMAN_RUN_LINE_HEAD = {64, 8, 0};  // $DF84 LDA $0020 : AND #$0002 : BNE
+static const CosimRun FISHMAN_RUN_LINE_GAP = {138, 13, 2};  // $DF8F-$DF9B, to the BPL
+static const CosimRun FISHMAN_RUN_LINE_NEGATE = {48, 7, 0};  // $DF9C EOR : INC : LDY #$FFFF
+static const CosimRun FISHMAN_RUN_LINE_STEP = {136, 10, 4};  // $DFA8-$DFB1
+static const CosimRun FISHMAN_RUN_LINE_DONE = {46, 5, 1};  // $DFB7 LDA #$0002 : STA $40
+static const CosimRun FISHMAN_RUN_PATROL_AGAIN = {46, 5, 1};  // $DED8 LDA #$DEFD : STA $1C
+static const CosimRun FISHMAN_RUN_RISE_HEAD = {98, 10, 2};  // $E189-$E192, to the BPL
+static const CosimRun FISHMAN_RUN_RISE_FALLING = {30, 4, 0};  // $E193 SEC : ORA #$0001
+static const CosimRun FISHMAN_RUN_RISE_TAIL = {206, 12, 1};  // $E197-$E1A2, the RTS too
+static const CosimRun FISHMAN_RUN_GLIDE_X_HEAD = {68, 5, 2};  // $E1A3 LDA $32 : CLC : ADC $36
+static const CosimRun FISHMAN_RUN_GLIDE_TEST = {40, 4, 1};  // CMP $30 : BCC
+static const CosimRun FISHMAN_RUN_GLIDE_STEP = {172, 14, 4};  // $E1AC-$E1B9, the BRA less its 6
+static const CosimRun FISHMAN_RUN_GLIDE_X_TAIL = {96, 7, 3};  // $E1BA STA $32 : LDA $34 : CLC : ADC $38
+static const CosimRun FISHMAN_RUN_GLIDE_Y_TAIL = {68, 3, 1};  // $E1D3 STA $34 : RTS
+static const CosimRun FISHMAN_RUN_FLIGHT_PLACE = {216, 17, 3};  // $E126-$E136, to the BEQ
+static const CosimRun FISHMAN_RUN_FLIGHT_FLOOR = {58, 6, 0};  // $E13A LDA #$0000 : STA $0004,X
+static const CosimRun FISHMAN_RUN_LANDED_HEAD = {372, 35, 6};  // $E15B-$E17D, to LDA $46 : BEQ
+static const CosimRun FISHMAN_RUN_ASHORE = {166, 16, 1};  // $D938-$D947, the JMP too
+static const CosimRun FISHMAN_RUN_LURK_SET = {86, 9, 2};  // $E309-$E311, to LDA $46 : BNE
+static const CosimRun FISHMAN_RUN_SHOW_FORM = {40, 4, 1};  // $E621 LDA $28 : BMI
+static const CosimRun FISHMAN_RUN_PICTURE_WAIT = {62, 4, 1};  // DEC $1E : BPL
+static const CosimRun FISHMAN_RUN_SWIM_PICTURE = {290, 30, 4};  // $E660-$E67B, to CMP #$0007 : BNE
+static const CosimRun FISHMAN_RUN_SWIM_PICTURE_WRAP = {18, 3, 0};  // $E67C LDA #$0000
+static const CosimRun FISHMAN_RUN_SWIM_PICTURE_STORE = {28, 2, 1};  // $E67F STA $20
+static const CosimRun FISHMAN_RUN_STAND_PICTURE = {312, 30, 4};  // $E62B-$E646, to CPX #$0030 : BCS
+static const CosimRun FISHMAN_RUN_STAND_PICTURE_PLAIN = {30, 5, 0};  // $E647 AND : BRA, less its 6
+static const CosimRun FISHMAN_RUN_STAND_PICTURE_MIRROR = {18, 3, 0};  // $E64C ORA
+static const CosimRun FISHMAN_RUN_STAND_PICTURE_STORE = {126, 11, 2};  // $E64F-$E659
+static const CosimRun FISHMAN_RUN_PLACE = {204, 13, 3};  // $E681-$E68D, the RTS too
+static const CosimRun FISHMAN_RUN_TAKEN = {6, 0, 0};
+
+// The ROM's own instructions on the thread's page in `own`, those of its two
+// tile tests in `zero`, which install page zero, and what its calls cost in
+// `calls`. The three counts say how many of each the bill has come to.
+typedef struct {
+  CosimRun own;
+  CosimRun zero;
+  int calls;
+  const FishmanLog* log;
+  const CosimRegs* in;
+  int slides, player_asks, bearings;
+} FishmanBill;
+
+static void fishman_add(FishmanBill* b, const CosimRun* r) {
+  run_add(&b->own, r, 1);
+}
+
+static void fishman_taken(FishmanBill* b) {
+  fishman_add(b, &FISHMAN_RUN_TAKEN);
+}
+
+// `$81:DC24` or `$81:E1D6`: each tile to its branch, which the first that
+// fails takes to the other `PLD`.
+static void fishman_tiles_bill(FishmanBill* b, const FishmanTiles* t,
+                               const CosimRun* head,
+                               const CosimRun* const* tiles) {
+  run_add(&b->zero, head, 1);
+  for (int i = 0; i < t->tiles; i++) run_add(&b->zero, tiles[i], 1);
+  if (!t->all) run_add(&b->zero, &FISHMAN_RUN_TAKEN, 1);
+  run_add(&b->zero, &FISHMAN_RUN_WATER_WET, 1);
+}
+
+static void fishman_water_bill(FishmanBill* b, const FishmanTiles* t) {
+  static const CosimRun* const TILES[] = {
+      &FISHMAN_RUN_WATER_TILE_1, &FISHMAN_RUN_WATER_TILE_2,
+      &FISHMAN_RUN_WATER_TILE_3, &FISHMAN_RUN_WATER_TILE_4,
+      &FISHMAN_RUN_WATER_TILE_5, &FISHMAN_RUN_WATER_TILE_6};
+  fishman_tiles_bill(b, t, &FISHMAN_RUN_WATER_HEAD, TILES);
+}
+
+static void fishman_landing_bill(FishmanBill* b, const FishmanTiles* t) {
+  static const CosimRun* const TILES[] = {
+      &FISHMAN_RUN_LAND_TILE_1, &FISHMAN_RUN_LAND_TILE_2,
+      &FISHMAN_RUN_LAND_TILE_3, &FISHMAN_RUN_LAND_TILE_4,
+      &FISHMAN_RUN_LAND_TILE_5, &FISHMAN_RUN_LAND_TILE_6};
+  fishman_tiles_bill(b, t, &FISHMAN_RUN_LAND_HEAD, TILES);
+}
+
+// May it swim there: the water, and then whoever is there. True when neither
+// branch out was taken.
+static bool fishman_probe_bill(FishmanBill* b, const FishmanProbe* p) {
+  fishman_add(b, &FISHMAN_RUN_WATER_ASK);
+  fishman_water_bill(b, &p->water);
+  if (!p->water.all) {
+    fishman_taken(b);
+    return false;
+  }
+  fishman_add(b, &FISHMAN_RUN_ACTOR_ASK);
+  if (p->someone) {
+    fishman_taken(b);
+    return false;
+  }
+  return true;
+}
+
+// The players asked after. True when neither is near, and the `BNE` falls
+// through.
+static bool fishman_players_bill(FishmanBill* b) {
+  const PlayerPickRegs* r = &b->log->players[b->player_asks++];
+  fishman_add(b, &FISHMAN_RUN_PLAYERS);
+  b->calls += player_bearing_cycles(r, b->in->fastrom);
+  if (r->a != 0) fishman_taken(b);
+  return r->a == 0;
+}
+
+// `$81:DD0B`, its `RTS` too. True when it was stuck.
+static bool fishman_slide_bill(FishmanBill* b) {
+  const FishmanSlide* k = &b->log->slide[b->slides++];
+  fishman_add(b, &FISHMAN_RUN_SLIDE_HEAD);
+  for (int axis = 0; axis < 2; axis++) {
+    if (axis == 1) fishman_add(b, &FISHMAN_RUN_SLIDE_MID);
+    if (!k->asked[axis])
+      fishman_taken(b);
+    else if (fishman_probe_bill(b, &k->axis[axis]))
+      fishman_add(b, &FISHMAN_RUN_SLIDE_TAKE);
+  }
+  fishman_add(b, &FISHMAN_RUN_SLIDE_TAIL);
+  if (!k->stuck) fishman_taken(b);
+  fishman_add(b, &FISHMAN_RUN_SLIDE_ANSWER);
+  return k->stuck;
+}
+
+// `$81:DD57`, its `RTS` too.
+static void fishman_look_bill(FishmanBill* b) {
+  fishman_add(b, &FISHMAN_RUN_LOOK_HEAD);
+  if (b->log->look == FISHMAN_LOOK_NEAR) {
+    fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_LOOK_NEAR);
+    fishman_add(b, &FISHMAN_RUN_SET_STATE);
+    return;
+  }
+  fishman_add(b, &FISHMAN_RUN_BAND);
+  if (b->log->look == FISHMAN_LOOK_WITHIN)
+    fishman_taken(b);
+  else if (fishman_players_bill(b))
+    fishman_add(b, &FISHMAN_RUN_LEAVE);
+  fishman_add(b, &FISHMAN_RUN_RTS);
+}
+
+// `$81:E007` when it does not leap, its `RTS` too: every way out is a branch
+// taken to it.
+static void fishman_leap_bill(FishmanBill* b) {
+  const FishmanLog* log = b->log;
+  fishman_add(b, &FISHMAN_RUN_LEAP_DRAW);
+  if (log->leap != FISHMAN_LEAP_NO_DRAW) {
+    fishman_add(b, &FISHMAN_RUN_LEAP_NEAR);
+    if (log->leap != FISHMAN_LEAP_NOBODY) {
+      fishman_add(b, &FISHMAN_RUN_LEAP_SPOT);
+      b->calls += bounds_cycles(log->leap_edge, b->in->fastrom);
+      if (log->leap != FISHMAN_LEAP_OFF_LEVEL) {
+        fishman_add(b, &FISHMAN_RUN_LEAP_LAND);
+        fishman_landing_bill(b, &log->landing);
+        if (log->leap != FISHMAN_LEAP_NO_LANDING)
+          fishman_add(b, &FISHMAN_RUN_ACTOR_ASK);
+      }
+    }
+  }
+  fishman_taken(b);
+  fishman_add(b, &FISHMAN_RUN_RTS);
+}
+
+// The `JSR` to the draw for a leap, and the `BCC` after it.
+static void fishman_ask_leap_bill(FishmanBill* b) {
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  fishman_leap_bill(b);
+  fishman_add(b, &FISHMAN_RUN_BRANCH);
+}
+
+static void fishman_ask_look_about_bill(FishmanBill* b) {
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  fishman_add(b, &FISHMAN_RUN_LOOK_ABOUT);
+  fishman_add(b, &FISHMAN_RUN_RTS);
+}
+
+// The step the way it faces. True when it moved, and the body goes on.
+static bool fishman_swim_on_bill(FishmanBill* b) {
+  fishman_add(b, &FISHMAN_RUN_TRY);
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  const bool clear = fishman_probe_bill(b, &b->log->ahead);
+  fishman_add(b, &FISHMAN_RUN_RTS);
+  fishman_add(b, &FISHMAN_RUN_BRANCH);
+  if (!clear) {
+    fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_JMP);
+    fishman_add(b, &FISHMAN_RUN_TURN_AT_WALL);
+    fishman_add(b, &FISHMAN_RUN_SET_STATE);
+    return false;
+  }
+  fishman_add(b, &FISHMAN_RUN_COMMIT);
+  return true;
+}
+
+static void fishman_swim_bill(FishmanBill* b) {
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  fishman_look_bill(b);
+  fishman_ask_look_about_bill(b);
+  fishman_ask_leap_bill(b);
+  if (fishman_swim_on_bill(b)) fishman_add(b, &FISHMAN_RUN_RTS);
+}
+
+static void fishman_swim_turned_bill(FishmanBill* b) {
+  fishman_ask_look_about_bill(b);
+  fishman_ask_leap_bill(b);
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  fishman_add(b, &FISHMAN_RUN_OPENING_HEAD);
+  if (fishman_probe_bill(b, &b->log->opening))
+    fishman_add(b, &FISHMAN_RUN_OPENING_TAKE);
+  fishman_add(b, &FISHMAN_RUN_RTS);
+  if (!fishman_swim_on_bill(b)) return;
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  fishman_look_bill(b);
+  fishman_add(b, &FISHMAN_RUN_RTS);
+}
+
+static void fishman_close_in_bill(FishmanBill* b) {
+  const FishmanLog* log = b->log;
+  const bool fast = b->in->fastrom;
+  fishman_ask_leap_bill(b);
+  fishman_add(b, &FISHMAN_RUN_CLOSE_HEAD);
+  if (log->range == FISHMAN_RANGE_TOUCHING) {
+    fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_LOOK_NEAR);
+    fishman_add(b, &FISHMAN_RUN_SET_STATE);
+    return;
+  }
+  fishman_add(b, &FISHMAN_RUN_BAND);
+  if (log->range == FISHMAN_RANGE_FAR) {
+    if (fishman_players_bill(b)) {
+      fishman_add(b, &FISHMAN_RUN_LEAVE);
+      fishman_add(b, &FISHMAN_RUN_RTS);
+    } else {
+      fishman_add(b, &FISHMAN_RUN_JMP);
+      fishman_add(b, &FISHMAN_RUN_SET_STATE);
+    }
+    return;
+  }
+  fishman_taken(b);
+  fishman_add(b, &FISHMAN_RUN_CLOSE_DRAW);
+  fishman_add(b, log->close_steps == 2 ? &FISHMAN_RUN_JSR : &FISHMAN_RUN_TAKEN);
+  for (int i = 0; i < log->close_steps; i++) {
+    fishman_add(b, &FISHMAN_RUN_CLOSE_STEP);
+    b->calls += actor_snap_cycles(&log->snap[b->bearings], fast) +
+                actor_bearing_cycles(&log->bearing[b->bearings], fast);
+    b->bearings++;
+    fishman_add(b, &FISHMAN_RUN_JSR);
+    fishman_slide_bill(b);
+    fishman_add(b, &FISHMAN_RUN_RTS);
+  }
+}
+
+static void fishman_patrol_bill(FishmanBill* b) {
+  const FishmanLog* log = b->log;
+  fishman_add(b, &FISHMAN_RUN_TRY);
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  const bool stuck = fishman_slide_bill(b);
+  fishman_add(b, &FISHMAN_RUN_BRANCH);
+  if (stuck) {
+    fishman_add(b, &FISHMAN_RUN_REVERSE);
+    fishman_add(b, log->reversed_wrapped ? &FISHMAN_RUN_REVERSE_WRAP
+                                         : &FISHMAN_RUN_TAKEN);
+    fishman_add(b, &FISHMAN_RUN_REVERSE_STORE);
+  } else {
+    fishman_taken(b);
+  }
+  fishman_ask_leap_bill(b);
+  fishman_add(b, &FISHMAN_RUN_PATROL_NEAR);
+  if (log->patrol == FISHMAN_PATROL_TOUCHING) {
+    fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_JMP);
+    fishman_add(b, &FISHMAN_RUN_SET_STATE);
+    return;
+  }
+  fishman_add(b, &FISHMAN_RUN_PATROL_GAP_X);
+  fishman_add(b, log->gap_negative[0] ? &FISHMAN_RUN_NEGATE : &FISHMAN_RUN_TAKEN);
+  fishman_add(b, &FISHMAN_RUN_BAND);
+  if (log->patrol != FISHMAN_PATROL_IN_COLUMN) {
+    fishman_add(b, &FISHMAN_RUN_PATROL_GAP_Y);
+    fishman_add(b,
+                log->gap_negative[1] ? &FISHMAN_RUN_NEGATE : &FISHMAN_RUN_TAKEN);
+    fishman_add(b, &FISHMAN_RUN_BAND);
+  }
+  if (log->patrol != FISHMAN_PATROL_APART) {
+    fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_JMP);
+    fishman_add(b, &FISHMAN_RUN_LINE_UP_SET);
+    return;
+  }
+  if (fishman_players_bill(b)) fishman_add(b, &FISHMAN_RUN_LEAVE);
+  fishman_add(b, &FISHMAN_RUN_RTS);
+}
+
+static void fishman_line_up_bill(FishmanBill* b) {
+  const FishmanLog* log = b->log;
+  fishman_add(b, &FISHMAN_RUN_LINE_HEAD);
+  fishman_add(b, log->line_steps == 2 ? &FISHMAN_RUN_JSR : &FISHMAN_RUN_TAKEN);
+  for (int i = 0; i < log->line_steps; i++) {
+    const FishmanLineStep* k = &log->line[i];
+    fishman_add(b, &FISHMAN_RUN_LINE_GAP);
+    fishman_add(b, k->negative ? &FISHMAN_RUN_LINE_NEGATE : &FISHMAN_RUN_TAKEN);
+    fishman_add(b, &FISHMAN_RUN_BAND);
+    if (k->arrived) {
+      fishman_taken(b);
+    } else {
+      fishman_add(b, &FISHMAN_RUN_LINE_STEP);
+      fishman_add(b, &FISHMAN_RUN_JSR);
+      const bool stuck = fishman_slide_bill(b);
+      fishman_add(b, &FISHMAN_RUN_BRANCH);
+      if (!stuck) {
+        fishman_taken(b);
+        fishman_add(b, &FISHMAN_RUN_RTS);
+        continue;
+      }
+    }
+    fishman_add(b, &FISHMAN_RUN_LINE_DONE);
+    fishman_add(b, &FISHMAN_RUN_JSR);
+    fishman_add(b, &FISHMAN_RUN_PATROL_AGAIN);
+    if (fishman_players_bill(b)) {
+      fishman_add(b, &FISHMAN_RUN_LEAVE);
+      fishman_add(b, &FISHMAN_RUN_BRANCH);  // a `BRA`
+      fishman_taken(b);
+    }
+    fishman_add(b, &FISHMAN_RUN_RTS);
+    fishman_add(b, &FISHMAN_RUN_RTS);
+  }
+}
+
+// One axis of `$81:E1A3`: the test once more than it stepped, and that last
+// one taken.
+static void fishman_glide_bill(FishmanBill* b, int steps) {
+  run_add(&b->own, &FISHMAN_RUN_GLIDE_TEST, steps + 1);
+  run_add(&b->own, &FISHMAN_RUN_GLIDE_STEP, steps);
+  run_add(&b->own, &FISHMAN_RUN_TAKEN, steps + 1);
+}
+
+static void fishman_fly_bill(FishmanBill* b) {
+  const FishmanLog* log = b->log;
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  fishman_add(b, &FISHMAN_RUN_RISE_HEAD);
+  fishman_add(b, log->falling ? &FISHMAN_RUN_RISE_FALLING : &FISHMAN_RUN_TAKEN);
+  fishman_add(b, &FISHMAN_RUN_RISE_TAIL);
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  fishman_add(b, &FISHMAN_RUN_GLIDE_X_HEAD);
+  fishman_glide_bill(b, log->glide_steps[0]);
+  fishman_add(b, &FISHMAN_RUN_GLIDE_X_TAIL);
+  fishman_glide_bill(b, log->glide_steps[1]);
+  fishman_add(b, &FISHMAN_RUN_GLIDE_Y_TAIL);
+  fishman_add(b, &FISHMAN_RUN_FLIGHT_PLACE);
+  if (log->flight == FISHMAN_FLIGHT_DOWN) {
+    fishman_taken(b);
+  } else {
+    fishman_add(b, &FISHMAN_RUN_BRANCH);
+    if (log->flight == FISHMAN_FLIGHT_UP) {
+      fishman_add(b, &FISHMAN_RUN_RTS);
+      return;
+    }
+    fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_FLIGHT_FLOOR);
+  }
+  fishman_add(b, &FISHMAN_RUN_JMP);
+  fishman_add(b, &FISHMAN_RUN_SET_STATE);
+}
+
+static void fishman_land_bill(FishmanBill* b) {
+  fishman_add(b, &FISHMAN_RUN_LANDED_HEAD);
+  if (b->log->ashore) {
+    fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_JMP);
+    fishman_add(b, &FISHMAN_RUN_ASHORE);
+    fishman_add(b, &FISHMAN_RUN_SET_STATE);
+    return;
+  }
+  fishman_add(b, &FISHMAN_RUN_JMP);
+  fishman_add(b, &FISHMAN_RUN_LURK_SET);
+  fishman_taken(b);
+  fishman_add(b, &FISHMAN_RUN_RTS);
+}
+
+// `$81:E610`, its `RTS` too.
+static void fishman_show_bill(FishmanBill* b) {
+  const FishmanLog* log = b->log;
+  if (fishman_players_bill(b)) {
+    fishman_add(b, &FISHMAN_RUN_LEAVE);
+    fishman_add(b, &FISHMAN_RUN_RTS);
+    return;
+  }
+  fishman_add(b, &FISHMAN_RUN_SHOW_FORM);
+  if (log->show == FISHMAN_SHOW_FLYING) {
+    fishman_taken(b);
+  } else {
+    fishman_add(b, &FISHMAN_RUN_BRANCH);
+    if (log->show == FISHMAN_SHOW_SWIMMING) fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_PICTURE_WAIT);
+    if (!log->new_picture) {
+      fishman_taken(b);
+    } else if (log->show == FISHMAN_SHOW_SWIMMING) {
+      fishman_add(b, &FISHMAN_RUN_SWIM_PICTURE);
+      fishman_add(b, log->picture_wrapped ? &FISHMAN_RUN_SWIM_PICTURE_WRAP
+                                          : &FISHMAN_RUN_TAKEN);
+      fishman_add(b, &FISHMAN_RUN_SWIM_PICTURE_STORE);
+    } else {
+      fishman_add(b, &FISHMAN_RUN_STAND_PICTURE);
+      fishman_taken(b);  // the `BCS` to the mirror, or the `BRA` round it
+      fishman_add(b, log->mirrored ? &FISHMAN_RUN_STAND_PICTURE_MIRROR
+                                   : &FISHMAN_RUN_STAND_PICTURE_PLAIN);
+      fishman_add(b, &FISHMAN_RUN_STAND_PICTURE_STORE);
+    }
+  }
+  // Everything but the swimming pictures goes by the `BRA` at `$E65A`.
+  if (log->show != FISHMAN_SHOW_SWIMMING) {
+    fishman_add(b, &FISHMAN_RUN_BRANCH);
+    fishman_taken(b);
+  }
+  fishman_add(b, &FISHMAN_RUN_PLACE);
+}
+
+// The tests put their scratch on page zero, and the tables are read through
+// the data bank. So are its record and the one it is after, which have to be
+// in the WRAM bank `$81` mirrors. Only lining up reads the one it is after
+// without having just found it.
+static bool fishman_frame_ok(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != FISHMAN_BANK) return false;
+  const uint16_t state = wram_r16(w, (uint16_t)(in->d + FISHMAN_DP_STATE));
+  const bool lining_up = state == FISHMAN_STATE_LINE_UP_DOWN ||
+                         state == FISHMAN_STATE_LINE_UP_ACROSS;
+  return wram_r16(w, (uint16_t)(in->d + FISHMAN_DP_RECORD)) < 0x1f00 &&
+         (!lining_up ||
+          wram_r16(w, (uint16_t)(in->d + FISHMAN_DP_TARGET)) < 0x1f00) &&
+         fishman_frame_supported(w, in->d);
+}
+
+// A pass that leaps, or stops to look about, is the ROM's, and only running
+// it says.
+static bool guard_fishman_frame(Wram* scratch, const Rom* rom,
+                                const CosimRegs* in) {
+  FishmanLog log;
+  fishman_frame(scratch, rom, in->d, (in->p & PORT_P_C) != 0, &log);
+  return !log.declined;
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or past the
+// test of its fate with that in A.
+static void fishman_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out, uint32_t yield_pc,
+                              uint32_t fate_pc) {
+  FishmanLog log;
+  const bool stays = fishman_frame(w, rom, in->d, (in->p & PORT_P_C) != 0,
+                                   &log) == FISHMAN_SLEEPS;
+
+  const bool fast = in->fastrom;
+  FishmanBill b = {{0, 0, 0}, {0, 0, 0}, 0, &log, in, 0, 0, 0};
+  fishman_add(&b, &FISHMAN_RUN_ENTER);
+  switch (log.state) {
+    case FISHMAN_STATE_SWIM:
+      fishman_swim_bill(&b);
+      break;
+    case FISHMAN_STATE_SWIM_TURNED:
+      fishman_swim_turned_bill(&b);
+      break;
+    case FISHMAN_STATE_CLOSE_IN:
+      fishman_close_in_bill(&b);
+      break;
+    case FISHMAN_STATE_PATROL:
+      fishman_patrol_bill(&b);
+      break;
+    case FISHMAN_STATE_LINE_UP_DOWN:
+    case FISHMAN_STATE_LINE_UP_ACROSS:
+      fishman_line_up_bill(&b);
+      break;
+    case FISHMAN_STATE_FLIGHT:
+    case FISHMAN_STATE_DIVE:
+      fishman_fly_bill(&b);
+      break;
+    default:
+      fishman_land_bill(&b);
+      break;
+  }
+  fishman_add(&b, &FISHMAN_RUN_JSR);
+  fishman_show_bill(&b);
+  fishman_add(&b, &FISHMAN_RUN_FATE);
+  if (stays) {
+    fishman_taken(&b);
+    fishman_add(&b, &FISHMAN_RUN_SLEEP);
+  }
+
+  b.calls += nearest_cycles(&log.nearest, fast) +
+             at_point_cycles(&log.at_point, fast);
+  for (int i = 0; i < log.draws && i < FISHMAN_MAX_DRAWS; i++)
+    b.calls += rng_cycles(log.draw_overflow[i], fast);
+  cosim_cost(b.calls +
+             cosim_run_cycles_dp(&b.own, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0) +
+             cosim_run_cycles_dp(&b.zero, fetch_fast(in), false));
+
+  out->pc = stays ? yield_pc : fate_pc;
+  out->a = stays ? log.ticks : wram_r16(w, (uint16_t)(in->d + FISHMAN_DP_FATE));
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (out->a == 0) out->p |= PORT_P_Z;
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V));
+}
+
+static void shim_fishman_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  fishman_frame_run(w, rom, in, out, FISHMAN_YIELD_PC, FISHMAN_FATE_PC);
+}
+
+static void shim_fishman_patrol_frame(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  fishman_frame_run(w, rom, in, out, FISHMAN_PATROL_YIELD_PC,
+                    FISHMAN_PATROL_FATE_PC);
+}
+
+static const uint32_t FISHMAN_FRAME_EXITS[] = {FISHMAN_YIELD_PC,
+                                               FISHMAN_FATE_PC};
+static const uint32_t FISHMAN_PATROL_FRAME_EXITS[] = {FISHMAN_PATROL_YIELD_PC,
+                                                      FISHMAN_PATROL_FATE_PC};
+
+// ---------------------------------------------------------------------------
+// The werewolf -- see `port/werewolf.h`
+// ---------------------------------------------------------------------------
+//
+// One entry, a whole pass of the loop. Each run is from `tools/cycles816.py
+// --db=81`, branches not taken; a taken branch, a `BRA` and nothing else
+// adds 6.
+static const CosimRun WEREWOLF_RUN_ENTER = {142, 8, 1};  // $AC1E PEA : LDA $0A : DEC : PHA : RTS
+static const CosimRun WEREWOLF_RUN_FATE = {40, 4, 1};  // $AC26 LDA $10 : BEQ
+static const CosimRun WEREWOLF_RUN_TICKS = {18, 3, 0};  // $AC17 LDA #$0001
+static const CosimRun WEREWOLF_RUN_RTS = {40, 1, 0};  // any RTS
+static const CosimRun WEREWOLF_RUN_JSR = {40, 3, 0};  // any JSR
+static const CosimRun WEREWOLF_RUN_JMP = {18, 3, 0};  // any JMP
+static const CosimRun WEREWOLF_RUN_BRANCH = {12, 2, 0};  // a branch by itself
+static const CosimRun WEREWOLF_RUN_NEGATE = {30, 4, 0};  // EOR : INC
+static const CosimRun WEREWOLF_RUN_BAND = {30, 5, 0};  // CMP # : BCS
+static const CosimRun WEREWOLF_RUN_ANSWER = {52, 2, 0};  // CLC : RTS, or SEC : RTS
+static const CosimRun WEREWOLF_RUN_SET_STATE = {86, 6, 1};  // LDA # : STA $0A : RTS
+static const CosimRun WEREWOLF_RUN_RUN_HEAD = {206, 15, 4};  // $ABC6-$ABD4, the JSR too
+static const CosimRun WEREWOLF_RUN_PAIR_DRAW = {84, 9, 0};  // $A741 JSL : AND #$0002 : BNE
+static const CosimRun WEREWOLF_RUN_STEP_HEAD = {58, 7, 1};  // $A74D LDA $44 : CMP #$0168 : BEQ
+static const CosimRun WEREWOLF_RUN_STEP_LEAVE = {118, 5, 2};  // $A7BD DEC $10 : STZ $3E : RTS
+static const CosimRun WEREWOLF_RUN_STEP_BEARING = {216, 17, 3};  // $A754-$A764, to TAX : BEQ
+static const CosimRun WEREWOLF_RUN_STEP_TRY = {296, 27, 3};  // $A765-$A77B
+static const CosimRun WEREWOLF_RUN_GROUND = {122, 10, 2};  // LDX : LDY : JSL : BCS
+static const CosimRun WEREWOLF_RUN_ACTOR = {150, 12, 3};  // LDA $08 : LDX : LDY : JSL : BCS
+static const CosimRun WEREWOLF_RUN_STEP_TAKE = {56, 4, 2};  // LDA : STA
+static const CosimRun WEREWOLF_RUN_STEP_PLACE = {204, 13, 3};  // $A7B0-$A7BC, the RTS too
+static const CosimRun WEREWOLF_RUN_RUN_WAIT = {62, 4, 1};  // $ABD5 DEC $0E : BPL
+static const CosimRun WEREWOLF_RUN_RUN_NEXT = {172, 16, 3};  // $ABD9-$ABE8, the JSR too
+static const CosimRun WEREWOLF_RUN_SHOW_HEAD = {52, 5, 1};  // $A694 LDA $1A : DEC : BMI
+static const CosimRun WEREWOLF_RUN_SHOW_PICK = {298, 30, 2};  // $A699-$A6B2, to the BMI
+static const CosimRun WEREWOLF_RUN_SHOW_SET = {120, 7, 0};  // ORA : STA : RTS, or AND
+static const CosimRun WEREWOLF_RUN_POUNCE_HEAD = {68, 6, 2};  // $A8A7 LDA $3A : CMP $3C : BNE
+static const CosimRun WEREWOLF_RUN_POUNCE_DRAW = {84, 9, 0};  // $A8AD JSL : CMP #$000F : BCS
+static const CosimRun WEREWOLF_RUN_POUNCE_NEAR = {58, 7, 1};  // $A8B6 LDA $44 : CMP #$0145 : BCS
+static const CosimRun WEREWOLF_RUN_POUNCE_GAP_X = {188, 15, 4};  // $A8BD-$A8CB, to the BPL
+static const CosimRun WEREWOLF_RUN_POUNCE_GAP_Y = {148, 12, 3};  // $A8D0-$A8DB, to the BPL
+static const CosimRun WEREWOLF_RUN_POUNCE_SUM = {70, 8, 1};  // $A8E0 CLC : ADC $36 : CMP #$0046 : BCC
+static const CosimRun WEREWOLF_RUN_REACH_HEAD = {58, 7, 1};  // $AB7D LDA $44 : CMP #$0145 : BCS
+static const CosimRun WEREWOLF_RUN_REACH_GAP_Y = {120, 10, 2};  // $AB84-$AB8D, to the BPL
+static const CosimRun WEREWOLF_RUN_REACH_GAP_X = {110, 11, 1};  // $AB97-$ABA1, to the BPL
+static const CosimRun WEREWOLF_RUN_REACH_NEGATE = {48, 7, 0};  // $ABA2 LDX #$0003 : EOR : INC
+static const CosimRun WEREWOLF_RUN_REACH_YES = {40, 4, 1};  // $ABAE STX $1A : BRA, less its 6
+static const CosimRun WEREWOLF_RUN_STRIKE_BEGIN = {86, 8, 1};  // $AAAE LDA # : STA $0A : JSR $AB32
+static const CosimRun WEREWOLF_RUN_BLOW_SET = {744, 59, 2};  // $AB32-$AB6A, the RTS too
+static const CosimRun WEREWOLF_RUN_STRIKE_FACE = {184, 18, 4};  // $AAB6-$AAC5, to the BMI
+static const CosimRun WEREWOLF_RUN_STRIKE_FACE_OR = {56, 4, 1};  // $AAC6 ORA ($08) : BRA, less its 6
+static const CosimRun WEREWOLF_RUN_STRIKE_FACE_AND = {44, 2, 1};  // $AACA AND ($08)
+static const CosimRun WEREWOLF_RUN_STRIKE_FACE_STORE = {84, 3, 1};  // $AACC STA ($08) : RTS
+static const CosimRun WEREWOLF_RUN_STRIKE_HEAD = {62, 4, 1};  // $AACF DEC $0E : BPL
+static const CosimRun WEREWOLF_RUN_STRIKE_NEXT = {186, 20, 3};  // $AAD3-$AAE4, to the BEQ
+static const CosimRun WEREWOLF_RUN_STRIKE_SHOW = {98, 10, 1};  // $AAE5-$AAEE, to CPX #$000C : BCS
+static const CosimRun WEREWOLF_RUN_STRIKE_BLOW = {166, 12, 1};  // $AAF0-$AAFB, the RTS too
+static const CosimRun WEREWOLF_RUN_RISE_HEAD = {98, 10, 2};  // $A85A-$A863, to the BPL
+static const CosimRun WEREWOLF_RUN_RISE_FALLING = {30, 4, 0};  // $A864 SEC : ORA #$0001
+static const CosimRun WEREWOLF_RUN_RISE_TAIL = {206, 12, 1};  // $A868-$A873, the RTS too
+static const CosimRun WEREWOLF_RUN_GLIDE_X_HEAD = {68, 5, 2};  // $A874 LDA $28 : CLC : ADC $2C
+static const CosimRun WEREWOLF_RUN_GLIDE_TEST = {40, 4, 1};  // CMP $26 : BCC
+static const CosimRun WEREWOLF_RUN_GLIDE_STEP = {172, 14, 4};  // $A87D-$A88A, the BRA less its 6
+static const CosimRun WEREWOLF_RUN_GLIDE_X_TAIL = {96, 7, 3};  // $A88B STA $28 : LDA $2A : CLC : ADC $2E
+static const CosimRun WEREWOLF_RUN_GLIDE_Y_TAIL = {68, 3, 1};  // $A8A4 STA $2A : RTS
+static const CosimRun WEREWOLF_RUN_FLIGHT_PLACE = {216, 17, 3};  // $A9F6-$AA06, to the BEQ
+static const CosimRun WEREWOLF_RUN_LAND_HEAD = {40, 4, 1};  // $AA08 LDA $1E : BMI
+static const CosimRun WEREWOLF_RUN_LAND_GAP = {120, 10, 2};  // $AA0C-$AA15, to the BPL
+static const CosimRun WEREWOLF_RUN_LAND_BESIDE = {272, 27, 5};  // $AA1F-$AA35
+static const CosimRun WEREWOLF_RUN_LAND_PLACE = {238, 19, 5};  // $AA36-$AA48, the JMP too
+static const CosimRun WEREWOLF_RUN_TAKEN = {6, 0, 0};
+
+// The ROM's own instructions in `own`, and what its calls cost in `calls`.
+// `bearings` says how many of the log's the bill has come to.
+typedef struct {
+  CosimRun own;
+  int calls;
+  const WerewolfLog* log;
+  const CosimRegs* in;
+  int bearings;
+} WerewolfBill;
+
+static void werewolf_add(WerewolfBill* b, const CosimRun* r) {
+  run_add(&b->own, r, 1);
+}
+
+static void werewolf_taken(WerewolfBill* b) {
+  werewolf_add(b, &WEREWOLF_RUN_TAKEN);
+}
+
+// A gap made positive: the `BPL` over the negation, or the negation.
+static void werewolf_sign_bill(WerewolfBill* b, bool negative) {
+  werewolf_add(b, negative ? &WEREWOLF_RUN_NEGATE : &WEREWOLF_RUN_TAKEN);
+}
+
+// May it stand there: the ground, and then whoever is there. True when
+// neither branch out was taken.
+static bool werewolf_probe_bill(WerewolfBill* b, const WerewolfProbe* p) {
+  werewolf_add(b, &WEREWOLF_RUN_GROUND);
+  if (p->blocked) {
+    werewolf_taken(b);
+    return false;
+  }
+  werewolf_add(b, &WEREWOLF_RUN_ACTOR);
+  if (p->someone) {
+    werewolf_taken(b);
+    return false;
+  }
+  return true;
+}
+
+// `$81:A74D`, its `RTS` too.
+static void werewolf_step_bill(WerewolfBill* b, const WerewolfStep* s) {
+  const bool fast = b->in->fastrom;
+  werewolf_add(b, &WEREWOLF_RUN_STEP_HEAD);
+  if (s->left) {
+    werewolf_taken(b);
+    werewolf_add(b, &WEREWOLF_RUN_STEP_LEAVE);
+    return;
+  }
+  werewolf_add(b, &WEREWOLF_RUN_STEP_BEARING);
+  b->calls += actor_snap_cycles(&b->log->snap[b->bearings], fast) +
+              actor_bearing_cycles(&b->log->bearing[b->bearings], fast);
+  b->bearings++;
+  if (s->on_them) {
+    werewolf_taken(b);
+    werewolf_add(b, &WEREWOLF_RUN_RTS);
+    return;
+  }
+  werewolf_add(b, &WEREWOLF_RUN_STEP_TRY);
+  for (int axis = 0; axis < 2; axis++)
+    if (werewolf_probe_bill(b, &s->axis[axis]))
+      werewolf_add(b, &WEREWOLF_RUN_STEP_TAKE);
+  werewolf_add(b, &WEREWOLF_RUN_STEP_PLACE);
+}
+
+// `$81:A8A7` when it does not pounce, its `RTS` too: every way out is a
+// branch taken to it.
+static void werewolf_pounce_bill(WerewolfBill* b) {
+  const WerewolfLog* log = b->log;
+  werewolf_add(b, &WEREWOLF_RUN_POUNCE_HEAD);
+  werewolf_add(b, &WEREWOLF_RUN_POUNCE_DRAW);
+  if (log->pounce != WEREWOLF_POUNCE_NO_DRAW) {
+    werewolf_add(b, &WEREWOLF_RUN_POUNCE_NEAR);
+    if (log->pounce != WEREWOLF_POUNCE_TOO_FAR) {
+      werewolf_add(b, &WEREWOLF_RUN_POUNCE_GAP_X);
+      werewolf_sign_bill(b, log->gap_negative[0]);
+      werewolf_add(b, &WEREWOLF_RUN_POUNCE_GAP_Y);
+      werewolf_sign_bill(b, log->gap_negative[1]);
+      werewolf_add(b, &WEREWOLF_RUN_POUNCE_SUM);
+    }
+  }
+  werewolf_taken(b);
+  werewolf_add(b, &WEREWOLF_RUN_RTS);
+}
+
+// `$81:AB7D`, its `RTS` too.
+static void werewolf_reach_bill(WerewolfBill* b) {
+  const WerewolfLog* log = b->log;
+  werewolf_add(b, &WEREWOLF_RUN_REACH_HEAD);
+  if (log->reach != WEREWOLF_REACH_TOO_FAR) {
+    werewolf_add(b, &WEREWOLF_RUN_REACH_GAP_Y);
+    werewolf_sign_bill(b, log->reach_negative[0]);
+    werewolf_add(b, &WEREWOLF_RUN_BAND);
+    if (log->reach != WEREWOLF_REACH_OFF_ROW) {
+      werewolf_add(b, &WEREWOLF_RUN_REACH_GAP_X);
+      werewolf_add(b, log->reach_negative[1] ? &WEREWOLF_RUN_REACH_NEGATE
+                                            : &WEREWOLF_RUN_TAKEN);
+      werewolf_add(b, &WEREWOLF_RUN_BAND);
+      if (log->reach == WEREWOLF_REACH_WITHIN)
+        werewolf_add(b, &WEREWOLF_RUN_REACH_YES);
+    }
+  }
+  werewolf_taken(b);  // the `BCS` that said no, or the `BRA` to the yes
+  werewolf_add(b, &WEREWOLF_RUN_ANSWER);
+}
+
+static void werewolf_run_bill(WerewolfBill* b) {
+  const WerewolfLog* log = b->log;
+  werewolf_add(b, &WEREWOLF_RUN_RUN_HEAD);
+  werewolf_add(b, &WEREWOLF_RUN_PAIR_DRAW);
+  werewolf_add(b, log->steps == 2 ? &WEREWOLF_RUN_JSR : &WEREWOLF_RUN_TAKEN);
+  for (int i = 0; i < log->steps; i++) werewolf_step_bill(b, &log->step[i]);
+
+  werewolf_add(b, &WEREWOLF_RUN_RUN_WAIT);
+  if (!log->new_picture) {
+    werewolf_taken(b);
+  } else {
+    werewolf_add(b, &WEREWOLF_RUN_RUN_NEXT);
+    werewolf_add(b, &WEREWOLF_RUN_SHOW_HEAD);
+    if (log->no_way) {
+      werewolf_taken(b);
+      werewolf_add(b, &WEREWOLF_RUN_RTS);
+    } else {
+      werewolf_add(b, &WEREWOLF_RUN_SHOW_PICK);
+      if (log->mask_clears) werewolf_taken(b);
+      werewolf_add(b, &WEREWOLF_RUN_SHOW_SET);
+    }
+  }
+  werewolf_add(b, &WEREWOLF_RUN_JSR);
+  werewolf_pounce_bill(b);
+  werewolf_add(b, &WEREWOLF_RUN_JSR);
+  werewolf_reach_bill(b);
+  werewolf_add(b, &WEREWOLF_RUN_BRANCH);
+  if (log->reach != WEREWOLF_REACH_WITHIN) {
+    werewolf_add(b, &WEREWOLF_RUN_RTS);
+    return;
+  }
+  werewolf_taken(b);
+  werewolf_add(b, &WEREWOLF_RUN_JMP);
+  werewolf_add(b, &WEREWOLF_RUN_STRIKE_BEGIN);
+  werewolf_add(b, &WEREWOLF_RUN_BLOW_SET);
+  b->calls += saucer_alloc_cycles(log->blow, b->in->fastrom);
+  werewolf_add(b, &WEREWOLF_RUN_STRIKE_FACE);
+  werewolf_taken(b);  // the `BMI` to the `AND`, or the `BRA` round it
+  werewolf_add(b, log->blow_mask_clears ? &WEREWOLF_RUN_STRIKE_FACE_AND
+                                       : &WEREWOLF_RUN_STRIKE_FACE_OR);
+  werewolf_add(b, &WEREWOLF_RUN_STRIKE_FACE_STORE);
+}
+
+static void werewolf_strike_bill(WerewolfBill* b) {
+  werewolf_add(b, &WEREWOLF_RUN_STRIKE_HEAD);
+  if (b->log->strike == WEREWOLF_STRIKE_WAITED) {
+    werewolf_taken(b);
+    werewolf_add(b, &WEREWOLF_RUN_RTS);
+    return;
+  }
+  werewolf_add(b, &WEREWOLF_RUN_STRIKE_NEXT);
+  werewolf_add(b, &WEREWOLF_RUN_STRIKE_SHOW);
+  if (b->log->strike == WEREWOLF_STRIKE_SHOWN) {
+    werewolf_add(b, &WEREWOLF_RUN_RTS);
+    return;
+  }
+  werewolf_taken(b);
+  werewolf_add(b, &WEREWOLF_RUN_STRIKE_BLOW);
+}
+
+// One axis of `$81:A874`: the test once more than it stepped, and that last
+// one taken.
+static void werewolf_glide_bill(WerewolfBill* b, int steps) {
+  run_add(&b->own, &WEREWOLF_RUN_GLIDE_TEST, steps + 1);
+  run_add(&b->own, &WEREWOLF_RUN_GLIDE_STEP, steps);
+  run_add(&b->own, &WEREWOLF_RUN_TAKEN, steps + 1);
+}
+
+static void werewolf_fly_bill(WerewolfBill* b) {
+  const WerewolfLog* log = b->log;
+  werewolf_add(b, &WEREWOLF_RUN_JSR);
+  werewolf_add(b, &WEREWOLF_RUN_RISE_HEAD);
+  werewolf_add(b, log->falling ? &WEREWOLF_RUN_RISE_FALLING : &WEREWOLF_RUN_TAKEN);
+  werewolf_add(b, &WEREWOLF_RUN_RISE_TAIL);
+  werewolf_add(b, &WEREWOLF_RUN_JSR);
+  werewolf_add(b, &WEREWOLF_RUN_GLIDE_X_HEAD);
+  werewolf_glide_bill(b, log->glide_steps[0]);
+  werewolf_add(b, &WEREWOLF_RUN_GLIDE_X_TAIL);
+  werewolf_glide_bill(b, log->glide_steps[1]);
+  werewolf_add(b, &WEREWOLF_RUN_GLIDE_Y_TAIL);
+  werewolf_add(b, &WEREWOLF_RUN_FLIGHT_PLACE);
+  if (log->flight == WEREWOLF_FLIGHT_UP) {
+    werewolf_add(b, &WEREWOLF_RUN_RTS);
+    return;
+  }
+  werewolf_taken(b);
+  werewolf_add(b, &WEREWOLF_RUN_LAND_HEAD);
+  if (log->flight == WEREWOLF_FLIGHT_DOWN_ALONE) {
+    werewolf_taken(b);
+  } else {
+    werewolf_add(b, &WEREWOLF_RUN_LAND_GAP);
+    werewolf_sign_bill(b, log->quarry_gap_negative);
+    werewolf_add(b, &WEREWOLF_RUN_BAND);
+    if (log->flight == WEREWOLF_FLIGHT_DOWN_MISSED)
+      werewolf_taken(b);
+    else
+      werewolf_add(b, &WEREWOLF_RUN_LAND_BESIDE);
+  }
+  werewolf_add(b, &WEREWOLF_RUN_LAND_PLACE);
+  werewolf_add(b, &WEREWOLF_RUN_SET_STATE);
+}
+
+// The tests put their scratch on page zero, and the tables are read through
+// the data bank. So is its record, which has to be in the WRAM bank `$81`
+// mirrors.
+static bool werewolf_frame_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == WEREWOLF_BANK &&
+         wram_r16(w, (uint16_t)(in->d + WEREWOLF_DP_RECORD)) < 0x1f00 &&
+         werewolf_frame_supported(w, in->d);
+}
+
+// What only running the pass can find: see `port/werewolf.h`.
+static bool guard_werewolf_frame(Wram* scratch, const Rom* rom,
+                                const CosimRegs* in) {
+  WerewolfLog log;
+  werewolf_frame(scratch, rom, in->d, &log);
+  return !log.declined;
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or past the
+// test of its fate with that in A.
+static void shim_werewolf_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  WerewolfLog log;
+  const bool stays = werewolf_frame(w, rom, in->d, &log) == WEREWOLF_SLEEPS;
+
+  const bool fast = in->fastrom;
+  WerewolfBill b = {{0, 0, 0}, 0, &log, in, 0};
+  werewolf_add(&b, &WEREWOLF_RUN_ENTER);
+  switch (log.state) {
+    case WEREWOLF_STATE_RUN:
+      werewolf_run_bill(&b);
+      b.calls += nearest_cycles(&log.nearest, fast);
+      break;
+    case WEREWOLF_STATE_STRIKE:
+      werewolf_strike_bill(&b);
+      break;
+    default:
+      werewolf_fly_bill(&b);
+      break;
+  }
+  werewolf_add(&b, &WEREWOLF_RUN_FATE);
+  if (stays) {
+    werewolf_taken(&b);
+    werewolf_add(&b, &WEREWOLF_RUN_TICKS);
+  }
+
+  b.calls += at_point_cycles(&log.at_point, fast);
+  for (int i = 0; i < log.draws && i < 2; i++)
+    b.calls += rng_cycles(log.draw_overflow[i], fast);
+  for (int i = 0; i < log.grounds && i < WEREWOLF_MAX_GROUNDS; i++)
+    b.calls += terrain_enemy_cycles(&log.ground[i], fast);
+  cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
+                                           (in->d & 0x00ffu) != 0));
+
+  out->pc = stays ? WEREWOLF_YIELD_PC : WEREWOLF_FATE_PC;
+  out->a = stays ? WEREWOLF_YIELD_TICKS
+                 : wram_r16(w, (uint16_t)(in->d + WEREWOLF_DP_FATE));
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V));
+}
+
+static const uint32_t WEREWOLF_FRAME_EXITS[] = {WEREWOLF_YIELD_PC,
+                                               WEREWOLF_FATE_PC};
+
+// ---------------------------------------------------------------------------
+// The footballers -- see `port/football.h`
+// ---------------------------------------------------------------------------
+//
+// One entry, a whole pass of the loop. Each run is from `tools/cycles816.py
+// --db=81`, branches not taken; a taken branch, a `BRA` and nothing else
+// adds 6.
+static const CosimRun FOOTBALLER_RUN_ENTER = {142, 8, 1};  // $C8A1 PEA : LDA $0A : DEC : PHA : RTS
+static const CosimRun FOOTBALLER_RUN_FATE = {40, 4, 1};  // $C8AC LDA $22 : BEQ
+static const CosimRun FOOTBALLER_RUN_TICKS = {18, 3, 0};  // $C89A LDA #$0002
+static const CosimRun FOOTBALLER_RUN_RTS = {40, 1, 0};  // any RTS
+static const CosimRun FOOTBALLER_RUN_JSR = {40, 3, 0};  // any JSR
+static const CosimRun FOOTBALLER_RUN_JMP = {18, 3, 0};  // any JMP
+static const CosimRun FOOTBALLER_RUN_BRANCH = {12, 2, 0};  // a branch by itself, or a BRA less its 6
+static const CosimRun FOOTBALLER_RUN_STEER_HEAD = {272, 22, 2};  // $C51F-$C534, to CPY #$0005 : BEQ
+static const CosimRun FOOTBALLER_RUN_STEER_SECOND = {30, 5, 0};  // $C535 CPY #$0006 : BEQ
+static const CosimRun FOOTBALLER_RUN_STEER_PICK = {36, 4, 0};  // $C53C ASL : TAX : BEQ
+static const CosimRun FOOTBALLER_RUN_STEER_WAY = {48, 7, 0};  // $C540 LDA $C548,X : BEQ
+static const CosimRun FOOTBALLER_RUN_STEER_SET = {28, 2, 1};  // $C545 STA $10
+static const CosimRun FOOTBALLER_RUN_RUN_WAIT = {62, 4, 1};  // $C55D DEC $14 : BPL
+static const CosimRun FOOTBALLER_RUN_RUN_PICTURE = {156, 15, 3};  // $C561-$C56F
+static const CosimRun FOOTBALLER_RUN_RUN_TRY = {300, 27, 5};  // $C570-$C586, the JSR too
+static const CosimRun FOOTBALLER_RUN_STEP_GROUND = {122, 10, 2};  // $C50C LDX : LDY : JSL : BCS
+static const CosimRun FOOTBALLER_RUN_STEP_TAKE = {112, 8, 4};  // $C516-$C51D
+static const CosimRun FOOTBALLER_RUN_RUN_TURN = {92, 9, 2};  // $C589 LDX $10 : LDA $C591,X : STA $10
+static const CosimRun FOOTBALLER_RUN_STAND_HEAD = {62, 4, 1};  // $C5FF DEC $14 : BMI
+static const CosimRun FOOTBALLER_RUN_STAND_SHOW = {126, 9, 2};  // $C603-$C60B, the RTS too
+static const CosimRun FOOTBALLER_RUN_STRAIGHTEN = {178, 15, 3};  // $C60F-$C61B, the RTS too
+static const CosimRun FOOTBALLER_RUN_LOOSE_HEAD = {84, 9, 0};  // $C61C JSL : CMP #$000A : BCS
+static const CosimRun FOOTBALLER_RUN_VEER = {438, 42, 4};  // $C63D-$C664, the RTS too
+static const CosimRun FOOTBALLER_RUN_VEER_HEAD = {62, 4, 1};  // $C665 DEC $14 : BPL
+static const CosimRun FOOTBALLER_RUN_VEER_DRAW = {84, 9, 0};  // $C669 JSL : CMP #$0046 : BCC
+static const CosimRun FOOTBALLER_RUN_VEER_WAY = {76, 9, 1};  // $C672 LDX $10 : LDA $C695,X : BEQ
+static const CosimRun FOOTBALLER_RUN_VEER_SET = {158, 15, 2};  // $C679-$C687
+static const CosimRun FOOTBALLER_RUN_SHOW_HEAD = {104, 11, 2};  // $C824-$C82C, to the BMI
+static const CosimRun FOOTBALLER_RUN_SHOW_OR = {52, 5, 0};  // $C82D ORA : BRA, less its 6
+static const CosimRun FOOTBALLER_RUN_SHOW_AND = {40, 3, 0};  // $C832 AND
+static const CosimRun FOOTBALLER_RUN_SHOW_REST = {490, 43, 5};  // $C835-$C85D, to TAX : BNE
+static const CosimRun FOOTBALLER_RUN_SHOW_GONE = {50, 2, 1};  // $C85E INC $22
+static const CosimRun FOOTBALLER_RUN_TAKEN = {6, 0, 0};
+
+// The ROM's own instructions in `own`, and what its calls cost in `calls`.
+typedef struct {
+  CosimRun own;
+  int calls;
+  const FootballerLog* log;
+  const CosimRegs* in;
+} FootballerBill;
+
+static void footballer_add(FootballerBill* b, const CosimRun* r) {
+  run_add(&b->own, r, 1);
+}
+
+static void footballer_taken(FootballerBill* b) {
+  footballer_add(b, &FOOTBALLER_RUN_TAKEN);
+}
+
+// `$81:C51F`, its `RTS` too.
+static void footballer_steer_bill(FootballerBill* b) {
+  const FootballerLog* log = b->log;
+  footballer_add(b, &FOOTBALLER_RUN_STEER_HEAD);
+  b->calls += player_bearing_cycles(&log->players[0], b->in->fastrom);
+  if (!log->first_player) footballer_add(b, &FOOTBALLER_RUN_STEER_SECOND);
+  if (log->steer == FOOTBALLER_STEER_NOT_A_PLAYER) {
+    footballer_add(b, &FOOTBALLER_RUN_BRANCH);  // a `BRA`
+  } else {
+    footballer_taken(b);
+    footballer_add(b, &FOOTBALLER_RUN_STEER_PICK);
+    if (log->steer != FOOTBALLER_STEER_NOBODY) {
+      footballer_add(b, &FOOTBALLER_RUN_STEER_WAY);
+      if (log->steer == FOOTBALLER_STEER_AT_THEM)
+        footballer_add(b, &FOOTBALLER_RUN_STEER_SET);
+    }
+  }
+  if (log->steer != FOOTBALLER_STEER_AT_THEM) footballer_taken(b);
+  footballer_add(b, &FOOTBALLER_RUN_RTS);
+}
+
+// `$81:C55A`, its `RTS` too.
+static void footballer_run_bill(FootballerBill* b) {
+  const FootballerLog* log = b->log;
+  footballer_add(b, &FOOTBALLER_RUN_JSR);
+  footballer_steer_bill(b);
+  footballer_add(b, &FOOTBALLER_RUN_RUN_WAIT);
+  footballer_add(b, log->new_picture ? &FOOTBALLER_RUN_RUN_PICTURE
+                                     : &FOOTBALLER_RUN_TAKEN);
+  footballer_add(b, &FOOTBALLER_RUN_RUN_TRY);
+  footballer_add(b, &FOOTBALLER_RUN_STEP_GROUND);
+  b->calls += terrain_enemy_cycles(&log->ground, b->in->fastrom);
+  footballer_add(b, log->ground.blocked ? &FOOTBALLER_RUN_TAKEN
+                                        : &FOOTBALLER_RUN_STEP_TAKE);
+  footballer_add(b, &FOOTBALLER_RUN_RTS);
+  footballer_add(b, &FOOTBALLER_RUN_BRANCH);
+  footballer_add(b, log->ground.blocked ? &FOOTBALLER_RUN_RUN_TURN
+                                        : &FOOTBALLER_RUN_TAKEN);
+  footballer_add(b, &FOOTBALLER_RUN_RTS);
+}
+
+// A `JSR` to `$81:C60F`, and the `JMP` on to the run.
+static void footballer_straighten_bill(FootballerBill* b) {
+  footballer_taken(b);
+  footballer_add(b, &FOOTBALLER_RUN_JSR);
+  footballer_add(b, &FOOTBALLER_RUN_STRAIGHTEN);
+}
+
+static void footballer_body_bill(FootballerBill* b) {
+  const FootballerLog* log = b->log;
+  switch (log->state) {
+    case FOOTBALLER_STATE_RUN:
+      break;
+    case FOOTBALLER_STATE_STAND:
+      footballer_add(b, &FOOTBALLER_RUN_STAND_HEAD);
+      if (log->stood_on) {
+        footballer_add(b, &FOOTBALLER_RUN_STAND_SHOW);
+      } else {
+        footballer_taken(b);
+        footballer_add(b, &FOOTBALLER_RUN_JMP);
+        footballer_add(b, &FOOTBALLER_RUN_STRAIGHTEN);
+      }
+      return;
+    case FOOTBALLER_STATE_RUN_LOOSE:
+      footballer_add(b, &FOOTBALLER_RUN_LOOSE_HEAD);
+      if (log->veered) {
+        footballer_add(b, &FOOTBALLER_RUN_JSR);
+        footballer_add(b, &FOOTBALLER_RUN_VEER);
+      } else {
+        footballer_taken(b);
+      }
+      footballer_add(b, &FOOTBALLER_RUN_JMP);
+      break;
+    default:
+      footballer_add(b, &FOOTBALLER_RUN_VEER_HEAD);
+      if (log->veer == FOOTBALLER_VEER_ON) {
+        footballer_taken(b);
+      } else {
+        footballer_add(b, &FOOTBALLER_RUN_VEER_DRAW);
+        if (log->veer == FOOTBALLER_VEER_STRAIGHTEN) {
+          footballer_straighten_bill(b);
+        } else {
+          footballer_add(b, &FOOTBALLER_RUN_VEER_WAY);
+          if (log->veer == FOOTBALLER_VEER_NO_WAY)
+            footballer_straighten_bill(b);
+          else
+            footballer_add(b, &FOOTBALLER_RUN_VEER_SET);
+        }
+      }
+      footballer_add(b, &FOOTBALLER_RUN_JMP);
+      break;
+  }
+  footballer_run_bill(b);
+}
+
+// `$81:C824`, its `RTS` too.
+static void footballer_show_bill(FootballerBill* b) {
+  const FootballerLog* log = b->log;
+  footballer_add(b, &FOOTBALLER_RUN_SHOW_HEAD);
+  footballer_taken(b);  // the `BMI` to the `AND`, or the `BRA` round it
+  footballer_add(b, log->mask_clears ? &FOOTBALLER_RUN_SHOW_AND
+                                     : &FOOTBALLER_RUN_SHOW_OR);
+  footballer_add(b, &FOOTBALLER_RUN_SHOW_REST);
+  b->calls += player_bearing_cycles(&log->players[log->ran ? 1 : 0],
+                                    b->in->fastrom);
+  footballer_add(b, log->gone ? &FOOTBALLER_RUN_SHOW_GONE
+                              : &FOOTBALLER_RUN_TAKEN);
+  footballer_add(b, &FOOTBALLER_RUN_RTS);
+}
+
+// The tests put their scratch on page zero, and the tables are read through
+// the data bank. So is its record, which has to be in the WRAM bank `$81`
+// mirrors.
+static bool footballer_frame_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == FOOTBALLER_BANK &&
+         wram_r16(w, (uint16_t)(in->d + FOOTBALLER_DP_RECORD)) < 0x1f00 &&
+         footballer_frame_supported(w, in->d);
+}
+
+// What the test of the players hands back, only running the pass says.
+static bool guard_footballer_frame(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  FootballerLog log;
+  footballer_frame(scratch, rom, in->d, (in->p & PORT_P_C) != 0, &log);
+  return !log.declined;
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or past the
+// test of its fate with that in A.
+static void shim_footballer_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  FootballerLog log;
+  const bool stays = footballer_frame(w, rom, in->d, (in->p & PORT_P_C) != 0,
+                                      &log) == FOOTBALLER_SLEEPS;
+
+  FootballerBill b = {{0, 0, 0}, 0, &log, in};
+  footballer_add(&b, &FOOTBALLER_RUN_ENTER);
+  footballer_body_bill(&b);
+  footballer_add(&b, &FOOTBALLER_RUN_JSR);
+  footballer_show_bill(&b);
+  footballer_add(&b, &FOOTBALLER_RUN_FATE);
+  if (stays) {
+    footballer_taken(&b);
+    footballer_add(&b, &FOOTBALLER_RUN_TICKS);
+  }
+  for (int i = 0; i < log.draws && i < FOOTBALLER_MAX_DRAWS; i++)
+    b.calls += rng_cycles(log.draw_overflow[i], in->fastrom);
+  cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
+                                           (in->d & 0x00ffu) != 0));
+
+  out->pc = stays ? FOOTBALLER_YIELD_PC : FOOTBALLER_FATE_PC;
+  out->a = stays ? FOOTBALLER_YIELD_TICKS
+                 : wram_r16(w, (uint16_t)(in->d + FOOTBALLER_DP_FATE));
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V));
+}
+
+static const uint32_t FOOTBALLER_FRAME_EXITS[] = {FOOTBALLER_YIELD_PC,
+                                                  FOOTBALLER_FATE_PC};
+
+// ---------------------------------------------------------------------------
 // The player's poses -- see `port/pose.h`
 // ---------------------------------------------------------------------------
 //
@@ -14198,6 +15696,73 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(PLAYERS_SCREEN_FRAME_EXITS),
         .uncalled = true,
         .cycles = 450,
+    },
+    {
+        .name = "chainsaw_frame",
+        .symbol = "$81:9878",
+        .entry = CHAINSAW_FRAME_PC,
+        .run = shim_chainsaw_frame,
+        .accepts = chainsaw_frame_ok,
+        COSIM_EXITS(CHAINSAW_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        // The computed `RTS`'s two words, the `JSR`s down to a step, and the
+        // `JSL` to its tests, and theirs.
+        .stack_bytes = 32,
+    },
+    {
+        .name = "fishman_frame",
+        .symbol = "$81:E4B2",
+        .entry = FISHMAN_FRAME_PC,
+        .run = shim_fishman_frame,
+        .accepts = fishman_frame_ok,
+        .supported = guard_fishman_frame,
+        COSIM_EXITS(FISHMAN_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        // The computed `RTS`'s two words, the `JSR`s down to a tile test, and
+        // the `JSL`s to the others, and theirs.
+        .stack_bytes = 32,
+    },
+    {
+        .name = "fishman_patrol_frame",
+        .symbol = "$81:E558",
+        .entry = FISHMAN_PATROL_FRAME_PC,
+        .run = shim_fishman_patrol_frame,
+        .accepts = fishman_frame_ok,
+        .supported = guard_fishman_frame,
+        COSIM_EXITS(FISHMAN_PATROL_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        .stack_bytes = 32,
+    },
+    {
+        .name = "werewolf_frame",
+        .symbol = "$81:AC1E",
+        .entry = WEREWOLF_FRAME_PC,
+        .run = shim_werewolf_frame,
+        .accepts = werewolf_frame_ok,
+        .supported = guard_werewolf_frame,
+        COSIM_EXITS(WEREWOLF_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        // The computed `RTS`'s two words, the `JSR`s down to a step, and the
+        // `JSL` to its tests, and theirs.
+        .stack_bytes = 32,
+    },
+    {
+        .name = "footballer_frame",
+        .symbol = "$81:C8A1",
+        .entry = FOOTBALLER_FRAME_PC,
+        .run = shim_footballer_frame,
+        .accepts = footballer_frame_ok,
+        .supported = guard_footballer_frame,
+        COSIM_EXITS(FOOTBALLER_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 5000,
+        // The computed `RTS`'s two words, two `JSR`s, and the `JSL` to the
+        // ground's test, and its own.
+        .stack_bytes = 32,
     },
 #define POSE_ENTRY(n, sym, pc, rts)                                          \
     {                                                                        \

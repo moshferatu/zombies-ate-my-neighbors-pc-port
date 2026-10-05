@@ -58,9 +58,12 @@ $corpus = [ordered]@{
     # The demo that plays when the title is left alone starts near frame
     # 4350, past where `boot.zmv` stops, and a real button ends it at 6000.
     # Nothing else in the corpus runs the demo's playback job.
-    # It runs on to 9000 for the title's menu and the players' screen the
-    # second time they come up, when the data bank is `$00` and not `$80`.
-    "demo-end.zmv"           = 9000
+    # It runs on past 9000 for the title's menu and the players' screen the
+    # second time they come up, when the data bank is `$00` and not `$80`,
+    # and to 26000 for the two demos after the first, a graveyard and a
+    # football field: nothing else in the corpus has their creatures, and
+    # the footballers do not come on until about 21000.
+    "demo-end.zmv"           = 26000
     "level1.zmv"             = 2400
     "level1-pickups.zmv"     = 2400
     "level1-map.zmv"         = 2700

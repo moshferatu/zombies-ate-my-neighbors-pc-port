@@ -242,8 +242,10 @@ add_library(zamn_port STATIC
   src/port/collide.c
   src/port/fade.c
   src/port/floor.c
+  src/port/football.c
   src/port/hud.c
   src/port/camera.c
+  src/port/chainsaw.c
   src/port/levelmap.c
   src/port/lzss.c
   src/port/monster.c
@@ -264,6 +266,7 @@ add_library(zamn_port STATIC
   src/port/doll.c
   src/port/pause.c
   src/port/pose.c
+  src/port/werewolf.c
   src/port/clone.c
   src/port/mainloop.c
   src/port/martian.c
@@ -272,6 +275,7 @@ add_library(zamn_port STATIC
   src/port/spider.c
   src/port/squirt.c
   src/port/stuck.c
+  src/port/fishman.c
   src/port/figure_colours.c
   src/port/bystander.c
   src/port/saucer.c

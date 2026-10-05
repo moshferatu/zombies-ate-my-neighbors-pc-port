@@ -107,6 +107,25 @@ void terrain_blocked_enemy(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out) {
   out->blocked = terrain_footprint(w, x, y, TERRAIN_MASK_ENEMY, out);
 }
 
+void terrain_footprint_read(Wram* w, uint16_t x, uint16_t y, uint16_t origin_x,
+                            uint16_t origin_y, TerrainFootprint* out) {
+  const uint16_t row = (uint16_t)(((uint16_t)(y - origin_y) >>
+                                   TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
+  const uint16_t col = (uint16_t)(((uint16_t)(x - origin_x) >>
+                                   TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
+  const uint16_t base = wram_r16(w, W_TILE_ROW_BASE + row);
+  const uint16_t map = (uint16_t)(col + base);
+  out->v_map = add16_overflows(col, base);
+  out->v_last_row = add16_overflows(wram_r16(w, W_TILEMAP_ROW_BYTES), 4);
+
+  wram_w16(w, TERRAIN_DP_MAP, map);
+  wram_w16(w, TERRAIN_DP_MAP_BANK, TERRAIN_MAP_BANK);
+  for (int i = 0; i < TERRAIN_PROBE_COUNT; i++) {
+    uint16_t tile = 0;
+    out->attrs[i] = probe_attrs(w, map, probe_offset(w, i), &tile);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // $82:90F7  terrain_blocked_wide
 // ---------------------------------------------------------------------------

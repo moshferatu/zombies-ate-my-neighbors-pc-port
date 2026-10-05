@@ -15983,3 +15983,115 @@ the ROM for the reason "What actually ends a lockstep run" gives: a load
 comes back on a frame boundary their cycles decide. The game substitutes
 them. So after a load the two are the same game some frames apart, and a
 picture that moves shows it.
+
+## Four creatures of the demos (2026-10-05)
+
+Five entries: `chainsaw_frame` (`port/chainsaw.h`), `fishman_frame` and
+`fishman_patrol_frame` (`port/fishman.h`), `werewolf_frame`
+(`port/werewolf.h`) and `footballer_frame` (`port/football.h`). Each is a
+whole pass of a thread's loop, entered where `thread_yield` returns and left
+at the next `JSL` to it, or past the test that ends the thread.
+
+### The movie
+
+All four are in the demos the title plays when it is left alone, which is
+where the live 20,000-frame runs met them. `demo-end.zmv` has no input
+after the boot, so it only needed more frames: 26,000, from 9,000. The
+second demo, a graveyard, has the chainsaw maniac, the fishmen and the
+werewolf from about frame 9,500. The third, a football field, has the
+footballers from about 21,000, and no other movie has those.
+
+Ten level movies reach the other three inside their checked frames. The
+chainsaw maniac is on five of the level-29 movies, 2,060 passes checked
+between them. The fishman that patrols is on all seven of those and on
+`level37-e6e4`, which also has the one that comes ashore. The werewolf is
+on `level49-bubble` and `level49-corner`, about 1,250 passes each.
+
+That each is what it is called was checked by eye, on `demo-end.zmv`: the
+chainsaw maniac is on screen at frame 11,400, a fishman ashore at 11,640
+and a werewolf at 12,800, each where its thread's page puts it.
+
+`level13` and `level41` had the same residue to the instruction because
+both end on the same demo. A row that two movies share exactly is the
+tail, not the level.
+
+### The carry a pass begins with
+
+Three of the four can begin a pass with a draw: the chainsaw maniac chasing,
+the fishman in three of its states, the footballer running loose. `rng_next`
+takes the caller's carry, and here the caller's carry is the thread's own,
+as the last pass left it and `thread_yield` handed it back. So those three
+ports take the carry as an argument, and their shims pass `in->p`'s.
+
+That is also why each follows carry and overflow through every sum and
+comparison of the pass, and not only the last: the next pass's first draw
+depends on it.
+
+### What `player_bearing` leaves in the overflow
+
+The fishman and the footballer end every pass by asking `player_bearing`
+whether a player is still near, so the overflow they sleep with is that
+routine's. `martian.c` gave it up as unknown. It is one of two things. With
+a player found off the point's row or column, the lookup's `ADC #$0001`
+clears it. Otherwise it is the last `SBC` of the two gaps measured: down,
+to the second player if there is one, or else to the first. With no player
+at all nothing writes it. `players_overflow` in both ports says so.
+
+### The fishman's two tile tests
+
+`$81:DC24` and `$81:E1D6` are `terrain_footprint` again: the same six
+tiles, the same pointer left in `$28`. The first wants bit 8 on all six.
+The second wants bit 7 and not bit 1 on all six, and takes nine off Y where
+every other copy takes eight. `terrain_footprint_read` in `port/terrain.h`
+reads the six words and the two overflows a test can leave, and
+`fishman.c` applies the rule.
+
+Both install page zero, so their instructions are priced on a page that is
+aligned whatever the thread's is. The fishman's bill keeps them in a run of
+their own for that.
+
+### Passes the ROM keeps
+
+`fishman_frame` declines a pass that leaps or stops to look about, each of
+which sleeps inside the call: `$81:E007` ends on a `JSL thread_yield` of
+its own, and `$81:DDA1` plays an animation. Both are down to a draw, so the
+guard runs the pass on a copy. `werewolf_frame` declines a pass that goes on
+to choose where a pounce comes down, the last pass of a strike, and one
+with nobody for `actor_nearest` to find. `footballer_frame` declines only
+when what `player_bearing` leaves in Y is no record.
+
+### A name defined twice
+
+`FISHMAN_LOOK_WITHIN` was an enumerator in `fishman.h` and a `#define` of
+`0x00d0` in `fishman.c`. The compiler took the macro in both places without
+a word. The comparison was right and the log was wrong, so every pass
+verified and 14 of 1,236 were priced out by 614 or 294 cycles: the bill
+read a look that had found somebody as one that had gone on to ask after
+the players, and charged for a call that was not made. Found by printing
+the log beside each wrong price. The distance is `FISHMAN_NOTICE_WITHIN`
+now.
+
+### Checked
+
+The corpus: 26,735,956 calls across 51 movies, 0 diverged, 727 of 890
+sites, 61 of the 67 new ones taken. The sweep: 39,050,551 calls over 56
+records, 0 diverged. All five entries are exact on every call priced.
+
+The chainsaw maniac dying, under `--poke`, on `demo-end.zmv`, where its page
+is `$0500` from frame 11,000 to 12,000:
+
+    --poke 11200:052A=FFFF    no health: out past the test
+
+Five sites are taken by nothing: `chainsaw_on_them`, `werewolf_on_them`,
+`werewolf_landed_beside`, `fishman_leap_off_level` and `fishman_leap_taken`.
+
+For the next poke: on `demo-end.zmv` the werewolf's page is `$0300` at
+frame 12,500, and a fishman's is `$0180` at 11,000 and `$0600` at 12,500.
+
+**Lockstep**: 264,122 passes, 48 of 51 never part, the same three as
+before on the same passes. `demo-end` is clean over its 25,999, and no
+other row moved.
+
+**Live**: the residue over the twelve movies is 5.0 million instructions,
+from 6.4. `level13` goes from 98.3% to 98.9%, `level41` from 98.1% to 98.9%
+and `level21` from 98.3% to 98.6%.

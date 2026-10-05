@@ -5,6 +5,98 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Four creatures of the demos: a chainsaw maniac, a fishman, a werewolf and the footballers (2026-10-05)
+
+What the 65816 still executed over the twelve movies goes from 6.4 to
+**5.0** million instructions of work. Live, `level13` goes from 98.3% to
+**98.9%**, `level41` from 98.1% to **98.9%** and `level21` from 98.3% to
+**98.6%**. The other nine are unchanged. The game registers 235 routines.
+
+* **Where the creatures were.** The live runs go on 15,000 frames past each
+  movie's input, and much of that is the title and the demos it plays when
+  it is left alone. `level13` and `level41` end up watching the same demos,
+  which is why their residue in these rows was the same to the instruction.
+  So the biggest rows left under a creature were not levels 13 and 41 at
+  all. They were the demos, and `demo-end.zmv` reaches them if it is run
+  for long enough: it runs to 26,000 frames in the corpus now, from 9,000,
+  through a graveyard and a football field. Ten level movies have one or
+  another of the first three as well: the fishman on the seven level-29
+  movies and the chainsaw maniac on five of them, the fishman on
+  `level37-e6e4`, and the werewolf on `level49-bubble` and
+  `level49-corner`. Only the demo has the footballers.
+* **The chainsaw maniac**, `src/port/chainsaw.c`, thread `$81:983A`. He
+  wanders, chases whoever is nearest two steps a pass, and when he is
+  stopped beside a tile that can be cut he cuts through. `chainsaw_frame`
+  is a pass of his loop from `$81:9878`, in the four states he gets about
+  in. The cutting, his swing and being hit sleep in the middle and are the
+  ROM's.
+* **The fishmen**, `src/port/fishman.c`, threads `$81:E481` and `$81:E51A`.
+  It may only be where all six tiles under it are water, and it leaps out
+  at somebody on a draw. One kind comes ashore and the other patrols its
+  pool, with a loop each over the same state bodies: `fishman_frame` and
+  `fishman_patrol_frame`, nine states between them. A pass that decides to
+  leap sleeps first, and is the ROM's.
+* **The werewolves**, `src/port/werewolf.c`, thread `$81:ABF5`. One runs at
+  whoever is nearest, strikes when they are beside it, and pounces from a
+  distance. `werewolf_frame` is the running, the passes of a strike and the
+  flight of a pounce.
+* **The footballers of level 21**, `src/port/football.c`, thread `$81:C87B`.
+  This is the creature the last round could not reach: no level-21 movie
+  has one inside its checked frames, and the demo does. They run four
+  pixels a pass in straight lines, veer on a draw, and go at a player who
+  is beside them. `footballer_frame` is the running. The tackle is the
+  ROM's.
+* **Named after a look.** The first three were ported from what they do: a
+  creature that cuts hedges, one that swims and one that pounces. Each was
+  then found on the screen of `demo-end.zmv` at the place its thread's page
+  says it is: the chainsaw maniac at frame 11,400, a fishman ashore at
+  11,640 and a werewolf at 12,800. The files are named for them.
+* **A footprint with another rule.** The fishman carries its own two copies
+  of the six-tile test in `port/terrain.h`: all six water, and all six
+  somewhere to land, the second with nine taken off both ways where the
+  first takes nine and eight. `terrain_footprint_read` hands back the six
+  attribute words and the two overflows, and the fishman asks its own
+  question of them.
+
+* **Checked.** The corpus verifies at 26,735,956 calls across 51 movies
+  with 0 diverged, and 727 of 890 coverage sites; 61 of the 67 new ones are
+  taken. `verify --level` over all 56 records, 39,050,551 calls, 0
+  diverged. There the chainsaw maniac is on two records, the fishman that
+  comes ashore on six and the one that patrols on eight, the werewolf on
+  eleven and the footballers on two.
+* **Prices.** Every call priced is exact, on the corpus and on the sweep.
+  On the corpus: 3,489 passes of the chainsaw maniac, 641 and 4,047 of the two
+  fishmen, 3,553 of the werewolf and 3,577 of the footballers, 445 of
+  those under HDMA, where a price is only held not to be too high. All four
+  ports verified on their first build, and three were exact on it.
+* **The one that was not.** The fishman's price was out on 14 passes of
+  1,236, by 614 or 294 cycles. `fishman.c` had a `#define` of the same name
+  as an enumerator in its header, a distance in one and a path in the
+  other. The port compared against the right number and logged it as the
+  path, so the bill took a pass that had looked and found somebody as one
+  that had asked after the players. The game was right throughout: only
+  the price said anything.
+* **What no movie reaches.** Six of the new sites. The chainsaw maniac dying
+  was verified on an asserted state, `--poke 11200:052A=FFFF` on
+  `demo-end.zmv`: 202 passes, all agreed and priced exactly. The other
+  five are unchecked: the chainsaw maniac and the werewolf on the same spot as
+  their quarry, the werewolf landing beside whoever it pounced at, and a
+  fishman's leap refused for a spot off the level or with somebody on it.
+* **Lockstep** over the corpus: 264,122 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes. `demo-end` is clean over
+  its 25,999. No other row moved by a cycle.
+* **What is left of them.** On the sweep the fishman that comes ashore
+  spends over half its passes on land, in states the port does not have:
+  5,899 of its 12,633 passes were taken. The chainsaw maniac's cutting, the
+  fishman's bite and the werewolf's crouch and landing each sleep inside a
+  call, and want the second entry the saucer's hatch has.
+* **Next.** The fishman on land (`$81:D9B8`, `$81:D9E9`, `$81:DA1D`). On
+  level 21, the martians' shot at `$81:F380` and whatever is at
+  `$82:D9xx`, which no port has looked at. On levels 5 and 37, `$80:BA00`
+  to `$80:BFFF`, `$80:E500` and `$81:B500` to `$81:B8FF`. Outside a level,
+  as before: the clears `$80:895A` and `$80:8992`, the title's logo at
+  `$80:94AF`, and `$80:A462`.
+
 ### The flying saucer, and the two screens before a game (2026-10-04)
 
 What the 65816 still executed over the twelve movies goes from 7.6 to

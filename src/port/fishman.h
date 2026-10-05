@@ -1,0 +1,281 @@
+// The fishmen, who swim about a pool and leap out of it at somebody.
+//
+// A fishman is a thread, and there are two kinds: `$81:E481`, which comes
+// ashore when it leaps, and `$81:E51A`, which keeps to its pool and patrols it.
+// Both begin only on a tile of water. Each has a loop of its own that sleeps,
+// runs the same state bodies, and shows itself. This is one pass of either,
+// as readable C, from where `thread_yield` returns to the next yield:
+//
+//   $81:E4B2  fishman_frame          the one that comes ashore
+//   $81:E558  fishman_patrol_frame   the one that patrols
+//
+// What is here is the swimming, the flight of a leap out and of the dive back,
+// and the landing. What is not is the thread's setup, the beginning of a
+// leap, its bite, its splash, what it does on land, and its end, each of
+// which sleeps in the middle or is not yet ported. A pass in one of those
+// states is the ROM's. So is a pass that decides to leap, which sleeps a few
+// ticks where it stands first, and one that stops to look about. Those are
+// down to a random draw, so the port finds out by running the pass:
+// `FishmanLog::declined` says so, and a guard asks it of a scratch copy
+// first.
+//
+// ## What it does
+//
+// **It may only be where all six tiles under it are water.** That is the
+// footprint test of `port/terrain.h` with another bit and the opposite sense,
+// and the creature carries its own copy of it, `$81:DC24`.
+//
+// **Swimming**, it goes two pixels a pass the way it faces. Stopped, it turns
+// a quarter and for a while tries a quarter turn the other way at every
+// opening, which takes it round the edge of the pool. With somebody within
+// 128 it closes in on them.
+//
+// **Closing in**, it faces whoever `actor_nearest` knows and steps at them,
+// an axis at a time, and on three draws in four it steps twice. Within 24 it
+// bites. With nobody within 175 it swims on.
+//
+// **Patrolling**, it goes back and forth along one line, turning about when
+// stopped. With somebody within 24 of its row or its column it lines up with
+// them along the other axis, a pixel a pass or two, until it is within 16.
+//
+// **Every pass in water it may leap**, on a draw, at somebody within 200. It
+// picks a spot near them, by three more draws, and leaps if the spot is on
+// the level, is somewhere to land, and has nobody on it.
+//
+// **A leap is an arc**: so many steps along the longer of the two gaps, the
+// other kept in proportion, and a height that rises by a quarter of a count
+// that falls by one each pass. It has landed when its height is back to
+// nothing. The dive back into the water is the same arc, and the same
+// instructions at another address.
+//
+// **With neither player within 208 it leaves**, whatever it was doing.
+//
+// ## Its contract with the ROM
+//
+// It writes WRAM exactly as the ROM does. A pass ends at the `JSL
+// thread_yield` with the tick count in A, or past the test of its fate with
+// that in A. Carry and overflow are left as the ROM leaves them: the thread's
+// own carry is the first thing a draw takes.
+//
+// Port code: libc only.
+
+#ifndef PORT_FISHMAN_H
+#define PORT_FISHMAN_H
+
+#include <stdbool.h>
+#include <stdint.h>
+
+#include "assets/rom.h"
+#include "port/oam.h"  // the works and registers of what it asks
+#include "port/terrain.h"
+#include "port/wram.h"
+
+// The tables are in bank `$81`, which is the thread's data bank.
+#define FISHMAN_BANK 0x81u
+
+#define FISHMAN_FRAME_PC 0x81e4b2u
+#define FISHMAN_YIELD_PC 0x81e4aeu  // `JSL thread_yield`, the ticks in A
+#define FISHMAN_FATE_PC 0x81e4c1u   // past the `BEQ`, its fate in A
+#define FISHMAN_PATROL_FRAME_PC 0x81e558u
+#define FISHMAN_PATROL_YIELD_PC 0x81e554u
+#define FISHMAN_PATROL_FATE_PC 0x81e567u
+
+// The state bodies, by the address the thread keeps in `$1C`.
+#define FISHMAN_STATE_SWIM 0xddfdu
+#define FISHMAN_STATE_SWIM_TURNED 0xde36u
+#define FISHMAN_STATE_CLOSE_IN 0xde72u
+#define FISHMAN_STATE_PATROL 0xdefdu
+#define FISHMAN_STATE_LINE_UP_DOWN 0xdf84u
+#define FISHMAN_STATE_LINE_UP_ACROSS 0xdfcbu
+#define FISHMAN_STATE_FLIGHT 0xe120u
+#define FISHMAN_STATE_LANDED 0xe15bu
+#define FISHMAN_STATE_DIVE 0xdb8bu
+// ...and four the port only names.
+#define FISHMAN_STATE_BITE 0xe295u
+#define FISHMAN_STATE_SPLASH 0xdbcdu
+#define FISHMAN_STATE_ASHORE 0xd9b8u
+#define FISHMAN_STATE_LURK 0xe31cu
+
+// Fields on its page.
+#define FISHMAN_DP_RECORD 0x08
+#define FISHMAN_DP_FATE 0x0a  // 0 alive, anything else and the thread ends
+#define FISHMAN_DP_X 0x10
+#define FISHMAN_DP_Y 0x12
+#define FISHMAN_DP_TRY_X 0x14         // the step being tried
+#define FISHMAN_DP_TRY_Y 0x16
+#define FISHMAN_DP_WAY 0x18           // a bearing, doubled
+#define FISHMAN_DP_TRY_WAY 0x1a       // the turn being tried
+#define FISHMAN_DP_STATE 0x1c
+#define FISHMAN_DP_PICTURE_WAIT 0x1e  // passes until its next picture
+#define FISHMAN_DP_PICTURE 0x20       // which of its cycle
+#define FISHMAN_DP_HIT_BY 0x22        // what hit it, cleared before each sleep
+#define FISHMAN_DP_TARGET 0x24        // the record it is after
+#define FISHMAN_DP_FORM 0x28  // 0 in water, 1 on land, negative in the air
+#define FISHMAN_DP_LAND_X 0x2a        // where a leap is to come down
+#define FISHMAN_DP_LAND_Y 0x2c
+#define FISHMAN_DP_RISE 0x2e  // a leap: four times what its height gains
+#define FISHMAN_DP_SPAN 0x30  // ...the count its two gaps are stepped by,
+#define FISHMAN_DP_PART_X 0x32        // ...what is left over of each,
+#define FISHMAN_DP_PART_Y 0x34
+#define FISHMAN_DP_GAP_X 0x36         // ...the gaps,
+#define FISHMAN_DP_GAP_Y 0x38
+#define FISHMAN_DP_SIGN_X 0x3a        // ...and which way each is
+#define FISHMAN_DP_SIGN_Y 0x3c
+#define FISHMAN_DP_TICKS 0x40         // how long it sleeps
+#define FISHMAN_DP_STAYS 0x46         // not zero for the one that patrols
+// Sliding borrows the word a leap keeps its part across in.
+#define FISHMAN_DP_AXES_TAKEN FISHMAN_DP_PART_X
+
+// For the harness, and only for it: what happened, which with the path is
+// what it takes to price the ROM's instructions around the calls.
+
+// A test of the six tiles under a point: how many it looked at, and whether
+// every one passed.
+typedef struct {
+  int tiles;
+  bool all;
+} FishmanTiles;
+
+// May it swim there? The water is asked, and then who is there.
+typedef struct {
+  FishmanTiles water;
+  bool someone_asked;
+  bool someone;
+} FishmanProbe;
+
+// A step, an axis at a time: an axis the step does not change is not asked.
+typedef struct {
+  bool asked[2];
+  FishmanProbe axis[2];  // across, then down
+  bool stuck;            // neither was taken
+} FishmanSlide;
+
+typedef enum {
+  FISHMAN_LOOK_NOT,     // it did not look
+  FISHMAN_LOOK_NEAR,    // somebody within 128: it closes in
+  FISHMAN_LOOK_WITHIN,  // ...or within 208
+  FISHMAN_LOOK_FAR,     // ...or not, and the players are asked after
+} FishmanLook;
+
+typedef enum {
+  FISHMAN_LEAP_NOT_ASKED,
+  FISHMAN_LEAP_NO_DRAW,     // the draw said no
+  FISHMAN_LEAP_NOBODY,      // nobody within 200
+  FISHMAN_LEAP_OFF_LEVEL,   // the spot is off the level
+  FISHMAN_LEAP_NO_LANDING,  // ...or nowhere to land
+  FISHMAN_LEAP_TAKEN,       // ...or somebody is on it
+  FISHMAN_LEAP_LEAPS,       // it leaps, and the pass is the ROM's
+} FishmanLeap;
+
+typedef enum {
+  FISHMAN_RANGE_TOUCHING,
+  FISHMAN_RANGE_NEAR,
+  FISHMAN_RANGE_FAR,
+} FishmanRange;
+
+typedef enum {
+  FISHMAN_PATROL_TOUCHING,   // somebody within 24: it bites
+  FISHMAN_PATROL_IN_COLUMN,  // ...within 24 across
+  FISHMAN_PATROL_IN_ROW,     // ...within 24 down
+  FISHMAN_PATROL_APART,
+} FishmanPatrol;
+
+// One step of lining up.
+typedef struct {
+  bool negative;  // its target is the other way
+  bool arrived;   // within 16
+  bool stuck;     // ...or the step was refused
+} FishmanLineStep;
+
+typedef enum {
+  FISHMAN_FLIGHT_UP,
+  FISHMAN_FLIGHT_DOWN,   // its height came to nothing exactly
+  FISHMAN_FLIGHT_UNDER,  // ...or went below, and was put back
+} FishmanFlight;
+
+typedef enum {
+  FISHMAN_SHOW_GONE,      // neither player near: it leaves, and is not shown
+  FISHMAN_SHOW_FLYING,
+  FISHMAN_SHOW_SWIMMING,
+  FISHMAN_SHOW_STANDING,
+} FishmanShow;
+
+#define FISHMAN_MAX_SLIDES 2
+#define FISHMAN_MAX_PLAYER_ASKS 4
+#define FISHMAN_MAX_DRAWS 8
+
+typedef struct {
+  uint16_t state;  // the body that ran
+  bool declined;   // the ROM's: it leaps, or it stops to look about
+
+  // Swimming.
+  FishmanLook look;
+  bool look_about_asked;
+  FishmanLeap leap;
+  BoundsExit leap_edge;
+  FishmanTiles landing;
+  bool opening_asked;
+  FishmanProbe opening;
+  bool ahead_asked;
+  FishmanProbe ahead;
+
+  // Closing in.
+  FishmanRange range;
+  int close_steps;
+
+  // Patrolling.
+  bool reversed;
+  bool reversed_wrapped;
+  FishmanPatrol patrol;
+  bool gap_negative[2];
+
+  // Lining up.
+  int line_steps;
+  FishmanLineStep line[2];
+
+  // A leap.
+  bool falling;
+  int glide_steps[2];
+  FishmanFlight flight;
+  bool ashore;
+
+  // What the bodies ask, in the order they asked.
+  int slides;
+  FishmanSlide slide[FISHMAN_MAX_SLIDES];
+  int player_asks;
+  PlayerPickRegs players[FISHMAN_MAX_PLAYER_ASKS];
+  int bearings;
+  ActorSnapRegs snap[FISHMAN_MAX_SLIDES];
+  ActorBearingRegs bearing[FISHMAN_MAX_SLIDES];
+  int draws;
+  bool draw_overflow[FISHMAN_MAX_DRAWS];
+  ActorNearestWork nearest;  // summed
+  AtPointWork at_point;      // summed
+
+  // Showing itself.
+  FishmanShow show;
+  bool new_picture;
+  bool picture_wrapped;
+  bool mirrored;
+
+  uint16_t ticks;     // what it sleeps for
+  bool c, v;          // carry and overflow as the pass leaves them
+  bool c_set, v_set;  // ...or the thread's own, where it wrote none
+} FishmanLog;
+
+typedef enum {
+  FISHMAN_SLEEPS,
+  FISHMAN_ENDS,
+} FishmanFate;
+
+// Can `fishman_frame` take this pass? Only in a state it knows, facing a way
+// the tables have, with a leap that ends. It only looks.
+bool fishman_frame_supported(const Wram* w, uint16_t page);
+
+// One pass, for the creature whose page is `page`. `carry` is the thread's
+// own, as it woke. `log` may be NULL, and `log->declined` says the pass is
+// the ROM's after all. WRAM is then part written.
+FishmanFate fishman_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
+                          FishmanLog* log);
+
+#endif

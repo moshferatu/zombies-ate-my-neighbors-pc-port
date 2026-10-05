@@ -118,6 +118,22 @@ void terrain_blocked(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out);
 // game's designers is not recorded anywhere this port can read.
 void terrain_blocked_enemy(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out);
 
+// **The footprint's six attribute words, with no rule applied.** Two bodies in
+// bank `$81` carry their own copy of the test above, with another origin and
+// another question: all six tiles water, or all six somewhere to land. This
+// reads what they read and leaves the same pointer in `$28`.
+//
+// `v_map` is the overflow of the sum that made the tilemap address, and
+// `v_last_row` that of `$B2 + 4`, which only a test that gets to the sixth
+// tile makes.
+typedef struct {
+  uint16_t attrs[TERRAIN_PROBE_COUNT];
+  bool v_map, v_last_row;
+} TerrainFootprint;
+
+void terrain_footprint_read(Wram* w, uint16_t x, uint16_t y, uint16_t origin_x,
+                            uint16_t origin_y, TerrainFootprint* out);
+
 // --- $82:90F7 ---------------------------------------------------------------
 
 // **The same test again, wider, with a second rule.** Everything above is here:

@@ -937,6 +937,81 @@
   X(players_screen_blinked, "players_screen_frame", "the tenth pass: who has not joined blinks") \
   X(players_screen_over, "players_screen_frame", "the count ran out") \
                                                                                    \
+  /* $81:9878 chainsaw_frame -- the chainsaw maniac's four states. */              \
+  X(chainsaw_charged, "chainsaw_frame", "a pass straight on") \
+  X(chainsaw_charge_turned, "chainsaw_frame", "stopped by the ground: a quarter turn by a draw") \
+  X(chainsaw_charge_wandered, "chainsaw_frame", "...or with no count left, a turn back and it wanders") \
+  X(chainsaw_wandered, "chainsaw_frame", "a pass wandering") \
+  X(chainsaw_gave_chase, "chainsaw_frame", "somebody within 300: it chases") \
+  X(chainsaw_strode_turned, "chainsaw_frame", "a pass after a turn") \
+  X(chainsaw_turn_over, "chainsaw_frame", "its passes after a turn ran out") \
+  X(chainsaw_turned_at_opening, "chainsaw_frame", "the step a quarter turn round was clear, so it turned") \
+  X(chainsaw_turned_back, "chainsaw_frame", "a step was refused, so it turned back") \
+  X(chainsaw_chased, "chainsaw_frame", "a pass chasing") \
+  X(chainsaw_swung, "chainsaw_frame", "somebody beside it and the draw let it: it swings") \
+  X(chainsaw_lost_them, "chainsaw_frame", "nobody within 250: it charges") \
+  X(chainsaw_on_them, "chainsaw_frame", "on the same spot as its quarry: the same") \
+  X(chainsaw_chase_gave_up, "chainsaw_frame", "the 120th short step of a chase") \
+  X(chainsaw_began_cutting, "chainsaw_frame", "a hedge beside it: it begins to cut") \
+  X(chainsaw_died, "chainsaw_frame", "its health gone: the thread goes on to its end") \
+                                                                                   \
+  /* $81:E4B2, $81:E558 fishman_frame -- the fishman's nine states. */             \
+  X(fishman_swam, "fishman_frame", "a pass the way it faces") \
+  X(fishman_swam_turned, "fishman_frame", "...and one turning at every opening") \
+  X(fishman_turned_at_wall, "fishman_frame", "it could not swim on: a quarter turn") \
+  X(fishman_turned_at_opening, "fishman_frame", "it could swim a quarter turn round, so it turned") \
+  X(fishman_closed_in, "fishman_frame", "somebody within 128: it closes in") \
+  X(fishman_looked_about, "fishman_frame", "the draw said stop and look about, which is the ROM's") \
+  X(fishman_leapt, "fishman_frame", "it leaps, which is the ROM's") \
+  X(fishman_leap_off_level, "fishman_frame", "the spot a leap would come down is off the level") \
+  X(fishman_leap_taken, "fishman_frame", "...or has somebody on it") \
+  X(fishman_closing_in, "fishman_frame", "a pass closing in") \
+  X(fishman_bit, "fishman_frame", "somebody within 24: it bites") \
+  X(fishman_lost_them, "fishman_frame", "nobody within 175: it swims on, or leaves") \
+  X(fishman_patrolled, "fishman_frame", "a pass of its patrol") \
+  X(fishman_turned_about, "fishman_frame", "stopped on its patrol: it turns about") \
+  X(fishman_patrol_bit, "fishman_frame", "patrolling with somebody within 24: it bites") \
+  X(fishman_in_column, "fishman_frame", "somebody within 24 across: it lines up down") \
+  X(fishman_in_row, "fishman_frame", "...or within 24 down: it lines up across") \
+  X(fishman_lining_up_down, "fishman_frame", "a pass lining up down") \
+  X(fishman_lining_up_across, "fishman_frame", "...and one across") \
+  X(fishman_lined_up, "fishman_frame", "within 16: it patrols again") \
+  X(fishman_flew, "fishman_frame", "a pass of a leap") \
+  X(fishman_dived, "fishman_frame", "...and one of the dive back into the water") \
+  X(fishman_came_down, "fishman_frame", "its height came to nothing: it has landed") \
+  X(fishman_landed_ashore, "fishman_frame", "landed, and it sets off some way by a draw") \
+  X(fishman_landed_lurking, "fishman_frame", "landed, the one that keeps to its pool") \
+  X(fishman_left, "fishman_frame", "neither player within 208: it leaves") \
+  X(fishman_left_unshown, "fishman_frame", "...found when it came to show itself") \
+                                                                                   \
+  /* $81:AC1E werewolf_frame -- the werewolf's three states. */                    \
+  X(werewolf_ran, "werewolf_frame", "a pass running") \
+  X(werewolf_left, "werewolf_frame", "its target exactly 360 away: it leaves") \
+  X(werewolf_on_them, "werewolf_frame", "on the same spot as its target: no step") \
+  X(werewolf_hopped_hurt, "werewolf_frame", "hurt since it last looked, which is the ROM's") \
+  X(werewolf_pounce_too_far, "werewolf_frame", "the draw said pounce, with its target 325 or more away") \
+  X(werewolf_pounce_too_near, "werewolf_frame", "...or under 70 by the sum of the gaps") \
+  X(werewolf_pounced, "werewolf_frame", "...or placed for it, which is the ROM's") \
+  X(werewolf_struck, "werewolf_frame", "its target beside it: a strike begins") \
+  X(werewolf_striking, "werewolf_frame", "a pass of a strike") \
+  X(werewolf_blow_shown, "werewolf_frame", "a picture from the sixth on: the blow is drawn") \
+  X(werewolf_strike_over, "werewolf_frame", "a strike's pictures ran out, which is the ROM's") \
+  X(werewolf_flew, "werewolf_frame", "a pass of a pounce") \
+  X(werewolf_came_down, "werewolf_frame", "its height came to nothing exactly") \
+  X(werewolf_landed_beside, "werewolf_frame", "...beside whoever it pounced at") \
+                                                                                   \
+  /* $81:C8A1 footballer_frame -- the footballers' four states. */                 \
+  X(footballer_stood, "footballer_frame", "a pass standing") \
+  X(footballer_set_off, "footballer_frame", "its stand is over: it runs") \
+  X(footballer_ran_loose, "footballer_frame", "a pass running loose") \
+  X(footballer_veered, "footballer_frame", "the draw said veer") \
+  X(footballer_ran_veering, "footballer_frame", "a pass of a veer") \
+  X(footballer_straightened, "footballer_frame", "a veer's passes are up, and the draw said straighten out") \
+  X(footballer_veered_again, "footballer_frame", "...or veer on") \
+  X(footballer_went_at_them, "footballer_frame", "a player within 32, to one side: it goes at them") \
+  X(footballer_turned_back, "footballer_frame", "stopped by the ground: it turns") \
+  X(footballer_left, "footballer_frame", "neither player within 320: it leaves") \
+                                                                                   \
   /* $80:C872, $80:C8B8, $80:A084, $80:A09E, $82:D88C -- DMA and its jobs. */       \
   X(dma_to_cgram, "dma_to_cgram", "colours sent") \
   X(dma_to_vram, "dma_to_vram", "bytes sent to VRAM") \
