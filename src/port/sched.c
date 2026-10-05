@@ -437,6 +437,77 @@ void nmi_leave(Wram* w, PortCpu* c, NmiWork* k) {
   wram_w16(w, W_NMI_FLAGS, (uint16_t)(flags & ~c->a));
   nmi_pull_all(w, c);
   c->pc = NMI_RETURN_PC;
+
+  // `RTL`, and then the trampoline's `PLB`, when the trampoline is where the
+  // handler came from and its stack is one the port can read.
+  if (c->s < 0x0010 || c->s >= 0x1ff0) return;
+  const uint32_t back = (uint32_t)wram_r8(w, (uint16_t)(c->s + 3)) << 16 |
+                        wram_r16(w, (uint16_t)(c->s + 1));
+  if (back != NMI_TRAMPOLINE_BACK) return;
+  PORT_COVER(nmi_returned);
+  c->s = (uint16_t)(c->s + 3);
+  c->db = pull8(w, c);
+  set_nz8(c, c->db);
+  k->blocks[NMI_LEAVE_RTL]++;
+  k->blocks[NMI_LEAVE_PLB]++;
+  c->pc = NMI_RTI_PC;
+}
+
+void nmi_vector(Wram* w, PortCpu* c, HwTrace* t) {
+  PORT_COVER(nmi_vectored);
+  // `PHB : PEA $0000 : PLB : PER $8176 : JML ($0000)`. One byte of the `PEA`
+  // stays on the stack, and it is the bank the handler's `RTL` comes back to.
+  push8(w, c, c->db);
+  push16(w, c, 0x0000);
+  c->db = pull8(w, c);
+  set_nz8(c, c->db);
+  push16(w, c, (uint16_t)NMI_TRAMPOLINE_BACK);
+  hw_run(t, NMI_TRAMPOLINE);
+
+  NmiWork unused = {0};
+  nmi_enter(w, c, &unused);
+  if (c->pc == NMI_RETURN_PC) {
+    hw_run(t, NMI_ENTER_BUSY);
+    return;
+  }
+  hw_run(t, NMI_ENTER);
+
+  // `SEP #$20 : LDA $4210`, read only to acknowledge, and `LDA #$80 :
+  // STA $2100`, which blanks the screen while the queues write to it.
+  c->p |= PORT_P_M;
+  hw_run(t, NMI_ACK);
+  hw_read8(t, NMI_REG_ACK);
+  c->a = (uint16_t)((c->a & 0xff00u) | NMI_DISPLAY_BLANK);
+  set_nz8(c, NMI_DISPLAY_BLANK);
+  hw_run(t, NMI_BLANK);
+  hw_w8(t, NMI_REG_DISPLAY, NMI_DISPLAY_BLANK);
+
+  nmi_stack(w, c, &unused);
+  hw_run(t, NMI_STACK_RUN);
+}
+
+void nmi_queue_a(Wram* w, PortCpu* c, VblRunWork* k) {
+  push16(w, c, NMI_QUEUE_A_BACK);
+  vbl_queue_run(w, &VBL_QUEUE_A_DESC, false, c, k);
+}
+
+void nmi_unblank(const Wram* w, PortCpu* c, HwTrace* t) {
+  PORT_COVER(nmi_unblanked);
+  // `SEP #$20 : LDA $136C : STA $2100`: the brightness the game last asked
+  // for, which also takes the blank off.
+  c->p |= PORT_P_M;
+  const uint8_t brightness = wram_r8(w, W_BRIGHTNESS_SHADOW);
+  c->a = (uint16_t)((c->a & 0xff00u) | brightness);
+  hw_run(t, NMI_UNBLANK);
+  hw_w8(t, NMI_REG_DISPLAY, brightness);
+  // `REP #$30 : SEP #$20`
+  c->p = (uint8_t)((c->p & ~PORT_P_X) | PORT_P_M);
+  hw_run(t, NMI_WIDTHS);
+  // `LDA $4212 : LSR : BCS`, until the joypads have been read. The `LSR`
+  // that ends it shifts a clear bit out and a clear bit in.
+  hw_wait_low(t, NMI_REG_STATUS);
+  c->p = (uint8_t)(c->p & ~(PORT_P_C | PORT_P_N));
+  c->pc = NMI_INPUT_PC;
 }
 
 // ---------------------------------------------------------------------------

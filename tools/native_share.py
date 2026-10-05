@@ -269,10 +269,11 @@ BLOCKED = {
     # `$80:8380` and their `$00` twins -- and off this list.
     #
     # The NMI's handler went the same way, in four pieces between its hardware
-    # accesses. What is left under this row is the bank $00 trampoline, the
-    # `LDA $4210`/`STA $2100` pair either side of the queues, and the
-    # auto-joypad wait.
-    0x80816C: 'the NMI trampoline and its hardware accesses, which stay the ROM\'s',
+    # accesses. $80:816C was here for what that left: the bank $00 trampoline,
+    # the `LDA $4210`/`STA $2100` pair either side of the queues, and the
+    # auto-joypad wait. Those are `nmi_vector` and `nmi_unblank` now, with the
+    # register accesses in a trace (`port/hw.h`), and the harness makes the
+    # `RTI` (`leave` in `cosim.c`).
     # The reset vector's work was the two block moves that clear WRAM, and
     # those are `$80:80C1 reset_clear` now, entered where `init_ppu_regs`
     # returns. What stays is the mode switch, the stack, and the hardware on

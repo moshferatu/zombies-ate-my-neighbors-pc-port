@@ -15,9 +15,9 @@
 // `verify` compare these with no dead-stack allowance at all, where every other
 // routine is allowed the bytes under its own pushes.
 //
-// What is not here is the one instruction each stretch leaves by. That stays
-// the ROM's: the `RTL` into the thread being resumed, the `WAI` that ends the
-// frame, the `RTL` into a job. The port stops on it and the core executes it.
+// What is not here is the one instruction each stretch leaves by: the `RTL`
+// into the thread being resumed, the `WAI` that ends the frame, the `RTL`
+// into a job. The port stops on it, and the harness makes it.
 //
 // Port code: libc only.
 
@@ -29,6 +29,7 @@
 
 #include "assets/rom.h"
 #include "port/cpu.h"
+#include "port/hw.h"
 #include "port/player.h"
 #include "port/rng.h"
 #include "port/wram.h"
@@ -164,12 +165,22 @@ void vbl_queue_run(Wram* w, const VblQueueDesc* q, bool resumed, PortCpu* c,
 
 // --- The NMI handler, `$80:8179` -----------------------------------------------
 //
-// Four stretches, split where the handler touches the hardware. Those
-// instructions stay the ROM's: `LDA $4210` acknowledges the interrupt,
-// `STA $2100` blanks and unblanks the screen, and `$80:81B5` waits for the
-// auto-joypad read to finish. The joypad itself is the exception. `LDA $4218`
-// and `LDA $421A` only read a latch, and the two words come in as arguments,
-// which is how a port with its own input would hand them over anyway.
+// The vector lands on a trampoline in bank `$00`, `$00:816C`, which saves the
+// data bank and jumps through the three bytes at `$0000`. Those hold
+// `$80:8179` for as long as the game runs. The handler comes back to the
+// trampoline's `PLB : RTI` by an `RTL`.
+//
+// The first four stretches were split where the handler touches the
+// hardware, and those instructions were left to the ROM: `LDA $4210`
+// acknowledges the interrupt, `STA $2100` blanks and unblanks the screen, and
+// `$80:81B5` waits for the auto-joypad read to finish. That was twenty
+// instructions a frame, and a third of everything the 65816 still executed.
+// The three stretches under them take those in, with the register accesses
+// recorded for the harness to make on the ROM's cycles (`port/hw.h`).
+//
+// The joypad is read differently. `LDA $4218` and `LDA $421A` only read a
+// latch, and the two words come in as arguments, which is how a port with its
+// own input would hand them over anyway.
 //
 //     nmi_enter  $80:8179  save A X Y D B, D = 0, B = $80, count the frame,
 //                          and the re-entry guard -> $818F, or all the way
@@ -177,7 +188,14 @@ void vbl_queue_run(Wram* w, const VblQueueDesc* q, bool resumed, PortCpu* c,
 //     nmi_stack  $80:8199  park S in $04 and move to NMI's own stack -> $81A2
 //     nmi_input  $80:81BB  the two pads, raw and as direction codes -> $81E1
 //     nmi_leave  $80:81E4  the rng tick, S back, the guard off, the pulls,
-//                          up to the RTL at $81F8
+//                          the RTL and the trampoline's PLB -> the RTI
+//
+//     nmi_vector   $00:816C  the trampoline, `nmi_enter`, the acknowledge,
+//                            the blank, `nmi_stack` -> $81A2
+//     nmi_queue_a  $80:81A6  `JSR vbl_queue_a_run`, and the dispatcher's
+//                            first stretch -> a job, or $8417
+//     nmi_unblank  $80:81A9  the brightness back, and the wait for the
+//                            joypads -> $81BB
 
 #define NMI_ENTER_PC 0x808179u
 #define NMI_STACK_PC 0x808199u
@@ -187,6 +205,24 @@ void vbl_queue_run(Wram* w, const VblQueueDesc* q, bool resumed, PortCpu* c,
 #define NMI_FLUSH_PC 0x8081a2u  // `JSL vram_queue_flush`
 #define NMI_QUEUE_B_PC 0x8081e1u  // `JSR vbl_queue_b_run`
 #define NMI_RETURN_PC 0x8081f8u  // `RTL`, to the trampoline's `PLB : RTI`
+#define NMI_VECTOR_PC 0x00816cu  // `PHB : PEA $0000 : PLB : PER : JML ($0000)`
+#define NMI_QUEUE_A_PC 0x8081a6u  // `JSR vbl_queue_a_run`
+#define NMI_UNBLANK_PC 0x8081a9u  // `SEP #$20 : LDA $136C : STA $2100`
+#define NMI_RTI_PC 0x008178u
+// What the trampoline's `PER` pushes: the byte before its `PLB : RTI`.
+#define NMI_TRAMPOLINE_BACK 0x008176u
+// Where `JSR vbl_queue_a_run` comes back to, less one.
+#define NMI_QUEUE_A_BACK 0x81a8u
+
+// The handler's address, three bytes, which the trampoline jumps through.
+#define W_NMI_HANDLER 0x0000
+// `RDNMI`, whose read acknowledges the interrupt; `INIDISP`, the screen's
+// brightness and its blanking bit; `HVBJOY`, whose bit 0 is set while the
+// joypads are being read.
+#define NMI_REG_ACK 0x4210
+#define NMI_REG_DISPLAY 0x2100
+#define NMI_REG_STATUS 0x4212
+#define NMI_DISPLAY_BLANK 0x80
 
 // `$80:81F9`: sixteen bytes, one direction code per D-pad nibble.
 #define NMI_DIR_TABLE 0x8081f9u
@@ -207,6 +243,14 @@ enum {
   NMI_INPUT_RUN,   // $81BB-$81DF
   NMI_LEAVE,       // $81E4-$81F7, with the rng held
   NMI_LEAVE_TICK,  // ...or ticked
+  NMI_LEAVE_RTL,   // $81F8
+  NMI_LEAVE_PLB,   // $00:8177
+  NMI_TRAMPOLINE,  // $00:816C-$8176
+  NMI_ACK,         // $818F-$8193: SEP, and LDA $4210 up to its read
+  NMI_BLANK,       // $8194-$8198: LDA #$80, and STA $2100 up to its write
+  NMI_CALL_A,      // $81A6: JSR
+  NMI_UNBLANK,     // $81A9-$81B0: SEP, LDA $136C, STA $2100 up to its write
+  NMI_WIDTHS,      // $81B1-$81B4: REP, SEP
   NMI_BLOCK_COUNT
 };
 
@@ -220,6 +264,17 @@ void nmi_stack(Wram* w, PortCpu* c, NmiWork* k);
 void nmi_input(Wram* w, const Rom* rom, PortCpu* c, uint16_t joy1,
                uint16_t joy2, NmiWork* k);
 void nmi_leave(Wram* w, PortCpu* c, NmiWork* k);
+
+// From the vector. Assumes `W_NMI_HANDLER` holds `NMI_ENTER_PC`, which the
+// harness checks. Leaves at `NMI_FLUSH_PC`, or at `NMI_RETURN_PC` when an NMI
+// was already running.
+void nmi_vector(Wram* w, PortCpu* c, HwTrace* t);
+// `JSR vbl_queue_a_run` and what `vbl_queue_run` does from its entry.
+void nmi_queue_a(Wram* w, PortCpu* c, VblRunWork* k);
+// Leaves at `NMI_INPUT_PC` with the accumulator's low byte and Z whatever the
+// last read of the status register made them, which the port cannot know and
+// `nmi_input` does not read.
+void nmi_unblank(const Wram* w, PortCpu* c, HwTrace* t);
 
 // --- The reset's WRAM clear -----------------------------------------------------
 //

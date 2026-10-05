@@ -72,6 +72,9 @@
   X(nmi_reentered,    "nmi_enter",         "an NMI while one was already running: straight back out") \
   X(nmi_rng_tick,     "nmi_leave",         "$1EB4 clear, so the random number state stepped") \
   X(nmi_rng_held,     "nmi_leave",         "...or set, and it did not")         \
+  X(nmi_returned,     "nmi_leave",         "out by the RTL and the trampoline's PLB, to the RTI") \
+  X(nmi_vectored,     "nmi_vector",        "the trampoline at the vector, through to the handler") \
+  X(nmi_unblanked,    "nmi_unblank",       "the brightness put back and the joypads waited for") \
   X(vbl_run_last_dropped, "vbl_queue_run",     "...and it was the last one, so the walk stopped") \
   X(reset_cold,       "reset_clear",       "no top-scores table in WRAM: every byte cleared") \
   X(reset_warm,       "reset_clear",       "the four magic words found, so $7E:2000-$2127 survive") \

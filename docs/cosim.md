@@ -15721,3 +15721,143 @@ instructions, from 21.6.
 as before. In the player, state `$0A` and the frames with a press. Then the
 big figure of level 21, the creatures of levels 13 and 41, and the level
 loaders.
+
+## The instructions between the ports (2026-10-04)
+
+| Entry | Where | What | Shape |
+|---|---|---|---|
+| `nmi_vector` | `$00:816C` | the trampoline, the handler's entry, the acknowledge, the blank, its own stack | jump, hardware trace |
+| `nmi_queue_a` | `$80:81A6` | `JSR vbl_queue_a_run` and the dispatcher's first stretch | jump |
+| `nmi_unblank` | `$80:81A9` | the brightness back, and the wait for the joypads | jump, hardware trace |
+
+and `nmi_leave` now ends on the trampoline's `RTI`.
+
+### What a port leaves by
+
+`run` used to end a substituted call by standing the CPU on one of the
+routine's own instructions and letting the core execute it: the `RTS` or
+`RTL` at `ret_op`, or the instruction at the exit a jump named. It borrowed
+the core's stack handling, and it cost one 65816 instruction a call.
+
+Ranked by address over the twelve movies, the instructions the core still
+executed were led by those: `$80:8397  RTL`, 1,178,201 times, which is the
+scheduler resuming a thread; `$80:8400  RTL` and `$80:845D  RTL`, 1,141,272,
+the dispatchers reaching a job; `$80:B9C6`, `$80:9ECD`, `$80:BDE2`,
+`$80:A9CB`, `$82:8244` and `$80:9E6C`, each the return of a routine ported
+whole. `RTL` was 4.4 million of the 19.5, `JSL` 1.8, `RTS` 0.8 and `JSR`
+0.7.
+
+`leave` in `cosim.c` makes the instruction instead. It is called wherever
+the CPU has just been stood on one, from `native_return` and `jump_go`, and
+it handles seven opcodes, each only a move of control:
+
+| | stack | cycles | polled before |
+|---|---|---|---|
+| `RTS` | pulls 2 | fetch + 3 idle + 2 stack | the last idle |
+| `RTL` | pulls 3 | fetch + 2 idle + 3 stack | the bank's pull |
+| `JSR abs` | pushes 2 | 3 fetch + idle + 2 stack | the second push |
+| `JSL` | pushes 3 | 4 fetch + idle + 3 stack | the last push |
+| `JMP abs` | | 3 fetch | the second operand byte |
+| `RTI` | pulls 4 | fetch + 2 idle + 4 stack | the bank's pull |
+| `WAI` | | fetch + 2 idle | not at all |
+
+A fetch is 6 or 8 by `$420D` and the bank, an idle 6 and a stack access 8.
+The cycles are spent twelve at a time, as a reported cost is, and counted
+native. The interrupt latch is set from what was due at the poll, which is
+where `cpu_checkInt` sits in each of the core's own, so an interrupt that
+falls due inside is taken after the instruction and before the next.
+
+It leaves three things to the core, as before. An instruction that is not
+one of the seven: a store to a register, a `SEP`. A stack outside low WRAM.
+And an instruction another port begins on, which is that port's to run:
+`nmi_unblank` leaves at `$80:81BB`, where `nmi_input` starts.
+
+A `JSR` or `JSL` made this way is counted in `calls_total` and in the
+profile's call graph, as one the core executed is.
+
+**`verify` is not changed by any of this.** It runs the ROM, and ends a call
+where it always did. What checks `leave` is lockstep, which runs it against
+a stock core: 48 of 51 movies never part, as before, and every movie's
+final drift and worst drift are the same to the cycle. The mean moves by
+tenths of a cycle on three.
+
+### The NMI handler
+
+The handler was four stretches: `nmi_enter`, `nmi_stack`, `nmi_input` and
+`nmi_leave`. Between them the ROM ran `SEP #$20 : LDA $4210 : LDA #$80 :
+STA $2100`, then `SEP #$20 : LDA $136C : STA $2100 : REP #$30 : SEP #$20`
+and the loop `LDA $4212 : LSR : BCS`. Before the first is the trampoline
+the vector points at, `$00:816C  PHB : PEA $0000 : PLB : PER $8176 :
+JML ($0000)`, and after the last its `PLB : RTI`.
+
+**`nmi_vector`** starts at the vector's target, in bank `$00`. One byte of
+the `PEA` stays on the stack under the `PER`'s two, and those three are the
+long address the handler's `RTL` returns to. `JML ($0000)` goes through
+three bytes of WRAM, and the guard takes the stretch only when they hold
+`$80:8179`. Then `nmi_enter`, the two hardware instructions, and
+`nmi_stack`, to the `JSL vram_queue_flush` at `$80:81A2`, or to the `RTL`
+when an NMI was already running. The trampoline is priced at 8 a program
+byte whatever `$420D` says, 184 cycles.
+
+**`nmi_queue_a`** is the `JSR` at `$80:81A6` and `vbl_queue_run` from its
+entry. It is an entry of its own because the flush's `RTL` lands on the
+`JSR`, and nothing else would take it.
+
+**`nmi_unblank`** leaves at `$80:81BB` with the accumulator's low byte and Z
+whatever the last read of `$4212` made them. The port cannot know that
+byte: its top two bits are where the beam is. So the shim does not claim A
+or Z, and `nmi_input`, which follows, loads A before it reads either.
+
+**`nmi_leave`** pulls the handler's `RTL` address itself when it is the
+trampoline's, makes the trampoline's `PLB`, and leaves at `$00:8178`, the
+`RTI`. The ROM passes `$80:81F8` on the way there, so the `RTL` cannot stay
+an exit beside it: `verify` would end the call at the first it reached. A
+guard runs the port on a copy and takes the stretch only when it comes out
+at the `RTI`.
+
+The two old entries `nmi_enter` and `nmi_stack` stay registered. Under
+`run` they are reached only when the vector's guard declines.
+
+### Reads in a trace
+
+`port/hw.h` had writes and the sound routines' waits. Two more:
+
+* `HW_READ`, `hw_read8`: an `LDA abs` of a register, for what reading does.
+  The three fetches are the run's in front of it and the read is 6.
+* `HW_WAIT_LOW`, `hw_wait_low`: `LDA abs : LSR : BCS` until bit 0 is clear.
+  Three fetches, the read, then a fetch and an idle for the `LSR` and two
+  fetches for the branch falling through. A read that does not end it costs
+  the whole loop and 6 more, as with the other waits.
+
+`verify` logged no reads but the APU's. It keeps `$4210` and `$4212` now,
+which nothing else in the ROM reads, and holds each to its address and its
+cycle. Under `run` the read is `snes_cpuRead`, the core's own, on that
+cycle.
+
+The wait is counted as waiting, with the wait sites in `waits.h`, and not as
+native work.
+
+### Checked
+
+The corpus: 24,705,495 calls across 51 movies, 0 diverged, 627 of 789 sites,
+the 3 new ones taken. The sweep: 38,951,391 calls over 56 records, 0
+diverged. `nmi_vector` and `nmi_unblank` are exact on all 256,035 calls
+each, and `nmi_queue_a` and `nmi_leave` on all 252,628 made with no HDMA
+running. Each vector has one read and one write compared, and each unblank
+one write and one wait.
+
+**Live**: the residue over the twelve movies is 7.6 million instructions,
+from 19.5: 12.8 after `leave`, and 7.6 after the NMI. The share goes from
+98.2% to 99.7% on `level1` and from 95.5% to 97.2% on `level21`, the
+highest and the lowest of the twelve.
+
+**Pictures.** The last frame under substitution is the stock core's on
+`level1`, `level5`, `level33`, `level49` and `level1-map`. On `level21` it
+is not, and the build before this round gives the same picture as this one.
+
+**What is left.** Nothing of the frame. A long tail of routines, none over
+4%: the big figure of level 21, the level loaders, and creatures. The
+player's states `$02` and `$0A` are what `player_frame` turns down most in
+the live runs, 3,172 and 1,936 passes of 158,609, all past the end of the
+movies' input. The corpus does not stay in either, so each needs a movie
+before it can be checked.

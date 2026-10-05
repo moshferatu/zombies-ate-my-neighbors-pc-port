@@ -5,6 +5,79 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The instructions between the ports: returns, calls, and the NMI's hardware (2026-10-04)
+
+What the 65816 still executed over the twelve movies goes from 19.5 to
+**7.6** million instructions of work, and none of it is the frame's any
+more: the NMI, the scheduler and the two dispatchers have left the ranking.
+Live, `level1` goes from 98.2% to **99.7%**, `level17` from 98.3% to 99.6%,
+`level53` from 97.7% to 99.6%, `level49` from 97.3% to 99.4%, `level33` from
+96.5% to 99.3%, `level29-fighting` from 97.5% to 99.2%, `level9` from 97.0%
+to 98.8%, `level5` from 96.7% to 98.4%, `level13` from 96.6% to 98.2%,
+`level37` from 96.5% to 98.2%, `level41` from 96.2% to 98.0% and `level21`
+from 95.5% to 97.2%. The game registers 226 routines.
+
+* **The harness makes the instruction a port leaves by.** A port ends
+  standing on one instruction of the routine's own: its `RTS` or `RTL`, or
+  the `JSL thread_yield` a native frame ends on, or the `RTL` the scheduler
+  resumes a thread by. The core used to execute that one. Ranked by address,
+  those single instructions were a third of the residue: 1.2 million `RTL`s
+  out of the scheduler, 1.1 million out of the dispatchers into a job, every
+  native call's own return. `leave` in `cosim.c` makes seven of them now,
+  `RTS`, `RTL`, `JSR abs`, `JSL`, `JMP abs`, `RTI` and `WAI`, with the stack
+  and the cycles the 65816 gives each, and an interrupt polled where the
+  core polls it. This alone took the residue from 19.5 to 12.8 million. No
+  port changed for it, and `verify` is not touched by it: it is `run`'s.
+* **The NMI handler's hardware instructions**, `src/port/sched.c`. The
+  handler was four ported stretches split round `LDA $4210`, two
+  `STA $2100`s and the wait on `$4212`, and those and the trampoline at the
+  vector were twenty instructions a frame, 5.0 of the 12.8 million. Three
+  new stretches take them in: `nmi_vector` from the vector at `$00:816C` to
+  the handler's own stack, `nmi_queue_a` for the `JSR` into the first
+  dispatcher, and `nmi_unblank` for the brightness and the joypad wait.
+  `nmi_leave` goes on through the handler's `RTL` and the trampoline's `PLB`
+  to the `RTI`. A frame's interrupt now runs with no instruction of the
+  core's in it.
+* **Two more kinds of step in a hardware trace**, `port/hw.h`. A read that
+  is made for what reading does, which is how `$4210` acknowledges the
+  interrupt, and `LDA : LSR : BCS` on a register until its bit 0 is clear.
+  `verify` compares each with the ROM's by address and cycle, as it does the
+  writes.
+
+* **Checked.** The corpus verifies at 24,705,495 calls across 51 movies with
+  0 diverged, and 627 of 789 coverage sites; the 3 new ones are all taken.
+  `verify --level` over all 56 records, 38,951,391 calls, 0 diverged. The
+  four NMI stretches are exact on every call priced, 256,035 of the vector
+  and of the unblank on the corpus, with every register access on the ROM's
+  cycle.
+* **Lockstep** over the corpus is what checks `leave`, and it is as it was:
+  48 of 51 never part, the same three part on the same passes, and each
+  movie's final drift and worst drift are the same to the cycle. The last
+  frame of
+  `level1`, `level5`, `level33`, `level49` and `level1-map` is the stock
+  core's, byte for byte. `level21`'s is not, and was not before the round:
+  this build's is the same picture as the last one's.
+* **What the share now leaves out.** The wait on `$4212` is a wait, and is
+  counted with the other waits and not as work, as `nmi_unblank` reports it.
+  It was work while the ROM ran it. That takes about 0.06% off the
+  denominator and nothing off the numerator.
+* **What the round taught.** The ranking by routine hid this for rounds. It
+  charged an `RTL` at `$80:8397` to `sched_rescan` and showed a ported
+  routine with work against it, which reads as a guard declining. Ranked by
+  address and opcode, a third of the residue was `RTL`, `RTS`, `JSL` and
+  `JSR`, each executed alone between two ports.
+* **Next.** What is left is a long tail with nothing over 4%: the big
+  figure of level 21 (`$82:84CE`, `$82:87E8`), the level loaders
+  (`$80:98EA`, `$80:96B9`, `$80:895A`, `$80:A462`), and the creatures at
+  `$81:DC24`, `$81:9107` and `$81:A74D`. In the player, the live runs go on
+  for 15,000 frames past the end of each movie's input, and there the frame
+  turns down 12,678 of 158,609 passes, a third of `level5`'s and of
+  `level37`'s. States `$02` (`$80:D2EA`) and `$0A` (`$80:D404`) are 3,172
+  and 1,936 of those, with a movement at `$80:E555` beside the first. No
+  movie in the corpus stays in either, so a movie comes before the port.
+  On the corpus's own frames the frame turns down little: state `$06` 192
+  times on `level5`, a movement at `$80:E6C2` 840 times on `level41`.
+
 ### The player's frame in readable C, and exact prices under it (2026-10-04)
 
 A player's whole frame is one native call now, and everything it calls is

@@ -694,6 +694,10 @@ static void compare_jump(CosimStat* s, const CosimCall* call, const Wram* ours,
 // The hardware registers: what the ROM wrote, and what the port says it wrote
 // ---------------------------------------------------------------------------
 
+// What the two kinds of cycle that are not a program fetch cost.
+#define COSIM_IDLE_CYCLES 6
+#define COSIM_STACK_CYCLES 8  // bank 0 below $2000, which is where the stack is
+
 // The priced trace the last shim handed over with `cosim_hw`. A global for the
 // reason `g_cosim_cost` is one, and emptied beside it before every run.
 static CosimHwEvent* g_hw;
@@ -759,6 +763,24 @@ bool cosim_hw(const HwTrace* t, const CosimRun* runs, bool fastrom) {
       hw_event_add(&g_hw, &g_hw_n, &g_hw_cap, &s);
       continue;
     }
+    if (st->kind == HW_READ) {
+      const CosimHwEvent r = {at, st->arg, 0, COSIM_HW_READ,
+                              (uint8_t)hw_access_cycles(st->arg), 0, 0};
+      hw_event_add(&g_hw, &g_hw_n, &g_hw_cap, &r);
+      at += r.len;
+      continue;
+    }
+    if (st->kind == HW_WAIT_LOW) {
+      // `LDA abs` is three fetches and its read. `LSR` is a fetch and an
+      // idle, and the `BCS` that falls through is two fetches.
+      const CosimHwEvent w = {
+          at, st->arg, 0, COSIM_HW_WAIT_LOW,
+          (uint8_t)hw_access_cycles(st->arg), (uint8_t)(3 * fetch),
+          (uint8_t)(3 * fetch + COSIM_IDLE_CYCLES)};
+      hw_event_add(&g_hw, &g_hw_n, &g_hw_cap, &w);
+      at += w.pre + w.len + w.post;
+      continue;
+    }
     if (st->kind == HW_WAIT8 || st->kind == HW_WAIT16) {
       // `CMP`/`CPY abs` is three fetches and then its reads, and the `BNE`
       // that falls through is two.
@@ -810,16 +832,23 @@ static bool hw_register(uint32_t adr) {
          (a >= 0x4200 && a < 0x4220) || (a >= 0x4300 && a < 0x4380);
 }
 
+// The two registers the NMI handler reads for what reading does, or to wait
+// on. Nothing else in the ROM reads either.
+static bool hw_read_kept(uint32_t adr) {
+  const uint16_t a = (uint16_t)adr;
+  return hw_io_bank(adr) && (a == 0x4210 || a == 0x4212);
+}
+
 // The core's hooks, under `verify`. An access is logged while the innermost
 // call is running, which is while some call's window is open; a suspended one
 // is not running, and the rest of the game writes the PPU every frame. Every
-// register write is kept, and of the reads only the APU's, which are the ones
-// a port waits on.
+// register write is kept, and of the reads the APU's, which are the ones a
+// sound port waits on, and the NMI handler's two.
 static void hw_log(Cosim* c, uint32_t adr, uint8_t val, uint64_t clock,
                    bool read) {
   CosimPriv* p = c->priv;
   if (p->depth == 0 || p->stack[p->depth - 1].suspended) return;
-  if (!hw_apu(adr) && (read || !hw_register(adr))) return;
+  if (!hw_apu(adr) && !(read ? hw_read_kept(adr) : hw_register(adr))) return;
   if (p->hw_rom_n == p->hw_rom_cap) {
     p->hw_rom_cap = p->hw_rom_cap ? p->hw_rom_cap * 2 : 1024;
     p->hw_rom = (CosimHwAccess*)realloc(
@@ -873,6 +902,20 @@ static void compare_hw(const Cosim* c, CosimStat* s, const CosimCall* call) {
     if (e->kind == COSIM_HW_ACCESS || e->kind == COSIM_HW_STACK ||
         e->kind == COSIM_HW_RUN)
       continue;
+    if (e->kind == COSIM_HW_READ) {
+      const CosimHwAccess* r = hw_next(p, call, &k);
+      const long at = r ? (long)(r->clock - call->cpu0) : -1;
+      if (!r || !r->read || r->addr != e->addr || at != e->at + shift) {
+        if (!r)
+          note(s, "hardware: the port reads $%04X at cycle %ld, the ROM no more",
+               e->addr, e->at + shift);
+        else
+          note(s, "hardware: ROM %s $%04X at cycle %ld, port reads $%04X at %ld",
+               r->read ? "read" : "wrote", r->addr, at, e->addr, e->at + shift);
+        return;
+      }
+      continue;
+    }
     if (e->kind == COSIM_HW_WRITE) {
       const CosimHwAccess* w = hw_next(p, call, &k);
       if (!w) {
@@ -915,7 +958,7 @@ static void compare_hw(const Cosim* c, CosimStat* s, const CosimCall* call) {
       }
       const uint16_t got =
           (uint16_t)(lo->val | (wide ? (uint16_t)(hi->val << 8) : 0));
-      if (got == e->val) break;
+      if (cosim_hw_wait_met(e, got)) break;
       shift += cosim_hw_spin(e);
       spins++;
     }
@@ -946,7 +989,7 @@ static long hw_spun(const Cosim* c, const CosimCall* call) {
     if (e->kind == COSIM_HW_ACCESS || e->kind == COSIM_HW_STACK ||
         e->kind == COSIM_HW_RUN)
       continue;
-    if (e->kind == COSIM_HW_WRITE) {
+    if (e->kind == COSIM_HW_WRITE || e->kind == COSIM_HW_READ) {
       if (!hw_next(p, call, &k)) return shift;
       continue;
     }
@@ -959,7 +1002,7 @@ static long hw_spun(const Cosim* c, const CosimCall* call) {
         if (!hi) return shift;
         got = (uint16_t)(got | hi->val << 8);
       }
-      if (got == e->val) break;
+      if (cosim_hw_wait_met(e, got)) break;
       shift += cosim_hw_spin(e);
     }
   }
@@ -1113,11 +1156,191 @@ static void native_publish(Cosim* c, const CosimRegs* out) {
   if (out->flags & COSIM_FLAG_V) cpu->v = out->v;
 }
 
-// Publish a finished routine's registers and hand the core its own RTS/RTL.
+// The longest run of cycles a real 65816 access can take, and the size a
+// reported cost is burned in. See `cycles_burn_modelled`.
+#define COSIM_BURN_PIECE 12
+
+// --- The instruction a substituted routine leaves by --------------------------
 //
-// Returning by pointing the program counter at the routine's own return
-// instruction borrows the core's exact stack and bank handling instead of
-// reimplementing it here, which is one fewer thing to get wrong.
+// A port ends standing on one instruction of the routine's own: the `RTS` or
+// `RTL` it returns by, or the exit a jump names. For a long time the core
+// executed that one, because its stack and bank handling were one fewer thing
+// to get wrong. But it is the routine's instruction and the routine is the
+// port's, and over twelve movies those single instructions were a quarter of
+// everything the 65816 still executed: 1.2 million `RTL`s out of the
+// scheduler into a thread, 1.1 million into a vblank job, every native
+// frame's `JSL thread_yield`.
+//
+// So the harness makes it, when it is one of the seven that only move
+// control: `RTS`, `RTL`, `JSR abs`, `JSL`, `JMP abs`, the `RTI` the NMI
+// handler ends on, and the `WAI` the scheduler stops at. What each does to the stack
+// and the program counter is below, in the order the 65816 does it, and its
+// cycles are spent the way a reported cost is. An interrupt is polled where
+// the core polls it, before the last cycle, so one that falls due inside is
+// taken after the instruction and before the next, as it is under the ROM.
+//
+// Anything else is left standing for the core, as before: a `WAI`, a store to
+// a register, a stack that is not in low WRAM. So is an instruction another
+// port begins on, which is that port's to run.
+
+static bool is_entry(const Cosim* c, uint32_t pc) {
+  for (int i = 0; i < c->stat_count; i++)
+    if (c->stats[i].routine->entry == pc && cosim_mask_get(&c->enabled, i))
+      return true;
+  return false;
+}
+
+typedef struct {
+  int cycles;  // the whole instruction
+  int last;    // ...of which after the interrupt poll
+} LeaveCost;
+
+static uint8_t leave_pull(Cpu* cpu, const uint8_t* ram) {
+  cpu->sp++;
+  return ram[cpu->sp];
+}
+
+static void leave_push(Cpu* cpu, uint8_t* ram, uint8_t v) {
+  ram[cpu->sp] = v;
+  cpu->sp--;
+}
+
+// The stack they use is at most four bytes either side of the pointer.
+static bool leave_stack_ok(const Cpu* cpu) {
+  return !cpu->e && cpu->sp >= 0x0104u && cpu->sp < 0x1ffbu;
+}
+
+// `PLP`, and what an `RTI` does first: an 8-bit index width takes the high
+// bytes of X and Y with it.
+static void leave_set_flags(Cpu* cpu, uint8_t p) {
+  cpu->n = p & 0x80;
+  cpu->v = p & 0x40;
+  cpu->mf = p & 0x20;
+  cpu->xf = p & 0x10;
+  cpu->d = p & 0x08;
+  cpu->i = p & 0x04;
+  cpu->z = p & 0x02;
+  cpu->c = p & 0x01;
+  if (cpu->xf) {
+    cpu->x &= 0xff;
+    cpu->y &= 0xff;
+  }
+}
+
+// Make the instruction the CPU is standing on, if it is one of the seven.
+// False when it is not, and then nothing has changed.
+static bool leave_step(Cosim* c, LeaveCost* cost) {
+  Snes* snes = c->snes;
+  Cpu* cpu = snes->cpu;
+  const uint32_t pc = cpu_pc24(snes);
+  uint32_t avail = 0;
+  const uint8_t* op = rom_ptr(&c->rom, pc, &avail);
+  if (!op || avail < 4 || (pc & 0xffffu) < 0x8000u) return false;
+  if (!leave_stack_ok(cpu)) return false;
+  const int fetch = snes->fastMem && (pc >> 16) >= 0x80u ? 6 : 8;
+  const uint16_t operand = (uint16_t)(op[1] | op[2] << 8);
+  uint32_t callee = 0;
+
+  switch (op[0]) {
+    case 0x60: {  // RTS: two idles, the address, an idle
+      const uint8_t lo = leave_pull(cpu, snes->ram);
+      const uint8_t hi = leave_pull(cpu, snes->ram);
+      cpu->pc = (uint16_t)((lo | hi << 8) + 1);
+      *cost = (LeaveCost){fetch + 3 * COSIM_IDLE_CYCLES + 2 * COSIM_STACK_CYCLES,
+                          COSIM_IDLE_CYCLES};
+      break;
+    }
+    case 0x6b: {  // RTL: two idles, the address, the bank
+      const uint8_t lo = leave_pull(cpu, snes->ram);
+      const uint8_t hi = leave_pull(cpu, snes->ram);
+      cpu->pc = (uint16_t)((lo | hi << 8) + 1);
+      cpu->k = leave_pull(cpu, snes->ram);
+      *cost = (LeaveCost){fetch + 2 * COSIM_IDLE_CYCLES + 3 * COSIM_STACK_CYCLES,
+                          COSIM_STACK_CYCLES};
+      break;
+    }
+    case 0x20: {  // JSR abs: the operand, an idle, the last byte's address
+      const uint16_t back = (uint16_t)(cpu->pc + 2);
+      leave_push(cpu, snes->ram, (uint8_t)(back >> 8));
+      leave_push(cpu, snes->ram, (uint8_t)back);
+      cpu->pc = operand;
+      callee = (uint32_t)cpu->k << 16 | operand;
+      *cost = (LeaveCost){3 * fetch + COSIM_IDLE_CYCLES + 2 * COSIM_STACK_CYCLES,
+                          COSIM_STACK_CYCLES};
+      break;
+    }
+    case 0x22: {  // JSL: the bank it is in, then the last byte's address
+      const uint16_t back = (uint16_t)(cpu->pc + 3);
+      leave_push(cpu, snes->ram, cpu->k);
+      leave_push(cpu, snes->ram, (uint8_t)(back >> 8));
+      leave_push(cpu, snes->ram, (uint8_t)back);
+      cpu->pc = operand;
+      cpu->k = op[3];
+      callee = (uint32_t)cpu->k << 16 | operand;
+      *cost = (LeaveCost){4 * fetch + COSIM_IDLE_CYCLES + 3 * COSIM_STACK_CYCLES,
+                          COSIM_STACK_CYCLES};
+      break;
+    }
+    case 0x4c:  // JMP abs
+      cpu->pc = operand;
+      *cost = (LeaveCost){3 * fetch, fetch};
+      break;
+    case 0x40: {  // RTI: two idles, the status byte, the address, the bank
+      leave_set_flags(cpu, leave_pull(cpu, snes->ram));
+      const uint8_t lo = leave_pull(cpu, snes->ram);
+      const uint8_t hi = leave_pull(cpu, snes->ram);
+      cpu->pc = (uint16_t)(lo | hi << 8);
+      cpu->k = leave_pull(cpu, snes->ram);
+      *cost = (LeaveCost){fetch + 2 * COSIM_IDLE_CYCLES + 4 * COSIM_STACK_CYCLES,
+                          COSIM_STACK_CYCLES};
+      break;
+    }
+    case 0xcb:  // WAI: two idles, and nothing more until an interrupt
+      cpu->pc = (uint16_t)(cpu->pc + 1);
+      cpu->waiting = true;
+      // It does not poll: the interrupt it waits for is what ends it.
+      *cost = (LeaveCost){fetch + 2 * COSIM_IDLE_CYCLES, 0};
+      break;
+    default:
+      return false;
+  }
+
+  // A call the game made, whoever made the instruction: see `cosim_step`.
+  if (callee) {
+    c->work.calls_total++;
+    if (c->profile) cosim_profile_call(c->profile, pc, callee);
+  }
+  return true;
+}
+
+static void burn_slice(Cosim* c, int cycles);
+static bool interrupt_due(const Snes* snes);
+
+// The CPU has just been stood on the instruction a port leaves by.
+static void leave(Cosim* c) {
+  Snes* snes = c->snes;
+  if (is_entry(c, cpu_pc24(snes))) return;
+  LeaveCost cost;
+  if (!leave_step(c, &cost)) return;
+
+  const uint64_t before = snes->cycles;
+  int head = cost.cycles - cost.last;
+  while (head > 0) {
+    const int piece = head < COSIM_BURN_PIECE ? head : COSIM_BURN_PIECE;
+    burn_slice(c, piece);
+    head -= piece;
+  }
+  if (cost.last) {
+    const bool polled = interrupt_due(snes);
+    burn_slice(c, cost.last);
+    snes->cpu->intWanted = polled;
+  }
+  c->work.cycles_native += snes->cycles - before;
+  c->work.leaves++;
+}
+
+// Publish a finished routine's registers and stand the CPU on its own
+// RTS/RTL, for `leave` to make.
 static void native_return(Cosim* c, const CosimRoutine* r, const CosimRegs* out) {
   Cpu* cpu = c->snes->cpu;
   native_publish(c, out);
@@ -1134,6 +1357,7 @@ static void native_return(Cosim* c, const CosimRoutine* r, const CosimRegs* out)
 
   cpu->k = (uint8_t)(r->ret_op >> 16);
   cpu->pc = (uint16_t)r->ret_op;
+  leave(c);
 }
 
 // Everything a jump hands over except where to: that waits for the budget. The
@@ -1172,6 +1396,7 @@ static void jump_go(Cosim* c, const CosimRegs* out) {
   c->snes->cpu->pc = (uint16_t)out->pc;
   // An interrupt the burn stopped for may have left it where the ROM's was.
   c->snes->cpu->sp = out->s;
+  leave(c);
 }
 
 // Advance the machine by a slice of a budget, the way a busy CPU advances it.
@@ -1259,7 +1484,7 @@ static void cycles_burn(Cosim* c, int cycles) {
 // for a 7,524-cycle one it is five refreshes the machine never sees. Burning a
 // cost in pieces no longer than a single access puts them back exactly where the
 // clock says they belong, and costs one loop.
-#define COSIM_BURN_PIECE 12
+// (`COSIM_BURN_PIECE`, defined above `leave`.)
 
 // Burn a cost the routine reported for itself. See `cosim_cost`: the number
 // excludes refresh, which is precisely what this lets the core add.
@@ -1293,6 +1518,9 @@ typedef enum {
 // `routines.c` is calibrated against that window and is right to be. So a budget
 // spent in full and *then* followed by the real instruction pays for it twice.
 //
+// The harness makes that instruction itself now, where it can (`leave`), and
+// spends its cycles there. The budget stops short of it all the same.
+//
 // It went unseen for a long time because an `RTS` here costs exactly 40 cycles,
 // which is a DRAM refresh to the cycle — the one residual `record_model` is
 // built to forgive. An `RTL` costs 42, and that is what finally showed up.
@@ -1302,9 +1530,6 @@ typedef enum {
 // are the core's own sequence of accesses, priced with the two access times that
 // can apply to a registry entry — every `ret_op` and `yield_op` in the registry
 // is in a ROM bank at $8000 or above, and the stack is always in low WRAM.
-#define COSIM_IDLE_CYCLES 6
-#define COSIM_STACK_CYCLES 8  // bank 0 below $2000, which is where the stack is
-
 static int tail_cycles(const Snes* snes, const CosimRoutine* r, CosimTail tail) {
   if (tail == COSIM_TAIL_NONE) return 0;
   const uint32_t op = tail == COSIM_TAIL_YIELD ? r->yield_op : r->ret_op;
@@ -1444,6 +1669,8 @@ static void burn_event(Cosim* c, CosimBurn* b) {
   const uint64_t stolen = c->snes->stolenCycles;
   if (e->kind == COSIM_HW_WRITE) {
     snes_cpuWrite(c->snes, e->addr, e->val);
+  } else if (e->kind == COSIM_HW_READ) {
+    (void)snes_cpuRead(c->snes, 0x800000u | e->addr);
   } else {
     dma_handleDma(c->snes->dma, e->len);
     snes_runCycles(c->snes, e->len);
@@ -1472,7 +1699,7 @@ static uint64_t burn_wait(Cosim* c, CosimBurn* b) {
   const CosimHwEvent* e = &b->ev[b->ev_i];
   Snes* snes = c->snes;
   const uint64_t before = snes->cycles;
-  const int fetch = e->post / 2;
+  const int fetch = b->fast ? 6 : 8;
   if (b->wstep == 0) {
     burn_slice(c, e->pre);
     const uint32_t bus = 0x800000u | e->addr;
@@ -1487,7 +1714,7 @@ static uint64_t burn_wait(Cosim* c, CosimBurn* b) {
     }
     b->left -= e->pre + e->len;
     b->spent += e->pre + e->len;
-    b->wstep = got == e->val ? 1 : 2;
+    b->wstep = cosim_hw_wait_met(e, got) ? 1 : 2;
   } else if (b->wstep == 1) {
     // Not taken: the poll comes after the opcode.
     burn_slice(c, fetch);
@@ -1516,7 +1743,7 @@ static uint64_t burn_wait(Cosim* c, CosimBurn* b) {
 }
 
 static bool burn_is_wait(const CosimHwEvent* e) {
-  return e->kind == COSIM_HW_WAIT8 || e->kind == COSIM_HW_WAIT16;
+  return cosim_hw_is_wait(e);
 }
 
 // One instruction of a run event, polled where the core polls it.
@@ -2720,6 +2947,10 @@ void cosim_share_report(const Cosim* c) {
            "  the budget was spent after the RTI — so a call longer than a frame\n"
            "  owes the game every NMI it spans, not one. See `CosimBurn`.\n",
            fmt_u64(c->work.burns_parked), c->work.burns_parked == 1 ? "" : "s");
+  if (c->work.leaves)
+    printf("\n  %s times a port left by a return, a call or a jump of the routine's\n"
+           "  own, and the harness made it. Those cycles are in the numerator.\n",
+           fmt_u64(c->work.leaves));
   printf("\n  Neither counts a thread body or a vblank job as a call: the\n"
          "  scheduler and the vblank dispatcher reach those by RTL, so there is\n"
          "  no call to intercept and none to count. Their cycles are in the work\n"

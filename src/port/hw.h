@@ -36,6 +36,16 @@
 // fetch to the end of the branch that falls through. The runs either side of
 // it leave both instructions out.
 //
+// ## The NMI's two reads
+//
+// The NMI handler reads two registers, and neither for a value it keeps.
+// `LDA $4210` acknowledges the interrupt: reading it is what lets the next
+// one happen. `hw_read8` records a read like that, and the harness makes it
+// on the ROM's cycle. `LDA $4212 : LSR : BCS` waits for the joypads to have
+// been read, going round until bit 0 is clear, and `hw_wait_low` records it
+// as the other waits are recorded: the whole loop, with the runs either side
+// leaving all three instructions out.
+//
 // ## Where the stack is
 //
 // An upload runs for frames and the NMI lands inside it, where the ROM is a
@@ -59,6 +69,8 @@ typedef enum {
   HW_WAIT8,   // `CMP`/`CPY abs : BNE` on the byte at `arg`, until it is `val`
   HW_WAIT16,  // ...and a 16-bit `CMP`, on the word at `arg`
   HW_STACK,   // the stack pointer is now `val`
+  HW_READ,    // `LDA abs` of the register at `arg`, for what reading it does
+  HW_WAIT_LOW,  // `LDA abs : LSR : BCS` on the byte at `arg`, until bit 0 is clear
 } HwKind;
 
 typedef struct {
@@ -113,6 +125,14 @@ static inline void hw_wait8(HwTrace* t, uint16_t reg, uint8_t v) {
 
 static inline void hw_wait16(HwTrace* t, uint16_t reg, uint16_t v) {
   hw_step(t, HW_WAIT16, reg, v);
+}
+
+static inline void hw_read8(HwTrace* t, uint16_t reg) {
+  hw_step(t, HW_READ, reg, 0);
+}
+
+static inline void hw_wait_low(HwTrace* t, uint16_t reg) {
+  hw_step(t, HW_WAIT_LOW, reg, 0);
 }
 
 static inline void hw_stack(HwTrace* t, uint16_t s) {

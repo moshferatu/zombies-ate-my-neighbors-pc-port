@@ -438,8 +438,9 @@ typedef struct {
   // that control leaves it by. The port stops on one and says which in
   // `CosimRegs::pc`, and hands over the whole register set -- the stack
   // pointer, the direct page, the data bank and the status byte as well as A,
-  // X and Y -- because an exit like that can change all of them. The core then
-  // executes the exit instruction itself, the same as `ret_op`.
+  // X and Y -- because an exit like that can change all of them. The exit
+  // instruction is then made as `ret_op` is: by the harness when it only
+  // moves control, and by the core otherwise. See `leave` in `cosim.c`.
   //
   // The entry does not have to be a subroutine's. `$80:8401` is where a job
   // returns into the dispatcher; `$80:8372` is the instruction after the
@@ -632,6 +633,10 @@ static inline int cosim_run_cycles(const CosimRun* r, bool fastrom) {
 // does not match takes the branch instead, one idle longer, and goes round
 // again, so each costs `pre + len + post + 6` more than the event's price.
 //
+// A read is `HW_READ`: the load's three fetches are the run's in front of it,
+// and the read is `len`. A low wait is `HW_WAIT_LOW`, priced as the other
+// waits are, with the `LSR` in `post` beside the branch.
+//
 // A stack event takes no time. It says where the ROM's stack pointer is from
 // `at` on, `val`, for an interrupt that lands in the burn: see `HW_STACK`.
 //
@@ -644,6 +649,8 @@ typedef enum {
   COSIM_HW_WAIT16,
   COSIM_HW_STACK,
   COSIM_HW_RUN,
+  COSIM_HW_READ,
+  COSIM_HW_WAIT_LOW,
 } CosimHwKind;
 
 typedef struct {
@@ -658,6 +665,16 @@ typedef struct {
 // What a wait costs each time round that does not end it.
 static inline int cosim_hw_spin(const CosimHwEvent* e) {
   return e->pre + e->len + e->post + 6;
+}
+
+static inline bool cosim_hw_is_wait(const CosimHwEvent* e) {
+  return e->kind == COSIM_HW_WAIT8 || e->kind == COSIM_HW_WAIT16 ||
+         e->kind == COSIM_HW_WAIT_LOW;
+}
+
+// Does this read end the wait?
+static inline bool cosim_hw_wait_met(const CosimHwEvent* e, uint16_t got) {
+  return e->kind == COSIM_HW_WAIT_LOW ? (got & 1) == 0 : got == e->val;
 }
 
 // Price a trace and hand it over: each `HW_RUN` costs `runs[block]`, each
@@ -821,6 +838,9 @@ typedef struct {
   // otherwise have been dropped or handed over late. Zero on a session made
   // only of short calls, and that is the correct answer there.
   uint64_t burns_parked;
+  // How many times the harness made the instruction a port left by: its
+  // `RTS` or `RTL`, or the call or jump at an exit. See `leave` in `cosim.c`.
+  uint64_t leaves;
   // ...of `cycles_native`, the DMA a substituted routine started, which the
   // core runs inside the burn (`CosimRoutine::hw`). Under the ROM the same
   // transfers are in the work denominator and not in the numerator, so the

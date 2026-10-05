@@ -5784,6 +5784,17 @@ static const CosimRun NMI_COST[NMI_BLOCK_COUNT] = {
     [NMI_INPUT_RUN] = {394, 42, 0},
     [NMI_LEAVE] = {322, 18, 0},
     [NMI_LEAVE_TICK] = {366, 20, 0},
+    [NMI_LEAVE_RTL] = {42, 1, 0},
+    // The trampoline is in bank `$00`, where a program byte costs 8 whatever
+    // `$420D` says, so these two are priced that way and carry no bytes.
+    [NMI_LEAVE_PLB] = {28, 0, 0},
+    [NMI_TRAMPOLINE] = {184, 0, 0},
+    // Each less the access it ends on, which `cosim_hw` adds.
+    [NMI_ACK] = {36, 5, 0},
+    [NMI_BLANK] = {30, 5, 0},
+    [NMI_CALL_A] = {40, 3, 0},
+    [NMI_UNBLANK] = {62, 8, 0},
+    [NMI_WIDTHS] = {36, 4, 0},
 };
 
 static int nmi_cycles(const NmiWork* k, bool fast) {
@@ -5809,6 +5820,18 @@ static bool accepts_nmi(const Wram* w, const CosimRegs* in) {
 // leaves set.
 static bool accepts_nmi_leave(const Wram* w, const CosimRegs* in) {
   return wide(in) && accepts_nmi(w, in);
+}
+
+// The way out is the trampoline's, when the trampoline was the way in. The
+// ROM passes the handler's `RTL` on the way to it, so the two cannot both be
+// exits, and a handler reached some other way is left to the ROM.
+static bool supported_nmi_leave(Wram* w, const Rom* rom, const CosimRegs* in) {
+  (void)rom;
+  PortCpu c;
+  NmiWork k = {0};
+  cpu_from(in, &c);
+  nmi_leave(w, &c, &k);
+  return c.pc == NMI_RTI_PC;
 }
 
 static void shim_nmi_enter(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -5854,6 +5877,58 @@ static void shim_nmi_leave(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(nmi_cycles(&k, in->fastrom));
 }
 
+// The trampoline jumps through `$0000`, and the port goes where the ROM put
+// the handler. Anything else there is the ROM's to follow.
+static bool accepts_nmi_vector(const Wram* w, const CosimRegs* in) {
+  const uint32_t handler = (uint32_t)wram_r8(w, W_NMI_HANDLER + 2) << 16 |
+                           wram_r16(w, W_NMI_HANDLER);
+  return handler == NMI_ENTER_PC && low_stack(in);
+}
+
+// One trace at a time. The handler's own are a dozen steps.
+static HwStep g_nmi_steps[32];
+static HwTrace g_nmi_trace = {0, 32, false, g_nmi_steps};
+
+static void shim_nmi_vector(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  g_nmi_trace.n = 0;
+  g_nmi_trace.full = false;
+  nmi_vector(w, &c, &g_nmi_trace);
+  cpu_to(&c, out);
+  // The entry is in bank `$00`, and all but the trampoline is in `$80`.
+  cosim_hw(&g_nmi_trace, NMI_COST, in->fastrom);
+}
+
+static void shim_nmi_queue_a(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  VblRunWork k = {0};
+  cpu_from(in, &c);
+  nmi_queue_a(w, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&NMI_COST[NMI_CALL_A], in->fastrom) +
+             vbl_run_cycles(&k, in->fastrom));
+}
+
+static void shim_nmi_unblank(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  g_nmi_trace.n = 0;
+  g_nmi_trace.full = false;
+  nmi_unblank(w, &c, &g_nmi_trace);
+  cpu_to(&c, out);
+  // What the wait's last read left: see `nmi_unblank`.
+  out->regs = (uint8_t)(out->regs & ~COSIM_REG_A);
+  out->p_keep = PORT_P_Z;
+  cosim_hw(&g_nmi_trace, NMI_COST, in->fastrom);
+}
+
 // $80:80C1  the reset's WRAM clear. Each byte `MVN` moves is the instruction
 // again, three program bytes and all, so it is priced a byte at a time.
 static const CosimRun RESET_COST[RESET_BLOCK_COUNT] = {
@@ -5895,7 +5970,9 @@ static const uint32_t RESET_EXITS[] = {RESET_NMI_ON_PC};
 static const uint32_t NMI_ENTER_EXITS[] = {NMI_BLANK_PC, NMI_RETURN_PC};
 static const uint32_t NMI_STACK_EXITS[] = {NMI_FLUSH_PC};
 static const uint32_t NMI_INPUT_EXITS[] = {NMI_QUEUE_B_PC};
-static const uint32_t NMI_LEAVE_EXITS[] = {NMI_RETURN_PC};
+static const uint32_t NMI_LEAVE_EXITS[] = {NMI_RTI_PC};
+static const uint32_t NMI_VECTOR_EXITS[] = {NMI_FLUSH_PC, NMI_RETURN_PC};
+static const uint32_t NMI_UNBLANK_EXITS[] = {NMI_INPUT_PC};
 
 static const uint32_t SCHED_EXITS[] = {SCHED_RESUME_PC, SCHED_WAI_PC};
 static const uint32_t SCHED_WAKE_EXITS[] = {SCHED_OAM_PC};
@@ -12736,9 +12813,44 @@ static const CosimRoutine ROUTINES[] = {
         .entry = 0x8081e4,
         .run = shim_nmi_leave,
         .accepts = accepts_nmi_leave,
+        .supported = supported_nmi_leave,
         COSIM_EXITS(NMI_LEAVE_EXITS),
         .uncalled = true,
-        .cycles = 366,
+        .cycles = 436,
+    },
+    // The vector's trampoline and the handler's hardware instructions, which
+    // the four above were split round. See `port/sched.h`.
+    {
+        .name = "nmi_vector",
+        .symbol = "$00:816C",
+        .entry = NMI_VECTOR_PC,
+        .run = shim_nmi_vector,
+        .accepts = accepts_nmi_vector,
+        COSIM_EXITS(NMI_VECTOR_EXITS),
+        .hw = true,
+        .uncalled = true,
+        .cycles = 700,
+    },
+    {
+        .name = "nmi_queue_a",
+        .symbol = "$80:81A6",
+        .entry = NMI_QUEUE_A_PC,
+        .run = shim_nmi_queue_a,
+        .accepts = accepts_vbl_run,
+        COSIM_EXITS(VBL_A_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+    },
+    {
+        .name = "nmi_unblank",
+        .symbol = "$80:81A9",
+        .entry = NMI_UNBLANK_PC,
+        .run = shim_nmi_unblank,
+        .accepts = accepts_nmi,
+        COSIM_EXITS(NMI_UNBLANK_EXITS),
+        .hw = true,
+        .uncalled = true,
+        .cycles = 180,
     },
     // Where `JSR init_ppu_regs` returns, to just before the NMI is turned on.
     // Nothing interrupts it, and `verify` checks it like any other call. The

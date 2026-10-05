@@ -36,8 +36,9 @@
 #define PORT_P_N 0x80
 
 // The whole CPU, in and out. `pc` is the entry on the way in and, on the way
-// out, the 24-bit address of the instruction the core is to execute next,
-// which is always one of the ROM's and always in the entry's bank.
+// out, the 24-bit address of the instruction the stretch stopped on, which is
+// always one of the ROM's. It is in the entry's bank for every stretch but
+// the NMI's first and last, which cross between `$00` and `$80`.
 typedef struct {
   uint16_t a, x, y, s, d;
   uint8_t db, p;
