@@ -278,12 +278,23 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
 // The third state this one also returns on, on top of the two above.
 #define PLAYER_STATE_IGNORE_C 0x000e
 
-// The fourth of the group, and the only one still unported: id `$35`, three
-// state tests and then `JMP $80:E331`. It is *not* in any census — no input has
-// ever carried id `$35` to the player — so it is recorded here rather than
-// written, because a routine ported ahead of its input is transcription and this
-// project has enough of that already.
+// The fourth of the group: id `$35`, three state tests and then
+// `JMP $80:E331`. For a long time no input carried id `$35` to the player.
+// The second demo does, nine times, so it is ported now.
+//
+// What it jumps to takes the player over: the pose becomes `$80:E33E`, with
+// thirty frames on the pose timer, the hit event is cleared, and the thread
+// stops taking hits at all (`$80:F36C`, which clears its handler).
 #define PLAYER_COLLIDE_STATE_GATE_E331 0xf999u
+#define PLAYER_STATE_IGNORE_D 0x000c
+#define PLAYER_E331_NEXT 0xe33eu
+#define PLAYER_E331_TIMER 0x001e
+#define PLAYER_DP_POSE_TIMER 0x16
+
+// Id `$37`, the door a finished level opens (`exit_door_collide`). All the
+// player's side does is queue the pose that leaves by it, `$80:FAF6`.
+#define PLAYER_COLLIDE_EXIT 0xfaf0u
+#define PLAYER_EXIT_NEXT 0xfaf6u
 
 // --- $80:DC09, the tail ------------------------------------------------------
 
@@ -1899,6 +1910,68 @@ bool shot_f6a3_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 #define F4EF_DP_HIT_ID 0x18
 
 bool actor_f4ef_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $82:F958  exit_door_collide -- the door a finished level opens
+// ---------------------------------------------------------------------------
+//
+// When the last neighbour is accounted for a door appears, and the level ends
+// when a player walks onto it. This is how the door finds out. A player
+// touching it is remembered twice: at `$14` on the door's page, and in
+// `$1FBC`, which is the last player to have touched any door. The first touch
+// by a player who is not that one counts the door's word at `$0A` down and
+// comes back with carry set, which wakes the door's thread. The same player
+// again, and anything that is not a player, changes nothing more.
+#define EXIT_DOOR_COLLIDE_ENTRY 0x82f958u
+
+#define EXIT_DOOR_ID_PLAYER_A 0x0005
+#define EXIT_DOOR_ID_PLAYER_B 0x0006
+#define EXIT_DOOR_DP_COUNT 0x0a    // counted down by each new player
+#define EXIT_DOOR_DP_TOUCHED 0x14  // the player touching it
+#define W_EXIT_DOOR_LAST 0x1fbc    // the last player to touch a door
+
+// The handler. Always true.
+bool exit_door_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $81:F25D  actor_f25d_collide -- something that takes hits, and counts them
+// ---------------------------------------------------------------------------
+//
+// Named for its address: the thread at `$81:F2B2` installs it, and no port
+// has looked at that yet. A hit is id 3 or 4, or anything of the players'
+// side: `$5C` and above, once bit 15 is masked off. Each takes one from the
+// word at `$40`,
+// and the hit that takes it below zero takes one from `$1C` as well. Id `$61`
+// takes one from `$1C` whatever `$40` holds. All of those come back with
+// carry set. Anything else is ignored, with carry clear.
+#define ACTOR_F25D_COLLIDE_ENTRY 0x81f25du
+
+#define F25D_ID_HIT_A 0x0003
+#define F25D_ID_HIT_B 0x0004
+#define F25D_ID_OUTRIGHT 0x0061
+#define F25D_DP_STATE 0x1c  // counted down when the hits run out
+#define F25D_DP_HITS 0x40   // hits it can still take
+
+// The handler. Always true.
+bool actor_f25d_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+
+// ---------------------------------------------------------------------------
+// $81:F8FC  actor_f8fc_collide -- remembers which of four it touched
+// ---------------------------------------------------------------------------
+//
+// Named for its address: `$81:F8F1` installs it. Ids 1, 3, 4 and `$35` are
+// stored at `$1C` on its page, for its thread to find, and everything else
+// is ignored. Carry comes back clear either way, so it never wakes anything.
+#define ACTOR_F8FC_COLLIDE_ENTRY 0x81f8fcu
+
+#define F8FC_ID_A 0x0003
+#define F8FC_ID_B 0x0004
+#define F8FC_ID_C 0x0001
+#define F8FC_ID_D 0x0035
+#define F8FC_DP_TOUCHED 0x1c
+
+// The handler. Always true.
+bool actor_f8fc_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 
 // ---------------------------------------------------------------------------
 // $82:DEEB  actor_deeb_collide — seven bytes, and the smallest in the game

@@ -63,6 +63,7 @@
 #include "port/doll.h"
 #include "port/zombie.h"
 #include "port/terrain.h"
+#include "port/textmap.h"
 #include "port/thread.h"
 #include "port/trig.h"
 #include "port/vblank.h"
@@ -2027,6 +2028,30 @@ static void shim_actor_f4ef_collide(Wram* w, const Rom* rom, const CosimRegs* in
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
   actor_f4ef_collide(w, in->d, in->a, &r);
   handler_regs(&r, out);
+}
+
+// ---------------------------------------------------------------------------
+// $82:F958, $81:F25D and $81:F8FC -- see `port/collide.h`
+// ---------------------------------------------------------------------------
+
+#define HANDLER_SHIM(name)                                                   \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    (void)rom;                                                               \
+    ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};   \
+    name(w, in->d, in->a, &r);                                               \
+    handler_regs(&r, out);                                                   \
+  }
+
+HANDLER_SHIM(exit_door_collide)
+HANDLER_SHIM(actor_f25d_collide)
+HANDLER_SHIM(actor_f8fc_collide)
+#undef HANDLER_SHIM
+
+// The door reads `$1FBC` through the data bank, which is the handler's own.
+static bool accepts_exit_door(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return in->db < 0x40 || (in->db >= 0x80 && in->db < 0xc0);
 }
 
 // ---------------------------------------------------------------------------
@@ -5948,6 +5973,34 @@ static const CosimRun RESET_COST[RESET_BLOCK_COUNT] = {
     [RESET_TAIL] = {262, 26, 2},
 };
 static const CosimRun RESET_MOVE_BYTE = {46, 3, 0};
+
+// $82:AD44  the text layer's map blanked -- see `port/textmap.h`. The store
+// and the registers loaded, then a byte at a time as below, then `PLB : RTL`.
+static const CosimRun TEXT_MAP_CLEAR_HEAD = {132, 17, 0};
+static const CosimRun TEXT_MAP_CLEAR_TAIL = {68, 2, 0};
+
+// The stack is the caller's, in low WRAM, for the `PHB`.
+static bool accepts_text_map_clear(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && low_stack(in);
+}
+
+static void shim_text_map_clear(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  text_map_clear(w);
+  const bool fast = fetch_fast(in);
+  cosim_cost(cosim_run_cycles(&TEXT_MAP_CLEAR_HEAD, fast) +
+             (TEXT_MAP_BYTES - 1) * cosim_run_cycles(&RESET_MOVE_BYTE, fast) +
+             cosim_run_cycles(&TEXT_MAP_CLEAR_TAIL, fast));
+  // What the copy leaves, and the flags of the `PLB` after it.
+  out->a = 0xffff;
+  out->x = (uint16_t)(W_TEXT_MAP + TEXT_MAP_BYTES - 1);
+  out->y = (uint16_t)(W_TEXT_MAP + TEXT_MAP_BYTES);
+  out->n = (in->db & 0x80u) != 0;
+  out->z = in->db == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+}
 
 // `init_ppu_regs` leaves page zero and 16-bit registers, and the stack at
 // `$01FF` from the `TXS` before it.
@@ -11034,6 +11087,26 @@ static const CosimRun POSE_RUN_FIRE_EMPTY = {52, 2, 0};  // $80:ED86-$ED87
 static const CosimRun POSE_RUN_FIRE_SHOT = {674, 57, 11};  // $80:ED45-$ED77
 static const CosimRun POSE_RUN_FIRE_TAIL = {98, 10, 1};  // $80:ED78-$ED81
 static const CosimRun POSE_RUN_TAKEN = {6, 0, 0};
+// In the air. `$80:DE0D` is `$80:DD41` again as far as its landing.
+static const CosimRun POSE_RUN_ARC_TIMER = {40, 4, 1};  // $80:DD41-$DD44
+static const CosimRun POSE_RUN_ARC_CALLS = {80, 6, 0};  // $80:DD45-$DD4A
+static const CosimRun POSE_RUN_ARC_RISE = {256, 20, 4};  // $80:F6F7-$F70A
+static const CosimRun POSE_RUN_ARC_SLOW = {50, 2, 1};  // $80:F70B-$F70C
+// Each axis: the add, the compare each time round, a step and its `BRA`,
+// and the sum kept.
+static const CosimRun POSE_RUN_ARC_ALONG = {68, 5, 2};  // $80:F6B4-$F6B8
+static const CosimRun POSE_RUN_ARC_TEST = {30, 5, 0};  // $80:F6B9-$F6BD
+static const CosimRun POSE_RUN_ARC_STEP = {150 + 18, 13 + 2, 3};  // -$F6CC
+static const CosimRun POSE_RUN_ARC_KEEP = {28, 2, 1};  // $80:F6CD-$F6CE
+static const CosimRun POSE_RUN_ARC_PUBLISH = {204, 13, 3};  // $80:F6EA-$F6F6
+static const CosimRun POSE_RUN_ARC_HEIGHT = {80, 7, 1};  // $80:DD4B-$DD51
+static const CosimRun POSE_RUN_ARC_HIGH_TEST = {30, 5, 0};  // $80:DD52-$DD56
+static const CosimRun POSE_RUN_ARC_HIGH = {166, 15, 2};  // $80:DD57-$DD65
+static const CosimRun POSE_RUN_ARC_PICTURE = {36, 6, 0};  // $80:DD66-$DD6B
+static const CosimRun POSE_RUN_ARC_AT = {186, 16, 3};  // $80:F70E-$F71D
+static const CosimRun POSE_RUN_READY_TIMER = {40, 4, 1};  // $80:DDF0-$DDF3
+static const CosimRun POSE_RUN_READY_SHOW = {104, 8, 1};  // $80:DDF5-$DDFC
+static const CosimRun POSE_RUN_READY_NEXT = {178, 16, 3};  // $80:DDFD-$DE0C
 
 typedef struct {
   CosimRun own;
@@ -11244,6 +11317,55 @@ static void pose_walk_firing_bill(PoseBill* b) {
   pose_weapon_bill(b);
 }
 
+// `$80:DD41` and `$80:DE0D`.
+static void pose_arc_axis_bill(PoseBill* b, int steps) {
+  pose_add(b, &POSE_RUN_ARC_ALONG);
+  pose_add_n(b, &POSE_RUN_ARC_TEST, steps + 1);
+  pose_add_n(b, &POSE_RUN_ARC_STEP, steps);
+  pose_taken(b);  // the `BCC` out
+  pose_add(b, &POSE_RUN_ARC_KEEP);
+}
+
+static void pose_arc_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_ARC_TIMER);
+  if (log->waiting) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_RTS);
+    return;
+  }
+  pose_add(b, &POSE_RUN_ARC_CALLS);
+  pose_add(b, &POSE_RUN_ARC_RISE);
+  if (log->arc_slowed) pose_add(b, &POSE_RUN_ARC_SLOW);
+  else pose_taken(b);
+  pose_add(b, &POSE_RUN_RTS);
+  pose_arc_axis_bill(b, log->arc_x);
+  pose_arc_axis_bill(b, log->arc_y);
+  pose_add(b, &POSE_RUN_ARC_PUBLISH);
+  pose_add(b, &POSE_RUN_ARC_HEIGHT);
+  pose_add(b, &POSE_RUN_ARC_HIGH_TEST);
+  if (!log->arc_high) {
+    pose_taken(b);
+  } else {
+    pose_add(b, &POSE_RUN_ARC_HIGH);
+    if (log->arc_falling) pose_taken(b);
+  }
+  pose_add(b, &POSE_RUN_ARC_PICTURE);
+  pose_add(b, &POSE_RUN_ARC_AT);
+}
+
+// `$80:DDF0`.
+static void pose_arc_ready_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_READY_TIMER);
+  if (b->log->waiting) {
+    pose_add(b, &POSE_RUN_RTS);
+    return;
+  }
+  pose_taken(b);
+  pose_add(b, &POSE_RUN_READY_SHOW);
+  pose_add(b, &POSE_RUN_READY_NEXT);
+}
+
 static int pose_total(PoseBill* b, const CosimRegs* in) {
   const PoseLog* log = b->log;
   // `$80:F300`: the `BMI` taken to the `AND`, or the `ORA` and its `BRA`.
@@ -11260,6 +11382,14 @@ static int pose_total(PoseBill* b, const CosimRegs* in) {
   return cosim_run_cycles_dp(&b->own, fetch_fast(in), (in->d & 0x00ffu) != 0);
 }
 
+// The hand weapon's pictures are a table the page points at, and the pointer
+// is zero while the weapon held has none. Only a pose with a hand weapon out
+// reads it.
+static bool weapon_pictures_ok(const Wram* w, uint16_t d) {
+  return wram_r16(w, (uint16_t)(d + PSN_DP_FIRE_A)) == 0 ||
+         wram_r16(w, (uint16_t)(d + POSE_DP_WEAPON_PICTURES)) >= 0x8000u;
+}
+
 // The tables are read through the data bank, and so are the two display
 // records and the three tables the page points at: the records have to be in
 // the WRAM bank `$80` mirrors, and the tables in the cartridge. The facing
@@ -11272,7 +11402,7 @@ static bool pose_ok(Wram* scratch, const Rom* rom, const CosimRegs* in,
   if (wram_r16(scratch, (uint16_t)(d + POSE_DP_RECORD)) >= 0x1f00 ||
       wram_r16(scratch, (uint16_t)(d + POSE_DP_WEAPON)) >= 0x1f00 ||
       wram_r16(scratch, (uint16_t)(d + POSE_DP_PICTURES)) < 0x8000u ||
-      wram_r16(scratch, (uint16_t)(d + POSE_DP_WEAPON_PICTURES)) < 0x8000u ||
+      !weapon_pictures_ok(scratch, d) ||
       wram_r16(scratch, (uint16_t)(d + POSE_DP_FRAMES)) < 0x8000u ||
       wram_r16(scratch, (uint16_t)(d + POSE_DP_STATE)) >= 0x40 ||
       wram_r16(scratch, (uint16_t)(d + POSE_DP_PICTURES_SET)) >= 0x10 ||
@@ -11305,6 +11435,8 @@ static bool pose_ok(Wram* scratch, const Rom* rom, const CosimRegs* in,
 POSE_SHIM(pose_stand, POSE_HANDLER_STAND)
 POSE_SHIM(pose_walk, POSE_HANDLER_WALK)
 POSE_SHIM(pose_walk_firing, POSE_HANDLER_WALK_FIRING)
+POSE_SHIM(pose_arc, POSE_HANDLER_ARC)
+POSE_SHIM(pose_arc_ready, POSE_HANDLER_ARC_READY)
 
 // ---------------------------------------------------------------------------
 // $80:CDFE  a frame of a player -- see `port/player_frame.h`
@@ -11316,6 +11448,14 @@ POSE_SHIM(pose_walk_firing, POSE_HANDLER_WALK_FIRING)
 // a `JSR` or the `PEA : PHA : RTS` that reaches a handler, each from
 // `tools/cycles816.py`. A callee's price ends with its own return.
 static const CosimRun PFRAME_RUN_DISPATCH = {36, 5, 0};  // JMP ($D1EF,X)
+// `$80:D343`, the state the pad only turns the player in: to the `BEQ` on
+// the direction, `STA $26`, `LDA $16 : BEQ`, and `DEC $16`.
+static const CosimRun PFRAME_RUN_TURN_HEAD = {232, 18, 5};
+static const CosimRun PFRAME_RUN_TURN_FACE = {28, 2, 1};
+static const CosimRun PFRAME_RUN_TURN_TIMER = {40, 4, 1};
+static const CosimRun PFRAME_RUN_TURN_DEC = {50, 2, 1};
+// `$80:CE2A  LDA $1F9C : ORA $1F9E : BNE`, with nobody left to rescue.
+static const CosimRun PFRAME_RUN_RESCUED = {80, 8, 0};
 
 // The state and the pose read their tables through the data bank, the walk's
 // tests put their scratch on page zero, and the two display records and the
@@ -11334,16 +11474,18 @@ static bool player_frame_ok(const Wram* w, const CosimRegs* in) {
          wram_r16(w, (uint16_t)(d + POSE_DP_RECORD)) < 0x1f00 &&
          wram_r16(w, (uint16_t)(d + POSE_DP_WEAPON)) < 0x1f00 &&
          wram_r16(w, (uint16_t)(d + POSE_DP_PICTURES)) >= 0x8000u &&
-         wram_r16(w, (uint16_t)(d + POSE_DP_WEAPON_PICTURES)) >= 0x8000u &&
          wram_r16(w, (uint16_t)(d + POSE_DP_FRAMES)) >= 0x8000u &&
          wram_r16(w, (uint16_t)(d + POSE_DP_PICTURES_SET)) < 0x10 &&
          wram_r16(w, (uint16_t)(d + POSE_DP_PICTURES_ROW)) < 0x40 &&
          facing >= 2 && facing <= 0x12;
 }
 
+// The state says afresh each frame whether a hand weapon is out, so the
+// pose's test of its pictures is made of the frame as the port left it.
 static bool supported_player_frame(Wram* scratch, const Rom* rom,
                                    const CosimRegs* in) {
-  return player_frame_supported(scratch, rom, in->d);
+  return player_frame_supported(scratch, rom, in->d) &&
+         weapon_pictures_ok(scratch, in->d);
 }
 
 static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -11362,6 +11504,12 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   run_add(&own, &PFRAME_RUN_DISPATCH, 1);
   if (log.state == PLAYER_STATE_NORMAL) {
     calls += psn_cycles(&log.normal, in->fastrom, unaligned);
+  } else if (log.state != PLAYER_STATE_STUCK) {
+    run_add(&own, &PFRAME_RUN_TURN_HEAD, 1);
+    run_add(&own, log.turned ? &PFRAME_RUN_TURN_FACE : &RUN_TAKEN, 1);
+    run_add(&own, &PFRAME_RUN_TURN_TIMER, 1);
+    run_add(&own, log.timer_ran ? &PFRAME_RUN_TURN_DEC : &RUN_TAKEN, 1);
+    run_add(&own, &RUN_RTS, 1);
   } else {
     run_add(&own, &RUN_JSR, 1);  // $80:D465  JSR floor_effect
     calls += floor_cycles(&log.floor, in->fastrom, unaligned);
@@ -11390,6 +11538,9 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   switch (log.pose) {
     case POSE_HANDLER_STAND: pose_stand_bill(&pose); break;
     case POSE_HANDLER_WALK: pose_walk_bill(&pose); break;
+    case POSE_HANDLER_ARC:
+    case POSE_HANDLER_ARC_B: pose_arc_bill(&pose); break;
+    case POSE_HANDLER_ARC_READY: pose_arc_ready_bill(&pose); break;
     default: pose_walk_firing_bill(&pose); break;
   }
   calls += pose_total(&pose, in) + pose_calls(&log.pose_log, rom, in->fastrom);
@@ -11410,6 +11561,7 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   calls += publish_cycles(log.two_part, in->fastrom, unaligned);
   run_add(&own, &PBODY_COST[PBODY_BUTTONS], 1);
   run_add(&own, &PBODY_COST[PBODY_WON], 1);
+  if (log.nobody_left) run_add(&own, &PFRAME_RUN_RESCUED, 1);
   run_add(&own, &RUN_TAKEN, 1);
   run_add(&own, &PBODY_COST[PBODY_DEAD], 1);
   run_add(&own, &RUN_RTS, 2);
@@ -11421,7 +11573,7 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   out->a = 0x0001;
   out->regs = COSIM_REG_A;
   out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
-  if (log.c) out->p |= PORT_P_C;
+  if (log.c_set ? log.c : (in->p & PORT_P_C) != 0) out->p |= PORT_P_C;
   if (log.v) out->p |= PORT_P_V;
 }
 
@@ -13397,6 +13549,39 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 0,
     },
     {
+        // The door at the end of a level. Its `RTL` is the one a new player
+        // leaves by; the other two exits are `CLC : RTL` earlier.
+        .name = "exit_door",
+        .symbol = "$82:F958",
+        .entry = 0x82f958,
+        .ret_op = 0x82f971,
+        .ret_kind = COSIM_RTL,
+        .run = shim_exit_door_collide,
+        .accepts = accepts_exit_door,
+        .cycles = 150,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "actor_f25d",
+        .symbol = "$81:F25D",
+        .entry = 0x81f25d,
+        .ret_op = 0x81f27d,  // the `RTL` after `SEC`; the ignore's is $F275
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_f25d_collide,
+        .cycles = 190,
+        .stack_bytes = 0,
+    },
+    {
+        .name = "actor_f8fc",
+        .symbol = "$81:F8FC",
+        .entry = 0x81f8fc,
+        .ret_op = 0x81f917,  // the `RTL` after the store; the ignore's is $F913
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_f8fc_collide,
+        .cycles = 150,
+        .stack_bytes = 0,
+    },
+    {
         .name = "enemy_d301",
         .symbol = "$81:D301",
         .entry = 0x81d301,
@@ -15123,6 +15308,19 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 6031452,
     },
+    // A quarter of a frame of `MVN`. Its callers wait for the vertical blank
+    // first, so no interrupt lands in it.
+    {
+        .name = "text_map_clear",
+        .symbol = "$82:AD44",
+        .entry = TEXT_MAP_CLEAR_PC,
+        .ret_op = 0x82ad59,
+        .ret_kind = COSIM_RTL,
+        .run = shim_text_map_clear,
+        .accepts = accepts_text_map_clear,
+        .cycles = 94362,
+        .stack_bytes = 1,  // its `PHB`
+    },
     // Thread bodies, between one yield or call and the next. See
     // `port/bodies.h`. `.cycles` is never used; every call prices itself.
     // The entries are written out rather than named, because
@@ -15764,9 +15962,10 @@ static const CosimRoutine ROUTINES[] = {
         // ground's test, and its own.
         .stack_bytes = 32,
     },
-#define POSE_ENTRY(n, sym, pc, rts)                                          \
+#define POSE_ENTRY(n, sym, pc, rts) POSE_ENTRY_AS(#n, n, sym, pc, rts)
+#define POSE_ENTRY_AS(label, n, sym, pc, rts)                                \
     {                                                                        \
-        .name = #n,                                                          \
+        .name = label,                                                       \
         .symbol = sym,                                                       \
         .entry = pc,                                                         \
         .ret_op = rts,                                                       \
@@ -15783,6 +15982,14 @@ static const CosimRoutine ROUTINES[] = {
     POSE_ENTRY(pose_walk, "$80:D6A8", POSE_WALK_PC, POSE_WALK_RTS_PC),
     POSE_ENTRY(pose_walk_firing, "$80:D704", POSE_WALK_FIRING_PC,
                POSE_WALK_FIRING_RTS_PC),
+    // ...and the three in the air. The second is the first again, with a
+    // landing of its own that neither port has.
+    POSE_ENTRY(pose_arc, "$80:DD41", POSE_ARC_PC, POSE_ARC_RTS_PC),
+    POSE_ENTRY_AS("pose_arc_b", pose_arc, "$80:DE0D", POSE_ARC_B_PC,
+                  POSE_ARC_B_RTS_PC),
+    POSE_ENTRY(pose_arc_ready, "$80:DDF0", POSE_ARC_READY_PC,
+               POSE_ARC_READY_RTS_PC),
+#undef POSE_ENTRY_AS
 #undef POSE_ENTRY
     // Vblank jobs, which write the PPU. See `port/vblank.h`. Each prices
     // itself through `cosim_hw`, so `.cycles` is only what a refused trace

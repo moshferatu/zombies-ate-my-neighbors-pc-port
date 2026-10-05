@@ -35,6 +35,29 @@ static bool ordinary_state(Frame* f) {
   for (int button = 0; button < PSN_PRESS_COUNT; button++)
     if (did->press[button] == PSN_PRESS_EDGE) return false;
   f->log->c = did->c;
+  f->log->c_set = true;
+  return true;
+}
+
+// `$80:D343`, which two states share. No weapon is out, and the pad only
+// turns the player. The pose timer still counts down.
+static bool turning_state(Frame* f) {
+  set_field(f, PSN_DP_FIRE_A, 0);
+  set_field(f, PSN_DP_FIRE_B, 0);
+  const uint16_t player = field(f, PLAYER_DP_INDEX);
+  set_field(f, PLAYER_DP_BUTTONS,
+            wram_r16(f->w, (uint16_t)(W_JOY_RAW + player)));
+  const uint16_t held = wram_r16(f->w, (uint16_t)(W_JOY_DIR + player));
+  set_field(f, PSN_DP_DIR, held);
+  if (held != 0) {
+    f->log->turned = true;
+    set_field(f, PSN_DP_DIR_HELD, held);
+  }
+  const uint16_t timer = field(f, POSE_DP_TIMER);
+  if (timer != 0) {
+    f->log->timer_ran = true;
+    set_field(f, POSE_DP_TIMER, (uint16_t)(timer - 1));
+  }
   return true;
 }
 
@@ -44,6 +67,7 @@ static bool stuck_state(Frame* f) {
   floor_effect(f->w, f->rom, f->page, &f->log->floor);
   stuck(f->w, f->rom, f->page, &f->log->stuck);
   f->log->c = f->log->stuck.c;
+  f->log->c_set = true;
   return true;
 }
 
@@ -56,6 +80,10 @@ static bool run_state(Frame* f) {
     case PLAYER_STATE_STUCK:
       PORT_COVER(player_frame_stuck);
       return stuck_state(f);
+    case PLAYER_STATE_TURNING:
+    case PLAYER_STATE_TURNING_B:
+      PORT_COVER(player_frame_turning);
+      return turning_state(f);
     default:
       return false;
   }
@@ -98,10 +126,20 @@ static bool strike_pose(Frame* f) {
     case POSE_HANDLER_WALK_FIRING:
       pose_walk_firing(f->w, f->rom, f->page, did);
       break;
+    case POSE_HANDLER_ARC:
+    case POSE_HANDLER_ARC_B:
+      pose_arc(f->w, f->rom, f->page, did);
+      break;
+    case POSE_HANDLER_ARC_READY:
+      pose_arc_ready(f->w, f->rom, f->page, did);
+      break;
     default:
       return false;
   }
-  if (did->c_set) f->log->c = did->c;
+  if (did->c_set) {
+    f->log->c = did->c;
+    f->log->c_set = true;
+  }
   if (did->v_set) f->log->v = did->v;
   return !did->unported;
 }
@@ -116,6 +154,7 @@ static bool move(Frame* f) {
   PORT_COVER(player_frame_walked);
   if (!player_walk_checked(f->w, f->rom, f->page, &f->log->walk)) return false;
   f->log->walked = true;
+  f->log->c_set = true;
   f->log->c = f->log->walk.last_yes;
   f->log->v = f->log->walk.overflow;
   return true;
@@ -127,9 +166,16 @@ static void publish_position(Frame* f) {
   actor_publish_pos(f->w, f->page, 0, 0, &unused);
 }
 
-// Ending the level and dying are both the ROM's.
+// A level with nobody left to rescue goes on if somebody was rescued: there
+// is a door to find. With nobody rescued the game is lost, and that is the
+// ROM's. So is dying.
 static bool level_goes_on(const Frame* f) {
-  return wram_r16(f->w, W_NEIGHBOURS_LEFT) != 0;
+  if (wram_r16(f->w, W_NEIGHBOURS_LEFT) != 0) return true;
+  if ((wram_r16(f->w, W_RESCUED) | wram_r16(f->w, W_RESCUED + 2)) == 0)
+    return false;
+  PORT_COVER(player_frame_nobody_left);
+  f->log->nobody_left = true;
+  return true;
 }
 
 static bool alive(const Frame* f) {

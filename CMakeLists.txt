@@ -243,6 +243,7 @@ add_library(zamn_port STATIC
   src/port/fade.c
   src/port/floor.c
   src/port/football.c
+  src/port/textmap.c
   src/port/hud.c
   src/port/camera.c
   src/port/chainsaw.c

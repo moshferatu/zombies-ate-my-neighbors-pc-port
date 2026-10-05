@@ -604,6 +604,40 @@ bool player_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
       r->z = false;
       break;
     }
+    case PLAYER_COLLIDE_STATE_GATE_E331: {
+      PORT_COVER(player_gate_e331);
+      const uint16_t state = wram_r16(w, (uint32_t)dp + ACTOR_DP_STATE);
+      r->a = state;
+      if (state == PLAYER_STATE_IGNORE_A || state == PLAYER_STATE_IGNORE_B ||
+          state == PLAYER_STATE_IGNORE_D) {
+        PORT_COVER(player_gate_e331_ignored);
+        r->n = false;
+        r->z = true;
+        break;
+      }
+      PORT_COVER(player_gate_e331_taken);
+      wram_w16(w, (uint32_t)dp + PLAYER_DP_NEXT, PLAYER_E331_NEXT);
+      wram_w16(w, (uint32_t)dp + PLAYER_DP_POSE_TIMER, PLAYER_E331_TIMER);
+      wram_w16(w, (uint32_t)dp + ACTOR_DP_EVENT, 0);
+      // `$80:8475` with nothing in A and Y: the running thread takes no more
+      // hits. Its `LDX $0008` and `TYA` are what come back.
+      const uint16_t thread = wram_r16(w, W_SCHED_CUR_TASK);
+      wram_w16(w, (uint16_t)(W_THREAD_HANDLER + thread), 0);
+      wram_w16(w, (uint16_t)(W_THREAD_HANDLER_BANK + thread), 0);
+      r->a = 0;
+      r->x = thread;
+      r->y = 0;
+      r->n = false;
+      r->z = true;
+      break;
+    }
+    case PLAYER_COLLIDE_EXIT:
+      PORT_COVER(player_exit_queued);
+      wram_w16(w, (uint32_t)dp + PLAYER_DP_NEXT, PLAYER_EXIT_NEXT);
+      r->a = PLAYER_EXIT_NEXT;
+      r->n = true;
+      r->z = false;
+      break;
     case PLAYER_COLLIDE_HURT_ALT: {
       // `$80:F979`, id `$0B`. The only one of the four that writes something
       // other than a next-routine pointer, and what it writes is a hit —
@@ -676,7 +710,7 @@ bool player_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
       break;
     }
     default:
-      // Everything else is a routine nobody has ported, and ten of the 57
+      // Everything else is a routine nobody has ported, and twelve of the 57
       // entries now are. Name the entry rather than the id when saying so: a
       // routine is the piece of work, however many ids share it.
       PORT_COVER(player_unported);
@@ -1440,12 +1474,18 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
     served = shot_f6a3_collide(w, dp, arg, &r);
   } else if (entry == ACTOR_F4EF_COLLIDE_ENTRY) {
     served = actor_f4ef_collide(w, dp, arg, &r);
+  } else if (entry == EXIT_DOOR_COLLIDE_ENTRY) {
+    served = exit_door_collide(w, dp, arg, &r);
+  } else if (entry == ACTOR_F25D_COLLIDE_ENTRY) {
+    served = actor_f25d_collide(w, dp, arg, &r);
+  } else if (entry == ACTOR_F8FC_COLLIDE_ENTRY) {
+    served = actor_f8fc_collide(w, dp, arg, &r);
   } else if (entry == VICTIM_COLLIDE_ENTRY) {
     served = victim_collide(w, dp, arg, &r);
   } else if (entry == OBJECT_COLLIDE_ENTRY) {
     served = object_collide(w, dp, arg, &r);
   } else {
-    // Twenty-seven addresses are handled above. Anything else is a routine
+    // Thirty addresses are handled above. Anything else is a routine
     // that has not been written yet, and saying so by address is what makes the
     // remaining work countable instead of vague — which is what `unported`
     // carries out.
@@ -3011,6 +3051,103 @@ bool shot_f6a3_collide(Wram* w, uint16_t dp, uint16_t arg,
   uint16_t diff = (uint16_t)(arg - SHOT_F6A3_RECORD_C);
   r->n = (diff & 0x8000) != 0;
   r->z = false;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $82:F958  exit_door_collide
+// ---------------------------------------------------------------------------
+
+// What a compare that did not match leaves in N and Z.
+static void unmatched(ActorHandlerRegs* r, uint16_t arg, uint16_t against) {
+  r->n = ((uint16_t)(arg - against) & 0x8000u) != 0;
+  r->z = false;
+}
+
+// ...and a count just stepped down.
+static uint16_t count_down(Wram* w, uint16_t at, ActorHandlerRegs* r) {
+  const uint16_t left = (uint16_t)(wram_r16(w, at) - 1);
+  wram_w16(w, at, left);
+  r->n = (left & 0x8000u) != 0;
+  r->z = left == 0;
+  return left;
+}
+
+bool exit_door_collide(Wram* w, uint16_t dp, uint16_t arg,
+                       ActorHandlerRegs* r) {
+  r->a = arg;
+  if (arg != EXIT_DOOR_ID_PLAYER_A && arg != EXIT_DOOR_ID_PLAYER_B) {
+    PORT_COVER(exit_door_ignore);
+    unmatched(r, arg, EXIT_DOOR_ID_PLAYER_B);
+    r->c = false;
+    return true;
+  }
+  wram_w16(w, (uint16_t)(dp + EXIT_DOOR_DP_TOUCHED), arg);
+  if (wram_r16(w, W_EXIT_DOOR_LAST) == arg) {
+    PORT_COVER(exit_door_same_player);
+    r->n = false;
+    r->z = true;
+    r->c = false;
+    return true;
+  }
+  PORT_COVER(exit_door_new_player);
+  wram_w16(w, W_EXIT_DOOR_LAST, arg);
+  count_down(w, (uint16_t)(dp + EXIT_DOOR_DP_COUNT), r);
+  r->c = true;
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $81:F25D  actor_f25d_collide
+// ---------------------------------------------------------------------------
+
+bool actor_f25d_collide(Wram* w, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r) {
+  r->a = arg;
+  r->c = true;
+  if (arg == F25D_ID_OUTRIGHT) {
+    PORT_COVER(f25d_outright);
+    count_down(w, (uint16_t)(dp + F25D_DP_STATE), r);
+    return true;
+  }
+  if (arg != F25D_ID_HIT_A && arg != F25D_ID_HIT_B) {
+    // The mask is in A when it comes back, on either side of the compare.
+    const uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
+    r->a = id;
+    if (id < COLLIDE_ID_PLAYER) {
+      PORT_COVER(f25d_ignore);
+      unmatched(r, id, COLLIDE_ID_PLAYER);
+      r->c = false;
+      return true;
+    }
+  }
+  PORT_COVER(f25d_hit);
+  const uint16_t left = count_down(w, (uint16_t)(dp + F25D_DP_HITS), r);
+  if (left & 0x8000u) {
+    PORT_COVER(f25d_last_hit);
+    count_down(w, (uint16_t)(dp + F25D_DP_STATE), r);
+  }
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// $81:F8FC  actor_f8fc_collide
+// ---------------------------------------------------------------------------
+
+bool actor_f8fc_collide(Wram* w, uint16_t dp, uint16_t arg,
+                        ActorHandlerRegs* r) {
+  r->a = arg;
+  r->c = false;
+  if (arg == F8FC_ID_A || arg == F8FC_ID_B || arg == F8FC_ID_C ||
+      arg == F8FC_ID_D) {
+    PORT_COVER(f8fc_touched);
+    wram_w16(w, (uint16_t)(dp + F8FC_DP_TOUCHED), arg);
+    r->n = false;
+    r->z = true;
+    return true;
+  }
+  PORT_COVER(f8fc_ignore);
+  unmatched(r, arg, F8FC_ID_D);
   return true;
 }
 

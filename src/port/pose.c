@@ -37,6 +37,15 @@
 #define POSE_PACE_SLOWER 0x4000u
 // `LDA #$0005 : STA $16`, which the step straight after it overwrites.
 #define POSE_FIRING_TIMER 5
+
+// In the air: a sum of 36 is a step, the height from which the player is
+// drawn over everything, and the pictures of a facing, four bytes each.
+#define POSE_ARC_WHOLE 0x0024
+#define POSE_ARC_HIGH 0x000a
+#define POSE_ARC_PICTURE_RISING 4
+#define POSE_ARC_PICTURE_FALLING 8
+// How long the first picture in the air is held.
+#define POSE_ARC_READY_TIMER 5
 // The state in which the hand weapon is left as it is.
 #define POSE_STATE_KEEPS_WEAPON 0x000c
 // What `$18` holds through the `$6C` walk until its first step.
@@ -376,6 +385,92 @@ static void walk_firing(Pose* p) {
 }
 
 // ---------------------------------------------------------------------------
+// In the air
+// ---------------------------------------------------------------------------
+
+// `$80:F6F7`: the height takes the speed, and every fourth frame gravity
+// takes one from the speed.
+static void rise(Pose* p) {
+  const uint16_t record = field(p, POSE_DP_RECORD);
+  const uint16_t speed = field(p, POSE_DP_RISE);
+  wram_w16(p->w, (uint16_t)(record + ACTOR_Z),
+           (uint16_t)(wram_r16(p->w, (uint16_t)(record + ACTOR_Z)) + speed));
+  const uint16_t count = (uint16_t)(field(p, POSE_DP_RISE_COUNT) - 1);
+  set_field(p, POSE_DP_RISE_COUNT, count);
+  if ((count & 3) != 0) return;
+  p->log->arc_slowed = true;
+  set_field(p, POSE_DP_RISE, (uint16_t)(speed - 1));
+}
+
+// One axis of `$80:F6B4`: add this frame's part to the sum, and move a step
+// for every whole one in it. It answers how many steps that was.
+static int along(Pose* p, uint16_t place, uint16_t part, uint16_t step,
+                 uint16_t sum) {
+  uint16_t total = (uint16_t)(field(p, sum) + field(p, part));
+  int steps = 0;
+  while (total >= POSE_ARC_WHOLE) {
+    set_field(p, place, (uint16_t)(field(p, place) + field(p, step)));
+    total = (uint16_t)(total - POSE_ARC_WHOLE);
+    steps++;
+  }
+  set_field(p, sum, total);
+  return steps;
+}
+
+// `$80:DD41` and `$80:DE0D`: a frame through the air. The two differ in
+// where they land, which is the ROM's.
+static void arc(Pose* p) {
+  if (field(p, POSE_DP_TIMER) != 0) {
+    p->log->waiting = true;
+    return;
+  }
+  rise(p);
+  p->log->arc_x = along(p, STEP_DP_X, POSE_DP_ARC_PART_X, POSE_DP_ARC_STEP_X,
+                        POSE_DP_ARC_SUM_X);
+  p->log->arc_y = along(p, STEP_DP_Y, POSE_DP_ARC_PART_Y, POSE_DP_ARC_STEP_Y,
+                        POSE_DP_ARC_SUM_Y);
+  const uint16_t record = field(p, POSE_DP_RECORD);
+  wram_w16(p->w, (uint16_t)(record + ACTOR_X), field(p, STEP_DP_X));
+  wram_w16(p->w, (uint16_t)(record + ACTOR_Y), field(p, STEP_DP_Y));
+
+  const uint16_t height = wram_r16(p->w, (uint16_t)(record + ACTOR_Z));
+  if (height == 0) {
+    leave_to_rom(p);
+    return;
+  }
+  PORT_COVER(pose_arc_flew);
+  uint16_t picture = POSE_ARC_PICTURE_RISING;
+  if (height >= POSE_ARC_HIGH) {
+    p->log->arc_high = true;
+    wram_w16(p->w, (uint16_t)(record + ACTOR_FLAGS),
+             (uint16_t)(wram_r16(p->w, (uint16_t)(record + ACTOR_FLAGS)) |
+                        ACTOR_PRIORITY_TOP));
+    if (negative(field(p, POSE_DP_RISE))) {
+      PORT_COVER(pose_arc_fell);
+      p->log->arc_falling = true;
+      picture = POSE_ARC_PICTURE_FALLING;
+    }
+  }
+  // `$80:F70E`: sixteen bytes of pictures for each facing.
+  set_field(p, POSE_DP_ARC_PICTURE, picture);
+  show(p, flags_add(&p->flags, (uint16_t)(facing_index(p) << 4), picture));
+}
+
+// `$80:DDF0`: the picture before a leap. When its time is up it is shown
+// the way the player faces, and the next frame is in the air.
+static void arc_ready(Pose* p) {
+  if (field(p, POSE_DP_TIMER) != 0) {
+    p->log->waiting = true;
+    return;
+  }
+  PORT_COVER(pose_arc_ready);
+  show(p, flags_double(&p->flags, facing_index(p)));
+  set_field(p, POSE_DP_FRAMES, POSE_FRAMES_ARC);
+  set_field(p, PSN_DP_RESUME, POSE_HANDLER_ARC_B);
+  set_field(p, POSE_DP_TIMER, POSE_ARC_READY_TIMER);
+}
+
+// ---------------------------------------------------------------------------
 
 static void run(void (*handler)(Pose*), Wram* w, const Rom* rom, uint16_t page,
                 PoseLog* log) {
@@ -400,12 +495,23 @@ void pose_walk_firing(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(walk_firing, w, rom, page, log);
 }
 
+void pose_arc(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(arc, w, rom, page, log);
+}
+
+void pose_arc_ready(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(arc_ready, w, rom, page, log);
+}
+
 bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler) {
   PoseLog log = {0};
   switch (handler) {
     case POSE_HANDLER_STAND: run(stand, w, rom, page, &log); break;
     case POSE_HANDLER_WALK: run(walk, w, rom, page, &log); break;
     case POSE_HANDLER_WALK_FIRING: run(walk_firing, w, rom, page, &log); break;
+    case POSE_HANDLER_ARC:
+    case POSE_HANDLER_ARC_B: run(arc, w, rom, page, &log); break;
+    case POSE_HANDLER_ARC_READY: run(arc_ready, w, rom, page, &log); break;
     default: return false;
   }
   return !log.unported;

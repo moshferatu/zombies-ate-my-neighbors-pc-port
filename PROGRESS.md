@@ -5,6 +5,83 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### What the ports were turning down: a guard, five handlers, a won level and a leap (2026-10-05)
+
+What the 65816 still executed over the twelve movies goes from 5.0 to
+**4.3** million instructions of work. Live, `level5` goes from 98.5% to
+**98.8%** and `level37` from 98.3% to **98.6%**. `level9`, `level13`,
+`level17`, `level21` and `level29-fighting` gain a tenth each, and the
+other five are unchanged. The game registers 242 routines.
+
+Most of this round is not new routines. It is calls that routines already
+ported were handing back to the ROM, found by asking each why.
+
+* **A guard that asked for a table nobody reads.** The player's pose shows
+  a hand weapon from a table their page points at. The guard for the
+  poses, and the one for the player's whole frame, wanted that pointer to
+  be in the cartridge. It is zero whenever the weapon held has no picture
+  in the hand, and then nothing reads it: only a pose with a hand weapon
+  out does. On `demo-end.zmv` that guard was turning down 1,872 of 7,067
+  walking frames. It asks only when a hand weapon is out now, and turns
+  down 2.
+* **A level that is won goes on.** The frame left to the ROM any frame with
+  no neighbour left to rescue. The ROM's own test has a second half: with
+  nobody left and somebody rescued it returns, and the player walks to the
+  door. Only nobody left and nobody rescued ends anything. On
+  `level21-exit.zmv` that was 292 frames of 2,317. The frame has both
+  halves now, and turns down 5.
+* **Five collision handlers.** A handler the port does not have costs more
+  than its own few instructions: the sprite pass that reached it is handed
+  back whole. `exit_door_collide` at `$82:F958` is the door a finished
+  level opens. `actor_f25d_collide` and `actor_f8fc_collide` are named for
+  their addresses, in bank `$81`: one counts hits, the other remembers
+  which of four ids touched it. On the player's side, id `$35` at
+  `$80:F999` and the door's id `$37` at `$80:FAF0`. On `demo-end.zmv` the
+  sprite pass was handed back 39 times in 23,580 and is not at all now.
+* **In the air.** Two of the player's eight states share a handler in which
+  the pad only turns them, `$80:D343`, and the frame has it. Under it run
+  three poses, in `port/pose.c`: `pose_arc_ready`, the picture before a
+  leap, and `pose_arc`, a frame through the air, which the ROM has twice
+  with two landings. The height takes a speed that gravity slows, and
+  across the ground the player moves by fractions of a step. The landings
+  are the ROM's.
+* **The text layer's map**, `src/port/textmap.c`. `text_map_clear` at
+  `$82:AD44` blanks the 32 rows of tiles the words on a screen are written
+  on. It is a quarter of a frame of `MVN`, and its callers wait for the
+  vertical blank first, so no interrupt lands in it.
+
+* **Checked.** The corpus verifies at 26,745,836 calls across 51 movies
+  with 0 diverged, and 738 of 909 coverage sites; 14 of the 19 new ones
+  are taken. Every call priced is exact, among them 123,039 of the
+  player's frame, 891 of the three poses in the air and 261 of the clear.
+* **Lockstep** over the corpus: 264,122 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes.
+* **What the corpus does not reach.** `actor_f25d_collide` is only in the
+  fourth demo, a factory, which starts after frame 26,000 of
+  `demo-end.zmv`. Run to 36,000 with the sound entries left out, that
+  movie verifies at 3,443,811 calls with 0 diverged, and the handler on
+  all 65 of its calls. The fifth untaken site is the player touched by id
+  `$35` in a state that ignores it.
+* **Why the fourth demo is not in the corpus.** Its sound upload fails
+  `verify`, and that is not this round's code. From the sixteenth upload
+  of the movie, `apu_send`'s third register write is 2 master cycles
+  later in the ROM than the port's trace says: `$2143` at cycle 2,116
+  against 2,114. Over 44,000 frames five calls of 118,713 are out on
+  price, by 2. The fifteen uploads before it are exact. Nothing is known
+  yet about why.
+* **A wrong guess, taken out.** The first theory for the poses was the
+  data bank, which `$80:895A` leaves at `$00` after a demo. A column for
+  table bytes read through a slow bank was written and priced before
+  anything was measured. Measured, the player's thread has bank `$80` on
+  all 9,681 of its frames on `demo-end.zmv`. The column is gone.
+* **Next.** On the player: the pose at `$80:DCA2` and the movement it
+  uses, `$80:E543`, which with `$80:E595` is the `$80:E500` row on levels
+  5 and 37; the walk at `$80:D6B8` for the second band of weapons; the
+  state at `$80:D2EA`. The fishman on land. The 2 cycles in `apu_send`, which is
+  what keeps the fourth demo out. Outside a level, as before: the clears
+  `$80:895A` and `$80:8992`, the first screen's tile map at `$80:A462`,
+  and the text printer at `$82:B898`.
+
 ### Four creatures of the demos: a chainsaw maniac, a fishman, a werewolf and the footballers (2026-10-05)
 
 What the 65816 still executed over the twelve movies goes from 6.4 to

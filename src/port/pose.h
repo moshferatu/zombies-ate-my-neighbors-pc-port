@@ -12,7 +12,12 @@
 //   $80:D704  walk_firing   walking with a hand weapon out
 //
 // and with them what they jump to when the buttons change, `$80:D4E9`, which
-// starts whichever pose the direction now asks for.
+// starts whichever pose the direction now asks for. Then three in which the
+// player is off the ground and the buttons do nothing:
+//
+//   $80:DDF0  arc_ready   the picture before a leap, held a few frames
+//   $80:DD41  arc         through the air
+//   $80:DE0D  arc         the same again, with another landing
 //
 // ## What a pose handler does
 //
@@ -38,8 +43,17 @@
 // which way they face. The weapon says which thread and how long until the
 // next. With no rounds left nothing happens.
 //
+// **A player in the air has a height and a speed upward.** Each frame the
+// height takes the speed, and every fourth frame gravity takes one from the
+// speed. Across the ground they go by fractions: each axis adds its part to
+// a sum, and for every 36 in the sum the player moves that axis's step. The
+// picture is one of three for each way of facing: going up, high and coming
+// down, and near the ground. High up they are drawn over everything.
+//
 // ## What is the ROM's
 //
+// The frame a player in the air comes down on: each of the two handlers has
+// a landing of its own.
 // Weapon 5's shot, which goes on to a pose of its own that sleeps. The poses
 // for the weapons in the second band (`$80:EE82`), whatever sets `$6C`
 // (`$80:EF67`), and the two walks those use, `$80:D6B8` and `$80:D6DC`.
@@ -81,6 +95,16 @@
 #define POSE_HANDLER_WALK_BAND_B 0xd6b8u  // not ported
 #define POSE_HANDLER_WALK_6C 0xd6dcu      // not ported
 #define POSE_HANDLER_WALK_FIRING 0xd704u
+#define POSE_HANDLER_ARC 0xdd41u
+#define POSE_HANDLER_ARC_READY 0xddf0u
+#define POSE_HANDLER_ARC_B 0xde0du
+
+#define POSE_ARC_PC 0x80dd41u
+#define POSE_ARC_RTS_PC 0x80dda4u
+#define POSE_ARC_READY_PC 0x80ddf0u
+#define POSE_ARC_READY_RTS_PC 0x80ddf4u
+#define POSE_ARC_B_PC 0x80de0du
+#define POSE_ARC_B_RTS_PC 0x80de75u
 
 // The pose tables `$14` points at: four bytes a picture, a mask for the
 // record's flags and a picture number. A mask with bit 15 is ANDed in and any
@@ -92,6 +116,7 @@
 #define POSE_FRAMES_WALK_FIRING 0xd7dfu
 #define POSE_FRAMES_WALK_BAND_B 0xd85fu
 #define POSE_FRAMES_WALK_6C 0xd8dfu
+#define POSE_FRAMES_ARC 0xfe68u  // four pictures for each facing
 
 // Fields on the player's page, beyond those `port/player.h` names.
 #define POSE_DP_RECORD 0x08       // the player's display record
@@ -103,6 +128,15 @@
 #define POSE_DP_TIMER 0x16        // frames until the next picture
 #define POSE_DP_CYCLE 0x18        // the walk cycle, 0 to 3
 #define POSE_DP_MOVE 0x2a         // the movement handler, or 0 standing still
+#define POSE_DP_ARC_PICTURE 0x2e  // in the air: which of the facing's pictures
+#define POSE_DP_RISE 0x38         // ...the speed upward
+#define POSE_DP_RISE_COUNT 0x3a   // ...frames, counted down: gravity's clock
+#define POSE_DP_ARC_PART_X 0x3c   // ...what each frame adds to the sums
+#define POSE_DP_ARC_PART_Y 0x3e
+#define POSE_DP_ARC_STEP_X 0x40   // ...and the step every 36 of a sum is worth
+#define POSE_DP_ARC_STEP_Y 0x42
+#define POSE_DP_ARC_SUM_X 0x44
+#define POSE_DP_ARC_SUM_Y 0x46
 #define POSE_DP_SHOT_DELAY 0x4c   // frames until the weapon may fire again
 #define POSE_DP_PACE 0x54         // bits 15 and 14 change how fast it walks
 #define POSE_DP_PICTURES_SET 0x6a // with `$0C`, which picture table is `$10`
@@ -152,6 +186,10 @@ typedef struct {
   PoseFire fire;
   int shot_slot;       // the thread slot the shot took, doubled, or -1 for none
   int hides, hides_kept;  // the weapon hidden, and left alone in state `$0C`
+  int arc_x, arc_y;    // in the air: steps taken along each axis
+  bool arc_slowed;     // ...gravity took one from the speed
+  bool arc_high;       // ...high enough to be drawn over everything
+  bool arc_falling;    // ......and on the way down
   bool unported;       // the frame reached something that is the ROM's
   bool c, v;           // carry and overflow as the handler leaves them
   bool c_set, v_set;   // ...and whether it wrote each at all
@@ -167,5 +205,7 @@ bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler);
 void pose_stand(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_walk(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_walk_firing(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_arc(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_arc_ready(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 
 #endif

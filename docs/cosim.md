@@ -16095,3 +16095,125 @@ other row moved.
 **Live**: the residue over the twelve movies is 5.0 million instructions,
 from 6.4. `level13` goes from 98.3% to 98.9%, `level41` from 98.1% to 98.9%
 and `level21` from 98.3% to 98.6%.
+
+## What the ports were turning down (2026-10-05)
+
+A routine in the registry is not the same as a routine that runs. Each
+entry has a guard, and a call the guard turns down is the ROM's. The
+report's `decl.` column counts them, and this round started from that
+column on `demo-end.zmv` rather than from the residue.
+
+### The player's frame, asked why
+
+`player_frame` turned down 2,896 of its 9,681 calls on that movie, and
+`pose_walk` 1,872 of 7,067. Neither says why. A temporary `fprintf` at
+each `return false` of the guard, and at each step of the frame, does:
+
+    1,872   the hand weapon's picture table, `$12`, is zero
+      374   state `$0E`
+      197   pose `$80:DD41`
+       96   state `$06`
+       86   pose `$80:D6B8`, the second band's walk
+       51   the walk turned down a step
+       21   a hit to tell the player of
+
+The first line is the guard's own. `pose_ok` and `player_frame_ok` each
+required `$12` to point into the cartridge, because `show_weapon` reads a
+table through it. It reads it only when `$1E` is set, a hand weapon out.
+With any other weapon held the pointer is zero and is never followed. The
+test is `weapon_pictures_ok` now, and for the whole frame it is made
+after the dry run, since the state writes `$1E` afresh every frame.
+
+### The second half of a test
+
+`$80:CE25` is where the frame asks whether the level is over:
+
+    $80:CE25  LDA $1D52 : BNE $CE6D        ; somebody left to rescue
+    $80:CE2A  LDA $1F9C : ORA $1F9E : BNE  ; or somebody rescued
+    $80:CE32  ...                          ; neither: the game is lost
+
+The port had the first line and left the frame to the ROM when it fell
+through. With the second, a level whose last neighbour has been rescued
+goes on: 292 frames of `level21-exit.zmv`, between the rescue and the
+door. `PlayerFrameLog::nobody_left` prices the second test.
+
+### Handlers
+
+`sprite_build_oam` runs the overlap pass, which calls each pair's
+handlers, and a handler the port does not have turns the whole pass down.
+The census at the foot of a report names them by address:
+
+    handler          $81:F25D    65
+    handler          $81:F8FC    32
+    handler          $82:F958    11
+    player id table  $80:F999     9
+    player id table  $80:FAF0     1
+
+All five are in `port/collide.c` now. `$82:F958` is the exit door:
+a player's id is stored at `$14`, and the first touch by a player who is
+not the one in `$1FBC` counts `$0A` down and returns carry set. `$80:F999`
+is the fourth of the group `collide.h` describes, the one it said was
+waiting for an input: on `demo-end.zmv` id `$35` reaches the player nine
+times.
+
+### The state the pad only turns
+
+States 6 and `$0E` both go to `$80:D343`: clear both fire words, copy the
+pad to `$1A`, the direction to `$24` and `$26`, and count `$16` down. It
+writes no carry. The frame's carry was always the state's until now, so
+`PlayerFrameLog::c_set` says whether anything wrote it, and the shim
+keeps the carry the thread woke with when nothing did.
+
+Under those states the poses are `$80:DD41`, `$80:DDF0` and `$80:DE0D`.
+`$80:DD41` and `$80:DE0D` are the same instructions as far as the
+landing:
+
+    $80:F6F7   height += speed; every fourth frame, speed -= 1
+    $80:F6B4   sum += part; while sum >= 36: place += step, sum -= 36
+               (once for x, once for y), then both to the record
+    height 0   land, which is the ROM's
+    else       picture 4 going up or near the ground, 8 high and falling
+
+One run of the bill was priced a byte too long and included the `STA $26`
+after its branch. 176 frames came out 12 cycles under: a refresh of 40,
+less the 28 charged twice.
+
+### The data bank, which it was not
+
+Before any of that was measured, the theory was the data bank. `$80:895A`
+ends on `MVN $00,$00`, the title menu runs with bank `$00` afterwards,
+and `pose_ok` requires `$80`. So a `data` column went onto `CosimRun`,
+for table bytes that cost 2 more through the slow copy, and nine runs
+were re-priced. Then the count: 9,681 frames of the player's thread on
+`demo-end.zmv`, all with bank `$80`. The change was reverted.
+
+### The fourth demo
+
+`level5` and `level37` end, live, in a demo `demo-end.zmv` does not
+reach in 26,000 frames: a factory, on screen at frame 30,000. Running the
+movie on fails `verify`, in the sound upload, here over 44,000 frames:
+
+    apu_send      118713 checked, 78265 passed
+      hardware write 2: ROM wrote $2143 = $BA at cycle 2116, port at 2114
+      first wrong: model 2144, ROM 2146, out by 2 -- D=$0000, DB=$00
+    apu_load_set  23 checked, 15 passed
+
+The fifteen uploads before it are exact, so it is something about the
+sixteenth. Until that is understood the movie stays at 26,000. With the
+five `apu_` entries excluded (`-x`), 36,000 frames verify at 3,443,811
+calls, 0 diverged.
+
+### Checked
+
+The corpus: 26,745,836 calls across 51 movies, 0 diverged, 738 of 909
+sites, 14 of the 19 new ones taken. Every call priced is exact.
+
+Untaken: the four sites of `actor_f25d_collide`, which only the fourth
+demo has, and `player_gate_e331_ignored`.
+
+**Lockstep**: 264,122 passes, 48 of 51 never part, the same three as
+before on the same passes.
+
+**Live**: the residue over the twelve movies is 4.3 million instructions,
+from 5.0. `level5` goes from 98.5% to 98.8% and `level37` from 98.3% to
+98.6%.

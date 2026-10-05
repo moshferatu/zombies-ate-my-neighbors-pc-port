@@ -76,6 +76,7 @@
   X(nmi_vectored,     "nmi_vector",        "the trampoline at the vector, through to the handler") \
   X(nmi_unblanked,    "nmi_unblank",       "the brightness put back and the joypads waited for") \
   X(vbl_run_last_dropped, "vbl_queue_run",     "...and it was the last one, so the walk stopped") \
+  X(text_map_cleared, "text_map_clear",    "the text layer's map blanked") \
   X(reset_cold,       "reset_clear",       "no top-scores table in WRAM: every byte cleared") \
   X(reset_warm,       "reset_clear",       "the four magic words found, so $7E:2000-$2127 survive") \
   /* Thread bodies, between one yield and the next. */                        \
@@ -376,6 +377,19 @@
   X(f6a3_ignore,      "shot_f6a3_collide",   "any other id, which the shot flies straight through") \
   X(f4ef_player,      "actor_f4ef_collide",  "id $05 or $06 — one of the two players, and nothing else counts") \
   X(f4ef_ignore,      "actor_f4ef_collide",  "any other id, which this actor does not notice at all") \
+  X(player_gate_e331, "player_collide",      "id $35: $80:F999, the state gate before $80:E331") \
+  X(player_gate_e331_ignored, "player_collide", "...in state 2, 4 or $0C, where it does nothing") \
+  X(player_gate_e331_taken, "player_collide", "...in any other: the pose at $80:E33E, and no more hits") \
+  X(player_exit_queued, "player_collide",    "id $37, the exit door: the pose that leaves by it is queued") \
+  X(exit_door_ignore, "exit_door_collide",   "not a player: the door takes no notice") \
+  X(exit_door_same_player, "exit_door_collide", "the player who touched a door last, again") \
+  X(exit_door_new_player, "exit_door_collide", "another player: counted, and the door's thread woken") \
+  X(f25d_outright,    "actor_f25d_collide",  "id $61, which counts its state down whatever hits are left") \
+  X(f25d_ignore,      "actor_f25d_collide",  "an id below $5C that is not 3 or 4") \
+  X(f25d_hit,         "actor_f25d_collide",  "a hit, and one fewer it can take") \
+  X(f25d_last_hit,    "actor_f25d_collide",  "...the one that took the count below zero") \
+  X(f8fc_touched,     "actor_f8fc_collide",  "id 1, 3, 4 or $35, remembered at $1C") \
+  X(f8fc_ignore,      "actor_f8fc_collide",  "any other id") \
                                                                                 \
   /* $82:DEEB and $82:F1C2 — seven bytes and thirty-six. */                      \
   X(deeb_stop,        "actor_deeb_collide",  "id $FF, which latches itself and parks the thread") \
@@ -826,6 +840,9 @@
   X(pose_fired, "pose_*", "a round taken and the shot's thread started") \
   X(pose_fire_empty, "pose_*", "...or no rounds left, and nothing happens") \
   X(pose_weapon_shown, "pose_*", "the hand weapon shown, the way the player faces") \
+  X(pose_arc_ready, "pose_arc_ready", "the picture before a leap, its time up") \
+  X(pose_arc_flew, "pose_arc", "a frame through the air") \
+  X(pose_arc_fell, "pose_arc", "...high up and on the way down") \
   /* The clones, in readable C: port/clone.h. */                                 \
   X(clone_copied, "clone_frame", "a frame of moving as its player moves") \
   X(clone_chased, "clone_frame", "a frame of coming for the nearer player") \
@@ -1050,6 +1067,8 @@
   /* $80:CDFE -- a frame of a player. */                                           \
   X(player_frame_normal, "player_frame", "the ordinary state, which reads the pad") \
   X(player_frame_stuck, "player_frame", "...or stuck in slime") \
+  X(player_frame_turning, "player_frame", "...or one of the two the pad only turns the player in") \
+  X(player_frame_nobody_left, "player_frame", "nobody left to rescue and somebody rescued: the level goes on") \
   X(player_frame_hurt_timer_running, "player_frame", "the hurt timer counted down") \
   X(player_frame_hurt_timer_out, "player_frame", "...or had run out, and stays at minus one") \
   X(player_frame_still, "player_frame", "no movement handler: the player stands still") \

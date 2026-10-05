@@ -11,7 +11,8 @@
 //
 //   the state      `$70` picks one of eight. The ordinary one reads the pad
 //                  (`port/player.h`), and the one for a player stuck in slime
-//                  is `port/stuck.h`.
+//                  is `port/stuck.h`. Two more share a handler in which the
+//                  pad only turns the player.
 //   the hurt timer counts down to the next time the player can be hurt
 //   the pose       `$28` names a handler, which shows the next picture
 //                  (`port/pose.h`)
@@ -26,7 +27,7 @@
 // Most frames are a player standing or walking, and those are here. The rest
 // are left to the ROM, which runs them as it always did, a piece at a time:
 //
-//   * any of the other six states
+//   * any of the other four states
 //   * a frame on which a button is pressed that changes the weapon or the
 //     item or uses the item, or a shoulder button is, and one with a
 //     frontend's request for such a change waiting
@@ -34,7 +35,8 @@
 //   * a pose or a movement that is not one of those named, and the frames of
 //     those that their own files leave to the ROM: a shot fired, a tile with
 //     a reaction of its own
-//   * the frame the level is won on, and the one the player dies on
+//   * the frame the game is lost on, with nobody left to rescue and nobody
+//     rescued, and the one the player dies on
 //
 // `player_frame_supported` says which frames those are.
 //
@@ -44,6 +46,8 @@
 // `JSL thread_yield` with one tick in A, and of the status only carry and
 // overflow outlive it: the yield's `PHP` parks them with the thread. Carry
 // is the state's, or the pose's when it wrote one, or the walk's last answer.
+// A frame in which none of the three writes it leaves the carry the thread
+// woke with, and `PlayerFrameLog::c_set` says which kind it was.
 // Overflow is bit 14 of the hit event, which the hurt timer's `BIT` reads,
 // or the pose's, or the walk's last add.
 //
@@ -83,7 +87,13 @@
 #define PLAYER_DP_STATE 0x70
 
 #define PLAYER_STATE_NORMAL 0x0000u
+#define PLAYER_STATE_TURNING 0x0006u    // these two share a handler,
+#define PLAYER_STATE_TURNING_B 0x000eu  // `$80:D343`
 #define PLAYER_STATE_STUCK 0x000cu
+
+// Neighbours rescued on this level, a word for each player. A level with
+// nobody left to rescue goes on while either is not zero.
+#define W_RESCUED 0x1f9cu
 #define PLAYER_MOVEMENT_WALK 0xe4bau
 
 typedef enum {
@@ -100,13 +110,17 @@ typedef struct {
   PlayerStateRegs normal;  // ...the ordinary one
   FloorRegs floor;         // ...or stuck: the ground under them, and then it
   StuckLog stuck;
+  bool turned;             // ...or turning: a direction was held
+  bool timer_ran;          // ......and the pose timer had not run out
   PlayerHurtTimer hurt_timer;
   uint16_t pose;           // the pose handler that ran
   PoseLog pose_log;
   bool walked;
   WalkLog walk;
   bool two_part;           // the position went to two display records
+  bool nobody_left;        // nobody left to rescue, and somebody was rescued
   bool c, v;
+  bool c_set;              // false: carry is as the thread woke with it
   bool unported;           // the frame reached something that is the ROM's
 } PlayerFrameLog;
 
