@@ -276,6 +276,7 @@ add_library(zamn_port STATIC
   src/port/bystander.c
   src/port/dma.c
   src/port/palcycle.c
+  src/port/player_frame.c
   src/port/demo.c
   src/port/frontend.c
   src/port/spawnlist.c)

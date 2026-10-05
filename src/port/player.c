@@ -344,10 +344,12 @@ static void psn_cpy(PlayerStateRegs* out, uint16_t y, uint16_t imm) {
 // `LDA $xx : BEQ over : DEC $xx`. The `LDA` sets N and Z from the old value and
 // the `DEC` overwrites them with the new one. **Neither touches carry**, which
 // is why the exit's carry belongs to whatever ran before this block.
-static bool psn_countdown(Wram* w, uint16_t addr, PlayerStateRegs* out) {
+static bool psn_countdown(Wram* w, uint16_t addr, PlayerStateRegs* out,
+                          int which) {
   uint16_t v = wram_r16(w, addr);
   out->a = v;
   psn_nz(out, v);
+  out->counting[which] = v != 0;
   if (v == 0) return false;
   v = (uint16_t)(v - 1u);
   wram_w16(w, addr, v);
@@ -360,6 +362,15 @@ static bool psn_edge(const Wram* w, uint16_t dp, uint16_t buttons,
                      uint16_t mask) {
   if ((buttons & mask) == 0) return false;
   return (wram_r16(w, dp + PSN_DP_PREV) & mask) == 0;
+}
+
+// The same, said to the log.
+static bool psn_pressed(const Wram* w, uint16_t dp, uint16_t buttons,
+                        uint16_t mask, PlayerStateRegs* out, int which) {
+  const bool edge = psn_edge(w, dp, buttons, mask);
+  out->press[which] = edge ? PSN_PRESS_EDGE
+                      : (buttons & mask) ? PSN_PRESS_HELD : PSN_PRESS_UP;
+  return edge;
 }
 
 bool player_state_normal_supported(const Wram* w, uint16_t dp) {
@@ -375,6 +386,12 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
   // $80:D1FF, and it is the first instruction: the ground, before a button.
   FloorRegs floor;
   floor_effect(w, rom, dp, &floor);
+  out->floor = floor;
+  out->weapon = PSN_WEAPON_NONE;
+  out->moving = false;
+  out->press[PSN_PRESS_SPAWN] = PSN_PRESS_UNASKED;
+  out->swallowed = false;
+  out->last_expired = false;
   out->a = floor.a;
   out->x = floor.x;
   out->y = floor.y;
@@ -396,6 +413,7 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
     PORT_COVER(psn_weapon_none);
   } else if ((buttons & PSN_BTN_FIRE) == 0) {
     PORT_COVER(psn_not_firing);
+    out->weapon = PSN_WEAPON_NOT_FIRING;
   } else {
     // `LDA $1CBC,X : ASL A : TAY : LDA ($64),Y`. The `ASL` writes carry, and
     // is the last thing to unless one of the two `CPY`s below runs.
@@ -410,6 +428,7 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
     if (left == 0) {
       // $80:D222. The game writing back over what it read from the pad.
       PORT_COVER(psn_weapon_empty);
+      out->weapon = PSN_WEAPON_EMPTY;
       buttons = (uint16_t)(buttons | PSN_EMPTY_FLAG);
       wram_w16(w, (uint32_t)(W_JOY_RAW + player), buttons);
       wram_w16(w, dp + PSN_DP_BUTTONS, buttons);
@@ -428,14 +447,17 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
       psn_cpy(out, weapon, PSN_WEAPON_BAND_LO);
       if (weapon < PSN_WEAPON_BAND_LO) {
         PORT_COVER(psn_fire_low);
+        out->weapon = PSN_WEAPON_LOW;
         wram_w16(w, dp + PSN_DP_FIRE_A, PSN_BTN_FIRE);
       } else {
         psn_cpy(out, weapon, PSN_WEAPON_BAND_HI);
         if (weapon >= PSN_WEAPON_BAND_HI) {
           PORT_COVER(psn_fire_high);
+          out->weapon = PSN_WEAPON_HIGH;
           wram_w16(w, dp + PSN_DP_FIRE_A, PSN_BTN_FIRE);
         } else {
           PORT_COVER(psn_fire_band);
+          out->weapon = PSN_WEAPON_BAND;
           wram_w16(w, dp + PSN_DP_FIRE_B, PSN_BTN_FIRE);
         }
       }
@@ -449,6 +471,7 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
   wram_w16(w, dp + PSN_DP_DIR, dir);
   if (dir != 0) {
     PORT_COVER(psn_dir_moving);
+    out->moving = true;
     wram_w16(w, dp + PSN_DP_DIR_HELD, dir);
   } else {
     PORT_COVER(psn_dir_still);
@@ -495,7 +518,7 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
   // $80:D259 player_input_buttons. Four edges. The first two are independent;
   // the third and fourth are exclusive, because `$80:D28C` branches past the
   // fourth once the third has fired.
-  if (psn_edge(w, dp, buttons, PSN_BTN_WEAPON)) {
+  if (psn_pressed(w, dp, buttons, PSN_BTN_WEAPON, out, PSN_PRESS_WEAPON)) {
     PORT_COVER(psn_press_weapon);
     WeaponSelectRegs r;
     weapon_select_next(w, rom, dp, &r);
@@ -506,7 +529,7 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
     out->z = r.z;
     out->c = r.c;
   }
-  if (psn_edge(w, dp, buttons, PSN_BTN_ITEM)) {
+  if (psn_pressed(w, dp, buttons, PSN_BTN_ITEM, out, PSN_PRESS_ITEM)) {
     PORT_COVER(psn_press_item);
     WeaponSelectRegs r;
     item_select_next(w, rom, dp, &r);
@@ -538,14 +561,15 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
     out->c = r.c;
   }
 
-  if (psn_edge(w, dp, buttons, PSN_BTN_USE)) {
+  if (psn_pressed(w, dp, buttons, PSN_BTN_USE, out, PSN_PRESS_USE)) {
     // `$80:EAE1 item_use` is not ported, so `player_state_normal_supported`
     // declined this frame and the ROM ran it. **Unreachable**, which is why
     // there is no coverage site here: the guard makes it one the harness can
     // never take, and such a site dilutes the number rather than measuring
     // anything. The branch itself has to stay, because `$80:D28C` is what makes
     // the fourth button exclusive with the third.
-  } else if (psn_edge(w, dp, buttons, PSN_BTN_SPAWN)) {
+  } else if (psn_pressed(w, dp, buttons, PSN_BTN_SPAWN, out,
+                         PSN_PRESS_SPAWN)) {
     // $80:D29C. A flag that has to be clear, and is cleared when it is not, so
     // the first press after something sets it is swallowed.
     uint16_t flag = wram_r16(w, (uint32_t)(W_PLAYER_FLAG + player));
@@ -554,6 +578,7 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
     psn_nz(out, flag);
     if (flag != 0) {
       PORT_COVER(psn_spawn_swallowed);
+      out->swallowed = true;
       wram_w16(w, (uint32_t)(W_PLAYER_FLAG + player), 0);
     } else {
       // $80:D2A8. Three words onto this page, then a thread that inherits
@@ -583,12 +608,13 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
 
   // $80:D2C9. Four countdowns. They write A, N and Z and **never carry**, so
   // whatever set carry above is what the caller gets.
-  psn_countdown(w, dp + PSN_DP_T0, out);
-  psn_countdown(w, dp + PSN_DP_T1, out);
-  psn_countdown(w, dp + PSN_DP_T2, out);
-  if (psn_countdown(w, dp + PSN_DP_T3, out)) {
+  psn_countdown(w, dp + PSN_DP_T0, out, 0);
+  psn_countdown(w, dp + PSN_DP_T1, out, 1);
+  psn_countdown(w, dp + PSN_DP_T2, out, 2);
+  if (psn_countdown(w, dp + PSN_DP_T3, out, 3)) {
     // `DEC $56 : BNE : STZ $54` -- `STZ` sets no flag, so the `DEC`'s stand.
     PORT_COVER(psn_t3_expired);
+    out->last_expired = true;
     wram_w16(w, dp + PSN_DP_T3_TAIL, 0);
   }
 }

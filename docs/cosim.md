@@ -15612,3 +15612,112 @@ instructions, from 25.2.
 **What is left.** `nmi_stack`, `nmi_entry`, `sched_rescan` and `nmi_enter`
 lead, as before. Then the big figure of level 21, the creatures of levels 13
 and 41, and the level loaders.
+
+## The player's frame, and exact prices under it (2026-10-04)
+
+| Entry | Where | What | Shape |
+|---|---|---|---|
+| `player_frame` | `$80:CDFE` | a frame of a player's thread | whole frame, guarded on a copy |
+
+and eight entries that were charged a mean now price each call:
+`terrain_blocked`, `step_propose`, `step_tether_blocked`,
+`actor_publish_pos`, `tilemap_tile_addr`, `tile_attrs_at_pixel`,
+`floor_effect`, `player_state_normal`.
+
+### The frame
+
+`src/port/player_frame.c`. The thread loops at `$80:CDF7`: `LDA #$0001 : JSL
+thread_yield`, then `JSR $D1EA` (the state), `JSR $D01B` (the hurt timer),
+the pose by `PEA : LDA $28 : DEC : PHA : RTS`, the movement the same way from
+`$2A` when it is not zero, `JSR $F327`, `LDA $1A : STA $1C`, `JSR $CE25`,
+`JSR $CE72`, and `BRA`. Each callee had an entry already, and the stretches
+between them had theirs (`player_ticks`, `player_state`, `player_move`,
+`player_buttons`, `player_loop` and the four small callees). What was left
+to the core was the instruction that joins each to the next.
+
+**One entry, one exit.** The entry is `$80:CDFE`, where the yield's `RTL`
+lands. The exit is the `JSL` at `$80:CDFA` with 1 in A. N and Z are that
+`LDA`'s. Carry and overflow are parked by the yield's `PHP`, so the port
+keeps both: carry is the state's, then the pose's if it wrote one, then the
+walk's last answer; overflow is bit 14 of `$50`, which `$80:D01B  BIT $50`
+reads every frame, then the pose's, then the walk's last add.
+
+**The guard runs the frame on a copy.** Each step answers whether it was the
+port's, and the frame stops at the first that was not: a state other than
+the ordinary one or `$0C`; a press of B, A, X, L or R on its edge; bit 15 of
+`$50`; a pose handler other than the three in `port/pose.h`, or one of their
+own unported paths; a movement handler other than `$80:E4BA`, or the walk's
+two unported paths; no neighbours left; no health left. A frame turned down
+is run by the ROM through the old entries, which all stay.
+
+**One thing outside the copy.** `player_state_normal` takes a frontend's
+request for the next weapon or item from a static, one step a frame. Run on
+a copy it would take the step and do nothing with it. `player_frame_supported`
+asks `player_cycle_pending` first and turns the frame down while a request
+waits. `verify` never has one, and the standalone entry handles it as before.
+
+**The price** is each callee's own and the joining instructions: three
+bytes of `JSR` at 40, `LDX $70 : JMP ($D1EF,X)` at 28 and 36, the two
+`PEA`-and-`RTS` dispatches, and the rest from `PBODY_COST`. A callee's price
+ends with its own return.
+
+### The shot
+
+`$80:ED30`, in `src/port/pose.c` as `fire`. `LDA $4C : BNE` is the delay,
+which both callers have just tested. Then the inventory's base from
+`$80:ED88`, the weapon's word, `SED : SEC : SBC #$0001 : CLD`, four words to
+the page for `thread_spawn` to copy (`$30`, `$32`, `$26`, `$0C`), the delay
+from `$80:ED90` and the thread from `$80:ED8C`, six bytes a weapon. With
+`CMP #$0005 : BNE` it ends; weapon 5 goes on by `JMP $DE96`, which sleeps,
+so a frame that fires weapon 5 is declined before it writes anything.
+
+`thread_spawn` writes neither carry nor overflow, so after a shot carry is
+that last compare's and overflow is clear, from `CLC : ADC $1CBC,Y`. With no
+rounds left carry is the `ASL`'s, clear.
+
+`pose_stand` and `pose_walk_firing` no longer decline a frame that fires.
+After the shot `pose_walk_firing` goes on to its timer, as the ROM does.
+
+### The prices
+
+All from `tools/cycles816.py`, branches not taken and 6 for each taken.
+
+* `terrain_blocked` (`$80:AE14`): a prologue of 426, probes of 170, 188,
+  188, 198, 222 and 228, and `PLD : RTL` at 76. A probe that finds the bit
+  takes its `BCS`; the sixth has none.
+* `step_propose` (`$80:E450`): 536 single and 620 doubled.
+* `step_tether_blocked` (`$80:A8B3`): by who asked, which window failed,
+  how many of the far path's four differences were negative, and which of
+  the three ways it ended. `TetherRegs` carries those.
+* `actor_publish_pos` (`$80:F327`): 244 with one record, 520 with two.
+* `tilemap_tile_addr` and `tile_attrs_at_pixel`: 250 and 960, no branches.
+* `floor_effect` (`$80:E86D`): by the tile, the gate, the harm and the
+  belt. `FloorRegs` carries those.
+* `player_state_normal` (`$80:D1FF`): by the weapon held, the direction,
+  each of the four buttons and each of the four countdowns.
+  `PlayerStateRegs` carries those. A frame that changes the weapon or the
+  item or starts the shoulder buttons' thread is not priced and is charged
+  the registry's figure.
+
+**The walk's own mistake.** `WALK_AROUND` priced each question as the loads,
+the `JSL`, an `RTL` and the branch. The `RTL` is the callee's, and every
+callee's price has it. With the callees at their means the walk was out by
+a few hundred cycles either way and the 42 a call did not show. With them
+exact every walk was over by 42 a question, and short by the walk's own
+`RTS`, which the table had never had.
+
+### Checked
+
+The corpus: 23,937,390 calls across 51 movies, 0 diverged, 624 of
+786 sites. Of the 8 new sites 7 are taken; no movie fires a weapon with no rounds left from a pose (`pose_fire_empty`). The sweep: 37,778,079 calls over 56
+records, 0 diverged. The frame serves 231,498 of the sweep's 263,587 player frames. Lockstep: 48 of 51 never part, where it was 47. `level25-lane` used to part at pass 6057 and now runs all 9,399. `level25`, `level25-2p` and `level25-heavy` part where they did. `level25-2p` shows five bytes the tool cannot account for, where it showed four, and `level25-item` its one, as before.
+
+**Prices**: Every call priced is exact, on the corpus and on the sweep: 112,591 and 231,498 frames of the player, 96,444 and 186,503 walks, 22,659 and 24,102 chases, and on the corpus 197,245 ground tests, 175,046 tether tests, 101,194 steps, 125,178 positions, 121,278 floors and 119,864 ordinary states.
+
+**Live**: Live, `level33` goes from 95.8% to **96.5%**, `level49` from 96.8% to 97.3%, `level9` from 96.6% to 97.0%, `level17` from 97.9% to 98.3%, `level53` from 97.3% to 97.7%, `level1` from 97.9% to 98.2%, `level29-fighting` from 97.2% to 97.5%, and `level5`, `level13`, `level21`, `level37` and `level41` by 0.2 each, to 96.7%, 96.6%, 95.5%, 96.5% and 96.2%. The residue over the twelve movies is 19.5 million
+instructions, from 21.6.
+
+**What is left.** The NMI's and the scheduler's joining instructions lead,
+as before. In the player, state `$0A` and the frames with a press. Then the
+big figure of level 21, the creatures of levels 13 and 41, and the level
+loaders.

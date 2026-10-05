@@ -64,6 +64,8 @@
 
 #include "assets/rom.h"
 #include "port/oam.h"  // ObstacleWork
+#include "port/step.h"     // TetherRegs
+#include "port/terrain.h"  // the ground test's probes, the map test's exits
 #include "port/wram.h"
 
 #define PLAYER_WALK_PC 0x80e4bau  // `$80:E4BA`, entered by the frame's `RTS`
@@ -101,10 +103,23 @@ typedef enum {
 // count, summed over both times it can be asked. `last_yes` is the carry the
 // last question left, which is the carry the walk returns, and `overflow` the
 // V the last add left.
+//
+// The tests are priced by what each did, so the log keeps that too: how often
+// each of the ground test's six probes ran and how many asks a probe before
+// the last one ended, how each tether test left, and which of the map test's
+// exits each ask took. A walk asks each at most once an axis.
+#define WALK_AXES 2
+
 typedef struct {
   uint16_t asked[WALK_ASK_COUNT][2];
   uint16_t taken;  // axes the player moved along
   ObstacleWork obstacle;
+  bool doubled;    // the step proposed was two
+  uint16_t probes[TERRAIN_PROBE_COUNT];
+  uint16_t ground_cut_short;
+  TetherRegs tether[WALK_AXES];
+  int tethers;
+  uint16_t map_exits[BOUNDS_LAST_COMPARE + 1];
   bool last_yes;
   bool overflow;
 } WalkLog;
@@ -115,6 +130,10 @@ bool walk_supported(Wram* w, const Rom* rom, uint16_t page);
 
 // Walk the player whose page is `page` for one frame. `log` may be NULL.
 void player_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
+
+// The same, for a caller that has not asked `walk_supported`: false is one of
+// the two paths that are the ROM's, and then `w` is not what the ROM leaves.
+bool player_walk_checked(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
 
 // The reaction a solid tile has, 1 to 6, or 0 for none. `attrs` is the
 // attribute word as `terrain_blocked` leaves it, shifted right one.

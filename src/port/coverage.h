@@ -820,6 +820,8 @@
   X(pose_stood, "pose_*", "a stand started") \
   X(pose_walked, "pose_*", "a walk started") \
   X(pose_stepped, "pose_walk*", "the walk cycle moved on") \
+  X(pose_fired, "pose_*", "a round taken and the shot's thread started") \
+  X(pose_fire_empty, "pose_*", "...or no rounds left, and nothing happens") \
   X(pose_weapon_shown, "pose_*", "the hand weapon shown, the way the player faces") \
   /* The clones, in readable C: port/clone.h. */                                 \
   X(clone_copied, "clone_frame", "a frame of moving as its player moves") \
@@ -928,6 +930,14 @@
   X(spawnlist_farther, "spawnlist_frame", "...or no nearer than the nearest") \
   X(spawnlist_none_near, "spawnlist_frame", "the end of the list, with nothing within 256") \
   X(spawnlist_started, "spawnlist_frame", "...or the nearest set resting, to be started") \
+                                                                                   \
+  /* $80:CDFE -- a frame of a player. */                                           \
+  X(player_frame_normal, "player_frame", "the ordinary state, which reads the pad") \
+  X(player_frame_stuck, "player_frame", "...or stuck in slime") \
+  X(player_frame_hurt_timer_running, "player_frame", "the hurt timer counted down") \
+  X(player_frame_hurt_timer_out, "player_frame", "...or had run out, and stays at minus one") \
+  X(player_frame_still, "player_frame", "no movement handler: the player stands still") \
+  X(player_frame_walked, "player_frame", "...or the walk is it") \
                                                                                    \
   /* $80:BE0C, $80:BE41 — a record's two ends. */                                   \
   X(slot_alloc_scan,  "actor_slot_alloc",    "this slot is taken, so try the one below it") \

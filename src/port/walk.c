@@ -66,6 +66,10 @@ static bool ground_is_solid(Walk* k, Point p) {
   TerrainRegs r;
   terrain_blocked(k->w, p.x, p.y, &r);
   overflow_left(k, r.v);
+  if (k->log) {
+    for (int i = 0; i < r.probes; i++) k->log->probes[i]++;
+    if (r.blocked && r.probes < TERRAIN_PROBE_COUNT) k->log->ground_cut_short++;
+  }
   if (!answer(k, WALK_ASK_GROUND, r.blocked)) return false;
   if (walk_tile_reaction(r.a) != 0) {
     // Not ours to handle. `walk_supported` turns the frame down, so a walk
@@ -81,6 +85,8 @@ static bool too_far_from_partner(Walk* k, Point p) {
   TetherRegs r;
   step_tether_blocked(k->w, p.x, p.y, &r);
   if (r.v_set) overflow_left(k, r.v);
+  if (k->log && k->log->tethers < WALK_AXES)
+    k->log->tether[k->log->tethers++] = r;
   return answer(k, WALK_ASK_TETHER, r.blocked);
 }
 
@@ -100,6 +106,7 @@ static bool someone_at(Walk* k, Point p, WalkQuestion q) {
 static bool off_the_map(Walk* k, Point p) {
   BoundsRegs r;
   terrain_out_of_bounds(k->w, p.x, p.y, &r);
+  if (k->log) k->log->map_exits[r.exit]++;
   return answer(k, WALK_ASK_MAP, r.c);
 }
 
@@ -137,6 +144,7 @@ static void walk(Walk* k) {
   StepProposeRegs proposed;
   step_propose(k->w, k->rom, k->page, &proposed);
   overflow_left(k, proposed.v);
+  if (k->log) k->log->doubled = proposed.x != 0;
 
   // Across first, at the height the player stands at now.
   Point here = position(k);
@@ -160,12 +168,16 @@ void player_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
   walk(&k);
 }
 
-bool walk_supported(Wram* w, const Rom* rom, uint16_t page) {
-  Walk k = {w, rom, page, false, NULL};
+bool player_walk_checked(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
+  Walk k = {w, rom, page, false, log};
   if (field(&k, WALK_DP_MODE) & WALK_TWICE) {
     PORT_COVER(walk_twice);
     return false;
   }
   walk(&k);
   return !k.met_reaction;
+}
+
+bool walk_supported(Wram* w, const Rom* rom, uint16_t page) {
+  return player_walk_checked(w, rom, page, NULL);
 }

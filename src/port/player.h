@@ -30,6 +30,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/floor.h"
 #include "port/wram.h"
 
 // --- $80:EA63 ---------------------------------------------------------------
@@ -340,9 +341,40 @@ void item_select_prev(Wram* w, const Rom* rom, uint16_t dp,
 // A, X and Y all differ by exit; there is no `PHD`, so N and Z are whichever
 // of the four countdowns the routine stopped on rather than anything to do
 // with the input.
+typedef enum {
+  PSN_WEAPON_NONE,        // nothing selected
+  PSN_WEAPON_NOT_FIRING,  // fire is not held
+  PSN_WEAPON_EMPTY,       // held, and none of it left
+  PSN_WEAPON_LOW,         // held and loaded: below the second band...
+  PSN_WEAPON_BAND,        // ...in it...
+  PSN_WEAPON_HIGH,        // ...or above it
+} PsnWeapon;
+
+// The four buttons the frame takes on their edge, in the order it tests them.
+enum { PSN_PRESS_WEAPON, PSN_PRESS_ITEM, PSN_PRESS_USE, PSN_PRESS_SPAWN,
+       PSN_PRESS_COUNT };
+
+typedef enum {
+  PSN_PRESS_UNASKED,  // the fourth, once the third has fired
+  PSN_PRESS_UP,
+  PSN_PRESS_HELD,     // down, and down last frame too
+  PSN_PRESS_EDGE,
+} PsnPress;
+
+#define PSN_COUNTDOWNS 4
+
 typedef struct {
   uint16_t a, x, y;
   bool n, z, c;
+  // For the harness, and only for it: what happened, which is what it takes
+  // to price the ROM's instructions.
+  FloorRegs floor;
+  PsnWeapon weapon;
+  bool moving;                       // a direction is held
+  PsnPress press[PSN_PRESS_COUNT];
+  bool swallowed;                    // the fourth button's press was eaten
+  bool counting[PSN_COUNTDOWNS];     // the countdown had something left
+  bool last_expired;                 // ...and the fourth reached zero
 } PlayerStateRegs;
 
 // True unless the frame would reach `$80:EAE1 item_use`.

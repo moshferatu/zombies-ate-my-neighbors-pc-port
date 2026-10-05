@@ -37,6 +37,7 @@
 #include "port/pose.h"
 #include "port/oam.h"
 #include "port/player.h"
+#include "port/player_frame.h"
 #include "port/rng.h"
 #include "port/bodies.h"
 #include "port/sched.h"
@@ -957,6 +958,329 @@ static void shim_sin_deg(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
+// What the player's frame calls, priced by what each call did
+// ---------------------------------------------------------------------------
+//
+// Each of these was charged a mean, and a mean is wrong on most calls: the
+// tether test costs 322 cycles alone and was charged 519, and the ground
+// test's six probes were charged as if a wall were never found early. Every
+// run below is from `tools/cycles816.py`, branches not taken, and a taken
+// branch adds 6. A routine that installs page zero pays nothing for its
+// caller's page after that, so those runs carry no direct-page count.
+static void run_add(CosimRun* to, const CosimRun* r, int times);
+
+static const CosimRun RUN_TAKEN = {6, 0, 0};
+static const CosimRun RUN_RTS = {40, 1, 0};
+static const CosimRun RUN_JSR = {40, 3, 0};
+static const CosimRun RUN_BRA = {18, 2, 0};  // always taken
+
+// `$80:AE14`: the prologue to `STA $2A`, each probe to its `BCS`, and
+// `PLD : RTL`. The sixth probe has no branch: its `LSR` is the answer.
+static const CosimRun TERRAIN_PROLOGUE = {426, 40, 0};
+static const CosimRun TERRAIN_PROBE[TERRAIN_PROBE_COUNT] = {
+    {170, 12, 0}, {188, 15, 0}, {188, 15, 0},
+    {198, 14, 0}, {222, 16, 0}, {228, 17, 0},
+};
+static const CosimRun TERRAIN_EXIT = {76, 2, 0};
+
+static void terrain_blocked_bill(CosimRun* own, int probes, bool blocked) {
+  run_add(own, &TERRAIN_PROLOGUE, 1);
+  for (int i = 0; i < probes; i++) run_add(own, &TERRAIN_PROBE[i], 1);
+  if (blocked && probes < TERRAIN_PROBE_COUNT) run_add(own, &RUN_TAKEN, 1);
+  run_add(own, &TERRAIN_EXIT, 1);
+}
+
+static int terrain_blocked_cycles(int probes, bool blocked, bool fast) {
+  CosimRun own = {0, 0, 0};
+  terrain_blocked_bill(&own, probes, blocked);
+  return cosim_run_cycles(&own, fast);
+}
+
+// `$80:E450`, on its caller's page. A single step skips each axis's second
+// add by a taken `BEQ`.
+static const CosimRun STEP_RUN_HEAD = {322, 34, 3};   // $80:E450-$E46D
+static const CosimRun STEP_RUN_TWICE = {48, 6, 0};    // $80:E46E-$E471
+static const CosimRun STEP_RUN_MID = {134, 15, 2};    // $80:E472-$E47E
+static const CosimRun STEP_RUN_TAIL = {68, 3, 1};     // $80:E483-$E485
+
+static int step_propose_cycles(bool doubled, bool fast, bool unaligned) {
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &STEP_RUN_HEAD, 1);
+  run_add(&own, doubled ? &STEP_RUN_TWICE : &RUN_TAKEN, 2);
+  run_add(&own, &STEP_RUN_MID, 1);
+  run_add(&own, &STEP_RUN_TAIL, 1);
+  return cosim_run_cycles_dp(&own, fast, unaligned);
+}
+
+// `$80:A8B3`.
+static const CosimRun TETHER_RUN_HEAD = {182, 15, 0};     // $80:A8B3-$A8C1
+static const CosimRun TETHER_RUN_PARTNER = {40, 4, 0};    // LDY $D2 or $D4 : BEQ
+static const CosimRun TETHER_RUN_WINDOW_X = {124, 14, 0}; // $80:A8CC-$A8D9
+static const CosimRun TETHER_RUN_WINDOW_Y = {140, 15, 0}; // $80:A8DA-$A8E8
+static const CosimRun TETHER_RUN_ALLOWED = {88, 3, 0};    // PLD : CLC : RTL
+static const CosimRun TETHER_RUN_FAR = {92 + 120 + 228 + 132, 8 + 10 + 18 + 11,
+                                        0};  // the four differences
+static const CosimRun TETHER_RUN_NEGATE = {30, 4, 0};     // EOR #$FFFF : INC
+static const CosimRun TETHER_RUN_COMPARE = {80, 7, 0};    // $80:A92B-$A931
+static const CosimRun TETHER_RUN_BCS = {12, 2, 0};
+static const CosimRun TETHER_RUN_REFUSED = {88, 3, 0};    // SEC : PLD : RTL
+
+static int tether_cycles(const TetherRegs* r, bool fast) {
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &TETHER_RUN_HEAD, 1);
+  if (r->mover_a) run_add(&own, &RUN_TAKEN, 1);
+  run_add(&own, &TETHER_RUN_PARTNER, 1);
+  if (r->exit == TETHER_ALONE) {
+    run_add(&own, &RUN_TAKEN, 1);
+    run_add(&own, &TETHER_RUN_ALLOWED, 1);
+    return cosim_run_cycles(&own, fast);
+  }
+  if (!r->mover_a) run_add(&own, &RUN_BRA, 1);
+  run_add(&own, &TETHER_RUN_WINDOW_X, 1);
+  if (!r->outside_x) run_add(&own, &TETHER_RUN_WINDOW_Y, 1);
+  if (r->exit == TETHER_INSIDE) {
+    run_add(&own, &TETHER_RUN_ALLOWED, 1);
+    return cosim_run_cycles(&own, fast);
+  }
+  run_add(&own, &RUN_TAKEN, 1);  // the window's `BCS`
+  run_add(&own, &TETHER_RUN_FAR, 1);
+  run_add(&own, &TETHER_RUN_NEGATE, r->negated);
+  run_add(&own, &RUN_TAKEN, 4 - r->negated);
+  run_add(&own, &TETHER_RUN_COMPARE, 1);
+  if (r->exit == TETHER_EQUAL) {
+    run_add(&own, &RUN_TAKEN, 1);
+    run_add(&own, &TETHER_RUN_REFUSED, 1);
+  } else {
+    run_add(&own, &TETHER_RUN_BCS, 1);
+    if (r->exit == TETHER_CLOSING) {
+      run_add(&own, &RUN_TAKEN, 1);
+      run_add(&own, &TETHER_RUN_ALLOWED, 1);
+    } else {
+      run_add(&own, &TETHER_RUN_REFUSED, 1);
+    }
+  }
+  return cosim_run_cycles(&own, fast);
+}
+
+// `$80:F327`, on its caller's page.
+static const CosimRun PUBLISH_RUN_HEAD = {40, 4, 1};   // LDA $1E : BNE
+static const CosimRun PUBLISH_RUN_ONE = {204, 13, 3};  // $80:F32B-$F337
+static const CosimRun PUBLISH_RUN_TWO = {474, 28, 8};  // $80:F338-$F353
+
+static int publish_cycles(bool two_part, bool fast, bool unaligned) {
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &PUBLISH_RUN_HEAD, 1);
+  if (two_part) run_add(&own, &RUN_TAKEN, 1);
+  run_add(&own, two_part ? &PUBLISH_RUN_TWO : &PUBLISH_RUN_ONE, 1);
+  return cosim_run_cycles_dp(&own, fast, unaligned);
+}
+
+// `$80:AD1C` and `$80:ADC8`, which calls it. Neither has a branch.
+static const CosimRun TILE_ADDR_RUN = {250, 15, 0};
+static const CosimRun TILE_ATTRS_RUN = {710 + 250, 43 + 15, 0};
+
+// `$80:E86D`, on its caller's page, with `$80:F935` in line as the ROM has it
+// one `JSR` away.
+static const CosimRun FLOOR_RUN_HEAD = {110, 8, 2};     // LDX $30 : LDY $32 : JSL
+static const CosimRun FLOOR_RUN_FIRST = {48, 8, 0};     // AND : CMP #$4000 : BEQ
+static const CosimRun FLOOR_RUN_TEST = {30, 5, 0};      // CMP or BIT, and a branch
+static const CosimRun FLOOR_RUN_CLEAR = {28, 2, 1};     // STZ $2A
+static const CosimRun FLOOR_RUN_WEAPON = {98, 10, 1};   // $80:E891-$E89A
+static const CosimRun FLOOR_RUN_GUARD = {40, 4, 1};     // LDA $1E : BNE
+static const CosimRun FLOOR_RUN_MODE = {58, 7, 1};      // LDA $70 : CMP #2 : BEQ
+static const CosimRun FLOOR_RUN_COOLING = {40, 4, 1};   // LDA $52 : BPL
+static const CosimRun FLOOR_RUN_START = {92, 10, 2};    // $80:F945-$F94E
+static const CosimRun FLOOR_RUN_MOVE = {50, 2, 1};      // DEC or INC of $30/$32
+static const CosimRun FLOOR_RUN_RIGHT = {146, 12, 2};   // $80:E8C2-$E8CD
+
+static int floor_cycles(const FloorRegs* r, bool fast, bool unaligned) {
+  CosimRun own = {0, 0, 0};
+  bool harm = false, belt = false;
+  run_add(&own, &FLOOR_RUN_HEAD, 1);
+  run_add(&own, &FLOOR_RUN_FIRST, 1);
+  switch (r->tile) {
+    case FLOOR_TILE_GATED:
+      run_add(&own, &RUN_TAKEN, 1);
+      run_add(&own, &FLOOR_RUN_WEAPON, 1);
+      if (r->gate == FLOOR_GATE_OTHER_WEAPON) {
+        run_add(&own, &RUN_TAKEN, 1);
+        harm = true;
+      } else {
+        run_add(&own, &FLOOR_RUN_GUARD, 1);
+        if (r->gate == FLOOR_GATE_SHUT) run_add(&own, &RUN_TAKEN, 1);
+        else harm = true;
+      }
+      break;
+    case FLOOR_TILE_HARM:
+      run_add(&own, &FLOOR_RUN_TEST, 1);
+      run_add(&own, &RUN_TAKEN, 1);
+      harm = true;
+      break;
+    case FLOOR_TILE_CLEAR:
+      run_add(&own, &FLOOR_RUN_TEST, 2);
+      run_add(&own, &RUN_TAKEN, 1);
+      run_add(&own, &FLOOR_RUN_CLEAR, 1);
+      run_add(&own, &RUN_BRA, 1);
+      break;
+    case FLOOR_TILE_BELT:
+      run_add(&own, &FLOOR_RUN_TEST, 3);
+      run_add(&own, &RUN_TAKEN, 1);
+      belt = true;
+      break;
+    case FLOOR_TILE_PLAIN:
+      run_add(&own, &FLOOR_RUN_TEST, 3);
+      break;
+  }
+  if (harm) {
+    run_add(&own, &RUN_JSR, 1);
+    run_add(&own, &FLOOR_RUN_MODE, 1);
+    if (r->harm == FLOOR_HARM_OFF_A) {
+      run_add(&own, &RUN_TAKEN, 1);
+    } else {
+      run_add(&own, &FLOOR_RUN_TEST, 1);
+      if (r->harm == FLOOR_HARM_OFF_B) {
+        run_add(&own, &RUN_TAKEN, 1);
+      } else {
+        run_add(&own, &FLOOR_RUN_COOLING, 1);
+        if (r->harm == FLOOR_HARM_COOLING) run_add(&own, &RUN_TAKEN, 1);
+        else run_add(&own, &FLOOR_RUN_START, 1);
+      }
+    }
+    run_add(&own, &RUN_RTS, 1);
+    belt = true;
+  }
+  int calls = cosim_run_cycles(&TILE_ATTRS_RUN, fast);
+  if (belt) {
+    // Four compares; the first that matches moves the player and leaves by
+    // a `BRA`, and the ones before it each took their `BNE`.
+    static const int TESTS[] = {
+        [FLOOR_BELT_UP] = 1, [FLOOR_BELT_DOWN] = 2, [FLOOR_BELT_LEFT] = 3,
+        [FLOOR_BELT_RIGHT] = 4, [FLOOR_BELT_RIGHT_BLOCKED] = 4,
+        [FLOOR_BELT_NOT] = 4};
+    const int tests = TESTS[r->belt];
+    run_add(&own, &FLOOR_RUN_TEST, tests);
+    run_add(&own, &RUN_TAKEN, r->belt == FLOOR_BELT_NOT ? tests : tests - 1);
+    switch (r->belt) {
+      case FLOOR_BELT_UP:
+      case FLOOR_BELT_DOWN:
+      case FLOOR_BELT_LEFT:
+        run_add(&own, &FLOOR_RUN_MOVE, 1);
+        run_add(&own, &RUN_BRA, 1);
+        break;
+      case FLOOR_BELT_RIGHT:
+      case FLOOR_BELT_RIGHT_BLOCKED:
+        run_add(&own, &FLOOR_RUN_RIGHT, 1);
+        calls += terrain_blocked_cycles(
+            r->probes, r->belt == FLOOR_BELT_RIGHT_BLOCKED, fast);
+        if (r->belt == FLOOR_BELT_RIGHT_BLOCKED) {
+          run_add(&own, &RUN_TAKEN, 1);
+        } else {
+          run_add(&own, &FLOOR_RUN_MOVE, 1);
+          run_add(&own, &RUN_BRA, 1);
+        }
+        break;
+      default:
+        break;
+    }
+  }
+  run_add(&own, &RUN_RTS, 1);
+  return calls + cosim_run_cycles_dp(&own, fast, unaligned);
+}
+
+// `$80:D1FF`, on its caller's page. The two selectors and the thread the
+// shoulder buttons start are not priced here: a frame that reaches one says
+// so by returning a negative price, and is charged the registry's figure.
+static const CosimRun PSN_RUN_HEAD = {244, 19, 4};    // $80:D1FF-$D211
+static const CosimRun PSN_RUN_FIRE = {58, 7, 1};      // LDA $1A : AND : BEQ
+static const CosimRun PSN_RUN_COUNT = {126, 9, 1};    // $80:D219-$D221
+static const CosimRun PSN_RUN_EMPTY = {126, 11, 1};   // $80:D222-$D22C
+static const CosimRun PSN_RUN_READY = {214, 22, 1};   // $80:D22F-$D244
+static const CosimRun PSN_RUN_BAND = {30, 5, 0};      // CPY #$000D : BCS
+static const CosimRun PSN_RUN_FILE = {28, 2, 1};      // STA $1E or $20
+static const CosimRun PSN_RUN_DIR = {80, 7, 1};       // $80:D250-$D256
+static const CosimRun PSN_RUN_EDGE = {58, 7, 1};      // LDA : AND : a branch
+static const CosimRun PSN_RUN_FLAG = {80, 7, 1};      // $80:D29C-$D2A2
+static const CosimRun PSN_RUN_SWALLOW = {40, 3, 0};   // STZ $1F98,X
+static const CosimRun PSN_RUN_TICK = {40, 4, 1};      // LDA : BEQ
+static const CosimRun PSN_RUN_DEC = {50, 2, 1};
+static const CosimRun PSN_RUN_LAST = {62, 4, 1};      // DEC $56 : BNE
+static const CosimRun PSN_RUN_STZ = {28, 2, 1};
+
+static int psn_cycles(const PlayerStateRegs* r, bool fast, bool unaligned) {
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &PSN_RUN_HEAD, 1);
+  if (r->weapon == PSN_WEAPON_NONE) {
+    run_add(&own, &RUN_TAKEN, 1);
+  } else {
+    run_add(&own, &PSN_RUN_FIRE, 1);
+    if (r->weapon == PSN_WEAPON_NOT_FIRING) {
+      run_add(&own, &RUN_TAKEN, 1);
+    } else {
+      run_add(&own, &PSN_RUN_COUNT, 1);
+      if (r->weapon == PSN_WEAPON_EMPTY) {
+        run_add(&own, &PSN_RUN_EMPTY, 1);
+        run_add(&own, &RUN_BRA, 1);
+      } else {
+        run_add(&own, &RUN_TAKEN, 1);
+        run_add(&own, &PSN_RUN_READY, 1);
+        if (r->weapon == PSN_WEAPON_LOW) {
+          run_add(&own, &RUN_TAKEN, 1);
+          run_add(&own, &PSN_RUN_FILE, 1);
+        } else {
+          run_add(&own, &PSN_RUN_BAND, 1);
+          if (r->weapon == PSN_WEAPON_HIGH) {
+            run_add(&own, &RUN_TAKEN, 1);
+            run_add(&own, &PSN_RUN_FILE, 1);
+          } else {
+            run_add(&own, &PSN_RUN_FILE, 1);
+            run_add(&own, &RUN_BRA, 1);
+          }
+        }
+      }
+    }
+  }
+  run_add(&own, &PSN_RUN_DIR, 1);
+  run_add(&own, r->moving ? &PSN_RUN_FILE : &RUN_TAKEN, 1);
+
+  for (int i = 0; i < PSN_PRESS_COUNT; i++) {
+    switch (r->press[i]) {
+      case PSN_PRESS_UNASKED:
+        break;
+      case PSN_PRESS_UP:
+        run_add(&own, &PSN_RUN_EDGE, 1);
+        run_add(&own, &RUN_TAKEN, 1);
+        break;
+      case PSN_PRESS_HELD:
+        run_add(&own, &PSN_RUN_EDGE, 2);
+        run_add(&own, &RUN_TAKEN, 1);
+        break;
+      case PSN_PRESS_EDGE:
+        if (i != PSN_PRESS_SPAWN || !r->swallowed) return -1;
+        run_add(&own, &PSN_RUN_EDGE, 2);
+        run_add(&own, &PSN_RUN_FLAG, 1);
+        run_add(&own, &PSN_RUN_SWALLOW, 1);
+        run_add(&own, &RUN_BRA, 1);
+        break;
+    }
+  }
+
+  for (int i = 0; i < PSN_COUNTDOWNS - 1; i++) {
+    run_add(&own, &PSN_RUN_TICK, 1);
+    run_add(&own, r->counting[i] ? &PSN_RUN_DEC : &RUN_TAKEN, 1);
+  }
+  run_add(&own, &PSN_RUN_TICK, 1);
+  if (!r->counting[PSN_COUNTDOWNS - 1]) {
+    run_add(&own, &RUN_TAKEN, 1);
+  } else {
+    run_add(&own, &PSN_RUN_LAST, 1);
+    run_add(&own, r->last_expired ? &PSN_RUN_STZ : &RUN_TAKEN, 1);
+  }
+  run_add(&own, &RUN_RTS, 1);
+  return floor_cycles(&r->floor, fast, unaligned) +
+         cosim_run_cycles_dp(&own, fast, unaligned);
+}
+
+// ---------------------------------------------------------------------------
 // $80:F327  actor_publish_pos — nothing in; the record is on the thread's page
 // ---------------------------------------------------------------------------
 
@@ -967,7 +1291,10 @@ static void shim_actor_publish_pos(Wram* w, const Rom* rom, const CosimRegs* in,
                                    CosimRegs* out) {
   (void)rom;
   PublishRegs r;
+  const bool two_part =
+      wram_r16(w, (uint16_t)(in->d + PUBLISH_DP_TWO_PART)) != 0;
   actor_publish_pos(w, in->d, in->x, in->y, &r);
+  cosim_cost(publish_cycles(two_part, in->fastrom, (in->d & 0x00ffu) != 0));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -3255,6 +3582,7 @@ static void shim_terrain_blocked(Wram* w, const Rom* rom, const CosimRegs* in,
   (void)rom;
   TerrainRegs r;
   terrain_blocked(w, in->x, in->y, &r);
+  cosim_cost(terrain_blocked_cycles(r.probes, r.blocked, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -3570,6 +3898,8 @@ static void shim_step_propose(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
   StepProposeRegs r;
   step_propose(w, rom, in->d, &r);
+  cosim_cost(step_propose_cycles(r.x != 0, in->fastrom,
+                                 (in->d & 0x00ffu) != 0));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -3597,6 +3927,7 @@ static void shim_step_tether_blocked(Wram* w, const Rom* rom,
   (void)rom;
   TetherRegs r;
   step_tether_blocked(w, in->x, in->y, &r);
+  cosim_cost(tether_cycles(&r, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -3776,6 +4107,7 @@ static void shim_tilemap_tile_addr(Wram* w, const Rom* rom, const CosimRegs* in,
   (void)rom;
   TilemapAddrRegs r;
   tilemap_tile_addr(w, in->x, in->y, &r);
+  cosim_cost(cosim_run_cycles(&TILE_ADDR_RUN, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = in->y;  // never mentioned after the `TYA`
@@ -3808,6 +4140,7 @@ static void shim_tile_attrs_at_pixel(Wram* w, const Rom* rom,
   (void)rom;
   TileAttrsRegs r;
   tile_attrs_at_pixel(w, in->x, in->y, &r);
+  cosim_cost(cosim_run_cycles(&TILE_ATTRS_RUN, in->fastrom));
   out->a = r.a;
   out->x = in->x;
   out->y = in->y;
@@ -3848,6 +4181,7 @@ static void shim_floor_effect(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
   FloorRegs r;
   floor_effect(w, rom, in->d, &r);
+  cosim_cost(floor_cycles(&r, in->fastrom, (in->d & 0x00ffu) != 0));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -3874,6 +4208,8 @@ static void shim_player_state_normal(Wram* w, const Rom* rom,
                                      const CosimRegs* in, CosimRegs* out) {
   PlayerStateRegs r;
   player_state_normal(w, rom, in->d, &r);
+  const int cycles = psn_cycles(&r, in->fastrom, (in->d & 0x00ffu) != 0);
+  if (cycles >= 0) cosim_cost(cycles);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -5759,32 +6095,34 @@ BODY_SHIM(player_dead, player_dead(w, &c, &k), PBODY_COST)
 // run. So its price is everything the ROM would have run in that window,
 // built from what the walk's log says it asked.
 //
-// Around each question the ROM loads the point, calls, returns and branches
-// on the answer. Those are priced here from `tools/cycles816.py`, with the
-// branch not taken. `WALK_BRANCH_ON_YES` says which answer takes it, for 6
-// more. The tests themselves cost what their own registry entries charge, so
-// a walk costs what the fifteen stretches it replaced and the calls between
-// them did.
+// Around each question the ROM loads the point, calls and branches on the
+// answer. Those are priced here from `tools/cycles816.py`, with the branch
+// not taken. `WALK_BRANCH_ON_YES` says which answer takes it, for 6 more.
+// Each test is priced by what it did, and its price ends with its own return.
+//
+// This table used to count an `RTL` after every call, which the tests' own
+// prices count too. Nothing showed it while the tests were charged a mean
+// each: the walk was out by a few hundred cycles on every call either way.
 static const CosimRun WALK_AROUND[WALK_ASK_COUNT] = {
-    // LDX $34 : LDY $32, JSL $80AE14, the RTL, BCC.
-    [WALK_ASK_GROUND] = {56 + 54 + 42 + 12, 4 + 4 + 1 + 2, 2},
+    // LDX $34 : LDY $32, JSL $80AE14, BCC.
+    [WALK_ASK_GROUND] = {56 + 54 + 12, 4 + 4 + 2, 2},
     // JSR $E739; ASL : AND #$CB38, six CMP : BNE taken, SEC, RTS; BCS.
     [WALK_ASK_REACTION] = {40 + 60 + 5 * 30 + 6 * 6 + 12 + 40 + 12,
                            3 + 9 + 5 * 5 + 1 + 1 + 2, 0},
-    // LDX : LDY, JSL $80A8B3, the RTL, BCS.
-    [WALK_ASK_TETHER] = {56 + 54 + 42 + 12, 4 + 4 + 1 + 2, 2},
-    // LDA $08 : LDX : LDY, JSL $80BFC8, the RTL, BCC.
-    [WALK_ASK_THERE] = {84 + 54 + 42 + 12, 6 + 4 + 1 + 2, 3},
-    [WALK_ASK_HERE] = {84 + 54 + 42 + 12, 6 + 4 + 1 + 2, 3},
-    // LDX : LDY, JSL $80B422, the RTL, BCS.
-    [WALK_ASK_MAP] = {56 + 54 + 42 + 12, 4 + 4 + 1 + 2, 2},
+    // LDX : LDY, JSL $80A8B3, BCS.
+    [WALK_ASK_TETHER] = {56 + 54 + 12, 4 + 4 + 2, 2},
+    // LDA $08 : LDX : LDY, JSL $80BFC8, BCC.
+    [WALK_ASK_THERE] = {84 + 54 + 12, 6 + 4 + 2, 3},
+    [WALK_ASK_HERE] = {84 + 54 + 12, 6 + 4 + 2, 3},
+    // LDX : LDY, JSL $80B422, BCS.
+    [WALK_ASK_MAP] = {56 + 54 + 12, 4 + 4 + 2, 2},
 };
 static const bool WALK_BRANCH_ON_YES[WALK_ASK_COUNT] = {
     [WALK_ASK_REACTION] = true, [WALK_ASK_TETHER] = true,
     [WALK_ASK_MAP] = true};
 static const CosimRun WALK_TAKEN_BRANCH = {6, 0, 0};
-// BIT $54 : BPL taken, JSR $E450, and its RTS.
-static const CosimRun WALK_OPENING = {40 + 6 + 40 + 40, 4 + 3 + 1, 1};
+// BIT $54 : BPL taken, JSR $E450.
+static const CosimRun WALK_OPENING = {40 + 6 + 40, 4 + 3, 1};
 // LDA $34 : STA $30, or LDA $36 : STA $32.
 static const CosimRun WALK_TAKE = {56, 4, 2};
 
@@ -5798,19 +6136,10 @@ static int registry_cycles(const char* name, int* cache) {
 }
 
 static int walk_cycles(const WalkLog* log, const CosimRegs* in) {
-  static int propose = -1, ground = -1, tether = -1, map = -1;
-  static const char* const TEST[WALK_ASK_COUNT] = {
-      [WALK_ASK_GROUND] = "terrain_blocked",
-      [WALK_ASK_TETHER] = "step_tether_blocked",
-      [WALK_ASK_MAP] = "terrain_out_of_bounds"};
-  int* const cache[WALK_ASK_COUNT] = {
-      [WALK_ASK_GROUND] = &ground, [WALK_ASK_TETHER] = &tether,
-      [WALK_ASK_MAP] = &map};
-
   const bool fast = fetch_fast(in);
   const bool unaligned = (in->d & 0x00ffu) != 0;
   int cycles = cosim_run_cycles_dp(&WALK_OPENING, fast, unaligned) +
-               registry_cycles("step_propose", &propose);
+               step_propose_cycles(log->doubled, in->fastrom, unaligned);
   for (int q = 0; q < WALK_ASK_COUNT; q++) {
     for (int yes = 0; yes < 2; yes++) {
       const int n = log->asked[q][yes];
@@ -5818,12 +6147,28 @@ static int walk_cycles(const WalkLog* log, const CosimRegs* in) {
       int each = cosim_run_cycles_dp(&WALK_AROUND[q], fast, unaligned);
       if (WALK_BRANCH_ON_YES[q] == (yes != 0))
         each += cosim_run_cycles(&WALK_TAKEN_BRANCH, fast);
-      if (TEST[q]) each += registry_cycles(TEST[q], cache[q]);
       cycles += n * each;
     }
   }
   cycles += log->taken * cosim_run_cycles_dp(&WALK_TAKE, fast, unaligned);
-  return cycles + obstacle_cycles(&log->obstacle, in->fastrom);
+
+  // The tests themselves, each by what it did.
+  CosimRun ground = {0, 0, 0};
+  const int grounds =
+      log->asked[WALK_ASK_GROUND][0] + log->asked[WALK_ASK_GROUND][1];
+  run_add(&ground, &TERRAIN_PROLOGUE, grounds);
+  run_add(&ground, &TERRAIN_EXIT, grounds);
+  for (int i = 0; i < TERRAIN_PROBE_COUNT; i++)
+    run_add(&ground, &TERRAIN_PROBE[i], log->probes[i]);
+  run_add(&ground, &RUN_TAKEN, log->ground_cut_short);
+  cycles += cosim_run_cycles(&ground, in->fastrom);
+  for (int i = 0; i < log->tethers; i++)
+    cycles += tether_cycles(&log->tether[i], in->fastrom);
+  for (int e = 0; e <= BOUNDS_LAST_COMPARE; e++)
+    cycles += log->map_exits[e] * bounds_cycles((BoundsExit)e, in->fastrom);
+  // ...and the walk's own `RTS`.
+  return cycles + cosim_run_cycles(&RUN_RTS, fast) +
+         obstacle_cycles(&log->obstacle, in->fastrom);
 }
 
 // The tests put their scratch on page zero, so a player's page there would
@@ -5873,7 +6218,6 @@ static void chase_add(CosimRun* t, int cycles, int bytes, int dp) {
 }
 
 static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
-  static int tile = -1;
   const int TAKEN = 6;
   CosimRun own = {0, 0, 0};
   int calls = nearest_cycles(&log->nearest, in->fastrom);
@@ -5946,10 +6290,10 @@ static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
     } else {
       // JSR $BC3D, a probe or two, and the landing if one had bit 13.
       chase_add(&own, 40 + 368, 3 + 35, 5);
-      calls += registry_cycles("tile_attrs_at_pixel", &tile);
+      calls += cosim_run_cycles(&TILE_ATTRS_RUN, in->fastrom);
       if (log->leap_probes == 2) {
         chase_add(&own, 392, 37, 5);
-        calls += registry_cycles("tile_attrs_at_pixel", &tile);
+        calls += cosim_run_cycles(&TILE_ATTRS_RUN, in->fastrom);
       }
       if (log->leap_found) {
         own.cycles += TAKEN;
@@ -8349,6 +8693,11 @@ static const CosimRun POSE_RUN_JSR = {40, 3, 0};  // $80:D724-$D726
 static const CosimRun POSE_RUN_WF_DELAY = {40, 4, 1};  // $80:D70A-$D70D
 static const CosimRun POSE_RUN_WF_TIMER = {40, 4, 1};  // $80:D711-$D714
 static const CosimRun POSE_RUN_WF_STEP = {104, 11, 1};  // $80:D715-$D71F
+static const CosimRun POSE_RUN_FIRE_DELAY = {40, 4, 1};  // $80:ED30-$ED33
+static const CosimRun POSE_RUN_FIRE_ROUNDS = {230, 19, 3};  // $80:ED34-$ED44
+static const CosimRun POSE_RUN_FIRE_EMPTY = {52, 2, 0};  // $80:ED86-$ED87
+static const CosimRun POSE_RUN_FIRE_SHOT = {674, 57, 11};  // $80:ED45-$ED77
+static const CosimRun POSE_RUN_FIRE_TAIL = {98, 10, 1};  // $80:ED78-$ED81
 static const CosimRun POSE_RUN_TAKEN = {6, 0, 0};
 
 typedef struct {
@@ -8384,6 +8733,28 @@ static void pose_weapon_bill(PoseBill* b) {
     }
   }
   pose_add(b, &POSE_RUN_WEAPON_SHOW);
+}
+
+// `$80:ED30`, reached by `JSR`. The shot's thread is `thread_spawn`'s to
+// price, by the slot it took: see `pose_calls`.
+static void pose_fire_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_JSR);
+  pose_add(b, &POSE_RUN_FIRE_DELAY);
+  pose_add(b, &POSE_RUN_FIRE_ROUNDS);
+  if (b->log->fire == POSE_FIRE_EMPTY) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_FIRE_EMPTY);
+    return;
+  }
+  pose_add(b, &POSE_RUN_FIRE_SHOT);
+  pose_add(b, &POSE_RUN_FIRE_TAIL);
+  pose_taken(b);
+  pose_add(b, &POSE_RUN_RTS);
+}
+
+static int pose_calls(const PoseLog* log, const Rom* rom, bool fast) {
+  return log->fire == POSE_FIRE_SHOT
+             ? thread_spawn_cycles(log->shot_slot, rom, fast) : 0;
 }
 
 // `$80:D4F4`.
@@ -8478,6 +8849,12 @@ static void pose_stand_bill(PoseBill* b) {
   pose_add(b, &POSE_RUN_STAND_DELAY);
   if (!log->delayed) {
     pose_add(b, &POSE_RUN_STAND_FIRE);
+    if (log->fire != POSE_FIRE_NONE) {
+      pose_taken(b);
+      pose_fire_bill(b);
+      pose_add(b, &POSE_RUN_RTS);
+      return;
+    }
     pose_add(b, &POSE_RUN_STAND_SPECIAL);
     if (log->restood) {
       pose_add(b, &POSE_RUN_JMP);
@@ -8519,7 +8896,8 @@ static void pose_walk_firing_bill(PoseBill* b) {
     return;
   }
   pose_add(b, &POSE_RUN_WF_DELAY);
-  pose_taken(b);
+  if (log->delayed) pose_taken(b);
+  else pose_fire_bill(b);
   pose_add(b, &POSE_RUN_WF_TIMER);
   if (log->waiting) {
     pose_taken(b);
@@ -8580,7 +8958,7 @@ static bool pose_ok(Wram* scratch, const Rom* rom, const CosimRegs* in,
     name(w, rom, in->d, &log);                                               \
     PoseBill b = {{0, 0, 0}, &log};                                          \
     name##_bill(&b);                                                         \
-    cosim_cost(pose_total(&b, in));                                          \
+    cosim_cost(pose_total(&b, in) + pose_calls(&log, rom, in->fastrom));     \
     out->regs = 0;                                                           \
     out->flags = 0;                                                          \
     out->c = log.c;                                                          \
@@ -8592,6 +8970,127 @@ static bool pose_ok(Wram* scratch, const Rom* rom, const CosimRegs* in,
 POSE_SHIM(pose_stand, POSE_HANDLER_STAND)
 POSE_SHIM(pose_walk, POSE_HANDLER_WALK)
 POSE_SHIM(pose_walk_firing, POSE_HANDLER_WALK_FIRING)
+
+// ---------------------------------------------------------------------------
+// $80:CDFE  a frame of a player -- see `port/player_frame.h`
+// ---------------------------------------------------------------------------
+//
+// From where the thread's sleep comes back to the `JSL` that is the next. The
+// frame is seven calls and the little between them, so its price is each
+// callee's own, by what it did, and the ROM's instructions round the calls:
+// a `JSR` or the `PEA : PHA : RTS` that reaches a handler, each from
+// `tools/cycles816.py`. A callee's price ends with its own return.
+static const CosimRun PFRAME_RUN_DISPATCH = {36, 5, 0};  // JMP ($D1EF,X)
+
+// The state and the pose read their tables through the data bank, the walk's
+// tests put their scratch on page zero, and the two display records and the
+// player's health are indexed in low WRAM.
+static bool player_frame_ok(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->db != PLAYER_FRAME_BANK || in->d < 0x0100)
+    return false;
+  const uint16_t d = in->d;
+  const uint16_t player = wram_r16(w, (uint16_t)(d + PLAYER_DP_INDEX));
+  // The way the player faces is a table index. The ordinary state makes it
+  // the direction held, when one is.
+  const uint16_t held = wram_r16(w, (uint16_t)(W_JOY_DIR + (player & 2u)));
+  const uint16_t facing =
+      held != 0 ? held : wram_r16(w, (uint16_t)(d + PSN_DP_DIR_HELD));
+  return player < 4 && (player & 1u) == 0 &&
+         wram_r16(w, (uint16_t)(d + POSE_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(d + POSE_DP_WEAPON)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(d + POSE_DP_PICTURES)) >= 0x8000u &&
+         wram_r16(w, (uint16_t)(d + POSE_DP_WEAPON_PICTURES)) >= 0x8000u &&
+         wram_r16(w, (uint16_t)(d + POSE_DP_FRAMES)) >= 0x8000u &&
+         wram_r16(w, (uint16_t)(d + POSE_DP_PICTURES_SET)) < 0x10 &&
+         wram_r16(w, (uint16_t)(d + POSE_DP_PICTURES_ROW)) < 0x40 &&
+         facing >= 2 && facing <= 0x12;
+}
+
+static bool supported_player_frame(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  return player_frame_supported(scratch, rom, in->d);
+}
+
+static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  PlayerFrameLog log;
+  player_frame(w, rom, in->d, &log);
+
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  CosimRun own = {0, 0, 0};
+  int calls = 0;
+
+  // JSR $D1EA, and its `LDX $70 : JMP ($D1EF,X)` into the state.
+  run_add(&own, &RUN_JSR, 1);
+  run_add(&own, &PBODY_COST[PBODY_BRANCH], 1);
+  run_add(&own, &PFRAME_RUN_DISPATCH, 1);
+  if (log.state == PLAYER_STATE_NORMAL) {
+    calls += psn_cycles(&log.normal, in->fastrom, unaligned);
+  } else {
+    run_add(&own, &RUN_JSR, 1);  // $80:D465  JSR floor_effect
+    calls += floor_cycles(&log.floor, in->fastrom, unaligned);
+    stuck_bill(&own, &log.stuck);
+  }
+
+  // JSR $D01B, the hurt timer.
+  run_add(&own, &RUN_JSR, 1);
+  run_add(&own, &PBODY_COST[PBODY_EVENT], 1);
+  run_add(&own, &PBODY_COST[PBODY_SKIP], 1);
+  if (log.hurt_timer == PLAYER_HURT_TIMER_HELD) {
+    run_add(&own, &RUN_TAKEN, 1);
+  } else {
+    run_add(&own, &PBODY_COST[PBODY_RECOVER], 1);
+    run_add(&own,
+            log.hurt_timer == PLAYER_HURT_TIMER_OUT
+                ? &PBODY_COST[PBODY_RECOVERED] : &RUN_TAKEN,
+            1);
+  }
+  run_add(&own, &RUN_RTS, 1);
+
+  // The pose, by `PEA : LDA $28 : DEC : PHA : RTS`.
+  run_add(&own, &PBODY_COST[PBODY_STATE], 1);
+  run_add(&own, &RUN_RTS, 1);
+  PoseBill pose = {{0, 0, 0}, &log.pose_log};
+  switch (log.pose) {
+    case POSE_HANDLER_STAND: pose_stand_bill(&pose); break;
+    case POSE_HANDLER_WALK: pose_walk_bill(&pose); break;
+    default: pose_walk_firing_bill(&pose); break;
+  }
+  calls += pose_total(&pose, in) + pose_calls(&log.pose_log, rom, in->fastrom);
+
+  // The movement the same way, when there is one.
+  run_add(&own, &PBODY_COST[PBODY_MOVE], 1);
+  if (log.walked) {
+    run_add(&own, &PBODY_COST[PBODY_MOVE_CALL], 1);
+    run_add(&own, &RUN_RTS, 1);
+    calls += walk_cycles(&log.walk, in);
+  } else {
+    run_add(&own, &RUN_TAKEN, 1);
+  }
+
+  // JSR $F327; LDA $1A : STA $1C; JSR $CE25 and JSR $CE72, each of which
+  // finds nothing and returns; BRA $CDF7, and its `LDA #$0001`.
+  run_add(&own, &RUN_JSR, 3);
+  calls += publish_cycles(log.two_part, in->fastrom, unaligned);
+  run_add(&own, &PBODY_COST[PBODY_BUTTONS], 1);
+  run_add(&own, &PBODY_COST[PBODY_WON], 1);
+  run_add(&own, &RUN_TAKEN, 1);
+  run_add(&own, &PBODY_COST[PBODY_DEAD], 1);
+  run_add(&own, &RUN_RTS, 2);
+  run_add(&own, &PBODY_COST[PBODY_BRA], 1);
+  run_add(&own, &PBODY_COST[PBODY_TICKS], 1);
+  cosim_cost(calls + cosim_run_cycles_dp(&own, fast, unaligned));
+
+  out->pc = PLAYER_FRAME_YIELD_PC;
+  out->a = 0x0001;
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+}
+
+static const uint32_t PLAYER_FRAME_EXITS[] = {PLAYER_FRAME_YIELD_PC};
 
 // ---------------------------------------------------------------------------
 // The evil dolls -- see `port/doll.h`
@@ -13011,6 +13510,23 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 2000,
         // The saved slot, the bank and the tile's address, and the `JSL`.
         .stack_bytes = 9,
+    },
+    // A player's whole frame: see `port/player_frame.h`. Entered where the
+    // thread's sleep returns. A frame it turns down is the ROM's, a piece at a
+    // time, through the entries above.
+    {
+        .name = "player_frame",
+        .symbol = "$80:CDFE",
+        .entry = PLAYER_FRAME_PC,
+        .run = shim_player_frame,
+        .accepts = player_frame_ok,
+        .supported = supported_player_frame,
+        COSIM_EXITS(PLAYER_FRAME_EXITS),
+        .uncalled = true,
+        // Never charged: the shim prices every frame it serves.
+        .cycles = 20000,
+        // The `JSR` to the state, and the ordinary state's own eighteen.
+        .stack_bytes = 20,
     },
 };
 

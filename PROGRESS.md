@@ -5,6 +5,58 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The player's frame in readable C, and exact prices under it (2026-10-04)
+
+A player's whole frame is one native call now, and everything it calls is
+priced by what it did. Live, `level33` goes from 95.8% to **96.5%**, `level49` from 96.8% to 97.3%, `level9` from 96.6% to 97.0%, `level17` from 97.9% to 98.3%, `level53` from 97.3% to 97.7%, `level1` from 97.9% to 98.2%, `level29-fighting` from 97.2% to 97.5%, and `level5`, `level13`, `level21`, `level37` and `level41` by 0.2 each, to 96.7%, 96.6%, 95.5%, 96.5% and 96.2%. The residue over the twelve movies goes from
+21.6 to **19.5** million instructions of work, and the game registers
+223 routines.
+
+* **The player's frame**, `src/port/player_frame.c`. From where the thread's
+  sleep comes back at `$80:CDFE` to the `JSL` that is the next: the state,
+  the hurt timer, the pose, the movement, the position, the buttons kept, and
+  the two tests for the level's end and the player's. Each of the seven was
+  already C; between them the core still ran thirteen or fourteen
+  instructions a frame, a `JSR` here and an `RTS` there, and over the twelve
+  movies that was 2.2 million, a tenth of what was left. The frame calls them
+  as C functions. It serves 112,591 of the corpus's 125,189 player frames, nine in ten, and the ROM runs the rest through the old entries.
+* **The player's shot**, in `src/port/pose.c`. `$80:ED30` takes a round of
+  the weapon held, in decimal, and starts the shot's thread with where the
+  player is and faces. The pose handlers used to leave every frame that
+  fired to the ROM, which was most of what the frame turned down on its first
+  run. Weapon 5's shot goes on to a pose that sleeps, and that stays the
+  ROM's.
+* **Exact prices for eight callees.** `terrain_blocked`, `step_propose`,
+  `step_tether_blocked`, `actor_publish_pos`, `tilemap_tile_addr`,
+  `tile_attrs_at_pixel`, `floor_effect` and `player_state_normal` were each
+  charged a mean. The tether test costs 322 cycles alone and was charged
+  519; the ground test was charged as if it never found a wall early. Each
+  now reports what the call did and is priced from it.
+* **The two "MODEL WRONG" flags are gone.** `player_walk` was exact on 105
+  of 96,444 calls and `monster_chase` on 20,345 of 22,659, since the rounds
+  that wrote them. The chase was only the tile read's mean, 20 cycles off.
+  The walk had the tests' means and a mistake of its own that they hid: its
+  table counted an `RTL` after each call, which the tests' prices count too.
+
+* **Checked.** The corpus verifies at 23,937,390 calls across 51 movies
+  with 0 diverged, and 624 of 786 coverage sites. Of the 8 new sites 7 are taken; no movie fires a weapon with no rounds left from a pose (`pose_fire_empty`).
+  `verify --level` over all 56 records, 37,778,079 calls, 0 diverged.
+  The frame serves 231,498 of the sweep's 263,587 player frames.
+* **Prices.** Every call priced is exact, on the corpus and on the sweep: 112,591 and 231,498 frames of the player, 96,444 and 186,503 walks, 22,659 and 24,102 chases, and on the corpus 197,245 ground tests, 175,046 tether tests, 101,194 steps, 125,178 positions, 121,278 floors and 119,864 ordinary states.
+* **Lockstep** over the corpus: 48 of 51 never part, where it was 47. `level25-lane` used to part at pass 6057 and now runs all 9,399. `level25`, `level25-2p` and `level25-heavy` part where they did. `level25-2p` shows five bytes the tool cannot account for, where it showed four, and `level25-item` its one, as before.
+* **What the round taught.** A mean hides more than its own error. While the
+  walk's tests were charged means, a wrong run in the walk's own table could
+  not be told from them, and stayed from the day the walk was written. A guard that runs the
+  port on a copy must not touch anything outside the copy: the ordinary
+  state takes a frontend's request for the next weapon from a variable of
+  its own, so the frame's guard turns the frame down while one is waiting.
+* **Next.** Player state `$0A` (`$80:D404`), which runs the ordinary state
+  and then calls `actor_notify_box` round the player; it is most of what the
+  frame still turns down. Then the big figure of level 21 (`$82:84CE`,
+  `$82:87E8`, `$82:873C`), the creatures at `$81:DC24`, `$81:9107`,
+  `$81:A74D` and `$81:E1A3`, and the level loaders at `$80:98EA` and
+  `$80:96B9`.
+
 ### The DMA jobs, the colour animations, the demo and the spawn list (2026-10-04)
 
 Fourteen more entries in readable C, most of them things that run every

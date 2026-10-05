@@ -30,10 +30,12 @@ static void floor_harm(Wram* w, uint16_t dp, FloorRegs* out) {
   set_nz(out, mode);
   if (from_cmp(out, mode, FLOOR_MODE_OFF_A)) {
     PORT_COVER(floor_mode_off);
+    out->harm = FLOOR_HARM_OFF_A;
     return;
   }
   if (from_cmp(out, mode, FLOOR_MODE_OFF_B)) {
     PORT_COVER(floor_mode_off);
+    out->harm = FLOOR_HARM_OFF_B;
     return;
   }
 
@@ -44,10 +46,12 @@ static void floor_harm(Wram* w, uint16_t dp, FloorRegs* out) {
   set_nz(out, cooldown);
   if (!out->n) {
     PORT_COVER(floor_harm_cooling);
+    out->harm = FLOOR_HARM_COOLING;
     return;
   }
 
   PORT_COVER(floor_harm_start);
+  out->harm = FLOOR_HARM_START;
   out->a = FLOOR_STATE_START;
   set_nz(out, FLOOR_STATE_START);
   wram_w16(w, dp + FLOOR_DP_STATE, FLOOR_STATE_START);
@@ -76,6 +80,11 @@ void floor_effect(Wram* w, const Rom* rom, uint16_t dp, FloorRegs* out) {
   out->x = px;
   out->y = py;
   out->c = tile.c;  // always clear; nothing below the `AND` changes it
+  out->tile = FLOOR_TILE_PLAIN;
+  out->gate = FLOOR_GATE_NONE;
+  out->harm = FLOOR_HARM_NONE;
+  out->belt = FLOOR_BELT_UNASKED;
+  out->probes = 0;
 
   uint16_t attrs = (uint16_t)(tile.a & FLOOR_ATTR_MASK);
   out->a = attrs;
@@ -86,6 +95,7 @@ void floor_effect(Wram* w, const Rom* rom, uint16_t dp, FloorRegs* out) {
 
   if (from_cmp(out, attrs, FLOOR_ATTR_HARM_GATED)) {
     // $80:E891. The one case that looks at the player rather than the tile.
+    out->tile = FLOOR_TILE_GATED;
     uint16_t player = wram_r16(w, dp + FLOOR_DP_PLAYER);
     out->x = player;  // `LDX $0E`, and X never comes back from here
 
@@ -98,20 +108,25 @@ void floor_effect(Wram* w, const Rom* rom, uint16_t dp, FloorRegs* out) {
       set_nz(out, guard);
       if (out->z) {
         PORT_COVER(floor_gate_open);
+        out->gate = FLOOR_GATE_OPEN;
         harm = true;
       } else {
         PORT_COVER(floor_gate_shut);
+        out->gate = FLOOR_GATE_SHUT;
       }
     } else {
       PORT_COVER(floor_gate_other_weapon);
+      out->gate = FLOOR_GATE_OTHER_WEAPON;
       harm = true;
     }
   } else if (from_cmp(out, attrs, FLOOR_ATTR_HARM)) {
     PORT_COVER(floor_harm_plain);
+    out->tile = FLOOR_TILE_HARM;
     harm = true;
   } else if (from_cmp(out, attrs, FLOOR_ATTR_CLEAR)) {
     // $80:E88D. `STZ` sets no flag, so the `CMP` above is the exit's.
     PORT_COVER(floor_clear_2a);
+    out->tile = FLOOR_TILE_CLEAR;
     wram_w16(w, dp + FLOOR_DP_CLEARED, 0);
   } else {
     // $80:E887 `BIT #$0008` — immediate, so **Z only**. N and carry stay as
@@ -119,6 +134,7 @@ void floor_effect(Wram* w, const Rom* rom, uint16_t dp, FloorRegs* out) {
     out->z = (attrs & FLOOR_ATTR_BELT) == 0;
     if (!out->z) {
       PORT_COVER(floor_belt);
+      out->tile = FLOOR_TILE_BELT;
       belt = true;
     } else {
       PORT_COVER(floor_plain);
@@ -136,12 +152,15 @@ void floor_effect(Wram* w, const Rom* rom, uint16_t dp, FloorRegs* out) {
   uint16_t v = out->a;
   if (from_cmp(out, v, FLOOR_ATTR_BELT_UP)) {
     PORT_COVER(floor_belt_up);
+    out->belt = FLOOR_BELT_UP;
     step_dp(w, dp + FLOOR_DP_Y, -1, out);
   } else if (from_cmp(out, v, FLOOR_ATTR_BELT_DOWN)) {
     PORT_COVER(floor_belt_down);
+    out->belt = FLOOR_BELT_DOWN;
     step_dp(w, dp + FLOOR_DP_Y, +1, out);
   } else if (from_cmp(out, v, FLOOR_ATTR_BELT_LEFT)) {
     PORT_COVER(floor_belt_left);
+    out->belt = FLOOR_BELT_LEFT;
     step_dp(w, dp + FLOOR_DP_X, -1, out);
   } else if (from_cmp(out, v, FLOOR_ATTR_BELT_RIGHT)) {
     // $80:E8C2. The only direction that asks the terrain first.
@@ -153,6 +172,8 @@ void floor_effect(Wram* w, const Rom* rom, uint16_t dp, FloorRegs* out) {
     out->x = t.x;
     out->y = t.y;
     out->c = t.blocked;
+    out->probes = t.probes;
+    out->belt = t.blocked ? FLOOR_BELT_RIGHT_BLOCKED : FLOOR_BELT_RIGHT;
     // `$80:AE96` is `PLD : RTL`, so N and Z are this routine's own direct page
     // and not the answer — see port/terrain.h.
     set_nz(out, dp);
@@ -164,5 +185,6 @@ void floor_effect(Wram* w, const Rom* rom, uint16_t dp, FloorRegs* out) {
     }
   } else {
     PORT_COVER(floor_belt_none);
+    out->belt = FLOOR_BELT_NOT;
   }
 }

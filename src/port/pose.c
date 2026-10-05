@@ -8,11 +8,23 @@
 #include "port/flags.h"
 #include "port/oam.h"     // the display record's fields
 #include "port/player.h"  // PSN_DP_*: the buttons, the weapon words, the facing
+#include "port/step.h"    // where the player is
+#include "port/thread.h"
 
 // Tables in `POSE_BANK`.
 #define POSE_PICTURE_TABLES 0xfb52u  // a picture table for each `$6A` and `$0C`
 #define POSE_MOVES 0xd74fu           // a movement handler for each state
 #define POSE_WEAPON_FACINGS 0xed12u  // the weapon's picture for each facing
+#define POSE_INVENTORIES 0xed88u     // each player's rounds, a word a weapon
+// Six bytes a weapon: its shot's thread, the bank of it, and the frames
+// until the next shot.
+#define POSE_SHOTS 0xed8cu
+#define POSE_SHOT_BYTES 6
+#define POSE_SHOT_BANK 2
+#define POSE_SHOT_DELAY 4
+#define POSE_WEAPONS 14
+// The weapon whose shot goes on to a pose of its own, `$80:DE96`.
+#define POSE_WEAPON_OF_ITS_OWN 5
 
 #define POSE_PICTURE_BANK 0x0090
 // How long a standing picture is held before the timer means anything.
@@ -235,6 +247,58 @@ static bool buttons_changed(Pose* p) {
 // The handlers
 // ---------------------------------------------------------------------------
 
+// One less, in decimal. `rounds` is not zero.
+static uint16_t decimal_less_one(uint16_t rounds) {
+  if (rounds & 0x000fu) return (uint16_t)(rounds - 0x0001u);
+  if (rounds & 0x00f0u) return (uint16_t)(rounds - 0x0010u + 0x0009u);
+  if (rounds & 0x0f00u) return (uint16_t)(rounds - 0x0100u + 0x0099u);
+  return (uint16_t)(rounds - 0x1000u + 0x0999u);
+}
+
+// `$80:ED30`, from where it has found the last shot's delay run out: take a
+// round of the weapon held and start its shot.
+static void fire(Pose* p) {
+  const uint16_t player = field(p, PSN_DP_PLAYER);
+  const uint16_t weapon = wram_r16(p->w, (uint16_t)(W_PLAYER_WEAPON + player));
+  if (weapon >= POSE_WEAPONS) {
+    leave_to_rom(p);  // nothing held: the ROM reads past the table
+    return;
+  }
+  const uint16_t inventory = table_word(p, POSE_INVENTORIES, player);
+  set_field(p, PLAYER_DP_PTR, inventory);
+  const uint16_t at = (uint16_t)(inventory + flags_double(&p->flags, weapon));
+  const uint16_t rounds = wram_r16(p->w, at);
+  if (rounds == 0) {
+    PORT_COVER(pose_fire_empty);
+    p->log->fire = POSE_FIRE_EMPTY;
+    return;
+  }
+  if (weapon == POSE_WEAPON_OF_ITS_OWN) {
+    leave_to_rom(p);
+    return;
+  }
+  PORT_COVER(pose_fired);
+  wram_w16(p->w, at, decimal_less_one(rounds));
+
+  // What the shot's thread starts with: the first words of this page, which
+  // `thread_spawn` copies to the new one.
+  set_field(p, 0x00, field(p, STEP_DP_X));
+  set_field(p, 0x02, field(p, STEP_DP_Y));
+  set_field(p, 0x04, field(p, PSN_DP_DIR_HELD));
+  set_field(p, 0x06, field(p, POSE_DP_PICTURES_ROW));
+  const uint16_t shot = (uint16_t)(weapon * POSE_SHOT_BYTES);
+  set_field(p, POSE_DP_SHOT_DELAY,
+            table_word(p, POSE_SHOTS + POSE_SHOT_DELAY, shot));
+  p->log->fire = POSE_FIRE_SHOT;
+  p->log->shot_slot =
+      thread_spawn(p->w, p->rom, table_word(p, POSE_SHOTS, shot),
+                   table_word(p, POSE_SHOTS + POSE_SHOT_BANK, shot), p->page);
+  // The index's add never overflows, and the last compare is against the
+  // weapon with a pose of its own.
+  flags_overflow(&p->flags, false);
+  flags_carry(&p->flags, weapon >= POSE_WEAPON_OF_ITS_OWN);
+}
+
 static void stand(Pose* p) {
   if (buttons_changed(p)) {
     start_again(p);
@@ -245,7 +309,7 @@ static void stand(Pose* p) {
     return;
   }
   if (field(p, PSN_DP_FIRE_A) != 0) {
-    leave_to_rom(p);  // it fires
+    fire(p);
     return;
   }
   if ((field(p, PSN_DP_FIRE_B) | field(p, POSE_DP_6C)) == 0) return;
@@ -297,10 +361,11 @@ static void walk_firing(Pose* p) {
     return;
   }
   if (field(p, POSE_DP_SHOT_DELAY) == 0) {
-    leave_to_rom(p);  // it fires
-    return;
+    fire(p);
+    if (p->log->unported) return;
+  } else {
+    p->log->delayed = true;
   }
-  p->log->delayed = true;
   if (field(p, POSE_DP_TIMER) != 0) {
     p->log->waiting = true;
     return;

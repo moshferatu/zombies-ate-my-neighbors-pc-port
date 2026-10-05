@@ -128,6 +128,40 @@
 #define FLOOR_STATE_START 0x8001u
 #define FLOOR_COOLDOWN_TICKS 0x0020u
 
+typedef enum {
+  FLOOR_TILE_PLAIN,
+  FLOOR_TILE_BELT,
+  FLOOR_TILE_CLEAR,
+  FLOOR_TILE_HARM,
+  FLOOR_TILE_GATED,
+} FloorTile;
+
+// The gated tile: what the player holds decides whether it harms.
+typedef enum {
+  FLOOR_GATE_NONE,
+  FLOOR_GATE_OTHER_WEAPON,
+  FLOOR_GATE_OPEN,
+  FLOOR_GATE_SHUT,
+} FloorGate;
+
+typedef enum {
+  FLOOR_HARM_NONE,
+  FLOOR_HARM_OFF_A,    // the player's state switches it off...
+  FLOOR_HARM_OFF_B,    // ...either of two
+  FLOOR_HARM_COOLING,  // the last hurt has not run out
+  FLOOR_HARM_START,
+} FloorHarm;
+
+typedef enum {
+  FLOOR_BELT_UNASKED,
+  FLOOR_BELT_UP,
+  FLOOR_BELT_DOWN,
+  FLOOR_BELT_LEFT,
+  FLOOR_BELT_RIGHT,
+  FLOOR_BELT_RIGHT_BLOCKED,
+  FLOOR_BELT_NOT,  // asked, and it was none of the four
+} FloorBelt;
+
 // A, X and Y all differ by exit. X starts as the player's own X, becomes the
 // player index on the `$4000` path (`LDX $0E`), and is `terrain_blocked`'s row
 // on the rightward belt; Y is the player's Y except on that same path. Carry
@@ -136,6 +170,13 @@
 typedef struct {
   uint16_t a, x, y;
   bool n, z, c;
+  // For the harness, and only for it: what the tile was and what came of it,
+  // which is what it takes to price the ROM's instructions.
+  FloorTile tile;
+  FloorGate gate;
+  FloorHarm harm;
+  FloorBelt belt;
+  int probes;  // the rightward belt's ground test: how many of its six ran
 } FloorRegs;
 
 // `$80:E86D` -- read the tile under the player and apply what it does.

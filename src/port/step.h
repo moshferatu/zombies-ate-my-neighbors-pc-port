@@ -159,6 +159,14 @@ void step_propose(Wram* w, const Rom* rom, uint16_t dp, StepProposeRegs* out);
 #define TETHER_DP_Y 0x38  // ...and, on the far path, |Ax - Bx|
 #define TETHER_DP_X 0x3a  // ...and, on the far path, the candidate's distance
 
+typedef enum {
+  TETHER_ALONE,    // no partner to be tethered to
+  TETHER_INSIDE,   // within the window round the partner
+  TETHER_CLOSING,  // outside it, and the step brings the two closer
+  TETHER_EQUAL,    // ...or leaves them as far apart, which is refused
+  TETHER_LEASHED,  // ...or takes them further
+} TetherExit;
+
 typedef struct {
   uint16_t a, x, y;
   bool blocked;
@@ -166,6 +174,13 @@ typedef struct {
   // window, `ADC $38` on the far path. The one-player exit runs none and
   // leaves the caller's, which `v_set` says.
   bool v_set, v;
+  // For the harness, which prices the call by them: whose thread asked, how
+  // the test ended, and on the far path which window the candidate was
+  // outside and how many of the four differences were negative.
+  bool mover_a;
+  TetherExit exit;
+  bool outside_x;
+  int negated;
 } TetherRegs;
 
 // `x`/`y` are the candidate position, passed in X and Y exactly as `$80:E4D3`

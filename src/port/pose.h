@@ -32,14 +32,18 @@
 // pose with one out shows it, by the way the player faces, and every other
 // pose hides it.
 //
+// **A handler with a weapon out fires**, once nothing is left of the last
+// shot's delay (`$80:ED30`). Firing takes a round of the weapon, in decimal,
+// and starts the shot: a thread of its own, handed where the player is and
+// which way they face. The weapon says which thread and how long until the
+// next. With no rounds left nothing happens.
+//
 // ## What is the ROM's
 //
-// Firing. A handler with a weapon out and nothing left of the last shot's
-// delay calls `$80:ED30`, which takes a round and spawns the shot. A frame
-// that would fire is left to the ROM, and so are the poses for the weapons in
-// the second band (`$80:EE82`), whatever sets `$6C` (`$80:EF67`), and the two
-// walks those use, `$80:D6B8` and `$80:D6DC`. `pose_supported` says which
-// frames those are.
+// Weapon 5's shot, which goes on to a pose of its own that sleeps. The poses
+// for the weapons in the second band (`$80:EE82`), whatever sets `$6C`
+// (`$80:EF67`), and the two walks those use, `$80:D6B8` and `$80:D6DC`.
+// `pose_supported` says which frames those are.
 //
 // ## Its contract with the ROM
 //
@@ -116,6 +120,12 @@ typedef enum {
 } PoseWeapon;
 
 typedef enum {
+  POSE_FIRE_NONE,
+  POSE_FIRE_EMPTY,  // asked to, with no rounds left
+  POSE_FIRE_SHOT,
+} PoseFire;
+
+typedef enum {
   POSE_WALK_PLAIN,
   POSE_WALK_FIRING,
   POSE_WALK_BAND_B,
@@ -139,6 +149,8 @@ typedef struct {
   int pace;            // ...and the timer started again from this
   int frames, frames_masked;  // pictures shown, and of those with an AND
   PoseWeapon weapon;
+  PoseFire fire;
+  int shot_slot;       // the thread slot the shot took, doubled, or -1 for none
   int hides, hides_kept;  // the weapon hidden, and left alone in state `$0C`
   bool unported;       // the frame reached something that is the ROM's
   bool c, v;           // carry and overflow as the handler leaves them
@@ -146,8 +158,8 @@ typedef struct {
 } PoseLog;
 
 // Would the port run this frame of the handler `handler` names the way the
-// ROM does? False when it would fire, or reach a pose that is not here. It
-// runs the handler to find out, so `w` is a copy.
+// ROM does? False when it would fire weapon 5, or reach a pose that is not
+// here. It runs the handler to find out, so `w` is a copy.
 bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler);
 
 // One frame of each handler, for the player whose page is `page`. `log` may

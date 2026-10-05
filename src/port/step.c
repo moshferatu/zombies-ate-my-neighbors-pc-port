@@ -85,16 +85,19 @@ void step_propose(Wram* w, const Rom* rom, uint16_t dp, StepProposeRegs* out) {
 // far path when there is no second player, and then this reads `$7E:0002` and
 // `$7E:0006` exactly as the ROM does.
 static uint16_t abs_diff(const Wram* w, uint16_t v, uint16_t rec,
-                         uint16_t field) {
+                         uint16_t field, int* negated) {
   uint16_t d = (uint16_t)(v - wram_r16(w, (uint16_t)(rec + field)));
-  return (d & 0x8000u) ? (uint16_t)(~d + 1u) : d;
+  if (!(d & 0x8000u)) return d;
+  (*negated)++;
+  return (uint16_t)(~d + 1u);
 }
 
 // The Manhattan distance from `(x, y)` to a record, which is what both halves
 // of the far path compute.
-static uint16_t manhattan(const Wram* w, uint16_t x, uint16_t y, uint16_t rec) {
-  uint16_t dx = abs_diff(w, x, rec, ACTOR_X);
-  uint16_t dy = abs_diff(w, y, rec, ACTOR_Y);
+static uint16_t manhattan(const Wram* w, uint16_t x, uint16_t y, uint16_t rec,
+                          int* negated) {
+  uint16_t dx = abs_diff(w, x, rec, ACTOR_X, negated);
+  uint16_t dy = abs_diff(w, y, rec, ACTOR_Y, negated);
   return (uint16_t)(dx + dy);
 }
 
@@ -112,6 +115,9 @@ void step_tether_blocked(Wram* w, uint16_t x, uint16_t y, TetherRegs* out) {
   out->x = x;
   out->blocked = false;
   out->v_set = true;
+  out->mover_a = is_a;
+  out->outside_x = false;
+  out->negated = 0;
 
   if (ref == 0) {
     // Nobody to be tethered to, which is every frame of a one-player game.
@@ -120,6 +126,7 @@ void step_tether_blocked(Wram* w, uint16_t x, uint16_t y, TetherRegs* out) {
     out->v = false;
     out->a = 0;  // the `LDA #$0000` that set the direct page, still in A
     out->y = 0;
+    out->exit = TETHER_ALONE;
     return;
   }
 
@@ -134,16 +141,18 @@ void step_tether_blocked(Wram* w, uint16_t x, uint16_t y, TetherRegs* out) {
     if (wy < TETHER_SPAN_Y) {
       PORT_COVER(tether_inside);
       out->a = wy;  // the `CMP` left the biased offset in A
+      out->exit = TETHER_INSIDE;
       return;
     }
     PORT_COVER(tether_outside_y);
   } else {
     PORT_COVER(tether_outside_x);
+    out->outside_x = true;
   }
 
   // Outside the window. `$34` and `$3A` become working space, in that order,
   // and both survive the routine.
-  uint16_t want = manhattan(w, x, y, ref);
+  uint16_t want = manhattan(w, x, y, ref, &out->negated);
   wram_w16(w, TETHER_DP_X, want);
 
   // `LDX $D2 : LDY $D4` — the two players, never the mover and its reference,
@@ -151,10 +160,11 @@ void step_tether_blocked(Wram* w, uint16_t x, uint16_t y, TetherRegs* out) {
   uint16_t a_rec = wram_r16(w, W_PLAYER_A_RECORD);
   uint16_t b_rec = wram_r16(w, W_PLAYER_B_RECORD);
   uint16_t apart_x = abs_diff(w, wram_r16(w, (uint16_t)(a_rec + ACTOR_X)), b_rec,
-                              ACTOR_X);
+                              ACTOR_X, &out->negated);
   wram_w16(w, TETHER_DP_Y, apart_x);
   const uint16_t apart_y =
-      abs_diff(w, wram_r16(w, (uint16_t)(a_rec + ACTOR_Y)), b_rec, ACTOR_Y);
+      abs_diff(w, wram_r16(w, (uint16_t)(a_rec + ACTOR_Y)), b_rec, ACTOR_Y,
+               &out->negated);
   uint16_t apart = (uint16_t)(apart_x + apart_y);
   out->v = add16_overflows(apart_y, apart_x);  // `CLC : ADC $38`
 
@@ -166,9 +176,11 @@ void step_tether_blocked(Wram* w, uint16_t x, uint16_t y, TetherRegs* out) {
   // already are, or it does not happen — equal is refused.
   if (apart > want) {
     PORT_COVER(tether_closing);
+    out->exit = TETHER_CLOSING;
     return;
   }
   PORT_COVER_IF(apart == want, tether_equal, tether_leashed);
+  out->exit = apart == want ? TETHER_EQUAL : TETHER_LEASHED;
   out->blocked = true;
 }
 
@@ -219,8 +231,9 @@ void partner_near(Wram* w, uint16_t rec, uint16_t x, uint16_t y,
   PORT_COVER_IF(is_a, partner_mover_a, partner_mover_b);
   const uint16_t ref = is_a ? b_rec : a_rec;
   out->y = ref;
+  int negated = 0;  // counted for the tether, not for this
 
-  partner_cmp(out, abs_diff(w, x, ref, ACTOR_X));
+  partner_cmp(out, abs_diff(w, x, ref, ACTOR_X, &negated));
   if (out->a >= PARTNER_NEAR_SPAN) {
     PORT_COVER(partner_far_x);
     out->c = false;
@@ -228,7 +241,7 @@ void partner_near(Wram* w, uint16_t rec, uint16_t x, uint16_t y,
   }
 
   // `LDA $0038` — the Y argument comes back out of the scalar it was parked in.
-  partner_cmp(out, abs_diff(w, wram_r16(w, PARTNER_DP_Y), ref, ACTOR_Y));
+  partner_cmp(out, abs_diff(w, wram_r16(w, PARTNER_DP_Y), ref, ACTOR_Y, &negated));
   if (out->a >= PARTNER_NEAR_SPAN) {
     PORT_COVER(partner_far_y);
     out->c = false;
@@ -290,8 +303,9 @@ void actor_publish_pos(Wram* w, uint16_t dp, uint16_t in_x, uint16_t in_y,
 // rather than `point - record`) and the magnitude is the same either way,
 // including at `$8000`, where both formulations negate to `$8000` again.
 static uint16_t chebyshev(const Wram* w, uint16_t x, uint16_t y, uint16_t rec) {
-  uint16_t dx = abs_diff(w, x, rec, ACTOR_X);
-  uint16_t dy = abs_diff(w, y, rec, ACTOR_Y);
+  int negated = 0;  // counted for the tether, not for this
+  uint16_t dx = abs_diff(w, x, rec, ACTOR_X, &negated);
+  uint16_t dy = abs_diff(w, y, rec, ACTOR_Y, &negated);
   return dy >= dx ? dy : dx;
 }
 
