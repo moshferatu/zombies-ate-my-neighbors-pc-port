@@ -15861,3 +15861,125 @@ player's states `$02` and `$0A` are what `player_frame` turns down most in
 the live runs, 3,172 and 1,936 passes of 158,609, all past the end of the
 movies' input. The corpus does not stay in either, so each needs a movie
 before it can be checked.
+
+## The flying saucer and the two screens before a game (2026-10-04)
+
+Four entries: `saucer_frame` and `saucer_frame_shown` (`port/saucer.h`),
+`title_menu_frame` and `players_screen_frame` (`port/menus.h`).
+
+### A stretch that ends deeper in the stack
+
+The saucer's loop is the usual one: sleep a tick, a state body by a computed
+`RTS`, then `JSR $87E8` for the lights. `saucer_frame` enters at `$82:87B1`,
+where the yield returns, and leaves at `$82:87AD`, the next `JSL
+thread_yield`, or at `$82:87C0` with its health gone.
+
+Two of the four bodies end `JSR $8337 : JSR $839C : RTS`, and `$82:839C`,
+which shows the hatch, ends `LDA #$0001 : JSL thread_yield : RTS`. That
+yield is two calls below the loop. So the stretch has a third exit,
+`$82:83DF`, and at it the stack is four bytes deeper: the loop's `PEA
+$87B8`, and under it the body's `JSR`, `$862F` or `$8716`. The shim writes
+both words and moves `out->s`. Nothing in the port reads them, but the
+thread comes back through them.
+
+`saucer_frame_shown` is that coming back, entered at `$82:83E3`. Its
+`accepts` reads the two words off the stack and takes the stretch only if
+they are a body's and the loop's. The port then does what the two `RTS`s
+lead to, the lights and the test of the health, and the shim puts the stack
+pointer back up.
+
+One thing follows from entering below where the stretch ends. `verify`
+waives the stack between the deepest the ROM's pointer got and where it
+*started*. This stretch starts four bytes down, so what the ROM pushes above
+that is not waived: the `JSR` to the lights goes where the `PEA` was, and a
+`JSL` the lights make goes where the body's `JSR` was. The shim writes those
+bytes as the ROM leaves them, `$87BB` always and `$82`, `$88` on a pass
+that changes the lights.
+
+### The saucer's bill
+
+The pass is priced as the others are, a run for each straight stretch of
+the ROM and 6 for each branch taken, with what it calls priced by the
+functions that already price them: `nearest_cycles`, `player_bearing_cycles`,
+`bounds_cycles`, `rng_cycles`, `thread_spawn_cycles`, `figure_colours_cycles`.
+Three had no price by path and have one here: `$80:83AE` by the slot the job
+went to, `$80:BE0C` by the record it took, and `$80:BE41` by where in the
+display list the record was. For the last the port writes that place in its
+log before it frees the record.
+
+`actor_nearest` runs up to three times a pass, and its work is summed.
+
+### The two screens
+
+Each frame enters after the loop's yield and leaves at the next, or past
+the compare of the pass count with 900. That exit is followed by a `PHP`
+on the title's menu, so the frame gives the compare's flags.
+
+A pad is taken by `LDA $006E : BIT $62 : BNE : STA $62 : CMP #$0000 : BEQ`.
+The `BIT` puts bit 14 of the remembered buttons in the overflow, and the
+`CMP` sets carry. Both are in the status byte `thread_yield` pushes, so the
+port follows both. With both players joined no pad is looked at, and the
+overflow is the thread's own: `p_keep`.
+
+A pass on which a press counts calls `apu_play_sfx`, and the guard hands
+those to the ROM. It runs the pass on a copy to find out.
+
+### The data bank
+
+`accepts` took only bank `$80`, and every movie verified. The live share did
+not move, and the residue still showed the loops' instructions at full
+count. The entries were not being declined: an entry whose `accepts` says
+no is not a call at all, and no column counts it.
+
+The bank is `$80` on the first visit and `$00` after. `$80:895A` clears
+WRAM with three `MVN`s when a game is lost, `MVN` leaves the data bank at
+its destination's, and the last is `MVN $00,$00`. Nothing puts it back
+before the title.
+
+Through `$00` the two reads of the menu's table are the cartridge's slow
+copy: 8 a byte and not 6 while `$420D` is set, 8 more for the four bytes.
+`verify` holds the price to that on `demo-end.zmv`, which the corpus now
+runs to 9,000 frames, far enough for the title to come round again: 1,800
+passes of the menu there, half through each bank.
+
+### Checked
+
+The corpus: 24,932,816 calls across 51 movies, 0 diverged, 656 of 823
+sites, 29 of the 34 new ones taken. The sweep: 38,969,187 calls over 56
+records, 0 diverged. All four entries are exact on every call priced.
+
+No movie shoots the saucer. The flash, the saucer shot down and the spot
+changing sides were verified under `--poke`, on `level21.zmv`, where the
+saucer's page is `$0700`:
+
+    --poke 3000:0732=0004     a hit: the flash begins, and four passes on, ends
+    --poke 4000:0730=FFFF     no health: out past the test
+    --poke 4590+:0728=0000    the line its quarry crosses: the spot changes sides
+
+**Lockstep**: 48 of 51 never part, the same three as before on the same
+passes. `demo-end` is clean over its 8,999 passes.
+
+**Live**: the residue over the twelve movies is 6.4 million instructions,
+from 7.6. `level21` goes from 97.2% to 98.3%.
+
+### A final frame that differs
+
+`level21`'s last frame under substitution was not the stock core's, last
+round, and nobody had looked. Four of nine movies differ at frame 20,000:
+`level9`, `level13`, `level21`, `level37`. The build before this round
+gives the same four pictures as this one.
+
+Lockstep to 20,000 frames on each of the four never parts. No live byte
+differs on any of 19,999 passes, and VRAM, CGRAM, OAM and the scroll agree
+on all of them.
+
+`level9`'s frame 20,000 is the stock core's frame 19,999 byte for byte, and
+`level13`'s is its 19,998. `level37`'s is both of those, which are the same
+picture. `level21`'s was not found: it is no stock frame from 19,940 to
+20,060, so for that one the offset is an inference and not a measurement.
+All four are past a lost game, on a screen with a drifting backdrop.
+Lockstep leaves `lzss_decompress`, `camera_follow` and `camera_scroll` to
+the ROM for the reason "What actually ends a lockstep run" gives: a load
+comes back on a frame boundary their cycles decide. The game substitutes
+them. So after a load the two are the same game some frames apart, and a
+picture that moves shows it.

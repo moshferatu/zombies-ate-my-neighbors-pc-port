@@ -5,6 +5,102 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The flying saucer, and the two screens before a game (2026-10-04)
+
+What the 65816 still executed over the twelve movies goes from 7.6 to
+**6.4** million instructions of work. Live, `level21` goes from 97.2% to
+**98.3%**, and `level5`, `level13`, `level33`, `level37` and `level41` by 0.1
+each, to 98.5%, 98.3%, 99.4%, 98.3% and 98.1%. The other six are unchanged.
+The game registers 230 routines.
+
+* **The flying saucer**, `src/port/saucer.c`. The big figure of level 21 is
+  the saucer of "The Day the Earth Ran Away": a thread at `$82:873C` with
+  four states, drawn as a background. It keeps a spot 116 to one side of
+  itself and flies to put the spot on whoever is nearest. Close, it shoots.
+  Closer, it opens a hatch and hangs there, and the hatch is the only part
+  of it that can be hit. Far off, it swoops. `saucer_frame` is one pass of
+  its loop, from `$82:87B1` to the next yield. It was 0.8 million of the
+  7.6, in the rows `$82:84CE`, `$82:87E8`, `$82:8337`, `$82:873C` and
+  `$82:839C`.
+* **A pass that sleeps in the middle.** The routine that shows the hatch
+  calls `thread_yield` itself, two calls below the loop. A pass that gets
+  there ends there, with two return addresses on the thread's stack, and
+  the thread wakes at `$82:83E3`. So the stretch leaves with the stack four
+  bytes deeper than it found it, and the shim writes those four as the
+  ROM's `PEA` and `JSR` do. A second entry, `saucer_frame_shown`, takes the
+  thread from where it wakes: it checks the two addresses are the ones it
+  knows, pulls them, and runs the rest of the pass. No creature's frame
+  before this one left the stack deeper than it found it.
+* **The two screens before a game**, `src/port/menus.c`. `$80:96B9` and
+  `$80:98EA` are not level loaders, which is what the last round called
+  them. They are the title's menu and the screen where each player presses
+  Start to join: loops in the main thread that sleep a tick a pass, for
+  fifteen seconds at most. The live runs sit in them after a game is lost.
+  `title_menu_frame` and `players_screen_frame` are a pass of each. A pass
+  on which a press counts makes a sound, and those are the ROM's: one or
+  two a movie.
+* **The data bank is `$00` the second time.** The first version of the two
+  frames took the screens at the start of every movie and none of the
+  visits after, which are all the live runs' tails are. `$80:895A`, the
+  clear a lost game ends with, is three `MVN`s, and the last leaves the
+  data bank at `$00`. The title then runs with it. The menu's table is the
+  same cartridge bytes through either bank and 8 cycles dearer through
+  `$00`, and the price says so. `demo-end.zmv` runs to 9,000 frames in the
+  corpus now, from 6,400, which is far enough to come round to the title
+  again.
+
+* **Checked.** The corpus verifies at 24,932,816 calls across 51 movies
+  with 0 diverged, and 656 of 823 coverage sites; 29 of the 34 new ones are
+  taken. `verify --level` over all 56 records, 38,969,187 calls, 0
+  diverged. The saucer is on two records there, and the two screens on all
+  56.
+* **Prices.** Every call priced is exact, on the corpus and on the sweep:
+  13,374 and 9,093 passes of the saucer, 3,638 and 1,479 rests of a pass,
+  12,382 and 448 passes of the title's menu, 11,208 and 6,776 of the
+  players' screen.
+* **What only a poke reaches.** No movie shoots the saucer, and
+  `a84ac_took`, its hit handler taking a hit, is untaken on the corpus too.
+  The flash of a hit, the saucer shot down and the spot changing sides were
+  verified on asserted states: on `level21.zmv`, `--poke 3000:0732=0004`
+  for a hit, `4000:0730=FFFF` for no health and `4590+:0728=0000` for the
+  line its quarry crosses. All passes agree and are priced exactly. The
+  fifth untaken site, a move down off the level, is taken on the sweep.
+* **Lockstep** over the corpus: 48 of 51 never part, the same three
+  level-25 movies as before on the same passes. The eight movies with a
+  saucer end within 26 cycles of where they did, and no other row moved
+  but `demo-end`'s, which is longer.
+* **The pictures that differ are a frame or two late, on three of four.** The last round
+  left `level21`'s final frame differing from the stock core's and did not
+  look. Four of nine movies differ at frame 20,000 now, `level9`, `level13`,
+  `level21` and `level37`, and all four did before this round: the last
+  round's build gives the same four pictures. Under lockstep to 20,000
+  frames none of the four ever parts, with no live byte different and VRAM,
+  CGRAM, OAM and the scroll equal on every pass. `level9`'s frame 20,000 is
+  the stock core's frame 19,999, and `level13`'s is its 19,998. `level37`'s
+  is both of those, which are the same picture. `level21`'s was not found:
+  it is no stock frame from 19,940 to 20,060, so for that one the offset is
+  an inference and not a measurement. Each is past a lost game, on a screen
+  whose backdrop drifts, and lockstep leaves `lzss_decompress` and the
+  camera to the ROM because a load comes back on a frame boundary that their
+  cycles decide. So the game is the same game some frames apart after a
+  load. `level1`, `level5`, `level33`, `level41` and `level49` end on the
+  stock core's own frame.
+* **What the round taught.** A lockstep run made by hand, with two of the
+  three exclusions `verify_corpus.ps1` gives, parted on `demo-end` at pass
+  4,688 with the new frames in, and read as their fault until the game's
+  own run of the movie came out the same length to the cycle. And a share
+  that does not move says more than a `verify` that passes: both screens
+  verified on every movie and the residue still held their loops, because
+  an entry whose `accepts` says no is not a call, and is counted nowhere.
+* **Next.** Level 21 has one more creature, a thread at `$81:C87B` that
+  walks in from the side of the screen (`$81:C824`, `$81:C51F`). No movie
+  reaches it inside its checked frames: it comes after the input ends, so
+  a movie comes before the port. Then the creatures of levels 13 and 41 at
+  `$81:DC24`, `$81:9107` and `$81:A74D`. Outside a level: the title's logo
+  at `$80:94AF`, which builds a wave a line at a time with `$80:9C8C`; the
+  clears `$80:895A` and `$80:8992`, which are long enough for an interrupt
+  to land in; and `$80:A462`, which draws a screenful of a level's map.
+
 ### The instructions between the ports: returns, calls, and the NMI's hardware (2026-10-04)
 
 What the 65816 still executed over the twelve movies goes from 19.5 to

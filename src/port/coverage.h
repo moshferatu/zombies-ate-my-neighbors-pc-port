@@ -899,6 +899,44 @@
   X(bystander_one_drawn, "bystander_frame", "one record on screen, which is not looked at") \
   X(bystander_ended, "bystander_frame", "told to end") \
                                                                                    \
+  /* $82:87B1, $82:83E3 -- the flying saucer's pass. */                            \
+  X(saucer_hunted, "saucer_frame", "a pass hunting") \
+  X(saucer_on_target, "saucer_frame", "its quarry under the spot: it opens over them") \
+  X(saucer_far, "saucer_frame", "its quarry far off: it swoops") \
+  X(saucer_spent_swooped, "saucer_frame", "out of shots, and the draw said swoop") \
+  X(saucer_spent_opened, "saucer_frame", "...or said open") \
+  X(saucer_shot, "saucer_frame", "a shot") \
+  X(saucer_shot_waited, "saucer_frame", "the draw said shoot, too soon after the last") \
+  X(saucer_changed_sides, "saucer_frame", "its quarry crossed it, and the spot changed sides") \
+  X(saucer_held, "saucer_frame", "a slanted way, on the pass in four it does not move") \
+  X(saucer_clamped, "saucer_frame", "a move from left of the left margin, brought to it") \
+  X(saucer_edge_across, "saucer_frame", "the move across is off the level, and is not taken") \
+  X(saucer_edge_down, "saucer_frame", "...and the move down") \
+  X(saucer_lost_them, "saucer_frame", "on target with no player under the spot: it shuts and hunts") \
+  X(saucer_on_target_wobbled, "saucer_frame", "on target, a step of the circle") \
+  X(saucer_swooped, "saucer_frame", "a pass swooping") \
+  X(saucer_swoop_stopped, "saucer_frame", "a swoop stopped by the level's edge") \
+  X(saucer_swoop_over, "saucer_frame", "a swoop's passes ran out: it opens") \
+  X(saucer_open_wobbled, "saucer_frame", "open, a step of the circle") \
+  X(saucer_open_timed_out, "saucer_frame", "open for long enough: it shuts and hunts") \
+  X(saucer_open_reached, "saucer_frame", "open with its quarry within reach: the same") \
+  X(saucer_hatch_opened, "saucer_frame", "a record taken for the hatch") \
+  X(saucer_hatch_shut, "saucer_frame", "...and given back") \
+  X(saucer_hatch_turned, "saucer_frame", "the hatch's next picture") \
+  X(saucer_flash_began, "saucer_frame", "hit since the last pass: the flash's colours and mosaic") \
+  X(saucer_flash_over, "saucer_frame", "the flash ran out: its own colours again") \
+  X(saucer_shown, "saucer_frame_shown", "the rest of a pass that slept showing the hatch") \
+  X(saucer_lights_changed, "saucer_frame", "the fifth pass: the lights change") \
+  X(saucer_shot_down, "saucer_frame", "its health gone: the thread goes on to its end") \
+                                                                                   \
+  /* $80:9748, $80:99C1 -- the two screens before a game. */                       \
+  X(title_menu_waited, "title_menu_frame", "a pass with no press that counts") \
+  X(title_menu_blinked, "title_menu_frame", "the tenth pass: the chosen one blinks") \
+  X(title_menu_over, "title_menu_frame", "the count ran out, or a choice ran it out") \
+  X(players_screen_waited, "players_screen_frame", "a pass with no press that counts") \
+  X(players_screen_blinked, "players_screen_frame", "the tenth pass: who has not joined blinks") \
+  X(players_screen_over, "players_screen_frame", "the count ran out") \
+                                                                                   \
   /* $80:C872, $80:C8B8, $80:A084, $80:A09E, $82:D88C -- DMA and its jobs. */       \
   X(dma_to_cgram, "dma_to_cgram", "colours sent") \
   X(dma_to_vram, "dma_to_vram", "bytes sent to VRAM") \

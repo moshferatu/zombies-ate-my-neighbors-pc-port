@@ -30,6 +30,7 @@
 #include "port/levelmap.h"
 #include "port/lzss.h"
 #include "port/mainloop.h"
+#include "port/menus.h"
 #include "port/monster.h"
 #include "port/palcycle.h"
 #include "port/palfade.h"
@@ -39,6 +40,7 @@
 #include "port/player.h"
 #include "port/player_frame.h"
 #include "port/rng.h"
+#include "port/saucer.h"
 #include "port/bodies.h"
 #include "port/sched.h"
 #include "port/score.h"
@@ -8719,6 +8721,764 @@ static const uint32_t BYSTANDER_FRAME_EXITS[] = {
     BYSTANDER_YIELD_PC, BYSTANDER_MET_PC, BYSTANDER_END_PC};
 
 // ---------------------------------------------------------------------------
+// The flying saucer -- see `port/saucer.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=82`, branches not taken, and a
+// taken branch adds 6, a `BRA` among them. The thread's own runs are priced
+// on its page. The runs of what it calls in bank `$80` are priced apart,
+// because the ones that use the direct page set their own.
+static const CosimRun SAUCER_RUN_ENTER = {142, 8, 1};  // $87B1 PEA : LDA $0E : DEC : PHA : RTS
+static const CosimRun SAUCER_RUN_LIGHTS_JSR = {40, 3, 0};  // $87B9 JSR $87E8
+static const CosimRun SAUCER_RUN_FATE = {40, 4, 1};  // $87BC LDA $30 : BPL
+static const CosimRun SAUCER_RUN_TICKS = {18, 3, 0};  // $87AA LDA #$0001
+static const CosimRun SAUCER_RUN_RTS = {40, 1, 0};  // any RTS
+static const CosimRun SAUCER_RUN_LIGHTS_HEAD = {40, 4, 1};  // $87E8 LDA $22 : BEQ
+static const CosimRun SAUCER_RUN_LIGHTS_COUNT = {50, 2, 1};  // $87EC DEC $22
+static const CosimRun SAUCER_RUN_LIGHTS_PLACE = {258, 24, 1};  // $87EE-$8805, to DEC $0A : BNE
+static const CosimRun SAUCER_RUN_LIGHTS_CHANGE = {222, 23, 3};  // $8806-$881C, to the JSL
+static const CosimRun SAUCER_RUN_LIGHTS_PHASE = {40, 4, 1};  // $881D LDA $0C : BNE
+static const CosimRun SAUCER_RUN_LIGHTS_JOB = {90, 10, 0};  // $8821-$882A, to the JSL
+static const CosimRun SAUCER_RUN_AIM = {632, 59, 4};  // $84CE-$8504, all of it
+static const CosimRun SAUCER_RUN_HUNT_HEAD = {174, 16, 2};  // $8505-$8514, to CMP #$000C : BCS
+static const CosimRun SAUCER_RUN_JMP = {18, 3, 0};  // any JMP
+static const CosimRun SAUCER_RUN_BEGIN_ON_TARGET = {154, 11, 2};  // $85E9-$85F3
+static const CosimRun SAUCER_RUN_HUNT_FAR = {30, 5, 0};  // $8518 CMP #$00FA : BCC
+static const CosimRun SAUCER_RUN_HUNT_NEAR = {30, 5, 0};  // $8520 CMP #$0040 : BCS
+static const CosimRun SAUCER_RUN_HUNT_SHOTS = {80, 7, 2};  // $8525 LDA $24 : CLC : ADC $22 : BMI
+static const CosimRun SAUCER_RUN_HUNT_DRAW = {84, 9, 0};  // $85A4 JSL : CMP #$007D : BCC
+static const CosimRun SAUCER_RUN_HUNT_OPEN = {110, 13, 2};  // $85B0-$85BC, to JMP $86D1
+static const CosimRun SAUCER_RUN_JSR = {40, 3, 0};  // any JSR
+static const CosimRun SAUCER_RUN_HUNT_WAIT = {62, 4, 1};  // $852F DEC $2C : BPL
+static const CosimRun SAUCER_RUN_HUNT_LOOK = {148, 14, 3};  // $8533-$8540, to CMP $1E62 : BCS
+static const CosimRun SAUCER_RUN_HUNT_LINE = {80, 7, 1};  // $8541 LDA $0002,Y : CMP $28 : BCC, or BCS
+static const CosimRun SAUCER_RUN_HUNT_AIM_BRA = {52, 5, 0};  // $8548 JSR $84CE : BRA
+static const CosimRun SAUCER_RUN_HUNT_BEARING = {174, 15, 2};  // $8557-$8565
+static const CosimRun SAUCER_RUN_HUNT_STRAIGHT = {58, 7, 1};  // $8566 LDA $10 : AND #$0002 : BNE
+static const CosimRun SAUCER_RUN_HUNT_FRAME = {64, 8, 0};  // $856D LDA $0020 : AND #$0003 : BEQ
+static const CosimRun SAUCER_RUN_HUNT_STEP = {118, 14, 1};  // $8575-$8580, to LDA $85C5,X : BEQ
+static const CosimRun SAUCER_RUN_HUNT_SIGN = {12, 2, 0};  // $8581 BMI
+static const CosimRun SAUCER_RUN_HUNT_DEY = {12, 1, 0};  // $8583 DEY
+static const CosimRun SAUCER_RUN_HUNT_STEP_X = {206, 18, 4};  // $8584-$8593
+static const CosimRun SAUCER_RUN_HUNT_STEP_Y = {190, 15, 1};  // $8594-$85A0, the JSR and the RTS
+static const CosimRun SAUCER_RUN_MOVE_HEAD = {116, 13, 2};  // $8337-$8343, to CPX #$0080 : BCS
+static const CosimRun SAUCER_RUN_MOVE_CLAMP = {46, 5, 1};  // $8344 LDX #$0080 : STX $18
+static const CosimRun SAUCER_RUN_MOVE_TEST_X = {100, 9, 0};  // $8349 LDY $1E64 : JSL : BCS
+static const CosimRun SAUCER_RUN_MOVE_TAKE_X = {168, 11, 4};  // $8352-$835C
+static const CosimRun SAUCER_RUN_MOVE_TEST_Y = {128, 11, 1};  // $835D-$8367
+static const CosimRun SAUCER_RUN_MOVE_TAKE_Y = {112, 7, 2};  // $8368-$836E
+static const CosimRun SAUCER_RUN_MOVE_TAIL = {86, 6, 1};  // $836F LDA $16 : CMP #$0001 : RTS
+static const CosimRun SAUCER_RUN_SHOOT_HEAD = {84, 9, 0};  // $8375 JSL : CMP #$001E : BCS
+static const CosimRun SAUCER_RUN_SHOOT_WAIT = {40, 4, 1};  // $837E LDA $22 : BNE
+static const CosimRun SAUCER_RUN_SHOOT_FIRE = {328, 26, 4};  // $8382-$839B, the RTS too
+static const CosimRun SAUCER_RUN_SHOW_HEAD = {40, 4, 1};  // $839C LDA $32 : BMI
+static const CosimRun SAUCER_RUN_BRANCH = {12, 2, 0};  // a branch by itself
+static const CosimRun SAUCER_RUN_SHOW_FOUR = {30, 5, 0};  // $83A2 CMP #$0004 : BEQ
+static const CosimRun SAUCER_RUN_SHOW_OVER = {102, 12, 0};  // $83E4-$83EF, the BRA taken
+static const CosimRun SAUCER_RUN_SHOW_HIT_A = {136, 15, 1};  // $83F0-$83FE, to the first JSL
+static const CosimRun SAUCER_RUN_SHOW_HIT_B = {200, 22, 1};  // $83FF-$8414, the BRA taken
+static const CosimRun SAUCER_RUN_SHOW_COUNT = {112, 6, 2};  // $83A7 DEC $32 : DEC $38 : BPL
+static const CosimRun SAUCER_RUN_SHOW_NEXT = {284, 29, 4};  // $83AD-$83C5
+static const CosimRun SAUCER_RUN_SHOW_PLACE = {254, 25, 1};  // $83C6-$83DE, to the JSL
+static const CosimRun SAUCER_RUN_OPEN_HATCH_HEAD = {58, 7, 1};  // $8439 LDA $36 : CMP #$FFFF : BNE
+static const CosimRun SAUCER_RUN_OPEN_HATCH_A = {54, 4, 0};  // $8440 JSL
+static const CosimRun SAUCER_RUN_OPEN_HATCH_B = {884, 82, 4};  // $8444-$8495
+static const CosimRun SAUCER_RUN_SHUT_HATCH = {258, 22, 2};  // $8496-$84AB
+static const CosimRun SAUCER_RUN_SWOOP_BEGIN_A = {180, 17, 2};  // $8657-$8667, to the first JSL
+static const CosimRun SAUCER_RUN_SWOOP_BEGIN_B = {256, 22, 3};  // $8668-$867D
+static const CosimRun SAUCER_RUN_ON_TARGET_HEAD = {158, 15, 1};  // $85F4-$8602, to TAX : BEQ
+static const CosimRun SAUCER_RUN_ON_TARGET_LOST = {58, 6, 0};  // $8631 JSR $8496 : JMP $84CE
+static const CosimRun SAUCER_RUN_ON_TARGET_SHOOT = {104, 11, 0};  // $8603-$860D, to AND #$0003 : BNE
+static const CosimRun SAUCER_RUN_WOBBLE = {432, 38, 4};  // $860E-$862F, or $86F5-$8716
+static const CosimRun SAUCER_RUN_SWOOP_HEAD = {62, 4, 1};  // $867E DEC $2A : BPL
+static const CosimRun SAUCER_RUN_SWOOP_OVER = {110, 13, 2};  // $86A0-$86AC, to JMP $86D1
+static const CosimRun SAUCER_RUN_SWOOP_GO = {300, 29, 3};  // $8684-$869C, to JSR : BCC
+static const CosimRun SAUCER_RUN_SWOOP_STOP = {68, 3, 1};  // $869D STZ $2A : RTS
+static const CosimRun SAUCER_RUN_OPEN_HEAD = {142, 10, 1};  // $86D1-$86DA, to DEC $2A : BMI
+static const CosimRun SAUCER_RUN_OPEN_SHUT = {80, 4, 0};  // $8718 JSR $8496 : RTS
+static const CosimRun SAUCER_RUN_OPEN_NEAR = {156, 13, 2};  // $86DB-$86E7, to CMP $2E : BCC
+static const CosimRun SAUCER_RUN_OPEN_STAY = {110, 13, 1};  // $86E8-$86F4, to AND #$0003 : BNE
+static const CosimRun SAUCER_RUN_BRA = {12, 2, 0};  // check BRA
+static const CosimRun SAUCER_RUN_HANDLER_SET = {168, 11, 0};  // $80:8475, all of it
+static const CosimRun SAUCER_RUN_ALLOC_HEAD = {116, 11, 0};  // $80:BE0C-$BE16
+static const CosimRun SAUCER_RUN_ALLOC_BUSY = {130, 14, 0};  // $80:BE17-$BE24, a record in use
+static const CosimRun SAUCER_RUN_ALLOC_FREE = {64, 6, 0};  // $80:BE17 LDA : LSR : BCC
+static const CosimRun SAUCER_RUN_ALLOC_TAKE = {272, 19, 0};  // $80:BE28-$BE3A
+static const CosimRun SAUCER_RUN_FREE_HEAD = {98, 9, 0};  // $80:BE41-$BE49, to CMP $000C,Y : BNE
+static const CosimRun SAUCER_RUN_FREE_LIVE = {64, 6, 0};  // $80:BE4A LDA : LSR : BCC
+static const CosimRun SAUCER_RUN_FREE_CLEAR = {172, 15, 1};  // $80:BE50-$BE5E, to CPY $1B5E : BNE
+static const CosimRun SAUCER_RUN_FREE_FIRST = {86, 8, 0};  // $80:BE5F-$BE66, the BRA taken
+static const CosimRun SAUCER_RUN_FREE_WALK = {34, 3, 0};  // $80:BE67 LDX $1B5E
+static const CosimRun SAUCER_RUN_FREE_NEXT = {52, 5, 0};  // $80:BE6A LDY $0012,X : BEQ
+static const CosimRun SAUCER_RUN_FREE_IS = {40, 4, 1};  // $80:BE6F CPY $38 : BEQ
+static const CosimRun SAUCER_RUN_FREE_ON = {24, 3, 0};  // $80:BE73 TYX : BRA
+static const CosimRun SAUCER_RUN_FREE_UNLINK = {74, 5, 1};  // $80:BE76 LDA $0012,Y : STA $12,X
+static const CosimRun SAUCER_RUN_FREE_PLD = {34, 1, 0};  // $80:BE7B PLD
+static const CosimRun SAUCER_RUN_FREE_RTL = {42, 1, 0};  // $80:BE7C RTL
+static const CosimRun SAUCER_RUN_QUEUE_A_HEAD = {92, 9, 0};  // $80:83AE-$83B6
+static const CosimRun SAUCER_RUN_QUEUE_A_FULL = {76, 2, 0};  // $80:83D3 PLY : RTL
+static const CosimRun SAUCER_RUN_QUEUE_A_FIRST = {18, 3, 0};  // $80:83B7 LDX #$0038
+static const CosimRun SAUCER_RUN_QUEUE_A_TEST = {52, 5, 0};  // $80:83BA LDY : BEQ
+static const CosimRun SAUCER_RUN_QUEUE_A_NEXT = {60, 6, 0};  // $80:83BF DEX x4 : BNE
+static const CosimRun SAUCER_RUN_QUEUE_A_STORE = {248, 14, 0};  // $80:83C5-$83D2
+static const CosimRun SAUCER_RUN_TAKEN = {6, 0, 0};
+
+typedef struct {
+  CosimRun own;
+  int calls;
+  int draw;  // which of the pass's draws is next
+  const SaucerLog* log;
+  const CosimRegs* in;
+  const Rom* rom;
+} SaucerBill;
+
+static void saucer_add(SaucerBill* b, const CosimRun* r) {
+  run_add(&b->own, r, 1);
+}
+
+static void saucer_taken(SaucerBill* b) { saucer_add(b, &SAUCER_RUN_TAKEN); }
+
+static void saucer_draw_bill(SaucerBill* b) {
+  b->calls += rng_cycles(b->log->draw_overflow[b->draw++], b->in->fastrom);
+}
+
+static void saucer_bearing_bill(SaucerBill* b) {
+  b->calls += player_bearing_cycles(&b->log->players, b->in->fastrom);
+}
+
+// `$80:83AE`, by where the job went. The search comes down from slot 14 and
+// takes slot 0 without testing it.
+static int saucer_queue_a_cycles(int slot, bool fast) {
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SAUCER_RUN_QUEUE_A_HEAD, 1);
+  if (slot < 0) {
+    run_add(&run, &SAUCER_RUN_TAKEN, 1);
+    run_add(&run, &SAUCER_RUN_QUEUE_A_FULL, 1);
+    return cosim_run_cycles(&run, fast);
+  }
+  const int busy = (0x38 - slot) / 4;
+  run_add(&run, &SAUCER_RUN_QUEUE_A_FIRST, 1);
+  run_add(&run, &SAUCER_RUN_QUEUE_A_TEST, busy);
+  run_add(&run, &SAUCER_RUN_QUEUE_A_NEXT, busy);
+  if (slot != 0) {
+    run_add(&run, &SAUCER_RUN_TAKEN, busy);  // each `BNE` back
+    run_add(&run, &SAUCER_RUN_QUEUE_A_TEST, 1);
+    run_add(&run, &SAUCER_RUN_TAKEN, 1);  // the `BEQ` out
+  } else {
+    run_add(&run, &SAUCER_RUN_TAKEN, busy - 1);  // the last `BNE` falls through
+  }
+  run_add(&run, &SAUCER_RUN_QUEUE_A_STORE, 1);
+  return cosim_run_cycles(&run, fast);
+}
+
+// `$80:BE0C`, by the record it took: the search comes down from the last.
+static int saucer_alloc_cycles(uint16_t record, bool fast) {
+  const int busy = (ACTOR_SLOT_LAST - record) / ACTOR_SLOT_STRIDE;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SAUCER_RUN_ALLOC_HEAD, 1);
+  run_add(&run, &SAUCER_RUN_ALLOC_BUSY, busy);
+  run_add(&run, &SAUCER_RUN_TAKEN, busy);
+  run_add(&run, &SAUCER_RUN_ALLOC_FREE, 1);
+  run_add(&run, &SAUCER_RUN_TAKEN, 1);
+  run_add(&run, &SAUCER_RUN_ALLOC_TAKE, 1);
+  return cosim_run_cycles(&run, fast);
+}
+
+// `$80:BE41`, by where in the display list the record was. Its direct-page
+// instructions run on page zero.
+static int saucer_free_cycles(int place, bool fast) {
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SAUCER_RUN_FREE_HEAD, 1);
+  if (place == -1) {
+    run_add(&run, &SAUCER_RUN_TAKEN, 1);
+    run_add(&run, &SAUCER_RUN_FREE_RTL, 1);
+    return cosim_run_cycles(&run, fast);
+  }
+  run_add(&run, &SAUCER_RUN_FREE_LIVE, 1);
+  if (place == -2) {
+    run_add(&run, &SAUCER_RUN_TAKEN, 1);
+    run_add(&run, &SAUCER_RUN_FREE_RTL, 1);
+    return cosim_run_cycles(&run, fast);
+  }
+  run_add(&run, &SAUCER_RUN_FREE_CLEAR, 1);
+  if (place == 0) {
+    run_add(&run, &SAUCER_RUN_FREE_FIRST, 1);
+    run_add(&run, &SAUCER_RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &SAUCER_RUN_TAKEN, 1);
+    run_add(&run, &SAUCER_RUN_FREE_WALK, 1);
+    run_add(&run, &SAUCER_RUN_FREE_NEXT, place);
+    run_add(&run, &SAUCER_RUN_FREE_IS, place);
+    run_add(&run, &SAUCER_RUN_FREE_ON, place - 1);
+    run_add(&run, &SAUCER_RUN_TAKEN, place - 1);  // each `BRA` back
+    run_add(&run, &SAUCER_RUN_TAKEN, 1);  // the `BEQ` that found it
+    run_add(&run, &SAUCER_RUN_FREE_UNLINK, 1);
+  }
+  run_add(&run, &SAUCER_RUN_FREE_PLD, 1);
+  run_add(&run, &SAUCER_RUN_FREE_RTL, 1);
+  return cosim_run_cycles(&run, fast);
+}
+
+static void saucer_colours_bill(SaucerBill* b) {
+  b->calls += figure_colours_cycles(b->log->colours_slot, b->in->fastrom);
+}
+
+static void saucer_job_bill(SaucerBill* b) {
+  b->calls += saucer_queue_a_cycles(b->log->job_slot, b->in->fastrom);
+}
+
+static void saucer_handler_bill(SaucerBill* b) {
+  b->calls += cosim_run_cycles(&SAUCER_RUN_HANDLER_SET, b->in->fastrom);
+}
+
+// `$82:84CE`. Its `actor_nearest` is in the pass's sum.
+static void saucer_aim_bill(SaucerBill* b) { saucer_add(b, &SAUCER_RUN_AIM); }
+
+static void saucer_move_bill(SaucerBill* b) {
+  const SaucerLog* log = b->log;
+  saucer_add(b, &SAUCER_RUN_MOVE_HEAD);
+  saucer_add(b, log->clamped ? &SAUCER_RUN_MOVE_CLAMP : &SAUCER_RUN_TAKEN);
+  saucer_add(b, &SAUCER_RUN_MOVE_TEST_X);
+  b->calls += bounds_cycles(log->edge[0].exit, b->in->fastrom);
+  saucer_add(b, log->edge[0].outside ? &SAUCER_RUN_TAKEN
+                                     : &SAUCER_RUN_MOVE_TAKE_X);
+  saucer_add(b, &SAUCER_RUN_MOVE_TEST_Y);
+  b->calls += bounds_cycles(log->edge[1].exit, b->in->fastrom);
+  saucer_add(b, log->edge[1].outside ? &SAUCER_RUN_TAKEN
+                                     : &SAUCER_RUN_MOVE_TAKE_Y);
+  saucer_add(b, &SAUCER_RUN_MOVE_TAIL);
+}
+
+static void saucer_shoot_bill(SaucerBill* b) {
+  const SaucerLog* log = b->log;
+  saucer_add(b, &SAUCER_RUN_SHOOT_HEAD);
+  saucer_draw_bill(b);
+  if (!log->shot_drawn) {
+    saucer_taken(b);
+    saucer_add(b, &SAUCER_RUN_RTS);
+    return;
+  }
+  saucer_add(b, &SAUCER_RUN_SHOOT_WAIT);
+  if (!log->shot) {
+    saucer_taken(b);
+    saucer_add(b, &SAUCER_RUN_RTS);
+    return;
+  }
+  saucer_add(b, &SAUCER_RUN_SHOOT_FIRE);
+  b->calls += thread_spawn_cycles(log->shot_slot, b->rom, b->in->fastrom);
+}
+
+static void saucer_open_hatch_bill(SaucerBill* b) {
+  saucer_add(b, &SAUCER_RUN_OPEN_HATCH_HEAD);
+  if (!b->log->hatch_opened) {
+    saucer_taken(b);
+    saucer_add(b, &SAUCER_RUN_RTS);
+    return;
+  }
+  saucer_add(b, &SAUCER_RUN_OPEN_HATCH_A);
+  b->calls += saucer_alloc_cycles(b->log->hatch_record, b->in->fastrom);
+  saucer_add(b, &SAUCER_RUN_OPEN_HATCH_B);
+  saucer_handler_bill(b);
+}
+
+static void saucer_shut_hatch_bill(SaucerBill* b) {
+  saucer_add(b, &SAUCER_RUN_SHUT_HATCH);
+  b->calls += saucer_free_cycles(b->log->shut_place, b->in->fastrom);
+  saucer_handler_bill(b);
+}
+
+// `$82:839C`, to its `JSL thread_yield`.
+static void saucer_show_bill(SaucerBill* b) {
+  const SaucerLog* log = b->log;
+  saucer_add(b, &SAUCER_RUN_SHOW_HEAD);
+  switch (log->flash) {
+    case SAUCER_FLASH_NONE:
+      saucer_taken(b);
+      break;
+    case SAUCER_FLASH_OVER:
+      saucer_add(b, &SAUCER_RUN_BRANCH);
+      saucer_taken(b);
+      saucer_add(b, &SAUCER_RUN_SHOW_OVER);
+      saucer_taken(b);
+      saucer_colours_bill(b);
+      break;
+    case SAUCER_FLASH_BEGINS:
+      saucer_add(b, &SAUCER_RUN_BRANCH);
+      saucer_add(b, &SAUCER_RUN_SHOW_FOUR);
+      saucer_taken(b);
+      saucer_add(b, &SAUCER_RUN_SHOW_HIT_A);
+      saucer_colours_bill(b);
+      saucer_add(b, &SAUCER_RUN_SHOW_HIT_B);
+      saucer_taken(b);
+      saucer_job_bill(b);
+      break;
+    default:
+      saucer_add(b, &SAUCER_RUN_BRANCH);
+      saucer_add(b, &SAUCER_RUN_SHOW_FOUR);
+      break;
+  }
+  saucer_add(b, &SAUCER_RUN_SHOW_COUNT);
+  saucer_add(b, log->next_picture ? &SAUCER_RUN_SHOW_NEXT : &SAUCER_RUN_TAKEN);
+  saucer_add(b, &SAUCER_RUN_SHOW_PLACE);
+}
+
+// `$82:8657`.
+static void saucer_swoop_begin_bill(SaucerBill* b) {
+  saucer_add(b, &SAUCER_RUN_SWOOP_BEGIN_A);
+  saucer_bearing_bill(b);
+  saucer_add(b, &SAUCER_RUN_SWOOP_BEGIN_B);
+  saucer_draw_bill(b);
+}
+
+// `$82:86D1`.
+static void saucer_open_bill(SaucerBill* b) {
+  saucer_add(b, &SAUCER_RUN_OPEN_HEAD);
+  saucer_open_hatch_bill(b);
+  saucer_aim_bill(b);
+  if (b->log->open != SAUCER_OPEN_TIMED_OUT) {
+    saucer_add(b, &SAUCER_RUN_OPEN_NEAR);
+  }
+  if (b->log->open == SAUCER_OPEN_TIMED_OUT ||
+      b->log->open == SAUCER_OPEN_REACHED) {
+    saucer_taken(b);
+    saucer_add(b, &SAUCER_RUN_OPEN_SHUT);
+    saucer_shut_hatch_bill(b);
+    return;
+  }
+  saucer_add(b, &SAUCER_RUN_OPEN_STAY);
+  if (b->log->open == SAUCER_OPEN_WAITED) {
+    saucer_taken(b);
+    saucer_add(b, &SAUCER_RUN_RTS);
+    return;
+  }
+  saucer_add(b, &SAUCER_RUN_WOBBLE);
+  saucer_move_bill(b);
+  saucer_show_bill(b);
+}
+
+// `$82:8505`.
+static void saucer_hunt_bill(SaucerBill* b) {
+  const SaucerLog* log = b->log;
+  saucer_add(b, &SAUCER_RUN_HUNT_HEAD);
+  if (log->range == SAUCER_RANGE_ON_IT) {
+    saucer_add(b, &SAUCER_RUN_JMP);
+    saucer_add(b, &SAUCER_RUN_JMP);
+    saucer_add(b, &SAUCER_RUN_BEGIN_ON_TARGET);
+    saucer_open_hatch_bill(b);
+    return;
+  }
+  saucer_taken(b);
+  saucer_add(b, &SAUCER_RUN_HUNT_FAR);
+  if (log->range == SAUCER_RANGE_FAR) {
+    saucer_add(b, &SAUCER_RUN_JMP);
+    saucer_add(b, &SAUCER_RUN_JMP);
+    saucer_swoop_begin_bill(b);
+    return;
+  }
+  saucer_taken(b);
+  saucer_add(b, &SAUCER_RUN_HUNT_NEAR);
+  if (log->range == SAUCER_RANGE_MIDDLE) {
+    saucer_taken(b);
+  } else {
+    saucer_add(b, &SAUCER_RUN_HUNT_SHOTS);
+    if (log->spent) {
+      saucer_taken(b);
+      saucer_add(b, &SAUCER_RUN_HUNT_DRAW);
+      saucer_draw_bill(b);
+      if (log->spent_swoops) {
+        saucer_add(b, &SAUCER_RUN_JMP);
+        saucer_swoop_begin_bill(b);
+        return;
+      }
+      saucer_taken(b);
+      saucer_add(b, &SAUCER_RUN_HUNT_OPEN);
+      saucer_open_bill(b);
+      return;
+    }
+    saucer_add(b, &SAUCER_RUN_JSR);
+    saucer_shoot_bill(b);
+  }
+
+  saucer_add(b, &SAUCER_RUN_HUNT_WAIT);
+  if (!log->looked) {
+    saucer_taken(b);
+  } else {
+    saucer_add(b, &SAUCER_RUN_HUNT_LOOK);
+    if (!log->aim_left) saucer_taken(b);
+    saucer_add(b, &SAUCER_RUN_HUNT_LINE);
+    if (!log->crossed) {
+      saucer_taken(b);
+    } else if (log->aim_left) {
+      saucer_add(b, &SAUCER_RUN_HUNT_AIM_BRA);
+      saucer_taken(b);
+      saucer_aim_bill(b);
+    } else {
+      saucer_add(b, &SAUCER_RUN_JSR);
+      saucer_aim_bill(b);
+    }
+    saucer_add(b, &SAUCER_RUN_HUNT_BEARING);
+    saucer_bearing_bill(b);
+  }
+
+  saucer_add(b, &SAUCER_RUN_HUNT_STRAIGHT);
+  if (log->straight) {
+    saucer_taken(b);
+  } else {
+    saucer_add(b, &SAUCER_RUN_HUNT_FRAME);
+    if (log->held) {
+      saucer_taken(b);
+      saucer_add(b, &SAUCER_RUN_RTS);
+      return;
+    }
+  }
+  saucer_add(b, &SAUCER_RUN_HUNT_STEP);
+  if (!log->across) {
+    saucer_taken(b);
+  } else {
+    saucer_add(b, &SAUCER_RUN_HUNT_SIGN);
+    saucer_add(b, log->leftwards ? &SAUCER_RUN_TAKEN : &SAUCER_RUN_HUNT_DEY);
+    saucer_add(b, &SAUCER_RUN_HUNT_STEP_X);
+  }
+  saucer_add(b, &SAUCER_RUN_HUNT_STEP_Y);
+  saucer_move_bill(b);
+}
+
+// `$82:85F4`.
+static void saucer_on_target_bill(SaucerBill* b) {
+  const SaucerLog* log = b->log;
+  saucer_add(b, &SAUCER_RUN_ON_TARGET_HEAD);
+  saucer_bearing_bill(b);
+  if (log->lost) {
+    saucer_taken(b);
+    saucer_add(b, &SAUCER_RUN_ON_TARGET_LOST);
+    saucer_shut_hatch_bill(b);
+    saucer_aim_bill(b);
+    return;
+  }
+  saucer_add(b, &SAUCER_RUN_ON_TARGET_SHOOT);
+  saucer_shoot_bill(b);
+  if (log->waited) {
+    saucer_taken(b);
+    saucer_add(b, &SAUCER_RUN_RTS);
+    return;
+  }
+  saucer_add(b, &SAUCER_RUN_WOBBLE);
+  saucer_move_bill(b);
+  saucer_show_bill(b);
+}
+
+// `$82:867E`.
+static void saucer_swoop_bill(SaucerBill* b) {
+  const SaucerLog* log = b->log;
+  saucer_add(b, &SAUCER_RUN_SWOOP_HEAD);
+  if (log->swoop_over) {
+    saucer_add(b, &SAUCER_RUN_BRA);
+    saucer_taken(b);
+    saucer_add(b, &SAUCER_RUN_SWOOP_OVER);
+    saucer_open_bill(b);
+    return;
+  }
+  saucer_taken(b);
+  saucer_add(b, &SAUCER_RUN_SWOOP_GO);
+  saucer_move_bill(b);
+  if (log->swoop_stopped) {
+    saucer_add(b, &SAUCER_RUN_SWOOP_STOP);
+  } else {
+    saucer_taken(b);
+    saucer_add(b, &SAUCER_RUN_RTS);
+  }
+}
+
+// `$82:87B9` on: the lights, and the test of its health.
+static void saucer_end_bill(SaucerBill* b, SaucerFate fate) {
+  const SaucerLog* log = b->log;
+  saucer_add(b, &SAUCER_RUN_LIGHTS_JSR);
+  saucer_add(b, &SAUCER_RUN_LIGHTS_HEAD);
+  saucer_add(b, log->shot_waiting ? &SAUCER_RUN_LIGHTS_COUNT
+                                  : &SAUCER_RUN_TAKEN);
+  saucer_add(b, &SAUCER_RUN_LIGHTS_PLACE);
+  if (!log->blinked) {
+    saucer_taken(b);
+  } else {
+    saucer_add(b, &SAUCER_RUN_LIGHTS_CHANGE);
+    saucer_colours_bill(b);
+    saucer_add(b, &SAUCER_RUN_LIGHTS_PHASE);
+    if (log->job_asked) {
+      saucer_add(b, &SAUCER_RUN_LIGHTS_JOB);
+      saucer_job_bill(b);
+    } else {
+      saucer_taken(b);
+    }
+  }
+  saucer_add(b, &SAUCER_RUN_RTS);
+  saucer_add(b, &SAUCER_RUN_FATE);
+  if (fate == SAUCER_SLEEPS) {
+    saucer_taken(b);
+    saucer_add(b, &SAUCER_RUN_TICKS);
+  }
+}
+
+static void saucer_cost(SaucerBill* b) {
+  const CosimRegs* in = b->in;
+  b->calls += nearest_cycles(&b->log->nearest, in->fastrom);
+  cosim_cost(b->calls + cosim_run_cycles_dp(&b->own, fetch_fast(in),
+                                            (in->d & 0x00ffu) != 0));
+}
+
+// The tables are read through the data bank, and so are the records and the
+// saucer's own position, which have to be in the bank's WRAM mirror.
+static bool saucer_frame_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == SAUCER_BANK &&
+         in->s >= 0x0040 && saucer_frame_supported(w, in->d);
+}
+
+// ...and for the rest of a pass, the two return addresses it wakes on.
+static bool saucer_frame_shown_ok(const Wram* w, const CosimRegs* in) {
+  if (!saucer_frame_ok(w, in) || in->s >= 0x1ff0) return false;
+  const uint16_t body = wram_r16(w, (uint16_t)(in->s + 1));
+  return (body == SAUCER_RETURN_ON_TARGET || body == SAUCER_RETURN_OPEN) &&
+         wram_r16(w, (uint16_t)(in->s + 3)) == SAUCER_RETURN_LOOP;
+}
+
+// Three things only running the pass can find: its quarry or its hatch is
+// no record, or there was none free for a hatch.
+static bool guard_saucer_frame(Wram* scratch, const Rom* rom,
+                               const CosimRegs* in) {
+  SaucerLog log;
+  saucer_frame(scratch, rom, in->d, &log);
+  return !log.declined;
+}
+
+// A pass leaves by a `JSL thread_yield` with the tick count in A, or past
+// the test of its health with that in A.
+static void saucer_leave(const Wram* w, const CosimRegs* in, CosimRegs* out,
+                         const SaucerLog* log, SaucerFate fate) {
+  out->pc = fate == SAUCER_SLEEPS           ? SAUCER_YIELD_PC
+            : fate == SAUCER_SLEEPS_SHOWING ? SAUCER_SHOW_YIELD_PC
+                                            : SAUCER_DEAD_PC;
+  out->a = fate == SAUCER_ENDS
+               ? wram_r16(w, (uint16_t)(in->d + SAUCER_DP_HEALTH))
+               : SAUCER_YIELD_TICKS;
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (log->c) out->p |= PORT_P_C;
+  if (log->v) out->p |= PORT_P_V;
+}
+
+// A pass that sleeps showing the hatch sleeps two calls deep, so the stack
+// is left as those calls left it: under the loop's `PEA`, the `JSR` of the
+// body that showed it.
+static void shim_saucer_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  SaucerLog log;
+  const SaucerFate fate = saucer_frame(w, rom, in->d, &log);
+
+  SaucerBill b = {{0, 0, 0}, 0, 0, &log, in, rom};
+  saucer_add(&b, &SAUCER_RUN_ENTER);
+  switch (log.state) {
+    case SAUCER_STATE_HUNT:
+      saucer_hunt_bill(&b);
+      break;
+    case SAUCER_STATE_ON_TARGET:
+      saucer_on_target_bill(&b);
+      break;
+    case SAUCER_STATE_SWOOP:
+      saucer_swoop_bill(&b);
+      break;
+    default:
+      saucer_open_bill(&b);
+      break;
+  }
+  if (fate != SAUCER_SLEEPS_SHOWING) saucer_end_bill(&b, fate);
+  saucer_cost(&b);
+
+  saucer_leave(w, in, out, &log, fate);
+  if (fate == SAUCER_SLEEPS_SHOWING) {
+    wram_w16(w, (uint16_t)(in->s - 1), SAUCER_RETURN_LOOP);
+    wram_w16(w, (uint16_t)(in->s - 3),
+             log.open != SAUCER_OPEN_NOT ? SAUCER_RETURN_OPEN
+                                         : SAUCER_RETURN_ON_TARGET);
+    out->s = (uint16_t)(in->s - 4);
+  }
+}
+
+// The rest of such a pass comes back up through the two `RTS`s. The loop's
+// `JSR` to the lights goes where its `PEA` was, and a call the lights make
+// goes where the body's `JSR` was: bytes above where the stretch began, so
+// written here as the ROM leaves them.
+#define SAUCER_LIGHTS_RETURN 0x87bbu      // the `JSR` at `$82:87B9`
+#define SAUCER_LIGHTS_CALL_RETURN 0x8288u  // the bank and high byte of both `JSL`s
+
+static void shim_saucer_frame_shown(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  SaucerLog log;
+  const SaucerFate fate = saucer_frame_shown(w, rom, in->d, &log);
+
+  SaucerBill b = {{0, 0, 0}, 0, 0, &log, in, rom};
+  saucer_add(&b, &SAUCER_RUN_RTS);
+  saucer_add(&b, &SAUCER_RUN_RTS);
+  saucer_end_bill(&b, fate);
+  saucer_cost(&b);
+
+  saucer_leave(w, in, out, &log, fate);
+  wram_w16(w, (uint16_t)(in->s + 3), SAUCER_LIGHTS_RETURN);
+  if (log.blinked)
+    wram_w16(w, (uint16_t)(in->s + 1), SAUCER_LIGHTS_CALL_RETURN);
+  out->s = (uint16_t)(in->s + 4);
+}
+
+static const uint32_t SAUCER_FRAME_EXITS[] = {
+    SAUCER_YIELD_PC, SAUCER_SHOW_YIELD_PC, SAUCER_DEAD_PC};
+static const uint32_t SAUCER_FRAME_SHOWN_EXITS[] = {SAUCER_YIELD_PC,
+                                                    SAUCER_DEAD_PC};
+
+// ---------------------------------------------------------------------------
+// The two screens before a game -- see `port/menus.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py`, branches not taken, and a taken
+// branch adds 6. A pass calls nothing, so the sum is the price.
+static const CosimRun MENUS_RUN_TITLE_ENTER = {108, 9, 2};  // $9748 INC $5E : LDA $5E : CMP #$0384 : BCS
+static const CosimRun MENUS_RUN_JMP = {18, 3, 0};  // either loop's JMP back
+static const CosimRun MENUS_RUN_TITLE_WAIT = {62, 4, 1};  // $96C7 DEC $66 : BPL
+static const CosimRun MENUS_RUN_TITLE_BLINK = {482, 50, 6};  // $96CB-$96F8
+static const CosimRun MENUS_RUN_PAD = {74, 7, 1};  // $96F9 LDA $006E : BIT $62 : BNE, and the three like it
+static const CosimRun MENUS_RUN_TAKE = {58, 7, 1};  // $9700 STA $62 : CMP #$0000 : BEQ, likewise
+static const CosimRun MENUS_RUN_TICKS = {18, 3, 0};  // LDA #$0001
+static const CosimRun MENUS_RUN_PLAYERS_ENTER = {108, 9, 2};  // $99C1 INC $5E : LDA $5E : CMP #$0384 : BCS
+static const CosimRun MENUS_RUN_PLAYERS_COUNT = {120, 11, 0};  // $98FE INC $005E : LDA $005E : CMP #$000A : BCC
+static const CosimRun MENUS_RUN_PLAYERS_BLINK_A = {80, 8, 0};  // $9909 STZ $005E : LDA $1E88 : BNE
+static const CosimRun MENUS_RUN_PLAYERS_FLIP = {126, 11, 1};  // $9911-$991B, or $9921-$992B
+static const CosimRun MENUS_RUN_PLAYERS_BLINK_B = {46, 5, 0};  // $991C LDA $1E8A : BNE
+static const CosimRun MENUS_RUN_PLAYERS_ASK = {46, 5, 0};  // $992C LDA $1E88 : BNE, or $9963
+static const CosimRun MENUS_RUN_TAKEN = {6, 0, 0};
+static const CosimRun MENUS_RUN_SLOW_TABLE = {8, 0, 0};  // four bytes, 2 each
+
+// One pad, when it is asked: held buttons leave by the `BNE`, and a pad with
+// nothing down by the `BEQ` after it is taken.
+static void menus_pad_bill(CosimRun* own, MenusPad pad) {
+  run_add(own, &MENUS_RUN_PAD, 1);
+  if (pad != MENUS_PAD_HELD) run_add(own, &MENUS_RUN_TAKE, 1);
+  run_add(own, &MENUS_RUN_TAKEN, 1);
+}
+
+static void menus_leave(const CosimRegs* in, CosimRegs* out, CosimRun* own,
+                        const MenusLog* log, uint32_t yield_pc,
+                        uint32_t over_pc) {
+  if (!log->over) run_add(own, &MENUS_RUN_TICKS, 1);
+  cosim_cost(cosim_run_cycles_dp(own, fetch_fast(in), (in->d & 0x00ffu) != 0));
+
+  out->pc = log->over ? over_pc : yield_pc;
+  out->a = log->a;
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (log->n) out->p |= PORT_P_N;
+  if (log->z) out->p |= PORT_P_Z;
+  if (log->c) out->p |= PORT_P_C;
+  if (log->v) out->p |= PORT_P_V;
+  // With no pad looked at, the overflow is the thread's own.
+  out->p_keep = log->v_set ? 0 : PORT_P_V;
+}
+
+// The pads, the players and the menu's table are read through the data
+// bank, and the two records written through it. The bank is `$80` the first
+// time the screens come up and `$00` every time after: the clear a game ends
+// with, `$80:895A`, is three `MVN`s, and the last leaves it there.
+static bool menus_bank_ok(const CosimRegs* in) {
+  return in->db == MENUS_BANK || in->db == 0x00;
+}
+
+static bool title_menu_frame_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && menus_bank_ok(in) &&
+         title_menu_frame_supported(w, in->d);
+}
+
+static bool players_screen_frame_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && menus_bank_ok(in) &&
+         players_screen_frame_supported(w, in->d);
+}
+
+// A pass with a press that counts is the ROM's, and only running it says.
+static bool guard_title_menu_frame(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  MenusLog log;
+  title_menu_frame(scratch, rom, in->d, &log);
+  return !log.declined;
+}
+
+static bool guard_players_screen_frame(Wram* scratch, const Rom* rom,
+                                       const CosimRegs* in) {
+  (void)rom;
+  MenusLog log;
+  players_screen_frame(scratch, in->d, &log);
+  return !log.declined;
+}
+
+static void shim_title_menu_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  MenusLog log;
+  title_menu_frame(w, rom, in->d, &log);
+
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &MENUS_RUN_TITLE_ENTER, 1);
+  if (log.over) {
+    run_add(&own, &MENUS_RUN_TAKEN, 1);
+  } else {
+    run_add(&own, &MENUS_RUN_JMP, 1);
+    run_add(&own, &MENUS_RUN_TITLE_WAIT, 1);
+    run_add(&own, log.blinked ? &MENUS_RUN_TITLE_BLINK : &MENUS_RUN_TAKEN, 1);
+    // The blink reads its table twice, and through bank `$00` the cartridge
+    // is slow whatever `$420D` says.
+    if (log.blinked && in->db == 0x00 && fetch_fast(in))
+      run_add(&own, &MENUS_RUN_SLOW_TABLE, 1);
+    menus_pad_bill(&own, log.pad[0]);
+    menus_pad_bill(&own, log.pad[1]);
+  }
+  menus_leave(in, out, &own, &log, TITLE_MENU_YIELD_PC, TITLE_MENU_OVER_PC);
+}
+
+static void shim_players_screen_frame(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  MenusLog log;
+  players_screen_frame(w, in->d, &log);
+
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &MENUS_RUN_PLAYERS_ENTER, 1);
+  if (log.over) {
+    run_add(&own, &MENUS_RUN_TAKEN, 1);
+  } else {
+    run_add(&own, &MENUS_RUN_JMP, 1);
+    run_add(&own, &MENUS_RUN_PLAYERS_COUNT, 1);
+    if (!log.blinked) {
+      run_add(&own, &MENUS_RUN_TAKEN, 1);
+    } else {
+      run_add(&own, &MENUS_RUN_PLAYERS_BLINK_A, 1);
+      run_add(&own, log.joined[0] ? &MENUS_RUN_TAKEN : &MENUS_RUN_PLAYERS_FLIP,
+              1);
+      run_add(&own, &MENUS_RUN_PLAYERS_BLINK_B, 1);
+      run_add(&own, log.joined[1] ? &MENUS_RUN_TAKEN : &MENUS_RUN_PLAYERS_FLIP,
+              1);
+    }
+    for (int player = 0; player < 2; player++) {
+      run_add(&own, &MENUS_RUN_PLAYERS_ASK, 1);
+      if (log.joined[player])
+        run_add(&own, &MENUS_RUN_TAKEN, 1);
+      else
+        menus_pad_bill(&own, log.pad[player]);
+    }
+  }
+  menus_leave(in, out, &own, &log, PLAYERS_SCREEN_YIELD_PC,
+              PLAYERS_SCREEN_OVER_PC);
+}
+
+static const uint32_t TITLE_MENU_FRAME_EXITS[] = {TITLE_MENU_YIELD_PC,
+                                                  TITLE_MENU_OVER_PC};
+static const uint32_t PLAYERS_SCREEN_FRAME_EXITS[] = {PLAYERS_SCREEN_YIELD_PC,
+                                                      PLAYERS_SCREEN_OVER_PC};
+
+// ---------------------------------------------------------------------------
 // The player's poses -- see `port/pose.h`
 // ---------------------------------------------------------------------------
 //
@@ -13391,6 +14151,53 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 1500,
         .stack_bytes = 2,  // the `JSR` to the search
+    },
+    {
+        .name = "saucer_frame",
+        .symbol = "$82:87B1",
+        .entry = SAUCER_FRAME_PC,
+        .run = shim_saucer_frame,
+        .accepts = saucer_frame_ok,
+        .supported = guard_saucer_frame,
+        COSIM_EXITS(SAUCER_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 3000,
+        // The computed `RTS`'s two words, a `JSR` or two, and the `JSL` down
+        // to what the bodies ask, and theirs.
+        .stack_bytes = 32,
+    },
+    {
+        .name = "saucer_frame_shown",
+        .symbol = "$82:83E3",
+        .entry = SAUCER_FRAME_SHOWN_PC,
+        .run = shim_saucer_frame_shown,
+        .accepts = saucer_frame_shown_ok,
+        COSIM_EXITS(SAUCER_FRAME_SHOWN_EXITS),
+        .uncalled = true,
+        .cycles = 700,
+        .stack_bytes = 32,
+    },
+    {
+        .name = "title_menu_frame",
+        .symbol = "$80:9748",
+        .entry = TITLE_MENU_FRAME_PC,
+        .run = shim_title_menu_frame,
+        .accepts = title_menu_frame_ok,
+        .supported = guard_title_menu_frame,
+        COSIM_EXITS(TITLE_MENU_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 400,
+    },
+    {
+        .name = "players_screen_frame",
+        .symbol = "$80:99C1",
+        .entry = PLAYERS_SCREEN_FRAME_PC,
+        .run = shim_players_screen_frame,
+        .accepts = players_screen_frame_ok,
+        .supported = guard_players_screen_frame,
+        COSIM_EXITS(PLAYERS_SCREEN_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 450,
     },
 #define POSE_ENTRY(n, sym, pc, rts)                                          \
     {                                                                        \

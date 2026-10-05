@@ -274,6 +274,8 @@ add_library(zamn_port STATIC
   src/port/stuck.c
   src/port/figure_colours.c
   src/port/bystander.c
+  src/port/saucer.c
+  src/port/menus.c
   src/port/dma.c
   src/port/palcycle.c
   src/port/player_frame.c
