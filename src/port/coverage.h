@@ -77,6 +77,8 @@
   X(nmi_unblanked,    "nmi_unblank",       "the brightness put back and the joypads waited for") \
   X(vbl_run_last_dropped, "vbl_queue_run",     "...and it was the last one, so the walk stopped") \
   X(text_map_cleared, "text_map_clear",    "the text layer's map blanked") \
+  X(span_cleared,     "game_clear",        "a stretch of WRAM cleared") \
+  X(threads_cleared,  "threads_clear",     "the threads' pages and stacks cleared") \
   X(reset_cold,       "reset_clear",       "no top-scores table in WRAM: every byte cleared") \
   X(reset_warm,       "reset_clear",       "the four magic words found, so $7E:2000-$2127 survive") \
   /* Thread bodies, between one yield and the next. */                        \
@@ -84,6 +86,18 @@
   X(victims_list_end,  "victims_resume",     "the victim list ran out: next frame starts at the top") \
   X(victims_start_one, "victims_resume",     "a victim came into range and its thread is started") \
   X(victims_stop_one,  "victims_resume",     "a live victim went out of range and its thread is stopped") \
+  X(pictures_shown,   "pictures_play",      "a picture put in the sprite's record, and its ticks slept") \
+  X(pictures_ended,   "pictures_play",      "the zero that ends a list of pictures") \
+  X(squirt_unfired,   "squirt_launch",      "fired from a tile that stops water: no shot") \
+  X(squirt_launched,  "squirt_launch",      "one more shot in the air, and its sound") \
+  X(squirt_dressed,   "squirt_dress",       "the record given its picture, id, step and muzzle") \
+  X(squirt_first_flew, "squirt_first_frame", "the first frame's step, and on") \
+  X(squirt_first_stopped, "squirt_first_frame", "...into a tile that stops it") \
+  X(squirt_second_flew, "squirt_second_frame", "the second frame's step, and the picture of flight") \
+  X(squirt_second_stopped, "squirt_second_frame", "...into a tile that stops it") \
+  X(squirt_splashed,  "squirt_splash",      "the handler taken away and the first splash shown") \
+  X(squirt_splashed_2, "squirt_splash_2",   "the second splash shown") \
+  X(squirt_gone,      "squirt_gone",        "one shot fewer, and its record on the way to being freed") \
   X(object_requests,  "object_resume",     "the object thread's handler left requests to serve") \
   X(object_list_end,  "object_polled",     "the object list ran out: next walk starts at the top") \
   X(object_give,      "object_polled",     "an object came into range and is given an actor") \
@@ -110,6 +124,13 @@
   X(walk_obstructed,  "player_walk",       "someone standing where the step lands") \
   X(walk_overlapping, "player_walk",       "...and where the player stands too, so the step goes ahead") \
   X(walk_off_map,     "player_walk",       "a step off the map") \
+  X(monster_walked,   "monster_walk",      "the potion's monster walked") \
+  X(monster_walk_obstructed, "monster_walk", "someone standing where its step lands") \
+  X(monster_walk_broke_wall, "monster_walk", "a wall that breaks under it, so the ROM walks") \
+  X(stuck_walked,     "stuck_walk",        "a player stuck in slime walked") \
+  X(stuck_walk_solid, "stuck_walk",        "solid ground it cannot cross") \
+  X(stuck_walk_crossed, "stuck_walk",      "solid ground it can") \
+  X(stuck_walk_obstructed, "stuck_walk",   "someone standing where its step lands") \
   /* Vblank jobs, which write the PPU. */                                      \
   X(vram_flush_held,  "vram_queue_flush",  "$26 bit 14 set: the queue held back a frame") \
   X(vram_flush_empty, "vram_queue_flush",  "nothing queued")                   \
@@ -1056,6 +1077,16 @@
   X(backdrop_drift_stepped, "backdrop_drift_job", "the backdrop moved a step along its path") \
   X(backdrop_drift_wrapped, "backdrop_drift_job", "...the last, and back to the first") \
                                                                                    \
+  /* $82:B1F9, $80:9A1B -- two more, and $80:8A00's, the game over. */             \
+  X(backdrop_slide_waited, "backdrop_slide_job", "not a fourth frame") \
+  X(backdrop_slide_moved, "backdrop_slide_job", "the third layer moved a pixel and was sent") \
+  X(portrait_scroll_waited, "portrait_scroll_job", "the first layer alone") \
+  X(portrait_scroll_fifth, "portrait_scroll_job", "a fifth frame: the third layer too") \
+  X(game_over_scroll_job, "game_over_scroll_job", "the third layer's height sent") \
+  X(game_over_colours_job, "game_over_colours_job", "three colours sent") \
+  X(game_over_fell_one, "game_over_fall", "four sprites a pixel down") \
+  X(game_over_fell_two, "game_over_fall", "an odd frame: two pixels") \
+                                                                                   \
   /* $81:810F -- a frame of the level's spawn list. */                             \
   X(spawnlist_held, "spawnlist_frame", "no room on the board") \
   X(spawnlist_rested, "spawnlist_frame", "the place was resting, and counted down") \
@@ -1068,6 +1099,9 @@
   X(player_frame_normal, "player_frame", "the ordinary state, which reads the pad") \
   X(player_frame_stuck, "player_frame", "...or stuck in slime") \
   X(player_frame_turning, "player_frame", "...or one of the two the pad only turns the player in") \
+  X(player_frame_monster, "player_frame", "...or the potion's monster") \
+  X(player_frame_flashing_normal, "player_frame", "...or flashing, over the ordinary state") \
+  X(player_frame_flashing_turning, "player_frame", "......or over the turning one") \
   X(player_frame_nobody_left, "player_frame", "nobody left to rescue and somebody rescued: the level goes on") \
   X(player_frame_hurt_timer_running, "player_frame", "the hurt timer counted down") \
   X(player_frame_hurt_timer_out, "player_frame", "...or had run out, and stays at minus one") \

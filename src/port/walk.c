@@ -19,6 +19,7 @@ typedef struct {
   uint16_t page;       // the player's direct page
   bool met_reaction;   // stopped at a tile with a reaction of its own
   WalkLog* log;        // may be NULL
+  WalkKind kind;
 } Walk;
 
 static uint16_t field(const Walk* k, uint16_t at) {
@@ -62,7 +63,28 @@ int walk_tile_reaction(uint16_t attrs) {
   return 0;
 }
 
+// The monster's ground. Two kinds of wall break under it, which is not ours.
+static bool ground_stops_monster(Walk* k, Point p) {
+  TerrainRegs r;
+  terrain_blocked_enemy(k->w, p.x, p.y, &r);
+  overflow_left(k, r.v);
+  if (k->log && k->log->enemy_grounds < WALK_AXES)
+    k->log->enemy_ground[k->log->enemy_grounds++] = r;
+  if (!answer(k, WALK_ASK_GROUND, r.blocked)) return false;
+  const uint16_t wall = r.a & MONSTER_WALL_BITS;
+  if (wall == MONSTER_WALL_BREAKS_A || wall == MONSTER_WALL_BREAKS_B) {
+    PORT_COVER(monster_walk_broke_wall);
+    k->met_reaction = true;
+    return true;
+  }
+  answer(k, WALK_ASK_REACTION, true);
+  // The carry this leaves is the compare with the second kind's.
+  if (k->log) k->log->last_yes = wall >= MONSTER_WALL_BREAKS_B;
+  return true;
+}
+
 static bool ground_is_solid(Walk* k, Point p) {
+  if (k->kind == WALK_OF_MONSTER) return ground_stops_monster(k, p);
   TerrainRegs r;
   terrain_blocked(k->w, p.x, p.y, &r);
   overflow_left(k, r.v);
@@ -71,6 +93,15 @@ static bool ground_is_solid(Walk* k, Point p) {
     if (r.blocked && r.probes < TERRAIN_PROBE_COUNT) k->log->ground_cut_short++;
   }
   if (!answer(k, WALK_ASK_GROUND, r.blocked)) return false;
+  if (k->kind == WALK_STUCK) {
+    // The word comes back shifted right one, and the ROM shifts it back.
+    const bool crosses = ((r.a << 1) & STUCK_WALK_CROSSES) != 0;
+    PORT_COVER_IF(crosses, stuck_walk_crossed, stuck_walk_solid);
+    answer(k, WALK_ASK_REACTION, !crosses);
+    // Stopped here, the carry left is the bit that shift pushed out.
+    if (!crosses && k->log) k->log->last_yes = (r.a & 0x8000u) != 0;
+    return !crosses;
+  }
   if (walk_tile_reaction(r.a) != 0) {
     // Not ours to handle. `walk_supported` turns the frame down, so a walk
     // that gets here is only finding that out.
@@ -125,6 +156,11 @@ static bool can_step(Walk* k, Point from, Point to) {
     return false;
   }
   if (someone_at(k, to, WALK_ASK_THERE)) {
+    if (k->kind != WALK_ORDINARY) {
+      PORT_COVER_IF(k->kind == WALK_STUCK, stuck_walk_obstructed,
+                    monster_walk_obstructed);
+      return false;
+    }
     // Standing clear, the player cannot walk into someone. Already standing
     // in someone, the player can walk out.
     if (!someone_at(k, from, WALK_ASK_HERE)) {
@@ -151,7 +187,13 @@ static void walk(Walk* k) {
   Point across = {field(k, WALK_DP_WANT_X), here.y};
   if (can_step(k, here, across)) {
     set_field(k, WALK_DP_X, across.x);
-    if (k->log) k->log->taken++;
+    if (k->kind == WALK_STUCK)
+      wram_w16(k->w, (uint16_t)(field(k, STUCK_WALK_DP_COVER) + ACTOR_X),
+               across.x);
+    if (k->log) {
+      k->log->taken++;
+      k->log->took[0] = true;
+    }
   }
 
   // Then up or down, from wherever that left the player.
@@ -159,17 +201,37 @@ static void walk(Walk* k) {
   Point up_down = {here.x, field(k, WALK_DP_WANT_Y)};
   if (can_step(k, here, up_down)) {
     set_field(k, WALK_DP_Y, up_down.y);
-    if (k->log) k->log->taken++;
+    if (k->kind == WALK_STUCK)
+      wram_w16(k->w, (uint16_t)(field(k, STUCK_WALK_DP_COVER) + ACTOR_Y),
+               (uint16_t)(up_down.y + 1));
+    if (k->log) {
+      k->log->taken++;
+      k->log->took[1] = true;
+    }
   }
 }
 
 void player_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
-  Walk k = {w, rom, page, false, log};
+  Walk k = {w, rom, page, false, log, WALK_ORDINARY};
   walk(&k);
 }
 
+void stuck_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
+  Walk k = {w, rom, page, false, log, WALK_STUCK};
+  PORT_COVER(stuck_walked);
+  walk(&k);
+}
+
+bool monster_walk_checked(Wram* w, const Rom* rom, uint16_t page,
+                          WalkLog* log) {
+  Walk k = {w, rom, page, false, log, WALK_OF_MONSTER};
+  PORT_COVER(monster_walked);
+  walk(&k);
+  return !k.met_reaction;
+}
+
 bool player_walk_checked(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
-  Walk k = {w, rom, page, false, log};
+  Walk k = {w, rom, page, false, log, WALK_ORDINARY};
   if (field(&k, WALK_DP_MODE) & WALK_TWICE) {
     PORT_COVER(walk_twice);
     return false;

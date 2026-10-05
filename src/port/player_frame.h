@@ -12,7 +12,8 @@
 //   the state      `$70` picks one of eight. The ordinary one reads the pad
 //                  (`port/player.h`), and the one for a player stuck in slime
 //                  is `port/stuck.h`. Two more share a handler in which the
-//                  pad only turns the player.
+//                  pad only turns the player. The potion's monster has one,
+//                  and so has a player who flashes and cannot be hurt.
 //   the hurt timer counts down to the next time the player can be hurt
 //   the pose       `$28` names a handler, which shows the next picture
 //                  (`port/pose.h`)
@@ -27,7 +28,9 @@
 // Most frames are a player standing or walking, and those are here. The rest
 // are left to the ROM, which runs them as it always did, a piece at a time:
 //
-//   * any of the other four states
+//   * either of the other two states
+//   * the monster's last frame, when the potion wears off, and the last
+//     frame of the flashing
 //   * a frame on which a button is pressed that changes the weapon or the
 //     item or uses the item, or a shoulder button is, and one with a
 //     frontend's request for such a change waiting
@@ -61,6 +64,7 @@
 
 #include "assets/rom.h"
 #include "port/floor.h"
+#include "port/oam.h"
 #include "port/player.h"
 #include "port/pose.h"
 #include "port/stuck.h"
@@ -87,14 +91,40 @@
 #define PLAYER_DP_STATE 0x70
 
 #define PLAYER_STATE_NORMAL 0x0000u
+#define PLAYER_STATE_MONSTER 0x0002u    // `$80:D2EA`: the potion's monster
 #define PLAYER_STATE_TURNING 0x0006u    // these two share a handler,
 #define PLAYER_STATE_TURNING_B 0x000eu  // `$80:D343`
+#define PLAYER_STATE_FLASHING 0x000au   // `$80:D404`
 #define PLAYER_STATE_STUCK 0x000cu
+
+// The monster: the pad as it was when a button to punch with was down, and
+// the frames the potion has left.
+#define MONSTER_DP_PUNCH 0x6c
+#define MONSTER_DP_FRAMES_LEFT 0x56
+#define MONSTER_PUNCH_BUTTONS 0xc0c0u
+
+// The flashing: the frames it has left, and a word that says the state under
+// it is the turning one when it holds this.
+#define FLASHING_DP_FRAMES_LEFT 0x74
+#define FLASHING_DP_UNDER 0x10
+#define FLASHING_UNDER_TURNING 0xfd72u
+#define FLASHING_REACH 8  // pixels each way that are told of the player
+#define FLASHING_HURT_TIMER 2
+// What each player tells them, a word a player.
+#define FLASHING_IDS 0x80d461u
+// The box `actor_notify_box` is given, on page zero.
+#define W_BOX_LEFT 0x0038u
+#define W_BOX_RIGHT 0x003au
+#define W_BOX_TOP 0x003cu
+#define W_BOX_BOTTOM 0x003eu
+#define W_BOX_ID 0x0040u
 
 // Neighbours rescued on this level, a word for each player. A level with
 // nobody left to rescue goes on while either is not zero.
 #define W_RESCUED 0x1f9cu
 #define PLAYER_MOVEMENT_WALK 0xe4bau
+#define PLAYER_MOVEMENT_MONSTER_WALK 0xe595u
+#define PLAYER_MOVEMENT_STUCK_WALK 0xe6c2u
 
 typedef enum {
   PLAYER_HURT_TIMER_HELD,
@@ -112,10 +142,16 @@ typedef struct {
   StuckLog stuck;
   bool turned;             // ...or turning: a direction was held
   bool timer_ran;          // ......and the pose timer had not run out
+  bool punched;            // ...or the monster: a button to punch with is down
+  bool potion_ran;         // ......and the potion has frames left
+  bool under_turning;      // ...or flashing: over the turning state
+  ActorNotifyWork told;    // ......what was in reach, and told
+  bool flickered;          // ......an even frame, and the picture's flag flipped
   PlayerHurtTimer hurt_timer;
   uint16_t pose;           // the pose handler that ran
   PoseLog pose_log;
   bool walked;
+  WalkKind walk_kind;      // ...by which of the walks
   WalkLog walk;
   bool two_part;           // the position went to two display records
   bool nobody_left;        // nobody left to rescue, and somebody was rescued
@@ -127,6 +163,9 @@ typedef struct {
 // Would the port run this frame the way the ROM does? It runs the frame to
 // find out, so `w` is a copy.
 bool player_frame_supported(Wram* w, const Rom* rom, uint16_t page);
+// ...and what the frame did, for a caller with more to ask of it.
+bool player_frame_tried(Wram* w, const Rom* rom, uint16_t page,
+                        PlayerFrameLog* log);
 
 // One frame of the player whose page is `page`. `log` may be NULL.
 void player_frame(Wram* w, const Rom* rom, uint16_t page, PlayerFrameLog* log);

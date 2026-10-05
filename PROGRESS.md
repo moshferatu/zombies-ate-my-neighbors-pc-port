@@ -5,6 +5,74 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The screens outside a level, the squirt gun's whole thread, and two more of the player's states (2026-10-05)
+
+What the 65816 still executed over the twelve movies goes from 4.3 to
+**3.0** million instructions of work. Live, `level5` goes from 98.8% to
+**99.1%**, `level37` from 98.6% to **98.9%** and `level41` from 98.9% to
+**99.2%**. `level9`, `level13` and `level21` gain two tenths, and
+`level29-fighting` and `level49` one. The game registers 261 routines.
+
+* **Jobs of the screens outside a level**, in `port/frontend.c`. The
+  backdrop behind a screen of words slides a pixel every fourth frame
+  (`$82:B1F9`). Behind the two players' portraits the first layer moves
+  every frame and the third every fifth (`$80:9A1B`). The game over sends
+  its third layer's height and three colours each frame (`$80:8B70`,
+  `$80:8B82`), and its four sprites fall a pixel, two on an odd frame
+  (`$80:8A58`).
+* **A list of pictures**, `$81:832C`, in `port/bodies.c`. Ninety places
+  call it: a list of pairs, a picture and the ticks to leave it up. It
+  sleeps between them, so it is two stretches, from the call and from each
+  wake.
+* **The squirt gun's whole thread**, in `port/squirt.c`. Only the flight
+  loop was the port's. Now the launch is too, with the record's dressing,
+  the first two frames, both pictures of the splash and the end: seven
+  more stretches. The sound and the record's allocation between them are
+  calls to routines already ported.
+* **Two more of the player's states**, in `port/player_frame.c`. The
+  potion's monster (`$80:D2EA`) has no weapon: the pad turns it, and is
+  kept when a button to punch with is down. A player who flashes and
+  cannot be hurt (`$80:D404`) runs the ordinary state underneath, tells
+  everything within eight pixels, and flips its picture on and off.
+* **Two more walks**, in `port/walk.c`, beside the first and sharing its
+  questions. The monster's (`$80:E595`) tests the ground as an enemy's is
+  tested. A player stuck in slime (`$80:E6C2`) can cross two kinds of
+  solid ground, and what covers them moves with them.
+* **What the game forgets**, in a new `port/clears.c`. `$80:895A` clears
+  three stretches of WRAM when a game or a demo ends, and `$80:8992` the
+  threads' pages. The first two stretches and the threads' are the
+  port's.
+
+* **Checked.** The corpus verifies at 31,503,267 calls across 51 movies
+  with 0 diverged, and 777 of 941 coverage sites; 29 of the 32 new ones
+  are taken. Every call priced is exact. Three movies now run to 20,000
+  frames, as the live profiles do: `level5`, `level13` and `level41`.
+  That is where the corpus meets the monster, the slime walk and a game's
+  end.
+* **Lockstep** over the corpus: 310,022 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes.
+* **What lockstep caught.** The third stretch of `$80:895A` was ported
+  too, and every call of it verified. In lockstep `demo-end.zmv` came out
+  with `$7E:0024` one ahead, and `level5.zmv` went on to a different game
+  at pass 18,475. That stretch holds `$7E:1EB4`, which the NMI's handler
+  reads: set, it holds the random numbers still. The ROM clears the
+  stretch a byte at a time and reaches that word nine tenths of the way
+  through. The port cleared it at once, so an NMI that landed in the
+  stretch stepped the numbers where the ROM's did not. Without that
+  stretch both movies are clean, and it is the ROM's again. `verify`
+  could not have seen it: it sets the handler's work aside.
+* **The registry's ceiling** was 256 routines and is 384.
+* **Untaken.** A squirt fired from a tile that stops water; a wall that
+  breaks under the monster, which is the ROM's anyway; solid ground a
+  stuck player can cross.
+* **Next.** The monster's punch is the pose at `$80:D6DC`, and with the
+  second band's walk at `$80:D6B8` it is what the player's frame still
+  turns down most. The creature from `$81:B4EA` to `$81:B8DC` is some
+  300,000 instructions on levels 5, 9, 37 and 49. Outside a level:
+  the first screen's tile map at `$80:A462`, the text printer at
+  `$82:B84A`, the wave's thread at `$80:94AF`, and the portraits' copy at
+  `$80:9A52`. The 2 cycles in `apu_send` are still not understood.
+
 ### What the ports were turning down: a guard, five handlers, a won level and a leap (2026-10-05)
 
 What the 65816 still executed over the twelve movies goes from 5.0 to

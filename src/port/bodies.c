@@ -749,3 +749,46 @@ void player_dead(Wram* w, PortCpu* c, BodyWork* k) {
   k->blocks[PBODY_TAKEN]++;
   c->pc = PLAYER_DEAD_END_PC;
 }
+
+// ---------------------------------------------------------------------------
+// $81:832C  pictures_play
+// ---------------------------------------------------------------------------
+
+// `$81:8330`: the next pair of the list, whose address is the word the
+// routine pushed and Y how far along it is.
+static void pictures_next(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k) {
+  const uint32_t list =
+      ((uint32_t)c->db << 16) | wram_r16(w, (uint16_t)(c->s + 1));
+  lda(c, data_r16(w, rom, list + c->y, k));
+  k->blocks[PICTURES_READ]++;
+  if (c->a == 0) {
+    PORT_COVER(pictures_ended);
+    lda(c, pull16(w, c));
+    k->blocks[PICTURES_END]++;
+    c->pc = PICTURES_RTL_PC;
+    return;
+  }
+  PORT_COVER(pictures_shown);
+  c->x = dp_r16(w, c, PICTURES_DP_SPRITE);
+  wram_w16(w, (uint16_t)(c->x + SPRITE_RECORD_PICTURE), c->a);
+  c->y = (uint16_t)(c->y + 2);
+  lda(c, data_r16(w, rom, list + c->y, k));
+  c->y = (uint16_t)(c->y + 2);
+  set_nz16(c, c->y);
+  push16(w, c, c->y);
+  k->blocks[PICTURES_SHOW]++;
+  c->pc = PICTURES_YIELD_PC;  // A is the ticks
+}
+
+void pictures_play(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k) {
+  push16(w, c, c->a);
+  c->y = 0;
+  k->blocks[PICTURES_ENTER]++;
+  pictures_next(w, rom, c, k);
+}
+
+void pictures_resume(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k) {
+  c->y = pull16(w, c);
+  k->blocks[PICTURES_WOKEN]++;
+  pictures_next(w, rom, c, k);
+}

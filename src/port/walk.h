@@ -54,6 +54,28 @@
 // * a solid tile with a reaction of its own. The reaction takes over from
 //   inside the walk, and it is not ported.
 //
+// ## The monster's walk
+//
+// A player the potion has made a monster moves by `$80:E595` instead. It is
+// the same walk with three differences:
+//
+// * the ground is tested as an enemy's is, `terrain_blocked_enemy`
+// * solid ground of two kinds breaks under it. That is `$80:F1A5`, not
+//   ported, and `monster_walk_checked` says so. Any other solid ground only
+//   stops the axis.
+// * someone standing where the step lands stops it, wherever the monster
+//   stands
+//
+// ## The walk of a player stuck in slime
+//
+// A player the slime covers moves by `$80:E6C2`, slowly, and what covers
+// them moves with them: it is the record at `$0A`, a pixel lower than the
+// player. It differs from the ordinary walk too:
+//
+// * solid ground with either of two attribute bits can be walked on. Any
+//   other stops the axis, and none has a reaction.
+// * someone standing where the step lands stops it, as it does the monster
+//
 // Port code: libc only.
 
 #ifndef PORT_WALK_H
@@ -70,6 +92,26 @@
 
 #define PLAYER_WALK_PC 0x80e4bau  // `$80:E4BA`, entered by the frame's `RTS`
 #define PLAYER_WALK_RTS_PC 0x80e542u
+#define MONSTER_WALK_PC 0x80e595u
+#define MONSTER_WALK_RTS_PC 0x80e5feu
+#define STUCK_WALK_PC 0x80e6c2u
+#define STUCK_WALK_RTS_PC 0x80e738u
+
+typedef enum {
+  WALK_ORDINARY,
+  WALK_OF_MONSTER,
+  WALK_STUCK,
+} WalkKind;
+
+// Solid ground a stuck player can still cross: bits of the attribute word.
+#define STUCK_WALK_CROSSES 0x0c00u
+#define STUCK_WALK_DP_COVER 0x0a  // the record of what covers the player
+
+// `$80:E790`: the attribute bits that say what solid ground is to the
+// monster, and the two values that break.
+#define MONSTER_WALL_BITS 0x8b38u
+#define MONSTER_WALL_BREAKS_A 0x0100u
+#define MONSTER_WALL_BREAKS_B 0x0200u
 
 // Fields on the player's page. `$30`/`$32` is where the player is, and
 // `step_propose` leaves where the pad wants them at `$34`/`$36`.
@@ -122,6 +164,10 @@ typedef struct {
   uint16_t map_exits[BOUNDS_LAST_COMPARE + 1];
   bool last_yes;
   bool overflow;
+  // The monster's ground tests, each as it answered.
+  TerrainRegs enemy_ground[WALK_AXES];
+  int enemy_grounds;
+  bool took[WALK_AXES];  // which axes the player moved along: across, down
 } WalkLog;
 
 // Would the port walk this frame the way the ROM does? False for the two
@@ -134,6 +180,13 @@ void player_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
 // The same, for a caller that has not asked `walk_supported`: false is one of
 // the two paths that are the ROM's, and then `w` is not what the ROM leaves.
 bool player_walk_checked(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
+
+// `$80:E595`, the monster's walk. False is a wall that breaks, and then `w`
+// is not what the ROM leaves. `log` may be NULL.
+bool monster_walk_checked(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
+
+// `$80:E6C2`, the walk of a player stuck in slime. `log` may be NULL.
+void stuck_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
 
 // The reaction a solid tile has, 1 to 6, or 0 for none. `attrs` is the
 // attribute word as `terrain_blocked` leaves it, shifted right one.

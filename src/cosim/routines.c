@@ -63,6 +63,7 @@
 #include "port/doll.h"
 #include "port/zombie.h"
 #include "port/terrain.h"
+#include "port/clears.h"
 #include "port/textmap.h"
 #include "port/thread.h"
 #include "port/trig.h"
@@ -6002,6 +6003,89 @@ static void shim_text_map_clear(Wram* w, const Rom* rom, const CosimRegs* in,
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
 }
 
+// $80:895A and $80:8992  what the game forgets -- see `port/clears.h`. Each
+// stretch of the first is a zero stored and the registers loaded, then a
+// byte at a time as above. The store is four bytes long for the first, which
+// is in bank `$7E`.
+static const CosimRun GAME_CLEAR_HIGH_HEAD = {112, 16, 0};
+static const CosimRun GAME_CLEAR_LOW_HEAD = {106, 15, 0};
+// The threads' is a loop: `STA $0000,X : INX : INX : CPX # : BNE` taken, and
+// round it `LDX # : LDA #`, the second `LDX #`, and the `RTL`. Each loop's
+// last branch is not taken.
+static const CosimRun THREADS_CLEAR_WORD = {100, 10, 0};
+static const CosimRun THREADS_CLEAR_REST = {36 + 18 + 42 - 12, 6 + 3 + 1, 0};
+
+// One stretch of `$80:895A`: the span, and where the next begins.
+static void game_clear_stretch(Wram* w, const CosimRegs* in, CosimRegs* out,
+                               ClearSpan span, uint8_t bank,
+                               const CosimRun* head, uint32_t next) {
+  clear_span(w, span);
+  PortCpu c;
+  cpu_from(in, &c);
+  c.a = 0xffff;
+  c.x = (uint16_t)span.last;
+  c.y = (uint16_t)(span.last + 1);
+  c.db = bank;
+  // The flags are the `LDY #`'s, of an address that is not zero.
+  set_nz16(&c, (uint16_t)(span.first + 1));
+  c.pc = next;
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  // The store's two bytes are not the copy's.
+  cosim_cost(cosim_run_cycles(head, fast) +
+             (int)(clear_span_bytes(span) - 1) *
+                 cosim_run_cycles(&RESET_MOVE_BYTE, fast));
+}
+
+static void shim_game_clear_high(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  game_clear_stretch(w, in, out, GAME_CLEAR_HIGH, 0x7e, &GAME_CLEAR_HIGH_HEAD,
+                     GAME_CLEAR_PAGE_PC);
+}
+
+static void shim_game_clear_page(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  game_clear_stretch(w, in, out, GAME_CLEAR_PAGE, 0x00, &GAME_CLEAR_LOW_HEAD,
+                     GAME_CLEAR_VARS_PC);
+}
+
+static const uint32_t GAME_CLEAR_HIGH_EXITS[] = {GAME_CLEAR_PAGE_PC};
+static const uint32_t GAME_CLEAR_PAGE_EXITS[] = {GAME_CLEAR_VARS_PC};
+
+static bool accepts_wide(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in);
+}
+
+// The second stretch's store is absolute, through the bank the first copy
+// left, `$7E`. The threads' are too, through the bank the third left, `$00`.
+static bool accepts_clear_low(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && (in->db == 0x7e || bank_sees_low_wram(in->db));
+}
+
+static void shim_threads_clear(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  threads_clear(w);
+  const int words = (int)(clear_span_bytes(THREADS_CLEAR_PAGES) +
+                          clear_span_bytes(THREADS_CLEAR_LAST)) / 2;
+  const bool fast = fetch_fast(in);
+  cosim_cost(words * cosim_run_cycles(&THREADS_CLEAR_WORD, fast) +
+             cosim_run_cycles(&THREADS_CLEAR_REST, fast));
+  // The last compare found X equal.
+  out->a = 0;
+  out->x = (uint16_t)(THREADS_CLEAR_LAST.last + 1);
+  out->y = in->y;
+  out->n = false;
+  out->z = true;
+  out->c = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  out->regs = COSIM_REG_ALL;
+}
+
 // `init_ppu_regs` leaves page zero and 16-bit registers, and the stack at
 // `$01FF` from the `TXS` before it.
 static bool accepts_reset_clear(const Wram* w, const CosimRegs* in) {
@@ -6149,6 +6233,17 @@ static const CosimRun PBODY_COST[PBODY_BLOCK_COUNT] = {
     [PBODY_TAKEN] = {6, 0, 0},
 };
 
+// `$81:832C`, by hand: `tools/cycles816.py` does not price `($01,S),Y`. It
+// is two program bytes, two of the stack and two of the list, with two idle
+// cycles: 52 for a list in fast ROM.
+static const CosimRun PICTURES_COST[PICTURES_BLOCK_COUNT] = {
+    [PICTURES_ENTER] = {46, 4, 0},
+    [PICTURES_READ] = {64, 4, 0},
+    [PICTURES_SHOW] = {196, 12, 1},
+    [PICTURES_WOKEN] = {52, 3, 0},
+    [PICTURES_END] = {40, 1, 0},
+};
+
 static int body_cycles(const BodyWork* k, const CosimRun* cost, int count,
                        const CosimRegs* in) {
   const bool fast = fetch_fast(in);
@@ -6187,6 +6282,26 @@ static bool accepts_body_list(const Wram* w, const CosimRegs* in) {
          wram_r16(w, (uint16_t)(in->d + 0x0c)) >= 0x8000;
 }
 
+// `$81:832C`: the list in the cartridge, all of the pair it is on, through a
+// bank that shows low WRAM as well, where the sprite's record is.
+static bool pictures_ok(const Wram* w, const CosimRegs* in, uint16_t list,
+                        uint16_t y) {
+  return body_ok(in) && in->db >= 0x80 && in->db < 0xc0 && list >= 0x8000 &&
+         (uint32_t)list + y + 3 <= 0xffffu &&
+         wram_r16(w, (uint16_t)(in->d + PICTURES_DP_SPRITE)) <= 0x1ff6u;
+}
+
+static bool accepts_pictures_play(const Wram* w, const CosimRegs* in) {
+  return pictures_ok(w, in, in->a, 0);
+}
+
+// Asleep, the place in the list is on top of the stack and the list under it.
+static bool accepts_pictures_resume(const Wram* w, const CosimRegs* in) {
+  return in->s < 0x1ff0 &&
+         pictures_ok(w, in, wram_r16(w, (uint16_t)(in->s + 3)),
+                     wram_r16(w, (uint16_t)(in->s + 1)));
+}
+
 #define BODY_SHIM(name, call, table)                                        \
   static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,     \
                           CosimRegs* out) {                                 \
@@ -6212,6 +6327,8 @@ BODY_SHIM(actors_measured, actors_measured(w, &c, &k), ACTORS_COST)
 BODY_SHIM(actors_started, actors_started(w, &c, &k), ACTORS_COST)
 BODY_SHIM(tile_anim_resume, tile_anim_resume(w, rom, &c, &k), TANIM_COST)
 BODY_SHIM(tile_anim_queued, tile_anim_queued(w, &c, &k), TANIM_COST)
+BODY_SHIM(pictures_play, pictures_play(w, rom, &c, &k), PICTURES_COST)
+BODY_SHIM(pictures_resume, pictures_resume(w, rom, &c, &k), PICTURES_COST)
 BODY_SHIM(player_ticks, player_ticks(&c, &k), PBODY_COST)
 BODY_SHIM(player_state, player_state(w, &c, &k), PBODY_COST)
 BODY_SHIM(player_move, player_move(w, &c, &k), PBODY_COST)
@@ -6271,27 +6388,58 @@ static int registry_cycles(const char* name, int* cache) {
   return *cache;
 }
 
-static int walk_cycles(const WalkLog* log, const CosimRegs* in) {
+// The monster's walk, `$80:E595`, differs round two of the questions. Solid
+// ground is `JSR $E790`, which is `AND # : CMP # : BEQ : CMP # : BEQ : RTS`
+// with neither taken, and a `BRA`: 176, less the 6 the loop below adds for a
+// yes. And someone standing there stops it, so that branch is a `BCS`.
+static const CosimRun MONSTER_WALK_WALL = {170, 19, 0};
+static const CosimRun MONSTER_WALK_OPENING = {40, 3, 0};  // JSR $E450
+// The stuck player's, `$80:E6C2`: solid ground is `ASL : BIT #$0C00 : BEQ`,
+// someone there stops it as it does the monster, and a step taken moves what
+// covers the player: `LDY $0A : STA $0002,Y`, with an `INC` for down.
+static const CosimRun STUCK_WALK_GROUND = {42, 6, 0};
+static const CosimRun STUCK_WALK_TAKE_X = {124 - 56, 9 - 4, 3 - 2};
+static const CosimRun STUCK_WALK_TAKE_Y = {136 - 56, 10 - 4, 3 - 2};
+
+static int walk_cycles_as(const WalkLog* log, const CosimRegs* in,
+                          WalkKind kind) {
   const bool fast = fetch_fast(in);
   const bool unaligned = (in->d & 0x00ffu) != 0;
-  int cycles = cosim_run_cycles_dp(&WALK_OPENING, fast, unaligned) +
+  const bool monster = kind == WALK_OF_MONSTER;
+  const bool stuck = kind == WALK_STUCK;
+  int cycles = cosim_run_cycles_dp(
+                   kind != WALK_ORDINARY ? &MONSTER_WALK_OPENING
+                                         : &WALK_OPENING,
+                   fast, unaligned) +
                step_propose_cycles(log->doubled, in->fastrom, unaligned);
   for (int q = 0; q < WALK_ASK_COUNT; q++) {
     for (int yes = 0; yes < 2; yes++) {
       const int n = log->asked[q][yes];
       if (n == 0) continue;
-      int each = cosim_run_cycles_dp(&WALK_AROUND[q], fast, unaligned);
-      if (WALK_BRANCH_ON_YES[q] == (yes != 0))
+      const CosimRun* around = &WALK_AROUND[q];
+      if (q == WALK_ASK_REACTION && monster) around = &MONSTER_WALK_WALL;
+      if (q == WALK_ASK_REACTION && stuck) around = &STUCK_WALK_GROUND;
+      const bool on_yes = WALK_BRANCH_ON_YES[q] ||
+                          (kind != WALK_ORDINARY && q == WALK_ASK_THERE);
+      int each = cosim_run_cycles_dp(around, fast, unaligned);
+      if (on_yes == (yes != 0))
         each += cosim_run_cycles(&WALK_TAKEN_BRANCH, fast);
       cycles += n * each;
     }
   }
   cycles += log->taken * cosim_run_cycles_dp(&WALK_TAKE, fast, unaligned);
+  if (stuck && log->took[0])
+    cycles += cosim_run_cycles_dp(&STUCK_WALK_TAKE_X, fast, unaligned);
+  if (stuck && log->took[1])
+    cycles += cosim_run_cycles_dp(&STUCK_WALK_TAKE_Y, fast, unaligned);
 
   // The tests themselves, each by what it did.
   CosimRun ground = {0, 0, 0};
   const int grounds =
-      log->asked[WALK_ASK_GROUND][0] + log->asked[WALK_ASK_GROUND][1];
+      monster ? 0
+              : log->asked[WALK_ASK_GROUND][0] + log->asked[WALK_ASK_GROUND][1];
+  for (int i = 0; i < log->enemy_grounds; i++)
+    cycles += terrain_enemy_cycles(&log->enemy_ground[i], in->fastrom);
   run_add(&ground, &TERRAIN_PROLOGUE, grounds);
   run_add(&ground, &TERRAIN_EXIT, grounds);
   for (int i = 0; i < TERRAIN_PROBE_COUNT; i++)
@@ -6305,6 +6453,10 @@ static int walk_cycles(const WalkLog* log, const CosimRegs* in) {
   // ...and the walk's own `RTS`.
   return cycles + cosim_run_cycles(&RUN_RTS, fast) +
          obstacle_cycles(&log->obstacle, in->fastrom);
+}
+
+static int walk_cycles(const WalkLog* log, const CosimRegs* in) {
+  return walk_cycles_as(log, in, WALK_ORDINARY);
 }
 
 // The tests put their scratch on page zero, so a player's page there would
@@ -6330,6 +6482,39 @@ static void shim_player_walk(Wram* w, const Rom* rom, const CosimRegs* in,
   WalkLog log = {0};
   player_walk(w, rom, in->d, &log);
   cosim_cost(walk_cycles(&log, in));
+  out->c = log.last_yes;
+  out->v = log.overflow;
+  out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
+  out->regs = 0;
+}
+
+static bool supported_monster_walk(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  return monster_walk_checked(scratch, rom, in->d, NULL);
+}
+
+static void shim_monster_walk(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  WalkLog log = {0};
+  monster_walk_checked(w, rom, in->d, &log);
+  cosim_cost(walk_cycles_as(&log, in, WALK_OF_MONSTER));
+  out->c = log.last_yes;
+  out->v = log.overflow;
+  out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
+  out->regs = 0;
+}
+
+// What covers the player is a record in low WRAM.
+static bool accepts_stuck_walk(const Wram* w, const CosimRegs* in) {
+  return accepts_player_walk(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + STUCK_WALK_DP_COVER)) < 0x1f00;
+}
+
+static void shim_stuck_walk(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  WalkLog log = {0};
+  stuck_walk(w, rom, in->d, &log);
+  cosim_cost(walk_cycles_as(&log, in, WALK_STUCK));
   out->c = log.last_yes;
   out->v = log.overflow;
   out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
@@ -7159,6 +7344,95 @@ static void shim_squirt_flight(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t SQUIRT_FLIGHT_EXITS[] = {SQUIRT_YIELD_PC, SQUIRT_END_PC};
+
+// The rest of the thread, a stretch at a time. Each run is from
+// `tools/cycles816.py --db=81`. Four reads are of the tables through
+// `$0000,X`, which the tool takes for low WRAM: 4 less each, and two more
+// bytes of the cartridge.
+static const CosimRun SQ_COST[SQ_BLOCK_COUNT] = {
+    [SQ_AIM] = {122, 10, 2},
+    [SQ_UNFIRED] = {18, 3, 0},
+    [SQ_COUNT_UP] = {162, 16, 0},
+    [SQ_DRESS] = {1422, 127, 19},
+    [SQ_HANDLER] = {258, 21, 0},
+    [SQ_PICTURE] = {458, 42, 2},
+    [SQ_TICKS] = {18, 3, 0},
+    [SQ_MOVE_TEST] = {502, 36, 9},
+    [SQ_TAKEN] = {6, 0, 0},
+    [SQ_SPLASH] = {356, 30, 1},
+    [SQ_SPLASH_2] = {104, 11, 1},
+    [SQ_GONE] = {138, 14, 1},
+};
+
+// The tables are read through the data bank, and the record through it too.
+static bool squirt_ok(const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == 0x81;
+}
+
+static bool squirt_record_ok(const Wram* w, const CosimRegs* in) {
+  return squirt_ok(in) &&
+         wram_r16(w, (uint16_t)(in->d + SQUIRT_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, W_SCHED_CUR_TASK) < 0x30;
+}
+
+static bool accepts_squirt_launch(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return squirt_ok(in);
+}
+
+// The record is the one `actor_slot_alloc` left in A.
+static bool accepts_squirt_dress(const Wram* w, const CosimRegs* in) {
+  return squirt_ok(in) && in->a < 0x1f00 && wram_r16(w, W_SCHED_CUR_TASK) < 0x30 &&
+         wram_r16(w, (uint16_t)(in->d + SQUIRT_DP_SIDE)) <= 2 &&
+         wram_r16(w, (uint16_t)(in->d + SQUIRT_DP_FACING)) <= SQUIRT_FACING_MAX;
+}
+
+static bool accepts_squirt_second(const Wram* w, const CosimRegs* in) {
+  return squirt_record_ok(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + SQUIRT_DP_FACING_AT)) <=
+             2 * SQUIRT_FACING_MAX;
+}
+
+// The ROM spins for good on a count gone negative.
+static bool accepts_squirt_gone(const Wram* w, const CosimRegs* in) {
+  const uint16_t live = wram_r16(w, W_SQUIRTS_LIVE);
+  return squirt_ok(in) && live >= 1 && live <= 0x8000;
+}
+
+#define SQUIRT_SHIM(name, call)                                             \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,     \
+                          CosimRegs* out) {                                 \
+    (void)rom;                                                              \
+    PortCpu c;                                                              \
+    SquirtWork k = {0};                                                     \
+    cpu_from(in, &c);                                                       \
+    call;                                                                   \
+    cpu_to(&c, out);                                                        \
+    if (!k.overflow_known) out->p_keep = PORT_P_V;                          \
+    const bool fast = fetch_fast(in);                                       \
+    const bool unaligned = (in->d & 0x00ffu) != 0;                          \
+    int cycles = k.tested ? terrain_bit2_cycles(&k.ground, in->fastrom) : 0; \
+    for (int i = 0; i < SQ_BLOCK_COUNT; i++)                                \
+      cycles += k.blocks[i] * cosim_run_cycles_dp(&SQ_COST[i], fast, unaligned); \
+    cosim_cost(cycles);                                                     \
+  }
+
+SQUIRT_SHIM(squirt_launch, squirt_launch(w, &c, &k))
+SQUIRT_SHIM(squirt_dress, squirt_dress(w, rom, &c, &k))
+SQUIRT_SHIM(squirt_first_frame, squirt_first_frame(w, &c, &k))
+SQUIRT_SHIM(squirt_second_frame, squirt_second_frame(w, rom, &c, &k))
+SQUIRT_SHIM(squirt_splash, squirt_splash(w, &c, &k))
+SQUIRT_SHIM(squirt_splash_2, squirt_splash_2(w, &c, &k))
+SQUIRT_SHIM(squirt_gone, squirt_gone(w, &c, &k))
+
+static const uint32_t SQUIRT_LAUNCH_EXITS[] = {SQUIRT_UNFIRED_RTL_PC,
+                                               SQUIRT_SFX_CALL_PC};
+static const uint32_t SQUIRT_DRESS_EXITS[] = {SQUIRT_LAUNCH_YIELD_PC};
+static const uint32_t SQUIRT_FIRST_EXITS[] = {SQUIRT_FIRST_YIELD_PC,
+                                              SQUIRT_END_PC};
+static const uint32_t SQUIRT_SPLASH_EXITS[] = {SQUIRT_SPLASH_YIELD_PC};
+static const uint32_t SQUIRT_SPLASH_2_EXITS[] = {SQUIRT_SPLASH_2_YIELD_PC};
+static const uint32_t SQUIRT_GONE_EXITS[] = {SQUIRT_FREE_JML_PC};
 
 // ---------------------------------------------------------------------------
 // The clones -- see `port/clone.h`
@@ -11454,6 +11728,23 @@ static const CosimRun PFRAME_RUN_TURN_HEAD = {232, 18, 5};
 static const CosimRun PFRAME_RUN_TURN_FACE = {28, 2, 1};
 static const CosimRun PFRAME_RUN_TURN_TIMER = {40, 4, 1};
 static const CosimRun PFRAME_RUN_TURN_DEC = {50, 2, 1};
+// `$80:D2EA`, the monster: to the `BEQ` on the punch buttons, `STA $6C`, to
+// the `BEQ` on the direction, `STA $26 : BRA`, and `LDA $56 : BEQ` with the
+// `DEC $56 : BNE` that is taken on every frame but the last.
+static const CosimRun PFRAME_RUN_MONSTER_HEAD = {154, 14, 3};
+static const CosimRun PFRAME_RUN_MONSTER_PUNCH = {28, 2, 1};
+static const CosimRun PFRAME_RUN_MONSTER_DIR = {80, 7, 1};
+static const CosimRun PFRAME_RUN_MONSTER_FACE = {46, 4, 1};
+static const CosimRun PFRAME_RUN_MONSTER_POTION = {108, 8, 2};
+static const CosimRun PFRAME_RUN_MONSTER_SPENT = {46, 4, 1};
+// `$80:D404`, the flashing: the test of what is under it, the box and its
+// `JSL`, the hurt timer and the test of the frame, the flip, and `DEC $74 :
+// BPL` taken.
+static const CosimRun PFRAME_RUN_FLASH_HEAD = {58, 7, 1};
+static const CosimRun PFRAME_RUN_FLASH_BOX = {464, 46, 3};
+static const CosimRun PFRAME_RUN_FLASH_AFTER = {110, 13, 1};
+static const CosimRun PFRAME_RUN_FLASH_FLIP = {126, 11, 1};
+static const CosimRun PFRAME_RUN_FLASH_COUNT = {68, 4, 1};
 // `$80:CE2A  LDA $1F9C : ORA $1F9E : BNE`, with nobody left to rescue.
 static const CosimRun PFRAME_RUN_RESCUED = {80, 8, 0};
 
@@ -11484,13 +11775,28 @@ static bool player_frame_ok(const Wram* w, const CosimRegs* in) {
 // pose's test of its pictures is made of the frame as the port left it.
 static bool supported_player_frame(Wram* scratch, const Rom* rom,
                                    const CosimRegs* in) {
-  return player_frame_supported(scratch, rom, in->d) &&
-         weapon_pictures_ok(scratch, in->d);
+  // The log is static for its size: a flashing frame's holds what every
+  // handler it told did.
+  static PlayerFrameLog log;
+  int told;
+  return player_frame_tried(scratch, rom, in->d, &log) &&
+         weapon_pictures_ok(scratch, in->d) &&
+         (log.state != PLAYER_STATE_FLASHING ||
+          notify_box_cycles(&log.told, in, &told));
+}
+
+// `$80:D343` with its `RTS`.
+static void pframe_turning_bill(CosimRun* own, const PlayerFrameLog* log) {
+  run_add(own, &PFRAME_RUN_TURN_HEAD, 1);
+  run_add(own, log->turned ? &PFRAME_RUN_TURN_FACE : &RUN_TAKEN, 1);
+  run_add(own, &PFRAME_RUN_TURN_TIMER, 1);
+  run_add(own, log->timer_ran ? &PFRAME_RUN_TURN_DEC : &RUN_TAKEN, 1);
+  run_add(own, &RUN_RTS, 1);
 }
 
 static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
-  PlayerFrameLog log;
+  static PlayerFrameLog log;
   player_frame(w, rom, in->d, &log);
 
   const bool fast = fetch_fast(in);
@@ -11502,18 +11808,51 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   run_add(&own, &RUN_JSR, 1);
   run_add(&own, &PBODY_COST[PBODY_BRANCH], 1);
   run_add(&own, &PFRAME_RUN_DISPATCH, 1);
-  if (log.state == PLAYER_STATE_NORMAL) {
-    calls += psn_cycles(&log.normal, in->fastrom, unaligned);
-  } else if (log.state != PLAYER_STATE_STUCK) {
-    run_add(&own, &PFRAME_RUN_TURN_HEAD, 1);
-    run_add(&own, log.turned ? &PFRAME_RUN_TURN_FACE : &RUN_TAKEN, 1);
-    run_add(&own, &PFRAME_RUN_TURN_TIMER, 1);
-    run_add(&own, log.timer_ran ? &PFRAME_RUN_TURN_DEC : &RUN_TAKEN, 1);
-    run_add(&own, &RUN_RTS, 1);
-  } else {
-    run_add(&own, &RUN_JSR, 1);  // $80:D465  JSR floor_effect
-    calls += floor_cycles(&log.floor, in->fastrom, unaligned);
-    stuck_bill(&own, &log.stuck);
+  switch (log.state) {
+    case PLAYER_STATE_NORMAL:
+      calls += psn_cycles(&log.normal, in->fastrom, unaligned);
+      break;
+    case PLAYER_STATE_STUCK:
+      run_add(&own, &RUN_JSR, 1);  // $80:D465  JSR floor_effect
+      calls += floor_cycles(&log.floor, in->fastrom, unaligned);
+      stuck_bill(&own, &log.stuck);
+      break;
+    case PLAYER_STATE_MONSTER:
+      run_add(&own, &RUN_JSR, 1);  // $80:D2EA  JSR floor_effect
+      calls += floor_cycles(&log.floor, in->fastrom, unaligned);
+      run_add(&own, &PFRAME_RUN_MONSTER_HEAD, 1);
+      run_add(&own, log.punched ? &PFRAME_RUN_MONSTER_PUNCH : &RUN_TAKEN, 1);
+      run_add(&own, &PFRAME_RUN_MONSTER_DIR, 1);
+      run_add(&own, log.turned ? &PFRAME_RUN_MONSTER_FACE : &RUN_TAKEN, 1);
+      run_add(&own, &PFRAME_RUN_TURN_TIMER, 1);
+      run_add(&own, log.timer_ran ? &PFRAME_RUN_TURN_DEC : &RUN_TAKEN, 1);
+      run_add(&own, log.potion_ran ? &PFRAME_RUN_MONSTER_POTION
+                                   : &PFRAME_RUN_MONSTER_SPENT, 1);
+      run_add(&own, &RUN_RTS, 1);
+      break;
+    case PLAYER_STATE_FLASHING: {
+      run_add(&own, &PFRAME_RUN_FLASH_HEAD, 1);
+      run_add(&own, &RUN_JSR, 1);
+      if (log.under_turning) {
+        run_add(&own, &RUN_TAKEN, 1);
+        pframe_turning_bill(&own, &log);
+      } else {
+        calls += psn_cycles(&log.normal, in->fastrom, unaligned);
+        run_add(&own, &RUN_BRA, 1);
+      }
+      run_add(&own, &PFRAME_RUN_FLASH_BOX, 1);
+      int told = 0;
+      notify_box_cycles(&log.told, in, &told);
+      calls += told;
+      run_add(&own, &PFRAME_RUN_FLASH_AFTER, 1);
+      run_add(&own, log.flickered ? &PFRAME_RUN_FLASH_FLIP : &RUN_TAKEN, 1);
+      run_add(&own, &PFRAME_RUN_FLASH_COUNT, 1);
+      run_add(&own, &RUN_RTS, 1);
+      break;
+    }
+    default:
+      pframe_turning_bill(&own, &log);
+      break;
   }
 
   // JSR $D01B, the hurt timer.
@@ -11550,7 +11889,7 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   if (log.walked) {
     run_add(&own, &PBODY_COST[PBODY_MOVE_CALL], 1);
     run_add(&own, &RUN_RTS, 1);
-    calls += walk_cycles(&log.walk, in);
+    calls += walk_cycles_as(&log.walk, in, log.walk_kind);
   } else {
     run_add(&own, &RUN_TAKEN, 1);
   }
@@ -12149,6 +12488,7 @@ static const uint32_t DOLL_FRAME_EXITS[] = {DOLL_FRAME_YIELD_PC,
                                             DOLL_FRAME_LEAVE_PC};
 
 static const uint32_t VICTIMS_YIELD_EXITS[] = {VICTIMS_YIELD_PC};
+static const uint32_t PICTURES_EXITS[] = {PICTURES_YIELD_PC, PICTURES_RTL_PC};
 static const uint32_t VICTIMS_RESUME_EXITS[] = {
     VICTIMS_YIELD_PC, VICTIMS_START_CALL_PC, VICTIMS_STOP_CALL_PC};
 static const uint32_t OBJECT_YIELD_EXITS[] = {OBJECT_YIELD_PC};
@@ -12304,6 +12644,10 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [IS_VADDR] = {54, 8, 0},
     [IS_TILE] = {56, 7, 1},
     [IS_TAIL] = {72, 4, 0},
+    [FE_SEP_SCROLL] = {62, 8, 0},
+    [FE_SEC_RTL] = {54, 2, 0},
+    [BS_HEAD] = {110, 12, 0},
+    [BS_STEP] = {112, 6, 0},
     [DMA_STORE] = {18, 3, 0},
     [DMA_IMM] = {30, 5, 0},
     [DMA_TAKEN] = {6, 0, 0},
@@ -12713,6 +13057,124 @@ static void shim_backdrop_drift_job(Wram* w, const Rom* rom,
   // Overflow is the second add's, on a frame that moved.
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C |
                (log.moved ? COSIM_FLAG_V : 0);
+  out->regs = COSIM_REG_ALL;
+}
+
+// `$82:B1F9`. On a fourth frame A's low byte is the last byte sent, under
+// the zero the `AND #$0003` left above it.
+static void shim_backdrop_slide_job(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  const bool moved = backdrop_slide_job(w, t);
+  const uint8_t last = wram_r8(w, W_BG3_SCROLL_Y + 1);
+  out->a = moved ? last : (uint16_t)(wram_r16(w, W_BACKDROP_SLIDE_COUNT) & 3);
+  out->x = in->x;
+  out->y = in->y;
+  out->n = moved && (last & 0x80u) != 0;
+  out->z = moved && last == 0;
+  out->c = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  out->regs = COSIM_REG_ALL;
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// `$80:9A1B`, from `tools/cycles816.py` as above.
+static const CosimRun PORTRAIT_RUN_HEAD = {164, 12, 2};   // $9A1B-$9A26
+static const CosimRun PORTRAIT_RUN_FIFTH = {140, 8, 1};   // $9A27-$9A2E
+static const CosimRun PORTRAIT_RUN_TAIL = {54, 2, 0};     // SEC : RTL
+
+static void shim_portrait_scroll_job(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  const bool fifth = portrait_scroll_job(w);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &PORTRAIT_RUN_HEAD, 1);
+  run_add(&run, fifth ? &PORTRAIT_RUN_FIFTH : &DRIFT_RUN_TAKEN, 1);
+  run_add(&run, &PORTRAIT_RUN_TAIL, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), false));
+
+  // The count as the compare with five found it. Below five the flags are the
+  // compare's; on the fifth they are the `INC $136A`'s.
+  const uint16_t y3 = wram_r16(w, W_BG3_SCROLL_Y);
+  out->a = fifth ? PORTRAIT_SCROLL_EVERY : wram_r16(w, W_PORTRAIT_SCROLL_COUNT);
+  out->x = in->x;
+  out->y = in->y;
+  out->n = fifth ? (y3 & 0x8000u) != 0 : true;
+  out->z = fifth && y3 == 0;
+  out->c = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  out->regs = COSIM_REG_ALL;
+}
+
+// The count is at most five going in, or the compare's flags are not these.
+static bool portrait_scroll_job_ok(const Wram* w, const CosimRegs* in) {
+  return accepts_vbl_job(w, in) &&
+         wram_r16(w, W_PORTRAIT_SCROLL_COUNT) < PORTRAIT_SCROLL_EVERY;
+}
+
+// `$80:8B70`. A's low byte is the second byte sent.
+static void shim_game_over_scroll_job(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  game_over_scroll_job(w, t);
+  const uint8_t last = wram_r8(w, W_BG3_SCROLL_Y + 1);
+  out->a = (uint16_t)((in->a & 0xff00u) | last);
+  out->x = in->x;
+  out->y = in->y;
+  out->n = (last & 0x80u) != 0;
+  out->z = last == 0;
+  out->c = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  out->regs = COSIM_REG_ALL;
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_game_over_colours_job(Wram* w, const Rom* rom,
+                                       const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  const uint8_t last = game_over_colours_job(t);
+  out->a = (uint16_t)((in->a & 0xff00u) | last);
+  out->x = in->x;
+  out->y = in->y;
+  out->n = (last & 0x80u) != 0;
+  out->z = last == 0;
+  out->c = true;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  out->regs = COSIM_REG_ALL;
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// `$80:8A58`: the test, the `JSR` an odd frame makes, and the four steps
+// with their `RTS`.
+static const CosimRun FALL_RUN_HEAD = {64, 8, 0};
+static const CosimRun FALL_RUN_JSR = {40, 3, 0};
+static const CosimRun FALL_RUN_STEP = {400, 21, 4};
+
+static bool game_over_fall_ok(const Wram* w, const CosimRegs* in) {
+  return wide(in) && bank_sees_low_wram(in->db) && low_stack(in) &&
+         game_over_fall_supported(w, in->d);
+}
+
+static void shim_game_over_fall(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  GameOverFallLog log;
+  game_over_fall(w, in->d, &log);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &FALL_RUN_HEAD, 1);
+  run_add(&run, log.twice ? &FALL_RUN_JSR : &DRIFT_RUN_TAKEN, 1);
+  run_add(&run, &FALL_RUN_STEP, log.twice ? 2 : 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+  out->a = log.a;
+  out->x = log.x;
+  out->y = in->y;
+  out->n = (log.last & 0x8000u) != 0;
+  out->z = log.last == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
   out->regs = COSIM_REG_ALL;
 }
 
@@ -15308,6 +15770,41 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 6031452,
     },
+    // What the game forgets: see `port/clears.h`. The first stretch is two
+    // and a half frames of `MVN`, and after a demo the NMI lands in it. The
+    // third, at `$80:897F`, is the ROM's: the handler reads a word of it.
+    {
+        .name = "game_clear_high",
+        .symbol = "$80:895A",
+        .entry = GAME_CLEAR_PC,
+        .run = shim_game_clear_high,
+        .accepts = accepts_wide,
+        COSIM_EXITS(GAME_CLEAR_HIGH_EXITS),
+        .cycles = 907232,
+        .through_interrupts = true,
+    },
+    {
+        .name = "game_clear_page",
+        .symbol = "$80:896D",
+        .entry = GAME_CLEAR_PAGE_PC,
+        .run = shim_game_clear_page,
+        .accepts = accepts_clear_low,
+        COSIM_EXITS(GAME_CLEAR_PAGE_EXITS),
+        .uncalled = true,
+        .cycles = 9214,
+        .through_interrupts = true,
+    },
+    {
+        .name = "threads_clear",
+        .symbol = "$80:8992",
+        .entry = THREADS_CLEAR_PC,
+        .ret_op = THREADS_CLEAR_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_threads_clear,
+        .accepts = accepts_clear_low,
+        .cycles = 147284,
+        .through_interrupts = true,
+    },
     // A quarter of a frame of `MVN`. Its callers wait for the vertical blank
     // first, so no interrupt lands in it.
     {
@@ -15364,6 +15861,26 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(VICTIMS_YIELD_EXITS),
         .uncalled = true,
         .cycles = 86,
+    },
+    // Not a body: ninety places in them call it. See `port/bodies.h`.
+    {
+        .name = "pictures_play",
+        .symbol = "$81:832C",
+        .entry = 0x81832c,
+        .run = shim_pictures_play,
+        .accepts = accepts_pictures_play,
+        COSIM_EXITS(PICTURES_EXITS),
+        .cycles = 306,
+    },
+    {
+        .name = "pictures_resume",
+        .symbol = "$81:8344",
+        .entry = 0x818344,
+        .run = shim_pictures_resume,
+        .accepts = accepts_pictures_resume,
+        COSIM_EXITS(PICTURES_EXITS),
+        .uncalled = true,
+        .cycles = 312,
     },
     {
         .name = "object_resume",
@@ -15564,6 +16081,33 @@ static const CosimRoutine ROUTINES[] = {
         // and `PHA`, or `actor_obstacle_at_point`'s `PHD` and `PEA`.
         .stack_bytes = 7,
     },
+    // The potion's monster walks by another. See `port/walk.h`.
+    {
+        .name = "monster_walk",
+        .symbol = "$80:E595",
+        .entry = MONSTER_WALK_PC,
+        .ret_op = MONSTER_WALK_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_monster_walk,
+        .accepts = accepts_player_walk,
+        .supported = supported_monster_walk,
+        .uncalled = true,
+        .cycles = 6000,
+        .stack_bytes = 7,
+    },
+    // ...and a player stuck in slime by a third.
+    {
+        .name = "stuck_walk",
+        .symbol = "$80:E6C2",
+        .entry = STUCK_WALK_PC,
+        .ret_op = STUCK_WALK_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_stuck_walk,
+        .accepts = accepts_stuck_walk,
+        .uncalled = true,
+        .cycles = 6000,
+        .stack_bytes = 7,
+    },
     // The second, and the same arrangement: see `port/chase.h`. Entered by
     // the monster thread's computed `RTS`. It declines the leap, and the ROM
     // chases then.
@@ -15722,6 +16266,82 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 1700,
         .stack_bytes = 16,
+    },
+    // ...and the rest of its thread.
+    {
+        .name = "squirt_launch",
+        .symbol = "$81:FCB2",
+        .entry = SQUIRT_LAUNCH_PC,
+        .run = shim_squirt_launch,
+        .accepts = accepts_squirt_launch,
+        COSIM_EXITS(SQUIRT_LAUNCH_EXITS),
+        .uncalled = true,
+        .cycles = 1100,
+        .stack_bytes = 16,
+    },
+    {
+        .name = "squirt_dress",
+        .symbol = "$81:FD66",
+        .entry = SQUIRT_DRESS_PC,
+        .run = shim_squirt_dress,
+        .accepts = accepts_squirt_dress,
+        COSIM_EXITS(SQUIRT_DRESS_EXITS),
+        .uncalled = true,
+        .cycles = 2160,
+        .stack_bytes = 3,
+    },
+    {
+        .name = "squirt_first_frame",
+        .symbol = "$81:FCE3",
+        .entry = SQUIRT_FIRST_PC,
+        .run = shim_squirt_first_frame,
+        .accepts = squirt_record_ok,
+        COSIM_EXITS(SQUIRT_FIRST_EXITS),
+        .uncalled = true,
+        .cycles = 1400,
+        .stack_bytes = 16,
+    },
+    {
+        .name = "squirt_second_frame",
+        .symbol = "$81:FCF7",
+        .entry = SQUIRT_SECOND_PC,
+        .run = shim_squirt_second_frame,
+        .accepts = accepts_squirt_second,
+        COSIM_EXITS(SQUIRT_FLIGHT_EXITS),
+        .uncalled = true,
+        .cycles = 1900,
+        .stack_bytes = 16,
+    },
+    {
+        .name = "squirt_splash",
+        .symbol = "$81:FD22",
+        .entry = SQUIRT_SPLASH_PC,
+        .run = shim_squirt_splash,
+        .accepts = squirt_record_ok,
+        COSIM_EXITS(SQUIRT_SPLASH_EXITS),
+        .uncalled = true,
+        .cycles = 356,
+        .stack_bytes = 3,
+    },
+    {
+        .name = "squirt_splash_2",
+        .symbol = "$81:FD39",
+        .entry = SQUIRT_SPLASH_2_PC,
+        .run = shim_squirt_splash_2,
+        .accepts = squirt_record_ok,
+        COSIM_EXITS(SQUIRT_SPLASH_2_EXITS),
+        .uncalled = true,
+        .cycles = 104,
+    },
+    {
+        .name = "squirt_gone",
+        .symbol = "$81:FD48",
+        .entry = SQUIRT_GONE_PC,
+        .run = shim_squirt_gone,
+        .accepts = accepts_squirt_gone,
+        COSIM_EXITS(SQUIRT_GONE_EXITS),
+        .uncalled = true,
+        .cycles = 138,
     },
     // The clones' loop, a frame at a time. See `port/clone.h`.
     {
@@ -16127,6 +16747,65 @@ static const CosimRoutine ROUTINES[] = {
         .accepts = backdrop_drift_job_ok,
         .uncalled = true,
         .cycles = 200,
+    },
+    {
+        .name = "backdrop_slide_job",
+        .symbol = "$82:B1F9",
+        .entry = BACKDROP_SLIDE_JOB_PC,
+        .ret_op = BACKDROP_SLIDE_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_backdrop_slide_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 240,
+    },
+    {
+        .name = "portrait_scroll_job",
+        .symbol = "$80:9A1B",
+        .entry = PORTRAIT_SCROLL_JOB_PC,
+        .ret_op = PORTRAIT_SCROLL_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_portrait_scroll_job,
+        .accepts = portrait_scroll_job_ok,
+        .uncalled = true,
+        .cycles = 250,
+    },
+    {
+        .name = "game_over_scroll_job",
+        .symbol = "$80:8B70",
+        .entry = GAME_OVER_SCROLL_JOB_PC,
+        .ret_op = GAME_OVER_SCROLL_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_game_over_scroll_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 190,
+    },
+    {
+        .name = "game_over_colours_job",
+        .symbol = "$80:8B82",
+        .entry = GAME_OVER_COLOURS_JOB_PC,
+        .ret_op = GAME_OVER_COLOURS_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_game_over_colours_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 350,
+    },
+    // Called by the game over's thread, not queued.
+    {
+        .name = "game_over_fall",
+        .symbol = "$80:8A58",
+        .entry = GAME_OVER_FALL_PC,
+        .ret_op = GAME_OVER_FALL_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_game_over_fall,
+        .accepts = game_over_fall_ok,
+        .cycles = 700,
+        .stack_bytes = 2,  // an odd frame's `JSR`
     },
     {
         .name = "spawnlist_frame",

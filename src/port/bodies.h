@@ -336,4 +336,37 @@ void player_hurt(Wram* w, PortCpu* c, BodyWork* k);
 void player_won(Wram* w, PortCpu* c, BodyWork* k);
 void player_dead(Wram* w, PortCpu* c, BodyWork* k);
 
+// --- $81:832C  pictures_play ---------------------------------------------------
+//
+// Not a body but what ninety places in the bodies call: show a list of
+// pictures, one after the other. A is the list's address in the caller's
+// bank, pairs of words, a picture and the ticks to leave it up, ended by a
+// zero picture. Each picture goes into the record of the thread's sprite,
+// which `$08` on its page points at, and the thread sleeps the ticks.
+//
+// It yields, so it is two stretches: from the call to the first picture, and
+// from each wake to the next. The list's address and the place in it are on
+// the stack while it sleeps, as the ROM has them.
+
+#define PICTURES_PLAY_PC 0x81832cu
+#define PICTURES_RESUME_PC 0x818344u  // after its `JSL thread_yield`
+// Where it leaves.
+#define PICTURES_YIELD_PC 0x818340u
+#define PICTURES_RTL_PC 0x818348u
+
+#define PICTURES_DP_SPRITE 0x08
+#define SPRITE_RECORD_PICTURE 0x08
+
+enum {
+  PICTURES_ENTER,   // PHA : LDY #$0000
+  PICTURES_READ,    // LDA ($01,S),Y : BEQ
+  PICTURES_SHOW,    // $8334-$833F: the picture stored, the ticks read
+  PICTURES_WOKEN,   // PLY : BRA
+  PICTURES_END,     // the branch taken, and PLA
+  PICTURES_BLOCK_COUNT
+};
+
+void pictures_play(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k);
+void pictures_resume(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k);
+
 #endif

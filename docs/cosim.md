@@ -16217,3 +16217,122 @@ before on the same passes.
 **Live**: the residue over the twelve movies is 4.3 million instructions,
 from 5.0. `level5` goes from 98.5% to 98.8% and `level37` from 98.3% to
 98.6%.
+
+## Outside a level, and a clear the NMI reads (2026-10-05)
+
+### Where the residue was
+
+Ranked by stretch of ROM and not by page, a quarter of what was left was
+not in any level: the title, the menus, the players' portraits, the game
+over, and the clears between them. A stretch here is a run of executed
+bytes ended by a gap or a return, which is close to a routine. The first
+five rows, of 4.28 million:
+
+    $80:895A-$8991   185,056   the clear when a game or a demo ends
+    $80:A462-$A49F   157,218   the first screen's tile map
+    $82:B84A-$B8FA   152,528   the text printer
+    $81:832C-$8348   129,739   a list of pictures, played
+    $80:94AF-$953A   121,282   the wave's thread
+
+### Jobs that write the hardware
+
+Four of the jobs are a few stores each, and three of them write
+registers, so they record a trace as `intro_screen_job` does. Their runs
+are the same shapes as that job's and are priced from the same table:
+
+    SEP #$20 : LDA abs : STA abs      62, 8 bytes   to the first write
+    LDA abs : STA abs                 44, 6
+    LDA #imm : STA abs                30, 5
+    REP #$20 : SEC : RTL              72, 4
+
+`verify` compares every register write of theirs, address, value and
+cycle.
+
+### A routine that sleeps, as two stretches
+
+`$81:832C` pushes the list's address, and at each pair pushes its place
+in the list and calls `thread_yield`. The one resumable routine in the
+registry, `fade_in`, keeps its state in a context of the port's. This one
+could not: the thread's parked stack pointer is in WRAM, and the ROM's is
+four bytes lower while it sleeps. So it is two entries with exits, as a
+thread's body is: `$81:832C` to the `JSL thread_yield` at `$81:8340` or
+the `RTL`, and `$81:8344`, where the yield comes back, to the same two.
+The port pushes what the ROM pushes.
+
+`LDA ($01,S),Y` is the one instruction `tools/cycles816.py` would not
+price. By hand: two program bytes, two of the stack, two of the list and
+two idle cycles, 52 for a list in fast ROM.
+
+### The squirt gun's thread
+
+Seven more stretches. They stop at the two calls whose cost is not theirs
+to say, `apu_play_sfx` and `actor_slot_alloc`, and make the others in C:
+the tile test, `thread_set_handler`, and the thread's own two
+subroutines.
+
+One thing the first run found. The dress returns by `RTS` to the launch
+and then makes two calls of its own, whose return addresses the ROM
+writes over the one it came in by. Those bytes are above the stack
+pointer the stretch began with, where the harness waives nothing. The
+port writes them: `called()` in `port/squirt.c`.
+
+### The player
+
+Run to 20,000 frames, `level5` had `player_frame` turn down 2,013 of
+10,653 frames. With the two states in, the rest were asked why, as last
+round:
+
+    1,013   movement $80:E595, state 2
+      504   pose $80:D6DC, state 2
+      772   movement $80:E6C2, state $0C     (level41)
+
+State 2 is the potion's monster and `$80:E595` its walk; `$80:E6C2` is
+the walk of a player stuck in slime. Both walks are the ordinary walk
+with other answers to two of its four questions, so `port/walk.c` has a
+`WalkKind` and one walk.
+
+The carry each leaves at solid ground is not the answer. The monster's
+is the compare with the second kind of wall that breaks, and the stuck
+player's is the bit an `ASL` pushed out of the attribute word. The first
+of those diverged at the monster's 77th walk until it was written down.
+
+### The clear, and what lockstep is for
+
+`$80:895A` is three `MVN`s. The first is two and a half frames. At a
+game's end no interrupt lands in it; after a demo the NMI is on and
+lands in it every time. So each stretch is an entry of its own, with
+`through_interrupts`, and `verify` passed all of them.
+
+`run` did not:
+
+    demo-end.zmv   $7E:0024  stock $4B, native $4C     from pass 13,690
+    level5.zmv     the timelines part at pass 18,475
+
+`$7E:0024` is the random numbers' state, and the NMI's tail steps it
+unless `$7E:1EB4` is set. `$7E:1EB4` is in the third stretch, `$B36`
+bytes into its `$C7E`. A port clears the stretch at once and then spends
+the cycles; the ROM has not reached the word when an NMI lands in the
+first nine tenths. One step of the numbers, and the next demo is another
+one.
+
+`verify` cannot see this. It sets the handler's stretch aside and leaves
+the bytes it changed out of the diff, which is right for what it is
+asking: did the routine do what the ROM's did. Whether the handler did
+what the ROM's handler did is `run`'s question.
+
+With the third stretch excluded both movies are clean, so it is not
+registered. The first stretch holds nothing the handler reads, and the
+second is nine thousand cycles that no interrupt has landed in.
+
+### Checked
+
+The corpus: 31,503,267 calls across 51 movies, 0 diverged, 777 of 941
+sites. Every call priced is exact. `level5`, `level13` and `level41` run
+to 20,000 frames in it now.
+
+**Lockstep**: 310,022 passes, 48 of 51 never part, the same three as
+before on the same passes.
+
+**Live**: the residue over the twelve movies is 3.0 million
+instructions, from 4.3. `level5` goes from 98.8% to 99.1%, `level37`
+from 98.6% to 98.9% and `level41` from 98.9% to 99.2%.

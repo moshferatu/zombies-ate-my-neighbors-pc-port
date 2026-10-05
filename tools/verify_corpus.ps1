@@ -71,11 +71,16 @@ $corpus = [ordered]@{
     "level1-rescue.zmv"      = 6100
     "level1-2p.zmv"          = 6000
     "level1-2p-rescue.zmv"   = 6100
-    "level5.zmv"             = 4700
+    # Three of the level probes run on to 20000, long past their last
+    # input, which is how far the live profiles run all twelve. The players
+    # die there and come back flashing, the game ends, and the title's demos
+    # come round: `level5` has the potion's monster in one, `level41` a
+    # player walking in slime, and `level13` gets through two games' ends.
+    "level5.zmv"             = 20000
     "level5-d7f6.zmv"        = 3500
     "level9.zmv"             = 4700
     "level9-weapons.zmv"     = 9000
-    "level13.zmv"            = 4700
+    "level13.zmv"            = 20000
     "level17.zmv"            = 4700
     "level17-weapon.zmv"     = 4700
     "level17-2p-freeze.zmv"  = 4700
@@ -101,7 +106,7 @@ $corpus = [ordered]@{
     "level33.zmv"            = 3600
     "level37.zmv"            = 4700
     "level37-e6e4.zmv"       = 6000
-    "level41.zmv"            = 4700
+    "level41.zmv"            = 20000
     "level45-bonus.zmv"      = 3600
     "level45-carried.zmv"    = 4700
     "level45-contested.zmv"  = 4000
