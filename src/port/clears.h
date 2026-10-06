@@ -77,4 +77,11 @@ void clear_span(Wram* w, ClearSpan s);
 // `$80:8992`, both of its spans.
 void threads_clear(Wram* w);
 
+// `$80:BDF2`: every display record is free again. The flags word of each of
+// the thirty-two is cleared, and the list has no first record. Nothing else
+// of a record is touched.
+#define ACTOR_SLOTS_CLEAR_PC 0x80bdf2u
+#define ACTOR_SLOTS_CLEAR_RTL_PC 0x80be0bu
+void actor_slots_clear(Wram* w);
+
 #endif

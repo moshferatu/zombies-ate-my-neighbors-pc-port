@@ -74,6 +74,10 @@
 #define VRAM_CLEAR_JOB_RTL_PC 0x809f98u  // of two: the other is at `$9F9A`
 #define COLOURS_112_ASK_PC 0x828163u
 #define COLOURS_112_ASK_RTL_PC 0x82816eu
+#define VRAM_WIPE_PC 0x809fb0u
+#define VRAM_WIPE_RTL_PC 0x809fdcu
+#define COLOURS_JOB_PC 0x809fdfu
+#define COLOURS_JOB_RTL_PC 0x80a036u
 
 // The HUD's shadow, four rows of 32 words less 32, and where it goes.
 #define HUD_SHADOW_AT 0x5f36u
@@ -91,6 +95,14 @@
 #define VRAM_CLEAR_SOURCE_BANK 0x80u
 #define VRAM_CLEAR_BYTES 0x0800u
 #define VRAM_CLEAR_WORDS 0x0400u
+// `vram_wipe`: from where in VRAM, how much, and a zero word of its own.
+#define VRAM_WIPE_AT 0x2000u
+#define VRAM_WIPE_BYTES 0xc000u
+#define VRAM_WIPE_SOURCE 0x9fddu
+// `colours_job`: the first 112 colours, and the 128 of the sprites'.
+#define COLOURS_LOW_BYTES 0x00e0u
+#define COLOURS_HIGH_FIRST 0x80u
+#define COLOURS_HIGH_BYTES 0x0100u
 
 // The colours, as the level has them, and the background's second copy.
 #define PALETTE_AT 0x5428u
@@ -187,5 +199,15 @@ int colours_112_ask(Wram* w);
 // set, until that address reaches `$8000`: thirty-two vblanks from zero for
 // the whole of VRAM. Returns the address it left. A is left `$0801`.
 uint16_t vram_clear_job(Wram* w, HwTrace* t);
+
+// `$80:9FB0`, which the screens between levels call once `vram_clear_job`
+// is through: VRAM from the word address `$2000` up zeroed in one transfer,
+// which is three quarters of it. A is left `$C001`. Carry is not touched.
+void vram_wipe(HwTrace* t);
+
+// `$80:9FDF`, a job of the vblank's: the level's colours sent in two
+// transfers, the first 112 and then the sprites' 128. Colours 112 to 127 are
+// `colours_112_job`'s to send. It runs once: carry clear. A is left `$0101`.
+void colours_job(HwTrace* t);
 
 #endif

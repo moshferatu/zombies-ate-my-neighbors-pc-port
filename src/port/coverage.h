@@ -208,6 +208,63 @@
   X(wander_tile_wrong,"wander_pick",        "...or on a tile without the bit") \
   X(wander_tile_below_wrong,"wander_pick",  "...or above one") \
   X(wander_gave_up,   "wander_pick",        "three spots, and none would do") \
+  /* Four threads' frames, a step and a clear -- see port/tracker.h, follower.h, */ \
+  /* walker.h, carried.h, pursuer.h and clears.h. */                            \
+  X(tracker_flapped,  "tracker_frame",      "a third frame: the other picture") \
+  X(tracker_steered,  "tracker_frame",      "a speed takes one more towards them") \
+  X(tracker_fast_enough,"tracker_frame",    "...or would be six, and stays") \
+  X(tracker_flew,     "tracker_frame",      "it goes where its speeds take it") \
+  X(tracker_met_ground,"tracker_frame",     "the ground is in the way, and it ends") \
+  X(tracker_ran_out,  "tracker_frame",      "its frames are up, and it ends") \
+  X(tracker_ended,    "tracker_frame",      "the loop is over") \
+  X(follower_frame_ended,"follower_frame",  "the word says it is over") \
+  X(follower_moved_on,"follower_frame",     "a seventh frame: the next place") \
+  X(follower_frame_looks,"follower_frame",  "a sixteenth frame: out by the sleep, a return on the stack") \
+  X(follower_next_picture,"follower_frame", "a seventh frame: the next of four pictures") \
+  X(follower_shown,   "follower_frame",     "an odd count: drawn again") \
+  X(follower_hidden,  "follower_frame",     "...or not drawn") \
+  X(follower_frame_hit,"follower_frame",    "its handler has said something touched it") \
+  X(walker_saw_someone,"walker_frame",      "someone is near: at them from the next frame") \
+  X(walker_alone_but_watched,"walker_frame","nobody near, but a player is") \
+  X(walker_left_alone,"walker_frame",       "...and no player either: it ends") \
+  X(walker_stepped,   "walker_frame",       "a pixel the way it faces") \
+  X(walker_turned,    "walker_frame",       "something in the way: a quarter turn") \
+  X(walker_took_the_side,"walker_frame",    "the quarter turn back is clear, and it faces it") \
+  X(walker_lost_them, "walker_frame",       "going at someone who is far now: it walks again") \
+  X(walker_one_step,  "walker_frame",       "at them, one step") \
+  X(walker_two_steps, "walker_frame",       "...or two") \
+  X(walker_went_across,"walker_frame",      "the step across was clear") \
+  X(walker_went_down, "walker_frame",       "the step down was clear") \
+  X(walker_faces_right,"walker_frame",      "a fifth frame: a picture as drawn") \
+  X(walker_faces_left,"walker_frame",       "...or turned over") \
+  X(walker_ended,     "walker_frame",       "the loop is over") \
+  X(carried_on,       "carried_frame",      "carried a step further") \
+  X(carried_met_ground,"carried_frame",     "the ground stops them") \
+  X(carried_met_a_thing,"carried_frame",    "a thing stops them") \
+  X(carried_past_the_leash,"carried_frame", "the other player is too far") \
+  X(carried_off_the_level,"carried_frame",  "the level's edge stops them") \
+  X(carried_ran_out,  "carried_frame",      "the count is up") \
+  X(pursuer_done,     "pursuer_step",       "the count is at its end: no step") \
+  X(pursuer_on_top_of_them,"pursuer_step",  "it faces nowhere: no step") \
+  X(pursuer_went_across,"pursuer_step",     "the step across was clear") \
+  X(pursuer_went_down,"pursuer_step",       "the step down was clear") \
+  X(pursuer_ground_in_the_way,"pursuer_step","ground stops half a step") \
+  X(pursuer_thing_in_the_way,"pursuer_step","a thing stops half a step") \
+  X(actor_slots_cleared,"actor_slots_clear","every display record freed") \
+  /* A tile changed in the map, and the swipe that changes them -- see */      \
+  /* port/tile_put.h and port/swipe.h. */                                       \
+  X(tile_put_over_sprites,"map_tile_put",   "a tile numbered low: drawn over the sprites") \
+  X(tile_put_on_screen,"map_tile_put",      "in the camera's window: on the list for VRAM") \
+  X(tile_put_off_screen,"map_tile_put",     "...or out of it: the map only") \
+  X(tile_put_asked,   "map_tile_put",       "the list's first: the job is queued") \
+  X(swipe_began,      "swipe_begin",        "a record in front of its owner") \
+  X(swipe_as_drawn,   "swipe_begin",        "a way whose picture is as drawn") \
+  X(swipe_turned_over,"swipe_begin",        "...or turned over") \
+  X(swipe_tile_left,  "swipe_cut",          "a tile with neither bit: left") \
+  X(swipe_cut_first,  "swipe_cut",          "a tile with bit 14: cut to $0097") \
+  X(swipe_cut_second, "swipe_cut",          "...or with bit 15: cut to $01DB") \
+  X(swipe_cut_nothing,"swipe_cut",          "nothing there to cut") \
+  X(swipe_cut_counted,"swipe_cut",          "the cuts counted for the player, and heard") \
   X(vram_send_more,   "vram_send_job",      "a kilobyte sent, and more to send") \
   X(vram_send_last,   "vram_send_job",      "the last of it sent") \
   X(bg1_vscroll_job,  "bg1_vscroll_job",    "BG1's scroll down, from its shadow") \
@@ -267,6 +324,8 @@
   X(colours_112_job,  "colours_112_job",    "colours 112 to 127 sent") \
   X(vram_clear_more,  "vram_clear_job",     "a kilobyte zeroed, and more to do") \
   X(vram_clear_done,  "vram_clear_job",     "...or the last, at the top of VRAM") \
+  X(vram_wiped,       "vram_wipe",          "three quarters of VRAM zeroed at once") \
+  X(colours_job,      "colours_job",        "the level's colours sent, in two transfers") \
   /* $81:F380 the bubble gun's bubble -- see port/bubble.h. */                  \
   X(bubble_unfired,   "bubble_launch",      "fired from a tile that stops it: no bubble") \
   X(bubble_launched,  "bubble_launch",      "two of the budget, and on to ask for a record") \

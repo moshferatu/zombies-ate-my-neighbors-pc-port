@@ -49,6 +49,7 @@
 #include "port/saucer.h"
 #include "port/blinker.h"
 #include "port/bolt.h"
+#include "port/carried.h"
 #include "port/bodies.h"
 #include "port/sched.h"
 #include "port/score.h"
@@ -72,6 +73,7 @@
 #include "port/seeker.h"
 #include "port/spawner.h"
 #include "port/stepper.h"
+#include "port/swipe.h"
 #include "port/bubble.h"
 #include "port/flame.h"
 #include "port/stuck.h"
@@ -79,6 +81,9 @@
 #include "port/step.h"
 #include "port/walk.h"
 #include "port/wander.h"
+#include "port/pursuer.h"
+#include "port/tracker.h"
+#include "port/walker.h"
 #include "port/chase.h"
 #include "port/demo.h"
 #include "port/dma.h"
@@ -88,6 +93,7 @@
 #include "port/clears.h"
 #include "port/textmap.h"
 #include "port/thread.h"
+#include "port/tile_put.h"
 #include "port/tile_rows.h"
 #include "port/trig.h"
 #include "port/vblank.h"
@@ -15094,6 +15100,35 @@ static void shim_colours_112_job(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_hw(t, DMA_COST, fetch_fast(in));
 }
 
+// `$80:9FB0`. Its stores are absolute, to registers the data bank has to
+// see. Carry is whatever it was.
+static bool accepts_vram_wipe(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && (in->db & 0x40) == 0;
+}
+
+static void shim_vram_wipe(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  vram_wipe(t);
+  dma_out(out, low_byte_one(VRAM_WIPE_BYTES), in->x, in->y, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_colours_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  colours_job(t);
+  dma_out(out, low_byte_one(COLOURS_HIGH_BYTES), in->x, in->y, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
 // The flags are the `BIT $C8`'s, on the address it has moved on to, and
 // carry says whether it has more to do.
 static void shim_vram_clear_job(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -16086,6 +16121,463 @@ static void shim_colours_112_ask(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(saucer_queue_a_cycles(slot, in->fastrom) +
              cosim_run_cycles(&run, fetch_fast(in)));
 }
+
+// ---------------------------------------------------------------------------
+// Four threads' frames, a step and a clear -- see `port/tracker.h`,
+// `port/follower.h`, `port/walker.h`, `port/carried.h`, `port/pursuer.h` and
+// `port/clears.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py` with the entry's own data bank; a
+// `BRA` at the end of one is counted taken. What each calls costs what
+// those entries charge.
+
+// `$82:F054`. Overflow at the end is the ground test's.
+static const CosimRun TK_COST[TK_BLOCK_COUNT] = {
+    [TK_FLAP] = {40 + 62, 3 + 4, 1},
+    [TK_PICTURE] = {260, 25, 4},
+    [TK_LOOK] = {40 + 40 + 240, 1 + 3 + 18, 3},
+    [TK_STEER] = {100, 11, 1},
+    [TK_NEGATE] = {30, 4, 0},
+    [TK_LIMIT] = {30, 5, 0},
+    [TK_KEEP] = {28, 2, 1},
+    [TK_MOVE] = {314, 24, 8},
+    [TK_PUT] = {226, 16, 4},
+    [TK_RTS] = {40, 1, 0},
+    [TK_STOP] = {90, 3, 1},
+    [TK_TAIL] = {40, 4, 1},
+    [TK_AGAIN] = {18, 3, 0},
+    [TK_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_tracker_frame(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == TRACKER_BANK &&
+         wram_r16(w, (uint16_t)(in->d + TRACKER_DP_RECORD)) < 0x1f00;
+}
+
+static void shim_tracker_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  PortCpu c;
+  TrackerWork k = {0};
+  cpu_from(in, &c);
+  tracker_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  out->p_keep = PORT_P_V;
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = nearest_cycles(&k.nearest, in->fastrom) +
+               actor_bearing_cycles(&k.bearing, in->fastrom) +
+               terrain_bit2_cycles(&k.ground, in->fastrom);
+  for (int i = 0; i < TK_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&TK_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t TRACKER_EXITS[] = {TRACKER_SLEEP_PC, TRACKER_ENDED_PC};
+
+// `$82:F4B8`. `follower_place` is priced by its own blocks.
+static const CosimRun FF_COST[FF_BLOCK_COUNT] = {
+    [FF_HEAD] = {40, 4, 1},
+    [FF_COUNT] = {62, 4, 1},
+    [FF_NEXT] = {144 + 6, 15, 3},
+    [FF_CALL] = {40, 3, 0},
+    [FF_BACK] = {40 + 40 + 62, 1 + 3 + 4, 1},
+    [FF_PICTURE] = {260, 25, 4},
+    [FF_BLINK] = {40 + 58, 3 + 7, 1},
+    [FF_TURN] = {56, 4, 1},
+    [FF_SHOW] = {30 + 6, 5, 0},
+    [FF_HIDE] = {18, 3, 0},
+    [FF_TURNED] = {44, 2, 1},
+    [FF_TAIL] = {40 + 40 + 40, 1 + 1 + 4, 1},
+    [FF_AGAIN] = {18, 3, 0},
+    [FF_TAKEN] = {6, 0, 0},
+};
+
+// A place past the table's end is one the frame before left it at.
+static bool accepts_follower_frame(const Wram* w, const CosimRegs* in) {
+  const uint16_t place = wram_r16(w, (uint16_t)(in->d + FOLLOWER_DP_PLACE));
+  return accepts_follower_place(w, in) &&
+         (place + FOLLOWER_PLACE_BYTES <= FOLLOWER_PLACES_END ||
+          wram_r16(w, (uint16_t)(in->d + FOLLOWER_DP_LEFT)) != 0);
+}
+
+static void shim_follower_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  PortCpu c;
+  FollowerFrameWork k = {0};
+  cpu_from(in, &c);
+  follower_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < FF_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&FF_COST[i], fast, unaligned);
+  for (int i = 0; i < FW_BLOCK_COUNT; i++)
+    cycles +=
+        k.place.blocks[i] * cosim_run_cycles_dp(&FW_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t FOLLOWER_FRAME_EXITS[] = {
+    FOLLOWER_FRAME_SLEEP_PC, FOLLOWER_FRAME_ENDED_PC, FOLLOWER_FRAME_HIT_PC,
+    FOLLOWER_SLEEP_PC};
+
+// `$81:D723`. A `JMP` is priced apart from a `JSR`.
+static const CosimRun WK_COST[WK_BLOCK_COUNT] = {
+    [WK_HEAD] = {142, 8, 1},
+    [WK_JSR] = {40, 3, 0},
+    [WK_JMP] = {18, 3, 0},
+    [WK_RTS] = {40, 1, 0},
+    [WK_LOOK] = {140, 13, 2},
+    [WK_LOOK_FAR] = {30, 5, 0},
+    [WK_LOOK_PLAYER] = {152, 14, 2},
+    [WK_LOOK_NONE] = {50, 2, 1},
+    [WK_STATE] = {86, 6, 1},
+    [WK_AIM] = {260, 24, 5},
+    [WK_GROUND] = {122, 10, 2},
+    [WK_BODY] = {150, 12, 3},
+    [WK_BCS] = {12, 2, 0},
+    [WK_STEP] = {152, 9, 4},
+    [WK_TURN] = {170, 18, 2},
+    [WK_SIDE] = {384, 37, 6},
+    [WK_TAKE] = {56, 4, 2},
+    [WK_AT] = {168, 15, 3},
+    [WK_AT_DRAW] = {84, 9, 0},
+    [WK_AT_GO] = {382, 33, 7},
+    [WK_SHOW] = {62, 4, 1},
+    [WK_PICTURE] = {312, 30, 4},
+    [WK_FACE_RIGHT] = {30 + 6, 5, 0},
+    [WK_FACE_LEFT] = {18, 3, 0},
+    [WK_PICTURE_END] = {126, 11, 2},
+    [WK_PLACE] = {204, 13, 3},
+    [WK_TAIL] = {40, 4, 1},
+    [WK_AGAIN] = {46, 5, 1},
+    [WK_TAKEN] = {6, 0, 0},
+};
+
+// One of its three states, and a way the tables have.
+static bool accepts_walker_frame(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != WALKER_BANK) return false;
+  const uint16_t state = wram_r16(w, (uint16_t)(in->d + WALKER_DP_STATE));
+  return (state == WALKER_STATE_WALK || state == WALKER_STATE_ALONG ||
+          state == WALKER_STATE_AT) &&
+         wram_r16(w, (uint16_t)(in->d + WALKER_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + WALKER_DP_WAY)) < WALKER_WAY_END &&
+         wram_r16(w, (uint16_t)(in->d + WALKER_DP_PICTURE)) < 4;
+}
+
+static void shim_walker_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  PortCpu c;
+  static WalkerWork k;
+  k = (WalkerWork){0};
+  cpu_from(in, &c);
+  walker_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (k.overflow_unknown) out->p_keep = PORT_P_V;
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < WK_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&WK_COST[i], fast, unaligned);
+  if (k.looked) cycles += nearest_cycles(&k.nearest, in->fastrom);
+  if (k.asked_players)
+    cycles += player_bearing_cycles(&k.players, in->fastrom);
+  for (int i = 0; i < k.grounds; i++)
+    cycles += terrain_enemy_cycles(&k.ground[i], in->fastrom);
+  for (int i = 0; i < k.bodies; i++)
+    cycles += at_point_cycles(&k.body[i], in->fastrom);
+  for (int i = 0; i < k.bearings; i++)
+    cycles += actor_bearing_cycles(&k.bearing[i], in->fastrom);
+  if (k.drew) cycles += rng_cycles(k.drew_overflow, in->fastrom);
+  cosim_cost(cycles);
+}
+
+static const uint32_t WALKER_EXITS[] = {WALKER_SLEEP_PC, WALKER_ENDED_PC};
+
+// `$80:E3D6`. Overflow on the way round is the tests'.
+static const CosimRun CA_COST[CA_BLOCK_COUNT] = {
+    [CA_TRY] = {40 + 314, 3 + 24, 8},
+    [CA_THING] = {150, 12, 3},
+    [CA_LEASH] = {122, 10, 2},
+    [CA_EDGE] = {122, 10, 2},
+    [CA_COUNT] = {62, 4, 1},
+    [CA_PUT] = {272, 18, 5},
+    [CA_STOP] = {300, 24, 4},
+    [CA_TAIL] = {12, 2, 0},
+    [CA_AGAIN] = {18, 3, 0},
+    [CA_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_carried_frame(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         wram_r16(w, (uint16_t)(in->d + CARRIED_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + CARRIED_DP_PLAYER)) <= 2;
+}
+
+static void shim_carried_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  CarriedWork k = {0};
+  cpu_from(in, &c);
+  carried_frame(w, &c, &k);
+  cpu_to(&c, out);
+  if (k.overflow_unknown) out->p_keep = PORT_P_V;
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles =
+      terrain_blocked_cycles(k.ground.probes, k.ground.blocked, in->fastrom);
+  if (k.asked_thing) cycles += obstacle_cycles(&k.thing, in->fastrom);
+  if (k.asked_leash) cycles += tether_cycles(&k.leash, in->fastrom);
+  if (k.asked_edge) cycles += bounds_cycles(k.edge.exit, in->fastrom);
+  for (int i = 0; i < CA_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&CA_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t CARRIED_EXITS[] = {CARRIED_SLEEP_PC, CARRIED_STOPPED_PC};
+
+// `$81:A74D`. It leaves by an `RTS` that is the ROM's.
+static const CosimRun PU_COST[PU_BLOCK_COUNT] = {
+    [PU_HEAD] = {58, 7, 1},
+    [PU_FACE] = {216, 17, 3},
+    [PU_AIM] = {418, 37, 5},
+    [PU_BODY] = {150, 12, 3},
+    [PU_TAKE] = {56, 4, 2},
+    [PU_GROUND] = {122, 10, 2},
+    [PU_PUT] = {164, 12, 3},
+    [PU_DONE] = {78, 4, 2},
+    [PU_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_pursuer_step(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == PURSUER_BANK &&
+         wram_r16(w, (uint16_t)(in->d + PURSUER_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + PURSUER_DP_WHOM)) < 0x1f00;
+}
+
+static void shim_pursuer_step(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  PortCpu c;
+  static PursuerWork k;
+  k = (PursuerWork){0};
+  cpu_from(in, &c);
+  pursuer_step(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (k.overflow_unknown) out->p_keep = PORT_P_V;
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  if (k.faced)
+    cycles += actor_snap_cycles(&k.snap, in->fastrom) +
+              actor_bearing_cycles(&k.bearing, in->fastrom);
+  for (int i = 0; i < k.grounds; i++)
+    cycles += terrain_enemy_cycles(&k.ground[i], in->fastrom);
+  for (int i = 0; i < k.bodies; i++)
+    cycles += at_point_cycles(&k.body[i], in->fastrom);
+  for (int i = 0; i < PU_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&PU_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t PURSUER_EXITS[] = {PURSUER_RTS_PC, PURSUER_DONE_RTS_PC};
+
+// `$80:BDF2`: thirty-two turns of its loop, of which the last falls through.
+static const CosimRun SLOTS_CLEAR_HEAD = {36, 6, 0};    // $BDF2-$BDF7
+static const CosimRun SLOTS_CLEAR_SLOT = {136, 16, 0};  // $BDF8-$BE07
+static const CosimRun SLOTS_CLEAR_TAIL = {76, 4, 0};    // STZ $1B5E : RTL
+
+static void shim_actor_slots_clear(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  actor_slots_clear(w);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SLOTS_CLEAR_HEAD, 1);
+  run_add(&run, &SLOTS_CLEAR_SLOT, ACTOR_SLOT_COUNT);
+  run_add(&run, &RUN_TAKEN, ACTOR_SLOT_COUNT - 1);
+  run_add(&run, &SLOTS_CLEAR_TAIL, 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+  // The last `DEY` found zero, and the last sum carried nothing.
+  out->a = ACTOR_SLOT_COUNT * ACTOR_SLOT_STRIDE;
+  out->x = out->a;
+  out->y = 0;
+  out->n = false;
+  out->z = true;
+  out->c = false;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  out->regs = COSIM_REG_ALL;
+}
+
+// ---------------------------------------------------------------------------
+// A tile changed in the map, and the swipe that changes them -- see
+// `port/tile_put.h` and `port/swipe.h`
+// ---------------------------------------------------------------------------
+
+// `$80:ABD3` by its path. It runs on page zero, which it installs itself.
+static const CosimRun MP_HEAD = {232, 16, 0};             // $ABD3-$ABE2
+static const CosimRun MP_OVER = {74, 7, 0};               // $ABE3-$ABE9
+static const CosimRun MP_WRITE = {264 + 108, 19 + 9, 0};  // $ABEA-$AC05
+static const CosimRun MP_COMPARE = {46, 5, 0};   // CPX or CPY, and a branch
+static const CosimRun MP_BCS = {12, 2, 0};
+static const CosimRun MP_FLAG_RTS = {52, 2, 0};  // SEC or CLC, and RTS
+static const CosimRun MP_LIST = {716, 69, 0};    // $AC06-$AC46
+static const CosimRun MP_ASK = {90, 10, 0};      // $AC47-$AC50
+static const CosimRun MP_TAIL = {104, 4, 0};     // STZ $ED : PLD : RTL
+
+static int tile_put_cycles(const TilePutRegs* r, bool fast) {
+  // How many compares ran, whether the lone `BCS` did, and whether the last
+  // branch of the test was taken.
+  static const struct {
+    int compares;
+    bool bcs, taken;
+  } TEST[] = {
+      [TILE_PUT_LEFT_OF] = {1, false, true},
+      [TILE_PUT_RIGHT_OF] = {2, false, true},
+      [TILE_PUT_ABOVE] = {3, false, true},
+      [TILE_PUT_LAST_ROW] = {4, false, true},
+      [TILE_PUT_BELOW] = {4, true, true},
+      [TILE_PUT_INSIDE] = {4, true, false},
+  };
+  const bool on_screen =
+      r->window == TILE_PUT_LAST_ROW || r->window == TILE_PUT_INSIDE;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &MP_HEAD, 1);
+  run_add(&run, r->over_sprites ? &MP_OVER : &RUN_TAKEN, 1);
+  run_add(&run, &MP_WRITE, 1);
+  run_add(&run, &MP_COMPARE, TEST[r->window].compares);
+  if (TEST[r->window].bcs) run_add(&run, &MP_BCS, 1);
+  if (TEST[r->window].taken) run_add(&run, &RUN_TAKEN, 1);
+  run_add(&run, &MP_FLAG_RTS, 1);
+  if (!on_screen) {
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &MP_LIST, 1);
+    run_add(&run, r->asked ? &MP_ASK : &RUN_TAKEN, 1);
+  }
+  run_add(&run, &MP_TAIL, 1);
+  int cycles = cosim_run_cycles(&run, fast) +
+               cosim_run_cycles(&TILE_ADDR_RUN, fast);
+  if (r->asked) cycles += saucer_queue_a_cycles(r->slot, fast);
+  return cycles;
+}
+
+// Its absolute reads are through the data bank, and it adds.
+static bool accepts_map_tile_put(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && (in->p & PORT_P_D) == 0 && low_stack(in) &&
+         (in->db & 0x40) == 0;
+}
+
+static void shim_map_tile_put(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  TilePutRegs r;
+  map_tile_put(w, rom, in->a, in->x, in->y, &r);
+  cosim_cost(tile_put_cycles(&r, in->fastrom));
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->c = r.c;
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// `$81:E8F1`, and `$81:FF05` at the end of it.
+static const CosimRun SW_BEGIN = {1516 + 68, 136 + 5, 18 + 1};  // $E8F1-$E977
+static const CosimRun SW_OP_TEST = {110, 10, 2};     // $FF05-$FF0C
+static const CosimRun SW_OP_SET = {92 + 6, 8, 0};    // ORA : STA : BRA
+static const CosimRun SW_OP_CLEAR = {80, 6, 0};      // AND : STA
+static const CosimRun SW_PICTURE = {260, 19, 3};     // $FF1B-$FF29
+
+// `$04` is twice a way of one to eight, and `$06` a player.
+static bool accepts_swipe(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != SWIPE_BANK) return false;
+  const uint16_t way = wram_r16(w, (uint16_t)(in->d + SWIPE_DP_WAY));
+  return cur_task_ok(w) && way >= 2 && way < SWIPE_WAY_END && (way & 1) == 0 &&
+         wram_r16(w, (uint16_t)(in->d + SWIPE_DP_OWNER)) < 0x1f00 &&
+         (wram_r16(w, (uint16_t)(in->d + SWIPE_DP_PLAYER)) & ~2u) == 0;
+}
+
+// No record free is the ROM's: it goes on with what is none.
+static bool guard_swipe_begin(Wram* scratch, const Rom* rom,
+                              const CosimRegs* in) {
+  if (!accepts_swipe(scratch, in)) return false;
+  PortCpu c;
+  SwipeBeginWork k = {0};
+  cpu_from(in, &c);
+  swipe_begin(scratch, rom, &c, &k);
+  return !k.declined;
+}
+
+static void shim_swipe_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  SwipeBeginWork k = {0};
+  cpu_from(in, &c);
+  swipe_begin(w, rom, &c, &k);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SW_BEGIN, 1);
+  run_add(&run, &SW_OP_TEST, 1);
+  if (k.turned_over) {
+    run_add(&run, &SW_OP_SET, 1);
+  } else {
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &SW_OP_CLEAR, 1);
+  }
+  run_add(&run, &SW_PICTURE, 1);
+  cosim_cost(saucer_alloc_cycles(k.record, in->fastrom) +
+             cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+// `$81:E979`. The tile's attributes are read on page zero, so that one
+// instruction is not counted with the direct page's.
+static const CosimRun SW_CUT_HEAD = {236, 22, 5};    // $E979-$E98A
+static const CosimRun SW_CUT_NEXT = {62, 4, 1};      // DEC $4C : BMI
+static const CosimRun SW_CUT_TILE = {276 + 276 + 94 + 52 + 186,
+                                     22 + 19 + 9 + 2 + 15, 6 + 2};  // $E98F-$E9CD
+static const CosimRun SW_CUT_SECOND = {54, 7, 0};    // $E9CE-$E9D4
+static const CosimRun SW_CUT_TAIL = {40, 4, 1};      // LDA $48 : BEQ
+
+static bool guard_swipe_cut(Wram* scratch, const Rom* rom,
+                            const CosimRegs* in) {
+  if (!accepts_swipe(scratch, in)) return false;
+  PortCpu c;
+  static SwipeCutWork k;
+  k = (SwipeCutWork){0};
+  cpu_from(in, &c);
+  swipe_cut(scratch, rom, &c, &k);
+  return !k.declined;
+}
+
+static void shim_swipe_cut(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  PortCpu c;
+  static SwipeCutWork k;
+  k = (SwipeCutWork){0};
+  cpu_from(in, &c);
+  swipe_cut(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (k.overflow_unknown) out->p_keep = PORT_P_V;
+  // A sound is not priced, and every cut ends in one. So what is priced is
+  // a look that cut nothing: each tile takes both its branches.
+  if (k.played) return;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SW_CUT_HEAD, 1);
+  run_add(&run, &SW_CUT_NEXT, k.tiles + 1);
+  run_add(&run, &SW_CUT_TILE, k.tiles);
+  run_add(&run, &SW_CUT_SECOND, k.tiles);
+  run_add(&run, &SW_CUT_TAIL, 1);
+  run_add(&run, &RUN_TAKEN, k.tiles + 2);
+  cosim_cost(k.tiles * cosim_run_cycles(&TILE_ADDR_RUN, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t SWIPE_BEGIN_EXITS[] = {SWIPE_BEGIN_RTS_PC};
+static const uint32_t SWIPE_CUT_EXITS[] = {SWIPE_CUT_RTS_PC};
 
 // The count is the table's length by construction, so it cannot drift from it.
 #define COSIM_COMMIT(tbl) \
@@ -19888,6 +20380,112 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 9000,
     },
+    // Four threads' frames, a step and a clear.
+    {
+        .name = "tracker_frame",
+        .symbol = "$82:F054",
+        .entry = TRACKER_PC,
+        .run = shim_tracker_frame,
+        .accepts = accepts_tracker_frame,
+        COSIM_EXITS(TRACKER_EXITS),
+        .uncalled = true,
+        .cycles = 3500,
+        // A `JSR`, a `JSL`, and the deepest of what the three push.
+        .stack_bytes = 24,
+    },
+    {
+        .name = "follower_frame",
+        .symbol = "$82:F4B8",
+        .entry = FOLLOWER_FRAME_PC,
+        .run = shim_follower_frame,
+        .accepts = accepts_follower_frame,
+        COSIM_EXITS(FOLLOWER_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 1800,
+        .stack_bytes = 4,  // a `JSR` and another
+    },
+    {
+        .name = "walker_frame",
+        .symbol = "$81:D723",
+        .entry = WALKER_PC,
+        .run = shim_walker_frame,
+        .accepts = accepts_walker_frame,
+        COSIM_EXITS(WALKER_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        // The state's return, three `JSR`s, a `JSL`, and the deepest of
+        // what those push.
+        .stack_bytes = 32,
+    },
+    {
+        .name = "carried_frame",
+        .symbol = "$80:E3D6",
+        .entry = CARRIED_PC,
+        .run = shim_carried_frame,
+        .accepts = accepts_carried_frame,
+        COSIM_EXITS(CARRIED_EXITS),
+        .uncalled = true,
+        .cycles = 4000,
+        // A `JSR`, a `JSL`, and the deepest of what the four tests push.
+        .stack_bytes = 24,
+    },
+    {
+        .name = "pursuer_step",
+        .symbol = "$81:A74D",
+        .entry = PURSUER_PC,
+        .run = shim_pursuer_step,
+        .accepts = accepts_pursuer_step,
+        COSIM_EXITS(PURSUER_EXITS),
+        .uncalled = true,
+        .cycles = 5000,
+        // A `JSL`, and the deepest of what those push.
+        .stack_bytes = 24,
+    },
+    {
+        .name = "actor_slots_clear",
+        .symbol = "$80:BDF2",
+        .entry = ACTOR_SLOTS_CLEAR_PC,
+        .ret_op = ACTOR_SLOTS_CLEAR_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_actor_slots_clear,
+        .accepts = accepts_clear_low,
+        .cycles = 4700,
+    },
+    // A tile changed in the map, and the swipe that changes them.
+    {
+        .name = "map_tile_put",
+        .symbol = "$80:ABD3",
+        .entry = MAP_TILE_PUT_PC,
+        .ret_op = MAP_TILE_PUT_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_map_tile_put,
+        .accepts = accepts_map_tile_put,
+        .cycles = 2600,
+    },
+    {
+        .name = "swipe_begin",
+        .symbol = "$81:E8F1",
+        .entry = SWIPE_BEGIN_PC,
+        .run = shim_swipe_begin,
+        .supported = guard_swipe_begin,
+        COSIM_EXITS(SWIPE_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 4000,
+        .stack_bytes = 6,  // a `JSL`, and `actor_slot_alloc`'s own three
+    },
+    {
+        .name = "swipe_cut",
+        .symbol = "$81:E979",
+        .entry = SWIPE_CUT_PC,
+        .run = shim_swipe_cut,
+        .supported = guard_swipe_cut,
+        COSIM_EXITS(SWIPE_CUT_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        // A tile's lookup pushes seven and calls; a cut pushes two and
+        // calls `map_tile_put`, which pushes and calls in its turn.
+        .stack_bytes = 28,
+    },
     {
         .name = "seeker_frame",
         .symbol = "$82:EF4F",
@@ -20007,7 +20605,22 @@ static const CosimRoutine ROUTINES[] = {
                   COLOURS_112_JOB_RTL_PC, 420),
     DMA_JOB_ENTRY(vram_clear_job, "$80:9F62", VRAM_CLEAR_JOB_PC,
                   VRAM_CLEAR_JOB_RTL_PC, 480),
+    DMA_JOB_ENTRY(colours_job, "$80:9FDF", COLOURS_JOB_PC, COLOURS_JOB_RTL_PC,
+                  900),
 #undef DMA_JOB_ENTRY
+    // Three quarters of VRAM in one transfer, which is most of two frames.
+    {
+        .name = "vram_wipe",
+        .symbol = "$80:9FB0",
+        .entry = VRAM_WIPE_PC,
+        .ret_op = VRAM_WIPE_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_vram_wipe,
+        .accepts = accepts_vram_wipe,
+        .hw = true,
+        .cycles = 400000,
+        .through_interrupts = true,
+    },
     {
         .name = "backdrop_slide_job",
         .symbol = "$82:B1F9",

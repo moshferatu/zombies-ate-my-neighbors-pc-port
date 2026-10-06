@@ -266,6 +266,12 @@ add_library(zamn_port STATIC
   src/port/bolt.c
   src/port/stepper.c
   src/port/wander.c
+  src/port/carried.c
+  src/port/pursuer.c
+  src/port/tracker.c
+  src/port/walker.c
+  src/port/swipe.c
+  src/port/tile_put.c
   src/port/clears.c
   src/port/hud.c
   src/port/camera.c

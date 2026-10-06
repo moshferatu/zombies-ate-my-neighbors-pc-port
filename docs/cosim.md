@@ -16923,3 +16923,114 @@ before on the same passes.
 
 **Live**: the residue over the twelve movies is 0.62 million
 instructions, from 0.74.
+
+## Four threads' frames, a swipe that cuts tiles, and five small things (2026-10-06)
+
+### Where the residue was
+
+By stretch, of 0.62 million:
+
+    $81:E979-$EA03     9,540   tiles looked at, and cut
+    $80:F791-$F7DE     8,198   a player carried a step
+    $82:F49E-$F4DF     8,041   the loop of level 21's placed thing
+    $81:A741-$A7BC     7,292   a step after the one it chose
+    $82:F091-$F0F3     7,174   a step that steers
+    $81:E8A8-$E978     7,078   the swipe's record
+    $80:BDF2-$BE0B     5,720   every display record freed
+    $81:D52F-$D56A     5,628   the walker trying the turn back
+    $80:9FB0-$A036     5,338   VRAM wiped, and the colours sent
+    $81:D76E-$D7AD     5,034   the walker shown
+    $81:D61D-$D644     4,535   the walker along a wall
+    $82:F3B7-$F3CC     4,515   the placed thing drawn or not
+    $82:F3CD-$F3EB     4,258   ...and its picture
+
+Most of these are leaves of a loop that sleeps. The ranking shows them
+apart, and the port that takes them is one frame of the loop: from the
+sleep's return to the next sleep.
+
+### An exit an inner call reaches too
+
+`$81:A741` draws, and by the draw either falls into the step at
+`$81:A74D` or calls it first and then falls into it. So the `RTS` at
+`$81:A7BC` is reached twice on half the calls.
+
+A routine with `COSIM_EXITS` is run in the ROM until the program counter
+is at an exit. The harness does not know how deep the stack is. It
+stopped the ROM at the first `RTS`, with one step taken, and the port had
+taken two: 1 call of 1,025 passed, and the model was out by a step's
+cost.
+
+The entry is the step now. The draw is nine bytes and stays the ROM's,
+and a call that steps twice is two calls of the entry.
+
+An exit address has to be one the routine reaches once. Where it calls
+itself, port the part that is called.
+
+### A frame that leaves by a sleep inside a call
+
+`follower_place` (`$82:F40B`) was ported in an earlier round with three
+exits, and one is a sleep inside it, on every sixteenth frame of the
+game. The loop that calls it could not be a frame for that reason: last
+round's notes say so.
+
+It can. On that frame `follower_frame` leaves at the same address the
+placing does, `$82:F446`, having pushed what the `JSR` at `$82:F4C0`
+pushes: the stack is two lower and the two bytes are `$F4C2`. The harness
+compares the stack pointer and the bytes above it, so a wrong push would
+show. 920 calls on `level21`, all passed.
+
+What follows that sleep is still the ROM's: it comes back inside the
+call, and returns to the loop's middle.
+
+### Overflow after a tile's lookup, again
+
+`swipe_cut` looks up a tile with `JSL $80:AD1C`, and `tilemap_tile_addr`
+ends on an `ADC` of the row's base and the column. The port's helper
+returns the address and carry. It does not return overflow.
+
+Nothing after the lookup sets overflow on the way out when no tile is
+cut: the tests are `BIT #`, which on an immediate changes Z only. So the
+routine leaves with the lookup's overflow, and the port left with the
+sum's before it.
+
+Three movies verified it, 83 calls. The corpus failed it at 28 of 300 on
+`level9-weapons`.
+
+It is the bug `wander_pick` had last round, by the same call. The fix is
+the same: the flag goes in `p_keep` once a tile has been looked up.
+
+A port that calls `tilemap_tile_addr`, or anything that calls it, does
+not know overflow afterwards. That is `tile_attrs_at_pixel`,
+`tile_attrs_at_tile`, the terrain tests and `map_tile_put`.
+
+### A transfer longer than a frame
+
+`vram_wipe` (`$80:9FB0`) sends `$C000` bytes in one transfer. The
+processor is stopped for all of it, about a frame and a half, and the
+vblank's interrupt is taken as it ends, inside the routine.
+
+So the routine has `through_interrupts`. An interrupt lands in every
+one of its 227 calls. The bytes it changed are left out of the compare,
+and none of them is a byte the port writes, since it writes no WRAM at
+all. The price is exact with the transfer in it: 405,510 cycles.
+
+### A sound is not priced
+
+`swipe_cut` plays a sound when it has cut something, and
+`apu_play_sfx` has no price. So a call that cuts is checked and not
+priced, and what is priced is the look that cuts nothing: 299 of 300 on
+`level9-weapons`.
+
+`map_tile_put` is priced on its own, by which compare of the window's
+test decided and whether the list was empty.
+
+### Checked
+
+The corpus: 33,297,294 calls across 51 movies, 0 diverged, 1,022 of
+1,220 sites. Every call priced is exact.
+
+**Lockstep**: 325,322 passes, 48 of 51 never part, the same three as
+before on the same passes.
+
+**Live**: the residue over the twelve movies is 0.51 million
+instructions, from 0.62.

@@ -98,6 +98,39 @@ void colours_112_job(HwTrace* t) {
   hw_run(t, DMA_REP_RTL);
 }
 
+void vram_wipe(HwTrace* t) {
+  PORT_COVER(vram_wiped);
+  store16(t, DMA_IMM16, REG_VMADD, VRAM_WIPE_AT);
+  store16(t, DMA_IMM16, REG_DMA_MODE, (DEST_VRAM << 8) | MODE_FIXED_TWO_REGS);
+  store16(t, DMA_IMM16, REG_DMA_SOURCE, VRAM_WIPE_SOURCE);
+  store16(t, DMA_IMM16, REG_DMA_BANK, VRAM_CLEAR_SOURCE_BANK);
+  store16(t, DMA_IMM16, REG_DMA_BYTES, VRAM_WIPE_BYTES);
+  store8(t, DMA_SEP_IMM, REG_VMAIN, VMAIN_STEP_ON_HIGH);
+  store8(t, DMA_IMM, REG_MDMAEN, 0x01);
+  hw_run(t, DMA_RTL);
+}
+
+// One of `colours_job`'s two transfers: `bytes` from `at` to the colours
+// from `first`. The first begins with a `SEP` the second does not need.
+static void send_colours(HwTrace* t, int first_run, uint8_t first, uint16_t at,
+                         uint16_t bytes) {
+  store8(t, first_run, REG_CGADD, first);
+  store8(t, DMA_STORE, REG_MDMAEN, 0x00);
+  store16(t, DMA_REP_IMM16, REG_DMA_MODE, (DEST_CGRAM << 8) | MODE_ONE_REG);
+  store16(t, DMA_IMM16, REG_DMA_SOURCE, at);
+  store16(t, DMA_IMM16, REG_DMA_BANK, PALETTE_BANK);
+  store16(t, DMA_IMM16, REG_DMA_BYTES, bytes);
+  store8(t, DMA_SEP_IMM, REG_MDMAEN, 0x01);
+}
+
+void colours_job(HwTrace* t) {
+  PORT_COVER(colours_job);
+  send_colours(t, DMA_SEP_IMM, 0, PALETTE_AT, COLOURS_LOW_BYTES);
+  send_colours(t, DMA_IMM, COLOURS_HIGH_FIRST,
+               PALETTE_AT + 2 * COLOURS_HIGH_FIRST, COLOURS_HIGH_BYTES);
+  hw_run(t, DMA_REP_RTL);
+}
+
 int colours_112_ask(Wram* w) {
   PORT_COVER(colours_112_asked);
   return vbl_queue_a_add(w, COLOURS_112_JOB_PC & 0xffffu,

@@ -61,4 +61,58 @@ typedef struct {
 
 void follower_place(Wram* w, const Rom* rom, PortCpu* c, FollowerWork* k);
 
+// --- $82:F4B8  a frame of its thread ----------------------------------------
+//
+// The thread is `$82:F49E`, and it sleeps a frame at `$82:F4B4`. From the
+// sleep's return: every seventh frame it moves on a place, it is put there,
+// and its picture is seen to. `$82:F3CD` gives the record the next of four
+// pictures every seventh frame, and on each odd count between it turns the
+// record's top bit over, so the thing is drawn every other frame.
+//
+// The loop ends when `$14` is not zero, or when `$18` is, which the thread's
+// handler sets.
+//
+// A sixteenth frame leaves by the sleep inside `follower_place`, with the
+// return to `$82:F4C3` on the stack as the `JSR` left it.
+
+#define FOLLOWER_FRAME_PC 0x82f4b8u
+#define FOLLOWER_FRAME_SLEEP_PC 0x82f4b4u  // `JSL`, A already 1
+#define FOLLOWER_FRAME_ENDED_PC 0x82f4cdu
+#define FOLLOWER_FRAME_HIT_PC 0x82f4cau
+#define FOLLOWER_PLACE_RETURN 0xf4c2u  // what the `JSR` at `$82:F4C0` pushes
+
+#define FOLLOWER_PICTURES 0x82f3ecu  // four
+#define FOLLOWER_PLACE_FRAMES 6      // both counted down past zero
+#define FOLLOWER_PICTURE_FRAMES 6
+#define FOLLOWER_PLACE_BYTES 4
+#define FOLLOWER_DP_PICTURE_LEFT 0x0e
+#define FOLLOWER_DP_PICTURE 0x10
+#define FOLLOWER_DP_PLACE_LEFT 0x12
+#define FOLLOWER_DP_HIT 0x18
+
+enum {
+  FF_HEAD,     // LDA $14 : BNE
+  FF_COUNT,    // DEC $12 : BMI
+  FF_NEXT,     // $F4E0-$F4EE
+  FF_CALL,     // JSR $F40B
+  FF_BACK,     // RTS, JSR $F3CD, DEC $0E : BPL
+  FF_PICTURE,  // $F3D1-$F3E7
+  FF_BLINK,    // JSR $F3B7, $F3B7-$F3BD
+  FF_TURN,     // LDA ($08) : BMI
+  FF_SHOW,     // ORA #$8000 : BRA
+  FF_HIDE,     // AND #$7FFF
+  FF_TURNED,   // STA ($08)
+  FF_TAIL,     // RTS, RTS, LDA $18 : BEQ
+  FF_AGAIN,    // LDA #$0001
+  FF_TAKEN,
+  FF_BLOCK_COUNT
+};
+
+typedef struct {
+  uint16_t blocks[FF_BLOCK_COUNT];
+  FollowerWork place;
+} FollowerFrameWork;
+
+void follower_frame(Wram* w, const Rom* rom, PortCpu* c, FollowerFrameWork* k);
+
 #endif

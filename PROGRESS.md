@@ -5,6 +5,72 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Four threads' frames, a swipe that cuts tiles, and five small things (2026-10-06)
+
+What the 65816 still executed over the twelve movies goes from 0.62 to
+**0.51** million instructions of work. Live, ten of the twelve go up a
+tenth or two; `level1` and `level17` do not move. The game registers 354
+routines, 11 more.
+
+* **Four threads, a frame each**, from the sleep's return to the next
+  sleep:
+  * `$82:F054`, a thing in level 37 that steers after whoever is nearest,
+    in a new `port/tracker.c`. It keeps a speed across and one down, and
+    each takes one more towards them a frame, up to five.
+  * `$82:F4B8`, the thing level 21 keeps beside another, in
+    `port/follower.c`, which had only its placing. Every seventh frame a
+    place on and the next picture, and it is drawn every other frame.
+  * `$81:D723`, a thing in levels 5 and 17 that walks until something is
+    in its way and then turns a quarter, in a new `port/walker.c`. It has
+    three states and all three are here.
+  * `$80:E3D6`, a player carried along until something stops them, in a
+    new `port/carried.c`. It is a pose that sleeps inside itself, so it
+    was never `player_frame`'s to take.
+* **A swipe that cuts tiles**, in a new `port/swipe.c`. `$81:E8F1` makes
+  its record in front of its owner, and `$81:E979` looks at a list of
+  tiles there and changes the ones with either of two bits. Levels 13, 37
+  and 41 have it, and `level9-weapons` uses it three hundred times.
+* **Five small things**:
+  * `$80:ABD3`, one tile changed in the level's map and on the screen if
+    it is there, in a new `port/tile_put.c`. The swipe calls it, and so
+    do five places that are still the ROM's.
+  * `$81:A74D`, a step of a thing going after the one it has chosen, in a
+    new `port/pursuer.c`.
+  * `$80:BDF2`, every display record freed, in `port/clears.c`.
+  * `$80:9FB0`, three quarters of VRAM zeroed in one transfer, and
+    `$80:9FDF`, the vblank job that sends the level's colours in two, both
+    in `port/dma.c`.
+
+* **Checked.** The corpus verifies at 33,297,294 calls across 51 movies
+  with 0 diverged, and 1,022 of 1,220 coverage sites; 48 of the 55 new
+  ones are taken. Every call priced is exact.
+* **Lockstep** over the corpus: 325,322 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes.
+* **One bug the corpus found**, after three movies had passed it.
+  `swipe_cut` claimed an overflow that a tile's lookup can change, and
+  `level9-weapons` failed 28 calls of 300. It is `wander_pick`'s bug of
+  last round over again. See `docs/cosim.md`.
+* **One the first verify found.** The pursuer's routine calls its own
+  step and then falls into it, so its `RTS` is reached twice, and the
+  harness stopped the ROM at the first. The entry is the step now.
+* **Untaken.** Ground, the leash and the level's edge stopping a carried
+  player: every one in the corpus runs out its count or meets a thing.
+  The pursuer on top of its target. A tile cut by its second bit. A tile
+  numbered low enough to be drawn over the sprites. The steering thing's
+  frames running out.
+* **Still the ROM's.** The draw before the pursuer's step. The follower's
+  look at its tile, after the sleep inside its placing. The swipe's
+  thread round its two calls. The job that sends the list of changed
+  tiles, `$80:AC55`. How a player comes to be carried.
+* **Named from what they do.** I have not seen the steering thing, the
+  walker, the pursuer or the swipe on a screen. The swipe reads like a
+  tool cutting what grows.
+* **Next.** The two at the top stay the ROM's on purpose (`$80:897F`,
+  5.0%, and `$80:9512`, 2.3%). After them nothing is over 1.4%: a stretch
+  of level 21's (`$81:C6F2`), a thread that waits for someone to come
+  near (`$83:9A89`), two of a player's (`$80:D082`, `$80:D02D`), and a
+  player's thread starting (`$80:D13A`).
+
 ### The slime's attack, a trampoline's bounces, and six small things (2026-10-06)
 
 What the 65816 still executed over the twelve movies goes from 0.74 to
