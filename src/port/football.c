@@ -46,6 +46,13 @@ typedef struct {
 #define FOOTBALLER_VEER_ON_TO 0xc695u    // the way a second veer takes, or none
 #define FOOTBALLER_PICTURE_AT 0xc861u    // by picture, doubled
 #define FOOTBALLER_FLAGS 0xc869u         // a word for its record's flags
+#define FOOTBALLER_OFF_TURNED 0xc76eu    // sent off: the way after the ground
+#define FOOTBALLER_OFF_STEPS 0xc780u     // ...and half a step, doubled again
+
+// Sent off, it is gone once its picture is this far past the screen.
+#define FOOTBALLER_OFF_MARGIN 0x0008
+#define FOOTBALLER_OFF_ACROSS 0x0150
+#define FOOTBALLER_OFF_DOWN 0x0110
 
 // The game's count of frames.
 #define W_FRAMES 0x0020u
@@ -180,6 +187,21 @@ static void steer(Footballer* f) {
   set_field(f, FOOTBALLER_DP_WAY, way);
 }
 
+// A picture's passes counted down, and the next of the four when they are
+// up.
+static void tick_picture(Footballer* f) {
+  const uint16_t count = (uint16_t)(field(f, FOOTBALLER_DP_COUNT) - 1);
+  set_field(f, FOOTBALLER_DP_COUNT, count);
+  if (negative(count)) {
+    f->log->new_picture = true;
+    const uint16_t next = (uint16_t)(
+        (((field(f, FOOTBALLER_DP_PICTURE) >> 1) + 1) & (FOOTBALLER_PICTURES - 1))
+        << 1);
+    set_field(f, FOOTBALLER_DP_PICTURE, next);
+    set_field(f, FOOTBALLER_DP_COUNT, FOOTBALLER_PICTURE_PASSES);
+  }
+}
+
 // `$81:C55A`: a pass of its run.
 static void run(Footballer* f) {
   FootballerLog* log = f->log;
@@ -187,16 +209,7 @@ static void run(Footballer* f) {
   steer(f);
   if (log->declined) return;
 
-  const uint16_t count = (uint16_t)(field(f, FOOTBALLER_DP_COUNT) - 1);
-  set_field(f, FOOTBALLER_DP_COUNT, count);
-  if (negative(count)) {
-    log->new_picture = true;
-    const uint16_t next = (uint16_t)(
-        (((field(f, FOOTBALLER_DP_PICTURE) >> 1) + 1) & (FOOTBALLER_PICTURES - 1))
-        << 1);
-    set_field(f, FOOTBALLER_DP_PICTURE, next);
-    set_field(f, FOOTBALLER_DP_COUNT, FOOTBALLER_PICTURE_PASSES);
-  }
+  tick_picture(f);
 
   const uint16_t way = field(f, FOOTBALLER_DP_WAY);
   const uint16_t at = (uint16_t)(way << 1);
@@ -306,6 +319,67 @@ static void run_veering(Footballer* f) {
   run(f);
 }
 
+// `$81:C70B`: sent off, it runs at twice the pace and looks for nobody. It
+// ends once the picture it last showed is off the screen.
+static void run_off(Footballer* f) {
+  FootballerLog* log = f->log;
+  tick_picture(f);
+
+  const uint16_t way = field(f, FOOTBALLER_DP_WAY);
+  const uint16_t at = (uint16_t)(way << 1);
+  const Point me = position(f);
+  Point to;
+  to.x = flags_add(&f->flags,
+                   (uint16_t)(table_word(f, FOOTBALLER_OFF_STEPS, at) << 1),
+                   me.x);
+  set_field(f, FOOTBALLER_DP_TRY_X, to.x);
+  to.y = flags_add(&f->flags,
+                   (uint16_t)(table_word(f, FOOTBALLER_OFF_STEPS + 2, at) << 1),
+                   me.y);
+  set_field(f, FOOTBALLER_DP_TRY_Y, to.y);
+
+  terrain_blocked_enemy(f->w, to.x, to.y, &log->ground);
+  flags_carry(&f->flags, log->ground.blocked);
+  flags_overflow(&f->flags, log->ground.v);
+  if (log->ground.blocked) {
+    PORT_COVER(footballer_off_turned);
+    set_field(f, FOOTBALLER_DP_WAY, table_word(f, FOOTBALLER_OFF_TURNED, way));
+  } else {
+    set_field(f, FOOTBALLER_DP_X, to.x);
+    set_field(f, FOOTBALLER_DP_Y, to.y);
+  }
+
+  const Point shown = {record_field(f, ACTOR_X), record_field(f, ACTOR_Y)};
+  log->off = FOOTBALLER_ON_SCREEN;
+  uint16_t edge = flags_sub(&f->flags, wram_r16(f->w, W_CAMERA_X),
+                            FOOTBALLER_OFF_MARGIN);
+  log->camera_near_left = negative(edge);
+  if (!log->camera_near_left) {
+    if (flags_at_least(&f->flags, edge, shown.x)) {
+      log->off = FOOTBALLER_OFF_LEFT;
+    } else {
+      edge = flags_add(&f->flags, edge, FOOTBALLER_OFF_ACROSS);
+      if (!flags_at_least(&f->flags, edge, shown.x))
+        log->off = FOOTBALLER_OFF_RIGHT;
+    }
+  }
+  if (log->off == FOOTBALLER_ON_SCREEN) {
+    edge = wram_r16(f->w, W_CAMERA_Y);
+    if (flags_at_least(&f->flags, edge, shown.y)) {
+      log->off = FOOTBALLER_OFF_TOP;
+    } else {
+      edge = flags_add(&f->flags, edge, FOOTBALLER_OFF_DOWN);
+      if (!flags_at_least(&f->flags, edge, shown.y))
+        log->off = FOOTBALLER_OFF_BOTTOM;
+    }
+  }
+  if (log->off != FOOTBALLER_ON_SCREEN) {
+    PORT_COVER(footballer_ran_off);
+    set_field(f, FOOTBALLER_DP_FATE,
+              (uint16_t)(field(f, FOOTBALLER_DP_FATE) + 1));
+  }
+}
+
 // ---------------------------------------------------------------------------
 // The pass
 // ---------------------------------------------------------------------------
@@ -346,7 +420,7 @@ bool footballer_frame_supported(const Wram* w, uint16_t page) {
   if (picture >= FOOTBALLER_PICTURES * 2 || (picture & 1) != 0) return false;
   return state == FOOTBALLER_STATE_RUN || state == FOOTBALLER_STATE_STAND ||
          state == FOOTBALLER_STATE_RUN_LOOSE ||
-         state == FOOTBALLER_STATE_VEER;
+         state == FOOTBALLER_STATE_VEER || state == FOOTBALLER_STATE_RUN_OFF;
 }
 
 FootballerFate footballer_frame(Wram* w, const Rom* rom, uint16_t page,
@@ -370,6 +444,10 @@ FootballerFate footballer_frame(Wram* w, const Rom* rom, uint16_t page,
     case FOOTBALLER_STATE_RUN_LOOSE:
       PORT_COVER(footballer_ran_loose);
       run_loose(&f);
+      break;
+    case FOOTBALLER_STATE_RUN_OFF:
+      PORT_COVER(footballer_sent_off);
+      run_off(&f);
       break;
     default:
       PORT_COVER(footballer_ran_veering);

@@ -268,6 +268,72 @@
   X(vram_send_more,   "vram_send_job",      "a kilobyte sent, and more to send") \
   X(vram_send_last,   "vram_send_job",      "the last of it sent") \
   X(bg1_vscroll_job,  "bg1_vscroll_job",    "BG1's scroll down, from its shadow") \
+  X(mosaic_off_job,   "mosaic_off_job",     "the mosaic off") \
+  X(brightness_up,    "brightness_up_job",  "a step brighter, and more to go") \
+  X(brightness_full,  "brightness_up_job",  "...and the fifteenth") \
+  X(brightness_down,  "brightness_down_job","a step darker") \
+  X(brightness_blanked,"brightness_down_job","...and past nothing: the screen blanked") \
+  /* What a level leaves on the ground -- see port/objects.h. */                \
+  X(object_parsed,    "object_list_parse",  "an entry of the level's list kept") \
+  X(object_list_ended,"object_list_parse",  "the list's end, and the handler named") \
+  X(object_spawned,   "object_spawn",       "an entry given a record") \
+  X(object_freed,     "object_free",        "an entry's record taken away") \
+  X(object_collected, "object_collect",     "the picked up retired, to the last") \
+  X(object_collect_another,"object_collect","...and another after it") \
+  X(victim_parsed,    "victim_list_parse",  "a neighbour's place kept") \
+  X(victim_list_ended,"victim_list_parse",  "the list ended at its end") \
+  X(victim_list_gated,"victim_list_parse",  "...or at a neighbour the level has not") \
+  X(victim_tables_cleared,"victim_tables_clear","nobody started") \
+  X(victim_ungated,   "victim_start",       "an entry with no gate") \
+  X(victim_at_the_gate,"victim_start",      "...or the last the level has") \
+  X(victim_within_the_gate,"victim_start",  "...or one before the last") \
+  /* A record begun, and the neighbours -- see port/begin.h, neighbours.h. */   \
+  X(record_begun,     "record_begin",       "a record at the page's place") \
+  X(zombie_begun,     "zombie_begin",       "...and a zombie's made of it") \
+  X(neighbour_begun,  "neighbour_begin",    "a neighbour's record, and their handler") \
+  X(neighbour_cycle_shown, "neighbour_cycle", "the next of its pictures") \
+  X(neighbour_cycle_went_round, "neighbour_cycle", "...which was the first again") \
+  X(neighbour_cycle_told, "neighbour_cycle", "something has set its word: the ROM's") \
+  X(tourists_stayed, "tourists_frame", "no room, or the word not set: they stay") \
+  X(tourists_turned, "tourists_frame", "room in the level, and the word set: the ROM's") \
+  X(neighbour_watch_at_ease, "neighbour_watch", "nothing near: the next picture") \
+  X(neighbour_watch_cried, "neighbour_watch", "one of them within a hundred: the cry") \
+  X(neighbour_watch_alarmed, "neighbour_watch", "...or alarm with no cry") \
+  X(neighbour_watch_told, "neighbour_watch", "something has set its word: the ROM's") \
+  X(neighbour_alarm_shown, "neighbour_alarm", "the next picture of the alarm") \
+  X(neighbour_alarm_over, "neighbour_alarm", "all shown: back to looking") \
+  X(neighbour_alarm_told, "neighbour_alarm", "something has set its word: the ROM's") \
+  X(neighbour_sign_shown,"neighbour_sign_frame","the sign's other picture") \
+  X(neighbour_sign_over,"neighbour_sign_frame","...and its turns are up") \
+  X(neighbour_sign_told,"neighbour_sign_frame","something has set the word: the ROM's") \
+  X(neighbour_rising, "neighbour_rise_frame","up a pixel, and more to go") \
+  X(neighbour_risen,  "neighbour_rise_frame","...and the twentieth") \
+  /* The weeds -- see port/weeds.h. */                                          \
+  X(weed_grew,        "weed_frame",         "nobody near: an arm's turn") \
+  X(weed_on_guard,    "weed_frame",         "a player near the root: on its guard") \
+  X(weed_stood_down,  "weed_frame",         "on its guard, and the draw said grow again") \
+  X(weed_resting,     "weed_frame",         "a pass of its rest") \
+  X(weed_rested,      "weed_frame",         "...and the last") \
+  X(weed_step_refused,"weed_frame",         "a step a player is near, or off the level") \
+  X(weed_tip_moved,   "weed_frame",         "a step onto ground it cannot take: the tip moves") \
+  X(weed_planted,     "weed_frame",         "a good step, and a tile planted") \
+  X(weed_marked,      "weed_frame",         "the spot marked") \
+  X(weed_clump,       "weed_frame",         "room for a clump") \
+  X(weed_clump_tile,  "weed_frame",         "...and a tile of it planted") \
+  X(weed_seed_flew,   "weed_seed_frame",    "a pass of its arc") \
+  X(weed_seed_landed, "weed_seed_frame",    "...and below the ground: landed") \
+  /* A player gone forward, and the decoy -- see port/lunge.h, decoy.h. */      \
+  X(lunge_on,         "lunge_frame",        "a step the way they face") \
+  X(lunge_ran_out,    "lunge_frame",        "the fifteenth frame") \
+  X(lunge_met_ground, "lunge_frame",        "ground in the way") \
+  X(lunge_past_the_leash,"lunge_frame",     "the other player too far behind") \
+  X(lunge_off_the_level,"lunge_frame",      "the level's edge") \
+  X(lunge_met_a_thing,"lunge_frame",        "a thing in the way") \
+  X(decoy_stood,      "decoy_frame",        "another ten frames of it") \
+  X(decoy_sounded,    "decoy_frame",        "its four pictures came round: the sound") \
+  X(decoy_hit,        "decoy_frame",        "its word has gone negative: the ROM ends it") \
+  X(decoy_ran_out,    "decoy_frame",        "its hundredth turn") \
+  X(decoy_on_an_ending_tile,"decoy_frame",  "a tile that ends it") \
   X(colours_112_asked,"colours_112_ask",    "the sixteen colours' job queued") \
   /* Five small things -- see port/line.h, flinch.h, blinker.h, follower.h. */  \
   X(line_moved,       "line_step",          "a frame along a line") \
@@ -1358,6 +1424,9 @@
   X(footballer_went_at_them, "footballer_frame", "a player within 32, to one side: it goes at them") \
   X(footballer_turned_back, "footballer_frame", "stopped by the ground: it turns") \
   X(footballer_left, "footballer_frame", "neither player within 320: it leaves") \
+  X(footballer_sent_off, "footballer_frame", "a pass sent off") \
+  X(footballer_off_turned, "footballer_frame", "...stopped by the ground: it turns") \
+  X(footballer_ran_off, "footballer_frame", "...and its picture is off the screen: it ends") \
                                                                                    \
   /* $80:C872, $80:C8B8, $80:A084, $80:A09E, $82:D88C -- DMA and its jobs. */       \
   X(dma_to_cgram, "dma_to_cgram", "colours sent") \

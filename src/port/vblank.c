@@ -377,3 +377,45 @@ void vram_send_job(Wram* w, PortCpu* c, HwTrace* t) {
   hw_run(t, VS_MORE_TAIL);
   set_c(c, true);
 }
+
+void mosaic_off_job(Wram* w, PortCpu* c, HwTrace* t) {
+  (void)w;
+  PORT_COVER(mosaic_off_job);
+  // The tail is `REP #$20 : CLC : RTL`, which costs what the scroll
+  // shadow's does.
+  hw_run(t, MO_HEAD);
+  hw_w8(t, 0x2106, 0);
+  hw_run(t, SS_TAIL);
+  set_c(c, false);
+}
+
+bool brightness_up_job(Wram* w, PortCpu* c) {
+  c->a = (uint16_t)(wram_r16(w, W_BRIGHTNESS_SHADOW) + 1);
+  wram_w16(w, W_BRIGHTNESS_SHADOW, c->a);
+  cmp16(c, c->a, BRIGHTNESS_FULL);
+  const bool more = c->a != BRIGHTNESS_FULL;
+  if (more) {
+    PORT_COVER(brightness_up);
+  } else {
+    PORT_COVER(brightness_full);
+  }
+  set_c(c, more);
+  return more;
+}
+
+bool brightness_down_job(Wram* w, PortCpu* c) {
+  const uint16_t now = (uint16_t)(wram_r16(w, W_BRIGHTNESS_SHADOW) - 1);
+  wram_w16(w, W_BRIGHTNESS_SHADOW, now);
+  set_nz16(c, now);
+  if (!(now & 0x8000u)) {
+    PORT_COVER(brightness_down);
+    set_c(c, true);
+    return true;
+  }
+  PORT_COVER(brightness_blanked);
+  c->a = BRIGHTNESS_BLANKED;
+  set_nz16(c, c->a);
+  wram_w16(w, W_BRIGHTNESS_SHADOW, c->a);
+  set_c(c, false);
+  return false;
+}

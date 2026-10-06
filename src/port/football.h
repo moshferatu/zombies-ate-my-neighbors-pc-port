@@ -8,9 +8,8 @@
 //   $81:C8A1  footballer_frame
 //
 // What is here is the running. What is not is the thread's setup, the tackle
-// it makes when it runs into a player, which sleeps in the middle, the run
-// it makes off the screen, and its end. A pass in one of those states is the
-// ROM's.
+// it makes when it runs into a player, which sleeps in the middle, and its
+// end. A pass in one of those states is the ROM's.
 //
 // ## What a footballer does
 //
@@ -26,6 +25,11 @@
 // another draw either straightens it out again or has it veer on.
 //
 // **With neither player within 320 it leaves.**
+//
+// **Sent off, it runs eight pixels a pass** the way it was facing, turning
+// where the ground stops it, and ends once its picture is off the screen:
+// eight to the left of it, or more than 328 across or 272 down from its
+// corner. Its handler sends it off, at `$81:C6F2`.
 //
 // ## Its contract with the ROM
 //
@@ -60,6 +64,7 @@
 #define FOOTBALLER_STATE_STAND 0xc5ffu
 #define FOOTBALLER_STATE_RUN_LOOSE 0xc61cu
 #define FOOTBALLER_STATE_VEER 0xc665u
+#define FOOTBALLER_STATE_RUN_OFF 0xc70bu
 
 // Fields on its page.
 #define FOOTBALLER_DP_RECORD 0x08
@@ -90,6 +95,15 @@ typedef enum {
   FOOTBALLER_VEER_AGAIN,
 } FootballerVeer;
 
+// Sent off: which edge of the screen its picture was found past.
+typedef enum {
+  FOOTBALLER_ON_SCREEN,
+  FOOTBALLER_OFF_LEFT,
+  FOOTBALLER_OFF_RIGHT,
+  FOOTBALLER_OFF_TOP,
+  FOOTBALLER_OFF_BOTTOM,
+} FootballerOff;
+
 #define FOOTBALLER_MAX_DRAWS 2
 
 typedef struct {
@@ -104,6 +118,9 @@ typedef struct {
   bool stood_on;       // standing: its passes are not up
   bool veered;         // running loose: the draw said veer
   FootballerVeer veer;
+
+  bool camera_near_left;  // sent off: the camera is under eight across
+  FootballerOff off;
 
   bool mask_clears;  // the table's word for its record's flags clears
   bool gone;         // neither player near: it leaves

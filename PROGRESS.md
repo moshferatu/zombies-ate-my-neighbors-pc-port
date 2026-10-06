@@ -5,6 +5,77 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The weeds, the neighbours' loops, what a level leaves on the ground, and eight small things (2026-10-06)
+
+What the 65816 still executed over the twelve movies goes from 0.51 to
+**0.37** million instructions of work. Live, all twelve are at 99.9%: six
+were at 99.8%. The game registers 381 routines, 27 more.
+
+* **The weeds**, in a new `port/weeds.c`.
+  * `$81:D2A5`, a pass of the thread: it grows an arm a tile at a time
+    while nobody is near, is on its guard while somebody is, and rests
+    after it has snapped. Levels 9, 13 and 41 have it. It was the largest
+    family left, 24 thousand instructions over six stretches.
+  * `$81:D4D6`, a pass of what it puts out when it snaps: a straight line
+    to where the player was, in an arc.
+* **The neighbours**, in new `port/begin.c` and `port/neighbours.c`.
+  * `$83:A13E`, the record all eleven kinds begin with.
+  * Six of their loops, a frame each. Three only go round their pictures
+    (`$83:96C0`, `$83:979D`, `$83:9E3C`). The tourists do that and ask
+    first whether to turn into werewolves (`$83:A009`). Two look about
+    them, and are alarmed by a monster within a hundred (`$83:9AB7` with
+    `$83:9AFB`, `$83:9969` with `$83:99A6`).
+  * `$83:A210`, what a rescued neighbour leaves, going up.
+  * `$83:A30A`, the sign ten of them put up beside themselves.
+* **What a level leaves on the ground**, in a new `port/objects.c`: the
+  four routines the pickups' thread calls (`$80:C9A5`, `$80:C9E3`,
+  `$80:CAA8`, `$80:CABF`), and three of the neighbours' list
+  (`$82:DB46`, `$81:817E`, `$81:81A2`).
+* **Eight small things**:
+  * `$81:8000`, a record begun at the page's place, and `$81:87BE`, a
+    zombie's made of it, in `port/begin.c`.
+  * `$81:C70B`, a footballer sent off, as a fifth state of
+    `footballer_frame`.
+  * `$80:DEC5`, a player gone forward fifteen frames, in a new
+    `port/lunge.c`.
+  * `$81:F16D`, the decoy, in a new `port/decoy.c`.
+  * `$82:882C`, `$80:9C63` and `$80:9C7D`, three vblank jobs: the mosaic
+    off, and the screen a step brighter or darker. In `port/vblank.c`.
+
+* **Checked.** The corpus verifies at 33,315,506 calls across 51 movies
+  with 0 diverged, and 1,082 of 1,285 coverage sites; 60 of the 65 new
+  ones are taken. Every call priced is exact.
+* **Lockstep** over the corpus: 325,322 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes.
+* **One bug the first verify found.** The weeds failed 143 passes of 155
+  on `level9`. Four of its eight arms read their steps with an index that
+  is negative, and `LDA abs,X` carries such an index into the next bank;
+  the port wrapped it inside the bank. See `docs/cosim.md`.
+* **Untaken.** The decoy on a tile that ends it. A player gone forward
+  stopped by the leash, or by the level's edge. A neighbour's sign
+  running out its turns. A neighbour in the list with no gate.
+* **Still the ROM's.** The pass on which the weeds snap. What a neighbour
+  does when it is told something, and the sign's making. The tourists
+  turning. How a player comes to be going forward, and ground that sends
+  them on from it. The decoy on a tile that moves it.
+* **Named by what the code says.** The tourists are the neighbours the
+  ROM replaces with two werewolves. The decoy has collide id `$38`, one of
+  the four that monsters look for. The weeds plant tiles and are on level
+  13. I have seen none of them on a screen, and which neighbour each of
+  the other five loops is I do not know.
+* **The share of calls is counted wrongly, and has been.** It did not
+  move this round, and it should have. 40 routines the port has begin with
+  a `JSR` or a `JSL`, and each time one is served the counter takes that
+  instruction for a call, which the port never makes. On `level1` that is
+  148,772 of the 327,642 "calls". Of the 178,894 calls really made there,
+  178,650 land on a routine the port has. Not fixed: see `docs/cosim.md`.
+* **Next.** The two at the top stay the ROM's on purpose (`$80:897F`,
+  6.9%, and `$80:9512`, 3.2%). After them: a player hurt (`$80:D02D`,
+  `$80:D082`), a player's thread starting (`$80:D13A`), the martians'
+  shot (`$81:9981`, with `$81:9C99`), the slime's splash (`$81:CE39`),
+  and more states of level 37's thread (`$82:EB13`, `$82:ECA3`,
+  `$82:EBE8`).
+
 ### Four threads' frames, a swipe that cuts tiles, and five small things (2026-10-06)
 
 What the 65816 still executed over the twelve movies goes from 0.62 to

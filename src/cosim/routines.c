@@ -43,6 +43,9 @@
 #include "port/pose.h"
 #include "port/werewolf.h"
 #include "port/oam.h"
+#include "port/begin.h"
+#include "port/neighbours.h"
+#include "port/objects.h"
 #include "port/player.h"
 #include "port/player_frame.h"
 #include "port/rng.h"
@@ -65,6 +68,8 @@
 #include "port/loads.h"
 #include "port/line.h"
 #include "port/lob.h"
+#include "port/lunge.h"
+#include "port/decoy.h"
 #include "port/logo.h"
 #include "port/card.h"
 #include "port/jumper.h"
@@ -81,6 +86,7 @@
 #include "port/step.h"
 #include "port/walk.h"
 #include "port/wander.h"
+#include "port/weeds.h"
 #include "port/pursuer.h"
 #include "port/tracker.h"
 #include "port/walker.h"
@@ -12650,6 +12656,12 @@ static const CosimRun FOOTBALLER_RUN_SHOW_OR = {52, 5, 0};  // $C82D ORA : BRA, 
 static const CosimRun FOOTBALLER_RUN_SHOW_AND = {40, 3, 0};  // $C832 AND
 static const CosimRun FOOTBALLER_RUN_SHOW_REST = {490, 43, 5};  // $C835-$C85D, to TAX : BNE
 static const CosimRun FOOTBALLER_RUN_SHOW_GONE = {50, 2, 1};  // $C85E INC $22
+static const CosimRun FOOTBALLER_RUN_OFF_TRY = {336, 31, 5};  // $C71E-$C738, the JSR and the BCC too
+static const CosimRun FOOTBALLER_RUN_OFF_LEFT = {104, 11, 1};  // $C740-$C74A, to the BMI
+static const CosimRun FOOTBALLER_RUN_OFF_PAST = {52, 5, 0};  // $C74B CMP $0002,Y : BCS
+static const CosimRun FOOTBALLER_RUN_OFF_SPAN = {82, 9, 0};  // $C750 CLC : ADC # : CMP : BCC, either way
+static const CosimRun FOOTBALLER_RUN_OFF_TOP = {86, 8, 0};  // $C759 LDA $1B6C : CMP $0006,Y : BCS
+static const CosimRun FOOTBALLER_RUN_OFF_GONE = {90, 3, 1};  // $C76B INC $22 : RTS
 static const CosimRun FOOTBALLER_RUN_TAKEN = {6, 0, 0};
 
 // The ROM's own instructions in `own`, and what its calls cost in `calls`.
@@ -12716,11 +12728,54 @@ static void footballer_straighten_bill(FootballerBill* b) {
   footballer_add(b, &FOOTBALLER_RUN_STRAIGHTEN);
 }
 
+// `$81:C70B`, its `RTS` too.
+static void footballer_run_off_bill(FootballerBill* b) {
+  const FootballerLog* log = b->log;
+  footballer_add(b, &FOOTBALLER_RUN_RUN_WAIT);
+  footballer_add(b, log->new_picture ? &FOOTBALLER_RUN_RUN_PICTURE
+                                     : &FOOTBALLER_RUN_TAKEN);
+  footballer_add(b, &FOOTBALLER_RUN_OFF_TRY);
+  footballer_add(b, &FOOTBALLER_RUN_STEP_GROUND);
+  b->calls += terrain_enemy_cycles(&log->ground, b->in->fastrom);
+  footballer_add(b, log->ground.blocked ? &FOOTBALLER_RUN_TAKEN
+                                        : &FOOTBALLER_RUN_STEP_TAKE);
+  footballer_add(b, &FOOTBALLER_RUN_RTS);
+  footballer_add(b, log->ground.blocked ? &FOOTBALLER_RUN_RUN_TURN
+                                        : &FOOTBALLER_RUN_TAKEN);
+
+  // The screen's four edges, to the first its picture is past.
+  footballer_add(b, &FOOTBALLER_RUN_OFF_LEFT);
+  bool gone = false;
+  if (log->camera_near_left) {
+    footballer_taken(b);
+  } else {
+    footballer_add(b, &FOOTBALLER_RUN_OFF_PAST);
+    gone = log->off == FOOTBALLER_OFF_LEFT;
+    if (!gone) {
+      footballer_add(b, &FOOTBALLER_RUN_OFF_SPAN);
+      gone = log->off == FOOTBALLER_OFF_RIGHT;
+    }
+  }
+  if (!gone) {
+    footballer_add(b, &FOOTBALLER_RUN_OFF_TOP);
+    gone = log->off == FOOTBALLER_OFF_TOP;
+    if (!gone) {
+      footballer_add(b, &FOOTBALLER_RUN_OFF_SPAN);
+      gone = log->off == FOOTBALLER_OFF_BOTTOM;
+    }
+  }
+  if (gone) footballer_taken(b);
+  footballer_add(b, gone ? &FOOTBALLER_RUN_OFF_GONE : &FOOTBALLER_RUN_RTS);
+}
+
 static void footballer_body_bill(FootballerBill* b) {
   const FootballerLog* log = b->log;
   switch (log->state) {
     case FOOTBALLER_STATE_RUN:
       break;
+    case FOOTBALLER_STATE_RUN_OFF:
+      footballer_run_off_bill(b);
+      return;
     case FOOTBALLER_STATE_STAND:
       footballer_add(b, &FOOTBALLER_RUN_STAND_HEAD);
       if (log->stood_on) {
@@ -14581,6 +14636,7 @@ static const CosimRun VBL_COST[VBL_BLOCK_COUNT] = {
     [VS_STEP] = {164, 19, 2},
     [VS_MORE_TAIL] = {72, 4, 0},
     [VS_DONE] = {100, 6, 1},
+    [MO_HEAD] = {36, 5, 0},
 };
 
 // The dispatcher and the NMI both leave 16-bit registers, page zero and a data
@@ -14634,6 +14690,45 @@ VBL_SHIM(scroll_shadow_job)
 VBL_SHIM(boss_bg_dma)
 VBL_SHIM(bg1_vscroll_job)
 VBL_SHIM(vram_send_job)
+VBL_SHIM(mosaic_off_job)
+
+// `$80:9C63` and `$80:9C7D`, which write no register.
+static const CosimRun BU_STEP = {120, 11, 0};  // INC : LDA : CMP : BEQ
+static const CosimRun BU_RTL = {54, 2, 0};     // SEC or CLC, and RTL
+static const CosimRun BD_STEP = {68, 5, 0};    // DEC : BMI
+static const CosimRun BD_BLANK = {106, 8, 0};  // LDA # : STA : CLC : RTL
+
+static void shim_brightness_up_job(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool more = brightness_up_job(w, &c);
+  ret_from_cpu(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &BU_STEP, 1);
+  if (!more) run_add(&run, &VBL_COST[VBL_TAKEN], 1);
+  run_add(&run, &BU_RTL, 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static void shim_brightness_down_job(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool more = brightness_down_job(w, &c);
+  ret_from_cpu(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &BD_STEP, 1);
+  if (more) {
+    run_add(&run, &BU_RTL, 1);
+  } else {
+    run_add(&run, &VBL_COST[VBL_TAKEN], 1);
+    run_add(&run, &BD_BLANK, 1);
+  }
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
 
 // ---------------------------------------------------------------------------
 // DMA to the picture hardware, and three jobs -- see `port/dma.h`
@@ -16578,6 +16673,970 @@ static void shim_swipe_cut(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t SWIPE_BEGIN_EXITS[] = {SWIPE_BEGIN_RTS_PC};
 static const uint32_t SWIPE_CUT_EXITS[] = {SWIPE_CUT_RTS_PC};
+
+// ---------------------------------------------------------------------------
+// What a level leaves on the ground, and the neighbours' list -- see
+// `port/objects.h`
+// ---------------------------------------------------------------------------
+
+// `$80:C9A5`. The list is in the cartridge, and its bytes cost what a
+// program's do.
+static const CosimRun OL_HEAD = {36, 6, 0};        // $C9A5-$C9AA
+static const CosimRun OL_ITEM = {448 + 6, 43, 3};  // $C9AB-$C9CF
+static const CosimRun OL_END = {60 + 6, 6, 1};     // LDA [$00],Y : BEQ
+static const CosimRun OL_TAIL = {148, 16, 0};      // $C9D0-$C9DF
+static const CosimRun OL_RTS = {68, 3, 1};         // STZ $12 : RTS
+// `$80:C9E3` and `$80:CAA8`, straight through.
+static const CosimRun OS_RUN = {912, 81, 1};
+static const CosimRun OF_RUN = {284, 23, 0};
+// `$80:CABF`.
+static const CosimRun OC_HEAD = {80, 7, 2};       // $CABF-$CAC5
+static const CosimRun OC_MISS = {88 + 6, 9, 0};   // $CAC6-$CACE
+static const CosimRun OC_HIT = {52 + 6, 5, 0};    // CMP : BEQ
+static const CosimRun OC_FREE = {136, 12, 0};     // $CACF-$CADA
+static const CosimRun OC_TAIL = {222, 18, 2};     // $CADB-$CAEC
+static const CosimRun OC_RTS = {40, 1, 0};
+
+// Its tables are read through the data bank, and so are its absolutes.
+static bool accepts_object(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == 0x80 && cur_task_ok(w);
+}
+
+static bool guard_object_list_parse(Wram* scratch, const Rom* rom,
+                                    const CosimRegs* in) {
+  if (!accepts_object(scratch, in)) return false;
+  // A list in the cartridge, which is where the levels keep them.
+  if (wram_r8(scratch, (uint16_t)(in->d + OBJECT_DP_LIST + 2)) < 0x80 ||
+      wram_r16(scratch, (uint16_t)(in->d + OBJECT_DP_LIST)) < 0x8000)
+    return false;
+  PortCpu c;
+  ObjectsWork k = {0};
+  cpu_from(in, &c);
+  object_list_parse(scratch, rom, &c, &k);
+  return !k.declined;
+}
+
+static void shim_object_list_parse(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  ObjectsWork k = {0};
+  cpu_from(in, &c);
+  object_list_parse(w, rom, &c, &k);
+  ret_from_cpu(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &OL_HEAD, 1);
+  run_add(&run, &OL_ITEM, k.entries);
+  run_add(&run, &OL_END, 1);
+  run_add(&run, &OL_TAIL, 1);
+  run_add(&run, &OL_RTS, 1);
+  cosim_cost(cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static bool guard_object_spawn(Wram* scratch, const Rom* rom,
+                               const CosimRegs* in) {
+  if (!accepts_object(scratch, in)) return false;
+  const uint16_t entry = wram_r16(scratch, (uint16_t)(in->d + OBJECT_DP_ENTRY));
+  if (entry >= OBJECT_SLOT_COUNT * 2 || (entry & 1)) return false;
+  const uint16_t type = wram_r16(scratch, (uint16_t)(W_OBJECT_TYPE + entry));
+  if (type >= OBJECT_TYPE_END || (type & 1)) return false;
+  PortCpu c;
+  ObjectsWork k = {0};
+  cpu_from(in, &c);
+  object_spawn(scratch, rom, &c, &k);
+  return !k.declined;
+}
+
+static void shim_object_spawn(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  PortCpu c;
+  ObjectsWork k = {0};
+  cpu_from(in, &c);
+  object_spawn(w, rom, &c, &k);
+  ret_from_cpu(&c, out);
+  // Overflow is the allocator's.
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  cosim_cost(saucer_alloc_cycles(k.record, in->fastrom) +
+             cosim_run_cycles_dp(&OS_RUN, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static bool guard_object_free(Wram* scratch, const Rom* rom,
+                              const CosimRegs* in) {
+  (void)rom;
+  if (!accepts_object(scratch, in)) return false;
+  if (in->x >= OBJECT_SLOT_COUNT * 2 || (in->x & 1)) return false;
+  PortCpu c;
+  ObjectsWork k = {0};
+  cpu_from(in, &c);
+  object_free(scratch, &c, &k);
+  return !k.declined;
+}
+
+static void shim_object_free(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  ObjectsWork k = {0};
+  cpu_from(in, &c);
+  object_free(w, &c, &k);
+  ret_from_cpu(&c, out);
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  cosim_cost(saucer_free_cycles(k.place[0], in->fastrom) +
+             cosim_run_cycles(&OF_RUN, fetch_fast(in)));
+}
+
+static bool guard_object_collect(Wram* scratch, const Rom* rom,
+                                 const CosimRegs* in) {
+  (void)rom;
+  if (!accepts_object(scratch, in)) return false;
+  const uint16_t left =
+      wram_r16(scratch, (uint16_t)(in->d + OBJECT_DP_COLLECTED));
+  if (left == 0 || (left & 1) || left > OBJECT_COLLECT_MAX * 2) return false;
+  PortCpu c;
+  ObjectsWork k = {0};
+  cpu_from(in, &c);
+  object_collect(scratch, &c, &k);
+  return !k.declined;
+}
+
+static void shim_object_collect(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  ObjectsWork k = {0};
+  cpu_from(in, &c);
+  object_collect(w, &c, &k);
+  ret_from_cpu(&c, out);
+  CosimRun run = {0, 0, 0};
+  int cycles = 0;
+  for (int i = 0; i < k.collected; i++) {
+    run_add(&run, &OC_HEAD, 1);
+    run_add(&run, &OC_MISS, k.scanned[i]);
+    run_add(&run, &OC_HIT, 1);
+    run_add(&run, &OC_FREE, 1);
+    run_add(&run, &OC_TAIL, 1);
+    if (i + 1 < k.collected) run_add(&run, &RUN_TAKEN, 1);
+    cycles += saucer_free_cycles(k.place[i], in->fastrom);
+  }
+  run_add(&run, &OC_RTS, 1);
+  cosim_cost(cycles + cosim_run_cycles_dp(&run, fetch_fast(in),
+                                          (in->d & 0xffu) != 0));
+}
+
+// `$82:DB46`, to the `SEP` its hardware writes begin with.
+static const CosimRun VL_HEAD = {132, 14, 2};      // $DB46-$DB53
+static const CosimRun VL_TEST = {78, 9, 1};        // LDY # : LDA [$28],Y : BEQ
+static const CosimRun VL_EQ = {52 + 6, 6, 0};      // CMP long : BEQ
+static const CosimRun VL_LT = {64, 8, 0};          // ...and BCS
+static const CosimRun VL_KEEP = {456 + 6, 44, 4};  // $DB63-$DB8A
+static const CosimRun VL_TAIL = {98, 11, 0};       // $DB8B-$DB95
+
+static bool guard_victim_list_parse(Wram* scratch, const Rom* rom,
+                                    const CosimRegs* in) {
+  if (!body_ok(in) || (in->a & 0xffu) < 0x80 || in->x < 0x8000) return false;
+  PortCpu c;
+  VictimsWork k = {0};
+  cpu_from(in, &c);
+  victim_list_parse(scratch, rom, &c, &k);
+  return !k.declined;
+}
+
+static void shim_victim_list_parse(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  VictimsWork k = {0};
+  cpu_from(in, &c);
+  victim_list_parse(w, rom, &c, &k);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &VL_HEAD, 1);
+  run_add(&run, &VL_TEST, k.entries + 1);
+  run_add(&run, &VL_EQ, k.equal);
+  run_add(&run, &VL_LT, k.entries - k.equal);
+  run_add(&run, &VL_KEEP, k.entries);
+  if (k.ended_past) run_add(&run, &VL_LT, 1);
+  run_add(&run, &RUN_TAKEN, 1);  // the branch out
+  run_add(&run, &VL_TAIL, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t VICTIM_LIST_PARSE_EXITS[] = {VICTIM_LIST_PARSE_DONE_PC};
+
+// `$81:817E`: thirty-two turns, of which the last falls through.
+static const CosimRun VT_ZERO = {36, 6, 0};
+static const CosimRun VT_LOOP = {116, 12, 0};
+static const CosimRun VT_RTL = {42, 1, 0};
+
+static bool accepts_victim_tables_clear(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && low_stack(in);
+}
+
+static void shim_victim_tables_clear(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  victim_tables_clear(w, &c);
+  ret_from_cpu(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &VT_ZERO, 1);
+  run_add(&run, &VT_LOOP, VICTIM_TABLE_BYTES / 2);
+  run_add(&run, &RUN_TAKEN, VICTIM_TABLE_BYTES / 2 - 1);
+  run_add(&run, &VT_RTL, 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+// `$81:81A2`. The entry is read through the data bank, which is the list's.
+static const CosimRun VB_HEAD = {458, 38, 11};  // $81A2-$81C3
+static const CosimRun VB_EQ = {52 + 6, 6, 0};   // CMP long : BEQ
+static const CosimRun VB_LT = {64, 8, 0};       // ...and BCS
+static const CosimRun VB_SPAWN = {268, 19, 2};  // $81CC-$81DA
+static const CosimRun VB_TAIL = {12 + 6 + 180, 2 + 17, 1};  // BPL, $81DE-$81EE
+
+static bool guard_victim_start(Wram* scratch, const Rom* rom,
+                               const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != 0x9f) return false;
+  if (wram_r16(scratch, (uint16_t)(in->d + VICTIM_DP_ENTRY)) >=
+          VICTIM_TABLE_BYTES ||
+      wram_r16(scratch, (uint16_t)(in->d + VICTIM_DP_START_LIST)) < 0x8000)
+    return false;
+  PortCpu c;
+  VictimsWork k = {0};
+  cpu_from(in, &c);
+  victim_start(scratch, rom, &c, &k);
+  return !k.declined;
+}
+
+static void shim_victim_start(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  PortCpu c;
+  VictimsWork k = {0};
+  cpu_from(in, &c);
+  victim_start(w, rom, &c, &k);
+  ret_from_cpu(&c, out);
+  // Carry and overflow are the spawn's.
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &VB_HEAD, 1);
+  if (k.ungated) {
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    run_add(&run, k.at_gate ? &VB_EQ : &VB_LT, 1);
+  }
+  run_add(&run, &VB_SPAWN, 1);
+  run_add(&run, &VB_TAIL, 1);
+  cosim_cost(thread_spawn_cycles(k.slot, rom, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+// ---------------------------------------------------------------------------
+// A record begun, and three of the neighbours' loops -- see `port/begin.h`
+// and `port/neighbours.h`
+// ---------------------------------------------------------------------------
+
+// Each straight through, and what it calls.
+static const CosimRun RB_RUN = {462, 36, 3};     // $81:8000-$8023
+static const CosimRun ZB_RUN = {736, 58, 10};    // $81:87BE-$87F7
+static const CosimRun NH_RUN = {1076, 81, 11};   // $83:A13E-$A18E
+
+static bool accepts_begin(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         cur_task_ok(w);
+}
+
+#define BEGIN_GUARD(name)                                                  \
+  static bool guard_##name(Wram* scratch, const Rom* rom,                  \
+                           const CosimRegs* in) {                          \
+    (void)rom;                                                             \
+    if (!accepts_begin(scratch, in)) return false;                         \
+    PortCpu c;                                                             \
+    BeginWork k = {0};                                                     \
+    cpu_from(in, &c);                                                      \
+    name(scratch, &c, &k);                                                 \
+    return !k.declined;                                                    \
+  }
+
+BEGIN_GUARD(record_begin)
+BEGIN_GUARD(zombie_begin)
+BEGIN_GUARD(neighbour_begin)
+
+// Overflow is the allocator's in all three.
+static void begin_out(const PortCpu* c, CosimRegs* out) {
+  ret_from_cpu(c, out);
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+static void shim_record_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  BeginWork k = {0};
+  cpu_from(in, &c);
+  record_begin(w, &c, &k);
+  begin_out(&c, out);
+  cosim_cost(saucer_alloc_cycles(k.record, in->fastrom) +
+             cosim_run_cycles_dp(&RB_RUN, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static void shim_zombie_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  BeginWork k = {0};
+  cpu_from(in, &c);
+  zombie_begin(w, &c, &k);
+  begin_out(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &RB_RUN, 1);
+  run_add(&run, &ZB_RUN, 1);
+  cosim_cost(saucer_alloc_cycles(k.record, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static void shim_neighbour_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  BeginWork k = {0};
+  cpu_from(in, &c);
+  neighbour_begin(w, &c, &k);
+  begin_out(&c, out);
+  cosim_cost(saucer_alloc_cycles(k.record, in->fastrom) +
+             cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom) +
+             cosim_run_cycles_dp(&NH_RUN, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+// A loop of pictures, which the tourists' ends in too.
+static const CosimRun TU_ROOM = {66, 6, 0};      // JSL : BCS
+static const CosimRun TU_NIGHT = {46, 5, 0};     // LDA $1F94 : BNE
+static const CosimRun TU_PICTURE = {70, 8, 1};   // LDA $10 : INC : CMP : BNE
+static const CosimRun TU_WRAP = {18, 3, 0};      // LDA #$0000
+static const CosimRun TU_SET = {272, 26, 4};     // STA $10 ... LDA $1E : BEQ
+static const CosimRun TU_AGAIN = {28, 2, 1};     // LDA $1A
+// The two that look about them. The second's alarm tests before it stores.
+static const CosimRun WH_TOLD = {40, 4, 1};      // LDA $1E : BNE
+static const CosimRun WH_LOOK = {140, 13, 2};    // LDX : LDY : JSL : CMP : BCC
+static const CosimRun WH_NEXT = {70, 8, 1};      // LDA $10 : INC : CMP : BNE
+static const CosimRun WH_SET = {244 + 6, 24, 3}; // STA $10 ... STA $1A : BRA
+static const CosimRun WH_NEAR = {74, 7, 2};      // STZ $10 : LDA # : STA $1A
+static const CosimRun WH_TEST = {58, 7, 1};      // LDA $10 : CMP : BEQ
+static const CosimRun WH_ALARM_SET = {266 + 6, 24, 3};  // INC $10 ... BRA
+static const CosimRun WH_TEST_B = {70, 8, 1};    // LDA $10 : INC : CMP : BCS
+static const CosimRun WH_ALARM_SET_B = {244 + 6, 24, 3};  // STA $10 ... BRA
+static const CosimRun WH_OVER = {40 + 6, 4, 1};  // STZ $10 : BRA
+// `$83:A210`.
+static const CosimRun NR_STEP = {192, 12, 3};    // $A210-$A21B
+static const CosimRun NR_AGAIN = {18, 3, 0};     // LDA #$0002
+
+static bool accepts_neighbour(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == NEIGHBOUR_BANK &&
+         wram_r16(w, (uint16_t)(in->d + NEIGHBOUR_DP_RECORD)) < 0x1f00;
+}
+
+static const NeighbourCycle* neighbour_cycle_at(uint32_t pc) {
+  for (int i = 0; i < NEIGHBOUR_CYCLE_COUNT; i++)
+    if (NEIGHBOUR_CYCLES[i].pc == pc) return &NEIGHBOUR_CYCLES[i];
+  return NULL;
+}
+
+static const NeighbourWatch* neighbour_watch_at(uint32_t pc) {
+  for (int i = 0; i < NEIGHBOUR_WATCH_COUNT; i++)
+    if (NEIGHBOUR_WATCHES[i].pc == pc || NEIGHBOUR_WATCHES[i].alarm_pc == pc)
+      return &NEIGHBOUR_WATCHES[i];
+  return NULL;
+}
+
+static bool accepts_neighbour_cycle_frame(const Wram* w, const CosimRegs* in) {
+  const NeighbourCycle* cycle = neighbour_cycle_at(in->pc);
+  return cycle && accepts_neighbour(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + NEIGHBOUR_DP_WHICH)) < cycle->count;
+}
+
+static bool accepts_tourists_frame(const Wram* w, const CosimRegs* in) {
+  return accepts_neighbour(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + NEIGHBOUR_DP_WHICH)) <
+             TOURISTS_PICTURE_COUNT;
+}
+
+static bool accepts_neighbour_watch_frame(const Wram* w, const CosimRegs* in) {
+  const NeighbourWatch* watch = neighbour_watch_at(in->pc);
+  return watch && accepts_neighbour(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + NEIGHBOUR_DP_WHICH)) < watch->count;
+}
+
+// The second's alarm stops at its count whatever it is on. The first's
+// stops only on the count itself.
+static bool accepts_neighbour_alarm_frame(const Wram* w, const CosimRegs* in) {
+  const NeighbourWatch* watch = neighbour_watch_at(in->pc);
+  return watch && accepts_neighbour(w, in) &&
+         (watch->counts_first ||
+          wram_r16(w, (uint16_t)(in->d + NEIGHBOUR_DP_WHICH)) <=
+              watch->alarm_count);
+}
+
+static bool accepts_neighbour_rise_frame(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         wram_r16(w, (uint16_t)(in->d + NEIGHBOUR_DP_RECORD)) < 0x1f00;
+}
+
+// The loop's own instructions, from the `LDA $10`.
+static void neighbour_cycle_bill(CosimRun* run, const NeighbourWork* k) {
+  run_add(run, &TU_PICTURE, 1);
+  run_add(run, k->wrapped ? &TU_WRAP : &RUN_TAKEN, 1);
+  run_add(run, &TU_SET, 1);
+  if (!k->told) {
+    run_add(run, &RUN_TAKEN, 1);
+    run_add(run, &TU_AGAIN, 1);
+  }
+}
+
+static void shim_neighbour_cycle_frame(Wram* w, const Rom* rom,
+                                       const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  NeighbourWork k = {0};
+  cpu_from(in, &c);
+  neighbour_cycle_frame(w, rom, &c, &k, neighbour_cycle_at(in->pc));
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  neighbour_cycle_bill(&run, &k);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t NEIGHBOUR_CYCLE_A_EXITS[] = {0x8396bcu, 0x8396e1u};
+static const uint32_t NEIGHBOUR_CYCLE_B_EXITS[] = {0x839799u, 0x8397beu};
+static const uint32_t NEIGHBOUR_CYCLE_C_EXITS[] = {0x839e38u, 0x839e5du};
+
+static void shim_tourists_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  PortCpu c;
+  NeighbourWork k = {0};
+  cpu_from(in, &c);
+  tourists_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  CosimRun room = {0, 0, 0}, run = {0, 0, 0};
+  spawn_has_room_bill(w, &room);
+  run_add(&run, &TU_ROOM, 1);
+  if (k.no_room) {
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &TU_NIGHT, 1);
+  }
+  if (k.turned) {
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    neighbour_cycle_bill(&run, &k);
+  }
+  cosim_cost(cosim_run_cycles(&room, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t TOURISTS_EXITS[] = {TOURISTS_SLEEP_PC, TOURISTS_TURN_PC,
+                                          TOURISTS_TOLD_PC};
+
+static void shim_neighbour_watch_frame(Wram* w, const Rom* rom,
+                                       const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  NeighbourWork k = {0};
+  cpu_from(in, &c);
+  neighbour_watch_frame(w, rom, &c, &k, neighbour_watch_at(in->pc));
+  cpu_to(&c, out);
+  // The search subtracts, and the port does not follow its overflow.
+  if (k.looked) out->p_keep = PORT_P_V;
+  if (k.cried) return;  // a sound is not priced
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &WH_TOLD, 1);
+  if (k.told) {
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &WH_LOOK, 1);
+    if (k.near) {
+      run_add(&run, &RUN_TAKEN, 1);
+      run_add(&run, &WH_NEAR, 1);
+    } else {
+      run_add(&run, &WH_NEXT, 1);
+      run_add(&run, k.wrapped ? &TU_WRAP : &RUN_TAKEN, 1);
+      run_add(&run, &WH_SET, 1);
+    }
+    run_add(&run, &TU_AGAIN, 1);
+  }
+  cosim_cost((k.looked ? nearest_cycles(&k.nearest, in->fastrom) : 0) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static void shim_neighbour_alarm_frame(Wram* w, const Rom* rom,
+                                       const CosimRegs* in, CosimRegs* out) {
+  const NeighbourWatch* watch = neighbour_watch_at(in->pc);
+  PortCpu c;
+  NeighbourWork k = {0};
+  cpu_from(in, &c);
+  neighbour_alarm_frame(w, rom, &c, &k, watch);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &WH_TOLD, 1);
+  if (k.told) {
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    run_add(&run, watch->counts_first ? &WH_TEST_B : &WH_TEST, 1);
+    if (k.over) {
+      run_add(&run, &RUN_TAKEN, 1);
+      run_add(&run, &WH_OVER, 1);
+    } else {
+      run_add(&run, watch->counts_first ? &WH_ALARM_SET_B : &WH_ALARM_SET, 1);
+    }
+    run_add(&run, &TU_AGAIN, 1);
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t NEIGHBOUR_WATCH_A_EXITS[] = {0x839ab3u, 0x839af7u,
+                                                   0x839b1eu};
+static const uint32_t NEIGHBOUR_WATCH_B_EXITS[] = {0x839965u, 0x8399a2u,
+                                                   0x8399cau};
+
+// `$83:A30A`.
+static const CosimRun NS_STEP = {276, 24, 4};   // $A30A-$A31F
+static const CosimRun NS_TOLD = {40, 4, 1};     // LDA $1E : BEQ
+static const CosimRun NS_AGAIN = {18, 3, 0};    // LDA #$0008
+
+static bool accepts_neighbour_sign_frame(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == NEIGHBOUR_BANK &&
+         wram_r16(w, (uint16_t)(in->d + NEIGHBOUR_SIGN_DP_RECORD)) < 0x1f00;
+}
+
+static void shim_neighbour_sign_frame(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  NeighbourWork k = {0};
+  cpu_from(in, &c);
+  neighbour_sign_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &NS_STEP, 1);
+  if (k.sign_over) {
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &NS_TOLD, 1);
+    if (!k.told) {
+      run_add(&run, &RUN_TAKEN, 1);
+      run_add(&run, &NS_AGAIN, 1);
+    }
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t NEIGHBOUR_SIGN_EXITS[] = {
+    NEIGHBOUR_SIGN_SLEEP_PC, NEIGHBOUR_SIGN_OVER_PC, NEIGHBOUR_SIGN_TOLD_PC};
+
+static void shim_neighbour_rise_frame(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  NeighbourWork k = {0};
+  cpu_from(in, &c);
+  neighbour_rise_frame(w, &c, &k);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &NR_STEP, 1);
+  if (!k.risen) {
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &NR_AGAIN, 1);
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t NEIGHBOUR_RISE_EXITS[] = {NEIGHBOUR_RISE_SLEEP_PC,
+                                                NEIGHBOUR_RISE_DONE_PC};
+
+// ---------------------------------------------------------------------------
+// A player gone forward, and a thing the monsters go for -- see
+// `port/lunge.h` and `port/decoy.h`
+// ---------------------------------------------------------------------------
+
+// `$80:DEC5`. The level's edge is asked twice, by the same instructions at
+// two addresses.
+static const CosimRun LU_COST[LU_BLOCK_COUNT] = {
+    [LU_COUNT] = {62, 4, 1},
+    [LU_TRY] = {298, 23, 7},
+    [LU_WALL] = {60, 9, 0},
+    [LU_TEST] = {122, 10, 2},
+    [LU_THING] = {150, 12, 3},
+    [LU_PUT] = {238, 19, 5},
+    [LU_AGAIN] = {18, 3, 0},
+    [LU_TAKEN] = {6, 0, 0},
+};
+
+static bool guard_lunge_frame(Wram* scratch, const Rom* rom,
+                              const CosimRegs* in) {
+  (void)rom;
+  if (!body_ok(in) || in->d < 0x0100 || !bank_sees_low_wram(in->db) ||
+      wram_r16(scratch, (uint16_t)(in->d + LUNGE_DP_RECORD)) >= 0x1f00)
+    return false;
+  PortCpu c;
+  LungeWork k = {0};
+  cpu_from(in, &c);
+  lunge_frame(scratch, &c, &k);
+  return !k.declined;
+}
+
+static void shim_lunge_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  LungeWork k = {0};
+  cpu_from(in, &c);
+  lunge_frame(w, &c, &k);
+  cpu_to(&c, out);
+  // Overflow is the tests', and two of them hand back no N or Z.
+  if (k.tried)
+    out->p_keep =
+        (uint8_t)(PORT_P_V | (k.nz_unknown ? PORT_P_N | PORT_P_Z : 0));
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  if (k.tried)
+    cycles +=
+        terrain_blocked_cycles(k.ground.probes, k.ground.blocked, in->fastrom);
+  if (k.asked_leash) cycles += tether_cycles(&k.leash, in->fastrom);
+  // The second asking found what the first did, or it was not made.
+  cycles += k.edges * bounds_cycles(k.edge.exit, in->fastrom);
+  if (k.asked_thing) cycles += obstacle_cycles(&k.thing, in->fastrom);
+  for (int i = 0; i < LU_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&LU_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t LUNGE_EXITS[] = {LUNGE_SLEEP_PC, LUNGE_ENDED_PC};
+
+// `$81:F16D`.
+static const CosimRun DC_LOOK_END = {140 + 6, 13, 2};  // $F16D-$F179
+static const CosimRun DC_LOOK = {170 + 6, 18, 2};      // $F16D-$F17E
+static const CosimRun DC_PICTURE = {70 + 6, 8, 1};     // $F1B5-$F1BC
+static const CosimRun DC_SET = {196, 18, 3};           // $F1C7-$F1D6
+static const CosimRun DC_COUNT = {62, 4, 1};           // DEC $3E : BNE
+static const CosimRun DC_AGAIN = {18, 3, 0};           // LDA #$000A
+
+static bool guard_decoy_frame(Wram* scratch, const Rom* rom,
+                              const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != DECOY_BANK ||
+      wram_r16(scratch, (uint16_t)(in->d + DECOY_DP_RECORD)) >= 0x1f00 ||
+      wram_r16(scratch, (uint16_t)(in->d + DECOY_DP_PICTURE)) >=
+          DECOY_PICTURE_COUNT)
+    return false;
+  PortCpu c;
+  DecoyWork k = {0};
+  cpu_from(in, &c);
+  decoy_frame(scratch, rom, &c, &k);
+  return !k.declined;
+}
+
+static void shim_decoy_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  DecoyWork k = {0};
+  cpu_from(in, &c);
+  decoy_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  // A tile's lookup leaves an overflow the port does not follow, and X and
+  // Y with it until something loads them.
+  out->p_keep = PORT_P_V;
+  if (k.end == DECOY_ON_AN_ENDING_TILE) out->regs = COSIM_REG_A;
+  if (k.played) return;  // a sound is not priced
+  CosimRun run = {0, 0, 0};
+  if (k.end == DECOY_ON_AN_ENDING_TILE) {
+    run_add(&run, &DC_LOOK_END, 1);
+  } else {
+    run_add(&run, &DC_LOOK, 1);
+    run_add(&run, &DC_PICTURE, 1);
+    run_add(&run, &DC_SET, 1);
+    if (k.end == DECOY_HIT) {
+      run_add(&run, &RUN_TAKEN, 1);
+    } else {
+      run_add(&run, &DC_COUNT, 1);
+      if (k.end == DECOY_ON) {
+        run_add(&run, &RUN_TAKEN, 1);
+        run_add(&run, &DC_AGAIN, 1);
+      }
+    }
+  }
+  cosim_cost(cosim_run_cycles(&TILE_ATTRS_RUN, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t DECOY_EXITS[] = {DECOY_SLEEP_PC, DECOY_ENDED_PC};
+
+// ---------------------------------------------------------------------------
+// The weeds -- see `port/weeds.h`
+// ---------------------------------------------------------------------------
+//
+// One entry, a whole pass of the loop. Each run is from `tools/cycles816.py`
+// with the data bank at `$81`, branches not taken; a taken branch and a
+// `BRA` add 6.
+static const CosimRun WD_ENTER = {142, 8, 1};       // $D2A5-$D2AC
+static const CosimRun WD_TAIL = {40, 4, 1};         // LDA $0C : BEQ
+static const CosimRun WD_AGAIN = {46, 5, 1};        // STZ $36 : LDA #$0002
+static const CosimRun WD_SEEK = {152, 14, 2};       // $D12D-$D13A
+static const CosimRun WD_GUARD = {6 + 104, 9, 1};   // $D13F-$D147
+static const CosimRun WD_GROW_CALL = {80, 4, 0};    // JSR $D028 : RTS
+static const CosimRun WD_REST = {62, 4, 1};         // DEC $16 : BMI
+static const CosimRun WD_RTS = {40, 1, 0};
+static const CosimRun WD_JMP = {18, 3, 0};
+static const CosimRun WD_GROW_SET = {86, 6, 1};     // $D127-$D12C
+static const CosimRun WD_DRAW = {84, 9, 0};         // JSL : CMP : BCC
+// An arm's turn, `$81:D028`.
+static const CosimRun WG_HEAD = {192, 13, 5};       // $D028-$D034
+static const CosimRun WG_PICK = {488, 43, 7};       // $CF9F-$CFC3
+static const CosimRun WG_MAY = {52, 5, 0};          // JSR $CF4D : BCC
+static const CosimRun WG_RANGE = {152, 14, 2};      // $CF4D-$CF5A, $CF79-$CF86
+static const CosimRun WG_FLAG_RTS = {52, 2, 0};     // SEC or CLC, and RTS
+static const CosimRun WG_GROUND = {140, 13, 2};     // $CF5B-$CF67
+static const CosimRun WG_EDGE = {122, 10, 2};       // $CF68-$CF71
+static const CosimRun WG_OFF = {70, 5, 0};          // LDA #$FFFF : SEC : RTS
+static const CosimRun WG_SKIP = {24, 3, 0};         // TAX : BNE
+static const CosimRun WG_MOVE = {152, 10, 5};       // $D03D-$D046
+static const CosimRun WG_DRAW = {84, 9, 0};         // JSL : CMP : BCC
+static const CosimRun WG_TILE = {500 + 6, 41, 8};   // $D053-$D07B
+static const CosimRun WG_KIND = {58, 7, 1};         // $D07C-$D082
+static const CosimRun WG_FAR = {70, 8, 0};          // JSR $D008 : CMP : BCC
+static const CosimRun WG_GAP = {120, 10, 2};        // either axis, to its BPL
+static const CosimRun WG_NEGATE = {30, 4, 0};       // EOR : INC
+static const CosimRun WG_GAP_TAIL = {80, 4, 1};     // CLC : ADC $34 : RTS
+static const CosimRun WG_MARK_GROUND = {122, 10, 2};  // $D094-$D09D
+static const CosimRun WG_MARK = {112, 8, 4};        // $D09E-$D0A5
+static const CosimRun WG_ROOM = {52, 5, 0};         // JSR $CF79 : BCS
+static const CosimRun WG_ROOM_EDGE = {206, 20, 2};  // $CF87-$CF9A
+static const CosimRun WG_CLUMP = {230, 19, 5};      // $D0AB-$D0BD
+static const CosimRun WG_CLUMP_STEP = {376, 35, 7}; // $D0BE-$D0DC
+static const CosimRun WG_CLUMP_PUT = {202, 17, 4};  // $D0DD-$D0EB
+static const CosimRun WG_CLUMP_NEXT = {98, 10, 2};  // $D0EC-$D0F5
+static const CosimRun WG_END = {88, 11, 1};         // $D0F6-$D100
+static const CosimRun WG_WRAP = {18, 3, 0};         // LDA #$0000
+static const CosimRun WG_STORE = {68, 3, 1};        // STA $18 : RTS
+// `$80:ADF3` is `$80:ADC8` without its ten instructions of shifting.
+static const CosimRun TILE_ATTRS_TILE_RUN = {710 - 120 + 250, 43 - 10 + 15, 0};
+
+static int weed_grow_bill(CosimRun* run, const WeedWork* k, bool fast) {
+  int calls = 0;
+  run_add(run, &WG_HEAD, 1);
+  run_add(run, &WG_PICK, 1);
+  calls += rng_cycles(k->pick_overflow, fast);
+
+  // May it grow where the step is?
+  run_add(run, &WG_MAY, 1);
+  run_add(run, &WG_RANGE, 1);
+  calls += player_in_range_cycles(&k->step_range, fast);
+  bool good = false;
+  if (k->step_near) {
+    run_add(run, &RUN_TAKEN, 1);
+    run_add(run, &WG_FLAG_RTS, 1);
+  } else {
+    run_add(run, &WG_GROUND, 1);
+    calls += cosim_run_cycles(&TILE_ATTRS_RUN, fast);
+    if (k->step_bare) {
+      run_add(run, &RUN_TAKEN, 1);
+      run_add(run, &WG_FLAG_RTS, 1);
+    } else {
+      run_add(run, &WG_EDGE, 1);
+      calls += bounds_cycles(k->step_edge, fast);
+      if (k->step_off) {
+        run_add(run, &RUN_TAKEN, 1);
+        run_add(run, &WG_OFF, 1);
+      } else {
+        run_add(run, &WG_FLAG_RTS, 1);
+        good = true;
+      }
+    }
+  }
+
+  if (!good) {
+    run_add(run, &WG_SKIP, 1);
+    run_add(run, k->tip_moved ? &WG_MOVE : &RUN_TAKEN, 1);
+    run_add(run, &WD_JMP, 1);
+  } else {
+    run_add(run, &RUN_TAKEN, 1);
+    run_add(run, &WG_DRAW, 1);
+    calls += rng_cycles(k->plant_overflow, fast);
+    if (k->planted) {
+      run_add(run, &WG_TILE, 1);
+      calls += rng_cycles(k->tile_overflow, fast) +
+               tile_put_cycles(&k->tile, fast);
+    } else {
+      run_add(run, &RUN_TAKEN, 1);
+      run_add(run, &WG_KIND, 1);
+      if (!k->kind_marks) {
+        run_add(run, &RUN_TAKEN, 1);
+      } else {
+        run_add(run, &WG_FAR, 1);
+        run_add(run, &WG_GAP, 2);
+        run_add(run, k->gap_x_negative ? &WG_NEGATE : &RUN_TAKEN, 1);
+        run_add(run, k->gap_y_negative ? &WG_NEGATE : &RUN_TAKEN, 1);
+        run_add(run, &WG_GAP_TAIL, 1);
+        if (k->near_root) {
+          run_add(run, &RUN_TAKEN, 1);
+        } else {
+          run_add(run, &WG_DRAW, 1);
+          calls += rng_cycles(k->mark_overflow, fast);
+          if (!k->mark_wanted) {
+            run_add(run, &RUN_TAKEN, 1);
+          } else {
+            run_add(run, &WG_MARK_GROUND, 1);
+            calls += terrain_enemy_cycles(&k->mark_ground, fast);
+            run_add(run, k->marked ? &WG_MARK : &RUN_TAKEN, 1);
+          }
+        }
+      }
+      // Is there room for a clump?
+      run_add(run, &WG_ROOM, 1);
+      run_add(run, &WG_RANGE, 1);
+      calls += player_in_range_cycles(&k->room_range, fast);
+      if (k->room_near) {
+        run_add(run, &RUN_TAKEN, 1);
+      } else {
+        run_add(run, &WG_ROOM_EDGE, 1);
+        calls += bounds_cycles(k->room_edge, fast);
+        if (k->room_off) run_add(run, &RUN_TAKEN, 1);
+      }
+      run_add(run, &WG_FLAG_RTS, 1);
+      if (!k->clump) {
+        run_add(run, &RUN_TAKEN, 1);
+      } else {
+        run_add(run, &WG_CLUMP, 1);
+        for (int i = 0; i < WEED_CLUMP_TILES; i++) {
+          run_add(run, &WG_CLUMP_STEP, 1);
+          calls += cosim_run_cycles(&TILE_ATTRS_TILE_RUN, fast);
+          if (k->clump_put[i]) {
+            run_add(run, &WG_CLUMP_PUT, 1);
+            calls += tile_put_cycles(&k->clump_tile[i], fast);
+          } else {
+            run_add(run, &RUN_TAKEN, 1);
+          }
+          run_add(run, &WG_CLUMP_NEXT, 1);
+          if (i + 1 < WEED_CLUMP_TILES) run_add(run, &RUN_TAKEN, 1);
+        }
+      }
+    }
+  }
+  run_add(run, &WG_END, 1);
+  run_add(run, k->went_round ? &WG_WRAP : &RUN_TAKEN, 1);
+  run_add(run, &WG_STORE, 1);
+  return calls;
+}
+
+// The tests put their scratch on page zero, and the tables are read through
+// the data bank. So is its record.
+static bool weed_frame_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == WEED_BANK &&
+         wram_r16(w, (uint16_t)(in->d + WEED_DP_RECORD)) < 0x1f00 &&
+         weed_frame_supported(w, in->d);
+}
+
+// Whether it puts out what snaps, only its draw says.
+static bool guard_weed_frame(Wram* scratch, const Rom* rom,
+                             const CosimRegs* in) {
+  static WeedWork k;
+  k = (WeedWork){0};
+  weed_frame(scratch, rom, in->d, (in->p & PORT_P_C) != 0,
+             (in->p & PORT_P_V) != 0, &k);
+  return !k.declined;
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or past the
+// test of its fate with that in A.
+static void shim_weed_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  static WeedWork k;
+  k = (WeedWork){0};
+  const bool sleeps = weed_frame(w, rom, in->d, (in->p & PORT_P_C) != 0,
+                                 (in->p & PORT_P_V) != 0, &k);
+
+  CosimRun run = {0, 0, 0};
+  int calls = 0;
+  run_add(&run, &WD_ENTER, 1);
+  switch (k.state) {
+    case WEED_STATE_GROW:
+      run_add(&run, &WD_SEEK, 1);
+      calls += player_in_range_cycles(&k.seek, in->fastrom);
+      if (k.player_near) {
+        run_add(&run, &WD_GUARD, 1);
+      } else {
+        run_add(&run, &WD_GROW_CALL, 1);
+        calls += weed_grow_bill(&run, &k, in->fastrom);
+      }
+      break;
+    case WEED_STATE_GUARD:
+      run_add(&run, &WD_DRAW, 1);
+      calls += rng_cycles(k.guard_overflow, in->fastrom);
+      run_add(&run, &WD_JMP, 2);
+      run_add(&run, &WD_GROW_SET, 1);
+      break;
+    default:
+      run_add(&run, &WD_REST, 1);
+      if (k.rest_over) {
+        run_add(&run, &RUN_TAKEN, 1);
+        run_add(&run, &WD_JMP, 1);
+        run_add(&run, &WD_GROW_SET, 1);
+      } else {
+        run_add(&run, &WD_RTS, 1);
+      }
+      break;
+  }
+  run_add(&run, &WD_TAIL, 1);
+  if (sleeps) {
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &WD_AGAIN, 1);
+  }
+  cosim_cost(calls + cosim_run_cycles_dp(&run, fetch_fast(in),
+                                         (in->d & 0x00ffu) != 0));
+
+  out->pc = sleeps ? WEED_YIELD_PC : WEED_FATE_PC;
+  out->a = sleeps ? WEED_YIELD_TICKS
+                  : wram_r16(w, (uint16_t)(in->d + WEED_DP_FATE));
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (k.c) out->p |= PORT_P_C;
+  if (k.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)(k.v_known ? 0 : PORT_P_V);
+}
+
+static const uint32_t WEED_FRAME_EXITS[] = {WEED_YIELD_PC, WEED_FATE_PC};
+
+// `$81:D4D6`. `line_step` is priced by its own blocks.
+static const CosimRun SD_JSR = {40, 3, 0};
+static const CosimRun SD_ARC = {280, 20, 3};   // $D3EB-$D3FE
+static const CosimRun SD_TAIL = {80, 7, 1};    // LDY $08 : LDA $0004,Y : BPL
+static const CosimRun SD_AGAIN = {18, 3, 0};   // LDA #$0002
+
+static void shim_weed_seed_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  WeedSeedWork k = {0};
+  cpu_from(in, &c);
+  weed_seed_frame(w, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SD_JSR, 2);
+  run_add(&run, &SD_ARC, 1);
+  if (!k.falling) run_add(&run, &RUN_TAKEN, 1);  // a `BPL` to the next line
+  run_add(&run, &SD_TAIL, 1);
+  if (!k.landed) {
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &SD_AGAIN, 1);
+  }
+  int cycles = cosim_run_cycles_dp(&run, fast, unaligned);
+  for (int i = 0; i < LN_BLOCK_COUNT; i++)
+    cycles += k.line.blocks[i] * cosim_run_cycles_dp(&LN_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t WEED_SEED_EXITS[] = {WEED_SEED_SLEEP_PC,
+                                           WEED_SEED_LANDED_PC};
 
 // The count is the table's length by construction, so it cannot drift from it.
 #define COSIM_COMMIT(tbl) \
@@ -20485,6 +21544,304 @@ static const CosimRoutine ROUTINES[] = {
         // A tile's lookup pushes seven and calls; a cut pushes two and
         // calls `map_tile_put`, which pushes and calls in its turn.
         .stack_bytes = 28,
+    },
+    // What a level leaves on the ground, and the neighbours' list.
+    {
+        .name = "object_list_parse",
+        .symbol = "$80:C9A5",
+        .entry = OBJECT_LIST_PARSE_PC,
+        .ret_op = OBJECT_LIST_PARSE_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_object_list_parse,
+        .supported = guard_object_list_parse,
+        .cycles = 8000,
+        .stack_bytes = 3,  // a `JSL`
+    },
+    {
+        .name = "object_spawn",
+        .symbol = "$80:C9E3",
+        .entry = OBJECT_SPAWN_PC,
+        .ret_op = OBJECT_SPAWN_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_object_spawn,
+        .supported = guard_object_spawn,
+        .cycles = 1600,
+        .stack_bytes = 6,  // a `JSL`, and the allocator's own three
+    },
+    {
+        .name = "object_free",
+        .symbol = "$80:CAA8",
+        .entry = OBJECT_FREE_PC,
+        .ret_op = OBJECT_FREE_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_object_free,
+        .supported = guard_object_free,
+        .cycles = 1200,
+        .stack_bytes = 8,  // a `JSL`, and what the free pushes
+    },
+    {
+        .name = "object_collect",
+        .symbol = "$80:CABF",
+        .entry = OBJECT_COLLECT_PC,
+        .ret_op = OBJECT_COLLECT_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_object_collect,
+        .supported = guard_object_collect,
+        .cycles = 2400,
+        .stack_bytes = 8,
+    },
+    {
+        .name = "victim_list_parse",
+        .symbol = "$82:DB46",
+        .entry = VICTIM_LIST_PARSE_PC,
+        .run = shim_victim_list_parse,
+        .supported = guard_victim_list_parse,
+        COSIM_EXITS(VICTIM_LIST_PARSE_EXITS),
+        .cycles = 5600,
+    },
+    {
+        .name = "victim_tables_clear",
+        .symbol = "$81:817E",
+        .entry = VICTIM_TABLES_CLEAR_PC,
+        .ret_op = VICTIM_TABLES_CLEAR_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_victim_tables_clear,
+        .accepts = accepts_victim_tables_clear,
+        .cycles = 3900,
+    },
+    {
+        .name = "victim_start",
+        .symbol = "$81:81A2",
+        .entry = VICTIM_START_PC,
+        .ret_op = VICTIM_START_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_victim_start,
+        .supported = guard_victim_start,
+        .cycles = 2600,
+        .stack_bytes = 12,  // a `PHA`, a `JSL`, and what the spawn pushes
+    },
+    {
+        .name = "brightness_up_job",
+        .symbol = "$80:9C63",
+        .entry = BRIGHTNESS_UP_JOB_PC,
+        .ret_op = BRIGHTNESS_UP_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_brightness_up_job,
+        .accepts = accepts_vbl_job,
+        .uncalled = true,
+        .cycles = 180,
+    },
+    {
+        .name = "brightness_down_job",
+        .symbol = "$80:9C7D",
+        .entry = BRIGHTNESS_DOWN_JOB_PC,
+        .ret_op = BRIGHTNESS_DOWN_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_brightness_down_job,
+        .accepts = accepts_vbl_job,
+        .uncalled = true,
+        .cycles = 130,
+    },
+    {
+        .name = "mosaic_off_job",
+        .symbol = "$82:882C",
+        .entry = MOSAIC_OFF_JOB_PC,
+        .ret_op = MOSAIC_OFF_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_mosaic_off_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 120,
+    },
+    // A record begun, and three of the neighbours' loops.
+    {
+        .name = "record_begin",
+        .symbol = "$81:8000",
+        .entry = RECORD_BEGIN_PC,
+        .ret_op = RECORD_BEGIN_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_record_begin,
+        .supported = guard_record_begin,
+        .cycles = 1100,
+        .stack_bytes = 6,  // a `JSL`, and the allocator's own three
+    },
+    {
+        .name = "zombie_begin",
+        .symbol = "$81:87BE",
+        .entry = ZOMBIE_BEGIN_PC,
+        .ret_op = ZOMBIE_BEGIN_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_zombie_begin,
+        .supported = guard_zombie_begin,
+        .cycles = 1900,
+        .stack_bytes = 9,  // two `JSL`s deep, and the allocator's three
+    },
+    {
+        .name = "neighbour_begin",
+        .symbol = "$83:A13E",
+        .entry = NEIGHBOUR_BEGIN_PC,
+        .ret_op = NEIGHBOUR_BEGIN_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_neighbour_begin,
+        .supported = guard_neighbour_begin,
+        .cycles = 2000,
+        .stack_bytes = 10,  // two pushes, a `JSL`, and the allocator's three
+    },
+    {
+        .name = "neighbour_cycle_a",
+        .symbol = "$83:96C0",
+        .entry = 0x8396c0u,
+        .run = shim_neighbour_cycle_frame,
+        .accepts = accepts_neighbour_cycle_frame,
+        COSIM_EXITS(NEIGHBOUR_CYCLE_A_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+    },
+    {
+        .name = "neighbour_cycle_b",
+        .symbol = "$83:979D",
+        .entry = 0x83979du,
+        .run = shim_neighbour_cycle_frame,
+        .accepts = accepts_neighbour_cycle_frame,
+        COSIM_EXITS(NEIGHBOUR_CYCLE_B_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+    },
+    {
+        .name = "neighbour_cycle_c",
+        .symbol = "$83:9E3C",
+        .entry = 0x839e3cu,
+        .run = shim_neighbour_cycle_frame,
+        .accepts = accepts_neighbour_cycle_frame,
+        COSIM_EXITS(NEIGHBOUR_CYCLE_C_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+    },
+    {
+        .name = "tourists_frame",
+        .symbol = "$83:A009",
+        .entry = TOURISTS_PC,
+        .run = shim_tourists_frame,
+        .accepts = accepts_tourists_frame,
+        COSIM_EXITS(TOURISTS_EXITS),
+        .uncalled = true,
+        .cycles = 700,
+        .stack_bytes = 3,  // a `JSL`
+    },
+    {
+        .name = "neighbour_watch_a",
+        .symbol = "$83:9AB7",
+        .entry = 0x839ab7u,
+        .run = shim_neighbour_watch_frame,
+        .accepts = accepts_neighbour_watch_frame,
+        COSIM_EXITS(NEIGHBOUR_WATCH_A_EXITS),
+        .uncalled = true,
+        .cycles = 6000,
+        // A `JSL`, and the deepest of what the search and the sound push.
+        .stack_bytes = 16,
+    },
+    {
+        .name = "neighbour_alarm_a",
+        .symbol = "$83:9AFB",
+        .entry = 0x839afbu,
+        .run = shim_neighbour_alarm_frame,
+        .accepts = accepts_neighbour_alarm_frame,
+        COSIM_EXITS(NEIGHBOUR_WATCH_A_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+    },
+    {
+        .name = "neighbour_watch_b",
+        .symbol = "$83:9969",
+        .entry = 0x839969u,
+        .run = shim_neighbour_watch_frame,
+        .accepts = accepts_neighbour_watch_frame,
+        COSIM_EXITS(NEIGHBOUR_WATCH_B_EXITS),
+        .uncalled = true,
+        .cycles = 6000,
+        .stack_bytes = 16,
+    },
+    {
+        .name = "neighbour_alarm_b",
+        .symbol = "$83:99A6",
+        .entry = 0x8399a6u,
+        .run = shim_neighbour_alarm_frame,
+        .accepts = accepts_neighbour_alarm_frame,
+        COSIM_EXITS(NEIGHBOUR_WATCH_B_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+    },
+    {
+        .name = "neighbour_sign_frame",
+        .symbol = "$83:A30A",
+        .entry = NEIGHBOUR_SIGN_PC,
+        .run = shim_neighbour_sign_frame,
+        .accepts = accepts_neighbour_sign_frame,
+        COSIM_EXITS(NEIGHBOUR_SIGN_EXITS),
+        .uncalled = true,
+        .cycles = 380,
+    },
+    {
+        .name = "neighbour_rise_frame",
+        .symbol = "$83:A210",
+        .entry = NEIGHBOUR_RISE_PC,
+        .run = shim_neighbour_rise_frame,
+        .accepts = accepts_neighbour_rise_frame,
+        COSIM_EXITS(NEIGHBOUR_RISE_EXITS),
+        .uncalled = true,
+        .cycles = 260,
+    },
+    // A player gone forward, and a thing the monsters go for.
+    {
+        .name = "lunge_frame",
+        .symbol = "$80:DEC5",
+        .entry = LUNGE_PC,
+        .run = shim_lunge_frame,
+        .supported = guard_lunge_frame,
+        COSIM_EXITS(LUNGE_EXITS),
+        .uncalled = true,
+        .cycles = 5200,
+        // A `JSL`, and the deepest of what the five tests push.
+        .stack_bytes = 24,
+    },
+    {
+        .name = "decoy_frame",
+        .symbol = "$81:F16D",
+        .entry = DECOY_PC,
+        .run = shim_decoy_frame,
+        .supported = guard_decoy_frame,
+        COSIM_EXITS(DECOY_EXITS),
+        .uncalled = true,
+        .cycles = 1500,
+        // A `JSL`, and the deeper of what the lookup and the sound push.
+        .stack_bytes = 16,
+    },
+    // The weeds.
+    {
+        .name = "weed_frame",
+        .symbol = "$81:D2A5",
+        .entry = WEED_FRAME_PC,
+        .run = shim_weed_frame,
+        .accepts = weed_frame_ok,
+        .supported = guard_weed_frame,
+        COSIM_EXITS(WEED_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 6000,
+        // The state's address and the loop's, two `JSR`s, a `JSL`, and the
+        // deepest of what those push: a tile put into the map.
+        .stack_bytes = 36,
+    },
+    {
+        .name = "weed_seed_frame",
+        .symbol = "$81:D4D6",
+        .entry = WEED_SEED_PC,
+        .run = shim_weed_seed_frame,
+        .accepts = accepts_line_step,
+        COSIM_EXITS(WEED_SEED_EXITS),
+        .uncalled = true,
+        .cycles = 1300,
+        .stack_bytes = 2,  // a `JSR`
     },
     {
         .name = "seeker_frame",

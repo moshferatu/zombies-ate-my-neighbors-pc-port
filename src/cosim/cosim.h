@@ -88,7 +88,7 @@ enum {
 // bitset rather than a machine word, so the next raise is this line alone. It
 // was 128 until the scheduler, the dispatchers and the NMI took it to 138, and
 // 256 until the squirt gun's thread and the monster's walk took it to 257.
-#define COSIM_MAX_ROUTINES 384
+#define COSIM_MAX_ROUTINES 448
 #define COSIM_MASK_WORDS ((COSIM_MAX_ROUTINES + 63) / 64)
 
 // Which routines are switched on. A struct rather than a `uint64_t` so it keeps

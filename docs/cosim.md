@@ -17034,3 +17034,153 @@ before on the same passes.
 
 **Live**: the residue over the twelve movies is 0.51 million
 instructions, from 0.62.
+
+## The weeds, the neighbours' loops, what a level leaves on the ground, and eight small things (2026-10-06)
+
+### Where the residue was
+
+By stretch, of 0.51 million:
+
+    $81:D028-$D106    14,784   an arm of the weeds, with the four it calls
+    $81:C6F2-$C76A     6,866   a footballer sent off
+    $83:9A89-$9B35     6,604   a neighbour who looks about
+    $80:C9E3-$CA2F     5,292   a thing on the ground given a record
+    $80:C9A5-$C9E2     5,274   the level's list of them
+    $82:882C-$8834     5,265   the mosaic off
+    $81:F1B5-$F25C     5,196   the decoy
+    $83:9FE2-$A062     5,184   the tourists
+    $81:87BE-$87F7     5,152   a zombie's record
+    $80:DF08-$DF45     5,127   a player gone forward
+    $83:A1D5-$A21C     5,096   what a neighbour leaves, rising
+    $81:81A2-$81EE     5,031   a neighbour's thread started
+    $82:DB46-$DBC0     5,013   the neighbours' list
+    $81:D28C-$D2AC     4,776   the weeds' loop
+    $80:9C63-$9C6F     4,488   the screen a step brighter
+
+The weeds are six rows of the ranking and no one of them is the largest.
+A family shows only when the rows are read as code: `$81:D028` calls
+`$81:CF9F`, `$81:CF4D`, `$81:CF79` and `$81:D008`, and a loop at
+`$81:D28C` calls it.
+
+### An index past the bank
+
+`weed_frame` failed 143 passes of 155 on `level9`, on a byte of page
+zero.
+
+The weed has four arms and the turn goes round eight. For the other four
+the ROM reads the page's scratch as tips, and reads the arm's ways from
+past the end of their table, which is the table of steps. Some of those
+words are `$FFFC`. `LDA $CFE4,X` with `$FFFC` in X is not `$81:CFE0`. An
+indexed absolute address is 24 bits, and the sum carries into the bank:
+it is `$82:CFE0`.
+
+The port added the index as 16 bits. It reads the table as 24 now, and
+all the passes agree.
+
+A port's helper that takes a table and an index must not truncate the
+sum. `rom_word(rom, (bank << 16) + table + index)`, with the index
+unsigned, is what the instruction does.
+
+### One function for several entries
+
+Three of the neighbours' loops are the same thirty-three bytes with
+another count and another table. A pattern search of bank `$83` for those
+bytes found them, and found the tourists' loop ending in the same bytes.
+
+They are one function with a table of where each begins and leaves, and
+one shim. The shim knows which by `in->pc`, which is the entry. Each has
+its own row in the registry, with its own exits.
+
+The two that look about them are one function too, with a flag for the
+one difference in their alarm: one tests its count before it stores, the
+other after.
+
+### A state added to a frame
+
+`footballer_frame` turned down a footballer sent off, a state it did not
+have: 177 passes of `level21`, and with the show after it and the loop
+round it, 13 thousand instructions. The state is forty instructions. It
+went into the frame's switch, with a bill for it, and the frame's entry,
+exits and guard did not change.
+
+Before ranking a creature's leaves as new work, look for the frame that
+turns them down.
+
+### Carry across a sleep
+
+The weeds' frame claims A, and carry. Carry is not dead at its sleep:
+`thread_yield` keeps the status register, and on its guard the next pass
+begins `JSL rng`, which takes the carry before it. So each path through
+the frame says what carry it leaves: the players' test's, the last sum's,
+the compare's, or the thread's own.
+
+A frame's flags are dead at a sleep only if every state begins by setting
+them.
+
+### A job with no register
+
+`$80:9C63` and `$80:9C7D` are vblank jobs that write no hardware. They
+step the brightness the NMI puts in `INIDISP`. They need no trace: an
+ordinary shim, `accepts_vbl_job`, and `uncalled`.
+
+### Names
+
+Three of this round's things are named for what they are, from the code:
+
+* The tourists' loop leaves, when the level has room and a word is set,
+  to code that starts the werewolf's thread twice, `$81:ABF5`, either side
+  of them.
+* The decoy's record has collide id `$38`. `actor_nearest` looks for four
+  ids: the two players', the neighbours', and `$38`.
+* The weeds plant tiles, on level 13.
+
+None is seen on a screen. The rest are named for what they do.
+
+### A prefix renamed twice
+
+`VC_` was `port/dma.h`'s. The compiler said so. I renamed mine with `sed`
+over the whole file, and it renamed `dma.h`'s row of the cost table too,
+which the compiler also said. A prefix is checked with `grep` before it is
+used, and a rename is done on the lines that are mine.
+
+### The share of calls
+
+The title bar's second number did not move this round: 60.2% on
+`level1` before and after, with 27 more routines.
+
+It counts a call wherever the CPU is on a `JSR` or `JSL`
+(`cosim_step`, `counted_call`). 40 registered entries begin with one:
+`zombie_87f8_frame`, `nmi_queue_a`, `sched_rescan`, `camera_scroll`,
+`spawnlist_frame`, `player_frame`, `mainloop_frame` and more. When the
+port serves one, the CPU is on that instruction and does not execute it,
+and the call is counted all the same. Nothing serves it, because it is
+not made.
+
+On `level1`, 20,000 frames:
+
+    calls counted                       327,642
+    ...of which no call was made        148,772
+    calls made                          178,894
+    ...to an entry the port has         178,650
+
+The profile's call graph has the 178,894, because it records a call only
+when the instruction ran.
+
+The numerator is out as well. It counts every serve of a routine not
+marked `uncalled`, and several of those 40 are reached by a return and
+not by a call. So taking the 148,772 out of the denominator alone gives
+more than 100%. A right count would take a serve as a served call only
+when the instruction before it was a call to that entry.
+
+It is not fixed in this round.
+
+### Checked
+
+The corpus: 33,315,506 calls across 51 movies, 0 diverged, 1,082 of
+1,285 sites. Every call priced is exact.
+
+**Lockstep**: 325,322 passes, 48 of 51 never part, the same three as
+before on the same passes.
+
+**Live**: the residue over the twelve movies is 0.37 million
+instructions, from 0.51.

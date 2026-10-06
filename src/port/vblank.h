@@ -93,6 +93,9 @@ enum {
   VS_MORE_TAIL, // REP #$20 : SEC : RTL
   VS_DONE,      // REP #$20 : STZ $C6 : CLC : RTL
 
+  // $82:882C mosaic_off_job
+  MO_HEAD,      // SEP #$20 : STZ $2106
+
   VBL_BLOCK_COUNT
 };
 
@@ -164,5 +167,30 @@ void bg1_vscroll_job(Wram* w, PortCpu* c, HwTrace* t);
 #define W_VRAM_SEND_AT 0x00c8u
 #define VRAM_SEND_BYTES 0x0400u
 void vram_send_job(Wram* w, PortCpu* c, HwTrace* t);
+
+// --- $82:882C mosaic_off_job ---------------------------------------------------
+//
+// The mosaic off, for every layer. `$82:8821` queues it, and it runs once:
+// carry clear.
+#define MOSAIC_OFF_JOB_PC 0x82882cu
+#define MOSAIC_OFF_JOB_RTL_PC 0x828834u
+void mosaic_off_job(Wram* w, PortCpu* c, HwTrace* t);
+
+// --- $80:9C63 and $80:9C7D: the screen's brightness, a step a vblank ----------
+//
+// Two jobs that write no register. They step the shadow the NMI puts in
+// `INIDISP`. `$80:9C52` zeroes it and queues the first, which takes it up
+// one a vblank and runs no more at fifteen. `$80:9C72` queues the second,
+// which takes it down one a vblank, and below nothing leaves it at `$80`:
+// the screen blanked.
+#define BRIGHTNESS_UP_JOB_PC 0x809c63u
+#define BRIGHTNESS_UP_JOB_RTL_PC 0x809c6fu
+#define BRIGHTNESS_DOWN_JOB_PC 0x809c7du
+#define BRIGHTNESS_DOWN_JOB_RTL_PC 0x809c83u
+#define BRIGHTNESS_FULL 0x000f
+#define BRIGHTNESS_BLANKED 0x0080
+// Each is true while its job stays queued.
+bool brightness_up_job(Wram* w, PortCpu* c);
+bool brightness_down_job(Wram* w, PortCpu* c);
 
 #endif
