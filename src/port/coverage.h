@@ -168,6 +168,51 @@
   X(seeker_stepped,   "seeker_step",        "a pixel the way it was told") \
   X(seeker_flap_waited, "seeker_flap",      "the same picture") \
   X(seeker_flapped,   "seeker_flap",        "a fifth call: the other picture") \
+  /* $82:B267 a cursor a pad moves about a screen -- see port/cursor.h. */      \
+  X(cursor_same,      "cursor_frame",       "the direction it was last turn") \
+  X(cursor_moved,     "cursor_frame",       "a direction newly held: a step that way") \
+  X(cursor_let_go,    "cursor_frame",       "...or newly let go") \
+  X(cursor_past_left, "cursor_frame",       "past the left edge, so in at the right") \
+  X(cursor_past_right,"cursor_frame",       "...or the right, so in at the left") \
+  X(cursor_past_top,  "cursor_frame",       "past the top, so in at the bottom") \
+  X(cursor_past_bottom,"cursor_frame",      "...or the bottom, so in at the top") \
+  X(cursor_button,    "cursor_frame",       "a button newly down: the ROM's") \
+  X(cursor_button_held,"cursor_frame",      "...or still down from before") \
+  X(cursor_start,     "cursor_frame",       "Start") \
+  X(cursor_time_up,   "cursor_frame",       "three hundred turns with nothing pressed") \
+  /* $81:807E something started from a list -- see port/spawner.h. */           \
+  X(spawn_at_place,   "spawn_entry",        "started at its place") \
+  X(spawn_scattered,  "spawn_entry",        "...or near it, on clear ground") \
+  X(spawn_ground_in_the_way,"spawn_entry",  "not started: something solid there") \
+  X(spawn_off_the_level,"spawn_entry",      "...or the place is off the level") \
+  /* Five small things -- see port/line.h, flinch.h, blinker.h, follower.h. */  \
+  X(line_moved,       "line_step",          "a frame along a line") \
+  X(line_stepped,     "line_step",          "...and a whole in a sum: a step that way") \
+  X(flinch_next,      "flinch_frame",       "the next picture of the list, and its frames") \
+  X(flinch_done,      "flinch_frame",       "...which was the last") \
+  X(flinch_other_state,"flinch_frame",      "state $0C, whose pictures are further on") \
+  X(blinker_turned,   "blinker_frame",      "the other picture, and its frames") \
+  X(blinker_told,     "blinker_frame",      "...and something has set its word: the ROM's") \
+  X(follower_this_side,"follower_place",    "put beside the point") \
+  X(follower_other_side,"follower_place",   "...the other side of it") \
+  X(follower_looks,   "follower_place",     "a sixteenth frame: the tile is looked at next") \
+  X(follower_ended,   "follower_place",     "past the last place") \
+  /* $82:EF4F a frame of level 37's thing -- see port/seeker.h. */              \
+  X(seeker_came_on,   "seeker_frame",       "a pixel toward whoever is nearest") \
+  X(seeker_backed_off,"seeker_frame",       "...or away, from too near") \
+  X(seeker_circle_began,"seeker_frame",     "...or in between, and it starts to circle") \
+  X(seeker_circled,   "seeker_frame",       "a place round the circle") \
+  X(seeker_lapped,    "seeker_frame",       "...past the last, and round again") \
+  X(seeker_lapped_back,"seeker_frame",      "...or past the first, going the other way") \
+  X(seeker_circle_asks,"seeker_frame",      "a fourth frame: next it asks who is nearest") \
+  X(seeker_circle_stayed,"seeker_frame",    "a lap done, and the draw says go on") \
+  X(seeker_ask_same,  "seeker_frame",       "still nearest to the one it circles") \
+  X(seeker_ask_other_far,"seeker_frame",    "...or someone else is, not near enough to matter") \
+  X(seeker_watched,   "seeker_frame",       "still, facing whoever is nearest") \
+  X(seeker_watched_b, "seeker_frame",       "...and the same from the other state") \
+  X(seeker_faced_left,"seeker_frame",       "...to the left of it, so drawn as it is") \
+  X(seeker_faced_right,"seeker_frame",      "...to the right, so flipped") \
+  X(seeker_frame_ended,"seeker_frame",      "the loop's end") \
   /* $81:F98A the thing thrown in an arc -- see port/lob.h. */                  \
   X(lob_flew,         "lob_frame",          "a frame in the air") \
   X(lob_slowed,       "lob_frame",          "a fourth frame: the rise one less") \
@@ -1026,6 +1071,12 @@
   X(pose_stood, "pose_*", "a stand started") \
   X(pose_walked, "pose_*", "a walk started") \
   X(pose_stepped, "pose_walk*", "the walk cycle moved on") \
+  X(pose_band_b_fired, "pose_walk_band_b", "the step that starts the cycle again: a shot") \
+  X(pose_band_b_stepped, "pose_walk_band_b", "...and any other step") \
+  X(pose_6c_ended, "pose_walk_6c", "the fourth picture shown: the pose starts again") \
+  X(pose_punched, "pose_walk_6c", "a picture of the swing: those in the fist's box told") \
+  X(pose_reached, "pose_walk_6c", "...and the tile the fist is at looked at") \
+  X(pose_reach_busy, "pose_walk_6c", "...or not, with a wall already coming down") \
   X(pose_fired, "pose_*", "a round taken and the shot's thread started") \
   X(pose_fire_empty, "pose_*", "...or no rounds left, and nothing happens") \
   X(pose_weapon_shown, "pose_*", "the hand weapon shown, the way the player faces") \

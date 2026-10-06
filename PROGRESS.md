@@ -5,6 +5,61 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The potion's monster, level 37's thread, a cursor and a spawner (2026-10-05)
+
+What the 65816 still executed over the twelve movies goes from 1.00 to
+**0.74** million instructions of work. Live, `level37` goes from 99.5% to
+**99.7%**, and `level5`, `level9` and `level17` each go up a tenth; the
+other eight do not move. The game registers 332 routines, 8 more.
+
+* **The monster the potion makes**, in `port/pose.c`. Its state was ported
+  already, and `player_frame` turned down every frame of it, because its
+  walk was not: `$80:D6DC`, which is a punch of four pictures. That is
+  here now, with the box in front of the fist that everything in it is
+  told of (`$80:F051`) and the tile the fist is at (`$80:F0D7`). So a
+  monster's frame is the port's whole. Two kinds of frame are still the
+  ROM's: the first picture of a swing, which makes a sound, and a punch
+  that lands on a wall that can be knocked down.
+* **Walking with a weapon of the second band**, `$80:D6B8`, in the same
+  file: the other walk that was missing.
+* **A frame of level 37's thing**, `$82:EF4F`, in `port/seeker.c`: the
+  thread's loop and five of its states. It comes at whoever is nearest,
+  backs off from too near, circles them at forty-eight pixels, and stands
+  facing them. A frame that goes on to anything else is turned down.
+* **A cursor a pad moves about a screen**, `$82:B267`, in a new
+  `port/cursor.c`: a turn of the loop that reads the pad every fourth
+  frame. I take it for the password screen: the eight movies that begin
+  at a later level all run it first.
+* **Something started from a list**, `$81:807E`, in a new
+  `port/spawner.c`: at its place, or scattered near it on clear ground.
+* **Five small things**:
+  * `$80:8475`, a thread naming the handler others call it by, in
+    `port/thread.c`.
+  * `$81:D443`, a step along a line, in a new `port/line.c`.
+  * `$80:D0BF`, a list of a player's pictures shown one after another, in
+    a new `port/flinch.c`.
+  * `$83:9C94`, a thing of two pictures turn about, in a new
+    `port/blinker.c`.
+  * `$82:F40B`, a thing in level 21 kept beside another, in a new
+    `port/follower.c`.
+
+* **Checked.** The corpus verifies at 33,254,386 calls across 51 movies
+  with 0 diverged, and 948 of 1,136 coverage sites; 36 of the 47 new ones
+  are taken. Every call priced is exact.
+* **Lockstep** over the corpus: 325,322 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes.
+* **Untaken.** The cursor past each of the four edges, Start, and its
+  time running out. Level 37's thing backing off, going by way of its
+  question on a fourth frame, finding someone else nearest, and the end
+  of its loop. A thing scattered off the level.
+* **Named from what they do.** I have not seen the cursor's screen, the
+  two-picture thing or level 21's thing on a screen. `flinch` is where
+  the code that takes one from a player's health goes on to.
+* **Next.** Nothing left is over 1.6% of the residue but the
+  between-games clear that stays the ROM's (`$80:897F`, 3.4%). After it
+  come a thread in level 21 (`$81:F808`), `$83:9D00`, `$80:94AF`, and the
+  job that scrolls a level's name (`$82:AEB4`).
+
 ### A block put into the map, a level's name coming down, and six small things a frame (2026-10-05)
 
 What the 65816 still executed over the twelve movies goes from 1.28 to

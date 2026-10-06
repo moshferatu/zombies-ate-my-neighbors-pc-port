@@ -180,3 +180,12 @@ int thread_spawn(Wram* w, const Rom* rom, uint16_t entry, uint16_t bank,
 
   return slot;
 }
+
+void thread_set_handler(Wram* w, PortCpu* c) {
+  c->x = wram_r16(w, W_SCHED_CUR_TASK);
+  wram_w16(w, (uint16_t)(W_THREAD_HANDLER + c->x), c->a);
+  c->a = c->y;
+  set_nz16(c, c->a);
+  wram_w16(w, (uint16_t)(W_THREAD_HANDLER_BANK + c->x), c->a);
+  c->pc = THREAD_SET_HANDLER_RTL_PC;
+}

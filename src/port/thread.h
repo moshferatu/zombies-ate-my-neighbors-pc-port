@@ -20,6 +20,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/wram.h"
 
 // `$80:8398` — age every live thread's wait counter by one tick.
@@ -171,5 +172,12 @@ void spawn_has_room(const Wram* w, SpawnRoomRegs* out);
 // `$80:8480`, is `thread_call_handler` in **`port/collide.h`** — it lives there
 // rather than here because what it does is enter actor behaviour, and the two
 // handlers a collision reaches are its neighbours in that file.
+
+// `$80:8475`: the thread that is running names the handler others are to
+// call it by, `$80:8480`'s. A is its address and Y its bank, and both
+// nothing takes it away. It comes back with the bank in A and the slot in X.
+#define THREAD_SET_HANDLER_PC 0x808475u
+#define THREAD_SET_HANDLER_RTL_PC 0x80847fu
+void thread_set_handler(Wram* w, PortCpu* c);
 
 #endif

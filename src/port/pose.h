@@ -10,6 +10,8 @@
 //   $80:D53D  stand         standing still
 //   $80:D6A8  walk          walking
 //   $80:D704  walk_firing   walking with a hand weapon out
+//   $80:D6B8  walk_band_b   walking with a weapon of the second band held
+//   $80:D6DC  walk_6c       walking as the monster the potion makes
 //
 // and with them what they jump to when the buttons change, `$80:D4E9`, which
 // starts whichever pose the direction now asks for. Then three in which the
@@ -43,6 +45,15 @@
 // which way they face. The weapon says which thread and how long until the
 // next. With no rounds left nothing happens.
 //
+// **A weapon of the second band fires from the walk**, on the step that
+// starts the cycle again, and that step's pictures are the ones with it out.
+//
+// **The monster's walk is a punch.** Its four pictures are a swing, and the
+// pose starts again when the fourth has been shown. At each of the last
+// three, everything in a box in front of the fist is told (`$80:F051`), and
+// the tile the fist is at is looked at (`$80:F0D7`): one that can be knocked
+// down starts a thread that does it.
+//
 // **A player in the air has a height and a speed upward.** Each frame the
 // height takes the speed, and every fourth frame gravity takes one from the
 // speed. Across the ground they go by fractions: each axis adds its part to
@@ -55,8 +66,9 @@
 // The frame a player in the air comes down on: each of the two handlers has
 // a landing of its own.
 // Weapon 5's shot, which goes on to a pose of its own that sleeps. The poses
-// for the weapons in the second band (`$80:EE82`), whatever sets `$6C`
-// (`$80:EF67`), and the two walks those use, `$80:D6B8` and `$80:D6DC`.
+// for the weapons in the second band (`$80:EE82`) and whatever sets `$6C`
+// (`$80:EF67`). Of the monster's walk, the first picture, which makes a
+// sound, and a punch that lands on a wall that comes down.
 // `pose_supported` says which frames those are.
 //
 // ## Its contract with the ROM
@@ -78,6 +90,7 @@
 
 #include "assets/rom.h"
 #include "port/cpu.h"
+#include "port/oam.h"
 #include "port/wram.h"
 
 // The tables are in bank `$80`, which is the player thread's data bank.
@@ -93,8 +106,8 @@
 
 #define POSE_HANDLER_STAND 0xd53du
 #define POSE_HANDLER_WALK 0xd6a8u
-#define POSE_HANDLER_WALK_BAND_B 0xd6b8u  // not ported
-#define POSE_HANDLER_WALK_6C 0xd6dcu      // not ported
+#define POSE_HANDLER_WALK_BAND_B 0xd6b8u
+#define POSE_HANDLER_WALK_6C 0xd6dcu
 #define POSE_HANDLER_WALK_FIRING 0xd704u
 #define POSE_HANDLER_ARC 0xdd41u
 #define POSE_HANDLER_ARC_READY 0xddf0u
@@ -130,6 +143,8 @@
 #define POSE_DP_CYCLE 0x18        // the walk cycle, 0 to 3
 #define POSE_DP_MOVE 0x2a         // the movement handler, or 0 standing still
 #define POSE_DP_ARC_PICTURE 0x2e  // in the air: which of the facing's pictures
+#define POSE_DP_REACH_X 0x34      // the monster: where the fist is
+#define POSE_DP_REACH_Y 0x36
 #define POSE_DP_RISE 0x38         // ...the speed upward
 #define POSE_DP_RISE_COUNT 0x3a   // ...frames, counted down: gravity's clock
 #define POSE_DP_ARC_PART_X 0x3c   // ...what each frame adds to the sums
@@ -191,6 +206,10 @@ typedef struct {
   bool arc_slowed;     // ...gravity took one from the speed
   bool arc_high;       // ...high enough to be drawn over everything
   bool arc_falling;    // ......and on the way down
+  bool band_b_fired;   // the second band's walk: a step that fires
+  bool punched;        // the monster's walk: those in the fist's box told...
+  ActorNotifyWork told;  // ...and what telling them took
+  bool reached;        // ...and the tile the fist is at looked at
   bool unported;       // the frame reached something that is the ROM's
   bool c, v;           // carry and overflow as the handler leaves them
   bool c_set, v_set;   // ...and whether it wrote each at all
@@ -206,6 +225,8 @@ bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler);
 void pose_stand(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_walk(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_walk_firing(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_walk_band_b(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_walk_6c(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_arc(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_arc_ready(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 

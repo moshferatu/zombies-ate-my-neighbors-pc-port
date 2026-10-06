@@ -241,12 +241,15 @@ add_library(zamn_port STATIC
   src/port/bubble.c
   src/port/bossbg.c
   src/port/collide.c
+  src/port/cursor.c
   src/port/fade.c
   src/port/doll_thread.c
   src/port/flame.c
+  src/port/flinch.c
   src/port/card.c
   src/port/jumper.c
   src/port/loads.c
+  src/port/line.c
   src/port/lob.c
   src/port/logo.c
   src/port/radar_thread.c
@@ -254,10 +257,12 @@ add_library(zamn_port STATIC
   src/port/seeker.c
   src/port/tile_rows.c
   src/port/floor.c
+  src/port/follower.c
   src/port/football.c
   src/port/text.c
   src/port/textmap.c
   src/port/axe.c
+  src/port/blinker.c
   src/port/clears.c
   src/port/hud.c
   src/port/camera.c
@@ -287,6 +292,7 @@ add_library(zamn_port STATIC
   src/port/mainloop.c
   src/port/martian.c
   src/port/slime.c
+  src/port/spawner.c
   src/port/palfade.c
   src/port/spider.c
   src/port/squirt.c

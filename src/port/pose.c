@@ -8,7 +8,9 @@
 #include "port/flags.h"
 #include "port/oam.h"     // the display record's fields
 #include "port/player.h"  // PSN_DP_*: the buttons, the weapon words, the facing
+#include "port/player_frame.h"  // W_BOX_*: the box those in it are told of
 #include "port/step.h"    // where the player is
+#include "port/terrain.h"
 #include "port/thread.h"
 
 // Tables in `POSE_BANK`.
@@ -50,6 +52,22 @@
 #define POSE_STATE_KEEPS_WEAPON 0x000c
 // What `$18` holds through the `$6C` walk until its first step.
 #define POSE_CYCLE_UNSTARTED 0xffffu
+// ...and at its last picture, after which the pose starts again.
+#define POSE_CYCLE_LAST 3
+
+// The monster's punch. A box for each facing, eight bytes: what to add to
+// where the player is for its left, right, top and bottom. Who the box says
+// is punching is by `$0C`.
+#define POSE_PUNCH_BOXES 0xf08fu
+#define POSE_PUNCH_IDS 0xf08bu
+// Where the fist is: a byte for each picture of the swing picks one of three
+// tables, which have a step across and a step down for each facing.
+#define POSE_REACH_ROWS 0xf12fu
+#define POSE_REACHES 0xf133u
+// A tile with this can be knocked down.
+#define POSE_TILE_BREAKS 0x0040u
+// Not zero while a wall is coming down.
+#define W_WALL_FALLING 0x1ff8u
 
 // One player's frame, and the carry and overflow the ROM would leave.
 typedef struct {
@@ -360,6 +378,119 @@ static void walk(Pose* p) {
   hide_weapon(p);
 }
 
+// `$80:D6B8`: walking with a weapon of the second band held. The step that
+// starts the cycle again fires, when the last shot's delay has run out, and
+// shows the pictures with the weapon out.
+static void walk_band_b(Pose* p) {
+  if (buttons_changed(p)) {
+    start_again(p);
+    return;
+  }
+  if (field(p, POSE_DP_TIMER) != 0) {
+    p->log->waiting = true;
+    return;
+  }
+  if ((field(p, POSE_DP_SHOT_DELAY) | field(p, POSE_DP_CYCLE)) == 0) {
+    PORT_COVER(pose_band_b_fired);
+    p->log->band_b_fired = true;
+    fire(p);
+    if (p->log->unported) return;
+    set_field(p, POSE_DP_FRAMES, POSE_FRAMES_WALK_BAND_B);
+  } else {
+    PORT_COVER(pose_band_b_stepped);
+    set_field(p, POSE_DP_FRAMES, POSE_FRAMES_WALK);
+  }
+  step(p);
+  hide_weapon(p);
+}
+
+// `$80:F051`, for a picture that is not the first: tell everything in the
+// box in front of the fist. What those told leave in overflow is theirs.
+static void punch(Pose* p) {
+  const uint16_t box = flags_double(
+      &p->flags, flags_double(&p->flags, field(p, PSN_DP_DIR_HELD)));
+  const uint16_t x = field(p, STEP_DP_X);
+  const uint16_t y = field(p, STEP_DP_Y);
+  wram_w16(p->w, W_BOX_LEFT,
+           flags_add(&p->flags, x, table_word(p, POSE_PUNCH_BOXES, box)));
+  wram_w16(p->w, W_BOX_RIGHT,
+           flags_add(&p->flags, x,
+                     table_word(p, POSE_PUNCH_BOXES + 2, box)));
+  wram_w16(p->w, W_BOX_TOP,
+           flags_add(&p->flags, y,
+                     table_word(p, POSE_PUNCH_BOXES + 4, box)));
+  wram_w16(p->w, W_BOX_BOTTOM,
+           flags_add(&p->flags, y,
+                     table_word(p, POSE_PUNCH_BOXES + 6, box)));
+  const uint16_t id =
+      table_word(p, POSE_PUNCH_IDS, field(p, POSE_DP_PICTURES_ROW));
+  wram_w16(p->w, W_BOX_ID, id);
+
+  ThreadCallResult tail = {.c = p->flags.c};
+  ActorNotifyRegs told;
+  if (!actor_notify_box_counted(p->w, p->rom, id, p->flags.c, &tail, &told,
+                                &p->log->told)) {
+    leave_to_rom(p);
+    return;
+  }
+  p->log->punched = true;
+  flags_carry(&p->flags, told.c);
+  flags_overflow_unknown(&p->flags);
+}
+
+// `$80:F0D7`: look at the tile the fist is at, unless a wall is already
+// coming down. One that can be knocked down is the ROM's to start.
+static void reach(Pose* p) {
+  if (wram_r16(p->w, W_WALL_FALLING) != 0) {
+    PORT_COVER(pose_reach_busy);
+    return;
+  }
+  PORT_COVER(pose_reached);
+  p->log->reached = true;
+  const uint16_t row =
+      table_word(p, POSE_REACH_ROWS, field(p, POSE_DP_CYCLE)) & 0x00ffu;
+  const uint16_t steps = flags_add(
+      &p->flags, flags_double(&p->flags, field(p, PSN_DP_DIR_HELD)),
+      table_word(p, POSE_REACHES, row));
+  const uint16_t x =
+      flags_add(&p->flags, field(p, STEP_DP_X), table_word(p, steps, 0));
+  const uint16_t y =
+      flags_add(&p->flags, field(p, STEP_DP_Y), table_word(p, steps, 2));
+  set_field(p, POSE_DP_REACH_X, x);
+  set_field(p, POSE_DP_REACH_Y, y);
+  set_field(p, PLAYER_DP_PTR, (uint16_t)(steps + 2));
+
+  TileAttrsRegs tile;
+  tile_attrs_at_pixel(p->w, x, y, &tile);
+  flags_carry(&p->flags, tile.c);
+  flags_overflow_unknown(&p->flags);
+  if (tile.a & POSE_TILE_BREAKS) leave_to_rom(p);
+}
+
+// `$80:D6DC`: the monster's walk, which is a punch of four pictures. The
+// first makes a sound, and that frame is the ROM's.
+static void walk_6c(Pose* p) {
+  if (flags_same(&p->flags, field(p, POSE_DP_CYCLE), POSE_CYCLE_LAST)) {
+    PORT_COVER(pose_6c_ended);
+    start_again(p);
+    return;
+  }
+  if (field(p, POSE_DP_TIMER) != 0) {
+    p->log->waiting = true;
+    return;
+  }
+  set_field(p, POSE_DP_FRAMES, POSE_FRAMES_WALK_6C);
+  step(p);
+  if (field(p, POSE_DP_CYCLE) == 0) {
+    leave_to_rom(p);
+    return;
+  }
+  PORT_COVER(pose_punched);
+  punch(p);
+  if (p->log->unported) return;
+  reach(p);
+}
+
 static void walk_firing(Pose* p) {
   if (buttons_changed(p)) {
     if (field(p, PSN_DP_FIRE_A) == 0) {
@@ -474,8 +605,12 @@ static void arc_ready(Pose* p) {
 
 static void run(void (*handler)(Pose*), Wram* w, const Rom* rom, uint16_t page,
                 PoseLog* log) {
-  PoseLog scratch = {0};
-  Pose p = {w, rom, page, log ? log : &scratch, {false, false, false, false}};
+  static PoseLog scratch;
+  if (log == NULL) {
+    scratch = (PoseLog){0};
+    log = &scratch;
+  }
+  Pose p = {w, rom, page, log, {false, false, false, false}};
   handler(&p);
   p.log->c = p.flags.c;
   p.log->v = p.flags.v;
@@ -495,6 +630,14 @@ void pose_walk_firing(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(walk_firing, w, rom, page, log);
 }
 
+void pose_walk_band_b(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(walk_band_b, w, rom, page, log);
+}
+
+void pose_walk_6c(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(walk_6c, w, rom, page, log);
+}
+
 void pose_arc(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(arc, w, rom, page, log);
 }
@@ -504,11 +647,14 @@ void pose_arc_ready(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
 }
 
 bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler) {
-  PoseLog log = {0};
+  static PoseLog log;
+  log = (PoseLog){0};
   switch (handler) {
     case POSE_HANDLER_STAND: run(stand, w, rom, page, &log); break;
     case POSE_HANDLER_WALK: run(walk, w, rom, page, &log); break;
     case POSE_HANDLER_WALK_FIRING: run(walk_firing, w, rom, page, &log); break;
+    case POSE_HANDLER_WALK_BAND_B: run(walk_band_b, w, rom, page, &log); break;
+    case POSE_HANDLER_WALK_6C: run(walk_6c, w, rom, page, &log); break;
     case POSE_HANDLER_ARC:
     case POSE_HANDLER_ARC_B: run(arc, w, rom, page, &log); break;
     case POSE_HANDLER_ARC_READY: run(arc_ready, w, rom, page, &log); break;

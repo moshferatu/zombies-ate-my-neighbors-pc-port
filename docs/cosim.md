@@ -16712,3 +16712,110 @@ leaves, 321 and 544 times.
 
 **Live**: the residue over the twelve movies is 1.00 million
 instructions, from 1.28.
+
+## The potion's monster, level 37's thread, a cursor and a spawner (2026-10-05)
+
+### Where the residue was
+
+By stretch, of 1.00 million:
+
+    $82:B27D-$B314    24,453   the cursor's loop
+    $81:807E-$80EB    23,944   something started from a list
+    $80:D2C9-$D314    23,890   the monster's state
+    $82:F40B-$F476    22,456   level 21's thing, put beside another
+    $82:E858-$E879    21,807   level 37's thing, coming on
+    $82:EF36-$EF56    19,525   ...its loop
+    $81:D443-$D481    17,060   a step along a line
+    $80:D082-$D0C7    16,742   a list of a player's pictures
+    $83:9C6D-$9CB9    15,043   a thing of two pictures
+    $82:EB13-$EB4F    13,557   level 37's thing, facing
+    $82:B232-$B276    11,759   the cursor's loop, its head
+    $82:E8F4-$E94B    10,777   level 37's thing, circling
+    $80:D6B8-$D700     9,769   the monster's walk
+    $80:8475-$847F     8,230   a thread's handler named
+    $80:F0D7-$F112     7,696   the monster's fist, the tile
+    $80:F051-$F08A     6,602   ...and its box
+
+### A routine in the ranking that was ported already
+
+`$80:D2EA`, the monster's state, was third. It was in
+`port/player_frame.c` already. The ROM still ran it because
+`player_frame` turned down every frame of a monster, and a frame turned
+down is the ROM's a piece at a time.
+
+It turned them down for the pose. A monster's walk is `$80:D6DC`, which
+`pose.h` listed as not ported, and `strike_pose` answers false for a
+handler it does not have. So the ranking named the state, the walk, the
+box and the tile as four stretches, and one missing handler was all four.
+
+Before porting a stretch from the ranking, look for its address in
+`src/port`. If it is there, the question is who turns the frame down.
+
+### A frame with a sound in it
+
+`$80:D6DC` plays sound `$15` on the first picture of a swing. What
+`apu_play_sfx` costs is how long the sound chip took to answer the last
+command, and no model has that. A port with the call inside it could not
+be priced exactly.
+
+So that frame is the ROM's: `walk_6c` says so on the copy it is asked
+about, 72 frames of 1,008 in the twelve movies. The other three pictures
+are the port's.
+
+### Overflow after a callee that does not report it
+
+The punch tells everything in a box (`$80:BF1B`), and what those told
+leave in overflow is theirs. The port has no way to know it, and
+`flags_overflow_unknown` says so. The tile lookup after it is the same.
+
+That is harmless while the monster walks, because the walk writes
+overflow after the pose. With no movement to run, nothing would, and the
+yield's `PHP` would park a guess. So `move` turns down a frame that
+punched and does not walk.
+
+### A whole frame of a thread, with most of its states the ROM's
+
+Level 37's thread is a loop: sleep, run the state `$16` names, and
+again. It has many states and five of them are most of its frames.
+Ported as states they would have left the loop's own seven instructions
+a frame in the ROM, which was about a quarter of what the thread ran.
+
+So the port is the frame: from the sleep's return, through the state, to
+the next sleep. `seeker_frame` returns false when the state is not one it
+has, or when a state it has goes on to something it has not: a swoop, a
+change of mind, being hit. The entry uses `.supported`, which runs it on
+a copy of WRAM first, so a frame that is turned down has changed nothing.
+
+The ROM enters a state by `PEA : LDA $16 : DEC : PHA : RTS`. The port
+leaves the stack as it found it and declares twelve bytes under it, for
+what those four bytes and the calls below them wrote there.
+
+### An error that is not a multiple of forty
+
+`spawn_entry` was out by 60 on its plainest path, and by 180 on its
+longest. A refresh is 40. I looked for 60 missing cycles for some time:
+ten direct-page accesses, five indexed reads at twelve each.
+
+Nothing was missing. The model charged 20 too much, and the call crossed
+two scanlines: 80 less 20. The longest path crossed five.
+
+The 20 is the list. It is read by `LDA $0005,X` and its like, and
+`tools/cycles816.py` takes an operand under `$2000` for WRAM. But the
+data bank is `$9F` and the list is at `$90E9` in level 1 and `$FE1B` in
+level 53: it is in the cartridge, where a byte is 6 with FastROM on and
+not 8. Five words read is 20. The shim takes it off when the entry is at `$8000` or above.
+
+So an error that is not a multiple of 40 may be a smaller one the other
+way, plus refreshes. `thread_spawn`'s own row, verified beside it, showed
+`+40..+80` and exact, which is what gave it away.
+
+### Checked
+
+The corpus: 33,254,386 calls across 51 movies, 0 diverged, 948 of 1,136
+sites. Every call priced is exact.
+
+**Lockstep**: 325,322 passes, 48 of 51 never part, the same three as
+before on the same passes.
+
+**Live**: the residue over the twelve movies is 0.74 million
+instructions, from 1.00.

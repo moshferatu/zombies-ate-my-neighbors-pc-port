@@ -214,6 +214,12 @@ static bool strike_pose(Frame* f) {
     case POSE_HANDLER_WALK_FIRING:
       pose_walk_firing(f->w, f->rom, f->page, did);
       break;
+    case POSE_HANDLER_WALK_BAND_B:
+      pose_walk_band_b(f->w, f->rom, f->page, did);
+      break;
+    case POSE_HANDLER_WALK_6C:
+      pose_walk_6c(f->w, f->rom, f->page, did);
+      break;
     case POSE_HANDLER_ARC:
     case POSE_HANDLER_ARC_B:
       pose_arc(f->w, f->rom, f->page, did);
@@ -235,6 +241,9 @@ static bool strike_pose(Frame* f) {
 static bool move(Frame* f) {
   const uint16_t movement = field(f, PLAYER_DP_MOVEMENT);
   if (movement == 0) {
+    // A punch leaves overflow as those it told left it, which the walk then
+    // writes. With no walk to, the frame is the ROM's.
+    if (f->log->pose_log.punched) return false;
     PORT_COVER(player_frame_still);
     return true;
   }

@@ -23,9 +23,12 @@
 #include "port/chainsaw.h"
 #include "port/clone.h"
 #include "port/collide.h"
+#include "port/cursor.h"
 #include "port/fade.h"
 #include "port/figure_colours.h"
+#include "port/flinch.h"
 #include "port/floor.h"
+#include "port/follower.h"
 #include "port/football.h"
 #include "port/frontend.h"
 #include "port/hud.h"
@@ -44,6 +47,7 @@
 #include "port/player_frame.h"
 #include "port/rng.h"
 #include "port/saucer.h"
+#include "port/blinker.h"
 #include "port/bodies.h"
 #include "port/sched.h"
 #include "port/score.h"
@@ -57,6 +61,7 @@
 #include "port/screen_tiles.h"
 #include "port/text.h"
 #include "port/loads.h"
+#include "port/line.h"
 #include "port/lob.h"
 #include "port/logo.h"
 #include "port/card.h"
@@ -64,6 +69,7 @@
 #include "port/radar_thread.h"
 #include "port/riser.h"
 #include "port/seeker.h"
+#include "port/spawner.h"
 #include "port/bubble.h"
 #include "port/flame.h"
 #include "port/stuck.h"
@@ -10050,6 +10056,371 @@ static void shim_seeker_flap(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
 }
 
+// `$82:EF4F`, a frame of its thread. Each run is from `tools/cycles816.py
+// --db=82`; a `BRA` at the end of one is counted taken. What it calls costs
+// what those entries charge.
+static const CosimRun SF_COST[SF_BLOCK_COUNT] = {
+    [SF_HEAD] = {142, 8, 1},
+    [SF_TAIL] = {40, 4, 1},
+    [SF_AGAIN] = {28, 2, 1},
+    [SF_CHASE] = {168, 15, 3},
+    [SF_CHASE_MID] = {30, 5, 0},
+    [SF_CHASE_FAR] = {94, 7, 1},
+    [SF_CHASE_GO] = {120, 7, 0},
+    [SF_CHASE_BACK] = {166 + 6, 16, 1},
+    [SF_CHASE_CIRCLE] = {216, 20, 3},
+    [SF_CIRCLE_BEGIN] = {554, 45, 10},
+    [SF_ASK] = {80, 7, 1},
+    [SF_ASK_LOOK] = {150, 12, 3},
+    [SF_ASK_NEAR] = {30, 5, 0},
+    [SF_ASK_SET] = {46, 5, 1},
+    [SF_CIRCLE] = {352, 32, 5},
+    [SF_CIRCLE_CMP] = {30, 5, 0},
+    [SF_CIRCLE_OVER] = {80 + 6, 7, 1},
+    [SF_CIRCLE_UNDER] = {68, 5, 1},
+    [SF_CIRCLE_PUT] = {296, 25, 4},
+    [SF_CIRCLE_ASK] = {46, 5, 1},
+    [SF_CIRCLE_LAPS] = {58, 7, 1},
+    [SF_CIRCLE_DRAW] = {84, 9, 0},
+    [SF_WATCH] = {124, 12, 0},
+    [SF_FACE] = {40, 4, 1},
+    [SF_FACE_LOOK] = {140, 13, 2},
+    [SF_FACE_TURN] = {308, 28, 4},
+    [SF_FACE_LEFT] = {70 + 6, 8, 0},
+    [SF_FACE_RIGHT] = {58, 6, 0},
+    [SF_FACE_END] = {80, 4, 0},
+    [SF_STEP] = {392, 32, 5},
+    [SF_FLAP] = {62, 4, 1},
+    [SF_FLAP_PICTURE] = {260, 25, 4},
+    [SF_RTS] = {40, 1, 0},
+    [SF_TAKEN] = {6, 0, 0},
+};
+
+// The records it reads are in low WRAM, and the place it circles from is in
+// the table. Then the frame has to be one the port has.
+static bool supported_seeker_frame(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  if (!accepts_seeker_flap(scratch, in) ||
+      wram_r16(scratch, (uint16_t)(in->d + SEEKER_DP_TARGET)) >= 0x1f00 ||
+      wram_r16(scratch, (uint16_t)(in->d + SEEKER_DP_PLACE)) >=
+          SEEKER_CIRCLE_END)
+    return false;
+  PortCpu c;
+  static SeekerWork k;
+  k = (SeekerWork){0};
+  cpu_from(in, &c);
+  return seeker_frame(scratch, rom, &c, &k);
+}
+
+static void shim_seeker_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  PortCpu c;
+  static SeekerWork k;
+  k = (SeekerWork){0};
+  cpu_from(in, &c);
+  seeker_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < SF_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&SF_COST[i], fast, unaligned);
+  if (k.looked) cycles += nearest_cycles(&k.nearest, in->fastrom);
+  if (k.faced) cycles += actor_bearing_cycles(&k.bearing, in->fastrom);
+  if (k.drew) cycles += rng_cycles(k.drew_overflow, in->fastrom);
+  cosim_cost(cycles);
+}
+
+static const uint32_t SEEKER_FRAME_EXITS[] = {SEEKER_FRAME_SLEEP_PC,
+                                              SEEKER_FRAME_ENDED_PC};
+
+// ---------------------------------------------------------------------------
+// Five small things -- see `port/thread.h`, `port/line.h`, `port/flinch.h`,
+// `port/blinker.h` and `port/follower.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py` with the entry's own data bank; a
+// `BRA` at the end of one is counted taken.
+
+// `$80:8475`. Its tables and the slot are read through the data bank.
+static const CosimRun SET_HANDLER_RUN = {168, 11, 0};  // $8475-$847F
+
+static bool accepts_thread_set_handler(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && bank_sees_low_wram(in->db) &&
+         wram_r16(w, W_SCHED_CUR_TASK) < WRAM_THREAD_SLOTS * 2;
+}
+
+static void shim_thread_set_handler(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  thread_set_handler(w, &c);
+  ret_from_cpu(&c, out);
+  cosim_cost(cosim_run_cycles(&SET_HANDLER_RUN, fetch_fast(in)));
+}
+
+// `$81:D443`.
+static const CosimRun LN_COST[LN_BLOCK_COUNT] = {
+    [LN_HEAD] = {68, 5, 2},
+    [LN_TEST] = {40, 4, 1},
+    [LN_STEP] = {172 + 6, 14, 4},
+    [LN_MID] = {96, 7, 3},
+    [LN_TAIL] = {232, 15, 4},
+    [LN_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_line_step(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         wram_r16(w, (uint16_t)(in->d + LINE_DP_RECORD)) < 0x1f00 &&
+         line_step_supported(w, in->d);
+}
+
+static void shim_line_step(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  LineWork k = {0};
+  cpu_from(in, &c);
+  line_step(w, &c, &k);
+  ret_from_cpu(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < LN_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&LN_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+// `$80:D0BF`. The list and the pictures are read through the data bank.
+static const CosimRun FN_COST[FN_BLOCK_COUNT] = {
+    [FN_NEXT] = {98 + 6, 10, 2},
+    [FN_HEAD] = {132, 13, 3},
+    [FN_OTHER] = {30, 4, 0},
+    [FN_SHOW] = {236, 20, 4},
+    [FN_TAKEN] = {6, 0, 0},
+};
+
+static bool supported_flinch_frame(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == FLINCH_BANK &&
+         wram_r16(scratch, (uint16_t)(in->d + FLINCH_DP_RECORD)) < 0x1f00 &&
+         flinch_frame_supported(scratch, rom, in->d);
+}
+
+static void shim_flinch_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  PortCpu c;
+  FlinchWork k = {0};
+  cpu_from(in, &c);
+  flinch_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < FN_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&FN_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t FLINCH_EXITS[] = {FLINCH_SLEEP_PC, FLINCH_DONE_PC};
+
+// `$83:9C94`. Its table is read through the data bank, and so is its record.
+static const CosimRun BK_COST[BK_BLOCK_COUNT] = {
+    [BK_TURN] = {318, 31, 5},
+    [BK_AGAIN] = {28, 2, 1},
+    [BK_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_blinker_frame(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == BLINKER_BANK &&
+         wram_r16(w, (uint16_t)(in->d + BLINKER_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + BLINKER_DP_WHICH)) < 2;
+}
+
+static void shim_blinker_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  PortCpu c;
+  BlinkerWork k = {0};
+  cpu_from(in, &c);
+  blinker_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < BK_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&BK_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t BLINKER_EXITS[] = {BLINKER_SLEEP_PC, BLINKER_TOLD_PC};
+
+// `$82:F40B`. Each exit is where the ROM goes on: an `RTS` or the sleep.
+static const CosimRun FW_COST[FW_BLOCK_COUNT] = {
+    [FW_HEAD] = {76, 9, 1},
+    [FW_SIDE] = {40, 4, 1},
+    [FW_OTHER] = {30, 4, 0},
+    [FW_PLACE] = {484, 43, 5},
+    [FW_LOOK] = {18, 3, 0},
+    [FW_ENDED] = {50, 2, 1},
+    [FW_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_follower_place(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == FOLLOWER_BANK &&
+         wram_r16(w, (uint16_t)(in->d + FOLLOWER_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + FOLLOWER_DP_PLACE)) <=
+             FOLLOWER_PLACES_END;
+}
+
+static void shim_follower_place(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  PortCpu c;
+  FollowerWork k = {0};
+  cpu_from(in, &c);
+  follower_place(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < FW_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&FW_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t FOLLOWER_EXITS[] = {FOLLOWER_RTS_PC, FOLLOWER_SLEEP_PC,
+                                          FOLLOWER_ENDED_RTS_PC};
+
+// ---------------------------------------------------------------------------
+// $82:B267  a cursor a pad moves about a screen -- see `port/cursor.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=82`; a `BRA` at the end of one
+// is counted taken.
+static const CosimRun CU_COST[CU_BLOCK_COUNT] = {
+    [CU_HEAD] = {182, 19, 1},
+    [CU_START] = {68 + 6, 5, 0},
+    [CU_BUTTONS] = {30, 5, 0},
+    [CU_HELD] = {46, 5, 0},
+    [CU_DIR] = {120, 11, 0},
+    [CU_MOVE] = {342, 32, 0},
+    [CU_MOVED] = {46, 5, 0},
+    [CU_TIME] = {92, 9, 0},
+    [CU_FLAG] = {46, 5, 0},
+    [CU_AGAIN] = {12 + 6 + 18, 2 + 3, 0},
+    [CU_PUT] = {140, 13, 1},
+    [CU_LEFT_EQ] = {30, 5, 0},
+    [CU_BCC] = {12, 2, 0},
+    [CU_RIGHT] = {30, 5, 0},
+    [CU_BRA] = {12 + 6, 2, 0},
+    [CU_TO_RIGHT] = {30 + 6, 5, 0},
+    [CU_TO_LEFT] = {18, 3, 0},
+    [CU_PUT_X] = {104, 11, 0},
+    [CU_BOTTOM] = {48, 7, 0},
+    [CU_TO_BOTTOM] = {78 + 6, 11, 0},
+    [CU_TO_TOP] = {18, 3, 0},
+    [CU_PUT_Y] = {80, 4, 0},
+    [CU_TAKEN] = {6, 0, 0},
+};
+
+static bool supported_cursor_frame(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  return body_ok(in) && in->db == CURSOR_BANK &&
+         cursor_frame_supported(scratch, rom, in->d);
+}
+
+static void shim_cursor_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  PortCpu c;
+  CursorWork k = {0};
+  cpu_from(in, &c);
+  cursor_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < CU_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&CU_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t CURSOR_EXITS[] = {CURSOR_SLEEP_PC, CURSOR_BUTTON_PC,
+                                        CURSOR_MOVED_PC, CURSOR_DONE_PC};
+
+// ---------------------------------------------------------------------------
+// $81:807E  something started from a list -- see `port/spawner.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=81`. What it calls costs what
+// those entries charge.
+static const CosimRun SPAWN_RUN_HEAD = {282, 24, 5};       // $807E-$8095
+static const CosimRun SPAWN_RUN_PLACE = {148 + 6, 12, 2};  // $8096-$80A1
+static const CosimRun SPAWN_RUN_DRAW_X = {150, 11, 3};     // $80A2-$80AC
+static const CosimRun SPAWN_RUN_DRAW_Y = {202, 15, 3};     // $80AD-$80BB
+static const CosimRun SPAWN_RUN_GROUND = {258, 19, 5};     // $80BC-$80CE
+static const CosimRun SPAWN_RUN_BCS = {12, 2, 0};
+static const CosimRun SPAWN_RUN_BOUNDS = {110, 8, 2};      // $80D1-$80D8
+static const CosimRun SPAWN_RUN_START = {218, 16, 3};      // $80DB-$80EA
+
+static bool accepts_spawn_entry(const Wram* w, const CosimRegs* in) {
+  PortCpu c;
+  cpu_from(in, &c);
+  return body_ok(in) && in->d >= 0x0100 && spawn_entry_supported(w, &c);
+}
+
+static void shim_spawn_entry(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  SpawnWork k = {0};
+  cpu_from(in, &c);
+  spawn_entry(w, rom, &c, &k);
+  ret_from_cpu(&c, out);
+  const bool spawned =
+      k.outcome == SPAWN_AT_PLACE || k.outcome == SPAWN_SCATTERED;
+  // Carry and overflow after a thread is started are `thread_spawn`'s.
+  if (spawned) out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+
+  const bool fast = in->fastrom;
+  CosimRun run = {0, 0, 0};
+  int calls = 0;
+  run_add(&run, &SPAWN_RUN_HEAD, 1);
+  if (k.outcome == SPAWN_AT_PLACE) {
+    run_add(&run, &SPAWN_RUN_PLACE, 1);
+  } else {
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &SPAWN_RUN_DRAW_X, 1);
+    run_add(&run, &SPAWN_RUN_DRAW_Y, 1);
+    run_add(&run, &SPAWN_RUN_GROUND, 1);
+    run_add(&run, &SPAWN_RUN_BCS, 1);
+    calls += rng_cycles(k.drew_overflow[0], fast) +
+             rng_cycles(k.drew_overflow[1], fast) +
+             terrain_enemy_cycles(&k.ground, fast);
+    if (k.outcome == SPAWN_GROUND_IN_THE_WAY) {
+      run_add(&run, &RUN_TAKEN, 1);
+    } else {
+      run_add(&run, &SPAWN_RUN_BOUNDS, 1);
+      run_add(&run, &SPAWN_RUN_BCS, 1);
+      calls += bounds_cycles(k.bounds.exit, fast);
+      if (k.outcome == SPAWN_OFF_THE_LEVEL) run_add(&run, &RUN_TAKEN, 1);
+    }
+  }
+  if (spawned) {
+    run_add(&run, &SPAWN_RUN_START, 1);
+    calls += thread_spawn_cycles(k.slot, rom, fast);
+  }
+  run_add(&run, &RUN_RTS, 1);
+  // The runs have the list in WRAM. In the cartridge each word of it read is
+  // two bytes FastROM makes quicker: the spread and the place, and for a
+  // thread that is started its address and bank.
+  if (wram_r16(w, (uint16_t)(in->d + SPAWN_DP_ENTRY)) >= 0x8000u) {
+    const int words = spawned ? 5 : 3;
+    run.cycles -= 4 * words;
+    run.bytes += 2 * words;
+  }
+  cosim_cost(calls + cosim_run_cycles_dp(&run, fetch_fast(in),
+                                         (in->d & 0x00ffu) != 0));
+}
+
 // ---------------------------------------------------------------------------
 // $81:F98A  the thing thrown in an arc -- see `port/lob.h`
 // ---------------------------------------------------------------------------
@@ -12503,6 +12874,19 @@ static const CosimRun POSE_RUN_FIRE_ROUNDS = {230, 19, 3};  // $80:ED34-$ED44
 static const CosimRun POSE_RUN_FIRE_EMPTY = {52, 2, 0};  // $80:ED86-$ED87
 static const CosimRun POSE_RUN_FIRE_SHOT = {674, 57, 11};  // $80:ED45-$ED77
 static const CosimRun POSE_RUN_FIRE_TAIL = {98, 10, 1};  // $80:ED78-$ED81
+static const CosimRun POSE_RUN_BB_TEST = {68, 6, 2};  // $80:D6C2-$D6C7
+static const CosimRun POSE_RUN_BB_FIRED = {30 + 6, 5, 0};  // $80:D6CB-$D6CF
+static const CosimRun POSE_RUN_BB_PLAIN = {18, 3, 0};  // $80:D6D0-$D6D2
+static const CosimRun POSE_RUN_BB_STEP = {86, 8, 1};  // $80:D6D3-$D6DA
+static const CosimRun POSE_RUN_6C_HEAD = {58, 7, 1};  // $80:D6DC-$D6E2
+static const CosimRun POSE_RUN_6C_STEP = {86, 8, 1};  // $80:D6E7-$D6EE
+static const CosimRun POSE_RUN_6C_CYCLE = {40, 4, 1};  // $80:D6EF-$D6F2
+static const CosimRun POSE_RUN_6C_CALLS = {80, 6, 0};  // $80:D6FA-$D6FF
+static const CosimRun POSE_RUN_PUNCH_TEST = {40, 4, 1};  // $80:F051-$F054
+static const CosimRun POSE_RUN_PUNCH_BOX = {724, 63, 4};  // $80:F055-$F089
+static const CosimRun POSE_RUN_REACH_TEST = {46, 5, 0};  // $80:F0D7-$F0DB
+static const CosimRun POSE_RUN_REACH = {744, 57, 13};  // $80:F0DC-$F10C
+static const CosimRun POSE_RUN_REACH_BIT = {30, 5, 0};  // $80:F10D-$F111
 static const CosimRun POSE_RUN_TAKEN = {6, 0, 0};
 // In the air. `$80:DE0D` is `$80:DD41` again as far as its landing.
 static const CosimRun POSE_RUN_ARC_TIMER = {40, 4, 1};  // $80:DD41-$DD44
@@ -12577,9 +12961,19 @@ static void pose_fire_bill(PoseBill* b) {
   pose_add(b, &POSE_RUN_RTS);
 }
 
-static int pose_calls(const PoseLog* log, const Rom* rom, bool fast) {
-  return log->fire == POSE_FIRE_SHOT
-             ? thread_spawn_cycles(log->shot_slot, rom, fast) : 0;
+// The monster's punch tells those in its box, and `supported_player_frame`
+// has seen that each of them can be priced.
+static int pose_calls(const PoseLog* log, const Rom* rom,
+                      const CosimRegs* in) {
+  int calls = log->fire == POSE_FIRE_SHOT
+                  ? thread_spawn_cycles(log->shot_slot, rom, in->fastrom) : 0;
+  if (log->punched) {
+    int told = 0;
+    notify_box_cycles(&log->told, in, &told);
+    calls += told;
+  }
+  if (log->reached) calls += cosim_run_cycles(&TILE_ATTRS_RUN, in->fastrom);
+  return calls;
 }
 
 // `$80:D4F4`.
@@ -12734,6 +13128,67 @@ static void pose_walk_firing_bill(PoseBill* b) {
   pose_weapon_bill(b);
 }
 
+// `$80:D6B8`.
+static void pose_walk_band_b_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_CHANGED);
+  if (log->changed) {
+    pose_taken(b);
+    pose_again_bill(b);
+    return;
+  }
+  pose_add(b, &POSE_RUN_WALK_TIMER);
+  if (log->waiting) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_RTS);
+    return;
+  }
+  pose_add(b, &POSE_RUN_BB_TEST);
+  if (log->band_b_fired) {
+    pose_fire_bill(b);
+    pose_add(b, &POSE_RUN_BB_FIRED);
+  } else {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_BB_PLAIN);
+  }
+  pose_add(b, &POSE_RUN_BB_STEP);
+  pose_step_bill(b);
+}
+
+// `$80:D6DC`, without the frame that makes the sound. `$80:F051` and
+// `$80:F0D7` are each reached by `JSR`.
+static void pose_walk_6c_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_6C_HEAD);
+  if (log->changed) {
+    pose_taken(b);
+    pose_again_bill(b);
+    return;
+  }
+  pose_add(b, &POSE_RUN_WALK_TIMER);
+  if (log->waiting) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_RTS);
+    return;
+  }
+  pose_add(b, &POSE_RUN_6C_STEP);
+  pose_step_bill(b);
+  pose_add(b, &POSE_RUN_6C_CYCLE);
+  pose_taken(b);
+  pose_add(b, &POSE_RUN_6C_CALLS);
+  pose_add(b, &POSE_RUN_PUNCH_TEST);
+  pose_add(b, &POSE_RUN_PUNCH_BOX);
+  pose_add(b, &POSE_RUN_RTS);
+  pose_add(b, &POSE_RUN_REACH_TEST);
+  if (log->reached) {
+    pose_add(b, &POSE_RUN_REACH);
+    pose_add(b, &POSE_RUN_REACH_BIT);
+  } else {
+    pose_taken(b);
+  }
+  pose_add_n(b, &POSE_RUN_RTS, 2);
+}
+
 // `$80:DD41` and `$80:DE0D`.
 static void pose_arc_axis_bill(PoseBill* b, int steps) {
   pose_add(b, &POSE_RUN_ARC_ALONG);
@@ -12858,11 +13313,12 @@ static bool pose_ok(Wram* scratch, const Rom* rom, const CosimRegs* in,
   }                                                                          \
   static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
                           CosimRegs* out) {                                  \
-    PoseLog log = {0};                                                       \
+    static PoseLog log;                                                      \
+    log = (PoseLog){0};                                                      \
     name(w, rom, in->d, &log);                                               \
     PoseBill b = {{0, 0, 0}, &log};                                          \
     name##_bill(&b);                                                         \
-    cosim_cost(pose_total(&b, in) + pose_calls(&log, rom, in->fastrom));     \
+    cosim_cost(pose_total(&b, in) + pose_calls(&log, rom, in));              \
     out->regs = 0;                                                           \
     out->flags = 0;                                                          \
     out->c = log.c;                                                          \
@@ -12947,7 +13403,9 @@ static bool supported_player_frame(Wram* scratch, const Rom* rom,
   return player_frame_tried(scratch, rom, in->d, &log) &&
          weapon_pictures_ok(scratch, in->d) &&
          (log.state != PLAYER_STATE_FLASHING ||
-          notify_box_cycles(&log.told, in, &told));
+          notify_box_cycles(&log.told, in, &told)) &&
+         (!log.pose_log.punched ||
+          notify_box_cycles(&log.pose_log.told, in, &told));
 }
 
 // `$80:D343` with its `RTS`.
@@ -13042,12 +13500,14 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   switch (log.pose) {
     case POSE_HANDLER_STAND: pose_stand_bill(&pose); break;
     case POSE_HANDLER_WALK: pose_walk_bill(&pose); break;
+    case POSE_HANDLER_WALK_BAND_B: pose_walk_band_b_bill(&pose); break;
+    case POSE_HANDLER_WALK_6C: pose_walk_6c_bill(&pose); break;
     case POSE_HANDLER_ARC:
     case POSE_HANDLER_ARC_B: pose_arc_bill(&pose); break;
     case POSE_HANDLER_ARC_READY: pose_arc_ready_bill(&pose); break;
     default: pose_walk_firing_bill(&pose); break;
   }
-  calls += pose_total(&pose, in) + pose_calls(&log.pose_log, rom, in->fastrom);
+  calls += pose_total(&pose, in) + pose_calls(&log.pose_log, rom, in);
 
   // The movement the same way, when there is one.
   run_add(&own, &PBODY_COST[PBODY_MOVE], 1);
@@ -18833,6 +19293,95 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_seeker_flap,
         .accepts = accepts_seeker_flap,
         .cycles = 150,
+    },
+    // A cursor a pad moves about a screen: see `port/cursor.h`.
+    {
+        .name = "cursor_frame",
+        .symbol = "$82:B267",
+        .entry = CURSOR_PC,
+        .run = shim_cursor_frame,
+        .supported = supported_cursor_frame,
+        COSIM_EXITS(CURSOR_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+        .stack_bytes = 2,  // a `JSR`
+    },
+    // Something started from a list: see `port/spawner.h`.
+    {
+        .name = "spawn_entry",
+        .symbol = "$81:807E",
+        .entry = SPAWN_ENTRY_PC,
+        .ret_op = SPAWN_ENTRY_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_spawn_entry,
+        .accepts = accepts_spawn_entry,
+        .cycles = 3000,
+        // A `JSL`, and the deepest of what it calls.
+        .stack_bytes = 12,
+    },
+    // Five small things.
+    {
+        .name = "thread_set_handler",
+        .symbol = "$80:8475",
+        .entry = THREAD_SET_HANDLER_PC,
+        .ret_op = THREAD_SET_HANDLER_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_thread_set_handler,
+        .accepts = accepts_thread_set_handler,
+        .cycles = 168,
+    },
+    {
+        .name = "line_step",
+        .symbol = "$81:D443",
+        .entry = LINE_STEP_PC,
+        .ret_op = LINE_STEP_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_line_step,
+        .accepts = accepts_line_step,
+        .cycles = 900,
+    },
+    {
+        .name = "flinch_frame",
+        .symbol = "$80:D0BF",
+        .entry = FLINCH_PC,
+        .run = shim_flinch_frame,
+        .supported = supported_flinch_frame,
+        COSIM_EXITS(FLINCH_EXITS),
+        .uncalled = true,
+        .cycles = 480,
+    },
+    {
+        .name = "blinker_frame",
+        .symbol = "$83:9C94",
+        .entry = BLINKER_PC,
+        .run = shim_blinker_frame,
+        .accepts = accepts_blinker_frame,
+        COSIM_EXITS(BLINKER_EXITS),
+        .uncalled = true,
+        .cycles = 360,
+    },
+    {
+        .name = "follower_place",
+        .symbol = "$82:F40B",
+        .entry = FOLLOWER_PC,
+        .run = shim_follower_place,
+        .accepts = accepts_follower_place,
+        COSIM_EXITS(FOLLOWER_EXITS),
+        .uncalled = true,
+        .cycles = 650,
+    },
+    {
+        .name = "seeker_frame",
+        .symbol = "$82:EF4F",
+        .entry = SEEKER_FRAME_PC,
+        .run = shim_seeker_frame,
+        .supported = supported_seeker_frame,
+        COSIM_EXITS(SEEKER_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        // The state's address and the loop's, a `JSR`, and the deepest of
+        // what that calls: a `JSL` and its `PHD`.
+        .stack_bytes = 12,
     },
     // The thing thrown in an arc: see `port/lob.h`.
     {
