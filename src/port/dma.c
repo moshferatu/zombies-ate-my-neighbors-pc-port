@@ -19,6 +19,7 @@
 #define DEST_CGRAM 0x22u   // `$2122`
 #define MODE_ONE_REG 0x00u   // every byte to the one register
 #define MODE_TWO_REGS 0x01u  // low and high bytes to it and the next
+#define MODE_FIXED_TWO_REGS 0x09u  // ...from a source that stays put
 #define VMAIN_STEP_ON_HIGH 0x80u
 
 static void store8(HwTrace* t, int run, uint16_t reg, uint8_t v) {
@@ -68,6 +69,55 @@ void background_job(HwTrace* t) {
   hw_run(t, PJ_HEAD);
   dma_to_cgram(t, PALETTE_BANK, PALETTE_SHOWN_AT, PALETTE_SHOWN_BYTES);
   hw_run(t, PJ_TAIL);
+}
+
+// --- Three jobs that fill in the channel themselves --------------------------
+
+void hud_upload_job(HwTrace* t) {
+  PORT_COVER(hud_upload_job);
+  store16(t, DMA_IMM16, REG_DMA_MODE, (DEST_VRAM << 8) | MODE_TWO_REGS);
+  store16(t, DMA_IMM16, REG_DMA_SOURCE, HUD_SHADOW_AT);
+  store16(t, DMA_IMM16, REG_DMA_BANK, PALETTE_BANK);
+  store16(t, DMA_IMM16, REG_DMA_BYTES, HUD_SHADOW_BYTES);
+  store16(t, DMA_IMM16, REG_VMADD, HUD_VRAM_AT);
+  store8(t, DMA_SEP_IMM, REG_VMAIN, VMAIN_STEP_ON_HIGH);
+  store8(t, DMA_IMM, REG_MDMAEN, 0x01);
+  hw_run(t, HJ_TAIL);
+}
+
+void colours_112_job(HwTrace* t) {
+  PORT_COVER(colours_112_job);
+  store8(t, DMA_SEP_IMM, REG_CGADD, COLOURS_112_FIRST);
+  store8(t, DMA_STORE, REG_MDMAEN, 0x00);
+  store16(t, DMA_REP_IMM16, REG_DMA_MODE, (DEST_CGRAM << 8) | MODE_ONE_REG);
+  store16(t, DMA_IMM16, REG_DMA_SOURCE, COLOURS_112_AT);
+  store16(t, DMA_IMM16, REG_DMA_BANK, PALETTE_BANK);
+  store16(t, DMA_IMM16, REG_DMA_BYTES, COLOURS_112_BYTES);
+  store8(t, DMA_SEP_IMM, REG_MDMAEN, 0x01);
+  hw_run(t, DMA_REP_RTL);
+}
+
+uint16_t vram_clear_job(Wram* w, HwTrace* t) {
+  const uint16_t at = wram_r16(w, W_VRAM_CLEAR_AT);
+  const uint16_t next = (uint16_t)(at + VRAM_CLEAR_WORDS);
+  store16(t, VC_HEAD, REG_VMADD, at);
+  wram_w16(w, W_VRAM_CLEAR_AT, next);
+  // Mode 9: both bytes of a word, from an address that does not move.
+  store16(t, VC_STEP, REG_DMA_MODE, (DEST_VRAM << 8) | MODE_FIXED_TWO_REGS);
+  store16(t, DMA_IMM16, REG_DMA_SOURCE, VRAM_CLEAR_SOURCE);
+  store16(t, DMA_IMM16, REG_DMA_BANK, VRAM_CLEAR_SOURCE_BANK);
+  store16(t, DMA_IMM16, REG_DMA_BYTES, VRAM_CLEAR_BYTES);
+  store8(t, DMA_SEP_IMM, REG_VMAIN, VMAIN_STEP_ON_HIGH);
+  store8(t, DMA_IMM, REG_MDMAEN, 0x01);
+  hw_run(t, VC_TEST);
+  if (next & 0x8000u) {
+    PORT_COVER(vram_clear_done);
+    hw_run(t, DMA_TAKEN);
+  } else {
+    PORT_COVER(vram_clear_more);
+  }
+  hw_run(t, DMA_FLAG_RTL);
+  return next;
 }
 
 // --- $82:D88C  the animated tiles ---------------------------------------------

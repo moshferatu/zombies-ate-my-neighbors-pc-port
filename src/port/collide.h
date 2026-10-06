@@ -1347,6 +1347,12 @@ void enemy_cdde_react_begin(Wram* w, uint16_t dp, ActorHandlerRegs* r);
 // creature in a different state" the obvious guess. It is left as a guess:
 // `$0A` runs *up* here and *down* there, and one shared offset is not a shared
 // meaning.
+//
+// **It is the handler of the axe a doll throws**, which `port/axe.h` has
+// since ported: the thread at `$81:B4EA` installs it. `$0C` is the one hit an
+// axe has to spare, and `$0A`, counted up by the second, ends the thread. So
+// the guess was near: not the doll in another state, but what the doll
+// throws.
 #define ENEMY_B592_COLLIDE_ENTRY 0x81b592u
 
 // `CMP #$0007 : BEQ` and `CMP #$0008 : BEQ`, both to the same instruction.
@@ -2297,6 +2303,9 @@ bool actor_84ac_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r)
 // `$0C`, the raw id parked at `$5A`, `$5D` straight into the death tail, and
 // every other shot through `ENEMY_DAMAGE_TABLE`. There is no `STZ $7E` in the
 // death tail, and `$5E` is just another row of the table.
+//
+// It is the handler of what a destroyed doll can leave, the thread at
+// `$81:B664`: see `port/flame.h`.
 #define ENEMY_B95F_COLLIDE_ENTRY 0x81b95fu
 #define B95F_DP_HEALTH 0x0c
 #define B95F_DP_HIT_ID 0x5a

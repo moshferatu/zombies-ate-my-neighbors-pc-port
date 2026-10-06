@@ -5,6 +5,79 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The evil dolls whole, the bubble gun's bubble, and the words and tiles of a level's start (2026-10-05)
+
+What the 65816 still executed over the twelve movies goes from 3.0 to
+**1.8** million instructions of work. Live, every one of the twelve is at
+99.4% or more: `level21` and `level37` go from 98.9% to **99.4%**, and
+`level5` and `level9` from 99.1% to **99.5%**. The game registers 295
+routines, 34 more.
+
+* **The axe a doll throws**, `$81:B4EA`, in a new `port/axe.c`: three
+  stretches, the launch, the dress and a frame of flight. It goes four
+  pixels a frame right or down and three left or up, because the second of
+  each pair of sums takes the first's carry. And of the eight sets of
+  four pictures its table names it is only ever given three: the ROM
+  tells left from right by comparing a step with -1, after it has doubled
+  the step.
+* **What a destroyed doll can leave**, `$81:B664`, in a new
+  `port/flame.c`: five stretches. It wanders, goes for whoever comes
+  within `$30`, trails pictures that fade, and is gone after 800 frames.
+  A doll that is destroyed leaves one 80 times in 256.
+* **The rest of the doll's own thread**, in a new `port/doll_thread.c`:
+  ten stretches round the loop that was already the port's, and its
+  opening state, which was not. `$80:AA0D`, the test for being on the
+  screen that nothing else calls, is in one of them.
+* **The bubble gun's bubble**, `$81:F380`, in a new `port/bubble.c`: six
+  stretches. The martians of level 21 fire it, and players do in other
+  movies. Its burst means to put the water's picture back first and
+  writes it over the picture's bank instead: both stores are to the same
+  word. The port writes what the ROM writes.
+* **Three more vblank jobs**, in `port/dma.c`: the HUD's rows sent from
+  their shadow (`$80:C34A`), sixteen colours from the 112th on
+  (`$82:8308`, on level 21), and VRAM zeroed a kilobyte a vblank
+  (`$80:9F62`).
+* **What a level's start copies**, in a new `port/loads.c`: the tile
+  attributes (`$80:AD92`), the background's colours to both their copies
+  (`$80:A037`), the sprites' (`$80:A05B`), and the HUD's reset
+  (`$80:C2F7`).
+* **The text printer**, in a new `port/text.c`: one string at one place
+  (`$82:B84A`), and strings each with its own place (`$82:B8FB`), which
+  runs to where the ROM queues the map for VRAM and waits. Every screen of
+  words goes through one or the other.
+* **A whole screen of tiles**, `$80:A4D9`, in a new
+  `port/screen_tiles.c`: the 31 rows and the column a level starts with,
+  copied to a buffer. It stops at `$80:A4FA`. The thirty or so
+  instructions after it fill the vblank's queue and are left to the ROM,
+  so the queue is filled when the ROM fills it. The loop they end in
+  waits for the vblank to empty the queue, and is in `cosim/waits.h` now
+  with the others of its kind: 48,204 instructions of the twelve movies
+  that were counted as work and are not.
+
+* **Checked.** The corpus verifies at 31,564,811 calls across 51 movies
+  with 0 diverged, and 851 of 1,022 coverage sites; 74 of the 81 new ones
+  are taken. Every call priced is exact.
+* **Lockstep** over the corpus: 310,022 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes.
+* **What lockstep does not reach.** A doll's death and what it leaves
+  are verified call by call: 15 deaths across the corpus, 14 of them and
+  all 676 of the flames' frames on `level5.zmv`, after its game has ended
+  and the demos have come round. In lockstep the same movie plays other
+  demos after its game ends, at 20,000 passes and at 26,000. So the
+  flame's five stretches have run in step with the ROM on no movie, and
+  the two of a doll's death are not known to have. The rest of the dolls
+  and their axes have, on `level49.zmv`. Why the two harnesses see
+  different demos is not known.
+* **Untaken.** An axe that hits a second thing, and a frame of one whose
+  mask is ORed in. A bubble fired from a tile that stops it. A flame that
+  lives its 800 frames, one with both places for a trail in use, and one
+  whose two legs are both nothing. A character under `$2F` in a string.
+* **Next.** Outside a level still: the wave's thread at `$80:94AF`, the
+  intro at `$83:8000`, `$82:AD5A`, and the portraits' copy at `$80:9A52`.
+  In one: the radar's thread at `$82:D92A` on level 21, the camera's
+  `$80:AB4E` and `$80:AAA1`, and the monster's punch at `$80:D6DC`. The 2
+  cycles in `apu_send` are still not understood.
+
 ### The screens outside a level, the squirt gun's whole thread, and two more of the player's states (2026-10-05)
 
 What the 65816 still executed over the twelve movies goes from 4.3 to

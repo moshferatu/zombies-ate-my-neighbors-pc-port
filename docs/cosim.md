@@ -16336,3 +16336,176 @@ before on the same passes.
 **Live**: the residue over the twelve movies is 3.0 million
 instructions, from 4.3. `level5` goes from 98.8% to 99.1%, `level37`
 from 98.6% to 98.9% and `level41` from 98.9% to 99.2%.
+
+## The dolls whole, and a level's start (2026-10-05)
+
+### Where the residue was
+
+By stretch, of 2.99 million. The first six were all outside a level, and
+the dolls were spread over eleven rows that came to 327,000 between them:
+
+    $80:A462-$A49F   157,218   a screen of tiles, row by row
+    $82:B84A-$B8FA   152,528   the text printer
+    $80:94AF-$953A   121,282   the wave's thread
+    $82:AD5A-$AE43   103,500
+    $83:8000-$8240    99,384   the intro
+    $82:B8FB-$B9B5    96,994   the text printer, with places
+    $81:B8AE-$B8DC    55,908   a doll's flame: its trail
+    $81:B5B0-$B5E9    55,083   a doll's axe: a frame of flight
+
+### Threads, and which stack bytes are waived
+
+The axe, the flame, the bubble and the doll's thread are stretches from
+where control arrives to the call or yield it leaves by, as the squirt
+gun's are. Twenty-four of them.
+
+A stretch that makes a call in C leaves the call's return address
+unwritten, and `stack_bytes` is what waives that. It waives from the
+deepest the ROM's stack pointer went, upward. So a stretch that returns
+with an `RTS` and then calls again has a return address above what is
+waived, lying over the one it came in by. Three of these do: the flame's
+dress (`JSR $B8A4` after its `RTS`), the doll's (`JSL $80AA0D`), and the
+doll's opening, whose `JSR` to the tick lies over the state body's own
+return. Each writes those bytes. The first run of the flame found it:
+
+    WRAM $7E:0D8B: ROM $73, port $70
+
+### Calls made in C, mid-frame
+
+A flame leaves a trail from inside its frame, by `actor_slot_alloc`, and
+gives one back by `actor_slot_free`. Stopping at each would make its
+frame four stretches with a loop between them. So both are made in C,
+and priced as the saucer's are: the allocator by the record it took, the
+free by where in the display list the record was, which is asked just
+before it is freed.
+
+The ROM does not check that the allocator found a record. A frame is
+declined when none is free and when the trail's two places do not agree
+with the display list.
+
+### What a page holds before it is written
+
+Six of the flame's first 676 frames were declined. The guard wanted the
+target at `$3C` to be a record, and the flame does not write `$3C` until
+its first look, on an odd frame of the game. Until then the page holds
+what its last thread left. A chase reads the target and a wander does
+not, so the guard asks only of a chase.
+
+### Flags that a frame fixes
+
+The flame's frame ends in a loop over its two trail places, counting X
+down by four from four. Whatever the frame did, its last arithmetic is
+`SBC #$0004` from zero: carry clear, overflow clear, X at `$FFFC`. So
+the frame's flags are known without following them through the frame,
+and the port is written without them.
+
+The one place they matter inside is the random number. A wander's draw
+takes the caller's carry, and that is the thread's own at the first,
+set after the compare with `$30`, and the thread's own again where a
+chase gives up. The second draw of a pair takes the carry of the sum
+that made the first leg's point.
+
+### The axe
+
+`CLC : LDA $18 : ADC $20 : ADC $20 : STA $18`. There is no `CLC` between
+the two sums. Going right, neither carries. Going left the step is
+`$FFFE`, the first sum carries, and the second adds one more: three
+pixels.
+
+`$81:B630` builds an index from two compares with `$FFFF`, the carry of
+each added in. The steps are 2, 0 or `$FFFE` by then, so neither compare
+sets carry, and the index is 0, 2, 4 or 6 of 12.
+
+### Two kinds of frame at one address
+
+The doll's loop comes back to `$81:B2DF` whatever its state. The opening
+state plays a list of pictures through `$81:832C`, which yields, so a
+frame in it cannot be one stretch with the rest. The registry has one
+entry for an address. So the entry's shim asks which, and the opening
+leaves by a third exit, the `JSL` to the list.
+
+`doll_again` is two instructions, `STZ $5A : LDA #$0001`, at the head of
+the loop. `verify` counts 29,946 of it: the ROM's own frame runs through
+that address on its way round, and the harness checks the entry each
+time. Substituted, the frame leaves past it.
+
+### Jobs
+
+The three jobs fill in DMA channel 0 themselves, and their runs are four
+shapes:
+
+    LDA #imm16 : STA abs                 36, 6 bytes   to the first write
+    SEP #$20 : LDA #imm : STA abs        48, 7
+    REP #$30 : LDA #imm16 : STA abs      54, 8
+    LDA #imm : STA abs                   30, 5
+
+`verify` compares every register write, address, value and cycle: 18,183
+calls of the three.
+
+### Loads
+
+Four routines that are a head, a loop of a fixed count and a tail, so
+their price is one number each. `tools/cycles816.py --ind` says where a
+pointer points, and takes one answer for every pointer in a run. The
+attributes' loop reads through one to the cartridge and writes through
+another to WRAM, so its store is 4 more than the tool's price and two
+bytes fewer of the cartridge.
+
+### The text printer
+
+All eight of its first calls were declined. The guard wanted the string
+in the cartridge, and these were at `$00:1EA0`: a number's digits, built
+in low WRAM. A word read from WRAM is the same adjustment as above, and
+the port counts them.
+
+`text_print_lines` does not return to its caller from the port. It ends
+by queueing a job and holding on `WAI` until the job has run, so it is a
+stretch to `$82:B9A6`, the first instruction of that. It leaves there
+with bank `$82`, and under the stack pointer the caller's data bank and a
+spare byte of the `PEA $0082` that set it.
+
+The one call `level21.zmv` makes of it is 175,860 cycles, half a frame,
+and `verify` goes through the interrupts that land in it. Nothing is
+queued to send the map until it has left.
+
+### A screen of tiles, and where to stop
+
+`$80:A4D9` copies a screen and a column, fills two entries of the
+vblank's queue, asks for a transfer, and waits for the queue to empty.
+The port is the copying and stops at `$80:A4FA`.
+
+Last round a clear was ported whole, verified, and put the random
+numbers a step out in lockstep, because the NMI read a word that the port
+had cleared early. The same reasoning says where this one has to stop. A
+port does all its writes at once and then spends the cycles. Were the
+queue filled and the transfer asked for at once, the first vblank inside
+those cycles would send the buffer, up to two thirds of a frame before
+the ROM's does. With the queue left to the ROM it is filled on the ROM's
+cycle.
+What the port writes early is the buffer, the allocator's two words and
+its own scratch, which nothing reads until the queue names them.
+
+The wait is `LDA $00CE : BNE` on the queue's count. It is in
+`cosim/waits.h` with `$80:9F5C`, which waits the same way on a byte
+count.
+
+### Checked
+
+The corpus: 31,564,811 calls across 51 movies, 0 diverged, 851 of 1,022
+sites. Every call priced is exact.
+
+**Lockstep**: 310,022 passes, 48 of 51 never part, the same three as
+before on the same passes.
+
+It does not reach the flame or a doll's death. `verify` reaches them on
+`level5.zmv` at 20,000 frames, in a demo that comes round after the
+movie's game has ended: 60 dolls, 14 destroyed, 3 flames. `run` on the
+same movie plays other demos, the martians' and the footballers', at
+20,000 passes and at 26,000, and takes none of the dolls' sites. Its
+clocks at 26,000 are `demo-end.zmv`'s to the cycle, which suggests that
+after the game it is in that movie's sequence. Which demo comes next is
+the random numbers' to say, so the two harnesses must leave them
+differently by then. Why has not been looked into.
+
+**Live**: the residue over the twelve movies is 1.81 million
+instructions, from 2.99. All twelve are at 99.4% or more.

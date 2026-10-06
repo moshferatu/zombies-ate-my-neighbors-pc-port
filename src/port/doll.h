@@ -16,9 +16,9 @@
 //   $B377  tick         count the timers down, and move the picture
 //   $B2DF  frame        the loop: one state body and the tick
 //
-// What is not here is the thread's setup and ending, and the opening
-// animation at `$81:B1DA`, which plays a script that yields in the middle
-// (`$81:832C`). A frame in that state is the ROM's.
+// The thread's setup and ending, and the opening state at `$81:B1DA`, which
+// plays a list of pictures through `$81:832C`, are further down, as stretches
+// of the thread.
 //
 // It was identified by swapping its pictures for a zombie's in a copy of the
 // cartridge: on level 49 the doll with the axe became a zombie. The collision
@@ -87,6 +87,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/oam.h"  // ActorNearestWork, PlayerPickRegs
 #include "port/terrain.h"  // BoundsExit
 #include "port/wram.h"
@@ -258,5 +259,137 @@ bool doll_frame_supported(const Wram* w, uint16_t page);
 
 // A whole frame: the state body and the tick. False when the doll is leaving.
 bool doll_frame(Wram* w, const Rom* rom, uint16_t page, DollLog* log);
+
+// ---------------------------------------------------------------------------
+// The thread round the loop
+// ---------------------------------------------------------------------------
+//
+// The rest of `$81:B2B0`, each stretch from where control arrives to the call
+// or yield it leaves by:
+//
+//     $81:B2B0  launch        24 of the budget at `$00DE`, and on to ask for
+//                             a record
+//     $81:B397  first record  ...kept, and on to ask for the axe's
+//     $81:B39D  dress         both records and the page. Then, if it is on
+//                             the screen and `$1F52` is 3, the sound of its
+//                             arrival, and if not the first yield.
+//     $81:B2D6  again         the yield, from after the sound
+//     $81:B2DF  opening       a frame in the opening state: on to play the
+//                             list of pictures at `$81:B239`
+//     $81:B1E1  opened        from after the list: the leap set up, 40 pixels
+//                             down, the tick, and the yield
+//     $81:B2EE  end           hit, and on to the score; or not, and the
+//                             budget back and on to free the axe's record
+//     $81:B2F9  scored        one more destroyed, and on to play the list at
+//                             `$81:B33F`
+//     $81:B303  burst         80 times in 256, the thread at `$81:B664`
+//                             started where it stood (`port/flame.h`). Then on
+//                             to play the list at `$81:B353`.
+//     $81:B326  gone          the budget back, and on to free the axe's record
+//     $81:B338  last          ...and its own
+//
+// `$80:AA0D`, the test for being on the screen, is in the dress: nothing else
+// in the cartridge calls it.
+
+#define DOLL_LAUNCH_PC 0x81b2b0u
+#define DOLL_FIRST_RECORD_PC 0x81b397u
+#define DOLL_DRESS_PC 0x81b39du
+#define DOLL_AGAIN_PC 0x81b2d6u
+#define DOLL_OPENED_PC 0x81b1e1u
+#define DOLL_END_PC DOLL_FRAME_LEAVE_PC
+#define DOLL_SCORED_PC 0x81b2f9u
+#define DOLL_BURST_PC 0x81b303u
+#define DOLL_GONE_PC 0x81b326u
+#define DOLL_LAST_PC 0x81b338u
+// Where they leave.
+#define DOLL_ALLOC_CALL_PC 0x81b393u
+#define DOLL_ALLOC_2_CALL_PC 0x81b399u
+#define DOLL_SFX_CALL_PC 0x81b2d2u
+#define DOLL_PICTURES_CALL_PC 0x81b1ddu
+#define DOLL_SCORE_CALL_PC 0x81b2f5u
+#define DOLL_DYING_CALL_PC 0x81b2ffu
+#define DOLL_ASHES_CALL_PC 0x81b322u
+#define DOLL_FREE_AXE_CALL_PC 0x81b334u
+#define DOLL_FREE_JML_PC 0x81b33au
+
+#define DOLL_STATE_OPENING 0xb1dau
+#define DOLL_FRAMES_OPENING 0xae5eu
+#define DOLL_DP_HEALTH 0x0c
+// How much of the budget at `$00DE` a doll is.
+#define DOLL_BUDGET 0x0018
+#define DOLL_HEALTH 3
+#define DOLL_POINTS 0x0200
+#define DOLL_COLLIDE_ID 0x0003
+#define DOLL_ATTR 0x0c00
+#define DOLL_FIRST_PICTURE 0xcd07u
+#define DOLL_THREAD_PICTURE_BANK 0x0090
+#define DOLL_LEAP_DOWN 0x0028
+#define DOLL_ARRIVAL_SFX 0x0028
+// The three lists of pictures it plays through `$81:832C`.
+#define DOLL_OPENING_PICTURES 0xb239u
+#define DOLL_DYING_PICTURES 0xb33fu
+#define DOLL_ASHES_PICTURES 0xb353u
+// What it can leave, and out of 256 how often.
+#define DOLL_FLAME_THREAD 0xb664u
+#define DOLL_FLAME_CHANCE 0x0050
+// Its arrival is heard only while this word is 3.
+#define W_DOLL_HEARD 0x1f52u
+#define DOLL_HEARD 0x0003
+// How many of them have been destroyed.
+#define W_DOLLS_DESTROYED 0x1f68u
+// `$80:AA0D`'s scratch, on page zero.
+#define DOLL_SCREEN_SCRATCH 0x0038u
+
+enum {
+  DT_LAUNCH,       // $B2B0-$B2BC
+  DT_FIRST,        // $B397-$B398
+  DT_DRESS_A,      // $B39D-$B3F6, and `$80:8475` itself
+  DT_DRESS_B,      // $B3F7-$B41B, and `$81:B1CB` itself
+  DT_SEEN_CALL,    // $B2BD-$B2C4
+  DT_SCREEN_LOW,   // $80:AA0D-$AA17, and $AA21-$AA2B the same
+  DT_SCREEN_HIGH,  // $80:AA18-$AA20, and $AA2C-$AA34 the same
+  DT_SCREEN_END,   // $80:AA35-$AA36, and $AA37-$AA38 the same
+  DT_SEEN_BCC,     // $B2C5-$B2C6
+  DT_SEEN_KIND,    // $B2C7-$B2CE
+  DT_SEEN_SFX,     // $B2CF-$B2D1
+  DT_AGAIN,        // $B2D6-$B2DA
+  DT_OPENING,      // $B2DF-$B2E6 and $B1DA-$B1DC
+  DT_OPENED,       // $B1E1-$B1F0
+  DT_FLY_TO,       // $B470-$B49B, neither distance negative
+  DT_OPENED_TAIL,  // $B1F1-$B202
+  DT_FRAME_TICK,   // $B2E7-$B2ED
+  DT_END_HEAD,     // $B2EE-$B2F4
+  DT_GONE,         // $B326-$B333
+  DT_SCORED,       // $B2F9-$B2FE
+  DT_BURST_DRAW,   // $B303-$B30B
+  DT_BURST_SPAWN,  // $B30C-$B31E
+  DT_BURST_TAIL,   // $B31F-$B321
+  DT_LAST,         // $B338-$B339
+  DT_TAKEN,        // a branch taken
+  DT_BLOCK_COUNT
+};
+
+// What a stretch did, for the harness to price.
+typedef struct {
+  uint16_t blocks[DT_BLOCK_COUNT];
+  bool ticked;     // the loop's tick ran...
+  DollLog tick;
+  bool drew;       // a random number drawn, and whether it left overflow set
+  bool draw_v;
+  bool spawned;    // a thread started, in this slot, doubled, or -1
+  int spawn_slot;
+} DollThreadWork;
+
+void doll_launch(Wram* w, PortCpu* c, DollThreadWork* k);
+void doll_first_record(Wram* w, PortCpu* c, DollThreadWork* k);
+void doll_dress(Wram* w, PortCpu* c, DollThreadWork* k);
+void doll_again(Wram* w, PortCpu* c, DollThreadWork* k);
+void doll_opening(Wram* w, PortCpu* c, DollThreadWork* k);
+void doll_opened(Wram* w, PortCpu* c, DollThreadWork* k);
+void doll_end(Wram* w, PortCpu* c, DollThreadWork* k);
+void doll_scored(Wram* w, PortCpu* c, DollThreadWork* k);
+void doll_burst(Wram* w, const Rom* rom, PortCpu* c, DollThreadWork* k);
+void doll_gone(Wram* w, PortCpu* c, DollThreadWork* k);
+void doll_last(Wram* w, PortCpu* c, DollThreadWork* k);
 
 #endif

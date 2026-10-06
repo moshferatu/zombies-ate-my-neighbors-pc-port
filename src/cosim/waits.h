@@ -64,6 +64,12 @@ static const CosimWaitSite cosim_wait_sites[] = {
     // remaining byte count, reaches zero: 2,149,252 of its 2,149,592
     // instructions, 99.98%, leaving 34 a call that are real.
     {0x809F5C, 4, "LDA $C6 : BNE     -- waiting for a queued VRAM upload to drain"},
+    // `$80:A4D9` ends the same way, on the queue's count and not a byte
+    // count: it queues a screen of tiles and holds until the vblank's flush
+    // has zeroed `$CE`. 48,204 of the 49,050 instructions the twelve profiles
+    // give `$80:A4D9`-`$80:A54C` are this loop. What comes before it is
+    // `screen_tiles_fill`.
+    {0x80A545, 5, "LDA $00CE : BNE   -- waiting for the VRAM queue to be flushed"},
     // The IPL rows above, once the sound driver is running. `$80:CCC8 apu_send`
     // is eleven instructions and every command the game sends goes through it:
     // it holds on `$2143` until the SPC700 has echoed the last command's count,

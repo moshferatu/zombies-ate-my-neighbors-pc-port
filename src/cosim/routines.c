@@ -53,6 +53,12 @@
 #include "port/spider.h"
 #include "port/sprite_cache.h"
 #include "port/squirt.h"
+#include "port/axe.h"
+#include "port/screen_tiles.h"
+#include "port/text.h"
+#include "port/loads.h"
+#include "port/bubble.h"
+#include "port/flame.h"
 #include "port/stuck.h"
 #include "port/fishman.h"
 #include "port/step.h"
@@ -7435,6 +7441,494 @@ static const uint32_t SQUIRT_SPLASH_2_EXITS[] = {SQUIRT_SPLASH_2_YIELD_PC};
 static const uint32_t SQUIRT_GONE_EXITS[] = {SQUIRT_FREE_JML_PC};
 
 // ---------------------------------------------------------------------------
+// $80:AD92, $80:A037, $80:A05B, $80:C2F7  a level's loads -- see `port/loads.h`
+// ---------------------------------------------------------------------------
+//
+// Each is a head, a loop of a fixed count whose branch is taken on every
+// pass but the last, and a tail. The runs are from `tools/cycles816.py
+// --db=7E --ind=8F:8000`, the source in the cartridge. The attributes' store
+// is through a pointer too, to WRAM: 4 more than the tool's price, and two
+// bytes fewer of the cartridge.
+static const CosimRun LOADS_ATTRS[3] = {{274, 24, 2}, {136, 10, 2}, {76, 2, 0}};
+static const CosimRun LOADS_PALETTE[3] = {{250, 17, 2}, {164, 14, 1}, {162, 7, 0}};
+static const CosimRun LOADS_SPRITES[3] = {{250, 17, 2}, {124, 11, 1}, {128, 4, 0}};
+static const CosimRun LOADS_HUD[3] = {{716, 74, 1}, {76, 8, 0}, {42, 1, 0}};
+
+static CosimRun loads_run(const CosimRun* parts, int passes) {
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &parts[0], 1);
+  run_add(&run, &parts[1], passes);
+  run_add(&run, &RUN_TAKEN, passes - 1);
+  run_add(&run, &parts[2], 1);
+  return run;
+}
+
+static bool loads_ok(const CosimRegs* in) {
+  return wide(in) && low_stack(in) && bank_sees_low_wram(in->db) &&
+         (in->p & PORT_P_D) == 0;
+}
+
+// The table is read at the cartridge's speed, so it has to be there.
+static bool accepts_tile_attrs_load(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return loads_ok(in) && loads_from_cartridge((uint8_t)in->y, in->a,
+                                              LOADS_TILE_ATTRS_BYTES);
+}
+
+static bool accepts_palette_load(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return loads_ok(in) &&
+         loads_from_cartridge((uint8_t)in->a, in->y, LOADS_PALETTE_BYTES);
+}
+
+static bool accepts_hud_reset(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return loads_ok(in) && in->d < 0x1f00;
+}
+
+// The loops run on page zero, whatever the caller's. Each leaves the
+// table's first word in A and Y at `$FFFE`.
+static void loads_out(const CosimRegs* in, CosimRegs* out, uint16_t a) {
+  out->a = a;
+  out->x = in->x;
+  out->y = 0xfffe;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+  out->regs = COSIM_REG_ALL;
+}
+
+// N and Z are the closing `PLD`'s.
+static void shim_tile_attrs_load(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  loads_out(in, out, tile_attrs_load(w, rom, in->a, in->y));
+  out->n = (in->d & 0x8000u) != 0;
+  out->z = in->d == 0;
+  const CosimRun run = loads_run(LOADS_ATTRS, LOADS_TILE_ATTRS_BYTES / 2);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+// ...and here the closing `PLB`'s.
+static void palette_out(const CosimRegs* in, CosimRegs* out, uint16_t a,
+                        const CosimRun* parts) {
+  loads_out(in, out, a);
+  out->n = (in->db & 0x80u) != 0;
+  out->z = in->db == 0;
+  const CosimRun run = loads_run(parts, LOADS_PALETTE_BYTES / 2);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static void shim_palette_load(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  palette_out(in, out, palette_load(w, rom, in->a, in->y), LOADS_PALETTE);
+}
+
+static void shim_palette_sprites_load(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  palette_out(in, out, palette_sprites_load(w, rom, in->a, in->y),
+              LOADS_SPRITES);
+}
+
+// A is the zero it stored, X the loop's `$FFFE`, and N and Z that `DEX`'s.
+static void shim_hud_reset(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  (void)rom;
+  hud_reset(w, in->d);
+  out->a = 0;
+  out->x = 0xfffe;
+  out->y = in->y;
+  out->n = true;
+  out->z = false;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+  out->regs = COSIM_REG_ALL;
+  const CosimRun run = loads_run(LOADS_HUD, LOADS_HUD_SHADOW_BYTES / 2);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+}
+
+// ---------------------------------------------------------------------------
+// $82:B84A and $82:B8FB  the text printer -- see `port/text.h`
+// ---------------------------------------------------------------------------
+//
+// Priced by what the string held. Each run is from `tools/cycles816.py
+// --db=82 --ind=9E:8000`, the place and the string in the cartridge. A
+// tile's store is through a pointer too, to WRAM: 4 more than the tool's
+// price, and two bytes fewer of the cartridge. A word read from WRAM, where
+// a string can be, is the same adjustment.
+static const CosimRun TX_RUN_HEAD = {1186, 92, 15};       // $B84A-$B8A1
+static const CosimRun TX_RUN_NEXT = {128, 11, 2};         // $B8A2-$B8AA
+static const CosimRun TX_RUN_JMP = {18, 3, 0};
+static const CosimRun TX_RUN_TAIL = {94, 3, 0};           // PLB : PLB : RTL
+static const CosimRun TX_RUN_INDEX = {78, 9, 0};          // $B8AE-$B8B6
+static const CosimRun TX_RUN_GLYPH_HEAD = {70, 9, 0};     // $B8B7-$B8BF
+static const CosimRun TX_RUN_TILE = {236, 25, 1};         // $B8C0-$B8D6
+static const CosimRun TX_RUN_ROW = {226, 22, 2};          // $B8D7-$B8EC
+static const CosimRun TX_RUN_GLYPH_TAIL = {104, 11, 2};   // $B8ED-$B8F7
+static const CosimRun TX_RUN_LINES_HEAD = {270, 21, 3};   // $B8FB-$B90F
+static const CosimRun TX_RUN_PLACE = {778, 63, 10};       // $B910-$B94A
+static const CosimRun TX_RUN_NEW_PLACE = {30, 5, 0};      // CMP #$00FF : BEQ
+
+// The characters: for each that was not a new place, the index, and for
+// each drawn, four tiles in two rows. A byte under `$2F` takes the `BMI`.
+static void text_chars_run(CosimRun* run, const TextWork* k, int chars) {
+  run_add(run, &TX_RUN_INDEX, chars);
+  run_add(run, &RUN_TAKEN, chars - k->glyphs);
+  run_add(run, &TX_RUN_GLYPH_HEAD, k->glyphs);
+  run_add(run, &TX_RUN_TILE, 4 * k->glyphs);
+  run_add(run, &TX_RUN_ROW, 2 * k->glyphs);
+  run_add(run, &RUN_TAKEN, 3 * k->glyphs);
+  run_add(run, &TX_RUN_GLYPH_TAIL, k->glyphs);
+  // Every byte but the last takes the `BNE` past the way out.
+  run_add(run, &TX_RUN_NEXT, k->bytes);
+  run_add(run, &RUN_TAKEN, k->bytes - 1);
+  run_add(run, &TX_RUN_JMP, 1);
+  run->cycles += 4 * k->slow_words;
+  run->bytes -= 2 * k->slow_words;
+}
+
+static bool text_ok(const CosimRegs* in) {
+  return wide(in) && low_stack(in) && in->d < 0x1f00 &&
+         (in->p & PORT_P_D) == 0;
+}
+
+static bool accepts_text_print(const Wram* w, const CosimRegs* in) {
+  return text_ok(in) && text_source_ok((uint8_t)in->a, in->x) &&
+         text_source_ok(wram_r8(w, W_TEXT_STRING_BANK), in->y);
+}
+
+static bool accepts_text_print_lines(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return text_ok(in) && text_source_ok((uint8_t)in->a, in->x);
+}
+
+// N and Z are the closing `PLB`'s. Carry and overflow are not claimed.
+static void shim_text_print(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  TextWork k = {0};
+  TextRegs r;
+  text_print(w, rom, in->d, in->a, in->x, in->y, &r, &k);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = (in->db & 0x80u) != 0;
+  out->z = in->db == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+  out->regs = COSIM_REG_ALL;
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &TX_RUN_HEAD, 1);
+  text_chars_run(&run, &k, k.bytes - 1);
+  run_add(&run, &TX_RUN_TAIL, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+}
+
+// It leaves at `$82:B9A6` with the caller's data bank and a spare byte of
+// its `PEA` on the stack, bank `$82`, 16-bit registers, and the `AND` that
+// found the string's end in N and Z.
+static void shim_text_print_lines(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  TextWork k = {0};
+  TextRegs r;
+  text_print_lines(w, rom, in->d, in->a, in->x, in->y, &r, &k);
+  wram_w8(w, in->s, in->db);
+  wram_w8(w, (uint16_t)(in->s - 1), 0x00);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->s = (uint16_t)(in->s - 2);
+  out->db = TEXT_BANK;
+  out->pc = TEXT_PRINT_LINES_SEND_PC;
+  out->regs = COSIM_REG_ALL;
+  out->p = (uint8_t)((in->p & ~(PORT_P_M | PORT_P_X | PORT_P_N)) | PORT_P_Z);
+  out->p_keep = PORT_P_C | PORT_P_V;
+
+  // Each place after the first is a byte of `$FF`, which takes the `BEQ`.
+  const int chars = k.bytes - 1 - (k.places - 1);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &TX_RUN_LINES_HEAD, 1);
+  run_add(&run, &TX_RUN_PLACE, k.places);
+  run_add(&run, &TX_RUN_NEW_PLACE, k.bytes - 1);
+  run_add(&run, &RUN_TAKEN, k.places - 1);
+  text_chars_run(&run, &k, chars);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+}
+
+static const uint32_t TEXT_PRINT_LINES_EXITS[] = {TEXT_PRINT_LINES_SEND_PC};
+
+// ---------------------------------------------------------------------------
+// $80:A4D9  a whole screen of tiles -- see `port/screen_tiles.h`
+// ---------------------------------------------------------------------------
+//
+// Two loops of a fixed count, and the one thing that varies: how many tiles
+// got the priority bit. Each run is from `tools/cycles816.py --db=7E
+// --ind=7F:0000`. It runs on page zero from its sixth instruction.
+static const CosimRun ST_RUN_HEAD = {178, 13, 0};       // $A4D9-$A4E5
+static const CosimRun ST_RUN_ORIGIN = {476, 41, 2};     // $A439-$A461
+static const CosimRun ST_RUN_ALLOC = {58 + 342, 6 + 21, 4};  // $A4E6, and $A401
+static const CosimRun ST_RUN_KEEP = {96, 7, 2};         // $A4EC-$A4F2
+static const CosimRun ST_RUN_ROWS_HEAD = {202, 18, 4};  // $A462-$A473
+static const CosimRun ST_RUN_ADDR = {250, 15, 0};       // $80:AD1C itself
+static const CosimRun ST_RUN_ROW_HEAD = {18, 3, 0};     // LDY #$003E
+static const CosimRun ST_RUN_TILE = {160, 11, 3};       // $A477-$A481
+static const CosimRun ST_RUN_OVER = {118, 7, 2};        // $A482-$A488
+static const CosimRun ST_RUN_TILE_NEXT = {36, 4, 0};    // DEY : DEY : BPL
+static const CosimRun ST_RUN_ROW_TAIL = {206, 18, 5};   // $A48D-$A49E
+static const CosimRun ST_RUN_MID = {96, 7, 2};          // $A4F3-$A4F9
+static const CosimRun ST_RUN_COLUMN_HEAD = {262, 26, 4};  // $A4A0-$A4B9
+static const CosimRun ST_RUN_COLUMN = {154, 11, 3};     // $A4BA-$A4C4
+static const CosimRun ST_RUN_COLUMN_OVER = {106, 7, 2}; // $A4C5-$A4CB
+static const CosimRun ST_RUN_COLUMN_NEXT = {188, 12, 3};  // $A4CC-$A4D7
+
+static bool accepts_screen_tiles(const Wram* w, const CosimRegs* in) {
+  return wide(in) && low_stack(in) && (in->p & PORT_P_D) == 0 &&
+         screen_tiles_supported(w);
+}
+
+static void shim_screen_tiles_fill(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  ScreenTilesWork k = {0};
+  cpu_from(in, &c);
+  screen_tiles_fill(w, &c, &k);
+  cpu_to(&c, out);
+
+  const int tiles = SCREEN_TILES_ACROSS * SCREEN_TILES_DOWN;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &ST_RUN_HEAD, 1);
+  run_add(&run, &ST_RUN_ORIGIN, 1);
+  run_add(&run, &ST_RUN_ALLOC, 1);
+  run_add(&run, &ST_RUN_KEEP, 1);
+  run_add(&run, &ST_RUN_ROWS_HEAD, 1);
+  run_add(&run, &ST_RUN_ADDR, 2);
+  // The rows: a tile under the priority line runs three more instructions,
+  // and any other takes the `BCS` round them. Each loop's branch is taken
+  // on every pass but its last.
+  run_add(&run, &ST_RUN_ROW_HEAD, SCREEN_TILES_DOWN);
+  run_add(&run, &ST_RUN_TILE, tiles);
+  run_add(&run, &ST_RUN_OVER, k.rows_over);
+  run_add(&run, &RUN_TAKEN, tiles - k.rows_over);
+  run_add(&run, &ST_RUN_TILE_NEXT, tiles);
+  run_add(&run, &RUN_TAKEN, tiles - SCREEN_TILES_DOWN);
+  run_add(&run, &ST_RUN_ROW_TAIL, SCREEN_TILES_DOWN);
+  run_add(&run, &RUN_TAKEN, SCREEN_TILES_DOWN - 1);
+  run_add(&run, &RUN_RTS, 1);
+  // The column.
+  run_add(&run, &ST_RUN_MID, 1);
+  run_add(&run, &ST_RUN_COLUMN_HEAD, 1);
+  run_add(&run, &ST_RUN_COLUMN, SCREEN_TILES_COLUMN);
+  run_add(&run, &ST_RUN_COLUMN_OVER, k.column_over);
+  run_add(&run, &RUN_TAKEN, SCREEN_TILES_COLUMN - k.column_over);
+  run_add(&run, &ST_RUN_COLUMN_NEXT, SCREEN_TILES_COLUMN);
+  run_add(&run, &RUN_TAKEN, SCREEN_TILES_COLUMN - 1);
+  run_add(&run, &RUN_RTS, 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static const uint32_t SCREEN_TILES_EXITS[] = {SCREEN_TILES_QUEUE_PC};
+
+// ---------------------------------------------------------------------------
+// $81:B4EA  the axe a doll throws -- see `port/axe.h`
+// ---------------------------------------------------------------------------
+//
+// Three stretches, priced as the squirt gun's are. Each run is from
+// `tools/cycles816.py --db=81`, with `--ind=81:ADDE` for the two reads
+// through `$24`.
+static const CosimRun AX_COST[AX_BLOCK_COUNT] = {
+    [AX_LAUNCH] = {138, 13, 0},
+    [AX_DRESS] = {1052, 93, 15},
+    [AX_SET_HEAD] = {58, 7, 1},
+    [AX_SET_X] = {84, 10, 0},
+    [AX_SET_MID] = {40, 4, 1},
+    [AX_SET_Y] = {60, 8, 0},
+    [AX_SET_TAIL] = {146, 13, 1},
+    [AX_HANDLER] = {258, 21, 0},
+    [AX_DRESS_TAIL] = {166, 10, 1},
+    [AX_AGAIN] = {46, 5, 1},
+    [AX_DISPATCH] = {142, 8, 1},
+    [AX_FLY_HEAD] = {40, 4, 1},
+    [AX_TURN] = {108, 9, 2},
+    [AX_TURN_WRAP] = {28, 2, 1},
+    [AX_MOVE] = {370, 28, 10},
+    [AX_LEASH] = {122, 10, 2},
+    [AX_INC] = {50, 2, 1},
+    [AX_FLY_TAIL] = {90, 3, 1},
+    [AX_LOOP] = {80, 7, 1},
+    [AX_SHOW_HEAD] = {62, 4, 1},
+    [AX_SHOW_RESET] = {56, 4, 2},
+    [AX_SHOW_MID] = {372, 31, 7},
+    [AX_SHOW_ORA] = {92, 8, 0},
+    [AX_SHOW_AND] = {80, 6, 0},
+    [AX_SHOW_TAIL] = {268, 23, 1},
+    [AX_LEAVE] = {150, 16, 1},
+    [AX_TAKEN] = {6, 0, 0},
+};
+
+// The tables are read through the data bank, and the record through it too.
+static bool axe_ok(const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == AXE_BANK;
+}
+
+static bool accepts_axe_launch(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return axe_ok(in);
+}
+
+// The record is the one `actor_slot_alloc` left in A.
+static bool accepts_axe_dress(const Wram* w, const CosimRegs* in) {
+  return axe_ok(in) && in->a < 0x1f00 && wram_r16(w, W_SCHED_CUR_TASK) < 0x30;
+}
+
+// The one state body, the one table, and a place in it that is there. The
+// ROM spins for good on a budget gone negative.
+static bool accepts_axe_frame(const Wram* w, const CosimRegs* in) {
+  if (!axe_ok(in)) return false;
+  const uint16_t live = wram_r16(w, W_SQUIRTS_LIVE);
+  return wram_r16(w, (uint16_t)(in->d + AXE_DP_STATE)) == AXE_STATE_FLY &&
+         wram_r16(w, (uint16_t)(in->d + AXE_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + AXE_DP_FRAMES)) == AXE_FRAMES &&
+         wram_r16(w, (uint16_t)(in->d + AXE_DP_SET)) <= 0x20 &&
+         wram_r16(w, (uint16_t)(in->d + AXE_DP_TURN)) < AXE_TURNS &&
+         live >= AXE_BUDGET && live <= 0x8000u + AXE_BUDGET - 1;
+}
+
+#define AXE_SHIM(name, call)                                                \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,     \
+                          CosimRegs* out) {                                 \
+    (void)rom;                                                              \
+    PortCpu c;                                                              \
+    AxeWork k = {0};                                                        \
+    cpu_from(in, &c);                                                       \
+    call;                                                                   \
+    cpu_to(&c, out);                                                        \
+    const bool fast = fetch_fast(in);                                       \
+    const bool unaligned = (in->d & 0x00ffu) != 0;                          \
+    int cycles = 0;                                                         \
+    if (k.tested) cycles += terrain_bit2_cycles(&k.ground, in->fastrom);    \
+    if (k.leashed) cycles += tether_cycles(&k.leash, in->fastrom);          \
+    for (int i = 0; i < AX_BLOCK_COUNT; i++)                                \
+      cycles += k.blocks[i] * cosim_run_cycles_dp(&AX_COST[i], fast, unaligned); \
+    cosim_cost(cycles);                                                     \
+  }
+
+AXE_SHIM(axe_launch, axe_launch(w, &c, &k))
+AXE_SHIM(axe_dress, axe_dress(w, rom, &c, &k))
+AXE_SHIM(axe_frame, axe_frame(w, rom, &c, &k))
+
+static const uint32_t AXE_LAUNCH_EXITS[] = {AXE_ALLOC_CALL_PC};
+static const uint32_t AXE_DRESS_EXITS[] = {AXE_YIELD_PC};
+static const uint32_t AXE_FRAME_EXITS[] = {AXE_YIELD_PC, AXE_FREE_JML_PC};
+
+// ---------------------------------------------------------------------------
+// $81:F380  the bubble gun's bubble -- see `port/bubble.h`
+// ---------------------------------------------------------------------------
+//
+// Six stretches, priced as the squirt gun's are. Each run is from
+// `tools/cycles816.py --db=81`. The dress reads the muzzle through
+// `$0000,X`, which the tool takes for low WRAM: 4 less for each of the two,
+// and two more bytes of the cartridge.
+static const CosimRun BUB_COST[BUB_BLOCK_COUNT] = {
+    [BUB_TEST] = {122, 10, 2},
+    [BUB_COUNT_UP] = {138, 13, 0},
+    [BUB_DRESS_HEAD] = {108, 9, 3},
+    [BUB_DRESS_OTHER] = {64, 8, 1},
+    [BUB_DRESS] = {914, 80, 9},
+    [BUB_SFX] = {18, 3, 0},
+    [BUB_FIRST] = {46, 5, 1},
+    [BUB_TICKS] = {18, 3, 0},
+    [BUB_BURST] = {162, 17, 1},
+    [BUB_MOVE] = {364, 30, 5},
+    [BUB_PLACE] = {226, 16, 4},
+    [BUB_FLOAT] = {448, 40, 2},
+    [BUB_HIT_TEST] = {40, 4, 1},
+    [BUB_END] = {138, 14, 1},
+    [BUB_TAKEN] = {6, 0, 0},
+};
+
+// The tables are read through the data bank, and the record through it too.
+static bool bubble_ok(const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == BUBBLE_BANK;
+}
+
+static bool accepts_bubble(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return bubble_ok(in);
+}
+
+static bool bubble_facing_ok(const Wram* w, const CosimRegs* in) {
+  const uint16_t facing = wram_r16(w, (uint16_t)(in->d + BUBBLE_DP_FACING));
+  return facing >= 2 && facing <= BUBBLE_FACING_MAX && (facing & 1u) == 0;
+}
+
+// The record is the one `actor_slot_alloc` left in A. A side is a player's,
+// 0 or 2, or negative.
+static bool accepts_bubble_dress(const Wram* w, const CosimRegs* in) {
+  const uint16_t side = wram_r16(w, (uint16_t)(in->d + BUBBLE_DP_SIDE));
+  return bubble_ok(in) && in->a < 0x1f00 && bubble_facing_ok(w, in) &&
+         wram_r16(w, W_SCHED_CUR_TASK) < 0x30 &&
+         ((side & 0x8000u) != 0 || side == 0 || side == 2);
+}
+
+static bool bubble_record_ok(const Wram* w, const CosimRegs* in) {
+  return bubble_ok(in) &&
+         wram_r16(w, (uint16_t)(in->d + BUBBLE_DP_RECORD)) < 0x1f00;
+}
+
+static bool accepts_bubble_rising(const Wram* w, const CosimRegs* in) {
+  return bubble_record_ok(w, in) && bubble_facing_ok(w, in) &&
+         wram_r16(w, W_SCHED_CUR_TASK) < 0x30;
+}
+
+// The ROM spins for good on a budget gone negative.
+static bool bubble_budget_ok(const Wram* w) {
+  const uint16_t live = wram_r16(w, W_SQUIRTS_LIVE);
+  return live >= BUBBLE_BUDGET && live <= 0x8000u + BUBBLE_BUDGET - 1;
+}
+
+static bool accepts_bubble_flying(const Wram* w, const CosimRegs* in) {
+  return accepts_bubble_rising(w, in) && bubble_budget_ok(w);
+}
+
+static bool accepts_bubble_gone(const Wram* w, const CosimRegs* in) {
+  return bubble_ok(in) && bubble_budget_ok(w);
+}
+
+#define BUBBLE_SHIM(name, call)                                             \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,     \
+                          CosimRegs* out) {                                 \
+    (void)rom;                                                              \
+    PortCpu c;                                                              \
+    BubbleWork k = {0};                                                     \
+    cpu_from(in, &c);                                                       \
+    call;                                                                   \
+    cpu_to(&c, out);                                                        \
+    if (!k.overflow_known) out->p_keep = PORT_P_V;                          \
+    const bool fast = fetch_fast(in);                                       \
+    const bool unaligned = (in->d & 0x00ffu) != 0;                          \
+    int cycles = 0;                                                         \
+    for (int i = 0; i < k.tests && i < BUBBLE_MAX_TESTS; i++)               \
+      cycles += terrain_bit2_cycles(&k.ground[i], in->fastrom);             \
+    for (int i = 0; i < BUB_BLOCK_COUNT; i++)                                \
+      cycles += k.blocks[i] * cosim_run_cycles_dp(&BUB_COST[i], fast, unaligned); \
+    cosim_cost(cycles);                                                     \
+  }
+
+BUBBLE_SHIM(bubble_launch, bubble_launch(w, &c, &k))
+BUBBLE_SHIM(bubble_dress, bubble_dress(w, rom, &c, &k))
+BUBBLE_SHIM(bubble_first, bubble_first(w, &c, &k))
+BUBBLE_SHIM(bubble_rising, bubble_rising(w, rom, &c, &k))
+BUBBLE_SHIM(bubble_flying, bubble_flying(w, rom, &c, &k))
+BUBBLE_SHIM(bubble_gone, bubble_gone(w, &c, &k))
+
+static const uint32_t BUBBLE_LAUNCH_EXITS[] = {BUBBLE_UNFIRED_RTL_PC,
+                                               BUBBLE_ALLOC_CALL_PC};
+static const uint32_t BUBBLE_DRESS_EXITS[] = {BUBBLE_SFX_CALL_PC};
+static const uint32_t BUBBLE_FIRST_EXITS[] = {BUBBLE_RISING_YIELD_PC,
+                                              BUBBLE_BURST_CALL_PC};
+static const uint32_t BUBBLE_RISING_EXITS[] = {
+    BUBBLE_RISING_YIELD_PC, BUBBLE_FLYING_YIELD_PC, BUBBLE_BURST_CALL_PC};
+static const uint32_t BUBBLE_FLYING_EXITS[] = {
+    BUBBLE_FLYING_YIELD_PC, BUBBLE_BURST_CALL_PC, BUBBLE_FREE_JML_PC};
+static const uint32_t BUBBLE_GONE_EXITS[] = {BUBBLE_FREE_JML_PC};
+
+// ---------------------------------------------------------------------------
 // The clones -- see `port/clone.h`
 // ---------------------------------------------------------------------------
 //
@@ -12487,6 +12981,288 @@ static void shim_doll_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 static const uint32_t DOLL_FRAME_EXITS[] = {DOLL_FRAME_YIELD_PC,
                                             DOLL_FRAME_LEAVE_PC};
 
+// ---------------------------------------------------------------------------
+// $81:B2B0  the doll's thread round its loop -- see `port/doll.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=81`. `$80:AA0D`'s are bank
+// `$80`'s, fetched at the same speed.
+static const CosimRun DT_COST[DT_BLOCK_COUNT] = {
+    [DT_LAUNCH] = {138, 13, 0},
+    [DT_FIRST] = {28, 2, 1},
+    [DT_DRESS_A] = {1192, 101, 6},
+    [DT_DRESS_B] = {644, 52, 12},
+    [DT_SEEN_CALL] = {110, 8, 2},
+    [DT_SCREEN_LOW] = {114, 11, 0},
+    [DT_SCREEN_HIGH] = {76, 9, 0},
+    [DT_SCREEN_END] = {54, 2, 0},
+    [DT_SEEN_BCC] = {12, 2, 0},
+    [DT_SEEN_KIND] = {64, 8, 0},
+    [DT_SEEN_SFX] = {18, 3, 0},
+    [DT_AGAIN] = {46, 5, 1},
+    [DT_OPENING] = {160, 11, 1},
+    [DT_OPENED] = {172, 16, 3},
+    [DT_FLY_TO] = {372, 30, 8},
+    [DT_OPENED_TAIL] = {228, 18, 5},
+    [DT_FRAME_TICK] = {80, 7, 1},
+    [DT_END_HEAD] = {58, 7, 1},
+    [DT_GONE] = {138, 14, 1},
+    [DT_SCORED] = {74, 6, 0},
+    [DT_BURST_DRAW] = {84, 9, 0},
+    [DT_BURST_SPAWN] = {214, 19, 4},
+    [DT_BURST_TAIL] = {18, 3, 0},
+    [DT_LAST] = {28, 2, 1},
+    [DT_TAKEN] = {6, 0, 0},
+};
+
+static bool doll_thread_ok(const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == DOLL_BANK;
+}
+
+static bool accepts_doll_thread(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return doll_thread_ok(in);
+}
+
+// The second record is the one `actor_slot_alloc` left in A.
+static bool accepts_doll_dress(const Wram* w, const CosimRegs* in) {
+  return doll_thread_ok(in) && in->a < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + DOLL_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, W_SCHED_CUR_TASK) < 0x30;
+}
+
+// The ROM spins for good on a budget gone negative.
+static bool accepts_doll_gone(const Wram* w, const CosimRegs* in) {
+  const uint16_t live = wram_r16(w, W_SQUIRTS_LIVE);
+  return doll_thread_ok(in) && live >= DOLL_BUDGET &&
+         live <= 0x8000u + DOLL_BUDGET - 1;
+}
+
+static int doll_thread_cycles(const DollThreadWork* k, const Rom* rom,
+                              const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < DT_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles_dp(&DT_COST[i], fast, unaligned);
+  if (k->ticked) {
+    DollBill b = {{0, 0, 0}, 0, in, &k->tick, 0, rom};
+    doll_tick_bill(&b);
+    cycles += doll_total(&b);
+  }
+  if (k->drew) cycles += rng_cycles(k->draw_v, in->fastrom);
+  if (k->spawned) cycles += thread_spawn_cycles(k->spawn_slot, rom, in->fastrom);
+  return cycles;
+}
+
+#define DOLL_THREAD_SHIM(name, call)                                        \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,     \
+                          CosimRegs* out) {                                 \
+    PortCpu c;                                                              \
+    DollThreadWork k = {0};                                                 \
+    cpu_from(in, &c);                                                       \
+    call;                                                                   \
+    cpu_to(&c, out);                                                        \
+    /* `thread_spawn` leaves a carry and an overflow the port does not    \
+       follow. */                                                           \
+    if (k.spawned) out->p_keep = PORT_P_C | PORT_P_V;                       \
+    cosim_cost(doll_thread_cycles(&k, rom, in));                            \
+  }
+
+DOLL_THREAD_SHIM(doll_launch, doll_launch(w, &c, &k))
+DOLL_THREAD_SHIM(doll_first_record, doll_first_record(w, &c, &k))
+DOLL_THREAD_SHIM(doll_dress, doll_dress(w, &c, &k))
+DOLL_THREAD_SHIM(doll_again, doll_again(w, &c, &k))
+DOLL_THREAD_SHIM(doll_opening, doll_opening(w, &c, &k))
+DOLL_THREAD_SHIM(doll_opened, doll_opened(w, &c, &k))
+DOLL_THREAD_SHIM(doll_end, doll_end(w, &c, &k))
+DOLL_THREAD_SHIM(doll_scored, doll_scored(w, &c, &k))
+DOLL_THREAD_SHIM(doll_burst, doll_burst(w, rom, &c, &k))
+DOLL_THREAD_SHIM(doll_gone, doll_gone(w, &c, &k))
+DOLL_THREAD_SHIM(doll_last, doll_last(w, &c, &k))
+
+// A frame of the loop is `doll_frame`'s, but for one in the opening state.
+static bool doll_any_frame_ok(const Wram* w, const CosimRegs* in) {
+  if (wram_r16(w, (uint16_t)(in->d + DOLL_DP_STATE)) == DOLL_STATE_OPENING)
+    return doll_thread_ok(in);
+  return doll_frame_ok(w, in);
+}
+
+static void shim_doll_any_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  if (wram_r16(w, (uint16_t)(in->d + DOLL_DP_STATE)) == DOLL_STATE_OPENING)
+    shim_doll_opening(w, rom, in, out);
+  else
+    shim_doll_frame(w, rom, in, out);
+}
+
+static const uint32_t DOLL_ANY_FRAME_EXITS[] = {
+    DOLL_FRAME_YIELD_PC, DOLL_FRAME_LEAVE_PC, DOLL_PICTURES_CALL_PC};
+static const uint32_t DOLL_LAUNCH_EXITS[] = {DOLL_ALLOC_CALL_PC};
+static const uint32_t DOLL_FIRST_RECORD_EXITS[] = {DOLL_ALLOC_2_CALL_PC};
+static const uint32_t DOLL_DRESS_EXITS[] = {DOLL_FRAME_YIELD_PC,
+                                            DOLL_SFX_CALL_PC};
+static const uint32_t DOLL_AGAIN_EXITS[] = {DOLL_FRAME_YIELD_PC};
+static const uint32_t DOLL_END_EXITS[] = {DOLL_SCORE_CALL_PC,
+                                          DOLL_FREE_AXE_CALL_PC};
+static const uint32_t DOLL_SCORED_EXITS[] = {DOLL_DYING_CALL_PC};
+static const uint32_t DOLL_BURST_EXITS[] = {DOLL_ASHES_CALL_PC};
+static const uint32_t DOLL_GONE_EXITS[] = {DOLL_FREE_AXE_CALL_PC};
+static const uint32_t DOLL_LAST_EXITS[] = {DOLL_FREE_JML_PC};
+
+// ---------------------------------------------------------------------------
+// $81:B664  what a destroyed doll can leave -- see `port/flame.h`
+// ---------------------------------------------------------------------------
+//
+// Five stretches, priced by the runs each stood for. Each run is from
+// `tools/cycles816.py --db=81`, with `--ind=81:AE66` for the two reads
+// through `$16`. The calls made in C cost what their own entries charge.
+static const CosimRun FL_COST[FL_BLOCK_COUNT] = {
+    [FL_LAUNCH] = {138, 13, 0},
+    [FL_DRESS] = {1086, 97, 15},
+    [FL_HANDLER] = {258, 21, 0},
+    [FL_DRESS_TAIL] = {240, 17, 3},
+    [FL_JSR] = {40, 3, 0},
+    [FL_JMP] = {18, 3, 0},
+    [FL_RTS] = {40, 1, 0},
+    [FL_TAKEN] = {6, 0, 0},
+    [FL_AGAIN] = {46, 5, 1},
+    [FL_DISPATCH] = {142, 8, 1},
+    [FL_PICK] = {238, 22, 4},
+    [FL_PICK_NEG] = {58, 6, 1},
+    [FL_PICK_TAIL] = {304, 24, 4},
+    [FL_AIM] = {372, 33, 8},
+    [FL_AIM_DEX] = {12, 1, 0},
+    [FL_AIM_NEG] = {48, 7, 0},
+    [FL_AXIS_HEAD] = {68, 6, 2},
+    [FL_AXIS_DOWN] = {40, 4, 1},
+    [FL_AXIS_ACROSS] = {28, 2, 1},
+    [FL_FACE_HEAD] = {58, 7, 1},
+    [FL_FACE_BMI] = {12, 2, 0},
+    [FL_FACE_LDY] = {18, 3, 0},
+    [FL_FACE_STY_BRA] = {40, 4, 1},
+    [FL_FACE_STY] = {28, 2, 1},
+    [FL_FACE_NONE] = {86, 6, 1},
+    [FL_W_HEAD] = {64, 8, 0},
+    [FL_W_LOOK] = {168, 15, 3},
+    [FL_COUNT] = {62, 4, 1},
+    [FL_STEP] = {282, 22, 6},
+    [FL_TAKE] = {112, 8, 4},
+    [FL_W_PLAYERS] = {152, 14, 2},
+    [FL_DEC] = {50, 2, 1},
+    [FL_C_START] = {290, 23, 4},
+    [FL_C_START_TAIL] = {160, 10, 3},
+    [FL_C_GAP] = {120, 10, 2},
+    [FL_NEG] = {30, 4, 0},
+    [FL_C_SUM] = {70, 8, 1},
+    [FL_C_STEP_TAIL] = {90, 3, 1},
+    [FL_A_HEAD] = {62, 4, 1},
+    [FL_A_TURN] = {212, 19, 4},
+    [FL_SHOW_HEAD] = {122, 11, 2},
+    [FL_SHOW_ORA] = {92, 8, 0},
+    [FL_SHOW_AND] = {80, 6, 0},
+    [FL_SHOW_TAIL] = {268, 23, 1},
+    [FL_A_TRAIL_TEST] = {64, 8, 0},
+    [FL_A_TAIL] = {226, 16, 4},
+    [FL_T_HEAD] = {18, 3, 0},
+    [FL_T_TEST] = {64, 7, 1},
+    [FL_T_NEXT] = {66, 8, 0},
+    [FL_T_FOUND] = {46, 5, 1},
+    [FL_T_DRESS] = {986, 83, 8},
+    [FL_G_COUNT] = {68, 4, 1},
+    [FL_G_PHASE] = {92, 9, 2},
+    [FL_G_SHOW] = {208, 17, 1},
+    [FL_G_FREE] = {338, 23, 5},
+    [FL_L_TEST] = {40, 4, 1},
+    [FL_L_SCORE_TEST] = {58, 7, 1},
+    [FL_L_END] = {138, 14, 1},
+    [FL_S_INC] = {56, 3, 0},
+};
+
+// The tables are read through the data bank, and the records through it too.
+static bool flame_ok(const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == FLAME_BANK;
+}
+
+static bool accepts_flame(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return flame_ok(in);
+}
+
+// The record is the one `actor_slot_alloc` left in A.
+static bool accepts_flame_dress(const Wram* w, const CosimRegs* in) {
+  return flame_ok(in) && in->a < 0x1f00 && wram_r16(w, W_SCHED_CUR_TASK) < 0x30;
+}
+
+// The ROM spins for good on a budget gone negative.
+static bool flame_budget_ok(const Wram* w) {
+  const uint16_t live = wram_r16(w, W_SQUIRTS_LIVE);
+  return live >= FLAME_BUDGET && live <= 0x8000u + FLAME_BUDGET - 1;
+}
+
+static bool accepts_flame_scored(const Wram* w, const CosimRegs* in) {
+  return flame_ok(in) && flame_budget_ok(w);
+}
+
+static bool accepts_flame_frame(const Wram* w, const CosimRegs* in) {
+  if (!flame_ok(in) || !flame_budget_ok(w)) return false;
+  // A chase reads its target's record. A wander names one before any chase,
+  // and until its first look the page holds whatever its last thread left.
+  if (wram_r16(w, (uint16_t)(in->d + FLAME_DP_STATE)) == FLAME_STATE_CHASE &&
+      wram_r16(w, (uint16_t)(in->d + FLAME_DP_TARGET)) >= 0x1f00)
+    return false;
+  return wram_r16(w, (uint16_t)(in->d + FLAME_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + FLAME_DP_FRAMES)) == FLAME_ANIMATION &&
+         wram_r16(w, (uint16_t)(in->d + FLAME_DP_FACING)) <= 12 &&
+         wram_r16(w, (uint16_t)(in->d + FLAME_DP_STRIDE)) <= 3 &&
+         wram_r16(w, W_SCHED_CUR_TASK) < 0x30 &&
+         flame_frame_supported(w, in->d);
+}
+
+static int flame_cycles(const FlameWork* k, const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < FL_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles_dp(&FL_COST[i], fast, unaligned);
+  for (int i = 0; i < k->draws && i < 2; i++)
+    cycles += rng_cycles(k->draw_v[i], in->fastrom);
+  if (k->looked) cycles += nearest_cycles(&k->nearest, in->fastrom);
+  for (int i = 0; i < k->grounds && i < 2; i++)
+    cycles += terrain_enemy_cycles(&k->ground[i], in->fastrom);
+  if (k->asked_players)
+    cycles += player_in_range_cycles(&k->players, in->fastrom);
+  if (k->trailed) cycles += saucer_alloc_cycles(k->trail_record, in->fastrom);
+  for (int i = 0; i < k->frees && i < FLAME_TRAIL_PLACES; i++)
+    cycles += saucer_free_cycles(k->free_place[i], in->fastrom);
+  return cycles;
+}
+
+#define FLAME_SHIM(name, call)                                              \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,     \
+                          CosimRegs* out) {                                 \
+    (void)rom;                                                              \
+    PortCpu c;                                                              \
+    FlameWork k = {0};                                                      \
+    cpu_from(in, &c);                                                       \
+    call;                                                                   \
+    cpu_to(&c, out);                                                        \
+    cosim_cost(flame_cycles(&k, in));                                       \
+  }
+
+FLAME_SHIM(flame_launch, flame_launch(w, &c, &k))
+FLAME_SHIM(flame_dress, flame_dress(w, &c, &k))
+FLAME_SHIM(flame_begin, flame_begin(w, &c, &k))
+FLAME_SHIM(flame_frame, flame_frame(w, rom, &c, &k))
+FLAME_SHIM(flame_scored, flame_scored(w, &c, &k))
+
+static const uint32_t FLAME_LAUNCH_EXITS[] = {FLAME_ALLOC_CALL_PC};
+static const uint32_t FLAME_DRESS_EXITS[] = {FLAME_FIRST_YIELD_PC};
+static const uint32_t FLAME_BEGIN_EXITS[] = {FLAME_YIELD_PC};
+static const uint32_t FLAME_FRAME_EXITS[] = {
+    FLAME_YIELD_PC, FLAME_SCORE_CALL_PC, FLAME_FREE_JML_PC};
+static const uint32_t FLAME_SCORED_EXITS[] = {FLAME_FREE_JML_PC};
+
 static const uint32_t VICTIMS_YIELD_EXITS[] = {VICTIMS_YIELD_PC};
 static const uint32_t PICTURES_EXITS[] = {PICTURES_YIELD_PC, PICTURES_RTL_PC};
 static const uint32_t VICTIMS_RESUME_EXITS[] = {
@@ -12664,6 +13440,15 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [TJ_SENT] = {68, 2, 0},
     [TJ_NEXT] = {36, 4, 0},
     [TJ_TAIL] = {54, 2, 0},
+    [DMA_IMM16] = {36, 6, 0},
+    [DMA_SEP_IMM] = {48, 7, 0},
+    [DMA_REP_IMM16] = {54, 8, 0},
+    [DMA_REP_RTL] = {72, 4, 0},
+    [DMA_FLAG_RTL] = {54, 2, 0},
+    [HJ_TAIL] = {78, 5, 0},
+    [VC_HEAD] = {46, 5, 1},
+    [VC_STEP] = {94, 12, 1},
+    [VC_TEST] = {58, 6, 1},
 };
 
 static HwTrace* dma_trace(void) {
@@ -13058,6 +13843,50 @@ static void shim_backdrop_drift_job(Wram* w, const Rom* rom,
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C |
                (log.moved ? COSIM_FLAG_V : 0);
   out->regs = COSIM_REG_ALL;
+}
+
+// `$80:C34A`, `$82:8308` and `$80:9F62`: three jobs that fill in the channel
+// themselves. A's high byte is the last 16-bit load's, under the 1 that
+// started the transfer.
+static void shim_hud_upload_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  hud_upload_job(t);
+  dma_out(out, low_byte_one(HUD_VRAM_AT), in->x, in->y, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_colours_112_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  colours_112_job(t);
+  dma_out(out, low_byte_one(COLOURS_112_BYTES), in->x, in->y, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// The flags are the `BIT $C8`'s, on the address it has moved on to, and
+// carry says whether it has more to do.
+static void shim_vram_clear_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  const uint16_t next = vram_clear_job(w, t);
+  out->a = low_byte_one(VRAM_CLEAR_BYTES);
+  out->x = in->x;
+  out->y = in->y;
+  out->n = (next & 0x8000u) != 0;
+  out->v = (next & 0x4000u) != 0;
+  out->z = (out->a & next) == 0;
+  out->c = !out->n;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
+  out->regs = COSIM_REG_ALL;
+  cosim_hw(t, DMA_COST, fetch_fast(in));
 }
 
 // `$82:B1F9`. On a fourth frame A's low byte is the last byte sent, under
@@ -16201,9 +17030,9 @@ static const CosimRoutine ROUTINES[] = {
         .name = "doll_frame",
         .symbol = "$81:B2DF",
         .entry = DOLL_FRAME_PC,
-        .run = shim_doll_frame,
-        .accepts = doll_frame_ok,
-        COSIM_EXITS(DOLL_FRAME_EXITS),
+        .run = shim_doll_any_frame,
+        .accepts = doll_any_frame_ok,
+        COSIM_EXITS(DOLL_ANY_FRAME_EXITS),
         .uncalled = true,
         .cycles = 9000,
         .stack_bytes = 16,
@@ -16239,6 +17068,40 @@ static const CosimRoutine ROUTINES[] = {
     DOLL_ENTRY("doll_tick", "$81:B377", DOLL_TICK_PC, DOLL_TICK_RTS_PC,
                shim_doll_tick, doll_page_ok, true, 0),
 #undef DOLL_ENTRY
+#define DOLL_THREAD_ENTRY(n, sym, pc, ok, ex, cyc, stack)                    \
+    {                                                                        \
+        .name = #n,                                                          \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_##n,                                                     \
+        .accepts = ok,                                                       \
+        COSIM_EXITS(ex),                                                     \
+        .uncalled = true,                                                    \
+        .cycles = cyc,                                                       \
+        .stack_bytes = stack,                                                \
+    }
+    // The rest of the doll's thread, round its loop. See `port/doll.h`.
+    DOLL_THREAD_ENTRY(doll_launch, "$81:B2B0", DOLL_LAUNCH_PC,
+                      accepts_doll_thread, DOLL_LAUNCH_EXITS, 138, 0),
+    DOLL_THREAD_ENTRY(doll_first_record, "$81:B397", DOLL_FIRST_RECORD_PC,
+                      accepts_doll_thread, DOLL_FIRST_RECORD_EXITS, 28, 0),
+    DOLL_THREAD_ENTRY(doll_dress, "$81:B39D", DOLL_DRESS_PC,
+                      accepts_doll_dress, DOLL_DRESS_EXITS, 2500, 3),
+    DOLL_THREAD_ENTRY(doll_again, "$81:B2D6", DOLL_AGAIN_PC,
+                      accepts_doll_thread, DOLL_AGAIN_EXITS, 46, 0),
+    DOLL_THREAD_ENTRY(doll_opened, "$81:B1E1", DOLL_OPENED_PC, doll_page_ok,
+                      DOLL_FRAME_EXITS, 1300, 2),
+    DOLL_THREAD_ENTRY(doll_end, "$81:B2EE", DOLL_END_PC, accepts_doll_gone,
+                      DOLL_END_EXITS, 200, 0),
+    DOLL_THREAD_ENTRY(doll_scored, "$81:B2F9", DOLL_SCORED_PC,
+                      accepts_doll_thread, DOLL_SCORED_EXITS, 74, 0),
+    DOLL_THREAD_ENTRY(doll_burst, "$81:B303", DOLL_BURST_PC,
+                      accepts_doll_thread, DOLL_BURST_EXITS, 500, 16),
+    DOLL_THREAD_ENTRY(doll_gone, "$81:B326", DOLL_GONE_PC, accepts_doll_gone,
+                      DOLL_GONE_EXITS, 138, 0),
+    DOLL_THREAD_ENTRY(doll_last, "$81:B338", DOLL_LAST_PC,
+                      accepts_doll_thread, DOLL_LAST_EXITS, 28, 0),
+#undef DOLL_THREAD_ENTRY
     // The level's main loop, a pass at a time. Its HUD refresh publishes to
     // queue A as `hud_refresh` does, and nothing the loop does after it
     // writes anything.
@@ -16342,6 +17205,119 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(SQUIRT_GONE_EXITS),
         .uncalled = true,
         .cycles = 138,
+    },
+#define BUBBLE_ENTRY(n, sym, pc, ok, ex, cyc, stack)                          \
+    {                                                                        \
+        .name = #n,                                                          \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_##n,                                                     \
+        .accepts = ok,                                                       \
+        COSIM_EXITS(ex),                                                     \
+        .uncalled = true,                                                    \
+        .cycles = cyc,                                                       \
+        .stack_bytes = stack,                                                \
+    }
+    // The bubble gun's bubble: see `port/bubble.h`.
+    BUBBLE_ENTRY(bubble_launch, "$81:F380", BUBBLE_LAUNCH_PC, accepts_bubble,
+                 BUBBLE_LAUNCH_EXITS, 1100, 16),
+    BUBBLE_ENTRY(bubble_dress, "$81:F442", BUBBLE_DRESS_PC,
+                 accepts_bubble_dress, BUBBLE_DRESS_EXITS, 1100, 0),
+    BUBBLE_ENTRY(bubble_first, "$81:F39F", BUBBLE_FIRST_PC, bubble_record_ok,
+                 BUBBLE_FIRST_EXITS, 900, 16),
+    BUBBLE_ENTRY(bubble_rising, "$81:F3B5", BUBBLE_RISING_PC,
+                 accepts_bubble_rising, BUBBLE_RISING_EXITS, 2300, 16),
+    BUBBLE_ENTRY(bubble_flying, "$81:F3F6", BUBBLE_FLYING_PC,
+                 accepts_bubble_flying, BUBBLE_FLYING_EXITS, 1500, 16),
+    BUBBLE_ENTRY(bubble_gone, "$81:F42C", BUBBLE_GONE_PC, accepts_bubble_gone,
+                 BUBBLE_GONE_EXITS, 138, 0),
+#undef BUBBLE_ENTRY
+    // The axe a doll throws: see `port/axe.h`.
+    {
+        .name = "axe_launch",
+        .symbol = "$81:B4EA",
+        .entry = AXE_LAUNCH_PC,
+        .run = shim_axe_launch,
+        .accepts = accepts_axe_launch,
+        COSIM_EXITS(AXE_LAUNCH_EXITS),
+        .uncalled = true,
+        .cycles = 138,
+    },
+    {
+        .name = "axe_dress",
+        .symbol = "$81:B527",
+        .entry = AXE_DRESS_PC,
+        .run = shim_axe_dress,
+        .accepts = accepts_axe_dress,
+        COSIM_EXITS(AXE_DRESS_EXITS),
+        .uncalled = true,
+        .cycles = 1900,
+        .stack_bytes = 3,
+    },
+    {
+        .name = "axe_frame",
+        .symbol = "$81:B500",
+        .entry = AXE_FRAME_PC,
+        .run = shim_axe_frame,
+        .accepts = accepts_axe_frame,
+        COSIM_EXITS(AXE_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 3000,
+        .stack_bytes = 16,
+    },
+    // What a destroyed doll can leave: see `port/flame.h`.
+    {
+        .name = "flame_launch",
+        .symbol = "$81:B664",
+        .entry = FLAME_LAUNCH_PC,
+        .run = shim_flame_launch,
+        .accepts = accepts_flame,
+        COSIM_EXITS(FLAME_LAUNCH_EXITS),
+        .uncalled = true,
+        .cycles = 138,
+    },
+    {
+        .name = "flame_dress",
+        .symbol = "$81:B6C1",
+        .entry = FLAME_DRESS_PC,
+        .run = shim_flame_dress,
+        .accepts = accepts_flame_dress,
+        COSIM_EXITS(FLAME_DRESS_EXITS),
+        .uncalled = true,
+        .cycles = 1600,
+        .stack_bytes = 3,
+    },
+    {
+        .name = "flame_begin",
+        .symbol = "$81:B67B",
+        .entry = FLAME_BEGIN_PC,
+        .run = shim_flame_begin,
+        .accepts = accepts_flame,
+        COSIM_EXITS(FLAME_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 2500,
+        .stack_bytes = 8,
+    },
+    {
+        .name = "flame_frame",
+        .symbol = "$81:B687",
+        .entry = FLAME_FRAME_PC,
+        .run = shim_flame_frame,
+        .accepts = accepts_flame_frame,
+        COSIM_EXITS(FLAME_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 6000,
+        .stack_bytes = 24,
+    },
+    {
+        .name = "flame_scored",
+        .symbol = "$81:B6A8",
+        .entry = FLAME_SCORED_PC,
+        .run = shim_flame_scored,
+        .accepts = accepts_flame_scored,
+        COSIM_EXITS(FLAME_SCORED_EXITS),
+        .uncalled = true,
+        .cycles = 194,
     },
     // The clones' loop, a frame at a time. See `port/clone.h`.
     {
@@ -16748,6 +17724,90 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 200,
     },
+#define LOADS_ENTRY(n, sym, pc, rtl, ok, cyc, stack)                         \
+    {                                                                        \
+        .name = #n,                                                          \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .ret_op = rtl,                                                       \
+        .ret_kind = COSIM_RTL,                                               \
+        .run = shim_##n,                                                     \
+        .accepts = ok,                                                       \
+        .cycles = cyc,                                                       \
+        .stack_bytes = stack,                                                \
+    }
+    // What a level's start copies into WRAM: see `port/loads.h`.
+    LOADS_ENTRY(tile_attrs_load, "$80:AD92", TILE_ATTRS_LOAD_PC,
+                TILE_ATTRS_LOAD_RTL_PC, accepts_tile_attrs_load, 73000, 4),
+    LOADS_ENTRY(palette_load, "$80:A037", PALETTE_LOAD_PC,
+                PALETTE_LOAD_RTL_PC, accepts_palette_load, 22000, 6),
+    LOADS_ENTRY(palette_sprites_load, "$80:A05B", PALETTE_SPRITES_LOAD_PC,
+                PALETTE_SPRITES_LOAD_RTL_PC, accepts_palette_load, 17000, 6),
+    LOADS_ENTRY(hud_reset, "$80:C2F7", HUD_RESET_PC, HUD_RESET_RTL_PC,
+                accepts_hud_reset, 11000, 0),
+#undef LOADS_ENTRY
+    // A whole screen of the level's tiles: see `port/screen_tiles.h`. Two
+    // thirds of a frame long, so the NMI can land in it. What it fills is
+    // not queued, or read by anything, until the ROM's own instructions
+    // after it.
+    {
+        .name = "screen_tiles_fill",
+        .symbol = "$80:A4D9",
+        .entry = SCREEN_TILES_PC,
+        .run = shim_screen_tiles_fill,
+        .accepts = accepts_screen_tiles,
+        COSIM_EXITS(SCREEN_TILES_EXITS),
+        .cycles = 245000,
+        .stack_bytes = 8,
+        .through_interrupts = true,
+    },
+    // The text printer: see `port/text.h`.
+    {
+        .name = "text_print",
+        .symbol = "$82:B84A",
+        .entry = TEXT_PRINT_PC,
+        .ret_op = TEXT_PRINT_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_text_print,
+        .accepts = accepts_text_print,
+        .cycles = 16000,
+        .stack_bytes = 4,
+        .through_interrupts = true,
+    },
+    {
+        .name = "text_print_lines",
+        .symbol = "$82:B8FB",
+        .entry = TEXT_PRINT_LINES_PC,
+        .run = shim_text_print_lines,
+        .accepts = accepts_text_print_lines,
+        COSIM_EXITS(TEXT_PRINT_LINES_EXITS),
+        .cycles = 90000,
+        .stack_bytes = 1,
+        // Long enough that the NMI lands in it. Nothing is queued to send
+        // the map until it has left.
+        .through_interrupts = true,
+    },
+#define DMA_JOB_ENTRY(n, sym, pc, rtl, cyc)                                  \
+    {                                                                        \
+        .name = #n,                                                          \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .ret_op = rtl,                                                       \
+        .ret_kind = COSIM_RTL,                                               \
+        .run = shim_##n,                                                     \
+        .accepts = accepts_vbl_job,                                          \
+        .hw = true,                                                          \
+        .uncalled = true,                                                    \
+        .cycles = cyc,                                                       \
+    }
+    // Three more jobs of `port/dma.h`.
+    DMA_JOB_ENTRY(hud_upload_job, "$80:C34A", HUD_UPLOAD_JOB_PC,
+                  HUD_UPLOAD_JOB_RTL_PC, 420),
+    DMA_JOB_ENTRY(colours_112_job, "$82:8308", COLOURS_112_JOB_PC,
+                  COLOURS_112_JOB_RTL_PC, 420),
+    DMA_JOB_ENTRY(vram_clear_job, "$80:9F62", VRAM_CLEAR_JOB_PC,
+                  VRAM_CLEAR_JOB_RTL_PC, 480),
+#undef DMA_JOB_ENTRY
     {
         .name = "backdrop_slide_job",
         .symbol = "$82:B1F9",

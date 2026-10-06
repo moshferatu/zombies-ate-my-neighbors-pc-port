@@ -1,4 +1,4 @@
-// Sending memory to the picture hardware, and three vblank jobs that do
+// Sending memory to the picture hardware, and six vblank jobs that do
 // little else.
 //
 //   $80:C872  dma_to_cgram        bytes of colours, from the first colour on
@@ -6,6 +6,9 @@
 //   $80:A084  palette_job         the level's 256 colours
 //   $80:A09E  background_job      the background's 128, from their second copy
 //   $82:D88C  tile_anim_job       the animated tiles that changed this frame
+//   $80:C34A  hud_upload_job      the HUD's four rows, from their shadow
+//   $82:8308  colours_112_job     sixteen colours, from the 112th on
+//   $80:9F62  vram_clear_job      a kilobyte of VRAM zeroed, a vblank at a time
 //
 // Each fills in DMA channel 0 and starts it. None of them writes the machine:
 // like every routine in `port/hw.h`'s scheme it records what it stored, in
@@ -63,6 +66,29 @@
 #define BACKGROUND_JOB_RTL_PC 0x80a0acu
 #define TILE_ANIM_JOB_PC 0x82d88cu
 #define TILE_ANIM_JOB_RTL_PC 0x82d8cau
+#define HUD_UPLOAD_JOB_PC 0x80c34au
+#define HUD_UPLOAD_JOB_RTL_PC 0x80c378u
+#define COLOURS_112_JOB_PC 0x828308u
+#define COLOURS_112_JOB_RTL_PC 0x828336u
+#define VRAM_CLEAR_JOB_PC 0x809f62u
+#define VRAM_CLEAR_JOB_RTL_PC 0x809f98u  // of two: the other is at `$9F9A`
+
+// The HUD's shadow, four rows of 32 words less 32, and where it goes.
+#define HUD_SHADOW_AT 0x5f36u
+#define HUD_SHADOW_BYTES 0x00c0u
+#define HUD_VRAM_AT 0x6440u
+// The sixteen colours `$82:8308` sends, in the level's table, and the colour
+// they start at.
+#define COLOURS_112_AT 0x5508u
+#define COLOURS_112_BYTES 0x0020u
+#define COLOURS_112_FIRST 0x70u
+// `vram_clear_job`: the word address it has reached, a zero word in the
+// cartridge to send over and over, and how much it sends a vblank.
+#define W_VRAM_CLEAR_AT 0x00c8u
+#define VRAM_CLEAR_SOURCE 0x9f9bu
+#define VRAM_CLEAR_SOURCE_BANK 0x80u
+#define VRAM_CLEAR_BYTES 0x0800u
+#define VRAM_CLEAR_WORDS 0x0400u
 
 // The colours, as the level has them, and the background's second copy.
 #define PALETTE_AT 0x5428u
@@ -103,6 +129,15 @@ enum {
   TJ_SENT,       // PLA : PLX
   TJ_NEXT,       // DEX : DEX : BPL
   TJ_TAIL,       // CLC : RTL
+  DMA_IMM16,     // LDA #imm16 : STA abs
+  DMA_SEP_IMM,   // SEP #$20 : LDA #imm : STA abs
+  DMA_REP_IMM16, // REP #$30 : LDA #imm16 : STA abs
+  DMA_REP_RTL,   // REP #$20 : CLC : RTL
+  DMA_FLAG_RTL,  // SEC or CLC, and RTL
+  HJ_TAIL,       // REP #$30 : REP #$31 : RTL
+  VC_HEAD,       // LDA $C8 : STA $2116
+  VC_STEP,       // CLC : ADC #$0400 : STA $C8 : LDA #$1809 : STA $4300
+  VC_TEST,       // REP #$20 : BIT $C8 : BMI
   DMA_BLOCK_COUNT
 };
 
@@ -128,5 +163,21 @@ bool tile_anim_job_supported(const Wram* w);
 // `$82:D88C`. Returns how many tiles it sent. It runs once: carry clear. X
 // is left at `$FFFE`; with a tile sent, A is the word at `$1E82` and Y is 32.
 int tile_anim_job(Wram* w, const Rom* rom, HwTrace* t);
+
+// `$80:C34A`, which `hud_refresh` queues when the HUD has changed
+// (`port/hud.h`). It runs once: carry clear. A is left `$6401`, the high byte
+// of the VRAM address over the 1 that started the transfer.
+void hud_upload_job(HwTrace* t);
+
+// `$82:8308`, which `$82:8163` queues: the level's colours 112 to 127 again,
+// which is the eighth of the background's palettes. It runs once: carry
+// clear, and 1 in A.
+void colours_112_job(HwTrace* t);
+
+// `$80:9F62`, which `$80:9F9D` queues and waits on: a kilobyte of VRAM zeroed
+// from the word address at `$C8`, which it moves on. It stays queued, carry
+// set, until that address reaches `$8000`: thirty-two vblanks from zero for
+// the whole of VRAM. Returns the address it left. A is left `$0801`.
+uint16_t vram_clear_job(Wram* w, HwTrace* t);
 
 #endif

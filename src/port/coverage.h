@@ -98,6 +98,95 @@
   X(squirt_splashed,  "squirt_splash",      "the handler taken away and the first splash shown") \
   X(squirt_splashed_2, "squirt_splash_2",   "the second splash shown") \
   X(squirt_gone,      "squirt_gone",        "one shot fewer, and its record on the way to being freed") \
+  /* $80:A4D9 a whole screen of tiles -- see port/screen_tiles.h. */            \
+  X(screen_tiles_fill, "screen_tiles_fill", "31 rows of 32 tiles and a column of 32 copied to a buffer") \
+  /* $82:B84A, $82:B8FB the text printer -- see port/text.h. */                 \
+  X(text_print,       "text_print",         "a string at one place") \
+  X(text_print_lines, "text_print_lines",   "strings each with its own place") \
+  X(text_new_place,   "text_print_lines",   "a byte of $FF: a new place, and the string goes on") \
+  X(text_char_drawn,  "text_print",         "a character's four tiles written") \
+  X(text_char_skipped, "text_print",        "a byte under $2F, which draws nothing") \
+  /* A level's loads -- see port/loads.h. */                                    \
+  X(tile_attrs_load,  "tile_attrs_load",    "a kilobyte of tile attributes copied") \
+  X(palette_load,     "palette_load",       "the background's colours copied, twice") \
+  X(palette_sprites_load, "palette_sprites_load", "the sprites' colours copied") \
+  X(hud_reset,        "hud_reset",          "the HUD's shadow emptied") \
+  /* $80:C34A, $82:8308, $80:9F62 three more jobs -- see port/dma.h. */        \
+  X(hud_upload_job,   "hud_upload_job",     "the HUD's shadow sent to VRAM") \
+  X(colours_112_job,  "colours_112_job",    "colours 112 to 127 sent") \
+  X(vram_clear_more,  "vram_clear_job",     "a kilobyte zeroed, and more to do") \
+  X(vram_clear_done,  "vram_clear_job",     "...or the last, at the top of VRAM") \
+  /* $81:F380 the bubble gun's bubble -- see port/bubble.h. */                  \
+  X(bubble_unfired,   "bubble_launch",      "fired from a tile that stops it: no bubble") \
+  X(bubble_launched,  "bubble_launch",      "two of the budget, and on to ask for a record") \
+  X(bubble_of_player, "bubble_dress",       "a player's: that side's muzzles and id") \
+  X(bubble_of_other,  "bubble_dress",       "anyone else's: the first player's muzzles, and id $0B") \
+  X(bubble_first_rose, "bubble_first",      "four frames as water to come") \
+  X(bubble_first_stopped, "bubble_first",   "...or the muzzle is in a tile that stops it") \
+  X(bubble_rose,      "bubble_rising",      "a step as water") \
+  X(bubble_rising_stopped, "bubble_rising", "...into a tile that stops it") \
+  X(bubble_formed,    "bubble_rising",      "the fourth step: a bubble, with a handler") \
+  X(bubble_flew,      "bubble_flying",      "a step as a bubble") \
+  X(bubble_stopped,   "bubble_flying",      "...into a tile that stops it") \
+  X(bubble_spent,     "bubble_flying",      "...or its thirtieth") \
+  X(bubble_hit,       "bubble_flying",      "it hit something: gone with no burst") \
+  X(bubble_gone,      "bubble_gone",        "the burst shown: the budget back, and its record") \
+  /* $81:B4EA the axe a doll throws -- see port/axe.h. */                       \
+  X(axe_launched,     "axe_launch",         "two more of the budget, and on to ask for a record") \
+  X(axe_dressed,      "axe_dress",          "the record given its place, picture, step and handler") \
+  X(axe_goes_across,  "axe_dress",          "it has a step across, which adds to the set of pictures") \
+  X(axe_goes_down,    "axe_dress",          "...and one down") \
+  X(axe_turned,       "axe_frame",          "the turn's wait ran out: the next of four pictures") \
+  X(axe_turned_round, "axe_frame",          "...and after the fourth, the first") \
+  X(axe_flew,         "axe_frame",          "a step, with no tile in the way and inside the leash") \
+  X(axe_stopped_ground, "axe_frame",        "a tile with bit 2, or the edge of the level") \
+  X(axe_stopped_leash, "axe_frame",         "too far from the first player") \
+  X(axe_shown_masked, "axe_frame",          "a frame whose mask is ANDed into the record's flags") \
+  X(axe_shown_ored,   "axe_frame",          "...or ORed in") \
+  X(axe_ended_stopped, "axe_frame",         "leaving because it was stopped") \
+  X(axe_ended_hit,    "axe_frame",          "...or because it hit a second thing") \
+  /* $81:B2B0 the doll's thread round its loop -- see port/doll.h. */          \
+  X(doll_launched,    "doll_launch",        "24 of the budget, and on to ask for a record") \
+  X(doll_dressed,     "doll_dress",         "both records and the page set up") \
+  X(doll_arrived_unseen, "doll_dress",      "off the screen: no sound") \
+  X(doll_arrived_unheard, "doll_dress",     "on it, but $1F52 is not 3: no sound") \
+  X(doll_arrived_heard, "doll_dress",       "on it, and heard") \
+  X(doll_opening,     "doll_frame",         "a frame in the opening state: on to play its pictures") \
+  X(doll_opened,      "doll_opened",        "the pictures played: the leap out set up") \
+  X(doll_destroyed,   "doll_end",           "leaving because it was hit: on to the score") \
+  X(doll_left_quietly, "doll_end",          "...or because nobody was in reach") \
+  X(doll_burst_plain, "doll_burst",         "176 times in 256 it leaves nothing") \
+  X(doll_burst_flame, "doll_burst",         "...and 80 times the thread at $81:B664") \
+  X(doll_gone,        "doll_gone",          "the budget back, and on to free the axe's record") \
+  /* $81:B664 what a destroyed doll can leave -- see port/flame.h. */           \
+  X(flame_launched,   "flame_launch",       "24 of the budget, and on to ask for a record") \
+  X(flame_dressed,    "flame_dress",        "the record, the page and the handler") \
+  X(flame_began,      "flame_begin",        "its first point to wander to") \
+  X(flame_wandered_off, "flame_frame",      "a new point picked, 8 to 24 pixels off on each axis") \
+  X(flame_goes_across, "flame_frame",       "the leg across is the longer, or as long: it is kept") \
+  X(flame_goes_down,  "flame_frame",        "...or the leg down is") \
+  X(flame_goes_nowhere, "flame_frame",      "both legs nothing, which only a chase's can be") \
+  X(flame_wander_rested, "flame_frame",     "an even frame of the game: a wander does nothing") \
+  X(flame_wander_stepped, "flame_frame",    "a pixel along the leg") \
+  X(flame_wander_blocked, "flame_frame",    "...or solid ground there, and none") \
+  X(flame_gave_up,    "flame_frame",        "no player within $D0: it ends") \
+  X(flame_chase_began, "flame_frame",       "something within $30: after it") \
+  X(flame_chase_stepped, "flame_frame",     "a pixel towards the target") \
+  X(flame_chase_blocked, "flame_frame",     "...or solid ground there") \
+  X(flame_chase_held_off, "flame_frame",    "...or the step would end within 9 pixels of it") \
+  X(flame_turned,     "flame_frame",        "the picture's wait ran out: the next of four") \
+  X(flame_shown_masked, "flame_frame",      "a frame whose mask is ANDed into the record's flags") \
+  X(flame_shown_ored, "flame_frame",        "...or ORed in") \
+  X(flame_trailed,    "flame_frame",        "a picture left behind it, in a free place") \
+  X(flame_trail_full, "flame_frame",        "...or both places in use, and none") \
+  X(flame_trail_changed, "flame_frame",     "a trail's picture changed, on its fourth frame") \
+  X(flame_trail_gone, "flame_frame",        "a trail's 24 frames out, and its record given back") \
+  X(flame_burned_out, "flame_frame",        "its 800 frames out: it ends") \
+  X(flame_stayed,     "flame_frame",        "on to the next frame") \
+  X(flame_trail_run_out, "flame_frame",     "leaving with a trail still showing: another frame off it at once") \
+  X(flame_destroyed,  "flame_frame",        "leaving because it was hit: on to the score") \
+  X(flame_left,       "flame_frame",        "...or for any other reason: the budget back, and its record") \
+  X(flame_scored,     "flame_scored",       "one more destroyed, the budget back, and its record") \
   X(object_requests,  "object_resume",     "the object thread's handler left requests to serve") \
   X(object_list_end,  "object_polled",     "the object list ran out: next walk starts at the top") \
   X(object_give,      "object_polled",     "an object came into range and is given an actor") \
