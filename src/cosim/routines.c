@@ -68,7 +68,9 @@
 #include "port/loads.h"
 #include "port/line.h"
 #include "port/lob.h"
+#include "port/hit.h"
 #include "port/lunge.h"
+#include "port/page.h"
 #include "port/decoy.h"
 #include "port/logo.h"
 #include "port/card.h"
@@ -1011,6 +1013,7 @@ static void shim_sin_deg(Wram* w, const Rom* rom, const CosimRegs* in,
 // branch adds 6. A routine that installs page zero pays nothing for its
 // caller's page after that, so those runs carry no direct-page count.
 static void run_add(CosimRun* to, const CosimRun* r, int times);
+static void ret_from_cpu(const PortCpu* c, CosimRegs* out);
 
 static const CosimRun RUN_TAKEN = {6, 0, 0};
 static const CosimRun RUN_RTS = {40, 1, 0};
@@ -9242,6 +9245,71 @@ static const uint32_t MARTIAN_FRAME_EXITS[] = {MARTIAN_WALKER_YIELD_PC,
 static const uint32_t MARTIAN_ARRIVAL_FRAME_EXITS[] = {MARTIAN_ARRIVAL_YIELD_PC,
                                                        MARTIAN_ARRIVAL_FATE_PC};
 
+// The two pieces of a pass that fires, which the ROM calls as it goes.
+static bool martian_piece_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == MARTIAN_BANK &&
+         wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_PICTURES)) >= 0x8000;
+}
+
+// `$81:9C99`.
+static bool accepts_martian_show(const Wram* w, const CosimRegs* in) {
+  return martian_piece_ok(w, in) && martian_show_supported(w, in->d);
+}
+
+static void shim_martian_show(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  PortCpu c;
+  MartianLog log = {0};
+  cpu_from(in, &c);
+  martian_show_walking(w, rom, &c, &log);
+  ret_from_cpu(&c, out);
+  MartianBill b = {{0, 0, 0}, 0, &log, in};
+  martian_show_bill(&b);
+  cosim_cost(cosim_run_cycles_dp(&b.own, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+}
+
+// `$81:9981`, with the data bank at `$81`.
+static const CosimRun MARTIAN_RUN_FIRE_SET = {150, 15, 2};    // $9994-$99A0
+static const CosimRun MARTIAN_RUN_FIRE_FLAGS = {126, 12, 2};  // $99A1-$99AC
+static const CosimRun MARTIAN_RUN_FIRE_STORE = {76, 9, 0};    // $99B5-$99BD
+static const CosimRun MARTIAN_RUN_FIRE_COUNT = {50, 2, 1};    // DEC $24
+
+static bool supported_martian_shoot(Wram* scratch, const Rom* rom,
+                                    const CosimRegs* in) {
+  return martian_piece_ok(scratch, in) &&
+         martian_shoot_supported(scratch, rom, in->d, in->a);
+}
+
+static void shim_martian_shoot(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  PortCpu c;
+  MartianShot shot = {0};
+  cpu_from(in, &c);
+  martian_shoot(w, rom, &c, &shot);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &MARTIAN_RUN_SHOOT_HEAD, 1);
+  if (!shot.fired) {
+    run_add(&run, &MARTIAN_RUN_TAKEN, 1);
+    run_add(&run, &MARTIAN_RUN_FIRE_COUNT, 1);
+  } else {
+    run_add(&run, &MARTIAN_RUN_FIRE_SET, 1);
+    run_add(&run, &MARTIAN_RUN_PICTURE, 1);
+    run_add(&run, &MARTIAN_RUN_FIRE_FLAGS, 1);
+    run_add(&run, shot.mirrored ? &MARTIAN_RUN_SHOW_MIRROR
+                                : &MARTIAN_RUN_SHOW_PLAIN, 1);
+    run_add(&run, &MARTIAN_RUN_TAKEN, 1);
+    run_add(&run, &MARTIAN_RUN_FIRE_STORE, 1);
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+}
+
+static const uint32_t MARTIAN_SHOOT_EXITS[] = {MARTIAN_SHOOT_SPAWN_PC,
+                                               MARTIAN_SHOOT_RTS_PC};
+
 // ---------------------------------------------------------------------------
 // The spiders -- see `port/spider.h`
 // ---------------------------------------------------------------------------
@@ -10115,6 +10183,12 @@ static const CosimRun SF_COST[SF_BLOCK_COUNT] = {
     [SF_FLAP_PICTURE] = {260, 25, 4},
     [SF_RTS] = {40, 1, 0},
     [SF_TAKEN] = {6, 0, 0},
+    [SF_SHOW] = {166, 12, 1},
+    [SF_BLINK] = {70, 8, 1},
+    [SF_BLINK_WHERE] = {150, 16, 2},
+    [SF_BLINK_ON] = {70 + 6, 8, 0},
+    [SF_BLINK_OFF] = {58, 6, 0},
+    [SF_BLINK_PUT] = {228, 14, 2},
 };
 
 // The records it reads are in low WRAM, and the place it circles from is in
@@ -10220,6 +10294,9 @@ static const CosimRun FN_COST[FN_BLOCK_COUNT] = {
     [FN_OTHER] = {30, 4, 0},
     [FN_SHOW] = {236, 20, 4},
     [FN_TAKEN] = {6, 0, 0},
+    [FN_WHICH] = {58, 7, 1},
+    [FN_LIST] = {138, 14, 3},
+    [FN_LONE] = {208, 20, 3},
 };
 
 static bool supported_flinch_frame(Wram* scratch, const Rom* rom,
@@ -10245,6 +10322,104 @@ static void shim_flinch_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t FLINCH_EXITS[] = {FLINCH_SLEEP_PC, FLINCH_DONE_PC};
+
+// `$80:D089`, the same from the list's first entry.
+static bool supported_flinch_begin(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == FLINCH_BANK &&
+         wram_r16(scratch, (uint16_t)(in->d + FLINCH_DP_RECORD)) < 0x1f00 &&
+         flinch_begin_supported(scratch, rom, in->d);
+}
+
+static void shim_flinch_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  PortCpu c;
+  FlinchWork k = {0};
+  cpu_from(in, &c);
+  flinch_begin(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < FN_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&FN_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t FLINCH_BEGIN_EXITS[] = {
+    FLINCH_SLEEP_PC, FLINCH_DONE_PC, FLINCH_LONE_SLEEP_PC};
+
+// `$80:D02D`. The table is read through the data bank.
+static const CosimRun HT_COST[HT_BLOCK_COUNT] = {
+    [HT_WHO] = {104, 11, 2},
+    [HT_NONE] = {40 + 6, 4, 1},
+    [HT_HEALTH] = {80, 7, 1},
+    [HT_TAKE] = {246, 21, 3},
+    [HT_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_player_hit(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != HIT_BANK) return false;
+  const uint16_t who = wram_r16(w, (uint16_t)(in->d + HIT_DP_WHO));
+  const uint16_t player = wram_r16(w, (uint16_t)(in->d + HIT_DP_PLAYER));
+  const uint16_t record = wram_r16(w, (uint16_t)(in->d + HIT_DP_OTHER_RECORD));
+  // A record that is no part of the page, which the request is read from
+  // after it is written.
+  return who < HIT_WHO_COUNT * 2 && (who & 1) == 0 &&
+         player < HIT_PLAYER_COUNT * 2 && (player & 1) == 0 &&
+         record < 0x1f00 && (record + 1 < in->d || record >= in->d + 0x100);
+}
+
+static void shim_player_hit(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  PortCpu c;
+  HitWork k = {0};
+  cpu_from(in, &c);
+  player_hit(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < HT_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&HT_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t HIT_EXITS[] = {HIT_RTS_PC, HIT_FLINCH_PC, HIT_OTHER_PC};
+
+// `$80:D13A`. The census is at an absolute address and the panel's word is
+// indexed, so both are read through the data bank.
+static const CosimRun PG_COST[PG_BLOCK_COUNT] = {
+    [PG_HEAD] = {116, 13, 0},
+    [PG_CLEAR] = {88, 9, 1},
+    [PG_TAIL] = {326, 26, 6},
+    [PG_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_player_page_begin(const Wram* w, const CosimRegs* in) {
+  // A page clear of the census, and of the two words by the slot.
+  return body_ok(in) && in->d >= 0x0100 && in->d < 0x1e00 &&
+         bank_sees_low_wram(in->db) &&
+         wram_r16(w, (uint16_t)(in->d + PAGE_DP_SLOT)) < PAGE_SLOT_COUNT;
+}
+
+static void shim_player_page_begin(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  PageWork k = {0};
+  cpu_from(in, &c);
+  player_page_begin(w, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < PG_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&PG_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t PAGE_BEGIN_EXITS[] = {PAGE_BEGIN_ALLOC_PC};
 
 // `$83:9C94`. Its table is read through the data bank, and so is its record.
 static const CosimRun BK_COST[BK_BLOCK_COUNT] = {
@@ -16031,6 +16206,26 @@ static void shim_slime_glob_dress(Wram* w, const Rom* rom, const CosimRegs* in,
              slime_own_cycles(&SLIME_RUN_GLOB_DRESS, in));
 }
 
+// `$81:CE40`. The box is at absolute addresses.
+static const CosimRun SLIME_RUN_GLOB_SPLASH = {364, 38, 2};  // $CE40-$CE65
+
+static bool accepts_slime_glob_splash(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db);
+}
+
+static void shim_slime_glob_splash(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  slime_glob_splash(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(slime_own_cycles(&SLIME_RUN_GLOB_SPLASH, in));
+}
+
+static const uint32_t SLIME_GLOB_SPLASH_EXITS[] = {SLIME_GLOB_SPLASH_TELL_PC};
+
 // Whom the slime found is a record, read through the data bank.
 static bool accepts_slime_glob_aim(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100 && in->db == SLIME_BANK &&
@@ -20651,6 +20846,28 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 32,
     },
     {
+        .name = "martian_shoot",
+        .symbol = "$81:9981",
+        .entry = MARTIAN_SHOOT_PC,
+        .run = shim_martian_shoot,
+        .supported = supported_martian_shoot,
+        COSIM_EXITS(MARTIAN_SHOOT_EXITS),
+        .cycles = 900,
+        // The `JSR` to the picture's setter.
+        .stack_bytes = 2,
+    },
+    {
+        .name = "martian_show",
+        .symbol = "$81:9C99",
+        .entry = MARTIAN_SHOW_PC,
+        .ret_op = MARTIAN_SHOW_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_martian_show,
+        .accepts = accepts_martian_show,
+        .cycles = 900,
+        .stack_bytes = 2,
+    },
+    {
         .name = "spider_frame",
         .symbol = "$83:B299",
         .entry = SPIDER_FRAME_PC,
@@ -21290,6 +21507,35 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 480,
     },
     {
+        .name = "flinch_begin",
+        .symbol = "$80:D089",
+        .entry = FLINCH_BEGIN_PC,
+        .run = shim_flinch_begin,
+        .supported = supported_flinch_begin,
+        COSIM_EXITS(FLINCH_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 640,
+    },
+    {
+        .name = "player_hit",
+        .symbol = "$80:D02D",
+        .entry = HIT_PC,
+        .run = shim_player_hit,
+        .accepts = accepts_player_hit,
+        COSIM_EXITS(HIT_EXITS),
+        .uncalled = true,
+        .cycles = 480,
+    },
+    {
+        .name = "player_page_begin",
+        .symbol = "$80:D13A",
+        .entry = PAGE_BEGIN_PC,
+        .run = shim_player_page_begin,
+        .accepts = accepts_player_page_begin,
+        COSIM_EXITS(PAGE_BEGIN_EXITS),
+        .cycles = 6200,
+    },
+    {
         .name = "blinker_frame",
         .symbol = "$83:9C94",
         .entry = BLINKER_PC,
@@ -21355,6 +21601,16 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 1500,
         .stack_bytes = 6,  // a `JSL`, and `actor_slot_alloc`'s own three
+    },
+    {
+        .name = "slime_glob_splash",
+        .symbol = "$81:CE40",
+        .entry = SLIME_GLOB_SPLASH_PC,
+        .run = shim_slime_glob_splash,
+        .accepts = accepts_slime_glob_splash,
+        COSIM_EXITS(SLIME_GLOB_SPLASH_EXITS),
+        .uncalled = true,
+        .cycles = 480,
     },
     {
         .name = "slime_glob_aim",

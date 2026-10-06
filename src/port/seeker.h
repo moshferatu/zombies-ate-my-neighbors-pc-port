@@ -1,7 +1,7 @@
 // The thing in level 37 that comes at a player.
 //
 // Its thread sleeps at `$82:EF4B` for as many frames as `$2C` says, and then
-// runs the state `$16` names. A frame of that is here, for five states:
+// runs the state `$16` names. A frame of that is here, for seven states:
 //
 //   $82:E858  It comes at whoever is nearest, a pixel a frame. From nearer
 //             than `$20` it backs off instead. Between `$20` and `$30` it
@@ -13,6 +13,10 @@
 //             nearest, and goes on circling.
 //   $82:EB64  It stays where it is and faces whoever is nearest.
 //   $82:EB7A  The same, with another thing to do next.
+//   $82:ECA3  The same again, and its record set to be drawn every frame.
+//   $82:ECF7  Three frames in which its record is put at its own place and
+//             at the place at `$0A` and `$0C` by turns, drawn on the game's
+//             even frames and not on the odd ones.
 //
 // What each goes on to do when it stops is the ROM's: `seeker_frame` says
 // false for a frame that gets there, having changed only the copy it was
@@ -78,6 +82,8 @@
 #define SEEKER_STATE_CIRCLE 0xe8f9u
 #define SEEKER_STATE_WATCH 0xeb64u
 #define SEEKER_STATE_WATCH_B 0xeb7au
+#define SEEKER_STATE_HOLD 0xeca3u
+#define SEEKER_STATE_BLINK 0xecf7u
 
 #define SEEKER_TOO_NEAR 0x0020
 #define SEEKER_NEAR 0x0030
@@ -93,6 +99,10 @@
 #define SEEKER_SWOOP_ODDS 0x37        // of 256, each frame after a lap
 #define SEEKER_WATCH_ODDS 0x23
 #define SEEKER_WATCH_B_ODDS 0x28
+#define SEEKER_HOLD_ODDS 0x1e
+#define SEEKER_BLINK_FRAMES 4    // what a frame takes from `$1A`
+#define SEEKER_DP_AHEAD_X 0x0a   // the other place it is shown at
+#define SEEKER_DP_AHEAD_Y 0x0c
 
 enum {
   SF_HEAD,          // PEA, LDA $16 : DEC : PHA, RTS
@@ -129,6 +139,12 @@ enum {
   SF_FLAP_PICTURE,  // $E80B-$E821
   SF_RTS,
   SF_TAKEN,
+  SF_SHOW,          // $EC97-$ECA2
+  SF_BLINK,         // $ECF7-$ECFE
+  SF_BLINK_WHERE,   // $ECFF-$ED0E
+  SF_BLINK_ON,      // LDA #$8000 : ORA $0000,Y : BRA
+  SF_BLINK_OFF,     // LDA #$7FFF : AND $0000,Y
+  SF_BLINK_PUT,     // $ED1D-$ED2A
   SF_BLOCK_COUNT
 };
 

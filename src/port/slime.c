@@ -663,3 +663,32 @@ void slime_glob_aim(Wram* w, PortCpu* c, SlimeAttackWork* k) {
   set_nz16(c, c->a);
   c->pc = SLIME_GLOB_YIELD_PC;
 }
+
+// ---------------------------------------------------------------------------
+// The glob, landed
+// ---------------------------------------------------------------------------
+
+// `$81:CE40`: the box it tells of, forty-eight across and thirty-two down
+// about where it came down.
+void slime_glob_splash(Wram* w, PortCpu* c) {
+  PORT_COVER(slime_glob_splashed);
+  const uint16_t page = c->d;
+  set_c(c, true);
+  const uint16_t left = sbc16(
+      c, wram_r16(w, (uint16_t)(page + SLIME_GLOB_DP_AIM_X)),
+      SLIME_SPLASH_HALF_WIDTH);
+  wram_w16(w, NOTIFY_BOX_DP_X0, left);
+  set_c(c, false);
+  wram_w16(w, NOTIFY_BOX_DP_X1, adc16(c, left, 2 * SLIME_SPLASH_HALF_WIDTH));
+  set_c(c, true);
+  const uint16_t top = sbc16(
+      c, wram_r16(w, (uint16_t)(page + SLIME_GLOB_DP_AIM_Y)),
+      SLIME_SPLASH_HALF_HEIGHT);
+  wram_w16(w, NOTIFY_BOX_DP_Y0, top);
+  set_c(c, false);
+  wram_w16(w, NOTIFY_BOX_DP_Y1, adc16(c, top, 2 * SLIME_SPLASH_HALF_HEIGHT));
+  c->a = SLIME_SPLASH_ID;
+  set_nz16(c, c->a);
+  wram_w16(w, NOTIFY_BOX_DP_ID, c->a);
+  c->pc = SLIME_GLOB_SPLASH_TELL_PC;
+}

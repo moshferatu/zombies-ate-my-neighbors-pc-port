@@ -25,6 +25,11 @@ typedef struct {
 #define MARTIAN_ABOVE_MOST 0x0078
 // ...and the draw that fires downwards has to come in under this.
 #define MARTIAN_DRAW_FIRE 0x1e
+// Passes between shots, and the thread a shot is: see `port/bubble.h`.
+#define MARTIAN_SHOT_COOLDOWN 0x003c
+#define MARTIAN_SHOT_THREAD 0xf380u
+// `$81:99CD`: the picture's number it fires in, for each direction.
+#define MARTIAN_SHOT_PICTURES 0x99cdu
 // Passes a picture lasts, less one.
 #define MARTIAN_PICTURE_PASSES 4
 #define MARTIAN_MIRROR 0x0002
@@ -185,7 +190,7 @@ static bool a_player_is_near(Martian* m, uint16_t reach_at) {
 // ---------------------------------------------------------------------------
 
 // `$81:9981`: fire along `way`, if it has not fired lately. The shot itself
-// is the ROM's.
+// is the ROM's, and `martian_shoot` below is the start of it.
 static void shoot(Martian* m, uint16_t way) {
   const Point me = position(m);
   set_field(m, MARTIAN_DP_SHOT_WAY, way);
@@ -524,4 +529,80 @@ bool martian_frame(Wram* w, const Rom* rom, uint16_t page, MartianLog* log) {
   m.log->c_set = m.flags.c_set;
   m.log->v_set = m.flags.v_set;
   return field(&m, MARTIAN_DP_FATE) == 0;
+}
+
+// ---------------------------------------------------------------------------
+// A pass that fires
+// ---------------------------------------------------------------------------
+//
+// It is the ROM's, and these are two pieces of it.
+
+bool martian_show_supported(const Wram* w, uint16_t page) {
+  return wram_r16(w, (uint16_t)(page + MARTIAN_DP_DIRECTION)) <=
+             WAY_READABLE_MAX &&
+         wram_r16(w, (uint16_t)(page + MARTIAN_DP_CYCLE)) <= 3;
+}
+
+void martian_show_walking(Wram* w, const Rom* rom, PortCpu* c,
+                          MartianLog* log) {
+  Martian m = {w, rom, c->d, wram_r16(w, (uint16_t)(c->d + MARTIAN_DP_RECORD)),
+               log, {false, false, false, false}};
+  PORT_COVER(martian_shown);
+  const uint16_t way = field(&m, MARTIAN_DP_DIRECTION);
+  show_walking(&m);
+  c->x = way;
+  c->y = m.record;
+  set_c(c, way >= WAY_FIRST_LEFT);
+  if (log->new_picture) {
+    c->a = field(&m, MARTIAN_DP_CYCLE);
+    set_nz16(c, c->a);
+  } else {
+    c->a = record_field(&m, ACTOR_FLAGS);
+    set_nz16(c, field(&m, MARTIAN_DP_PICTURE_TIMER));
+  }
+}
+
+bool martian_shoot_supported(const Wram* w, const Rom* rom, uint16_t page,
+                             uint16_t way) {
+  if (way > WAY_MAX || (way & 1) != 0) return false;
+  const uint16_t number = rom_word(
+      rom, ((uint32_t)MARTIAN_BANK << 16) + MARTIAN_SHOT_PICTURES + way);
+  const uint16_t pictures = wram_r16(w, (uint16_t)(page + MARTIAN_DP_PICTURES));
+  return number < 0x0100 && (uint32_t)pictures + number * 2u + 1 <= 0xffffu;
+}
+
+void martian_shoot(Wram* w, const Rom* rom, PortCpu* c, MartianShot* shot) {
+  Martian m = {w, rom, c->d, wram_r16(w, (uint16_t)(c->d + MARTIAN_DP_RECORD)),
+               NULL, {false, false, false, false}};
+  const uint16_t way = c->a;
+  const Point me = position(&m);
+  set_field(&m, MARTIAN_DP_SHOT_WAY, way);
+  set_field(&m, MARTIAN_DP_SHOT_X, me.x);
+  set_field(&m, MARTIAN_DP_SHOT_Y, me.y);
+  set_field(&m, MARTIAN_DP_SHOT_SLOT, 0xffff);
+  const uint16_t cooldown = field(&m, MARTIAN_DP_COOLDOWN);
+  if (cooldown != 0) {
+    PORT_COVER(martian_shot_cooling);
+    c->a = cooldown;
+    set_field(&m, MARTIAN_DP_COOLDOWN, (uint16_t)(cooldown - 1));
+    set_nz16(c, (uint16_t)(cooldown - 1));
+    c->pc = MARTIAN_SHOOT_RTS_PC;
+    return;
+  }
+
+  PORT_COVER(martian_shot_begun);
+  shot->fired = true;
+  set_field(&m, MARTIAN_DP_COOLDOWN, MARTIAN_SHOT_COOLDOWN);
+  show(&m, table_word(&m, MARTIAN_SHOT_PICTURES, way));
+  const uint16_t flags = record_field(&m, ACTOR_FLAGS);
+  shot->mirrored = way >= WAY_FIRST_LEFT;
+  set_record_field(&m, ACTOR_FLAGS,
+                   shot->mirrored ? (uint16_t)(flags | MARTIAN_MIRROR)
+                                  : (uint16_t)(flags & ~MARTIAN_MIRROR));
+  c->x = way;
+  set_c(c, shot->mirrored);
+  c->a = MARTIAN_SHOT_THREAD;
+  c->y = MARTIAN_BANK;
+  set_nz16(c, c->y);
+  c->pc = MARTIAN_SHOOT_SPAWN_PC;
 }

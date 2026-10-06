@@ -192,6 +192,7 @@
   X(slime_rose,       "slime_attack_rise",  "its handler put back, and off a random way") \
   X(slime_glob_dressed,"slime_glob_dress",  "a record for the glob, where the slime is") \
   X(slime_glob_aimed, "slime_glob_aim",     "where it comes down, near whom the slime found") \
+  X(slime_glob_splashed,"slime_glob_splash","the box it tells of when it lands") \
   X(stepper_stepped,  "stepper_frame",      "a twentieth frame: on to the next place") \
   X(stepper_went_round,"stepper_frame",     "...which was the first again") \
   X(stepper_turned_picture,"stepper_frame", "the other picture, and its frames") \
@@ -341,6 +342,13 @@
   X(flinch_next,      "flinch_frame",       "the next picture of the list, and its frames") \
   X(flinch_done,      "flinch_frame",       "...which was the last") \
   X(flinch_other_state,"flinch_frame",      "state $0C, whose pictures are further on") \
+  X(flinch_begun,     "flinch_begin",       "the list for the way they face, and its first picture") \
+  X(flinch_lone,      "flinch_begin",       "the pictures at $FD72: one of them, twelve frames") \
+  X(hit_shrugged,     "player_hit",         "pictures in which nothing is taken") \
+  X(hit_no_health,    "player_hit",         "no health to take") \
+  X(hit_flinched,     "player_hit",         "one from their health, and on to the pictures") \
+  X(hit_shown_the_other_way,"player_hit",   "...with the next bit set: the ROM's") \
+  X(player_page_begun,"player_page_begin",  "a player's page cleared, and whose it is") \
   X(blinker_turned,   "blinker_frame",      "the other picture, and its frames") \
   X(blinker_told,     "blinker_frame",      "...and something has set its word: the ROM's") \
   X(follower_this_side,"follower_place",    "put beside the point") \
@@ -363,6 +371,9 @@
   X(seeker_faced_left,"seeker_frame",       "...to the left of it, so drawn as it is") \
   X(seeker_faced_right,"seeker_frame",      "...to the right, so flipped") \
   X(seeker_frame_ended,"seeker_frame",      "the loop's end") \
+  X(seeker_held,      "seeker_frame",       "facing them from a third state, and set to be drawn") \
+  X(seeker_blinked_on,"seeker_frame",       "at one of two places, drawn: an even frame") \
+  X(seeker_blinked_off,"seeker_frame",      "...and not drawn: an odd one") \
   /* $81:F98A the thing thrown in an arc -- see port/lob.h. */                  \
   X(lob_flew,         "lob_frame",          "a frame in the air") \
   X(lob_slowed,       "lob_frame",          "a fourth frame: the rise one less") \
@@ -1269,6 +1280,9 @@
   X(martian_arrived, "martian_frame", "a pass of coming in across the top") \
   X(martian_held_fire, "martian_frame", "something lined up with it while it cooled") \
   X(martian_fired, "martian_frame", "...or with nothing to wait for: the ROM's, so the pass was declined") \
+  X(martian_shot_begun, "martian_shoot", "the picture it fires in, and the shot's thread asked for") \
+  X(martian_shot_cooling, "martian_shoot", "called while it cools: one counted off") \
+  X(martian_shown, "martian_show", "the walking picture, called by the ROM") \
   X(martian_backed_off, "martian_frame", "a look that found its target too close") \
   X(martian_lined_up, "martian_frame", "...or near enough to line up with") \
   X(martian_approached, "martian_frame", "...or far enough to come closer to") \

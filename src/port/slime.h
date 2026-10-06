@@ -179,7 +179,8 @@ typedef struct {
 //   $81:CF2A  frame   rise or fall by this pass's speed
 //
 // The splash it lands with, which tells everything near and plays an
-// animation that sleeps inside the call, is the ROM's.
+// animation that sleeps inside the call, is the ROM's, but for the box it
+// tells of: see `slime_glob_splash`.
 #define SLIME_GLOB_FRAME_PC 0x81cf2au
 #define SLIME_GLOB_YIELD_PC 0x81cf26u  // `JSL thread_yield`, A already 2
 #define SLIME_GLOB_LANDED_PC 0x81cf36u // the splash
@@ -294,5 +295,15 @@ bool slime_frame_end(Wram* w, const Rom* rom, uint16_t page, SlimeLog* log);
 
 void slime_glob_dress(Wram* w, PortCpu* c, SlimeAttackWork* k);
 void slime_glob_aim(Wram* w, PortCpu* c, SlimeAttackWork* k);
+
+// `$81:CE40`, from the return of the splash's sound: the box that
+// `actor_notify_box` is asked about, as far as the `JSL` that asks.
+#define SLIME_GLOB_SPLASH_PC 0x81ce40u
+#define SLIME_GLOB_SPLASH_TELL_PC 0x81ce66u
+#define SLIME_SPLASH_HALF_WIDTH 0x0018
+#define SLIME_SPLASH_HALF_HEIGHT 0x0010
+#define SLIME_SPLASH_ID 0x0034
+
+void slime_glob_splash(Wram* w, PortCpu* c);
 
 #endif

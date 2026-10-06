@@ -246,6 +246,7 @@ add_library(zamn_port STATIC
   src/port/doll_thread.c
   src/port/flame.c
   src/port/flinch.c
+  src/port/hit.c
   src/port/card.c
   src/port/jumper.c
   src/port/loads.c
@@ -273,6 +274,7 @@ add_library(zamn_port STATIC
   src/port/begin.c
   src/port/decoy.c
   src/port/lunge.c
+  src/port/page.c
   src/port/neighbours.c
   src/port/objects.c
   src/port/swipe.c

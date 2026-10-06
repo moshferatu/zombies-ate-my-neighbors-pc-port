@@ -5,6 +5,53 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### A player hit, a page begun, a martian's shot and three small things (2026-10-06)
+
+What the 65816 still executed over the twelve movies goes from 0.37 to
+**0.33** million instructions of work. Live, all twelve stay at 99.9% of
+the work. The game registers 387 routines, 6 more.
+
+* **A player hit**, in a new `port/hit.c` and in `port/flinch.c`.
+  * `$80:D02D`, what is done about a hit: one from their health, their
+    other record no longer drawn, and on to how it shows.
+  * `$80:D089`, the start of the flinch: the list of pictures for the way
+    they face, and the first of them. `flinch_frame` had the rest.
+* **A player's page begun**, in a new `port/page.c`: `$80:D13A` as far as
+  its first call. It clears the page a word at a time, which was nearly
+  all the routine cost.
+* **Two pieces of a martian's pass that fires**, in `port/martian.c`. The
+  pass is still the ROM's, because the shot sleeps inside a call. But the
+  ROM now calls the port for `$81:9981`, as far as the shot's thread being
+  asked for, and for `$81:9C99`, the walking picture.
+* **Three small things**:
+  * Two more states of level 37's thread in `seeker_frame`: `$82:ECA3`,
+    which faces whoever is nearest and is drawn, and `$82:ECF7`, three
+    frames shown at two places by turns.
+  * `$81:CE40`, the box a slime's glob tells of when it lands, in
+    `port/slime.c`.
+
+* **Checked.** The corpus verifies at 33,372,679 calls across 51 movies
+  with 0 diverged, and 1,094 of 1,299 coverage sites; 12 of the 14 new
+  ones are taken. Every call priced is exact.
+* **Lockstep** over the corpus: 325,322 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes.
+* **The share of calls** moved where it should: `level21` from 99.0% to
+  99.3%, and `level37` from 99.3% to 99.4%.
+* **Untaken.** A hit on a player with no health. A hit on one in the
+  pictures the table at `$80:FCF6` has.
+* **Still the ROM's.** The other way a hit shows (`$80:D056`). The rest of
+  a player's page, a dozen calls. The pass a martian fires on, around the
+  two pieces. Level 37's thread after its third frame at two places, and
+  its states at `$82:EBCF`, `$82:ECC1` and `$82:EE0E`.
+* **Named by what the code says.** The pictures at `$80:FD72`, which have
+  one flinch picture and not a list, I have not seen. Nor the set in
+  which a hit takes nothing. What level 37's thing is I still do not
+  know.
+* **Next.** The two at the top stay the ROM's on purpose (`$80:897F` and
+  `$80:9512`). After them: level 37's thread again (`$82:ECC1`,
+  `$82:EBCF`), the tile a fist knocks (`$80:F0D7`), `$80:F354`,
+  `$82:BA36`, and the cursor screen's clock (`$82:B2BE`).
+
 ### The share of calls, counted from what the CPU did (2026-10-06)
 
 The second number in the title bar was wrong, and is right now. On

@@ -17257,3 +17257,84 @@ same to the cycle on all twelve. Lockstep's report is the same file, byte for by
 What the number does not see is as before. A thread's frame and a vblank
 job are reached by a return, so they are in the work share and in neither
 side of this one.
+
+## A player hit, a page begun, a martian's shot and three small things (2026-10-06)
+
+Six entries more, 387, and two states added to one there was. Over the
+twelve live movies the ROM's instructions go from 371,265 to 331,939.
+
+### Where the residue was
+
+`runs.py` in the scratch directory lists what the profile has as
+stretches: addresses executed with no gap of more than four bytes
+between them, summed. 453 of them. It reads better than pages do,
+because a stretch is what a port takes.
+
+    80D03A-D0BB   10,614   58 ins   a hit, and the flinch's start
+    82EC92-EE41    8,602  187 ins   level 37's thread, four states
+    80D13A-D1DB    6,426   67 ins   a player's page
+    819981-99C9    5,482   29 ins   a martian fires
+    81CE39-CE71    5,302   22 ins   a glob lands
+    82EF36-EF59    4,887   16 ins   level 37's loop, on a frame turned down
+    819C8F-9CA6    3,796   14 ins   a martian's picture
+
+### An entry where a port already leaves
+
+`player_hurt` and `player_frame` both leave at `$80:D02D` when the top
+bit of `$50` is set, and said it was the ROM's. An entry registered at
+that address is taken on the next step, with nothing changed in either.
+The same for `$80:D089`: it is where the sound's `RTL` comes back to, and
+the sound was a port.
+
+### A loop priced by its count
+
+`$80:D13A` clears 59 words with `STZ $00,X : DEX : DEX : CPX #$0009 :
+BCS`. The block is priced once a word, and a taken branch for each word
+but the last. 6,182 cycles, exact on all 65 calls in the corpus.
+
+### Pieces of a pass the port turns down
+
+`martian_frame` runs a pass on a scratch copy and declines if it fires:
+the shot sleeps twelve ticks inside `$81:9981`. So the ROM runs that
+pass, and the one it wakes in. Supporting it in the frame would mean
+leaving in the middle of two calls with their return addresses made up.
+
+Instead the two routines such a pass spends most in are entries of their
+own, which the ROM calls as it goes:
+
+* `$81:9981` to the `JSL` that asks for the shot's thread, or to the
+  `RTS` when it is cooling.
+* `$81:9C99` whole, to its `RTS`.
+
+Both are the frame's own functions with a `PortCpu` put round them, and
+the runs were priced already. In verify they are called on every pass,
+16,938 and 37,739 times, because there the ROM runs every pass.
+
+`ret_from_cpu` is declared before it is defined for this: the martians'
+shims come first in the file.
+
+### Two states of level 37's thread
+
+`$82:ECA3` is the watch state a third time, with other odds and the
+record set to be drawn. `$82:ECF7` has no calls: it takes four from
+`$1A`, and until that goes negative puts the record at `$0A`,`$0C` or at
+`$0E`,`$10`, drawn on the game's even frames. `seeker_frame` was priced
+on 274 calls in the corpus and is on 330.
+
+### Names
+
+The record's top bit is `ACTOR_DRAW`, so a hit is "their other record no
+longer drawn" and not a bit cleared. `$0038` to `$0040` are
+`actor_notify_box`'s four bounds and its id, so the glob's stretch is
+the box it tells of.
+
+`flinch_lone`, the pictures at `$80:FD72`, I expected no movie to take.
+The corpus takes it.
+
+### Checked
+
+33,372,679 calls across 51 movies, 0 diverged. 1,094 of 1,299 sites; of
+the 14 new, `hit_no_health` and `hit_shrugged` are untaken. Every priced
+call is refresh-exact. Lockstep: 325,322 passes, 48 of 51 never part;
+the report differs from the last in one figure, `level21`'s worst drift,
+by 12 cycles.

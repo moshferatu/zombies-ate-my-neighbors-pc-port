@@ -332,6 +332,58 @@ static bool watch(Seeker* s, uint16_t odds) {
   return true;
 }
 
+// `$82:ECA3`: face them, and most frames nothing else but its record set
+// to be drawn.
+static bool hold(Seeker* s) {
+  PortCpu* c = s->c;
+  if (!face_nearest(s)) return false;
+  draw(s);
+  cmp16(c, c->a, SEEKER_HOLD_ODDS);
+  if (c->a < SEEKER_HOLD_ODDS) return false;
+  ran(s, SF_WATCH);
+  ran(s, SF_TAKEN);
+  c->y = field(s, SEEKER_DP_RECORD);
+  c->a = (uint16_t)(wram_r16(s->w, (uint16_t)(c->y + ACTOR_FLAGS)) |
+                    ACTOR_DRAW);
+  set_nz16(c, c->a);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
+  ran(s, SF_SHOW);
+  return true;
+}
+
+// `$82:ECF7`: its record at one of two places, and drawn or not by the
+// game's frame. After the third the ROM goes on to something else.
+static bool blink(Seeker* s) {
+  PortCpu* c = s->c;
+  set_c(c, true);
+  c->a = sbc16(c, field(s, SEEKER_DP_FRAMES), SEEKER_BLINK_FRAMES);
+  ran(s, SF_BLINK);
+  if (c->a & 0x8000u) return false;
+  set_field(s, SEEKER_DP_FRAMES, c->a);
+  c->x = (uint16_t)(c->a & 4);
+  c->y = field(s, SEEKER_DP_RECORD);
+  const uint16_t flags = wram_r16(s->w, (uint16_t)(c->y + ACTOR_FLAGS));
+  ran(s, SF_BLINK_WHERE);
+  if ((wram_r16(s->w, W_SCHED_TICK) & 1) == 0) {
+    PORT_COVER(seeker_blinked_on);
+    c->a = (uint16_t)(flags | ACTOR_DRAW);
+    ran(s, SF_BLINK_ON);
+  } else {
+    PORT_COVER(seeker_blinked_off);
+    ran(s, SF_TAKEN);
+    c->a = (uint16_t)(flags & ~ACTOR_DRAW);
+    ran(s, SF_BLINK_OFF);
+  }
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_X),
+           field(s, (uint16_t)(SEEKER_DP_AHEAD_X + c->x)));
+  c->a = field(s, (uint16_t)(SEEKER_DP_AHEAD_Y + c->x));
+  set_nz16(c, c->a);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_Y), c->a);
+  ran(s, SF_BLINK_PUT);
+  return true;
+}
+
 bool seeker_frame(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k) {
   Seeker s = {w, rom, c, k};
   ran(&s, SF_HEAD);
@@ -352,6 +404,13 @@ bool seeker_frame(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k) {
     case SEEKER_STATE_WATCH_B:
       PORT_COVER(seeker_watched_b);
       if (!watch(&s, SEEKER_WATCH_B_ODDS)) return false;
+      break;
+    case SEEKER_STATE_HOLD:
+      if (!hold(&s)) return false;
+      PORT_COVER(seeker_held);
+      break;
+    case SEEKER_STATE_BLINK:
+      if (!blink(&s)) return false;
       break;
     default:
       return false;

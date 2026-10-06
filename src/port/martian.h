@@ -17,6 +17,13 @@
 // `MartianLog::declined` says so, and a guard asks it of a scratch copy
 // first.
 //
+// Two pieces of such a pass are here all the same, each for the ROM to call
+// as it goes:
+//
+//   $81:9981  shoot   as far as the shot's thread being asked for, or the
+//                     `RTS` when it is still cooling
+//   $81:9C99  show    the walking picture, to its `RTS`
+//
 // ## What a martian does
 //
 // **It shoots at whatever is lined up with it.** Every pass it asks
@@ -76,6 +83,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/oam.h"  // the works and registers of what it asks
 #include "port/terrain.h"
 #include "port/wram.h"
@@ -102,6 +110,12 @@ typedef enum {
 #define MARTIAN_STATE_ARRIVE 0x9dbbu
 // What it fires with, by the address in `$22`.
 #define MARTIAN_SHOOT 0x9981u
+
+#define MARTIAN_SHOOT_PC 0x819981u
+#define MARTIAN_SHOOT_SPAWN_PC 0x8199beu  // `JSL thread_spawn`, A and Y set
+#define MARTIAN_SHOOT_RTS_PC 0x8199ccu    // cooling: the `RTS`
+#define MARTIAN_SHOW_PC 0x819c99u
+#define MARTIAN_SHOW_RTS_PC 0x819cd6u
 
 // Fields on the martian's page.
 #define MARTIAN_DP_SHOT_X 0x00      // where a shot starts from
@@ -216,5 +230,23 @@ bool martian_frame_supported(const Wram* w, uint16_t page);
 // `log->declined` says the pass is the ROM's after all. WRAM is then part
 // written, which is why a guard asks on a scratch copy first.
 bool martian_frame(Wram* w, const Rom* rom, uint16_t page, MartianLog* log);
+
+// `$81:9C99`, called: the picture for the way it faces. `log` says what it
+// did, in `capped`, `mirrored` and `new_picture`.
+bool martian_show_supported(const Wram* w, uint16_t page);
+void martian_show_walking(Wram* w, const Rom* rom, PortCpu* c,
+                          MartianLog* log);
+
+// `$81:9981`, called with the way in A. It ends at the `JSL` that asks for
+// the shot's thread, having put up the picture it fires in, or at the `RTS`
+// with one counted off.
+typedef struct {
+  bool fired;
+  bool mirrored;
+} MartianShot;
+
+bool martian_shoot_supported(const Wram* w, const Rom* rom, uint16_t page,
+                             uint16_t way);
+void martian_shoot(Wram* w, const Rom* rom, PortCpu* c, MartianShot* shot);
 
 #endif
