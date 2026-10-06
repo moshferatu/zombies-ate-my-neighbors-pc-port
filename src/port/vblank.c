@@ -310,3 +310,70 @@ void boss_bg_dma(Wram* w, PortCpu* c, HwTrace* t) {
   wram_w16(w, W_BG_DMA_CURSOR, 0);
   set_c(c, false);
 }
+
+void bg1_vscroll_job(Wram* w, PortCpu* c, HwTrace* t) {
+  PORT_COVER(bg1_vscroll_job);
+  // `scroll_shadow_job`'s instructions on two of its twelve bytes, and so
+  // its runs. The tail is `CLC : REP #$20 : RTL`, which costs what that
+  // one's does.
+  for (int i = 0; i < 2; i++) {
+    hw_run(t, i == 0 ? SS_FIRST : SS_NEXT);
+    const uint8_t v = wram_r8(w, (uint32_t)(W_SCROLL_SHADOW + 2 + i));
+    lda8(c, v);
+    hw_w8(t, 0x210e, v);
+  }
+  hw_run(t, SS_TAIL);
+  set_c(c, false);
+}
+
+void vram_send_job(Wram* w, PortCpu* c, HwTrace* t) {
+  hw_run(t, VS_MODE);
+  hw_w16(t, 0x4300, 0x1801);
+  hw_run(t, VS_VMAIN);
+  hw_w8(t, 0x2115, 0x80);
+  const uint16_t source = wram_r16(w, W_VRAM_SEND_SOURCE);
+  hw_run(t, VS_SOURCE);
+  c->x = source;
+  hw_w16(t, 0x4302, source);
+  // A word to `$4304`, so the byte above the bank goes to `$4305`, which
+  // the length then overwrites.
+  hw_run(t, VS_LOAD);
+  hw_w16(t, 0x4304, wram_r16(w, W_VRAM_SEND_BANK));
+  const uint16_t at = wram_r16(w, W_VRAM_SEND_AT);
+  hw_run(t, VS_LOAD);
+  c->y = at;
+  hw_w16(t, 0x2116, at);
+
+  const uint16_t left = wram_r16(w, W_VRAM_SEND_LEFT);
+  hw_run(t, VS_TEST);
+  cmp16(c, left, VRAM_SEND_BYTES);
+  if (left <= VRAM_SEND_BYTES) {
+    PORT_COVER(vram_send_last);
+    if (left == VRAM_SEND_BYTES) hw_run(t, VS_BEQ);
+    hw_run(t, VBL_TAKEN);
+    hw_run(t, VBL_STORE);
+    hw_w16(t, 0x4305, left);
+    c->a = left;
+    dma_go(c, t);
+    wram_w16(w, W_VRAM_SEND_LEFT, 0);
+    hw_run(t, VS_DONE);
+    set_c(c, false);
+    return;
+  }
+
+  PORT_COVER(vram_send_more);
+  hw_run(t, VS_BEQ);
+  wram_w16(w, W_VRAM_SEND_LEFT, sbc16(c, left, VRAM_SEND_BYTES));
+  hw_run(t, VS_MORE);
+  hw_w16(t, 0x4305, VRAM_SEND_BYTES);
+  // The subtraction left carry set, so `ADC #$03FF` is a kilobyte on. VRAM's
+  // address is in words, and takes that sum's carry.
+  wram_w16(w, W_VRAM_SEND_SOURCE, adc16(c, source, VRAM_SEND_BYTES - 1));
+  c->a = adc16(c, at, VRAM_SEND_BYTES / 2);
+  wram_w16(w, W_VRAM_SEND_AT, c->a);
+  hw_run(t, VS_STEP);
+  lda8(c, 0x01);
+  hw_w8(t, 0x420b, 0x01);
+  hw_run(t, VS_MORE_TAIL);
+  set_c(c, true);
+}

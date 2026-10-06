@@ -227,6 +227,15 @@ static bool strike_pose(Frame* f) {
     case POSE_HANDLER_ARC_READY:
       pose_arc_ready(f->w, f->rom, f->page, did);
       break;
+    case POSE_HANDLER_BOUNCE:
+      pose_bounce(f->w, f->rom, f->page, did);
+      break;
+    case POSE_HANDLER_BOUNCE_WAIT:
+      pose_bounce_wait(f->w, f->rom, f->page, did);
+      break;
+    case POSE_HANDLER_BOUNCE_OFF:
+      pose_bounce_off(f->w, f->rom, f->page, did);
+      break;
     default:
       return false;
   }

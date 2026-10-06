@@ -263,6 +263,9 @@ add_library(zamn_port STATIC
   src/port/textmap.c
   src/port/axe.c
   src/port/blinker.c
+  src/port/bolt.c
+  src/port/stepper.c
+  src/port/wander.c
   src/port/clears.c
   src/port/hud.c
   src/port/camera.c

@@ -48,6 +48,7 @@
 #include "port/rng.h"
 #include "port/saucer.h"
 #include "port/blinker.h"
+#include "port/bolt.h"
 #include "port/bodies.h"
 #include "port/sched.h"
 #include "port/score.h"
@@ -70,12 +71,14 @@
 #include "port/riser.h"
 #include "port/seeker.h"
 #include "port/spawner.h"
+#include "port/stepper.h"
 #include "port/bubble.h"
 #include "port/flame.h"
 #include "port/stuck.h"
 #include "port/fishman.h"
 #include "port/step.h"
 #include "port/walk.h"
+#include "port/wander.h"
 #include "port/chase.h"
 #include "port/demo.h"
 #include "port/dma.h"
@@ -8680,6 +8683,20 @@ static bool slime_frame_ok(const Wram* w, const CosimRegs* in) {
          slime_frame_supported(w, in->d);
 }
 
+// The registers a pass leaves: see `shim_slime_frame`.
+static void slime_frame_out(const Wram* w, const CosimRegs* in,
+                            const SlimeLog* log, bool stays, CosimRegs* out) {
+  out->pc = stays ? SLIME_YIELD_PC : SLIME_FATE_PC;
+  out->a = stays ? SLIME_YIELD_TICKS
+                 : wram_r16(w, (uint16_t)(in->d + SLIME_DP_FATE));
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (log->c) out->p |= PORT_P_C;
+  if (log->v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)(log->flags_set ? 0 : PORT_P_C | PORT_P_V);
+}
+
 // Two things only running the pass can find. An attack began, which is the
 // ROM's. Or the touch, which tells whoever is in the box through their
 // collision handlers, met `actor_notify_box`'s decline: a handler the port
@@ -8718,15 +8735,7 @@ static void shim_slime_frame(Wram* w, const Rom* rom, const CosimRegs* in,
     cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
                                              (in->d & 0x00ffu) != 0));
 
-  out->pc = stays ? SLIME_YIELD_PC : SLIME_FATE_PC;
-  out->a = stays ? SLIME_YIELD_TICKS
-                 : wram_r16(w, (uint16_t)(in->d + SLIME_DP_FATE));
-  out->regs = COSIM_REG_A;
-  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
-  if (out->a & 0x8000u) out->p |= PORT_P_N;
-  if (log.c) out->p |= PORT_P_C;
-  if (log.v) out->p |= PORT_P_V;
-  out->p_keep = (uint8_t)(log.flags_set ? 0 : PORT_P_C | PORT_P_V);
+  slime_frame_out(w, in, &log, stays, out);
 }
 
 static const uint32_t SLIME_FRAME_EXITS[] = {SLIME_YIELD_PC, SLIME_FATE_PC};
@@ -13238,6 +13247,75 @@ static void pose_arc_ready_bill(PoseBill* b) {
   pose_add(b, &POSE_RUN_READY_NEXT);
 }
 
+// `$80:DFDA`. It opens as `$80:DD41` does, instruction for instruction, as
+// far as the height's test.
+static const CosimRun POSE_RUN_BOUNCE_SPEED = {40, 4, 1};  // $80:DFEB-$DFEE
+static const CosimRun POSE_RUN_BOUNCE_HIGH_TEST = {98, 10, 1};  // $80:DFEF-$DFF8
+static const CosimRun POSE_RUN_BOUNCE_HIGH = {172, 16, 2};  // $80:DFF9-$E008
+// `$80:E180`.
+static const CosimRun POSE_RUN_OFF_HEAD = {120, 12, 2};  // $80:E183-$E18E
+static const CosimRun POSE_RUN_OFF_STEP = {300 + 6, 28, 4};  // $80:E18F-$E1A6
+static const CosimRun POSE_RUN_OFF_FOURTH = {288, 26, 4};  // $80:E1A7-$E1BC
+static const CosimRun POSE_RUN_OFF_HEIGHT = {52, 5, 0};  // $80:E1BD-$E1C1
+
+static void pose_rise_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_ARC_RISE);
+  if (b->log->arc_slowed) pose_add(b, &POSE_RUN_ARC_SLOW);
+  else pose_taken(b);
+  pose_add(b, &POSE_RUN_RTS);
+}
+
+static void pose_bounce_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_ARC_TIMER);
+  if (log->waiting) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_RTS);
+    return;
+  }
+  pose_add(b, &POSE_RUN_ARC_CALLS);
+  pose_rise_bill(b);
+  pose_arc_axis_bill(b, log->arc_x);
+  pose_arc_axis_bill(b, log->arc_y);
+  pose_add(b, &POSE_RUN_ARC_PUBLISH);
+  pose_add(b, &POSE_RUN_ARC_HEIGHT);
+  pose_add(b, &POSE_RUN_BOUNCE_SPEED);
+  if (log->arc_falling) {
+    pose_taken(b);
+  } else {
+    pose_add(b, &POSE_RUN_BOUNCE_HIGH_TEST);
+    if (log->arc_high) pose_add(b, &POSE_RUN_BOUNCE_HIGH);
+    else pose_taken(b);
+  }
+  pose_add(b, &POSE_RUN_ARC_PICTURE);
+  pose_add(b, &POSE_RUN_ARC_AT);
+}
+
+// `$80:E035`, for a frame the timer is still running on.
+static void pose_bounce_wait_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_ARC_TIMER);
+  pose_taken(b);
+  pose_add(b, &POSE_RUN_RTS);
+}
+
+static void pose_bounce_off_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_JSR);
+  pose_rise_bill(b);
+  pose_add(b, &POSE_RUN_OFF_HEAD);
+  if (log->off_fourth) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_OFF_FOURTH);
+  } else {
+    pose_add(b, &POSE_RUN_OFF_STEP);
+  }
+  pose_add(b, &POSE_RUN_OFF_HEIGHT);
+  pose_add(b, &POSE_RUN_BOUNCE_SPEED);
+  if (log->arc_falling) pose_taken(b);
+  pose_add(b, &POSE_RUN_ARC_PICTURE);
+  pose_add(b, &POSE_RUN_ARC_AT);
+}
+
 static int pose_total(PoseBill* b, const CosimRegs* in) {
   const PoseLog* log = b->log;
   // `$80:F300`: the `BMI` taken to the `AND`, or the `ORA` and its `BRA`.
@@ -13505,6 +13583,9 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
     case POSE_HANDLER_ARC:
     case POSE_HANDLER_ARC_B: pose_arc_bill(&pose); break;
     case POSE_HANDLER_ARC_READY: pose_arc_ready_bill(&pose); break;
+    case POSE_HANDLER_BOUNCE: pose_bounce_bill(&pose); break;
+    case POSE_HANDLER_BOUNCE_WAIT: pose_bounce_wait_bill(&pose); break;
+    case POSE_HANDLER_BOUNCE_OFF: pose_bounce_off_bill(&pose); break;
     default: pose_walk_firing_bill(&pose); break;
   }
   calls += pose_total(&pose, in) + pose_calls(&log.pose_log, rom, in);
@@ -14484,6 +14565,16 @@ static const CosimRun VBL_COST[VBL_BLOCK_COUNT] = {
     [BB_FIRST] = {24, 2, 0},
     [BB_NEXT] = {54, 6, 0},
     [BB_DONE] = {88, 5, 0},
+    [VS_MODE] = {36, 6, 0},
+    [VS_VMAIN] = {48, 7, 0},
+    [VS_SOURCE] = {64, 7, 1},
+    [VS_LOAD] = {46, 5, 1},
+    [VS_TEST] = {58, 7, 1},
+    [VS_BEQ] = {12, 2, 0},
+    [VS_MORE] = {82, 11, 1},
+    [VS_STEP] = {164, 19, 2},
+    [VS_MORE_TAIL] = {72, 4, 0},
+    [VS_DONE] = {100, 6, 1},
 };
 
 // The dispatcher and the NMI both leave 16-bit registers, page zero and a data
@@ -14535,6 +14626,8 @@ VBL_SHIM(bg2_scroll_job)
 VBL_SHIM(camera_scroll_job)
 VBL_SHIM(scroll_shadow_job)
 VBL_SHIM(boss_bg_dma)
+VBL_SHIM(bg1_vscroll_job)
+VBL_SHIM(vram_send_job)
 
 // ---------------------------------------------------------------------------
 // DMA to the picture hardware, and three jobs -- see `port/dma.h`
@@ -15698,6 +15791,301 @@ APU_SHIM(apu_boot, apu_boot_traced(w, rom, &c, &g_apu_trace))
 static const uint32_t APU_SEND_EXITS[] = {APU_SEND_EXIT};
 static const uint32_t APU_LOAD_SET_EXITS[] = {APU_LOAD_SET_EXIT};
 static const uint32_t APU_BOOT_EXITS[] = {APU_BOOT_EXIT};
+
+// ---------------------------------------------------------------------------
+// The slime's attack between its sleeps -- see `port/slime.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=81`.
+static const CosimRun SLIME_RUN_THROW = {258, 22, 6};        // $CBC0-$CBD5
+static const CosimRun SLIME_RUN_THROW_LIST = {18, 3, 0};     // $CBD6 LDA #$CBFA
+static const CosimRun SLIME_RUN_RISE = {90, 10, 0};          // $CBDD-$CBE6
+static const CosimRun SLIME_RUN_RISE_OFF = {230, 24, 2};     // $CBE7 JMP, and $C9E4-$C9F8
+static const CosimRun SLIME_RUN_GLOB_DRESS = {764, 67, 7};   // $CECC-$CF0E
+// $CF1D JSR, $CE16-$CE38, $CF20 JSR, $CE82-$CE87 and $CF23 LDA #$0002
+static const CosimRun SLIME_RUN_GLOB_AIM = {592, 50, 4};
+
+static int slime_own_cycles(const CosimRun* run, const CosimRegs* in) {
+  return cosim_run_cycles_dp(run, fetch_fast(in), (in->d & 0x00ffu) != 0);
+}
+
+// `$81:CCF0`. The tables are read through the data bank.
+static bool accepts_slime_frame_end(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == SLIME_BANK &&
+         wram_r16(w, (uint16_t)(in->d + SLIME_DP_RECORD)) < 0x1f00 &&
+         slime_frame_end_supported(w, in->d);
+}
+
+// The touch may meet `actor_notify_box`'s decline: a handler the port does
+// not have.
+static bool guard_slime_frame_end(Wram* scratch, const Rom* rom,
+                                  const CosimRegs* in) {
+  SlimeLog log = {0};
+  slime_frame_end(scratch, rom, in->d, &log);
+  return !log.declined;
+}
+
+static void shim_slime_frame_end(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  SlimeLog log = {0};
+  const bool stays = slime_frame_end(w, rom, in->d, &log);
+
+  SlimeBill b = {{0, 0, 0}, 0, &log, in};
+  slime_add(&b, &SLIME_RUN_SHOW_CALL);
+  const bool priced = slime_show_bill(&b);
+  slime_add(&b, &SLIME_RUN_FATE);
+  if (stays) {
+    slime_add(&b, &SLIME_RUN_TAKEN);
+    slime_add(&b, &SLIME_RUN_SLEEP);
+  }
+  if (priced) cosim_cost(b.calls + slime_own_cycles(&b.own, in));
+  slime_frame_out(w, in, &log, stays, out);
+}
+
+static bool accepts_slime_attack(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == SLIME_BANK &&
+         cur_task_ok(w);
+}
+
+static void shim_slime_attack_throw(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  SlimeAttackWork k = {0};
+  cpu_from(in, &c);
+  slime_attack_throw(w, rom, &c, &k);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SLIME_RUN_THROW, 1);
+  run_add(&run, &SLIME_RUN_THROW_LIST, 1);
+  cosim_cost(thread_spawn_cycles(k.slot, rom, in->fastrom) +
+             slime_own_cycles(&run, in));
+}
+
+static void shim_slime_attack_rise(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  SlimeAttackWork k = {0};
+  cpu_from(in, &c);
+  slime_attack_rise(w, &c, &k);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SLIME_RUN_RISE, 1);
+  run_add(&run, &SLIME_RUN_RISE_OFF, 1);
+  cosim_cost(cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom) +
+             rng_cycles(k.drew_overflow[0], in->fastrom) +
+             slime_own_cycles(&run, in));
+}
+
+// No record free is the ROM's: it goes on with what is none.
+static bool guard_slime_glob_dress(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  (void)rom;
+  if (!accepts_slime_attack(scratch, in)) return false;
+  PortCpu c;
+  SlimeAttackWork k = {0};
+  cpu_from(in, &c);
+  slime_glob_dress(scratch, &c, &k);
+  return !k.declined;
+}
+
+static void shim_slime_glob_dress(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  SlimeAttackWork k = {0};
+  cpu_from(in, &c);
+  slime_glob_dress(w, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(saucer_alloc_cycles(k.record, in->fastrom) +
+             slime_own_cycles(&SLIME_RUN_GLOB_DRESS, in));
+}
+
+// Whom the slime found is a record, read through the data bank.
+static bool accepts_slime_glob_aim(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == SLIME_BANK &&
+         wram_r16(w, (uint16_t)(in->d + SLIME_GLOB_DP_TARGET)) < 0x1f00;
+}
+
+static void shim_slime_glob_aim(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  SlimeAttackWork k = {0};
+  cpu_from(in, &c);
+  slime_glob_aim(w, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(rng_cycles(k.drew_overflow[0], in->fastrom) +
+             rng_cycles(k.drew_overflow[1], in->fastrom) +
+             slime_own_cycles(&SLIME_RUN_GLOB_AIM, in));
+}
+
+static const uint32_t SLIME_THROW_EXITS[] = {SLIME_THROW_PICTURES_PC};
+static const uint32_t SLIME_RISE_EXITS[] = {SLIME_RISE_RTS_PC};
+static const uint32_t SLIME_GLOB_DRESS_EXITS[] = {SLIME_GLOB_DRESS_RTS_PC};
+static const uint32_t SLIME_GLOB_AIM_EXITS[] = {SLIME_GLOB_YIELD_PC};
+
+// ---------------------------------------------------------------------------
+// Three small threads' stretches, and a job that asks for another -- see
+// `port/stepper.h`, `port/bolt.h`, `port/wander.h` and `port/dma.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py` with the entry's own data bank; a
+// `BRA` at the end of one is counted taken.
+
+// `$83:9D2C`. Its tables are read through the data bank, and so is its record.
+static const CosimRun ST_COST[ST_BLOCK_COUNT] = {
+    [ST_HEAD] = {62, 4, 1},
+    [ST_PLACE] = {70, 8, 1},
+    [ST_ROUND] = {18, 3, 0},
+    [ST_STEP] = {426, 38, 7},
+    [ST_PICTURE_TEST] = {62, 4, 1},
+    [ST_PICTURE] = {278, 27, 4},
+    [ST_TOLD] = {40, 4, 1},
+    [ST_AGAIN] = {18, 3, 0},
+    [ST_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_stepper_frame(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == STEPPER_BANK &&
+         wram_r16(w, (uint16_t)(in->d + STEPPER_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + STEPPER_DP_WHICH)) < 2 &&
+         wram_r16(w, (uint16_t)(in->d + STEPPER_DP_PLACE)) < STEPPER_PLACES;
+}
+
+static void shim_stepper_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  PortCpu c;
+  StepperWork k = {0};
+  cpu_from(in, &c);
+  stepper_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < ST_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&ST_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t STEPPER_EXITS[] = {STEPPER_SLEEP_PC, STEPPER_TOLD_PC};
+
+// `$81:F823`. The ROM spins for good on a load gone negative.
+static const CosimRun BO_COST[BO_BLOCK_COUNT] = {
+    [BO_HEAD] = {40, 4, 1},
+    [BO_COUNT] = {62, 4, 1},
+    [BO_LEASH] = {198, 16, 1},
+    [BO_GROUND] = {198, 16, 1},
+    [BO_MOVE] = {398, 34, 3},
+    [BO_PICTURE] = {284 + 6, 28, 4},
+    [BO_AGAIN] = {18, 3, 0},
+    [BO_END] = {224, 22, 2},
+    [BO_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_bolt_frame(const Wram* w, const CosimRegs* in) {
+  const uint16_t load = wram_r16(w, W_SPAWN_LOAD);
+  return body_ok(in) && in->d >= 0x0100 && in->db == BOLT_BANK &&
+         wram_r16(w, (uint16_t)(in->d + BOLT_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + BOLT_DP_WAY)) <= BOLT_WAY_MAX &&
+         wram_r16(w, (uint16_t)(in->d + BOLT_DP_WHICH)) < 2 &&
+         load >= BOLT_BUDGET && load <= 0x8000u + BOLT_BUDGET - 1;
+}
+
+static void shim_bolt_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  PortCpu c;
+  BoltWork k = {0};
+  cpu_from(in, &c);
+  bolt_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  if (k.leashed) cycles += tether_cycles(&k.leash, in->fastrom);
+  if (k.tested) cycles += terrain_bit2_cycles(&k.ground, in->fastrom);
+  for (int i = 0; i < BO_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&BO_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t BOLT_EXITS[] = {BOLT_SLEEP_PC, BOLT_FREE_PC};
+
+// `$81:D948`. Its record is read through the data bank.
+static const CosimRun WA_COST[WA_BLOCK_COUNT] = {
+    [WA_HEAD] = {68, 6, 2},
+    [WA_TRIES] = {46, 5, 1},
+    [WA_DRAW] = {562, 50, 5},
+    [WA_TILE] = {140, 13, 2},
+    [WA_BELOW] = {182, 18, 2},
+    [WA_NEXT] = {62, 4, 1},
+    [WA_GIVE_UP] = {12 + 6, 2, 0},
+    [WA_FOUND] = {74, 7, 2},
+    [WA_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_wander_pick(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         wram_r16(w, (uint16_t)(in->d + WANDER_DP_RECORD)) < 0x1f00;
+}
+
+static void shim_wander_pick(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  WanderWork k = {0};
+  cpu_from(in, &c);
+  wander_pick(w, &c, &k);
+  cpu_to(&c, out);
+  // A tile's lookup leaves an overflow the port does not follow.
+  if (k.overflow_unknown) out->p_keep = PORT_P_V;
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = k.draws_once * rng_cycles(false, in->fastrom) +
+               k.draws_twice * rng_cycles(true, in->fastrom) +
+               k.tiles * cosim_run_cycles(&TILE_ATTRS_RUN, in->fastrom);
+  for (int e = 0; e <= BOUNDS_LAST_COMPARE; e++)
+    cycles += k.bounds_exits[e] * bounds_cycles((BoundsExit)e, in->fastrom);
+  for (int i = 0; i < WA_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&WA_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t WANDER_EXITS[] = {WANDER_RTS_PC, WANDER_FOUND_PC};
+
+// `$82:8163`, which the queue reaches by an `RTL`. What `vbl_queue_a_add`
+// leaves is its own; this clears carry after it.
+static const CosimRun ASK_RUN_HEAD = {90, 10, 0};  // $8163-$816C
+static const CosimRun ASK_RUN_TAIL = {54, 2, 0};   // CLC : RTL
+
+static bool accepts_colours_112_ask(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && low_stack(in) && bank_sees_low_wram(in->db);
+}
+
+static void shim_colours_112_ask(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  const uint16_t job = COLOURS_112_JOB_PC & 0xffffu;
+  const uint16_t bank = COLOURS_112_JOB_PC >> 16;
+  const int slot = colours_112_ask(w);
+  if (slot < 0) {
+    out->a = job;
+    out->x = in->x;
+    out->y = bank;
+  } else {
+    out->a = (uint16_t)(job - 1);
+    out->y = out->a;
+    out->x = (uint16_t)slot;
+  }
+  queue_flags(w, W_VBL_QUEUE_A_COUNT, bank, slot >= 0, out);
+  out->c = false;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &ASK_RUN_HEAD, 1);
+  run_add(&run, &ASK_RUN_TAIL, 1);
+  cosim_cost(saucer_queue_a_cycles(slot, in->fastrom) +
+             cosim_run_cycles(&run, fetch_fast(in)));
+}
 
 // The count is the table's length by construction, so it cannot drift from it.
 #define COSIM_COMMIT(tbl) \
@@ -19369,6 +19757,136 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(FOLLOWER_EXITS),
         .uncalled = true,
         .cycles = 650,
+    },
+    // The slime's attack between its sleeps: see `port/slime.h`.
+    {
+        .name = "slime_frame_end",
+        .symbol = "$81:CCF0",
+        .entry = SLIME_END_PC,
+        .run = shim_slime_frame_end,
+        .accepts = accepts_slime_frame_end,
+        .supported = guard_slime_frame_end,
+        COSIM_EXITS(SLIME_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 2500,
+        // A `JSR`, another, and the `JSL` down to `actor_notify_box`.
+        .stack_bytes = 32,
+    },
+    {
+        .name = "slime_attack_throw",
+        .symbol = "$81:CBC0",
+        .entry = SLIME_THROW_PC,
+        .run = shim_slime_attack_throw,
+        .accepts = accepts_slime_attack,
+        COSIM_EXITS(SLIME_THROW_EXITS),
+        .uncalled = true,
+        .cycles = 2600,
+        .stack_bytes = 7,  // a `JSL`, and `thread_spawn`'s own four
+    },
+    {
+        .name = "slime_attack_rise",
+        .symbol = "$81:CBDD",
+        .entry = SLIME_RISE_PC,
+        .run = shim_slime_attack_rise,
+        .accepts = accepts_slime_attack,
+        COSIM_EXITS(SLIME_RISE_EXITS),
+        .uncalled = true,
+        .cycles = 850,
+        .stack_bytes = 3,  // a `JSL`
+    },
+    {
+        .name = "slime_glob_dress",
+        .symbol = "$81:CECC",
+        .entry = SLIME_GLOB_DRESS_PC,
+        .run = shim_slime_glob_dress,
+        .supported = guard_slime_glob_dress,
+        COSIM_EXITS(SLIME_GLOB_DRESS_EXITS),
+        .uncalled = true,
+        .cycles = 1500,
+        .stack_bytes = 6,  // a `JSL`, and `actor_slot_alloc`'s own three
+    },
+    {
+        .name = "slime_glob_aim",
+        .symbol = "$81:CF1D",
+        .entry = SLIME_GLOB_AIM_PC,
+        .run = shim_slime_glob_aim,
+        .accepts = accepts_slime_glob_aim,
+        COSIM_EXITS(SLIME_GLOB_AIM_EXITS),
+        .uncalled = true,
+        .cycles = 1300,
+        .stack_bytes = 5,  // a `JSR` and a `JSL`
+    },
+    // Three small threads' stretches, a job that asks for another, and two
+    // vblank jobs.
+    {
+        .name = "stepper_frame",
+        .symbol = "$83:9D2C",
+        .entry = STEPPER_PC,
+        .run = shim_stepper_frame,
+        .accepts = accepts_stepper_frame,
+        COSIM_EXITS(STEPPER_EXITS),
+        .uncalled = true,
+        .cycles = 200,
+    },
+    {
+        .name = "bolt_frame",
+        .symbol = "$81:F823",
+        .entry = BOLT_PC,
+        .run = shim_bolt_frame,
+        .accepts = accepts_bolt_frame,
+        COSIM_EXITS(BOLT_EXITS),
+        .uncalled = true,
+        .cycles = 2400,
+        // A `JSL`, and the deepest of what the two tests push.
+        .stack_bytes = 16,
+    },
+    {
+        .name = "wander_pick",
+        .symbol = "$81:D948",
+        .entry = WANDER_PC,
+        .run = shim_wander_pick,
+        .accepts = accepts_wander_pick,
+        COSIM_EXITS(WANDER_EXITS),
+        .uncalled = true,
+        .cycles = 4000,
+        // A `JSL`, and the tile lookup's nine and its own call.
+        .stack_bytes = 20,
+    },
+    {
+        .name = "colours_112_ask",
+        .symbol = "$82:8163",
+        .entry = COLOURS_112_ASK_PC,
+        .ret_op = COLOURS_112_ASK_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_colours_112_ask,
+        .accepts = accepts_colours_112_ask,
+        .uncalled = true,
+        .cycles = 1100,
+        .stack_bytes = 5,  // a `JSL` and its `PHY`
+    },
+    {
+        .name = "bg1_vscroll_job",
+        .symbol = "$82:AEB4",
+        .entry = BG1_VSCROLL_JOB_PC,
+        .ret_op = BG1_VSCROLL_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_bg1_vscroll_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 190,
+    },
+    {
+        .name = "vram_send_job",
+        .symbol = "$80:9ED0",
+        .entry = VRAM_SEND_JOB_PC,
+        .ret_op = VRAM_SEND_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_vram_send_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 9000,
     },
     {
         .name = "seeker_frame",

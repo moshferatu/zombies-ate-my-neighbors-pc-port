@@ -72,6 +72,8 @@
 #define COLOURS_112_JOB_RTL_PC 0x828336u
 #define VRAM_CLEAR_JOB_PC 0x809f62u
 #define VRAM_CLEAR_JOB_RTL_PC 0x809f98u  // of two: the other is at `$9F9A`
+#define COLOURS_112_ASK_PC 0x828163u
+#define COLOURS_112_ASK_RTL_PC 0x82816eu
 
 // The HUD's shadow, four rows of 32 words less 32, and where it goes.
 #define HUD_SHADOW_AT 0x5f36u
@@ -173,6 +175,12 @@ void hud_upload_job(HwTrace* t);
 // which is the eighth of the background's palettes. It runs once: carry
 // clear, and 1 in A.
 void colours_112_job(HwTrace* t);
+
+// `$82:8163`, a job of the other queue, the one that runs after the
+// picture: it puts `colours_112_job` on the vblank's. It runs once: carry
+// clear. Returns the slot `vbl_queue_a_add` gave it, or -1 with that queue
+// full.
+int colours_112_ask(Wram* w);
 
 // `$80:9F62`, which `$80:9F9D` queues and waits on: a kilobyte of VRAM zeroed
 // from the word address at `$C8`, which it moves on. It stays queued, carry

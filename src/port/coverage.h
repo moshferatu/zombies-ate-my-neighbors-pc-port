@@ -185,6 +185,33 @@
   X(spawn_scattered,  "spawn_entry",        "...or near it, on clear ground") \
   X(spawn_ground_in_the_way,"spawn_entry",  "not started: something solid there") \
   X(spawn_off_the_level,"spawn_entry",      "...or the place is off the level") \
+  /* The slime's attack between its sleeps, and four small things -- see     \
+     port/slime.h, stepper.h, bolt.h, wander.h, vblank.h, dma.h. */          \
+  X(slime_frame_ended_for_the_rom,"slime_frame_end", "the picture and the touch, after a state that was the ROM's") \
+  X(slime_threw,      "slime_attack_throw", "the glob's thread started") \
+  X(slime_rose,       "slime_attack_rise",  "its handler put back, and off a random way") \
+  X(slime_glob_dressed,"slime_glob_dress",  "a record for the glob, where the slime is") \
+  X(slime_glob_aimed, "slime_glob_aim",     "where it comes down, near whom the slime found") \
+  X(stepper_stepped,  "stepper_frame",      "a twentieth frame: on to the next place") \
+  X(stepper_went_round,"stepper_frame",     "...which was the first again") \
+  X(stepper_turned_picture,"stepper_frame", "the other picture, and its frames") \
+  X(stepper_told,     "stepper_frame",      "something has set its word: the ROM's") \
+  X(bolt_flew,        "bolt_frame",         "a step the way it goes") \
+  X(bolt_turned_picture,"bolt_frame",       "...and a ninth frame: the other picture") \
+  X(bolt_met_ground,  "bolt_frame",         "the ground is in the way, and it ends") \
+  X(bolt_past_the_leash,"bolt_frame",       "too far from a player, and it ends") \
+  X(bolt_ran_out,     "bolt_frame",         "sixty frames, and it ends") \
+  X(bolt_told,        "bolt_frame",         "something has set its word, and it ends") \
+  X(wander_content,   "wander_pick",        "the two words are the same: nothing to look for") \
+  X(wander_found,     "wander_pick",        "a spot that will do") \
+  X(wander_off_the_level,"wander_pick",     "a spot off the level") \
+  X(wander_tile_wrong,"wander_pick",        "...or on a tile without the bit") \
+  X(wander_tile_below_wrong,"wander_pick",  "...or above one") \
+  X(wander_gave_up,   "wander_pick",        "three spots, and none would do") \
+  X(vram_send_more,   "vram_send_job",      "a kilobyte sent, and more to send") \
+  X(vram_send_last,   "vram_send_job",      "the last of it sent") \
+  X(bg1_vscroll_job,  "bg1_vscroll_job",    "BG1's scroll down, from its shadow") \
+  X(colours_112_asked,"colours_112_ask",    "the sixteen colours' job queued") \
   /* Five small things -- see port/line.h, flinch.h, blinker.h, follower.h. */  \
   X(line_moved,       "line_step",          "a frame along a line") \
   X(line_stepped,     "line_step",          "...and a whole in a sum: a step that way") \
@@ -1083,6 +1110,10 @@
   X(pose_arc_ready, "pose_arc_ready", "the picture before a leap, its time up") \
   X(pose_arc_flew, "pose_arc", "a frame through the air") \
   X(pose_arc_fell, "pose_arc", "...high up and on the way down") \
+  X(pose_bounce_rose, "pose_bounce", "up from a trampoline") \
+  X(pose_bounce_fell, "pose_bounce", "...and down onto it again") \
+  X(pose_bounce_waited, "pose_bounce_wait", "on it, between two bounces") \
+  X(pose_bounced_off, "pose_bounce_off", "off it, across the ground") \
   /* The clones, in readable C: port/clone.h. */                                 \
   X(clone_copied, "clone_frame", "a frame of moving as its player moves") \
   X(clone_chased, "clone_frame", "a frame of coming for the nearer player") \

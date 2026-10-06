@@ -21,6 +21,12 @@
 //   $80:DD41  arc         through the air
 //   $80:DE0D  arc         the same again, with another landing
 //
+// and three of a player on a trampoline:
+//
+//   $80:DFDA  bounce       up from it and down onto it again
+//   $80:E035  bounce_wait  on it, between two bounces
+//   $80:E180  bounce_off   off it, across the ground
+//
 // ## What a pose handler does
 //
 // **When this frame's buttons differ from last frame's, the pose starts
@@ -61,10 +67,19 @@
 // picture is one of three for each way of facing: going up, high and coming
 // down, and near the ground. High up they are drawn over everything.
 //
+// **A bounce is the same flight, straight up.** Going up, at ten pixels
+// and above, the player is drawn over everything and is in state 6. Coming
+// down they show the falling picture whatever the height.
+//
+// **Bouncing off goes by a table and not by fractions.** `$5A` picks a row
+// for the way they go, and the row has two steps: one for three frames in
+// four and another for the fourth, by the frame count.
+//
 // ## What is the ROM's
 //
-// The frame a player in the air comes down on: each of the two handlers has
-// a landing of its own.
+// The frame a player in the air comes down on: each of the handlers has a
+// landing of its own. The frame a wait on the trampoline ends on, which
+// looks for where to bounce to.
 // Weapon 5's shot, which goes on to a pose of its own that sleeps. The poses
 // for the weapons in the second band (`$80:EE82`) and whatever sets `$6C`
 // (`$80:EF67`). Of the monster's walk, the first picture, which makes a
@@ -112,6 +127,9 @@
 #define POSE_HANDLER_ARC 0xdd41u
 #define POSE_HANDLER_ARC_READY 0xddf0u
 #define POSE_HANDLER_ARC_B 0xde0du
+#define POSE_HANDLER_BOUNCE 0xdfdau
+#define POSE_HANDLER_BOUNCE_WAIT 0xe035u
+#define POSE_HANDLER_BOUNCE_OFF 0xe180u
 
 #define POSE_ARC_PC 0x80dd41u
 #define POSE_ARC_RTS_PC 0x80dda4u
@@ -155,6 +173,7 @@
 #define POSE_DP_ARC_SUM_Y 0x46
 #define POSE_DP_SHOT_DELAY 0x4c   // frames until the weapon may fire again
 #define POSE_DP_PACE 0x54         // bits 15 and 14 change how fast it walks
+#define POSE_DP_OFF_ROW 0x5a      // bouncing off: the row of steps for the way
 #define POSE_DP_PICTURES_SET 0x6a // with `$0C`, which picture table is `$10`
 #define POSE_DP_6C 0x6c           // nonzero is a pose of its own, `$80:EF67`
 #define POSE_DP_STATE 0x70        // the player's state: picks the movement
@@ -206,6 +225,7 @@ typedef struct {
   bool arc_slowed;     // ...gravity took one from the speed
   bool arc_high;       // ...high enough to be drawn over everything
   bool arc_falling;    // ......and on the way down
+  bool off_fourth;     // bouncing off: a fourth frame, which has its own step
   bool band_b_fired;   // the second band's walk: a step that fires
   bool punched;        // the monster's walk: those in the fist's box told...
   ActorNotifyWork told;  // ...and what telling them took
@@ -229,6 +249,9 @@ void pose_walk_band_b(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_walk_6c(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_arc(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_arc_ready(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_bounce(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_bounce_wait(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_bounce_off(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 
 // `$80:F300` as a call of its own, for the poses that are still the ROM's.
 // A is how far into the pose table. The entry there is a word to put in the

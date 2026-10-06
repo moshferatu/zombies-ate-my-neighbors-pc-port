@@ -81,6 +81,18 @@ enum {
   BB_NEXT,      // REP #$20 : DEX : DEX : BPL
   BB_DONE,      // STZ $1D54 : CLC : RTL
 
+  // $80:9ED0 vram_send_job
+  VS_MODE,      // LDA #$1801 : STA $4300
+  VS_VMAIN,     // SEP #$20 : LDA #$80 : STA $2115
+  VS_SOURCE,    // REP #$30 : LDX $C2 : STX $4302
+  VS_LOAD,      // LDA $C4 : STA $4304, and LDY $C8 : STY $2116
+  VS_TEST,      // LDA $C6 : CMP #$0400 : BCC
+  VS_BEQ,       // BEQ
+  VS_MORE,      // SBC #$0400 : STA $C6 : LDA #$0400 : STA $4305
+  VS_STEP,      // $9F02-$9F12: both addresses moved on, and STA $420B
+  VS_MORE_TAIL, // REP #$20 : SEC : RTL
+  VS_DONE,      // REP #$20 : STZ $C6 : CLC : RTL
+
   VBL_BLOCK_COUNT
 };
 
@@ -129,5 +141,28 @@ void scroll_shadow_job(Wram* w, PortCpu* c, HwTrace* t);
 // The tilemap rows `port/bossbg.h` queues, `W_BG_DMA_*`, sent last entry first,
 // and the queue emptied. A one-shot: it returns with carry clear.
 void boss_bg_dma(Wram* w, PortCpu* c, HwTrace* t);
+
+// --- $82:AEB4 bg1_vscroll_job -------------------------------------------------
+//
+// BG1's scroll down, from its two bytes of the scroll shadow. It is queued
+// every frame while a level's name comes down, and runs once: carry clear.
+#define BG1_VSCROLL_JOB_PC 0x82aeb4u
+#define BG1_VSCROLL_JOB_RTL_PC 0x82aec5u
+void bg1_vscroll_job(Wram* w, PortCpu* c, HwTrace* t);
+
+// --- $80:9ED0 vram_send_job ---------------------------------------------------
+//
+// Bytes to VRAM, a kilobyte a vblank: `$C6` of them from `$C4:$C2`, to the
+// word address at `$C8`. It moves all three on and stays queued, carry set,
+// while more than a kilobyte is left. What is left then it sends, and runs
+// no more.
+#define VRAM_SEND_JOB_PC 0x809ed0u
+#define VRAM_SEND_JOB_RTL_PC 0x809f18u  // of two: the other is at `$9F28`
+#define W_VRAM_SEND_SOURCE 0x00c2u
+#define W_VRAM_SEND_BANK 0x00c4u
+#define W_VRAM_SEND_LEFT 0x00c6u
+#define W_VRAM_SEND_AT 0x00c8u
+#define VRAM_SEND_BYTES 0x0400u
+void vram_send_job(Wram* w, PortCpu* c, HwTrace* t);
 
 #endif

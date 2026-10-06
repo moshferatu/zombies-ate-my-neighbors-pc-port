@@ -5,6 +5,67 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The slime's attack, a trampoline's bounces, and six small things (2026-10-06)
+
+What the 65816 still executed over the twelve movies goes from 0.74 to
+**0.62** million instructions of work. Live, `level21`, `level29-fighting`,
+`level33` and `level41` each go up a tenth; the other eight do not move.
+The game registers 343 routines, 11 more.
+
+* **The slime's attack, between its sleeps**, in `port/slime.c`. A pass
+  that begins an attack is one `slime_frame` turns down, because the attack
+  shows two lists of pictures and sleeps inside each. So the ROM ran all of
+  it, and the glob's first frame with it. Five stretches of that are here
+  now:
+  * `$81:CCF0`, the picture and the touch and the pass's end, for a pass
+    whose state was the ROM's.
+  * `$81:CBC0`, the glob's thread started.
+  * `$81:CBDD`, the slime's handler put back, and off a random way.
+  * `$81:CECC`, a record for the glob.
+  * `$81:CF1D`, where the glob will come down.
+* **A player on a trampoline**, in `port/pose.c`: three more pose handlers.
+  `$80:DFDA` is a bounce, straight up and down again. `$80:E035` waits on
+  it between two. `$80:E180` is the bounce off it, across the ground. No
+  routine is new: `player_frame` turned those frames down for the pose, and
+  now takes them. I take it for a trampoline by what the handlers do.
+* **Six small things**:
+  * `$81:F823`, a frame of a thing sent off one way in a straight line, in
+    a new `port/bolt.c`. Level 21 has it.
+  * `$83:9D2C`, a turn of a thing that steps round four places, in a new
+    `port/stepper.c`.
+  * `$81:D948`, a thing looking for somewhere near to go, in a new
+    `port/wander.c`.
+  * `$82:8163`, a job that asks for the sixteen colours' job, in
+    `port/dma.c`.
+  * `$82:AEB4`, the vblank job that scrolls BG1 down, and `$80:9ED0`, the
+    one that sends bytes to VRAM a kilobyte a vblank, both in
+    `port/vblank.c`.
+
+* **Checked.** The corpus verifies at 33,284,636 calls across 51 movies
+  with 0 diverged, and 974 of 1,165 coverage sites; 26 of the 29 new ones
+  are taken. Every call priced is exact.
+* **Lockstep** over the corpus: 325,322 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes.
+* **Two bugs the corpus found**, after the movies I had tried passed both. The
+  glob's aim read its target before the draw, and a slime that found
+  nobody hands it a target whose bytes are the generator's own. And
+  `wander_pick` claimed an overflow it does not follow. See
+  `docs/cosim.md`.
+* **Untaken.** The bolt meeting ground, and the bolt past the leash: every
+  one in the corpus runs out its sixty frames or is told to stop. A spot
+  off the level.
+* **Still the ROM's.** Of the attack: its first stretch, as far as the
+  first list of pictures, and the glob's landing. Of the trampoline: each
+  landing, and the frame a wait ends on.
+* **Named from what they do.** I have not seen the bolt, the stepper or
+  the wanderer on a screen.
+* **Next.** Two stretches are over 1.6% of the residue and both stay the
+  ROM's on purpose: the between-games clear (`$80:897F`, 4.2%), and the
+  one `JSR` of the wobble's thread (`$80:9512`, 1.9%). After them come a
+  thread that looks at the tiles round it (`$81:E8A8` and `$81:E979`), a
+  pose of level 21's (`$80:F791`), and the loop of level 21's placed thing
+  (`$82:F49E`), which sleeps inside a call.
+
 ### The potion's monster, level 37's thread, a cursor and a spawner (2026-10-05)
 
 What the 65816 still executed over the twelve movies goes from 1.00 to

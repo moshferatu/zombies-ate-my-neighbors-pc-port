@@ -8,6 +8,7 @@
 #include "port/coverage.h"
 #include "port/flags.h"
 #include "port/rng.h"
+#include "port/thread.h"
 
 typedef struct {
   uint16_t x, y;
@@ -455,6 +456,24 @@ bool slime_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
   return true;
 }
 
+bool slime_frame_end_supported(const Wram* w, uint16_t page) {
+  return wram_r16(w, (uint16_t)(page + SLIME_DP_DIRECTION)) <=
+             SLIME_DIRECTION_MAX &&
+         wram_r16(w, (uint16_t)(page + SLIME_DP_PHASE)) < SLIME_PHASES;
+}
+
+bool slime_frame_end(Wram* w, const Rom* rom, uint16_t page, SlimeLog* log) {
+  SlimeLog scratch = {0};
+  Slime s = {w, rom, page, wram_r16(w, (uint16_t)(page + SLIME_DP_RECORD)),
+             false, log ? log : &scratch};
+  PORT_COVER(slime_frame_ended_for_the_rom);
+  show(&s);
+  if (s.log->declined) return true;
+  if (field(&s, SLIME_DP_FATE) != 0) return false;
+  set_field(&s, SLIME_DP_HIT_BY, 0);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // The glob
 // ---------------------------------------------------------------------------
@@ -516,4 +535,131 @@ bool slime_glob_frame(Wram* w, uint16_t page, SlimeGlobLog* log) {
   log->v = flags.v;
   log->flags_set = flags.c_set;
   return wram_r16(w, (uint16_t)(page + SLIME_GLOB_DP_LANDED)) == 0;
+}
+
+// ---------------------------------------------------------------------------
+// The attack, between its sleeps
+// ---------------------------------------------------------------------------
+
+// `$81:CBC0`: the glob is a thread of its own, started with where the slime
+// is and whom it found. Then the second list of pictures, which is the
+// ROM's to show.
+void slime_attack_throw(Wram* w, const Rom* rom, PortCpu* c,
+                        SlimeAttackWork* k) {
+  const uint16_t page = c->d;
+  PORT_COVER(slime_threw);
+  wram_w16(w, (uint16_t)(page + SLIME_GLOB_DP_ARG_X),
+           wram_r16(w, (uint16_t)(page + SLIME_DP_X)));
+  wram_w16(w, (uint16_t)(page + SLIME_GLOB_DP_ARG_Y),
+           wram_r16(w, (uint16_t)(page + SLIME_DP_Y)));
+  wram_w16(w, (uint16_t)(page + SLIME_GLOB_DP_ARG_TARGET),
+           wram_r16(w, (uint16_t)(page + SLIME_DP_TARGET)));
+  k->slot = thread_spawn(w, rom, SLIME_GLOB_THREAD, SLIME_BANK, page);
+  // `thread_spawn` leaves the slot in X, or `$FFFE` with none free, and in
+  // Y the last of the page it copied. Carry and overflow it does not touch.
+  c->x = k->slot < 0 ? 0xfffe : (uint16_t)k->slot;
+  c->y = k->slot < 0 ? SLIME_BANK : (THREAD_SPAWN_ARGS - 1) * 2;
+  c->a = SLIME_THROW_PICTURES;
+  set_nz16(c, c->a);
+  c->pc = SLIME_THROW_PICTURES_PC;
+}
+
+// `$81:CBDD`: the attack is over. The handler that takes its hits, which
+// the attack took away, is put back, and it sets off a random way.
+void slime_attack_rise(Wram* w, PortCpu* c, SlimeAttackWork* k) {
+  PORT_COVER(slime_rose);
+  c->a = SLIME_HIT_HANDLER;
+  c->y = SLIME_BANK;
+  thread_set_handler(w, c);
+
+  RngResult draw;
+  rng_next(w, flag(c, PORT_P_C), &draw);
+  k->drew_overflow[0] = draw.v;
+  set_v(c, draw.v);
+  const uint16_t direction =
+      (uint16_t)(asl16(c, asl16(c, (uint16_t)(draw.a & 3))) + 2);
+  wram_w16(w, (uint16_t)(c->d + SLIME_DP_DIRECTION), direction);
+  wram_w16(w, (uint16_t)(c->d + SLIME_DP_STATE), SLIME_STATE_CRAWL);
+  c->a = SLIME_STATE_CRAWL;
+  set_nz16(c, c->a);
+  c->pc = SLIME_RISE_RTS_PC;
+}
+
+// ---------------------------------------------------------------------------
+// The glob, before its first pass
+// ---------------------------------------------------------------------------
+
+// `$81:CECC`: a record, put where the slime is and fifteen up.
+void slime_glob_dress(Wram* w, PortCpu* c, SlimeAttackWork* k) {
+  const uint16_t page = c->d;
+  SlotAllocRegs r;
+  actor_slot_alloc(w, c->db, &r);
+  if (r.c) {  // none free, and the ROM goes on with what is no record
+    k->declined = true;
+    return;
+  }
+  PORT_COVER(slime_glob_dressed);
+  const uint16_t record = r.a;
+  k->record = record;
+  // The search steps down a record at a time with an `SBC`, which leaves
+  // overflow clear. With the last record free it runs none.
+  if (record != ACTOR_SLOT_LAST) set_v(c, false);
+  set_c(c, r.c);
+  c->x = r.x;
+  c->y = record;
+  wram_w16(w, (uint16_t)(page + SLIME_GLOB_DP_RECORD), record);
+  wram_w16(w, (uint16_t)(record + ACTOR_X),
+           wram_r16(w, (uint16_t)(page + SLIME_GLOB_DP_ARG_X)));
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), SLIME_GLOB_HEIGHT);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y),
+           wram_r16(w, (uint16_t)(page + SLIME_GLOB_DP_ARG_Y)));
+  wram_w16(w, (uint16_t)(page + SLIME_GLOB_DP_TARGET),
+           wram_r16(w, (uint16_t)(page + SLIME_GLOB_DP_ARG_TARGET)));
+  wram_w16(w, (uint16_t)(record + ACTOR_META), SLIME_GLOB_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), SLIME_GLOB_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD),
+           wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), SLIME_GLOB_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      SLIME_GLOB_FLAGS));
+  wram_w16(w, (uint16_t)(page + SLIME_GLOB_DP_SPEED), SLIME_GLOB_FIRST_SPEED);
+  wram_w16(w, (uint16_t)(page + SLIME_GLOB_DP_LANDED), 0);
+  c->a = SLIME_GLOB_FIRST_SPEED;
+  set_nz16(c, c->a);
+  c->pc = SLIME_GLOB_DRESS_RTS_PC;
+}
+
+// A draw of 0 to 31 less 16, from the word at `place`. The second sum has
+// no `CLC`, so it takes the first's carry.
+//
+// The word is read after the draw. A slime that found nobody hands the glob
+// a target that is no record, and `$001E` is one it hands: six bytes on
+// from there are the generator's own two.
+static uint16_t glob_near(Wram* w, PortCpu* c, bool* overflow,
+                          uint16_t place) {
+  RngResult draw;
+  rng_next(w, flag(c, PORT_P_C), &draw);
+  *overflow = draw.v;
+  set_c(c, false);
+  const uint16_t off = adc16(c, (uint16_t)(draw.a & SLIME_GLOB_AIM_MASK),
+                             (uint16_t)(0u - SLIME_GLOB_AIM_HALF));
+  return adc16(c, off, wram_r16(w, place));
+}
+
+// `$81:CF1D`: where it comes down, and the state it begins in.
+void slime_glob_aim(Wram* w, PortCpu* c, SlimeAttackWork* k) {
+  const uint16_t page = c->d;
+  PORT_COVER(slime_glob_aimed);
+  c->y = wram_r16(w, (uint16_t)(page + SLIME_GLOB_DP_TARGET));
+  wram_w16(w, (uint16_t)(page + SLIME_GLOB_DP_AIM_X),
+           glob_near(w, c, &k->drew_overflow[0],
+                     (uint16_t)(c->y + ACTOR_X)));
+  wram_w16(w, (uint16_t)(page + SLIME_GLOB_DP_AIM_Y),
+           glob_near(w, c, &k->drew_overflow[1],
+                     (uint16_t)(c->y + ACTOR_Y)));
+  wram_w16(w, (uint16_t)(page + SLIME_GLOB_DP_STATE), SLIME_GLOB_STATE_RISE);
+  c->a = SLIME_GLOB_YIELD_TICKS;
+  set_nz16(c, c->a);
+  c->pc = SLIME_GLOB_YIELD_PC;
 }

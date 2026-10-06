@@ -6,6 +6,7 @@
 
 #include "port/coverage.h"
 #include "port/flags.h"
+#include "port/frontend.h"  // the frame count
 #include "port/oam.h"     // the display record's fields
 #include "port/player.h"  // PSN_DP_*: the buttons, the weapon words, the facing
 #include "port/player_frame.h"  // W_BOX_*: the box those in it are told of
@@ -48,6 +49,10 @@
 #define POSE_ARC_PICTURE_FALLING 8
 // How long the first picture in the air is held.
 #define POSE_ARC_READY_TIMER 5
+// Bouncing off: a step across and a step down for each row, for three
+// frames in four, and the same for the fourth.
+#define POSE_OFF_STEPS 0xe1edu
+#define POSE_OFF_STEPS_FOURTH 0xe235u
 // The state in which the hand weapon is left as it is.
 #define POSE_STATE_KEEPS_WEAPON 0x000c
 // What `$18` holds through the `$6C` walk until its first step.
@@ -548,6 +553,12 @@ static int along(Pose* p, uint16_t place, uint16_t part, uint16_t step,
   return steps;
 }
 
+// `$80:F70E`: one of the sixteen bytes of pictures each facing has.
+static void show_in_air(Pose* p, uint16_t picture) {
+  set_field(p, POSE_DP_ARC_PICTURE, picture);
+  show(p, flags_add(&p->flags, (uint16_t)(facing_index(p) << 4), picture));
+}
+
 // `$80:DD41` and `$80:DE0D`: a frame through the air. The two differ in
 // where they land, which is the ROM's.
 static void arc(Pose* p) {
@@ -582,9 +593,7 @@ static void arc(Pose* p) {
       picture = POSE_ARC_PICTURE_FALLING;
     }
   }
-  // `$80:F70E`: sixteen bytes of pictures for each facing.
-  set_field(p, POSE_DP_ARC_PICTURE, picture);
-  show(p, flags_add(&p->flags, (uint16_t)(facing_index(p) << 4), picture));
+  show_in_air(p, picture);
 }
 
 // `$80:DDF0`: the picture before a leap. When its time is up it is shown
@@ -599,6 +608,85 @@ static void arc_ready(Pose* p) {
   set_field(p, POSE_DP_FRAMES, POSE_FRAMES_ARC);
   set_field(p, PSN_DP_RESUME, POSE_HANDLER_ARC_B);
   set_field(p, POSE_DP_TIMER, POSE_ARC_READY_TIMER);
+}
+
+// `$80:DFDA`: a bounce on the trampoline, straight up and down again.
+// Landing on it is the ROM's.
+static void bounce(Pose* p) {
+  if (field(p, POSE_DP_TIMER) != 0) {
+    p->log->waiting = true;
+    return;
+  }
+  rise(p);
+  p->log->arc_x = along(p, STEP_DP_X, POSE_DP_ARC_PART_X, POSE_DP_ARC_STEP_X,
+                        POSE_DP_ARC_SUM_X);
+  p->log->arc_y = along(p, STEP_DP_Y, POSE_DP_ARC_PART_Y, POSE_DP_ARC_STEP_Y,
+                        POSE_DP_ARC_SUM_Y);
+  const uint16_t record = field(p, POSE_DP_RECORD);
+  wram_w16(p->w, (uint16_t)(record + ACTOR_X), field(p, STEP_DP_X));
+  wram_w16(p->w, (uint16_t)(record + ACTOR_Y), field(p, STEP_DP_Y));
+
+  const uint16_t height = wram_r16(p->w, (uint16_t)(record + ACTOR_Z));
+  if (height == 0) {
+    leave_to_rom(p);
+    return;
+  }
+  if (negative(field(p, POSE_DP_RISE))) {
+    PORT_COVER(pose_bounce_fell);
+    p->log->arc_falling = true;
+    show_in_air(p, POSE_ARC_PICTURE_FALLING);
+    return;
+  }
+  PORT_COVER(pose_bounce_rose);
+  if (height >= POSE_ARC_HIGH) {
+    p->log->arc_high = true;
+    wram_w16(p->w, (uint16_t)(record + ACTOR_FLAGS),
+             (uint16_t)(wram_r16(p->w, (uint16_t)(record + ACTOR_FLAGS)) |
+                        ACTOR_PRIORITY_TOP));
+    // The state a player high over a trampoline is in.
+    set_field(p, POSE_DP_STATE, PLAYER_STATE_TURNING);
+  }
+  show_in_air(p, POSE_ARC_PICTURE_RISING);
+}
+
+// `$80:E035`: on the trampoline, until the timer runs out. What it does
+// then, which is look for where to bounce to, is the ROM's.
+static void bounce_wait(Pose* p) {
+  if (field(p, POSE_DP_TIMER) == 0) {
+    leave_to_rom(p);
+    return;
+  }
+  PORT_COVER(pose_bounce_waited);
+  p->log->waiting = true;
+}
+
+// `$80:E180`: off the trampoline and across the ground, by the row's step
+// for this frame. Landing is the ROM's.
+static void bounce_off(Pose* p) {
+  rise(p);
+  const uint16_t row = field(p, POSE_DP_OFF_ROW);
+  const uint16_t record = field(p, POSE_DP_RECORD);
+  p->log->off_fourth = (wram_r16(p->w, W_FRAME_COUNT) & 3) == 0;
+  const uint16_t steps = p->log->off_fourth ? POSE_OFF_STEPS_FOURTH
+                                            : POSE_OFF_STEPS;
+  const uint16_t x =
+      (uint16_t)(table_word(p, steps, row) + field(p, STEP_DP_X));
+  set_field(p, STEP_DP_X, x);
+  wram_w16(p->w, (uint16_t)(record + ACTOR_X), x);
+  const uint16_t y =
+      (uint16_t)(table_word(p, steps, (uint16_t)(row + 2)) +
+                 field(p, STEP_DP_Y));
+  set_field(p, STEP_DP_Y, y);
+  wram_w16(p->w, (uint16_t)(record + ACTOR_Y), y);
+
+  if (wram_r16(p->w, (uint16_t)(record + ACTOR_Z)) == 0) {
+    leave_to_rom(p);
+    return;
+  }
+  PORT_COVER(pose_bounced_off);
+  p->log->arc_falling = negative(field(p, POSE_DP_RISE));
+  show_in_air(p, p->log->arc_falling ? POSE_ARC_PICTURE_FALLING
+                                     : POSE_ARC_PICTURE_RISING);
 }
 
 // ---------------------------------------------------------------------------
@@ -646,6 +734,18 @@ void pose_arc_ready(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(arc_ready, w, rom, page, log);
 }
 
+void pose_bounce(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(bounce, w, rom, page, log);
+}
+
+void pose_bounce_wait(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(bounce_wait, w, rom, page, log);
+}
+
+void pose_bounce_off(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(bounce_off, w, rom, page, log);
+}
+
 bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler) {
   static PoseLog log;
   log = (PoseLog){0};
@@ -658,6 +758,9 @@ bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler) {
     case POSE_HANDLER_ARC:
     case POSE_HANDLER_ARC_B: run(arc, w, rom, page, &log); break;
     case POSE_HANDLER_ARC_READY: run(arc_ready, w, rom, page, &log); break;
+    case POSE_HANDLER_BOUNCE: run(bounce, w, rom, page, &log); break;
+    case POSE_HANDLER_BOUNCE_WAIT: run(bounce_wait, w, rom, page, &log); break;
+    case POSE_HANDLER_BOUNCE_OFF: run(bounce_off, w, rom, page, &log); break;
     default: return false;
   }
   return !log.unported;

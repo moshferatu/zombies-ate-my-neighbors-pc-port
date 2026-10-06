@@ -16819,3 +16819,107 @@ before on the same passes.
 
 **Live**: the residue over the twelve movies is 0.74 million
 instructions, from 1.00.
+
+## The slime's attack, a trampoline's bounces, and six small things (2026-10-06)
+
+### Where the residue was
+
+By stretch, of 0.74 million:
+
+    $81:F808-$F8FB    11,756   a thing sent off one way
+    $83:9D00-$9D7C    11,696   a thing that steps round four places
+    $82:8163-$816E    10,550   a job that asks for another
+    $82:AEB4-$AEC5     9,792   BG1's scroll down
+    $80:9ED0-$9F18     8,928   bytes to VRAM, a kilobyte a vblank
+    $81:C94E-$C99B     8,610   the slime's touch
+    $81:D94F-$D9AF     8,542   a thing looking for somewhere to go
+    $80:D343-$D35D     7,200   a player's state, in the air
+    $81:CD33-$CD72     7,061   the slime's picture
+    $81:CEC5-$CF0F     6,888   the glob's record
+    $81:CBA0-$CBE7     6,396   the slime's attack
+    $80:E11B-$E1D7     6,139   a bounce off a trampoline
+    $80:F70E-$F769     6,048   a picture in the air
+    $80:F6B4-$F6F6     5,185   ...across the ground by fractions
+    $80:F6F7-$F70D     4,576   ...and the height
+
+### Two more that were ported already
+
+The slime's touch and picture are sixth and ninth in that list, and both
+are in `port/slime.c`. So is the player's state at `$80:D343`, in
+`port/player_frame.c`. It is last round's lesson and it held: look for
+the address in `src/port` first, and ask who turns the frame down.
+
+The slime's frame is turned down when an attack begins. The attack sleeps
+inside two calls, so it is one state over many frames, and when it is
+over it comes back to the loop's end at `$81:CCF0`, which the ROM then
+ran: the touch, the picture and the sleep.
+
+The cure was not a bigger `slime_frame`. It was an entry at `$81:CCF0`
+that does what `slime_frame` does after a state, for a state that was the
+ROM's. It reuses `show`, the bill and the registers.
+
+The player's frame was turned down for the pose, as the monster's was.
+Three handlers were missing. Two of them are the leap's with a different
+middle, and the third only waits.
+
+### A word read after a draw
+
+`$81:CE16` aims the glob: `JSL rng`, a mask, and `ADC $0002,Y` with Y the
+record of whoever the slime found. The port passed the word to a helper
+that drew and then added. So the word was read before the draw.
+
+That is the same number unless the draw writes the word. A slime that
+found nobody has `$001E` for its target, and six bytes on from `$001E`
+are `$0024` and `$0025`, the generator's state. The ROM adds the state as
+the draw left it, and the port added it as it was.
+
+Three movies verified it at 20 of 20, in their first 4,700 frames. The
+corpus failed it at 76 of 88 on all of `level41`, and at 2 of 5 on
+`level21-p2-bubble`.
+
+A helper that takes a value where the ROM takes an address has moved a
+read. When a call comes between, pass the address.
+
+### Which mask an unclaimed flag goes in
+
+`wander_pick` looks up a tile, and what that leaves in overflow the port
+does not follow. The shim said so the way `spawn_entry`'s does, by
+leaving `COSIM_FLAG_V` out of `flags`.
+
+`spawn_entry` returns. `wander_pick` leaves by a jump, and a routine that
+leaves by a jump has its whole status byte compared, less `p_keep`. The
+`flags` it set were not read. It passed where overflow happened to agree,
+which was all 47 calls on `level13` and on `level41`, and 24 of 78 on
+`level29-ice` and on `level29-990b-freeze`.
+
+For a routine with `COSIM_EXITS`, a flag the port does not claim goes in
+`p_keep`.
+
+### A run's bytes are the bytes it fetches
+
+The two vblank jobs are priced by hand, each run less the writes it ends
+on. `TXA` is twelve cycles and one byte; `SEP` is eighteen and two. A run
+counted as cycles over six has too many bytes, and is right on FastROM
+and wrong the first time a job runs with it off.
+
+`bg1_vscroll_job` has no runs of its own. Its instructions are
+`scroll_shadow_job`'s on two of that job's twelve bytes, and its tail is
+that tail with `CLC` for `SEC`.
+
+### A stretch that stays in the ranking
+
+`$80:94AF-$9512` is second in the new ranking at 11,677. Of that, 10,957
+is one instruction, the `JSR` to `wave_hdma_build`, which `port/trig.h`
+leaves to the ROM so that the pads are read after the build and not
+before. It will be there every round.
+
+### Checked
+
+The corpus: 33,284,636 calls across 51 movies, 0 diverged, 974 of 1,165
+sites. Every call priced is exact.
+
+**Lockstep**: 325,322 passes, 48 of 51 never part, the same three as
+before on the same passes.
+
+**Live**: the residue over the twelve movies is 0.62 million
+instructions, from 0.74.

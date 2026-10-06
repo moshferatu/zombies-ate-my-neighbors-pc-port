@@ -3,6 +3,7 @@
 #include "port/dma.h"
 
 #include "port/coverage.h"
+#include "port/thread.h"
 
 // The registers.
 #define REG_VMAIN 0x2115u      // how VRAM's address steps
@@ -95,6 +96,12 @@ void colours_112_job(HwTrace* t) {
   store16(t, DMA_IMM16, REG_DMA_BYTES, COLOURS_112_BYTES);
   store8(t, DMA_SEP_IMM, REG_MDMAEN, 0x01);
   hw_run(t, DMA_REP_RTL);
+}
+
+int colours_112_ask(Wram* w) {
+  PORT_COVER(colours_112_asked);
+  return vbl_queue_a_add(w, COLOURS_112_JOB_PC & 0xffffu,
+                         COLOURS_112_JOB_PC >> 16);
 }
 
 uint16_t vram_clear_job(Wram* w, HwTrace* t) {

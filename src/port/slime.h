@@ -73,6 +73,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/oam.h"  // the works and registers of what it asks
 #include "port/terrain.h"
 #include "port/wram.h"
@@ -226,5 +227,72 @@ bool slime_frame_supported(const Wram* w, uint16_t page);
 // written, which is why a guard asks on a scratch copy first.
 bool slime_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
                  SlimeLog* log);
+
+// ---------------------------------------------------------------------------
+// The attack, between its sleeps
+// ---------------------------------------------------------------------------
+//
+// A pass that begins an attack is one `slime_frame` turns down. The attack
+// shows two lists of pictures and sleeps inside each, so it is not a pass
+// but several. These are the stretches of it between the sleeps:
+//
+//   $81:CBC0  throw   the glob's thread started, with where the slime is
+//                     and whom it found
+//   $81:CBDD  rise    its own handler put back, and off a random way
+//   $81:CCF0  end     the picture and the touch, and the pass's end: what
+//                     `slime_frame` does after a state, for a state that
+//                     was the ROM's
+//
+// And two of the glob's own, before its first pass:
+//
+//   $81:CECC  dress   a record taken, and put where the slime is
+//   $81:CF1D  aim     where it will come down, within sixteen pixels of
+//                     whom the slime found
+#define SLIME_THROW_PC 0x81cbc0u
+#define SLIME_THROW_PICTURES_PC 0x81cbd9u  // `JSL pictures_play`, A the list
+#define SLIME_THROW_PICTURES 0xcbfau
+#define SLIME_RISE_PC 0x81cbddu
+#define SLIME_RISE_RTS_PC 0x81c9f9u  // the `RTS`, which is the ROM's
+#define SLIME_END_PC 0x81ccf0u
+#define SLIME_HIT_HANDLER 0xcddeu
+
+#define SLIME_GLOB_THREAD 0xcf10u
+#define SLIME_GLOB_DRESS_PC 0x81ceccu
+#define SLIME_GLOB_DRESS_RTS_PC 0x81cf0fu  // the `RTS`, which is the ROM's
+#define SLIME_GLOB_AIM_PC 0x81cf1du
+// What the glob's thread is started with, and where it keeps the third.
+#define SLIME_GLOB_DP_ARG_X 0x00
+#define SLIME_GLOB_DP_ARG_Y 0x02
+#define SLIME_GLOB_DP_ARG_TARGET 0x04
+#define SLIME_GLOB_DP_TARGET 0x14
+#define SLIME_GLOB_HEIGHT 0x000f
+#define SLIME_GLOB_PICTURE 0xc3bdu
+#define SLIME_GLOB_PICTURE_BANK 0x0090u
+#define SLIME_GLOB_ID 0x0036
+#define SLIME_GLOB_FLAGS 0x8008u
+#define SLIME_GLOB_FIRST_SPEED 0x0018
+#define SLIME_GLOB_AIM_MASK 0x001f
+#define SLIME_GLOB_AIM_HALF 0x0010
+
+typedef struct {
+  int slot;               // throw: the thread `thread_spawn` took, or -1
+  bool drew_overflow[2];  // rise's draw, or aim's two
+  bool declined;          // dress: no record was free, which is the ROM's
+  uint16_t record;        // ...or the one it took
+} SlimeAttackWork;
+
+void slime_attack_throw(Wram* w, const Rom* rom, PortCpu* c,
+                        SlimeAttackWork* k);
+void slime_attack_rise(Wram* w, PortCpu* c, SlimeAttackWork* k);
+
+// Can `slime_frame_end` take this one? It only looks.
+bool slime_frame_end_supported(const Wram* w, uint16_t page);
+
+// As `slime_frame`, from after the state. `log->declined` when the touch
+// reached a handler the port lacks.
+bool slime_frame_end(Wram* w, const Rom* rom, uint16_t page, SlimeLog* log);
+
+void slime_glob_dress(Wram* w, PortCpu* c, SlimeAttackWork* k);
+void slime_glob_aim(Wram* w, PortCpu* c, SlimeAttackWork* k);
 
 #endif
