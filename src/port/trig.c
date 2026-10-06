@@ -157,3 +157,33 @@ void wave_hdma_build(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
   WaveWork ignored;
   wave_hdma_build_counted(w, rom, dp, in_x, in_y, in_c, out, &ignored);
 }
+
+// --- $80:9515 ----------------------------------------------------------------
+
+void wave_thread_tests(const Wram* w, PortCpu* c, WaveThreadWork* k) {
+  for (int pad = 0; pad < 2; pad++) {
+    c->a = wram_r16(w, (uint16_t)(W_WAVE_PADS + 2 * pad));
+    cmp16(c, c->a, WAVE_PAD_START);
+    k->blocks[WT_PAD]++;
+    if (c->a == WAVE_PAD_START) {
+      PORT_COVER(wave_thread_start);
+      k->blocks[WT_TAKEN]++;
+      c->pc = WAVE_THREAD_END_PC;
+      return;
+    }
+  }
+  c->a = wram_r16(w, (uint16_t)(c->d + WAVE_DP_LENGTH));
+  set_nz16(c, c->a);
+  k->blocks[WT_LENGTH]++;
+  if (c->a & 0x8000u) {
+    PORT_COVER(wave_thread_over);
+    c->pc = WAVE_THREAD_END_PC;
+    return;
+  }
+  PORT_COVER(wave_thread_again);
+  k->blocks[WT_TAKEN]++;
+  c->a = WAVE_THREAD_YIELD_TICKS;
+  set_nz16(c, c->a);
+  k->blocks[WT_AGAIN]++;
+  c->pc = WAVE_THREAD_YIELD_PC;
+}

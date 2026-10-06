@@ -5,6 +5,70 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The big letters, the radar's square, and the logo screens between their waits (2026-10-05)
+
+What the 65816 still executed over the twelve movies goes from 1.8 to
+**1.3** million instructions of work. Live, `level21` goes from 99.4% to
+**99.6%**, and `level1`, `level5`, `level9`, `level13`, `level41` and
+`level49` gain a tenth. The game registers 314 routines, 19 more.
+
+* **The big letters of a level's name**, `$82:AD5A`, in `port/text.c`.
+  The ROM asks the console's multiplier where in the font each letter
+  starts, which is two writes to the hardware in the middle of every
+  letter. So it is two stretches, each ending where the next write would
+  be, and the five instructions between them stay the ROM's. The second
+  does not read the product back: A and X still hold what was multiplied.
+* **The radar's thread**, `$82:D8FD`, in a new `port/radar_thread.c`: the
+  frame that moves the one square to the next neighbour within `$180`
+  pixels of the player. The radar going down, and the count of neighbours
+  changing under it, are left to the ROM.
+* **The logo screens**, `$83:8000`. It is one run of code with eight
+  loops, each waiting on a `WAI`. A new `port/logo.c` has a frame of each,
+  from the instruction after its `WAI` to the next. `port/frontend.c` has
+  what comes before them: the tilemap made in the scratch buffer
+  (`$83:802D`) and the copy of colours from the cartridge (`$83:8241`).
+* **A player's portrait**, `$80:9A52`, in `port/frontend.c`: 208 tiles
+  from the cartridge into the text map. Its two tables are read through
+  the data bank, which is `$80` on the way into a game and `$00` on the
+  way to the top scores. The first guard asked for `$80` and declined six
+  of the demo movie's eight calls.
+* **The game over's thread**, `$80:8A11` and `$80:8A30`, in
+  `port/frontend.c`: a frame of each of its two loops. The fall they call
+  was already the port's.
+* **The wobble's thread**, `$80:9515`, in `port/trig.c`: the three tests
+  it makes after each build of the table. The call to the build is one
+  instruction and is left to the ROM. Two of the tests read the pads,
+  which the NMI writes, and a build is long enough for an NMI to land in:
+  a stretch that began before the build would read them too early.
+* **The neighbour who jumps**, `$83:9F11` and `$83:9F2E`, in a new
+  `port/jumper.c`: the twenty frames up and the twenty down.
+
+* **Checked.** The corpus verifies at 33,182,521 calls across 51 movies
+  with 0 diverged, and 887 of 1,060 coverage sites; 36 of the 38 new ones
+  are taken. Every call priced is exact. `level21.zmv` runs to 20,000
+  frames in the corpus now: a demo that comes round after its game puts
+  the radar up, which no movie does in play.
+* **Lockstep** over the corpus: 325,322 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes.
+* **A correction to the round before.** It said the flame a doll leaves
+  had run in step with the ROM on no movie. It has: `demo-end.zmv`, in
+  the corpus's lockstep, runs all 676 of the flame's frames and 14 dolls'
+  deaths, and never parts. I had looked at `level5.zmv` alone. The radar
+  is in lockstep on the same movie and on `level21.zmv`, 261 frames each.
+  Which demo comes round after a game still differs between `verify` and
+  lockstep on some movies, and with which routines lockstep leaves to the
+  ROM: `level21.zmv` plays the radar's demo with the corpus's three left
+  out and another with nothing left out.
+* **Untaken.** A character the big letters' table draws nothing for. A
+  radar with no neighbour near enough to show.
+* **Not ported, on purpose.** The third stretch of the between-games
+  clear, `$80:897F`, is still 25,000 instructions of the residue. It
+  stays the ROM's for the reason `port/clears.h` gives.
+* **Next.** The block of tiles the camera's code puts on the screen at
+  `$80:AB5A`, with `$80:AAA1` and `$80:A9F3` under it, is the largest
+  piece left, 77,000. After it the residue is a long tail: nothing else
+  is much over 2% of it.
+
 ### The evil dolls whole, the bubble gun's bubble, and the words and tiles of a level's start (2026-10-05)
 
 What the 65816 still executed over the twelve movies goes from 3.0 to
@@ -59,15 +123,13 @@ routines, 34 more.
   are taken. Every call priced is exact.
 * **Lockstep** over the corpus: 310,022 passes, 48 of 51 never part, the
   same three level-25 movies on the same passes.
-* **What lockstep does not reach.** A doll's death and what it leaves
-  are verified call by call: 15 deaths across the corpus, 14 of them and
-  all 676 of the flames' frames on `level5.zmv`, after its game has ended
-  and the demos have come round. In lockstep the same movie plays other
-  demos after its game ends, at 20,000 passes and at 26,000. So the
-  flame's five stretches have run in step with the ROM on no movie, and
-  the two of a doll's death are not known to have. The rest of the dolls
-  and their axes have, on `level49.zmv`. Why the two harnesses see
-  different demos is not known.
+* **What lockstep does not reach on `level5.zmv`.** A doll's death and
+  what it leaves are verified call by call: 15 deaths across the corpus,
+  14 of them and all 676 of the flames' frames on `level5.zmv`, after its
+  game has ended and the demos have come round. In lockstep the same
+  movie plays other demos after its game ends. This said that the flame
+  had run in step with the ROM on no movie, which was wrong:
+  `demo-end.zmv` does it. See the section above.
 * **Untaken.** An axe that hits a second thing, and a frame of one whose
   mask is ORed in. A bubble fired from a tile that stops it. A flame that
   lives its 800 frames, one with both places for a trail in use, and one

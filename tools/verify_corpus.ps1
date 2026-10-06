@@ -84,7 +84,9 @@ $corpus = [ordered]@{
     "level17.zmv"            = 4700
     "level17-weapon.zmv"     = 4700
     "level17-2p-freeze.zmv"  = 4700
-    "level21.zmv"            = 4700
+    # Run on as the three above are. A demo that comes round after its
+    # game puts the radar up, which no movie does in play.
+    "level21.zmv"            = 20000
     "level21-spin.zmv"       = 4700
     "level21-bubble.zmv"     = 6700
     "level21-p2-bubble.zmv"  = 6700

@@ -110,6 +110,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/wram.h"
 
 #define SIN_DEG_ENTRY 0x809c90u
@@ -282,5 +283,40 @@ typedef struct {
 void wave_hdma_build_counted(Wram* w, const Rom* rom, uint16_t dp,
                              uint16_t in_x, uint16_t in_y, bool in_c,
                              WaveRegs* out, WaveWork* work);
+
+// --- $80:9515  the wobble's thread, after each build -------------------------
+//
+// `$80:94AF` is the thread that holds the wobble up. Each frame it calls
+// `wave_hdma_build`, and then asks three things: is Start down on the first
+// pad and nothing else, is it on the second, and has the table's length gone
+// negative. Any of them ends the wobble at `$80:9529`. Otherwise it sleeps a
+// frame.
+//
+// This is those tests, from where the build returns to. The call itself is
+// left to the ROM, one instruction: the pads are the NMI's to write, a build
+// is long enough for an NMI to land in, and a stretch that began before the
+// build would have read them too early.
+#define WAVE_THREAD_TESTS_PC 0x809515u
+#define WAVE_THREAD_YIELD_PC 0x80950eu  // `JSL thread_yield`, A already 1
+#define WAVE_THREAD_END_PC 0x809529u
+#define WAVE_THREAD_YIELD_TICKS 1
+// The two pads as they were read this frame, a word each: `W_JOY_RAW` in
+// `port/player.h`.
+#define W_WAVE_PADS 0x006eu
+#define WAVE_PAD_START 0x1000u
+
+enum {
+  WT_PAD,     // $9515-$951C, and the same again at $951D-$9524
+  WT_LENGTH,  // $9525-$9528
+  WT_AGAIN,   // $950B-$950D
+  WT_TAKEN,   // a branch taken
+  WT_BLOCK_COUNT
+};
+
+typedef struct {
+  uint16_t blocks[WT_BLOCK_COUNT];
+} WaveThreadWork;
+
+void wave_thread_tests(const Wram* w, PortCpu* c, WaveThreadWork* k);
 
 #endif

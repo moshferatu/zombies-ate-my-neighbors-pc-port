@@ -57,6 +57,9 @@
 #include "port/screen_tiles.h"
 #include "port/text.h"
 #include "port/loads.h"
+#include "port/logo.h"
+#include "port/jumper.h"
+#include "port/radar_thread.h"
 #include "port/bubble.h"
 #include "port/flame.h"
 #include "port/stuck.h"
@@ -7653,6 +7656,127 @@ static void shim_text_print_lines(Wram* w, const Rom* rom, const CosimRegs* in,
 static const uint32_t TEXT_PRINT_LINES_EXITS[] = {TEXT_PRINT_LINES_SEND_PC};
 
 // ---------------------------------------------------------------------------
+// $82:AD5A  the big letters -- see `port/text.h`
+// ---------------------------------------------------------------------------
+//
+// Priced by what the string held, as the printer above. Each run is from
+// `tools/cycles816.py --db=82`, with `--ind=9E:8000` for the string's reads
+// and `--ind=7E:6502` for the map's store.
+static const CosimRun TB_RUN_HEAD = {236, 18, 3};      // $AD5A-$AD6B
+static const CosimRun TB_RUN_PLACE = {732, 59, 10};    // $AD6C-$ADA2
+static const CosimRun TB_RUN_NEXT = {128, 11, 2};      // $ADA3-$ADAB
+static const CosimRun TB_RUN_JMP = {18, 3, 0};
+static const CosimRun TB_RUN_NEW_PLACE = {30, 5, 0};   // CMP #$00FF : BEQ
+static const CosimRun TB_RUN_INDEX = {102, 14, 0};     // $ADB4-$ADBF
+static const CosimRun TB_RUN_PRE = {328, 31, 0};       // $ADC0-$ADDA
+static const CosimRun TB_RUN_POST = {176, 19, 0};      // $ADE4-$ADF6
+static const CosimRun TB_RUN_WORD = {234, 22, 1};      // $ADF7-$AE0A
+static const CosimRun TB_RUN_ROW = {272, 26, 2};       // $AE0B-$AE24
+static const CosimRun TB_RUN_TAIL = {150, 15, 2};      // $AE25-$AE33
+
+// The string's bytes: every one but a closing zero takes the `BNE`, a new
+// place the `BEQ`, a character that draws nothing the `BMI`. `places` is how
+// many of them were new places.
+static void text_big_scan_run(CosimRun* run, const TextBigWork* k,
+                              const TextBigRegs* r, int places) {
+  const int bytes = k->text.bytes;
+  const int nonzero = bytes - (r->multiply ? 0 : 1);
+  const int plain = nonzero - places;
+  run_add(run, &TB_RUN_NEXT, bytes);
+  run_add(run, &RUN_TAKEN, nonzero);
+  run_add(run, &TB_RUN_JMP, r->multiply ? 0 : 1);
+  run_add(run, &TB_RUN_NEW_PLACE, nonzero);
+  run_add(run, &RUN_TAKEN, places);
+  run_add(run, &TB_RUN_PLACE, places);
+  run_add(run, &TB_RUN_INDEX, plain);
+  run_add(run, &RUN_TAKEN, k->skipped);
+  run_add(run, &TB_RUN_PRE, r->multiply ? 1 : 0);
+  run->cycles += 4 * k->text.slow_words;
+  run->bytes -= 2 * k->text.slow_words;
+}
+
+// Either way out, with carry and overflow not followed. At the multiplier
+// the registers are 8 bits wide and Z is the `AND #$00FF`'s. At the string's
+// end they are 16 and Z is set.
+static void text_big_out(const CosimRegs* in, CosimRegs* out,
+                         const TextBigRegs* r) {
+  out->a = r->a;
+  out->x = r->x;
+  out->y = r->y;
+  out->regs = COSIM_REG_ALL;
+  uint8_t p = (uint8_t)(in->p & ~(PORT_P_M | PORT_P_X | PORT_P_N | PORT_P_Z));
+  if (r->multiply) {
+    p |= PORT_P_M | PORT_P_X;
+    if (r->a == 0) p |= PORT_P_Z;
+    out->pc = TEXT_BIG_MULTIPLY_PC;
+  } else {
+    p |= PORT_P_Z;
+    out->pc = TEXT_BIG_SEND_PC;
+  }
+  out->p = p;
+  out->p_keep = PORT_P_C | PORT_P_V;
+}
+
+static bool accepts_text_big_begin(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return text_ok(in) && text_source_ok((uint8_t)in->a, in->x);
+}
+
+// 8-bit registers still, the map's bank where the first stretch put it, and
+// a width that is one of the three.
+static bool accepts_text_big_glyph(const Wram* w, const CosimRegs* in) {
+  if ((in->p & (PORT_P_M | PORT_P_X)) != (PORT_P_M | PORT_P_X)) return false;
+  if (!low_stack(in) || in->d >= 0x1f00) return false;
+  if ((in->p & PORT_P_D) != 0) return false;
+  if (in->db != TEXT_BANK) return false;
+  const uint16_t page = in->d;
+  return wram_r8(w, (uint16_t)(page + TEXT_DP_TO + 2)) == TEXT_MAP_BANK &&
+         text_source_ok(wram_r8(w, (uint16_t)(page + TEXT_DP_FROM + 2)),
+                        wram_r16(w, (uint16_t)(page + TEXT_DP_FROM))) &&
+         text_big_width_ok(wram_r16(w, W_TEXT_BIG_WIDTH), in->x);
+}
+
+static void shim_text_big_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  TextBigWork k = {0};
+  TextBigRegs r;
+  text_big_begin(w, rom, in->d, in->a, in->x, in->y, &r, &k);
+  wram_w8(w, in->s, in->db);
+  wram_w8(w, (uint16_t)(in->s - 1), 0x00);
+  out->s = (uint16_t)(in->s - 2);
+  out->db = TEXT_BANK;
+  text_big_out(in, out, &r);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &TB_RUN_HEAD, 1);
+  run_add(&run, &TB_RUN_PLACE, 1);
+  text_big_scan_run(&run, &k, &r, k.text.places - 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+}
+
+static void shim_text_big_glyph(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  TextBigWork k = {0};
+  TextBigRegs r;
+  text_big_glyph(w, rom, in->d, (uint8_t)in->a, (uint8_t)in->x, &r, &k);
+  text_big_out(in, out, &r);
+
+  // Each row's last tile and the last row fall out of their loops.
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &TB_RUN_POST, 1);
+  run_add(&run, &TB_RUN_WORD, k.words);
+  run_add(&run, &RUN_TAKEN, k.words - TEXT_BIG_ROWS);
+  run_add(&run, &TB_RUN_ROW, TEXT_BIG_ROWS);
+  run_add(&run, &RUN_TAKEN, TEXT_BIG_ROWS - 1);
+  run_add(&run, &TB_RUN_TAIL, 1);
+  text_big_scan_run(&run, &k, &r, k.text.places);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+}
+
+static const uint32_t TEXT_BIG_EXITS[] = {TEXT_BIG_MULTIPLY_PC,
+                                          TEXT_BIG_SEND_PC};
+
+// ---------------------------------------------------------------------------
 // $80:A4D9  a whole screen of tiles -- see `port/screen_tiles.h`
 // ---------------------------------------------------------------------------
 //
@@ -7723,6 +7847,233 @@ static void shim_screen_tiles_fill(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t SCREEN_TILES_EXITS[] = {SCREEN_TILES_QUEUE_PC};
+
+// ---------------------------------------------------------------------------
+// $80:9515  the wobble's thread, after each build -- see `port/trig.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=80`.
+static const CosimRun WT_COST[WT_BLOCK_COUNT] = {
+    [WT_PAD] = {64, 8, 0},
+    [WT_LENGTH] = {40, 4, 1},
+    [WT_AGAIN] = {18, 3, 0},
+    [WT_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_wave_thread_tests(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && bank_sees_low_wram(in->db);
+}
+
+static void shim_wave_thread_tests(Wram* w, const Rom* rom, const CosimRegs* in,
+                                   CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  WaveThreadWork k = {0};
+  cpu_from(in, &c);
+  wave_thread_tests(w, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < WT_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&WT_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t WAVE_THREAD_EXITS[] = {WAVE_THREAD_YIELD_PC,
+                                             WAVE_THREAD_END_PC};
+
+// ---------------------------------------------------------------------------
+// $82:D8FD  the radar's thread -- see `port/radar_thread.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=82`, which prices a `BRA` as a
+// branch that falls through: the port counts it taken.
+static const CosimRun RD_COST[RD_BLOCK_COUNT] = {
+    [RD_HEAD] = {80, 7, 1},
+    [RD_DOWN] = {18, 3, 0},
+    [RD_SAME] = {74, 7, 1},
+    [RD_COUNT] = {68, 6, 1},
+    [RD_TRY] = {62, 4, 1},
+    [RD_NONE] = {138, 13, 1},
+    [RD_PICK] = {92, 9, 1},
+    [RD_PICK_BCC] = {12, 2, 0},
+    [RD_PICK_WRAP] = {18, 3, 0},
+    [RD_FLAG] = {122, 13, 1},
+    [RD_DX] = {288, 24, 3},
+    [RD_NEGATE] = {80, 6, 1},
+    [RD_FAR] = {30, 5, 0},
+    [RD_DY] = {180, 16, 1},
+    [RD_PUT_HEAD] = {116, 10, 2},
+    [RD_SUB] = {80, 7, 2},
+    [RD_ADD] = {68, 5, 2},
+    [RD_PUT_MID] = {108, 9, 2},
+    [RD_PUT_TAIL] = {58, 6, 0},
+    [RD_YIELD] = {18, 3, 0},
+    [RD_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_radar_frame(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         radar_frame_supported(w, in->d);
+}
+
+static void shim_radar_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  RadarWork k = {0};
+  cpu_from(in, &c);
+  radar_frame(w, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < RD_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&RD_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t RADAR_EXITS[] = {RADAR_YIELD_PC, RADAR_DOWN_PC,
+                                       RADAR_RECOUNT_PC};
+
+// ---------------------------------------------------------------------------
+// $83:9F11 and $83:9F2E  the neighbour who jumps -- see `port/jumper.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=83`.
+static const CosimRun JP_COST[JP_BLOCK_COUNT] = {
+    [JP_EVENT] = {40, 4, 1},
+    [JP_COUNT] = {62, 4, 1},
+    [JP_STEP] = {138, 12, 1},
+    [JP_TURN] = {46, 5, 1},
+    [JP_LAND] = {104, 11, 1},
+    [JP_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_jumper_frame(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         wram_r16(w, (uint16_t)(in->d + JUMPER_DP_RECORD)) < 0x1f00;
+}
+
+static void jumper_shim(Wram* w, const CosimRegs* in, CosimRegs* out,
+                        bool down) {
+  PortCpu c;
+  JumperWork k = {0};
+  cpu_from(in, &c);
+  jumper_frame(w, &c, down, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < JP_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&JP_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static void shim_jumper_up(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  (void)rom;
+  jumper_shim(w, in, out, false);
+}
+
+static void shim_jumper_down(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  jumper_shim(w, in, out, true);
+}
+
+static const uint32_t JUMPER_UP_EXITS[] = {JUMPER_UP_YIELD_PC,
+                                           JUMPER_DOWN_YIELD_PC,
+                                           JUMPER_ENDED_PC};
+static const uint32_t JUMPER_DOWN_EXITS[] = {JUMPER_DOWN_YIELD_PC,
+                                             JUMPER_LANDED_PC,
+                                             JUMPER_ENDED_PC};
+
+// ---------------------------------------------------------------------------
+// $83:8102 to $83:8228  the logo screens, between their waits -- see
+// `port/logo.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=83`.
+static const CosimRun LG_COST[LG_BLOCK_COUNT] = {
+    [LG_RTS] = {40, 1, 0},
+    [LG_1A] = {126, 12, 2},
+    [LG_1B] = {110, 11, 2},
+    [LG_1C] = {46, 5, 1},
+    [LG_1D] = {110, 12, 0},
+    [LG_1E] = {108, 10, 2},
+    [LG_2A] = {148, 12, 2},
+    [LG_2B] = {46, 5, 1},
+    [LG_2W] = {134, 15, 0},
+    [LG_2C] = {62, 4, 1},
+    [LG_3A] = {216, 17, 0},
+    [LG_3B] = {18, 3, 0},
+    [LG_4A] = {194, 16, 0},
+    [LG_4W] = {214, 23, 0},
+    [LG_4C] = {210, 14, 1},
+    [LG_5A] = {126, 11, 0},
+    [LG_5W] = {134, 15, 0},
+    [LG_5C] = {136, 9, 1},
+    [LG_5D] = {28, 2, 1},
+    [LG_6A] = {424, 33, 7},
+    [LG_6B] = {18, 3, 0},
+    [LG_7A] = {64, 6, 0},
+    [LG_8A] = {142, 11, 0},
+    [LG_TAKEN] = {6, 0, 0},
+};
+
+// Its own data bank, for the shadows it reads through it.
+static bool accepts_logo_frame(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->db == 0x83;
+}
+
+static void logo_shim(Wram* w, const CosimRegs* in, CosimRegs* out,
+                      LogoStage stage) {
+  PortCpu c;
+  LogoWork k = {0};
+  cpu_from(in, &c);
+  logo_frame(w, &c, stage, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < LG_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&LG_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+#define LOGO_SHIM(name, stage)                                              \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,     \
+                          CosimRegs* out) {                                 \
+    (void)rom;                                                              \
+    logo_shim(w, in, out, stage);                                           \
+  }
+LOGO_SHIM(logo_slide, LOGO_SLIDE)
+LOGO_SHIM(logo_cycle, LOGO_CYCLE)
+LOGO_SHIM(logo_rise, LOGO_RISE)
+LOGO_SHIM(logo_sweep, LOGO_SWEEP)
+LOGO_SHIM(logo_sweep_2, LOGO_SWEEP_2)
+LOGO_SHIM(logo_flash, LOGO_FLASH)
+LOGO_SHIM(logo_hold, LOGO_HOLD)
+LOGO_SHIM(logo_fade, LOGO_FADE)
+#undef LOGO_SHIM
+
+static const uint32_t LOGO_SLIDE_EXITS[] = {LOGO_SLIDE_WAI_PC,
+                                            LOGO_CYCLE_WAI_PC};
+static const uint32_t LOGO_CYCLE_EXITS[] = {LOGO_CYCLE_WAI_PC,
+                                            LOGO_RISE_WAI_PC};
+static const uint32_t LOGO_RISE_EXITS[] = {LOGO_RISE_WAI_PC, LOGO_RISE_END_PC};
+static const uint32_t LOGO_SWEEP_EXITS[] = {LOGO_SWEEP_WAI_PC,
+                                            LOGO_SWEEP_END_PC};
+static const uint32_t LOGO_SWEEP_2_EXITS[] = {LOGO_SWEEP_2_WAI_PC,
+                                              LOGO_FLASH_WAI_PC};
+static const uint32_t LOGO_FLASH_EXITS[] = {LOGO_FLASH_WAI_PC,
+                                            LOGO_HOLD_WAI_PC};
+static const uint32_t LOGO_HOLD_EXITS[] = {LOGO_HOLD_WAI_PC, LOGO_FADE_WAI_PC};
+static const uint32_t LOGO_FADE_EXITS[] = {LOGO_FADE_WAI_PC, LOGO_FADE_END_PC};
 
 // ---------------------------------------------------------------------------
 // $81:B4EA  the axe a doll throws -- see `port/axe.h`
@@ -14008,6 +14359,203 @@ static void shim_game_over_fall(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
+// $80:8A11 and $80:8A30  the game over's thread -- see `port/frontend.h`
+// ---------------------------------------------------------------------------
+//
+// The fall is priced as its own entry prices it. Each run of the loops is
+// from `tools/cycles816.py --db=80`.
+static const CosimRun GO_RUN_FIRST_HEAD = {96, 6, 0};   // $8A11-$8A16
+static const CosimRun GO_RUN_FIRST_TEST = {64, 8, 0};   // $8A17-$8A1E
+static const CosimRun GO_RUN_SECOND = {160, 14, 0};     // $8A30-$8A3D
+static const CosimRun GO_RUN_AGAIN = {18, 3, 0};        // LDA #$0001
+
+static bool game_over_frame_ok(const Wram* w, const CosimRegs* in) {
+  return game_over_fall_ok(w, in) && in->d < 0x1f00 &&
+         (in->p & PORT_P_D) == 0;
+}
+
+static void game_over_frame_shim(Wram* w, const CosimRegs* in, CosimRegs* out,
+                                 bool second) {
+  PortCpu c;
+  GameOverFrameLog log;
+  cpu_from(in, &c);
+  game_over_frame(w, &c, second, &log);
+  cpu_to(&c, out);
+
+  CosimRun run = {0, 0, 0};
+  if (second) {
+    run_add(&run, &GO_RUN_SECOND, 1);
+  } else {
+    run_add(&run, &GO_RUN_FIRST_HEAD, 1);
+    run_add(&run, &GO_RUN_FIRST_TEST, 1);
+  }
+  run_add(&run, &FALL_RUN_HEAD, 1);
+  run_add(&run, log.fall.twice ? &FALL_RUN_JSR : &DRIFT_RUN_TAKEN, 1);
+  run_add(&run, &FALL_RUN_STEP, log.fall.twice ? 2 : 1);
+  if (log.again) {
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &GO_RUN_AGAIN, 1);
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static void shim_game_over_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  game_over_frame_shim(w, in, out, false);
+}
+
+static void shim_game_over_frame_2(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  game_over_frame_shim(w, in, out, true);
+}
+
+static const uint32_t GAME_OVER_FRAME_EXITS[] = {GAME_OVER_FRAME_YIELD_PC,
+                                                 GAME_OVER_FRAME_END_PC};
+static const uint32_t GAME_OVER_FRAME_2_EXITS[] = {GAME_OVER_FRAME_2_YIELD_PC,
+                                                   GAME_OVER_FRAME_2_END_PC};
+
+// ---------------------------------------------------------------------------
+// $80:9A52  a portrait -- see `port/frontend.h`
+// ---------------------------------------------------------------------------
+//
+// Sixteen rows of thirteen words. Each run is from `tools/cycles816.py
+// --db=80 --ind=83:ECEC`, the picture in the cartridge. The store is through
+// a pointer too, to WRAM: 4 more than the tool's price, and two bytes fewer
+// of the cartridge.
+static const CosimRun PC_RUN_HEAD = {340, 38, 4};  // $9A52-$9A71
+static const CosimRun PC_RUN_WORD = {254, 17, 4};  // $9A72-$9A80
+static const CosimRun PC_RUN_ROW = {128, 14, 2};   // $9A81-$9A8E
+
+// Its two tables are read through the data bank, which is `$80` on the
+// way into a game and `$00` on the way to the top scores: the same bytes,
+// at the slow speed.
+static bool accepts_portrait_copy(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && low_stack(in) && in->d < 0x1f00 &&
+         (in->db == 0x80 || in->db == 0x00) && (in->p & PORT_P_D) == 0 &&
+         portrait_copy_supported(in->x, in->y);
+}
+
+// X and Y are the loops' zeroes, and N and Z the last `DEX`'s.
+static void shim_portrait_copy(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  PortraitCopyRegs r;
+  portrait_copy(w, rom, in->d, in->db, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = 0;
+  out->y = 0;
+  out->n = false;
+  out->z = true;
+  out->c = r.c;
+  out->v = r.v;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
+  out->regs = COSIM_REG_ALL;
+
+  const int words = PORTRAIT_ROWS * (PORTRAIT_ROW_BYTES / 2);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &PC_RUN_HEAD, 1);
+  if (in->db < 0x80) {
+    // The tables' three words, 2 more a byte and none of them FastROM's.
+    run.cycles += 12;
+    run.bytes -= 6;
+  }
+  run_add(&run, &PC_RUN_WORD, words);
+  run_add(&run, &RUN_TAKEN, words - PORTRAIT_ROWS);
+  run_add(&run, &PC_RUN_ROW, PORTRAIT_ROWS);
+  run_add(&run, &RUN_TAKEN, PORTRAIT_ROWS - 1);
+  run_add(&run, &RUN_RTS, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+// ---------------------------------------------------------------------------
+// $83:802D and $83:8241  the logo screens' start -- see `port/frontend.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=83`. An `MVN` is an instruction
+// a byte. The colours' read is from the cartridge, which the tool cannot
+// know from `LDA $0000,Y`: 4 fewer than its price, and two bytes more.
+static const CosimRun IF_RUN_HEAD = {36, 5, 0};    // $802D-$8031
+static const CosimRun IF_RUN_COPY = {112, 13, 0};  // $8032-$803C
+static const CosimRun IF_RUN_MID = {36, 6, 0};     // $803D-$8042
+static const CosimRun IF_RUN_FILL = {76, 8, 0};    // $8043-$804A
+static const CosimRun IF_RUN_PRE = {132, 17, 0};   // $804B-$805B
+static const CosimRun IF_RUN_MVN = {46, 3, 0};
+static const CosimRun IF_RUN_PLB = {26, 1, 0};
+static const CosimRun IC_RUN_HEAD = {40, 3, 1};    // $8241-$8243
+static const CosimRun IC_RUN_WORD = {186, 17, 1};  // $8244-$8252
+
+// 8-bit A and 16-bit index registers, as the instructions before it leave
+// them, and the table read through the data bank.
+static bool accepts_intro_fill(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return (in->p & (PORT_P_M | PORT_P_X)) == PORT_P_M && low_stack(in) &&
+         in->db == INTRO_BANK;
+}
+
+// The registers are the copy's: A at `$FFFF`, X on the last byte and Y one
+// past it. N and Z are the `PLB`'s, and the byte it pulled stays under the
+// stack.
+static void shim_intro_fill(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  intro_fill(w, rom);
+  wram_w8(w, in->s, in->db);
+  out->a = 0xffff;
+  out->x = (uint16_t)(INTRO_FILL_AT + INTRO_FILL_END - 1);
+  out->y = (uint16_t)(INTRO_FILL_AT + INTRO_FILL_END);
+  out->regs = COSIM_REG_ALL;
+  out->p = (uint8_t)((in->p & ~(PORT_P_M | PORT_P_Z)) | PORT_P_N);
+  out->pc = INTRO_FILL_END_PC;
+
+  const int head = INTRO_FILL_HEAD_BYTES / 2;
+  const int blank = (INTRO_FILL_BLANK_END - INTRO_FILL_HEAD_BYTES) / 2;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &IF_RUN_HEAD, 1);
+  run_add(&run, &IF_RUN_COPY, head);
+  run_add(&run, &RUN_TAKEN, head - 1);
+  run_add(&run, &IF_RUN_MID, 1);
+  run_add(&run, &IF_RUN_FILL, blank);
+  run_add(&run, &RUN_TAKEN, blank - 1);
+  run_add(&run, &IF_RUN_PRE, 1);
+  run_add(&run, &IF_RUN_MVN, INTRO_FILL_END - INTRO_FILL_BLANK_END - 1);
+  run_add(&run, &IF_RUN_PLB, 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static const uint32_t INTRO_FILL_EXITS[] = {INTRO_FILL_END_PC};
+
+static bool accepts_intro_colours_copy(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && low_stack(in) && in->d < 0x1f00 && in->db == INTRO_BANK &&
+         intro_colours_copy_supported(in->a, in->x, in->y);
+}
+
+// N and Z are the count's last `DEC`, and carry the bit the `LSR` halved
+// away.
+static void shim_intro_colours_copy(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  IntroColoursRegs r;
+  intro_colours_copy(w, rom, in->d, in->a, in->x, in->y, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->n = false;
+  out->z = true;
+  out->c = false;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  out->regs = COSIM_REG_ALL;
+
+  const int words = in->a >> 1;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &IC_RUN_HEAD, 1);
+  run_add(&run, &IC_RUN_WORD, words);
+  run_add(&run, &RUN_TAKEN, words - 1);
+  run_add(&run, &RUN_RTS, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+// ---------------------------------------------------------------------------
 // The spawn list's frame -- see `port/spawnlist.h`
 // ---------------------------------------------------------------------------
 //
@@ -17724,6 +18272,158 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 200,
     },
+    // The wobble's thread, after each build: see `port/trig.h`.
+    {
+        .name = "wave_thread_tests",
+        .symbol = "$80:9515",
+        .entry = WAVE_THREAD_TESTS_PC,
+        .run = shim_wave_thread_tests,
+        .accepts = accepts_wave_thread_tests,
+        COSIM_EXITS(WAVE_THREAD_EXITS),
+        .uncalled = true,
+        .cycles = 240,
+    },
+    // The game over's thread, and what two more screens start with: see
+    // `port/frontend.h`.
+    {
+        .name = "game_over_frame",
+        .symbol = "$80:8A11",
+        .entry = GAME_OVER_FRAME_PC,
+        .run = shim_game_over_frame,
+        .accepts = game_over_frame_ok,
+        COSIM_EXITS(GAME_OVER_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 900,
+        .stack_bytes = 4,  // the `JSR`, and an odd frame's
+    },
+    {
+        .name = "game_over_frame_2",
+        .symbol = "$80:8A30",
+        .entry = GAME_OVER_FRAME_2_PC,
+        .run = shim_game_over_frame_2,
+        .accepts = game_over_frame_ok,
+        COSIM_EXITS(GAME_OVER_FRAME_2_EXITS),
+        .uncalled = true,
+        .cycles = 900,
+        .stack_bytes = 4,
+    },
+    {
+        .name = "portrait_copy",
+        .symbol = "$80:9A52",
+        .entry = PORTRAIT_COPY_PC,
+        .ret_op = PORTRAIT_COPY_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_portrait_copy,
+        .accepts = accepts_portrait_copy,
+        .cycles = 56000,
+        // A sixth of a frame. The map is not sent until its caller has
+        // queued it.
+        .through_interrupts = true,
+    },
+    {
+        .name = "intro_fill",
+        .symbol = "$83:802D",
+        .entry = INTRO_FILL_PC,
+        .run = shim_intro_fill,
+        .accepts = accepts_intro_fill,
+        COSIM_EXITS(INTRO_FILL_EXITS),
+        .uncalled = true,
+        .cycles = 91000,
+        .stack_bytes = 1,  // the `PHB`
+        // A quarter of a frame. Nothing reads the buffer until the
+        // instructions after it queue it.
+        .through_interrupts = true,
+    },
+    {
+        .name = "intro_colours_copy",
+        .symbol = "$83:8241",
+        .entry = INTRO_COLOURS_COPY_PC,
+        .ret_op = INTRO_COLOURS_COPY_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_intro_colours_copy,
+        .accepts = accepts_intro_colours_copy,
+        .cycles = 7000,
+    },
+    // The big letters of a level's name: see `port/text.h`.
+    {
+        .name = "text_big_begin",
+        .symbol = "$82:AD5A",
+        .entry = TEXT_BIG_PC,
+        .run = shim_text_big_begin,
+        .accepts = accepts_text_big_begin,
+        COSIM_EXITS(TEXT_BIG_EXITS),
+        .cycles = 2500,
+        .stack_bytes = 2,  // half the `PEA`, and the character's `PHA`
+    },
+    {
+        .name = "text_big_glyph",
+        .symbol = "$82:ADE4",
+        .entry = TEXT_BIG_GLYPH_PC,
+        .run = shim_text_big_glyph,
+        .accepts = accepts_text_big_glyph,
+        COSIM_EXITS(TEXT_BIG_EXITS),
+        .uncalled = true,
+        .cycles = 8000,
+        .stack_bytes = 2,  // the next character's `PHA`
+        .through_interrupts = true,
+    },
+    // The radar's thread: see `port/radar_thread.h`.
+    {
+        .name = "radar_frame",
+        .symbol = "$82:D8FD",
+        .entry = RADAR_FRAME_PC,
+        .run = shim_radar_frame,
+        .accepts = accepts_radar_frame,
+        COSIM_EXITS(RADAR_EXITS),
+        .uncalled = true,
+        .cycles = 3000,
+    },
+    // The neighbour who jumps: see `port/jumper.h`.
+    {
+        .name = "jumper_up",
+        .symbol = "$83:9F11",
+        .entry = JUMPER_UP_PC,
+        .run = shim_jumper_up,
+        .accepts = accepts_jumper_frame,
+        COSIM_EXITS(JUMPER_UP_EXITS),
+        .uncalled = true,
+        .cycles = 260,
+    },
+    {
+        .name = "jumper_down",
+        .symbol = "$83:9F2E",
+        .entry = JUMPER_DOWN_PC,
+        .run = shim_jumper_down,
+        .accepts = accepts_jumper_frame,
+        COSIM_EXITS(JUMPER_DOWN_EXITS),
+        .uncalled = true,
+        .cycles = 260,
+    },
+#define LOGO_ENTRY(n, sym, pc, ex, cyc, stack)                               \
+    {                                                                        \
+        .name = #n,                                                          \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_##n,                                                     \
+        .accepts = accepts_logo_frame,                                       \
+        COSIM_EXITS(ex),                                                     \
+        .uncalled = true,                                                    \
+        .cycles = cyc,                                                       \
+        .stack_bytes = stack,                                                \
+    }
+    // The logo screens, between their waits: see `port/logo.h`. Each has
+    // the `JSR` under its stack, and the sweeps what they pushed.
+    LOGO_ENTRY(logo_slide, "$83:8102", LOGO_SLIDE_PC, LOGO_SLIDE_EXITS, 300, 2),
+    LOGO_ENTRY(logo_cycle, "$83:8135", LOGO_CYCLE_PC, LOGO_CYCLE_EXITS, 300, 2),
+    LOGO_ENTRY(logo_rise, "$83:815A", LOGO_RISE_PC, LOGO_RISE_EXITS, 300, 2),
+    LOGO_ENTRY(logo_sweep, "$83:8184", LOGO_SWEEP_PC, LOGO_SWEEP_EXITS, 2700,
+               4),
+    LOGO_ENTRY(logo_sweep_2, "$83:81CC", LOGO_SWEEP_2_PC, LOGO_SWEEP_2_EXITS,
+               1700, 2),
+    LOGO_ENTRY(logo_flash, "$83:81F2", LOGO_FLASH_PC, LOGO_FLASH_EXITS, 520, 2),
+    LOGO_ENTRY(logo_hold, "$83:8217", LOGO_HOLD_PC, LOGO_HOLD_EXITS, 150, 2),
+    LOGO_ENTRY(logo_fade, "$83:821E", LOGO_FADE_PC, LOGO_FADE_EXITS, 230, 2),
+#undef LOGO_ENTRY
 #define LOADS_ENTRY(n, sym, pc, rtl, ok, cyc, stack)                         \
     {                                                                        \
         .name = #n,                                                          \

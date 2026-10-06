@@ -244,7 +244,10 @@ add_library(zamn_port STATIC
   src/port/fade.c
   src/port/doll_thread.c
   src/port/flame.c
+  src/port/jumper.c
   src/port/loads.c
+  src/port/logo.c
+  src/port/radar_thread.c
   src/port/floor.c
   src/port/football.c
   src/port/text.c

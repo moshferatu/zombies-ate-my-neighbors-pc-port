@@ -16507,5 +16507,112 @@ after the game it is in that movie's sequence. Which demo comes next is
 the random numbers' to say, so the two harnesses must leave them
 differently by then. Why has not been looked into.
 
+(Wrong about the reach: `demo-end.zmv` takes all of it in lockstep. See
+the next section.)
+
 **Live**: the residue over the twelve movies is 1.81 million
 instructions, from 2.99. All twelve are at 99.4% or more.
+
+## The big letters, the radar, and the logo screens (2026-10-05)
+
+### Where the residue was
+
+By stretch, of 1.81 million:
+
+    $80:94AF-$953A   121,282   the wobble's thread
+    $82:AD5A-$AE43   103,500   the big letters
+    $83:8000-$8240    99,384   the logo screens
+    $80:9A52-$9A8F    68,058   a portrait's copy
+    $82:D92A-$D9EA    65,261   the radar's thread
+    $80:AB4E-$ABD2    42,800   a block of tiles put on the screen
+    $83:9EBE-$9F88    41,804   the neighbour who jumps
+
+All but the sixth are the port's now, or all but an instruction or two a
+frame of them.
+
+### A stretch must not read what the NMI writes after a long wait
+
+The wobble's loop is `JSL thread_yield : JSR $9570 : LDA $006E : CMP
+#$1000 : BEQ ...`: sleep, build the table, test the pads. The build was
+already the port's. One stretch from the wake to the next yield would
+have taken eleven instructions a frame out of the ROM.
+
+It would also have been wrong. A build is up to 163,000 cycles, and
+under `run` the port does a stretch's work at its entry and then waits
+the cycles out. The pads at `$006E` are written by the NMI. If one
+landed in the wait, the ROM would test the new pad and the port had
+already tested the old one.
+
+So the stretch begins at `$80:9515`, where the build returns to, and the
+`JSR` is left to the ROM. The same question was asked of every other
+stretch here. None reads anything the NMI writes after a long run of its
+own.
+
+### The multiplier, without a trace of the hardware
+
+`$82:AD5A` multiplies a letter's number by its set's width with `STA
+$4202 : STX $4203`, waits three `NOP`s, and reads `$4216`. A port of the
+whole routine would have had to record those writes for the harness to
+make on their cycles, as the vblank jobs do, in a routine a quarter of a
+frame long that the NMI lands in.
+
+Instead the routine is cut at the writes. `text_big_begin` runs from the
+entry to the first `STA $4202`. `text_big_glyph` begins at the `REP`
+after the `NOP`s, draws the letter, and runs on to the next `STA $4202`
+or to the string's end. The ROM makes the writes itself. The second
+stretch computes the product from A and X, which still hold the two
+bytes, and so reads no hardware either.
+
+### Pricing under HDMA
+
+`verify` checks a price exactly only when no HDMA ran in the call. The
+wobble is HDMA, and it was running in every call of the radar's too:
+12,525 and 687 calls, none checkable.
+
+A routine with `.hw` set is priced on the CPU's own clock, with what
+HDMA and refresh took left out. Setting it for a build, on a routine
+that writes no register, checks the model on that clock:
+
+    radar_frame          261  261  +0..+0, mean +0   261/261
+    wave_thread_tests   1077 1077  +0..+0, mean +0  1077/1077
+
+Both were set, run and unset again.
+
+### A data bank that is `$00`
+
+`portrait_copy` was declined on six of `demo-end.zmv`'s eight calls. Its
+tables are at `$9AA4`, read through the data bank, and the calls on the
+way to the top scores come with it at `$00`. That is the same cartridge
+byte, read 2 cycles slower and never at the fast speed. The port reads
+through whichever bank it is given, and the head's price is 12 more and
+six bytes fewer of FastROM.
+
+### The logo screens
+
+Eight loops in one routine, each `WAI : JSR $8254 : ...`, and `$8254`
+is an `RTS`. A stretch for each, entered after the `WAI` and leaving at
+the next one. They are one function with a switch, and one cost table.
+
+### Checked
+
+The corpus: 33,182,521 calls across 51 movies, 0 diverged, 887 of 1,060
+sites. Every call priced is exact. `level21.zmv` is run to 20,000 frames
+for the radar.
+
+**Lockstep**: 325,322 passes, 48 of 51 never part, the same three as
+before on the same passes.
+
+The section above said lockstep does not reach the flame or a doll's
+death. That was from `level5.zmv` alone and is wrong. `run` on
+`demo-end.zmv`, leaving out the three routines the corpus leaves out,
+takes 676 frames of the flame, 14 deaths and 261 frames of the radar,
+and never parts. `level21.zmv` takes the radar too.
+
+What differs is still not explained. Both harnesses feed the movie a
+frame at a time. But `level21.zmv` under `run` plays the radar's demo
+with `lzss_decompress`, `camera_follow` and `camera_scroll` left to the
+ROM, and a different one with nothing left out. So which demo comes
+round depends on timing that those three change.
+
+**Live**: the residue over the twelve movies is 1.28 million
+instructions, from 1.81.

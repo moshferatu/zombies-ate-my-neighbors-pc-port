@@ -98,6 +98,50 @@
   X(squirt_splashed,  "squirt_splash",      "the handler taken away and the first splash shown") \
   X(squirt_splashed_2, "squirt_splash_2",   "the second splash shown") \
   X(squirt_gone,      "squirt_gone",        "one shot fewer, and its record on the way to being freed") \
+  /* $80:9515 the wobble's thread, after each build -- see port/trig.h. */      \
+  X(wave_thread_start, "wave_thread_tests", "Start alone on a pad: the wobble ends") \
+  X(wave_thread_over, "wave_thread_tests",  "the table's length gone negative: it ends") \
+  X(wave_thread_again, "wave_thread_tests", "neither, and a frame's sleep") \
+  /* The game over's thread and two screens' starts -- see port/frontend.h. */ \
+  X(game_over_frame,  "game_over_frame",    "a frame of the first loop: the layer up, the sprites down") \
+  X(game_over_frame_2, "game_over_frame_2", "a frame of the second: the sprites, then the layer") \
+  X(game_over_frame_last, "game_over_frame", "the layer as far up as a loop takes it") \
+  X(portrait_copy,    "portrait_copy",      "a portrait's 208 tiles copied into the text map") \
+  X(intro_fill,       "intro_fill",         "the logo screens' tilemap made in the scratch buffer") \
+  X(intro_colours_copy, "intro_colours_copy", "colours for them copied from the cartridge") \
+  /* $82:AD5A the big letters -- see port/text.h. */                            \
+  X(text_big_begin,   "text_big_begin",     "the first place of a string of big letters") \
+  X(text_big_glyph,   "text_big_glyph",     "a big letter's six rows of tiles written") \
+  X(text_big_found,   "text_big_begin",     "a character that draws: its set's place and width, and off to multiply") \
+  X(text_big_skipped, "text_big_begin",     "a character the table draws nothing for") \
+  X(text_big_new_place, "text_big_begin",   "a byte of $FF: a new place") \
+  X(text_big_ended,   "text_big_begin",     "the string's zero, and on to send the map") \
+  /* $82:D8FD the radar's thread -- see port/radar_thread.h. */                 \
+  X(radar_went_down,  "radar_frame",        "the player's radar is no longer up: the ROM's") \
+  X(radar_recount,    "radar_frame",        "a neighbour fewer than the panel shows: the ROM's") \
+  X(radar_none_near,  "radar_frame",        "round the whole list and none near: the square off the screen") \
+  X(radar_wrapped,    "radar_frame",        "past the last neighbour, and back to the first") \
+  X(radar_skipped_gone, "radar_frame",      "a neighbour saved or gone, passed over") \
+  X(radar_skipped_far_x, "radar_frame",     "...or too far across") \
+  X(radar_skipped_far_y, "radar_frame",     "...or too far up or down") \
+  X(radar_shown,      "radar_frame",        "the square put where the next near neighbour is") \
+  /* $83:9F11, $83:9F2E the neighbour who jumps -- see port/jumper.h. */        \
+  X(jumper_rose,      "jumper_up",          "a pixel up") \
+  X(jumper_turned,    "jumper_up",          "the top of the jump, and the first pixel down") \
+  X(jumper_fell,      "jumper_down",        "a pixel down") \
+  X(jumper_landed,    "jumper_down",        "on the ground, and its collision id back") \
+  X(jumper_ended,     "jumper_up",          "its event gone negative: the ROM's") \
+  /* The logo screens, between their waits -- see port/logo.h. */               \
+  X(logo_tile_stepped, "logo_slide",        "an other frame: the tile two on") \
+  X(logo_tile_wrapped, "logo_slide",        "...and past twelve, back to six") \
+  X(logo_slid,        "logo_slide",         "the first layer all the way across") \
+  X(logo_cycled,      "logo_cycle",         "a fourth frame: sixteen colours down a place") \
+  X(logo_risen,       "logo_rise",          "the first layer as far up as it goes") \
+  X(logo_swept,       "logo_sweep",         "the two rows' tenth move") \
+  X(logo_swept_2,     "logo_sweep_2",       "the third row's tenth move") \
+  X(logo_flashed,     "logo_flash",         "the first colour white") \
+  X(logo_held,        "logo_hold",          "the 255th frame") \
+  X(logo_faded,       "logo_fade",          "the brightness at zero") \
   /* $80:A4D9 a whole screen of tiles -- see port/screen_tiles.h. */            \
   X(screen_tiles_fill, "screen_tiles_fill", "31 rows of 32 tiles and a column of 32 copied to a buffer") \
   /* $82:B84A, $82:B8FB the text printer -- see port/text.h. */                 \

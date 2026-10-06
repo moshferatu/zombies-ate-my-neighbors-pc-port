@@ -3,6 +3,7 @@
 //   $82:B84A  text_print        one string at one place
 //   $82:B8FB  text_print_lines  strings each with its own place, and then on
 //                               to send the text map to VRAM
+//   $82:AD5A  the big letters   a level's name, in two stretches: see below
 //
 // Every screen of words goes through one of these: the title's, the menus',
 // a level's name, the counts when one is over.
@@ -116,5 +117,70 @@ void text_print(Wram* w, const Rom* rom, uint16_t page, uint16_t a, uint16_t x,
                 uint16_t y, TextRegs* out, TextWork* k);
 void text_print_lines(Wram* w, const Rom* rom, uint16_t page, uint16_t a,
                       uint16_t x, uint16_t y, TextRegs* out, TextWork* k);
+
+// --- $82:AD5A  the big letters -----------------------------------------------
+//
+// A level's name is written in letters six tiles tall. `$82:AD5A` takes a
+// place and a string as `text_print_lines` does, from the bank in A's low
+// byte at X, with `$FF` for a new place, and adds nothing to a place.
+//
+// A character is a word of the table at `$82:AF37`, indexed by the byte less
+// `$20`. A negative word draws nothing. Otherwise its high byte names one of
+// three sets, each with a width in bytes of map and a place in the font at
+// `$96:D641`, and its low byte says which of the set. The font is 256 bytes
+// to a row of tiles, so a character's six rows are `$100` apart.
+//
+// Where in its set's row a character starts is its number times its width,
+// and the ROM asks the console's multiplier. That is two writes to the
+// hardware in the middle of every character, so the routine is two stretches
+// here, each ending where the next write would be:
+//
+//     $82:AD5A  begin   the first place, and the string up to the first
+//                       character that draws
+//     $82:ADE4  glyph   from the product: that character's tiles, and the
+//                       string up to the next one that draws
+//
+// The five instructions between them stay the ROM's: `STA $4202 : STX
+// $4203` and three `NOP`s. The glyph stretch does not read the product from
+// the hardware. A and X still hold what was multiplied.
+//
+// Either leaves at `$82:AE34` when the string ends, where the ROM queues the
+// job that sends the map, with the data bank `$82` and the caller's under a
+// spare byte on the stack, as `text_print_lines` does.
+#define TEXT_BIG_PC 0x82ad5au
+#define TEXT_BIG_MULTIPLY_PC 0x82addbu  // `STA $4202`, 8-bit registers
+#define TEXT_BIG_GLYPH_PC 0x82ade4u     // `REP #$30 : LDA $4216`
+#define TEXT_BIG_SEND_PC 0x82ae34u
+#define TEXT_BIG_CHARS 0x82af37u
+#define TEXT_BIG_FIRST_CHAR 0x20
+// A set's place in the font and its width, a word each, by twice the set.
+#define TEXT_BIG_SET_AT 0x82ae63u
+#define TEXT_BIG_SET_WIDTH 0x82ae69u
+#define TEXT_BIG_FONT 0x96d641u
+#define TEXT_BIG_FONT_ROW 0x0100u
+#define TEXT_BIG_ROWS 6
+#define TEXT_BIG_MAP_ROW 0x0040u
+#define W_TEXT_BIG_WIDTH 0x1e90u
+#define W_TEXT_BIG_AT 0x1e92u
+
+typedef struct {
+  TextWork text;  // bytes, places and slow words, as the others count them
+  int skipped;    // characters the table draws nothing for
+  int words;      // tiles written
+} TextBigWork;
+
+typedef struct {
+  uint16_t a, x, y;
+  bool multiply;  // it stopped for a product; otherwise the string ended
+} TextBigRegs;
+
+// One of the three widths the sets have, and X the same.
+bool text_big_width_ok(uint16_t width, uint16_t x);
+
+void text_big_begin(Wram* w, const Rom* rom, uint16_t page, uint16_t a,
+                    uint16_t x, uint16_t y, TextBigRegs* out, TextBigWork* k);
+// `which` and `width` are A and X, the two bytes that were multiplied.
+void text_big_glyph(Wram* w, const Rom* rom, uint16_t page, uint8_t which,
+                    uint8_t width, TextBigRegs* out, TextBigWork* k);
 
 #endif

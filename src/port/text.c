@@ -164,3 +164,90 @@ void text_print_lines(Wram* w, const Rom* rom, uint16_t page, uint16_t a,
   }
   finish(&t, out);
 }
+
+// --- $82:AD5A  the big letters -----------------------------------------------
+
+bool text_big_width_ok(uint16_t width, uint16_t x) {
+  return (width == 4 || width == 6 || width == 12) && x == width;
+}
+
+// The string from where it is, up to a character that draws or to its end.
+// For one that draws, everything before the multiplier is asked: its set's
+// place and width are put away, and A and X hold what is to be multiplied.
+static void big_scan(Text* t, TextBigWork* k, TextBigRegs* out) {
+  for (;;) {
+    const uint8_t ch = next_char(t);
+    if (ch == 0) {
+      PORT_COVER(text_big_ended);
+      out->a = 0;
+      out->x = t->x;
+      out->y = t->y;
+      out->multiply = false;
+      return;
+    }
+    if (ch == TEXT_NEW_PLACE) {
+      PORT_COVER(text_big_new_place);
+      read_place(t, 0);
+      continue;
+    }
+    const uint16_t index =
+        (uint16_t)((uint16_t)(ch - TEXT_BIG_FIRST_CHAR) << 1);
+    t->x = index;
+    const uint16_t entry = bus_r16(t->w, t->rom, TEXT_BIG_CHARS + index);
+    if (entry & 0x8000u) {
+      PORT_COVER(text_big_skipped);
+      k->skipped++;
+      continue;
+    }
+    PORT_COVER(text_big_found);
+    const uint8_t set = (uint8_t)((entry >> 8) << 1);
+    const uint16_t width = bus_r16(t->w, t->rom, TEXT_BIG_SET_WIDTH + set);
+    wram_w16(t->w, W_TEXT_BIG_AT, bus_r16(t->w, t->rom, TEXT_BIG_SET_AT + set));
+    wram_w16(t->w, W_TEXT_BIG_WIDTH, width);
+    // 8-bit registers from here to the product.
+    out->a = entry & 0x00ffu;
+    out->x = width & 0x00ffu;
+    out->y = t->y & 0x00ffu;
+    out->multiply = true;
+    return;
+  }
+}
+
+void text_big_begin(Wram* w, const Rom* rom, uint16_t page, uint16_t a,
+                    uint16_t x, uint16_t y, TextBigRegs* out, TextBigWork* k) {
+  Text t = {w, rom, page, &k->text, x, y};
+  PORT_COVER(text_big_begin);
+  read_from(&t, (uint8_t)(a >> 8), (uint8_t)a, x);
+  set_word(&t, TEXT_DP_TO + 1, (uint16_t)(TEXT_MAP_BANK << 8));
+  read_place(&t, 0);
+  big_scan(&t, k, out);
+}
+
+void text_big_glyph(Wram* w, const Rom* rom, uint16_t page, uint8_t which,
+                    uint8_t width, TextBigRegs* out, TextBigWork* k) {
+  Text t = {w, rom, page, &k->text, 0, 0};
+  PORT_COVER(text_big_glyph);
+  const uint16_t across = wram_r16(w, W_TEXT_BIG_WIDTH);
+  uint16_t from = (uint16_t)(which * width + wram_r16(w, W_TEXT_BIG_AT));
+  for (int row = 0; row < TEXT_BIG_ROWS; row++) {
+    uint16_t along = 0;
+    do {
+      const uint16_t tile = (uint16_t)(bus_r16(w, rom, TEXT_BIG_FONT + from) +
+                                       wram_r16(w, W_TEXT_TILE_BASE));
+      put_tile(&t, along, tile);
+      along = (uint16_t)(along + 2);
+      from = (uint16_t)(from + 2);
+      k->words++;
+    } while (along != across);
+    set_word(&t, TEXT_DP_TO,
+             (uint16_t)(word_at(&t, TEXT_DP_TO) + TEXT_BIG_MAP_ROW));
+    from = (uint16_t)(from + TEXT_BIG_FONT_ROW - across);
+  }
+  wram_w16(w, W_TEXT_LINES_ROWS, 0);
+  // Six rows back up, and the character's width along.
+  set_word(&t, TEXT_DP_TO,
+           (uint16_t)(word_at(&t, TEXT_DP_TO) -
+                      TEXT_BIG_ROWS * TEXT_BIG_MAP_ROW + across));
+  t.x = from;
+  big_scan(&t, k, out);
+}

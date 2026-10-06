@@ -8,6 +8,11 @@
 //   $80:8B70  game_over_scroll_job   the game over's third layer, each frame
 //   $80:8B82  game_over_colours_job  ...and three of its colours
 //   $80:8A58  game_over_fall         its four sprites, a step down
+//   $80:8A11  game_over_frame        the game over's thread, a frame of
+//   $80:8A30                         each of its two loops
+//   $80:9A52  portrait_copy          a player's portrait, into the text map
+//   $83:802D  intro_fill             the logo screens' tilemap
+//   $83:8241  intro_colours_copy     ...and colours for them
 //
 // ## The intro's screen
 //
@@ -63,6 +68,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/dma.h"
 #include "port/hw.h"
 #include "port/wram.h"
@@ -156,5 +162,96 @@ bool game_over_fall_supported(const Wram* w, uint16_t d);
 
 // `$80:8A58`. `d` is the thread's page. `log` may be NULL.
 void game_over_fall(Wram* w, uint16_t d, GameOverFallLog* log);
+
+// --- $80:8A11 and $80:8A30  the game over's thread ---------------------------
+//
+// The thread has two loops, a frame each time round. The first moves the
+// third layer's shadow up a pixel and then the sprites down, until the
+// shadow is under `$FF00`. The second moves the sprites and then the shadow,
+// until it is under `$FE00`. Each is a stretch here, from its wake to its
+// yield or to the instruction after its loop.
+#define GAME_OVER_FRAME_PC 0x808a11u
+#define GAME_OVER_FRAME_YIELD_PC 0x808a0du  // `JSL thread_yield`, A already 1
+#define GAME_OVER_FRAME_END_PC 0x808a1fu
+#define GAME_OVER_FRAME_2_PC 0x808a30u
+#define GAME_OVER_FRAME_2_YIELD_PC 0x808a2cu
+#define GAME_OVER_FRAME_2_END_PC 0x808a3eu
+#define GAME_OVER_FIRST_UNTIL 0xff00u
+#define GAME_OVER_SECOND_UNTIL 0xfe00u
+
+typedef struct {
+  GameOverFallLog fall;
+  bool again;  // it left by its yield
+} GameOverFrameLog;
+
+void game_over_frame(Wram* w, PortCpu* c, bool second, GameOverFrameLog* log);
+
+// --- $80:9A52  a portrait ----------------------------------------------------
+//
+// One player's portrait, 13 tiles across and 16 down, copied from the
+// cartridge into the text map. X is twice the side the player is on, which
+// picks the picture, and Y picks the place: 0 for the left, 2 for the right.
+// The two far pointers it copies through are left on the caller's page at
+// `$58` and `$5B`.
+#define PORTRAIT_COPY_PC 0x809a52u
+#define PORTRAIT_COPY_RTS_PC 0x809a8fu
+// Two tables, read through the caller's data bank.
+#define PORTRAIT_PICTURES 0x9aa4u  // a far pointer in four bytes, for each
+#define PORTRAIT_PLACES 0x9aacu    // an offset into the text map, for each
+#define PORTRAIT_DP_FROM 0x58
+#define PORTRAIT_DP_TO 0x5b
+#define PORTRAIT_MAP_AT 0x6502u
+#define PORTRAIT_ROWS 16
+#define PORTRAIT_ROW_BYTES 0x1a
+#define PORTRAIT_MAP_ROW 0x0040u
+
+typedef struct {
+  uint16_t a;
+  bool c, v;  // the last row's add
+} PortraitCopyRegs;
+
+// One of the two pictures and one of the two places.
+bool portrait_copy_supported(uint16_t x, uint16_t y);
+
+void portrait_copy(Wram* w, const Rom* rom, uint16_t page, uint8_t db,
+                   uint16_t x, uint16_t y, PortraitCopyRegs* out);
+
+// --- $83:802D and $83:8241  the logo screens' start --------------------------
+//
+// `$83:8000` shows the logo screens. It begins by making a tilemap in the
+// scratch buffer at `$7E:8000`: 98 bytes of it from the cartridge, tile 2 to
+// the end of its first kilobyte, and a second kilobyte of zeroes, which it
+// clears as the reset clears, a zero word copied onto itself a byte along.
+// `intro_fill` is that, from the `REP` after the PPU's registers are set to
+// the instruction that begins to send it.
+//
+// `$83:8241` copies colours from the cartridge to the ones shown: A bytes
+// of them, from Y, to the X'th byte.
+#define INTRO_FILL_PC 0x83802du
+#define INTRO_FILL_END_PC 0x838060u
+#define INTRO_BANK 0x83u
+#define INTRO_FILL_AT 0x8000u         // in bank `$7E`
+#define INTRO_FILL_HEAD 0x8382acu
+#define INTRO_FILL_HEAD_BYTES 0x0062u
+#define INTRO_FILL_BLANK_END 0x0400u  // tile 2 up to here
+#define INTRO_FILL_END 0x0800u        // ...and zeroes up to here
+#define INTRO_BLANK_TILE 0x0002u
+
+void intro_fill(Wram* w, const Rom* rom);
+
+#define INTRO_COLOURS_COPY_PC 0x838241u
+#define INTRO_COLOURS_COPY_RTS_PC 0x838253u
+#define INTRO_DP_COUNT 0x44
+
+typedef struct {
+  uint16_t a, x, y;
+} IntroColoursRegs;
+
+// An even count that is not zero, from the cartridge, to colours that are
+// there.
+bool intro_colours_copy_supported(uint16_t a, uint16_t x, uint16_t y);
+
+void intro_colours_copy(Wram* w, const Rom* rom, uint16_t page, uint16_t a,
+                        uint16_t x, uint16_t y, IntroColoursRegs* out);
 
 #endif
