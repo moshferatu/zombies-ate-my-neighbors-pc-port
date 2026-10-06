@@ -313,6 +313,15 @@ struct CosimPriv {
   uint64_t irq_cpu_at, irq_all_at;
   uint64_t irq_skip_cpu, irq_skip_all;
   Wram* irq_before;
+  // Where the call instruction just made went, or 0 if the last instruction
+  // was not a call. It is what says an entry was reached by a call, for the
+  // call share. `called_held` is one an interrupt came between, kept until
+  // its `RTI` is back there with `called_held_sp`. See `call_made`.
+  uint32_t called_pc;
+  uint32_t called_held;
+  uint16_t called_held_sp;
+  // The core executed an instruction on this step, or took an interrupt.
+  bool core_ran;
 };
 
 // ---------------------------------------------------------------------------
@@ -375,6 +384,52 @@ static bool at_instruction(Snes* snes) {
 
 static uint32_t cpu_pc24(Snes* snes) {
   return ((uint32_t)snes->cpu->k << 16) | snes->cpu->pc;
+}
+
+// ---------------------------------------------------------------------------
+// How an entry was reached
+// ---------------------------------------------------------------------------
+//
+// The call share is calls served over calls made, and both are counted from
+// what the CPU did. A call is made when a `JSR` or `JSL` executes, whether the
+// core made it or `leave` did. It is served when a port takes the entry *that
+// call went to*, on the next step.
+//
+// The PC alone cannot say either. A registered entry may begin with a `JSR`,
+// which the port stands in for and nobody executes. And an entry may be
+// reached by an `RTL`, by a jump, or by falling into it, which serves no call.
+
+// An instruction has been made. `callee` is where it called, or 0.
+static void call_made(Cosim* c, uint32_t callee) {
+  c->priv->called_pc = callee;
+  if (callee) c->work.calls_total++;
+}
+
+// An interrupt has been taken. A call it came between is still owed its
+// entry, which the handler's `RTI` goes back to.
+static void call_interrupted(Cosim* c, uint16_t sp) {
+  if (!c->priv->called_pc) return;
+  c->priv->called_held = c->priv->called_pc;
+  c->priv->called_held_sp = sp;
+  c->priv->called_pc = 0;
+}
+
+// An `RTI` has been made, by whoever made it.
+static void call_resumed(Cosim* c) {
+  CosimPriv* p = c->priv;
+  if (!p->called_held) return;
+  if (cpu_pc24(c->snes) != p->called_held || c->snes->cpu->sp != p->called_held_sp)
+    return;
+  p->called_pc = p->called_held;
+  p->called_held = 0;
+}
+
+// A port is taking the entry the CPU is on. Was it called?
+static bool call_served(Cosim* c) {
+  const bool called = c->priv->called_pc == cpu_pc24(c->snes);
+  c->priv->called_pc = 0;
+  if (called) c->work.calls_native++;
+  return called;
 }
 
 // ---------------------------------------------------------------------------
@@ -1305,11 +1360,10 @@ static bool leave_step(Cosim* c, LeaveCost* cost) {
       return false;
   }
 
-  // A call the game made, whoever made the instruction: see `cosim_step`.
-  if (callee) {
-    c->work.calls_total++;
-    if (c->profile) cosim_profile_call(c->profile, pc, callee);
-  }
+  // A call the game made, whoever made the instruction: see `call_made`.
+  call_made(c, callee);
+  if (callee && c->profile) cosim_profile_call(c->profile, pc, callee);
+  if (op[0] == 0x40) call_resumed(c);
   return true;
 }
 
@@ -2031,7 +2085,7 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
     // The *call*, not the segments. A routine that suspends fifteen times is
     // still one `JSL` the ROM did not have to serve, and the call share's
     // denominator counts calls.
-    c->work.calls_native++;
+    call_served(c);
     run_native_segment(c, call);
     return true;
   }
@@ -2039,6 +2093,9 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
   // A budget spent on the spot has nowhere to keep its writes. Only at an
   // absurd depth, and then the ROM makes them itself.
   if (r->hw && c->priv->burn_depth >= COSIM_MAX_DEPTH) return false;
+
+  // Before the port runs: leaving it may make the next call.
+  call_served(c);
 
   CosimRegs in, out;
   regs_capture(snes, &in);
@@ -2058,7 +2115,6 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
   s->calls++;
   s->checked++;
   s->passed++;
-  if (!r->uncalled) c->work.calls_native++;
   return true;
 }
 
@@ -2485,6 +2541,7 @@ static void cosim_step_inner(Cosim* c) {
     }
   }
 
+  c->priv->core_ran = true;
   snes_runCpuCycle(snes);
 }
 
@@ -2527,12 +2584,10 @@ void cosim_step(Cosim* c) {
 
   // ...and if something is, which instruction, and is it a call or a spin.
   uint32_t pc = 0;
-  bool counted_call = false;
+  bool on_call = false;
   bool spinning = false;
   // A parked burn is excluded: the CPU is sitting on a substituted routine's
-  // entry instruction without executing it, and if that instruction happens to
-  // be a `JSR` this would count one call per interrupt it waits out. The call
-  // was already counted when the ROM's caller reached it.
+  // entry instruction without executing it.
   // Where the CPU is about to go without being called: an interrupt vector or
   // reset. Only the profile wants to know, as an entry for attribution.
   const bool vectoring = !halted && (snes->cpu->intWanted || snes->cpu->resetWanted);
@@ -2549,14 +2604,23 @@ void cosim_step(Cosim* c) {
       case 0x20:  // JSR abs
       case 0x22:  // JSL long
       case 0xFC:  // JSR (abs,X)
-        counted_call = true;
+        on_call = true;
         break;
       default:
         break;
     }
   }
 
+  const uint16_t sp_before = snes->cpu->sp;
+  c->priv->core_ran = false;
   cosim_step_inner(c);
+
+  // Being on a `JSR` is not making one. A port may have taken the entry the
+  // CPU was on, and then the core executed nothing: 40 registered entries
+  // begin with a call, and counting those was most of what this used to
+  // report.
+  const bool ran = c->priv->core_ran;
+  const bool counted_call = on_call && ran;
 
   const uint64_t spent = snes->cycles - before;
   c->work.cycles_total += spent;
@@ -2571,7 +2635,17 @@ void cosim_step(Cosim* c) {
   // the ratio mean anything: calls made *inside* a substituted routine never
   // execute at all, so a routine that used to contribute its own call plus six
   // of its callees' now contributes one — and that one is served.
-  if (counted_call) c->work.calls_total++;
+  //
+  // Any other instruction the core executed ends the wait for a call's entry
+  // to be served: the ROM is running that entry itself.
+  if (ran) {
+    if (opcode >= 0) {
+      call_made(c, counted_call ? cpu_pc24(snes) : 0);
+      if (opcode == 0x40) call_resumed(c);
+    } else if (vectoring) {
+      call_interrupted(c, sp_before);
+    }
+  }
 
   // The residue, for `--profile`: an instruction the core really executed, and
   // not the step that burned a substituted routine's budget at its entry, which
@@ -2621,6 +2695,8 @@ void cosim_forget_calls(Cosim* c) {
   c->priv->depth = 0;
   c->priv->burn_depth = 0;
   c->priv->irq_call = NULL;
+  c->priv->called_pc = 0;
+  c->priv->called_held = 0;
 }
 
 bool cosim_failed(const Cosim* c) {

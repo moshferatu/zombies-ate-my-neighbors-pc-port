@@ -17184,3 +17184,76 @@ before on the same passes.
 
 **Live**: the residue over the twelve movies is 0.37 million
 instructions, from 0.51.
+
+## The share of calls, counted from what the CPU did
+
+The round before found the title bar's second number wrong and left it.
+This is the fix. It is in `cosim.c` alone.
+
+### What was wrong
+
+**The denominator.** `cosim_step` looked at the opcode under the PC before
+the step and counted a call if it was a `JSR`, a `JSL` or a `JSR (abs,X)`.
+But a step that begins on a registered entry may execute nothing: the port
+takes it. 40 entries begin with a call instruction, and each serve of one
+was a call counted and never made.
+
+**The numerator.** Every serve of a routine not marked `uncalled` was a
+call served. The flag was set by hand, and it cannot be right for an entry
+that is reached both ways.
+
+### What it does now
+
+Three functions, above `Setup`:
+
+* `call_made(c, callee)` after every instruction made, by the core or by
+  `leave`. `callee` is where a call went, and 0 for anything else. A call
+  adds one to `calls_total`. Either way it is remembered in `called_pc`.
+* `call_served(c)` when a port takes an entry. If the PC is `called_pc`,
+  one is added to `calls_native`. `called_pc` is cleared.
+* `call_interrupted` and `call_resumed`, for an interrupt taken after the
+  call and before the entry. The call is set aside with the stack pointer,
+  and the `RTI` that comes back to that entry with that stack pointer puts
+  it back.
+
+Whether the core executed anything on a step is `core_ran`, set where
+`cosim_step_inner` reaches `snes_runCpuCycle`.
+
+`call_served` is called before the port runs and not after, because a port
+that leaves by a `JSL` has `leave` make it, and that is the next call.
+
+`CosimRoutine::uncalled` is still in 154 rows. It says how the entry is
+reached to somebody reading the registry. Nothing reads it.
+
+### What it says
+
+20,000 frames of each, calls served of calls made:
+
+    movie              before                      now
+    level1             197,346 of 327,642  60.2%   178,650 of 178,894  99.9%
+    level5             186,029 of 253,998  73.2%   167,369 of 168,399  99.4%
+    level9             166,921 of 234,384  71.2%   148,392 of 149,124  99.5%
+    level13            170,973 of 238,164  71.8%   152,802 of 153,836  99.3%
+    level17            196,880 of 292,939  67.2%   178,129 of 178,326  99.9%
+    level21            186,110 of 253,489  73.4%   167,639 of 169,376  99.0%
+    level29-fighting   171,507 of 246,928  69.5%   152,985 of 153,334  99.8%
+    level33            167,006 of 248,881  67.1%   148,437 of 148,558  99.9%
+    level37            186,861 of 252,780  73.9%   168,348 of 169,465  99.3%
+    level41            160,385 of 228,283  70.3%   142,079 of 143,250  99.2%
+    level49            172,373 of 259,198  66.5%   153,514 of 153,650  99.9%
+    level53            178,962 of 294,463  60.8%   160,365 of 160,504  99.9%
+
+### Checked
+
+The profile's call graph is a second count of the same thing, made
+another way: it records caller and callee when a call instruction ran.
+Summed, and split by whether the callee is a registered entry, it gave
+178,650 of 178,894 on `level1` and 167,369 of 168,399 on `level5` before
+this change. The counter now gives the same four numbers.
+
+The work share is untouched: cycles native and cycles of work are the
+same to the cycle on all twelve. Lockstep's report is the same file, byte for byte: 325,322 passes, 48 of 51 never part.
+
+What the number does not see is as before. A thread's frame and a vblank
+job are reached by a return, so they are in the work share and in neither
+side of this one.

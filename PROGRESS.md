@@ -5,6 +5,30 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The share of calls, counted from what the CPU did (2026-10-06)
+
+The second number in the title bar was wrong, and is right now. On
+`level1` it said 60.2%. It says **99.9%**: 178,650 of the 178,894 calls
+the game made were served by the port. Over the twelve movies it is 99.0%
+to 99.9%, where it said 60% to 74%.
+
+* **A call is counted when it is made.** The counter took the CPU being
+  *on* a `JSR` or `JSL` for a call. 40 routines the port has begin with
+  one, and when the port serves such a routine nobody executes it. That
+  was 148,772 of the 327,642 "calls" on `level1`.
+* **A serve is counted when the entry was called.** The harness now keeps
+  where the last call went, and a port taking that entry on the next step
+  has served it. An entry reached by an `RTL`, a jump or by falling into
+  it serves nothing. The registry's `uncalled` flag said this by hand for
+  154 rows; nothing reads it now.
+* **An interrupt between a call and its entry** does not lose the call.
+  It is kept until the handler's `RTI` is back at that entry.
+* **Checked against the profile.** Its call graph records a call only when
+  the instruction ran, and always did. Both numbers on `level1` and on
+  `level5` are its numbers exactly.
+* **Nothing else moved.** The work share's two numbers are the same to the
+  cycle on all twelve movies. Lockstep's report is the same file, byte for byte: 325,322 passes, 48 of 51 never part.
+
 ### The weeds, the neighbours' loops, what a level leaves on the ground, and eight small things (2026-10-06)
 
 What the 65816 still executed over the twelve movies goes from 0.51 to

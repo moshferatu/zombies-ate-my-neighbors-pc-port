@@ -463,7 +463,9 @@ typedef struct {
   const uint32_t* exits;
   int exit_count;
   // Reached by an `RTL` or by falling into it, never by a `JSR`/`JSL`, so
-  // serving it serves no call. Only the call share cares.
+  // serving it serves no call. It says so to a reader and nothing reads it:
+  // the call share finds out how each entry was reached, as it is reached.
+  // See `call_served` in `cosim.c`.
   bool uncalled;
   // Optional, and asked before `supported`. See `CosimAccepts`.
   CosimAccepts accepts;
@@ -806,7 +808,10 @@ typedef struct CosimPriv CosimPriv;
 //   * **calls** — of the subroutine calls the game made, how many the port
 //     served. Cruder, since every call counts the same, but it is the thing
 //     people mean when they ask how much of the game is ported, and it is
-//     exact: the engine counts `JSR`/`JSL` at the instruction that executes it.
+//     exact: the engine counts a `JSR`/`JSL` when it executes, and a serve
+//     when a port takes the entry that call went to. A port taking an entry
+//     reached any other way, by an `RTL` or by falling into it, serves no
+//     call, and an entry that begins with a `JSR` makes none by being served.
 //
 // Both denominators shrink correctly as the port grows: a call made *inside* a
 // substituted routine never executes, so neither its cycles nor its `JSR` are
@@ -825,9 +830,9 @@ typedef struct {
   // ...of which, spent going round one of the ROM's declared busy-wait loops.
   // See `src/cosim/waits.h` for why these come out of the denominator.
   uint64_t cycles_wait;
-  // `JSR`/`JSL`/`JSR (abs,X)` instructions the 65816 executed...
+  // `JSR`/`JSL`/`JSR (abs,X)` instructions made, by the 65816 or by `leave`...
   uint64_t calls_total;
-  // ...plus the ones it did not, because the port served them at the entry PC.
+  // ...of which, the ones a port served at the entry they went to.
   uint64_t calls_native;
   // How many times a substituted call's budget was stopped part-way because an
   // interrupt had fallen due, and resumed after the core had taken it.
