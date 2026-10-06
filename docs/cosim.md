@@ -16616,3 +16616,99 @@ round depends on timing that those three change.
 
 **Live**: the residue over the twelve movies is 1.28 million
 instructions, from 1.81.
+
+## A block put into the map, and six small things a frame (2026-10-05)
+
+### Where the residue was
+
+By stretch, of 1.28 million:
+
+    $80:AB4E-$ABD2    42,800   a block put into the map
+    $81:8294-$8303    27,094   the figure that rises
+    $82:BA11-$BA4E    25,708   the wait for a button
+    $82:E7C7-$E7E2    24,075   level 37's thing, a step
+    $80:AAA1-$AB11    23,800   ...a block's row queued
+    $80:AC55-$ACF5    23,481   where the map's rows are
+    $81:FA55-$FA6F    16,835   the thrown thing, along
+    $80:F300-$F326    16,460   a pose's picture
+    $82:AEC6-$AEEE    13,488   a level's name, the bounce
+    $81:FEEF-$FF04    13,246   the thrown thing, up
+    $81:F976-$F9D8    12,580   ...its loop
+    $80:A9F3-$AA0A    10,744   is a tile on the screen
+    $82:AE6F-$AEB3    10,296   a level's name, the loops
+    $82:E807-$E857    10,253   level 37's thing, its picture
+
+All of these are the port's now but a few instructions a call.
+
+### A routine that holds a lock the NMI tests
+
+`$80:AB5A` sets bit 14 of `$26`, copies and queues eight rows, clears the
+bit, and asks for the queue to be sent. `$80:9E7B`, the NMI's flush of
+that queue, begins `BIT $26 : BVS` and does nothing while the bit is set.
+So does the camera.
+
+Under `run` a port does a stretch's work at its entry and then waits its
+cycles out. A port of the whole routine would have cleared the bit and
+asked for the transfer at the entry. An NMI in the wait would have sent a
+queue the ROM's NMI leaves alone, a frame early.
+
+So the stretch is the part the bit is set for. The ROM runs to the `TSB`
+and sets it. The port begins at the next instruction, `$80:AB8F`, and
+ends at `$80:ABC9`, the `LDA #$4000` of the `TRB`. An NMI anywhere in it
+finds the bit set, in the ROM and in the port alike, and reads nothing the
+rows write. The ROM clears the bit and makes the request itself.
+
+It is the wobble's rule again from the other side. There the stretch was
+cut so as not to read what the NMI writes. Here it is cut so that what
+the NMI reads is the same at every cycle of it.
+
+The entry is marked `through_interrupts`: it is twenty to thirty scanlines long.
+
+### The first run across the seam is never shortened
+
+A row that crosses the seam between the tilemap's two screens is two
+transfers. The length of the first is kept in `$4C`, and the code is
+`CMP $4C : BCC skip : STA $4C`. So `$4C` is only raised. The routine
+zeroes it once, before the first row, and every row of a block starts at
+the same column, so every row computes the same length and the `BCC` is
+never taken. The port keeps the compare. Its site is one of the four
+untaken.
+
+### A jump through a table, by hand
+
+`tools/cycles816.py` will not price `JMP ($AB14,X)`: the table is not in
+the run it is given. It is three bytes fetched, one cycle of the CPU's
+own, and two bytes of the table from the same bank: 46 master cycles at
+the slow speed and 5 bytes that FastROM makes 2 quicker. All 41 calls in
+the corpus are exact with that.
+
+### A guard that needs the cartridge
+
+`$80:F300` reads a picture's number from a pose's table and then the
+picture from a second table at twice the number. Whether that second read
+stays in the bank depends on the number, which is in the cartridge.
+`CosimAccepts` is given WRAM and the registers and no ROM. So this entry
+uses `.supported`, which is given both, and pays for a copy of WRAM a
+call. It is about 33,000 calls in the corpus and no slower to the eye.
+
+### What a stretch at a yield keeps on the stack
+
+`$81:82D4` pushes its count and its place in the pictures before
+`JSL thread_yield` and pulls them after. The stretch begins at the `PLX`.
+The port pulls both with `pull16`, as the ROM does, and pushes them back
+before the next yield, so the stack is the ROM's byte for byte and
+`.stack_bytes` is 0.
+
+### Checked
+
+The corpus: 33,227,487 calls across 51 movies, 0 diverged, 912 of 1,089
+sites. Every call priced is exact, and none of the ten was under HDMA
+except 147 calls of `pose_show`.
+
+**Lockstep**: 325,322 passes, 48 of 51 never part, the same three as
+before on the same passes. `level5.zmv` takes the block's rows, the
+thrown thing, the wait and the rising figure. `level37.zmv` takes the two
+leaves, 321 and 544 times.
+
+**Live**: the residue over the twelve movies is 1.00 million
+instructions, from 1.28.

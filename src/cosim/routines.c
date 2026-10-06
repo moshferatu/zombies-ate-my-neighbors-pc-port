@@ -57,9 +57,13 @@
 #include "port/screen_tiles.h"
 #include "port/text.h"
 #include "port/loads.h"
+#include "port/lob.h"
 #include "port/logo.h"
+#include "port/card.h"
 #include "port/jumper.h"
 #include "port/radar_thread.h"
+#include "port/riser.h"
+#include "port/seeker.h"
 #include "port/bubble.h"
 #include "port/flame.h"
 #include "port/stuck.h"
@@ -75,6 +79,7 @@
 #include "port/clears.h"
 #include "port/textmap.h"
 #include "port/thread.h"
+#include "port/tile_rows.h"
 #include "port/trig.h"
 #include "port/vblank.h"
 
@@ -9795,6 +9800,299 @@ static void shim_figure_colours_set(Wram* w, const Rom* rom,
 }
 
 // ---------------------------------------------------------------------------
+// $80:ACA2 and $80:AB8F  the map's rows -- see `port/tile_rows.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=80`, with `--ind=7E:4000` for
+// the block's rows. `JMP ($AB14,X)` is by hand: three bytes, a cycle of its
+// own, and the two bytes of the table.
+static const CosimRun RT_RUN_HEAD = {380, 30, 5};   // $ACA2-$ACBF
+static const CosimRun RT_RUN_ROW = {128, 12, 1};    // $ACC0-$ACCB, and $ACD3
+static const CosimRun RT_RUN_MID = {74, 7, 2};      // $ACCC-$ACD2
+static const CosimRun RT_RUN_TAIL = {308, 23, 4};   // $ACDF-$ACF5
+
+static const CosimRun TR_COST[TR_BLOCK_COUNT] = {
+    [TR_HEAD] = {28, 2, 1},
+    [TR_ROW] = {464, 38, 6},
+    [TR_TEST_1] = {46, 5, 0},
+    [TR_TEST_2] = {46, 5, 0},
+    [TR_TEST_3] = {46, 5, 0},
+    [TR_TEST_4] = {46, 5, 0},
+    [TR_TEST_5] = {12, 2, 0},
+    [TR_TEST_END] = {52, 2, 0},
+    [TR_NONE] = {40, 1, 0},
+    [TR_RIGHT_END] = {350, 32, 6},
+    [TR_LEFT_END] = {200, 17, 4},
+    [TR_WHOLE] = {120, 12, 3},
+    [TR_PLACE] = {716, 66, 9},
+    [TR_ONE] = {458, 37, 5},
+    [TR_TWO] = {1004, 87, 12},
+    [TR_TWO_STORE] = {28, 2, 1},
+    [TR_COPY] = {312, 24, 7},
+    [TR_WORD] = {198, 15, 3},
+    [TR_BELOW] = {122, 7, 2},
+    [TR_TAIL] = {132, 10, 0},
+    [TR_TAKEN] = {6, 0, 0},
+};
+
+// What a routine that returns hands back, from the port's CPU.
+static void ret_from_cpu(const PortCpu* c, CosimRegs* out) {
+  out->a = c->a;
+  out->x = c->x;
+  out->y = c->y;
+  out->n = flag(c, PORT_P_N);
+  out->z = flag(c, PORT_P_Z);
+  out->c = flag(c, PORT_P_C);
+  out->v = flag(c, PORT_P_V);
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
+  out->regs = COSIM_REG_ALL;
+}
+
+static bool accepts_tilemap_row_tables(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && tilemap_row_tables_supported(in->y);
+}
+
+static void shim_tilemap_row_tables(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  tilemap_row_tables(w, &c);
+  ret_from_cpu(&c, out);
+
+  const int tile_rows = in->y * BLOCK_TILES;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &RT_RUN_HEAD, 1);
+  run_add(&run, &RT_RUN_ROW, tile_rows + in->y);
+  run_add(&run, &RUN_TAKEN, tile_rows + in->y - 2);
+  run_add(&run, &RT_RUN_MID, 1);
+  run_add(&run, &RT_RUN_TAIL, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), false));
+}
+
+// Page zero, which the routine has made its own by here.
+static bool accepts_tile_block_rows(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d == 0 && bank_sees_low_wram(in->db) &&
+         tile_block_rows_supported(w);
+}
+
+static void shim_tile_block_rows(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  PortCpu c;
+  TileRowsWork k = {0};
+  cpu_from(in, &c);
+  tile_block_rows(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  int cycles = 0;
+  for (int i = 0; i < TR_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&TR_COST[i], fast, false);
+  cosim_cost(cycles);
+}
+
+static const uint32_t TILE_BLOCK_ROWS_EXITS[] = {TILE_BLOCK_ROWS_END_PC};
+
+// ---------------------------------------------------------------------------
+// $82:AE76, $82:AEA2 and $82:BA26  a level's name -- see `port/card.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=82`. The queue's adder is
+// priced by where the job went, as everywhere.
+static const CosimRun CD_COST[CD_BLOCK_COUNT] = {
+    [CD_QUEUE] = {102, 12, 0},
+    [CD_DROP] = {166, 15, 0},
+    [CD_BOUNCE] = {456, 44, 0},
+    [CD_BOUNCE_END] = {64, 4, 0},
+    [CD_BOUNCE_MORE] = {64, 4, 0},
+    [CD_WAIT_PADS] = {98, 11, 0},
+    [CD_WAIT_COUNT] = {68, 5, 0},
+    [CD_WAIT_AGAIN] = {18, 3, 0},
+    [CD_TAKEN] = {6, 0, 0},
+};
+
+static void card_cost(const CosimRegs* in, const CardWork* k, bool queued) {
+  CosimRun run = {0, 0, 0};
+  for (int i = 0; i < CD_BLOCK_COUNT; i++)
+    run_add(&run, &CD_COST[i], k->blocks[i]);
+  if (queued) queue_b_bill(&run, k->slot);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static bool accepts_card_drop(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && bank_sees_low_wram(in->db);
+}
+
+static bool accepts_card_bounce(const Wram* w, const CosimRegs* in) {
+  return accepts_card_drop(w, in) && card_bounce_supported(w);
+}
+
+static void card_slide_shim(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out, bool bounce) {
+  PortCpu c;
+  CardWork k = {0};
+  cpu_from(in, &c);
+  card_slide_frame(w, rom, &c, bounce, &k);
+  cpu_to(&c, out);
+  card_cost(in, &k, true);
+}
+
+static void shim_card_drop(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  card_slide_shim(w, rom, in, out, false);
+}
+
+static void shim_card_bounce(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  card_slide_shim(w, rom, in, out, true);
+}
+
+static void shim_card_wait(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  CardWork k = {0};
+  cpu_from(in, &c);
+  card_wait_frame(w, &c, &k);
+  cpu_to(&c, out);
+  card_cost(in, &k, false);
+}
+
+static const uint32_t CARD_DROP_EXITS[] = {CARD_DROP_WAI_PC, CARD_DROP_END_PC};
+static const uint32_t CARD_BOUNCE_EXITS[] = {CARD_BOUNCE_WAI_PC,
+                                             CARD_BOUNCE_END_PC};
+static const uint32_t CARD_WAIT_EXITS[] = {CARD_WAIT_YIELD_PC,
+                                           CARD_WAIT_END_PC};
+
+// ---------------------------------------------------------------------------
+// $81:8300  the figure that rises -- see `port/riser.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=81`.
+static const CosimRun RS_COST[RS_BLOCK_COUNT] = {
+    [RS_HEAD] = {214, 20, 1},
+    [RS_AROUND] = {64, 8, 1},
+    [RS_COUNT] = {98, 7, 0},
+    [RS_FOURTH] = {58, 6, 0},
+    [RS_NEXT] = {24, 2, 0},
+    [RS_YIELD] = {46, 4, 0},
+    [RS_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_riser_frame(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || !bank_sees_low_wram(in->db))
+    return false;
+  PortCpu c;
+  cpu_from(in, &c);
+  return wram_r16(w, (uint16_t)(in->d + RISER_DP_RECORD)) < 0x1f00 &&
+         riser_frame_supported(w, &c);
+}
+
+static void shim_riser_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  RiserWork k = {0};
+  cpu_from(in, &c);
+  riser_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < RS_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&RS_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t RISER_EXITS[] = {RISER_YIELD_PC, RISER_RTL_PC};
+
+// ---------------------------------------------------------------------------
+// $82:E7C7 and $82:E807  the thing that comes at a player -- see
+// `port/seeker.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=82`.
+static const CosimRun SK_RUN_STEP = {392, 32, 5};       // $E7C7-$E7E2
+static const CosimRun SK_RUN_COUNT = {62, 4, 1};        // DEC $1A : BPL
+static const CosimRun SK_RUN_PICTURE = {260, 25, 4};    // $E80B-$E821
+
+// Its own data bank: the two tables are read through it.
+static bool accepts_seeker_flap(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == SEEKER_BANK &&
+         wram_r16(w, (uint16_t)(in->d + SEEKER_DP_RECORD)) < 0x1f00;
+}
+
+static bool accepts_seeker_step(const Wram* w, const CosimRegs* in) {
+  return accepts_seeker_flap(w, in) && seeker_step_supported(in->a);
+}
+
+static void shim_seeker_step(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  seeker_step(w, rom, &c);
+  ret_from_cpu(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&SK_RUN_STEP, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static void shim_seeker_flap(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool changed = seeker_flap(w, rom, &c);
+  ret_from_cpu(&c, out);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SK_RUN_COUNT, 1);
+  run_add(&run, changed ? &SK_RUN_PICTURE : &RUN_TAKEN, 1);
+  run_add(&run, &RUN_RTS, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+// ---------------------------------------------------------------------------
+// $81:F98A  the thing thrown in an arc -- see `port/lob.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=81`, with `--ind=81:FAA1` for
+// the picture. A call's `JSR` and `RTS` are with what it calls.
+static const CosimRun LB_COST[LB_BLOCK_COUNT] = {
+    [LB_ARC] = {346, 23, 5},
+    [LB_ARC_SLOW] = {50, 2, 1},
+    [LB_MOVE] = {416, 34, 2},
+    [LB_PIC_COUNT] = {142, 8, 1},
+    [LB_PIC] = {472, 45, 7},
+    [LB_PIC_HIGH] = {18, 3, 0},
+    [LB_TEST] = {80, 7, 1},
+    [LB_AGAIN] = {36, 5, 0},
+    [LB_TAKEN] = {6, 0, 0},
+};
+
+// Its own data bank: the steps and the pictures are read through it.
+static bool accepts_lob_frame(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == LOB_BANK &&
+         wram_r16(w, (uint16_t)(in->d + LOB_DP_RECORD)) < 0x1f00 &&
+         lob_frame_supported(w, in->d);
+}
+
+static void shim_lob_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  PortCpu c;
+  LobWork k = {0};
+  cpu_from(in, &c);
+  lob_frame(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < LB_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&LB_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t LOB_EXITS[] = {LOB_YIELD_PC, LOB_LANDED_PC};
+
+// ---------------------------------------------------------------------------
 // The bystander -- see `port/bystander.h`
 // ---------------------------------------------------------------------------
 //
@@ -12499,6 +12797,28 @@ static int pose_total(PoseBill* b, const CosimRegs* in) {
   pose_add_n(b, &POSE_RUN_TAKEN, log->hides_kept);
   pose_add_n(b, &POSE_RUN_HIDE, log->hides - log->hides_kept);
   return cosim_run_cycles_dp(&b->own, fetch_fast(in), (in->d & 0x00ffu) != 0);
+}
+
+// `$80:F300` called from a pose the port does not have. The runs are the
+// ones above.
+static bool supported_pose_show(Wram* w, const Rom* rom, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == POSE_BANK &&
+         pose_show_supported(w, rom, in->d, in->a);
+}
+
+static void shim_pose_show(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool masked = pose_show(w, rom, &c);
+  ret_from_cpu(&c, out);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &POSE_RUN_SHOW_HEAD, 1);
+  run_add(&run, masked ? &POSE_RUN_SHOW_AND : &POSE_RUN_SHOW_ORA, 1);
+  run_add(&run, &RUN_TAKEN, 1);
+  run_add(&run, &POSE_RUN_SHOW_TAIL, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
 }
 
 // The hand weapon's pictures are a table the page points at, and the pointer
@@ -18424,6 +18744,119 @@ static const CosimRoutine ROUTINES[] = {
     LOGO_ENTRY(logo_hold, "$83:8217", LOGO_HOLD_PC, LOGO_HOLD_EXITS, 150, 2),
     LOGO_ENTRY(logo_fade, "$83:821E", LOGO_FADE_PC, LOGO_FADE_EXITS, 230, 2),
 #undef LOGO_ENTRY
+    // The map's rows: see `port/tile_rows.h`.
+    {
+        .name = "tilemap_row_tables",
+        .symbol = "$80:ACA2",
+        .entry = TILEMAP_ROW_TABLES_PC,
+        .ret_op = TILEMAP_ROW_TABLES_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_tilemap_row_tables,
+        .accepts = accepts_tilemap_row_tables,
+        .cycles = 25000,
+        .stack_bytes = 4,  // the `PHD` and the `PEA`
+    },
+    {
+        .name = "tile_block_rows",
+        .symbol = "$80:AB8F",
+        .entry = TILE_BLOCK_ROWS_PC,
+        .run = shim_tile_block_rows,
+        .accepts = accepts_tile_block_rows,
+        COSIM_EXITS(TILE_BLOCK_ROWS_EXITS),
+        .uncalled = true,
+        .cycles = 22000,
+        .stack_bytes = 4,  // a `JSR` under a `JSR`
+        // The camera and the queue are held for all of it.
+        .through_interrupts = true,
+    },
+    // A level's name coming down, and the wait after: see `port/card.h`.
+    {
+        .name = "card_drop",
+        .symbol = "$82:AE76",
+        .entry = CARD_DROP_PC,
+        .run = shim_card_drop,
+        .accepts = accepts_card_drop,
+        COSIM_EXITS(CARD_DROP_EXITS),
+        .uncalled = true,
+        .cycles = 700,
+        .stack_bytes = 5,  // the `JSL` and the adder's `PHY`
+    },
+    {
+        .name = "card_bounce",
+        .symbol = "$82:AEA2",
+        .entry = CARD_BOUNCE_PC,
+        .run = shim_card_bounce,
+        .accepts = accepts_card_bounce,
+        COSIM_EXITS(CARD_BOUNCE_EXITS),
+        .uncalled = true,
+        .cycles = 1000,
+        .stack_bytes = 5,
+    },
+    {
+        .name = "card_wait",
+        .symbol = "$82:BA26",
+        .entry = CARD_WAIT_PC,
+        .run = shim_card_wait,
+        .accepts = accepts_card_drop,
+        COSIM_EXITS(CARD_WAIT_EXITS),
+        .uncalled = true,
+        .cycles = 200,
+    },
+    // The figure that rises: see `port/riser.h`.
+    {
+        .name = "riser_frame",
+        .symbol = "$81:8300",
+        .entry = RISER_PC,
+        .run = shim_riser_frame,
+        .accepts = accepts_riser_frame,
+        COSIM_EXITS(RISER_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+    },
+    // The thing that comes at a player: see `port/seeker.h`.
+    {
+        .name = "seeker_step",
+        .symbol = "$82:E7C7",
+        .entry = SEEKER_STEP_PC,
+        .ret_op = SEEKER_STEP_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_seeker_step,
+        .accepts = accepts_seeker_step,
+        .cycles = 400,
+    },
+    {
+        .name = "seeker_flap",
+        .symbol = "$82:E807",
+        .entry = SEEKER_FLAP_PC,
+        .ret_op = SEEKER_FLAP_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_seeker_flap,
+        .accepts = accepts_seeker_flap,
+        .cycles = 150,
+    },
+    // The thing thrown in an arc: see `port/lob.h`.
+    {
+        .name = "lob_frame",
+        .symbol = "$81:F98A",
+        .entry = LOB_PC,
+        .run = shim_lob_frame,
+        .accepts = accepts_lob_frame,
+        COSIM_EXITS(LOB_EXITS),
+        .uncalled = true,
+        .cycles = 1100,
+        .stack_bytes = 2,  // a `JSR`
+    },
+    // A pose's picture, for the poses that are the ROM's: see `port/pose.h`.
+    {
+        .name = "pose_show",
+        .symbol = "$80:F300",
+        .entry = POSE_SHOW_PC,
+        .ret_op = POSE_SHOW_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_pose_show,
+        .supported = supported_pose_show,
+        .cycles = 480,
+    },
 #define LOADS_ENTRY(n, sym, pc, rtl, ok, cyc, stack)                         \
     {                                                                        \
         .name = #n,                                                          \

@@ -516,3 +516,41 @@ bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler) {
   }
   return !log.unported;
 }
+
+// ---------------------------------------------------------------------------
+// $80:F300 on its own
+// ---------------------------------------------------------------------------
+
+bool pose_show_supported(const Wram* w, const Rom* rom, uint16_t page,
+                         uint16_t at) {
+  const uint16_t frames = wram_r16(w, (uint16_t)(page + POSE_DP_FRAMES));
+  const uint16_t pictures = wram_r16(w, (uint16_t)(page + POSE_DP_PICTURES));
+  if (wram_r16(w, (uint16_t)(page + POSE_DP_RECORD)) >= 0x1f00) return false;
+  if (frames < 0x8000u || (uint32_t)frames + at + 3 > 0xffffu) return false;
+  const uint16_t number =
+      rom_word(rom, ((uint32_t)POSE_BANK << 16) + frames + at + 2);
+  return pictures >= 0x8000u &&
+         (uint32_t)pictures + (uint16_t)(number << 1) + 1 <= 0xffffu;
+}
+
+bool pose_show(Wram* w, const Rom* rom, PortCpu* c) {
+  const uint32_t bank = (uint32_t)POSE_BANK << 16;
+  const uint16_t frames = wram_r16(w, (uint16_t)(c->d + POSE_DP_FRAMES));
+  const uint16_t pictures = wram_r16(w, (uint16_t)(c->d + POSE_DP_PICTURES));
+  const uint16_t mask = rom_word(rom, bank + frames + c->a);
+  const uint16_t number = rom_word(rom, bank + frames + c->a + 2);
+  c->x = wram_r16(w, (uint16_t)(c->d + POSE_DP_RECORD));
+  const uint16_t flags = wram_r16(w, (uint16_t)(c->x + ACTOR_FLAGS));
+  PORT_COVER_IF(negative(mask), pose_show_masked, pose_show_set);
+  wram_w16(w, (uint16_t)(c->x + ACTOR_FLAGS),
+           negative(mask) ? (uint16_t)(flags & mask)
+                          : (uint16_t)(flags | mask));
+  c->y = asl16(c, number);
+  wram_w16(w, (uint16_t)(c->x + ACTOR_META),
+           rom_word(rom, bank + pictures + c->y));
+  wram_w16(w, (uint16_t)(c->x + ACTOR_META_BANK), POSE_PICTURE_BANK);
+  c->a = POSE_PICTURE_BANK;
+  set_nz16(c, c->a);
+  c->pc = POSE_SHOW_RTS_PC;
+  return negative(mask);
+}

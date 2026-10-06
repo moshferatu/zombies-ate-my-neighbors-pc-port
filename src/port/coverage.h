@@ -142,6 +142,41 @@
   X(logo_flashed,     "logo_flash",         "the first colour white") \
   X(logo_held,        "logo_hold",          "the 255th frame") \
   X(logo_faded,       "logo_fade",          "the brightness at zero") \
+  /* $80:AB8F a block put into the map -- see port/tile_rows.h. */              \
+  X(tile_rows_off_screen, "tile_block_rows", "a row the camera does not show") \
+  X(tile_rows_whole,  "tile_block_rows",    "a row it shows all of") \
+  X(tile_rows_left_end, "tile_block_rows",  "a row cut by the right of the screen") \
+  X(tile_rows_right_end, "tile_block_rows", "...or by the left") \
+  X(tile_rows_one_run, "tile_block_rows",   "a row queued as one transfer") \
+  X(tile_rows_two_runs, "tile_block_rows",  "a row across the seam: two") \
+  X(tile_rows_two_runs_kept, "tile_block_rows", "...with an earlier row's longer first run") \
+  /* $82:AE76, $82:AEA2, $82:BA26 a level's name -- see port/card.h. */         \
+  X(card_queue_full,  "card_drop",          "the queue full: a frame waited") \
+  X(card_dropped,     "card_drop",          "sixteen lines down") \
+  X(card_down,        "card_drop",          "the sixteenth frame") \
+  X(card_bounced,     "card_bounce",        "a step of the bounce") \
+  X(card_still,       "card_bounce",        "the table's zero") \
+  X(card_wait_waited, "card_wait",          "no button, and frames left") \
+  X(card_wait_pressed, "card_wait",         "a button") \
+  X(card_wait_over,   "card_wait",          "six seconds and none") \
+  /* $81:8300 the figure that rises -- see port/riser.h. */                     \
+  X(riser_rose,       "riser_frame",        "a pixel up") \
+  X(riser_next_picture, "riser_frame",      "a fourth step: the next picture") \
+  X(riser_went_round, "riser_frame",        "past the fifth picture, and the first again") \
+  X(riser_gone,       "riser_frame",        "the sixtieth step") \
+  /* $82:E7C7, $82:E807 the thing that comes at a player -- see port/seeker.h. */\
+  X(seeker_stepped,   "seeker_step",        "a pixel the way it was told") \
+  X(seeker_flap_waited, "seeker_flap",      "the same picture") \
+  X(seeker_flapped,   "seeker_flap",        "a fifth call: the other picture") \
+  /* $81:F98A the thing thrown in an arc -- see port/lob.h. */                  \
+  X(lob_flew,         "lob_frame",          "a frame in the air") \
+  X(lob_slowed,       "lob_frame",          "a fourth frame: the rise one less") \
+  X(lob_picture_low,  "lob_frame",          "a ninth frame: the next picture") \
+  X(lob_picture_high, "lob_frame",          "...of the four for high up") \
+  X(lob_landed,       "lob_frame",          "below the ground: the ROM's") \
+  /* $80:F300 a pose's picture, called on its own -- see port/pose.h. */        \
+  X(pose_show_set,    "pose_show",          "the entry's word set in the record's flags") \
+  X(pose_show_masked, "pose_show",          "...or a mask, and its bits cleared") \
   /* $80:A4D9 a whole screen of tiles -- see port/screen_tiles.h. */            \
   X(screen_tiles_fill, "screen_tiles_fill", "31 rows of 32 tiles and a column of 32 copied to a buffer") \
   /* $82:B84A, $82:B8FB the text printer -- see port/text.h. */                 \

@@ -77,6 +77,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/wram.h"
 
 // The tables are in bank `$80`, which is the player thread's data bank.
@@ -207,5 +208,16 @@ void pose_walk(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_walk_firing(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_arc(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_arc_ready(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+
+// `$80:F300` as a call of its own, for the poses that are still the ROM's.
+// A is how far into the pose table. The entry there is a word to put in the
+// record's flags and a picture's number. False unless both tables are in
+// the cartridge and the record is a record.
+#define POSE_SHOW_PC 0x80f300u
+#define POSE_SHOW_RTS_PC 0x80f326u
+bool pose_show_supported(const Wram* w, const Rom* rom, uint16_t page,
+                         uint16_t at);
+// True if the word was a mask.
+bool pose_show(Wram* w, const Rom* rom, PortCpu* c);
 
 #endif

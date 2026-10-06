@@ -5,6 +5,61 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### A block put into the map, a level's name coming down, and six small things a frame (2026-10-05)
+
+What the 65816 still executed over the twelve movies goes from 1.28 to
+**1.00** million instructions of work. Live, `level37` goes from 99.4% to
+**99.5%**; the other eleven do not move a tenth. The game registers 324
+routines, 10 more.
+
+* **A block put into the map**, `$80:AB5A`, in a new `port/tile_rows.c`.
+  It is how a door opens and a wall comes down: eight rows of eight tiles
+  copied from the library, and a transfer queued for each row the camera
+  shows. The routine holds the camera and the queue still while it works,
+  with bit 14 of the render flags. The port is the stretch the bit is set
+  for, `$80:AB8F` to `$80:ABC9`. The ROM sets the bit and clears it, so an
+  NMI in the stretch finds it set whether the port has done the rows yet
+  or not.
+* **Where the map's rows are**, `$80:ACA2`, in the same file: the two
+  tables of row addresses a level's start makes, and the camera's limits.
+* **A level's name coming down the screen**, `$82:AE6F`, in a new
+  `port/card.c`: a frame of the sixteen it drops for, and a frame of the
+  bounce after. Each queues the job that puts the scroll in the register.
+  The job itself is still the ROM's.
+* **The wait for a button after it**, `$82:BA26`, in `port/card.c`: a
+  frame of up to six seconds.
+* **The figure that rises**, `$81:8300`, in a new `port/riser.c`: sixty
+  steps of a pixel up, the picture changing every fourth. Its count and
+  its place in the pictures are on the stack across the yield, and the
+  port reads and writes them there.
+* **The thing thrown in an arc**, `$81:F98A`, in a new `port/lob.c`: a
+  frame of its flight, with the three routines it calls.
+* **Two leaves of the thing in level 37 that comes at a player**,
+  `$82:E7C7` and `$82:E807`, in a new `port/seeker.c`: a pixel the way it
+  was told, and the other of its two pictures every fifth call.
+* **A pose's picture as a call of its own**, `$80:F300`, in `port/pose.c`.
+  The ported poses already did this in C. The poses that are still the
+  ROM's called the ROM's, 1,005 times over the twelve movies.
+
+* **Checked.** The corpus verifies at 33,227,487 calls across 51 movies
+  with 0 diverged, and 912 of 1,089 coverage sites; 25 of the 29 new ones
+  are taken. Every call priced is exact.
+* **Lockstep** over the corpus: 325,322 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes. Each of the ten runs in
+  step on at least one of `level5.zmv`, `level21.zmv` and `level37.zmv`.
+* **Untaken.** The queue full when the name's job is added. A button
+  during the wait. The thrown thing's pictures for `$44` up and over. A
+  row across the tilemap's seam after a row of the same block that had
+  more of itself this side of it.
+* **Named from what they do.** I have not seen the rising figure, the
+  thrown thing or level 37's on a screen. The names say what the code
+  does to a display record.
+* **Next.** Nothing left is over 2.6% of the residue. The largest are
+  the between-games clear that stays the ROM's (`$80:897F`), a screen in
+  bank `$82` that reads the pads (`$82:B27D`), a spawner (`$81:807E`),
+  a loop that reads a pad (`$80:D2EA`), and the rest of level 37's thread
+  (`$82:E858`, `$82:EF49`).
+
 ### The big letters, the radar's square, and the logo screens between their waits (2026-10-05)
 
 What the 65816 still executed over the twelve movies goes from 1.8 to
