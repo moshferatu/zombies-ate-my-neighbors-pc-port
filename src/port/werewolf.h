@@ -7,13 +7,13 @@
 //
 //   $81:AC1E  werewolf_frame
 //
-// What is here is the running, the passes of a strike and the flight of a
-// pounce. What is not is the thread's setup, the crouch before a pounce and
-// the landing after it, which sleep in the middle, and its end. A pass in
-// one of those states is the ROM's. So are three kinds of pass that only
-// running it finds, which `WerewolfLog::declined` says and a guard asks of a
-// scratch copy first: one that goes on to choose where a pounce is to come
-// down, the last of a strike, and one with nobody on the level to run at.
+// What is here is the running, the choosing of where a pounce is to come
+// down, the passes of a strike and the flight of a pounce. What is not is
+// the thread's setup, the crouch before a pounce and the landing after it,
+// which sleep in the middle, and its end. A pass in one of those states is
+// the ROM's. So are two kinds of pass that only running it finds, which
+// `WerewolfLog::declined` says and a guard asks of a scratch copy first: the
+// last of a strike, and one with nobody on the level to run at.
 //
 // ## What it does
 //
@@ -24,6 +24,13 @@
 // **It pounces on a draw**, about one pass in seventeen, at somebody under
 // 325 away and 70 or more by the sum of the two gaps. Hurt since it last
 // looked, it hops away to somewhere near instead.
+//
+// **Where it means to come down** is past whoever it pounces at, the way it
+// is running: 28 across for a neighbour with the id `$01`, and 124 for
+// anybody else. A hop is to 20 to 51 across and 15 to 46 up or down, by
+// three draws. Either is given up if the spot is exactly 19 across from it,
+// is not all ground that can be landed on, has somebody on it, or is off the
+// level. Otherwise it crouches, facing the spot.
 //
 // **It strikes somebody within 4 of its row and 29 across.** It faces them,
 // takes a second record for the blow, and shows nine pictures of three
@@ -91,6 +98,7 @@
 #define WEREWOLF_DP_GAP_Y 0x2e
 #define WEREWOLF_DP_SIGN_X 0x30        // ...and which way each is
 #define WEREWOLF_DP_SIGN_Y 0x32
+#define WEREWOLF_DP_SPOT_WAY 0x34      // which way the spot is from it
 #define WEREWOLF_DP_GAP_ACROSS 0x36    // scratch: how far across its target is
 #define WEREWOLF_DP_BLOW 0x38          // a strike's second record, or `$FFFF`
 #define WEREWOLF_DP_HURT_SEEN 0x3a     // what `$3C` was when it last looked
@@ -121,9 +129,19 @@ typedef enum {
   WEREWOLF_POUNCE_NO_DRAW,   // the draw said no
   WEREWOLF_POUNCE_TOO_FAR,   // its target is 325 or more away
   WEREWOLF_POUNCE_TOO_NEAR,  // ...or under 70 by the sum of the gaps
-  WEREWOLF_POUNCE_CHOOSES,   // it goes on to choose where, which is the ROM's
-  WEREWOLF_POUNCE_HURT,      // hurt since it last looked: the same
+  WEREWOLF_POUNCE_CHOOSES,   // it goes on to choose where
+  WEREWOLF_POUNCE_HURT,      // hurt since it last looked: a hop, the same way
 } WerewolfPounce;
+
+// What came of the spot it chose.
+typedef enum {
+  WEREWOLF_SPOT_NOT_ASKED,
+  WEREWOLF_SPOT_NINETEEN,   // exactly 19 across from it
+  WEREWOLF_SPOT_NO_GROUND,  // not all ground to land on
+  WEREWOLF_SPOT_TAKEN,      // somebody is on it
+  WEREWOLF_SPOT_OFF_LEVEL,
+  WEREWOLF_SPOT_GOOD,       // it crouches
+} WerewolfSpot;
 
 typedef enum {
   WEREWOLF_REACH_NOT_ASKED,
@@ -149,6 +167,7 @@ typedef enum {
 
 #define WEREWOLF_MAX_STEPS 2
 #define WEREWOLF_MAX_GROUNDS 4
+#define WEREWOLF_MAX_DRAWS 4
 
 typedef struct {
   uint16_t state;  // the body that ran
@@ -162,6 +181,14 @@ typedef struct {
   bool mask_clears;   // ...or the table's word for its record's flags clears
   WerewolfPounce pounce;
   bool gap_negative[2];
+  bool quarry_near;         // the one it pounces at has the id `$01`
+  bool hop_flipped[2];      // a hop: across the other way, and down
+  WerewolfSpot spot;
+  bool spot_same_row, spot_same_column;  // the spot and its record
+  bool spot_negative[2];
+  bool spot_down_longer;    // the gap down is the longer, or they are equal
+  TerrainRegs spot_ground;
+  BoundsExit spot_edge;
   WerewolfReach reach;
   bool reach_negative[2];  // down, then across
   uint16_t blow;           // the record taken for the blow
@@ -177,7 +204,7 @@ typedef struct {
 
   // What the bodies ask, summed over the pass.
   int draws;
-  bool draw_overflow[2];
+  bool draw_overflow[WEREWOLF_MAX_DRAWS];
   ActorNearestWork nearest;
   int bearings;
   ActorSnapRegs snap[WEREWOLF_MAX_STEPS];

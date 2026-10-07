@@ -17338,3 +17338,124 @@ the 14 new, `hit_no_health` and `hit_shrugged` are untaken. Every priced
 call is refresh-exact. Lockstep: 325,322 passes, 48 of 51 never part;
 the report differs from the last in one figure, `level21`'s worst drift,
 by 12 cycles.
+
+## Where a werewolf's pounce comes down, a fishman on land, and five small things (2026-10-06)
+
+Seven entries more, 394, and two frames that take passes they turned
+down. Over the twelve live movies the ROM's instructions go from 331,939
+to 295,589.
+
+### Where the residue was
+
+The stretches of two threads, summed from `runs.py`'s list:
+
+    81A643-AC75   12,103   the werewolf, levels 13 and 41
+    81D8B6-E68D   25,916   the fishman, the same two
+
+Both threads had a port of a whole pass. What the ROM ran was the passes
+the ports turned down, and what such a pass calls.
+
+### A pass turned down for what it calls
+
+`werewolf_frame` said `declined` for a pass that went on to choose where
+a pounce comes down. The choice is `$81:A7E6`, fifty-odd instructions
+and four calls.
+Two of the four had no price of their own, only the registry's average,
+and a frame's price is exact or it is nothing.
+
+* `actor_bearing_point`, `$80:B1EC`, is straight-line but for two `BEQ`s:
+  604 cycles, less 60 for a record on the point's row and 36 for one on
+  its column. The port cannot tell the first from what the routine
+  returns, because the routine throws the vertical half away. So the
+  frame's log says whether the row and the column were shared.
+* `terrain_footprint_bit12`, `$80:AF66`, costs what `$80:AE97` costs, run
+  for run: the same prologue, the same six probes, the same two ways out.
+  `terrain_enemy_cycles` prices it once the port says how many probes ran.
+
+Both shims charge those now, and 311 and 238 calls over the corpus are
+exact. On `level13` the frame turns down 16 passes of 1,117 where it
+turned down 56.
+
+### Overflow through a chain of calls
+
+A thread's carry and overflow are parked by `thread_yield`'s `PHP`, so a
+pass has to leave them as the ROM does. The choice ends in a `CLC` or a
+`SEC`. Overflow is whatever wrote it last: the gap down, then the
+footprint's sum, then `actor_at_point` when it writes one.
+`terrain_out_of_bounds` writes none. `terrain_footprint_bit12` reports
+its overflow now, as `terrain_blocked_enemy` did already.
+
+### A state that calls a port
+
+A fishman's pass on land begins `JSR $D948`, which was a port already:
+`wander_pick`, taken at its own address. The frame calls the same C
+function with a `PortCpu` of its own, and bills what `wander_cycles`
+says, which is the shim's sum moved into a function.
+
+That call is how `port/wander.h` got its name put right. It said "a
+thing looking for somewhere near to go" and "I have not seen it on a
+screen". State `$81:DA1D` is in the fishman's loop, and the tile bit the
+routine wants is the one the fishman's own test of water reads.
+
+When the routine finds water it does not return: it goes on to
+`$81:DB04`, where the dive begins with a sleep. The frame declines that
+pass, having run it on the guard's scratch copy.
+
+### An entry at another's exit
+
+`fishman_patrol_frame` leaves at `$81:E567` when the fishman's fate is
+not zero. `fishman_patrol_end` is registered at that address, so the
+port goes on from one to the other with nothing between. It accepts only
+the plain end: nothing hit it, no blow's record out, and its own record
+in the display list.
+
+`fishman_patrol_begin` is the thread's first instruction. It asks
+`spawn_has_room`, looks at the tile it was put on, adds its weight to
+the census, takes a record, names its handler and asks after the
+players. The last of those is the frame's own `patrol_again`, so the
+carry and overflow at the first sleep are the frame's.
+
+No movie begins a fishman with no room, or off deep water. Those two
+ways out are priced from the listing and checked by nothing.
+
+### A leaf of a pass the port turns down
+
+A pass that leaps sleeps inside `$81:E007`, so it stays the ROM's. Most
+of what it runs is `$81:E1D6`, about a hundred instructions when all
+six tiles pass.
+That is an entry now, as two pieces of a martian's pass were last time.
+`terrain_footprint_read` hands back the row and each tile's number, so
+the entry leaves X and Y as the ROM does.
+
+### Three leaves and a copy out of the cartridge
+
+`$80:820A` is two loops of stores. `$80:8947` is `game_clear_page`'s
+instructions at another address, over `$7E:1F8A-$1FFB`.
+
+`$82:BB0D` copies 190 bytes out of bank `$82` with two `MVN`s. A byte of
+that costs 44 cycles where a byte within WRAM costs 46: the read is from
+the cartridge. `cycles816.py` will not price an `MVN` through a ROM
+bank, so the figure is by hand, and 51 calls agree with it.
+
+### Names
+
+`$80:F0D7` is "the tile a punch lands on" because `port/pose.h` had
+already found its caller: a player turned monster punches as it walks.
+A neighbour's collide id is `$01` or `$02` by `port/oam.h`, so a
+werewolf comes down 28 past "a neighbour with the id `$01`" and 124
+past anybody else. What that neighbour is I have not seen.
+
+### Checked
+
+33,374,357 calls across 51 movies, 0 diverged. 1,108 of 1,318 sites; of
+the 19 new, five are untaken: `fishman_begin_no_room`,
+`fishman_begin_not_water`, `fishman_found_water`,
+`werewolf_spot_nineteen` and `werewolf_spot_off_level`. Every priced
+call is refresh-exact. Lockstep: 325,322 passes, 48 of 51 never part,
+the same three on the same passes. The report differs from the last in
+fourteen movies' mean drift, by 8 cycles at most, and in two movies'
+worst drift, by 12 at most. I take that to be the two routines now
+priced by their path and not by an average, and have not traced it.
+
+Live, the werewolf's stretches come to 2,043 and the fishman's to
+11,012.

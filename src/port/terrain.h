@@ -129,6 +129,10 @@ void terrain_blocked_enemy(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out);
 typedef struct {
   uint16_t attrs[TERRAIN_PROBE_COUNT];
   bool v_map, v_last_row;
+  // What the ROM's copies leave in X and, after each tile, in Y: the row's
+  // place in the table of rows, and the tile's number doubled.
+  uint16_t row;
+  uint16_t tiles[TERRAIN_PROBE_COUNT];
 } TerrainFootprint;
 
 void terrain_footprint_read(Wram* w, uint16_t x, uint16_t y, uint16_t origin_x,

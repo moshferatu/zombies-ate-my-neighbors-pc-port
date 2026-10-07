@@ -23,6 +23,17 @@ typedef struct {
 #define WEREWOLF_POUNCE_ODDS 0x0f
 #define WEREWOLF_NOTICE_WITHIN 0x0145
 #define WEREWOLF_POUNCE_NO_NEARER 0x0046
+// Whoever it pounces at with this id it comes down nearer to. `port/oam.h`
+// has `$01` and `$02` as the neighbours'.
+#define WEREWOLF_NEAR_ID 0x0001
+// A hop: this and up to 31 more, across and down.
+#define WEREWOLF_HOP_MASK 0x001f
+#define WEREWOLF_HOP_ACROSS 0x0014
+#define WEREWOLF_HOP_DOWN 0x000f
+#define WEREWOLF_HOP_ACROSS_BACK 0x0001  // bits of the first draw
+#define WEREWOLF_HOP_DOWN_BACK 0x0002
+// A spot exactly this far across from it is never taken.
+#define WEREWOLF_SPOT_NEVER_ACROSS 0x0013
 
 // A strike is made at a target this near its row, and this near across.
 #define WEREWOLF_STRIKE_ROW_WITHIN 0x0004
@@ -53,6 +64,8 @@ typedef struct {
 #define WEREWOLF_STRIKE_FLAGS 0xab20u     // by way, doubled
 #define WEREWOLF_BLOW_ASIDE 0xab6bu       // by way, doubled: the blow, from it
 #define WEREWOLF_LAND_BESIDE 0xaa49u      // by way, in fours
+#define WEREWOLF_POUNCE_PAST 0xa97cu      // by way, doubled: past its quarry
+#define WEREWOLF_POUNCE_FURTHER 0xa96au   // ...and further, past most
 
 // One werewolf's pass.
 typedef struct {
@@ -149,7 +162,8 @@ static uint16_t random_byte(Werewolf* p) {
   rng_next(p->w, p->flags.c, &r);
   flags_carry(&p->flags, r.c);
   flags_overflow(&p->flags, r.v);
-  if (p->log->draws < 2) p->log->draw_overflow[p->log->draws] = r.v;
+  if (p->log->draws < WEREWOLF_MAX_DRAWS)
+    p->log->draw_overflow[p->log->draws] = r.v;
   p->log->draws++;
   return r.a;
 }
@@ -244,15 +258,106 @@ static void show_running(Werewolf* p) {
       apply_to_flags(p, table_word(p, WEREWOLF_RUN_PICTURE_AT, at));
 }
 
+// `$81:A7E6`: may it come down on the spot it chose? If so the flight is
+// measured out: so many passes, by the longer of the two gaps.
+static bool spot_is_good(Werewolf* p) {
+  WerewolfLog* log = p->log;
+  const Point spot = {field(p, WEREWOLF_DP_LAND_X),
+                      field(p, WEREWOLF_DP_LAND_Y)};
+  const Point me = position(p);
+  log->spot_same_row = record_field(p, ACTOR_Y) == spot.y;
+  log->spot_same_column = record_field(p, ACTOR_X) == spot.x;
+  ActorBearingRegs way;
+  actor_bearing_point(p->w, p->rom, p->record, spot.x, spot.y, &way);
+  set_field(p, WEREWOLF_DP_SPOT_WAY, way.a);
+
+  const uint16_t across = flags_sub(&p->flags, spot.x, me.x);
+  log->spot_negative[0] = negative(across);
+  set_field(p, WEREWOLF_DP_SIGN_X, negative(across) ? 0xffffu : 1);
+  set_field(p, WEREWOLF_DP_GAP_X, magnitude(across));
+  if (flags_same(&p->flags, magnitude(across), WEREWOLF_SPOT_NEVER_ACROSS)) {
+    PORT_COVER(werewolf_spot_nineteen);
+    log->spot = WEREWOLF_SPOT_NINETEEN;
+    flags_carry(&p->flags, false);
+    return false;
+  }
+  const uint16_t down = flags_sub(&p->flags, spot.y, me.y);
+  log->spot_negative[1] = negative(down);
+  set_field(p, WEREWOLF_DP_SIGN_Y, negative(down) ? 0xffffu : 1);
+  set_field(p, WEREWOLF_DP_GAP_Y, magnitude(down));
+  log->spot_down_longer =
+      flags_at_least(&p->flags, magnitude(down), magnitude(across));
+  const uint16_t longer =
+      log->spot_down_longer ? magnitude(down) : magnitude(across);
+  set_field(p, WEREWOLF_DP_SPAN, (uint16_t)(longer >> 2));
+  set_field(p, WEREWOLF_DP_RISE, (uint16_t)(longer >> 3));
+
+  terrain_footprint_bit12(p->w, spot.x, spot.y, &log->spot_ground);
+  flags_overflow(&p->flags, log->spot_ground.v);
+  flags_carry(&p->flags, false);  // each way out but the last is a `CLC`
+  if (log->spot_ground.blocked) {
+    PORT_COVER(werewolf_spot_no_ground);
+    log->spot = WEREWOLF_SPOT_NO_GROUND;
+    return false;
+  }
+  AtPointRegs someone;
+  AtPointWork work;
+  actor_at_point_counted(p->w, p->record, spot.x, spot.y, &someone, &work);
+  for (int i = 0; i < AT_POINT_BLOCK_COUNT; i++)
+    log->at_point.blocks[i] += work.blocks[i];
+  if (someone.v_set) flags_overflow(&p->flags, someone.v);
+  if (someone.found) {
+    PORT_COVER(werewolf_spot_taken);
+    log->spot = WEREWOLF_SPOT_TAKEN;
+    return false;
+  }
+  BoundsRegs edge;
+  terrain_out_of_bounds(p->w, spot.x, spot.y, &edge);
+  log->spot_edge = edge.exit;
+  if (edge.c) {
+    PORT_COVER(werewolf_spot_off_level);
+    log->spot = WEREWOLF_SPOT_OFF_LEVEL;
+    return false;
+  }
+  PORT_COVER(werewolf_crouched);
+  log->spot = WEREWOLF_SPOT_GOOD;
+  set_field(p, WEREWOLF_DP_PART_X, 0);
+  set_field(p, WEREWOLF_DP_PART_Y, 0);
+  set_field(p, WEREWOLF_DP_WAY, way.a);
+  set_state(p, WEREWOLF_STATE_CROUCH);
+  flags_carry(&p->flags, true);
+  return true;
+}
+
+// `$81:A913`: hurt, it hops to somewhere near, at nobody.
+static void hop(Werewolf* p) {
+  WerewolfLog* log = p->log;
+  const uint16_t coin = random_byte(p);
+  set_field(p, WEREWOLF_DP_GAP_ACROSS, coin);
+  uint16_t across = flags_add(&p->flags, random_byte(p) & WEREWOLF_HOP_MASK,
+                              WEREWOLF_HOP_ACROSS);
+  uint16_t down = flags_add(&p->flags, random_byte(p) & WEREWOLF_HOP_MASK,
+                            WEREWOLF_HOP_DOWN);
+  log->hop_flipped[0] = (coin & WEREWOLF_HOP_ACROSS_BACK) != 0;
+  log->hop_flipped[1] = (coin & WEREWOLF_HOP_DOWN_BACK) != 0;
+  if (log->hop_flipped[0]) across = (uint16_t)(0u - across);
+  if (log->hop_flipped[1]) down = (uint16_t)(0u - down);
+  const Point me = position(p);
+  set_field(p, WEREWOLF_DP_LAND_X, flags_add(&p->flags, me.x, across));
+  set_field(p, WEREWOLF_DP_LAND_Y, flags_add(&p->flags, me.y, down));
+  set_field(p, WEREWOLF_DP_HURT_SEEN, field(p, WEREWOLF_DP_HURT));
+  set_field(p, WEREWOLF_DP_QUARRY, 0xffffu);
+}
+
 // `$81:A8A7`: pounce, on a draw, at a target far enough and near enough.
-// Choosing where to come down is the ROM's.
 static void maybe_pounce(Werewolf* p) {
   WerewolfLog* log = p->log;
   if (!flags_same(&p->flags, field(p, WEREWOLF_DP_HURT_SEEN),
                   field(p, WEREWOLF_DP_HURT))) {
     PORT_COVER(werewolf_hopped_hurt);
     log->pounce = WEREWOLF_POUNCE_HURT;
-    log->declined = true;
+    hop(p);
+    spot_is_good(p);
     return;
   }
   if (flags_at_least(&p->flags, random_byte(p), WEREWOLF_POUNCE_ODDS)) {
@@ -286,7 +391,19 @@ static void maybe_pounce(Werewolf* p) {
   }
   PORT_COVER(werewolf_pounced);
   log->pounce = WEREWOLF_POUNCE_CHOOSES;
-  log->declined = true;
+  const uint16_t way = (uint16_t)(field(p, WEREWOLF_DP_WAY) << 1);
+  uint16_t x =
+      flags_add(&p->flags, them.x, table_word(p, WEREWOLF_POUNCE_PAST, way));
+  set_field(p, WEREWOLF_DP_LAND_X, x);
+  log->quarry_near =
+      flags_same(&p->flags,
+                 wram_r16(p->w, (uint16_t)(target + ACTOR_COLLIDE_ID)),
+                 WEREWOLF_NEAR_ID);
+  if (!log->quarry_near) {
+    x = flags_add(&p->flags, x, table_word(p, WEREWOLF_POUNCE_FURTHER, way));
+    set_field(p, WEREWOLF_DP_LAND_X, x);
+  }
+  spot_is_good(p);
 }
 
 // `$81:AB7D`: is its target beside it, to strike? It then faces them.

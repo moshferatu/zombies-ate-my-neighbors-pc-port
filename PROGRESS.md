@@ -5,6 +5,69 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Where a werewolf's pounce comes down, a fishman on land, and five small things (2026-10-06)
+
+What the 65816 still executed over the twelve movies goes from 0.33 to
+**0.30** million instructions of work. Live, all twelve stay at 99.9% of
+the work. The game registers 394 routines, 7 more.
+
+Two creatures of levels 13 and 41 had 38,000 of the 332,000 between them:
+the werewolf and the fishman. Both had ports, which turned passes down.
+
+* **Where a werewolf's pounce comes down**, in `port/werewolf.c`.
+  `werewolf_frame` turned down a pass that went on to choose the spot, and
+  one that hopped away hurt. Both are the port's now:
+  * the spot past whoever it pounces at (`$81:A8E8`), or near itself by
+    three draws (`$81:A913`);
+  * the four things that rule a spot out, and the crouch (`$81:A7E6`).
+  * Two routines the choice asks were priced by an average, and are priced
+    by their path now: `actor_bearing_point` and `terrain_footprint_bit12`.
+* **A fishman on land**, in `port/fishman.c`: state `$81:DA1D` of the one
+  that keeps to its pool. It walks at whoever is nearest, an axis at a
+  time, and looks for water to dive back into.
+  * `port/wander.h` was "a thing looking for somewhere near to go", which I
+    had not seen. It is this fishman looking for water, and says so now.
+* **A fishman begun and ended.** Whatever places the one that patrols asks
+  again and again, and one with no player near leaves on its first pass:
+  62 were begun in the two movies and 47 of them left at once.
+  * `$81:E51A`, from the thread's first instruction to its first sleep.
+  * `$81:E567`, from the test of its fate to the thread's `RTL`.
+* **Five small things**:
+  * `$81:E1D6`, the test of where a fishman's leap comes down. The pass
+    that leaps is still the ROM's, and calls the port for this.
+  * `$80:F0D7`, the tile a punch lands on, in a new `port/knock.c`.
+  * Three things a level begins with, in `port/clears.c`: the threads'
+    tables and the vblank queues cleared (`$80:820A`), a level's counts
+    cleared (`$80:8947`), and the cartridge's top scores copied in
+    (`$82:BB0D`).
+
+* **Checked.** The corpus verifies at 33,374,357 calls across 51 movies
+  with 0 diverged, and 1,108 of 1,318 coverage sites; 14 of the 19 new
+  ones are taken. Every call priced is exact.
+* **Lockstep** over the corpus: 325,322 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes.
+* **The share of calls** moved where it should: `level13` from 99.3% to
+  99.5%, `level41` from 99.2% to 99.4%, and `level37` from 99.4% to 99.5%.
+* **What it took off.** The werewolf's instructions go from 12,103 to
+  2,043, and the fishman's from 25,916 to 11,012.
+* **Untaken.** A fishman begun with no room on the level, and one not put
+  on deep water. A fishman on land finding water past where the ground
+  stopped it. A werewolf's spot exactly 19 across, and one off the level.
+  None of those five is checked against the ROM by any movie.
+* **Still the ROM's.** A werewolf's crouch and its landing, which sleep. A
+  fishman's leap from the draw to the flight, its bite on land
+  (`$81:E31C`), its dive's start (`$81:DB04`) and its splash. A fishman on
+  land with somebody within 28 or nobody within 175. The other kind of
+  fishman's beginning: no movie has one.
+* **A slip of mine.** Once, checking the build, I ran `zamn.exe` with no
+  arguments. I stopped that process, found by its parent to be mine. No
+  settings or saves were written.
+* **Next.** The two at the top stay the ROM's on purpose (`$80:897F` and
+  `$80:9512`). After them: a level's start (`$80:857E` on), level 37's
+  thread (`$82:ECC1`, `$82:EBCF`), `$80:F354`, the two screens' clocks
+  (`$82:BA36`, `$82:B2BE`), and the screen's registers reset (`$80:88A9`),
+  which writes the hardware.
+
 ### A player hit, a page begun, a martian's shot and three small things (2026-10-06)
 
 What the 65816 still executed over the twelve movies goes from 0.37 to

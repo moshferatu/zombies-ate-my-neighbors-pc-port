@@ -1,15 +1,16 @@
-// A thing looking for somewhere near to go.
+// A fishman on land looking for water to dive back into.
 //
-// `$81:D948` is a routine of a thread in levels 13 and 41. When the word at
-// `$0C` on its page is not the one at `$0E`, it draws a spot within ninety-six
-// pixels of its thing, up to three times. A spot will do when it is on the
+// `$81:D948` is the first thing a fishman's pass on land does: see
+// `port/fishman.h`, whose state `$81:DA1D` calls it. When the word at `$0C`
+// on its page is not the one at `$0E`, it draws a spot within ninety-six
+// pixels of itself, up to three times. A spot will do when it is on the
 // level and the tile there, and the tile eight pixels below, both have bit 8
-// of their attributes. With one found the two words are made the same and
-// the routine goes on to `$81:DB04`. Otherwise it returns.
+// of their attributes, which is the bit the fishman's own test of water
+// reads. With one found the two words are made the same and the routine goes
+// on to `$81:DB04`, where the dive begins. Otherwise it returns.
 //
-// The spot is left at `$2A` and `$2C` on the page.
-//
-// I have not seen it on a screen.
+// The spot is left at `$2A` and `$2C` on the page, which is where a leap is
+// to come down.
 //
 // Port code: libc only.
 

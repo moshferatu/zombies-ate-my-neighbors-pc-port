@@ -349,6 +349,9 @@
   X(hit_flinched,     "player_hit",         "one from their health, and on to the pictures") \
   X(hit_shown_the_other_way,"player_hit",   "...with the next bit set: the ROM's") \
   X(player_page_begun,"player_page_begin",  "a player's page cleared, and whose it is") \
+  X(knock_busy,       "knock_look",         "a tile is being knocked down already") \
+  X(knock_nothing,    "knock_look",         "the tile the fist is at is not one to knock down") \
+  X(knock_begun,      "knock_look",         "...or is, and the thread that does it is asked for") \
   X(blinker_turned,   "blinker_frame",      "the other picture, and its frames") \
   X(blinker_told,     "blinker_frame",      "...and something has set its word: the ROM's") \
   X(follower_this_side,"follower_place",    "put beside the point") \
@@ -1408,17 +1411,33 @@
   X(fishman_came_down, "fishman_frame", "its height came to nothing: it has landed") \
   X(fishman_landed_ashore, "fishman_frame", "landed, and it sets off some way by a draw") \
   X(fishman_landed_lurking, "fishman_frame", "landed, the one that keeps to its pool") \
+  X(fishman_stalked, "fishman_frame", "a pass on land, at whoever is nearest") \
+  X(fishman_walk_stopped, "fishman_frame", "...stopped by the ground one way, so it looks for water past it") \
+  X(fishman_found_water, "fishman_frame", "...and finds it, which is the dive and the ROM's") \
   X(fishman_left, "fishman_frame", "neither player within 208: it leaves") \
+  X(sched_tables_cleared, "sched_tables_clear", "the threads' tables and the vblank queues cleared") \
+  X(top_scores_defaulted, "top_scores_default", "the cartridge's top scores copied in") \
+  X(fishman_landing_good, "fishman_landing", "all six tiles are somewhere to land") \
+  X(fishman_landing_bad, "fishman_landing", "one of them is not") \
+  X(fishman_begin_no_room, "fishman_patrol_begin", "the level has no room for it") \
+  X(fishman_begin_not_water, "fishman_patrol_begin", "it was not put on deep water") \
+  X(fishman_begun, "fishman_patrol_begin", "it begins, to its first sleep") \
+  X(fishman_ended, "fishman_patrol_end", "one that left of itself: its record given back") \
   X(fishman_left_unshown, "fishman_frame", "...found when it came to show itself") \
                                                                                    \
   /* $81:AC1E werewolf_frame -- the werewolf's three states. */                    \
   X(werewolf_ran, "werewolf_frame", "a pass running") \
   X(werewolf_left, "werewolf_frame", "its target exactly 360 away: it leaves") \
   X(werewolf_on_them, "werewolf_frame", "on the same spot as its target: no step") \
-  X(werewolf_hopped_hurt, "werewolf_frame", "hurt since it last looked, which is the ROM's") \
+  X(werewolf_hopped_hurt, "werewolf_frame", "hurt since it last looked: it chooses somewhere near to hop to") \
   X(werewolf_pounce_too_far, "werewolf_frame", "the draw said pounce, with its target 325 or more away") \
   X(werewolf_pounce_too_near, "werewolf_frame", "...or under 70 by the sum of the gaps") \
-  X(werewolf_pounced, "werewolf_frame", "...or placed for it, which is the ROM's") \
+  X(werewolf_pounced, "werewolf_frame", "...or placed for it: it chooses where to come down") \
+  X(werewolf_spot_nineteen, "werewolf_frame", "the spot is exactly 19 across from it, which is never taken") \
+  X(werewolf_spot_no_ground, "werewolf_frame", "...or is not all ground to land on") \
+  X(werewolf_spot_taken, "werewolf_frame", "...or has somebody on it") \
+  X(werewolf_spot_off_level, "werewolf_frame", "...or is off the level") \
+  X(werewolf_crouched, "werewolf_frame", "...or is good, and it crouches") \
   X(werewolf_struck, "werewolf_frame", "its target beside it: a strike begins") \
   X(werewolf_striking, "werewolf_frame", "a pass of a strike") \
   X(werewolf_blow_shown, "werewolf_frame", "a picture from the sixth on: the blow is drawn") \

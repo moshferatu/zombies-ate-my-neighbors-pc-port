@@ -120,9 +120,11 @@ void terrain_footprint_read(Wram* w, uint16_t x, uint16_t y, uint16_t origin_x,
 
   wram_w16(w, TERRAIN_DP_MAP, map);
   wram_w16(w, TERRAIN_DP_MAP_BANK, TERRAIN_MAP_BANK);
+  out->row = row;
   for (int i = 0; i < TERRAIN_PROBE_COUNT; i++) {
     uint16_t tile = 0;
     out->attrs[i] = probe_attrs(w, map, probe_offset(w, i), &tile);
+    out->tiles[i] = tile;
   }
 }
 
@@ -445,7 +447,9 @@ void terrain_footprint_bit12(Wram* w, uint16_t x, uint16_t y,
                              TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
   uint16_t col = (uint16_t)(((uint16_t)(x - TERRAIN_ORIGIN_X) >>
                              TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
-  uint16_t map = (uint16_t)(col + wram_r16(w, W_TILE_ROW_BASE + row));
+  const uint16_t base = wram_r16(w, W_TILE_ROW_BASE + row);
+  uint16_t map = (uint16_t)(col + base);
+  out->v = add16_overflows(col, base);
 
   wram_w16(w, TERRAIN_DP_MAP, map);
   wram_w16(w, TERRAIN_DP_MAP_BANK, TERRAIN_MAP_BANK);
@@ -456,8 +460,11 @@ void terrain_footprint_bit12(Wram* w, uint16_t x, uint16_t y,
   // *without* the bit is what ends it, and getting to the end is the answer.
   for (int i = 0; i < TERRAIN_PROBE_COUNT; i++) {
     uint16_t tile = 0;
+    if (i == TERRAIN_PROBE_COUNT - 1)  // `LDA $B2 : CLC : ADC #$0004`
+      out->v = add16_overflows(wram_r16(w, W_TILEMAP_ROW_BYTES), 4);
     uint16_t attrs = probe_attrs(w, map, probe_offset(w, i), &tile);
     out->y = tile;
+    out->probes = i + 1;
     out->a = (uint16_t)(attrs & TERRAIN_MASK_BIT12);
     if (out->a == 0) {
       PORT_COVER_IF(i < TERRAIN_PROBE_COLS, bit12_gap_upper, bit12_gap_lower);

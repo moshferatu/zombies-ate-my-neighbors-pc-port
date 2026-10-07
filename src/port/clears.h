@@ -46,11 +46,31 @@
 //
 // Port code: libc only.
 
+// ## What a level begins with
+//
+// Three more, each called once as a game or a level begins:
+//
+//   $80:820A  sched_tables_clear  no thread but the one running, and
+//                                 nothing waiting for the vertical blank
+//   $80:8947  tallies_clear       `$7E:1F8A-$1FFB`, the counts a level keeps
+//   $82:BB0D  top_scores_default  the table of top scores as the cartridge
+//                                 has it, when the game has none yet
+//
+// The first is a word at a time. Every thread's wait word and handler is
+// cleared, and the running thread's wait word is marked live again; then
+// both vblank queues and the sixteen words between them, and both counts.
+// The second is cleared as a game's stretches are, with `MVN`. The third is
+// two copies out of the cartridge, one straight after the other, into
+// `$7E:2064` and `$7E:20FA`, which is one run of 190 bytes.
+//
+// Port code: libc only.
+
 #ifndef PORT_CLEARS_H
 #define PORT_CLEARS_H
 
 #include <stdint.h>
 
+#include "assets/rom.h"
 #include "port/wram.h"
 
 #define GAME_CLEAR_PC 0x80895au
@@ -83,5 +103,27 @@ void threads_clear(Wram* w);
 #define ACTOR_SLOTS_CLEAR_PC 0x80bdf2u
 #define ACTOR_SLOTS_CLEAR_RTL_PC 0x80be0bu
 void actor_slots_clear(Wram* w);
+
+#define SCHED_TABLES_CLEAR_PC 0x80820au
+#define SCHED_TABLES_CLEAR_RTL_PC 0x808245u
+#define SCHED_THREADS 24
+#define SCHED_QUEUE_WORDS 16   // of each of three runs of sixteen
+#define W_VBL_QUEUE_BETWEEN 0x12c0
+#define THREAD_LIVE 0x8000u
+void sched_tables_clear(Wram* w);
+
+#define TALLIES_CLEAR_PC 0x808947u
+#define TALLIES_CLEAR_RTL_PC 0x808959u
+#define TALLIES ((ClearSpan){0x1f8au, 0x1ffbu})
+
+#define TOP_SCORES_DEFAULT_PC 0x82bb0du
+#define TOP_SCORES_DEFAULT_RTL_PC 0x82bb2du
+#define TOP_SCORES_ROM 0x82bb2eu
+#define TOP_SCORES_ROM_SECOND 0x82bbc4u
+#define W_TOP_SCORES 0x2064u       // bank `$7E`
+#define W_TOP_SCORES_SECOND 0x20fau
+#define TOP_SCORES_FIRST_BYTES 0x96
+#define TOP_SCORES_SECOND_BYTES 0x28
+void top_scores_default(Wram* w, const Rom* rom);
 
 #endif

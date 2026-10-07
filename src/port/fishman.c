@@ -7,6 +7,7 @@
 #include "port/coverage.h"
 #include "port/flags.h"
 #include "port/rng.h"
+#include "port/thread.h"
 
 typedef struct {
   uint16_t x, y;
@@ -17,6 +18,7 @@ typedef struct {
 #define FISHMAN_NOTICE_WITHIN 0x00d0
 #define FISHMAN_BITE_WITHIN 0x0018
 #define FISHMAN_KEEP_CLOSING_WITHIN 0x00af
+#define FISHMAN_STALK_NO_NEARER 0x001c
 #define FISHMAN_LEAP_WITHIN 0x00c8
 // ...and how near a player, for it to stay on the level at all.
 #define FISHMAN_PLAYERS_WITHIN 0x00d0
@@ -55,6 +57,22 @@ typedef struct {
 #define FISHMAN_NO_LANDING 0x0002
 #define FISHMAN_LANDING_ORIGIN_Y 0x0009
 
+// It begins only where the tile has both of these: the water's bit, and the
+// one `terrain_blocked` reads.
+#define FISHMAN_DEEP_WATER 0x0101
+// What the one that patrols counts for in the level's load.
+#define FISHMAN_PATROL_LOAD 0x0015
+// Its first picture, its handler and its first way.
+#define FISHMAN_FIRST_PICTURE 0xf07au
+#define FISHMAN_PICTURE_BANK 0x0090
+#define FISHMAN_HANDLER 0xe6e4u
+#define FISHMAN_ATTR 0x0c00
+#define FISHMAN_PATROL_FIRST_WAY 0x000e
+#define FISHMAN_WATER_WORD 3
+#define FISHMAN_NO_BLOW 0xffffu
+// What X holds through its end.
+#define FISHMAN_END_X 0x0200
+
 // How long it sleeps: swimming, and lined up or in the air.
 #define FISHMAN_TICKS_SLOW 2
 #define FISHMAN_TICKS_FAST 1
@@ -72,6 +90,13 @@ typedef struct {
 // Tables in `FISHMAN_BANK`.
 #define FISHMAN_STEPS 0xd837u  // by way, doubled: a step across and down
 #define FISHMAN_LEAP_SIDES 0xe078u      // by the draw's bit: a place across
+// By way, doubled: where water is looked for, from where it was stopped.
+#define FISHMAN_WATERSIDE 0xdae0u
+// ...with up to 30 across put on by a draw, or taken off for the ways from
+// here on.
+#define FISHMAN_SEEK_MASK 0x000f
+#define FISHMAN_SEEK_BACK_FROM 0x0018
+#define FISHMAN_SEEK_BELOW 8
 #define FISHMAN_STAND_PICTURE_AT 0xe68eu
 #define FISHMAN_SWIM_PICTURE_AT 0xe6d6u
 
@@ -254,6 +279,35 @@ static bool all_water(Fishman* s, Point p, FishmanTiles* log) {
 static bool somewhere_to_land(Fishman* s, Point p, FishmanTiles* log) {
   return every_tile(s, p, FISHMAN_LANDING_ORIGIN_Y,
                     FISHMAN_LANDING | FISHMAN_NO_LANDING, FISHMAN_LANDING, log);
+}
+
+void fishman_landing(Wram* w, PortCpu* c, FishmanTiles* log) {
+  TerrainFootprint under;
+  terrain_footprint_read(w, c->x, c->y, TERRAIN_ORIGIN_X,
+                         FISHMAN_LANDING_ORIGIN_Y, &under);
+  int last = TERRAIN_PROBE_COUNT - 1;
+  log->all = true;
+  for (int i = 0; i < TERRAIN_PROBE_COUNT; i++) {
+    if ((under.attrs[i] & (FISHMAN_LANDING | FISHMAN_NO_LANDING)) ==
+        FISHMAN_LANDING)
+      continue;
+    log->all = false;
+    last = i;
+    break;
+  }
+  log->tiles = last + 1;
+  if (log->all) {
+    PORT_COVER(fishman_landing_good);
+  } else {
+    PORT_COVER(fishman_landing_bad);
+  }
+  c->a = (uint16_t)(under.attrs[last] & (FISHMAN_LANDING | FISHMAN_NO_LANDING));
+  c->x = under.row;
+  c->y = under.tiles[last];
+  set_nz16(c, c->d);  // the `PLD`
+  set_c(c, !log->all);
+  set_v(c, last == TERRAIN_PROBE_COUNT - 1 ? under.v_last_row : under.v_map);
+  c->pc = log->all ? FISHMAN_LANDING_YES_PC : FISHMAN_LANDING_NO_PC;
 }
 
 // Is somebody at `p`? Carry is the answer, and overflow the test's when it
@@ -456,6 +510,104 @@ static void maybe_leap(Fishman* s) {
   PORT_COVER(fishman_leapt);
   log->leap = FISHMAN_LEAP_LEAPS;
   log->declined = true;
+}
+
+// ---------------------------------------------------------------------------
+// On land
+// ---------------------------------------------------------------------------
+
+// `$81:DA85`: stopped by the ground at `at`, is there water a little past
+// it? With water there and under it, on the level, it dives, and that is
+// the ROM's.
+static void seek_water(Fishman* s, Point at, FishmanSeek* k) {
+  uint16_t off = (uint16_t)((random_byte(s) & FISHMAN_SEEK_MASK) << 1);
+  const uint16_t way = (uint16_t)(field(s, FISHMAN_DP_WAY) << 1);
+  k->back = flags_at_least(&s->flags, way, FISHMAN_SEEK_BACK_FROM);
+  if (k->back) off = (uint16_t)(0u - off);
+  set_field(s, FISHMAN_DP_SCRATCH, off);
+  // The second sum takes the carry of the first.
+  const uint16_t part = flags_add(&s->flags, at.x, off);
+  const uint16_t x = flags_adc(&s->flags, part,
+                               table_word(s, FISHMAN_WATERSIDE, way),
+                               s->flags.c);
+  set_field(s, FISHMAN_DP_LAND_X, x);
+  const uint16_t y = flags_add(&s->flags, at.y,
+                               table_word(s, FISHMAN_WATERSIDE + 2, way));
+  set_field(s, FISHMAN_DP_LAND_Y, y);
+
+  // Every way back is by a `SEC`. A tile's lookup leaves an overflow the
+  // port does not follow.
+  flags_carry(&s->flags, true);
+  flags_overflow_unknown(&s->flags);
+  TileAttrsRegs tile;
+  tile_attrs_at_pixel(s->w, x, y, &tile);
+  k->tiles = 1;
+  if ((tile.a & FISHMAN_WATER) == 0) return;
+  tile_attrs_at_pixel(s->w, x, (uint16_t)(y + FISHMAN_SEEK_BELOW), &tile);
+  k->tiles = 2;
+  if ((tile.a & FISHMAN_WATER) == 0) return;
+  BoundsRegs edge;
+  terrain_out_of_bounds(s->w, x, y, &edge);
+  k->edge_asked = true;
+  k->edge = edge.exit;
+  if (edge.c) return;
+  PORT_COVER(fishman_found_water);
+  s->log->declined = true;
+}
+
+// May it walk to `at`? Ground that may be walked on, and nobody there.
+static bool can_walk_to(Fishman* s, Point at, FishmanLandProbe* k) {
+  terrain_blocked_enemy(s->w, at.x, at.y, &k->ground);
+  flags_carry(&s->flags, k->ground.blocked);
+  flags_overflow(&s->flags, k->ground.v);
+  if (k->ground.blocked) {
+    PORT_COVER(fishman_walk_stopped);
+    seek_water(s, at, &k->seek);
+    return false;
+  }
+  k->someone = someone_at(s, at);
+  return !k->someone;
+}
+
+// `$81:D8B6`: take the step being tried, an axis at a time, the second from
+// wherever the first left it.
+static void walk(Fishman* s) {
+  FishmanLog* log = s->log;
+  Point me = position(s);
+  const Point to = {field(s, FISHMAN_DP_TRY_X), field(s, FISHMAN_DP_TRY_Y)};
+  if (can_walk_to(s, (Point){to.x, me.y}, &log->land[0])) {
+    me.x = to.x;
+    set_field(s, FISHMAN_DP_X, me.x);
+  }
+  if (log->declined) return;
+  if (can_walk_to(s, (Point){me.x, to.y}, &log->land[1]))
+    set_field(s, FISHMAN_DP_Y, to.y);
+}
+
+// `$81:DA1D`: on land, at whoever is nearest, unless there is water to go
+// back to.
+static void stalk(Fishman* s) {
+  FishmanLog* log = s->log;
+  PortCpu cpu = {0};
+  cpu.d = s->page;
+  wander_pick(s->w, &cpu, &log->wander);
+  if (cpu.pc == WANDER_FOUND_PC) {
+    log->declined = true;
+    return;
+  }
+  uint16_t dist;
+  const uint16_t target = nearest_actor(s, &dist);
+  if (!flags_at_least(&s->flags, dist, FISHMAN_STALK_NO_NEARER) ||
+      flags_at_least(&s->flags, dist, FISHMAN_KEEP_CLOSING_WITHIN)) {
+    log->declined = true;
+    return;
+  }
+  set_field(s, FISHMAN_DP_TARGET, target);
+  const uint16_t way = (uint16_t)(bearing_to(s, target) << 1);
+  set_field(s, FISHMAN_DP_WAY, way);
+  flags_carry(&s->flags, false);  // the `ASL`s
+  try_way(s, way);
+  walk(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -762,13 +914,161 @@ static void show(Fishman* s) {
   set_record_field(s, ACTOR_Y, me.y);
 }
 
+// ---------------------------------------------------------------------------
+// The one that patrols: its beginning and its end
+// ---------------------------------------------------------------------------
+
+static void flags_to_cpu(PortCpu* c, const PortFlags* f) {
+  set_c(c, f->c);
+  set_v(c, f->v);
+}
+
+// Where in the display list a record is: the ROM's unlink walks that far.
+// -1 for one that is not this thread's, -2 for one not in use, -3 for one
+// the list does not hold.
+static int place_in_list(const Wram* w, uint16_t record) {
+  if (wram_r16(w, W_SCHED_CUR_TASK) !=
+      wram_r16(w, (uint16_t)(record + ACTOR_THREAD)))
+    return -1;
+  if (!(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) & ACTOR_ACTIVE))
+    return -2;
+  int place = 0;
+  for (uint16_t at = wram_r16(w, W_ACTOR_LIST_HEAD); at != record;
+       at = wram_r16(w, (uint16_t)(at + ACTOR_NEXT))) {
+    if (at < W_ACTOR_SLOTS || at > ACTOR_SLOT_LAST ||
+        ++place > ACTOR_SLOT_COUNT)
+      return -3;
+  }
+  return place;
+}
+
+void fishman_patrol_begin(Wram* w, const Rom* rom, PortCpu* c,
+                          FishmanBeginLog* log) {
+  *log = (FishmanBeginLog){0};
+  const uint16_t page = c->d;
+  c->pc = FISHMAN_PATROL_RTL_PC;
+
+  SpawnRoomRegs room;
+  spawn_has_room(w, &room);
+  if (room.c) {
+    PORT_COVER(fishman_begin_no_room);
+    log->how = FISHMAN_BEGIN_NO_ROOM;
+    c->a = room.a;
+    c->p = (uint8_t)(c->p & ~(PORT_P_N | PORT_P_Z));
+    if (room.n) c->p |= PORT_P_N;
+    if (room.z) c->p |= PORT_P_Z;
+    set_c(c, true);
+    return;
+  }
+  const Point at = {wram_r16(w, (uint16_t)(page + FISHMAN_DP_PLACED_X)),
+                    wram_r16(w, (uint16_t)(page + FISHMAN_DP_PLACED_Y))};
+  TileAttrsRegs tile;
+  tile_attrs_at_pixel(w, at.x, at.y, &tile);
+  c->a = (uint16_t)(tile.a & FISHMAN_DEEP_WATER);
+  cmp16(c, c->a, FISHMAN_DEEP_WATER);
+  if (c->a != FISHMAN_DEEP_WATER) {
+    PORT_COVER(fishman_begin_not_water);
+    log->how = FISHMAN_BEGIN_NOT_WATER;
+    log->v_unknown = true;
+    return;
+  }
+
+  FishmanLog pass = {0};
+  Fishman s = {w, rom, page, 0, &pass, {0}};
+  wram_w16(w, W_SPAWN_LOAD, flags_add(&s.flags, wram_r16(w, W_SPAWN_LOAD),
+                                      FISHMAN_PATROL_LOAD));
+  SlotAllocRegs slot;
+  actor_slot_alloc(w, c->db, &slot);
+  if (slot.c) {
+    log->declined = true;
+    return;
+  }
+  PORT_COVER(fishman_begun);
+  log->how = FISHMAN_BEGIN_BEGAN;
+  const uint16_t record = slot.a;
+  log->record = record;
+  s.record = record;
+  // The search for a record takes twenty off as it goes.
+  if (record != ACTOR_SLOT_LAST) flags_overflow(&s.flags, false);
+
+  set_field(&s, FISHMAN_DP_RECORD, record);
+  set_field(&s, FISHMAN_DP_X, at.x);
+  set_field(&s, FISHMAN_DP_Y, at.y);
+  set_record_field(&s, ACTOR_X, at.x);
+  set_record_field(&s, ACTOR_Z, 0);
+  set_record_field(&s, ACTOR_Y, at.y);
+  set_record_field(&s, ACTOR_META, FISHMAN_FIRST_PICTURE);
+  set_record_field(&s, ACTOR_META_BANK, FISHMAN_PICTURE_BANK);
+  set_record_field(&s, ACTOR_THREAD, wram_r16(w, W_SCHED_CUR_TASK));
+  set_record_field(&s, ACTOR_COLLIDE_ID, FISHMAN_LANDED_ID);
+  set_record_field(&s, ACTOR_FLAGS,
+                   record_field(&s, ACTOR_FLAGS) | ACTOR_DRAW);
+  set_record_field(&s, ACTOR_ATTR, FISHMAN_ATTR);
+
+  set_field(&s, FISHMAN_DP_WATER_WANTED, FISHMAN_WATER_WORD);
+  set_field(&s, FISHMAN_DP_WATER_HAD, FISHMAN_WATER_WORD);
+  set_field(&s, FISHMAN_DP_PICTURE, 0);
+  set_field(&s, FISHMAN_DP_PICTURE_WAIT, 0);
+  set_field(&s, FISHMAN_DP_FATE, 0);
+  set_field(&s, FISHMAN_DP_HIT_BY, 0);
+  set_field(&s, FISHMAN_DP_UNREAD, 0);
+  set_field(&s, FISHMAN_DP_FORM, 0);
+  set_field(&s, FISHMAN_DP_TICKS, FISHMAN_TICKS_SLOW);
+  set_field(&s, FISHMAN_DP_BLOW, FISHMAN_NO_BLOW);
+  set_field(&s, FISHMAN_DP_BLOW_AT, 0);
+
+  c->a = FISHMAN_HANDLER;
+  c->y = FISHMAN_BANK;
+  thread_set_handler(w, c);
+
+  set_field(&s, FISHMAN_DP_STAYS, 0xffffu);
+  set_field(&s, FISHMAN_DP_WAY, FISHMAN_PATROL_FIRST_WAY);
+  patrol_again(&s);
+  log->players = pass.players[0];
+  log->alone = field(&s, FISHMAN_DP_FATE) != 0;
+
+  set_field(&s, FISHMAN_DP_HIT_BY, 0);
+  c->a = field(&s, FISHMAN_DP_TICKS);
+  set_nz16(c, c->a);
+  flags_to_cpu(c, &s.flags);
+  c->pc = FISHMAN_PATROL_YIELD_PC;
+}
+
+bool fishman_patrol_end_supported(const Wram* w, uint16_t page) {
+  const uint16_t record = wram_r16(w, (uint16_t)(page + FISHMAN_DP_RECORD));
+  return wram_r16(w, (uint16_t)(page + FISHMAN_DP_HIT_BY)) == 0 &&
+         wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW)) == FISHMAN_NO_BLOW &&
+         wram_r16(w, W_SPAWN_LOAD) >= FISHMAN_PATROL_LOAD &&
+         wram_r16(w, W_SPAWN_LOAD) < 0x8000u &&
+         record >= W_ACTOR_SLOTS && record <= ACTOR_SLOT_LAST &&
+         place_in_list(w, record) >= 0;
+}
+
+void fishman_patrol_end(Wram* w, PortCpu* c, FishmanEndLog* log) {
+  PORT_COVER(fishman_ended);
+  const uint16_t page = c->d;
+  PortFlags f = {0};
+  wram_w16(w, W_SPAWN_LOAD,
+           flags_sub(&f, wram_r16(w, W_SPAWN_LOAD), FISHMAN_PATROL_LOAD));
+  const uint16_t record = wram_r16(w, (uint16_t)(page + FISHMAN_DP_RECORD));
+  log->place = place_in_list(w, record);
+  SlotFreeRegs r;
+  actor_slot_free(w, record, page, FISHMAN_END_X, c->y, &r);
+  c->x = r.x;
+  c->y = r.y;
+  c->a = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW));
+  cmp16(c, c->a, FISHMAN_NO_BLOW);
+  set_v(c, f.v);
+  c->pc = FISHMAN_PATROL_RTL_PC;
+}
+
 static bool state_known(uint16_t state) {
   return state == FISHMAN_STATE_SWIM || state == FISHMAN_STATE_SWIM_TURNED ||
          state == FISHMAN_STATE_CLOSE_IN || state == FISHMAN_STATE_PATROL ||
          state == FISHMAN_STATE_LINE_UP_DOWN ||
          state == FISHMAN_STATE_LINE_UP_ACROSS ||
          state == FISHMAN_STATE_FLIGHT || state == FISHMAN_STATE_LANDED ||
-         state == FISHMAN_STATE_DIVE;
+         state == FISHMAN_STATE_DIVE || state == FISHMAN_STATE_STALK;
 }
 
 bool fishman_frame_supported(const Wram* w, uint16_t page) {
@@ -825,6 +1125,10 @@ FishmanFate fishman_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
     case FISHMAN_STATE_DIVE:
       PORT_COVER(fishman_dived);
       fly(&s, FISHMAN_STATE_SPLASH);
+      break;
+    case FISHMAN_STATE_STALK:
+      stalk(&s);
+      if (!log->declined) PORT_COVER(fishman_stalked);
       break;
     default:
       land(&s);

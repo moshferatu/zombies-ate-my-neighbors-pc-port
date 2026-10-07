@@ -1,4 +1,4 @@
-// $81:D948  a thing looking for somewhere near to go -- see port/wander.h.
+// $81:D948  a fishman on land looking for water -- see port/wander.h.
 
 #include "port/wander.h"
 

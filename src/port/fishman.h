@@ -9,13 +9,33 @@
 //   $81:E4B2  fishman_frame          the one that comes ashore
 //   $81:E558  fishman_patrol_frame   the one that patrols
 //
+// The one that patrols is begun and ended many times a level: whatever
+// places it asks again and again, and a fishman with neither player within
+// 208 leaves on its first pass. So its beginning and its plain end are here
+// too:
+//
+//   $81:E51A  fishman_patrol_begin   from the thread's first instruction to
+//                                    its first sleep, or to its `RTL` when
+//                                    there is no room or the place is not
+//                                    water
+//   $81:E567  fishman_patrol_end     from the test of its fate to the `RTL`,
+//                                    for one that left of itself
+//
+// A pass that leaps is the ROM's, and most of what it runs is the test of
+// the spot the leap is to come down on. That is an entry of its own, which
+// the ROM calls as it goes:
+//
+//   $81:E1D6  fishman_landing        are all six tiles under a point
+//                                    somewhere to land? To either `RTS`.
+//
 // What is here is the swimming, the flight of a leap out and of the dive back,
-// and the landing. What is not is the thread's setup, the beginning of a
-// leap, its bite, its splash, what it does on land, and its end, each of
-// which sleeps in the middle or is not yet ported. A pass in one of those
-// states is the ROM's. So is a pass that decides to leap, which sleeps a few
-// ticks where it stands first, and one that stops to look about. Those are
-// down to a random draw, so the port finds out by running the pass:
+// the landing, and the walk on land of the one that keeps to its pool. What
+// is not is the thread's setup, the beginning of a leap, its bite, its
+// splash, what the other one does on land, and its end, each of which sleeps
+// in the middle or is not yet ported. A pass in one of those states is the
+// ROM's. So is a pass that decides to leap, or to dive back, which sleeps a
+// few ticks where it stands first, and one that stops to look about. Those
+// are down to a random draw, so the port finds out by running the pass:
 // `FishmanLog::declined` says so, and a guard asks it of a scratch copy
 // first.
 //
@@ -37,6 +57,13 @@
 // **Patrolling**, it goes back and forth along one line, turning about when
 // stopped. With somebody within 24 of its row or its column it lines up with
 // them along the other axis, a pixel a pass or two, until it is within 16.
+//
+// **On land**, the one that keeps to its pool walks at whoever is nearest,
+// two pixels a pass, an axis at a time, over ground that may be walked on
+// and has nobody on it. First it asks `port/wander.h` for water to go back
+// to, which is the dive. Stopped by the ground, it looks for water a little
+// past where it was stopped, by a draw, and that is the dive too. With
+// somebody within 28, or nobody within 175, the pass is the ROM's.
 //
 // **Every pass in water it may leap**, on a draw, at somebody within 200. It
 // picks a spot near them, by three more draws, and leaps if the spot is on
@@ -68,6 +95,7 @@
 #include "assets/rom.h"
 #include "port/oam.h"  // the works and registers of what it asks
 #include "port/terrain.h"
+#include "port/wander.h"
 #include "port/wram.h"
 
 // The tables are in bank `$81`, which is the thread's data bank.
@@ -79,6 +107,12 @@
 #define FISHMAN_PATROL_FRAME_PC 0x81e558u
 #define FISHMAN_PATROL_YIELD_PC 0x81e554u
 #define FISHMAN_PATROL_FATE_PC 0x81e567u
+#define FISHMAN_PATROL_BEGIN_PC 0x81e51au
+#define FISHMAN_PATROL_END_PC FISHMAN_PATROL_FATE_PC
+#define FISHMAN_PATROL_RTL_PC 0x81e5b7u  // the thread's last instruction
+#define FISHMAN_LANDING_PC 0x81e1d6u
+#define FISHMAN_LANDING_YES_PC 0x81e28bu  // the `RTS` after the `CLC`
+#define FISHMAN_LANDING_NO_PC 0x81e28eu   // ...and after the `SEC`
 
 // The state bodies, by the address the thread keeps in `$1C`.
 #define FISHMAN_STATE_SWIM 0xddfdu
@@ -90,6 +124,7 @@
 #define FISHMAN_STATE_FLIGHT 0xe120u
 #define FISHMAN_STATE_LANDED 0xe15bu
 #define FISHMAN_STATE_DIVE 0xdb8bu
+#define FISHMAN_STATE_STALK 0xda1du
 // ...and four the port only names.
 #define FISHMAN_STATE_BITE 0xe295u
 #define FISHMAN_STATE_SPLASH 0xdbcdu
@@ -110,6 +145,7 @@
 #define FISHMAN_DP_PICTURE 0x20       // which of its cycle
 #define FISHMAN_DP_HIT_BY 0x22        // what hit it, cleared before each sleep
 #define FISHMAN_DP_TARGET 0x24        // the record it is after
+#define FISHMAN_DP_SCRATCH 0x26
 #define FISHMAN_DP_FORM 0x28  // 0 in water, 1 on land, negative in the air
 #define FISHMAN_DP_LAND_X 0x2a        // where a leap is to come down
 #define FISHMAN_DP_LAND_Y 0x2c
@@ -123,6 +159,13 @@
 #define FISHMAN_DP_SIGN_Y 0x3c
 #define FISHMAN_DP_TICKS 0x40         // how long it sleeps
 #define FISHMAN_DP_STAYS 0x46         // not zero for the one that patrols
+#define FISHMAN_DP_PLACED_X 0x00      // where whatever began it put it
+#define FISHMAN_DP_PLACED_Y 0x02
+#define FISHMAN_DP_WATER_WANTED 0x0c  // `port/wander.h`'s two words
+#define FISHMAN_DP_WATER_HAD 0x0e
+#define FISHMAN_DP_BLOW 0x42          // a bite's second record, or `$FFFF`
+#define FISHMAN_DP_BLOW_AT 0x44
+#define FISHMAN_DP_UNREAD 0x7e        // cleared; nothing here reads it
 // Sliding borrows the word a leap keeps its part across in.
 #define FISHMAN_DP_AXES_TAKEN FISHMAN_DP_PART_X
 
@@ -142,6 +185,21 @@ typedef struct {
   bool someone_asked;
   bool someone;
 } FishmanProbe;
+
+// Stopped by the ground, it looks for water just past the place.
+typedef struct {
+  bool back;        // the draw was taken off, not put on
+  int tiles;        // how many tiles it looked at, of two
+  bool edge_asked;
+  BoundsExit edge;
+} FishmanSeek;
+
+// May it walk there? The ground is asked, and then who is there.
+typedef struct {
+  TerrainRegs ground;
+  FishmanSeek seek;
+  bool someone;
+} FishmanLandProbe;
 
 // A step, an axis at a time: an axis the step does not change is not asked.
 typedef struct {
@@ -233,6 +291,10 @@ typedef struct {
   int line_steps;
   FishmanLineStep line[2];
 
+  // On land.
+  WanderWork wander;
+  FishmanLandProbe land[2];  // across, then down
+
   // A leap.
   bool falling;
   int glide_steps[2];
@@ -262,6 +324,39 @@ typedef struct {
   bool c, v;          // carry and overflow as the pass leaves them
   bool c_set, v_set;  // ...or the thread's own, where it wrote none
 } FishmanLog;
+
+// How the one that patrols began.
+typedef enum {
+  FISHMAN_BEGIN_NO_ROOM,    // the level has no room for it
+  FISHMAN_BEGIN_NOT_WATER,  // it was not put on deep water
+  FISHMAN_BEGIN_BEGAN,
+} FishmanBegin;
+
+typedef struct {
+  FishmanBegin how;
+  bool declined;     // no record free, and the ROM goes on with what is none
+  uint16_t record;
+  bool alone;        // neither player near: it will leave on its first pass
+  PlayerPickRegs players;
+  bool v_unknown;    // a tile's lookup was the last to write overflow
+} FishmanBeginLog;
+
+typedef struct {
+  bool declined;  // not one that left of itself, or one with a blow out
+  int place;      // where in the display list its record was
+} FishmanEndLog;
+
+// X and Y are the point. It comes back as the ROM's does: carry set when a
+// tile is not somewhere to land, and that tile's bits in A.
+void fishman_landing(Wram* w, PortCpu* c, FishmanTiles* log);
+
+// `c->d` is the thread's page. It comes back with A, the flags and `pc` as
+// the ROM leaves them at the `JSL thread_yield` or the `RTL`.
+void fishman_patrol_begin(Wram* w, const Rom* rom, PortCpu* c,
+                          FishmanBeginLog* log);
+// False unless it left of itself with its record its own.
+bool fishman_patrol_end_supported(const Wram* w, uint16_t page);
+void fishman_patrol_end(Wram* w, PortCpu* c, FishmanEndLog* log);
 
 typedef enum {
   FISHMAN_SLEEPS,
