@@ -13,8 +13,16 @@
 // looked like the player became a zombie. Its collision handler is
 // `enemy_9063_collide` in `port/collide.h`.
 //
-// What is not here is the thread's setup, the growing animation it opens
-// with, and its ending.
+// Before the loop it grows, and that is two more stretches:
+//
+//   $81:8E89  begin   whose double it is, and its record
+//   $81:8D16  first   the first picture of the growing
+//   $81:8D29  grow    the next picture of the growing, or the last of it
+//
+// The first ends at the `JSL` that plays the sound it grows with, and the
+// second begins where that comes back.
+//
+// What is not here is its ending.
 //
 // ## What a clone does
 //
@@ -36,6 +44,14 @@
 // **It walks in the player's pictures**, four to a direction, the next every
 // seven frames. A direction of 6 or more, the three that face left, is drawn
 // mirrored.
+//
+// **It is the double of one player, chosen as it starts.** With both in the
+// game the choice is a random draw. It takes that player's pictures and
+// copies that player's pad.
+//
+// **It grows before it moves**: eleven pictures, ten frames each, with a
+// sound at the first. Nothing can hit it until the last has been shown,
+// which is when it names its handler.
 //
 // ## Directions
 //
@@ -59,12 +75,23 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/oam.h"  // AtPointWork, PlayerPickRegs
 #include "port/wram.h"
 
 // The tables are in bank `$81`, which is the thread's data bank.
 #define CLONE_BANK 0x81u
 
+#define CLONE_BEGIN_PC 0x818e89u
+#define CLONE_BEGIN_SOUND_PC 0x818d12u  // `JSL apu_play_sfx`, sound in A
+#define CLONE_FIRST_PC 0x818d16u
+#define CLONE_GROW_PC 0x818d29u
+#define CLONE_GROW_YIELD_PC 0x818d25u  // `JSL thread_yield`, ten ticks in A
+#define CLONE_GROW_TICKS 10
+#define CLONE_GROW_PICTURES 11
+// The growing is a subroutine, so its sleeps are a call deep: this is on the
+// stack, for its `RTS`.
+#define CLONE_GROW_RETURN 0x8ea0u
 #define CLONE_FRAME_PC 0x818ea8u
 #define CLONE_YIELD_PC 0x818ea4u  // `JSL thread_yield`, A already 1
 #define CLONE_LEAVE_PC 0x818ed5u
@@ -83,6 +110,7 @@
 #define CLONE_DP_TO_Y 0x1c
 #define CLONE_DP_TO_FINE_X 0x1e      // ...and in quarter pixels
 #define CLONE_DP_TO_FINE_Y 0x20
+#define CLONE_DP_GROWING 0x28        // the pictures it grows through
 #define CLONE_DP_COPYING 0x24        // 1 copying the player, 0 chasing
 #define CLONE_DP_MODE_LEFT 0x26      // frames left of this mode
 #define CLONE_DP_PICTURES 0x2a       // the player's pictures it draws from
@@ -115,5 +143,31 @@ typedef struct {
 // One frame, for the clone whose page is `page`. False when the clone is
 // leaving. `log` may be NULL.
 bool clone_frame(Wram* w, const Rom* rom, uint16_t page, CloneLog* log);
+
+// Which character each player plays, a word a player: 0 or 2. Named for
+// what the clone does with it, which is pick between the two picture tables.
+#define W_PLAYER_CHARACTER 0x1e84u
+
+typedef struct {
+  bool declined;       // nobody in the game, or no record free: the ROM's
+  int looked;          // players asked whether they are in the game
+  bool drew;           // both were, so a random draw chose...
+  bool drew_overflow;  // ...one that overflowed, which costs more
+  bool first_in_game;  // player one is in the game...
+  bool is_first;       // ...and it is their double
+  bool is_second;      // or is not, and the character is player two's
+  uint16_t record;
+} CloneBeginLog;
+
+// The thread's start, as far as its sound. It ends at
+// `CLONE_BEGIN_SOUND_PC`, a call deep. Asked of a copy first: `declined`.
+void clone_begin(Wram* w, const Rom* rom, PortCpu* c, CloneBeginLog* log);
+// From where the sound comes back to the first picture's sleep, at
+// `CLONE_GROW_YIELD_PC`.
+void clone_grow_first(Wram* w, const Rom* rom, PortCpu* c);
+
+// From where one of those sleeps comes back. True: the next picture, and
+// the same sleep again. False: grown, and it ends at `CLONE_YIELD_PC`.
+bool clone_grow(Wram* w, const Rom* rom, PortCpu* c);
 
 #endif

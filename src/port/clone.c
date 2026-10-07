@@ -4,11 +4,13 @@
 
 #include <stddef.h>
 
+#include "port/begin.h"
 #include "port/coverage.h"
 #include "port/flags.h"
 #include "port/player.h"  // W_JOY_DIR
 #include "port/rng.h"
 #include "port/terrain.h"
+#include "port/thread.h"
 
 typedef struct {
   uint16_t x, y;
@@ -220,4 +222,161 @@ bool clone_frame(Wram* w, const Rom* rom, uint16_t page, CloneLog* log) {
   c.log->c_set = c.flags.c_set;
   c.log->v_set = c.flags.v_set;
   return stays;
+}
+
+// ---------------------------------------------------------------------------
+// $81:8E89 and $81:8D29: starting, and growing
+// ---------------------------------------------------------------------------
+
+#define CLONE_LOAD 0x0018         // what one adds to the level's load
+#define CLONE_PICTURE_TABLES 0x8f9fu   // a word a character
+#define CLONE_GROWING_TABLES 0x9033u   // likewise
+#define CLONE_FIRST_PICTURE 0x9f0du
+#define CLONE_META_BANK 0x0090
+#define CLONE_SFX_GROW 0x001a
+#define CLONE_COLLIDE_ID 0x0003
+#define CLONE_ATTR 0x0c00
+#define CLONE_HANDLER 0x9063u
+
+static uint16_t rom81(const Rom* rom, uint16_t at) {
+  return rom_word(rom, ((uint32_t)CLONE_BANK << 16) + at);
+}
+
+// `$81:8D5A`: whose double. A player who is out leaves the other; with both
+// in, a draw.
+static uint16_t pick_character(Wram* w, PortCpu* c, CloneBeginLog* log) {
+  for (int player = 2; player >= 0; player -= 2) {
+    log->looked++;
+    if (wram_r16(w, (uint16_t)(W_HUD_PANEL_ON + player)) == 0)
+      return wram_r16(w, (uint16_t)(W_PLAYER_CHARACTER + ((player + 2) & 3)));
+  }
+  PORT_COVER(clone_began_drawn);
+  RngResult r;
+  rng_next(w, flag(c, PORT_P_C), &r);
+  set_c(c, r.c);
+  set_v(c, r.v);
+  log->drew = true;
+  log->drew_overflow = r.v;
+  return r.a & 2;
+}
+
+void clone_begin(Wram* w, const Rom* rom, PortCpu* c, CloneBeginLog* log) {
+  const uint16_t page = c->d;
+  if ((wram_r16(w, W_HUD_PANEL_ON) | wram_r16(w, W_HUD_PANEL_ON + 2)) == 0) {
+    log->declined = true;
+    return;
+  }
+  set_c(c, false);
+  wram_w16(w, W_SPAWN_LOAD, adc16(c, wram_r16(w, W_SPAWN_LOAD), CLONE_LOAD));
+
+  const uint16_t character = pick_character(w, c, log);
+  if (character != 0 && character != 2) {
+    log->declined = true;
+    return;
+  }
+  wram_w16(w, (uint16_t)(page + CLONE_DP_PICTURES),
+           rom81(rom, (uint16_t)(CLONE_PICTURE_TABLES + character)));
+  const uint16_t growing =
+      rom81(rom, (uint16_t)(CLONE_GROWING_TABLES + character));
+  wram_w16(w, (uint16_t)(page + CLONE_DP_GROWING), growing);
+  uint16_t copies = 2;
+  if (wram_r16(w, W_HUD_PANEL_ON) != 0) {
+    log->first_in_game = true;
+    log->is_first = character == wram_r16(w, W_PLAYER_CHARACTER);
+    if (log->is_first) copies = 0;
+  } else {
+    log->is_second = character == wram_r16(w, W_PLAYER_CHARACTER + 2);
+  }
+  wram_w16(w, (uint16_t)(page + CLONE_DP_PLAYER), copies);
+
+  // `$81:8CD4`: a record where the thread was started, and the first
+  // picture.
+  BeginWork k = {0};
+  record_begin(w, c, &k);
+  if (k.declined) {
+    log->declined = true;
+    return;
+  }
+  PORT_COVER(clone_began);
+  if (k.record != RECORD_SEARCHED_FIRST) set_v(c, false);
+  const uint16_t record = k.record;
+  log->record = record;
+  wram_w16(w, (uint16_t)(page + CLONE_DP_FINE_X),
+           (uint16_t)(wram_r16(w, (uint16_t)(page + BEGIN_DP_PLACE_X))
+                      << CLONE_FINE_SHIFT));
+  wram_w16(w, (uint16_t)(page + CLONE_DP_FINE_Y),
+           (uint16_t)(wram_r16(w, (uint16_t)(page + BEGIN_DP_PLACE_Y))
+                      << CLONE_FINE_SHIFT));
+  wram_w16(w, (uint16_t)(record + ACTOR_META), CLONE_FIRST_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), CLONE_META_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  wram_w16(w, (uint16_t)(page + CLONE_DP_PICTURE_TIMER), CLONE_PICTURE_FRAMES);
+  wram_w16(w, (uint16_t)(page + CLONE_DP_MODE_LEFT), 1);
+  wram_w16(w, (uint16_t)(page + CLONE_DP_CYCLE), 0);
+  // Carry is the place's, shifted up to quarter pixels.
+  set_c(c, (wram_r16(w, (uint16_t)(page + BEGIN_DP_PLACE_Y)) & 0x4000u) != 0);
+  // The sound is called from inside the `JSR $8CD4`.
+  push16(w, c, CLONE_GROW_RETURN);
+  c->a = CLONE_SFX_GROW;
+  c->x = record;
+  c->y = ACTOR_META_BANK;  // the last `LDY`, for the store of the bank
+  set_nz16(c, c->a);
+  c->pc = CLONE_BEGIN_SOUND_PC;
+}
+
+void clone_grow_first(Wram* w, const Rom* rom, PortCpu* c) {
+  PORT_COVER(clone_grew_first);
+  const uint16_t page = c->d;
+  const uint16_t record = wram_r16(w, (uint16_t)(page + CLONE_DP_RECORD));
+  wram_w16(w, (uint16_t)(page + CLONE_DP_CYCLE), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_META),
+           rom81(rom, wram_r16(w, (uint16_t)(page + CLONE_DP_GROWING))));
+  c->a = CLONE_GROW_TICKS;
+  c->x = record;
+  c->y = 0;
+  set_nz16(c, c->a);
+  c->pc = CLONE_GROW_YIELD_PC;
+}
+
+bool clone_grow(Wram* w, const Rom* rom, PortCpu* c) {
+  const uint16_t page = c->d;
+  const uint16_t record = wram_r16(w, (uint16_t)(page + CLONE_DP_RECORD));
+  const uint16_t next =
+      (uint16_t)(wram_r16(w, (uint16_t)(page + CLONE_DP_CYCLE)) + 2);
+  cmp16(c, next, CLONE_GROW_PICTURES * 2);
+  if (next != CLONE_GROW_PICTURES * 2) {
+    PORT_COVER(clone_grew);
+    wram_w16(w, (uint16_t)(page + CLONE_DP_CYCLE), next);
+    wram_w16(w, (uint16_t)(record + ACTOR_META),
+             rom81(rom, (uint16_t)(wram_r16(w, (uint16_t)(page +
+                                                       CLONE_DP_GROWING)) +
+                                   next)));
+    c->a = CLONE_GROW_TICKS;
+    c->x = record;
+    c->y = next;
+    set_nz16(c, c->a);
+    c->pc = CLONE_GROW_YIELD_PC;
+    return true;
+  }
+  // Grown: now it can be hit. The mode it is in has a frame left, so the
+  // loop's first pass changes it, to copying.
+  PORT_COVER(clone_grown);
+  wram_w16(w, (uint16_t)(page + 0x22), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), CLONE_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), CLONE_ATTR);
+  c->a = CLONE_HANDLER;
+  c->y = CLONE_BANK;
+  thread_set_handler(w, c);
+  wram_w16(w, (uint16_t)(page + CLONE_DP_COPYING), 0);
+  wram_w16(w, (uint16_t)(page + 0x30), 0);
+  wram_w16(w, (uint16_t)(page + CLONE_DP_CYCLE), 0);
+  wram_w16(w, (uint16_t)(page + CLONE_DP_LEAVE), 0);
+  wram_w16(w, (uint16_t)(page + 0x7e), 0);
+  pull16(w, c);  // the `RTS`
+  c->a = CLONE_YIELD_TICKS;
+  set_nz16(c, c->a);
+  c->pc = CLONE_YIELD_PC;
+  return false;
 }

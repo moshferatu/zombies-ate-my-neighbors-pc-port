@@ -941,6 +941,21 @@ bool enemy_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
   return true;
 }
 
+uint16_t enemy_flash_begin(Wram* w, uint16_t dp) {
+  PORT_COVER(react_flash_on);
+  const uint16_t record = wram_r16(w, (uint32_t)dp + VICTIM_DP_RECORD);
+  wram_w16(w, record, (uint16_t)(wram_r16(w, record) | ACTOR_ATTR_SET));
+  return record;
+}
+
+uint16_t enemy_flash_end(Wram* w, uint16_t dp, uint16_t* flags) {
+  PORT_COVER(react_flash_off);
+  const uint16_t record = wram_r16(w, (uint32_t)dp + VICTIM_DP_RECORD);
+  *flags = (uint16_t)(wram_r16(w, record) & ~ACTOR_ATTR_SET);
+  wram_w16(w, record, *flags);
+  return record;
+}
+
 // ---------------------------------------------------------------------------
 // $81:83C6  enemy_bubble_react
 // ---------------------------------------------------------------------------
@@ -1410,7 +1425,7 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
     served =
         monster_c440_collide_counted(w, rom, dp, arg, &r, NULL, &work->monster);
   } else if (entry == ENEMY_B41C_COLLIDE_ENTRY) {
-    served = enemy_b41c_collide(w, rom, dp, arg, &r, NULL);
+    served = enemy_b41c_collide_counted(w, rom, dp, arg, &r, NULL, &work->b41c);
   } else if (entry == ENEMY_CDDE_COLLIDE_ENTRY) {
     served = enemy_cdde_collide(w, dp, arg, &r);
   } else if (entry == ENEMY_B592_COLLIDE_ENTRY) {
@@ -1846,11 +1861,21 @@ bool monster_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
 
 bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                         ActorHandlerRegs* r, uint32_t* unported) {
+  B41cCollideWork work;
+  return enemy_b41c_collide_counted(w, rom, dp, arg, r, unported, &work);
+}
+
+bool enemy_b41c_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
+                                uint16_t arg, ActorHandlerRegs* r,
+                                uint32_t* unported, B41cCollideWork* work) {
+  (void)unported;
+  memset(work->blocks, 0, sizeof work->blocks);
   if (arg < COLLIDE_ID_PLAYER) {
     // `$81:B41C  CMP #$005C : BCS : CLC : RTL`, which is `enemy_collide`'s first
     // four instructions unchanged — and, as there, the branch that writes
     // nothing at all.
     PORT_COVER(b41c_ignore);
+    work->blocks[B41C_BLK_IGNORE]++;
     uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
     r->a = arg;
     r->n = (diff & 0x8000) != 0;
@@ -1862,6 +1887,7 @@ bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // `$81:B423  STA $5A : AND #$7FFF`. The park happens here the way it does in
   // both twins, even though this copy never reads it back.
   PORT_COVER(b41c_act);
+  work->blocks[B41C_BLK_ACT]++;
   wram_w16(w, (uint32_t)dp + B41C_DP_HIT_ID, arg);
   uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
 
@@ -1870,10 +1896,12 @@ bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // more piece of evidence that this is that routine again.
   if (id == ENEMY_HIT_SPECIAL_B) {
     PORT_COVER(b41c_hit_freeze);
+    work->blocks[B41C_BLK_DEEP]++;
     return enemy_freeze(w, dp, r);
   }
   if (id == ENEMY_HIT_SPECIAL_A) {
     PORT_COVER(b41c_hit_special);
+    work->blocks[B41C_BLK_DEEP]++;
     return enemy_bubble_react(w, dp, r);
   }
 
@@ -1885,9 +1913,11 @@ bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   if (id == B41C_HIT_SPECIAL) {
     uint16_t record = wram_r16(w, (uint32_t)dp + B41C_DP_RECORD);
     uint16_t z = wram_r16(w, (uint32_t)record + ACTOR_Z);
+    work->blocks[B41C_BLK_SPECIAL]++;
     if (z == 0) {
       // `JSR $B168`, three instructions, inlined for `monster_collide`'s reason.
       PORT_COVER(b41c_special_grounded);
+      work->blocks[B41C_BLK_GROUNDED]++;
       wram_w16(w, (uint32_t)dp + B41C_DP_NEXT, B41C_NEXT_ON_SPECIAL);
       r->a = B41C_NEXT_ON_SPECIAL;
       r->x = z;  // what the `LDX` left, which is zero on this side of the `BNE`
@@ -1900,6 +1930,7 @@ bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
     // Airborne: the `BNE` goes back to `$B437` with X holding the height and Y
     // the record, and the damage path below overwrites X but never Y.
     PORT_COVER(b41c_special_airborne);
+    work->blocks[B41C_BLK_AIRBORNE]++;
     r->x = z;
     r->y = record;
   }
@@ -1907,6 +1938,7 @@ bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // `$81:B437  INC $4C` — the hit flag, raised before the damage is even
   // computed, so a hit that does nothing still tells the body it happened.
   PORT_COVER(b41c_hit);
+  work->blocks[B41C_BLK_HIT]++;
   uint16_t flag = wram_r16(w, (uint32_t)dp + B41C_DP_HIT_FLAG);
   wram_w16(w, (uint32_t)dp + B41C_DP_HIT_FLAG, (uint16_t)(flag + 1));
 
@@ -1933,6 +1965,7 @@ bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
     // for how little that is known to mean. The store of the negative health
     // happens here too, exactly as it does in the twin.
     PORT_COVER(b41c_died);
+    work->blocks[B41C_BLK_DIED]++;
     uint16_t count = wram_r16(w, (uint32_t)dp + B41C_DP_COUNTER_0A);
     wram_w16(w, (uint32_t)dp + B41C_DP_COUNTER_0A, (uint16_t)(count - 1));
     wram_w16(w, (uint32_t)dp + B41C_DP_HEALTH, left);
@@ -1956,6 +1989,7 @@ bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
     // that out — which is a real difference from the twin, where a zero-damage
     // hit leaves no trace at all.
     PORT_COVER(b41c_no_damage);
+    work->blocks[B41C_BLK_NO_DAMAGE]++;
     r->a = left;
     r->x = index;
     r->n = false;
@@ -1968,6 +2002,13 @@ bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   // jumps to, shared rather than re-spelled, because `enemy_survived_react`
   // reads the record from `$08` and that is where this page keeps it too.
   PORT_COVER(b41c_survived);
+  work->blocks[B41C_BLK_SURVIVED]++;
+  {
+    // Which side of `$81:8506`'s branch it is about to take.
+    const uint16_t record = wram_r16(w, (uint32_t)dp + B41C_DP_RECORD);
+    const bool flashing = (wram_r16(w, record) & ACTOR_ATTR_SET) != 0;
+    work->blocks[flashing ? B41C_BLK_ALREADY : B41C_BLK_SPLICED]++;
+  }
   wram_w16(w, (uint32_t)dp + B41C_DP_HEALTH, left);
   // **What the `TAX` left, and it was missing.** `$81:8506`'s already-flashing
   // exit never writes X, so the index comes back on it. `verify` on record 36

@@ -1,10 +1,16 @@
-// A player gone forward fifteen frames, the way they face.
+// A player knocked back fifteen frames, against the way they face.
 //
 // `$80:DE96` is a pose of a player's that sleeps inside itself. It waits
 // five frames, shows the picture for the way they face, and then for
 // fourteen frames sleeps one and steps them by what a table has for that
 // way: five pixels straight, three and three on a diagonal. A frame of that
 // is here, from the sleep's return at `$80:DEC5`.
+//
+// **The step is backward.** The table at `$80:DF6C` has five pixels down
+// for a player facing up, and five right for one facing left. This file
+// said forward until the table was read against one whose ways are known.
+// Firing weapon 5 is the one thing that starts it (`$80:ED82`), so it is
+// that weapon's kick. `port/pose.h` has the pose's first two stretches.
 //
 // A step is taken if the ground is clear, the leash to the other player
 // allows it, it is on the level, and no thing is in the way. Anything else
@@ -14,7 +20,7 @@
 // send them to `$80:DD0D`. That frame is the ROM's.
 //
 // It sits among the trampoline's poses in the ROM, and no corpus movie's own
-// player does it: the demos have it. I have not seen what it is.
+// player does it: the demos have it. I have not seen it on a screen.
 //
 // Port code: libc only.
 

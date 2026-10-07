@@ -21,6 +21,29 @@
 // None of the three tests whether a record was free. With none free the ROM
 // goes on with what is no record, and that is the ROM's to do.
 //
+// ## And ended
+//
+// **A thing's thread ends the same way whatever it was.** It takes what it
+// added to the level's load off again, loads its record, and jumps to
+// `actor_slot_free`, whose return ends the thread. Seven instructions, a
+// copy for each kind of thing. `record_end` is those, as far as the jump.
+// A load that would go below nothing stops the ROM where it stands, on a
+// branch to itself, and that is the ROM's to do.
+//
+//   $81:83A3  death_pictures   a killed thing's last pictures begun
+//
+// **A killed thing is heard, and can no longer be touched.** Its thread
+// calls this with a list of pictures in A, their bank in Y, and in X the
+// word that says a player killed it. It plays a sound, takes the record's
+// collide id away, and goes on to `pictures_play`. With anything else in X
+// it does nothing at all.
+//
+// It is two stretches, one either side of the sound. A sound waits until
+// the sound chip has taken the last one, and how long that is is not the
+// port's to say. So the first stretch ends at the `JSL` that plays it, with
+// the list and the bank on the stack, and the second begins where that
+// comes back and ends at the `JSL pictures_play`.
+//
 // Port code: libc only.
 
 #ifndef PORT_BEGIN_H
@@ -57,8 +80,45 @@ typedef struct {
   uint16_t record;
 } BeginWork;
 
+// The record the search for a free one begins at. Passing over one in use,
+// the search subtracts, which leaves overflow clear; taking this one, it
+// leaves overflow as it found it.
+#define RECORD_SEARCHED_FIRST 0x1acau
+
 void record_begin(Wram* w, PortCpu* c, BeginWork* k);
 void zombie_begin(Wram* w, PortCpu* c, BeginWork* k);
 void neighbour_begin(Wram* w, PortCpu* c, BeginWork* k);
+
+// A thread's end: where its seven instructions are, what it gives back,
+// and which word of its page is its record.
+typedef struct {
+  uint32_t pc;       // `SEC`
+  uint32_t free_pc;  // `JML actor_slot_free`, the record in A
+  uint16_t load;
+  uint8_t record_at;
+} RecordEnd;
+
+enum {
+  RECORD_END_ZOMBIE_SLOW,
+  RECORD_END_ZOMBIE_FAST,
+  RECORD_END_ZOMBIE_THIRD,
+  RECORD_END_SLIME_GLOB,
+  RECORD_END_SHOT_5,
+  RECORD_END_COUNT
+};
+extern const RecordEnd RECORD_ENDS[RECORD_END_COUNT];
+
+// False if the load would go below nothing. It only looks, then.
+bool record_end(Wram* w, PortCpu* c, const RecordEnd* end);
+
+#define DEATH_PICTURES_PC 0x8183a3u
+#define DEATH_PICTURES_SOUND_PC 0x8183adu  // `JSL apu_play_sfx`
+#define DEATH_PICTURES_HEARD_PC 0x8183b1u
+#define DEATH_PICTURES_PLAY_PC 0x8183bfu   // `JSL pictures_play`
+#define DEATH_KILLED 0xf5f5u               // in X: a player killed it
+#define DEATH_SFX 0x0021
+// False for anything else in X, which is the ROM's.
+bool death_pictures(Wram* w, PortCpu* c);
+void death_pictures_heard(Wram* w, PortCpu* c);
 
 #endif

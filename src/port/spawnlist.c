@@ -74,6 +74,23 @@ static void start_pass(Wram* w, uint16_t page) {
   set_field(w, page, SPAWNLIST_DP_PLACE, 0);
 }
 
+void spawnlist_begin(Wram* w, PortCpu* c) {
+  PORT_COVER(spawnlist_began);
+  for (uint16_t at = 0; at < SPAWNLIST_PLACES_MAX; at += 2)
+    wram_w16(w, (uint16_t)(W_SPAWNLIST_REST + at), 0);
+  wram_w16(w, (uint16_t)(c->d + SPAWNLIST_DP_LIST),
+           wram_r16(w, (uint16_t)(c->d + SPAWNLIST_DP_GIVEN_LIST)));
+  // `PEI ($02) : PLB`: the word goes on the stack and its low byte comes off.
+  push16(w, c, wram_r16(w, (uint16_t)(c->d + SPAWNLIST_DP_GIVEN_BANK)));
+  c->db = pull8(w, c);
+  wram_w16(w, (uint16_t)(c->d + SPAWNLIST_DP_DISTANCE), 0xffff);
+  wram_w16(w, (uint16_t)(c->d + SPAWNLIST_DP_PLACE), 0);
+  c->x = 0xfffe;  // where the clearing loop's count ends
+  c->a = 1;
+  set_nz16(c, c->a);
+  c->pc = SPAWNLIST_YIELD_PC;
+}
+
 SpawnlistFate spawnlist_frame(Wram* w, const Rom* rom, uint16_t page,
                               uint8_t bank, SpawnlistLog* log) {
   SpawnlistLog scratch;

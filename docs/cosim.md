@@ -17695,3 +17695,112 @@ refresh-exact. Declines fall from 7,178 to 3,521.
 
 Lockstep: 325,322 passes, 48 of 51 never part, the same three on the
 same passes, and every drift figure as it was.
+
+## The pieces of a player's pose, two poses that sleep, and the starts and ends of five threads (2026-10-07)
+
+Thirty-five entries more, 445. Over the twelve live movies the ROM's
+instructions go from 244,319 to 217,485.
+
+### The profile outruns the movies
+
+`live_prof.sh` runs each movie for 20,000 frames. `verify_corpus.ps1` runs
+most for 4,700. A movie's input ends, the player dies, and the title
+screen's demos begin, as I take it: I did not watch one. The live profile
+has weapon 5, a potion and the second-band weapons on movie after movie in
+the same numbers, and `verify` at a corpus length has none of them.
+
+A `printf` in the frame's guard at 9,000 frames showed no monster at all.
+At 20,000 it showed the monster and the rest. The entries this round were
+checked at 20,000 frames. In the corpus `demo-end.zmv`, `level5.zmv` and
+`level21.zmv` run that long or longer.
+
+### An entry is not only a handler
+
+`player_frame` turns down a frame whole. The pose's handler is then an
+entry of its own, and it turns the frame down again if any part of it is
+the ROM's. But the handler is a few tests and a `JMP`: `$80:D4E9` picks a
+stand or a walk, and each of those the port has. So they are entries too,
+reached by `JMP` and left by an `RTS` that is not theirs.
+
+The shot, `$80:ED30`, leaves three ways: either of two `RTS`s, or `JMP
+$DE96` for weapon 5, whose pose opens with `LDA #$0005 : JSL thread_yield`.
+A routine left by a return cannot also be left by a jump, so this one
+names its exits: the two `RTS` instructions themselves, and the `JSL`.
+The harness stops on the `RTS` and the ROM makes it.
+
+### A pose that sleeps
+
+Most handlers return each frame. Two call `thread_yield` themselves and
+return many frames later, to the frame they were called from. Each is a
+run of stretches, a sleep to a sleep, at the stack depth it was entered
+on.
+
+The last stretch of the second band's, the hold at `$80:EED3`, was an
+entry already: `fired_wait`. I wrote it again. Two entries at one address
+do not diverge. What showed it was the corpus's coverage: `fired_wait_on`,
+`fired_wait_done` and `fired_wait_moved` had been taken and were not. A
+listing would have shown it sooner: the profile has `$80:EED3` as never
+run by the ROM.
+
+### A sound's wait
+
+`apu_play_sfx` spins on `$2143` until the sound chip has taken the last
+sound. The harness charges a sound 484 cycles, a call that did not wait.
+The sound's own entry hands `verify` no price, so nothing is claimed of a
+call that did.
+
+A stretch with a sound inside it does make a claim: its price is the sum.
+`death_pictures` was `PHA ... JSL apu_play_sfx ... JSL pictures_play`, and
+on `level13` one call of 16 was out by 1,048.
+
+So a stretch ends at the `JSL` that plays its sound, with the sound in A,
+and another begins where it comes back. That is the rule `pictures_play`
+already had. It costs one instruction of the ROM, the `JSL`. Four
+stretches were cut this way: a killed thing's pictures, the thing thrown
+in an arc landing, a clone's start, and the swipe's thread.
+
+Last round's swing still has its sound inside. It is exact on the corpus.
+
+### The swipe's cut
+
+`swipe_cut` plays a sound when it cuts something, and that path was never
+priced: it charges its fallback. Inside the thread's start the fallback
+would have been the start's own, 9,000 cycles, where the ROM took up to
+45,678 with the wait. A start that cut something is turned down, and the
+ROM runs it through the two calls' entries as before.
+
+### `PEI ($02) : PLB`
+
+The spawn list's thread is handed its list's address and bank. `PEI`
+pushes the word and `PLB` pulls one byte, so the thread's stack is a byte
+deeper from then on. The stretch ends with S one lower, the data bank
+changed, and the byte left behind written as the ROM writes it.
+
+### The doll's handler
+
+`$81:B41C` to its exits, and `$81:8506` to its two. Eleven blocks, and a
+twelfth for the two ids that leave by a `JML` elsewhere, which stay
+unpriced. The first version of the table began at `$81:B423` and left out
+`CMP #$005C : BCS` taken, 36 cycles.
+
+The survivor's splice is 682 cycles of straight line: three words of the
+parked stack moved down three bytes and a far address written under them.
+
+Lockstep drifts less on the four level-29 movies. A doll's hit was
+charged a flat 235 before, and I take the price to be why. I did not run
+it without.
+
+### Not priced
+
+A punch, or a landing, that tells a player, a neighbour or something on
+the ground: `$80:F7F7`'s deep paths, `$83:A364` and `$80:CAEE` have no
+table in `thread_call_cycles`.
+
+### Checked
+
+33,427,039 calls across 51 movies, 0 diverged. 1,170 of 1,392 sites; of
+the 28 new, two are untaken: `clone_began_drawn` and `pose_fire_waited`.
+Every priced call is refresh-exact. Declines go from 3,521 to 3,709.
+
+Lockstep: 325,322 passes, 48 of 51 never part, the same three. Drift is
+smaller on seven movies and larger on none.

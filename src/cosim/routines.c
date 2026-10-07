@@ -1861,11 +1861,45 @@ static bool guard_enemy_b41c_collide(Wram* scratch, const Rom* rom,
   return false;
 }
 
+// Every stretch of it but the two ids that leave by a `JML` elsewhere,
+// indexed by `B41cCollideBlock`. A branch taken is 6 more than one not, and
+// the block that takes it carries the 6.
+static const CosimRun B41C_COST[B41C_BLOCK_COUNT] = {
+    [B41C_BLK_IGNORE] = {18 + 12 + 12 + 42, 7},
+    [B41C_BLK_ACT] = {36 + 136, 25, 1},    // $B41C-$B436, the BCS taken
+    [B41C_BLK_SPECIAL] = {6 + 80, 7, 1},   // $B462-$B468
+    [B41C_BLK_GROUNDED] = {94 + 86, 11, 1},  // $B469-$B46D and $B168-$B16D
+    [B41C_BLK_AIRBORNE] = {6, 0},
+    [B41C_BLK_HIT] = {192, 19, 2},         // $B437-$B447
+    [B41C_BLK_DIED] = {6 + 160, 8, 3},     // $B452-$B459
+    [B41C_BLK_NO_DAMAGE] = {28 + 18 + 54, 6, 1},  // $B448-$B44B, $B46E-$B46F
+    [B41C_BLK_SURVIVED] = {92 + 98, 20, 3},  // $B448-$B451 and $8506-$850F
+    [B41C_BLK_ALREADY] = {6 + 54, 2},      // $855F-$8560
+    [B41C_BLK_SPLICED] = {682, 50},        // $8510-$8541
+};
+
+static bool b41c_cycles(const B41cCollideWork* k, bool fast, bool dp_unaligned,
+                        int* out) {
+  if (k->blocks[B41C_BLK_DEEP]) return false;
+  int cycles = 0;
+  for (int i = 0; i < B41C_BLOCK_COUNT; i++)
+    cycles +=
+        k->blocks[i] * cosim_run_cycles_dp(&B41C_COST[i], fast, dp_unaligned);
+  *out = cycles;
+  return true;
+}
+
 static void shim_enemy_b41c_collide(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  enemy_b41c_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  B41cCollideWork work;
+  // the guard allowed it
+  enemy_b41c_collide_counted(w, rom, in->d, in->a, &r, NULL, &work);
   handler_regs(&r, out);
+
+  int cycles;
+  if (b41c_cycles(&work, in->fastrom, (in->d & 0xff) != 0, &cycles))
+    cosim_cost(cycles);
 }
 
 // ---------------------------------------------------------------------------
@@ -2517,6 +2551,12 @@ static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
       int handler;
       if (!monster_cycles(&k->monster, fast, dp_unaligned, &handler))
         return false;
+      cycles += handler;
+      break;
+    }
+    case ENEMY_B41C_COLLIDE_ENTRY: {
+      int handler;
+      if (!b41c_cycles(&k->b41c, fast, dp_unaligned, &handler)) return false;
       cycles += handler;
       break;
     }
@@ -13942,6 +13982,7 @@ static const CosimRun POSE_RUN_WF_STEP = {104, 11, 1};  // $80:D715-$D71F
 static const CosimRun POSE_RUN_FIRE_DELAY = {40, 4, 1};  // $80:ED30-$ED33
 static const CosimRun POSE_RUN_FIRE_ROUNDS = {230, 19, 3};  // $80:ED34-$ED44
 static const CosimRun POSE_RUN_FIRE_EMPTY = {52, 2, 0};  // $80:ED86-$ED87
+static const CosimRun POSE_RUN_CLD = {12, 1, 0};  // $80:ED86
 static const CosimRun POSE_RUN_FIRE_SHOT = {674, 57, 11};  // $80:ED45-$ED77
 static const CosimRun POSE_RUN_FIRE_TAIL = {98, 10, 1};  // $80:ED78-$ED81
 static const CosimRun POSE_RUN_BB_TEST = {68, 6, 2};  // $80:D6C2-$D6C7
@@ -14459,8 +14500,7 @@ static bool weapon_pictures_ok(const Wram* w, uint16_t d) {
 // records and the three tables the page points at: the records have to be in
 // the WRAM bank `$80` mirrors, and the tables in the cartridge. The facing
 // and the state index tables too. Then the frame has to be one the port has.
-static bool pose_ok(Wram* scratch, const Rom* rom, const CosimRegs* in,
-                    uint16_t handler) {
+static bool pose_page_ok(const Wram* scratch, const CosimRegs* in) {
   if (!body_ok(in) || in->db != POSE_BANK) return false;
   const uint16_t d = in->d;
   const uint16_t facing = wram_r16(scratch, (uint16_t)(d + PSN_DP_DIR_HELD));
@@ -14474,7 +14514,39 @@ static bool pose_ok(Wram* scratch, const Rom* rom, const CosimRegs* in,
       wram_r16(scratch, (uint16_t)(d + POSE_DP_PICTURES_ROW)) >= 0x40 ||
       facing < 2 || facing > 0x12)
     return false;
-  return pose_supported(scratch, rom, d, handler);
+  return true;
+}
+
+static bool pose_ok(Wram* scratch, const Rom* rom, const CosimRegs* in,
+                    uint16_t handler) {
+  return pose_page_ok(scratch, in) &&
+         pose_supported(scratch, rom, in->d, handler);
+}
+
+// A handler, or a piece of one, that is asked by running it on the copy.
+// The monster's punch tells those in its box, and each has to have a price.
+static bool pose_tried(void (*piece)(Wram*, const Rom*, uint16_t, PoseLog*),
+                       Wram* scratch, const Rom* rom, const CosimRegs* in) {
+  static PoseLog log;
+  int told;
+  if (!pose_page_ok(scratch, in)) return false;
+  log = (PoseLog){0};
+  piece(scratch, rom, in->d, &log);
+  return !log.unported &&
+         (!log.punched || notify_box_cycles(&log.told, in, &told));
+}
+
+// `$80:D4E9`, reached by `JMP`.
+static void pose_begin_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_AGAIN);
+  if (b->log->moving) {
+    pose_add(b, &POSE_RUN_JMP);
+    pose_walk_begin_bill(b);
+  } else {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_JMP);
+    pose_stand_begin_bill(b);
+  }
 }
 
 #define POSE_SHIM(name, handler)                                             \
@@ -14504,6 +14576,178 @@ POSE_SHIM(pose_walk_firing, POSE_HANDLER_WALK_FIRING)
 POSE_SHIM(pose_arc, POSE_HANDLER_ARC)
 POSE_SHIM(pose_arc_ready, POSE_HANDLER_ARC_READY)
 POSE_SHIM(pose_swim, POSE_HANDLER_SWIM)
+
+#define POSE_PIECE_SHIM(name)                                                \
+  static bool guard_##name(Wram* scratch, const Rom* rom,                    \
+                           const CosimRegs* in) {                            \
+    return pose_tried(name, scratch, rom, in);                               \
+  }                                                                          \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    static PoseLog log;                                                      \
+    log = (PoseLog){0};                                                      \
+    name(w, rom, in->d, &log);                                               \
+    PoseBill b = {{0, 0, 0}, &log};                                          \
+    name##_bill(&b);                                                         \
+    cosim_cost(pose_total(&b, in) + pose_calls(&log, rom, in));              \
+    out->regs = 0;                                                           \
+    out->flags = 0;                                                          \
+    out->c = log.c;                                                          \
+    out->v = log.v;                                                          \
+    if (log.c_set) out->flags |= COSIM_FLAG_C;                               \
+    if (log.v_set) out->flags |= COSIM_FLAG_V;                               \
+  }
+
+// Two handlers that had no entry of their own, and three pieces.
+POSE_PIECE_SHIM(pose_walk_band_b)
+POSE_PIECE_SHIM(pose_walk_6c)
+POSE_PIECE_SHIM(pose_begin)
+POSE_PIECE_SHIM(pose_stand_begin)
+POSE_PIECE_SHIM(pose_walk_begin)
+
+// `$80:ED30`, the shot. It leaves by one of two `RTS`s, or by `JMP $DE96`
+// to weapon 5's pose, whose first two instructions are a sleep: the stretch
+// ends at that `JSL`, on the stack it began on.
+static const CosimRun POSE_RUN_RECOIL = {18 + 18, 6, 0};  // JMP : LDA #$0005
+
+static bool guard_pose_fire(Wram* scratch, const Rom* rom,
+                            const CosimRegs* in) {
+  static PoseLog log;
+  if (!pose_page_ok(scratch, in)) return false;
+  log = (PoseLog){0};
+  pose_fire(scratch, rom, in->d, &log);
+  return !log.unported || log.recoils;
+}
+
+static void shim_pose_fire(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  static PoseLog log;
+  log = (PoseLog){0};
+  pose_fire(w, rom, in->d, &log);
+
+  PoseBill b = {{0, 0, 0}, &log};
+  pose_add(&b, &POSE_RUN_FIRE_DELAY);
+  out->pc = POSE_FIRE_RTS_PC;
+  if (log.delayed) {
+    pose_taken(&b);
+  } else {
+    pose_add(&b, &POSE_RUN_FIRE_ROUNDS);
+    if (log.fire == POSE_FIRE_EMPTY) {
+      pose_taken(&b);
+      pose_add(&b, &POSE_RUN_CLD);
+      out->pc = POSE_FIRE_EMPTY_RTS_PC;
+    } else {
+      pose_add(&b, &POSE_RUN_FIRE_SHOT);
+      pose_add(&b, &POSE_RUN_FIRE_TAIL);
+      if (log.recoils) {
+        pose_add(&b, &POSE_RUN_RECOIL);
+        out->pc = POSE_RECOIL_YIELD_PC;
+      } else {
+        pose_taken(&b);
+      }
+    }
+  }
+  cosim_cost(pose_total(&b, in) + pose_calls(&log, rom, in));
+
+  // What the handlers go on to loads A, X and Y before it reads them, and
+  // the sleep takes its ticks in A.
+  out->regs = 0;
+  out->p = in->p;
+  out->p_keep = PORT_P_N | PORT_P_Z;
+  if (log.c_set) {
+    out->p &= (uint8_t)~PORT_P_C;
+    if (log.c) out->p |= PORT_P_C;
+  }
+  if (log.v_set) {
+    out->p &= (uint8_t)~PORT_P_V;
+    if (log.v) out->p |= PORT_P_V;
+  }
+  if (log.recoils) {
+    out->a = POSE_RECOIL_TICKS;
+    out->regs = COSIM_REG_A;
+    out->p &= (uint8_t)~(PORT_P_N | PORT_P_Z);
+    out->p_keep = 0;
+  }
+}
+
+static const uint32_t POSE_FIRE_EXITS[] = {
+    POSE_FIRE_RTS_PC, POSE_FIRE_EMPTY_RTS_PC, POSE_RECOIL_YIELD_PC};
+
+// The stretches of the two poses that sleep inside themselves. Each ends at
+// a `JSL thread_yield` with the ticks in A.
+static const CosimRun POSE_RUN_RECOIL_BEGIN = {406, 40, 5};  // $DE9D-$DEC0
+static const CosimRun POSE_RUN_AIM_TEST = {40, 4, 1};    // LDA $6A : BEQ
+static const CosimRun POSE_RUN_AIM_RESET = {28, 2, 1};   // STZ $18
+static const CosimRun POSE_RUN_AIM = {342, 32, 5};       // $EE88-$EEA3
+static const CosimRun POSE_RUN_SHOOT = {82, 10, 1};      // $EEAB-$EEB2
+static const CosimRun POSE_RUN_LOWER = {258, 24, 4};     // $EEB7-$EECE
+
+static void pose_recoil_begin_bill(PoseBill* b) {
+  // Both `JSR`s are in the run. What they call is billed from the log's
+  // counts, each with its own `RTS`.
+  pose_add(b, &POSE_RUN_RECOIL_BEGIN);
+}
+
+static void pose_band_b_aim_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_AIM_TEST);
+  if (b->log->aim_reset) pose_add(b, &POSE_RUN_AIM_RESET);
+  else pose_taken(b);
+  pose_add(b, &POSE_RUN_AIM);
+}
+
+static void pose_band_b_shoot_bill(PoseBill* b) {
+  if (b->log->delayed) {
+    pose_add(b, &POSE_RUN_JSR);
+    pose_add(b, &POSE_RUN_FIRE_DELAY);
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_RTS);
+  } else {
+    pose_fire_bill(b);
+  }
+  pose_add(b, &POSE_RUN_SHOOT);
+}
+
+static void pose_band_b_lower_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_LOWER);
+}
+
+#define POSE_STRETCH_SHIM(name, at_yield)                                    \
+  static bool guard_##name(Wram* scratch, const Rom* rom,                    \
+                           const CosimRegs* in) {                            \
+    return pose_tried(name, scratch, rom, in);                               \
+  }                                                                          \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    static PoseLog log;                                                      \
+    log = (PoseLog){0};                                                      \
+    name(w, rom, in->d, &log);                                               \
+    PoseBill b = {{0, 0, 0}, &log};                                          \
+    name##_bill(&b);                                                         \
+    cosim_cost(pose_total(&b, in) + pose_calls(&log, rom, in));              \
+    out->p = in->p;                                                          \
+    if (log.c_set) {                                                         \
+      out->p &= (uint8_t)~PORT_P_C;                                          \
+      if (log.c) out->p |= PORT_P_C;                                         \
+    }                                                                        \
+    if (log.v_set) {                                                         \
+      out->p &= (uint8_t)~PORT_P_V;                                          \
+      if (log.v) out->p |= PORT_P_V;                                         \
+    }                                                                        \
+    out->pc = at_yield;                                                      \
+    out->a = (uint16_t)log.ticks;                                            \
+    out->regs = COSIM_REG_A;                                                 \
+    out->p &= (uint8_t)~(PORT_P_N | PORT_P_Z);                               \
+  }
+
+POSE_STRETCH_SHIM(pose_recoil_begin, POSE_RECOIL_BEGUN_YIELD_PC)
+POSE_STRETCH_SHIM(pose_band_b_aim, POSE_BAND_B_AIM_YIELD_PC)
+POSE_STRETCH_SHIM(pose_band_b_shoot, POSE_BAND_B_SHOOT_YIELD_PC)
+POSE_STRETCH_SHIM(pose_band_b_lower, POSE_BAND_B_HOLD_YIELD_PC)
+
+static const uint32_t POSE_RECOIL_BEGIN_EXITS[] = {POSE_RECOIL_BEGUN_YIELD_PC};
+static const uint32_t POSE_BAND_B_AIM_EXITS[] = {POSE_BAND_B_AIM_YIELD_PC};
+static const uint32_t POSE_BAND_B_SHOOT_EXITS[] = {POSE_BAND_B_SHOOT_YIELD_PC};
+static const uint32_t POSE_BAND_B_LOWER_EXITS[] = {POSE_BAND_B_HOLD_YIELD_PC};
 
 // ---------------------------------------------------------------------------
 // $80:CDFE  a frame of a player -- see `port/player_frame.h`
@@ -14718,6 +14962,39 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t PLAYER_FRAME_EXITS[] = {PLAYER_FRAME_YIELD_PC};
+
+// `$80:D2EA` on its own: the monster's state in a frame the port turned
+// down. The runs are the frame's.
+static bool guard_player_monster_state(Wram* scratch, const Rom* rom,
+                                       const CosimRegs* in) {
+  static PlayerFrameLog log;
+  return player_monster_state(scratch, rom, in->d, &log);
+}
+
+static void shim_player_monster_state(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  static PlayerFrameLog log;
+  player_monster_state(w, rom, in->d, &log);
+
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &RUN_JSR, 1);  // $80:D2EA  JSR floor_effect
+  run_add(&own, &PFRAME_RUN_MONSTER_HEAD, 1);
+  run_add(&own, log.punched ? &PFRAME_RUN_MONSTER_PUNCH : &RUN_TAKEN, 1);
+  run_add(&own, &PFRAME_RUN_MONSTER_DIR, 1);
+  run_add(&own, log.turned ? &PFRAME_RUN_MONSTER_FACE : &RUN_TAKEN, 1);
+  run_add(&own, &PFRAME_RUN_TURN_TIMER, 1);
+  run_add(&own, log.timer_ran ? &PFRAME_RUN_TURN_DEC : &RUN_TAKEN, 1);
+  run_add(&own, log.potion_ran ? &PFRAME_RUN_MONSTER_POTION
+                               : &PFRAME_RUN_MONSTER_SPENT, 1);
+  run_add(&own, &RUN_RTS, 1);
+  cosim_cost(floor_cycles(&log.floor, in->fastrom, unaligned) +
+             cosim_run_cycles_dp(&own, fetch_fast(in), unaligned));
+
+  out->regs = 0;
+  out->flags = COSIM_FLAG_C;
+  out->c = log.c;
+}
 
 // ---------------------------------------------------------------------------
 // The evil dolls -- see `port/doll.h`
@@ -17666,6 +17943,22 @@ static bool guard_swipe_begin(Wram* scratch, const Rom* rom,
   return !k.declined;
 }
 
+// Its own instructions into `run`, and what it calls handed back.
+static int swipe_begin_bill(CosimRun* run, const SwipeBeginWork* k,
+                            const CosimRegs* in) {
+  run_add(run, &SW_BEGIN, 1);
+  run_add(run, &SW_OP_TEST, 1);
+  if (k->turned_over) {
+    run_add(run, &SW_OP_SET, 1);
+  } else {
+    run_add(run, &RUN_TAKEN, 1);
+    run_add(run, &SW_OP_CLEAR, 1);
+  }
+  run_add(run, &SW_PICTURE, 1);
+  return saucer_alloc_cycles(k->record, in->fastrom) +
+         cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom);
+}
+
 static void shim_swipe_begin(Wram* w, const Rom* rom, const CosimRegs* in,
                              CosimRegs* out) {
   PortCpu c;
@@ -17674,17 +17967,8 @@ static void shim_swipe_begin(Wram* w, const Rom* rom, const CosimRegs* in,
   swipe_begin(w, rom, &c, &k);
   cpu_to(&c, out);
   CosimRun run = {0, 0, 0};
-  run_add(&run, &SW_BEGIN, 1);
-  run_add(&run, &SW_OP_TEST, 1);
-  if (k.turned_over) {
-    run_add(&run, &SW_OP_SET, 1);
-  } else {
-    run_add(&run, &RUN_TAKEN, 1);
-    run_add(&run, &SW_OP_CLEAR, 1);
-  }
-  run_add(&run, &SW_PICTURE, 1);
-  cosim_cost(saucer_alloc_cycles(k.record, in->fastrom) +
-             cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom) +
+  const int calls = swipe_begin_bill(&run, &k, in);
+  cosim_cost(calls +
              cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
 }
 
@@ -17696,6 +17980,19 @@ static const CosimRun SW_CUT_TILE = {276 + 276 + 94 + 52 + 186,
                                      22 + 19 + 9 + 2 + 15, 6 + 2};  // $E98F-$E9CD
 static const CosimRun SW_CUT_SECOND = {54, 7, 0};    // $E9CE-$E9D4
 static const CosimRun SW_CUT_TAIL = {40, 4, 1};      // LDA $48 : BEQ
+
+// A look that cut nothing: its own instructions into `run`, and what it
+// calls handed back.
+static int swipe_cut_bill(CosimRun* run, const SwipeCutWork* k,
+                          const CosimRegs* in) {
+  run_add(run, &SW_CUT_HEAD, 1);
+  run_add(run, &SW_CUT_NEXT, k->tiles + 1);
+  run_add(run, &SW_CUT_TILE, k->tiles);
+  run_add(run, &SW_CUT_SECOND, k->tiles);
+  run_add(run, &SW_CUT_TAIL, 1);
+  run_add(run, &RUN_TAKEN, k->tiles + 2);
+  return k->tiles * cosim_run_cycles(&TILE_ADDR_RUN, in->fastrom);
+}
 
 static bool guard_swipe_cut(Wram* scratch, const Rom* rom,
                             const CosimRegs* in) {
@@ -17721,13 +18018,8 @@ static void shim_swipe_cut(Wram* w, const Rom* rom, const CosimRegs* in,
   // a look that cut nothing: each tile takes both its branches.
   if (k.played) return;
   CosimRun run = {0, 0, 0};
-  run_add(&run, &SW_CUT_HEAD, 1);
-  run_add(&run, &SW_CUT_NEXT, k.tiles + 1);
-  run_add(&run, &SW_CUT_TILE, k.tiles);
-  run_add(&run, &SW_CUT_SECOND, k.tiles);
-  run_add(&run, &SW_CUT_TAIL, 1);
-  run_add(&run, &RUN_TAKEN, k.tiles + 2);
-  cosim_cost(k.tiles * cosim_run_cycles(&TILE_ADDR_RUN, in->fastrom) +
+  const int calls = swipe_cut_bill(&run, &k, in);
+  cosim_cost(calls +
              cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
 }
 
@@ -18116,6 +18408,533 @@ static bool zombie_risen_ok(const Wram* w, const CosimRegs* in) {
 
 ZOMBIE_START_SHIMS(zombie_slow, ZOMBIE_SLOW)
 ZOMBIE_START_SHIMS(zombie_fast, ZOMBIE_FAST)
+
+// A thread's end, and a killed thing's last pictures begun. See
+// `port/begin.h`.
+static const CosimRun RE_RUN = {138, 14, 1};         // SEC ... LDA $08
+static const CosimRun DP_RUN = {104, 10, 0};         // $83A3-$83AC
+static const CosimRun DP_RUN_HEARD = {206, 14, 1};   // $83B1-$83BE
+static const CosimRun ZL_RUN_TEST = {30, 5, 0};      // CMP #$F5F5 : BNE
+static const CosimRun ZL_RUN_KILLED = {120, 11, 1};  // INC ... LDX $12
+
+static bool accepts_record_end(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db);
+}
+
+#define RECORD_END_SHIMS(name, which)                                        \
+  static bool guard_##name(Wram* scratch, const Rom* rom,                    \
+                           const CosimRegs* in) {                            \
+    (void)rom;                                                               \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    return record_end(scratch, &c, &RECORD_ENDS[which]);                     \
+  }                                                                          \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    (void)rom;                                                               \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    record_end(w, &c, &RECORD_ENDS[which]);                                  \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(cosim_run_cycles_dp(&RE_RUN, fetch_fast(in),                  \
+                                   (in->d & 0xffu) != 0));                   \
+  }                                                                          \
+  static const uint32_t name##_EXITS[] = {RECORD_ENDS_FREE_##which};
+
+// The exits again, as constants a table can hold.
+#define RECORD_ENDS_FREE_RECORD_END_ZOMBIE_SLOW 0x818868u
+#define RECORD_ENDS_FREE_RECORD_END_ZOMBIE_FAST 0x818952u
+#define RECORD_ENDS_FREE_RECORD_END_ZOMBIE_THIRD 0x818c8cu
+#define RECORD_ENDS_FREE_RECORD_END_SLIME_GLOB 0x81cf47u
+#define RECORD_ENDS_FREE_RECORD_END_SHOT_5 0x81ec6eu
+
+RECORD_END_SHIMS(zombie_slow_end, RECORD_END_ZOMBIE_SLOW)
+RECORD_END_SHIMS(zombie_fast_end, RECORD_END_ZOMBIE_FAST)
+RECORD_END_SHIMS(zombie_third_end, RECORD_END_ZOMBIE_THIRD)
+RECORD_END_SHIMS(slime_glob_end, RECORD_END_SLIME_GLOB)
+RECORD_END_SHIMS(shot_5_end, RECORD_END_SHOT_5)
+
+static bool accepts_death_pictures(const Wram* w, const CosimRegs* in) {
+  return in->x == DEATH_KILLED && accepts_record_end(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + BEGIN_DP_RECORD)) < 0x1f00;
+}
+
+static void shim_death_pictures(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  death_pictures(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&DP_RUN, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static bool accepts_death_pictures_heard(const Wram* w, const CosimRegs* in) {
+  return accepts_record_end(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + BEGIN_DP_RECORD)) < 0x1f00;
+}
+
+static void shim_death_pictures_heard(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  death_pictures_heard(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&DP_RUN_HEARD, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t DEATH_PICTURES_EXITS[] = {DEATH_PICTURES_SOUND_PC};
+static const uint32_t DEATH_PICTURES_HEARD_EXITS[] = {DEATH_PICTURES_PLAY_PC};
+
+#define ZOMBIE_LEAVE_SHIMS(name, thread, death_pc, free_pc)                  \
+  static bool guard_##name(Wram* scratch, const Rom* rom,                    \
+                           const CosimRegs* in) {                            \
+    (void)rom;                                                               \
+    PortCpu c;                                                               \
+    bool stopped;                                                            \
+    cpu_from(in, &c);                                                        \
+    zombie_leave(scratch, &c, thread, &stopped);                             \
+    return !stopped;                                                         \
+  }                                                                          \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    (void)rom;                                                               \
+    PortCpu c;                                                               \
+    bool stopped;                                                            \
+    cpu_from(in, &c);                                                        \
+    const bool killed = zombie_leave(w, &c, thread, &stopped);               \
+    cpu_to(&c, out);                                                         \
+    CosimRun run = {0, 0, 0};                                                \
+    run_add(&run, &ZL_RUN_TEST, 1);                                          \
+    if (killed) {                                                            \
+      run_add(&run, &ZL_RUN_KILLED, 1);                                      \
+    } else {                                                                 \
+      run_add(&run, &RUN_TAKEN, 1);                                          \
+      run_add(&run, &RE_RUN, 1);                                             \
+    }                                                                        \
+    cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in),                     \
+                                   (in->d & 0xffu) != 0));                   \
+  }                                                                          \
+  static const uint32_t name##_EXITS[] = {death_pc, free_pc};
+
+ZOMBIE_LEAVE_SHIMS(zombie_slow_leave, ZOMBIE_THREAD_87F8,
+                   ZOMBIE_87F8_DEATH_PC, 0x818868u)
+ZOMBIE_LEAVE_SHIMS(zombie_fast_leave, ZOMBIE_THREAD_88CA,
+                   ZOMBIE_88CA_DEATH_PC, 0x818952u)
+ZOMBIE_LEAVE_SHIMS(zombie_third_leave, ZOMBIE_THREAD_8C17,
+                   ZOMBIE_8C17_DEATH_PC, 0x818c8cu)
+
+static bool accepts_zombie_leave(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return zombie_page_ok(in);
+}
+
+// The swipe's thread. See `port/swipe.h`. A cut ends in a sound, which
+// `swipe_cut_bill` does not price, so a start that cut something is turned
+// down: the ROM runs it, through the two calls' own entries.
+static const CosimRun SWT_RUN_HEAD = {156, 15, 0};   // $E8A8-$E8B6
+static const CosimRun SWT_RUN_REST = {58, 6, 0};     // $E8B7-$E8BC
+static const CosimRun SWT_RUN_WAIT_X = {108, 9, 2};  // $E8C8-$E8D0
+static const CosimRun SWT_RUN_WAIT_Y = {80, 7, 1};   // $E8D1-$E8D7
+static const CosimRun SWT_RUN_TICK = {18, 3, 0};     // LDA #$0001
+static const CosimRun SWT_RUN_END = {138, 14, 1};    // $E8DF-$E8EC
+
+static bool guard_swipe_thread_begin(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  if (!accepts_swipe(scratch, in)) return false;
+  PortCpu c;
+  SwipeBeginWork begun = {0};
+  static SwipeCutWork cut;
+  cut = (SwipeCutWork){0};
+  cpu_from(in, &c);
+  return swipe_thread_begin(scratch, rom, &c, &begun, &cut) && !cut.played;
+}
+
+static void shim_swipe_thread_begin(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  SwipeBeginWork begun = {0};
+  static SwipeCutWork cut;
+  cut = (SwipeCutWork){0};
+  cpu_from(in, &c);
+  swipe_thread_begin(w, rom, &c, &begun, &cut);
+  cpu_to(&c, out);
+  out->p_keep = PORT_P_V;  // a tile lookup's
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SWT_RUN_HEAD, 1);
+  int calls = swipe_begin_bill(&run, &begun, in);
+  run_add(&run, &RUN_RTS, 1);
+  run_add(&run, &SWT_RUN_REST, 1);
+  calls += swipe_cut_bill(&run, &cut, in);
+  run_add(&run, &RUN_RTS, 1);
+  cosim_cost(calls +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static bool accepts_swipe_thread(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         wram_r16(w, (uint16_t)(in->d + SWIPE_DP_OWNER)) < 0x1f00;
+}
+
+static bool guard_swipe_thread_wait(Wram* scratch, const Rom* rom,
+                                    const CosimRegs* in) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  return swipe_thread_wait(scratch, &c) != SWIPE_STOPS;
+}
+
+static bool guard_swipe_thread_end(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  return swipe_thread_end(scratch, &c) != SWIPE_STOPS;
+}
+
+static void shim_swipe_thread_wait(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const uint16_t owner = wram_r16(w, (uint16_t)(in->d + SWIPE_DP_OWNER));
+  const bool same_x = wram_r16(w, (uint16_t)(owner + ACTOR_X)) ==
+                      wram_r16(w, (uint16_t)(in->d + SWIPE_DP_OWNER_X));
+  const SwipeFate fate = swipe_thread_wait(w, &c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SWT_RUN_WAIT_X, 1);
+  if (same_x) run_add(&run, &SWT_RUN_WAIT_Y, 1);
+  if (fate == SWIPE_WAITS) {
+    run_add(&run, &SWT_RUN_TICK, 1);
+  } else {
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &SWT_RUN_END, 1);
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static void shim_swipe_thread_end(Wram* w, const Rom* rom,
+                                  const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  swipe_thread_end(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&SWT_RUN_END, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t SWIPE_THREAD_BEGIN_EXITS[] = {SWIPE_THREAD_SOUND_PC};
+static const uint32_t SWIPE_THREAD_WAIT_EXITS[] = {SWIPE_THREAD_WAIT_YIELD_PC,
+                                                   SWIPE_THREAD_FREE_PC};
+static const uint32_t SWIPE_THREAD_END_EXITS[] = {SWIPE_THREAD_FREE_PC};
+
+// The rest of the thing thrown in an arc. See `port/lob.h`.
+static const CosimRun LT_RUN_HEAD = {138, 13, 0};    // $F976-$F982
+static const CosimRun LT_RUN_SETUP = {850, 73, 8};   // $F9D9-$FA21
+static const CosimRun LT_RUN_TICK = {18, 3, 0};      // LDA #$0001
+static const CosimRun LT_RUN_LANDED = {104, 11, 1};  // $F99C-$F9A6
+static const CosimRun LT_RUN_BURST = {58, 6, 0};     // JSR $FA70 : LDA #
+static const CosimRun LT_RUN_BOX = {556, 51, 2};     // $FA70-$FAA0
+static const CosimRun LT_RUN_END = {138, 14, 1};     // $F9C6-$F9D3
+
+static bool guard_lob_begin(Wram* scratch, const Rom* rom,
+                            const CosimRegs* in) {
+  (void)rom;
+  if (!accepts_begin(scratch, in) || in->db != LOB_BANK) return false;
+  PortCpu c;
+  uint16_t record;
+  cpu_from(in, &c);
+  return lob_begin(scratch, &c, &record);
+}
+
+static void shim_lob_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  uint16_t record = 0;
+  cpu_from(in, &c);
+  lob_begin(w, &c, &record);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &LT_RUN_HEAD, 1);
+  run_add(&run, &LT_RUN_SETUP, 1);
+  run_add(&run, &LT_RUN_TICK, 1);
+  cosim_cost(saucer_alloc_cycles(record, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static bool accepts_lob_thread(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == LOB_BANK &&
+         wram_r16(w, (uint16_t)(in->d + LOB_DP_RECORD)) < 0x1f00 &&
+         (wram_r16(w, (uint16_t)(in->d + LOB_DP_PLAYER)) & ~2u) == 0;
+}
+
+static void shim_lob_landed(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  lob_landed(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&LT_RUN_LANDED, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+#define LOB_BURST_SHIMS(name, again)                                         \
+  static bool guard_##name(Wram* scratch, const Rom* rom,                    \
+                           const CosimRegs* in) {                            \
+    static ActorNotifyWork told;                                             \
+    PortCpu c;                                                               \
+    int cycles;                                                              \
+    cpu_from(in, &c);                                                        \
+    return lob_burst(scratch, rom, &c, again, &told) &&                      \
+           notify_box_cycles(&told, in, &cycles);                            \
+  }                                                                          \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    static ActorNotifyWork told;                                             \
+    PortCpu c;                                                               \
+    int cycles = 0;                                                          \
+    cpu_from(in, &c);                                                        \
+    lob_burst(w, rom, &c, again, &told);                                     \
+    cpu_to(&c, out);                                                         \
+    out->p_keep = PORT_P_V; /* whatever those told left */                   \
+    notify_box_cycles(&told, in, &cycles);                                   \
+    CosimRun run = {0, 0, 0};                                                \
+    run_add(&run, &LT_RUN_BURST, 1);                                         \
+    run_add(&run, &LT_RUN_BOX, 1);                                           \
+    cosim_cost(cycles + cosim_run_cycles_dp(&run, fetch_fast(in),            \
+                                            (in->d & 0xffu) != 0));          \
+  }
+
+LOB_BURST_SHIMS(lob_burst, false)
+LOB_BURST_SHIMS(lob_burst_again, true)
+
+static bool guard_lob_end(Wram* scratch, const Rom* rom,
+                          const CosimRegs* in) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  return lob_end(scratch, &c);
+}
+
+static void shim_lob_end(Wram* w, const Rom* rom, const CosimRegs* in,
+                         CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  lob_end(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&LT_RUN_END, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t LOB_BEGIN_EXITS[] = {LOB_YIELD_PC};
+static const uint32_t LOB_LANDED_EXITS[] = {LOB_LANDED_SOUND_PC};
+static const uint32_t LOB_BURST_EXITS[] = {LOB_BURST_YIELD_PC};
+static const uint32_t LOB_BURST_AGAIN_EXITS[] = {LOB_BURST_PLAY_PC};
+static const uint32_t LOB_END_EXITS[] = {LOB_END_FREE_PC};
+
+// The clones' start. See `port/clone.h`. Runs from `tools/cycles816.py
+// --db 81`, branches not taken, and a taken one 6 more.
+static const CosimRun CB_RUN_HEAD = {218, 21, 0};       // $8E89-$8E9D
+static const CosimRun CB_RUN_FIRST = {18, 3, 0};        // $8D5A LDX #$0002
+static const CosimRun CB_RUN_IN_GAME = {88, 9, 0};      // $8D5D-$8D65
+// `LDA $1E88,X : BEQ` taken, and `$8D95-$8DA0` with its `BRA`.
+static const CosimRun CB_RUN_OUT = {58 + 124, 5 + 12, 0};
+static const CosimRun CB_RUN_DRAW = {54 + 18, 7, 0};    // JSL : AND #$0002
+static const CosimRun CB_RUN_PICTURES = {204, 19, 2};   // $8D6D-$8D7F
+static const CosimRun CB_RUN_IS_FIRST = {46, 5, 0};     // CPX $1E84 : BEQ
+static const CosimRun CB_RUN_SECOND = {18 + 18, 5, 0};  // LDY #$0002 : BRA
+// The `BEQ` taken, then `LDY #$0002 : CPX $1E86 : BEQ`.
+static const CosimRun CB_RUN_FIRST_OUT = {6 + 18 + 34 + 12, 8, 0};
+static const CosimRun CB_RUN_PICKED = {28 + 40, 3, 1};  // STY $2C : RTS
+// `JSR $8CD4`, and `$8CD4-$8D11`, the first `JSL` included.
+static const CosimRun CB_RUN_SETUP = {40 + 770 - 54, 3 + 66 - 4, 12};
+static const CosimRun CB_RUN_SHOW_FIRST = {178, 17, 3};  // $8D16-$8D24
+static const CosimRun CG_RUN_NEXT = {82, 9, 1};          // $8D29-$8D31
+static const CosimRun CG_RUN_SHOW = {160, 14, 3};        // $8D19-$8D24
+// `$8D32-$8D59` with its `JSL` and `RTS`, and `LDA #$0001`.
+static const CosimRun CG_RUN_GROWN = {460 + 18, 43, 7};
+
+static bool guard_clone_begin(Wram* scratch, const Rom* rom,
+                              const CosimRegs* in) {
+  if (!accepts_begin(scratch, in) || in->db != CLONE_BANK) return false;
+  PortCpu c;
+  CloneBeginLog log = {0};
+  cpu_from(in, &c);
+  clone_begin(scratch, rom, &c, &log);
+  return !log.declined;
+}
+
+static void shim_clone_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  CloneBeginLog log = {0};
+  cpu_from(in, &c);
+  clone_begin(w, rom, &c, &log);
+  cpu_to(&c, out);
+
+  CosimRun run = {0, 0, 0};
+  int calls = saucer_alloc_cycles(log.record, in->fastrom);
+  run_add(&run, &CB_RUN_HEAD, 1);
+  run_add(&run, &CB_RUN_FIRST, 1);
+  if (log.drew) {
+    run_add(&run, &CB_RUN_IN_GAME, 2);
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &CB_RUN_DRAW, 1);
+    calls += rng_cycles(log.drew_overflow, in->fastrom);
+  } else {
+    if (log.looked == 2) {
+      run_add(&run, &CB_RUN_IN_GAME, 1);
+      run_add(&run, &RUN_TAKEN, 1);
+    }
+    run_add(&run, &CB_RUN_OUT, 1);
+  }
+  run_add(&run, &CB_RUN_PICTURES, 1);
+  if (log.first_in_game) {
+    run_add(&run, &CB_RUN_IS_FIRST, 1);
+    run_add(&run, log.is_first ? &RUN_TAKEN : &CB_RUN_SECOND, 1);
+  } else {
+    run_add(&run, &CB_RUN_FIRST_OUT, 1);
+    if (log.is_second) run_add(&run, &RUN_TAKEN, 1);
+  }
+  run_add(&run, &CB_RUN_PICKED, 1);
+  run_add(&run, &CB_RUN_SETUP, 1);
+  run_add(&run, &RB_RUN, 1);
+  cosim_cost(calls + cosim_run_cycles_dp(&run, fetch_fast(in),
+                                         (in->d & 0xffu) != 0));
+}
+
+// The pictures are in the cartridge, and the sleep is a call deep.
+static bool clone_grow_ok(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != CLONE_BANK ||
+      !cur_task_ok(w))
+    return false;
+  const uint16_t at = wram_r16(w, (uint16_t)(in->d + CLONE_DP_CYCLE));
+  return wram_r16(w, (uint16_t)(in->d + CLONE_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + CLONE_DP_GROWING)) >= 0x8000u &&
+         wram_r16(w, (uint16_t)(in->d + CLONE_DP_GROWING)) < 0xff00u &&
+         (at & 1) == 0 && at < CLONE_GROW_PICTURES * 2 &&
+         wram_r16(w, (uint16_t)(in->s + 1)) == CLONE_GROW_RETURN;
+}
+
+static bool clone_first_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == CLONE_BANK &&
+         wram_r16(w, (uint16_t)(in->d + CLONE_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + CLONE_DP_GROWING)) >= 0x8000u &&
+         wram_r16(w, (uint16_t)(in->d + CLONE_DP_GROWING)) < 0xff00u &&
+         wram_r16(w, (uint16_t)(in->s + 1)) == CLONE_GROW_RETURN;
+}
+
+static void shim_clone_grow(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool grows = clone_grow(w, rom, &c);
+  cpu_to(&c, out);
+
+  CosimRun run = {0, 0, 0};
+  int calls = 0;
+  run_add(&run, &CG_RUN_NEXT, 1);
+  if (grows) {
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &CG_RUN_SHOW, 1);
+  } else {
+    run_add(&run, &CG_RUN_GROWN, 1);
+    calls += cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom);
+  }
+  cosim_cost(calls + cosim_run_cycles_dp(&run, fetch_fast(in),
+                                         (in->d & 0xffu) != 0));
+}
+
+static void shim_clone_grow_first(Wram* w, const Rom* rom,
+                                  const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  clone_grow_first(w, rom, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&CB_RUN_SHOW_FIRST, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t CLONE_BEGIN_EXITS[] = {CLONE_BEGIN_SOUND_PC};
+static const uint32_t CLONE_FIRST_EXITS[] = {CLONE_GROW_YIELD_PC};
+static const uint32_t CLONE_GROW_EXITS[] = {CLONE_GROW_YIELD_PC,
+                                            CLONE_YIELD_PC};
+
+// The spawn list's start. See `port/spawnlist.h`.
+static const CosimRun SB_RUN_HEAD = {36, 6, 0};    // $80EC-$80F1
+static const CosimRun SB_RUN_CLEAR = {76, 8, 0};   // $80F2-$80F9
+static const CosimRun SB_RUN_TAIL = {218, 17, 5};  // $80FA-$810A
+
+static bool spawnlist_begin_ok(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->d >= 0x0100;
+}
+
+static void shim_spawnlist_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  spawnlist_begin(w, &c);
+  cpu_to(&c, out);
+  out->regs = COSIM_REG_A | COSIM_REG_X;
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SB_RUN_HEAD, 1);
+  run_add(&run, &SB_RUN_CLEAR, SPAWNLIST_PLACES_MAX / 2);
+  run_add(&run, &RUN_TAKEN, SPAWNLIST_PLACES_MAX / 2 - 1);
+  run_add(&run, &SB_RUN_TAIL, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t SPAWNLIST_BEGIN_EXITS[] = {SPAWNLIST_YIELD_PC};
+
+// A survivor's flash. See `ENEMY_FLASH_PC` in `port/collide.h`.
+static const CosimRun FLASH_RUN_ON = {144, 14, 1};   // $8542-$854F
+static const CosimRun FLASH_RUN_OFF = {180, 13, 1};  // $8554-$8560
+
+static bool enemy_flash_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         wram_r16(w, (uint16_t)(in->d + VICTIM_DP_RECORD)) < 0x1f00;
+}
+
+static void shim_enemy_flash_begin(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  out->y = enemy_flash_begin(w, in->d);
+  out->a = ENEMY_FLASH_TICKS;
+  out->regs = COSIM_REG_A | COSIM_REG_Y;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z));
+  out->pc = ENEMY_FLASH_YIELD_PC;
+  cosim_cost(cosim_run_cycles_dp(&FLASH_RUN_ON, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static void shim_enemy_flash_end(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  uint16_t flags;
+  out->y = enemy_flash_end(w, in->d, &flags);
+  out->a = flags;
+  out->x = in->x;
+  out->n = (flags & 0x8000u) != 0;
+  out->z = flags == 0;
+  out->c = false;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  cosim_cost(cosim_run_cycles_dp(&FLASH_RUN_OFF, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t ENEMY_FLASH_EXITS[] = {ENEMY_FLASH_YIELD_PC};
 
 static const uint32_t ZOMBIE_SLOW_SPAWN_EXITS[] = {ZOMBIE_SLOW_RISE_PC};
 static const uint32_t ZOMBIE_FAST_SPAWN_EXITS[] = {ZOMBIE_FAST_RISE_PC};
@@ -21774,6 +22593,62 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 5000,
         .stack_bytes = 16,
     },
+    // ...and their start: to the first picture's sleep, and from each of
+    // those sleeps to the next or to the loop's first.
+    {
+        .name = "clone_begin",
+        .symbol = "$81:8E89",
+        .entry = CLONE_BEGIN_PC,
+        .run = shim_clone_begin,
+        .supported = guard_clone_begin,
+        COSIM_EXITS(CLONE_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 3000,
+        .stack_bytes = 16,
+    },
+    {
+        .name = "clone_grow_first",
+        .symbol = "$81:8D16",
+        .entry = CLONE_FIRST_PC,
+        .run = shim_clone_grow_first,
+        .accepts = clone_first_ok,
+        COSIM_EXITS(CLONE_FIRST_EXITS),
+        .uncalled = true,
+        .cycles = 200,
+    },
+    {
+        .name = "clone_grow",
+        .symbol = "$81:8D29",
+        .entry = CLONE_GROW_PC,
+        .run = shim_clone_grow,
+        .accepts = clone_grow_ok,
+        COSIM_EXITS(CLONE_GROW_EXITS),
+        .uncalled = true,
+        .cycles = 400,
+        .stack_bytes = 8,
+    },
+    // A survivor's flash: its bit set and the sleep, and its bit cleared.
+    {
+        .name = "enemy_flash_begin",
+        .symbol = "$81:8542",
+        .entry = ENEMY_FLASH_PC,
+        .run = shim_enemy_flash_begin,
+        .accepts = enemy_flash_ok,
+        COSIM_EXITS(ENEMY_FLASH_EXITS),
+        .uncalled = true,
+        .cycles = 150,
+    },
+    {
+        .name = "enemy_flash_end",
+        .symbol = "$81:8554",
+        .entry = ENEMY_FLASH_END_PC,
+        .ret_op = ENEMY_FLASH_END_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_enemy_flash_end,
+        .accepts = enemy_flash_ok,
+        .uncalled = true,
+        .cycles = 180,
+    },
     // The slimes' loop, a pass at a time. See `port/slime.h`.
     {
         .name = "slime_frame",
@@ -22085,6 +22960,64 @@ static const CosimRoutine ROUTINES[] = {
                POSE_ARC_READY_RTS_PC),
     // ...and the one in the water.
     POSE_ENTRY(pose_swim, "$80:DCA2", POSE_SWIM_PC, POSE_SWIM_RTS_PC),
+    // ...and two walks, for the frames the whole frame is turned down on.
+    POSE_ENTRY(pose_walk_band_b, "$80:D6B8", POSE_WALK_BAND_B_PC,
+               POSE_WALK_RTS_PC),
+    POSE_ENTRY(pose_walk_6c, "$80:D6DC", POSE_WALK_6C_PC, POSE_WALK_RTS_PC),
+    // The pieces a handler that is the ROM's still reaches, by `JMP`.
+    POSE_ENTRY(pose_begin, "$80:D4E9", POSE_BEGIN_PC, POSE_STAND_RTS_PC),
+    POSE_ENTRY(pose_stand_begin, "$80:D4F4", POSE_STAND_BEGIN_PC,
+               POSE_STAND_RTS_PC),
+    POSE_ENTRY(pose_walk_begin, "$80:D65B", POSE_WALK_BEGIN_PC,
+               POSE_WALK_BEGIN_RTS_PC),
+    // ...and the shot, by `JSR`. Weapon 5's ends at its pose's sleep.
+    {
+        .name = "pose_fire",
+        .symbol = "$80:ED30",
+        .entry = POSE_FIRE_PC,
+        .run = shim_pose_fire,
+        .supported = guard_pose_fire,
+        COSIM_EXITS(POSE_FIRE_EXITS),
+        .cycles = 400,
+        // `thread_spawn`'s return address and what it pushes.
+        .stack_bytes = 24,
+    },
+#define POSE_STRETCH(n, sym, pc, exits_, stack)                              \
+    {                                                                        \
+        .name = #n,                                                          \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_##n,                                                     \
+        .supported = guard_##n,                                              \
+        COSIM_EXITS(exits_),                                                 \
+        .uncalled = true,                                                    \
+        .cycles = 600,                                                       \
+        .stack_bytes = stack,                                                \
+    }
+    // The two poses that sleep inside themselves, a stretch at a time.
+    POSE_STRETCH(pose_recoil_begin, "$80:DE9D", POSE_RECOIL_BEGIN_PC,
+                 POSE_RECOIL_BEGIN_EXITS, 2),
+    POSE_STRETCH(pose_band_b_aim, "$80:EE82", POSE_BAND_B_AIM_PC,
+                 POSE_BAND_B_AIM_EXITS, 2),
+    POSE_STRETCH(pose_band_b_shoot, "$80:EEA8", POSE_BAND_B_SHOOT_PC,
+                 POSE_BAND_B_SHOOT_EXITS, 24),
+    POSE_STRETCH(pose_band_b_lower, "$80:EEB7", POSE_BAND_B_LOWER_PC,
+                 POSE_BAND_B_LOWER_EXITS, 2),
+#undef POSE_STRETCH
+    // The monster's state, from the player's state table.
+    {
+        .name = "player_monster_state",
+        .symbol = "$80:D2EA",
+        .entry = PLAYER_MONSTER_STATE_PC,
+        .ret_op = PLAYER_MONSTER_STATE_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_monster_state,
+        .accepts = player_frame_ok,
+        .supported = guard_player_monster_state,
+        .uncalled = true,
+        .cycles = 600,
+        .stack_bytes = 16,
+    },
 #undef POSE_ENTRY_AS
 #undef POSE_ENTRY
     // Vblank jobs, which write the PPU. See `port/vblank.h`. Each prices
@@ -23292,6 +24225,144 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 1100,
         .stack_bytes = 2,  // a `JSR`
     },
+#define END_ROW(n, sym, pc, acc)                                             \
+    {                                                                        \
+        .name = #n,                                                          \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_##n,                                                     \
+        .accepts = acc,                                                      \
+        .supported = guard_##n,                                              \
+        COSIM_EXITS(n##_EXITS),                                              \
+        .uncalled = true,                                                    \
+        .cycles = 200,                                                       \
+    }
+    // Where a zombie's loop goes when it is leaving, and the end of its
+    // thread and two more. See `port/begin.h`.
+    END_ROW(zombie_slow_leave, "$81:8846", ZOMBIE_87F8_LEAVE_PC,
+            accepts_zombie_leave),
+    END_ROW(zombie_fast_leave, "$81:8930", ZOMBIE_88CA_LEAVE_PC,
+            accepts_zombie_leave),
+    END_ROW(zombie_third_leave, "$81:8C6A", ZOMBIE_8C17_LEAVE_PC,
+            accepts_zombie_leave),
+    END_ROW(zombie_slow_end, "$81:885A", 0x81885au, accepts_record_end),
+    END_ROW(zombie_fast_end, "$81:8944", 0x818944u, accepts_record_end),
+    END_ROW(zombie_third_end, "$81:8C7E", 0x818c7eu, accepts_record_end),
+    END_ROW(slime_glob_end, "$81:CF39", 0x81cf39u, accepts_record_end),
+    END_ROW(shot_5_end, "$81:EC60", 0x81ec60u, accepts_record_end),
+#undef END_ROW
+    // A killed thing's last pictures begun, either side of its sound.
+    {
+        .name = "death_pictures",
+        .symbol = "$81:83A3",
+        .entry = DEATH_PICTURES_PC,
+        .run = shim_death_pictures,
+        .accepts = accepts_death_pictures,
+        COSIM_EXITS(DEATH_PICTURES_EXITS),
+        .cycles = 110,
+    },
+    {
+        .name = "death_pictures_heard",
+        .symbol = "$81:83B1",
+        .entry = DEATH_PICTURES_HEARD_PC,
+        .run = shim_death_pictures_heard,
+        .accepts = accepts_death_pictures_heard,
+        COSIM_EXITS(DEATH_PICTURES_HEARD_EXITS),
+        .uncalled = true,
+        .cycles = 210,
+    },
+    // ...and the rest of its thread.
+    {
+        .name = "lob_begin",
+        .symbol = "$81:F976",
+        .entry = LOB_BEGIN_PC,
+        .run = shim_lob_begin,
+        .supported = guard_lob_begin,
+        COSIM_EXITS(LOB_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 1700,
+        .stack_bytes = 12,
+    },
+    {
+        .name = "lob_landed",
+        .symbol = "$81:F99C",
+        .entry = LOB_LANDED_PC,
+        .run = shim_lob_landed,
+        .accepts = accepts_lob_thread,
+        COSIM_EXITS(LOB_LANDED_EXITS),
+        .uncalled = true,
+        .cycles = 700,
+        .stack_bytes = 12,
+    },
+    {
+        .name = "lob_burst",
+        .symbol = "$81:F9B2",
+        .entry = LOB_BURST_PC,
+        .run = shim_lob_burst,
+        .accepts = accepts_lob_thread,
+        .supported = guard_lob_burst,
+        COSIM_EXITS(LOB_BURST_EXITS),
+        .uncalled = true,
+        .cycles = 3000,
+        .stack_bytes = 48,
+    },
+    {
+        .name = "lob_burst_again",
+        .symbol = "$81:F9BC",
+        .entry = LOB_BURST_AGAIN_PC,
+        .run = shim_lob_burst_again,
+        .accepts = accepts_lob_thread,
+        .supported = guard_lob_burst_again,
+        COSIM_EXITS(LOB_BURST_AGAIN_EXITS),
+        .uncalled = true,
+        .cycles = 3000,
+        .stack_bytes = 48,
+    },
+    {
+        .name = "lob_end",
+        .symbol = "$81:F9C6",
+        .entry = LOB_END_PC,
+        .run = shim_lob_end,
+        .accepts = accepts_lob_thread,
+        .supported = guard_lob_end,
+        COSIM_EXITS(LOB_END_EXITS),
+        .uncalled = true,
+        .cycles = 140,
+    },
+    // The swipe's thread, round its two calls.
+    {
+        .name = "swipe_thread_begin",
+        .symbol = "$81:E8A8",
+        .entry = SWIPE_THREAD_PC,
+        .run = shim_swipe_thread_begin,
+        .supported = guard_swipe_thread_begin,
+        COSIM_EXITS(SWIPE_THREAD_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        .stack_bytes = 32,
+    },
+    {
+        .name = "swipe_thread_wait",
+        .symbol = "$81:E8C8",
+        .entry = SWIPE_THREAD_WAIT_PC,
+        .run = shim_swipe_thread_wait,
+        .accepts = accepts_swipe_thread,
+        .supported = guard_swipe_thread_wait,
+        COSIM_EXITS(SWIPE_THREAD_WAIT_EXITS),
+        .uncalled = true,
+        .cycles = 300,
+    },
+    {
+        .name = "swipe_thread_end",
+        .symbol = "$81:E8DF",
+        .entry = SWIPE_THREAD_END_PC,
+        .run = shim_swipe_thread_end,
+        .accepts = accepts_swipe_thread,
+        .supported = guard_swipe_thread_end,
+        COSIM_EXITS(SWIPE_THREAD_END_EXITS),
+        .uncalled = true,
+        .cycles = 140,
+    },
     // A pose's picture, for the poses that are the ROM's: see `port/pose.h`.
     {
         .name = "pose_show",
@@ -23460,6 +24531,17 @@ static const CosimRoutine ROUTINES[] = {
         .accepts = game_over_fall_ok,
         .cycles = 700,
         .stack_bytes = 2,  // an odd frame's `JSR`
+    },
+    {
+        .name = "spawnlist_begin",
+        .symbol = "$81:80EC",
+        .entry = SPAWNLIST_BEGIN_PC,
+        .run = shim_spawnlist_begin,
+        .accepts = spawnlist_begin_ok,
+        COSIM_EXITS(SPAWNLIST_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 2900,
+        .stack_bytes = 2,  // the `PEI`'s word, of which a byte stays
     },
     {
         .name = "spawnlist_frame",

@@ -84,15 +84,54 @@
 // whichever way the player faces. The handler names the movement afresh each
 // frame: the swim (`port/walk.h`), unless the player faces nowhere.
 //
+// ## The pieces on their own
+//
+// A handler the port turns down is the ROM's for that frame, and the ROM
+// still reaches the pieces it is made of. Four of them are entries too:
+//
+//   $80:D4E9  begin        the pose the direction asks for
+//   $80:D4F4  stand_begin  a stand
+//   $80:D65B  walk_begin   a walk
+//   $80:ED30  fire         a shot, if the last one's delay has run out
+//
+// **Weapon 5's shot goes on to a pose of its own**, which sleeps five ticks
+// before it does anything. `pose_fire` takes the round and starts the shot,
+// and says so: `PoseLog::recoils`. The handlers still leave that frame to
+// the ROM.
+//
+// ## Two poses that sleep inside themselves
+//
+// A handler is called once a frame and returns. These two do not return for
+// many frames: they call `thread_yield` themselves. So each is a run of
+// stretches from one sleep to the next, and each stretch ends at a `JSL
+// thread_yield` with the ticks in A.
+//
+//   $80:DE9D  recoil_begin   weapon 5's kick: its picture, and the step set
+//
+// The rest of the kick is `port/lunge.h`.
+//
+//   $80:EE82  band_b_aim     a second-band weapon raised
+//   $80:EEA8  band_b_shoot   the shot
+//   $80:EEB7  band_b_lower   the picture after it
+//
+// The hold that follows, `$80:EED3`, is `fired_wait` in
+// `port/player_small.h`.
+//
+// **A weapon of the second band fired standing is three pictures.** The
+// first is held four ticks, the shot is made, the first is held four more,
+// and the second is shown. Then the pose waits up to eight frames for the
+// direction the pad holds to change, and returns. That return is the
+// handler's own, to the frame it left many frames ago.
+//
 // ## What is the ROM's
 //
 // The frame a player in the air comes down on: each of the handlers has a
 // landing of its own. The frame a wait on the trampoline ends on, which
 // looks for where to bounce to.
-// Weapon 5's shot, which goes on to a pose of its own that sleeps. The poses
-// for the weapons in the second band (`$80:EE82`) and whatever sets `$6C`
-// (`$80:EF67`). Of the monster's walk, a punch that lands on a wall that
-// comes down.
+// A handler's frame that fires weapon 5, or that goes on to the second
+// band's standing shot (`$80:EE82`): the stretches above take over from
+// where the ROM gets to. The pose for whatever sets `$6C` (`$80:EF67`). Of
+// the monster's walk, a punch that lands on a wall that comes down.
 // `pose_supported` says which frames those are.
 //
 // ## Its contract with the ROM
@@ -150,6 +189,27 @@
 
 #define POSE_SWIM_PC 0x80dca2u
 #define POSE_SWIM_RTS_PC 0x80dcc8u
+#define POSE_WALK_BAND_B_PC 0x80d6b8u
+#define POSE_WALK_6C_PC 0x80d6dcu
+#define POSE_BEGIN_PC 0x80d4e9u
+#define POSE_STAND_BEGIN_PC 0x80d4f4u
+#define POSE_WALK_BEGIN_PC 0x80d65bu
+#define POSE_WALK_BEGIN_RTS_PC 0x80d6a7u
+// The shot. It ends at either `RTS`, or at the sleep weapon 5's pose begins
+// with: `JSL thread_yield`, five ticks in A.
+#define POSE_FIRE_PC 0x80ed30u
+#define POSE_FIRE_RTS_PC 0x80ed85u
+#define POSE_FIRE_EMPTY_RTS_PC 0x80ed87u
+#define POSE_RECOIL_YIELD_PC 0x80de99u
+#define POSE_RECOIL_TICKS 5
+#define POSE_RECOIL_BEGIN_PC 0x80de9du
+#define POSE_RECOIL_BEGUN_YIELD_PC 0x80dec1u
+#define POSE_BAND_B_AIM_PC 0x80ee82u
+#define POSE_BAND_B_AIM_YIELD_PC 0x80eea4u
+#define POSE_BAND_B_SHOOT_PC 0x80eea8u
+#define POSE_BAND_B_SHOOT_YIELD_PC 0x80eeb3u
+#define POSE_BAND_B_LOWER_PC 0x80eeb7u
+#define POSE_BAND_B_HOLD_YIELD_PC 0x80eecfu
 
 // The pose tables `$14` points at: four bytes a picture, a mask for the
 // record's flags and a picture number. A mask with bit 15 is ANDed in and any
@@ -174,6 +234,8 @@
 #define POSE_DP_CYCLE 0x18        // the walk cycle, 0 to 3
 #define POSE_DP_MOVE 0x2a         // the movement handler, or 0 standing still
 #define POSE_DP_ARC_PICTURE 0x2e  // in the air: which of the facing's pictures
+#define POSE_DP_SHOT_PICTURE 0x2e // a standing shot: its picture, then its hold
+#define POSE_DP_HELD_DIR 0x6e     // ...and the direction held as the hold began
 #define POSE_DP_REACH_X 0x34      // the monster: where the fist is
 #define POSE_DP_REACH_Y 0x36
 #define POSE_DP_RISE 0x38         // ...the speed upward
@@ -233,6 +295,9 @@ typedef struct {
   PoseWeapon weapon;
   PoseFire fire;
   int shot_slot;       // the thread slot the shot took, doubled, or -1 for none
+  bool recoils;        // ...weapon 5's, which goes on to a pose of its own
+  int ticks;           // a stretch of a pose that sleeps: how long
+  bool aim_reset;      // band_b_aim: a picture set that starts the cycle again
   int hides, hides_kept;  // the weapon hidden, and left alone in state `$0C`
   int arc_x, arc_y;    // in the air: steps taken along each axis
   bool arc_slowed;     // ...gravity took one from the speed
@@ -270,6 +335,22 @@ void pose_bounce(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_bounce_wait(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_bounce_off(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_swim(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+
+// The pieces, for a frame whose handler is the ROM's. Each is asked of a
+// copy first, like a handler: `log->unported` says it reached something that
+// is the ROM's. `pose_fire` sets it for weapon 5 too, with `log->recoils`,
+// having done everything the ROM does before that pose's sleep.
+void pose_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_stand_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_walk_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_fire(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+
+// The stretches of the two poses that sleep. `log->ticks` is what the sleep
+// each ends at is given.
+void pose_recoil_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_band_b_aim(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_band_b_shoot(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_band_b_lower(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 
 // `$80:F300` as a call of its own, for the poses that are still the ROM's.
 // A is how far into the pose table. The entry there is a word to put in the

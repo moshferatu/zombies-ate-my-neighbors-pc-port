@@ -610,6 +610,19 @@ bool enemy_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 // bank `$81:8532  LDA #$0081 : XBA` writes above it. One less than the routine
 // it wants, because what resumes the thread is an `RTL`.
 #define ENEMY_REACT_RETURN 0x8541
+// What the thread wakes into there: it flashes for two ticks. The record's
+// bit is set, the thread sleeps, and the bit is cleared again. The `RTL`
+// after that is the one the splice made room for: it goes back to wherever
+// the thread was asleep.
+#define ENEMY_FLASH_PC 0x818542u
+#define ENEMY_FLASH_YIELD_PC 0x818550u    // `JSL thread_yield`, two ticks in A
+#define ENEMY_FLASH_END_PC 0x818554u
+#define ENEMY_FLASH_END_RTL_PC 0x818560u
+#define ENEMY_FLASH_TICKS 2
+// Each hands back the record, and the second the record's flags as it left
+// them.
+uint16_t enemy_flash_begin(Wram* w, uint16_t dp);
+uint16_t enemy_flash_end(Wram* w, uint16_t dp, uint16_t* flags);
 #define ENEMY_REACT_BANK 0x81
 // How far the parked stack pointer moves, which is also how many bytes the
 // three words below it slide.
@@ -1127,6 +1140,34 @@ bool monster_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r);
 // the address it gave up at.
 bool enemy_b41c_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
                         ActorHandlerRegs* r, uint32_t* unported);
+
+// The stretches of it a call runs, for the harness to price. Unlike
+// `enemy_collide`'s, a survivor's is here too: `$81:8506` is a straight line
+// either side of its one branch. Only the two ids that leave by a `JML` to
+// somewhere else are not.
+typedef enum {
+  B41C_BLK_IGNORE,     // $81:B41F BCS not taken: CLC : RTL
+  B41C_BLK_ACT,        // $81:B423 to the third BEQ, none taken
+  B41C_BLK_SPECIAL,    // ...the third taken, and LDY : LDX : BNE
+  B41C_BLK_GROUNDED,   // ......not taken: JSR $B168 : SEC : RTL
+  B41C_BLK_AIRBORNE,   // ......taken, back to the damage
+  B41C_BLK_HIT,        // $81:B437 to the BMI
+  B41C_BLK_DIED,       // ...taken: DEC : STA : STZ : SEC : RTL
+  B41C_BLK_NO_DAMAGE,  // ...not: CMP : BEQ taken, CLC : RTL
+  B41C_BLK_SURVIVED,   // ......not: STA : JML $81:8506, to its BNE
+  B41C_BLK_ALREADY,    // .........taken: flashing already, CLC : RTL
+  B41C_BLK_SPLICED,    // .........not: the parked stack opened, SEC : RTL
+  B41C_BLK_DEEP,       // id $5E or $5D: not priced here
+  B41C_BLOCK_COUNT,
+} B41cCollideBlock;
+
+typedef struct {
+  uint16_t blocks[B41C_BLOCK_COUNT];
+} B41cCollideWork;
+
+bool enemy_b41c_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
+                                uint16_t arg, ActorHandlerRegs* r,
+                                uint32_t* unported, B41cCollideWork* work);
 
 // ---------------------------------------------------------------------------
 // $81:C440  monster_c440_collide — the same creature, one stage earlier
@@ -2508,6 +2549,7 @@ typedef struct {
   // Both copies of `$81:C4A6` count into this one, because both are priced by
   // one table — `MonsterCollideBlock` says why.
   MonsterCollideWork monster;
+  B41cCollideWork b41c;
 } ThreadCallWork;
 
 bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,

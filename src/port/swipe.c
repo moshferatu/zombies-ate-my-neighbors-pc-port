@@ -170,3 +170,53 @@ void swipe_cut(Wram* w, const Rom* rom, PortCpu* c, SwipeCutWork* k) {
                    (sound.n ? PORT_P_N : 0) | (sound.z ? PORT_P_Z : 0) |
                    (sound.c ? PORT_P_C : 0));
 }
+
+// ---------------------------------------------------------------------------
+// The thread round the two
+// ---------------------------------------------------------------------------
+
+bool swipe_thread_begin(Wram* w, const Rom* rom, PortCpu* c,
+                        SwipeBeginWork* begun, SwipeCutWork* cut) {
+  set_c(c, false);
+  wram_w16(w, W_SPAWN_LOAD, adc16(c, wram_r16(w, W_SPAWN_LOAD), SWIPE_LOAD));
+  swipe_begin(w, rom, c, begun);
+  if (begun->declined) return false;
+  swipe_cut(w, rom, c, cut);
+  if (cut->declined) return false;
+  PORT_COVER(swipe_thread_began);
+  c->a = SWIPE_THREAD_SFX;
+  set_nz16(c, c->a);
+  c->pc = SWIPE_THREAD_SOUND_PC;
+  return true;
+}
+
+SwipeFate swipe_thread_end(Wram* w, PortCpu* c) {
+  set_c(c, true);
+  const uint16_t load = sbc16(c, wram_r16(w, W_SPAWN_LOAD), SWIPE_LOAD);
+  if (load & 0x8000u) return SWIPE_STOPS;
+  wram_w16(w, W_SPAWN_LOAD, load);
+  c->a = field(w, c, SWIPE_DP_RECORD);
+  set_nz16(c, c->a);
+  c->pc = SWIPE_THREAD_FREE_PC;
+  return SWIPE_ENDS;
+}
+
+SwipeFate swipe_thread_wait(Wram* w, PortCpu* c) {
+  const uint16_t owner = field(w, c, SWIPE_DP_OWNER);
+  c->y = owner;
+  const uint16_t x = wram_r16(w, (uint16_t)(owner + ACTOR_X));
+  cmp16(c, x, field(w, c, SWIPE_DP_OWNER_X));
+  if (x == field(w, c, SWIPE_DP_OWNER_X)) {
+    const uint16_t y = wram_r16(w, (uint16_t)(owner + ACTOR_Y));
+    cmp16(c, y, field(w, c, SWIPE_DP_OWNER_Y));
+    if (y == field(w, c, SWIPE_DP_OWNER_Y)) {
+      PORT_COVER(swipe_thread_waited);
+      c->a = 1;
+      set_nz16(c, c->a);
+      c->pc = SWIPE_THREAD_WAIT_YIELD_PC;
+      return SWIPE_WAITS;
+    }
+  }
+  PORT_COVER(swipe_thread_owner_moved);
+  return swipe_thread_end(w, c);
+}

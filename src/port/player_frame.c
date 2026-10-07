@@ -324,6 +324,14 @@ void player_frame(Wram* w, const Rom* rom, uint16_t page, PlayerFrameLog* log) {
   log->unported = false;
 }
 
+bool player_monster_state(Wram* w, const Rom* rom, uint16_t page,
+                          PlayerFrameLog* log) {
+  *log = (PlayerFrameLog){0};
+  Frame f = {w, rom, page, log};
+  PORT_COVER(player_monster_state_alone);
+  return monster_state(&f);
+}
+
 bool player_frame_tried(Wram* w, const Rom* rom, uint16_t page,
                         PlayerFrameLog* log) {
   // A frontend's request for the next weapon or item is taken by the ordinary

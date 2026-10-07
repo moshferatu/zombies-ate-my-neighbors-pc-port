@@ -1,4 +1,4 @@
-// $80:DEC5  a player gone forward fifteen frames -- see port/lunge.h.
+// $80:DEC5  a player knocked back fifteen frames -- see port/lunge.h.
 
 #include "port/lunge.h"
 

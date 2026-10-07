@@ -5,6 +5,115 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The pieces of a player's pose, two poses that sleep, and the starts and ends of five threads (2026-10-07)
+
+What the 65816 still executed over the twelve movies goes from 244,319 to
+**217,485** instructions of work. Live, all twelve stay at 99.9% of the
+work, and `level17` reads 100.0%. The game registers 445 routines, 35 more.
+
+No one of the 35 is large. The round is the long tail the last one ended
+on: the stretches of a thread before its loop and after it, and the pieces
+of a player's frame the ROM still reaches when the whole frame is turned
+down.
+
+* **Where the player's frames in the profile come from.** The live profile
+  runs 20,000 frames and most movies end well before that. Past 9,000
+  frames the same weapon 5, the same potion's monster and the same
+  second-band weapons turn up on movie after movie, in the same numbers. I
+  take them to be the title's demos, and did not watch one. A run at a
+  corpus length never reaches them, so this round's entries were checked
+  at 20,000 frames.
+* **The pieces of a pose**, in `port/pose.c`. A handler the port turns
+  down is the ROM's, and the ROM still jumps to what it is made of. Now
+  those are entries: the pose the direction asks for (`$80:D4E9`), a stand
+  begun (`$80:D4F4`), a walk begun (`$80:D65B`), and the shot
+  (`$80:ED30`). The two walks that had no entry of their own have one: the
+  second band's (`$80:D6B8`) and the monster's (`$80:D6DC`). So has the
+  monster's state (`$80:D2EA`).
+* **Two poses that sleep inside themselves.** Weapon 5's kick begins at
+  `$80:DE9D`, and a second-band weapon fired standing is `$80:EE82`,
+  `$80:EEA8` and `$80:EEB7`. Each is a stretch from one sleep to the next.
+* **Weapon 5 kicks backward.** `port/lunge.h` said its fifteen frames go
+  forward. The table at `$80:DF6C` has five pixels down for a player
+  facing up. I had not read it against a table whose ways are known. The
+  header is corrected. By what the code does this is the bazooka: its
+  shot breaks walls and firing it throws the player back. I have not seen
+  it on a screen.
+* **The doll's handler has a price.** `$81:B41C` and the survivor's
+  reaction it jumps to, `$81:8506`, are a straight line either side of
+  each branch. Last round named this as what a punch on a doll wanted.
+  Counted, it was two frames in eight movies, and both tell a neighbour
+  too. A player, a neighbour and what lies on the ground still have no
+  price, so no punch is the port's for this yet.
+* **Five threads' starts and ends.**
+  * The spawn list's start (`$81:80EC`), in `port/spawnlist.c`. It
+    installs the list's bank with `PEI ($02) : PLB`, which leaves a byte
+    on the thread's stack for good.
+  * A clone's start and its growing (`$81:8E89`, `$81:8D16`, `$81:8D29`),
+    in `port/clone.c`. Eleven pictures, ten frames each.
+  * The swipe's thread round its two calls (`$81:E8A8`, `$81:E8C8`,
+    `$81:E8DF`). It lasts two ticks, or one if its owner moves.
+  * The thing thrown in an arc, from its start to its end (`$81:F976`,
+    `$81:F99C`, `$81:F9B2`, `$81:F9BC`, `$81:F9C6`). Landing, it tells
+    everything within forty pixels, twice.
+  * A survivor's flash (`$81:8542`, `$81:8554`).
+* **How a thread ends**, in `port/begin.c`. Seven instructions, a copy for
+  each kind of thing: the weight given back, the record loaded, a jump to
+  free it. Five copies are entries, and so is where each of the three
+  zombies' loops goes when it is leaving. A killed thing's last pictures
+  (`$81:83A3`) are two more.
+
+* **Checked.** The corpus verifies at 33,427,039 calls across 51 movies
+  with 0 diverged, and 1,170 of 1,392 coverage sites. Every call priced is
+  exact. It turns down 3,709 calls where it turned down 3,521: some of the
+  new entries turn calls down themselves.
+* **Lockstep** over the corpus: 325,322 passes, 48 of 51 never part, the
+  same three level-25 movies. Seven movies drift less than they did and
+  none more. Four are level 29's, where the dolls are: `level29-item`
+  goes from a mean of 8,823.9 cycles to 2,924.8. I take that to be the
+  doll's handler's price, and did not run it without.
+* **The share of calls**: `level37` from 99.6% to 99.7%. The other eleven
+  read as they did.
+* **What it took off.** The player thread's area goes from 29,197
+  instructions to 18,519, and bank `$81` from 76,012 to 59,856.
+
+* **Four mistakes of mine the checks caught.**
+  * The doll's handler was priced from its third instruction. `verify`
+    had it 36 cycles short on 11 of 66 calls.
+  * I wrote an entry for `$80:EED3` that was there already, as
+    `fired_wait`. Nothing diverged. The corpus's coverage showed three
+    sites that had been taken going untaken, and that was the old entry
+    shadowed. Mine is gone.
+  * A sound inside a priced stretch. A sound waits for the sound chip to
+    take the last one, and a killed thing's waited 1,048 cycles on one
+    call of 16. Four stretches now end at the `JSL` that plays their
+    sound, and the sound's price is its own entry's.
+  * The swipe's start charged its fallback where its cut had played a
+    sound. That is a fixed 9,000 cycles for a ROM that took 45,678. Such
+    a start is turned down now: 3 of 26 on `level13`.
+* **Untaken by the corpus.** Two of the 28 new sites. A clone started with
+  both players in the game, where whose double it is comes from a random
+  draw. And the shot asked for on its own while the last one's delay
+  runs. No run of mine checks either against the ROM.
+* **Not established.** Two words count zombies a player killed, `$1F64`
+  and `$1F66`. I have not looked for what reads them. `$1E84` is named
+  for the character each player plays, from what the clone does with it.
+  The swipe and the thing thrown in an arc I have still not seen on a
+  screen.
+* **Still the ROM's.**
+  * Weapon 5's shot, the thread at `$81:EBE2`: about 6,500 instructions on
+    the three movies whose demo fires it.
+  * A stand that goes on to a second-band weapon's aim: the entry at
+    `$80:D4F4` turns it down, and the ROM runs as far as the aim.
+  * The thing thrown in an arc landing by something with no price: 5 of
+    13 on `level21`.
+  * A monster's punch on a player, a neighbour or something on the
+    ground.
+* **Next.** Weapon 5's shot. Prices for `$83:A364` and `$80:CAEE`, which
+  a punch and a landing both want. Level 21's thread (`$81:99E0` on).
+  The title card in bank `$82`, which waits on `WAI` and writes the
+  hardware.
+
 ### A swimmer's strokes, a monster's first swing, a slime's attack begun and the zombies' start (2026-10-06)
 
 What the 65816 still executed over the twelve movies goes from 265,367 to

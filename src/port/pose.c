@@ -312,10 +312,6 @@ static void fire(Pose* p) {
     p->log->fire = POSE_FIRE_EMPTY;
     return;
   }
-  if (weapon == POSE_WEAPON_OF_ITS_OWN) {
-    leave_to_rom(p);
-    return;
-  }
   PORT_COVER(pose_fired);
   wram_w16(p->w, at, decimal_less_one(rounds));
 
@@ -336,6 +332,21 @@ static void fire(Pose* p) {
   // weapon with a pose of its own.
   flags_overflow(&p->flags, false);
   flags_carry(&p->flags, weapon >= POSE_WEAPON_OF_ITS_OWN);
+  if (weapon == POSE_WEAPON_OF_ITS_OWN) {
+    PORT_COVER(pose_fire_recoiled);
+    p->log->recoils = true;
+    leave_to_rom(p);  // the handler's frame goes on in a pose that sleeps
+  }
+}
+
+// `$80:ED30` from the top: nothing, while the last shot's delay runs.
+static void fire_when_ready(Pose* p) {
+  if (field(p, POSE_DP_SHOT_DELAY) != 0) {
+    PORT_COVER(pose_fire_waited);
+    p->log->delayed = true;
+    return;
+  }
+  fire(p);
 }
 
 static void stand(Pose* p) {
@@ -531,6 +542,76 @@ static void walk_firing(Pose* p) {
   set_field(p, POSE_DP_TIMER, POSE_FIRING_TIMER);
   step(p);
   show_weapon(p);
+}
+
+// ---------------------------------------------------------------------------
+// Two poses that sleep inside themselves
+// ---------------------------------------------------------------------------
+
+#define POSE_FRAMES_RECOIL 0xdf8cu
+#define POSE_RECOIL_STEPS 0xdf6cu  // across and down, for each facing
+#define POSE_RECOIL_FRAMES 15
+#define POSE_DP_RECOIL_STEP_X 0x60
+#define POSE_DP_RECOIL_STEP_Y 0x62
+#define POSE_DP_RECOIL_LEFT 0x68
+#define POSE_BAND_B_FRAMES 0xeee3u  // a pose table for each picture set
+#define POSE_BAND_B_TICKS 0xeee1u   // a byte each: how long the aim is held
+#define POSE_BAND_B_HOLD 8
+
+// `$80:DE9D`: weapon 5's kick, once its five ticks are up.
+static void recoil_begin(Pose* p) {
+  PORT_COVER(pose_recoil_began);
+  set_field(p, POSE_DP_RECOIL_LEFT, POSE_RECOIL_FRAMES);
+  set_field(p, POSE_DP_FRAMES, POSE_FRAMES_RECOIL);
+  hide_weapon(p);
+  const uint16_t row = flags_double(&p->flags, facing_index(p));
+  set_field(p, POSE_DP_RECOIL_STEP_X, table_word(p, POSE_RECOIL_STEPS, row));
+  set_field(p, POSE_DP_RECOIL_STEP_Y,
+            table_word(p, POSE_RECOIL_STEPS + 2, row));
+  show(p, row);
+  p->log->ticks = 1;
+}
+
+static uint16_t band_b_ticks(const Pose* p) {
+  return table_word(p, POSE_BAND_B_TICKS, field(p, POSE_DP_PICTURES_SET)) &
+         0x00ffu;
+}
+
+// `$80:EE82`: the first picture, for the way the player faces.
+static void band_b_aim(Pose* p) {
+  PORT_COVER(pose_band_b_aimed);
+  const uint16_t set = field(p, POSE_DP_PICTURES_SET);
+  if (set != 0) {
+    p->log->aim_reset = true;
+    set_field(p, POSE_DP_CYCLE, 0);
+  }
+  set_field(p, POSE_DP_FRAMES,
+            table_word(p, POSE_BAND_B_FRAMES, flags_double(&p->flags, set)));
+  const uint16_t picture = flags_double(
+      &p->flags,
+      flags_double(&p->flags,
+                   (uint16_t)(facing_index(p) | field(p, POSE_DP_CYCLE))));
+  set_field(p, POSE_DP_SHOT_PICTURE, picture);
+  show(p, picture);
+  p->log->ticks = (int)band_b_ticks(p);
+}
+
+// `$80:EEA8`: the shot, and the first picture a while longer.
+static void band_b_shoot(Pose* p) {
+  PORT_COVER(pose_band_b_shot);
+  fire_when_ready(p);
+  if (p->log->unported) return;
+  p->log->ticks = (int)band_b_ticks(p);
+}
+
+// `$80:EEB7`: the second picture, and the hold begun.
+static void band_b_lower(Pose* p) {
+  PORT_COVER(pose_band_b_lowered);
+  show(p, flags_add(&p->flags, field(p, POSE_DP_SHOT_PICTURE), 4));
+  set_field(p, POSE_DP_HELD_DIR,
+            wram_r16(p->w, (uint16_t)(W_JOY_DIR + field(p, PSN_DP_PLAYER))));
+  set_field(p, POSE_DP_SHOT_PICTURE, POSE_BAND_B_HOLD);
+  p->log->ticks = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -794,6 +875,38 @@ void pose_bounce_off(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
 
 void pose_swim(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(swim, w, rom, page, log);
+}
+
+void pose_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(start_again, w, rom, page, log);
+}
+
+void pose_stand_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(stand_begin, w, rom, page, log);
+}
+
+void pose_walk_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(walk_begin, w, rom, page, log);
+}
+
+void pose_fire(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(fire_when_ready, w, rom, page, log);
+}
+
+void pose_recoil_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(recoil_begin, w, rom, page, log);
+}
+
+void pose_band_b_aim(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(band_b_aim, w, rom, page, log);
+}
+
+void pose_band_b_shoot(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(band_b_shoot, w, rom, page, log);
+}
+
+void pose_band_b_lower(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(band_b_lower, w, rom, page, log);
 }
 
 bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler) {

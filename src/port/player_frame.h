@@ -173,4 +173,12 @@ bool player_frame_tried(Wram* w, const Rom* rom, uint16_t page,
 // One frame of the player whose page is `page`. `log` may be NULL.
 void player_frame(Wram* w, const Rom* rom, uint16_t page, PlayerFrameLog* log);
 
+// `$80:D2EA` on its own, for a frame that is the ROM's: the state of the
+// monster the potion makes. False on the frame the potion wears off, which
+// is the ROM's; it is asked of a copy first.
+#define PLAYER_MONSTER_STATE_PC 0x80d2eau
+#define PLAYER_MONSTER_STATE_RTS_PC 0x80d31bu
+bool player_monster_state(Wram* w, const Rom* rom, uint16_t page,
+                          PlayerFrameLog* log);
+
 #endif

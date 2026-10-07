@@ -231,6 +231,25 @@ typedef enum {
 
 typedef enum { ZOMBIE_WALKING, ZOMBIE_FOLLOWING, ZOMBIE_CHASING } ZombieState;
 
+// Where a loop goes when its zombie is leaving, `$12` in A. One a player
+// killed is counted and goes to its death's pictures first: the stretch
+// ends at `JSL death_pictures` with the list in A, its bank in Y and the
+// word that says so in X. Any other goes straight to the thread's end
+// (`record_end` in `port/begin.h`), and the stretch ends at its jump.
+// The first two kinds are counted in one word and the third in the next.
+// What reads the counts I have not looked for.
+#define ZOMBIE_87F8_DEATH_PC 0x818856u
+#define ZOMBIE_88CA_DEATH_PC 0x818940u
+#define ZOMBIE_8C17_DEATH_PC 0x818c7au
+#define W_ZOMBIES_KILLED 0x1f64u
+#define W_ZOMBIES_KILLED_THIRD 0x1f66u
+#define ZOMBIE_DEATH_PICTURES 0x8ca4u
+#define ZOMBIE_DEATH_PICTURES_BANK 0x0090
+#define ZOMBIE_KILLED 0xf5f5u
+// True: killed. False: the thread's end, or with `*stopped` the load would
+// have gone below nothing, which is the ROM's.
+bool zombie_leave(Wram* w, PortCpu* c, ZombieThread thread, bool* stopped);
+
 // For the harness: the three pieces' logs, and which state body ran.
 typedef struct {
   ZombieLog decide, act, animate;

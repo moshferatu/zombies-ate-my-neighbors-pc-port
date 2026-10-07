@@ -266,6 +266,9 @@
   X(swipe_cut_second, "swipe_cut",          "...or with bit 15: cut to $01DB") \
   X(swipe_cut_nothing,"swipe_cut",          "nothing there to cut") \
   X(swipe_cut_counted,"swipe_cut",          "the cuts counted for the player, and heard") \
+  X(swipe_thread_began,"swipe_thread_begin", "the thread's start: both calls, and off to be heard") \
+  X(swipe_thread_waited,"swipe_thread_wait", "its owner where they were: one more tick") \
+  X(swipe_thread_owner_moved,"swipe_thread_wait", "...or moved, and it ends a tick early") \
   X(vram_send_more,   "vram_send_job",      "a kilobyte sent, and more to send") \
   X(vram_send_last,   "vram_send_job",      "the last of it sent") \
   X(bg1_vscroll_job,  "bg1_vscroll_job",    "BG1's scroll down, from its shadow") \
@@ -292,6 +295,11 @@
   X(record_begun,     "record_begin",       "a record at the page's place") \
   X(zombie_begun,     "zombie_begin",       "...and a zombie's made of it") \
   X(neighbour_begun,  "neighbour_begin",    "a neighbour's record, and their handler") \
+  X(record_ended,     "record_end",         "a thread's end: its weight given back") \
+  X(death_pictures_begun,"death_pictures",  "a killed thing, off to be heard") \
+  X(death_pictures_heard,"death_pictures_heard", "...and no longer touchable") \
+  X(zombie_leave_unkilled,"zombie_leave",   "a zombie leaving that nobody killed") \
+  X(zombie_leave_killed,"zombie_leave",     "...or one a player killed, and counted") \
   X(neighbour_cycle_shown, "neighbour_cycle", "the next of its pictures") \
   X(neighbour_cycle_went_round, "neighbour_cycle", "...which was the first again") \
   X(neighbour_cycle_told, "neighbour_cycle", "something has set its word: the ROM's") \
@@ -323,8 +331,8 @@
   X(weed_clump_tile,  "weed_frame",         "...and a tile of it planted") \
   X(weed_seed_flew,   "weed_seed_frame",    "a pass of its arc") \
   X(weed_seed_landed, "weed_seed_frame",    "...and below the ground: landed") \
-  /* A player gone forward, and the decoy -- see port/lunge.h, decoy.h. */      \
-  X(lunge_on,         "lunge_frame",        "a step the way they face") \
+  /* A player knocked back, and the decoy -- see port/lunge.h, decoy.h. */      \
+  X(lunge_on,         "lunge_frame",        "a step back, against the way they face") \
   X(lunge_ran_out,    "lunge_frame",        "the fifteenth frame") \
   X(lunge_met_ground, "lunge_frame",        "ground in the way") \
   X(lunge_past_the_leash,"lunge_frame",     "the other player too far behind") \
@@ -409,6 +417,11 @@
   X(lob_picture_low,  "lob_frame",          "a ninth frame: the next picture") \
   X(lob_picture_high, "lob_frame",          "...of the four for high up") \
   X(lob_landed,       "lob_frame",          "below the ground: the ROM's") \
+  X(lob_began,        "lob_begin",          "its record, thirty pixels up") \
+  X(lob_came_down,    "lob_landed",         "on the ground, and off to be heard") \
+  X(lob_burst,        "lob_burst",          "everything within forty pixels told") \
+  X(lob_burst_again,  "lob_burst",          "...and told again a tick later") \
+  X(lob_ended,        "lob_end",            "its weight given back") \
   /* $80:F300 a pose's picture, called on its own -- see port/pose.h. */        \
   X(pose_show_set,    "pose_show",          "the entry's word set in the record's flags") \
   X(pose_show_masked, "pose_show",          "...or a mask, and its bits cleared") \
@@ -1287,6 +1300,12 @@
   X(pose_swung, "pose_walk_6c", "the swing's first picture, which makes a sound") \
   X(pose_fired, "pose_*", "a round taken and the shot's thread started") \
   X(pose_fire_empty, "pose_*", "...or no rounds left, and nothing happens") \
+  X(pose_fire_recoiled, "pose_fire", "...weapon 5's shot, which goes on to a pose of its own") \
+  X(pose_fire_waited, "pose_fire", "asked on its own, with the last shot's delay still running") \
+  X(pose_recoil_began, "pose_recoil_begin", "weapon 5's kick: the picture, and the step back set") \
+  X(pose_band_b_aimed, "pose_band_b_aim", "a second-band weapon raised, standing") \
+  X(pose_band_b_shot, "pose_band_b_shoot", "...and its shot") \
+  X(pose_band_b_lowered, "pose_band_b_lower", "...and the picture after it") \
   X(pose_weapon_shown, "pose_*", "the hand weapon shown, the way the player faces") \
   X(pose_arc_ready, "pose_arc_ready", "the picture before a leap, its time up") \
   X(pose_arc_flew, "pose_arc", "a frame through the air") \
@@ -1552,11 +1571,20 @@
   X(spawnlist_farther, "spawnlist_frame", "...or no nearer than the nearest") \
   X(spawnlist_none_near, "spawnlist_frame", "the end of the list, with nothing within 256") \
   X(spawnlist_started, "spawnlist_frame", "...or the nearest set resting, to be started") \
+  X(spawnlist_began, "spawnlist_begin", "the thread's start: every place ready, the list's bank installed") \
+  X(react_flash_on, "enemy_flash_begin", "a survivor's thread woken to flash") \
+  X(react_flash_off, "enemy_flash_end", "...and the flash over, two ticks on") \
+  X(clone_began, "clone_begin", "a clone's start, as far as its sound") \
+  X(clone_grew_first, "clone_grow_first", "the first picture of the growing") \
+  X(clone_began_drawn, "clone_begin", "...with both players in the game, so whose double is a draw") \
+  X(clone_grew, "clone_grow", "the next picture of the growing") \
+  X(clone_grown, "clone_grow", "...or the last shown, and it can be hit") \
                                                                                    \
   /* $80:CDFE -- a frame of a player. */                                           \
   X(player_frame_normal, "player_frame", "the ordinary state, which reads the pad") \
   X(player_frame_stuck, "player_frame", "...or stuck in slime") \
   X(player_frame_turning, "player_frame", "...or one of the two the pad only turns the player in") \
+  X(player_monster_state_alone, "player_monster_state", "the monster's state, in a frame that is the ROM's") \
   X(player_frame_monster, "player_frame", "...or the potion's monster") \
   X(player_frame_flashing_normal, "player_frame", "...or flashing, over the ordinary state") \
   X(player_frame_flashing_turning, "player_frame", "......or over the turning one") \

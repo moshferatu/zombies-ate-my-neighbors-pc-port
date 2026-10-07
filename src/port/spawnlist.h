@@ -7,6 +7,11 @@
 //
 //   $81:810F  frame   one place looked at, or the nearest one started
 //
+// and before the first of those, from the thread's first instruction to its
+// first yield:
+//
+//   $81:80EC  begin   every place ready, and the list's bank installed
+//
 // `port/bodies.h` has the same loop as three stretches, a register at a time.
 // They are still registered, and take the frames this one declines.
 //
@@ -27,6 +32,11 @@
 //
 // The rest time of zero is what ends the list.
 //
+// **It starts with every place ready.** The sixty-four counters are cleared.
+// The thread is handed the list's address and its bank, and it makes the
+// bank its data bank: `PEI ($02) : PLB`. That pushes two bytes and pulls
+// one, so the thread runs from then on with a byte more on its stack.
+//
 // ## Its contract with the ROM
 //
 // It writes WRAM exactly as the ROM does: the thread's page, the rest
@@ -44,8 +54,10 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/wram.h"
 
+#define SPAWNLIST_BEGIN_PC 0x8180ecu
 #define SPAWNLIST_FRAME_PC 0x81810fu
 #define SPAWNLIST_YIELD_PC 0x81810bu  // `JSL thread_yield`, A already 1
 #define SPAWNLIST_START_PC 0x818179u  // `JSR $807E`
@@ -58,7 +70,10 @@
 #define SPAWNLIST_NEAR 0x0100u
 #define W_SPAWNLIST_REST 0x60dau  // a byte a place: frames of rest left
 
-// Fields on the thread's page.
+// Fields on the thread's page. It is started with the list's address in the
+// first word and its bank in the second.
+#define SPAWNLIST_DP_GIVEN_LIST 0x00
+#define SPAWNLIST_DP_GIVEN_BANK 0x02
 #define SPAWNLIST_DP_DOUBLE 0x0a   // working: a place's number, doubled
 #define SPAWNLIST_DP_LIST 0x0c     // the list's address, in the data bank
 #define SPAWNLIST_DP_PLACE 0x10    // the place this frame looks at
@@ -90,5 +105,9 @@ bool spawnlist_frame_supported(const Wram* w, uint16_t page, uint8_t bank);
 // One frame, for the thread whose page is `page`. `log` may be NULL.
 SpawnlistFate spawnlist_frame(Wram* w, const Rom* rom, uint16_t page,
                               uint8_t bank, SpawnlistLog* log);
+
+// The thread's start. It ends at `SPAWNLIST_YIELD_PC` with one tick in A,
+// the new data bank, and the stack a byte deeper.
+void spawnlist_begin(Wram* w, PortCpu* c);
 
 #endif

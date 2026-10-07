@@ -531,9 +531,6 @@ static const Start STARTS[ZOMBIE_KINDS] = {
                      ZOMBIE_88CA_YIELD_PC, true},
 };
 
-// The record the search for a free one begins at.
-#define RECORD_SEARCHED_FIRST 0x1acau
-
 void zombie_spawn(Wram* w, PortCpu* c, ZombieKind kind, BeginWork* k) {
   set_c(c, false);
   wram_w16(w, W_SPAWN_LOAD, adc16(c, wram_r16(w, W_SPAWN_LOAD), ZOMBIE_LOAD));
@@ -568,4 +565,41 @@ void zombie_risen(Wram* w, const Rom* rom, PortCpu* c, ZombieKind kind,
   set_c(c, log->carry);
   set_v(c, log->overflow);
   c->pc = STARTS[kind].first_yield_pc;
+}
+
+// ---------------------------------------------------------------------------
+// Leaving
+// ---------------------------------------------------------------------------
+
+bool zombie_leave(Wram* w, PortCpu* c, ZombieThread thread, bool* stopped) {
+  static const struct {
+    uint32_t death_pc;
+    uint16_t count;
+    int end;
+  } LEAVES[ZOMBIE_THREADS] = {
+      [ZOMBIE_THREAD_87F8] = {ZOMBIE_87F8_DEATH_PC, W_ZOMBIES_KILLED,
+                              RECORD_END_ZOMBIE_SLOW},
+      [ZOMBIE_THREAD_88CA] = {ZOMBIE_88CA_DEATH_PC, W_ZOMBIES_KILLED,
+                              RECORD_END_ZOMBIE_FAST},
+      [ZOMBIE_THREAD_8C17] = {ZOMBIE_8C17_DEATH_PC, W_ZOMBIES_KILLED_THIRD,
+                              RECORD_END_ZOMBIE_THIRD},
+  };
+  *stopped = false;
+  cmp16(c, c->a, ZOMBIE_KILLED);
+  if (c->a != ZOMBIE_KILLED) {
+    *stopped = !record_end(w, c, &RECORD_ENDS[LEAVES[thread].end]);
+    if (!*stopped) {
+      PORT_COVER(zombie_leave_unkilled);
+    }
+    return false;
+  }
+  PORT_COVER(zombie_leave_killed);
+  wram_w16(w, LEAVES[thread].count,
+           (uint16_t)(wram_r16(w, LEAVES[thread].count) + 1));
+  c->a = ZOMBIE_DEATH_PICTURES;
+  c->y = ZOMBIE_DEATH_PICTURES_BANK;
+  c->x = wram_r16(w, (uint16_t)(c->d + ZOMBIE_DP_LEAVE));
+  set_nz16(c, c->x);
+  c->pc = LEAVES[thread].death_pc;
+  return true;
 }

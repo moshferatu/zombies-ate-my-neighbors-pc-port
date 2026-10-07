@@ -96,3 +96,52 @@ void neighbour_begin(Wram* w, PortCpu* c, BeginWork* k) {
   thread_set_handler(w, c);
   c->pc = NEIGHBOUR_BEGIN_RTS_PC;
 }
+
+// ---------------------------------------------------------------------------
+// ...and ended
+// ---------------------------------------------------------------------------
+
+const RecordEnd RECORD_ENDS[RECORD_END_COUNT] = {
+    [RECORD_END_ZOMBIE_SLOW] = {0x81885au, 0x818868u, 0x0014, 0x08},
+    [RECORD_END_ZOMBIE_FAST] = {0x818944u, 0x818952u, 0x0014, 0x08},
+    [RECORD_END_ZOMBIE_THIRD] = {0x818c7eu, 0x818c8cu, 0x0014, 0x08},
+    [RECORD_END_SLIME_GLOB] = {0x81cf39u, 0x81cf47u, 0x0004, 0x08},
+    [RECORD_END_SHOT_5] = {0x81ec60u, 0x81ec6eu, 0x0006, 0x0a},
+};
+
+bool record_end(Wram* w, PortCpu* c, const RecordEnd* end) {
+  set_c(c, true);
+  const uint16_t load = sbc16(c, wram_r16(w, W_SPAWN_LOAD), end->load);
+  if (load & 0x8000u) return false;
+  PORT_COVER(record_ended);
+  wram_w16(w, W_SPAWN_LOAD, load);
+  c->a = field(w, c, end->record_at);
+  set_nz16(c, c->a);
+  c->pc = end->free_pc;
+  return true;
+}
+
+bool death_pictures(Wram* w, PortCpu* c) {
+  if (c->x != DEATH_KILLED) return false;
+  PORT_COVER(death_pictures_begun);
+  cmp16(c, c->x, DEATH_KILLED);
+  push16(w, c, c->a);  // the list
+  push16(w, c, c->y);  // its bank
+  c->a = DEATH_SFX;
+  set_nz16(c, c->a);
+  c->pc = DEATH_PICTURES_SOUND_PC;
+  return true;
+}
+
+void death_pictures_heard(Wram* w, PortCpu* c) {
+  PORT_COVER(death_pictures_heard);
+  const uint16_t bank = pull16(w, c);
+  const uint16_t record = field(w, c, BEGIN_DP_RECORD);
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), bank);
+  c->x = record;
+  c->y = bank;
+  c->a = pull16(w, c);
+  set_nz16(c, c->a);
+  c->pc = DEATH_PICTURES_PLAY_PC;
+}

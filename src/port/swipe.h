@@ -18,6 +18,16 @@
 // It looks like a tool cutting what grows, by what the code does. I have
 // not seen it on a screen.
 //
+// And the thread round those two, in three stretches:
+//
+//   $81:E8A8  thread_begin  both calls, and off to be heard
+//   $81:E8C8  thread_wait   a second tick, if its owner has not moved
+//   $81:E8DF  thread_end    its weight given back, and off to free its record
+//
+// **It lasts two ticks, or one if its owner moves.** After the first sleep
+// it looks at where the owner is. An owner still where they were when it
+// began gets one more tick of it.
+//
 // Port code: libc only.
 
 #ifndef PORT_SWIPE_H
@@ -37,6 +47,14 @@
 #define SWIPE_BEGIN_RTS_PC 0x81e978u
 #define SWIPE_CUT_PC 0x81e979u
 #define SWIPE_CUT_RTS_PC 0x81ea03u
+#define SWIPE_THREAD_PC 0x81e8a8u
+#define SWIPE_THREAD_SOUND_PC 0x81e8bdu  // `JSL apu_play_sfx`, sound in A
+#define SWIPE_THREAD_WAIT_PC 0x81e8c8u
+#define SWIPE_THREAD_WAIT_YIELD_PC 0x81e8dbu
+#define SWIPE_THREAD_END_PC 0x81e8dfu
+#define SWIPE_THREAD_FREE_PC 0x81e8edu   // `JML actor_slot_free`, record in A
+#define SWIPE_LOAD 0x0004                // what one adds to the level's load
+#define SWIPE_THREAD_SFX 0x0014
 
 #define SWIPE_BANK 0x81
 #define SWIPE_FLAG_OPS 0xea24u     // for each way: a mask or bits, and a picture
@@ -99,5 +117,17 @@ typedef struct {
 
 void swipe_begin(Wram* w, const Rom* rom, PortCpu* c, SwipeBeginWork* k);
 void swipe_cut(Wram* w, const Rom* rom, PortCpu* c, SwipeCutWork* k);
+
+typedef enum {
+  SWIPE_WAITS,  // another tick: it ends at `SWIPE_THREAD_WAIT_YIELD_PC`
+  SWIPE_ENDS,   // it ends at `SWIPE_THREAD_FREE_PC`
+  SWIPE_STOPS,  // the level's load would go below nothing: the ROM's
+} SwipeFate;
+
+// False when either call declined. Asked of a copy first.
+bool swipe_thread_begin(Wram* w, const Rom* rom, PortCpu* c,
+                        SwipeBeginWork* begun, SwipeCutWork* cut);
+SwipeFate swipe_thread_wait(Wram* w, PortCpu* c);
+SwipeFate swipe_thread_end(Wram* w, PortCpu* c);
 
 #endif
