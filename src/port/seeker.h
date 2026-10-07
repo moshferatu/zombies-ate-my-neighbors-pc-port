@@ -1,7 +1,7 @@
 // The thing in level 37 that comes at a player.
 //
 // Its thread sleeps at `$82:EF4B` for as many frames as `$2C` says, and then
-// runs the state `$16` names. A frame of that is here, for seven states:
+// runs the state `$16` names. A frame of that is here, for nine states:
 //
 //   $82:E858  It comes at whoever is nearest, a pixel a frame. From nearer
 //             than `$20` it backs off instead. Between `$20` and `$30` it
@@ -17,10 +17,22 @@
 //   $82:ECF7  Three frames in which its record is put at its own place and
 //             at the place at `$0A` and `$0C` by turns, drawn on the game's
 //             even frames and not on the odd ones.
+//   $82:ECC1  It darts at whoever is nearest, four pixels a hop, straight up,
+//             down or across: whichever they are further off along. A hop is
+//             the three frames above and then its place moved. It stops
+//             within `$10` of them, or after eight to twenty-three hops.
+//   $82:EBCF  Hidden, it looks for somewhere to come back: a place 24 to 39
+//             pixels from whoever is nearest each way, drawn afresh every
+//             frame until the ground there will do.
 //
-// What each goes on to do when it stops is the ROM's: `seeker_frame` says
-// false for a frame that gets there, having changed only the copy it was
-// given.
+// The third of those goes on to the dart on thirty draws in 256. The fourth
+// goes on to the state at `$82:EE0E` on thirty-five, which begins threads at
+// `$82:F03E` and is the ROM's.
+//
+// What else each goes on to do when it stops is the ROM's: `seeker_frame`
+// says false for a frame that gets there, having changed only the copy it
+// was given. Those are the frames that sleep inside a state: it hides, it
+// comes back, it is hit.
 //
 // Two leaves of it are entries of their own as well.
 //
@@ -43,6 +55,7 @@
 #include "assets/rom.h"
 #include "port/cpu.h"
 #include "port/oam.h"
+#include "port/terrain.h"
 #include "port/wram.h"
 
 #define SEEKER_STEP_PC 0x82e7c7u
@@ -84,6 +97,9 @@
 #define SEEKER_STATE_WATCH_B 0xeb7au
 #define SEEKER_STATE_HOLD 0xeca3u
 #define SEEKER_STATE_BLINK 0xecf7u
+#define SEEKER_STATE_DART 0xecc1u
+#define SEEKER_STATE_PLACE 0xebcfu
+#define SEEKER_STATE_EE0E 0xee0eu  // the ROM's
 
 #define SEEKER_TOO_NEAR 0x0020
 #define SEEKER_NEAR 0x0030
@@ -103,6 +119,24 @@
 #define SEEKER_BLINK_FRAMES 4    // what a frame takes from `$1A`
 #define SEEKER_DP_AHEAD_X 0x0a   // the other place it is shown at
 #define SEEKER_DP_AHEAD_Y 0x0c
+#define SEEKER_BLINK_START 0x000c  // three frames of four
+#define SEEKER_DP_STEP_X 0x12    // a hop, and the place it looks to come back
+#define SEEKER_DP_STEP_Y 0x14
+#define SEEKER_DP_DIST 0x20      // how far whoever is nearest was
+#define SEEKER_DP_HOPS 0x24      // hops left
+#define SEEKER_DART_NEAR 0x0010
+#define SEEKER_HOP 4
+#define SEEKER_HOPS_LEAST 8      // and up to fifteen more
+#define SEEKER_HANDLER 0xeff0u   // `enemy_eff0_collide`, `port/collide.h`
+#define SEEKER_HANDLER_BANK 0x0082u
+// The ways a hop can go, doubled: indexes of the table of pictures.
+#define SEEKER_WAY_UP 0x0002
+#define SEEKER_WAY_ACROSS 0x0006
+#define SEEKER_WAY_DOWN 0x000a
+#define SEEKER_WAY_BACK 0x000e
+#define SEEKER_PLACE_LEAST 0x0030  // halved: 24 pixels, and up to 15 more
+#define SEEKER_MAX_LOOKS 2
+#define SEEKER_MAX_DRAWS 2
 
 enum {
   SF_HEAD,          // PEA, LDA $16 : DEC : PHA, RTS
@@ -145,18 +179,49 @@ enum {
   SF_BLINK_ON,      // LDA #$8000 : ORA $0000,Y : BRA
   SF_BLINK_OFF,     // LDA #$7FFF : AND $0000,Y
   SF_BLINK_PUT,     // $ED1D-$ED2A
+  SF_GO_EE0E,       // JMP $EDFD, and $EDFD-$EE0D
+  SF_HOLD_GO,       // $ECAF-$ECC0
+  SF_DART,          // $ECC1-$ECCD
+  SF_DART_NEAR,     // JMP $EB5E, and $EB5E-$EB63
+  SF_DART_COUNT,    // $ECD1-$ECD8
+  SF_DART_OVER,     // $ED2B-$ED42, and $EB5E-$EB63
+  SF_DART_FAR,      // LDA $20 : CMP #$00F0 : BCS
+  SF_DART_AIM,      // JSR $ED75, and $ECE3-$ECEC
+  SF_DART_SET,      // $ECED-$ECF6
+  SF_DART_ON,       // $ED51-$ED5B
+  SF_AIM_X,         // $ED75-$ED80
+  SF_NEGATE,        // EOR #$FFFF : INC
+  SF_AIM_Y,         // $ED85-$ED90
+  SF_AIM_CMP,       // STA $14 : CMP $12 : BCS
+  SF_AIM_ACROSS,    // $ED9B-$EDA6
+  SF_AIM_BACK,      // $EDA7-$EDB3
+  SF_AIM_DOWN,      // $EDB4-$EDBF
+  SF_AIM_UP,        // $EDC0-$EDCA
+  SF_AIM_PUT,       // $EDCB-$EDEA
+  SF_CLAMP,         // LDA : CMP #$0004 : BCC
+  SF_CLAMP_SET,     // LDA #$0004 : STA
+  SF_PLACE,         // $EBCF-$EBDD
+  SF_PLACE_DRAW,    // $EBE8-$EBF5
+  SF_PLACE_X,       // $EBFA-$EC0D
+  SF_PLACE_Y,       // $EC12-$EC21
+  SF_PLACE_MAP,     // $EC22-$EC2B
   SF_BLOCK_COUNT
 };
 
 // For the harness: what ran, and what each call under it did.
 typedef struct {
   uint16_t blocks[SF_BLOCK_COUNT];
-  bool looked;  // `actor_nearest` asked
-  ActorNearestWork nearest;
+  int looks;    // `actor_nearest` asked, and what each did
+  ActorNearestWork nearest[SEEKER_MAX_LOOKS];
   bool faced;   // `actor_bearing` asked
   ActorBearingRegs bearing;
-  bool drew;    // a random byte drawn...
-  bool drew_overflow;
+  int draws;    // random bytes drawn, and the overflow each left
+  bool draw_overflow[SEEKER_MAX_DRAWS];
+  bool grounded;  // the ground asked after, by either of two tests
+  TerrainRegs ground;
+  bool mapped;    // ...and the level's edge
+  BoundsExit map_exit;
+  bool handler_set;
 } SeekerWork;
 
 // A frame of the thread, from the sleep's return to the next sleep or to

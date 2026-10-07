@@ -71,6 +71,7 @@
 #include "port/hit.h"
 #include "port/lunge.h"
 #include "port/knock.h"
+#include "port/player_small.h"
 #include "port/page.h"
 #include "port/decoy.h"
 #include "port/logo.h"
@@ -3900,11 +3901,24 @@ static void shim_terrain_point_bit2(Wram* w, const Rom* rom,
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
+// `$80:B05F`: to the `BNE`, and either way out.
+static const CosimRun BIT8_RUN = {542, 46, 0};
+static const CosimRun BIT8_RUN_OUT = {88, 3, 0};  // PLD : CLC or SEC : RTL
+
+static int terrain_bit8_cycles(bool hit, bool fast) {
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &BIT8_RUN, 1);
+  if (hit) run_add(&own, &RUN_TAKEN, 1);
+  run_add(&own, &BIT8_RUN_OUT, 1);
+  return cosim_run_cycles(&own, fast);
+}
+
 static void shim_terrain_point_bit8(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   (void)rom;
   TerrainRegs r;
   terrain_point_bit8(w, in->x, in->y, &r);
+  cosim_cost(terrain_bit8_cycles(r.blocked, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -6527,8 +6541,135 @@ static const CosimRun STUCK_WALK_GROUND = {42, 6, 0};
 static const CosimRun STUCK_WALK_TAKE_X = {124 - 56, 9 - 4, 3 - 2};
 static const CosimRun STUCK_WALK_TAKE_Y = {136 - 56, 10 - 4, 3 - 2};
 
-static int walk_cycles_as(const WalkLog* log, const CosimRegs* in,
-                          WalkKind kind) {
+// A reaction the walk took itself. Round a door: `JSR $E739`, its chain to
+// the third compare, `JSR $E8D3 : BRA`, `SEC : RTS` and the `BCS` taken.
+// Round the fifth: the chain to the fifth compare, `$E774-$E783` and the
+// `BCS` not taken.
+static const CosimRun WALK_DOOR_AROUND = {300, 31, 0};
+static const CosimRun WALK_DOOR_HEAD = {76, 9, 1};    // LDX $26 : LDA $EA1E,X : BEQ
+static const CosimRun WALK_DOOR_LOOK = {210, 20, 3};  // $E8DA-$E8ED
+static const CosimRun WALK_DOOR_ITEMS = {80, 7, 1};   // LDY # : LDA ($66),Y : BNE
+static const CosimRun WALK_DOOR_BEGIN = {108, 12, 0}; // LDA # : LDY # : JSL : BRA
+static const CosimRun WALK_SQUARE_AROUND = {494, 50, 1};
+// `$82:F4FF`, on page zero until its second `PLD`.
+static const CosimRun WALK_SQUARE_HEAD = {502, 41, 0};   // $F4FF-$F527
+static const CosimRun WALK_SQUARE_LOOK = {52, 6, 0};     // LDA $7E572C,X : BPL
+static const CosimRun WALK_SQUARE_SAME = {46, 5, 0};     // CMP $0038 : BEQ
+static const CosimRun WALK_SQUARE_NEXT = {36, 4, 0};     // DEX : DEX : BPL
+static const CosimRun WALK_SQUARE_OUT = {146, 7, 0};     // $F539-$F53F
+static const CosimRun WALK_SQUARE_BEGIN = {444, 33, 3};  // $F540-$F560
+
+static int walk_reaction_cycles(const WalkReaction* did, const Rom* rom,
+                                const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  CosimRun own = {0, 0, 0};
+  int calls = 0;
+  if (did->kind == WALK_REACTION_DOOR) {
+    run_add(&own, &WALK_DOOR_AROUND, 1);
+    run_add(&own, &WALK_DOOR_HEAD, 1);
+    if (!did->reached) {
+      run_add(&own, &RUN_TAKEN, 1);
+    } else {
+      run_add(&own, &WALK_DOOR_LOOK, 1);
+      calls += cosim_run_cycles(&TILE_ATTRS_RUN, in->fastrom);
+      if (!did->locked) {
+        run_add(&own, &RUN_TAKEN, 1);
+      } else {
+        run_add(&own, &WALK_DOOR_ITEMS, 1);
+        run_add(&own, &WALK_DOOR_BEGIN, 1);
+        calls += thread_spawn_cycles(did->slot, rom, in->fastrom);
+      }
+    }
+    run_add(&own, &RUN_RTS, 1);
+    return calls + cosim_run_cycles_dp(&own, fast, unaligned);
+  }
+  run_add(&own, &WALK_SQUARE_AROUND, 1);
+  CosimRun far = {0, 0, 0};
+  run_add(&far, &WALK_SQUARE_HEAD, 1);
+  for (int i = 1; i <= did->looked; i++) {
+    const bool last = i == did->looked;
+    run_add(&far, &WALK_SQUARE_LOOK, 1);
+    if (last && did->end == WALK_SQUARE_BEGUN) {
+      run_add(&far, &RUN_BRA, 1);
+      break;
+    }
+    run_add(&far, &RUN_TAKEN, 1);
+    run_add(&far, &WALK_SQUARE_SAME, 1);
+    if (last && did->end == WALK_SQUARE_KNOWN) {
+      run_add(&far, &RUN_TAKEN, 1);
+      break;
+    }
+    run_add(&far, &WALK_SQUARE_NEXT, 1);
+    if (!last) run_add(&far, &RUN_TAKEN, 1);
+  }
+  if (did->end == WALK_SQUARE_BEGUN) {
+    calls += cosim_run_cycles_dp(&WALK_SQUARE_BEGIN, in->fastrom, unaligned) +
+             thread_spawn_cycles(did->slot, rom, in->fastrom);
+  } else {
+    run_add(&far, &WALK_SQUARE_OUT, 1);
+  }
+  return calls + cosim_run_cycles(&far, in->fastrom) +
+         cosim_run_cycles_dp(&own, fast, unaligned);
+}
+
+// The swim, `$80:E543`. Round each question: `LDX : LDY : JSL : BCS`.
+// Where it is not water, `JSR $E7FE : BRA`.
+static const CosimRun SWIM_ASK = {122, 10, 2};
+static const CosimRun SWIM_BANK_CALL = {58, 5, 0};
+// `$80:E7FE`, a test at a time, and the point with its `JSL` and `BCS`.
+static const CosimRun SWIM_BANK_HEALTH = {80, 7, 1};   // LDX $0E : LDA $1CB8,X : BEQ
+static const CosimRun SWIM_BANK_SIGN = {12, 2, 0};     // BMI
+static const CosimRun SWIM_BANK_STATE = {58, 7, 1};    // LDA $70 : CMP # : BNE
+static const CosimRun SWIM_BANK_FACING = {40, 4, 1};   // LDA $26 : BEQ
+static const CosimRun SWIM_BANK_POINT = {322, 30, 4};  // $E812-$E82B
+
+static int swim_cycles(const WalkLog* log, const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  CosimRun own = {0, 0, 0};
+  int calls = step_propose_cycles(log->doubled, in->fastrom, unaligned);
+  run_add(&own, &RUN_JSR, 1);
+  for (int wet = 0; wet < 2; wet++) {
+    run_add(&own, &SWIM_ASK, log->water[wet]);
+    run_add(&own, wet ? &RUN_TAKEN : &SWIM_BANK_CALL, log->water[wet]);
+    calls += log->water[wet] * terrain_bit8_cycles(wet != 0, in->fastrom);
+  }
+  for (int e = 0; e < SWIM_BANK_COUNT; e++) {
+    const int n = log->bank[e];
+    run_add(&own, &SWIM_BANK_HEALTH, n);
+    if (e > SWIM_BANK_DEAD) run_add(&own, &SWIM_BANK_SIGN, n);
+    if (e > SWIM_BANK_LESS) run_add(&own, &SWIM_BANK_STATE, n);
+    if (e > SWIM_BANK_NOT_SWIMMING) run_add(&own, &SWIM_BANK_FACING, n);
+    if (e > SWIM_BANK_NO_WAY) run_add(&own, &SWIM_BANK_POINT, n);
+    run_add(&own, &RUN_TAKEN, n);
+    run_add(&own, &RUN_RTS, n);
+  }
+  CosimRun ground = {0, 0, 0};
+  run_add(&ground, &TERRAIN_PROLOGUE, log->bank[SWIM_BANK_SOLID]);
+  run_add(&ground, &TERRAIN_EXIT, log->bank[SWIM_BANK_SOLID]);
+  for (int i = 0; i < TERRAIN_PROBE_COUNT; i++)
+    run_add(&ground, &TERRAIN_PROBE[i], log->probes[i]);
+  run_add(&ground, &RUN_TAKEN, log->ground_cut_short);
+  calls += cosim_run_cycles(&ground, in->fastrom);
+  static const WalkQuestion AFTER[] = {WALK_ASK_TETHER, WALK_ASK_MAP};
+  for (int i = 0; i < 2; i++) {
+    const uint16_t* asked = log->asked[AFTER[i]];
+    run_add(&own, &SWIM_ASK, asked[0] + asked[1]);
+    run_add(&own, &RUN_TAKEN, asked[1]);
+  }
+  for (int i = 0; i < log->tethers; i++)
+    calls += tether_cycles(&log->tether[i], in->fastrom);
+  for (int e = 0; e <= BOUNDS_LAST_COMPARE; e++)
+    calls += log->map_exits[e] * bounds_cycles((BoundsExit)e, in->fastrom);
+  run_add(&own, &WALK_TAKE, log->taken);
+  run_add(&own, &RUN_RTS, 1);
+  return calls + cosim_run_cycles_dp(&own, fast, unaligned);
+}
+
+static int walk_cycles_as(const WalkLog* log, const Rom* rom,
+                          const CosimRegs* in, WalkKind kind) {
+  if (kind == WALK_SWIM) return swim_cycles(log, in);
   const bool fast = fetch_fast(in);
   const bool unaligned = (in->d & 0x00ffu) != 0;
   const bool monster = kind == WALK_OF_MONSTER;
@@ -6554,6 +6695,8 @@ static int walk_cycles_as(const WalkLog* log, const CosimRegs* in,
     }
   }
   cycles += log->taken * cosim_run_cycles_dp(&WALK_TAKE, fast, unaligned);
+  for (int i = 0; i < log->reactions; i++)
+    cycles += walk_reaction_cycles(&log->reaction[i], rom, in);
   if (stuck && log->took[0])
     cycles += cosim_run_cycles_dp(&STUCK_WALK_TAKE_X, fast, unaligned);
   if (stuck && log->took[1])
@@ -6581,8 +6724,9 @@ static int walk_cycles_as(const WalkLog* log, const CosimRegs* in,
          obstacle_cycles(&log->obstacle, in->fastrom);
 }
 
-static int walk_cycles(const WalkLog* log, const CosimRegs* in) {
-  return walk_cycles_as(log, in, WALK_ORDINARY);
+static int walk_cycles(const WalkLog* log, const Rom* rom,
+                       const CosimRegs* in) {
+  return walk_cycles_as(log, rom, in, WALK_ORDINARY);
 }
 
 // The tests put their scratch on page zero, so a player's page there would
@@ -6607,7 +6751,7 @@ static void shim_player_walk(Wram* w, const Rom* rom, const CosimRegs* in,
                              CosimRegs* out) {
   WalkLog log = {0};
   player_walk(w, rom, in->d, &log);
-  cosim_cost(walk_cycles(&log, in));
+  cosim_cost(walk_cycles(&log, rom, in));
   out->c = log.last_yes;
   out->v = log.overflow;
   out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
@@ -6623,7 +6767,7 @@ static void shim_monster_walk(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
   WalkLog log = {0};
   monster_walk_checked(w, rom, in->d, &log);
-  cosim_cost(walk_cycles_as(&log, in, WALK_OF_MONSTER));
+  cosim_cost(walk_cycles_as(&log, rom, in, WALK_OF_MONSTER));
   out->c = log.last_yes;
   out->v = log.overflow;
   out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
@@ -6640,7 +6784,30 @@ static void shim_stuck_walk(Wram* w, const Rom* rom, const CosimRegs* in,
                             CosimRegs* out) {
   WalkLog log = {0};
   stuck_walk(w, rom, in->d, &log);
-  cosim_cost(walk_cycles_as(&log, in, WALK_STUCK));
+  cosim_cost(walk_cycles_as(&log, rom, in, WALK_STUCK));
+  out->c = log.last_yes;
+  out->v = log.overflow;
+  out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
+  out->regs = 0;
+}
+
+// The swim reads a table by the way faced, through the data bank.
+static bool accepts_swim_walk(const Wram* w, const CosimRegs* in) {
+  return accepts_player_walk(w, in) && in->db == 0x80 &&
+         wram_r16(w, (uint16_t)(in->d + WALK_DP_FACING)) <= WALK_FACING_MAX &&
+         wram_r16(w, (uint16_t)(in->d + SWIM_DP_PLAYER)) < 4;
+}
+
+static bool supported_swim_walk(Wram* scratch, const Rom* rom,
+                                const CosimRegs* in) {
+  return swim_walk_checked(scratch, rom, in->d, NULL);
+}
+
+static void shim_swim_walk(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  WalkLog log = {0};
+  swim_walk_checked(w, rom, in->d, &log);
+  cosim_cost(swim_cycles(&log, in));
   out->c = log.last_yes;
   out->v = log.overflow;
   out->flags = COSIM_FLAG_C | COSIM_FLAG_V;
@@ -10233,6 +10400,9 @@ static void shim_seeker_flap(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
 }
 
+// `$80:8475`. Its tables and the slot are read through the data bank.
+static const CosimRun SET_HANDLER_RUN = {168, 11, 0};  // $8475-$847F
+
 // `$82:EF4F`, a frame of its thread. Each run is from `tools/cycles816.py
 // --db=82`; a `BRA` at the end of one is counted taken. What it calls costs
 // what those entries charge.
@@ -10277,6 +10447,32 @@ static const CosimRun SF_COST[SF_BLOCK_COUNT] = {
     [SF_BLINK_ON] = {70 + 6, 8, 0},
     [SF_BLINK_OFF] = {58, 6, 0},
     [SF_BLINK_PUT] = {228, 14, 2},
+    [SF_GO_EE0E] = {18 + 212, 3 + 17, 2},
+    [SF_HOLD_GO] = {176, 18, 2},
+    [SF_DART] = {140, 13, 2},
+    [SF_DART_NEAR] = {18 + 86, 3 + 6, 1},
+    [SF_DART_COUNT] = {118, 8, 3},
+    [SF_DART_OVER] = {234 + 86, 24 + 6, 2},
+    [SF_DART_FAR] = {58, 7, 1},
+    [SF_DART_AIM] = {40 + 122, 3 + 10, 2},
+    [SF_DART_SET] = {92, 10, 2},
+    [SF_DART_ON] = {130, 11, 4},
+    [SF_AIM_X] = {148, 12, 3},
+    [SF_NEGATE] = {30, 4, 0},
+    [SF_AIM_Y] = {148, 12, 3},
+    [SF_AIM_CMP] = {68, 6, 2},
+    [SF_AIM_ACROSS] = {126, 12, 2},
+    [SF_AIM_BACK] = {116 + 6, 13, 2},
+    [SF_AIM_DOWN] = {126, 12, 2},
+    [SF_AIM_UP] = {104, 11, 2},
+    [SF_AIM_PUT] = {390, 34, 6},
+    [SF_CLAMP] = {58, 7, 1},
+    [SF_CLAMP_SET] = {46, 5, 1},
+    [SF_PLACE] = {168, 15, 3},
+    [SF_PLACE_DRAW] = {126, 14, 0},
+    [SF_PLACE_X] = {206 - 126, 20 - 14, 1},
+    [SF_PLACE_Y] = {202, 16, 3},
+    [SF_PLACE_MAP] = {122, 10, 2},
 };
 
 // The records it reads are in low WRAM, and the place it circles from is in
@@ -10284,6 +10480,7 @@ static const CosimRun SF_COST[SF_BLOCK_COUNT] = {
 static bool supported_seeker_frame(Wram* scratch, const Rom* rom,
                                    const CosimRegs* in) {
   if (!accepts_seeker_flap(scratch, in) ||
+      wram_r16(scratch, W_SCHED_CUR_TASK) >= WRAM_THREAD_SLOTS * 2 ||
       wram_r16(scratch, (uint16_t)(in->d + SEEKER_DP_TARGET)) >= 0x1f00 ||
       wram_r16(scratch, (uint16_t)(in->d + SEEKER_DP_PLACE)) >=
           SEEKER_CIRCLE_END)
@@ -10308,9 +10505,15 @@ static void shim_seeker_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   int cycles = 0;
   for (int i = 0; i < SF_BLOCK_COUNT; i++)
     cycles += k.blocks[i] * cosim_run_cycles_dp(&SF_COST[i], fast, unaligned);
-  if (k.looked) cycles += nearest_cycles(&k.nearest, in->fastrom);
+  for (int i = 0; i < k.looks; i++)
+    cycles += nearest_cycles(&k.nearest[i], in->fastrom);
   if (k.faced) cycles += actor_bearing_cycles(&k.bearing, in->fastrom);
-  if (k.drew) cycles += rng_cycles(k.drew_overflow, in->fastrom);
+  for (int i = 0; i < k.draws; i++)
+    cycles += rng_cycles(k.draw_overflow[i], in->fastrom);
+  // Either test of the ground costs what `$80:AE97` does, run for run.
+  if (k.grounded) cycles += terrain_enemy_cycles(&k.ground, in->fastrom);
+  if (k.mapped) cycles += bounds_cycles(k.map_exit, in->fastrom);
+  if (k.handler_set) cycles += cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom);
   cosim_cost(cycles);
 }
 
@@ -10324,9 +10527,6 @@ static const uint32_t SEEKER_FRAME_EXITS[] = {SEEKER_FRAME_SLEEP_PC,
 //
 // Each run is from `tools/cycles816.py` with the entry's own data bank; a
 // `BRA` at the end of one is counted taken.
-
-// `$80:8475`. Its tables and the slot are read through the data bank.
-static const CosimRun SET_HANDLER_RUN = {168, 11, 0};  // $8475-$847F
 
 static bool accepts_thread_set_handler(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && bank_sees_low_wram(in->db) &&
@@ -10483,6 +10683,185 @@ static const CosimRun PG_COST[PG_BLOCK_COUNT] = {
     [PG_TAIL] = {326, 26, 6},
     [PG_TAKEN] = {6, 0, 0},
 };
+
+// ---------------------------------------------------------------------------
+// $80:F366-$80:F451  small things a player's states do -- see
+// `port/player_small.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=80`, with its `RTS` but for the
+// last two entries, which stop at theirs. A list's words are read from ROM
+// where the tool takes `$0000,Y` for low WRAM: 4 cycles less a read, and two
+// bytes more.
+static const CosimRun PSMALL_RUN_AWAY_ASK = {58, 7, 1};      // LDA $70 : CMP : BEQ
+static const CosimRun PSMALL_RUN_AWAY = {126, 11, 1};        // $ED04-$ED0E
+static const CosimRun FWAIT_RUN_HELD = {108, 9, 2};          // $EED3-$EEDB
+static const CosimRun FWAIT_RUN_COUNT = {62, 4, 1};          // DEC $2E : BNE
+static const CosimRun FWAIT_RUN_AGAIN = {18, 3, 0};          // LDA #$0001
+static const CosimRun PSMALL_RUN_UNTOUCHABLE = {108, 6, 1};  // $F366-$F36B
+static const CosimRun PSMALL_RUN_UNHANDLED = {152, 11, 1};   // $F36C-$F376
+static const CosimRun PSMALL_RUN_TOUCHABLE = {172, 13, 2};   // $F377-$F381
+static const CosimRun PSMALL_RUN_HANDLED = {130, 11, 0};     // $F382-$F38C
+static const CosimRun PSMALL_RUN_SWAP = {382, 24, 1};        // $F38D-$F3A4
+static const CosimRun PSMALL_RUN_BACK = {228, 15, 1};        // $F3A5-$F3B3
+static const CosimRun PSMALL_RUN_SPAN_X = {98, 10, 2};       // $F3B4-$F3BD
+static const CosimRun PSMALL_RUN_SPAN_NEG = {48, 7, 0};      // EOR : INC : LDX #
+static const CosimRun PSMALL_RUN_SPAN_Y = {154, 14, 4};      // $F3C5-$F3D2
+static const CosimRun PSMALL_RUN_SPAN_END = {152, 9, 4};     // $F3DA-$F3E2
+static const CosimRun TSEARCH_RUN_HEAD = {58, 7, 1};         // LDA $70 : CMP : BNE
+static const CosimRun TSEARCH_RUN_OUT = {12, 1, 0};          // CLC or SEC
+static const CosimRun TSEARCH_RUN_SETUP = {366, 34, 6};      // $F3EC-$F409
+static const CosimRun TSEARCH_RUN_LOOK = {270, 26, 3};       // $F40A-$F41F
+static const CosimRun TSEARCH_RUN_NEXT = {132, 11, 2};       // $F420-$F42A
+static const CosimRun TSEARCH_RUN_FOUND = {408, 39, 5};      // $F42D-$F44F
+// `$80:B03B` to its `BNE`, the address it asks `$80:AD1C` for, and either
+// way out. It runs on page zero.
+static const CosimRun BIT3_RUN = {362 + 250, 30 + 15, 0};
+static const CosimRun BIT3_RUN_OUT = {88, 3, 0};
+
+static bool accepts_player_small(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == PLAYER_SMALL_BANK &&
+         wram_r16(w, (uint16_t)(in->d + PLAYER_SMALL_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + PLAYER_SMALL_DP_NUMBER)) < 4 &&
+         wram_r16(w, (uint16_t)(in->d + PLAYER_SMALL_DP_PLAYER)) < 4 &&
+         wram_r16(w, W_SCHED_CUR_TASK) < WRAM_THREAD_SLOTS * 2;
+}
+
+static void psmall_done(const PortCpu* c, const CosimRegs* in, CosimRegs* out,
+                        const CosimRun* own, int calls) {
+  ret_from_cpu(c, out);
+  cosim_cost(calls + cosim_run_cycles_dp(own, fetch_fast(in),
+                                         (in->d & 0x00ffu) != 0));
+}
+
+#define PSMALL_SHIM(name, call, run, calls)                               \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,   \
+                          CosimRegs* out) {                               \
+    (void)rom;                                                            \
+    PortCpu c;                                                            \
+    cpu_from(in, &c);                                                     \
+    call;                                                                 \
+    psmall_done(&c, in, out, &run, calls);                                \
+  }
+
+PSMALL_SHIM(player_untouchable, player_untouchable(w, &c),
+            PSMALL_RUN_UNTOUCHABLE, 0)
+PSMALL_SHIM(player_touchable, player_touchable(w, rom, &c),
+            PSMALL_RUN_TOUCHABLE, 0)
+PSMALL_SHIM(player_unhandled, player_unhandled(w, &c), PSMALL_RUN_UNHANDLED,
+            cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom))
+PSMALL_SHIM(player_handled, player_handled(w, &c), PSMALL_RUN_HANDLED,
+            cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom))
+PSMALL_SHIM(player_hands_swap, player_hands_swap(w, &c), PSMALL_RUN_SWAP, 0)
+PSMALL_SHIM(player_hands_back, player_hands_back(w, &c), PSMALL_RUN_BACK, 0)
+
+static void player_span_bill(CosimRun* own, const PlayerSpan* did) {
+  run_add(own, &PSMALL_RUN_SPAN_X, 1);
+  run_add(own, did->back_x ? &PSMALL_RUN_SPAN_NEG : &RUN_TAKEN, 1);
+  run_add(own, &PSMALL_RUN_SPAN_Y, 1);
+  run_add(own, did->back_y ? &PSMALL_RUN_SPAN_NEG : &RUN_TAKEN, 1);
+  run_add(own, &PSMALL_RUN_SPAN_END, 1);
+}
+
+static void shim_player_span(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  PlayerSpan did;
+  cpu_from(in, &c);
+  player_span(w, &c, &did);
+  CosimRun own = {0, 0, 0};
+  player_span_bill(&own, &did);
+  psmall_done(&c, in, out, &own, 0);
+}
+
+static bool accepts_weapon_away(const Wram* w, const CosimRegs* in) {
+  return accepts_player_small(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + WEAPON_AWAY_DP_WEAPON)) < 0x1f00;
+}
+
+static void shim_weapon_away(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool hidden = weapon_away(w, &c);
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &PSMALL_RUN_AWAY_ASK, 1);
+  run_add(&own, hidden ? &PSMALL_RUN_AWAY : &RUN_TAKEN, 1);
+  run_add(&own, &RUN_RTS, 1);
+  psmall_done(&c, in, out, &own, 0);
+}
+
+static void shim_fired_wait(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const FiredWait end = fired_wait(w, &c);
+  cpu_to(&c, out);
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &FWAIT_RUN_HELD, 1);
+  if (end == FIRED_WAIT_MOVED) {
+    run_add(&own, &RUN_TAKEN, 1);
+  } else {
+    run_add(&own, &FWAIT_RUN_COUNT, 1);
+    if (end == FIRED_WAIT_ON) {
+      run_add(&own, &RUN_TAKEN, 1);
+      run_add(&own, &FWAIT_RUN_AGAIN, 1);
+    }
+  }
+  cosim_cost(cosim_run_cycles_dp(&own, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+}
+
+static const uint32_t FIRED_WAIT_EXITS[] = {FIRED_WAIT_YIELD_PC,
+                                            FIRED_WAIT_RTS_PC};
+
+static bool supported_tile_search(Wram* scratch, const Rom* rom,
+                                  const CosimRegs* in) {
+  return accepts_player_small(scratch, in) &&
+         tile_search_supported(scratch, rom, in->d);
+}
+
+static void shim_tile_search(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  TileSearch did;
+  cpu_from(in, &c);
+  tile_search(w, rom, &c, &did);
+  CosimRun own = {0, 0, 0};
+  CosimRun far = {0, 0, 0};
+  run_add(&own, &TSEARCH_RUN_HEAD, 1);
+  if (!did.resting) {
+    run_add(&own, &RUN_TAKEN, 1);
+    run_add(&own, &TSEARCH_RUN_SETUP, 1);
+    run_add(&own, &TSEARCH_RUN_LOOK, did.looked);
+    run_add(&far, &BIT3_RUN, did.looked);
+    run_add(&far, &BIT3_RUN_OUT, did.looked);
+    if (did.found) {
+      // The tile's `BNE` and the search's `BCS`, both taken.
+      run_add(&far, &RUN_TAKEN, 1);
+      run_add(&own, &RUN_TAKEN, 1);
+      run_add(&own, &TSEARCH_RUN_NEXT, did.looked - 1);
+      run_add(&own, &RUN_TAKEN, did.looked - 1);
+      run_add(&own, &TSEARCH_RUN_FOUND, 1);
+      player_span_bill(&own, &did.span);
+    } else {
+      run_add(&own, &TSEARCH_RUN_NEXT, did.looked);
+      run_add(&own, &RUN_TAKEN, did.looked - 1);
+    }
+  }
+  run_add(&own, &TSEARCH_RUN_OUT, 1);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&far, in->fastrom) +
+             cosim_run_cycles_dp(&own, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+}
+
+static const uint32_t TILE_SEARCH_EXITS[] = {TILE_SEARCH_RESTING_RTS_PC,
+                                             TILE_SEARCH_NONE_RTS_PC,
+                                             TILE_SEARCH_FOUND_RTS_PC};
 
 // `$80:F0D7`. Its tables are read through the data bank.
 static const CosimRun KNOCK_RUN_HEAD = {46, 5, 0};      // LDA $1FF8 : BNE
@@ -14247,7 +14626,7 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   if (log.walked) {
     run_add(&own, &PBODY_COST[PBODY_MOVE_CALL], 1);
     run_add(&own, &RUN_RTS, 1);
-    calls += walk_cycles_as(&log.walk, in, log.walk_kind);
+    calls += walk_cycles_as(&log.walk, rom, in, log.walk_kind);
   } else {
     run_add(&own, &RUN_TAKEN, 1);
   }
@@ -20811,7 +21190,8 @@ static const CosimRoutine ROUTINES[] = {
     // The first routine in readable C. See `port/walk.h`. Entered by the
     // frame's `RTS` with the frame's return address already pushed, so it is
     // a routine like any other to the harness. It declines the double step
-    // and the tiles with a reaction of their own, and the ROM walks those.
+    // and the tiles with a reaction of their own, but for a door that stays
+    // shut and the fifth reaction, and the ROM walks those.
     {
         .name = "player_walk",
         .symbol = "$80:E4BA",
@@ -20824,9 +21204,9 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         // Never charged: the shim prices every call it serves.
         .cycles = 6000,
-        // The deepest the ROM goes: a `JSL`, then `terrain_blocked`'s `PHD`
-        // and `PHA`, or `actor_obstacle_at_point`'s `PHD` and `PEA`.
-        .stack_bytes = 7,
+        // The deepest the ROM goes is at a door: two `JSR`s, a `JSL`, the
+        // tile lookup's four pushes, and its own `JSL` and `PHA`.
+        .stack_bytes = 19,
     },
     // The potion's monster walks by another. See `port/walk.h`.
     {
@@ -20853,6 +21233,21 @@ static const CosimRoutine ROUTINES[] = {
         .accepts = accepts_stuck_walk,
         .uncalled = true,
         .cycles = 6000,
+        .stack_bytes = 7,
+    },
+    // ...and a player in water by a fourth, which declines the stroke that
+    // reaches the bank.
+    {
+        .name = "swim_walk",
+        .symbol = "$80:E543",
+        .entry = SWIM_WALK_PC,
+        .ret_op = SWIM_WALK_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_swim_walk,
+        .accepts = accepts_swim_walk,
+        .supported = supported_swim_walk,
+        .uncalled = true,
+        .cycles = 4000,
         .stack_bytes = 7,
     },
     // The second, and the same arrangement: see `port/chase.h`. Entered by
@@ -22015,6 +22410,112 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 480,
     },
+    // Small things a player's states do: see `port/player_small.h`.
+    {
+        .name = "player_untouchable",
+        .symbol = "$80:F366",
+        .entry = PLAYER_UNTOUCHABLE_PC,
+        .ret_op = PLAYER_UNTOUCHABLE_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_untouchable,
+        .accepts = accepts_player_small,
+        .cycles = 110,
+    },
+    {
+        .name = "player_touchable",
+        .symbol = "$80:F377",
+        .entry = PLAYER_TOUCHABLE_PC,
+        .ret_op = PLAYER_TOUCHABLE_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_touchable,
+        .accepts = accepts_player_small,
+        .cycles = 170,
+    },
+    {
+        .name = "player_unhandled",
+        .symbol = "$80:F36C",
+        .entry = PLAYER_UNHANDLED_PC,
+        .ret_op = PLAYER_UNHANDLED_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_unhandled,
+        .accepts = accepts_player_small,
+        .cycles = 320,
+        .stack_bytes = 3,  // the `JSL`
+    },
+    {
+        .name = "player_handled",
+        .symbol = "$80:F382",
+        .entry = PLAYER_HANDLED_PC,
+        .ret_op = PLAYER_HANDLED_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_handled,
+        .accepts = accepts_player_small,
+        .cycles = 300,
+        .stack_bytes = 3,
+    },
+    {
+        .name = "player_hands_swap",
+        .symbol = "$80:F38D",
+        .entry = PLAYER_HANDS_SWAP_PC,
+        .ret_op = PLAYER_HANDS_SWAP_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_hands_swap,
+        .accepts = accepts_player_small,
+        .cycles = 380,
+        .stack_bytes = 2,  // the `PHA`
+    },
+    {
+        .name = "player_hands_back",
+        .symbol = "$80:F3A5",
+        .entry = PLAYER_HANDS_BACK_PC,
+        .ret_op = PLAYER_HANDS_BACK_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_hands_back,
+        .accepts = accepts_player_small,
+        .cycles = 230,
+    },
+    {
+        .name = "player_span",
+        .symbol = "$80:F3B4",
+        .entry = PLAYER_SPAN_PC,
+        .ret_op = PLAYER_SPAN_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_span,
+        .accepts = accepts_player_small,
+        .cycles = 450,
+    },
+    {
+        .name = "weapon_away",
+        .symbol = "$80:ECFD",
+        .entry = WEAPON_AWAY_PC,
+        .ret_op = WEAPON_AWAY_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_weapon_away,
+        .accepts = accepts_weapon_away,
+        .cycles = 220,
+    },
+    // A tick of the wait after a shot, entered where the sleep comes back.
+    {
+        .name = "fired_wait",
+        .symbol = "$80:EED3",
+        .entry = FIRED_WAIT_PC,
+        .run = shim_fired_wait,
+        .accepts = accepts_player_small,
+        COSIM_EXITS(FIRED_WAIT_EXITS),
+        .uncalled = true,
+        .cycles = 200,
+    },
+    {
+        .name = "tile_search",
+        .symbol = "$80:F3E3",
+        .entry = TILE_SEARCH_PC,
+        .run = shim_tile_search,
+        .supported = supported_tile_search,
+        COSIM_EXITS(TILE_SEARCH_EXITS),
+        .cycles = 12000,
+        // The tile test's `JSL` and `PHD`, and the address's `JSL` and `PHA`.
+        .stack_bytes = 10,
+    },
     // The tile a punch lands on: see `port/knock.h`.
     {
         .name = "knock_look",
@@ -22882,8 +23383,8 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         // Never charged: the shim prices every frame it serves.
         .cycles = 20000,
-        // The `JSR` to the state, and the ordinary state's own eighteen.
-        .stack_bytes = 20,
+        // The address the walk returns to, and the walk's own nineteen.
+        .stack_bytes = 22,
     },
 };
 

@@ -18,7 +18,8 @@
 //   the pose       `$28` names a handler, which shows the next picture
 //                  (`port/pose.h`)
 //   the movement   `$2A` names another, or nothing for a player standing
-//                  still. On ordinary ground it is the walk (`port/walk.h`).
+//                  still. On ordinary ground it is the walk, and in water
+//                  the swim (`port/walk.h`).
 //   the position   is copied to the display record (`port/step.h`)
 //   this frame's buttons are kept, to tell a press from a hold next frame
 //   has the level been won, or the player died?
@@ -37,7 +38,7 @@
 //   * a frame that tells the player they were hit
 //   * a pose or a movement that is not one of those named, and the frames of
 //     those that their own files leave to the ROM: a shot fired, a tile with
-//     a reaction of its own
+//     a reaction the walk does not have, a swimmer reaching the bank
 //   * the frame the game is lost on, with nobody left to rescue and nobody
 //     rescued, and the one the player dies on
 //
@@ -125,6 +126,7 @@
 #define PLAYER_MOVEMENT_WALK 0xe4bau
 #define PLAYER_MOVEMENT_MONSTER_WALK 0xe595u
 #define PLAYER_MOVEMENT_STUCK_WALK 0xe6c2u
+#define PLAYER_MOVEMENT_SWIM 0xe543u
 
 typedef enum {
   PLAYER_HURT_TIMER_HELD,

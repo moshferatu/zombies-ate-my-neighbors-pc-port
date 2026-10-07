@@ -352,6 +352,22 @@
   X(knock_busy,       "knock_look",         "a tile is being knocked down already") \
   X(knock_nothing,    "knock_look",         "the tile the fist is at is not one to knock down") \
   X(knock_begun,      "knock_look",         "...or is, and the thread that does it is asked for") \
+  /* $80:F366-$80:F451 small things a player's states do -- see port/player_small.h. */ \
+  X(player_untouchable, "player_untouchable", "the record's collide id cleared") \
+  X(player_touchable, "player_touchable",   "...and put back") \
+  X(player_unhandled, "player_unhandled",   "the thread's handler taken away") \
+  X(player_handled,   "player_handled",     "...and put back") \
+  X(player_hands_swapped, "player_hands_swap", "what is in hand kept, and something else there") \
+  X(player_hands_back, "player_hands_back", "...and what was kept in hand again") \
+  X(player_spanned,   "player_span",        "how far a point is from the player, and which way") \
+  X(weapon_away_kept, "weapon_away",        "state $0C: the weapon in hand stays drawn") \
+  X(weapon_away_hidden, "weapon_away",      "...any other: not drawn") \
+  X(fired_wait_moved, "fired_wait",         "the pad is held another way, and the wait is over") \
+  X(fired_wait_done,  "fired_wait",         "...or the eighth tick is") \
+  X(fired_wait_on,    "fired_wait",         "...or neither: another tick") \
+  X(tile_search_resting, "tile_search",     "a player in state $06: not looked for") \
+  X(tile_search_none, "tile_search",        "no tile in the list has the bit") \
+  X(tile_search_found, "tile_search",       "one has, and its middle is the point") \
   X(blinker_turned,   "blinker_frame",      "the other picture, and its frames") \
   X(blinker_told,     "blinker_frame",      "...and something has set its word: the ROM's") \
   X(follower_this_side,"follower_place",    "put beside the point") \
@@ -377,6 +393,16 @@
   X(seeker_held,      "seeker_frame",       "facing them from a third state, and set to be drawn") \
   X(seeker_blinked_on,"seeker_frame",       "at one of two places, drawn: an even frame") \
   X(seeker_blinked_off,"seeker_frame",      "...and not drawn: an odd one") \
+  X(seeker_went_on,   "seeker_frame",       "watching: the draw sends it on to $82:EE0E") \
+  X(seeker_dart_began,"seeker_frame",       "held: the draw says dart, and for how many hops") \
+  X(seeker_dart_arrived,"seeker_frame",     "darting: near enough, so it watches again") \
+  X(seeker_dart_spent,"seeker_frame",       "...or out of hops, and the same") \
+  X(seeker_hop_across,"seeker_frame",       "a hop across: they are further off that way") \
+  X(seeker_hop_down,  "seeker_frame",       "...or up or down") \
+  X(seeker_hop_began, "seeker_frame",       "clear ground where the hop lands") \
+  X(seeker_hopped,    "seeker_frame",       "the third frame of a hop over: its place moved") \
+  X(seeker_place_bad_ground,"seeker_frame", "hidden: the ground at the place drawn will not do") \
+  X(seeker_place_off_level,"seeker_frame",  "...or the place is off the level") \
   /* $81:F98A the thing thrown in an arc -- see port/lob.h. */                  \
   X(lob_flew,         "lob_frame",          "a frame in the air") \
   X(lob_slowed,       "lob_frame",          "a fourth frame: the rise one less") \
@@ -499,6 +525,13 @@
   X(walk_twice,       "player_walk",       "$54 bit 15: the ROM walks twice") \
   X(walk_solid,       "player_walk",       "solid ground where the step lands") \
   X(walk_reaction,    "player_walk",       "...with a reaction of its own, so the ROM walks") \
+  X(walk_door_no_reach, "player_walk",     "a door's tile, and no tile to look at the way the player faces") \
+  X(walk_door_not_there, "player_walk",    "...or one to look at, which is not a door") \
+  X(walk_door_locked, "player_walk",       "...or a door, and nothing to open it: a thread begun") \
+  X(walk_door_opened, "player_walk",       "...or a door and something to open it, so the ROM walks") \
+  X(walk_square_known, "player_walk",      "the fifth reaction: a square it has already") \
+  X(walk_square_begun, "player_walk",      "...or a new one, and a thread begun for it") \
+  X(walk_square_full, "player_walk",       "...or a new one, and five others in the way") \
   X(walk_tethered,    "player_walk",       "too far from the other player to step there") \
   X(walk_obstructed,  "player_walk",       "someone standing where the step lands") \
   X(walk_overlapping, "player_walk",       "...and where the player stands too, so the step goes ahead") \
@@ -510,6 +543,12 @@
   X(stuck_walk_solid, "stuck_walk",        "solid ground it cannot cross") \
   X(stuck_walk_crossed, "stuck_walk",      "solid ground it can") \
   X(stuck_walk_obstructed, "stuck_walk",   "someone standing where its step lands") \
+  X(swim_walked,      "swim_walk",         "a player in water swam") \
+  X(swim_not_water,   "swim_walk",         "no water where the step lands") \
+  X(swim_bank_solid,  "swim_walk",         "...and the bank the way they face is solid") \
+  X(swim_reached_bank, "swim_walk",        "...or clear, so the ROM ends the swim") \
+  X(swim_tethered,    "swim_walk",         "too far from the other player to swim there") \
+  X(swim_off_map,     "swim_walk",         "a stroke off the map") \
   /* Vblank jobs, which write the PPU. */                                      \
   X(vram_flush_held,  "vram_queue_flush",  "$26 bit 14 set: the queue held back a frame") \
   X(vram_flush_empty, "vram_queue_flush",  "nothing queued")                   \

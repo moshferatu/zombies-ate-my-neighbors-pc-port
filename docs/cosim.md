@@ -17459,3 +17459,126 @@ priced by their path and not by an average, and have not traced it.
 
 Live, the werewolf's stretches come to 2,043 and the fishman's to
 11,012.
+
+## A locked door, a swim, level 37's dart and ten small things (2026-10-06)
+
+Eleven entries more, 405, and three ports that take passes they turned
+down. Over the twelve live movies the ROM's instructions go from 295,589
+to 265,367.
+
+### A frame turned down for one tile
+
+`player_frame` is a player's whole pass, and it calls the walk as C. The
+walk said no to a step onto a solid tile with a reaction of its own, so
+the frame said no, and the ROM ran the frame a piece at a time. The
+pieces that are ports were taken at their own addresses. The walk was
+not, being the piece that had said no.
+
+On `level5` the movie's player stands pushing at a door with nothing to
+open it. That is reaction three, about a hundred frames of it.
+
+`$80:E8D3` looks at the tile above or below the player, by a table of
+nine for the way faced. A door there, and the first of the player's
+items zero, begins a thread at `$82:DEFB`. That thread plays sound `$13`
+twice and lets no other of itself do so meanwhile, by the word at
+`$7E:1FF4`. So the ROM begins one every frame and all but one end at
+once.
+
+The port does as the ROM does: `thread_spawn` is called as C, and the
+shim charges `thread_spawn_cycles` for the slot it took.
+
+### Overflow from a tile lookup
+
+The walk hands back carry and overflow, and overflow is the last add's.
+After a door that is `tile_attrs_at_pixel`'s: the column added to the
+row's address. `TileAttrsRegs` does not carry it. The walk works it out
+from the same two words, and `lookup_overflows` is that. The swim's
+test of water makes the same add of the same two words.
+
+### The fifth reaction goes on
+
+Five of the six reactions leave the tile solid. The fifth returns with
+carry clear, and the step goes on to the other three questions.
+`$82:F4FF` keeps five words at `$7E:572C`, each a square of 64 pixels,
+and looks from the last for the one the player's record is in. A free
+place takes it and a thread is begun at `$82:F6EB`.
+
+It runs on page zero until its second `PLD`, and its last three stores
+are on the player's page. So its price is two runs: one that never pays
+for an unaligned page, and one that does.
+
+### The swim
+
+`$80:E543` has the walk's shape with other questions. Its ground test is
+`$80:B05F`, which had no price of its own. That routine is straight but
+for one branch: 542 cycles to the `BNE`, 88 out, 6 for the branch taken.
+7,213 calls over the corpus are exact.
+
+Where it is not water the swim calls `$80:E7FE`, which has four ways to
+say no before it looks at the ground. The carry differs by which: the
+water test's, or the compare of the state with `$0E`, or the ground
+test's. The log counts each way out, and the price and the carry both
+come from that.
+
+Clear ground there ends in `PLA : JMP $DDBD`. That is the stroke the
+port turns down.
+
+### Two looks and two draws in a frame
+
+A frame of level 37's thing asked who is nearest once, and drew one
+random byte. The dart asks again after facing them, and the frame that
+begins it draws twice. `SeekerWork` keeps two of each now.
+
+`actor_nearest` leaves overflow clear: its last subtraction steps a
+record's address down by 20. The frame did not say so, because every
+path it had wrote overflow afterwards. The dart's way out to watching
+does not, so `look` says it.
+
+### A hop
+
+`$82:ED75` takes the gap to whoever it chose each way and goes along the
+longer, four pixels at most. The picture is by the way, from the table
+the facing uses. Then `terrain_blocked_enemy` at the place the hop
+lands. Solid there ends the dart in something that sleeps, and the
+frame turns that down.
+
+A hop is three frames of `$82:ECF7`, which were the port's. The fourth
+frame moves its place and asks again, and that was not.
+
+### An entry that stops at its `RTS`
+
+`tile_search` has three ways out, so it is registered with exits and
+stops at each `RTS` and does not run it. I had billed the `RTS` and
+handed back registers as a called routine's shim does. The harness said
+so at once: the port's exit was the entry's address.
+
+### A wait that is not only a wait
+
+`$80:EECC` sleeps a tick, eight times, and stops early if the pad is
+held another way. It is not in `waits.h`: it reads the pad and counts.
+`fired_wait` is a tick of it, from where the sleep comes back to the
+next sleep or the `RTS`.
+
+### Names
+
+`$82:DEFB` I read: two sounds and a guard. `$82:F6EB` I did not, past
+its loop. `$82:EE0E` begins threads at `$82:F03E` and I have not seen
+what they show, so the state has its address for a name. The first of a
+player's items is what a door takes one of. I take that to be keys and
+have not checked it against a screen.
+
+### Checked
+
+33,396,982 calls across 51 movies, 0 diverged. 1,137 of 1,356 sites; of
+the 38 new, nine are untaken: `walk_door_no_reach`,
+`walk_door_not_there`, `walk_square_full`, `swim_tethered`,
+`swim_off_map`, `tile_search_resting`, `seeker_dart_arrived`,
+`seeker_place_bad_ground` and `seeker_place_off_level`. The corpus runs
+`level37.zmv` for 4,700 frames. `zamn_cosim verify -f 30000` on it takes
+the seventh and eighth of those: 2,616 frames of 2,788 passed, each
+priced exactly, 0 diverged.
+
+Every priced call is refresh-exact. Lockstep: 325,322 passes, 48 of 51
+never part, the same three on the same passes. Eight movies' mean drift
+differs from the last report, by 1.2 cycles at most, and
+`level37-e6e4`'s drift by 4 and its worst by 36.

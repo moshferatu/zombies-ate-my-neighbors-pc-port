@@ -5,6 +5,83 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### A locked door, a swim, level 37's dart and ten small things (2026-10-06)
+
+What the 65816 still executed over the twelve movies goes from 0.30 to
+**0.27** million instructions of work. Live, all twelve stay at 99.9% of
+the work. The game registers 405 routines, 11 more: the swim and the ten
+small things below.
+
+Most of it was passes that ports turned down, not routines with no port.
+
+* **A locked door**, in `port/walk.c`. `player_walk` turned down any step
+  onto a tile with a reaction of its own, and the player's whole frame with
+  it. Two of the six reactions are the port's now:
+  * the third, a door. With nothing to open it a thread is begun at
+    `$82:DEFB`, which plays a sound twice. A player pushing at one does
+    that every frame, which is what `level5` was doing for about a hundred;
+  * the fifth, which begins a thread for the square of 64 pixels the
+    player is in, once. What that thread shows I have not seen.
+  * A door that opens is still the ROM's, and so are the other four.
+* **A swim**, `$80:E543`, in the same file. A player in water moves by it:
+  water, the other player and the level's edge are asked after, and nobody
+  else. The stroke that reaches the bank is the ROM's.
+  * `terrain_point_bit8`, which it asks, was priced by an average and is
+    priced by its path now.
+* **Level 37's dart**, in `port/seeker.c`. The thing there darts at
+  whoever is nearest, four pixels a hop, up, down or across. That is state
+  `$82:ECC1`, and the three frames of a hop were the port's already.
+  * Hidden, it looks for somewhere to come back: `$82:EBCF`. The frames
+    that find nowhere are the port's.
+  * Watching, it goes on to the state at `$82:EE0E` on a draw. That frame
+    is the port's and the state is not.
+* **Ten small things**, in a new `port/player_small.c`. A player who is
+  hit, drowns or turns monster goes through routines that are the ROM's,
+  and they share leaves:
+  * nothing can touch the player, and that undone (`$80:F366`, `$80:F377`);
+  * nobody is told about them, and that undone (`$80:F36C`, `$80:F382`);
+  * what they hold kept aside, and put back (`$80:F38D`, `$80:F3A5`);
+  * how far a point is from them (`$80:F3B4`);
+  * the weapon in hand not drawn (`$80:ECFD`);
+  * the second of the walk's reactions looking for a tile (`$80:F3E3`);
+  * a tick of the wait after a shot (`$80:EED3`).
+
+* **Checked.** The corpus verifies at 33,396,982 calls across 51 movies
+  with 0 diverged, and 1,137 of 1,356 coverage sites; 29 of the 38 new
+  ones are taken. Every call priced is exact. It turns down 7,178 calls
+  where it turned down 7,487.
+* **Lockstep** over the corpus: 325,322 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes.
+* **The share of calls**: `level5` from 99.4% to 99.6%, `level13` and
+  `level37` from 99.5% to 99.6%, `level41` from 99.4% to 99.5%, `level21`
+  from 99.3% to 99.4%.
+* **What it took off.** Over the twelve movies the walk is turned down 9
+  times where it was 137, the swim runs in the ROM 4 times where it did
+  108, and level 37's frame is turned down 172 times where it was 327. A
+  player's whole frame is turned down 814 times where it was 939.
+* **Untaken by the corpus.** Nine of the new sites:
+  * a door's tile with no tile to look at, and one to look at that is not
+    a door;
+  * five squares held and a sixth wanted;
+  * a swimmer too far from the other player, and one at the level's edge;
+  * the tile search for a player in state `$06`;
+  * level 37's dart arriving, and its hidden thing finding bad ground or a
+    place off the level.
+  * The corpus runs `level37.zmv` for 4,700 frames. Run for 30,000, as I
+    did by hand, it takes the dart's arrival and the bad ground, with 0
+    diverged. The other seven no run of mine checks against the ROM.
+* **Still the ROM's.** On level 37: hiding, coming back, being hit, and
+  the state at `$82:EE0E`. Each sleeps inside the state. A player's shot
+  (`$80:ED30`) where the pose that fires is the ROM's. A swimmer's whole
+  frame is still taken a piece at a time, and I have not looked at which
+  piece says no.
+* **Next.** The two at the top stay the ROM's on purpose (`$80:897F` and
+  `$80:9512`). After them: a level's start (`$80:857E` on), the screens'
+  clocks in bank `$82`, a player's shot and the poses that fire
+  (`$80:D4F4`, `$80:EE82`, `$80:ED30`), level 5's and level 21's threads
+  (`$81:8CD4`, `$81:9D1F`, `$81:9AA2`), and the screen's registers reset
+  (`$80:88A9`), which writes the hardware.
+
 ### Where a werewolf's pounce comes down, a fishman on land, and five small things (2026-10-06)
 
 What the 65816 still executed over the twelve movies goes from 0.33 to

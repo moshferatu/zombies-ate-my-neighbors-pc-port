@@ -7,6 +7,8 @@
 #include "port/frontend.h"  // the frame count
 #include "port/oam.h"  // the display record's fields
 #include "port/rng.h"
+#include "port/terrain.h"
+#include "port/thread.h"
 
 bool seeker_step_supported(uint16_t way) { return way < SEEKER_WAYS; }
 
@@ -78,12 +80,16 @@ static void ran(Seeker* s, int block) { s->k->blocks[block]++; }
 // `LDX $0E : LDY $10 : JSL actor_nearest`. A is how far, X is who.
 static void look(Seeker* s) {
   PortCpu* c = s->c;
+  static ActorNearestWork unkept;
+  ActorNearestWork* work = s->k->looks < SEEKER_MAX_LOOKS
+                               ? &s->k->nearest[s->k->looks++]
+                               : &unkept;
   c->y = field(s, SEEKER_DP_Y);
   uint16_t dist = 0;
-  c->x = actor_nearest_counted(s->w, field(s, SEEKER_DP_X), c->y, &dist,
-                               &s->k->nearest);
+  c->x = actor_nearest_counted(s->w, field(s, SEEKER_DP_X), c->y, &dist, work);
   c->a = dist;
-  s->k->looked = true;
+  // Its last subtraction steps a record's address down, and never overflows.
+  set_v(c, false);
 }
 
 // `LDX $08 : JSL actor_bearing`: which way `whom` is from here.
@@ -125,8 +131,17 @@ static void draw(Seeker* s) {
   c->a = r.a;
   set_c(c, r.c);
   set_v(c, r.v);
-  s->k->drew = true;
-  s->k->drew_overflow = r.v;
+  if (s->k->draws < SEEKER_MAX_DRAWS) s->k->draw_overflow[s->k->draws++] = r.v;
+}
+
+// `LDY $08 : LDA #$8000 : ORA $0000,Y : STA $0000,Y`: its record drawn.
+static void show(Seeker* s) {
+  PortCpu* c = s->c;
+  c->y = field(s, SEEKER_DP_RECORD);
+  c->a = (uint16_t)(wram_r16(s->w, (uint16_t)(c->y + ACTOR_FLAGS)) |
+                    ACTOR_DRAW);
+  set_nz16(c, c->a);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
 }
 
 // `$82:E8AC`: begin to circle, from the place opposite the way it faced,
@@ -319,46 +334,281 @@ static bool face_nearest(Seeker* s) {
   return true;
 }
 
-// `$82:EB64` and `$82:EB7A`: face them, and most frames nothing else.
-static bool watch(Seeker* s, uint16_t odds) {
+// `$82:EB64` and `$82:EB7A`: face them, and most frames nothing else. The
+// first goes on to the state at `$82:EE0E`, with its record drawn. What the
+// second goes on to sleeps, and is the ROM's.
+static bool watch(Seeker* s, uint16_t odds, bool goes_on) {
   PortCpu* c = s->c;
   if (!face_nearest(s)) return false;
   draw(s);
   cmp16(c, c->a, odds);
-  if (c->a < odds) return false;
   ran(s, SF_WATCH);
+  if (c->a < odds) {
+    if (!goes_on) return false;
+    PORT_COVER(seeker_went_on);
+    set_field(s, SEEKER_DP_STATE, SEEKER_STATE_EE0E);
+    show(s);
+    ran(s, SF_GO_EE0E);
+    return true;
+  }
   ran(s, SF_TAKEN);
   ran(s, SF_RTS);
   return true;
 }
 
+static bool blink(Seeker* s);
+
+// `$82:ED5C`: neither part of a hop is more than four pixels.
+static uint16_t clamped(Seeker* s, uint16_t far) {
+  ran(s, SF_CLAMP);
+  ran(s, far < SEEKER_HOP ? SF_TAKEN : SF_CLAMP_SET);
+  return far < SEEKER_HOP ? far : SEEKER_HOP;
+}
+
+// `$82:ED75`: where a hop at whoever it chose lands, at `$0A` and `$0C`, and
+// the picture for the way it goes. It goes along the axis they are further
+// off on, and down when they are as far both ways.
+static void aim(Seeker* s) {
+  const uint16_t target = field(s, SEEKER_DP_TARGET);
+  const uint16_t record = field(s, SEEKER_DP_RECORD);
+  const uint16_t dx = (uint16_t)(wram_r16(s->w, (uint16_t)(target + ACTOR_X)) -
+                                 field(s, SEEKER_DP_X));
+  const uint16_t dy = (uint16_t)(wram_r16(s->w, (uint16_t)(target + ACTOR_Y)) -
+                                 field(s, SEEKER_DP_Y));
+  const bool left = (dx & 0x8000u) != 0, up = (dy & 0x8000u) != 0;
+  uint16_t across = left ? (uint16_t)(0 - dx) : dx;
+  uint16_t down = up ? (uint16_t)(0 - dy) : dy;
+  ran(s, SF_AIM_X);
+  ran(s, left ? SF_NEGATE : SF_TAKEN);
+  ran(s, SF_AIM_Y);
+  ran(s, up ? SF_NEGATE : SF_TAKEN);
+  ran(s, SF_AIM_CMP);
+
+  uint16_t way;
+  if (down < across) {
+    PORT_COVER(seeker_hop_across);
+    across = clamped(s, across);
+    clamped(s, down);
+    ran(s, SF_RTS);
+    down = 0;
+    way = SEEKER_WAY_ACROSS;
+    ran(s, SF_AIM_ACROSS);
+    if (left) {
+      across = (uint16_t)(0 - across);
+      way = SEEKER_WAY_BACK;
+      ran(s, SF_AIM_BACK);
+    } else {
+      ran(s, SF_TAKEN);
+    }
+  } else {
+    PORT_COVER(seeker_hop_down);
+    ran(s, SF_TAKEN);
+    clamped(s, across);
+    down = clamped(s, down);
+    ran(s, SF_RTS);
+    across = 0;
+    way = SEEKER_WAY_DOWN;
+    ran(s, SF_AIM_DOWN);
+    if (up) {
+      down = (uint16_t)(0 - down);
+      way = SEEKER_WAY_UP;
+      ran(s, SF_AIM_UP);
+    } else {
+      ran(s, SF_TAKEN);
+    }
+  }
+  set_field(s, SEEKER_DP_STEP_X, across);
+  set_field(s, SEEKER_DP_STEP_Y, down);
+  set_field(s, SEEKER_DP_AHEAD_X,
+            (uint16_t)(wram_r16(s->w, (uint16_t)(record + ACTOR_X)) + across));
+  set_field(s, SEEKER_DP_AHEAD_Y,
+            (uint16_t)(wram_r16(s->w, (uint16_t)(record + ACTOR_Y)) + down));
+  wram_w16(s->w, (uint16_t)(record + ACTOR_META),
+           rom_word(s->rom, SEEKER_FACINGS + way));
+  ran(s, SF_AIM_PUT);
+  const uint16_t flags = wram_r16(s->w, (uint16_t)(record + ACTOR_FLAGS));
+  if (way < SEEKER_FACES_RIGHT) {
+    wram_w16(s->w, (uint16_t)(record + ACTOR_FLAGS),
+             (uint16_t)(flags & ~SEEKER_FLIPPED));
+    ran(s, SF_FACE_LEFT);
+  } else {
+    ran(s, SF_TAKEN);
+    wram_w16(s->w, (uint16_t)(record + ACTOR_FLAGS),
+             (uint16_t)(flags | SEEKER_FLIPPED));
+    ran(s, SF_FACE_RIGHT);
+  }
+  ran(s, SF_FACE_END);
+}
+
+// `$82:ECC1`: the dart. Each frame of it that begins a hop asks who is
+// nearest. Near enough, or out of hops, it goes back to watching. With
+// nobody in reach, or solid ground where the hop lands, the ROM's.
+static bool dart(Seeker* s) {
+  PortCpu* c = s->c;
+  look(s);
+  cmp16(c, c->a, SEEKER_DART_NEAR);
+  ran(s, SF_DART);
+  if (c->a < SEEKER_DART_NEAR) {
+    PORT_COVER(seeker_dart_arrived);
+    set_field(s, SEEKER_DP_STATE, SEEKER_STATE_WATCH);
+    ran(s, SF_DART_NEAR);
+    return true;
+  }
+  ran(s, SF_TAKEN);
+  const uint16_t hops = (uint16_t)(field(s, SEEKER_DP_HOPS) - 1);
+  set_field(s, SEEKER_DP_HOPS, hops);
+  set_field(s, SEEKER_DP_DIST, c->a);
+  set_field(s, SEEKER_DP_TARGET, c->x);
+  ran(s, SF_DART_COUNT);
+  if (hops & 0x8000u) {
+    // Things that touch it are told to its handler again.
+    PORT_COVER(seeker_dart_spent);
+    ran(s, SF_TAKEN);
+    c->a = SEEKER_HANDLER;
+    c->y = SEEKER_HANDLER_BANK;
+    thread_set_handler(s->w, c);
+    s->k->handler_set = true;
+    show(s);
+    set_field(s, SEEKER_DP_STATE, SEEKER_STATE_WATCH);
+    ran(s, SF_DART_OVER);
+    return true;
+  }
+  cmp16(c, c->a, SEEKER_TOO_FAR);
+  if (c->a >= SEEKER_TOO_FAR) return false;
+  ran(s, SF_DART_FAR);
+
+  aim(s);
+  TerrainRegs* ground = &s->k->ground;
+  terrain_blocked_enemy(s->w, field(s, SEEKER_DP_AHEAD_X),
+                        field(s, SEEKER_DP_AHEAD_Y), ground);
+  s->k->grounded = true;
+  c->a = ground->a;
+  c->x = ground->x;
+  c->y = ground->y;
+  set_c(c, ground->blocked);
+  set_v(c, ground->v);
+  if (ground->blocked) return false;
+  PORT_COVER(seeker_hop_began);
+  ran(s, SF_DART_AIM);
+  set_field(s, SEEKER_DP_FRAMES, SEEKER_BLINK_START);
+  set_field(s, SEEKER_DP_STATE, SEEKER_STATE_BLINK);
+  ran(s, SF_DART_SET);
+  return blink(s);
+}
+
 // `$82:ECA3`: face them, and most frames nothing else but its record set
-// to be drawn.
+// to be drawn. On the rest it begins to dart, for eight hops or up to
+// fifteen more.
 static bool hold(Seeker* s) {
   PortCpu* c = s->c;
   if (!face_nearest(s)) return false;
   draw(s);
   cmp16(c, c->a, SEEKER_HOLD_ODDS);
-  if (c->a < SEEKER_HOLD_ODDS) return false;
   ran(s, SF_WATCH);
+  if (c->a < SEEKER_HOLD_ODDS) {
+    PORT_COVER(seeker_dart_began);
+    draw(s);
+    set_c(c, false);
+    c->a = adc16(c, (uint16_t)(c->a & 0x000fu), SEEKER_HOPS_LEAST);
+    set_field(s, SEEKER_DP_HOPS, c->a);
+    set_field(s, SEEKER_DP_STATE, SEEKER_STATE_DART);
+    ran(s, SF_HOLD_GO);
+    return dart(s);
+  }
+  PORT_COVER(seeker_held);
   ran(s, SF_TAKEN);
-  c->y = field(s, SEEKER_DP_RECORD);
-  c->a = (uint16_t)(wram_r16(s->w, (uint16_t)(c->y + ACTOR_FLAGS)) |
-                    ACTOR_DRAW);
-  set_nz16(c, c->a);
-  wram_w16(s->w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
+  show(s);
   ran(s, SF_SHOW);
   return true;
 }
 
+// A step each way of 24 to 39 pixels, one way or the other by the draw's
+// low bit. `ROR` halves the sum and keeps that bit.
+static uint16_t place_step(Seeker* s) {
+  PortCpu* c = s->c;
+  draw(s);
+  set_c(c, false);
+  const uint16_t sum =
+      adc16(c, (uint16_t)(c->a & 0x001fu), SEEKER_PLACE_LEAST);
+  const bool back = (sum & 1u) != 0;
+  set_c(c, back);
+  ran(s, SF_PLACE_DRAW);
+  ran(s, back ? SF_NEGATE : SF_TAKEN);
+  return back ? (uint16_t)(0 - (sum >> 1)) : (uint16_t)(sum >> 1);
+}
+
+// `$82:EBCF`: hidden, it tries a place near whoever is nearest. Ground that
+// will not do, or a place off the level, and it tries again next frame.
+// Coming back sleeps, and is the ROM's. So is nobody in reach.
+static bool place(Seeker* s) {
+  PortCpu* c = s->c;
+  look(s);
+  cmp16(c, c->a, SEEKER_TOO_FAR);
+  set_field(s, SEEKER_DP_TARGET, c->x);
+  if (c->a >= SEEKER_TOO_FAR) return false;
+  ran(s, SF_PLACE);
+  ran(s, SF_TAKEN);
+  const uint16_t target = c->x;
+
+  uint16_t step = place_step(s);
+  set_c(c, false);
+  const uint16_t x =
+      adc16(c, step, wram_r16(s->w, (uint16_t)(target + ACTOR_X)));
+  set_field(s, SEEKER_DP_STEP_X, x);
+  step = place_step(s);
+  ran(s, SF_PLACE_X);
+  set_c(c, false);
+  const uint16_t y =
+      adc16(c, step, wram_r16(s->w, (uint16_t)(target + ACTOR_Y)));
+  set_field(s, SEEKER_DP_STEP_Y, y);
+
+  TerrainRegs* ground = &s->k->ground;
+  terrain_footprint_bit12(s->w, x, y, ground);
+  s->k->grounded = true;
+  c->a = ground->a;
+  c->x = ground->x;
+  c->y = ground->y;
+  set_c(c, ground->blocked);
+  set_v(c, ground->v);
+  ran(s, SF_PLACE_Y);
+  if (ground->blocked) {
+    PORT_COVER(seeker_place_bad_ground);
+    ran(s, SF_TAKEN);
+    ran(s, SF_RTS);
+    return true;
+  }
+  BoundsRegs map;
+  terrain_out_of_bounds(s->w, x, y, &map);
+  s->k->mapped = true;
+  s->k->map_exit = map.exit;
+  c->a = map.a;
+  c->x = x;
+  c->y = y;
+  set_c(c, map.c);
+  if (!map.c) return false;
+  PORT_COVER(seeker_place_off_level);
+  ran(s, SF_PLACE_MAP);
+  ran(s, SF_TAKEN);
+  ran(s, SF_RTS);
+  return true;
+}
+
 // `$82:ECF7`: its record at one of two places, and drawn or not by the
-// game's frame. After the third the ROM goes on to something else.
+// game's frame. After the third its place is the further one, and it darts
+// on from there.
 static bool blink(Seeker* s) {
   PortCpu* c = s->c;
   set_c(c, true);
   c->a = sbc16(c, field(s, SEEKER_DP_FRAMES), SEEKER_BLINK_FRAMES);
   ran(s, SF_BLINK);
-  if (c->a & 0x8000u) return false;
+  if (c->a & 0x8000u) {
+    PORT_COVER(seeker_hopped);
+    ran(s, SF_TAKEN);
+    set_field(s, SEEKER_DP_X, field(s, SEEKER_DP_AHEAD_X));
+    set_field(s, SEEKER_DP_Y, field(s, SEEKER_DP_AHEAD_Y));
+    ran(s, SF_DART_ON);
+    return dart(s);
+  }
   set_field(s, SEEKER_DP_FRAMES, c->a);
   c->x = (uint16_t)(c->a & 4);
   c->y = field(s, SEEKER_DP_RECORD);
@@ -399,18 +649,23 @@ bool seeker_frame(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k) {
       break;
     case SEEKER_STATE_WATCH:
       PORT_COVER(seeker_watched);
-      if (!watch(&s, SEEKER_WATCH_ODDS)) return false;
+      if (!watch(&s, SEEKER_WATCH_ODDS, true)) return false;
       break;
     case SEEKER_STATE_WATCH_B:
       PORT_COVER(seeker_watched_b);
-      if (!watch(&s, SEEKER_WATCH_B_ODDS)) return false;
+      if (!watch(&s, SEEKER_WATCH_B_ODDS, false)) return false;
       break;
     case SEEKER_STATE_HOLD:
       if (!hold(&s)) return false;
-      PORT_COVER(seeker_held);
       break;
     case SEEKER_STATE_BLINK:
       if (!blink(&s)) return false;
+      break;
+    case SEEKER_STATE_DART:
+      if (!dart(&s)) return false;
+      break;
+    case SEEKER_STATE_PLACE:
+      if (!place(&s)) return false;
       break;
     default:
       return false;

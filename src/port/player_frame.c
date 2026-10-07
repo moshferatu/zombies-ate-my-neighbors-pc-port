@@ -263,6 +263,10 @@ static bool move(Frame* f) {
   } else if (movement == PLAYER_MOVEMENT_STUCK_WALK) {
     f->log->walk_kind = WALK_STUCK;
     stuck_walk(f->w, f->rom, f->page, &f->log->walk);
+  } else if (movement == PLAYER_MOVEMENT_SWIM) {
+    f->log->walk_kind = WALK_SWIM;
+    if (!swim_walk_checked(f->w, f->rom, f->page, &f->log->walk))
+      return false;
   } else if (movement == PLAYER_MOVEMENT_WALK) {
     PORT_COVER(player_frame_walked);
     if (!player_walk_checked(f->w, f->rom, f->page, &f->log->walk))
