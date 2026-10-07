@@ -422,6 +422,15 @@
   X(lob_burst,        "lob_burst",          "everything within forty pixels told") \
   X(lob_burst_again,  "lob_burst",          "...and told again a tick later") \
   X(lob_ended,        "lob_end",            "its weight given back") \
+  /* $81:EC03, $81:EC30 -- weapon 5's shot. */                                    \
+  X(shot5_began,      "shot5_begin",        "its record, in front of whoever fired it") \
+  X(shot5_aimed,      "shot5_aim",          "...at the weapon's mouth, with the picture for its way") \
+  X(shot5_flew,       "shot5_frame",        "a frame over a tile without bit 1") \
+  X(shot5_flew_over,  "shot5_frame",        "...or over one with it and none of the three: one of sixty") \
+  X(shot5_spent,      "shot5_frame",        "...the sixtieth, and it is gone") \
+  X(shot5_struck,     "shot5_frame",        "a tile with bit 1 and one of the three: it stops") \
+  X(shot5_blocked,    "shot5_frame",        "carry from the test: it stops, the tile left alone") \
+  X(shot5_burst,      "shot5_burst",        "its record where it bursts") \
   /* $80:F300 a pose's picture, called on its own -- see port/pose.h. */        \
   X(pose_show_set,    "pose_show",          "the entry's word set in the record's flags") \
   X(pose_show_masked, "pose_show",          "...or a mask, and its bits cleared") \
@@ -1347,7 +1356,10 @@
   X(martian_walked, "martian_frame", "a pass of walking") \
   X(martian_arrived, "martian_frame", "a pass of coming in across the top") \
   X(martian_held_fire, "martian_frame", "something lined up with it while it cooled") \
-  X(martian_fired, "martian_frame", "...or with nothing to wait for: the ROM's, so the pass was declined") \
+  X(martian_fired, "martian_frame", "...or with nothing to wait for, arriving: the ROM's, so the pass was declined") \
+  X(martian_walker_fired, "martian_frame", "...or walking: it fired, and the frame ends at the shot's spawn") \
+  X(martian_woke, "martian_wake", "the rest of a walking pass that fired") \
+  X(martian_began, "martian_begin", "a martian's record and its page set up") \
   X(martian_shot_begun, "martian_shoot", "the picture it fires in, and the shot's thread asked for") \
   X(martian_shot_cooling, "martian_shoot", "called while it cools: one counted off") \
   X(martian_shown, "martian_show", "the walking picture, called by the ROM") \
@@ -1490,6 +1502,8 @@
   X(fishman_begun, "fishman_patrol_begin", "it begins, to its first sleep") \
   X(fishman_ended, "fishman_patrol_end", "one that left of itself: its record given back") \
   X(fishman_left_unshown, "fishman_frame", "...found when it came to show itself") \
+  X(fishman_swept, "fishman_sweep_tick", "its second record at the next place in the ring") \
+  X(fishman_sweep_over, "fishman_sweep_tick", "...or the five ticks are up, and the record is to be freed") \
                                                                                    \
   /* $81:AC1E werewolf_frame -- the werewolf's three states. */                    \
   X(werewolf_ran, "werewolf_frame", "a pass running") \
@@ -1523,6 +1537,7 @@
   X(footballer_went_at_them, "footballer_frame", "a player within 32, to one side: it goes at them") \
   X(footballer_turned_back, "footballer_frame", "stopped by the ground: it turns") \
   X(footballer_left, "footballer_frame", "neither player within 320: it leaves") \
+  X(footballer_shown, "footballer_show", "its picture, called by the ROM") \
   X(footballer_sent_off, "footballer_frame", "a pass sent off") \
   X(footballer_off_turned, "footballer_frame", "...stopped by the ground: it turns") \
   X(footballer_ran_off, "footballer_frame", "...and its picture is off the screen: it ends") \

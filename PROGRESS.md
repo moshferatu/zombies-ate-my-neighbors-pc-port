@@ -5,6 +5,98 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### A martian's pass that fires, weapon 5's shot, and three small pieces (2026-10-07)
+
+What the 65816 still executed over the twelve movies goes from 217,485 to
+**203,078** instructions of work. Live, all twelve stay at 99.9% of the
+work, and `level17` reads 100.0%. The game registers 455 routines, 10 more.
+
+* **A martian's pass that fires**, in `port/martian.c`. A shot sleeps
+  twelve ticks in the middle of the call that fires it, so such a pass was
+  the ROM's, and so was the pass it woke in. A walker's is now two
+  stretches. The frame ends at the `JSL` that asks for the shot's thread,
+  three return addresses down. The rest is a new entry at the `RTS` the
+  sleep comes back to, `$81:99C9`.
+  * One that fires while arriving is still the ROM's. Its shot is called
+    two ways, and the stack is not the same shape.
+  * The rest of a pass is turned down when its look chooses no way to go:
+    14 of 164 on `level21`. See `docs/cosim.md` for why.
+* **A martian's start and its end.** `$81:9AC0` takes its record and clears
+  its page, as far as its first pictures. `$81:9A17` and `$81:9A7B` are two
+  more copies of the seven instructions a thread ends with, and
+  `record_end` in `port/begin.c` has them.
+* **Weapon 5's shot**, new in `port/shot5.c`: four stretches of the thread
+  at `$81:EBE2`.
+  * `$81:ED1A`, its record, in front of whoever fired it.
+  * `$81:EC79`, that record moved to the mouth of the weapon, with the
+    picture for the way it goes.
+  * `$81:EC03`, a frame of its flight.
+  * `$81:EC30`, where it bursts.
+* **What stops that shot.** Each frame it asks the ground about one point.
+  Carry stops it and leaves the tile alone. A tile with bit 1 of its
+  attributes and any of bits 4, 5 and 6 stops it, and the ROM then changes
+  the tile. A tile with bit 1 alone it flies over, for sixty such frames in
+  all, and then it is gone without bursting. What the bits are to the game
+  I have not established. By what the code does this is still the bazooka.
+  I have not seen it on a screen.
+* **Its step is not the same every way.** Four pixels a frame up or left,
+  three down or right, two and two on a slant.
+* **A footballer's picture**, `$81:C824`, for the ROM to call in a pass
+  that is its own. The C was there already, inside the frame.
+* **A tick of a fishman's sweep**, `$81:E381`. The state at `$81:E31C`
+  takes a second record with no picture and collide id 3, and for five
+  ticks puts it at the next of eight places in a ring about the fishman.
+  By what the code does that is a swipe at whoever is beside it on land.
+  The port had named the state a lurk, which was a guess. The header says
+  so now. I have not seen it on a screen.
+
+* **Checked.** The corpus verifies at 33,438,605 calls across 51 movies
+  with 0 diverged, and 1,183 of 1,406 coverage sites. Every call priced is
+  exact. It turns down 3,561 calls where it turned down 3,709: a walker's
+  pass that fires is no longer turned down.
+* **Lockstep** over the corpus: 325,322 passes, 48 of 51 never part, the
+  same three level-25 movies. The mean drift is smaller on thirteen movies
+  and larger on none. `level41` goes from 1,125.0 cycles to 841.3, and the
+  seven level-21 movies by between 0.5% and 10%. On one, `level24-carry`, the
+  worst single figure is larger, 84,096 for 83,924, with a smaller mean. I
+  did not run any of this round's entries alone to see which did what.
+* **The share of calls**: `level21` from 99.4% to 99.6%, `level5` from
+  99.7% to 99.8%. The other ten read as they did.
+* **What it took off.** Bank `$81` goes from 59,856 instructions to
+  45,449. `level21` alone goes from 36,636 to 27,692.
+
+* **Two mistakes of mine the checks caught.**
+  * The registry was full. Four entries took it to 449 with room for 448,
+    and `zamn_cosim` said so and stopped. It is 512 now.
+  * `$81:EC79` was priced 8 cycles dear, on every call. It reads two words
+    through X from a table in the cartridge, and I had priced them as reads
+    of WRAM.
+* **Untaken by the corpus.** One of the 14 new sites: the shot's sixtieth
+  frame over a tile with bit 1 alone, where it is gone. No run of mine
+  checks that against the ROM.
+* **Not established.**
+  * The shot is handed a side, 0 or 2 in `port/score.h`'s sense, and its
+    start reads a height and a table of places by it. Why those differ by
+    side I have not established. I take it to be that the two characters
+    are drawn differently, and have not run it with two players.
+  * A martian's start clears `$32` and `$7E` of its page. I have not read
+    what uses them.
+* **Still the ROM's.**
+  * What weapon 5's shot does to the tile it stops at, `$81:ECAC`. It
+    calls `$80:AB5A`, which has no entry.
+  * The first stretch of that shot's thread, and the first test of the
+    ground it makes.
+  * A martian that fires while it is arriving.
+  * The creature at `$81:9063` on levels 13 and 41: `$81:9530` and
+    `$81:9107`, about 3,500 instructions. I have not found out what it is,
+    so I have not named anything of its.
+* **Next.** Bank `$82` is now 49,318 of the 203,078, a quarter. What
+  every movie has of it is the screen a level opens with, which waits on
+  `WAI` and writes the hardware; the rest is threads of levels 37, 21 and
+  5. That is by the addresses in the profile. I have not gone through it.
+  After it: `$80:AB5A`, which the shot's tile wants. `$80:857E`, a level's
+  start. The creature at `$81:9063`.
+
 ### The pieces of a player's pose, two poses that sleep, and the starts and ends of five threads (2026-10-07)
 
 What the 65816 still executed over the twelve movies goes from 244,319 to

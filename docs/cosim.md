@@ -17804,3 +17804,94 @@ Every priced call is refresh-exact. Declines go from 3,521 to 3,709.
 
 Lockstep: 325,322 passes, 48 of 51 never part, the same three. Drift is
 smaller on seven movies and larger on none.
+
+## A martian's pass that fires, weapon 5's shot, and three small pieces (2026-10-07)
+
+Ten entries more, 455. Over the twelve live movies the ROM's instructions
+go from 217,485 to 203,078.
+
+### A pass split at a sleep
+
+A martian's shot is `$81:9981`. With nothing to wait for it starts the
+shot's thread and then calls `thread_yield` for twelve ticks, inside the
+state, inside the pass. The pass was the ROM's for that, both halves.
+
+A walker's is now two stretches.
+
+**The first** is the frame itself, with one more exit:
+`MARTIAN_SHOOT_SPAWN_PC`, the `JSL thread_spawn`. The ROM gets there with
+three words on its stack that it will come back through, and the port
+pushes nothing, so the shim writes them and moves S down six:
+
+| At | Word | What pushed it |
+|---|---|---|
+| S-1 | `$99FD` or `$9A61` | the loop's `PEA` |
+| S-3 | `$9D3D` | the walk's `JSR $9D1F` |
+| S-5 | `$9D28` | the `PEA` the shot is called through |
+
+**The second** is `martian_wake`, at `$81:99C9`: the `RTS` after the
+sleep. It reads those three words back. They say it is a walk's shot, and
+which of the two loops the pass belongs to, since a walker can be in
+either. Anything else on the stack and it is turned down.
+
+It leaves six bytes higher than it came in. `dead_stack` waives what is
+between the deepest the stack went and where it started, and these bytes
+are above where it started. So the shim writes them as the ROM leaves
+them: `$9DAF`, the pass's `JSR` to the picture, and `$9CAD`, that one's to
+the setter. Those are the last two calls a pass makes at those depths
+whenever it steps.
+
+When its look chooses no way to go the pass returns without the step and
+the picture, and what is left there is some call's of the look. That path
+is turned down: 14 of 164 on `level21` at 20,000 frames.
+
+One that fires arriving stays the ROM's. It is called by `JSR $9D1F` from
+one place and by a plain `JSR $9981` from another, so the wake would have
+two more shapes to know.
+
+### The registry's limit
+
+Four entries took the count to 449 and `COSIM_MAX_ROUTINES` was 448.
+`cosim_init` printed that and stopped, as it was written to. It is 512.
+Changing it rebuilds everything that includes `cosim.h`.
+
+### A table read through X
+
+`$81:EC79` has `LDA $0000,X` and `LDA $0002,X` with X pointing into the
+cartridge. `verify` had the stretch 8 dear on all nine calls of each
+movie. I take it `tools/cycles816.py` priced the operand `$0000` as WRAM,
+8 cycles a byte, where in FastROM these four bytes are 6: taking 8 off
+made every call exact, and I did not read the tool. The run is `{624, 59, 9}`: 8 off
+the cycles, and the four bytes counted with the program's, so that with
+FastROM off they cost 8 again.
+
+### An entry after a `JSL`, an exit at an `RTS`
+
+`shot5_aim` begins where `JSL pictures_play` comes back, in the middle of
+a routine that was called by `JSR`. It ends by `JMP $FF2A`, whose `RTS` is
+the routine's. So the entry names that `RTS` as its exit, the harness
+stops on it, and the ROM makes it. Last round's pose pieces do the same.
+
+`shot5_begin` ends at a `JSL` to `$80:9D6A`, six instructions that turn a
+side into a score slot (`port/collide.h` has the note). It has no entry
+and is the ROM's.
+
+### Overflow, claimed when it is known
+
+`footballer_show` is a called routine, so it hands back every register and
+flag. Its overflow is whatever `player_bearing` left, which the port
+follows only when a player was there to measure to. With neither, the
+shim takes V out of `out->flags`.
+
+`shot5_frame` does not claim V at all. The ground's test makes sums of its
+own that the port does not follow.
+
+### Checked
+
+33,438,605 calls across 51 movies, 0 diverged. 1,183 of 1,406 sites; of
+the 14 new, one is untaken: `shot5_spent`. Every priced call is
+refresh-exact. Declines go from 3,709 to 3,561.
+
+Lockstep: 325,322 passes, 48 of 51 never part, the same three. Mean drift
+is smaller on thirteen movies and larger on none. The worst single drift
+is larger on `level24-carry`, 84,096 for 83,924.

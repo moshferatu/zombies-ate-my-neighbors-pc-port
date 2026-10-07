@@ -107,6 +107,8 @@ const RecordEnd RECORD_ENDS[RECORD_END_COUNT] = {
     [RECORD_END_ZOMBIE_THIRD] = {0x818c7eu, 0x818c8cu, 0x0014, 0x08},
     [RECORD_END_SLIME_GLOB] = {0x81cf39u, 0x81cf47u, 0x0004, 0x08},
     [RECORD_END_SHOT_5] = {0x81ec60u, 0x81ec6eu, 0x0006, 0x0a},
+    [RECORD_END_MARTIAN] = {0x819a17u, 0x819a25u, 0x001e, 0x08},
+    [RECORD_END_MARTIAN_ARRIVAL] = {0x819a7bu, 0x819a89u, 0x001e, 0x08},
 };
 
 bool record_end(Wram* w, PortCpu* c, const RecordEnd* end) {

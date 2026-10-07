@@ -28,6 +28,19 @@
 //   $81:E1D6  fishman_landing        are all six tiles under a point
 //                                    somewhere to land? To either `RTS`.
 //
+// And so is a tick of the state at `$81:E31C`, which the one that comes
+// ashore gets to on land:
+//
+//   $81:E381  fishman_sweep_tick     from where its sleep comes back to the
+//                                    next, or to its second record freed
+//
+// **That state sweeps a second record round it.** It takes a record with no
+// picture and collide id 3, and for five ticks puts it at the next of eight
+// places in a ring about itself: 24 to either side, or 8 above or below and
+// up to 8 across. It starts from the way its target is. By what the code
+// does that is a swipe at whoever is next to it. I have not seen it on a
+// screen, and the name the port had for the state, a lurk, was a guess.
+//
 // What is here is the swimming, the flight of a leap out and of the dive back,
 // the landing, and the walk on land of the one that keeps to its pool. What
 // is not is the thread's setup, the beginning of a leap, its bite, its
@@ -164,7 +177,12 @@
 #define FISHMAN_DP_WATER_WANTED 0x0c  // `port/wander.h`'s two words
 #define FISHMAN_DP_WATER_HAD 0x0e
 #define FISHMAN_DP_BLOW 0x42          // a bite's second record, or `$FFFF`
-#define FISHMAN_DP_BLOW_AT 0x44
+#define FISHMAN_DP_BLOW_AT 0x44       // the sweep: where in the ring, in fours
+#define FISHMAN_SWEEP_PC 0x81e381u
+#define FISHMAN_SWEEP_YIELD_PC 0x81e37du  // `JSL thread_yield`, A already 1
+#define FISHMAN_SWEEP_FREE_PC 0x81e387u   // `JSL actor_slot_free`, the record in A
+#define FISHMAN_SWEEP_RING 0xe3c0u        // across and down, eight of them
+#define FISHMAN_SWEEP_RING_SIZE 0x20
 #define FISHMAN_DP_UNREAD 0x7e        // cleared; nothing here reads it
 // Sliding borrows the word a leap keeps its part across in.
 #define FISHMAN_DP_AXES_TAKEN FISHMAN_DP_PART_X
@@ -357,6 +375,12 @@ void fishman_patrol_begin(Wram* w, const Rom* rom, PortCpu* c,
 // False unless it left of itself with its record its own.
 bool fishman_patrol_end_supported(const Wram* w, uint16_t page);
 void fishman_patrol_end(Wram* w, PortCpu* c, FishmanEndLog* log);
+
+// `$81:E381`. False for a place the ring does not have, or a record that is
+// none.
+bool fishman_sweep_supported(const Wram* w, uint16_t page);
+// True while it goes on. `*wrapped` says the ring came round to its start.
+bool fishman_sweep_tick(Wram* w, const Rom* rom, PortCpu* c, bool* wrapped);
 
 typedef enum {
   FISHMAN_SLEEPS,

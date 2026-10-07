@@ -7,6 +7,10 @@
 //
 //   $81:C8A1  footballer_frame
 //
+// And one piece of it, for the ROM to call in a pass that is its own:
+//
+//   $81:C824  footballer_show    its picture where it now is, to the `RTS`
+//
 // What is here is the running. What is not is the thread's setup, the tackle
 // it makes when it runs into a player, which sleeps in the middle, and its
 // end. A pass in one of those states is the ROM's.
@@ -47,6 +51,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/oam.h"  // the works and registers of what it asks
 #include "port/terrain.h"
 #include "port/wram.h"
@@ -148,5 +153,15 @@ bool footballer_frame_supported(const Wram* w, uint16_t page);
 // the ROM's after all. WRAM is then part written.
 FootballerFate footballer_frame(Wram* w, const Rom* rom, uint16_t page,
                                 bool carry, FootballerLog* log);
+
+#define FOOTBALLER_SHOW_PC 0x81c824u
+#define FOOTBALLER_SHOW_RTS_PC 0x81c860u
+
+// `$81:C824`, called. False for a way or a picture the tables do not have.
+bool footballer_show_supported(const Wram* w, uint16_t page);
+// It comes back as the ROM's does. `*v_known` is false when nothing it asked
+// wrote overflow that the port follows.
+void footballer_show(Wram* w, const Rom* rom, PortCpu* c, FootballerLog* log,
+                     bool* v_known);
 
 #endif

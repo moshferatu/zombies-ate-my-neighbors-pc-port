@@ -411,13 +411,37 @@ static void show(Footballer* f) {
   }
 }
 
-bool footballer_frame_supported(const Wram* w, uint16_t page) {
-  const uint16_t state = wram_r16(w, (uint16_t)(page + FOOTBALLER_DP_STATE));
+bool footballer_show_supported(const Wram* w, uint16_t page) {
   const uint16_t way = wram_r16(w, (uint16_t)(page + FOOTBALLER_DP_WAY));
   const uint16_t picture =
       wram_r16(w, (uint16_t)(page + FOOTBALLER_DP_PICTURE));
   if (way > FOOTBALLER_LAST_WAY || (way & 1) != 0) return false;
-  if (picture >= FOOTBALLER_PICTURES * 2 || (picture & 1) != 0) return false;
+  return picture < FOOTBALLER_PICTURES * 2 && (picture & 1) == 0;
+}
+
+void footballer_show(Wram* w, const Rom* rom, PortCpu* c, FootballerLog* log,
+                     bool* v_known) {
+  *log = (FootballerLog){0};
+  Footballer f = {w, rom, c->d,
+                  wram_r16(w, (uint16_t)(c->d + FOOTBALLER_DP_RECORD)), log,
+                  {flag(c, PORT_P_C), false, false, false}};
+  PORT_COVER(footballer_shown);
+  show(&f);
+
+  // `TAX : BNE`, and the `INC` of its fate when nobody was near.
+  const PlayerPickRegs* r = &log->players[0];
+  c->a = r->a;
+  c->x = r->a;
+  c->y = r->y;
+  set_nz16(c, log->gone ? field(&f, FOOTBALLER_DP_FATE) : r->a);
+  set_c(c, r->c);
+  *v_known = f.flags.v_set;
+  if (f.flags.v_set) set_v(c, f.flags.v);
+}
+
+bool footballer_frame_supported(const Wram* w, uint16_t page) {
+  const uint16_t state = wram_r16(w, (uint16_t)(page + FOOTBALLER_DP_STATE));
+  if (!footballer_show_supported(w, page)) return false;
   return state == FOOTBALLER_STATE_RUN || state == FOOTBALLER_STATE_STAND ||
          state == FOOTBALLER_STATE_RUN_LOOSE ||
          state == FOOTBALLER_STATE_VEER || state == FOOTBALLER_STATE_RUN_OFF;

@@ -4,6 +4,7 @@
 
 #include <stddef.h>
 
+#include "port/begin.h"  // RECORD_SEARCHED_FIRST
 #include "port/coverage.h"
 #include "port/flags.h"
 #include "port/rng.h"
@@ -25,9 +26,8 @@ typedef struct {
 #define MARTIAN_ABOVE_MOST 0x0078
 // ...and the draw that fires downwards has to come in under this.
 #define MARTIAN_DRAW_FIRE 0x1e
-// Passes between shots, and the thread a shot is: see `port/bubble.h`.
+// Passes between shots.
 #define MARTIAN_SHOT_COOLDOWN 0x003c
-#define MARTIAN_SHOT_THREAD 0xf380u
 // `$81:99CD`: the picture's number it fires in, for each direction.
 #define MARTIAN_SHOT_PICTURES 0x99cdu
 // Passes a picture lasts, less one.
@@ -189,8 +189,22 @@ static bool a_player_is_near(Martian* m, uint16_t reach_at) {
 // Shooting
 // ---------------------------------------------------------------------------
 
-// `$81:9981`: fire along `way`, if it has not fired lately. The shot itself
-// is the ROM's, and `martian_shoot` below is the start of it.
+// The picture it fires in, facing the way it fires, and sixty passes until
+// the next. True if that way is to the left.
+static bool fire(Martian* m, uint16_t way) {
+  set_field(m, MARTIAN_DP_COOLDOWN, MARTIAN_SHOT_COOLDOWN);
+  show(m, table_word(m, MARTIAN_SHOT_PICTURES, way));
+  const uint16_t flags = record_field(m, ACTOR_FLAGS);
+  const bool mirrored = way >= WAY_FIRST_LEFT;
+  set_record_field(m, ACTOR_FLAGS,
+                   mirrored ? (uint16_t)(flags | MARTIAN_MIRROR)
+                            : (uint16_t)(flags & ~MARTIAN_MIRROR));
+  return mirrored;
+}
+
+// `$81:9981`: fire along `way`, if it has not fired lately. The shot's
+// thread is the ROM's to start, and the pass sleeps once it has. A walker's
+// pass goes that far here. One arriving is the ROM's.
 static void shoot(Martian* m, uint16_t way) {
   const Point me = position(m);
   set_field(m, MARTIAN_DP_SHOT_WAY, way);
@@ -198,12 +212,21 @@ static void shoot(Martian* m, uint16_t way) {
   set_field(m, MARTIAN_DP_SHOT_Y, me.y);
   set_field(m, MARTIAN_DP_SHOT_SLOT, 0xffff);
   const uint16_t cooldown = field(m, MARTIAN_DP_COOLDOWN);
-  if (cooldown == 0) {
+  if (cooldown != 0) {
+    set_field(m, MARTIAN_DP_COOLDOWN, (uint16_t)(cooldown - 1));
+    return;
+  }
+  if (m->log->state != MARTIAN_STATE_WALK ||
+      !martian_shoot_supported(m->w, m->rom, m->page, way)) {
     PORT_COVER(martian_fired);
     m->log->declined = true;
     return;
   }
-  set_field(m, MARTIAN_DP_COOLDOWN, (uint16_t)(cooldown - 1));
+  PORT_COVER(martian_walker_fired);
+  m->log->fired = true;
+  m->log->shot_way = way;
+  m->log->shot_mirrored = fire(m, way);
+  flags_carry(&m->flags, m->log->shot_mirrored);
 }
 
 // Which way something is lined up with it, doubled, or 0 for nothing.
@@ -365,22 +388,27 @@ static void show_walking(Martian* m) {
   log->new_picture = cycle_moved_on(m);
 }
 
-// `$81:9D30`: shoot at anything lined up, look now and then, and go the way
-// the last look chose.
-static void walk(Martian* m) {
-  PORT_COVER(martian_walked);
-  const uint16_t way = lined_up_way(m);
-  if (way != 0) {
-    PORT_COVER(martian_held_fire);
-    m->log->held_fire = true;
-    shoot(m, way);
-    if (m->log->declined) return;
-  }
+// `$81:9D3E`: look now and then, and go the way the last look chose.
+static void walk_on(Martian* m) {
   if (ran_out(m, MARTIAN_DP_LOOK_TIMER) && !look(m)) return;
 
   m->log->steps = 1;
   step(m, field(m, MARTIAN_DP_DIRECTION), &m->log->step[0]);
   show_walking(m);
+}
+
+// `$81:9D30`: shoot at anything lined up, and then walk on. A pass that
+// fires stops there, and `martian_wake` is the rest of it.
+static void walk(Martian* m) {
+  PORT_COVER(martian_walked);
+  const uint16_t way = lined_up_way(m);
+  if (way != 0) {
+    m->log->held_fire = true;
+    shoot(m, way);
+    if (m->log->declined || m->log->fired) return;
+    PORT_COVER(martian_held_fire);
+  }
+  walk_on(m);
 }
 
 // ---------------------------------------------------------------------------
@@ -514,6 +542,16 @@ bool martian_frame_supported(const Wram* w, uint16_t page) {
   return wram_r16(w, (uint16_t)(page + MARTIAN_DP_CYCLE)) <= 3;
 }
 
+// What the pass leaves in carry and overflow, and whether the thread goes
+// on.
+static bool pass_over(Martian* m) {
+  m->log->c = m->flags.c;
+  m->log->v = m->flags.v;
+  m->log->c_set = m->flags.c_set;
+  m->log->v_set = m->flags.v_set;
+  return field(m, MARTIAN_DP_FATE) == 0;
+}
+
 bool martian_frame(Wram* w, const Rom* rom, uint16_t page, MartianLog* log) {
   MartianLog scratch = {0};
   Martian m = {w, rom, page, wram_r16(w, (uint16_t)(page + MARTIAN_DP_RECORD)),
@@ -523,19 +561,76 @@ bool martian_frame(Wram* w, const Rom* rom, uint16_t page, MartianLog* log) {
     walk(&m);
   else
     arrive(&m);
+  return pass_over(&m);
+}
 
-  m.log->c = m.flags.c;
-  m.log->v = m.flags.v;
-  m.log->c_set = m.flags.c_set;
-  m.log->v_set = m.flags.v_set;
-  return field(&m, MARTIAN_DP_FATE) == 0;
+bool martian_wake(Wram* w, const Rom* rom, uint16_t page, MartianLog* log) {
+  MartianLog scratch = {0};
+  Martian m = {w, rom, page, wram_r16(w, (uint16_t)(page + MARTIAN_DP_RECORD)),
+               log ? log : &scratch, {false, false, false, false}};
+  PORT_COVER(martian_woke);
+  m.log->state = MARTIAN_STATE_WALK;
+  walk_on(&m);
+  return pass_over(&m);
+}
+
+// ---------------------------------------------------------------------------
+// The thread's start
+// ---------------------------------------------------------------------------
+
+bool martian_begin(Wram* w, PortCpu* c, uint16_t* record_out) {
+  SlotAllocRegs slot;
+  actor_slot_alloc(w, c->db, &slot);
+  if (slot.c) return false;
+  PORT_COVER(martian_began);
+  const uint16_t record = slot.a;
+  *record_out = record;
+  Martian m = {w, NULL, c->d, record, NULL, {false, false, false, false}};
+  // The search for a record subtracts for each it passes over, which leaves
+  // overflow clear; taking the first, it leaves it as it was.
+  if (record != RECORD_SEARCHED_FIRST) set_v(c, false);
+  set_c(c, slot.c);
+
+  const Point place = {field(&m, MARTIAN_DP_SHOT_X),
+                       field(&m, MARTIAN_DP_SHOT_Y)};
+  set_field(&m, MARTIAN_DP_RECORD, record);
+  set_field(&m, MARTIAN_DP_X, place.x);
+  set_field(&m, MARTIAN_DP_Y, place.y);
+  set_record_field(&m, ACTOR_X, place.x);
+  set_record_field(&m, ACTOR_Z, 0);
+  set_record_field(&m, ACTOR_Y, place.y);
+  set_record_field(&m, ACTOR_META, MARTIAN_START_PICTURE);
+  set_record_field(&m, ACTOR_META_BANK, MARTIAN_PICTURE_BANK);
+  set_record_field(&m, ACTOR_THREAD, wram_r16(w, W_SCHED_CUR_TASK));
+  set_record_field(&m, ACTOR_COLLIDE_ID, MARTIAN_COLLIDE_ID);
+  set_record_field(&m, ACTOR_FLAGS,
+                   (uint16_t)(record_field(&m, ACTOR_FLAGS) | ACTOR_DRAW));
+  set_record_field(&m, ACTOR_ATTR, MARTIAN_START_ATTR);
+
+  set_field(&m, MARTIAN_DP_COOLDOWN, 0);
+  set_field(&m, MARTIAN_DP_CYCLE, 0);
+  set_field(&m, MARTIAN_DP_PICTURE_TIMER, 0);
+  set_field(&m, MARTIAN_DP_FATE, 0);
+  set_field(&m, MARTIAN_DP_LOOK_TIMER, 0);
+  set_field(&m, MARTIAN_DP_7E, 0);
+  set_field(&m, MARTIAN_DP_KILLED, 0);
+  set_field(&m, MARTIAN_DP_32, 0);
+  set_field(&m, MARTIAN_DP_SHOOT, MARTIAN_SHOOT);
+  set_field(&m, MARTIAN_DP_PICTURES, MARTIAN_START_PICTURES);
+
+  c->x = slot.x;
+  c->y = record;
+  c->a = MARTIAN_FIRST_PICTURES;
+  set_nz16(c, c->a);
+  c->pc = MARTIAN_BEGIN_PLAY_PC;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
 // A pass that fires
 // ---------------------------------------------------------------------------
 //
-// It is the ROM's, and these are two pieces of it.
+// Arriving, it is the ROM's, and these are two pieces of it.
 
 bool martian_show_supported(const Wram* w, uint16_t page) {
   return wram_r16(w, (uint16_t)(page + MARTIAN_DP_DIRECTION)) <=
@@ -592,13 +687,7 @@ void martian_shoot(Wram* w, const Rom* rom, PortCpu* c, MartianShot* shot) {
 
   PORT_COVER(martian_shot_begun);
   shot->fired = true;
-  set_field(&m, MARTIAN_DP_COOLDOWN, MARTIAN_SHOT_COOLDOWN);
-  show(&m, table_word(&m, MARTIAN_SHOT_PICTURES, way));
-  const uint16_t flags = record_field(&m, ACTOR_FLAGS);
-  shot->mirrored = way >= WAY_FIRST_LEFT;
-  set_record_field(&m, ACTOR_FLAGS,
-                   shot->mirrored ? (uint16_t)(flags | MARTIAN_MIRROR)
-                                  : (uint16_t)(flags & ~MARTIAN_MIRROR));
+  shot->mirrored = fire(&m, way);
   c->x = way;
   set_c(c, shot->mirrored);
   c->a = MARTIAN_SHOT_THREAD;

@@ -1146,3 +1146,53 @@ FishmanFate fishman_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
   log->ticks = field(&s, FISHMAN_DP_TICKS);
   return FISHMAN_SLEEPS;
 }
+
+// ---------------------------------------------------------------------------
+// The sweep
+// ---------------------------------------------------------------------------
+
+bool fishman_sweep_supported(const Wram* w, uint16_t page) {
+  const uint16_t at = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW_AT));
+  return at < FISHMAN_SWEEP_RING_SIZE && (at & 3) == 0 &&
+         wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW)) < 0x1f00u;
+}
+
+bool fishman_sweep_tick(Wram* w, const Rom* rom, PortCpu* c, bool* wrapped) {
+  const uint16_t page = c->d;
+  const uint16_t blow = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW));
+  const uint16_t left =
+      (uint16_t)(wram_r16(w, (uint16_t)(page + FISHMAN_DP_SCRATCH)) - 1);
+  wram_w16(w, (uint16_t)(page + FISHMAN_DP_SCRATCH), left);
+  if (left == 0) {
+    PORT_COVER(fishman_sweep_over);
+    c->a = blow;
+    set_nz16(c, c->a);
+    c->pc = FISHMAN_SWEEP_FREE_PC;
+    return false;
+  }
+
+  PORT_COVER(fishman_swept);
+  const uint16_t at = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW_AT));
+  const uint32_t ring = ((uint32_t)FISHMAN_BANK << 16) | FISHMAN_SWEEP_RING;
+  set_c(c, false);
+  wram_w16(w, (uint16_t)(blow + ACTOR_X),
+           adc16(c, rom_word(rom, ring + at),
+                 wram_r16(w, (uint16_t)(page + FISHMAN_DP_X))));
+  set_c(c, false);
+  wram_w16(w, (uint16_t)(blow + ACTOR_Y),
+           adc16(c, rom_word(rom, ring + 2 + at),
+                 wram_r16(w, (uint16_t)(page + FISHMAN_DP_Y))));
+  set_c(c, false);
+  uint16_t next = adc16(c, at, 4);
+  *wrapped = next >= FISHMAN_SWEEP_RING_SIZE;
+  set_c(c, *wrapped);
+  if (*wrapped) next = 0;
+  wram_w16(w, (uint16_t)(page + FISHMAN_DP_BLOW_AT), next);
+
+  c->x = at;
+  c->y = blow;
+  c->a = 1;
+  set_nz16(c, c->a);
+  c->pc = FISHMAN_SWEEP_YIELD_PC;
+  return true;
+}

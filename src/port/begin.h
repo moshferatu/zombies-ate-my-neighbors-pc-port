@@ -104,6 +104,8 @@ enum {
   RECORD_END_ZOMBIE_THIRD,
   RECORD_END_SLIME_GLOB,
   RECORD_END_SHOT_5,
+  RECORD_END_MARTIAN,          // the loop of one that began on the ground
+  RECORD_END_MARTIAN_ARRIVAL,  // ...and of one that came in over the top
   RECORD_END_COUNT
 };
 extern const RecordEnd RECORD_ENDS[RECORD_END_COUNT];

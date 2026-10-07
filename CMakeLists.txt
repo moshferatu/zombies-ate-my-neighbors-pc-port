@@ -254,6 +254,7 @@ add_library(zamn_port STATIC
   src/port/loads.c
   src/port/line.c
   src/port/lob.c
+  src/port/shot5.c
   src/port/logo.c
   src/port/radar_thread.c
   src/port/riser.c

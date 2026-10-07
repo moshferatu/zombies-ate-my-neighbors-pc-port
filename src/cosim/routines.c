@@ -68,6 +68,7 @@
 #include "port/loads.h"
 #include "port/line.h"
 #include "port/lob.h"
+#include "port/shot5.h"
 #include "port/hit.h"
 #include "port/lunge.h"
 #include "port/knock.h"
@@ -9170,6 +9171,13 @@ static const CosimRun MARTIAN_RUN_SHOOT_JSR = {40, 3, 0};     // $9D3B JSR $9D1F
 static const CosimRun MARTIAN_RUN_SHOOT_VIA = {154, 10, 1};   // $9D1F-$9D28
 static const CosimRun MARTIAN_RUN_SHOOT_HEAD = {226, 19, 7};  // $9981-$9993
 static const CosimRun MARTIAN_RUN_SHOOT_WAIT = {90, 3, 1};    // $99CA DEC $24 : RTS
+// ...and when it fires.
+static const CosimRun MARTIAN_RUN_FIRE_SET = {150, 15, 2};    // $9994-$99A0
+static const CosimRun MARTIAN_RUN_FIRE_FLAGS = {126, 12, 2};  // $99A1-$99AC
+static const CosimRun MARTIAN_RUN_FIRE_STORE = {76, 9, 0};    // $99B5-$99BD
+static const CosimRun MARTIAN_RUN_FIRE_COUNT = {50, 2, 1};    // DEC $24
+// Its start: $9AC0-$9B2B, and the two setters it calls.
+static const CosimRun MARTIAN_RUN_BEGIN = {1346, 114, 16};
 // Walking.
 static const CosimRun MARTIAN_RUN_WALK_ALIGN = {134, 11, 2};  // $9D30-$9D3A
 static const CosimRun MARTIAN_RUN_WALK_TIMER = {62, 4, 1};    // $9D3E DEC $2A : BPL
@@ -9331,18 +9339,41 @@ static void martian_show_bill(MartianBill* b) {
   martian_add(b, &MARTIAN_RUN_RTS);
 }
 
+// From `$81:9D3E`: the look and the step.
+static void martian_walk_on_bill(MartianBill* b);
+
+// A walker's pass that fires stops at the `JSL` that asks for the shot's
+// thread.
 static void martian_walk_bill(MartianBill* b) {
   const MartianLog* log = b->log;
   const bool fast = b->in->fastrom;
   martian_add(b, &MARTIAN_RUN_WALK_ALIGN);
   b->calls += aligned_cycles(&log->aligned, fast);
+  if (log->fired) {
+    martian_add(b, &MARTIAN_RUN_SHOOT_JSR);
+    martian_add(b, &MARTIAN_RUN_SHOOT_VIA);
+    martian_add(b, &MARTIAN_RUN_SHOOT_HEAD);
+    martian_add(b, &MARTIAN_RUN_FIRE_SET);
+    martian_add(b, &MARTIAN_RUN_PICTURE);
+    martian_add(b, &MARTIAN_RUN_FIRE_FLAGS);
+    martian_add(b, log->shot_mirrored ? &MARTIAN_RUN_SHOW_MIRROR
+                                      : &MARTIAN_RUN_SHOW_PLAIN);
+    martian_taken(b);
+    martian_add(b, &MARTIAN_RUN_FIRE_STORE);
+    return;
+  }
   if (log->held_fire) {
     martian_add(b, &MARTIAN_RUN_SHOOT_JSR);
     martian_shoot_bill(b, true);
   } else {
     martian_taken(b);
   }
+  martian_walk_on_bill(b);
+}
 
+static void martian_walk_on_bill(MartianBill* b) {
+  const MartianLog* log = b->log;
+  const bool fast = b->in->fastrom;
   martian_add(b, &MARTIAN_RUN_WALK_TIMER);
   if (log->look == MARTIAN_LOOK_NONE) {
     martian_taken(b);
@@ -9515,11 +9546,40 @@ static bool guard_martian_frame(Wram* scratch, const Rom* rom,
          wram_r16(scratch, (uint16_t)(in->d + MARTIAN_DP_TARGET)) < 0x1f00;
 }
 
+// The words a pass has on its stack: the loop's `PEA`, the walk's `JSR` to
+// the shot, and the `PEA` the shot is called through. And the two that are
+// left behind by the rest of the pass: its `JSR` to the picture, and that
+// one's to the setter.
+#define MARTIAN_RETURN_WALKER 0x99fdu
+#define MARTIAN_RETURN_ARRIVAL 0x9a61u
+#define MARTIAN_RETURN_WALK_SHOT 0x9d3du
+#define MARTIAN_RETURN_VIA 0x9d28u
+#define MARTIAN_RETURN_SHOW 0x9dafu
+#define MARTIAN_RETURN_SHOW_SET 0x9cadu
+
+// The end of a pass: the fate's test, and what the calls cost.
+static void martian_pass_cost(MartianBill* b, bool stays) {
+  martian_add(b, &MARTIAN_RUN_FATE);
+  if (stays) {
+    martian_taken(b);
+    martian_add(b, &MARTIAN_RUN_TICKS);
+  }
+  b->calls += at_point_cycles(&b->log->at_point, b->in->fastrom);
+  cosim_cost(b->calls + cosim_run_cycles_dp(&b->own, fetch_fast(b->in),
+                                            (b->in->d & 0x00ffu) != 0));
+}
+
+static void martian_pass_leave(const Wram* w, const CosimRegs* in,
+                               CosimRegs* out, const MartianLog* log,
+                               bool stays, uint32_t yield_pc,
+                               uint32_t fate_pc);
+
 // It leaves by the `JSL thread_yield` with the tick count in A, or past the
-// test of its fate with that in A.
+// test of its fate with that in A. Or, a walker firing, by the `JSL` that
+// asks for the shot's thread, with the stack as the ROM has it there.
 static void martian_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
-                              CosimRegs* out, uint32_t yield_pc,
-                              uint32_t fate_pc) {
+                              CosimRegs* out, uint16_t loop_return,
+                              uint32_t yield_pc, uint32_t fate_pc) {
   MartianLog log = {0};
   const bool stays = martian_frame(w, rom, in->d, &log);
 
@@ -9529,15 +9589,34 @@ static void martian_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
     martian_walk_bill(&b);
   else
     martian_arrive_bill(&b);
-  martian_add(&b, &MARTIAN_RUN_FATE);
-  if (stays) {
-    martian_taken(&b);
-    martian_add(&b, &MARTIAN_RUN_TICKS);
+  if (log.fired) {
+    cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
+                                             (in->d & 0x00ffu) != 0));
+    out->pc = MARTIAN_SHOOT_SPAWN_PC;
+    out->a = MARTIAN_SHOT_THREAD;
+    out->x = log.shot_way;
+    out->y = MARTIAN_BANK;
+    out->regs = COSIM_REG_ALL;
+    out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+    if (log.shot_mirrored) out->p |= PORT_P_C;
+    if (log.v) out->p |= PORT_P_V;
+    out->p_keep = (uint8_t)(log.v_set ? 0 : PORT_P_V);
+    wram_w16(w, (uint16_t)(in->s - 1), loop_return);
+    wram_w16(w, (uint16_t)(in->s - 3), MARTIAN_RETURN_WALK_SHOT);
+    wram_w16(w, (uint16_t)(in->s - 5), MARTIAN_RETURN_VIA);
+    wram_w16(w, (uint16_t)(in->s - 7), (uint16_t)(MARTIAN_SHOOT - 1));
+    out->s = (uint16_t)(in->s - 6);
+    return;
   }
-  b.calls += at_point_cycles(&log.at_point, in->fastrom);
-  cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
-                                           (in->d & 0x00ffu) != 0));
+  martian_pass_cost(&b, stays);
+  martian_pass_leave(w, in, out, &log, stays, yield_pc, fate_pc);
+}
 
+static void martian_pass_leave(const Wram* w, const CosimRegs* in,
+                               CosimRegs* out, const MartianLog* plog,
+                               bool stays, uint32_t yield_pc,
+                               uint32_t fate_pc) {
+  const MartianLog log = *plog;
   out->pc = stays ? yield_pc : fate_pc;
   out->a = stays ? MARTIAN_YIELD_TICKS
                  : wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_FATE));
@@ -9551,20 +9630,100 @@ static void martian_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static void shim_martian_frame(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
-  martian_frame_run(w, rom, in, out, MARTIAN_WALKER_YIELD_PC,
-                    MARTIAN_WALKER_FATE_PC);
+  martian_frame_run(w, rom, in, out, MARTIAN_RETURN_WALKER,
+                    MARTIAN_WALKER_YIELD_PC, MARTIAN_WALKER_FATE_PC);
 }
 
 static void shim_martian_arrival_frame(Wram* w, const Rom* rom,
                                        const CosimRegs* in, CosimRegs* out) {
-  martian_frame_run(w, rom, in, out, MARTIAN_ARRIVAL_YIELD_PC,
-                    MARTIAN_ARRIVAL_FATE_PC);
+  martian_frame_run(w, rom, in, out, MARTIAN_RETURN_ARRIVAL,
+                    MARTIAN_ARRIVAL_YIELD_PC, MARTIAN_ARRIVAL_FATE_PC);
 }
 
-static const uint32_t MARTIAN_FRAME_EXITS[] = {MARTIAN_WALKER_YIELD_PC,
-                                               MARTIAN_WALKER_FATE_PC};
-static const uint32_t MARTIAN_ARRIVAL_FRAME_EXITS[] = {MARTIAN_ARRIVAL_YIELD_PC,
-                                                       MARTIAN_ARRIVAL_FATE_PC};
+static const uint32_t MARTIAN_FRAME_EXITS[] = {
+    MARTIAN_WALKER_YIELD_PC, MARTIAN_WALKER_FATE_PC, MARTIAN_SHOOT_SPAWN_PC};
+static const uint32_t MARTIAN_ARRIVAL_FRAME_EXITS[] = {
+    MARTIAN_ARRIVAL_YIELD_PC, MARTIAN_ARRIVAL_FATE_PC, MARTIAN_SHOOT_SPAWN_PC};
+
+// `$81:99C9`: the rest of a walking pass that fired. The sleep comes back
+// to an `RTS`, and what that goes back through is on the stack: the shot's
+// caller, the walk, and whichever loop the pass is of.
+static bool accepts_martian_wake(const Wram* w, const CosimRegs* in) {
+  if (!martian_frame_ok(w, in) ||
+      wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_STATE)) != MARTIAN_STATE_WALK)
+    return false;
+  const uint16_t loop = wram_r16(w, (uint16_t)(in->s + 5));
+  return wram_r16(w, (uint16_t)(in->s + 1)) == MARTIAN_RETURN_VIA &&
+         wram_r16(w, (uint16_t)(in->s + 3)) == MARTIAN_RETURN_WALK_SHOT &&
+         (loop == MARTIAN_RETURN_WALKER || loop == MARTIAN_RETURN_ARRIVAL);
+}
+
+// A look that chose no way returns without the step and the picture, and
+// what is left on the stack is then some call's of the look's: the ROM's.
+// So is one whose `actor_nearest` gave it no record.
+static bool guard_martian_wake(Wram* scratch, const Rom* rom,
+                               const CosimRegs* in) {
+  MartianLog log = {0};
+  martian_wake(scratch, rom, in->d, &log);
+  if (log.look == MARTIAN_LOOK_NONE) return true;
+  return log.look != MARTIAN_LOOK_STAND && log.look != MARTIAN_LOOK_LEAVE &&
+         wram_r16(scratch, (uint16_t)(in->d + MARTIAN_DP_TARGET)) < 0x1f00;
+}
+
+static void shim_martian_wake(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  const bool arrival =
+      wram_r16(w, (uint16_t)(in->s + 5)) == MARTIAN_RETURN_ARRIVAL;
+  MartianLog log = {0};
+  const bool stays = martian_wake(w, rom, in->d, &log);
+
+  MartianBill b = {{0, 0, 0}, 0, &log, in};
+  martian_add(&b, &MARTIAN_RUN_RTS);  // the shot's
+  martian_add(&b, &MARTIAN_RUN_RTS);  // ...and the one it was called through
+  martian_walk_on_bill(&b);
+  martian_pass_cost(&b, stays);
+  martian_pass_leave(w, in, out, &log, stays,
+                     arrival ? MARTIAN_ARRIVAL_YIELD_PC
+                             : MARTIAN_WALKER_YIELD_PC,
+                     arrival ? MARTIAN_ARRIVAL_FATE_PC
+                             : MARTIAN_WALKER_FATE_PC);
+  wram_w16(w, (uint16_t)(in->s + 3), MARTIAN_RETURN_SHOW);
+  wram_w16(w, (uint16_t)(in->s + 1), MARTIAN_RETURN_SHOW_SET);
+  out->s = (uint16_t)(in->s + 6);
+}
+
+static const uint32_t MARTIAN_WAKE_EXITS[] = {
+    MARTIAN_WALKER_YIELD_PC, MARTIAN_WALKER_FATE_PC, MARTIAN_ARRIVAL_YIELD_PC,
+    MARTIAN_ARRIVAL_FATE_PC};
+
+// `$81:9AC0`, called by either loop's start.
+static bool accepts_begin(const Wram* w, const CosimRegs* in);
+static int saucer_alloc_cycles(uint16_t record, bool fast);
+
+static bool guard_martian_begin(Wram* scratch, const Rom* rom,
+                                const CosimRegs* in) {
+  (void)rom;
+  if (!accepts_begin(scratch, in) || in->db != MARTIAN_BANK) return false;
+  PortCpu c;
+  uint16_t record;
+  cpu_from(in, &c);
+  return martian_begin(scratch, &c, &record);
+}
+
+static void shim_martian_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  uint16_t record = 0;
+  cpu_from(in, &c);
+  martian_begin(w, &c, &record);
+  cpu_to(&c, out);
+  cosim_cost(saucer_alloc_cycles(record, in->fastrom) +
+             cosim_run_cycles_dp(&MARTIAN_RUN_BEGIN, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t MARTIAN_BEGIN_EXITS[] = {MARTIAN_BEGIN_PLAY_PC};
 
 // The two pieces of a pass that fires, which the ROM calls as it goes.
 static bool martian_piece_ok(const Wram* w, const CosimRegs* in) {
@@ -9592,11 +9751,6 @@ static void shim_martian_show(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // `$81:9981`, with the data bank at `$81`.
-static const CosimRun MARTIAN_RUN_FIRE_SET = {150, 15, 2};    // $9994-$99A0
-static const CosimRun MARTIAN_RUN_FIRE_FLAGS = {126, 12, 2};  // $99A1-$99AC
-static const CosimRun MARTIAN_RUN_FIRE_STORE = {76, 9, 0};    // $99B5-$99BD
-static const CosimRun MARTIAN_RUN_FIRE_COUNT = {50, 2, 1};    // DEC $24
-
 static bool supported_martian_shoot(Wram* scratch, const Rom* rom,
                                     const CosimRegs* in) {
   return martian_piece_ok(scratch, in) &&
@@ -13142,6 +13296,41 @@ static void shim_fishman_landing(Wram* w, const Rom* rom, const CosimRegs* in,
 static const uint32_t FISHMAN_LANDING_EXITS[] = {FISHMAN_LANDING_YES_PC,
                                                  FISHMAN_LANDING_NO_PC};
 
+// `$81:E381`: a tick of its sweep on land. See `port/fishman.h`.
+static const CosimRun FSW_RUN_COUNT = {62, 4, 1};    // DEC $26 : BNE
+static const CosimRun FSW_RUN_PLACE = {360, 36, 4};  // $E355-$E374
+static const CosimRun FSW_RUN_WRAP = {18, 3, 0};     // LDA #$0000
+static const CosimRun FSW_RUN_SLEEP = {46, 5, 1};    // STA $44 : LDA #$0001
+static const CosimRun FSW_RUN_OVER = {28, 2, 1};     // LDA $42
+
+static bool accepts_fishman_sweep(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == FISHMAN_BANK &&
+         fishman_sweep_supported(w, in->d);
+}
+
+static void shim_fishman_sweep_tick(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  bool wrapped = false;
+  cpu_from(in, &c);
+  const bool on = fishman_sweep_tick(w, rom, &c, &wrapped);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &FSW_RUN_COUNT, 1);
+  if (on) {
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &FSW_RUN_PLACE, 1);
+    run_add(&run, wrapped ? &FSW_RUN_WRAP : &RUN_TAKEN, 1);
+    run_add(&run, &FSW_RUN_SLEEP, 1);
+  } else {
+    run_add(&run, &FSW_RUN_OVER, 1);
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t FISHMAN_SWEEP_EXITS[] = {FISHMAN_SWEEP_YIELD_PC,
+                                               FISHMAN_SWEEP_FREE_PC};
+
 static bool accepts_fishman_patrol_begin(const Wram* w, const CosimRegs* in) {
   (void)w;
   return body_ok(in) && in->d >= 0x0100 && in->db == FISHMAN_BANK;
@@ -13926,6 +14115,28 @@ static void shim_footballer_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t FOOTBALLER_FRAME_EXITS[] = {FOOTBALLER_YIELD_PC,
                                                   FOOTBALLER_FATE_PC};
+
+// `$81:C824`, called by a pass that is the ROM's.
+static bool accepts_footballer_show(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == FOOTBALLER_BANK &&
+         wram_r16(w, (uint16_t)(in->d + FOOTBALLER_DP_RECORD)) < 0x1f00 &&
+         footballer_show_supported(w, in->d);
+}
+
+static void shim_footballer_show(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  PortCpu c;
+  FootballerLog log;
+  bool v_known = false;
+  cpu_from(in, &c);
+  footballer_show(w, rom, &c, &log, &v_known);
+  ret_from_cpu(&c, out);
+  if (!v_known) out->flags &= ~COSIM_FLAG_V;
+  FootballerBill b = {{0, 0, 0}, 0, &log, in};
+  footballer_show_bill(&b);
+  cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
+                                           (in->d & 0x00ffu) != 0));
+}
 
 // ---------------------------------------------------------------------------
 // The player's poses -- see `port/pose.h`
@@ -18448,12 +18659,16 @@ static bool accepts_record_end(const Wram* w, const CosimRegs* in) {
 #define RECORD_ENDS_FREE_RECORD_END_ZOMBIE_THIRD 0x818c8cu
 #define RECORD_ENDS_FREE_RECORD_END_SLIME_GLOB 0x81cf47u
 #define RECORD_ENDS_FREE_RECORD_END_SHOT_5 0x81ec6eu
+#define RECORD_ENDS_FREE_RECORD_END_MARTIAN 0x819a25u
+#define RECORD_ENDS_FREE_RECORD_END_MARTIAN_ARRIVAL 0x819a89u
 
 RECORD_END_SHIMS(zombie_slow_end, RECORD_END_ZOMBIE_SLOW)
 RECORD_END_SHIMS(zombie_fast_end, RECORD_END_ZOMBIE_FAST)
 RECORD_END_SHIMS(zombie_third_end, RECORD_END_ZOMBIE_THIRD)
 RECORD_END_SHIMS(slime_glob_end, RECORD_END_SLIME_GLOB)
 RECORD_END_SHIMS(shot_5_end, RECORD_END_SHOT_5)
+RECORD_END_SHIMS(martian_end, RECORD_END_MARTIAN)
+RECORD_END_SHIMS(martian_arrival_end, RECORD_END_MARTIAN_ARRIVAL)
 
 static bool accepts_death_pictures(const Wram* w, const CosimRegs* in) {
   return in->x == DEATH_KILLED && accepts_record_end(w, in) &&
@@ -18734,6 +18949,125 @@ static void shim_lob_end(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(cosim_run_cycles_dp(&LT_RUN_END, fetch_fast(in),
                                  (in->d & 0xffu) != 0));
 }
+
+// Weapon 5's shot. See `port/shot5.h`. Runs from `tools/cycles816.py --db
+// 81`, branches not taken, and a taken one 6 more.
+static const CosimRun S5_RUN_HEAD = {162, 13, 2};   // $EC03-$EC0F
+static const CosimRun S5_RUN_MOVE = {340, 23, 7};   // $ED93-$EDA9
+static const CosimRun S5_RUN_OVER = {42, 6, 0};     // CLC : BIT #$0002 : BEQ
+static const CosimRun S5_RUN_TEST = {30, 5, 0};     // BIT # : BNE
+static const CosimRun S5_RUN_COUNT = {62, 4, 1};    // DEC $40 : BNE
+static const CosimRun S5_RUN_SPENT = {12, 2, 0};    // BRA
+static const CosimRun S5_RUN_TICK = {18, 3, 0};     // LDA #$0001
+static const CosimRun S5_RUN_BURST = {428, 40, 2};  // $EC30-$EC53
+static const CosimRun S5_RUN_BEGIN = {1204, 108, 15};  // $ED1A-$ED7B
+// The two words of the place are read from the cartridge, through X.
+static const CosimRun S5_RUN_AIM = {624, 59, 9};       // $EC79-$ECAB
+static const CosimRun S5_RUN_SET = {110, 10, 2};       // $FF2A-$FF31
+static const CosimRun S5_RUN_SET_OR = {92, 8, 0};      // ORA : STA : BRA
+static const CosimRun S5_RUN_SET_AND = {80, 6, 0};     // AND : STA
+static const CosimRun S5_RUN_SET_REST = {110, 9, 1};   // $FF40-$FF46
+
+static bool guard_shot5_begin(Wram* scratch, const Rom* rom,
+                              const CosimRegs* in) {
+  if (!accepts_begin(scratch, in) || in->db != SHOT5_BANK ||
+      !shot5_begin_supported(scratch, in->d))
+    return false;
+  PortCpu c;
+  uint16_t record;
+  cpu_from(in, &c);
+  return shot5_begin(scratch, rom, &c, &record);
+}
+
+static void shim_shot5_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  uint16_t record = 0;
+  cpu_from(in, &c);
+  shot5_begin(w, rom, &c, &record);
+  cpu_to(&c, out);
+  cosim_cost(saucer_alloc_cycles(record, in->fastrom) +
+             cosim_run_cycles_dp(&S5_RUN_BEGIN, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static bool guard_shot5_aim(Wram* scratch, const Rom* rom,
+                            const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == SHOT5_BANK &&
+         wram_r16(scratch, (uint16_t)(in->d + SHOT5_DP_RECORD)) < 0x1f00 &&
+         shot5_aim_supported(scratch, rom, in->d);
+}
+
+static void shim_shot5_aim(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool clears = shot5_aim(w, rom, &c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &S5_RUN_AIM, 1);
+  run_add(&run, &S5_RUN_SET, 1);
+  run_add(&run, &RUN_TAKEN, 1);  // the `BMI` to the `AND`, or the `BRA` round it
+  run_add(&run, clears ? &S5_RUN_SET_AND : &S5_RUN_SET_OR, 1);
+  run_add(&run, &S5_RUN_SET_REST, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t SHOT5_BEGIN_EXITS[] = {SHOT5_BEGIN_OWNER_PC};
+static const uint32_t SHOT5_AIM_EXITS[] = {SHOT5_AIM_RTS_PC};
+
+static bool accepts_shot5(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == SHOT5_BANK &&
+         wram_r16(w, (uint16_t)(in->d + SHOT5_DP_RECORD)) < 0x1f00;
+}
+
+static void shim_shot5_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  Shot5Log log = {0};
+  cpu_from(in, &c);
+  const Shot5Fate fate = shot5_frame(w, &c, &log);
+  cpu_to(&c, out);
+  out->p_keep = PORT_P_V;  // the test's own sums, which the port does not follow
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &S5_RUN_HEAD, 1);
+  run_add(&run, &S5_RUN_MOVE, 1);
+  if (log.ground.blocked) {
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &S5_RUN_OVER, 1);
+    run_add(&run, &S5_RUN_TEST, log.tests);
+    if (!log.over || fate == SHOT5_STOPS) run_add(&run, &RUN_TAKEN, 1);
+    if (log.counted) {
+      run_add(&run, &S5_RUN_COUNT, 1);
+      run_add(&run, &RUN_TAKEN, 1);  // the `BNE` back, or the `BRA` on
+      if (fate == SHOT5_SPENT) run_add(&run, &S5_RUN_SPENT, 1);
+    }
+    if (fate == SHOT5_FLIES) run_add(&run, &S5_RUN_TICK, 1);
+  }
+  cosim_cost(terrain_bit2_cycles(&log.ground, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static bool accepts_shot5_burst(const Wram* w, const CosimRegs* in) {
+  return accepts_shot5(w, in) && shot5_burst_supported(w, in->d);
+}
+
+static void shim_shot5_burst(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  shot5_burst(w, rom, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&S5_RUN_BURST, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t SHOT5_FRAME_EXITS[] = {SHOT5_YIELD_PC, SHOT5_STOP_PC,
+                                             SHOT5_SPENT_PC};
+static const uint32_t SHOT5_BURST_EXITS[] = {SHOT5_BURST_PLAY_PC};
 
 static const uint32_t LOB_BEGIN_EXITS[] = {LOB_YIELD_PC};
 static const uint32_t LOB_LANDED_EXITS[] = {LOB_LANDED_SOUND_PC};
@@ -22702,6 +23036,28 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 32,
     },
     {
+        .name = "martian_wake",
+        .symbol = "$81:99C9",
+        .entry = MARTIAN_WAKE_PC,
+        .run = shim_martian_wake,
+        .accepts = accepts_martian_wake,
+        .supported = guard_martian_wake,
+        COSIM_EXITS(MARTIAN_WAKE_EXITS),
+        .uncalled = true,
+        .cycles = 5000,
+        .stack_bytes = 32,
+    },
+    {
+        .name = "martian_begin",
+        .symbol = "$81:9AC0",
+        .entry = MARTIAN_BEGIN_PC,
+        .run = shim_martian_begin,
+        .supported = guard_martian_begin,
+        COSIM_EXITS(MARTIAN_BEGIN_EXITS),
+        .cycles = 1900,
+        .stack_bytes = 12,
+    },
+    {
         .name = "martian_shoot",
         .symbol = "$81:9981",
         .entry = MARTIAN_SHOOT_PC,
@@ -22871,6 +23227,16 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 32,
     },
     {
+        .name = "fishman_sweep_tick",
+        .symbol = "$81:E381",
+        .entry = FISHMAN_SWEEP_PC,
+        .run = shim_fishman_sweep_tick,
+        .accepts = accepts_fishman_sweep,
+        COSIM_EXITS(FISHMAN_SWEEP_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+    },
+    {
         .name = "fishman_landing",
         .symbol = "$81:E1D6",
         .entry = FISHMAN_LANDING_PC,
@@ -22916,6 +23282,17 @@ static const CosimRoutine ROUTINES[] = {
         // The computed `RTS`'s two words, the `JSR`s down to a step, and the
         // `JSL` to its tests, and theirs.
         .stack_bytes = 32,
+    },
+    {
+        .name = "footballer_show",
+        .symbol = "$81:C824",
+        .entry = FOOTBALLER_SHOW_PC,
+        .ret_op = FOOTBALLER_SHOW_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_footballer_show,
+        .accepts = accepts_footballer_show,
+        .cycles = 2300,
+        .stack_bytes = 16,
     },
     {
         .name = "footballer_frame",
@@ -24250,6 +24627,8 @@ static const CosimRoutine ROUTINES[] = {
     END_ROW(zombie_third_end, "$81:8C7E", 0x818c7eu, accepts_record_end),
     END_ROW(slime_glob_end, "$81:CF39", 0x81cf39u, accepts_record_end),
     END_ROW(shot_5_end, "$81:EC60", 0x81ec60u, accepts_record_end),
+    END_ROW(martian_end, "$81:9A17", 0x819a17u, accepts_record_end),
+    END_ROW(martian_arrival_end, "$81:9A7B", 0x819a7bu, accepts_record_end),
 #undef END_ROW
     // A killed thing's last pictures begun, either side of its sound.
     {
@@ -24328,6 +24707,50 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(LOB_END_EXITS),
         .uncalled = true,
         .cycles = 140,
+    },
+    // Weapon 5's shot: two stretches of its start, a frame of its flight,
+    // and where it bursts.
+    {
+        .name = "shot5_begin",
+        .symbol = "$81:ED1A",
+        .entry = SHOT5_BEGIN_PC,
+        .run = shim_shot5_begin,
+        .supported = guard_shot5_begin,
+        COSIM_EXITS(SHOT5_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 1700,
+        .stack_bytes = 12,
+    },
+    {
+        .name = "shot5_aim",
+        .symbol = "$81:EC79",
+        .entry = SHOT5_AIM_PC,
+        .run = shim_shot5_aim,
+        .supported = guard_shot5_aim,
+        COSIM_EXITS(SHOT5_AIM_EXITS),
+        .uncalled = true,
+        .cycles = 1000,
+    },
+    {
+        .name = "shot5_frame",
+        .symbol = "$81:EC03",
+        .entry = SHOT5_FRAME_PC,
+        .run = shim_shot5_frame,
+        .accepts = accepts_shot5,
+        COSIM_EXITS(SHOT5_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 1600,
+        .stack_bytes = 16,
+    },
+    {
+        .name = "shot5_burst",
+        .symbol = "$81:EC30",
+        .entry = SHOT5_BURST_PC,
+        .run = shim_shot5_burst,
+        .accepts = accepts_shot5_burst,
+        COSIM_EXITS(SHOT5_BURST_EXITS),
+        .uncalled = true,
+        .cycles = 430,
     },
     // The swipe's thread, round its two calls.
     {
