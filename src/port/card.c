@@ -111,3 +111,32 @@ void card_wait_frame(Wram* w, PortCpu* c, CardWork* k) {
   k->blocks[CD_TAKEN]++;
   c->pc = CARD_WAIT_YIELD_PC;
 }
+
+bool scores_line_supported(const Wram* w) {
+  const uint16_t line = wram_r16(w, W_SCORES_LINE);
+  return line < SCORES_LINES * SCORES_PLACE_BYTES &&
+         line % SCORES_PLACE_BYTES == 0;
+}
+
+bool scores_line(Wram* w, const Rom* rom, PortCpu* c) {
+  set_c(c, true);
+  const uint16_t line =
+      sbc16(c, wram_r16(w, W_SCORES_LINE), SCORES_PLACE_BYTES);
+  wram_w16(w, W_SCORES_LINE, line);
+  c->a = line;
+  if (line & 0x8000u) {
+    PORT_COVER(scores_printed);
+    c->pc = SCORES_LINE_DONE_PC;
+    return false;
+  }
+  PORT_COVER(scores_line);
+  set_c(c, false);
+  c->x = adc16(c, SCORES_PLACES, line);
+  wram_w16(w, W_SCORES_ROW_BANK, SCORES_ROW_BANK);
+  set_c(c, false);  // `LSR`, of a multiple of four
+  c->y = rom_word(rom, SCORES_ROWS + (line >> 1));
+  c->a = CARD_BANK;
+  set_nz16(c, c->x);
+  c->pc = SCORES_LINE_PRINT_PC;
+  return true;
+}

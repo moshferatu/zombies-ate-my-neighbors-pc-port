@@ -129,6 +129,12 @@ $corpus = [ordered]@{
     # stopping before the level it lands in has run.
     "level21-exit.zmv"       = 7000
     "level24-carry.zmv"      = 10600
+    # Three passwords the screen does not take as a level and a count: the
+    # one `$82:B018` tests by its letters, and two it turns down, one at
+    # each of its tables. Each runs into the level the game starts instead.
+    "password-bcdf.zmv"      = 3000
+    "password-no-level.zmv"  = 3000
+    "password-no-count.zmv"  = 3000
 }
 
 $movies = @($corpus.Keys | Where-Object { $Only -eq "" -or $_ -like $Only })

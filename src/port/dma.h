@@ -9,6 +9,8 @@
 //   $80:C34A  hud_upload_job      the HUD's four rows, from their shadow
 //   $82:8308  colours_112_job     sixteen colours, from the 112th on
 //   $80:9F62  vram_clear_job      a kilobyte of VRAM zeroed, a vblank at a time
+//   $82:B82E  text_map_job        the words a screen has printed, two rows
+//   $82:B9B6                      ...of sixteen: the same job again
 //
 // Each fills in DMA channel 0 and starts it. None of them writes the machine:
 // like every routine in `port/hw.h`'s scheme it records what it stored, in
@@ -78,6 +80,10 @@
 #define VRAM_WIPE_RTL_PC 0x809fdcu
 #define COLOURS_JOB_PC 0x809fdfu
 #define COLOURS_JOB_RTL_PC 0x80a036u
+#define TEXT_MAP_JOB_PC 0x82b82eu
+#define TEXT_MAP_JOB_RTL_PC 0x82b849u
+#define TEXT_LINES_JOB_PC 0x82b9b6u   // the same instructions
+#define TEXT_LINES_JOB_RTL_PC 0x82b9d1u
 
 // The HUD's shadow, four rows of 32 words less 32, and where it goes.
 #define HUD_SHADOW_AT 0x5f36u
@@ -103,6 +109,13 @@
 #define COLOURS_LOW_BYTES 0x00e0u
 #define COLOURS_HIGH_FIRST 0x80u
 #define COLOURS_HIGH_BYTES 0x0100u
+
+// `text_map_job`: the map `port/text.h` prints into, how much of it goes,
+// the layer's map in VRAM, and which kilobyte of that the text is on.
+#define TEXT_MAP_JOB_AT 0x6502u       // `TEXT_MAP_AT`
+#define TEXT_MAP_JOB_BYTES 0x0800u
+#define TEXT_MAP_JOB_VRAM 0x6800u
+#define W_TEXT_MAP_JOB_PAGE 0x1e8eu   // `W_TEXT_JOB_BYTE`
 
 // The colours, as the level has them, and the background's second copy.
 #define PALETTE_AT 0x5428u
@@ -152,6 +165,8 @@ enum {
   VC_HEAD,       // LDA $C8 : STA $2116
   VC_STEP,       // CLC : ADC #$0400 : STA $C8 : LDA #$1809 : STA $4300
   VC_TEST,       // REP #$20 : BIT $C8 : BMI
+  TMJ_HEAD,      // $B82E-$B846, as far as the `JSL`'s own cycles
+  TMJ_TAIL,      // PLA : CLC : RTL
   DMA_BLOCK_COUNT
 };
 
@@ -209,5 +224,13 @@ void vram_wipe(HwTrace* t);
 // transfers, the first 112 and then the sprites' 128. Colours 112 to 127 are
 // `colours_112_job`'s to send. It runs once: carry clear. A is left `$0101`.
 void colours_job(HwTrace* t);
+
+// `$82:B82E`, which a screen in bank `$82` queues when it has printed: the
+// first kilobyte of the text's map sent to the layer's map in VRAM, at the
+// kilobyte `$1E8E` says. That is two rows of the thirty-two a map has for
+// each of its sixteen lines of text. `$82:B9B6` is the same instructions,
+// queued by the printer of several lines. It runs once: carry clear. A is
+// left `$007E`, and the address in VRAM, which it returns, in X.
+uint16_t text_map_job(const Wram* w, HwTrace* t);
 
 #endif

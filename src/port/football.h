@@ -164,4 +164,34 @@ bool footballer_show_supported(const Wram* w, uint16_t page);
 void footballer_show(Wram* w, const Rom* rom, PortCpu* c, FootballerLog* log,
                      bool* v_known);
 
+// Where one comes on, `$81:C7A5`: just off the edge of the screen nearer to
+// where it was asked for, facing in. Asked for within 160 of the camera's
+// left edge it comes on 8 to the left of it, running right; otherwise 328
+// to the right of it, running left. It ends at the first of the two tests
+// the ROM then makes of that place, with the place in X and Y.
+#define FOOTBALLER_ENTER_PC 0x81c7a5u
+#define FOOTBALLER_ENTER_TEST_PC 0x81c7cfu  // `JSL $80:AE14`
+#define FOOTBALLER_DP_ASKED_X 0x00
+#define FOOTBALLER_DP_ASKED_Y 0x02
+#define FOOTBALLER_ENTER_NEAR 0x00a0
+#define FOOTBALLER_ENTER_LEFT 0x0008        // off the left edge by this
+#define FOOTBALLER_ENTER_RIGHT 0x0148       // ...or this far along from it
+#define FOOTBALLER_WAY_RIGHT 0x0006
+#define FOOTBALLER_WAY_LEFT 0x000e
+// True if it comes on from the left.
+bool footballer_enter(Wram* w, PortCpu* c);
+
+// Its start, `$81:C7E6`, once both tests have passed: a record, and its page
+// cleared, as far as the `RTS`. Where its record is on the screen is not
+// set here. False with no record free, which is the ROM's: it only looks
+// then.
+#define FOOTBALLER_BEGIN_PC 0x81c7e6u
+#define FOOTBALLER_BEGIN_RTS_PC 0x81c823u
+#define FOOTBALLER_START_PICTURE 0xe3dfu
+#define FOOTBALLER_PICTURE_BANK 0x0090
+#define FOOTBALLER_COLLIDE_ID 0x0035
+#define FOOTBALLER_START_ATTR 0x0c00
+#define FOOTBALLER_DP_7E 0x7e  // cleared; I have not read what uses it
+bool footballer_begin(Wram* w, PortCpu* c, uint16_t* record);
+
 #endif

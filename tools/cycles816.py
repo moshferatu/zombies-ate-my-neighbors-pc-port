@@ -308,9 +308,11 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
         # 16-bit index registers take the extra cycle unconditionally, and so
         # does every write. With 8-bit ones it would depend on a page crossing,
         # which is data this cannot see.
-        if x:
-            raise Unpriced("%s with 8-bit index: the page crossing decides" % name)
-        c += IDLE
+        if x and not SAME_PAGE:
+            raise Unpriced("%s with 8-bit index: the page crossing decides "
+                           "(--same-page if it never crosses)" % name)
+        if not x or name in STORES or name in RMW:
+            c += IDLE
         at = access(val, db)
         fast = fast_rom(val, db)
     elif mode in (ABL, ABLX):
@@ -374,6 +376,11 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
     return c, None, touched if fast else 0
 
 
+# `--same-page`: the caller's word that no read through an 8-bit index in
+# this run crosses a page, which is what its extra cycle depends on.
+SAME_PAGE = False
+
+
 def main():
     rom = open(sys.argv[1], "rb").read()
     bank, addr = sys.argv[2].split(":")
@@ -385,6 +392,8 @@ def main():
     m = x = 0
     db = 0x80
     ind = None
+    global SAME_PAGE
+    SAME_PAGE = "--same-page" in args
     for a in args:
         if a.startswith("--m="):
             m = int(a[4:])

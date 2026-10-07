@@ -4,9 +4,11 @@
 
 #include <stddef.h>
 
+#include "port/begin.h"  // RECORD_SEARCHED_FIRST
 #include "port/coverage.h"
 #include "port/flags.h"
 #include "port/rng.h"
+#include "port/thread.h"  // W_SCHED_CUR_TASK
 
 typedef struct {
   uint16_t x, y;
@@ -487,4 +489,73 @@ FootballerFate footballer_frame(Wram* w, const Rom* rom, uint16_t page,
   log->v_set = f.flags.v_set;
   return field(&f, FOOTBALLER_DP_FATE) != 0 ? FOOTBALLER_ENDS
                                             : FOOTBALLER_SLEEPS;
+}
+
+// ---------------------------------------------------------------------------
+// $81:C7A5 and $81:C7E6  one coming on
+// ---------------------------------------------------------------------------
+
+bool footballer_enter(Wram* w, PortCpu* c) {
+  const uint16_t page = c->d;
+  const uint16_t camera = wram_r16(w, W_CAMERA_X);
+  const bool from_left =
+      (uint16_t)(wram_r16(w, (uint16_t)(page + FOOTBALLER_DP_ASKED_X)) -
+                 camera) < FOOTBALLER_ENTER_NEAR;
+  uint16_t x;
+  if (from_left) {
+    PORT_COVER(footballer_from_left);
+    wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_WAY), FOOTBALLER_WAY_RIGHT);
+    set_c(c, true);
+    x = sbc16(c, camera, FOOTBALLER_ENTER_LEFT);
+  } else {
+    PORT_COVER(footballer_from_right);
+    wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_WAY), FOOTBALLER_WAY_LEFT);
+    set_c(c, false);
+    x = adc16(c, camera, FOOTBALLER_ENTER_RIGHT);
+  }
+  wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_ASKED_X), x);
+  c->a = x;
+  c->x = x;
+  c->y = wram_r16(w, (uint16_t)(page + FOOTBALLER_DP_ASKED_Y));
+  set_nz16(c, c->y);
+  c->pc = FOOTBALLER_ENTER_TEST_PC;
+  return from_left;
+}
+
+bool footballer_begin(Wram* w, PortCpu* c, uint16_t* record_out) {
+  const uint16_t page = c->d;
+  SlotAllocRegs slot;
+  actor_slot_alloc(w, c->db, &slot);
+  if (slot.c) return false;
+  PORT_COVER(footballer_began);
+  const uint16_t record = slot.a;
+  *record_out = record;
+  // The search for a record subtracts for each it passes over, which leaves
+  // overflow clear; taking the first, it leaves it as it was.
+  if (record != RECORD_SEARCHED_FIRST) set_v(c, false);
+
+  wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_RECORD), record);
+  wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_X),
+           wram_r16(w, (uint16_t)(page + FOOTBALLER_DP_ASKED_X)));
+  wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_Y),
+           wram_r16(w, (uint16_t)(page + FOOTBALLER_DP_ASKED_Y)));
+  wram_w16(w, (uint16_t)(record + ACTOR_META), FOOTBALLER_START_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), FOOTBALLER_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), FOOTBALLER_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), FOOTBALLER_START_ATTR);
+  wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_FATE), 0);
+  wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_PICTURE), 0);
+  wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_7E), 0);
+
+  c->x = slot.x;
+  c->y = record;
+  c->a = FOOTBALLER_START_ATTR;
+  set_nz16(c, c->a);
+  set_c(c, false);
+  c->pc = FOOTBALLER_BEGIN_RTS_PC;
+  return true;
 }

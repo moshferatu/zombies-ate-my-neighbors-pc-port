@@ -17895,3 +17895,60 @@ refresh-exact. Declines go from 3,709 to 3,561.
 Lockstep: 325,322 passes, 48 of 51 never part, the same three. Mean drift
 is smaller on thirteen movies and larger on none. The worst single drift
 is larger on `level24-carry`, 84,096 for 83,924.
+
+## The password screen: a password checked, a letter picked, and five fades (2026-10-07)
+
+Fourteen entries more, 469. Over the twelve live movies the ROM's
+instructions go from 203,078 to 183,910.
+
+### A routine with four ways out
+
+`$82:B018` is reached by `JML ($00E0)` with a return address pushed by
+hand, and it has four `RTL`s. So its entry is not a called one with a
+`ret_op`. It names all four `RTL`s as exits, the harness stops on
+whichever it comes to, and the ROM makes the return. The runs are priced
+without the `RTL`.
+
+### 8-bit index registers
+
+The check reads its tables with `SEP #$30` in force. A read through an
+8-bit index costs a cycle more when it crosses a page, which is data, so
+`tools/cycles816.py` refused the run. `--same-page` is the caller's word
+that none does: stores and read-modify-writes still pay the cycle, reads
+do not. Here the tables are the cartridge's, at `$82:B14A` to `$82:B1A6`,
+and the furthest any index reaches is inside that page. The four
+passwords the corpus now tries are each exact.
+
+Its last `ADC` is 8-bit too, and is the last thing to write V. The port
+works the overflow out from the two bytes.
+
+### One shim, several rows
+
+The five fades are the same instructions at five addresses. There is one
+shim, and a row for each: the shim finds which loop it is in from
+`in->pc`. Each row's exits are its own `WAI` and the instruction after
+its loop.
+
+The text map's job is the same instructions at two addresses, and its two
+rows share a shim as well.
+
+### An entry after a `JSL`, with a word under the stack
+
+`scores_line` begins where `JSL text_print` comes back and ends at the
+next `JSL`. In between the ROM pushes a word and pulls it into X, so two
+bytes under S are written. `stack_bytes` is 2 for that.
+
+### A start that takes a record
+
+`footballer_begin` begins at the `JSL` that takes a record and ends at the
+routine's `RTS`. The record's search is priced by `saucer_alloc_cycles`,
+by which record it took, as a martian's start is. With no record free the
+guard turns the call down.
+
+### Checked
+
+34,249,214 calls across 54 movies, 0 diverged. 1,204 of 1,427 sites; of
+the 21 new, none is untaken. Every priced call is refresh-exact.
+Declines: 3,577.
+
+Lockstep: 334,319 passes, 51 of 54 never part, the same three.

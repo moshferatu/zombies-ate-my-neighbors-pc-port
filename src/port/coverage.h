@@ -180,6 +180,21 @@
   X(cursor_button_held,"cursor_frame",      "...or still down from before") \
   X(cursor_start,     "cursor_frame",       "Start") \
   X(cursor_time_up,   "cursor_frame",       "three hundred turns with nothing pressed") \
+  X(cursor_pick_letter,"cursor_pick",       "a character entered, and the place moved on") \
+  X(cursor_pick_last, "cursor_pick",        "...or entered at the last place, which stays") \
+  X(cursor_pick_space,"cursor_pick",        "the grid's `$3C`, entered as `$2F`") \
+  X(cursor_pick_end,  "cursor_pick",        "the grid's `$3B`: the entry is over") \
+  X(cursor_after_pick,"cursor_after",       "the clock set again after a pick") \
+  X(cursor_after_move,"cursor_after",       "...or after a move's sound") \
+  X(password_cheat,   "password_check",     "the one password tested by its letters") \
+  X(password_good,    "password_check",     "a level, and one to nine neighbours") \
+  X(password_ten,     "password_check",     "...or all ten") \
+  X(password_no_level,"password_check",     "the middle two letters are no level's") \
+  X(password_no_count,"password_check",     "the outer two are no count's on that level") \
+  X(dim_darker,       "dim_frame",          "a screen a step darker") \
+  X(dim_dark,         "dim_frame",          "...and dark") \
+  X(dim_lighter,      "dim_frame",          "a screen a step lighter") \
+  X(dim_light,        "dim_frame",          "...and as light as it goes") \
   /* $81:807E something started from a list -- see port/spawner.h. */           \
   X(spawn_at_place,   "spawn_entry",        "started at its place") \
   X(spawn_scattered,  "spawn_entry",        "...or near it, on clear ground") \
@@ -449,6 +464,7 @@
   X(hud_reset,        "hud_reset",          "the HUD's shadow emptied") \
   /* $80:C34A, $82:8308, $80:9F62 three more jobs -- see port/dma.h. */        \
   X(hud_upload_job,   "hud_upload_job",     "the HUD's shadow sent to VRAM") \
+  X(text_map_job,     "text_map_job",       "a screen's printed words sent to VRAM") \
   X(colours_112_job,  "colours_112_job",    "colours 112 to 127 sent") \
   X(vram_clear_more,  "vram_clear_job",     "a kilobyte zeroed, and more to do") \
   X(vram_clear_done,  "vram_clear_job",     "...or the last, at the top of VRAM") \
@@ -1538,6 +1554,11 @@
   X(footballer_turned_back, "footballer_frame", "stopped by the ground: it turns") \
   X(footballer_left, "footballer_frame", "neither player within 320: it leaves") \
   X(footballer_shown, "footballer_show", "its picture, called by the ROM") \
+  X(footballer_from_left, "footballer_enter", "one coming on from the left of the screen") \
+  X(footballer_from_right, "footballer_enter", "...or from the right") \
+  X(footballer_began, "footballer_begin", "its record, and its page cleared") \
+  X(scores_line,      "scores_line",        "a line of the top scores to print") \
+  X(scores_printed,   "scores_line",        "...and all ten printed") \
   X(footballer_sent_off, "footballer_frame", "a pass sent off") \
   X(footballer_off_turned, "footballer_frame", "...stopped by the ground: it turns") \
   X(footballer_ran_off, "footballer_frame", "...and its picture is off the screen: it ends") \

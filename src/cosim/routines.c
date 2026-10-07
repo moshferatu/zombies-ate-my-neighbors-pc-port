@@ -39,6 +39,7 @@
 #include "port/monster.h"
 #include "port/palcycle.h"
 #include "port/palfade.h"
+#include "port/password_check.h"
 #include "port/pause.h"
 #include "port/pose.h"
 #include "port/werewolf.h"
@@ -97,6 +98,7 @@
 #include "port/walker.h"
 #include "port/chase.h"
 #include "port/demo.h"
+#include "port/dim.h"
 #include "port/dma.h"
 #include "port/doll.h"
 #include "port/zombie.h"
@@ -10539,6 +10541,32 @@ static const uint32_t CARD_BOUNCE_EXITS[] = {CARD_BOUNCE_WAI_PC,
 static const uint32_t CARD_WAIT_EXITS[] = {CARD_WAIT_YIELD_PC,
                                            CARD_WAIT_END_PC};
 
+// `$82:BAB9`, the top scores' lines.
+static const CosimRun SCORES_RUN_NEXT = {110, 12, 0};  // $BAB9-$BAC4
+static const CosimRun SCORES_RUN_LINE = {290, 28, 0};  // $BA9B-$BAB4
+
+static bool accepts_scores_line(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->db == CARD_BANK && scores_line_supported(w);
+}
+
+static void shim_scores_line(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool more = scores_line(w, rom, &c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SCORES_RUN_NEXT, 1);
+  if (more) {
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &SCORES_RUN_LINE, 1);
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), false));
+}
+
+static const uint32_t SCORES_LINE_EXITS[] = {SCORES_LINE_PRINT_PC,
+                                             SCORES_LINE_DONE_PC};
+
 // ---------------------------------------------------------------------------
 // $81:8300  the figure that rises -- see `port/riser.h`
 // ---------------------------------------------------------------------------
@@ -11277,6 +11305,160 @@ static void shim_cursor_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t CURSOR_EXITS[] = {CURSOR_SLEEP_PC, CURSOR_BUTTON_PC,
                                         CURSOR_MOVED_PC, CURSOR_DONE_PC};
+
+// `$82:B3F6`, `$82:B28A` and `$82:B2C5`. The pick's first run is with
+// `--ind=82:B000`: the screen's table and the grid are both the cartridge's.
+static const CosimRun PK_COST[PK_BLOCK_COUNT] = {
+    [PK_HEAD] = {738, 74, 3},
+    [PK_SPACE_TEST] = {24, 4, 0},
+    [PK_SPACE] = {24 + 6, 4, 0},
+    [PK_BACK_TEST] = {24, 4, 0},
+    [PK_STORE] = {130, 13, 0},
+    [PK_ADVANCE] = {46, 4, 0},
+    [PK_SOUND] = {36, 5, 0},
+    [PK_END] = {74, 5, 0},
+    [PK_CLOCK] = {52, 6, 0},
+    [PK_TAKEN] = {6, 0, 0},
+};
+
+static void pick_cost(const CosimRegs* in, const PickWork* k) {
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < PK_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles_dp(&PK_COST[i], fast, unaligned);
+  for (int i = 0; i < CU_BLOCK_COUNT; i++)
+    cycles +=
+        k->turn.blocks[i] * cosim_run_cycles_dp(&CU_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static bool supported_cursor_pick(Wram* scratch, const Rom* rom,
+                                  const CosimRegs* in) {
+  return body_ok(in) && in->db == CURSOR_BANK &&
+         cursor_pick_supported(scratch, rom, in->db, in->d);
+}
+
+static void shim_cursor_pick(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  PickWork k = {0};
+  cpu_from(in, &c);
+  cursor_pick(w, rom, &c, &k);
+  cpu_to(&c, out);
+  pick_cost(in, &k);
+}
+
+static void cursor_after_shim(Wram* w, const CosimRegs* in, CosimRegs* out,
+                              bool picked) {
+  PortCpu c;
+  PickWork k = {0};
+  cpu_from(in, &c);
+  cursor_after(w, &c, picked, &k);
+  cpu_to(&c, out);
+  pick_cost(in, &k);
+}
+
+static void shim_cursor_after_pick(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  cursor_after_shim(w, in, out, true);
+}
+
+static void shim_cursor_after_move(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  cursor_after_shim(w, in, out, false);
+}
+
+static const uint32_t CURSOR_PICK_EXITS[] = {CURSOR_PICK_SOUND_PC,
+                                             CURSOR_PICK_RTS_PC};
+static const uint32_t CURSOR_AFTER_EXITS[] = {CURSOR_SLEEP_PC, CURSOR_DONE_PC};
+
+// ---------------------------------------------------------------------------
+// $82:B018  a password checked -- see `port/password_check.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=82 --same-page`: the tables are
+// read through 8-bit index registers, and none of them reaches a page's end.
+static const CosimRun PW_COST[PW_BLOCK_COUNT] = {
+    [PW_FIRST] = {64, 8, 0},
+    [PW_SECOND] = {64, 8, 0},
+    [PW_CHEAT] = {46, 4, 0},
+    [PW_SWAP] = {210, 25, 0},
+    [PW_LEVEL_TEST] = {196, 26, 0},
+    [PW_LEVEL_NEXT] = {278, 19, 0},
+    [PW_FAIL] = {64, 7, 0},
+    [PW_COUNT_HEAD] = {104, 12, 0},
+    [PW_COUNT_TEST] = {344, 44, 0},
+    [PW_COUNT_NEXT] = {110, 10, 0},
+    [PW_FOUND] = {64, 8, 0},
+    [PW_TEN] = {18, 3, 0},
+    [PW_TAIL] = {220, 23, 0},
+    [PW_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_password_check(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->db == PASSWORD_BANK;
+}
+
+static void shim_password_check(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  PortCpu c;
+  PasswordWork k = {0};
+  cpu_from(in, &c);
+  password_check(w, rom, &c, &k);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  for (int i = 0; i < PW_BLOCK_COUNT; i++)
+    run_add(&run, &PW_COST[i], k.blocks[i]);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), false));
+}
+
+static const uint32_t PASSWORD_CHECK_EXITS[] = {
+    PASSWORD_CHEAT_RTL_PC, PASSWORD_NO_LEVEL_RTL_PC, PASSWORD_NO_COUNT_RTL_PC,
+    PASSWORD_CHECK_RTL_PC};
+
+// ---------------------------------------------------------------------------
+// Five loops that fade a screen -- see `port/dim.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=82`.
+static const CosimRun DIM_RUN_DARK_TEST = {46, 5, 0};    // LDA $136C : BEQ
+static const CosimRun DIM_RUN_LIGHT_TEST = {64, 8, 0};   // ...: CMP # : BEQ
+static const CosimRun DIM_RUN_STEP = {58 + 6, 6, 0};     // DEC : STA : BRA
+
+static const DimLoop* dim_loop_at(uint32_t pc) {
+  for (int i = 0; i < DIM_LOOP_COUNT; i++)
+    if (DIM_LOOPS[i].entry == pc) return &DIM_LOOPS[i];
+  return NULL;
+}
+
+static bool accepts_dim(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && bank_sees_low_wram(in->db) && dim_loop_at(in->pc);
+}
+
+static void shim_dim_frame(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  (void)rom;
+  const DimLoop* loop = dim_loop_at(in->pc);
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool done = dim_frame(w, &c, loop);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, loop->lighter ? &DIM_RUN_LIGHT_TEST : &DIM_RUN_DARK_TEST, 1);
+  run_add(&run, done ? &RUN_TAKEN : &DIM_RUN_STEP, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), false));
+}
+
+static const uint32_t DIM_NAME_OUT_EXITS[] = {0x82ac9au, 0x82aca6u};
+static const uint32_t DIM_CURSOR_OUT_EXITS[] = {0x82b2f1u, 0x82b2fdu};
+static const uint32_t DIM_SCORES_OUT_EXITS[] = {0x82ba36u, 0x82ba42u};
+static const uint32_t DIM_CURSOR_IN_EXITS[] = {0x82b565u, 0x82b574u};
+static const uint32_t DIM_SCORES_IN_EXITS[] = {0x82bae8u, 0x82baf7u};
 
 // ---------------------------------------------------------------------------
 // $81:807E  something started from a list -- see `port/spawner.h`
@@ -14116,6 +14298,60 @@ static void shim_footballer_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 static const uint32_t FOOTBALLER_FRAME_EXITS[] = {FOOTBALLER_YIELD_PC,
                                                   FOOTBALLER_FATE_PC};
 
+// `$81:C7A5` and `$81:C7E6`: one coming on.
+static const CosimRun FOOTBALLER_RUN_ENTER_HEAD = {104, 11, 1};  // $C7A5-$C7AF
+static const CosimRun FOOTBALLER_RUN_ENTER_LEFT = {122 + 6, 14, 1};
+static const CosimRun FOOTBALLER_RUN_ENTER_RIGHT = {110 + 6, 12, 1};
+static const CosimRun FOOTBALLER_RUN_ENTER_TAIL = {68, 5, 2};    // $C7CA-$C7CE
+static const CosimRun FOOTBALLER_RUN_BEGIN = {706, 61, 8};       // $C7E6-$C822
+
+static bool accepts_footballer_enter(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db);
+}
+
+static void shim_footballer_enter(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool from_left = footballer_enter(w, &c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &FOOTBALLER_RUN_ENTER_HEAD, 1);
+  run_add(&run, from_left ? &FOOTBALLER_RUN_ENTER_LEFT
+                          : &FOOTBALLER_RUN_ENTER_RIGHT, 1);
+  run_add(&run, &FOOTBALLER_RUN_ENTER_TAIL, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+}
+
+static bool guard_footballer_begin(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  (void)rom;
+  if (!accepts_begin(scratch, in)) return false;
+  PortCpu c;
+  uint16_t record;
+  cpu_from(in, &c);
+  return footballer_begin(scratch, &c, &record);
+}
+
+static void shim_footballer_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  uint16_t record = 0;
+  cpu_from(in, &c);
+  footballer_begin(w, &c, &record);
+  cpu_to(&c, out);
+  cosim_cost(saucer_alloc_cycles(record, in->fastrom) +
+             cosim_run_cycles_dp(&FOOTBALLER_RUN_BEGIN, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t FOOTBALLER_ENTER_EXITS[] = {FOOTBALLER_ENTER_TEST_PC};
+static const uint32_t FOOTBALLER_BEGIN_EXITS[] = {FOOTBALLER_BEGIN_RTS_PC};
+
 // `$81:C824`, called by a pass that is the ROM's.
 static bool accepts_footballer_show(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100 && in->db == FOOTBALLER_BANK &&
@@ -16296,6 +16532,8 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [VC_HEAD] = {46, 5, 1},
     [VC_STEP] = {94, 12, 1},
     [VC_TEST] = {58, 6, 1},
+    [TMJ_HEAD] = {254, 25, 0},
+    [TMJ_TAIL] = {88, 3, 0},
 };
 
 static HwTrace* dma_trace(void) {
@@ -16703,6 +16941,19 @@ static void shim_hud_upload_job(Wram* w, const Rom* rom, const CosimRegs* in,
   hud_upload_job(t);
   dma_out(out, low_byte_one(HUD_VRAM_AT), in->x, in->y, false,
           COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// `$82:B82E` and `$82:B9B6`. V is the `ADC #$6800`'s.
+static void shim_text_map_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  const uint16_t vram = text_map_job(w, t);
+  dma_out(out, PALETTE_BANK, vram, TEXT_MAP_JOB_BYTES, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V);
+  out->v = add16_overflows((uint16_t)(vram - TEXT_MAP_JOB_VRAM),
+                           TEXT_MAP_JOB_VRAM);
   cosim_hw(t, DMA_COST, fetch_fast(in));
 }
 
@@ -23284,6 +23535,26 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 32,
     },
     {
+        .name = "footballer_enter",
+        .symbol = "$81:C7A5",
+        .entry = FOOTBALLER_ENTER_PC,
+        .run = shim_footballer_enter,
+        .accepts = accepts_footballer_enter,
+        COSIM_EXITS(FOOTBALLER_ENTER_EXITS),
+        .cycles = 400,
+    },
+    {
+        .name = "footballer_begin",
+        .symbol = "$81:C7E6",
+        .entry = FOOTBALLER_BEGIN_PC,
+        .run = shim_footballer_begin,
+        .supported = guard_footballer_begin,
+        COSIM_EXITS(FOOTBALLER_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 2400,
+        .stack_bytes = 12,
+    },
+    {
         .name = "footballer_show",
         .symbol = "$81:C824",
         .entry = FOOTBALLER_SHOW_PC,
@@ -23744,6 +24015,17 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 200,
     },
+    {
+        .name = "scores_line",
+        .symbol = "$82:BAB9",
+        .entry = SCORES_LINE_PC,
+        .run = shim_scores_line,
+        .accepts = accepts_scores_line,
+        COSIM_EXITS(SCORES_LINE_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+        .stack_bytes = 2,  // the place, pushed and pulled into X
+    },
     // The figure that rises: see `port/riser.h`.
     {
         .name = "riser_frame",
@@ -23788,6 +24070,66 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 500,
         .stack_bytes = 2,  // a `JSR`
     },
+    // What a button does there, and the end of a turn that did something.
+    {
+        .name = "cursor_pick",
+        .symbol = "$82:B3F6",
+        .entry = CURSOR_PICK_PC,
+        .run = shim_cursor_pick,
+        .supported = supported_cursor_pick,
+        COSIM_EXITS(CURSOR_PICK_EXITS),
+        .cycles = 1200,
+    },
+    {
+        .name = "cursor_after_pick",
+        .symbol = "$82:B28A",
+        .entry = CURSOR_AFTER_PICK_PC,
+        .run = shim_cursor_after_pick,
+        .accepts = accepts_body_low,
+        COSIM_EXITS(CURSOR_AFTER_EXITS),
+        .uncalled = true,
+        .cycles = 300,
+    },
+    {
+        .name = "cursor_after_move",
+        .symbol = "$82:B2C5",
+        .entry = CURSOR_AFTER_MOVE_PC,
+        .run = shim_cursor_after_move,
+        .accepts = accepts_body_low,
+        COSIM_EXITS(CURSOR_AFTER_EXITS),
+        .uncalled = true,
+        .cycles = 300,
+    },
+    // A password checked: see `port/password_check.h`.
+    {
+        .name = "password_check",
+        .symbol = "$82:B018",
+        .entry = PASSWORD_CHECK_PC,
+        .run = shim_password_check,
+        .accepts = accepts_password_check,
+        COSIM_EXITS(PASSWORD_CHECK_EXITS),
+        // Through the pointer in the screen's table, by a `JML`.
+        .uncalled = true,
+        .cycles = 14000,
+    },
+    // Five loops that fade a screen: see `port/dim.h`.
+#define DIM_ENTRY(n, sym, loop, exit_list)                                    \
+    {                                                                         \
+        .name = n,                                                            \
+        .symbol = sym,                                                        \
+        .entry = loop,                                                        \
+        .run = shim_dim_frame,                                                \
+        .accepts = accepts_dim,                                               \
+        COSIM_EXITS(exit_list),                                               \
+        .uncalled = true,                                                     \
+        .cycles = 150,                                                        \
+    }
+    DIM_ENTRY("dim_name_out", "$82:AC9B", 0x82ac9bu, DIM_NAME_OUT_EXITS),
+    DIM_ENTRY("dim_cursor_out", "$82:B2F2", 0x82b2f2u, DIM_CURSOR_OUT_EXITS),
+    DIM_ENTRY("dim_scores_out", "$82:BA37", 0x82ba37u, DIM_SCORES_OUT_EXITS),
+    DIM_ENTRY("dim_cursor_in", "$82:B566", 0x82b566u, DIM_CURSOR_IN_EXITS),
+    DIM_ENTRY("dim_scores_in", "$82:BAE9", 0x82bae9u, DIM_SCORES_IN_EXITS),
+#undef DIM_ENTRY
     // Something started from a list: see `port/spawner.h`.
     {
         .name = "spawn_entry",
@@ -24876,6 +25218,32 @@ static const CosimRoutine ROUTINES[] = {
     // Three more jobs of `port/dma.h`.
     DMA_JOB_ENTRY(hud_upload_job, "$80:C34A", HUD_UPLOAD_JOB_PC,
                   HUD_UPLOAD_JOB_RTL_PC, 420),
+    {
+        .name = "text_map_job",
+        .symbol = "$82:B82E",
+        .entry = TEXT_MAP_JOB_PC,
+        .ret_op = TEXT_MAP_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_text_map_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 800,
+        .stack_bytes = 5,  // the bank, and the `JSL`
+    },
+    {
+        .name = "text_lines_job",
+        .symbol = "$82:B9B6",
+        .entry = TEXT_LINES_JOB_PC,
+        .ret_op = TEXT_LINES_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_text_map_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 800,
+        .stack_bytes = 5,
+    },
     DMA_JOB_ENTRY(colours_112_job, "$82:8308", COLOURS_112_JOB_PC,
                   COLOURS_112_JOB_RTL_PC, 420),
     DMA_JOB_ENTRY(vram_clear_job, "$80:9F62", VRAM_CLEAR_JOB_PC,

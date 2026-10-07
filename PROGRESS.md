@@ -5,6 +5,98 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The password screen: a password checked, a letter picked, and five fades (2026-10-07)
+
+What the 65816 still executed over the twelve movies goes from 203,078 to
+**183,910** instructions of work. Live, the twelve read as they did to a
+tenth of a percent, in work and in calls. The game registers 469 routines,
+14 more. The corpus has three movies more, 54.
+
+Eleven of the twelve movies type a password before their level, so what
+they shared of bank `$82` was mostly that screen.
+
+* **A password checked**, `$82:B018`, new in `port/password_check.c`: four
+  letters in, a level and a count of neighbours out. How the letters name
+  them was already in `assets/password.h` and `docs/password.md`, and the
+  port uses that header's names. What is new is the ROM's routine itself.
+  * **A password it turns down is left changed.** It swaps the first and
+    third letters to make a word of each pair, and swaps them back only
+    when it has found both. Turned down, the level is 1 and carry is set.
+* **A letter picked**, `$82:B3F6`, in `port/cursor.c`: the character under
+  the cursor put at the end of what has been entered. Three characters of
+  the grid are not letters. `$3B` ends the entry. `$3C` is entered as
+  `$2F`. `$3A` takes the last one back, and that one is still the ROM's.
+* **The end of a turn that did something**, `$82:B28A` and `$82:B2C5`: the
+  clock set to three hundred turns again, and the count a plain turn ends
+  with.
+* **Five loops that fade a screen**, new in `port/dim.c`. The screens of
+  bank `$82` do not fade through the scheduler. Each has a loop of its own
+  round a `WAI` that moves the brightness one step. A frame of each is one
+  entry: three that darken and two that lighten.
+* **The job that sends a screen's words to VRAM**, `$82:B82E`, in
+  `port/dma.c`, and its copy at `$82:B9B6`.
+* **The top scores' lines**, `$82:BAB9`, in `port/card.c`: from where the
+  printer comes back with one line to where it is called for the next.
+  * `port/card.h` had `$82:BA11` as the wait after a level's name. It is
+    the screen of top scores: its title is the cartridge's words for them,
+    and the ten lines under it come from the table at `$7E:2064`. The
+    header says so now.
+* **A footballer coming on**, in `port/football.c`. `$81:C7A5` puts it
+  just off whichever edge of the screen is nearer to where it was asked
+  for, facing in. `$81:C7E6` is its start: a record, and its page cleared.
+
+* **Three movies more**, each a password the screen does not take as a
+  level and a count. `tools/make_password_movie.py` wrote them.
+  * `password-bcdf`: the one password tested by its letters. It stores
+    level 0. The card that comes up reads DAY OF THE TENTACLE, at frame
+    2400, and a level follows that no other movie reaches.
+  * `password-no-level` and `password-no-count`: turned down at each of
+    the routine's two tables. Both then start level 1, which is what frame
+    2990 shows of each.
+* **`tools/cycles816.py --same-page`.** The tool would not price a read
+  through an 8-bit index register, because a page crossed costs a cycle
+  more. The option is the caller's word that none in the run crosses.
+
+* **Checked.** The corpus verifies at 34,249,214 calls across 54 movies
+  with 0 diverged, and 1,204 of 1,427 coverage sites. Every call
+  priced is exact. It turns down 3,577 calls. Run first on last round's
+  51 movies it was 33,442,941 calls, with 3,561 turned down as before.
+* **Lockstep** over the corpus: 334,319 passes, 51 of 54 never part, the
+  same three level-25 movies. On the 51 it was 325,322 passes as before.
+  Mean drift is a little smaller on `level21` and `demo-end` and the same
+  on the other 49. No worst figure moved.
+* **What it took off.** Bank `$82` goes from 49,318 instructions to
+  31,368, and bank `$81` from 45,449 to 44,231. Ten of the eleven movies
+  that type a password are each down by between 1,200 and 2,100, and
+  `level21` by 3,193 with its footballers.
+* **Nothing diverged and nothing was mispriced on its first run** this
+  round. One mistake was mine all the same: I wrote the password's port
+  before looking for what the project already had on passwords. It had
+  the whole format. The port now uses those names and says less.
+* **Untaken by the corpus.** None of the 21 new sites, with the three
+  movies in. Before them four were: the three ways a password is not a
+  level and a count, and the grid's `$3C`.
+* **Not established.**
+  * That `$2F` is a space. The grid has it between its letters, and I take
+    it from that.
+  * The cursor's screen has a second table, with six places and a grid
+    that has vowels. I take it to be where a name is entered for the top
+    scores. No movie reaches it.
+  * What the two tests are that a footballer's place has to pass
+    (`$80:AE14` and `$80:B422`), and what `$7E` of its page is for.
+* **Still the ROM's.**
+  * The character that takes one back, and the flash of a finished entry
+    (`$82:B396`).
+  * The cursor's screen being drawn (`$82:B4B7`), which writes the
+    hardware, and its cursor's record (`$82:B584`).
+  * The first of the top scores' ten lines, and the screen's start.
+* **Next.** Bank `$80` is now 98,178 of the 183,910, over half, and 41,349
+  of that is the two stretches that stay the ROM's on purpose. What is
+  left after them is a level's start: `$80:857E`, `$80:8868`, `$80:97AC`
+  and `$80:9254`, about 13,500 between them. Then the creature at
+  `$81:9063` on levels 13 and 41, still unnamed, and level 37's threads in
+  bank `$82`.
+
 ### A martian's pass that fires, weapon 5's shot, and three small pieces (2026-10-07)
 
 What the 65816 still executed over the twelve movies goes from 217,485 to

@@ -86,6 +86,18 @@ void hud_upload_job(HwTrace* t) {
   hw_run(t, HJ_TAIL);
 }
 
+uint16_t text_map_job(const Wram* w, HwTrace* t) {
+  PORT_COVER(text_map_job);
+  // `ASL : ASL : XBA`: the page times 1,024.
+  const uint16_t page = (uint16_t)(wram_r16(w, W_TEXT_MAP_JOB_PAGE) << 2);
+  const uint16_t vram =
+      (uint16_t)((uint16_t)(page << 8 | page >> 8) + TEXT_MAP_JOB_VRAM);
+  hw_run(t, TMJ_HEAD);
+  dma_to_vram(t, PALETTE_BANK, TEXT_MAP_JOB_AT, vram, TEXT_MAP_JOB_BYTES);
+  hw_run(t, TMJ_TAIL);
+  return vram;
+}
+
 void colours_112_job(HwTrace* t) {
   PORT_COVER(colours_112_job);
   store8(t, DMA_SEP_IMM, REG_CGADD, COLOURS_112_FIRST);
