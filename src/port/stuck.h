@@ -25,15 +25,16 @@
 // second bit. It is drawn through the display record that otherwise shows
 // the weapon in their hand.
 //
-// ## What is the ROM's
-//
-// The frame the countdown reaches zero on, which goes to `$80:DC70` and puts
-// the player back as they were. `stuck_supported` says which that is.
+// **The frame the countdown reaches zero on ends it**, at `$80:DC70`. What
+// the player held before is back in their hands (`port/player_small.h`), and
+// they are in the ordinary state again.
 //
 // ## Its contract with the ROM
 //
 // It writes WRAM exactly as the ROM does, and leaves A, X, Y, carry, zero and
-// negative as the ROM does at the `RTS`.
+// negative as the ROM does at the `RTS`. The last frame returns from another
+// `RTS` than the rest, at `$80:DC75`. `stuck_supported` says which frame
+// that is, for a caller that can only return from the first.
 //
 // Port code: libc only.
 
@@ -68,6 +69,10 @@
 #define STUCK_DP_HURT_TIMER 0x52   // negative once it has run out
 #define STUCK_DP_FRAMES_LEFT 0x56  // the countdown
 #define STUCK_DP_SHAKES 0x5a
+#define STUCK_DP_STATE 0x70        // the player's state: `$0C` while stuck
+// What undoes the state, for whoever ends it early. `$80:CE25` calls it for
+// a player whose game is lost. I have read no other caller.
+#define STUCK_DP_UNDO 0x72
 
 // For the harness, and only for it: what happened, which is what it takes to
 // price the ROM's instructions, and the registers at the `RTS`.
@@ -80,12 +85,13 @@ typedef struct {
   bool turned;         // a direction is held
   bool timer_ran;      // the pose timer was not zero
   bool counting;       // the countdown was not zero
+  bool freed;          // ...and this frame took it there
   uint16_t a, x, y;
   bool n, z, c;
 } StuckLog;
 
-// Is this frame the port's? Not the one the countdown ends on. It only
-// looks.
+// False for the frame the countdown ends on, which returns from `$80:DC75`.
+// It only looks.
 bool stuck_supported(const Wram* w, uint16_t page);
 
 // One frame, for the player whose page is `page`. `log` may be NULL.

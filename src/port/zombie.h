@@ -78,6 +78,8 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/begin.h"
+#include "port/cpu.h"
 #include "port/oam.h"  // ActorNearestWork, AtPointWork
 #include "port/wram.h"
 
@@ -249,5 +251,47 @@ bool zombie_frame(Wram* w, const Rom* rom, uint16_t page, ZombieThread thread,
 // The address of a heading's step in a kind's table, in bank `$81`. The
 // heading comes off the page, so the harness checks it lands in the cartridge.
 uint16_t zombie_step_at(ZombieKind kind, uint16_t heading);
+
+// --- The start ---------------------------------------------------------------
+//
+// A zombie's thread begins by coming up out of the ground, which is a list
+// of pictures it sleeps through. These are what it does before that and
+// after, for `$81:87F8` and `$81:88CA`:
+//
+//     $81:87F8  $81:88CA  spawn   to where the pictures are played
+//     $81:8811  $81:88E3  risen   from there to the loop's first sleep
+//
+// **Spawned**, it is charged to the level's load (`W_SPAWN_LOAD`), twenty of
+// it, and a record is made a zombie's at the place the thread was handed
+// (`port/begin.h`). The leg's timer starts from seven.
+//
+// **Risen**, it can be touched: its record takes collide id 3. It sets off
+// one of the four straight ways by a draw and takes that way's first step.
+// Its handler is `enemy_collide`, and what a hit is taken from is nothing,
+// so the first that does any damage kills it. The fast kind decides from
+// its first frame.
+//
+// Each ends at a `JSL` with that routine's argument in A: the list of
+// pictures, or the two ticks the loop sleeps.
+#define ZOMBIE_SLOW_SPAWN_PC 0x8187f8u
+#define ZOMBIE_SLOW_RISE_PC 0x81880du  // `JSL pictures_play`, A the list
+#define ZOMBIE_SLOW_RISEN_PC 0x818811u
+#define ZOMBIE_FAST_SPAWN_PC 0x8188cau
+#define ZOMBIE_FAST_RISE_PC 0x8188dfu
+#define ZOMBIE_FAST_RISEN_PC 0x8188e3u
+
+#define ZOMBIE_LOAD 0x0014
+#define ZOMBIE_FIRST_TIMER 7
+#define ZOMBIE_SLOW_RISE_PICTURES 0x886cu
+#define ZOMBIE_FAST_RISE_PICTURES 0x8956u
+#define ZOMBIE_COLLIDE_ID 0x0003
+#define ZOMBIE_HANDLER 0x8888u  // `enemy_collide`, in this bank
+#define ZOMBIE_DP_HEALTH 0x1e   // what a hit is taken from
+
+// With no record free the ROM goes on with what is no record, and that is
+// the ROM's to do: `k->declined`.
+void zombie_spawn(Wram* w, PortCpu* c, ZombieKind kind, BeginWork* k);
+void zombie_risen(Wram* w, const Rom* rom, PortCpu* c, ZombieKind kind,
+                  ZombieLog* log);
 
 #endif

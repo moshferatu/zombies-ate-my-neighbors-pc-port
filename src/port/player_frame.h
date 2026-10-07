@@ -37,8 +37,9 @@
 //     frontend's request for such a change waiting
 //   * a frame that tells the player they were hit
 //   * a pose or a movement that is not one of those named, and the frames of
-//     those that their own files leave to the ROM: a shot fired, a tile with
-//     a reaction the walk does not have, a swimmer reaching the bank
+//     those that their own files leave to the ROM: a shot that goes on to a
+//     pose of its own, a tile with a reaction the walk does not have, a
+//     swimmer reaching the bank
 //   * the frame the game is lost on, with nobody left to rescue and nobody
 //     rescued, and the one the player dies on
 //

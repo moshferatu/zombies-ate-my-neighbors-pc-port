@@ -8,11 +8,11 @@
 //
 //   $81:CCE8  frame   the state body, then the picture and the touch
 //
-// What is not here is the thread's setup, its attack and its death. The
-// attack plays two animations that sleep inside the call, so a pass that
-// begins one is left to the ROM. Whether one does is down to a random draw,
-// so the port finds out by running the pass: `SlimeLog::declined` says so,
-// and a guard asks it of a scratch copy first.
+// What is not here is the thread's setup and its death, and of its attack
+// only the stretches between its sleeps are. The attack plays two animations
+// that sleep inside the call. A pass that begins one ends there, at the
+// `JSL` that plays the first, with the state's return still on the stack:
+// `SlimeLog::attack_began` says so.
 //
 // ## What a slime does
 //
@@ -35,7 +35,9 @@
 // neither player is within `$140`, when it leaves the level.
 //
 // **It attacks less than it thinks of it.** A second draw has to come in
-// under `$23`, about one in seven. Otherwise it sets off a random way.
+// under `$23`, about one in seven. Otherwise it sets off a random way. One
+// that does attack is told of nothing until the attack is over: its handler
+// is taken away first.
 //
 // **Facing someone** is `actor_bearing`'s answer made into one of the four
 // ways. On a diagonal a table picks between the two axes by which gap is the
@@ -62,7 +64,9 @@
 // It writes WRAM exactly as the ROM does. A frame ends at the `JSL
 // thread_yield` with the tick count in A, or with the slime's fate there when
 // that is no longer zero. Carry and overflow are the picture's
-// arithmetic, and the thread's own on a pass spent flashing.
+// arithmetic, and the thread's own on a pass spent flashing. A frame that
+// begins an attack ends at `$81:CBBC` with the list of pictures in A, the
+// thread's slot in X, zero in Y, carry clear and the draw's overflow.
 //
 // Port code: libc only.
 
@@ -84,6 +88,11 @@
 #define SLIME_FRAME_PC 0x81cce8u
 #define SLIME_YIELD_PC 0x81cce4u  // `JSL thread_yield`, A already 4
 #define SLIME_FATE_PC 0x81ccf7u   // `BMI`, on a fate in A that is not zero
+#define SLIME_ATTACK_PC 0x81cbbcu // `JSL pictures_play`, A the attack's list
+#define SLIME_ATTACK_PICTURES 0xcbeau
+// Where a state's `RTS` goes back to, less one: what the loop's `PEA` put on
+// the stack, and still there when a pass ends inside the state.
+#define SLIME_STATE_RETURN 0xccefu
 #define SLIME_YIELD_TICKS 4
 
 // The state bodies, by the address the thread keeps in `$16`.
@@ -151,6 +160,8 @@ typedef struct {
   bool took_other_way;        // feeling: the turn back was clear
   bool attack_weighed;        // SLIME_STATE_ATTACK ran...
   bool attack_wanted;         // ...and its draw said yes
+  bool attack_began;          // ......and so did the word at `$0006`
+  uint16_t attack_slot;       // .........the thread's slot, which X is left as
   bool draws_overflowed[2];   // ...that draw, and the random way's
   bool flash_ended;           // flashing: this was the last pass of it
   bool flashing;              // the picture was left alone
@@ -158,8 +169,8 @@ typedef struct {
   bool touched;               // the box was told...
   bool measured;              // ...having been measured anew
   ActorNotifyWork touch;      // ...and what `actor_notify_box` did
-  bool declined;              // the ROM's: an attack began, or the touch
-                              // reached a handler the port lacks
+  bool declined;              // the ROM's: the touch reached a handler
+                              // the port lacks
   bool mirrored;              // the picture faces left
   bool lunge_ended;           // the record moved up
   bool c, v;                  // carry and overflow as the frame leaves them
@@ -226,6 +237,8 @@ bool slime_frame_supported(const Wram* w, uint16_t page);
 //
 // `log->declined` says the pass is the ROM's after all. WRAM is then part
 // written, which is why a guard asks on a scratch copy first.
+// `log->attack_began` says it ended at `SLIME_ATTACK_PC` and not at the
+// yield.
 bool slime_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
                  SlimeLog* log);
 
@@ -233,9 +246,9 @@ bool slime_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
 // The attack, between its sleeps
 // ---------------------------------------------------------------------------
 //
-// A pass that begins an attack is one `slime_frame` turns down. The attack
-// shows two lists of pictures and sleeps inside each, so it is not a pass
-// but several. These are the stretches of it between the sleeps:
+// A pass that begins an attack ends at the first of the two lists of
+// pictures the attack shows. It sleeps inside each, so it is not a pass but
+// several. These are the stretches of it between the sleeps:
 //
 //   $81:CBC0  throw   the glob's thread started, with where the slime is
 //                     and whom it found

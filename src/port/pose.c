@@ -4,6 +4,7 @@
 
 #include <stddef.h>
 
+#include "port/apu.h"
 #include "port/coverage.h"
 #include "port/flags.h"
 #include "port/frontend.h"  // the frame count
@@ -73,6 +74,12 @@
 #define POSE_TILE_BREAKS 0x0040u
 // Not zero while a wall is coming down.
 #define W_WALL_FALLING 0x1ff8u
+// The sound the swing's first picture makes.
+#define POSE_SFX_SWING 0x0015
+
+// Swimming: the pictures there are, and how long each is held.
+#define POSE_SWIM_PICTURES 8
+#define POSE_SWIM_TIMER 10
 
 // One player's frame, and the carry and overflow the ROM would leave.
 typedef struct {
@@ -473,7 +480,7 @@ static void reach(Pose* p) {
 }
 
 // `$80:D6DC`: the monster's walk, which is a punch of four pictures. The
-// first makes a sound, and that frame is the ROM's.
+// first makes a sound and tells nobody.
 static void walk_6c(Pose* p) {
   if (flags_same(&p->flags, field(p, POSE_DP_CYCLE), POSE_CYCLE_LAST)) {
     PORT_COVER(pose_6c_ended);
@@ -487,12 +494,18 @@ static void walk_6c(Pose* p) {
   set_field(p, POSE_DP_FRAMES, POSE_FRAMES_WALK_6C);
   step(p);
   if (field(p, POSE_DP_CYCLE) == 0) {
-    leave_to_rom(p);
-    return;
+    PORT_COVER(pose_swung);
+    p->log->sounded = true;
+    ApuSfxRegs unused;
+    apu_play_sfx(p->w, POSE_SFX_SWING, p->page, &unused);
+    // The sound waits until the sound chip has the last one, on a compare
+    // that leaves carry set.
+    flags_carry(&p->flags, true);
+  } else {
+    PORT_COVER(pose_punched);
+    punch(p);
+    if (p->log->unported) return;
   }
-  PORT_COVER(pose_punched);
-  punch(p);
-  if (p->log->unported) return;
   reach(p);
 }
 
@@ -690,6 +703,39 @@ static void bounce_off(Pose* p) {
 }
 
 // ---------------------------------------------------------------------------
+// In the water
+// ---------------------------------------------------------------------------
+
+// `$80:DCA2`: swimming. The next of eight pictures when the timer has run
+// out, four bytes a picture and none for the way faced. Then the movement,
+// which this handler names every frame.
+static void swim(Pose* p) {
+  if (field(p, POSE_DP_TIMER) != 0) {
+    PORT_COVER(pose_swim_waited);
+    p->log->waiting = true;
+  } else {
+    PORT_COVER(pose_swim_stroked);
+    p->log->stroked = true;
+    uint16_t picture = (uint16_t)(field(p, POSE_DP_CYCLE) + 1);
+    if (flags_same(&p->flags, picture, POSE_SWIM_PICTURES)) {
+      PORT_COVER(pose_swim_wrapped);
+      p->log->stroke_wrapped = true;
+      picture = 0;
+    }
+    set_field(p, POSE_DP_CYCLE, picture);
+    show(p, flags_double(&p->flags, flags_double(&p->flags, picture)));
+    set_field(p, POSE_DP_TIMER, POSE_SWIM_TIMER);
+  }
+  set_field(p, POSE_DP_MOVE, 0);
+  if (field(p, PSN_DP_DIR_HELD) == 0) {
+    PORT_COVER(pose_swim_still);
+    return;
+  }
+  p->log->swims = true;
+  set_field(p, POSE_DP_MOVE, PLAYER_MOVEMENT_SWIM);
+}
+
+// ---------------------------------------------------------------------------
 
 static void run(void (*handler)(Pose*), Wram* w, const Rom* rom, uint16_t page,
                 PoseLog* log) {
@@ -746,6 +792,10 @@ void pose_bounce_off(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(bounce_off, w, rom, page, log);
 }
 
+void pose_swim(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(swim, w, rom, page, log);
+}
+
 bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler) {
   static PoseLog log;
   log = (PoseLog){0};
@@ -761,6 +811,7 @@ bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler) {
     case POSE_HANDLER_BOUNCE: run(bounce, w, rom, page, &log); break;
     case POSE_HANDLER_BOUNCE_WAIT: run(bounce_wait, w, rom, page, &log); break;
     case POSE_HANDLER_BOUNCE_OFF: run(bounce_off, w, rom, page, &log); break;
+    case POSE_HANDLER_SWIM: run(swim, w, rom, page, &log); break;
     default: return false;
   }
   return !log.unported;

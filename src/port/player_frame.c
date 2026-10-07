@@ -146,7 +146,6 @@ static bool flashing_state(Frame* f) {
 
 // A stuck player is still standing on something, and it acts on them first.
 static bool stuck_state(Frame* f) {
-  if (!stuck_supported(f->w, f->page)) return false;
   floor_effect(f->w, f->rom, f->page, &f->log->floor);
   stuck(f->w, f->rom, f->page, &f->log->stuck);
   f->log->c = f->log->stuck.c;
@@ -236,6 +235,9 @@ static bool strike_pose(Frame* f) {
     case POSE_HANDLER_BOUNCE_OFF:
       pose_bounce_off(f->w, f->rom, f->page, did);
       break;
+    case POSE_HANDLER_SWIM:
+      pose_swim(f->w, f->rom, f->page, did);
+      break;
     default:
       return false;
   }
@@ -250,9 +252,10 @@ static bool strike_pose(Frame* f) {
 static bool move(Frame* f) {
   const uint16_t movement = field(f, PLAYER_DP_MOVEMENT);
   if (movement == 0) {
-    // A punch leaves overflow as those it told left it, which the walk then
-    // writes. With no walk to, the frame is the ROM's.
-    if (f->log->pose_log.punched) return false;
+    // A punch leaves overflow as those it told left it, or as the look at
+    // the fist's tile did, which the walk then writes. With no walk to, the
+    // frame is the ROM's.
+    if (f->log->pose_log.punched || f->log->pose_log.reached) return false;
     PORT_COVER(player_frame_still);
     return true;
   }

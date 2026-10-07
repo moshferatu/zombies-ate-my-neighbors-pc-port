@@ -5,6 +5,8 @@
 #include <stddef.h>
 
 #include "port/coverage.h"
+#include "port/cpu.h"
+#include "port/player_small.h"
 
 // The pad as the frame read it, a word for each player.
 #define PAD_BUTTONS 0x006eu
@@ -116,8 +118,7 @@ static void run_pose_timer(Wram* w, uint16_t page, StuckLog* log) {
   set_field(w, page, STUCK_DP_POSE_TIMER, (uint16_t)(timer - 1));
 }
 
-// A frame nearer the end. The frame that reaches it is the ROM's, so this
-// one never does.
+// A frame nearer the end.
 static void count_down(Wram* w, uint16_t page, StuckLog* log) {
   const uint16_t left = field(w, page, STUCK_DP_FRAMES_LEFT);
   log->a = left;
@@ -129,6 +130,21 @@ static void count_down(Wram* w, uint16_t page, StuckLog* log) {
   set_field(w, page, STUCK_DP_FRAMES_LEFT, (uint16_t)(left - 1));
   log->n = ((left - 1) & 0x8000u) != 0;
   log->z = left == 1;
+  log->freed = left == 1;
+}
+
+// `$80:DC70`, by way of `$80:D4DF`: what the player held is back in their
+// hands, and they are in the ordinary state again.
+static void get_free(Wram* w, uint16_t page, StuckLog* log) {
+  PORT_COVER(stuck_freed);
+  set_field(w, page, STUCK_DP_UNDO, 0);
+  PortCpu hands = {0};
+  hands.d = page;
+  player_hands_back(w, &hands);
+  set_field(w, page, STUCK_DP_STATE, 0);
+  log->a = hands.a;
+  log->n = (hands.a & 0x8000u) != 0;
+  log->z = hands.a == 0;
 }
 
 void stuck(Wram* w, const Rom* rom, uint16_t page, StuckLog* log) {
@@ -150,4 +166,5 @@ void stuck(Wram* w, const Rom* rom, uint16_t page, StuckLog* log) {
 
   log->x = field(w, page, STUCK_DP_PLAYER);
   log->y = field(w, page, STUCK_DP_COVER);
+  if (log->freed) get_free(w, page, log);
 }

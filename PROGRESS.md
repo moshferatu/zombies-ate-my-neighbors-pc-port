@@ -5,6 +5,72 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### A swimmer's strokes, a monster's first swing, a slime's attack begun and the zombies' start (2026-10-06)
+
+What the 65816 still executed over the twelve movies goes from 265,367 to
+**244,319** instructions of work. Live, all twelve stay at 99.9% of the
+work, and `level17` reads 100.0%. The game registers 410 routines, 5 more:
+the swim's pose and four of the zombies' start.
+
+What is left is a long tail. After the two at the top, which stay the
+ROM's on purpose, nothing is over 6,000 instructions across the twelve.
+
+* **Why a player's frame was turned down**, counted before anything was
+  written. Of 814 frames: 288 told the player of a hit, 126 were the
+  potion's monster's, 112 the ordinary state said no to, 108 were a
+  swimmer's, 32 a player caught by a slime's glob, 23 that player
+  getting free.
+  * So last round's open question has its answer. A swimmer's frame was
+    turned down by the pose, `$80:DCA2`, which no port had.
+* **A swimmer's strokes**, `$80:DCA2`, in `port/pose.c`. Eight pictures,
+  one every ten frames, the same eight whichever way they face. It names
+  the movement afresh each frame. A swimmer's whole frame is the port's.
+* **The monster's first swing**, in the same file. The first of a punch's
+  four pictures makes a sound and tells nobody, and that frame was the
+  ROM's.
+* **A stuck player getting free**, in `port/stuck.c`. The frame the
+  countdown ends on puts what they held back in their hands, with last
+  round's `player_hands_back`.
+* **A slime's attack begun**, in `port/slime.c`. A pass that began one
+  was turned down whole. It ends now where the attack's pictures start,
+  `$81:CBBC`, inside the state and not at the loop's sleep.
+* **The zombies' start**, in `port/zombie.c`, for the slow kind and the
+  fast: from the thread's first instruction to where it rises out of the
+  ground, and from there to its first sleep. Four entries.
+
+* **Checked.** The corpus verifies at 33,404,930 calls across 51 movies
+  with 0 diverged, and 1,144 of 1,364 coverage sites; 7 of the 8 new ones
+  are taken. Every call priced is exact. It turns down 3,521 calls where
+  it turned down 7,178.
+  * The corpus caught one price of mine. The zombie's start counted 9
+    bytes where there are 11, which shows only where the model's FastROM
+    flag is off. That is `level1-map.zmv` and no other of the 51. Why it
+    is off there I did not look into.
+* **Lockstep** over the corpus: 325,322 passes, 48 of 51 never part, the
+  same three level-25 movies on the same passes. Every figure in the
+  report is last round's.
+* **The share of calls**: `level5` from 99.6% to 99.7%. The other eleven
+  read as they did.
+* **What it took off.** Over the twelve movies a player's whole frame is
+  turned down 625 times where it was 814. No slime's pass is: 246 were.
+  The zombies' starts ran 21 and 23 instructions of the ROM each, 224
+  times, and run none.
+* **Untaken by the corpus.** One of the new sites: a swimmer who faces
+  nowhere, and so has no movement. No run of mine checks it against the
+  ROM.
+* **Still the ROM's.**
+  * A punch that lands on an evil doll. The frame is run and is right,
+    and the harness turns it down because `$81:B41C`, the doll's handler,
+    has no price. 42 frames on two movies.
+  * The frame a slime's glob catches a player on (`$80:DC1E`), which
+    sleeps a tick in the middle.
+  * The third kind of zombie's start, `$81:8C17`.
+* **Next.** `$81:B41C`'s price, which wants `$81:8506`'s. The ends of
+  threads, which give back their weight and free a record: `$81:CF39`,
+  `$81:E8DF` and others like them. Level 21's thread (`$81:99E0` on),
+  about 10,000 instructions and all on one movie. The password screen in
+  bank `$82`, which waits on `WAI` and writes the hardware.
+
 ### A locked door, a swim, level 37's dart and ten small things (2026-10-06)
 
 What the 65816 still executed over the twelve movies goes from 0.30 to

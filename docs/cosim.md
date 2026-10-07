@@ -17582,3 +17582,116 @@ Every priced call is refresh-exact. Lockstep: 325,322 passes, 48 of 51
 never part, the same three on the same passes. Eight movies' mean drift
 differs from the last report, by 1.2 cycles at most, and
 `level37-e6e4`'s drift by 4 and its worst by 36.
+
+## A swimmer's strokes, a monster's first swing, a slime's attack begun and the zombies' start (2026-10-06)
+
+Five entries more, 410. Over the twelve live movies the ROM's
+instructions go from 265,367 to 244,319.
+
+### Counting before writing
+
+`player_frame` says no for one of five reasons, in order: the state, the
+hurt timer, the pose, the movement, or a price the harness lacks. A
+`printf` in the guard, with which, gave this over eight movies:
+
+| said no | frames | what |
+|---|---|---|
+| the hurt timer | 250 | the player is told of a hit |
+| the pose | 108 | `$80:DCA2`, swimming |
+| the state | 79 | the ordinary one, which says no on a press |
+| the pose | 36 | the monster's first picture |
+| the pose | 32 | `$80:DC1E`, caught by a glob |
+| the state | 23 | stuck, and the countdown over |
+| a price | 21 | a punch that told `$81:B41C` |
+| the state | 14 | the last frame of the flashing |
+
+The `printf` is gone again. Three of the rows are this round's.
+
+### A sound inside a priced frame
+
+The monster's first picture calls `apu_play_sfx`, which writes the sound
+chip's ports. A guard runs the frame on a copy to ask if it can, and
+that must not make the sound. The harness already saw to it: nothing a
+dry run sends reaches the chip, and what a real run sends is compared
+with what the ROM sent.
+
+The price is another matter. `apu_play_sfx` spins on `$2143` until the
+chip has taken the last sound, and that wait is anything from nothing to
+a frame and a half. The frame charges 484 cycles, a sound that did not
+wait. On the corpus every such frame is exact. A swing is four pictures
+of four frames each as a rule, so the chip has caught up by the next.
+
+Carry is set when it returns, by the compare that ends the wait.
+
+### The fist's tile and overflow
+
+A picture of the swing looks at the tile the fist is at. The look leaves
+overflow as its last add left it, and the port does not say what that
+was. The monster's walk writes overflow afterwards, so it did not
+matter. The first picture tells nobody but still looks, so the rule that
+turned down a punch with no walk after it now turns down a look with
+none too.
+
+### A last frame that returns from elsewhere
+
+`$80:D468`, the stuck state, has one `RTS` for every frame but the last.
+The last jumps to `$80:DC70` and returns from `$80:DC75`. The entry of
+its own cannot take that frame: it has one return address. The whole
+frame can, because it ends at the thread's sleep whichever `RTS` the
+state used. So `stuck_supported` still says no for the entry, and
+`player_frame` no longer asks.
+
+### Leaving inside a state
+
+A slime's state is entered by `PEA $CCEF : LDA $16 : DEC : PHA : RTS`.
+An attack plays two lists of pictures and sleeps inside each call. So a
+pass that begins one cannot end at the loop's sleep. It ended nowhere
+the port could stop, and the pass was turned down.
+
+It stops now at the `JSL pictures_play` itself, `$81:CBBC`, with the
+list in A. The stack is one word deeper than at the entry: the `PEA`'s
+`$CCEF` is still there for the state's `RTS`, when the attack is over.
+The shim writes those two bytes and hands back S two lower.
+`pictures_play` is a port, so the ROM runs the `JSL` and no more.
+
+At that `JSL`: X is the thread's slot, from `thread_set_handler`; Y is
+zero; carry is clear, from `CMP #$0010`; overflow is the draw's.
+
+### The zombies' start
+
+`$81:87F8` and `$81:88CA` each begin with nine instructions and a `JSL
+pictures_play`, and go on after it with twelve or fourteen more to the
+loop's first `JSL thread_yield`. Each half is an entry that stops at its
+`JSL`.
+
+Overflow at the first `JSL` is the add that charged the level's load,
+unless the search for a free record passed one in use. The search
+subtracts 20 from an address for each, with carry set, and that leaves
+overflow clear.
+
+The second half calls `$81:85EB` or `$81:8A5C`: a draw, a way, and the
+walk's first step. That is what a chase does when it gives up, and
+`zombie.c` had it as `wander`. The price is `zombie_wander_bill`.
+
+I counted the bytes of `LDY $08 : LDA #$0003 : STA $000E,Y : JSR` as 9.
+They are 11. Bytes only matter to a price where FastROM is off, and of
+51 movies the model's flag is off on one, `level1-map.zmv`. Nine calls
+there, six with the PPU quiet, each out by 4. The corpus run found it
+and four movies run by hand had not.
+
+### Not priced
+
+A punch that lands on an evil doll tells `$81:B41C`. The port has that
+handler and `thread_call_cycles` has no table for it, so the frame is
+right and is turned down. A doll that lives leaves by `JML $81:8506`,
+which walks a parked stack, and `enemy_collide`'s model stops at the
+same place. That is 42 frames over `level5` and `level37`.
+
+### Checked
+
+33,404,930 calls across 51 movies, 0 diverged. 1,144 of 1,364 sites; of
+the 8 new, one is untaken: `pose_swim_still`. Every priced call is
+refresh-exact. Declines fall from 7,178 to 3,521.
+
+Lockstep: 325,322 passes, 48 of 51 never part, the same three on the
+same passes, and every drift figure as it was.

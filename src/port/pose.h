@@ -27,6 +27,10 @@
 //   $80:E035  bounce_wait  on it, between two bounces
 //   $80:E180  bounce_off   off it, across the ground
 //
+// and one in the water:
+//
+//   $80:DCA2  swim   swimming
+//
 // ## What a pose handler does
 //
 // **When this frame's buttons differ from last frame's, the pose starts
@@ -55,7 +59,8 @@
 // starts the cycle again, and that step's pictures are the ones with it out.
 //
 // **The monster's walk is a punch.** Its four pictures are a swing, and the
-// pose starts again when the fourth has been shown. At each of the last
+// pose starts again when the fourth has been shown. The first makes a sound.
+// At each of the last
 // three, everything in a box in front of the fist is told (`$80:F051`), and
 // the tile the fist is at is looked at (`$80:F0D7`): one that can be knocked
 // down starts a thread that does it.
@@ -75,6 +80,10 @@
 // for the way they go, and the row has two steps: one for three frames in
 // four and another for the fourth, by the frame count.
 //
+// **Swimming is eight pictures**, one every ten frames, and the same eight
+// whichever way the player faces. The handler names the movement afresh each
+// frame: the swim (`port/walk.h`), unless the player faces nowhere.
+//
 // ## What is the ROM's
 //
 // The frame a player in the air comes down on: each of the handlers has a
@@ -82,8 +91,8 @@
 // looks for where to bounce to.
 // Weapon 5's shot, which goes on to a pose of its own that sleeps. The poses
 // for the weapons in the second band (`$80:EE82`) and whatever sets `$6C`
-// (`$80:EF67`). Of the monster's walk, the first picture, which makes a
-// sound, and a punch that lands on a wall that comes down.
+// (`$80:EF67`). Of the monster's walk, a punch that lands on a wall that
+// comes down.
 // `pose_supported` says which frames those are.
 //
 // ## Its contract with the ROM
@@ -130,6 +139,7 @@
 #define POSE_HANDLER_BOUNCE 0xdfdau
 #define POSE_HANDLER_BOUNCE_WAIT 0xe035u
 #define POSE_HANDLER_BOUNCE_OFF 0xe180u
+#define POSE_HANDLER_SWIM 0xdca2u
 
 #define POSE_ARC_PC 0x80dd41u
 #define POSE_ARC_RTS_PC 0x80dda4u
@@ -137,6 +147,9 @@
 #define POSE_ARC_READY_RTS_PC 0x80ddf4u
 #define POSE_ARC_B_PC 0x80de0du
 #define POSE_ARC_B_RTS_PC 0x80de75u
+
+#define POSE_SWIM_PC 0x80dca2u
+#define POSE_SWIM_RTS_PC 0x80dcc8u
 
 // The pose tables `$14` points at: four bytes a picture, a mask for the
 // record's flags and a picture number. A mask with bit 15 is ANDed in and any
@@ -230,6 +243,10 @@ typedef struct {
   bool punched;        // the monster's walk: those in the fist's box told...
   ActorNotifyWork told;  // ...and what telling them took
   bool reached;        // ...and the tile the fist is at looked at
+  bool sounded;        // ...or the swing's first picture, and its sound
+  bool stroked;        // swimming: the next picture shown...
+  bool stroke_wrapped; // ......which was the first again
+  bool swims;          // ...and the movement is the swim
   bool unported;       // the frame reached something that is the ROM's
   bool c, v;           // carry and overflow as the handler leaves them
   bool c_set, v_set;   // ...and whether it wrote each at all
@@ -252,6 +269,7 @@ void pose_arc_ready(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_bounce(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_bounce_wait(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_bounce_off(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_swim(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 
 // `$80:F300` as a call of its own, for the poses that are still the ROM's.
 // A is how far into the pose table. The entry there is a word to put in the

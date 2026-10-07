@@ -242,9 +242,9 @@ static void set_off_at_random(Slime* s, bool carry) {
   set_field(s, SLIME_DP_STATE, SLIME_STATE_CRAWL);
 }
 
-// `$81:CBA0`: an attack, if the draw allows one. The attack itself is the
-// ROM's. Either comparison that refuses one leaves carry set for the next
-// draw.
+// `$81:CBA0`: an attack, if the draw allows one. Either comparison that
+// refuses one leaves carry set for the next draw. One that begins takes the
+// slime's handler away, and the pass ends where its pictures start.
 static void weigh_attack(Slime* s) {
   s->log->attack_weighed = true;
   RngResult draw;
@@ -254,7 +254,10 @@ static void weigh_attack(Slime* s) {
     s->log->attack_wanted = true;
     if (wram_r16(s->w, SLIME_STRIKE_WORD) < SLIME_STRIKE_WORD_LIMIT) {
       PORT_COVER(slime_attacked);
-      s->log->declined = true;
+      PortCpu none = {0};
+      thread_set_handler(s->w, &none);
+      s->log->attack_began = true;
+      s->log->attack_slot = none.x;
       return;
     }
   }
@@ -449,7 +452,7 @@ bool slime_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
   Slime s = {w, rom, page, wram_r16(w, (uint16_t)(page + SLIME_DP_RECORD)),
              carry, log ? log : &scratch};
   run_state(&s, field(&s, SLIME_DP_STATE));
-  if (s.log->declined) return true;
+  if (s.log->declined || s.log->attack_began) return true;
   show(&s);
   if (field(&s, SLIME_DP_FATE) != 0) return false;
   set_field(&s, SLIME_DP_HIT_BY, 0);

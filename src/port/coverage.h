@@ -1248,6 +1248,8 @@
   X(zombie_on_top,    "zombie_*_chase",      "...or right on top of it, likewise") \
   X(zombie_chase_stuck, "zombie_fast_chase", "a fast chase's step that went nowhere") \
   X(zombie_wandered,  "zombie_*_chase",      "a random straight heading, and a walk along it") \
+  X(zombie_spawned,   "zombie_*_spawn",      "charged to the level's load, and a record made a zombie's") \
+  X(zombie_risen,     "zombie_*_risen",      "up out of the ground: touchable, off a random way, and asleep") \
   X(zombie_noticed,   "zombie_*_decide",     "something near enough, so it gives chase") \
   X(zombie_left,      "zombie_*_decide",     "neither player within reach, so it leaves") \
   X(zombie_quiet,     "zombie_fast_decide",  "$24 not negative, so it does not look") \
@@ -1282,6 +1284,7 @@
   X(pose_punched, "pose_walk_6c", "a picture of the swing: those in the fist's box told") \
   X(pose_reached, "pose_walk_6c", "...and the tile the fist is at looked at") \
   X(pose_reach_busy, "pose_walk_6c", "...or not, with a wall already coming down") \
+  X(pose_swung, "pose_walk_6c", "the swing's first picture, which makes a sound") \
   X(pose_fired, "pose_*", "a round taken and the shot's thread started") \
   X(pose_fire_empty, "pose_*", "...or no rounds left, and nothing happens") \
   X(pose_weapon_shown, "pose_*", "the hand weapon shown, the way the player faces") \
@@ -1292,6 +1295,10 @@
   X(pose_bounce_fell, "pose_bounce", "...and down onto it again") \
   X(pose_bounce_waited, "pose_bounce_wait", "on it, between two bounces") \
   X(pose_bounced_off, "pose_bounce_off", "off it, across the ground") \
+  X(pose_swim_waited, "pose_swim", "a frame of a picture's ten") \
+  X(pose_swim_stroked, "pose_swim", "the next picture of the stroke") \
+  X(pose_swim_wrapped, "pose_swim", "...which is the first again") \
+  X(pose_swim_still, "pose_swim", "facing nowhere: no movement") \
   /* The clones, in readable C: port/clone.h. */                                 \
   X(clone_copied, "clone_frame", "a frame of moving as its player moves") \
   X(clone_chased, "clone_frame", "a frame of coming for the nearer player") \
@@ -1310,7 +1317,7 @@
   X(slime_chose_attack, "slime_frame", "thinking: the draw said attack") \
   X(slime_chose_face, "slime_frame", "...or turn to face") \
   X(slime_set_off, "slime_frame", "an attack thought better of: a random way instead") \
-  X(slime_attacked, "slime_frame", "...or begun, which is the ROM's, so the pass was declined") \
+  X(slime_attacked, "slime_frame", "...or begun: its handler taken away, and off to its pictures") \
   X(slime_left, "slime_frame", "...or carry on, with neither player near, so it leaves") \
   X(slime_flash_ended, "slime_frame", "the last pass of a hit's flash") \
   X(slime_lunge_ended, "slime_frame", "the fifth picture, and the record moved up") \
@@ -1358,6 +1365,7 @@
   X(stuck_hurt, "stuck", "the hurt timer had run out, so they are hit again") \
   X(stuck_shook, "stuck", "right after left or left after right: a shake") \
   X(stuck_turned, "stuck", "a direction held, which they turn to face") \
+  X(stuck_freed, "stuck", "the countdown over: free, and their hands as they were") \
                                                                                    \
   /* $82:8138 -- the big figure's colours. */                                      \
   X(figure_colours_set, "figure_colours_set", "sixteen colours into the background's eighth row") \
