@@ -257,6 +257,16 @@ if ($Picture) {
                 $left = [int]$Matches[2]
             }
             if ($text -match "(\d+) of them differ from the PPU's") { $differ = [int]$Matches[1] }
+            # ...and the lines whose sprites were left, or found differently,
+            # with them.
+            if ($text -match "Sprites: \d+ lines' found here, (\d+) left to the PPU") {
+                $left += [int]$Matches[1]
+            }
+            if ($differ -ge 0 -and $text -match "(\d+) of those are not what the PPU found") {
+                $differ += [int]$Matches[1]
+            } else {
+                $differ = -1
+            }
             $sum = ""
             if ($text -match "Picture checksum ([0-9A-F]{16}) over (\d+) lines") { $sum = "$($Matches[1]) $($Matches[2])" }
             $sumAlone = "none"

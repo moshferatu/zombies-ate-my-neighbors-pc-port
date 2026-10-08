@@ -41,8 +41,9 @@
 // `src/video/ppu_hook.c` fills one from the emulated PPU, which is where the
 // registers still live while the ROM's code is what writes them.
 //
-// The sprites of a line are not found here yet. The state carries them as the
-// PPU found them, a pixel and a priority for each column.
+// A line's sprites are found from OAM by `video_sprites`, into a row of the
+// picture's width that `video_line` is then given: a pixel and a priority for
+// each column.
 //
 // libc only.
 
@@ -91,6 +92,41 @@ typedef struct {
   bool mosaic;
 } VideoBg;
 
+// Where a sprite goes when the picture is widened. The values are the
+// emulated PPU's `ppu_sprite*`, which `ppu_hook.c` checks.
+typedef enum {
+  VIDEO_SPRITE_WORLD,     // the console's coordinates, on past its edges
+  VIDEO_SPRITE_ANCHORED,  // as far in from the picture's edge as from the console's
+  VIDEO_SPRITE_CENTRED,   // with a centred layer, and again in each of its margins
+} VideoSpritePlace;
+
+#define VIDEO_SPRITES 128
+
+// The sprites: OAM as the game left it, the registers that say how to read
+// it, and what the frontend has said of each sprite.
+typedef struct {
+  // Two words a sprite. The first is X's low eight bits and, above them, Y.
+  // The second is the character, the name table's bit, three bits of
+  // palette, two of priority and the two flips.
+  const uint16_t* oam;
+  // Two bits a sprite, four sprites a byte: X's ninth bit, and whether it is
+  // the larger of the two sizes.
+  const uint8_t* high_oam;
+  uint8_t sizes;         // which two sizes, 0 to 7
+  uint8_t first;         // the sprite looked at first, and so drawn in front
+  uint16_t tiles_at[2];  // the characters' word address in VRAM, per name table
+  bool interlace;        // half-height sprites (not found here)
+  // Per sprite. `front`: found before every sprite that is not, whatever its
+  // number. `remap_on`: its pixels are looked up in `remap`.
+  const bool* front;
+  const bool* remap_on;
+  const uint8_t* place;  // a `VideoSpritePlace`
+  const int16_t* shift;  // columns along from where the game put it
+  // For a sprite with `remap_on`: the palette index each of its sixteen
+  // pixel values is drawn in, or 0 for the one its own palette gives.
+  const uint8_t* remap;
+} VideoObj;
+
 // One of the two windows' part in a layer's window, and how the two combine.
 typedef struct {
   bool one, two;
@@ -126,8 +162,10 @@ typedef struct {
   VideoWindow colour_window;
   uint8_t window1_left, window1_right, window2_left, window2_right;
 
-  // The sprites on this line, as the PPU found them: for each column of the
-  // picture a palette index, or 0, and that sprite's priority, 0 to 3.
+  VideoObj obj;
+  // The sprites on this line, as `video_sprites` or the PPU found them: for
+  // each column of the picture a palette index, or 0, and that sprite's
+  // priority, 0 to 3.
   const uint8_t* obj_pixel;
   const uint8_t* obj_priority;
 
@@ -188,6 +226,23 @@ const char* video_declines(const VideoState* s);
 // each 0x00RRGGBB with the brightness applied. Only for a line
 // `video_declines` has nothing to say about.
 void video_line(Video* v, const VideoState* s, VideoCentre* centre, int line, uint32_t* out);
+
+// More sprites on a line than the console has time for: more than 32 of
+// them, or more than 34 tiles' worth. The game can read both back.
+enum {
+  VIDEO_SPRITES_RANGE_OVER = 1,
+  VIDEO_SPRITES_TIME_OVER = 2,
+};
+
+// Find the sprites on line `line` of the frame, 1 to 224: for each of the
+// picture's `video_width` columns a palette index into `pixel`, 0 where there
+// is none, and where there is one its sprite's priority into `priority`,
+// whose other columns are left as they were. Returns which of the two limits
+// the line went over. After `video_init`; `s->obj_pixel` and `obj_priority`
+// are not read. `video_sprites_declines` is true where the PPU would find
+// something else.
+bool video_sprites_declines(const VideoState* s);
+int video_sprites(const VideoState* s, int line, uint8_t* pixel, uint8_t* priority);
 
 // One background's line of a frame that has been drawn, for taking the frame
 // apart (`src/layers.h`): the columns `from` up to `to` of the picture, which

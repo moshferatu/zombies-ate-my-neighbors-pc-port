@@ -380,6 +380,148 @@ void video_bg_row(const VideoState* s, VideoCentre* centre, int layer, int line,
   bg_line(s, centre, layer, line, from, to, SCROLL_RECORDED, true, &rows);
 }
 
+// --- The sprites of a line ---------------------------------------------------------
+//
+// The console looks through OAM for the sprites that cross the line, keeps
+// the first 32, and then fetches their tiles from the last kept to the first,
+// eight pixels at a time, until it has fetched 34. Each is drawn over what
+// was there, so the first found ends up in front; and a line with too many
+// loses the ones found first, which is the flicker of a crowded line.
+//
+// A widened picture has those limits in proportion to its width. Held at the
+// console's numbers it would drop sprites that the console drew.
+
+// A sprite's two sizes, by the register that picks the pair.
+static const uint8_t OBJ_SIZE[8][2] = {
+    {8, 16}, {8, 32}, {8, 64}, {16, 32}, {16, 64}, {32, 64}, {16, 32}, {16, 32},
+};
+
+static int obj_size(const VideoObj* o, int sprite) {
+  return OBJ_SIZE[o->sizes][(o->high_oam[sprite >> 2] >> ((sprite & 3) * 2 + 1)) & 1];
+}
+
+// A sprite's column. Nine bits of X are a range of 512, which the console
+// spends as -256 to 255: 256 and up is a sprite hanging off the left edge. A
+// picture with a right margin moves that point out to its own right edge, or
+// a sprite in the margin would be drawn 512 columns to the left of it.
+static int obj_x(const VideoState* s, int sprite) {
+  const VideoObj* o = &s->obj;
+  int x = o->oam[sprite * 2] & 0xff;
+  x |= ((o->high_oam[sprite >> 2] >> ((sprite & 3) * 2)) & 1) << 8;
+  if (o->place[sprite] == VIDEO_SPRITE_CENTRED) {
+    // Laid out over a centred layer, whose columns are the console's 256
+    // shifted to the picture's middle.
+    if (x > 255) x -= 512;
+    return x + (s->extra_right - s->extra_left) / 2;
+  }
+  if (x > 255 + s->extra_right) x -= 512;
+  if (o->place[sprite] == VIDEO_SPRITE_ANCHORED && (s->extra_left != 0 || s->extra_right != 0))
+    x += x < 128 ? -s->extra_left : s->extra_right;
+  return x + o->shift[sprite];
+}
+
+// A sprite found on the line: which, how far along from its own column this
+// finding of it is drawn, and the columns it is clipped to, `lo` up to `hi`.
+// A sprite placed with a centred layer is found up to three times, 256
+// columns apart: once clipped to the layer's columns and once to each margin,
+// which repeat the layer.
+typedef struct {
+  uint8_t sprite;
+  int16_t shift, lo, hi;
+} Found;
+
+#define MAX_FOUND (32 * VIDEO_MAX_WIDTH / 256)
+
+bool video_sprites_declines(const VideoState* s) { return s->obj.interlace; }
+
+int video_sprites(const VideoState* s, int line, uint8_t* pixel, uint8_t* priority) {
+  const VideoObj* o = &s->obj;
+  const int width = video_width(s);
+  const int left = -s->extra_left, right = 256 + s->extra_right;
+  const bool wide = s->extra_left != 0 || s->extra_right != 0;
+  const int mid = (s->extra_right - s->extra_left) / 2;
+  const int sprite_limit = 32 * width / 256, tile_limit = 34 * width / 256;
+  int flags = 0;
+  memset(pixel, 0, (size_t)width);
+
+  // The sprites that cross the line, in OAM's order from `first` round; the
+  // ones marked `front` before the rest.
+  Found found[MAX_FOUND];
+  int count = 0;
+  bool any_front = false, full = false;
+  for (int n = 0; n < VIDEO_SPRITES && !any_front; n++) any_front = o->front[n];
+  for (int pass = any_front ? 0 : 1; pass < 2 && !full; pass++) {
+    for (int i = 0; i < VIDEO_SPRITES && !full; i++) {
+      const int n = (o->first + i) & (VIDEO_SPRITES - 1);
+      if (o->front[n] != (pass == 0)) continue;
+      // A sprite at Y is drawn from the line after it. The row is eight bits,
+      // so a sprite near the foot of the 256 lines comes round to the top.
+      const uint8_t row = (uint8_t)(line - 1 - (o->oam[n * 2] >> 8));
+      const int size = obj_size(o, n);
+      if (row >= size) continue;
+      const int x = obj_x(s, n);
+      const bool centred = wide && o->place[n] == VIDEO_SPRITE_CENTRED;
+      for (int k = centred ? -1 : 0; k <= (centred ? 1 : 0); k++) {
+        const int at = x + k * 256;
+        const int lo = !centred || k < 0 ? left : k > 0 ? mid + 256 : mid;
+        const int hi = !centred || k > 0 ? right : k < 0 ? mid : mid + 256;
+        if (at + size <= lo || (centred && at >= hi)) continue;
+        if (count == sprite_limit) {
+          flags |= VIDEO_SPRITES_RANGE_OVER;
+          full = true;
+          break;
+        }
+        found[count++] = (Found){(uint8_t)n, (int16_t)(k * 256), (int16_t)lo, (int16_t)hi};
+      }
+    }
+  }
+
+  // Their tiles, from the last found to the first.
+  int tiles = 0;
+  for (int i = count - 1; i >= 0; i--) {
+    const Found* f = &found[i];
+    const int n = f->sprite;
+    const uint16_t attributes = o->oam[n * 2 + 1];
+    const int size = obj_size(o, n);
+    const int x = obj_x(s, n) + f->shift;
+    if (x <= left - size) continue;
+    uint8_t row = (uint8_t)(line - 1 - (o->oam[n * 2] >> 8));
+    if (attributes & 0x8000) row = (uint8_t)(size - 1 - row);
+    const bool flip_x = (attributes & 0x4000) != 0;
+    const int character = attributes & 0xff;
+    const int tiles_at = o->tiles_at[(attributes >> 8) & 1];
+    const int base = 0x80 + 16 * ((attributes >> 9) & 7);
+    const uint8_t sprite_priority = (uint8_t)((attributes >> 12) & 3);
+    const uint8_t* remap = o->remap_on[n] ? o->remap : NULL;
+    const int lo = f->lo > left ? f->lo : left, hi = f->hi < right ? f->hi : right;
+    for (int col = 0; col < size; col += 8) {
+      const int at = x + col;
+      if (at <= left - 8 || at >= right) continue;
+      if (++tiles > tile_limit) return flags | VIDEO_SPRITES_TIME_OVER;
+      // The characters are sixteen to a row and sixteen rows, and a sprite of
+      // several goes on round its row, and its column, of them.
+      const int across = (flip_x ? size - 1 - col : col) / 8;
+      const int tile = ((((character >> 4) + row / 8) << 4) | ((character + across) & 0xf)) & 0xff;
+      const int words = tiles_at + tile * 16 + (row & 7);
+      const uint16_t low = s->vram[words & 0x7fff], high = s->vram[(words + 8) & 0x7fff];
+      const uint64_t* spread = SPREAD[flip_x];
+      const uint64_t bits = spread[low & 0xff] | (spread[low >> 8] << 1) |
+                            (spread[high & 0xff] << 2) | (spread[high >> 8] << 3);
+      if (bits == 0) continue;
+      uint8_t pixels[8];
+      memcpy(pixels, &bits, 8);
+      for (int px = 0; px < 8; px++) {
+        const int c = at + px;
+        const uint8_t p = pixels[px];
+        if (p == 0 || c < lo || c >= hi) continue;
+        pixel[c - left] = remap && remap[p] ? remap[p] : (uint8_t)(base + p);
+        priority[c - left] = sprite_priority;
+      }
+    }
+  }
+  return flags;
+}
+
 // --- One screen -------------------------------------------------------------------
 
 // Mode 1's layers from the front to the back, without BG3's high tiles in

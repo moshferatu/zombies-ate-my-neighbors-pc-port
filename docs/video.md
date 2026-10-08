@@ -4,9 +4,9 @@ The plan this project started with kept the console's video chip emulated for
 good. That has changed. The picture and the sound are to be ported as the
 game's code is, until nothing of LakeSnes is left in the game.
 
-This is where the picture stands. `src/video` draws every scanline the game
-shows, and the emulated PPU draws none of them. The PPU still holds the
-registers, VRAM, the palette and OAM, and still finds each line's sprites.
+This is where the picture stands. `src/video` finds every line's sprites and
+draws every scanline the game shows, and the emulated PPU does neither. The
+PPU still holds the registers, VRAM, the palette and OAM.
 
 ## Why it was worth doing first
 
@@ -30,8 +30,30 @@ the game last set them, under names of this project's. It names nothing of the
 emulator's. `src/video/ppu_hook.c` is the one file that knows both, and fills a
 `VideoState` from the PPU before each line.
 
-The sprites of a line come with the state, as the PPU found them: a palette
-index and a priority for each column.
+The sprites come in two steps. The state has OAM and the registers that say
+how to read it, and `video_sprites` finds a line's sprites from them into a
+row: a palette index and a priority for each column. The line is then drawn
+with that row.
+
+## How a line's sprites are found
+
+As the console finds them, because the game can see how it does.
+
+1. **The sprites that cross the line**, in OAM's order, and the first 32 kept.
+2. **Their tiles**, from the last kept to the first, eight pixels at a time
+   until 34 have been fetched. Each is written over what was there, so the
+   sprite found first ends up in front.
+
+A line with more than 32 sprites, or more than 34 tiles, loses some, and
+sets a flag the game can read from `$213E`. Both limits and both flags are
+kept. A widened picture has the limits in proportion to its width.
+
+The frontend's additions are kept too: sprites marked to be found before the
+rest, sprites drawn in colours of the frontend's, and the three places a
+sprite can have in a widened picture. A sprite placed with a centred layer
+is found up to three times, once for the layer and once for each margin.
+
+Half-height sprites, which the game never asks for, are left to the PPU.
 
 ## How a line is drawn
 
@@ -111,9 +133,10 @@ a time.
 
 ## How it is checked
 
-- **`zamn --renderer check`** draws every line both ways and compares them
-  column by column. It reports the lines that differ and the first of them,
-  and exits 1 if there were any.
+- **`zamn --renderer check`** finds every line's sprites both ways, draws
+  every line both ways, and compares each column by column, with the two
+  flags. It reports the lines that differ and the first of them, and exits 1
+  if there were any.
 - **`tools/verify_corpus.ps1 -Picture`** runs every movie of the corpus under
   the check, then again with `src/video` drawing alone, and compares a
   checksum of every line of the picture between the two. `-Widescreen
@@ -128,16 +151,25 @@ a time.
 A rule broken on purpose is caught: `zamn_test_video` with a 16x16 tile's
 lower half read one character out reported 22,756 lines differing of 51,520.
 
+For the sprites, three rules broken in turn over 600 frames: one sprite too
+many kept, 1,691 lines differing; one tile too many fetched, 39,834; the
+flag for too many sprites never set, 53. The first of those was not caught
+until the noise was changed. Sprites at random are spread too thin to crowd
+a line, so one frame in four now has them in a band of lines.
+
 ## Results
 
 **Checked**, on the build that is described here:
 
 - **The corpus.** 54 movies at four widths: 310,747,136 lines drawn both ways
-  and none differ. None was left to the PPU. Each of the 216 runs comes to the
-  same checksum with `src/video` drawing alone.
-- **Noise.** 12,000 frames over eight seeds: 2,024,736 lines drawn both ways
-  and none differ, with 663,264 more declined. 394,296 rows read back and none
-  differ.
+  and none differ, and no line's sprites differ. None was left to the PPU.
+  Each of the 216 runs comes to the same checksum with `src/video` working
+  alone.
+- **Noise.** 6,000 frames over two seeds: 1,260,224 lines' sprites found both
+  ways and none differ, with 22,848 more left to the PPU. The picture, drawn
+  from them both ways, does not differ either, and nor do 196,824 rows read
+  back. (Before the sprites, 12,000 frames over eight seeds: 2,024,736 lines
+  drawn both ways and none differ.)
 - **The smoothing.** 324 screenshots and 4,832 of the smoothing's pictures,
   from twelve movies at two widths, are byte for byte what the build before
   drew.
@@ -159,13 +191,17 @@ A profile of the same run afterwards has 39% as many busy samples. Of them
 the drawing is 11%, taking the frame apart 12%, the 65816 with the ports and
 the sound about 44%, and showing the pictures about 32%.
 
+Finding the sprites here did not change the cost. A tick at 16:9 emulates in
+2.4 to 2.5 ms before and after. It was done to need the emulator less.
+
 ## What is still the emulator's
 
 - **The registers and the memory.** The ROM's code writes `$21xx` and the PPU
   decodes it. `VideoState` is filled from the PPU a line at a time.
-- **The sprites of a line.** `ppu_evaluateSprites` finds them, with the
-  widened picture's rules for them, and sets the two flags the game can read
-  back.
+- **The sprites' two rows and two flags.** They are found here but kept in
+  the PPU, which is where the game reads the flags from.
+- **The tools.** Only the game installs `src/video`. `zamn_cosim` and the
+  rest still run the PPU's own sprite finder, and draw nothing.
 - **What `VIDEO_WIDE_AUTO` is worked out from.** Whether a layer is empty at
   its edges, scrolled or drawn a line at a time is the PPU's to notice.
 - **The picture's buffer.** A line is written into the PPU's pixel buffer,
@@ -173,7 +209,6 @@ the sound about 44%, and showing the pictures about 32%.
 
 ## Next
 
-- Find a line's sprites in `src/video`.
 - Draw a frame once. With the smoothing on, a frame shown as layers is still
   drawn as a picture that nobody sees.
 - Take the registers out of the PPU: a write to `$21xx` into a `VideoState`.

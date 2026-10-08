@@ -1,19 +1,21 @@
 // `video.h`'s renderer in place of the emulated PPU's.
 //
 // The emulated PPU still holds the registers, VRAM, the palette and OAM,
-// because the ROM's code is what writes them, and it still finds each line's
-// sprites. What it no longer does is draw: `Ppu.drawLine` is called where it
-// would have, and `video_ppu_line` draws the line with `video_line` into the
-// PPU's own pixel buffer, so everything that reads the picture reads it where
-// it always was.
+// because the ROM's code is what writes them. What it no longer does is find
+// a line's sprites or draw it. `Ppu.findSprites` and `Ppu.drawLine` are
+// called where it would have: `video_ppu_sprites` finds the sprites with
+// `video_sprites` into the PPU's own two rows and sets the flags the game
+// reads back, and `video_ppu_line` draws the line with `video_line` into the
+// PPU's own pixel buffer, so everything that reads either reads it where it
+// always was.
 //
-// A line `video_declines` is left to the PPU, and counted by what it was
-// about the line.
+// A line `video_declines`, or `video_sprites_declines`, is left to the PPU,
+// and counted by what it was about the line.
 //
-// `VIDEO_CHECK` draws every line both ways and compares them, column by
-// column. It is the test: a movie run under it says how many lines differed
-// and where the first one was. `VIDEO_EMULATED` leaves the drawing to the
-// PPU; it is there so that one switch has all three, and for the checksum.
+// `VIDEO_CHECK` does both both ways and compares them, column by column. It
+// is the test: a movie run under it says how many lines differed and where
+// the first one was. `VIDEO_EMULATED` leaves it all to the PPU; it is there
+// so that one switch has all three, and for the checksum.
 //
 // The checksum, when it is asked for, is over every line as it is drawn, in
 // any of the three. A movie's is the same number however its picture was
@@ -53,6 +55,13 @@ typedef struct {
     int line, column;
     uint32_t native, emulated;
   } first;
+  // The same for the lines' sprites: found by `video_sprites`, left to the
+  // PPU, and under `VIDEO_CHECK` not what the PPU found.
+  long sprite_lines, sprite_declined, sprite_differing;
+  struct {
+    uint32_t frame;
+    int line;
+  } first_sprites;
   bool checksummed;
   uint64_t checksum;
   long checksum_lines;

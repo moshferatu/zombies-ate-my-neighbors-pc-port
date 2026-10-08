@@ -15,6 +15,10 @@ _Static_assert(VIDEO_WIDE_AUTO == (int)ppu_wideAuto &&
                    VIDEO_WIDE_SWEEP == (int)ppu_wideSweep &&
                    VIDEO_WIDE_CENTRE_CLIP == (int)ppu_wideCentreClip,
                "the widescreen policies are numbered as the PPU numbers them");
+_Static_assert(VIDEO_SPRITE_WORLD == (int)ppu_spriteWorld &&
+                   VIDEO_SPRITE_ANCHORED == (int)ppu_spriteAnchored &&
+                   VIDEO_SPRITE_CENTRED == (int)ppu_spriteCentred,
+               "the sprites' places are numbered as the PPU numbers them");
 _Static_assert(VIDEO_EXTRA_MAX == PPU_EXTRA_MAX && VIDEO_LINES == PPU_LINES,
                "the picture is as wide and as tall as the PPU's");
 
@@ -72,6 +76,19 @@ void video_state_from_ppu(VideoState* s, const Ppu* ppu) {
   s->window1_right = ppu->window1right;
   s->window2_left = ppu->window2left;
   s->window2_right = ppu->window2right;
+  s->obj = (VideoObj){
+      .oam = ppu->oam,
+      .high_oam = ppu->highOam,
+      .sizes = ppu->objSize,
+      .first = (uint8_t)(ppu->objPriority ? ppu->oamAdr >> 1 : 0),
+      .tiles_at = {ppu->objTileAdr1, ppu->objTileAdr2},
+      .interlace = ppu->objInterlace,
+      .front = ppu->objFront,
+      .remap_on = ppu->objRemapOn,
+      .place = ppu->spritePlace,
+      .shift = ppu->spriteShift,
+      .remap = ppu->objRemap,
+  };
   s->obj_pixel = ppu->objPixelBuffer;
   s->obj_priority = ppu->objPriorityBuffer;
   s->extra_left = ppu->extraLeft;
@@ -160,6 +177,42 @@ static void note_decline(VideoHook* hook, const char* why) {
   }
 }
 
+static bool video_ppu_sprites(void* user, Ppu* ppu, int line) {
+  VideoHook* hook = (VideoHook*)user;
+  VideoState s;
+  video_state_from_ppu(&s, ppu);
+  if (hook->renderer == VIDEO_EMULATED || video_sprites_declines(&s)) {
+    hook->sprite_declined++;
+    return false;
+  }
+  hook->sprite_lines++;
+  if (hook->renderer == VIDEO_NATIVE) {
+    const int over = video_sprites(&s, line, ppu->objPixelBuffer, ppu->objPriorityBuffer);
+    if (over & VIDEO_SPRITES_RANGE_OVER) ppu->rangeOver = true;
+    if (over & VIDEO_SPRITES_TIME_OVER) ppu->timeOver = true;
+    return true;
+  }
+  // Both, and the PPU's kept. A priority is compared only where there is a
+  // sprite: elsewhere it is whatever an earlier line left.
+  uint8_t pixel[VIDEO_MAX_WIDTH], priority[VIDEO_MAX_WIDTH];
+  const int over = video_sprites(&s, line, pixel, priority);
+  const bool range_over = ppu->rangeOver || (over & VIDEO_SPRITES_RANGE_OVER);
+  const bool time_over = ppu->timeOver || (over & VIDEO_SPRITES_TIME_OVER);
+  ppu_findSprites(ppu, line);
+  bool same = range_over == ppu->rangeOver && time_over == ppu->timeOver;
+  for (int c = 0; c < video_width(&s) && same; c++)
+    same = pixel[c] == ppu->objPixelBuffer[c] &&
+           (pixel[c] == 0 || priority[c] == ppu->objPriorityBuffer[c]);
+  if (!same) {
+    if (hook->sprite_differing == 0) {
+      hook->first_sprites.frame = ppu->snes ? ppu->snes->frames : 0;
+      hook->first_sprites.line = line;
+    }
+    hook->sprite_differing++;
+  }
+  return true;
+}
+
 static bool video_ppu_line(void* user, Ppu* ppu, int line) {
   VideoHook* hook = (VideoHook*)user;
   VideoState s;
@@ -208,6 +261,7 @@ void video_hook_install(VideoHook* hook, Ppu* ppu, VideoRenderer renderer, bool 
   hook->checksummed = checksummed;
   hook->checksum = 14695981039346656037ull;
   ppu->drawLine = video_ppu_line;
+  ppu->findSprites = video_ppu_sprites;
   ppu->drawUser = hook;
 }
 
@@ -224,10 +278,18 @@ bool video_hook_report(const VideoHook* hook, FILE* to) {
               hook->first.frame, hook->first.line, hook->first.column, hook->first.native,
               hook->first.emulated);
   }
+  fprintf(to, "Sprites: %ld lines' found here, %ld left to the PPU.\n", hook->sprite_lines,
+          hook->sprite_declined);
+  if (hook->renderer == VIDEO_CHECK) {
+    fprintf(to, "  %ld of those are not what the PPU found.\n", hook->sprite_differing);
+    if (hook->sprite_differing)
+      fprintf(to, "  The first: frame %u, line %d.\n", hook->first_sprites.frame,
+              hook->first_sprites.line);
+  }
   if (hook->checksummed)
     fprintf(to, "  Picture checksum %016llX over %ld lines.\n",
             (unsigned long long)hook->checksum, hook->checksum_lines);
-  return hook->differing == 0;
+  return hook->differing == 0 && hook->sprite_differing == 0;
 }
 
 bool video_renderer_named(const char* name, VideoRenderer* renderer) {

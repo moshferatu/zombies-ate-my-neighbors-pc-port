@@ -12,9 +12,9 @@ the picture and the sound are to be ported too, until the game does not
 depend on LakeSnes. This is the start of the picture. `docs/video.md` is
 the long form.
 
-`src/video` draws every scanline the game shows, and the emulated PPU draws
-none of them. At 16:9 a tick of `level1.zmv` costs **2.8 ms** to emulate
-and take apart for the smoothing, from 8.3.
+`src/video` finds every line's sprites and draws every scanline the game
+shows, and the emulated PPU does neither. At 16:9 a tick of `level1.zmv`
+costs **2.8 ms** to emulate and take apart for the smoothing, from 8.3.
 
 * **Why this first.** A profile at 240 Hz and 16:9 had 43% of the busy
   samples in the PPU drawing the frame a dot at a time, and 21% in the
@@ -82,6 +82,27 @@ and take apart for the smoothing, from 8.3.
   * With the sound on. A level at 16:9 in a window: 75% and 93% of one
     core before either change, 27% and 30% now. The title in fullscreen
     at 3840x2160 with the pads read: 101% before, 21% now.
+* **A line's sprites, found here.** `video_sprites` in `src/video/video.c`
+  reads OAM as the console does: the sprites that cross the line, the first
+  32 kept, then their tiles from the last kept to the first until 34 are
+  fetched.
+  * The two limits and the two flags the game reads from `$213E` are kept,
+    and so are the frontend's own: sprites found before the rest, sprites
+    in the frontend's colours, and a sprite's three places in a widened
+    picture.
+  * `Ppu.findSprites` is where the PPU asks for them. `--renderer check`
+    finds them both ways and compares the rows and the flags.
+  * The corpus at four widths: no line's sprites differ, and the picture
+    still does not, over 310,747,136 lines. Noise: 1,260,224 lines' sprites
+    and none differ.
+  * It is no faster. A tick at 16:9 emulates in 2.4 to 2.5 ms before and
+    after. It was done to need the emulator less.
+  * A mistake of mine. The noise test did not catch one sprite too many
+    kept, because sprites at random never crowd a line. One frame in four
+    now has them in a band of lines, and it catches that, a tile too many
+    and a flag never set.
+  * Not established: whether any movie of the corpus crowds a line. The
+    tools other than the game still use the PPU's finder.
 * **Tried before this and not kept.** Three smaller things, each measured
   in a copy: asking each layer once a dot in `ppu_getPixel`, 13% and
   pixel-identical; remembering the last tile read, 4% more; whole-program
@@ -103,14 +124,14 @@ and take apart for the smoothing, from 8.3.
   * A screen the corpus does not reach may draw a kind of line that is
     declined. The PPU then draws it, correctly and slowly, and
     `--verbose` counts such lines by what they were.
-* **Still the emulator's.** The registers, VRAM, the palette and OAM. The
-  sprites of a line. What the automatic policy is worked out from. The
-  buffer the picture is written into.
+* **Still the emulator's.** The registers, VRAM, the palette and OAM. What
+  the automatic policy is worked out from. The buffer the picture is
+  written into, and the sprites' rows and flags.
 * **`PLAN.md` still says the PPU stays emulated.** I have not edited it.
-* **Next.** A line's sprites found in `src/video`. A frame drawn once: with
-  the smoothing on, a frame shown as layers is still drawn as a picture
-  nobody sees. The registers out of the PPU. The smoothing's sprites and
-  its maths window, which are still a dot at a time.
+* **Next.** A frame drawn once: with the smoothing on, a frame shown as
+  layers is still drawn as a picture nobody sees. The registers out of the
+  PPU. The smoothing's sprites and its maths window, which are still a dot
+  at a time.
 
 ### The wobble's call, the screens' sends, and the calls of a player's frame (2026-10-08)
 

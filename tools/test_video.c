@@ -7,7 +7,8 @@
 // emulated PPU is filled with noise -- VRAM, the palette, OAM, the scrolls,
 // which layers are on, the colour maths, the colour window, the margins of a
 // widened picture and what each layer does with them -- and every line of the
-// frame is drawn both ways and compared. What `video_declines` is left to the
+// frame has its sprites found both ways, is drawn both ways, and each is
+// compared. What `video_declines` is left to the
 // PPU, and a share of the frames are made to have something it declines, so
 // that a line it should have declined and drew wrong shows up as a line that
 // differs.
@@ -56,11 +57,21 @@ static void noise(Ppu* ppu) {
   for (int i = 0; i < 0x100; i++) ppu->cgram[i] = (uint16_t)(rnd() & 0x7fff);
   for (int i = 0; i < 0x100; i++) ppu->oam[i] = (uint16_t)rnd();
   for (int i = 0; i < 0x20; i++) ppu->highOam[i] = (uint8_t)rnd();
+  // Sprites at random are spread too thin for a line ever to have more than
+  // it has time for. One frame in four has them all on the console's columns
+  // and in a band of lines, some or all of them.
+  if (one_in(4)) {
+    const int band = below(256), crowd = 16 << below(4);
+    for (int i = 0; i < crowd; i++)
+      ppu->oam[i * 2] = (uint16_t)(((band + below(48)) & 0xff) << 8 | (rnd() & 0xff));
+    for (int i = 0; i < 0x20; i++) ppu->highOam[i] &= 0xaa;
+  }
   const int obsel = below(256);
   ppu->objSize = (uint8_t)(obsel >> 5);
   ppu->objTileAdr1 = (uint16_t)((obsel & 7) << 13);
   ppu->objTileAdr2 = (uint16_t)(ppu->objTileAdr1 + (((obsel & 0x18) + 8) << 9));
   ppu->objPriority = one_in(4);
+  ppu->objInterlace = one_in(40);
   ppu->oamAdr = (uint8_t)rnd();
   for (int i = 0; i < 0x80; i++) {
     ppu->objFront[i] = one_in(40);

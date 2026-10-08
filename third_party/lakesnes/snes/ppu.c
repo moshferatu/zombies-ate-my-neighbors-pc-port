@@ -416,11 +416,18 @@ void ppu_runLine(Ppu* ppu, int line) {
   }
   // evaluate sprites
   memset(ppu->objPixelBuffer, 0, (size_t)ppu_gameWidth(ppu));
-  if(!ppu->forcedBlank) ppu_evaluateSprites(ppu, line - 1);
+  if(!ppu->forcedBlank && !(ppu->findSprites && ppu->findSprites(ppu->drawUser, ppu, line))) {
+    ppu_findSprites(ppu, line);
+  }
   // actual line
   if(ppu->noPixels) return;
   if(ppu->drawLine && ppu->drawLine(ppu->drawUser, ppu, line)) return;
   ppu_drawLine(ppu, line);
+}
+
+// A sprite at Y is drawn from line Y + 1 on, which is the `- 1`.
+void ppu_findSprites(Ppu* ppu, int line) {
+  ppu_evaluateSprites(ppu, line - 1);
 }
 
 void ppu_drawLine(Ppu* ppu, int line) {

@@ -305,6 +305,13 @@ struct Ppu {
   // one user.
   bool (*drawLine)(void* user, Ppu* ppu, int line);
   void* drawUser;
+  // zamn: ...and a line's sprites found by somebody else. Called from
+  // `ppu_runLine` where they would be found, with `drawUser`, `noPixels` or
+  // not: finding them sets the two flags the game can read back. True if it
+  // found them -- into `objPixelBuffer`, which is zero when it is called, and
+  // `objPriorityBuffer`, with `rangeOver` and `timeOver` set if they are --
+  // and false to have them found here.
+  bool (*findSprites)(void* user, Ppu* ppu, int line);
   // widescreen: margins in game pixels, and what each layer does with them
   int extraLeft;
   int extraRight;
@@ -405,6 +412,9 @@ void ppu_runLine(Ppu* ppu, int line);
 // from the state as it stands and the sprites `ppu_runLine` found. For a
 // `drawLine` that wants the line drawn here after all.
 void ppu_drawLine(Ppu* ppu, int line);
+// ...and the half before it: this line's sprites into `objPixelBuffer` and
+// `objPriorityBuffer`. For a `findSprites` that wants them found here.
+void ppu_findSprites(Ppu* ppu, int line);
 // Draw the whole picture again from the PPU's state as it stands now -- every
 // line `ppu_runLine` drew this frame, into the same half of the pixel buffer,
 // so `ppu_putPixels` afterwards hands out the redrawn picture. `hScroll` and
