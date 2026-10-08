@@ -82,6 +82,10 @@ Ppu* ppu_init(Snes* snes) {
   ppu->noPixels = false;
   ppu->drawLine = NULL;
   ppu->drawUser = NULL;
+  ppu->findSprites = NULL;
+  ppu->wrote = NULL;
+  ppu->didRead = NULL;
+  ppu->happened = NULL;
   ppu_setPixelOutputFormat(ppu, ppu_pixelOutputFormatBGRX);
   // Set here and not in `ppu_reset`, because the width of the picture belongs
   // to whoever is displaying it and a game resetting itself is not a reason to
@@ -217,6 +221,7 @@ void ppu_reset(Ppu* ppu) {
   ppu->ppu1openBus = 0;
   ppu->ppu2openBus = 0;
   memset(ppu->pixelBuffer, 0, sizeof(ppu->pixelBuffer));
+  if(ppu->happened) ppu->happened(ppu->drawUser, ppu, ppu_wasReset);
 }
 
 void ppu_handleState(Ppu* ppu, StateHandler* sh) {
@@ -273,11 +278,13 @@ void ppu_handleState(Ppu* ppu, StateHandler* sh) {
   sh_handleByteArray(sh, ppu->highOam, 0x20);
   sh_handleByteArray(sh, ppu->objPixelBuffer, 256);
   sh_handleByteArray(sh, ppu->objPriorityBuffer, 256);
+  if(!sh->saving && ppu->happened) ppu->happened(ppu->drawUser, ppu, ppu_stateLoaded);
 }
 
 bool ppu_checkOverscan(Ppu* ppu) {
   // called at (0,225)
   ppu->frameOverscan = ppu->overscan; // set if we have a overscan-frame
+  if(ppu->happened) ppu->happened(ppu->drawUser, ppu, ppu_overscanChecked);
   return ppu->frameOverscan;
 }
 
@@ -289,6 +296,7 @@ void ppu_handleVblank(Ppu* ppu) {
     ppu->oamSecondWrite = false;
   }
   ppu->frameInterlace = ppu->interlace; // set if we have a interlaced frame
+  if(ppu->happened) ppu->happened(ppu->drawUser, ppu, ppu_vblankBegan);
 }
 
 // The tilemap word covering layer coordinates (x, y) -- the same address
@@ -398,6 +406,7 @@ void ppu_handleFrameStart(Ppu* ppu) {
                                 ppu_columnEmpty(ppu, i, 255));
     }
   }
+  if(ppu->happened) ppu->happened(ppu->drawUser, ppu, ppu_frameStarted);
 }
 
 void ppu_runLine(Ppu* ppu, int line) {
@@ -1269,7 +1278,15 @@ static uint16_t ppu_getVramRemap(Ppu* ppu) {
   return adr;
 }
 
+static uint8_t ppu_readHere(Ppu* ppu, uint8_t adr);
+
 uint8_t ppu_read(Ppu* ppu, uint8_t adr) {
+  uint8_t val = ppu_readHere(ppu, adr);
+  if(ppu->didRead) ppu->didRead(ppu->drawUser, ppu, adr, &val);
+  return val;
+}
+
+static uint8_t ppu_readHere(Ppu* ppu, uint8_t adr) {
   switch(adr) {
     case 0x04: case 0x14: case 0x24:
     case 0x05: case 0x15: case 0x25:
@@ -1390,7 +1407,14 @@ uint8_t ppu_read(Ppu* ppu, uint8_t adr) {
   }
 }
 
+static void ppu_writeHere(Ppu* ppu, uint8_t adr, uint8_t val);
+
 void ppu_write(Ppu* ppu, uint8_t adr, uint8_t val) {
+  ppu_writeHere(ppu, adr, val);
+  if(ppu->wrote) ppu->wrote(ppu->drawUser, ppu, adr, val);
+}
+
+static void ppu_writeHere(Ppu* ppu, uint8_t adr, uint8_t val) {
   // A write while a line is being drawn -- the same test `snes_runCycle`
   // uses to decide whether a line is -- to anything but a scroll register
   // ($210D-$2114, which are recorded per line). See `midFrameWrite`.
@@ -1758,6 +1782,13 @@ int ppu_freeSprite(const Ppu* ppu, int from) {
 void ppu_setWideClamp(Ppu* ppu, int lo, int hi) {
   ppu->wideClampLo = lo;
   ppu->wideClampHi = hi;
+}
+
+void ppu_setScroll(Ppu* ppu, int layer, uint16_t h, uint16_t v) {
+  if(layer < 0 || layer > 3) return;
+  ppu->bgLayer[layer].hScroll = h & 0x3ff;
+  ppu->bgLayer[layer].vScroll = v & 0x3ff;
+  if(ppu->happened) ppu->happened(ppu->drawUser, ppu, ppu_scrollSet);
 }
 
 void ppu_writeVramWord(Ppu* ppu, uint16_t wordAdr, uint16_t val) {

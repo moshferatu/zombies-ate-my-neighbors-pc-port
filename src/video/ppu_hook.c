@@ -99,6 +99,77 @@ void video_state_from_ppu(VideoState* s, const Ppu* ppu) {
   s->line_vscroll = ppu->lineVScroll;
 }
 
+// Every register, as it is kept here and as the PPU keeps it.
+#define REGISTERS(X)                                                                        \
+  X(blank, forcedBlank) X(brightness, brightness)                                           \
+  X(obj_sizes, objSize) X(obj_tiles_at[0], objTileAdr1) X(obj_tiles_at[1], objTileAdr2)     \
+  X(obj_from_address, objPriority)                                                          \
+  X(oam_at, oamAdr) X(oam_at_written, oamAdrWritten)                                        \
+  X(oam_high, oamInHigh) X(oam_high_written, oamInHighWritten)                              \
+  X(oam_second, oamSecondWrite) X(oam_first_byte, oamBuffer)                                \
+  X(mode, mode) X(bg3_front, bg3priority)                                                   \
+  X(mosaic_size, mosaicSize) X(mosaic_from, mosaicStartLine)                                \
+  X(scroll_latch, scrollPrev) X(hscroll_latch, scrollPrev2)                                 \
+  X(vram_at, vramPointer) X(vram_step, vramIncrement) X(vram_remap, vramRemapMode)          \
+  X(vram_step_on_high, vramIncrementOnHigh) X(vram_ahead, vramReadBuffer)                   \
+  X(m7_latch, m7prev) X(m7_large_field, m7largeField) X(m7_fill, m7charFill)                \
+  X(m7_flip_x, m7xFlip) X(m7_flip_y, m7yFlip) X(m7_ext_bg, m7extBg)                         \
+  X(cgram_at, cgramPointer) X(cgram_second, cgramSecondWrite)                               \
+  X(cgram_first_byte, cgramBuffer)                                                          \
+  X(window1_left, window1left) X(window1_right, window1right)                               \
+  X(window2_left, window2left) X(window2_right, window2right)                               \
+  X(direct_colour, directColor) X(add_sub, addSubscreen) X(subtract, subtractColor)         \
+  X(half, halfColor) X(prevent, preventMathMode) X(clip, clipMode)                          \
+  X(fixed_r, fixedColorR) X(fixed_g, fixedColorG) X(fixed_b, fixedColorB)                   \
+  X(interlace, interlace) X(obj_interlace, objInterlace) X(overscan, overscan)              \
+  X(pseudo_hires, pseudoHires)                                                              \
+  X(even_frame, evenFrame) X(frame_overscan, frameOverscan)                                 \
+  X(frame_interlace, frameInterlace) X(range_over, rangeOver) X(time_over, timeOver)        \
+  X(h_count, hCount) X(v_count, vCount) X(h_second, hCountSecond)                           \
+  X(v_second, vCountSecond) X(latched, countersLatched)                                     \
+  X(bus1, ppu1openBus) X(bus2, ppu2openBus)                                                 \
+  for (int i = 0; i < 4; i++) {                                                             \
+    X(bg[i].hscroll, bgLayer[i].hScroll) X(bg[i].vscroll, bgLayer[i].vScroll)               \
+    X(bg[i].map_at, bgLayer[i].tilemapAdr) X(bg[i].tiles_at, bgLayer[i].tileAdr)            \
+    X(bg[i].map_wide, bgLayer[i].tilemapWider) X(bg[i].map_high, bgLayer[i].tilemapHigher)  \
+    X(bg[i].big_tiles, bgLayer[i].bigTiles) X(bg[i].mosaic, bgLayer[i].mosaicEnabled)       \
+  }                                                                                         \
+  for (int i = 0; i < 5; i++) {                                                             \
+    X(main[i], layer[i].mainScreenEnabled) X(sub[i], layer[i].subScreenEnabled)             \
+    X(main_windowed[i], layer[i].mainScreenWindowed)                                        \
+    X(sub_windowed[i], layer[i].subScreenWindowed)                                          \
+  }                                                                                         \
+  for (int i = 0; i < VIDEO_LAYERS; i++) {                                                  \
+    X(window[i].one, windowLayer[i].window1enabled)                                         \
+    X(window[i].two, windowLayer[i].window2enabled)                                         \
+    X(window[i].one_inverted, windowLayer[i].window1inversed)                               \
+    X(window[i].two_inverted, windowLayer[i].window2inversed)                               \
+    X(window[i].logic, windowLayer[i].maskLogic) X(math[i], mathEnabled[i])                 \
+  }                                                                                         \
+  for (int i = 0; i < 8; i++) { X(m7[i], m7matrix[i]) }
+
+void video_registers_from_ppu(VideoRegisters* r, const Ppu* ppu) {
+#define TAKE(here, theirs) r->here = ppu->theirs;
+  REGISTERS(TAKE)
+#undef TAKE
+}
+
+const char* video_registers_differ(const VideoRegisters* r, const Ppu* ppu) {
+#define SAME(here, theirs) \
+  if (r->here != ppu->theirs) return #here;
+  REGISTERS(SAME)
+#undef SAME
+  return NULL;
+}
+
+// What a line is drawn from: the registers kept here if they are, and the
+// PPU's if not, with what the frontend has said of the picture, which is in
+// the PPU either way.
+static void state_of(const VideoHook* hook, VideoState* s, const Ppu* ppu) {
+  video_state_from_ppu(s, ppu);
+  if (hook->registers_kept) video_registers_state(&hook->registers, s);
+}
+
 // The centred layers' margins are searched for by whichever of the two draws
 // a line, and kept in the PPU, so that each finds what the other left.
 void video_centre_from_ppu(VideoCentre* c, const Ppu* ppu) {
@@ -179,17 +250,21 @@ static void note_decline(VideoHook* hook, const char* why) {
 
 static bool video_ppu_sprites(void* user, Ppu* ppu, int line) {
   VideoHook* hook = (VideoHook*)user;
+  VideoRegisters* r = &hook->registers;
   VideoState s;
-  video_state_from_ppu(&s, ppu);
+  state_of(hook, &s, ppu);
   if (hook->renderer == VIDEO_EMULATED || video_sprites_declines(&s)) {
     hook->sprite_declined++;
-    return false;
+    ppu_findSprites(ppu, line);
+    r->range_over = ppu->rangeOver;
+    r->time_over = ppu->timeOver;
+    return true;
   }
   hook->sprite_lines++;
   if (hook->renderer == VIDEO_NATIVE) {
     const int over = video_sprites(&s, line, ppu->objPixelBuffer, ppu->objPriorityBuffer);
-    if (over & VIDEO_SPRITES_RANGE_OVER) ppu->rangeOver = true;
-    if (over & VIDEO_SPRITES_TIME_OVER) ppu->timeOver = true;
+    if (over & VIDEO_SPRITES_RANGE_OVER) ppu->rangeOver = r->range_over = true;
+    if (over & VIDEO_SPRITES_TIME_OVER) ppu->timeOver = r->time_over = true;
     return true;
   }
   // Both, and the PPU's kept. A priority is compared only where there is a
@@ -198,6 +273,8 @@ static bool video_ppu_sprites(void* user, Ppu* ppu, int line) {
   const int over = video_sprites(&s, line, pixel, priority);
   const bool range_over = ppu->rangeOver || (over & VIDEO_SPRITES_RANGE_OVER);
   const bool time_over = ppu->timeOver || (over & VIDEO_SPRITES_TIME_OVER);
+  r->range_over = range_over;
+  r->time_over = time_over;
   ppu_findSprites(ppu, line);
   bool same = range_over == ppu->rangeOver && time_over == ppu->timeOver;
   for (int c = 0; c < video_width(&s) && same; c++)
@@ -216,7 +293,7 @@ static bool video_ppu_sprites(void* user, Ppu* ppu, int line) {
 static bool video_ppu_line(void* user, Ppu* ppu, int line) {
   VideoHook* hook = (VideoHook*)user;
   VideoState s;
-  video_state_from_ppu(&s, ppu);
+  state_of(hook, &s, ppu);
   const int width = video_width(&s);
   const char* why = hook->renderer == VIDEO_EMULATED ? NULL : video_declines(&s);
   if (hook->renderer == VIDEO_EMULATED || why != NULL) {
@@ -254,6 +331,84 @@ static bool video_ppu_line(void* user, Ppu* ppu, int line) {
   return true;
 }
 
+// Under `VIDEO_CHECK`, after something has been done to the registers and
+// to the PPU: are they the same? `misread` is for a read whose two answers
+// were not. Registers that differ are made the PPU's again, so that what is
+// counted is the things done wrong and not everything after the first.
+static void check_registers(VideoHook* hook, Ppu* ppu, const char* what, uint8_t address,
+                            uint8_t value, bool misread) {
+  if (hook->renderer != VIDEO_CHECK) return;
+  const char* which = video_registers_differ(&hook->registers, ppu);
+  if (which == NULL && misread) which = "the value read";
+  if (which == NULL) return;
+  if (hook->registers_differing++ == 0) {
+    hook->first_register.frame = ppu->snes->frames;
+    hook->first_register.line = ppu->snes->vPos;
+    hook->first_register.what = what;
+    hook->first_register.address = address;
+    hook->first_register.value = value;
+    hook->first_register.which = which;
+  }
+  video_registers_from_ppu(&hook->registers, ppu);
+}
+
+static void video_ppu_wrote(void* user, Ppu* ppu, uint8_t address, uint8_t value) {
+  VideoHook* hook = (VideoHook*)user;
+  video_registers_write(&hook->registers, address, value, ppu->snes->vPos);
+  hook->writes++;
+  check_registers(hook, ppu, "write", address, value, false);
+}
+
+static void video_ppu_read(void* user, Ppu* ppu, uint8_t address, uint8_t* value) {
+  VideoHook* hook = (VideoHook*)user;
+  const VideoBus bus = {
+      .dot = ppu->snes->hPos / 4,
+      .line = ppu->snes->vPos,
+      .pal = ppu->snes->palTiming,
+      .open_bus = ppu->snes->openBus,
+  };
+  const uint8_t here = video_registers_read(&hook->registers, address, &bus);
+  hook->reads++;
+  check_registers(hook, ppu, "read", address, *value, here != *value);
+  if (hook->renderer == VIDEO_NATIVE) *value = here;
+}
+
+static void video_ppu_happened(void* user, Ppu* ppu, int what) {
+  VideoHook* hook = (VideoHook*)user;
+  VideoRegisters* r = &hook->registers;
+  const char* name = "";
+  switch (what) {
+    case ppu_wasReset: video_registers_reset(r); name = "reset"; break;
+    case ppu_frameStarted: video_registers_frame_start(r); name = "frame's start"; break;
+    case ppu_overscanChecked: video_registers_overscan(r); name = "overscan's check"; break;
+    case ppu_vblankBegan: video_registers_vblank(r); name = "picture's end"; break;
+    // A state is the PPU's, whole, and a scroll the frontend put in is the
+    // frontend's.
+    case ppu_stateLoaded: video_registers_from_ppu(r, ppu); return;
+    case ppu_scrollSet:
+      for (int l = 0; l < 4; l++) {
+        r->bg[l].hscroll = ppu->bgLayer[l].hScroll;
+        r->bg[l].vscroll = ppu->bgLayer[l].vScroll;
+      }
+      return;
+  }
+  check_registers(hook, ppu, name, 0, 0, false);
+}
+
+void video_hook_keep_registers(VideoHook* hook, Ppu* ppu) {
+  if (hook->renderer == VIDEO_EMULATED) return;
+  VideoRegisters* r = &hook->registers;
+  r->vram = ppu->vram;
+  r->cgram = ppu->cgram;
+  r->oam = ppu->oam;
+  r->high_oam = ppu->highOam;
+  video_registers_from_ppu(r, ppu);
+  hook->registers_kept = true;
+  ppu->wrote = video_ppu_wrote;
+  ppu->didRead = video_ppu_read;
+  ppu->happened = video_ppu_happened;
+}
+
 void video_hook_install(VideoHook* hook, Ppu* ppu, VideoRenderer renderer, bool checksummed) {
   memset(hook, 0, sizeof *hook);
   video_init(&hook->video);
@@ -286,10 +441,29 @@ bool video_hook_report(const VideoHook* hook, FILE* to) {
       fprintf(to, "  The first: frame %u, line %d.\n", hook->first_sprites.frame,
               hook->first_sprites.line);
   }
+  if (hook->registers_kept) {
+    fprintf(to, "Registers: %ld writes and %ld reads kept here.\n", hook->writes, hook->reads);
+    if (hook->renderer == VIDEO_CHECK)
+      fprintf(to, "  %ld of them, or of a frame's events, were not as the PPU had them.\n",
+              hook->registers_differing);
+    if (hook->registers_differing) {
+      const char* what = hook->first_register.what;
+      fprintf(to, "  The first: frame %u, line %d, `%s` after ", hook->first_register.frame,
+              hook->first_register.line, hook->first_register.which);
+      if (!strcmp(what, "write"))
+        fprintf(to, "%02X was written to $21%02X.\n", hook->first_register.value,
+                hook->first_register.address);
+      else if (!strcmp(what, "read"))
+        fprintf(to, "$21%02X was read, as %02X by the PPU.\n", hook->first_register.address,
+                hook->first_register.value);
+      else
+        fprintf(to, "the %s.\n", what);
+    }
+  }
   if (hook->checksummed)
     fprintf(to, "  Picture checksum %016llX over %ld lines.\n",
             (unsigned long long)hook->checksum, hook->checksum_lines);
-  return hook->differing == 0 && hook->sprite_differing == 0;
+  return hook->differing == 0 && hook->sprite_differing == 0 && hook->registers_differing == 0;
 }
 
 bool video_renderer_named(const char* name, VideoRenderer* renderer) {

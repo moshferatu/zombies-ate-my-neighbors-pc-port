@@ -38,8 +38,9 @@
 //
 // `VideoState` is what a line is drawn from: VRAM, the palette, and the
 // registers as the game last set them. It names nothing of the emulator's.
-// `src/video/ppu_hook.c` fills one from the emulated PPU, which is where the
-// registers still live while the ROM's code is what writes them.
+// The registers are kept by `registers.h`, which fills its share of one.
+// `src/video/ppu_hook.c` fills the rest from the emulated PPU: the widened
+// picture, and what the frontend has said of each sprite.
 //
 // A line's sprites are found from OAM by `video_sprites`, into a row of the
 // picture's width that `video_line` is then given: a pixel and a priority for

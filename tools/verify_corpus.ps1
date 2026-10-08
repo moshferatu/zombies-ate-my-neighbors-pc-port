@@ -268,6 +268,12 @@ if ($Picture) {
                 $differ = -1
             }
             $sum = ""
+            # ...and the writes and reads that left the registers not the PPU's.
+            if ($differ -ge 0 -and $text -match "(\d+) of them, or of a frame's events, were not as the PPU had them") {
+                $differ += [int]$Matches[1]
+            } else {
+                $differ = -1
+            }
             if ($text -match "Picture checksum ([0-9A-F]{16}) over (\d+) lines") { $sum = "$($Matches[1]) $($Matches[2])" }
             $sumAlone = "none"
             if ($alone -match "Picture checksum ([0-9A-F]{16}) over (\d+) lines") { $sumAlone = "$($Matches[1]) $($Matches[2])" }

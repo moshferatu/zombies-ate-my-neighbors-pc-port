@@ -5,8 +5,10 @@ good. That has changed. The picture and the sound are to be ported as the
 game's code is, until nothing of LakeSnes is left in the game.
 
 This is where the picture stands. `src/video` finds every line's sprites and
-draws every scanline the game shows, and the emulated PPU does neither. The
-PPU still holds the registers, VRAM, the palette and OAM.
+draws every scanline the game shows, and the emulated PPU does neither. It
+keeps the chip's registers too: a line is drawn from them, and the game reads
+what they answer. The PPU still holds VRAM, the palette and OAM, and is
+still written to as well, because the frontend reads its copy.
 
 ## Why it was worth doing first
 
@@ -27,8 +29,46 @@ its bits, stop at the first that is not transparent.
 
 `VideoState`, in `src/video/video.h`: VRAM, the palette, and the registers as
 the game last set them, under names of this project's. It names nothing of the
-emulator's. `src/video/ppu_hook.c` is the one file that knows both, and fills a
-`VideoState` from the PPU before each line.
+emulator's. `src/video/ppu_hook.c` is the one file that knows both. Before
+each line it fills a `VideoState`: the registers' share from
+`VideoRegisters`, and the frontend's share from the PPU, which is the widened
+picture and what it has said of each sprite.
+
+## The registers
+
+`VideoRegisters`, in `src/video/registers.h`, is the chip as the game sees
+it: the sixty-four addresses from `$2100`.
+
+- **`video_registers_write`** is the fifty-two the game writes. What they say
+  is kept decoded, under the names a line is drawn from.
+- **`video_registers_read`** is the twelve it reads: the memories back, a
+  multiply, the beam's latched place, and two bytes of status.
+- **Three events a frame** that the game does not ask for: the frame's
+  start, the check for overscan at line 225, and the picture's end.
+
+Three of the addresses are doors into the chip's memories. Each has an
+address that steps as bytes go through, and each has a catch:
+
+- **OAM** takes a word when its second byte is written. Its address goes
+  round from the sprites' words into the table of extra bits and back, and
+  is put back to what the game wrote when the picture ends.
+- **VRAM** steps by 1, 32 or 128, after the low byte or the high. Its
+  address can have its low bits turned, and a read comes through a word
+  fetched ahead.
+- **The palette** takes a colour when its second byte is written.
+
+The memories themselves are not `VideoRegisters`'s. It is told where they
+are, and for now they are the PPU's own arrays. The frontend writes sprites
+and map words straight into those, and both sets of registers must see them.
+
+The PPU calls `Ppu.wrote`, `Ppu.didRead` and `Ppu.happened` after it has done
+each thing itself. So every write is done twice, to the same memory, which
+comes to the same.
+
+One register is written by the frontend and not the game. In a widened
+picture `src/widescreen.h` moves the big figure's plane, which the game parks
+for a picture 256 wide. It wrote the scroll into the PPU's struct. It now
+calls `ppu_setScroll`, which tells the registers here.
 
 The sprites come in two steps. The state has OAM and the registers that say
 how to read it, and `video_sprites` finds a line's sprites from them into a
@@ -137,6 +177,8 @@ a time.
   every line both ways, and compares each column by column, with the two
   flags. It reports the lines that differ and the first of them, and exits 1
   if there were any.
+  It also compares the registers with the PPU's after every write, every
+  read and every event, each register by name, and a read's two answers.
 - **`tools/verify_corpus.ps1 -Picture`** runs every movie of the corpus under
   the check, then again with `src/video` drawing alone, and compares a
   checksum of every line of the picture between the two. `-Widescreen
@@ -148,6 +190,12 @@ a time.
   have something `video_declines`, so a line that should have been declined
   and was drawn wrong shows as a line that differs.
 
+- **`zamn_test_registers`** needs no ROM. A PPU and a `VideoRegisters`, with
+  memories of their own, have the same things done to them at random: any
+  byte written to any address, any address read, the beam moved, the three
+  events, a reset. Every register is compared after each, and the memories
+  every 64 steps. A third of the writes and reads go to the three doors.
+
 A rule broken on purpose is caught: `zamn_test_video` with a 16x16 tile's
 lower half read one character out reported 22,756 lines differing of 51,520.
 
@@ -157,14 +205,35 @@ flag for too many sprites never set, 53. The first of those was not caught
 until the noise was changed. Sprites at random are spread too thin to crowd
 a line, so one frame in four now has them in a band of lines.
 
+For the registers, nine rules broken in turn over 600,000 steps, and each
+was caught and named:
+
+| Broken | Steps wrong | First named |
+|---|---|---|
+| A scroll's low bits from the wrong latch | 6,518 | `bg[i].hscroll` |
+| VRAM's address turned one bit short | 3,169 | VRAM |
+| An OAM read not going on into the extra bits | 7 | `oam_high` |
+| A colour's sixteenth bit read as 0 | 954 | `bus2` |
+| OAM's address put back under a blanked screen | 3,792 | `oam_at` |
+| The fixed colour's green set by the red bit | 1,809 | `fixed_g` |
+| A status read not letting the counters latch again | 783 | `latched` |
+| VRAM stepping after the wrong byte | 15,228 | `vram_at` |
+| An OAM word written with its bytes swapped | 2,826 | OAM |
+
 ## Results
 
 **Checked**, on the build that is described here:
 
 - **The corpus.** 54 movies at four widths: 310,747,136 lines drawn both ways
   and none differ, and no line's sprites differ. None was left to the PPU.
-  Each of the 216 runs comes to the same checksum with `src/video` working
-  alone.
+  No write, read or event left a register other than the PPU's. Each of the
+  216 runs comes to the same checksum with `src/video` working alone.
+  The first pass did not: 12 movies at 16:9, 9 at 16:10 and 8 at 21:9 drew a
+  different picture alone, on the levels with a big figure. That was the
+  scroll the frontend wrote past the registers, above.
+- **The registers at random.** 13,000,000 steps over three seeds: 7,799,515
+  writes, 3,252,192 reads and 781,693 events, and none left a register, an
+  answer or a memory other than the PPU's.
 - **Noise.** 6,000 frames over two seeds: 1,260,224 lines' sprites found both
   ways and none differ, with 22,848 more left to the PPU. The picture, drawn
   from them both ways, does not differ either, and nor do 196,824 rows read
@@ -194,12 +263,18 @@ the sound about 44%, and showing the pictures about 32%.
 Finding the sprites here did not change the cost. A tick at 16:9 emulates in
 2.4 to 2.5 ms before and after. It was done to need the emulator less.
 
+Keeping the registers here did not change it either: 2.4 to 2.5 ms. Every write is done twice for now, and a write is cheap.
+
 ## What is still the emulator's
 
-- **The registers and the memory.** The ROM's code writes `$21xx` and the PPU
-  decodes it. `VideoState` is filled from the PPU a line at a time.
-- **The sprites' two rows and two flags.** They are found here but kept in
-  the PPU, which is where the game reads the flags from.
+- **The memory.** VRAM, the palette and OAM are the PPU's arrays.
+- **A second set of registers.** The PPU still decodes every write, and the
+  frontend reads that copy: the smoothing, the widescreen's policies, the
+  radar and the blood. A saved state is the PPU's, and the registers here
+  are taken from it when one is loaded.
+- **When things happen.** The emulated console says where the beam is, when
+  a frame starts and when the picture ends.
+- **The sprites' two rows.** They are found here but kept in the PPU.
 - **The tools.** Only the game installs `src/video`. `zamn_cosim` and the
   rest still run the PPU's own sprite finder, and draw nothing.
 - **What `VIDEO_WIDE_AUTO` is worked out from.** Whether a layer is empty at
@@ -211,6 +286,7 @@ Finding the sprites here did not change the cost. A tick at 16:9 emulates in
 
 - Draw a frame once. With the smoothing on, a frame shown as layers is still
   drawn as a picture that nobody sees.
-- Take the registers out of the PPU: a write to `$21xx` into a `VideoState`.
+- Have the frontend read `src/video`'s registers and not the PPU's. Then the
+  PPU's copy has no reader, and the memories and the saved state can move.
 - The smoothing's sprites and its maths window are still worked out a dot at
   a time.

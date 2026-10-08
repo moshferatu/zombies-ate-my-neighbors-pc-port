@@ -37,6 +37,7 @@ endif()
 # ---------------------------------------------------------------------------
 add_library(zamn_video STATIC
   src/video/video.c
+  src/video/registers.c
   src/video/ppu_hook.c)
 target_include_directories(zamn_video PUBLIC src)
 target_link_libraries(zamn_video PUBLIC snescore)
@@ -46,6 +47,13 @@ add_executable(zamn_test_video tools/test_video.c)
 target_link_libraries(zamn_test_video PRIVATE zamn_video)
 if(MSVC)
   target_compile_definitions(zamn_test_video PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+# ...and the registers': writes and reads at random, done to both. No ROM.
+add_executable(zamn_test_registers tools/test_registers.c)
+target_link_libraries(zamn_test_registers PRIVATE zamn_video)
+if(MSVC)
+  target_compile_definitions(zamn_test_registers PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # ---------------------------------------------------------------------------

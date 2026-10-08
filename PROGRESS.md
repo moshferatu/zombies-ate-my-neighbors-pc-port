@@ -13,8 +13,9 @@ depend on LakeSnes. This is the start of the picture. `docs/video.md` is
 the long form.
 
 `src/video` finds every line's sprites and draws every scanline the game
-shows, and the emulated PPU does neither. At 16:9 a tick of `level1.zmv`
-costs **2.8 ms** to emulate and take apart for the smoothing, from 8.3.
+shows, and the emulated PPU does neither. It keeps the chip's registers as
+well, and the game reads those. At 16:9 a tick of `level1.zmv` costs
+**2.8 ms** to emulate and take apart for the smoothing, from 8.3.
 
 * **Why this first.** A profile at 240 Hz and 16:9 had 43% of the busy
   samples in the PPU drawing the frame a dot at a time, and 21% in the
@@ -103,6 +104,34 @@ costs **2.8 ms** to emulate and take apart for the smoothing, from 8.3.
     and a flag never set.
   * Not established: whether any movie of the corpus crowds a line. The
     tools other than the game still use the PPU's finder.
+* **The chip's registers, kept here.** `src/video/registers.c` is the
+  sixty-four addresses from `$2100`: the writes decoded, the twelve reads
+  answered, and the three things that happen to the chip once a frame.
+  * A line is drawn from these registers, and the game reads what they
+    answer. The PPU still has every write done to it too, because the
+    frontend reads its copy. The memories are the PPU's arrays, shared.
+  * `Ppu.wrote`, `Ppu.didRead` and `Ppu.happened` are where the PPU says
+    what it has just done. `--renderer check` compares every register by
+    name after each.
+  * The corpus at four widths: no write, read or event left a register
+    other than the PPU's, and the picture is unchanged.
+  * The corpus caught one thing first. At the three widened widths, 12, 9
+    and 8 movies drew a different picture with `src/video` alone: the
+    levels with a big figure. `src/widescreen.h` moves that figure's plane
+    by writing a scroll into the PPU's struct, which the registers here
+    never saw. It calls `ppu_setScroll` now, and the PPU says so.
+  * `zamn_test_registers`, which is new and needs no ROM: 13,000,000 steps
+    at random over three seeds, none differing. Nine rules broken on
+    purpose were each caught and named.
+  * The game hardly reads the chip: `level1.zmv` makes 4,133,561 writes and
+    one read. So the reads are checked by the noise and not by the corpus.
+  * A mistake of mine in the last commit. `Ppu.findSprites` was never set
+    to NULL in `ppu_init`, which does not clear what it allocates. The
+    tools that do not install `src/video` ran on whatever was there, which
+    happened to be zero. It is set now.
+  * Not established: the cosim and lockstep passes were not rerun. A saved
+    state loaded in the game was not tried; the registers are taken from
+    the PPU when one is.
 * **Tried before this and not kept.** Three smaller things, each measured
   in a copy: asking each layer once a dot in `ppu_getPixel`, 13% and
   pixel-identical; remembering the last tile read, 4% more; whole-program
@@ -124,14 +153,16 @@ costs **2.8 ms** to emulate and take apart for the smoothing, from 8.3.
   * A screen the corpus does not reach may draw a kind of line that is
     declined. The PPU then draws it, correctly and slowly, and
     `--verbose` counts such lines by what they were.
-* **Still the emulator's.** The registers, VRAM, the palette and OAM. What
-  the automatic policy is worked out from. The buffer the picture is
-  written into, and the sprites' rows and flags.
+* **Still the emulator's.** VRAM, the palette and OAM. A second copy of
+  the registers, which the frontend reads. What the automatic policy is
+  worked out from. The buffer the picture is written into, and the
+  sprites' rows. When a frame starts and ends.
 * **`PLAN.md` still says the PPU stays emulated.** I have not edited it.
-* **Next.** A frame drawn once: with the smoothing on, a frame shown as
-  layers is still drawn as a picture nobody sees. The registers out of the
-  PPU. The smoothing's sprites and its maths window, which are still a dot
-  at a time.
+* **Next.** The frontend reading `src/video`'s registers and not the
+  PPU's, after which the PPU's copy has no reader. A frame drawn once:
+  with the smoothing on, a frame shown as layers is still drawn as a
+  picture nobody sees. The smoothing's sprites and its maths window, which
+  are still a dot at a time.
 
 ### The wobble's call, the screens' sends, and the calls of a player's frame (2026-10-08)
 

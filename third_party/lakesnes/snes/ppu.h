@@ -312,6 +312,14 @@ struct Ppu {
   // `objPriorityBuffer`, with `rangeOver` and `timeOver` set if they are --
   // and false to have them found here.
   bool (*findSprites)(void* user, Ppu* ppu, int line);
+  // zamn: ...and the registers kept by somebody else as well, all with
+  // `drawUser`. `wrote` is called after every `ppu_write` has been done
+  // here, and `didRead` after every `ppu_read`, with what it read, which it
+  // may change. `happened` is called after each of the things below has.
+  // All NULL, which is how they start, is nobody.
+  void (*wrote)(void* user, Ppu* ppu, uint8_t adr, uint8_t val);
+  void (*didRead)(void* user, Ppu* ppu, uint8_t adr, uint8_t* val);
+  void (*happened)(void* user, Ppu* ppu, int what);
   // widescreen: margins in game pixels, and what each layer does with them
   int extraLeft;
   int extraRight;
@@ -400,6 +408,18 @@ struct Ppu {
 
 enum { ppu_pixelOutputFormatXBGR = 0, ppu_pixelOutputFormatBGRX = 1 };
 
+// What `Ppu.happened` is told of: `ppu_reset`, `ppu_handleFrameStart`,
+// `ppu_checkOverscan`, `ppu_handleVblank`, a state loaded by
+// `ppu_handleState`, and a scroll put in by `ppu_setScroll`.
+enum {
+  ppu_wasReset,
+  ppu_frameStarted,
+  ppu_overscanChecked,
+  ppu_vblankBegan,
+  ppu_stateLoaded,
+  ppu_scrollSet,
+};
+
 Ppu* ppu_init(Snes* snes);
 void ppu_free(Ppu* ppu);
 void ppu_reset(Ppu* ppu);
@@ -487,6 +507,11 @@ bool ppu_bgOnMainScreen(const Ppu* ppu, int layer);
 // open unless something knows better; the anchored layers ignore it, because a
 // status panel is not in the world and does not end where the world does.
 void ppu_setWideClamp(Ppu* ppu, int lo, int hi);
+// A background's scroll, straight in, ten bits each way. For a layer the
+// frontend puts where the game did not: the big figure's plane, which the
+// game parks out of sight of a picture narrower than the one being drawn.
+// Not a write of the game's, and not counted as one for `layerRaster`.
+void ppu_setScroll(Ppu* ppu, int layer, uint16_t h, uint16_t v);
 // One tilemap word, straight in. For filling the parts of a scrolling tilemap
 // that the game maintains only as far as its own 256 columns.
 void ppu_writeVramWord(Ppu* ppu, uint16_t wordAdr, uint16_t val);

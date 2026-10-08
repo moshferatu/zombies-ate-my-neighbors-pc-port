@@ -1341,6 +1341,7 @@ int main(int argc, char** argv) {
   video_hook_install(&video_hook, snes->ppu,
                      !native && !renderer_asked ? VIDEO_EMULATED : renderer,
                      verbose || renderer == VIDEO_CHECK);
+  video_hook_keep_registers(&video_hook, snes->ppu);
   if (profile_dir && !(cosim.profile = cosim_profile_new(cosim.rom.size))) {
     fprintf(stderr, "error: no memory for --profile\n");
     return 2;

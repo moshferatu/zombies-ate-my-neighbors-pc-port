@@ -1259,7 +1259,7 @@ static inline bool ws_boss_extent(const Snes* snes, int* x0, int* x1) {
 // (`LAYERS_MARGIN`). A figure, or a lap of one, left in those columns is one
 // that flickers at the picture's edge as the boss walks.
 static inline void ws_boss_plane(Snes* snes, const Widescreen* ws, int left, int right) {
-  BgLayer* bg = &snes->ppu->bgLayer[0];
+  const BgLayer* bg = &snes->ppu->bgLayer[0];
   int x0, x1;
   if (!ws_boss_extent(snes, &x0, &x1)) return;  // a level with no big figure
   const int lo = -left - WS_CAPTURE_SLACK, hi = 256 + right + WS_CAPTURE_SLACK;
@@ -1276,7 +1276,8 @@ static inline void ws_boss_plane(Snes* snes, const Widescreen* ws, int left, int
     // is parked as the job parks it.
     int sx = (1024 - (bg->hScroll & 0x3ff)) & 0x3ff;
     if (sx >= 512) sx -= 1024;
-    if (sx + x1 <= lo && sx + 512 + x0 < hi) bg->hScroll = bg->vScroll = WS_BOSS_PARKED;
+    if (sx + x1 <= lo && sx + 512 + x0 < hi)
+      ppu_setScroll(snes->ppu, 0, WS_BOSS_PARKED, WS_BOSS_PARKED);
     return;
   }
   // Parked. Where the job would have put it is worked out from the words it
@@ -1308,8 +1309,7 @@ static inline void ws_boss_plane(Snes* snes, const Widescreen* ws, int left, int
     const int sx = -(int)(int16_t)dx;
     if (sx < 256 || sx + x0 >= hi || sx - 512 + x1 > lo) return;
     if (!job_kept_y) return;  // off the top or the bottom: parked is right
-    bg->hScroll = dx & 0x3ff;
-    bg->vScroll = dy & 0x3ff;
+    ppu_setScroll(snes->ppu, 0, dx, dy);
     return;
   }
 }
