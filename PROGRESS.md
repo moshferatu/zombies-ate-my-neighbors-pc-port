@@ -5,6 +5,125 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The fishman's leap and dive, the weeds' seed, and twenty-one more thread ends (2026-10-07)
+
+What the 65816 still executed over the twelve movies goes from 148,960 to
+**132,840** instructions of work. Live, each share reads as it did or
+higher: the calls by a tenth of a percent on `level9`, `level13` and
+`level29-fighting`, and by two tenths on `level41`. The game registers 527
+routines, 35 more. The corpus is the same 54 movies.
+
+* **The fishman from the water to the land and back**, in
+  `port/fishman.c`. The port had its swimming, the flight of a leap, the
+  landing and its walk. A pass that decided to leap was the ROM's, and so
+  was everything a leap leads to. Over `level13` and `level41` the ROM ran
+  10,296 instructions of the fishman's own. It runs 496: one pass on each
+  that stops to look about.
+  * **Four bodies sleep in the middle**, or show a list of pictures, which
+    sleeps too. A pass that gets to one now stops there, with the body's
+    returns on the thread's stack as the ROM has them. What is left of the
+    pass is a stretch that begins where the thread wakes.
+  * **The leap.** Having drawn a spot, it waits one to eight ticks.
+    `fishman_leap_wake` (`$81:E076`) sets the leap up and finishes the
+    pass. A spot under 32 pixels across is no leap after all. Otherwise
+    its line is half the longer gap, and it leaves a splash where it left
+    the water, which is a thread of its own.
+  * **The sweep.** Landed, it turns to whoever it is after and shows three
+    pictures. `fishman_sweep_begin` (`$81:E346`) takes its second record.
+    `fishman_sweep_tick` had the five ticks, and now frees that record at
+    the last. `fishman_sweep_after` (`$81:E397`) sets it walking.
+  * **The dive back.** `port/wander.h` finds water, and it waits again.
+    `fishman_dive_wake` (`$81:DB10`) sets the dive up and goes on with the
+    pass on land it was in the middle of. The pass after is the dive's
+    first, and the last is the splash, which stops at two pictures.
+    `fishman_splash_after` (`$81:DBE1`) has it swimming again.
+  * **It walks until it has swept once.** The search for water runs only
+    when two words on its page differ, and they begin the same. The end of
+    a sweep doubles one. Finding water makes them the same again. I had not
+    seen that before this round.
+  * **On land with somebody near or nobody near**, which were the ROM's:
+    within 28 and eight or more across it sweeps again, and with nobody
+    within 175 it leaves or goes about as the other kind does.
+  * **The splash a leap leaves**, `$81:E72C`: `fishman_splash_begin`, and
+    its end in `port/begin.c`.
+* **The weeds' seed**, `$81:D4C9`, in `port/weeds.c`. Its flight was
+  ported. Now its start is, and its landing, in four stretches:
+  `weed_seed_begin`, `weed_seed_landed`, `weed_seed_told` and
+  `weed_seed_end`. It comes down near whoever the weed was on its guard
+  against, up to 32 pixels either way by two draws.
+* **A slime's glob**, four stretches of a few instructions each, in
+  `port/slime.c`: its start as far as its sound (`$81:CF10`), its landing
+  as far as its second (`$81:CF36`), the list of its last pictures
+  (`$81:CE6A`), and its end from inside the landing's `JSR` (`$81:CE71`).
+  They ran 2,927 instructions between them.
+* **Twenty-one more thread ends** in `record_end`'s table. A scan of the
+  ROM for its seven instructions finds the ends the twelve movies still
+  ran, 249 times. One is the splash's. Three are where a thread's loop
+  goes on a fate that is not nothing, so they have their thread's name:
+  the werewolf's, the slime's and the weed's. Seventeen are named for
+  their address, because the port has not read the threads they end.
+  * One is left: `$83:9F68`, which frees two records.
+* **The table of routines was full.** It held 512 and the round reached
+  519. It holds 768.
+
+* **Checked.** The corpus verifies at 34,253,648 calls across 54 movies
+  with 0 diverged, and 1,257 of 1,489 coverage sites. Every call priced is
+  exact. It turns down 3,198 calls, where it was 3,331.
+* **Coverage.** Of the 25 new sites the movies take 20. Four more are
+  taken under `--poke`, on `level13`, each with 0 diverged:
+  * a fishman on land put 12 pixels beside the player: it sweeps again;
+  * put 4 across and 16 below: it steps all the same;
+  * put far off: it leaves;
+  * the water it found put straight below it: no dive.
+  One is taken by nothing: the end of a sweep for the fishman that comes
+  ashore, which is the other's with one instruction left out.
+* **Lockstep** over the corpus: 334,319 passes, 51 of 54 never part, the
+  same three level-25 movies. Mean drift is smaller on 36 movies, the same
+  on 13, and larger on five by half a cycle or less. Three worst figures
+  moved: `level1-pickups` down 6, `level1-keys` up 12, and
+  `level9-weapons` up 770.
+  * `level9-weapons`' is pass 6,614, where a weed's thread ends. Leaving
+    `weed_end` to the ROM puts it back. The total over the movie is the
+    same to the cycle, -58,740. It is last round's `level5` again, at
+    another thread's end, and I have still not shown the cause.
+* **What it took off.** Bank `$81` goes from 30,163 instructions to
+  15,130. Bank `$82` goes from 25,689 to 25,190 and bank `$83` from 7,521
+  to 6,933, both by the thread ends. Bank `$80` is as it was. `level41` is
+  down by 7,013, `level13` by 6,046 and `level9` by 1,466.
+* **Four mistakes of mine.**
+  * The two fishman rows have a list of exits each, and I gave the new
+    stops to one. On the other the ROM ran past the sleep into another
+    thread: 1,131 calls of 1,754 failed, the first on the word that says
+    which thread is running.
+  * The seed's end failed 9 calls of 9. The free keeps the thread's page
+    on the stack as it works, and here that is above where the stretch's
+    stack began, over the return of the `JSR` the landing made. The port
+    writes it. The glob's end has the same.
+  * With 519 routines in a table of 512 the harness says so and checks
+    nothing. I saw it as twelve empty reports.
+  * A patch with a backslash in it went through a shell heredoc again,
+    this time a print I was adding to find a frame, and did not build.
+* **Not established.**
+  * What the seventeen threads are whose ends are named for an address.
+  * Why a thread's end can move one pass's figure in lockstep and leave
+    the total alone.
+  * What the weeds' seed keeps at `$1C`, which is the way to where it will
+    come down. Nothing in its thread reads it.
+  * Whether the fishman's second record is a swipe at whoever is beside
+    it. That is still by what the code does.
+* **Still the ROM's.**
+  * Of the fishman: a pass that stops to look about, one on land that is
+    stopped by the ground and finds water past it, the bite, what the
+    kind that comes ashore does there, its setup, and an end that is not
+    the plain one.
+  * A call to play a sound that an entry stops at. A sound is not priced
+    inside an entry.
+* **Next.** Bank `$80` is 85,587 of the 132,840, and 41,349 of that is the
+  two stretches that stay the ROM's on purpose. After them: a level's
+  start, `$80:85BB` on, 3,743; the fractions at `$80:F6B4`, 1,868; five
+  instructions round a multiply at `$82:ADDB`, 1,775; and level 21's
+  three at `$82:DB96`, `$82:F354` and `$82:F44A`, 3,286.
+
 ### The chainsaw maniac's swing, a wall knocked down, and threads that end in the port (2026-10-07)
 
 What the 65816 still executed over the twelve movies goes from 162,997 to

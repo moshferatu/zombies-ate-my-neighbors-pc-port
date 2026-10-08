@@ -100,6 +100,29 @@ typedef struct {
   bool calls;        // ...or a `JSL` to it and an `RTL` of its own after
 } RecordEnd;
 
+// Seventeen more of them, named for where they are. The port has not read
+// the threads they end, so it does not say what they are: only that each
+// is the same seven instructions, with what it gives back and where it
+// keeps its record. One calls the free and has an `RTL` of its own.
+#define RECORD_ENDS_BY_ADDRESS(X) \
+  X(81c8b0, "$81:C8B0", 0x81c8b0u, 0x000a, 0x08, false) \
+  X(81d747, "$81:D747", 0x81d747u, 0x0018, 0x08, false) \
+  X(81f1ed, "$81:F1ED", 0x81f1edu, 0x0008, 0x0a, false) \
+  X(82f06d, "$82:F06D", 0x82f06du, 0x0008, 0x08, false) \
+  X(82f22f, "$82:F22F", 0x82f22fu, 0x0005, 0x08, false) \
+  X(82f4cd, "$82:F4CD", 0x82f4cdu, 0x000a, 0x08, true) \
+  X(82f767, "$82:F767", 0x82f767u, 0x0005, 0x08, false) \
+  X(839700, "$83:9700", 0x839700u, 0x000e, 0x08, false) \
+  X(8397dd, "$83:97DD", 0x8397ddu, 0x0006, 0x08, false) \
+  X(839a23, "$83:9A23", 0x839a23u, 0x000e, 0x08, false) \
+  X(839b77, "$83:9B77", 0x839b77u, 0x000e, 0x08, false) \
+  X(839cce, "$83:9CCE", 0x839cceu, 0x000a, 0x08, false) \
+  X(839dc9, "$83:9DC9", 0x839dc9u, 0x000e, 0x08, false) \
+  X(839e7c, "$83:9E7C", 0x839e7cu, 0x000a, 0x08, false) \
+  X(83a054, "$83:A054", 0x83a054u, 0x000e, 0x08, false) \
+  X(83a0d6, "$83:A0D6", 0x83a0d6u, 0x000e, 0x08, false) \
+  X(83b2bd, "$83:B2BD", 0x83b2bdu, 0x000f, 0x08, false)
+
 enum {
   RECORD_END_ZOMBIE_SLOW,
   RECORD_END_ZOMBIE_FAST,
@@ -108,6 +131,15 @@ enum {
   RECORD_END_SHOT_5,
   RECORD_END_MARTIAN,          // the loop of one that began on the ground
   RECORD_END_MARTIAN_ARRIVAL,  // ...and of one that came in over the top
+  RECORD_END_FISHMAN_SPLASH,   // the splash a fishman's leap leaves
+  // Each of these is where its thread's loop goes on a fate that is not
+  // nothing, past what a killed one shows first.
+  RECORD_END_WEREWOLF,
+  RECORD_END_SLIME,
+  RECORD_END_WEED,
+#define X(at, sym, pc, load, record_at, calls) RECORD_END_AT_##at,
+  RECORD_ENDS_BY_ADDRESS(X)
+#undef X
   RECORD_END_COUNT
 };
 extern const RecordEnd RECORD_ENDS[RECORD_END_COUNT];

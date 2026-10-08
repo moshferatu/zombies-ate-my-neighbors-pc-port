@@ -79,6 +79,7 @@
 
 #include "assets/rom.h"
 #include "port/cpu.h"
+#include "port/begin.h"
 #include "port/oam.h"  // the works and registers of what it asks
 #include "port/terrain.h"
 #include "port/wram.h"
@@ -325,6 +326,35 @@ void slime_glob_dress(Wram* w, PortCpu* c, SlimeAttackWork* k);
 // record free, which the ROM does not test for, it says so in `k`.
 void slime_begin(Wram* w, PortCpu* c, SlimeAttackWork* k);
 void slime_glob_aim(Wram* w, PortCpu* c, SlimeAttackWork* k);
+
+// **The four stretches of the glob's thread that are a few instructions
+// each**, between its sound, its calls and its sleeps:
+//
+//   $81:CF10  begin   its weight on the level's load, to its first sound
+//   $81:CF36  landed  down: to its second sound
+//   $81:CE6A  told    whatever it came down on told: to its last pictures
+//   $81:CE71  done    those shown: `port/begin.h`'s end, from inside the
+//                     `JSR` the landing made
+#define SLIME_GLOB_BEGIN_PC 0x81cf10u
+#define SLIME_GLOB_BEGIN_SOUND_PC 0x81cec8u   // `JSL apu_play_sfx`
+#define SLIME_GLOB_LANDED_SOUND_PC 0x81ce3cu  // `JSL apu_play_sfx`
+#define SLIME_GLOB_TOLD_PC 0x81ce6au
+#define SLIME_GLOB_PLAY_PC 0x81ce6du          // `JSL pictures_play`
+#define SLIME_GLOB_DONE_PC 0x81ce71u
+#define SLIME_GLOB_SFX 0x001a
+#define SLIME_GLOB_LOAD 0x0004
+#define SLIME_GLOB_LAST_PICTURES 0xce72u
+// What the thread's two `JSR`s push.
+#define SLIME_GLOB_BEGIN_RETURN 0xcf1cu
+#define SLIME_GLOB_LANDED_RETURN 0xcf38u
+
+void slime_glob_begin(Wram* w, PortCpu* c);
+void slime_glob_landed(Wram* w, PortCpu* c);
+void slime_glob_told(PortCpu* c);
+// False unless the stack is as the landing left it, and for what
+// `record_end` turns down. `*place` is where in the display list its
+// record was.
+bool slime_glob_done(Wram* w, PortCpu* c, int* place);
 
 // `$81:CE40`, from the return of the splash's sound: the box that
 // `actor_notify_box` is asked about, as far as the `JSL` that asks.

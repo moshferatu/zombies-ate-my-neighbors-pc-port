@@ -34,6 +34,31 @@ typedef struct {
 #define FISHMAN_LEAP_ACROSS_MASK 0x001f
 #define FISHMAN_LEAP_DOWN_MASK 0x000f
 #define FISHMAN_LEAP_DOWN_MIDDLE 0x0008
+// Before a leap or a dive it waits one to eight ticks, by a draw.
+#define FISHMAN_WAIT_MASK 0x0007
+// A spot under this far across is no leap, and one straight above or below
+// is no dive.
+#define FISHMAN_LEAP_NO_SHORTER 0x0020
+#define FISHMAN_DIVE_NO_SHORTER 0x0001
+// In the air: its picture, what it is to hit, and how high a leap begins.
+#define FISHMAN_AIR_PICTURE 0xf170u
+#define FISHMAN_AIR_ID 0x0036
+#define FISHMAN_LEAP_HEIGHT 0x0010
+// The thread a leap leaves behind it where it left the water.
+#define FISHMAN_LEAP_SPLASH 0xe72cu
+// On land, somebody this far across is swept at, and the one that comes
+// ashore sweeps on a draw under the second.
+#define FISHMAN_SWEEP_ACROSS 0x0008
+#define FISHMAN_SWEEP_ODDS 0x96
+// The sweep faces the mirrored ways from here.
+#define FISHMAN_SWEEP_MIRRORED_FROM 0x000c
+#define FISHMAN_SWEEP_TICKS 5
+// The lists of pictures: before a sweep, after it, and of a splash.
+#define FISHMAN_SWEEP_PICTURES 0xe3a0u
+#define FISHMAN_SWEPT_PICTURES 0xe3b0u
+#define FISHMAN_SPLASH_PICTURES 0xdc0cu
+// Where the show's call to ask after the players comes back.
+#define FISHMAN_SHOW_ASKED_FROM 0xe61au
 
 // A quarter turn and a half turn, in doubled bearings.
 #define FISHMAN_QUARTER_TURN 0x0004
@@ -90,6 +115,10 @@ typedef struct {
 // Tables in `FISHMAN_BANK`.
 #define FISHMAN_STEPS 0xd837u  // by way, doubled: a step across and down
 #define FISHMAN_LEAP_SIDES 0xe078u      // by the draw's bit: a place across
+// By which way a leap is: a flag put on its record, or with the top bit a
+// mask that takes one off.
+#define FISHMAN_LEAP_FACES 0xe143u
+#define FISHMAN_DIVE_PICTURES 0xdbb5u   // by way
 // By way, doubled: where water is looked for, from where it was stopped.
 #define FISHMAN_WATERSIDE 0xdae0u
 // ...with up to 30 across put on by a draw, or taken off for the ways from
@@ -111,7 +140,15 @@ typedef struct {
   uint16_t record;
   FishmanLog* log;  // never NULL here
   PortFlags flags;
+  const FishmanLoop* loop;
+  uint16_t sp;  // the thread's stack, under the body's returns
 } Fishman;
+
+const FishmanLoop FISHMAN_LOOP = {FISHMAN_YIELD_PC, FISHMAN_FATE_PC, 0xe4b9u,
+                                  0xe4bcu};
+const FishmanLoop FISHMAN_PATROL_LOOP = {FISHMAN_PATROL_YIELD_PC,
+                                         FISHMAN_PATROL_FATE_PC, 0xe55fu,
+                                         0xe562u};
 
 static uint16_t field(const Fishman* s, uint16_t at) {
   return wram_r16(s->w, (uint16_t)(s->page + at));
@@ -156,6 +193,25 @@ static uint16_t magnitude(uint16_t v) {
 static void leave(Fishman* s) {
   set_field(s, FISHMAN_DP_FATE, (uint16_t)(field(s, FISHMAN_DP_FATE) - 1));
 }
+
+static void push_return(Fishman* s, uint16_t to) {
+  s->sp = (uint16_t)(s->sp - 2);
+  wram_w16(s->w, (uint16_t)(s->sp + 1), to);
+}
+
+// The body stops here, in the middle. `from` is what its `JSR` to where it
+// stops pushed, or 0 for a body that stops in itself. The loop's return is
+// under it.
+static void stop_at(Fishman* s, FishmanStop stop, uint16_t a, uint16_t from) {
+  push_return(s, s->loop->body_return);
+  if (from != 0) push_return(s, from);
+  s->log->stop = stop;
+  s->log->a = a;
+  s->log->s = s->sp;
+}
+
+// A few ticks where it is, before a leap or a dive.
+static uint16_t wait_ticks(Fishman* s);
 
 // ---------------------------------------------------------------------------
 // What it asks the rest of the game
@@ -459,19 +515,24 @@ static void maybe_look_about(Fishman* s) {
   s->log->declined = true;
 }
 
+static uint16_t wait_ticks(Fishman* s) {
+  return (uint16_t)((random_byte(s) & FISHMAN_WAIT_MASK) + 1);
+}
+
 // `$81:E007`: leap at somebody, on a draw, if there is somewhere near them
-// to come down. The leap is the ROM's.
-static void maybe_leap(Fishman* s) {
+// to come down. It waits a few ticks first, and the pass stops there.
+// `from` is what the body's `JSR` here pushed. True when the body goes on.
+static bool maybe_leap(Fishman* s, uint16_t from) {
   FishmanLog* log = s->log;
   if (flags_at_least(&s->flags, random_byte(s), FISHMAN_LEAP_ODDS)) {
     log->leap = FISHMAN_LEAP_NO_DRAW;
-    return;
+    return true;
   }
   uint16_t dist;
   const uint16_t target = nearest_actor(s, &dist);
   if (flags_at_least(&s->flags, dist, FISHMAN_LEAP_WITHIN)) {
     log->leap = FISHMAN_LEAP_NOBODY;
-    return;
+    return true;
   }
   set_field(s, FISHMAN_DP_TARGET, target);
   const Point them = place_of(s, target);
@@ -496,20 +557,21 @@ static void maybe_leap(Fishman* s) {
   if (edge.c) {
     PORT_COVER(fishman_leap_off_level);
     log->leap = FISHMAN_LEAP_OFF_LEVEL;
-    return;
+    return true;
   }
   if (!somewhere_to_land(s, spot, &log->landing)) {
     log->leap = FISHMAN_LEAP_NO_LANDING;
-    return;
+    return true;
   }
   if (someone_at(s, spot)) {
     PORT_COVER(fishman_leap_taken);
     log->leap = FISHMAN_LEAP_TAKEN;
-    return;
+    return true;
   }
   PORT_COVER(fishman_leapt);
   log->leap = FISHMAN_LEAP_LEAPS;
-  log->declined = true;
+  stop_at(s, FISHMAN_STOP_LEAP, wait_ticks(s), from);
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -584,22 +646,48 @@ static void walk(Fishman* s) {
     set_field(s, FISHMAN_DP_Y, to.y);
 }
 
-// `$81:DA1D`: on land, at whoever is nearest, unless there is water to go
-// back to.
-static void stalk(Fishman* s) {
+// `$81:E309`: it sweeps from its next pass. The one that comes ashore does
+// so on a draw, and otherwise walks on.
+static void sweep_from_next_pass(Fishman* s) {
   FishmanLog* log = s->log;
-  PortCpu cpu = {0};
-  cpu.d = s->page;
-  wander_pick(s->w, &cpu, &log->wander);
-  if (cpu.pc == WANDER_FOUND_PC) {
-    log->declined = true;
-    return;
-  }
+  set_state(s, FISHMAN_STATE_LURK);
+  if (field(s, FISHMAN_DP_STAYS) != 0) return;
+  log->sweep_drawn = true;
+  if (!flags_at_least(&s->flags, random_byte(s), FISHMAN_SWEEP_ODDS)) return;
+  log->sweep_off = true;
+  set_state(s, FISHMAN_STATE_STALK);
+}
+
+// `$81:DA20`: at whoever is nearest. Too near and to one side, it sweeps.
+// With nobody near it leaves, or goes about as the one that comes ashore
+// does.
+static void stalk_on(Fishman* s) {
+  FishmanLog* log = s->log;
   uint16_t dist;
   const uint16_t target = nearest_actor(s, &dist);
-  if (!flags_at_least(&s->flags, dist, FISHMAN_STALK_NO_NEARER) ||
-      flags_at_least(&s->flags, dist, FISHMAN_KEEP_CLOSING_WITHIN)) {
-    log->declined = true;
+  if (!flags_at_least(&s->flags, dist, FISHMAN_STALK_NO_NEARER)) {
+    set_field(s, FISHMAN_DP_TARGET, target);
+    const uint16_t across =
+        flags_sub(&s->flags, field(s, FISHMAN_DP_X), place_of(s, target).x);
+    log->beside_negative = negative(across);
+    if (flags_at_least(&s->flags, magnitude(across), FISHMAN_SWEEP_ACROSS)) {
+      PORT_COVER(fishman_stalk_sweeps);
+      log->stalk = FISHMAN_STALK_SWEEPS;
+      sweep_from_next_pass(s);
+      return;
+    }
+    PORT_COVER(fishman_stalk_beside);
+    log->stalk = FISHMAN_STALK_BESIDE;
+  } else if (flags_at_least(&s->flags, dist, FISHMAN_KEEP_CLOSING_WITHIN)) {
+    if (nobody_about(s)) {
+      PORT_COVER(fishman_stalk_left);
+      log->stalk = FISHMAN_STALK_LEFT;
+      leave(s);
+    } else {
+      PORT_COVER(fishman_stalk_goes_about);
+      log->stalk = FISHMAN_STALK_GOES_ABOUT;
+      set_state(s, FISHMAN_STATE_ASHORE);
+    }
     return;
   }
   set_field(s, FISHMAN_DP_TARGET, target);
@@ -608,6 +696,24 @@ static void stalk(Fishman* s) {
   flags_carry(&s->flags, false);  // the `ASL`s
   try_way(s, way);
   walk(s);
+}
+
+// `$81:DA1D`: on land. With water to go back to it waits a few ticks, and
+// the pass stops there.
+static void stalk(Fishman* s) {
+  FishmanLog* log = s->log;
+  PortCpu cpu = {0};
+  cpu.d = s->page;
+  log->wander_asked = true;
+  wander_pick(s->w, &cpu, &log->wander);
+  if (cpu.pc == WANDER_FOUND_PC) {
+    PORT_COVER(fishman_stalk_found_water);
+    log->stalk = FISHMAN_STALK_FOUND_WATER;
+    flags_carry(&s->flags, flag(&cpu, PORT_P_C));
+    stop_at(s, FISHMAN_STOP_DIVE, wait_ticks(s), FISHMAN_DIVE_FROM_STALK);
+    return;
+  }
+  stalk_on(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -619,8 +725,7 @@ static void swim(Fishman* s) {
   look(s);
   maybe_look_about(s);
   if (s->log->declined) return;
-  maybe_leap(s);
-  if (s->log->declined) return;
+  if (!maybe_leap(s, FISHMAN_LEAP_FROM_SWIM)) return;
   swim_on(s);
 }
 
@@ -628,8 +733,7 @@ static void swim(Fishman* s) {
 static void swim_turned(Fishman* s) {
   maybe_look_about(s);
   if (s->log->declined) return;
-  maybe_leap(s);
-  if (s->log->declined) return;
+  if (!maybe_leap(s, FISHMAN_LEAP_FROM_SWIM_TURNED)) return;
   turn_if_clear(s);
   if (swim_on(s)) look(s);
 }
@@ -646,8 +750,7 @@ static void close_step(Fishman* s, uint16_t target) {
 // `$81:DE72`: at whoever is nearest, until it can bite them.
 static void close_in(Fishman* s) {
   FishmanLog* log = s->log;
-  maybe_leap(s);
-  if (log->declined) return;
+  if (!maybe_leap(s, FISHMAN_LEAP_FROM_CLOSE_IN)) return;
 
   uint16_t dist;
   const uint16_t target = nearest_actor(s, &dist);
@@ -701,8 +804,7 @@ static void patrol(Fishman* s) {
     }
     set_field(s, FISHMAN_DP_WAY, way);
   }
-  maybe_leap(s);
-  if (log->declined) return;
+  if (!maybe_leap(s, FISHMAN_LEAP_FROM_PATROL)) return;
 
   uint16_t dist;
   const uint16_t target = nearest_actor(s, &dist);
@@ -846,6 +948,48 @@ static void land(Fishman* s) {
             (uint16_t)(((random_byte(s) & 3) << 2) + FISHMAN_FIRST_WAY));
   flags_carry(&s->flags, false);  // the two `ASL`s
   set_state(s, FISHMAN_STATE_ASHORE);
+}
+
+// `$81:E31C`: it turns to whoever it is after, and shows three pictures.
+// The pass stops there, and the sweep is what follows them.
+static void sweep_turn(Fishman* s) {
+  FishmanLog* log = s->log;
+  ActorBearingRegs scratch;
+  ActorBearingRegs* r = log->bearings < FISHMAN_MAX_SLIDES
+                            ? &log->bearing[log->bearings]
+                            : &scratch;
+  log->bearings++;
+  actor_bearing(s->w, s->rom, s->record, field(s, FISHMAN_DP_TARGET), r);
+  if (r->a != 0) flags_overflow(&s->flags, false);
+  const uint16_t way = (uint16_t)(r->a << 1);
+  set_field(s, FISHMAN_DP_WAY, way);
+  const uint16_t flags = record_field(s, ACTOR_FLAGS);
+  log->faces_back = flags_at_least(&s->flags, way, FISHMAN_SWEEP_MIRRORED_FROM);
+  set_record_field(s, ACTOR_FLAGS,
+                   log->faces_back ? (uint16_t)(flags | FISHMAN_MIRROR)
+                                   : (uint16_t)(flags & ~FISHMAN_MIRROR));
+  stop_at(s, FISHMAN_STOP_SWEEP, FISHMAN_SWEEP_PICTURES, 0);
+}
+
+// `$81:DB63`: off the ground, and the first pass of the dive.
+static void dive_begin(Fishman* s) {
+  set_record_field(s, ACTOR_META,
+                   table_word(s, FISHMAN_DIVE_PICTURES,
+                              field(s, FISHMAN_DP_WAY)));
+  set_record_field(s, ACTOR_COLLIDE_ID, FISHMAN_AIR_ID);
+  set_record_field(s, ACTOR_FLAGS,
+                   record_field(s, ACTOR_FLAGS) | ACTOR_PRIORITY_TOP);
+  set_field(s, FISHMAN_DP_FORM, 0xffffu);
+  set_field(s, FISHMAN_DP_TICKS, FISHMAN_TICKS_FAST);
+  set_state(s, FISHMAN_STATE_DIVE);
+}
+
+// `$81:DBCD`: back in the water. Two pictures of the splash, and the pass
+// stops there.
+static void splash(Fishman* s) {
+  set_field(s, FISHMAN_DP_TICKS, FISHMAN_TICKS_SLOW);
+  set_record_field(s, ACTOR_META_BANK, FISHMAN_PICTURE_BANK);
+  stop_at(s, FISHMAN_STOP_SPLASH, FISHMAN_SPLASH_PICTURES, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1068,29 +1212,51 @@ static bool state_known(uint16_t state) {
          state == FISHMAN_STATE_LINE_UP_DOWN ||
          state == FISHMAN_STATE_LINE_UP_ACROSS ||
          state == FISHMAN_STATE_FLIGHT || state == FISHMAN_STATE_LANDED ||
-         state == FISHMAN_STATE_DIVE || state == FISHMAN_STATE_STALK;
+         state == FISHMAN_STATE_DIVE || state == FISHMAN_STATE_STALK ||
+         state == FISHMAN_STATE_LURK || state == FISHMAN_STATE_DIVE_BEGIN ||
+         state == FISHMAN_STATE_SPLASH;
+}
+
+// Its show reads two tables by these.
+static bool shows(const Wram* w, uint16_t page) {
+  const uint16_t way = wram_r16(w, (uint16_t)(page + FISHMAN_DP_WAY));
+  return way <= FISHMAN_LAST_WAY && (way & 1) == 0 &&
+         wram_r16(w, (uint16_t)(page + FISHMAN_DP_PICTURE)) <=
+             FISHMAN_SWIM_PICTURES;
 }
 
 bool fishman_frame_supported(const Wram* w, uint16_t page) {
   const uint16_t state = wram_r16(w, (uint16_t)(page + FISHMAN_DP_STATE));
-  const uint16_t way = wram_r16(w, (uint16_t)(page + FISHMAN_DP_WAY));
-  if (!state_known(state)) return false;
-  if (way > FISHMAN_LAST_WAY || (way & 1) != 0) return false;
-  const uint16_t picture = wram_r16(w, (uint16_t)(page + FISHMAN_DP_PICTURE));
-  if (picture > FISHMAN_SWIM_PICTURES) return false;
+  if (!state_known(state) || !shows(w, page)) return false;
   // A leap over no distance would never finish its pass.
-  const bool flying =
-      state == FISHMAN_STATE_FLIGHT || state == FISHMAN_STATE_DIVE;
+  const bool flying = state == FISHMAN_STATE_FLIGHT ||
+                      state == FISHMAN_STATE_DIVE ||
+                      state == FISHMAN_STATE_DIVE_BEGIN;
   return !flying || wram_r16(w, (uint16_t)(page + FISHMAN_DP_SPAN)) != 0;
 }
 
-FishmanFate fishman_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
+// `$81:E560` and `$81:E4BA`: the rest of a pass, from its show.
+static FishmanFate end_pass(Fishman* s) {
+  FishmanLog* log = s->log;
+  show(s);
+  log->c = s->flags.c;
+  log->v = s->flags.v;
+  log->c_set = s->flags.c_set;
+  log->v_set = s->flags.v_set;
+  if (field(s, FISHMAN_DP_FATE) != 0) return FISHMAN_ENDS;
+  set_field(s, FISHMAN_DP_HIT_BY, 0);
+  log->ticks = field(s, FISHMAN_DP_TICKS);
+  return FISHMAN_SLEEPS;
+}
+
+FishmanFate fishman_frame(Wram* w, const Rom* rom, const FishmanLoop* loop,
+                          uint16_t page, uint16_t sp, bool carry,
                           FishmanLog* log) {
   FishmanLog scratch;
   if (log == NULL) log = &scratch;
   *log = (FishmanLog){0};
   Fishman s = {w, rom, page, wram_r16(w, (uint16_t)(page + FISHMAN_DP_RECORD)),
-               log, {carry, false, false, false}};
+               log, {carry, false, false, false}, loop, sp};
 
   log->state = field(&s, FISHMAN_DP_STATE);
   switch (log->state) {
@@ -1130,21 +1296,287 @@ FishmanFate fishman_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
       stalk(&s);
       if (!log->declined) PORT_COVER(fishman_stalked);
       break;
+    case FISHMAN_STATE_LURK:
+      PORT_COVER(fishman_sweep_turned);
+      sweep_turn(&s);
+      break;
+    case FISHMAN_STATE_DIVE_BEGIN:
+      PORT_COVER(fishman_dive_began);
+      dive_begin(&s);
+      fly(&s, FISHMAN_STATE_SPLASH);
+      break;
+    case FISHMAN_STATE_SPLASH:
+      PORT_COVER(fishman_splashed);
+      splash(&s);
+      break;
     default:
       land(&s);
       break;
   }
   if (log->declined) return FISHMAN_SLEEPS;
-  show(&s);
+  if (log->stop != FISHMAN_STOP_PASS) {
+    log->c = s.flags.c;
+    log->v = s.flags.v;
+    log->c_set = s.flags.c_set;
+    log->v_set = s.flags.v_set;
+    return FISHMAN_SLEEPS;
+  }
+  return end_pass(&s);
+}
 
-  log->c = s.flags.c;
-  log->v = s.flags.v;
-  log->c_set = s.flags.c_set;
-  log->v_set = s.flags.v_set;
-  if (field(&s, FISHMAN_DP_FATE) != 0) return FISHMAN_ENDS;
-  set_field(&s, FISHMAN_DP_HIT_BY, 0);
-  log->ticks = field(&s, FISHMAN_DP_TICKS);
-  return FISHMAN_SLEEPS;
+// ---------------------------------------------------------------------------
+// Where a body wakes
+// ---------------------------------------------------------------------------
+
+static const FishmanLoop* loop_of(uint16_t body_return) {
+  if (body_return == FISHMAN_LOOP.body_return) return &FISHMAN_LOOP;
+  if (body_return == FISHMAN_PATROL_LOOP.body_return)
+    return &FISHMAN_PATROL_LOOP;
+  return NULL;
+}
+
+// The rest of a pass, for a stretch that began with `returns` words of the
+// body's on the stack. It leaves as the loop does. The show's own return
+// goes where the loop's was, and under it is what its call to ask after
+// the players pushed.
+static FishmanFate finish(Fishman* s, PortCpu* c, int returns) {
+  FishmanLog* log = s->log;
+  const uint16_t top = (uint16_t)(c->s + 2 * returns);
+  const FishmanFate fate = end_pass(s);
+  wram_w16(s->w, (uint16_t)(top - 1), s->loop->shown_return);
+  wram_w8(s->w, (uint16_t)(top - 2), FISHMAN_BANK);
+  wram_w16(s->w, (uint16_t)(top - 4), FISHMAN_SHOW_ASKED_FROM);
+
+  const bool sleeps = fate == FISHMAN_SLEEPS;
+  c->s = top;
+  c->pc = sleeps ? s->loop->yield_pc : s->loop->fate_pc;
+  c->a = sleeps ? log->ticks : field(s, FISHMAN_DP_FATE);
+  set_nz16(c, c->a);
+  if (log->c_set) set_c(c, log->c);
+  if (log->v_set) set_v(c, log->v);
+  return fate;
+}
+
+static Fishman woken(Wram* w, const Rom* rom, PortCpu* c, FishmanLog* log,
+                     int returns) {
+  *log = (FishmanLog){0};
+  const uint16_t loop_return =
+      wram_r16(w, (uint16_t)(c->s + 2 * returns - 1));
+  return (Fishman){w, rom, c->d,
+                   wram_r16(w, (uint16_t)(c->d + FISHMAN_DP_RECORD)), log,
+                   {flag(c, PORT_P_C), flag(c, PORT_P_V), false, false},
+                   loop_of(loop_return), (uint16_t)(c->s + 2 * returns)};
+}
+
+// Which way the spot it is going to is, and how far across and down. The
+// ways are `actor_bearing_point`'s, which knows only left and right.
+static uint16_t gap_to(Fishman* s, uint16_t to, uint16_t from,
+                       uint16_t sign_at, uint16_t gap_at, bool* is_negative) {
+  uint16_t gap = flags_sub(&s->flags, to, from);
+  *is_negative = negative(gap);
+  set_field(s, sign_at, *is_negative ? 0xffffu : 1);
+  gap = magnitude(gap);
+  set_field(s, gap_at, gap);
+  return gap;
+}
+
+static uint16_t way_to_spot(Fishman* s, Point spot, FishmanWakeLog* k) {
+  ActorBearingRegs r;
+  k->same_row = record_field(s, ACTOR_Y) == spot.y;
+  k->same_column = record_field(s, ACTOR_X) == spot.x;
+  actor_bearing_point(s->w, s->rom, s->record, spot.x, spot.y, &r);
+  set_field(s, FISHMAN_DP_LEAP_WAY, r.a);
+  return r.a;
+}
+
+// The longer of the two gaps.
+static uint16_t longer_gap(Fishman* s, uint16_t across, Point spot,
+                           FishmanWakeLog* k) {
+  const uint16_t down = gap_to(s, spot.y, field(s, FISHMAN_DP_Y),
+                               FISHMAN_DP_SIGN_Y, FISHMAN_DP_GAP_Y,
+                               &k->negative[1]);
+  k->across_longer = !flags_at_least(&s->flags, down, across);
+  return k->across_longer ? across : down;
+}
+
+bool fishman_leap_wake_supported(const Wram* w, uint16_t page, uint16_t s) {
+  const uint16_t from = wram_r16(w, (uint16_t)(s + 1));
+  return (from == FISHMAN_LEAP_FROM_SWIM ||
+          from == FISHMAN_LEAP_FROM_SWIM_TURNED ||
+          from == FISHMAN_LEAP_FROM_CLOSE_IN ||
+          from == FISHMAN_LEAP_FROM_PATROL) &&
+         loop_of(wram_r16(w, (uint16_t)(s + 3))) != NULL && shows(w, page);
+}
+
+// `$81:E07C`: the leap, to the spot the pass before chose. Too little
+// across and it does not leap after all.
+FishmanFate fishman_leap_wake(Wram* w, const Rom* rom, PortCpu* c,
+                              FishmanWakeLog* k) {
+  *k = (FishmanWakeLog){0};
+  k->splash_slot = -1;
+  Fishman s = woken(w, rom, c, &k->pass, 2);
+  const Point spot = {field(&s, FISHMAN_DP_LAND_X),
+                      field(&s, FISHMAN_DP_LAND_Y)};
+  const uint16_t way = way_to_spot(&s, spot, k);
+  const uint16_t across = gap_to(&s, spot.x, field(&s, FISHMAN_DP_X),
+                                 FISHMAN_DP_SIGN_X, FISHMAN_DP_GAP_X,
+                                 &k->negative[0]);
+  if (!flags_at_least(&s.flags, across, FISHMAN_LEAP_NO_SHORTER)) {
+    PORT_COVER(fishman_leap_too_short);
+    k->stays = true;
+    return finish(&s, c, 2);
+  }
+  PORT_COVER(fishman_leap_began);
+  const uint16_t span = (uint16_t)(longer_gap(&s, across, spot, k) >> 1);
+  set_field(&s, FISHMAN_DP_SPAN, span);
+  set_field(&s, FISHMAN_DP_RISE, (uint16_t)(span >> 1));
+  flags_carry(&s.flags, (span & 1) != 0);
+  set_field(&s, FISHMAN_DP_PART_X, 0);
+  set_field(&s, FISHMAN_DP_PART_Y, 0);
+
+  set_field(&s, FISHMAN_DP_FORM, 0xffffu);
+  const uint16_t face = table_word(&s, FISHMAN_LEAP_FACES, (uint16_t)(way << 1));
+  uint16_t flags = record_field(&s, ACTOR_FLAGS);
+  k->faces_cleared = negative(face);
+  flags = k->faces_cleared ? (uint16_t)(flags & face) : (uint16_t)(flags | face);
+  set_record_field(&s, ACTOR_FLAGS, flags | ACTOR_PRIORITY_TOP);
+  set_record_field(&s, ACTOR_META, FISHMAN_AIR_PICTURE);
+  set_record_field(&s, ACTOR_COLLIDE_ID, FISHMAN_AIR_ID);
+  set_state(&s, FISHMAN_STATE_FLIGHT);
+  set_record_field(&s, ACTOR_Z, FISHMAN_LEAP_HEIGHT);
+
+  // A splash where it left the water: a thread of its own, told where.
+  set_field(&s, FISHMAN_DP_PLACED_X, record_field(&s, ACTOR_X));
+  set_field(&s, FISHMAN_DP_PLACED_Y, record_field(&s, ACTOR_Y));
+  k->splash_slot =
+      thread_spawn(w, rom, FISHMAN_LEAP_SPLASH, FISHMAN_BANK, s.page);
+  flags_overflow_unknown(&s.flags);
+  set_field(&s, FISHMAN_DP_TICKS, FISHMAN_TICKS_FAST);
+  return finish(&s, c, 2);
+}
+
+bool fishman_dive_wake_supported(const Wram* w, uint16_t page, uint16_t s) {
+  return wram_r16(w, (uint16_t)(s + 1)) == FISHMAN_DIVE_FROM_STALK &&
+         loop_of(wram_r16(w, (uint16_t)(s + 3))) != NULL && shows(w, page);
+}
+
+// `$81:DB10`: the dive, to the water `port/wander.h` found, from its next
+// pass. Then the rest of the pass on land it was in the middle of.
+FishmanFate fishman_dive_wake(Wram* w, const Rom* rom, PortCpu* c,
+                              FishmanWakeLog* k) {
+  *k = (FishmanWakeLog){0};
+  k->splash_slot = -1;
+  Fishman s = woken(w, rom, c, &k->pass, 2);
+  const Point spot = {field(&s, FISHMAN_DP_LAND_X),
+                      field(&s, FISHMAN_DP_LAND_Y)};
+  way_to_spot(&s, spot, k);
+  const uint16_t across = gap_to(&s, spot.x, field(&s, FISHMAN_DP_X),
+                                 FISHMAN_DP_SIGN_X, FISHMAN_DP_GAP_X,
+                                 &k->negative[0]);
+  if (!flags_at_least(&s.flags, across, FISHMAN_DIVE_NO_SHORTER)) {
+    PORT_COVER(fishman_dive_straight);
+    k->stays = true;
+    set_state(&s, FISHMAN_STATE_ASHORE_TURNED);
+  } else {
+    PORT_COVER(fishman_dive_set);
+    const uint16_t span = longer_gap(&s, across, spot, k);
+    set_field(&s, FISHMAN_DP_SPAN, span);
+    set_field(&s, FISHMAN_DP_RISE, (uint16_t)(span >> 1));
+    flags_carry(&s.flags, (span & 1) != 0);
+    set_field(&s, FISHMAN_DP_PART_X, 0);
+    set_field(&s, FISHMAN_DP_PART_Y, 0);
+    set_state(&s, FISHMAN_STATE_DIVE_BEGIN);
+  }
+  stalk_on(&s);
+  if (k->pass.declined) return FISHMAN_SLEEPS;
+  return finish(&s, c, 2);
+}
+
+bool fishman_after_supported(const Wram* w, uint16_t page, uint16_t s) {
+  return loop_of(wram_r16(w, (uint16_t)(s + 1))) != NULL && shows(w, page);
+}
+
+// `$81:E397`: the sweep is over, and it walks. The one that keeps to its
+// pool now wants water to go back to.
+FishmanFate fishman_sweep_after(Wram* w, const Rom* rom, PortCpu* c,
+                                FishmanLog* log, bool* stays) {
+  Fishman s = woken(w, rom, c, log, 1);
+  *stays = field(&s, FISHMAN_DP_STAYS) != 0;
+  if (*stays) {
+    PORT_COVER(fishman_wants_water);
+    set_field(&s, FISHMAN_DP_WATER_HAD,
+              flags_double(&s.flags, field(&s, FISHMAN_DP_WATER_HAD)));
+  } else {
+    PORT_COVER(fishman_swept_ashore);
+  }
+  set_state(&s, FISHMAN_STATE_STALK);
+  return finish(&s, c, 1);
+}
+
+// `$81:DBE1`: in the water again as it began, some way by a draw.
+FishmanFate fishman_splash_after(Wram* w, const Rom* rom, PortCpu* c,
+                                 FishmanLog* log) {
+  PORT_COVER(fishman_swims_again);
+  Fishman s = woken(w, rom, c, log, 1);
+  set_record_field(&s, ACTOR_META, FISHMAN_FIRST_PICTURE);
+  set_record_field(&s, ACTOR_META_BANK, FISHMAN_PICTURE_BANK);
+  set_record_field(&s, ACTOR_COLLIDE_ID, FISHMAN_LANDED_ID);
+  set_record_field(&s, ACTOR_FLAGS,
+                   record_field(&s, ACTOR_FLAGS) &
+                       (uint16_t)~ACTOR_PRIORITY_TOP);
+  set_field(&s, FISHMAN_DP_FORM, 0);
+  set_field(&s, FISHMAN_DP_PICTURE_WAIT, 0);
+  set_field(&s, FISHMAN_DP_PICTURE, 0);
+  set_field(&s, FISHMAN_DP_WAY,
+            (uint16_t)(((random_byte(&s) & 3) << 2) + FISHMAN_FIRST_WAY));
+  flags_carry(&s.flags, false);  // the two `ASL`s
+  set_state(&s, FISHMAN_STATE_SWIM);
+  return finish(&s, c, 1);
+}
+
+// ---------------------------------------------------------------------------
+// The splash a leap leaves
+// ---------------------------------------------------------------------------
+
+// What it counts for in the level's load, and its pictures.
+#define FISHMAN_LEAP_SPLASH_LOAD 0x0007
+#define FISHMAN_LEAP_SPLASH_PICTURE 0x81aeu
+#define FISHMAN_LEAP_SPLASH_PICTURES 0xe787u
+
+bool fishman_splash_begin(Wram* w, PortCpu* c, uint16_t* record) {
+  const uint16_t page = c->d;
+  set_c(c, false);
+  wram_w16(w, W_SPAWN_LOAD,
+           adc16(c, wram_r16(w, W_SPAWN_LOAD), FISHMAN_LEAP_SPLASH_LOAD));
+  SlotAllocRegs taken;
+  actor_slot_alloc(w, c->db, &taken);
+  if (taken.c) return false;
+  PORT_COVER(fishman_splash_began);
+  const uint16_t splash = taken.a;
+  *record = splash;
+  // The search for a record takes twenty off as it goes.
+  if (splash != ACTOR_SLOT_LAST) set_v(c, false);
+  set_c(c, false);
+
+  wram_w16(w, (uint16_t)(page + FISHMAN_DP_RECORD), splash);
+  wram_w16(w, (uint16_t)(splash + ACTOR_X),
+           wram_r16(w, (uint16_t)(page + FISHMAN_DP_PLACED_X)));
+  wram_w16(w, (uint16_t)(splash + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(splash + ACTOR_Y),
+           wram_r16(w, (uint16_t)(page + FISHMAN_DP_PLACED_Y)));
+  wram_w16(w, (uint16_t)(splash + ACTOR_META), FISHMAN_LEAP_SPLASH_PICTURE);
+  wram_w16(w, (uint16_t)(splash + ACTOR_META_BANK), FISHMAN_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(splash + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(splash + ACTOR_COLLIDE_ID), 0);
+  wram_w16(w, (uint16_t)(splash + ACTOR_FLAGS),
+           (uint16_t)(ACTOR_DRAW |
+                      wram_r16(w, (uint16_t)(splash + ACTOR_FLAGS))));
+  c->x = taken.x;
+  c->y = splash;
+  c->a = FISHMAN_LEAP_SPLASH_PICTURES;
+  set_nz16(c, c->a);
+  c->pc = FISHMAN_SPLASH_BEGIN_LIST_PC;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1153,25 +1585,86 @@ FishmanFate fishman_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
 
 bool fishman_sweep_supported(const Wram* w, uint16_t page) {
   const uint16_t at = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW_AT));
-  return at < FISHMAN_SWEEP_RING_SIZE && (at & 3) == 0 &&
-         wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW)) < 0x1f00u;
+  const uint16_t blow = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW));
+  if (at >= FISHMAN_SWEEP_RING_SIZE || (at & 3) != 0 || blow >= 0x1f00u)
+    return false;
+  if (wram_r16(w, (uint16_t)(page + FISHMAN_DP_SCRATCH)) != 1) return true;
+  return blow >= W_ACTOR_SLOTS && blow <= ACTOR_SLOT_LAST &&
+         place_in_list(w, blow) >= 0;
 }
 
-bool fishman_sweep_tick(Wram* w, const Rom* rom, PortCpu* c, bool* wrapped) {
+static void sweep_place(Wram* w, const Rom* rom, PortCpu* c, bool* wrapped);
+
+bool fishman_sweep_begin_supported(const Wram* w, uint16_t page, uint16_t s) {
+  const uint16_t way = wram_r16(w, (uint16_t)(page + FISHMAN_DP_WAY));
+  return way >= FISHMAN_FIRST_WAY && way <= FISHMAN_LAST_WAY &&
+         (way & 1) == 0 && loop_of(wram_r16(w, (uint16_t)(s + 1))) != NULL;
+}
+
+// `$81:E346`: a second record where it stands, with no picture, to hit
+// with. Then the ring from the way it faces, for five ticks.
+bool fishman_sweep_begin(Wram* w, const Rom* rom, PortCpu* c, uint16_t* record,
+                         bool* wrapped) {
+  const uint16_t page = c->d;
+  SlotAllocRegs taken;
+  actor_slot_alloc(w, c->db, &taken);
+  if (taken.c) return false;
+  PORT_COVER(fishman_sweep_began);
+  const uint16_t blow = taken.a;
+  *record = blow;
+  wram_w16(w, (uint16_t)(page + FISHMAN_DP_BLOW), blow);
+  wram_w16(w, (uint16_t)(blow + ACTOR_X),
+           wram_r16(w, (uint16_t)(page + FISHMAN_DP_X)));
+  wram_w16(w, (uint16_t)(blow + ACTOR_Y),
+           wram_r16(w, (uint16_t)(page + FISHMAN_DP_Y)));
+  wram_w16(w, (uint16_t)(blow + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(blow + ACTOR_META), 0);
+  wram_w16(w, (uint16_t)(blow + ACTOR_META_BANK), 0);
+  wram_w16(w, (uint16_t)(blow + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(blow + ACTOR_COLLIDE_ID), FISHMAN_LANDED_ID);
+  wram_w16(w, (uint16_t)(blow + ACTOR_FLAGS),
+           (uint16_t)(ACTOR_DRAW | wram_r16(w, (uint16_t)(blow + ACTOR_FLAGS))));
+
+  wram_w16(w, (uint16_t)(page + FISHMAN_DP_SCRATCH), FISHMAN_SWEEP_TICKS);
+  const uint16_t way = wram_r16(w, (uint16_t)(page + FISHMAN_DP_WAY));
+  wram_w16(w, (uint16_t)(page + FISHMAN_DP_BLOW_AT),
+           (uint16_t)((way - FISHMAN_FIRST_WAY) << 1));
+  sweep_place(w, rom, c, wrapped);
+  return true;
+}
+
+bool fishman_sweep_tick(Wram* w, const Rom* rom, PortCpu* c, bool* wrapped,
+                        int* place) {
   const uint16_t page = c->d;
   const uint16_t blow = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW));
   const uint16_t left =
       (uint16_t)(wram_r16(w, (uint16_t)(page + FISHMAN_DP_SCRATCH)) - 1);
   wram_w16(w, (uint16_t)(page + FISHMAN_DP_SCRATCH), left);
   if (left == 0) {
+    // Its second record goes, and it shows three pictures more.
     PORT_COVER(fishman_sweep_over);
-    c->a = blow;
+    *place = place_in_list(w, blow);
+    SlotFreeRegs freed;
+    actor_slot_free(w, blow, page, c->x, c->y, &freed);
+    c->x = freed.x;
+    c->y = freed.y;
+    set_c(c, freed.c);
+    wram_w16(w, (uint16_t)(page + FISHMAN_DP_BLOW), FISHMAN_NO_BLOW);
+    c->a = FISHMAN_SWEPT_PICTURES;
     set_nz16(c, c->a);
-    c->pc = FISHMAN_SWEEP_FREE_PC;
+    c->pc = FISHMAN_SWEEP_DONE_PC;
     return false;
   }
 
   PORT_COVER(fishman_swept);
+  sweep_place(w, rom, c, wrapped);
+  return true;
+}
+
+// `$81:E355`: the record at the next place in the ring, and a tick's sleep.
+static void sweep_place(Wram* w, const Rom* rom, PortCpu* c, bool* wrapped) {
+  const uint16_t page = c->d;
+  const uint16_t blow = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW));
   const uint16_t at = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW_AT));
   const uint32_t ring = ((uint32_t)FISHMAN_BANK << 16) | FISHMAN_SWEEP_RING;
   set_c(c, false);
@@ -1194,5 +1687,4 @@ bool fishman_sweep_tick(Wram* w, const Rom* rom, PortCpu* c, bool* wrapped) {
   c->a = 1;
   set_nz16(c, c->a);
   c->pc = FISHMAN_SWEEP_YIELD_PC;
-  return true;
 }

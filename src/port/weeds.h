@@ -48,10 +48,23 @@
 // in a straight line from beside the root to where the player was, by
 // `line_step` of `port/line.h`, and in an arc: its height takes a rise
 // that is one less every pass, so it goes up, slows, and comes down. Below
-// the ground it has landed, and the ROM tells whatever is there and ends
-// it. A pass of its flight is here too:
+// the ground it has landed, tells whatever is there, shows a list of
+// pictures and ends. Its thread is here too, in the stretches between its
+// sleeps and its calls:
 //
-//   $81:D4D6  weed_seed_frame
+//   $81:D4C9  weed_seed_begin   its record, and where it is to come down:
+//                               to its first sleep
+//   $81:D4D6  weed_seed_frame   a pass of its flight
+//   $81:D4E3  weed_seed_landed  on the ground, and the box round where it
+//                               came down: to the `JSL` that tells them
+//   $81:D42B  weed_seed_told    the list of its last pictures: to the `JSL`
+//                               that shows them
+//   $81:D432  weed_seed_end     its record freed, and the thread's end
+//
+// **It comes down near whoever the weed was on its guard against**, not on
+// them: up to 32 pixels either way across and down, by two draws. A gap
+// under four pixels is taken as four. The line's count is half the longer
+// gap, and its first rise a quarter.
 //
 // "Seed" is a guess at what is drawn.
 //
@@ -201,5 +214,41 @@ typedef struct {
 } WeedSeedWork;
 
 void weed_seed_frame(Wram* w, PortCpu* c, WeedSeedWork* k);
+
+#define WEED_SEED_BEGIN_PC 0x81d4c9u
+#define WEED_SEED_TELL_PC 0x81d427u   // `JSL actor_notify_box`
+#define WEED_SEED_TOLD_PC 0x81d42bu
+#define WEED_SEED_PLAY_PC 0x81d42eu   // `JSL pictures_play`, the list in A
+#define WEED_SEED_END_PC 0x81d432u
+#define WEED_SEED_EXITED_PC 0x00833eu  // `thread_exit`
+#define WEED_SEED_DP_PLACED_X 0x00     // what the weed hands it: where,
+#define WEED_SEED_DP_PLACED_Y 0x02
+#define WEED_SEED_DP_PLACED_AT 0x04    // ...and whose record it is thrown at
+#define WEED_SEED_DP_TO_X 0x0e
+#define WEED_SEED_DP_TO_Y 0x10
+#define WEED_SEED_DP_WAY 0x1c          // kept, and read by nothing here
+#define WEED_SEED_DP_AT 0x24
+
+typedef struct {
+  bool declined;    // no record free, and the ROM goes on with what is none
+  uint16_t record;
+  bool draw_overflow[2];
+  bool same_row, same_column;  // of where it is to come down
+  bool negative[2];            // that is left of it, and above it
+  bool floored[2];             // a gap under four, taken as four
+  bool across_longer;
+} WeedSeedBegin;
+
+// `c->d` is the thread's page. It comes back at the `JSL thread_yield`.
+void weed_seed_begin(Wram* w, const Rom* rom, PortCpu* c, WeedSeedBegin* k);
+// It comes back at the `JSL actor_notify_box`, with the return of the `JSR`
+// it is inside on the stack.
+void weed_seed_landed(Wram* w, PortCpu* c);
+void weed_seed_told(PortCpu* c);
+// False unless the stack is as the landing left it over a thread's own,
+// and the display list holds its record.
+bool weed_seed_end_supported(const Wram* w, uint16_t page, uint16_t s);
+// `*place` is where in the display list its record was.
+void weed_seed_end(Wram* w, PortCpu* c, int* place);
 
 #endif

@@ -216,6 +216,10 @@
   X(slime_glob_dressed,"slime_glob_dress",  "a record for the glob, where the slime is") \
   X(slime_glob_aimed, "slime_glob_aim",     "where it comes down, near whom the slime found") \
   X(slime_glob_splashed,"slime_glob_splash","the box it tells of when it lands") \
+  X(slime_glob_began, "slime_glob_begin",   "the glob's thread begun: its weight, to its sound") \
+  X(slime_glob_heard_landing, "slime_glob_landed", "down: to its second sound") \
+  X(slime_glob_told,  "slime_glob_told",    "its last pictures' list") \
+  X(slime_glob_done,  "slime_glob_done",    "back from the landing, and its end") \
   X(stepper_stepped,  "stepper_frame",      "a twentieth frame: on to the next place") \
   X(stepper_went_round,"stepper_frame",     "...which was the first again") \
   X(stepper_turned_picture,"stepper_frame", "the other picture, and its frames") \
@@ -369,6 +373,10 @@
   X(weed_clump_tile,  "weed_frame",         "...and a tile of it planted") \
   X(weed_seed_flew,   "weed_seed_frame",    "a pass of its arc") \
   X(weed_seed_landed, "weed_seed_frame",    "...and below the ground: landed") \
+  X(weed_seed_began,  "weed_seed_begin",    "its record, and where it is to come down") \
+  X(weed_seed_came_down, "weed_seed_landed", "on the ground, and the box round it made") \
+  X(weed_seed_told,   "weed_seed_told",     "its last pictures' list") \
+  X(weed_seed_ended,  "weed_seed_end",      "its record freed, and the thread's end") \
   /* A player knocked back, and the decoy -- see port/lunge.h, decoy.h. */      \
   X(lunge_on,         "lunge_frame",        "a step back, against the way they face") \
   X(lunge_ran_out,    "lunge_frame",        "the fifteenth frame") \
@@ -1519,14 +1527,14 @@
   X(chainsaw_swing_wrapped, "chainsaw_swing_next", "...past the table's first way, so on from its last") \
   X(chainsaw_swing_ended, "chainsaw_swing_next", "the turn made: the saw's record freed, and a chase") \
                                                                                    \
-  /* $81:E4B2, $81:E558 fishman_frame -- the fishman's nine states. */             \
+  /* $81:E4B2, $81:E558 fishman_frame -- the fishman's states.      */             \
   X(fishman_swam, "fishman_frame", "a pass the way it faces") \
   X(fishman_swam_turned, "fishman_frame", "...and one turning at every opening") \
   X(fishman_turned_at_wall, "fishman_frame", "it could not swim on: a quarter turn") \
   X(fishman_turned_at_opening, "fishman_frame", "it could swim a quarter turn round, so it turned") \
   X(fishman_closed_in, "fishman_frame", "somebody within 128: it closes in") \
   X(fishman_looked_about, "fishman_frame", "the draw said stop and look about, which is the ROM's") \
-  X(fishman_leapt, "fishman_frame", "it leaps, which is the ROM's") \
+  X(fishman_leapt, "fishman_frame", "it is to leap, and sleeps a few ticks first") \
   X(fishman_leap_off_level, "fishman_frame", "the spot a leap would come down is off the level") \
   X(fishman_leap_taken, "fishman_frame", "...or has somebody on it") \
   X(fishman_closing_in, "fishman_frame", "a pass closing in") \
@@ -1548,6 +1556,23 @@
   X(fishman_stalked, "fishman_frame", "a pass on land, at whoever is nearest") \
   X(fishman_walk_stopped, "fishman_frame", "...stopped by the ground one way, so it looks for water past it") \
   X(fishman_found_water, "fishman_frame", "...and finds it, which is the dive and the ROM's") \
+  X(fishman_stalk_found_water, "fishman_frame", "on land with water to go back to: it sleeps a few ticks first") \
+  X(fishman_stalk_sweeps, "fishman_frame", "...somebody within 28 and to one side: it sweeps again") \
+  X(fishman_stalk_beside, "fishman_frame", "...or under 8 across: a step all the same") \
+  X(fishman_stalk_left, "fishman_frame", "...nobody within 175 and no player near: it leaves") \
+  X(fishman_stalk_goes_about, "fishman_frame", "...or a player is: it goes about as the other one does") \
+  X(fishman_sweep_turned, "fishman_frame", "landed: it turns to them, and stops at three pictures") \
+  X(fishman_dive_began, "fishman_frame", "off the ground, and the first pass of the dive") \
+  X(fishman_splashed, "fishman_frame", "back in the water: it stops at two pictures") \
+  X(fishman_leap_too_short, "fishman_leap_wake", "the spot is under 32 across: no leap after all") \
+  X(fishman_leap_began, "fishman_leap_wake", "the leap set up, and a splash left behind it") \
+  X(fishman_dive_straight, "fishman_dive_wake", "the water is straight above or below: no dive") \
+  X(fishman_dive_set, "fishman_dive_wake", "the dive set up, from its next pass") \
+  X(fishman_sweep_began, "fishman_sweep_begin", "its second record, at the first place in the ring") \
+  X(fishman_wants_water, "fishman_sweep_after", "the sweep over: the one that keeps to its pool wants water") \
+  X(fishman_swept_ashore, "fishman_sweep_after", "...and the other walks on") \
+  X(fishman_swims_again, "fishman_splash_after", "in the water again, some way by a draw") \
+  X(fishman_splash_began, "fishman_splash_begin", "the splash a leap leaves: its record, to its pictures") \
   X(fishman_left, "fishman_frame", "neither player within 208: it leaves") \
   X(sched_tables_cleared, "sched_tables_clear", "the threads' tables and the vblank queues cleared") \
   X(top_scores_defaulted, "top_scores_default", "the cartridge's top scores copied in") \
@@ -1559,7 +1584,7 @@
   X(fishman_ended, "fishman_patrol_end", "one that left of itself: its record given back") \
   X(fishman_left_unshown, "fishman_frame", "...found when it came to show itself") \
   X(fishman_swept, "fishman_sweep_tick", "its second record at the next place in the ring") \
-  X(fishman_sweep_over, "fishman_sweep_tick", "...or the five ticks are up, and the record is to be freed") \
+  X(fishman_sweep_over, "fishman_sweep_tick", "...or the five ticks are up, and the record is freed") \
                                                                                    \
   /* $81:AC1E werewolf_frame -- the werewolf's three states. */                    \
   X(werewolf_ran, "werewolf_frame", "a pass running") \

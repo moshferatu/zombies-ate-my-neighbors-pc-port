@@ -18138,3 +18138,93 @@ is two runs.
 new are taken. Every priced call is refresh-exact. Declines: 3,331.
 
 Lockstep: 334,319 passes, 51 of 54 never part, the same three.
+
+## The fishman's leap and dive, the weeds' seed, and twenty-one more thread ends (2026-10-07)
+
+Thirty-five entries more, 527. Over the twelve live movies the ROM's
+instructions go from 148,960 to 132,840.
+
+### A body that stops in the middle
+
+A fishman's loop is `PEA` a return, push the state's address less one, and
+`RTS`. The body runs with the loop's return on the stack and its own `RTS`
+goes to the loop's show.
+
+Four bodies do not get that far in one pass. Two sleep, by `JSL
+thread_yield` at `$81:E072` and `$81:DB0C`, and two show a list by `JSL
+pictures_play` at `$81:E342` and `$81:DBDD`. Each is an exit of both frame
+rows now. `fishman_frame` leaves S lower than it found it, by the loop's
+return and, for the two sleeps, by the return of the `JSR` the body made to
+get there. The port writes those words. `FishmanLog::stop` says which stop
+and `FishmanLog::s` the stack.
+
+A stretch that begins at a wake reads them back. The word nearest the top
+says which body it was in: four bodies call the draw for a leap, and each
+goes on the same way. The word under it says which of the two loops, and so
+where the stretch leaves. A guard turns the call down unless both are
+addresses it knows.
+
+### What the rest of a pass leaves above the stack
+
+A stretch that wakes with two returns on the stack ends with S four higher
+than it began. Bytes above where a stretch's stack began are compared.
+The ROM's show writes five there: its own return where the loop's was, and
+under that the bank and the address its `JSL` to ask after the players
+pushed. That call is the first thing the show does, so it is always the
+last thing written at that depth. `finish` in `port/fishman.c` writes the
+five.
+
+### A free's page above the stack
+
+`actor_slot_free` begins with `PHD`. For an end that is a `JML` from the
+thread's own depth the two bytes are under the stack and waived. Two ends
+are reached from inside a `JSR`: the seed's at `$81:D432` and the glob's at
+`$81:CE71`. Their `RTS` comes first, so the `PHD` lands where the `JSR`'s
+return was, which is above where the stretch began. The port writes the
+page there.
+
+### An exit list for each row
+
+`fishman_frame` and `fishman_patrol_frame` run the same bodies and have an
+exit list each, since each loop sleeps and tests its fate at its own
+addresses. A stop added to one list and not the other is not an error the
+harness names. The ROM runs past the sleep into the scheduler and out into
+whichever thread is next, and stops at that thread's exit. What it reports
+is `$7E:0008`, the running thread, with a stack pointer that ranged over
+several threads' stacks during the segment.
+
+### Two calls ended by one instruction
+
+`slime_glob_done` begins at the `RTS` at `$81:CE71` and ends at
+`thread_exit`. The ROM's run through it passes `$81:CF39`, where
+`slime_glob_end` begins, which ends at `thread_exit` too. On that
+instruction `verify` ends the call on top and then looks again, so both are
+checked: 154 calls each over the corpus.
+
+### The table of routines
+
+`COSIM_MAX_ROUTINES` was 512 and is 768. Past it the harness prints the
+count and checks nothing, which is what it is for.
+
+### Pokes
+
+Four of the fishman's branches on land are taken by no movie. Each was
+checked on `level13` by putting a word on the page of the fishman at
+`$7E:0300`, which is on land from frame 16,355:
+
+    --poke 16370:0310=03BE --poke 16370:0312=01FD    it sweeps again
+    --poke 16370:0310=03B6 --poke 16370:0312=0209    a step all the same
+    --poke 16370:0310=0040 --poke 16370:0312=0040    it leaves
+    --poke 16404:032A=03B1 --poke 16405:032A=03B1 --poke 16406:032A=03B1
+                                                     no dive
+
+0 diverged on each, of 2,085,005, 2,116,364, 2,112,780 and 2,086,888 calls.
+They are not in the corpus's count of sites. They ran on a build that also
+had a print in the frame's shim, to find the frame, since taken out.
+
+### Checked
+
+34,253,648 calls across 54 movies, 0 diverged. 1,257 of 1,489 sites; of the
+25 new, 20 are taken. Every priced call is refresh-exact. Declines: 3,198.
+
+Lockstep: 334,319 passes, 51 of 54 never part, the same three.

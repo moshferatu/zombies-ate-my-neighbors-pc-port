@@ -109,6 +109,14 @@ const RecordEnd RECORD_ENDS[RECORD_END_COUNT] = {
     [RECORD_END_SHOT_5] = {0x81ec60u, 0x81ec6eu, 0x0006, 0x0a},
     [RECORD_END_MARTIAN] = {0x819a17u, 0x819a25u, 0x001e, 0x08, true},
     [RECORD_END_MARTIAN_ARRIVAL] = {0x819a7bu, 0x819a89u, 0x001e, 0x08},
+    [RECORD_END_FISHMAN_SPLASH] = {0x81e775u, 0x81e783u, 0x0007, 0x08},
+    [RECORD_END_WEREWOLF] = {0x81ac67u, 0x81ac75u, 0x001c, 0x08},
+    [RECORD_END_SLIME] = {0x81cd0cu, 0x81cd1au, 0x0020, 0x08},
+    [RECORD_END_WEED] = {0x81d2ceu, 0x81d2dcu, 0x0023, 0x08},
+#define X(at, sym, pc, load, record_at, calls) \
+  [RECORD_END_AT_##at] = {pc, pc + 14, load, record_at, calls},
+    RECORD_ENDS_BY_ADDRESS(X)
+#undef X
 };
 
 bool record_end(Wram* w, PortCpu* c, const RecordEnd* end, int* place) {

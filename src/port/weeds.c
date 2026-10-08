@@ -324,6 +324,200 @@ bool weed_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
   return true;
 }
 
+// The seed's record: how high it begins, its picture, and what it is to
+// whatever it comes down on.
+#define WEED_SEED_HEIGHT 0x0018
+#define WEED_SEED_PICTURE 0xc3bdu
+#define WEED_SEED_PICTURE_BANK 0x0090
+#define WEED_SEED_AIR_ID 0x0036
+#define WEED_SEED_ATTR 0x0400
+#define WEED_SEED_FLAGS 0x8018u
+// Where it comes down, from whoever it is thrown at.
+#define WEED_SEED_SCATTER_MASK 0x003f
+#define WEED_SEED_SCATTER_BACK 0xffe0u
+#define WEED_SEED_LEAST_GAP 4
+// Landed: the box it tells, its id to them, and its last pictures.
+#define WEED_SEED_BOX_LEFT 0x0018
+#define WEED_SEED_BOX_WIDTH 0x0030
+#define WEED_SEED_BOX_UP 0x0010
+#define WEED_SEED_BOX_HEIGHT 0x0020
+#define WEED_SEED_TELLS 0x0003
+#define WEED_SEED_LAST_PICTURES 0xd433u
+#define WEED_SEED_BOX_RETURN 0xd4ebu  // what the `JSR` to the box pushes
+#define W_NOTIFY_BOX 0x0038u          // left, right, top, bottom, and the id
+
+static uint16_t seed_field(const Wram* w, const PortCpu* c, uint16_t at) {
+  return wram_r16(w, (uint16_t)(c->d + at));
+}
+
+static void set_seed_field(Wram* w, const PortCpu* c, uint16_t at,
+                           uint16_t v) {
+  wram_w16(w, (uint16_t)(c->d + at), v);
+}
+
+// A draw of up to 32 either way from `middle`. The second sum takes the
+// carry of the first.
+static uint16_t scatter(Wram* w, PortCpu* c, uint16_t middle, bool* overflow) {
+  RngResult r;
+  rng_next(w, flag(c, PORT_P_C), &r);
+  *overflow = r.v;
+  set_c(c, false);
+  const uint16_t off =
+      adc16(c, (uint16_t)(r.a & WEED_SEED_SCATTER_MASK), WEED_SEED_SCATTER_BACK);
+  return adc16(c, off, middle);
+}
+
+// One gap of its line: which way a step goes, and how much a pass adds.
+static uint16_t seed_gap(Wram* w, PortCpu* c, uint16_t to, uint16_t from,
+                         uint16_t step_at, uint16_t part_at, bool* is_negative,
+                         bool* floored) {
+  set_c(c, true);
+  uint16_t gap = sbc16(c, to, from);
+  *is_negative = (gap & 0x8000u) != 0;
+  if (*is_negative) gap = (uint16_t)(0u - gap);
+  set_seed_field(w, c, step_at, *is_negative ? 0xffffu : 1);
+  set_seed_field(w, c, part_at, gap);
+  *floored = gap < WEED_SEED_LEAST_GAP;
+  set_c(c, !*floored);
+  if (*floored) {
+    gap = WEED_SEED_LEAST_GAP;
+    set_seed_field(w, c, part_at, gap);
+  }
+  return gap;
+}
+
+void weed_seed_begin(Wram* w, const Rom* rom, PortCpu* c, WeedSeedBegin* k) {
+  *k = (WeedSeedBegin){0};
+  SlotAllocRegs taken;
+  actor_slot_alloc(w, c->db, &taken);
+  if (taken.c) {
+    k->declined = true;
+    return;
+  }
+  PORT_COVER(weed_seed_began);
+  const uint16_t record = taken.a;
+  k->record = record;
+  set_c(c, false);
+
+  // `$81:D482`: its record, in the air beside the root.
+  const uint16_t x = seed_field(w, c, WEED_SEED_DP_PLACED_X);
+  const uint16_t y = seed_field(w, c, WEED_SEED_DP_PLACED_Y);
+  const uint16_t at = seed_field(w, c, WEED_SEED_DP_PLACED_AT);
+  set_seed_field(w, c, LINE_DP_RECORD, record);
+  set_seed_field(w, c, LINE_DP_X, x);
+  set_seed_field(w, c, LINE_DP_Y, y);
+  set_seed_field(w, c, WEED_SEED_DP_AT, at);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), x);
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), WEED_SEED_HEIGHT);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), WEED_SEED_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), WEED_SEED_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), WEED_SEED_AIR_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), WEED_SEED_ATTR);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(WEED_SEED_FLAGS |
+                      wram_r16(w, (uint16_t)(record + ACTOR_FLAGS))));
+
+  // `$81:D36E`: where it is to come down, and the line there.
+  const uint16_t to_x =
+      scatter(w, c, wram_r16(w, (uint16_t)(at + ACTOR_X)), &k->draw_overflow[0]);
+  set_seed_field(w, c, WEED_SEED_DP_TO_X, to_x);
+  const uint16_t to_y =
+      scatter(w, c, wram_r16(w, (uint16_t)(at + ACTOR_Y)), &k->draw_overflow[1]);
+  set_seed_field(w, c, WEED_SEED_DP_TO_Y, to_y);
+
+  ActorBearingRegs way;
+  k->same_row = y == to_y;
+  k->same_column = x == to_x;
+  actor_bearing_point(w, rom, record, to_x, to_y, &way);
+  set_seed_field(w, c, WEED_SEED_DP_WAY, way.a);
+
+  const uint16_t across = seed_gap(w, c, to_x, x, LINE_DP_STEP_X,
+                                   LINE_DP_PART_X, &k->negative[0],
+                                   &k->floored[0]);
+  uint16_t longer = seed_gap(w, c, to_y, y, LINE_DP_STEP_Y, LINE_DP_PART_Y,
+                             &k->negative[1], &k->floored[1]);
+  k->across_longer = longer < across;
+  if (k->across_longer) longer = across;
+  const uint16_t whole = (uint16_t)(longer >> 1);
+  set_seed_field(w, c, LINE_DP_WHOLE, whole);
+  set_seed_field(w, c, WEED_SEED_DP_RISE, (uint16_t)(whole >> 1));
+  set_c(c, (whole & 1) != 0);
+  set_seed_field(w, c, LINE_DP_SUM_X, 0);
+  set_seed_field(w, c, LINE_DP_SUM_Y, 0);
+
+  c->a = WEED_SEED_TICKS;
+  set_nz16(c, c->a);
+  c->pc = WEED_SEED_SLEEP_PC;
+}
+
+void weed_seed_landed(Wram* w, PortCpu* c) {
+  PORT_COVER(weed_seed_came_down);
+  const uint16_t record = seed_field(w, c, LINE_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_Z), 0);
+  push16(w, c, WEED_SEED_BOX_RETURN);
+
+  // `$81:D3FF`: everything in a box round where it was to come down is
+  // told.
+  set_c(c, true);
+  const uint16_t left =
+      sbc16(c, seed_field(w, c, WEED_SEED_DP_TO_X), WEED_SEED_BOX_LEFT);
+  wram_w16(w, W_NOTIFY_BOX, left);
+  set_c(c, false);
+  wram_w16(w, W_NOTIFY_BOX + 2, adc16(c, left, WEED_SEED_BOX_WIDTH));
+  set_c(c, true);
+  const uint16_t top =
+      sbc16(c, seed_field(w, c, WEED_SEED_DP_TO_Y), WEED_SEED_BOX_UP);
+  wram_w16(w, W_NOTIFY_BOX + 4, top);
+  set_c(c, false);
+  wram_w16(w, W_NOTIFY_BOX + 6, adc16(c, top, WEED_SEED_BOX_HEIGHT));
+  wram_w16(w, W_NOTIFY_BOX + 8, WEED_SEED_TELLS);
+
+  c->y = record;
+  c->a = WEED_SEED_TELLS;
+  set_nz16(c, c->a);
+  c->pc = WEED_SEED_TELL_PC;
+}
+
+void weed_seed_told(PortCpu* c) {
+  PORT_COVER(weed_seed_told);
+  c->a = WEED_SEED_LAST_PICTURES;
+  set_nz16(c, c->a);
+  c->pc = WEED_SEED_PLAY_PC;
+}
+
+bool weed_seed_end_supported(const Wram* w, uint16_t page, uint16_t s) {
+  const uint16_t record = wram_r16(w, (uint16_t)(page + LINE_DP_RECORD));
+  return record >= W_ACTOR_SLOTS && record <= ACTOR_SLOT_LAST &&
+         actor_list_place(w, record) != -3 &&
+         wram_r16(w, (uint16_t)(s + 1)) == WEED_SEED_BOX_RETURN &&
+         wram_r16(w, (uint16_t)(s + 3)) == (WEED_SEED_EXITED_PC & 0xffffu) - 1 &&
+         wram_r8(w, (uint16_t)(s + 5)) == (WEED_SEED_EXITED_PC >> 16);
+}
+
+void weed_seed_end(Wram* w, PortCpu* c, int* place) {
+  PORT_COVER(weed_seed_ended);
+  // Back from the box, and a jump to `actor_slot_free`: its `RTL` is the
+  // thread's.
+  const uint16_t record = seed_field(w, c, LINE_DP_RECORD);
+  *place = actor_list_place(w, record);
+  SlotFreeRegs r;
+  actor_slot_free(w, record, c->d, c->x, c->y, &r);
+  // The free keeps the page on the stack as it works, where the box's
+  // return was.
+  wram_w16(w, (uint16_t)(c->s + 1), c->d);
+  c->a = r.a;
+  c->x = r.x;
+  c->y = r.y;
+  c->p = (uint8_t)(c->p & ~(PORT_P_N | PORT_P_Z));
+  if (r.n) c->p |= PORT_P_N;
+  if (r.z) c->p |= PORT_P_Z;
+  set_c(c, r.c);
+  c->s = (uint16_t)(c->s + 5);
+  c->pc = WEED_SEED_EXITED_PC;
+}
+
 void weed_seed_frame(Wram* w, PortCpu* c, WeedSeedWork* k) {
   line_step(w, c, &k->line);
 

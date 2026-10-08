@@ -592,6 +592,49 @@ void slime_attack_rise(Wram* w, PortCpu* c, SlimeAttackWork* k) {
 // The glob, before its first pass
 // ---------------------------------------------------------------------------
 
+// `$81:CF10`: it counts for four in the level's load, and is heard.
+void slime_glob_begin(Wram* w, PortCpu* c) {
+  PORT_COVER(slime_glob_began);
+  set_c(c, false);
+  wram_w16(w, W_SPAWN_LOAD,
+           adc16(c, wram_r16(w, W_SPAWN_LOAD), SLIME_GLOB_LOAD));
+  push16(w, c, SLIME_GLOB_BEGIN_RETURN);
+  c->a = SLIME_GLOB_SFX;
+  set_nz16(c, c->a);
+  c->pc = SLIME_GLOB_BEGIN_SOUND_PC;
+}
+
+// `$81:CF36`: down, and heard again.
+void slime_glob_landed(Wram* w, PortCpu* c) {
+  PORT_COVER(slime_glob_heard_landing);
+  push16(w, c, SLIME_GLOB_LANDED_RETURN);
+  c->a = SLIME_GLOB_SFX;
+  set_nz16(c, c->a);
+  c->pc = SLIME_GLOB_LANDED_SOUND_PC;
+}
+
+void slime_glob_told(PortCpu* c) {
+  PORT_COVER(slime_glob_told);
+  c->a = SLIME_GLOB_LAST_PICTURES;
+  set_nz16(c, c->a);
+  c->pc = SLIME_GLOB_PLAY_PC;
+}
+
+// `$81:CE71`: back from the landing, and the thread's end.
+bool slime_glob_done(Wram* w, PortCpu* c, int* place) {
+  const uint16_t under = c->s;
+  if (wram_r16(w, (uint16_t)(under + 1)) != SLIME_GLOB_LANDED_RETURN)
+    return false;
+  c->s = (uint16_t)(under + 2);
+  if (!record_end(w, c, &RECORD_ENDS[RECORD_END_SLIME_GLOB], place))
+    return false;
+  PORT_COVER(slime_glob_done);
+  // The free keeps the page on the stack as it works, where the landing's
+  // return was.
+  wram_w16(w, (uint16_t)(under + 1), c->d);
+  return true;
+}
+
 // `$81:CECC`: a record, put where the slime is and fifteen up.
 void slime_glob_dress(Wram* w, PortCpu* c, SlimeAttackWork* k) {
   const uint16_t page = c->d;

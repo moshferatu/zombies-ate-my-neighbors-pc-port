@@ -13103,7 +13103,35 @@ static const CosimRun FISHMAN_RUN_STAND_PICTURE_PLAIN = {30, 5, 0};  // $E647 AN
 static const CosimRun FISHMAN_RUN_STAND_PICTURE_MIRROR = {18, 3, 0};  // $E64C ORA
 static const CosimRun FISHMAN_RUN_STAND_PICTURE_STORE = {126, 11, 2};  // $E64F-$E659
 static const CosimRun FISHMAN_RUN_PLACE = {204, 13, 3};  // $E681-$E68D, the RTS too
-static const CosimRun FISHMAN_RUN_STALK_HEAD = {180, 16, 2};  // $DA1D-$DA2C, to CMP #$001C : BCC
+static const CosimRun FISHMAN_RUN_STALK_NEAREST = {140, 13, 2};  // $DA20-$DA2C, to CMP #$001C : BCC
+static const CosimRun FISHMAN_RUN_STALK_NEAR = {148, 12, 3};  // $DA6D-$DA78, to the BPL
+static const CosimRun FISHMAN_RUN_SWEEP_DRAW = {84, 9, 0};  // $E312 JSL : CMP #$0096 : BCS
+static const CosimRun FISHMAN_RUN_SWEEP_AFTER = {40, 4, 1};  // $E397 LDA $46 : BEQ
+static const CosimRun FISHMAN_RUN_WANT_WATER = {50, 2, 1};  // $E39B ASL $0E
+static const CosimRun FISHMAN_RUN_SWEEP_FACE = {208, 18, 4};  // $E31C-$E32D, to CMP #$000C : BCS
+static const CosimRun FISHMAN_RUN_SWEEP_PLAIN = {70, 8, 0};  // $E32E LDA : AND : BRA, less its 6
+static const CosimRun FISHMAN_RUN_SWEEP_MIRROR = {58, 6, 0};  // $E336 LDA : ORA
+static const CosimRun FISHMAN_RUN_SWEEP_LIST = {58, 6, 0};  // $E33C STA : LDA #$E3A0
+static const CosimRun FISHMAN_RUN_BLOW_DRESS = {638, 51, 3};  // $E3E0-$E412
+static const CosimRun FISHMAN_RUN_SWEEP_SET = {138, 12, 3};  // $E349-$E354
+static const CosimRun FISHMAN_RUN_DIVE_BEGIN = {426, 42, 5};  // $DB63-$DB8A
+static const CosimRun FISHMAN_RUN_SPLASH = {150, 16, 2};  // $DBCD-$DBDC
+static const CosimRun FISHMAN_RUN_SPLASH_DRESS = {402, 38, 4};  // $DBE1-$DC06, the JMP too
+// A leap or a dive, where its sleep comes back. The two have the same
+// instructions as far as the longer gap.
+static const CosimRun FISHMAN_RUN_WAIT = {84, 8, 0};  // $E06A and $DB04 JSL : AND #$0007 : INC
+static const CosimRun FISHMAN_RUN_WAKE_BACK = {52, 2, 0};  // $E076 CLC : RTS
+static const CosimRun FISHMAN_RUN_GAP_X_HEAD = {264, 22, 6};  // $E07C-$E091 and $DB10-$DB25, to the BPL
+static const CosimRun FISHMAN_RUN_GAP_X_TAIL = {86, 9, 2};  // $E099-$E0A1 and $DB2D-$DB35, to the branch
+static const CosimRun FISHMAN_RUN_GAP_Y_HEAD = {98, 10, 2};  // $E0A2-$E0AB and $DB39-$DB42
+static const CosimRun FISHMAN_RUN_GAP_Y_TAIL = {96, 8, 3};  // $E0B3-$E0BA and $DB4A-$DB51
+static const CosimRun FISHMAN_RUN_GAP_LONGER = {28, 2, 1};  // LDA $36
+static const CosimRun FISHMAN_RUN_LEAP_SPAN = {154, 13, 4};  // $E0BD-$E0C9, the JMP too
+static const CosimRun FISHMAN_RUN_LEAP_FORM = {174, 18, 3};  // $E0CB-$E0DA, to the BMI
+static const CosimRun FISHMAN_RUN_LEAP_FACE_ON = {52, 5, 0};  // $E0DB ORA : BRA, less its 6
+static const CosimRun FISHMAN_RUN_LEAP_FACE_OFF = {40, 3, 0};  // $E0E0 AND
+static const CosimRun FISHMAN_RUN_LEAP_DRESS = {670, 61, 4};  // $E0E3-$E11F, the RTS too
+static const CosimRun FISHMAN_RUN_DIVE_SPAN = {124, 9, 4};  // $DB54-$DB5C
 static const CosimRun FISHMAN_RUN_STALK_STEP = {504, 42, 8};  // $DA46-$DA6B, the JSR too
 static const CosimRun FISHMAN_RUN_WALK_GROUND = {122, 10, 2};  // LDX : LDY : JSL : BCC
 static const CosimRun FISHMAN_RUN_WALK_SEEK = {108 + 6, 9, 2};  // LDX : LDY : JSR $DA85 : BRA
@@ -13225,8 +13253,8 @@ static void fishman_look_bill(FishmanBill* b) {
   fishman_add(b, &FISHMAN_RUN_RTS);
 }
 
-// `$81:E007` when it does not leap, its `RTS` too: every way out is a branch
-// taken to it.
+// `$81:E007`. When it does not leap, its `RTS` too: every way out is a
+// branch taken to it. When it does, as far as its sleep.
 static void fishman_leap_bill(FishmanBill* b) {
   const FishmanLog* log = b->log;
   fishman_add(b, &FISHMAN_RUN_LEAP_DRAW);
@@ -13243,15 +13271,22 @@ static void fishman_leap_bill(FishmanBill* b) {
       }
     }
   }
+  if (log->leap == FISHMAN_LEAP_LEAPS) {
+    fishman_add(b, &FISHMAN_RUN_WAIT);
+    return;
+  }
   fishman_taken(b);
   fishman_add(b, &FISHMAN_RUN_RTS);
 }
 
-// The `JSR` to the draw for a leap, and the `BCC` after it.
-static void fishman_ask_leap_bill(FishmanBill* b) {
+// The `JSR` to the draw for a leap, and the `BCC` after it. False when it
+// is to leap, and the pass stops at its sleep.
+static bool fishman_ask_leap_bill(FishmanBill* b) {
   fishman_add(b, &FISHMAN_RUN_JSR);
   fishman_leap_bill(b);
+  if (b->log->leap == FISHMAN_LEAP_LEAPS) return false;
   fishman_add(b, &FISHMAN_RUN_BRANCH);
+  return true;
 }
 
 static void fishman_ask_look_about_bill(FishmanBill* b) {
@@ -13282,13 +13317,13 @@ static void fishman_swim_bill(FishmanBill* b) {
   fishman_add(b, &FISHMAN_RUN_JSR);
   fishman_look_bill(b);
   fishman_ask_look_about_bill(b);
-  fishman_ask_leap_bill(b);
+  if (!fishman_ask_leap_bill(b)) return;
   if (fishman_swim_on_bill(b)) fishman_add(b, &FISHMAN_RUN_RTS);
 }
 
 static void fishman_swim_turned_bill(FishmanBill* b) {
   fishman_ask_look_about_bill(b);
-  fishman_ask_leap_bill(b);
+  if (!fishman_ask_leap_bill(b)) return;
   fishman_add(b, &FISHMAN_RUN_JSR);
   fishman_add(b, &FISHMAN_RUN_OPENING_HEAD);
   if (fishman_probe_bill(b, &b->log->opening))
@@ -13303,7 +13338,7 @@ static void fishman_swim_turned_bill(FishmanBill* b) {
 static void fishman_close_in_bill(FishmanBill* b) {
   const FishmanLog* log = b->log;
   const bool fast = b->in->fastrom;
-  fishman_ask_leap_bill(b);
+  if (!fishman_ask_leap_bill(b)) return;
   fishman_add(b, &FISHMAN_RUN_CLOSE_HEAD);
   if (log->range == FISHMAN_RANGE_TOUCHING) {
     fishman_taken(b);
@@ -13350,7 +13385,7 @@ static void fishman_patrol_bill(FishmanBill* b) {
   } else {
     fishman_taken(b);
   }
-  fishman_ask_leap_bill(b);
+  if (!fishman_ask_leap_bill(b)) return;
   fishman_add(b, &FISHMAN_RUN_PATROL_NEAR);
   if (log->patrol == FISHMAN_PATROL_TOUCHING) {
     fishman_taken(b);
@@ -13448,6 +13483,28 @@ static void fishman_fly_bill(FishmanBill* b) {
   fishman_add(b, &FISHMAN_RUN_SET_STATE);
 }
 
+// `$81:E309`, its `RTS` too: it sweeps from its next pass, unless the one
+// that comes ashore draws otherwise.
+static void fishman_sweep_set_bill(FishmanBill* b) {
+  const FishmanLog* log = b->log;
+  fishman_add(b, &FISHMAN_RUN_LURK_SET);
+  if (!log->sweep_drawn) {
+    fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_RTS);
+    return;
+  }
+  fishman_add(b, &FISHMAN_RUN_SWEEP_DRAW);
+  if (!log->sweep_off) {
+    fishman_add(b, &FISHMAN_RUN_RTS);
+    return;
+  }
+  fishman_taken(b);
+  fishman_add(b, &FISHMAN_RUN_SWEEP_AFTER);
+  fishman_taken(b);
+  fishman_add(b, &FISHMAN_RUN_JMP);
+  fishman_add(b, &FISHMAN_RUN_SET_STATE);
+}
+
 static void fishman_land_bill(FishmanBill* b) {
   fishman_add(b, &FISHMAN_RUN_LANDED_HEAD);
   if (b->log->ashore) {
@@ -13458,9 +13515,7 @@ static void fishman_land_bill(FishmanBill* b) {
     return;
   }
   fishman_add(b, &FISHMAN_RUN_JMP);
-  fishman_add(b, &FISHMAN_RUN_LURK_SET);
-  fishman_taken(b);
-  fishman_add(b, &FISHMAN_RUN_RTS);
+  fishman_sweep_set_bill(b);
 }
 
 // `$81:DA85`, its `RTS` too, when it does not dive: every way back is a
@@ -13502,21 +13557,77 @@ static void fishman_walk_bill(FishmanBill* b) {
   fishman_add(b, &FISHMAN_RUN_RTS);
 }
 
-// `$81:DA1D`, with somebody neither too near nor too far.
-static void fishman_stalk_bill(FishmanBill* b) {
+// `$81:DA20`, its `RTS` too: the pass on land from whoever is nearest.
+static void fishman_stalk_on_bill(FishmanBill* b) {
   const FishmanLog* log = b->log;
   const bool fast = b->in->fastrom;
-  fishman_add(b, &FISHMAN_RUN_STALK_HEAD);
-  b->calls += wander_cycles(&log->wander, b->in);
-  fishman_add(b, &FISHMAN_RUN_RTS);  // the wander's
-  fishman_add(b, &FISHMAN_RUN_BAND);
-  fishman_taken(b);
+  fishman_add(b, &FISHMAN_RUN_STALK_NEAREST);
+  switch (log->stalk) {
+    case FISHMAN_STALK_SWEEPS:
+    case FISHMAN_STALK_BESIDE:
+      fishman_taken(b);
+      fishman_add(b, &FISHMAN_RUN_STALK_NEAR);
+      fishman_add(b, log->beside_negative ? &FISHMAN_RUN_NEGATE
+                                          : &FISHMAN_RUN_TAKEN);
+      fishman_add(b, &FISHMAN_RUN_BAND);
+      if (log->stalk == FISHMAN_STALK_SWEEPS) {
+        fishman_add(b, &FISHMAN_RUN_JMP);
+        fishman_sweep_set_bill(b);
+        return;
+      }
+      fishman_taken(b);
+      break;
+    case FISHMAN_STALK_LEFT:
+    case FISHMAN_STALK_GOES_ABOUT:
+      fishman_add(b, &FISHMAN_RUN_BAND);
+      if (fishman_players_bill(b)) {
+        fishman_add(b, &FISHMAN_RUN_LEAVE);
+        fishman_add(b, &FISHMAN_RUN_RTS);
+      } else {
+        fishman_add(b, &FISHMAN_RUN_JMP);
+        fishman_add(b, &FISHMAN_RUN_SET_STATE);
+      }
+      return;
+    default:
+      fishman_add(b, &FISHMAN_RUN_BAND);
+      fishman_taken(b);
+      break;
+  }
   fishman_add(b, &FISHMAN_RUN_STALK_STEP);
   b->calls += actor_snap_cycles(&log->snap[b->bearings], fast) +
               actor_bearing_cycles(&log->bearing[b->bearings], fast);
   b->bearings++;
   fishman_walk_bill(b);
   fishman_add(b, &FISHMAN_RUN_RTS);
+}
+
+// `$81:DA1D`: with water to go back to, as far as its sleep.
+static void fishman_stalk_bill(FishmanBill* b) {
+  const FishmanLog* log = b->log;
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  b->calls += wander_cycles(&log->wander, b->in);
+  if (log->stalk == FISHMAN_STALK_FOUND_WATER) {
+    fishman_add(b, &FISHMAN_RUN_WAIT);
+    return;
+  }
+  fishman_add(b, &FISHMAN_RUN_RTS);  // the wander's
+  fishman_stalk_on_bill(b);
+}
+
+// `$81:E31C`, as far as its pictures.
+static void fishman_sweep_turn_bill(FishmanBill* b) {
+  const FishmanLog* log = b->log;
+  fishman_add(b, &FISHMAN_RUN_SWEEP_FACE);
+  b->calls += actor_bearing_cycles(&log->bearing[b->bearings], b->in->fastrom);
+  b->bearings++;
+  if (log->faces_back) {
+    fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_SWEEP_MIRROR);
+  } else {
+    fishman_add(b, &FISHMAN_RUN_SWEEP_PLAIN);
+    fishman_taken(b);
+  }
+  fishman_add(b, &FISHMAN_RUN_SWEEP_LIST);
 }
 
 // `$81:E610`, its `RTS` too.
@@ -13565,32 +13676,74 @@ static bool fishman_frame_ok(const Wram* w, const CosimRegs* in) {
   if (!body_ok(in) || in->d < 0x0100 || in->db != FISHMAN_BANK) return false;
   const uint16_t state = wram_r16(w, (uint16_t)(in->d + FISHMAN_DP_STATE));
   const bool lining_up = state == FISHMAN_STATE_LINE_UP_DOWN ||
-                         state == FISHMAN_STATE_LINE_UP_ACROSS;
+                         state == FISHMAN_STATE_LINE_UP_ACROSS ||
+                         state == FISHMAN_STATE_LURK;
   return wram_r16(w, (uint16_t)(in->d + FISHMAN_DP_RECORD)) < 0x1f00 &&
          (!lining_up ||
           wram_r16(w, (uint16_t)(in->d + FISHMAN_DP_TARGET)) < 0x1f00) &&
          fishman_frame_supported(w, in->d);
 }
 
-// A pass that leaps, or stops to look about, is the ROM's, and only running
-// it says.
+// A pass that stops to look about is the ROM's, and only running it says.
 static bool guard_fishman_frame(Wram* scratch, const Rom* rom,
                                 const CosimRegs* in) {
   FishmanLog log;
-  fishman_frame(scratch, rom, in->d, (in->p & PORT_P_C) != 0, &log);
+  fishman_frame(scratch, rom, &FISHMAN_LOOP, in->d, in->s,
+                (in->p & PORT_P_C) != 0, &log);
   return !log.declined;
 }
 
-// It leaves by the `JSL thread_yield` with the tick count in A, or past the
-// test of its fate with that in A.
-static void fishman_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
-                              CosimRegs* out, uint32_t yield_pc,
-                              uint32_t fate_pc) {
-  FishmanLog log;
-  const bool stays = fishman_frame(w, rom, in->d, (in->p & PORT_P_C) != 0,
-                                   &log) == FISHMAN_SLEEPS;
+// The end of a pass, from the `JSR` that shows it.
+static void fishman_end_bill(FishmanBill* b, bool stays) {
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  fishman_show_bill(b);
+  fishman_add(b, &FISHMAN_RUN_FATE);
+  if (stays) {
+    fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_SLEEP);
+  }
+}
 
+static void fishman_charge(FishmanBill* b) {
+  const FishmanLog* log = b->log;
+  const CosimRegs* in = b->in;
   const bool fast = in->fastrom;
+  b->calls += nearest_cycles(&log->nearest, fast) +
+              at_point_cycles(&log->at_point, fast);
+  for (int i = 0; i < log->draws && i < FISHMAN_MAX_DRAWS; i++)
+    b->calls += rng_cycles(log->draw_overflow[i], fast);
+  cosim_cost(b->calls +
+             cosim_run_cycles_dp(&b->own, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0) +
+             cosim_run_cycles_dp(&b->zero, fetch_fast(in), false));
+}
+
+// What a stretch that finished a pass leaves: A, and the flags it wrote.
+static void fishman_woken_out(const PortCpu* c, const FishmanLog* log,
+                              CosimRegs* out) {
+  cpu_to(c, out);
+  out->regs = COSIM_REG_A;
+  out->p_keep =
+      (uint8_t)((log->c_set ? 0 : PORT_P_C) | (log->v_set ? 0 : PORT_P_V));
+}
+
+// It leaves by the `JSL thread_yield` with the tick count in A, or past the
+// test of its fate with that in A. Or it stops in the middle of a body, at
+// a sleep or a list of pictures.
+static void fishman_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out, const FishmanLoop* loop) {
+  static const uint32_t STOP_PC[] = {
+      [FISHMAN_STOP_LEAP] = FISHMAN_LEAP_SLEEP_PC,
+      [FISHMAN_STOP_DIVE] = FISHMAN_DIVE_SLEEP_PC,
+      [FISHMAN_STOP_SWEEP] = FISHMAN_SWEEP_LIST_PC,
+      [FISHMAN_STOP_SPLASH] = FISHMAN_SPLASH_LIST_PC,
+  };
+  FishmanLog log;
+  const bool stays = fishman_frame(w, rom, loop, in->d, in->s,
+                                   (in->p & PORT_P_C) != 0,
+                                   &log) == FISHMAN_SLEEPS;
+  const bool whole = log.stop == FISHMAN_STOP_PASS;
+
   FishmanBill b = {{0, 0, 0}, {0, 0, 0}, 0, &log, in, 0, 0, 0};
   fishman_add(&b, &FISHMAN_RUN_ENTER);
   switch (log.state) {
@@ -13617,29 +13770,32 @@ static void fishman_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
     case FISHMAN_STATE_STALK:
       fishman_stalk_bill(&b);
       break;
+    case FISHMAN_STATE_LURK:
+      fishman_sweep_turn_bill(&b);
+      break;
+    case FISHMAN_STATE_DIVE_BEGIN:
+      fishman_add(&b, &FISHMAN_RUN_DIVE_BEGIN);
+      fishman_fly_bill(&b);
+      break;
+    case FISHMAN_STATE_SPLASH:
+      fishman_add(&b, &FISHMAN_RUN_SPLASH);
+      break;
     default:
       fishman_land_bill(&b);
       break;
   }
-  fishman_add(&b, &FISHMAN_RUN_JSR);
-  fishman_show_bill(&b);
-  fishman_add(&b, &FISHMAN_RUN_FATE);
-  if (stays) {
-    fishman_taken(&b);
-    fishman_add(&b, &FISHMAN_RUN_SLEEP);
+  if (whole) fishman_end_bill(&b, stays);
+  fishman_charge(&b);
+
+  if (!whole) {
+    out->pc = STOP_PC[log.stop];
+    out->a = log.a;
+    out->s = log.s;
+  } else {
+    out->pc = stays ? loop->yield_pc : loop->fate_pc;
+    out->a =
+        stays ? log.ticks : wram_r16(w, (uint16_t)(in->d + FISHMAN_DP_FATE));
   }
-
-  b.calls += nearest_cycles(&log.nearest, fast) +
-             at_point_cycles(&log.at_point, fast);
-  for (int i = 0; i < log.draws && i < FISHMAN_MAX_DRAWS; i++)
-    b.calls += rng_cycles(log.draw_overflow[i], fast);
-  cosim_cost(b.calls +
-             cosim_run_cycles_dp(&b.own, fetch_fast(in),
-                                 (in->d & 0x00ffu) != 0) +
-             cosim_run_cycles_dp(&b.zero, fetch_fast(in), false));
-
-  out->pc = stays ? yield_pc : fate_pc;
-  out->a = stays ? log.ticks : wram_r16(w, (uint16_t)(in->d + FISHMAN_DP_FATE));
   out->regs = COSIM_REG_A;
   out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
   if (out->a & 0x8000u) out->p |= PORT_P_N;
@@ -13651,17 +13807,166 @@ static void fishman_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static void shim_fishman_frame(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
-  fishman_frame_run(w, rom, in, out, FISHMAN_YIELD_PC, FISHMAN_FATE_PC);
+  fishman_frame_run(w, rom, in, out, &FISHMAN_LOOP);
 }
 
 static void shim_fishman_patrol_frame(Wram* w, const Rom* rom,
                                       const CosimRegs* in, CosimRegs* out) {
-  fishman_frame_run(w, rom, in, out, FISHMAN_PATROL_YIELD_PC,
-                    FISHMAN_PATROL_FATE_PC);
+  fishman_frame_run(w, rom, in, out, &FISHMAN_PATROL_LOOP);
 }
 
-static const uint32_t FISHMAN_FRAME_EXITS[] = {FISHMAN_YIELD_PC,
-                                               FISHMAN_FATE_PC};
+static const uint32_t FISHMAN_FRAME_EXITS[] = {
+    FISHMAN_YIELD_PC,       FISHMAN_FATE_PC,       FISHMAN_LEAP_SLEEP_PC,
+    FISHMAN_DIVE_SLEEP_PC,  FISHMAN_SWEEP_LIST_PC, FISHMAN_SPLASH_LIST_PC};
+
+// The stretches that begin where a body wakes. Each leaves as either loop
+// does.
+static const uint32_t FISHMAN_WOKEN_EXITS[] = {
+    FISHMAN_YIELD_PC, FISHMAN_FATE_PC, FISHMAN_PATROL_YIELD_PC,
+    FISHMAN_PATROL_FATE_PC};
+
+static bool fishman_woken_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == FISHMAN_BANK &&
+         cur_task_ok(w) &&
+         wram_r16(w, (uint16_t)(in->d + FISHMAN_DP_RECORD)) < 0x1f00;
+}
+
+// The spot's bearing and the gap across, to the branch on it.
+static void fishman_gap_x_bill(FishmanBill* b, const FishmanWakeLog* k) {
+  fishman_add(b, &FISHMAN_RUN_GAP_X_HEAD);
+  b->calls += actor_bearing_point_cycles(k->same_row, k->same_column,
+                                         b->in->fastrom);
+  fishman_add(b, k->negative[0] ? &FISHMAN_RUN_LINE_NEGATE : &FISHMAN_RUN_TAKEN);
+  fishman_add(b, &FISHMAN_RUN_GAP_X_TAIL);
+}
+
+// ...and the gap down, and the longer of the two.
+static void fishman_gap_y_bill(FishmanBill* b, const FishmanWakeLog* k) {
+  fishman_add(b, &FISHMAN_RUN_GAP_Y_HEAD);
+  fishman_add(b, k->negative[1] ? &FISHMAN_RUN_LINE_NEGATE : &FISHMAN_RUN_TAKEN);
+  fishman_add(b, &FISHMAN_RUN_GAP_Y_TAIL);
+  fishman_add(b, k->across_longer ? &FISHMAN_RUN_GAP_LONGER : &FISHMAN_RUN_TAKEN);
+}
+
+static bool accepts_fishman_leap_wake(const Wram* w, const CosimRegs* in) {
+  return fishman_woken_ok(w, in) &&
+         fishman_leap_wake_supported(w, in->d, in->s);
+}
+
+static void shim_fishman_leap_wake(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  FishmanWakeLog k;
+  cpu_from(in, &c);
+  const bool stays = fishman_leap_wake(w, rom, &c, &k) == FISHMAN_SLEEPS;
+  fishman_woken_out(&c, &k.pass, out);
+
+  FishmanBill b = {{0, 0, 0}, {0, 0, 0}, 0, &k.pass, in, 0, 0, 0};
+  fishman_add(&b, &FISHMAN_RUN_WAKE_BACK);
+  fishman_add(&b, &FISHMAN_RUN_BRANCH);
+  fishman_taken(&b);
+  fishman_add(&b, &FISHMAN_RUN_JMP);
+  fishman_gap_x_bill(&b, &k);
+  if (k.stays) {
+    fishman_taken(&b);
+    fishman_add(&b, &FISHMAN_RUN_RTS);
+  } else {
+    fishman_gap_y_bill(&b, &k);
+    fishman_add(&b, &FISHMAN_RUN_LEAP_SPAN);
+    fishman_add(&b, &FISHMAN_RUN_LEAP_FORM);
+    if (k.faces_cleared) {
+      fishman_taken(&b);
+      fishman_add(&b, &FISHMAN_RUN_LEAP_FACE_OFF);
+    } else {
+      fishman_add(&b, &FISHMAN_RUN_LEAP_FACE_ON);
+      fishman_taken(&b);
+    }
+    fishman_add(&b, &FISHMAN_RUN_LEAP_DRESS);
+    b.calls += thread_spawn_cycles(k.splash_slot, rom, in->fastrom);
+  }
+  fishman_end_bill(&b, stays);
+  fishman_charge(&b);
+}
+
+static bool accepts_fishman_dive_wake(const Wram* w, const CosimRegs* in) {
+  return fishman_woken_ok(w, in) &&
+         fishman_dive_wake_supported(w, in->d, in->s);
+}
+
+// The rest of its pass on land may find water past where it is stopped,
+// which is the ROM's, and only running it says.
+static bool guard_fishman_dive_wake(Wram* scratch, const Rom* rom,
+                                    const CosimRegs* in) {
+  if (!accepts_fishman_dive_wake(scratch, in)) return false;
+  PortCpu c;
+  FishmanWakeLog k;
+  cpu_from(in, &c);
+  fishman_dive_wake(scratch, rom, &c, &k);
+  return !k.pass.declined;
+}
+
+static void shim_fishman_dive_wake(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  FishmanWakeLog k;
+  cpu_from(in, &c);
+  const bool stays = fishman_dive_wake(w, rom, &c, &k) == FISHMAN_SLEEPS;
+  fishman_woken_out(&c, &k.pass, out);
+
+  FishmanBill b = {{0, 0, 0}, {0, 0, 0}, 0, &k.pass, in, 0, 0, 0};
+  fishman_gap_x_bill(&b, &k);
+  if (k.stays) {
+    fishman_add(&b, &FISHMAN_RUN_JMP);
+    fishman_add(&b, &FISHMAN_RUN_JMP);
+  } else {
+    fishman_taken(&b);
+    fishman_gap_y_bill(&b, &k);
+    fishman_add(&b, &FISHMAN_RUN_DIVE_SPAN);
+  }
+  fishman_add(&b, &FISHMAN_RUN_SET_STATE);
+  fishman_stalk_on_bill(&b);
+  fishman_end_bill(&b, stays);
+  fishman_charge(&b);
+}
+
+static bool accepts_fishman_after(const Wram* w, const CosimRegs* in) {
+  return fishman_woken_ok(w, in) && fishman_after_supported(w, in->d, in->s);
+}
+
+static void shim_fishman_sweep_after(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  FishmanLog log;
+  bool wants = false;
+  cpu_from(in, &c);
+  const bool stays =
+      fishman_sweep_after(w, rom, &c, &log, &wants) == FISHMAN_SLEEPS;
+  fishman_woken_out(&c, &log, out);
+
+  FishmanBill b = {{0, 0, 0}, {0, 0, 0}, 0, &log, in, 0, 0, 0};
+  fishman_add(&b, &FISHMAN_RUN_SWEEP_AFTER);
+  fishman_add(&b, wants ? &FISHMAN_RUN_WANT_WATER : &FISHMAN_RUN_TAKEN);
+  fishman_add(&b, &FISHMAN_RUN_JMP);
+  fishman_add(&b, &FISHMAN_RUN_SET_STATE);
+  fishman_end_bill(&b, stays);
+  fishman_charge(&b);
+}
+
+static void shim_fishman_splash_after(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  FishmanLog log;
+  cpu_from(in, &c);
+  const bool stays = fishman_splash_after(w, rom, &c, &log) == FISHMAN_SLEEPS;
+  fishman_woken_out(&c, &log, out);
+
+  FishmanBill b = {{0, 0, 0}, {0, 0, 0}, 0, &log, in, 0, 0, 0};
+  fishman_add(&b, &FISHMAN_RUN_SPLASH_DRESS);
+  fishman_add(&b, &FISHMAN_RUN_ASHORE);  // `$DD91` has the same instructions
+  fishman_add(&b, &FISHMAN_RUN_SET_STATE);
+  fishman_end_bill(&b, stays);
+  fishman_charge(&b);
+}
 // The beginning and the plain end of the one that patrols. `$80:9D5B`
 // runs on absolute addresses: both tests, or the first alone when the load
 // says no.
@@ -13710,6 +14015,8 @@ static const CosimRun FSW_RUN_PLACE = {360, 36, 4};  // $E355-$E374
 static const CosimRun FSW_RUN_WRAP = {18, 3, 0};     // LDA #$0000
 static const CosimRun FSW_RUN_SLEEP = {46, 5, 1};    // STA $44 : LDA #$0001
 static const CosimRun FSW_RUN_OVER = {28, 2, 1};     // LDA $42
+static const CosimRun FSW_RUN_FREE = {54, 4, 0};     // JSL actor_slot_free
+static const CosimRun FSW_RUN_DONE = {64, 8, 1};     // $E38B LDA # : STA $42 : LDA #
 
 static bool accepts_fishman_sweep(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100 && in->db == FISHMAN_BANK &&
@@ -13720,8 +14027,10 @@ static void shim_fishman_sweep_tick(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   PortCpu c;
   bool wrapped = false;
+  int place = 0;
+  int freed = 0;
   cpu_from(in, &c);
-  const bool on = fishman_sweep_tick(w, rom, &c, &wrapped);
+  const bool on = fishman_sweep_tick(w, rom, &c, &wrapped, &place);
   cpu_to(&c, out);
   CosimRun run = {0, 0, 0};
   run_add(&run, &FSW_RUN_COUNT, 1);
@@ -13732,12 +14041,89 @@ static void shim_fishman_sweep_tick(Wram* w, const Rom* rom,
     run_add(&run, &FSW_RUN_SLEEP, 1);
   } else {
     run_add(&run, &FSW_RUN_OVER, 1);
+    run_add(&run, &FSW_RUN_FREE, 1);
+    run_add(&run, &FSW_RUN_DONE, 1);
+    freed = saucer_free_cycles(place, in->fastrom);
   }
-  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+  cosim_cost(freed + cosim_run_cycles_dp(&run, fetch_fast(in),
+                                         (in->d & 0xffu) != 0));
 }
 
 static const uint32_t FISHMAN_SWEEP_EXITS[] = {FISHMAN_SWEEP_YIELD_PC,
-                                               FISHMAN_SWEEP_FREE_PC};
+                                               FISHMAN_SWEEP_DONE_PC};
+
+// `$81:E346`: the sweep begun, to its first sleep.
+static bool accepts_fishman_sweep_begin(const Wram* w, const CosimRegs* in) {
+  return fishman_woken_ok(w, in) &&
+         fishman_sweep_begin_supported(w, in->d, in->s);
+}
+
+// No record free is the ROM's, which does not ask.
+static bool guard_fishman_sweep_begin(Wram* scratch, const Rom* rom,
+                                      const CosimRegs* in) {
+  if (!accepts_fishman_sweep_begin(scratch, in)) return false;
+  PortCpu c;
+  uint16_t record = 0;
+  bool wrapped = false;
+  cpu_from(in, &c);
+  return fishman_sweep_begin(scratch, rom, &c, &record, &wrapped);
+}
+
+static void shim_fishman_sweep_begin(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  uint16_t record = 0;
+  bool wrapped = false;
+  cpu_from(in, &c);
+  fishman_sweep_begin(w, rom, &c, &record, &wrapped);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &FISHMAN_RUN_JSR, 1);
+  run_add(&run, &FISHMAN_RUN_BLOW_DRESS, 1);
+  run_add(&run, &FISHMAN_RUN_SWEEP_SET, 1);
+  run_add(&run, &FSW_RUN_PLACE, 1);
+  run_add(&run, wrapped ? &FSW_RUN_WRAP : &RUN_TAKEN, 1);
+  run_add(&run, &FSW_RUN_SLEEP, 1);
+  cosim_cost(saucer_alloc_cycles(record, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t FISHMAN_SWEEP_BEGIN_EXITS[] = {FISHMAN_SWEEP_YIELD_PC};
+
+// `$81:E72C`: the splash a leap leaves, to its pictures.
+static const CosimRun FISHMAN_RUN_SPLASH_BEGIN = {750, 69, 3};  // $E72C-$E770
+
+static bool accepts_fishman_splash_begin(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == FISHMAN_BANK &&
+         cur_task_ok(w);
+}
+
+// No record free is the ROM's, which does not ask.
+static bool guard_fishman_splash_begin(Wram* scratch, const Rom* rom,
+                                       const CosimRegs* in) {
+  (void)rom;
+  if (!accepts_fishman_splash_begin(scratch, in)) return false;
+  PortCpu c;
+  uint16_t record = 0;
+  cpu_from(in, &c);
+  return fishman_splash_begin(scratch, &c, &record);
+}
+
+static void shim_fishman_splash_begin(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  uint16_t record = 0;
+  cpu_from(in, &c);
+  fishman_splash_begin(w, &c, &record);
+  cpu_to(&c, out);
+  cosim_cost(saucer_alloc_cycles(record, in->fastrom) +
+             cosim_run_cycles_dp(&FISHMAN_RUN_SPLASH_BEGIN, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t FISHMAN_SPLASH_BEGIN_EXITS[] = {
+    FISHMAN_SPLASH_BEGIN_LIST_PC};
 
 static bool accepts_fishman_patrol_begin(const Wram* w, const CosimRegs* in) {
   (void)w;
@@ -13830,8 +14216,9 @@ static void shim_fishman_patrol_end(Wram* w, const Rom* rom,
 
 static const uint32_t FISHMAN_PATROL_END_EXITS[] = {FISHMAN_PATROL_RTL_PC};
 
-static const uint32_t FISHMAN_PATROL_FRAME_EXITS[] = {FISHMAN_PATROL_YIELD_PC,
-                                                      FISHMAN_PATROL_FATE_PC};
+static const uint32_t FISHMAN_PATROL_FRAME_EXITS[] = {
+    FISHMAN_PATROL_YIELD_PC, FISHMAN_PATROL_FATE_PC, FISHMAN_LEAP_SLEEP_PC,
+    FISHMAN_DIVE_SLEEP_PC,   FISHMAN_SWEEP_LIST_PC,  FISHMAN_SPLASH_LIST_PC};
 
 // ---------------------------------------------------------------------------
 // The werewolf -- see `port/werewolf.h`
@@ -19151,6 +19538,81 @@ RECORD_END_SHIMS(slime_glob_end, RECORD_END_SLIME_GLOB)
 RECORD_END_SHIMS(shot_5_end, RECORD_END_SHOT_5)
 RECORD_END_SHIMS(martian_end, RECORD_END_MARTIAN)
 RECORD_END_SHIMS(martian_arrival_end, RECORD_END_MARTIAN_ARRIVAL)
+RECORD_END_SHIMS(fishman_splash_end, RECORD_END_FISHMAN_SPLASH)
+RECORD_END_SHIMS(werewolf_end, RECORD_END_WEREWOLF)
+RECORD_END_SHIMS(slime_end, RECORD_END_SLIME)
+RECORD_END_SHIMS(weed_end, RECORD_END_WEED)
+
+// The glob's four small stretches. See `port/slime.h`.
+static const CosimRun GLOB_RUN_BEGIN = {138, 13, 0};   // $CF10-$CF1C, the JSR too
+static const CosimRun GLOB_RUN_SFX = {18, 3, 0};       // LDA #$001A, and LDA #$CE72
+static const CosimRun GLOB_RUN_JSR = {40, 3, 0};       // $CF36
+static const CosimRun GLOB_RUN_RTS = {40, 1, 0};       // $CE71
+
+static void shim_slime_glob_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  slime_glob_begin(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&GLOB_RUN_BEGIN, fetch_fast(in)) +
+             cosim_run_cycles(&GLOB_RUN_SFX, fetch_fast(in)));
+}
+
+static void shim_slime_glob_landed(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  slime_glob_landed(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&GLOB_RUN_JSR, fetch_fast(in)) +
+             cosim_run_cycles(&GLOB_RUN_SFX, fetch_fast(in)));
+}
+
+static void shim_slime_glob_told(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  slime_glob_told(&c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&GLOB_RUN_SFX, fetch_fast(in)));
+}
+
+static bool guard_slime_glob_done(Wram* scratch, const Rom* rom,
+                                  const CosimRegs* in) {
+  (void)rom;
+  PortCpu c;
+  int place = 0;
+  cpu_from(in, &c);
+  return slime_glob_done(scratch, &c, &place);
+}
+
+static void shim_slime_glob_done(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  int place = 0;
+  cpu_from(in, &c);
+  slime_glob_done(w, &c, &place);
+  cpu_to(&c, out);
+  cosim_cost(saucer_free_cycles(place, in->fastrom) +
+             cosim_run_cycles(&GLOB_RUN_RTS, fetch_fast(in)) +
+             cosim_run_cycles_dp(&RE_RUN, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t SLIME_GLOB_BEGIN_EXITS[] = {SLIME_GLOB_BEGIN_SOUND_PC};
+static const uint32_t SLIME_GLOB_LANDED_EXITS[] = {SLIME_GLOB_LANDED_SOUND_PC};
+static const uint32_t SLIME_GLOB_TOLD_EXITS[] = {SLIME_GLOB_PLAY_PC};
+static const uint32_t SLIME_GLOB_DONE_EXITS[] = {RECORD_END_EXITED_PC};
+#define X(at, sym, pc, load, record_at, calls) \
+  RECORD_END_SHIMS(end_##at, RECORD_END_AT_##at)
+RECORD_ENDS_BY_ADDRESS(X)
+#undef X
 
 static bool accepts_death_pictures(const Wram* w, const CosimRegs* in) {
   return in->x == DEATH_KILLED && accepts_record_end(w, in) &&
@@ -20402,6 +20864,131 @@ static void shim_weed_seed_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t WEED_SEED_EXITS[] = {WEED_SEED_SLEEP_PC,
                                            WEED_SEED_LANDED_PC};
+
+// The rest of the seed's thread. See `port/weeds.h`.
+static const CosimRun SD_DRESS = {844, 71, 7};     // $D482-$D4C8
+static const CosimRun SD_AIM = {632, 56, 9};       // $D36E-$D3A5, to the BPL
+static const CosimRun SD_NEGATE = {48, 7, 0};      // EOR : INC : LDY #$FFFF
+static const CosimRun SD_GAP = {86, 9, 2};         // STY : STA : CMP #$0004 : BCS
+static const CosimRun SD_FLOOR = {46, 5, 1};       // LDA #$0004 : STA
+static const CosimRun SD_GAP_Y = {98, 10, 2};      // $D3BB-$D3C4, to the BPL
+static const CosimRun SD_LONGER_ASK = {40, 4, 1};  // CMP $18 : BCS
+static const CosimRun SD_LONGER = {28, 2, 1};      // LDA $18
+static const CosimRun SD_WHOLE = {176, 11, 4};     // $D3E0-$D3EA, the RTS too
+static const CosimRun SD_DOWN = {98, 9, 0};        // $D4E3 LDA # : STA $0004,Y : JSR
+static const CosimRun SD_BOX = {392, 40, 3};       // $D3FF-$D426
+static const CosimRun SD_LIST = {18, 3, 0};        // $D42B LDA #$D433
+static const CosimRun SD_RTS = {40, 1, 0};
+static const CosimRun SD_FREE = {52, 6, 1};        // $D4EC LDA $08 : JML
+
+// The seed is thrown at a record it reads through the data bank.
+static bool accepts_weed_seed_begin(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == 0x81 && cur_task_ok(w) &&
+         wram_r16(w, (uint16_t)(in->d + WEED_SEED_DP_PLACED_AT)) < 0x1f00;
+}
+
+// No record free is the ROM's, which does not ask.
+static bool guard_weed_seed_begin(Wram* scratch, const Rom* rom,
+                                  const CosimRegs* in) {
+  if (!accepts_weed_seed_begin(scratch, in)) return false;
+  PortCpu c;
+  WeedSeedBegin k;
+  cpu_from(in, &c);
+  weed_seed_begin(scratch, rom, &c, &k);
+  return !k.declined;
+}
+
+static void shim_weed_seed_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  PortCpu c;
+  WeedSeedBegin k;
+  cpu_from(in, &c);
+  weed_seed_begin(w, rom, &c, &k);
+  cpu_to(&c, out);
+  out->regs = COSIM_REG_A;
+  const bool fast = in->fastrom;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SD_JSR, 2);
+  run_add(&run, &SD_DRESS, 1);
+  run_add(&run, &SD_AIM, 1);
+  run_add(&run, k.negative[0] ? &SD_NEGATE : &RUN_TAKEN, 1);
+  run_add(&run, &SD_GAP, 1);
+  run_add(&run, k.floored[0] ? &SD_FLOOR : &RUN_TAKEN, 1);
+  run_add(&run, &SD_GAP_Y, 1);
+  run_add(&run, k.negative[1] ? &SD_NEGATE : &RUN_TAKEN, 1);
+  run_add(&run, &SD_GAP, 1);
+  run_add(&run, k.floored[1] ? &SD_FLOOR : &RUN_TAKEN, 1);
+  run_add(&run, &SD_LONGER_ASK, 1);
+  run_add(&run, k.across_longer ? &SD_LONGER : &RUN_TAKEN, 1);
+  run_add(&run, &SD_WHOLE, 1);
+  run_add(&run, &SD_AGAIN, 1);
+  cosim_cost(saucer_alloc_cycles(k.record, fast) +
+             rng_cycles(k.draw_overflow[0], fast) +
+             rng_cycles(k.draw_overflow[1], fast) +
+             actor_bearing_point_cycles(k.same_row, k.same_column, fast) +
+             cosim_run_cycles_dp(&run, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+}
+
+static const uint32_t WEED_SEED_BEGIN_EXITS[] = {WEED_SEED_SLEEP_PC};
+
+// It writes the box on page zero through the data bank, and its height
+// through Y, which is its record as the flight left it.
+static bool accepts_weed_seed_landed(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == 0x81 &&
+         in->y == wram_r16(w, (uint16_t)(in->d + LINE_DP_RECORD)) &&
+         in->y < 0x1f00;
+}
+
+static void shim_weed_seed_landed(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  weed_seed_landed(w, &c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SD_DOWN, 1);
+  run_add(&run, &SD_BOX, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+}
+
+static const uint32_t WEED_SEED_LANDED_EXITS[] = {WEED_SEED_TELL_PC};
+
+static void shim_weed_seed_told(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  weed_seed_told(&c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&SD_LIST, fetch_fast(in)));
+}
+
+static const uint32_t WEED_SEED_TOLD_EXITS[] = {WEED_SEED_PLAY_PC};
+
+static bool accepts_weed_seed_end(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         weed_seed_end_supported(w, in->d, in->s);
+}
+
+static void shim_weed_seed_end(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  int place = 0;
+  cpu_from(in, &c);
+  weed_seed_end(w, &c, &place);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SD_RTS, 1);
+  run_add(&run, &SD_FREE, 1);
+  cosim_cost(saucer_free_cycles(place, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+}
+
+static const uint32_t WEED_SEED_END_EXITS[] = {WEED_SEED_EXITED_PC};
 
 // ---------------------------------------------------------------------------
 // A start, two that write the picture's registers, a list sent, a side of the
@@ -24236,7 +24823,74 @@ static const CosimRoutine ROUTINES[] = {
         .accepts = accepts_fishman_sweep,
         COSIM_EXITS(FISHMAN_SWEEP_EXITS),
         .uncalled = true,
-        .cycles = 500,
+        .cycles = 1500,
+        .stack_bytes = 8,  // a `JSL`, and `actor_slot_free`'s own
+    },
+    {
+        .name = "fishman_sweep_begin",
+        .symbol = "$81:E346",
+        .entry = FISHMAN_SWEEP_BEGIN_PC,
+        .run = shim_fishman_sweep_begin,
+        .supported = guard_fishman_sweep_begin,
+        COSIM_EXITS(FISHMAN_SWEEP_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 3000,
+        .stack_bytes = 12,
+    },
+    {
+        .name = "fishman_splash_begin",
+        .symbol = "$81:E72C",
+        .entry = FISHMAN_SPLASH_BEGIN_PC,
+        .run = shim_fishman_splash_begin,
+        .supported = guard_fishman_splash_begin,
+        COSIM_EXITS(FISHMAN_SPLASH_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 3000,
+        .stack_bytes = 12,
+    },
+    {
+        .name = "fishman_sweep_after",
+        .symbol = "$81:E397",
+        .entry = FISHMAN_SWEEP_AFTER_PC,
+        .run = shim_fishman_sweep_after,
+        .accepts = accepts_fishman_after,
+        COSIM_EXITS(FISHMAN_WOKEN_EXITS),
+        .uncalled = true,
+        .cycles = 4000,
+        .stack_bytes = 32,
+    },
+    {
+        .name = "fishman_splash_after",
+        .symbol = "$81:DBE1",
+        .entry = FISHMAN_SPLASH_AFTER_PC,
+        .run = shim_fishman_splash_after,
+        .accepts = accepts_fishman_after,
+        COSIM_EXITS(FISHMAN_WOKEN_EXITS),
+        .uncalled = true,
+        .cycles = 4000,
+        .stack_bytes = 32,
+    },
+    {
+        .name = "fishman_leap_wake",
+        .symbol = "$81:E076",
+        .entry = FISHMAN_LEAP_WAKE_PC,
+        .run = shim_fishman_leap_wake,
+        .accepts = accepts_fishman_leap_wake,
+        COSIM_EXITS(FISHMAN_WOKEN_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        .stack_bytes = 32,
+    },
+    {
+        .name = "fishman_dive_wake",
+        .symbol = "$81:DB10",
+        .entry = FISHMAN_DIVE_WAKE_PC,
+        .run = shim_fishman_dive_wake,
+        .supported = guard_fishman_dive_wake,
+        COSIM_EXITS(FISHMAN_WOKEN_EXITS),
+        .uncalled = true,
+        .cycles = 9000,
+        .stack_bytes = 32,
     },
     {
         .name = "fishman_landing",
@@ -25702,6 +26356,48 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 2,  // a `JSR`
     },
     {
+        .name = "weed_seed_begin",
+        .symbol = "$81:D4C9",
+        .entry = WEED_SEED_BEGIN_PC,
+        .run = shim_weed_seed_begin,
+        .supported = guard_weed_seed_begin,
+        COSIM_EXITS(WEED_SEED_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 5000,
+        .stack_bytes = 12,
+    },
+    {
+        .name = "weed_seed_landed",
+        .symbol = "$81:D4E3",
+        .entry = WEED_SEED_LANDED_PC,
+        .run = shim_weed_seed_landed,
+        .accepts = accepts_weed_seed_landed,
+        COSIM_EXITS(WEED_SEED_LANDED_EXITS),
+        .uncalled = true,
+        .cycles = 800,
+    },
+    {
+        .name = "weed_seed_told",
+        .symbol = "$81:D42B",
+        .entry = WEED_SEED_TOLD_PC,
+        .run = shim_weed_seed_told,
+        .accepts = accepts_body,
+        COSIM_EXITS(WEED_SEED_TOLD_EXITS),
+        .uncalled = true,
+        .cycles = 100,
+    },
+    {
+        .name = "weed_seed_end",
+        .symbol = "$81:D432",
+        .entry = WEED_SEED_END_PC,
+        .run = shim_weed_seed_end,
+        .accepts = accepts_weed_seed_end,
+        COSIM_EXITS(WEED_SEED_END_EXITS),
+        .uncalled = true,
+        .cycles = 1500,
+        .stack_bytes = 5,
+    },
+    {
         .name = "seeker_frame",
         .symbol = "$82:EF4F",
         .entry = SEEKER_FRAME_PC,
@@ -25755,6 +26451,57 @@ static const CosimRoutine ROUTINES[] = {
     END_ROW(shot_5_end, "$81:EC60", 0x81ec60u, accepts_record_end),
     END_ROW(martian_end, "$81:9A17", 0x819a17u, accepts_record_end),
     END_ROW(martian_arrival_end, "$81:9A7B", 0x819a7bu, accepts_record_end),
+    END_ROW(fishman_splash_end, "$81:E775", 0x81e775u, accepts_record_end),
+    END_ROW(werewolf_end, "$81:AC67", 0x81ac67u, accepts_record_end),
+    END_ROW(slime_end, "$81:CD0C", 0x81cd0cu, accepts_record_end),
+    END_ROW(weed_end, "$81:D2CE", 0x81d2ceu, accepts_record_end),
+    {
+        .name = "slime_glob_begin",
+        .symbol = "$81:CF10",
+        .entry = SLIME_GLOB_BEGIN_PC,
+        .run = shim_slime_glob_begin,
+        .accepts = accepts_record_end,
+        COSIM_EXITS(SLIME_GLOB_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 300,
+    },
+    {
+        .name = "slime_glob_landed",
+        .symbol = "$81:CF36",
+        .entry = SLIME_GLOB_LANDED_PC,
+        .run = shim_slime_glob_landed,
+        .accepts = accepts_body,
+        COSIM_EXITS(SLIME_GLOB_LANDED_EXITS),
+        .uncalled = true,
+        .cycles = 200,
+    },
+    {
+        .name = "slime_glob_told",
+        .symbol = "$81:CE6A",
+        .entry = SLIME_GLOB_TOLD_PC,
+        .run = shim_slime_glob_told,
+        .accepts = accepts_body,
+        COSIM_EXITS(SLIME_GLOB_TOLD_EXITS),
+        .uncalled = true,
+        .cycles = 100,
+    },
+    {
+        .name = "slime_glob_done",
+        .symbol = "$81:CE71",
+        .entry = SLIME_GLOB_DONE_PC,
+        .run = shim_slime_glob_done,
+        .accepts = accepts_record_end,
+        .supported = guard_slime_glob_done,
+        COSIM_EXITS(SLIME_GLOB_DONE_EXITS),
+        .uncalled = true,
+        .cycles = 1500,
+        .stack_bytes = 5,
+    },
+    // ...and seventeen the port names for where they are.
+#define X(at, sym, pc, load, record_at, calls) \
+    END_ROW(end_##at, sym, pc, accepts_record_end),
+    RECORD_ENDS_BY_ADDRESS(X)
+#undef X
 #undef END_ROW
     // A killed thing's last pictures begun, either side of its sound.
     {
