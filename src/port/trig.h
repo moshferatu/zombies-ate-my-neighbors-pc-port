@@ -292,10 +292,13 @@ void wave_hdma_build_counted(Wram* w, const Rom* rom, uint16_t dp,
 // negative. Any of them ends the wobble at `$80:9529`. Otherwise it sleeps a
 // frame.
 //
-// This is those tests, from where the build returns to. The call itself is
-// left to the ROM, one instruction: the pads are the NMI's to write, a build
-// is long enough for an NMI to land in, and a stretch that began before the
-// build would have read them too early.
+// This is those tests, from where the build returns to. The call is a
+// stretch of its own, the one instruction, and ends where the build begins.
+// The pads are the NMI's to write and a build is long enough for an NMI to
+// land in: one stretch from before the build to after the tests would have
+// read them too early. Three do not. The build is in the middle, taking its
+// own time, and the tests begin when it has returned.
+#define WAVE_THREAD_CALL_PC 0x809512u  // `JSR $9570`
 #define WAVE_THREAD_TESTS_PC 0x809515u
 #define WAVE_THREAD_YIELD_PC 0x80950eu  // `JSL thread_yield`, A already 1
 #define WAVE_THREAD_END_PC 0x809529u
@@ -318,5 +321,7 @@ typedef struct {
 } WaveThreadWork;
 
 void wave_thread_tests(const Wram* w, PortCpu* c, WaveThreadWork* k);
+// `$80:9512`: the call, as far as the build's first instruction.
+void wave_thread_call(Wram* w, PortCpu* c);
 
 #endif

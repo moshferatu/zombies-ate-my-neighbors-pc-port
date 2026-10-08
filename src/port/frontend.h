@@ -10,6 +10,11 @@
 //   $80:8A58  game_over_fall         its four sprites, a step down
 //   $80:8AD3  game_over_sprite_begin ...and the start of each
 //   $80:9847  portrait_sprites_begin the two sprites of the portraits' screen
+//   $80:943D  title_sprites_begin    ...and the two of the title
+//   $80:9261  frontend_reset         what every pass of the front end zeroes
+//   $80:938E  opening_job            the screen before the title, each frame
+//   $80:931F  opening_wait           ...its thread asking after the pads
+//   $80:9322  opening_count          ...and counting fifteen frames
 //   $80:8A11  game_over_frame        the game over's thread, a frame of
 //   $80:8A30                         each of its two loops
 //   $80:9A52  portrait_copy          a player's portrait, into the text map
@@ -225,6 +230,95 @@ bool game_over_sprite_begin(Wram* w, const Rom* rom, PortCpu* c,
 
 // False with fewer than two records free. `records` are the two it took.
 bool portrait_sprites_begin(Wram* w, PortCpu* c, uint16_t records[2]);
+
+// --- $80:943D  the two sprites of the title ----------------------------------
+//
+// The last of the title's setup, `$80:93AC`. Two records as the portraits'
+// screen takes them, at 208 and 213 across and 182 and 200 down, with the
+// pictures at `$8F:E870` and `$8F:E889` and `$0C00` in the word that says
+// how they are drawn. I have not looked at what they are. It ends at the
+// setup's `RTS`.
+#define TITLE_SPRITES_BEGIN_PC 0x80943du
+#define TITLE_SPRITES_BEGUN_PC 0x8094aeu
+#define TITLE_SPRITE_UPPER_X 0x00d0
+#define TITLE_SPRITE_UPPER_Y 0x00b6
+#define TITLE_SPRITE_UPPER_PICTURE 0xe870u
+#define TITLE_SPRITE_LOWER_X 0x00d5
+#define TITLE_SPRITE_LOWER_Y 0x00c8
+#define TITLE_SPRITE_LOWER_PICTURE 0xe889u
+#define TITLE_SPRITE_ATTR 0x0c00u
+
+// False with fewer than two records free. `records` are the two it took.
+bool title_sprites_begin(Wram* w, PortCpu* c, uint16_t records[2]);
+
+// --- $80:9261  the front end, begun ------------------------------------------
+//
+// `$80:9126` is the front end's thread, and every pass of it begins by
+// calling `$80:925D`. That calls `$82:AD44` and then zeroes what the screens
+// keep: two words for each player at `$7E:1E88`, five on the thread's page,
+// and the scroll of all three layers. `$7E:1E84` is zeroed too and
+// `$7E:1E86` set to two. I have not read what those two are for. This is
+// from the call's return to the `RTS`.
+#define FRONTEND_RESET_PC 0x809261u
+#define FRONTEND_RESET_RTS_PC 0x80928fu
+#define W_FRONTEND_PLAYERS 0x1e88u  // a word a player
+#define W_FRONTEND_1E84 0x1e84u
+#define W_FRONTEND_1E86 0x1e86u
+#define W_SCROLL_SHADOWS 0x1360u    // across and down, for three layers
+
+void frontend_reset(Wram* w, PortCpu* c);
+
+// --- $80:92F3  the screen before the title -----------------------------------
+//
+// The front end shows one screen the first time it runs and never again:
+// `$7C` on its page says it has. I have not looked at what is on it. Its
+// thread does not sleep. It stops on a `WAI` each frame, fifteen times, and
+// after each asks after the pads. Start alone on either ends the screen at
+// once. Either shoulder button alone plays a sound, and that is left to the
+// ROM. The ROM goes on to wait 148 frames more.
+//
+// `$7E:136C` counts the fifteen, and its bit 7 says the screen is over. The
+// job reads that: until it is set, every fourth frame by a count of its own
+// at `$38`, it moves the third layer a pixel down and across.
+//
+//   $80:938E  opening_job    the job. It leaves at one of its two `RTL`s,
+//                            carry clear once the screen is over.
+//   $80:931F  opening_wait   `JSR $9344`, and the pads. It leaves at the
+//                            `RTS` at `$9384`, or with the screen ended at
+//                            the `WAI` at `$9342`.
+//   $80:9322  opening_count  the count. It leaves at the `WAI` at `$931E`,
+//                            or at `$932D` with fifteen counted.
+#define OPENING_JOB_PC 0x80938eu
+#define OPENING_JOB_RTL_PC 0x8093a9u       // carry set: it stays queued
+#define OPENING_JOB_OVER_RTL_PC 0x8093abu  // carry clear
+#define OPENING_WAIT_PC 0x80931fu
+#define OPENING_WAIT_RTS_PC 0x809384u
+#define OPENING_WAIT_ENDED_PC 0x809342u    // `WAI`
+#define OPENING_COUNT_PC 0x809322u
+#define OPENING_COUNT_WAI_PC 0x80931eu
+#define OPENING_COUNT_DONE_PC 0x80932du
+#define W_OPENING_FRAMES 0x136cu
+#define OPENING_OVER 0x0080u
+#define OPENING_FRAMES 0x000fu
+#define OPENING_JOB_DP_COUNT 0x38
+#define W_PADS 0x006eu  // the two pads as the NMI read them, a word each
+#define PAD_START 0x1000u
+#define PAD_R 0x0010u
+#define PAD_L 0x0020u
+
+typedef struct {
+  bool over;   // the job: the screen was over
+  bool moved;  // ...or it was a fourth frame
+  int pads;    // the wait: pads asked after for Start
+  bool ended;  // ...and one had it
+} OpeningLog;
+
+void opening_job(Wram* w, PortCpu* c, OpeningLog* log);
+// Not with a shoulder button alone on the first pad.
+bool opening_wait_supported(const Wram* w);
+void opening_wait(Wram* w, PortCpu* c, OpeningLog* log);
+// True when it goes round again.
+bool opening_count(Wram* w, PortCpu* c);
 
 // --- $80:9A52  a portrait ----------------------------------------------------
 //

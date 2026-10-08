@@ -6,6 +6,8 @@
 #include "port/thread.h"
 
 // The registers.
+#define REG_BG3SC 0x2109u      // where the third layer's map is
+#define REG_BG34NBA 0x210cu    // ...and its tiles
 #define REG_VMAIN 0x2115u      // how VRAM's address steps
 #define REG_VMADD 0x2116u      // VRAM's address, in words
 #define REG_CGADD 0x2121u      // which colour
@@ -45,6 +47,19 @@ void dma_to_cgram(HwTrace* t, uint8_t bank, uint16_t at, uint16_t bytes) {
   hw_run(t, DMA_RTL);
 }
 
+void dma_to_cgram_at(HwTrace* t, uint8_t bank, uint16_t at, uint16_t bytes,
+                     uint8_t first) {
+  PORT_COVER(dma_to_cgram_at);
+  store8(t, DC_HEAD, REG_DMA_BANK, bank);
+  store8(t, DCA_FIRST, REG_CGADD, first);
+  store16(t, DMA_STORE, REG_DMA_SOURCE, at);
+  store16(t, DMA_STORE, REG_DMA_BYTES, bytes);
+  store8(t, DMA_IMM, REG_DMA_DEST, DEST_CGRAM);
+  store8(t, DMA_STORE, REG_DMA_MODE, MODE_ONE_REG);
+  store8(t, DMA_IMM, REG_MDMAEN, 0x01);
+  hw_run(t, DMA_RTL);
+}
+
 void dma_to_vram(HwTrace* t, uint8_t bank, uint16_t at, uint16_t vram,
                  uint16_t bytes) {
   PORT_COVER(dma_to_vram);
@@ -73,6 +88,26 @@ void background_job(HwTrace* t) {
 }
 
 // --- Three jobs that fill in the channel themselves --------------------------
+
+void hud_tiles_job(HwTrace* t) {
+  PORT_COVER(hud_tiles_job);
+  store16(t, DMA_IMM16, REG_DMA_MODE, (DEST_VRAM << 8) | MODE_TWO_REGS);
+  store16(t, DMA_IMM16, REG_DMA_SOURCE, HUD_TILES_AT);
+  store16(t, DMA_IMM16, REG_DMA_BANK, HUD_TILES_BANK);
+  store16(t, DMA_IMM16, REG_DMA_BYTES, HUD_TILES_BYTES);
+  store16(t, DMA_IMM16, REG_VMADD, HUD_TILES_VRAM);
+  store8(t, DMA_SEP_IMM, REG_VMAIN, VMAIN_STEP_ON_HIGH);
+  store8(t, DMA_IMM, REG_MDMAEN, 0x01);
+  // `REP #$20 : REP #$21 : RTL`, which costs what the other's tail does.
+  hw_run(t, HJ_TAIL);
+}
+
+void hud_layer_set(HwTrace* t) {
+  PORT_COVER(hud_layer_set);
+  store8(t, DMA_SEP_IMM, REG_BG3SC, HUD_LAYER_MAP);
+  store8(t, DMA_IMM, REG_BG34NBA, HUD_LAYER_TILES);
+  hw_run(t, DMA_REP);
+}
 
 void hud_upload_job(HwTrace* t) {
   PORT_COVER(hud_upload_job);
@@ -246,4 +281,32 @@ int tile_anim_job(Wram* w, const Rom* rom, HwTrace* t) {
   }
   hw_run(t, TJ_TAIL);
   return sent;
+}
+
+// --- What a screen's sends are called with -----------------------------------
+
+const SendArgs SEND_ARGS[SEND_ARGS_COUNT] = {
+#define X(at, sym, pc, exit, pull, pushed, a, x, y) \
+  [SEND_ARGS_AT_##at] = {pc, exit, pull, pushed, a, x, y},
+    SEND_ARGS_BY_ADDRESS(X)
+#undef X
+};
+
+void send_args(Wram* w, PortCpu* c, const SendArgs* args) {
+  PORT_COVER(send_args);
+  if (args->pull) {
+    c->a = pull16(w, c);
+    set_nz16(c, c->a);
+  }
+  if (args->pushed >= 0) push16(w, c, (uint16_t)args->pushed);
+  if (args->a >= 0) {
+    c->a = (uint16_t)args->a;
+    c->x = (uint16_t)args->x;
+    set_nz16(c, c->x);
+  }
+  if (args->y >= 0) {
+    c->y = (uint16_t)args->y;
+    set_nz16(c, c->y);
+  }
+  c->pc = args->exit;
 }

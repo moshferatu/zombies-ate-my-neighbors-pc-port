@@ -61,6 +61,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/hw.h"
 #include "port/wram.h"
 
 #define TEXT_PRINT_PC 0x82b84au
@@ -132,17 +133,19 @@ void text_print_lines(Wram* w, const Rom* rom, uint16_t page, uint16_t a,
 //
 // Where in its set's row a character starts is its number times its width,
 // and the ROM asks the console's multiplier. That is two writes to the
-// hardware in the middle of every character, so the routine is two stretches
-// here, each ending where the next write would be:
+// hardware in the middle of every character, so the routine is three
+// stretches here:
 //
-//     $82:AD5A  begin   the first place, and the string up to the first
-//                       character that draws
-//     $82:ADE4  glyph   from the product: that character's tiles, and the
-//                       string up to the next one that draws
+//     $82:AD5A  begin     the first place, and the string up to the first
+//                         character that draws
+//     $82:ADDB  multiply  the two factors to the multiplier: `STA $4202 :
+//                         STX $4203`, and three `NOP`s while it works
+//     $82:ADE4  glyph     from the product: that character's tiles, and the
+//                         string up to the next one that draws
 //
-// The five instructions between them stay the ROM's: `STA $4202 : STX
-// $4203` and three `NOP`s. The glyph stretch does not read the product from
-// the hardware. A and X still hold what was multiplied.
+// The second records its two writes and does not make them, as the jobs in
+// `port/dma.h` do. The glyph stretch does not read the product from the
+// hardware. A and X still hold what was multiplied.
 //
 // Either leaves at `$82:AE34` when the string ends, where the ROM queues the
 // job that sends the map, with the data bank `$82` and the caller's under a
@@ -179,6 +182,17 @@ bool text_big_width_ok(uint16_t width, uint16_t x);
 
 void text_big_begin(Wram* w, const Rom* rom, uint16_t page, uint16_t a,
                     uint16_t x, uint16_t y, TextBigRegs* out, TextBigWork* k);
+// The multiplier's two factors, and the runs of `text_big_multiply`.
+#define REG_MULTIPLICAND 0x4202u
+#define REG_MULTIPLIER 0x4203u
+enum {
+  TBM_STORE,  // a store's three bytes, as far as its write
+  TBM_WAIT,   // NOP : NOP : NOP
+  TBM_BLOCK_COUNT
+};
+
+// `$82:ADDB`. `which` and `width` are A and X, eight bits each.
+void text_big_multiply(uint8_t which, uint8_t width, HwTrace* t);
 // `which` and `width` are A and X, the two bytes that were multiplied.
 void text_big_glyph(Wram* w, const Rom* rom, uint16_t page, uint8_t which,
                     uint8_t width, TextBigRegs* out, TextBigWork* k);

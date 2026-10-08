@@ -6428,6 +6428,9 @@ static const CosimRun PBODY_COST[PBODY_BLOCK_COUNT] = {
     [PBODY_BUTTONS] = {56, 4, 2},
     [PBODY_BRA] = {18, 2, 0},
     [PBODY_BRANCH] = {28, 2, 1},
+    [PBODY_JUMP] = {36, 5, 0},  // three bytes of it and two of the table
+    [PBODY_JSR] = {40, 3, 0},
+    [PBODY_OUT] = {64, 7, 1},
     [PBODY_EVENT] = {40, 4, 1},
     [PBODY_SKIP] = {40, 4, 1},
     [PBODY_RECOVER] = {62, 4, 1},
@@ -6538,8 +6541,12 @@ BODY_SHIM(player_state, player_state(w, &c, &k), PBODY_COST)
 BODY_SHIM(player_move, player_move(w, &c, &k), PBODY_COST)
 BODY_SHIM(player_buttons, player_buttons(w, &c, &k), PBODY_COST)
 BODY_SHIM(player_loop, player_loop(&c, &k), PBODY_COST)
-BODY_SHIM(player_branch, player_branch(w, &c, &k), PBODY_COST)
+BODY_SHIM(player_branch, player_branch(w, rom, &c, &k), PBODY_COST)
 BODY_SHIM(player_hurt, player_hurt(w, &c, &k), PBODY_COST)
+BODY_SHIM(player_hurt_call, player_hurt_call(w, &c, &k), PBODY_COST)
+BODY_SHIM(player_dead_call, player_dead_call(w, &c, &k), PBODY_COST)
+BODY_SHIM(player_out_show, player_out_show(w, rom, &c, &k), PBODY_COST)
+BODY_SHIM(player_out_again, player_out_again(w, rom, &c, &k), PBODY_COST)
 BODY_SHIM(player_won, player_won(w, &c, &k), PBODY_COST)
 BODY_SHIM(player_dead, player_dead(w, &c, &k), PBODY_COST)
 
@@ -8246,6 +8253,24 @@ static void shim_wave_thread_tests(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t WAVE_THREAD_EXITS[] = {WAVE_THREAD_YIELD_PC,
                                              WAVE_THREAD_END_PC};
+
+// `$80:9512`: the one `JSR`.
+static bool accepts_wave_thread_call(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return low_stack(in);
+}
+
+static void shim_wave_thread_call(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  wave_thread_call(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&RUN_JSR, fetch_fast(in)));
+}
+
+static const uint32_t WAVE_THREAD_CALL_EXITS[] = {WAVE_HDMA_ENTRY};
 
 // ---------------------------------------------------------------------------
 // $82:D8FD  the radar's thread -- see `port/radar_thread.h`
@@ -16938,7 +16963,22 @@ static const uint32_t PLAYER_MOVE_EXITS[] = {
     PLAYER_MOVE_CALL_PC, PLAYER_PUBLISH_PC};
 static const uint32_t PLAYER_BUTTONS_EXITS[] = {PLAYER_WON_CALL_PC};
 static const uint32_t PLAYER_LOOP_EXITS[] = {PLAYER_YIELD_PC};
-static const uint32_t PLAYER_BRANCH_EXITS[] = {PLAYER_BRANCH_JMP_PC};
+// The seven handlers the table of states names.
+static const uint32_t PLAYER_BRANCH_EXITS[] = {
+    0x80d1ffu, 0x80d2eau, 0x80d31cu, 0x80d343u,
+    0x80d35eu, 0x80d404u, 0x80d465u};
+
+static const uint32_t PLAYER_OUT_EXITS[] = {PLAYER_OUT_PLAY_PC};
+
+static bool accepts_player_out(const Wram* w, const CosimRegs* in) {
+  const uint16_t number = wram_r16(w, (uint16_t)(in->d + PLAYER_DP_NUMBER));
+  return accepts_body(w, in) && (number == 0 || number == 2);
+}
+
+static bool accepts_player_branch(const Wram* w, const CosimRegs* in) {
+  const uint16_t state = wram_r16(w, (uint16_t)(in->d + 0x70));
+  return accepts_body(w, in) && state < PLAYER_STATE_LIMIT && !(state & 1u);
+}
 static const uint32_t PLAYER_HURT_EXITS[] = {
     PLAYER_HURT_EVENT_PC, PLAYER_HURT_RTS_PC, PLAYER_HURT_RESET_RTS_PC};
 static const uint32_t PLAYER_WON_EXITS[] = {
@@ -17142,6 +17182,8 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [DMA_REP_RTL] = {72, 4, 0},
     [DMA_FLAG_RTL] = {54, 2, 0},
     [HJ_TAIL] = {78, 5, 0},
+    [DCA_FIRST] = {88, 9, 0},
+    [DMA_REP] = {18, 2, 0},
     [VC_HEAD] = {46, 5, 1},
     [VC_STEP] = {94, 12, 1},
     [VC_TEST] = {58, 6, 1},
@@ -17161,6 +17203,34 @@ static HwTrace* dma_trace(void) {
   g_vbl_trace.full = false;
   return &g_vbl_trace;
 }
+
+// `$82:ADDB`, between the two stretches of the big letters: see
+// `port/text.h`. Registers eight bits wide, and nothing else asked of them.
+static const CosimRun TBM_COST[TBM_BLOCK_COUNT] = {
+    [TBM_STORE] = {18, 3, 0},
+    [TBM_WAIT] = {36, 3, 0},
+};
+
+static bool accepts_text_big_multiply(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return (in->p & (PORT_P_M | PORT_P_X)) == (PORT_P_M | PORT_P_X) &&
+         low_stack(in);
+}
+
+static void shim_text_big_multiply(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  text_big_multiply((uint8_t)in->a, (uint8_t)in->x, t);
+  PortCpu c;
+  cpu_from(in, &c);
+  c.pc = TEXT_BIG_GLYPH_PC;
+  cpu_to(&c, out);
+  cosim_hw(t, TBM_COST, fetch_fast(in));
+}
+
+static const uint32_t TEXT_BIG_MULTIPLY_EXITS[] = {TEXT_BIG_GLYPH_PC};
 
 // What every one of these leaves: 16-bit registers, and the flags of the last
 // `LDA #$01` or of the last `DEX`, with carry where a job clears it.
@@ -17210,6 +17280,80 @@ static void shim_dma_to_vram(Wram* w, const Rom* rom, const CosimRegs* in,
           COSIM_FLAG_N | COSIM_FLAG_Z);
   cosim_hw(t, DMA_COST, fetch_fast(in));
 }
+
+// The colour is the word its caller pushed, as `dma_to_vram`'s bank is.
+static void shim_dma_to_cgram_at(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  const uint16_t pushed = wram_r16(w, (uint16_t)(in->s + 4));
+  HwTrace* t = dma_trace();
+  dma_to_cgram_at(t, (uint8_t)in->a, in->x, in->y, (uint8_t)pushed);
+  dma_out(out, low_byte_one(pushed), in->x, in->y, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_hud_tiles_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  hud_tiles_job(t);
+  dma_out(out, low_byte_one(HUD_TILES_VRAM), in->x, in->y, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_hud_layer_set(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  hud_layer_set(t);
+  PortCpu c;
+  cpu_from(in, &c);
+  c.a = (uint16_t)((c.a & 0xff00u) | HUD_LAYER_TILES);
+  c.p = (uint8_t)(c.p & ~(PORT_P_N | PORT_P_Z));
+  c.pc = HUD_LAYER_SET_RTL_PC;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static const uint32_t HUD_LAYER_SET_EXITS[] = {HUD_LAYER_SET_RTL_PC};
+
+// What a screen's sends are called with: see `port/dma.h`. Sixteen bits
+// wide, and a stack in low WRAM.
+static const CosimRun SA_RUN_PULL = {34, 1, 0};   // PLA
+static const CosimRun SA_RUN_PUSH = {46, 4, 0};   // LDA # : PHA
+static const CosimRun SA_RUN_LOAD = {18, 3, 0};   // LDA #, LDX # or LDY #
+
+static bool accepts_send_args(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && low_stack(in);
+}
+
+static void shim_send_args(Wram* w, const CosimRegs* in, CosimRegs* out,
+                           const SendArgs* args) {
+  PortCpu c;
+  cpu_from(in, &c);
+  send_args(w, &c, args);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SA_RUN_PULL, args->pull ? 1 : 0);
+  run_add(&run, &SA_RUN_PUSH, args->pushed >= 0 ? 1 : 0);
+  run_add(&run, &SA_RUN_LOAD, (args->a >= 0 ? 2 : 0) + (args->y >= 0 ? 1 : 0));
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+#define X(at, sym, pc, exit, pull, pushed, a, x, y)                          \
+  static void shim_send_args_##at(Wram* w, const Rom* rom,                   \
+                                  const CosimRegs* in, CosimRegs* out) {     \
+    (void)rom;                                                               \
+    shim_send_args(w, in, out, &SEND_ARGS[SEND_ARGS_AT_##at]);               \
+  }                                                                          \
+  static const uint32_t send_args_##at##_EXITS[] = {exit};
+SEND_ARGS_BY_ADDRESS(X)
+#undef X
 
 static void shim_palette_job(Wram* w, const Rom* rom, const CosimRegs* in,
                              CosimRegs* out) {
@@ -21336,6 +21480,132 @@ static void shim_portrait_sprites_begin(Wram* w, const Rom* rom,
                                  (in->d & 0xffu) != 0));
 }
 
+// `$80:943D`, as far as its `JSL` that names no handler, with that in it.
+static const CosimRun TITLE_RUN_SPRITES = {1240, 113, 3};
+
+static bool guard_title_sprites_begin(Wram* scratch, const Rom* rom,
+                                      const CosimRegs* in) {
+  (void)rom;
+  if (!accepts_screen_sprites(scratch, in)) return false;
+  PortCpu c;
+  uint16_t records[2];
+  cpu_from(in, &c);
+  return title_sprites_begin(scratch, &c, records);
+}
+
+static void shim_title_sprites_begin(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  uint16_t records[2] = {0, 0};
+  cpu_from(in, &c);
+  title_sprites_begin(w, &c, records);
+  cpu_to(&c, out);
+  cosim_cost(saucer_alloc_cycles(records[0], in->fastrom) +
+             saucer_alloc_cycles(records[1], in->fastrom) +
+             cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom) +
+             cosim_run_cycles_dp(&TITLE_RUN_SPRITES, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t TITLE_SPRITES_BEGIN_EXITS[] = {TITLE_SPRITES_BEGUN_PC};
+
+// `$80:9261`-`$928E`.
+static const CosimRun FRONTEND_RUN_RESET = {516, 46, 5};
+
+static bool accepts_frontend_reset(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && bank_sees_low_wram(in->db);
+}
+
+static void shim_frontend_reset(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  frontend_reset(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&FRONTEND_RUN_RESET, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t FRONTEND_RESET_EXITS[] = {FRONTEND_RESET_RTS_PC};
+
+// The screen before the title. Each run is from `tools/cycles816.py --db=80`.
+static const CosimRun OPENING_RUN_JOB_HEAD = {64, 8, 0};    // $938E-$9395
+static const CosimRun OPENING_RUN_JOB_COUNT = {126, 12, 2};  // $9396-$93A1
+static const CosimRun OPENING_RUN_JOB_MOVE = {112, 6, 0};   // $93A2-$93A7
+static const CosimRun OPENING_RUN_FLAG = {12, 1, 0};        // SEC, or CLC
+static const CosimRun OPENING_RUN_PAD = {64, 8, 0};    // LDA abs : CMP # : Bxx
+static const CosimRun OPENING_RUN_END = {98, 9, 0};    // $9385-$938D
+static const CosimRun OPENING_RUN_COUNT = {120, 11, 0};  // $9322-$932C
+
+static void shim_opening_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  OpeningLog log;
+  cpu_from(in, &c);
+  opening_job(w, &c, &log);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &OPENING_RUN_JOB_HEAD, 1);
+  if (log.over) {
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &OPENING_RUN_JOB_COUNT, 1);
+    run_add(&run, log.moved ? &OPENING_RUN_JOB_MOVE : &RUN_TAKEN, 1);
+  }
+  run_add(&run, &OPENING_RUN_FLAG, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), false));
+}
+
+static bool accepts_opening_wait(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && bank_sees_low_wram(in->db) && opening_wait_supported(w);
+}
+
+static void shim_opening_wait(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  OpeningLog log;
+  cpu_from(in, &c);
+  opening_wait(w, &c, &log);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &RUN_JSR, 1);
+  // Neither shoulder button: two tests, both branching.
+  run_add(&run, &OPENING_RUN_PAD, 2 + log.pads);
+  run_add(&run, &RUN_TAKEN, 2);
+  if (log.ended) {
+    // The `BEQ`, the `BRA`, and the test of the bit it has just set.
+    run_add(&run, &RUN_TAKEN, 2);
+    run_add(&run, &OPENING_RUN_END, 1);
+    run_add(&run, &OPENING_RUN_PAD, 1);
+  }
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static void shim_opening_count(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool again = opening_count(w, &c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &OPENING_RUN_COUNT, 1);
+  if (again) run_add(&run, &RUN_TAKEN, 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static const uint32_t OPENING_JOB_EXITS[] = {OPENING_JOB_RTL_PC,
+                                             OPENING_JOB_OVER_RTL_PC};
+static const uint32_t OPENING_WAIT_EXITS[] = {OPENING_WAIT_RTS_PC,
+                                              OPENING_WAIT_ENDED_PC};
+static const uint32_t OPENING_COUNT_EXITS[] = {OPENING_COUNT_WAI_PC,
+                                               OPENING_COUNT_DONE_PC};
+
 static const uint32_t GAME_OVER_SPRITE_BEGIN_EXITS[] = {
     GAME_OVER_SPRITE_BEGIN_RTS_PC};
 static const uint32_t PORTRAIT_SPRITES_BEGIN_EXITS[] = {
@@ -24016,9 +24286,49 @@ static const CosimRoutine ROUTINES[] = {
         .symbol = "$80:D1EA",
         .entry = 0x80d1ea,
         .run = shim_player_branch,
-        .accepts = accepts_body,
+        .accepts = accepts_player_branch,
         COSIM_EXITS(PLAYER_BRANCH_EXITS),
-        .cycles = 28,
+        .cycles = 64,
+    },
+    {
+        .name = "player_hurt_call",
+        .symbol = "$80:CE01",
+        .entry = PLAYER_HURT_CALL_PC,
+        .run = shim_player_hurt_call,
+        .accepts = accepts_body,
+        COSIM_EXITS(PLAYER_HURT_EXITS),
+        .uncalled = true,
+        .cycles = 188,
+    },
+    {
+        .name = "player_out_show",
+        .symbol = "$80:CF0B",
+        .entry = PLAYER_OUT_SHOW_PC,
+        .run = shim_player_out_show,
+        .accepts = accepts_player_out,
+        COSIM_EXITS(PLAYER_OUT_EXITS),
+        .uncalled = true,
+        .cycles = 64,
+    },
+    {
+        .name = "player_out_again",
+        .symbol = "$80:CF14",
+        .entry = PLAYER_OUT_AGAIN_PC,
+        .run = shim_player_out_again,
+        .accepts = accepts_player_out,
+        COSIM_EXITS(PLAYER_OUT_EXITS),
+        .uncalled = true,
+        .cycles = 82,
+    },
+    {
+        .name = "player_dead_call",
+        .symbol = "$80:CE20",
+        .entry = PLAYER_DEAD_CALL_PC,
+        .run = shim_player_dead_call,
+        .accepts = accepts_player_dead,
+        COSIM_EXITS(PLAYER_DEAD_EXITS),
+        .uncalled = true,
+        .cycles = 120,
     },
     {
         .name = "player_hurt",
@@ -25210,7 +25520,18 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 200,
     },
-    // The wobble's thread, after each build: see `port/trig.h`.
+    // The wobble's thread: its call of the build, and what it asks after
+    // each. See `port/trig.h`.
+    {
+        .name = "wave_thread_call",
+        .symbol = "$80:9512",
+        .entry = WAVE_THREAD_CALL_PC,
+        .run = shim_wave_thread_call,
+        .accepts = accepts_wave_thread_call,
+        COSIM_EXITS(WAVE_THREAD_CALL_EXITS),
+        .uncalled = true,
+        .cycles = 40,
+    },
     {
         .name = "wave_thread_tests",
         .symbol = "$80:9515",
@@ -25292,6 +25613,17 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(TEXT_BIG_EXITS),
         .cycles = 2500,
         .stack_bytes = 2,  // half the `PEA`, and the character's `PHA`
+    },
+    {
+        .name = "text_big_multiply",
+        .symbol = "$82:ADDB",
+        .entry = TEXT_BIG_MULTIPLY_PC,
+        .run = shim_text_big_multiply,
+        .accepts = accepts_text_big_multiply,
+        COSIM_EXITS(TEXT_BIG_MULTIPLY_EXITS),
+        .uncalled = true,
+        .cycles = 84,
+        .hw = true,
     },
     {
         .name = "text_big_glyph",
@@ -26746,6 +27078,8 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,                                                    \
         .cycles = cyc,                                                       \
     }
+    DMA_JOB_ENTRY(hud_tiles_job, "$80:C2AB", HUD_TILES_JOB_PC,
+                  HUD_TILES_JOB_RTL_PC, 420),
     // Three more jobs of `port/dma.h`.
     DMA_JOB_ENTRY(hud_upload_job, "$80:C34A", HUD_UPLOAD_JOB_PC,
                   HUD_UPLOAD_JOB_RTL_PC, 420),
@@ -26899,6 +27233,41 @@ static const CosimRoutine ROUTINES[] = {
         .hw = true,
         .cycles = 352,
     },
+    {
+        .name = "dma_to_cgram_at",
+        .symbol = "$80:C892",
+        .entry = DMA_TO_CGRAM_AT_PC,
+        .ret_op = DMA_TO_CGRAM_AT_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_dma_to_cgram_at,
+        .accepts = dma_to_vram_ok,
+        .hw = true,
+        .cycles = 400,
+    },
+    {
+        .name = "hud_layer_set",
+        .symbol = "$80:C2E8",
+        .entry = HUD_LAYER_SET_PC,
+        .run = shim_hud_layer_set,
+        .accepts = dma_to_vram_ok,
+        COSIM_EXITS(HUD_LAYER_SET_EXITS),
+        .uncalled = true,
+        .cycles = 110,
+        .hw = true,
+    },
+#define X(at, sym, pc, exit, pull, pushed, a, x, y)                          \
+    {                                                                        \
+        .name = "send_args_" #at,                                            \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_send_args_##at,                                          \
+        .accepts = accepts_send_args,                                        \
+        COSIM_EXITS(send_args_##at##_EXITS),                                 \
+        .uncalled = true,                                                    \
+        .cycles = 134,                                                       \
+    },
+    SEND_ARGS_BY_ADDRESS(X)
+#undef X
     {
         .name = "palette_job",
         .symbol = "$80:A084",
@@ -27092,6 +27461,57 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(PORTRAIT_SPRITES_BEGIN_EXITS),
         .cycles = 3600,
         .stack_bytes = 6,
+    },
+    {
+        .name = "title_sprites_begin",
+        .symbol = "$80:943D",
+        .entry = TITLE_SPRITES_BEGIN_PC,
+        .run = shim_title_sprites_begin,
+        .supported = guard_title_sprites_begin,
+        COSIM_EXITS(TITLE_SPRITES_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 3700,
+        .stack_bytes = 6,
+    },
+    {
+        .name = "frontend_reset",
+        .symbol = "$80:9261",
+        .entry = FRONTEND_RESET_PC,
+        .run = shim_frontend_reset,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(FRONTEND_RESET_EXITS),
+        .uncalled = true,
+        .cycles = 516,
+    },
+    {
+        .name = "opening_job",
+        .symbol = "$80:938E",
+        .entry = OPENING_JOB_PC,
+        .run = shim_opening_job,
+        .accepts = accepts_vbl_job,
+        COSIM_EXITS(OPENING_JOB_EXITS),
+        .uncalled = true,
+        .cycles = 220,
+    },
+    {
+        .name = "opening_wait",
+        .symbol = "$80:931F",
+        .entry = OPENING_WAIT_PC,
+        .run = shim_opening_wait,
+        .accepts = accepts_opening_wait,
+        COSIM_EXITS(OPENING_WAIT_EXITS),
+        .uncalled = true,
+        .cycles = 310,
+    },
+    {
+        .name = "opening_count",
+        .symbol = "$80:9322",
+        .entry = OPENING_COUNT_PC,
+        .run = shim_opening_count,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(OPENING_COUNT_EXITS),
+        .uncalled = true,
+        .cycles = 126,
     },
     // The thread a punch begins, and a block swapped: see `port/knock.h`.
     {

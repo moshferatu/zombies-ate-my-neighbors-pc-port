@@ -1226,9 +1226,9 @@ static void native_publish(Cosim* c, const CosimRegs* out) {
 // scheduler into a thread, 1.1 million into a vblank job, every native
 // frame's `JSL thread_yield`.
 //
-// So the harness makes it, when it is one of the seven that only move
-// control: `RTS`, `RTL`, `JSR abs`, `JSL`, `JMP abs`, the `RTI` the NMI
-// handler ends on, and the `WAI` the scheduler stops at. What each does to the stack
+// So the harness makes it, when it is one of the eight that only move
+// control: `RTS`, `RTL`, `JSR abs`, `JSL`, `JMP abs`, `JML`, the `RTI` the
+// NMI handler ends on, and the `WAI` the scheduler stops at. What each does to the stack
 // and the program counter is below, in the order the 65816 does it, and its
 // cycles are spent the way a reported cost is. An interrupt is polled where
 // the core polls it, before the last cycle, so one that falls due inside is
@@ -1282,7 +1282,7 @@ static void leave_set_flags(Cpu* cpu, uint8_t p) {
   }
 }
 
-// Make the instruction the CPU is standing on, if it is one of the seven.
+// Make the instruction the CPU is standing on, if it is one of the eight.
 // False when it is not, and then nothing has changed.
 static bool leave_step(Cosim* c, LeaveCost* cost) {
   Snes* snes = c->snes;
@@ -1339,6 +1339,11 @@ static bool leave_step(Cosim* c, LeaveCost* cost) {
     case 0x4c:  // JMP abs
       cpu->pc = operand;
       *cost = (LeaveCost){3 * fetch, fetch};
+      break;
+    case 0x5c:  // JML: the bank is its fourth byte
+      cpu->pc = operand;
+      cpu->k = op[3];
+      *cost = (LeaveCost){4 * fetch, fetch};
       break;
     case 0x40: {  // RTI: two idles, the status byte, the address, the bank
       leave_set_flags(cpu, leave_pull(cpu, snes->ram));

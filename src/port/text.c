@@ -223,6 +223,15 @@ void text_big_begin(Wram* w, const Rom* rom, uint16_t page, uint16_t a,
   big_scan(&t, k, out);
 }
 
+void text_big_multiply(uint8_t which, uint8_t width, HwTrace* t) {
+  PORT_COVER(text_big_multiply);
+  hw_run(t, TBM_STORE);
+  hw_w8(t, REG_MULTIPLICAND, which);
+  hw_run(t, TBM_STORE);
+  hw_w8(t, REG_MULTIPLIER, width);
+  hw_run(t, TBM_WAIT);
+}
+
 void text_big_glyph(Wram* w, const Rom* rom, uint16_t page, uint8_t which,
                     uint8_t width, TextBigRegs* out, TextBigWork* k) {
   Text t = {w, rom, page, &k->text, 0, 0};

@@ -5,6 +5,91 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The wobble's call, the screens' sends, and the calls of a player's frame (2026-10-08)
+
+What the 65816 still executed over the twelve movies goes from 132,840 to
+**107,993** instructions of work. The game registers 566 routines, 39
+more. The corpus is the same 54 movies.
+
+* **The wobble's one `JSR`**, `$80:9512`, which I had been calling the
+  ROM's on purpose. It ran 10,957 times. It is a stretch of its own now,
+  `wave_thread_call` in `port/trig.c`, and ends where the build begins.
+  * The reason given for leaving it was that a stretch beginning before
+    the build would read the pads too early. That is true of one stretch
+    from before the build to after the tests. It is not true of three:
+    the call, the build taking its own time, and the tests after it.
+  * So one stretch stays the ROM's on purpose, not two: the third of the
+    between-games clear, `$80:897F`, 25,624.
+* **The screen before the title**, in `port/frontend.c`. The front end
+  shows it once. Its thread waits on `WAI` fifteen times and asks after
+  the pads each time.
+  * `opening_job` (`$80:938E`) moves the third layer every fourth frame.
+  * `opening_wait` (`$80:931F`) is the call and the pads. Start alone on
+    either ends the screen. A shoulder button alone plays a sound, and
+    that is left to the ROM.
+  * `opening_count` (`$80:9322`) counts the fifteen.
+* **The title's two sprites**, `title_sprites_begin` (`$80:943D`), as the
+  portraits' screen takes its two. And `frontend_reset` (`$80:9261`), what
+  every pass of the front end zeroes.
+* **What the screens' sends are called with**, in `port/dma.c`. A screen
+  sets itself up with a run of calls to the DMA routines, and between two
+  there is only the next one's numbers: a word pulled, a word pushed, and
+  A, X and Y loaded. Twenty-five such stretches over four screens are one
+  function and a table, `SEND_ARGS_BY_ADDRESS`, named for where they are.
+* **Three more of the DMA's own**, each recording its writes:
+  * `dma_to_cgram_at` (`$80:C892`), colours from a colour the caller names;
+  * `hud_tiles_job` (`$80:C2AB`), the third layer's tiles;
+  * `hud_layer_set` (`$80:C2E8`), where that layer's map and tiles are.
+* **The big letters' multiply**, `text_big_multiply` (`$82:ADDB`): the two
+  factors to the console's multiplier and three `NOP`s. It ran 1,775
+  instructions between two stretches that were ported.
+* **The calls of a player's frame**, in `port/bodies.c`. On a frame
+  `player_frame` turns down, the ROM runs the frame a piece at a time, and
+  ran the instructions between the pieces itself.
+  * `player_branch` (`$80:D1EA`) now makes the jump through the table of
+    states as well as the `LDX` in front of it.
+  * `player_hurt_call` (`$80:CE01`) and `player_dead_call` (`$80:CE20`)
+    are each a `JSR` with what it calls.
+  * `player_out_show` and `player_out_again` (`$80:CF0B`, `$80:CF14`) are
+    the loop a player ends in with none left of what `$7E:1D4C` counts.
+* **A `JML` is an exit the harness can make**, the eighth instruction of
+  its kind. Four threads end on `JML $80:BE41` and the ROM ran each.
+
+* **Checked.** The corpus verifies at 34,603,665 calls across 54 movies
+  with 0 diverged, and 1,273 of 1,505 coverage sites. All 16 new sites are
+  taken. Every call priced is exact. It turns down 3,198 calls, as before.
+* **Hardware.** The four that write registers are compared write by
+  write: address, value and cycle. None was unmodelled.
+* **Lockstep** over the corpus: 334,319 passes, 51 of 54 never part, the
+  same three level-25 movies. Mean drift is smaller on 22 movies, the same
+  on 20, and larger on twelve: `boot` by 7.8 cycles, `level1` by 4.8, the
+  rest by 1.3 or less. Five worst figures moved: `level1-map` up 36,
+  `boot` up 14, `password-bcdf` down 12, two more down 6. The total over
+  the corpus is -1,992,290 against -1,992,262.
+* **What it took off.** Bank `$80` goes from 85,587 instructions to
+  63,252, bank `$82` from 25,190 to 23,415 and bank `$81` from 15,130 to
+  14,393. Bank `$83` is as it was. Seven movies are down by 2,700 to
+  3,700 each and the other five by 700 to 900.
+* **One mistake of mine.** The new functions in `port/frontend.c` went in
+  above the helpers they call, and it did not build.
+* **Not established.**
+  * What is on the screen before the title, or what the title's two
+    sprites are. I have not looked.
+  * What `$7E:1E84` and `$7E:1E86` are, which `frontend_reset` sets.
+  * That `$7E:1D4C` counts lives. That is by what the code does with it.
+  * Why `boot`'s mean drift is 7.8 cycles larger.
+* **Still the ROM's.**
+  * `$80:CDFE`, the first `JSR` of a frame `player_frame` turns down, 593.
+    A second routine cannot begin where another does.
+  * Of the screens: the stretches that write the picture registers
+    between the sends, and the lone `RTS` after the last send.
+  * The decimal count of neighbours at `$80:C863`.
+* **Next.** Bank `$80` is 63,252 of the 107,993, and 25,624 of that is
+  the clear that stays the ROM's. After it: a level's start, `$80:85BB`
+  on, 3,743; the fractions at `$80:F6B4`, 1,868; level 21's three at
+  `$82:DB96`, `$82:F354` and `$82:F44A`, 3,286; the animated tiles' start
+  at `$82:D7CF`, 1,342.
+
 ### The fishman's leap and dive, the weeds' seed, and twenty-one more thread ends (2026-10-07)
 
 What the 65816 still executed over the twelve movies goes from 148,960 to
@@ -118,8 +203,12 @@ routines, 35 more. The corpus is the same 54 movies.
     the plain one.
   * A call to play a sound that an entry stops at. A sound is not priced
     inside an entry.
-* **Next.** Bank `$80` is 85,587 of the 132,840, and 41,349 of that is the
-  two stretches that stay the ROM's on purpose. After them: a level's
+* **Next.** Bank `$80` is 85,587 of the 132,840, and 36,581 of that was
+  being left to the ROM on purpose: the third stretch of the
+  between-games clear, `$80:897F`, 25,624, and the one `JSR` of the
+  wobble's thread, `$80:9512`, 10,957. I had been giving 41,349, which
+  counted 4,768 of ordinary residue next to that `JSR` with it. The round
+  after this ports the `JSR`. After them: a level's
   start, `$80:85BB` on, 3,743; the fractions at `$80:F6B4`, 1,868; five
   instructions round a multiply at `$82:ADDB`, 1,775; and level 21's
   three at `$82:DB96`, `$82:F354` and `$82:F44A`, 3,286.

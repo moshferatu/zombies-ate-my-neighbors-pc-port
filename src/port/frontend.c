@@ -361,3 +361,114 @@ bool portrait_sprites_begin(Wram* w, PortCpu* c, uint16_t records[2]) {
   c->pc = PORTRAIT_SPRITES_BEGUN_PC;
   return true;
 }
+
+bool title_sprites_begin(Wram* w, PortCpu* c, uint16_t records[2]) {
+  if (!take_record(w, c, &records[0])) return false;
+  wram_w16(w, (uint16_t)(c->d + PORTRAIT_DP_SPRITES), records[0]);
+  if (!take_record(w, c, &records[1])) return false;
+  PORT_COVER(title_sprites_begun);
+  wram_w16(w, (uint16_t)(c->d + PORTRAIT_DP_SPRITES + 2), records[1]);
+  dress(w, records[0], TITLE_SPRITE_UPPER_X, TITLE_SPRITE_UPPER_Y,
+        TITLE_SPRITE_UPPER_PICTURE, PORTRAIT_SPRITE_FLAGS);
+  dress(w, records[1], TITLE_SPRITE_LOWER_X, TITLE_SPRITE_LOWER_Y,
+        TITLE_SPRITE_LOWER_PICTURE, PORTRAIT_SPRITE_FLAGS);
+  for (int i = 0; i < 2; i++)
+    wram_w16(w, (uint16_t)(records[i] + ACTOR_ATTR), TITLE_SPRITE_ATTR);
+  c->x = records[1];
+  no_handler(w, c);
+  c->pc = TITLE_SPRITES_BEGUN_PC;
+  return true;
+}
+
+// --- $80:9261  the front end, begun ------------------------------------------
+
+void frontend_reset(Wram* w, PortCpu* c) {
+  PORT_COVER(frontend_reset);
+  for (int player = 0; player < 2; player++)
+    wram_w16(w, (uint16_t)(W_FRONTEND_PLAYERS + 2 * player), 0);
+  wram_w16(w, W_FRONTEND_1E84, 0);
+  wram_w16(w, W_FRONTEND_1E86, 2);
+  static const uint8_t on_page[] = {0x5e, 0x60, 0x62, 0x64, 0x78};
+  for (size_t i = 0; i < sizeof on_page; i++)
+    wram_w16(w, (uint16_t)(c->d + on_page[i]), 0);
+  for (int word = 0; word < 6; word++)
+    wram_w16(w, (uint16_t)(W_SCROLL_SHADOWS + 2 * word), 0);
+  c->a = 2;
+  set_nz16(c, c->a);
+  c->pc = FRONTEND_RESET_RTS_PC;
+}
+
+// --- $80:92F3  the screen before the title -----------------------------------
+
+void opening_job(Wram* w, PortCpu* c, OpeningLog* log) {
+  *log = (OpeningLog){0};
+  c->a = wram_r16(w, W_OPENING_FRAMES) & OPENING_OVER;
+  set_nz16(c, c->a);
+  if (c->a != 0) {
+    PORT_COVER(opening_job_over);
+    log->over = true;
+    set_c(c, false);
+    c->pc = OPENING_JOB_OVER_RTL_PC;
+    return;
+  }
+  const uint16_t count =
+      (uint16_t)(wram_r16(w, (uint16_t)(c->d + OPENING_JOB_DP_COUNT)) + 1);
+  wram_w16(w, (uint16_t)(c->d + OPENING_JOB_DP_COUNT), count);
+  c->a = count & 3;
+  cmp16(c, c->a, 3);
+  if (c->a == 3) {
+    PORT_COVER(opening_job_moved);
+    log->moved = true;
+    uint16_t at = 0;
+    for (int axis = 0; axis < 2; axis++) {
+      at = (uint16_t)(wram_r16(w, (uint16_t)(W_BG3_SCROLL_X + 2 * axis)) + 1);
+      wram_w16(w, (uint16_t)(W_BG3_SCROLL_X + 2 * axis), at);
+    }
+    set_nz16(c, at);
+  } else {
+    PORT_COVER(opening_job_waited);
+  }
+  set_c(c, true);
+  c->pc = OPENING_JOB_RTL_PC;
+}
+
+bool opening_wait_supported(const Wram* w) {
+  const uint16_t first = wram_r16(w, W_PADS);
+  return first != PAD_R && first != PAD_L;
+}
+
+void opening_wait(Wram* w, PortCpu* c, OpeningLog* log) {
+  *log = (OpeningLog){0};
+  push16(w, c, (uint16_t)(OPENING_WAIT_PC + 2));
+  for (int pad = 0; pad < 2; pad++) {
+    log->pads++;
+    c->a = wram_r16(w, (uint16_t)(W_PADS + 2 * pad));
+    cmp16(c, c->a, PAD_START);
+    if (c->a != PAD_START) continue;
+    // It does not go back to the loop: the return is thrown away.
+    PORT_COVER(opening_wait_ended);
+    log->ended = true;
+    pull16(w, c);
+    wram_w16(w, W_OPENING_FRAMES, OPENING_OVER);
+    c->a = OPENING_OVER;
+    set_nz16(c, c->a);
+    c->pc = OPENING_WAIT_ENDED_PC;
+    return;
+  }
+  PORT_COVER(opening_wait_on);
+  c->pc = OPENING_WAIT_RTS_PC;
+}
+
+bool opening_count(Wram* w, PortCpu* c) {
+  c->a = (uint16_t)(wram_r16(w, W_OPENING_FRAMES) + 1);
+  wram_w16(w, W_OPENING_FRAMES, c->a);
+  cmp16(c, c->a, OPENING_FRAMES);
+  if (c->a == OPENING_FRAMES) {
+    PORT_COVER(opening_count_done);
+    c->pc = OPENING_COUNT_DONE_PC;
+    return false;
+  }
+  PORT_COVER(opening_counted);
+  c->pc = OPENING_COUNT_WAI_PC;
+  return true;
+}

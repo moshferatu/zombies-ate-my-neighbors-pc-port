@@ -271,11 +271,16 @@ void tile_anim_queued(Wram* w, PortCpu* c, BodyWork* k);
 // and between them it does almost nothing: `$1C = $1A` keeps this frame's
 // buttons as the next frame's last ones. So it is ported as the stretches
 // between the calls, and as the three small callees that end the frame.
-// `$D1EA` is a stretch too, the `LDX` in front of its jump.
+// `$D1EA` is a stretch too, the `LDX` and the jump through the table of
+// states after it.
 //
-// The five with nothing between a call's return and the next call -- `$CDF4`,
-// `$CDFE`, `$CE01`, `$CE16` and `$CE20` -- have no stretch: the ROM executes
-// the next `JSR` itself, as it executes every call these make.
+// Two of the calls have nothing between the last one's return and
+// themselves, `$CE01` and `$CE20`. Each is a stretch with what it calls: the
+// `JSR` and then the hurt timer, or the `JSR` and then the health.
+//
+// Three more have no stretch -- `$CDF4`, `$CDFE` and `$CE16` -- and the ROM
+// executes the `JSR` itself. `$CDFE` is where `port/player_frame.h` begins,
+// so it is the ROM's only on a frame that turns down.
 //
 // The movement handler on ordinary ground, `$80:E4BA`, is `port/walk.h`.
 
@@ -285,6 +290,8 @@ void tile_anim_queued(Wram* w, PortCpu* c, BodyWork* k);
 #define PLAYER_BUTTONS_PC 0x80ce19u  // after `JSR $F327`
 #define PLAYER_LOOP_PC 0x80ce23u     // after `JSR $CE72`
 #define PLAYER_BRANCH_PC 0x80d1eau   // `$80:D1EA`, called
+#define PLAYER_HURT_CALL_PC 0x80ce01u  // `JSR $D01B`, after the state's `RTS`
+#define PLAYER_DEAD_CALL_PC 0x80ce20u  // `JSR $CE72`, after `$CE25`'s `RTS`
 #define PLAYER_HURT_PC 0x80d01bu     // `$80:D01B`, called
 #define PLAYER_WON_PC 0x80ce25u      // `$80:CE25`, called
 #define PLAYER_DEAD_PC 0x80ce72u     // `$80:CE72`, called
@@ -294,7 +301,10 @@ void tile_anim_queued(Wram* w, PortCpu* c, BodyWork* k);
 #define PLAYER_MOVE_CALL_PC 0x80ce15u   // the `RTS` into the movement handler
 #define PLAYER_PUBLISH_PC 0x80ce16u     // `JSR $F327`
 #define PLAYER_WON_CALL_PC 0x80ce1du    // `JSR $CE25`
-#define PLAYER_BRANCH_JMP_PC 0x80d1ecu  // `JMP ($D1EF,X)`
+// The states' handlers, a word each by `$70`, which is even and under
+// sixteen.
+#define PLAYER_STATES 0x80d1efu
+#define PLAYER_STATE_LIMIT 0x0010u
 #define PLAYER_HURT_EVENT_PC 0x80d02du  // an event request: the ROM's
 #define PLAYER_HURT_RESET_RTS_PC 0x80d02cu
 #define PLAYER_HURT_RTS_PC 0x80d081u
@@ -302,6 +312,16 @@ void tile_anim_queued(Wram* w, PortCpu* c, BodyWork* k);
 #define PLAYER_WON_END_PC 0x80ce2au   // no neighbours left: the ROM's
 #define PLAYER_DEAD_RTS_PC 0x80ce79u
 #define PLAYER_DEAD_END_PC 0x80ce7au  // no health left: the ROM's
+
+// A player who has died and has none left of what `$7E:1D4C` counts, which
+// I take to be lives, ends in a loop at `$80:CF0B`: a list of pictures for
+// the player's number, shown over and over. It is two stretches, the first
+// time round and every time after, and both end at the `JSL pictures_play`.
+#define PLAYER_OUT_SHOW_PC 0x80cf0bu
+#define PLAYER_OUT_AGAIN_PC 0x80cf14u  // `BRA $CF0B`
+#define PLAYER_OUT_PLAY_PC 0x80cf10u
+#define PLAYER_OUT_LISTS 0x80cf5fu     // a word a player
+#define PLAYER_DP_NUMBER 0x0c          // the player's number, doubled
 
 // `$7E:1D52`, the neighbours still to be saved, and `$7E:1CB8`, each player's
 // health, by the doubled index on the page at `$0E`. See `docs/wram-map.md`.
@@ -316,6 +336,9 @@ enum {
   PBODY_BUTTONS,    // LDA $1A : STA $1C
   PBODY_BRA,        // BRA $CDF7, always taken
   PBODY_BRANCH,     // LDX $70
+  PBODY_JUMP,       // JMP ($D1EF,X)
+  PBODY_JSR,        // JSR $D01B, or JSR $CE72
+  PBODY_OUT,        // LDX $0C : LDA $CF5F,X
   PBODY_EVENT,      // BIT $50 : BMI
   PBODY_SKIP,       // LDA $6A : BNE
   PBODY_RECOVER,    // DEC $52 : BPL
@@ -331,8 +354,14 @@ void player_state(Wram* w, PortCpu* c, BodyWork* k);
 void player_move(Wram* w, PortCpu* c, BodyWork* k);
 void player_buttons(Wram* w, PortCpu* c, BodyWork* k);
 void player_loop(PortCpu* c, BodyWork* k);
-void player_branch(Wram* w, PortCpu* c, BodyWork* k);
+// False for a state the table has no handler for.
+bool player_branch(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k);
 void player_hurt(Wram* w, PortCpu* c, BodyWork* k);
+void player_hurt_call(Wram* w, PortCpu* c, BodyWork* k);
+void player_dead_call(Wram* w, PortCpu* c, BodyWork* k);
+// False for a number that is neither player's.
+bool player_out_show(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k);
+bool player_out_again(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k);
 void player_won(Wram* w, PortCpu* c, BodyWork* k);
 void player_dead(Wram* w, PortCpu* c, BodyWork* k);
 

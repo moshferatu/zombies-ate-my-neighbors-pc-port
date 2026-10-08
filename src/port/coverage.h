@@ -102,6 +102,7 @@
   X(wave_thread_start, "wave_thread_tests", "Start alone on a pad: the wobble ends") \
   X(wave_thread_over, "wave_thread_tests",  "the table's length gone negative: it ends") \
   X(wave_thread_again, "wave_thread_tests", "neither, and a frame's sleep") \
+  X(wave_thread_called, "wave_thread_call", "the call of the build") \
   /* The game over's thread and two screens' starts -- see port/frontend.h. */ \
   X(game_over_frame,  "game_over_frame",    "a frame of the first loop: the layer up, the sprites down") \
   X(game_over_frame_2, "game_over_frame_2", "a frame of the second: the sprites, then the layer") \
@@ -112,6 +113,7 @@
   /* $82:AD5A the big letters -- see port/text.h. */                            \
   X(text_big_begin,   "text_big_begin",     "the first place of a string of big letters") \
   X(text_big_glyph,   "text_big_glyph",     "a big letter's six rows of tiles written") \
+  X(text_big_multiply, "text_big_multiply", "a big letter's number and its set's width, to the multiplier") \
   X(text_big_found,   "text_big_begin",     "a character that draws: its set's place and width, and off to multiply") \
   X(text_big_skipped, "text_big_begin",     "a character the table draws nothing for") \
   X(text_big_new_place, "text_big_begin",   "a byte of $FF: a new place") \
@@ -249,6 +251,15 @@
   X(slime_began,      "slime_begin",        "a record where it was started, facing down") \
   X(game_over_sprite_begun,"game_over_sprite_begin", "one of the game over's four sprites, above the screen") \
   X(portrait_sprites_begun,"portrait_sprites_begin", "the two sprites of the portraits' screen") \
+  X(title_sprites_begun, "title_sprites_begin", "the two sprites of the title") \
+  X(frontend_reset,     "frontend_reset",     "what every pass of the front end zeroes") \
+  X(opening_job_over,   "opening_job",        "the screen before the title is over: the job ends") \
+  X(opening_job_waited, "opening_job",        "not a fourth frame") \
+  X(opening_job_moved,  "opening_job",        "its third layer a pixel down and across") \
+  X(opening_wait_on,    "opening_wait",       "Start alone on neither pad") \
+  X(opening_wait_ended, "opening_wait",       "...on one: the screen is over") \
+  X(opening_counted,    "opening_count",      "a frame counted, and another to come") \
+  X(opening_count_done, "opening_count",      "fifteen counted") \
   X(tile_job_busy,    "tile_put_job",       "the list is being added to: left queued") \
   X(tile_job_empty,   "tile_put_job",       "...or has nothing on it") \
   X(tile_job_sent,    "tile_put_job",       "...or each word sent to its place in VRAM") \
@@ -599,6 +610,7 @@
   X(player_recovered, "player_hurt",       "the hit recovery count ran out and was held at $FFFF") \
   X(player_level_won, "player_won",        "no neighbours left, and the ROM ends the level") \
   X(player_died,      "player_dead",       "no health left, and the ROM has the player die") \
+  X(player_out_show,  "player_out_show",   "a player with none left: the list of pictures, once more") \
   X(walk_twice,       "player_walk",       "$54 bit 15: the ROM walks twice") \
   X(walk_solid,       "player_walk",       "solid ground where the step lands") \
   X(walk_reaction,    "player_walk",       "...with a reaction of its own, so the ROM walks") \
@@ -1631,6 +1643,10 @@
   /* $80:C872, $80:C8B8, $80:A084, $80:A09E, $82:D88C -- DMA and its jobs. */       \
   X(dma_to_cgram, "dma_to_cgram", "colours sent") \
   X(dma_to_vram, "dma_to_vram", "bytes sent to VRAM") \
+  X(dma_to_cgram_at, "dma_to_cgram_at", "bytes of colours sent, from a colour the caller names") \
+  X(hud_tiles_job, "hud_tiles_job", "the third layer's tiles sent to VRAM") \
+  X(hud_layer_set, "hud_layer_set", "where the third layer's map and tiles are") \
+  X(send_args, "send_args", "what a screen's next send is called with") \
   X(palette_job, "palette_job", "all 256 colours sent") \
   X(background_job, "background_job", "the background's second copy sent") \
   X(tile_anim_job_sent, "tile_anim_job", "an animated tile's frame sent") \

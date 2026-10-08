@@ -18228,3 +18228,65 @@ had a print in the frame's shim, to find the frame, since taken out.
 25 new, 20 are taken. Every priced call is refresh-exact. Declines: 3,198.
 
 Lockstep: 334,319 passes, 51 of 54 never part, the same three.
+
+## The wobble's call, the screens' sends, and the calls of a player's frame (2026-10-08)
+
+Thirty-nine entries more, 566. Over the twelve live movies the ROM's
+instructions go from 132,840 to 107,993.
+
+### An exit that is another entry
+
+Three of the new stretches end on the first instruction of a routine that
+is itself ported: `wave_thread_call` on `wave_hdma_build`, `player_branch`
+on a state's handler, and `text_big_multiply` on `text_big_glyph`. `verify`
+ends the call
+on top there and looks again, as it does for two calls ended by one
+instruction. `leave` makes nothing, since the instruction is a port's to
+run.
+
+### One instruction as a stretch
+
+`$80:9512` is `JSR $9570`. The stretch pushes the return and names the
+build's entry. It reads nothing. The build is then a call like any other
+and an NMI lands in it as it does under the ROM, and the tests at
+`$80:9515` begin when it has returned. Under HDMA the price is not
+checked, which is every one of its 12,561 calls over the corpus.
+
+### A call with its callee
+
+`$80:CE01` and `$80:CE20` are reached by an `RTS` and are each a `JSR`.
+The stretch is the `JSR` and the callee's port, with the callee's exits.
+`verify` also checks the callee's own row inside it, since the ROM passes
+its entry.
+
+`$80:CDFE` is the same shape and is not done. `player_frame` begins there,
+and the harness finds one row for an address.
+
+### `JML`
+
+`leave_step` makes a `JML`: the operand, and the bank from its fourth
+byte. Four fetches, with the interrupt polled before the last.
+
+### The sends' arguments
+
+`SEND_ARGS_BY_ADDRESS` in `port/dma.h` is 25 rows of entry, exit, whether a
+word is pulled first, the word pushed, and A, X and Y, with -1 for a part
+that is absent. A pull is 34 cycles in one byte, a push with its load 46
+in four, and a load 18 in three. One shim prices any of them.
+
+A row that pulls ends with S two above where it began. Nothing is written
+there.
+
+### Writes to the hardware from a stretch with exits
+
+`text_big_multiply` and `hud_layer_set` are `.hw` rows that leave by an
+exit. The trace is the DMA jobs' buffer. A run ends where a store's write
+begins, so the multiply is a store's three bytes, a write, the same again,
+and the three `NOP`s.
+
+### Checked
+
+34,603,665 calls across 54 movies, 0 diverged. 1,273 of 1,505 sites; all 16
+new ones are taken. Every priced call is refresh-exact. Declines: 3,198.
+
+Lockstep: 334,319 passes, 51 of 54 never part, the same three.

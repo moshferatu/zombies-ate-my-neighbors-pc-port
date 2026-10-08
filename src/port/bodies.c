@@ -676,12 +676,15 @@ void player_buttons(Wram* w, PortCpu* c, BodyWork* k) {
   c->pc = PLAYER_WON_CALL_PC;
 }
 
-// `$80:D1EA  LDX $70`, in front of `JMP ($D1EF,X)`.
-void player_branch(Wram* w, PortCpu* c, BodyWork* k) {
+// `$80:D1EA  LDX $70 : JMP ($D1EF,X)`: the state's handler.
+bool player_branch(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k) {
   c->x = dp_r16(w, c, 0x70);
   set_nz16(c, c->x);
   k->blocks[PBODY_BRANCH]++;
-  c->pc = PLAYER_BRANCH_JMP_PC;
+  if (c->x >= PLAYER_STATE_LIMIT || (c->x & 1u)) return false;
+  k->blocks[PBODY_JUMP]++;
+  c->pc = (PLAYER_STATES & 0xff0000u) | rom_word(rom, PLAYER_STATES + c->x);
+  return true;
 }
 
 // `$80:D01B`. Bit 15 of `$50` is an event request, and what it does is the
@@ -720,6 +723,13 @@ void player_hurt(Wram* w, PortCpu* c, BodyWork* k) {
   c->pc = PLAYER_HURT_RESET_RTS_PC;
 }
 
+// `$80:CE01  JSR $D01B`, which the state's handler comes back to.
+void player_hurt_call(Wram* w, PortCpu* c, BodyWork* k) {
+  push16(w, c, (uint16_t)(PLAYER_HURT_CALL_PC + 2));
+  k->blocks[PBODY_JSR]++;
+  player_hurt(w, c, k);
+}
+
 // `$80:CE25  LDA $1D52 : BNE $CE6D`. With no neighbours left the level is
 // over, and ending it is the ROM's.
 void player_won(Wram* w, PortCpu* c, BodyWork* k) {
@@ -748,6 +758,30 @@ void player_dead(Wram* w, PortCpu* c, BodyWork* k) {
   PORT_COVER(player_died);
   k->blocks[PBODY_TAKEN]++;
   c->pc = PLAYER_DEAD_END_PC;
+}
+
+// `$80:CE20  JSR $CE72`, which `$CE25` comes back to.
+void player_dead_call(Wram* w, PortCpu* c, BodyWork* k) {
+  push16(w, c, (uint16_t)(PLAYER_DEAD_CALL_PC + 2));
+  k->blocks[PBODY_JSR]++;
+  player_dead(w, c, k);
+}
+
+// `$80:CF0B  LDX $0C : LDA $CF5F,X`, and the `JSL pictures_play` after it.
+bool player_out_show(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k) {
+  c->x = dp_r16(w, c, PLAYER_DP_NUMBER);
+  if (c->x != 0 && c->x != 2) return false;
+  PORT_COVER(player_out_show);
+  lda(c, rom_word(rom, PLAYER_OUT_LISTS + c->x));
+  k->blocks[PBODY_OUT]++;
+  c->pc = PLAYER_OUT_PLAY_PC;
+  return true;
+}
+
+// `$80:CF14  BRA $CF0B`: the list is done, and is shown again.
+bool player_out_again(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k) {
+  k->blocks[PBODY_BRA]++;
+  return player_out_show(w, rom, c, k);
 }
 
 // ---------------------------------------------------------------------------

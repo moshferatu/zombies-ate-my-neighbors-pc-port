@@ -158,7 +158,13 @@ void wave_hdma_build(Wram* w, const Rom* rom, uint16_t dp, uint16_t in_x,
   wave_hdma_build_counted(w, rom, dp, in_x, in_y, in_c, out, &ignored);
 }
 
-// --- $80:9515 ----------------------------------------------------------------
+// --- $80:9512 and $80:9515 ---------------------------------------------------
+
+void wave_thread_call(Wram* w, PortCpu* c) {
+  PORT_COVER(wave_thread_called);
+  push16(w, c, (uint16_t)(WAVE_THREAD_CALL_PC + 2));
+  c->pc = WAVE_HDMA_ENTRY;
+}
 
 void wave_thread_tests(const Wram* w, PortCpu* c, WaveThreadWork* k) {
   for (int pad = 0; pad < 2; pad++) {

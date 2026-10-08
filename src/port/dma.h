@@ -3,6 +3,9 @@
 //
 //   $80:C872  dma_to_cgram        bytes of colours, from the first colour on
 //   $80:C8B8  dma_to_vram         bytes of tiles or of a tilemap, to an address
+//   $80:C892  dma_to_cgram_at     bytes of colours, from a colour its caller names
+//   $80:C2AB  hud_tiles_job       the third layer's tiles, from the cartridge
+//   $80:C2E8  hud_layer_set       ...and where that layer's map and tiles are
 //   $80:A084  palette_job         the level's 256 colours
 //   $80:A09E  background_job      the background's 128, from their second copy
 //   $82:D88C  tile_anim_job       the animated tiles that changed this frame
@@ -55,6 +58,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/hw.h"
 #include "port/wram.h"
 
@@ -62,6 +66,12 @@
 #define DMA_TO_CGRAM_RTL_PC 0x80c891u
 #define DMA_TO_VRAM_PC 0x80c8b8u
 #define DMA_TO_VRAM_RTL_PC 0x80c8dbu
+#define DMA_TO_CGRAM_AT_PC 0x80c892u
+#define DMA_TO_CGRAM_AT_RTL_PC 0x80c8b7u
+#define HUD_TILES_JOB_PC 0x80c2abu
+#define HUD_TILES_JOB_RTL_PC 0x80c2d9u
+#define HUD_LAYER_SET_PC 0x80c2e8u
+#define HUD_LAYER_SET_RTL_PC 0x80c2f6u
 #define PALETTE_JOB_PC 0x80a084u
 #define PALETTE_JOB_RTL_PC 0x80a092u
 #define BACKGROUND_JOB_PC 0x80a09eu
@@ -85,6 +95,14 @@
 #define TEXT_LINES_JOB_PC 0x82b9b6u   // the same instructions
 #define TEXT_LINES_JOB_RTL_PC 0x82b9d1u
 
+// The third layer's tiles, in the cartridge, and where its map and they are
+// in VRAM as the two registers say it.
+#define HUD_TILES_AT 0xe841u
+#define HUD_TILES_BANK 0x96u
+#define HUD_TILES_BYTES 0x1190u
+#define HUD_TILES_VRAM 0x4000u
+#define HUD_LAYER_MAP 0x64u    // `$2109`
+#define HUD_LAYER_TILES 0x44u  // `$210C`
 // The HUD's shadow, four rows of 32 words less 32, and where it goes.
 #define HUD_SHADOW_AT 0x5f36u
 #define HUD_SHADOW_BYTES 0x00c0u
@@ -174,6 +192,8 @@ enum {
   TPJ_NEXT,      // DEX : DEX : BPL
   TPJ_TAIL,      // STZ $D0 : CLC : RTL
   LR_HEAD,       // $80:88A9 six STZ : SEP #$30 : LDA #$00 : STA $210D
+  DCA_FIRST,     // REP #$20 : LDA $04,S : SEP #$20 : STA $2121
+  DMA_REP,       // REP #$20
   DMA_BLOCK_COUNT
 };
 
@@ -199,6 +219,20 @@ bool tile_anim_job_supported(const Wram* w);
 // `$82:D88C`. Returns how many tiles it sent. It runs once: carry clear. X
 // is left at `$FFFE`; with a tile sent, A is the word at `$1E82` and Y is 32.
 int tile_anim_job(Wram* w, const Rom* rom, HwTrace* t);
+
+// `$80:C892`. As `dma_to_cgram`, but from the colour `first`, which the
+// ROM's caller pushes as a word. It leaves 1 in A's low byte and that
+// word's high byte in A's.
+void dma_to_cgram_at(HwTrace* t, uint8_t bank, uint16_t at, uint16_t bytes,
+                     uint8_t first);
+
+// `$80:C2AB`, which `$80:C2DA` queues after the HUD is reset. It runs once:
+// carry clear. A is left `$4001`. It is `hud_upload_job` with other numbers.
+void hud_tiles_job(HwTrace* t);
+
+// `$80:C2E8`, the end of `$80:C2DA`, from where its `JSL` to queue the job
+// comes back to its `RTL`. `$44` is left in A's low byte.
+void hud_layer_set(HwTrace* t);
 
 // `$80:C34A`, which `hud_refresh` queues when the HUD has changed
 // (`port/hud.h`). It runs once: carry clear. A is left `$6401`, the high byte
@@ -239,5 +273,71 @@ void colours_job(HwTrace* t);
 // queued by the printer of several lines. It runs once: carry clear. A is
 // left `$007E`, and the address in VRAM, which it returns, in X.
 uint16_t text_map_job(const Wram* w, HwTrace* t);
+
+// --- What a screen's sends are called with -----------------------------------
+//
+// A screen of the front end sets itself up with a run of calls, one after
+// the other, to `dma_to_vram`, `dma_to_cgram` and `dma_to_cgram_at`, and
+// once to `$80:CD20`. Between each two there is nothing but the numbers the
+// next is called with. A send to VRAM is given its bank as a word on the
+// stack, which its caller pulls off afterwards, and the rest in A, X and Y:
+//
+//     PLA               the word the last call was given
+//     LDA #  : PHA      ...and this one's
+//     LDA #  : LDX #  : LDY #
+//
+// Not every one has every part. Each is a stretch here, from where the last
+// call comes back to the `JSL` of the next, or to the `RTS` or the first
+// instruction that is something else. They are named for where they are.
+// An absent part is -1.
+//
+//                                  pull  pushed  A       X       Y
+#define SEND_ARGS_BY_ADDRESS(X) \
+  /* `$80:91F7`, the screen before the title's colours */ \
+  X(8091ff, "$80:91FF", 0x8091ffu, 0x809208u, 0, -1, 0x009e, 0x8e76, 0x0100) \
+  X(80920c, "$80:920C", 0x80920cu, 0x809215u, 0, -1, 0x0094, 0xfeab, 0x0010) \
+  /* `$80:9290`, that screen's tiles and maps */ \
+  X(809290, "$80:9290", 0x809290u, 0x80929du, 0, 0x0097, 0xafc4, 0x5000, 0x0e20) \
+  X(8092a1, "$80:92A1", 0x8092a1u, 0x8092afu, 1, 0x009e, 0xaf00, 0x6800, 0x0800) \
+  X(8092b3, "$80:92B3", 0x8092b3u, 0x8092c1u, 1, 0x0092, 0xf6b1, 0x4000, 0x08e0) \
+  X(8092c5, "$80:92C5", 0x8092c5u, 0x8092d3u, 1, 0x009e, 0xa700, 0x6400, 0x0800) \
+  X(8092d7, "$80:92D7", 0x8092d7u, 0x8092e1u, 1, -1, 0x0083, 0xee8c, 0x0100) \
+  X(8092e5, "$80:92E5", 0x8092e5u, 0x8092eeu, 0, -1, 0x0094, 0xfeab, 0x0010) \
+  /* `$80:93AC`, the title's */ \
+  X(8093b1, "$80:93B1", 0x8093b1u, 0x8093beu, 0, 0x0092, 0x8000, 0x5000, 0x2800) \
+  X(8093c2, "$80:93C2", 0x8093c2u, 0x8093d0u, 1, 0x009e, 0xd700, 0x6800, 0x0800) \
+  X(8093d4, "$80:93D4", 0x8093d4u, 0x8093e2u, 1, 0x0095, 0xd4c3, 0x4000, 0x17e0) \
+  X(8093e6, "$80:93E6", 0x8093e6u, 0x8093f4u, 1, 0x009e, 0xcf00, 0x6400, 0x0800) \
+  X(8093f8, "$80:93F8", 0x8093f8u, 0x809402u, 1, -1, 0x0083, 0xf28c, 0x0100) \
+  X(809406, "$80:9406", 0x809406u, 0x809413u, 0, 0x0080, 0x0083, 0x9599, 0x0100) \
+  X(809417, "$80:9417", 0x809417u, 0x809418u, 1, -1, -1, -1, -1) \
+  /* `$80:97AC`, the portraits' screen's. The second send's length is what \
+     `$80:CD20` left in Y. */ \
+  X(8097ac, "$80:97AC", 0x8097acu, 0x8097b9u, 0, 0xa300, 0x0094, 0x007e, 0x8000) \
+  X(8097bd, "$80:97BD", 0x8097bdu, 0x8097c8u, 1, 0x007e, 0x8000, 0x2000, -1) \
+  X(8097cc, "$80:97CC", 0x8097ccu, 0x8097dau, 1, 0x0097, 0xd5a2, 0x4000, 0x0a70) \
+  X(8097de, "$80:97DE", 0x8097deu, 0x8097ecu, 1, 0x0096, 0xff0d, 0x5000, 0x00e0) \
+  X(8097f0, "$80:97F0", 0x8097f0u, 0x8097feu, 1, 0x009e, 0xbf00, 0x7000, 0x0800) \
+  X(809802, "$80:9802", 0x809802u, 0x809810u, 1, 0x009e, 0xc700, 0x6800, 0x0800) \
+  X(809814, "$80:9814", 0x809814u, 0x809822u, 1, 0x009e, 0xb700, 0x6400, 0x0800) \
+  X(809826, "$80:9826", 0x809826u, 0x809830u, 1, -1, 0x0083, 0xef8c, 0x0100) \
+  X(809834, "$80:9834", 0x809834u, 0x809841u, 0, 0x0080, 0x009e, 0x8f76, 0x0100) \
+  X(809845, "$80:9845", 0x809845u, 0x809846u, 1, -1, -1, -1, -1)
+
+typedef struct {
+  uint32_t pc, exit;
+  bool pull;
+  int32_t pushed, a, x, y;
+} SendArgs;
+
+enum {
+#define X(at, sym, pc, exit, pull, pushed, a, x, y) SEND_ARGS_AT_##at,
+  SEND_ARGS_BY_ADDRESS(X)
+#undef X
+  SEND_ARGS_COUNT
+};
+extern const SendArgs SEND_ARGS[SEND_ARGS_COUNT];
+
+void send_args(Wram* w, PortCpu* c, const SendArgs* args);
 
 #endif
