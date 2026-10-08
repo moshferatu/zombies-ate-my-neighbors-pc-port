@@ -8,8 +8,9 @@
 //
 //   $81:CCE8  frame   the state body, then the picture and the touch
 //
-// What is not here is the thread's setup and its death, and of its attack
-// only the stretches between its sleeps are. The attack plays two animations
+// Of the thread's setup, `slime_begin` is the record and the page, as far
+// as the pictures it plays first. What is not here is the rest of that and
+// its death, and of its attack only the stretches between its sleeps are. The attack plays two animations
 // that sleep inside the call. A pass that begins one ends there, at the
 // `JSL` that plays the first, with the state's return still on the stack:
 // `SlimeLog::attack_began` says so.
@@ -94,6 +95,16 @@
 // the stack, and still there when a pass ends inside the state.
 #define SLIME_STATE_RETURN 0xccefu
 #define SLIME_YIELD_TICKS 4
+#define SLIME_BEGIN_PC 0x81cc4fu       // `JSL`, for a record
+#define SLIME_BEGIN_PLAY_PC 0x81cca8u  // `JSL pictures_play`, A their list
+#define SLIME_FIRST_PICTURES 0xccb7u
+#define SLIME_DP_ARG_X 0x00            // where the thread was started
+#define SLIME_DP_ARG_Y 0x02
+#define SLIME_START_PICTURE 0xbf11u
+#define SLIME_PICTURE_BANK 0x0090u
+#define SLIME_COLLIDE_ID 0x0003
+#define SLIME_START_DIRECTION 10       // down
+#define SLIME_HITS 4
 
 // The state bodies, by the address the thread keeps in `$16`.
 #define SLIME_STATE_CRAWL 0xc9fau
@@ -307,6 +318,12 @@ bool slime_frame_end_supported(const Wram* w, uint16_t page);
 bool slime_frame_end(Wram* w, const Rom* rom, uint16_t page, SlimeLog* log);
 
 void slime_glob_dress(Wram* w, PortCpu* c, SlimeAttackWork* k);
+
+// `$81:CC4F`: a record where the thread was started, facing down, with
+// four hits to take, and everything else on its page that a pass reads
+// zeroed. It ends at the `JSL` that plays its first pictures. With no
+// record free, which the ROM does not test for, it says so in `k`.
+void slime_begin(Wram* w, PortCpu* c, SlimeAttackWork* k);
 void slime_glob_aim(Wram* w, PortCpu* c, SlimeAttackWork* k);
 
 // `$81:CE40`, from the return of the splash's sound: the box that

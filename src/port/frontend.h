@@ -8,6 +8,8 @@
 //   $80:8B70  game_over_scroll_job   the game over's third layer, each frame
 //   $80:8B82  game_over_colours_job  ...and three of its colours
 //   $80:8A58  game_over_fall         its four sprites, a step down
+//   $80:8AD3  game_over_sprite_begin ...and the start of each
+//   $80:9847  portrait_sprites_begin the two sprites of the portraits' screen
 //   $80:8A11  game_over_frame        the game over's thread, a frame of
 //   $80:8A30                         each of its two loops
 //   $80:9A52  portrait_copy          a player's portrait, into the text map
@@ -185,6 +187,44 @@ typedef struct {
 } GameOverFrameLog;
 
 void game_over_frame(Wram* w, PortCpu* c, bool second, GameOverFrameLog* log);
+
+// --- $80:8AD3  one of the game over's four sprites, begun ---------------------
+//
+// X is twice which. A record is taken and its pointer kept at `$08,X` on
+// the thread's page. Its place is from two tables, across at `$80:8BAB` and
+// down at `$80:8BB3`, and the places down are all above the screen. The
+// record is in the screen's space and not the level's. Then the thread is
+// told to call nothing when something touches one.
+#define GAME_OVER_SPRITE_BEGIN_PC 0x808ad3u
+#define GAME_OVER_SPRITE_BEGIN_RTS_PC 0x808b16u
+#define GAME_OVER_SPRITE_XS 0x808babu
+#define GAME_OVER_SPRITE_YS 0x808bb3u
+#define GAME_OVER_SPRITE_PICTURE 0xe9a7u
+#define FRONTEND_PICTURE_BANK 0x008fu
+#define GAME_OVER_SPRITE_FLAGS 0xc028u
+
+bool game_over_sprite_begin_supported(uint16_t x);
+// False with no record free, which the ROM does not test for.
+bool game_over_sprite_begin(Wram* w, const Rom* rom, PortCpu* c,
+                            uint16_t* record_out);
+
+// --- $80:9847  the two sprites of the portraits' screen ----------------------
+//
+// Two records, kept at `$50` and `$52` on the thread's page, at 72 and 192
+// across and 80 down the screen, both with the picture at `$8F:E82D`. I
+// have not looked at what it is. It ends where the handler's call comes
+// back, at `$80:98A9`.
+#define PORTRAIT_SPRITES_BEGIN_PC 0x809847u
+#define PORTRAIT_SPRITES_BEGUN_PC 0x8098a9u
+#define PORTRAIT_DP_SPRITES 0x50
+#define PORTRAIT_SPRITE_LEFT_X 0x0048
+#define PORTRAIT_SPRITE_RIGHT_X 0x00c0
+#define PORTRAIT_SPRITE_Y 0x0050
+#define PORTRAIT_SPRITE_PICTURE 0xe82du
+#define PORTRAIT_SPRITE_FLAGS 0xc000u
+
+// False with fewer than two records free. `records` are the two it took.
+bool portrait_sprites_begin(Wram* w, PortCpu* c, uint16_t records[2]);
 
 // --- $80:9A52  a portrait ----------------------------------------------------
 //

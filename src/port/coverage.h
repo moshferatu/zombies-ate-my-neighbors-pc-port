@@ -131,6 +131,9 @@
   X(jumper_fell,      "jumper_down",        "a pixel down") \
   X(jumper_landed,    "jumper_down",        "on the ground, and its collision id back") \
   X(jumper_ended,     "jumper_up",          "its event gone negative: the ROM's") \
+  X(jumper_stood,     "jumper_stand",       "on the ground: sixty frames asked for") \
+  X(jumper_jumped,    "jumper_rested",      "the sixty over: off the ground, a pixel up") \
+  X(jumper_disturbed, "jumper_rested",      "...or an event in them: the ROM's") \
   /* The logo screens, between their waits -- see port/logo.h. */               \
   X(logo_tile_stepped, "logo_slide",        "an other frame: the tile two on") \
   X(logo_tile_wrapped, "logo_slide",        "...and past twelve, back to six") \
@@ -159,7 +162,10 @@
   X(card_wait_waited, "card_wait",          "no button, and frames left") \
   X(card_wait_pressed, "card_wait",         "a button") \
   X(card_wait_over,   "card_wait",          "six seconds and none") \
-  /* $81:8300 the figure that rises -- see port/riser.h. */                     \
+  /* $81:8294 the figure that rises -- see port/riser.h. */                     \
+  X(riser_began,      "riser_begin",        "in front of every layer, and the first of five pictures") \
+  X(riser_showed,     "riser_shown",        "the next of the five") \
+  X(riser_lifted,     "riser_shown",        "...or after the fifth, the first pixel up") \
   X(riser_rose,       "riser_frame",        "a pixel up") \
   X(riser_next_picture, "riser_frame",      "a fourth step: the next picture") \
   X(riser_went_round, "riser_frame",        "past the fifth picture, and the first again") \
@@ -233,6 +239,21 @@
   X(tracker_met_ground,"tracker_frame",     "the ground is in the way, and it ends") \
   X(tracker_ran_out,  "tracker_frame",      "its frames are up, and it ends") \
   X(tracker_ended,    "tracker_frame",      "the loop is over") \
+  X(tracker_began,    "tracker_begin",      "a record, a place and a speed the way it was sent") \
+  X(slime_began,      "slime_begin",        "a record where it was started, facing down") \
+  X(game_over_sprite_begun,"game_over_sprite_begin", "one of the game over's four sprites, above the screen") \
+  X(portrait_sprites_begun,"portrait_sprites_begin", "the two sprites of the portraits' screen") \
+  X(tile_job_busy,    "tile_put_job",       "the list is being added to: left queued") \
+  X(tile_job_empty,   "tile_put_job",       "...or has nothing on it") \
+  X(tile_job_sent,    "tile_put_job",       "...or each word sent to its place in VRAM") \
+  X(layers_set_up,    "layers_setup",       "the mode, and where three layers' maps and tiles are") \
+  X(layers_reset,     "layers_reset",       "...and every layer at its corner first") \
+  X(hud_side_1_blanked,"hud_side_1_blank",  "the first player's side of the HUD's shadow blanked") \
+  X(hud_side_2_blanked,"hud_side_2_blank",  "the second player's") \
+  X(mainloop_leaving_on,"mainloop_leaving_frame", "not everyone playing has left yet") \
+  X(mainloop_all_out, "mainloop_leaving_frame", "...or they have: the level is done") \
+  X(mainloop_none_rescued,"mainloop_leaving_frame", "...or neither has a neighbour: the game is over") \
+  X(mainloop_leaving_nobody,"mainloop_leaving_frame", "...or nobody is playing") \
   X(follower_frame_ended,"follower_frame",  "the word says it is over") \
   X(follower_moved_on,"follower_frame",     "a seventh frame: the next place") \
   X(follower_frame_looks,"follower_frame",  "a sixteenth frame: out by the sleep, a return on the stack") \
@@ -406,6 +427,9 @@
   X(seeker_lapped_back,"seeker_frame",      "...or past the first, going the other way") \
   X(seeker_circle_asks,"seeker_frame",      "a fourth frame: next it asks who is nearest") \
   X(seeker_circle_stayed,"seeker_frame",    "a lap done, and the draw says go on") \
+  X(seeker_circle_off_level,"seeker_frame", "...or says stop, from a place off the level") \
+  X(seeker_circle_bad_ground,"seeker_frame","...or over ground that will not do") \
+  X(seeker_circle_left,"seeker_frame",      "...or from a place that will: it stops circling") \
   X(seeker_ask_same,  "seeker_frame",       "still nearest to the one it circles") \
   X(seeker_ask_other_far,"seeker_frame",    "...or someone else is, not near enough to matter") \
   X(seeker_watched,   "seeker_frame",       "still, facing whoever is nearest") \

@@ -8,7 +8,10 @@
 //             starts to circle them.
 //   $82:E8F9  It circles: forty places round whoever it chose, forty-eight
 //             pixels out, one way or the other. Every fourth frame of the
-//             game it goes by way of `$82:E8D9` next.
+//             game it goes by way of `$82:E8D9` next. Once it has been round,
+//             fifty-five draws in 256 say stop: it does if where it is is on
+//             the level and the ground there will do, and its next state is
+//             the one at `$82:EA35`.
 //   $82:E8D9  ...which asks whether they are still there and still the
 //             nearest, and goes on circling.
 //   $82:EB64  It stays where it is and faces whoever is nearest.
@@ -100,6 +103,7 @@
 #define SEEKER_STATE_DART 0xecc1u
 #define SEEKER_STATE_PLACE 0xebcfu
 #define SEEKER_STATE_EE0E 0xee0eu  // the ROM's
+#define SEEKER_STATE_EA35 0xea35u  // the ROM's
 
 #define SEEKER_TOO_NEAR 0x0020
 #define SEEKER_NEAR 0x0030
@@ -113,6 +117,11 @@
 #define SEEKER_FLIPPED 0x0002
 #define SEEKER_TOO_FAR 0x00f0
 #define SEEKER_SWOOP_ODDS 0x37        // of 256, each frame after a lap
+#define SEEKER_LEAVING_PICTURE 0xda65u
+#define SEEKER_PICTURE_BANK 0x0090u
+// All but `ACTOR_PRIORITY_TOP` and `ACTOR_SORT_FIRST`.
+#define SEEKER_LEAVING_FLAGS 0xffd7u
+#define SEEKER_LEAVING_FRAMES 8
 #define SEEKER_WATCH_ODDS 0x23
 #define SEEKER_WATCH_B_ODDS 0x28
 #define SEEKER_HOLD_ODDS 0x1e
@@ -205,6 +214,9 @@ enum {
   SF_PLACE_X,       // $EBFA-$EC0D
   SF_PLACE_Y,       // $EC12-$EC21
   SF_PLACE_MAP,     // $EC22-$EC2B
+  SF_CIRCLE_MAP,    // $E955-$E95E
+  SF_CIRCLE_GROUND, // $E95F-$E968
+  SF_CIRCLE_LEAVE,  // JMP $EA0C, and $EA0C-$EA33
   SF_BLOCK_COUNT
 };
 

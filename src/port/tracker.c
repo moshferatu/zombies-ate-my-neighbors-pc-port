@@ -3,7 +3,9 @@
 
 #include "port/tracker.h"
 
+#include "port/begin.h"  // RECORD_SEARCHED_FIRST
 #include "port/coverage.h"
+#include "port/thread.h"
 
 static uint16_t field(const Wram* w, const PortCpu* c, uint16_t at) {
   return wram_r16(w, (uint16_t)(c->d + at));
@@ -121,4 +123,56 @@ void tracker_frame(Wram* w, const Rom* rom, PortCpu* c, TrackerWork* k) {
   set_nz16(c, c->a);
   k->blocks[TK_AGAIN]++;
   c->pc = TRACKER_SLEEP_PC;
+}
+
+bool tracker_begin_supported(const Wram* w, uint16_t page) {
+  return wram_r16(w, (uint16_t)(page + TRACKER_DP_ASKED_WAY)) <
+         2 * TRACKER_WAYS;
+}
+
+bool tracker_begin(Wram* w, const Rom* rom, PortCpu* c, uint16_t* record_out) {
+  SlotAllocRegs slot;
+  actor_slot_alloc(w, c->db, &slot);
+  if (slot.c) return false;
+  PORT_COVER(tracker_began);
+  const uint16_t record = slot.a;
+  *record_out = record;
+  // The search for a record subtracts for each it passes over, which leaves
+  // overflow clear; taking the first, it leaves it as it was.
+  if (record != RECORD_SEARCHED_FIRST) set_v(c, false);
+
+  const uint16_t x = field(w, c, TRACKER_DP_ASKED_X);
+  set_field(w, c, TRACKER_DP_X, x);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), x);
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), TRACKER_HEIGHT);
+  const uint16_t y = field(w, c, TRACKER_DP_ASKED_Y);
+  set_field(w, c, TRACKER_DP_Y, y);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
+
+  const uint16_t way = asl16(c, field(w, c, TRACKER_DP_ASKED_WAY));
+  set_field(w, c, TRACKER_DP_WAY, way);
+  set_field(w, c, TRACKER_DP_SPEED_X, rom_word(rom, TRACKER_START_SPEEDS + way));
+  set_field(w, c, TRACKER_DP_SPEED_Y,
+            rom_word(rom, TRACKER_START_SPEEDS + 2 + way));
+
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), TRACKER_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), TRACKER_START_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), TRACKER_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  set_field(w, c, TRACKER_DP_FRAMES_LEFT, TRACKER_FRAMES);
+  set_field(w, c, TRACKER_DP_ENDED, 0);
+  set_field(w, c, TRACKER_DP_PICTURE, 0);
+  set_field(w, c, TRACKER_DP_PICTURE_LEFT, 0);
+
+  // Things that touch it are told to its handler.
+  c->a = TRACKER_HANDLER;
+  c->y = TRACKER_HANDLER_BANK;
+  thread_set_handler(w, c);
+  c->a = record;
+  set_nz16(c, c->a);
+  c->pc = TRACKER_BEGIN_RTS_PC;
+  return true;
 }

@@ -172,11 +172,16 @@
 // caller anywhere in the ROM — searched for `JSR`, `JMP`, `JSL` and `JML`, all
 // four came back empty. It is not ported and not registered.
 //
-// `$80:C1CF` and its neighbours call `$C0A3` and `$C139` after clearing the
-// whole shadow tilemap; they are a screen transition rather than a refresh, and
-// they are why the two panels are registered in their own right as well as under
+// `$80:C1CF` calls `$C0A3` or `$C139`, by which player A says, and they
+// are why the two panels are registered in their own right as well as under
 // `$80:C07F`. A routine reached from two places and checked at one is checked
 // half as hard.
+//
+// Between two calls of the panel it blanks that player's side of the shadow:
+// fifteen words at the start of each of the four rows, or the fifteen from
+// the eighteenth on. `hud_side_blank` is that stretch, from the first call's
+// return to the second call. I had written here that it clears the whole
+// shadow. It does not.
 //
 // Port code: libc only.
 
@@ -192,6 +197,13 @@
 #define HUD_REFRESH_ENTRY 0x80c07fu
 #define HUD_PANEL1_ENTRY 0x80c0a3u
 #define HUD_PANEL2_ENTRY 0x80c139u
+#define HUD_SIDE_BLANK_1_PC 0x80c1d4u
+#define HUD_SIDE_BLANK_1_JSR_PC 0x80c1f1u  // `JSR`, the panel again
+#define HUD_SIDE_BLANK_2_PC 0x80c1f8u
+#define HUD_SIDE_BLANK_2_JSR_PC 0x80c215u
+#define HUD_SIDE_WORDS 15
+#define HUD_SIDE_2_WORD 17  // where the second player's side starts in a row
+#define HUD_SIDE_ROWS 4
 
 // The bank every absolute read in this cluster resolves against. `LDA $C5B6,X`
 // and `LDA $0000,Y` are the same instruction shape with a data bank of `$80`:
@@ -395,5 +407,8 @@ typedef struct {
 // `dp` is the caller's direct page, which is where the alternating phase lives.
 // `io` carries X, Y and carry in as well as out, for the reason above.
 void hud_refresh(Wram* w, const Rom* rom, uint16_t dp, HudRefreshRegs* io);
+
+// `side` is 0 or 1. It returns the count of changes, which it adds one to.
+uint16_t hud_side_blank(Wram* w, int side);
 
 #endif

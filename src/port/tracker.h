@@ -13,6 +13,10 @@
 // The picture is `$82:F11B`: every third frame the record gets the other of
 // two.
 //
+// `tracker_begin` is its start, `$82:F13C`: a record at the place it was
+// asked for, twelve pixels up, and a speed across and down from a table by
+// the way it was sent. It has 130 frames.
+//
 // I have not seen it on a screen.
 //
 // Port code: libc only.
@@ -32,6 +36,8 @@
 #define TRACKER_PC 0x82f054u
 #define TRACKER_SLEEP_PC 0x82f050u  // `JSL`, A already 1
 #define TRACKER_ENDED_PC 0x82f05eu
+#define TRACKER_BEGIN_PC 0x82f13cu      // `JSL`, for a record
+#define TRACKER_BEGIN_RTS_PC 0x82f19du
 
 #define TRACKER_BANK 0x82
 #define TRACKER_STEPS 0x82f0f7u     // across and down, four bytes a way
@@ -48,6 +54,21 @@
 #define TRACKER_DP_PICTURE 0x16
 #define TRACKER_DP_PICTURE_LEFT 0x18
 #define TRACKER_DP_FRAMES_LEFT 0x1a
+
+// The start's.
+#define TRACKER_DP_ASKED_X 0x00
+#define TRACKER_DP_ASKED_Y 0x02
+#define TRACKER_DP_ASKED_WAY 0x04      // the way, doubled
+#define TRACKER_DP_WAY 0x12            // ...and doubled again
+#define TRACKER_WAYS 9
+#define TRACKER_START_SPEEDS 0x82f19eu // across and down, four bytes a way
+#define TRACKER_HEIGHT 0x000c
+#define TRACKER_START_PICTURE 0xddb0u
+#define TRACKER_PICTURE_BANK 0x0090u
+#define TRACKER_COLLIDE_ID 0x0003
+#define TRACKER_FRAMES 0x0082
+#define TRACKER_HANDLER 0xf1c2u
+#define TRACKER_HANDLER_BANK 0x0082u
 
 enum {
   TK_FLAP,     // JSR $F11B, DEC $18 : BPL
@@ -75,5 +96,10 @@ typedef struct {
 } TrackerWork;
 
 void tracker_frame(Wram* w, const Rom* rom, PortCpu* c, TrackerWork* k);
+
+// False for a way the table does not have.
+bool tracker_begin_supported(const Wram* w, uint16_t page);
+// False with no record free, which the ROM does not test for.
+bool tracker_begin(Wram* w, const Rom* rom, PortCpu* c, uint16_t* record_out);
 
 #endif

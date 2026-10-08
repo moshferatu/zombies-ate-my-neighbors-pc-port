@@ -617,3 +617,17 @@ void hud_refresh(Wram* w, const Rom* rom, uint16_t dp, HudRefreshRegs* io) {
   io->z = f.z;
   io->c = f.c;
 }
+
+// --- $80:C1D4 and $80:C1F8  a side of the shadow blanked ----------------------
+
+uint16_t hud_side_blank(Wram* w, int side) {
+  PORT_COVER_IF(side, hud_side_2_blanked, hud_side_1_blanked);
+  const uint32_t first = W_HUD_TILEMAP + (side ? 2u * HUD_SIDE_2_WORD : 0u);
+  for (int row = 0; row < HUD_SIDE_ROWS; row++)
+    for (int word = 0; word < HUD_SIDE_WORDS; word++)
+      wram_w16(w, first + (uint32_t)row * HUD_TILEMAP_ROW + 2u * (uint32_t)word,
+               0);
+  const uint16_t changes = (uint16_t)(wram_r16(w, W_HUD_DIRTY) + 1);
+  wram_w16(w, W_HUD_DIRTY, changes);
+  return changes;
+}

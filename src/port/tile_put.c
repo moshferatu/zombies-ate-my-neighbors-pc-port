@@ -3,6 +3,7 @@
 #include "port/tile_put.h"
 
 #include "port/coverage.h"
+#include "port/dma.h"  // the runs' numbers
 #include "port/terrain.h"
 #include "port/thread.h"
 
@@ -94,4 +95,55 @@ void map_tile_put(Wram* w, const Rom* rom, uint16_t tile, uint16_t col,
     PORT_COVER(tile_put_off_screen);
   }
   wram_w16(w, W_TILE_PUT_BUSY, 0);
+}
+
+// --- $80:AC55  the list sent --------------------------------------------------
+
+#define REG_VMAIN 0x2115u   // how VRAM's address steps
+#define REG_VMADD 0x2116u   // VRAM's address, in words
+#define REG_VMDATA 0x2118u  // a word to it
+#define VMAIN_STEP_ON_HIGH 0x80u
+
+bool tile_put_job_supported(const Wram* w) {
+  const uint16_t bytes = wram_r16(w, W_TILE_PUT_BYTES);
+  return (bytes & 1) == 0 && bytes <= TILE_PUT_LIST_BYTES;
+}
+
+TileJobFate tile_put_job(Wram* w, HwTrace* t, uint16_t* a_out) {
+  const uint16_t busy = wram_r16(w, W_TILE_PUT_BUSY);
+  hw_run(t, TPJ_HEAD);
+  if (busy != 0) {
+    PORT_COVER(tile_job_busy);
+    hw_run(t, DMA_TAKEN);
+    hw_run(t, DMA_FLAG_RTL);
+    *a_out = busy;
+    return TILE_JOB_BUSY;
+  }
+  hw_run(t, TJ_HEAD);
+  hw_w8(t, REG_VMAIN, VMAIN_STEP_ON_HIGH);
+  const uint16_t bytes = wram_r16(w, W_TILE_PUT_BYTES);
+  hw_run(t, TPJ_COUNT);
+  if (bytes == 0) {
+    PORT_COVER(tile_job_empty);
+    hw_run(t, DMA_TAKEN);
+    hw_run(t, DMA_FLAG_RTL);
+    *a_out = VMAIN_STEP_ON_HIGH;
+    return TILE_JOB_EMPTY;
+  }
+
+  PORT_COVER(tile_job_sent);
+  uint16_t word = 0;
+  for (int at = bytes - 2; at >= 0; at -= 2) {
+    hw_run(t, at == bytes - 2 ? TPJ_FIRST : TPJ_LOAD);
+    hw_w16(t, REG_VMADD, wram_r16(w, (uint16_t)(W_TILE_PUT_VRAM + at)));
+    word = wram_r16(w, (uint16_t)(W_TILE_PUT_WORDS + at));
+    hw_run(t, TPJ_LOAD);
+    hw_w16(t, REG_VMDATA, word);
+    hw_run(t, TPJ_NEXT);
+    if (at != 0) hw_run(t, DMA_TAKEN);
+  }
+  wram_w16(w, W_TILE_PUT_BYTES, 0);
+  hw_run(t, TPJ_TAIL);
+  *a_out = word;
+  return TILE_JOB_SENT;
 }

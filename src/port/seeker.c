@@ -204,7 +204,29 @@ static void chase(Seeker* s) {
   ran(s, SF_CHASE_GO);
 }
 
-// `$82:E8F9`. After a lap it may stop circling, and that is the ROM's.
+// `$82:EA0C`: it stops circling. Its record gets another picture, and is no
+// longer drawn in front of every layer nor sorted ahead of the rest. Next
+// frame its state is the one at `$82:EA35`, which is the ROM's.
+static void leave_circle(Seeker* s) {
+  PortCpu* c = s->c;
+  PORT_COVER(seeker_circle_left);
+  set_field(s, SEEKER_DP_SLEEP, 1);
+  set_field(s, SEEKER_DP_STATE, SEEKER_STATE_EA35);
+  c->y = field(s, SEEKER_DP_RECORD);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_META), SEEKER_LEAVING_PICTURE);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_META_BANK), SEEKER_PICTURE_BANK);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(s->w, (uint16_t)(c->y + ACTOR_FLAGS)) &
+                      SEEKER_LEAVING_FLAGS));
+  c->a = SEEKER_LEAVING_FRAMES;
+  set_nz16(c, c->a);
+  set_field(s, SEEKER_DP_FRAMES, c->a);
+  set_field(s, SEEKER_DP_PICTURE, 0);
+  ran(s, SF_CIRCLE_LEAVE);
+  ran(s, SF_RTS);
+}
+
+// `$82:E8F9`. After a lap it may stop circling.
 static bool circle(Seeker* s) {
   PortCpu* c = s->c;
   const uint16_t place = field(s, SEEKER_DP_PLACE);
@@ -265,11 +287,47 @@ static bool circle(Seeker* s) {
   ran(s, SF_TAKEN);
   draw(s);
   cmp16(c, c->a, SEEKER_SWOOP_ODDS);
-  if (c->a < SEEKER_SWOOP_ODDS) return false;
-  PORT_COVER(seeker_circle_stayed);
   ran(s, SF_CIRCLE_DRAW);
-  ran(s, SF_TAKEN);
-  ran(s, SF_RTS);
+  if (c->a >= SEEKER_SWOOP_ODDS) {
+    PORT_COVER(seeker_circle_stayed);
+    ran(s, SF_TAKEN);
+    ran(s, SF_RTS);
+    return true;
+  }
+
+  // The draw says leave the circle. It does only from a place on the level,
+  // over ground that will do; from any other it circles on.
+  BoundsRegs map;
+  terrain_out_of_bounds(s->w, x, y, &map);
+  s->k->mapped = true;
+  s->k->map_exit = map.exit;
+  c->a = map.a;
+  c->x = x;
+  c->y = y;
+  set_c(c, map.c);
+  ran(s, SF_CIRCLE_MAP);
+  if (map.c) {
+    PORT_COVER(seeker_circle_off_level);
+    ran(s, SF_TAKEN);
+    ran(s, SF_RTS);
+    return true;
+  }
+  TerrainRegs* ground = &s->k->ground;
+  terrain_footprint_bit12(s->w, x, y, ground);
+  s->k->grounded = true;
+  c->a = ground->a;
+  c->x = ground->x;
+  c->y = ground->y;
+  set_c(c, ground->blocked);
+  set_v(c, ground->v);
+  ran(s, SF_CIRCLE_GROUND);
+  if (ground->blocked) {
+    PORT_COVER(seeker_circle_bad_ground);
+    ran(s, SF_TAKEN);
+    ran(s, SF_RTS);
+    return true;
+  }
+  leave_circle(s);
   return true;
 }
 

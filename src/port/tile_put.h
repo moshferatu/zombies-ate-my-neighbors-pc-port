@@ -12,6 +12,11 @@
 // `$ED` is set while it runs and cleared after, and the job leaves the list
 // alone while it is set.
 //
+// `tile_put_job` is that job. With `$ED` set it stays queued: carry set.
+// Otherwise it sends each word to its address, last on the list first, and
+// empties the list: carry clear. It records its writes as `port/hw.h` has
+// them, and the harness makes them.
+//
 // ## Its contract with the ROM
 //
 // WRAM as the ROM leaves it, and the registers and carry: what they are
@@ -27,11 +32,14 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/hw.h"
 #include "port/wram.h"
 
 #define MAP_TILE_PUT_PC 0x80abd3u
 #define MAP_TILE_PUT_RTL_PC 0x80ac54u
 #define MAP_TILE_JOB_PC 0x80ac55u  // the job that sends the list
+#define MAP_TILE_JOB_RTL_PC 0x80ac7bu  // of two: the other is at `$AC7D`
+#define TILE_PUT_LIST_BYTES 30  // fifteen words, and then the addresses
 
 #define W_TILE_PUT_BUSY 0x00edu
 #define W_TILE_PUT_BYTES 0x00d0u
@@ -75,5 +83,15 @@ typedef struct {
 
 void map_tile_put(Wram* w, const Rom* rom, uint16_t tile, uint16_t col,
                   uint16_t row, TilePutRegs* out);
+
+typedef enum {
+  TILE_JOB_BUSY,   // `$ED` set: nothing sent, and A is that word
+  TILE_JOB_EMPTY,  // nothing on the list: A is `$0080`, X is 0
+  TILE_JOB_SENT,   // A is the first word of the list, X is `$FFFE`
+} TileJobFate;
+
+// False for a list longer than its room, or an odd count of bytes.
+bool tile_put_job_supported(const Wram* w);
+TileJobFate tile_put_job(Wram* w, HwTrace* t, uint16_t* a_out);
 
 #endif

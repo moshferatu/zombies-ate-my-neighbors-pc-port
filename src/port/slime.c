@@ -695,3 +695,52 @@ void slime_glob_splash(Wram* w, PortCpu* c) {
   wram_w16(w, NOTIFY_BOX_DP_ID, c->a);
   c->pc = SLIME_GLOB_SPLASH_TELL_PC;
 }
+
+// --- $81:CC4F  a slime's start ------------------------------------------------
+
+void slime_begin(Wram* w, PortCpu* c, SlimeAttackWork* k) {
+  const uint16_t page = c->d;
+  SlotAllocRegs r;
+  actor_slot_alloc(w, c->db, &r);
+  if (r.c) {
+    k->declined = true;
+    return;
+  }
+  PORT_COVER(slime_began);
+  const uint16_t record = r.a;
+  k->record = record;
+  // The search's `SBC`s leave overflow clear. With the last record free it
+  // runs none.
+  if (record != ACTOR_SLOT_LAST) set_v(c, false);
+  set_c(c, r.c);
+  c->x = r.x;
+  c->y = record;
+  wram_w16(w, (uint16_t)(page + SLIME_DP_RECORD), record);
+  const uint16_t x = wram_r16(w, (uint16_t)(page + SLIME_DP_ARG_X));
+  wram_w16(w, (uint16_t)(page + SLIME_DP_X), x);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), x);
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  const uint16_t y = wram_r16(w, (uint16_t)(page + SLIME_DP_ARG_Y));
+  wram_w16(w, (uint16_t)(page + SLIME_DP_Y), y);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), SLIME_START_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), SLIME_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD),
+           wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), SLIME_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  wram_w16(w, (uint16_t)(page + SLIME_DP_DIRECTION), SLIME_START_DIRECTION);
+  wram_w16(w, (uint16_t)(page + SLIME_DP_HITS_LEFT), SLIME_HITS);
+  static const uint16_t ZEROED[] = {
+      SLIME_DP_PHASE,   SLIME_DP_BOX_LEFT,   SLIME_DP_BOX_RIGHT,
+      SLIME_DP_BOX_TOP, SLIME_DP_BOX_BOTTOM, SLIME_DP_TOUCHES,
+      SLIME_DP_FLASH_LEFT, SLIME_DP_FATE,
+  };
+  for (size_t i = 0; i < sizeof ZEROED / sizeof ZEROED[0]; i++)
+    wram_w16(w, (uint16_t)(page + ZEROED[i]), 0);
+  c->a = SLIME_FIRST_PICTURES;
+  set_nz16(c, c->a);
+  c->pc = SLIME_BEGIN_PLAY_PC;
+}

@@ -40,6 +40,7 @@
 #include "port/palcycle.h"
 #include "port/palfade.h"
 #include "port/password_check.h"
+#include "port/layers_setup.h"
 #include "port/pause.h"
 #include "port/pose.h"
 #include "port/werewolf.h"
@@ -8277,6 +8278,10 @@ static const CosimRun JP_COST[JP_BLOCK_COUNT] = {
     [JP_TURN] = {46, 5, 1},
     [JP_LAND] = {104, 11, 1},
     [JP_TAKEN] = {6, 0, 0},
+    [JP_SHOW] = {40 + 166, 3 + 12, 1},
+    [JP_STAND] = {104, 11, 1},
+    [JP_ANY] = {40, 4, 1},
+    [JP_BEGIN] = {172, 16, 2},
 };
 
 static bool accepts_jumper_frame(const Wram* w, const CosimRegs* in) {
@@ -10568,18 +10573,23 @@ static const uint32_t SCORES_LINE_EXITS[] = {SCORES_LINE_PRINT_PC,
                                              SCORES_LINE_DONE_PC};
 
 // ---------------------------------------------------------------------------
-// $81:8300  the figure that rises -- see `port/riser.h`
+// $81:8294  the figure that rises -- see `port/riser.h`
 // ---------------------------------------------------------------------------
 //
 // Each run is from `tools/cycles816.py --db=81`.
 static const CosimRun RS_COST[RS_BLOCK_COUNT] = {
-    [RS_HEAD] = {214, 20, 1},
+    [RS_AGAIN] = {46, 3, 0},
+    [RS_STEP] = {168, 17, 1},
     [RS_AROUND] = {64, 8, 1},
     [RS_COUNT] = {98, 7, 0},
     [RS_FOURTH] = {58, 6, 0},
     [RS_NEXT] = {24, 2, 0},
     [RS_YIELD] = {46, 4, 0},
     [RS_TAKEN] = {6, 0, 0},
+    [RS_BEGIN] = {348, 36, 2},
+    [RS_PICTURE] = {48, 8, 0},
+    [RS_SHOW] = {138, 11, 1},
+    [RS_RISE] = {74, 6, 1},
 };
 
 static bool accepts_riser_frame(const Wram* w, const CosimRegs* in) {
@@ -10606,7 +10616,55 @@ static void shim_riser_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(cycles);
 }
 
+static bool accepts_riser_begin(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         low_stack(in) &&
+         wram_r16(w, (uint16_t)(in->d + RISER_DP_RECORD)) < 0x1f00 &&
+         riser_begin_supported(in->a);
+}
+
+static bool accepts_riser_shown(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || !bank_sees_low_wram(in->db))
+    return false;
+  PortCpu c;
+  cpu_from(in, &c);
+  return wram_r16(w, (uint16_t)(in->d + RISER_DP_RECORD)) < 0x1f00 &&
+         riser_shown_supported(w, &c);
+}
+
+static void riser_cost(const RiserWork* k, const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < RS_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles_dp(&RS_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static void shim_riser_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  RiserWork k = {0};
+  cpu_from(in, &c);
+  riser_begin(w, rom, &c, &k);
+  cpu_to(&c, out);
+  riser_cost(&k, in);
+}
+
+static void shim_riser_shown(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  RiserWork k = {0};
+  cpu_from(in, &c);
+  riser_shown(w, rom, &c, &k);
+  cpu_to(&c, out);
+  riser_cost(&k, in);
+}
+
 static const uint32_t RISER_EXITS[] = {RISER_YIELD_PC, RISER_RTL_PC};
+static const uint32_t RISER_BEGIN_EXITS[] = {RISER_SHOW_YIELD_PC};
+static const uint32_t RISER_SHOWN_EXITS[] = {RISER_SHOW_YIELD_PC,
+                                             RISER_YIELD_PC, RISER_RTL_PC};
 
 // ---------------------------------------------------------------------------
 // $82:E7C7 and $82:E807  the thing that comes at a player -- see
@@ -10725,17 +10783,24 @@ static const CosimRun SF_COST[SF_BLOCK_COUNT] = {
     [SF_PLACE_X] = {206 - 126, 20 - 14, 1},
     [SF_PLACE_Y] = {202, 16, 3},
     [SF_PLACE_MAP] = {122, 10, 2},
+    [SF_CIRCLE_MAP] = {122, 10, 2},
+    [SF_CIRCLE_GROUND] = {122, 10, 2},
+    [SF_CIRCLE_LEAVE] = {18 + 408, 3 + 40, 5},
 };
 
-// The records it reads are in low WRAM, and the place it circles from is in
-// the table. Then the frame has to be one the port has.
+// The records it reads are in low WRAM, and circling, the place it circles
+// from is in the table. Then the frame has to be one the port has.
 static bool supported_seeker_frame(Wram* scratch, const Rom* rom,
                                    const CosimRegs* in) {
   if (!accepts_seeker_flap(scratch, in) ||
-      wram_r16(scratch, W_SCHED_CUR_TASK) >= WRAM_THREAD_SLOTS * 2 ||
-      wram_r16(scratch, (uint16_t)(in->d + SEEKER_DP_TARGET)) >= 0x1f00 ||
-      wram_r16(scratch, (uint16_t)(in->d + SEEKER_DP_PLACE)) >=
-          SEEKER_CIRCLE_END)
+      wram_r16(scratch, W_SCHED_CUR_TASK) >= WRAM_THREAD_SLOTS * 2)
+    return false;
+  const uint16_t state =
+      wram_r16(scratch, (uint16_t)(in->d + SEEKER_DP_STATE));
+  if ((state == SEEKER_STATE_CIRCLE || state == SEEKER_STATE_CIRCLE_ASK) &&
+      (wram_r16(scratch, (uint16_t)(in->d + SEEKER_DP_TARGET)) >= 0x1f00 ||
+       wram_r16(scratch, (uint16_t)(in->d + SEEKER_DP_PLACE)) >=
+           SEEKER_CIRCLE_END))
     return false;
   PortCpu c;
   static SeekerWork k;
@@ -16534,6 +16599,13 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [VC_TEST] = {58, 6, 1},
     [TMJ_HEAD] = {254, 25, 0},
     [TMJ_TAIL] = {88, 3, 0},
+    [TPJ_HEAD] = {40, 4, 1},
+    [TPJ_COUNT] = {58, 6, 1},
+    [TPJ_FIRST] = {82, 8, 0},
+    [TPJ_LOAD] = {58, 6, 0},
+    [TPJ_NEXT] = {36, 4, 0},
+    [TPJ_TAIL] = {82, 4, 1},
+    [LR_HEAD] = {252, 25, 0},
 };
 
 static HwTrace* dma_trace(void) {
@@ -20167,6 +20239,357 @@ static void shim_weed_seed_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t WEED_SEED_EXITS[] = {WEED_SEED_SLEEP_PC,
                                            WEED_SEED_LANDED_PC};
+
+// ---------------------------------------------------------------------------
+// A start, two that write the picture's registers, a list sent, a side of the
+// HUD, the level's second loop and a neighbour standing
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py` with the entry's own data bank.
+
+// `$82:F13C` -- see `port/tracker.h`. The run is from the `JSL` for a record
+// to the `PLA`, less what the two calls do.
+static const CosimRun TRACKER_RUN_BEGIN = {1152, 101, 12};
+
+static bool guard_tracker_begin(Wram* scratch, const Rom* rom,
+                                const CosimRegs* in) {
+  if (!accepts_begin(scratch, in) || in->db != TRACKER_BANK ||
+      !tracker_begin_supported(scratch, in->d))
+    return false;
+  PortCpu c;
+  uint16_t record;
+  cpu_from(in, &c);
+  return tracker_begin(scratch, rom, &c, &record);
+}
+
+static void shim_tracker_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  PortCpu c;
+  uint16_t record = 0;
+  cpu_from(in, &c);
+  tracker_begin(w, rom, &c, &record);
+  cpu_to(&c, out);
+  cosim_cost(saucer_alloc_cycles(record, in->fastrom) +
+             cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom) +
+             cosim_run_cycles_dp(&TRACKER_RUN_BEGIN, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t TRACKER_BEGIN_EXITS[] = {TRACKER_BEGIN_RTS_PC};
+
+// `$80:AC7E` and `$80:88A9` -- see `port/layers_setup.h`. Their absolute
+// stores have to find the registers, which a data bank of `$7E` would not.
+static bool accepts_layers(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && (in->db & 0x40) == 0;
+}
+
+static void layers_out(const CosimRegs* in, CosimRegs* out) {
+  dma_out(out, (uint16_t)((in->a & 0xff00u) | LAYERS_LEFT_IN_A),
+          (uint16_t)(in->x & 0x00ffu), (uint16_t)(in->y & 0x00ffu), false,
+          COSIM_FLAG_N | COSIM_FLAG_Z);
+}
+
+static void shim_layers_setup(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  layers_setup(t);
+  layers_out(in, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_layers_reset(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  layers_reset(w, t);
+  layers_out(in, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// `$80:AC55` -- see `port/tile_put.h`.
+static bool accepts_tile_put_job(const Wram* w, const CosimRegs* in) {
+  return accepts_vbl_job(w, in) && tile_put_job_supported(w);
+}
+
+static void shim_tile_put_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  uint16_t a = 0;
+  const TileJobFate fate = tile_put_job(w, t, &a);
+  out->a = a;
+  out->x = fate == TILE_JOB_BUSY ? in->x
+                                 : fate == TILE_JOB_EMPTY ? 0 : 0xfffe;
+  out->y = in->y;
+  // The `LDA $ED`'s, the `LDX $D0`'s, or the last `DEX`'s.
+  out->n = fate == TILE_JOB_BUSY ? (a & 0x8000u) != 0 : fate == TILE_JOB_SENT;
+  out->z = fate == TILE_JOB_EMPTY;
+  out->c = fate == TILE_JOB_BUSY;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  out->regs = COSIM_REG_ALL;
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// `$80:C1D4` and `$80:C1F8` -- see `port/hud.h`. Sixty long stores, none
+// through the direct page.
+static const CosimRun HB_RUN_HEAD = {36, 6, 0};   // LDA #$0000 : LDX #$001C
+static const CosimRun HB_RUN_WORD = {196, 20, 0}; // four STA, DEX : DEX : BPL
+static const CosimRun HB_RUN_TAIL = {56, 3, 0};   // INC $1E7A
+
+static bool accepts_hud_side_blank(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && bank_sees_low_wram(in->db);
+}
+
+static void hud_side_blank_shim(Wram* w, const CosimRegs* in, CosimRegs* out,
+                                int side) {
+  PortCpu c;
+  cpu_from(in, &c);
+  const uint16_t changes = hud_side_blank(w, side);
+  c.a = 0;
+  c.x = 0xfffe;
+  set_nz16(&c, changes);
+  c.pc = side ? HUD_SIDE_BLANK_2_JSR_PC : HUD_SIDE_BLANK_1_JSR_PC;
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &HB_RUN_HEAD, 1);
+  run_add(&run, &HB_RUN_WORD, HUD_SIDE_WORDS);
+  run_add(&run, &RUN_TAKEN, HUD_SIDE_WORDS - 1);
+  run_add(&run, &HB_RUN_TAIL, 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static void shim_hud_side_1_blank(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  hud_side_blank_shim(w, in, out, 0);
+}
+
+static void shim_hud_side_2_blank(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  hud_side_blank_shim(w, in, out, 1);
+}
+
+static const uint32_t HUD_SIDE_1_EXITS[] = {HUD_SIDE_BLANK_1_JSR_PC};
+static const uint32_t HUD_SIDE_2_EXITS[] = {HUD_SIDE_BLANK_2_JSR_PC};
+
+// `$80:8585`, a pass of the level's second loop -- see `port/mainloop.h`. It
+// is priced as `shim_mainloop_frame` prices the first, and hands over what
+// that does.
+static void shim_mainloop_leaving_frame(Wram* w, const Rom* rom,
+                                        const CosimRegs* in, CosimRegs* out) {
+  static const CosimRun JSL = {54, 4, 0};
+  static const CosimRun PAUSE_TEST = {98 + 6, 11, 0};
+  static const CosimRun PAUSE_REST = {106, 9, 0};
+  static const CosimRun EITHER = {80, 8, 0};  // LDA abs : ORA abs : BEQ
+  static const CosimRun COUNT = {240, 22, 0}; // $859D-$85B2
+  static const CosimRun TICKS = {18, 3, 0};   // LDA #$0002
+  static int hud_mean = -1;
+
+  const uint16_t pad = pause_pad_one(w);
+  HudWork work = {0};
+  HudRefreshRegs hud = {.x = in->x, .y = in->y, .c = pad >= PAUSE_PAD_SELECT,
+                        .work = &work};
+  uint16_t playing = 0;
+  const MainLoopNext next =
+      mainloop_leaving_frame(w, rom, in->d, &hud, &playing);
+
+  const bool fast = fetch_fast(in);
+  int cycles = 2 * cosim_run_cycles(&JSL, fast) +
+               cosim_run_cycles(&PAUSE_TEST, in->fastrom) +
+               cosim_run_cycles(&PAUSE_REST, in->fastrom) +
+               (pad != PAUSE_PAD_SELECT ? 6 : 0) +
+               cosim_run_cycles(&EITHER, fast);
+  cycles += (in->d & 0xff) == 0 && in->db < 0x80
+                ? hud_cycles(&work, in->fastrom)
+                : registry_cycles("hud_refresh", &hud_mean);
+  if (next == MAINLOOP_NONE_RESCUED) {
+    cycles += 6;
+  } else {
+    cycles += cosim_run_cycles(&EITHER, fast);
+    if (next == MAINLOOP_NO_PLAYERS) {
+      cycles += 6;
+    } else {
+      cycles += cosim_run_cycles(&COUNT, fast);
+      cycles += next == MAINLOOP_ALL_OUT
+                    ? 6
+                    : cosim_run_cycles(&RUN_BRA, fast) +
+                          cosim_run_cycles(&TICKS, fast);
+    }
+  }
+  cosim_cost(cycles);
+
+  out->x = hud.x;
+  out->y = hud.y;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C));
+  out->p_keep = PORT_P_V;
+  if (next == MAINLOOP_GOES_ON) {
+    // Carry is the compare's: as many playing as have left, or more.
+    if (playing >= wram_r16(w, W_MAINLOOP_OUT)) out->p |= PORT_P_C;
+    out->pc = MAINLOOP_LEAVING_YIELD_PC;
+    out->a = MAINLOOP_YIELD_TICKS;
+    out->regs = COSIM_REG_A;
+  } else if (next == MAINLOOP_ALL_OUT) {
+    out->p |= PORT_P_Z | PORT_P_C;
+    out->pc = MAINLOOP_ALL_OUT_PC;
+    out->a = playing;
+    out->regs = COSIM_REG_ALL;
+  } else {
+    // The `ORA` that came up zero.
+    if (hud.c) out->p |= PORT_P_C;
+    out->pc = MAINLOOP_NO_PLAYERS_PC;
+    out->a = 0;
+    out->p |= PORT_P_Z;
+    out->regs = COSIM_REG_ALL;
+  }
+}
+
+static const uint32_t MAINLOOP_LEAVING_EXITS[] = {
+    MAINLOOP_LEAVING_YIELD_PC, MAINLOOP_NO_PLAYERS_PC, MAINLOOP_ALL_OUT_PC};
+
+// `$83:9EDB` and `$83:9EED` -- see `port/jumper.h`. The record that stays on
+// the ground is read as well as the neighbour's.
+static bool accepts_jumper_stand(const Wram* w, const CosimRegs* in) {
+  return accepts_jumper_frame(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + JUMPER_DP_UNDER)) < 0x1f00;
+}
+
+static void jumper_cost(const JumperWork* k, const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < JP_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles_dp(&JP_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static void shim_jumper_stand(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  JumperWork k = {0};
+  cpu_from(in, &c);
+  jumper_stand(w, &c, &k);
+  cpu_to(&c, out);
+  jumper_cost(&k, in);
+}
+
+static void shim_jumper_rested(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  JumperWork k = {0};
+  cpu_from(in, &c);
+  jumper_rested(w, &c, &k);
+  cpu_to(&c, out);
+  jumper_cost(&k, in);
+}
+
+static const uint32_t JUMPER_STAND_EXITS[] = {JUMPER_STAND_YIELD_PC};
+static const uint32_t JUMPER_RESTED_EXITS[] = {JUMPER_UP_YIELD_PC,
+                                               JUMPER_ENDED_PC};
+
+// `$81:CC4F` -- see `port/slime.h`. From the `JSL` for a record to the
+// `LDA` before the `JSL` that plays its first pictures.
+static const CosimRun SLIME_RUN_BEGIN = {1024, 89, 15};
+
+static bool guard_slime_begin(Wram* scratch, const Rom* rom,
+                              const CosimRegs* in) {
+  (void)rom;
+  if (!accepts_slime_attack(scratch, in)) return false;
+  PortCpu c;
+  SlimeAttackWork k = {0};
+  cpu_from(in, &c);
+  slime_begin(scratch, &c, &k);
+  return !k.declined;
+}
+
+static void shim_slime_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  SlimeAttackWork k = {0};
+  cpu_from(in, &c);
+  slime_begin(w, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(saucer_alloc_cycles(k.record, in->fastrom) +
+             slime_own_cycles(&SLIME_RUN_BEGIN, in));
+}
+
+static const uint32_t SLIME_BEGIN_EXITS[] = {SLIME_BEGIN_PLAY_PC};
+
+// `$80:8AD3` and `$80:9847` -- see `port/frontend.h`. Each run is as far as
+// the `JSL` that names no handler, with that `JSL` in it.
+static const CosimRun GAME_OVER_RUN_SPRITE = {790, 71, 1};
+static const CosimRun PORTRAIT_RUN_SPRITES = {1106, 98, 3};
+
+// The tables are read through the data bank, and bank `$00` has the same
+// bytes there as bank `$80`.
+static bool accepts_screen_sprites(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 &&
+         (in->db == 0x80 || in->db == 0x00) && cur_task_ok(w);
+}
+
+static bool guard_game_over_sprite_begin(Wram* scratch, const Rom* rom,
+                                         const CosimRegs* in) {
+  if (!accepts_screen_sprites(scratch, in) ||
+      !game_over_sprite_begin_supported(in->x))
+    return false;
+  PortCpu c;
+  uint16_t record;
+  cpu_from(in, &c);
+  return game_over_sprite_begin(scratch, rom, &c, &record);
+}
+
+static void shim_game_over_sprite_begin(Wram* w, const Rom* rom,
+                                        const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  uint16_t record = 0;
+  cpu_from(in, &c);
+  game_over_sprite_begin(w, rom, &c, &record);
+  cpu_to(&c, out);
+  // Its two words of the tables are four bytes read through the data bank,
+  // and bank `$00` is slow where the run has them fast.
+  const int slow_tables = fetch_fast(in) && in->db == 0x00 ? 4 * 2 : 0;
+  cosim_cost(slow_tables + saucer_alloc_cycles(record, in->fastrom) +
+             cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom) +
+             cosim_run_cycles_dp(&GAME_OVER_RUN_SPRITE, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static bool guard_portrait_sprites_begin(Wram* scratch, const Rom* rom,
+                                         const CosimRegs* in) {
+  (void)rom;
+  if (!accepts_screen_sprites(scratch, in)) return false;
+  PortCpu c;
+  uint16_t records[2];
+  cpu_from(in, &c);
+  return portrait_sprites_begin(scratch, &c, records);
+}
+
+static void shim_portrait_sprites_begin(Wram* w, const Rom* rom,
+                                        const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  uint16_t records[2] = {0, 0};
+  cpu_from(in, &c);
+  portrait_sprites_begin(w, &c, records);
+  cpu_to(&c, out);
+  cosim_cost(saucer_alloc_cycles(records[0], in->fastrom) +
+             saucer_alloc_cycles(records[1], in->fastrom) +
+             cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom) +
+             cosim_run_cycles_dp(&PORTRAIT_RUN_SPRITES, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t GAME_OVER_SPRITE_BEGIN_EXITS[] = {
+    GAME_OVER_SPRITE_BEGIN_RTS_PC};
+static const uint32_t PORTRAIT_SPRITES_BEGIN_EXITS[] = {
+    PORTRAIT_SPRITES_BEGUN_PC};
 
 // The count is the table's length by construction, so it cannot drift from it.
 #define COSIM_COMMIT(tbl) \
@@ -24037,6 +24460,25 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 500,
     },
+    {
+        .name = "riser_begin",
+        .symbol = "$81:8294",
+        .entry = RISER_BEGIN_PC,
+        .run = shim_riser_begin,
+        .accepts = accepts_riser_begin,
+        COSIM_EXITS(RISER_BEGIN_EXITS),
+        .cycles = 600,
+    },
+    {
+        .name = "riser_shown",
+        .symbol = "$81:82CB",
+        .entry = RISER_SHOWN_PC,
+        .run = shim_riser_shown,
+        .accepts = accepts_riser_shown,
+        COSIM_EXITS(RISER_SHOWN_EXITS),
+        .uncalled = true,
+        .cycles = 700,
+    },
     // The thing that comes at a player: see `port/seeker.h`.
     {
         .name = "seeker_step",
@@ -25424,6 +25866,143 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 20000,
         // The address the walk returns to, and the walk's own nineteen.
         .stack_bytes = 22,
+    },
+    // The start of the thing level 37's launches: see `port/tracker.h`.
+    {
+        .name = "tracker_begin",
+        .symbol = "$82:F13C",
+        .entry = TRACKER_BEGIN_PC,
+        .run = shim_tracker_begin,
+        .supported = guard_tracker_begin,
+        COSIM_EXITS(TRACKER_BEGIN_EXITS),
+        .cycles = 2800,
+        // The record kept under two `JSL`s and what the first pushes.
+        .stack_bytes = 12,
+    },
+    // The layers set up for a level: see `port/layers_setup.h`.
+    {
+        .name = "layers_setup",
+        .symbol = "$80:AC7E",
+        .entry = LAYERS_SETUP_PC,
+        .ret_op = LAYERS_SETUP_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_layers_setup,
+        .accepts = accepts_layers,
+        .hw = true,
+        .cycles = 300,
+    },
+    {
+        .name = "layers_reset",
+        .symbol = "$80:88A9",
+        .entry = LAYERS_RESET_PC,
+        .ret_op = LAYERS_RESET_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_layers_reset,
+        .accepts = accepts_layers,
+        .hw = true,
+        .cycles = 900,
+    },
+    // The job that sends the tiles `map_tile_put` listed.
+    {
+        .name = "tile_put_job",
+        .symbol = "$80:AC55",
+        .entry = MAP_TILE_JOB_PC,
+        .ret_op = MAP_TILE_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_tile_put_job,
+        .accepts = accepts_tile_put_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 500,
+    },
+    // A side of the HUD's shadow blanked, between two calls of its panel.
+    {
+        .name = "hud_side_1_blank",
+        .symbol = "$80:C1D4",
+        .entry = HUD_SIDE_BLANK_1_PC,
+        .run = shim_hud_side_1_blank,
+        .accepts = accepts_hud_side_blank,
+        COSIM_EXITS(HUD_SIDE_1_EXITS),
+        .uncalled = true,
+        .cycles = 3200,
+    },
+    {
+        .name = "hud_side_2_blank",
+        .symbol = "$80:C1F8",
+        .entry = HUD_SIDE_BLANK_2_PC,
+        .run = shim_hud_side_2_blank,
+        .accepts = accepts_hud_side_blank,
+        COSIM_EXITS(HUD_SIDE_2_EXITS),
+        .uncalled = true,
+        .cycles = 3200,
+    },
+    // The level's second loop, a pass at a time, as `mainloop_frame` is the
+    // first's.
+    {
+        .name = "mainloop_leaving_frame",
+        COSIM_COMMIT(COMMIT_VBL_A),
+        .symbol = "$80:8585",
+        .entry = MAINLOOP_LEAVING_PC,
+        .run = shim_mainloop_leaving_frame,
+        .accepts = accepts_mainloop_frame,
+        COSIM_EXITS(MAINLOOP_LEAVING_EXITS),
+        .uncalled = true,
+        .cycles = 2200,
+        .stack_bytes = 16,
+    },
+    // The neighbour who jumps, on the ground: see `port/jumper.h`.
+    {
+        .name = "jumper_stand",
+        .symbol = "$83:9EDB",
+        .entry = JUMPER_STAND_PC,
+        .run = shim_jumper_stand,
+        .accepts = accepts_jumper_stand,
+        COSIM_EXITS(JUMPER_STAND_EXITS),
+        .uncalled = true,
+        .cycles = 320,
+        .stack_bytes = 2,  // a `JSR`
+    },
+    {
+        .name = "jumper_rested",
+        .symbol = "$83:9EED",
+        .entry = JUMPER_RESTED_PC,
+        .run = shim_jumper_rested,
+        .accepts = accepts_jumper_frame,
+        COSIM_EXITS(JUMPER_RESTED_EXITS),
+        .uncalled = true,
+        .cycles = 360,
+    },
+    // A slime's start: see `port/slime.h`.
+    {
+        .name = "slime_begin",
+        .symbol = "$81:CC4F",
+        .entry = SLIME_BEGIN_PC,
+        .run = shim_slime_begin,
+        .supported = guard_slime_begin,
+        COSIM_EXITS(SLIME_BEGIN_EXITS),
+        .cycles = 2400,
+        .stack_bytes = 6,  // a `JSL`, and `actor_slot_alloc`'s own three
+    },
+    // Two screens' sprites: see `port/frontend.h`.
+    {
+        .name = "game_over_sprite_begin",
+        .symbol = "$80:8AD3",
+        .entry = GAME_OVER_SPRITE_BEGIN_PC,
+        .run = shim_game_over_sprite_begin,
+        .supported = guard_game_over_sprite_begin,
+        COSIM_EXITS(GAME_OVER_SPRITE_BEGIN_EXITS),
+        .cycles = 2200,
+        .stack_bytes = 8,  // X kept under a `JSL` and what it pushes
+    },
+    {
+        .name = "portrait_sprites_begin",
+        .symbol = "$80:9847",
+        .entry = PORTRAIT_SPRITES_BEGIN_PC,
+        .run = shim_portrait_sprites_begin,
+        .supported = guard_portrait_sprites_begin,
+        COSIM_EXITS(PORTRAIT_SPRITES_BEGIN_EXITS),
+        .cycles = 3600,
+        .stack_bytes = 6,
     },
 };
 

@@ -5,6 +5,109 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Level 37's circle, five starts, the layers' registers and a level's second loop (2026-10-07)
+
+What the 65816 still executed over the twelve movies goes from 183,910 to
+**162,997** instructions of work. Live, each share reads as it did or a
+tenth of a percent higher: the work on `level1`, the calls on `level13`,
+`level21` and `level37`. The game registers 483 routines, 14 more. The
+corpus is the same 54 movies.
+
+Nothing here is one large piece. The residue is a long tail now, and this
+round took fourteen pieces off it and widened one that was there.
+
+* **Level 37's thing leaving its circle**, in `port/seeker.c`. Its frame
+  turned down every circling frame on which the draw said stop. Those
+  frames go on to two questions, and both were already the port's: is where
+  it is on the level (`$80:B422`), and will the ground there do
+  (`$80:AF66`)? A no to either and it circles on. Two yeses and it stops
+  (`$82:EA0C`): another picture, a frame's sleep, and a next state at
+  `$82:EA35` that is still the ROM's.
+  * The frame's guard also read two fields that only circling uses, in
+    every state. It reads them only when circling now.
+  * On `level37`'s 8,000 frames the frame was turned down 159 times, and is
+    61 times now.
+* **The start of the thing it launches**, `$82:F13C`, in `port/tracker.c`:
+  a record twelve pixels up at the place asked for, a speed across and down
+  from a table by the way it was sent, and 130 frames to live.
+* **A slime's start**, `$81:CC4F`, in `port/slime.c`: a record where the
+  thread was started, facing down, four hits to take. It ends at the call
+  that plays its first pictures, which sleeps.
+* **The rest of the figure that rises**, in `port/riser.c`. Only its last
+  loop was the port's. `riser_begin` (`$81:8294`) puts its record in front
+  of every layer where nothing can touch it. `riser_shown` (`$81:82CB`) is
+  each of its first five pictures, and after the fifth the first pixel up.
+* **The rest of the neighbour who jumps**, in `port/jumper.c`:
+  `jumper_stand` (`$83:9EDB`), on the ground for sixty frames, and
+  `jumper_rested` (`$83:9EED`), where the sixty end and it leaves the
+  ground. With these its whole round is the port's.
+* **A level's second loop**, `$80:8585`, in `port/mainloop.c`. With no
+  neighbours left to save the level's thread goes round a second loop until
+  everyone playing has left. A pass of it is `mainloop_leaving_frame`,
+  priced as the first loop's is.
+* **The picture's layers set up**, new in `port/layers_setup.c`.
+  `layers_setup` (`$80:AC7E`) writes the mode and where three layers have
+  their maps and tiles. `layers_reset` (`$80:88A9`) puts every layer at its
+  corner first. Both record their writes and the harness makes them on the
+  ROM's cycles.
+* **The job that sends tiles put into the map**, `$80:AC55`, in
+  `port/tile_put.c`: each word on the list to its address in VRAM, last
+  first.
+* **A side of the HUD blanked**, `$80:C1D4` and `$80:C1F8`, in
+  `port/hud.c`: fifteen words of each of four rows.
+  * `port/hud.h` said `$80:C1CF` clears the whole shadow. It clears one
+    player's side. The header says so now.
+* **Two screens' sprites**, in `port/frontend.c`: each of the game over's
+  four (`$80:8AD3`), and the two on the portraits' screen (`$80:9847`).
+
+* **Checked.** The corpus verifies at 34,251,025 calls across 54 movies
+  with 0 diverged, and 1,223 of 1,451 coverage sites. Every call priced is
+  exact. It turns down 3,490 calls, where it was 3,577.
+* **Lockstep** over the corpus: 334,319 passes, 51 of 54 never part, the
+  same three level-25 movies. Mean drift is a little smaller on every
+  movie. Four worst figures moved: `level1-map` by 36 cycles, `level49`
+  and `password-bcdf` by 12, all up, and `level1` down by 6.
+* **What it took off.** Bank `$80` goes from 98,178 instructions to 88,539,
+  bank `$81` from 44,231 to 41,248, bank `$82` from 31,368 to 25,689 and
+  bank `$83` from 10,133 to 7,521. `level37` is down by 7,818 and `level1`
+  by 2,149, which is over two fifths of what it had.
+* **Three mistakes of mine.**
+  * A patch written in a shell heredoc lost the backslashes that end the
+    rows of `coverage.h`, as the notes warn it will. I mended the row by
+    hand and wrote the rest as script files.
+  * `game_over_sprite_begin` was turned down every time, and then priced
+    eight cycles short. That screen runs with a data bank of `$00`. I had
+    asked for `$80`, and its tables read through bank `$00` are slow where
+    the run had them fast. The harness said MODEL WRONG on four calls of
+    four.
+  * I wrote that the bits level 37's thing clears when it stops circling
+    make it one nothing touches. They are the two that draw it in front of
+    every layer and sort it first. Corrected before the write-up.
+* **Untaken by the corpus.** Five of the 24 new sites.
+  * The second loop ending with nobody playing, or with neither player
+    having a neighbour.
+  * The tiles' job finding its list busy, or empty.
+  * Level 37's thing told to stop circling from a place off the level.
+* **Not established.**
+  * What level 37's thing does at `$82:EA35`. I call it leaving the circle
+    and no more.
+  * That `$1FB8` and `$1FBA` are who has left by the exit. The second loop
+    ends when they add up to how many are playing; I have not read what
+    sets them.
+  * What the jumping neighbour's second record is. It stays on the ground
+    where the neighbour started.
+  * What the picture at `$8F:E82D` on the portraits' screen is.
+* **Still the ROM's.**
+  * Of level 37's thing: the state at `$82:EE0E`, hiding, coming back and
+    being hit. Each sleeps inside a call.
+  * The hardware multiply in the big letters, `$82:ADDB`, on purpose.
+* **Next.** Bank `$80` is 88,539 of the 162,997, and 41,349 of that is the
+  two stretches that stay the ROM's on purpose. The largest piece after
+  them is still a level's start, `$80:85BB` on, 3,743: it is calls with a
+  few instructions between each. Then the creature at `$81:9063` on levels
+  13 and 41 (`$81:9530`, `$81:9107`, about 3,500), and the fractions at
+  `$80:F6B4`.
+
 ### The password screen: a password checked, a letter picked, and five fades (2026-10-07)
 
 What the 65816 still executed over the twelve movies goes from 203,078 to

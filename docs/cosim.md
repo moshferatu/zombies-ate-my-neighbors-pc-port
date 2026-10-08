@@ -17952,3 +17952,96 @@ the 21 new, none is untaken. Every priced call is refresh-exact.
 Declines: 3,577.
 
 Lockstep: 334,319 passes, 51 of 54 never part, the same three.
+
+## Level 37's circle, five starts, the layers' registers and a level's second loop (2026-10-07)
+
+Fourteen entries more, 483. Over the twelve live movies the ROM's
+instructions go from 183,910 to 162,997.
+
+### A guard that asked for more than the state reads
+
+`seeker_frame`'s guard turned a frame down unless the record at `$1E` was
+in low WRAM and the place at `$26` was in the circle's table. Only the two
+circling states read either. In the others they hold whatever was there
+last, and a frame the port has was the ROM's for no reason. The guard reads
+the state first now.
+
+The circling state itself ended at its draw. What follows the draw is two
+calls the port already had, and the frame's work has a place for each: the
+level's edge is priced by the exit it took and the ground by its probes, as
+the hidden state's are. The three new runs are the two calls' instructions
+and the stretch at `$82:EA0C`.
+
+### Starts that take a record
+
+Four of the new entries take a record from `$80:BE0C` at or next to
+their first instruction: `tracker_begin`, `slime_begin`,
+`game_over_sprite_begin` and `portrait_sprites_begin`, which takes two.
+`footballer_begin` did last round. Each is priced the same way:
+the run of its own instructions with the `JSL` in it, and
+`saucer_alloc_cycles` for the search, by which record it took.
+
+The ROM tests none of them for a full board. The guard runs the port on the
+scratch copy and turns the call down when no record is free.
+
+Where one ends is by what comes next. Three run on through
+`thread_set_handler`, which is eleven bytes with no branch, and charge its
+run. `slime_begin` stops at the call that plays its pictures, because that
+call sleeps.
+
+### A data bank of zero
+
+`game_over_sprite_begin` reads two tables through the data bank. The game
+over's thread runs with it `$00`, where the level's threads have `$80`. The
+bytes are the same. The speed is not: bank `$00` is slow whatever `$420D`
+says, and the run counts those four bytes as fast. The shim adds two
+cycles for each when the bank is `$00` and the cartridge is fast.
+
+### Registers written outside a job
+
+`layers_setup` and `layers_reset` are not vblank jobs. Screens call them
+from their threads. They are `.hw` entries all the same: the trace is the
+ROM's writes in its order, and `cosim_hw` makes them on its cycles. The
+existing runs priced all but one stretch: `LR_HEAD` is the six `STZ`s, the
+`SEP`, the `LDA` and the first store's fetch.
+
+Both begin their writes with `SEP #$30`, so X and Y come back with their
+high bytes clear. The shim hands that over.
+
+`layers_reset` clears the scroll's shadow at its entry, where the ROM
+clears it over its first 200 cycles. An NMI inside those would find the
+port's shadow already clear. Lockstep parts on nothing new.
+
+### A job with three ways out
+
+`tile_put_job` has two `RTL`s and three fates: the list busy, the list
+empty, the list sent. The row names the first `RTL`. A return is found by
+PC and stack, so the other is found too. What it leaves in A, X and the
+flags is different for each, and the shim sets them from the fate.
+
+### Entries that share a stack with the ROM
+
+`riser_begin` leaves a word on the stack and ends at a yield.
+`riser_shown` wakes from that yield, pulls the word, and either pushes it
+again or pushes two. So the port reads and writes the stack where the ROM
+does, as `riser_frame` already did, and its guard looks at the word under
+S before it says yes.
+
+`riser_frame`'s first run was `PLX : BRA` and the step together. It is two
+runs now, since `riser_shown` reaches the step without them. The sums are
+the same.
+
+### The second loop
+
+`mainloop_leaving_frame` is `mainloop_frame` with three questions for two.
+It keeps the sum it compares at `$0038`, as the ROM does. At the yield
+carry is the compare's. At the two ends by `BEQ $85B5` it is the HUD
+refresh's, which nothing after it changes.
+
+### Checked
+
+34,251,025 calls across 54 movies, 0 diverged. 1,223 of 1,451 sites; of the
+24 new, five are untaken. Every priced call is refresh-exact. Declines:
+3,490.
+
+Lockstep: 334,319 passes, 51 of 54 never part, the same three.

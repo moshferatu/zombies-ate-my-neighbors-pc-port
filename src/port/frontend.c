@@ -6,6 +6,8 @@
 
 #include "port/coverage.h"
 #include "port/flags.h"
+#include "port/oam.h"
+#include "port/thread.h"
 
 #define REG_VMAIN 0x2115u
 #define REG_VMADD 0x2116u
@@ -288,4 +290,74 @@ void intro_colours_copy(Wram* w, const Rom* rom, uint16_t page, uint16_t a,
   out->a = last;
   out->x = x;
   out->y = y;
+}
+
+// --- $80:8AD3 and $80:9847  two screens' sprites ------------------------------
+
+// `actor_slot_alloc`, as a thread's start calls it. The search's `SBC`s leave
+// overflow clear; with the last record free it runs none.
+static bool take_record(Wram* w, PortCpu* c, uint16_t* record) {
+  SlotAllocRegs r;
+  actor_slot_alloc(w, c->db, &r);
+  if (r.c) return false;
+  if (r.a != ACTOR_SLOT_LAST) set_v(c, false);
+  set_c(c, r.c);
+  *record = r.a;
+  return true;
+}
+
+// A record in the screen's space, drawn, belonging to the thread.
+static void dress(Wram* w, uint16_t record, uint16_t x, uint16_t y,
+                  uint16_t picture, uint16_t flags) {
+  wram_w16(w, (uint16_t)(record + ACTOR_X), x);
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), FRONTEND_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), picture);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) | flags));
+}
+
+// `LDA #$0000 : TAY : JSL thread_set_handler`: nothing is called.
+static void no_handler(Wram* w, PortCpu* c) {
+  c->a = 0;
+  c->y = 0;
+  thread_set_handler(w, c);
+}
+
+bool game_over_sprite_begin_supported(uint16_t x) {
+  return (x & 1) == 0 && x < 2 * GAME_OVER_SPRITES;
+}
+
+bool game_over_sprite_begin(Wram* w, const Rom* rom, PortCpu* c,
+                            uint16_t* record_out) {
+  const uint16_t which = c->x;
+  uint16_t record;
+  if (!take_record(w, c, &record)) return false;
+  PORT_COVER(game_over_sprite_begun);
+  *record_out = record;
+  wram_w16(w, (uint16_t)(c->d + GAME_OVER_DP_SPRITES + which), record);
+  dress(w, record, rom_word(rom, GAME_OVER_SPRITE_XS + which),
+        rom_word(rom, GAME_OVER_SPRITE_YS + which), GAME_OVER_SPRITE_PICTURE,
+        GAME_OVER_SPRITE_FLAGS);
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), 0);
+  no_handler(w, c);
+  c->pc = GAME_OVER_SPRITE_BEGIN_RTS_PC;
+  return true;
+}
+
+bool portrait_sprites_begin(Wram* w, PortCpu* c, uint16_t records[2]) {
+  if (!take_record(w, c, &records[0])) return false;
+  wram_w16(w, (uint16_t)(c->d + PORTRAIT_DP_SPRITES), records[0]);
+  if (!take_record(w, c, &records[1])) return false;
+  PORT_COVER(portrait_sprites_begun);
+  wram_w16(w, (uint16_t)(c->d + PORTRAIT_DP_SPRITES + 2), records[1]);
+  dress(w, records[0], PORTRAIT_SPRITE_LEFT_X, PORTRAIT_SPRITE_Y,
+        PORTRAIT_SPRITE_PICTURE, PORTRAIT_SPRITE_FLAGS);
+  dress(w, records[1], PORTRAIT_SPRITE_RIGHT_X, PORTRAIT_SPRITE_Y,
+        PORTRAIT_SPRITE_PICTURE, PORTRAIT_SPRITE_FLAGS);
+  no_handler(w, c);
+  c->pc = PORTRAIT_SPRITES_BEGUN_PC;
+  return true;
 }

@@ -167,6 +167,13 @@ enum {
   VC_TEST,       // REP #$20 : BIT $C8 : BMI
   TMJ_HEAD,      // $B82E-$B846, as far as the `JSL`'s own cycles
   TMJ_TAIL,      // PLA : CLC : RTL
+  TPJ_HEAD,      // $80:AC55 LDA $ED : BNE
+  TPJ_COUNT,     // REP #$30 : LDX $D0 : BEQ
+  TPJ_FIRST,     // DEX : DEX : LDA $1C92,X : STA $2116
+  TPJ_LOAD,      // LDA abs,X : STA abs
+  TPJ_NEXT,      // DEX : DEX : BPL
+  TPJ_TAIL,      // STZ $D0 : CLC : RTL
+  LR_HEAD,       // $80:88A9 six STZ : SEP #$30 : LDA #$00 : STA $210D
   DMA_BLOCK_COUNT
 };
 
