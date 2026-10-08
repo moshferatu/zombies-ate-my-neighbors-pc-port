@@ -519,16 +519,36 @@ static void show(Chainsaw* c) {
   set_record_field(c, ACTOR_Y, me.y);
 }
 
+static bool way_known(const Wram* w, uint16_t page) {
+  const uint16_t way = wram_r16(w, (uint16_t)(page + CHAINSAW_DP_WAY));
+  return way >= CHAINSAW_FIRST_WAY && way <= CHAINSAW_LAST_WAY &&
+         (way & 1) == 0;
+}
+
+// Its picture's place in the cycle is not asked about: a swing leaves it
+// anywhere, and the next picture masks it.
 bool chainsaw_frame_supported(const Wram* w, uint16_t page) {
   const uint16_t state = wram_r16(w, (uint16_t)(page + CHAINSAW_DP_STATE));
-  const uint16_t way = wram_r16(w, (uint16_t)(page + CHAINSAW_DP_WAY));
-  if (way < CHAINSAW_FIRST_WAY || way > CHAINSAW_LAST_WAY || (way & 1) != 0)
-    return false;
-  if (wram_r16(w, (uint16_t)(page + CHAINSAW_DP_PICTURE)) >=
-      CHAINSAW_PICTURES_IN_CYCLE)
-    return false;
+  if (!way_known(w, page)) return false;
   return state == CHAINSAW_STATE_CHARGE || state == CHAINSAW_STATE_WANDER ||
-         state == CHAINSAW_STATE_TURNED || state == CHAINSAW_STATE_CHASE;
+         state == CHAINSAW_STATE_TURNED || state == CHAINSAW_STATE_CHASE ||
+         state == CHAINSAW_STATE_SWING;
+}
+
+// `$81:9880`: the end of every pass.
+static ChainsawFate finish(Chainsaw* c) {
+  ChainsawLog* log = c->log;
+  show(c);
+
+  log->c = c->flags.c;
+  log->v = c->flags.v;
+  log->c_set = c->flags.c_set;
+  log->v_set = c->flags.v_set;
+  if (negative(field(c, CHAINSAW_DP_HEALTH))) {
+    PORT_COVER(chainsaw_died);
+    return CHAINSAW_ENDS;
+  }
+  return CHAINSAW_SLEEPS;
 }
 
 ChainsawFate chainsaw_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
@@ -559,15 +579,132 @@ ChainsawFate chainsaw_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
       chase(&c);
       break;
   }
-  show(&c);
+  return finish(&c);
+}
 
-  log->c = c.flags.c;
-  log->v = c.flags.v;
-  log->c_set = c.flags.c_set;
-  log->v_set = c.flags.v_set;
-  if (negative(field(&c, CHAINSAW_DP_HEALTH))) {
-    PORT_COVER(chainsaw_died);
-    return CHAINSAW_ENDS;
+// ---------------------------------------------------------------------------
+// The swing
+// ---------------------------------------------------------------------------
+
+// By the way it faces, four words: its picture, and where the saw is from
+// it, across and down. The turn goes back through the table.
+#define CHAINSAW_SWING_TABLE 0x95bau
+#define CHAINSAW_SWING_ENTRY 8
+#define CHAINSAW_SWING_PICTURES 8
+#define CHAINSAW_SWING_LAST_AT \
+  ((CHAINSAW_SWING_PICTURES - 1) * CHAINSAW_SWING_ENTRY)
+#define CHAINSAW_SAW_COLLIDE_ID 0x0003
+#define CHAINSAW_NO_SAW 0xffffu
+
+// `$81:956D`: the picture for this eighth of the turn, and the saw where
+// that holds it. Then three ticks.
+static void swing_show(Chainsaw* c, PortCpu* cpu) {
+  const uint16_t at = field(c, CHAINSAW_DP_PICTURE);
+  const uint16_t saw = field(c, CHAINSAW_DP_SAW);
+  const Point me = position(c);
+  set_record_field(c, ACTOR_META, table_word(c, CHAINSAW_SWING_TABLE, at));
+  set_c(cpu, false);
+  wram_w16(c->w, (uint16_t)(saw + ACTOR_X),
+           adc16(cpu, table_word(c, CHAINSAW_SWING_TABLE + 2, at), me.x));
+  set_c(cpu, false);
+  wram_w16(c->w, (uint16_t)(saw + ACTOR_Y),
+           adc16(cpu, table_word(c, CHAINSAW_SWING_TABLE + 4, at), me.y));
+  wram_w16(c->w, (uint16_t)(saw + ACTOR_COLLIDE_ID), CHAINSAW_SAW_COLLIDE_ID);
+  cpu->a = CHAINSAW_SWING_TICKS;
+  set_nz16(cpu, cpu->a);
+  cpu->x = at;
+  cpu->y = saw;
+  cpu->pc = CHAINSAW_SWING_YIELD_PC;
+}
+
+void chainsaw_swing_begin(Wram* w, const Rom* rom, PortCpu* cpu,
+                          ChainsawSwingLog* log) {
+  *log = (ChainsawSwingLog){0};
+  Chainsaw c = {w, rom, cpu->d,
+                wram_r16(w, (uint16_t)(cpu->d + CHAINSAW_DP_RECORD)),
+                &log->pass, {false, false, false, false}};
+  push16(w, cpu, CHAINSAW_PASS_RETURN);
+
+  set_field(&c, CHAINSAW_DP_SWING_LEFT, CHAINSAW_SWING_PICTURES);
+  set_field(&c, CHAINSAW_DP_PICTURE,
+            (uint16_t)((field(&c, CHAINSAW_DP_WAY) - CHAINSAW_FIRST_WAY) << 2));
+  set_record_field(&c, ACTOR_FLAGS,
+                   (uint16_t)(record_field(&c, ACTOR_FLAGS) & ~CHAINSAW_MIRROR));
+
+  // `$81:95FA`: a record for the saw, where it stands, with no picture.
+  SlotAllocRegs taken;
+  actor_slot_alloc(w, cpu->db, &taken);
+  if (taken.c) {
+    log->declined = true;
+    return;
   }
-  return CHAINSAW_SLEEPS;
+  PORT_COVER(chainsaw_swing_began);
+  const uint16_t saw = taken.a;
+  const Point me = position(&c);
+  log->record = saw;
+  wram_w16(w, (uint16_t)(saw + ACTOR_X), me.x);
+  wram_w16(w, (uint16_t)(saw + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(saw + ACTOR_Y), me.y);
+  wram_w16(w, (uint16_t)(saw + ACTOR_META), 0);
+  wram_w16(w, (uint16_t)(saw + ACTOR_META_BANK), 0);
+  wram_w16(w, (uint16_t)(saw + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(saw + ACTOR_COLLIDE_ID), CHAINSAW_SAW_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(saw + ACTOR_FLAGS),
+           (uint16_t)(0x8000u | wram_r16(w, (uint16_t)(saw + ACTOR_FLAGS))));
+  set_field(&c, CHAINSAW_DP_SAW, saw);
+  swing_show(&c, cpu);
+}
+
+bool chainsaw_swing_next_supported(const Wram* w, uint16_t page, uint16_t s) {
+  const uint16_t at = wram_r16(w, (uint16_t)(page + CHAINSAW_DP_PICTURE));
+  const uint16_t left = wram_r16(w, (uint16_t)(page + CHAINSAW_DP_SWING_LEFT));
+  const uint16_t saw = wram_r16(w, (uint16_t)(page + CHAINSAW_DP_SAW));
+  return way_known(w, page) && at <= CHAINSAW_SWING_LAST_AT &&
+         at % CHAINSAW_SWING_ENTRY == 0 && left >= 1 &&
+         left <= CHAINSAW_SWING_PICTURES && saw >= W_ACTOR_SLOTS &&
+         saw <= ACTOR_SLOT_LAST && actor_list_place(w, saw) != -3 &&
+         wram_r16(w, (uint16_t)(s + 1)) == CHAINSAW_PASS_RETURN;
+}
+
+void chainsaw_swing_next(Wram* w, const Rom* rom, PortCpu* cpu,
+                         ChainsawSwingLog* log) {
+  *log = (ChainsawSwingLog){0};
+  Chainsaw c = {w, rom, cpu->d,
+                wram_r16(w, (uint16_t)(cpu->d + CHAINSAW_DP_RECORD)),
+                &log->pass, {false, false, false, false}};
+
+  // On round the turn.
+  set_c(cpu, true);
+  uint16_t at = sbc16(cpu, field(&c, CHAINSAW_DP_PICTURE), CHAINSAW_SWING_ENTRY);
+  if (negative(at)) {
+    PORT_COVER(chainsaw_swing_wrapped);
+    log->wrapped = true;
+    at = CHAINSAW_SWING_LAST_AT;
+  }
+  set_field(&c, CHAINSAW_DP_PICTURE, at);
+  const uint16_t left = (uint16_t)(field(&c, CHAINSAW_DP_SWING_LEFT) - 1);
+  set_field(&c, CHAINSAW_DP_SWING_LEFT, left);
+  if (left != 0) {
+    PORT_COVER(chainsaw_swing_turned);
+    log->more = true;
+    swing_show(&c, cpu);
+    return;
+  }
+
+  // The turn is made. The saw's record goes, and it chases again -- and
+  // may swing again at once.
+  PORT_COVER(chainsaw_swing_ended);
+  const uint16_t saw = field(&c, CHAINSAW_DP_SAW);
+  log->free_place = actor_list_place(w, saw);
+  SlotFreeRegs freed;
+  actor_slot_free(w, saw, cpu->d, cpu->x, cpu->y, &freed);
+  set_field(&c, CHAINSAW_DP_SAW, CHAINSAW_NO_SAW);
+  set_state(&c, CHAINSAW_STATE_CHASE);
+  c.flags = (PortFlags){freed.c, flag(cpu, PORT_P_V), true, true};
+  maybe_swing(&c);
+  cpu->s = (uint16_t)(cpu->s + 2);  // the `RTS` back to the pass
+  // The pass's `JSR` to its picture puts its own return where that one was.
+  push16(w, cpu, CHAINSAW_PASS_SHOWN_RETURN);
+  cpu->s = (uint16_t)(cpu->s + 2);
+  log->fate = finish(&c);
 }

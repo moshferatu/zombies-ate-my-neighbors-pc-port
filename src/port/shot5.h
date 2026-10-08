@@ -30,8 +30,8 @@
 //
 //   * carry: it stops, and the tile is left alone;
 //   * a tile without bit 1: it flies on;
-//   * a tile with bit 1 and any of bits 4, 5 and 6: it stops, and the ROM
-//     goes on to change the tile (`$81:ECAC`);
+//   * a tile with bit 1 and any of bits 4, 5 and 6: it stops, and the
+//     tile is changed (`$81:ECAC`, whose first part is `shot5_break`);
 //   * a tile with bit 1 and none of those: it flies on, for sixty such
 //     frames in all, and then it is gone without bursting.
 //
@@ -60,6 +60,7 @@
 #include "assets/rom.h"
 #include "port/cpu.h"
 #include "port/terrain.h"
+#include "port/tile_rows.h"
 #include "port/wram.h"
 
 #define SHOT5_BANK 0x81
@@ -69,6 +70,8 @@
 #define SHOT5_SPENT_PC 0x81ec58u  // gone without bursting
 #define SHOT5_BURST_PC 0x81ec30u
 #define SHOT5_BURST_PLAY_PC 0x81ec54u  // `JSL pictures_play`
+#define SHOT5_BREAK_PC 0x81ecacu       // the tile it struck changed
+#define SHOT5_BREAK_PUT_PC 0x81ecdcu   // `JSL $80:AB5A`
 
 #define SHOT5_BEGIN_PC 0x81ed1au
 #define SHOT5_BEGIN_OWNER_PC 0x81ed7cu  // `JSL $80:9D6A`, the side in A
@@ -133,6 +136,12 @@ bool shot5_begin(Wram* w, const Rom* rom, PortCpu* c, uint16_t* record);
 bool shot5_aim_supported(const Wram* w, const Rom* rom, uint16_t page);
 // True if the table's word for its flags is one that clears.
 bool shot5_aim(Wram* w, const Rom* rom, PortCpu* c);
+
+// `$81:ECAC`, as far as the `JSL` that puts the block: the block where the
+// shot is swapped for its pair. See `port/tile_rows.h`. The tile's
+// attributes stay on the stack for what the ROM does after.
+bool shot5_break_supported(const Wram* w, const Rom* rom, uint16_t page);
+void shot5_break(Wram* w, const Rom* rom, PortCpu* c, BlockSwapWork* k);
 
 // False for a way the table does not have.
 bool shot5_burst_supported(const Wram* w, uint16_t page);

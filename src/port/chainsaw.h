@@ -6,10 +6,18 @@
 //
 //   $81:9878  chainsaw_frame
 //
-// What is here is how it gets about: four of its states. What is not is the
-// thread's setup, the cutting itself, the swing it makes at somebody beside
-// it, and being hit, each of which sleeps in the middle. A pass in one of
-// those states is the ROM's.
+// What is here is how it gets about, four of its states, and the swing it
+// makes at somebody beside it. What is not is the thread's setup, the
+// cutting itself and being hit, each of which sleeps in the middle. A pass
+// in one of those states is the ROM's.
+//
+// The swing sleeps in the middle too, so it is two stretches:
+//
+//   $81:9878  chainsaw_frame       in the swing's state: as far as its first
+//                                  picture's sleep
+//   $81:9598  chainsaw_swing_next  where it wakes: the next picture and
+//                                  another sleep, or the swing's end and
+//                                  the rest of the pass
 //
 // ## What it does
 //
@@ -30,6 +38,13 @@
 // that is refused and gets it less than two pixels is counted, and after 120
 // of those it gives up and charges. So it does with nobody within 250.
 // With somebody within 32 it swings, on a draw.
+//
+// **A swing is a full turn with the saw held out**: eight pictures, three
+// ticks each, starting with the way it faces and going round. The saw is a
+// record of its own with no picture, fifteen to nineteen pixels out, which
+// is what hurts. Its picture's place in the cycle is borrowed to count the
+// turn, and is left wherever the turn began, which is seldom a place in the
+// cycle. The next picture it shows puts that right.
 //
 // **Charging**, it goes straight on until the ground stops it, and then
 // turns a quarter left or right, by a draw.
@@ -57,6 +72,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/oam.h"  // the works and registers of what it asks
 #include "port/terrain.h"
 #include "port/wram.h"
@@ -74,9 +90,18 @@
 #define CHAINSAW_STATE_WANDER 0x921bu
 #define CHAINSAW_STATE_TURNED 0x9235u
 #define CHAINSAW_STATE_CHASE 0x9256u
-// ...and two the port leaves to the ROM.
-#define CHAINSAW_STATE_CUT 0x92d6u
 #define CHAINSAW_STATE_SWING 0x9550u
+// ...and one the port leaves to the ROM.
+#define CHAINSAW_STATE_CUT 0x92d6u
+
+// The swing's own stops.
+#define CHAINSAW_SWING_YIELD_PC 0x819594u  // `JSL thread_yield`, A already 3
+#define CHAINSAW_SWING_NEXT_PC 0x819598u   // where it wakes
+#define CHAINSAW_SWING_TICKS 3
+// What the pass's computed `RTS` leaves under a state's body.
+#define CHAINSAW_PASS_RETURN 0x987fu
+// ...and what the pass's `JSR` to its picture then writes over it.
+#define CHAINSAW_PASS_SHOWN_RETURN 0x9882u
 
 // Fields on its page.
 #define CHAINSAW_DP_RECORD 0x08
@@ -96,9 +121,11 @@
 #define CHAINSAW_DP_MOVED 0x28         // how far the last step got it
 #define CHAINSAW_DP_HEALTH 0x2a        // negative and the thread ends
 #define CHAINSAW_DP_COUNT 0x30         // chasing: steps refused. Turned: passes
+#define CHAINSAW_DP_SWING_LEFT 0x36    // pictures of a swing still to show
 #define CHAINSAW_DP_TURN 0x38          // a quarter turn, one way or the other
 #define CHAINSAW_DP_STEP_AT 0x3a       // chasing: its way, doubled twice
 #define CHAINSAW_DP_REFUSED 0x3e       // how many axes of the last step failed
+#define CHAINSAW_DP_SAW 0x40           // the saw's record in a swing, or $FFFF
 #define CHAINSAW_DP_CUT_X 0x42         // where the hedge is,
 #define CHAINSAW_DP_CUT_Y 0x44
 #define CHAINSAW_DP_CUT_SIDE 0x46      // ...and on which side of it
@@ -196,8 +223,33 @@ typedef enum {
 } ChainsawFate;
 
 // Can `chainsaw_frame` take this pass? Only in a state it knows, facing a
-// way the tables have. It only looks.
+// way the tables have. It only looks. A pass in the swing's state is
+// `chainsaw_swing_begin`'s.
 bool chainsaw_frame_supported(const Wram* w, uint16_t page);
+
+// What a stretch of the swing did.
+typedef struct {
+  bool declined;    // no record for the saw: the ROM's to go on with
+  uint16_t record;  // the one it took
+  bool wrapped;     // the turn went past the table's first way
+  bool more;        // another picture
+  int free_place;   // where in the display list the saw's record was
+  ChainsawLog pass; // the rest of the pass, when the swing ended
+  ChainsawFate fate;
+} ChainsawSwingLog;
+
+// A pass in the swing's state, as far as the first picture's sleep. It
+// leaves the pass's return on the stack, as the ROM has it there.
+void chainsaw_swing_begin(Wram* w, const Rom* rom, PortCpu* c,
+                          ChainsawSwingLog* log);
+
+// Can `chainsaw_swing_next` take it from here? It only looks.
+bool chainsaw_swing_next_supported(const Wram* w, uint16_t page, uint16_t s);
+
+// Where the swing wakes. The next picture and its sleep, or the saw's
+// record freed, a chase begun, and the rest of the pass.
+void chainsaw_swing_next(Wram* w, const Rom* rom, PortCpu* c,
+                         ChainsawSwingLog* log);
 
 // One pass, for the creature whose page is `page`. `carry` is the thread's
 // own, as it woke. `log` may be NULL.

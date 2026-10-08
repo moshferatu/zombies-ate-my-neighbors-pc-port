@@ -18045,3 +18045,96 @@ refresh's, which nothing after it changes.
 3,490.
 
 Lockstep: 334,319 passes, 51 of 54 never part, the same three.
+
+## The chainsaw maniac's swing, a wall knocked down, and threads that end in the port (2026-10-07)
+
+Nine entries more, 492. Over the twelve live movies the ROM's instructions
+go from 162,997 to 148,960.
+
+### An exit at another routine's entry
+
+A thread's end is `SEC ... LDA $08 : JML actor_slot_free`. The free's `RTL`
+pops what the scheduler pushed when it began the thread, and lands on
+`thread_exit` at `$00:833E`.
+
+An entry cannot stop at the free's `RTL`. `verify` looks for an exit only
+in the call on top of its stack, and the ROM's run through `$80:BE41` puts
+`actor_slot_free`'s own call there. That call ends when its `RTL` has been
+executed, and by then the PC is past the exit. The outer call is never
+ended and is counted interrupted.
+
+It can stop at `$00:833E`. On that instruction `verify` first ends the
+free's call, by PC and stack, then finds the exit of the one under it, and
+then begins `thread_exit` as its own call. So the ends stop there, with the
+free and its `RTL` in them: `squirt_gone`, `knock_thread_end`, and the
+seven of `record_end`.
+
+Each guard reads the three bytes above S and turns the call down unless
+they are `$00:833D`. It also turns down a record the display list does not
+hold, which the ROM would walk off the end of the list for.
+
+The price is the run with the `JML` in it and `saucer_free_cycles` by the
+record's place in the list. One of the seven is `JSL` and its own `RTL`
+where the rest are `JML`: 72 cycles and a byte more.
+
+### An entry that begins at a call
+
+`squirt_dress` began at `$81:FD66`, after `JSL actor_slot_alloc` had come
+back. It begins at the `JSL` now, as the other starts do. Its guard runs it
+on the scratch copy and turns it down with no record free.
+
+### Two stretches of one state
+
+A pass of the chainsaw's loop is `PEA $987F`, the state's address pushed,
+and `RTS`. A state's body runs with `$987F` on the stack and returns
+through it.
+
+The swing's state sleeps eight times inside that body. So the first
+stretch, entered at the loop like any pass, leaves S two lower with
+`$987F` above it. `chainsaw_swing_next` wakes there. Seven times it shows
+the next picture and sleeps again. The eighth it frees the saw's record,
+sets the chase's state, makes the chase's draw for another swing, and
+returns through `$987F` into the rest of the pass: its picture and the test
+of its health. That end is priced by the same bill as every pass.
+
+The pass's `JSR` to its picture then pushes `$9882` over `$987F`. Those two
+bytes are above where the stretch's stack began, so they are compared, and
+the port writes them.
+
+`chainsaw_frame`'s guard runs the first stretch on the scratch copy when
+the state is the swing's, since it takes a record.
+
+### A guard that asked for a word in range
+
+The guard turned a pass down unless `$0C`, the place in its four walking
+pictures, was under four. A swing uses `$0C` for its place in the turn and
+leaves it at 0 to 56. The walk's next picture is `($0C + 1) & 3`, and
+nothing reads it before that. The guard does not ask now.
+
+### A block's put, less two instructions
+
+`$80:AB5A` ends its opening with `LDA #$4000 : TSB $26`, which holds the
+camera for the rows. `tile_block_begin` stops at that `LDA`. A substituted
+entry writes WRAM at once and is then charged its cycles, so with the `TSB`
+in it an NMI in those cycles would find the camera held where the ROM's
+would not. What it does write is the routine's scratch on page zero.
+
+It is on page zero from its third instruction, so its direct-page
+instructions are priced aligned whatever page it was called on.
+
+### A read through a pointer
+
+`tile_block_swap_ask` reads the map of blocks through `[$28]`. The map's
+bank is the level record's, WRAM or the cartridge. The run has both prices:
+the word read at eight cycles a byte, or at the cartridge's speed with its
+two bytes counted.
+
+Its first part is on the caller's page and its second on page zero, so it
+is two runs.
+
+### Checked
+
+34,252,116 calls across 54 movies, 0 diverged. 1,237 of 1,464 sites; all 13
+new are taken. Every priced call is refresh-exact. Declines: 3,331.
+
+Lockstep: 334,319 passes, 51 of 54 never part, the same three.

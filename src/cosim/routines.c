@@ -937,6 +937,26 @@ static void shim_apu_play_sfx(Wram* w, const Rom* rom, const CosimRegs* in,
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
+// `$80:CC13` and `$80:CC27`: the same with `$32` built in, by command 1 and
+// by command 2.
+#define APU_FIXED_SHIM(name, cmd)                                            \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    (void)rom;                                                               \
+    ApuSfxRegs r;                                                            \
+    apu_fixed_command(w, cmd, in->d, &r);                                    \
+    out->a = r.a;                                                            \
+    out->x = r.x;                                                            \
+    out->y = r.y;                                                            \
+    out->n = r.n;                                                            \
+    out->z = r.z;                                                            \
+    out->c = r.c;                                                            \
+    out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;                 \
+  }
+APU_FIXED_SHIM(apu_fixed_1, APU_CMD_PLAY_SFX)
+APU_FIXED_SHIM(apu_fixed_2, APU_CMD_2)
+#undef APU_FIXED_SHIM
+
 // ---------------------------------------------------------------------------
 // $80:CCBF  apu_next_byte — nothing in, one byte out, cursor advanced
 // ---------------------------------------------------------------------------
@@ -7690,7 +7710,7 @@ static const CosimRun SQ_COST[SQ_BLOCK_COUNT] = {
     [SQ_AIM] = {122, 10, 2},
     [SQ_UNFIRED] = {18, 3, 0},
     [SQ_COUNT_UP] = {162, 16, 0},
-    [SQ_DRESS] = {1422, 127, 19},
+    [SQ_DRESS] = {1476, 131, 19},
     [SQ_HANDLER] = {258, 21, 0},
     [SQ_PICTURE] = {458, 42, 2},
     [SQ_TICKS] = {18, 3, 0},
@@ -7698,8 +7718,12 @@ static const CosimRun SQ_COST[SQ_BLOCK_COUNT] = {
     [SQ_TAKEN] = {6, 0, 0},
     [SQ_SPLASH] = {356, 30, 1},
     [SQ_SPLASH_2] = {104, 11, 1},
-    [SQ_GONE] = {138, 14, 1},
+    [SQ_GONE] = {162, 18, 1},
 };
+
+// What the dress and the end call, priced further down.
+static int saucer_alloc_cycles(uint16_t record, bool fast);
+static int saucer_free_cycles(int place, bool fast);
 
 // The tables are read through the data bank, and the record through it too.
 static bool squirt_ok(const CosimRegs* in) {
@@ -7717,11 +7741,19 @@ static bool accepts_squirt_launch(const Wram* w, const CosimRegs* in) {
   return squirt_ok(in);
 }
 
-// The record is the one `actor_slot_alloc` left in A.
-static bool accepts_squirt_dress(const Wram* w, const CosimRegs* in) {
-  return squirt_ok(in) && in->a < 0x1f00 && wram_r16(w, W_SCHED_CUR_TASK) < 0x30 &&
-         wram_r16(w, (uint16_t)(in->d + SQUIRT_DP_SIDE)) <= 2 &&
-         wram_r16(w, (uint16_t)(in->d + SQUIRT_DP_FACING)) <= SQUIRT_FACING_MAX;
+// It takes a record, and the ROM does not ask whether there was one.
+static bool guard_squirt_dress(Wram* scratch, const Rom* rom,
+                               const CosimRegs* in) {
+  if (!squirt_ok(in) || wram_r16(scratch, W_SCHED_CUR_TASK) >= 0x30 ||
+      wram_r16(scratch, (uint16_t)(in->d + SQUIRT_DP_SIDE)) > 2 ||
+      wram_r16(scratch, (uint16_t)(in->d + SQUIRT_DP_FACING)) >
+          SQUIRT_FACING_MAX)
+    return false;
+  PortCpu c;
+  SquirtWork k = {0};
+  cpu_from(in, &c);
+  squirt_dress(scratch, rom, &c, &k);
+  return !k.declined;
 }
 
 static bool accepts_squirt_second(const Wram* w, const CosimRegs* in) {
@@ -7733,7 +7765,8 @@ static bool accepts_squirt_second(const Wram* w, const CosimRegs* in) {
 // The ROM spins for good on a count gone negative.
 static bool accepts_squirt_gone(const Wram* w, const CosimRegs* in) {
   const uint16_t live = wram_r16(w, W_SQUIRTS_LIVE);
-  return squirt_ok(in) && live >= 1 && live <= 0x8000;
+  return squirt_ok(in) && live >= 1 && live <= 0x8000 &&
+         squirt_gone_supported(w, in->d, in->s);
 }
 
 #define SQUIRT_SHIM(name, call)                                             \
@@ -7751,6 +7784,8 @@ static bool accepts_squirt_gone(const Wram* w, const CosimRegs* in) {
     int cycles = k.tested ? terrain_bit2_cycles(&k.ground, in->fastrom) : 0; \
     for (int i = 0; i < SQ_BLOCK_COUNT; i++)                                \
       cycles += k.blocks[i] * cosim_run_cycles_dp(&SQ_COST[i], fast, unaligned); \
+    if (k.record != 0) cycles += saucer_alloc_cycles(k.record, in->fastrom); \
+    if (k.freed) cycles += saucer_free_cycles(k.free_place, in->fastrom);   \
     cosim_cost(cycles);                                                     \
   }
 
@@ -7769,7 +7804,7 @@ static const uint32_t SQUIRT_FIRST_EXITS[] = {SQUIRT_FIRST_YIELD_PC,
                                               SQUIRT_END_PC};
 static const uint32_t SQUIRT_SPLASH_EXITS[] = {SQUIRT_SPLASH_YIELD_PC};
 static const uint32_t SQUIRT_SPLASH_2_EXITS[] = {SQUIRT_SPLASH_2_YIELD_PC};
-static const uint32_t SQUIRT_GONE_EXITS[] = {SQUIRT_FREE_JML_PC};
+static const uint32_t SQUIRT_GONE_EXITS[] = {SQUIRT_EXITED_PC};
 
 // ---------------------------------------------------------------------------
 // $80:AD92, $80:A037, $80:A05B, $80:C2F7  a level's loads -- see `port/loads.h`
@@ -10452,6 +10487,28 @@ static void shim_tilemap_row_tables(Wram* w, const Rom* rom,
   cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), false));
 }
 
+// `$80:AB5A` to the `LDA #$4000` at `$80:AB8A`, the two `JSL`s in it, and
+// `$80:AD0B`, all of it. After its third instruction it is on page zero.
+static const CosimRun TB_RUN_BEGIN = {640, 48, 8};
+static const CosimRun TB_RUN_LIBRARY = {250, 17, 4};
+
+static void shim_tile_block_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  bool v = false;
+  cpu_from(in, &c);
+  tile_block_begin(w, &c, &v);
+  set_v(&c, v);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  cosim_cost(cosim_run_cycles_dp(&TB_RUN_BEGIN, fast, false) +
+             cosim_run_cycles_dp(&TB_RUN_LIBRARY, fast, false) +
+             cosim_run_cycles(&TILE_ADDR_RUN, in->fastrom));
+}
+
+static const uint32_t TILE_BLOCK_BEGIN_EXITS[] = {TILE_BLOCK_HOLD_PC};
+
 // Page zero, which the routine has made its own by here.
 static bool accepts_tile_block_rows(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d == 0 && bank_sees_low_wram(in->db) &&
@@ -12559,6 +12616,15 @@ static const CosimRun CHAINSAW_RUN_HEDGE_LEFT = {228, 23, 3};  // $80:B106-$B11C
 static const CosimRun CHAINSAW_RUN_HEDGE_NONE = {76, 2, 0};  // $80:B11D PLD : RTL
 static const CosimRun CHAINSAW_RUN_HEDGE_FOUND = {104, 4, 1};  // $80:B11F LDA $3C : PLD : RTL
 static const CosimRun CHAINSAW_RUN_TAKEN = {6, 0, 0};
+// The swing.
+static const CosimRun CHAINSAW_RUN_SWING_BEGIN = {316, 27, 4};  // $9550-$956A, the JSR too
+static const CosimRun CHAINSAW_RUN_SWING_SAW = {708, 57, 2};  // $95FA-$9632, its JSL and RTS too
+static const CosimRun CHAINSAW_RUN_SWING_KEEP = {28, 2, 1};  // $956B STA $40
+static const CosimRun CHAINSAW_RUN_SWING_SHOW = {468, 45, 5};  // $956D-$9593, to LDA #$0003
+static const CosimRun CHAINSAW_RUN_SWING_ON = {70, 8, 1};  // $9598 LDA $0C : SEC : SBC # : BPL
+static const CosimRun CHAINSAW_RUN_SWING_WRAP = {18, 3, 0};  // $95A0 LDA #$0038
+static const CosimRun CHAINSAW_RUN_SWING_COUNT = {90, 6, 2};  // $95A3 STA $0C : DEC $36 : BNE
+static const CosimRun CHAINSAW_RUN_SWING_END = {186, 17, 2};  // $95A9-$95B9, JSL, JSR and JMP
 
 // The ROM's own instructions in `own`, and what its calls cost in `calls`.
 typedef struct {
@@ -12710,9 +12776,9 @@ static void chainsaw_turned_bill(ChainsawBill* b) {
   chainsaw_add(b, &CHAINSAW_RUN_RTS);
 }
 
-static void chainsaw_chase_bill(ChainsawBill* b) {
+// `$81:9530`, its `RTS` too.
+static void chainsaw_swing_draw_bill(ChainsawBill* b) {
   const ChainsawLog* log = b->log;
-  chainsaw_add(b, &CHAINSAW_RUN_JSR);
   chainsaw_add(b, &CHAINSAW_RUN_SWING_HEAD);
   if (!log->swing_drawn) {
     chainsaw_taken(b);
@@ -12727,6 +12793,12 @@ static void chainsaw_chase_bill(ChainsawBill* b) {
       chainsaw_add(b, &CHAINSAW_RUN_RTS);
     }
   }
+}
+
+static void chainsaw_chase_bill(ChainsawBill* b) {
+  const ChainsawLog* log = b->log;
+  chainsaw_add(b, &CHAINSAW_RUN_JSR);
+  chainsaw_swing_draw_bill(b);
 
   chainsaw_add(b, &CHAINSAW_RUN_CHASE_LOOK);
   if (!log->nobody) chainsaw_add(b, &CHAINSAW_RUN_CHASE_BEARING);
@@ -12783,21 +12855,104 @@ static void chainsaw_show_bill(ChainsawBill* b) {
 // The tests put their scratch on page zero, and the tables are read through
 // the data bank. So is its record, which has to be in the WRAM bank `$81`
 // mirrors.
-static bool chainsaw_frame_ok(const Wram* w, const CosimRegs* in) {
+static bool chainsaw_page_ok(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100 && in->db == CHAINSAW_BANK &&
-         wram_r16(w, (uint16_t)(in->d + CHAINSAW_DP_RECORD)) < 0x1f00 &&
-         chainsaw_frame_supported(w, in->d);
+         wram_r16(w, (uint16_t)(in->d + CHAINSAW_DP_RECORD)) < 0x1f00;
 }
 
-// It leaves by the `JSL thread_yield` with the tick count in A, or past the
-// test of its health with that in A.
+static bool chainsaw_swinging(const Wram* w, const CosimRegs* in) {
+  return wram_r16(w, (uint16_t)(in->d + CHAINSAW_DP_STATE)) ==
+         CHAINSAW_STATE_SWING;
+}
+
+// A swing takes a record, and the ROM does not ask whether there was one.
+static bool guard_chainsaw_frame(Wram* scratch, const Rom* rom,
+                                 const CosimRegs* in) {
+  if (!chainsaw_page_ok(scratch, in) ||
+      !chainsaw_frame_supported(scratch, in->d))
+    return false;
+  if (!chainsaw_swinging(scratch, in)) return true;
+  if (wram_r16(scratch, W_SCHED_CUR_TASK) >= 0x30) return false;
+  PortCpu c;
+  ChainsawSwingLog log;
+  cpu_from(in, &c);
+  chainsaw_swing_begin(scratch, rom, &c, &log);
+  return !log.declined;
+}
+
+// The end of a pass, from the `JSR` that shows it: what is left of the bill,
+// and how it leaves. By the `JSL thread_yield` with the tick count in A, or
+// past the test of its health with that in A.
+static void chainsaw_pass_end(ChainsawBill* b, const Wram* w, bool stays,
+                              CosimRegs* out) {
+  const ChainsawLog* log = b->log;
+  const CosimRegs* in = b->in;
+  const bool fast = in->fastrom;
+  chainsaw_add(b, &CHAINSAW_RUN_JSR);
+  chainsaw_show_bill(b);
+  chainsaw_add(b, &CHAINSAW_RUN_FATE);
+  if (stays) {
+    chainsaw_taken(b);
+    chainsaw_add(b, &CHAINSAW_RUN_TICKS);
+  }
+
+  b->calls += nearest_cycles(&log->nearest, fast) +
+              at_point_cycles(&log->at_point, fast) +
+              log->draws * rng_cycles(log->draw_overflow, fast);
+  for (int i = 0; i < log->grounds && i < CHAINSAW_MAX_GROUNDS; i++)
+    b->calls += terrain_enemy_cycles(&log->ground[i], fast);
+  if (log->bearing_asked)
+    b->calls += actor_snap_cycles(&log->snap, fast) +
+                actor_bearing_cycles(&log->bearing, fast);
+  cosim_cost(b->calls + cosim_run_cycles_dp(&b->own, fetch_fast(in),
+                                            (in->d & 0x00ffu) != 0));
+
+  out->pc = stays ? CHAINSAW_YIELD_PC : CHAINSAW_DEAD_PC;
+  out->a = stays ? CHAINSAW_YIELD_TICKS
+                 : wram_r16(w, (uint16_t)(in->d + CHAINSAW_DP_HEALTH));
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (log->c) out->p |= PORT_P_C;
+  if (log->v) out->p |= PORT_P_V;
+  out->p_keep =
+      (uint8_t)((log->c_set ? 0 : PORT_P_C) | (log->v_set ? 0 : PORT_P_V));
+}
+
+// A stretch of the swing that ends at a picture's sleep.
+static void chainsaw_swing_sleeps(const ChainsawBill* b, const PortCpu* c,
+                                  CosimRegs* out) {
+  cpu_to(c, out);
+  cosim_cost(b->calls + cosim_run_cycles_dp(&b->own, fetch_fast(b->in),
+                                            (b->in->d & 0x00ffu) != 0));
+}
+
+static void shim_chainsaw_swing_begin(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  ChainsawSwingLog log;
+  cpu_from(in, &c);
+  chainsaw_swing_begin(w, rom, &c, &log);
+  ChainsawBill b = {{0, 0, 0}, 0, &log.pass, in};
+  chainsaw_add(&b, &CHAINSAW_RUN_ENTER);
+  chainsaw_add(&b, &CHAINSAW_RUN_SWING_BEGIN);
+  chainsaw_add(&b, &CHAINSAW_RUN_SWING_SAW);
+  b.calls += saucer_alloc_cycles(log.record, in->fastrom);
+  chainsaw_add(&b, &CHAINSAW_RUN_SWING_KEEP);
+  chainsaw_add(&b, &CHAINSAW_RUN_SWING_SHOW);
+  chainsaw_swing_sleeps(&b, &c, out);
+}
+
 static void shim_chainsaw_frame(Wram* w, const Rom* rom, const CosimRegs* in,
                                 CosimRegs* out) {
+  if (chainsaw_swinging(w, in)) {
+    shim_chainsaw_swing_begin(w, rom, in, out);
+    return;
+  }
   ChainsawLog log;
   const bool stays = chainsaw_frame(w, rom, in->d, (in->p & PORT_P_C) != 0,
                                     &log) == CHAINSAW_SLEEPS;
 
-  const bool fast = in->fastrom;
   ChainsawBill b = {{0, 0, 0}, 0, &log, in};
   chainsaw_add(&b, &CHAINSAW_RUN_ENTER);
   switch (log.state) {
@@ -12814,38 +12969,44 @@ static void shim_chainsaw_frame(Wram* w, const Rom* rom, const CosimRegs* in,
       chainsaw_chase_bill(&b);
       break;
   }
-  chainsaw_add(&b, &CHAINSAW_RUN_JSR);
-  chainsaw_show_bill(&b);
-  chainsaw_add(&b, &CHAINSAW_RUN_FATE);
-  if (stays) {
-    chainsaw_taken(&b);
-    chainsaw_add(&b, &CHAINSAW_RUN_TICKS);
-  }
-
-  b.calls += nearest_cycles(&log.nearest, fast) +
-             at_point_cycles(&log.at_point, fast) +
-             log.draws * rng_cycles(log.draw_overflow, fast);
-  for (int i = 0; i < log.grounds && i < CHAINSAW_MAX_GROUNDS; i++)
-    b.calls += terrain_enemy_cycles(&log.ground[i], fast);
-  if (log.bearing_asked)
-    b.calls += actor_snap_cycles(&log.snap, fast) +
-               actor_bearing_cycles(&log.bearing, fast);
-  cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
-                                           (in->d & 0x00ffu) != 0));
-
-  out->pc = stays ? CHAINSAW_YIELD_PC : CHAINSAW_DEAD_PC;
-  out->a = stays ? CHAINSAW_YIELD_TICKS
-                 : wram_r16(w, (uint16_t)(in->d + CHAINSAW_DP_HEALTH));
-  out->regs = COSIM_REG_A;
-  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
-  if (out->a & 0x8000u) out->p |= PORT_P_N;
-  if (log.c) out->p |= PORT_P_C;
-  if (log.v) out->p |= PORT_P_V;
-  out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V));
+  chainsaw_pass_end(&b, w, stays, out);
 }
 
-static const uint32_t CHAINSAW_FRAME_EXITS[] = {CHAINSAW_YIELD_PC,
-                                                CHAINSAW_DEAD_PC};
+static const uint32_t CHAINSAW_FRAME_EXITS[] = {
+    CHAINSAW_YIELD_PC, CHAINSAW_DEAD_PC, CHAINSAW_SWING_YIELD_PC};
+
+// `$81:9598`: where a swing wakes.
+static bool accepts_chainsaw_swing_next(const Wram* w, const CosimRegs* in) {
+  return chainsaw_page_ok(w, in) && cur_task_ok(w) &&
+         chainsaw_swing_next_supported(w, in->d, in->s);
+}
+
+static void shim_chainsaw_swing_next(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  ChainsawSwingLog log;
+  cpu_from(in, &c);
+  chainsaw_swing_next(w, rom, &c, &log);
+  ChainsawBill b = {{0, 0, 0}, 0, &log.pass, in};
+  chainsaw_add(&b, &CHAINSAW_RUN_SWING_ON);
+  chainsaw_add(&b, log.wrapped ? &CHAINSAW_RUN_SWING_WRAP : &CHAINSAW_RUN_TAKEN);
+  chainsaw_add(&b, &CHAINSAW_RUN_SWING_COUNT);
+  if (log.more) {
+    chainsaw_taken(&b);
+    chainsaw_add(&b, &CHAINSAW_RUN_SWING_SHOW);
+    chainsaw_swing_sleeps(&b, &c, out);
+    return;
+  }
+  chainsaw_add(&b, &CHAINSAW_RUN_SWING_END);
+  b.calls += saucer_free_cycles(log.free_place, in->fastrom);
+  chainsaw_add(&b, &CHAINSAW_RUN_SET_STATE);
+  chainsaw_swing_draw_bill(&b);
+  chainsaw_pass_end(&b, w, log.fate == CHAINSAW_SLEEPS, out);
+  out->s = c.s;
+}
+
+static const uint32_t CHAINSAW_SWING_NEXT_EXITS[] = {
+    CHAINSAW_SWING_YIELD_PC, CHAINSAW_YIELD_PC, CHAINSAW_DEAD_PC};
 
 // ---------------------------------------------------------------------------
 // The fishman -- see `port/fishman.h`
@@ -18945,7 +19106,8 @@ ZOMBIE_START_SHIMS(zombie_fast, ZOMBIE_FAST)
 
 // A thread's end, and a killed thing's last pictures begun. See
 // `port/begin.h`.
-static const CosimRun RE_RUN = {138, 14, 1};         // SEC ... LDA $08
+static const CosimRun RE_RUN = {162, 18, 1};         // SEC ... LDA $08 : JML
+static const CosimRun RE_RUN_CALLS = {72, 1, 0};     // a `JSL` for it, and an `RTL`
 static const CosimRun DP_RUN = {104, 10, 0};         // $83A3-$83AC
 static const CosimRun DP_RUN_HEARD = {206, 14, 1};   // $83B1-$83BE
 static const CosimRun ZL_RUN_TEST = {30, 5, 0};      // CMP #$F5F5 : BNE
@@ -18961,29 +19123,26 @@ static bool accepts_record_end(const Wram* w, const CosimRegs* in) {
                            const CosimRegs* in) {                            \
     (void)rom;                                                               \
     PortCpu c;                                                               \
+    int place = 0;                                                           \
     cpu_from(in, &c);                                                        \
-    return record_end(scratch, &c, &RECORD_ENDS[which]);                     \
+    return record_end(scratch, &c, &RECORD_ENDS[which], &place);             \
   }                                                                          \
   static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
                           CosimRegs* out) {                                  \
     (void)rom;                                                               \
     PortCpu c;                                                               \
+    int place = 0;                                                           \
     cpu_from(in, &c);                                                        \
-    record_end(w, &c, &RECORD_ENDS[which]);                                  \
+    record_end(w, &c, &RECORD_ENDS[which], &place);                          \
     cpu_to(&c, out);                                                         \
-    cosim_cost(cosim_run_cycles_dp(&RE_RUN, fetch_fast(in),                  \
+    cosim_cost(saucer_free_cycles(place, in->fastrom) +                      \
+               (RECORD_ENDS[which].calls                                     \
+                    ? cosim_run_cycles(&RE_RUN_CALLS, fetch_fast(in))        \
+                    : 0) +                                                   \
+               cosim_run_cycles_dp(&RE_RUN, fetch_fast(in),                  \
                                    (in->d & 0xffu) != 0));                   \
   }                                                                          \
-  static const uint32_t name##_EXITS[] = {RECORD_ENDS_FREE_##which};
-
-// The exits again, as constants a table can hold.
-#define RECORD_ENDS_FREE_RECORD_END_ZOMBIE_SLOW 0x818868u
-#define RECORD_ENDS_FREE_RECORD_END_ZOMBIE_FAST 0x818952u
-#define RECORD_ENDS_FREE_RECORD_END_ZOMBIE_THIRD 0x818c8cu
-#define RECORD_ENDS_FREE_RECORD_END_SLIME_GLOB 0x81cf47u
-#define RECORD_ENDS_FREE_RECORD_END_SHOT_5 0x81ec6eu
-#define RECORD_ENDS_FREE_RECORD_END_MARTIAN 0x819a25u
-#define RECORD_ENDS_FREE_RECORD_END_MARTIAN_ARRIVAL 0x819a89u
+  static const uint32_t name##_EXITS[] = {RECORD_END_EXITED_PC};
 
 RECORD_END_SHIMS(zombie_slow_end, RECORD_END_ZOMBIE_SLOW)
 RECORD_END_SHIMS(zombie_fast_end, RECORD_END_ZOMBIE_FAST)
@@ -19028,14 +19187,15 @@ static void shim_death_pictures_heard(Wram* w, const Rom* rom,
 static const uint32_t DEATH_PICTURES_EXITS[] = {DEATH_PICTURES_SOUND_PC};
 static const uint32_t DEATH_PICTURES_HEARD_EXITS[] = {DEATH_PICTURES_PLAY_PC};
 
-#define ZOMBIE_LEAVE_SHIMS(name, thread, death_pc, free_pc)                  \
+#define ZOMBIE_LEAVE_SHIMS(name, thread, death_pc)                           \
   static bool guard_##name(Wram* scratch, const Rom* rom,                    \
                            const CosimRegs* in) {                            \
     (void)rom;                                                               \
     PortCpu c;                                                               \
     bool stopped;                                                            \
+    int place = 0;                                                           \
     cpu_from(in, &c);                                                        \
-    zombie_leave(scratch, &c, thread, &stopped);                             \
+    zombie_leave(scratch, &c, thread, &stopped, &place);                     \
     return !stopped;                                                         \
   }                                                                          \
   static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
@@ -19043,28 +19203,31 @@ static const uint32_t DEATH_PICTURES_HEARD_EXITS[] = {DEATH_PICTURES_PLAY_PC};
     (void)rom;                                                               \
     PortCpu c;                                                               \
     bool stopped;                                                            \
+    int place = 0;                                                           \
     cpu_from(in, &c);                                                        \
-    const bool killed = zombie_leave(w, &c, thread, &stopped);               \
+    const bool killed = zombie_leave(w, &c, thread, &stopped, &place);       \
     cpu_to(&c, out);                                                         \
     CosimRun run = {0, 0, 0};                                                \
+    int freed = 0;                                                           \
     run_add(&run, &ZL_RUN_TEST, 1);                                          \
     if (killed) {                                                            \
       run_add(&run, &ZL_RUN_KILLED, 1);                                      \
     } else {                                                                 \
       run_add(&run, &RUN_TAKEN, 1);                                          \
       run_add(&run, &RE_RUN, 1);                                             \
+      freed = saucer_free_cycles(place, in->fastrom);                        \
     }                                                                        \
-    cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in),                     \
-                                   (in->d & 0xffu) != 0));                   \
+    cosim_cost(freed + cosim_run_cycles_dp(&run, fetch_fast(in),             \
+                                           (in->d & 0xffu) != 0));           \
   }                                                                          \
-  static const uint32_t name##_EXITS[] = {death_pc, free_pc};
+  static const uint32_t name##_EXITS[] = {death_pc, RECORD_END_EXITED_PC};
 
 ZOMBIE_LEAVE_SHIMS(zombie_slow_leave, ZOMBIE_THREAD_87F8,
-                   ZOMBIE_87F8_DEATH_PC, 0x818868u)
+                   ZOMBIE_87F8_DEATH_PC)
 ZOMBIE_LEAVE_SHIMS(zombie_fast_leave, ZOMBIE_THREAD_88CA,
-                   ZOMBIE_88CA_DEATH_PC, 0x818952u)
+                   ZOMBIE_88CA_DEATH_PC)
 ZOMBIE_LEAVE_SHIMS(zombie_third_leave, ZOMBIE_THREAD_8C17,
-                   ZOMBIE_8C17_DEATH_PC, 0x818c8cu)
+                   ZOMBIE_8C17_DEATH_PC)
 
 static bool accepts_zombie_leave(const Wram* w, const CosimRegs* in) {
   (void)w;
@@ -20591,6 +20754,137 @@ static const uint32_t GAME_OVER_SPRITE_BEGIN_EXITS[] = {
 static const uint32_t PORTRAIT_SPRITES_BEGIN_EXITS[] = {
     PORTRAIT_SPRITES_BEGUN_PC};
 
+// ---------------------------------------------------------------------------
+// A block swapped for its pair: the thread a punch begins, and weapon 5's shot
+// ---------------------------------------------------------------------------
+//
+// See `port/knock.h`, `port/shot5.h` and `port/tile_rows.h`. Each run is
+// from `tools/cycles816.py --db=81`.
+
+// The swap, from its `LDX $38` to the `LDY $3A` before the `JSL`, on page
+// zero. The second is with the map of blocks in the cartridge: its word is
+// read at the cartridge's speed.
+static const CosimRun SWAP_RUN_ASK = {254, 20, 5};
+static const CosimRun SWAP_RUN_ASK_ROM = {250, 22, 5};
+// What comes before it, on the caller's page: `PHD` to `TCD`.
+static const CosimRun KNOCK_RUN_SWAP_HEAD = {326, 27, 2};  // $81:F315-$F32F
+static const CosimRun SHOT5_RUN_BREAK_HEAD = {354, 28, 2};  // $81:ECAC-$ECC7
+static const CosimRun KNOCK_RUN_THREAD_BEGIN = {960, 88, 5};  // $81:F2B2-$F309, less its calls
+static const CosimRun KNOCK_RUN_SWAPPED = {142, 10, 0};  // $81:F348-$F351
+static const CosimRun KNOCK_RUN_END = {162, 18, 1};  // $81:F356-$F367, the `JML` too
+
+static int swap_cycles(const CosimRun* head, const BlockSwapWork* k,
+                       const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  return cosim_run_cycles_dp(head, fast, (in->d & 0xffu) != 0) +
+         cosim_run_cycles_dp(k->cell_in_rom ? &SWAP_RUN_ASK_ROM : &SWAP_RUN_ASK,
+                             fast, false) +
+         cosim_run_cycles(&BLOCK_CELL_PTR, in->fastrom);
+}
+
+static bool knock_thread_ok(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 &&
+         in->db == KNOCK_THREAD_DATA_BANK && cur_task_ok(w);
+}
+
+static bool guard_knock_thread_begin(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  (void)rom;
+  if (!knock_thread_ok(scratch, in)) return false;
+  PortCpu c;
+  uint16_t record;
+  cpu_from(in, &c);
+  return knock_thread_begin(scratch, &c, &record);
+}
+
+static void shim_knock_thread_begin(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  uint16_t record = 0;
+  cpu_from(in, &c);
+  knock_thread_begin(w, &c, &record);
+  cpu_to(&c, out);
+  cosim_cost(saucer_alloc_cycles(record, in->fastrom) +
+             cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom) +
+             cosim_run_cycles_dp(&KNOCK_RUN_THREAD_BEGIN, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static bool guard_knock_thread_swap(Wram* scratch, const Rom* rom,
+                                    const CosimRegs* in) {
+  return knock_thread_ok(scratch, in) &&
+         knock_thread_swap_supported(scratch, rom, in->d);
+}
+
+static void shim_knock_thread_swap(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  BlockSwapWork k = {0};
+  cpu_from(in, &c);
+  knock_thread_swap(w, rom, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(swap_cycles(&KNOCK_RUN_SWAP_HEAD, &k, in));
+}
+
+// It comes back from the block's put on page zero, with its own page on the
+// stack.
+static bool accepts_knock_thread_swapped(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->db == KNOCK_THREAD_DATA_BANK;
+}
+
+static void shim_knock_thread_swapped(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  knock_thread_swapped(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&KNOCK_RUN_SWAPPED, fetch_fast(in)));
+}
+
+static bool accepts_knock_thread_end(const Wram* w, const CosimRegs* in) {
+  return knock_thread_ok(w, in) &&
+         knock_thread_end_supported(w, in->d, in->s);
+}
+
+static void shim_knock_thread_end(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  int place = 0;
+  cpu_from(in, &c);
+  knock_thread_end(w, &c, &place);
+  cpu_to(&c, out);
+  cosim_cost(saucer_free_cycles(place, in->fastrom) +
+             cosim_run_cycles_dp(&KNOCK_RUN_END, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static const uint32_t KNOCK_THREAD_BEGIN_EXITS[] = {KNOCK_THREAD_SFX_PC};
+static const uint32_t KNOCK_THREAD_SWAP_EXITS[] = {KNOCK_SWAP_PUT_PC};
+static const uint32_t KNOCK_THREAD_SWAPPED_EXITS[] = {KNOCK_SWAPPED_PLAY_PC};
+static const uint32_t KNOCK_THREAD_END_EXITS[] = {KNOCK_EXITED_PC};
+
+static bool guard_shot5_break(Wram* scratch, const Rom* rom,
+                              const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == SHOT5_BANK &&
+         shot5_break_supported(scratch, rom, in->d);
+}
+
+static void shim_shot5_break(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  BlockSwapWork k = {0};
+  cpu_from(in, &c);
+  shot5_break(w, rom, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(swap_cycles(&SHOT5_RUN_BREAK_HEAD, &k, in));
+}
+
+static const uint32_t SHOT5_BREAK_EXITS[] = {SHOT5_BREAK_PUT_PC};
+
 // The count is the table's length by construction, so it cannot drift from it.
 #define COSIM_COMMIT(tbl) \
   .commit = (tbl), .commit_count = (int)(sizeof(tbl) / sizeof((tbl)[0]))
@@ -21437,6 +21731,28 @@ static const CosimRoutine ROUTINES[] = {
         // billing a wait that did not happen.
         .cycles = 484,
         .stack_bytes = 4,  // PHD + PEA, then the `JSR $CCC8` at the same depth
+    },
+    // The same with `$32` built in. As `apu_play_sfx`, each is charged a
+    // call that did not wait: its 484 and an `LDA #`.
+    {
+        .name = "apu_fixed_1",
+        .symbol = "$80:CC13",
+        .entry = APU_FIXED_1_ENTRY,
+        .ret_op = APU_FIXED_1_RTL,
+        .ret_kind = COSIM_RTL,
+        .run = shim_apu_fixed_1,
+        .cycles = 502,
+        .stack_bytes = 4,
+    },
+    {
+        .name = "apu_fixed_2",
+        .symbol = "$80:CC27",
+        .entry = APU_FIXED_2_ENTRY,
+        .ret_op = APU_FIXED_2_RTL,
+        .ret_kind = COSIM_RTL,
+        .run = shim_apu_fixed_2,
+        .cycles = 502,
+        .stack_bytes = 4,
     },
     {
         // Also a callee of the uploader `apu_send` serves, and the third of the
@@ -23414,14 +23730,14 @@ static const CosimRoutine ROUTINES[] = {
     },
     {
         .name = "squirt_dress",
-        .symbol = "$81:FD66",
+        .symbol = "$81:FD62",
         .entry = SQUIRT_DRESS_PC,
         .run = shim_squirt_dress,
-        .accepts = accepts_squirt_dress,
+        .supported = guard_squirt_dress,
         COSIM_EXITS(SQUIRT_DRESS_EXITS),
         .uncalled = true,
-        .cycles = 2160,
-        .stack_bytes = 3,
+        .cycles = 3400,
+        .stack_bytes = 6,  // a `JSL`, and `actor_slot_alloc`'s own three
     },
     {
         .name = "squirt_first_frame",
@@ -23474,7 +23790,8 @@ static const CosimRoutine ROUTINES[] = {
         .accepts = accepts_squirt_gone,
         COSIM_EXITS(SQUIRT_GONE_EXITS),
         .uncalled = true,
-        .cycles = 138,
+        .cycles = 1200,
+        .stack_bytes = 2,  // `actor_slot_free`'s `PHD`
     },
 #define BUBBLE_ENTRY(n, sym, pc, ok, ex, cyc, stack)                          \
     {                                                                        \
@@ -23866,12 +24183,23 @@ static const CosimRoutine ROUTINES[] = {
         .symbol = "$81:9878",
         .entry = CHAINSAW_FRAME_PC,
         .run = shim_chainsaw_frame,
-        .accepts = chainsaw_frame_ok,
+        .supported = guard_chainsaw_frame,
         COSIM_EXITS(CHAINSAW_FRAME_EXITS),
         .uncalled = true,
         .cycles = 9000,
         // The computed `RTS`'s two words, the `JSR`s down to a step, and the
         // `JSL` to its tests, and theirs.
+        .stack_bytes = 32,
+    },
+    {
+        .name = "chainsaw_swing_next",
+        .symbol = "$81:9598",
+        .entry = CHAINSAW_SWING_NEXT_PC,
+        .run = shim_chainsaw_swing_next,
+        .accepts = accepts_chainsaw_swing_next,
+        COSIM_EXITS(CHAINSAW_SWING_NEXT_EXITS),
+        .uncalled = true,
+        .cycles = 4000,
         .stack_bytes = 32,
     },
     {
@@ -24391,6 +24719,18 @@ static const CosimRoutine ROUTINES[] = {
         .accepts = accepts_tilemap_row_tables,
         .cycles = 25000,
         .stack_bytes = 4,  // the `PHD` and the `PEA`
+    },
+    {
+        .name = "tile_block_begin",
+        .symbol = "$80:AB5A",
+        .entry = TILE_BLOCK_BEGIN_PC,
+        .run = shim_tile_block_begin,
+        .accepts = accepts_body,
+        COSIM_EXITS(TILE_BLOCK_BEGIN_EXITS),
+        .cycles = 1140,
+        // The `PHD` stays. Under it a `PHA`, and a `JSL` with a `PHA` of its
+        // own.
+        .stack_bytes = 9,
     },
     {
         .name = "tile_block_rows",
@@ -25396,7 +25736,9 @@ static const CosimRoutine ROUTINES[] = {
         .supported = guard_##n,                                              \
         COSIM_EXITS(n##_EXITS),                                              \
         .uncalled = true,                                                    \
-        .cycles = 200,                                                       \
+        .cycles = 1200,                                                      \
+        /* `actor_slot_free`'s `PHD`, under the one end's `JSL` */           \
+        .stack_bytes = 5,                                                    \
     }
     // Where a zombie's loop goes when it is leaving, and the end of its
     // thread and two more. See `port/begin.h`.
@@ -26003,6 +26345,57 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(PORTRAIT_SPRITES_BEGIN_EXITS),
         .cycles = 3600,
         .stack_bytes = 6,
+    },
+    // The thread a punch begins, and a block swapped: see `port/knock.h`.
+    {
+        .name = "knock_thread_begin",
+        .symbol = "$81:F2B2",
+        .entry = KNOCK_THREAD_PC,
+        .run = shim_knock_thread_begin,
+        .supported = guard_knock_thread_begin,
+        COSIM_EXITS(KNOCK_THREAD_BEGIN_EXITS),
+        .cycles = 2500,
+        .stack_bytes = 6,  // a `JSL`, and `actor_slot_alloc`'s own three
+    },
+    {
+        .name = "knock_thread_swap",
+        .symbol = "$81:F315",
+        .entry = KNOCK_SWAP_PC,
+        .run = shim_knock_thread_swap,
+        .supported = guard_knock_thread_swap,
+        COSIM_EXITS(KNOCK_THREAD_SWAP_EXITS),
+        .cycles = 950,
+        .stack_bytes = 7,  // the `PHD` stays; a `JSL` and a `PHA` under it
+    },
+    {
+        .name = "knock_thread_swapped",
+        .symbol = "$81:F348",
+        .entry = KNOCK_SWAPPED_PC,
+        .run = shim_knock_thread_swapped,
+        .accepts = accepts_knock_thread_swapped,
+        COSIM_EXITS(KNOCK_THREAD_SWAPPED_EXITS),
+        .cycles = 142,
+    },
+    {
+        .name = "knock_thread_end",
+        .symbol = "$81:F356",
+        .entry = KNOCK_END_PC,
+        .run = shim_knock_thread_end,
+        .accepts = accepts_knock_thread_end,
+        COSIM_EXITS(KNOCK_THREAD_END_EXITS),
+        .cycles = 1200,
+        .stack_bytes = 2,  // `actor_slot_free`'s `PHD`
+    },
+    // Weapon 5's shot, the tile it struck: see `port/shot5.h`.
+    {
+        .name = "shot5_break",
+        .symbol = "$81:ECAC",
+        .entry = SHOT5_BREAK_PC,
+        .run = shim_shot5_break,
+        .supported = guard_shot5_break,
+        COSIM_EXITS(SHOT5_BREAK_EXITS),
+        .cycles = 980,
+        .stack_bytes = 9,  // A and the page stay; a `JSL` and a `PHA` under
     },
 };
 

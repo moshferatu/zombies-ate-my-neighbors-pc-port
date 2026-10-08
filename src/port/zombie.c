@@ -571,7 +571,8 @@ void zombie_risen(Wram* w, const Rom* rom, PortCpu* c, ZombieKind kind,
 // Leaving
 // ---------------------------------------------------------------------------
 
-bool zombie_leave(Wram* w, PortCpu* c, ZombieThread thread, bool* stopped) {
+bool zombie_leave(Wram* w, PortCpu* c, ZombieThread thread, bool* stopped,
+                  int* place) {
   static const struct {
     uint32_t death_pc;
     uint16_t count;
@@ -587,7 +588,7 @@ bool zombie_leave(Wram* w, PortCpu* c, ZombieThread thread, bool* stopped) {
   *stopped = false;
   cmp16(c, c->a, ZOMBIE_KILLED);
   if (c->a != ZOMBIE_KILLED) {
-    *stopped = !record_end(w, c, &RECORD_ENDS[LEAVES[thread].end]);
+    *stopped = !record_end(w, c, &RECORD_ENDS[LEAVES[thread].end], place);
     if (!*stopped) {
       PORT_COVER(zombie_leave_unkilled);
     }

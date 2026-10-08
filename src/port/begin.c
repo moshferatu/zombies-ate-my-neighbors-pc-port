@@ -107,19 +107,36 @@ const RecordEnd RECORD_ENDS[RECORD_END_COUNT] = {
     [RECORD_END_ZOMBIE_THIRD] = {0x818c7eu, 0x818c8cu, 0x0014, 0x08},
     [RECORD_END_SLIME_GLOB] = {0x81cf39u, 0x81cf47u, 0x0004, 0x08},
     [RECORD_END_SHOT_5] = {0x81ec60u, 0x81ec6eu, 0x0006, 0x0a},
-    [RECORD_END_MARTIAN] = {0x819a17u, 0x819a25u, 0x001e, 0x08},
+    [RECORD_END_MARTIAN] = {0x819a17u, 0x819a25u, 0x001e, 0x08, true},
     [RECORD_END_MARTIAN_ARRIVAL] = {0x819a7bu, 0x819a89u, 0x001e, 0x08},
 };
 
-bool record_end(Wram* w, PortCpu* c, const RecordEnd* end) {
+bool record_end(Wram* w, PortCpu* c, const RecordEnd* end, int* place) {
   set_c(c, true);
   const uint16_t load = sbc16(c, wram_r16(w, W_SPAWN_LOAD), end->load);
   if (load & 0x8000u) return false;
+  const uint16_t record = field(w, c, end->record_at);
+  if (record < W_ACTOR_SLOTS || record > ACTOR_SLOT_LAST) return false;
+  *place = actor_list_place(w, record);
+  if (*place == -3) return false;
+  if (wram_r16(w, (uint16_t)(c->s + 1)) != (RECORD_END_EXITED_PC & 0xffffu) - 1 ||
+      wram_r8(w, (uint16_t)(c->s + 3)) != (RECORD_END_EXITED_PC >> 16))
+    return false;
   PORT_COVER(record_ended);
   wram_w16(w, W_SPAWN_LOAD, load);
-  c->a = field(w, c, end->record_at);
-  set_nz16(c, c->a);
-  c->pc = end->free_pc;
+
+  // `JML actor_slot_free`: its `RTL` is the thread's.
+  SlotFreeRegs r;
+  actor_slot_free(w, record, c->d, c->x, c->y, &r);
+  c->a = r.a;
+  c->x = r.x;
+  c->y = r.y;
+  c->p = (uint8_t)(c->p & ~(PORT_P_N | PORT_P_Z));
+  if (r.n) c->p |= PORT_P_N;
+  if (r.z) c->p |= PORT_P_Z;
+  set_c(c, r.c);
+  c->s = (uint16_t)(c->s + 3);
+  c->pc = RECORD_END_EXITED_PC;
   return true;
 }
 

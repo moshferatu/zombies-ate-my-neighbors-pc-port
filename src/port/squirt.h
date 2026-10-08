@@ -24,7 +24,7 @@
 //     $81:FCB2  launch        is the player's own tile one that stops water?
 //                             Then nothing is fired and the thread ends. If
 //                             not, one more shot is in the air, and the sound.
-//     $81:FD66  dress         the record `actor_slot_alloc` just gave it: the
+//     $81:FD62  dress         a record taken from `actor_slot_alloc`: the
 //                             picture, the collision id of the side that
 //                             fired, the step for the way it faces, and the
 //                             place of the muzzle. Then the handler.
@@ -32,7 +32,9 @@
 //     $81:FCF7  second frame  ...and the picture of water in flight
 //     $81:FD22  splash        the handler taken away, a picture for 5 ticks
 //     $81:FD39  splash, 2     another for 4
-//     $81:FD48  gone          one shot fewer, and the record freed
+//     $81:FD48  gone          one shot fewer, and the record freed: it
+//                             jumps to `actor_slot_free`, whose `RTL` is
+//                             the thread's own, to `thread_exit`
 //
 // The page as its player's code filled it: where it is fired from at `$00`
 // and `$02`, the way it faces at `$04`, doubled as the game has it, 2 to 16,
@@ -77,7 +79,7 @@ SquirtNext squirt_flight_frame(Wram* w, uint16_t page, TerrainRegs* ground);
 // --- The other seven stretches -------------------------------------------------
 
 #define SQUIRT_LAUNCH_PC 0x81fcb2u
-#define SQUIRT_DRESS_PC 0x81fd66u       // after `JSL actor_slot_alloc`
+#define SQUIRT_DRESS_PC 0x81fd62u       // `JSL actor_slot_alloc`
 #define SQUIRT_FIRST_PC 0x81fce3u       // after the launch's yield
 #define SQUIRT_SECOND_PC 0x81fcf7u      // after the first frame's
 #define SQUIRT_SPLASH_PC SQUIRT_END_PC
@@ -90,7 +92,7 @@ SquirtNext squirt_flight_frame(Wram* w, uint16_t page, TerrainRegs* ground);
 #define SQUIRT_FIRST_YIELD_PC 0x81fcf3u
 #define SQUIRT_SPLASH_YIELD_PC 0x81fd35u
 #define SQUIRT_SPLASH_2_YIELD_PC 0x81fd44u
-#define SQUIRT_FREE_JML_PC 0x81fd56u       // `JML actor_slot_free`
+#define SQUIRT_EXITED_PC 0x00833eu         // `thread_exit`, by the `RTL`
 
 // More of the page.
 #define SQUIRT_DP_FROM_X 0x00
@@ -128,7 +130,7 @@ enum {
   SQ_AIM,        // LDX $00 : LDY $02 : JSL : BCC
   SQ_UNFIRED,    // JMP $FD5A
   SQ_COUNT_UP,   // the branch taken, $FCBF-$FCCB and LDA #$000B
-  SQ_DRESS,      // $FD66-$FDD6
+  SQ_DRESS,      // $FD62-$FDD6
   SQ_HANDLER,    // LDA # : LDY # : JSL, and `$80:8475` itself
   SQ_PICTURE,    // LDX # : JSR, and `$81:FDD7` itself
   SQ_TICKS,      // LDA #imm
@@ -136,18 +138,30 @@ enum {
   SQ_TAKEN,      // a branch taken
   SQ_SPLASH,     // $FD22-$FD34, and `$80:8475` itself
   SQ_SPLASH_2,   // $FD39-$FD43
-  SQ_GONE,       // $FD48-$FD55
+  SQ_GONE,       // $FD48-$FD59, the `JML` too
   SQ_BLOCK_COUNT
 };
 
 // What a stretch did, for the harness to price. `overflow_known` is false
 // when the last thing to write the overflow flag was the tile test.
+// `record` is the one the dress took, and `declined` is set when there was
+// none to take: the ROM does not test for that, and the port leaves it to
+// the ROM. `freed` and `free_place` are the end's: where in the display list
+// the record was, as `actor_slot_free` walks to it.
 typedef struct {
   uint16_t blocks[SQ_BLOCK_COUNT];
   bool tested;
   TerrainRegs ground;
   bool overflow_known;
+  uint16_t record;
+  bool declined;
+  bool freed;
+  int free_place;
 } SquirtWork;
+
+// Whether the end's record is one `squirt_gone` can free as the ROM does,
+// and what is on the stack at `s` is the return every thread is begun with.
+bool squirt_gone_supported(const Wram* w, uint16_t page, uint16_t s);
 
 void squirt_launch(Wram* w, PortCpu* c, SquirtWork* k);
 void squirt_dress(Wram* w, const Rom* rom, PortCpu* c, SquirtWork* k);

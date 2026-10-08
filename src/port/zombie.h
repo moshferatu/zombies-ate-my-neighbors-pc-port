@@ -246,9 +246,11 @@ typedef enum { ZOMBIE_WALKING, ZOMBIE_FOLLOWING, ZOMBIE_CHASING } ZombieState;
 #define ZOMBIE_DEATH_PICTURES 0x8ca4u
 #define ZOMBIE_DEATH_PICTURES_BANK 0x0090
 #define ZOMBIE_KILLED 0xf5f5u
-// True: killed. False: the thread's end, or with `*stopped` the load would
-// have gone below nothing, which is the ROM's.
-bool zombie_leave(Wram* w, PortCpu* c, ZombieThread thread, bool* stopped);
+// True: killed. False: the thread's end, with `*place` where in the display
+// list its record was, or with `*stopped` an end `record_end` leaves to the
+// ROM.
+bool zombie_leave(Wram* w, PortCpu* c, ZombieThread thread, bool* stopped,
+                  int* place);
 
 // For the harness: the three pieces' logs, and which state body ran.
 typedef struct {

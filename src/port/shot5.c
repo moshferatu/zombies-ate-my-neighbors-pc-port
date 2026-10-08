@@ -239,3 +239,19 @@ void shot5_burst(Wram* w, const Rom* rom, PortCpu* c) {
   set_nz16(c, c->a);
   c->pc = SHOT5_BURST_PLAY_PC;
 }
+
+// --- $81:ECAC  the tile it struck ------------------------------------------------
+
+bool shot5_break_supported(const Wram* w, const Rom* rom, uint16_t page) {
+  return tile_block_swap_supported(
+      w, rom, wram_r16(w, (uint16_t)(page + SHOT5_DP_X)),
+      wram_r16(w, (uint16_t)(page + SHOT5_DP_Y)));
+}
+
+void shot5_break(Wram* w, const Rom* rom, PortCpu* c, BlockSwapWork* k) {
+  PORT_COVER(shot5_broke);
+  push16(w, c, c->a);
+  tile_block_swap_ask(w, rom, c, wram_r16(w, (uint16_t)(c->d + SHOT5_DP_X)),
+                      wram_r16(w, (uint16_t)(c->d + SHOT5_DP_Y)), k);
+  c->pc = SHOT5_BREAK_PUT_PC;
+}

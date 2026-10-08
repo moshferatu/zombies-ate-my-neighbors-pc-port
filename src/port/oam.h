@@ -1415,4 +1415,10 @@ typedef struct {
 void actor_slot_free(Wram* w, uint16_t rec, uint16_t caller_d, uint16_t in_x,
                      uint16_t in_y, SlotFreeRegs* out);
 
+// Where in the display list a record is, which is how far `actor_slot_free`
+// walks to unlink it: 0 for the head. -1 for a record that is not the
+// running thread's and -2 for one not in use, the two it turns down. -3 for
+// one the list does not hold, which the ROM would walk off the list for.
+int actor_list_place(const Wram* w, uint16_t record);
+
 #endif  // PORT_OAM_H

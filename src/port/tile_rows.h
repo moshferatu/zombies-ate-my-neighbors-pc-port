@@ -14,10 +14,26 @@
 //
 // The routine holds the camera and the queue still while it works, with bit
 // 14 of the render flags: see `RENDER_FLAG_CAMERA_HELD` in `port/camera.h`.
-// That is why the port is not the whole of it. It is the stretch the bit is
-// set for, from `$80:AB8F` to `$80:ABC9`. The ROM sets the bit before and
-// clears it after, so an NMI that lands in the stretch finds it set whether
-// the rows have been done yet or not, and reads nothing the rows write.
+// That is why the port is not the whole of it. `tile_block_rows` is the
+// stretch the bit is set for, from `$80:AB8F` to `$80:ABC9`. The ROM sets
+// the bit before and clears it after, so an NMI that lands in the stretch
+// finds it set whether the rows have been done yet or not, and reads nothing
+// the rows write.
+//
+// `tile_block_begin` is what comes before the bit, from `$80:AB5A` to the
+// `LDA #$4000` at `$80:AB8A`: where the block's tiles are in the library,
+// where its first row is in the map, and eight rows to do. It writes only
+// the routine's own scratch on page zero. The two instructions that set the
+// bit stay the ROM's, so the bit is set when the ROM sets it.
+//
+// ## A block swapped for its pair
+//
+// A door and a wall that can come down are two blocks numbered next to each
+// other, shut and open: the callers that open one read the block at a place
+// and put the same number with its low bit turned over. Three of them do it
+// with the same instructions, their own places apart. `tile_block_swap_ask`
+// is those: the place in pixels to a column and a row of blocks, the block
+// there, and its pair in A for the `JSL` to `$80:AB5A` that follows.
 //
 // Port code: libc only.
 
@@ -33,6 +49,8 @@
 
 #define TILEMAP_ROW_TABLES_PC 0x80aca2u
 #define TILEMAP_ROW_TABLES_RTL_PC 0x80acf5u
+#define TILE_BLOCK_BEGIN_PC 0x80ab5au
+#define TILE_BLOCK_HOLD_PC 0x80ab8au      // `LDA #$4000 : TSB $26`
 #define TILE_BLOCK_ROWS_PC 0x80ab8fu      // `STZ $4C`, the bit just set
 #define TILE_BLOCK_ROWS_END_PC 0x80abc9u  // `LDA #$4000`, to clear it
 
@@ -54,6 +72,14 @@
 #define TB_DP_CURSOR 0x4a     // the column, in the tilemap's sixty-four
 #define TB_DP_FIRST_RUN 0x4c  // bytes this side of the seam
 #define W_MAP_FIRST_ROW 0x00a6       // the map of blocks, in its bank
+#define W_BLOCK_LIBRARY 0x00aa       // the blocks' tiles, and their bank
+#define W_BLOCK_LIBRARY_BANK 0x00ac
+#define BLOCK_NUMBER_MASK 0x01ffu
+#define BLOCK_LIBRARY_SHIFT 7        // 128 bytes a block
+#define BLOCK_PIXEL_SHIFT 6          // sixty-four pixels a block
+#define BLOCK_PAIR_BIT 0x0001u
+#define BLOCK_SWAP_COLUMN 0x0038     // the swap's column and row, page zero
+#define BLOCK_SWAP_ROW 0x003a
 #define W_MAP_BLOCK_ROW_BYTES 0x00ae
 #define W_MAP_BLOCK_ROWS 0x00b0
 #define SCREEN_WIDTH 0x0100
@@ -95,6 +121,25 @@ typedef struct {
 // no room for, or none.
 bool tilemap_row_tables_supported(uint16_t blocks_down);
 void tilemap_row_tables(Wram* w, PortCpu* c);
+
+// `$80:AB5A`: block A put at column X and row Y of the map of blocks. `v`
+// is the overflow its last sum left.
+void tile_block_begin(Wram* w, PortCpu* c, bool* v);
+
+// What the swap read, for the harness.
+typedef struct {
+  bool v;            // overflow, from the sum that found the cell
+  bool cell_in_rom;  // the map of blocks is in the cartridge
+} BlockSwapWork;
+
+// False if the cell for that place is not where a word can be read.
+bool tile_block_swap_supported(const Wram* w, const Rom* rom, uint16_t x,
+                               uint16_t y);
+// `PHD`, the column and row to `$0038` and `$003A`, page zero, `$80:ACF6`,
+// and the block's pair. It leaves the caller's page on the stack and the
+// column and row in X and Y. The caller says where it stops.
+void tile_block_swap_ask(Wram* w, const Rom* rom, PortCpu* c, uint16_t x,
+                         uint16_t y, BlockSwapWork* k);
 
 // False unless the two pointers are in the banks the ROM puts them in and
 // every row stays inside them.

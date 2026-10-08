@@ -26,7 +26,8 @@
 // **A thing's thread ends the same way whatever it was.** It takes what it
 // added to the level's load off again, loads its record, and jumps to
 // `actor_slot_free`, whose return ends the thread. Seven instructions, a
-// copy for each kind of thing. `record_end` is those, as far as the jump.
+// copy for each kind of thing. `record_end` is those and the free they jump
+// to, as far as `thread_exit`, where the free's `RTL` goes.
 // A load that would go below nothing stops the ROM where it stands, on a
 // branch to itself, and that is the ROM's to do.
 //
@@ -96,6 +97,7 @@ typedef struct {
   uint32_t free_pc;  // `JML actor_slot_free`, the record in A
   uint16_t load;
   uint8_t record_at;
+  bool calls;        // ...or a `JSL` to it and an `RTL` of its own after
 } RecordEnd;
 
 enum {
@@ -110,8 +112,14 @@ enum {
 };
 extern const RecordEnd RECORD_ENDS[RECORD_END_COUNT];
 
-// False if the load would go below nothing. It only looks, then.
-bool record_end(Wram* w, PortCpu* c, const RecordEnd* end);
+// Where a thread's last `RTL` goes: `thread_exit`.
+#define RECORD_END_EXITED_PC 0x00833eu
+
+// False if the load would go below nothing, if its record is not one the
+// display list holds, or if the stack is not as a thread's is begun. It only
+// looks, then. `place` is where in the list the record was, which is how
+// far the free walks.
+bool record_end(Wram* w, PortCpu* c, const RecordEnd* end, int* place);
 
 #define DEATH_PICTURES_PC 0x8183a3u
 #define DEATH_PICTURES_SOUND_PC 0x8183adu  // `JSL apu_play_sfx`

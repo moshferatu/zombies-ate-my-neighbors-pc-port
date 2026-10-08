@@ -106,6 +106,28 @@ void apu_play_sfx(Wram* w, uint16_t id, uint16_t caller_dp, ApuSfxRegs* out) {
 }
 
 // ---------------------------------------------------------------------------
+// $80:CC13, $80:CC27  a command with its argument built in
+// ---------------------------------------------------------------------------
+
+void apu_fixed_command(Wram* w, uint8_t cmd, uint16_t caller_dp,
+                       ApuSfxRegs* out) {
+  if (cmd == APU_CMD_PLAY_SFX) {
+    PORT_COVER(apu_fixed_1);
+  } else {
+    PORT_COVER(apu_fixed_2);
+  }
+  apu_send(w, APU_FIXED_PARAM, cmd, NULL);
+  // As `apu_play_sfx` leaves them: the registers narrowed and widened again,
+  // N and Z from the `PLD`, carry from the wait.
+  out->a = APU_FIXED_PARAM;
+  out->x = cmd;
+  out->y = wram_r8(w, W_APU_SEQ);
+  out->n = (caller_dp & 0x8000) != 0;
+  out->z = caller_dp == 0;
+  out->c = true;
+}
+
+// ---------------------------------------------------------------------------
 // $80:CCBF  apu_next_byte
 // ---------------------------------------------------------------------------
 

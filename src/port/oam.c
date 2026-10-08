@@ -1744,6 +1744,22 @@ void actor_slot_alloc(Wram* w, uint16_t caller_db, SlotAllocRegs* out) {
 // $80:BE41  actor_slot_free
 // ---------------------------------------------------------------------------
 
+int actor_list_place(const Wram* w, uint16_t record) {
+  if (wram_r16(w, W_SCHED_CUR_TASK) !=
+      wram_r16(w, (uint16_t)(record + ACTOR_THREAD)))
+    return -1;
+  if (!(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) & ACTOR_ACTIVE))
+    return -2;
+  int place = 0;
+  for (uint16_t at = wram_r16(w, W_ACTOR_LIST_HEAD); at != record;
+       at = wram_r16(w, (uint16_t)(at + ACTOR_NEXT))) {
+    if (at < W_ACTOR_SLOTS || at > ACTOR_SLOT_LAST ||
+        ++place > ACTOR_SLOT_COUNT)
+      return -3;
+  }
+  return place;
+}
+
 void actor_slot_free(Wram* w, uint16_t rec, uint16_t caller_d, uint16_t in_x,
                      uint16_t in_y, SlotFreeRegs* out) {
   const uint16_t owner = wram_r16(w, W_SCHED_CUR_TASK);

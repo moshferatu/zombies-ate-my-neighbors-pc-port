@@ -4,6 +4,8 @@
 
 #include "port/camera.h"
 #include "port/coverage.h"
+#include "port/levelmap.h"
+#include "port/terrain.h"
 
 // --- $80:ACA2 ---------------------------------------------------------------
 
@@ -54,6 +56,90 @@ void tilemap_row_tables(Wram* w, PortCpu* c) {
 // --- $80:AB8F ---------------------------------------------------------------
 
 static uint16_t zp(const Wram* w, uint16_t at) { return wram_r16(w, at); }
+
+// --- $80:AB5A ---------------------------------------------------------------
+
+void tile_block_begin(Wram* w, PortCpu* c, bool* v) {
+  PORT_COVER(tile_block_begun);
+  // `PHD : PEA $0000 : PLD`.
+  push16(w, c, c->d);
+  push16(w, c, 0);
+  c->s = (uint16_t)(c->s + 2);
+  c->d = 0;
+
+  const uint16_t column = (uint16_t)(c->x * BLOCK_TILES);
+  const uint16_t row = (uint16_t)(c->y * BLOCK_TILES);
+  wram_w16(w, TB_DP_COLUMN, column);
+  wram_w16(w, TB_DP_BLOCK_COLUMN, column);
+  wram_w16(w, TB_DP_ROW, row);
+
+  // `$80:AD0B`: where the block's tiles are.
+  const uint16_t block = (uint16_t)(c->a & BLOCK_NUMBER_MASK);
+  wram_w16(w, TB_DP_FROM, (uint16_t)((block << BLOCK_LIBRARY_SHIFT) +
+                                     wram_r16(w, W_BLOCK_LIBRARY)));
+  wram_w16(w, TB_DP_FROM + 2, wram_r16(w, W_BLOCK_LIBRARY_BANK));
+
+  // `$80:AD1C`: where its first row goes.
+  TilemapAddrRegs at;
+  tilemap_tile_addr(w, column, row, &at);
+  *v = add16_overflows((uint16_t)(at.a - at.x), at.x);
+  wram_w16(w, TB_DP_TO, at.a);
+  wram_w16(w, TB_DP_TO + 2, TILE_BLOCK_BANK_TO);
+  wram_w16(w, TB_DP_ROWS_LEFT, BLOCK_TILES);
+
+  c->a = BLOCK_TILES;
+  set_nz16(c, c->a);
+  c->x = at.x;
+  c->y = row;
+  set_c(c, at.c);
+  c->pc = TILE_BLOCK_HOLD_PC;
+}
+
+// --- A block swapped for its pair ---------------------------------------------
+
+static bool map_in_rom(uint8_t bank) { return (bank & 0xfeu) != 0x7eu; }
+
+bool tile_block_swap_supported(const Wram* w, const Rom* rom, uint16_t x,
+                               uint16_t y) {
+  const uint16_t column = (uint16_t)(x >> BLOCK_PIXEL_SHIFT);
+  const uint16_t row = (uint16_t)(y >> BLOCK_PIXEL_SHIFT);
+  const uint16_t at = (uint16_t)(
+      wram_r16(w, (uint32_t)W_BLOCK_ROW_BASE + (uint32_t)(row << 1)) +
+      (uint16_t)(column << 1));
+  const uint8_t bank = wram_r8(w, LM_DP_MAP_BANK);
+  if (at == 0xffffu) return false;
+  if (!map_in_rom(bank)) return true;
+  return at >= 0x8000u && rom_has(rom, ((uint32_t)bank << 16) | at, 2);
+}
+
+void tile_block_swap_ask(Wram* w, const Rom* rom, PortCpu* c, uint16_t x,
+                         uint16_t y, BlockSwapWork* k) {
+  PORT_COVER(tile_block_swap_asked);
+  push16(w, c, c->d);
+  const uint16_t column = (uint16_t)(x >> BLOCK_PIXEL_SHIFT);
+  const uint16_t row = (uint16_t)(y >> BLOCK_PIXEL_SHIFT);
+  wram_w16(w, BLOCK_SWAP_COLUMN, column);
+  wram_w16(w, BLOCK_SWAP_ROW, row);
+  c->d = 0;
+
+  BlockCellRegs cell;
+  blockmap_cell_ptr(w, 0, column, row, &cell);
+  const uint16_t at = wram_r16(w, LM_DP_SRC);
+  k->v = add16_overflows((uint16_t)(at - cell.x), cell.x);
+  const uint8_t bank = wram_r8(w, LM_DP_SRC_BANK);
+  k->cell_in_rom = map_in_rom(bank);
+  const uint16_t block =
+      k->cell_in_rom
+          ? rom_word(rom, ((uint32_t)bank << 16) | at)
+          : wram_r16(w, ((uint32_t)(bank & 1u) << 16) | at);
+
+  c->a = (uint16_t)(block ^ BLOCK_PAIR_BIT);
+  c->x = column;
+  c->y = row;
+  set_nz16(c, row);
+  set_c(c, cell.c);
+  set_v(c, k->v);
+}
 
 bool tile_block_rows_supported(const Wram* w) {
   if (wram_r8(w, TB_DP_FROM + 2) != TILE_BLOCK_BANK_FROM) return false;

@@ -5,6 +5,109 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The chainsaw maniac's swing, a wall knocked down, and threads that end in the port (2026-10-07)
+
+What the 65816 still executed over the twelve movies goes from 162,997 to
+**148,960** instructions of work. Live, each share reads as it did or a
+tenth of a percent higher: the calls on `level1`, `level9` and `level41`.
+The game registers 492 routines, 9 more. The corpus is the same 54 movies.
+
+* **A thread's last jump.** A thing's thread ends by jumping to
+  `actor_slot_free`, and the free's `RTL` is the thread's own. The entries
+  for those ends stopped at the jump, which left the jump to the ROM: one
+  instruction, 3,067 times over the twelve movies. They go through the free
+  now and stop at `thread_exit`, where that `RTL` goes. 1,001 are left.
+  * The squirt gun's shot was 1,570 of them (`squirt_gone`). Its
+    `squirt_dress` begins one instruction earlier too, at the call that
+    takes its record: another 1,570.
+  * `record_end` in `port/begin.c` is the end of seven kinds of thing: three
+    zombies, a slime's glob, weapon 5's shot, and a martian by either way
+    in.
+  * `actor_list_place` in `port/oam.c` is how far the free walks to unlink
+    a record, which is what it costs. Four older files have a copy each.
+    What was written this round uses the one.
+* **The chainsaw maniac's swing**, in `port/chainsaw.c`. It is a full turn
+  with the saw held out: eight pictures, three ticks each, and for the saw
+  a record of its own with no picture, fifteen to nineteen pixels out. It
+  sleeps between pictures, so it is two stretches: `chainsaw_frame` in the
+  swing's state, as far as the first sleep, and `chainsaw_swing_next`
+  (`$81:9598`) where it wakes.
+  * Its frame was also turned down after every swing, for up to six
+    passes. A swing borrows the word that counts its walking pictures and
+    leaves it out of range. The guard asked for it in range. Nothing reads
+    it before it is masked, so the guard no longer asks.
+  * Over `level13` and `level41` the ROM ran 36 of its passes. It runs 8
+    now, each a pass that cuts a hedge.
+* **A block's put begun**, `$80:AB5A`, in `port/tile_rows.c`:
+  `tile_block_begin`, as far as the two instructions that hold the camera.
+  Those stay the ROM's, so the camera is held when the ROM holds it.
+* **A block swapped for its pair**, `tile_block_swap_ask` in the same file.
+  A wall that can come down is two blocks numbered next to each other, and
+  three callers read the one at a place and ask for the other with the same
+  instructions. Two of them use it:
+  * **The thread a punch begins**, `$81:F2B2`, in `port/knock.c`: four
+    stretches, from its record and sound to its end. `port/knock.h` had the
+    punch that asks for it.
+  * **Weapon 5's shot breaking a tile**, `$81:ECAC`, in `port/shot5.c`:
+    `shot5_break`, as far as the call that puts the block.
+* **Two sound commands with their argument built in**, `$80:CC13` and
+  `$80:CC27`, in `port/apu.c`.
+
+* **Checked.** The corpus verifies at 34,252,116 calls across 54 movies
+  with 0 diverged, and 1,237 of 1,464 coverage sites. Every call priced is
+  exact. It turns down 3,331 calls, where it was 3,490.
+* **Coverage.** All 13 new sites are taken. `chainsaw_died` is taken for
+  the first time: the passes a maniac died on were among those turned down.
+* **Lockstep** over the corpus: 334,319 passes, 51 of 54 never part, the
+  same three level-25 movies. Mean drift is smaller on 52 movies and three
+  tenths of a cycle larger on two. Twenty-six worst figures moved. Nine
+  went down, five of them by 282 to 922 cycles. Seventeen went up: twelve
+  by 46 or less, `level49-bubble` by 76, `demo-end` by 138, `level49` by
+  204, `boot` by 254 and `level5` by 892.
+  * `level5`'s is one pass, 13,391, where a slime's glob ends. Leaving
+    `slime_glob_end` to the ROM puts it back. The total over the movie is
+    the same to the cycle. I take it to be where in that pass the clocks
+    are compared, now that the end is one stretch where it was two. I have
+    not shown that.
+* **What it took off.** Bank `$81` goes from 41,248 instructions to 30,163
+  and bank `$80` from 88,539 to 85,587. Banks `$82` and `$83` are as they
+  were. `level13` is down by 3,470, `level41` by 3,392, `level37` by 2,099
+  and `level5` by 2,081.
+* **Four mistakes of mine.**
+  * I first stopped the shot's end at the free's own `RTL`. That address is
+    where another entry returns, and the harness ended that one and never
+    saw mine: 150 calls of 150 "not reached". It stops at `thread_exit`
+    now, which is checked.
+  * I took all seven ends in `record_end` to jump to the free. The martian
+    that began on the ground calls it and has an `RTL` of its own after.
+    The harness said MODEL WRONG, 72 cycles short on 13 calls of 13. Priced.
+  * The swing's end failed 25 calls of 32. The pass's `JSR` to its picture
+    writes its return where the swing's had been, above where the stack
+    began, and the port had not written it.
+  * A patch written in a shell heredoc lost its backslashes again, and a
+    script of mine stopped at a wrong anchor with four files already
+    changed. I cut what had been applied and ran the rest.
+* **Not established.**
+  * What command 2 is to the sound driver, and what `$32` is to either
+    command.
+  * What reads `$7E:1FC2`, which the swap counts up.
+  * Why the thread a punch begins keeps its page's `$08` in `$24`. It reads
+    it nowhere.
+* **Still the ROM's.**
+  * Of the chainsaw maniac: the cutting, its setup, and being hit.
+  * The two instructions that hold the camera in a block's put, and the
+    five that let it go.
+  * The last jump of the axe, the doll, the bubble and the swipe: 723. Each
+    is inside a longer stretch with its own bill.
+  * A call to play a sound that an entry stops at: 1,172. A sound is not
+    priced inside an entry.
+* **Next.** Bank `$80` is 85,587 of the 148,960, and 41,349 of that is the
+  two stretches that stay the ROM's on purpose. After them: a level's
+  start, `$80:85BB` on, 3,743; the fractions at `$80:F6B4`, 1,868; level
+  21's two at `$82:DB96` and `$82:F354`, 2,521; and the fishman's patrol,
+  whose frame is turned down 42 times on `level13` (`$81:E007`, `$81:E07C`,
+  `$81:E550` and `$81:E610`, about 3,800).
+
 ### Level 37's circle, five starts, the layers' registers and a level's second loop (2026-10-07)
 
 What the 65816 still executed over the twelve movies goes from 183,910 to

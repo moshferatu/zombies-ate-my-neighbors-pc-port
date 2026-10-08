@@ -143,6 +143,22 @@ typedef struct {
 // register the caller never thought it was passing.
 void apu_play_sfx(Wram* w, uint16_t id, uint16_t caller_dp, ApuSfxRegs* out);
 
+// --- $80:CC13 and $80:CC27  one fixed command each ----------------------------
+//
+// Two more of `apu_play_sfx`'s shape, each with its argument built in:
+// `LDA #$0032`, then `LDX #$0001` at `$80:CC13` and `LDX #$0002` at
+// `$80:CC27`. So the first is sound effect `$32` played. What command 2 is
+// to the driver I have not established, nor what `$32` is to either. They
+// come back as `apu_play_sfx` does, with `$0032` in A and the command in X.
+#define APU_FIXED_PARAM 0x0032
+#define APU_FIXED_1_ENTRY 0x80cc13u
+#define APU_FIXED_1_RTL 0x80cc26u
+#define APU_FIXED_2_ENTRY 0x80cc27u
+#define APU_FIXED_2_RTL 0x80cc3au
+#define APU_CMD_2 0x02
+void apu_fixed_command(Wram* w, uint8_t cmd, uint16_t caller_dp,
+                       ApuSfxRegs* out);
+
 // --- $80:CCBF  apu_next_byte ------------------------------------------------
 //
 // Five instructions, and 255,859 calls over the eleven profiled movies — third

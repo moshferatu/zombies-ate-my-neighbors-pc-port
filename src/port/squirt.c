@@ -136,7 +136,14 @@ void squirt_launch(Wram* w, PortCpu* c, SquirtWork* k) {
 
 void squirt_dress(Wram* w, const Rom* rom, PortCpu* c, SquirtWork* k) {
   const uint16_t page = c->d;
-  const uint16_t record = c->a;
+  SlotAllocRegs taken;
+  actor_slot_alloc(w, c->db, &taken);
+  if (taken.c) {
+    k->declined = true;
+    return;
+  }
+  const uint16_t record = taken.a;
+  k->record = record;
   const uint16_t side = field(w, page, SQUIRT_DP_SIDE);
   PORT_COVER(squirt_dressed);
   set_field(w, page, SQUIRT_DP_RECORD, record);
@@ -233,12 +240,34 @@ void squirt_splash_2(Wram* w, PortCpu* c, SquirtWork* k) {
   c->pc = SQUIRT_SPLASH_2_YIELD_PC;
 }
 
+bool squirt_gone_supported(const Wram* w, uint16_t page, uint16_t s) {
+  const uint16_t record = field(w, page, SQUIRT_DP_RECORD);
+  return record >= W_ACTOR_SLOTS && record <= ACTOR_SLOT_LAST &&
+         actor_list_place(w, record) != -3 &&
+         wram_r16(w, (uint16_t)(s + 1)) == (SQUIRT_EXITED_PC & 0xffffu) - 1 &&
+         wram_r8(w, (uint16_t)(s + 3)) == (SQUIRT_EXITED_PC >> 16);
+}
+
 void squirt_gone(Wram* w, PortCpu* c, SquirtWork* k) {
   PORT_COVER(squirt_gone);
   set_c(c, true);
   wram_w16(w, W_SQUIRTS_LIVE, sbc16(c, wram_r16(w, W_SQUIRTS_LIVE), 1));
   k->overflow_known = true;
-  lda(c, field(w, c->d, SQUIRT_DP_RECORD));
   k->blocks[SQ_GONE]++;
-  c->pc = SQUIRT_FREE_JML_PC;
+
+  // `JML actor_slot_free`: its `RTL` is the thread's, to `thread_exit`.
+  const uint16_t record = field(w, c->d, SQUIRT_DP_RECORD);
+  k->freed = true;
+  k->free_place = actor_list_place(w, record);
+  SlotFreeRegs r;
+  actor_slot_free(w, record, c->d, c->x, c->y, &r);
+  c->a = r.a;
+  c->x = r.x;
+  c->y = r.y;
+  c->p = (uint8_t)(c->p & ~(PORT_P_N | PORT_P_Z));
+  if (r.n) c->p |= PORT_P_N;
+  if (r.z) c->p |= PORT_P_Z;
+  set_c(c, r.c);
+  c->s = (uint16_t)(c->s + 3);
+  c->pc = SQUIRT_EXITED_PC;
 }

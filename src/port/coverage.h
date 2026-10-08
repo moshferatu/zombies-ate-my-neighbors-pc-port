@@ -90,14 +90,14 @@
   X(pictures_ended,   "pictures_play",      "the zero that ends a list of pictures") \
   X(squirt_unfired,   "squirt_launch",      "fired from a tile that stops water: no shot") \
   X(squirt_launched,  "squirt_launch",      "one more shot in the air, and its sound") \
-  X(squirt_dressed,   "squirt_dress",       "the record given its picture, id, step and muzzle") \
+  X(squirt_dressed,   "squirt_dress",       "a record taken and given its picture, id, step and muzzle") \
   X(squirt_first_flew, "squirt_first_frame", "the first frame's step, and on") \
   X(squirt_first_stopped, "squirt_first_frame", "...into a tile that stops it") \
   X(squirt_second_flew, "squirt_second_frame", "the second frame's step, and the picture of flight") \
   X(squirt_second_stopped, "squirt_second_frame", "...into a tile that stops it") \
   X(squirt_splashed,  "squirt_splash",      "the handler taken away and the first splash shown") \
   X(squirt_splashed_2, "squirt_splash_2",   "the second splash shown") \
-  X(squirt_gone,      "squirt_gone",        "one shot fewer, and its record on the way to being freed") \
+  X(squirt_gone,      "squirt_gone",        "one shot fewer, and its record freed") \
   /* $80:9515 the wobble's thread, after each build -- see port/trig.h. */      \
   X(wave_thread_start, "wave_thread_tests", "Start alone on a pad: the wobble ends") \
   X(wave_thread_over, "wave_thread_tests",  "the table's length gone negative: it ends") \
@@ -146,6 +146,8 @@
   X(logo_held,        "logo_hold",          "the 255th frame") \
   X(logo_faded,       "logo_fade",          "the brightness at zero") \
   /* $80:AB8F a block put into the map -- see port/tile_rows.h. */              \
+  X(tile_block_begun, "tile_block_begin",   "a block's tiles found, and where its first row goes") \
+  X(tile_block_swap_asked, "tile_block_swap_ask", "the block at a place read, for its pair") \
   X(tile_rows_off_screen, "tile_block_rows", "a row the camera does not show") \
   X(tile_rows_whole,  "tile_block_rows",    "a row it shows all of") \
   X(tile_rows_left_end, "tile_block_rows",  "a row cut by the right of the screen") \
@@ -331,7 +333,7 @@
   X(record_begun,     "record_begin",       "a record at the page's place") \
   X(zombie_begun,     "zombie_begin",       "...and a zombie's made of it") \
   X(neighbour_begun,  "neighbour_begin",    "a neighbour's record, and their handler") \
-  X(record_ended,     "record_end",         "a thread's end: its weight given back") \
+  X(record_ended,     "record_end",         "a thread's end: its weight given back and its record freed") \
   X(death_pictures_begun,"death_pictures",  "a killed thing, off to be heard") \
   X(death_pictures_heard,"death_pictures_heard", "...and no longer touchable") \
   X(zombie_leave_unkilled,"zombie_leave",   "a zombie leaving that nobody killed") \
@@ -396,6 +398,10 @@
   X(knock_busy,       "knock_look",         "a tile is being knocked down already") \
   X(knock_nothing,    "knock_look",         "the tile the fist is at is not one to knock down") \
   X(knock_begun,      "knock_look",         "...or is, and the thread that does it is asked for") \
+  X(knock_thread_began, "knock_thread_begin", "a record under the place, and its sound") \
+  X(knock_thread_swapping, "knock_thread_swap", "the block there, and its pair asked for") \
+  X(knock_thread_swapped, "knock_thread_swapped", "the swap counted, and another may begin") \
+  X(knock_thread_ended, "knock_thread_end",   "its load given back and its record freed") \
   /* $80:F366-$80:F451 small things a player's states do -- see port/player_small.h. */ \
   X(player_untouchable, "player_untouchable", "the record's collide id cleared") \
   X(player_touchable, "player_touchable",   "...and put back") \
@@ -470,6 +476,7 @@
   X(shot5_struck,     "shot5_frame",        "a tile with bit 1 and one of the three: it stops") \
   X(shot5_blocked,    "shot5_frame",        "carry from the test: it stops, the tile left alone") \
   X(shot5_burst,      "shot5_burst",        "its record where it bursts") \
+  X(shot5_broke,      "shot5_break",        "the block it struck, and its pair asked for") \
   /* $80:F300 a pose's picture, called on its own -- see port/pose.h. */        \
   X(pose_show_set,    "pose_show",          "the entry's word set in the record's flags") \
   X(pose_show_masked, "pose_show",          "...or a mask, and its bits cleared") \
@@ -1214,6 +1221,10 @@
   X(boss_parts_plain, "boss_place_parts",    "$36 is zero, so the four parts trail down and to the right") \
   X(boss_parts_mirrored,"boss_place_parts",  "...or it is not, and the same four X offsets come from the second half of the table") \
                                                                                    \
+  /* $80:CC13, $80:CC27 -- a command with its argument built in. */               \
+  X(apu_fixed_1,      "apu_fixed_command",   "sound effect $32, by command 1") \
+  X(apu_fixed_2,      "apu_fixed_command",   "...and $32 by command 2") \
+                                                                                  \
   /* $80:CCBF apu_next_byte — the 16-bit cursor incremented eight bits at a time. */ \
   X(apu_src_step,     "apu_next_byte",       "the low byte advanced without carrying, which is 255 calls in 256") \
   X(apu_src_wrap,     "apu_next_byte",       "...and the 256th, where the second INC runs and takes over the flags") \
@@ -1502,6 +1513,11 @@
   X(chainsaw_chase_gave_up, "chainsaw_frame", "the 120th short step of a chase") \
   X(chainsaw_began_cutting, "chainsaw_frame", "a hedge beside it: it begins to cut") \
   X(chainsaw_died, "chainsaw_frame", "its health gone: the thread goes on to its end") \
+  X(chainsaw_swing_began, "chainsaw_frame", "a pass in the swing's state: the saw's record, and the first picture") \
+  /* $81:9598 chainsaw_swing_next -- where a swing wakes. */              \
+  X(chainsaw_swing_turned, "chainsaw_swing_next", "the next picture of the turn") \
+  X(chainsaw_swing_wrapped, "chainsaw_swing_next", "...past the table's first way, so on from its last") \
+  X(chainsaw_swing_ended, "chainsaw_swing_next", "the turn made: the saw's record freed, and a chase") \
                                                                                    \
   /* $81:E4B2, $81:E558 fishman_frame -- the fishman's nine states. */             \
   X(fishman_swam, "fishman_frame", "a pass the way it faces") \
