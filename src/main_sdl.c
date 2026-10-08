@@ -62,6 +62,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <time.h>
 
 #include <SDL.h>
 
@@ -93,6 +94,7 @@
 #include "config.h"
 #include "sfx_overlay.h"
 #include "bank_sfx.h"
+#include "video/ppu_hook.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -412,6 +414,47 @@ static void layers_advance(Layers* s) {
   layers_link(s->frame[s->cur], s->frame[s->cur ^ 1]);
 }
 
+// Sleep for about `ms` milliseconds, and say whether it could: false when
+// there is no clock here fine enough to sleep by, and the caller must fall
+// back on `SDL_Delay`, which sleeps in whole milliseconds and wakes up to one
+// late.
+//
+// On Windows this is a high-resolution waitable timer, which has been there
+// since Windows 10 1803. Measured on the machine this was written on, it
+// wakes half a millisecond late at the median and a millisecond late at the
+// worst, for any sleep from a third of a millisecond to three and a half.
+//
+// `PACE_SPIN_MS` is how much of a wait is left to be spun after it. Measured
+// at 240 pictures a second with the pacer as the clock, as the share of
+// pictures arriving within a millisecond of the period and the share of one
+// core the whole game used: 2 ms, 99.0% and 68%; 1 ms, 98.9% and 42%; half a
+// millisecond, 99.8% and 29%; none, 96.9% and 24%.
+#define PACE_SPIN_MS 0.5
+static bool pace_sleep(double ms) {
+#ifdef _WIN32
+#ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#endif
+  static HANDLE timer;
+  static bool tried;
+  if (!tried) {
+    tried = true;
+    timer = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                   TIMER_ALL_ACCESS);
+  }
+  if (!timer) return false;
+  LARGE_INTEGER due;
+  due.QuadPart = -(LONGLONG)(ms * 10000.0);  // relative, in units of 100 ns
+  if (due.QuadPart >= 0 || !SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) return false;
+  return WaitForSingleObject(timer, INFINITE) == WAIT_OBJECT_0;
+#else
+  struct timespec want;
+  want.tv_sec = (time_t)(ms / 1000.0);
+  want.tv_nsec = (long)((ms - (double)want.tv_sec * 1000.0) * 1e6);
+  return nanosleep(&want, NULL) == 0;
+#endif
+}
+
 // The thread that runs the machine while the pictures are being shown.
 //
 // One tick takes about four milliseconds here and a 240 Hz refresh is four
@@ -702,6 +745,11 @@ static void usage(void) {
     "  --volume <N>    0 to 100, default 100.\n"
     "  --stock         Do not substitute; run the ROM under the core, as the\n"
     "                  Phase 0b baseline did.\n"
+    "  --renderer <r>  native (default), emulated or check: who draws the\n"
+    "                  picture. native is src/video; emulated is the core's PPU,\n"
+    "                  and what --stock runs with unless told otherwise; check\n"
+    "                  draws every line both ways, reports the lines that differ\n"
+    "                  and exits 1 if any did.\n"
     "  -r <routine>    Substitute only this one. Repeatable; default is every\n"
     "                  routine `zamn_cosim list` reports.\n"
     "  -m <movie.zmv>  Replay a recorded movie instead of reading the keyboard.\n"
@@ -929,6 +977,8 @@ int main(int argc, char** argv) {
   int only_count = 0;
   long frame_limit = 0;
   bool native = true, want_audio = g_cfg.audio, want_pads = g_cfg.pads;
+  VideoRenderer renderer = VIDEO_NATIVE;
+  bool renderer_asked = false;
   int volume = g_cfg.volume;
   bool effect_overlay = g_cfg.effect_overlay;
   bool all_monster_sounds = g_cfg.all_monster_sounds;
@@ -994,6 +1044,15 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--no-config")) {}
     else if (!strcmp(a, "--config") && i + 1 < argc) i++;  // both read above
     else if (!strcmp(a, "--stock")) native = false;
+    else if (!strcmp(a, "--renderer") && i + 1 < argc) {
+      if (!video_renderer_named(argv[++i], &renderer)) {
+        fprintf(stderr, "error: unknown renderer '%s' — want native, emulated or check\n\n",
+                argv[i]);
+        usage();
+        return 2;
+      }
+      renderer_asked = true;
+    }
     else if (!strcmp(a, "--no-audio")) want_audio = false;
     else if (!strcmp(a, "--audio")) want_audio = true;
     else if (!strcmp(a, "--no-effect-overlay")) effect_overlay = false;
@@ -1274,6 +1333,14 @@ int main(int argc, char** argv) {
   // so this is the mode to be in even when starting with substitution off.
   Cosim cosim;
   cosim_init(&cosim, snes, COSIM_NATIVE);
+  // Who draws the picture: `src/video`, unless this is the baseline or
+  // somebody said otherwise.
+  // ...and with a checksum of the picture when there will be a report to put
+  // it in: it is what `tools/verify_corpus.ps1 -Picture` compares.
+  static VideoHook video_hook;
+  video_hook_install(&video_hook, snes->ppu,
+                     !native && !renderer_asked ? VIDEO_EMULATED : renderer,
+                     verbose || renderer == VIDEO_CHECK);
   if (profile_dir && !(cosim.profile = cosim_profile_new(cosim.rom.size))) {
     fprintf(stderr, "error: no memory for --profile\n");
     return 2;
@@ -1965,10 +2032,14 @@ int main(int argc, char** argv) {
       for (;;) {
         const double left = deadline - PACE_MS(started, SDL_GetPerformanceCounter());
         if (left <= 0.0) break;
-        // Sleep away the bulk and spin the tail. `SDL_Delay(1)` cannot resolve
-        // better than the scheduler's tick, and overshooting the deadline is
-        // the jitter we came here to remove — so the last two milliseconds are
-        // worth a busy-wait, which on this loop is about a tenth of one core.
+        // Sleep away the bulk and spin the tail, because overshooting the
+        // deadline is the jitter we came here to remove. How long the tail is
+        // decides what the wait costs: spun, it is a processor doing nothing
+        // else. With a clock fine enough to sleep by it is `PACE_SPIN_MS`.
+        // Without one it is two milliseconds, `SDL_Delay(1)` being unable to
+        // resolve better than the scheduler's tick -- which was a tenth of a
+        // core at sixty pictures a second and is nearly half of one at 240.
+        if (left > PACE_SPIN_MS && pace_sleep(left - PACE_SPIN_MS)) continue;
         if (left > 2.0) SDL_Delay(1);
       }
     }
@@ -2331,6 +2402,9 @@ int main(int argc, char** argv) {
            "                 %ld, %ld and %ld on the copies holding sets 0 to 3%s\n",
            bank.wanted, bank.set[0].played, bank.set[1].played, bank.set[2].played,
            bank.set[3].played, bank.failed ? " (one or more could not be built)" : "");
+  bool picture_ok = true;
+  if (verbose || video_hook.renderer == VIDEO_CHECK)
+    picture_ok = video_hook_report(&video_hook, stdout);
   if (verbose) {
     cosim_report(&cosim);
     // The two percentages the table cannot give: 82 rows of `OK` say each
@@ -2366,5 +2440,5 @@ int main(int argc, char** argv) {
   bank_sfx_free(&bank);
   snes_free(snes);
   free(rom);
-  return 0;
+  return picture_ok ? 0 : 1;
 }

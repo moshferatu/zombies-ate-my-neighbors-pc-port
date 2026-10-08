@@ -5,6 +5,113 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The picture, drawn natively (2026-10-08)
+
+The plan kept the console's video chip emulated for good. That has changed:
+the picture and the sound are to be ported too, until the game does not
+depend on LakeSnes. This is the start of the picture. `docs/video.md` is
+the long form.
+
+`src/video` draws every scanline the game shows, and the emulated PPU draws
+none of them. At 16:9 a tick of `level1.zmv` costs **2.8 ms** to emulate
+and take apart for the smoothing, from 8.3.
+
+* **Why this first.** A profile at 240 Hz and 16:9 had 43% of the busy
+  samples in the PPU drawing the frame a dot at a time, and 21% in the
+  smoothing taking the same frame apart a dot at a time. The 65816, the
+  ports and the sound together were 18%.
+* **`src/video/video.c`** draws a line the way the game describes it.
+  * Each background's line a tile at a time, eight pixels of a tile's row
+    at once, into a row for its tiles that go behind and a row for those
+    that go in front.
+  * The rows painted over each other from the back, with the sprites' row
+    where mode 1 puts it.
+  * Each column's colour looked up in a table that is made again only when
+    the palette, the brightness or the fixed colour changes.
+* **The widened picture is runs of tiles too.** A policy says which column
+  of a layer each column of the picture shows, and every policy is a few
+  stretches of consecutive columns. The seven the game uses are drawn.
+* **It draws what the game uses and declines the rest.** A survey of every
+  line of the corpus, 77,686,784 of them at one width, found 15 kinds, all
+  mode 1. `video_declines` names what a line has that is outside that, and
+  such a line is left to the PPU. Over the corpus none is.
+* **`src/video/ppu_hook.c`** is the one file that knows the emulator. The
+  PPU still holds the registers and the memory and still finds each line's
+  sprites. It calls `Ppu.drawLine` where it would have drawn.
+* **`--renderer native`, `emulated` or `check`.** Native is the default.
+  `--stock` runs emulated unless told otherwise. `check` draws every line
+  both ways, reports the lines that differ and exits 1 if any did.
+* **The smoothing's planes by rows.** `video_bg_row` is the same line
+  reader over the columns and lines `src/layers.h` wants, and
+  `layers_planes_by_row` fills a plane from it. A layer with a window on it
+  is still read a dot at a time.
+
+* **Checked**, on the last build.
+  * `tools/verify_corpus.ps1 -Picture`, which is new: 54 movies at four
+    widths, 310,747,136 lines drawn both ways, and none differ. Each of the
+    216 runs comes to the same checksum with `src/video` drawing alone.
+  * `zamn_test_video`, which is new and needs no ROM: PPUs filled with
+    noise. 2,024,736 lines drawn both ways over eight seeds and none
+    differ. 394,296 rows read back as the smoothing reads them and none
+    differ.
+  * 324 screenshots and 4,832 of the smoothing's pictures are byte for
+    byte what the build before drew.
+  * The corpus verifies as it did: 34,603,665 calls, 0 diverged, 1,273 of
+    1,505 sites. Lockstep: 334,319 passes, 51 of 54 never part, the same
+    three.
+* **Cost**, milliseconds a tick, emulating and then taking apart.
+  * 4:3: 4.4 and 2.3 before, 2.2 and 0.4 after.
+  * 16:9: 5.5 and 2.8 before, 2.4 and 0.4 after.
+  * 21:9: 6.6 and 3.3 before, 2.5 and 0.5 after.
+  * The whole process in a window at 240 Hz and 16:9, no sound: 50% to 75%
+    of one core before and 17% to 37% after, three runs of each. Those
+    runs are noisy, and with no sound they leave out the wait below.
+* **The wait between pictures**, which is not the picture and was most of
+  what the game cost as it is played. I had measured with the sound off
+  and said the pacing loop was fine. It was not, and the user saw no
+  difference from the renderer until it was mended.
+  * The loop slept in whole milliseconds and spun the last two before each
+    deadline. When the display's own wait holds the loop, there is nothing
+    left to spin. When the pacer is the clock, which it was in every run
+    with the sound device open, that is two milliseconds of every 4.17 at
+    240 pictures a second: nearly half a core.
+  * `pace_sleep` in `src/main_sdl.c` sleeps by a high-resolution timer,
+    and the loop spins the last half millisecond. Tried at 2, 1, 0.5, 0.2
+    and 0: half a millisecond had the most pictures within a millisecond
+    of the period, 99.8%, and none had 96.9%.
+  * With the sound on. A level at 16:9 in a window: 75% and 93% of one
+    core before either change, 27% and 30% now. The title in fullscreen
+    at 3840x2160 with the pads read: 101% before, 21% now.
+* **Tried before this and not kept.** Three smaller things, each measured
+  in a copy: asking each layer once a dot in `ppu_getPixel`, 13% and
+  pixel-identical; remembering the last tile read, 4% more; whole-program
+  optimisation, nothing. The first two are moot now.
+* **One mistake of mine.** To see that the noise test could fail I broke a
+  rule on purpose, and the first rule I broke was one noise cannot reach:
+  whether a sprite pixel of exactly `$C0` takes colour maths, which no
+  sprite pixel is. The test passed. The second, a 16x16 tile's lower half
+  read one character out, failed on 22,756 lines of 51,520.
+* **Not established.**
+  * I have not looked at it. Every check compares bytes.
+  * The cost of a level in fullscreen. The title is measured there and a
+    level in a window.
+  * Why the display's wait holds the loop with the sound off and the pacer
+    does with it on.
+  * Whether half a millisecond is the right tail on another machine. It
+    was measured on one.
+  * That it builds on Linux. It has only been built here.
+  * A screen the corpus does not reach may draw a kind of line that is
+    declined. The PPU then draws it, correctly and slowly, and
+    `--verbose` counts such lines by what they were.
+* **Still the emulator's.** The registers, VRAM, the palette and OAM. The
+  sprites of a line. What the automatic policy is worked out from. The
+  buffer the picture is written into.
+* **`PLAN.md` still says the PPU stays emulated.** I have not edited it.
+* **Next.** A line's sprites found in `src/video`. A frame drawn once: with
+  the smoothing on, a frame shown as layers is still drawn as a picture
+  nobody sees. The registers out of the PPU. The smoothing's sprites and
+  its maths window, which are still a dot at a time.
+
 ### The wobble's call, the screens' sends, and the calls of a player's frame (2026-10-08)
 
 What the 65816 still executed over the twelve movies goes from 132,840 to

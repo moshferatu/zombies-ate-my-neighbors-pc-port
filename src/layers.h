@@ -130,6 +130,7 @@
 
 #include "ppu.h"
 #include "smooth.h"
+#include "video/ppu_hook.h"
 
 // The picture, in game pixels: the console's 224 lines, and as many columns
 // as the PPU has been widened to.
@@ -602,6 +603,51 @@ static inline void layers_occlude(LayersFrame* f) {
   }
 }
 
+// One background's planes, a line at a time from `video_bg_row`: each line's
+// tiles read eight pixels at once, and each pixel's colour looked up in a
+// table made once for the layer. What the loop in `layers_capture` does a
+// pixel at a time through `ppu_layerPixel` and `layers_rgba`, and the same
+// planes. `mathed` is whether the planes have the fixed colour's maths in
+// them, and `twins` whether the mathed twins are filled as well.
+static inline void layers_planes_by_row(LayersFrame* f, Ppu* ppu, const VideoState* vs, int l,
+                                        bool mathed, bool twins, int x0, int x1) {
+  uint32_t plain[256], twin[256];
+  plain[0] = twin[0] = 0;
+  for (int i = 1; i < 256; i++) {
+    uint8_t rgba[4];
+    layers_rgba(ppu, i, mathed, rgba);
+    memcpy(&plain[i], rgba, 4);
+    layers_rgba(ppu, i, true, rgba);
+    memcpy(&twin[i], rgba, 4);
+  }
+  const int p0 = LAYERS_PLANE_OF(l, 0), p1 = LAYERS_PLANE_OF(l, 1);
+  const int width = x1 - x0;
+  VideoCentre centre;
+  video_centre_from_ppu(&centre, ppu);
+  uint8_t back[LAYERS_PLANE_W], front[LAYERS_PLANE_W];
+  uint8_t anyBack = 0, anyFront = 0;
+  for (int line = 1 - LAYERS_MARGIN; line <= LAYERS_LINES + LAYERS_MARGIN; line++) {
+    const int r = line - 1 + LAYERS_MARGIN;
+    video_bg_row(vs, &centre, l, line, x0, x1, back, front);
+    for (int c = 0; c < width; c++) {
+      memcpy(f->plane[p0][r][c], &plain[back[c]], 4);
+      memcpy(f->plane[p1][r][c], &plain[front[c]], 4);
+      anyBack |= back[c];
+      anyFront |= front[c];
+    }
+    if (!twins) continue;
+    for (int c = 0; c < width; c++) {
+      memcpy(f->plane[LAYERS_MATHED(p0)][r][c], &twin[back[c]], 4);
+      memcpy(f->plane[LAYERS_MATHED(p1)][r][c], &twin[front[c]], 4);
+    }
+  }
+  video_centre_to_ppu(&centre, ppu);
+  if (anyBack) f->planeUsed[p0] = true;
+  if (anyFront) f->planeUsed[p1] = true;
+  if (twins && anyBack) f->planeUsed[LAYERS_MATHED(p0)] = true;
+  if (twins && anyFront) f->planeUsed[LAYERS_MATHED(p1)] = true;
+}
+
 // Take the picture apart. `ownerRec`/`ownerOx`/`ownerOy` are the port's
 // table (`sprite_oam_owners`) if its pass ran *this tick*, else NULL: the
 // caller knows, from the table's serial, and this does not. Always fills
@@ -684,6 +730,8 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
   const int x0 = -ppu->extraLeft - LAYERS_MARGIN;
   const int x1 = 256 + ppu->extraRight + LAYERS_MARGIN;
   memset(f->planeUsed, 0, sizeof f->planeUsed);
+  VideoState vs;
+  video_state_from_ppu(&vs, ppu);
   for (int l = 0; l < 4; l++) {
     f->main[l] = ppu->layer[l].mainScreenEnabled;
     f->anchored[l] = ppu->layerWide[l] == ppu_wideAnchor;
@@ -708,6 +756,14 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
     if (!f->main[l] && !(f->sub[l] && f->subAdd)) continue;
     const bool math = fixedMath && f->mathMain[l] && f->main[l];
     const bool onSubOnly = !f->main[l];
+    // By rows, unless a window hides part of the layer or it is one
+    // `src/video` does not read; then a pixel at a time, as the PPU reads it.
+    const bool windowed = onSubOnly ? ppu->layer[l].subScreenWindowed
+                                    : ppu->layer[l].mainScreenWindowed;
+    if (!windowed && !video_bg_row_declines(&vs, l)) {
+      layers_planes_by_row(f, ppu, &vs, l, math && allowedEverywhere, math && f->mathGated, x0, x1);
+      continue;
+    }
     for (int line = 1 - LAYERS_MARGIN; line <= LAYERS_LINES + LAYERS_MARGIN; line++) {
       const int r = line - 1 + LAYERS_MARGIN;
       for (int x = x0; x < x1; x++) {

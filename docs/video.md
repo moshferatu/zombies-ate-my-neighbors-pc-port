@@ -1,0 +1,181 @@
+# The picture, drawn natively
+
+The plan this project started with kept the console's video chip emulated for
+good. That has changed. The picture and the sound are to be ported as the
+game's code is, until nothing of LakeSnes is left in the game.
+
+This is where the picture stands. `src/video` draws every scanline the game
+shows, and the emulated PPU draws none of them. The PPU still holds the
+registers, VRAM, the palette and OAM, and still finds each line's sprites.
+
+## Why it was worth doing first
+
+A profile of `level1.zmv` at 240 Hz and 16:9, with the smoothing on:
+
+| Share of busy samples | What |
+|---|---|
+| 43% | The PPU drawing the frame, a dot at a time |
+| 21% | The smoothing taking the frame apart, a dot at a time |
+| 18% | The 65816, the ports and the sound chip |
+| 18% | Showing 240 pictures a second |
+
+The first two are the same work done twice, and both asked the PPU about one
+dot at a time: for each dot, for each layer from the front, find the tile, read
+its bits, stop at the first that is not transparent.
+
+## What a line is drawn from
+
+`VideoState`, in `src/video/video.h`: VRAM, the palette, and the registers as
+the game last set them, under names of this project's. It names nothing of the
+emulator's. `src/video/ppu_hook.c` is the one file that knows both, and fills a
+`VideoState` from the PPU before each line.
+
+The sprites of a line come with the state, as the PPU found them: a palette
+index and a priority for each column.
+
+## How a line is drawn
+
+1. **Each background's line, a tile at a time.** `tile_row` reads one row of
+   one tile as eight pixels at once. A table turns each byte of a bitplane
+   into eight bytes, one a pixel, and four of them shifted and ORed are the
+   row. The eight go to one of two rows of the line: one for tiles that go
+   behind and one for tiles that go in front.
+2. **The rows painted from the back.** Mode 1 has ten places in its stack: a
+   background's two rows and the sprites' four priorities, in a fixed order.
+   Each place that has anything in it is one pass over the line.
+3. **Each column's colour looked up.** Two tables of 256, the palette as it
+   goes to the screen and the palette with the fixed colour's maths done.
+   They are made again only when the palette, the brightness or the fixed
+   colour changes.
+
+Where the game adds the sub screen, the sub screen's line is painted the same
+way from the same rows, and the two colours are added a column at a time.
+
+The colour window is two ranges of columns, so it is worked out as ranges and
+not asked about a column at a time.
+
+## The widened picture
+
+A layer's policy says which column of the layer each column of the picture
+shows. Every policy is a few runs of consecutive columns, so a widened line is
+still a few runs of whole tiles.
+
+| Policy | Runs |
+|---|---|
+| clip | the console's 256 |
+| stretch | the columns the world has anything in |
+| anchor | the left half at the left edge, the right half at the right |
+| tile | the console's 256, repeated |
+| centre clip | the 256 at the picture's middle |
+| centre | the same, and each margin: nothing, the 256 again, or one pixel carried out |
+| sweep | the layer shifted, and its first column carried out to the left |
+
+`ppu_wideClampEdge` is not drawn. Nothing sets it.
+
+**The centred layer's margins are searched for once.** The game over's mask
+is the one user. The PPU keeps what it found, by line and scroll, and
+`src/video` keeps the same thing in the same place (`VideoCentre`, copied out
+of the PPU and back), because the PPU's is not made again when VRAM changes
+and two copies could come apart.
+
+## What it does not draw
+
+`video_declines` names the first thing about a line that `video_line` does
+not draw as the PPU does, and such a line is left to the PPU:
+
+- a mode other than 1;
+- mosaic, pseudo hi-res or overscan;
+- a window on a layer;
+- the main screen clipped by the colour window;
+- colour maths halved;
+- a layer's edge column carried into the margins, or sprites placed other than
+  with the world or the console.
+
+Over the corpus the game does none of them. A survey of every line of all 54
+movies found 15 kinds of line, all mode 1 with BG3's high tiles in front. The
+only window in use is the colour window, to say where colour maths applies.
+
+## The smoothing's planes
+
+`src/layers.h` takes a frame apart into a plane for each background and
+priority. It asked `ppu_layerPixel` for each dot of each plane, and worked out
+each dot's colour.
+
+`video_bg_row` is the same line reader, over a few more columns either side of
+the picture and a few lines above and below it, read with the scroll recorded
+as each line was drawn. `layers_planes_by_row` fills a plane a line at a time
+from it, with each colour looked up in a table made once for the layer.
+
+A layer with a window on it, or in a mode other than 1, is still read a dot at
+a time.
+
+## How it is checked
+
+- **`zamn --renderer check`** draws every line both ways and compares them
+  column by column. It reports the lines that differ and the first of them,
+  and exits 1 if there were any.
+- **`tools/verify_corpus.ps1 -Picture`** runs every movie of the corpus under
+  the check, then again with `src/video` drawing alone, and compares a
+  checksum of every line of the picture between the two. `-Widescreen
+  off,16:9,16:10,21:9` is all four widths.
+- **`zamn_test_video`** needs no ROM. It fills a PPU with noise: VRAM, the
+  palette, OAM, the scrolls, the layers, the maths, the window, the margins
+  and the policies. Every line is drawn both ways, and some rows are read
+  back with `video_bg_row` against `ppu_layerPixel`. A share of the frames
+  have something `video_declines`, so a line that should have been declined
+  and was drawn wrong shows as a line that differs.
+
+A rule broken on purpose is caught: `zamn_test_video` with a 16x16 tile's
+lower half read one character out reported 22,756 lines differing of 51,520.
+
+## Results
+
+**Checked**, on the build that is described here:
+
+- **The corpus.** 54 movies at four widths: 310,747,136 lines drawn both ways
+  and none differ. None was left to the PPU. Each of the 216 runs comes to the
+  same checksum with `src/video` drawing alone.
+- **Noise.** 12,000 frames over eight seeds: 2,024,736 lines drawn both ways
+  and none differ, with 663,264 more declined. 394,296 rows read back and none
+  differ.
+- **The smoothing.** 324 screenshots and 4,832 of the smoothing's pictures,
+  from twelve movies at two widths, are byte for byte what the build before
+  drew.
+
+**Cost**, `level1.zmv`, milliseconds a tick: emulating the tick, which has the
+drawing in it, and taking it apart for the smoothing.
+
+| Width | Before | After |
+|---|---|---|
+| 4:3 | 4.4 and 2.3 | 2.2 and 0.4 |
+| 16:9 | 5.5 and 2.8 | 2.4 and 0.4 |
+| 21:9 | 6.6 and 3.3 | 2.5 and 0.5 |
+
+The whole process, in a window at 240 Hz and 16:9 with no sound, used 50% to
+75% of one core before and 17% to 37% after, over three runs of each. Those
+runs are noisy; the table is the steadier measure.
+
+A profile of the same run afterwards has 39% as many busy samples. Of them
+the drawing is 11%, taking the frame apart 12%, the 65816 with the ports and
+the sound about 44%, and showing the pictures about 32%.
+
+## What is still the emulator's
+
+- **The registers and the memory.** The ROM's code writes `$21xx` and the PPU
+  decodes it. `VideoState` is filled from the PPU a line at a time.
+- **The sprites of a line.** `ppu_evaluateSprites` finds them, with the
+  widened picture's rules for them, and sets the two flags the game can read
+  back.
+- **What `VIDEO_WIDE_AUTO` is worked out from.** Whether a layer is empty at
+  its edges, scrolled or drawn a line at a time is the PPU's to notice.
+- **The picture's buffer.** A line is written into the PPU's pixel buffer,
+  eight bytes a column, and the frontend reads it from there.
+
+## Next
+
+- Find a line's sprites in `src/video`.
+- Draw a frame once. With the smoothing on, a frame shown as layers is still
+  drawn as a picture that nobody sees.
+- Take the registers out of the PPU: a write to `$21xx` into a `VideoState`.
+- The smoothing's sprites and its maths window are still worked out a dot at
+  a time.

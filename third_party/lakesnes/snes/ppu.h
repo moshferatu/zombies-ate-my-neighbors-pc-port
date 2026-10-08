@@ -297,6 +297,14 @@ struct Ppu {
   // picture: drawing writes only the buffer, so the machine runs the same,
   // and without it `zamn_cosim run` is 2.4 times as fast.
   bool noPixels;
+  // zamn: a line drawn by somebody else. Called from `ppu_runLine` where the
+  // line's pixels would be drawn, after its sprites are found, and not at
+  // all under `noPixels`. True if it drew the line -- into `pixelBuffer`, by
+  // `ppu_drawLine` or by its own means -- and false to have it drawn here.
+  // NULL, which is how it starts, draws every line here. `src/video` is the
+  // one user.
+  bool (*drawLine)(void* user, Ppu* ppu, int line);
+  void* drawUser;
   // widescreen: margins in game pixels, and what each layer does with them
   int extraLeft;
   int extraRight;
@@ -393,6 +401,10 @@ bool ppu_checkOverscan(Ppu* ppu);
 void ppu_handleVblank(Ppu* ppu);
 void ppu_handleFrameStart(Ppu* ppu);
 void ppu_runLine(Ppu* ppu, int line);
+// The drawing half of `ppu_runLine`: this line's pixels into `pixelBuffer`,
+// from the state as it stands and the sprites `ppu_runLine` found. For a
+// `drawLine` that wants the line drawn here after all.
+void ppu_drawLine(Ppu* ppu, int line);
 // Draw the whole picture again from the PPU's state as it stands now -- every
 // line `ppu_runLine` drew this frame, into the same half of the pixel buffer,
 // so `ppu_putPixels` afterwards hands out the redrawn picture. `hScroll` and

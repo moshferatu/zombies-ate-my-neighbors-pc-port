@@ -30,6 +30,25 @@ if(MSVC)
 endif()
 
 # ---------------------------------------------------------------------------
+# The picture, drawn natively. `src/video/video.c` draws a scanline from VRAM,
+# the palette and the registers, and knows nothing of the emulator;
+# `ppu_hook.c` is the one file that does, and has the emulated PPU call it
+# where it would have drawn the line itself.
+# ---------------------------------------------------------------------------
+add_library(zamn_video STATIC
+  src/video/video.c
+  src/video/ppu_hook.c)
+target_include_directories(zamn_video PUBLIC src)
+target_link_libraries(zamn_video PUBLIC snescore)
+
+# ...and its test: PPUs filled with noise, every line drawn both ways. No ROM.
+add_executable(zamn_test_video tools/test_video.c)
+target_link_libraries(zamn_test_video PRIVATE zamn_video)
+if(MSVC)
+  target_compile_definitions(zamn_test_video PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+# ---------------------------------------------------------------------------
 # Phase 0a: headless boot -> PNG (no SDL). Verifies the core boots the ROM.
 # ---------------------------------------------------------------------------
 add_executable(zamn_headless src/headless.c)
@@ -118,7 +137,7 @@ endif()
 # checked against frames, so this one runs a movie: hand it the cartridge and
 # a movie and it reports, frame by frame, identical or not and why not.
 add_executable(zamn_test_layers tools/test_layers.c)
-target_link_libraries(zamn_test_layers PRIVATE zamn_cosim_lib)
+target_link_libraries(zamn_test_layers PRIVATE zamn_cosim_lib zamn_video)
 target_include_directories(zamn_test_layers PRIVATE src third_party/stb)
 if(MSVC)
   target_compile_definitions(zamn_test_layers PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -128,7 +147,7 @@ endif()
 # frames for ffmpeg, and the sound as a WAV. How a trailer is made at 4K on a
 # display that is not 4K.
 add_executable(zamn_record tools/record.c)
-target_link_libraries(zamn_record PRIVATE zamn_cosim_lib)
+target_link_libraries(zamn_record PRIVATE zamn_cosim_lib zamn_video)
 target_include_directories(zamn_record PRIVATE src)
 if(MSVC)
   target_compile_definitions(zamn_record PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -381,7 +400,7 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
   add_executable(zamn WIN32 src/main_sdl.c)
   # zamn_cosim_lib pulls in snescore, zamn_port and zamn_analysis transitively:
   # the core to run on, the port to substitute, and the movie reader for `-m`.
-  target_link_libraries(zamn PRIVATE zamn_cosim_lib SDL2::SDL2 SDL2::SDL2main)
+  target_link_libraries(zamn PRIVATE zamn_cosim_lib zamn_video SDL2::SDL2 SDL2::SDL2main)
   if(WIN32)
     # The desktop compositor's frame statistics, for the cadence report.
     target_link_libraries(zamn PRIVATE dwmapi)

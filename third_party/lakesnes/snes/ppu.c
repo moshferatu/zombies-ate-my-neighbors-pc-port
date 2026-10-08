@@ -80,6 +80,8 @@ Ppu* ppu_init(Snes* snes) {
   Ppu* ppu = malloc(sizeof(Ppu));
   ppu->snes = snes;
   ppu->noPixels = false;
+  ppu->drawLine = NULL;
+  ppu->drawUser = NULL;
   ppu_setPixelOutputFormat(ppu, ppu_pixelOutputFormatBGRX);
   // Set here and not in `ppu_reset`, because the width of the picture belongs
   // to whoever is displaying it and a game resetting itself is not a reason to
@@ -417,6 +419,11 @@ void ppu_runLine(Ppu* ppu, int line) {
   if(!ppu->forcedBlank) ppu_evaluateSprites(ppu, line - 1);
   // actual line
   if(ppu->noPixels) return;
+  if(ppu->drawLine && ppu->drawLine(ppu->drawUser, ppu, line)) return;
+  ppu_drawLine(ppu, line);
+}
+
+void ppu_drawLine(Ppu* ppu, int line) {
   if(ppu->mode == 7) ppu_calculateMode7Starts(ppu, line);
   // Widescreen runs the same loop over a wider range of the same coordinate:
   // column 0 is where it always was, and the margins are columns the console

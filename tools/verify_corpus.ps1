@@ -11,11 +11,18 @@
 #   powershell -ExecutionPolicy Bypass -File tools\verify_corpus.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\verify_corpus.ps1 -Coverage
 #   powershell -ExecutionPolicy Bypass -File tools\verify_corpus.ps1 -Lockstep
+#   powershell -ExecutionPolicy Bypass -File tools\verify_corpus.ps1 -Picture
 #
 # The first two run `verify`, which checks every call's answer against the
 # ROM's. `-Lockstep` runs `run` instead, which substitutes the port for real and
 # compares all of WRAM once per scheduler pass -- a stronger claim over fewer
 # calls, and about forty seconds a movie against one.
+#
+# `-Picture` is about the picture and not the game: it runs the game itself,
+# `zamn.exe`, with no window, and has every scanline of every frame drawn
+# twice, by `src/video` and by the emulated PPU, and compared. Then it runs
+# each movie again with `src/video` drawing alone and checks that the picture
+# comes to the same checksum. Once for each width in `-Widescreen`.
 #
 # Movies run `-Jobs` at a time, twelve unless told otherwise, and the rows come
 # out in corpus order when all of them have finished. The whole lockstep pass
@@ -28,6 +35,11 @@ param(
     [switch]$Coverage,
     # Run the lockstep pass instead of the verify pass.
     [switch]$Lockstep,
+    # Run the picture pass instead, at each of these widths: off, 16:9, 16:10
+    # or 21:9. `-Widescreen off,16:9,16:10,21:9` is all four; under -File a
+    # list arrives as one string with the commas in it, and is split below.
+    [switch]$Picture,
+    [string[]]$Widescreen = @("off", "16:9"),
     # What `-Lockstep` leaves to the ROM; see the block under the corpus.
     # `-Without none` excludes nothing: PowerShell's -File does not evaluate
     # `@()` on the command line, and "none" is the spelling `zamn_cosim -r`
@@ -155,9 +167,20 @@ if ($Only -ne "") {
 # each one's output and exit code. The rows are printed afterwards, in corpus
 # order, so the report reads the same however the runs interleaved.
 function Invoke-Corpus([string]$command, [string[]]$extra) {
+    $exe = Join-Path $root "build\zamn_cosim.exe"
+    # Start-Process joins its arguments with spaces and quotes nothing, and
+    # the ROM's name has three in it.
+    return Invoke-Movies $exe {
+        param($m)
+        @($command, "`"$Rom`"", "-m", "`"movies\$m`"", "-f", "$($corpus[$m])") + $extra
+    }
+}
+
+# The same for any program: `$argvOf` is handed a movie and says what the
+# program is run with.
+function Invoke-Movies([string]$exe, [scriptblock]$argvOf) {
     $dir = Join-Path ([IO.Path]::GetTempPath()) ("zamn-corpus-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory $dir | Out-Null
-    $exe = Join-Path $root "build\zamn_cosim.exe"
     $pending = New-Object System.Collections.Queue
     foreach ($m in $movies) { $pending.Enqueue($m) }
     $live = @{}
@@ -166,9 +189,7 @@ function Invoke-Corpus([string]$command, [string[]]$extra) {
         while ($pending.Count -gt 0 -or $live.Count -gt 0) {
             while ($pending.Count -gt 0 -and $live.Count -lt [Math]::Max(1, $Jobs)) {
                 $m = $pending.Dequeue()
-                # Start-Process joins its arguments with spaces and quotes
-                # nothing, and the ROM's name has three in it.
-                $argv = @($command, "`"$Rom`"", "-m", "`"movies\$m`"", "-f", "$($corpus[$m])") + $extra
+                $argv = & $argvOf $m
                 $p = Start-Process -FilePath $exe -ArgumentList $argv -NoNewWindow -PassThru `
                     -RedirectStandardOutput (Join-Path $dir "$m.out") `
                     -RedirectStandardError (Join-Path $dir "$m.err")
@@ -192,6 +213,77 @@ function Invoke-Corpus([string]$command, [string[]]$extra) {
         Remove-Item -Recurse -Force $dir -ErrorAction SilentlyContinue
     }
     return $done
+}
+
+# The picture pass.
+#
+# `--renderer check` draws each line both ways and counts the lines that came
+# out different; it is the whole of the comparison, column by column. The
+# second run is `--renderer native`, which is how the game is played, and
+# proves one thing more: that with the PPU drawing nothing at all the picture
+# is still the same one. Its checksum is over every line as `src/video` left
+# it, and the check's is over every line as the PPU drew it.
+if ($Picture) {
+    $game = Join-Path $root "zamn.exe"
+    $env:SDL_VIDEODRIVER = "dummy"
+    $Widescreen = @($Widescreen | ForEach-Object { $_ -split "," } | Where-Object { $_ })
+    $bad = 0
+    $row = "{0,-24} {1,6} {2,9} {3,7} {4,7}  {5}"
+    foreach ($w in $Widescreen) {
+        $runs = @{}
+        foreach ($renderer in @("check", "native")) {
+            $runs[$renderer] = Invoke-Movies $game {
+                param($m)
+                @("`"$Rom`"", "-m", "`"movies\$m`"", "--frames", "$($corpus[$m])", "--no-config",
+                  "--no-pads", "--no-high-scores", "--no-audio", "--widescreen", $w,
+                  "--renderer", $renderer)
+            }
+        }
+        "The picture over the corpus, widescreen $w."
+        ""
+        $row -f "movie", "frames", "lines", "left", "differ", "drawn alone"
+        $lineTotal = 0
+        $leftTotal = 0
+        $differTotal = 0
+        $failed = 0
+        foreach ($movie in $movies) {
+            $text = $runs["check"][$movie].Lines | Out-String
+            $alone = $runs["native"][$movie].Lines | Out-String
+            $lines = 0
+            $left = 0
+            $differ = -1
+            if ($text -match "Drawing: check; (\d+) lines drawn here, (\d+) left to the PPU") {
+                $lines = [int]$Matches[1]
+                $left = [int]$Matches[2]
+            }
+            if ($text -match "(\d+) of them differ from the PPU's") { $differ = [int]$Matches[1] }
+            $sum = ""
+            if ($text -match "Picture checksum ([0-9A-F]{16}) over (\d+) lines") { $sum = "$($Matches[1]) $($Matches[2])" }
+            $sumAlone = "none"
+            if ($alone -match "Picture checksum ([0-9A-F]{16}) over (\d+) lines") { $sumAlone = "$($Matches[1]) $($Matches[2])" }
+            $state = "the same picture"
+            $ok = $true
+            if ($differ -ne 0 -or $lines -eq 0) { $state = "NOT CHECKED"; $ok = $false }
+            if ($differ -gt 0) { $state = "DIFFERS" }
+            elseif ($sum -ne $sumAlone) { $state = "ANOTHER PICTURE"; $ok = $false }
+            elseif ($runs["check"][$movie].Code -ne 0 -or $runs["native"][$movie].Code -ne 0) {
+                $state = "EXIT $($runs['check'][$movie].Code), $($runs['native'][$movie].Code)"
+                $ok = $false
+            }
+            if (-not $ok) { $failed++ }
+            $lineTotal += $lines
+            $leftTotal += $left
+            if ($differ -gt 0) { $differTotal += $differ }
+            $row -f $movie, $corpus[$movie], $lines, $left, $(if ($differ -lt 0) { "-" } else { $differ }), $state
+        }
+        ""
+        "$lineTotal lines drawn both ways across $($movies.Count) movie$(if ($movies.Count -ne 1) { 's' }) at $w, " +
+            "$differTotal differ; $leftTotal left to the PPU; $failed movie$(if ($failed -ne 1) { 's' }) not the same picture."
+        ""
+        $bad += $failed
+    }
+    if ($bad -gt 0) { exit 1 }
+    exit 0
 }
 
 # The lockstep pass.
