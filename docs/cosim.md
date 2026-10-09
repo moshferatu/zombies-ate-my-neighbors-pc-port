@@ -18290,3 +18290,74 @@ and the three `NOP`s.
 new ones are taken. Every priced call is refresh-exact. Declines: 3,198.
 
 Lockstep: 334,319 passes, 51 of 54 never part, the same three.
+
+## What is asked of the core, and where it took over (2026-10-09)
+
+The goal is now a game with no 65816 in it (`PLAN.md`). The first step is
+to make the core's share of a substituted run exact and small enough to
+name.
+
+### The core runs instructions and nothing else
+
+Between two ports the core used to do three things. It executed whatever
+no port had. It took the NMI: a fetch thrown away, an idle, four pushes and
+the vector. And it waited out the scheduler's `WAI`, an idle at a time.
+
+The last two are not instructions of the ROM's, so they are not the game's
+code, and a driver with no CPU has to make them anyway. The harness makes
+them now. `take_interrupt` and `wait_for_interrupt` are the core's
+`cpu_doInterrupt` and its waiting branch, access for access, through
+`snes_cpuRead`, `snes_cpuWrite` and `snes_cpuIdle`. Those are the console's,
+so every access costs what it did and HDMA is answered where it was.
+
+`core_step` is the one place the core is called from. Its order is the
+core's: reset, `STP`, `WAI`, an interrupt, an instruction. Under `verify`,
+and with nothing switched on, it hands everything to the core as before.
+That second case is what keeps lockstep's stock side stock.
+
+The check was to run the same movie both ways, with a switch that gave the
+interrupt and the wait back to the core. `level1` and `boot` print the same
+report to the byte: each routine's costs, the clocks' drift pass by pass,
+both shares.
+
+### Takeovers
+
+With that done, the core is called for one reason, and each call is the
+port falling short. `core_instruction` counts them.
+
+A takeover is the core executing an instruction when the step before was
+not its own. It is recorded by address and by how the program counter got
+there:
+
+| How | What it means |
+|---|---|
+| declined | A registered entry, and its port turned the call down |
+| not served | A registered entry `run` never substitutes |
+| returned to | A port returned here. The caller is not ported |
+| called | A port called or jumped here. The callee is not ported |
+| left standing | A port stopped on an instruction `leave` does not make |
+| reset | The reset vector's target. The boot code |
+
+The routine beside it is the one that declined, or else the port that
+handed over. Instructions the core goes on to execute are counted against
+the takeover they followed, until a port next runs.
+
+An interrupt that lands in the core's code and returns to it is not a new
+takeover. `take_interrupt` notes the address and the stack pointer, and an
+instruction at that address with that stack pointer carries on the old one.
+
+`zamn_cosim run` and the game print the forty commonest at exit, and
+`zamn --profile <dir>` writes all of them to `<dir>/takeovers.csv`. That
+file is the session's alone. The counts beside it accumulate.
+
+### What "left standing" is
+
+`leave` makes eight instructions. A port that stops on any other leaves it
+for the core. Each of the 61 places is that: a port that stops on a load,
+a store or a branch, and the ROM runs on from there. The row names the
+port.
+
+The one that was not: the resumable port's `JSL thread_yield`, 1,725 times
+over the survey. `native_yield` stood the CPU on it and returned. It calls
+`leave` now, and the totals did not move: the budget already stopped short
+of the `JSL` by its cost.

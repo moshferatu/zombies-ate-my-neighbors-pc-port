@@ -322,6 +322,21 @@ struct CosimPriv {
   uint16_t called_held_sp;
   // The core executed an instruction on this step, or took an interrupt.
   bool core_ran;
+  // Where the core has taken over (`CosimTakeover`), and which of them its
+  // instructions are being counted against: -1 before the first.
+  CosimTakeover* took;
+  int took_n, took_cap, took_cur;
+  // The last step was an instruction of the core's.
+  bool core_running;
+  // The port that last ran, and how the program counter was last handed on:
+  // by which kind of instruction, or by which routine standing aside.
+  const CosimRoutine* port;
+  uint8_t handed_how;
+  const CosimRoutine* handed_by;
+  // An interrupt landed in the core's code here. Coming back is no takeover.
+  bool core_held;
+  uint32_t core_held_pc;
+  uint16_t core_held_sp;
 };
 
 // ---------------------------------------------------------------------------
@@ -508,6 +523,7 @@ void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
   }
 
   c->priv = (CosimPriv*)calloc(1, sizeof(CosimPriv));
+  c->priv->took_cur = -1;
   c->priv->stack_lo = stack_area_lo(&c->rom);
   c->priv->stack_hi = STACK_AREA_HI;
   // Verify mode needs somewhere to rewind to and somewhere to run; native mode
@@ -561,6 +577,7 @@ void cosim_free(Cosim* c) {
   }
   free(c->priv->hw_rom);
   free(c->priv->irq_before);
+  free(c->priv->took);
   for (int i = 0; i < COSIM_MAX_DEPTH; i++) free(c->priv->burn[i].ev);
   free(c->priv->scratch);
   free(c->priv->guard);
@@ -1245,6 +1262,19 @@ static bool is_entry(const Cosim* c, uint32_t pc) {
   return false;
 }
 
+// The program counter has been stood somewhere, and this is how. It matters
+// only if the core is what runs next: see `CosimTakeover`.
+static void handed(Cosim* c, CosimTookHow how, const CosimRoutine* by) {
+  c->priv->handed_how = (uint8_t)how;
+  c->priv->handed_by = by;
+}
+
+// A port has the machine, so whatever the core runs next it is taking over.
+static void port_runs(Cosim* c, const CosimRoutine* r) {
+  c->priv->port = r;
+  c->priv->core_running = false;
+}
+
 typedef struct {
   int cycles;  // the whole instruction
   int last;    // ...of which after the interrupt poll
@@ -1369,6 +1399,8 @@ static bool leave_step(Cosim* c, LeaveCost* cost) {
   call_made(c, callee);
   if (callee && c->profile) cosim_profile_call(c->profile, pc, callee);
   if (op[0] == 0x40) call_resumed(c);
+  const bool returned = op[0] == 0x60 || op[0] == 0x6b || op[0] == 0x40;
+  handed(c, returned ? COSIM_TOOK_RETURN : COSIM_TOOK_CALL, c->priv->port);
   return true;
 }
 
@@ -1380,7 +1412,10 @@ static void leave(Cosim* c) {
   Snes* snes = c->snes;
   if (is_entry(c, cpu_pc24(snes))) return;
   LeaveCost cost;
-  if (!leave_step(c, &cost)) return;
+  if (!leave_step(c, &cost)) {
+    handed(c, COSIM_TOOK_EXIT, c->priv->port);
+    return;
+  }
 
   const uint64_t before = snes->cycles;
   int head = cost.cycles - cost.last;
@@ -1659,6 +1694,128 @@ static bool interrupt_due(const Snes* snes) {
   return cpu->nmiWanted || (cpu->irqWanted && !cpu->i);
 }
 
+// --- What is asked of the core -------------------------------------------------
+//
+// Under `run`, an instruction no port has, and nothing else. Taking an
+// interrupt and waiting out a `WAI` are not instructions of the ROM's, and
+// the harness makes both: the same accesses in the same order as the core's
+// `cpu_doInterrupt` and its waiting branch, through the console's own bus, so
+// each costs what it did and the machine cannot tell.
+
+static uint8_t status_byte(const Cpu* cpu) {
+  return (uint8_t)(cpu->n << 7 | cpu->v << 6 | cpu->mf << 5 | cpu->xf << 4 |
+                   cpu->d << 3 | cpu->i << 2 | cpu->z << 1 | cpu->c);
+}
+
+static void bus_push(Snes* snes, uint8_t v) {
+  Cpu* cpu = snes->cpu;
+  snes_cpuWrite(snes, cpu->sp, v);
+  cpu->sp--;
+  if (cpu->e) cpu->sp = (uint16_t)((cpu->sp & 0xff) | 0x100);
+}
+
+// A fetch that is thrown away, an idle, the return address and the status
+// byte, and then the vector.
+static void take_interrupt(Cosim* c) {
+  Snes* snes = c->snes;
+  Cpu* cpu = snes->cpu;
+  CosimPriv* p = c->priv;
+  if (p->core_running) {
+    p->core_held = true;
+    p->core_held_pc = cpu_pc24(snes);
+    p->core_held_sp = cpu->sp;
+    p->core_running = false;
+  }
+  (void)snes_cpuRead(snes, cpu_pc24(snes));
+  snes_cpuIdle(snes, false);
+  bus_push(snes, cpu->k);
+  bus_push(snes, (uint8_t)(cpu->pc >> 8));
+  bus_push(snes, (uint8_t)cpu->pc);
+  bus_push(snes, status_byte(cpu));
+  cpu->i = true;
+  cpu->d = false;
+  cpu->k = 0;
+  cpu->intWanted = false;
+  const uint32_t vector = cpu->nmiWanted ? 0xffeau : 0xffeeu;
+  cpu->nmiWanted = false;
+  const uint8_t lo = snes_cpuRead(snes, vector);
+  cpu->pc = (uint16_t)(lo | snes_cpuRead(snes, vector + 1) << 8);
+}
+
+// One idle while nothing is wanted. When something is, two, with the poll
+// between them, and the interrupt is taken on the step after.
+static void wait_for_interrupt(Cosim* c) {
+  Snes* snes = c->snes;
+  Cpu* cpu = snes->cpu;
+  if (!cpu->irqWanted && !cpu->nmiWanted) {
+    snes_cpuIdle(snes, true);
+    return;
+  }
+  cpu->waiting = false;
+  snes_cpuIdle(snes, false);
+  cpu->intWanted = interrupt_due(snes);
+  snes_cpuIdle(snes, false);
+}
+
+// The core is taking over at `pc`: find its row, or start one.
+static void took_note(Cosim* c, uint32_t pc) {
+  CosimPriv* p = c->priv;
+  const uint8_t how = p->handed_how;
+  int i = 0;
+  while (i < p->took_n && (p->took[i].pc != pc || p->took[i].how != how)) i++;
+  if (i == p->took_n) {
+    if (p->took_n == p->took_cap) {
+      p->took_cap = p->took_cap ? 2 * p->took_cap : 256;
+      p->took = (CosimTakeover*)realloc(p->took,
+                                        (size_t)p->took_cap * sizeof *p->took);
+    }
+    p->took[p->took_n++] = (CosimTakeover){
+        .pc = pc,
+        .how = how,
+        .routine = how == COSIM_TOOK_RESET ? NULL : p->handed_by,
+        .first_frame = (long)c->snes->frames,
+    };
+  }
+  p->took[i].times++;
+  p->took_cur = i;
+}
+
+static void core_instruction(Cosim* c) {
+  Snes* snes = c->snes;
+  CosimPriv* p = c->priv;
+  if (!p->core_running) {
+    const bool back = p->core_held && cpu_pc24(snes) == p->core_held_pc &&
+                      snes->cpu->sp == p->core_held_sp;
+    if (!back) took_note(c, cpu_pc24(snes));
+    p->core_held = false;
+    p->core_running = true;
+  }
+  if (p->took_cur >= 0) p->took[p->took_cur].instructions++;
+  c->work.core_instructions++;
+  snes_runCpuCycle(snes);
+}
+
+static bool any_enabled(const Cosim* c) {
+  for (int i = 0; i < COSIM_MASK_WORDS; i++)
+    if (c->enabled.w[i]) return true;
+  return false;
+}
+
+// One step of the CPU that no port and no budget has claimed. The order is
+// the core's: reset, a `STP`, a `WAI`, an interrupt, an instruction.
+static void core_step(Cosim* c) {
+  Snes* snes = c->snes;
+  const Cpu* cpu = snes->cpu;
+  if (c->mode != COSIM_NATIVE || !any_enabled(c) || cpu->resetWanted ||
+      cpu->stopped) {
+    snes_runCpuCycle(snes);
+    return;
+  }
+  if (cpu->waiting) wait_for_interrupt(c);
+  else if (cpu->intWanted) take_interrupt(c);
+  else core_instruction(c);
+}
+
 // What the stretches this routine publishes hold right now, before it runs.
 static void commit_capture(const Cosim* c, const CosimRoutine* r,
                            CosimCommit* k) {
@@ -1919,7 +2076,7 @@ static bool burn_spend(Cosim* c) {
       c->work.burns_parked++;
       if (b->jump) burn_stack_for_interrupt(c, b);
       c->snes->cpu->intWanted = true;
-      snes_runCpuCycle(c->snes);  // the core takes it, from the entry instruction
+      core_step(c);  // taken from the entry instruction
     }
     return false;
   }
@@ -1970,13 +2127,10 @@ static bool burn_parked(const Cosim* c) {
 // ...and the mirror image: suspend by jumping to the routine's own
 // `JSL thread_yield`, with the sleep count in A where the ROM would have put it.
 //
-// This is the same idea as `native_return`, and it is what makes substituting a
-// coroutine tractable at all. The port does not have to model parking a stack
-// pointer, choosing the next thread, or coming back: the core executes the real
-// `JSL`, the real scheduler parks the real frame, and the real scheduler
-// resumes it. Because it is literally the ROM's own instruction, the stack
-// footprint of a substituted suspension is not an approximation of the ROM's —
-// it *is* the ROM's.
+// This is the same idea as `native_return`. The port does not have to model
+// parking a stack pointer, choosing the next thread, or coming back: the `JSL`
+// is made as the ROM's is (`leave`), and `thread_yield`'s own port parks the
+// frame and resumes it.
 //
 // The registers and flags are published first, and that is not housekeeping.
 // `thread_yield` opens with `PHP`, so whatever is set here is what the thread
@@ -1990,6 +2144,7 @@ static void native_yield(Cosim* c, const CosimRoutine* r, CosimCall* call,
   cpu->pc = (uint16_t)r->yield_op;
   call->suspended = true;
   call->resume_pc = r->yield_op + 4;  // past the 4-byte JSL
+  leave(c);
 }
 
 // Run one segment of a substituted routine against the emulator's own memory,
@@ -1999,6 +2154,7 @@ static void run_native_segment(Cosim* c, CosimCall* call) {
   const CosimRoutine* r = s->routine;
   Snes* snes = c->snes;
 
+  port_runs(c, r);
   CosimRegs in, out;
   regs_capture(snes, &in);
   out = in;
@@ -2101,6 +2257,7 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
 
   // Before the port runs: leaving it may make the next call.
   call_served(c);
+  port_runs(c, r);
 
   CosimRegs in, out;
   regs_capture(snes, &in);
@@ -2479,7 +2636,10 @@ static void cosim_step_inner(Cosim* c) {
       // Verified but never substituted — see `CosimRoutine::verify_only`. Nothing
       // is counted, because nothing was offered: the report says `verify only`
       // against a row of zeroes rather than pretending this was a decline.
-      if (c->mode == COSIM_NATIVE && r->verify_only) break;
+      if (c->mode == COSIM_NATIVE && r->verify_only) {
+        handed(c, COSIM_TOOK_UNSERVED, r);
+        break;
+      }
       // ...and the mirror. `verify` cannot score this one — an interrupt lands
       // inside the call window — so it does not intercept it either, rather
       // than counting a call it is going to abandon. See
@@ -2491,6 +2651,7 @@ static void cosim_step_inner(Cosim* c) {
       if (!guard_allows(c, r)) {
         c->stats[i].calls++;
         c->stats[i].declined++;
+        handed(c, COSIM_TOOK_DECLINED, r);
         break;
       }
       if (c->mode == COSIM_NATIVE) {
@@ -2547,7 +2708,7 @@ static void cosim_step_inner(Cosim* c) {
   }
 
   c->priv->core_ran = true;
-  snes_runCpuCycle(snes);
+  core_step(c);
 }
 
 // The opcode about to execute, straight out of the cartridge image.
@@ -2702,6 +2863,8 @@ void cosim_forget_calls(Cosim* c) {
   c->priv->irq_call = NULL;
   c->priv->called_pc = 0;
   c->priv->called_held = 0;
+  c->priv->core_running = false;
+  c->priv->core_held = false;
 }
 
 bool cosim_failed(const Cosim* c) {
@@ -3069,6 +3232,88 @@ void cosim_share_report(const Cosim* c) {
          "  this row, over the same input and the same number of frames. Do not\n"
          "  compare it against the line above that, which counts routines that\n"
          "  are written and deliberately never substituted.\n");
+}
+
+// ---------------------------------------------------------------------------
+// Where the 65816 took over
+// ---------------------------------------------------------------------------
+
+const CosimTakeover* cosim_takeovers(const Cosim* c, int* count) {
+  *count = c->priv->took_n;
+  return c->priv->took;
+}
+
+static const char* took_how(uint8_t how) {
+  switch (how) {
+    case COSIM_TOOK_RESET: return "reset";
+    case COSIM_TOOK_DECLINED: return "declined";
+    case COSIM_TOOK_UNSERVED: return "not served";
+    case COSIM_TOOK_RETURN: return "returned to";
+    case COSIM_TOOK_CALL: return "called";
+    default: return "left standing";
+  }
+}
+
+static int took_by_times(const void* a, const void* b) {
+  const CosimTakeover* x = *(const CosimTakeover* const*)a;
+  const CosimTakeover* y = *(const CosimTakeover* const*)b;
+  if (x->times != y->times) return x->times < y->times ? 1 : -1;
+  return x->pc < y->pc ? -1 : x->pc > y->pc;
+}
+
+int cosim_takeover_report(const Cosim* c, int most) {
+  const CosimPriv* p = c->priv;
+  if (c->mode != COSIM_NATIVE) return 0;
+  if (p->took_n == 0) {
+    printf("\nThe 65816 executed nothing.\n");
+    return 0;
+  }
+  const CosimTakeover** row =
+      (const CosimTakeover**)malloc((size_t)p->took_n * sizeof *row);
+  uint64_t times = 0;
+  for (int i = 0; i < p->took_n; i++) {
+    row[i] = &p->took[i];
+    times += p->took[i].times;
+  }
+  qsort(row, (size_t)p->took_n, sizeof *row, took_by_times);
+
+  printf("\nWhere the 65816 took over -- %d places, %s times, %s instructions\n",
+         p->took_n, fmt_u64(times), fmt_u64(c->work.core_instructions));
+  printf("\n  %-10s %-13s %12s %14s %8s  %s\n", "address", "how", "times",
+         "instructions", "frame", "routine");
+  for (int i = 0; i < p->took_n && i < most; i++) {
+    const CosimTakeover* t = row[i];
+    printf("  $%02X:%04X   %-13s %12s %14s %8ld  %s\n", (unsigned)(t->pc >> 16),
+           (unsigned)(t->pc & 0xffff), took_how(t->how), fmt_u64(t->times),
+           fmt_u64(t->instructions), t->first_frame,
+           t->routine ? t->routine->name : "");
+  }
+  if (p->took_n > most) printf("  ...and %d more.\n", p->took_n - most);
+  printf("\n  `how` is how the program counter got there. `routine` is the one\n"
+         "  that turned the call down or is never served, or else the port that\n"
+         "  handed over. `frame` is the first time. An instruction is counted\n"
+         "  against the takeover it followed, until a port next ran.\n");
+  free(row);
+  return p->took_n;
+}
+
+bool cosim_takeover_save(const Cosim* c, const char* path) {
+  const CosimPriv* p = c->priv;
+  FILE* f = fopen(path, "w");
+  if (!f) {
+    fprintf(stderr, "error: cannot write '%s'\n", path);
+    return false;
+  }
+  fprintf(f, "pc,how,routine,times,instructions,first_frame\n");
+  for (int i = 0; i < p->took_n; i++) {
+    const CosimTakeover* t = &p->took[i];
+    fprintf(f, "$%02X:%04X,%s,%s,%llu,%llu,%ld\n", (unsigned)(t->pc >> 16),
+            (unsigned)(t->pc & 0xffff), took_how(t->how),
+            t->routine ? t->routine->name : "", (unsigned long long)t->times,
+            (unsigned long long)t->instructions, t->first_frame);
+  }
+  fclose(f);
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -3833,6 +4078,7 @@ int cosim_lockstep(Snes* stock, Snes* native, const uint8_t* rom_data, int rom_l
   // its share is zero and saying so would be a fact about the control, not
   // about the port.
   cosim_share_report(&nat.cosim);
+  cosim_takeover_report(&nat.cosim, 40);
 
   movie_free(&ref.movie);
   movie_free(&nat.movie);

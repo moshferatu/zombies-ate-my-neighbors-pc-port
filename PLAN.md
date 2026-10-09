@@ -187,10 +187,28 @@ Run the registry without the core. The pieces exist: `PortCpu` in
   cost. See the first decision below.
 
 It is built in the test programs first, as a second way to run the same
-registry, and compared with the core's way a scheduler pass at a time. It
-can be started now. Until step 1 is done it runs each movie as far as the
-first address nothing has, and says which. That is a better list than a
-profile.
+registry, and compared with the core's way a scheduler pass at a time.
+
+**Begun, 2026-10-09.** The harness takes the interrupt and waits out the
+`WAI` itself, so the core is called for one thing: an instruction no port
+has. Each place it takes over is counted, with how the program counter got
+there. That list is the work of step 1 by address:
+
+| How the core got there | Places | Times |
+|---|---|---|
+| A port returned to code that is not ported | 888 | 637,120 |
+| A port stopped on an instruction the harness does not make | 61 | 5,796 |
+| A port turned the call down | 34 | 4,024 |
+| Reset: the boot code | 1 | 110 |
+| A port called code that is not ported | 5 | 84 |
+
+Over the same 110 sessions. The 893 places returned to or called are in
+276 routines. When the list is empty for a session, the core executed
+nothing in it.
+
+What is left of this step: registers of the driver's own in place of the
+core's, the clock, and a stop that names the address in place of the
+core.
 
 ### Step 3. A machine with no console
 

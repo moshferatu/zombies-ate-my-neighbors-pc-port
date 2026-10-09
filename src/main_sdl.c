@@ -2420,6 +2420,7 @@ int main(int argc, char** argv) {
     // measured over the whole run.
     cosim_share_report(&cosim);
     cosim_census_report();
+    cosim_takeover_report(&cosim, 40);
   }
 
   if (emu_thread) {
@@ -2439,6 +2440,10 @@ int main(int argc, char** argv) {
     if (cosim_profile_save(cosim.profile, profile_dir))
       printf("Profile added to %s; rank it with tools/native_share.py --residue.\n",
              profile_dir);
+    // This session's alone, unlike the counts beside it.
+    char takeovers[512];
+    snprintf(takeovers, sizeof takeovers, "%s/takeovers.csv", profile_dir);
+    cosim_takeover_save(&cosim, takeovers);
     cosim_profile_free(cosim.profile);
     cosim.profile = NULL;
   }

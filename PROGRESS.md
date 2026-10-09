@@ -5,6 +5,52 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The core is asked only for what no port has (2026-10-09)
+
+`PLAN.md` was rewritten for a game that links nothing of LakeSnes. This is
+the first piece of its driver with no CPU.
+
+Under `run`, and so in the game, the 65816 core now does one thing: execute
+an instruction of the ROM's that no port has. Everything else between two
+ports is the harness's.
+
+* **The interrupt and the `WAI`.** The core used to take the NMI and wait out
+  the scheduler's `WAI`. The harness makes both now (`take_interrupt` and
+  `wait_for_interrupt` in `src/cosim/cosim.c`): the core's accesses in the
+  core's order, through the console's bus, so each costs what it did. With
+  nothing switched on the machine is still the core's alone, which keeps
+  lockstep's stock side stock.
+* **The yield's `JSL`.** The one resumable port left its `JSL thread_yield`
+  for the core. `leave` makes it, as it makes a return.
+* **Takeovers.** Each place the core is handed the program counter is
+  counted, with how it got there: a port turned the call down, a port
+  returned to code that is not ported, a port called such code, or a port
+  stopped on an instruction the harness does not make. `run` and the game
+  print the list at exit, and `--profile <dir>` writes it to
+  `<dir>/takeovers.csv`. A game with no CPU stops at each of these, so it
+  is the list of what is left, by address. `docs/cosim.md` has the detail.
+* **What the list says**, over the survey's 110 sessions:
+
+  | How the core got there | Places | Times |
+  |---|---|---|
+  | A port returned to it | 888 | 637,120 |
+  | Left standing on an instruction | 61 | 5,796 |
+  | A port turned the call down | 34 | 4,024 |
+  | Reset | 1 | 110 |
+  | A port called it | 5 | 84 |
+
+  The 893 places a port returned to or called are in 276 routines, going
+  by the nearest routine start below each. 19 of those starts are
+  registered entries.
+* **Checked.**
+  * Two movies run with the core taking the interrupt and with the harness
+    taking it print the same report to the byte: every cost, the clocks'
+    drift, both shares.
+  * Lockstep: 334,319 passes, 51 of 54 never part, the same three, and
+    every row as it was.
+  * `-Picture`: 155,373,568 lines at two widths, none differ.
+  * The corpus verifies clean.
+
 ### The picture, drawn natively (2026-10-08)
 
 The plan kept the console's video chip emulated for good. That has changed:

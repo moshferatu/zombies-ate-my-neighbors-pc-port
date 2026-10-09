@@ -310,10 +310,9 @@ typedef struct {
   // every thread in the game yields, so the entry PC alone means nothing.
   uint32_t end;
   // A `JSL thread_yield` inside the routine. When the port suspends, native
-  // mode puts the tick count in A and jumps here, so the *core* performs the
-  // suspension: the same instruction, the same pushes, the same parked stack.
-  // Same reasoning as `ret_op` — the routine already contains the code that
-  // does the 65816 part correctly.
+  // mode puts the tick count in A and stands the CPU here, and the `JSL` is
+  // made as the ROM's is: the same pushes, the same parked stack. Same
+  // reasoning as `ret_op`.
   uint32_t yield_op;
   int ctx_size;  // sizeof the port's context struct
   const CosimExclude* excludes;
@@ -854,6 +853,9 @@ typedef struct {
   // transfers are in the work denominator and not in the numerator, so the
   // report says what the share is without them.
   uint64_t cycles_native_dma;
+  // Instructions the 65816 executed. An interrupt taken and a `WAI` waited
+  // out are not instructions, and under `run` the harness makes both.
+  uint64_t core_instructions;
 } CosimWork;
 
 // The same, reduced to the two percentages and their denominators.
@@ -868,6 +870,46 @@ typedef struct {
 } CosimShare;
 
 // (`cosim_share` and `cosim_share_report` are declared below `Cosim`.)
+
+// ---------------------------------------------------------------------------
+// Where the 65816 took over
+// ---------------------------------------------------------------------------
+//
+// Under `run` the core is asked for one thing: an instruction of the ROM's
+// that no port has. The harness takes an interrupt itself and waits out a
+// `WAI` itself, through the console's bus as the core does, so every other
+// step of the machine is a port's or the harness's. With nothing switched on
+// the machine is the core's alone, as it is under `verify`.
+//
+// A takeover is a place the core was handed the program counter: the address,
+// and how it came to be there. A game with no CPU would stop at each one, so
+// the list is what is left to port, by address, and it is empty when nothing
+// is.
+//
+// One is counted when the core executes an instruction and the step before
+// was not its own. An interrupt that lands in the core's code and comes back
+// to it is not a second one. The core's instructions are counted against the
+// takeover they followed, until a port next runs.
+typedef enum {
+  COSIM_TOOK_RESET,     // the reset vector's target: the boot code
+  COSIM_TOOK_DECLINED,  // a registered entry whose port turned the call down
+  COSIM_TOOK_UNSERVED,  // a registered entry `run` never substitutes
+  COSIM_TOOK_RETURN,    // a port returned to it: its caller is not ported
+  COSIM_TOOK_CALL,      // a port called it or jumped to it
+  COSIM_TOOK_EXIT,      // the instruction a port left by, which the harness
+                        // does not make
+} CosimTookHow;
+
+typedef struct {
+  uint32_t pc;
+  uint8_t how;
+  // The routine that turned the call down or is never served, or the port
+  // that handed over. NULL for the boot code.
+  const CosimRoutine* routine;
+  uint64_t times;
+  uint64_t instructions;
+  long first_frame;  // the console's count of frames, the first time
+} CosimTakeover;
 
 // An instruction of the ROM's that something outside the harness wants to know
 // the machine has reached -- see `cosim_watch`.
@@ -964,6 +1006,17 @@ void cosim_forget_calls(Cosim* c);
 
 // True if any enabled routine has diverged.
 bool cosim_failed(const Cosim* c);
+
+// The takeovers so far, in the order they were first met.
+const CosimTakeover* cosim_takeovers(const Cosim* c, int* count);
+
+// Print the `most` commonest, and how many there were. Returns the number of
+// distinct ones. Says nothing under `verify`, where the ROM runs everything.
+int cosim_takeover_report(const Cosim* c, int most);
+
+// Write all of them to `path` as CSV, replacing it. False if it cannot be
+// written.
+bool cosim_takeover_save(const Cosim* c, const char* path);
 
 // Print the per-routine table. Returns the number of routines that failed.
 int cosim_report(const Cosim* c);
