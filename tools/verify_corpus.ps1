@@ -170,9 +170,11 @@ function Invoke-Corpus([string]$command, [string[]]$extra) {
     $exe = Join-Path $root "build\zamn_cosim.exe"
     # Start-Process joins its arguments with spaces and quotes nothing, and
     # the ROM's name has three in it.
+    # An empty `$extra` arrives as $null, which is not an argument.
+    $more = @($extra | Where-Object { $_ })
     return Invoke-Movies $exe {
         param($m)
-        @($command, "`"$Rom`"", "-m", "`"movies\$m`"", "-f", "$($corpus[$m])") + $extra
+        @($command, "`"$Rom`"", "-m", "`"movies\$m`"", "-f", "$($corpus[$m])") + $more
     }
 }
 
@@ -269,7 +271,7 @@ if ($Picture) {
             }
             $sum = ""
             # ...and the writes and reads that left the registers not the PPU's.
-            if ($differ -ge 0 -and $text -match "(\d+) of them, or of a frame's events, were not as the PPU had them") {
+            if ($differ -ge 0 -and $text -match "(\d+) of them, or of a frame's events or a state's saving, were not as the PPU had them") {
                 $differ += [int]$Matches[1]
             } else {
                 $differ = -1

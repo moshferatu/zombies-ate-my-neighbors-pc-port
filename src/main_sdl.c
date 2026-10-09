@@ -1333,15 +1333,16 @@ int main(int argc, char** argv) {
   // so this is the mode to be in even when starting with substitution off.
   Cosim cosim;
   cosim_init(&cosim, snes, COSIM_NATIVE);
-  // Who draws the picture: `src/video`, unless this is the baseline or
-  // somebody said otherwise.
+  // `src/video` is the console's video chip. Who draws the picture: it does,
+  // with the PPU told nothing, unless this is the baseline or somebody said
+  // otherwise.
   // ...and with a checksum of the picture when there will be a report to put
   // it in: it is what `tools/verify_corpus.ps1 -Picture` compares.
   static VideoHook video_hook;
   video_hook_install(&video_hook, snes->ppu,
                      !native && !renderer_asked ? VIDEO_EMULATED : renderer,
                      verbose || renderer == VIDEO_CHECK);
-  video_hook_keep_registers(&video_hook, snes->ppu);
+  video_hook_attach(&video_hook, snes);
   if (profile_dir && !(cosim.profile = cosim_profile_new(cosim.rom.size))) {
     fprintf(stderr, "error: no memory for --profile\n");
     return 2;

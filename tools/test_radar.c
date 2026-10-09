@@ -190,7 +190,7 @@ static Tick* run(const uint8_t* rom, int rom_len, const char* movie_path, long n
   // them beside the PPU's. The PPU draws the picture here.
   static VideoHook video_hook;
   video_hook_install(&video_hook, snes->ppu, VIDEO_EMULATED, false);
-  video_hook_keep_registers(&video_hook, snes->ppu);
+  video_hook_attach(&video_hook, snes);
   static Widescreen ws;
   video_set_margins(snes->ppu, margin, margin);
   widescreen_install(snes, &ws, rom, rom_len, margin);

@@ -32,8 +32,9 @@ endif()
 # ---------------------------------------------------------------------------
 # The picture, drawn natively. `src/video/video.c` draws a scanline from VRAM,
 # the palette and the registers, and knows nothing of the emulator;
-# `ppu_hook.c` is the one file that does, and has the emulated PPU call it
-# where it would have drawn the line itself.
+# `ppu_hook.c` is the one file that does. It is the console's video chip in
+# the emulated PPU's place, and runs the PPU beside itself to be checked
+# against.
 # ---------------------------------------------------------------------------
 add_library(zamn_video STATIC
   src/video/video.c

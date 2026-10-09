@@ -87,7 +87,7 @@ int main(int argc, char** argv) {
   // picture here.
   static VideoHook video_hook;
   video_hook_install(&video_hook, snes->ppu, VIDEO_EMULATED, false);
-  video_hook_keep_registers(&video_hook, snes->ppu);
+  video_hook_attach(&video_hook, snes);
   video_set_pixel_format(snes->ppu, VIDEO_PIXELS_XRGB);
   snes_reset(snes, true);
   Movie movie;

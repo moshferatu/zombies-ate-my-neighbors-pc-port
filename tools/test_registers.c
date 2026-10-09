@@ -17,6 +17,10 @@
 // those things the two sets of notes are compared as well. Now and then the
 // picture is widened, or said to be something else, to both.
 //
+// Now and then both are saved as a state, and the two states compared; and
+// now and then a state the PPU saved earlier is loaded into both, each from
+// the same bytes, and the memories compared whole at once.
+//
 // Now and then something is put into the memories from outside, as the
 // frontend puts it: a sprite whole, a word of VRAM or a colour. The PPU's is
 // done as the PPU did it when these were its own, and the memories are
@@ -134,8 +138,14 @@ int main(int argc, char** argv) {
   static VideoPicture picture;
   video_frame_init(&frame);
   video_picture_init(&picture);
+  // The last line's sprites, which are the PPU's finding here, and a state
+  // of the PPU's from some steps back.
+  static uint8_t obj_pixel[VIDEO_MAX_WIDTH], obj_priority[VIDEO_MAX_WIDTH];
+  uint8_t* kept_state = NULL;
+  int kept_size = 0;
 
   long writes = 0, reads = 0, events = 0, lines = 0, puts = 0, differing = 0;
+  long saves = 0, loads = 0;
   long columns = 0, columns_empty = 0, columns_filled = 0;
   long maths_allowed = 0, shifted = 0;
   long first_step = -1;
@@ -143,6 +153,7 @@ int main(int argc, char** argv) {
   for (long step = 0; step < steps; step++) {
     char did[96];
     bool misread = false, put = false;
+    const char* state = NULL;
     int line = -1;
     const int what = below(100);
     if (what < 55) {
@@ -173,8 +184,42 @@ int main(int argc, char** argv) {
       // Finding the line's sprites is the PPU's here, and so are its flags.
       r->range_over = ppu->rangeOver;
       r->time_over = ppu->timeOver;
+      memcpy(obj_pixel, ppu->objPixelBuffer, sizeof obj_pixel);
+      memcpy(obj_priority, ppu->objPriorityBuffer, sizeof obj_priority);
       snprintf(did, sizeof did, "line %d began", line);
       lines++;
+    } else if (what < 71 && one_in(8)) {
+      // A state. One saved is kept half the time, to be loaded later.
+      if (kept_state != NULL && one_in(2)) {
+        StateHandler* theirs = sh_init(false, kept_state, kept_size);
+        StateHandler* here = sh_init(false, kept_state, kept_size);
+        ppu_handleState(ppu, theirs);
+        video_state_handle(r, obj_pixel, obj_priority, here, NULL);
+        if (here->offset != theirs->offset) state = "how much of a state was read";
+        sh_free(theirs);
+        sh_free(here);
+        snprintf(did, sizeof did, "a state was loaded");
+        put = true;
+        loads++;
+      } else {
+        StateHandler* theirs = sh_init(true, NULL, 0);
+        StateHandler* here = sh_init(true, NULL, 0);
+        VideoStateParts parts;
+        ppu_handleState(ppu, theirs);
+        video_state_handle(r, obj_pixel, obj_priority, here, &parts);
+        state = here->offset != theirs->offset
+                    ? "the state's size"
+                    : video_states_differ(here->data, theirs->data, theirs->offset, &parts);
+        if (kept_state == NULL || one_in(2)) {
+          kept_state = realloc(kept_state, (size_t)theirs->offset);
+          memcpy(kept_state, theirs->data, (size_t)theirs->offset);
+          kept_size = theirs->offset;
+        }
+        sh_free(theirs);
+        sh_free(here);
+        snprintf(did, sizeof did, "a state was saved");
+        saves++;
+      }
     } else if (what < 71) {
       // From outside. Half the sprites put are parked, so that there are
       // free ones to be found.
@@ -255,6 +300,7 @@ int main(int argc, char** argv) {
     const char* which = video_registers_differ(r, ppu);
     const char* when = "after";
     if (which == NULL && misread) which = put ? "which sprite is free" : "the answer";
+    if (which == NULL) which = state;
     if (which == NULL) which = video_notes_differ(&frame, ppu, line);
     if (which == NULL && (put || step % 64 == 0)) {
       which = memory_differs(&memories, ppu);
@@ -309,6 +355,7 @@ int main(int argc, char** argv) {
          (unsigned long long)seed, writes, reads, events);
   printf("  %ld lines begun and noted, %ld things put into the memories from outside.\n", lines,
          puts);
+  printf("  %ld states saved and compared, %ld loaded.\n", saves, loads);
   printf("  %ld columns asked about: %ld empty, %ld filled.\n", columns, columns_empty,
          columns_filled);
   printf("  As many sprites, columns of a line and backgrounds asked about:"
@@ -316,6 +363,7 @@ int main(int argc, char** argv) {
          maths_allowed, shifted);
   printf("  %ld of them were not as the PPU had them.\n", differing);
   if (differing) printf("  The first, at step %ld: %s.\n", first_step, first);
+  free(kept_state);
   ppu_free(ppu);
   free(snes);
   return differing ? 1 : 0;

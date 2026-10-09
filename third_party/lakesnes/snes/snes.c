@@ -26,12 +26,45 @@ static void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val);
 static uint8_t snes_rread(Snes* snes, uint32_t adr); // wrapped by read, to set open bus
 static int snes_getAccessTime(Snes* snes, uint32_t adr);
 
+// The console's own PPU as its video chip: see `SnesVideo`.
+static void snes_ppuReset(void* ppu) { ppu_reset((Ppu*) ppu); }
+static uint8_t snes_ppuRead(void* ppu, uint8_t adr) { return ppu_read((Ppu*) ppu, adr); }
+static void snes_ppuWrite(void* ppu, uint8_t adr, uint8_t val) { ppu_write((Ppu*) ppu, adr, val); }
+static void snes_ppuFrameStart(void* ppu) { ppu_handleFrameStart((Ppu*) ppu); }
+static bool snes_ppuCheckOverscan(void* ppu) { return ppu_checkOverscan((Ppu*) ppu); }
+static void snes_ppuVblank(void* ppu) { ppu_handleVblank((Ppu*) ppu); }
+static void snes_ppuRunLine(void* ppu, int line) { ppu_runLine((Ppu*) ppu, line); }
+static void snes_ppuHandleState(void* ppu, StateHandler* sh) { ppu_handleState((Ppu*) ppu, sh); }
+static bool snes_ppuEvenFrame(void* ppu) { return ((Ppu*) ppu)->evenFrame; }
+static bool snes_ppuFrameInterlace(void* ppu) { return ((Ppu*) ppu)->frameInterlace; }
+
+void snes_setVideo(Snes* snes, const SnesVideo* video) {
+  if(video != NULL) {
+    snes->video = *video;
+    return;
+  }
+  snes->video = (SnesVideo) {
+    .user = snes->ppu,
+    .reset = snes_ppuReset,
+    .read = snes_ppuRead,
+    .write = snes_ppuWrite,
+    .frameStart = snes_ppuFrameStart,
+    .checkOverscan = snes_ppuCheckOverscan,
+    .vblank = snes_ppuVblank,
+    .runLine = snes_ppuRunLine,
+    .handleState = snes_ppuHandleState,
+    .evenFrame = snes_ppuEvenFrame,
+    .frameInterlace = snes_ppuFrameInterlace,
+  };
+}
+
 Snes* snes_init(void) {
   Snes* snes = malloc(sizeof(Snes));
   snes->cpu = cpu_init(snes, snes_cpuRead, snes_cpuWrite, snes_cpuIdle);
   snes->apu = apu_init(snes);
   snes->dma = dma_init(snes);
   snes->ppu = ppu_init(snes);
+  snes_setVideo(snes, NULL);
   snes->cart = cart_init(snes);
   snes->input1 = input_init(snes);
   snes->input2 = input_init(snes);
@@ -64,7 +97,7 @@ void snes_reset(Snes* snes, bool hard) {
   cpu_reset(snes->cpu, hard);
   apu_reset(snes->apu);
   dma_reset(snes->dma);
-  ppu_reset(snes->ppu);
+  snes->video.reset(snes->video.user);
   input_reset(snes->input1);
   input_reset(snes->input2);
   cart_reset(snes->cart);
@@ -115,7 +148,7 @@ void snes_handleState(Snes* snes, StateHandler* sh) {
   // components
   cpu_handleState(snes->cpu, sh);
   dma_handleState(snes->dma, sh);
-  ppu_handleState(snes->ppu, sh);
+  snes->video.handleState(snes->video.user, sh);
   apu_handleState(snes->apu, sh);
   input_handleState(snes->input1, sh);
   input_handleState(snes->input2, sh);
@@ -181,17 +214,17 @@ static void snes_runCycle(Snes* snes) {
       snes->inVblank = false;
       snes->inNmi = false;
       if(snes->frameHook) snes->frameHook(snes, snes->frameHookCtx);
-      ppu_handleFrameStart(snes->ppu);
+      snes->video.frameStart(snes->video.user);
     } else if(snes->vPos == 225) {
       // ask the ppu if we start vblank now or at vPos 240 (overscan)
-      startingVblank = !ppu_checkOverscan(snes->ppu);
+      startingVblank = !snes->video.checkOverscan(snes->video.user);
     } else if(snes->vPos == 240){
       // if we are not yet in vblank, we had an overscan frame, set startingVblank
       if(!snes->inVblank) startingVblank = true;
     }
     if(startingVblank) {
       // if we are starting vblank
-      ppu_handleVblank(snes->ppu);
+      snes->video.vblank(snes->video.user);
       snes->inVblank = true;
       snes->inNmi = true;
       if(snes->autoJoyRead) {
@@ -207,7 +240,7 @@ static void snes_runCycle(Snes* snes) {
     if(snes->vPos == 0) snes->dma->hdmaInitRequested = true;
   } else if(snes->hPos == 512) {
     // render the line halfway of the screen for better compatibility
-    if(!snes->inVblank && snes->vPos > 0) ppu_runLine(snes->ppu, snes->vPos);
+    if(!snes->inVblank && snes->vPos > 0) snes->video.runLine(snes->video.user, snes->vPos);
   } else if(snes->hPos == 1104) {
     if(!snes->inVblank) snes->dma->hdmaRunRequested = true;
   }
@@ -217,22 +250,24 @@ static void snes_runCycle(Snes* snes) {
   snes->hPos += 2;
   if(!snes->palTiming) {
     // line 240 of odd frame with no interlace is 4 cycles shorter
-    if((snes->hPos == 1360 && snes->vPos == 240 && !snes->ppu->evenFrame && !snes->ppu->frameInterlace) || snes->hPos == 1364) {
+    const SnesVideo* video = &snes->video;
+    if((snes->hPos == 1360 && snes->vPos == 240 && !video->evenFrame(video->user) && !video->frameInterlace(video->user)) || snes->hPos == 1364) {
       snes->hPos = 0;
       snes->vPos++;
       // even interlace frame is 263 lines
-      if((snes->vPos == 262 && (!snes->ppu->frameInterlace || !snes->ppu->evenFrame)) || snes->vPos == 263) {
+      if((snes->vPos == 262 && (!video->frameInterlace(video->user) || !video->evenFrame(video->user))) || snes->vPos == 263) {
         snes->vPos = 0;
         snes->frames++;
       }
     }
   } else {
     // line 311 of odd frame with interlace is 4 cycles longer
-    if((snes->hPos == 1364 && (snes->vPos != 311 || snes->ppu->evenFrame || !snes->ppu->frameInterlace)) || snes->hPos == 1368) {
+    const SnesVideo* video = &snes->video;
+    if((snes->hPos == 1364 && (snes->vPos != 311 || video->evenFrame(video->user) || !video->frameInterlace(video->user))) || snes->hPos == 1368) {
       snes->hPos = 0;
       snes->vPos++;
       // even interlace frame is 313 lines
-      if((snes->vPos == 312 && (!snes->ppu->frameInterlace || !snes->ppu->evenFrame)) || snes->vPos == 313) {
+      if((snes->vPos == 312 && (!video->frameInterlace(video->user) || !video->evenFrame(video->user))) || snes->vPos == 313) {
         snes->vPos = 0;
         snes->frames++;
       }
@@ -265,7 +300,7 @@ static void snes_doAutoJoypad(Snes* snes) {
 
 uint8_t snes_readBBus(Snes* snes, uint8_t adr) {
   if(adr < 0x40) {
-    return ppu_read(snes->ppu, adr);
+    return snes->video.read(snes->video.user, adr);
   }
   if(adr < 0x80) {
     snes_catchupApu(snes); // catch up the apu before reading
@@ -281,7 +316,7 @@ uint8_t snes_readBBus(Snes* snes, uint8_t adr) {
 
 void snes_writeBBus(Snes* snes, uint8_t adr, uint8_t val) {
   if(adr < 0x40) {
-    ppu_write(snes->ppu, adr, val);
+    snes->video.write(snes->video.user, adr, val);
     return;
   }
   if(adr < 0x80) {
@@ -384,7 +419,7 @@ static void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val) {
     case 0x4201: {
       if(!(val & 0x80) && snes->ppuLatch) {
         // latch the ppu
-        ppu_read(snes->ppu, 0x37);
+        snes->video.read(snes->video.user, 0x37);
       }
       snes->ppuLatch = val & 0x80;
       break;

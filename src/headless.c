@@ -501,12 +501,12 @@ int main(int argc, char** argv) {
     snes_free(snes);
     return 1;
   }
-  // The frontend reads the chip's registers from `src/video`, which keeps
-  // them beside the PPU's, and takes the picture from it. The PPU draws the
-  // picture here unless `--renderer` says otherwise.
+  // `src/video` is the console's video chip, and the frontend reads the
+  // registers and takes the picture from it. It has the PPU draw the picture
+  // here unless `--renderer` says otherwise.
   static VideoHook video_hook;
   video_hook_install(&video_hook, snes->ppu, renderer, renderer_given);
-  video_hook_keep_registers(&video_hook, snes->ppu);
+  video_hook_attach(&video_hook, snes);
   // Widen the picture before the first frame is drawn. `fb_w` is what the core
   // will pack its rows at from here on, and every buffer above was allocated at
   // the widest it could be. The hook then does the per-frame half of it, at the

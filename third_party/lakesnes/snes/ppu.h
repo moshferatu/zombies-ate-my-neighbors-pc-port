@@ -313,17 +313,9 @@ struct Ppu {
   // blanked and has none -- and false to have them found here if it is not.
   // `objPixelBuffer` is zero when it is called.
   bool (*findSprites)(void* user, Ppu* ppu, int line);
-  // zamn: ...and the registers kept by somebody else as well, all with
-  // `drawUser`. `wrote` is called after every `ppu_write` has been done
-  // here, and `didRead` after every `ppu_read`, with what it read, which it
-  // may change. `happened` is called after each of the things below has.
-  // All NULL, which is how they start, is nobody.
-  void (*wrote)(void* user, Ppu* ppu, uint8_t adr, uint8_t val);
-  void (*didRead)(void* user, Ppu* ppu, uint8_t adr, uint8_t* val);
-  void (*happened)(void* user, Ppu* ppu, int what);
   // zamn: ...and `beganLine` as each line of the picture begins, before its
-  // sprites are found, whether or not anything is drawn. Not for a line
-  // `ppu_renderFrame` draws again.
+  // sprites are found, whether or not anything is drawn, with `drawUser`.
+  // Not for a line `ppu_renderFrame` draws again.
   void (*beganLine)(void* user, Ppu* ppu, int line);
   // widescreen: margins in game pixels, and what each layer does with them
   int extraLeft;
@@ -412,17 +404,6 @@ struct Ppu {
 };
 
 enum { ppu_pixelOutputFormatXBGR = 0, ppu_pixelOutputFormatBGRX = 1 };
-
-// What `Ppu.happened` is told of: `ppu_reset`, `ppu_handleFrameStart`,
-// `ppu_checkOverscan`, `ppu_handleVblank`, and a state loaded by
-// `ppu_handleState`.
-enum {
-  ppu_wasReset,
-  ppu_frameStarted,
-  ppu_overscanChecked,
-  ppu_vblankBegan,
-  ppu_stateLoaded,
-};
 
 Ppu* ppu_init(Snes* snes);
 void ppu_free(Ppu* ppu);

@@ -167,6 +167,12 @@ const char* video_registers_differ(const VideoRegisters* r, const Ppu* ppu) {
   return NULL;
 }
 
+static void registers_to_ppu(const VideoRegisters* r, Ppu* ppu) {
+#define GIVE(here, theirs) ppu->theirs = r->here;
+  REGISTERS(GIVE)
+#undef GIVE
+}
+
 // What is noted of a frame other than its lines, as it is kept here and as
 // the PPU keeps it.
 #define NOTES(X)                                                                  \
@@ -187,6 +193,17 @@ void video_notes_from_ppu(VideoFrame* f, const Ppu* ppu) {
   memcpy(f->line_hscroll, ppu->lineHScroll, sizeof f->line_hscroll);
   memcpy(f->line_vscroll, ppu->lineVScroll, sizeof f->line_vscroll);
   memcpy(f->line_window, ppu->lineWindow, sizeof f->line_window);
+}
+
+static void notes_to_ppu(const VideoFrame* f, Ppu* ppu) {
+#define GIVE(here, theirs) ppu->theirs = f->here;
+  NOTES(GIVE)
+#undef GIVE
+  ppu->midFrameAdr = f->mid_frame_address;
+  ppu->midFrameLine = f->mid_frame_line;
+  memcpy(ppu->lineHScroll, f->line_hscroll, sizeof f->line_hscroll);
+  memcpy(ppu->lineVScroll, f->line_vscroll, sizeof f->line_vscroll);
+  memcpy(ppu->lineWindow, f->line_window, sizeof f->line_window);
 }
 
 const char* video_notes_differ(const VideoFrame* f, const Ppu* ppu, int line) {
@@ -218,6 +235,19 @@ static void picture_from_ppu(VideoPicture* p, const Ppu* ppu) {
   memcpy(p->front, ppu->objFront, sizeof p->front);
   memcpy(p->remap_on, ppu->objRemapOn, sizeof p->remap_on);
   memcpy(p->remap, ppu->objRemap, sizeof p->remap);
+}
+
+static void picture_to_ppu(const VideoPicture* p, Ppu* ppu) {
+  ppu->extraLeft = p->extra_left;
+  ppu->extraRight = p->extra_right;
+  memcpy(ppu->layerWide, p->wide, sizeof p->wide);
+  ppu->wideClampLo = p->clamp_lo;
+  ppu->wideClampHi = p->clamp_hi;
+  memcpy(ppu->spritePlace, p->place, sizeof p->place);
+  memcpy(ppu->spriteShift, p->shift, sizeof p->shift);
+  memcpy(ppu->objFront, p->front, sizeof p->front);
+  memcpy(ppu->objRemapOn, p->remap_on, sizeof p->remap_on);
+  memcpy(ppu->objRemap, p->remap, sizeof p->remap);
 }
 
 // ...and what of the picture the PPU was not told as it is said here.
@@ -306,6 +336,13 @@ static void note_decline(VideoHook* hook, const char* why) {
 
 static VideoHook* hook_of(const Ppu* ppu) { return (VideoHook*)ppu->drawUser; }
 
+// The PPU, if it is kept up beside what is kept here: told every write as it
+// is made and everything the frontend says. NULL for a console's chip under
+// `VIDEO_NATIVE`, whose PPU is told nothing until a line is left to it.
+static Ppu* beside(const VideoHook* hook) {
+  return hook->renderer == VIDEO_NATIVE && hook->registers_kept ? NULL : hook->ppu;
+}
+
 const VideoRegisters* video_registers_of(const Ppu* ppu) { return &hook_of(ppu)->registers; }
 const VideoPicture* video_picture_of(const Ppu* ppu) { return &hook_of(ppu)->picture; }
 const VideoFrame* video_frame_of(const Ppu* ppu) { return &hook_of(ppu)->frame; }
@@ -314,89 +351,125 @@ void video_state_of(VideoState* s, const Ppu* ppu) { state_of(hook_of(ppu), s, p
 
 // --- What the frontend says of the picture --------------------------------------
 //
-// Said here, and to the PPU: it draws the lines `src/video` is checked
-// against.
+// Said here, and to the PPU if it is kept up beside this: it draws the lines
+// `src/video` is checked against.
 
 void video_set_scroll(Ppu* ppu, int layer, int h, int v) {
   if (layer < VIDEO_BG1 || layer > VIDEO_BG4) return;
-  VideoBg* bg = &hook_of(ppu)->registers.bg[layer];
+  VideoHook* hook = hook_of(ppu);
+  VideoBg* bg = &hook->registers.bg[layer];
   bg->hscroll = (uint16_t)(h & 0x3ff);
   bg->vscroll = (uint16_t)(v & 0x3ff);
-  ppu_setScroll(ppu, layer, bg->hscroll, bg->vscroll);
+  if (beside(hook)) ppu_setScroll(ppu, layer, bg->hscroll, bg->vscroll);
 }
 
 void video_set_sprite(Ppu* ppu, int sprite, int x, int y, uint16_t word, bool large) {
   if (sprite < 0 || sprite >= VIDEO_SPRITES) return;
-  VideoRegisters* r = &hook_of(ppu)->registers;
+  VideoHook* hook = hook_of(ppu);
+  VideoRegisters* r = &hook->registers;
   video_put_sprite(r, sprite, x, y, word, large);
+  if (!beside(hook)) return;
   ppu->oam[sprite * 2] = r->oam[sprite * 2];
   ppu->oam[sprite * 2 + 1] = r->oam[sprite * 2 + 1];
   ppu->highOam[sprite >> 2] = r->high_oam[sprite >> 2];
 }
 
 void video_set_vram(Ppu* ppu, uint16_t at, uint16_t word) {
-  video_put_vram(&hook_of(ppu)->registers, at, word);
-  ppu->vram[at & 0x7fff] = word;
+  VideoHook* hook = hook_of(ppu);
+  video_put_vram(&hook->registers, at, word);
+  if (beside(hook)) ppu->vram[at & 0x7fff] = word;
 }
 
 void video_set_colour(Ppu* ppu, int index, uint16_t colour) {
-  VideoRegisters* r = &hook_of(ppu)->registers;
+  VideoHook* hook = hook_of(ppu);
+  VideoRegisters* r = &hook->registers;
   video_put_colour(r, index, colour);
-  ppu->cgram[index & 0xff] = r->cgram[index & 0xff];
+  if (beside(hook)) ppu->cgram[index & 0xff] = r->cgram[index & 0xff];
 }
 
 void video_set_margins(Ppu* ppu, int left, int right) {
-  VideoPicture* p = &hook_of(ppu)->picture;
+  VideoHook* hook = hook_of(ppu);
+  VideoPicture* p = &hook->picture;
   p->extra_left = left < 0 ? 0 : left > VIDEO_EXTRA_MAX ? VIDEO_EXTRA_MAX : left;
   p->extra_right = right < 0 ? 0 : right > VIDEO_EXTRA_MAX ? VIDEO_EXTRA_MAX : right;
-  ppu_setWidescreen(ppu, p->extra_left, p->extra_right);
+  if (beside(hook)) ppu_setWidescreen(ppu, p->extra_left, p->extra_right);
 }
 
 void video_set_wide(Ppu* ppu, int layer, VideoWide policy) {
   if (layer < VIDEO_BG1 || layer > VIDEO_OBJ) return;
-  hook_of(ppu)->picture.wide[layer] = (uint8_t)policy;
-  ppu_setLayerWide(ppu, layer, policy);
+  VideoHook* hook = hook_of(ppu);
+  hook->picture.wide[layer] = (uint8_t)policy;
+  if (beside(hook)) ppu_setLayerWide(ppu, layer, policy);
 }
 
 void video_set_clamp(Ppu* ppu, int lo, int hi) {
-  VideoPicture* p = &hook_of(ppu)->picture;
-  p->clamp_lo = lo;
-  p->clamp_hi = hi;
-  ppu_setWideClamp(ppu, lo, hi);
+  VideoHook* hook = hook_of(ppu);
+  hook->picture.clamp_lo = lo;
+  hook->picture.clamp_hi = hi;
+  if (beside(hook)) ppu_setWideClamp(ppu, lo, hi);
 }
 
 void video_set_sprite_place(Ppu* ppu, int sprite, VideoSpritePlace place) {
   if (sprite < 0 || sprite >= VIDEO_SPRITES) return;
-  hook_of(ppu)->picture.place[sprite] = ppu->spritePlace[sprite] = (uint8_t)place;
+  VideoHook* hook = hook_of(ppu);
+  hook->picture.place[sprite] = (uint8_t)place;
+  if (beside(hook)) ppu->spritePlace[sprite] = (uint8_t)place;
 }
 
 void video_set_sprite_shift(Ppu* ppu, int sprite, int shift) {
   if (sprite < 0 || sprite >= VIDEO_SPRITES) return;
-  hook_of(ppu)->picture.shift[sprite] = ppu->spriteShift[sprite] = (int16_t)shift;
+  VideoHook* hook = hook_of(ppu);
+  hook->picture.shift[sprite] = (int16_t)shift;
+  if (beside(hook)) ppu->spriteShift[sprite] = (int16_t)shift;
 }
 
 void video_set_sprite_front(Ppu* ppu, int sprite, bool front) {
   if (sprite < 0 || sprite >= VIDEO_SPRITES) return;
-  hook_of(ppu)->picture.front[sprite] = ppu->objFront[sprite] = front;
+  VideoHook* hook = hook_of(ppu);
+  hook->picture.front[sprite] = front;
+  if (beside(hook)) ppu->objFront[sprite] = front;
 }
 
 void video_set_sprite_remapped(Ppu* ppu, int sprite, bool remapped) {
   if (sprite < 0 || sprite >= VIDEO_SPRITES) return;
-  hook_of(ppu)->picture.remap_on[sprite] = ppu->objRemapOn[sprite] = remapped;
+  VideoHook* hook = hook_of(ppu);
+  hook->picture.remap_on[sprite] = remapped;
+  if (beside(hook)) ppu->objRemapOn[sprite] = remapped;
 }
 
 void video_set_remap(Ppu* ppu, const uint8_t remap[16]) {
-  memcpy(hook_of(ppu)->picture.remap, remap, 16);
-  memcpy(ppu->objRemap, remap, 16);
+  VideoHook* hook = hook_of(ppu);
+  memcpy(hook->picture.remap, remap, 16);
+  if (beside(hook)) memcpy(ppu->objRemap, remap, 16);
 }
 
-// Called for every line of the picture, with the PPU's row of pixels
-// cleared. A line that is blanked has no sprites and none are looked for, so
-// neither flag can be set by it. Which lines those are is decided here from
-// the registers kept here, and for the PPU's finding from its own.
+static void memory_to_ppu(const VideoMemory* m, Ppu* ppu) {
+  memcpy(ppu->vram, m->vram, sizeof m->vram);
+  memcpy(ppu->cgram, m->cgram, sizeof m->cgram);
+  memcpy(ppu->oam, m->oam, sizeof m->oam);
+  memcpy(ppu->highOam, m->high_oam, sizeof m->high_oam);
+}
+
+// A PPU that has been told nothing, told everything at once: the registers,
+// the memories, the notes and the picture as they stand here. For a line
+// that is left to it after all. Nothing this game shows is, so what it costs
+// -- the memories are copied whole -- is paid by no frame of it.
+static void ppu_catch_up(const VideoHook* hook, Ppu* ppu) {
+  registers_to_ppu(&hook->registers, ppu);
+  memory_to_ppu(&hook->memory, ppu);
+  notes_to_ppu(&hook->frame, ppu);
+  picture_to_ppu(&hook->picture, ppu);
+}
+
+// Called for every line of the picture: by the PPU with its row of pixels
+// cleared, or for a console's chip under `VIDEO_NATIVE` by `chip_line`. A
+// line that is blanked has no sprites and none are looked for, so neither
+// flag can be set by it. Which lines those are is decided here from the
+// registers kept here, and for the PPU's finding from its own.
 static bool video_ppu_sprites(void* user, Ppu* ppu, int line) {
   VideoHook* hook = (VideoHook*)user;
   VideoRegisters* r = &hook->registers;
+  Ppu* const told = beside(hook);
   VideoState s;
   state_of(hook, &s, ppu);
   const int width = video_width(&s);
@@ -404,6 +477,10 @@ static bool video_ppu_sprites(void* user, Ppu* ppu, int line) {
   if (hook->renderer == VIDEO_EMULATED || video_sprites_declines(&s)) {
     if (hook->renderer == VIDEO_EMULATED ? ppu->forcedBlank : s.blank) return true;
     hook->sprite_declined++;
+    if (told == NULL) {
+      ppu_catch_up(hook, ppu);
+      memset(ppu->objPixelBuffer, 0, (size_t)width);
+    }
     ppu_findSprites(ppu, line);
     memcpy(hook->obj_pixel, ppu->objPixelBuffer, (size_t)width);
     memcpy(hook->obj_priority, ppu->objPriorityBuffer, (size_t)width);
@@ -417,8 +494,10 @@ static bool video_ppu_sprites(void* user, Ppu* ppu, int line) {
     over = video_sprites(&s, line, hook->obj_pixel, hook->obj_priority);
   }
   if (hook->renderer == VIDEO_NATIVE) {
-    if (over & VIDEO_SPRITES_RANGE_OVER) ppu->rangeOver = r->range_over = true;
-    if (over & VIDEO_SPRITES_TIME_OVER) ppu->timeOver = r->time_over = true;
+    if (over & VIDEO_SPRITES_RANGE_OVER) r->range_over = true;
+    if (over & VIDEO_SPRITES_TIME_OVER) r->time_over = true;
+    if (told != NULL && (over & VIDEO_SPRITES_RANGE_OVER)) told->rangeOver = true;
+    if (told != NULL && (over & VIDEO_SPRITES_TIME_OVER)) told->timeOver = true;
     return true;
   }
   // Both. A priority is compared only where there is a sprite: elsewhere it
@@ -453,13 +532,19 @@ static bool video_ppu_line(void* user, Ppu* ppu, int line) {
   const int width = video_width(&s);
   const bool even = even_frame(hook, ppu);
   uint8_t* row = &hook->pixels[row_at(even, line)];
-  const uint8_t* ppu_row = &ppu->pixelBuffer[row_at(ppu->evenFrame, line)];
   const char* why = hook->renderer == VIDEO_EMULATED ? NULL : video_declines(&s);
   if (hook->renderer == VIDEO_EMULATED || why != NULL) {
     if (why != NULL) note_decline(hook, why);
     else hook->left++;
+    // The PPU draws from its own two rows of sprites, which under
+    // `VIDEO_NATIVE` it did not find.
+    if (hook->renderer == VIDEO_NATIVE) {
+      if (beside(hook) == NULL) ppu_catch_up(hook, ppu);
+      memcpy(ppu->objPixelBuffer, hook->obj_pixel, (size_t)width);
+      memcpy(ppu->objPriorityBuffer, hook->obj_priority, (size_t)width);
+    }
     ppu_drawLine(ppu, line);
-    memcpy(row, ppu_row, (size_t)width * 8);
+    memcpy(row, &ppu->pixelBuffer[row_at(ppu->evenFrame, line)], (size_t)width * 8);
     checksum_line(hook, row, line, width);
     return true;
   }
@@ -467,6 +552,7 @@ static bool video_ppu_line(void* user, Ppu* ppu, int line) {
   video_line(&hook->video, &s, &hook->frame.centre, line, colours);
   hook->lines++;
   if (hook->renderer == VIDEO_CHECK) {
+    const uint8_t* ppu_row = &ppu->pixelBuffer[row_at(ppu->evenFrame, line)];
     ppu_drawLine(ppu, line);
     for (int c = 0; c < width; c++) {
       if (row_is(hook->format, ppu_row, c, colours[c])) continue;
@@ -488,6 +574,8 @@ static bool video_ppu_line(void* user, Ppu* ppu, int line) {
   return true;
 }
 
+// The PPU is told whether it is kept up or not: a line left to it is copied
+// out of its buffer as it is.
 void video_set_pixel_format(Ppu* ppu, VideoPixels format) {
   hook_of(ppu)->format = format;
   ppu_setPixelOutputFormat(ppu, format);
@@ -531,14 +619,28 @@ static const char* memory_differs(const VideoMemory* m, const Ppu* ppu) {
   return NULL;
 }
 
+// Under `VIDEO_CHECK`, something done here that was not as the PPU did it:
+// what was done, and which register or memory it left different.
+static void note_difference(VideoHook* hook, const char* what, uint8_t address, uint8_t value,
+                            const char* which) {
+  if (hook->registers_differing++ != 0) return;
+  hook->first_register.frame = hook->snes->frames;
+  hook->first_register.line = hook->snes->vPos;
+  hook->first_register.what = what;
+  hook->first_register.address = address;
+  hook->first_register.value = value;
+  hook->first_register.which = which;
+}
+
 // Under `VIDEO_CHECK`, after something has been done to the registers and
 // to the PPU: are they the same? `misread` is for a read whose two answers
 // were not, and `memories` has the three memories compared whole as well.
 // What differs is made the PPU's again, so that what is counted is the
 // things done wrong and not everything after the first.
-static void check_registers(VideoHook* hook, Ppu* ppu, const char* what, uint8_t address,
-                            uint8_t value, bool misread, bool memories) {
+static void check_registers(VideoHook* hook, const char* what, uint8_t address, uint8_t value,
+                            bool misread, bool memories) {
   if (hook->renderer != VIDEO_CHECK) return;
+  const Ppu* ppu = hook->ppu;
   const char* which = video_registers_differ(&hook->registers, ppu);
   if (which == NULL && misread) which = "the value read";
   if (which == NULL && memories) {
@@ -546,96 +648,239 @@ static void check_registers(VideoHook* hook, Ppu* ppu, const char* what, uint8_t
     if (which != NULL) memory_from_ppu(&hook->memory, ppu);
   }
   if (which == NULL) return;
-  if (hook->registers_differing++ == 0) {
-    hook->first_register.frame = ppu->snes->frames;
-    hook->first_register.line = ppu->snes->vPos;
-    hook->first_register.what = what;
-    hook->first_register.address = address;
-    hook->first_register.value = value;
-    hook->first_register.which = which;
-  }
+  note_difference(hook, what, address, value, which);
   video_registers_from_ppu(&hook->registers, ppu);
 }
 
 // ...and the same of the notes, and at a frame's top of the picture, which
 // the PPU is told as it is said. `line` is the line that began, 0 for a
 // frame's top, or -1.
-static void check_notes(VideoHook* hook, Ppu* ppu, int line) {
+static void check_notes(VideoHook* hook, int line) {
   if (hook->renderer != VIDEO_CHECK) return;
+  const Ppu* ppu = hook->ppu;
   const char* which = video_notes_differ(&hook->frame, ppu, line);
   if (which == NULL && line == 0) which = picture_differs(&hook->picture, ppu);
   if (which == NULL) return;
   if (hook->notes_differing++ == 0) {
-    hook->first_note.frame = ppu->snes->frames;
-    hook->first_note.line = ppu->snes->vPos;
+    hook->first_note.frame = hook->snes->frames;
+    hook->first_note.line = hook->snes->vPos;
     hook->first_note.which = which;
   }
   video_notes_from_ppu(&hook->frame, ppu);
   picture_from_ppu(&hook->picture, ppu);
 }
 
-static void video_ppu_wrote(void* user, Ppu* ppu, uint8_t address, uint8_t value) {
-  VideoHook* hook = (VideoHook*)user;
-  const Snes* snes = ppu->snes;
-  video_frame_write(&hook->frame, &hook->registers, address, value, snes->vPos,
-                    !snes->inVblank && snes->vPos > 0);
-  hook->writes++;
-  check_registers(hook, ppu, "write", address, value, false, false);
-  check_notes(hook, ppu, -1);
-}
-
 static void video_ppu_began_line(void* user, Ppu* ppu, int line) {
+  (void)ppu;
   VideoHook* hook = (VideoHook*)user;
   video_frame_line(&hook->frame, &hook->registers, line);
   hook->noted_lines++;
-  check_notes(hook, ppu, line);
+  check_notes(hook, line);
 }
 
-static void video_ppu_read(void* user, Ppu* ppu, uint8_t address, uint8_t* value) {
+// --- The console's video chip ---------------------------------------------------
+//
+// What a console asks of its chip (`SnesVideo`), answered from what is kept
+// here. Under `VIDEO_CHECK` and `VIDEO_EMULATED` each thing is done to the
+// PPU first, and where the two could answer differently the PPU's answer is
+// the one the console gets.
+
+static void chip_write(void* user, uint8_t address, uint8_t value) {
   VideoHook* hook = (VideoHook*)user;
+  const Snes* snes = hook->snes;
+  Ppu* ppu = beside(hook);
+  if (ppu != NULL) ppu_write(ppu, address, value);
+  video_frame_write(&hook->frame, &hook->registers, address, value, snes->vPos,
+                    !snes->inVblank && snes->vPos > 0);
+  hook->writes++;
+  check_registers(hook, "write", address, value, false, false);
+  check_notes(hook, -1);
+}
+
+static uint8_t chip_read(void* user, uint8_t address) {
+  VideoHook* hook = (VideoHook*)user;
+  const Snes* snes = hook->snes;
   const VideoBus bus = {
-      .dot = ppu->snes->hPos / 4,
-      .line = ppu->snes->vPos,
-      .pal = ppu->snes->palTiming,
-      .open_bus = ppu->snes->openBus,
+      .dot = snes->hPos / 4,
+      .line = snes->vPos,
+      .pal = snes->palTiming,
+      .open_bus = snes->openBus,
   };
-  const uint8_t here = video_registers_read(&hook->registers, address, &bus);
+  Ppu* ppu = beside(hook);
   hook->reads++;
-  check_registers(hook, ppu, "read", address, *value, here != *value, false);
-  if (hook->renderer == VIDEO_NATIVE) *value = here;
+  if (ppu == NULL) return video_registers_read(&hook->registers, address, &bus);
+  const uint8_t theirs = ppu_read(ppu, address);
+  const uint8_t here = video_registers_read(&hook->registers, address, &bus);
+  check_registers(hook, "read", address, theirs, here != theirs, false);
+  return theirs;
 }
 
-static void video_ppu_happened(void* user, Ppu* ppu, int what) {
+static void chip_reset(void* user) {
   VideoHook* hook = (VideoHook*)user;
-  VideoRegisters* r = &hook->registers;
-  const char* name = "";
-  switch (what) {
-    case ppu_wasReset:
-      video_registers_reset(r);
-      video_picture_reset(&hook->picture);
-      memset(hook->obj_pixel, 0, sizeof hook->obj_pixel);
-      memset(hook->obj_priority, 0, sizeof hook->obj_priority);
-      memset(hook->pixels, 0, sizeof hook->pixels);
-      name = "reset";
-      break;
-    case ppu_frameStarted:
-      video_registers_frame_start(r);
-      video_frame_start(&hook->frame, r, &hook->picture);
-      check_notes(hook, ppu, 0);
-      name = "frame's start";
-      break;
-    case ppu_overscanChecked: video_registers_overscan(r); name = "overscan's check"; break;
-    case ppu_vblankBegan: video_registers_vblank(r); name = "picture's end"; break;
-    // A state is the PPU's, whole.
-    case ppu_stateLoaded:
-      video_registers_from_ppu(r, ppu);
-      memory_from_ppu(&hook->memory, ppu);
-      return;
-  }
-  check_registers(hook, ppu, name, 0, 0, false, true);
+  Ppu* ppu = beside(hook);
+  if (ppu != NULL) ppu_reset(ppu);
+  video_registers_reset(&hook->registers);
+  video_picture_reset(&hook->picture);
+  memset(hook->obj_pixel, 0, sizeof hook->obj_pixel);
+  memset(hook->obj_priority, 0, sizeof hook->obj_priority);
+  memset(hook->pixels, 0, sizeof hook->pixels);
+  check_registers(hook, "reset", 0, 0, false, true);
 }
 
-void video_hook_keep_registers(VideoHook* hook, Ppu* ppu) {
+static void chip_frame_start(void* user) {
+  VideoHook* hook = (VideoHook*)user;
+  Ppu* ppu = beside(hook);
+  if (ppu != NULL) ppu_handleFrameStart(ppu);
+  video_registers_frame_start(&hook->registers);
+  video_frame_start(&hook->frame, &hook->registers, &hook->picture);
+  check_notes(hook, 0);
+  check_registers(hook, "frame's start", 0, 0, false, true);
+}
+
+static bool chip_overscan(void* user) {
+  VideoHook* hook = (VideoHook*)user;
+  Ppu* ppu = beside(hook);
+  const bool here = video_registers_overscan(&hook->registers);
+  if (ppu == NULL) return here;
+  const bool theirs = ppu_checkOverscan(ppu);
+  check_registers(hook, "overscan's check", 0, 0, false, true);
+  return theirs;
+}
+
+static void chip_vblank(void* user) {
+  VideoHook* hook = (VideoHook*)user;
+  Ppu* ppu = beside(hook);
+  if (ppu != NULL) ppu_handleVblank(ppu);
+  video_registers_vblank(&hook->registers);
+  check_registers(hook, "picture's end", 0, 0, false, true);
+}
+
+// A line of the picture: its scrolls and windows noted, its sprites found,
+// and the line drawn. The PPU, where it is kept up, does the three in that
+// order and calls back for each.
+static void chip_line(void* user, int line) {
+  VideoHook* hook = (VideoHook*)user;
+  Ppu* ppu = beside(hook);
+  if (ppu != NULL) {
+    ppu_runLine(ppu, line);
+    return;
+  }
+  video_ppu_began_line(hook, hook->ppu, line);
+  video_ppu_sprites(hook, hook->ppu, line);
+  video_ppu_line(hook, hook->ppu, line);
+}
+
+// Which of the two fields the frame is, and whether it is interlaced: an odd
+// field that is not is a little shorter, and an even one that is has a line
+// more.
+static bool chip_even_frame(void* user) {
+  const VideoHook* hook = (const VideoHook*)user;
+  const Ppu* ppu = beside(hook);
+  return ppu != NULL ? ppu->evenFrame : hook->registers.even_frame;
+}
+
+static bool chip_frame_interlace(void* user) {
+  const VideoHook* hook = (const VideoHook*)user;
+  const Ppu* ppu = beside(hook);
+  return ppu != NULL ? ppu->frameInterlace : hook->registers.frame_interlace;
+}
+
+// --- A saved state ----------------------------------------------------------------
+
+void video_state_handle(VideoRegisters* r, uint8_t* obj_pixel, uint8_t* obj_priority,
+                        StateHandler* sh, VideoStateParts* parts) {
+  const int from = sh->offset;
+  sh_handleBools(sh,
+    &r->vram_step_on_high, &r->cgram_second, &r->oam_high, &r->oam_high_written, &r->oam_second,
+    &r->obj_from_address, &r->time_over, &r->range_over, &r->obj_interlace, &r->m7_large_field,
+    &r->m7_fill, &r->m7_flip_x, &r->m7_flip_y, &r->m7_ext_bg, &r->add_sub, &r->subtract, &r->half,
+    &r->math[0], &r->math[1], &r->math[2], &r->math[3], &r->math[4], &r->math[5],
+    &r->blank, &r->bg3_front, &r->even_frame, &r->pseudo_hires, &r->overscan,
+    &r->frame_overscan, &r->interlace, &r->frame_interlace, &r->direct_colour, &r->h_second,
+    &r->v_second, &r->latched, NULL);
+  sh_handleBytes(sh,
+    &r->vram_remap, &r->cgram_at, &r->cgram_first_byte, &r->oam_at, &r->oam_at_written,
+    &r->oam_first_byte, &r->obj_sizes, &r->scroll_latch, &r->hscroll_latch, &r->mosaic_size,
+    &r->mosaic_from, &r->m7_latch, &r->window1_left, &r->window1_right, &r->window2_left,
+    &r->window2_right, &r->clip, &r->prevent, &r->fixed_r, &r->fixed_g, &r->fixed_b,
+    &r->brightness, &r->mode, &r->bus1, &r->bus2, NULL);
+  sh_handleWords(sh,
+    &r->vram_at, &r->vram_step, &r->vram_ahead, &r->obj_tiles_at[0], &r->obj_tiles_at[1],
+    &r->h_count, &r->v_count, NULL);
+  sh_handleWordsS(sh,
+    &r->m7[0], &r->m7[1], &r->m7[2], &r->m7[3], &r->m7[4], &r->m7[5], &r->m7[6], &r->m7[7], NULL);
+  int32_t mode7_x = 0, mode7_y = 0;
+  if (parts != NULL) parts->mode7_working = sh->offset - from;
+  sh_handleIntsS(sh, &mode7_x, &mode7_y, NULL);
+  for (int i = 0; i < 4; i++) {
+    VideoBg* bg = &r->bg[i];
+    sh_handleBools(sh, &bg->map_wide, &bg->map_high, &bg->big_tiles, &bg->mosaic, NULL);
+    sh_handleWords(sh, &bg->hscroll, &bg->vscroll, &bg->map_at, &bg->tiles_at, NULL);
+  }
+  for (int i = 0; i < 5; i++)
+    sh_handleBools(sh, &r->main[i], &r->sub[i], &r->main_windowed[i], &r->sub_windowed[i], NULL);
+  for (int i = 0; i < VIDEO_LAYERS; i++) {
+    VideoWindow* w = &r->window[i];
+    sh_handleBools(sh, &w->one, &w->one_inverted, &w->two, &w->two_inverted, NULL);
+    sh_handleBytes(sh, &w->logic, NULL);
+  }
+  sh_handleWordArray(sh, r->vram, 0x8000);
+  sh_handleWordArray(sh, r->cgram, 0x100);
+  sh_handleWordArray(sh, r->oam, 0x100);
+  sh_handleByteArray(sh, r->high_oam, 0x20);
+  if (parts != NULL) parts->sprite_rows = sh->offset - from;
+  sh_handleByteArray(sh, obj_pixel, 256);
+  sh_handleByteArray(sh, obj_priority, 256);
+}
+
+const char* video_states_differ(const uint8_t* here, const uint8_t* theirs, int size,
+                                const VideoStateParts* parts) {
+  const int after_working = parts->mode7_working + 8, rows = parts->sprite_rows;
+  if (size != rows + 512) return "the state's size";
+  if (memcmp(here, theirs, (size_t)parts->mode7_working) ||
+      memcmp(here + after_working, theirs + after_working, (size_t)(rows - after_working)))
+    return "the state as saved";
+  if (memcmp(here + rows, theirs + rows, 256)) return "the sprites' row as saved";
+  for (int c = 0; c < 256; c++)
+    if (here[rows + c] != 0 && here[rows + 256 + c] != theirs[rows + 256 + c])
+      return "the sprites' priorities as saved";
+  return NULL;
+}
+
+// Saved from here under `VIDEO_NATIVE`. Under the other two the PPU's is
+// what is saved, and under `VIDEO_CHECK` what would have been saved from
+// here is compared with it. A load is into both, each from the same bytes,
+// and the check then compares the two as it does after anything else.
+static void chip_state(void* user, StateHandler* sh) {
+  VideoHook* hook = (VideoHook*)user;
+  Ppu* ppu = beside(hook);
+  VideoRegisters* r = &hook->registers;
+  if (ppu == NULL) {
+    video_state_handle(r, hook->obj_pixel, hook->obj_priority, sh, NULL);
+    return;
+  }
+  const int from = sh->offset;
+  ppu_handleState(ppu, sh);
+  const int size = sh->offset - from;
+  if (!sh->saving) {
+    StateHandler again = *sh;
+    again.offset = from;
+    video_state_handle(r, hook->obj_pixel, hook->obj_priority, &again, NULL);
+    check_registers(hook, "state's load", 0, 0, false, true);
+  } else if (hook->renderer == VIDEO_CHECK) {
+    StateHandler* here = sh_init(true, NULL, 0);
+    VideoStateParts parts;
+    video_state_handle(r, hook->obj_pixel, hook->obj_priority, here, &parts);
+    const char* which = here->offset != size
+                            ? "the state's size"
+                            : video_states_differ(here->data, sh->data + from, size, &parts);
+    if (which != NULL) note_difference(hook, "state's save", 0, 0, which);
+    sh_free(here);
+  }
+}
+
+void video_hook_attach(VideoHook* hook, Snes* snes) {
+  Ppu* ppu = hook->ppu;
   VideoRegisters* r = &hook->registers;
   video_registers_attach(r, &hook->memory);
   memory_from_ppu(&hook->memory, ppu);
@@ -643,10 +888,22 @@ void video_hook_keep_registers(VideoHook* hook, Ppu* ppu) {
   video_notes_from_ppu(&hook->frame, ppu);
   picture_from_ppu(&hook->picture, ppu);
   hook->registers_kept = true;
-  ppu->wrote = video_ppu_wrote;
-  ppu->didRead = video_ppu_read;
-  ppu->happened = video_ppu_happened;
+  hook->snes = snes;
   ppu->beganLine = video_ppu_began_line;
+  const SnesVideo chip = {
+      .user = hook,
+      .reset = chip_reset,
+      .read = chip_read,
+      .write = chip_write,
+      .frameStart = chip_frame_start,
+      .checkOverscan = chip_overscan,
+      .vblank = chip_vblank,
+      .runLine = chip_line,
+      .handleState = chip_state,
+      .evenFrame = chip_even_frame,
+      .frameInterlace = chip_frame_interlace,
+  };
+  snes_setVideo(snes, &chip);
 }
 
 void video_hook_install(VideoHook* hook, Ppu* ppu, VideoRenderer renderer, bool checksummed) {
@@ -655,6 +912,7 @@ void video_hook_install(VideoHook* hook, Ppu* ppu, VideoRenderer renderer, bool 
   video_picture_init(&hook->picture);
   video_frame_init(&hook->frame);
   hook->renderer = renderer;
+  hook->ppu = ppu;
   hook->format = (VideoPixels)ppu->pixelOutputFormat;
   hook->checksummed = checksummed;
   hook->checksum = 14695981039346656037ull;
@@ -687,7 +945,8 @@ bool video_hook_report(const VideoHook* hook, FILE* to) {
   if (hook->registers_kept) {
     fprintf(to, "Registers: %ld writes and %ld reads kept here.\n", hook->writes, hook->reads);
     if (hook->renderer == VIDEO_CHECK)
-      fprintf(to, "  %ld of them, or of a frame's events, were not as the PPU had them.\n",
+      fprintf(to, "  %ld of them, or of a frame's events or a state's saving, were not as the"
+                  " PPU had them.\n",
               hook->registers_differing);
     if (hook->registers_differing) {
       const char* what = hook->first_register.what;
