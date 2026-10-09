@@ -67,7 +67,9 @@ add_executable(zamn_headless src/headless.c)
 # geometry the game draws from.
 # ...and the port, because `src/widescreen.h` reads the sprite pass's owner
 # table to anchor the sprites of a screen-space record.
-target_link_libraries(zamn_headless PRIVATE snescore zamn_analysis zamn_assets_lib zamn_port)
+# ...and `src/video`, which keeps the chip's registers that it reads.
+target_link_libraries(zamn_headless PRIVATE snescore zamn_analysis zamn_assets_lib zamn_port
+                      zamn_video)
 target_include_directories(zamn_headless PRIVATE third_party/stb)
 if(MSVC)
   target_compile_definitions(zamn_headless PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -211,7 +213,7 @@ endif()
 # console's one at a time -- the same machine, and a picture changed only
 # where the squares are.
 add_executable(zamn_test_radar tools/test_radar.c)
-target_link_libraries(zamn_test_radar PRIVATE zamn_cosim_lib)
+target_link_libraries(zamn_test_radar PRIVATE zamn_cosim_lib zamn_video)
 target_include_directories(zamn_test_radar PRIVATE src)
 if(MSVC)
   target_compile_definitions(zamn_test_radar PRIVATE _CRT_SECURE_NO_WARNINGS)

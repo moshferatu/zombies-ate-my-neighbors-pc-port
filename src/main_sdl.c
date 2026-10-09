@@ -615,7 +615,7 @@ static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads,
   for (; f < last; f++) {
     // The title or the first logo, about to fade in: the game has turned the
     // screen on.
-    if (to_first_light && f >= INTRO_BYPASS_FIRST && !snes->ppu->forcedBlank) break;
+    if (to_first_light && f >= INTRO_BYPASS_FIRST && !video_registers_of(snes->ppu)->blank) break;
     const bool down = !to_first_light &&
         f >= INTRO_FIRST_PRESS && f <= INTRO_LAST_PRESS &&
         (f - INTRO_FIRST_PRESS) % INTRO_PRESS_PERIOD < INTRO_PRESS_HOLD;
@@ -2266,7 +2266,7 @@ int main(int argc, char** argv) {
                      ws_main_thread_at(ws.mem), ws_game_over(ws.mem),
                      ws.mem[0x1e88] | (ws.mem[0x1e89] << 8), ws.mem[0x1e8a] | (ws.mem[0x1e8b] << 8),
                      snes->ram[0x1e88] | (snes->ram[0x1e89] << 8), snes->ram[0x1e8a] | (snes->ram[0x1e8b] << 8),
-                     snes->ppu->layerWide[2], snes_bgTilemapWider(snes, 1) && snes_bgOnMainScreen(snes, 1));
+                     snes->ppu->layerWide[2], video_hook.registers.bg[1].map_wide && video_hook.registers.main[1]);
               stbi_write_png(path, r.w, r.h, 3, gpu, r.w * 3);
             }
             if (sw) {

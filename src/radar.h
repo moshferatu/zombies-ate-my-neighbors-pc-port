@@ -49,6 +49,7 @@
 
 #include "ppu.h"
 #include "snes.h"
+#include "video/ppu_hook.h"
 
 #include "assets/rom.h"
 #include "assets/sprite.h"
@@ -113,12 +114,12 @@ static inline uint16_t radar_r16(const uint8_t* mem, uint32_t off) {
 // left to remember it in, and then nothing is written.
 static inline bool radar_put(Snes* snes, Radar* r, int s, int x, int y, uint16_t word, bool large) {
   if (r->written == RADAR_WRITTEN_MAX) return false;
-  const Ppu* ppu = snes->ppu;
+  const VideoRegisters* reg = video_registers_of(snes->ppu);
   const int i = r->written++;
   r->slot[i] = s;
-  r->was_lo[i] = ppu->oam[s * 2];
-  r->was_word[i] = ppu->oam[s * 2 + 1];
-  r->was_high[i] = (uint8_t)((ppu->highOam[s >> 2] >> ((s & 3) * 2)) & 3);
+  r->was_lo[i] = reg->oam[s * 2];
+  r->was_word[i] = reg->oam[s * 2 + 1];
+  r->was_high[i] = (uint8_t)((reg->high_oam[s >> 2] >> ((s & 3) * 2)) & 3);
   snes_setSprite(snes, s, x, y, word, large);
   return true;
 }
@@ -129,9 +130,10 @@ static inline bool radar_put(Snes* snes, Radar* r, int s, int x, int y, uint16_t
 // the game's own marker has since landed on is the game's.)
 static inline void radar_return(Snes* snes, Radar* r) {
   Ppu* ppu = snes->ppu;
+  const VideoRegisters* reg = video_registers_of(ppu);
   for (int i = 0; i < r->written; i++) ppu->objFront[r->slot[i]] = false;
-  if (r->written && !memcmp(ppu->oam, r->oam, sizeof r->oam) &&
-      !memcmp(ppu->highOam, r->high, sizeof r->high)) {
+  if (r->written && !memcmp(reg->oam, r->oam, sizeof r->oam) &&
+      !memcmp(reg->high_oam, r->high, sizeof r->high)) {
     for (int i = r->written - 1; i >= 0; i--) {
       const int s = r->slot[i];
       snes_setSprite(snes, s, (r->was_lo[i] & 0xff) | (r->was_high[i] & 1) << 8, r->was_lo[i] >> 8,
@@ -143,15 +145,16 @@ static inline void radar_return(Snes* snes, Radar* r) {
 
 // ...and after this frame's are written, the OAM it leaves.
 static inline void radar_keep(const Snes* snes, Radar* r) {
-  memcpy(r->oam, snes->ppu->oam, sizeof r->oam);
-  memcpy(r->high, snes->ppu->highOam, sizeof r->high);
+  const VideoRegisters* reg = video_registers_of(snes->ppu);
+  memcpy(r->oam, reg->oam, sizeof r->oam);
+  memcpy(r->high, reg->high_oam, sizeof r->high);
 }
 
 // One radar's squares, for the thread on page `dp`. `place` is where the
 // widened picture puts a sprite laid out over the panel.
 static inline void radar_draw(Snes* snes, Radar* r, const Rom* rom, const uint8_t* mem,
                               uint16_t dp, int place, int* shown) {
-  Ppu* ppu = snes->ppu;
+  const VideoRegisters* reg = video_registers_of(snes->ppu);
   const uint16_t player = radar_r16(mem, dp + RADAR_DP_PLAYER);
   if (player > 1 || !radar_r16(mem, RADAR_UP + player * 2u)) return;
   const uint16_t rec = radar_r16(mem, dp + RADAR_DP_RECORD);
@@ -179,11 +182,11 @@ static inline void radar_draw(Snes* snes, Radar* r, const Rom* rom, const uint8_
   const uint16_t look = (uint16_t)(((p->attr | prio) & 0xfe00) | tile);
   int entry = -1;
   for (int e = 0; e < OAM_ENTRIES && entry < 0; e++) {
-    const int y = ppu->oam[e * 2] >> 8;
-    if ((y < 0xe0 || y > 0xf0) && ppu->oam[e * 2 + 1] == look) entry = e;
+    const int y = reg->oam[e * 2] >> 8;
+    if ((y < 0xe0 || y > 0xf0) && reg->oam[e * 2 + 1] == look) entry = e;
   }
   if (entry < 0) return;
-  const bool large = (ppu->highOam[entry >> 2] >> ((entry & 3) * 2 + 1)) & 1;
+  const bool large = (reg->high_oam[entry >> 2] >> ((entry & 3) * 2 + 1)) & 1;
   if (!radar_put(snes, r, entry, 0, 0xe0, look, large)) return;
 
   const uint16_t prec = radar_r16(mem, W_PLAYER_A_RECORD + player * 2u);

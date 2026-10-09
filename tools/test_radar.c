@@ -167,6 +167,11 @@ static Tick* run(const uint8_t* rom, int rom_len, const char* movie_path, long n
   if (!movie_load(&movie, movie_path)) return NULL;
   Snes* snes = snes_init();
   if (!snes_loadRom(snes, rom, rom_len)) return NULL;
+  // The frontend reads the chip's registers from `src/video`, which keeps
+  // them beside the PPU's. The PPU draws the picture here.
+  static VideoHook video_hook;
+  video_hook_install(&video_hook, snes->ppu, VIDEO_EMULATED, false);
+  video_hook_keep_registers(&video_hook, snes->ppu);
   static Widescreen ws;
   snes_setWidescreen(snes, margin, margin);
   widescreen_install(snes, &ws, rom, rom_len, margin);

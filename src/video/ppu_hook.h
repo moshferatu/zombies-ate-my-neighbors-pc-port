@@ -2,9 +2,11 @@
 // registers beside its own.
 //
 // The emulated PPU still holds VRAM, the palette and OAM, and still has every
-// register written to it, because the frontend reads them from it. What it
-// no longer does is find a line's sprites or draw it, or answer the game's
-// reads. `Ppu.findSprites` and `Ppu.drawLine` are
+// register written to it, because it reads them itself for what it tells
+// the frontend of a frame. What it no longer does is find a line's sprites
+// or draw it, answer the game's reads, or have its registers read by the
+// frontend, which is given `video_registers_of`'s.
+// `Ppu.findSprites` and `Ppu.drawLine` are
 // called where it would have: `video_ppu_sprites` finds the sprites with
 // `video_sprites` into the PPU's own two rows and sets the flags the game
 // reads back, and `video_ppu_line` draws the line with `video_line` into the
@@ -24,7 +26,8 @@
 // PPU's own. A line is then drawn from those registers, and the game reads
 // what they answer. Under `VIDEO_CHECK` the PPU's answer is the one the game
 // gets, and after every one of them the registers are compared with the
-// PPU's, each by name.
+// PPU's, each by name. Under `VIDEO_EMULATED` they are kept for the frontend
+// alone.
 //
 // The checksum, when it is asked for, is over every line as it is drawn, in
 // any of the three. A movie's is the same number however its picture was
@@ -92,9 +95,9 @@ typedef struct {
   long left;  // `VIDEO_EMULATED`: lines the PPU drew, which is all of them
 } VideoHook;
 
-// What `video.h` draws from, out of the PPU as it stands; and the centred
-// layers' margins, which the PPU keeps for both of them. For a caller that
-// reads the PPU with `video.h` itself, as `src/layers.h` does.
+// What `video.h` draws from, out of the PPU as it stands and its own
+// registers; and the centred layers' margins, which the PPU keeps for both
+// of them.
 void video_state_from_ppu(VideoState* s, const Ppu* ppu);
 void video_centre_from_ppu(VideoCentre* c, const Ppu* ppu);
 void video_centre_to_ppu(const VideoCentre* c, Ppu* ppu);
@@ -109,9 +112,14 @@ const char* video_registers_differ(const VideoRegisters* r, const Ppu* ppu);
 void video_hook_install(VideoHook* hook, Ppu* ppu, VideoRenderer renderer, bool checksummed);
 
 // ...and keep its registers in `hook` as well, from where they stand now.
-// Nothing under `VIDEO_EMULATED`. The PPU must belong to a console: a write
-// is told the beam's line.
+// The PPU must belong to a console: a write is told the beam's line.
 void video_hook_keep_registers(VideoHook* hook, Ppu* ppu);
+
+// For the frontend, of a PPU whose registers are kept: the registers, and
+// what a line of its picture is drawn from, which is those registers with
+// what the frontend has said of the picture.
+const VideoRegisters* video_registers_of(const Ppu* ppu);
+void video_state_of(VideoState* s, const Ppu* ppu);
 
 // What was drawn, by whom, and what a check found. Returns false if a check
 // found any line different.

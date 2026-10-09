@@ -419,3 +419,76 @@ void video_registers_state(const VideoRegisters* r, VideoState* s) {
   s->obj.tiles_at[1] = r->obj_tiles_at[1];
   s->obj.interlace = r->obj_interlace;
 }
+
+// ---------------------------------------------------------------------------
+// A column of a background
+// ---------------------------------------------------------------------------
+
+// The bits a pixel of each background has in each mode, and 0 for a
+// background the mode does not have.
+static const uint8_t BG_DEPTH[8][4] = {
+    {2, 2, 2, 2}, {4, 4, 2, 0}, {4, 4, 0, 0}, {8, 4, 0, 0},
+    {8, 2, 0, 0}, {4, 2, 0, 0}, {4, 0, 0, 0}, {8, 0, 0, 0},
+};
+
+// The map's word for the tile at pixel (x, y) of a background.
+static uint16_t map_word(const VideoRegisters* r, int layer, int x, int y) {
+  const VideoBg* bg = &r->bg[layer];
+  // Modes 5 and 6 have tiles sixteen wide whatever the register says.
+  const bool wide_tiles = bg->big_tiles || r->mode == 5 || r->mode == 6;
+  const int across = wide_tiles ? 4 : 3, down = bg->big_tiles ? 4 : 3;
+  x &= 0x3ff;
+  y &= 0x3ff;
+  uint16_t at = (uint16_t)(bg->map_at + (((y >> down) & 0x1f) << 5 | ((x >> across) & 0x1f)));
+  // Past the 32nd tile is the next screen of the map, if it has one.
+  if ((x & (0x20 << across)) && bg->map_wide) at += 0x400;
+  if ((y & (0x20 << down)) && bg->map_high) at += bg->map_wide ? 0x800 : 0x400;
+  return r->vram[at & 0x7fff];
+}
+
+// Whether a character is eight rows of nothing: `depth` bits a pixel is
+// four words a bit.
+static bool character_empty(const VideoRegisters* r, int layer, int character, int depth) {
+  const int words = 4 * depth;
+  const uint16_t at = (uint16_t)(r->bg[layer].tiles_at + (character & 0x3ff) * words);
+  for (int i = 0; i < words; i++)
+    if (r->vram[(at + i) & 0x7fff] != 0) return false;
+  return true;
+}
+
+static int bg_depth(const VideoRegisters* r, int layer) {
+  return layer < 0 || layer > 3 ? 0 : BG_DEPTH[r->mode][layer];
+}
+
+bool video_column_empty(const VideoRegisters* r, int layer, int x) {
+  const int depth = bg_depth(r, layer);
+  if (depth == 0) return false;
+  const VideoBg* bg = &r->bg[layer];
+  const int step = bg->big_tiles ? 16 : 8;
+  // Every row of tiles the picture touches, and one more for the row the
+  // scroll leaves half on it.
+  for (int y = bg->vscroll; y < bg->vscroll + 224 + step; y += step) {
+    const int tile = map_word(r, layer, x + bg->hscroll, y) & 0x3ff;
+    if (!character_empty(r, layer, tile, depth)) return false;
+    // A tile sixteen square is four characters: the one named, the next,
+    // and the two a row of sixteen below them.
+    if (bg->big_tiles &&
+        !(character_empty(r, layer, tile + 1, depth) &&
+          character_empty(r, layer, tile + 0x10, depth) &&
+          character_empty(r, layer, tile + 0x11, depth)))
+      return false;
+  }
+  return true;
+}
+
+bool video_column_filled(const VideoRegisters* r, int layer, int x) {
+  const int depth = bg_depth(r, layer);
+  if (depth == 0) return false;
+  const VideoBg* bg = &r->bg[layer];
+  const int step = bg->big_tiles ? 16 : 8;
+  for (int y = bg->vscroll; y < bg->vscroll + 224 + step; y += step) {
+    const int tile = map_word(r, layer, x + bg->hscroll, y) & 0x3ff;
+    if (character_empty(r, layer, tile, depth)) return false;
+  }
+  return true;
+}

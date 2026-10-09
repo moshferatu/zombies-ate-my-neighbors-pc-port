@@ -14,7 +14,8 @@ the long form.
 
 `src/video` finds every line's sprites and draws every scanline the game
 shows, and the emulated PPU does neither. It keeps the chip's registers as
-well, and the game reads those. At 16:9 a tick of `level1.zmv` costs
+well, and the game and the frontend read those. At 16:9 a tick of
+`level1.zmv` costs
 **2.8 ms** to emulate and take apart for the smoothing, from 8.3.
 
 * **Why this first.** A profile at 240 Hz and 16:9 had 43% of the busy
@@ -132,6 +133,38 @@ well, and the game reads those. At 16:9 a tick of `level1.zmv` costs
   * Not established: the cosim and lockstep passes were not rerun. A saved
     state loaded in the game was not tried; the registers are taken from
     the PPU when one is.
+* **The frontend reads those registers.** The smoothing, the widescreen's
+  policies, the radar and the blood read `src/video`'s registers and the
+  memories through them, and not the PPU's copy.
+  * Two things they asked the PPU are asked of `src/video`: whether a
+    background has nothing down a column, and whether it has something in
+    every tile of one.
+  * `zamn_headless`, `zamn_record`, `zamn_test_layers` and
+    `zamn_test_radar` share the frontend's code, so they keep registers
+    too. The PPU still draws for them.
+  * The corpus at four widths: no line differs, no register differs, and
+    all 216 runs come to the same checksum alone. A tick costs what it
+    did, 2.3 to 2.4 ms.
+  * The noise test asks both about a column every eighth step: 1,478,376
+    columns over 13,000,000 steps and the same answer to each. Five rules
+    broken on purpose were each caught.
+  * Against the build before: the radar test prints the same at two
+    widths, and `zamn_headless` writes the same picture from two movies.
+  * A mistake of mine, three commits old. `zamn_test_layers` and
+    `zamn_record` had read every background as empty since the picture
+    was first drawn here. `video_bg_row` wants a table that only
+    `video_init` made, and those two tools never called it. The game did.
+    I had not run the test since. The build before this fails it on 2,681
+    frames of 2,686; the table is now made by whatever first needs it,
+    and the test passes on four runs, 8,997 frames drawn as a list.
+  * The PPU's registers still have readers. It reads them for what it
+    notes of a frame, and for four things the frontend still asks it:
+    where a sprite goes in a widened picture, where colour maths is
+    allowed, a dot of a layer, and a swept layer's shift. What the tools
+    print for a person reads them too.
+  * Not established: `zamn_record`'s pictures have nothing to be compared
+    with, the build before being wrong. It draws with the code the layers
+    test checks. The cosim and lockstep passes were not rerun.
 * **Tried before this and not kept.** Three smaller things, each measured
   in a copy: asking each layer once a dot in `ppu_getPixel`, 13% and
   pixel-identical; remembering the last tile read, 4% more; whole-program
@@ -154,12 +187,14 @@ well, and the game reads those. At 16:9 a tick of `level1.zmv` costs
     declined. The PPU then draws it, correctly and slowly, and
     `--verbose` counts such lines by what they were.
 * **Still the emulator's.** VRAM, the palette and OAM. A second copy of
-  the registers, which the frontend reads. What the automatic policy is
-  worked out from. The buffer the picture is written into, and the
+  the registers, which the PPU reads itself. What the frontend has said of
+  the picture, and what is noted of each frame. What the automatic policy
+  is worked out from. The buffer the picture is written into, and the
   sprites' rows. When a frame starts and ends.
 * **`PLAN.md` still says the PPU stays emulated.** I have not edited it.
-* **Next.** The frontend reading `src/video`'s registers and not the
-  PPU's, after which the PPU's copy has no reader. A frame drawn once:
+* **Next.** What the frontend says of the picture and what is noted of a
+  frame, moved out of the PPU, after which its registers have no reader.
+  A frame drawn once:
   with the smoothing on, a frame shown as layers is still drawn as a
   picture nobody sees. The smoothing's sprites and its maths window, which
   are still a dot at a time.

@@ -248,6 +248,14 @@ static void note_decline(VideoHook* hook, const char* why) {
   }
 }
 
+const VideoRegisters* video_registers_of(const Ppu* ppu) {
+  return &((const VideoHook*)ppu->drawUser)->registers;
+}
+
+void video_state_of(VideoState* s, const Ppu* ppu) {
+  state_of((const VideoHook*)ppu->drawUser, s, ppu);
+}
+
 static bool video_ppu_sprites(void* user, Ppu* ppu, int line) {
   VideoHook* hook = (VideoHook*)user;
   VideoRegisters* r = &hook->registers;
@@ -396,7 +404,6 @@ static void video_ppu_happened(void* user, Ppu* ppu, int what) {
 }
 
 void video_hook_keep_registers(VideoHook* hook, Ppu* ppu) {
-  if (hook->renderer == VIDEO_EMULATED) return;
   VideoRegisters* r = &hook->registers;
   r->vram = ppu->vram;
   r->cgram = ppu->cgram;

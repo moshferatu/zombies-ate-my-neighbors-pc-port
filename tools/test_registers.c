@@ -9,7 +9,8 @@
 // moved, a frame's start, its overscan check and its end, the sprites' two
 // flags raised, now and then a reset. After each, every register is compared
 // by name, and a read's two answers with them; every so often, and at the
-// end, the three memories are compared whole.
+// end, the three memories are compared whole. Every eighth step both are
+// asked whether a column of a background is empty, and whether it is filled.
 //
 // The doors into the memories are where most of the state is, so a third of
 // the writes and reads go to them and to their addresses.
@@ -79,6 +80,7 @@ int main(int argc, char** argv) {
   video_registers_reset(r);
 
   long writes = 0, reads = 0, events = 0, differing = 0;
+  long columns = 0, columns_empty = 0, columns_filled = 0;
   long first_step = -1;
   char first[160] = "";
   for (long step = 0; step < steps; step++) {
@@ -141,7 +143,17 @@ int main(int argc, char** argv) {
     if (which == NULL && misread) which = "the answer";
     if (which == NULL && step % 64 == 0) {
       which = memory_differs(&memories, ppu);
-      when = "by the time";
+      if (which != NULL) when = "by the time";
+    }
+    if (which == NULL && step % 8 == 0) {
+      const int layer = below(4), x = below(256);
+      const bool empty = video_column_empty(r, layer, x);
+      const bool filled = video_column_filled(r, layer, x);
+      columns++;
+      columns_empty += empty;
+      columns_filled += filled;
+      if (empty != ppu_columnEmptyAt(ppu, layer, x)) which = "whether a column is empty";
+      else if (filled != ppu_columnFilledAt(ppu, layer, x)) which = "whether a column is filled";
     }
     if (which == NULL) continue;
     if (differing++ == 0) {
@@ -160,6 +172,8 @@ int main(int argc, char** argv) {
 
   printf("%ld steps at random, seed %llu: %ld writes, %ld reads, %ld of a frame's events.\n", steps,
          (unsigned long long)seed, writes, reads, events);
+  printf("  %ld columns asked about: %ld empty, %ld filled.\n", columns, columns_empty,
+         columns_filled);
   printf("  %ld of them were not as the PPU had them.\n", differing);
   if (differing) printf("  The first, at step %ld: %s.\n", first_step, first);
   ppu_free(ppu);

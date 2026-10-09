@@ -239,11 +239,14 @@ enum {
 // picture's `video_width` columns a palette index into `pixel`, 0 where there
 // is none, and where there is one its sprite's priority into `priority`,
 // whose other columns are left as they were. Returns which of the two limits
-// the line went over. After `video_init`; `s->obj_pixel` and `obj_priority`
-// are not read. `video_sprites_declines` is true where the PPU would find
-// something else.
+// the line went over. `s->obj_pixel` and `obj_priority` are not read.
+// `video_sprites_declines` is true where the PPU would find something else.
 bool video_sprites_declines(const VideoState* s);
 int video_sprites(const VideoState* s, int line, uint8_t* pixel, uint8_t* priority);
+
+// A sprite's side in pixels, 8 to 64: the smaller or the larger of the two
+// sizes the register picks.
+int video_obj_size(const VideoObj* o, int sprite);
 
 // One background's line of a frame that has been drawn, for taking the frame
 // apart (`src/layers.h`): the columns `from` up to `to` of the picture, which

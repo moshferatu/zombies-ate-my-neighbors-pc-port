@@ -17,6 +17,10 @@
 // `SPREAD` turns one such byte into eight bytes, one per pixel, leftmost
 // first, each 0 or 1; the second table is the same for a tile flipped left to
 // right. Four of them shifted and ORed are a row's eight pixels at once.
+//
+// It is made the first time anything here is asked for a row of pixels, and
+// not by `video_init` alone: `video_bg_row` and `video_sprites` take no
+// `Video`, and a caller of only those has made none.
 static uint64_t SPREAD[2][256];
 static bool spread_made;
 
@@ -376,6 +380,7 @@ bool video_bg_row_declines(const VideoState* s, int layer) {
 
 void video_bg_row(const VideoState* s, VideoCentre* centre, int layer, int line, int from, int to,
                   uint8_t* back, uint8_t* front) {
+  if (!spread_made) make_spread();
   BgRows rows = {.back = back, .front = front};
   bg_line(s, centre, layer, line, from, to, SCROLL_RECORDED, true, &rows);
 }
@@ -396,7 +401,7 @@ static const uint8_t OBJ_SIZE[8][2] = {
     {8, 16}, {8, 32}, {8, 64}, {16, 32}, {16, 64}, {32, 64}, {16, 32}, {16, 32},
 };
 
-static int obj_size(const VideoObj* o, int sprite) {
+int video_obj_size(const VideoObj* o, int sprite) {
   return OBJ_SIZE[o->sizes][(o->high_oam[sprite >> 2] >> ((sprite & 3) * 2 + 1)) & 1];
 }
 
@@ -435,6 +440,7 @@ typedef struct {
 bool video_sprites_declines(const VideoState* s) { return s->obj.interlace; }
 
 int video_sprites(const VideoState* s, int line, uint8_t* pixel, uint8_t* priority) {
+  if (!spread_made) make_spread();
   const VideoObj* o = &s->obj;
   const int width = video_width(s);
   const int left = -s->extra_left, right = 256 + s->extra_right;
@@ -457,7 +463,7 @@ int video_sprites(const VideoState* s, int line, uint8_t* pixel, uint8_t* priori
       // A sprite at Y is drawn from the line after it. The row is eight bits,
       // so a sprite near the foot of the 256 lines comes round to the top.
       const uint8_t row = (uint8_t)(line - 1 - (o->oam[n * 2] >> 8));
-      const int size = obj_size(o, n);
+      const int size = video_obj_size(o, n);
       if (row >= size) continue;
       const int x = obj_x(s, n);
       const bool centred = wide && o->place[n] == VIDEO_SPRITE_CENTRED;
@@ -482,7 +488,7 @@ int video_sprites(const VideoState* s, int line, uint8_t* pixel, uint8_t* priori
     const Found* f = &found[i];
     const int n = f->sprite;
     const uint16_t attributes = o->oam[n * 2 + 1];
-    const int size = obj_size(o, n);
+    const int size = video_obj_size(o, n);
     const int x = obj_x(s, n) + f->shift;
     if (x <= left - size) continue;
     uint8_t row = (uint8_t)(line - 1 - (o->oam[n * 2] >> 8));

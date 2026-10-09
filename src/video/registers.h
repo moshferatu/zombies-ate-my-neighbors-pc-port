@@ -16,6 +16,10 @@
 // What the registers say is kept decoded, as `video.h` wants it:
 // `video_registers_state` fills a `VideoState`'s share of it.
 //
+// They are read by name as well, by whoever decides what goes beside the
+// console's picture when it is widened; `video_column_empty` and
+// `video_column_filled` are two things that asks which take the memory too.
+//
 // libc only.
 
 #ifndef ZAMN_VIDEO_REGISTERS_H
@@ -140,5 +144,16 @@ void video_registers_vblank(VideoRegisters* r);
 // line's sprites, the widened picture, what the frontend says of each sprite
 // -- is left as it was.
 void video_registers_state(const VideoRegisters* r, VideoState* s);
+
+// Whether background `layer` draws nothing at all down the column of tiles
+// under column `x` of the console's picture, as it is scrolled now: every
+// tile there, on each of the picture's 224 lines, a character of nothing but
+// zeroes. It is about pixels and not map words. Two blank tiles in two
+// palettes are two words and the same nothing, and the game uses both.
+// False for a background the mode does not have.
+bool video_column_empty(const VideoRegisters* r, int layer, int x);
+// ...and whether every tile down that column has something in it. Of a tile
+// sixteen pixels square, only the first of its four characters is looked at.
+bool video_column_filled(const VideoRegisters* r, int layer, int x);
 
 #endif

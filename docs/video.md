@@ -6,9 +6,10 @@ game's code is, until nothing of LakeSnes is left in the game.
 
 This is where the picture stands. `src/video` finds every line's sprites and
 draws every scanline the game shows, and the emulated PPU does neither. It
-keeps the chip's registers too: a line is drawn from them, and the game reads
-what they answer. The PPU still holds VRAM, the palette and OAM, and is
-still written to as well, because the frontend reads its copy.
+keeps the chip's registers too: a line is drawn from them, the game reads
+what they answer, and the frontend reads them. The PPU still holds VRAM, the
+palette and OAM. It is still written to as well, because it reads its own
+copy for what it notes of each frame and for what the frontend still asks it.
 
 ## Why it was worth doing first
 
@@ -69,6 +70,24 @@ One register is written by the frontend and not the game. In a widened
 picture `src/widescreen.h` moves the big figure's plane, which the game parks
 for a picture 256 wide. It wrote the scroll into the PPU's struct. It now
 calls `ppu_setScroll`, which tells the registers here.
+
+The frontend reads these registers and not the PPU's: the smoothing, the
+widescreen's policies, the radar and the blood. `video_registers_of` hands
+them over, under any of the three renderers. The memories are read through
+them as well.
+
+Two things the frontend asked the PPU are asked here now:
+
+- **`video_column_empty`**: whether a background draws nothing down the
+  column of tiles under one column of the picture.
+- **`video_column_filled`**: whether every tile down that column has
+  something in it.
+
+A sprite's size is `video_obj_size`, which `video_sprites` already used.
+
+Four tools share the frontend's code: `zamn_headless`, `zamn_record`,
+`zamn_test_layers` and `zamn_test_radar`. They keep registers for it as the
+game does. The PPU still draws their pictures.
 
 The sprites come in two steps. The state has OAM and the registers that say
 how to read it, and `video_sprites` finds a line's sprites from them into a
@@ -195,6 +214,7 @@ a time.
   byte written to any address, any address read, the beam moved, the three
   events, a reset. Every register is compared after each, and the memories
   every 64 steps. A third of the writes and reads go to the three doors.
+  Every eighth step both are asked the two questions about a column.
 
 A rule broken on purpose is caught: `zamn_test_video` with a 16x16 tile's
 lower half read one character out reported 22,756 lines differing of 51,520.
@@ -220,6 +240,16 @@ was caught and named:
 | VRAM stepping after the wrong byte | 15,228 | `vram_at` |
 | An OAM word written with its bytes swapped | 2,826 | OAM |
 
+And five of the two questions about a column, over the same 600,000 steps:
+
+| Broken | Steps wrong |
+|---|---|
+| A big tile's lower two characters looked for a row out | 1,084 |
+| The map's second screen across never read | 2,100 |
+| The half row at the picture's bottom left out | 83 |
+| Mode 1's third background read as sixteen colours | 570 |
+| Filled asked of the scroll's column and not the picture's | 5,444 |
+
 ## Results
 
 **Checked**, on the build that is described here:
@@ -231,9 +261,25 @@ was caught and named:
   The first pass did not: 12 movies at 16:9, 9 at 16:10 and 8 at 21:9 drew a
   different picture alone, on the levels with a big figure. That was the
   scroll the frontend wrote past the registers, above.
-- **The registers at random.** 13,000,000 steps over three seeds: 7,799,515
-  writes, 3,252,192 reads and 781,693 events, and none left a register, an
-  answer or a memory other than the PPU's.
+- **The registers at random.** 13,000,000 steps over three seeds: 7,798,816
+  writes, 3,250,101 reads and 782,591 events, and none left a register, an
+  answer or a memory other than the PPU's. 1,478,376 columns were asked
+  about, 312,744 of them empty and 206,976 filled, and the PPU said the same
+  of every one.
+- **The frontend on these registers.** The corpus at four widths again: no
+  line differs, no register differs, and each of the 216 runs comes to the
+  same checksum alone. Two movies at 16:9 come to one checksum under all
+  three renderers. Against the build before, `zamn_test_radar` prints the
+  same at 4:3 and 16:9, and `zamn_headless` writes the same picture from two
+  movies. `zamn_test_layers` passes on four runs: 8,997 frames drawn as a
+  list and none differing.
+- **A mistake of mine, three commits old.** `zamn_test_layers` and
+  `zamn_record` had read every background as empty since the picture was
+  first drawn here. `video_bg_row` wants a table that only `video_init`
+  made, and those two never called it. The game did, so the game was right
+  and I did not run the test. The build before this one fails it on 2,681
+  frames of 2,686. The table is now made by whatever first needs it, and
+  that change alone makes the build before pass.
 - **Noise.** 6,000 frames over two seeds: 1,260,224 lines' sprites found both
   ways and none differ, with 22,848 more left to the PPU. The picture, drawn
   from them both ways, does not differ either, and nor do 196,824 rows read
@@ -265,18 +311,26 @@ Finding the sprites here did not change the cost. A tick at 16:9 emulates in
 
 Keeping the registers here did not change it either: 2.4 to 2.5 ms. Every write is done twice for now, and a write is cheap.
 
+Nor did the frontend reading them: 2.34, 2.35 and 2.43 ms.
+
 ## What is still the emulator's
 
 - **The memory.** VRAM, the palette and OAM are the PPU's arrays.
-- **A second set of registers.** The PPU still decodes every write, and the
-  frontend reads that copy: the smoothing, the widescreen's policies, the
-  radar and the blood. A saved state is the PPU's, and the registers here
-  are taken from it when one is loaded.
+- **A second set of registers.** The PPU still decodes every write, and
+  reads that copy itself: for what it notes of a frame, below, and for the
+  four things the frontend still asks it. Those are where a sprite goes in a
+  widened picture, where colour maths is allowed, one dot of a layer, and
+  how far a swept layer is shifted. Each needs what the frontend has said of
+  the picture, which the PPU holds. What the tools print for a person reads
+  it too. A saved state is the PPU's, and the registers here are taken from
+  it when one is loaded.
 - **When things happen.** The emulated console says where the beam is, when
   a frame starts and when the picture ends.
 - **The sprites' two rows.** They are found here but kept in the PPU.
-- **The tools.** Only the game installs `src/video`. `zamn_cosim` and the
-  rest still run the PPU's own sprite finder, and draw nothing.
+- **The tools.** Only the game draws with `src/video`. The four tools that
+  share the frontend's code keep registers and leave the drawing to the PPU.
+  `zamn_cosim` and the rest still run the PPU's own sprite finder, and draw
+  nothing.
 - **What `VIDEO_WIDE_AUTO` is worked out from.** Whether a layer is empty at
   its edges, scrolled or drawn a line at a time is the PPU's to notice.
 - **The picture's buffer.** A line is written into the PPU's pixel buffer,
@@ -286,7 +340,10 @@ Keeping the registers here did not change it either: 2.4 to 2.5 ms. Every write 
 
 - Draw a frame once. With the smoothing on, a frame shown as layers is still
   drawn as a picture that nobody sees.
-- Have the frontend read `src/video`'s registers and not the PPU's. Then the
-  PPU's copy has no reader, and the memories and the saved state can move.
+- Move what the frontend says of the picture, and what is noted of a frame,
+  out of the PPU: the margins and each layer's policy, each sprite's place,
+  each line's scrolls and windows. The four things the frontend still asks
+  the PPU can then be asked here, and the PPU's registers have no reader.
+  The memories and the saved state can move after that.
 - The smoothing's sprites and its maths window are still worked out a dot at
   a time.

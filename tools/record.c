@@ -131,6 +131,11 @@ int main(int argc, char** argv) {
   Snes* snes = snes_init();
   if (!snes_loadRom(snes, rom, rom_len)) { fprintf(stderr, "error: not a ROM\n"); return 1; }
   snes_setPixelFormat(snes, pixelFormatXRGB);
+  // The frontend reads the chip's registers from `src/video`, which keeps
+  // them beside the PPU's. The PPU draws the picture here.
+  static VideoHook video_hook;
+  video_hook_install(&video_hook, snes->ppu, VIDEO_EMULATED, false);
+  video_hook_keep_registers(&video_hook, snes->ppu);
   // As the frontend sets the machine up: the widened picture and its hook,
   // which also draws the radar and the blood, and the game over's line.
   static Widescreen ws;

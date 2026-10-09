@@ -388,28 +388,28 @@ static inline uint8_t layers_channel(int c, int brightness) {
 // (It used to be refused -- "sub screen in a fade" -- and the whole of the
 // character select's fade-in was the PPU's picture, a quarter of a second of
 // sixty pictures a second at the start of a screen that is smooth after.)
-static inline bool layers_dim_late(const Ppu* ppu) {
-  if (ppu->brightness >= 15 || !ppu->addSubscreen) return false;
+static inline bool layers_dim_late(const VideoRegisters* reg) {
+  if (reg->brightness >= 15 || !reg->add_sub) return false;
   for (int l = 0; l < 6; l++)
-    if (ppu->mathEnabled[l]) return true;
+    if (reg->math[l]) return true;
   return false;
 }
 
 // A CGRAM colour as RGBA, with fixed-colour maths applied if `math`.
-static inline void layers_rgba(const Ppu* ppu, int index, bool math,
+static inline void layers_rgba(const VideoRegisters* reg, int index, bool math,
                                uint8_t out[4]) {
-  const int brightness = layers_dim_late(ppu) ? 15 : ppu->brightness;
-  const uint16_t color = ppu->cgram[index & 0xff];
+  const int brightness = layers_dim_late(reg) ? 15 : reg->brightness;
+  const uint16_t color = reg->cgram[index & 0xff];
   int r = color & 0x1f, g = (color >> 5) & 0x1f, b = (color >> 10) & 0x1f;
   if (math) {
-    if (ppu->subtractColor) {
-      r -= ppu->fixedColorR; g -= ppu->fixedColorG; b -= ppu->fixedColorB;
+    if (reg->subtract) {
+      r -= reg->fixed_r; g -= reg->fixed_g; b -= reg->fixed_b;
     } else {
-      r += ppu->fixedColorR; g += ppu->fixedColorG; b += ppu->fixedColorB;
+      r += reg->fixed_r; g += reg->fixed_g; b += reg->fixed_b;
     }
     // Halved before it is clamped, as the PPU does it; a negative halves to
     // a negative and clamps to nothing either way.
-    if (ppu->halfColor) {
+    if (reg->half) {
       r = r < 0 ? -((-r) >> 1) : r >> 1;
       g = g < 0 ? -((-g) >> 1) : g >> 1;
       b = b < 0 ? -((-b) >> 1) : b >> 1;
@@ -452,48 +452,49 @@ static inline int layers_stack(int mode, bool bg3prio, int* layer, int* prio) {
 // feature of the console the list has no op for; each is counted by the test
 // so that "how often" is a measured number and not a guess.
 static inline const char* layers_unexpressible(const Ppu* ppu) {
-  if (ppu->forcedBlank) return "forced blank";
+  const VideoRegisters* reg = video_registers_of(ppu);
+  if (reg->blank) return "forced blank";
   if (ppu->midFrameWrite) return "written mid-frame";
-  if (ppu->mode != 0 && ppu->mode != 1 && ppu->mode != 3) return "mode";
-  if (ppu->pseudoHires || ppu->interlace || ppu->frameOverscan) return "hires/interlace/overscan";
-  if (ppu->directColor) return "direct colour";
-  if (ppu->clipMode != 0) return "colour window clips";
+  if (reg->mode != 0 && reg->mode != 1 && reg->mode != 3) return "mode";
+  if (reg->pseudo_hires || reg->interlace || reg->frame_overscan) return "hires/interlace/overscan";
+  if (reg->direct_colour) return "direct colour";
+  if (reg->clip != 0) return "colour window clips";
   // The window edges moved during the frame: fine for the maths gate, which
   // is read per line, and for nothing else, which is read as the frame ended.
   if (ppu->windowRaster) {
     for (int l = 0; l < 4; l++)
-      if ((ppu->layer[l].mainScreenEnabled && ppu->layer[l].mainScreenWindowed) ||
-          (ppu->layer[l].subScreenEnabled && ppu->layer[l].subScreenWindowed))
+      if ((reg->main[l] && reg->main_windowed[l]) ||
+          (reg->sub[l] && reg->sub_windowed[l]))
         return "layer window written mid-frame";
-    if (ppu->layer[4].mainScreenWindowed || ppu->layer[4].subScreenWindowed)
+    if (reg->main_windowed[4] || reg->sub_windowed[4])
       return "sprite window written mid-frame";
   }
   for (int l = 0; l < 4; l++)
-    if (ppu->bgLayer[l].mosaicEnabled && ppu->mosaicSize > 1 &&
-        (ppu->layer[l].mainScreenEnabled || ppu->layer[l].subScreenEnabled))
+    if (reg->bg[l].mosaic && reg->mosaic_size > 1 &&
+        (reg->main[l] || reg->sub[l]))
       return "mosaic";
   // A layer on both screens with different windowing would need two planes.
   for (int l = 0; l < 4; l++)
-    if (ppu->layer[l].mainScreenEnabled && ppu->layer[l].subScreenEnabled &&
-        ppu->layer[l].mainScreenWindowed != ppu->layer[l].subScreenWindowed)
+    if (reg->main[l] && reg->sub[l] &&
+        reg->main_windowed[l] != reg->sub_windowed[l])
       return "windowed differently on each screen";
   bool anyMath = false;
-  for (int l = 0; l < 6; l++) anyMath |= ppu->mathEnabled[l];
-  if (anyMath && ppu->addSubscreen) {
+  for (int l = 0; l < 6; l++) anyMath |= reg->math[l];
+  if (anyMath && reg->add_sub) {
     // The sub screen is drawn as one additive layer, so it must be one layer.
     int subs = 0;
-    for (int l = 0; l < 4; l++) subs += ppu->layer[l].subScreenEnabled ? 1 : 0;
-    if (ppu->layer[4].subScreenEnabled) return "sprites on the sub screen";
+    for (int l = 0; l < 4; l++) subs += reg->sub[l] ? 1 : 0;
+    if (reg->sub[4]) return "sprites on the sub screen";
     if (subs > 1) return "two layers on the sub screen";
     // Where the sub screen is clear the console adds the fixed colour instead;
     // an additive draw adds nothing there.
-    if (subs == 1 && (ppu->fixedColorR || ppu->fixedColorG || ppu->fixedColorB))
+    if (subs == 1 && (reg->fixed_r || reg->fixed_g || reg->fixed_b))
       return "sub screen with a fixed colour";
-    if (ppu->halfColor) return "half colour with the sub screen";
+    if (reg->half) return "half colour with the sub screen";
     // (In a fade the planes are left at full brightness and the picture is
     // dimmed whole -- `layers_dim_late`.)
     // ...and the maths window would have to gate the additive draw per column.
-    if (ppu->preventMathMode != 0) return "sub screen through a window";
+    if (reg->prevent != 0) return "sub screen through a window";
   }
   return NULL;
 }
@@ -508,15 +509,16 @@ static inline const uint8_t* layers_fb_pixel(const LayersFrame* f, int x, int y)
 // with its palette -- and its maths, if it has one -- baked in.
 static inline void layers_sprite_cell(LayersFrame* f, const Ppu* ppu, int slot,
                                       int size, bool mathAllowedAll) {
+  const VideoRegisters* reg = video_registers_of(ppu);
   const int index = slot * 2;
-  const uint16_t attr = ppu->oam[index + 1];
+  const uint16_t attr = reg->oam[index + 1];
   const int tile = attr & 0xff;
   const int palette = (attr & 0xe00) >> 9;
   const bool hFlip = (attr & 0x4000) != 0, vFlip = (attr & 0x8000) != 0;
-  const uint16_t objAdr = (attr & 0x100) ? ppu->objTileAdr2 : ppu->objTileAdr1;
+  const uint16_t objAdr = (attr & 0x100) ? reg->obj_tiles_at[1] : reg->obj_tiles_at[0];
   // Palettes 4-7 are the sprites colour maths applies to (the PPU's "layer
   // 4"; 0-3 are its "layer 6").
-  const bool math = palette >= 4 && ppu->mathEnabled[4] && !ppu->addSubscreen;
+  const bool math = palette >= 4 && reg->math[4] && !reg->add_sub;
   const int cx = (slot % LAYERS_ATLAS_COLS) * f->cell;
   const int cy = (slot / LAYERS_ATLAS_COLS) * f->cell;
   const int x0 = f->spr[slot].x, y0 = f->spr[slot].y;
@@ -526,8 +528,8 @@ static inline void layers_sprite_cell(LayersFrame* f, const Ppu* ppu, int slot,
       const int usedCol = hFlip ? size - 1 - col : col;
       const uint8_t usedTile =
           (uint8_t)((((tile >> 4) + (srow / 8)) << 4) | (((tile & 0xf) + (usedCol / 8)) & 0xf));
-      const uint16_t plane1 = ppu->vram[(objAdr + usedTile * 16 + (srow & 7)) & 0x7fff];
-      const uint16_t plane2 = ppu->vram[(objAdr + usedTile * 16 + 8 + (srow & 7)) & 0x7fff];
+      const uint16_t plane1 = reg->vram[(objAdr + usedTile * 16 + (srow & 7)) & 0x7fff];
+      const uint16_t plane2 = reg->vram[(objAdr + usedTile * 16 + 8 + (srow & 7)) & 0x7fff];
       for (int px = 0; px < 8; px++) {
         const int shift = hFlip ? px : 7 - px;
         int pixel = (plane1 >> shift) & 1;
@@ -541,7 +543,7 @@ static inline void layers_sprite_cell(LayersFrame* f, const Ppu* ppu, int slot,
         // over's drips under `--red-blood`), as `ppu_evaluateSprites` has it.
         const int colour = ppu->objRemapOn[slot] && ppu->objRemap[pixel]
                                ? ppu->objRemap[pixel] : 0x80 + 16 * palette + pixel;
-        layers_rgba(ppu, colour, m, out);
+        layers_rgba(reg, colour, m, out);
       }
     }
   }
@@ -611,13 +613,14 @@ static inline void layers_occlude(LayersFrame* f) {
 // them, and `twins` whether the mathed twins are filled as well.
 static inline void layers_planes_by_row(LayersFrame* f, Ppu* ppu, const VideoState* vs, int l,
                                         bool mathed, bool twins, int x0, int x1) {
+  const VideoRegisters* reg = video_registers_of(ppu);
   uint32_t plain[256], twin[256];
   plain[0] = twin[0] = 0;
   for (int i = 1; i < 256; i++) {
     uint8_t rgba[4];
-    layers_rgba(ppu, i, mathed, rgba);
+    layers_rgba(reg, i, mathed, rgba);
     memcpy(&plain[i], rgba, 4);
-    layers_rgba(ppu, i, true, rgba);
+    layers_rgba(reg, i, true, rgba);
     memcpy(&twin[i], rgba, 4);
   }
   const int p0 = LAYERS_PLANE_OF(l, 0), p1 = LAYERS_PLANE_OF(l, 1);
@@ -657,34 +660,35 @@ static inline void layers_planes_by_row(LayersFrame* f, Ppu* ppu, const VideoSta
 static inline void layers_capture(LayersFrame* f, Ppu* ppu,
                                   const int16_t* ownerRec, const int16_t* ownerOx,
                                   const int16_t* ownerOy) {
+  const VideoRegisters* reg = video_registers_of(ppu);
   f->valid = true;
   f->width = ppu_gameWidth(ppu);
   f->extraLeft = ppu->extraLeft;
-  f->world = ppu->bgLayer[1].tilemapWider && ppu->layer[1].mainScreenEnabled;
+  f->world = reg->bg[1].map_wide && reg->main[1];
   f->fbWidth = ppu_outputWidth(ppu);
   ppu_putPixels(ppu, f->fb);
-  f->mode = ppu->mode;
-  f->bg3prio = ppu->bg3priority;
-  f->dark = ppu->forcedBlank || ppu->brightness == 0;
-  f->dim = layers_dim_late(ppu) ? ppu->brightness : 15;
+  f->mode = reg->mode;
+  f->bg3prio = reg->bg3_front;
+  f->dark = reg->blank || reg->brightness == 0;
+  f->dim = layers_dim_late(reg) ? reg->brightness : 15;
   f->why = layers_unexpressible(ppu);
   f->layered = f->why == NULL;
-  memcpy(f->oam, ppu->oam, sizeof f->oam);
-  memcpy(f->highOam, ppu->highOam, sizeof f->highOam);
+  memcpy(f->oam, reg->oam, sizeof f->oam);
+  memcpy(f->highOam, reg->high_oam, sizeof f->highOam);
   f->ownersFresh = ownerRec != NULL;
   if (!f->layered) return;
 
   // Maths, as the list needs to know it.
   bool anyMath = false;
-  for (int l = 0; l < 6; l++) { f->mathMain[l] = ppu->mathEnabled[l]; anyMath |= ppu->mathEnabled[l]; }
-  f->subAdd = anyMath && ppu->addSubscreen;
-  f->subSubtract = ppu->subtractColor;
+  for (int l = 0; l < 6; l++) { f->mathMain[l] = reg->math[l]; anyMath |= reg->math[l]; }
+  f->subAdd = anyMath && reg->add_sub;
+  f->subSubtract = reg->subtract;
   f->subLayer = -1;
-  for (int l = 0; l < 4; l++) if (ppu->layer[l].subScreenEnabled) f->subLayer = l;
+  for (int l = 0; l < 4; l++) if (reg->sub[l]) f->subLayer = l;
   // Fixed-colour maths only when the sub screen is not in it; and if maths is
   // gated by a window nowhere, the per-column test can be skipped.
-  const bool fixedMath = anyMath && !ppu->addSubscreen;
-  const bool allowedEverywhere = ppu->preventMathMode == 0;
+  const bool fixedMath = anyMath && !reg->add_sub;
+  const bool allowedEverywhere = reg->prevent == 0;
   // Gated by the window: the plain plane and its mathed twin, and the
   // rectangles where the twin shows. Found first, so that a window too busy
   // for the list is known before the planes are built.
@@ -726,16 +730,16 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
 
   // The backgrounds, and the backdrop as a plane of its own so that the
   // maths window can vary it by column like anything else.
-  const int last = ppu->frameOverscan ? 239 : LAYERS_LINES;
+  const int last = reg->frame_overscan ? 239 : LAYERS_LINES;
   const int x0 = -ppu->extraLeft - LAYERS_MARGIN;
   const int x1 = 256 + ppu->extraRight + LAYERS_MARGIN;
   memset(f->planeUsed, 0, sizeof f->planeUsed);
   VideoState vs;
-  video_state_from_ppu(&vs, ppu);
+  video_state_of(&vs, ppu);
   for (int l = 0; l < 4; l++) {
-    f->main[l] = ppu->layer[l].mainScreenEnabled;
+    f->main[l] = reg->main[l];
     f->anchored[l] = ppu->layerWide[l] == ppu_wideAnchor;
-    f->sub[l] = ppu->layer[l].subScreenEnabled;
+    f->sub[l] = reg->sub[l];
     f->scrollX[l] = ppu->lineHScroll[l][1];
     f->scrollY[l] = ppu->lineVScroll[l][1];
     f->raster[l] = false;
@@ -745,7 +749,7 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
         break;
       }
     // ...across only, and the lines can be eased one by one -- see `lineX`.
-    f->rasterX[l] = f->raster[l] && !ppu->frameOverscan;
+    f->rasterX[l] = f->raster[l] && !reg->frame_overscan;
     for (int y = 1; y <= LAYERS_LINES; y++) {
       if (ppu->lineVScroll[l][y] != f->scrollY[l]) f->rasterX[l] = false;
       f->lineX[l][y] = (int16_t)((ppu->lineHScroll[l][y] - ppu_layerShiftX(ppu, l, y)) & 0x3ff);
@@ -758,8 +762,8 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
     const bool onSubOnly = !f->main[l];
     // By rows, unless a window hides part of the layer or it is one
     // `src/video` does not read; then a pixel at a time, as the PPU reads it.
-    const bool windowed = onSubOnly ? ppu->layer[l].subScreenWindowed
-                                    : ppu->layer[l].mainScreenWindowed;
+    const bool windowed = onSubOnly ? reg->sub_windowed[l]
+                                    : reg->main_windowed[l];
     if (!windowed && !video_bg_row_declines(&vs, l)) {
       layers_planes_by_row(f, ppu, &vs, l, math && allowedEverywhere, math && f->mathGated, x0, x1);
       continue;
@@ -783,10 +787,10 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
         if (pixel == 0) continue;
         // Maths everywhere is baked into the plane; maths through a window
         // goes into the twin, and the plane stays plain.
-        layers_rgba(ppu, pixel, math && allowedEverywhere, prio ? out1 : out0);
+        layers_rgba(reg, pixel, math && allowedEverywhere, prio ? out1 : out0);
         f->planeUsed[LAYERS_PLANE_OF(l, prio)] = true;
         if (math && f->mathGated) {
-          layers_rgba(ppu, pixel, true, prio ? tw1 : tw0);
+          layers_rgba(reg, pixel, true, prio ? tw1 : tw0);
           f->planeUsed[LAYERS_MATHED(LAYERS_PLANE_OF(l, prio))] = true;
         }
       }
@@ -795,8 +799,8 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
   {
     const bool math = fixedMath && f->mathMain[5];
     uint8_t plain[4], mathed[4];
-    layers_rgba(ppu, 0, false, plain);
-    layers_rgba(ppu, 0, true, mathed);
+    layers_rgba(reg, 0, false, plain);
+    layers_rgba(reg, 0, true, mathed);
     for (int r = 0; r < LAYERS_PLANE_H; r++) {
       for (int x = x0; x < x1; x++) {
         const int c = x + ppu->extraLeft + LAYERS_MARGIN;
@@ -809,21 +813,21 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
   }
 
   // The sprites.
-  f->cell = ppu_spriteSize(ppu, 0);
+  f->cell = video_obj_size(&vs.obj, 0);
   for (int s = 0; s < LAYERS_SPRITES; s++) {
-    const int size = ppu_spriteSize(ppu, s);
+    const int size = video_obj_size(&vs.obj, s);
     if (size > f->cell) f->cell = size;
   }
   if (f->cell > LAYERS_CELL_MAX) f->cell = LAYERS_CELL_MAX;
-  const bool spritesOn = ppu->layer[4].mainScreenEnabled;
+  const bool spritesOn = reg->main[4];
   for (int s = 0; s < LAYERS_SPRITES; s++) {
     LayersSprite* sp = &f->spr[s];
-    const int size = ppu_spriteSize(ppu, s);
+    const int size = video_obj_size(&vs.obj, s);
     sp->x = (int16_t)ppu_spriteXOf(ppu, s);
-    sp->y = (int16_t)(ppu->oam[s * 2] >> 8);
+    sp->y = (int16_t)(reg->oam[s * 2] >> 8);
     sp->w = sp->h = (uint8_t)size;
-    sp->prio = (uint8_t)((ppu->oam[s * 2 + 1] & 0x3000) >> 12);
-    sp->math = ((ppu->oam[s * 2 + 1] & 0xe00) >> 9) >= 4;
+    sp->prio = (uint8_t)((reg->oam[s * 2 + 1] & 0x3000) >> 12);
+    sp->math = ((reg->oam[s * 2 + 1] & 0xe00) >> 9) >= 4;
     sp->place = ppu->spritePlace[s];
     sp->front = ppu->objFront[s];
     sp->known = false;
@@ -857,12 +861,13 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
 // console is sent the same sprites again, and if every entry the table
 // accounts for is still what it was, the table still accounts for them.
 static inline bool layers_owners_stand(const LayersFrame* last, const Ppu* ppu, const int16_t* rec) {
+  const VideoRegisters* reg = video_registers_of(ppu);
   if (!last->valid) return false;
   for (int s = 0; s < LAYERS_SPRITES; s++) {
     if (rec[s] < 0) continue;
     const int bit = (s & 3) * 2;
-    if (ppu->oam[s * 2] != last->oam[s * 2] || ppu->oam[s * 2 + 1] != last->oam[s * 2 + 1] ||
-        ((ppu->highOam[s >> 2] ^ last->highOam[s >> 2]) >> bit) & 3)
+    if (reg->oam[s * 2] != last->oam[s * 2] || reg->oam[s * 2 + 1] != last->oam[s * 2 + 1] ||
+        ((reg->high_oam[s >> 2] ^ last->highOam[s >> 2]) >> bit) & 3)
       return false;
   }
   return true;
