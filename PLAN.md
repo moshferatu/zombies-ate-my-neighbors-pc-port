@@ -1,112 +1,325 @@
 # Native PC Port of *Zombies Ate My Neighbors* (SNES) — Plan
 
-## Context
+Rewritten 2026-10-09. The first plan kept the console's video chip and sound
+chip emulated for good, as `snesrev/zelda3` does. That changed on 2026-10-08.
+The plan before this one is in git.
 
-The working directory contains a single artifact: `Zombies Ate My Neighbors.sfc` (an 8 Mbit SNES ROM). The
-goal is a **native Windows port** of the game — not an emulator wrapper, but real native code — built as a
-**clean, maintainable C reimplementation** in the style of the well-known `snesrev/zelda3` project. The payoff
-features you care about are **widescreen / higher internal resolution** and **framerate + quality-of-life
-improvements**. This is a personal / learning project, so distribution constraints are relaxed, but the design
-still loads all game data from your own ROM at runtime (no asset redistribution needed, and it makes mods work).
+## The goal
 
-### ROM technical profile (verified from the ROM header)
-- **Mapping:** LoROM, SlowROM (`$FFD5 = $20`)
-- **Size:** 1,048,576 bytes = 8 Mbit, no copier header
-- **Chipset:** `$FFD6 = $00` → **ROM only, no coprocessor** (no SA-1 / Super FX / DSP). This is the *simplest*
-  possible SNES profile to reimplement.
-- **Save:** RAM size `$00` → **no SRAM/battery**; the game saves via **passwords**.
-- **Region:** NTSC (USA), stock 65816 CPU + SPC700 audio.
-- **Entry points:** RESET = `$80AE`, NMI = `$816C` (these anchor the main loop / vblank handler).
+**`zamn.exe` links nothing of LakeSnes.** The game's code, the picture, the
+sound, the clock and the saved states are the port's own. LakeSnes stays in
+the tree for the test programs, which run it beside the port and compare.
 
-### Why the zelda3 model fits
-`zelda3` keeps the SNES **PPU and SPC700/DSP emulated** (they render/produce audio from VRAM/OAM/DSP state),
-but reimplements the **CPU-side game logic as hand-written native C**. Correctness is guaranteed by a
-**co-simulation harness**: the original ROM runs in an embedded 65816 emulator in lockstep with the C code, and
-**WRAM is compared every frame** — any divergence pinpoints an unported or buggy routine. ZAMN is a top-down
-run-and-gun that is *simpler and smaller than Zelda 3* (no Mode 7 overworld, no coprocessor, no SRAM), so this
-approach is very tractable here.
+The game still loads everything from the user's ROM when it starts. Nothing
+of the ROM is in the repository.
 
-### Head start: the community has already reverse-engineered ZAMN's data formats
-`Piranhaplant/Necrofy` (the modern ZAMN level editor, open-source C#) already decodes ZAMN's **compression,
-tilesets, level layout, sprites, palettes, and music**. We reuse its format knowledge to load assets directly
-from the ROM — which also means Necrofy-authored level/graphics/music hacks load in the port for free.
+## Where it stands
 
----
+| Phase of the first plan | State |
+|---|---|
+| 0. A reference emulator in a window | Done |
+| 1. Analysis and the memory map | Done |
+| 2. Assets read from the ROM | Done |
+| 3. The game's code in C, under the harness | Underway. 566 routines |
+| 4. The emulator cut loose | Begun, with the picture. This plan |
+| 5. Widescreen, quick save, pads, cheats, a launcher | Done, ahead of 4 |
 
-## Recommended Approach
+The picture is drawn by `src/video`, and `zamn.exe` has no emulated PPU in
+it. `build/zamn_with_ppu` is the same game with one, for the check.
 
-A staged, correctness-first build that reaches your widescreen/QoL goals last (they require the game logic to
-already be native). Each phase leaves a runnable artifact.
+What `zamn.exe` still links from LakeSnes:
 
-### Phase 0 — Foundations & reference oracle
-- New repo. Build system: **CMake + Ninja**, MSVC or clang-cl. Windowing/input/audio/GPU blit via **SDL2/SDL3**.
-- **Vendor a small, readable SNES core** to serve two jobs: (a) the *reference emulator* for the diff harness,
-  and (b) the *emulated PPU + SPC700/DSP* the finished port keeps using. Recommended: **LakeSNES** (compact C,
-  the same core `zelda3` and `snesrecomp` build on). Alternatively lift `zelda3`'s bundled `snes/` directory.
-- Boot the ROM under this core in an SDL window. **Deliverable:** the game runs (emulated) natively on Windows —
-  a playable baseline *and* the ground-truth oracle for everything that follows.
+| Piece | Lines | What the game uses it for |
+|---|---|---|
+| The 65816, `cpu.c` | 2,478 | Runs what is not ported. Carries control from one port to the next. Is the clock every cost is spent on |
+| Sound, `apu.c` `spc.c` `dsp.c` | 2,462 | The SPC700 running the game's sound driver, and the DSP mixing it. The game's machine, and more of them for the frontend |
+| The console, `snes.c` `snes_other.c` | 863 | The beam, the bus, WRAM, when the NMI falls, the multiplier, the pads' latch |
+| DMA, `dma.c` | 388 | Copies to VRAM, the palette and the sprites. HDMA, a line at a time |
+| States, the cartridge, the pads | 468 | The layout of a saved state, where the ROM is mapped, the buttons |
 
-### Phase 1 — Static/dynamic analysis & memory map
-- Disassemble and trace with **Mesen2** (trace logger, Code/Data Logger, Lua scripting) as the primary dynamic
-  tool, and **DiztinGUIsh** (LoROM-aware interactive disassembler) to grow an annotated disassembly. Optionally
-  `AndreaOrru/gilgamesh` for whole-program static flow.
-- Build a **CDL** (code-vs-data map) by playing through the whole game in Mesen.
-- Trace the frame skeleton from RESET `$80AE` and NMI `$816C`: vblank-driven update, main game-state loop.
-- Produce a **WRAM map** (player state, enemy/actor slots, level/tile state, timers, RNG, HUD, password state).
-  Seed it from Necrofy's source, the Data Crystal wiki, and romhacking.net ZAMN maps.
+The 65816 is the hub. The console, DMA and the states cannot leave before
+it. Sound is separate, and can be done at any time.
 
-### Phase 2 — Asset pipeline (reuse Necrofy formats)
-- Port the *format-decoding logic* from Necrofy (C#) into C, and **load assets at runtime from the user's ROM**
-  (graphics, tilesets, palettes, level definitions, sprites, music/sequence data). No extraction/redistribution
-  step; matches the zelda3 model and keeps mod compatibility.
+## The survey of 2026-10-09
 
-### Phase 3 — Incremental logic reimplementation under the diff harness
-- Stand up **co-simulation**: reference ROM (LakeSNES) and the C reimplementation share an identical WRAM
-  layout. Start with the C side delegating everything to the emulator, then **replace one routine at a time**,
-  asserting the per-frame **WRAM (+ VRAM/OAM/DSP) diff stays byte-identical** to the reference.
-- Suggested port order (each step validated by a clean diff):
-  boot/init → main loop & NMI → input → player movement → weapons/items → enemy AI (slot-based actors) →
-  collision → level/tile streaming & camera → HUD → victim/rescue logic → doors/warps → **password system** →
-  bosses → title/menus.
-- Keep the **emulated PPU and SPC700** the whole time; feed them exactly as the original code did, so rendering
-  and audio "just work" once the C code's VRAM/OAM/DSP writes match the reference.
+110 sessions: the 54 movies of the corpus at their usual lengths, and each
+of the 56 level records started with `--level` under `level1.zmv` for 4,700
+frames. 609,850 frames. Each was run twice: in the game with `--profile`,
+which counts what the 65816 still executes, and in `zamn_trace`, which counts
+what the stock ROM executes. Nothing was built for it.
 
-### Phase 4 — Cut the reference loose
-- When a full recorded playthrough diffs clean, remove the reference emulator from the *runtime* (keep it as a
-  test-only harness). CPU-side logic is now 100% native C; only PPU + SPC700 remain emulated (as in zelda3).
+### The game's code
 
-### Phase 5 — Enhancements (your actual goal)
-- **Widescreen / hi-res:** with logic native, widen the camera and object culling to spawn/track actors beyond
-  the original 256 px field (zelda3 does exactly this for 16:9). Either drive the emulated PPU's region-export
-  path or add a native tile/sprite renderer for higher internal resolution and clean scaling.
-- **Framerate & QoL:** decouple the update step from 60 Hz where safe; **save-states become trivial** (WRAM is
-  now a C struct — dump/restore it), plus remappable controls, fast-forward, quick pause/resume.
-- **Modding (free byproduct):** because assets load from the ROM via Necrofy's formats, Necrofy-made hacks run.
+**By work the 65816 is nearly gone. By code it is not.**
 
----
+| Measure | The 65816 still runs | Of the stock ROM's |
+|---|---|---|
+| Instructions executed, waits left out | 25,859,710 | 2,290,971,949: 1.13% |
+| ...without one pause, see below | 7,963,192 | 0.35% |
+| Cycles of work | 741,454,158 | 60,915,677,430: 1.22% |
+| Calls not served by a port | 286,356 | 4,703,179: 6.1% |
+| Distinct instructions | 11,297 | 27,494: 41.1% |
+| Bytes of code | 26,697 | 62,439: 42.8% |
 
-## Key resources (external — there is no local codebase to modify yet)
-- **`snesrev/zelda3`** — architecture + co-simulation harness pattern to mirror.
-- **`Piranhaplant/Necrofy`** — ZAMN compression, level, tileset, sprite, palette, and music formats.
-- **LakeSNES** (or `zelda3`'s `snes/`) — compact C SNES core for the reference + emulated PPU/APU.
-- **`mstan/snesrecomp` / `sp00nznet/snesrecomp`** — a working SNES static-recompiler ecosystem; useful as a
-  cross-reference and a possible fast-path fallback (it auto-translated SMW and Mega Man X to native C).
-- **Mesen2** (debug/trace/CDL/Lua), **DiztinGUIsh** (disassembly), **gilgamesh** (static analysis).
-- **Data Crystal / romhacking.net** — ZAMN RAM & ROM maps.
+So 16,197 instructions of the 27,494 these sessions reach are never executed
+by the 65816 in any of them. The other 11,297 are, at least once. The corpus
+alone gives 10,185 of 26,581. The records reach 1,112 the corpus does not.
 
-## Verification
-- **Primary (automated):** per-frame **WRAM/VRAM/OAM/DSP equality** between the reference ROM and the C
-  reimplementation. Drive both with the *same recorded input movie* (TAS-style); assert zero divergence. This is
-  the zelda3 gold standard and it makes correctness objective rather than eyeballed.
-- **Milestone playthroughs:** title → level 1 clear → password save/restore → a boss, compared against Mesen.
-- **Regression:** store recorded input movies; a headless CI job replays them and compares WRAM hashes.
+What the 11,297 are:
 
-## Honest risk assessment
-- **Effort:** months of focused work. ZAMN is materially smaller/simpler than Zelda 3, which helps.
-- **Top risks:** SPC700 audio-driver quirks, faithful **RNG** replication, and undocumented enemy/boss AI.
-- **Mitigation:** keeping the APU emulated sidesteps most audio risk; the per-frame diff harness surfaces any
-  RNG/AI divergence the instant it happens, so bugs are localized to the one routine you just ported.
+- **6,127 run as often as in the stock ROM.** Nothing has taken them. Most
+  run seldom: a level's start, a screen's setup, a creature's first frame.
+- **5,170 run less often than in the stock ROM.** A port takes them some of
+  the time. The ROM runs them when a port turns a call down, or leaves by a
+  path it does not have. 39 routines turned down 4,254 calls of 15,830,512.
+  `player_frame` is 1,989 of those.
+- **They are rare.** 3,484 ran fewer than ten times in 609,850 frames, and
+  7,847 fewer than a hundred. 1,097 ran a thousand times or more.
+- **They are in 496 runs of adjacent code**, 146 of them 64 bytes or longer.
+  Two 4 KB blocks have none left: `$80:B000` and `$82:C000`. The most are
+  left in `$82:9000` and `$82:D000`, three quarters of each.
 
-## First concrete step after approval
-Scaffold the Phase 0 repo (CMake + SDL + vendored LakeSNES) and get `Zombies Ate My Neighbors.sfc` booting in a
-native window as the reference oracle — the foundation every later phase builds on.
+Two things the ranking showed that are not code to port:
+
+- **The pause is a wait nobody declared.** `$80:89C8` to `$80:89E7` spins
+  on the pads' word until Start is let go, pressed and let go. It is
+  17,896,518 instructions in one movie, `level21-exit`. It belongs in
+  `src/cosim/waits.h` with the other thirteen.
+- **The waits are where the 65816 spends its time**: 374,719,039
+  instructions in the thirteen declared ones. Each spins on a word only the
+  NMI changes, or on the sound chip's answer.
+
+**Code no session reaches.** Following every branch and call out of the code
+that did run finds 8,476 more bytes of code: 1,681 in bank `$80`, 1,409 in
+`$81`, 4,103 in `$82` and 1,283 in `$83`. That is a lower bound. Code
+reached only through a table of addresses is not found this way. 48,386
+bytes of the four banks were touched by nothing, as code or as data.
+
+**How a port is driven.** This decides the size of step 2.
+
+- A port is entered at an address of the ROM's and leaves by an instruction
+  of the ROM's: a return, a call, a jump, or `JSL thread_yield`. The harness
+  already makes eight kinds of that instruction itself, 15,177,851 times in
+  these sessions. The core makes the rest.
+- A thread's stack is WRAM, and the ports that need it write it as the ROM
+  does. The scheduler, both dispatchers and the NMI handler are ported with
+  no instruction of the core's between them.
+- The registry and its 368 adapters in `src/cosim/routines.c` call nothing
+  of the emulator. Neither does `src/port`. Only the engine in
+  `src/cosim/cosim.c` does, through fifteen functions.
+- The frontend calls sixteen functions of the emulator and reads six of
+  its fields.
+- An NMI fell due inside a ported call 55,182 times, one frame in eleven.
+  Those are mostly the frames the console could not finish in time, and
+  the long loads.
+
+### The console
+
+103 registers are touched. 52 are the video chip's, which `src/video` has.
+
+| What | Used |
+|---|---|
+| Interrupts | 608,094 NMIs. No IRQ, ever. The timers are written once, at reset |
+| Pads | The automatic read: `$4218` to `$421B`, and the wait on `$4212`. `$4016` and `$4017` are never touched |
+| Multiplier | 3,795 products, from two places. The divider is cleared at reset and never used |
+| DMA | Channel 0 only, to the chip only: sprites (`$2104`), VRAM (`$2118`) and colours (`$2122`). 1,423,455 transfers |
+| HDMA | Channels 5, 6 and 7. `$420C` is written 725 times, from four places |
+| WRAM's own port, `$2180` | Never |
+| Speed, `$420D` | Written from three places. It is not left set |
+| Sound's four ports | 185,039,098 reads of `$2143`, nearly all of them the wait for an answer |
+
+### The sound
+
+- The whole audio program runs on the SPC700. It is David Warhol's driver
+  of 1992: 2,999 bytes at `$0600`, with 36,547 bytes of samples. The 65816
+  sends it one-byte commands and uploads songs and sample sets through it.
+- Part of it is already read. `src/sfx_overlay.h` knows where a command is
+  taken, where an effect is started or dropped, and how a note takes a
+  voice: four sequence slots, eight voices, a priority to each.
+- The DSP as each of the 56 levels' songs starts: every voice on ADSR, echo
+  on with a delay of 3 and feedback up to `$6E`, no noise and no pitch
+  modulation. That is one moment of each song. Whether an effect turns
+  noise on later was not looked at.
+- The frontend runs more sound machines on LakeSnes, for two things. One
+  brings back effects the driver drops for want of a slot or a voice. One
+  plays monster sounds from sample sets the level did not load. Both exist
+  only because the driver has four slots, eight voices and room for one
+  set.
+
+## The plan
+
+### Step 1. The game's code, until no session meets the 65816
+
+The work is the same as it has been: a routine at a time, verified per call
+against the ROM, ranked by `tools/native_share.py --residue`. What changes
+is the target and the ranking.
+
+1. **Rank by code and not by work.** By work the list is finished. What is
+   left is 11,297 instructions that run seldom, and a rarely run instruction
+   stops a game with no CPU as surely as a common one.
+2. **The paths the ports turn down.** 39 routines, 4,254 calls.
+3. **Every wait becomes a wait.** Thirteen declared and the pause. In C each
+   is "until the NMI has changed this word", and the driver of step 2 runs
+   frames until it has.
+4. **Code no session reaches.** At least 8,476 bytes. A movie comes before a
+   port, as now. Where no movie can be made, a poke.
+5. **A map of the ROM's code**, kept by a tool: each byte of the four banks
+   as ported, not ported, or data. It is what says the work is done, since
+   a movie can only say what it reached.
+
+Done when all 110 sessions run with the 65816 executing nothing, and the map
+has no code byte that is not ported.
+
+### Step 2. A driver with no CPU
+
+Run the registry without the core. The pieces exist: `PortCpu` in
+`src/port/cpu.h` is the register set, the stack is WRAM, and `leave` in
+`cosim.c` makes the instruction a port ends on.
+
+- **A loop.** Look the address up, run the port, make the instruction it
+  left by, look the next address up. An address nothing has is an error
+  that names it.
+- **The NMI as a call**: the push the 65816 makes, then the handler's
+  ports.
+- **`WAI` and the waits** run the frame to its NMI.
+- **A clock**: 262 lines of 1,364 cycles, the refresh each line, a DMA's
+  hold on the CPU, and where the NMI falls. Each port already says what it
+  cost. See the first decision below.
+
+It is built in the test programs first, as a second way to run the same
+registry, and compared with the core's way a scheduler pass at a time. It
+can be started now. Until step 1 is done it runs each movie as far as the
+first address nothing has, and says which. That is a better list than a
+profile.
+
+### Step 3. A machine with no console
+
+Small, by the survey.
+
+- WRAM as an array, which `Wram` is already.
+- The frame: `src/video`'s chip called directly for each line.
+- DMA on channel 0 to three registers, and HDMA on three channels.
+- The pads' latch, the multiplier, and `$4210` and `$4212`.
+- No IRQ, no divider, no manual pad read, no `$2180`.
+
+Then `zamn.exe` is `main_sdl.c` on the driver and this, with the sound.
+
+### Step 4. The sound
+
+Independent of steps 1 to 3.
+
+1. **The DSP**, written again: BRR decoding, ADSR, pitch, echo with its
+   filter, the mix. It is a fixed specification. Checked sample for sample
+   against LakeSnes's, on the register writes of every song and effect.
+2. **The driver, in C**, as the game's code was done: the sequencer that
+   reads a song and drives the DSP. Checked against the SPC700 running the
+   original, by the DSP writes each makes and when.
+3. **The uploads go.** A song and its samples are read from the ROM.
+   `src/assets/music.c` already decodes every data set.
+4. **The frontend's two extra machines go.** A driver of our own can have
+   more slots and voices than four and eight, and all four sample sets
+   loaded. The dropped effects and the missing monster sounds become
+   settings of one engine.
+
+The hard part is what the game sees of the sound chip: how long it takes to
+answer a command. See the risks.
+
+### Step 5. What is left
+
+- **Saved states** in a layout of the port's own: WRAM, the registers, the
+  clock, `src/video`'s share, the sound.
+- **The launcher's icon and heading**, drawn when the game is built, by
+  `src/video` and not the PPU.
+- **The link.** As with the PPU: the console is split into libraries, and
+  `zamn.exe` is linked against none. A call of LakeSnes from anywhere in
+  the game is then a link error. `zamn_with_ppu` grows into the build that
+  has all of it.
+
+## How each step is checked
+
+The way the picture was. The test build runs the port and LakeSnes side by
+side and compares, and the corpus is the standing check.
+
+| Step | Compared |
+|---|---|
+| 1 | Every call: 128 KB of WRAM and the registers, as now |
+| 2 | Every scheduler pass: WRAM and the clock, driver against core |
+| 3 | The same, and every register write by address, value and cycle |
+| 4 | Every sample from the DSP. Every DSP write from the driver |
+| 5 | A state saved by one build loads in the other. The link itself |
+
+Each new check gets things broken on purpose, to show it catches them.
+
+## Decisions that are the user's
+
+1. **Timing.** With no CPU there are no cycles unless the port counts them.
+   - *Keep the console's timing.* The ports already report their costs and
+     the harness holds them exact. The game slows where the console did,
+     and a movie stays in step with the emulator, which is what makes the
+     corpus a check.
+   - *Drop it.* The game never slows, and no movie can be compared frame
+     for frame again.
+   - Recommended: keep it. "Never slows" can be a setting later.
+2. **The rare code.** Three ways to get the 65816 out.
+   - *Port all of it by hand.* The most work. The only one that leaves
+     readable C throughout.
+   - *An interpreter of our own for what is left.* LakeSnes leaves sooner.
+     It is still emulation of the game's code.
+   - *Translate what is left by machine.* Native, and not readable.
+   - Recommended: by hand.
+3. **The sound driver.** Port it to C, or write an SPC700 of our own and
+   run the original. Recommended: port it. The second removes LakeSnes and
+   keeps an emulator.
+4. **Old quick saves** stop loading when the layout changes. Recommended:
+   let them, and have the test build convert one if it is wanted.
+
+## Order
+
+1. **The driver and its clock, in the test build.** It is the design risk,
+   it is small, and it turns "what is left" into an address per movie.
+2. **Step 1**, by the driver's list and the ranking by code. This is most
+   of the work.
+3. **The DSP**, then the sound driver, alongside. Neither waits on step 1.
+4. **The machine**, when a movie first runs through on the driver.
+5. **States, the art, the link.**
+
+## Risks
+
+- **Step 1 is larger than the share of work says.** 99% by work is 59% by
+  code, and the code that is left is the code the movies reach least.
+- **Code nothing reaches.** A game with no CPU has nothing to fall back
+  on. An address nothing has must stop the game with its name, and the map
+  of step 1 is what keeps that from happening in play.
+- **The sound chip's answer.** The game waits on it, and how long it waits
+  moves everything after it. A native driver answers at its own time. If
+  timing is kept, that time has to be modelled to the frame, or the movies
+  keyed to the game's own ticks and not to frames. Not looked at yet.
+- **Level 25.** Three movies part from the stock console under lockstep
+  today, on timing. A second clock will meet the same thing.
+
+## Not established
+
+- How much code is behind tables of addresses that no session used.
+- Which of the 8,476 bytes are dead code.
+- Whether any effect uses the DSP's noise or pitch modulation.
+- How the sound chip's answering time is distributed.
+- What the three HDMA channels each write, beyond the wave on channel 6.
+- That the 56 records were played well. Each ran `level1.zmv`'s buttons on
+  another level's map.
+
+## The ROM
+
+- **Mapping:** LoROM, 1,048,576 bytes, no header.
+- **Chips:** none. No SRAM. The game saves by password.
+- **Region:** NTSC.
+- **Vectors:** RESET `$80AE`, NMI `$816C`. IRQ is never taken.
+- **Code:** banks `$80` to `$83`. Level records in `$9F`. Sound from `$91`.
+
+## Resources
+
+- `Piranhaplant/Necrofy`: the level, tile, sprite and palette formats.
+- `snesrev/zelda3`: the harness's pattern.
+- LakeSnes, in `third_party/lakesnes`: the reference.
+- `docs/cosim.md`, `docs/threads.md`, `docs/video.md`: how the harness, the
+  threads and the picture were done.
+- `PROGRESS.md`: what has been done, by date.
