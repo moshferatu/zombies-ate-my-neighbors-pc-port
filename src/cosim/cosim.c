@@ -3332,10 +3332,10 @@ static bool video_differs(const Snes* ref, const Snes* nat, char* buf,
   return false;
 }
 
-static bool side_start(Side* s, const uint8_t* rom_data, int rom_len,
+static bool side_start(Side* s, Snes* snes, const uint8_t* rom_data, int rom_len,
                        CosimMode mode, const char* movie_path) {
   memset(s, 0, sizeof *s);
-  s->snes = snes_init();
+  s->snes = snes;
   if (!snes_loadRom(s->snes, rom_data, rom_len)) return false;
   // The comparison reads the PPU's memory and scroll, never its picture.
   s->snes->ppu->noPixels = true;
@@ -3392,9 +3392,9 @@ static bool side_pass(Side* s, uint64_t budget) {
   return false;
 }
 
-int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
-                   int frames, const char* const* names, int name_count,
-                   bool verbose) {
+int cosim_lockstep(Snes* stock, Snes* native, const uint8_t* rom_data, int rom_len,
+                   const char* movie_path, int frames, const char* const* names,
+                   int name_count, bool verbose) {
   // Only the native side gets a harness; the reference side runs stock. Both
   // are driven by the same movie, so any difference between their WRAM is
   // caused by the substitution and nothing else.
@@ -3403,8 +3403,8 @@ int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
   // port's one APU hook, so whichever harness is constructed last owns it, and
   // the one that should own it is the one that runs port code.
   Side ref, nat;
-  if (!side_start(&ref, rom_data, rom_len, COSIM_VERIFY, movie_path)) return 1;
-  if (!side_start(&nat, rom_data, rom_len, COSIM_NATIVE, movie_path)) return 1;
+  if (!side_start(&ref, stock, rom_data, rom_len, COSIM_VERIFY, movie_path)) return 1;
+  if (!side_start(&nat, native, rom_data, rom_len, COSIM_NATIVE, movie_path)) return 1;
   cosim_mask_none(&ref.cosim.enabled);
 
   if (name_count == 0) {

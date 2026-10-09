@@ -21,8 +21,9 @@
 # `-Picture` is about the picture and not the game: it runs the game itself,
 # `zamn.exe`, with no window, and has every scanline of every frame drawn
 # twice, by `src/video` and by the emulated PPU, and compared. Then it runs
-# each movie again with `src/video` drawing alone and checks that the picture
-# comes to the same checksum. Once for each width in `-Widescreen`.
+# each movie again in `build\zamn_native.exe`, the game built with no emulated
+# PPU in it, and checks that the picture comes to the same checksum. Once for
+# each width in `-Widescreen`.
 #
 # Movies run `-Jobs` at a time, twelve unless told otherwise, and the rows come
 # out in corpus order when all of them have finished. The whole lockstep pass
@@ -221,12 +222,15 @@ function Invoke-Movies([string]$exe, [scriptblock]$argvOf) {
 #
 # `--renderer check` draws each line both ways and counts the lines that came
 # out different; it is the whole of the comparison, column by column. The
-# second run is `--renderer native`, which is how the game is played, and
-# proves one thing more: that with the PPU drawing nothing at all the picture
-# is still the same one. Its checksum is over every line as `src/video` left
-# it, and the check's is over every line as the PPU drew it.
+# second run is `zamn_native.exe`, which has no PPU to draw anything, and
+# proves one thing more: that with `src/video` alone the picture is still the
+# same one. Its checksum is over every line as `src/video` left it, and the
+# check's is over every line as the PPU drew it. It exits non-zero if there
+# was a line it did not draw, which with no PPU is shown black.
 if ($Picture) {
     $game = Join-Path $root "zamn.exe"
+    $alone = Join-Path $root "build\zamn_native.exe"
+    if (-not (Test-Path $alone)) { throw "there is no ${alone}; build the zamn_native target" }
     $env:SDL_VIDEODRIVER = "dummy"
     $Widescreen = @($Widescreen | ForEach-Object { $_ -split "," } | Where-Object { $_ })
     $bad = 0
@@ -234,7 +238,7 @@ if ($Picture) {
     foreach ($w in $Widescreen) {
         $runs = @{}
         foreach ($renderer in @("check", "native")) {
-            $runs[$renderer] = Invoke-Movies $game {
+            $runs[$renderer] = Invoke-Movies $(if ($renderer -eq "check") { $game } else { $alone }) {
                 param($m)
                 @("`"$Rom`"", "-m", "`"movies\$m`"", "--frames", "$($corpus[$m])", "--no-config",
                   "--no-pads", "--no-high-scores", "--no-audio", "--widescreen", $w,
@@ -250,7 +254,7 @@ if ($Picture) {
         $failed = 0
         foreach ($movie in $movies) {
             $text = $runs["check"][$movie].Lines | Out-String
-            $alone = $runs["native"][$movie].Lines | Out-String
+            $drawnAlone = $runs["native"][$movie].Lines | Out-String
             $lines = 0
             $left = 0
             $differ = -1
@@ -284,7 +288,7 @@ if ($Picture) {
             }
             if ($text -match "Picture checksum ([0-9A-F]{16}) over (\d+) lines") { $sum = "$($Matches[1]) $($Matches[2])" }
             $sumAlone = "none"
-            if ($alone -match "Picture checksum ([0-9A-F]{16}) over (\d+) lines") { $sumAlone = "$($Matches[1]) $($Matches[2])" }
+            if ($drawnAlone -match "Picture checksum ([0-9A-F]{16}) over (\d+) lines") { $sumAlone = "$($Matches[1]) $($Matches[2])" }
             $state = "the same picture"
             $ok = $true
             if ($differ -ne 0 -or $lines -eq 0) { $state = "NOT CHECKED"; $ok = $false }

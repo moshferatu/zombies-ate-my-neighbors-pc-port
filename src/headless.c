@@ -493,19 +493,16 @@ int main(int argc, char** argv) {
   if (!rom) return 1;
   printf("Loaded ROM '%s' (%d bytes)\n", rom_path, rom_len);
 
-  Snes* snes = snes_init();
-  if (!snes_loadRom(snes, rom, rom_len)) {
-    fprintf(stderr, "error: core rejected ROM\n");
-    free(rom);
-    snes_free(snes);
-    return 1;
-  }
   // `src/video` is the console's video chip, and the frontend reads the
   // registers and takes the picture from it. It has the PPU draw the picture
   // here unless `--renderer` says otherwise.
-  static VideoConsole video;
-  video_console_install(&video, snes->ppu, renderer, renderer_given);
-  video_console_attach(&video, snes);
+  Snes* snes = video_snes_init(renderer, renderer_given);
+  if (!snes_loadRom(snes, rom, rom_len)) {
+    fprintf(stderr, "error: core rejected ROM\n");
+    free(rom);
+    video_snes_free(snes);
+    return 1;
+  }
   // Widen the picture before the first frame is drawn. `fb_w` is what the core
   // will pack its rows at from here on, and every buffer above was allocated at
   // the widest it could be. The hook then does the per-frame half of it, at the
@@ -537,7 +534,7 @@ int main(int argc, char** argv) {
   if (movie_path) {
     if (!movie_load(&movie, movie_path)) {
       fprintf(stderr, "error: cannot load movie '%s'\n", movie_path);
-      free(rom); snes_free(snes);
+      free(rom); video_snes_free(snes);
       return 1;
     }
     have_movie = true;
@@ -550,7 +547,7 @@ int main(int argc, char** argv) {
     if (!state_load(snes, load_path, &start)) {
       fprintf(stderr, "error: cannot load state '%s'\n", load_path);
       if (have_movie) movie_free(&movie);
-      free(rom); snes_free(snes);
+      free(rom); video_snes_free(snes);
       return 1;
     }
     printf("Loaded state '%s' at frame %d\n", load_path, start);
@@ -604,7 +601,7 @@ int main(int argc, char** argv) {
       if (!state_save(snes, save_path, i + 1)) {
         fprintf(stderr, "error: cannot write state '%s'\n", save_path);
         if (have_movie) movie_free(&movie);
-        free(rom); snes_free(snes);
+        free(rom); video_snes_free(snes);
         return 1;
       }
       printf("Saved state at frame %d -> %s\n", i + 1, save_path);
@@ -628,14 +625,14 @@ int main(int argc, char** argv) {
   if (!write_png(snes, out_path)) {
     fprintf(stderr, "error: failed to write '%s'\n", out_path);
     if (have_movie) movie_free(&movie);
-    free(rom); snes_free(snes);
+    free(rom); video_snes_free(snes);
     return 1;
   }
   printf("Wrote %s (%dx%d)\n", out_path, fb_w, FB_H);
-  const bool picture_ok = !renderer_given || video_console_report(&video, stdout);
+  const bool picture_ok = !renderer_given || video_snes_report(snes, stdout);
 
   if (have_movie) movie_free(&movie);
   free(rom);
-  snes_free(snes);
+  video_snes_free(snes);
   return picture_ok ? 0 : 1;
 }

@@ -1011,10 +1011,15 @@ int cosim_census_report(void);
 // `enabled` routines substituted natively — and compare all of WRAM at every
 // frame boundary.
 //
+// `stock` and `native` are two consoles as `snes_init` makes them, which this
+// takes and frees. They are the caller's to make because each must have a
+// PPU, whose memories are compared, and this file is also linked by a game
+// that has none.
+//
 // `movie_path` may be NULL for no input. Returns 0 if the two agreed for the
 // whole run, and prints the first frame and address at which they did not.
-int cosim_lockstep(const uint8_t* rom_data, int rom_len, const char* movie_path,
-                   int frames, const char* const* names, int name_count,
-                   bool verbose);
+int cosim_lockstep(Snes* stock, Snes* native, const uint8_t* rom_data, int rom_len,
+                   const char* movie_path, int frames, const char* const* names,
+                   int name_count, bool verbose);
 
 #endif

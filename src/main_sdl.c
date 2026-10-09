@@ -1272,7 +1272,19 @@ int main(int argc, char** argv) {
     return 1;
   }
 
-  Snes* snes = snes_init();
+  // `src/video` is the console's video chip. Who draws the picture: it does,
+  // with the PPU told nothing, unless this is the baseline or somebody said
+  // otherwise.
+  // ...and with a checksum of the picture when there will be a report to put
+  // it in: it is what `tools/verify_corpus.ps1 -Picture` compares.
+  const VideoRenderer drawn_by = !native && !renderer_asked ? VIDEO_EMULATED : renderer;
+  Snes* snes = video_snes_init(drawn_by, verbose || drawn_by == VIDEO_CHECK);
+  if (!snes) {
+    fprintf(stderr, "error: this build has no emulated PPU, and draws the picture only with\n"
+                    "       --renderer native%s\n",
+            native ? "" : ", which --stock must then be given as well");
+    return 1;
+  }
   if (!snes_loadRom(snes, rom, rom_len)) {
     fprintf(stderr, "error: core rejected ROM '%s'\n", rom_path);
     return 1;
@@ -1333,16 +1345,6 @@ int main(int argc, char** argv) {
   // so this is the mode to be in even when starting with substitution off.
   Cosim cosim;
   cosim_init(&cosim, snes, COSIM_NATIVE);
-  // `src/video` is the console's video chip. Who draws the picture: it does,
-  // with the PPU told nothing, unless this is the baseline or somebody said
-  // otherwise.
-  // ...and with a checksum of the picture when there will be a report to put
-  // it in: it is what `tools/verify_corpus.ps1 -Picture` compares.
-  static VideoConsole video;
-  video_console_install(&video, snes->ppu,
-                     !native && !renderer_asked ? VIDEO_EMULATED : renderer,
-                     verbose || renderer == VIDEO_CHECK);
-  video_console_attach(&video, snes);
   if (profile_dir && !(cosim.profile = cosim_profile_new(cosim.rom.size))) {
     fprintf(stderr, "error: no memory for --profile\n");
     return 2;
@@ -2084,7 +2086,7 @@ int main(int argc, char** argv) {
         pace_add(&h_emulate, trace_emulate_ms);
       }
       trace_core_frame = snes->frames;
-      trace_scroll_y = video.chip.frame.line_vscroll[0][1];
+      trace_scroll_y = video_chip_of(snes)->frame.line_vscroll[0][1];
       frame++;
 
       // This frame's audio, resampled by however much it takes to hold the
@@ -2267,7 +2269,8 @@ int main(int argc, char** argv) {
                      ws_main_thread_at(ws.mem), ws_game_over(ws.mem),
                      ws.mem[0x1e88] | (ws.mem[0x1e89] << 8), ws.mem[0x1e8a] | (ws.mem[0x1e8b] << 8),
                      snes->ram[0x1e88] | (snes->ram[0x1e89] << 8), snes->ram[0x1e8a] | (snes->ram[0x1e8b] << 8),
-                     video.chip.picture.wide[2], video.chip.registers.bg[1].map_wide && video.chip.registers.main[1]);
+                     video_chip_of(snes)->picture.wide[2],
+                     video_chip_of(snes)->registers.bg[1].map_wide && video_chip_of(snes)->registers.main[1]);
               stbi_write_png(path, r.w, r.h, 3, gpu, r.w * 3);
             }
             if (sw) {
@@ -2405,8 +2408,8 @@ int main(int argc, char** argv) {
            bank.wanted, bank.set[0].played, bank.set[1].played, bank.set[2].played,
            bank.set[3].played, bank.failed ? " (one or more could not be built)" : "");
   bool picture_ok = true;
-  if (verbose || video.renderer == VIDEO_CHECK)
-    picture_ok = video_console_report(&video, stdout);
+  if (verbose || drawn_by == VIDEO_CHECK)
+    picture_ok = video_snes_report(snes, stdout);
   if (verbose) {
     cosim_report(&cosim);
     // The two percentages the table cannot give: 82 rows of `OK` say each
@@ -2440,7 +2443,7 @@ int main(int argc, char** argv) {
   cosim_free(&cosim);
   sfx_overlay_free(&sfx);
   bank_sfx_free(&bank);
-  snes_free(snes);
+  video_snes_free(snes);
   free(rom);
   return picture_ok ? 0 : 1;
 }

@@ -15,7 +15,7 @@
 //
 // There is no console here and nothing is written through a register. The
 // noise is put straight into the PPU, and the chip takes what is in the PPU
-// (`video_console_take`) before a line is drawn from it.
+// (`video_beside_take`) before a line is drawn from it.
 //
 // Then the frame is read back as the smoothing reads it (`video_bg_row`): a
 // few rows of each background, some of them above or below the picture and
@@ -29,7 +29,7 @@
 #include <string.h>
 
 #include "ppu.h"
-#include "video/console.h"
+#include "video/beside.h"
 
 static uint64_t rng_state;
 
@@ -191,9 +191,9 @@ int main(int argc, char** argv) {
   const int frames = argc > 1 ? atoi(argv[1]) : 400;
   const uint64_t seed = argc > 2 ? strtoull(argv[2], NULL, 0) : 1;
   Ppu* ppu = ppu_init(NULL);
-  static VideoConsole console;
+  static VideoBeside beside;
   ppu_reset(ppu);
-  video_console_install(&console, ppu, VIDEO_CHECK, true);
+  video_beside_install(&beside, ppu, VIDEO_CHECK, true);
   long failed_frame = -1;
   for (int f = 0; f < frames; f++) {
     // Each frame's noise from its own number, so one frame can be made again.
@@ -207,7 +207,7 @@ int main(int argc, char** argv) {
       ppu->layerScrolled[i] = one_in(2);
       ppu->layerRaster[i] = one_in(6);
     }
-    video_console_take(&console);
+    video_beside_take(&beside);
     // A fifth of the frames move a scroll or a window on the way down.
     const bool raster = one_in(5);
     for (int line = 1; line <= 224; line++) {
@@ -217,17 +217,17 @@ int main(int argc, char** argv) {
         else bg->vScroll = (uint16_t)(rnd() & 0x3ff);
         if (one_in(4)) ppu->window1left = edge();
         if (one_in(4)) ppu->window1right = edge();
-        video_console_take(&console);
+        video_beside_take(&beside);
       }
       ppu_runLine(ppu, line);
     }
-    read_rows(ppu, &console.chip);
-    const bool differing = console.differing || console.sprite_differing ||
-                           console.notes_differing || rows_differing;
+    read_rows(ppu, &beside.console.chip);
+    const bool differing = beside.differing || beside.sprite_differing ||
+                           beside.notes_differing || rows_differing;
     if (differing && failed_frame < 0) failed_frame = f;
   }
   printf("%d frames of noise, seed %llu.\n", frames, (unsigned long long)seed);
-  bool ok = video_console_report(&console, stdout);
+  bool ok = video_beside_report(&beside, stdout);
   printf("  %ld rows read back, %ld differ from the PPU's.\n", rows_read, rows_differing);
   ok = ok && rows_differing == 0;
   if (!ok)

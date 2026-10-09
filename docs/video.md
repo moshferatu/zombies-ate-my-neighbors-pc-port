@@ -13,6 +13,9 @@ loads its share of a state. Drawing alone, it tells the emulated PPU
 nothing. The PPU is run beside it only to be checked against, or when it is
 asked to draw in its place.
 
+The game is also built with no emulated PPU in it at all, as
+`zamn_native`. It draws the same picture.
+
 ## Why it was worth doing first
 
 A profile of `level1.zmv` at 240 Hz and 16:9, with the smoothing on:
@@ -36,8 +39,9 @@ emulator's. Before each line `src/video/chip.c` fills one from three things
 it keeps: the registers (`VideoRegisters`), what the frontend has said of
 the picture (`VideoPicture`) and what has been noted of the frame
 (`VideoFrame`). The memories the registers point at and the two rows of the
-line's sprites are kept there as well. `src/video/console.c` is the one
-file that knows the emulator too.
+line's sprites are kept there as well. `console.c` puts the chip in an
+emulated console and `state.c` writes a state with the emulator's handler.
+`beside.c` is the one file that knows the emulated PPU.
 
 ## The registers
 
@@ -205,10 +209,11 @@ chip:
 - which field the frame is and whether it is interlaced, which decide how
   long a line and a frame are.
 
-A console starts with its own PPU behind those. `video_console_attach` puts
-a `VideoConsole` there, which is the chip with the PPU beside it: see the
-next section. `zamn_cosim` and the tools that attach nothing run on the PPU
-as they did.
+A console made by `snes_init` starts with its own PPU behind those.
+`video_beside_attach` puts the chip there with the PPU beside it, and
+`video_console_attach` puts the chip there alone: see the next two
+sections. `zamn_cosim` and the tools that attach nothing run on the PPU as
+they did.
 
 **What each renderer does with them.**
 
@@ -276,24 +281,25 @@ or puts, after the chip has done it. The other two are asked for a line's
 sprites the chip does not find, and for a line it does not draw. With
 nobody there, such a line is black and has no sprites.
 
-**`VideoConsole`**, in `console.h`, is that somebody: a chip, the console's
-PPU and the renderer. It is what a console is given as its video chip
-(`SnesVideo`), and it does to the PPU what the renderer says. Everything a
-check counts is in it. `video_console_attach` was `video_hook_attach`.
+**`VideoBeside`**, in `beside.h`, is that somebody: a chip in its console,
+the console's PPU and the renderer. It is what a console with a PPU is
+given as its video chip (`SnesVideo`), and it does to the PPU what the
+renderer says. Everything a check counts is in it. It was named
+`VideoConsole` for one commit, and `VideoHook` before that.
 
 **`state.h`** is the chip's share of a saved state, moved out on its own.
 It is written with the emulator's state handler and knows nothing else of
 the emulator.
 
 Under `native` a line is run by the chip alone, in `chip.c`. Under `check`
-and `emulated` the PPU runs it and calls back into `console.c`, which calls
+and `emulated` the PPU runs it and calls back into `beside.c`, which calls
 the chip for its part. Those had been one function with three branches.
 
 **The noise tests.** A `VideoHook` could be put on a PPU with no console,
 and a line was then drawn from the PPU's own registers, by a second way of
 filling a `VideoState`. That way is gone. `zamn_test_video` still puts its
 noise straight into a PPU. It then has the chip take what is in the PPU
-(`video_console_take`) before a line is drawn. So the chip draws from
+(`video_beside_take`) before a line is drawn. So the chip draws from
 itself in the test as it does in the game, and the frame's notes are
 compared in the test as well, which they were not.
 
@@ -312,6 +318,63 @@ rubbish and agreed. Under that policy the PPU now shows nothing of the
 sprites outside their own 256 columns. The noise test's checksum changed
 with that and with nothing else: before the mend, the new build came to the
 old number.
+
+## A build without the PPU
+
+Three things called the emulated PPU from code the game links, and each had
+to stop before a program could be built without it.
+
+**The emulated console.** `snes_init` made a PPU, and the same file held the
+PPU as the console's default video chip. `snes_initWithoutPpu` now makes a
+console with no PPU and nobody for its video chip, and calls nothing of the
+PPU's. What does call it is in one new file of the console's, `snes_ppu.c`:
+`snes_init`, the PPU as a `SnesVideo`, and the three functions that hand
+over the PPU's picture.
+
+**`console.c`.** It is two files now.
+
+- **`VideoConsole`**, in `console.h`, is a chip in a console and nothing
+  else. `video_console_attach` makes it the console's video chip. Every
+  one of the ten things a console asks is one call of the chip. Nobody is
+  beside the chip, so a line it declines is black.
+- **`VideoBeside`**, in `beside.h`, is a `VideoConsole` with the PPU and
+  the renderer. Under `native` it attaches the console's own ten functions
+  and sets itself as the chip's `VideoOther`. Under `check` and `emulated`
+  it attaches ten of its own, each of which does the thing to the PPU
+  first.
+
+**The lockstep harness.** `cosim_lockstep` made its two consoles, and the
+game links the file it is in. They are handed to it now.
+
+**Which a program has is settled where it is linked.** `console.h` declares
+three functions that are written twice: `video_snes_init`, which makes a
+console drawn by a renderer, `video_snes_report` and `video_snes_free`.
+
+| | `with_ppu.c` | `without_ppu.c` |
+|---|---|---|
+| The console is made by | `snes_init` | `snes_initWithoutPpu` |
+| Its video chip is | a `VideoBeside` | a `VideoConsole` |
+| Renderers | all three | `native` |
+| Asked for another | | `video_snes_init` returns NULL |
+| A declined line | the PPU's | black, and the run exits 1 |
+
+There is no `#ifdef`. The frontend and the tools call those three and name
+no PPU, except `zamn_test_radar` where it has the PPU draw a frame again.
+
+**Two libraries of the console's.** `snescore_without_ppu` is everything
+but `ppu.c` and `snes_ppu.c`, and `snescore` is those two on top of it. The
+harness and `src/video` link the first. So a program that links
+`zamn_video_without_ppu` has no PPU on its link line, and a call of the PPU
+from anywhere in it is a link error. A PPU cannot be linked in quietly.
+
+**`zamn_native`** is `src/main_sdl.c` built a second time against that. It
+is left in the build directory, and `zamn.exe` is as it was. Given
+`--renderer check` or `emulated`, or `--stock` alone, it says it has no PPU
+and exits. It is 41 KB smaller than `zamn.exe`.
+
+`tools/verify_corpus.ps1 -Picture` now takes its second checksum from
+`zamn_native`. That run used to be `zamn.exe --renderer native`, which had
+a PPU to fall back on.
 
 ## How a line's sprites are found
 
@@ -432,7 +495,7 @@ was drawn.
   under one renderer and loads it under another. Loaded under `check`, every
   comparison above runs from the load on.
 - **`tools/verify_corpus.ps1 -Picture`** runs every movie of the corpus under
-  the check, then again with `src/video` drawing alone, and compares a
+  the check, then again in `zamn_native`, which has no PPU, and compares a
   checksum of every line of the picture between the two. `-Widescreen
   off,16:9,16:10,21:9` is all four widths.
 - **`zamn_test_video`** needs no ROM. It fills a PPU with noise: VRAM, the
@@ -645,6 +708,36 @@ game over, and each came to the right checksum: every odd line left to the
 PPU under `native`, every odd line's sprites, both, both under `check`, and
 the PPU filled with rubbish once the console is attached.
 
+Eleven of the console with no PPU. Each was run in `zamn_native` on two
+movies and a forced game over, with a quick save made on an odd frame.
+
+| Broken | Caught by | What it said |
+|---|---|---|
+| The frame's start not passed to the chip | any of the three, alone | another checksum |
+| The console told every frame has overscan | the same | another checksum |
+| The console told every frame is interlaced | the same | another checksum |
+| A line run as the line after it | the same | another checksum |
+| The console told the wrong field of the two | the quick save, alone | another file |
+| No state saved from the chip | the same | another file |
+| A read answered with nothing | a forced game over, check | 1 read, of `$213F` |
+| Every write told to the chip as made outside the picture | the same | 240,307 notes, `mid_frame_write` |
+| A write told to the chip as on the line before | the same | 2 writes and 19 notes, `mosaic_from` |
+
+The last three changed no checksum in `zamn_native`. They are of the two
+functions the check runs as well, a write and a read as the console makes
+them, and `zamn --renderer check` caught each.
+
+Two were not caught by anything:
+
+- **The console's reset not passed to the chip**, as before, and for the
+  same reason.
+- **The picture's end not passed to the chip.** It puts OAM's address back
+  and settles whether the next frame is interlaced. The game sets the
+  address itself every frame and never interlaces.
+
+Both are one line that calls the chip, and the chip's side of each is
+tried by the registers' noise test.
+
 ## Results
 
 **Checked**, on the build that is described here:
@@ -810,6 +903,41 @@ the PPU filled with rubbish once the console is attached.
   clean under the check and come to the Windows build's checksums under all
   three renderers. A state saved on an odd frame is the same file under all
   three, and the file the Windows build saves.
+- **A build without the PPU.**
+  `zamn_native` links against a console that has no PPU in it, and builds.
+  On Linux its symbols were counted: none of the PPU's, against 47 in
+  `zamn`.
+  The corpus at four widths: 310,747,136 lines drawn both ways by `zamn`,
+  none differing and none left to the PPU, and each of the 216 runs comes
+  to the same checksum in `zamn_native`, which exits 0 on every one.
+  It comes to the three renderers' checksum on two movies at 16:9 and on
+  the forced game over with red blood at three widths.
+  A quick save made by the command line (`--quick-at`), on an even frame
+  and on an odd one, is the same file from `zamn` under each of the three
+  renderers and from `zamn_native`. One made by either was loaded by
+  `zamn` under `check` and `native` and by `zamn_native`: twelve runs,
+  each the checksum of the others loading the same file, and nothing
+  differing under the check.
+  The game's own corpus, run because its harness and the console's making
+  changed: 34,603,665 calls checked over 54 movies and none diverged, and
+  under lockstep 334,319 passes with 51 of 54 never parting, the same
+  three. Both are the figures from before.
+  Both noise tests print what the build before printed, byte for byte:
+  13,000,000 steps over three seeds and 6,000 frames over two.
+  Three renderers still come to one checksum in `zamn` on the five runs
+  above, each the build before's. The states `zamn_headless` saves are the
+  files it saved before, and the 36 loaded runs the same pictures.
+  Against the build before: `zamn_test_layers` prints the same on seven
+  runs, `zamn_test_radar` at two widths, `zamn_headless` writes the same
+  picture from three movies and `zamn_record` the same bytes from four
+  recordings.
+  On Linux, in WSL with gcc 13: the tree builds, both noise tests pass,
+  and `zamn` comes to the Windows checksums under all three renderers.
+  `zamn_native` there comes to them on one movie and the forced game over,
+  and its quick save is the file the Windows build makes.
+  The first run of the corpus script did not start. I had written a
+  PowerShell string with a variable and a colon after it, which is read as
+  a drive.
 - **Linux.** The tree builds in WSL with gcc 13, once `src/port/clears.c`
   includes `<stddef.h>`, which an earlier commit of mine left out. Both
   noise tests pass there. `level25-boss.zmv` at 16:9 is clean under the
@@ -869,32 +997,46 @@ same six runs had 2.60, 2.42 and 2.52 against 2.46, 2.74 and 2.39. If the
 second pass's 0.04 ms is real it is under 2% of a tick; I cannot tell it
 from the noise of the first.
 
+Nor does having no PPU. Run in turn on a busier afternoon: the build
+before 2.64, 2.60 and 2.84 ms, `zamn` 2.56, 2.69 and 2.52, and
+`zamn_native` 2.57, 2.65 and 2.51. Under `native` the PPU was already told
+nothing, so there was nothing of it left to stop paying for.
+
 ## What is still the emulator's
 
 - **When things happen.** The emulated console says where the beam is, when
   a frame starts, when a line begins and when the picture ends. It says them
   to `src/video` directly now.
-- **The PPU, linked in.** Under `native` it does nothing unless a line is
-  declined, which no line of this game is. It is still what `check` and
-  `emulated` run. `console.c` is the only file of `src/video` that names
-  it, and the frontend names it only to set a console up. A build without
-  it has not been tried.
+- **The PPU, in `zamn.exe`.** Under `native` it does nothing unless a line
+  is declined, which no line of this game is. It is still what `check` and
+  `emulated` run. `beside.c` and `with_ppu.c` are the only files of
+  `src/video` that name it, and the frontend does not. `zamn_native` has
+  none.
+- **The rest of the console, in both.** `zamn_native` still links the
+  emulated console for its clock and its bus, the 65816 for what is not
+  ported, DMA, the cartridge, the pads and the whole of the sound.
 - **The state's layout.** It is the PPU's, written with the emulator's state
   handler, so that states already saved still load. `state.c` is the only
   other file of `src/video` that includes anything of the emulator's.
 - **The tools.** The game draws with `src/video`, and `zamn_headless` does
   when asked. The other three that share the frontend's code attach it and
   leave the drawing to the PPU. `zamn_cosim` and the rest run on the PPU
-  alone, and draw nothing.
+  alone, and draw nothing. `zamn_icon` and `zamn_logo`, which draw the
+  launcher's icon and heading when the game is built, have the PPU draw
+  the title screen.
 
 ## Next
 
 - Draw a frame once. With the smoothing on, a frame shown as layers is still
   drawn as a picture that nobody sees.
-- Try a build without the PPU: a console given a `VideoChip` and nobody
-  beside it, where a declined line is black. `chip.c` already runs a line
-  that way. What is missing is a console that can be built without `ppu.c`,
-  and the four tools that have the PPU draw.
+- Which of the two is the game. `zamn.exe` still has the PPU, for the
+  check. `zamn_native` could be `zamn.exe`, and the one with the PPU a test
+  program beside it. I have not looked at the picture `zamn_native` draws,
+  only compared its bytes.
+- The tools off the PPU: `zamn_headless`, `zamn_record` and
+  `zamn_test_layers` drawn by `src/video` and linked without it, the
+  radar test's second drawing of a frame, and the launcher's icon and
+  heading.
 - The picture is kept eight bytes a column because the frontend takes it
   doubled. Four would do if the frontend took it as drawn.
 - The smoothing's sprites and its maths window are still worked out a dot at

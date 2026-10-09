@@ -7,7 +7,6 @@
 
 #include "snes.h"
 #include "cart.h"
-#include "ppu.h"
 #include "dsp.h"
 #include "statehandler.h"
 
@@ -129,21 +128,6 @@ void snes_setButtonState(Snes* snes, int player, int button, bool pressed) {
       snes->input2->currentState &= ~(1 << button);
     }
   }
-}
-
-void snes_setPixelFormat(Snes* snes, int pixelFormat) {
-  // pixelFormatXRGB, pixelFormatRGBX (default: pixelFormatRGBX)
-  ppu_setPixelOutputFormat(snes->ppu, (pixelFormat) ? ppu_pixelOutputFormatBGRX : ppu_pixelOutputFormatXBGR);
-}
-
-void snes_setPixels(Snes* snes, uint8_t* pixelData) {
-  // size is 4 (rgba) * snes_pixelWidth (w) * 480 (h), and that width is 512
-  // unless the picture has been widened
-  ppu_putPixels(snes->ppu, pixelData);
-}
-
-int snes_pixelWidth(const Snes* snes) {
-  return ppu_outputWidth(snes->ppu);
 }
 
 void snes_setFrameHook(Snes* snes, SnesFrameHook hook, void* ctx) {

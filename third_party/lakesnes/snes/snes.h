@@ -39,9 +39,10 @@ typedef SnesWriteHook SnesReadHook;
 // long a line and a frame are. `handleState` saves or loads the chip's share
 // of a state, in the layout `ppu_handleState` has. Each is passed `user`.
 //
-// A console starts with its own PPU behind this. `snes_setVideo` puts
-// somebody else there: `src/video` is the one user, and has the PPU beside
-// it only to be checked against.
+// A console made by `snes_init` starts with its own PPU behind this, and one
+// made by `snes_initWithoutPpu` with nobody. `snes_setVideo` puts somebody
+// there: `src/video` is the one user, and where there is a PPU it has it
+// beside it only to be checked against.
 typedef struct SnesVideo {
   void* user;
   void (*reset)(void* user);
@@ -59,9 +60,11 @@ typedef struct SnesVideo {
 struct Snes {
   Cpu* cpu;
   Apu* apu;
-  // The PPU is always there, and is the console's video chip unless
-  // `snes_setVideo` has said otherwise: `video` is who is asked.
+  // The PPU, which is the console's video chip unless `snes_setVideo` has
+  // said otherwise: `video` is who is asked. NULL, as is the way to free it,
+  // in a console made without one.
   Ppu* ppu;
+  void (*freePpu)(Ppu* ppu);
   SnesVideo video;
   Dma* dma;
   Cart* cart;
@@ -119,7 +122,11 @@ struct Snes {
   void* readHookCtx;
 };
 
+// A console with a PPU for its video chip (`snes_ppu.c`), and one with no
+// PPU at all, which must be given a video chip (`snes_setVideo`) before it is
+// reset or run. Either is freed by `snes_free`.
 Snes* snes_init(void);
+Snes* snes_initWithoutPpu(void);
 void snes_free(Snes* snes);
 void snes_reset(Snes* snes, bool hard);
 void snes_handleState(Snes* snes, StateHandler* sh);
@@ -144,14 +151,15 @@ enum { pixelFormatXRGB = 0, pixelFormatRGBX = 1 };
 
 bool snes_loadRom(Snes* snes, const uint8_t* data, int length);
 void snes_setButtonState(Snes* snes, int player, int button, bool pressed);
-// These three are the PPU's picture, for a console whose video chip it is.
+// These three are the PPU's picture, for a console whose video chip it is
+// (`snes_ppu.c`).
 void snes_setPixelFormat(Snes* snes, int pixelFormat);
 void snes_setPixels(Snes* snes, uint8_t* pixelData);
 // Widescreen is said to `src/video` (`video_set_margins` and the rest), which
 // tells the PPU. `snes_pixelWidth` is the width of what `snes_setPixels` then
 // writes, in output pixels, and its row pitch is that times four bytes.
 int snes_pixelWidth(const Snes* snes);
-// See `SnesVideo`. Pass NULL to have the console's own PPU again.
+// See `SnesVideo`.
 void snes_setVideo(Snes* snes, const SnesVideo* video);
 // See `SnesFrameHook`. Pass NULL to remove it.
 void snes_setFrameHook(Snes* snes, SnesFrameHook hook, void* ctx);

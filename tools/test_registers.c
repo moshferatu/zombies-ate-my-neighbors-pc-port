@@ -43,7 +43,7 @@
 
 #include "ppu.h"
 #include "snes.h"
-#include "video/console.h"
+#include "video/beside.h"
 #include "video/state.h"
 
 static uint64_t rng_state;

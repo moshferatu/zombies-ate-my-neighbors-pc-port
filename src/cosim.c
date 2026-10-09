@@ -375,8 +375,8 @@ static int cmd_run(const Options* o) {
   int rom_len = 0;
   uint8_t* rom_data = read_file(o->rom_path, &rom_len);
   if (!rom_data) return 1;
-  int rc = cosim_lockstep(rom_data, rom_len, o->movie_path, o->frames,
-                          o->selected, o->selected_count, o->verbose);
+  int rc = cosim_lockstep(snes_init(), snes_init(), rom_data, rom_len, o->movie_path,
+                          o->frames, o->selected, o->selected_count, o->verbose);
   cosim_coverage_report(o->coverage);
   cosim_census_report();
   free(rom_data);

@@ -79,14 +79,11 @@ int main(int argc, char** argv) {
   int rom_len;
   uint8_t* rom = read_file(argv[1], &rom_len);
   if (!rom) { fprintf(stderr, "error: cannot read '%s'\n", argv[1]); return 1; }
-  Snes* snes = snes_init();
-  if (!snes_loadRom(snes, rom, rom_len)) { fprintf(stderr, "error: not a ROM\n"); return 1; }
   // The frontend reads the chip's registers from `src/video`, which keeps
   // them beside the PPU's, and takes the picture from it. The PPU draws the
   // picture here.
-  static VideoConsole video;
-  video_console_install(&video, snes->ppu, VIDEO_EMULATED, false);
-  video_console_attach(&video, snes);
+  Snes* snes = video_snes_init(VIDEO_EMULATED, false);
+  if (!snes_loadRom(snes, rom, rom_len)) { fprintf(stderr, "error: not a ROM\n"); return 1; }
   video_set_pixel_format(video_chip_of(snes), VIDEO_PIXELS_XRGB);
   snes_reset(snes, true);
   Movie movie;
@@ -596,7 +593,7 @@ int main(int argc, char** argv) {
          differing, pieces_apart, squares_slid, skipped_frames);
   cosim_free(&cosim);
   movie_free(&movie);
-  snes_free(snes);
+  video_snes_free(snes);
   free(rom); free(frames[0]); free(frames[1]); free(ops); free(rgb);
   return ok ? 0 : 1;
 }

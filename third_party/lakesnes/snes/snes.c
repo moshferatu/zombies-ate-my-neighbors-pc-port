@@ -10,7 +10,6 @@
 #include "apu.h"
 #include "spc.h"
 #include "dma.h"
-#include "ppu.h"
 #include "cart.h"
 #include "input.h"
 #include "statehandler.h"
@@ -26,45 +25,20 @@ static void snes_writeReg(Snes* snes, uint16_t adr, uint8_t val);
 static uint8_t snes_rread(Snes* snes, uint32_t adr); // wrapped by read, to set open bus
 static int snes_getAccessTime(Snes* snes, uint32_t adr);
 
-// The console's own PPU as its video chip: see `SnesVideo`.
-static void snes_ppuReset(void* ppu) { ppu_reset((Ppu*) ppu); }
-static uint8_t snes_ppuRead(void* ppu, uint8_t adr) { return ppu_read((Ppu*) ppu, adr); }
-static void snes_ppuWrite(void* ppu, uint8_t adr, uint8_t val) { ppu_write((Ppu*) ppu, adr, val); }
-static void snes_ppuFrameStart(void* ppu) { ppu_handleFrameStart((Ppu*) ppu); }
-static bool snes_ppuCheckOverscan(void* ppu) { return ppu_checkOverscan((Ppu*) ppu); }
-static void snes_ppuVblank(void* ppu) { ppu_handleVblank((Ppu*) ppu); }
-static void snes_ppuRunLine(void* ppu, int line) { ppu_runLine((Ppu*) ppu, line); }
-static void snes_ppuHandleState(void* ppu, StateHandler* sh) { ppu_handleState((Ppu*) ppu, sh); }
-static bool snes_ppuEvenFrame(void* ppu) { return ((Ppu*) ppu)->evenFrame; }
-static bool snes_ppuFrameInterlace(void* ppu) { return ((Ppu*) ppu)->frameInterlace; }
-
 void snes_setVideo(Snes* snes, const SnesVideo* video) {
-  if(video != NULL) {
-    snes->video = *video;
-    return;
-  }
-  snes->video = (SnesVideo) {
-    .user = snes->ppu,
-    .reset = snes_ppuReset,
-    .read = snes_ppuRead,
-    .write = snes_ppuWrite,
-    .frameStart = snes_ppuFrameStart,
-    .checkOverscan = snes_ppuCheckOverscan,
-    .vblank = snes_ppuVblank,
-    .runLine = snes_ppuRunLine,
-    .handleState = snes_ppuHandleState,
-    .evenFrame = snes_ppuEvenFrame,
-    .frameInterlace = snes_ppuFrameInterlace,
-  };
+  snes->video = *video;
 }
 
-Snes* snes_init(void) {
+// zamn: nothing in this file calls the PPU, so that a program whose consoles
+// are all made here links none of it. `snes_init` is in `snes_ppu.c`.
+Snes* snes_initWithoutPpu(void) {
   Snes* snes = malloc(sizeof(Snes));
   snes->cpu = cpu_init(snes, snes_cpuRead, snes_cpuWrite, snes_cpuIdle);
   snes->apu = apu_init(snes);
   snes->dma = dma_init(snes);
-  snes->ppu = ppu_init(snes);
-  snes_setVideo(snes, NULL);
+  snes->ppu = NULL;
+  snes->freePpu = NULL;
+  memset(&snes->video, 0, sizeof(snes->video));
   snes->cart = cart_init(snes);
   snes->input1 = input_init(snes);
   snes->input2 = input_init(snes);
@@ -86,7 +60,7 @@ void snes_free(Snes* snes) {
   cpu_free(snes->cpu);
   apu_free(snes->apu);
   dma_free(snes->dma);
-  ppu_free(snes->ppu);
+  if(snes->ppu != NULL) snes->freePpu(snes->ppu);
   cart_free(snes->cart);
   input_free(snes->input1);
   input_free(snes->input2);

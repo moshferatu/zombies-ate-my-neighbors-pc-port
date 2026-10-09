@@ -184,13 +184,10 @@ static Tick* run(const uint8_t* rom, int rom_len, const char* movie_path, long n
                  bool steady, Radar* out, uint16_t* word, bool* have_word) {
   Movie movie;
   if (!movie_load(&movie, movie_path)) return NULL;
-  Snes* snes = snes_init();
-  if (!snes_loadRom(snes, rom, rom_len)) return NULL;
   // The frontend reads the chip's registers from `src/video`, which keeps
   // them beside the PPU's. The PPU draws the picture here.
-  static VideoConsole video;
-  video_console_install(&video, snes->ppu, VIDEO_EMULATED, false);
-  video_console_attach(&video, snes);
+  Snes* snes = video_snes_init(VIDEO_EMULATED, false);
+  if (!snes_loadRom(snes, rom, rom_len)) return NULL;
   static Widescreen ws;
   video_set_margins(video_chip_of(snes), margin, margin);
   widescreen_install(snes, &ws, rom, rom_len, margin);
@@ -224,7 +221,7 @@ static Tick* run(const uint8_t* rom, int rom_len, const char* movie_path, long n
   }
   *out = ws.radar;
   cosim_free(&cosim);
-  snes_free(snes);
+  video_snes_free(snes);
   return ticks;
 }
 

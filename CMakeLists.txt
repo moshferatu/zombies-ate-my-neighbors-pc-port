@@ -18,24 +18,43 @@ endif()
 # Vendored SNES core (LakeSnes, MIT). Serves as both the reference emulator for
 # the co-simulation diff harness and the emulated PPU/APU the finished port
 # keeps using. See third_party/lakesnes/LICENSE.txt.
+#
+# It is two libraries. `snescore` is the whole console. `snescore_without_ppu`
+# is all of it but the emulated PPU and the one file that calls it, for a
+# program whose picture `src/video` draws alone: linked against that one, a
+# call of the PPU from anywhere is an error and not a PPU quietly linked.
 # ---------------------------------------------------------------------------
 file(GLOB SNES_CORE_SRC third_party/lakesnes/snes/*.c)
-add_library(snescore STATIC ${SNES_CORE_SRC})
-target_include_directories(snescore PUBLIC third_party/lakesnes/snes)
+set(SNES_PPU_SRC
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lakesnes/snes/ppu.c
+  ${CMAKE_CURRENT_SOURCE_DIR}/third_party/lakesnes/snes/snes_ppu.c)
+list(REMOVE_ITEM SNES_CORE_SRC ${SNES_PPU_SRC})
+add_library(snescore_without_ppu STATIC ${SNES_CORE_SRC})
+target_include_directories(snescore_without_ppu PUBLIC third_party/lakesnes/snes)
+add_library(snescore STATIC ${SNES_PPU_SRC})
+target_link_libraries(snescore PUBLIC snescore_without_ppu)
 
 if(MSVC)
   # The vendored core is third-party C; silence its warnings, keep ours honest.
-  target_compile_definitions(snescore PRIVATE _CRT_SECURE_NO_WARNINGS)
-  target_compile_options(snescore PRIVATE /w)
+  foreach(core snescore snescore_without_ppu)
+    target_compile_definitions(${core} PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_compile_options(${core} PRIVATE /w)
+  endforeach()
 endif()
 
 # ---------------------------------------------------------------------------
 # The picture, drawn natively. `src/video/video.c` draws a scanline from VRAM,
 # the palette and the registers, and `chip.c` is the console's video chip:
 # the registers, the memories and the picture. Neither knows anything of the
-# emulator. `console.c` is the file that does: it puts a chip in the emulated
-# PPU's place and runs the PPU beside it to be checked against. `state.c`
-# writes the chip's share of a saved state with the emulator's handler.
+# emulator. `console.c` puts a chip where an emulated console's video chip
+# is, and `state.c` writes the chip's share of a saved state with the
+# emulator's handler. None of it calls the emulated PPU.
+#
+# A program then links one of two more, which is where it is settled whether
+# it has a PPU at all. `zamn_video_with_ppu` makes a console with its PPU
+# beside the chip (`beside.c`), to draw in its place or be checked against:
+# all three renderers. `zamn_video_without_ppu` makes a console with none,
+# and has the native renderer alone.
 # ---------------------------------------------------------------------------
 add_library(zamn_video STATIC
   src/video/video.c
@@ -45,18 +64,24 @@ add_library(zamn_video STATIC
   src/video/state.c
   src/video/console.c)
 target_include_directories(zamn_video PUBLIC src)
-target_link_libraries(zamn_video PUBLIC snescore)
+target_link_libraries(zamn_video PUBLIC snescore_without_ppu)
+
+add_library(zamn_video_with_ppu STATIC src/video/beside.c src/video/with_ppu.c)
+target_link_libraries(zamn_video_with_ppu PUBLIC zamn_video snescore)
+
+add_library(zamn_video_without_ppu STATIC src/video/without_ppu.c)
+target_link_libraries(zamn_video_without_ppu PUBLIC zamn_video)
 
 # ...and its test: PPUs filled with noise, every line drawn both ways. No ROM.
 add_executable(zamn_test_video tools/test_video.c)
-target_link_libraries(zamn_test_video PRIVATE zamn_video)
+target_link_libraries(zamn_test_video PRIVATE zamn_video_with_ppu)
 if(MSVC)
   target_compile_definitions(zamn_test_video PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # ...and the registers': writes and reads at random, done to both. No ROM.
 add_executable(zamn_test_registers tools/test_registers.c)
-target_link_libraries(zamn_test_registers PRIVATE zamn_video)
+target_link_libraries(zamn_test_registers PRIVATE zamn_video_with_ppu)
 if(MSVC)
   target_compile_definitions(zamn_test_registers PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
@@ -74,7 +99,7 @@ add_executable(zamn_headless src/headless.c)
 # table to anchor the sprites of a screen-space record.
 # ...and `src/video`, which keeps the chip's registers that it reads.
 target_link_libraries(zamn_headless PRIVATE snescore zamn_analysis zamn_assets_lib zamn_port
-                      zamn_video)
+                      zamn_video_with_ppu)
 target_include_directories(zamn_headless PRIVATE third_party/stb)
 if(MSVC)
   target_compile_definitions(zamn_headless PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -152,7 +177,7 @@ endif()
 # checked against frames, so this one runs a movie: hand it the cartridge and
 # a movie and it reports, frame by frame, identical or not and why not.
 add_executable(zamn_test_layers tools/test_layers.c)
-target_link_libraries(zamn_test_layers PRIVATE zamn_cosim_lib zamn_video)
+target_link_libraries(zamn_test_layers PRIVATE zamn_cosim_lib zamn_video_with_ppu)
 target_include_directories(zamn_test_layers PRIVATE src third_party/stb)
 if(MSVC)
   target_compile_definitions(zamn_test_layers PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -162,7 +187,7 @@ endif()
 # frames for ffmpeg, and the sound as a WAV. How a trailer is made at 4K on a
 # display that is not 4K.
 add_executable(zamn_record tools/record.c)
-target_link_libraries(zamn_record PRIVATE zamn_cosim_lib zamn_video)
+target_link_libraries(zamn_record PRIVATE zamn_cosim_lib zamn_video_with_ppu)
 target_include_directories(zamn_record PRIVATE src)
 if(MSVC)
   target_compile_definitions(zamn_record PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -209,7 +234,7 @@ endif()
 # a level with its set. Needs the cartridge; skips without it.
 add_executable(zamn_test_bank_sfx tools/test_bank_sfx.c)
 target_include_directories(zamn_test_bank_sfx PRIVATE src)
-target_link_libraries(zamn_test_bank_sfx PRIVATE zamn_cosim_lib)
+target_link_libraries(zamn_test_bank_sfx PRIVATE zamn_cosim_lib snescore)
 if(MSVC)
   target_compile_definitions(zamn_test_bank_sfx PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
@@ -218,7 +243,7 @@ endif()
 # console's one at a time -- the same machine, and a picture changed only
 # where the squares are.
 add_executable(zamn_test_radar tools/test_radar.c)
-target_link_libraries(zamn_test_radar PRIVATE zamn_cosim_lib zamn_video)
+target_link_libraries(zamn_test_radar PRIVATE zamn_cosim_lib zamn_video_with_ppu)
 target_include_directories(zamn_test_radar PRIVATE src)
 if(MSVC)
   target_compile_definitions(zamn_test_radar PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -370,18 +395,19 @@ target_include_directories(zamn_port PUBLIC src)
 target_link_libraries(zamn_port PUBLIC zamn_assets_lib)
 
 # The harness itself is tooling, not port code: it may use the emulator, and it
-# goes away in Phase 4 when the reference is cut loose.
+# goes away in Phase 4 when the reference is cut loose. It calls no PPU: the
+# two consoles `cosim_lockstep` compares are handed to it.
 add_library(zamn_cosim_lib STATIC
   src/cosim/cosim.c
   src/cosim/profile.c
   src/cosim/routines.c)
 target_include_directories(zamn_cosim_lib PUBLIC src)
-target_link_libraries(zamn_cosim_lib PUBLIC snescore zamn_port zamn_analysis)
+target_link_libraries(zamn_cosim_lib PUBLIC snescore_without_ppu zamn_port zamn_analysis)
 
 # zamn_cosim: runs the port against the ROM, either checked call-by-call
 # (`verify`) or actually substituted and diffed per frame (`run`).
 add_executable(zamn_cosim src/cosim.c)
-target_link_libraries(zamn_cosim PRIVATE zamn_cosim_lib)
+target_link_libraries(zamn_cosim PRIVATE zamn_cosim_lib snescore)
 
 # ---------------------------------------------------------------------------
 # The interactive frontend — the playable build, with the port substituted in.
@@ -412,18 +438,29 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
     FetchContent_MakeAvailable(SDL2)
   endif()
 
-  add_executable(zamn WIN32 src/main_sdl.c)
-  # zamn_cosim_lib pulls in snescore, zamn_port and zamn_analysis transitively:
+  # It is built twice from the one source. `zamn` has the emulated PPU beside
+  # `src/video`'s chip, and so `--renderer check` and `emulated`. `zamn_native`
+  # has no PPU in it: it is linked against the console without one, so that
+  # it builds at all is the proof that nothing it runs calls the PPU. It is
+  # left in the build directory.
+  #
+  # zamn_cosim_lib pulls in the core, zamn_port and zamn_analysis transitively:
   # the core to run on, the port to substitute, and the movie reader for `-m`.
-  target_link_libraries(zamn PRIVATE zamn_cosim_lib zamn_video SDL2::SDL2 SDL2::SDL2main)
-  if(WIN32)
-    # The desktop compositor's frame statistics, for the cadence report.
-    target_link_libraries(zamn PRIVATE dwmapi)
-  endif()
-  target_include_directories(zamn PRIVATE third_party/lakesnes/snes third_party/stb)
-  if(MSVC)
-    target_compile_definitions(zamn PRIVATE _CRT_SECURE_NO_WARNINGS)
-  endif()
+  add_executable(zamn WIN32 src/main_sdl.c)
+  target_link_libraries(zamn PRIVATE zamn_video_with_ppu)
+  add_executable(zamn_native WIN32 src/main_sdl.c)
+  target_link_libraries(zamn_native PRIVATE zamn_video_without_ppu)
+  foreach(game zamn zamn_native)
+    target_link_libraries(${game} PRIVATE zamn_cosim_lib SDL2::SDL2 SDL2::SDL2main)
+    if(WIN32)
+      # The desktop compositor's frame statistics, for the cadence report.
+      target_link_libraries(${game} PRIVATE dwmapi)
+    endif()
+    target_include_directories(${game} PRIVATE third_party/lakesnes/snes third_party/stb)
+    if(MSVC)
+      target_compile_definitions(${game} PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+  endforeach()
 
   # `src/present.h` is the SDL half of the scaling, and it is checked the only
   # way a filter can be: draw through it into a software renderer, read the
