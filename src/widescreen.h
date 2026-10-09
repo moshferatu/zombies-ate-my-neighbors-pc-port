@@ -465,9 +465,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "ppu.h"
 #include "snes.h"
-#include "video/ppu_hook.h"
+#include "video/console.h"
 
 #include "blood.h"
 #include "radar.h"
@@ -687,7 +686,7 @@ static inline bool ws_game_over(const uint8_t* mem) {
 // `widescreen_frame`.
 static inline bool ws_bg3_across(const Snes* snes) {
   for (int x = 14 * 8; x < 18 * 8; x += 8)
-    if (!video_column_empty(video_registers_of(snes->ppu), 2, x)) return true;
+    if (!video_column_empty(&video_chip_of(snes)->registers, 2, x)) return true;
   return false;
 }
 
@@ -700,9 +699,9 @@ static inline bool ws_upload(Snes* snes, const Rom* rom, uint16_t frame,
   if (!sprite_frame_read(rom, frame, raw)) return false;
   const uint16_t base = sprite_slot_vram(slot);
   for (int i = 0; i < 32; i++) {
-    video_set_vram(snes->ppu, (uint16_t)(base + i),
+    video_set_vram(video_chip_of(snes), (uint16_t)(base + i),
                    (uint16_t)(raw[i * 2] | (raw[i * 2 + 1] << 8)));
-    video_set_vram(snes->ppu, (uint16_t)(base + 0x100 + i),
+    video_set_vram(video_chip_of(snes), (uint16_t)(base + 0x100 + i),
                    (uint16_t)(raw[64 + i * 2] | (raw[65 + i * 2] << 8)));
   }
   return true;
@@ -828,11 +827,11 @@ static inline int ws_emit_meta(Snes* snes, Widescreen* ws, int slot, int rec,
     if (tile < 0) continue;
     const uint16_t word =
         (uint16_t)(((uint16_t)tile | (p->attr & attr_and) | attr_or) ^ flip_eor);
-    video_set_sprite(snes->ppu, slot, at & 0x1ff, sy & 0xff, word, true);
+    video_set_sprite(video_chip_of(snes), slot, at & 0x1ff, sy & 0xff, word, true);
     ws->owner_rec[slot] = (int16_t)rec;
     ws->owner_ox[slot] = (int16_t)(ox + shift);
     ws->owner_oy[slot] = oy;
-    slot = video_free_sprite(video_registers_of(snes->ppu), slot + 1);
+    slot = video_free_sprite(&video_chip_of(snes)->registers, slot + 1);
   }
   return slot;
 }
@@ -914,7 +913,7 @@ static inline bool ws_record_draw(const Widescreen* ws, uint16_t rec, SpriteMeta
 // a whole 16x16 frame, so an entry's tile number is a slot's tile number and
 // the map back is exact.
 static inline void ws_mark_drawn(const Snes* snes, Widescreen* ws) {
-  const VideoRegisters* reg = video_registers_of(snes->ppu);
+  const VideoRegisters* reg = &video_chip_of(snes)->registers;
   ws->lent_count = 0;
   memset(ws->slot_drawn, 0, sizeof ws->slot_drawn);
   for (int e = 0; e < OAM_ENTRIES; e++) {
@@ -935,7 +934,7 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
                                      int right) {
   const uint8_t* mem = ws_sprite_mem(ws);
   const uint16_t count = ws_r16(mem, W_VISIBLE_ACTOR_COUNT);
-  int slot = video_free_sprite(video_registers_of(snes->ppu), 0);
+  int slot = video_free_sprite(&video_chip_of(snes)->registers, 0);
   memset(ws->owner_rec, 0xff, sizeof ws->owner_rec);
   ws_mark_drawn(snes, ws);
 
@@ -994,7 +993,7 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
 // table said it was the radar's marker. So an unmatched OAM is read by its
 // look instead (`ws_screen_by_look`), and NULL says so.
 static inline const SpriteOamOwners* ws_pass_on_screen(const Snes* snes, Widescreen* ws) {
-  const VideoRegisters* reg = video_registers_of(snes->ppu);
+  const VideoRegisters* reg = &video_chip_of(snes)->registers;
   const uint32_t newest = sprite_oam_owners.serial;
   for (uint32_t back = 0; back < SPRITE_OAM_HISTORY && back < newest; back++) {
     const SpriteOamPass* pass = &sprite_oam_history[(newest - back) % SPRITE_OAM_HISTORY];
@@ -1024,7 +1023,7 @@ static inline const SpriteOamOwners* ws_pass_on_screen(const Snes* snes, Widescr
 // the frame after the copy was taken; a frame in neither is matched on the
 // rest. Entries the margins filled are theirs, as with a table.
 static inline void ws_screen_by_look(const Snes* snes, const Widescreen* ws, int16_t owner[OAM_ENTRIES]) {
-  const VideoRegisters* reg = video_registers_of(snes->ppu);
+  const VideoRegisters* reg = &video_chip_of(snes)->registers;
   memset(owner, 0xff, OAM_ENTRIES * sizeof owner[0]);
   const uint8_t* mem = ws_sprite_mem(ws);
   const uint16_t count = ws_r16(mem, W_VISIBLE_ACTOR_COUNT);
@@ -1101,9 +1100,10 @@ static inline const SpriteOamOwners* ws_owners(const Widescreen* ws, const Sprit
 }
 
 static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, VideoSpritePlace place) {
+  VideoChip* chip = video_chip_of(snes);
   const uint8_t* mem = ws_sprite_mem(ws);
   if (place == VIDEO_SPRITE_WORLD) {
-    for (int s = 0; s < OAM_ENTRIES; s++) video_set_sprite_place(snes->ppu, s, VIDEO_SPRITE_WORLD);
+    for (int s = 0; s < OAM_ENTRIES; s++) video_set_sprite_place(chip, s, VIDEO_SPRITE_WORLD);
     return;
   }
   const SpriteOamOwners* owners = ws_pass_on_screen(snes, ws);
@@ -1113,7 +1113,7 @@ static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, VideoSpri
     const int rec = owners ? owners->rec[s] : -1;
     const bool screen = owners ? rec >= 0 && (ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS) & ACTOR_SCREEN_SPACE) != 0
                                : by_look[s] >= 0;
-    video_set_sprite_place(snes->ppu, s, screen ? place : VIDEO_SPRITE_WORLD);
+    video_set_sprite_place(chip, s, screen ? place : VIDEO_SPRITE_WORLD);
   }
 }
 
@@ -1197,14 +1197,14 @@ static inline bool ws_firework_sprites(Snes* snes, Widescreen* ws, int left, int
     if (rec < 0 || i == n) continue;
     const int16_t ox = (int16_t)ws_r16(mem, (uint32_t)rec + ACTOR_X);
     const int shift = ws_firework_shift(ox, left, right);
-    video_set_sprite_shift(snes->ppu, s, shift);
+    video_set_sprite_shift(video_chip_of(snes), s, shift);
     ws->owner_rec[s] = (int16_t)rec;
     ws->owner_ox[s] = (int16_t)(ox + shift);
     ws->owner_oy[s] = (int16_t)ws_r16(mem, (uint32_t)rec + ACTOR_Y);
   }
 
   ws_mark_drawn(snes, ws);
-  int slot = video_free_sprite(video_registers_of(snes->ppu), 0);
+  int slot = video_free_sprite(&video_chip_of(snes)->registers, 0);
   for (int i = 0; i < n && slot < OAM_ENTRIES; i++) {
     SpriteMeta meta;
     int16_t ox, oy;
@@ -1234,7 +1234,7 @@ static inline bool ws_firework_sprites(Snes* snes, Widescreen* ws, int left, int
 // widest and tallest, so the screen's last word is the blank one. False for a
 // plane with nothing in it.
 static inline bool ws_boss_extent(const Snes* snes, int* x0, int* x1) {
-  const VideoRegisters* reg = video_registers_of(snes->ppu);
+  const VideoRegisters* reg = &video_chip_of(snes)->registers;
   const uint16_t base = reg->bg[0].map_at;
   const uint16_t blank = reg->vram[(base + 0x3ff) & 0x7fff] & 0x3ff;
   int c0 = 32, c1 = -1;
@@ -1263,7 +1263,7 @@ static inline bool ws_boss_extent(const Snes* snes, int* x0, int* x1) {
 // (`LAYERS_MARGIN`). A figure, or a lap of one, left in those columns is one
 // that flickers at the picture's edge as the boss walks.
 static inline void ws_boss_plane(Snes* snes, const Widescreen* ws, int left, int right) {
-  const VideoBg* bg = &video_registers_of(snes->ppu)->bg[0];
+  const VideoBg* bg = &video_chip_of(snes)->registers.bg[0];
   int x0, x1;
   if (!ws_boss_extent(snes, &x0, &x1)) return;  // a level with no big figure
   const int lo = -left - WS_CAPTURE_SLACK, hi = 256 + right + WS_CAPTURE_SLACK;
@@ -1281,7 +1281,7 @@ static inline void ws_boss_plane(Snes* snes, const Widescreen* ws, int left, int
     int sx = (1024 - (bg->hscroll & 0x3ff)) & 0x3ff;
     if (sx >= 512) sx -= 1024;
     if (sx + x1 <= lo && sx + 512 + x0 < hi)
-      video_set_scroll(snes->ppu, 0, WS_BOSS_PARKED, WS_BOSS_PARKED);
+      video_set_scroll(video_chip_of(snes), 0, WS_BOSS_PARKED, WS_BOSS_PARKED);
     return;
   }
   // Parked. Where the job would have put it is worked out from the words it
@@ -1313,7 +1313,7 @@ static inline void ws_boss_plane(Snes* snes, const Widescreen* ws, int left, int
     const int sx = -(int)(int16_t)dx;
     if (sx < 256 || sx + x0 >= hi || sx - 512 + x1 > lo) return;
     if (!job_kept_y) return;  // off the top or the bottom: parked is right
-    video_set_scroll(snes->ppu, 0, dx, dy);
+    video_set_scroll(video_chip_of(snes), 0, dx, dy);
     return;
   }
 }
@@ -1336,7 +1336,7 @@ static inline void ws_split_margins(int cam_x, int map_cols, int margin, int* le
 }
 
 static inline bool ws_konami_sweep(const Snes* snes) {
-  const VideoRegisters* reg = video_registers_of(snes->ppu);
+  const VideoRegisters* reg = &video_chip_of(snes)->registers;
   const VideoBg* bg = &reg->bg[0];
   if (reg->mode != 1 || !bg->big_tiles || !bg->map_wide) return false;
   const uint16_t* row = &reg->vram[(bg->map_at + 32) & 0x7fe0];
@@ -1349,10 +1349,11 @@ static inline bool ws_konami_sweep(const Snes* snes) {
 // own copy instead (`ws_sprite_mem`), which is the same thing on a tick that
 // finished in time and the right thing on one that did not.
 static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
-  const VideoRegisters* reg = video_registers_of(snes->ppu);
+  VideoChip* chip = video_chip_of(snes);
+  const VideoRegisters* reg = &chip->registers;
   const uint8_t* mem = ws->mem;
   const int margin = ws->margin;
-  for (int s = 0; s < OAM_ENTRIES; s++) video_set_sprite_shift(snes->ppu, s, 0);
+  for (int s = 0; s < OAM_ENTRIES; s++) video_set_sprite_shift(chip, s, 0);
   // Both halves, and see the note at the top of this file on why the width
   // alone is not enough: BG2SC keeps its 64 columns across the cards between
   // two levels, and only `$212C` says the world has stopped being drawn.
@@ -1404,34 +1405,34 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // with writing on it, and is repeated from the first frame.
   const bool bg3_field =
       !in_level && video_column_filled(reg, 2, 0) && video_column_filled(reg, 2, 255);
-  video_set_wide(snes->ppu, 2, bg3_field ? VIDEO_WIDE_TILE
-                               : !in_level ? VIDEO_WIDE_AUTO : bg3_mask ? VIDEO_WIDE_CENTRE
-                               : bg3_writing ? VIDEO_WIDE_CENTRE_CLIP : VIDEO_WIDE_ANCHOR);
+  video_set_wide(chip, 2, bg3_field ? VIDEO_WIDE_TILE
+                          : !in_level ? VIDEO_WIDE_AUTO : bg3_mask ? VIDEO_WIDE_CENTRE
+                          : bg3_writing ? VIDEO_WIDE_CENTRE_CLIP : VIDEO_WIDE_ANCHOR);
   // (The sprites laid out over BG3 -- the radar's markers, the mask's drips
   // -- go the same way: `ws_place_screen_sprites`, at the end.)
   // BG2 is the scrolling world, and its margins are filled below, so it is the
   // one layer whose continuation is known rather than guessed at.
-  video_set_wide(snes->ppu, 1, in_level ? VIDEO_WIDE_STRETCH : VIDEO_WIDE_AUTO);
+  video_set_wide(chip, 1, in_level ? VIDEO_WIDE_STRETCH : VIDEO_WIDE_AUTO);
   // Sprites are world things in a level and stagecraft outside one. A title
   // card slides its letters in from off the side of the console's 256 and
   // relies on that edge to hide them; widening the picture without saying this
   // shows the trick, as the same words a second time at both edges.
-  video_set_wide(snes->ppu, 4, in_level ? VIDEO_WIDE_STRETCH : VIDEO_WIDE_CLIP);
+  video_set_wide(chip, 4, in_level ? VIDEO_WIDE_STRETCH : VIDEO_WIDE_CLIP);
   // BG1 outside a level is the one background that is neither: see
   // `ws_konami_sweep`. In a level it is the big figure's plane, 512 pixels of
   // the game's own with a boss in one corner of it or nothing at all, and it
   // goes on into the margins as the world does -- see the header.
-  video_set_wide(snes->ppu, 0, in_level ? (reg->bg[0].map_wide ? VIDEO_WIDE_STRETCH : VIDEO_WIDE_AUTO)
-                               : ws_konami_sweep(snes) ? VIDEO_WIDE_SWEEP : VIDEO_WIDE_AUTO);
+  video_set_wide(chip, 0, in_level ? (reg->bg[0].map_wide ? VIDEO_WIDE_STRETCH : VIDEO_WIDE_AUTO)
+                          : ws_konami_sweep(snes) ? VIDEO_WIDE_SWEEP : VIDEO_WIDE_AUTO);
 
   if (!in_level || margin <= 0) {
     memset(ws->owner_rec, 0xff, sizeof ws->owner_rec);
     // Nothing outside a level has a map to run off the end of.
-    video_set_margins(snes->ppu, margin, margin);
-    video_set_clamp(snes->ppu, -VIDEO_EXTRA_MAX, 255 + VIDEO_EXTRA_MAX);
+    video_set_margins(chip, margin, margin);
+    video_set_clamp(chip, -VIDEO_EXTRA_MAX, 255 + VIDEO_EXTRA_MAX);
     // The Winner screen's fireworks, spread out to the picture's edges.
     if (!in_level && margin > 0 && ws_firework_sprites(snes, ws, margin, margin))
-      video_set_wide(snes->ppu, 4, VIDEO_WIDE_STRETCH);
+      video_set_wide(chip, 4, VIDEO_WIDE_STRETCH);
     ws->screen_place = VIDEO_SPRITE_WORLD;
     ws_place_screen_sprites(snes, ws, ws->screen_place);
     return;
@@ -1468,13 +1469,13 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // either.
   int left, right;
   ws_split_margins(cam_x, map_cols, margin, &left, &right);
-  video_set_margins(snes->ppu, left, right);
+  video_set_margins(chip, left, right);
   // ...and if the map is narrower than the whole picture, neither margin can be
   // filled and the total has to stay put or the framebuffer would change size
   // frame to frame. The backdrop covers whatever is left, from the map's two
   // edges in picture columns: world x is `cam_x` plus screen x, so world 0 sits
   // at `-cam_x` and the last map pixel at the far end of the last column.
-  video_set_clamp(snes->ppu, -(int)cam_x, map_cols * 8 - 1 - (int)cam_x);
+  video_set_clamp(chip, -(int)cam_x, map_cols * 8 - 1 - (int)cam_x);
 
   // The columns either side of the game's 32 that the picture reaches, and
   // `WS_CAPTURE_SLACK` past its edges for the smoothing. No more: the ring is
@@ -1520,7 +1521,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
         if ((tile & TILEMAP_COPY_MASK) < threshold) tile |= TILEMAP_PRIORITY_BIT;
 
         const int ring_row = (cursor_y + j) & TILEMAP_CURSOR_MASK_Y;
-        video_set_vram(snes->ppu, (uint16_t)(vram_base + slot_word + ring_row * 32), tile);
+        video_set_vram(chip, (uint16_t)(vram_base + slot_word + ring_row * 32), tile);
       }
     }
   }

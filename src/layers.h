@@ -129,9 +129,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "ppu.h"
 #include "smooth.h"
-#include "video/ppu_hook.h"
+#include "video/console.h"
 
 // The picture, in game pixels: the console's 224 lines, and as many columns
 // as the picture has been widened to.
@@ -139,7 +138,7 @@
 // Room around every plane for a tick's worth of movement, so a layer eased
 // past its own edge has something there. Nothing moves further than a snap.
 #define LAYERS_MARGIN SMOOTH_SNAP
-#define LAYERS_PLANE_W (PPU_MAX_WIDTH + 2 * LAYERS_MARGIN)
+#define LAYERS_PLANE_W (VIDEO_MAX_WIDTH + 2 * LAYERS_MARGIN)
 #define LAYERS_PLANE_H (LAYERS_LINES + 2 * LAYERS_MARGIN)
 // Planes: two priorities for each of four backgrounds, and the backdrop --
 // and a twin of each with the fixed-colour maths applied, used only when the
@@ -166,7 +165,7 @@
 #define LAYERS_ATLAS_H (LAYERS_ATLAS_ROWS * LAYERS_CELL_MAX)
 // The frame as it was drawn, kept for the frames that cannot be drawn as
 // layers: `video_put_pixels` layout, four bytes a pixel, each line twice.
-#define LAYERS_FB_W (PPU_MAX_WIDTH * 2)
+#define LAYERS_FB_W (VIDEO_MAX_WIDTH * 2)
 #define LAYERS_FB_H 480
 // A draw list is at most every plane, every sprite drawn six times (once
 // wrapped down, and each of those three times across for a centred one),
@@ -452,9 +451,9 @@ static inline int layers_stack(int mode, bool bg3prio, int* layer, int* prio) {
 // Why a frame cannot be a draw list, or NULL if it can. Every reason is a
 // feature of the console the list has no op for; each is counted by the test
 // so that "how often" is a measured number and not a guess.
-static inline const char* layers_unexpressible(const Ppu* ppu) {
-  const VideoRegisters* reg = video_registers_of(ppu);
-  const VideoFrame* noted = video_frame_of(ppu);
+static inline const char* layers_unexpressible(const VideoChip* chip) {
+  const VideoRegisters* reg = &chip->registers;
+  const VideoFrame* noted = &chip->frame;
   if (reg->blank) return "forced blank";
   if (noted->mid_frame_write) return "written mid-frame";
   // The planes are read a row at a time by `video_bg_row`, which reads what
@@ -504,9 +503,9 @@ static inline const uint8_t* layers_fb_pixel(const LayersFrame* f, int x, int y)
 
 // One sprite's cell in the atlas, decoded the way `ppu_evaluateSprites` does,
 // with its palette -- and its maths, if it has one -- baked in.
-static inline void layers_sprite_cell(LayersFrame* f, const Ppu* ppu, const VideoState* vs,
+static inline void layers_sprite_cell(LayersFrame* f, const VideoChip* chip, const VideoState* vs,
                                       int slot, int size, bool mathAllowedAll) {
-  const VideoRegisters* reg = video_registers_of(ppu);
+  const VideoRegisters* reg = &chip->registers;
   const int index = slot * 2;
   const uint16_t attr = reg->oam[index + 1];
   const int tile = attr & 0xff;
@@ -607,9 +606,9 @@ static inline void layers_occlude(LayersFrame* f) {
 // table made once for the layer. `mathed` is whether the planes have the
 // fixed colour's maths in them, and `twins` whether the mathed twins are
 // filled as well.
-static inline void layers_planes_by_row(LayersFrame* f, Ppu* ppu, const VideoState* vs, int l,
-                                        bool mathed, bool twins, int x0, int x1) {
-  const VideoRegisters* reg = video_registers_of(ppu);
+static inline void layers_planes_by_row(LayersFrame* f, const VideoChip* chip, const VideoState* vs,
+                                        int l, bool mathed, bool twins, int x0, int x1) {
+  const VideoRegisters* reg = &chip->registers;
   uint32_t plain[256], twin[256];
   plain[0] = twin[0] = 0;
   for (int i = 1; i < 256; i++) {
@@ -623,7 +622,7 @@ static inline void layers_planes_by_row(LayersFrame* f, Ppu* ppu, const VideoSta
   const int width = x1 - x0;
   // A centred layer's margins, from what the frame's lines found of them,
   // and a copy: what is found here is not what a line found.
-  VideoCentre centre = video_frame_of(ppu)->centre;
+  VideoCentre centre = chip->frame.centre;
   uint8_t back[LAYERS_PLANE_W], front[LAYERS_PLANE_W];
   uint8_t anyBack = 0, anyFront = 0;
   for (int line = 1 - LAYERS_MARGIN; line <= LAYERS_LINES + LAYERS_MARGIN; line++) {
@@ -652,23 +651,23 @@ static inline void layers_planes_by_row(LayersFrame* f, Ppu* ppu, const VideoSta
 // caller knows, from the table's serial, and this does not. Always fills
 // `fb`; fills the planes and sprites only when the frame can be a draw list.
 // Nothing of `ppu` is changed.
-static inline void layers_capture(LayersFrame* f, Ppu* ppu,
+static inline void layers_capture(LayersFrame* f, const VideoChip* chip,
                                   const int16_t* ownerRec, const int16_t* ownerOx,
                                   const int16_t* ownerOy) {
-  const VideoRegisters* reg = video_registers_of(ppu);
+  const VideoRegisters* reg = &chip->registers;
   VideoState vs;
-  video_state_of(&vs, ppu);
+  video_chip_state(chip, &vs);
   f->valid = true;
   f->width = video_width(&vs);
   f->extraLeft = vs.extra_left;
   f->world = reg->bg[1].map_wide && reg->main[1];
-  f->fbWidth = video_output_width(ppu);
-  video_put_pixels(ppu, f->fb);
+  f->fbWidth = video_output_width(chip);
+  video_put_pixels(chip, f->fb);
   f->mode = reg->mode;
   f->bg3prio = reg->bg3_front;
   f->dark = reg->blank || reg->brightness == 0;
   f->dim = layers_dim_late(reg) ? reg->brightness : 15;
-  f->why = layers_unexpressible(ppu);
+  f->why = layers_unexpressible(chip);
   f->layered = f->why == NULL;
   memcpy(f->oam, reg->oam, sizeof f->oam);
   memcpy(f->highOam, reg->high_oam, sizeof f->highOam);
@@ -759,7 +758,7 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
     // Maths everywhere is baked into the planes; maths through a window goes
     // into their twins, and the planes stay plain.
     const bool math = fixedMath && f->mathMain[l] && f->main[l];
-    layers_planes_by_row(f, ppu, &vs, l, math && allowedEverywhere, math && f->mathGated, x0, x1);
+    layers_planes_by_row(f, chip, &vs, l, math && allowedEverywhere, math && f->mathGated, x0, x1);
   }
   {
     const bool math = fixedMath && f->mathMain[5];
@@ -807,7 +806,7 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
     const bool onY = sp->y < LAYERS_LINES || sp->y + size > 256;
     const bool onX = sp->x > -size - vs.extra_left && sp->x < 256 + vs.extra_right;
     sp->drawn = spritesOn && onY && onX;
-    if (sp->drawn) layers_sprite_cell(f, ppu, &vs, s, size, allowedEverywhere);
+    if (sp->drawn) layers_sprite_cell(f, chip, &vs, s, size, allowedEverywhere);
   }
   layers_occlude(f);
 }
@@ -825,8 +824,9 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
 // the picture after a tick that did not finish is the picture before it. The
 // console is sent the same sprites again, and if every entry the table
 // accounts for is still what it was, the table still accounts for them.
-static inline bool layers_owners_stand(const LayersFrame* last, const Ppu* ppu, const int16_t* rec) {
-  const VideoRegisters* reg = video_registers_of(ppu);
+static inline bool layers_owners_stand(const LayersFrame* last, const VideoChip* chip,
+                                       const int16_t* rec) {
+  const VideoRegisters* reg = &chip->registers;
   if (!last->valid) return false;
   for (int s = 0; s < LAYERS_SPRITES; s++) {
     if (rec[s] < 0) continue;

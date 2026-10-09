@@ -40,9 +40,9 @@ Drawing alone, it tells the emulated PPU nothing. At 16:9 a tick of
   line of the corpus, 77,686,784 of them at one width, found 15 kinds, all
   mode 1. `video_declines` names what a line has that is outside that, and
   such a line is left to the PPU. Over the corpus none is.
-* **`src/video/ppu_hook.c`** is the one file that knows the emulator. The
-  PPU still holds the registers and the memory and still finds each line's
-  sprites. It calls `Ppu.drawLine` where it would have drawn.
+* **`src/video/console.c`** is the one file that knows the emulator. It
+  puts the chip (`chip.c`) in the PPU's place and runs the PPU beside it
+  under `check` and `emulated`.
 * **`--renderer native`, `emulated` or `check`.** Native is the default.
   `--stock` runs emulated unless told otherwise. `check` draws every line
   both ways, reports the lines that differ and exits 1 if any did.
@@ -270,7 +270,7 @@ Drawing alone, it tells the emulated PPU nothing. At 16:9 a tick of
   * `SnesVideo`, in the console's `snes.h`: a write, a read, the frame's
     three events, a line, a reset, the chip's share of a state, and which
     field the frame is. A console starts with its own PPU behind it, and
-    `video_hook_attach` puts `src/video` there.
+    `video_console_attach` puts `src/video` there.
   * Under `native` the PPU is told nothing: no write, no line, nothing the
     frontend says. Under `check` and `emulated` everything is done to it
     first, and its answers are the ones the console gets.
@@ -318,6 +318,56 @@ Drawing alone, it tells the emulated PPU nothing. At 16:9 a tick of
     was saved and loaded by `zamn_headless`, through the same two calls.
     The game reads the chip once in a movie, so a read answered from here
     alone is tried by the noise test and hardly by a movie.
+* **The chip and its console.** One struct had been the chip, the PPU's
+  pointer and what a check found, named `VideoHook`, and the frontend's
+  handle on it was the PPU's pointer.
+  * `VideoChip` (`src/video/chip.h`) is the chip, and includes nothing of
+    the emulator's. The frontend has it from `video_chip_of`, reads
+    `registers`, `picture` and `frame` in it and calls `video_set_*` on it.
+    Nothing of the frontend's is handed a PPU now.
+  * `VideoConsole` (`console.h`) is a chip with the console's PPU beside
+    it, and is what a console is given as its video chip. The chip speaks
+    to it through three functions (`VideoOther`): what the frontend said,
+    and a line or a line's sprites the chip does not draw or find. With
+    nobody there such a line is black.
+  * `state.h` is the chip's share of a saved state, on its own.
+  * `zamn_test_video` has the chip take what is in its PPU before a line,
+    so the chip draws from itself there as in the game. The second way of
+    filling a `VideoState`, out of a PPU, is gone. `zamn_test_registers`
+    drives a `VideoChip`.
+  * That found an overrun in the emulated PPU. Given the sprites under the
+    centring policy, which the frontend never says of them, it wrote two
+    bytes past an array of four into its own flags. Mended in `ppu.c`. The
+    noise test's checksum changed with that and nothing else.
+  * The corpus at four widths: no line, register, memory or note differs
+    over 310,747,136 lines, and all 216 runs come to the same checksum with
+    the PPU told nothing. The game's own corpus: 34,603,665 calls and none
+    diverged. Lockstep was not run again.
+  * Three renderers come to one checksum on two movies and on the forced
+    game over with red blood at three widths, each the build before's.
+    A state saved under each of the three is one file in five cases, and
+    the file the build before saved. Twelve were loaded under all three:
+    36 runs, each the unbroken run's picture.
+  * Both noise tests do what they did, count for count, and nothing
+    differs: 13,000,000 steps and 6,000 frames. The second now compares
+    1,344,000 lines' notes too.
+  * Thirty things broken on purpose were each caught, and five that must
+    change nothing changed nothing. Two were not caught. The console's
+    reset not passed to the chip: a movie resets once, before anything is
+    written. And the PPU not told a sprite's shift: only the winner's
+    screen shifts one, and no movie gets there.
+  * Against the build before: the layers test prints the same on seven
+    runs, the radar test at two widths, `zamn_headless` writes the same
+    picture from three movies, and `zamn_record` the same bytes from four
+    recordings.
+  * It builds on Linux and both noise tests pass there. One movie and the
+    forced game over come to the Windows build's checksums under all three
+    renderers, and a state saved there is the file the Windows build saves.
+  * A tick costs what it did, as near as I can measure: 2.46 to 2.47 ms at
+    16:9 against 2.39 to 2.44, and an earlier pass had 2.42 to 2.60
+    against 2.39 to 2.74.
+  * Not established: the quick save's own key was not pressed. Nobody has
+    looked at the picture. A build without the PPU has not been tried.
 * **Tried before this and not kept.** Three smaller things, each measured
   in a copy: asking each layer once a dot in `ppu_getPixel`, 13% and
   pixel-identical; remembering the last tile read, 4% more; whole-program
@@ -340,8 +390,8 @@ Drawing alone, it tells the emulated PPU nothing. At 16:9 a tick of
     `--verbose` counts such lines by what they were.
 * **Still the emulator's.** When a frame starts and ends and when a line
   begins, which the console now says to `src/video` directly. The PPU,
-  linked in: idle under `native`, run under the other two, and its pointer
-  still the frontend's handle. The layout of a saved state.
+  linked in: idle under `native`, run under the other two. The layout of a
+  saved state.
 * **`PLAN.md` still says the PPU stays emulated.** I have not edited it.
 * **Next.** A handle of `src/video`'s own for the frontend in place of
   the PPU's pointer, and the hook named for what it is, after which a

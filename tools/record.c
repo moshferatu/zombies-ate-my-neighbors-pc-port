@@ -28,7 +28,6 @@
 #include <io.h>
 #endif
 
-#include "ppu.h"
 #include "snes.h"
 
 #include "analysis/movie_apply.h"
@@ -133,14 +132,14 @@ int main(int argc, char** argv) {
   // The frontend reads the chip's registers from `src/video`, which keeps
   // them beside the PPU's, and takes the picture from it. The PPU draws the
   // picture here.
-  static VideoHook video_hook;
-  video_hook_install(&video_hook, snes->ppu, VIDEO_EMULATED, false);
-  video_hook_attach(&video_hook, snes);
-  video_set_pixel_format(snes->ppu, VIDEO_PIXELS_XRGB);
+  static VideoConsole video;
+  video_console_install(&video, snes->ppu, VIDEO_EMULATED, false);
+  video_console_attach(&video, snes);
+  video_set_pixel_format(video_chip_of(snes), VIDEO_PIXELS_XRGB);
   // As the frontend sets the machine up: the widened picture and its hook,
   // which also draws the radar and the blood, and the game over's line.
   static Widescreen ws;
-  video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
+  video_set_margins(video_chip_of(snes), wide_margin(wide), wide_margin(wide));
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
   ws.radar.steady = !radar_flash;
   maskline_fix(snes->cart);
@@ -198,12 +197,12 @@ int main(int argc, char** argv) {
     LayersFrame* f = frames[cur];
     LayersFrame* prev = frames[cur ^ 1];
     const SpriteOamOwners* game =
-        held_fresh ? &held : used_ok && layers_owners_stand(prev, snes->ppu, used.rec) ? &used : NULL;
+        held_fresh ? &held : used_ok && layers_owners_stand(prev, video_chip_of(snes), used.rec) ? &used : NULL;
     if (game && game != &used) used = *game;
     used_ok = game != NULL;
     SpriteOamOwners with;
     const SpriteOamOwners* own = ws_owners(&ws, game, &with);
-    layers_capture(f, snes->ppu, own ? own->rec : NULL, own ? own->ox : NULL, own ? own->oy : NULL);
+    layers_capture(f, video_chip_of(snes), own ? own->rec : NULL, own ? own->ox : NULL, own ? own->oy : NULL);
     held = sprite_oam_owners;
     held_fresh = fresh;
     layers_link(f, prev);

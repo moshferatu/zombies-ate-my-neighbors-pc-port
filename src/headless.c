@@ -7,7 +7,7 @@
 //                      [--pos first[,last[,step]]] [--records first[,last[,step]]]
 //
 // `--renderer native|emulated|check` says who draws the picture, as the game's
-// own switch does (`src/video/ppu_hook.h`), and has what was drawn reported
+// own switch does (`src/video/console.h`), and has what was drawn reported
 // at the end with its checksum. Left out, the emulated PPU draws it. With
 // `--save` and `--load` it is how a saved state is tried under each of them.
 //
@@ -50,7 +50,6 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "ppu.h"
 #include "snes.h"
 
 #include "analysis/movie_apply.h"
@@ -68,7 +67,7 @@
 // grow with it and everything here reads `fb_w` instead. `FB_W` stays as the
 // widest it can be, because the buffers are allocated once and the option is
 // parsed after them.
-#define FB_W (PPU_MAX_WIDTH * 2)
+#define FB_W (VIDEO_MAX_WIDTH * 2)
 #define FB_H 480
 static int fb_w = 512;
 
@@ -95,7 +94,7 @@ static bool write_png(Snes* snes, const char* path) {
   uint8_t* fb = (uint8_t*)malloc((size_t)FB_W * FB_H * 4);
   uint8_t* rgb = (uint8_t*)malloc((size_t)FB_W * FB_H * 3);
   if (!fb || !rgb) { free(fb); free(rgb); return false; }
-  video_put_pixels(snes->ppu, fb);
+  video_put_pixels(video_chip_of(snes), fb);
   // Convert XRGB(=[B,G,R,X]) -> packed RGB for the PNG. The core packs its rows
   // at the live width, so this is a straight run of `fb_w * FB_H` pixels.
   for (int i = 0; i < fb_w * FB_H; i++) {
@@ -504,21 +503,21 @@ int main(int argc, char** argv) {
   // `src/video` is the console's video chip, and the frontend reads the
   // registers and takes the picture from it. It has the PPU draw the picture
   // here unless `--renderer` says otherwise.
-  static VideoHook video_hook;
-  video_hook_install(&video_hook, snes->ppu, renderer, renderer_given);
-  video_hook_attach(&video_hook, snes);
+  static VideoConsole video;
+  video_console_install(&video, snes->ppu, renderer, renderer_given);
+  video_console_attach(&video, snes);
   // Widen the picture before the first frame is drawn. `fb_w` is what the core
   // will pack its rows at from here on, and every buffer above was allocated at
   // the widest it could be. The hook then does the per-frame half of it, at the
   // top of each frame rather than from here — see `SnesFrameHook`.
-  video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
-  fb_w = video_output_width(snes->ppu);
+  video_set_margins(video_chip_of(snes), wide_margin(wide), wide_margin(wide));
+  fb_w = video_output_width(video_chip_of(snes));
   static Widescreen ws;
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
   ws.radar.steady = !radar_flash;
   if (wide != WIDE_OFF) printf("Widescreen %s: %d columns\n", wide_name(wide), fb_w / 2);
   // XRGB layout: framebuffer bytes per pixel are [B, G, R, X].
-  video_set_pixel_format(snes->ppu, VIDEO_PIXELS_XRGB);
+  video_set_pixel_format(video_chip_of(snes), VIDEO_PIXELS_XRGB);
   if (!cheats_install(&cheats, snes->cart->rom, (size_t)snes->cart->romSize)) {
     fprintf(stderr, "error: this is not a cartridge the cheats know how to change\n");
     return 1;
@@ -633,7 +632,7 @@ int main(int argc, char** argv) {
     return 1;
   }
   printf("Wrote %s (%dx%d)\n", out_path, fb_w, FB_H);
-  const bool picture_ok = !renderer_given || video_hook_report(&video_hook, stdout);
+  const bool picture_ok = !renderer_given || video_console_report(&video, stdout);
 
   if (have_movie) movie_free(&movie);
   free(rom);

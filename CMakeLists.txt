@@ -31,16 +31,19 @@ endif()
 
 # ---------------------------------------------------------------------------
 # The picture, drawn natively. `src/video/video.c` draws a scanline from VRAM,
-# the palette and the registers, and knows nothing of the emulator;
-# `ppu_hook.c` is the one file that does. It is the console's video chip in
-# the emulated PPU's place, and runs the PPU beside itself to be checked
-# against.
+# the palette and the registers, and `chip.c` is the console's video chip:
+# the registers, the memories and the picture. Neither knows anything of the
+# emulator. `console.c` is the file that does: it puts a chip in the emulated
+# PPU's place and runs the PPU beside it to be checked against. `state.c`
+# writes the chip's share of a saved state with the emulator's handler.
 # ---------------------------------------------------------------------------
 add_library(zamn_video STATIC
   src/video/video.c
   src/video/registers.c
   src/video/frame.c
-  src/video/ppu_hook.c)
+  src/video/chip.c
+  src/video/state.c
+  src/video/console.c)
 target_include_directories(zamn_video PUBLIC src)
 target_link_libraries(zamn_video PUBLIC snescore)
 

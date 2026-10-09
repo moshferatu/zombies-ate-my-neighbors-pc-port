@@ -47,9 +47,8 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "ppu.h"
 #include "snes.h"
-#include "video/ppu_hook.h"
+#include "video/console.h"
 
 #include "assets/rom.h"
 #include "assets/sprite.h"
@@ -114,13 +113,13 @@ static inline uint16_t radar_r16(const uint8_t* mem, uint32_t off) {
 // left to remember it in, and then nothing is written.
 static inline bool radar_put(Snes* snes, Radar* r, int s, int x, int y, uint16_t word, bool large) {
   if (r->written == RADAR_WRITTEN_MAX) return false;
-  const VideoRegisters* reg = video_registers_of(snes->ppu);
+  const VideoRegisters* reg = &video_chip_of(snes)->registers;
   const int i = r->written++;
   r->slot[i] = s;
   r->was_lo[i] = reg->oam[s * 2];
   r->was_word[i] = reg->oam[s * 2 + 1];
   r->was_high[i] = (uint8_t)((reg->high_oam[s >> 2] >> ((s & 3) * 2)) & 3);
-  video_set_sprite(snes->ppu, s, x, y, word, large);
+  video_set_sprite(video_chip_of(snes), s, x, y, word, large);
   return true;
 }
 
@@ -129,14 +128,14 @@ static inline bool radar_put(Snes* snes, Radar* r, int s, int x, int y, uint16_t
 // so an entry written twice ends as it began. (Not entry by entry: a square
 // the game's own marker has since landed on is the game's.)
 static inline void radar_return(Snes* snes, Radar* r) {
-  Ppu* ppu = snes->ppu;
-  const VideoRegisters* reg = video_registers_of(ppu);
-  for (int i = 0; i < r->written; i++) video_set_sprite_front(ppu, r->slot[i], false);
+  VideoChip* chip = video_chip_of(snes);
+  const VideoRegisters* reg = &chip->registers;
+  for (int i = 0; i < r->written; i++) video_set_sprite_front(chip, r->slot[i], false);
   if (r->written && !memcmp(reg->oam, r->oam, sizeof r->oam) &&
       !memcmp(reg->high_oam, r->high, sizeof r->high)) {
     for (int i = r->written - 1; i >= 0; i--) {
       const int s = r->slot[i];
-      video_set_sprite(ppu, s, (r->was_lo[i] & 0xff) | (r->was_high[i] & 1) << 8, r->was_lo[i] >> 8,
+      video_set_sprite(chip, s, (r->was_lo[i] & 0xff) | (r->was_high[i] & 1) << 8, r->was_lo[i] >> 8,
                        r->was_word[i], (r->was_high[i] & 2) != 0);
     }
   }
@@ -145,7 +144,7 @@ static inline void radar_return(Snes* snes, Radar* r) {
 
 // ...and after this frame's are written, the OAM it leaves.
 static inline void radar_keep(const Snes* snes, Radar* r) {
-  const VideoRegisters* reg = video_registers_of(snes->ppu);
+  const VideoRegisters* reg = &video_chip_of(snes)->registers;
   memcpy(r->oam, reg->oam, sizeof r->oam);
   memcpy(r->high, reg->high_oam, sizeof r->high);
 }
@@ -154,7 +153,7 @@ static inline void radar_keep(const Snes* snes, Radar* r) {
 // widened picture puts a sprite laid out over the panel.
 static inline void radar_draw(Snes* snes, Radar* r, const Rom* rom, const uint8_t* mem,
                               uint16_t dp, VideoSpritePlace place, int* shown) {
-  const VideoRegisters* reg = video_registers_of(snes->ppu);
+  const VideoRegisters* reg = &video_chip_of(snes)->registers;
   const uint16_t player = radar_r16(mem, dp + RADAR_DP_PLAYER);
   if (player > 1 || !radar_r16(mem, RADAR_UP + player * 2u)) return;
   const uint16_t rec = radar_r16(mem, dp + RADAR_DP_RECORD);
@@ -210,11 +209,11 @@ static inline void radar_draw(Snes* snes, Radar* r, const Rom* rom, const uint8_
     if (ax >= RADAR_REACH || ay >= RADAR_REACH) continue;
     const int x = middle_x + (dx < 0 ? ax >> 4 : -(ax >> 4));
     const int y = middle_y + (dy < 0 ? ay >> 4 : -(ay >> 4));
-    slot = video_free_sprite(video_registers_of(snes->ppu), slot);
+    slot = video_free_sprite(&video_chip_of(snes)->registers, slot);
     if (slot >= OAM_ENTRIES) return;
     if (!radar_put(snes, r, slot, (x + p->x) & 0x1ff, (y + p->y) & 0xff, look, large)) return;
-    video_set_sprite_place(snes->ppu, slot, place);
-    video_set_sprite_front(snes->ppu, slot, true);
+    video_set_sprite_place(video_chip_of(snes), slot, place);
+    video_set_sprite_front(video_chip_of(snes), slot, true);
     (*shown)++;
   }
 }

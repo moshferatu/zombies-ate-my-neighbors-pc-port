@@ -951,6 +951,9 @@ static bool ppu_wideMapX(Ppu* ppu, int layer, int* x, int* y) {
       // there with it. Rounded toward the left as the picture's own width is.
       *x -= (ppu->extraRight - ppu->extraLeft) / 2;
       if(*x >= 0 && *x <= 255) return true;
+      // The sprites have no map to fill a margin from, and no row in the
+      // records below, which are the four backgrounds'.
+      if(layer > 3) return false;
       // Beyond the layer's edge. The mask is a solid field with the letters
       // cut out of its upper part and a row of drips hanging from its foot,
       // and its margins are drawn in two ways. Beside the field and the

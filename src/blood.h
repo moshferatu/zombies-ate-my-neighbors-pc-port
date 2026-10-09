@@ -56,9 +56,8 @@
 #include <string.h>
 
 #include "cart.h"
-#include "ppu.h"
 #include "snes.h"
-#include "video/ppu_hook.h"
+#include "video/console.h"
 
 #include "port/wram.h"
 
@@ -121,13 +120,13 @@ static inline int blood_frame_tile(const uint8_t* ram, int frame) {
 
 // From the frame hook, after the game's vblank and before the first line.
 static inline void blood_frame(Snes* snes, Blood* blood) {
-  Ppu* ppu = snes->ppu;
+  VideoChip* chip = video_chip_of(snes);
   // OAM and the palette are read through the registers, which say where the
   // chip's memories are. A colour is written with `video_set_colour`.
-  const VideoRegisters* reg = video_registers_of(ppu);
+  const VideoRegisters* reg = &chip->registers;
   if (!blood->on) return;
   if (blood->marked) {
-    for (int s = 0; s < 0x80; s++) video_set_sprite_remapped(ppu, s, false);
+    for (int s = 0; s < 0x80; s++) video_set_sprite_remapped(chip, s, false);
     blood->marked = false;
   }
   int tiles[BLOOD_DRIP_FRAME_LAST - BLOOD_DRIP_FRAME_FIRST + 1];
@@ -144,7 +143,7 @@ static inline void blood_frame(Snes* snes, Blood* blood) {
     const int tile = attr & 0x1ff;
     for (int k = 0; k <= BLOOD_DRIP_FRAME_LAST - BLOOD_DRIP_FRAME_FIRST; k++)
       if (tiles[k] == tile) {
-        video_set_sprite_remapped(ppu, s, true);
+        video_set_sprite_remapped(chip, s, true);
         blood->marked = true;
       }
   }
@@ -153,10 +152,10 @@ static inline void blood_frame(Snes* snes, Blood* blood) {
   uint8_t remap[16] = {0};
   for (int i = 0; i < BLOOD_MASK_COLOURS; i++) {
     remap[blood_drip_pixels[i]] = blood_drip_cgram[i];
-    video_set_colour(ppu, blood_drip_cgram[i],
+    video_set_colour(chip, blood_drip_cgram[i],
                      blood_red(reg->cgram[0x80 + 16 * BLOOD_DRIP_PALETTE + blood_drip_pixels[i]]));
   }
-  video_set_remap(ppu, remap);
+  video_set_remap(chip, remap);
 }
 
 #endif

@@ -72,7 +72,7 @@ enum {
 };
 
 // What a layer does with the margins of a widened picture. The values are
-// the emulated PPU's `ppu_wide*`, which `ppu_hook.c` checks.
+// the emulated PPU's `ppu_wide*`, which `console.c` checks.
 typedef enum {
   VIDEO_WIDE_AUTO,         // worked out from the layer
   VIDEO_WIDE_STRETCH,      // the map goes on
@@ -95,7 +95,7 @@ typedef struct {
 } VideoBg;
 
 // Where a sprite goes when the picture is widened. The values are the
-// emulated PPU's `ppu_sprite*`, which `ppu_hook.c` checks.
+// emulated PPU's `ppu_sprite*`, which `console.c` checks.
 typedef enum {
   VIDEO_SPRITE_WORLD,     // the console's coordinates, on past its edges
   VIDEO_SPRITE_ANCHORED,  // as far in from the picture's edge as from the console's

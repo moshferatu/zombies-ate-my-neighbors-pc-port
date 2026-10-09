@@ -94,7 +94,7 @@
 #include "config.h"
 #include "sfx_overlay.h"
 #include "bank_sfx.h"
-#include "video/ppu_hook.h"
+#include "video/console.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -139,7 +139,7 @@ static DwmStats dwm_stats(void) {
 // widened, in which case it is 2 output pixels per game column and everything
 // here reads `fb_w`. `FB_W_MAX` is what gets allocated, once, at the widest the
 // PPU will ever go — see `ppu_setWidescreen`.
-#define FB_W_MAX (PPU_MAX_WIDTH * 2)
+#define FB_W_MAX (VIDEO_MAX_WIDTH * 2)
 #define FB_H 480
 static int fb_w = 512;
 // The live part of it. `video_put_pixels` doubles the game's 224 scanlines into
@@ -202,7 +202,7 @@ static bool write_png(Snes* snes, const char* path) {
   uint8_t* fb = (uint8_t*)malloc((size_t)FB_W_MAX * FB_H * 4);
   uint8_t* rgb = (uint8_t*)malloc((size_t)FB_W_MAX * FB_H * 3);
   if (!fb || !rgb) { free(fb); free(rgb); return false; }
-  video_put_pixels(snes->ppu, fb);
+  video_put_pixels(video_chip_of(snes), fb);
   const int c = ZAMN_PIXEL_FORMAT;  // 0 for [B,G,R,X], 1 for [X,B,G,R]
   for (int i = 0; i < fb_w * FB_H; i++) {
     rgb[i * 3 + 0] = fb[i * 4 + c + 2];  // R
@@ -300,7 +300,7 @@ static void present_pixels(Present* p, const uint8_t* fb, int width) {
   present_draw(p);
 }
 
-static void present_frame(Present* p, Ppu* ppu) {
+static void present_frame(Present* p, const VideoChip* chip) {
   void* pixels; int pitch;
   if (SDL_LockTexture(p->frame, NULL, &pixels, &pitch) == 0) {
     // The core packs its rows tightly at the live width, so it can only write
@@ -309,12 +309,12 @@ static void present_frame(Present* p, Ppu* ppu) {
     // guarantee SDL makes, and the failure would be a sheared picture rather
     // than anything that says what went wrong.
     if (pitch == fb_w * 4) {
-      video_put_pixels(ppu, (uint8_t*)pixels);
+      video_put_pixels(chip, (uint8_t*)pixels);
     } else {
       static uint8_t* scratch = NULL;
       if (!scratch) scratch = (uint8_t*)malloc((size_t)FB_W_MAX * FB_H * 4);
       if (scratch) {
-        video_put_pixels(ppu, scratch);
+        video_put_pixels(chip, scratch);
         for (int y = 0; y < FB_H; y++)
           memcpy((uint8_t*)pixels + (size_t)y * pitch,
                  scratch + (size_t)y * fb_w * 4, (size_t)fb_w * 4);
@@ -392,15 +392,15 @@ static void layers_free(Layers* s) {
 // frame that is not the current one. Called with the emulation stopped. The
 // port's owner table is passed along only if its pass ran this tick, which
 // its serial says.
-static void layers_take(Layers* s, Ppu* ppu) {
+static void layers_take(Layers* s, const VideoChip* chip) {
   SpriteOamOwners with;
   const SpriteOamOwners* game =
       s->held_fresh ? &s->held
-      : s->used_ok && layers_owners_stand(s->frame[s->cur], ppu, s->used.rec) ? &s->used : NULL;
+      : s->used_ok && layers_owners_stand(s->frame[s->cur], chip, s->used.rec) ? &s->used : NULL;
   if (game && game != &s->used) s->used = *game;
   s->used_ok = game != NULL;
   const SpriteOamOwners* own = ws_owners(s->ws, game, &with);
-  layers_capture(s->frame[s->cur ^ 1], ppu, own ? own->rec : NULL, own ? own->ox : NULL,
+  layers_capture(s->frame[s->cur ^ 1], chip, own ? own->rec : NULL, own ? own->ox : NULL,
                  own ? own->oy : NULL);
   s->held_fresh = sprite_oam_owners.serial != s->serial;
   s->serial = sprite_oam_owners.serial;
@@ -492,7 +492,7 @@ static int emu_thread_main(void* arg) {
     t->last_ms = (double)(t1 - t0) * 1000.0 / freq;
     t->take_ms = 0.0;
     if (t->capture) {
-      layers_take(t->layers, t->snes->ppu);
+      layers_take(t->layers, video_chip_of(t->snes));
       t->take_ms = (double)(SDL_GetPerformanceCounter() - t1) * 1000.0 / freq;
     }
     SDL_SemPost(t->done);
@@ -615,7 +615,7 @@ static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads,
   for (; f < last; f++) {
     // The title or the first logo, about to fade in: the game has turned the
     // screen on.
-    if (to_first_light && f >= INTRO_BYPASS_FIRST && !video_registers_of(snes->ppu)->blank) break;
+    if (to_first_light && f >= INTRO_BYPASS_FIRST && !video_chip_of(snes)->registers.blank) break;
     const bool down = !to_first_light &&
         f >= INTRO_FIRST_PRESS && f <= INTRO_LAST_PRESS &&
         (f - INTRO_FIRST_PRESS) % INTRO_PRESS_PERIOD < INTRO_PRESS_HOLD;
@@ -1338,11 +1338,11 @@ int main(int argc, char** argv) {
   // otherwise.
   // ...and with a checksum of the picture when there will be a report to put
   // it in: it is what `tools/verify_corpus.ps1 -Picture` compares.
-  static VideoHook video_hook;
-  video_hook_install(&video_hook, snes->ppu,
+  static VideoConsole video;
+  video_console_install(&video, snes->ppu,
                      !native && !renderer_asked ? VIDEO_EMULATED : renderer,
                      verbose || renderer == VIDEO_CHECK);
-  video_hook_attach(&video_hook, snes);
+  video_console_attach(&video, snes);
   if (profile_dir && !(cosim.profile = cosim_profile_new(cosim.rom.size))) {
     fprintf(stderr, "error: no memory for --profile\n");
     return 2;
@@ -1398,7 +1398,7 @@ int main(int argc, char** argv) {
   // place as ever, and nothing is written back.
   hiscore.read_only = cheats_any(&cheats);
 
-  video_set_pixel_format(snes->ppu, ZAMN_PIXEL_FORMAT);
+  video_set_pixel_format(video_chip_of(snes), ZAMN_PIXEL_FORMAT);
   // Before the window is sized, because the window is sized from the picture.
   // `auto` starts off, which is what it is in a window and so the size the
   // window comes back to; fullscreen, the loop widens it before the first
@@ -1406,8 +1406,8 @@ int main(int argc, char** argv) {
   WideMode wide = wide_setting == WIDE_AUTO ? WIDE_OFF : wide_setting;
   WideMode wide_shown = wide;  // the width the console last reported
   bool wide_told = false;      // past the first pass of the loop
-  video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
-  fb_w = video_output_width(snes->ppu);
+  video_set_margins(video_chip_of(snes), wide_margin(wide), wide_margin(wide));
+  fb_w = video_output_width(video_chip_of(snes));
   // ...and the per-frame half of it runs at the top of each frame, from the
   // machine itself, because that is the only moment the game's vblank is over
   // and none of the picture has been drawn yet. See `SnesFrameHook`.
@@ -2000,9 +2000,9 @@ int main(int argc, char** argv) {
         // made at the old width. Between frames, so nothing is half-drawn at
         // one width and finished at the other.
         wide = want;
-        video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
+        video_set_margins(video_chip_of(snes), wide_margin(wide), wide_margin(wide));
         ws.margin = wide_margin(wide);
-        fb_w = video_output_width(snes->ppu);
+        fb_w = video_output_width(video_chip_of(snes));
         const ScaleMode m = present.mode;
         present_free(&present);
         live.w = fb_w;
@@ -2084,7 +2084,7 @@ int main(int argc, char** argv) {
         pace_add(&h_emulate, trace_emulate_ms);
       }
       trace_core_frame = snes->frames;
-      trace_scroll_y = video_hook.frame.line_vscroll[0][1];
+      trace_scroll_y = video.chip.frame.line_vscroll[0][1];
       frame++;
 
       // This frame's audio, resampled by however much it takes to hold the
@@ -2214,7 +2214,7 @@ int main(int argc, char** argv) {
         // and its planes go to the renderer once for all its pictures.
         if (!taken) {
           const Uint64 t0 = SDL_GetPerformanceCounter();
-          layers_take(&lay, snes->ppu);
+          layers_take(&lay, video_chip_of(snes));
           pace_add(&h_take, PACE_MS(t0, SDL_GetPerformanceCounter()));
         }
         // After a quick load, the tick that was on screen is no neighbour of
@@ -2267,7 +2267,7 @@ int main(int argc, char** argv) {
                      ws_main_thread_at(ws.mem), ws_game_over(ws.mem),
                      ws.mem[0x1e88] | (ws.mem[0x1e89] << 8), ws.mem[0x1e8a] | (ws.mem[0x1e8b] << 8),
                      snes->ram[0x1e88] | (snes->ram[0x1e89] << 8), snes->ram[0x1e8a] | (snes->ram[0x1e8b] << 8),
-                     video_hook.picture.wide[2], video_hook.registers.bg[1].map_wide && video_hook.registers.main[1]);
+                     video.chip.picture.wide[2], video.chip.registers.bg[1].map_wide && video.chip.registers.main[1]);
               stbi_write_png(path, r.w, r.h, 3, gpu, r.w * 3);
             }
             if (sw) {
@@ -2291,7 +2291,7 @@ int main(int argc, char** argv) {
       }
       present_finish(&present);
     } else {
-      present_frame(&present, snes->ppu);
+      present_frame(&present, video_chip_of(snes));
       if (dump_prefix && frame >= dump_first && frame <= dump_last)
         dump_output(&present, dump_prefix, frame, phase);
       present_finish(&present);
@@ -2405,8 +2405,8 @@ int main(int argc, char** argv) {
            bank.wanted, bank.set[0].played, bank.set[1].played, bank.set[2].played,
            bank.set[3].played, bank.failed ? " (one or more could not be built)" : "");
   bool picture_ok = true;
-  if (verbose || video_hook.renderer == VIDEO_CHECK)
-    picture_ok = video_hook_report(&video_hook, stdout);
+  if (verbose || video.renderer == VIDEO_CHECK)
+    picture_ok = video_console_report(&video, stdout);
   if (verbose) {
     cosim_report(&cosim);
     // The two percentages the table cannot give: 82 rows of `OK` say each

@@ -34,7 +34,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "ppu.h"
 #include "snes.h"
 
 #include "analysis/movie_apply.h"
@@ -85,10 +84,10 @@ int main(int argc, char** argv) {
   // The frontend reads the chip's registers from `src/video`, which keeps
   // them beside the PPU's, and takes the picture from it. The PPU draws the
   // picture here.
-  static VideoHook video_hook;
-  video_hook_install(&video_hook, snes->ppu, VIDEO_EMULATED, false);
-  video_hook_attach(&video_hook, snes);
-  video_set_pixel_format(snes->ppu, VIDEO_PIXELS_XRGB);
+  static VideoConsole video;
+  video_console_install(&video, snes->ppu, VIDEO_EMULATED, false);
+  video_console_attach(&video, snes);
+  video_set_pixel_format(video_chip_of(snes), VIDEO_PIXELS_XRGB);
   snes_reset(snes, true);
   Movie movie;
   if (!movie_load(&movie, argv[2])) { fprintf(stderr, "error: cannot load movie '%s'\n", argv[2]); return 1; }
@@ -160,7 +159,7 @@ int main(int argc, char** argv) {
   static Widescreen ws;
   // Installed at any width, as the frontend installs it: the hook also draws
   // the survivor radar's squares (`src/radar.h`).
-  video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
+  video_set_margins(video_chip_of(snes), wide_margin(wide), wide_margin(wide));
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
   ws.radar.steady = !radar_flash;
   if (mask_line && !maskline_fix(snes->cart)) {
@@ -189,7 +188,7 @@ int main(int argc, char** argv) {
   frames[0] = (LayersFrame*)calloc(1, sizeof(LayersFrame));
   frames[1] = (LayersFrame*)calloc(1, sizeof(LayersFrame));
   LayersOp* ops = (LayersOp*)malloc(sizeof(LayersOp) * LAYERS_MAX_OPS);
-  uint8_t* rgb = (uint8_t*)malloc((size_t)PPU_MAX_WIDTH * 4 * LAYERS_LINES * 4 * 3);
+  uint8_t* rgb = (uint8_t*)malloc((size_t)VIDEO_MAX_WIDTH * 4 * LAYERS_LINES * 4 * 3);
   int cur = 0;
   uint32_t last_serial = sprite_oam_owners.serial;
   static SpriteOamOwners held;
@@ -225,10 +224,10 @@ int main(int argc, char** argv) {
     }
     if (i + 1 < first) continue;
     const int frame = i + 1;
-    Ppu* ppu = snes->ppu;
-    const VideoRegisters* reg = video_registers_of(ppu);
-    const VideoPicture* said = video_picture_of(ppu);
-    const VideoFrame* noted = video_frame_of(ppu);
+    VideoChip* chip = video_chip_of(snes);
+    const VideoRegisters* reg = &chip->registers;
+    const VideoPicture* said = &chip->picture;
+    const VideoFrame* noted = &chip->frame;
     const bool fresh = sprite_oam_owners.serial != last_serial;
     last_serial = sprite_oam_owners.serial;
     LayersFrame* f = frames[cur];
@@ -242,12 +241,12 @@ int main(int argc, char** argv) {
     static SpriteOamOwners used;
     static bool used_ok;
     const SpriteOamOwners* game =
-        own_fresh ? own : used_ok && layers_owners_stand(prev, ppu, used.rec) ? &used : NULL;
+        own_fresh ? own : used_ok && layers_owners_stand(prev, chip, used.rec) ? &used : NULL;
     if (game && game != &used) used = *game;
     used_ok = game != NULL;
     SpriteOamOwners with;
     own = ws_owners(&ws, game, &with);
-    layers_capture(f, ppu, own ? own->rec : NULL, own ? own->ox : NULL, own ? own->oy : NULL);
+    layers_capture(f, chip, own ? own->rec : NULL, own ? own->ox : NULL, own ? own->oy : NULL);
     held = sprite_oam_owners;
     held_fresh = fresh;
     if (f->ownersFresh) owners_fresh++;
@@ -455,7 +454,7 @@ int main(int argc, char** argv) {
                  noted->line_window[80][1], noted->line_window[80][2], noted->line_window[80][3], said->wide[0],
                  said->wide[1], said->wide[2], said->wide[3], -said->extra_left);
           VideoState vs;
-          video_state_of(&vs, ppu);
+          video_chip_state(chip, &vs);
           for (int x = -said->extra_left; x < 256 + said->extra_right; x++)
             printf("%c", video_math_allowed(&vs, x, 80) ? '#' : '.');
           printf("\n");

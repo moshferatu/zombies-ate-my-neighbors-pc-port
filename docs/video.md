@@ -32,12 +32,12 @@ its bits, stop at the first that is not transparent.
 
 `VideoState`, in `src/video/video.h`: VRAM, the palette, and the registers as
 the game last set them, under names of this project's. It names nothing of the
-emulator's. `src/video/ppu_hook.c` is the one file that knows both. Before
-each line it fills a `VideoState` from three things kept here: the registers
-(`VideoRegisters`), what the frontend has said of the picture
-(`VideoPicture`) and what has been noted of the frame (`VideoFrame`). The
-memories the registers point at and the two rows of the line's sprites are
-kept here as well.
+emulator's. Before each line `src/video/chip.c` fills one from three things
+it keeps: the registers (`VideoRegisters`), what the frontend has said of
+the picture (`VideoPicture`) and what has been noted of the frame
+(`VideoFrame`). The memories the registers point at and the two rows of the
+line's sprites are kept there as well. `src/video/console.c` is the one
+file that knows the emulator too.
 
 ## The registers
 
@@ -75,9 +75,9 @@ for a picture 256 wide. It wrote the scroll into the PPU's struct. It now
 calls `video_set_scroll`, which sets the register here and tells the PPU.
 
 The frontend reads these registers and not the PPU's: the smoothing, the
-widescreen's policies, the radar and the blood. `video_registers_of` hands
-them over, under any of the three renderers. The memories are read through
-them as well.
+widescreen's policies, the radar and the blood. It has the chip, from
+`video_chip_of`, and reads `registers` in it under any of the three
+renderers. The memories are read through them as well.
 
 Two things the frontend asked the PPU are asked here now:
 
@@ -149,8 +149,9 @@ bits. The game's writes reach it through the three doors. Under `check` and
 `emulated` the PPU decodes the same writes into its own set.
 
 The frontend puts four things into the memories that the game did not. Each
-is a function of `registers.h`, and `ppu_hook.h` has one beside it that
-tells the PPU's set too, where the PPU is being kept up:
+is a function of `registers.h`, and `chip.h` has one beside it that tells
+whoever is beside the chip. That is the PPU's set, where the PPU is being
+kept up:
 
 - **`video_set_sprite`**: a sprite whole, for the ones the game drops because
   they are off the console's picture and on the widened one, and for the
@@ -167,12 +168,12 @@ the PPU's array. This file listed three writes and that one was not among
 them. See the results.
 
 **The sprites' rows.** `video_sprites` finds a line's sprites into two rows
-of the hook's. The PPU's hook for it is now called on every line, blanked or
+of the chip's. The PPU's callback for it is now called on every line, blanked or
 not, and whether a blanked line's sprites are looked for is decided here from
 the registers here. When the PPU finds them, for a line that is declined or
 under `emulated`, its rows are copied here.
 
-**The picture.** A line is put into a buffer of the hook's, laid out as the
+**The picture.** A line is put into a buffer of the chip's, laid out as the
 PPU's is: two fields of 239 lines, eight bytes a column. The frontend takes
 it with `video_put_pixels`, which hands over 480 rows as the PPU's did, and
 asks its width with `video_output_width`. `video_set_pixel_format` says
@@ -204,9 +205,10 @@ chip:
 - which field the frame is and whether it is interlaced, which decide how
   long a line and a frame are.
 
-A console starts with its own PPU behind those. `video_hook_attach` puts a
-`VideoHook` there. `zamn_cosim` and the tools that attach nothing run on
-the PPU as they did.
+A console starts with its own PPU behind those. `video_console_attach` puts
+a `VideoConsole` there, which is the chip with the PPU beside it: see the
+next section. `zamn_cosim` and the tools that attach nothing run on the PPU
+as they did.
 
 **What each renderer does with them.**
 
@@ -223,7 +225,7 @@ for a line remain, and are how `check` and `emulated` run a line: the PPU
 notes the line, and calls back to have the sprites found and the line drawn.
 
 **A line left to the PPU under `native`.** A line `video_declines` is still
-drawn by the PPU, which by then has been told nothing since the hook was
+drawn by the PPU, which by then has been told nothing since the console was
 attached. It is first told everything at once: the registers, the memories,
 the notes, the picture as the frontend has said it, and the line's sprites
 if they were found here. Nothing this game shows is such a line, so no frame
@@ -249,6 +251,67 @@ after anything else.
 
 A state saved under `native` used to differ from the PPU's in its row of
 sprite pixels. It is the same file now, byte for byte, in every case tried.
+
+## The chip, and the PPU beside it
+
+One struct had been all of this: the chip, the PPU's pointer, and what a
+check had found. It was named `VideoHook`, for what it began as, and the
+frontend's handle on it was the PPU's pointer. It is split now.
+
+**`VideoChip`**, in `chip.h`, is the chip: the registers and the memories,
+the picture as the frontend says it, the frame's notes, the line's sprites
+and the picture. It includes nothing of the emulator's. Whoever runs the
+console calls `video_chip_write`, `video_chip_read`, the three events and
+`video_chip_run_line`.
+
+The frontend has the chip itself, from `video_chip_of`. It reads
+`registers`, `picture` and `frame` in it by name, and calls
+`video_set_margins` and the rest on it. Nothing of the frontend's is handed
+a PPU now. The PPU is named where a console is set up, and by
+`zamn_test_radar`, which has it draw a frame again.
+
+**`VideoOther`** is how the chip speaks to somebody with another chip
+beside it. It is three functions. One is told each thing the frontend says
+or puts, after the chip has done it. The other two are asked for a line's
+sprites the chip does not find, and for a line it does not draw. With
+nobody there, such a line is black and has no sprites.
+
+**`VideoConsole`**, in `console.h`, is that somebody: a chip, the console's
+PPU and the renderer. It is what a console is given as its video chip
+(`SnesVideo`), and it does to the PPU what the renderer says. Everything a
+check counts is in it. `video_console_attach` was `video_hook_attach`.
+
+**`state.h`** is the chip's share of a saved state, moved out on its own.
+It is written with the emulator's state handler and knows nothing else of
+the emulator.
+
+Under `native` a line is run by the chip alone, in `chip.c`. Under `check`
+and `emulated` the PPU runs it and calls back into `console.c`, which calls
+the chip for its part. Those had been one function with three branches.
+
+**The noise tests.** A `VideoHook` could be put on a PPU with no console,
+and a line was then drawn from the PPU's own registers, by a second way of
+filling a `VideoState`. That way is gone. `zamn_test_video` still puts its
+noise straight into a PPU. It then has the chip take what is in the PPU
+(`video_console_take`) before a line is drawn. So the chip draws from
+itself in the test as it does in the game, and the frame's notes are
+compared in the test as well, which they were not.
+
+`zamn_test_registers` does to a `VideoChip` what it did to the registers
+and the notes separately, so the chip's own functions are what the noise
+runs.
+
+**An overrun in the emulated PPU.** Comparing the notes in the noise test
+found one at once. Given the sprites under the policy that centres a layer,
+the PPU kept a record for layer 4 in arrays of four. It wrote two bytes
+past the last of them, into its own flags for which backgrounds have
+scrolled. The frontend never says that policy of the sprites, and
+`src/video` declines such a line, so no picture of the game had it. The old
+test read those flags back out of the PPU, so both ways drew from the same
+rubbish and agreed. Under that policy the PPU now shows nothing of the
+sprites outside their own 256 columns. The noise test's checksum changed
+with that and with nothing else: before the mend, the new build came to the
+old number.
 
 ## How a line's sprites are found
 
@@ -521,8 +584,66 @@ game over. Each came to the right checksum:
 - every odd line's sprites left to it;
 - both;
 - both under `check`;
-- the PPU's memories and registers filled with rubbish once the hook is
+- the PPU's memories and registers filled with rubbish once the console is
   attached, under `native`.
+
+Thirty of the chip and its console. Each was caught by the run named:
+
+| Broken | Caught by | What it said |
+|---|---|---|
+| The chip's reset not its registers' | noise, registers | 18 steps, `blank` |
+| A write told to the chip as made outside the picture | noise, registers | 114,356 steps, `mid_frame_write` |
+| The frame's start not noted by the chip | noise, registers | 10,960 steps, `mid_frame_write` |
+| A line's beginning not noted by the chip | noise, registers | 48,129 steps, `line_hscroll` |
+| A colour put into the chip at the next index | noise, registers | 1,155 steps, the palette |
+| A state with two of its bytes in each other's place | noise, registers | 568 steps, the state as saved |
+| The chip not taking the PPU's notes | noise, video | 300 frames' tops, `last_hscroll` |
+| The chip not taking the PPU's registers | noise, video | 65,820 lines' sprites |
+| A line's scrolls not noted as it begins | a movie alone | another checksum |
+| A line's sprites not found | a forced game over, alone | another checksum |
+| A sprite the frontend puts not put | the same | another checksum |
+| The margins the frontend says held to one size | the same | another checksum |
+| The frame's start not told to the chip | the same | another checksum |
+| The console told every frame is interlaced | the same | another checksum |
+| A line put into the other field's row | a screenshot | another picture |
+| The picture handed over from line 2 | a screenshot | another picture |
+| A state saved from the chip with OAM where the palette goes | a state saved alone | another file |
+| The PPU not told a colour the frontend puts | a forced game over, check | 394 events, the palette |
+| ...a layer's policy | the same | 3,602 frames' tops, a layer's policy |
+| ...a sprite's place | the same | 394 frames' tops, a sprite's place |
+| ...a sprite's extra bits | the same | 981 events, OAM's extra bits |
+| The PPU told a word of VRAM at the next address | the same | 1,717 events, VRAM |
+| The PPU told what the frontend says under `native` and not under the check | the same | 1,717 events and 3,603 frames' tops |
+| Odd lines left to a PPU not told the registers | a forced game over, alone | another checksum |
+| ...not told the memories | the same | another checksum |
+| ...not told the picture | the same | another checksum |
+| ...not given the line's sprites | the same | another checksum |
+| ...not told the notes | a movie alone | another checksum |
+| Odd lines left, and the PPU's line not copied to the chip | a forced game over, alone | another checksum |
+| Odd lines' sprites left to a PPU told nothing | the same | another checksum |
+
+Two more were not caught, and a third was no test at all:
+
+- **The console's reset not passed to the chip.** The same checksum. A
+  movie resets the console once, before anything is written, when the chip
+  is already as a reset leaves it. The chip's own reset is tried by the
+  registers' noise test, which is the first row above. That the console
+  passes one on in the middle of a run is tried by nothing.
+- **The PPU not told a sprite's shift.** Clean under the check. A sprite is
+  shifted only on the winner's screen, for its fireworks, and no movie of
+  the corpus gets there. This was so before this step too.
+- **The check's line compared with the chip's own row.** It found nothing,
+  and could not have: that is the check made blind, and a check does not
+  catch that itself.
+
+One more is not a breakage and not a no-change. With every odd line left
+and nobody given to draw it, the picture comes to the checksum it comes to
+when a PPU told nothing draws those lines: they are black.
+
+The five things that must change nothing were done again, on the forced
+game over, and each came to the right checksum: every odd line left to the
+PPU under `native`, every odd line's sprites, both, both under `check`, and
+the PPU filled with rubbish once the console is attached.
 
 ## Results
 
@@ -656,6 +777,39 @@ game over. Each came to the right checksum:
   clean under the check and come to the Windows build's checksums under all
   three renderers. A state saved on an odd frame is the same file under all
   three, and the file the Windows build saves.
+- **The chip and its console.**
+  The corpus at four widths: 310,747,136 lines, none differing, none left to
+  the PPU. No register, memory or note was other than the PPU's, and each of
+  the 216 runs comes to the same checksum with the PPU told nothing.
+  The game's own corpus, run because `ppu.c` changed by a line: 34,603,665
+  calls checked over 54 movies and none diverged, as before. The lockstep
+  pass was not run again. It draws no widened picture, which is the only
+  place that line is reached.
+  Three renderers come to one checksum on two movies at 16:9, and on the
+  forced game over with red blood at 16:9, 16:10 and 21:9. Each is the
+  number the build before came to.
+  States saved at frame 1,500 on two movies at two widths, and on an odd
+  frame, are each one file under the three renderers, and each is the file
+  the build before saved. Each of the twelve was loaded under all three:
+  every one of the 36 runs writes the picture the unbroken run writes, and
+  under `check` nothing differs after the load or at the save.
+  `zamn_test_registers`, driving the chip, 13,000,000 steps over three
+  seeds: the same 24,893,913 writes, 1,819,398 reads, 781,999 events,
+  1,039,619 lines, 113,817 things put, 7,996 states saved and 8,196 loaded
+  as before, and nothing other than the PPU's.
+  `zamn_test_video`, 6,000 frames over two seeds: the same 1,261,568 lines'
+  sprites found both ways, 1,076,320 lines drawn both ways and 200,724 rows
+  read back, none differing, and now 1,344,000 lines' notes compared, none
+  differing.
+  Against the build before: `zamn_test_layers` prints the same on seven
+  runs, 17,605 frames drawn as a list and none differing; `zamn_test_radar`
+  the same at 4:3 and 16:9; `zamn_headless` writes the same picture from
+  three movies; and `zamn_record` the same bytes from four recordings.
+  On Linux, in WSL with gcc 13: the tree builds and both noise tests pass.
+  `level25-boss.zmv` and the forced game over with red blood, at 16:9, are
+  clean under the check and come to the Windows build's checksums under all
+  three renderers. A state saved on an odd frame is the same file under all
+  three, and the file the Windows build saves.
 - **Linux.** The tree builds in WSL with gcc 13, once `src/port/clears.c`
   includes `<stddef.h>`, which an earlier commit of mine left out. Both
   noise tests pass there. `level25-boss.zmv` at 16:9 is clean under the
@@ -709,6 +863,12 @@ run in turn. The PPU's decoding of about a thousand writes a frame was too
 little to measure. What the step buys is that `native` no longer needs the
 PPU to run.
 
+Nor did giving the frontend the chip. Run in turn with the build before:
+2.46, 2.47 and 2.46 ms against 2.44, 2.39 and 2.42. An earlier pass of the
+same six runs had 2.60, 2.42 and 2.52 against 2.46, 2.74 and 2.39. If the
+second pass's 0.04 ms is real it is under 2% of a tick; I cannot tell it
+from the noise of the first.
+
 ## What is still the emulator's
 
 - **When things happen.** The emulated console says where the beam is, when
@@ -716,12 +876,12 @@ PPU to run.
   to `src/video` directly now.
 - **The PPU, linked in.** Under `native` it does nothing unless a line is
   declined, which no line of this game is. It is still what `check` and
-  `emulated` run, and the frontend's handle on `src/video` is still the
-  PPU's pointer. A build without it has not been tried.
-- **The names.** `VideoHook` and `ppu_hook.c` are named for what they were,
-  a hook on the PPU. They are the chip now.
+  `emulated` run. `console.c` is the only file of `src/video` that names
+  it, and the frontend names it only to set a console up. A build without
+  it has not been tried.
 - **The state's layout.** It is the PPU's, written with the emulator's state
-  handler, so that states already saved still load.
+  handler, so that states already saved still load. `state.c` is the only
+  other file of `src/video` that includes anything of the emulator's.
 - **The tools.** The game draws with `src/video`, and `zamn_headless` does
   when asked. The other three that share the frontend's code attach it and
   leave the drawing to the PPU. `zamn_cosim` and the rest run on the PPU
@@ -731,9 +891,10 @@ PPU to run.
 
 - Draw a frame once. With the smoothing on, a frame shown as layers is still
   drawn as a picture that nobody sees.
-- Give the frontend a handle of `src/video`'s own in place of the PPU's
-  pointer, and name the hook for what it is. A build without the PPU can
-  then be tried, with a declined line drawn black or not at all.
+- Try a build without the PPU: a console given a `VideoChip` and nobody
+  beside it, where a declined line is black. `chip.c` already runs a line
+  that way. What is missing is a console that can be built without `ppu.c`,
+  and the four tools that have the PPU draw.
 - The picture is kept eight bytes a column because the frontend takes it
   doubled. Four would do if the frontend took it as drawn.
 - The smoothing's sprites and its maths window are still worked out a dot at

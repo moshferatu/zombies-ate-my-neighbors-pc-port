@@ -13,9 +13,9 @@
 // that a line it should have declined and drew wrong shows up as a line that
 // differs.
 //
-// The PPU's registers are not kept beside it here. The noise is put straight
-// into the PPU, and a line is drawn from what `video_state_from_ppu` takes
-// out of it.
+// There is no console here and nothing is written through a register. The
+// noise is put straight into the PPU, and the chip takes what is in the PPU
+// (`video_console_take`) before a line is drawn from it.
 //
 // Then the frame is read back as the smoothing reads it (`video_bg_row`): a
 // few rows of each background, some of them above or below the picture and
@@ -29,7 +29,7 @@
 #include <string.h>
 
 #include "ppu.h"
-#include "video/ppu_hook.h"
+#include "video/console.h"
 
 static uint64_t rng_state;
 
@@ -162,9 +162,10 @@ static long rows_read, rows_differing;
 // Some rows of each background of the frame just drawn. A centred layer's
 // margins are searched for with a copy of what the frame's lines found, as
 // `src/layers.h` reads them.
-static void read_rows(Ppu* ppu, const VideoCentre* found) {
+static void read_rows(Ppu* ppu, const VideoChip* chip) {
+  const VideoCentre* found = &chip->frame.centre;
   VideoState s;
-  video_state_from_ppu(&s, ppu);
+  video_chip_state(chip, &s);
   const int from = -ppu->extraLeft - ROW_MARGIN, to = 256 + ppu->extraRight + ROW_MARGIN;
   for (int layer = 0; layer < 3; layer++) {
     if (video_bg_row_declines(&s, layer) || ppu->layer[layer].mainScreenWindowed) continue;
@@ -190,9 +191,9 @@ int main(int argc, char** argv) {
   const int frames = argc > 1 ? atoi(argv[1]) : 400;
   const uint64_t seed = argc > 2 ? strtoull(argv[2], NULL, 0) : 1;
   Ppu* ppu = ppu_init(NULL);
-  static VideoHook hook;
+  static VideoConsole console;
   ppu_reset(ppu);
-  video_hook_install(&hook, ppu, VIDEO_CHECK, true);
+  video_console_install(&console, ppu, VIDEO_CHECK, true);
   long failed_frame = -1;
   for (int f = 0; f < frames; f++) {
     // Each frame's noise from its own number, so one frame can be made again.
@@ -206,6 +207,7 @@ int main(int argc, char** argv) {
       ppu->layerScrolled[i] = one_in(2);
       ppu->layerRaster[i] = one_in(6);
     }
+    video_console_take(&console);
     // A fifth of the frames move a scroll or a window on the way down.
     const bool raster = one_in(5);
     for (int line = 1; line <= 224; line++) {
@@ -215,14 +217,17 @@ int main(int argc, char** argv) {
         else bg->vScroll = (uint16_t)(rnd() & 0x3ff);
         if (one_in(4)) ppu->window1left = edge();
         if (one_in(4)) ppu->window1right = edge();
+        video_console_take(&console);
       }
       ppu_runLine(ppu, line);
     }
-    read_rows(ppu, &hook.frame.centre);
-    if ((hook.differing || rows_differing) && failed_frame < 0) failed_frame = f;
+    read_rows(ppu, &console.chip);
+    const bool differing = console.differing || console.sprite_differing ||
+                           console.notes_differing || rows_differing;
+    if (differing && failed_frame < 0) failed_frame = f;
   }
   printf("%d frames of noise, seed %llu.\n", frames, (unsigned long long)seed);
-  bool ok = video_hook_report(&hook, stdout);
+  bool ok = video_console_report(&console, stdout);
   printf("  %ld rows read back, %ld differ from the PPU's.\n", rows_read, rows_differing);
   ok = ok && rows_differing == 0;
   if (!ok)
