@@ -427,7 +427,7 @@ void ppu_runLine(Ppu* ppu, int line) {
   if(ppu->beganLine) ppu->beganLine(ppu->drawUser, ppu, line);
   // evaluate sprites
   memset(ppu->objPixelBuffer, 0, (size_t)ppu_gameWidth(ppu));
-  if(!ppu->forcedBlank && !(ppu->findSprites && ppu->findSprites(ppu->drawUser, ppu, line))) {
+  if(!(ppu->findSprites && ppu->findSprites(ppu->drawUser, ppu, line)) && !ppu->forcedBlank) {
     ppu_findSprites(ppu, line);
   }
   // actual line
@@ -1762,29 +1762,6 @@ bool ppu_bgOnMainScreen(const Ppu* ppu, int layer) {
   return ppu->layer[layer].mainScreenEnabled;
 }
 
-void ppu_setSprite(Ppu* ppu, int slot, int x, int y, uint16_t tileAttr,
-                   bool large) {
-  if(slot < 0 || slot >= 128) return;
-  const int i = slot * 2;
-  ppu->oam[i] = (uint16_t)(((y & 0xff) << 8) | (x & 0xff));
-  ppu->oam[i + 1] = tileAttr;
-  const int bit = i & 7;
-  const uint8_t mask = (uint8_t)(3 << bit);
-  const uint8_t val = (uint8_t)((((x >> 8) & 1) << bit) | ((large ? 1 : 0) << (bit + 1)));
-  ppu->highOam[i >> 3] = (uint8_t)((ppu->highOam[i >> 3] & ~mask) | val);
-}
-
-int ppu_freeSprite(const Ppu* ppu, int from) {
-  for(int slot = from; slot < 128; slot++) {
-    const int y = ppu->oam[slot * 2] >> 8;
-    // $E0..$F0 is the gap between the bottom of the screen and the rows a
-    // sprite hanging off the top would use, so nothing the game draws lands
-    // there and anything that does is parked.
-    if(y >= 0xe0 && y <= 0xf0) return slot;
-  }
-  return 128;
-}
-
 void ppu_setWideClamp(Ppu* ppu, int lo, int hi) {
   ppu->wideClampLo = lo;
   ppu->wideClampHi = hi;
@@ -1794,10 +1771,6 @@ void ppu_setScroll(Ppu* ppu, int layer, uint16_t h, uint16_t v) {
   if(layer < 0 || layer > 3) return;
   ppu->bgLayer[layer].hScroll = h & 0x3ff;
   ppu->bgLayer[layer].vScroll = v & 0x3ff;
-}
-
-void ppu_writeVramWord(Ppu* ppu, uint16_t wordAdr, uint16_t val) {
-  ppu->vram[wordAdr & 0x7fff] = val;
 }
 
 void ppu_putPixels(Ppu* ppu, uint8_t* pixels) {

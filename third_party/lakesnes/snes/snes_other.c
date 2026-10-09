@@ -142,19 +142,6 @@ void snes_setPixels(Snes* snes, uint8_t* pixelData) {
   ppu_putPixels(snes->ppu, pixelData);
 }
 
-void snes_writeVramWord(Snes* snes, uint16_t wordAdr, uint16_t val) {
-  ppu_writeVramWord(snes->ppu, wordAdr, val);
-}
-
-void snes_setSprite(Snes* snes, int slot, int x, int y, uint16_t tileAttr,
-                    bool large) {
-  ppu_setSprite(snes->ppu, slot, x, y, tileAttr, large);
-}
-
-int snes_freeSprite(const Snes* snes, int from) {
-  return ppu_freeSprite(snes->ppu, from);
-}
-
 int snes_pixelWidth(const Snes* snes) {
   return ppu_outputWidth(snes->ppu);
 }

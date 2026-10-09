@@ -16,7 +16,9 @@ the long form.
 shows, and the emulated PPU does neither. It keeps the chip's registers as
 well, and the game and the frontend read those. It keeps what the frontend
 says of the picture and what is noted of each frame, so the frontend asks
-the PPU nothing about what is on the screen. At 16:9 a tick of
+the PPU nothing about what is on the screen. It keeps the chip's memories,
+each line's sprites and the picture too, so a frame drawn here reads
+nothing out of the PPU. At 16:9 a tick of
 `level1.zmv` costs
 **2.8 ms** to emulate and take apart for the smoothing, from 8.3.
 
@@ -210,6 +212,59 @@ the PPU nothing about what is on the screen. At 16:9 a tick of
     build's checksum.
   * Not established: a saved state loaded in the game was not tried. The
     cosim and lockstep passes were not rerun.
+* **The memories, the sprites' rows and the picture, kept here.** They
+  were the PPU's, written into by `src/video`. The hook has its own now.
+  * `VideoMemory` is VRAM, the palette and OAM. The PPU decodes the game's
+    writes into a second set of its own.
+  * The frontend puts things into the memories with `video_set_sprite`,
+    `video_set_vram` and `video_set_colour`, which tell the PPU's set too,
+    and finds a parked sprite with `video_free_sprite`. The PPU's own
+    functions for these are gone.
+  * A line's sprites go into two rows of the hook's. Whether a blanked
+    line's are looked for is decided here; the PPU's hook is called on
+    every line.
+  * The picture goes into a buffer of the hook's, laid out as the PPU's.
+    The frontend takes it with `video_put_pixels`. A line the PPU draws is
+    copied here, so there is one place to take it from.
+  * `--renderer check` compares the memories whole at each of a frame's
+    three events.
+  * The corpus at four widths: no line, register, memory or note differs
+    over 310,747,136 lines, and all 216 runs come to the same checksum
+    alone.
+  * `zamn_test_registers` puts things into the memories from outside too,
+    130,378 times over 13,000,000 steps and three seeds, and nothing
+    differs. `zamn_test_video`, 6,000 frames: nothing differs.
+  * A saved state was tried, which had not been. `zamn_headless` takes
+    `--renderer` now. Two movies at two widths, saved under `native` and
+    under `emulated`, each loaded under all three: every loaded run writes
+    the unbroken run's picture, and under `check` nothing differs after the
+    load. The state is still the PPU's. One saved while `src/video` draws
+    has the PPU's row of sprite pixels cleared, 65 to 176 bytes of 256
+    that nothing reads.
+  * A fourth write of the frontend's that I had not listed.
+    `src/blood.h` put its red into the palette through the registers'
+    pointer, which was the PPU's array until this. With the memories apart
+    `--red-blood` was red under `native` only. A forced game over showed
+    two checksums where there should be one, and the check named the
+    palette. The corpus has no red blood and would not have shown it.
+  * Eighteen things broken on purpose were each caught: five by
+    `zamn_test_registers`, three by `zamn_test_video`, three by the check
+    on a forced game over, one by a state loaded under the check, two by
+    a movie's checksum and four by a screenshot.
+  * Three renderers come to one checksum on two movies and on the forced
+    game over with red blood at three widths, each the build before's.
+    Against the build before: the layers test prints the same on seven
+    runs, the radar test at two widths, `zamn_headless` writes the same
+    picture from three movies, and `zamn_record` the same bytes from four
+    recordings.
+  * It builds on Linux and both noise tests pass there. One movie and the
+    forced game over, at 16:9, are clean under the check and come to the
+    Windows build's checksums.
+  * A tick costs what it did: 2.41 to 2.48 ms at 16:9 against 2.55 to 2.56
+    for the build before, run in turn. The PPU still decodes every write.
+  * Not established: the cosim and lockstep passes were not rerun. The
+    quick save's own key was not pressed; the state was saved and loaded
+    by `zamn_headless`, through the same two calls.
 * **Tried before this and not kept.** Three smaller things, each measured
   in a copy: asking each layer once a dot in `ppu_getPixel`, 13% and
   pixel-identical; remembering the last tile read, 4% more; whole-program
@@ -230,15 +285,14 @@ the PPU nothing about what is on the screen. At 16:9 a tick of
   * A screen the corpus does not reach may draw a kind of line that is
     declined. The PPU then draws it, correctly and slowly, and
     `--verbose` counts such lines by what they were.
-* **Still the emulator's.** VRAM, the palette and OAM, and the three
-  writes the frontend makes straight into them. The buffer the picture is
-  written into, and the sprites' rows. When a frame starts and ends, and
-  whether a line's sprites are looked for. A second copy of everything
-  kept here, which only the PPU and the checks read.
+* **Still the emulator's.** When a frame starts and ends and when a line
+  begins. The saved state. A second copy of everything kept here, which
+  only the PPU and the checks read, and which the PPU still fills under
+  every renderer.
 * **`PLAN.md` still says the PPU stays emulated.** I have not edited it.
-* **Next.** The memories, the sprites' rows and the picture's buffer
-  moved here, and the console calling `src/video` for a write, a read and
-  a line, after which the PPU is needed only by the check.
+* **Next.** The console calling `src/video` for a write, a read, a line
+  and a frame's events, with the saved state written from here, after
+  which the PPU is needed only by the check.
   A frame drawn once:
   with the smoothing on, a frame shown as layers is still drawn as a
   picture nobody sees. The smoothing's sprites and its maths window, which

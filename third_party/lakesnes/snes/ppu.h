@@ -306,11 +306,12 @@ struct Ppu {
   bool (*drawLine)(void* user, Ppu* ppu, int line);
   void* drawUser;
   // zamn: ...and a line's sprites found by somebody else. Called from
-  // `ppu_runLine` where they would be found, with `drawUser`, `noPixels` or
-  // not: finding them sets the two flags the game can read back. True if it
-  // found them -- into `objPixelBuffer`, which is zero when it is called, and
-  // `objPriorityBuffer`, with `rangeOver` and `timeOver` set if they are --
-  // and false to have them found here.
+  // `ppu_runLine` for every line, with `drawUser`, `noPixels` or not, and
+  // whether or not the line is blanked: finding them sets the two flags the
+  // game can read back. True if it saw to them -- found them, with
+  // `rangeOver` and `timeOver` set if they are, or found that the line is
+  // blanked and has none -- and false to have them found here if it is not.
+  // `objPixelBuffer` is zero when it is called.
   bool (*findSprites)(void* user, Ppu* ppu, int line);
   // zamn: ...and the registers kept by somebody else as well, all with
   // `drawUser`. `wrote` is called after every `ppu_write` has been done
@@ -515,18 +516,6 @@ void ppu_setWideClamp(Ppu* ppu, int lo, int hi);
 // game parks out of sight of a picture narrower than the one being drawn.
 // Not a write of the game's, and not counted as one for `layerRaster`.
 void ppu_setScroll(Ppu* ppu, int layer, uint16_t h, uint16_t v);
-// One tilemap word, straight in. For filling the parts of a scrolling tilemap
-// that the game maintains only as far as its own 256 columns.
-void ppu_writeVramWord(Ppu* ppu, uint16_t wordAdr, uint16_t val);
-// One OAM entry, straight in: `x` is nine bits, `y` eight, `tileAttr` the
-// second word as the game composes it. For the sprites a game drops because
-// they are outside the console's 256 and inside the widened picture.
-void ppu_setSprite(Ppu* ppu, int slot, int x, int y, uint16_t tileAttr,
-                   bool large);
-// The first OAM entry at or after `from` that is parked off the bottom of the
-// screen, or 128 if there is none. Where those dropped sprites can go without
-// disturbing one the game placed.
-int ppu_freeSprite(const Ppu* ppu, int from);
 // The picture's current size across, in game pixels: 256 plus both margins.
 int ppu_gameWidth(const Ppu* ppu);
 // ...and in *output* pixels, which is two per game pixel, so the row pitch

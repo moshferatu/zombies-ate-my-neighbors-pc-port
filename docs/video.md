@@ -9,10 +9,11 @@ draws every scanline the game shows, and the emulated PPU does neither. It
 keeps the chip's registers too: a line is drawn from them, the game reads
 what they answer, and the frontend reads them. It keeps what the frontend
 says of the picture and what is noted of each frame as well, so the frontend
-asks the PPU nothing about what is on the screen. The PPU still holds VRAM,
-the palette and OAM, and the buffer the picture is written into. It is still
-written to and told what the frontend says, because it is what `src/video`
-is checked against.
+asks the PPU nothing about what is on the screen. And it keeps the chip's
+memories, each line's sprites and the picture itself, so a frame drawn here
+reads nothing out of the PPU. The PPU is still written to and told what the
+frontend says, because it is what `src/video` is checked against, and it
+still says when a frame and a line begin.
 
 ## Why it was worth doing first
 
@@ -36,8 +37,9 @@ the game last set them, under names of this project's. It names nothing of the
 emulator's. `src/video/ppu_hook.c` is the one file that knows both. Before
 each line it fills a `VideoState` from three things kept here: the registers
 (`VideoRegisters`), what the frontend has said of the picture
-(`VideoPicture`) and what has been noted of the frame (`VideoFrame`). Only
-the line's sprites are still in the PPU's two rows.
+(`VideoPicture`) and what has been noted of the frame (`VideoFrame`). The
+memories the registers point at and the two rows of the line's sprites are
+kept here as well.
 
 ## The registers
 
@@ -62,13 +64,12 @@ address that steps as bytes go through, and each has a catch:
   fetched ahead.
 - **The palette** takes a colour when its second byte is written.
 
-The memories themselves are not `VideoRegisters`'s. It is told where they
-are, and for now they are the PPU's own arrays. The frontend writes sprites
-and map words straight into those, and both sets of registers must see them.
+The memories themselves are a `VideoMemory`, and `VideoRegisters` is told
+where one is. `src/video` has its own, and the PPU has a second set. See
+"The memories, the sprites' rows and the picture" below.
 
 The PPU calls `Ppu.wrote`, `Ppu.didRead` and `Ppu.happened` after it has done
-each thing itself. So every write is done twice, to the same memory, which
-comes to the same.
+each thing itself. So every write is done twice, each to its own memory.
 
 One register is written by the frontend and not the game. In a widened
 picture `src/widescreen.h` moves the big figure's plane, which the game parks
@@ -140,6 +141,58 @@ how to read it, and `video_sprites` finds a line's sprites from them into a
 row: a palette index and a priority for each column. The line is then drawn
 with that row.
 
+## The memories, the sprites' rows and the picture
+
+These three were the PPU's, and `src/video` wrote into them. They are kept
+in `src/video` now, and the PPU's own are written only by the PPU.
+
+**The memories.** `VideoMemory` is VRAM, the palette, OAM and OAM's extra
+bits. The game's writes reach it through the three doors. The PPU decodes
+the same writes into its own set.
+
+The frontend puts four things into the memories that the game did not. Each
+is a function of `registers.h`, and `ppu_hook.h` has one beside it that
+tells the PPU's set too:
+
+- **`video_set_sprite`**: a sprite whole, for the ones the game drops because
+  they are off the console's picture and on the widened one, and for the
+  radar's squares.
+- **`video_free_sprite`**: the first sprite parked below the picture. It
+  only reads.
+- **`video_set_vram`**: a word of VRAM, for the map beyond the console's
+  columns and the characters of lent sprites.
+- **`video_set_colour`**: a colour, for the red of `--red-blood`.
+
+The PPU's own functions for the first three are gone. The fourth had none:
+`src/blood.h` wrote the palette through the registers' pointer, which was
+the PPU's array. This file listed three writes and that one was not among
+them. See the results.
+
+**The sprites' rows.** `video_sprites` finds a line's sprites into two rows
+of the hook's. The PPU's hook for it is now called on every line, blanked or
+not, and whether a blanked line's sprites are looked for is decided here from
+the registers here. When the PPU finds them, for a line that is declined or
+under `emulated`, its rows are copied here.
+
+**The picture.** A line is put into a buffer of the hook's, laid out as the
+PPU's is: two fields of 239 lines, eight bytes a column. The frontend takes
+it with `video_put_pixels`, which hands over 480 rows as the PPU's did, and
+asks its width with `video_output_width`. `video_set_pixel_format` says
+which end of a pixel's four bytes is unused. A line the PPU draws is copied
+here, so the picture is taken from one place under all three renderers.
+Under `check` the picture shown is the PPU's.
+
+**A saved state is still the PPU's.** The PPU is written to under every
+renderer, so its state is whole when it is saved. When one is loaded the
+registers and the memories here are taken from it. One thing differs: a
+state saved while `src/video` draws has the PPU's row of sprite pixels as
+the PPU cleared it, and not the last line's sprites. Nothing reads that row
+after a load. Over four saves the two kinds of state differed in 65 to 176
+bytes, all within those 256.
+
+`zamn_headless` takes `--renderer`, as the game does, so a state can be
+saved and loaded under each of the three.
+
 ## How a line's sprites are found
 
 As the console finds them, because the game can see how it does.
@@ -158,7 +211,8 @@ rest, sprites drawn in colours of the frontend's, and the three places a
 sprite can have in a widened picture. A sprite placed with a centred layer
 is found up to three times, once for the layer and once for each margin.
 
-Half-height sprites, which the game never asks for, are left to the PPU.
+Half-height sprites, which the game never asks for, are left to the PPU,
+and what it finds is copied into the rows here.
 
 ## How a line is drawn
 
@@ -250,6 +304,11 @@ was drawn.
   And it compares the frame's notes with the PPU's own after every write,
   every line and every frame's top, and at a frame's top what the frontend
   has said of the picture with what the PPU was told.
+  And it compares the three memories whole with the PPU's at each of a
+  frame's three events.
+- **`zamn_headless --renderer`** with `--save` and `--load` saves a state
+  under one renderer and loads it under another. Loaded under `check`, every
+  comparison above runs from the load on.
 - **`tools/verify_corpus.ps1 -Picture`** runs every movie of the corpus under
   the check, then again with `src/video` drawing alone, and compares a
   checksum of every line of the picture between the two. `-Widescreen
@@ -272,6 +331,10 @@ was drawn.
   its policies changed, and the notes are compared after each. Every eighth
   step both are also asked where a sprite is drawn, whether maths is allowed
   at a column of a line, and how far a background is shifted.
+  One step in a hundred puts something into the memories from outside: a
+  sprite, a word of VRAM or a colour. The PPU's is done as the PPU's own
+  functions did it, which the test keeps a copy of. The memories are compared
+  whole at once, and so is which sprite each says is free.
 
 A rule broken on purpose is caught: `zamn_test_video` with a 16x16 tile's
 lower half read one character out reported 22,756 lines differing of 51,520.
@@ -335,6 +398,30 @@ And two of clamp edge, over 300 frames of `zamn_test_video`: the right
 margin taken from a column in, 1,277 lines and 135 rows read back; the left
 margin taken from the line above, 1,207 lines and 131 rows.
 
+Eighteen of the memories, the rows and the picture. Each was caught by the
+run named:
+
+| Broken | Caught by | What it said |
+|---|---|---|
+| A sprite put with its size bit in the ninth bit's place | noise, registers | 1,343 steps, OAM's extra bits |
+| A sprite put without X's ninth bit | noise, registers | 1,354 steps, OAM's extra bits |
+| A sprite on line `$F0` not read as parked | noise, registers | 304 steps, which sprite is free |
+| A word put into half of VRAM | noise, registers | 968 steps, VRAM |
+| A colour put into half of the palette | noise, registers | 681 steps, the palette |
+| Sprites looked for on a blanked line | noise, video | 3,134 lines' sprites |
+| The sprites' row not cleared before a line | noise, video | 16 lines' sprites |
+| Sprites the PPU found not copied here | noise, video | 1,282 lines |
+| A colour put here and not into the PPU's palette | a forced game over, check | 394 events, the palette |
+| A sprite put here without the PPU's extra bits | the same | 981 events, OAM's extra bits |
+| A word of VRAM put here and not into the PPU's | the same | 1,717 events, VRAM |
+| A loaded state's memories left as they were | a state loaded under check | VRAM, at the first frame |
+| A line put a byte out of place | a movie alone | another checksum |
+| A line the PPU drew not copied here | a movie, emulated | another checksum |
+| The picture's second rows taken from the other field | a screenshot | another picture |
+| The picture handed over two rows high | a screenshot | another picture |
+| A line drawn into the field that is not shown | a screenshot | another picture |
+| The picture's width without its right margin | a screenshot | another picture |
+
 ## Results
 
 **Checked**, on the build that is described here:
@@ -392,6 +479,42 @@ margin taken from the line above, 1,207 lines and 131 rows.
   layers test counts the frames the drips were marked on, not what colour
   they came out. The build before's checksum for that run was a different
   number.
+- **The memories, the rows and the picture kept here.**
+  The corpus at four widths again: 310,747,136 lines, none differing, none
+  left to the PPU. No register, memory or note was other than the PPU's, and
+  each of the 216 runs comes to the same checksum alone. Some comments were
+  mended after that pass. Everything below is on the build after.
+  `zamn_test_registers`, 13,000,000 steps over three seeds: 24,889,909
+  writes, 1,820,766 reads, 781,462 events, 1,038,936 lines begun and 130,378
+  things put into the memories from outside, and nothing other than the
+  PPU's. `zamn_test_video`, 6,000 frames over two seeds: 1,261,568 lines'
+  sprites found both ways, 1,076,320 lines drawn both ways and 200,724 rows
+  read back, none differing.
+  Three renderers come to one checksum on two movies at 16:9, and on the
+  forced game over with red blood at 16:9, 16:10 and 21:9. Each is the
+  number the build before came to.
+  Against the build before: `zamn_test_layers` prints the same on seven
+  runs, 17,605 frames drawn as a list and none differing; `zamn_test_radar`
+  the same at 4:3 and 16:9; `zamn_headless` writes the same picture from
+  three movies; and `zamn_record` the same bytes from four recordings.
+- **A saved state.** `zamn_headless` on two movies at two widths, saved at
+  frame 1,500 and run to 3,000. A state saved under `native` and one saved
+  under `emulated` were each loaded under all three renderers. Each of the
+  six loaded runs writes the picture the unbroken run writes, the six come
+  to one checksum, and under `check` nothing differs after the load: no
+  line, no line's sprites, no register, no memory and no note.
+- **A fourth write I had not listed, caught twice.** With the memories
+  apart, `--red-blood` drew its red under `native` and not under `check` or
+  `emulated`: `src/blood.h` put its three colours into the palette through
+  the registers' pointer, which had been the PPU's array and was now only
+  the one here. The forced game over showed it as two checksums where there
+  should be one, and the check's new comparison named it: the palette, 394
+  times. It calls `video_set_colour` now. The corpus would not have shown
+  it, having no red blood.
+- **Linux again.** The tree builds in WSL with gcc 13 and both noise tests
+  pass there. `level25-boss.zmv` and the forced game over with red blood, at
+  16:9, are clean under the check and come to the Windows build's checksums
+  alone.
 - **Linux.** The tree builds in WSL with gcc 13, once `src/port/clears.c`
   includes `<stddef.h>`, which an earlier commit of mine left out. Both
   noise tests pass there. `level25-boss.zmv` at 16:9 is clean under the
@@ -433,37 +556,41 @@ Nor did keeping the picture and the notes here. Measured back to back with
 the build before, on a noisier afternoon: 2.50 to 2.96 ms against 2.56 to
 2.87, and taking a tick apart 0.54 to 0.60 against 0.53 to 0.56.
 
+Nor did keeping the memories, the rows and the picture's buffer here: 2.41
+to 2.48 ms over three runs, against 2.55 to 2.56 for the build before, run
+in turn. The PPU still decodes every write under every renderer. That is the
+cost left to take out, and it goes when the console calls `src/video`
+itself.
+
 ## What is still the emulator's
 
-- **The memory.** VRAM, the palette and OAM are the PPU's arrays.
 - **A second set of everything kept here.** The PPU still decodes every
-  write, takes its own notes of a frame and is told what the frontend says.
-  Nothing outside it reads any of that but the checks, and the PPU itself
-  for the lines it draws under `check` and `emulated`. Two things it does
-  for every renderer: it decides whether a line's sprites are looked for,
-  from its own blank bit, and it hands the picture over from its own
-  buffer. A saved state is the PPU's, and the registers here are taken from
-  it when one is loaded.
-- **Three writes to the memories.** The frontend puts sprites and map words
-  into the PPU's arrays through `snes_setSprite`, `snes_freeSprite` and
-  `snes_writeVramWord`. They move when the memories do.
+  write into registers and memories of its own, takes its own notes of a
+  frame and is told what the frontend says. Nothing outside it reads any of
+  that but the checks, and the PPU itself for the lines it draws under
+  `check` and `emulated`. Under `native` it is work done for nobody, but for
+  the saved state.
+- **The saved state.** It is the PPU's, and the registers and memories here
+  are taken from it when one is loaded.
 - **When things happen.** The emulated console says where the beam is, when
-  a frame starts and when the picture ends.
-- **The sprites' two rows.** They are found here but kept in the PPU.
-- **The tools.** Only the game draws with `src/video`. The four tools that
-  share the frontend's code keep registers and leave the drawing to the PPU.
-  `zamn_cosim` and the rest still run the PPU's own sprite finder, and draw
-  nothing.
-- **The picture's buffer.** A line is written into the PPU's pixel buffer,
-  eight bytes a column, and the frontend reads it from there.
+  a frame starts, when a line begins and when the picture ends, and it says
+  them through the PPU. The frontend's handle on `src/video` is still the
+  PPU's pointer.
+- **The tools.** The game draws with `src/video`, and `zamn_headless` does
+  when asked. The other three that share the frontend's code keep registers
+  and leave the drawing to the PPU. `zamn_cosim` and the rest still run the
+  PPU's own sprite finder, and draw nothing.
 
 ## Next
 
 - Draw a frame once. With the smoothing on, a frame shown as layers is still
   drawn as a picture that nobody sees.
-- Move the memories, the sprites' rows and the picture's buffer here, and
-  have the console call `src/video` for a write, a read and a line. The PPU
-  is then needed only by `check` and `emulated`, and a build without it can
-  be tried. The saved state has to be written from here first.
+- Have the console call `src/video` for a write, a read, a line and a
+  frame's events, with the PPU beside it only under `check` and `emulated`.
+  The saved state has to be written from here first, in the PPU's layout so
+  that states already saved still load. A build without the PPU can then be
+  tried, and `native` stops paying for the PPU's decoding.
+- The picture is kept eight bytes a column because the frontend takes it
+  doubled. Four would do if the frontend took it as drawn.
 - The smoothing's sprites and its maths window are still worked out a dot at
   a time.

@@ -142,7 +142,7 @@ static DwmStats dwm_stats(void) {
 #define FB_W_MAX (PPU_MAX_WIDTH * 2)
 #define FB_H 480
 static int fb_w = 512;
-// The live part of it. `ppu_putPixels` doubles the game's 224 scanlines into
+// The live part of it. `video_put_pixels` doubles the game's 224 scanlines into
 // rows 16..463 and zeroes the sixteen above and below, so a third of a
 // megapixel of every frame is blank by construction. Scaling that with the rest
 // spends 6.7% of the screen's height enlarging black — measured on a real
@@ -186,15 +186,15 @@ static uint8_t* read_file(const char* path, int* out_len) {
 // byte-for-byte with the `SDL_PIXELFORMAT_RGBX8888` texture below, and it is
 // also the core's own default — but it is set explicitly, because `write_png`
 // has to agree with it and a default is a bad thing for two places to depend on.
-#define ZAMN_PIXEL_FORMAT pixelFormatRGBX
+#define ZAMN_PIXEL_FORMAT VIDEO_PIXELS_RGBX
 
 // The core's framebuffer as a PNG — how a run nobody watched gets checked
 // afterwards.
 //
 // This is `zamn_headless`'s conversion with one byte of difference, and the byte
-// is the whole reason to say anything here. `ppu_setPixelOutputFormat` does not
+// is the whole reason to say anything here. `video_set_pixel_format` does not
 // reorder the channels, it *shifts* them: a pixel is `[B,G,R,X]` under
-// `pixelFormatXRGB` and `[X,B,G,R]` under `pixelFormatRGBX`, the same three
+// `VIDEO_PIXELS_XRGB` and `[X,B,G,R]` under `VIDEO_PIXELS_RGBX`, the same three
 // bytes one position along. Headless picks XRGB and reads from +0; this reads
 // from +1, and getting that wrong is not a crash but a picture in the wrong
 // palette — green grass comes out brown — which is what it did first time.
@@ -202,7 +202,7 @@ static bool write_png(Snes* snes, const char* path) {
   uint8_t* fb = (uint8_t*)malloc((size_t)FB_W_MAX * FB_H * 4);
   uint8_t* rgb = (uint8_t*)malloc((size_t)FB_W_MAX * FB_H * 3);
   if (!fb || !rgb) { free(fb); free(rgb); return false; }
-  snes_setPixels(snes, fb);
+  video_put_pixels(snes->ppu, fb);
   const int c = ZAMN_PIXEL_FORMAT;  // 0 for [B,G,R,X], 1 for [X,B,G,R]
   for (int i = 0; i < fb_w * FB_H; i++) {
     rgb[i * 3 + 0] = fb[i * 4 + c + 2];  // R
@@ -218,7 +218,7 @@ static bool write_png(Snes* snes, const char* path) {
 // (where it goes and how) and `src/present.h` (the SDL that does it), both so
 // that `zamn_test_scale` and `zamn_test_present` can check them without a
 // window between them.
-// `ppu` is the machine's own; `ppu_putPixels` is what `snes_setPixels` is.
+// `ppu` is the machine's own, and the picture is taken from `src/video`.
 //
 // And a word over it for a moment -- SAVED, LOADED -- because a quick save
 // changes nothing on screen and the console is behind a fullscreen window.
@@ -309,12 +309,12 @@ static void present_frame(Present* p, Ppu* ppu) {
     // guarantee SDL makes, and the failure would be a sheared picture rather
     // than anything that says what went wrong.
     if (pitch == fb_w * 4) {
-      ppu_putPixels(ppu, (uint8_t*)pixels);
+      video_put_pixels(ppu, (uint8_t*)pixels);
     } else {
       static uint8_t* scratch = NULL;
       if (!scratch) scratch = (uint8_t*)malloc((size_t)FB_W_MAX * FB_H * 4);
       if (scratch) {
-        ppu_putPixels(ppu, scratch);
+        video_put_pixels(ppu, scratch);
         for (int y = 0; y < FB_H; y++)
           memcpy((uint8_t*)pixels + (size_t)y * pitch,
                  scratch + (size_t)y * fb_w * 4, (size_t)fb_w * 4);
@@ -1397,7 +1397,7 @@ int main(int argc, char** argv) {
   // place as ever, and nothing is written back.
   hiscore.read_only = cheats_any(&cheats);
 
-  snes_setPixelFormat(snes, ZAMN_PIXEL_FORMAT);
+  video_set_pixel_format(snes->ppu, ZAMN_PIXEL_FORMAT);
   // Before the window is sized, because the window is sized from the picture.
   // `auto` starts off, which is what it is in a window and so the size the
   // window comes back to; fullscreen, the loop widens it before the first
@@ -1406,7 +1406,7 @@ int main(int argc, char** argv) {
   WideMode wide_shown = wide;  // the width the console last reported
   bool wide_told = false;      // past the first pass of the loop
   video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
-  fb_w = snes_pixelWidth(snes);
+  fb_w = video_output_width(snes->ppu);
   // ...and the per-frame half of it runs at the top of each frame, from the
   // machine itself, because that is the only moment the game's vblank is over
   // and none of the picture has been drawn yet. See `SnesFrameHook`.
@@ -2001,7 +2001,7 @@ int main(int argc, char** argv) {
         wide = want;
         video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
         ws.margin = wide_margin(wide);
-        fb_w = snes_pixelWidth(snes);
+        fb_w = video_output_width(snes->ppu);
         const ScaleMode m = present.mode;
         present_free(&present);
         live.w = fb_w;

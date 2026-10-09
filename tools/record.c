@@ -13,7 +13,7 @@
 // Each picture is `(256 + 2 * margin) * sx` by `224 * sy`, where the margin is
 // `--widescreen`'s and `--scale sx,sy` defaults to 12,10: 4104x2240 at 16:9,
 // which ffmpeg then shrinks to 3840x2160 the way `sharp` does. A tick the draw
-// list cannot express is the PPU's own picture, enlarged nearest.
+// list cannot express is the picture as it was drawn, enlarged nearest.
 //
 //   --wav <file>      The sound of frames `first` to `last`, 48 kHz stereo, 800
 //                     samples a tick: one tick is exactly 1/60 s, as in video.
@@ -130,12 +130,13 @@ int main(int argc, char** argv) {
 
   Snes* snes = snes_init();
   if (!snes_loadRom(snes, rom, rom_len)) { fprintf(stderr, "error: not a ROM\n"); return 1; }
-  snes_setPixelFormat(snes, pixelFormatXRGB);
   // The frontend reads the chip's registers from `src/video`, which keeps
-  // them beside the PPU's. The PPU draws the picture here.
+  // them beside the PPU's, and takes the picture from it. The PPU draws the
+  // picture here.
   static VideoHook video_hook;
   video_hook_install(&video_hook, snes->ppu, VIDEO_EMULATED, false);
   video_hook_keep_registers(&video_hook, snes->ppu);
+  video_set_pixel_format(snes->ppu, VIDEO_PIXELS_XRGB);
   // As the frontend sets the machine up: the widened picture and its hook,
   // which also draws the radar and the blood, and the game over's line.
   static Widescreen ws;

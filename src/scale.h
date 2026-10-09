@@ -42,7 +42,7 @@
 //
 // ## Aspect ratio
 //
-// The core hands over 512x480, but only rows 16..463 are picture: `ppu_putPixels`
+// The core hands over 512x480, but only rows 16..463 are picture: `video_put_pixels`
 // zeroes sixteen rows top and bottom when the game is not in overscan, and this
 // one is not. Scaling all 480 rows spends 6.7% of the screen enlarging black and
 // then letterboxes *that*, so the caller crops to the live 512x448 and the sizes
@@ -164,7 +164,7 @@ static inline int wide_margin(WideMode m) {
 }
 
 // The source width the frontend then works in: output pixels, two per game
-// pixel across, matching `snes_pixelWidth`.
+// pixel across, matching `video_output_width`.
 static inline int wide_source_width(WideMode m) {
   return (256 + 2 * wide_margin(m)) * 2;
 }

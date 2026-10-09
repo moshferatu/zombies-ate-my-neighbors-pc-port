@@ -6,6 +6,11 @@
 // Usage: zamn_headless <rom.sfc> <out.png> [frames] [-m movie] [--at f,f,...]
 //                      [--pos first[,last[,step]]] [--records first[,last[,step]]]
 //
+// `--renderer native|emulated|check` says who draws the picture, as the game's
+// own switch does (`src/video/ppu_hook.h`), and has what was drawn reported
+// at the end with its checksum. Left out, the emulated PPU draws it. With
+// `--save` and `--load` it is how a saved state is tried under each of them.
+//
 // `-m` replays a movie file (`src/analysis/movie.c`) instead of holding no
 // buttons, and `--at` writes one PNG per listed frame — `out.01860.png` and so
 // on — rather than only the last. That pair is the movie-authoring loop: run a
@@ -90,7 +95,7 @@ static bool write_png(Snes* snes, const char* path) {
   uint8_t* fb = (uint8_t*)malloc((size_t)FB_W * FB_H * 4);
   uint8_t* rgb = (uint8_t*)malloc((size_t)FB_W * FB_H * 3);
   if (!fb || !rgb) { free(fb); free(rgb); return false; }
-  snes_setPixels(snes, fb);
+  video_put_pixels(snes->ppu, fb);
   // Convert XRGB(=[B,G,R,X]) -> packed RGB for the PNG. The core packs its rows
   // at the live width, so this is a straight run of `fb_w * FB_H` pixels.
   for (int i = 0; i < fb_w * FB_H; i++) {
@@ -343,6 +348,7 @@ int main(int argc, char** argv) {
             "       [--poke frame[+]:addr=value[.b]]...\n"
             "       [--twin-stick] [--aim frame[+]:U|D|L|R...|-]...\n"
             "       [--widescreen off|16:9|16:10|21:9] [--flashing-radar]\n"
+            "       [--renderer native|emulated|check]\n"
             "       [--invincible] [--invincible-neighbors] [--infinite-ammo]\n"
             "       [--infinite-lives] [--give-all] [--always-run]\n",
             argv[0]);
@@ -351,6 +357,8 @@ int main(int argc, char** argv) {
   const char* rom_path = argv[1];
   const char* out_path = argv[2];
   WideMode wide = WIDE_OFF;
+  VideoRenderer renderer = VIDEO_EMULATED;
+  bool renderer_given = false;
   bool radar_flash = false;  // src/radar.h
   int frames = 180;
   const char* movie_path = NULL;
@@ -465,6 +473,12 @@ int main(int argc, char** argv) {
         fprintf(stderr, "error: --widescreen wants off, 16:9, 16:10 or 21:9\n");
         return 2;
       }
+    } else if (!strcmp(argv[i], "--renderer") && has_next) {
+      if (!video_renderer_named(argv[++i], &renderer)) {
+        fprintf(stderr, "error: --renderer wants native, emulated or check\n");
+        return 2;
+      }
+      renderer_given = true;
     } else if (!strcmp(argv[i], "--flashing-radar")) {
       radar_flash = true;
     } else if (argv[i][0] != '-') {
@@ -488,22 +502,23 @@ int main(int argc, char** argv) {
     return 1;
   }
   // The frontend reads the chip's registers from `src/video`, which keeps
-  // them beside the PPU's. The PPU draws the picture here.
+  // them beside the PPU's, and takes the picture from it. The PPU draws the
+  // picture here unless `--renderer` says otherwise.
   static VideoHook video_hook;
-  video_hook_install(&video_hook, snes->ppu, VIDEO_EMULATED, false);
+  video_hook_install(&video_hook, snes->ppu, renderer, renderer_given);
   video_hook_keep_registers(&video_hook, snes->ppu);
   // Widen the picture before the first frame is drawn. `fb_w` is what the core
   // will pack its rows at from here on, and every buffer above was allocated at
   // the widest it could be. The hook then does the per-frame half of it, at the
   // top of each frame rather than from here — see `SnesFrameHook`.
   video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
-  fb_w = snes_pixelWidth(snes);
+  fb_w = video_output_width(snes->ppu);
   static Widescreen ws;
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
   ws.radar.steady = !radar_flash;
   if (wide != WIDE_OFF) printf("Widescreen %s: %d columns\n", wide_name(wide), fb_w / 2);
   // XRGB layout: framebuffer bytes per pixel are [B, G, R, X].
-  snes_setPixelFormat(snes, pixelFormatXRGB);
+  video_set_pixel_format(snes->ppu, VIDEO_PIXELS_XRGB);
   if (!cheats_install(&cheats, snes->cart->rom, (size_t)snes->cart->romSize)) {
     fprintf(stderr, "error: this is not a cartridge the cheats know how to change\n");
     return 1;
@@ -618,9 +633,10 @@ int main(int argc, char** argv) {
     return 1;
   }
   printf("Wrote %s (%dx%d)\n", out_path, fb_w, FB_H);
+  const bool picture_ok = !renderer_given || video_hook_report(&video_hook, stdout);
 
   if (have_movie) movie_free(&movie);
   free(rom);
   snes_free(snes);
-  return 0;
+  return picture_ok ? 0 : 1;
 }

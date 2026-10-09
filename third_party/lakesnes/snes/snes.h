@@ -122,10 +122,6 @@ void snes_setPixels(Snes* snes, uint8_t* pixelData);
 // Widescreen is said to `src/video` (`video_set_margins` and the rest), which
 // tells the PPU. `snes_pixelWidth` is the width of what `snes_setPixels` then
 // writes, in output pixels, and its row pitch is that times four bytes.
-void snes_writeVramWord(Snes* snes, uint16_t wordAdr, uint16_t val);
-void snes_setSprite(Snes* snes, int slot, int x, int y, uint16_t tileAttr,
-                    bool large);
-int snes_freeSprite(const Snes* snes, int from);
 int snes_pixelWidth(const Snes* snes);
 // See `SnesFrameHook`. Pass NULL to remove it.
 void snes_setFrameHook(Snes* snes, SnesFrameHook hook, void* ctx);

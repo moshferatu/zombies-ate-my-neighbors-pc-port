@@ -82,12 +82,13 @@ int main(int argc, char** argv) {
   if (!rom) { fprintf(stderr, "error: cannot read '%s'\n", argv[1]); return 1; }
   Snes* snes = snes_init();
   if (!snes_loadRom(snes, rom, rom_len)) { fprintf(stderr, "error: not a ROM\n"); return 1; }
-  snes_setPixelFormat(snes, pixelFormatXRGB);
   // The frontend reads the chip's registers from `src/video`, which keeps
-  // them beside the PPU's. The PPU draws the picture here.
+  // them beside the PPU's, and takes the picture from it. The PPU draws the
+  // picture here.
   static VideoHook video_hook;
   video_hook_install(&video_hook, snes->ppu, VIDEO_EMULATED, false);
   video_hook_keep_registers(&video_hook, snes->ppu);
+  video_set_pixel_format(snes->ppu, VIDEO_PIXELS_XRGB);
   snes_reset(snes, true);
   Movie movie;
   if (!movie_load(&movie, argv[2])) { fprintf(stderr, "error: cannot load movie '%s'\n", argv[2]); return 1; }

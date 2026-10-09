@@ -4,6 +4,13 @@
 
 #include <string.h>
 
+void video_registers_attach(VideoRegisters* r, VideoMemory* m) {
+  r->vram = m->vram;
+  r->cgram = m->cgram;
+  r->oam = m->oam;
+  r->high_oam = m->high_oam;
+}
+
 void video_registers_reset(VideoRegisters* r) {
   uint16_t* const vram = r->vram;
   uint16_t* const cgram = r->cgram;
@@ -491,4 +498,33 @@ bool video_column_filled(const VideoRegisters* r, int layer, int x) {
     if (character_empty(r, layer, tile, depth)) return false;
   }
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Put in from outside
+// ---------------------------------------------------------------------------
+
+void video_put_sprite(VideoRegisters* r, int sprite, int x, int y, uint16_t word, bool large) {
+  if (sprite < 0 || sprite >= VIDEO_SPRITES) return;
+  r->oam[sprite * 2] = (uint16_t)((y & 0xff) << 8 | (x & 0xff));
+  r->oam[sprite * 2 + 1] = word;
+  const int shift = (sprite & 3) * 2;
+  uint8_t* extra = &r->high_oam[sprite >> 2];
+  *extra = (uint8_t)((*extra & ~(3 << shift)) | ((x >> 8) & 1) << shift | (large ? 2 : 0) << shift);
+}
+
+int video_free_sprite(const VideoRegisters* r, int from) {
+  for (int sprite = from < 0 ? 0 : from; sprite < VIDEO_SPRITES; sprite++) {
+    // Lines $E0 to $F0 are between the picture's last and the rows a sprite
+    // hanging off its top would be on. Nothing the game draws is put there.
+    const int y = r->oam[sprite * 2] >> 8;
+    if (y >= 0xe0 && y <= 0xf0) return sprite;
+  }
+  return VIDEO_SPRITES;
+}
+
+void video_put_vram(VideoRegisters* r, uint16_t at, uint16_t word) { r->vram[at & 0x7fff] = word; }
+
+void video_put_colour(VideoRegisters* r, int index, uint16_t colour) {
+  r->cgram[index & 0xff] = colour & 0x7fff;
 }

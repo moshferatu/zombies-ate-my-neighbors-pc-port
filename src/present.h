@@ -9,7 +9,7 @@
 // nothing tested.
 //
 // `present_draw` is deliberately separate from getting a frame *into* the
-// texture: the frontend fills it from the core with `snes_setPixels` under a
+// texture: the frontend fills it from `video_put_pixels` under a
 // lock, and the test fills it with a pattern. Neither has any business knowing
 // how the other does it.
 

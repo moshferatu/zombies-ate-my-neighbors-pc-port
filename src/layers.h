@@ -37,7 +37,7 @@
 // a mode other than 1, mosaic, hi-res, a window on a background or one that
 // clips to black, a sub screen with more than one layer on it, anything
 // written mid-frame -- makes the frame
-// `layered = false`, and the frontend shows the PPU's own picture of it for
+// `layered = false`, and the frontend shows the picture as it was drawn for
 // every refresh, as the plain loop would. `tools/test_layers.c` measures over
 // the movie corpus how often that is, and that the draw list drawn at the
 // console's own size, unmoved, is the frame the PPU drew.
@@ -164,8 +164,8 @@
 #define LAYERS_CELL_MAX 64
 #define LAYERS_ATLAS_W (LAYERS_ATLAS_COLS * LAYERS_CELL_MAX)
 #define LAYERS_ATLAS_H (LAYERS_ATLAS_ROWS * LAYERS_CELL_MAX)
-// The PPU's own picture of the frame, kept for the frames that cannot be drawn
-// as layers: its output width at two bytes... four bytes a pixel, line doubled.
+// The frame as it was drawn, kept for the frames that cannot be drawn as
+// layers: `video_put_pixels` layout, four bytes a pixel, each line twice.
 #define LAYERS_FB_W (PPU_MAX_WIDTH * 2)
 #define LAYERS_FB_H 480
 // A draw list is at most every plane, every sprite drawn six times (once
@@ -362,8 +362,8 @@ typedef struct {
   // column `s % 16`, row `s / 16`, each `cell` pixels square.
   uint8_t plane[LAYERS_PLANES][LAYERS_PLANE_H][LAYERS_PLANE_W][4];
   uint8_t atlas[LAYERS_ATLAS_H][LAYERS_ATLAS_W][4];
-  // The PPU's own output of this frame, `ppu_putPixels` layout, `fbWidth`
-  // pixels across and `LAYERS_FB_H` rows.
+  // The frame as it was drawn, `video_put_pixels` layout, `fbWidth` pixels
+  // across and `LAYERS_FB_H` rows.
   int fbWidth;
   uint8_t fb[LAYERS_FB_W * LAYERS_FB_H * 4];
 } LayersFrame;
@@ -496,7 +496,7 @@ static inline const char* layers_unexpressible(const Ppu* ppu) {
   return NULL;
 }
 
-// Where the frame's bytes of RGB sit in `LayersFrame.fb`: `ppu_putPixels`
+// Where the frame's bytes of RGB sit in `LayersFrame.fb`: `video_put_pixels`
 // doubles every line and every pixel, and packs XRGB as B, G, R, X.
 static inline const uint8_t* layers_fb_pixel(const LayersFrame* f, int x, int y) {
   return &f->fb[(((size_t)(y * 2 + 16)) * f->fbWidth + (size_t)x * 2) * 4];
@@ -651,8 +651,7 @@ static inline void layers_planes_by_row(LayersFrame* f, Ppu* ppu, const VideoSta
 // table (`sprite_oam_owners`) if its pass ran *this tick*, else NULL: the
 // caller knows, from the table's serial, and this does not. Always fills
 // `fb`; fills the planes and sprites only when the frame can be a draw list.
-// `ppu` is not const because `ppu_putPixels` does not take one, but nothing
-// in it is changed.
+// Nothing of `ppu` is changed.
 static inline void layers_capture(LayersFrame* f, Ppu* ppu,
                                   const int16_t* ownerRec, const int16_t* ownerOx,
                                   const int16_t* ownerOy) {
@@ -663,8 +662,8 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
   f->width = video_width(&vs);
   f->extraLeft = vs.extra_left;
   f->world = reg->bg[1].map_wide && reg->main[1];
-  f->fbWidth = ppu_outputWidth(ppu);
-  ppu_putPixels(ppu, f->fb);
+  f->fbWidth = video_output_width(ppu);
+  video_put_pixels(ppu, f->fb);
   f->mode = reg->mode;
   f->bg3prio = reg->bg3_front;
   f->dark = reg->blank || reg->brightness == 0;

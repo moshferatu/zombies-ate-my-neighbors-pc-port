@@ -30,8 +30,17 @@
 
 #include "video/video.h"
 
+// The chip's three memories.
 typedef struct {
-  // The chip's memories. Whoever sets this up says where they are.
+  uint16_t vram[0x8000];
+  uint16_t cgram[0x100];   // 256 colours
+  uint16_t oam[0x100];     // two words a sprite, 128 sprites
+  uint8_t high_oam[0x20];  // two more bits a sprite, four sprites a byte
+} VideoMemory;
+
+typedef struct {
+  // The chip's memories. Whoever sets this up says where they are, with
+  // `video_registers_attach` or by hand.
   uint16_t* vram;     // 0x8000 words
   uint16_t* cgram;    // 256 colours
   uint16_t* oam;      // two words a sprite, 128 sprites
@@ -124,6 +133,9 @@ typedef struct {
   uint8_t open_bus;  // what the processor's bus was left at
 } VideoBus;
 
+// Have `r` keep its memories in `m`.
+void video_registers_attach(VideoRegisters* r, VideoMemory* m);
+
 // The chip as the console's reset leaves it, with its memories cleared.
 // `vram` and the other three must be set first, and are left as they are.
 void video_registers_reset(VideoRegisters* r);
@@ -144,6 +156,24 @@ void video_registers_vblank(VideoRegisters* r);
 // line's sprites, the widened picture, what the frontend says of each sprite
 // -- is left as it was.
 void video_registers_state(const VideoRegisters* r, VideoState* s);
+
+// Four things put into the memories from outside, and not by the game
+// through a door: nothing of the doors' addresses moves.
+//
+// A sprite whole: `x` is nine bits, `y` eight, `word` its second word as the
+// game composes it. For the sprites a game drops because they are outside
+// the console's 256 columns and inside a widened picture.
+void video_put_sprite(VideoRegisters* r, int sprite, int x, int y, uint16_t word, bool large);
+// The first sprite at or after `from` that is parked below the picture, or
+// `VIDEO_SPRITES` if there is none: where one of those can go without
+// disturbing a sprite the game placed.
+int video_free_sprite(const VideoRegisters* r, int from);
+// One word of VRAM. For the parts of a scrolling map that the game keeps up
+// only as far as its own 256 columns.
+void video_put_vram(VideoRegisters* r, uint16_t at, uint16_t word);
+// One colour of the palette, fifteen bits. For a colour the game has none
+// of, in a place it leaves unused.
+void video_put_colour(VideoRegisters* r, int index, uint16_t colour);
 
 // Whether background `layer` draws nothing at all down the column of tiles
 // under column `x` of the console's picture, as it is scrolled now: every

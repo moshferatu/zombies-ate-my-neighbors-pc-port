@@ -1,35 +1,36 @@
 // `video.h`'s renderer in place of the emulated PPU's, and `registers.h`'s
 // registers and `frame.h`'s notes beside its own.
 //
-// The emulated PPU still holds VRAM, the palette and OAM, the picture's
-// buffer and each line's sprites. It still has every register written to it
-// and is still told what the frontend says of the picture, because under two
-// of the three renderers it draws lines, and they are what `src/video` is
-// checked against. What it no longer does is find a line's sprites or draw
-// it, answer the game's reads, or answer the frontend, which asks
-// `video_registers_of`, `video_picture_of` and `video_frame_of`.
-// `Ppu.findSprites` and `Ppu.drawLine` are
-// called where it would have: `video_ppu_sprites` finds the sprites with
-// `video_sprites` into the PPU's own two rows and sets the flags the game
-// reads back, and `video_ppu_line` draws the line with `video_line` into the
-// PPU's own pixel buffer, so everything that reads either reads it where it
-// always was.
+// The emulated PPU still has every register written to it and is still told
+// what the frontend says of the picture, because under two of the three
+// renderers it draws lines, and they are what `src/video` is checked against.
+// What it no longer does is find a line's sprites or draw it, answer the
+// game's reads, or answer the frontend, which asks `video_registers_of`,
+// `video_picture_of` and `video_frame_of` and takes the picture with
+// `video_put_pixels`. `Ppu.findSprites` and `Ppu.drawLine` are called where
+// it would have: `video_ppu_sprites` finds the sprites with `video_sprites`
+// and sets the flags the game reads back, and `video_ppu_line` draws the line
+// with `video_line`. The sprites' two rows and the picture's buffer they go
+// into are kept here, and the PPU's own are not written.
 //
 // A line `video_declines`, or `video_sprites_declines`, is left to the PPU,
-// and counted by what it was about the line.
+// and counted by what it was about the line. What the PPU found or drew is
+// then copied here, so that whoever reads a line reads it in one place.
 //
 // `VIDEO_CHECK` does both both ways and compares them, column by column. It
 // is the test: a movie run under it says how many lines differed and where
-// the first one was. `VIDEO_EMULATED` leaves it all to the PPU; it is there
-// so that one switch has all three, and for the checksum.
+// the first one was. The picture it shows is the PPU's. `VIDEO_EMULATED`
+// leaves it all to the PPU; it is there so that one switch has all three,
+// and for the checksum.
 //
 // `video_hook_keep_registers` has every write, every read and the frame's
-// three events done to a `VideoRegisters` as well, whose memories are the
-// PPU's own. A line is then drawn from those registers, and the game reads
+// three events done to a `VideoRegisters` as well, with memories of its own:
+// VRAM, the palette and OAM are kept here, and the PPU keeps a second set. A
+// line is then drawn from those registers and memories, and the game reads
 // what they answer. Under `VIDEO_CHECK` the PPU's answer is the one the game
 // gets, and after every one of them the registers are compared with the
-// PPU's, each by name. Under `VIDEO_EMULATED` they are kept for the frontend
-// alone.
+// PPU's, each by name; the memories are compared whole at each of a frame's
+// three events. Under `VIDEO_EMULATED` they are kept for the frontend alone.
 //
 // What is noted of a frame is kept with them, in a `VideoFrame`: each line's
 // scrolls and windows as it begins, the writes made while the picture is
@@ -62,6 +63,19 @@ typedef enum {
   VIDEO_CHECK,
 } VideoRenderer;
 
+// How a pixel of the picture is handed over, as a 32-bit word: its bytes in
+// memory are blue, green, red and one unused, or the unused one first.
+typedef enum {
+  VIDEO_PIXELS_XRGB,
+  VIDEO_PIXELS_RGBX,
+} VideoPixels;
+
+// The picture as it is kept: two fields of 239 lines, of which a frame that
+// is not interlaced draws one. A column is eight bytes, the pixel twice, so
+// a line is handed over twice as wide as the game drew it.
+#define VIDEO_ROW_BYTES (VIDEO_MAX_WIDTH * 8)
+#define VIDEO_FIELD_ROWS (VIDEO_LINES - 1)
+
 #define VIDEO_HOOK_REASONS 8
 
 typedef struct {
@@ -92,6 +106,7 @@ typedef struct {
   // those, or of the frame's events, left them or the value read not the
   // PPU's. The first of them: what was done, and which register.
   VideoRegisters registers;
+  VideoMemory memory;
   bool registers_kept;
   long writes, reads, registers_differing;
   struct {
@@ -114,6 +129,12 @@ typedef struct {
     int line;
     const char* which;
   } first_note;
+  // The sprites on the line being drawn, whoever found them: a palette
+  // index for each column of the picture, or 0, and that sprite's priority.
+  uint8_t obj_pixel[VIDEO_MAX_WIDTH], obj_priority[VIDEO_MAX_WIDTH];
+  // The picture, whoever drew it.
+  VideoPixels format;
+  uint8_t pixels[2 * VIDEO_FIELD_ROWS * VIDEO_ROW_BYTES];
   bool checksummed;
   uint64_t checksum;
   long checksum_lines;
@@ -121,8 +142,8 @@ typedef struct {
 } VideoHook;
 
 // What `video.h` draws from, all of it out of the PPU as it stands: its
-// registers, its notes and what it has been told of the picture. For a PPU
-// whose registers are not kept, which is the noise test's.
+// memories, its registers, its notes and what it has been told of the
+// picture. For a PPU whose registers are not kept, which is the noise test's.
 void video_state_from_ppu(VideoState* s, const Ppu* ppu);
 
 // The registers as the PPU has them, into `r`, whose memories are left as
@@ -140,9 +161,9 @@ const char* video_notes_differ(const VideoFrame* f, const Ppu* ppu, int line);
 // the picture if `checksummed`. `hook` must outlive the PPU's use of it.
 void video_hook_install(VideoHook* hook, Ppu* ppu, VideoRenderer renderer, bool checksummed);
 
-// ...and keep its registers in `hook` as well, and what is noted of a frame,
-// from where they stand now. The PPU must belong to a console: a write is
-// told the beam's line.
+// ...and keep its registers in `hook` as well, with the memories and what is
+// noted of a frame, from where they stand now. The PPU must belong to a
+// console: a write is told the beam's line.
 void video_hook_keep_registers(VideoHook* hook, Ppu* ppu);
 
 // For the frontend, of a PPU whose registers are kept: the registers, what
@@ -171,6 +192,24 @@ void video_set_remap(Ppu* ppu, const uint8_t remap[16]);
 // figure's plane, which the game parks out of sight of a picture narrower
 // than the one being drawn. Not a write of the game's, and not noted as one.
 void video_set_scroll(Ppu* ppu, int layer, int h, int v);
+
+// ...and three it puts into the memories, of a PPU whose registers are kept:
+// see `video_put_sprite`, `video_put_vram` and `video_put_colour`. The
+// frontend reads the memories through `video_registers_of` and writes them
+// only with these, because the PPU has a set of its own to be told.
+void video_set_sprite(Ppu* ppu, int sprite, int x, int y, uint16_t word, bool large);
+void video_set_vram(Ppu* ppu, uint16_t at, uint16_t word);
+void video_set_colour(Ppu* ppu, int index, uint16_t colour);
+
+// The picture of the frame last drawn, of a PPU whose registers are kept.
+// `video_output_width` pixels across, which is two for each of the picture's
+// columns, and 480 rows, each of the frame's lines twice: 224 lines leave
+// sixteen rows of black above and below them, and 239 leave two above. Four
+// bytes a pixel, as `video_set_pixel_format` last said, and no gap between
+// rows.
+void video_set_pixel_format(Ppu* ppu, VideoPixels format);
+int video_output_width(const Ppu* ppu);
+void video_put_pixels(const Ppu* ppu, uint8_t* pixels);
 
 // What was drawn, by whom, and what a check found. Returns false if a check
 // found anything different.

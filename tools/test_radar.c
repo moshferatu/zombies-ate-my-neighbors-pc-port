@@ -106,12 +106,22 @@ static bool marker_word(const Snes* snes, const Rom* rom, const uint8_t* mem, ui
     const int x = ((int16_t)radar_r16(mem, rec + ACTOR_X) + meta.pieces[0].x) & 0x1ff;
     const int y = ((int16_t)radar_r16(mem, rec + ACTOR_Y) + meta.pieces[0].y) & 0xff;
     for (int e = 0; e < OAM_ENTRIES; e++) {
-      const uint16_t lo = snes->ppu->oam[e * 2];
-      const int ex = (lo & 0xff) | ((snes->ppu->highOam[e >> 2] >> ((e & 3) * 2)) & 1) << 8;
-      if (ex == x && (lo >> 8) == y) { *word = snes->ppu->oam[e * 2 + 1]; return true; }
+      const VideoRegisters* reg = video_registers_of(snes->ppu);
+      const uint16_t lo = reg->oam[e * 2];
+      const int ex = (lo & 0xff) | ((reg->high_oam[e >> 2] >> ((e & 3) * 2)) & 1) << 8;
+      if (ex == x && (lo >> 8) == y) { *word = reg->oam[e * 2 + 1]; return true; }
     }
   }
   return false;
+}
+
+// Sprite `s` put on line `y` and otherwise left as it is, in the OAM the
+// registers keep and in the PPU's own, which it draws a frame again from.
+static void sprite_to_line(Ppu* ppu, int s, int y) {
+  const VideoRegisters* reg = video_registers_of(ppu);
+  const int extra = reg->high_oam[s >> 2] >> ((s & 3) * 2);
+  video_set_sprite(ppu, s, (reg->oam[s * 2] & 0xff) | (extra & 1) << 8, y, reg->oam[s * 2 + 1],
+                   (extra & 2) != 0);
 }
 
 // Whether the squares are drawn over everything else, on a picture `fb` just
@@ -156,11 +166,11 @@ static long squares_hidden(Snes* snes, const Radar* r, const uint8_t* fb, int wi
   }
   for (int pass = 0; pass < 2; pass++) {
     for (int s = 0; s < OAM_ENTRIES; s++)
-      if (pass == 1 || !square[s]) reg->oam[s * 2] = (uint16_t)((reg->oam[s * 2] & 0xff) | 0xe000);
+      if (pass == 1 || !square[s]) sprite_to_line(ppu, s, 0xe0);
     ppu_renderFrame(ppu, noted->line_hscroll, noted->line_vscroll);
-    ppu_putPixels(ppu, pass ? none : alone);
+    video_put_pixels(ppu, pass ? none : alone);
   }
-  memcpy(reg->oam, oam, sizeof oam);
+  for (int s = 0; s < OAM_ENTRIES; s++) sprite_to_line(ppu, s, oam[s * 2] >> 8);
   ppu_renderFrame(ppu, noted->line_hscroll, noted->line_vscroll);
   long covered = 0;
   for (size_t o = 0; o < bytes; o += 4)
@@ -202,10 +212,10 @@ static Tick* run(const uint8_t* rom, int rom_len, const char* movie_path, long n
     if (!t->radar) continue;
     if (!*have_word) *have_word = marker_word(snes, &ws.rom, ws_sprite_mem(&ws), word);
     if (*have_word) find_spots(snes, *word, t);
-    t->width = ppu_outputWidth(snes->ppu);
+    t->width = video_output_width(snes->ppu);
     t->extra_left = video_picture_of(snes->ppu)->extra_left;
     t->fb = (uint8_t*)malloc((size_t)t->width * 4 * FB_H);
-    ppu_putPixels(snes->ppu, t->fb);
+    video_put_pixels(snes->ppu, t->fb);
     if (steady) {
       const long h = squares_hidden(snes, &ws.radar, t->fb, t->width, &overlaps);
       if (h && hidden_ticks++ == 0) hidden_first = f;

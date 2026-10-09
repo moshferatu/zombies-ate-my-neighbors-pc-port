@@ -120,7 +120,7 @@ static inline bool radar_put(Snes* snes, Radar* r, int s, int x, int y, uint16_t
   r->was_lo[i] = reg->oam[s * 2];
   r->was_word[i] = reg->oam[s * 2 + 1];
   r->was_high[i] = (uint8_t)((reg->high_oam[s >> 2] >> ((s & 3) * 2)) & 3);
-  snes_setSprite(snes, s, x, y, word, large);
+  video_set_sprite(snes->ppu, s, x, y, word, large);
   return true;
 }
 
@@ -136,8 +136,8 @@ static inline void radar_return(Snes* snes, Radar* r) {
       !memcmp(reg->high_oam, r->high, sizeof r->high)) {
     for (int i = r->written - 1; i >= 0; i--) {
       const int s = r->slot[i];
-      snes_setSprite(snes, s, (r->was_lo[i] & 0xff) | (r->was_high[i] & 1) << 8, r->was_lo[i] >> 8,
-                     r->was_word[i], (r->was_high[i] & 2) != 0);
+      video_set_sprite(ppu, s, (r->was_lo[i] & 0xff) | (r->was_high[i] & 1) << 8, r->was_lo[i] >> 8,
+                       r->was_word[i], (r->was_high[i] & 2) != 0);
     }
   }
   r->written = 0;
@@ -210,7 +210,7 @@ static inline void radar_draw(Snes* snes, Radar* r, const Rom* rom, const uint8_
     if (ax >= RADAR_REACH || ay >= RADAR_REACH) continue;
     const int x = middle_x + (dx < 0 ? ax >> 4 : -(ax >> 4));
     const int y = middle_y + (dy < 0 ? ay >> 4 : -(ay >> 4));
-    slot = snes_freeSprite(snes, slot);
+    slot = video_free_sprite(video_registers_of(snes->ppu), slot);
     if (slot >= OAM_ENTRIES) return;
     if (!radar_put(snes, r, slot, (x + p->x) & 0x1ff, (y + p->y) & 0xff, look, large)) return;
     video_set_sprite_place(snes->ppu, slot, place);

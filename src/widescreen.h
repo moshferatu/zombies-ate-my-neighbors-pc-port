@@ -700,10 +700,10 @@ static inline bool ws_upload(Snes* snes, const Rom* rom, uint16_t frame,
   if (!sprite_frame_read(rom, frame, raw)) return false;
   const uint16_t base = sprite_slot_vram(slot);
   for (int i = 0; i < 32; i++) {
-    snes_writeVramWord(snes, (uint16_t)(base + i),
-                       (uint16_t)(raw[i * 2] | (raw[i * 2 + 1] << 8)));
-    snes_writeVramWord(snes, (uint16_t)(base + 0x100 + i),
-                       (uint16_t)(raw[64 + i * 2] | (raw[65 + i * 2] << 8)));
+    video_set_vram(snes->ppu, (uint16_t)(base + i),
+                   (uint16_t)(raw[i * 2] | (raw[i * 2 + 1] << 8)));
+    video_set_vram(snes->ppu, (uint16_t)(base + 0x100 + i),
+                   (uint16_t)(raw[64 + i * 2] | (raw[65 + i * 2] << 8)));
   }
   return true;
 }
@@ -828,11 +828,11 @@ static inline int ws_emit_meta(Snes* snes, Widescreen* ws, int slot, int rec,
     if (tile < 0) continue;
     const uint16_t word =
         (uint16_t)(((uint16_t)tile | (p->attr & attr_and) | attr_or) ^ flip_eor);
-    snes_setSprite(snes, slot, at & 0x1ff, sy & 0xff, word, true);
+    video_set_sprite(snes->ppu, slot, at & 0x1ff, sy & 0xff, word, true);
     ws->owner_rec[slot] = (int16_t)rec;
     ws->owner_ox[slot] = (int16_t)(ox + shift);
     ws->owner_oy[slot] = oy;
-    slot = snes_freeSprite(snes, slot + 1);
+    slot = video_free_sprite(video_registers_of(snes->ppu), slot + 1);
   }
   return slot;
 }
@@ -935,7 +935,7 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
                                      int right) {
   const uint8_t* mem = ws_sprite_mem(ws);
   const uint16_t count = ws_r16(mem, W_VISIBLE_ACTOR_COUNT);
-  int slot = snes_freeSprite(snes, 0);
+  int slot = video_free_sprite(video_registers_of(snes->ppu), 0);
   memset(ws->owner_rec, 0xff, sizeof ws->owner_rec);
   ws_mark_drawn(snes, ws);
 
@@ -1204,7 +1204,7 @@ static inline bool ws_firework_sprites(Snes* snes, Widescreen* ws, int left, int
   }
 
   ws_mark_drawn(snes, ws);
-  int slot = snes_freeSprite(snes, 0);
+  int slot = video_free_sprite(video_registers_of(snes->ppu), 0);
   for (int i = 0; i < n && slot < OAM_ENTRIES; i++) {
     SpriteMeta meta;
     int16_t ox, oy;
@@ -1520,8 +1520,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
         if ((tile & TILEMAP_COPY_MASK) < threshold) tile |= TILEMAP_PRIORITY_BIT;
 
         const int ring_row = (cursor_y + j) & TILEMAP_CURSOR_MASK_Y;
-        snes_writeVramWord(
-            snes, (uint16_t)(vram_base + slot_word + ring_row * 32), tile);
+        video_set_vram(snes->ppu, (uint16_t)(vram_base + slot_word + ring_row * 32), tile);
       }
     }
   }

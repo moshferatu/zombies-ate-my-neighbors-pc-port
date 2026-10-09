@@ -17,6 +17,11 @@
 // those things the two sets of notes are compared as well. Now and then the
 // picture is widened, or said to be something else, to both.
 //
+// Now and then something is put into the memories from outside, as the
+// frontend puts it: a sprite whole, a word of VRAM or a colour. The PPU's is
+// done as the PPU did it when these were its own, and the memories are
+// compared whole at once; so is which sprite each says is free.
+//
 // Every eighth step both are asked five things: whether a column of a
 // background is empty, and whether it is filled; where a sprite is drawn;
 // whether colour maths is allowed at a column of a line; and how far a
@@ -55,12 +60,26 @@ static uint8_t any_address(void) {
   return one_in(3) ? DOORS[below((int)sizeof DOORS)] : (uint8_t)below(0x40);
 }
 
-typedef struct {
-  uint16_t vram[0x8000];
-  uint16_t cgram[0x100];
-  uint16_t oam[0x100];
-  uint8_t high_oam[0x20];
-} Memories;
+// A sprite put into the PPU's OAM, and the first one free, as the PPU did
+// them itself before `video_put_sprite` and `video_free_sprite` were held
+// to it.
+static void ppu_put_sprite(Ppu* ppu, int slot, int x, int y, uint16_t word, bool large) {
+  const int i = slot * 2;
+  ppu->oam[i] = (uint16_t)(((y & 0xff) << 8) | (x & 0xff));
+  ppu->oam[i + 1] = word;
+  const int bit = i & 7;
+  const uint8_t mask = (uint8_t)(3 << bit);
+  const uint8_t val = (uint8_t)((((x >> 8) & 1) << bit) | ((large ? 1 : 0) << (bit + 1)));
+  ppu->highOam[i >> 3] = (uint8_t)((ppu->highOam[i >> 3] & ~mask) | val);
+}
+
+static int ppu_free_sprite(const Ppu* ppu, int from) {
+  for (int slot = from; slot < 128; slot++) {
+    const int y = ppu->oam[slot * 2] >> 8;
+    if (y >= 0xe0 && y <= 0xf0) return slot;
+  }
+  return 128;
+}
 
 // The picture said to be something at random, to both: the console a third
 // of the time, each layer left to be worked out half the time, and a few of
@@ -86,7 +105,7 @@ static void say_picture(Ppu* ppu, VideoPicture* p) {
   }
 }
 
-static const char* memory_differs(const Memories* m, const Ppu* ppu) {
+static const char* memory_differs(const VideoMemory* m, const Ppu* ppu) {
   if (memcmp(m->vram, ppu->vram, sizeof m->vram)) return "VRAM";
   if (memcmp(m->cgram, ppu->cgram, sizeof m->cgram)) return "the palette";
   if (memcmp(m->oam, ppu->oam, sizeof m->oam)) return "OAM";
@@ -106,27 +125,24 @@ int main(int argc, char** argv) {
   ppu_reset(ppu);
   // A line is begun and its sprites found, and nothing is drawn.
   ppu->noPixels = true;
-  static Memories memories;
+  static VideoMemory memories;
   static VideoRegisters registers;
   VideoRegisters* r = &registers;
-  r->vram = memories.vram;
-  r->cgram = memories.cgram;
-  r->oam = memories.oam;
-  r->high_oam = memories.high_oam;
+  video_registers_attach(r, &memories);
   video_registers_reset(r);
   static VideoFrame frame;
   static VideoPicture picture;
   video_frame_init(&frame);
   video_picture_init(&picture);
 
-  long writes = 0, reads = 0, events = 0, lines = 0, differing = 0;
+  long writes = 0, reads = 0, events = 0, lines = 0, puts = 0, differing = 0;
   long columns = 0, columns_empty = 0, columns_filled = 0;
   long maths_allowed = 0, shifted = 0;
   long first_step = -1;
   char first[160] = "";
   for (long step = 0; step < steps; step++) {
     char did[96];
-    bool misread = false;
+    bool misread = false, put = false;
     int line = -1;
     const int what = below(100);
     if (what < 55) {
@@ -159,6 +175,33 @@ int main(int argc, char** argv) {
       r->time_over = ppu->timeOver;
       snprintf(did, sizeof did, "line %d began", line);
       lines++;
+    } else if (what < 71) {
+      // From outside. Half the sprites put are parked, so that there are
+      // free ones to be found.
+      if (one_in(3)) {
+        const uint16_t at = (uint16_t)rnd(), word = (uint16_t)rnd();
+        video_put_vram(r, at, word);
+        ppu->vram[at & 0x7fff] = word;
+        snprintf(did, sizeof did, "%04X was put into VRAM at %04X", word, at);
+      } else if (one_in(3)) {
+        const int index = below(0x100);
+        const uint16_t colour = (uint16_t)(rnd() & 0x7fff);
+        video_put_colour(r, index, colour);
+        ppu->cgram[index] = colour;
+        snprintf(did, sizeof did, "colour %d was put", index);
+      } else {
+        const int sprite = below(VIDEO_SPRITES), x = below(0x200);
+        const int y = one_in(2) ? 0xe0 + below(0x11) : below(0x100);
+        const uint16_t word = (uint16_t)rnd();
+        const bool large = one_in(2);
+        video_put_sprite(r, sprite, x, y, word, large);
+        ppu_put_sprite(ppu, sprite, x, y, word, large);
+        snprintf(did, sizeof did, "sprite %d was put at %d, %d", sprite, x, y);
+      }
+      const int from = below(VIDEO_SPRITES + 1);
+      misread = video_free_sprite(r, from) != ppu_free_sprite(ppu, from);
+      put = true;
+      puts++;
     } else if (what < 85) {
       const uint8_t address = any_address();
       const VideoBus bus = {snes->hPos / 4, snes->vPos, snes->palTiming, snes->openBus};
@@ -211,11 +254,11 @@ int main(int argc, char** argv) {
     // A memory is found different some steps after it was made so.
     const char* which = video_registers_differ(r, ppu);
     const char* when = "after";
-    if (which == NULL && misread) which = "the answer";
+    if (which == NULL && misread) which = put ? "which sprite is free" : "the answer";
     if (which == NULL) which = video_notes_differ(&frame, ppu, line);
-    if (which == NULL && step % 64 == 0) {
+    if (which == NULL && (put || step % 64 == 0)) {
       which = memory_differs(&memories, ppu);
-      if (which != NULL) when = "by the time";
+      if (which != NULL && !put) when = "by the time";
     }
     if (which == NULL && step % 8 == 0) {
       const int layer = below(4), x = below(256);
@@ -264,7 +307,8 @@ int main(int argc, char** argv) {
 
   printf("%ld steps at random, seed %llu: %ld writes, %ld reads, %ld of a frame's events.\n", steps,
          (unsigned long long)seed, writes, reads, events);
-  printf("  %ld lines begun and noted.\n", lines);
+  printf("  %ld lines begun and noted, %ld things put into the memories from outside.\n", lines,
+         puts);
   printf("  %ld columns asked about: %ld empty, %ld filled.\n", columns, columns_empty,
          columns_filled);
   printf("  As many sprites, columns of a line and backgrounds asked about:"
