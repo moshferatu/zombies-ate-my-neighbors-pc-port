@@ -13,8 +13,8 @@ loads its share of a state. Drawing alone, it tells the emulated PPU
 nothing. The PPU is run beside it only to be checked against, or when it is
 asked to draw in its place.
 
-The game is also built with no emulated PPU in it at all, as
-`zamn_native`. It draws the same picture.
+The game, `zamn.exe`, has no emulated PPU in it at all. A second build of
+it that has one, `zamn_with_ppu`, is the test its picture is held to.
 
 ## Why it was worth doing first
 
@@ -375,6 +375,20 @@ and exits. It is 41 KB smaller than `zamn.exe`.
 `tools/verify_corpus.ps1 -Picture` now takes its second checksum from
 `zamn_native`. That run used to be `zamn.exe --renderer native`, which had
 a PPU to fall back on.
+
+**The two have since changed places.** `zamn.exe`, the game the launcher
+starts and the release zips, is the build without the PPU. The build with
+it is `zamn_with_ppu`, left in the build directory, and is what
+`--renderer check` and `emulated` are run in. Wherever this document says
+`zamn_native` it means what is now `zamn.exe`, and where it says a check
+was run in `zamn` it would now be run in `zamn_with_ppu`.
+
+`--stock` used to have the PPU draw unless told otherwise. It still does in
+`zamn_with_ppu`. In `zamn.exe` it is drawn by `src/video`, as everything
+there is.
+
+`tools/verify_corpus.ps1 -Picture` runs the check in `zamn_with_ppu` and
+takes its second checksum from `zamn.exe`.
 
 ## How a line's sprites are found
 
@@ -1029,10 +1043,6 @@ nothing, so there was nothing of it left to stop paying for.
 
 - Draw a frame once. With the smoothing on, a frame shown as layers is still
   drawn as a picture that nobody sees.
-- Which of the two is the game. `zamn.exe` still has the PPU, for the
-  check. `zamn_native` could be `zamn.exe`, and the one with the PPU a test
-  program beside it. I have not looked at the picture `zamn_native` draws,
-  only compared its bytes.
 - The tools off the PPU: `zamn_headless`, `zamn_record` and
   `zamn_test_layers` drawn by `src/video` and linked without it, the
   radar test's second drawing of a frame, and the launcher's icon and

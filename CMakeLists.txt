@@ -438,19 +438,20 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
     FetchContent_MakeAvailable(SDL2)
   endif()
 
-  # It is built twice from the one source. `zamn` has the emulated PPU beside
-  # `src/video`'s chip, and so `--renderer check` and `emulated`. `zamn_native`
-  # has no PPU in it: it is linked against the console without one, so that
-  # it builds at all is the proof that nothing it runs calls the PPU. It is
-  # left in the build directory.
+  # It is built twice from the one source. `zamn` is the game, and has no
+  # emulated PPU in it: it is linked against the console without one, so that
+  # it builds at all is the proof that nothing it runs calls the PPU.
+  # `zamn_with_ppu` has the PPU beside `src/video`'s chip, and so `--renderer
+  # check` and `emulated`. It is the test the game's picture is held to, and
+  # is left in the build directory.
   #
   # zamn_cosim_lib pulls in the core, zamn_port and zamn_analysis transitively:
   # the core to run on, the port to substitute, and the movie reader for `-m`.
   add_executable(zamn WIN32 src/main_sdl.c)
-  target_link_libraries(zamn PRIVATE zamn_video_with_ppu)
-  add_executable(zamn_native WIN32 src/main_sdl.c)
-  target_link_libraries(zamn_native PRIVATE zamn_video_without_ppu)
-  foreach(game zamn zamn_native)
+  target_link_libraries(zamn PRIVATE zamn_video_without_ppu)
+  add_executable(zamn_with_ppu WIN32 src/main_sdl.c)
+  target_link_libraries(zamn_with_ppu PRIVATE zamn_video_with_ppu)
+  foreach(game zamn zamn_with_ppu)
     target_link_libraries(${game} PRIVATE zamn_cosim_lib SDL2::SDL2 SDL2::SDL2main)
     if(WIN32)
       # The desktop compositor's frame statistics, for the cadence report.

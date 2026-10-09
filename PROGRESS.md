@@ -43,8 +43,9 @@ Drawing alone, it tells the emulated PPU nothing. At 16:9 a tick of
 * **`src/video/console.c`** puts the chip (`chip.c`) where an emulated
   console's video chip is. `beside.c` is the one file that knows the
   emulated PPU, and runs it beside the chip under `check` and `emulated`.
-* **`zamn_native`** is the game built with no emulated PPU in it. It draws
-  the same picture.
+* **`zamn.exe` has no emulated PPU in it.** `zamn_with_ppu`, in the build
+  directory, is the same game built with one, for `--renderer check` and
+  `emulated`.
 * **`--renderer native`, `emulated` or `check`.** Native is the default.
   `--stock` runs emulated unless told otherwise. `check` draws every line
   both ways, reports the lines that differ and exits 1 if any did.
@@ -416,6 +417,14 @@ Drawing alone, it tells the emulated PPU nothing. At 16:9 a tick of
   * Not established: nobody has looked at the picture it draws, or played
     it. Every check compares bytes. It still links the rest of the
     emulated console: the clock and the bus, the 65816, DMA and the sound.
+* **The two changed places.** `zamn.exe`, which the launcher starts and
+  the release zips, is the build without the PPU. The one with it is
+  `zamn_with_ppu`, left in the build directory. What the bullet above
+  calls `zamn_native` is `zamn.exe` now.
+  * `--stock` has the PPU draw only in `zamn_with_ppu`. In `zamn.exe` it is
+    drawn by `src/video`.
+  * `tools/verify_corpus.ps1 -Picture` runs the check in `zamn_with_ppu`
+    and takes its second checksum from `zamn.exe`.
 * **Tried before this and not kept.** Three smaller things, each measured
   in a copy: asking each layer once a dot in `ppu_getPixel`, 13% and
   pixel-identical; remembering the last tile read, 4% more; whole-program
@@ -434,7 +443,8 @@ Drawing alone, it tells the emulated PPU nothing. At 16:9 a tick of
   * Whether half a millisecond is the right tail on another machine. It
     was measured on one.
   * A screen the corpus does not reach may draw a kind of line that is
-    declined. The PPU then draws it, correctly and slowly, and
+    declined. `zamn.exe` has no PPU and shows such a line black.
+    `zamn_with_ppu` has the PPU draw it, correctly and slowly, and
     `--verbose` counts such lines by what they were.
 * **Still the emulator's.** When a frame starts and ends and when a line
   begins, which the console now says to `src/video` directly. The PPU, in
@@ -442,9 +452,7 @@ Drawing alone, it tells the emulated PPU nothing. At 16:9 a tick of
   saved state. The launcher's icon and heading, which the PPU draws when
   the game is built.
 * **`PLAN.md` still says the PPU stays emulated.** I have not edited it.
-* **Next.** Which of the two builds is the game: `zamn_native` could be
-  `zamn.exe`, with the one that has the PPU kept beside it for the check.
-  The tools off the PPU: `zamn_headless`, `zamn_record`, the layers and
+* **Next.** The tools off the PPU: `zamn_headless`, `zamn_record`, the layers and
   radar tests, and the launcher's icon and heading.
   A frame drawn once:
   with the smoothing on, a frame shown as layers is still drawn as a

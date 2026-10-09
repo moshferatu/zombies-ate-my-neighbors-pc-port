@@ -18,12 +18,12 @@
 # compares all of WRAM once per scheduler pass -- a stronger claim over fewer
 # calls, and about forty seconds a movie against one.
 #
-# `-Picture` is about the picture and not the game: it runs the game itself,
-# `zamn.exe`, with no window, and has every scanline of every frame drawn
-# twice, by `src/video` and by the emulated PPU, and compared. Then it runs
-# each movie again in `build\zamn_native.exe`, the game built with no emulated
-# PPU in it, and checks that the picture comes to the same checksum. Once for
-# each width in `-Widescreen`.
+# `-Picture` is about the picture and not the game: it runs the game as it is
+# built with the emulated PPU in it, `build\zamn_with_ppu.exe`, with no window,
+# and has every scanline of every frame drawn twice, by `src/video` and by the
+# PPU, and compared. Then it runs each movie again in the game itself,
+# `zamn.exe`, which has no PPU, and checks that the picture comes to the same
+# checksum. Once for each width in `-Widescreen`.
 #
 # Movies run `-Jobs` at a time, twelve unless told otherwise, and the rows come
 # out in corpus order when all of them have finished. The whole lockstep pass
@@ -222,15 +222,15 @@ function Invoke-Movies([string]$exe, [scriptblock]$argvOf) {
 #
 # `--renderer check` draws each line both ways and counts the lines that came
 # out different; it is the whole of the comparison, column by column. The
-# second run is `zamn_native.exe`, which has no PPU to draw anything, and
+# second run is `zamn.exe`, which has no PPU to draw anything, and
 # proves one thing more: that with `src/video` alone the picture is still the
 # same one. Its checksum is over every line as `src/video` left it, and the
 # check's is over every line as the PPU drew it. It exits non-zero if there
 # was a line it did not draw, which with no PPU is shown black.
 if ($Picture) {
-    $game = Join-Path $root "zamn.exe"
-    $alone = Join-Path $root "build\zamn_native.exe"
-    if (-not (Test-Path $alone)) { throw "there is no ${alone}; build the zamn_native target" }
+    $game = Join-Path $root "build\zamn_with_ppu.exe"
+    $alone = Join-Path $root "zamn.exe"
+    if (-not (Test-Path $game)) { throw "there is no ${game}; build the zamn_with_ppu target" }
     $env:SDL_VIDEODRIVER = "dummy"
     $Widescreen = @($Widescreen | ForEach-Object { $_ -split "," } | Where-Object { $_ })
     $bad = 0

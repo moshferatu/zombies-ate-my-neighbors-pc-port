@@ -746,10 +746,11 @@ static void usage(void) {
     "  --stock         Do not substitute; run the ROM under the core, as the\n"
     "                  Phase 0b baseline did.\n"
     "  --renderer <r>  native (default), emulated or check: who draws the\n"
-    "                  picture. native is src/video; emulated is the core's PPU,\n"
-    "                  and what --stock runs with unless told otherwise; check\n"
-    "                  draws every line both ways, reports the lines that differ\n"
-    "                  and exits 1 if any did.\n"
+    "                  picture. native is src/video. The other two are only in\n"
+    "                  zamn_with_ppu, the build that has the core's PPU: emulated\n"
+    "                  is the PPU, and what --stock runs with there unless told\n"
+    "                  otherwise; check draws every line both ways, reports the\n"
+    "                  lines that differ and exits 1 if any did.\n"
     "  -r <routine>    Substitute only this one. Repeatable; default is every\n"
     "                  routine `zamn_cosim list` reports.\n"
     "  -m <movie.zmv>  Replay a recorded movie instead of reading the keyboard.\n"
@@ -1273,16 +1274,17 @@ int main(int argc, char** argv) {
   }
 
   // `src/video` is the console's video chip. Who draws the picture: it does,
-  // with the PPU told nothing, unless this is the baseline or somebody said
-  // otherwise.
+  // unless somebody said otherwise. The baseline has the PPU draw it in a
+  // build that has a PPU.
   // ...and with a checksum of the picture when there will be a report to put
   // it in: it is what `tools/verify_corpus.ps1 -Picture` compares.
-  const VideoRenderer drawn_by = !native && !renderer_asked ? VIDEO_EMULATED : renderer;
-  Snes* snes = video_snes_init(drawn_by, verbose || drawn_by == VIDEO_CHECK);
+  VideoRenderer drawn_by = renderer;
+  Snes* snes = NULL;
+  if (!native && !renderer_asked) snes = video_snes_init(drawn_by = VIDEO_EMULATED, verbose);
+  if (!snes) snes = video_snes_init(drawn_by = renderer, verbose || renderer == VIDEO_CHECK);
   if (!snes) {
     fprintf(stderr, "error: this build has no emulated PPU, and draws the picture only with\n"
-                    "       --renderer native%s\n",
-            native ? "" : ", which --stock must then be given as well");
+                    "       --renderer native. zamn_with_ppu has the other two.\n");
     return 1;
   }
   if (!snes_loadRom(snes, rom, rom_len)) {
