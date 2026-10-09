@@ -13,6 +13,10 @@
 // that a line it should have declined and drew wrong shows up as a line that
 // differs.
 //
+// The PPU's registers are not kept beside it here. The noise is put straight
+// into the PPU, and a line is drawn from what `video_state_from_ppu` takes
+// out of it.
+//
 // Then the frame is read back as the smoothing reads it (`video_bg_row`): a
 // few rows of each background, some of them above or below the picture and
 // all of them running past its edges, each against `ppu_layerPixel` a column
@@ -155,8 +159,10 @@ static void noise(Ppu* ppu) {
 
 static long rows_read, rows_differing;
 
-// Some rows of each background of the frame just drawn.
-static void read_rows(Ppu* ppu) {
+// Some rows of each background of the frame just drawn. A centred layer's
+// margins are searched for with a copy of what the frame's lines found, as
+// `src/layers.h` reads them.
+static void read_rows(Ppu* ppu, const VideoCentre* found) {
   VideoState s;
   video_state_from_ppu(&s, ppu);
   const int from = -ppu->extraLeft - ROW_MARGIN, to = 256 + ppu->extraRight + ROW_MARGIN;
@@ -165,10 +171,8 @@ static void read_rows(Ppu* ppu) {
     for (int k = 0; k < 12; k++) {
       const int line = below(224 + 2 * ROW_MARGIN) + 1 - ROW_MARGIN;
       uint8_t back[PPU_MAX_WIDTH + 2 * ROW_MARGIN], front[PPU_MAX_WIDTH + 2 * ROW_MARGIN];
-      VideoCentre centre;
-      video_centre_from_ppu(&centre, ppu);
+      VideoCentre centre = *found;
       video_bg_row(&s, &centre, layer, line, from, to, back, front);
-      video_centre_to_ppu(&centre, ppu);
       bool same = true;
       for (int x = from; x < to && same; x++) {
         int priority = 0;
@@ -214,7 +218,7 @@ int main(int argc, char** argv) {
       }
       ppu_runLine(ppu, line);
     }
-    read_rows(ppu);
+    read_rows(ppu, &hook.frame.centre);
     if ((hook.differing || rows_differing) && failed_frame < 0) failed_frame = f;
   }
   printf("%d frames of noise, seed %llu.\n", frames, (unsigned long long)seed);

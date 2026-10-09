@@ -1405,7 +1405,7 @@ int main(int argc, char** argv) {
   WideMode wide = wide_setting == WIDE_AUTO ? WIDE_OFF : wide_setting;
   WideMode wide_shown = wide;  // the width the console last reported
   bool wide_told = false;      // past the first pass of the loop
-  snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
+  video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
   fb_w = snes_pixelWidth(snes);
   // ...and the per-frame half of it runs at the top of each frame, from the
   // machine itself, because that is the only moment the game's vblank is over
@@ -1999,7 +1999,7 @@ int main(int argc, char** argv) {
         // made at the old width. Between frames, so nothing is half-drawn at
         // one width and finished at the other.
         wide = want;
-        snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
+        video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
         ws.margin = wide_margin(wide);
         fb_w = snes_pixelWidth(snes);
         const ScaleMode m = present.mode;
@@ -2083,7 +2083,7 @@ int main(int argc, char** argv) {
         pace_add(&h_emulate, trace_emulate_ms);
       }
       trace_core_frame = snes->frames;
-      trace_scroll_y = snes->ppu->lineVScroll[0][1];
+      trace_scroll_y = video_hook.frame.line_vscroll[0][1];
       frame++;
 
       // This frame's audio, resampled by however much it takes to hold the
@@ -2266,7 +2266,7 @@ int main(int argc, char** argv) {
                      ws_main_thread_at(ws.mem), ws_game_over(ws.mem),
                      ws.mem[0x1e88] | (ws.mem[0x1e89] << 8), ws.mem[0x1e8a] | (ws.mem[0x1e8b] << 8),
                      snes->ram[0x1e88] | (snes->ram[0x1e89] << 8), snes->ram[0x1e8a] | (snes->ram[0x1e8b] << 8),
-                     snes->ppu->layerWide[2], video_hook.registers.bg[1].map_wide && video_hook.registers.main[1]);
+                     video_hook.picture.wide[2], video_hook.registers.bg[1].map_wide && video_hook.registers.main[1]);
               stbi_write_png(path, r.w, r.h, 3, gpu, r.w * 3);
             }
             if (sw) {

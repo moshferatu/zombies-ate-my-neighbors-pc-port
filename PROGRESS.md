@@ -14,7 +14,9 @@ the long form.
 
 `src/video` finds every line's sprites and draws every scanline the game
 shows, and the emulated PPU does neither. It keeps the chip's registers as
-well, and the game and the frontend read those. At 16:9 a tick of
+well, and the game and the frontend read those. It keeps what the frontend
+says of the picture and what is noted of each frame, so the frontend asks
+the PPU nothing about what is on the screen. At 16:9 a tick of
 `level1.zmv` costs
 **2.8 ms** to emulate and take apart for the smoothing, from 8.3.
 
@@ -165,6 +167,49 @@ well, and the game and the frontend read those. At 16:9 a tick of
   * Not established: `zamn_record`'s pictures have nothing to be compared
     with, the build before being wrong. It draws with the code the layers
     test checks. The cosim and lockstep passes were not rerun.
+* **The picture and the frame's notes, kept here.** `src/video/frame.h`
+  has what the frontend says of the picture (`VideoPicture`) and what is
+  noted as a frame is drawn (`VideoFrame`).
+  * The picture: the margins, each layer's policy, the columns the map
+    reaches, and each sprite's place, shift, order and colours. The
+    frontend says them with `video_set_margins` and the rest, which keep
+    them here and tell the PPU. The console's wrappers for them are gone.
+  * The notes: each line's scrolls and windows, whether anything else was
+    written while the picture was drawn, and what an automatic policy is
+    worked out from. The PPU says when a line begins (`Ppu.beganLine`).
+  * Three of the four things the frontend still asked the PPU are asked
+    of `src/video`: where a sprite is drawn, whether maths is allowed at
+    a column of a line, and a swept layer's shift.
+  * The fourth was a dot of a layer, for a layer with a window on it or
+    in a mode other than 1. The smoothing now shows such a frame as it
+    was drawn. No frame of the corpus is one, and the layers test names
+    the same reasons, as often, as before.
+  * `VIDEO_WIDE_CLAMP_EDGE` is drawn. Nothing sets it, and it was the one
+    policy left to the PPU.
+  * A centred layer's margins are searched for by each of the two for
+    itself, where they shared one copy. The lines still come out the same.
+  * `--renderer check` compares the notes with the PPU's after every
+    write, line and frame's top. The corpus at four widths: no line, no
+    register and no note differs, and all 216 runs come to the same
+    checksum alone.
+  * `zamn_test_registers` keeps notes too and asks the three things:
+    13,000,000 steps over three seeds, none differing. Twenty rules
+    broken on purpose were each caught.
+  * A mistake of mine, caught by comparing with the build before.
+    `--red-blood` had stopped changing the picture: I left out the call
+    that hands `src/blood.h`'s colours over. The check could not see it,
+    because the PPU had been told nothing either. A forced game over's
+    checksum was not the build before's, and that was why.
+  * Against the build before: the layers test prints the same on seven
+    runs, two of them a forced game over; the radar test the same at two
+    widths; `zamn_headless` the same picture from two movies; and
+    `zamn_record` the same pictures from three recordings.
+  * It builds on Linux, in WSL with gcc 13, once `src/port/clears.c`
+    includes `<stddef.h>`, which an earlier commit of mine left out. Both
+    noise tests pass there, and one movie at 16:9 comes to the Windows
+    build's checksum.
+  * Not established: a saved state loaded in the game was not tried. The
+    cosim and lockstep passes were not rerun.
 * **Tried before this and not kept.** Three smaller things, each measured
   in a copy: asking each layer once a dot in `ppu_getPixel`, 13% and
   pixel-identical; remembering the last tile read, 4% more; whole-program
@@ -182,18 +227,18 @@ well, and the game and the frontend read those. At 16:9 a tick of
     does with it on.
   * Whether half a millisecond is the right tail on another machine. It
     was measured on one.
-  * That it builds on Linux. It has only been built here.
   * A screen the corpus does not reach may draw a kind of line that is
     declined. The PPU then draws it, correctly and slowly, and
     `--verbose` counts such lines by what they were.
-* **Still the emulator's.** VRAM, the palette and OAM. A second copy of
-  the registers, which the PPU reads itself. What the frontend has said of
-  the picture, and what is noted of each frame. What the automatic policy
-  is worked out from. The buffer the picture is written into, and the
-  sprites' rows. When a frame starts and ends.
+* **Still the emulator's.** VRAM, the palette and OAM, and the three
+  writes the frontend makes straight into them. The buffer the picture is
+  written into, and the sprites' rows. When a frame starts and ends, and
+  whether a line's sprites are looked for. A second copy of everything
+  kept here, which only the PPU and the checks read.
 * **`PLAN.md` still says the PPU stays emulated.** I have not edited it.
-* **Next.** What the frontend says of the picture and what is noted of a
-  frame, moved out of the PPU, after which its registers have no reader.
+* **Next.** The memories, the sprites' rows and the picture's buffer
+  moved here, and the console calling `src/video` for a write, a read and
+  a line, after which the PPU is needed only by the check.
   A frame drawn once:
   with the smoothing on, a frame shown as layers is still drawn as a
   picture nobody sees. The smoothing's sprites and its maths window, which

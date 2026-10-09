@@ -119,24 +119,9 @@ bool snes_loadRom(Snes* snes, const uint8_t* data, int length);
 void snes_setButtonState(Snes* snes, int player, int button, bool pressed);
 void snes_setPixelFormat(Snes* snes, int pixelFormat);
 void snes_setPixels(Snes* snes, uint8_t* pixelData);
-// Widescreen. `left`/`right` are extra *game* pixels either side of the
-// console's 256; 0,0 is the console. `snes_pixelWidth` is the width of what
-// `snes_setPixels` then writes, in output pixels, and its row pitch is that
-// times four bytes. See `ppu_setWidescreen`.
-void snes_setWidescreen(Snes* snes, int left, int right);
-void snes_setLayerWide(Snes* snes, int layer, int policy);
-// Where OAM sprite `slot` is drawn when the picture is widened: with the
-// world, with the anchored layers or with a centred one -- one of the
-// `ppu_sprite*` places, see `Ppu.spritePlace`.
-void snes_setSpritePlace(Snes* snes, int slot, int place);
-// ...and `shift` columns along from there -- see `Ppu.spriteShift`.
-void snes_setSpriteShift(Snes* snes, int slot, int shift);
-bool snes_bgTilemapWider(const Snes* snes, int layer);
-bool snes_bgOnMainScreen(const Snes* snes, int layer);
-// Whether column `x` (0-255) of background `layer` is empty on every line of
-// the frame, at its current scroll -- see `ppu_columnEmptyAt`.
-bool snes_bgColumnEmpty(const Snes* snes, int layer, int x);
-void snes_setWideClamp(Snes* snes, int lo, int hi);
+// Widescreen is said to `src/video` (`video_set_margins` and the rest), which
+// tells the PPU. `snes_pixelWidth` is the width of what `snes_setPixels` then
+// writes, in output pixels, and its row pitch is that times four bytes.
 void snes_writeVramWord(Snes* snes, uint16_t wordAdr, uint16_t val);
 void snes_setSprite(Snes* snes, int slot, int x, int y, uint16_t tileAttr,
                     bool large);

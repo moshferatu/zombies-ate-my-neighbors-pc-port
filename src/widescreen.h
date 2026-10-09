@@ -1,7 +1,7 @@
 // What this game, specifically, wants done with a widened picture.
 //
-// The PPU knows how to draw margins and what the treatments of one are
-// (`ppu_wideStretch`, `ppu_wideAnchor`, `ppu_wideClampEdge`, `ppu_wideClip`);
+// `src/video` knows how to draw margins and what the treatments of one are
+// (`VIDEO_WIDE_STRETCH`, `VIDEO_WIDE_ANCHOR`, `VIDEO_WIDE_CLAMP_EDGE`, `VIDEO_WIDE_CLIP`);
 // it does not know which layer of *Zombies Ate My Neighbors* deserves which,
 // or where this game's world stops. Those are facts about the game, and this
 // header is the only place they are written down.
@@ -14,7 +14,7 @@
 // laid out as player 1 in the left sixteen tilemap columns and player 2 in the
 // right sixteen (`src/port/hud.h`). That is already two half-width halves, so
 // widening should move them apart rather than stretch or repeat them, which is
-// `ppu_wideAnchor` and needs no change to the shadow tilemap the co-simulation
+// `VIDEO_WIDE_ANCHOR` and needs no change to the shadow tilemap the co-simulation
 // checks byte for byte.
 //
 // The same layer carries the title, the password screen and the story cards,
@@ -63,7 +63,7 @@
 //
 // Where the margin runs off the end of the map there is no column to copy, and
 // the answer is not to black it out but to stop insisting the two margins be
-// equal — see the sliding margins below. `ppu_setWideClamp` is only the
+// equal — see the sliding margins below. `video_set_clamp` is only the
 // backstop for a map narrower than the whole picture.
 //
 // ## Sprites are world things in a level and stagecraft outside one
@@ -73,7 +73,7 @@
 // and the trick shows: the same words a second time at both edges, which reads
 // exactly like a tilemap being wrapped and is nothing of the kind — that screen
 // has one background layer enabled and its tilemap is a single repeated tile.
-// So objects get `ppu_wideClip` outside a level and `ppu_wideStretch` inside
+// So objects get `VIDEO_WIDE_CLIP` outside a level and `VIDEO_WIDE_STRETCH` inside
 // one, on the same test as the other two.
 //
 // The one screen outside a level whose sprites do want the margins is the
@@ -82,7 +82,7 @@
 //
 // (The card that announces how much worse this level is than the last one does
 // the same thing with a background instead, and that one is not settled here:
-// `ppu_wideAuto` clips it, because it is a 256-pixel tilemap the game never
+// `VIDEO_WIDE_AUTO` clips it, because it is a 256-pixel tilemap the game never
 // scrolls sideways. See the note on the enum in `ppu.h`.)
 //
 // ## ...and in a level, the game throws away the ones in the margins
@@ -376,7 +376,7 @@
 // have one). Two things went wrong with it in the margins,
 // and they are the two halves of one report.
 //
-// **The policy.** BG1 was left to `ppu_wideAuto`, which has to guess, and
+// **The policy.** BG1 was left to `VIDEO_WIDE_AUTO`, which has to guess, and
 // both of its guesses were wrong here. With nothing in the console's edge
 // columns it clips the layer to the console's 256, so a figure standing
 // across the edge was cut off flat at it. With something in them it takes a
@@ -385,7 +385,7 @@
 // left edge was drawn a second time in the right margin, and the margin it
 // was actually standing in stayed empty. Neither guess is needed: the plane is
 // the game's and all of it is maintained (any 256 of its 512 columns are on
-// the console at some scroll). In a level BG1 is `ppu_wideStretch`, like the
+// the console at some scroll). In a level BG1 is `VIDEO_WIDE_STRETCH`, like the
 // world.
 //
 // **The plane comes round.** It is 512 pixels and then it repeats, which the
@@ -617,7 +617,7 @@ typedef struct {
   // same reason, and where this frame put the sprites laid out over the
   // panel, which the squares go with.
   Radar radar;
-  int screen_place;
+  VideoSpritePlace screen_place;
 } Widescreen;
 
 // WRAM as a flat 128 KB, the way `src/port/wram.h` numbers it: bank `$7E` is
@@ -767,7 +767,7 @@ static inline int ws_lend_slot(Snes* snes, Widescreen* ws, uint16_t frame) {
 // that fall outside the console's 256 and inside the widened picture. Returns
 // the next free entry. `shift` moves the pieces that along once they are
 // chosen, for a record whose sprites are drawn somewhere other than where
-// the game put them (`Ppu.spriteShift`): which pieces the ROM dropped is a
+// the game put them (`VideoPicture.shift`): which pieces the ROM dropped is a
 // question about where it put them.
 //
 // The one test worth reading twice is the one that decides which pieces those
@@ -959,7 +959,7 @@ static inline void ws_margin_sprites(Snes* snes, Widescreen* ws, int left,
 
 // The sprites of a screen-space record go with whatever BG3 is carrying,
 // not with the world: the survivor radar's markers are laid out over its
-// box, which is on the panel that `ppu_wideAnchor` pins to the picture's
+// box, which is on the panel that `VIDEO_WIDE_ANCHOR` pins to the picture's
 // edges, and the drips hanging from the game over mask's foot are sprites
 // of such records too, laid out over the trunks the mask draws for them --
 // anchored with the panel while the mask was centred, they hung 43 columns
@@ -1100,10 +1100,10 @@ static inline const SpriteOamOwners* ws_owners(const Widescreen* ws, const Sprit
   return out;
 }
 
-static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, int place) {
+static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, VideoSpritePlace place) {
   const uint8_t* mem = ws_sprite_mem(ws);
-  if (place == ppu_spriteWorld) {
-    for (int s = 0; s < OAM_ENTRIES; s++) snes_setSpritePlace(snes, s, ppu_spriteWorld);
+  if (place == VIDEO_SPRITE_WORLD) {
+    for (int s = 0; s < OAM_ENTRIES; s++) video_set_sprite_place(snes->ppu, s, VIDEO_SPRITE_WORLD);
     return;
   }
   const SpriteOamOwners* owners = ws_pass_on_screen(snes, ws);
@@ -1113,7 +1113,7 @@ static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, int place
     const int rec = owners ? owners->rec[s] : -1;
     const bool screen = owners ? rec >= 0 && (ws_r16(mem, (uint32_t)rec + ACTOR_FLAGS) & ACTOR_SCREEN_SPACE) != 0
                                : by_look[s] >= 0;
-    snes_setSpritePlace(snes, s, screen ? place : ppu_spriteWorld);
+    video_set_sprite_place(snes->ppu, s, screen ? place : VIDEO_SPRITE_WORLD);
   }
 }
 
@@ -1133,7 +1133,7 @@ static inline void ws_place_screen_sprites(Snes* snes, Widescreen* ws, int place
 // the console's edge goes up at the picture's, one at the band's inner end
 // where it did, and the bursts are as far apart as they were across the
 // width they now have. The record is not touched. Its sprites are drawn
-// further out (`Ppu.spriteShift`), and the pieces the emitter dropped are
+// further out (`VideoPicture.shift`), and the pieces the emitter dropped are
 // put back where the moved burst has them.
 #define WS_FIREWORK_ENTRY 0xdf6au  // the byte before, as the table files it
 #define WS_FIREWORK_BANK 0x82u
@@ -1197,7 +1197,7 @@ static inline bool ws_firework_sprites(Snes* snes, Widescreen* ws, int left, int
     if (rec < 0 || i == n) continue;
     const int16_t ox = (int16_t)ws_r16(mem, (uint32_t)rec + ACTOR_X);
     const int shift = ws_firework_shift(ox, left, right);
-    snes_setSpriteShift(snes, s, shift);
+    video_set_sprite_shift(snes->ppu, s, shift);
     ws->owner_rec[s] = (int16_t)rec;
     ws->owner_ox[s] = (int16_t)(ox + shift);
     ws->owner_oy[s] = (int16_t)ws_r16(mem, (uint32_t)rec + ACTOR_Y);
@@ -1223,7 +1223,7 @@ static inline bool ws_firework_sprites(Snes* snes, Widescreen* ws, int left, int
 // The Konami logo's first act is a star drawn across the screen with a line
 // behind it, and it is BG1: a map of 16x16 tiles, 64 columns of them, whose
 // second row is sixteen tiles of line, the star, and then black; the game
-// scrolls it from 256 to 0 and the star crosses the console. `ppu_wideAuto`
+// scrolls it from 256 to 0 and the star crosses the console. `VIDEO_WIDE_AUTO`
 // takes a 64-column map outside a level for one the game maintains 32 columns
 // of and repeats the console's 256 -- so the right margin had a second line
 // running through it, and at the end a second star, while the left margin had
@@ -1281,7 +1281,7 @@ static inline void ws_boss_plane(Snes* snes, const Widescreen* ws, int left, int
     int sx = (1024 - (bg->hscroll & 0x3ff)) & 0x3ff;
     if (sx >= 512) sx -= 1024;
     if (sx + x1 <= lo && sx + 512 + x0 < hi)
-      ppu_setScroll(snes->ppu, 0, WS_BOSS_PARKED, WS_BOSS_PARKED);
+      video_set_scroll(snes->ppu, 0, WS_BOSS_PARKED, WS_BOSS_PARKED);
     return;
   }
   // Parked. Where the job would have put it is worked out from the words it
@@ -1313,7 +1313,7 @@ static inline void ws_boss_plane(Snes* snes, const Widescreen* ws, int left, int
     const int sx = -(int)(int16_t)dx;
     if (sx < 256 || sx + x0 >= hi || sx - 512 + x1 > lo) return;
     if (!job_kept_y) return;  // off the top or the bottom: parked is right
-    ppu_setScroll(snes->ppu, 0, dx, dy);
+    video_set_scroll(snes->ppu, 0, dx, dy);
     return;
   }
 }
@@ -1352,7 +1352,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   const VideoRegisters* reg = video_registers_of(snes->ppu);
   const uint8_t* mem = ws->mem;
   const int margin = ws->margin;
-  for (int s = 0; s < OAM_ENTRIES; s++) snes_setSpriteShift(snes, s, 0);
+  for (int s = 0; s < OAM_ENTRIES; s++) video_set_sprite_shift(snes->ppu, s, 0);
   // Both halves, and see the note at the top of this file on why the width
   // alone is not enough: BG2SC keeps its 64 columns across the cards between
   // two levels, and only `$212C` says the world has stopped being drawn.
@@ -1362,7 +1362,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // panel's map: "GAME OVER" cut out of a purple field, the level showing
   // through the letters (`$80:8A00`). Split like the panel, the mask left the
   // middle third of the picture bare; centred in the picture and carried to
-  // its edges instead (`ppu_wideCentre`) it is whole. Centred, not left in
+  // its edges instead (`VIDEO_WIDE_CENTRE`) it is whole. Centred, not left in
   // the console's place: at the end of a map the margins are not the same
   // width, and there the console's place is off to one side. Which of the two
   // BG3 is carrying is what the main game thread is doing: parked inside the
@@ -1396,7 +1396,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   const bool bg3_writing = in_level && !bg3_mask && ws_bg3_across(snes);
   // Outside a level BG3 is the wallpaper behind the LucasArts logo, the title
   // and the character select, which the game steps along every few ticks --
-  // and `ppu_wideAuto` continues a 256-pixel map into the margins only once it
+  // and `VIDEO_WIDE_AUTO` continues a 256-pixel map into the margins only once it
   // has seen it move. The select's comes up at scroll 0 and first steps on its
   // fifth tick, so for the first five ticks of the fade-in the margins were the
   // flat colour behind it, lighter than the wallpaper: a flash down both edges.
@@ -1404,35 +1404,35 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // with writing on it, and is repeated from the first frame.
   const bool bg3_field =
       !in_level && video_column_filled(reg, 2, 0) && video_column_filled(reg, 2, 255);
-  snes_setLayerWide(snes, 2, bg3_field ? ppu_wideTile
-                             : !in_level ? ppu_wideAuto : bg3_mask ? ppu_wideCentre
-                             : bg3_writing ? ppu_wideCentreClip : ppu_wideAnchor);
+  video_set_wide(snes->ppu, 2, bg3_field ? VIDEO_WIDE_TILE
+                               : !in_level ? VIDEO_WIDE_AUTO : bg3_mask ? VIDEO_WIDE_CENTRE
+                               : bg3_writing ? VIDEO_WIDE_CENTRE_CLIP : VIDEO_WIDE_ANCHOR);
   // (The sprites laid out over BG3 -- the radar's markers, the mask's drips
   // -- go the same way: `ws_place_screen_sprites`, at the end.)
   // BG2 is the scrolling world, and its margins are filled below, so it is the
   // one layer whose continuation is known rather than guessed at.
-  snes_setLayerWide(snes, 1, in_level ? ppu_wideStretch : ppu_wideAuto);
+  video_set_wide(snes->ppu, 1, in_level ? VIDEO_WIDE_STRETCH : VIDEO_WIDE_AUTO);
   // Sprites are world things in a level and stagecraft outside one. A title
   // card slides its letters in from off the side of the console's 256 and
   // relies on that edge to hide them; widening the picture without saying this
   // shows the trick, as the same words a second time at both edges.
-  snes_setLayerWide(snes, 4, in_level ? ppu_wideStretch : ppu_wideClip);
+  video_set_wide(snes->ppu, 4, in_level ? VIDEO_WIDE_STRETCH : VIDEO_WIDE_CLIP);
   // BG1 outside a level is the one background that is neither: see
   // `ws_konami_sweep`. In a level it is the big figure's plane, 512 pixels of
   // the game's own with a boss in one corner of it or nothing at all, and it
   // goes on into the margins as the world does -- see the header.
-  snes_setLayerWide(snes, 0, in_level ? (reg->bg[0].map_wide ? ppu_wideStretch : ppu_wideAuto)
-                             : ws_konami_sweep(snes) ? ppu_wideSweep : ppu_wideAuto);
+  video_set_wide(snes->ppu, 0, in_level ? (reg->bg[0].map_wide ? VIDEO_WIDE_STRETCH : VIDEO_WIDE_AUTO)
+                               : ws_konami_sweep(snes) ? VIDEO_WIDE_SWEEP : VIDEO_WIDE_AUTO);
 
   if (!in_level || margin <= 0) {
     memset(ws->owner_rec, 0xff, sizeof ws->owner_rec);
     // Nothing outside a level has a map to run off the end of.
-    snes_setWidescreen(snes, margin, margin);
-    snes_setWideClamp(snes, -PPU_EXTRA_MAX, 255 + PPU_EXTRA_MAX);
+    video_set_margins(snes->ppu, margin, margin);
+    video_set_clamp(snes->ppu, -VIDEO_EXTRA_MAX, 255 + VIDEO_EXTRA_MAX);
     // The Winner screen's fireworks, spread out to the picture's edges.
     if (!in_level && margin > 0 && ws_firework_sprites(snes, ws, margin, margin))
-      snes_setLayerWide(snes, 4, ppu_wideStretch);
-    ws->screen_place = ppu_spriteWorld;
+      video_set_wide(snes->ppu, 4, VIDEO_WIDE_STRETCH);
+    ws->screen_place = VIDEO_SPRITE_WORLD;
     ws_place_screen_sprites(snes, ws, ws->screen_place);
     return;
   }
@@ -1468,13 +1468,13 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
   // either.
   int left, right;
   ws_split_margins(cam_x, map_cols, margin, &left, &right);
-  snes_setWidescreen(snes, left, right);
+  video_set_margins(snes->ppu, left, right);
   // ...and if the map is narrower than the whole picture, neither margin can be
   // filled and the total has to stay put or the framebuffer would change size
   // frame to frame. The backdrop covers whatever is left, from the map's two
   // edges in picture columns: world x is `cam_x` plus screen x, so world 0 sits
   // at `-cam_x` and the last map pixel at the far end of the last column.
-  snes_setWideClamp(snes, -(int)cam_x, map_cols * 8 - 1 - (int)cam_x);
+  video_set_clamp(snes->ppu, -(int)cam_x, map_cols * 8 - 1 - (int)cam_x);
 
   // The columns either side of the game's 32 that the picture reaches, and
   // `WS_CAPTURE_SLACK` past its edges for the smoothing. No more: the ring is
@@ -1528,7 +1528,7 @@ static inline void widescreen_frame(Snes* snes, Widescreen* ws) {
 
   if (reg->bg[0].map_wide) ws_boss_plane(snes, ws, left, right);
   ws_margin_sprites(snes, ws, left, right);
-  ws->screen_place = bg3_mask ? ppu_spriteCentred : ppu_spriteAnchored;
+  ws->screen_place = bg3_mask ? VIDEO_SPRITE_CENTRED : VIDEO_SPRITE_ANCHORED;
   ws_place_screen_sprites(snes, ws, ws->screen_place);
 }
 

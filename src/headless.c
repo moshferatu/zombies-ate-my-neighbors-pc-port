@@ -496,7 +496,7 @@ int main(int argc, char** argv) {
   // will pack its rows at from here on, and every buffer above was allocated at
   // the widest it could be. The hook then does the per-frame half of it, at the
   // top of each frame rather than from here — see `SnesFrameHook`.
-  snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
+  video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
   fb_w = snes_pixelWidth(snes);
   static Widescreen ws;
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));

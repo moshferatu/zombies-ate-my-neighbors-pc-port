@@ -38,6 +38,7 @@ endif()
 add_library(zamn_video STATIC
   src/video/video.c
   src/video/registers.c
+  src/video/frame.c
   src/video/ppu_hook.c)
 target_include_directories(zamn_video PUBLIC src)
 target_link_libraries(zamn_video PUBLIC snescore)

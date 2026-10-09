@@ -83,13 +83,13 @@ typedef struct {
 // The squares' tile and attributes, as the marker's metasprite gives them
 // once the pass has put it in the cache: the entries in OAM with this word.
 static void find_spots(const Snes* snes, uint16_t word, Tick* t) {
-  const Ppu* ppu = snes->ppu;
+  const VideoRegisters* reg = video_registers_of(snes->ppu);
   t->spots = 0;
   for (int e = 0; e < OAM_ENTRIES && t->spots < SPOTS_MAX; e++) {
-    const uint16_t lo = ppu->oam[e * 2];
+    const uint16_t lo = reg->oam[e * 2];
     if ((lo >> 8) >= 0xe0 && (lo >> 8) <= 0xf0) continue;
-    if (ppu->oam[e * 2 + 1] != word) continue;
-    const int x = (lo & 0xff) | ((ppu->highOam[e >> 2] >> ((e & 3) * 2)) & 1) << 8;
+    if (reg->oam[e * 2 + 1] != word) continue;
+    const int x = (lo & 0xff) | ((reg->high_oam[e >> 2] >> ((e & 3) * 2)) & 1) << 8;
     t->spot[t->spots].x = x >= 256 ? x - 512 : x;
     t->spot[t->spots].y = lo >> 8;
     t->spots++;
@@ -119,13 +119,21 @@ static bool marker_word(const Snes* snes, const Rom* rom, const uint8_t* mem, ui
 // at all, which says which pixels are the squares', and each of those must
 // be the squares' in `fb` too. `*overlaps` counts squares some other sprite
 // on screen covers part of. Returns the pixels that were not the squares'.
+//
+// The PPU draws the frame again (`ppu_renderFrame`), from OAM as it is left
+// here and each line's scrolls as they were noted.
 static long squares_hidden(Snes* snes, const Radar* r, const uint8_t* fb, int width, long* overlaps) {
   Ppu* ppu = snes->ppu;
-  if (!ppu_frameStatic(ppu)) return 0;
+  const VideoRegisters* reg = video_registers_of(ppu);
+  const VideoFrame* noted = video_frame_of(ppu);
+  VideoState vs;
+  video_state_of(&vs, ppu);
+  // Only a frame that can be drawn again from its end.
+  if (noted->mid_frame_write || reg->mode == 7) return 0;
   // The entries the radar wrote, less the marker it parked.
   bool square[OAM_ENTRIES] = {false}, any = false;
   for (int i = 0; i < r->written; i++) {
-    const int s = r->slot[i], y = ppu->oam[s * 2] >> 8;
+    const int s = r->slot[i], y = reg->oam[s * 2] >> 8;
     if (y < 0xe0 || y > 0xf0) square[s] = any = true;
   }
   if (!any) return 0;
@@ -134,25 +142,26 @@ static long squares_hidden(Snes* snes, const Radar* r, const uint8_t* fb, int wi
   uint8_t* alone = (uint8_t*)malloc(bytes);
   uint8_t* none = (uint8_t*)malloc(bytes);
   uint16_t oam[OAM_ENTRIES * 2];
-  memcpy(oam, ppu->oam, sizeof oam);
+  memcpy(oam, reg->oam, sizeof oam);
   for (int s = 0; s < OAM_ENTRIES; s++) {
     if (!square[s]) continue;
-    const int sx = ppu_spriteXOf(ppu, s), sy = ppu->oam[s * 2] >> 8, size = ppu_spriteSize(ppu, s);
+    const int sx = video_sprite_x(&vs, s), sy = reg->oam[s * 2] >> 8;
+    const int size = video_obj_size(&vs.obj, s);
     for (int e = 0; e < OAM_ENTRIES; e++) {
-      const int ey = ppu->oam[e * 2] >> 8;
+      const int ey = reg->oam[e * 2] >> 8;
       if (square[e] || (ey >= 0xe0 && ey <= 0xf0)) continue;
-      const int ex = ppu_spriteXOf(ppu, e), esize = ppu_spriteSize(ppu, e);
+      const int ex = video_sprite_x(&vs, e), esize = video_obj_size(&vs.obj, e);
       if (ex < sx + size && sx < ex + esize && ey < sy + size && sy < ey + esize) { (*overlaps)++; break; }
     }
   }
   for (int pass = 0; pass < 2; pass++) {
     for (int s = 0; s < OAM_ENTRIES; s++)
-      if (pass == 1 || !square[s]) ppu->oam[s * 2] = (uint16_t)((ppu->oam[s * 2] & 0xff) | 0xe000);
-    ppu_renderFrame(ppu, ppu->lineHScroll, ppu->lineVScroll);
+      if (pass == 1 || !square[s]) reg->oam[s * 2] = (uint16_t)((reg->oam[s * 2] & 0xff) | 0xe000);
+    ppu_renderFrame(ppu, noted->line_hscroll, noted->line_vscroll);
     ppu_putPixels(ppu, pass ? none : alone);
   }
-  memcpy(ppu->oam, oam, sizeof oam);
-  ppu_renderFrame(ppu, ppu->lineHScroll, ppu->lineVScroll);
+  memcpy(reg->oam, oam, sizeof oam);
+  ppu_renderFrame(ppu, noted->line_hscroll, noted->line_vscroll);
   long covered = 0;
   for (size_t o = 0; o < bytes; o += 4)
     if (memcmp(alone + o, none + o, 4) && memcmp(alone + o, fb + o, 4)) covered++;
@@ -173,7 +182,7 @@ static Tick* run(const uint8_t* rom, int rom_len, const char* movie_path, long n
   video_hook_install(&video_hook, snes->ppu, VIDEO_EMULATED, false);
   video_hook_keep_registers(&video_hook, snes->ppu);
   static Widescreen ws;
-  snes_setWidescreen(snes, margin, margin);
+  video_set_margins(snes->ppu, margin, margin);
   widescreen_install(snes, &ws, rom, rom_len, margin);
   ws.radar.steady = steady;
   Cosim cosim;
@@ -194,7 +203,7 @@ static Tick* run(const uint8_t* rom, int rom_len, const char* movie_path, long n
     if (!*have_word) *have_word = marker_word(snes, &ws.rom, ws_sprite_mem(&ws), word);
     if (*have_word) find_spots(snes, *word, t);
     t->width = ppu_outputWidth(snes->ppu);
-    t->extra_left = snes->ppu->extraLeft;
+    t->extra_left = video_picture_of(snes->ppu)->extra_left;
     t->fb = (uint8_t*)malloc((size_t)t->width * 4 * FB_H);
     ppu_putPixels(snes->ppu, t->fb);
     if (steady) {

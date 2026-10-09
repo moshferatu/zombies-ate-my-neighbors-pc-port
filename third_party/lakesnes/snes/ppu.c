@@ -86,6 +86,7 @@ Ppu* ppu_init(Snes* snes) {
   ppu->wrote = NULL;
   ppu->didRead = NULL;
   ppu->happened = NULL;
+  ppu->beganLine = NULL;
   ppu_setPixelOutputFormat(ppu, ppu_pixelOutputFormatBGRX);
   // Set here and not in `ppu_reset`, because the width of the picture belongs
   // to whoever is displaying it and a game resetting itself is not a reason to
@@ -423,6 +424,7 @@ void ppu_runLine(Ppu* ppu, int line) {
     ppu->lineWindow[line][2] = ppu->window2left;
     ppu->lineWindow[line][3] = ppu->window2right;
   }
+  if(ppu->beganLine) ppu->beganLine(ppu->drawUser, ppu, line);
   // evaluate sprites
   memset(ppu->objPixelBuffer, 0, (size_t)ppu_gameWidth(ppu));
   if(!ppu->forcedBlank && !(ppu->findSprites && ppu->findSprites(ppu->drawUser, ppu, line))) {
@@ -461,6 +463,9 @@ void ppu_renderFrame(Ppu* ppu, const uint16_t (*hScroll)[PPU_LINES],
   // same half back. Sprites are evaluated against the OAM as it stands, so a
   // caller that has moved them sees them moved.
   const int last = ppu->frameOverscan ? 239 : 224;
+  // A line drawn again is not a line of the frame beginning.
+  void (*const beganLine)(void*, Ppu*, int) = ppu->beganLine;
+  ppu->beganLine = NULL;
   for(int line = 1; line <= last; line++) {
     for(int i = 0; i < 4; i++) {
       if(hScroll) ppu->bgLayer[i].hScroll = hScroll[i][line];
@@ -468,6 +473,7 @@ void ppu_renderFrame(Ppu* ppu, const uint16_t (*hScroll)[PPU_LINES],
     }
     ppu_runLine(ppu, line);
   }
+  ppu->beganLine = beganLine;
 }
 
 bool ppu_frameStatic(const Ppu* ppu) {
@@ -1788,7 +1794,6 @@ void ppu_setScroll(Ppu* ppu, int layer, uint16_t h, uint16_t v) {
   if(layer < 0 || layer > 3) return;
   ppu->bgLayer[layer].hScroll = h & 0x3ff;
   ppu->bgLayer[layer].vScroll = v & 0x3ff;
-  if(ppu->happened) ppu->happened(ppu->drawUser, ppu, ppu_scrollSet);
 }
 
 void ppu_writeVramWord(Ppu* ppu, uint16_t wordAdr, uint16_t val) {

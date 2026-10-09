@@ -14,7 +14,7 @@
 // That is the jitter. And a redraw costs the PPU three milliseconds, three
 // times a tick, which at a four-millisecond refresh is the whole budget.
 //
-// So this does not ask the PPU to draw the picture. It asks the PPU what the
+// So this does not ask for the picture to be drawn again. It asks what the
 // picture is made of -- one plane of pixels per background and priority, the
 // backdrop, and every sprite as its own little bitmap -- once per tick, and
 // hands the frontend a *draw list*: put this plane here, that sprite there,
@@ -34,8 +34,9 @@
 // additive draw of the sub screen's one layer over it, which is exact where
 // that layer is opaque and is how the character select's film strips are
 // blended onto the wallpaper. What is *not* expressible as a draw list --
-// mode 7, mosaic, hi-res, a window that clips to black, a sub screen with
-// more than one layer on it, anything written mid-frame -- makes the frame
+// a mode other than 1, mosaic, hi-res, a window on a background or one that
+// clips to black, a sub screen with more than one layer on it, anything
+// written mid-frame -- makes the frame
 // `layered = false`, and the frontend shows the PPU's own picture of it for
 // every refresh, as the plain loop would. `tools/test_layers.c` measures over
 // the movie corpus how often that is, and that the draw list drawn at the
@@ -133,7 +134,7 @@
 #include "video/ppu_hook.h"
 
 // The picture, in game pixels: the console's 224 lines, and as many columns
-// as the PPU has been widened to.
+// as the picture has been widened to.
 #define LAYERS_LINES 224
 // Room around every plane for a tick's worth of movement, so a layer eased
 // past its own edge has something there. Nothing moves further than a snap.
@@ -216,9 +217,9 @@ typedef struct {
   uint8_t w, h;        // both the sprite's size
   uint8_t prio;        // 0..3, the OAM attribute's
   bool math;           // palettes 4-7: the sprites colour maths applies to
-  uint8_t place;       // where it goes in a widened picture, `Ppu.spritePlace`
+  uint8_t place;       // where it goes in a widened picture, `VideoPicture.place`
   bool drawn;          // false for a parked or empty one
-  bool front;          // `Ppu.objFront`: in front of every sprite without it
+  bool front;          // `VideoPicture.front`: in front of every sprite without it
   // Where this sprite was a tick ago, in whole pixels, if that is known:
   // `known` is false for one that has just appeared or whose predecessor could
   // not be found, and such a sprite is drawn where it is.
@@ -249,7 +250,7 @@ typedef struct {
   // The brightness to apply to the finished picture, of 15 -- 15 when it is
   // in the planes already, which is nearly always. See `layers_dim_late`.
   int dim;
-  int width;       // game pixels across, `ppu_gameWidth`
+  int width;       // game pixels across, `video_width`
   int extraLeft;   // ...of which this many are left of the console's column 0
   int mode;
   bool bg3prio;
@@ -428,7 +429,7 @@ static inline void layers_rgba(const VideoRegisters* reg, int index, bool math,
 // The main screen's stack, from `layersPerMode`/`prioritysPerMode` in the
 // PPU, for the modes a draw list can express: 0, 1 and 3, plus 1 with BG3 in
 // front. Front to back, as the PPU walks them; the list builder walks them
-// backwards.
+// backwards. (Only mode 1 is taken apart: see `layers_unexpressible`.)
 static inline int layers_stack(int mode, bool bg3prio, int* layer, int* prio) {
   static const int L0[] = {4, 0, 1, 4, 0, 1, 4, 2, 3, 4, 2, 3};
   static const int P0[] = {3, 1, 1, 2, 0, 0, 1, 1, 1, 0, 0, 0};
@@ -453,31 +454,27 @@ static inline int layers_stack(int mode, bool bg3prio, int* layer, int* prio) {
 // so that "how often" is a measured number and not a guess.
 static inline const char* layers_unexpressible(const Ppu* ppu) {
   const VideoRegisters* reg = video_registers_of(ppu);
+  const VideoFrame* noted = video_frame_of(ppu);
   if (reg->blank) return "forced blank";
-  if (ppu->midFrameWrite) return "written mid-frame";
-  if (reg->mode != 0 && reg->mode != 1 && reg->mode != 3) return "mode";
+  if (noted->mid_frame_write) return "written mid-frame";
+  // The planes are read a row at a time by `video_bg_row`, which reads what
+  // this game shows: mode 1, and no window on a background. No frame of the
+  // corpus has either.
+  if (reg->mode != 1) return "mode";
   if (reg->pseudo_hires || reg->interlace || reg->frame_overscan) return "hires/interlace/overscan";
   if (reg->direct_colour) return "direct colour";
   if (reg->clip != 0) return "colour window clips";
+  for (int l = 0; l < 3; l++)
+    if ((reg->main[l] && reg->main_windowed[l]) || (reg->sub[l] && reg->sub_windowed[l]))
+      return "a window on a background";
   // The window edges moved during the frame: fine for the maths gate, which
   // is read per line, and for nothing else, which is read as the frame ended.
-  if (ppu->windowRaster) {
-    for (int l = 0; l < 4; l++)
-      if ((reg->main[l] && reg->main_windowed[l]) ||
-          (reg->sub[l] && reg->sub_windowed[l]))
-        return "layer window written mid-frame";
-    if (reg->main_windowed[4] || reg->sub_windowed[4])
-      return "sprite window written mid-frame";
-  }
+  if (noted->window_raster && (reg->main_windowed[4] || reg->sub_windowed[4]))
+    return "sprite window written mid-frame";
   for (int l = 0; l < 4; l++)
     if (reg->bg[l].mosaic && reg->mosaic_size > 1 &&
         (reg->main[l] || reg->sub[l]))
       return "mosaic";
-  // A layer on both screens with different windowing would need two planes.
-  for (int l = 0; l < 4; l++)
-    if (reg->main[l] && reg->sub[l] &&
-        reg->main_windowed[l] != reg->sub_windowed[l])
-      return "windowed differently on each screen";
   bool anyMath = false;
   for (int l = 0; l < 6; l++) anyMath |= reg->math[l];
   if (anyMath && reg->add_sub) {
@@ -507,8 +504,8 @@ static inline const uint8_t* layers_fb_pixel(const LayersFrame* f, int x, int y)
 
 // One sprite's cell in the atlas, decoded the way `ppu_evaluateSprites` does,
 // with its palette -- and its maths, if it has one -- baked in.
-static inline void layers_sprite_cell(LayersFrame* f, const Ppu* ppu, int slot,
-                                      int size, bool mathAllowedAll) {
+static inline void layers_sprite_cell(LayersFrame* f, const Ppu* ppu, const VideoState* vs,
+                                      int slot, int size, bool mathAllowedAll) {
   const VideoRegisters* reg = video_registers_of(ppu);
   const int index = slot * 2;
   const uint16_t attr = reg->oam[index + 1];
@@ -538,11 +535,11 @@ static inline void layers_sprite_cell(LayersFrame* f, const Ppu* ppu, int slot,
         pixel |= ((plane2 >> (8 + shift)) & 1) << 3;
         uint8_t* out = f->atlas[cy + row][cx + col + px];
         if (pixel == 0) { out[0] = out[1] = out[2] = out[3] = 0; continue; }
-        const bool m = math && (mathAllowedAll || ppu_mathAllowedAt((Ppu*)ppu, x0 + col + px, y0 + row + 1));
-        // `Ppu.objRemap`: a sprite in colours of the frontend's (the game
-        // over's drips under `--red-blood`), as `ppu_evaluateSprites` has it.
-        const int colour = ppu->objRemapOn[slot] && ppu->objRemap[pixel]
-                               ? ppu->objRemap[pixel] : 0x80 + 16 * palette + pixel;
+        const bool m = math && (mathAllowedAll || video_math_allowed(vs, x0 + col + px, y0 + row + 1));
+        // `VideoPicture.remap`: a sprite in colours of the frontend's (the
+        // game over's drips under `--red-blood`), as `video_sprites` has it.
+        const int colour = vs->obj.remap_on[slot] && vs->obj.remap[pixel]
+                               ? vs->obj.remap[pixel] : 0x80 + 16 * palette + pixel;
         layers_rgba(reg, colour, m, out);
       }
     }
@@ -561,8 +558,8 @@ static inline void layers_sprite_cell(LayersFrame* f, const Ppu* ppu, int slot,
 // the test measures. Sprites of the same priority need nothing: drawing the
 // lower index last is the rule already.
 //
-// "Lower" is in the order the PPU finds them, where an entry marked `front`
-// comes before every entry that is not (`Ppu.objFront`).
+// "Lower" is in the order they are found on a line, where an entry marked
+// `front` comes before every entry that is not (`VideoPicture.front`).
 static inline bool layers_ahead(const LayersFrame* f, int j, int i) {
   if (f->spr[j].front != f->spr[i].front) return f->spr[j].front;
   return j < i;
@@ -607,10 +604,9 @@ static inline void layers_occlude(LayersFrame* f) {
 
 // One background's planes, a line at a time from `video_bg_row`: each line's
 // tiles read eight pixels at once, and each pixel's colour looked up in a
-// table made once for the layer. What the loop in `layers_capture` does a
-// pixel at a time through `ppu_layerPixel` and `layers_rgba`, and the same
-// planes. `mathed` is whether the planes have the fixed colour's maths in
-// them, and `twins` whether the mathed twins are filled as well.
+// table made once for the layer. `mathed` is whether the planes have the
+// fixed colour's maths in them, and `twins` whether the mathed twins are
+// filled as well.
 static inline void layers_planes_by_row(LayersFrame* f, Ppu* ppu, const VideoState* vs, int l,
                                         bool mathed, bool twins, int x0, int x1) {
   const VideoRegisters* reg = video_registers_of(ppu);
@@ -625,8 +621,9 @@ static inline void layers_planes_by_row(LayersFrame* f, Ppu* ppu, const VideoSta
   }
   const int p0 = LAYERS_PLANE_OF(l, 0), p1 = LAYERS_PLANE_OF(l, 1);
   const int width = x1 - x0;
-  VideoCentre centre;
-  video_centre_from_ppu(&centre, ppu);
+  // A centred layer's margins, from what the frame's lines found of them,
+  // and a copy: what is found here is not what a line found.
+  VideoCentre centre = video_frame_of(ppu)->centre;
   uint8_t back[LAYERS_PLANE_W], front[LAYERS_PLANE_W];
   uint8_t anyBack = 0, anyFront = 0;
   for (int line = 1 - LAYERS_MARGIN; line <= LAYERS_LINES + LAYERS_MARGIN; line++) {
@@ -644,7 +641,6 @@ static inline void layers_planes_by_row(LayersFrame* f, Ppu* ppu, const VideoSta
       memcpy(f->plane[LAYERS_MATHED(p1)][r][c], &twin[front[c]], 4);
     }
   }
-  video_centre_to_ppu(&centre, ppu);
   if (anyBack) f->planeUsed[p0] = true;
   if (anyFront) f->planeUsed[p1] = true;
   if (twins && anyBack) f->planeUsed[LAYERS_MATHED(p0)] = true;
@@ -655,15 +651,17 @@ static inline void layers_planes_by_row(LayersFrame* f, Ppu* ppu, const VideoSta
 // table (`sprite_oam_owners`) if its pass ran *this tick*, else NULL: the
 // caller knows, from the table's serial, and this does not. Always fills
 // `fb`; fills the planes and sprites only when the frame can be a draw list.
-// `ppu` is not const because the PPU's own lookups are not, but nothing in
-// it is changed.
+// `ppu` is not const because `ppu_putPixels` does not take one, but nothing
+// in it is changed.
 static inline void layers_capture(LayersFrame* f, Ppu* ppu,
                                   const int16_t* ownerRec, const int16_t* ownerOx,
                                   const int16_t* ownerOy) {
   const VideoRegisters* reg = video_registers_of(ppu);
+  VideoState vs;
+  video_state_of(&vs, ppu);
   f->valid = true;
-  f->width = ppu_gameWidth(ppu);
-  f->extraLeft = ppu->extraLeft;
+  f->width = video_width(&vs);
+  f->extraLeft = vs.extra_left;
   f->world = reg->bg[1].map_wide && reg->main[1];
   f->fbWidth = ppu_outputWidth(ppu);
   ppu_putPixels(ppu, f->fb);
@@ -702,11 +700,11 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
       // flag and not a sentinel column.
       int runStart = 0;
       bool inRun = false;
-      for (int x = -ppu->extraLeft; x <= 256 + ppu->extraRight; x++) {
-        const bool m = x < 256 + ppu->extraRight && ppu_mathAllowedAt(ppu, x, line);
+      for (int x = -vs.extra_left; x <= 256 + vs.extra_right; x++) {
+        const bool m = x < 256 + vs.extra_right && video_math_allowed(&vs, x, line);
         if (m && !inRun) { runStart = x; inRun = true; }
         if (!m && inRun) {
-          const int px = runStart + ppu->extraLeft, pw = x - runStart, py = line - 1;
+          const int px = runStart + vs.extra_left, pw = x - runStart, py = line - 1;
           int r = 0;
           for (; r < f->mathRects; r++)
             if (f->mathRect[r].x == px && f->mathRect[r].w == pw &&
@@ -731,70 +729,38 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
   // The backgrounds, and the backdrop as a plane of its own so that the
   // maths window can vary it by column like anything else.
   const int last = reg->frame_overscan ? 239 : LAYERS_LINES;
-  const int x0 = -ppu->extraLeft - LAYERS_MARGIN;
-  const int x1 = 256 + ppu->extraRight + LAYERS_MARGIN;
+  const int x0 = -vs.extra_left - LAYERS_MARGIN;
+  const int x1 = 256 + vs.extra_right + LAYERS_MARGIN;
   memset(f->planeUsed, 0, sizeof f->planeUsed);
-  VideoState vs;
-  video_state_of(&vs, ppu);
   for (int l = 0; l < 4; l++) {
     f->main[l] = reg->main[l];
-    f->anchored[l] = ppu->layerWide[l] == ppu_wideAnchor;
+    f->anchored[l] = vs.wide[l] == VIDEO_WIDE_ANCHOR;
     f->sub[l] = reg->sub[l];
-    f->scrollX[l] = ppu->lineHScroll[l][1];
-    f->scrollY[l] = ppu->lineVScroll[l][1];
+    f->scrollX[l] = vs.line_hscroll[l][1];
+    f->scrollY[l] = vs.line_vscroll[l][1];
     f->raster[l] = false;
     for (int y = 2; y <= last; y++)
-      if (ppu->lineHScroll[l][y] != f->scrollX[l] || ppu->lineVScroll[l][y] != f->scrollY[l]) {
+      if (vs.line_hscroll[l][y] != f->scrollX[l] || vs.line_vscroll[l][y] != f->scrollY[l]) {
         f->raster[l] = true;
         break;
       }
     // ...across only, and the lines can be eased one by one -- see `lineX`.
     f->rasterX[l] = f->raster[l] && !reg->frame_overscan;
     for (int y = 1; y <= LAYERS_LINES; y++) {
-      if (ppu->lineVScroll[l][y] != f->scrollY[l]) f->rasterX[l] = false;
-      f->lineX[l][y] = (int16_t)((ppu->lineHScroll[l][y] - ppu_layerShiftX(ppu, l, y)) & 0x3ff);
+      if (vs.line_vscroll[l][y] != f->scrollY[l]) f->rasterX[l] = false;
+      f->lineX[l][y] = (int16_t)((vs.line_hscroll[l][y] - video_sweep_shift(&vs, l, y)) & 0x3ff);
     }
-    // A layer the widened picture draws shifted (`ppu_wideSweep`) moves by its
-    // scroll and by the shift's change, and it is the motion this is kept for.
-    f->scrollX[l] = (uint16_t)((f->scrollX[l] - ppu_layerShiftX(ppu, l, 1)) & 0x3ff);
+    // A layer the widened picture draws shifted (`VIDEO_WIDE_SWEEP`) moves by
+    // its scroll and by the shift's change, and it is the motion this is kept
+    // for.
+    f->scrollX[l] = (uint16_t)((f->scrollX[l] - video_sweep_shift(&vs, l, 1)) & 0x3ff);
+    // Mode 1 has three backgrounds, whatever the fourth's bits say.
+    if (video_bg_row_declines(&vs, l)) continue;
     if (!f->main[l] && !(f->sub[l] && f->subAdd)) continue;
+    // Maths everywhere is baked into the planes; maths through a window goes
+    // into their twins, and the planes stay plain.
     const bool math = fixedMath && f->mathMain[l] && f->main[l];
-    const bool onSubOnly = !f->main[l];
-    // By rows, unless a window hides part of the layer or it is one
-    // `src/video` does not read; then a pixel at a time, as the PPU reads it.
-    const bool windowed = onSubOnly ? reg->sub_windowed[l]
-                                    : reg->main_windowed[l];
-    if (!windowed && !video_bg_row_declines(&vs, l)) {
-      layers_planes_by_row(f, ppu, &vs, l, math && allowedEverywhere, math && f->mathGated, x0, x1);
-      continue;
-    }
-    for (int line = 1 - LAYERS_MARGIN; line <= LAYERS_LINES + LAYERS_MARGIN; line++) {
-      const int r = line - 1 + LAYERS_MARGIN;
-      for (int x = x0; x < x1; x++) {
-        const int c = x + ppu->extraLeft + LAYERS_MARGIN;
-        int prio = 0;
-        const int pixel = ppu_layerPixel(ppu, l, x, line, onSubOnly, &prio);
-        uint8_t* out0 = f->plane[LAYERS_PLANE_OF(l, 0)][r][c];
-        uint8_t* out1 = f->plane[LAYERS_PLANE_OF(l, 1)][r][c];
-        out0[0] = out0[1] = out0[2] = out0[3] = 0;
-        out1[0] = out1[1] = out1[2] = out1[3] = 0;
-        uint8_t* tw0 = f->plane[LAYERS_MATHED(LAYERS_PLANE_OF(l, 0))][r][c];
-        uint8_t* tw1 = f->plane[LAYERS_MATHED(LAYERS_PLANE_OF(l, 1))][r][c];
-        if (math && f->mathGated) {
-          tw0[0] = tw0[1] = tw0[2] = tw0[3] = 0;
-          tw1[0] = tw1[1] = tw1[2] = tw1[3] = 0;
-        }
-        if (pixel == 0) continue;
-        // Maths everywhere is baked into the plane; maths through a window
-        // goes into the twin, and the plane stays plain.
-        layers_rgba(reg, pixel, math && allowedEverywhere, prio ? out1 : out0);
-        f->planeUsed[LAYERS_PLANE_OF(l, prio)] = true;
-        if (math && f->mathGated) {
-          layers_rgba(reg, pixel, true, prio ? tw1 : tw0);
-          f->planeUsed[LAYERS_MATHED(LAYERS_PLANE_OF(l, prio))] = true;
-        }
-      }
-    }
+    layers_planes_by_row(f, ppu, &vs, l, math && allowedEverywhere, math && f->mathGated, x0, x1);
   }
   {
     const bool math = fixedMath && f->mathMain[5];
@@ -803,7 +769,7 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
     layers_rgba(reg, 0, true, mathed);
     for (int r = 0; r < LAYERS_PLANE_H; r++) {
       for (int x = x0; x < x1; x++) {
-        const int c = x + ppu->extraLeft + LAYERS_MARGIN;
+        const int c = x + vs.extra_left + LAYERS_MARGIN;
         memcpy(f->plane[LAYERS_BACKDROP][r][c], math && allowedEverywhere ? mathed : plain, 4);
         if (math && f->mathGated) memcpy(f->plane[LAYERS_MATHED(LAYERS_BACKDROP)][r][c], mathed, 4);
       }
@@ -823,26 +789,26 @@ static inline void layers_capture(LayersFrame* f, Ppu* ppu,
   for (int s = 0; s < LAYERS_SPRITES; s++) {
     LayersSprite* sp = &f->spr[s];
     const int size = video_obj_size(&vs.obj, s);
-    sp->x = (int16_t)ppu_spriteXOf(ppu, s);
+    sp->x = (int16_t)video_sprite_x(&vs, s);
     sp->y = (int16_t)(reg->oam[s * 2] >> 8);
     sp->w = sp->h = (uint8_t)size;
     sp->prio = (uint8_t)((reg->oam[s * 2 + 1] & 0x3000) >> 12);
     sp->math = ((reg->oam[s * 2 + 1] & 0xe00) >> 9) >= 4;
-    sp->place = ppu->spritePlace[s];
-    sp->front = ppu->objFront[s];
+    sp->place = vs.obj.place[s];
+    sp->front = vs.obj.front[s];
     sp->known = false;
     sp->px = sp->py = 0;
     sp->rec = f->ownersFresh ? ownerRec[s] : -1;
     sp->ox = f->ownersFresh ? ownerOx[s] : 0;
     sp->oy = f->ownersFresh ? ownerOy[s] : 0;
-    // On screen at all? The PPU's y is eight bits and its row test wraps, so
+    // On screen at all? A sprite's y is eight bits and its row test wraps, so
     // a sprite at 250 shows its bottom rows at the top of the picture; one
     // parked at 224..240 shows nothing. Off the right edge it is dropped by
-    // `ppu_spriteX`'s wrap, which the reading above already applied.
+    // `video_sprite_x`'s wrap, which the reading above already applied.
     const bool onY = sp->y < LAYERS_LINES || sp->y + size > 256;
-    const bool onX = sp->x > -size - ppu->extraLeft && sp->x < 256 + ppu->extraRight;
+    const bool onX = sp->x > -size - vs.extra_left && sp->x < 256 + vs.extra_right;
     sp->drawn = spritesOn && onY && onX;
-    if (sp->drawn) layers_sprite_cell(f, ppu, s, size, allowedEverywhere);
+    if (sp->drawn) layers_sprite_cell(f, ppu, &vs, s, size, allowedEverywhere);
   }
   layers_occlude(f);
 }
@@ -1454,11 +1420,11 @@ static inline int layers_list(const LayersFrame* cur, int num, int den, int sx,
         // Once where it is, and once 256 lines up for the wrap. The PPU
         // evaluates sprites for `line - 1`, so a sprite at OAM y lands on
         // picture row y, one below where a background's line 1 lands. And a
-        // sprite placed with a centred layer (`ppu_spriteCentred`) is drawn
+        // sprite placed with a centred layer (`VIDEO_SPRITE_CENTRED`) is drawn
         // where it is, clipped to the layer's own 256 columns, and again 256
         // columns either side, clipped to that margin, as the PPU draws it;
         // the clip stays where the margin is while the sprite is eased.
-        const bool centred = sp->place == ppu_spriteCentred && W != 256;
+        const bool centred = sp->place == VIDEO_SPRITE_CENTRED && W != 256;
         const int extraRight = W - 256 - cur->extraLeft;
         const int mid = (extraRight - cur->extraLeft) / 2 + cur->extraLeft;
         for (int wrap = 0; wrap < 2; wrap++) {

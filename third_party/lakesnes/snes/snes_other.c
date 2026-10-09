@@ -142,40 +142,6 @@ void snes_setPixels(Snes* snes, uint8_t* pixelData) {
   ppu_putPixels(snes->ppu, pixelData);
 }
 
-void snes_setWidescreen(Snes* snes, int left, int right) {
-  ppu_setWidescreen(snes->ppu, left, right);
-}
-
-void snes_setLayerWide(Snes* snes, int layer, int policy) {
-  ppu_setLayerWide(snes->ppu, layer, policy);
-}
-
-void snes_setSpritePlace(Snes* snes, int slot, int place) {
-  if(slot < 0 || slot >= 128) return;
-  snes->ppu->spritePlace[slot] = (uint8_t)place;
-}
-
-void snes_setSpriteShift(Snes* snes, int slot, int shift) {
-  if(slot < 0 || slot >= 128) return;
-  snes->ppu->spriteShift[slot] = (int16_t)shift;
-}
-
-bool snes_bgTilemapWider(const Snes* snes, int layer) {
-  return ppu_bgTilemapWider(snes->ppu, layer);
-}
-
-bool snes_bgOnMainScreen(const Snes* snes, int layer) {
-  return ppu_bgOnMainScreen(snes->ppu, layer);
-}
-
-bool snes_bgColumnEmpty(const Snes* snes, int layer, int x) {
-  return ppu_columnEmptyAt(snes->ppu, layer, x);
-}
-
-void snes_setWideClamp(Snes* snes, int lo, int hi) {
-  ppu_setWideClamp(snes->ppu, lo, hi);
-}
-
 void snes_writeVramWord(Snes* snes, uint16_t wordAdr, uint16_t val) {
   ppu_writeVramWord(snes->ppu, wordAdr, val);
 }

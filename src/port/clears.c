@@ -2,6 +2,8 @@
 
 #include "port/clears.h"
 
+#include <stddef.h>
+
 #include "port/coverage.h"
 #include "port/oam.h"
 

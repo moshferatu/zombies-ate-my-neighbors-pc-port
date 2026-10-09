@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
   static Widescreen ws;
   // Installed at any width, as the frontend installs it: the hook also draws
   // the survivor radar's squares (`src/radar.h`).
-  snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
+  video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
   ws.radar.steady = !radar_flash;
   if (mask_line && !maskline_fix(snes->cart)) {
@@ -225,6 +225,9 @@ int main(int argc, char** argv) {
     if (i + 1 < first) continue;
     const int frame = i + 1;
     Ppu* ppu = snes->ppu;
+    const VideoRegisters* reg = video_registers_of(ppu);
+    const VideoPicture* said = video_picture_of(ppu);
+    const VideoFrame* noted = video_frame_of(ppu);
     const bool fresh = sprite_oam_owners.serial != last_serial;
     last_serial = sprite_oam_owners.serial;
     LayersFrame* f = frames[cur];
@@ -267,28 +270,28 @@ int main(int argc, char** argv) {
       if (r < reasons) reason_count[r]++;
       if (motion_first >= 0 && frame >= motion_first && frame <= motion_last) {
         printf("  frame %d: %s", frame, f->why);
-        if (ppu->midFrameWrite)
-          printf(" -- first $21%02x on line %d, %d writes", ppu->midFrameAdr, ppu->midFrameLine,
-                 ppu->midFrameWrites);
+        if (noted->mid_frame_write)
+          printf(" -- first $21%02x on line %d, %d writes", noted->mid_frame_address, noted->mid_frame_line,
+                 noted->mid_frame_writes);
         printf("\n");
         if (frame == motion_first) {
           // The windowing and maths registers as the frame ended, once, for
           // working out what a screen that cannot be a draw list is doing.
           printf("    w1 %d..%d w2 %d..%d clip %d preventMath %d addSub %d subtract %d half %d fixed %d,%d,%d\n",
-                 ppu->window1left, ppu->window1right, ppu->window2left, ppu->window2right, ppu->clipMode,
-                 ppu->preventMathMode, ppu->addSubscreen, ppu->subtractColor, ppu->halfColor,
-                 ppu->fixedColorR, ppu->fixedColorG, ppu->fixedColorB);
+                 reg->window1_left, reg->window1_right, reg->window2_left, reg->window2_right, reg->clip,
+                 reg->prevent, reg->add_sub, reg->subtract, reg->half,
+                 reg->fixed_r, reg->fixed_g, reg->fixed_b);
           for (int l = 0; l < 6; l++)
             printf("    %s: w1 %d%s w2 %d%s logic %d%s\n",
                    l < 4 ? (const char*[]){"bg1", "bg2", "bg3", "bg4"}[l] : l == 4 ? "sprites" : "colour",
-                   ppu->windowLayer[l].window1enabled, ppu->windowLayer[l].window1inversed ? " inv" : "",
-                   ppu->windowLayer[l].window2enabled, ppu->windowLayer[l].window2inversed ? " inv" : "",
-                   ppu->windowLayer[l].maskLogic, l < 4 && ppu->layer[l].mainScreenEnabled ? " main" : "");
+                   reg->window[l].one, reg->window[l].one_inverted ? " inv" : "",
+                   reg->window[l].two, reg->window[l].two_inverted ? " inv" : "",
+                   reg->window[l].logic, l < 4 && reg->main[l] ? " main" : "");
           for (int l = 0; l < 4; l++)
             printf("    bg%d: main %d sub %d mainWindowed %d subWindowed %d math %d\n", l + 1,
-                   ppu->layer[l].mainScreenEnabled, ppu->layer[l].subScreenEnabled,
-                   ppu->layer[l].mainScreenWindowed, ppu->layer[l].subScreenWindowed, ppu->mathEnabled[l]);
-          printf("    sprites math %d backdrop math %d\n", ppu->mathEnabled[4], ppu->mathEnabled[5]);
+                   reg->main[l], reg->sub[l],
+                   reg->main_windowed[l], reg->sub_windowed[l], reg->math[l]);
+          printf("    sprites math %d backdrop math %d\n", reg->math[4], reg->math[5]);
         }
       }
     } else {
@@ -307,7 +310,7 @@ int main(int argc, char** argv) {
           if (d > maxd) maxd = d;
         }
       }
-      if (ppu->rangeOver || ppu->timeOver) dropped++;
+      if (reg->range_over || reg->time_over) dropped++;
       else if (maxd == 0) identical++;
       else if (maxd <= 1) within_one++;
       else {
@@ -337,7 +340,7 @@ int main(int argc, char** argv) {
         link_pose += f->linkPose;
         window_held += f->mathHeld;
         if (f->anchored[2]) bg3_anchored++;
-        if (ppu->layerWide[2] == ppu_wideCentre) bg3_mask++;
+        if (said->wide[2] == VIDEO_WIDE_CENTRE) bg3_mask++;
         for (int l = 0; l < 4; l++) if (f->stepK[l]) steps_spread++;
         lines_moved += f->linesMoved;
         lines_spread += f->linesSpread;
@@ -447,10 +450,13 @@ int main(int argc, char** argv) {
         if (f->mathGated) {
           // The maths gate column by column on one line of the window, with
           // the edges that line had, for when a rectangle is not the box.
-          printf("    line 80: windows %d..%d %d..%d, wide policy %d%d%d%d, gate from column %d:", ppu->lineWindow[80][0],
-                 ppu->lineWindow[80][1], ppu->lineWindow[80][2], ppu->lineWindow[80][3], ppu->layerWide[0],
-                 ppu->layerWide[1], ppu->layerWide[2], ppu->layerWide[3], -ppu->extraLeft);
-          for (int x = -ppu->extraLeft; x < 256 + ppu->extraRight; x++) printf("%c", ppu_mathAllowedAt(ppu, x, 80) ? '#' : '.');
+          printf("    line 80: windows %d..%d %d..%d, wide policy %d%d%d%d, gate from column %d:", noted->line_window[80][0],
+                 noted->line_window[80][1], noted->line_window[80][2], noted->line_window[80][3], said->wide[0],
+                 said->wide[1], said->wide[2], said->wide[3], -said->extra_left);
+          VideoState vs;
+          video_state_of(&vs, ppu);
+          for (int x = -said->extra_left; x < 256 + said->extra_right; x++)
+            printf("%c", video_math_allowed(&vs, x, 80) ? '#' : '.');
           printf("\n");
         }
         // Which of BG3's columns are empty on every line, as runs -- what
@@ -460,7 +466,7 @@ int main(int argc, char** argv) {
                ws_main_thread_at(snes->ram), snes->ram[0x136a] | (snes->ram[0x136b] << 8), ws_game_over(snes->ram),
                snes->ram[0x1e88] | (snes->ram[0x1e89] << 8), snes->ram[0x1e8a] | (snes->ram[0x1e8b] << 8));
         for (int c = 0, from = -1; c <= 256; c++) {
-          const bool empty = c < 256 && ppu_columnEmptyAt(ppu, 2, c);
+          const bool empty = c < 256 && video_column_empty(reg, 2, c);
           if (empty && from < 0) from = c;
           if (!empty && from >= 0) { printf(" %d-%d", from, c - 1); from = -1; }
         }
@@ -469,8 +475,8 @@ int main(int argc, char** argv) {
           int anchored = 0, centred = 0;
           for (int s = 0; s < LAYERS_SPRITES; s++) {
             if (!f->spr[s].drawn) continue;
-            anchored += f->spr[s].place == ppu_spriteAnchored;
-            centred += f->spr[s].place == ppu_spriteCentred;
+            anchored += f->spr[s].place == VIDEO_SPRITE_ANCHORED;
+            centred += f->spr[s].place == VIDEO_SPRITE_CENTRED;
           }
           printf("    sprites placed: %d anchored, %d centred\n", anchored, centred);
         }
@@ -480,7 +486,7 @@ int main(int argc, char** argv) {
           char vpath[600];
           snprintf(vpath, sizeof vpath, "%s.%d.vram.bin", png, frame);
           FILE* vf = fopen(vpath, "wb");
-          if (vf) { fwrite(ppu->vram, sizeof ppu->vram[0], 0x8000, vf); fclose(vf); }
+          if (vf) { fwrite(reg->vram, sizeof reg->vram[0], 0x8000, vf); fclose(vf); }
           // ...the scroll of every line of a background that has a raster
           // effect on it, one "line h v" a row...
           for (int l = 0; l < 4; l++) {
@@ -488,7 +494,7 @@ int main(int argc, char** argv) {
             snprintf(vpath, sizeof vpath, "%s.%d.scroll%d.txt", png, frame, l);
             vf = fopen(vpath, "w");
             if (!vf) continue;
-            for (int y = 1; y <= 224; y++) fprintf(vf, "%d %d %d" "\n", y, ppu->lineHScroll[l][y], ppu->lineVScroll[l][y]);
+            for (int y = 1; y <= 224; y++) fprintf(vf, "%d %d %d" "\n", y, noted->line_hscroll[l][y], noted->line_vscroll[l][y]);
             fclose(vf);
           }
           // ...and work RAM, for finding where the game keeps something.
@@ -500,16 +506,16 @@ int main(int argc, char** argv) {
           snprintf(vpath, sizeof vpath, "%s.%d.cgram.bin", png, frame);
           vf = fopen(vpath, "wb");
           if (vf) {
-            fwrite(ppu->cgram, sizeof ppu->cgram[0], 0x100, vf);
-            fwrite(ppu->oam, sizeof ppu->oam[0], 0x100, vf);
-            fwrite(ppu->highOam, 1, 0x20, vf);
+            fwrite(reg->cgram, sizeof reg->cgram[0], 0x100, vf);
+            fwrite(reg->oam, sizeof reg->oam[0], 0x100, vf);
+            fwrite(reg->high_oam, 1, 0x20, vf);
             fclose(vf);
           }
           printf("    maps:");
           for (int l = 0; l < 4; l++)
-            printf(" %04x%s%s%s/%04x", ppu->bgLayer[l].tilemapAdr, ppu->bgLayer[l].tilemapWider ? "w" : "",
-                   ppu->bgLayer[l].tilemapHigher ? "h" : "", ppu->bgLayer[l].bigTiles ? "b" : "",
-                   ppu->bgLayer[l].tileAdr);
+            printf(" %04x%s%s%s/%04x", reg->bg[l].map_at, reg->bg[l].map_wide ? "w" : "",
+                   reg->bg[l].map_high ? "h" : "", reg->bg[l].big_tiles ? "b" : "",
+                   reg->bg[l].tiles_at);
           printf("\n");
         }
         if (f->mathGated)

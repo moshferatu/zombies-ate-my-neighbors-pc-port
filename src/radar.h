@@ -35,7 +35,7 @@
 // The squares are in higher entries than the marker's, which the game puts
 // first, and a sprite hides every sprite in a higher entry: a neighbour
 // standing where a square falls was drawn over it. So each is marked
-// `Ppu.objFront`, which the PPU and the smoothing's draw list both read as
+// `VideoPicture.front`, which a line's sprites and the smoothing's draw list both read as
 // "found first", and the squares are in front of everything, as the one
 // marker in entry 0 was.
 //
@@ -131,7 +131,7 @@ static inline bool radar_put(Snes* snes, Radar* r, int s, int x, int y, uint16_t
 static inline void radar_return(Snes* snes, Radar* r) {
   Ppu* ppu = snes->ppu;
   const VideoRegisters* reg = video_registers_of(ppu);
-  for (int i = 0; i < r->written; i++) ppu->objFront[r->slot[i]] = false;
+  for (int i = 0; i < r->written; i++) video_set_sprite_front(ppu, r->slot[i], false);
   if (r->written && !memcmp(reg->oam, r->oam, sizeof r->oam) &&
       !memcmp(reg->high_oam, r->high, sizeof r->high)) {
     for (int i = r->written - 1; i >= 0; i--) {
@@ -153,7 +153,7 @@ static inline void radar_keep(const Snes* snes, Radar* r) {
 // One radar's squares, for the thread on page `dp`. `place` is where the
 // widened picture puts a sprite laid out over the panel.
 static inline void radar_draw(Snes* snes, Radar* r, const Rom* rom, const uint8_t* mem,
-                              uint16_t dp, int place, int* shown) {
+                              uint16_t dp, VideoSpritePlace place, int* shown) {
   const VideoRegisters* reg = video_registers_of(snes->ppu);
   const uint16_t player = radar_r16(mem, dp + RADAR_DP_PLAYER);
   if (player > 1 || !radar_r16(mem, RADAR_UP + player * 2u)) return;
@@ -213,15 +213,16 @@ static inline void radar_draw(Snes* snes, Radar* r, const Rom* rom, const uint8_
     slot = snes_freeSprite(snes, slot);
     if (slot >= OAM_ENTRIES) return;
     if (!radar_put(snes, r, slot, (x + p->x) & 0x1ff, (y + p->y) & 0xff, look, large)) return;
-    snes_setSpritePlace(snes, slot, place);
-    snes->ppu->objFront[slot] = true;
+    video_set_sprite_place(snes->ppu, slot, place);
+    video_set_sprite_front(snes->ppu, slot, true);
     (*shown)++;
   }
 }
 
 // From the frame hook, once the sprites of the picture are placed. `mem` is
 // the memory they were composed from.
-static inline void radar_frame(Snes* snes, Radar* r, const Rom* rom, const uint8_t* mem, int place) {
+static inline void radar_frame(Snes* snes, Radar* r, const Rom* rom, const uint8_t* mem,
+                               VideoSpritePlace place) {
   if (!r->steady) return;
   int shown = 0;
   bool any = false;

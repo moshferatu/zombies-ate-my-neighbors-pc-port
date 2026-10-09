@@ -39,8 +39,9 @@
 // `VideoState` is what a line is drawn from: VRAM, the palette, and the
 // registers as the game last set them. It names nothing of the emulator's.
 // The registers are kept by `registers.h`, which fills its share of one.
-// `src/video/ppu_hook.c` fills the rest from the emulated PPU: the widened
-// picture, and what the frontend has said of each sprite.
+// `frame.h` fills the rest: the widened picture and what the frontend has
+// said of each sprite, and where the scrolls and the windows were on each
+// line of the frame.
 //
 // A line's sprites are found from OAM by `video_sprites`, into a row of the
 // picture's width that `video_line` is then given: a pixel and a priority for
@@ -77,7 +78,7 @@ typedef enum {
   VIDEO_WIDE_STRETCH,      // the map goes on
   VIDEO_WIDE_ANCHOR,       // its halves at the picture's two edges
   VIDEO_WIDE_CLIP,         // the console's 256 and nothing beside them
-  VIDEO_WIDE_CLAMP_EDGE,   // its edge columns carried out (not drawn here)
+  VIDEO_WIDE_CLAMP_EDGE,   // its edge columns carried out
   VIDEO_WIDE_CENTRE,       // its 256 at the picture's middle, margins filled
   VIDEO_WIDE_TILE,         // its 256 repeated
   VIDEO_WIDE_SWEEP,        // shifted as it is swept in
@@ -184,6 +185,9 @@ typedef struct {
   // drawn, this line included.
   const uint16_t (*line_hscroll)[VIDEO_LINES];
   const uint16_t (*line_vscroll)[VIDEO_LINES];
+  // ...and where the two windows' edges were: the first's left and right,
+  // then the second's.
+  const uint8_t (*line_window)[4];
 } VideoState;
 
 // `VIDEO_WIDE_CENTRE`'s margins, per background and side: where on the layer
@@ -191,8 +195,8 @@ typedef struct {
 // line and the scroll; and the last line the layer is opaque right across,
 // found once for a scroll. See the policy in `video.c`.
 //
-// It is kept by whoever calls, and not in `Video`, because the emulated PPU
-// keeps the same thing for the lines it draws and the two must agree.
+// It is kept by whoever calls, and not in `Video`: `frame.h` keeps the one a
+// frame's lines are drawn with, and the smoothing reads the frame with a copy.
 typedef struct {
   int16_t fill_col[4][2], fill_from[4][2];
   int16_t fill_line[4][2];
@@ -248,6 +252,24 @@ int video_sprites(const VideoState* s, int line, uint8_t* pixel, uint8_t* priori
 // sizes the register picks.
 int video_obj_size(const VideoObj* o, int sprite);
 
+// The column of the picture a sprite's left edge is drawn at, which on the
+// console is its X. A widened picture moves the point where X comes round,
+// and a sprite placed with an anchored or a centred layer goes where that
+// layer's column of the same number went.
+int video_sprite_x(const VideoState* s, int sprite);
+
+// How far right of its place on the console background `layer` was drawn on
+// `line` of the frame: `VIDEO_WIDE_SWEEP`'s shift, and 0 under every other
+// policy. Whoever follows the layer from one frame to the next wants its
+// scroll less this.
+int video_sweep_shift(const VideoState* s, int layer, int line);
+
+// Whether colour maths was allowed at column `x` of the picture on `line` of
+// the frame, by the colour window as its edges were on that line. Whether a
+// layer has maths at all is `VideoState.math`. A line above or below the
+// picture is read as the nearest line that was drawn.
+bool video_math_allowed(const VideoState* s, int x, int line);
+
 // One background's line of a frame that has been drawn, for taking the frame
 // apart (`src/layers.h`): the columns `from` up to `to` of the picture, which
 // may run past its edges, on a line that may be a little above or below it,
@@ -256,7 +278,7 @@ int video_obj_size(const VideoObj* o, int sprite);
 // behind and to `front` if it goes in front, and 0 to the other.
 //
 // No window is applied. `video_bg_row_declines` is true for a layer this does
-// not read as the PPU does.
+// not read: any outside mode 1, and the fourth, which mode 1 has not got.
 bool video_bg_row_declines(const VideoState* s, int layer);
 void video_bg_row(const VideoState* s, VideoCentre* centre, int layer, int line, int from, int to,
                   uint8_t* back, uint8_t* front);

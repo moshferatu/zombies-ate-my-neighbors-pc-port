@@ -274,6 +274,12 @@ if ($Picture) {
             } else {
                 $differ = -1
             }
+            # ...and what was noted of a frame, or said of the picture, that was not.
+            if ($differ -ge 0 -and $text -match "(\d+) writes, lines or frames' tops left them not as the PPU had its own") {
+                $differ += [int]$Matches[1]
+            } else {
+                $differ = -1
+            }
             if ($text -match "Picture checksum ([0-9A-F]{16}) over (\d+) lines") { $sum = "$($Matches[1]) $($Matches[2])" }
             $sumAlone = "none"
             if ($alone -match "Picture checksum ([0-9A-F]{16}) over (\d+) lines") { $sumAlone = "$($Matches[1]) $($Matches[2])" }

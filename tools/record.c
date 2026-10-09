@@ -139,7 +139,7 @@ int main(int argc, char** argv) {
   // As the frontend sets the machine up: the widened picture and its hook,
   // which also draws the radar and the blood, and the game over's line.
   static Widescreen ws;
-  snes_setWidescreen(snes, wide_margin(wide), wide_margin(wide));
+  video_set_margins(snes->ppu, wide_margin(wide), wide_margin(wide));
   widescreen_install(snes, &ws, rom, rom_len, wide_margin(wide));
   ws.radar.steady = !radar_flash;
   maskline_fix(snes->cart);

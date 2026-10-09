@@ -320,6 +320,10 @@ struct Ppu {
   void (*wrote)(void* user, Ppu* ppu, uint8_t adr, uint8_t val);
   void (*didRead)(void* user, Ppu* ppu, uint8_t adr, uint8_t* val);
   void (*happened)(void* user, Ppu* ppu, int what);
+  // zamn: ...and `beganLine` as each line of the picture begins, before its
+  // sprites are found, whether or not anything is drawn. Not for a line
+  // `ppu_renderFrame` draws again.
+  void (*beganLine)(void* user, Ppu* ppu, int line);
   // widescreen: margins in game pixels, and what each layer does with them
   int extraLeft;
   int extraRight;
@@ -409,15 +413,14 @@ struct Ppu {
 enum { ppu_pixelOutputFormatXBGR = 0, ppu_pixelOutputFormatBGRX = 1 };
 
 // What `Ppu.happened` is told of: `ppu_reset`, `ppu_handleFrameStart`,
-// `ppu_checkOverscan`, `ppu_handleVblank`, a state loaded by
-// `ppu_handleState`, and a scroll put in by `ppu_setScroll`.
+// `ppu_checkOverscan`, `ppu_handleVblank`, and a state loaded by
+// `ppu_handleState`.
 enum {
   ppu_wasReset,
   ppu_frameStarted,
   ppu_overscanChecked,
   ppu_vblankBegan,
   ppu_stateLoaded,
-  ppu_scrollSet,
 };
 
 Ppu* ppu_init(Snes* snes);

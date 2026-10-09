@@ -30,8 +30,8 @@
 // So the drips are recoloured a sprite at a time, in the renderer.
 // `blood_frame`, from the frame hook, finds the OAM entries that are drips --
 // palette 5, and a tile that the frame cache (`W_FRAME_SLOT`) says holds one
-// of the three frames -- and marks them in `Ppu.objRemapOn`; for a marked
-// entry `Ppu.objRemap` sends pixel 9, 11 and 12 to CGRAM `$C0`, `$D0` and
+// of the three frames -- and marks them in `VideoPicture.remap_on`; for a marked
+// entry `VideoPicture.remap` sends pixel 9, 11 and 12 to CGRAM `$C0`, `$D0` and
 // `$E0` instead, and `blood_frame` puts the reds there. Those three are
 // colour 0 of sprite palettes 4, 5 and 6, which is transparent: no pixel of
 // the picture ever reads them, the game rewrites them with every palette it
@@ -126,7 +126,7 @@ static inline void blood_frame(Snes* snes, Blood* blood) {
   const VideoRegisters* reg = video_registers_of(ppu);
   if (!blood->on) return;
   if (blood->marked) {
-    memset(ppu->objRemapOn, 0, sizeof ppu->objRemapOn);
+    for (int s = 0; s < 0x80; s++) video_set_sprite_remapped(ppu, s, false);
     blood->marked = false;
   }
   int tiles[BLOOD_DRIP_FRAME_LAST - BLOOD_DRIP_FRAME_FIRST + 1];
@@ -143,18 +143,19 @@ static inline void blood_frame(Snes* snes, Blood* blood) {
     const int tile = attr & 0x1ff;
     for (int k = 0; k <= BLOOD_DRIP_FRAME_LAST - BLOOD_DRIP_FRAME_FIRST; k++)
       if (tiles[k] == tile) {
-        ppu->objRemapOn[s] = true;
+        video_set_sprite_remapped(ppu, s, true);
         blood->marked = true;
       }
   }
   if (!blood->marked) return;
   blood->frames++;
-  memset(ppu->objRemap, 0, sizeof ppu->objRemap);
+  uint8_t remap[16] = {0};
   for (int i = 0; i < BLOOD_MASK_COLOURS; i++) {
-    ppu->objRemap[blood_drip_pixels[i]] = blood_drip_cgram[i];
+    remap[blood_drip_pixels[i]] = blood_drip_cgram[i];
     reg->cgram[blood_drip_cgram[i]] =
         blood_red(reg->cgram[0x80 + 16 * BLOOD_DRIP_PALETTE + blood_drip_pixels[i]]);
   }
+  video_set_remap(ppu, remap);
 }
 
 #endif

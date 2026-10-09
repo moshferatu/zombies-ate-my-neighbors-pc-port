@@ -251,6 +251,12 @@ static void bg_runs(const VideoState* s, VideoCentre* centre, int layer, int lin
     case VIDEO_WIDE_CLIP:
       run_add(runs, 0, 256, 0);
       return;
+    case VIDEO_WIDE_CLAMP_EDGE:
+      // Each margin is the nearer edge column's pixel on this line.
+      run_add_fixed(runs, left, 0, 0, line);
+      run_add(runs, 0, 256, 0);
+      run_add_fixed(runs, 256, right, 255, line);
+      return;
     case VIDEO_WIDE_STRETCH:
       run_add(runs, s->clamp_lo, s->clamp_hi + 1, 0);
       return;
@@ -373,9 +379,13 @@ static void bg_line(const VideoState* s, VideoCentre* centre, int layer, int lin
 }
 
 bool video_bg_row_declines(const VideoState* s, int layer) {
-  if (s->mode != 1 || layer > VIDEO_BG3) return true;
-  if (s->extra_left == 0 && s->extra_right == 0) return false;
-  return wide_policy(s, layer) == VIDEO_WIDE_CLAMP_EDGE;
+  return s->mode != 1 || layer > VIDEO_BG3;
+}
+
+int video_sweep_shift(const VideoState* s, int layer, int line) {
+  if (layer < VIDEO_BG1 || layer > VIDEO_BG4 || s->wide[layer] != VIDEO_WIDE_SWEEP) return 0;
+  if (s->extra_left == 0 && s->extra_right == 0) return 0;
+  return sweep_shift(s, layer, drawn_line(line));
 }
 
 void video_bg_row(const VideoState* s, VideoCentre* centre, int layer, int line, int from, int to,
@@ -409,7 +419,7 @@ int video_obj_size(const VideoObj* o, int sprite) {
 // spends as -256 to 255: 256 and up is a sprite hanging off the left edge. A
 // picture with a right margin moves that point out to its own right edge, or
 // a sprite in the margin would be drawn 512 columns to the left of it.
-static int obj_x(const VideoState* s, int sprite) {
+int video_sprite_x(const VideoState* s, int sprite) {
   const VideoObj* o = &s->obj;
   int x = o->oam[sprite * 2] & 0xff;
   x |= ((o->high_oam[sprite >> 2] >> ((sprite & 3) * 2)) & 1) << 8;
@@ -465,7 +475,7 @@ int video_sprites(const VideoState* s, int line, uint8_t* pixel, uint8_t* priori
       const uint8_t row = (uint8_t)(line - 1 - (o->oam[n * 2] >> 8));
       const int size = video_obj_size(o, n);
       if (row >= size) continue;
-      const int x = obj_x(s, n);
+      const int x = video_sprite_x(s, n);
       const bool centred = wide && o->place[n] == VIDEO_SPRITE_CENTRED;
       for (int k = centred ? -1 : 0; k <= (centred ? 1 : 0); k++) {
         const int at = x + k * 256;
@@ -489,7 +499,7 @@ int video_sprites(const VideoState* s, int line, uint8_t* pixel, uint8_t* priori
     const int n = f->sprite;
     const uint16_t attributes = o->oam[n * 2 + 1];
     const int size = video_obj_size(o, n);
-    const int x = obj_x(s, n) + f->shift;
+    const int x = video_sprite_x(s, n) + f->shift;
     if (x <= left - size) continue;
     uint8_t row = (uint8_t)(line - 1 - (o->oam[n * 2] >> 8));
     if (attributes & 0x8000) row = (uint8_t)(size - 1 - row);
@@ -659,6 +669,19 @@ static void window_span(const VideoState* s, int left, int right, int* lo, int* 
   *hi = right < 128 ? right - s->extra_left : right + s->extra_right;
 }
 
+// Whether a column is inside a layer's window, from whether each of the two
+// windows covers it. One at least of the two is on.
+static bool window_of_two(const VideoWindow* w, bool covered_by_one, bool covered_by_two) {
+  const bool one = covered_by_one != w->one_inverted;
+  const bool two = covered_by_two != w->two_inverted;
+  if (!w->two) return one;
+  if (!w->one) return two;
+  if (w->logic == 0) return one || two;
+  if (w->logic == 1) return one && two;
+  if (w->logic == 2) return one != two;
+  return one == two;
+}
+
 // Whether each column is inside the colour window.
 static void colour_window_line(const VideoState* s, int width, uint8_t* inside) {
   const VideoWindow* w = &s->colour_window;
@@ -671,17 +694,23 @@ static void colour_window_line(const VideoState* s, int width, uint8_t* inside) 
   window_span(s, s->window2_left, s->window2_right, &lo2, &hi2);
   for (int c = 0; c < width; c++) {
     const int x = c - s->extra_left;
-    const bool one = (x >= lo1 && x <= hi1) != w->one_inverted;
-    const bool two = (x >= lo2 && x <= hi2) != w->two_inverted;
-    bool in;
-    if (!w->two) in = one;
-    else if (!w->one) in = two;
-    else if (w->logic == 0) in = one || two;
-    else if (w->logic == 1) in = one && two;
-    else if (w->logic == 2) in = one != two;
-    else in = one == two;
-    inside[c] = in;
+    inside[c] = window_of_two(w, x >= lo1 && x <= hi1, x >= lo2 && x <= hi2);
   }
+}
+
+bool video_math_allowed(const VideoState* s, int x, int line) {
+  if (s->prevent == 0) return true;
+  if (s->prevent == 3) return false;
+  const VideoWindow* w = &s->colour_window;
+  bool inside = false;
+  if (w->one || w->two) {
+    const uint8_t* edge = s->line_window[drawn_line(line)];
+    int lo1, hi1, lo2, hi2;
+    window_span(s, edge[0], edge[1], &lo1, &hi1);
+    window_span(s, edge[2], edge[3], &lo2, &hi2);
+    inside = window_of_two(w, x >= lo1 && x <= hi1, x >= lo2 && x <= hi2);
+  }
+  return s->prevent == 1 ? inside : !inside;
 }
 
 // --- A line -----------------------------------------------------------------------
@@ -712,9 +741,6 @@ const char* video_declines(const VideoState* s) {
       return "mosaic";
   }
   if (s->extra_left == 0 && s->extra_right == 0) return NULL;
-  for (int l = VIDEO_BG1; l <= VIDEO_BG3; l++)
-    if (wide_policy(s, l) == VIDEO_WIDE_CLAMP_EDGE)
-      return "a layer's edge column carried into the margins";
   const VideoWide obj = wide_policy(s, VIDEO_OBJ);
   if (obj != VIDEO_WIDE_STRETCH && obj != VIDEO_WIDE_CLIP)
     return "sprites placed other than with the world or the console";

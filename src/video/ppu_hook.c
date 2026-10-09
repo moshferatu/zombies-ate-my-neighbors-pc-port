@@ -97,6 +97,7 @@ void video_state_from_ppu(VideoState* s, const Ppu* ppu) {
   s->clamp_hi = ppu->wideClampHi;
   s->line_hscroll = ppu->lineHScroll;
   s->line_vscroll = ppu->lineVScroll;
+  s->line_window = ppu->lineWindow;
 }
 
 // Every register, as it is kept here and as the PPU keeps it.
@@ -162,38 +163,84 @@ const char* video_registers_differ(const VideoRegisters* r, const Ppu* ppu) {
   return NULL;
 }
 
-// What a line is drawn from: the registers kept here if they are, and the
-// PPU's if not, with what the frontend has said of the picture, which is in
-// the PPU either way.
+// What is noted of a frame other than its lines, as it is kept here and as
+// the PPU keeps it.
+#define NOTES(X)                                                                  \
+  X(window_raster, windowRaster)                                                  \
+  X(mid_frame_write, midFrameWrite) X(mid_frame_writes, midFrameWrites)           \
+  for (int i = 0; i < 4; i++) {                                                   \
+    X(edge_empty[i], layerEdgeEmpty[i]) X(scrolled[i], layerScrolled[i])          \
+    X(raster[i], layerRaster[i])                                                  \
+    X(last_hscroll[i], lastHScroll[i]) X(hscroll_writes[i], hScrollWrites[i])     \
+  }
+
+void video_notes_from_ppu(VideoFrame* f, const Ppu* ppu) {
+#define TAKE(here, theirs) f->here = ppu->theirs;
+  NOTES(TAKE)
+#undef TAKE
+  f->mid_frame_address = ppu->midFrameAdr;
+  f->mid_frame_line = ppu->midFrameLine;
+  memcpy(f->line_hscroll, ppu->lineHScroll, sizeof f->line_hscroll);
+  memcpy(f->line_vscroll, ppu->lineVScroll, sizeof f->line_vscroll);
+  memcpy(f->line_window, ppu->lineWindow, sizeof f->line_window);
+}
+
+const char* video_notes_differ(const VideoFrame* f, const Ppu* ppu, int line) {
+#define SAME(here, theirs) \
+  if (f->here != ppu->theirs) return #here;
+  NOTES(SAME)
+#undef SAME
+  // Which write was the first means something only once there has been one.
+  if (f->mid_frame_write && f->mid_frame_address != ppu->midFrameAdr) return "mid_frame_address";
+  if (f->mid_frame_write && f->mid_frame_line != ppu->midFrameLine) return "mid_frame_line";
+  if (line < 1 || line >= VIDEO_LINES) return NULL;
+  for (int l = 0; l < 4; l++) {
+    if (f->line_hscroll[l][line] != ppu->lineHScroll[l][line]) return "line_hscroll";
+    if (f->line_vscroll[l][line] != ppu->lineVScroll[l][line]) return "line_vscroll";
+  }
+  if (memcmp(f->line_window[line], ppu->lineWindow[line], sizeof f->line_window[line]))
+    return "line_window";
+  return NULL;
+}
+
+static void picture_from_ppu(VideoPicture* p, const Ppu* ppu) {
+  p->extra_left = ppu->extraLeft;
+  p->extra_right = ppu->extraRight;
+  memcpy(p->wide, ppu->layerWide, sizeof p->wide);
+  p->clamp_lo = ppu->wideClampLo;
+  p->clamp_hi = ppu->wideClampHi;
+  memcpy(p->place, ppu->spritePlace, sizeof p->place);
+  memcpy(p->shift, ppu->spriteShift, sizeof p->shift);
+  memcpy(p->front, ppu->objFront, sizeof p->front);
+  memcpy(p->remap_on, ppu->objRemapOn, sizeof p->remap_on);
+  memcpy(p->remap, ppu->objRemap, sizeof p->remap);
+}
+
+// ...and what of the picture the PPU was not told as it is said here.
+static const char* picture_differs(const VideoPicture* p, const Ppu* ppu) {
+  if (p->extra_left != ppu->extraLeft || p->extra_right != ppu->extraRight) return "the margins";
+  if (memcmp(p->wide, ppu->layerWide, sizeof p->wide)) return "a layer's policy";
+  if (p->clamp_lo != ppu->wideClampLo || p->clamp_hi != ppu->wideClampHi) return "the clamp";
+  if (memcmp(p->place, ppu->spritePlace, sizeof p->place)) return "a sprite's place";
+  if (memcmp(p->shift, ppu->spriteShift, sizeof p->shift)) return "a sprite's shift";
+  if (memcmp(p->front, ppu->objFront, sizeof p->front)) return "a sprite in front";
+  if (memcmp(p->remap_on, ppu->objRemapOn, sizeof p->remap_on)) return "a sprite's colours";
+  if (memcmp(p->remap, ppu->objRemap, sizeof p->remap)) return "the colours a sprite is drawn in";
+  return NULL;
+}
+
+// What a line is drawn from: the registers, the notes and the picture kept
+// here if they are, and the PPU's if not. The line's sprites are in the
+// PPU's two rows either way.
 static void state_of(const VideoHook* hook, VideoState* s, const Ppu* ppu) {
-  video_state_from_ppu(s, ppu);
-  if (hook->registers_kept) video_registers_state(&hook->registers, s);
-}
-
-// The centred layers' margins are searched for by whichever of the two draws
-// a line, and kept in the PPU, so that each finds what the other left.
-void video_centre_from_ppu(VideoCentre* c, const Ppu* ppu) {
-  memcpy(c->fill_col, ppu->centreFillCol, sizeof c->fill_col);
-  memcpy(c->fill_from, ppu->centreFillFrom, sizeof c->fill_from);
-  memcpy(c->fill_line, ppu->centreFillLine, sizeof c->fill_line);
-  memcpy(c->fill_h, ppu->centreFillH, sizeof c->fill_h);
-  memcpy(c->fill_v, ppu->centreFillV, sizeof c->fill_v);
-  memcpy(c->fill_wrap, ppu->centreFillWrap, sizeof c->fill_wrap);
-  memcpy(c->last_full, ppu->centreLastFull, sizeof c->last_full);
-  memcpy(c->last_full_h, ppu->centreLastFullH, sizeof c->last_full_h);
-  memcpy(c->last_full_v, ppu->centreLastFullV, sizeof c->last_full_v);
-}
-
-void video_centre_to_ppu(const VideoCentre* c, Ppu* ppu) {
-  memcpy(ppu->centreFillCol, c->fill_col, sizeof c->fill_col);
-  memcpy(ppu->centreFillFrom, c->fill_from, sizeof c->fill_from);
-  memcpy(ppu->centreFillLine, c->fill_line, sizeof c->fill_line);
-  memcpy(ppu->centreFillH, c->fill_h, sizeof c->fill_h);
-  memcpy(ppu->centreFillV, c->fill_v, sizeof c->fill_v);
-  memcpy(ppu->centreFillWrap, c->fill_wrap, sizeof c->fill_wrap);
-  memcpy(ppu->centreLastFull, c->last_full, sizeof c->last_full);
-  memcpy(ppu->centreLastFullH, c->last_full_h, sizeof c->last_full_h);
-  memcpy(ppu->centreLastFullV, c->last_full_v, sizeof c->last_full_v);
+  if (!hook->registers_kept) {
+    video_state_from_ppu(s, ppu);
+    return;
+  }
+  video_registers_state(&hook->registers, s);
+  video_frame_state(&hook->frame, &hook->picture, s);
+  s->obj_pixel = ppu->objPixelBuffer;
+  s->obj_priority = ppu->objPriorityBuffer;
 }
 
 // A line's place in the PPU's pixel buffer. Every column is eight bytes there:
@@ -248,12 +295,70 @@ static void note_decline(VideoHook* hook, const char* why) {
   }
 }
 
-const VideoRegisters* video_registers_of(const Ppu* ppu) {
-  return &((const VideoHook*)ppu->drawUser)->registers;
+static VideoHook* hook_of(const Ppu* ppu) { return (VideoHook*)ppu->drawUser; }
+
+const VideoRegisters* video_registers_of(const Ppu* ppu) { return &hook_of(ppu)->registers; }
+const VideoPicture* video_picture_of(const Ppu* ppu) { return &hook_of(ppu)->picture; }
+const VideoFrame* video_frame_of(const Ppu* ppu) { return &hook_of(ppu)->frame; }
+
+void video_state_of(VideoState* s, const Ppu* ppu) { state_of(hook_of(ppu), s, ppu); }
+
+// --- What the frontend says of the picture --------------------------------------
+//
+// Said here, and to the PPU: it draws the lines `src/video` is checked
+// against, and the picture's buffer is as wide as it is told.
+
+void video_set_scroll(Ppu* ppu, int layer, int h, int v) {
+  if (layer < VIDEO_BG1 || layer > VIDEO_BG4) return;
+  VideoBg* bg = &hook_of(ppu)->registers.bg[layer];
+  bg->hscroll = (uint16_t)(h & 0x3ff);
+  bg->vscroll = (uint16_t)(v & 0x3ff);
+  ppu_setScroll(ppu, layer, bg->hscroll, bg->vscroll);
 }
 
-void video_state_of(VideoState* s, const Ppu* ppu) {
-  state_of((const VideoHook*)ppu->drawUser, s, ppu);
+void video_set_margins(Ppu* ppu, int left, int right) {
+  VideoPicture* p = &hook_of(ppu)->picture;
+  p->extra_left = left < 0 ? 0 : left > VIDEO_EXTRA_MAX ? VIDEO_EXTRA_MAX : left;
+  p->extra_right = right < 0 ? 0 : right > VIDEO_EXTRA_MAX ? VIDEO_EXTRA_MAX : right;
+  ppu_setWidescreen(ppu, p->extra_left, p->extra_right);
+}
+
+void video_set_wide(Ppu* ppu, int layer, VideoWide policy) {
+  if (layer < VIDEO_BG1 || layer > VIDEO_OBJ) return;
+  hook_of(ppu)->picture.wide[layer] = (uint8_t)policy;
+  ppu_setLayerWide(ppu, layer, policy);
+}
+
+void video_set_clamp(Ppu* ppu, int lo, int hi) {
+  VideoPicture* p = &hook_of(ppu)->picture;
+  p->clamp_lo = lo;
+  p->clamp_hi = hi;
+  ppu_setWideClamp(ppu, lo, hi);
+}
+
+void video_set_sprite_place(Ppu* ppu, int sprite, VideoSpritePlace place) {
+  if (sprite < 0 || sprite >= VIDEO_SPRITES) return;
+  hook_of(ppu)->picture.place[sprite] = ppu->spritePlace[sprite] = (uint8_t)place;
+}
+
+void video_set_sprite_shift(Ppu* ppu, int sprite, int shift) {
+  if (sprite < 0 || sprite >= VIDEO_SPRITES) return;
+  hook_of(ppu)->picture.shift[sprite] = ppu->spriteShift[sprite] = (int16_t)shift;
+}
+
+void video_set_sprite_front(Ppu* ppu, int sprite, bool front) {
+  if (sprite < 0 || sprite >= VIDEO_SPRITES) return;
+  hook_of(ppu)->picture.front[sprite] = ppu->objFront[sprite] = front;
+}
+
+void video_set_sprite_remapped(Ppu* ppu, int sprite, bool remapped) {
+  if (sprite < 0 || sprite >= VIDEO_SPRITES) return;
+  hook_of(ppu)->picture.remap_on[sprite] = ppu->objRemapOn[sprite] = remapped;
+}
+
+void video_set_remap(Ppu* ppu, const uint8_t remap[16]) {
+  memcpy(hook_of(ppu)->picture.remap, remap, 16);
+  memcpy(ppu->objRemap, remap, 16);
 }
 
 static bool video_ppu_sprites(void* user, Ppu* ppu, int line) {
@@ -312,11 +417,8 @@ static bool video_ppu_line(void* user, Ppu* ppu, int line) {
     return true;
   }
   uint32_t colours[VIDEO_MAX_WIDTH];
-  VideoCentre centre;
   if (hook->renderer == VIDEO_CHECK) ppu_drawLine(ppu, line);
-  video_centre_from_ppu(&centre, ppu);
-  video_line(&hook->video, &s, &centre, line, colours);
-  video_centre_to_ppu(&centre, ppu);
+  video_line(&hook->video, &s, &hook->frame.centre, line, colours);
   hook->lines++;
   uint8_t* row = ppu_row(ppu, line);
   if (hook->renderer == VIDEO_CHECK) {
@@ -360,11 +462,38 @@ static void check_registers(VideoHook* hook, Ppu* ppu, const char* what, uint8_t
   video_registers_from_ppu(&hook->registers, ppu);
 }
 
+// ...and the same of the notes, and at a frame's top of the picture, which
+// the PPU is told as it is said. `line` is the line that began, 0 for a
+// frame's top, or -1.
+static void check_notes(VideoHook* hook, Ppu* ppu, int line) {
+  if (hook->renderer != VIDEO_CHECK) return;
+  const char* which = video_notes_differ(&hook->frame, ppu, line);
+  if (which == NULL && line == 0) which = picture_differs(&hook->picture, ppu);
+  if (which == NULL) return;
+  if (hook->notes_differing++ == 0) {
+    hook->first_note.frame = ppu->snes->frames;
+    hook->first_note.line = ppu->snes->vPos;
+    hook->first_note.which = which;
+  }
+  video_notes_from_ppu(&hook->frame, ppu);
+  picture_from_ppu(&hook->picture, ppu);
+}
+
 static void video_ppu_wrote(void* user, Ppu* ppu, uint8_t address, uint8_t value) {
   VideoHook* hook = (VideoHook*)user;
-  video_registers_write(&hook->registers, address, value, ppu->snes->vPos);
+  const Snes* snes = ppu->snes;
+  video_frame_write(&hook->frame, &hook->registers, address, value, snes->vPos,
+                    !snes->inVblank && snes->vPos > 0);
   hook->writes++;
   check_registers(hook, ppu, "write", address, value, false);
+  check_notes(hook, ppu, -1);
+}
+
+static void video_ppu_began_line(void* user, Ppu* ppu, int line) {
+  VideoHook* hook = (VideoHook*)user;
+  video_frame_line(&hook->frame, &hook->registers, line);
+  hook->noted_lines++;
+  check_notes(hook, ppu, line);
 }
 
 static void video_ppu_read(void* user, Ppu* ppu, uint8_t address, uint8_t* value) {
@@ -386,19 +515,21 @@ static void video_ppu_happened(void* user, Ppu* ppu, int what) {
   VideoRegisters* r = &hook->registers;
   const char* name = "";
   switch (what) {
-    case ppu_wasReset: video_registers_reset(r); name = "reset"; break;
-    case ppu_frameStarted: video_registers_frame_start(r); name = "frame's start"; break;
+    case ppu_wasReset:
+      video_registers_reset(r);
+      video_picture_reset(&hook->picture);
+      name = "reset";
+      break;
+    case ppu_frameStarted:
+      video_registers_frame_start(r);
+      video_frame_start(&hook->frame, r, &hook->picture);
+      check_notes(hook, ppu, 0);
+      name = "frame's start";
+      break;
     case ppu_overscanChecked: video_registers_overscan(r); name = "overscan's check"; break;
     case ppu_vblankBegan: video_registers_vblank(r); name = "picture's end"; break;
-    // A state is the PPU's, whole, and a scroll the frontend put in is the
-    // frontend's.
+    // A state is the PPU's, whole.
     case ppu_stateLoaded: video_registers_from_ppu(r, ppu); return;
-    case ppu_scrollSet:
-      for (int l = 0; l < 4; l++) {
-        r->bg[l].hscroll = ppu->bgLayer[l].hScroll;
-        r->bg[l].vscroll = ppu->bgLayer[l].vScroll;
-      }
-      return;
   }
   check_registers(hook, ppu, name, 0, 0, false);
 }
@@ -410,15 +541,20 @@ void video_hook_keep_registers(VideoHook* hook, Ppu* ppu) {
   r->oam = ppu->oam;
   r->high_oam = ppu->highOam;
   video_registers_from_ppu(r, ppu);
+  video_notes_from_ppu(&hook->frame, ppu);
+  picture_from_ppu(&hook->picture, ppu);
   hook->registers_kept = true;
   ppu->wrote = video_ppu_wrote;
   ppu->didRead = video_ppu_read;
   ppu->happened = video_ppu_happened;
+  ppu->beganLine = video_ppu_began_line;
 }
 
 void video_hook_install(VideoHook* hook, Ppu* ppu, VideoRenderer renderer, bool checksummed) {
   memset(hook, 0, sizeof *hook);
   video_init(&hook->video);
+  video_picture_init(&hook->picture);
+  video_frame_init(&hook->frame);
   hook->renderer = renderer;
   hook->checksummed = checksummed;
   hook->checksum = 14695981039346656037ull;
@@ -466,11 +602,19 @@ bool video_hook_report(const VideoHook* hook, FILE* to) {
       else
         fprintf(to, "the %s.\n", what);
     }
+    fprintf(to, "Notes: %ld lines' scrolls and windows kept here.\n", hook->noted_lines);
+    if (hook->renderer == VIDEO_CHECK)
+      fprintf(to, "  %ld writes, lines or frames' tops left them not as the PPU had its own.\n",
+              hook->notes_differing);
+    if (hook->notes_differing)
+      fprintf(to, "  The first: frame %u, line %d, `%s`.\n", hook->first_note.frame,
+              hook->first_note.line, hook->first_note.which);
   }
   if (hook->checksummed)
     fprintf(to, "  Picture checksum %016llX over %ld lines.\n",
             (unsigned long long)hook->checksum, hook->checksum_lines);
-  return hook->differing == 0 && hook->sprite_differing == 0 && hook->registers_differing == 0;
+  return hook->differing == 0 && hook->sprite_differing == 0 &&
+         hook->registers_differing == 0 && hook->notes_differing == 0;
 }
 
 bool video_renderer_named(const char* name, VideoRenderer* renderer) {
