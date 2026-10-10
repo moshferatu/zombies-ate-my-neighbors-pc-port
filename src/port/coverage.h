@@ -352,6 +352,28 @@
   X(ant_leaves,       "ant_turned",         "`$2A` positive: nobody near, and it goes quietly") \
   X(ant_killed,       "ant_turned",         "a fatal thing held, or `$2A` negative") \
   X(ant_frees_held, "ant_freed",            "it ends holding a record, which is freed too") \
+  /* The clone that only hunts -- see port/clone.h. */                          \
+  X(clone_hunted, "clone_hunter_frame", "both steps towards a player") \
+  X(clone_hunter_left, "clone_hunter_frame", "a step found no player within `$F0`: it leaves") \
+  X(clone_hunter_killed, "clone_hunter_frame", "its health below nothing") \
+  /* The purple tentacle's thread -- see port/tentacle.h. */                     \
+  X(tentacle_no_room, "tentacle_comes_in", "the level carries enough already") \
+  X(tentacle_no_ground, "tentacle_comes_in", "solid ground where it would come in") \
+  X(tentacle_past_edge, "tentacle_comes_in", "...or that is past the level's edge") \
+  X(tentacle_comes_in, "tentacle_comes_in", "room, and a record is asked for") \
+  X(tentacle_sees_someone, "tentacle_wakes", "somebody within `$60`: it will chase") \
+  X(tentacle_nobody_about, "tentacle_wakes", "nobody for a long way and no player in reach: it leaves") \
+  X(tentacle_walks, "tentacle_wakes", "walking: a step the way it faces") \
+  X(tentacle_walk_refused, "tentacle_wakes", "...refused, so it follows") \
+  X(tentacle_turns_left, "tentacle_wakes", "following: its left is clear, and it turns that way") \
+  X(tentacle_follows, "tentacle_wakes", "following: a step along what stopped it") \
+  X(tentacle_turns_right, "tentacle_wakes", "a step refused: a quarter turn to its right") \
+  X(tentacle_loses_them, "tentacle_wakes", "chasing: nobody within `$70`, and it walks") \
+  X(tentacle_chases, "tentacle_wakes", "chasing: a step towards them") \
+  X(tentacle_chases_twice, "tentacle_wakes", "...and a second, by a draw") \
+  X(tentacle_rests, "tentacle_wakes", "its fourth picture shown: twelve ticks' rest") \
+  X(tentacle_ends, "tentacle_wakes", "`$0A` set: killed, or nobody about") \
+  X(tentacle_looks_round, "tentacle_rested", "a rest's draw under 10: it looks round") \
   /* The giant ant's states -- see port/ant_states.h. */                        \
   X(ant_no_room_ground, "ant_asks_for_room", "solid ground at the top of the screen")         \
   X(ant_no_room_edge, "ant_asks_for_room", "...or that is past the level's edge")         \

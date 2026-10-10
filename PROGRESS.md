@@ -5,6 +5,89 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The purple tentacle, and the clone that only hunts (2026-10-10)
+
+The thread the 65816 still ran most was the bonus levels' purple
+tentacle. It is ported, in `port/tentacle.h`. So is the second of the
+clones' two threads, the one that only hunts.
+
+* **The tentacle** (`$82:990F`: records 0 and 51, and `password-bcdf`).
+  * *It comes in* 8 pixels off the left of the screen or the right, by a
+    draw, on the row it was spawned at. Solid ground there, or the
+    level's edge, and it does not come in.
+  * *Walking* (`$82:97E6`): a step of 2 pixels the way it faces. Refused,
+    it turns right and follows.
+  * *Following* (`$82:9814`): it keeps what stopped it on its left, and
+    turns left when that ends.
+  * *Chasing* (`$82:9845`): a step towards whoever is nearest, twice on
+    about half its frames. Each step is taken an axis at a time, so it
+    slides along a wall.
+  * It chases somebody within `$60` and stops when nobody is within
+    `$70`. With nobody within `$D0` and no player in reach it leaves.
+  * Every third frame it shows the next of four pictures. After the
+    fourth it rests twelve ticks, and about one rest in twenty-five it
+    looks round.
+  * Its end was ported already, as two of `port/begin.h`'s rows:
+    `$82:993F` pays for a killed one and `$82:9969` frees it.
+* **That it is the tentacle was looked at.** `src/widescreen.h` called it
+  that. A picture of record 0 at frame 2,600 shows a purple tentacle on
+  the player.
+* **Eight stretches, and a frame is one of them.** The thread goes to its
+  state by a computed `RTS`. There are three states and every call they
+  make has an exact price, so the port makes that jump itself: sleep to
+  sleep is one row, where the giant ant's is three and two links. A `$1A`
+  that is none of the three is turned down.
+* **Two words are read from the cartridge**: the two sides it comes in
+  at, and how far it asks for a player. Widescreen moves both.
+* **The clone that only hunts** (`$81:8F1F`, record 31). The clones have
+  a second thread. It starts and grows through the first's routines and
+  then never copies anybody: each frame it takes the chasing step twice.
+  A step that finds no player within `$F0` ends it, and so does its
+  health going below nothing.
+  * Its frame is `clone_hunter_frame`, made of the first loop's pieces.
+  * `clone_begin`, `clone_grow_first` and `clone_grow` serve both threads
+    now. They were guarded by the address they return to, and turned the
+    second thread's 12 calls down.
+* **Checked.**
+  * The corpus verifies clean: 126,330,813 calls, none diverged. The
+    tentacle's stretches were called 601 times and every one cost what
+    the ROM's did.
+  * The records the corpus does not have, each verified alone: records 0
+    and 51, 5,617 calls of the tentacle's stretches each, and record 31,
+    2,742 frames of the hunter and its start. None diverged, and every
+    one cost what the ROM's did.
+  * Lockstep: the table is byte for byte what it was. 334,319 passes, 51
+    of 54 never part, the same three.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies, and
+    none differ, at both widths.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 730 to 699 | 203,509 to 102,287 | 3,298,326 to 1,952,105 |
+  | Left standing on an instruction | 50 to 50 | 2,965 to 2,965 | 67,508 to 67,508 |
+  | A port turned the call down | 34 to 32 | 4,024 to 4,012 | 24,609 to 24,477 |
+  | A port or a link called it | 6 to 6 | 85 to 85 | 950 to 950 |
+  | All | 821 to 788 | 210,693 to 109,459 | 3,399,313 to 2,052,960 |
+
+  812 routines are registered.
+* **Not done or not known.**
+  * The hunting clone is checked only under `verify`. No movie reaches
+    record 31, so lockstep has not compared it substituted. The survey
+    ran it that way, and nothing compares there. Its being killed is
+    taken by no session.
+  * Three of the tentacle's branches are taken by no session: no room
+    for one more, solid ground where it would come in, and the level's
+    edge there. Each is as the listing reads.
+  * A row at an address that has one already is never run, and nothing
+    says so. A stretch for `$82:9969` was written before it was seen that
+    `port/begin.h` had the address. `verify` printed `not reached` for it
+    and that was all. The registry does not check for this as it loads.
+  * Overflow after `actor_nearest`, `actor_bearing` and `player_bearing`
+    is waived, as it is elsewhere.
+  * What a hit does to the giant ant, its thread's fourth copy, and how
+    the boss's thread starts and ends: as they were.
+
 ### The giant ant's states (2026-10-10)
 
 What the giant ant does when it is not chasing anyone was the ROM's

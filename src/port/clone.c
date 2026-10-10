@@ -212,6 +212,47 @@ static bool frame(Clone* c) {
   return true;
 }
 
+// One of a hunter's two steps: `$81:8E62` and the test after it. False when
+// neither player was near enough, and it leaves having stepped nowhere.
+static bool hunts(Clone* c) {
+  const uint16_t direction = towards_player(c);
+  set_field(c, CLONE_DP_DIRECTION, direction);
+  step(c, direction);
+  if (direction != 0) return true;
+  c->log->nobody = true;
+  return false;
+}
+
+bool clone_hunter_frame(Wram* w, const Rom* rom, uint16_t page,
+                        CloneHunterLog* log) {
+  CloneHunterLog scratch = {0};
+  if (!log) log = &scratch;
+  Clone c = {w, rom, page, wram_r16(w, (uint16_t)(page + CLONE_DP_RECORD)),
+             &log->step[0], {false, false, false, false}};
+  bool stays = false;
+  if ((field(&c, CLONE_DP_HEALTH) & 0x8000u) != 0) {
+    PORT_COVER(clone_hunter_killed);
+    log->killed = true;
+  } else {
+    animate(&c);
+    stays = true;
+    while (stays && log->steps < CLONE_HUNTER_STEPS) {
+      c.log = &log->step[log->steps++];
+      stays = hunts(&c);
+    }
+    if (stays) {
+      PORT_COVER(clone_hunted);
+    } else {
+      PORT_COVER(clone_hunter_left);
+    }
+  }
+  log->c = c.flags.c;
+  log->v = c.flags.v;
+  log->c_set = c.flags.c_set;
+  log->v_set = c.flags.v_set;
+  return stays;
+}
+
 bool clone_frame(Wram* w, const Rom* rom, uint16_t page, CloneLog* log) {
   CloneLog scratch = {0};
   Clone c = {w, rom, page, wram_r16(w, (uint16_t)(page + CLONE_DP_RECORD)),
@@ -262,6 +303,9 @@ static uint16_t pick_character(Wram* w, PortCpu* c, CloneBeginLog* log) {
 
 void clone_begin(Wram* w, const Rom* rom, PortCpu* c, CloneBeginLog* log) {
   const uint16_t page = c->d;
+  const uint16_t grow_return = c->pc == CLONE_HUNTER_BEGIN_PC
+                                   ? CLONE_HUNTER_GROW_RETURN
+                                   : CLONE_GROW_RETURN;
   if ((wram_r16(w, W_HUD_PANEL_ON) | wram_r16(w, W_HUD_PANEL_ON + 2)) == 0) {
     log->declined = true;
     return;
@@ -318,7 +362,7 @@ void clone_begin(Wram* w, const Rom* rom, PortCpu* c, CloneBeginLog* log) {
   // Carry is the place's, shifted up to quarter pixels.
   set_c(c, (wram_r16(w, (uint16_t)(page + BEGIN_DP_PLACE_Y)) & 0x4000u) != 0);
   // The sound is called from inside the `JSR $8CD4`.
-  push16(w, c, CLONE_GROW_RETURN);
+  push16(w, c, grow_return);
   c->a = CLONE_SFX_GROW;
   c->x = record;
   c->y = ACTOR_META_BANK;  // the last `LDY`, for the store of the bank
@@ -374,9 +418,10 @@ bool clone_grow(Wram* w, const Rom* rom, PortCpu* c) {
   wram_w16(w, (uint16_t)(page + CLONE_DP_CYCLE), 0);
   wram_w16(w, (uint16_t)(page + CLONE_DP_LEAVE), 0);
   wram_w16(w, (uint16_t)(page + 0x7e), 0);
-  pull16(w, c);  // the `RTS`
+  // The `RTS`, to whichever thread it is, and that loop's `LDA #$0001`.
+  const bool hunter = pull16(w, c) == CLONE_HUNTER_GROW_RETURN;
   c->a = CLONE_YIELD_TICKS;
   set_nz16(c, c->a);
-  c->pc = CLONE_YIELD_PC;
+  c->pc = hunter ? CLONE_HUNTER_YIELD_PC : CLONE_YIELD_PC;
   return false;
 }

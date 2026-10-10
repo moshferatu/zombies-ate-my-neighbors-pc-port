@@ -264,6 +264,8 @@ $82:F4C6  actor_f4ef_poll      # LDA $18 : BEQ $F4AF — the body waiting to be 
 $81:C440  ant_c440_collide # $81:C4A6 one stage earlier: same page, $81:8506 and $81:847E instead
 $81:C321  ant_c440_body        # installs it, then JMP $C3B5 into the body that installs $81:C4A6
 $81:D7F6  enemy_d7f6_collide   # level 17's; health $0C = 1, $5E kills outright, death is DEC $0A
+$82:990F  tentacle_thread      # the bonus levels' purple tentacle: in at a side of the screen,
+                               # walk, follow a wall, chase; `src/port/tentacle.h`
 $82:9A6D  enemy_9a6d_collide   # $81:D7F6's 64 bytes again, byte for byte; records 0 and 51
 $82:AA2E  boss_aa2e_collide    # $82:9660's shape: health $48 = 75, $4C flash, $60 immune, DEC $46 dies
 $82:F330  actor_f330_collide   # $5D/$62/$5C/$65 DEC $10 and set carry, $FF sets carry

@@ -51,6 +51,7 @@
 #include "port/ant_states.h"
 #include "port/ant_thread.h"
 #include "port/boss_thread.h"
+#include "port/tentacle.h"
 #include "port/neighbours.h"
 #include "port/objects.h"
 #include "port/player.h"
@@ -8731,6 +8732,38 @@ static void clone_add(CosimRun* own, const CosimRun* r) {
   own->dp += r->dp;
 }
 
+// `$81:8E62` as far as its jump to the step: which way the nearer player
+// is. Its own runs go to `own`, and what it called is handed back.
+static int clone_chase_cycles(const CloneLog* log, CosimRun* own,
+                              const CosimRegs* in) {
+  clone_add(own, &CLONE_RUN_BEAR);
+  return player_bearing_cycles(&log->players, in->fastrom);
+}
+
+// `$81:8DA1`, the step: each axis a ground test, and an actor test when that
+// was clear.
+static int clone_step_cycles(const CloneLog* log, CosimRun* own,
+                             const CosimRegs* in) {
+  int calls = 0;
+  for (int axis = 0; axis < 2; axis++) {
+    const CloneProbe* p = &log->probe[axis];
+    const TerrainRegs ground = {.blocked = p->ground, .probes = p->tiles};
+    clone_add(own, axis == 0 ? &CLONE_RUN_STEP_ACROSS : &CLONE_RUN_STEP_DOWN);
+    calls += terrain_enemy_cycles(&ground, in->fastrom);
+    if (p->ground) {
+      clone_add(own, &CLONE_RUN_TAKEN);
+      continue;
+    }
+    clone_add(own, &CLONE_RUN_STEP_ACTOR);
+    clone_add(own, p->someone ? &CLONE_RUN_TAKEN : &CLONE_RUN_STEP_TAKE);
+  }
+  calls += at_point_cycles(&log->at_point, in->fastrom);
+  clone_add(own, &CLONE_RUN_STEP_PLACE);
+  if (!log->mirrored) clone_add(own, &CLONE_RUN_TAKEN);
+  clone_add(own, &CLONE_RUN_STEP_FLAGS);
+  return calls;
+}
+
 static int clone_frame_cycles(const CloneLog* log, bool stays,
                               const CosimRegs* in) {
   CosimRun own = {0, 0, 0};
@@ -8756,27 +8789,9 @@ static int clone_frame_cycles(const CloneLog* log, bool stays,
     clone_add(&own, &CLONE_RUN_COPY);
   } else {
     clone_add(&own, &CLONE_RUN_CHASE_CALL);
-    clone_add(&own, &CLONE_RUN_BEAR);
-    calls += player_bearing_cycles(&log->players, in->fastrom);
+    calls += clone_chase_cycles(log, &own, in);
   }
-
-  // The step: each axis a ground test, and an actor test when that was clear.
-  for (int axis = 0; axis < 2; axis++) {
-    const CloneProbe* p = &log->probe[axis];
-    const TerrainRegs ground = {.blocked = p->ground, .probes = p->tiles};
-    clone_add(&own, axis == 0 ? &CLONE_RUN_STEP_ACROSS : &CLONE_RUN_STEP_DOWN);
-    calls += terrain_enemy_cycles(&ground, in->fastrom);
-    if (p->ground) {
-      clone_add(&own, &CLONE_RUN_TAKEN);
-      continue;
-    }
-    clone_add(&own, &CLONE_RUN_STEP_ACTOR);
-    clone_add(&own, p->someone ? &CLONE_RUN_TAKEN : &CLONE_RUN_STEP_TAKE);
-  }
-  calls += at_point_cycles(&log->at_point, in->fastrom);
-  clone_add(&own, &CLONE_RUN_STEP_PLACE);
-  if (!log->mirrored) clone_add(&own, &CLONE_RUN_TAKEN);
-  clone_add(&own, &CLONE_RUN_STEP_FLAGS);
+  calls += clone_step_cycles(log, &own, in);
 
   if (!log->copying) clone_add(&own, log->nobody ? &CLONE_RUN_TAKEN : &CLONE_RUN_BRA);
   if (stays) {
@@ -8830,6 +8845,57 @@ static void shim_clone_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t CLONE_FRAME_EXITS[] = {CLONE_YIELD_PC, CLONE_LEAVE_PC};
+
+// The one that only hunts: `$81:8F3E` to its `BRA`, in the same runs. Its
+// test is `LDA $22 : BMI` and each step's is `JSR : LDA $0E : BEQ`, which
+// cost what the other loop's test and chase do.
+static const CosimRun CLONE_RUN_HUNTER_ANIMATE = {40, 3, 0};  // $8F42 JSR $8E41
+
+static void shim_clone_hunter_frame(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  CloneHunterLog log = {0};
+  const bool stays = clone_hunter_frame(w, rom, in->d, &log);
+
+  CosimRun own = {0, 0, 0};
+  int calls = 0;
+  clone_add(&own, &CLONE_RUN_LEAVE_TEST);
+  if (log.killed) {
+    clone_add(&own, &CLONE_RUN_TAKEN);
+  } else {
+    clone_add(&own, &CLONE_RUN_HUNTER_ANIMATE);
+    clone_add(&own, &CLONE_RUN_ANIM_TEST);
+    if (log.step[0].new_picture) {
+      clone_add(&own, &CLONE_RUN_ANIM_PICTURE);
+    } else {
+      clone_add(&own, &CLONE_RUN_TAKEN);
+      clone_add(&own, &CLONE_RUN_RTS);
+    }
+    for (int i = 0; i < log.steps; i++) {
+      clone_add(&own, &CLONE_RUN_CHASE_CALL);
+      calls += clone_chase_cycles(&log.step[i], &own, in);
+      calls += clone_step_cycles(&log.step[i], &own, in);
+      if (log.step[i].nobody) clone_add(&own, &CLONE_RUN_TAKEN);
+    }
+    if (stays) {
+      clone_add(&own, &CLONE_RUN_BRA);
+      clone_add(&own, &CLONE_RUN_TICKS);
+    }
+  }
+  cosim_cost(calls + cosim_run_cycles_dp(&own, fetch_fast(in),
+                                         (in->d & 0x00ffu) != 0));
+
+  out->pc = stays ? CLONE_HUNTER_YIELD_PC : CLONE_HUNTER_LEAVE_PC;
+  out->a = CLONE_YIELD_TICKS;
+  out->regs = stays ? COSIM_REG_A : 0;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V) |
+                          (stays ? 0 : PORT_P_N | PORT_P_Z));
+}
+
+static const uint32_t CLONE_HUNTER_FRAME_EXITS[] = {CLONE_HUNTER_YIELD_PC,
+                                                    CLONE_HUNTER_LEAVE_PC};
 
 // ---------------------------------------------------------------------------
 // The slimes -- see `port/slime.h`
@@ -20272,6 +20338,152 @@ static const uint32_t ANT_MARCHING_EXITS[] = {
     ANT_LEAP_PICTURES_PC};
 
 // ---------------------------------------------------------------------------
+// The purple tentacle's thread -- see `port/tentacle.h`
+// ---------------------------------------------------------------------------
+//
+// One shim for every stretch, priced as the giant ant's states are: by the
+// straight runs of the listing it took, each from `tools/price_runs.py`, a
+// taken branch at 6 more, and the calls it made itself by their own models.
+static const CosimRun TENTACLE_RUN_COST[TENTACLE_RUN_COUNT] = {
+    [TENTACLE_RUN_96FD] = {122, 10, 2},  // LDX : LDY : JSL : BCS
+    [TENTACLE_RUN_9707] = {150, 12, 3},  // LDA : LDX : LDY : JSL : BCS
+    [TENTACLE_RUN_9713] = {40, 1, 0},  // RTS
+    [TENTACLE_RUN_9715] = {506, 47, 8},  // LDA : DEC : DEC : SEC : SBC : AND : INC : INC : STA : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDX : LDY : JSL : BCS
+    [TENTACLE_RUN_9740] = {150, 12, 3},  // LDA : LDX : LDY : JSL : BCS
+    [TENTACLE_RUN_974C] = {56, 4, 2},  // LDA : STA
+    [TENTACLE_RUN_9751] = {122, 10, 2},  // LDX : LDY : JSL : BCS
+    [TENTACLE_RUN_975B] = {150, 12, 3},  // LDA : LDX : LDY : JSL : BCS
+    [TENTACLE_RUN_9767] = {56, 4, 2},  // LDA : STA
+    [TENTACLE_RUN_976B] = {122, 10, 2},  // LDX : LDY : JSL : BCS
+    [TENTACLE_RUN_9775] = {150, 12, 3},  // LDA : LDX : LDY : JSL : BCS
+    [TENTACLE_RUN_9781] = {56, 4, 2},  // LDA : STA
+    [TENTACLE_RUN_9786] = {140, 13, 2},  // LDX : LDY : JSL : CMP : BCC
+    [TENTACLE_RUN_9793] = {30, 5, 0},  // CMP : BCC
+    [TENTACLE_RUN_9798] = {382, 31, 5},  // TXY : LDX : JSL : LDA : STA : LDA : STA : LDA : LDX : LDY : JSL : TAX : BNE
+    [TENTACLE_RUN_97B7] = {50, 2, 1},  // DEC
+    [TENTACLE_RUN_97BA] = {18, 3, 0},  // JMP
+    [TENTACLE_RUN_97BE] = {170, 18, 2},  // LDA : DEC : DEC : CLC : ADC : AND : INC : INC : STA : JMP
+    [TENTACLE_RUN_97D0] = {166, 16, 1},  // JSL : AND : ASL : ASL : INC : INC : STA : JMP
+    [TENTACLE_RUN_97E0] = {86, 6, 1},  // LDA : STA : RTS
+    [TENTACLE_RUN_97E6] = {40, 3, 0},  // JSR
+    [TENTACLE_RUN_97E9] = {300, 27, 5},  // LDA : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : JSR
+    [TENTACLE_RUN_9800] = {12, 2, 0},  // BCS
+    [TENTACLE_RUN_9802] = {152, 9, 4},  // LDA : STA : LDA : STA : RTS
+    [TENTACLE_RUN_980B] = {18, 3, 0},  // JMP
+    [TENTACLE_RUN_980E] = {86, 6, 1},  // LDA : STA : RTS
+    [TENTACLE_RUN_9814] = {40, 3, 0},  // JSR
+    [TENTACLE_RUN_9817] = {40, 3, 0},  // JSR
+    [TENTACLE_RUN_981A] = {300, 27, 5},  // LDA : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : JSR
+    [TENTACLE_RUN_9831] = {12, 2, 0},  // BCS
+    [TENTACLE_RUN_9833] = {152, 9, 4},  // LDA : STA : LDA : STA : RTS
+    [TENTACLE_RUN_983C] = {18, 3, 0},  // JMP
+    [TENTACLE_RUN_983F] = {86, 6, 1},  // LDA : STA : RTS
+    [TENTACLE_RUN_9845] = {168, 15, 3},  // LDX : LDY : JSL : STX : CMP : BCC
+    [TENTACLE_RUN_9854] = {18, 3, 0},  // JMP
+    [TENTACLE_RUN_9857] = {84, 9, 0},  // JSL : AND : BNE
+    [TENTACLE_RUN_9860] = {40, 3, 0},  // JSR
+    [TENTACLE_RUN_9863] = {422, 36, 7},  // LDX : LDY : JSL : ASL : STA : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : JSR
+    [TENTACLE_RUN_9884] = {40, 3, 0},  // JSR
+    [TENTACLE_RUN_9887] = {12, 2, 0},  // BCS
+    [TENTACLE_RUN_988D] = {916, 83, 11},  // STA : TAY : LDA : STA : STA : LDA : STA : LDA : STA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : STA : LDA : STA : LDA : STA : STZ : STZ : STZ : STZ : STZ : LDA : LDY
+    [TENTACLE_RUN_98E4] = {52, 2, 0},  // CLC : RTS
+    [TENTACLE_RUN_98E6] = {300, 28, 2},  // JSL : AND : TAX : LDA : CLC : ADC : STA : TAX : LDY : JSL : BCS
+    [TENTACLE_RUN_9900] = {122, 10, 2},  // LDX : LDY : JSL : BCS
+    [TENTACLE_RUN_9913] = {12, 2, 0},  // BCS
+    [TENTACLE_RUN_9915] = {40, 3, 0},  // JSR
+    [TENTACLE_RUN_9918] = {12, 2, 0},  // BCS
+    [TENTACLE_RUN_991A] = {138, 13, 0},  // CLC : LDA : ADC : STA : JSR
+    [TENTACLE_RUN_9927] = {46, 5, 1},  // STZ : LDA
+    [TENTACLE_RUN_9930] = {142, 8, 1},  // PEA : LDA : DEC : PHA : RTS
+    [TENTACLE_RUN_9938] = {40, 3, 0},  // JSR
+    [TENTACLE_RUN_993B] = {40, 4, 1},  // LDA : BEQ
+    [TENTACLE_RUN_994A] = {218, 20, 1},  // INC : LDY : LDA : STA : LDA : STA : LDA
+    [TENTACLE_RUN_9962] = {18, 3, 0},  // LDA
+    [TENTACLE_RUN_9994] = {62, 4, 1},  // DEC : BPL
+    [TENTACLE_RUN_9998] = {312, 30, 4},  // LDA : STA : LDA : ASL : ORA : ASL : TAY : LDX : LDA : STA : LDA : CPY : BCS
+    [TENTACLE_RUN_99B4] = {30, 5, 0},  // AND : BRA
+    [TENTACLE_RUN_99B9] = {18, 3, 0},  // ORA
+    [TENTACLE_RUN_99BC] = {166, 15, 3},  // STA : LDA : INC : AND : STA : LDA : BEQ
+    [TENTACLE_RUN_99CB] = {204, 13, 3},  // LDY : LDA : STA : LDA : STA : RTS
+    [TENTACLE_RUN_99D8] = {18, 3, 0},  // LDA
+    [TENTACLE_RUN_99DF] = {112, 11, 1},  // STZ : JSL : CMP : BCS
+    [TENTACLE_RUN_99EA] = {18, 3, 0},  // LDA
+    [TENTACLE_RUN_99F1] = {12, 2, 0},  // BRA
+};
+
+// Its tables are read through the bank, and so is its record.
+static bool accepts_tentacle(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->d >= 0x0100 && in->db == TENTACLE_BANK;
+}
+
+// The record it was given is in A.
+static bool accepts_tentacle_set_up(const Wram* w, const CosimRegs* in) {
+  return accepts_tentacle(w, in) && in->a < 0x1f00;
+}
+
+static bool accepts_tentacle_record(const Wram* w, const CosimRegs* in) {
+  return accepts_tentacle(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + TENTACLE_DP_RECORD)) < 0x1f00;
+}
+
+// It goes to its state by a computed `RTS`, and the port knows three.
+static bool accepts_tentacle_wakes(const Wram* w, const CosimRegs* in) {
+  return accepts_tentacle_record(w, in) &&
+         tentacle_state_known(
+             wram_r16(w, (uint16_t)(in->d + TENTACLE_DP_STATE)));
+}
+
+static void shim_tentacle(Wram* w, const Rom* rom, const CosimRegs* in,
+                          CosimRegs* out) {
+  PortCpu c;
+  TentacleWork k = {0};
+  cpu_from(in, &c);
+  tentacle_run(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (!k.v_known) {
+    out->flags &= ~COSIM_FLAG_V;
+    out->p_keep = PORT_P_V;
+  }
+
+  const bool fast = fetch_fast(in);
+  CosimRun run = {0, 0, 0};
+  for (int i = 0; i < TENTACLE_RUN_COUNT; i++)
+    run_add(&run, &TENTACLE_RUN_COST[i], k.runs[i]);
+  run_add(&run, &RUN_TAKEN, k.taken);
+  int cycles = cosim_run_cycles_dp(&run, fast, (in->d & 0x00ffu) != 0);
+  for (int blocked = 0; blocked < 2; blocked++) {
+    for (int probes = 0; probes <= TERRAIN_PROBE_COUNT; probes++) {
+      const TerrainRegs ground = {.blocked = blocked != 0, .probes = probes};
+      cycles += k.grounds[blocked][probes] * terrain_enemy_cycles(&ground, fast);
+    }
+  }
+  for (int i = 0; i < k.at_point_count; i++)
+    cycles += at_point_cycles(&k.at_points[i], fast);
+  if (k.asked_room)
+    cycles += terrain_blocked_cycles(k.room.probes, k.room.blocked, fast);
+  if (k.asked_edge) cycles += bounds_cycles(k.edge, fast);
+  if (k.drew) cycles += rng_cycles(k.draw_twice, fast);
+  if (k.sought) cycles += nearest_cycles(&k.nearest, fast);
+  if (k.asked_players)
+    cycles += actor_snap_cycles(&k.snap, fast) +
+              player_bearing_cycles(&k.players, fast);
+  for (int i = 0; i < k.bearing_count; i++)
+    cycles += actor_bearing_cycles(&k.bearings[i], fast);
+  cosim_cost(cycles);
+}
+
+static const uint32_t TENTACLE_COMES_IN_EXITS[] = {TENTACLE_GONE_PC,
+                                                   TENTACLE_RECORD_PC};
+static const uint32_t TENTACLE_SET_UP_EXITS[] = {TENTACLE_HANDLER_PC};
+static const uint32_t TENTACLE_SETTLES_EXITS[] = {TENTACLE_SLEEP_PC};
+// A frame ends asleep, at rest, or where its end begins.
+static const uint32_t TENTACLE_FRAME_EXITS[] = {
+    TENTACLE_SLEEP_PC, TENTACLE_REST_PC, TENTACLE_DIES_PC, TENTACLE_LOOK_PC};
+static const uint32_t TENTACLE_SCORED_EXITS[] = {TENTACLE_CRY_PC};
+static const uint32_t TENTACLE_CRIED_EXITS[] = {TENTACLE_DEATH_PC};
+
+// ---------------------------------------------------------------------------
 // The big figure's thread on level 25 -- see `port/boss_thread.h`
 // ---------------------------------------------------------------------------
 //
@@ -21043,6 +21255,12 @@ static void shim_clone_begin(Wram* w, const Rom* rom, const CosimRegs* in,
                                          (in->d & 0xffu) != 0));
 }
 
+// Growing is a call deep, and comes back to one of the two threads.
+static bool clone_grows_for(uint16_t return_to) {
+  return return_to == CLONE_GROW_RETURN ||
+         return_to == CLONE_HUNTER_GROW_RETURN;
+}
+
 // The pictures are in the cartridge, and the sleep is a call deep.
 static bool clone_grow_ok(const Wram* w, const CosimRegs* in) {
   if (!body_ok(in) || in->d < 0x0100 || in->db != CLONE_BANK ||
@@ -21053,7 +21271,7 @@ static bool clone_grow_ok(const Wram* w, const CosimRegs* in) {
          wram_r16(w, (uint16_t)(in->d + CLONE_DP_GROWING)) >= 0x8000u &&
          wram_r16(w, (uint16_t)(in->d + CLONE_DP_GROWING)) < 0xff00u &&
          (at & 1) == 0 && at < CLONE_GROW_PICTURES * 2 &&
-         wram_r16(w, (uint16_t)(in->s + 1)) == CLONE_GROW_RETURN;
+         clone_grows_for(wram_r16(w, (uint16_t)(in->s + 1)));
 }
 
 static bool clone_first_ok(const Wram* w, const CosimRegs* in) {
@@ -21061,7 +21279,7 @@ static bool clone_first_ok(const Wram* w, const CosimRegs* in) {
          wram_r16(w, (uint16_t)(in->d + CLONE_DP_RECORD)) < 0x1f00 &&
          wram_r16(w, (uint16_t)(in->d + CLONE_DP_GROWING)) >= 0x8000u &&
          wram_r16(w, (uint16_t)(in->d + CLONE_DP_GROWING)) < 0xff00u &&
-         wram_r16(w, (uint16_t)(in->s + 1)) == CLONE_GROW_RETURN;
+         clone_grows_for(wram_r16(w, (uint16_t)(in->s + 1)));
 }
 
 static void shim_clone_grow(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -21098,7 +21316,8 @@ static void shim_clone_grow_first(Wram* w, const Rom* rom,
 static const uint32_t CLONE_BEGIN_EXITS[] = {CLONE_BEGIN_SOUND_PC};
 static const uint32_t CLONE_FIRST_EXITS[] = {CLONE_GROW_YIELD_PC};
 static const uint32_t CLONE_GROW_EXITS[] = {CLONE_GROW_YIELD_PC,
-                                            CLONE_YIELD_PC};
+                                            CLONE_YIELD_PC,
+                                            CLONE_HUNTER_YIELD_PC};
 
 // The spawn list's start. See `port/spawnlist.h`.
 static const CosimRun SB_RUN_HEAD = {36, 6, 0};    // $80EC-$80F1
@@ -25617,6 +25836,29 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 5000,
         .stack_bytes = 16,
     },
+    // The loop of the one that only hunts, and its start.
+    {
+        .name = "clone_hunter_frame",
+        .symbol = "$81:8F3E",
+        .entry = CLONE_HUNTER_FRAME_PC,
+        .run = shim_clone_hunter_frame,
+        .accepts = clone_frame_ok,
+        COSIM_EXITS(CLONE_HUNTER_FRAME_EXITS),
+        .uncalled = true,
+        .cycles = 8000,
+        .stack_bytes = 16,
+    },
+    {
+        .name = "clone_hunter_begin",
+        .symbol = "$81:8F1F",
+        .entry = CLONE_HUNTER_BEGIN_PC,
+        .run = shim_clone_begin,
+        .supported = guard_clone_begin,
+        COSIM_EXITS(CLONE_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 3000,
+        .stack_bytes = 16,
+    },
     // ...and their start: to the first picture's sleep, and from each of
     // those sleeps to the next or to the loop's first.
     {
@@ -27770,6 +28012,38 @@ static const CosimRoutine ROUTINES[] = {
     },
     ANT_STATE_LINKS(X)
 #undef X
+    // The purple tentacle's thread. See `port/tentacle.h`.
+#define TENTACLE_ROW(name_, sym, pc, exits_, guard, mean)                    \
+    {                                                                        \
+        .name = "tentacle_" #name_,                                          \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_tentacle,                                                \
+        .accepts = guard,                                                    \
+        COSIM_EXITS(exits_),                                                 \
+        .uncalled = true,                                                    \
+        .cycles = mean,                                                      \
+        /* The deepest is two `JSR`s to a `JSL actor_at_point`, under the */ \
+        /* state's own return. */                                            \
+        .stack_bytes = 24,                                                   \
+    },
+    TENTACLE_ROW(comes_in, "$82:9913", TENTACLE_COMES_IN_PC,
+                 TENTACLE_COMES_IN_EXITS, accepts_tentacle, 1500)
+    TENTACLE_ROW(set_up, "$82:988D", TENTACLE_SET_UP_PC, TENTACLE_SET_UP_EXITS,
+                 accepts_tentacle_set_up, 900)
+    TENTACLE_ROW(settles, "$82:98E4", TENTACLE_SETTLES_PC,
+                 TENTACLE_SETTLES_EXITS, accepts_tentacle_record, 600)
+    TENTACLE_ROW(wakes, "$82:9930", TENTACLE_WAKES_PC, TENTACLE_FRAME_EXITS,
+                 accepts_tentacle_wakes, 3000)
+    TENTACLE_ROW(scored, "$82:994A", TENTACLE_SCORED_PC, TENTACLE_SCORED_EXITS,
+                 accepts_tentacle_record, 250)
+    TENTACLE_ROW(cried, "$82:9962", TENTACLE_CRIED_PC, TENTACLE_CRIED_EXITS,
+                 accepts_tentacle, 20)
+    TENTACLE_ROW(rested, "$82:99DF", TENTACLE_RESTED_PC, TENTACLE_FRAME_EXITS,
+                 accepts_tentacle_record, 600)
+    TENTACLE_ROW(looked, "$82:99F1", TENTACLE_LOOKED_PC, TENTACLE_FRAME_EXITS,
+                 accepts_tentacle_record, 400)
+#undef TENTACLE_ROW
     // The big figure's thread on level 25. See `port/boss_thread.h`.
 #define BOSS_ROW(name_, sym, pc, exits_, jumped_to)                          \
     {                                                                        \

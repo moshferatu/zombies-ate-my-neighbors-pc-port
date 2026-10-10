@@ -241,6 +241,11 @@ no longer turns a leap down. So is the job that shakes the screen under
 the boss. The places are 821 and the core executes 3,399,313
 instructions over the survey.
 
+**The tentacle and the hunting clone, the same day.** The bonus levels'
+purple tentacle was what the core ran most, and is ported with the second
+of the clones' two threads. The places are 788 and the core executes
+2,052,960 instructions over the survey.
+
 What is left of this step: registers of the driver's own in place of the
 core's, the clock, and a stop that names the address in place of the
 core.

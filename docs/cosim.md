@@ -18761,3 +18761,60 @@ named the cycle.
 Over the same 110 sessions the core executes 3,399,313 instructions
 where it executed 4,091,951, and takes over 210,693 times where it
 did 264,938, at 821 places where there were 852.
+
+## The purple tentacle, and the clone that only hunts (2026-10-10)
+
+### A computed jump inside the stretch
+
+The giant ant's thread reaches its state by `PEA : LDA $12 : DEC : PHA :
+RTS`, and the port stops on that `RTS`. The harness makes it, and the
+state is the next row. A frame is three rows and two links.
+
+The tentacle's thread has the same five instructions at `$82:9930`. Its
+states are three, each sets `$1A` to another of the three, and every call
+they make is priced to the cycle. So the port makes the jump: it pushes
+what the ROM pushes, pulls it, and calls the state as C. A frame is one
+row, from the sleep's return to the next `JSL thread_yield`.
+
+    $82:9930  wakes    the state, the picture, the test for its end
+    $82:99DF  rested   after the twelve ticks it rests every fourth picture
+    $82:99F1  looked   after the pictures of looking round
+
+The guard is what makes it safe: a `$1A` that is not one of the three
+states is the ROM's.
+
+### A row where there was one already
+
+The first try had nine stretches. The ninth was the thread's end at
+`$82:9969`, and the frame ran on through `$82:993F`, the award. Both
+addresses had rows already, among `port/begin.h`'s ends and kills.
+
+Nothing failed. A frame that ran through `$82:993F` verified, because a
+call that begins inside another's window is checked inside it. The row at
+`$82:9969` did nothing: the registry is searched in order and the earlier
+row is the one found. `verify` printed `not reached` for the new one, on
+a session where the tentacle left 14 times.
+
+So the frame stops at `$82:993F` now, and the two old rows end the
+thread. The check for a new row is its own line in the report: `not
+reached` on a session that must reach it means something else has the
+address.
+
+### Two threads through one routine
+
+The clones' start pushes the address its growing returns to, and
+`clone_grow` was guarded by that word on the stack: `$8EA0`. The second
+thread calls the same routines from `$81:8F34` and returns to `$8F36`.
+So its start had no row and its growing was turned down, 12 times on
+record 31.
+
+The routines are the same bytes for both. What differs is where the
+last `RTS` goes, and the port reads that off the stack as the ROM does:
+the start pushes by which entry it is, and the growing's end pulls the
+word and goes to that thread's sleep.
+
+### After
+
+Over the same 110 sessions the core executes 2,052,960 instructions
+where it executed 3,399,313, and takes over 109,459 times where it
+did 210,693, at 788 places where there were 821.

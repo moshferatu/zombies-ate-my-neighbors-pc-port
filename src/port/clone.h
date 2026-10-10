@@ -24,6 +24,18 @@
 //
 // What is not here is its ending.
 //
+// **There is a second thread, `$81:8F1F`, and it only hunts.** It starts and
+// grows as the first does, through the same routines, and then its loop is
+// its own:
+//
+//   $81:8F3E  hunter  animate, and come for the nearer player twice
+//
+// It never copies anybody. Each frame it takes the chasing step, and takes
+// it again, so it covers a pixel and a half. Either step finding no player
+// within `$F0` ends it. So does its health going below nothing: this loop
+// reads `$22`, which its handler counts down, where the first reads `$2E`.
+// Record 31 places them.
+//
 // ## What a clone does
 //
 // **It has two modes, and swaps between them.** In one it copies the player:
@@ -97,6 +109,13 @@
 #define CLONE_LEAVE_PC 0x818ed5u
 #define CLONE_YIELD_TICKS 1
 
+// The same places in the thread that only hunts.
+#define CLONE_HUNTER_BEGIN_PC 0x818f1fu
+#define CLONE_HUNTER_GROW_RETURN 0x8f36u
+#define CLONE_HUNTER_FRAME_PC 0x818f3eu
+#define CLONE_HUNTER_YIELD_PC 0x818f3au
+#define CLONE_HUNTER_LEAVE_PC 0x818f55u
+
 // Fields on the clone's page.
 #define CLONE_DP_RECORD 0x08
 #define CLONE_DP_PICTURE_TIMER 0x0a  // frames until the next picture
@@ -116,6 +135,7 @@
 #define CLONE_DP_PICTURES 0x2a       // the player's pictures it draws from
 #define CLONE_DP_PLAYER 0x2c         // which player it copies, 0 or 2
 #define CLONE_DP_LEAVE 0x2e          // nonzero ends the thread
+#define CLONE_DP_HEALTH 0x22         // negative ends the one that only hunts
 
 // For the harness, and only for it: what happened, which with the path is
 // what it takes to price the ROM's instructions around the calls.
@@ -144,6 +164,22 @@ typedef struct {
 // leaving. `log` may be NULL.
 bool clone_frame(Wram* w, const Rom* rom, uint16_t page, CloneLog* log);
 
+// The same for one that only hunts: its two steps, each as a chasing frame
+// of the other kind logs its one.
+#define CLONE_HUNTER_STEPS 2
+typedef struct {
+  bool killed;  // its health was below nothing, so nothing else ran
+  int steps;    // how many it took: the last found nobody, if it left
+  CloneLog step[CLONE_HUNTER_STEPS];  // `new_picture` is the first's
+  bool c, v;
+  bool c_set, v_set;
+} CloneHunterLog;
+
+// One frame, for the hunting clone whose page is `page`. False when it is
+// leaving. `log` may be NULL.
+bool clone_hunter_frame(Wram* w, const Rom* rom, uint16_t page,
+                        CloneHunterLog* log);
+
 // Which character each player plays, a word a player: 0 or 2. Named for
 // what the clone does with it, which is pick between the two picture tables.
 #define W_PLAYER_CHARACTER 0x1e84u
@@ -159,15 +195,17 @@ typedef struct {
   uint16_t record;
 } CloneBeginLog;
 
-// The thread's start, as far as its sound. It ends at
-// `CLONE_BEGIN_SOUND_PC`, a call deep. Asked of a copy first: `declined`.
+// The thread's start, as far as its sound, for either thread: `c->pc` says
+// which. It ends at `CLONE_BEGIN_SOUND_PC`, a call deep. Asked of a copy
+// first: `declined`.
 void clone_begin(Wram* w, const Rom* rom, PortCpu* c, CloneBeginLog* log);
 // From where the sound comes back to the first picture's sleep, at
 // `CLONE_GROW_YIELD_PC`.
 void clone_grow_first(Wram* w, const Rom* rom, PortCpu* c);
 
 // From where one of those sleeps comes back. True: the next picture, and
-// the same sleep again. False: grown, and it ends at `CLONE_YIELD_PC`.
+// the same sleep again. False: grown, and it ends at its loop's own sleep,
+// `CLONE_YIELD_PC` or `CLONE_HUNTER_YIELD_PC`.
 bool clone_grow(Wram* w, const Rom* rom, PortCpu* c);
 
 #endif
