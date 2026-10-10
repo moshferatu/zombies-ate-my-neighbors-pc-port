@@ -5,6 +5,72 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The loops the game waits in (2026-10-09)
+
+The 65816 executed 400.6 million instructions over the survey, and nearly
+all of them were the game going round a loop until the vblank had done
+something. Those loops are ported now, and it executes 7.5 million.
+
+* **Twelve loops, one port** (`hold_turn` in `port/hold.h`). Each reads a
+  word, tests it and branches back: until VRAM is cleared, an upload has
+  gone, the queue is flushed, the level's card has been up 120 frames, a
+  fade has finished, or Start has been let go. They are rows of one table.
+* **A turn is a call.** The port is one time round the loop. It leaves at
+  the instruction after the branch when the wait is over, and at the loop's
+  first instruction when it is not, which is its own entry again. Nothing
+  in the harness had to learn what a wait is.
+* **A turn is priced an instruction at a time**, as the sound uploads are,
+  so the NMI is taken after the instruction the ROM takes it after. That
+  decides which turn reads what the NMI left.
+* **Two things the harness now does at the edges of such a budget**
+  (`cosim.c`):
+  * It opens with no interrupt latched. One that fell due since the last
+    poll is seen by the first instruction's own poll, and taken after it.
+    Before, it was taken at the entry.
+  * When the last instruction's poll saw one, it is taken before the
+    instruction the port leaves by. That instruction is made when the
+    `RTI` comes back to it (`leave`). Before, it was made first.
+* **A turn's cycles count as waiting** whoever spends them, so the share
+  of the game's work that is native is not flattered by them.
+* **A port that writes nothing is asked first** under `verify`
+  (`CosimRoutine::writes_nothing`). Checked the usual way, 91 million turns
+  each had all of WRAM copied twice and compared once, and the corpus took
+  27 minutes where it had taken 10. Asked at the entry, on the memory the
+  ROM is about to read, a turn costs no copy, and the corpus takes 10
+  again. The exit, every register and the cost are still compared.
+* **Checked.**
+  * The corpus verifies clean: 126,005,398 calls, none diverged. All twelve
+    loops are reached, and all 91.4 million turns cost what the ROM's did,
+    to the cycle.
+  * Lockstep: every row of the table is what it was, to the cycle. 334,319
+    passes, 51 of 54 never part, the same three.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies, and
+    none differ, with widescreen off and at 16:9.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 878 to 882 | 637,037 to 636,918 | 400,470,343 to 7,390,046 |
+  | Left standing on an instruction | 45 to 50 | 2,497 to 2,965 | 61,937 to 67,511 |
+  | A port turned the call down | 34 | 4,024 | 24,609 |
+  | All | 963 to 973 | 643,752 to 644,107 | 400,565,723 to 7,491,006 |
+
+  The ten new places are where a wait ends: the instruction after its
+  branch is seldom one the harness makes. 621 routines are registered.
+* **A correction.** The last entry said two of the seven places wait for
+  the sound chip. They do not. A takeover is named for the port that
+  handed over, and two were after `apu_send`. What ran from there was the
+  card's 120 frames at `$82:AC65`, and the pause. No wait on the sound
+  chip is left to the core: `apu_send` and the uploads make theirs.
+* **Not done or not known.**
+  * Nothing checks that the ROM's turn wrote nothing. It is two to four
+    instructions, none of them a store.
+  * What stands round the waits is still the ROM's: the pause's volume and
+    brightness, and the queueing before each.
+  * The two changes at a budget's edges also apply to the uploads and the
+    NMI's ports. No lockstep figure moved, so no movie shows them doing
+    anything there, right or wrong.
+
 ### Ports that end on a call, and what a killed thing does first (2026-10-09)
 
 The first work down the takeover list: the places a port stopped a few

@@ -18422,3 +18422,114 @@ routine each follows and from how long it runs.
 
 By instructions, then, nearly all of what the core does is waiting. By
 places it is the reverse: these are 7 of 963.
+
+## The loops the game waits in (2026-10-09)
+
+### What the seven places were
+
+The table above names each place by where the core took over, and I said
+five wait on the NMI and two on the sound chip. The second half was wrong.
+A place is where a port handed the program counter back, and what the core
+ran from there goes on until the next port's entry. Summed by instruction
+over the same profiles, the loops are these:
+
+| Where | The loop | Instructions |
+|---|---|---|
+| `$80:9FAA` | `BIT $00C8 : BPL` | 195,222,971 |
+| `$82:AC92` | `LDA $0016 : CMP #$0078 : BCC` | 70,792,026 |
+| `$82:AC65` | the same | 34,187,481 |
+| `$80:924C` | `LDA $136C : AND #$0080 : BEQ` | 25,298,790 |
+| `$80:9F5C` | `LDA $C6 : BNE` | 24,520,750 |
+| `$80:923A` | `LDA $136C : CMP #$000F : BNE` | 23,169,366 |
+| `$80:89C8` to `$80:89E7` | `LDA $006E : ORA $0070 : BIT #$1000` and a branch, three times | 17,896,250 |
+| `$80:9B94` | as `$80:924C` | 1,226,121 |
+| `$80:933A` | as `$80:924C` | 458,706 |
+| `$80:A545` | `LDA $00CE : BNE` | 301,534 |
+
+That is 393.1 million of the 400.6 million. The two places after `apu_send`
+were the card's hold at `$82:AC65` and the pause. Neither waits on the
+sound chip.
+
+### One turn is one call
+
+`hold_turn` in `port/hold.h` is one time round a loop. The registry has
+each loop's first instruction as an entry with two exits: the instruction
+after the branch, and the entry itself.
+
+That second exit is all the harness needs. Under `run` the port says the
+wait is not over, the budget of one turn is spent, and the program counter
+is stood on the entry, where the port is asked again. Under `verify` the
+ROM's branch back to the entry ends one call and begins the next.
+
+The alternative was to teach the burn a wait on WRAM, beside the waits on
+a register it has (`HW_WAIT8`). Those read the bus on the ROM's cycle and
+go round inside one budget. A word of WRAM does not need the bus read
+timed: only an interrupt changes it, and an interrupt is taken between
+instructions. So a turn has only to end where the ROM's does.
+
+### Where the NMI lands
+
+The NMI is what ends most of these waits, and it lands inside the loop.
+Which instruction it is taken after decides the rest:
+
+* after the load, and that turn has read the old word. The branch goes
+  back and the next turn reads the new one.
+* after the branch, and the next turn's load reads the new word.
+
+So a turn is priced an instruction at a time (`CosimInsn`), and the burn
+polls where the core polls: before each instruction's last cycle. Two
+cases at the edges of a budget were not right for that, and are now:
+
+* **The first instruction.** A burn began by asking whether an interrupt
+  was due, and took it at the entry. But the entry is reached with nothing
+  latched, or the harness would not be there. One that has fallen due since
+  the last poll is seen by the first instruction's poll and taken after it.
+  A burn that opens on an instruction now starts as polled, and clear.
+* **The last instruction.** A budget that ended on an instruction whose
+  poll saw an interrupt went on to `leave`, which made the next instruction
+  and took the interrupt after that. Now `burn_spend` latches it, and
+  `leave` stands the instruction it would have made (`CosimPriv::stood`).
+  The interrupt is taken, and when its `RTI` is back on that instruction
+  with that stack pointer, `leave` makes it. Where the exit is an entry,
+  as a turn's is, nothing stands: the port is asked after the `RTI`, and
+  reads what the handler left.
+
+Both apply to every budget stepped this way, the uploads' and the NMI's
+too. The lockstep table did not move by a cycle in any row, with the loops
+ported or left to the ROM.
+
+### Checking a turn
+
+`verify` treats a turn as any other stretch with exits. Two flags make it
+work:
+
+* `through_interrupts`. An interrupt that lands in a turn is set aside:
+  its cycles come off the clock and what it wrote is not the turn's. The
+  ROM's read came before it, so the port, run over the memory at the
+  entry, agrees.
+* `hw`. The cost is held to the CPU's own clock exactly. All 91,400,972
+  turns over the corpus cost what the model says.
+
+And one is new, `writes_nothing`. `verify` copies WRAM at a call's entry,
+copies it again for the port to run over, and compares all of it at the
+end. For 91 million turns that was most of the corpus's time: 27 minutes
+against 10. A turn writes nothing and its port takes a `const Wram*`. So
+it is asked at the entry, on the console's own memory, and what it said
+is kept in the call (`CosimCall::told`) until the ROM reaches an exit.
+The exit, the registers and the cost are compared. No memory is.
+
+What that gives up: nothing shows the ROM's turn wrote nothing. It is two
+to four instructions, a load, a test and a branch.
+
+### What a wait's time is
+
+`waits.h` exists so that time spent going round is not counted as work.
+That is as true of a port's turn as of the ROM's. `burn_spend` puts a
+budget whose entry is a wait site in `cycles_wait`, and `cosim_step` counts
+a wait site there only when the core ran it, so neither counts twice.
+
+### After
+
+Over the same 110 sessions the core executes 7,491,006 instructions where
+it executed 400,565,723. The places it takes over are 973, ten more: the
+instruction after each wait's branch is the ROM's still.

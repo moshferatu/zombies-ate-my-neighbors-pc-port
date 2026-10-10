@@ -5,9 +5,13 @@
 // that flatters nobody. A 65816 going round `BIT $00C8 : BPL` a hundred
 // thousand times is a CPU with nothing to do until the next VBlank. Left in the
 // denominator it makes the port's share look smaller than it is; left in a
-// ranking of what to port next it puts a two-instruction loop at the top, where
-// porting it would achieve exactly nothing — the C would have to spin on the
-// same flag.
+// ranking of what to port next it puts a two-instruction loop at the top.
+//
+// The ones that wait on a word of WRAM are ported all the same, a turn at a
+// time (`port/hold.h`), because a game with no CPU has to wait there too.
+// That changes who goes round and not what going round is: a turn's cycles
+// are counted as waiting whether the core spends them or a port's budget
+// does (`burn_spend` in `cosim.c`).
 //
 // Each site was found by reading the disassembly of a routine that a ranking had
 // put near the top, and each is checked against a profile rather than assumed:
@@ -53,12 +57,19 @@ static const CosimWaitSite cosim_wait_sites[] = {
     // and `$80:9C72` queues `$80:9C7D` to `DEC` it back past zero. So this is a
     // fade counted on the vblank side with the CPU held against it, and porting
     // either loop would replace a spin with a spin.
+    // The pause, `$80:89B0`, once Start is held: three loops on the two pads'
+    // words, which the NMI fills in. 17,896,675 instructions on the one
+    // session of 110 that pauses.
+    {0x8089C8, 11, "BIT #$1000 : BNE  -- the pause, until Start is let go"},
+    {0x8089D3, 11, "BIT #$1000 : BEQ  -- ...until it is pressed again"},
+    {0x8089DE, 11, "BIT #$1000 : BNE  -- ...and until it is let go again"},
     {0x80923A, 8, "CMP #$000F : BNE  -- a screen fading in, counted by a VBL job"},
     {0x80924C, 8, "AND #$0080 : BEQ  -- ...and the same screen fading back out"},
     // `$80:9AB0` does the same after `JSR $9C72`, between two levels: 613,311
     // instructions over six calls on the twelve profiled movies, all but 78 a
     // call of them this loop.
     {0x809B94, 8, "AND #$0080 : BEQ  -- ...and a level fading out the same way"},
+    {0x80933A, 8, "AND #$0080 : BEQ  -- ...and the screen before the title"},
     // The same story one row down. `$80:9F29` queues the vblank job `$80:9ED0`
     // to push a tilemap into VRAM and then holds here until `$C6`, the job's
     // remaining byte count, reaches zero: 2,149,252 of its 2,149,592

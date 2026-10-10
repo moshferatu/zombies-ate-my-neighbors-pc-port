@@ -60,6 +60,10 @@ typedef struct {
   uint8_t level;
   uint8_t* waive;
   bool waived;
+  // What the port said at the entry and what it priced the call at, for a
+  // routine asked first. See `CosimRoutine::writes_nothing`.
+  CosimRegs told;
+  int told_cost;
 } CosimCall;
 
 #define COSIM_MAX_DEPTH 8
@@ -337,6 +341,13 @@ struct CosimPriv {
   bool core_held;
   uint32_t core_held_pc;
   uint16_t core_held_sp;
+  // A port stood the CPU on the instruction it leaves by with an interrupt
+  // latched, which is taken first. The instruction is made when the `RTI`
+  // is back on it. See `leave`.
+  bool stood;
+  uint32_t stood_pc;
+  uint16_t stood_sp;
+  const CosimRoutine* stood_by;
 };
 
 // ---------------------------------------------------------------------------
@@ -734,10 +745,12 @@ static void compare(CosimStat* s, const CosimCall* call, const Wram* ours,
 
 // ...and for a routine that leaves by a jump, every register there is: where
 // it went, the stack it left on, the page and bank, and the status byte whole.
+// `ours` is NULL for a routine that writes nothing, which has no memory of
+// its own to compare.
 static void compare_jump(CosimStat* s, const CosimCall* call, const Wram* ours,
                          const Wram* theirs, const CosimRegs* rom_regs,
                          const CosimRegs* our_regs) {
-  compare_wram(s, call, ours, theirs);
+  if (ours) compare_wram(s, call, ours, theirs);
   if (s->failed) return;
   if (!s->routine->hw) compare_apu(s, call);
   if (s->failed) return;
@@ -1408,9 +1421,22 @@ static void burn_slice(Cosim* c, int cycles);
 static bool interrupt_due(const Snes* snes);
 
 // The CPU has just been stood on the instruction a port leaves by.
+//
+// A port stepped an instruction at a time may end on one whose poll saw an
+// interrupt (`burn_spend`). The ROM takes it before the next instruction, so
+// that one is not made yet: it is left standing, and made when the handler's
+// `RTI` comes back to it.
 static void leave(Cosim* c) {
   Snes* snes = c->snes;
+  CosimPriv* p = c->priv;
   if (is_entry(c, cpu_pc24(snes))) return;
+  if (snes->cpu->intWanted) {
+    p->stood = true;
+    p->stood_pc = cpu_pc24(snes);
+    p->stood_sp = snes->cpu->sp;
+    p->stood_by = p->port;
+    return;
+  }
   LeaveCost cost;
   if (!leave_step(c, &cost)) {
     handed(c, COSIM_TOOK_EXIT, c->priv->port);
@@ -2028,13 +2054,17 @@ static void burn_take_events(CosimBurn* b) {
   b->shift = 0;
   b->wstep = 0;
   b->sp = b->out.s;
-  b->polled = false;
   b->runs = g_hw_runs;
   b->fast = g_hw_fast;
   b->ins_i = 0;
   b->rep_i = 0;
   for (int i = 0; i < g_hw_n; i++)
     hw_event_add(&b->ev, &b->ev_n, &b->ev_cap, &g_hw[i]);
+  // An entry is taken with no interrupt latched. One that has fallen due
+  // since the last poll is seen by the first instruction's own, where the
+  // burn opens on an instruction, and is taken after it and not before.
+  b->polled = b->ev_n > 0 && b->ev[0].kind == COSIM_HW_RUN && b->ev[0].at == 0;
+  b->latched = false;
 }
 
 static bool burn_spend(Cosim* c) {
@@ -2068,7 +2098,12 @@ static bool burn_spend(Cosim* c) {
   // routine's, and `verify` is what says the model was short.
   if (b->left <= 0 && !b->wstep)
     while (b->ev_i < b->ev_n || b->wstep) waited += burn_step(c, b);
-  c->work.cycles_native += c->snes->cycles - before - waited;
+  // A turn of one of the ROM's waits is time spent waiting, whoever spends
+  // it. See `waits.h`.
+  if (cosim_is_wait_site(b->entry))
+    c->work.cycles_wait += c->snes->cycles - before;
+  else
+    c->work.cycles_native += c->snes->cycles - before - waited;
 
   if (b->left > 0 || b->wstep) {
     if (burn_interrupt(c, b)) {
@@ -2081,6 +2116,10 @@ static bool burn_spend(Cosim* c) {
     return false;
   }
   commit_publish(c, &b->commit);
+  // The budget ended on an instruction, and its poll saw an interrupt: it is
+  // taken before the instruction the routine leaves by. See `leave`.
+  if (b->polled && b->latched) c->snes->cpu->intWanted = true;
+  c->priv->port = b->routine;
   if (b->jump) jump_go(c, &b->out);
   else native_return(c, b->routine, &b->out);
   c->priv->burn_depth--;
@@ -2304,7 +2343,21 @@ static void segment_start(Cosim* c, CosimCall* call) {
   if (call->waived) memset(call->waive, 0, WRAM_SIZE);
   call->waived = false;
   regs_capture(c->snes, &call->in);
-  memcpy(call->before, c->snes->ram, sizeof(Wram));
+  if (!c->stats[call->index].routine->writes_nothing)
+    memcpy(call->before, c->snes->ram, sizeof(Wram));
+}
+
+// Ask a routine that writes nothing, before the ROM runs it. The memory is
+// the console's own, which the port only reads.
+static void ask_first(Cosim* c, CosimCall* call, const CosimRoutine* r) {
+  call->told = call->in;
+  call->told.flags = 0;
+  call->told.regs = COSIM_REG_ALL;
+  g_cosim_cost = -1;
+  g_hw_n = 0;
+  r->run((Wram*)c->snes->ram, &c->rom, &call->in, &call->told);
+  call->told_cost = g_cosim_cost;
+  g_hw_n = 0;
 }
 
 // Begin a verification: remember everything the port will need, and let the ROM
@@ -2322,6 +2375,7 @@ static void begin_verify(Cosim* c, int index, const CosimRoutine* r, CosimStat* 
   call->jump = r->exit_count > 0;
   if (r->run_yield) memset(call->ctx, 0, (size_t)r->ctx_size);
   segment_start(c, call);
+  if (r->writes_nothing) ask_first(c, call, r);
 }
 
 // Run the port over one segment and diff what it produced against what the ROM
@@ -2489,10 +2543,17 @@ static void end_jump_verify(Cosim* c, CosimCall* call) {
 
   CosimRegs out;
   uint16_t ticks = 0;
-  verify_segment(c, call, &out, &ticks);
+  const bool asked = s->routine->writes_nothing;
+  if (asked) {
+    out = call->told;
+    g_cosim_cost = call->told_cost;
+    g_hw_n = 0;
+  } else {
+    verify_segment(c, call, &out, &ticks);
+  }
   record_segment(c, call, s);
-  compare_jump(s, call, c->priv->scratch, (const Wram*)c->snes->ram, &rom_regs,
-               &out);
+  compare_jump(s, call, asked ? NULL : c->priv->scratch,
+               (const Wram*)c->snes->ram, &rom_regs, &out);
   if (!s->failed) compare_hw(c, s, call);
 
   if (!s->failed) s->passed++;
@@ -2568,6 +2629,15 @@ static void cosim_step_inner(Cosim* c) {
 
   if (at_instruction(snes)) {
     uint32_t pc = cpu_pc24(snes);
+
+    // The interrupt that came in front of a port's last instruction is over.
+    if (c->priv->stood && pc == c->priv->stood_pc &&
+        snes->cpu->sp == c->priv->stood_sp) {
+      c->priv->stood = false;
+      c->priv->port = c->priv->stood_by;
+      leave(c);
+      return;
+    }
 
     // An interrupt set aside is over when the `RTI` is back where it was taken.
     if (c->priv->irq_call && pc == c->priv->irq_pc &&
@@ -2791,7 +2861,8 @@ void cosim_step(Cosim* c) {
   const uint64_t spent = snes->cycles - before;
   c->work.cycles_total += spent;
   if (halted) c->work.cycles_idle += spent;
-  else if (spinning) c->work.cycles_wait += spent;
+  // A wait a port took is counted where its budget is spent (`burn_spend`).
+  else if (spinning && ran) c->work.cycles_wait += spent;
   // Every call the game made, including the ones the port went on to serve:
   // substitution happens at the *callee's* entry PC, so the caller's `JSR` has
   // already executed by then and is counted here either way. `calls_native` is
@@ -2818,7 +2889,7 @@ void cosim_step(Cosim* c) {
   // is the one case where the PC was at an instruction and none of it ran.
   if (c->profile) {
     const bool burned = c->work.cycles_native != native_before;
-    if (opcode >= 0 && !burned) {
+    if (opcode >= 0 && ran && !burned) {
       uint32_t avail = 0;
       const uint8_t* p = rom_ptr(&c->rom, pc, &avail);
       if (p) {

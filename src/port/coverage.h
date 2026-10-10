@@ -344,6 +344,9 @@
   X(victim_ungated,   "victim_start",       "an entry with no gate") \
   X(victim_at_the_gate,"victim_start",      "...or the last the level has") \
   X(victim_within_the_gate,"victim_start",  "...or one before the last") \
+  /* The loops the game waits in -- see port/hold.h. */                         \
+  X(hold_over,        "hold_turn",          "what a loop waited for has happened") \
+  X(hold_goes_on,     "hold_turn",          "...or not yet, and it goes round") \
   /* A record begun, and the neighbours -- see port/begin.h, neighbours.h. */   \
   X(record_begun,     "record_begin",       "a record at the page's place") \
   X(zombie_begun,     "zombie_begin",       "...and a zombie's made of it") \

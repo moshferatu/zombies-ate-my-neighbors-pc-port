@@ -15,10 +15,9 @@
 //     LDA $2C : STA $40
 //     JSR $A4A0      32 tiles of the next column
 //
-// The queueing and the wait are the ROM's still. They are thirty instructions
-// and a loop that is in `cosim/waits.h`, and the wait is on the vblank's side
-// of things: leaving them where they are leaves the queue filled when the ROM
-// fills it.
+// The queueing is the ROM's still: thirty instructions, and leaving them
+// where they are leaves the queue filled when the ROM fills it. The wait
+// after it is `port/hold.h`'s.
 //
 // ## A tile's priority
 //

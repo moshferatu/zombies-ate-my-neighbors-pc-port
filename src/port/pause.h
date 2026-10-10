@@ -2,7 +2,8 @@
 //
 // With Start held on either pad the ROM pauses there and then: it turns the
 // volume and the screen down and waits, in the routine itself, for Start to be
-// let go, pressed again and let go again. Those waits are the ROM's to run.
+// let go, pressed again and let go again. The three waits are `port/hold.h`'s.
+// What is round them is the ROM's still.
 //
 // On every other frame it does nothing. What is left of it is a compare of
 // pad one against Select alone whose branch goes to the next instruction

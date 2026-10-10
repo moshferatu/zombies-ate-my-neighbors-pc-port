@@ -498,6 +498,19 @@ typedef struct {
   // let off this way, and `irq_waived_ours` those the port had also written,
   // which are the ones nothing checked.
   bool through_interrupts;
+  // A stretch that writes no memory at all, with `exits`: a turn of one of
+  // the loops the game waits in (`port/hold.h`). Those are entered tens of
+  // millions of times over the corpus, and `verify` copies all of WRAM twice
+  // and compares it once for every call it checks: with them checked that
+  // way the corpus took 27 minutes where it had taken 10.
+  //
+  // So one of these is asked first. The port runs at the entry, on the
+  // memory the ROM is about to read, and what it said is kept until the ROM
+  // reaches an exit: the exit, every register and the cost are compared
+  // then, as for any other. No WRAM is copied and none is compared. What
+  // goes unchecked is that the ROM's instructions wrote nothing, which for
+  // a load, a compare and a branch is read off the listing.
+  bool writes_nothing;
 } CosimRoutine;
 
 // The registry. Every routine `src/port/` has replaced, in the order they were

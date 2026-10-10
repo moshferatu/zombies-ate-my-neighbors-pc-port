@@ -46,6 +46,7 @@
 #include "port/werewolf.h"
 #include "port/oam.h"
 #include "port/begin.h"
+#include "port/hold.h"
 #include "port/neighbours.h"
 #include "port/objects.h"
 #include "port/player.h"
@@ -19815,6 +19816,97 @@ KILLS_SCORED(X)
 KILLS_COUNTED(X)
 #undef X
 
+// The loops the game waits in -- see `port/hold.h`. A turn is one call, and
+// it is priced an instruction at a time, as the uploads are: the NMI lands
+// in these loops more than anywhere, and which instruction it is taken after
+// decides which turn reads what it left.
+//
+// A load or a `BIT` of a word is three fetches and two reads, or two fetches
+// through the direct page. An immediate is three fetches. A branch taken is
+// two fetches and an idle, and one that falls through is the two fetches.
+typedef enum {
+  HOLD_FORM_WORD,       // `BIT abs` or `LDA abs`, and the branch
+  HOLD_FORM_PAGE_WORD,  // `LDA dp`, and the branch
+  HOLD_FORM_TESTED,     // `LDA abs`, a `CMP #` or an `AND #`, and the branch
+  HOLD_FORM_PADS,       // `LDA abs : ORA abs : BIT #`, and the branch
+  HOLD_FORM_COUNT
+} HoldForm;
+
+#define I(c, b) {c, b, 6, false}
+#define W(c, b) {c, b, 8, false}
+#define F(c, b) {c, b, 6, true}
+static const CosimInsn HOLD_WORD_ON_I[] = {W(34, 3), I(18, 2)};
+static const CosimInsn HOLD_WORD_OVER_I[] = {W(34, 3), F(12, 2)};
+static const CosimInsn HOLD_PAGE_WORD_ON_I[] = {W(28, 2), I(18, 2)};
+static const CosimInsn HOLD_PAGE_WORD_OVER_I[] = {W(28, 2), F(12, 2)};
+static const CosimInsn HOLD_TESTED_ON_I[] = {W(34, 3), F(18, 3), I(18, 2)};
+static const CosimInsn HOLD_TESTED_OVER_I[] = {W(34, 3), F(18, 3), F(12, 2)};
+static const CosimInsn HOLD_PADS_ON_I[] = {W(34, 3), W(34, 3), F(18, 3),
+                                           I(18, 2)};
+static const CosimInsn HOLD_PADS_OVER_I[] = {W(34, 3), W(34, 3), F(18, 3),
+                                             F(12, 2)};
+#undef I
+#undef W
+#undef F
+
+// A form's turn that goes round, and then the one that ends the wait.
+#define HOLD_RUN(cycles, bytes, ins) \
+  {cycles, bytes, 0, ins, (int)(sizeof ins / sizeof ins[0])}
+static const CosimRun HOLD_RUNS[2 * HOLD_FORM_COUNT] = {
+    HOLD_RUN(52, 5, HOLD_WORD_ON_I),      HOLD_RUN(46, 5, HOLD_WORD_OVER_I),
+    HOLD_RUN(46, 4, HOLD_PAGE_WORD_ON_I), HOLD_RUN(40, 4, HOLD_PAGE_WORD_OVER_I),
+    HOLD_RUN(70, 8, HOLD_TESTED_ON_I),    HOLD_RUN(64, 8, HOLD_TESTED_OVER_I),
+    HOLD_RUN(104, 11, HOLD_PADS_ON_I),    HOLD_RUN(98, 11, HOLD_PADS_OVER_I),
+};
+
+static HoldForm hold_form(const Hold* hold) {
+  switch (hold->until) {
+    case HOLD_TOP_BIT:
+    case HOLD_ZERO:
+      return hold->over_pc - hold->pc == 4 ? HOLD_FORM_PAGE_WORD
+                                           : HOLD_FORM_WORD;
+    case HOLD_PADS_OFF:
+    case HOLD_PADS_ON:
+      return HOLD_FORM_PADS;
+    default:
+      return HOLD_FORM_TESTED;
+  }
+}
+
+// One shim serves them all: the entry says which loop it is.
+static const Hold* hold_at(uint32_t pc) {
+  for (int i = 0; i < HOLD_COUNT; i++)
+    if (HOLDS_BY[i].pc == pc) return &HOLDS_BY[i];
+  return NULL;
+}
+
+static bool accepts_hold(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  const Hold* hold = hold_at(in->pc);
+  if (!hold || (in->p & PORT_P_M) != 0) return false;
+  if (hold_form(hold) == HOLD_FORM_PAGE_WORD) return in->d == 0;
+  return bank_sees_low_wram(in->db);
+}
+
+static void shim_hold(Wram* w, const Rom* rom, const CosimRegs* in,
+                      CosimRegs* out) {
+  (void)rom;
+  const Hold* hold = hold_at(in->pc);
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool over = hold_turn(w, &c, hold);
+  cpu_to(&c, out);
+  HwStep step[1];
+  HwTrace t = {0, 1, false, step};
+  hw_run(&t, 2 * (int)hold_form(hold) + (over ? 1 : 0));
+  cosim_hw(&t, HOLD_RUNS, fetch_fast(in));
+}
+
+#define X(name, sym, pc, over_pc, until, at, n) \
+  static const uint32_t hold_##name##_EXITS[] = {pc, over_pc};
+HOLDS(X)
+#undef X
+
 static bool accepts_death_pictures(const Wram* w, const CosimRegs* in) {
   return in->x == DEATH_KILLED && accepts_record_end(w, in) &&
          wram_r16(w, (uint16_t)(in->d + BEGIN_DP_RECORD)) < 0x1f00;
@@ -26892,6 +26984,23 @@ static const CosimRoutine ROUTINES[] = {
     RECORD_ENDS_BY_ADDRESS(X)
 #undef X
 #undef END_ROW
+    // The loops the game waits in, a turn at a time. See `port/hold.h`.
+#define X(name_, sym, pc, over_pc, until, at, n)                             \
+    {                                                                        \
+        .name = "hold_" #name_,                                              \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_hold,                                                    \
+        .accepts = accepts_hold,                                             \
+        COSIM_EXITS(hold_##name_##_EXITS),                                   \
+        .uncalled = true,                                                    \
+        .cycles = 52,                                                        \
+        .hw = true,                                                          \
+        .through_interrupts = true,                                          \
+        .writes_nothing = true,                                              \
+    },
+    HOLDS(X)
+#undef X
     // What a killed thing's thread does before its end.
 #define X(at, sym, pc, worth, killer_at, nobody_pc)                          \
     {                                                                        \

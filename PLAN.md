@@ -84,7 +84,8 @@ Two things the ranking showed that are not code to port:
 - **The pause is a wait nobody declared.** `$80:89C8` to `$80:89E7` spins
   on the pads' word until Start is let go, pressed and let go. It is
   17,896,518 instructions in one movie, `level21-exit`. It belongs in
-  `src/cosim/waits.h` with the other thirteen.
+  `src/cosim/waits.h` with the other thirteen. (It is there now, and
+  ported: see step 2's notes.)
 - **The waits are where the 65816 spends its time**: 374,719,039
   instructions in the thirteen declared ones. Each spins on a word only the
   NMI changes, or on the sound chip's answer.
@@ -211,6 +212,14 @@ returned to, 45 left standing, 34 declined. The core executed 400.6
 million instructions over the survey, and 392.8 million of them are seven
 loops that wait. So item 3 of step 1, the waits, is nearly all of the
 core's work, and almost none of its places.
+
+**The waits, the same day.** Item 3 of step 1 is done for the twelve that
+wait on a word of WRAM: `port/hold.h`, one turn of a loop a call. The core
+executes 7.5 million instructions over the survey where it executed 400.6
+million. The places are 973, ten more, because the instruction after a
+wait is the ROM's still. What a driver with no CPU does with a turn that
+says "not yet" is its own choice: the harness spends a turn's cycles, and
+one that runs the frame to its NMI would be right too.
 
 What is left of this step: registers of the driver's own in place of the
 core's, the clock, and a stop that names the address in place of the
