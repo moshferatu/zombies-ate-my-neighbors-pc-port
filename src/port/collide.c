@@ -1408,10 +1408,10 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
     served = player_collide_counted(w, rom, dp, arg, &r, NULL, &work->player);
   } else if (entry == ENEMY_COLLIDE_ENTRY) {
     served = enemy_collide_counted(w, rom, dp, arg, &r, NULL, &work->enemy);
-  } else if (entry == MONSTER_COLLIDE_ENTRY) {
-    // **This one was missing, and nothing could see it.** `monster_collide` has
+  } else if (entry == ANT_COLLIDE_ENTRY) {
+    // **This one was missing, and nothing could see it.** `ant_collide` has
     // been registered on its own entry PC since the level-45 round, so `verify`
-    // offered it every call the giant spider made and it passed all 1,138 of
+    // offered it every call the giant ant made and it passed all 1,138 of
     // them — but the *dispatcher* never routed to it, so every one of those
     // calls also declined here, one level up. The two facts are not in tension:
     // a routine reached directly is checked, and the same routine reached
@@ -1420,10 +1420,10 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
     // `$81:C4A6` was on that exclusion list while not being on this one, so the
     // declines were counted and never named. On `movies/level45-carried.zmv`
     // that is 1,351 of `thread_call_handler`'s 2,800 calls.
-    served = monster_collide_counted(w, rom, dp, arg, &r, NULL, &work->monster);
-  } else if (entry == MONSTER_C440_COLLIDE_ENTRY) {
+    served = ant_collide_counted(w, rom, dp, arg, &r, NULL, &work->ant);
+  } else if (entry == ANT_C440_COLLIDE_ENTRY) {
     served =
-        monster_c440_collide_counted(w, rom, dp, arg, &r, NULL, &work->monster);
+        ant_c440_collide_counted(w, rom, dp, arg, &r, NULL, &work->ant);
   } else if (entry == ENEMY_B41C_COLLIDE_ENTRY) {
     served = enemy_b41c_collide_counted(w, rom, dp, arg, &r, NULL, &work->b41c);
   } else if (entry == ENEMY_CDDE_COLLIDE_ENTRY) {
@@ -1543,26 +1543,26 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
 }
 
 // ---------------------------------------------------------------------------
-// $81:C4A6  monster_collide
+// $81:C4A6  ant_collide
 // ---------------------------------------------------------------------------
 
 // `$81:BBEB`, which is `$81:8727` again at three times the money. Returns false
 // only if `score_add` declines, which a stock ROM cannot produce.
 //
 // The guard is the interesting instruction: `LDA $20 : BEQ` skips the whole
-// award when the parked id is zero, so a monster killed by something with no id
+// award when the parked id is zero, so an ant killed by something with no id
 // is worth nothing and still counts down. `DEC $2A` happens either way.
-static bool monster_death_award(Wram* w, const Rom* rom, uint16_t dp,
-                                ActorHandlerRegs* r) {
-  uint16_t id = wram_r16(w, (uint32_t)dp + MONSTER_DP_HIT_ID);
+static bool ant_death_award(Wram* w, const Rom* rom, uint16_t dp,
+                            ActorHandlerRegs* r) {
+  uint16_t id = wram_r16(w, (uint32_t)dp + ANT_DP_HIT_ID);
   // `LDX #$0300 : LDA $20 : BEQ` — the award is in X before the guard is even
   // read, so the path that skips the payout still returns it, and A is the id.
-  r->x = MONSTER_DEATH_AWARD;
+  r->x = ANT_DEATH_AWARD;
   r->a = id;
   if (id != 0) {
-    PORT_COVER(monster_kill_award);
+    PORT_COVER(ant_kill_award);
     ScoreResult score;
-    if (!score_add(w, rom, (id & 0x8000) != 0, MONSTER_DEATH_AWARD, r->c, &score))
+    if (!score_add(w, rom, (id & 0x8000) != 0, ANT_DEATH_AWARD, r->c, &score))
       return false;
     r->c = score.c;
     // `LDA $20 : AND #$8000 : ASL A : ROL A : ROL A : TAX` — bit 15 becomes 0 or
@@ -1583,7 +1583,7 @@ static bool monster_death_award(Wram* w, const Rom* rom, uint16_t dp,
     // perturbation now fails at **`$7E:1FD5`**: the byte *between* the two
     // counters, which is exactly where an undoubled index lands.
     uint16_t side = (uint16_t)((id & 0x8000) ? 2 : 0);
-    uint16_t at = (uint16_t)(W_MONSTER_KILL_COUNT + side);
+    uint16_t at = (uint16_t)(W_ANT_KILL_COUNT + side);
     uint16_t n = (uint16_t)(wram_r16(w, at) + 1);
     wram_w16(w, at, n);
     r->a = side;
@@ -1593,17 +1593,17 @@ static bool monster_death_award(Wram* w, const Rom* rom, uint16_t dp,
   } else {
     // **This site exists because a perturbation got past the report.** Paying
     // the award unconditionally — deleting the `BEQ` — passed all 151 calls on
-    // `movies/level25.zmv`, and `monster_kill_award` read 10 the whole time, so
+    // `movies/level25.zmv`, and `ant_kill_award` read 10 the whole time, so
     // the coverage table said nothing was missing. A site marks the branch it is
     // written on; a guard with a mark on its *passing* side only says the guard
     // was reached, never that it refused. Marking the skip is what makes the
-    // refusal countable, and it is untaken: every monster that has died in the
+    // refusal countable, and it is untaken: every ant that has died in the
     // corpus was killed by something carrying an id.
-    PORT_COVER(monster_kill_free);
+    PORT_COVER(ant_kill_free);
   }
   // `$81:BC02  DEC $2A`, on both paths, and it is the last thing to set flags.
-  uint16_t count = (uint16_t)(wram_r16(w, (uint32_t)dp + MONSTER_DP_COUNT) - 1);
-  wram_w16(w, (uint32_t)dp + MONSTER_DP_COUNT, count);
+  uint16_t count = (uint16_t)(wram_r16(w, (uint32_t)dp + ANT_DP_COUNT) - 1);
+  wram_w16(w, (uint32_t)dp + ANT_DP_COUNT, count);
   r->n = (count & 0x8000) != 0;
   r->z = count == 0;
   return true;
@@ -1611,11 +1611,11 @@ static bool monster_death_award(Wram* w, const Rom* rom, uint16_t dp,
 
 // The death tail at `$81:C4DF`, shared by the negative-health path and by id
 // `$5E` reaching it without subtracting anything.
-static bool monster_die(Wram* w, const Rom* rom, uint16_t dp, uint16_t health,
-                        ActorHandlerRegs* r) {
-  wram_w16(w, (uint32_t)dp + MONSTER_DP_HEALTH, health);
-  wram_w16(w, (uint32_t)dp + MONSTER_DP_SCRATCH_7E, 0);
-  if (!monster_death_award(w, rom, dp, r)) return false;
+static bool ant_die(Wram* w, const Rom* rom, uint16_t dp, uint16_t health,
+                    ActorHandlerRegs* r) {
+  wram_w16(w, (uint32_t)dp + ANT_DP_HEALTH, health);
+  wram_w16(w, (uint32_t)dp + ANT_DP_SCRATCH_7E, 0);
+  if (!ant_death_award(w, rom, dp, r)) return false;
   r->c = true;  // `$81:C4E6  SEC : RTL` — parks the thread
   return true;
 }
@@ -1632,45 +1632,45 @@ static bool monster_die(Wram* w, const Rom* rom, uint16_t dp, uint16_t health,
 typedef struct {
   bool is_c440;                // which copy, for the two marks that need it
   uint32_t special_entry;      // where id `$5D` goes, and declines
-} MonsterCopy;
+} AntCopy;
 
-static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
-                                 uint16_t arg, ActorHandlerRegs* r,
-                                 uint32_t* unported, const MonsterCopy* copy,
-                                 MonsterCollideWork* work) {
+static bool ant_collide_body(Wram* w, const Rom* rom, uint16_t dp,
+                             uint16_t arg, ActorHandlerRegs* r,
+                             uint32_t* unported, const AntCopy* copy,
+                             AntCollideWork* work) {
   memset(work->blocks, 0, sizeof work->blocks);
   // `$81:C4A6  CMP #$005C : BCS`. Everything below a weapon shot is sorted by
   // two more comparisons into three outcomes, and two of those write nothing.
   if (arg < COLLIDE_ID_PLAYER) {
-    if (arg < MONSTER_OBJECT_ID_FIRST) {
+    if (arg < ANT_OBJECT_ID_FIRST) {
       // `CMP #$000C : BCC $C50A`, and `$C50A` is a bare `CLC : RTL`. This is the
       // branch a player standing on it takes, every frame, which is why it is
       // most of the 2,039 declines the census counted.
-      PORT_COVER(monster_ignore_low);
+      PORT_COVER(ant_ignore_low);
       work->blocks[MON_BLK_IGNORE_LOW]++;
-      uint16_t diff = (uint16_t)(arg - MONSTER_OBJECT_ID_FIRST);
+      uint16_t diff = (uint16_t)(arg - ANT_OBJECT_ID_FIRST);
       r->a = arg;
       r->n = (diff & 0x8000) != 0;
       r->z = diff == 0;
       r->c = false;
       return true;
     }
-    if (arg >= MONSTER_OBJECT_ID_END) {
+    if (arg >= ANT_OBJECT_ID_END) {
       // `CMP #$0033 : BCC` fell through to its own `CLC : RTL` two bytes later,
       // which is a *different* exit from the one above and leaves different
       // flags: this comparison did not borrow.
       //
       // **The difference is unobservable and that is not an accident of this
-      // corpus.** Computing the flags from `arg - MONSTER_OBJECT_ID_FIRST` here
+      // corpus.** Computing the flags from `arg - ANT_OBJECT_ID_FIRST` here
       // instead passes every call on every movie, because the two spellings can
-      // only disagree on `arg == MONSTER_OBJECT_ID_END` — every other id in
+      // only disagree on `arg == ANT_OBJECT_ID_END` — every other id in
       // `[$33,$5C)` is positive and non-zero either way. Id `$33` is not in
       // `$80:CA30`'s thirty entries, so nothing in the game carries it. Not a
       // branch, so no coverage mark can say it; written down here beside the
       // line, like the `STZ $7E` in `enemy_die`.
-      PORT_COVER(monster_ignore_high);
+      PORT_COVER(ant_ignore_high);
       work->blocks[MON_BLK_IGNORE_HIGH]++;
-      uint16_t diff = (uint16_t)(arg - MONSTER_OBJECT_ID_END);
+      uint16_t diff = (uint16_t)(arg - ANT_OBJECT_ID_END);
       r->a = arg;
       r->n = (diff & 0x8000) != 0;
       r->z = diff == 0;
@@ -1679,11 +1679,11 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
     }
 
     // `$81:C4EC  LDA $26 : BNE` — the latch, and the same shape as
-    // `victim_collide`'s: whatever reached this monster first has already
+    // `victim_collide`'s: whatever reached this ant first has already
     // decided, and a second object is ignored.
-    uint16_t latch = wram_r16(w, (uint32_t)dp + MONSTER_DP_LATCH);
+    uint16_t latch = wram_r16(w, (uint32_t)dp + ANT_DP_LATCH);
     if (latch != 0) {
-      PORT_COVER(monster_latched);
+      PORT_COVER(ant_latched);
       work->blocks[MON_BLK_LATCHED]++;
       r->a = latch;
       r->n = (latch & 0x8000) != 0;
@@ -1692,32 +1692,32 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
       return true;
     }
 
-    // `LDY $08 : LDA #$0003 : STA $000E,Y`. **This is the theft**: the monster
+    // `LDY $08 : LDA #$0003 : STA $000E,Y`. **This is the theft**: the ant
     // rewrites its own display record's collision id, which is the `$04` -> `$03`
     // transition `--records` caught the instant a bonus object vanished.
-    PORT_COVER(monster_take);
-    uint16_t rec = wram_r16(w, (uint32_t)dp + MONSTER_DP_RECORD);
-    wram_w16(w, (uint32_t)rec + ACTOR_COLLIDE_ID, MONSTER_TAKEN_ID);
+    PORT_COVER(ant_take);
+    uint16_t rec = wram_r16(w, (uint32_t)dp + ANT_DP_RECORD);
+    wram_w16(w, (uint32_t)rec + ACTOR_COLLIDE_ID, ANT_TAKEN_ID);
 
     // `LDA $0042 : CMP #$0004 : BNE +2 : LDA $0046` — both absolute. One value
     // of the first global redirects the latch to the second.
-    uint16_t src = wram_r16(w, W_MONSTER_LATCH_SRC);
-    if (src == MONSTER_LATCH_SRC_ALT) {
-      PORT_COVER(monster_latch_alt);
+    uint16_t src = wram_r16(w, W_ANT_LATCH_SRC);
+    if (src == ANT_LATCH_SRC_ALT) {
+      PORT_COVER(ant_latch_alt);
       work->blocks[MON_BLK_TAKE_ALT]++;
-      src = wram_r16(w, W_MONSTER_LATCH_ALT);
+      src = wram_r16(w, W_ANT_LATCH_ALT);
     } else {
       work->blocks[MON_BLK_TAKE]++;
     }
-    wram_w16(w, (uint32_t)dp + MONSTER_DP_LATCH, src);
+    wram_w16(w, (uint32_t)dp + ANT_DP_LATCH, src);
 
     // `JSR $C04A`, which is `LDA #$C050 : STA $12 : RTS` — three instructions,
     // inlined because a routine that only ever queues one constant is not a
     // routine worth a registry entry.
-    wram_w16(w, (uint32_t)dp + MONSTER_DP_NEXT, MONSTER_NEXT_TAKE_OBJECT);
-    r->a = MONSTER_NEXT_TAKE_OBJECT;
+    wram_w16(w, (uint32_t)dp + ANT_DP_NEXT, ANT_NEXT_TAKE_OBJECT);
+    r->a = ANT_NEXT_TAKE_OBJECT;
     r->y = rec;
-    r->n = (MONSTER_NEXT_TAKE_OBJECT & 0x8000) != 0;
+    r->n = (ANT_NEXT_TAKE_OBJECT & 0x8000) != 0;
     r->z = false;
     r->c = true;  // `$81:C508  SEC : RTL`
     return true;
@@ -1725,34 +1725,34 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
 
   // `$81:C4B7  STA $20 : AND #$7FFF`. A weapon shot, and from here on the
   // routine is `enemy_collide` in a different page's clothing.
-  PORT_COVER(monster_hit);
-  wram_w16(w, (uint32_t)dp + MONSTER_DP_HIT_ID, arg);
+  PORT_COVER(ant_hit);
+  wram_w16(w, (uint32_t)dp + ANT_DP_HIT_ID, arg);
   uint16_t id = arg & ENEMY_COLLIDE_ID_MASK;
 
-  if (id == MONSTER_HIT_SPECIAL) {
-    // `JML $81:BB05` on the spider, `JML $81:847E` one stage earlier — and this
+  if (id == ANT_HIT_SPECIAL) {
+    // `JML $81:BB05` on the later copy, `JML $81:847E` one stage earlier — and this
     // is where the two copies genuinely part company, which is why they had
     // separate sites before either address meant anything. The earlier one goes
-    // to `enemy_freeze`, which the port has; the spider's still declines.
+    // to `enemy_freeze`, which the port has; the later copy's still declines.
     work->blocks[MON_BLK_DEEP]++;
     if (copy->is_c440) {
       PORT_COVER(c440_special);
       return enemy_freeze(w, dp, r);
     }
-    PORT_COVER(monster_special);
+    PORT_COVER(ant_special);
     if (unported) *unported = copy->special_entry;
     return false;
   }
 
-  uint16_t health = wram_r16(w, (uint32_t)dp + MONSTER_DP_HEALTH);
-  if (id == MONSTER_HIT_FATAL) {
+  uint16_t health = wram_r16(w, (uint32_t)dp + ANT_DP_HEALTH);
+  if (id == ANT_HIT_FATAL) {
     // `CMP #$005E : BEQ $C4DF` jumps *into* the death tail without subtracting,
     // so what gets stored as health is A — and A here is the masked id, not any
     // arithmetic on health. Transcribed from the listing and worth flagging as
     // such: no input has produced id $5E.
-    PORT_COVER(monster_fatal_id);
+    PORT_COVER(ant_fatal_id);
     work->blocks[MON_BLK_DEEP]++;
-    return monster_die(w, rom, dp, id, r);
+    return ant_die(w, rom, dp, id, r);
   }
 
   // `SEC : SBC #$005C : ASL A : TAX`, then `SEC : LDA $22 : SBC $818561,X` —
@@ -1763,13 +1763,13 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
   r->x = index;
 
   if (left & 0x8000) {
-    PORT_COVER(monster_died);
+    PORT_COVER(ant_died);
     work->blocks[MON_BLK_DEEP]++;
-    return monster_die(w, rom, dp, left, r);
+    return ant_die(w, rom, dp, left, r);
   }
   if (left == health) {
     // `CMP $22 : BEQ $C50A`, the shared `CLC : RTL`. Not even the store happens.
-    PORT_COVER(monster_no_damage);
+    PORT_COVER(ant_no_damage);
     work->blocks[MON_BLK_NO_DAMAGE]++;
     r->a = left;
     r->n = false;
@@ -1780,9 +1780,9 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
 
   // `STA $22 : JML $81:BAB3` — it lived. The store happens *before* the jump, so
   // it belongs to this routine even though the reaction does not.
-  PORT_COVER(monster_survived);
+  PORT_COVER(ant_survived);
   work->blocks[MON_BLK_DEEP]++;
-  wram_w16(w, (uint32_t)dp + MONSTER_DP_HEALTH, left);
+  wram_w16(w, (uint32_t)dp + ANT_DP_HEALTH, left);
   if (copy->is_c440) {
     // ...and one stage earlier the jump is to `$81:8506` instead, which is a
     // different reaction and not a relocation of the same one: it guards on bit
@@ -1793,53 +1793,53 @@ static bool monster_collide_body(Wram* w, const Rom* rom, uint16_t dp,
     PORT_COVER(c440_survived);
     return enemy_survived_react(w, dp, r);
   }
-  return monster_survived_react(w, dp, r);
+  return ant_survived_react(w, dp, r);
 }
 
-static const MonsterCopy MONSTER_SPIDER = {false, MONSTER_SPECIAL_ENTRY};
-static const MonsterCopy MONSTER_EARLIER = {true, MONSTER_C440_SPECIAL_ENTRY};
+static const AntCopy ANT_LATER = {false, ANT_SPECIAL_ENTRY};
+static const AntCopy ANT_EARLIER = {true, ANT_C440_SPECIAL_ENTRY};
 
-bool monster_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                             ActorHandlerRegs* r, uint32_t* unported,
-                             MonsterCollideWork* work) {
-  return monster_collide_body(w, rom, dp, arg, r, unported, &MONSTER_SPIDER,
-                              work);
+bool ant_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                         ActorHandlerRegs* r, uint32_t* unported,
+                         AntCollideWork* work) {
+  return ant_collide_body(w, rom, dp, arg, r, unported, &ANT_LATER,
+                          work);
 }
 
-bool monster_c440_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
-                                  uint16_t arg, ActorHandlerRegs* r,
-                                  uint32_t* unported,
-                                  MonsterCollideWork* work) {
-  return monster_collide_body(w, rom, dp, arg, r, unported, &MONSTER_EARLIER,
-                              work);
+bool ant_c440_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
+                              uint16_t arg, ActorHandlerRegs* r,
+                              uint32_t* unported,
+                              AntCollideWork* work) {
+  return ant_collide_body(w, rom, dp, arg, r, unported, &ANT_EARLIER,
+                          work);
 }
 
-bool monster_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                     ActorHandlerRegs* r, uint32_t* unported) {
-  MonsterCollideWork ignored;
-  return monster_collide_counted(w, rom, dp, arg, r, unported, &ignored);
+bool ant_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                 ActorHandlerRegs* r, uint32_t* unported) {
+  AntCollideWork ignored;
+  return ant_collide_counted(w, rom, dp, arg, r, unported, &ignored);
 }
 
-bool monster_c440_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                          ActorHandlerRegs* r, uint32_t* unported) {
-  MonsterCollideWork ignored;
-  return monster_c440_collide_counted(w, rom, dp, arg, r, unported, &ignored);
+bool ant_c440_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                      ActorHandlerRegs* r, uint32_t* unported) {
+  AntCollideWork ignored;
+  return ant_c440_collide_counted(w, rom, dp, arg, r, unported, &ignored);
 }
 
 // ---------------------------------------------------------------------------
 // $81:BAB3  the survivor's reaction, again
 // ---------------------------------------------------------------------------
 
-bool monster_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
+bool ant_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
   // `LDY $08 : LDA $0010,Y : BNE $BB03`. The twin tests bit 4 of the record's
   // *flags*; this tests the whole of `ACTOR_ATTR`, the field that bit selects.
   // Same question, asked of the answer rather than of the permission — and it
   // means what comes back on this path is whatever was in the field, where the
   // twin can hand back a constant.
-  uint16_t record = wram_r16(w, (uint32_t)dp + MONSTER_DP_RECORD);
+  uint16_t record = wram_r16(w, (uint32_t)dp + ANT_DP_RECORD);
   uint16_t attr = wram_r16(w, (uint32_t)record + ACTOR_ATTR);
   if (attr != 0) {
-    PORT_COVER(monster_react_already);
+    PORT_COVER(ant_react_already);
     r->a = attr;
     r->y = record;
     r->n = (attr & 0x8000) != 0;
@@ -1850,8 +1850,8 @@ bool monster_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
 
   // From here it is `$81:8506` instruction for instruction, so it is the same
   // C: `$81:BAEC` goes in as `$81:BAEB`, for the one an `RTL` adds.
-  PORT_COVER(monster_react_splice);
-  enemy_react_splice(w, record, MONSTER_REACT_RETURN, r);
+  PORT_COVER(ant_react_splice);
+  enemy_react_splice(w, record, ANT_REACT_RETURN, r);
   return true;
 }
 
@@ -1915,7 +1915,7 @@ bool enemy_b41c_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
     uint16_t z = wram_r16(w, (uint32_t)record + ACTOR_Z);
     work->blocks[B41C_BLK_SPECIAL]++;
     if (z == 0) {
-      // `JSR $B168`, three instructions, inlined for `monster_collide`'s reason.
+      // `JSR $B168`, three instructions, inlined for `ant_collide`'s reason.
       PORT_COVER(b41c_special_grounded);
       work->blocks[B41C_BLK_GROUNDED]++;
       wram_w16(w, (uint32_t)dp + B41C_DP_NEXT, B41C_NEXT_ON_SPECIAL);
@@ -2042,7 +2042,7 @@ void enemy_cdde_react_begin(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
   wram_w16(w, (uint32_t)dp + CDDE_DP_COUNTDOWN, CDDE_REACT_COUNTDOWN);
 
   // `LDY $08 : LDA $0000,Y : ORA #$0010 : STA $0000,Y`, then `LDA #$0C00 : STA
-  // $0010,Y`. The same two fields `monster_survived_react` ends with, reached
+  // $0010,Y`. The same two fields `ant_survived_react` ends with, reached
   // without any of the machinery.
   uint16_t record = wram_r16(w, (uint32_t)dp + CDDE_DP_RECORD);
   uint16_t flags = wram_r16(w, (uint32_t)record + ACTOR_FLAGS);
@@ -2248,7 +2248,7 @@ bool enemy_d7f6_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   if (id == ENEMY_HIT_SPECIAL_A) {
     // `CMP #$005E : BEQ $D825` — **into the death tail, not out to a routine**.
     // Both other copies of this comparison are a `JML $81:83C6`; this one is the
-    // id that kills outright, which is `monster_collide`'s reading of `$5E`
+    // id that kills outright, which is `ant_collide`'s reading of `$5E`
     // rather than `enemy_collide`'s. What gets stored as health is therefore the
     // masked id itself, `$005E`, and no subtraction happens.
     PORT_COVER(d7f6_fatal_id);

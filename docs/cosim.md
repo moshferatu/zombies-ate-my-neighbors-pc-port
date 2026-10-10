@@ -1100,7 +1100,7 @@ pattern, so the row is a lower bound and is labelled as one.
 **port a neighbour, and see whether the number moves by more than the neighbour
 is worth.** This round is the first time following it caught something.
 
-Registering `$81:C16B monster_anim` moved the native total by **291,771**
+Registering `$81:C16B ant_anim` moved the native total by **291,771**
 instructions where the routine itself executes 145,410. The other 146,361 starts
 at `$81:C1FB`, and it is another thread body:
 
@@ -1278,7 +1278,7 @@ port never chose. It is checked on all 16,569 calls `level21-bubble` makes.
 
 ### Four sprite sets, a mirror, and one frame of lag on half the compass
 
-`port/collide.h` has the big monster's two collision handlers and calls it "the
+`port/collide.h` has the giant ant's two collision handlers and calls it "the
 monster side, the one that takes objects out from under the player". `$81:C16B`
 and `$81:C00B` are the other half of its frame: the walk cycle, and what it does
 with what it has taken.
@@ -1555,7 +1555,7 @@ neither function takes them.
 
 ### The monster's other half
 
-`port/monster.h` already had the half of the creature's states that draws.
+`port/ant.h` already had the half of the creature's states that draws.
 `$81:BB75` and `$81:BBA4` are the half that decides where to go — and the shape
 is exact, because four of its state bodies open with a pair of `JSR`s and
 nothing else:
@@ -1630,7 +1630,7 @@ inside the routine will do for the teleport. Both entries name the plain one.
 
 #### A registry entry no movie reaches
 
-`monster_deliver` is checked on zero calls, on all 43 movies, and the profiler
+`ant_deliver` is checked on zero calls, on all 43 movies, and the profiler
 agrees: `$81:BBA4` has a call count of **zero in every one of the eleven
 traces**. The creature has to actually pick somebody up and set off home with
 them, and no input in the corpus has ever made it do that.
@@ -1638,7 +1638,7 @@ them, and no input in the corpus has ever made it do that.
 The entry stays. It is checked the moment any input reaches it, which is what a
 registry entry is for, and the project already carries seven ported routines
 that executed nothing in the last profiling run. What it cannot have is a
-measured budget: `.cycles` is `monster_seek`'s figure, which is defensible
+measured budget: `.cycles` is `ant_seek`'s figure, which is defensible
 rather than measured — the two make the same single `JSL actor_nearest` and that
 call is nearly all of the cost — and the comment on the entry says exactly that.
 
@@ -1649,7 +1649,7 @@ four fifths of what the ranking credited to `$81:BC3D` was really a
 three-instruction state installer nothing calls. The note left behind said the
 bodies under it "stay charged to it, and that is a lower bound again".
 
-Writing `monster_seek` meant reading the constant that installer stores, which
+Writing `ant_seek` meant reading the constant that installer stores, which
 is the address of the body: **`$81:BEE3`**, the monster's chase. Declaring it
 splits 469,168 instructions into an installer's four and a chase's 439,308, and
 the chase now has a row of its own at 0.2%. It is still not portable, for the
@@ -1691,7 +1691,7 @@ in `port/apu.c` instead. **Sites are a harness mechanism and they belong only to
 code the harness runs.**
 
 Of the twelve that stayed, **eight were taken and four were not**, and the four
-are all `monster_deliver`'s. Those are the good kind of untaken: they name
+are all `ant_deliver`'s. Those are the good kind of untaken: they name
 something the game does that no input in the corpus has made it do — pick a
 victim up and set off home with them — and the fix for them is a movie, exactly
 as the report says it is.
@@ -2814,8 +2814,8 @@ the list is short. In corpus order of what it would buy:
 | handler | where it dominates |
 | --- | --- |
 | `$82:9660  boss_9660_collide` | `level25-2p`, 9,802 dispatches — far the largest single item |
-| `$81:C4A6  monster_collide` | `level45-carried`, 4,269 |
-| `$81:C440  monster_c440_collide` | `level25-2p`, 2,700 |
+| `$81:C4A6  ant_collide` | `level45-carried`, 4,269 |
+| `$81:C440  ant_c440_collide` | `level25-2p`, 2,700 |
 | `$80:CAEE  object_collide` | `level25-2p`, 1,666 |
 | `$81:8888`'s four deep exits | `level1-rescue` and `level53` |
 
@@ -3007,7 +3007,7 @@ now has three parts.
 
 ### What is left, precisely
 
-The handler tree still has `$81:C4A6 monster_collide` (4,269 dispatches on
+The handler tree still has `$81:C4A6 ant_collide` (4,269 dispatches on
 `level45-carried`), `$81:C440` (2,700), `$80:CAEE object_collide` (1,666) and
 `$81:8888`'s four deep exits — but this round is the reason to stop there. They
 buy accuracy in a number the `WAI` is already absorbing, they do not buy back
@@ -3922,14 +3922,14 @@ the arithmetic check that the census counts what the drift table counts.
 
 ### One table for two copies of one routine
 
-`$81:C440` is the giant spider one stage before `$81:C4A6 monster_collide`, and
+`$81:C440` is the giant spider one stage before `$81:C4A6 ant_collide`, and
 the port has shared a body between them since the level-45 round -- three bytes
 differ in the ROM. Two of the three are `JML` targets on paths that decline
 anyway, and the third is the order of the `CMP #$005D`/`CMP #$005E` pair, which
 cannot cost anything different because both comparisons run and neither branch
 is taken on any path that reaches them.
 
-So there is one `MonsterCollideBlock` table and it prices both entries. Writing
+So there is one `AntCollideBlock` table and it prices both entries. Writing
 it twice would have been two things that can drift, which is the same argument
 that made the port share the body in the first place.
 
@@ -3944,7 +3944,7 @@ a death, a survival -- decline, exactly as `enemy_cycles` declines its own.
 listings rounds apart and had never been put next to each other. Neither has
 ever been measured and neither ever will be by these movies: no shot in the game
 carries a damage-table entry of zero, so `enemy_no_damage` and
-`monster_no_damage` are both untaken on every input. Two independent
+`ant_no_damage` are both untaken on every input. Two independent
 transcriptions agreeing is the only check available for a branch nothing
 reaches, and it is a real one.
 
@@ -3956,7 +3956,7 @@ reaches, and it is a real one.
 | ...per call, over 6,042 | -6,907 | -736 |
 | declining calls | 1,028 | **105** |
 
-`verify` measures `monster_c440`'s cheapest call at **exactly 120 cycles**, which
+`verify` measures `ant_c440`'s cheapest call at **exactly 120 cycles**, which
 is `MON_BLK_IGNORE_LOW` -- `CMP : BCS : CMP : BCC` into the shared `CLC : RTL` --
 arrived at from the listing and not fitted to anything. Over the 1,311 priced
 calls the error is **+0..+40, mean +4**, and all 1,311 are refresh-exact with no
@@ -4044,8 +4044,8 @@ checks the port against it, so a cost model cannot move it. What did move is the
   actor_overlap_pass    131994 -> 137432
   sprite_build_oam      131994 -> 137432
   thread_call_handler   103161 -> 109865
-  monster_c440               -> 4152      (new)
-  monster_collide            -> 2552      (new)
+  ant_c440                   -> 4152      (new)
+  ant_collide                -> 2552      (new)
 ```
 
 Both new models are refresh-exact on every call they accept, which is the
@@ -4053,7 +4053,7 @@ strongest verdict the harness gives:
 
 | routine | priced | error | refresh-exact |
 | --- | --- | --- | --- |
-| `monster_c440` | 1,311 of 1,343 | +0..+40, mean **+4** | 1,311 / 1,311 |
+| `ant_c440` | 1,311 of 1,343 | +0..+40, mean **+4** | 1,311 / 1,311 |
 | `actor_notify_box` | 5,138 of 5,245 | +0..+360, mean +141 | 5,138 / 5,138 |
 | `boss_stomp` | 4,884 of 4,991 | +40..+360, mean +158 | 4,884 / 4,884 |
 
@@ -4328,11 +4328,11 @@ thing in the table by a factor of two:
   routine                      cycles      calls     per call
   boss_step                  +5428166      11593       +468.2
   camera_follow              -3151348      20608       -152.9
-  monster_seek               -2606030       6817       -382.3
+  ant_seek                   -2606030       6817       -382.3
 ```
 
 It is also the first of these in a while that is not a walk. `camera_follow` and
-`monster_seek` under it are both single passes with a handful of branches, which
+`ant_seek` under it are both single passes with a handful of branches, which
 makes them the cheapest models left rather than the most interesting ones.
 
 ## The biggest debt in the registry, and the frames it did not buy (2026-08-12)
@@ -4530,14 +4530,14 @@ priced:
   routine                      cycles      calls     per call
   sprite_build_oam           -4448875       6042       -736.3
   camera_follow              -3151348      20608       -152.9
-  monster_seek               -2606030       6817       -382.3
+  ant_seek                   -2606030       6817       -382.3
 ```
 
 `sprite_build_oam`'s model is refresh-exact on the 5,937 calls it prices and
 **declines the other 105**, and those 105 carry the whole -4.4M. That is a
 different job from the last several rounds: not a routine to price but a guard
 to narrow, and the drift it shows is the cost of the fallback constant rather
-than an error in any block. `camera_follow` and `monster_seek` under it are the
+than an error in any block. `camera_follow` and `ant_seek` under it are the
 single passes they were last round.
 
 But the honest reading of the zero above is that none of these three will move a
@@ -6532,7 +6532,7 @@ was enough.
 Six perturbations, five caught, each on the movie chosen for it: writing `$0004`
 instead of `$0003` into the record (`$7E:1A4C`, ROM `$03` against port `$04` —
 the display record itself); dropping the latch guard (`$7E:0312`); never taking
-the `$46` redirect (`$7E:0726`, and `monster_latch_alt` fires exactly once in the
+the `$46` redirect (`$7E:0726`, and `ant_latch_alt` fires exactly once in the
 whole corpus, in `movies/level45-bonus.zmv`); reading health from `$1E` rather
 than `$22` (`$7E:0622`, ROM `$0F` against port `$FD` — a monster with negative
 health); and skipping the `DEC $2A` countdown (`$7E:062A`).
@@ -6556,7 +6556,7 @@ Twelve new coverage sites, nine of them taken.
 
 ### And then the survive path, which was `$81:8506` with different numbers
 
-The census named `$81:BAB3` the moment `monster_collide` was registered, and it
+The census named `$81:BAB3` the moment `ant_collide` was registered, and it
 was right about what it is: **`$81:8506` instruction for instruction** — read the
 thread's parked stack pointer out of `W_THREAD_SP`, move it down three bytes,
 slide the top three words down lowest-first, and write a far return address into
@@ -6583,23 +6583,23 @@ own source), the return address not decremented for the `RTL` (`$7E:0D87`, ROM
 `$EB` against port `$EC`), and the two overlapping stores swapped (`$7E:0D88`).
 **Not caught: dropping the already-reacting guard** — which is exactly the twin's
 blind spot. `react_already` has never been taken and neither has
-`monster_react_already`; an entry guard that only ever reads zero is a thing no
+`ant_react_already`; an entry guard that only ever reads zero is a thing no
 diff can check, and both are now recorded as such.
 
 ### Where that leaves the numbers
 
 **Twenty-five routines, and the four level-45 movies print no census section at
-all** — `monster_collide` serves every call it is offered, 186 of 186 and 1,138
+all** — `ant_collide` serves every call it is offered, 186 of 186 and 1,138
 of 1,138. All fifteen movies verify with no divergence; the level-45 totals are
 **54,478**, **70,347**, **96,399** and **76,313**. `run` substitutes it over 3,589
 and 4,389 scheduler passes, at most 28 and 21 bytes differing, all inside the
 stacks or a declared scratch byte.
 
 Fourteen new coverage sites, eleven taken. **Branch coverage is 100 of 125**, 25
-untaken — four of them in this family: `monster_special` (id `$5D`, the other
-splice, and the only decline left in these movies), `monster_fatal_id` (id `$5E`,
-which dies without subtracting anything), `monster_no_damage`, and
-`monster_react_already`.
+untaken — four of them in this family: `ant_special` (id `$5D`, the other
+splice, and the only decline left in these movies), `ant_fatal_id` (id `$5E`,
+which dies without subtracting anything), `ant_no_damage`, and
+`ant_react_already`.
 
 The census that remains is level 29's: `$81:B41C` (163), `$81:CDDE` (112) and
 `$81:B592` (5). Three more handlers, on a level whose actors are a third kind
@@ -6607,7 +6607,7 @@ again.
 
 ## A routine that was checked and never called
 
-`monster_collide` above is the case that says why "the port passes every call"
+`ant_collide` above is the case that says why "the port passes every call"
 and "the port serves every call" are different sentences, and it took four
 rounds and a corpus runner to notice they had come apart.
 
@@ -6842,7 +6842,7 @@ could decline. By this round eight could.
 
 Nothing would have reported the omission. The symptom is a census line naming a
 routine the port already has — which is the same shape as the bug that hid
-`monster_collide`'s missing dispatch for four rounds, and just as quiet.
+`ant_collide`'s missing dispatch for four rounds, and just as quiet.
 `thread_call_handler` now hands the address back in `ThreadCallResult::unported`,
 set only on the branch that does not recognise the handler at all, so the guard
 has one thing to test instead of a list to keep in step.
@@ -6850,7 +6850,7 @@ has one thing to test instead of a list to keep in step.
 ### A movie that adds no coverage and proves something anyway
 
 `movies/level25-2p.zmv` is the input this document's *Coverage the movie does not
-have* section has been asking for since the level-45 round. `monster_death_award`
+have* section has been asking for since the level-45 round. `ant_death_award`
 ends `LDA $20 : AND #$8000 : ASL A : ROL A : ROL A : TAX : INC $1FD4,X`, a
 counter indexed by the side that landed the blow **already doubled**, and writing
 `1` there instead of `2` passed every call on every input for two rounds: every
@@ -7048,7 +7048,7 @@ reached, and nothing to do with the weapon. It is the **ninth copy of `$81:8888`
 and the plainest re-spelling yet: health `$3C`, parked id `$3E`, `DEC $10` on
 death, `enemy_freeze` for `$5D`, `enemy_survived_react` for a survivor, and one
 comparison no other copy has. `$81:ACA8  CMP #$0067 : BEQ` sends id `$67` straight
-into the death tail with no subtraction — `MONSTER_HIT_FATAL`'s mechanism at a
+into the death tail with no subtraction — `ANT_HIT_FATAL`'s mechanism at a
 different id — and `ENEMY_DAMAGE_TABLE` says what that is worth: `$67` costs 4
 ordinarily, so this is a middling weapon being made lethal rather than a strong one
 waved through.
@@ -7151,12 +7151,12 @@ ROM. `$78` has five immediate loads, none of them near shot code.
 
 **So the only zero-damage ids a shot can carry are `$5D` and `$5E`, and seven of
 the nine copies divert both of them before the subtraction.** `enemy_collide` and
-`enemy_b41c_collide` hand both to a routine of their own; `monster_collide`,
+`enemy_b41c_collide` hand both to a routine of their own; `ant_collide`,
 `enemy_d7f6_collide`, `enemy_9b6b_collide` and `enemy_9063_collide` divert `$5D`
 and give `$5E` the death tail with no subtraction at all; `enemy_ac92_collide`
 sends one to `enemy_freeze` and the other to `enemy_bubble_react`. Nothing that
 reaches their `CMP` can arrive with a zero. **`enemy_no_damage`,
-`monster_no_damage`, `b41c_no_damage`, `d7f6_no_damage`, `d9b6b_no_damage`,
+`ant_no_damage`, `b41c_no_damage`, `d7f6_no_damage`, `d9b6b_no_damage`,
 `d9063_no_damage` and `dac92_no_damage` have no input, in the same sense
 `$80:FA26` has no movie.**
 
@@ -12898,7 +12898,7 @@ offers it every call the ROM makes there, which is what the 430/430 measures.
 `thread_call_handler` finds it by the address in the actor's record and runs an
 `else if` chain of twenty-six entries in `port/collide.c`, and a handler missing
 from *that* is a decline no matter how exactly the C matches. The file has this
-written down already, in the comment over `monster_collide`: `$81:C4A6` was
+written down already, in the comment over `ant_collide`: `$81:C4A6` was
 registered and undispatched for a whole round, passed 1,138 calls, and declined
 every one of them a level up. The note ends "a routine reached directly is
 checked, and the same routine reached through a caller that does not know about
@@ -14724,7 +14724,7 @@ record gains 0.5 to 1.2 points. Without the vblank jobs' DMA it is **86.5%**,
 from 85.7%. The residue goes from 60.3 to 51.8 million instructions of work.
 What is left, by family: callable routines 85.0%, thread bodies 7.4%, vblank
 jobs 4.5%, the frame 3.1%. The top rows are the NMI's own instructions at
-`$80:8199` and `$80:816C`, then `$81:BEE3 monster_chase` at 2.5%, `$81:8A5C`
+`$80:8199` and `$80:816C`, then `$81:BEE3 ant_chase` at 2.5%, `$81:8A5C`
 at 2.4% and `$80:D4F4` at 2.0%.
 
 What the new rows are still charged is their exits: each `JSR`, `JSL` and
@@ -14789,11 +14789,11 @@ look for a tile to leap. The leap is its own state and is declined to the
 ROM.
 
 * **Only V can outlive it, and only after giving up.** The thread follows
-  the chase with `monster_seek` or `monster_deliver`, and both set N, Z and C
-  first. `monster_seek`'s scan sets V too whenever it matches someone, which
+  the chase with `ant_seek` or `ant_deliver`, and both set N, Z and C
+  first. `ant_seek`'s scan sets V too whenever it matches someone, which
   after a step it always does. So the shim claims no register on a step and
   the random number generator's V on a give-up.
-* **Checked.** `verify -r monster_chase`: 22,659 calls over the 11 corpus
+* **Checked.** `verify -r ant_chase`: 22,659 calls over the 11 corpus
   movies that reach it, and 24,102 over all 56 level records, with 0
   diverged and 15 declined. The six levels with the monster are the only
   ones that reach it. Every branch is taken, the leap 16 times.
@@ -15063,7 +15063,7 @@ round left at means. Three things turned up on the way.
 `JSL`s, because `camera_follow` is. `tools/verify_corpus.ps1 -Lockstep`
 leaves it to the ROM with `camera_follow`, for the reason given there.
 
-Still at means: `monster_chase`, where `tile_attrs_at_pixel` is, and
+Still at means: `ant_chase`, where `tile_attrs_at_pixel` is, and
 `player_walk`.
 
 ### The poses
@@ -18540,11 +18540,11 @@ instruction after each wait's branch is the ROM's still.
 
 After the waits, the commonest place for the core to take over was this:
 
-    $81:C355  JSR $BB75     ; monster_seek, which is ported
-    $81:C358  JSR $C16B     ; monster_anim, which is ported
+    $81:C355  JSR $BB75     ; ant_seek, which is ported
+    $81:C358  JSR $C16B     ; ant_anim, which is ported
 
-`monster_chase` returns to `$C355`. The core is asked for the `JSR`, and
-`monster_seek` takes the entry it goes to. Then again for the next. Two
+`ant_chase` returns to `$C355`. The core is asked for the `JSR`, and
+`ant_seek` takes the entry it goes to. Then again for the next. Two
 instructions a frame for each monster, and 137,494 takeovers over the
 survey were of that kind: one instruction, with a port on both sides.
 
@@ -18555,7 +18555,7 @@ There were three ways to be rid of them.
   address nobody has looked at would pass through the harness silently.
 * **One stretch for the whole turn**, calling the ports as C functions.
   That is how the small threads are done (`stepper_frame`). It needs every
-  callee priced exactly, and `monster_seek` and `monster_anim` are older
+  callee priced exactly, and `ant_seek` and `ant_anim` are older
   ports with a mean for a cost.
 * **A row for the instruction.** This is what was done.
 
@@ -18566,7 +18566,7 @@ that first, and the link is made when the `RTI` comes back.
 
 Why a row and not a rule: step 2's driver looks every address up. At
 `$81:C355` it has to find something, and what it finds is the statement
-that the thread calls `monster_seek` here and goes on at `$C358`.
+that the thread calls `ant_seek` here and goes on at `$C358`.
 
 A link is safe wherever its instruction is one of the six. The harness
 makes the same instruction the core would, at the same cost, whoever was
@@ -18574,26 +18574,26 @@ running before it. `cosim_init` refuses a link on anything else.
 
 ### A thread as stretches
 
-`port/monster_thread.h` is the first thread written this way from end to
+`port/ant_thread.h` is the first thread written this way from end to
 end. Each stretch runs from where a call comes back to the next call, and
 the calls are links:
 
 | Stretch | From | To |
 |---|---|---|
-| `monster_loaded` | its weight on the load | `JSL thread_set_handler` |
-| `monster_sleeps` | `LDA #$0001` | `JSL thread_yield` |
-| `monster_woke` | the sleep's return | the `RTS` that goes to the state |
-| `monster_turned` | `LDA $2A` after its picture | the sleep, the drop, or the end |
-| `monster_dropped` | a killed one's record | its sound |
-| `monster_ends` | its weight off the load | `JSL actor_slot_free` |
-| `monster_freed` | `LDA $28` | the second free, or the `RTL` |
+| `ant_loaded` | its weight on the load | `JSL thread_set_handler` |
+| `ant_sleeps` | `LDA #$0001` | `JSL thread_yield` |
+| `ant_woke` | the sleep's return | the `RTS` that goes to the state |
+| `ant_turned` | `LDA $2A` after its picture | the sleep, the drop, or the end |
+| `ant_dropped` | a killed one's record | its sound |
+| `ant_ends` | its weight off the load | `JSL actor_slot_free` |
+| `ant_freed` | `LDA $28` | the second free, or the `RTL` |
 
 Each has its cost from `tools/cycles816.py` and is checked per call like
 any stretch with exits. The three copies share the functions and differ by
 a table row.
 
-An exit may be another stretch's entry. `monster_turned` leaves at the
-sleep's `LDA #$0001` when the turn goes on, and `monster_sleeps` begins
+An exit may be another stretch's entry. `ant_turned` leaves at the
+sleep's `LDA #$0001` when the turn goes on, and `ant_sleeps` begins
 there. `leave` does nothing at an entry, so the next step is the next
 port.
 
@@ -18691,11 +18691,11 @@ Over the same 110 sessions the core executes 4,091,951 instructions
 where it executed 6,805,266, and takes over 264,938 times where it
 did 411,336, at 852 places where there were 883.
 
-## The big monster's states (2026-10-10)
+## The giant ant's states (2026-10-10)
 
 ### One stretch a state
 
-The monster's thread (`port/monster_thread.h`) was cut at every call,
+The monster's thread (`port/ant_thread.h`) was cut at every call,
 because two of the routines it calls are priced by a mean. Its states
 are not. A step asks four things:
 
@@ -18711,7 +18711,7 @@ into it to its own `RTS` out. `$81:BE71` makes two step tests and up to
 four calls, and is one row.
 
 The one call with a mean is `pictures_play`, in a leap. The leap stops on
-that `JSL` when the way it faces has pictures, and `monster_lands` is
+that `JSL` when the way it faces has pictures, and `ant_lands` is
 where it comes back.
 
 ### A loop of calls, priced by a tally
@@ -18724,7 +18724,7 @@ tiles each looked at. The price of a test depends on nothing else.
 
 ### Turning a decline into an exit
 
-`monster_chase` was written before stretches. It was a port with one
+`ant_chase` was written before stretches. It was a port with one
 return, and it turned the frame down when the monster would leap,
 because the leap was the ROM's. With the leap ported that is an exit:
 

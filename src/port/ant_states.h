@@ -1,7 +1,6 @@
-// The big monster's states: how it walks when it is not chasing anyone.
-// The big monster is the giant ant: see `port/monster.h`.
+// The giant ant's states: how it walks when it is not chasing anyone.
 //
-// `port/monster_thread.h` is the thread, which goes each frame to the
+// `port/ant_thread.h` is the thread, which goes each frame to the
 // routine whose address is at `$12`. `port/chase.h` is one of those. These
 // are the other three, with what they share:
 //
@@ -28,7 +27,7 @@
 // **A leap** (`$81:BCF1`) is over in the frame it begins. It lands past the
 // tile it leapt, and then 8 pixels further for as long as the ground there
 // is solid. Its pictures are the ROM's call to make: the stretch stops on
-// the `JSL pictures_play` when the way it faces has any, and `monster_lands`
+// the `JSL pictures_play` when the way it faces has any, and `ant_lands`
 // is where that comes back.
 //
 // **How one is set up** is here too, since it is what chooses the state it
@@ -38,22 +37,22 @@
 // one at `$81:BA78`. The copy that marches comes in at the top of the
 // screen, and `$81:BFA8` is whether there is room for it there.
 //
-// **What it picks up and puts down.** A monster that has caught somebody
+// **What it picks up and puts down.** An ant that has caught somebody
 // holds them as a record of its own, shown by a picture for their kind
 // (`$81:C050`). A killed one puts them back as what they were (`$81:C0E5`).
 // A kind with no picture, or nothing to be put back as, stops the ROM on a
-// branch to itself, and that is the ROM's to do: `monster_state_supported`.
+// branch to itself, and that is the ROM's to do: `ant_state_supported`.
 //
 // **Written as stretches**, like `port/boss_thread.h`: each makes the calls
 // whose cost is known to the cycle. The rest are the ROM's instructions and
 // the harness makes them: a record, a handler, pictures. Every stretch stops
-// on an instruction of the ROM's, and `monster_state_run` leaves that
+// on an instruction of the ROM's, and `ant_state_run` leaves that
 // address in `pc`.
 //
 // Port code: libc only.
 
-#ifndef PORT_MONSTER_STATES_H
-#define PORT_MONSTER_STATES_H
+#ifndef PORT_ANT_STATES_H
+#define PORT_ANT_STATES_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -64,97 +63,97 @@
 #include "port/terrain.h"
 #include "port/wram.h"
 
-#define MONSTER_STATES_BANK 0x81u
+#define ANT_STATES_BANK 0x81u
 
-// Fields on the monster's page, beyond those `port/monster.h` and
+// Fields on the ant's page, beyond those `port/ant.h` and
 // `port/chase.h` name.
-#define MONSTER_DP_LEFT_WAY 0x16    // the way to its left, while going round
-#define MONSTER_DP_LEFT_TURNS 0x1a  // left turns running
+#define ANT_DP_LEFT_WAY 0x16        // the way to its left, while going round
+#define ANT_DP_LEFT_TURNS 0x1a      // left turns running
 
-#define MONSTER_DP_SPAWN_X 0x00      // where it was spawned
-#define MONSTER_DP_SPAWN_Y 0x02
-#define MONSTER_DP_HEALTH 0x22
-#define MONSTER_DP_HITS 0x7e         // counted towards a stagger
+#define ANT_DP_SPAWN_X 0x00          // where it was spawned
+#define ANT_DP_SPAWN_Y 0x02
+#define ANT_DP_HEALTH 0x22
+#define ANT_DP_HITS 0x7e             // counted towards a stagger
 
 // The states, as `$12` holds them.
-#define MONSTER_STATE_GOING_ROUND 0xbe71u
-#define MONSTER_STATE_LEAPING 0xbd01u
-#define MONSTER_STATE_MARCHING 0xbfcdu
+#define ANT_STATE_GOING_ROUND 0xbe71u
+#define ANT_STATE_LEAPING 0xbd01u
+#define ANT_STATE_MARCHING 0xbfcdu
 
 // A new one's record.
-#define MONSTER_FIRST_PICTURE 0xf883u
-#define MONSTER_COLLIDE_ID 0x0004u
+#define ANT_FIRST_PICTURE 0xf883u
+#define ANT_COLLIDE_ID 0x0004u
 
 // The two kinds: the usual one, and the faster one that takes more killing.
-#define MONSTER_USUAL_ATTR 0x0c00u
-#define MONSTER_USUAL_HEALTH 0x0009u
-#define MONSTER_USUAL_STEPS 0xb991u
-#define MONSTER_USUAL_PICTURES 0xba64u
-#define MONSTER_FAST_HEALTH 0x0013u
-#define MONSTER_FAST_PICTURES 0xba9fu
+#define ANT_USUAL_ATTR 0x0c00u
+#define ANT_USUAL_HEALTH 0x0009u
+#define ANT_USUAL_STEPS 0xb991u
+#define ANT_USUAL_PICTURES 0xba64u
+#define ANT_FAST_HEALTH 0x0013u
+#define ANT_FAST_PICTURES 0xba9fu
 
 // One that marches starts facing down.
-#define MONSTER_WAY_DOWN 0x000au
+#define ANT_WAY_DOWN 0x000au
 
 // What it holds: a record of its own, a little off the ground. Its picture
 // and what it is put back as are by its kind, less the first kind there is.
-#define MONSTER_HELD_FIRST_KIND 0x000cu
-#define MONSTER_HELD_HEIGHT 0x0008u
-#define MONSTER_HELD_PICTURES 0xc095u   // 0: none, and the ROM stops
-#define MONSTER_HELD_META_BANK 0x008fu
-#define MONSTER_PUT_BACK_AS 0xc11bu     // `$FFFF`: nothing, likewise
+#define ANT_HELD_FIRST_KIND 0x000cu
+#define ANT_HELD_HEIGHT 0x0008u
+#define ANT_HELD_PICTURES 0xc095u       // 0: none, and the ROM stops
+#define ANT_HELD_META_BANK 0x008fu
+#define ANT_PUT_BACK_AS 0xc11bu         // `$FFFF`: nothing, likewise
 
 // A way is a direction doubled, 2 for up and round by the clock to 16. A
 // quarter turn is two directions.
-#define MONSTER_QUARTER_TURN 0x0004u
-#define MONSTER_LEFT_TURNS_MOST 0x0005u
+#define ANT_QUARTER_TURN 0x0004u
+#define ANT_LEFT_TURNS_MOST 0x0005u
 
 // A leap, by the way it faces times two. `PICTURES` and `FLAGS` are a pair:
 // the pictures to play, or none, and what to do to its record's flags, which
 // is to set the bits of a positive word and keep those of a negative one.
-#define MONSTER_LEAP_PICTURES 0xbd72u
-#define MONSTER_LEAP_FLAGS 0xbd74u
-#define MONSTER_LEAP_LANDING 0xbdc6u  // where it lands, from where it is
-#define MONSTER_LEAP_FURTHER 0xbdeau  // ...and each try past that
+#define ANT_LEAP_PICTURES 0xbd72u
+#define ANT_LEAP_FLAGS 0xbd74u
+#define ANT_LEAP_LANDING 0xbdc6u      // where it lands, from where it is
+#define ANT_LEAP_FURTHER 0xbdeau      // ...and each try past that
 
 // Where each stretch begins.
-#define MONSTER_SET_UP_PC 0x81b9fdu       // after its record
-#define MONSTER_HOLDS_NOTHING_PC 0x81ba34u  // after its handler
-#define MONSTER_USUAL_KIND_PC 0x81ba46u
-#define MONSTER_FAST_KIND_PC 0x81ba78u
-#define MONSTER_ROOM_PC 0x81bfa8u
-#define MONSTER_MARCH_BEGINS_PC 0x81bfc2u
-#define MONSTER_PICKS_UP_PC 0x81c054u     // after the record for it
-#define MONSTER_PUTS_DOWN_PC 0x81c0e5u
-#define MONSTER_PUT_DOWN_PC 0x81c105u     // after it is put back
-#define MONSTER_HOLDS_NONE_PC 0x81c10bu   // after its record is freed
-#define MONSTER_WANDERS_OFF_PC 0x81bce1u
-#define MONSTER_LEAPS_PC 0x81bcf1u
-#define MONSTER_LANDS_PC 0x81bd1eu  // after its pictures
-#define MONSTER_WALKING_PC 0x81be14u
-#define MONSTER_GOING_ROUND_PC 0x81be71u
-#define MONSTER_MARCHING_PC 0x81bfcdu
+#define ANT_SET_UP_PC 0x81b9fdu           // after its record
+#define ANT_HOLDS_NOTHING_PC 0x81ba34u      // after its handler
+#define ANT_USUAL_KIND_PC 0x81ba46u
+#define ANT_FAST_KIND_PC 0x81ba78u
+#define ANT_ROOM_PC 0x81bfa8u
+#define ANT_MARCH_BEGINS_PC 0x81bfc2u
+#define ANT_PICKS_UP_PC 0x81c054u         // after the record for it
+#define ANT_PUTS_DOWN_PC 0x81c0e5u
+#define ANT_PUT_DOWN_PC 0x81c105u         // after it is put back
+#define ANT_HOLDS_NONE_PC 0x81c10bu       // after its record is freed
+#define ANT_WANDERS_OFF_PC 0x81bce1u
+#define ANT_LEAPS_PC 0x81bcf1u
+#define ANT_LANDS_PC 0x81bd1eu      // after its pictures
+#define ANT_WALKING_PC 0x81be14u
+#define ANT_GOING_ROUND_PC 0x81be71u
+#define ANT_MARCHING_PC 0x81bfcdu
 
 // Where one stops: a call the harness makes, or an `RTS` to the thread.
-#define MONSTER_NO_HANDLER_PC 0x81ba30u     // `JSL thread_set_handler`
-#define MONSTER_SET_UP_RTS_PC 0x81ba45u
-#define MONSTER_USUAL_PICTURES_PC 0x81ba5du // `JSL pictures_play`
-#define MONSTER_FAST_PICTURES_PC 0x81ba98u
-#define MONSTER_ROOM_RTS_PC 0x81bfc1u
-#define MONSTER_MARCH_BEGUN_RTS_PC 0x81bfccu
-#define MONSTER_PUT_BACK_PC 0x81c101u       // `JSL $80C97F`
-#define MONSTER_FREE_HELD_PC 0x81c107u      // `JSL actor_slot_free`
-#define MONSTER_PUT_DOWN_RTS_PC 0x81c11au
-#define MONSTER_LEAP_PICTURES_PC 0x81bd1au  // `JSL pictures_play`
-#define MONSTER_WALK_BEGUN_RTS_PC 0x81be13u
-#define MONSTER_WALKED_RTS_PC 0x81be3du
-#define MONSTER_ROUND_BEGUN_RTS_PC 0x81be70u
-#define MONSTER_WENT_ROUND_RTS_PC 0x81bed6u
-#define MONSTER_MARCHED_RTS_PC 0x81bffbu
+#define ANT_NO_HANDLER_PC 0x81ba30u         // `JSL thread_set_handler`
+#define ANT_SET_UP_RTS_PC 0x81ba45u
+#define ANT_USUAL_PICTURES_PC 0x81ba5du // `JSL pictures_play`
+#define ANT_FAST_PICTURES_PC 0x81ba98u
+#define ANT_ROOM_RTS_PC 0x81bfc1u
+#define ANT_MARCH_BEGUN_RTS_PC 0x81bfccu
+#define ANT_PUT_BACK_PC 0x81c101u           // `JSL $80C97F`
+#define ANT_FREE_HELD_PC 0x81c107u          // `JSL actor_slot_free`
+#define ANT_PUT_DOWN_RTS_PC 0x81c11au
+#define ANT_LEAP_PICTURES_PC 0x81bd1au      // `JSL pictures_play`
+#define ANT_WALK_BEGUN_RTS_PC 0x81be13u
+#define ANT_WALKED_RTS_PC 0x81be3du
+#define ANT_ROUND_BEGUN_RTS_PC 0x81be70u
+#define ANT_WENT_ROUND_RTS_PC 0x81bed6u
+#define ANT_MARCHED_RTS_PC 0x81bffbu
 
 // The straight runs of the listing a stretch is made of, each named for where
 // it starts, with where it ends. `tools/price_runs.py` prices them.
-#define MONSTER_RUNS(X) \
+#define ANT_RUNS(X) \
   X(B9FD, 0x81ba30u) \
   X(BA34, 0x81ba45u) \
   X(BA46, 0x81ba5du) \
@@ -218,31 +217,31 @@
 // The calls and jumps between the stretches, which the harness makes: see
 // `CosimRoutine::link`. The first thread's two calls to be set up, and
 // `JMP $BCE1` after each kind's pictures.
-#define MONSTER_STATE_LINKS(X) \
+#define ANT_STATE_LINKS(X) \
   X(c201_set_up, "$81:C1FB", 0x81c1fbu) \
   X(c201_kind, "$81:C1FE", 0x81c1feu) \
   X(usual_kind_wanders, "$81:BA61", 0x81ba61u) \
   X(fast_kind_wanders, "$81:BA9C", 0x81ba9cu)
 
 typedef enum {
-#define X(from, to) MONSTER_RUN_##from,
-  MONSTER_RUNS(X)
+#define X(from, to) ANT_RUN_##from,
+  ANT_RUNS(X)
 #undef X
-  MONSTER_RUN_COUNT,
-  MONSTER_RUN_RTS = MONSTER_RUN_BC22,  // any `RTS`: they all cost the same
-} MonsterRun;
+  ANT_RUN_COUNT,
+  ANT_RUN_RTS = ANT_RUN_BC22,          // any `RTS`: they all cost the same
+} AntRun;
 
 // The most of each that one stretch makes.
-#define MONSTER_MAX_AT_POINTS 2
+#define ANT_MAX_AT_POINTS 2
 
 // What a stretch did, for the harness to price.
 typedef struct {
-  uint16_t runs[MONSTER_RUN_COUNT];
+  uint16_t runs[ANT_RUN_COUNT];
   uint16_t taken;  // branches taken
   // The ground tests, by whether the ground was solid and how many of the
   // six tiles each looked at. A leap makes as many as it takes to land.
   uint16_t grounds[2][TERRAIN_PROBE_COUNT + 1];
-  AtPointWork at_points[MONSTER_MAX_AT_POINTS];  // `actor_at_point`
+  AtPointWork at_points[ANT_MAX_AT_POINTS];      // `actor_at_point`
   int at_point_count;
   BoundsExit edge;  // `terrain_out_of_bounds`, if it `asked_edge`
   bool asked_edge;
@@ -254,19 +253,19 @@ typedef struct {
   // Overflow is the ROM's at the end, which it is not after a call that
   // does not say what it left there.
   bool v_known;
-} MonsterStatesWork;
+} AntStatesWork;
 
 // True if `pc` is where one of the stretches begins.
-bool monster_state_begins_at(uint32_t pc);
+bool ant_state_begins_at(uint32_t pc);
 
 // False where the ROM would stop on a branch to itself: the stretch at `pc`
-// is about what the monster on `page` holds, and that is of a kind with no
+// is about what the ant on `page` holds, and that is of a kind with no
 // picture, or with nothing to be put back as.
-bool monster_state_supported(const Wram* w, const Rom* rom, uint16_t page,
-                             uint32_t pc);
+bool ant_state_supported(const Wram* w, const Rom* rom, uint16_t page,
+                         uint32_t pc);
 
 // Run the stretch that begins at `c->pc`.
-void monster_state_run(Wram* w, const Rom* rom, PortCpu* c,
-                       MonsterStatesWork* k);
+void ant_state_run(Wram* w, const Rom* rom, PortCpu* c,
+                   AntStatesWork* k);
 
 #endif

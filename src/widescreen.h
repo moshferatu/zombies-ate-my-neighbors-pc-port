@@ -351,8 +351,8 @@
 // sibling `player_in_range` at `$80:B26B`, and the thread's leaving flag
 // decremented or incremented when it comes back empty -- finds seventeen of them
 // (`WS_ROM_WORDS`, below): both of the zombie's threads (`$81:87F8`, walking,
-// and `$81:88CA`, rising), the creature's `monster_seek` (`$81:BB93`; see
-// `port/monster.h`, which reads the word back out of the cartridge because it
+// and `$81:88CA`, rising), the creature's `ant_seek` (`$81:BB93`; see
+// `port/ant.h`, which reads the word back out of the cartridge because it
 // is ported), and fourteen more monsters' copies of the same three lines, all
 // `$00D0` but one `$0140` and one `$00F0`. The calls that load a reach and do
 // something *else* with the answer -- start a chase, wait for the players to
@@ -551,7 +551,7 @@ static const WsRomWord WS_ROM_WORDS[] = {
     // `LDA #$00D0` before each `JSL $80B2A5` or `$80B26B` whose empty answer
     // sets the thread's leaving flag. The zombie's two threads first,
     // `$81:8716` walking and `$81:8B46` rising; the creature's
-    // `monster_seek`, `$81:BB93`; then the rest in address order.
+    // `ant_seek`, `$81:BB93`; then the rest in address order.
     {0x08716u, 0xa9, 0x08717u, 0x00d0, 2},
     {0x08b46u, 0xa9, 0x08b47u, 0x00d0, 2},
     {0x0bb93u, 0xa9, 0x0bb94u, 0x00d0, 2},

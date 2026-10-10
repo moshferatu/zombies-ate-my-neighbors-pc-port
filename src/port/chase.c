@@ -1,11 +1,11 @@
-// $81:BEE3  monster_chase -- see port/chase.h.
+// $81:BEE3  ant_chase -- see port/chase.h.
 
 #include "port/chase.h"
 
 #include <stddef.h>
 
 #include "port/coverage.h"
-#include "port/monster.h"
+#include "port/ant.h"
 #include "port/rng.h"
 #include "port/terrain.h"
 
@@ -16,11 +16,11 @@ typedef struct {
 // Directions, as the game numbers them. See the header.
 enum { DIR_UP = 1, DIR_RIGHT = 3, DIR_DOWN = 5, DIR_LEFT = 7 };
 
-// One monster's chase this frame.
+// One ant's chase this frame.
 typedef struct {
   Wram* w;
   const Rom* rom;
-  uint16_t page;     // the monster's direct page
+  uint16_t page;     // the ant's direct page
   uint16_t record;   // ...and its display record
   bool leapt;        // found something to leap
   ChaseLog* log;     // may be NULL
@@ -39,15 +39,15 @@ static Point where_is(const Chase* k, uint16_t record) {
                  wram_r16(k->w, (uint16_t)(record + ACTOR_Y))};
 }
 
-// Where the monster is, as its page keeps it, and moving it there and on its
+// Where the ant is, as its page keeps it, and moving it there and on its
 // record together.
 static Point position(const Chase* k) {
-  return (Point){field(k, MONSTER_DP_X), field(k, MONSTER_DP_Y)};
+  return (Point){field(k, ANT_DP_X), field(k, ANT_DP_Y)};
 }
 
 static void move_to(Chase* k, Point p) {
-  set_field(k, MONSTER_DP_X, p.x);
-  set_field(k, MONSTER_DP_Y, p.y);
+  set_field(k, ANT_DP_X, p.x);
+  set_field(k, ANT_DP_Y, p.y);
   wram_w16(k->w, (uint16_t)(k->record + ACTOR_X), p.x);
   wram_w16(k->w, (uint16_t)(k->record + ACTOR_Y), p.y);
 }
@@ -125,8 +125,8 @@ static void give_up(Chase* k) {
   PORT_COVER(chase_gave_up);
   if (k->log) k->log->gave_up = true;
   const uint16_t dir = (uint16_t)((random_byte(k, true) & 3) * 2 + DIR_UP);
-  set_field(k, MONSTER_DP_FACING, (uint16_t)(dir * 2));
-  set_field(k, MONSTER_DP_STATE, MONSTER_STATE_WANDER);
+  set_field(k, ANT_DP_FACING, (uint16_t)(dir * 2));
+  set_field(k, ANT_DP_STATE, ANT_STATE_WANDER);
 }
 
 // The target is on a diagonal: close the smaller gap first. The halved gaps
@@ -151,7 +151,7 @@ static uint16_t line_up(Chase* k, Point me, Point target) {
   return negative(gap_y) ? DIR_UP : DIR_DOWN;
 }
 
-// May the monster stand at `p`? `$32` says which test refused: 0 for the
+// May the ant stand at `p`? `$32` says which test refused: 0 for the
 // ground, 1 for an actor.
 static bool can_stand_at(Chase* k, Point p) {
   set_field(k, CHASE_DP_BLOCKER, 0);
@@ -198,13 +198,13 @@ static ChaseOutcome step(Chase* k, Point me, uint16_t dir) {
 static void chase(Chase* k) {
   uint16_t dist;
   const uint16_t target = nearest_actor(k, position(k), &dist);
-  if (dist >= MONSTER_SEEK_NEAR) {
+  if (dist >= ANT_SEEK_NEAR) {
     give_up(k);
     return;
   }
-  set_field(k, MONSTER_DP_TARGET, target);
+  set_field(k, ANT_DP_TARGET, target);
 
-  // Within a pixel of lining up with the target, the monster snaps into
+  // Within a pixel of lining up with the target, the ant snaps into
   // line. Then it asks which way the target is, from wherever that left it.
   ActorSnapRegs snapped;
   actor_snap_to(k->w, k->record, target, &snapped);
@@ -215,8 +215,8 @@ static void chase(Chase* k) {
     k->log->bearing = bearing;
   }
   const Point me = where_is(k, k->record);
-  set_field(k, MONSTER_DP_X, me.x);
-  set_field(k, MONSTER_DP_Y, me.y);
+  set_field(k, ANT_DP_X, me.x);
+  set_field(k, ANT_DP_Y, me.y);
 
   uint16_t dir = bearing.a;
   const bool straight = (dir & 1) != 0;
@@ -227,7 +227,7 @@ static void chase(Chase* k) {
     PORT_COVER(chase_diagonal);
     dir = line_up(k, me, where_is(k, target));
   }
-  set_field(k, MONSTER_DP_FACING, (uint16_t)(dir * 2));
+  set_field(k, ANT_DP_FACING, (uint16_t)(dir * 2));
   set_field(k, CHASE_DP_STEP_INDEX, (uint16_t)(dir * 4));
 
   // Two pixels on the frames the generator's bit 1 is set. The carry it is
@@ -242,8 +242,8 @@ static void chase(Chase* k) {
     set_field(k, CHASE_DP_STEPS, field(k, CHASE_DP_USUAL_STEPS));
 }
 
-bool monster_chase(Wram* w, const Rom* rom, uint16_t page, ChaseLog* log) {
-  Chase k = {w, rom, page, wram_r16(w, (uint16_t)(page + MONSTER_DP_RECORD)),
+bool ant_chase(Wram* w, const Rom* rom, uint16_t page, ChaseLog* log) {
+  Chase k = {w, rom, page, wram_r16(w, (uint16_t)(page + ANT_DP_RECORD)),
              false, log};
   chase(&k);
   return k.leapt;

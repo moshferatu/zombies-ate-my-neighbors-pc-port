@@ -223,10 +223,10 @@ one that runs the frame to its NMI would be right too.
 
 **Links, the same day.** A call, a jump or a return that stands between
 two ports is a registry row of its own, a link, and the harness makes it.
-The big monster's thread is written that way: three of its four copies,
+The giant ant's thread is written that way: three of its four copies,
 as stretches from one call to the next. The places are 883 and the core
 executes 6,805,266 instructions over the survey. Most of what it runs
-now on levels 25 and 45 is the monster's three state routines and the
+now on levels 25 and 45 is the ant's three state routines and the
 boss's thread.
 
 **The big figure's thread, the same day.** Level 25's boss was two of
@@ -235,7 +235,7 @@ are ported, each state a C function that calls the ports it uses and
 stops only on a call with no exact price. The places are 852 and
 the core executes 4,091,951 instructions over the survey.
 
-**The big monster's states, 2026-10-10.** What it does when it is not
+**The giant ant's states, 2026-10-10.** What it does when it is not
 chasing, how one is set up and what it carries are ported, and the chase
 no longer turns a leap down. So is the job that shakes the screen under
 the boss. The places are 821 and the core executes 3,399,313

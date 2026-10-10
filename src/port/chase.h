@@ -1,8 +1,7 @@
-// The monster's chase: one frame of going after whoever is nearest.
-// The monster is the giant ant: see `port/monster.h`.
+// The ant's chase: one frame of going after whoever is nearest.
 //
-// `$81:BEE3` is one of the state bodies of the monster's thread (see
-// `port/monster.h`), the one `monster_seek` installs when something comes
+// `$81:BEE3` is one of the state bodies of the ant's thread (see
+// `port/ant.h`), the one `ant_seek` installs when something comes
 // within `$B4`. The thread reaches it through `$12` by a computed `RTS`, as it
 // reaches all its states, and it returns to the thread's loop with an `RTS`.
 // This is that body as readable C. It calls the scan, the bearing, the random
@@ -23,11 +22,11 @@
 //   generator falls, the step is two pixels instead of one.
 //
 // The step is refused by solid ground or by anyone standing where it lands. A
-// monster blocked by someone waits. A monster blocked by ground looks for a
+// ant blocked by someone waits. An ant blocked by ground looks for a
 // tile it can leap: one tile ahead or two, a tile with attribute bit 13, and
 // clear ground 48 to 56 pixels beyond it. With all three it leaps, and the
-// chase stops on the `JMP` to the leap: `monster_leaps`, in
-// `port/monster_states.h`. Without them it waits.
+// chase stops on the `JMP` to the leap: `ant_leaps`, in
+// `port/ant_states.h`. Without them it waits.
 //
 // ## Directions
 //
@@ -40,9 +39,9 @@
 // It writes WRAM exactly as the ROM does, scratch included. Of the registers,
 // nothing the chase leaves is read, and the reason is worth keeping.
 //
-// The thread's loop follows the chase with `monster_seek` or
-// `monster_deliver`. Both begin with arithmetic that sets N, Z and C before
-// anything reads them. `monster_seek`'s is `actor_nearest`, which runs an
+// The thread's loop follows the chase with `ant_seek` or
+// `ant_deliver`. Both begin with arithmetic that sets N, Z and C before
+// anything reads them. `ant_seek`'s is `actor_nearest`, which runs an
 // `ADC` only for an actor it matches. After a step it matches the one the
 // chase just found, because nothing between the two calls changes who is on
 // the board. After giving up, it may match nobody. Overflow can then survive
@@ -64,23 +63,23 @@
 #include "port/oam.h"  // ActorNearestWork, AtPointWork
 #include "port/wram.h"
 
-#define MONSTER_CHASE_PC 0x81bee3u  // entered by the thread's computed `RTS`
+#define ANT_CHASE_PC 0x81bee3u      // entered by the thread's computed `RTS`
 // Where it leaves: its own `RTS`, the walk's when it gave up, and the jump
 // to a leap.
-#define MONSTER_CHASE_RTS_PC 0x81bf98u
-#define MONSTER_CHASE_GAVE_UP_RTS_PC 0x81be13u
-#define MONSTER_CHASE_LEAPS_PC 0x81bfa5u  // `JMP $BCF1`
+#define ANT_CHASE_RTS_PC 0x81bf98u
+#define ANT_CHASE_GAVE_UP_RTS_PC 0x81be13u
+#define ANT_CHASE_LEAPS_PC 0x81bfa5u      // `JMP $BCF1`
 
 // The tables sit in the chase's own bank, which is where the thread keeps its
 // data bank.
 #define CHASE_BANK 0x81u
 
-// Fields on the monster's page, beyond those `port/monster.h` names.
+// Fields on the ant's page, beyond those `port/ant.h` names.
 #define CHASE_DP_NEXT_X 0x0e     // the point being tried
 #define CHASE_DP_NEXT_Y 0x10
 #define CHASE_DP_STEP_INDEX 0x18  // the direction times four, for the tables
 #define CHASE_DP_BLOCKER 0x32    // 0 when ground refused the step, 1 when an actor did
-#define CHASE_DP_GAP_X 0x34      // target less monster, when the bearing was diagonal
+#define CHASE_DP_GAP_X 0x34      // target less ant, when the bearing was diagonal
 #define CHASE_DP_GAP_Y 0x36
 #define CHASE_DP_STEPS 0x38      // the step table in use this frame
 #define CHASE_DP_USUAL_STEPS 0x3a  // ...and the one it goes back to
@@ -88,13 +87,13 @@
 // `LDA #$B9B5`: the step table at two pixels a frame.
 #define CHASE_FAST_STEPS 0xb9b5u
 // `LDA #$BE14`: the wander state, installed on giving up.
-#define MONSTER_STATE_WANDER 0xbe14u
+#define ANT_STATE_WANDER 0xbe14u
 
 // The leap test's tables, in `CHASE_BANK`: where to look for a tile to leap,
-// and how far past it the monster lands. Both indexed by direction times four.
+// and how far past it the ant lands. Both indexed by direction times four.
 #define CHASE_LEAP_PROBE 0xbc99u
 #define CHASE_LEAP_LANDING 0xbcbdu
-// Attribute bit 13: a tile a monster can leap.
+// Attribute bit 13: a tile an ant can leap.
 #define CHASE_LEAPABLE 0x2000u
 
 // For the harness, and only for it: what the chase did, which is what it
@@ -131,8 +130,8 @@ typedef struct {
   int grounds;
 } ChaseLog;
 
-// Chase for one frame, for the monster whose page is `page`. `log` may be
+// Chase for one frame, for the ant whose page is `page`. `log` may be
 // NULL. True if it found something to leap, and the leap is next.
-bool monster_chase(Wram* w, const Rom* rom, uint16_t page, ChaseLog* log);
+bool ant_chase(Wram* w, const Rom* rom, uint16_t page, ChaseLog* log);
 
 #endif

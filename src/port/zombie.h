@@ -1,7 +1,7 @@
 // The zombies: how they walk, follow walls, notice people and chase them.
 //
 // Every zombie is a thread, and its loop is the same small state machine the
-// monster has (see `port/monster.h`): yield two ticks, decide, run the state
+// giant ant has (see `port/ant.h`): yield two ticks, decide, run the state
 // body `$14` names, animate, and go round again. A state body is entered by a
 // computed `RTS` and returns with one. This is all of it but the loop itself
 // as readable C: three state bodies, the decision before them and the

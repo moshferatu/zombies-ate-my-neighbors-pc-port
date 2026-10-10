@@ -513,7 +513,7 @@ typedef struct {
   // a load, a compare and a branch is read off the listing.
   bool writes_nothing;
   // A link: one instruction of the ROM's that only moves control, standing
-  // between two ports. `JSR monster_seek` in a thread's turn is one: the port
+  // between two ports. `JSR ant_seek` in a thread's turn is one: the port
   // before it returns to it and the port after it begins where it goes. There
   // is nothing to run, so the row has no `run`. `entry` is the instruction,
   // and the harness makes it as it makes the one a port leaves by (`leave`).

@@ -261,8 +261,8 @@ $82:F4EF  actor_f4ef_collide   # sixteen bytes: ids $05 and $06 -- the two playe
                                # nothing else -- latch into $18. Never drawn
 $82:F3A7  actor_f4ef_seed      # STZ $18, four instructions before it installs the handler
 $82:F4C6  actor_f4ef_poll      # LDA $18 : BEQ $F4AF — the body waiting to be stood on
-$81:C440  monster_c440_collide # $81:C4A6 one stage earlier: same page, $81:8506 and $81:847E instead
-$81:C321  monster_c440_body    # installs it, then JMP $C3B5 into the body that installs $81:C4A6
+$81:C440  ant_c440_collide # $81:C4A6 one stage earlier: same page, $81:8506 and $81:847E instead
+$81:C321  ant_c440_body        # installs it, then JMP $C3B5 into the body that installs $81:C4A6
 $81:D7F6  enemy_d7f6_collide   # level 17's; health $0C = 1, $5E kills outright, death is DEC $0A
 $82:9A6D  enemy_9a6d_collide   # $81:D7F6's 64 bytes again, byte for byte; records 0 and 51
 $82:AA2E  boss_aa2e_collide    # $82:9660's shape: health $48 = 75, $4C flash, $60 immune, DEC $46 dies
@@ -530,7 +530,7 @@ $80:F327  actor_publish_pos    # copies the thread's $30/$32 into its actor
 $81:8024  nearest_player_dist  # max(|dx|,|dy|) to the nearer player, $FFFF for
                                # one who is not there
 
-# --- Code: a step, a wobble and the monster's walk ---------------------------
+# --- Code: a step, a wobble and the giant ant's walk ---------------------------
 $80:950B  wave_thread          # yield 1 : JSR wave_hdma_build, until $70 goes
                                # negative or either player presses Start
 $81:9BF3  actor_step_bearing   # A = doubled direction; steps 2px per axis on
@@ -538,30 +538,30 @@ $81:9BF3  actor_step_bearing   # A = doubled direction; steps 2px per axis on
                                # own by terrain_blocked_enemy, out_of_bounds and
                                # actor_at_point
 $81:9C62  step_bearing_table   # 9 x {i16 dx, i16 dy}, clockwise from up
-$81:C201  monster_thread       # charges $1C to spawn_load, installs $81:C440
-$81:C16B  monster_anim         # three frames a leg, four legs, nine directions
+$81:C201  ant_thread           # charges $1C to spawn_load, installs $81:C440
+$81:C16B  ant_anim             # three frames a leg, four legs, nine directions
                                # of which three draw the mirror of another three
-$81:C1B1  monster_frame_table  # 9 x 4 x u16 metasprite pointers, bank $90
-$81:C00B  monster_place_carried # puts $28's record beside the monster, offset by
+$81:C1B1  ant_frame_table      # 9 x 4 x u16 metasprite pointers, bank $90
+$81:C00B  ant_place_carried    # puts $28's record beside the ant, offset by
                                # facing; $FFFF means empty-handed
-$81:C026  monster_carry_table  # 9 x {i16 dx, i16 dy}
-$81:BEDA  monster_state_beda   # LDA #$BEE3 : STA $12 : RTS — installs the next
+$81:C026  ant_carry_table      # 9 x {i16 dx, i16 dy}
+$81:BEDA  ant_state_beda       # LDA #$BEE3 : STA $12 : RTS — installs the next
                                # state, which the thread reaches by a computed
                                # RTS through $12. 469,168 instructions over the
                                # corpus were credited to $81:BC3D for want of
                                # this line
 
-# --- Code: the monster decides where to go, and the big figure's hitboxes ----
-$81:BB75  monster_seek         # one actor_nearest scan asked at two ranges:
+# --- Code: the ant decides where to go, and the big figure's hitboxes --------
+$81:BB75  ant_seek             # one actor_nearest scan asked at two ranges:
                                # inside $B4 chase it, beyond $D0 ask whether
                                # either player is still about and give up if not
-$81:BBA4  monster_deliver      # the carrying state's: within 16px of the spawn
+$81:BBA4  ant_deliver          # the carrying state's: within 16px of the spawn
                                # point, free $28 and clear $26; then seek's tail
-$81:BEE3  monster_chase        # the state $81:BEDA installs, entered by the
+$81:BEE3  ant_chase            # the state $81:BEDA installs, entered by the
                                # thread's computed RTS. 439,308 instructions
                                # over six movies and nothing calls it
-$81:B9F9  monster_setup        # writes the spawn point to $0A/$0C *and* to
-                               # $2E/$30, which is what monster_deliver measures
+$81:B9F9  ant_setup            # writes the spawn point to $0A/$0C *and* to
+                               # $2E/$30, which is what ant_deliver measures
                                # its way home against
 $82:9265  boss_place_parts     # drags the four records at $24..$2A to boss_x/
                                # boss_y plus a fixed offset, mirrored by $36

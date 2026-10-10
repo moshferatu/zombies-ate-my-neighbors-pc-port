@@ -347,31 +347,31 @@
   /* The loops the game waits in -- see port/hold.h. */                         \
   X(hold_over,        "hold_turn",          "what a loop waited for has happened") \
   X(hold_goes_on,     "hold_turn",          "...or not yet, and it goes round") \
-  /* The big monster's thread -- see port/monster_thread.h. */                  \
-  X(monster_goes_on,  "monster_turned",     "nothing in `$2A`: another frame") \
-  X(monster_leaves,   "monster_turned",     "`$2A` positive: nobody near, and it goes quietly") \
-  X(monster_killed,   "monster_turned",     "a fatal thing held, or `$2A` negative") \
-  X(monster_frees_held, "monster_freed",    "it ends holding a record, which is freed too") \
-  /* The big monster's states -- see port/monster_states.h. */                  \
-  X(monster_no_room_ground, "monster_asks_for_room", "solid ground at the top of the screen") \
-  X(monster_no_room_edge, "monster_asks_for_room", "...or that is past the level's edge") \
-  X(monster_picks_up, "monster_picks_up",   "somebody caught: a record for them, by their kind") \
-  X(monster_puts_down, "monster_puts_down", "a killed one puts down who it holds") \
-  X(monster_walks,    "monster_walking",    "a step the way it faces") \
-  X(monster_walk_refused, "monster_walking", "...refused, so it goes round") \
-  X(monster_goes_round, "monster_going_round", "a step along what stopped it") \
-  X(monster_turns_left, "monster_going_round", "nothing on its left any more: it turns that way") \
-  X(monster_turns_right, "monster_going_round", "the step refused: a quarter turn to its right") \
-  X(monster_circling, "monster_going_round", "five left turns running") \
-  X(monster_wanders_off, "monster_wanders_off", "one of the four straight ways, by a draw") \
-  X(monster_marches,  "monster_marching",   "a step the way it was sent") \
-  X(monster_march_met_edge, "monster_marching", "...refused by the level's edge") \
-  X(monster_march_waits, "monster_marching", "...or by ground with nothing to leap") \
-  X(monster_nothing_leapable, "monster_marching", "no tile to leap, one ahead or two") \
-  X(monster_no_landing, "monster_marching", "a tile to leap, and solid ground past it") \
-  X(monster_leaps,    "monster_leaps",      "a leap begins") \
-  X(monster_leaps_plain, "monster_leaps",   "...with no pictures of its own") \
-  X(monster_lands_further, "monster_lands", "solid where it would land: 8 pixels on") \
+  /* The giant ant's thread -- see port/ant_thread.h. */                        \
+  X(ant_goes_on,      "ant_turned",         "nothing in `$2A`: another frame") \
+  X(ant_leaves,       "ant_turned",         "`$2A` positive: nobody near, and it goes quietly") \
+  X(ant_killed,       "ant_turned",         "a fatal thing held, or `$2A` negative") \
+  X(ant_frees_held, "ant_freed",            "it ends holding a record, which is freed too") \
+  /* The giant ant's states -- see port/ant_states.h. */                        \
+  X(ant_no_room_ground, "ant_asks_for_room", "solid ground at the top of the screen")         \
+  X(ant_no_room_edge, "ant_asks_for_room", "...or that is past the level's edge")         \
+  X(ant_picks_up, "ant_picks_up",           "somebody caught: a record for them, by their kind") \
+  X(ant_puts_down, "ant_puts_down", "a killed one puts down who it holds")         \
+  X(ant_walks,        "ant_walking",        "a step the way it faces") \
+  X(ant_walk_refused, "ant_walking", "...refused, so it goes round")         \
+  X(ant_goes_round, "ant_going_round", "a step along what stopped it")         \
+  X(ant_turns_left, "ant_going_round", "nothing on its left any more: it turns that way")         \
+  X(ant_turns_right, "ant_going_round", "the step refused: a quarter turn to its right")         \
+  X(ant_circling, "ant_going_round", "five left turns running")         \
+  X(ant_wanders_off, "ant_wanders_off", "one of the four straight ways, by a draw")         \
+  X(ant_marches,      "ant_marching",       "a step the way it was sent") \
+  X(ant_march_met_edge, "ant_marching", "...refused by the level's edge")         \
+  X(ant_march_waits, "ant_marching", "...or by ground with nothing to leap")         \
+  X(ant_nothing_leapable, "ant_marching", "no tile to leap, one ahead or two")         \
+  X(ant_no_landing, "ant_marching", "a tile to leap, and solid ground past it")         \
+  X(ant_leaps,        "ant_leaps",          "a leap begins") \
+  X(ant_leaps_plain, "ant_leaps",           "...with no pictures of its own") \
+  X(ant_lands_further, "ant_lands", "solid where it would land: 8 pixels on")         \
   /* The big figure's thread on level 25 -- see port/boss_thread.h. */          \
   X(boss_strides,     "boss_turn",          "its stride's next picture, every ninth frame") \
   X(boss_stride_waits, "boss_turn",         "...due, but the last picture has not gone up") \
@@ -828,20 +828,20 @@
   X(object_taken,     "object_collide",      "one of the three ids that pick an object up") \
   X(object_ignore,    "object_collide",      "an id that touches an object without taking it") \
                                                                                 \
-  /* $81:C4A6 monster_collide — the second enemy subsystem. */                  \
-  X(monster_ignore_low,  "monster_collide",  "an id below the object range, which it ignores") \
-  X(monster_ignore_high, "monster_collide",  "an id above the object range and below a shot's") \
-  X(monster_take,     "monster_collide",     "an object taken out from under whoever else wanted it") \
-  X(monster_latched,  "monster_collide",     "...refused, because something already happened to this one") \
-  X(monster_latch_alt,"monster_collide",     "...latching $46 rather than $42, on the one value that redirects") \
-  X(monster_hit,      "monster_collide",     "a weapon shot, which is the only id it takes damage from") \
-  X(monster_special,  "monster_collide",     "id $5D, which has a routine of its own — declined") \
-  X(monster_died,     "monster_collide",     "a hit that took its last health") \
-  X(monster_fatal_id, "monster_collide",     "...id $5E, which skips the subtraction and dies outright") \
-  X(monster_no_damage,"monster_collide",     "a hit whose damage-table entry is zero — no shot can carry one here") \
-  X(monster_survived, "monster_collide",     "one that lived through a hit")   X(monster_react_already,"monster_survived_react","a second hit while ACTOR_ATTR still holds the first")   X(monster_react_splice,"monster_survived_react","a JSL frame written into a suspended thread's stack") \
-  X(monster_kill_award,"monster_collide",    "$81:BBEB paid out; its guard is the parked id being zero") \
-  X(monster_kill_free,"monster_collide",     "...and that guard refusing — killed by something with no id, so worth nothing") \
+  /* $81:C4A6 ant_collide — the second enemy subsystem. */                      \
+  X(ant_ignore_low,      "ant_collide",      "an id below the object range, which it ignores") \
+  X(ant_ignore_high, "ant_collide",          "an id above the object range and below a shot's") \
+  X(ant_take,         "ant_collide",         "an object taken out from under whoever else wanted it") \
+  X(ant_latched,      "ant_collide",         "...refused, because something already happened to this one") \
+  X(ant_latch_alt,"ant_collide",             "...latching $46 rather than $42, on the one value that redirects") \
+  X(ant_hit,          "ant_collide",         "a weapon shot, which is the only id it takes damage from") \
+  X(ant_special,      "ant_collide",         "id $5D, which has a routine of its own — declined") \
+  X(ant_died,         "ant_collide",         "a hit that took its last health") \
+  X(ant_fatal_id, "ant_collide",             "...id $5E, which skips the subtraction and dies outright") \
+  X(ant_no_damage,"ant_collide",             "a hit whose damage-table entry is zero — no shot can carry one here") \
+  X(ant_survived, "ant_collide",             "one that lived through a hit")   X(ant_react_already,"ant_survived_react","a second hit while ACTOR_ATTR still holds the first")           X(ant_react_splice,"ant_survived_react","a JSL frame written into a suspended thread's stack")         \
+  X(ant_kill_award,"ant_collide",            "$81:BBEB paid out; its guard is the parked id being zero") \
+  X(ant_kill_free,"ant_collide",             "...and that guard refusing — killed by something with no id, so worth nothing") \
                                                                                 \
   /* $81:B41C enemy_b41c_collide — the third copy of the same subsystem. */      \
   X(b41c_ignore,      "enemy_b41c_collide",  "an id below a weapon shot's, which it ignores") \
@@ -869,8 +869,8 @@
                                                                                 \
   /* $81:C440 — the same routine one stage earlier. Only the two branches that \
      differ from $81:C4A6's are marked; everything else is one shared body. */   \
-  X(c440_special,     "monster_c440_collide","id $5D, which goes to $81:847E rather than $81:BB05 — declined") \
-  X(c440_survived,    "monster_c440_collide","a survivor, which flashes through $81:8506 rather than $81:BAB3") \
+  X(c440_special,     "ant_c440_collide","id $5D, which goes to $81:847E rather than $81:BB05 — declined")     \
+  X(c440_survived,    "ant_c440_collide","a survivor, which flashes through $81:8506 rather than $81:BAB3")     \
                                                                                 \
   /* $80:F9BE and $80:F979 — two more of the player table's state-gate group. */ \
   X(player_queue_entry,"player_collide",     "id $0A: $80:F9BE, the state gate with its store inlined") \
@@ -1367,34 +1367,34 @@
   X(bearing_took_x,   "actor_step_bearing",  "the X step was taken, so the Y step is tested from the new column") \
   X(bearing_took_y,   "actor_step_bearing",  "the Y step was taken") \
                                                                                    \
-  /* $81:C16B, $81:C00B — the big monster's walk cycle and what it carries. */      \
-  X(monster_anim_hold,"monster_anim",        "the leg timer has not expired, so $2C is last frame's facing") \
-  X(monster_anim_advance,"monster_anim",     "...or it has, and the walk takes its next leg") \
-  X(monster_anim_mirror,"monster_anim",      "a west-facing direction: set the flip bit and return without placing the load") \
-  X(monster_anim_plain,"monster_anim",       "...or one of the other six, which clears it and does place it") \
-  X(monster_empty_handed,"monster_place_carried","holding nothing -- $28 is $FFFF and the TAX never happens") \
-  X(monster_carrying, "monster_place_carried","...or holding something, which gets put beside whichever way it faces") \
+  /* $81:C16B, $81:C00B — the giant ant's walk cycle and what it carries. */        \
+  X(ant_anim_hold,"ant_anim",                "the leg timer has not expired, so $2C is last frame's facing") \
+  X(ant_anim_advance,"ant_anim",             "...or it has, and the walk takes its next leg") \
+  X(ant_anim_mirror,"ant_anim",              "a west-facing direction: set the flip bit and return without placing the load") \
+  X(ant_anim_plain,"ant_anim",               "...or one of the other six, which clears it and does place it") \
+  X(ant_empty_handed,"ant_place_carried","holding nothing -- $28 is $FFFF and the TAX never happens")         \
+  X(ant_carrying, "ant_place_carried","...or holding something, which gets put beside whichever way it faces")         \
                                                                                    \
-  /* $81:BB75, $81:BBA4 — the two states that decide where the monster goes. */     \
-  X(monster_board_far,"monster_seek",        "nothing of the four ids within $D0, so ask about the two players instead") \
-  X(monster_player_about,"monster_seek",     "...and one of them is close enough, so the creature stays") \
-  X(monster_gives_up, "monster_seek",        "...or neither is, and INC $2A ends the thread at the bottom of its loop") \
-  X(monster_dead_band,"monster_seek",        "between $B4 and $D0: too far to chase, too near to count as an empty board") \
-  X(monster_hands_full,"monster_seek",       "inside $B4 but $26 is set, so it will not start a second chase") \
-  X(monster_hands_free,"monster_seek",       "...or it is empty-handed, and the chase state is installed") \
-  X(monster_drops_victim,"monster_deliver",  "home to within 16 pixels on both axes and holding something, which is freed") \
-  X(monster_still_travelling,"monster_deliver","...or not home, or home with empty hands -- one instruction serves all three") \
-  X(monster_nothing_near,"monster_deliver",  "the shared tail: nothing inside $B4, so the state stands") \
-  X(monster_gives_chase,"monster_deliver",   "...or something is, and $12 gets $BEE3 whatever is still being carried") \
+  /* $81:BB75, $81:BBA4 — the two states that decide where the ant goes. */         \
+  X(ant_board_far,"ant_seek",                "nothing of the four ids within $D0, so ask about the two players instead") \
+  X(ant_player_about,"ant_seek",             "...and one of them is close enough, so the creature stays") \
+  X(ant_gives_up, "ant_seek",                "...or neither is, and INC $2A ends the thread at the bottom of its loop") \
+  X(ant_dead_band,"ant_seek",                "between $B4 and $D0: too far to chase, too near to count as an empty board") \
+  X(ant_hands_full,"ant_seek",               "inside $B4 but $26 is set, so it will not start a second chase") \
+  X(ant_hands_free,"ant_seek",               "...or it is empty-handed, and the chase state is installed") \
+  X(ant_drops_victim,"ant_deliver",          "home to within 16 pixels on both axes and holding something, which is freed") \
+  X(ant_still_travelling,"ant_deliver","...or not home, or home with empty hands -- one instruction serves all three")         \
+  X(ant_nothing_near,"ant_deliver",          "the shared tail: nothing inside $B4, so the state stands") \
+  X(ant_gives_chase,"ant_deliver",           "...or something is, and $12 gets $BEE3 whatever is still being carried") \
                                                                                    \
-  /* $81:BEE3 monster_chase, in readable C. */                                     \
-  X(chase_gave_up,    "monster_chase",       "nothing within $B4, so it wanders off in a random straight line") \
-  X(chase_straight,   "monster_chase",       "the target straight up, down, left or right") \
-  X(chase_diagonal,   "monster_chase",       "...or on a diagonal, so it closes the smaller gap first") \
-  X(chase_stepped,    "monster_chase",       "the step taken") \
-  X(chase_met_someone,"monster_chase",       "an actor where the step lands, so it waits") \
-  X(chase_met_ground, "monster_chase",       "solid ground and nothing to leap, so it waits") \
-  X(chase_leapt,      "monster_chase",       "...or something to leap, so it leaps") \
+  /* $81:BEE3 ant_chase, in readable C. */                                         \
+  X(chase_gave_up,    "ant_chase",           "nothing within $B4, so it wanders off in a random straight line") \
+  X(chase_straight,   "ant_chase",           "the target straight up, down, left or right") \
+  X(chase_diagonal,   "ant_chase",           "...or on a diagonal, so it closes the smaller gap first") \
+  X(chase_stepped,    "ant_chase",           "the step taken") \
+  X(chase_met_someone,"ant_chase",           "an actor where the step lands, so it waits") \
+  X(chase_met_ground, "ant_chase",           "solid ground and nothing to leap, so it waits") \
+  X(chase_leapt,      "ant_chase",           "...or something to leap, so it leaps") \
                                                                                    \
   /* The zombies, in readable C: port/zombie.h. Both kinds share each site. */      \
   X(zombie_walked,    "zombie_*_walk",       "a step straight ahead") \

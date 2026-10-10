@@ -176,7 +176,7 @@ JUMP_ENTRIES = {
     #
     # It is also a fourth family, and this one is not enumerated here. $81:BEDA
     # is three instructions -- `LDA #$BEE3 : STA $12 : RTS` -- that install the
-    # *next* state of the monster's behaviour in `$12`, which its thread then
+    # *next* state of the ant's behaviour in `$12`, which its thread then
     # reaches with `PEA <ret> : LDA $12 : DEC : PHA : RTS`. So the state bodies
     # under it are entered by a computed `RTS` through a WRAM word: no JSR, no
     # JSL, and no spawn idiom to grep for. Declaring the installer separates the
@@ -187,13 +187,13 @@ JUMP_ENTRIES = {
     # whose tail *is* $81:BEDA -- found the body the installer names, because
     # writing the port meant reading the constant it stores. $81:BEDA is four
     # instructions (`JMP $BEDD` and the three it lands on) and the 469,168 above
-    # is almost all $81:BEE3, the monster's chase: `LDX $0A : LDY $0C : JSL
+    # is almost all $81:BEE3, the ant's chase: `LDX $0A : LDY $0C : JSL
     # actor_nearest` and then two hundred bytes of steering. Declaring it makes
     # the installer's row the size of an installer and gives the chase a row of
     # its own, which is where it belongs. Nothing calls it, which once meant it
-    # could not be ported; it is now, as `monster_chase` in src/port/chase.c,
+    # could not be ported; it is now, as `ant_chase` in src/port/chase.c,
     # entered at the address the thread's `RTS` lands on as the walk is.
-    0x81BEE3: 'the monster chase state, entered by computed RTS through $12',
+    0x81BEE3: 'the ant chase state, entered by computed RTS through $12',
     # The five handlers in the word table at $80:D74F, reached through it by
     # `JMP $F300` and never called. Found the same way as the vblank jobs
     # queued by JML (see VBL_JOBS): a residue profile charged 110,349
@@ -432,7 +432,7 @@ THREAD_BODIES = frozenset((
     0x83AD33,
     # ...and one of the four the comment above calls a lower bound, found by the
     # check the `$80:A937` round installed rather than by a search. Registering
-    # `$81:C16B monster_anim` moved the native total by 291,771 where the
+    # `$81:C16B ant_anim` moved the native total by 291,771 where the
     # routine itself executes 145,410; the other 146,361 begins at `$81:C1FB`,
     # opens `JSR $B9F9 : JSR $BA46 : CLC : LDA $00DE : ADC #$001C` -- the spawn
     # charge -- installs `$81:C440` as its collision handler and then loops on

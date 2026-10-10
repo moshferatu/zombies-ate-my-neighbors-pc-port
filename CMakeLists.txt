@@ -338,8 +338,8 @@ add_library(zamn_port STATIC
   src/port/walker.c
   src/port/begin.c
   src/port/hold.c
-  src/port/monster_thread.c
-  src/port/monster_states.c
+  src/port/ant_thread.c
+  src/port/ant_states.c
   src/port/boss_thread.c
   src/port/decoy.c
   src/port/lunge.c
@@ -355,7 +355,7 @@ add_library(zamn_port STATIC
   src/port/chainsaw.c
   src/port/levelmap.c
   src/port/lzss.c
-  src/port/monster.c
+  src/port/ant.c
   src/port/oam.c
   src/port/player.c
   src/port/rng.c

@@ -5,11 +5,11 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
-### The big monster's states (2026-10-10)
+### The giant ant's states (2026-10-10)
 
-What the big monster does when it is not chasing anyone was the ROM's
+What the giant ant does when it is not chasing anyone was the ROM's
 still. It is ported, with how one is set up and what it carries, in
-`port/monster_states.h`. So is the job that shakes the screen under level
+`port/ant_states.h`. So is the job that shakes the screen under level
 25's boss.
 
 * **Three states**, each a C function that ends by naming the next.
@@ -25,7 +25,7 @@ still. It is ported, with how one is set up and what it carries, in
 * **A leap** (`$81:BCF1`) is over in the frame it begins. It lands past
   the tile it leapt, and 8 pixels further for as long as the ground there
   is solid.
-* **The chase leaps now.** `monster_chase` turned a frame down when it
+* **The chase leaps now.** `ant_chase` turned a frame down when it
   found something to leap, and the ROM chased. It stops on the `JMP` to
   the leap instead, and turns nothing down.
   * That made it a port with three exits: its own `RTS`, the walk's when
@@ -182,12 +182,12 @@ in `port/boss_thread.h`.
   * The monster's three state routines, `$81:BE14`, `$81:BE71` and
     `$81:BFCD`, with the tests they share. They are next.
 
-### Links, and the big monster's thread (2026-10-09)
+### Links, and the giant ant's thread (2026-10-09)
 
 Where the 65816 still takes over, it is often for one instruction: a `JSR`
 to a routine that is ported, standing where another port returned. Those
 are the harness's to make now, and the first thread written that way is
-the big monster's.
+the giant ant's.
 
 * **A link** (`CosimRoutine::link`) is a registry row with nothing to run.
   Its entry is one of the ROM's calls, jumps or returns, and the harness
@@ -198,14 +198,14 @@ the big monster's.
     passed, and the report says `a link`.
   * The registry is checked as it loads: a link whose instruction is not a
     call, a jump or a return stops the program with its name.
-* **The big monster's thread** (`port/monster_thread.h`). It is four
+* **The giant ant's thread** (`port/ant_thread.h`). It is four
   copies of one loop: sleep a frame, the state's own routine, where to go,
   its picture, and round again until something sets `$2A`. Three copies
   are ported, as seven stretches each, one more in two of them, and
   sixteen links between.
   * One table row a copy: the handler it installs, the count a killed one
     adds to, and the two things only the first copy does.
-  * How a turn ends is one function, `monster_turned`: it goes on, it was
+  * How a turn ends is one function, `ant_turned`: it goes on, it was
     killed (three ways), or it leaves quietly.
   * Its end frees two records, which `record_end` does not do. Three of
     the eight such ends in the ROM are these.
@@ -241,7 +241,7 @@ the big monster's.
     the core runs most often now on levels 25 and 45.
   * The boss's thread on level 25, `$82:9569`: its walk, its flash, and
     the routines its states are made of.
-  * `monster_chase` turning a call down is a place on the list now. It did
+  * `ant_chase` turning a call down is a place on the list now. It did
     before, too, and was not counted: the core was already running when it
     got there.
   * Nothing checks a link under `verify`. What stands behind one is
@@ -2732,7 +2732,7 @@ priced by what it did. Live, `level33` goes from 95.8% to **96.5%**, `level49` f
   519; the ground test was charged as if it never found a wall early. Each
   now reports what the call did and is priced from it.
 * **The two "MODEL WRONG" flags are gone.** `player_walk` was exact on 105
-  of 96,444 calls and `monster_chase` on 20,345 of 22,659, since the rounds
+  of 96,444 calls and `ant_chase` on 20,345 of 22,659, since the rounds
   that wrote them. The chase was only the tile read's mean, 20 cycles off.
   The walk had the tests' means and a mistake of its own that they hid: its
   table counted an `RTL` after each call, which the tests' prices count too.
@@ -3170,11 +3170,11 @@ look for a tile to leap. The leap is its own state and is declined to the
 ROM.
 
 * **Only V can outlive it, and only after giving up.** The thread follows
-  the chase with `monster_seek` or `monster_deliver`, and both set N, Z and C
-  first. `monster_seek`'s scan sets V too whenever it matches someone, which
+  the chase with `ant_seek` or `ant_deliver`, and both set N, Z and C
+  first. `ant_seek`'s scan sets V too whenever it matches someone, which
   after a step it always does. So the shim claims no register on a step and
   the random number generator's V on a give-up.
-* **Checked.** `verify -r monster_chase`: 22,659 calls over the 11 corpus
+* **Checked.** `verify -r ant_chase`: 22,659 calls over the 11 corpus
   movies that reach it, and 24,102 over all 56 level records, with 0
   diverged and 15 declined. The six levels with the monster are the only
   ones that reach it. Every branch is taken, the leap 16 times.
@@ -3286,7 +3286,7 @@ double step `$54` asks for. The registry is 184 entries.
 * **The residue** goes from 60.3 to 51.8 million instructions of work. By
   family: callable routines 85.0%, thread bodies 7.4%, vblank jobs 4.5%, the
   frame 3.1%. The top rows now are the NMI's own instructions,
-  `$81:BEE3 monster_chase` at 2.5% and `$81:8A5C` at 2.4%.
+  `$81:BEE3 ant_chase` at 2.5% and `$81:8A5C` at 2.4%.
 * **What a stretch still costs the ROM** is its exits: the calls and returns
   between stretches. The frame's are three a pass at `$CDF7`. They are most of
   what the residue still charges to the new rows, and they are the price of
@@ -8286,7 +8286,7 @@ in the ROM either; `$78`'s five immediate loads are all outside the shot bank.
 
 **So the only zero-damage ids a shot can carry are `$5D` and `$5E`, and seven of
 the nine copies divert both before the subtraction.** `enemy_no_damage`,
-`monster_no_damage`, `b41c_no_damage`, `d7f6_no_damage`, `d9b6b_no_damage`,
+`ant_no_damage`, `b41c_no_damage`, `d7f6_no_damage`, `d9b6b_no_damage`,
 `d9063_no_damage` and `dac92_no_damage` **have no input**, in the same sense
 `$80:FA26` has no movie. The two that are not on that list are the interesting
 half: `enemy_d301_collide` has no `CMP #$005E`, so the bubble gun reaches its
@@ -8706,7 +8706,7 @@ always had to exclude the handlers that decline *internally* — an id
 put a routine the port already has at the top of the work list. That exclusion
 was **four addresses, written when four handlers could decline; by this round
 eight could**. The symptom of the omission is a census line naming a routine the
-port already has, which is the same shape as the bug that hid `monster_collide`'s
+port already has, which is the same shape as the bug that hid `ant_collide`'s
 missing dispatch for four rounds and just as quiet.
 `thread_call_handler` hands the address back in `ThreadCallResult::unported` now,
 set only on the branch that does not recognise the handler at all.
@@ -8719,7 +8719,7 @@ on the first run** with no census, and **68 of 219 sites** — the highest of an
 single input in the corpus, against level 21's 62.
 
 **What it was for is one word of WRAM, and it settles a question two rounds
-old.** `monster_death_award` ends `LDA $20 : AND #$8000 : ASL A : ROL A : ROL A :
+old.** `ant_death_award` ends `LDA $20 : AND #$8000 : ASL A : ROL A : ROL A :
 TAX : INC $1FD4,X` — a counter indexed by the side that landed the blow, already
 doubled. Writing `1` there instead of `2` has passed every call on every input
 since the level-45 round, because every death in the corpus was player one's and
@@ -8838,18 +8838,18 @@ rounds ago, holding still while the thing around it changed.
 movies produced — and the first of them is the first routine in the project
 where two ROM addresses share one C function.**
 
-**`$81:C440` is `monster_collide` again, and for once "again" is not a
+**`$81:C440` is `ant_collide` again, and for once "again" is not a
 judgement call.** Three bytes differ in 102, and the case that it is the *same
 creature* rather than a relative is the bodies: `$81:C321` installs this handler
 and then `$81:C326  JMP $C3B5` falls into `$81:C3B6`, which installs
 `$81:C4A6`. One thread, two handlers, in that order. So this is the giant spider
-before whatever `$81:BFA8` decides and `monster_collide` is it afterwards, and
+before whatever `$81:BFA8` decides and `ant_collide` is it afterwards, and
 the page they share — health `$22`, parked id `$20`, latch `$26`, record `$08`,
 counter `$2A` — is the same page because it is the same actor.
 
 **So the body is shared rather than transcribed a second time**, with the two
 differences as fields: a survivor leaves through `enemy_survived_react` here and
-`monster_survived_react` there, and id `$5D` declines to `$81:847E` rather than
+`ant_survived_react` there, and id `$5D` declines to `$81:847E` rather than
 `$81:BB05`. That is the call `ENEMY_REACT_FRAME` already makes one level down —
 two copies of one routine in C are two things that can drift, and a diff only
 catches the drift on a level that runs both. What it costs is that a coverage
@@ -8860,7 +8860,7 @@ intercepting one never intercepts the other, and the flags each leaves are
 checked only at its own entry PC.
 
 **151 of 151 on the first run, and the sample is the one the spider never
-got.** Level 45 offered `monster_collide` 1,138 calls of which almost all were
+got.** Level 45 offered `ant_collide` 1,138 calls of which almost all were
 ignores; level 25 offers this copy **115 hits, 105 survivors and 10 deaths**. The
 death tail, `$81:BBEB`'s award and `handler_park` are diffed properly for the
 first time rather than transcribed.
@@ -8876,9 +8876,9 @@ rather than recording.**
 
 * **A guard marked on its passing side says nothing about its refusal.** Paying
   `$81:BBEB`'s award unconditionally — deleting the `LDA $20 : BEQ` — passed all
-  151 calls while `monster_kill_award` read 10 the whole time, so the coverage
+  151 calls while `ant_kill_award` read 10 the whole time, so the coverage
   table showed nothing missing. A site marks the branch it is written on. There
-  is now a `monster_kill_free` site on the skip, and it is untaken: every monster
+  is now a `ant_kill_free` site on the skip, and it is untaken: every monster
   that has died in the corpus was killed by something carrying an id.
 * **The kill counter's doubled side index is transcribed**, for the third time
   in this project after `player_pickup`'s doubled id and `enemy_b41c_collide`'s
@@ -8894,7 +8894,7 @@ invisible for being already zero.
 **`$81:D7F6` is the fifth copy of `$81:8888` and it is not close enough to any of
 the four to share.** Health at `$0C`, parked id at `$20`, and — the real
 difference — **id `$5E` reaches the death tail instead of `JML`ing out**, which
-is `monster_collide`'s reading of that id rather than `enemy_collide`'s. It
+is `ant_collide`'s reading of that id rather than `enemy_collide`'s. It
 starts on **one** health, so almost anything that hits it kills it.
 
 **Its `$0A` is what `B41C_DP_COUNTER_0A` has been waiting for.** Two other copies
@@ -9012,7 +9012,7 @@ seventy clean hits and the busiest probe lands 45. `boss_died` and
 weapon or a route rather than a longer wait.
 
 **A bug fell out of having a corpus runner, and it was four rounds old.**
-`monster_collide` has been registered on its own entry PC since the level-45
+`ant_collide` has been registered on its own entry PC since the level-45
 round and passed every call `verify` offered it — but **`thread_call_handler`
 never routed to it**, so every one of those calls *also* declined one level up.
 The two facts are not in tension and neither is visible alone: a routine reached
@@ -9130,7 +9130,7 @@ earlier**. Every exit is `CLC`, so unlike an enemy it never parks its thread.
 
 **Its reaction to a killing blow is a third mechanism.**
 `enemy_survived_react` splices a `JSL` frame into a suspended thread's own stack
-and `monster_survived_react` does the same one page over; `$81:CC0A` just swaps
+and `ant_survived_react` does the same one page over; `$81:CC0A` just swaps
 its own next-routine pointer — save `$16` into `$26`, install `$81:CC2F`, arm a
 30-tick timer, put the countdown *back up* to `$14`, and set `ACTOR_ATTR_SET` and
 `ACTOR_ATTR` = `$0C00` on its record. `$81:CC2F` is the undo. No stack, no
@@ -9192,7 +9192,7 @@ of live game state identical on all of them, and the playable build still matche
 **`$81:B41C` is ported, and it is `$81:8888` again.** The census had it at the
 top of level 29's list — 66 declines on `movies/level29-fighting.zmv` — and it
 turned out to be the *third* copy of the enemy collision subsystem, after
-`enemy_collide` and the giant spider's `monster_collide`. Same `CMP #$005C`
+`enemy_collide` and the giant spider's `ant_collide`. Same `CMP #$005C`
 opening, same `AND #$7FFF`, same `ENEMY_DAMAGE_TABLE` at `$81:8561` indexed the
 same way, same two ids (`$5E`, `$5D`) leaving through the same two routines, and
 the same `JML $81:8506` for a survivor — **shared rather than re-spelled**, which
@@ -9548,7 +9548,7 @@ leave different flags but can only disagree on `arg == $33` — and `$80:CA30`
 stops at `$30`, so nothing in the game carries it. Written down beside the line.
 
 **And the survive path went in behind it**, because the census named `$81:BAB3`
-the moment `monster_collide` was registered and it turned out to be **`$81:8506`
+the moment `ant_collide` was registered and it turned out to be **`$81:8506`
 instruction for instruction** — the same three-byte gap, the same three words
 slid down lowest-first, the same far return address written into the hole so the
 scheduler resumes through a reaction nobody called. `ENEMY_REACT_FRAME` is
@@ -9563,7 +9563,7 @@ Five more perturbations, four caught — the guard field, the words moved
 highest-first, the return address not decremented for its `RTL`, the two
 overlapping stores swapped. **Not caught: dropping the already-reacting guard**,
 which is precisely the twin's blind spot: `react_already` has never been taken
-and neither has `monster_react_already`, and an entry guard that only ever reads
+and neither has `ant_react_already`, and an entry guard that only ever reads
 zero is a thing no diff can check.
 
 **Twenty-five routines, and the four level-45 movies now print no census section

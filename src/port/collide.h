@@ -894,17 +894,14 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 
 // ---------------------------------------------------------------------------
-// $81:C4A6  monster_collide — a second, larger enemy's handler
+// $81:C4A6  ant_collide — a second, larger enemy's handler
 // ---------------------------------------------------------------------------
 
 // The census named this one, and it named it loudly: **2,039 declines across the
 // four level-45 movies**, more than everything else on the list put together.
 // `$81:C3B6` installs it (`LDA #$C4A6 : LDY #$0081 : JSL thread_set_handler`),
-// and `$81:C3B6` is the body of level 46's type-`$14` actor — the giant spider,
+// and `$81:C3B6` is the body of level 46's type-`$14` actor — the giant ant,
 // ten of that level's twenty placements.
-//
-// "The giant spider" here and below was a guess. It is the giant ant, the big
-// red one level 45 is full of. The spiders are `$83:B299`, `spider_frame`.
 //
 // It is a **second copy of the enemy subsystem**, not a variant of the first.
 // Same damage table at `$81:8561`, same "subtract, went negative means dead"
@@ -917,26 +914,26 @@ bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 // **And it is the routine behind this round's findings.** The object branch is
 // `LDA #$0003 : STA $000E,Y` into its own display record, which is exactly the
 // `$04` -> `$03` transition `zamn_headless --records` caught at frames 3466 and
-// 3790 when a monster took a bonus object out from under the player.
-#define MONSTER_COLLIDE_ENTRY 0x81c4a6u
+// 3790 when an ant took a bonus object out from under the player.
+#define ANT_COLLIDE_ENTRY 0x81c4a6u
 
 // The three ids the dispatch cuts on, besides `COLLIDE_ID_PLAYER`. Ids in
-// `[MONSTER_OBJECT_ID_FIRST, MONSTER_OBJECT_ID_END)` are the object range —
+// `[ANT_OBJECT_ID_FIRST, ANT_OBJECT_ID_END)` are the object range —
 // `$80:CA30`'s thirty entries run `$0C`..`$30` — and everything outside it and
 // below `$5C` is ignored outright, in two separate `CLC : RTL`s.
-#define MONSTER_OBJECT_ID_FIRST 0x000c
-#define MONSTER_OBJECT_ID_END 0x0033
+#define ANT_OBJECT_ID_FIRST 0x000c
+#define ANT_OBJECT_ID_END 0x0033
 
 // The two ids with routines of their own, both `JML`s, neither ported: `$5D`
 // goes to `$81:BB05` and `$5E` shares the death tail. Note the asymmetry with
 // `enemy_collide`, where *both* are separate routines.
-#define MONSTER_HIT_SPECIAL 0x005d
-#define MONSTER_HIT_FATAL 0x005e
+#define ANT_HIT_SPECIAL 0x005d
+#define ANT_HIT_FATAL 0x005e
 
 // Where a survivor goes, and where `$5D` goes. Both are stack splices in the
 // `$81:8506` family. The first is ported below; the second declines by name.
-#define MONSTER_SURVIVE_ENTRY 0x81bab3u
-#define MONSTER_SPECIAL_ENTRY 0x81bb05u
+#define ANT_SURVIVE_ENTRY 0x81bab3u
+#define ANT_SPECIAL_ENTRY 0x81bb05u
 
 // --- $81:BAB3 ---------------------------------------------------------------
 
@@ -958,65 +955,65 @@ bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 // Everything else — the three-byte gap, the three overlapping word moves lowest
 // first, the two stores that lay down three bytes, `SEC` to park the thread — is
 // the same routine, and `ENEMY_REACT_FRAME` is shared rather than re-spelled.
-#define MONSTER_REACT_RETURN 0xbaeb  // `$81:BAEC` less the one an `RTL` adds
-#define MONSTER_REACT_BANK 0x81
+#define ANT_REACT_RETURN 0xbaeb      // `$81:BAEC` less the one an `RTL` adds
+#define ANT_REACT_BANK 0x81
 
 // --- this actor's own page --------------------------------------------------
 
 // Health. `$22` here, where `enemy_collide`'s is `$1E` — see `ACTOR_DP_HEALTH`.
-#define MONSTER_DP_HEALTH 0x22
+#define ANT_DP_HEALTH 0x22
 // The raw hit id, parked sign bit and all, because `$81:BBEB` reads bit 15 of it
 // to decide whose points these are. Same trick, same place in the routine.
-#define MONSTER_DP_HIT_ID 0x20
-// What became of this monster, latched — and a latch in the same sense
+#define ANT_DP_HIT_ID 0x20
+// What became of this ant, latched — and a latch in the same sense
 // `victim_collide`'s `$1E` is one: the object branch refuses outright if
 // anything is already here, so the *first* thing to reach it decides.
-#define MONSTER_DP_LATCH 0x26
+#define ANT_DP_LATCH 0x26
 // The state machine's next routine. `$81:C3DA  LDA $12 : DEC A : PHA : RTS` is
 // the body dispatching through it, and `$81:C04A` — three instructions, inlined
 // below — is how the object branch queues `$81:C050` up.
-#define MONSTER_DP_NEXT 0x12
-#define MONSTER_NEXT_TAKE_OBJECT 0xc050
+#define ANT_DP_NEXT 0x12
+#define ANT_NEXT_TAKE_OBJECT 0xc050
 // A countdown `$81:BBEB` steps on the way out of a death.
-#define MONSTER_DP_COUNT 0x2a
+#define ANT_DP_COUNT 0x2a
 // Cleared on the death path, the same way `ACTOR_DP_SCRATCH_7E` is.
-#define MONSTER_DP_SCRATCH_7E 0x7e
+#define ANT_DP_SCRATCH_7E 0x7e
 // Its own display record — the address, at the same `$08` a victim keeps one at
 // and a different offset from the `$0A` a shot uses. Named separately from
 // `VICTIM_DP_RECORD` because sharing a number is not sharing a meaning: these
 // pages are laid out by their own bodies and agree by accident.
-#define MONSTER_DP_RECORD 0x08
+#define ANT_DP_RECORD 0x08
 // What it writes into that record's `ACTOR_COLLIDE_ID` on taking an object, and
 // the single most useful constant in this file for reading a `--records` dump:
-// a monster showing `$03` where it showed `$04` a frame ago has just eaten
+// an ant showing `$03` where it showed `$04` a frame ago has just eaten
 // something.
-#define MONSTER_TAKEN_ID 0x0003
+#define ANT_TAKEN_ID 0x0003
 
 // --- the two globals the object branch reads -------------------------------
 //
 // `AD 42 00` and `AD 46 00` are **absolute**, not direct page, so these are
-// `$7E:0042` and `$7E:0046` rather than offsets into the monster's page. Worth
+// `$7E:0042` and `$7E:0046` rather than offsets into the ant's page. Worth
 // the note: every other field this routine touches is direct page, and reading
 // them as such would put the latch's value somewhere plausible and wrong.
-#define W_MONSTER_LATCH_SRC 0x0042
-#define W_MONSTER_LATCH_ALT 0x0046
-#define MONSTER_LATCH_SRC_ALT 0x0004
+#define W_ANT_LATCH_SRC 0x0042
+#define W_ANT_LATCH_ALT 0x0046
+#define ANT_LATCH_SRC_ALT 0x0004
 
 // --- $81:BBEB ---------------------------------------------------------------
 
 // `$81:8727` again, and worth three times as much: `LDX #$0300`. The rest is the
 // same routine — `score_add` with bit 15 of the parked id as the side, then a
 // per-side counter, then a countdown.
-#define MONSTER_DEATH_AWARD 0x0300
+#define ANT_DEATH_AWARD 0x0300
 // `INC $1FD4,X`, absolute again, indexed by the side already doubled — which is
 // what `AND #$8000 : ASL A : ROL A : ROL A` computes from the parked id.
-#define W_MONSTER_KILL_COUNT 0x1fd4
+#define W_ANT_KILL_COUNT 0x1fd4
 
-// The handler. `arg` is the other actor's collision id, `dp` this monster's own
+// The handler. `arg` is the other actor's collision id, `dp` this ant's own
 // page.
 //
 // Four ways out of the dispatch and two of them write nothing: an id below
-// `MONSTER_OBJECT_ID_FIRST`, and one at or above `MONSTER_OBJECT_ID_END` but
+// `ANT_OBJECT_ID_FIRST`, and one at or above `ANT_OBJECT_ID_END` but
 // below `COLLIDE_ID_PLAYER`. The object range takes the object. At or above
 // `COLLIDE_ID_PLAYER` is a weapon shot, and that path is ported as far as the
 // two outcomes that stay inside it — dead, and zero damage — while a survivor
@@ -1024,8 +1021,8 @@ bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 // before a movie reached it.
 //
 // False only on those two. `unported` takes the address it gave up at.
-bool monster_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                     ActorHandlerRegs* r, uint32_t* unported);
+bool ant_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                 ActorHandlerRegs* r, uint32_t* unported);
 
 // The five exits that end inside the routine, and a mark for the four that do
 // not — the same bargain `EnemyCollideBlock` makes, on the same reasoning: a
@@ -1036,8 +1033,8 @@ bool monster_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 // bytes: two `JML` targets, which are only on the deep paths that decline
 // anyway, and the order of the `CMP #$005D`/`CMP #$005E` pair, which costs the
 // same either way because both comparisons run and neither branch is taken on
-// any path that reaches them. So there is no `MonsterCopy` in the cost model
-// and there does not need to be — see `monster_collide_body`, which the two
+// any path that reaches them. So there is no `AntCopy` in the cost model
+// and there does not need to be — see `ant_collide_body`, which the two
 // share for the same reason.
 typedef enum {
   MON_BLK_IGNORE_LOW,   // $81:C4AE BCC taken: below the object range, CLC : RTL
@@ -1047,28 +1044,28 @@ typedef enum {
   MON_BLK_TAKE_ALT,     // ...and the same latching $46, which costs one more load
   MON_BLK_NO_DAMAGE,    // $81:C4D7 BEQ taken: the subtraction took nothing off
   MON_BLK_DEEP,         // $5D, $5E, a death or a survival: not priced here
-  MONSTER_BLOCK_COUNT,
-} MonsterCollideBlock;
+  ANT_BLOCK_COUNT,
+} AntCollideBlock;
 
 typedef struct {
-  uint16_t blocks[MONSTER_BLOCK_COUNT];
-} MonsterCollideWork;
+  uint16_t blocks[ANT_BLOCK_COUNT];
+} AntCollideWork;
 
-bool monster_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                             ActorHandlerRegs* r, uint32_t* unported,
-                             MonsterCollideWork* work);
+bool ant_collide_counted(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                         ActorHandlerRegs* r, uint32_t* unported,
+                         AntCollideWork* work);
 
 // `$81:BAB3`, split out for the same reason `enemy_survived_react` is: it has
 // two coverage sites of its own and one of them is an entry guard no diff can
 // check. Always true — there is nothing in it to decline.
-bool monster_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r);
+bool ant_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r);
 
 // ---------------------------------------------------------------------------
 // $81:B41C  enemy_b41c_collide — the third copy of the enemy subsystem
 // ---------------------------------------------------------------------------
 //
 // **The name is the address, and that is a claim about what is known rather
-// than a failure of imagination.** `enemy_collide` and `monster_collide` are
+// than a failure of imagination.** `enemy_collide` and `ant_collide` are
 // named for what they are; this one is not identified. Its body is entered
 // through `$81:AEA6`, no actor in level 29's placement list names it — the
 // creature is spawned rather than placed — and nothing in the disassembly ties
@@ -1084,7 +1081,7 @@ bool monster_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r);
 
 // --- this actor's own page --------------------------------------------------
 
-// Health. `$0C` here, against `enemy_collide`'s `$1E` and `monster_collide`'s
+// Health. `$0C` here, against `enemy_collide`'s `$1E` and `ant_collide`'s
 // `$22` — three copies of one routine, three different pages, and the same
 // damage table at `ENEMY_DAMAGE_TABLE` indexed the same way.
 #define B41C_DP_HEALTH 0x0c
@@ -1111,7 +1108,7 @@ bool monster_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r);
 // what it counts is **not established** and the name says only where it lives.
 #define B41C_DP_COUNTER_0A 0x0a
 // Where `$81:B168` puts the routine below — the "what I do next" pointer on
-// this page, the way `MONSTER_DP_NEXT` is `$12` on the spider's.
+// this page, the way `ANT_DP_NEXT` is `$12` on the ant's.
 #define B41C_DP_NEXT 0x0e
 
 // --- the third accepted id --------------------------------------------------
@@ -1130,7 +1127,7 @@ bool monster_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r);
 #define B41C_Z_AIRBORNE_TO_DAMAGE 1  /* documentation, not a value */
 
 // `$81:B168  LDA #$B16E : STA $0E : RTS` — three instructions, inlined for the
-// reason `monster_collide` inlines `JSR $C04A`: a routine that only ever queues
+// reason `ant_collide` inlines `JSR $C04A`: a routine that only ever queues
 // one constant is not a routine worth a registry entry. `$81:B16E` is what
 // happens next — it swaps the record's metasprite out of the table at
 // `$81:B199`, drops the handler, sleeps `$20` ticks and re-installs this one.
@@ -1173,30 +1170,30 @@ bool enemy_b41c_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
                                 uint32_t* unported, B41cCollideWork* work);
 
 // ---------------------------------------------------------------------------
-// $81:C440  monster_c440_collide — the same creature, one stage earlier
+// $81:C440  ant_c440_collide — the same creature, one stage earlier
 // ---------------------------------------------------------------------------
 //
 // **This is `$81:C4A6` again, 102 bytes before it, and for once the copy is not
 // a guess.** The two share a page down to the last offset — health `$22`,
 // parked id `$20`, latch `$26`, record `$08`, counter `$2A`, next-routine `$12`
-// — and the same `JSR $81:BBEB` pays the same `MONSTER_DEATH_AWARD`. What makes
+// — and the same `JSR $81:BBEB` pays the same `ANT_DEATH_AWARD`. What makes
 // it the *same creature* rather than a relative is the bodies: `$81:C321`
 // installs this handler and then `$81:C326  JMP $C3B5` falls into `$81:C3B6`,
 // which installs `$81:C4A6`. One thread, two handlers, in that order. So this
-// is the giant spider before whatever `$81:BFA8` decides, and `monster_collide`
+// is the giant ant before whatever `$81:BFA8` decides, and `ant_collide`
 // is it afterwards.
 //
 // **Three bytes differ and two of them matter.**
-#define MONSTER_C440_COLLIDE_ENTRY 0x81c440u
+#define ANT_C440_COLLIDE_ENTRY 0x81c440u
 
 // A survivor goes to `enemy_survived_react` rather than to
-// `monster_survived_react` — `JML $81:8506` against `JML $81:BAB3`. Both are
+// `ant_survived_react` — `JML $81:8506` against `JML $81:BAB3`. Both are
 // ported, and they are not interchangeable: one guards on bit 4 of the record's
 // flags and splices an address that *sets* that bit, the other guards on the
 // whole of `ACTOR_ATTR` and splices one that writes `$0C00` into it. So the
 // earlier stage flashes the way an ordinary enemy does and the later one does
 // not.
-#define MONSTER_C440_SURVIVE_ENTRY 0x818506u
+#define ANT_C440_SURVIVE_ENTRY 0x818506u
 
 // Id `$5D` goes to `ENEMY_SPECIAL_B_ENTRY` — `$81:847E`, the address
 // `enemy_collide` declines to — rather than to `$81:BB05`. Unported either way,
@@ -1204,26 +1201,26 @@ bool enemy_b41c_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
 // is written down because that is the whole value of the census, and because
 // getting exactly this wrong once already cost a round (see the `_A`/`_B`
 // mix-up recorded at `ENEMY_SPECIAL_A_ENTRY`).
-#define MONSTER_C440_SPECIAL_ENTRY ENEMY_SPECIAL_B_ENTRY
+#define ANT_C440_SPECIAL_ENTRY ENEMY_SPECIAL_B_ENTRY
 
 // The third difference is not observable and is recorded so that nobody has to
 // re-derive it: the two `CMP`s that pick out `$5D` and `$5E` are in the
 // opposite order here. Both are equality tests against distinct constants and
 // the fall-through immediately runs `SEC : SBC #$005C`, so neither which one
 // matches nor what flags the pair leaves can differ.
-#define MONSTER_C440_CMP_ORDER_IMMATERIAL 1  /* documentation, not a value */
+#define ANT_C440_CMP_ORDER_IMMATERIAL 1      /* documentation, not a value */
 
-// The handler, and it is `monster_collide`'s implementation with the two
+// The handler, and it is `ant_collide`'s implementation with the two
 // addresses above substituted — shared rather than re-spelled, for the reason
 // `ENEMY_REACT_FRAME` is shared. False only on `$5D`, exactly as its twin.
-bool monster_c440_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                          ActorHandlerRegs* r, uint32_t* unported);
+bool ant_c440_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
+                      ActorHandlerRegs* r, uint32_t* unported);
 
-// ...and it counts into the same `MonsterCollideWork`, priced by the same
-// table. See `MonsterCollideBlock` for why one table is enough for both.
-bool monster_c440_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
-                                  uint16_t arg, ActorHandlerRegs* r,
-                                  uint32_t* unported, MonsterCollideWork* work);
+// ...and it counts into the same `AntCollideWork`, priced by the same
+// table. See `AntCollideBlock` for why one table is enough for both.
+bool ant_c440_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
+                              uint16_t arg, ActorHandlerRegs* r,
+                              uint32_t* unported, AntCollideWork* work);
 
 // ---------------------------------------------------------------------------
 // $81:D7F6  enemy_d7f6_collide — level 17's, and the fifth copy of $81:8888
@@ -1270,7 +1267,7 @@ bool monster_c440_collide_counted(Wram* w, const Rom* rom, uint16_t dp,
 // What the body does with that flag, recorded here because it is where the
 // handler's two stores end up being read: `LDX #$0050 : LDA $20 : BEQ` — an
 // award of `$0050`, the smallest in the game, and **skipped entirely when the
-// parked id is zero**, which is `monster_death_award`'s guard again on another
+// parked id is zero**, which is `ant_death_award`'s guard again on another
 // page. Then `INC $1F74`, a death animation, and `actor_slot_free`.
 #define D7F6_DEATH_AWARD 0x0050  /* documentation: the body pays it, not this */
 
@@ -1352,7 +1349,7 @@ bool enemy_d7f6_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 
 // **A third way of reacting to a hit, and the simplest of the three.**
 // `enemy_survived_react` splices a `JSL` frame into a suspended thread's own
-// stack; `monster_survived_react` does the same one page over. This one just
+// stack; `ant_survived_react` does the same one page over. This one just
 // swaps its own next-routine pointer: save `CDDE_DP_NEXT`, install `$81:CC2F`,
 // arm the timer, reset the countdown, and set the flash on the display record.
 // `$81:CC2F` is the undo — count down, restore, clear. No stack, no splice, and
@@ -1361,7 +1358,7 @@ bool enemy_d7f6_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 #define CDDE_REACT_TICKS 0x001e
 #define CDDE_REACT_COUNTDOWN 0x0014
 // What it writes into the record's `ACTOR_ATTR` — the same `$0C00`
-// `monster_survived_react` writes, alongside the same `ACTOR_ATTR_SET` bit.
+// `ant_survived_react` writes, alongside the same `ACTOR_ATTR_SET` bit.
 #define CDDE_REACT_ATTR 0x0c00
 
 // The handler. Always true: every one of its ids is answered here, and the one
@@ -1444,7 +1441,7 @@ bool enemy_b592_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r)
 // hands `$5E` straight to `$81:83C6`; this one counts it first.
 //
 // `TYA : ASL A : AND #$0000 : ROL A : ROL A` turns bit 15 of Y into 0 or 2 — the
-// doubled side index `score_add` searches with and `monster_death_award` builds
+// doubled side index `score_add` searches with and `ant_death_award` builds
 // the same way — `JSL $80:9D6A` turns that into a score *slot*, and `INC
 // $1FDC,X` counts one bubbled martian for the player who fired.
 //
@@ -1556,7 +1553,7 @@ bool victim_a264_collide(Wram* w, uint16_t dp, uint16_t arg,
 // `enemy_9b6b_collide` with two offsets moved and its one flourish removed: the
 // id-`$5E` branch is a bare `JML $81:83C6` here rather than nine instructions
 // and then the same `JML`. Health `$22` — which is `ACTOR_DP_HIT_ID`'s offset on
-// an enemy's page and `MONSTER_DP_HEALTH`'s on the spider's, a reminder that
+// an enemy's page and `ANT_DP_HEALTH`'s on the ant's, a reminder that
 // these numbers mean nothing across a page.
 #define ENEMY_9063_COLLIDE_ENTRY 0x819063u
 #define D9063_DP_HEALTH 0x22
@@ -1594,7 +1591,7 @@ bool enemy_9063_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 
 // `$81:ACA8  CMP #$0067 : BEQ` — an id that kills this creature outright,
 // skipping the subtraction, and no other copy singles it out. It is
-// `MONSTER_HIT_FATAL`'s mechanism at a different id: what gets stored into
+// `ANT_HIT_FATAL`'s mechanism at a different id: what gets stored into
 // `DAC92_DP_HEALTH` is the masked id itself.
 //
 // **What it buys is legible from the damage table.** `ENEMY_DAMAGE_TABLE`'s
@@ -2550,8 +2547,8 @@ typedef struct {
   EnemyCollideWork enemy;
   BossCollideWork boss;
   // Both copies of `$81:C4A6` count into this one, because both are priced by
-  // one table — `MonsterCollideBlock` says why.
-  MonsterCollideWork monster;
+  // one table — `AntCollideBlock` says why.
+  AntCollideWork ant;
   B41cCollideWork b41c;
 } ThreadCallWork;
 

@@ -36,7 +36,7 @@
 #include "port/lzss.h"
 #include "port/mainloop.h"
 #include "port/menus.h"
-#include "port/monster.h"
+#include "port/ant.h"
 #include "port/palcycle.h"
 #include "port/palfade.h"
 #include "port/password_check.h"
@@ -48,8 +48,8 @@
 #include "port/begin.h"
 #include "port/hold.h"
 #include "port/links.h"
-#include "port/monster_states.h"
-#include "port/monster_thread.h"
+#include "port/ant_states.h"
+#include "port/ant_thread.h"
 #include "port/boss_thread.h"
 #include "port/neighbours.h"
 #include "port/objects.h"
@@ -760,7 +760,7 @@ static bool guard_thread_call_handler(Wram* scratch, const Rom* rom,
   // and by the eighth copy of `$81:8888` it wanted eight.** Nothing would have
   // reported a missing entry: the symptom is a census line naming a routine the
   // port already has, which is exactly the shape of the bug that hid
-  // `monster_collide`'s missing dispatch for four rounds.
+  // `ant_collide`'s missing dispatch for four rounds.
   if (out.unported) cosim_census_note("handler", out.unported);
   return false;
 }
@@ -1597,7 +1597,7 @@ static void shim_actor_step_bearing(Wram* w, const Rom* rom, const CosimRegs* in
 }
 
 // ---------------------------------------------------------------------------
-// $81:C16B, $81:C00B — the monster's walk, and its load
+// $81:C16B, $81:C00B — the giant ant's walk, and its load
 // ---------------------------------------------------------------------------
 
 // Two entries for what is nearly one routine: `$81:C16B` falls into `$81:C00B`
@@ -1609,10 +1609,10 @@ static void shim_actor_step_bearing(Wram* w, const Rom* rom, const CosimRegs* in
 // V is not claimed by either. On `$81:C00B`'s working path it is a coordinate
 // addition's overflow, on its guard path it is the caller's own, and the walk
 // above never touches it; the one caller in the ROM reads none of the four.
-static void shim_monster_place_carried(Wram* w, const Rom* rom,
-                                       const CosimRegs* in, CosimRegs* out) {
-  MonsterCarryRegs r;
-  monster_place_carried(w, rom, in->d, in->a, in->x, &r);
+static void shim_ant_place_carried(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  AntCarryRegs r;
+  ant_place_carried(w, rom, in->d, in->a, in->x, &r);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -1622,10 +1622,10 @@ static void shim_monster_place_carried(Wram* w, const Rom* rom,
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
-static void shim_monster_anim(Wram* w, const Rom* rom, const CosimRegs* in,
-                              CosimRegs* out) {
-  MonsterAnimRegs r;
-  monster_anim(w, rom, in->d, in->x, &r);
+static void shim_ant_anim(Wram* w, const Rom* rom, const CosimRegs* in,
+                          CosimRegs* out) {
+  AntAnimRegs r;
+  ant_anim(w, rom, in->d, in->x, &r);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -1636,10 +1636,10 @@ static void shim_monster_anim(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
-// $81:BB75, $81:BBA4  monster_seek, monster_deliver — nothing in but the page
+// $81:BB75, $81:BBA4  ant_seek, ant_deliver — nothing in but the page
 // ---------------------------------------------------------------------------
 //
-// The other half of each of the creature's states: `monster_anim` draws and one
+// The other half of each of the creature's states: `ant_anim` draws and one
 // of these two decides where to go. Neither takes an argument — the first
 // instruction of one is `STZ $24` and of the other `LDA $0A` — so the direct
 // page is the whole calling convention.
@@ -1648,11 +1648,11 @@ static void shim_monster_anim(Wram* w, const Rom* rom, const CosimRegs* in,
 // returns, which is why `ret_op` below points at an address that does not look
 // like either routine's last instruction. `ret_op` decides where a *substituted*
 // call is sent, not how a returning one is recognised, so any `RTS` inside the
-// routine does the job; see `port/monster.h`.
-static void shim_monster_seek(Wram* w, const Rom* rom, const CosimRegs* in,
-                              CosimRegs* out) {
-  MonsterSeekRegs r;
-  monster_seek(w, rom, in->d, &r);
+// routine does the job; see `port/ant.h`.
+static void shim_ant_seek(Wram* w, const Rom* rom, const CosimRegs* in,
+                          CosimRegs* out) {
+  AntSeekRegs r;
+  ant_seek(w, rom, in->d, &r);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -1662,11 +1662,11 @@ static void shim_monster_seek(Wram* w, const Rom* rom, const CosimRegs* in,
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
-static void shim_monster_deliver(Wram* w, const Rom* rom, const CosimRegs* in,
-                                 CosimRegs* out) {
+static void shim_ant_deliver(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
   (void)rom;
-  MonsterDeliverRegs r;
-  monster_deliver(w, in->d, &r);
+  AntDeliverRegs r;
+  ant_deliver(w, in->d, &r);
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -1765,24 +1765,24 @@ static void shim_enemy_collide(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
-// $81:C4A6  monster_collide — a second enemy subsystem, on a third kind of page
+// $81:C4A6  ant_collide — a second enemy subsystem, on a third kind of page
 // ---------------------------------------------------------------------------
 
 // Carry is an input on the same one path `enemy_collide`'s is: the death tail
 // hands whatever arrived to `score_add`, whose discard path passes it through.
-static bool guard_monster_collide(Wram* scratch, const Rom* rom,
-                                  const CosimRegs* in) {
+static bool guard_ant_collide(Wram* scratch, const Rom* rom,
+                              const CosimRegs* in) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
   uint32_t unported = 0;
-  if (monster_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  if (ant_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
   // One decline left — id `$5D`'s `JML $81:BB05`, the other splice in the
   // `$81:8506` family — and the census names the routine rather than the id for
   // the reason it always has.
-  cosim_census_note("monster id", unported);
+  cosim_census_note("ant id", unported);
   return false;
 }
 
-// The five exits that end inside `$81:C4A6`, indexed by `MonsterCollideBlock`,
+// The five exits that end inside `$81:C4A6`, indexed by `AntCollideBlock`,
 // and the same table prices `$81:C440` — see the enum for the three bytes that
 // differ and why none of them is on a priced path.
 //
@@ -1793,7 +1793,7 @@ static bool guard_monster_collide(Wram* scratch, const Rom* rom,
 // kilobytes away and never compared until it was written down. Neither has ever
 // been measured: no shot in the game carries a damage-table entry of zero, so
 // both are transcription and both say the same thing.
-static const CosimRun MONSTER_COST[MONSTER_BLOCK_COUNT] = {
+static const CosimRun ANT_COST[ANT_BLOCK_COUNT] = {
     // $81:C4A6 CMP #$005C : BCS not taken : CMP #$000C : BCC taken, into the
     // shared `CLC : RTL` at `$81:C50A`.
     [MON_BLK_IGNORE_LOW] = {18 + 12 + 18 + 18 + 12 + 42, 12},
@@ -1818,32 +1818,32 @@ static const CosimRun MONSTER_COST[MONSTER_BLOCK_COUNT] = {
     [MON_BLK_NO_DAMAGE] = {18 + 18 + 312 + 18 + 54, 43, 3},
 };
 
-static bool monster_cycles(const MonsterCollideWork* k, bool fast,
-                           bool dp_unaligned, int* out) {
+static bool ant_cycles(const AntCollideWork* k, bool fast,
+                       bool dp_unaligned, int* out) {
   if (k->blocks[MON_BLK_DEEP]) return false;
   int cycles = 0;
-  for (int i = 0; i < MONSTER_BLOCK_COUNT; i++)
+  for (int i = 0; i < ANT_BLOCK_COUNT; i++)
     cycles +=
-        k->blocks[i] * cosim_run_cycles_dp(&MONSTER_COST[i], fast, dp_unaligned);
+        k->blocks[i] * cosim_run_cycles_dp(&ANT_COST[i], fast, dp_unaligned);
   *out = cycles;
   return true;
 }
 
-static void shim_monster_collide(Wram* w, const Rom* rom, const CosimRegs* in,
-                                 CosimRegs* out) {
+static void shim_ant_collide(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  MonsterCollideWork work;
+  AntCollideWork work;
   // the guard allowed it
-  monster_collide_counted(w, rom, in->d, in->a, &r, NULL, &work);
+  ant_collide_counted(w, rom, in->d, in->a, &r, NULL, &work);
   handler_regs(&r, out);
 
   int cycles;
-  if (monster_cycles(&work, in->fastrom, (in->d & 0xff) != 0, &cycles))
+  if (ant_cycles(&work, in->fastrom, (in->d & 0xff) != 0, &cycles))
     cosim_cost(cycles);
 }
 
 // ---------------------------------------------------------------------------
-// $81:C440  monster_c440_collide — the same creature one stage earlier
+// $81:C440  ant_c440_collide — the same creature one stage earlier
 // ---------------------------------------------------------------------------
 
 // Registered separately even though the port body is shared with the routine
@@ -1852,25 +1852,25 @@ static void shim_monster_collide(Wram* w, const Rom* rom, const CosimRegs* in,
 // one never intercepts the other, and the flags each leaves are checked only at
 // its own entry PC. A shared implementation is a claim that they compute the
 // same thing; two registry entries are what test it.
-static bool guard_monster_c440_collide(Wram* scratch, const Rom* rom,
-                                       const CosimRegs* in) {
+static bool guard_ant_c440_collide(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
   uint32_t unported = 0;
-  if (monster_c440_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  if (ant_c440_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
   cosim_census_note("c440 id", unported);
   return false;
 }
 
-static void shim_monster_c440_collide(Wram* w, const Rom* rom,
-                                      const CosimRegs* in, CosimRegs* out) {
+static void shim_ant_c440_collide(Wram* w, const Rom* rom,
+                                  const CosimRegs* in, CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  MonsterCollideWork work;
+  AntCollideWork work;
   // the guard allowed it
-  monster_c440_collide_counted(w, rom, in->d, in->a, &r, NULL, &work);
+  ant_c440_collide_counted(w, rom, in->d, in->a, &r, NULL, &work);
   handler_regs(&r, out);
 
   int cycles;
-  if (monster_cycles(&work, in->fastrom, (in->d & 0xff) != 0, &cycles))
+  if (ant_cycles(&work, in->fastrom, (in->d & 0xff) != 0, &cycles))
     cosim_cost(cycles);
 }
 
@@ -2575,10 +2575,10 @@ static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
     // 96% of what `sprite_build_oam` used to decline on and `$81:C4A6` was on
     // the same work list; pricing one without the other would have meant
     // writing the same six constants twice.
-    case MONSTER_COLLIDE_ENTRY:
-    case MONSTER_C440_COLLIDE_ENTRY: {
+    case ANT_COLLIDE_ENTRY:
+    case ANT_C440_COLLIDE_ENTRY: {
       int handler;
-      if (!monster_cycles(&k->monster, fast, dp_unaligned, &handler))
+      if (!ant_cycles(&k->ant, fast, dp_unaligned, &handler))
         return false;
       cycles += handler;
       break;
@@ -6892,7 +6892,7 @@ static void shim_swim_walk(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 // ---------------------------------------------------------------------------
-// $81:BEE3  monster_chase -- see `port/chase.h`
+// $81:BEE3  ant_chase -- see `port/chase.h`
 // ---------------------------------------------------------------------------
 //
 // Priced the walk's way: what the ROM would have run between `$BEE3` and the
@@ -7013,7 +7013,7 @@ static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
 
 // The tests put their scratch on page zero, as for the walk, and the tables
 // are read through the data bank, which is the thread's own.
-static bool accepts_monster_chase(const Wram* w, const CosimRegs* in) {
+static bool accepts_ant_chase(const Wram* w, const CosimRegs* in) {
   if (!body_ok(in) || in->d < 0x0100 || in->db != CHASE_BANK) return false;
   // The step table is read through `$38`, so it has to be in the cartridge.
   return wram_r16(w, (uint16_t)(in->d + CHASE_DP_STEPS)) >= 0x8000u &&
@@ -7022,15 +7022,15 @@ static bool accepts_monster_chase(const Wram* w, const CosimRegs* in) {
 
 // Nothing it leaves in a register is read, except V after giving up. See
 // `port/chase.h`, "Its contract with the ROM".
-static void shim_monster_chase(Wram* w, const Rom* rom, const CosimRegs* in,
-                               CosimRegs* out) {
+static void shim_ant_chase(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
   ChaseLog log = {0};
   PortCpu c;
   cpu_from(in, &c);
-  const bool leaps = monster_chase(w, rom, in->d, &log);
-  c.pc = leaps ? MONSTER_CHASE_LEAPS_PC
-               : log.gave_up ? MONSTER_CHASE_GAVE_UP_RTS_PC
-                             : MONSTER_CHASE_RTS_PC;
+  const bool leaps = ant_chase(w, rom, in->d, &log);
+  c.pc = leaps ? ANT_CHASE_LEAPS_PC
+               : log.gave_up ? ANT_CHASE_GAVE_UP_RTS_PC
+                             : ANT_CHASE_RTS_PC;
   if (log.gave_up) set_v(&c, log.overflow);
   cpu_to(&c, out);
   cosim_cost(chase_cycles(&log, in));
@@ -7040,9 +7040,9 @@ static void shim_monster_chase(Wram* w, const Rom* rom, const CosimRegs* in,
                           (log.gave_up ? 0 : PORT_P_V));
 }
 
-static const uint32_t MONSTER_CHASE_EXITS[] = {MONSTER_CHASE_RTS_PC,
-                                               MONSTER_CHASE_GAVE_UP_RTS_PC,
-                                               MONSTER_CHASE_LEAPS_PC};
+static const uint32_t ANT_CHASE_EXITS[] = {ANT_CHASE_RTS_PC,
+                                           ANT_CHASE_GAVE_UP_RTS_PC,
+                                           ANT_CHASE_LEAPS_PC};
 
 // ---------------------------------------------------------------------------
 // The zombies -- see `port/zombie.h`
@@ -19929,30 +19929,30 @@ HOLDS(X)
 #undef X
 
 // ---------------------------------------------------------------------------
-// The big monster's thread, between its calls -- see `port/monster_thread.h`
+// The giant ant's thread, between its calls -- see `port/ant_thread.h`
 // ---------------------------------------------------------------------------
 //
 // Each run is from `tools/cycles816.py`, with a branch that is taken counted
 // taken. One shim serves a stretch in all three copies: the entry says which.
 
-typedef uint32_t (*MonsterPc)(const MonsterThread* t);
+typedef uint32_t (*AntPc)(const AntThread* t);
 
-static uint32_t monster_loaded_at(const MonsterThread* t) { return t->loaded_pc; }
-static uint32_t monster_sleeps_at(const MonsterThread* t) { return t->sleep_pc; }
-static uint32_t monster_woke_at(const MonsterThread* t) { return t->woke_pc; }
-static uint32_t monster_turned_at(const MonsterThread* t) { return t->turned_pc; }
-static uint32_t monster_ends_at(const MonsterThread* t) { return t->end_pc; }
-static uint32_t monster_untouched_at(const MonsterThread* t) {
+static uint32_t ant_loaded_at(const AntThread* t) { return t->loaded_pc; }
+static uint32_t ant_sleeps_at(const AntThread* t) { return t->sleep_pc; }
+static uint32_t ant_woke_at(const AntThread* t) { return t->woke_pc; }
+static uint32_t ant_turned_at(const AntThread* t) { return t->turned_pc; }
+static uint32_t ant_ends_at(const AntThread* t) { return t->end_pc; }
+static uint32_t ant_untouched_at(const AntThread* t) {
   return t->heard_pc;
 }
 
-static const MonsterThread* monster_thread_at(uint32_t pc, MonsterPc at) {
-  for (int i = 0; i < MONSTER_THREAD_COUNT; i++)
-    if (at(&MONSTER_THREADS_BY[i]) == pc) return &MONSTER_THREADS_BY[i];
+static const AntThread* ant_thread_at(uint32_t pc, AntPc at) {
+  for (int i = 0; i < ANT_THREAD_COUNT; i++)
+    if (at(&ANT_THREADS_BY[i]) == pc) return &ANT_THREADS_BY[i];
   return NULL;
 }
 
-static void monster_cost(const CosimRegs* in, const CosimRun* run) {
+static void ant_cost(const CosimRegs* in, const CosimRun* run) {
   cosim_cost(cosim_run_cycles_dp(run, fetch_fast(in), (in->d & 0x00ffu) != 0));
 }
 
@@ -19960,12 +19960,12 @@ static const CosimRun MT_RUN_LOADED = {134, 16, 0};   // `CLC` to `LDY #`
 static const CosimRun MT_RUN_SLEEPS = {18, 3, 0};     // `LDA #$0001`
 static const CosimRun MT_RUN_WOKE = {102, 7, 1};      // `PEA` to `PHA`
 static const CosimRun MT_RUN_WOKE_FORGETS = {130, 9, 2};  // ...after `STZ $20`
-static const CosimRun MT_RUN_TURNED[MONSTER_FATE_COUNT] = {
-    [MONSTER_GOES_ON] = {46, 4, 1},        // `LDA $2A : BEQ`
-    [MONSTER_HELD_FATAL_A] = {104, 11, 2}, // ...`LDA $26 : CMP : BEQ`
-    [MONSTER_HELD_FATAL_B] = {134, 16, 2}, // ...`CMP : BEQ`
-    [MONSTER_TOLD] = {168, 20, 3},         // ...`LDA $2A : BPL`
-    [MONSTER_LEAVES] = {174, 20, 3},
+static const CosimRun MT_RUN_TURNED[ANT_FATE_COUNT] = {
+    [ANT_GOES_ON] = {46, 4, 1},            // `LDA $2A : BEQ`
+    [ANT_HELD_FATAL_A] = {104, 11, 2}, // ...`LDA $26 : CMP : BEQ`
+    [ANT_HELD_FATAL_B] = {134, 16, 2}, // ...`CMP : BEQ`
+    [ANT_TOLD] = {168, 20, 3},             // ...`LDA $2A : BPL`
+    [ANT_LEAVES] = {174, 20, 3},
 };
 // `LDA $28 : CMP #$FFFF : BEQ`, twice in each copy.
 static const CosimRun MT_RUN_HOLDING = {58, 7, 1};
@@ -19977,250 +19977,250 @@ static const CosimRun MT_RUN_ENDS = {138, 14, 1};     // `SEC` to `LDA $08`
 static const CosimRun MT_RUN_ROOM = {18, 2, 0};       // `BCC`
 static const CosimRun MT_RUN_NO_ROOM = {12, 2, 0};
 
-static bool accepts_monster_thread(const Wram* w, const CosimRegs* in) {
+static bool accepts_ant_thread(const Wram* w, const CosimRegs* in) {
   (void)w;
   return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db);
 }
 
-static bool accepts_monster_dropped(const Wram* w, const CosimRegs* in) {
-  return accepts_monster_thread(w, in) &&
-         wram_r16(w, (uint16_t)(in->d + MONSTER_DP_RECORD)) < 0x1f00;
+static bool accepts_ant_dropped(const Wram* w, const CosimRegs* in) {
+  return accepts_ant_thread(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + ANT_DP_RECORD)) < 0x1f00;
 }
 
 // A load that would go below nothing is the ROM's: it stops there.
-static bool accepts_monster_ends(const Wram* w, const CosimRegs* in) {
-  return accepts_monster_thread(w, in) &&
-         wram_r16(w, W_SPAWN_LOAD) >= MONSTER_WEIGHT &&
-         wram_r16(w, W_SPAWN_LOAD) < 0x8000u + MONSTER_WEIGHT;
+static bool accepts_ant_ends(const Wram* w, const CosimRegs* in) {
+  return accepts_ant_thread(w, in) &&
+         wram_r16(w, W_SPAWN_LOAD) >= ANT_WEIGHT &&
+         wram_r16(w, W_SPAWN_LOAD) < 0x8000u + ANT_WEIGHT;
 }
 
-static void shim_monster_loaded(Wram* w, const Rom* rom, const CosimRegs* in,
-                                CosimRegs* out) {
+static void shim_ant_loaded(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
   (void)rom;
   PortCpu c;
   cpu_from(in, &c);
-  monster_loaded(w, &c, monster_thread_at(in->pc, monster_loaded_at));
+  ant_loaded(w, &c, ant_thread_at(in->pc, ant_loaded_at));
   cpu_to(&c, out);
-  monster_cost(in, &MT_RUN_LOADED);
+  ant_cost(in, &MT_RUN_LOADED);
 }
 
-static void shim_monster_sleeps(Wram* w, const Rom* rom, const CosimRegs* in,
-                                CosimRegs* out) {
+static void shim_ant_sleeps(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
   (void)w;
   (void)rom;
   PortCpu c;
   cpu_from(in, &c);
-  monster_sleeps(&c, monster_thread_at(in->pc, monster_sleeps_at));
+  ant_sleeps(&c, ant_thread_at(in->pc, ant_sleeps_at));
   cpu_to(&c, out);
-  monster_cost(in, &MT_RUN_SLEEPS);
+  ant_cost(in, &MT_RUN_SLEEPS);
 }
 
-static void shim_monster_woke(Wram* w, const Rom* rom, const CosimRegs* in,
-                              CosimRegs* out) {
+static void shim_ant_woke(Wram* w, const Rom* rom, const CosimRegs* in,
+                          CosimRegs* out) {
   (void)rom;
-  const MonsterThread* t = monster_thread_at(in->pc, monster_woke_at);
+  const AntThread* t = ant_thread_at(in->pc, ant_woke_at);
   PortCpu c;
   cpu_from(in, &c);
-  monster_woke(w, &c, t);
+  ant_woke(w, &c, t);
   cpu_to(&c, out);
-  monster_cost(in, t->forgets ? &MT_RUN_WOKE_FORGETS : &MT_RUN_WOKE);
+  ant_cost(in, t->forgets ? &MT_RUN_WOKE_FORGETS : &MT_RUN_WOKE);
 }
 
-static void shim_monster_turned(Wram* w, const Rom* rom, const CosimRegs* in,
-                                CosimRegs* out) {
+static void shim_ant_turned(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
   (void)rom;
   PortCpu c;
   cpu_from(in, &c);
   bool holding = false;
-  const MonsterFate fate = monster_turned(
-      w, &c, monster_thread_at(in->pc, monster_turned_at), &holding);
+  const AntFate fate = ant_turned(
+      w, &c, ant_thread_at(in->pc, ant_turned_at), &holding);
   cpu_to(&c, out);
   CosimRun run = MT_RUN_TURNED[fate];
-  if (fate != MONSTER_GOES_ON && fate != MONSTER_LEAVES)
+  if (fate != ANT_GOES_ON && fate != ANT_LEAVES)
     run_add(&run, holding ? &MT_RUN_HOLDING : &MT_RUN_EMPTY, 1);
-  monster_cost(in, &run);
+  ant_cost(in, &run);
 }
 
-static uint32_t monster_dropped_at(const MonsterThread* t) {
-  return monster_dropped_pc(t);
+static uint32_t ant_dropped_at(const AntThread* t) {
+  return ant_dropped_pc(t);
 }
 
-static void shim_monster_dropped(Wram* w, const Rom* rom, const CosimRegs* in,
-                                 CosimRegs* out) {
+static void shim_ant_dropped(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
   (void)rom;
-  const MonsterThread* t = monster_thread_at(in->pc, monster_dropped_at);
+  const AntThread* t = ant_thread_at(in->pc, ant_dropped_at);
   PortCpu c;
   cpu_from(in, &c);
-  monster_dropped(w, &c, t);
+  ant_dropped(w, &c, t);
   cpu_to(&c, out);
-  monster_cost(in, t->untouchable ? &MT_RUN_DROPPED_UNTOUCHABLE
+  ant_cost(in, t->untouchable ? &MT_RUN_DROPPED_UNTOUCHABLE
                                   : &MT_RUN_DROPPED);
 }
 
-static void shim_monster_untouched(Wram* w, const Rom* rom,
-                                   const CosimRegs* in, CosimRegs* out) {
+static void shim_ant_untouched(Wram* w, const Rom* rom,
+                               const CosimRegs* in, CosimRegs* out) {
   (void)w;
   (void)rom;
   PortCpu c;
   cpu_from(in, &c);
-  monster_untouched(&c, monster_thread_at(in->pc, monster_untouched_at));
+  ant_untouched(&c, ant_thread_at(in->pc, ant_untouched_at));
   cpu_to(&c, out);
-  monster_cost(in, &MT_RUN_UNTOUCHED);
+  ant_cost(in, &MT_RUN_UNTOUCHED);
 }
 
-static void shim_monster_ends(Wram* w, const Rom* rom, const CosimRegs* in,
-                              CosimRegs* out) {
+static void shim_ant_ends(Wram* w, const Rom* rom, const CosimRegs* in,
+                          CosimRegs* out) {
   (void)rom;
   PortCpu c;
   cpu_from(in, &c);
-  monster_ends(w, &c, monster_thread_at(in->pc, monster_ends_at));
+  ant_ends(w, &c, ant_thread_at(in->pc, ant_ends_at));
   cpu_to(&c, out);
-  monster_cost(in, &MT_RUN_ENDS);
+  ant_cost(in, &MT_RUN_ENDS);
 }
 
-static uint32_t monster_freed_at(const MonsterThread* t) {
-  return monster_freed_pc(t);
+static uint32_t ant_freed_at(const AntThread* t) {
+  return ant_freed_pc(t);
 }
 
-static void shim_monster_freed(Wram* w, const Rom* rom, const CosimRegs* in,
-                               CosimRegs* out) {
+static void shim_ant_freed(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
   (void)rom;
   PortCpu c;
   cpu_from(in, &c);
   const bool holding =
-      monster_freed(w, &c, monster_thread_at(in->pc, monster_freed_at));
+      ant_freed(w, &c, ant_thread_at(in->pc, ant_freed_at));
   cpu_to(&c, out);
-  monster_cost(in, holding ? &MT_RUN_HOLDING : &MT_RUN_EMPTY);
+  ant_cost(in, holding ? &MT_RUN_HOLDING : &MT_RUN_EMPTY);
 }
 
-static void shim_monster_has_room(Wram* w, const Rom* rom, const CosimRegs* in,
-                                  CosimRegs* out) {
+static void shim_ant_has_room(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
   (void)w;
   (void)rom;
   PortCpu c;
   cpu_from(in, &c);
-  const bool room = monster_has_room(&c);
+  const bool room = ant_has_room(&c);
   cpu_to(&c, out);
-  monster_cost(in, room ? &MT_RUN_ROOM : &MT_RUN_NO_ROOM);
+  ant_cost(in, room ? &MT_RUN_ROOM : &MT_RUN_NO_ROOM);
 }
 
 #define X(at, loaded, handler, sleep, woke, forgets, turned, heard,          \
           untouchable, end)                                                  \
-  static const uint32_t monster_##at##_loaded_EXITS[] = {loaded + 0x10};     \
-  static const uint32_t monster_##at##_sleeps_EXITS[] = {sleep + 3};         \
-  static const uint32_t monster_##at##_woke_EXITS[] = {turned - 7};          \
-  static const uint32_t monster_##at##_turned_EXITS[] = {                    \
+  static const uint32_t ant_##at##_loaded_EXITS[] = {loaded + 0x10};         \
+  static const uint32_t ant_##at##_sleeps_EXITS[] = {sleep + 3};             \
+  static const uint32_t ant_##at##_woke_EXITS[] = {turned - 7};              \
+  static const uint32_t ant_##at##_turned_EXITS[] = {                        \
       sleep, turned + 0x1b, turned + 0x1e, end};                             \
-  static const uint32_t monster_##at##_dropped_EXITS[] = {                   \
+  static const uint32_t ant_##at##_dropped_EXITS[] = {                       \
       untouchable ? heard - 4 : heard + 3};                                  \
-  static const uint32_t monster_##at##_ends_EXITS[] = {end + 0x0e};          \
-  static const uint32_t monster_##at##_freed_EXITS[] = {end + 0x19,          \
-                                                        end + 0x1d};
-MONSTER_THREADS(X)
+  static const uint32_t ant_##at##_ends_EXITS[] = {end + 0x0e};              \
+  static const uint32_t ant_##at##_freed_EXITS[] = {end + 0x19,              \
+                                                    end + 0x1d};
+ANT_THREADS(X)
 #undef X
-static const uint32_t monster_c201_untouched_EXITS[] = {0x81c260u};
-static const uint32_t MONSTER_HAS_ROOM_EXITS[] = {MONSTER_C321_NO_ROOM_PC,
-                                                  MONSTER_C321_BEGIN_PC};
+static const uint32_t ant_c201_untouched_EXITS[] = {0x81c260u};
+static const uint32_t ANT_HAS_ROOM_EXITS[] = {ANT_C321_NO_ROOM_PC,
+                                              ANT_C321_BEGIN_PC};
 
 // ---------------------------------------------------------------------------
-// The big monster's states -- see `port/monster_states.h`
+// The giant ant's states -- see `port/ant_states.h`
 // ---------------------------------------------------------------------------
 //
 // One shim for every stretch, priced as the big figure's thread below is:
 // by the straight runs of the listing it took, each from
 // `tools/price_runs.py`, a taken branch at 6 more, and the calls it made
 // itself by their own models.
-static const CosimRun MONSTER_RUN_COST[MONSTER_RUN_COUNT] = {
-    [MONSTER_RUN_B9FD] = {556, 51, 7},  // LDA : STA : STA : LDA : STA : STA : LDY : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : STA : LDA : TAY
-    [MONSTER_RUN_BA34] = {214, 17, 7},  // STZ : STZ : STZ : STZ : STZ : STZ : LDA : STA
-    [MONSTER_RUN_BA46] = {224, 23, 4},  // LDY : LDA : STA : LDA : STA : LDA : STA : STA : LDA
-    [MONSTER_RUN_BA78] = {322, 32, 4},  // LDY : LDA : ORA : STA : LDA : STA : LDA : STA : LDA : STA : STA : LDA
-    [MONSTER_RUN_BC05] = {168, 15, 3},  // LDA : STA : LDX : LDY : JSL : BCS
-    [MONSTER_RUN_BC14] = {200, 14, 4},  // INC : LDA : LDX : LDY : JSL : BCS
-    [MONSTER_RUN_BC22] = {40, 1, 0},  // RTS
-    [MONSTER_RUN_BC23] = {168, 15, 3},  // LDA : STA : LDX : LDY : JSL : BCS
-    [MONSTER_RUN_BC32] = {160, 10, 3},  // INC : LDX : LDY : JSL
-    [MONSTER_RUN_BC3D] = {368, 35, 5},  // LDA : ASL : TAY : LDA : CLC : ADC : STA : TAX : LDA : CLC : ADC : STA : TAY : JSL : AND : BNE
-    [MONSTER_RUN_BC5C] = {392, 37, 5},  // LDA : ASL : TAY : LDA : ASL : CLC : ADC : STA : TAX : LDA : ASL : CLC : ADC : STA : TAY : JSL : AND : BNE
-    [MONSTER_RUN_BC7D] = {52, 2, 0},  // SEC : RTS
-    [MONSTER_RUN_BC7F] = {294, 28, 3},  // LDA : ASL : TAY : LDA : CLC : ADC : TAX : LDA : CLC : ADC : TAY : JSL : BCS
-    [MONSTER_RUN_BC97] = {52, 2, 0},  // CLC : RTS
-    [MONSTER_RUN_BCE1] = {166, 16, 1},  // JSL : AND : ASL : ASL : INC : INC : STA : JMP
-    [MONSTER_RUN_BCF1] = {172, 16, 2},  // LDA : STA : LDY : LDA : ORA : STA
-    [MONSTER_RUN_BD01] = {100, 11, 1},  // LDA : ASL : TAX : LDA : BMI
-    [MONSTER_RUN_BD0A] = {52, 5, 0},  // ORA : BRA
-    [MONSTER_RUN_BD0F] = {40, 3, 0},  // AND
-    [MONSTER_RUN_BD12] = {88, 10, 0},  // STA : LDA : BEQ
-    [MONSTER_RUN_BD1E] = {288, 26, 6},  // LDA : ASL : STA : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA
-    [MONSTER_RUN_BD34] = {122, 10, 2},  // LDX : LDY : JSL : BCC
-    [MONSTER_RUN_BD3E] = {248, 24, 5},  // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : BRA
-    [MONSTER_RUN_BD52] = {392, 32, 7},  // LDY : LDA : AND : STA : LDA : STA : STA : LDA : STA : STA : STZ : STZ : JMP
-    [MONSTER_RUN_BE0E] = {46, 5, 1},  // LDA : STA
-    [MONSTER_RUN_BE14] = {344, 27, 7},  // LDA : ASL : TAY : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : JSR
-    [MONSTER_RUN_BE2B] = {12, 2, 0},  // BCS
-    [MONSTER_RUN_BE2D] = {220, 16, 5},  // LDY : LDA : STA : STA : LDA : STA : STA
-    [MONSTER_RUN_BE3E] = {18, 3, 0},  // JMP
-    [MONSTER_RUN_BE41] = {198, 20, 3},  // STZ : LDA : DEC : DEC : CLC : ADC : AND : INC : INC : STA : JMP
-    [MONSTER_RUN_BE69] = {74, 7, 2},  // LDA : STA : STZ
-    [MONSTER_RUN_BE71] = {468, 40, 8},  // LDA : DEC : DEC : SEC : SBC : AND : INC : INC : STA : ASL : TAY : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : JSR
-    [MONSTER_RUN_BE95] = {12, 2, 0},  // BCS
-    [MONSTER_RUN_BE97] = {108, 9, 2},  // INC : LDA : CMP : BCC
-    [MONSTER_RUN_BEA0] = {18, 3, 0},  // JMP
-    [MONSTER_RUN_BEA3] = {96, 8, 3},  // LDA : STA : STZ : BRA
-    [MONSTER_RUN_BEAB] = {28, 2, 1},  // STZ
-    [MONSTER_RUN_BEAD] = {344, 27, 7},  // LDA : ASL : TAY : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : JSR
-    [MONSTER_RUN_BEC4] = {12, 2, 0},  // BCS
-    [MONSTER_RUN_BEC6] = {220, 16, 5},  // LDY : LDA : STA : STA : LDA : STA : STA
-    [MONSTER_RUN_BED7] = {18, 3, 0},  // JMP
-    [MONSTER_RUN_BFCD] = {416, 32, 10},  // LDA : ASL : STA : LDY : LDX : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : JSR
-    [MONSTER_RUN_BFE9] = {12, 2, 0},  // BCS
-    [MONSTER_RUN_BFEB] = {220, 16, 5},  // LDY : LDA : STA : STA : LDA : STA : STA
-    [MONSTER_RUN_BFA8] = {168, 14, 2},  // LDX : LDA : STA : TAY : JSL : BCS
-    [MONSTER_RUN_BFB6] = {122, 10, 2},  // LDX : LDY : JSL : BCS
-    [MONSTER_RUN_BFC0] = {12, 1, 0},  // CLC
-    [MONSTER_RUN_BFC2] = {92, 10, 2},  // LDA : STA : LDA : STA
-    [MONSTER_RUN_BFFC] = {18, 3, 0},  // JMP
-    [MONSTER_RUN_BFFF] = {40, 4, 1},  // LDA : BNE
-    [MONSTER_RUN_C003] = {40, 3, 0},  // JSR
-    [MONSTER_RUN_C006] = {12, 2, 0},  // BCS
-    [MONSTER_RUN_C008] = {18, 3, 0},  // JMP
-    [MONSTER_RUN_C054] = {422, 40, 4},  // STA : TAY : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : SEC : SBC : ASL : TAX : LDA : BEQ
-    [MONSTER_RUN_C07A] = {288, 27, 0},  // STA : LDA : STA : LDA : STA : LDA : ORA : STA : JMP
-    [MONSTER_RUN_C0E5] = {260, 26, 5},  // LDA : STA : LDA : STA : LDA : SEC : SBC : ASL : TAX : LDA : CMP : BEQ
-    [MONSTER_RUN_C0FD] = {56, 4, 2},  // LDX : LDY
-    [MONSTER_RUN_C105] = {28, 2, 1},  // LDA
-    [MONSTER_RUN_C10B] = {160, 15, 3},  // LDA : STA : STZ : LDY : LDA : STA
+static const CosimRun ANT_RUN_COST[ANT_RUN_COUNT] = {
+    [ANT_RUN_B9FD] = {556, 51, 7},      // LDA : STA : STA : LDA : STA : STA : LDY : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : STA : LDA : TAY
+    [ANT_RUN_BA34] = {214, 17, 7},      // STZ : STZ : STZ : STZ : STZ : STZ : LDA : STA
+    [ANT_RUN_BA46] = {224, 23, 4},      // LDY : LDA : STA : LDA : STA : LDA : STA : STA : LDA
+    [ANT_RUN_BA78] = {322, 32, 4},      // LDY : LDA : ORA : STA : LDA : STA : LDA : STA : LDA : STA : STA : LDA
+    [ANT_RUN_BC05] = {168, 15, 3},      // LDA : STA : LDX : LDY : JSL : BCS
+    [ANT_RUN_BC14] = {200, 14, 4},      // INC : LDA : LDX : LDY : JSL : BCS
+    [ANT_RUN_BC22] = {40, 1, 0},      // RTS
+    [ANT_RUN_BC23] = {168, 15, 3},      // LDA : STA : LDX : LDY : JSL : BCS
+    [ANT_RUN_BC32] = {160, 10, 3},      // INC : LDX : LDY : JSL
+    [ANT_RUN_BC3D] = {368, 35, 5},      // LDA : ASL : TAY : LDA : CLC : ADC : STA : TAX : LDA : CLC : ADC : STA : TAY : JSL : AND : BNE
+    [ANT_RUN_BC5C] = {392, 37, 5},      // LDA : ASL : TAY : LDA : ASL : CLC : ADC : STA : TAX : LDA : ASL : CLC : ADC : STA : TAY : JSL : AND : BNE
+    [ANT_RUN_BC7D] = {52, 2, 0},      // SEC : RTS
+    [ANT_RUN_BC7F] = {294, 28, 3},      // LDA : ASL : TAY : LDA : CLC : ADC : TAX : LDA : CLC : ADC : TAY : JSL : BCS
+    [ANT_RUN_BC97] = {52, 2, 0},      // CLC : RTS
+    [ANT_RUN_BCE1] = {166, 16, 1},      // JSL : AND : ASL : ASL : INC : INC : STA : JMP
+    [ANT_RUN_BCF1] = {172, 16, 2},      // LDA : STA : LDY : LDA : ORA : STA
+    [ANT_RUN_BD01] = {100, 11, 1},      // LDA : ASL : TAX : LDA : BMI
+    [ANT_RUN_BD0A] = {52, 5, 0},      // ORA : BRA
+    [ANT_RUN_BD0F] = {40, 3, 0},      // AND
+    [ANT_RUN_BD12] = {88, 10, 0},      // STA : LDA : BEQ
+    [ANT_RUN_BD1E] = {288, 26, 6},      // LDA : ASL : STA : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA
+    [ANT_RUN_BD34] = {122, 10, 2},      // LDX : LDY : JSL : BCC
+    [ANT_RUN_BD3E] = {248, 24, 5},      // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : BRA
+    [ANT_RUN_BD52] = {392, 32, 7},      // LDY : LDA : AND : STA : LDA : STA : STA : LDA : STA : STA : STZ : STZ : JMP
+    [ANT_RUN_BE0E] = {46, 5, 1},      // LDA : STA
+    [ANT_RUN_BE14] = {344, 27, 7},      // LDA : ASL : TAY : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : JSR
+    [ANT_RUN_BE2B] = {12, 2, 0},      // BCS
+    [ANT_RUN_BE2D] = {220, 16, 5},      // LDY : LDA : STA : STA : LDA : STA : STA
+    [ANT_RUN_BE3E] = {18, 3, 0},      // JMP
+    [ANT_RUN_BE41] = {198, 20, 3},      // STZ : LDA : DEC : DEC : CLC : ADC : AND : INC : INC : STA : JMP
+    [ANT_RUN_BE69] = {74, 7, 2},      // LDA : STA : STZ
+    [ANT_RUN_BE71] = {468, 40, 8},      // LDA : DEC : DEC : SEC : SBC : AND : INC : INC : STA : ASL : TAY : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : JSR
+    [ANT_RUN_BE95] = {12, 2, 0},      // BCS
+    [ANT_RUN_BE97] = {108, 9, 2},      // INC : LDA : CMP : BCC
+    [ANT_RUN_BEA0] = {18, 3, 0},      // JMP
+    [ANT_RUN_BEA3] = {96, 8, 3},      // LDA : STA : STZ : BRA
+    [ANT_RUN_BEAB] = {28, 2, 1},      // STZ
+    [ANT_RUN_BEAD] = {344, 27, 7},      // LDA : ASL : TAY : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : JSR
+    [ANT_RUN_BEC4] = {12, 2, 0},      // BCS
+    [ANT_RUN_BEC6] = {220, 16, 5},      // LDY : LDA : STA : STA : LDA : STA : STA
+    [ANT_RUN_BED7] = {18, 3, 0},      // JMP
+    [ANT_RUN_BFCD] = {416, 32, 10},      // LDA : ASL : STA : LDY : LDX : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : JSR
+    [ANT_RUN_BFE9] = {12, 2, 0},      // BCS
+    [ANT_RUN_BFEB] = {220, 16, 5},      // LDY : LDA : STA : STA : LDA : STA : STA
+    [ANT_RUN_BFA8] = {168, 14, 2},      // LDX : LDA : STA : TAY : JSL : BCS
+    [ANT_RUN_BFB6] = {122, 10, 2},      // LDX : LDY : JSL : BCS
+    [ANT_RUN_BFC0] = {12, 1, 0},      // CLC
+    [ANT_RUN_BFC2] = {92, 10, 2},      // LDA : STA : LDA : STA
+    [ANT_RUN_BFFC] = {18, 3, 0},      // JMP
+    [ANT_RUN_BFFF] = {40, 4, 1},      // LDA : BNE
+    [ANT_RUN_C003] = {40, 3, 0},      // JSR
+    [ANT_RUN_C006] = {12, 2, 0},      // BCS
+    [ANT_RUN_C008] = {18, 3, 0},      // JMP
+    [ANT_RUN_C054] = {422, 40, 4},      // STA : TAY : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : SEC : SBC : ASL : TAX : LDA : BEQ
+    [ANT_RUN_C07A] = {288, 27, 0},      // STA : LDA : STA : LDA : STA : LDA : ORA : STA : JMP
+    [ANT_RUN_C0E5] = {260, 26, 5},      // LDA : STA : LDA : STA : LDA : SEC : SBC : ASL : TAX : LDA : CMP : BEQ
+    [ANT_RUN_C0FD] = {56, 4, 2},      // LDX : LDY
+    [ANT_RUN_C105] = {28, 2, 1},      // LDA
+    [ANT_RUN_C10B] = {160, 15, 3},      // LDA : STA : STZ : LDY : LDA : STA
 };
 
 // The record is written through the bank.
-static bool accepts_monster_set_up(const Wram* w, const CosimRegs* in) {
-  return body_ok(in) && in->d >= 0x0100 && in->db == MONSTER_STATES_BANK &&
-         wram_r16(w, (uint16_t)(in->d + MONSTER_DP_RECORD)) < 0x1f00;
+static bool accepts_ant_set_up(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == ANT_STATES_BANK &&
+         wram_r16(w, (uint16_t)(in->d + ANT_DP_RECORD)) < 0x1f00;
 }
 
 // ...and the step table is read through `$38`, so it has to be in the
 // cartridge.
-static bool accepts_monster_states(const Wram* w, const CosimRegs* in) {
-  return accepts_monster_set_up(w, in) &&
+static bool accepts_ant_states(const Wram* w, const CosimRegs* in) {
+  return accepts_ant_set_up(w, in) &&
          wram_r16(w, (uint16_t)(in->d + CHASE_DP_STEPS)) >= 0x8000u;
 }
 
 // The record for what it has caught is in A.
-static bool accepts_monster_picks_up(const Wram* w, const CosimRegs* in) {
-  return accepts_monster_set_up(w, in) && in->a < 0x1f00;
+static bool accepts_ant_picks_up(const Wram* w, const CosimRegs* in) {
+  return accepts_ant_set_up(w, in) && in->a < 0x1f00;
 }
 
-static bool supported_monster_states(Wram* scratch, const Rom* rom,
-                                     const CosimRegs* in) {
-  return monster_state_supported(scratch, rom, in->d, in->pc);
+static bool supported_ant_states(Wram* scratch, const Rom* rom,
+                                 const CosimRegs* in) {
+  return ant_state_supported(scratch, rom, in->d, in->pc);
 }
 
-static void shim_monster_states(Wram* w, const Rom* rom, const CosimRegs* in,
-                                CosimRegs* out) {
+static void shim_ant_states(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
   PortCpu c;
-  MonsterStatesWork k = {0};
+  AntStatesWork k = {0};
   cpu_from(in, &c);
-  monster_state_run(w, rom, &c, &k);
+  ant_state_run(w, rom, &c, &k);
   cpu_to(&c, out);
   if (!k.v_known) {
     out->flags &= ~COSIM_FLAG_V;
@@ -20229,8 +20229,8 @@ static void shim_monster_states(Wram* w, const Rom* rom, const CosimRegs* in,
 
   const bool fast = fetch_fast(in);
   CosimRun run = {0, 0, 0};
-  for (int i = 0; i < MONSTER_RUN_COUNT; i++)
-    run_add(&run, &MONSTER_RUN_COST[i], k.runs[i]);
+  for (int i = 0; i < ANT_RUN_COUNT; i++)
+    run_add(&run, &ANT_RUN_COST[i], k.runs[i]);
   run_add(&run, &RUN_TAKEN, k.taken);
   int cycles = cosim_run_cycles_dp(&run, fast, (in->d & 0x00ffu) != 0);
   for (int blocked = 0; blocked < 2; blocked++) {
@@ -20249,27 +20249,27 @@ static void shim_monster_states(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(cycles);
 }
 
-static const uint32_t MONSTER_SET_UP_EXITS[] = {MONSTER_NO_HANDLER_PC};
-static const uint32_t MONSTER_HOLDS_NOTHING_EXITS[] = {MONSTER_SET_UP_RTS_PC};
-static const uint32_t MONSTER_USUAL_KIND_EXITS[] = {MONSTER_USUAL_PICTURES_PC};
-static const uint32_t MONSTER_FAST_KIND_EXITS[] = {MONSTER_FAST_PICTURES_PC};
-static const uint32_t MONSTER_ROOM_EXITS[] = {MONSTER_ROOM_RTS_PC};
-static const uint32_t MONSTER_MARCH_BEGINS_EXITS[] = {
-    MONSTER_MARCH_BEGUN_RTS_PC};
-static const uint32_t MONSTER_PUTS_DOWN_EXITS[] = {MONSTER_PUT_BACK_PC};
-static const uint32_t MONSTER_PUT_DOWN_EXITS[] = {MONSTER_FREE_HELD_PC};
-static const uint32_t MONSTER_HOLDS_NONE_EXITS[] = {MONSTER_PUT_DOWN_RTS_PC};
-static const uint32_t MONSTER_WALK_BEGINS_EXITS[] = {MONSTER_WALK_BEGUN_RTS_PC};
-static const uint32_t MONSTER_LEAPS_EXITS[] = {MONSTER_LEAP_PICTURES_PC,
-                                               MONSTER_WALK_BEGUN_RTS_PC};
-static const uint32_t MONSTER_WALKING_EXITS[] = {MONSTER_WALKED_RTS_PC,
-                                                 MONSTER_ROUND_BEGUN_RTS_PC};
-static const uint32_t MONSTER_GOING_ROUND_EXITS[] = {
-    MONSTER_WENT_ROUND_RTS_PC, MONSTER_ROUND_BEGUN_RTS_PC,
-    MONSTER_WALK_BEGUN_RTS_PC};
-static const uint32_t MONSTER_MARCHING_EXITS[] = {
-    MONSTER_MARCHED_RTS_PC, MONSTER_WALK_BEGUN_RTS_PC,
-    MONSTER_LEAP_PICTURES_PC};
+static const uint32_t ANT_SET_UP_EXITS[] = {ANT_NO_HANDLER_PC};
+static const uint32_t ANT_HOLDS_NOTHING_EXITS[] = {ANT_SET_UP_RTS_PC};
+static const uint32_t ANT_USUAL_KIND_EXITS[] = {ANT_USUAL_PICTURES_PC};
+static const uint32_t ANT_FAST_KIND_EXITS[] = {ANT_FAST_PICTURES_PC};
+static const uint32_t ANT_ROOM_EXITS[] = {ANT_ROOM_RTS_PC};
+static const uint32_t ANT_MARCH_BEGINS_EXITS[] = {
+    ANT_MARCH_BEGUN_RTS_PC};
+static const uint32_t ANT_PUTS_DOWN_EXITS[] = {ANT_PUT_BACK_PC};
+static const uint32_t ANT_PUT_DOWN_EXITS[] = {ANT_FREE_HELD_PC};
+static const uint32_t ANT_HOLDS_NONE_EXITS[] = {ANT_PUT_DOWN_RTS_PC};
+static const uint32_t ANT_WALK_BEGINS_EXITS[] = {ANT_WALK_BEGUN_RTS_PC};
+static const uint32_t ANT_LEAPS_EXITS[] = {ANT_LEAP_PICTURES_PC,
+                                           ANT_WALK_BEGUN_RTS_PC};
+static const uint32_t ANT_WALKING_EXITS[] = {ANT_WALKED_RTS_PC,
+                                             ANT_ROUND_BEGUN_RTS_PC};
+static const uint32_t ANT_GOING_ROUND_EXITS[] = {
+    ANT_WENT_ROUND_RTS_PC, ANT_ROUND_BEGUN_RTS_PC,
+    ANT_WALK_BEGUN_RTS_PC};
+static const uint32_t ANT_MARCHING_EXITS[] = {
+    ANT_MARCHED_RTS_PC, ANT_WALK_BEGUN_RTS_PC,
+    ANT_LEAP_PICTURES_PC};
 
 // ---------------------------------------------------------------------------
 // The big figure's thread on level 25 -- see `port/boss_thread.h`
@@ -22733,7 +22733,7 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 9,   // the ignore branch pushes nothing; a death, 9
     },
     {
-        .name = "monster_collide",
+        .name = "ant_collide",
         .symbol = "$81:C4A6",
         .entry = 0x81c4a6,
         // `$81:C50B`, a bare `RTL`, for `enemy_collide`'s reason: three of the
@@ -22742,8 +22742,8 @@ static const CosimRoutine ROUTINES[] = {
         // published. The `CLC` that shares this exit is the byte before.
         .ret_op = 0x81c50b,
         .ret_kind = COSIM_RTL,
-        .run = shim_monster_collide,
-        .supported = guard_monster_collide,
+        .run = shim_ant_collide,
+        .supported = guard_ant_collide,
         // Measured 120..540, mean 135, over 186 calls on
         // `movies/level45-race.zmv`. The floor is the ignore branch, which is
         // 157 of them; the ceiling is taking an object.
@@ -22755,7 +22755,7 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 9,
     },
     {
-        .name = "monster_c440",
+        .name = "ant_c440",
         .symbol = "$81:C440",
         .entry = 0x81c440,
         // `$81:C4A5`, this copy's own bare `RTL` — the one two bytes into
@@ -22764,12 +22764,12 @@ static const CosimRoutine ROUTINES[] = {
         // working the day either moves.
         .ret_op = 0x81c4a5,
         .ret_kind = COSIM_RTL,
-        .run = shim_monster_c440_collide,
-        .supported = guard_monster_c440_collide,
+        .run = shim_ant_c440_collide,
+        .supported = guard_ant_c440_collide,
         // Measured 120..1322, mean 267, over the 151 calls
-        // `movies/level25.zmv` makes — and unlike the spider's, this sample is
+        // `movies/level25.zmv` makes — and unlike the later copy's, this sample is
         // not all ignores: 115 of them are hits, 105 survivors and 10 deaths.
-        // The mean is twice `monster_collide`'s for exactly that reason.
+        // The mean is twice `ant_collide`'s for exactly that reason.
         .cycles = 267,
         .stack_bytes = 9,  // the same death path, budgeted the same way
     },
@@ -23583,12 +23583,12 @@ static const CosimRoutine ROUTINES[] = {
                            // PHD and PEA under the call's three bytes
     },
     {
-        .name = "monster_anim",
+        .name = "ant_anim",
         .symbol = "$81:C16B",
         .entry = 0x81c16b,
         .ret_op = 0x81c1a6,  // the RTS after the JSR; the mirror exits at $C1B0
         .ret_kind = COSIM_RTS,
-        .run = shim_monster_anim,
+        .run = shim_ant_anim,
         // 280..1,166, call-weighted 473 over 26,736 calls on the two movies
         // that meet the creature — `level25-lane` and `level45-race`, at 461
         // and 480, which is as close as two movies get in this table.
@@ -23596,22 +23596,22 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 2,  // the JSR into $81:C00B on three of the four paths
     },
     {
-        .name = "monster_place_carried",
+        .name = "ant_place_carried",
         .symbol = "$81:C00B",
         .entry = 0x81c00b,
         .ret_op = 0x81c025,  // RTS
         .ret_kind = COSIM_RTS,
-        .run = shim_monster_place_carried,
+        .run = shim_ant_place_carried,
         // 104..400, call-weighted 120 over 24,422 calls, and the two ends are
         // the two paths: 104 is the `CPY #$FFFF` guard and an `RTS`, and the
         // rest is two table reads and two coordinate adds. The 2,314-call gap
-        // between this and `monster_anim` is the mirrored exit that returns
+        // between this and `ant_anim` is the mirrored exit that returns
         // without calling it.
         .cycles = 120,
         .stack_bytes = 0,
     },
     {
-        .name = "monster_seek",
+        .name = "ant_seek",
         .symbol = "$81:BB75",
         .entry = 0x81bb75,
         // Three exits in two routines: `$BB92`, `$BBA3`, and the `RTS` at
@@ -23619,7 +23619,7 @@ static const CosimRoutine ROUTINES[] = {
         // first of them, chosen because it is the one that touches nothing.
         .ret_op = 0x81bb92,
         .ret_kind = COSIM_RTS,
-        .run = shim_monster_seek,
+        .run = shim_ant_seek,
         // 6,494..10,948, call-weighted 7,964 over 27,280 calls on four movies.
         // Eleven of its own instructions and one `JSL actor_nearest`, which is
         // 32 slots walked whatever the board looks like — so this budget is
@@ -23630,16 +23630,16 @@ static const CosimRoutine ROUTINES[] = {
                            // PHD and `player_in_range`'s deeper pushes on top
     },
     {
-        .name = "monster_deliver",
+        .name = "ant_deliver",
         .symbol = "$81:BBA4",
         .entry = 0x81bba4,
         .ret_op = 0x81bbea,  // likewise: the plain `RTS`, not the stub's
         .ret_kind = COSIM_RTS,
-        .run = shim_monster_deliver,
+        .run = shim_ant_deliver,
         // **Not measured, because no movie in the corpus reaches it.** The
         // creature has to pick somebody up and carry them, and 43 movies never
         // once do; the profiler agrees, counting zero calls at `$81:BBA4` in
-        // every one of the eleven traces. This is `monster_seek`'s figure,
+        // every one of the eleven traces. This is `ant_seek`'s figure,
         // which is defensible rather than measured: the two routines make the
         // same single `JSL actor_nearest` and that call is nearly all of the
         // budget, and the extra work here is three compares and, on one path,
@@ -25226,14 +25226,14 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 7,
     },
     // The second, and the same arrangement: see `port/chase.h`. Entered by
-    // the monster thread's computed `RTS`. It stops on the `JMP` to a leap.
+    // the ant thread's computed `RTS`. It stops on the `JMP` to a leap.
     {
-        .name = "monster_chase",
+        .name = "ant_chase",
         .symbol = "$81:BEE3",
-        .entry = MONSTER_CHASE_PC,
-        .run = shim_monster_chase,
-        .accepts = accepts_monster_chase,
-        COSIM_EXITS(MONSTER_CHASE_EXITS),
+        .entry = ANT_CHASE_PC,
+        .run = shim_ant_chase,
+        .accepts = accepts_ant_chase,
+        COSIM_EXITS(ANT_CHASE_EXITS),
         .uncalled = true,
         // Never charged: the shim prices every call it serves.
         .cycles = 12000,
@@ -27666,59 +27666,59 @@ static const CosimRoutine ROUTINES[] = {
     },
     HOLDS(X)
 #undef X
-    // The big monster's thread, between its calls. See
-    // `port/monster_thread.h`.
-#define MONSTER_ROW(at, part, pc, shim, guard)                               \
+    // The giant ant's thread, between its calls. See
+    // `port/ant_thread.h`.
+#define ANT_ROW(at, part, pc, shim, guard)                                   \
     {                                                                        \
-        .name = "monster_" #at "_" #part,                                    \
+        .name = "ant_" #at "_" #part,                                        \
         .symbol = "$81:" #at,                                                \
         .entry = pc,                                                         \
         .run = shim,                                                         \
         .accepts = guard,                                                    \
-        COSIM_EXITS(monster_##at##_##part##_EXITS),                          \
+        COSIM_EXITS(ant_##at##_##part##_EXITS),                              \
         .uncalled = true,                                                    \
         .cycles = 100,                                                       \
     },
 #define X(at, loaded_pc, handler, sleep_pc, woke_pc, forgets, turned_pc,     \
           heard_pc, untouchable, end_pc)                                     \
-    MONSTER_ROW(at, loaded, loaded_pc, shim_monster_loaded,                  \
-                accepts_monster_thread)                                      \
-    MONSTER_ROW(at, sleeps, sleep_pc, shim_monster_sleeps,                   \
-                accepts_monster_thread)                                      \
-    MONSTER_ROW(at, woke, woke_pc, shim_monster_woke,                        \
-                accepts_monster_thread)                                      \
-    MONSTER_ROW(at, turned, turned_pc, shim_monster_turned,                  \
-                accepts_monster_thread)                                      \
-    MONSTER_ROW(at, dropped, turned_pc + 0x1e, shim_monster_dropped,         \
-                accepts_monster_dropped)                                     \
-    MONSTER_ROW(at, ends, end_pc, shim_monster_ends, accepts_monster_ends)   \
-    MONSTER_ROW(at, freed, end_pc + 0x12, shim_monster_freed,                \
-                accepts_monster_thread)
-    MONSTER_THREADS(X)
+    ANT_ROW(at, loaded, loaded_pc, shim_ant_loaded,                          \
+            accepts_ant_thread)                                          \
+    ANT_ROW(at, sleeps, sleep_pc, shim_ant_sleeps,                           \
+            accepts_ant_thread)                                          \
+    ANT_ROW(at, woke, woke_pc, shim_ant_woke,                                \
+            accepts_ant_thread)                                          \
+    ANT_ROW(at, turned, turned_pc, shim_ant_turned,                          \
+            accepts_ant_thread)                                          \
+    ANT_ROW(at, dropped, turned_pc + 0x1e, shim_ant_dropped,                 \
+            accepts_ant_dropped)                                         \
+    ANT_ROW(at, ends, end_pc, shim_ant_ends, accepts_ant_ends)               \
+    ANT_ROW(at, freed, end_pc + 0x12, shim_ant_freed,                        \
+            accepts_ant_thread)
+    ANT_THREADS(X)
 #undef X
     // Only the first takes a killed one's handler away, and comes back here.
-    MONSTER_ROW(c201, untouched, 0x81c25du, shim_monster_untouched,
-                accepts_monster_thread)
-#undef MONSTER_ROW
+    ANT_ROW(c201, untouched, 0x81c25du, shim_ant_untouched,
+            accepts_ant_thread)
+#undef ANT_ROW
     {
-        .name = "monster_c321_has_room",
+        .name = "ant_c321_has_room",
         .symbol = "$81:C324",
-        .entry = MONSTER_C321_ROOM_PC,
-        .run = shim_monster_has_room,
-        .accepts = accepts_monster_thread,
-        COSIM_EXITS(MONSTER_HAS_ROOM_EXITS),
+        .entry = ANT_C321_ROOM_PC,
+        .run = shim_ant_has_room,
+        .accepts = accepts_ant_thread,
+        COSIM_EXITS(ANT_HAS_ROOM_EXITS),
         .uncalled = true,
         .cycles = 18,
     },
-    // The big monster's states. See `port/monster_states.h`.
+    // The giant ant's states. See `port/ant_states.h`.
 #define STATE_ROW_BY(name_, sym, pc, exits_, guard, called, mean)            \
     {                                                                        \
-        .name = "monster_" #name_,                                           \
+        .name = "ant_" #name_,                                               \
         .symbol = sym,                                                       \
         .entry = pc,                                                         \
-        .run = shim_monster_states,                                          \
+        .run = shim_ant_states,                                              \
         .accepts = guard,                                                    \
-        .supported = supported_monster_states,                               \
+        .supported = supported_ant_states,                                   \
         COSIM_EXITS(exits_),                                                 \
         .uncalled = !(called),                                               \
         .cycles = mean,                                                      \
@@ -27726,49 +27726,49 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 16,                                                   \
     },
 #define STATE_ROW(name_, sym, pc, exits_)                                    \
-    STATE_ROW_BY(name_, sym, pc, exits_, accepts_monster_states, false, 2400)
-    STATE_ROW_BY(set_up, "$81:B9FD", MONSTER_SET_UP_PC, MONSTER_SET_UP_EXITS,
-                 accepts_monster_set_up, false, 500)
-    STATE_ROW_BY(holds_nothing, "$81:BA34", MONSTER_HOLDS_NOTHING_PC,
-                 MONSTER_HOLDS_NOTHING_EXITS, accepts_monster_set_up, false,
+    STATE_ROW_BY(name_, sym, pc, exits_, accepts_ant_states, false, 2400)
+    STATE_ROW_BY(set_up, "$81:B9FD", ANT_SET_UP_PC, ANT_SET_UP_EXITS,
+                 accepts_ant_set_up, false, 500)
+    STATE_ROW_BY(holds_nothing, "$81:BA34", ANT_HOLDS_NOTHING_PC,
+                 ANT_HOLDS_NOTHING_EXITS, accepts_ant_set_up, false,
                  200)
-    STATE_ROW_BY(usual_kind, "$81:BA46", MONSTER_USUAL_KIND_PC,
-                 MONSTER_USUAL_KIND_EXITS, accepts_monster_set_up, true, 200)
-    STATE_ROW_BY(fast_kind, "$81:BA78", MONSTER_FAST_KIND_PC,
-                 MONSTER_FAST_KIND_EXITS, accepts_monster_set_up, true, 300)
-    STATE_ROW_BY(asks_for_room, "$81:BFA8", MONSTER_ROOM_PC,
-                 MONSTER_ROOM_EXITS, accepts_monster_set_up, true, 2000)
-    STATE_ROW_BY(march_begins, "$81:BFC2", MONSTER_MARCH_BEGINS_PC,
-                 MONSTER_MARCH_BEGINS_EXITS, accepts_monster_set_up, true, 100)
-    STATE_ROW_BY(picks_up, "$81:C054", MONSTER_PICKS_UP_PC,
-                 MONSTER_WALK_BEGINS_EXITS, accepts_monster_picks_up, false,
+    STATE_ROW_BY(usual_kind, "$81:BA46", ANT_USUAL_KIND_PC,
+                 ANT_USUAL_KIND_EXITS, accepts_ant_set_up, true, 200)
+    STATE_ROW_BY(fast_kind, "$81:BA78", ANT_FAST_KIND_PC,
+                 ANT_FAST_KIND_EXITS, accepts_ant_set_up, true, 300)
+    STATE_ROW_BY(asks_for_room, "$81:BFA8", ANT_ROOM_PC,
+                 ANT_ROOM_EXITS, accepts_ant_set_up, true, 2000)
+    STATE_ROW_BY(march_begins, "$81:BFC2", ANT_MARCH_BEGINS_PC,
+                 ANT_MARCH_BEGINS_EXITS, accepts_ant_set_up, true, 100)
+    STATE_ROW_BY(picks_up, "$81:C054", ANT_PICKS_UP_PC,
+                 ANT_WALK_BEGINS_EXITS, accepts_ant_picks_up, false,
                  1000)
-    STATE_ROW_BY(puts_down, "$81:C0E5", MONSTER_PUTS_DOWN_PC,
-                 MONSTER_PUTS_DOWN_EXITS, accepts_monster_set_up, true, 300)
-    STATE_ROW_BY(put_down, "$81:C105", MONSTER_PUT_DOWN_PC,
-                 MONSTER_PUT_DOWN_EXITS, accepts_monster_set_up, false, 40)
-    STATE_ROW_BY(holds_none, "$81:C10B", MONSTER_HOLDS_NONE_PC,
-                 MONSTER_HOLDS_NONE_EXITS, accepts_monster_set_up, false, 200)
-    STATE_ROW(wanders_off, "$81:BCE1", MONSTER_WANDERS_OFF_PC,
-              MONSTER_WALK_BEGINS_EXITS)
-    STATE_ROW(leaps, "$81:BCF1", MONSTER_LEAPS_PC, MONSTER_LEAPS_EXITS)
-    STATE_ROW(lands, "$81:BD1E", MONSTER_LANDS_PC, MONSTER_WALK_BEGINS_EXITS)
-    STATE_ROW(walking, "$81:BE14", MONSTER_WALKING_PC, MONSTER_WALKING_EXITS)
-    STATE_ROW(going_round, "$81:BE71", MONSTER_GOING_ROUND_PC,
-              MONSTER_GOING_ROUND_EXITS)
-    STATE_ROW(marching, "$81:BFCD", MONSTER_MARCHING_PC,
-              MONSTER_MARCHING_EXITS)
+    STATE_ROW_BY(puts_down, "$81:C0E5", ANT_PUTS_DOWN_PC,
+                 ANT_PUTS_DOWN_EXITS, accepts_ant_set_up, true, 300)
+    STATE_ROW_BY(put_down, "$81:C105", ANT_PUT_DOWN_PC,
+                 ANT_PUT_DOWN_EXITS, accepts_ant_set_up, false, 40)
+    STATE_ROW_BY(holds_none, "$81:C10B", ANT_HOLDS_NONE_PC,
+                 ANT_HOLDS_NONE_EXITS, accepts_ant_set_up, false, 200)
+    STATE_ROW(wanders_off, "$81:BCE1", ANT_WANDERS_OFF_PC,
+              ANT_WALK_BEGINS_EXITS)
+    STATE_ROW(leaps, "$81:BCF1", ANT_LEAPS_PC, ANT_LEAPS_EXITS)
+    STATE_ROW(lands, "$81:BD1E", ANT_LANDS_PC, ANT_WALK_BEGINS_EXITS)
+    STATE_ROW(walking, "$81:BE14", ANT_WALKING_PC, ANT_WALKING_EXITS)
+    STATE_ROW(going_round, "$81:BE71", ANT_GOING_ROUND_PC,
+              ANT_GOING_ROUND_EXITS)
+    STATE_ROW(marching, "$81:BFCD", ANT_MARCHING_PC,
+              ANT_MARCHING_EXITS)
 #undef STATE_ROW
 #undef STATE_ROW_BY
 #define X(name_, sym, pc)                                                    \
     {                                                                        \
-        .name = "monster_" #name_,                                           \
+        .name = "ant_" #name_,                                               \
         .symbol = sym,                                                       \
         .entry = pc,                                                         \
         .uncalled = true,                                                    \
         .link = true,                                                        \
     },
-    MONSTER_STATE_LINKS(X)
+    ANT_STATE_LINKS(X)
 #undef X
     // The big figure's thread on level 25. See `port/boss_thread.h`.
 #define BOSS_ROW(name_, sym, pc, exits_, jumped_to)                          \
@@ -27839,17 +27839,17 @@ static const CosimRoutine ROUTINES[] = {
     },
     BOSS_LINKS(X)
 #undef X
-    // ...and the calls, jumps and returns between the monster's, which the
+    // ...and the calls, jumps and returns between the ant's, which the
     // harness makes. See `CosimRoutine::link`.
 #define X(name_, sym, pc)                                                    \
     {                                                                        \
-        .name = "monster_" #name_,                                           \
+        .name = "ant_" #name_,                                               \
         .symbol = sym,                                                       \
         .entry = pc,                                                         \
         .uncalled = true,                                                    \
         .link = true,                                                        \
     },
-    MONSTER_LINKS(X)
+    ANT_LINKS(X)
 #undef X
     // ...and the ones that are in no port's table. See `port/links.h`.
 #define X(at, sym, pc)                                                       \

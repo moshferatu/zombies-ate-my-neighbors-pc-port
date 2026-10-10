@@ -116,7 +116,7 @@ typedef struct {
 // Sixteen more in the ROM are not here. Eight call the free and then free
 // a second record: `$81:98BF`, `$81:B326`, `$81:C26E`, `$81:C303`,
 // `$81:C398`, `$81:C422`, `$81:E59A` and `$83:9F68`. Three of those are the
-// big monster's, and `port/monster_thread.h` has them. And eight are inside
+// giant ant's, and `port/ant_thread.h` has them. And eight are inside
 // a port that does them itself, the axe's, the flame's, the swipe's, the
 // knock's, the bubble's, the bolt's, the lob's and the squirt's. An entry
 // inside another port's stretch hides that port's exit from the check.
