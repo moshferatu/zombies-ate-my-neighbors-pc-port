@@ -18690,3 +18690,74 @@ last cycle as it is for one.
 Over the same 110 sessions the core executes 4,091,951 instructions
 where it executed 6,805,266, and takes over 264,938 times where it
 did 411,336, at 852 places where there were 883.
+
+## The big monster's states (2026-10-10)
+
+### One stretch a state
+
+The monster's thread (`port/monster_thread.h`) was cut at every call,
+because two of the routines it calls are priced by a mean. Its states
+are not. A step asks four things:
+
+    $80:AE97  terrain_blocked_enemy   is the ground solid
+    $80:BF67  actor_at_point          is anybody standing there
+    $80:B422  terrain_out_of_bounds   is it past the level's edge
+    $80:ADC8  tile_attrs_at_pixel     can this tile be leapt
+
+Each has a counted model that is right to the cycle, and so has
+`rng_next`. By the rule of the boss's thread, a callee priced to the
+cycle is called as C, so a state is one stretch from the thread's `RTS`
+into it to its own `RTS` out. `$81:BE71` makes two step tests and up to
+four calls, and is one row.
+
+The one call with a mean is `pictures_play`, in a leap. The leap stops on
+that `JSL` when the way it faces has pictures, and `monster_lands` is
+where it comes back.
+
+### A loop of calls, priced by a tally
+
+A leap lands past the tile, then tries 8 pixels further while the ground
+is solid. That is `terrain_blocked_enemy` as many times as it takes. The
+work record cannot hold one entry a call, so it holds a tally: how many
+tests found solid ground and how many did not, by how many of the six
+tiles each looked at. The price of a test depends on nothing else.
+
+### Turning a decline into an exit
+
+`monster_chase` was written before stretches. It was a port with one
+return, and it turned the frame down when the monster would leap,
+because the leap was the ROM's. With the leap ported that is an exit:
+
+    $81:BF98  RTS         it stepped, or waited
+    $81:BE13  RTS         nothing in range: it wanders off, by the walk's code
+    $81:BFA5  JMP $BCF1   it leaps
+
+The second was always there. A port with one `ret_op` is ended by the
+stack pointer coming back, so it did not matter where the `RTS` was. A
+port with exits is ended by address, and the first try listed two of the
+three. `verify` said so at once: the ROM ran on past the chase into the
+next thread, and `$7E:0008`, the current task, differed.
+
+Two things follow a port from `ret_op` to exits:
+
+* Its price no longer has the instruction it leaves by. The harness
+  makes that and charges it. Each of the chase's three paths lost an
+  `RTS`.
+* It hands back the whole status byte. The chase claims no register and
+  no flag but V after giving up, so it keeps N, Z and C as the CPU has
+  them (`CosimRegs::p_keep`).
+
+### A job's run ends before its write
+
+`boss_shake_job` writes `$2110` twice. A vblank job's runs
+(`VBL_COST`) each end on a register write, and the run's price stops
+6 cycles short of the instruction's end: the write is timed when its
+last cycle begins, and that cycle is charged with the write. Priced from
+the listing whole, the first write came out 6 cycles late and `verify`
+named the cycle.
+
+### After
+
+Over the same 110 sessions the core executes 3,399,313 instructions
+where it executed 4,091,951, and takes over 210,693 times where it
+did 264,938, at 821 places where there were 852.

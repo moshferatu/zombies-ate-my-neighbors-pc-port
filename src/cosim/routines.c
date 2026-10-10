@@ -48,6 +48,7 @@
 #include "port/begin.h"
 #include "port/hold.h"
 #include "port/links.h"
+#include "port/monster_states.h"
 #include "port/monster_thread.h"
 #include "port/boss_thread.h"
 #include "port/neighbours.h"
@@ -6897,7 +6898,9 @@ static void shim_swim_walk(Wram* w, const Rom* rom, const CosimRegs* in,
 // Priced the walk's way: what the ROM would have run between `$BEE3` and the
 // `RTS`, from what the log says happened. Each run of the chase's own
 // instructions is from `tools/cycles816.py` with the data bank at `$81`,
-// branches not taken, and a taken branch adds 6. The calls cost a `JSL` here
+// branches not taken, and a taken branch adds 6. The instruction it leaves
+// by, its `RTS` or the `JMP` to a leap, is not in the price: the harness
+// makes it. The calls cost a `JSL` here
 // and their callee's own figure, which includes its `RTL`: the counted models
 // for the scan, the actor test and the ground test, the registry's means for
 // the rest.
@@ -6916,8 +6919,8 @@ static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
   chase_add(&own, 140, 13, 2);
   if (log->gave_up) {
     // JMP $BF99 : JMP $BCE1, JSL rng_next : AND : ASL ASL INC INC : STA $14 :
-    // JMP $BE0E, LDA #$BE14 : STA $12 : RTS.
-    chase_add(&own, 18 + 18 + 166 + 86, 3 + 3 + 16 + 6, 2);
+    // JMP $BE0E, LDA #$BE14 : STA $12.
+    chase_add(&own, 18 + 18 + 166 + 46, 3 + 3 + 16 + 5, 2);
     calls += rng_cycles(log->overflow, in->fastrom);
     return calls + cosim_run_cycles_dp(&own, fetch_fast(in),
                                        (in->d & 0x00ffu) != 0);
@@ -6970,8 +6973,8 @@ static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
   }
   chase_add(&own, 40 + 12, 1 + 2, 0);  // RTS, BCS
   if (log->outcome == CHASE_STEPPED) {
-    // The commit and the `RTS`.
-    chase_add(&own, 316, 21, 7);
+    // The commit.
+    chase_add(&own, 276, 20, 7);
   } else {
     own.cycles += TAKEN;
     chase_add(&own, 40, 4, 1);  // LDA $32 : BNE
@@ -6987,14 +6990,22 @@ static int chase_cycles(const ChaseLog* log, const CosimRegs* in) {
       }
       if (log->leap_found) {
         own.cycles += TAKEN;
-        chase_add(&own, 294 + TAKEN, 28, 3);
+        // ...whose `BCS` goes to the `SEC` when the landing is solid.
+        chase_add(&own, 294 + (log->outcome == CHASE_LEAPT ? 0 : TAKEN), 28,
+                  3);
         const TerrainRegs landing = {.blocked = log->outcome != CHASE_LEAPT,
                                      .probes = log->ground_tiles[1]};
         calls += terrain_enemy_cycles(&landing, in->fastrom);
       }
+      if (log->outcome == CHASE_LEAPT) {
+        // CLC : RTS, and the `BCS` falls through to the `JMP`.
+        chase_add(&own, 52 + 12, 2 + 2, 0);
+        return calls + cosim_run_cycles_dp(&own, fetch_fast(in),
+                                           (in->d & 0x00ffu) != 0);
+      }
       chase_add(&own, 52 + 12 + TAKEN, 2 + 2, 0);  // SEC : RTS, BCS taken
     }
-    chase_add(&own, 96, 5, 2);  // LDA $3A : STA $38 : RTS
+    chase_add(&own, 56, 4, 2);  // LDA $3A : STA $38
   }
   return calls + cosim_run_cycles_dp(&own, fetch_fast(in),
                                      (in->d & 0x00ffu) != 0);
@@ -7009,25 +7020,29 @@ static bool accepts_monster_chase(const Wram* w, const CosimRegs* in) {
          wram_r16(w, (uint16_t)(in->d + CHASE_DP_USUAL_STEPS)) >= 0x8000u;
 }
 
-static bool supported_monster_chase(Wram* scratch, const Rom* rom,
-                                    const CosimRegs* in) {
-  return chase_supported(scratch, rom, in->d);
-}
-
 // Nothing it leaves in a register is read, except V after giving up. See
 // `port/chase.h`, "Its contract with the ROM".
 static void shim_monster_chase(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
   ChaseLog log = {0};
-  monster_chase(w, rom, in->d, &log);
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool leaps = monster_chase(w, rom, in->d, &log);
+  c.pc = leaps ? MONSTER_CHASE_LEAPS_PC
+               : log.gave_up ? MONSTER_CHASE_GAVE_UP_RTS_PC
+                             : MONSTER_CHASE_RTS_PC;
+  if (log.gave_up) set_v(&c, log.overflow);
+  cpu_to(&c, out);
   cosim_cost(chase_cycles(&log, in));
   out->regs = 0;
-  out->flags = 0;
-  if (log.gave_up) {
-    out->v = log.overflow;
-    out->flags = COSIM_FLAG_V;
-  }
+  out->flags = log.gave_up ? COSIM_FLAG_V : 0;
+  out->p_keep = (uint8_t)(PORT_P_N | PORT_P_Z | PORT_P_C |
+                          (log.gave_up ? 0 : PORT_P_V));
 }
+
+static const uint32_t MONSTER_CHASE_EXITS[] = {MONSTER_CHASE_RTS_PC,
+                                               MONSTER_CHASE_GAVE_UP_RTS_PC,
+                                               MONSTER_CHASE_LEAPS_PC};
 
 // ---------------------------------------------------------------------------
 // The zombies -- see `port/zombie.h`
@@ -17070,6 +17085,8 @@ static const CosimRun VBL_COST[VBL_BLOCK_COUNT] = {
     [VS_MORE_TAIL] = {72, 4, 0},
     [VS_DONE] = {100, 6, 1},
     [MO_HEAD] = {36, 5, 0},
+    [SK_FIRST] = {122, 14, 0},
+    [SK_SECOND] = {36, 4, 0},
 };
 
 // The dispatcher and the NMI both leave 16-bit registers, page zero and a data
@@ -17124,6 +17141,7 @@ VBL_SHIM(boss_bg_dma)
 VBL_SHIM(bg1_vscroll_job)
 VBL_SHIM(vram_send_job)
 VBL_SHIM(mosaic_off_job)
+VBL_SHIM(boss_shake_job)
 
 // `$80:9C63` and `$80:9C7D`, which write no register.
 static const CosimRun BU_STEP = {120, 11, 0};  // INC : LDA : CMP : BEQ
@@ -20103,6 +20121,155 @@ MONSTER_THREADS(X)
 static const uint32_t monster_c201_untouched_EXITS[] = {0x81c260u};
 static const uint32_t MONSTER_HAS_ROOM_EXITS[] = {MONSTER_C321_NO_ROOM_PC,
                                                   MONSTER_C321_BEGIN_PC};
+
+// ---------------------------------------------------------------------------
+// The big monster's states -- see `port/monster_states.h`
+// ---------------------------------------------------------------------------
+//
+// One shim for every stretch, priced as the big figure's thread below is:
+// by the straight runs of the listing it took, each from
+// `tools/price_runs.py`, a taken branch at 6 more, and the calls it made
+// itself by their own models.
+static const CosimRun MONSTER_RUN_COST[MONSTER_RUN_COUNT] = {
+    [MONSTER_RUN_B9FD] = {556, 51, 7},  // LDA : STA : STA : LDA : STA : STA : LDY : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : STA : LDA : TAY
+    [MONSTER_RUN_BA34] = {214, 17, 7},  // STZ : STZ : STZ : STZ : STZ : STZ : LDA : STA
+    [MONSTER_RUN_BA46] = {224, 23, 4},  // LDY : LDA : STA : LDA : STA : LDA : STA : STA : LDA
+    [MONSTER_RUN_BA78] = {322, 32, 4},  // LDY : LDA : ORA : STA : LDA : STA : LDA : STA : LDA : STA : STA : LDA
+    [MONSTER_RUN_BC05] = {168, 15, 3},  // LDA : STA : LDX : LDY : JSL : BCS
+    [MONSTER_RUN_BC14] = {200, 14, 4},  // INC : LDA : LDX : LDY : JSL : BCS
+    [MONSTER_RUN_BC22] = {40, 1, 0},  // RTS
+    [MONSTER_RUN_BC23] = {168, 15, 3},  // LDA : STA : LDX : LDY : JSL : BCS
+    [MONSTER_RUN_BC32] = {160, 10, 3},  // INC : LDX : LDY : JSL
+    [MONSTER_RUN_BC3D] = {368, 35, 5},  // LDA : ASL : TAY : LDA : CLC : ADC : STA : TAX : LDA : CLC : ADC : STA : TAY : JSL : AND : BNE
+    [MONSTER_RUN_BC5C] = {392, 37, 5},  // LDA : ASL : TAY : LDA : ASL : CLC : ADC : STA : TAX : LDA : ASL : CLC : ADC : STA : TAY : JSL : AND : BNE
+    [MONSTER_RUN_BC7D] = {52, 2, 0},  // SEC : RTS
+    [MONSTER_RUN_BC7F] = {294, 28, 3},  // LDA : ASL : TAY : LDA : CLC : ADC : TAX : LDA : CLC : ADC : TAY : JSL : BCS
+    [MONSTER_RUN_BC97] = {52, 2, 0},  // CLC : RTS
+    [MONSTER_RUN_BCE1] = {166, 16, 1},  // JSL : AND : ASL : ASL : INC : INC : STA : JMP
+    [MONSTER_RUN_BCF1] = {172, 16, 2},  // LDA : STA : LDY : LDA : ORA : STA
+    [MONSTER_RUN_BD01] = {100, 11, 1},  // LDA : ASL : TAX : LDA : BMI
+    [MONSTER_RUN_BD0A] = {52, 5, 0},  // ORA : BRA
+    [MONSTER_RUN_BD0F] = {40, 3, 0},  // AND
+    [MONSTER_RUN_BD12] = {88, 10, 0},  // STA : LDA : BEQ
+    [MONSTER_RUN_BD1E] = {288, 26, 6},  // LDA : ASL : STA : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA
+    [MONSTER_RUN_BD34] = {122, 10, 2},  // LDX : LDY : JSL : BCC
+    [MONSTER_RUN_BD3E] = {248, 24, 5},  // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : BRA
+    [MONSTER_RUN_BD52] = {392, 32, 7},  // LDY : LDA : AND : STA : LDA : STA : STA : LDA : STA : STA : STZ : STZ : JMP
+    [MONSTER_RUN_BE0E] = {46, 5, 1},  // LDA : STA
+    [MONSTER_RUN_BE14] = {344, 27, 7},  // LDA : ASL : TAY : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : JSR
+    [MONSTER_RUN_BE2B] = {12, 2, 0},  // BCS
+    [MONSTER_RUN_BE2D] = {220, 16, 5},  // LDY : LDA : STA : STA : LDA : STA : STA
+    [MONSTER_RUN_BE3E] = {18, 3, 0},  // JMP
+    [MONSTER_RUN_BE41] = {198, 20, 3},  // STZ : LDA : DEC : DEC : CLC : ADC : AND : INC : INC : STA : JMP
+    [MONSTER_RUN_BE69] = {74, 7, 2},  // LDA : STA : STZ
+    [MONSTER_RUN_BE71] = {468, 40, 8},  // LDA : DEC : DEC : SEC : SBC : AND : INC : INC : STA : ASL : TAY : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : JSR
+    [MONSTER_RUN_BE95] = {12, 2, 0},  // BCS
+    [MONSTER_RUN_BE97] = {108, 9, 2},  // INC : LDA : CMP : BCC
+    [MONSTER_RUN_BEA0] = {18, 3, 0},  // JMP
+    [MONSTER_RUN_BEA3] = {96, 8, 3},  // LDA : STA : STZ : BRA
+    [MONSTER_RUN_BEAB] = {28, 2, 1},  // STZ
+    [MONSTER_RUN_BEAD] = {344, 27, 7},  // LDA : ASL : TAY : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : JSR
+    [MONSTER_RUN_BEC4] = {12, 2, 0},  // BCS
+    [MONSTER_RUN_BEC6] = {220, 16, 5},  // LDY : LDA : STA : STA : LDA : STA : STA
+    [MONSTER_RUN_BED7] = {18, 3, 0},  // JMP
+    [MONSTER_RUN_BFCD] = {416, 32, 10},  // LDA : ASL : STA : LDY : LDX : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : JSR
+    [MONSTER_RUN_BFE9] = {12, 2, 0},  // BCS
+    [MONSTER_RUN_BFEB] = {220, 16, 5},  // LDY : LDA : STA : STA : LDA : STA : STA
+    [MONSTER_RUN_BFA8] = {168, 14, 2},  // LDX : LDA : STA : TAY : JSL : BCS
+    [MONSTER_RUN_BFB6] = {122, 10, 2},  // LDX : LDY : JSL : BCS
+    [MONSTER_RUN_BFC0] = {12, 1, 0},  // CLC
+    [MONSTER_RUN_BFC2] = {92, 10, 2},  // LDA : STA : LDA : STA
+    [MONSTER_RUN_BFFC] = {18, 3, 0},  // JMP
+    [MONSTER_RUN_BFFF] = {40, 4, 1},  // LDA : BNE
+    [MONSTER_RUN_C003] = {40, 3, 0},  // JSR
+    [MONSTER_RUN_C006] = {12, 2, 0},  // BCS
+    [MONSTER_RUN_C008] = {18, 3, 0},  // JMP
+    [MONSTER_RUN_C054] = {422, 40, 4},  // STA : TAY : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : SEC : SBC : ASL : TAX : LDA : BEQ
+    [MONSTER_RUN_C07A] = {288, 27, 0},  // STA : LDA : STA : LDA : STA : LDA : ORA : STA : JMP
+    [MONSTER_RUN_C0E5] = {260, 26, 5},  // LDA : STA : LDA : STA : LDA : SEC : SBC : ASL : TAX : LDA : CMP : BEQ
+    [MONSTER_RUN_C0FD] = {56, 4, 2},  // LDX : LDY
+    [MONSTER_RUN_C105] = {28, 2, 1},  // LDA
+    [MONSTER_RUN_C10B] = {160, 15, 3},  // LDA : STA : STZ : LDY : LDA : STA
+};
+
+// The record is written through the bank.
+static bool accepts_monster_set_up(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == MONSTER_STATES_BANK &&
+         wram_r16(w, (uint16_t)(in->d + MONSTER_DP_RECORD)) < 0x1f00;
+}
+
+// ...and the step table is read through `$38`, so it has to be in the
+// cartridge.
+static bool accepts_monster_states(const Wram* w, const CosimRegs* in) {
+  return accepts_monster_set_up(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + CHASE_DP_STEPS)) >= 0x8000u;
+}
+
+// The record for what it has caught is in A.
+static bool accepts_monster_picks_up(const Wram* w, const CosimRegs* in) {
+  return accepts_monster_set_up(w, in) && in->a < 0x1f00;
+}
+
+static bool supported_monster_states(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  return monster_state_supported(scratch, rom, in->d, in->pc);
+}
+
+static void shim_monster_states(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  PortCpu c;
+  MonsterStatesWork k = {0};
+  cpu_from(in, &c);
+  monster_state_run(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (!k.v_known) {
+    out->flags &= ~COSIM_FLAG_V;
+    out->p_keep = PORT_P_V;
+  }
+
+  const bool fast = fetch_fast(in);
+  CosimRun run = {0, 0, 0};
+  for (int i = 0; i < MONSTER_RUN_COUNT; i++)
+    run_add(&run, &MONSTER_RUN_COST[i], k.runs[i]);
+  run_add(&run, &RUN_TAKEN, k.taken);
+  int cycles = cosim_run_cycles_dp(&run, fast, (in->d & 0x00ffu) != 0);
+  for (int blocked = 0; blocked < 2; blocked++) {
+    for (int probes = 0; probes <= TERRAIN_PROBE_COUNT; probes++) {
+      const TerrainRegs ground = {.blocked = blocked != 0, .probes = probes};
+      cycles += k.grounds[blocked][probes] * terrain_enemy_cycles(&ground, fast);
+    }
+  }
+  for (int i = 0; i < k.at_point_count; i++)
+    cycles += at_point_cycles(&k.at_points[i], fast);
+  if (k.asked_edge) cycles += bounds_cycles(k.edge, fast);
+  if (k.asked_room)
+    cycles += terrain_blocked_cycles(k.room.probes, k.room.blocked, fast);
+  cycles += k.tiles * cosim_run_cycles(&TILE_ATTRS_RUN, fast);
+  if (k.drew) cycles += rng_cycles(k.draw_twice, fast);
+  cosim_cost(cycles);
+}
+
+static const uint32_t MONSTER_SET_UP_EXITS[] = {MONSTER_NO_HANDLER_PC};
+static const uint32_t MONSTER_HOLDS_NOTHING_EXITS[] = {MONSTER_SET_UP_RTS_PC};
+static const uint32_t MONSTER_USUAL_KIND_EXITS[] = {MONSTER_USUAL_PICTURES_PC};
+static const uint32_t MONSTER_FAST_KIND_EXITS[] = {MONSTER_FAST_PICTURES_PC};
+static const uint32_t MONSTER_ROOM_EXITS[] = {MONSTER_ROOM_RTS_PC};
+static const uint32_t MONSTER_MARCH_BEGINS_EXITS[] = {
+    MONSTER_MARCH_BEGUN_RTS_PC};
+static const uint32_t MONSTER_PUTS_DOWN_EXITS[] = {MONSTER_PUT_BACK_PC};
+static const uint32_t MONSTER_PUT_DOWN_EXITS[] = {MONSTER_FREE_HELD_PC};
+static const uint32_t MONSTER_HOLDS_NONE_EXITS[] = {MONSTER_PUT_DOWN_RTS_PC};
+static const uint32_t MONSTER_WALK_BEGINS_EXITS[] = {MONSTER_WALK_BEGUN_RTS_PC};
+static const uint32_t MONSTER_LEAPS_EXITS[] = {MONSTER_LEAP_PICTURES_PC,
+                                               MONSTER_WALK_BEGUN_RTS_PC};
+static const uint32_t MONSTER_WALKING_EXITS[] = {MONSTER_WALKED_RTS_PC,
+                                                 MONSTER_ROUND_BEGUN_RTS_PC};
+static const uint32_t MONSTER_GOING_ROUND_EXITS[] = {
+    MONSTER_WENT_ROUND_RTS_PC, MONSTER_ROUND_BEGUN_RTS_PC,
+    MONSTER_WALK_BEGUN_RTS_PC};
+static const uint32_t MONSTER_MARCHING_EXITS[] = {
+    MONSTER_MARCHED_RTS_PC, MONSTER_WALK_BEGUN_RTS_PC,
+    MONSTER_LEAP_PICTURES_PC};
 
 // ---------------------------------------------------------------------------
 // The big figure's thread on level 25 -- see `port/boss_thread.h`
@@ -25059,17 +25226,14 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 7,
     },
     // The second, and the same arrangement: see `port/chase.h`. Entered by
-    // the monster thread's computed `RTS`. It declines the leap, and the ROM
-    // chases then.
+    // the monster thread's computed `RTS`. It stops on the `JMP` to a leap.
     {
         .name = "monster_chase",
         .symbol = "$81:BEE3",
         .entry = MONSTER_CHASE_PC,
-        .ret_op = MONSTER_CHASE_RTS_PC,
-        .ret_kind = COSIM_RTS,
         .run = shim_monster_chase,
         .accepts = accepts_monster_chase,
-        .supported = supported_monster_chase,
+        COSIM_EXITS(MONSTER_CHASE_EXITS),
         .uncalled = true,
         // Never charged: the shim prices every call it serves.
         .cycles = 12000,
@@ -27102,6 +27266,18 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 120,
     },
+    {
+        .name = "boss_shake_job",
+        .symbol = "$82:8C49",
+        .entry = BOSS_SHAKE_JOB_PC,
+        .ret_op = BOSS_SHAKE_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_boss_shake_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 242,
+    },
     // A record begun, and three of the neighbours' loops.
     {
         .name = "record_begin",
@@ -27534,6 +27710,66 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 18,
     },
+    // The big monster's states. See `port/monster_states.h`.
+#define STATE_ROW_BY(name_, sym, pc, exits_, guard, called, mean)            \
+    {                                                                        \
+        .name = "monster_" #name_,                                           \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_monster_states,                                          \
+        .accepts = guard,                                                    \
+        .supported = supported_monster_states,                               \
+        COSIM_EXITS(exits_),                                                 \
+        .uncalled = !(called),                                               \
+        .cycles = mean,                                                      \
+        /* The deepest is a `JSR` to a `JSL tile_attrs_at_pixel`. */         \
+        .stack_bytes = 16,                                                   \
+    },
+#define STATE_ROW(name_, sym, pc, exits_)                                    \
+    STATE_ROW_BY(name_, sym, pc, exits_, accepts_monster_states, false, 2400)
+    STATE_ROW_BY(set_up, "$81:B9FD", MONSTER_SET_UP_PC, MONSTER_SET_UP_EXITS,
+                 accepts_monster_set_up, false, 500)
+    STATE_ROW_BY(holds_nothing, "$81:BA34", MONSTER_HOLDS_NOTHING_PC,
+                 MONSTER_HOLDS_NOTHING_EXITS, accepts_monster_set_up, false,
+                 200)
+    STATE_ROW_BY(usual_kind, "$81:BA46", MONSTER_USUAL_KIND_PC,
+                 MONSTER_USUAL_KIND_EXITS, accepts_monster_set_up, true, 200)
+    STATE_ROW_BY(fast_kind, "$81:BA78", MONSTER_FAST_KIND_PC,
+                 MONSTER_FAST_KIND_EXITS, accepts_monster_set_up, true, 300)
+    STATE_ROW_BY(asks_for_room, "$81:BFA8", MONSTER_ROOM_PC,
+                 MONSTER_ROOM_EXITS, accepts_monster_set_up, true, 2000)
+    STATE_ROW_BY(march_begins, "$81:BFC2", MONSTER_MARCH_BEGINS_PC,
+                 MONSTER_MARCH_BEGINS_EXITS, accepts_monster_set_up, true, 100)
+    STATE_ROW_BY(picks_up, "$81:C054", MONSTER_PICKS_UP_PC,
+                 MONSTER_WALK_BEGINS_EXITS, accepts_monster_picks_up, false,
+                 1000)
+    STATE_ROW_BY(puts_down, "$81:C0E5", MONSTER_PUTS_DOWN_PC,
+                 MONSTER_PUTS_DOWN_EXITS, accepts_monster_set_up, true, 300)
+    STATE_ROW_BY(put_down, "$81:C105", MONSTER_PUT_DOWN_PC,
+                 MONSTER_PUT_DOWN_EXITS, accepts_monster_set_up, false, 40)
+    STATE_ROW_BY(holds_none, "$81:C10B", MONSTER_HOLDS_NONE_PC,
+                 MONSTER_HOLDS_NONE_EXITS, accepts_monster_set_up, false, 200)
+    STATE_ROW(wanders_off, "$81:BCE1", MONSTER_WANDERS_OFF_PC,
+              MONSTER_WALK_BEGINS_EXITS)
+    STATE_ROW(leaps, "$81:BCF1", MONSTER_LEAPS_PC, MONSTER_LEAPS_EXITS)
+    STATE_ROW(lands, "$81:BD1E", MONSTER_LANDS_PC, MONSTER_WALK_BEGINS_EXITS)
+    STATE_ROW(walking, "$81:BE14", MONSTER_WALKING_PC, MONSTER_WALKING_EXITS)
+    STATE_ROW(going_round, "$81:BE71", MONSTER_GOING_ROUND_PC,
+              MONSTER_GOING_ROUND_EXITS)
+    STATE_ROW(marching, "$81:BFCD", MONSTER_MARCHING_PC,
+              MONSTER_MARCHING_EXITS)
+#undef STATE_ROW
+#undef STATE_ROW_BY
+#define X(name_, sym, pc)                                                    \
+    {                                                                        \
+        .name = "monster_" #name_,                                           \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .uncalled = true,                                                    \
+        .link = true,                                                        \
+    },
+    MONSTER_STATE_LINKS(X)
+#undef X
     // The big figure's thread on level 25. See `port/boss_thread.h`.
 #define BOSS_ROW(name_, sym, pc, exits_, jumped_to)                          \
     {                                                                        \

@@ -1,6 +1,7 @@
 #include "port/vblank.h"
 
 #include "port/coverage.h"
+#include "port/frontend.h"  // W_FRAME_COUNT
 
 // `XBA`: the accumulator's bytes swapped, N and Z from the new low byte.
 static void xba(PortCpu* c) {
@@ -385,6 +386,24 @@ void mosaic_off_job(Wram* w, PortCpu* c, HwTrace* t) {
   // shadow's does.
   hw_run(t, MO_HEAD);
   hw_w8(t, 0x2106, 0);
+  hw_run(t, SS_TAIL);
+  set_c(c, false);
+}
+
+void boss_shake_job(Wram* w, PortCpu* c, HwTrace* t) {
+  PORT_COVER(boss_shake_job);
+  const uint16_t down =
+      adc16(c, wram_r16(w, W_FRAME_COUNT) & BOSS_SHAKE_LINES,
+            wram_r16(w, W_CAMERA_SUB_Y));
+  hw_run(t, SK_FIRST);
+  hw_w8(t, 0x2110, (uint8_t)down);
+  // `XBA`, for the high byte.
+  c->a = (uint16_t)(down << 8 | down >> 8);
+  set_nz8(c, (uint8_t)c->a);
+  hw_run(t, SK_SECOND);
+  hw_w8(t, 0x2110, (uint8_t)c->a);
+  // The tail is `REP #$30 : CLC : RTL`, which costs what the scroll
+  // shadow's does.
   hw_run(t, SS_TAIL);
   set_c(c, false);
 }

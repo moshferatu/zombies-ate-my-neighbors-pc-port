@@ -1,7 +1,9 @@
 // The big monster's thread: what it does round the routines it calls.
+// The big monster is the giant ant: see `port/monster.h`.
 //
-// `port/monster.h` has what the creature's thread calls each frame, and
-// `port/chase.h` its chase. This is the thread itself, which is four copies
+// `port/monster.h` has what the creature's thread calls each frame,
+// `port/chase.h` its chase and `port/monster_states.h` its other states and
+// how one is set up. This is the thread itself, which is four copies
 // of one loop, at `$81:C201`, `$81:C28C`, `$81:C321` and `$81:C3B6`:
 //
 //     its weight on the level's load, and its handler

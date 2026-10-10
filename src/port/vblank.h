@@ -96,6 +96,10 @@ enum {
   // $82:882C mosaic_off_job
   MO_HEAD,      // SEP #$20 : STZ $2106
 
+  // $82:8C49 boss_shake_job
+  SK_FIRST,     // LDA $0020 : AND #$0003 : ADC $1B68 : SEP #$20 : STA $2110
+  SK_SECOND,    // XBA : STA $2110
+
   VBL_BLOCK_COUNT
 };
 
@@ -175,6 +179,20 @@ void vram_send_job(Wram* w, PortCpu* c, HwTrace* t);
 #define MOSAIC_OFF_JOB_PC 0x82882cu
 #define MOSAIC_OFF_JOB_RTL_PC 0x828834u
 void mosaic_off_job(Wram* w, PortCpu* c, HwTrace* t);
+
+// --- $82:8C49 boss_shake_job ---------------------------------------------------
+//
+// The screen shaking under the big figure of level 25 while it stamps. BG2,
+// the ground everything stands on there, is scrolled down by 0 to 3 lines
+// more than the camera has it, by the frame counter. The stamp queues it
+// every frame, and it runs once: carry clear.
+//
+// The sum has no `CLC`, so it takes the carry the queue's walk left, and
+// sometimes that is one line more.
+#define BOSS_SHAKE_JOB_PC 0x828c49u
+#define BOSS_SHAKE_JOB_RTL_PC 0x828c5eu
+#define BOSS_SHAKE_LINES 0x0003u
+void boss_shake_job(Wram* w, PortCpu* c, HwTrace* t);
 
 // --- $80:9C63 and $80:9C7D: the screen's brightness, a step a vblank ----------
 //

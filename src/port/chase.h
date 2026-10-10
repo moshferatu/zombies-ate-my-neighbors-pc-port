@@ -1,4 +1,5 @@
 // The monster's chase: one frame of going after whoever is nearest.
+// The monster is the giant ant: see `port/monster.h`.
 //
 // `$81:BEE3` is one of the state bodies of the monster's thread (see
 // `port/monster.h`), the one `monster_seek` installs when something comes
@@ -24,8 +25,9 @@
 // The step is refused by solid ground or by anyone standing where it lands. A
 // monster blocked by someone waits. A monster blocked by ground looks for a
 // tile it can leap: one tile ahead or two, a tile with attribute bit 13, and
-// clear ground 48 to 56 pixels beyond it. With all three it leaps, which is a
-// state of its own at `$81:BD01` and is not ported. Without them it waits.
+// clear ground 48 to 56 pixels beyond it. With all three it leaps, and the
+// chase stops on the `JMP` to the leap: `monster_leaps`, in
+// `port/monster_states.h`. Without them it waits.
 //
 // ## Directions
 //
@@ -47,7 +49,8 @@
 // to the thread's next `PHP`, so the give-up path hands back the random number
 // generator's V, and only that path does.
 //
-// One path is the ROM's, and `chase_supported` says when: the leap.
+// A chase that leaps leaves by a jump and not by its `RTS`, and the leap
+// reads nothing the chase left in a register either.
 //
 // Port code: libc only.
 
@@ -62,7 +65,11 @@
 #include "port/wram.h"
 
 #define MONSTER_CHASE_PC 0x81bee3u  // entered by the thread's computed `RTS`
+// Where it leaves: its own `RTS`, the walk's when it gave up, and the jump
+// to a leap.
 #define MONSTER_CHASE_RTS_PC 0x81bf98u
+#define MONSTER_CHASE_GAVE_UP_RTS_PC 0x81be13u
+#define MONSTER_CHASE_LEAPS_PC 0x81bfa5u  // `JMP $BCF1`
 
 // The tables sit in the chase's own bank, which is where the thread keeps its
 // data bank.
@@ -97,7 +104,7 @@ typedef enum {
   CHASE_STEPPED,       // the step was taken
   CHASE_MET_SOMEONE,   // an actor stood where it landed
   CHASE_MET_GROUND,    // solid ground, and nothing to leap
-  CHASE_LEAPT,         // solid ground, and something to leap: the ROM's
+  CHASE_LEAPT,         // solid ground, and something to leap
 } ChaseOutcome;
 
 typedef struct {
@@ -124,12 +131,8 @@ typedef struct {
   int grounds;
 } ChaseLog;
 
-// Would the port chase this frame the way the ROM does? False when the
-// monster would leap. It runs the chase to find out, so `w` is a copy.
-bool chase_supported(Wram* w, const Rom* rom, uint16_t page);
-
 // Chase for one frame, for the monster whose page is `page`. `log` may be
-// NULL.
-void monster_chase(Wram* w, const Rom* rom, uint16_t page, ChaseLog* log);
+// NULL. True if it found something to leap, and the leap is next.
+bool monster_chase(Wram* w, const Rom* rom, uint16_t page, ChaseLog* log);
 
 #endif

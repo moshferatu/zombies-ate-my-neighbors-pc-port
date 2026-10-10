@@ -325,7 +325,7 @@
   X(vram_send_more,   "vram_send_job",      "a kilobyte sent, and more to send") \
   X(vram_send_last,   "vram_send_job",      "the last of it sent") \
   X(bg1_vscroll_job,  "bg1_vscroll_job",    "BG1's scroll down, from its shadow") \
-  X(mosaic_off_job,   "mosaic_off_job",     "the mosaic off") \
+  X(mosaic_off_job,   "mosaic_off_job",     "the mosaic off")   X(boss_shake_job,   "boss_shake_job",     "the ground under the big figure, a few lines down") \
   X(brightness_up,    "brightness_up_job",  "a step brighter, and more to go") \
   X(brightness_full,  "brightness_up_job",  "...and the fifteenth") \
   X(brightness_down,  "brightness_down_job","a step darker") \
@@ -352,6 +352,26 @@
   X(monster_leaves,   "monster_turned",     "`$2A` positive: nobody near, and it goes quietly") \
   X(monster_killed,   "monster_turned",     "a fatal thing held, or `$2A` negative") \
   X(monster_frees_held, "monster_freed",    "it ends holding a record, which is freed too") \
+  /* The big monster's states -- see port/monster_states.h. */                  \
+  X(monster_no_room_ground, "monster_asks_for_room", "solid ground at the top of the screen") \
+  X(monster_no_room_edge, "monster_asks_for_room", "...or that is past the level's edge") \
+  X(monster_picks_up, "monster_picks_up",   "somebody caught: a record for them, by their kind") \
+  X(monster_puts_down, "monster_puts_down", "a killed one puts down who it holds") \
+  X(monster_walks,    "monster_walking",    "a step the way it faces") \
+  X(monster_walk_refused, "monster_walking", "...refused, so it goes round") \
+  X(monster_goes_round, "monster_going_round", "a step along what stopped it") \
+  X(monster_turns_left, "monster_going_round", "nothing on its left any more: it turns that way") \
+  X(monster_turns_right, "monster_going_round", "the step refused: a quarter turn to its right") \
+  X(monster_circling, "monster_going_round", "five left turns running") \
+  X(monster_wanders_off, "monster_wanders_off", "one of the four straight ways, by a draw") \
+  X(monster_marches,  "monster_marching",   "a step the way it was sent") \
+  X(monster_march_met_edge, "monster_marching", "...refused by the level's edge") \
+  X(monster_march_waits, "monster_marching", "...or by ground with nothing to leap") \
+  X(monster_nothing_leapable, "monster_marching", "no tile to leap, one ahead or two") \
+  X(monster_no_landing, "monster_marching", "a tile to leap, and solid ground past it") \
+  X(monster_leaps,    "monster_leaps",      "a leap begins") \
+  X(monster_leaps_plain, "monster_leaps",   "...with no pictures of its own") \
+  X(monster_lands_further, "monster_lands", "solid where it would land: 8 pixels on") \
   /* The big figure's thread on level 25 -- see port/boss_thread.h. */          \
   X(boss_strides,     "boss_turn",          "its stride's next picture, every ninth frame") \
   X(boss_stride_waits, "boss_turn",         "...due, but the last picture has not gone up") \
@@ -1374,7 +1394,7 @@
   X(chase_stepped,    "monster_chase",       "the step taken") \
   X(chase_met_someone,"monster_chase",       "an actor where the step lands, so it waits") \
   X(chase_met_ground, "monster_chase",       "solid ground and nothing to leap, so it waits") \
-  X(chase_leapt,      "monster_chase",       "...or something to leap, so the ROM chases") \
+  X(chase_leapt,      "monster_chase",       "...or something to leap, so it leaps") \
                                                                                    \
   /* The zombies, in readable C: port/zombie.h. Both kinds share each site. */      \
   X(zombie_walked,    "zombie_*_walk",       "a step straight ahead") \

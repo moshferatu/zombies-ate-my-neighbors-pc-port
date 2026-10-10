@@ -235,6 +235,12 @@ are ported, each state a C function that calls the ports it uses and
 stops only on a call with no exact price. The places are 852 and
 the core executes 4,091,951 instructions over the survey.
 
+**The big monster's states, 2026-10-10.** What it does when it is not
+chasing, how one is set up and what it carries are ported, and the chase
+no longer turns a leap down. So is the job that shakes the screen under
+the boss. The places are 821 and the core executes 3,399,313
+instructions over the survey.
+
 What is left of this step: registers of the driver's own in place of the
 core's, the clock, and a stop that names the address in place of the
 core.

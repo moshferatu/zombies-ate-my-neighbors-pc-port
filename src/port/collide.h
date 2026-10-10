@@ -903,6 +903,9 @@ bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 // and `$81:C3B6` is the body of level 46's type-`$14` actor — the giant spider,
 // ten of that level's twenty placements.
 //
+// "The giant spider" here and below was a guess. It is the giant ant, the big
+// red one level 45 is full of. The spiders are `$83:B299`, `spider_frame`.
+//
 // It is a **second copy of the enemy subsystem**, not a variant of the first.
 // Same damage table at `$81:8561`, same "subtract, went negative means dead"
 // shape, and each of the routines it leans on has a ported twin: `$81:BBEB` is

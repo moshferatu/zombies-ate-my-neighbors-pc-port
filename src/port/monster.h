@@ -1,5 +1,8 @@
 // The big monster's walk cycle, and what it does with what it is carrying.
 //
+// "The big monster" is the giant ant, the big red one level 45 is full of.
+// These files were named before anyone had put a picture to the code.
+//
 //   $81:C16B  monster_anim          advance the walk, pick a frame, set the flip
 //   $81:C00B  monster_place_carried put the held record where the facing says
 //   $81:BB75  monster_seek          is anything worth chasing, and is anyone left

@@ -22,7 +22,7 @@ typedef struct {
   const Rom* rom;
   uint16_t page;     // the monster's direct page
   uint16_t record;   // ...and its display record
-  bool leapt;        // found something to leap, which is the ROM's to do
+  bool leapt;        // found something to leap
   ChaseLog* log;     // may be NULL
 } Chase;
 
@@ -187,8 +187,6 @@ static ChaseOutcome step(Chase* k, Point me, uint16_t dir) {
     return CHASE_MET_SOMEONE;
   }
   if (can_leap(k, me, dir)) {
-    // Not ours. `chase_supported` turns the frame down, so a chase that gets
-    // here is only finding that out.
     PORT_COVER(chase_leapt);
     k->leapt = true;
     return CHASE_LEAPT;
@@ -244,15 +242,9 @@ static void chase(Chase* k) {
     set_field(k, CHASE_DP_STEPS, field(k, CHASE_DP_USUAL_STEPS));
 }
 
-void monster_chase(Wram* w, const Rom* rom, uint16_t page, ChaseLog* log) {
+bool monster_chase(Wram* w, const Rom* rom, uint16_t page, ChaseLog* log) {
   Chase k = {w, rom, page, wram_r16(w, (uint16_t)(page + MONSTER_DP_RECORD)),
              false, log};
   chase(&k);
-}
-
-bool chase_supported(Wram* w, const Rom* rom, uint16_t page) {
-  Chase k = {w, rom, page, wram_r16(w, (uint16_t)(page + MONSTER_DP_RECORD)),
-             false, NULL};
-  chase(&k);
-  return !k.leapt;
+  return k.leapt;
 }

@@ -5,6 +5,85 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The big monster's states (2026-10-10)
+
+What the big monster does when it is not chasing anyone was the ROM's
+still. It is ported, with how one is set up and what it carries, in
+`port/monster_states.h`. So is the job that shakes the screen under level
+25's boss.
+
+* **Three states**, each a C function that ends by naming the next.
+  * *Walking* (`$81:BE14`): a step the way it faces.
+  * *Going round* (`$81:BE71`): how it gets past a wall. It keeps what
+    stopped it on its left. Each frame it asks whether it could step
+    left. If so the wall has ended and it turns that way. Then it steps
+    ahead, and turns right when that is refused. Five left turns running
+    means it is circling something, and it wanders off a random way.
+  * *Marching* (`$81:BFCD`): the kind that comes in at the top of the
+    screen. It walks down, leaps what it can, and wanders off at the
+    level's edge.
+* **A leap** (`$81:BCF1`) is over in the frame it begins. It lands past
+  the tile it leapt, and 8 pixels further for as long as the ground there
+  is solid.
+* **The chase leaps now.** `monster_chase` turned a frame down when it
+  found something to leap, and the ROM chased. It stops on the `JMP` to
+  the leap instead, and turns nothing down.
+  * That made it a port with three exits: its own `RTS`, the walk's when
+    it gives up, and the jump.
+  * Pricing the leap showed the landing test's branch charged as taken
+    whichever way it fell. Nothing had been charged for it before,
+    because those frames were the ROM's.
+* **How one is set up.** Where it stands and its first picture
+  (`$81:B9FD`), the usual kind and the fast kind (`$81:BA46`, `$81:BA78`),
+  and whether there is room for one at the top of the screen (`$81:BFA8`).
+* **What it holds.** Somebody caught becomes a record of the monster's
+  own, by their kind (`$81:C054`). A killed monster puts them back
+  (`$81:C0E5`). A kind with no picture stops the ROM on a branch to
+  itself, and the port turns that call down.
+* **Every call these make has an exact price**, except the leap's
+  pictures. So each state is one stretch, where the monster's thread was
+  cut at every call.
+* **The shake** (`boss_shake_job`, `$82:8C49`). While the boss stamps, a
+  job in the vblank scrolls BG2 down by 0 to 3 lines by the frame
+  counter. Its sum has no `CLC`, so it takes whatever carry the queue's
+  walk left.
+* **Four more links**: the first thread's two calls to be set up, and the
+  jump after each kind's pictures.
+* **Checked.**
+  * The corpus verifies clean: 126,330,212 calls, none diverged. The
+    new stretches were called 13,999 times, the chase 22,675 and the
+    shake 1,617, and every one cost what the ROM's did.
+  * Lockstep: the table is byte for byte what it was. 334,319 passes, 51
+    of 54 never part, the same three.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies, and
+    none differ, at both widths.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 756 to 730 | 257,421 to 203,509 | 3,988,464 to 3,298,326 |
+  | Left standing on an instruction | 50 to 50 | 2,965 to 2,965 | 67,508 to 67,508 |
+  | A port turned the call down | 35 to 34 | 4,039 to 4,024 | 24,654 to 24,609 |
+  | A port or a link called it | 10 to 6 | 403 to 85 | 3,405 to 950 |
+  | All | 852 to 821 | 264,938 to 210,693 | 4,091,951 to 3,399,313 |
+
+  802 routines are registered.
+* **Not done or not known.**
+  * Five branches no movie takes: a leap with no pictures of its own, a
+    landing that has to go further, a march that meets the level's edge,
+    no room because the top of the screen is past the edge, and ground
+    with no tile to leap within two. Each is as the listing reads.
+  * Putting somebody down ran once in the corpus, in `level25-lane`.
+  * What a hit does to it: its handler at `$81:C440`, and the stagger at
+    `$81:BAB3` and `$81:BB05`. Thirteen times over the survey.
+  * The thread's fourth copy, the one that carries somebody home.
+  * The boss's thread: how it starts (`$82:9569` and `$82:94E4`) and its
+    death from `$82:95A0`. They call `$82:80E8` and `$82:8113`, which
+    are not ported.
+  * Overflow after `tile_attrs_at_pixel` is waived, as it is elsewhere:
+    that routine does not say what it leaves there. Only a march that
+    finds nothing to leap ends that way, and no movie has one.
+
 ### The boss's death was black (2026-10-09)
 
 Killing level 25's boss showed about half a second of black. Fixed.
