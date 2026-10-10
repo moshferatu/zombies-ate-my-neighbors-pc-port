@@ -5,6 +5,64 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Ports that end on a call, and what a killed thing does first (2026-10-09)
+
+The first work down the takeover list: the places a port stopped a few
+instructions short of a call or a return, and the core ran them.
+
+* **Thirteen ports end on the instruction `leave` makes.** Each stopped on
+  a load or a store before its `JSL`, `JSR`, `JML`, `RTS` or `RTL`. The
+  port does those instructions now and ends on the call or the return:
+  `cursor_frame`, `player_hit`, `flinch_frame`, `palfade_frame`,
+  `card_drop`, `tile_block_begin`, `tile_block_rows`, `text_print_lines`,
+  the two of `text_big`, `logo_sweep`, `player_dead` and
+  `bystander_frame`.
+* **`tile_block_begin` holds the camera itself** and runs into
+  `tile_block_rows`, which lets it go. The two instructions each way used
+  to be the ROM's. The bit is still set before the rows' time begins.
+* **A killed thing's two stretches** (`kill_scored` and `kill_counted` in
+  `port/begin.h`). Before its end, the thread of a thing a player killed
+  gives them what it was worth and counts one more of its kind. Most
+  kinds have a copy of the same instructions. They are one port each,
+  from a table: 19 places for the score and 9 for the count.
+* **15 more thread ends** in `RECORD_ENDS_BY_ADDRESS`, found by their
+  bytes. The ROM has 59 copies of that end. 43 are registered now.
+  * 8 free a second record after the first, and are not done.
+  * 8 are inside a port that does the end itself.
+* **An entry inside another port's stretch breaks the check.** Under
+  `verify` the inner entry is checked on its own, and the outer port's
+  exit goes by unseen. Eight of the ends I first added were like that,
+  and `axe_frame` and `bolt_frame` failed until they were taken out.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times |
+  |---|---|---|
+  | A port returned to it | 888 to 878 | 637,120 to 637,037 |
+  | Left standing on an instruction | 61 to 45 | 5,796 to 2,497 |
+  | A port turned the call down | 34 | 4,024 |
+
+  609 routines are registered.
+* **Where the core's instructions are.** It executed 400.6 million over
+  the survey. 392.8 million are in seven places, all of them a loop that
+  waits: for the NMI to empty a queue, or for the sound chip to answer.
+  Everything else is under 8 million.
+* **Checked.**
+  * The corpus verifies clean: 34,604,426 calls, none diverged, and every
+    changed port's cost exact on every call.
+  * Lockstep: 334,319 passes, 51 of 54 never part, the same three.
+    Seven rows' clock figures moved: the final drift in four of them, by
+    2 to 30 cycles in tens of thousands.
+* **Not done or not known.**
+  * `-Picture` was not run again.
+  * Why those drifts moved. My guess is where an NMI lands in a
+    port's time against where it landed between two instructions. I have
+    not shown it.
+  * 9 of the 19 score places, 2 of the 9 count places and 9 of the 15
+    new ends are reached by no movie, so they are unchecked.
+  * The seven fate exits that begin with a branch or `LDA #$0000 : TAY`:
+    the slime's, the weed's, the fishman's, the werewolf's, the
+    chainsaw's, the decoy's and shot 5's.
+
 ### The core is asked only for what no port has (2026-10-09)
 
 `PLAN.md` was rewritten for a game that links nothing of LakeSnes. This is

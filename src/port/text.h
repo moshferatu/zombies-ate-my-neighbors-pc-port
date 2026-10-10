@@ -47,10 +47,10 @@
 // registers in X and Y, and N and Z from the data bank it restores. Carry and
 // overflow are not followed.
 //
-// `text_print_lines` does not return here: it runs to `$82:B9A6`, where the
-// ROM queues the job that sends the map and waits for it. So it leaves as
-// that instruction finds things, with the data bank `$82` and the caller's
-// under a spare byte on the stack.
+// `text_print_lines` does not return here: it runs to `$82:B9AC`, the `JSL`
+// that queues the job that sends the map, with the job in A and Y. The ROM
+// waits for it after. So it leaves with the data bank `$82` and the
+// caller's under a spare byte on the stack.
 //
 // Port code: libc only.
 
@@ -67,7 +67,8 @@
 #define TEXT_PRINT_PC 0x82b84au
 #define TEXT_PRINT_RTL_PC 0x82b8fau
 #define TEXT_PRINT_LINES_PC 0x82b8fbu
-#define TEXT_PRINT_LINES_SEND_PC 0x82b9a6u
+#define TEXT_PRINT_LINES_SEND_PC 0x82b9acu  // `JSL`, the job that sends the map in A and Y
+#define TEXT_PRINT_LINES_SEND_JOB 0xb9b6u
 #define TEXT_BANK 0x82u  // the data bank both run under
 
 // On the caller's direct page: a far pointer to what is being read, and one
@@ -147,13 +148,14 @@ void text_print_lines(Wram* w, const Rom* rom, uint16_t page, uint16_t a,
 // `port/dma.h` do. The glyph stretch does not read the product from the
 // hardware. A and X still hold what was multiplied.
 //
-// Either leaves at `$82:AE34` when the string ends, where the ROM queues the
+// Either leaves at `$82:AE3A` when the string ends, the `JSL` that queues the
 // job that sends the map, with the data bank `$82` and the caller's under a
 // spare byte on the stack, as `text_print_lines` does.
 #define TEXT_BIG_PC 0x82ad5au
 #define TEXT_BIG_MULTIPLY_PC 0x82addbu  // `STA $4202`, 8-bit registers
 #define TEXT_BIG_GLYPH_PC 0x82ade4u     // `REP #$30 : LDA $4216`
-#define TEXT_BIG_SEND_PC 0x82ae34u
+#define TEXT_BIG_SEND_PC 0x82ae3au
+#define TEXT_BIG_SEND_JOB 0xae44u
 #define TEXT_BIG_CHARS 0x82af37u
 #define TEXT_BIG_FIRST_CHAR 0x20
 // A set's place in the font and its width, a word each, by twice the set.

@@ -186,6 +186,8 @@ bool palfade_frame(Wram* w, const Rom* rom, uint16_t page, PalfadeLog* log) {
     if (field(&f, PALFADE_DP_MOVED) == 0) {
       PORT_COVER(palfade_over);
       log->over = true;
+      log->ended = (uint16_t)(wram_r16(w, W_PALFADE_ENDED) + 1);
+      wram_w16(w, W_PALFADE_ENDED, log->ended);
       log->c = f.flags.c;
       log->v = f.flags.v;
       return false;

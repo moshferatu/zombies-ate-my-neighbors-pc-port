@@ -15,16 +15,16 @@
 // The routine holds the camera and the queue still while it works, with bit
 // 14 of the render flags: see `RENDER_FLAG_CAMERA_HELD` in `port/camera.h`.
 // That is why the port is not the whole of it. `tile_block_rows` is the
-// stretch the bit is set for, from `$80:AB8F` to `$80:ABC9`. The ROM sets
-// the bit before and clears it after, so an NMI that lands in the stretch
-// finds it set whether the rows have been done yet or not, and reads nothing
-// the rows write.
+// stretch the bit is set for, from `$80:AB8F` to the `JSR` at `$80:ABCE`,
+// and its last act is to clear the bit. An NMI that lands in the stretch
+// finds the bit set whether the rows have been done yet or not, and reads
+// nothing the rows write.
 //
-// `tile_block_begin` is what comes before the bit, from `$80:AB5A` to the
-// `LDA #$4000` at `$80:AB8A`: where the block's tiles are in the library,
-// where its first row is in the map, and eight rows to do. It writes only
-// the routine's own scratch on page zero. The two instructions that set the
-// bit stay the ROM's, so the bit is set when the ROM sets it.
+// `tile_block_begin` is what comes before, from `$80:AB5A` to `$80:AB8F`:
+// where the block's tiles are in the library, where its first row is in
+// the map, and eight rows to do. Its last act is to set the bit. It writes
+// nothing else but the routine's own scratch on page zero. The bit is set
+// before the rows' time begins, as it is in the ROM.
 //
 // ## A block swapped for its pair
 //
@@ -50,9 +50,8 @@
 #define TILEMAP_ROW_TABLES_PC 0x80aca2u
 #define TILEMAP_ROW_TABLES_RTL_PC 0x80acf5u
 #define TILE_BLOCK_BEGIN_PC 0x80ab5au
-#define TILE_BLOCK_HOLD_PC 0x80ab8au      // `LDA #$4000 : TSB $26`
-#define TILE_BLOCK_ROWS_PC 0x80ab8fu      // `STZ $4C`, the bit just set
-#define TILE_BLOCK_ROWS_END_PC 0x80abc9u  // `LDA #$4000`, to clear it
+#define TILE_BLOCK_ROWS_PC 0x80ab8fu      // `STZ $4C`, the camera just held
+#define TILE_BLOCK_ROWS_END_PC 0x80abceu  // `JSR`, the camera let go
 
 #define BLOCK_TILES 8
 #define MAP_BLOCK_ROWS_MAX 128  // what the two tables have room for
@@ -109,6 +108,7 @@ enum {
   TR_WORD,       // $AB9B-$ABA5, $ABAD-$ABB0
   TR_BELOW,      // $ABA6-$ABAC
   TR_TAIL,       // JSR $9E37 and its three instructions
+  TR_RELEASE,    // LDA #$4000 : TRB $26
   TR_TAKEN,
   TR_BLOCK_COUNT
 };

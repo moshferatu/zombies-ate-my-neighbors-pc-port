@@ -87,12 +87,13 @@ void tile_block_begin(Wram* w, PortCpu* c, bool* v) {
   wram_w16(w, TB_DP_TO + 2, TILE_BLOCK_BANK_TO);
   wram_w16(w, TB_DP_ROWS_LEFT, BLOCK_TILES);
 
-  c->a = BLOCK_TILES;
-  set_nz16(c, c->a);
   c->x = at.x;
   c->y = row;
   set_c(c, at.c);
-  c->pc = TILE_BLOCK_HOLD_PC;
+  c->a = RENDER_FLAG_CAMERA_HELD;
+  set_nz16(c, c->a);
+  wram_w16(w, W_RENDER_FLAGS, tsb16(c, wram_r16(w, W_RENDER_FLAGS)));
+  c->pc = TILE_BLOCK_ROWS_PC;
 }
 
 // --- A block swapped for its pair ---------------------------------------------
@@ -341,5 +342,9 @@ void tile_block_rows(Wram* w, const Rom* rom, PortCpu* c, TileRowsWork* k) {
   cmp16(c, c->a, VRAM_QUEUE_FULL);
   c->y = 0xfffeu;
   k->blocks[TR_TAIL]++;
+  c->a = RENDER_FLAG_CAMERA_HELD;
+  set_nz16(c, c->a);
+  wram_w16(w, W_RENDER_FLAGS, trb16(c, wram_r16(w, W_RENDER_FLAGS)));
+  k->blocks[TR_RELEASE]++;
   c->pc = TILE_BLOCK_ROWS_END_PC;
 }

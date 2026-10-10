@@ -18361,3 +18361,64 @@ The one that was not: the resumable port's `JSL thread_yield`, 1,725 times
 over the survey. `native_yield` stood the CPU on it and returned. It calls
 `leave` now, and the totals did not move: the budget already stopped short
 of the `JSL` by its cost.
+
+## Ports that end on a call (2026-10-09)
+
+### Stopping short
+
+Many ports with exits stop where the ROM's next instruction is easy to
+find, and not where the harness can carry on. `cursor_frame` ended at
+`$82:B2BE`, which is `LDA #$000E : JSL apu_play_sfx`. The core ran the load
+and the call, and the sound's port took the call's target.
+
+A driver with no CPU has nothing to run the load with. So the port does it,
+and ends at the `JSL`, which `leave` makes. The cost is the load's, in a
+block of its own. Thirteen ports were changed this way. The rest of the
+list is in `PROGRESS.md`.
+
+`tile_block_begin` is the one that ends on another port's entry and not on
+a call. It sets the bit that holds the camera and stops at `$80:AB8F`,
+where `tile_block_rows` begins. Nothing is made between them.
+
+### An entry inside another port's stretch
+
+`verify` checks a port with exits by running the ROM from the entry to
+whichever exit it reaches. If the ROM passes a second registered entry on
+the way, that one is checked too, on its own, to its own exit.
+
+That goes wrong when the inner port's exit is beyond the outer's. The
+thread ends are like that: each runs through `actor_slot_free` to
+`thread_exit`. `axe_frame` ends at its `JML actor_slot_free`, having given
+the load back itself. With an end registered at `$81:B511`, inside it, the
+inner check ran past the `JML` and the outer never saw its exit. It was
+then compared a frame later: `WRAM $7E:0006: ROM $0D, port $0E`.
+
+So an end is not registered where another port already does it. That is
+eight of the ROM's 59: the axe's, the flame's, the swipe's, the knock's,
+the bubble's, the bolt's, the lob's and the squirt's.
+
+Nothing checks this when the registry is built. A new entry is safe when
+no port's stretch passes through it, and the corpus only shows that for
+the stretches it reaches.
+
+### Where the core's instructions are
+
+Over the survey the core executed 400.6 million instructions. Seven places
+have 392.8 million of them:
+
+| Where | After | Instructions |
+|---|---|---|
+| `$80:9FAA` | `vbl_queue_a_add` | 195,226,504 |
+| `$82:AC91` | `nmi_leave` | 70,792,242 |
+| `$80:CBF9` | `apu_send` | 34,188,739 |
+| `$80:9C7C` | `vbl_queue_a_add` | 26,985,117 |
+| `$80:9F5C` | `vbl_queue_a_add` | 24,524,680 |
+| `$80:9C62` | `vbl_queue_a_add` | 23,171,947 |
+| `$80:CC6B` | `apu_send` | 17,896,675 |
+
+Each is a loop that waits. Five wait for the NMI to do something. Two wait
+for the sound chip to answer. I have not read all seven: that is from the
+routine each follows and from how long it runs.
+
+By instructions, then, nearly all of what the core does is waiting. By
+places it is the reverse: these are 7 of 963.

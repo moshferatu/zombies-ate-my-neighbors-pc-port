@@ -29,8 +29,9 @@
 // ## Its contract with the ROM
 //
 // It writes nothing. A frame ends at the `JSL thread_yield` with the tick
-// count in A, at the `JSR $DDA7` with a player found, or at `$82:DD68` with
-// the thread told to end. A, carry, zero and negative are left as the ROM
+// count in A, at the `JSR $DDA7` with a player found, or at the `JML
+// actor_slot_free` at `$82:DD6A` with the thread told to end and its slot
+// in A. A, carry, zero and negative are left as the ROM
 // leaves them, and overflow as it was.
 //
 // Port code: libc only.
@@ -46,7 +47,7 @@
 #define BYSTANDER_FRAME_PC 0x82dd5cu
 #define BYSTANDER_YIELD_PC 0x82dd58u  // `JSL thread_yield`, A already 5
 #define BYSTANDER_MET_PC 0x82dd61u    // `JSR $DDA7`
-#define BYSTANDER_END_PC 0x82dd68u    // `LDA $10 : JML actor_slot_free`
+#define BYSTANDER_END_PC 0x82dd6au    // `JML actor_slot_free`, its slot in A
 #define BYSTANDER_YIELD_TICKS 5
 
 // Fields on the thread's page.
@@ -54,6 +55,7 @@
 #define BYSTANDER_DP_RIGHT 0x0a   // one past
 #define BYSTANDER_DP_TOP 0x0c
 #define BYSTANDER_DP_BOTTOM 0x0e  // one past
+#define BYSTANDER_DP_SLOT 0x10    // its actor's
 #define BYSTANDER_DP_END 0x12     // not zero, and the thread ends
 
 typedef enum {

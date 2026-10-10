@@ -148,6 +148,42 @@ bool record_end(Wram* w, PortCpu* c, const RecordEnd* end, int* place) {
   return true;
 }
 
+const KillScored KILLS_SCORED_BY[KILL_SCORED_COUNT] = {
+#define X(at, sym, pc, worth, killer_at, nobody_pc) \
+  [KILL_SCORED_AT_##at] = {pc, worth, killer_at, nobody_pc},
+    KILLS_SCORED(X)
+#undef X
+};
+
+const KillCounted KILLS_COUNTED_BY[KILL_COUNTED_COUNT] = {
+#define X(at, sym, pc, count_at, pictures) \
+  [KILL_COUNTED_AT_##at] = {pc, count_at, pictures},
+    KILLS_COUNTED(X)
+#undef X
+};
+
+bool kill_scored(const Wram* w, PortCpu* c, const KillScored* kill) {
+  c->x = kill->worth;
+  c->a = field(w, c, kill->killer_at);
+  set_nz16(c, c->a);
+  if (c->a == 0) {
+    PORT_COVER(kill_by_nobody);
+    c->pc = kill->nobody_pc;
+    return false;
+  }
+  PORT_COVER(kill_scored);
+  c->pc = kill->pc + KILL_SCORED_CALL_BYTES;
+  return true;
+}
+
+void kill_counted(Wram* w, PortCpu* c, const KillCounted* kill) {
+  PORT_COVER(kill_counted);
+  wram_w16(w, kill->count_at, (uint16_t)(wram_r16(w, kill->count_at) + 1));
+  c->a = kill->pictures;
+  set_nz16(c, c->a);
+  c->pc = kill->pc + KILL_COUNTED_CALL_BYTES;
+}
+
 bool death_pictures(Wram* w, PortCpu* c) {
   if (c->x != DEATH_KILLED) return false;
   PORT_COVER(death_pictures_begun);

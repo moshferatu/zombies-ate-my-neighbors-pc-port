@@ -60,5 +60,8 @@ void player_hit(Wram* w, const Rom* rom, PortCpu* c, HitWork* k) {
   PORT_COVER(hit_flinched);
   k->blocks[HT_TAKEN]++;
   k->end = HIT_FLINCHED;
+  c->a = HIT_SOUND;
+  set_nz16(c, c->a);
+  k->blocks[HT_SOUND]++;
   c->pc = HIT_FLINCH_PC;
 }

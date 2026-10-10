@@ -206,6 +206,12 @@ Over the same 110 sessions. The 893 places returned to or called are in
 276 routines. When the list is empty for a session, the core executed
 nothing in it.
 
+**Later that day**, after the first work down the list: 878 places
+returned to, 45 left standing, 34 declined. The core executed 400.6
+million instructions over the survey, and 392.8 million of them are seven
+loops that wait. So item 3 of step 1, the waits, is nearly all of the
+core's work, and almost none of its places.
+
 What is left of this step: registers of the driver's own in place of the
 core's, the clock, and a stop that names the address in place of the
 core.

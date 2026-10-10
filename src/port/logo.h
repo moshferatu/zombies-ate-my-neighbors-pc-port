@@ -54,7 +54,9 @@ typedef enum {
 #define LOGO_RISE_END_PC 0x83816eu     // `JSL` for a sound, A already `$31`
 #define LOGO_SWEEP_PC 0x838184u
 #define LOGO_SWEEP_WAI_PC 0x838183u
-#define LOGO_SWEEP_END_PC 0x8381b9u
+#define LOGO_SWEEP_END_PC 0x8381c2u    // `JSR` to copy colours, set out in A, X and Y
+#define LOGO_SWEPT_COLOURS 0x9270u     // what the logo is left in
+#define LOGO_SWEPT_BYTES 0x0020
 #define LOGO_SWEEP_2_PC 0x8381ccu
 #define LOGO_SWEEP_2_WAI_PC 0x8381cau  // two of them
 #define LOGO_FLASH_PC 0x8381f2u
@@ -95,6 +97,7 @@ enum {
   LG_4A,  // $8184-$8193
   LG_4W,  // $8194-$81AA
   LG_4C,  // $81AB-$81B8
+  LG_4D,  // $81B9-$81C1
   LG_5A,  // $81CC-$81D6
   LG_5W,  // $81D7-$81E5
   LG_5C,  // $81E6-$81EE

@@ -9,7 +9,7 @@
 // Two stretches of it are here. `$80:D089` is from the sound's return: the
 // list found and its first entry shown. `$80:D0BF` is from the return of its
 // sleep: the next entry shown. Each ends at the sleep again or, after the
-// last entry, at `$80:D0DD`.
+// last entry, with `$1C` cleared and at the `RTS`.
 //
 // With the pictures at `$80:FD72` there is no list: one picture, by which of
 // the two the player is, for twelve frames. What those pictures are I have
@@ -32,7 +32,7 @@
 
 #define FLINCH_PC 0x80d0bfu
 #define FLINCH_SLEEP_PC 0x80d0bbu  // `JSL`, A already the frames
-#define FLINCH_DONE_PC 0x80d0ddu
+#define FLINCH_DONE_PC 0x80d0dfu  // the `RTS`
 #define FLINCH_BEGIN_PC 0x80d089u
 #define FLINCH_LONE_SLEEP_PC 0x80d0d9u  // `JSL`, A already twelve
 
@@ -40,6 +40,7 @@
 #define FLINCH_DP_RECORD 0x08
 #define FLINCH_DP_PICTURES 0x10
 #define FLINCH_DP_AT 0x18       // how far down the list
+#define FLINCH_DP_BUSY 0x1c     // cleared when the list is done
 #define FLINCH_DP_LIST 0x5e
 #define FLINCH_DP_STATE 0x70
 #define FLINCH_STATE_OTHER 0x000c  // the state with pictures of its own
@@ -63,6 +64,7 @@ enum {
   FN_WHICH,  // LDA $10 : CMP #$FD72 : BEQ
   FN_LIST,   // $D090-$D09B
   FN_LONE,   // $D0C9-$D0D8
+  FN_DONE,   // STZ $1C
   FN_BLOCK_COUNT
 };
 

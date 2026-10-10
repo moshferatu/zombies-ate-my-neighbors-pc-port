@@ -46,7 +46,7 @@
 #define CURSOR_PC 0x82b267u
 #define CURSOR_SLEEP_PC 0x82b263u    // `JSL`, A already 4
 #define CURSOR_BUTTON_PC 0x82b287u   // a button newly down
-#define CURSOR_MOVED_PC 0x82b2beu    // moved: a sound, and the clock again
+#define CURSOR_MOVED_PC 0x82b2c1u    // moved: `JSL`, the sound in A
 #define CURSOR_DONE_PC 0x82b2dbu     // Start, or time up
 #define CURSOR_PICK_PC 0x82b3f6u
 #define CURSOR_PICK_SOUND_PC 0x82b48au  // `JSL`, the sound in A
@@ -97,6 +97,7 @@
 #define CURSOR_CHAR_BACK 0x3a
 #define CURSOR_SPACE 0x2f
 #define CURSOR_PICK_SOUND 0x0010
+#define CURSOR_MOVE_SOUND 0x000e
 
 enum {
   CU_HEAD,      // $B267-$B277
@@ -106,6 +107,7 @@ enum {
   CU_DIR,       // $B292-$B29C
   CU_MOVE,      // $B29D-$B2B8
   CU_MOVED,     // LDA $004E : BEQ
+  CU_SOUND,     // LDA #$000E
   CU_TIME,      // $B2CB-$B2D3
   CU_FLAG,      // LDA $1EB2 : BNE
   CU_AGAIN,     // BRA, LDA #$0004

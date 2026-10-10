@@ -33,8 +33,9 @@
 //
 // It writes WRAM exactly as the ROM does, the working the two row routines
 // leave on page zero included. A frame ends at the `JSL thread_yield` with
-// the tick count in A, or at `$82:AC03` with the fade over. Carry and
-// overflow are left as the ROM leaves them.
+// the tick count in A, or with the fade over: one more on the count at
+// `$7E:1F94`, and the `RTL` at `$82:AC06`. Carry and overflow are left as
+// the ROM leaves them.
 //
 // Port code: libc only.
 
@@ -49,7 +50,9 @@
 
 #define PALFADE_FRAME_PC 0x82abbdu
 #define PALFADE_YIELD_PC 0x82abb9u  // `JSL thread_yield`, the ticks already in A
-#define PALFADE_OVER_PC 0x82ac03u   // `INC $1F94 : RTL`
+#define PALFADE_OVER_PC 0x82ac06u   // the `RTL` that ends the thread
+
+#define W_PALFADE_ENDED 0x1f94u      // a count of the fades that have ended
 
 // The job that sends the colours to the screen, `$80:9FDF`.
 #define PALFADE_UPLOAD_JOB 0x9fdfu
@@ -83,6 +86,7 @@ typedef struct {
   PalfadeRowWork background, sprites;
   bool swept;      // that was the eighth row
   bool over;       // ...of a sweep that moved nothing
+  uint16_t ended;  // ...and the count of fades ended, with this one
   int queue_slot;  // ...or where the upload went in the queue, -1 for nowhere
   bool sooner;     // it sleeps a tick less from now on
   uint16_t ticks;  // how long it sleeps

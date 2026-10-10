@@ -155,6 +155,11 @@ void logo_frame(Wram* w, PortCpu* c, LogoStage stage, LogoWork* k) {
         c->pc = LOGO_SWEEP_WAI_PC;
       } else {
         PORT_COVER(logo_swept);
+        c->a = LOGO_SWEPT_BYTES;
+        c->y = LOGO_SWEPT_COLOURS;
+        c->x = 0;  // from the first colour shown
+        set_nz16(c, c->x);
+        k->blocks[LG_4D]++;
         c->pc = LOGO_SWEEP_END_PC;
       }
       return;

@@ -36,7 +36,8 @@
 
 #define CARD_DROP_PC 0x82ae76u
 #define CARD_DROP_WAI_PC 0x82ae75u
-#define CARD_DROP_END_PC 0x82ae91u    // `LDA #$0021`, for the sound
+#define CARD_DROP_END_PC 0x82ae94u    // `JSL`, the sound in A
+#define CARD_DROP_SOUND 0x0021
 #define CARD_BOUNCE_PC 0x82aea2u
 #define CARD_BOUNCE_WAI_PC 0x82aea1u
 #define CARD_BOUNCE_END_PC 0x82aeb3u  // `RTS`
@@ -70,6 +71,7 @@
 enum {
   CD_QUEUE,        // LDA #$AEB4 : LDY #$0082 : JSL : BCS, less the call's body
   CD_DROP,         // $AE82-$AE90
+  CD_SOUND,        // LDA #$0021
   CD_BOUNCE,       // JSR $AEC6, $AEC6-$AEEC
   CD_BOUNCE_END,   // SEC : RTS : BCC
   CD_BOUNCE_MORE,  // CLC : RTS : BCC

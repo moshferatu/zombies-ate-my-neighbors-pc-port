@@ -107,6 +107,10 @@ BystanderFate bystander_frame(const Wram* w, uint16_t page, BystanderLog* log) {
   log->z = end == 0;
   if (end != 0) {
     PORT_COVER(bystander_ended);
+    const uint16_t slot = field(w, page, BYSTANDER_DP_SLOT);
+    log->a = slot;
+    log->n = (slot & 0x8000u) != 0;
+    log->z = slot == 0;
     return BYSTANDER_ENDS;
   }
   PORT_COVER(bystander_slept);

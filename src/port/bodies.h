@@ -311,7 +311,8 @@ void tile_anim_queued(Wram* w, PortCpu* c, BodyWork* k);
 #define PLAYER_WON_RTS_PC 0x80ce6du
 #define PLAYER_WON_END_PC 0x80ce2au   // no neighbours left: the ROM's
 #define PLAYER_DEAD_RTS_PC 0x80ce79u
-#define PLAYER_DEAD_END_PC 0x80ce7au  // no health left: the ROM's
+#define PLAYER_DEAD_END_PC 0x80ce7du  // no health left: `JSL`, the sound in A
+#define PLAYER_DEAD_SOUND 0x0008
 
 // A player who has died and has none left of what `$7E:1D4C` counts, which
 // I take to be lives, ends in a loop at `$80:CF0B`: a list of pictures for
@@ -345,6 +346,7 @@ enum {
   PBODY_RECOVERED,  // LDA #$FFFF : STA $52
   PBODY_WON,        // LDA $1D52 : BNE
   PBODY_DEAD,       // LDX $0E : LDA $1CB8,X : BEQ
+  PBODY_DEAD_SOUND, // LDA #$0008
   PBODY_TAKEN,      // a branch taken
   PBODY_BLOCK_COUNT
 };

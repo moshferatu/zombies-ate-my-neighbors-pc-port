@@ -164,6 +164,9 @@ static bool read_pad(Wram* w, const Rom* rom, PortCpu* c, CursorWork* k) {
   k->blocks[CU_MOVED]++;
   if (c->a != 0) {
     PORT_COVER(cursor_moved);
+    c->a = CURSOR_MOVE_SOUND;
+    set_nz16(c, c->a);
+    k->blocks[CU_SOUND]++;
     c->pc = CURSOR_MOVED_PC;
     return false;
   }

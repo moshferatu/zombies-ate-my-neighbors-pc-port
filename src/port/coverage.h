@@ -349,6 +349,9 @@
   X(zombie_begun,     "zombie_begin",       "...and a zombie's made of it") \
   X(neighbour_begun,  "neighbour_begin",    "a neighbour's record, and their handler") \
   X(record_ended,     "record_end",         "a thread's end: its weight given back and its record freed") \
+  X(kill_scored,      "kill_scored",        "a thing a player killed: what it was worth, for them") \
+  X(kill_by_nobody,   "kill_scored",        "...or nobody did, and it goes on to its end") \
+  X(kill_counted,     "kill_counted",       "one more of its kind killed, and its last pictures") \
   X(death_pictures_begun,"death_pictures",  "a killed thing, off to be heard") \
   X(death_pictures_heard,"death_pictures_heard", "...and no longer touchable") \
   X(zombie_leave_unkilled,"zombie_leave",   "a zombie leaving that nobody killed") \

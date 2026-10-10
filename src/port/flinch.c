@@ -118,6 +118,8 @@ static void show(Wram* w, const Rom* rom, PortCpu* c, FlinchWork* k,
   if (c->a == 0) {
     PORT_COVER(flinch_done);
     k->blocks[FN_TAKEN]++;
+    wram_w16(w, (uint16_t)(page + FLINCH_DP_BUSY), 0);
+    k->blocks[FN_DONE]++;
     c->pc = FLINCH_DONE_PC;
     return;
   }

@@ -745,7 +745,7 @@ void player_won(Wram* w, PortCpu* c, BodyWork* k) {
 }
 
 // `$80:CE72  LDX $0E : LDA $1CB8,X : BEQ $CE7A`. With no health left the
-// player dies, and that is the ROM's.
+// player dies: a sound, and the rest is the ROM's.
 void player_dead(Wram* w, PortCpu* c, BodyWork* k) {
   c->x = dp_r16(w, c, 0x0e);
   set_nz16(c, c->x);
@@ -757,6 +757,8 @@ void player_dead(Wram* w, PortCpu* c, BodyWork* k) {
   }
   PORT_COVER(player_died);
   k->blocks[PBODY_TAKEN]++;
+  lda(c, PLAYER_DEAD_SOUND);
+  k->blocks[PBODY_DEAD_SOUND]++;
   c->pc = PLAYER_DEAD_END_PC;
 }
 

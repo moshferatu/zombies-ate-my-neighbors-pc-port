@@ -141,6 +141,18 @@ static inline void bit16(PortCpu* c, uint16_t m) {
   if ((c->a & m) == 0) c->p |= PORT_P_Z;
 }
 
+// `TSB` and `TRB` on a 16-bit operand from memory: Z is whether it shares a
+// bit with A, and what comes back is the operand with A's bits set, or clear.
+static inline uint16_t tsb16(PortCpu* c, uint16_t m) {
+  c->p = (uint8_t)((c->a & m) == 0 ? c->p | PORT_P_Z : c->p & ~PORT_P_Z);
+  return (uint16_t)(m | c->a);
+}
+
+static inline uint16_t trb16(PortCpu* c, uint16_t m) {
+  c->p = (uint8_t)((c->a & m) == 0 ? c->p | PORT_P_Z : c->p & ~PORT_P_Z);
+  return (uint16_t)(m & ~c->a);
+}
+
 // A data read at a 24-bit address, as the bus answers it: the first 8 KB of
 // WRAM in every bank below `$40` and in `$80-$BF`, WRAM itself in `$7E-$7F`,
 // and the cartridge wherever `rom.h` says it is. Anything else -- the PPU, the

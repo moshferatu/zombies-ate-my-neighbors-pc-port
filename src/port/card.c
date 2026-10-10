@@ -53,6 +53,9 @@ void card_slide_frame(Wram* w, const Rom* rom, PortCpu* c, bool bounce,
     k->blocks[CD_DROP]++;
     if (left & 0x8000u) {
       PORT_COVER(card_down);
+      c->a = CARD_DROP_SOUND;
+      set_nz16(c, c->a);
+      k->blocks[CD_SOUND]++;
       c->pc = CARD_DROP_END_PC;
     } else {
       PORT_COVER(card_dropped);

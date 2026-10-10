@@ -6437,6 +6437,7 @@ static const CosimRun PBODY_COST[PBODY_BLOCK_COUNT] = {
     [PBODY_RECOVERED] = {46, 5, 1},
     [PBODY_WON] = {46, 5, 0},
     [PBODY_DEAD] = {80, 7, 1},
+    [PBODY_DEAD_SOUND] = {18, 3, 0},
     [PBODY_TAKEN] = {6, 0, 0},
 };
 
@@ -7929,6 +7930,7 @@ static const CosimRun TX_RUN_HEAD = {1186, 92, 15};       // $B84A-$B8A1
 static const CosimRun TX_RUN_NEXT = {128, 11, 2};         // $B8A2-$B8AA
 static const CosimRun TX_RUN_JMP = {18, 3, 0};
 static const CosimRun TX_RUN_TAIL = {94, 3, 0};           // PLB : PLB : RTL
+static const CosimRun TX_RUN_SEND = {36, 6, 0};           // LDA #job : LDY #$0082
 static const CosimRun TX_RUN_INDEX = {78, 9, 0};          // $B8AE-$B8B6
 static const CosimRun TX_RUN_GLYPH_HEAD = {70, 9, 0};     // $B8B7-$B8BF
 static const CosimRun TX_RUN_TILE = {236, 25, 1};         // $B8C0-$B8D6
@@ -7992,9 +7994,9 @@ static void shim_text_print(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
 }
 
-// It leaves at `$82:B9A6` with the caller's data bank and a spare byte of
-// its `PEA` on the stack, bank `$82`, 16-bit registers, and the `AND` that
-// found the string's end in N and Z.
+// It leaves at the `JSL` at `$82:B9AC` with the caller's data bank and a
+// spare byte of its `PEA` on the stack, bank `$82`, 16-bit registers, and the
+// job that sends the map in A and Y.
 static void shim_text_print_lines(Wram* w, const Rom* rom, const CosimRegs* in,
                                   CosimRegs* out) {
   TextWork k = {0};
@@ -8002,14 +8004,14 @@ static void shim_text_print_lines(Wram* w, const Rom* rom, const CosimRegs* in,
   text_print_lines(w, rom, in->d, in->a, in->x, in->y, &r, &k);
   wram_w8(w, in->s, in->db);
   wram_w8(w, (uint16_t)(in->s - 1), 0x00);
-  out->a = r.a;
+  out->a = TEXT_PRINT_LINES_SEND_JOB;
   out->x = r.x;
-  out->y = r.y;
+  out->y = TEXT_BANK;
   out->s = (uint16_t)(in->s - 2);
   out->db = TEXT_BANK;
   out->pc = TEXT_PRINT_LINES_SEND_PC;
   out->regs = COSIM_REG_ALL;
-  out->p = (uint8_t)((in->p & ~(PORT_P_M | PORT_P_X | PORT_P_N)) | PORT_P_Z);
+  out->p = (uint8_t)(in->p & ~(PORT_P_M | PORT_P_X | PORT_P_N | PORT_P_Z));
   out->p_keep = PORT_P_C | PORT_P_V;
 
   // Each place after the first is a byte of `$FF`, which takes the `BEQ`.
@@ -8020,6 +8022,7 @@ static void shim_text_print_lines(Wram* w, const Rom* rom, const CosimRegs* in,
   run_add(&run, &TX_RUN_NEW_PLACE, k.bytes - 1);
   run_add(&run, &RUN_TAKEN, k.places - 1);
   text_chars_run(&run, &k, chars);
+  run_add(&run, &TX_RUN_SEND, 1);
   cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
 }
 
@@ -8061,13 +8064,14 @@ static void text_big_scan_run(CosimRun* run, const TextBigWork* k,
   run_add(run, &TB_RUN_INDEX, plain);
   run_add(run, &RUN_TAKEN, k->skipped);
   run_add(run, &TB_RUN_PRE, r->multiply ? 1 : 0);
+  run_add(run, &TX_RUN_SEND, r->multiply ? 0 : 1);
   run->cycles += 4 * k->text.slow_words;
   run->bytes -= 2 * k->text.slow_words;
 }
 
 // Either way out, with carry and overflow not followed. At the multiplier
 // the registers are 8 bits wide and Z is the `AND #$00FF`'s. At the string's
-// end they are 16 and Z is set.
+// end they are 16, with the job that sends the map in A and Y.
 static void text_big_out(const CosimRegs* in, CosimRegs* out,
                          const TextBigRegs* r) {
   out->a = r->a;
@@ -8080,7 +8084,8 @@ static void text_big_out(const CosimRegs* in, CosimRegs* out,
     if (r->a == 0) p |= PORT_P_Z;
     out->pc = TEXT_BIG_MULTIPLY_PC;
   } else {
-    p |= PORT_P_Z;
+    out->a = TEXT_BIG_SEND_JOB;
+    out->y = TEXT_BANK;
     out->pc = TEXT_BIG_SEND_PC;
   }
   out->p = p;
@@ -8405,6 +8410,7 @@ static const CosimRun LG_COST[LG_BLOCK_COUNT] = {
     [LG_4A] = {194, 16, 0},
     [LG_4W] = {214, 23, 0},
     [LG_4C] = {210, 14, 1},
+    [LG_4D] = {54, 9, 0},
     [LG_5A] = {126, 11, 0},
     [LG_5W] = {134, 15, 0},
     [LG_5C] = {136, 9, 1},
@@ -10100,6 +10106,7 @@ static const CosimRun PALFADE_RUN_UPLOAD = {136, 15, 1};      // $ABE6-$ABF4
 static const CosimRun PALFADE_RUN_STORE = {86, 9, 2};         // $ABF5-$ABFD
 static const CosimRun PALFADE_RUN_SOONER = {52, 5, 1};        // $ABFE DEC : STA : BRA
 static const CosimRun PALFADE_RUN_SLEEP = {28, 2, 1};         // $ABB7 LDA $0E
+static const CosimRun PALFADE_RUN_ENDED = {56, 3, 0};         // $AC03 INC $1F94
 static const CosimRun PALFADE_RUN_TAKEN = {6, 0, 0};
 static const CosimRun PALFADE_RUN_BG_HEAD = {262, 19, 2};     // $AB19-$AB2B
 static const CosimRun PALFADE_RUN_BG_SETUP = {110, 10, 2};    // $AB2C-$AB35
@@ -10218,8 +10225,8 @@ static bool palfade_frame_ok(const Wram* w, const CosimRegs* in) {
          palfade_frame_supported(w, in->d);
 }
 
-// It leaves by the `JSL thread_yield` with the tick count in A, or at the two
-// instructions that end the thread, with the sweep's count of zero in A.
+// It leaves by the `JSL thread_yield` with the tick count in A, or at the
+// `RTL` that ends the thread, with the sweep's count of zero in A.
 static void shim_palfade_frame(Wram* w, const Rom* rom, const CosimRegs* in,
                             CosimRegs* out) {
   PalfadeLog log = {0};
@@ -10255,6 +10262,8 @@ static void shim_palfade_frame(Wram* w, const Rom* rom, const CosimRegs* in,
     }
     run_add(&own, &PALFADE_RUN_TAKEN, 1);  // the `BCC`, or the `BRA`
     run_add(&own, &PALFADE_RUN_SLEEP, 1);
+  } else {
+    run_add(&zero, &PALFADE_RUN_ENDED, 1);
   }
   cosim_cost(cosim_run_cycles_dp(&zero, fetch_fast(in), false) +
              cosim_run_cycles_dp(&own, fetch_fast(in),
@@ -10264,8 +10273,9 @@ static void shim_palfade_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   out->a = stays ? log.ticks : 0;
   out->regs = COSIM_REG_A;
   out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
-  if (out->a & 0x8000u) out->p |= PORT_P_N;
-  if (out->a == 0) out->p |= PORT_P_Z;
+  const uint16_t last = stays ? out->a : log.ended;
+  if (last & 0x8000u) out->p |= PORT_P_N;
+  if (last == 0) out->p |= PORT_P_Z;
   if (log.c) out->p |= PORT_P_C;
   if (log.v) out->p |= PORT_P_V;
 }
@@ -10473,6 +10483,7 @@ static const CosimRun TR_COST[TR_BLOCK_COUNT] = {
     [TR_WORD] = {198, 15, 3},
     [TR_BELOW] = {122, 7, 2},
     [TR_TAIL] = {132, 10, 0},
+    [TR_RELEASE] = {68, 5, 1},
     [TR_TAKEN] = {6, 0, 0},
 };
 
@@ -10512,9 +10523,9 @@ static void shim_tilemap_row_tables(Wram* w, const Rom* rom,
   cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), false));
 }
 
-// `$80:AB5A` to the `LDA #$4000` at `$80:AB8A`, the two `JSL`s in it, and
+// `$80:AB5A` to the `STZ $4C` at `$80:AB8F`, the two `JSL`s in it, and
 // `$80:AD0B`, all of it. After its third instruction it is on page zero.
-static const CosimRun TB_RUN_BEGIN = {640, 48, 8};
+static const CosimRun TB_RUN_BEGIN = {640 + 68, 48 + 5, 8 + 1};
 static const CosimRun TB_RUN_LIBRARY = {250, 17, 4};
 
 static void shim_tile_block_begin(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -10532,7 +10543,8 @@ static void shim_tile_block_begin(Wram* w, const Rom* rom, const CosimRegs* in,
              cosim_run_cycles(&TILE_ADDR_RUN, in->fastrom));
 }
 
-static const uint32_t TILE_BLOCK_BEGIN_EXITS[] = {TILE_BLOCK_HOLD_PC};
+// It runs into the rows, which are the next port.
+static const uint32_t TILE_BLOCK_BEGIN_EXITS[] = {TILE_BLOCK_ROWS_PC};
 
 // Page zero, which the routine has made its own by here.
 static bool accepts_tile_block_rows(const Wram* w, const CosimRegs* in) {
@@ -10565,6 +10577,7 @@ static const uint32_t TILE_BLOCK_ROWS_EXITS[] = {TILE_BLOCK_ROWS_END_PC};
 static const CosimRun CD_COST[CD_BLOCK_COUNT] = {
     [CD_QUEUE] = {102, 12, 0},
     [CD_DROP] = {166, 15, 0},
+    [CD_SOUND] = {18, 3, 0},
     [CD_BOUNCE] = {456, 44, 0},
     [CD_BOUNCE_END] = {64, 4, 0},
     [CD_BOUNCE_MORE] = {64, 4, 0},
@@ -10984,6 +10997,7 @@ static const CosimRun FN_COST[FN_BLOCK_COUNT] = {
     [FN_WHICH] = {58, 7, 1},
     [FN_LIST] = {138, 14, 3},
     [FN_LONE] = {208, 20, 3},
+    [FN_DONE] = {28, 2, 1},
 };
 
 static bool supported_flinch_frame(Wram* scratch, const Rom* rom,
@@ -11042,6 +11056,7 @@ static const CosimRun HT_COST[HT_BLOCK_COUNT] = {
     [HT_NONE] = {40 + 6, 4, 1},
     [HT_HEALTH] = {80, 7, 1},
     [HT_TAKE] = {246, 21, 3},
+    [HT_SOUND] = {18, 3, 0},
     [HT_TAKEN] = {6, 0, 0},
 };
 
@@ -11411,6 +11426,7 @@ static const CosimRun CU_COST[CU_BLOCK_COUNT] = {
     [CU_DIR] = {120, 11, 0},
     [CU_MOVE] = {342, 32, 0},
     [CU_MOVED] = {46, 5, 0},
+    [CU_SOUND] = {18, 3, 0},
     [CU_TIME] = {92, 9, 0},
     [CU_FLAG] = {46, 5, 0},
     [CU_AGAIN] = {12 + 6 + 18, 2 + 3, 0},
@@ -11741,6 +11757,7 @@ static const CosimRun BYSTANDER_RUN_NONE = {52, 2, 0};    // CLC RTS
 static const CosimRun BYSTANDER_RUN_CALL = {52, 5, 0};    // $DD5C JSR : BCC
 static const CosimRun BYSTANDER_RUN_ENDED = {40, 4, 1};   // $DD64 LDA $12 : BEQ
 static const CosimRun BYSTANDER_RUN_SLEEP = {18, 3, 0};   // $DD55 LDA #$0005
+static const CosimRun BYSTANDER_RUN_SLOT = {28, 2, 1};    // $DD68 LDA $10
 static const CosimRun BYSTANDER_RUN_TAKEN = {6, 0, 0};
 
 static void bystander_search_bill(CosimRun* own, const BystanderLog* log,
@@ -11809,6 +11826,7 @@ static void shim_bystander_frame(Wram* w, const Rom* rom, const CosimRegs* in,
     run_add(&own, &BYSTANDER_RUN_TAKEN, 1);
     run_add(&own, &BYSTANDER_RUN_SLEEP, 1);
   }
+  if (fate == BYSTANDER_ENDS) run_add(&own, &BYSTANDER_RUN_SLOT, 1);
   cosim_cost(cosim_run_cycles_dp(&own, fetch_fast(in), (in->d & 0x00ffu) != 0));
 
   out->pc = fate == BYSTANDER_MET    ? BYSTANDER_MET_PC
@@ -19758,6 +19776,45 @@ static const uint32_t SLIME_GLOB_DONE_EXITS[] = {RECORD_END_EXITED_PC};
 RECORD_ENDS_BY_ADDRESS(X)
 #undef X
 
+// A killed thing's two stretches before its end. The count is reached
+// through the data bank.
+static const CosimRun KS_RUN = {58, 7, 1};    // LDX #worth : LDA $who : BEQ
+static const CosimRun KC_RUN = {74, 6, 0};    // INC $count : LDA #pictures
+
+#define X(at, sym, pc, worth, killer_at, nobody_pc)                          \
+  static void shim_scored_##at(Wram* w, const Rom* rom, const CosimRegs* in, \
+                               CosimRegs* out) {                             \
+    (void)rom;                                                               \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    const bool scored =                                                      \
+        kill_scored(w, &c, &KILLS_SCORED_BY[KILL_SCORED_AT_##at]);           \
+    cpu_to(&c, out);                                                         \
+    CosimRun run = {0, 0, 0};                                                \
+    run_add(&run, &KS_RUN, 1);                                               \
+    if (!scored) run_add(&run, &RUN_TAKEN, 1);                               \
+    cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in),                     \
+                                   (in->d & 0xffu) != 0));                   \
+  }                                                                          \
+  static const uint32_t scored_##at##_EXITS[] = {                            \
+      pc + KILL_SCORED_CALL_BYTES, nobody_pc};
+KILLS_SCORED(X)
+#undef X
+#define X(at, sym, pc, count_at, pictures)                                   \
+  static void shim_counted_##at(Wram* w, const Rom* rom,                     \
+                                const CosimRegs* in, CosimRegs* out) {       \
+    (void)rom;                                                               \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    kill_counted(w, &c, &KILLS_COUNTED_BY[KILL_COUNTED_AT_##at]);            \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(cosim_run_cycles(&KC_RUN, fetch_fast(in)));                   \
+  }                                                                          \
+  static const uint32_t counted_##at##_EXITS[] = {                           \
+      pc + KILL_COUNTED_CALL_BYTES};
+KILLS_COUNTED(X)
+#undef X
+
 static bool accepts_death_pictures(const Wram* w, const CosimRegs* in) {
   return in->x == DEATH_KILLED && accepts_record_end(w, in) &&
          wram_r16(w, (uint16_t)(in->d + BEGIN_DP_RECORD)) < 0x1f00;
@@ -26829,12 +26886,39 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 1500,
         .stack_bytes = 5,
     },
-    // ...and seventeen the port names for where they are.
+    // ...and thirty-two the port names for where they are.
 #define X(at, sym, pc, load, record_at, calls) \
     END_ROW(end_##at, sym, pc, accepts_record_end),
     RECORD_ENDS_BY_ADDRESS(X)
 #undef X
 #undef END_ROW
+    // What a killed thing's thread does before its end.
+#define X(at, sym, pc, worth, killer_at, nobody_pc)                          \
+    {                                                                        \
+        .name = "scored_" #at,                                               \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_scored_##at,                                             \
+        .accepts = accepts_record_end,                                       \
+        COSIM_EXITS(scored_##at##_EXITS),                                    \
+        .uncalled = true,                                                    \
+        .cycles = 70,                                                        \
+    },
+    KILLS_SCORED(X)
+#undef X
+#define X(at, sym, pc, count_at, pictures)                                   \
+    {                                                                        \
+        .name = "counted_" #at,                                              \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_counted_##at,                                            \
+        .accepts = accepts_record_end,                                       \
+        COSIM_EXITS(counted_##at##_EXITS),                                   \
+        .uncalled = true,                                                    \
+        .cycles = 80,                                                        \
+    },
+    KILLS_COUNTED(X)
+#undef X
     // A killed thing's last pictures begun, either side of its sound.
     {
         .name = "death_pictures",
