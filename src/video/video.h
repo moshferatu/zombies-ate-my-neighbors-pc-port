@@ -23,10 +23,13 @@
 //
 // It draws what this game uses, which is little of what the chip can do. Over
 // the 54 movies of the corpus every line the game shows is mode 1, with no
-// mosaic, no hi-res, no interlace, no window on any layer, and the colour
-// window used only to say where colour maths applies. `video_declines` names
-// the first thing about a line that is outside that, and the caller leaves
-// such a line to the emulator. Nothing in the corpus is declined.
+// hi-res, no interlace, no window on any layer, and the colour window used
+// only to say where colour maths applies. `video_declines` names the first
+// thing about a line that is outside that, and the caller leaves such a line
+// to the emulator. Nothing in the corpus is declined.
+//
+// A mosaic is drawn, though no movie has one: level 25's boss dies under
+// one, and a line left to nobody is black.
 //
 // The widened picture (`extra_left`, `extra_right` and a policy per layer,
 // see `third_party/lakesnes/snes/ppu.h` for what each policy is for) is drawn
@@ -146,7 +149,8 @@ typedef struct {
   bool bg3_front;      // mode 1: BG3's high tiles in front of everything
   bool pseudo_hires;
   bool overscan;
-  uint8_t mosaic_size;
+  uint8_t mosaic_size;  // 1 to 16, for the backgrounds that have `mosaic`
+  uint8_t mosaic_from;  // the line its blocks are counted down from
   VideoBg bg[4];
   // Which layers are on each screen, and which of those a window hides part
   // of. Indexed by `VIDEO_BG1` to `VIDEO_OBJ`.
@@ -277,8 +281,9 @@ bool video_math_allowed(const VideoState* s, int x, int line);
 // column's palette index, or 0, goes to `back` if its tile is one that goes
 // behind and to `front` if it goes in front, and 0 to the other.
 //
-// No window is applied. `video_bg_row_declines` is true for a layer this does
-// not read: any outside mode 1, and the fourth, which mode 1 has not got.
+// No window and no mosaic is applied. `video_bg_row_declines` is true for a
+// layer this does not read: any outside mode 1, and the fourth, which mode 1
+// has not got.
 bool video_bg_row_declines(const VideoState* s, int layer);
 void video_bg_row(const VideoState* s, VideoCentre* centre, int layer, int line, int from, int to,
                   uint8_t* back, uint8_t* front);

@@ -465,7 +465,7 @@ what the lines found, and leaves theirs alone.
 not draw as the PPU does, and such a line is left to the PPU:
 
 - a mode other than 1;
-- mosaic, pseudo hi-res or overscan;
+- pseudo hi-res or overscan;
 - a window on a layer;
 - the main screen clipped by the colour window;
 - colour maths halved;
@@ -474,6 +474,14 @@ not draw as the PPU does, and such a line is left to the PPU:
 Over the corpus the game does none of them. A survey of every line of all 54
 movies found 15 kinds of line, all mode 1 with BG3's high tiles in front. The
 only window in use is the colour window, to say where colour maths applies.
+
+**A mosaic is drawn, and the corpus did not say it was needed.** Level 25's
+boss dies under one: a job at `$82:9644` writes `$2106` in the vblank for 28
+frames, with a block size taken from the frame counter. No movie kills the
+boss, so the survey never saw it, and the game showed those frames black.
+`video_line` now draws a background's mosaic a column at a time, the block's
+first column on the block's first line. A row read back for the smoothing
+has none, and the smoothing still does not take such a frame apart.
 
 ## The smoothing's planes
 

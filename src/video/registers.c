@@ -399,6 +399,7 @@ void video_registers_state(const VideoRegisters* r, VideoState* s) {
   s->pseudo_hires = r->pseudo_hires;
   s->overscan = r->frame_overscan;
   s->mosaic_size = r->mosaic_size;
+  s->mosaic_from = r->mosaic_from;
   memcpy(s->bg, r->bg, sizeof s->bg);
   memcpy(s->main, r->main, sizeof s->main);
   memcpy(s->sub, r->sub, sizeof s->sub);

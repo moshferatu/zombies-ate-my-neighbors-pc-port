@@ -91,6 +91,7 @@ static void noise(Ppu* ppu) {
   ppu->bg3priority = one_in(2);
   ppu->pseudoHires = one_in(40);
   ppu->mosaicSize = (uint8_t)(one_in(20) ? 1 + below(16) : 1);
+  ppu->mosaicStartLine = (uint8_t)(one_in(2) ? 1 : below(240));
   const bool layer_windows = one_in(20);
   for (int i = 0; i < 4; i++) {
     BgLayer* bg = &ppu->bgLayer[i];

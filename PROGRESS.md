@@ -5,6 +5,32 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The boss's death was black (2026-10-09)
+
+Killing level 25's boss showed about half a second of black. Fixed.
+
+* **Why.** It dies under a mosaic. A vblank job at `$82:9644` writes `$2106`
+  for 28 frames. `src/video` did not draw a mosaic and declined those lines,
+  and the game has no other chip to leave them to, so they were black.
+* **Why nothing caught it.** No movie kills the boss, so no line of the
+  corpus has a mosaic, and the picture check had nothing to compare.
+* **The fix.** `video_line` draws a background's mosaic: each block the
+  colour of its first column on its first line, counted from the screen's
+  left edge and from the line the register was written on.
+* **Checked.**
+  * `level25-boss` with the boss's dead word poked at frame 7,000
+    (`--poke 7000:0x083A=0xFFFF`), drawn both ways: 6,272 lines were left
+    for mosaic before and none are now, and none differ, at off, 16:9 and
+    21:9.
+  * `zamn_test_video` gives the mosaic a random start line now, and its
+    mosaic lines are drawn and compared where they were skipped. Seven
+    seeds, none differ.
+  * The smoothing over the same frames passes. It still falls back to the
+    drawn picture for a frame with a mosaic.
+* **Not done.** A movie that kills the boss. The poke stands in for one.
+  The corpus and lockstep were not rerun: nothing a line without a mosaic
+  goes through changed.
+
 ### The big figure's thread on level 25 (2026-10-09)
 
 The thread at `$82:9569` was what the 65816 ran most: two of every five

@@ -332,14 +332,39 @@ static int scroll_y(const VideoState* s, int layer, int line, ScrollFrom from) {
   return from == SCROLL_NOW ? s->bg[layer].vscroll : s->line_vscroll[layer][drawn_line(line)];
 }
 
+// A mosaic shows a background in blocks, `mosaic_size` pixels square, each
+// all the colour of its top left pixel. The blocks are counted across from
+// the layer's column 0 and down from the line `mosaic_from`, before the
+// scroll is added, so they stand still on the screen while the layer moves
+// under them. This game uses it once: level 25's boss breaks up as it dies.
+//
+// The remainders are C's, which is how the emulated PPU has them: a column
+// left of 0, which only the widened picture has, belongs to a block that
+// ends at 0, and a line above `mosaic_from` to one that ends there.
+//
+// Only a line being drawn has it. A row read back is the layer as it is: the
+// smoothing does not take apart a frame that has a mosaic.
+static bool bg_mosaic(const VideoState* s, int layer, ScrollFrom from) {
+  return from == SCROLL_NOW && s->bg[layer].mosaic && s->mosaic_size > 1;
+}
+
+static int mosaic_column(const VideoState* s, int x) { return x - x % s->mosaic_size; }
+
+static int mosaic_line(const VideoState* s, int line) {
+  return line - (line - s->mosaic_from) % s->mosaic_size;
+}
+
 // One run of a background's line.
 static void bg_draw_run(const VideoState* s, int layer, int line, ScrollFrom from,
                         const Runs* runs, const Run* run, BgRows* rows) {
   uint8_t pixels[8];
   bool in_front;
+  const bool mosaic = bg_mosaic(s, layer, from);
   if (run->fixed) {
-    const int px = (run->from_x + scroll_x(s, layer, run->from_line, from)) & 0x3ff;
-    const int py = (run->from_line + scroll_y(s, layer, run->from_line, from)) & 0x3ff;
+    const int from_x = mosaic ? mosaic_column(s, run->from_x) : run->from_x;
+    const int from_line = mosaic ? mosaic_line(s, run->from_line) : run->from_line;
+    const int px = (from_x + scroll_x(s, layer, run->from_line, from)) & 0x3ff;
+    const int py = (from_line + scroll_y(s, layer, run->from_line, from)) & 0x3ff;
     const uint64_t row = tile_row(s, layer, px, py, &in_front);
     memcpy(pixels, &row, 8);
     memset((in_front ? rows->front : rows->back) + (run->x0 - runs->from), pixels[px & 7],
@@ -348,6 +373,18 @@ static void bg_draw_run(const VideoState* s, int layer, int line, ScrollFrom fro
     return;
   }
   const int hs = scroll_x(s, layer, line, from);
+  if (mosaic) {
+    // A column at a time: a block is not a whole number of tiles.
+    const int py = (mosaic_line(s, line) + scroll_y(s, layer, line, from)) & 0x3ff;
+    for (int x = run->x0; x < run->x1; x++) {
+      const int px = (mosaic_column(s, x + run->shift) + hs) & 0x3ff;
+      const uint64_t row = tile_row(s, layer, px, py, &in_front);
+      memcpy(pixels, &row, 8);
+      (in_front ? rows->front : rows->back)[x - runs->from] = pixels[px & 7];
+      *(in_front ? &rows->any_front : &rows->any_back) = true;
+    }
+    return;
+  }
   const int py = (line + scroll_y(s, layer, line, from)) & 0x3ff;
   for (int x = run->x0; x < run->x1;) {
     const int px = (x + run->shift + hs) & 0x3ff;
@@ -737,8 +774,6 @@ const char* video_declines(const VideoState* s) {
     if (l == VIDEO_BG4) continue;
     if ((s->main[l] && s->main_windowed[l]) || (s->sub[l] && s->sub_windowed[l]))
       return "a window on a layer";
-    if (l != VIDEO_OBJ && s->bg[l].mosaic && s->mosaic_size > 1 && (s->main[l] || s->sub[l]))
-      return "mosaic";
   }
   if (s->extra_left == 0 && s->extra_right == 0) return NULL;
   const VideoWide obj = wide_policy(s, VIDEO_OBJ);
