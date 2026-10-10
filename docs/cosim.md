@@ -18533,3 +18533,79 @@ a wait site there only when the core ran it, so neither counts twice.
 Over the same 110 sessions the core executes 7,491,006 instructions where
 it executed 400,565,723. The places it takes over are 973, ten more: the
 instruction after each wait's branch is the ROM's still.
+
+## Links, and a thread written as its stretches (2026-10-09)
+
+### One instruction between two ports
+
+After the waits, the commonest place for the core to take over was this:
+
+    $81:C355  JSR $BB75     ; monster_seek, which is ported
+    $81:C358  JSR $C16B     ; monster_anim, which is ported
+
+`monster_chase` returns to `$C355`. The core is asked for the `JSR`, and
+`monster_seek` takes the entry it goes to. Then again for the next. Two
+instructions a frame for each monster, and 137,494 takeovers over the
+survey were of that kind: one instruction, with a port on both sides.
+
+There were three ways to be rid of them.
+
+* **Make any call, jump or return the machine stands on.** No rows at all.
+  But then the takeover list stops meaning "what is left to port": an
+  address nobody has looked at would pass through the harness silently.
+* **One stretch for the whole turn**, calling the ports as C functions.
+  That is how the small threads are done (`stepper_frame`). It needs every
+  callee priced exactly, and `monster_seek` and `monster_anim` are older
+  ports with a mean for a cost.
+* **A row for the instruction.** This is what was done.
+
+A link is a registry row with an entry and no `run`. The harness makes the
+instruction as `leave` makes one a port ends on, by the same function, and
+counts it as a port's step. If an interrupt is wanted the harness takes
+that first, and the link is made when the `RTI` comes back.
+
+Why a row and not a rule: step 2's driver looks every address up. At
+`$81:C355` it has to find something, and what it finds is the statement
+that the thread calls `monster_seek` here and goes on at `$C358`.
+
+A link is safe wherever its instruction is one of the six. The harness
+makes the same instruction the core would, at the same cost, whoever was
+running before it. `cosim_init` refuses a link on anything else.
+
+### A thread as stretches
+
+`port/monster_thread.h` is the first thread written this way from end to
+end. Each stretch runs from where a call comes back to the next call, and
+the calls are links:
+
+| Stretch | From | To |
+|---|---|---|
+| `monster_loaded` | its weight on the load | `JSL thread_set_handler` |
+| `monster_sleeps` | `LDA #$0001` | `JSL thread_yield` |
+| `monster_woke` | the sleep's return | the `RTS` that goes to the state |
+| `monster_turned` | `LDA $2A` after its picture | the sleep, the drop, or the end |
+| `monster_dropped` | a killed one's record | its sound |
+| `monster_ends` | its weight off the load | `JSL actor_slot_free` |
+| `monster_freed` | `LDA $28` | the second free, or the `RTL` |
+
+Each has its cost from `tools/cycles816.py` and is checked per call like
+any stretch with exits. The three copies share the functions and differ by
+a table row.
+
+An exit may be another stretch's entry. `monster_turned` leaves at the
+sleep's `LDA #$0001` when the turn goes on, and `monster_sleeps` begins
+there. `leave` does nothing at an entry, so the next step is the next
+port.
+
+### The links found by survey
+
+`port/links.h` has 76 more, named for where they are. They were found by
+listing every takeover where the core executed exactly one instruction
+each time and that instruction was a call, a jump or a return. A second
+survey with those in place found four more behind them.
+
+### After
+
+Over the same 110 sessions the core executes 6,805,266 instructions
+where it executed 7,491,006, and takes over 411,336 times where it
+did 644,107, at 883 places where there were 973.

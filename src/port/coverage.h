@@ -347,6 +347,11 @@
   /* The loops the game waits in -- see port/hold.h. */                         \
   X(hold_over,        "hold_turn",          "what a loop waited for has happened") \
   X(hold_goes_on,     "hold_turn",          "...or not yet, and it goes round") \
+  /* The big monster's thread -- see port/monster_thread.h. */                  \
+  X(monster_goes_on,  "monster_turned",     "nothing in `$2A`: another frame") \
+  X(monster_leaves,   "monster_turned",     "`$2A` positive: nobody near, and it goes quietly") \
+  X(monster_killed,   "monster_turned",     "a fatal thing held, or `$2A` negative") \
+  X(monster_frees_held, "monster_freed",    "it ends holding a record, which is freed too") \
   /* A record begun, and the neighbours -- see port/begin.h, neighbours.h. */   \
   X(record_begun,     "record_begin",       "a record at the page's place") \
   X(zombie_begun,     "zombie_begin",       "...and a zombie's made of it") \

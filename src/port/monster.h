@@ -15,7 +15,8 @@
 // The thread is at `$81:C201`, and it opens by charging **28** to `W_SPAWN_LOAD`
 // — the fifth-heaviest weight of the twenty-one in that census — installing
 // `$81:C440` as its collision handler and then looping on
-// `thread_yield : JSR $BB75 : JSR $C16B`. So one of these two runs every frame
+// `thread_yield : JSR $BB75 : JSR $C16B`. That loop is
+// `port/monster_thread.h`'s. So one of these two runs every frame
 // the creature is alive, 11,862 times over the corpus, which is why a routine
 // this small is worth a registry slot.
 //

@@ -47,6 +47,8 @@
 #include "port/oam.h"
 #include "port/begin.h"
 #include "port/hold.h"
+#include "port/links.h"
+#include "port/monster_thread.h"
 #include "port/neighbours.h"
 #include "port/objects.h"
 #include "port/player.h"
@@ -19907,6 +19909,200 @@ static void shim_hold(Wram* w, const Rom* rom, const CosimRegs* in,
 HOLDS(X)
 #undef X
 
+// ---------------------------------------------------------------------------
+// The big monster's thread, between its calls -- see `port/monster_thread.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py`, with a branch that is taken counted
+// taken. One shim serves a stretch in all three copies: the entry says which.
+
+typedef uint32_t (*MonsterPc)(const MonsterThread* t);
+
+static uint32_t monster_loaded_at(const MonsterThread* t) { return t->loaded_pc; }
+static uint32_t monster_sleeps_at(const MonsterThread* t) { return t->sleep_pc; }
+static uint32_t monster_woke_at(const MonsterThread* t) { return t->woke_pc; }
+static uint32_t monster_turned_at(const MonsterThread* t) { return t->turned_pc; }
+static uint32_t monster_ends_at(const MonsterThread* t) { return t->end_pc; }
+static uint32_t monster_untouched_at(const MonsterThread* t) {
+  return t->heard_pc;
+}
+
+static const MonsterThread* monster_thread_at(uint32_t pc, MonsterPc at) {
+  for (int i = 0; i < MONSTER_THREAD_COUNT; i++)
+    if (at(&MONSTER_THREADS_BY[i]) == pc) return &MONSTER_THREADS_BY[i];
+  return NULL;
+}
+
+static void monster_cost(const CosimRegs* in, const CosimRun* run) {
+  cosim_cost(cosim_run_cycles_dp(run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+}
+
+static const CosimRun MT_RUN_LOADED = {134, 16, 0};   // `CLC` to `LDY #`
+static const CosimRun MT_RUN_SLEEPS = {18, 3, 0};     // `LDA #$0001`
+static const CosimRun MT_RUN_WOKE = {102, 7, 1};      // `PEA` to `PHA`
+static const CosimRun MT_RUN_WOKE_FORGETS = {130, 9, 2};  // ...after `STZ $20`
+static const CosimRun MT_RUN_TURNED[MONSTER_FATE_COUNT] = {
+    [MONSTER_GOES_ON] = {46, 4, 1},        // `LDA $2A : BEQ`
+    [MONSTER_HELD_FATAL_A] = {104, 11, 2}, // ...`LDA $26 : CMP : BEQ`
+    [MONSTER_HELD_FATAL_B] = {134, 16, 2}, // ...`CMP : BEQ`
+    [MONSTER_TOLD] = {168, 20, 3},         // ...`LDA $2A : BPL`
+    [MONSTER_LEAVES] = {174, 20, 3},
+};
+// `LDA $28 : CMP #$FFFF : BEQ`, twice in each copy.
+static const CosimRun MT_RUN_HOLDING = {58, 7, 1};
+static const CosimRun MT_RUN_EMPTY = {64, 7, 1};
+static const CosimRun MT_RUN_DROPPED = {162, 17, 1};      // `LDY $08` to `LDA #`
+static const CosimRun MT_RUN_DROPPED_UNTOUCHABLE = {156, 15, 1};  // ...to `TAY`
+static const CosimRun MT_RUN_UNTOUCHED = {18, 3, 0};  // `LDA #$0021`
+static const CosimRun MT_RUN_ENDS = {138, 14, 1};     // `SEC` to `LDA $08`
+static const CosimRun MT_RUN_ROOM = {18, 2, 0};       // `BCC`
+static const CosimRun MT_RUN_NO_ROOM = {12, 2, 0};
+
+static bool accepts_monster_thread(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db);
+}
+
+static bool accepts_monster_dropped(const Wram* w, const CosimRegs* in) {
+  return accepts_monster_thread(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + MONSTER_DP_RECORD)) < 0x1f00;
+}
+
+// A load that would go below nothing is the ROM's: it stops there.
+static bool accepts_monster_ends(const Wram* w, const CosimRegs* in) {
+  return accepts_monster_thread(w, in) &&
+         wram_r16(w, W_SPAWN_LOAD) >= MONSTER_WEIGHT &&
+         wram_r16(w, W_SPAWN_LOAD) < 0x8000u + MONSTER_WEIGHT;
+}
+
+static void shim_monster_loaded(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  monster_loaded(w, &c, monster_thread_at(in->pc, monster_loaded_at));
+  cpu_to(&c, out);
+  monster_cost(in, &MT_RUN_LOADED);
+}
+
+static void shim_monster_sleeps(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  monster_sleeps(&c, monster_thread_at(in->pc, monster_sleeps_at));
+  cpu_to(&c, out);
+  monster_cost(in, &MT_RUN_SLEEPS);
+}
+
+static void shim_monster_woke(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  const MonsterThread* t = monster_thread_at(in->pc, monster_woke_at);
+  PortCpu c;
+  cpu_from(in, &c);
+  monster_woke(w, &c, t);
+  cpu_to(&c, out);
+  monster_cost(in, t->forgets ? &MT_RUN_WOKE_FORGETS : &MT_RUN_WOKE);
+}
+
+static void shim_monster_turned(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  bool holding = false;
+  const MonsterFate fate = monster_turned(
+      w, &c, monster_thread_at(in->pc, monster_turned_at), &holding);
+  cpu_to(&c, out);
+  CosimRun run = MT_RUN_TURNED[fate];
+  if (fate != MONSTER_GOES_ON && fate != MONSTER_LEAVES)
+    run_add(&run, holding ? &MT_RUN_HOLDING : &MT_RUN_EMPTY, 1);
+  monster_cost(in, &run);
+}
+
+static uint32_t monster_dropped_at(const MonsterThread* t) {
+  return monster_dropped_pc(t);
+}
+
+static void shim_monster_dropped(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  const MonsterThread* t = monster_thread_at(in->pc, monster_dropped_at);
+  PortCpu c;
+  cpu_from(in, &c);
+  monster_dropped(w, &c, t);
+  cpu_to(&c, out);
+  monster_cost(in, t->untouchable ? &MT_RUN_DROPPED_UNTOUCHABLE
+                                  : &MT_RUN_DROPPED);
+}
+
+static void shim_monster_untouched(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  monster_untouched(&c, monster_thread_at(in->pc, monster_untouched_at));
+  cpu_to(&c, out);
+  monster_cost(in, &MT_RUN_UNTOUCHED);
+}
+
+static void shim_monster_ends(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  monster_ends(w, &c, monster_thread_at(in->pc, monster_ends_at));
+  cpu_to(&c, out);
+  monster_cost(in, &MT_RUN_ENDS);
+}
+
+static uint32_t monster_freed_at(const MonsterThread* t) {
+  return monster_freed_pc(t);
+}
+
+static void shim_monster_freed(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool holding =
+      monster_freed(w, &c, monster_thread_at(in->pc, monster_freed_at));
+  cpu_to(&c, out);
+  monster_cost(in, holding ? &MT_RUN_HOLDING : &MT_RUN_EMPTY);
+}
+
+static void shim_monster_has_room(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool room = monster_has_room(&c);
+  cpu_to(&c, out);
+  monster_cost(in, room ? &MT_RUN_ROOM : &MT_RUN_NO_ROOM);
+}
+
+#define X(at, loaded, handler, sleep, woke, forgets, turned, heard,          \
+          untouchable, end)                                                  \
+  static const uint32_t monster_##at##_loaded_EXITS[] = {loaded + 0x10};     \
+  static const uint32_t monster_##at##_sleeps_EXITS[] = {sleep + 3};         \
+  static const uint32_t monster_##at##_woke_EXITS[] = {turned - 7};          \
+  static const uint32_t monster_##at##_turned_EXITS[] = {                    \
+      sleep, turned + 0x1b, turned + 0x1e, end};                             \
+  static const uint32_t monster_##at##_dropped_EXITS[] = {                   \
+      untouchable ? heard - 4 : heard + 3};                                  \
+  static const uint32_t monster_##at##_ends_EXITS[] = {end + 0x0e};          \
+  static const uint32_t monster_##at##_freed_EXITS[] = {end + 0x19,          \
+                                                        end + 0x1d};
+MONSTER_THREADS(X)
+#undef X
+static const uint32_t monster_c201_untouched_EXITS[] = {0x81c260u};
+static const uint32_t MONSTER_HAS_ROOM_EXITS[] = {MONSTER_C321_NO_ROOM_PC,
+                                                  MONSTER_C321_BEGIN_PC};
+
 static bool accepts_death_pictures(const Wram* w, const CosimRegs* in) {
   return in->x == DEATH_KILLED && accepts_record_end(w, in) &&
          wram_r16(w, (uint16_t)(in->d + BEGIN_DP_RECORD)) < 0x1f00;
@@ -27000,6 +27196,73 @@ static const CosimRoutine ROUTINES[] = {
         .writes_nothing = true,                                              \
     },
     HOLDS(X)
+#undef X
+    // The big monster's thread, between its calls. See
+    // `port/monster_thread.h`.
+#define MONSTER_ROW(at, part, pc, shim, guard)                               \
+    {                                                                        \
+        .name = "monster_" #at "_" #part,                                    \
+        .symbol = "$81:" #at,                                                \
+        .entry = pc,                                                         \
+        .run = shim,                                                         \
+        .accepts = guard,                                                    \
+        COSIM_EXITS(monster_##at##_##part##_EXITS),                          \
+        .uncalled = true,                                                    \
+        .cycles = 100,                                                       \
+    },
+#define X(at, loaded_pc, handler, sleep_pc, woke_pc, forgets, turned_pc,     \
+          heard_pc, untouchable, end_pc)                                     \
+    MONSTER_ROW(at, loaded, loaded_pc, shim_monster_loaded,                  \
+                accepts_monster_thread)                                      \
+    MONSTER_ROW(at, sleeps, sleep_pc, shim_monster_sleeps,                   \
+                accepts_monster_thread)                                      \
+    MONSTER_ROW(at, woke, woke_pc, shim_monster_woke,                        \
+                accepts_monster_thread)                                      \
+    MONSTER_ROW(at, turned, turned_pc, shim_monster_turned,                  \
+                accepts_monster_thread)                                      \
+    MONSTER_ROW(at, dropped, turned_pc + 0x1e, shim_monster_dropped,         \
+                accepts_monster_dropped)                                     \
+    MONSTER_ROW(at, ends, end_pc, shim_monster_ends, accepts_monster_ends)   \
+    MONSTER_ROW(at, freed, end_pc + 0x12, shim_monster_freed,                \
+                accepts_monster_thread)
+    MONSTER_THREADS(X)
+#undef X
+    // Only the first takes a killed one's handler away, and comes back here.
+    MONSTER_ROW(c201, untouched, 0x81c25du, shim_monster_untouched,
+                accepts_monster_thread)
+#undef MONSTER_ROW
+    {
+        .name = "monster_c321_has_room",
+        .symbol = "$81:C324",
+        .entry = MONSTER_C321_ROOM_PC,
+        .run = shim_monster_has_room,
+        .accepts = accepts_monster_thread,
+        COSIM_EXITS(MONSTER_HAS_ROOM_EXITS),
+        .uncalled = true,
+        .cycles = 18,
+    },
+    // ...and the calls, jumps and returns between them, which the harness
+    // makes. See `CosimRoutine::link`.
+#define X(name_, sym, pc)                                                    \
+    {                                                                        \
+        .name = "monster_" #name_,                                           \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .uncalled = true,                                                    \
+        .link = true,                                                        \
+    },
+    MONSTER_LINKS(X)
+#undef X
+    // ...and the ones that are in no port's table. See `port/links.h`.
+#define X(at, sym, pc)                                                       \
+    {                                                                        \
+        .name = "link_" #at,                                                 \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .uncalled = true,                                                    \
+        .link = true,                                                        \
+    },
+    LINKS(X)
 #undef X
     // What a killed thing's thread does before its end.
 #define X(at, sym, pc, worth, killer_at, nobody_pc)                          \

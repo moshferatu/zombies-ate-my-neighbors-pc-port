@@ -221,6 +221,14 @@ wait is the ROM's still. What a driver with no CPU does with a turn that
 says "not yet" is its own choice: the harness spends a turn's cycles, and
 one that runs the frame to its NMI would be right too.
 
+**Links, the same day.** A call, a jump or a return that stands between
+two ports is a registry row of its own, a link, and the harness makes it.
+The big monster's thread is written that way: three of its four copies,
+as stretches from one call to the next. The places are 883 and the core
+executes 6,805,266 instructions over the survey. Most of what it runs
+now on levels 25 and 45 is the monster's three state routines and the
+boss's thread.
+
 What is left of this step: registers of the driver's own in place of the
 core's, the clock, and a stop that names the address in place of the
 core.

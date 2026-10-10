@@ -338,6 +338,7 @@ add_library(zamn_port STATIC
   src/port/walker.c
   src/port/begin.c
   src/port/hold.c
+  src/port/monster_thread.c
   src/port/decoy.c
   src/port/lunge.c
   src/port/page.c

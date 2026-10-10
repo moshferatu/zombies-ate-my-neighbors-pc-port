@@ -5,6 +5,71 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Links, and the big monster's thread (2026-10-09)
+
+Where the 65816 still takes over, it is often for one instruction: a `JSR`
+to a routine that is ported, standing where another port returned. Those
+are the harness's to make now, and the first thread written that way is
+the big monster's.
+
+* **A link** (`CosimRoutine::link`) is a registry row with nothing to run.
+  Its entry is one of the ROM's calls, jumps or returns, and the harness
+  makes it as it makes the instruction a port leaves by. It is a row so
+  that a game with no CPU finds something at that address: "call this, and
+  come back to the next".
+  * `verify` has nothing to compare there. It counts how often the ROM
+    passed, and the report says `a link`.
+  * The registry is checked as it loads: a link whose instruction is not a
+    call, a jump or a return stops the program with its name.
+* **The big monster's thread** (`port/monster_thread.h`). It is four
+  copies of one loop: sleep a frame, the state's own routine, where to go,
+  its picture, and round again until something sets `$2A`. Three copies
+  are ported, as seven stretches each, one more in two of them, and
+  sixteen links between.
+  * One table row a copy: the handler it installs, the count a killed one
+    adds to, and the two things only the first copy does.
+  * How a turn ends is one function, `monster_turned`: it goes on, it was
+    killed (three ways), or it leaves quietly.
+  * Its end frees two records, which `record_end` does not do. Three of
+    the eight such ends in the ROM are these.
+  * The fourth copy, the one that carries somebody home, is not here: no
+    movie reaches it.
+* **Seventy-six more links, by address** (`port/links.h`). Each is a place
+  the survey found the core asked for exactly one instruction, between two
+  ports. Most are inside routines nobody has ported whole. They are there
+  so the list of what is left is a list of code.
+* **Checked.**
+  * The corpus verifies clean: 126,112,843 calls, none diverged. Every
+    stretch of the three copies is reached, and each of the 107,445 calls
+    of them cost what the ROM's did.
+  * Lockstep: every row of the table is what it was, to the cycle. 334,319
+    passes, 51 of 54 never part, the same three.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies, and none
+    differ, with widescreen off and at 16:9.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 882 to 787 | 636,918 to 403,819 | 7,390,046 to 6,701,779 |
+  | Left standing on an instruction | 50 to 50 | 2,965 to 2,965 | 67,511 to 67,508 |
+  | A port turned the call down | 34 to 35 | 4,024 to 4,039 | 24,609 to 24,654 |
+  | A port or a link called it | 6 to 10 | 90 to 403 | 920 to 3,405 |
+  | All | 973 to 883 | 644,107 to 411,336 | 7,491,006 to 6,805,266 |
+
+  736 routines are registered, of the 768 there is room for.
+* **Not done or not known.**
+  * The monster's states. Three of the routines its thread goes to by
+    `$12` are the ROM's still, at `$81:BE14`, `$81:BE71` and `$81:BFCD`,
+    with the tests they share at `$81:BC05` to `$81:BC98`. They are what
+    the core runs most often now on levels 25 and 45.
+  * The boss's thread on level 25, `$82:9569`: its walk, its flash, and
+    the routines its states are made of.
+  * `monster_chase` turning a call down is a place on the list now. It did
+    before, too, and was not counted: the core was already running when it
+    got there.
+  * Nothing checks a link under `verify`. What stands behind one is
+    lockstep, as for every instruction the harness makes.
+
 ### The loops the game waits in (2026-10-09)
 
 The 65816 executed 400.6 million instructions over the survey, and nearly

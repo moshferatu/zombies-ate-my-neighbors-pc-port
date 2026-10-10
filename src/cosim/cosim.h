@@ -511,6 +511,16 @@ typedef struct {
   // goes unchecked is that the ROM's instructions wrote nothing, which for
   // a load, a compare and a branch is read off the listing.
   bool writes_nothing;
+  // A link: one instruction of the ROM's that only moves control, standing
+  // between two ports. `JSR monster_seek` in a thread's turn is one: the port
+  // before it returns to it and the port after it begins where it goes. There
+  // is nothing to run, so the row has no `run`. `entry` is the instruction,
+  // and the harness makes it as it makes the one a port leaves by (`leave`).
+  //
+  // It is in the registry because a game with no CPU looks every address up
+  // here, and this is what it finds at that one: "call this, and come back
+  // to the next". `verify` has nothing to compare and counts nothing.
+  bool link;
 } CosimRoutine;
 
 // The registry. Every routine `src/port/` has replaced, in the order they were

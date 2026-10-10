@@ -509,6 +509,26 @@ static uint32_t stack_area_lo(const Rom* rom) {
   return lo < 0x0d00u ? 0x0d00u : lo;
 }
 
+// Is this one of the calls, jumps and returns `leave_step` makes? A link has
+// to be. (Not the `RTI` or the `WAI`: those are the handler's and the
+// scheduler's own.)
+static bool link_opcode(const Rom* rom, uint32_t pc) {
+  uint32_t avail = 0;
+  const uint8_t* op = rom_ptr(rom, pc, &avail);
+  if (!op) return false;
+  switch (*op) {
+    case 0x60:  // RTS
+    case 0x6b:  // RTL
+    case 0x20:  // JSR abs
+    case 0x22:  // JSL
+    case 0x4c:  // JMP abs
+    case 0x5c:  // JML
+      return true;
+    default:
+      return false;
+  }
+}
+
 void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
   memset(c, 0, sizeof *c);
   c->snes = snes;
@@ -531,6 +551,13 @@ void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
   for (int i = 0; i < count; i++) {
     c->stats[i].routine = &all[i];
     c->stats[i].cycles_min = -1;
+    if (all[i].link && !link_opcode(&c->rom, all[i].entry)) {
+      fprintf(stderr,
+              "error: %s is registered as a link, and $%06X is not an\n"
+              "       instruction the harness makes.\n",
+              all[i].name, (unsigned)all[i].entry);
+      exit(2);
+    }
   }
 
   c->priv = (CosimPriv*)calloc(1, sizeof(CosimPriv));
@@ -1426,6 +1453,8 @@ static bool interrupt_due(const Snes* snes);
 // interrupt (`burn_spend`). The ROM takes it before the next instruction, so
 // that one is not made yet: it is left standing, and made when the handler's
 // `RTI` comes back to it.
+static bool leave_make(Cosim* c);
+
 static void leave(Cosim* c) {
   Snes* snes = c->snes;
   CosimPriv* p = c->priv;
@@ -1437,11 +1466,15 @@ static void leave(Cosim* c) {
     p->stood_by = p->port;
     return;
   }
+  if (!leave_make(c)) handed(c, COSIM_TOOK_EXIT, c->priv->port);
+}
+
+// Make the instruction the CPU is on and spend what it costs. False when it
+// is not one the harness makes.
+static bool leave_make(Cosim* c) {
+  Snes* snes = c->snes;
   LeaveCost cost;
-  if (!leave_step(c, &cost)) {
-    handed(c, COSIM_TOOK_EXIT, c->priv->port);
-    return;
-  }
+  if (!leave_step(c, &cost)) return false;
 
   const uint64_t before = snes->cycles;
   int head = cost.cycles - cost.last;
@@ -1457,6 +1490,21 @@ static void leave(Cosim* c) {
   }
   c->work.cycles_native += snes->cycles - before;
   c->work.leaves++;
+  return true;
+}
+
+// The CPU is on a link, with no interrupt wanted. See `CosimRoutine::link`.
+static bool link_make(Cosim* c, const CosimRoutine* r, CosimStat* s) {
+  call_served(c);
+  port_runs(c, r);
+  if (!leave_make(c)) {
+    handed(c, COSIM_TOOK_EXIT, r);
+    return false;
+  }
+  s->calls++;
+  s->checked++;
+  s->passed++;
+  return true;
 }
 
 // Publish a finished routine's registers and stand the CPU on its own
@@ -2703,6 +2751,11 @@ static void cosim_step_inner(Cosim* c) {
       if (!cosim_mask_get(&c->enabled, i)) continue;
       const CosimRoutine* r = c->stats[i].routine;
       if (pc != r->entry) continue;
+      if (r->link) {
+        if (c->mode == COSIM_NATIVE && link_make(c, r, &c->stats[i])) return;
+        if (c->mode == COSIM_VERIFY) c->stats[i].calls++;
+        break;
+      }
       // Verified but never substituted — see `CosimRoutine::verify_only`. Nothing
       // is counted, because nothing was offered: the report says `verify only`
       // against a row of zeroes rather than pretending this was a decline.
@@ -3138,6 +3191,7 @@ int cosim_report(const Cosim* c) {
       verdict = "verify only";
     else if (c->mode == COSIM_VERIFY && s->routine->run_only)
       verdict = "run only";
+    else if (s->routine->link) verdict = s->calls > 0 ? "a link" : "not reached";
     else if (s->checked > 0) verdict = "OK";
     else if (s->declined > 0) verdict = "all declined";
     else verdict = "not reached";
