@@ -229,6 +229,12 @@ executes 6,805,266 instructions over the survey. Most of what it runs
 now on levels 25 and 45 is the monster's three state routines and the
 boss's thread.
 
+**The big figure's thread, the same day.** Level 25's boss was two of
+every five instructions the core still ran. Its turn and its eight states
+are ported, each state a C function that calls the ports it uses and
+stops only on a call with no exact price. The places are 852 and
+the core executes 4,091,951 instructions over the survey.
+
 What is left of this step: registers of the driver's own in place of the
 core's, the clock, and a stop that names the address in place of the
 core.

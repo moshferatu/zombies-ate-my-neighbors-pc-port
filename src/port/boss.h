@@ -22,6 +22,9 @@
 //     $82:958C  JSR $9265 : JSR $92D6 : JSR $93C6
 //     $82:9595  LDA #$0001 : JSL thread_yield
 //
+// That thread, and the states that decide which way it steps, are
+// `port/boss_thread.h`.
+//
 // ## Not `step_propose`
 //
 // `$80:E450` proposes a destination and leaves somebody else to accept it. This

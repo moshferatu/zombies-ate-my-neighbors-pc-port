@@ -49,6 +49,7 @@
 #include "port/hold.h"
 #include "port/links.h"
 #include "port/monster_thread.h"
+#include "port/boss_thread.h"
 #include "port/neighbours.h"
 #include "port/objects.h"
 #include "port/player.h"
@@ -20103,6 +20104,298 @@ static const uint32_t monster_c201_untouched_EXITS[] = {0x81c260u};
 static const uint32_t MONSTER_HAS_ROOM_EXITS[] = {MONSTER_C321_NO_ROOM_PC,
                                                   MONSTER_C321_BEGIN_PC};
 
+// ---------------------------------------------------------------------------
+// The big figure's thread on level 25 -- see `port/boss_thread.h`
+// ---------------------------------------------------------------------------
+//
+// One shim for every stretch: `boss_thread_run` goes by the entry. A stretch
+// is priced by the straight runs of the listing it took, each from
+// `tools/cycles816.py` with the thread's data bank, a taken branch at 6 more,
+// and the calls it made itself by their own models.
+static const CosimRun BOSS_RUN_COST[BOSS_RUN_COUNT] = {
+    [BOSS_RUN_80E0] = {76, 4, 0},  // LDA : RTL
+    [BOSS_RUN_890C] = {104, 12, 0},  // LDA : STA : LDA : STA
+    [BOSS_RUN_891D] = {104, 12, 0},  // LDA : STA : LDA : STA
+    [BOSS_RUN_892E] = {252, 28, 1},  // ASL : ASL : TAX : LDA : STA : LDA : STA : LDA : BIT : BPL
+    [BOSS_RUN_8944] = {30, 4, 0},  // EOR : INC
+    [BOSS_RUN_8948] = {144, 15, 1},  // STA : LDA : STA : LDA : BNE
+    [BOSS_RUN_8955] = {40, 3, 0},  // JSR
+    [BOSS_RUN_895A] = {40, 3, 0},  // JSR
+    [BOSS_RUN_897E] = {198, 15, 0},  // JSL : PHA : TAY : LDX : PLA : CPX : BEQ
+    [BOSS_RUN_898D] = {30, 5, 0},  // CPX : BEQ
+    [BOSS_RUN_8992] = {30, 5, 0},  // BRA : LDA
+    [BOSS_RUN_8998] = {166, 17, 0},  // STX : STY : LDX : LDA : CMP : BEQ
+    [BOSS_RUN_89A9] = {66, 7, 0},  // TXA : ADC : ASL : ASL : TAX
+    [BOSS_RUN_89B0] = {80, 8, 0},  // LDA : CMP : BEQ
+    [BOSS_RUN_89B8] = {42, 5, 0},  // TXA : ADC : TAX
+    [BOSS_RUN_89BD] = {94, 10, 0},  // LDA : AND : RTS
+    [BOSS_RUN_89D2] = {130, 14, 1},  // LDA : STA : JSL : CMP : BCC
+    [BOSS_RUN_89E0] = {76, 10, 1},  // AND : STA : CMP : BCC
+    [BOSS_RUN_89EA] = {130, 13, 1},  // JSL : AND : CLC : ADC : STA
+    [BOSS_RUN_89F7] = {40, 1, 0},  // RTS
+    [BOSS_RUN_89F8] = {150, 15, 0},  // LDA : LDX : LDY : JSR : TAX : BNE
+    [BOSS_RUN_8A07] = {62, 4, 1},  // DEC : BPL
+    [BOSS_RUN_8A0E] = {58, 6, 0},  // LDA : JSR
+    [BOSS_RUN_8A15] = {84, 9, 0},  // JSL : AND : BNE
+    [BOSS_RUN_8A1E] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8A21] = {154, 13, 2},  // LDA : STA : LDA : STA : JMP
+    [BOSS_RUN_8A2E] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8A31] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8A34] = {338, 35, 5},  // LDA : STA : LDA : STA : JSL : CLC : ADC : STA : LDA : CLC : ADC : AND : CLC : ADC : STA
+    [BOSS_RUN_8A58] = {40, 4, 1},  // LDA : BMI
+    [BOSS_RUN_8A5C] = {62, 4, 1},  // DEC : BMI
+    [BOSS_RUN_8A60] = {70, 8, 0},  // LDA : JSR : BCS
+    [BOSS_RUN_8A68] = {70, 8, 0},  // LDA : JSR : BCS
+    [BOSS_RUN_8A70] = {70, 8, 0},  // LDA : JSR : BCS
+    [BOSS_RUN_8A79] = {188, 18, 2},  // JSL : AND : CLC : ADC : TAX : LDA : STA
+    [BOSS_RUN_8A8A] = {110, 13, 1},  // LDA : STA : LDA : AND : BNE
+    [BOSS_RUN_8A97] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8A9A] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8A9D] = {172, 17, 1},  // LDA : STA : LDA : LDX : LDY : JSR
+    [BOSS_RUN_8AAE] = {194, 16, 3},  // STA : TAX : LDA : STA : LDA : STA : JMP
+    [BOSS_RUN_8B06] = {410, 39, 9},  // LDA : AND : STA : LDA : AND : ORA : STA : LDA : AND : STA : LDA : AND : ORA : STA : LDA : STA
+    [BOSS_RUN_8B2E] = {96, 7, 2},  // LDX : LDY : JSR
+    [BOSS_RUN_8B35] = {24, 3, 0},  // TAX : BEQ
+    [BOSS_RUN_8B38] = {230, 22, 4},  // ASL : ASL : ASL : STA : LDA : AND : STA : LDA : AND : CMP : BNE
+    [BOSS_RUN_8B4E] = {166, 17, 3},  // LDA : AND : STA : LDA : AND : CMP : BEQ
+    [BOSS_RUN_8B5F] = {70, 8, 0},  // LDA : JSR : BCS
+    [BOSS_RUN_8B67] = {70, 8, 0},  // LDA : JSR : BCS
+    [BOSS_RUN_8B70] = {150, 15, 0},  // LDA : LDX : LDY : JSR : TAX : BEQ
+    [BOSS_RUN_8B7F] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8B82] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8B85] = {92, 10, 2},  // LDA : STA : LDA : STA
+    [BOSS_RUN_8B90] = {40, 4, 1},  // LDA : BMI
+    [BOSS_RUN_8B94] = {162, 8, 3},  // DEC : DEC : DEC : BPL
+    [BOSS_RUN_8B9C] = {216, 20, 0},  // LDX : LDY : JSL : TXY : TAX : LDA : CMP : BEQ
+    [BOSS_RUN_8BB0] = {30, 5, 0},  // CMP : BEQ
+    [BOSS_RUN_8BB5] = {30, 5, 0},  // CMP : BEQ
+    [BOSS_RUN_8BBA] = {12, 2, 0},  // BRA
+    [BOSS_RUN_8BBC] = {30, 5, 0},  // CPX : BCC
+    [BOSS_RUN_8BC1] = {30, 5, 0},  // CPX : BCC
+    [BOSS_RUN_8BC6] = {30, 5, 0},  // CPX : BCC
+    [BOSS_RUN_8BCB] = {84, 9, 0},  // JSL : AND : BNE
+    [BOSS_RUN_8BD4] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8BD7] = {36, 6, 0},  // LDA : LDY
+    [BOSS_RUN_8BE2] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8BE5] = {292, 26, 2},  // LDA : LDX : LDY : JSR : TAX : LDA : STA : LDA : STA : JMP
+    [BOSS_RUN_8BFF] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8C02] = {160, 18, 1},  // JSL : AND : CLC : ADC : STA : AND : BEQ
+    [BOSS_RUN_8C14] = {86, 8, 2},  // LDA : EOR : INC : STA
+    [BOSS_RUN_8C1C] = {160, 18, 1},  // JSL : AND : CLC : ADC : STA : AND : BEQ
+    [BOSS_RUN_8C2E] = {86, 8, 2},  // LDA : EOR : INC : STA
+    [BOSS_RUN_8C36] = {222, 19, 4},  // LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : JMP
+    [BOSS_RUN_8C5F] = {138, 15, 2},  // LDA : STA : LDY : LDA : CMP : BCS
+    [BOSS_RUN_8C6E] = {18, 3, 0},  // LDY
+    [BOSS_RUN_8C71] = {74, 7, 2},  // STY : LDA : STA
+    [BOSS_RUN_8C79] = {40, 4, 1},  // LDA : BMI
+    [BOSS_RUN_8C7D] = {86, 8, 1},  // LDA : SEC : SBC : BPL
+    [BOSS_RUN_8C85] = {30, 4, 0},  // EOR : INC
+    [BOSS_RUN_8C89] = {30, 5, 0},  // CMP : BCC
+    [BOSS_RUN_8C8E] = {70, 8, 0},  // LDA : JSR : BCS
+    [BOSS_RUN_8C96] = {62, 4, 1},  // DEC : BPL
+    [BOSS_RUN_8C9A] = {150, 15, 0},  // LDA : LDX : LDY : JSR : TAX : BNE
+    [BOSS_RUN_8CAA] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8CAD] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8CB0] = {154, 13, 2},  // LDA : STA : LDA : STA : JMP
+    [BOSS_RUN_8CBD] = {86, 8, 1},  // LDA : STA : JSR
+    [BOSS_RUN_8CC5] = {64, 8, 1},  // AND : ORA : STA
+    [BOSS_RUN_8CCE] = {178, 17, 1},  // LDA : LDX : LDY : JSR : STA : TAY : BEQ
+    [BOSS_RUN_8CDF] = {40, 4, 1},  // LDA : BMI
+    [BOSS_RUN_8CE3] = {98, 9, 0},  // LDA : SEC : SBC : BPL
+    [BOSS_RUN_8CEC] = {30, 4, 0},  // EOR : INC
+    [BOSS_RUN_8CF0] = {30, 5, 0},  // CMP : BCC
+    [BOSS_RUN_8CF5] = {58, 7, 1},  // LDA : LDX : BPL
+    [BOSS_RUN_8CFC] = {30, 4, 0},  // EOR : INC
+    [BOSS_RUN_8D00] = {264, 23, 3},  // CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : SEC : SBC : BPL
+    [BOSS_RUN_8D17] = {30, 4, 0},  // EOR : INC
+    [BOSS_RUN_8D1B] = {30, 5, 0},  // CMP : BCS
+    [BOSS_RUN_8D20] = {86, 8, 1},  // LDA : SEC : SBC : BPL
+    [BOSS_RUN_8D28] = {30, 4, 0},  // EOR : INC
+    [BOSS_RUN_8D2C] = {30, 5, 0},  // CMP : BCS
+    [BOSS_RUN_8D31] = {12, 2, 0},  // BRA
+    [BOSS_RUN_8D33] = {108, 9, 2},  // LDX : LDY : JSR : BEQ
+    [BOSS_RUN_8D3C] = {134, 13, 1},  // ASL : ASL : ASL : STA : LDA : JSR : BCS
+    [BOSS_RUN_8D49] = {56, 4, 2},  // LDA : STA
+    [BOSS_RUN_8D4E] = {46, 5, 1},  // STZ : JMP
+    [BOSS_RUN_8D53] = {256, 22, 5},  // LDA : STA : STZ : LDX : LDA : STA : LDA : STA : JMP
+    [BOSS_RUN_8D69] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8D6C] = {64, 8, 0},  // LDA : CMP : BNE
+    [BOSS_RUN_8D74] = {18, 3, 0},  // LDA
+    [BOSS_RUN_8D7B] = {86, 8, 1},  // LDA : STA : JSR
+    [BOSS_RUN_8D83] = {66, 6, 0},  // JSL : BEQ
+    [BOSS_RUN_8D89] = {18, 3, 0},  // LDA
+    [BOSS_RUN_8D92] = {58, 6, 0},  // LDA : JSR
+    [BOSS_RUN_8D98] = {310, 29, 3},  // LDY : LDX : LDA : STA : LDA : STA : LDA : STA : STA : LDA : BEQ
+    [BOSS_RUN_8DB5] = {208, 20, 0},  // LDA : ORA : STA : LDA : ORA : STA : BRA
+    [BOSS_RUN_8DC9] = {196, 18, 0},  // LDA : AND : STA : LDA : AND : STA
+    [BOSS_RUN_8DDB] = {50, 2, 1},  // INC
+    [BOSS_RUN_8DDE] = {66, 6, 0},  // JSL : BEQ
+    [BOSS_RUN_8DE4] = {18, 3, 0},  // LDA
+    [BOSS_RUN_8DED] = {356, 33, 3},  // LDY : LDX : LDA : STA : STA : LDA : STA : STA : LDA : STA : LDA : JSR
+    [BOSS_RUN_8E0E] = {40, 4, 1},  // LDA : BNE
+    [BOSS_RUN_8E12] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8E15] = {46, 5, 1},  // LDA : STA
+    [BOSS_RUN_8E1A] = {62, 4, 1},  // DEC : BMI
+    [BOSS_RUN_8E1E] = {40, 3, 0},  // JSR
+    [BOSS_RUN_8E21] = {18, 3, 0},  // LDA
+    [BOSS_RUN_8E2A] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8E2D] = {126, 11, 1},  // LDY : LDA : SEC : SBC : BPL
+    [BOSS_RUN_8E38] = {30, 4, 0},  // EOR : INC
+    [BOSS_RUN_8E3C] = {30, 5, 0},  // CMP : BCC
+    [BOSS_RUN_8E41] = {58, 7, 1},  // LDA : LDX : BPL
+    [BOSS_RUN_8E48] = {30, 4, 0},  // EOR : INC
+    [BOSS_RUN_8E4C] = {258, 25, 1},  // CLC : ADC : TAX : LDA : CLC : ADC : TAY : LDA : JSL : STX : TAY : BNE
+    [BOSS_RUN_8E65] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8E68] = {58, 7, 1},  // LDA : CMP : BCC
+    [BOSS_RUN_8E6F] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8E72] = {42, 6, 0},  // TXA : AND : BEQ
+    [BOSS_RUN_8E78] = {92, 10, 1},  // LDY : LDA : AND : BNE
+    [BOSS_RUN_8E82] = {128, 14, 0},  // LDA : STA : LDA : STA : BRA
+    [BOSS_RUN_8E90] = {116, 12, 0},  // LDA : STA : LDA : STA
+    [BOSS_RUN_8E9C] = {602, 58, 8},  // LDA : AND : STA : JSL : AND : ORA : STA : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : STA : LDA : STA : JSR
+    [BOSS_RUN_8ECE] = {12, 2, 0},  // BCC
+    [BOSS_RUN_8ED0] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8ED3] = {102, 9, 3},  // LDA : STA : STZ : STZ
+    [BOSS_RUN_8EDC] = {62, 4, 1},  // DEC : BPL
+    [BOSS_RUN_8EE0] = {232, 17, 5},  // LDA : STA : INC : INC : LDY : LDA : BEQ
+    [BOSS_RUN_8EEF] = {68, 5, 1},  // LDY : STA
+    [BOSS_RUN_8EF4] = {50, 2, 1},  // INC
+    [BOSS_RUN_8EF7] = {90, 6, 2},  // INC : LDA : BEQ
+    [BOSS_RUN_8EFD] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8F00] = {84, 9, 0},  // JSL : CMP : BCC
+    [BOSS_RUN_8F09] = {18, 3, 0},  // JMP
+    [BOSS_RUN_8F0C] = {46, 5, 1},  // LDA : STA
+    [BOSS_RUN_8F6A] = {40, 4, 1},  // LDA : BEQ
+    [BOSS_RUN_8F6E] = {62, 4, 1},  // DEC : BNE
+    [BOSS_RUN_8F72] = {36, 6, 0},  // LDA : LDY
+    [BOSS_RUN_8F7D] = {40, 4, 1},  // BIT : BPL
+    [BOSS_RUN_8F81] = {110, 13, 2},  // STZ : LDA : STA : LDA : LDY
+    [BOSS_RUN_9204] = {188, 21, 0},  // LDA : LDX : LDY : JSL : LDY : CMP : BCC
+    [BOSS_RUN_9219] = {18, 3, 0},  // LDY
+    [BOSS_RUN_921C] = {80, 4, 1},  // STY : TYA : RTS
+    [BOSS_RUN_9220] = {62, 4, 1},  // DEC : BPL
+    [BOSS_RUN_9224] = {66, 6, 0},  // JSL : BNE
+    [BOSS_RUN_922A] = {232, 23, 3},  // LDA : STA : LDA : INC : AND : STA : ASL : TAX : LDA : JSR
+    [BOSS_RUN_9248] = {360, 29, 0},  // LDA : CLC : ADC : SEC : SBC : STA : LDA : CLC : ADC : SEC : SBC : STA : RTS
+    [BOSS_RUN_9303] = {18, 3, 0},  // LDA
+    [BOSS_RUN_9306] = {76, 8, 1},  // TAX : LDA : CMP : BEQ
+    [BOSS_RUN_930E] = {54, 7, 0},  // TXA : SEC : SBC : BPL
+    [BOSS_RUN_9315] = {52, 2, 0},  // SEC : RTS
+    [BOSS_RUN_9317] = {68, 5, 1},  // STX : JSR
+    [BOSS_RUN_931C] = {52, 2, 0},  // CLC : RTS
+    [BOSS_RUN_931E] = {50, 2, 1},  // INC
+    [BOSS_RUN_9324] = {1138, 98, 11},  // LDX : STA : STA : TAY : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : CLC : LSR : LSR : LSR : LSR : INC : INC : STA : LDA : ASL : ASL : ASL : TAX : LDA : STA : LDA : ORA : ORA : STA : TXY : LDX : LDA : STA : LDA : STA : RTS
+    [BOSS_RUN_93C6] = {240, 26, 1},  // LDA : AND : ASL : TAY : LDX : PHX : LDX : LDA : CMP : BEQ
+    [BOSS_RUN_93DC] = {28, 2, 1},  // STX
+    [BOSS_RUN_93E1] = {98, 8, 1},  // PLX : LDA : CMP : BEQ
+    [BOSS_RUN_93E9] = {28, 2, 1},  // STX
+    [BOSS_RUN_93F7] = {74, 6, 2},  // LDX : LDA : BPL
+    [BOSS_RUN_93FD] = {68, 4, 1},  // INC : BMI
+    [BOSS_RUN_9401] = {18, 3, 0},  // JMP
+    [BOSS_RUN_9404] = {94, 11, 1},  // LDA : EOR : INC : BIT : BNE
+    [BOSS_RUN_940F] = {150, 13, 2},  // LDY : STY : TAX : LDA : STA
+    [BOSS_RUN_941D] = {18, 3, 0},  // JMP
+    [BOSS_RUN_9420] = {466, 32, 8},  // LDY : STY : LDA : CLC : ADC : STA : STA : LDA : CLC : ADC : STA : STA : LDX : DEC : BPL
+    [BOSS_RUN_9440] = {224, 21, 3},  // LDX : LDA : STA : LDY : LDA : STA : LDA : STA
+    [BOSS_RUN_9459] = {62, 4, 2},  // LDX : LDA
+    [BOSS_RUN_9461] = {130, 9, 3},  // LDX : LDA : STA : DEC
+    [BOSS_RUN_9475] = {416, 42, 1},  // LDY : LDA : SEC : SBC : STA : CLC : ADC : STA : LDA : SEC : SBC : STA : CLC : ADC : STA : LDA : STA
+    [BOSS_RUN_9579] = {68, 5, 1},  // STZ : JSR
+    [BOSS_RUN_957E] = {102, 7, 1},  // PEA : LDA : DEC : PHA
+    [BOSS_RUN_9586] = {40, 3, 0},  // JSR
+    [BOSS_RUN_9589] = {40, 3, 0},  // JSR
+    [BOSS_RUN_9592] = {40, 3, 0},  // JSR
+    [BOSS_RUN_9595] = {18, 3, 0},  // LDA
+    [BOSS_RUN_959C] = {40, 4, 1},  // LDA : BEQ
+};
+
+static bool accepts_boss_thread(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != BOSS_THREAD_BANK)
+    return false;
+  // A spit's record is read and written through the bank, and so is a
+  // player's.
+  for (uint16_t slot = 0; slot < 0x20; slot += 8) {
+    const uint16_t record =
+        wram_r16(w, (uint16_t)(in->d + BOSS_DP_SPIT_RECORD + slot));
+    if (record != BOSS_SPIT_NONE && record >= 0x1f00) return false;
+  }
+  // ...and the one whose box is asked for is at `$08`.
+  if (in->pc == BOSS_SPIT_HITS_PC &&
+      wram_r16(w, (uint16_t)(in->d + BOSS_DP_SCRATCH)) >= 0x1f00)
+    return false;
+  // A new one's record is in A, and is nothing when there was none to have.
+  if (in->pc == BOSS_SPIT_MADE_PC && (in->a == 0 || in->a >= 0x1f00))
+    return false;
+  // The two parts that are its bottle.
+  for (uint16_t part = 0; part < 4; part += BOSS_PARTS_DP_STRIDE)
+    if (wram_r16(w, (uint16_t)(in->d + BOSS_PARTS_DP_FIRST + part)) >= 0x1f00)
+      return false;
+  return wram_r16(w, (uint16_t)(in->d + BOSS_DP_SPIT)) < 0x20 &&
+         wram_r16(w, (uint16_t)(in->d + BOSS_DP_PLAYER)) < 0x1f00;
+}
+
+static void shim_boss_thread(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  PortCpu c;
+  BossWork k = {0};
+  cpu_from(in, &c);
+  boss_thread_run(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (!k.v_known) {
+    out->flags &= ~COSIM_FLAG_V;
+    out->p_keep = PORT_P_V;
+  }
+
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  CosimRun run = {0, 0, 0};
+  for (int i = 0; i < BOSS_RUN_COUNT; i++)
+    run_add(&run, &BOSS_RUN_COST[i], k.runs[i]);
+  run_add(&run, &RUN_TAKEN, k.taken);
+  int cycles = cosim_run_cycles_dp(&run, fast, unaligned);
+  for (int i = 0; i < k.step_count; i++)
+    cycles += boss_step_cycles(&k.steps[i], fast, unaligned);
+  for (int i = 0; i < k.draws; i++) cycles += rng_cycles(k.draw_twice[i], fast);
+  for (int i = 0; i < k.look_count; i++)
+    cycles += player_in_range_cycles(&k.looks[i], fast);
+  for (int i = 0; i < k.bearing_count; i++)
+    cycles += player_bearing_cycles(&k.bearings[i], fast);
+  if (k.sought) cycles += nearest_cycles(&k.nearest, fast);
+  cosim_cost(cycles);
+}
+
+static const uint32_t BOSS_TURN_EXITS[] = {BOSS_DIES_PC, BOSS_STATE_PC,
+                                           BOSS_PICTURE_PC,
+                                           BOSS_PICTURE_FLIP_PC};
+static const uint32_t BOSS_TURN_ENDS_EXITS[] = {BOSS_UNFLASH_PC, BOSS_FLASH_PC,
+                                                BOSS_PARTS_PC};
+static const uint32_t BOSS_SPITS_EXITS[] = {BOSS_SPIT_FIRST_CALL_PC,
+                                            BOSS_SPIT_SECOND_CALL_PC,
+                                            BOSS_YIELD_PC};
+static const uint32_t BOSS_SPIT_SECOND_EXITS[] = {BOSS_SPIT_SECOND_CALL_PC,
+                                                  BOSS_SPITS_RTS_PC};
+static const uint32_t BOSS_SLEEPS_EXITS[] = {BOSS_YIELD_PC};
+static const uint32_t BOSS_SPIT_MOVES_EXITS[] = {
+    BOSS_SPIT_RTS_PC, BOSS_SPIT_BURST_PC, BOSS_SPIT_BURSTING_PC,
+    BOSS_SPIT_FREE_PC};
+static const uint32_t BOSS_SPIT_GONE_EXITS[] = {BOSS_SPIT_GONE_RTS_PC};
+static const uint32_t BOSS_SPIT_HITS_EXITS[] = {BOSS_SPIT_TELL_PC};
+// A state ends on its own `RTS` or on the one of whatever it began.
+static const uint32_t BOSS_STATE_EXITS[] = {
+    BOSS_CHOSE_RTS_PC,        BOSS_CHOOSE_CALL_PC,
+    BOSS_PACED_RTS_PC,        BOSS_RAMPAGE_BEGUN_RTS_PC,
+    BOSS_RAMPAGED_RTS_PC,     BOSS_TURNED_RTS_PC,
+    BOSS_GOING_BEGUN_RTS_PC,  BOSS_WENT_RTS_PC,
+    BOSS_STAMP_BEGUN_RTS_PC,  BOSS_SHAKE_PC,
+    BOSS_HOME_BEGUN_RTS_PC,   BOSS_HOME_RTS_PC,
+    BOSS_LINE_UP_BEGUN_RTS_PC, BOSS_LINED_UP_RTS_PC,
+    BOSS_CRY_PC,              BOSS_OPEN_YIELD_PC,
+    BOSS_PICTURE_PC,          BOSS_PICTURE_FLIP_PC,
+    BOSS_MOUTH_OPEN_RTS_PC,   BOSS_STOP_YIELD_PC,
+    BOSS_LINGER_YIELD_PC,     BOSS_SPIT_FIRST_CALL_PC,
+    BOSS_SPIT_SECOND_CALL_PC, BOSS_SPAT_RTS_PC,
+    BOSS_SPITS_AGAIN_RTS_PC,  BOSS_SPIT_ALLOC_PC};
+
 static bool accepts_death_pictures(const Wram* w, const CosimRegs* in) {
   return in->x == DEATH_KILLED && accepts_record_end(w, in) &&
          wram_r16(w, (uint16_t)(in->d + BEGIN_DP_RECORD)) < 0x1f00;
@@ -27241,8 +27534,77 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 18,
     },
-    // ...and the calls, jumps and returns between them, which the harness
-    // makes. See `CosimRoutine::link`.
+    // The big figure's thread on level 25. See `port/boss_thread.h`.
+#define BOSS_ROW(name_, sym, pc, exits_, jumped_to)                          \
+    {                                                                        \
+        .name = "boss_" #name_,                                              \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_boss_thread,                                             \
+        .accepts = accepts_boss_thread,                                      \
+        COSIM_EXITS(exits_),                                                 \
+        .uncalled = jumped_to,                                               \
+        .cycles = 100,                                                       \
+        /* The deepest is a `JSR` to a `JSL player_bearing`. */              \
+        .stack_bytes = 16,                                                   \
+    },
+    BOSS_ROW(choose, "$82:89D2", BOSS_CHOOSE_PC, BOSS_STATE_EXITS, false)
+    BOSS_ROW(pacing, "$82:89F8", BOSS_PACING_PC, BOSS_STATE_EXITS, true)
+    BOSS_ROW(pacing_step, "$82:8A0E", BOSS_PACING_STEP_PC, BOSS_STATE_EXITS,
+             true)
+    BOSS_ROW(rampaging, "$82:8A58", BOSS_RAMPAGING_PC, BOSS_STATE_EXITS, true)
+    BOSS_ROW(going, "$82:8B2E", BOSS_GOING_PC, BOSS_STATE_EXITS, true)
+    BOSS_ROW(stamping, "$82:8B90", BOSS_STAMPING_PC, BOSS_STATE_EXITS, true)
+    BOSS_ROW(home, "$82:8C79", BOSS_HOME_PC, BOSS_STATE_EXITS, true)
+    BOSS_ROW(lining_up, "$82:8CCE", BOSS_LINING_UP_PC, BOSS_STATE_EXITS, true)
+    BOSS_ROW(spit_begins, "$82:8D6C", BOSS_SPIT_BEGINS_PC, BOSS_STATE_EXITS,
+             true)
+    BOSS_ROW(turns_to_spit, "$82:8D7B", BOSS_TURNS_TO_SPIT_PC,
+             BOSS_STATE_EXITS, true)
+    BOSS_ROW(opens_mouth, "$82:8D83", BOSS_OPENS_MOUTH_PC, BOSS_STATE_EXITS,
+             true)
+    BOSS_ROW(mouth_open, "$82:8D98", BOSS_MOUTH_OPEN_PC, BOSS_STATE_EXITS,
+             true)
+    BOSS_ROW(stop_spitting, "$82:8DDE", BOSS_STOP_SPITTING_PC,
+             BOSS_STATE_EXITS, true)
+    BOSS_ROW(mouth_shut, "$82:8E0E", BOSS_MOUTH_SHUT_PC, BOSS_STATE_EXITS,
+             true)
+    BOSS_ROW(lingers, "$82:8E1A", BOSS_LINGERS_PC, BOSS_STATE_EXITS, true)
+    BOSS_ROW(lingers_sleeps, "$82:8E21", BOSS_LINGERS_SLEEPS_PC,
+             BOSS_STATE_EXITS, true)
+    BOSS_ROW(spitting, "$82:8E2D", BOSS_SPITTING_PC, BOSS_STATE_EXITS, true)
+    BOSS_ROW(spit_shows, "$82:8EDC", BOSS_SPIT_SHOWS_PC, BOSS_STATE_EXITS,
+             true)
+    BOSS_ROW(spit_made, "$82:9324", BOSS_SPIT_MADE_PC, BOSS_STATE_EXITS, true)
+    BOSS_ROW(spit_second, "$82:93E1", BOSS_SPIT_SECOND_PC,
+             BOSS_SPIT_SECOND_EXITS, true)
+    BOSS_ROW(spit_moves, "$82:93F7", BOSS_SPIT_MOVES_PC, BOSS_SPIT_MOVES_EXITS,
+             false)
+    BOSS_ROW(spit_gone, "$82:9461", BOSS_SPIT_GONE_PC, BOSS_SPIT_GONE_EXITS,
+             true)
+    BOSS_ROW(spit_hits, "$82:9475", BOSS_SPIT_HITS_PC, BOSS_SPIT_HITS_EXITS,
+             false)
+    BOSS_ROW(turn, "$82:9579", BOSS_TURN_PC, BOSS_TURN_EXITS, true)
+    BOSS_ROW(state_goes, "$82:957E", BOSS_STATE_GOES_PC, BOSS_TURN_EXITS, true)
+    BOSS_ROW(turn_ends, "$82:9586", BOSS_TURN_ENDS_PC, BOSS_TURN_ENDS_EXITS,
+             true)
+    BOSS_ROW(flashed, "$82:9589", BOSS_FLASHED_PC, BOSS_TURN_ENDS_EXITS, true)
+    BOSS_ROW(spits, "$82:9592", BOSS_SPITS_PC, BOSS_SPITS_EXITS, true)
+    BOSS_ROW(sleeps, "$82:9595", BOSS_SLEEPS_PC, BOSS_SLEEPS_EXITS, true)
+    BOSS_ROW(wakes, "$82:959C", BOSS_WAKES_PC, BOSS_TURN_EXITS, true)
+#undef BOSS_ROW
+#define X(name_, sym, pc)                                                    \
+    {                                                                        \
+        .name = "boss_" #name_,                                              \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .uncalled = true,                                                    \
+        .link = true,                                                        \
+    },
+    BOSS_LINKS(X)
+#undef X
+    // ...and the calls, jumps and returns between the monster's, which the
+    // harness makes. See `CosimRoutine::link`.
 #define X(name_, sym, pc)                                                    \
     {                                                                        \
         .name = "monster_" #name_,                                           \

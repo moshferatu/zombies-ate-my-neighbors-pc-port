@@ -352,6 +352,41 @@
   X(monster_leaves,   "monster_turned",     "`$2A` positive: nobody near, and it goes quietly") \
   X(monster_killed,   "monster_turned",     "a fatal thing held, or `$2A` negative") \
   X(monster_frees_held, "monster_freed",    "it ends holding a record, which is freed too") \
+  /* The big figure's thread on level 25 -- see port/boss_thread.h. */          \
+  X(boss_strides,     "boss_turn",          "its stride's next picture, every ninth frame") \
+  X(boss_stride_waits, "boss_turn",         "...due, but the last picture has not gone up") \
+  X(boss_picture_mirrored, "boss_turn",     "a picture drawn facing the other way") \
+  X(boss_flashes,     "boss_turn_ends",     "hit since the last flash: three frames of other colours") \
+  X(boss_flash_over,  "boss_turn_ends",     "...and its own colours back") \
+  X(boss_paces,       "boss_choose",        "nothing in mind: east or west for up to 63 frames") \
+  X(boss_rampages,    "boss_choose",        "a rampage begun, from whichever state") \
+  X(boss_lines_up,    "boss_choose",        "it turns to a player, to go and spit at them") \
+  X(boss_goes_to_point, "boss_going",       "a point to go to, put on its own grid") \
+  X(boss_stamps,      "boss_stamping",      "36 frames of stamping begun") \
+  X(boss_goes_home,   "boss_home",          "north or south to the row it started on") \
+  X(boss_saw_no_player, "boss_pacing",      "what answered within reach was no player") \
+  X(boss_turns_away,  "boss_rampaging",     "stuck on a step, so another way by a draw") \
+  X(boss_stung_rampaging, "boss_rampaging", "hit while it rampaged: it goes for the nearer player") \
+  X(boss_stuck_going, "boss_going",         "stuck on the way to its point") \
+  X(boss_hops,        "boss_stamping",      "somebody right under it: a point a hop away") \
+  X(boss_closes_in,   "boss_stamping",      "a player 104 to 119 away: it goes to them") \
+  X(boss_stung_stamping, "boss_stamping",   "hit while it stamped: a rampage") \
+  X(boss_stung_going_home, "boss_home",     "hit on the way home: a rampage") \
+  X(boss_got_home,    "boss_home",          "on its row, and it chooses again") \
+  X(boss_home_gives_up, "boss_home",        "too long getting home with a player within 120") \
+  X(boss_goes_to_player, "boss_lining_up",  "stung, or the player is too close beside it to spit at") \
+  X(boss_in_place,    "boss_lining_up",     "on the spot beside the player: the spit begins") \
+  X(boss_lost_player, "boss_lining_up",     "no player in sight any more: a rampage") \
+  X(boss_stuck_lining_up, "boss_lining_up", "no way to the spot: a rampage") \
+  X(boss_heard,       "boss_spit_begins",   "its cry, on a level that has the sound") \
+  X(boss_spits_one,   "boss_spitting",      "a spit aimed, and a record asked for") \
+  X(boss_spit_no_slot, "boss_spitting",     "...but all four are out") \
+  X(boss_spit_out_of_reach, "boss_spitting", "no player within 128 of its mouth") \
+  X(boss_spits_all_out, "boss_spitting",    "four out already, counted before it looks for one") \
+  X(boss_spits_again, "boss_spit_shows",    "the bottle's pictures done, and another to come") \
+  X(boss_stops_spitting, "boss_stop_spitting", "the bottle put away and its first picture back") \
+  X(boss_spit_bursts, "boss_spit_moves",    "a spit's flight ends and it bursts") \
+  X(boss_spit_gone,   "boss_spit_moves",    "the burst's last picture shown: its record is freed") \
   /* A record begun, and the neighbours -- see port/begin.h, neighbours.h. */   \
   X(record_begun,     "record_begin",       "a record at the page's place") \
   X(zombie_begun,     "zombie_begin",       "...and a zombie's made of it") \

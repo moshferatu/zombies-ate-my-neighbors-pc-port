@@ -523,6 +523,8 @@ static bool link_opcode(const Rom* rom, uint32_t pc) {
     case 0x22:  // JSL
     case 0x4c:  // JMP abs
     case 0x5c:  // JML
+    case 0x80:  // BRA
+    case 0x82:  // BRL
       return true;
     default:
       return false;
@@ -1352,7 +1354,7 @@ static void leave_set_flags(Cpu* cpu, uint8_t p) {
   }
 }
 
-// Make the instruction the CPU is standing on, if it is one of the eight.
+// Make the instruction the CPU is standing on, if it is one of the ten.
 // False when it is not, and then nothing has changed.
 static bool leave_step(Cosim* c, LeaveCost* cost) {
   Snes* snes = c->snes;
@@ -1414,6 +1416,14 @@ static bool leave_step(Cosim* c, LeaveCost* cost) {
       cpu->pc = operand;
       cpu->k = op[3];
       *cost = (LeaveCost){4 * fetch, fetch};
+      break;
+    case 0x80:  // BRA: always taken, so the idle a taken branch ends on
+      cpu->pc = (uint16_t)(cpu->pc + 2 + (int8_t)op[1]);
+      *cost = (LeaveCost){2 * fetch + COSIM_IDLE_CYCLES, COSIM_IDLE_CYCLES};
+      break;
+    case 0x82:  // BRL: the same, a word away
+      cpu->pc = (uint16_t)(cpu->pc + 3 + operand);
+      *cost = (LeaveCost){3 * fetch + COSIM_IDLE_CYCLES, COSIM_IDLE_CYCLES};
       break;
     case 0x40: {  // RTI: two idles, the status byte, the address, the bank
       leave_set_flags(cpu, leave_pull(cpu, snes->ram));

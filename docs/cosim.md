@@ -18609,3 +18609,84 @@ survey with those in place found four more behind them.
 Over the same 110 sessions the core executes 6,805,266 instructions
 where it executed 7,491,006, and takes over 411,336 times where it
 did 644,107, at 883 places where there were 973.
+
+## A thread whose states call their ports (2026-10-09)
+
+### When a stretch makes the call itself
+
+The monster's thread was cut at every call, because two of the routines it
+calls have a mean for a cost. Cut the same way, the big figure's thread at
+`$82:9569` would have been more than a hundred stretches: a rampage alone
+is
+
+    $82:8A60  LDA #$6969 : JSR $8F93 : BCS $8A79
+    $82:8A68  LDA #$6969 : JSR $8F93 : BCS $8A79
+    $82:8A70  LDA #$6969 : JSR $8F93 : BCS $8A79
+
+and each `BCS` would be a stretch of one instruction.
+
+The rule that came out of it:
+
+* **A callee priced to the cycle is called as C**, and its cost is added
+  by its own model. The stretch goes on past it.
+* **A callee priced by a mean ends the stretch.** The exit is the `JSL` or
+  `JSR` itself, the harness makes it, and the next stretch begins where it
+  comes back.
+
+The reason is what `verify` can say afterwards. A stretch with only exact
+callees inside is checked to the cycle on every call. One with a mean
+inside could only be checked to the mean, and a wrong run in its own table
+would hide in that.
+
+`boss_step`, `rng_next`, `player_in_range`, `player_bearing` and
+`actor_nearest` are exact. `boss_bg_queue`, `figure_colours_set`,
+`vbl_queue_a_add`, `apu_play_sfx`, `actor_slot_alloc`, `actor_slot_free` and
+`actor_notify_box` are not, and the thread stops on each.
+
+### An exit a stretch passes through
+
+Every state shares one list of exits: its own `RTS` and the `RTS` of
+whatever it began. That is safe only while no stretch runs *through* an
+address on its own list on the way to a later one.
+
+Two places would have. `$82:8A0B` is `JSR $89D2` in the middle of pacing,
+and `$89D2` ends on an `RTS` that is on the list. So pacing stops on the
+`JSR`, the choice is a stretch of its own, and the step after it is a
+third. And the frame's spits end on an `RTS` at `$82:93EE` that the turn
+runs through when no spit is out, so the turn's list does not have it and
+the stretch that begins after a spit moved has a list of its own that
+does.
+
+A `JSR` to a routine with one caller is different: where its `RTS` goes is
+known, and the stretch runs through it.
+
+### Runs, not blocks
+
+Earlier ports have a block enum written by hand, with a cost a block
+typed in from `tools/cycles816.py`. This thread has 194 straight runs, so
+they are rows of an X-macro, `X(8A58, 0x828a5cu)`: where a run starts and
+where it ends. The enum is made from the rows, and
+`tools/price_runs.py` reads the same rows and prints the cost table. A run
+with a branch inside it is refused.
+
+The port says `ran(b, BOSS_RUN_8A58)` after doing what that run does and
+`took(b, ...)` on a branch. That is all the bookkeeping there is.
+
+### `BRA` is a link
+
+A wait inside a state is
+
+    $82:8D83  JSL $8280E0 : BEQ $8D92
+    $82:8D89  LDA #$0001 : JSL thread_yield
+    $82:8D90  BRA $8D83
+
+The yield comes back to the `BRA`, with a stretch on the other side of
+it. So `BRA` and `BRL` joined the six instructions a link may be. They
+cost what a taken branch costs, and the interrupt poll is before the
+last cycle as it is for one.
+
+### After
+
+Over the same 110 sessions the core executes 4,091,951 instructions
+where it executed 6,805,266, and takes over 264,938 times where it
+did 411,336, at 852 places where there were 883.

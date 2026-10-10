@@ -5,6 +5,78 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The big figure's thread on level 25 (2026-10-09)
+
+The thread at `$82:9569` was what the 65816 ran most: two of every five
+instructions it executed over the survey. It is ported, turn and states,
+in `port/boss_thread.h`.
+
+* **Its turn**, once a frame: the next picture of its stride, the state's
+  own routine, a flash if it was hit, where its plane is scrolled to, its
+  four parts, what it stands on, two of its four spits, and sleep.
+* **Its eight states.** Six move it: pacing, rampaging, going to a point,
+  stamping, going home, lining up beside a player. Two spit: a spit is
+  aimed, and the bottle's pictures play over it. Its mouth opens before
+  them and shuts after. Each is a C function that ends by naming the
+  next.
+* **A stretch makes a call itself when the callee is priced to the cycle,**
+  and stops on the call when it is not. That is the rule that decides
+  between one function and a link. The step, a draw, the nearer player,
+  which way they are and the nearest thing are exact, so a state calls
+  them as C. The picture's upload, the colours, the shake's job, its cry, a
+  spit's record and what a spit hits are priced by a mean, so the stretch
+  ends on the `JSL` and the harness makes it.
+  * So the thread is 30 stretches and 16 links, where a stretch for every
+    call would have been more than a hundred.
+  * A rampage's three double steps are one stretch now, and were four
+    takeovers a frame.
+* **Priced by the listing.** The port counts the straight runs it took, 194
+  of them, each named for where it starts. `tools/price_runs.py` reads
+  those rows out of the header and prints the table of what each costs.
+  Nothing in the table is typed by hand.
+* **`BRA` and `BRL` are links too.** A wait inside a state is `JSL
+  thread_yield : BRA` back to its test, and the `BRA` is all there is
+  between the yield and the next stretch.
+* **The registry holds 1,024 rows**, where it held 768. 781 are
+  registered.
+* **Checked.**
+  * The corpus verifies clean: 126,314,580 calls, none diverged. The 30
+    stretches were called 201,737 times and every one cost what the
+    ROM's did.
+  * Lockstep: every row of the table is what it was, to the cycle. 334,319
+    passes, 51 of 54 never part, the same three.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies, and
+    none differ, at both widths.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 787 to 756 | 403,819 to 257,421 | 6,701,779 to 3,988,464 |
+  | Left standing on an instruction | 50 to 50 | 2,965 to 2,965 | 67,508 to 67,508 |
+  | A port turned the call down | 35 to 35 | 4,039 to 4,039 | 24,654 to 24,654 |
+  | A port or a link called it | 10 to 10 | 403 to 403 | 3,405 to 3,405 |
+  | All | 883 to 852 | 411,336 to 264,938 | 6,805,266 to 4,091,951 |
+
+* **Not done or not known.**
+  * How the thread starts and how it ends: `$82:9569` to `$82:9578` with
+    what it calls to set itself up, and its death from `$82:95A0`. Nine
+    times each over the survey.
+  * The job that shakes the screen while it stamps, `$82:8C49`. It runs in
+    the vblank and writes `$2110`, 2,216 times over the survey, and is the
+    only thing of the figure's the core still runs every frame of
+    anything.
+  * Nine of its branches are taken by no movie: a stride's picture waiting
+    for the last to go up, its cry, a hop from somebody right under it, a
+    hit while it stamps or goes home, a spit with no player in reach, four
+    spits out already (two ways), and a second spit after the first. And
+    `boss_pacing_step`, the step after it chose again mid-pace, is never
+    reached. Each is as the listing reads and nothing has run it.
+  * Overflow after a call that does not say what it left there is waived,
+    as other ports waive it. That is the nearer player, which way they
+    are, and the nearest thing.
+  * The monster's three state routines, `$81:BE14`, `$81:BE71` and
+    `$81:BFCD`, with the tests they share. They are next.
+
 ### Links, and the big monster's thread (2026-10-09)
 
 Where the 65816 still takes over, it is often for one instruction: a `JSR`
