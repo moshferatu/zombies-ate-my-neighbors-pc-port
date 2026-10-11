@@ -257,6 +257,11 @@ share and the one weapons 7 to 11 share. Both are ported whole. The places
 are 755 and the core executes 577,131 instructions
 over the survey.
 
+**The fishman's bite and its going about, 2026-10-11.** The place the
+core ran most was the fishman's bite, and after it what the one that comes
+ashore does on land. Both are in `port/fishman.c`. The places are
+750 and the core executes 445,564 instructions over the survey.
+
 What is left of this step: registers of the driver's own in place of the
 core's, the clock, and a stop that names the address in place of the
 core.

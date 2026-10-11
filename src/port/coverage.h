@@ -1712,6 +1712,15 @@
   X(fishman_sweep_turned, "fishman_frame", "landed: it turns to them, and stops at three pictures") \
   X(fishman_dive_began, "fishman_frame", "off the ground, and the first pass of the dive") \
   X(fishman_splashed, "fishman_frame", "back in the water: it stops at two pictures") \
+  X(fishman_ashore_goes_after, "fishman_frame", "going about on land with somebody within 128: it walks at them") \
+  X(fishman_ashore_found_water, "fishman_frame", "...with water to go back to: it sleeps a few ticks first") \
+  X(fishman_ashore_stepped, "fishman_frame", "...a step the way it faces") \
+  X(fishman_ashore_turned, "fishman_frame", "...stopped: a quarter turn") \
+  X(fishman_ashore_turned_back, "fishman_frame", "...a quarter turn back, that way being clear") \
+  X(fishman_bite_began, "fishman_frame", "a bite: its second record, at the first place round") \
+  X(fishman_bite_went_on, "fishman_bite_tick", "the next place round") \
+  X(fishman_bite_over_closes_in, "fishman_bite_tick", "eight ticks: the record goes, and it closes in again") \
+  X(fishman_bite_over_patrols, "fishman_bite_tick", "...or the one that patrols does that again") \
   X(fishman_leap_too_short, "fishman_leap_wake", "the spot is under 32 across: no leap after all") \
   X(fishman_leap_began, "fishman_leap_wake", "the leap set up, and a splash left behind it") \
   X(fishman_dive_straight, "fishman_dive_wake", "the water is straight above or below: no dive") \

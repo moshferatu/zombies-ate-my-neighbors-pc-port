@@ -13271,12 +13271,23 @@ static const CosimRun FISHMAN_RUN_STALK_STEP = {504, 42, 8};  // $DA46-$DA6B, th
 static const CosimRun FISHMAN_RUN_WALK_GROUND = {122, 10, 2};  // LDX : LDY : JSL : BCC
 static const CosimRun FISHMAN_RUN_WALK_SEEK = {108 + 6, 9, 2};  // LDX : LDY : JSR $DA85 : BRA
 static const CosimRun FISHMAN_RUN_WALK_TAKE = {56, 4, 2};  // LDA : STA
+static const CosimRun FISHMAN_RUN_STEP_SEEK = {96, 7, 2};  // $D872 LDX : LDY : JSR $DA85
 static const CosimRun FISHMAN_RUN_SEEK_HEAD = {250, 21, 2};  // $DA85-$DA99, to CPY #$0018 : BCC
 static const CosimRun FISHMAN_RUN_SEEK_BACK = {86, 8, 2};  // $DA9A LDA : EOR : INC : STA
 static const CosimRun FISHMAN_RUN_SEEK_SPOT = {388, 33, 5};  // $DAA2-$DABE, to AND #$0100 : BEQ
 static const CosimRun FISHMAN_RUN_SEEK_BELOW = {182, 18, 2};  // $DABF-$DAD0, the same
 static const CosimRun FISHMAN_RUN_SEEK_EDGE = {122, 10, 2};  // $DAD1 LDX : LDY : JSL : BCS
 static const CosimRun FISHMAN_RUN_TAKEN = {6, 0, 0};
+// A tick of its sweep on land, `$81:E381`, and of its bite, `$81:E2D0`: the
+// same instructions.
+static const CosimRun FSW_RUN_COUNT = {62, 4, 1};    // DEC $26 : BNE
+static const CosimRun FSW_RUN_PLACE = {360, 36, 4};  // $E355-$E374, $E2A4-$E2C3
+static const CosimRun FSW_RUN_WRAP = {18, 3, 0};     // LDA #$0000
+static const CosimRun FSW_RUN_SLEEP = {46, 5, 1};    // STA $44 : LDA #$0001
+static const CosimRun FSW_RUN_OVER = {28, 2, 1};     // LDA $42
+static const CosimRun FSW_RUN_FREE = {54, 4, 0};     // JSL actor_slot_free
+static const CosimRun FSW_RUN_DONE = {64, 8, 1};     // $E38B LDA # : STA $42 : LDA #
+static const CosimRun FISHMAN_RUN_BITE_DONE = {86, 9, 2};  // $E2DA LDA # : STA $42 : LDA $46 : BNE
 
 static int wander_cycles(const WanderWork* k, const CosimRegs* in);
 
@@ -13749,6 +13760,72 @@ static void fishman_stalk_bill(FishmanBill* b) {
   fishman_stalk_on_bill(b);
 }
 
+// What is left of a pass going about on land, after it asked for water:
+// `$81:D9BE`, or `$81:D9EF` with the quarter turn back first.
+static void fishman_go_about_on_bill(FishmanBill* b, uint16_t from) {
+  const FishmanLog* log = b->log;
+  const bool fast = b->in->fastrom;
+  if (from == FISHMAN_DIVE_FROM_ASHORE_TURNED) {
+    // `$81:D87A`, its `RTS` too.
+    const FishmanLandProbe* k = &log->turn;
+    fishman_add(b, &FISHMAN_RUN_JSR);
+    fishman_add(b, &FISHMAN_RUN_OPENING_HEAD);
+    fishman_add(b, &FISHMAN_RUN_WALK_GROUND);
+    b->calls += terrain_enemy_cycles(&k->ground, fast);
+    if (k->ground.blocked) {
+      fishman_taken(b);
+    } else {
+      fishman_add(b, &FISHMAN_RUN_ACTOR_ASK);
+      if (k->someone)
+        fishman_taken(b);
+      else
+        fishman_add(b, &FISHMAN_RUN_OPENING_TAKE);
+    }
+    fishman_add(b, &FISHMAN_RUN_RTS);
+  }
+
+  // The step, and `$81:D85B` for whether it may be taken.
+  const FishmanLandProbe* k = &log->land[0];
+  fishman_add(b, &FISHMAN_RUN_TRY);
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  fishman_add(b, &FISHMAN_RUN_WALK_GROUND);
+  b->calls += terrain_enemy_cycles(&k->ground, fast);
+  if (k->ground.blocked) {
+    fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_STEP_SEEK);
+    fishman_seek_bill(b, &k->seek);
+  } else {
+    fishman_add(b, &FISHMAN_RUN_ACTOR_ASK);
+    if (k->someone) fishman_taken(b);
+  }
+  fishman_add(b, &FISHMAN_RUN_RTS);
+  fishman_add(b, &FISHMAN_RUN_BRANCH);
+  if (log->walked) {
+    fishman_add(b, &FISHMAN_RUN_COMMIT);
+    fishman_add(b, &FISHMAN_RUN_RTS);
+    return;
+  }
+  fishman_taken(b);
+  fishman_add(b, &FISHMAN_RUN_JMP);
+  fishman_add(b, &FISHMAN_RUN_TURN_AT_WALL);  // `$D926` is the same
+  fishman_add(b, &FISHMAN_RUN_SET_STATE);
+}
+
+// `$81:D9B8` and `$81:D9E9`: with water to go back to, as far as its sleep.
+static void fishman_go_about_bill(FishmanBill* b, uint16_t from) {
+  const FishmanLog* log = b->log;
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  fishman_look_bill(b);  // `$D8FD` is `$DD57` again
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  b->calls += wander_cycles(&log->wander, b->in);
+  if (log->ashore_found_water) {
+    fishman_add(b, &FISHMAN_RUN_WAIT);
+    return;
+  }
+  fishman_add(b, &FISHMAN_RUN_RTS);  // the wander's
+  fishman_go_about_on_bill(b, from);
+}
+
 // `$81:E31C`, as far as its pictures.
 static void fishman_sweep_turn_bill(FishmanBill* b) {
   const FishmanLog* log = b->log;
@@ -13872,6 +13949,7 @@ static void fishman_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
       [FISHMAN_STOP_DIVE] = FISHMAN_DIVE_SLEEP_PC,
       [FISHMAN_STOP_SWEEP] = FISHMAN_SWEEP_LIST_PC,
       [FISHMAN_STOP_SPLASH] = FISHMAN_SPLASH_LIST_PC,
+      [FISHMAN_STOP_BITE] = FISHMAN_BITE_YIELD_PC,
   };
   FishmanLog log;
   const bool stays = fishman_frame(w, rom, loop, in->d, in->s,
@@ -13915,6 +13993,22 @@ static void fishman_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
     case FISHMAN_STATE_SPLASH:
       fishman_add(&b, &FISHMAN_RUN_SPLASH);
       break;
+    case FISHMAN_STATE_ASHORE:
+      fishman_go_about_bill(&b, FISHMAN_DIVE_FROM_ASHORE);
+      break;
+    case FISHMAN_STATE_ASHORE_TURNED:
+      fishman_go_about_bill(&b, FISHMAN_DIVE_FROM_ASHORE_TURNED);
+      break;
+    case FISHMAN_STATE_BITE:
+      // `$E295`: its second record, and the first place round.
+      fishman_add(&b, &FISHMAN_RUN_JSR);
+      fishman_add(&b, &FISHMAN_RUN_BLOW_DRESS);
+      b.calls += saucer_alloc_cycles(log.blow, in->fastrom);
+      fishman_add(&b, &FISHMAN_RUN_SWEEP_SET);
+      fishman_add(&b, &FSW_RUN_PLACE);
+      fishman_add(&b, log.ring_wrapped ? &FSW_RUN_WRAP : &FISHMAN_RUN_TAKEN);
+      fishman_add(&b, &FSW_RUN_SLEEP);
+      break;
     default:
       fishman_land_bill(&b);
       break;
@@ -13952,7 +14046,8 @@ static void shim_fishman_patrol_frame(Wram* w, const Rom* rom,
 
 static const uint32_t FISHMAN_FRAME_EXITS[] = {
     FISHMAN_YIELD_PC,       FISHMAN_FATE_PC,       FISHMAN_LEAP_SLEEP_PC,
-    FISHMAN_DIVE_SLEEP_PC,  FISHMAN_SWEEP_LIST_PC, FISHMAN_SPLASH_LIST_PC};
+    FISHMAN_DIVE_SLEEP_PC,  FISHMAN_SWEEP_LIST_PC, FISHMAN_SPLASH_LIST_PC,
+    FISHMAN_BITE_YIELD_PC};
 
 // The stretches that begin where a body wakes. Each leaves as either loop
 // does.
@@ -14059,7 +14154,10 @@ static void shim_fishman_dive_wake(Wram* w, const Rom* rom,
     fishman_add(&b, &FISHMAN_RUN_DIVE_SPAN);
   }
   fishman_add(&b, &FISHMAN_RUN_SET_STATE);
-  fishman_stalk_on_bill(&b);
+  if (k.from == FISHMAN_DIVE_FROM_STALK)
+    fishman_stalk_on_bill(&b);
+  else
+    fishman_go_about_on_bill(&b, k.from);
   fishman_end_bill(&b, stays);
   fishman_charge(&b);
 }
@@ -14145,13 +14243,6 @@ static const uint32_t FISHMAN_LANDING_EXITS[] = {FISHMAN_LANDING_YES_PC,
                                                  FISHMAN_LANDING_NO_PC};
 
 // `$81:E381`: a tick of its sweep on land. See `port/fishman.h`.
-static const CosimRun FSW_RUN_COUNT = {62, 4, 1};    // DEC $26 : BNE
-static const CosimRun FSW_RUN_PLACE = {360, 36, 4};  // $E355-$E374
-static const CosimRun FSW_RUN_WRAP = {18, 3, 0};     // LDA #$0000
-static const CosimRun FSW_RUN_SLEEP = {46, 5, 1};    // STA $44 : LDA #$0001
-static const CosimRun FSW_RUN_OVER = {28, 2, 1};     // LDA $42
-static const CosimRun FSW_RUN_FREE = {54, 4, 0};     // JSL actor_slot_free
-static const CosimRun FSW_RUN_DONE = {64, 8, 1};     // $E38B LDA # : STA $42 : LDA #
 
 static bool accepts_fishman_sweep(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100 && in->db == FISHMAN_BANK &&
@@ -14186,6 +14277,57 @@ static void shim_fishman_sweep_tick(Wram* w, const Rom* rom,
 
 static const uint32_t FISHMAN_SWEEP_EXITS[] = {FISHMAN_SWEEP_YIELD_PC,
                                                FISHMAN_SWEEP_DONE_PC};
+
+// `$81:E2D0`: a tick of its bite. The last finishes the pass.
+static bool accepts_fishman_bite(const Wram* w, const CosimRegs* in) {
+  return fishman_woken_ok(w, in) && fishman_bite_supported(w, in->d, in->s);
+}
+
+static void shim_fishman_bite_tick(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  FishmanBiteLog k;
+  cpu_from(in, &c);
+  fishman_bite_tick(w, rom, &c, &k);
+
+  FishmanBill b = {{0, 0, 0}, {0, 0, 0}, 0, &k.pass, in, 0, 0, 0};
+  fishman_add(&b, &FSW_RUN_COUNT);
+  if (!k.over) {
+    cpu_to(&c, out);
+    fishman_taken(&b);
+    fishman_add(&b, &FSW_RUN_PLACE);
+    fishman_add(&b, k.wrapped ? &FSW_RUN_WRAP : &FISHMAN_RUN_TAKEN);
+    fishman_add(&b, &FSW_RUN_SLEEP);
+    fishman_charge(&b);
+    return;
+  }
+
+  fishman_woken_out(&c, &k.pass, out);
+  fishman_add(&b, &FSW_RUN_OVER);
+  fishman_add(&b, &FSW_RUN_FREE);
+  b.calls += saucer_free_cycles(k.place, in->fastrom);
+  fishman_add(&b, &FISHMAN_RUN_BITE_DONE);
+  if (k.stays) {
+    fishman_taken(&b);
+    fishman_add(&b, &FISHMAN_RUN_JMP);
+    fishman_add(&b, &FISHMAN_RUN_PATROL_AGAIN);
+    if (fishman_players_bill(&b)) {
+      fishman_add(&b, &FISHMAN_RUN_LEAVE);
+      fishman_add(&b, &FISHMAN_RUN_BRANCH);  // a `BRA`
+      fishman_taken(&b);
+    }
+    fishman_add(&b, &FISHMAN_RUN_RTS);
+  } else {
+    fishman_add(&b, &FISHMAN_RUN_JMP);
+    fishman_add(&b, &FISHMAN_RUN_SET_STATE);
+  }
+  fishman_end_bill(&b, k.fate == FISHMAN_SLEEPS);
+  fishman_charge(&b);
+}
+
+static const uint32_t FISHMAN_BITE_EXITS[] = {
+    FISHMAN_BITE_YIELD_PC,   FISHMAN_YIELD_PC, FISHMAN_FATE_PC,
+    FISHMAN_PATROL_YIELD_PC, FISHMAN_PATROL_FATE_PC};
 
 // `$81:E346`: the sweep begun, to its first sleep.
 static bool accepts_fishman_sweep_begin(const Wram* w, const CosimRegs* in) {
@@ -14353,7 +14495,8 @@ static const uint32_t FISHMAN_PATROL_END_EXITS[] = {FISHMAN_PATROL_RTL_PC};
 
 static const uint32_t FISHMAN_PATROL_FRAME_EXITS[] = {
     FISHMAN_PATROL_YIELD_PC, FISHMAN_PATROL_FATE_PC, FISHMAN_LEAP_SLEEP_PC,
-    FISHMAN_DIVE_SLEEP_PC,   FISHMAN_SWEEP_LIST_PC,  FISHMAN_SPLASH_LIST_PC};
+    FISHMAN_DIVE_SLEEP_PC,   FISHMAN_SWEEP_LIST_PC,  FISHMAN_SPLASH_LIST_PC,
+    FISHMAN_BITE_YIELD_PC};
 
 // ---------------------------------------------------------------------------
 // The werewolf -- see `port/werewolf.h`
@@ -26584,6 +26727,17 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 1500,
         .stack_bytes = 8,  // a `JSL`, and `actor_slot_free`'s own
+    },
+    {
+        .name = "fishman_bite_tick",
+        .symbol = "$81:E2D0",
+        .entry = FISHMAN_BITE_PC,
+        .run = shim_fishman_bite_tick,
+        .accepts = accepts_fishman_bite,
+        COSIM_EXITS(FISHMAN_BITE_EXITS),
+        .uncalled = true,
+        .cycles = 4000,
+        .stack_bytes = 32,
     },
     {
         .name = "fishman_sweep_begin",

@@ -5,6 +5,96 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The fishman's bite, and the one that comes ashore going about (2026-10-11)
+
+What the 65816 ran most was listed as a routine at `$81:E1D6`. That is
+only the nearest name below it: the places were `$81:E2D0`, `$81:E2DA` and
+`$81:E3E4`, which are the fishman's bite. `port/fishman.c` has had the
+rest of the fishman already, and the bite and what the one that comes
+ashore does on land were the two states of its own left to the ROM. Both are in
+it now, in the way that file already works: a pass is one row, and a body
+that sleeps in the middle stops there.
+
+* **The bite** (`$81:E295`) is the sweep's instructions again at another
+  address. The sweep is what a fishman on land does to whoever is beside
+  it: a second record with no picture and collide id 3, put at the next of
+  eight places round it each tick.
+  * A bite's ring is a circle 16 out, and it lasts eight ticks, which is
+    once round from the way the fishman faces. The sweep's is wider than
+    it is tall, 24 to either side and 8 above or below, for five.
+  * Then the record is freed, and the fishman is as it was: the one that
+    comes ashore closes in again (`$81:DE6C`), the one that keeps to its
+    pool patrols again and asks after the players (`$81:DED8`).
+  * The two share their code now: `blow_begin` and `blow_place` in
+    `port/fishman.c`, with a ring, a count and a sleep each.
+  * A pass in that state takes the record and stops at the first tick's
+    sleep, `$81:E2CC`. `fishman_bite_tick` (`$81:E2D0`) is a tick, and the
+    last finishes the pass as either loop does.
+* **Going about on land** (`$81:D9B8` and `$81:D9E9`). The one that comes
+  ashore walks two pixels a pass the way it faces, over ground that may be
+  walked on with nobody on it.
+  * Stopped, it turns a quarter and is in the second body from then on.
+    That one tries a quarter turn back first, every pass, and takes it if
+    that way is clear. So it goes round whatever stopped it, as it does
+    round the edge of a pool when it swims.
+  * Nothing puts it back in the first body. Once it has turned it tries
+    the turn back for as long as it goes about.
+  * With somebody within 128 it walks at them from its next pass, which is
+    the body the one that keeps to its pool has on land. With nobody
+    within 208, and neither player that near, it leaves.
+  * Every pass it asks `port/wander.h` for water to go back to, as the
+    other does. With water found it sleeps a few ticks and the pass stops
+    there. `fishman_dive_wake` took that only from the other body: it
+    reads which `JSR` it sleeps under and finishes that body's pass.
+  * The look on land, `$81:D8FD`, is the look in the water, `$81:DD57`,
+    with another body to go to. So is the quarter turn. The port's `look`
+    takes the body.
+* **Checked.**
+  * The corpus verifies clean: 126,346,052 calls, none diverged.
+  * By session, the rows a fishman has. Every call that was checked cost
+    what the ROM's did. The records are `--level` over 7,000 frames. In
+    brackets, the calls turned down.
+
+    | Session | `fishman_frame` | `fishman_patrol_frame` | `fishman_bite_tick` | `fishman_dive_wake` |
+    |---|---|---|---|---|
+    | `level29-990b-freeze` |  | 359 | 8 |  |
+    | `level29-ice` |  | 359 | 8 |  |
+    | `level37-e6e4` | 568 (2) | 1,821 | 1,519 |  |
+    | `record 18` | 28 | 9,011 (10) | 152 | 20 (1) |
+    | `record 23` | 4,321 (28) |  | 72 | 1 (14) |
+    | `record 31` | 1,709 (13) | 2,995 (12) | 398 | 12 (8) |
+    | `record 35` | 1,312 (9) | 4,491 (8) |  | 8 (2) |
+    | `record 38` | 1,508 (14) | 871 | 416 | 8 (5) |
+    | All | 9,446 (66) | 19,907 (30) | 2,573 | 49 (30) |
+
+  * Lockstep: 51 of the 54 movies never part, and the three that do are the three that did, on the same passes.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies,
+    and none differ, at both widths.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 666 to 660 | 44,663 to 37,688 | 476,276 to 350,441 |
+  | Left standing on an instruction | 50 to 50 | 2,965 to 2,966 | 67,508 to 67,511 |
+  | A port turned the call down | 32 to 33 | 4,012 to 3,273 | 24,477 to 18,742 |
+  | A port or a link called it | 6 to 6 | 85 to 85 | 950 to 950 |
+  | All | 755 to 750 | 51,835 to 44,122 | 577,131 to 445,564 |
+
+  826 routines are registered.
+* **Not done or not known.**
+  * Whether the second record is a bite, or a swipe on land, is still by
+    what the code does. It has no picture, so a screen does not show it.
+  * A pass on land stopped by the ground that finds water just past it is
+    still the ROM's, and so is the rest of a pass that does that after
+    its sleep. Going about, that is most of the dives: the water it was
+    going back to is what stops its step. Over the survey 42 passes of
+    either loop are turned down where 320 were, and 3 wakes.
+  * A pass that stops to look about, the setup of the one that comes
+    ashore, and an end that is not the plain one are the ROM's as they
+    were.
+  * A bite with no record free is turned down. The ROM does not ask, and
+    no session does it.
+
 ### The spray, and what weapons 7 to 11 send out (2026-10-10)
 
 What the 65816 ran most was two of the threads `player_fire` starts, off

@@ -18940,3 +18940,40 @@ over the ground, landing. Rows 3 and 4 never did.
 Over the same 110 sessions the core executes 577,131 instructions
 where it executed 1,005,323, and takes over 51,835 times where it
 did 74,589, at 755 places where there were 766.
+
+## The fishman's bite and its going about (2026-10-11)
+
+### A routine's name in the survey is only the nearest below
+
+The survey listed `$81:E1D6` first: 4,149 times and 72,674 instructions.
+`$81:E1D6` is `fishman_landing`, which is ported.
+The survey names a place by the nearest symbol at or below it, and the
+places were `$81:E2D0`, `$81:E2DA` and `$81:E3E4`: the loop of the bite at
+`$81:E295`, which had no name of its own. `q11.py` lists the places in a
+range of addresses, and that is the thing to read before the name.
+
+### One body at two addresses
+
+    $81:E295  JSR $E3E0 : LDA #$0008 : STA $26 : ...   the bite
+    $81:E346  JSR $E3E0 : LDA #$0005 : STA $26 : ...   the sweep
+
+The two differ in the count, the table and where they go afterwards.
+Their runs cost the same, so the bite is billed with the sweep's rows
+(`FSW_RUN_*`) and one of its own, `FISHMAN_RUN_BITE_DONE`. The same holds
+on land: `$81:D8FD` is `$81:DD57`, `$81:D926` is `$81:DD7F` and
+`$81:D87A` begins as `$81:DCD0` does, each to the cycle by
+`tools/cycles816.py`.
+
+### A stretch that finishes another body's pass
+
+`fishman_dive_wake` begins where a sleep comes back, with the `JSR` it
+slept under on the stack. It accepted one, `$DA1F`, and finished the walk
+on land. Going about sleeps under `$D9BD` or `$D9EE`, and what is left of
+that pass is a step, or the turn back and a step. The stretch reads the
+return and does the one it names.
+
+### After
+
+Over the same 110 sessions the core executes 445,564 instructions
+where it executed 577,131, and takes over 44,122 times where it
+did 51,835, at 750 places where there were 755.

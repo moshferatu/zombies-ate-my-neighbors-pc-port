@@ -45,6 +45,9 @@
 //   $81:E397  fishman_sweep_after    after those: it walks
 //   $81:DBE1  fishman_splash_after   back in the water, and two pictures
 //                                    shown: it swims
+//   $81:E2D0  fishman_bite_tick      from where a bite's sleep comes back to
+//                                    the next, or to its second record freed
+//                                    and the pass finished
 //
 // **A leap leaves a splash behind it**, where it left the water. That is a
 // thread of its own, `$81:E72C`: a record with nothing to hit, a list of
@@ -60,15 +63,20 @@
 // does that is a swipe at whoever is next to it. I have not seen it on a
 // screen, and the name the port had for the state, a lurk, was a guess.
 //
+// **A bite is the same thing in the water.** `$81:E295` takes the same
+// second record and for eight ticks puts it at the next of eight places 16
+// out, which is a circle and once round it. Then the record goes, and the one that
+// comes ashore closes in again and the other patrols again.
+//
 // What is here is the swimming, a leap out and the dive back from the
-// deciding to the splash, the landing, the sweep, and the walk on land of the
-// one that keeps to its pool. What is not is the setup of the one that comes
-// ashore, its bite, what that one does on land, and an end that is not the
-// plain one. A pass in one of those states is the ROM's. So is a pass that
-// stops to look about, and one on land that is stopped by the ground and
-// finds water just past it. Those are down to a random draw, so the port
-// finds out by running the pass: `FishmanLog::declined` says so, and a guard
-// asks it of a scratch copy first.
+// deciding to the splash, the landing, the sweep, the bite, and both ways of
+// getting about on land. What is not is the setup of the one that comes
+// ashore, and an end that is not the plain one. Three passes are the ROM's
+// too: one that stops to look about, one on land that is stopped by the
+// ground and finds water just past it, and a bite with no record free. The
+// first two are down to a random draw, so the port finds out by running the
+// pass: `FishmanLog::declined` says so, and a guard asks it of a scratch
+// copy first.
 //
 // ## What it does
 //
@@ -96,6 +104,13 @@
 // past where it was stopped, by a draw, and that is the dive too. With
 // somebody within 28 and eight or more across from it, it sweeps again. With
 // nobody within 175 it leaves, or goes about as the other one does.
+//
+// **The one that comes ashore goes about** as it swims: two pixels a pass
+// the way it faces, over ground that may be walked on and has nobody on it.
+// Stopped, it turns a quarter, and from then on tries a quarter turn the
+// other way at every pass, which takes it round whatever stopped it. With
+// somebody within 128 it walks at them as the other one does. Every pass it
+// asks `port/wander.h` for water to go back to as well.
 //
 // **The dive waits to be asked for.** `port/wander.h` looks for water only
 // when two words on its page differ. They begin the same. The end of a
@@ -176,8 +191,10 @@ extern const FishmanLoop FISHMAN_PATROL_LOOP;
 #define FISHMAN_LEAP_FROM_SWIM_TURNED 0xde3bu
 #define FISHMAN_LEAP_FROM_CLOSE_IN 0xde74u
 #define FISHMAN_LEAP_FROM_PATROL 0xdf28u
-// ...and what the walk on land's `JSR` to `port/wander.h` pushes.
+// ...and what each body on land's `JSR` to `port/wander.h` pushes.
 #define FISHMAN_DIVE_FROM_STALK 0xda1fu
+#define FISHMAN_DIVE_FROM_ASHORE 0xd9bdu
+#define FISHMAN_DIVE_FROM_ASHORE_TURNED 0xd9eeu
 #define FISHMAN_PATROL_BEGIN_PC 0x81e51au
 #define FISHMAN_PATROL_END_PC FISHMAN_PATROL_FATE_PC
 #define FISHMAN_PATROL_RTL_PC 0x81e5b7u  // the thread's last instruction
@@ -199,10 +216,9 @@ extern const FishmanLoop FISHMAN_PATROL_LOOP;
 #define FISHMAN_STATE_DIVE_BEGIN 0xdb63u
 #define FISHMAN_STATE_SPLASH 0xdbcdu
 #define FISHMAN_STATE_LURK 0xe31cu  // the sweep. The name was a guess.
-// ...and three the port only names.
 #define FISHMAN_STATE_BITE 0xe295u
-#define FISHMAN_STATE_ASHORE 0xd9b8u
-#define FISHMAN_STATE_ASHORE_TURNED 0xd9e9u
+#define FISHMAN_STATE_ASHORE 0xd9b8u         // going about on land
+#define FISHMAN_STATE_ASHORE_TURNED 0xd9e9u  // ...round what stopped it
 
 // Fields on its page.
 #define FISHMAN_DP_RECORD 0x08
@@ -244,6 +260,11 @@ extern const FishmanLoop FISHMAN_PATROL_LOOP;
 #define FISHMAN_SWEEP_DONE_PC 0x81e393u   // `JSL pictures_play`, the list in A
 #define FISHMAN_SWEEP_RING 0xe3c0u        // across and down, eight of them
 #define FISHMAN_SWEEP_RING_SIZE 0x20
+// A bite is the sweep's instructions again at another address, with a ring
+// and a count of its own.
+#define FISHMAN_BITE_PC 0x81e2d0u
+#define FISHMAN_BITE_YIELD_PC 0x81e2ccu  // `JSL thread_yield`, A already 1
+#define FISHMAN_BITE_RING 0xe2e9u
 #define FISHMAN_DP_UNREAD 0x7e        // cleared; nothing here reads it
 // Sliding borrows the word a leap keeps its part across in.
 #define FISHMAN_DP_AXES_TAKEN FISHMAN_DP_PART_X
@@ -347,6 +368,7 @@ typedef enum {
   FISHMAN_STOP_DIVE,    // `$81:DB0C`: a sleep, and then the dive
   FISHMAN_STOP_SWEEP,   // `$81:E342`: three pictures, and then the sweep
   FISHMAN_STOP_SPLASH,  // `$81:DBDD`: two pictures, and then it swims
+  FISHMAN_STOP_BITE,    // `$81:E2CC`: a tick's sleep, and then the next
 } FishmanStop;
 
 typedef enum {
@@ -401,6 +423,17 @@ typedef struct {
   bool sweep_off;        // ...and the draw said walk on
   FishmanLandProbe land[2];  // across, then down
   bool faces_back;       // the sweep begins facing one of the mirrored ways
+
+  // Going about on land.
+  bool ashore_found_water;   // water to go back to: it sleeps, then dives
+  bool turn_tried;           // a quarter turn back, if that way is clear
+  FishmanLandProbe turn;
+  bool turned_back;
+  bool walked;               // the step the way it faces was taken
+
+  // A bite begun.
+  uint16_t blow;         // the record it took
+  bool ring_wrapped;     // it began at the last place in the ring
 
   // A leap.
   bool falling;
@@ -459,6 +492,7 @@ typedef struct {
   bool same_row, same_column;  // of the spot, for `actor_bearing_point`
   bool negative[2];       // the spot is left of it, and above it
   bool stays;             // too little across: no leap, or no dive
+  uint16_t from;          // a dive: which body's `JSR` it sleeps under
   bool across_longer;
   bool faces_cleared;     // the leap's picture takes a flag off
   int splash_slot;        // the thread a leap begins, or -1
@@ -497,8 +531,28 @@ typedef enum {
   FISHMAN_ENDS,
 } FishmanFate;
 
+// What a tick of a bite came to.
+typedef struct {
+  bool over;       // its last: the record went, and the pass was finished
+  bool wrapped;    // the ring came round to its start
+  int place;       // where in the display list the record was
+  bool stays;      // the one that patrols, which asks after the players
+  FishmanFate fate;
+  FishmanLog pass;  // the rest of the pass
+} FishmanBiteLog;
+
+// `$81:E2D0`. False for a place the ring does not have, or a record that is
+// none, or on its last tick one the display list does not hold or a stack
+// without a loop's return.
+bool fishman_bite_supported(const Wram* w, uint16_t page, uint16_t s);
+// It comes back at the bite's `JSL thread_yield`, or on its last tick as a
+// pass does.
+void fishman_bite_tick(Wram* w, const Rom* rom, PortCpu* c,
+                       FishmanBiteLog* log);
+
 // Can `fishman_frame` take this pass? Only in a state it knows, facing a way
-// the tables have, with a leap that ends. It only looks.
+// the tables have, with a leap that ends. It only looks. A bite with no
+// record free is the ROM's, and `log->declined` says so.
 bool fishman_frame_supported(const Wram* w, uint16_t page);
 
 // One pass, for the creature whose page is `page`, in `loop`. `s` is the

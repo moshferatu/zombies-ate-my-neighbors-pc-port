@@ -53,6 +53,7 @@ typedef struct {
 // The sweep faces the mirrored ways from here.
 #define FISHMAN_SWEEP_MIRRORED_FROM 0x000c
 #define FISHMAN_SWEEP_TICKS 5
+#define FISHMAN_BITE_TICKS 8
 // The lists of pictures: before a sweep, after it, and of a splash.
 #define FISHMAN_SWEEP_PICTURES 0xe3a0u
 #define FISHMAN_SWEPT_PICTURES 0xe3b0u
@@ -485,16 +486,21 @@ static bool swim_on(Fishman* s) {
 // What it may do on any pass in the water
 // ---------------------------------------------------------------------------
 
-// `$81:DD57`: close in on somebody near, and leave if nobody is.
-static void look(Fishman* s) {
+// `$81:DD57`, and `$81:D8FD` on land: go after somebody near, in the body
+// that does that, and leave if nobody is.
+static void look(Fishman* s, uint16_t after) {
   FishmanLog* log = s->log;
   uint16_t dist;
   const uint16_t target = nearest_actor(s, &dist);
   if (!flags_at_least(&s->flags, dist, FISHMAN_CLOSE_IN_WITHIN)) {
-    PORT_COVER(fishman_closed_in);
+    if (after == FISHMAN_STATE_CLOSE_IN) {
+      PORT_COVER(fishman_closed_in);
+    } else {
+      PORT_COVER(fishman_ashore_goes_after);
+    }
     log->look = FISHMAN_LOOK_NEAR;
     set_field(s, FISHMAN_DP_TARGET, target);
-    set_state(s, FISHMAN_STATE_CLOSE_IN);
+    set_state(s, after);
     return;
   }
   if (!flags_at_least(&s->flags, dist, FISHMAN_NOTICE_WITHIN)) {
@@ -717,12 +723,86 @@ static void stalk(Fishman* s) {
 }
 
 // ---------------------------------------------------------------------------
+// Going about on land
+// ---------------------------------------------------------------------------
+
+// `$81:D87A`: a quarter turn back, if it can walk that way. Ground in the
+// way is not looked past here.
+static void turn_back_if_clear(Fishman* s) {
+  FishmanLog* log = s->log;
+  FishmanLandProbe* k = &log->turn;
+  log->turn_tried = true;
+  const uint16_t way = (uint16_t)(field(s, FISHMAN_DP_WAY) - FISHMAN_FIRST_WAY);
+  const uint16_t other =
+      way_of(flags_sub(&s->flags, way, FISHMAN_QUARTER_TURN));
+  set_field(s, FISHMAN_DP_TRY_WAY, other);
+  const Point to = try_way(s, other);
+  terrain_blocked_enemy(s->w, to.x, to.y, &k->ground);
+  flags_carry(&s->flags, k->ground.blocked);
+  flags_overflow(&s->flags, k->ground.v);
+  if (k->ground.blocked) return;
+  k->someone = someone_at(s, to);
+  if (k->someone) return;
+  PORT_COVER(fishman_ashore_turned_back);
+  log->turned_back = true;
+  set_field(s, FISHMAN_DP_WAY, other);
+}
+
+// `$81:D9BE` and `$81:D9F2`: a step the way it faces, or a quarter turn.
+// Stopped by the ground, it looks for water just past the place
+// (`$81:D85B`).
+static void step_ashore(Fishman* s) {
+  FishmanLog* log = s->log;
+  const Point to = try_way(s, field(s, FISHMAN_DP_WAY));
+  if (can_walk_to(s, to, &log->land[0])) {
+    PORT_COVER(fishman_ashore_stepped);
+    log->walked = true;
+    set_field(s, FISHMAN_DP_X, to.x);
+    set_field(s, FISHMAN_DP_Y, to.y);
+    return;
+  }
+  if (log->declined) return;
+  PORT_COVER(fishman_ashore_turned);
+  const uint16_t way = (uint16_t)(field(s, FISHMAN_DP_WAY) - FISHMAN_FIRST_WAY);
+  set_field(s, FISHMAN_DP_WAY,
+            way_of(flags_add(&s->flags, way, FISHMAN_QUARTER_TURN)));
+  set_state(s, FISHMAN_STATE_ASHORE_TURNED);
+}
+
+// What is left of a pass going about, after it asked for water. `from` is
+// which body it is.
+static void go_about_on(Fishman* s, uint16_t from) {
+  if (from == FISHMAN_DIVE_FROM_ASHORE_TURNED) turn_back_if_clear(s);
+  step_ashore(s);
+}
+
+// `$81:D9B8` and `$81:D9E9`: it goes after somebody near, asks for water to
+// go back to, and goes on the way it faces. With water found it waits a few
+// ticks, and the pass stops there.
+static void go_about(Fishman* s, uint16_t from) {
+  FishmanLog* log = s->log;
+  look(s, FISHMAN_STATE_STALK);
+  PortCpu cpu = {0};
+  cpu.d = s->page;
+  log->wander_asked = true;
+  wander_pick(s->w, &cpu, &log->wander);
+  if (cpu.pc == WANDER_FOUND_PC) {
+    PORT_COVER(fishman_ashore_found_water);
+    log->ashore_found_water = true;
+    flags_carry(&s->flags, flag(&cpu, PORT_P_C));
+    stop_at(s, FISHMAN_STOP_DIVE, wait_ticks(s), from);
+    return;
+  }
+  go_about_on(s, from);
+}
+
+// ---------------------------------------------------------------------------
 // The state bodies
 // ---------------------------------------------------------------------------
 
 // `$81:DDFD`: the way it faces, until something stops it.
 static void swim(Fishman* s) {
-  look(s);
+  look(s, FISHMAN_STATE_CLOSE_IN);
   maybe_look_about(s);
   if (s->log->declined) return;
   if (!maybe_leap(s, FISHMAN_LEAP_FROM_SWIM)) return;
@@ -735,7 +815,7 @@ static void swim_turned(Fishman* s) {
   if (s->log->declined) return;
   if (!maybe_leap(s, FISHMAN_LEAP_FROM_SWIM_TURNED)) return;
   turn_if_clear(s);
-  if (swim_on(s)) look(s);
+  if (swim_on(s)) look(s, FISHMAN_STATE_CLOSE_IN);
 }
 
 // One step at `target`.
@@ -1206,6 +1286,110 @@ void fishman_patrol_end(Wram* w, PortCpu* c, FishmanEndLog* log) {
   c->pc = FISHMAN_PATROL_RTL_PC;
 }
 
+// ---------------------------------------------------------------------------
+// Its second record
+// ---------------------------------------------------------------------------
+
+// The sweep and the bite are the same instructions at two addresses: a
+// record with no picture, put round a ring of eight places for so many
+// ticks.
+typedef struct {
+  uint16_t ring;      // across and down, eight of them
+  uint16_t ticks;
+  uint32_t yield_pc;  // its `JSL thread_yield`
+} FishmanBlow;
+
+static const FishmanBlow SWEEP = {FISHMAN_SWEEP_RING, FISHMAN_SWEEP_TICKS,
+                                  FISHMAN_SWEEP_YIELD_PC};
+static const FishmanBlow BITE = {FISHMAN_BITE_RING, FISHMAN_BITE_TICKS,
+                                 FISHMAN_BITE_YIELD_PC};
+
+// Does it face a way the ring has a place for?
+static bool blow_faces(const Wram* w, uint16_t page) {
+  const uint16_t way = wram_r16(w, (uint16_t)(page + FISHMAN_DP_WAY));
+  return way >= FISHMAN_FIRST_WAY && way <= FISHMAN_LAST_WAY && (way & 1) == 0;
+}
+
+// `$81:E355` and `$81:E2A4`: the record at the next place in the ring, and
+// a tick's sleep.
+static void blow_place(Wram* w, const Rom* rom, PortCpu* c,
+                       const FishmanBlow* blow, bool* wrapped) {
+  const uint16_t page = c->d;
+  const uint16_t record = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW));
+  const uint16_t at = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW_AT));
+  const uint32_t ring = ((uint32_t)FISHMAN_BANK << 16) | blow->ring;
+  set_c(c, false);
+  wram_w16(w, (uint16_t)(record + ACTOR_X),
+           adc16(c, rom_word(rom, ring + at),
+                 wram_r16(w, (uint16_t)(page + FISHMAN_DP_X))));
+  set_c(c, false);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y),
+           adc16(c, rom_word(rom, ring + 2 + at),
+                 wram_r16(w, (uint16_t)(page + FISHMAN_DP_Y))));
+  set_c(c, false);
+  uint16_t next = adc16(c, at, 4);
+  *wrapped = next >= FISHMAN_SWEEP_RING_SIZE;
+  set_c(c, *wrapped);
+  if (*wrapped) next = 0;
+  wram_w16(w, (uint16_t)(page + FISHMAN_DP_BLOW_AT), next);
+
+  c->x = at;
+  c->y = record;
+  c->a = 1;
+  set_nz16(c, c->a);
+  c->pc = blow->yield_pc;
+}
+
+// `$81:E3E0` and what follows either call of it: a second record where it
+// stands, with no picture, to hit with. Then the ring from the way it
+// faces. False with no record free, which the ROM does not ask about.
+static bool blow_begin(Wram* w, const Rom* rom, PortCpu* c,
+                       const FishmanBlow* blow, uint16_t* record,
+                       bool* wrapped) {
+  const uint16_t page = c->d;
+  SlotAllocRegs taken;
+  actor_slot_alloc(w, c->db, &taken);
+  if (taken.c) return false;
+  const uint16_t it = taken.a;
+  *record = it;
+  wram_w16(w, (uint16_t)(page + FISHMAN_DP_BLOW), it);
+  wram_w16(w, (uint16_t)(it + ACTOR_X),
+           wram_r16(w, (uint16_t)(page + FISHMAN_DP_X)));
+  wram_w16(w, (uint16_t)(it + ACTOR_Y),
+           wram_r16(w, (uint16_t)(page + FISHMAN_DP_Y)));
+  wram_w16(w, (uint16_t)(it + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(it + ACTOR_META), 0);
+  wram_w16(w, (uint16_t)(it + ACTOR_META_BANK), 0);
+  wram_w16(w, (uint16_t)(it + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(it + ACTOR_COLLIDE_ID), FISHMAN_LANDED_ID);
+  wram_w16(w, (uint16_t)(it + ACTOR_FLAGS),
+           (uint16_t)(ACTOR_DRAW | wram_r16(w, (uint16_t)(it + ACTOR_FLAGS))));
+
+  wram_w16(w, (uint16_t)(page + FISHMAN_DP_SCRATCH), blow->ticks);
+  const uint16_t way = wram_r16(w, (uint16_t)(page + FISHMAN_DP_WAY));
+  wram_w16(w, (uint16_t)(page + FISHMAN_DP_BLOW_AT),
+           (uint16_t)((way - FISHMAN_FIRST_WAY) << 1));
+  blow_place(w, rom, c, blow, wrapped);
+  return true;
+}
+
+// `$81:E295`: somebody is within 24, and it bites. The pass stops at the
+// first tick's sleep.
+static void bite(Fishman* s) {
+  FishmanLog* log = s->log;
+  PortCpu c = {0};
+  c.d = s->page;
+  c.db = FISHMAN_BANK;
+  if (!blow_begin(s->w, s->rom, &c, &BITE, &log->blow, &log->ring_wrapped)) {
+    log->declined = true;
+    return;
+  }
+  PORT_COVER(fishman_bite_began);
+  flags_carry(&s->flags, log->ring_wrapped);
+  flags_overflow(&s->flags, false);
+  stop_at(s, FISHMAN_STOP_BITE, 1, 0);
+}
+
 static bool state_known(uint16_t state) {
   return state == FISHMAN_STATE_SWIM || state == FISHMAN_STATE_SWIM_TURNED ||
          state == FISHMAN_STATE_CLOSE_IN || state == FISHMAN_STATE_PATROL ||
@@ -1214,7 +1398,9 @@ static bool state_known(uint16_t state) {
          state == FISHMAN_STATE_FLIGHT || state == FISHMAN_STATE_LANDED ||
          state == FISHMAN_STATE_DIVE || state == FISHMAN_STATE_STALK ||
          state == FISHMAN_STATE_LURK || state == FISHMAN_STATE_DIVE_BEGIN ||
-         state == FISHMAN_STATE_SPLASH;
+         state == FISHMAN_STATE_SPLASH || state == FISHMAN_STATE_BITE ||
+         state == FISHMAN_STATE_ASHORE ||
+         state == FISHMAN_STATE_ASHORE_TURNED;
 }
 
 // Its show reads two tables by these.
@@ -1232,7 +1418,9 @@ bool fishman_frame_supported(const Wram* w, uint16_t page) {
   const bool flying = state == FISHMAN_STATE_FLIGHT ||
                       state == FISHMAN_STATE_DIVE ||
                       state == FISHMAN_STATE_DIVE_BEGIN;
-  return !flying || wram_r16(w, (uint16_t)(page + FISHMAN_DP_SPAN)) != 0;
+  if (flying && wram_r16(w, (uint16_t)(page + FISHMAN_DP_SPAN)) == 0)
+    return false;
+  return state != FISHMAN_STATE_BITE || blow_faces(w, page);
 }
 
 // `$81:E560` and `$81:E4BA`: the rest of a pass, from its show.
@@ -1308,6 +1496,15 @@ FishmanFate fishman_frame(Wram* w, const Rom* rom, const FishmanLoop* loop,
     case FISHMAN_STATE_SPLASH:
       PORT_COVER(fishman_splashed);
       splash(&s);
+      break;
+    case FISHMAN_STATE_BITE:
+      bite(&s);
+      break;
+    case FISHMAN_STATE_ASHORE:
+      go_about(&s, FISHMAN_DIVE_FROM_ASHORE);
+      break;
+    case FISHMAN_STATE_ASHORE_TURNED:
+      go_about(&s, FISHMAN_DIVE_FROM_ASHORE_TURNED);
       break;
     default:
       land(&s);
@@ -1456,7 +1653,10 @@ FishmanFate fishman_leap_wake(Wram* w, const Rom* rom, PortCpu* c,
 }
 
 bool fishman_dive_wake_supported(const Wram* w, uint16_t page, uint16_t s) {
-  return wram_r16(w, (uint16_t)(s + 1)) == FISHMAN_DIVE_FROM_STALK &&
+  const uint16_t from = wram_r16(w, (uint16_t)(s + 1));
+  return (from == FISHMAN_DIVE_FROM_STALK ||
+          from == FISHMAN_DIVE_FROM_ASHORE ||
+          from == FISHMAN_DIVE_FROM_ASHORE_TURNED) &&
          loop_of(wram_r16(w, (uint16_t)(s + 3))) != NULL && shows(w, page);
 }
 
@@ -1466,6 +1666,7 @@ FishmanFate fishman_dive_wake(Wram* w, const Rom* rom, PortCpu* c,
                               FishmanWakeLog* k) {
   *k = (FishmanWakeLog){0};
   k->splash_slot = -1;
+  k->from = wram_r16(w, (uint16_t)(c->s + 1));
   Fishman s = woken(w, rom, c, &k->pass, 2);
   const Point spot = {field(&s, FISHMAN_DP_LAND_X),
                       field(&s, FISHMAN_DP_LAND_Y)};
@@ -1487,7 +1688,10 @@ FishmanFate fishman_dive_wake(Wram* w, const Rom* rom, PortCpu* c,
     set_field(&s, FISHMAN_DP_PART_Y, 0);
     set_state(&s, FISHMAN_STATE_DIVE_BEGIN);
   }
-  stalk_on(&s);
+  if (k->from == FISHMAN_DIVE_FROM_STALK)
+    stalk_on(&s);
+  else
+    go_about_on(&s, k->from);
   if (k->pass.declined) return FISHMAN_SLEEPS;
   return finish(&s, c, 2);
 }
@@ -1593,43 +1797,15 @@ bool fishman_sweep_supported(const Wram* w, uint16_t page) {
          place_in_list(w, blow) >= 0;
 }
 
-static void sweep_place(Wram* w, const Rom* rom, PortCpu* c, bool* wrapped);
-
 bool fishman_sweep_begin_supported(const Wram* w, uint16_t page, uint16_t s) {
-  const uint16_t way = wram_r16(w, (uint16_t)(page + FISHMAN_DP_WAY));
-  return way >= FISHMAN_FIRST_WAY && way <= FISHMAN_LAST_WAY &&
-         (way & 1) == 0 && loop_of(wram_r16(w, (uint16_t)(s + 1))) != NULL;
+  return blow_faces(w, page) && loop_of(wram_r16(w, (uint16_t)(s + 1))) != NULL;
 }
 
-// `$81:E346`: a second record where it stands, with no picture, to hit
-// with. Then the ring from the way it faces, for five ticks.
+// `$81:E346`: its second record, and the ring for five ticks.
 bool fishman_sweep_begin(Wram* w, const Rom* rom, PortCpu* c, uint16_t* record,
                          bool* wrapped) {
-  const uint16_t page = c->d;
-  SlotAllocRegs taken;
-  actor_slot_alloc(w, c->db, &taken);
-  if (taken.c) return false;
+  if (!blow_begin(w, rom, c, &SWEEP, record, wrapped)) return false;
   PORT_COVER(fishman_sweep_began);
-  const uint16_t blow = taken.a;
-  *record = blow;
-  wram_w16(w, (uint16_t)(page + FISHMAN_DP_BLOW), blow);
-  wram_w16(w, (uint16_t)(blow + ACTOR_X),
-           wram_r16(w, (uint16_t)(page + FISHMAN_DP_X)));
-  wram_w16(w, (uint16_t)(blow + ACTOR_Y),
-           wram_r16(w, (uint16_t)(page + FISHMAN_DP_Y)));
-  wram_w16(w, (uint16_t)(blow + ACTOR_Z), 0);
-  wram_w16(w, (uint16_t)(blow + ACTOR_META), 0);
-  wram_w16(w, (uint16_t)(blow + ACTOR_META_BANK), 0);
-  wram_w16(w, (uint16_t)(blow + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
-  wram_w16(w, (uint16_t)(blow + ACTOR_COLLIDE_ID), FISHMAN_LANDED_ID);
-  wram_w16(w, (uint16_t)(blow + ACTOR_FLAGS),
-           (uint16_t)(ACTOR_DRAW | wram_r16(w, (uint16_t)(blow + ACTOR_FLAGS))));
-
-  wram_w16(w, (uint16_t)(page + FISHMAN_DP_SCRATCH), FISHMAN_SWEEP_TICKS);
-  const uint16_t way = wram_r16(w, (uint16_t)(page + FISHMAN_DP_WAY));
-  wram_w16(w, (uint16_t)(page + FISHMAN_DP_BLOW_AT),
-           (uint16_t)((way - FISHMAN_FIRST_WAY) << 1));
-  sweep_place(w, rom, c, wrapped);
   return true;
 }
 
@@ -1657,34 +1833,52 @@ bool fishman_sweep_tick(Wram* w, const Rom* rom, PortCpu* c, bool* wrapped,
   }
 
   PORT_COVER(fishman_swept);
-  sweep_place(w, rom, c, wrapped);
+  blow_place(w, rom, c, &SWEEP, wrapped);
   return true;
 }
 
-// `$81:E355`: the record at the next place in the ring, and a tick's sleep.
-static void sweep_place(Wram* w, const Rom* rom, PortCpu* c, bool* wrapped) {
+// ---------------------------------------------------------------------------
+// The bite
+// ---------------------------------------------------------------------------
+
+bool fishman_bite_supported(const Wram* w, uint16_t page, uint16_t s) {
+  if (!fishman_sweep_supported(w, page)) return false;
+  if (wram_r16(w, (uint16_t)(page + FISHMAN_DP_SCRATCH)) != 1) return true;
+  return fishman_after_supported(w, page, s);
+}
+
+// `$81:E2D0`: the next place round, or after the eighth its record goes and
+// it is as it was before: closing in, or on its patrol.
+void fishman_bite_tick(Wram* w, const Rom* rom, PortCpu* c,
+                       FishmanBiteLog* log) {
   const uint16_t page = c->d;
   const uint16_t blow = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW));
-  const uint16_t at = wram_r16(w, (uint16_t)(page + FISHMAN_DP_BLOW_AT));
-  const uint32_t ring = ((uint32_t)FISHMAN_BANK << 16) | FISHMAN_SWEEP_RING;
-  set_c(c, false);
-  wram_w16(w, (uint16_t)(blow + ACTOR_X),
-           adc16(c, rom_word(rom, ring + at),
-                 wram_r16(w, (uint16_t)(page + FISHMAN_DP_X))));
-  set_c(c, false);
-  wram_w16(w, (uint16_t)(blow + ACTOR_Y),
-           adc16(c, rom_word(rom, ring + 2 + at),
-                 wram_r16(w, (uint16_t)(page + FISHMAN_DP_Y))));
-  set_c(c, false);
-  uint16_t next = adc16(c, at, 4);
-  *wrapped = next >= FISHMAN_SWEEP_RING_SIZE;
-  set_c(c, *wrapped);
-  if (*wrapped) next = 0;
-  wram_w16(w, (uint16_t)(page + FISHMAN_DP_BLOW_AT), next);
+  const uint16_t left =
+      (uint16_t)(wram_r16(w, (uint16_t)(page + FISHMAN_DP_SCRATCH)) - 1);
+  wram_w16(w, (uint16_t)(page + FISHMAN_DP_SCRATCH), left);
+  *log = (FishmanBiteLog){0};
+  log->over = left == 0;
+  if (!log->over) {
+    PORT_COVER(fishman_bite_went_on);
+    blow_place(w, rom, c, &BITE, &log->wrapped);
+    return;
+  }
 
-  c->x = at;
-  c->y = blow;
-  c->a = 1;
-  set_nz16(c, c->a);
-  c->pc = FISHMAN_SWEEP_YIELD_PC;
+  log->place = place_in_list(w, blow);
+  SlotFreeRegs freed;
+  actor_slot_free(w, blow, page, c->x, c->y, &freed);
+  wram_w16(w, (uint16_t)(page + FISHMAN_DP_BLOW), FISHMAN_NO_BLOW);
+
+  Fishman s = woken(w, rom, c, &log->pass, 1);
+  flags_carry(&s.flags, freed.c);
+  log->stays = field(&s, FISHMAN_DP_STAYS) != 0;
+  if (log->stays) {
+    PORT_COVER(fishman_bite_over_patrols);
+    patrol_again(&s);
+  } else {
+    PORT_COVER(fishman_bite_over_closes_in);
+    set_state(&s, FISHMAN_STATE_CLOSE_IN);
+  }
+  log->fate = finish(&s, c, 1);
 }
+
