@@ -251,6 +251,12 @@ what the core ran most, and is ported as far as its coming up to bite.
 The places are 766 and the core executes 1,005,323
 instructions over the survey.
 
+**The spray and the thrown things, the same day.** Two of the threads
+`player_fire` starts were what the core ran most: the one weapons 1 and 13
+share and the one weapons 7 to 11 share. Both are ported whole. The places
+are 755 and the core executes 577,131 instructions
+over the survey.
+
 What is left of this step: registers of the driver's own in place of the
 core's, the clock, and a stop that names the address in place of the
 core.

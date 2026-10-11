@@ -108,18 +108,19 @@ typedef struct {
   bool calls;        // ...or a `JSL` to it and an `RTL` of its own after
 } RecordEnd;
 
-// Thirty-two more of them, named for where they are. The port has not
+// Thirty-one more of them, named for where they are. The port has not
 // read the threads they end, so it does not say what they are: only that
 // each is the same seven instructions, with what it gives back and where
 // it keeps its record. Three call the free and have an `RTL` of their own.
 //
-// Sixteen more in the ROM are not here. Eight call the free and then free
+// Seventeen more in the ROM are not here. Eight call the free and then free
 // a second record: `$81:98BF`, `$81:B326`, `$81:C26E`, `$81:C303`,
 // `$81:C398`, `$81:C422`, `$81:E59A` and `$83:9F68`. Three of those are the
-// giant ant's, and `port/ant_thread.h` has them. And eight are inside
+// giant ant's, and `port/ant_thread.h` has them. And nine are inside
 // a port that does them itself, the axe's, the flame's, the swipe's, the
-// knock's, the bubble's, the bolt's, the lob's and the squirt's. An entry
-// inside another port's stretch hides that port's exit from the check.
+// knock's, the bubble's, the bolt's, the lob's, the squirt's and the
+// spray's. An entry inside another port's stretch hides that port's exit
+// from the check.
 #define RECORD_ENDS_BY_ADDRESS(X) \
   X(81a523, "$81:A523", 0x81a523u, 0x001c, 0x08, true) \
   X(81c8b0, "$81:C8B0", 0x81c8b0u, 0x000a, 0x08, false) \
@@ -129,7 +130,6 @@ typedef struct {
   X(81f012, "$81:F012", 0x81f012u, 0x0004, 0x0a, false) \
   X(81f1ed, "$81:F1ED", 0x81f1edu, 0x0008, 0x0a, false) \
   X(81f5c7, "$81:F5C7", 0x81f5c7u, 0x0002, 0x0a, false) \
-  X(81fb67, "$81:FB67", 0x81fb67u, 0x0002, 0x0a, false) \
   X(829969, "$82:9969", 0x829969u, 0x0012, 0x08, false) \
   X(82dd1a, "$82:DD1A", 0x82dd1au, 0x0005, 0x08, false) \
   X(82ef78, "$82:EF78", 0x82ef78u, 0x0014, 0x08, true) \

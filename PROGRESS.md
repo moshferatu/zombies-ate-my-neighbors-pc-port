@@ -5,6 +5,111 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The spray, and what weapons 7 to 11 send out (2026-10-10)
+
+What the 65816 ran most was two of the threads `player_fire` starts, off
+the table at `$80:ED8C`. Both are ported whole, in `port/spray.h` and
+`port/thrown.h`.
+
+* **The spray** (`$81:FAF5`: weapons 1 and 13). One thread for two weapons.
+  Which it is for is read once, from the weapon its owner holds: 13 gets
+  one set of pictures and one pair of collide ids, anything else the
+  other.
+  * *It stays ahead of its owner.* Each frame it goes a step further out,
+    4 pixels straight or 3 each way on a diagonal, and that is added to
+    where its owner is now. Somebody running carries it along.
+  * *It grows.* Its first picture for three frames, then four more for 2,
+    3, 4 and 5. The frame after that it ends: 17 frames.
+  * *Ground stops it*: `terrain_point_bit2`, asked of where it would be
+    shown.
+* **What weapons 7 to 11 send out** (`$81:F55E`). One thread for five
+  weapons, each with a row of sixteen bytes at `$81:F6CC`.
+  * *It flies at a height*, from 30. Each frame its height gains its
+    rise, and every so many frames its rise is one less. Three of the
+    rows start with a rise of 1 that goes down one frame in four, which
+    is an arc. Two have a rise of nothing that never goes down, and fly
+    level.
+  * *Ground stops it only when it is low*: under 31. Higher, and what is
+    under it is not asked about. So the three that arc go over what the
+    two that fly level are stopped by.
+  * *A changed weapon ends it before it is made.* Which of the five it
+    is comes from the weapon in hand as the thread starts, the frame
+    after the shot. A weapon before 7 by then, and the thread pulls its
+    return address and ends: `PLA : RTL` at `$81:F61C`. `level25-heavy`
+    and `level25-lane` each do it once in 40 shots. The port turned that down at first and
+    does it now.
+  * *It ends* after 60 frames, or further from a player than a thing may
+    go. It *bursts*, with pictures of its own, when it lands, meets ground
+    or hits something.
+* **That weapon 1 is the fire extinguisher was looked at.** A picture of
+  `level17-weapon` at frame 2,800 shows the extinguisher in the panel
+  and two white puffs ahead of the player, the further the larger.
+  That 13 is the flamethrower, and what the five are, were not: the port
+  says what their rows do.
+* **A row that was inside the spray.** `port/begin.h` names thirty-two
+  threads' ends for where they are, and `$81:FB67` was one. It is inside
+  the spray's frame. With it there the frame verified alone and failed
+  with everything: 48 of 1,372 calls passed. The comment over that list
+  says so: an entry inside another port's stretch hides that port's exit
+  from the check. The row is gone and the spray does its own end. The
+  thrown thing's end, `$81:F5C7`, is where its frame stops, so that row
+  stays.
+* **Four words priced as RAM that are the cartridge's.** The spray's
+  set-up reads its place at `$0000,X`, with X a table in bank `$81`.
+  `tools/cycles816.py` cannot know X and prices a low address as RAM.
+  The run was 16 over on all 99 calls of a movie until its row said so.
+* **Checked.**
+  * The corpus verifies clean: 126,344,242 calls, none diverged.
+  * The spray, by movie. Every call cost what the ROM's did.
+
+    | Movie | `spray_starts` | `spray_made` | `spray_wakes` |
+    |---|---|---|---|
+    | `level9-weapons` | 99 | 99 | 1,433 |
+    | `level17-weapon` | 99 | 99 | 1,419 |
+    | `level17-2p-freeze` | 99 | 99 | 1,428 |
+    | `level29-990b-freeze` | 48 | 48 | 816 |
+    | `level29-ice` | 32 | 32 | 218 |
+    | All | 377 | 377 | 5,314 |
+
+  * The thrown thing, by movie, the same.
+
+    | Movie | `thrown_starts` | `thrown_made` | `thrown_ready` | `thrown_cried` | `thrown_wakes` |
+    |---|---|---|---|---|---|
+    | `level25-heavy` | 40 | 39 | 39 | 1,743 | 1,743 |
+    | `level25-lane` | 40 | 39 | 39 | 2,008 | 2,008 |
+    | All | 80 | 78 | 78 | 3,751 | 3,751 |
+
+  * The first 4,700 frames of `level25-heavy` throw only weapon 11. The
+    other four were run by holding each in hand with `--poke`, over those
+    frames: about 22 thrown and 470 to 925 frames each, none diverged,
+    every call to the cycle. The flame was run the same way on `level17-weapon`: 263
+    sprays, 3,179 frames. Under a held poke `apu_send` and `apu_load_set`
+    diverge, with these rows or without them: the poke lands inside a
+    call of theirs.
+  * Lockstep: 51 of the 54 movies never part, and the three that do are the three that did, at the same passes. The thrown thing's five rows alone, substituted on `level25-heavy` and `level25-lane`, never part over 6,699 and 9,399 passes.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies,
+    and none differ, at both widths.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 677 to 666 | 67,417 to 44,663 | 904,468 to 476,276 |
+  | Left standing on an instruction | 50 to 50 | 2,965 to 2,965 | 67,508 to 67,508 |
+  | A port turned the call down | 32 to 32 | 4,012 to 4,012 | 24,477 to 24,477 |
+  | A port or a link called it | 6 to 6 | 85 to 85 | 950 to 950 |
+  | All | 766 to 755 | 74,589 to 51,835 | 1,005,323 to 577,131 |
+
+  825 routines are registered.
+* **Not done or not known.**
+  * Two of the thrown thing's branches are taken by no session and no
+    poke: further from a player than a thing may go, and a picture whose
+    word keeps bits of its record's flags. Each is as the listing reads.
+  * A weapon after 11 in hand as the thrown thing's thread starts has no
+    row. The harness does not hand that over, and no session does it.
+  * The ROM stops for good if `W_SPAWN_LOAD` goes below nothing at a
+    spray's end. The harness does not hand over a frame that could.
+  * Overflow after `terrain_point_bit2` is waived, as it is elsewhere.
+
 ### The Snakeoid, as far as its bite (2026-10-10)
 
 What the 65816 ran most was the mound that tunnels about levels 20, 40
@@ -171,9 +276,9 @@ clones' two threads, the one that only hunts.
 
   812 routines are registered.
 * **Not done or not known.**
-  * The hunting clone is checked only under `verify`. No movie reaches
-    record 31, so lockstep has not compared it substituted. The survey
-    ran it that way, and nothing compares there. Its being killed is
+  * No movie reaches record 31, where the hunting clone is. Since
+    `zamn_cosim run` took `--level`, lockstep has run that record with
+    the clone substituted, and the two never part. Its being killed is
     taken by no session.
   * Three of the tentacle's branches are taken by no session: no room
     for one more, solid ground where it would come in, and the level's

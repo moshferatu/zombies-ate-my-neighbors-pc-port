@@ -53,6 +53,8 @@
 #include "port/boss_thread.h"
 #include "port/tentacle.h"
 #include "port/snakeoid.h"
+#include "port/spray.h"
+#include "port/thrown.h"
 #include "port/neighbours.h"
 #include "port/objects.h"
 #include "port/player.h"
@@ -20698,6 +20700,196 @@ static const uint32_t SNAKEOID_EXITS[] = {
     SNAKEOID_BITES_PC,  SNAKEOID_BITES_BESIDE_PC};
 
 // ---------------------------------------------------------------------------
+// The spray of the extinguisher and the flamethrower -- see `port/spray.h`
+// ---------------------------------------------------------------------------
+//
+// One shim for the three stretches, priced as the Snakeoid's are: the
+// straight runs it took, a taken branch at 6 more, and the ground test it
+// made itself by that routine's own model.
+static const CosimRun SPRAY_RUN_COST[SPRAY_RUN_COUNT] = {
+    [SPRAY_RUN_9D6A] = {64, 8, 0},  // LDX : CMP : BEQ
+    [SPRAY_RUN_9D72] = {24, 2, 0},  // INX : INX
+    [SPRAY_RUN_9D74] = {42, 1, 0},  // RTL
+    [SPRAY_RUN_FAF5] = {40, 3, 0},  // JSR
+    [SPRAY_RUN_FAF8] = {138, 13, 0},  // CLC : LDA : ADC : STA : JSR
+    [SPRAY_RUN_FB05] = {46, 5, 1},  // LDA : STA
+    [SPRAY_RUN_FB0A] = {62, 4, 1},  // DEC : BNE
+    [SPRAY_RUN_FB0E] = {98, 10, 2},  // LDA : STA : INC : CMP : BEQ
+    [SPRAY_RUN_FB18] = {336, 24, 6},  // STA : LDY : LDA : ASL : ASL : CLC : ADC : TAX : LDA : STA : INC : INC
+    [SPRAY_RUN_FB2E] = {470, 36, 9},  // LDY : LDA : CLC : ADC : STA : CLC : ADC : STA : TAX : LDA : CLC : ADC : STA : CLC : ADC : STA : TAY : JSL : BCS
+    [SPRAY_RUN_FB52] = {182, 15, 3},  // LDY : LDA : STA : LDA : STA : LDA
+    [SPRAY_RUN_FB65] = {12, 2, 0},  // BRA
+    [SPRAY_RUN_FB67] = {110, 12, 0},  // SEC : LDA : SBC : STA : BMI
+    [SPRAY_RUN_FB73] = {28, 2, 1},  // LDA
+    [SPRAY_RUN_FB79] = {18, 3, 0},  // LDA
+    // Four words of this run are read at `$0000,X` and priced as RAM. They
+    // are its table's, in the cartridge: 8 bytes at the cartridge's speed.
+    [SPRAY_RUN_FB84] = {1286 - 16, 108 + 8, 14},  // STA : TAY : LDX : LDA : ASL : ASL : CLC : ADC : TAX : LDA : CLC : ADC : STZ : STA : LDA : CLC : ADC : STZ : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDX : LDA : STA : LDA : ASL : CLC : ADC : TAX : LDA : STA : LDA : STA : LDA : ORA : STA : LDA : STA : STZ : RTS
+    [SPRAY_RUN_FBEA] = {82, 6, 1},  // LDA : JSL
+    [SPRAY_RUN_FBF0] = {116, 13, 1},  // LDA : STA : LDA : CMP : BEQ
+    [SPRAY_RUN_FBFD] = {100, 4, 2},  // DEC : DEC
+    [SPRAY_RUN_FC01] = {40, 1, 0},  // RTS
+};
+
+// Its tables are read through the bank, and so are the two records. A frame
+// that could end is not taken with the load so low that the ROM would stop
+// at `$81:FB71`.
+static bool accepts_spray(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != SPRAY_BANK) return false;
+  if (in->pc == SPRAY_STARTS_PC) return true;
+  if (wram_r16(w, (uint16_t)(in->d + SPRAY_DP_OWNER)) >= 0x1f00) return false;
+  if (wram_r16(w, W_SPAWN_LOAD) < SPRAY_WEIGHT ||
+      wram_r16(w, W_SPAWN_LOAD) >= 0x8000u + SPRAY_WEIGHT)
+    return false;
+  if (in->pc == SPRAY_WAKES_PC)
+    return wram_r16(w, (uint16_t)(in->d + SPRAY_DP_RECORD)) < 0x1f00;
+  // The record it was given is in A, and it returns to the one place that
+  // calls for it.
+  return in->a < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + SPRAY_DP_WAY)) <= 0x0010 &&
+         wram_r16(w, (uint16_t)(in->s + 1)) == SPRAY_MADE_RETURN;
+}
+
+static void shim_spray(Wram* w, const Rom* rom, const CosimRegs* in,
+                       CosimRegs* out) {
+  PortCpu c;
+  SprayWork k = {0};
+  cpu_from(in, &c);
+  spray_run(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (!k.v_known) {
+    out->flags &= ~COSIM_FLAG_V;
+    out->p_keep = PORT_P_V;
+  }
+
+  const bool fast = fetch_fast(in);
+  CosimRun run = {0, 0, 0};
+  for (int i = 0; i < SPRAY_RUN_COUNT; i++)
+    run_add(&run, &SPRAY_RUN_COST[i], k.runs[i]);
+  run_add(&run, &RUN_TAKEN, k.taken);
+  int cycles = cosim_run_cycles_dp(&run, fast, (in->d & 0x00ffu) != 0);
+  if (k.tested) cycles += terrain_bit2_cycles(&k.ground, fast);
+  cosim_cost(cycles);
+}
+
+static const uint32_t SPRAY_STARTS_EXITS[] = {SPRAY_SOUND_PC};
+// A frame ends asleep, or with its record to be freed.
+static const uint32_t SPRAY_FRAME_EXITS[] = {SPRAY_SLEEP_PC, SPRAY_FREE_PC};
+
+// ---------------------------------------------------------------------------
+// What weapons 7 to 11 send out -- see `port/thrown.h`
+// ---------------------------------------------------------------------------
+//
+// One shim for the five stretches, priced as the spray's are: the straight
+// runs it took, a taken branch at 6 more, and the two tests it made itself
+// by those routines' own models.
+static const CosimRun THROWN_RUN_COST[THROWN_RUN_COUNT] = {
+    [THROWN_RUN_9D6A] = {64, 8, 0},  // LDX : CMP : BEQ
+    [THROWN_RUN_9D72] = {24, 2, 0},  // INX : INX
+    [THROWN_RUN_9D74] = {42, 1, 0},  // RTL
+    [THROWN_RUN_F55E] = {40, 3, 0},  // JSR
+    [THROWN_RUN_F561] = {116, 13, 0},  // CLC : LDA : ADC : STA : LDA
+    [THROWN_RUN_F572] = {18, 3, 0},  // LDA
+    [THROWN_RUN_F579] = {68, 6, 2},  // LDY : LDA : BEQ
+    [THROWN_RUN_F57F] = {18, 3, 0},  // JMP
+    [THROWN_RUN_F582] = {62, 4, 1},  // DEC : BMI
+    [THROWN_RUN_F586] = {170, 14, 0},  // LDA : TAX : LDA : TAY : JSL : BCS
+    [THROWN_RUN_F594] = {80, 7, 1},  // LDY : LDA : BMI
+    [THROWN_RUN_F59B] = {30, 5, 0},  // CMP : BCS
+    [THROWN_RUN_F5A0] = {170, 14, 0},  // LDA : TAX : LDA : TAY : JSL : BCS
+    [THROWN_RUN_F5AE] = {40, 3, 0},  // JSR
+    [THROWN_RUN_F5B1] = {40, 3, 0},  // JSR
+    [THROWN_RUN_F5B4] = {40, 3, 0},  // JSR
+    [THROWN_RUN_F5B7] = {12, 2, 0},  // BRA
+    [THROWN_RUN_F5B9] = {114, 10, 2},  // LDA : LDY : STA : LDA
+    [THROWN_RUN_F5D9] = {420, 31, 4},  // LDX : LDA : ASL : TAY : LDA : CLC : ADC : STA : INY : INY : LDA : CLC : ADC : STA : RTS
+    [THROWN_RUN_F5F4] = {62, 4, 1},  // DEC : BPL
+    [THROWN_RUN_F5F8] = {136, 11, 4},  // LDA : STA : LDA : INC : CMP : BCC
+    [THROWN_RUN_F603] = {18, 3, 0},  // LDA
+    [THROWN_RUN_F606] = {58, 6, 1},  // STA : ASL : JMP
+    [THROWN_RUN_F60C] = {40, 1, 0},  // RTS
+    [THROWN_RUN_F60D] = {82, 6, 1},  // LDA : JSL
+    [THROWN_RUN_F613] = {82, 9, 0},  // LDA : SEC : SBC : BPL
+    [THROWN_RUN_F61C] = {34, 1, 0},  // PLA
+    [THROWN_RUN_F61E] = {28, 1, 0},  // PHA
+    [THROWN_RUN_F623] = {1572, 141, 18},  // STA : STA : PLA : ASL : ASL : PHA : ASL : ASL : TAX : LDA : STA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : PLA : CLC : ADC : TAX : LDA : STA : LDA : STA : LDA : STA : LDA : STA : PHY : LDY : LDA : PLY : STA : LDA : STA : LDA : STA : LDA : ORA : STA : STZ : STZ : STZ : LDA : STA : LDA : LDY
+    [THROWN_RUN_F6A2] = {40, 1, 0},  // RTS
+    [THROWN_RUN_FEEF] = {266, 19, 5},  // LDY : LDA : CLC : ADC : STA : INC : LDA : AND : BNE
+    [THROWN_RUN_FF02] = {50, 2, 1},  // DEC
+    [THROWN_RUN_FF04] = {40, 1, 0},  // RTS
+    [THROWN_RUN_FF2A] = {110, 10, 2},  // LDX : ASL : TAY : LDA : BMI
+    [THROWN_RUN_FF32] = {92, 8, 0},  // ORA : STA : BRA
+    [THROWN_RUN_FF3A] = {80, 6, 0},  // AND : STA
+    [THROWN_RUN_FF40] = {150, 10, 1},  // INY : INY : LDA : STA : RTS
+};
+
+// Its tables are read through the bank, and so is its record.
+static bool accepts_thrown(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != THROWN_BANK) return false;
+  const uint16_t side = wram_r16(w, (uint16_t)(in->d + THROWN_DP_SIDE));
+  switch (in->pc) {
+    case THROWN_STARTS_PC: {
+      // A weapon after the last of the five has no row.
+      const uint16_t weapon = thrown_weapon_of(w, side);
+      return weapon <= THROWN_LAST_WEAPON || weapon >= 0x8000u;
+    }
+    case THROWN_MADE_PC:
+      // The record it was given is in A and in Y, and which of the five it
+      // is is on the stack.
+      return in->a < 0x1f00 && in->y < 0x1f00 && side <= 2 &&
+             wram_r16(w, (uint16_t)(in->s + 1)) <=
+                 THROWN_LAST_WEAPON - THROWN_FIRST_WEAPON;
+    case THROWN_READY_PC:
+      // It returns to the one place that calls for it.
+      return wram_r16(w, (uint16_t)(in->s + 1)) == THROWN_READY_RETURN;
+    case THROWN_CRIED_PC:
+      return true;
+    default:
+      // Its pictures and its steps are the cartridge's.
+      return wram_r16(w, (uint16_t)(in->d + THROWN_DP_RECORD)) < 0x1f00 &&
+             wram_r16(w, (uint16_t)(in->d + THROWN_DP_WAY)) <= 0x0010 &&
+             wram_r16(w, (uint16_t)(in->d + THROWN_DP_PICTURE)) < 0x0100 &&
+             wram_r16(w, (uint16_t)(in->d + THROWN_DP_PICTURES)) >= 0x8000 &&
+             wram_r16(w, (uint16_t)(in->d + THROWN_DP_PICTURES)) < 0xfc00 &&
+             wram_r16(w, (uint16_t)(in->d + THROWN_DP_STEPS)) >= 0x8000 &&
+             wram_r16(w, (uint16_t)(in->d + THROWN_DP_STEPS)) < 0xff00;
+  }
+}
+
+static void shim_thrown(Wram* w, const Rom* rom, const CosimRegs* in,
+                        CosimRegs* out) {
+  PortCpu c;
+  ThrownWork k = {0};
+  cpu_from(in, &c);
+  thrown_run(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (!k.v_known) {
+    out->flags &= ~COSIM_FLAG_V;
+    out->p_keep = PORT_P_V;
+  }
+
+  const bool fast = fetch_fast(in);
+  CosimRun run = {0, 0, 0};
+  for (int i = 0; i < THROWN_RUN_COUNT; i++)
+    run_add(&run, &THROWN_RUN_COST[i], k.runs[i]);
+  run_add(&run, &RUN_TAKEN, k.taken);
+  int cycles = cosim_run_cycles_dp(&run, fast, (in->d & 0x00ffu) != 0);
+  if (k.leashed) cycles += tether_cycles(&k.leash, fast);
+  if (k.tested) cycles += terrain_bit2_cycles(&k.ground, fast);
+  cosim_cost(cycles);
+}
+
+static const uint32_t THROWN_STARTS_EXITS[] = {THROWN_QUIT_PC,
+                                               THROWN_RECORD_PC};
+static const uint32_t THROWN_MADE_EXITS[] = {THROWN_HANDLER_PC};
+static const uint32_t THROWN_READY_EXITS[] = {THROWN_SOUND_PC};
+static const uint32_t THROWN_CRIED_EXITS[] = {THROWN_SLEEP_PC};
+// A frame ends asleep, with the pictures of its end to play, or where its
+// end begins, which is `port/begin.h`'s.
+static const uint32_t THROWN_FRAME_EXITS[] = {THROWN_SLEEP_PC, THROWN_BURST_PC,
+                                              THROWN_END_PC};
+
+// ---------------------------------------------------------------------------
 // The big figure's thread on level 25 -- see `port/boss_thread.h`
 // ---------------------------------------------------------------------------
 //
@@ -28098,7 +28290,7 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 1500,
         .stack_bytes = 5,
     },
-    // ...and thirty-two the port names for where they are.
+    // ...and thirty-one the port names for where they are.
 #define X(at, sym, pc, load, record_at, calls) \
     END_ROW(end_##at, sym, pc, accepts_record_end),
     RECORD_ENDS_BY_ADDRESS(X)
@@ -28279,6 +28471,47 @@ static const CosimRoutine ROUTINES[] = {
     SNAKEOID_ROW(dropped, "$82:9E18", SNAKEOID_DROPPED_PC, 9000)
     SNAKEOID_ROW(rose, "$82:A1F8", SNAKEOID_ROSE_PC, 900)
 #undef SNAKEOID_ROW
+    // The spray of the extinguisher and the flamethrower. See
+    // `port/spray.h`.
+#define SPRAY_ROW(name_, sym, pc, exits_, mean)                              \
+    {                                                                        \
+        .name = "spray_" #name_,                                             \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_spray,                                                   \
+        .accepts = accepts_spray,                                            \
+        COSIM_EXITS(exits_),                                                 \
+        .uncalled = true,                                                    \
+        .cycles = mean,                                                      \
+        /* A `JSR` to a `JSL` as it starts, and `terrain_point_bit2` */      \
+        /* under a frame. */                                                 \
+        .stack_bytes = 12,                                                   \
+    },
+    SPRAY_ROW(starts, "$81:FAF5", SPRAY_STARTS_PC, SPRAY_STARTS_EXITS, 700)
+    SPRAY_ROW(made, "$81:FB84", SPRAY_MADE_PC, SPRAY_FRAME_EXITS, 3200)
+    SPRAY_ROW(wakes, "$81:FB65", SPRAY_WAKES_PC, SPRAY_FRAME_EXITS, 1900)
+#undef SPRAY_ROW
+    // What weapons 7 to 11 send out. See `port/thrown.h`.
+#define THROWN_ROW(name_, sym, pc, exits_, mean)                             \
+    {                                                                        \
+        .name = "thrown_" #name_,                                            \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_thrown,                                                  \
+        .accepts = accepts_thrown,                                           \
+        COSIM_EXITS(exits_),                                                 \
+        .uncalled = true,                                                    \
+        .cycles = mean,                                                      \
+        /* A `JSR` to a `JSL` as it starts, and the two tests under a */     \
+        /* frame. */                                                         \
+        .stack_bytes = 16,                                                   \
+    },
+    THROWN_ROW(starts, "$81:F55E", THROWN_STARTS_PC, THROWN_STARTS_EXITS, 500)
+    THROWN_ROW(made, "$81:F623", THROWN_MADE_PC, THROWN_MADE_EXITS, 1600)
+    THROWN_ROW(ready, "$81:F6A2", THROWN_READY_PC, THROWN_READY_EXITS, 200)
+    THROWN_ROW(cried, "$81:F572", THROWN_CRIED_PC, THROWN_CRIED_EXITS, 20)
+    THROWN_ROW(wakes, "$81:F579", THROWN_WAKES_PC, THROWN_FRAME_EXITS, 4500)
+#undef THROWN_ROW
     // The big figure's thread on level 25. See `port/boss_thread.h`.
 #define BOSS_ROW(name_, sym, pc, exits_, jumped_to)                          \
     {                                                                        \

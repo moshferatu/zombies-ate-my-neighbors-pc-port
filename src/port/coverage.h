@@ -400,6 +400,28 @@
   X(snakeoid_hurries, "snakeoid_wakes", "chasing: nearer than `$A0`, a frame off its wait") \
   X(snakeoid_chases, "snakeoid_dropped", "chasing: a step towards them") \
   X(snakeoid_chase_stopped, "snakeoid_dropped", "...stopped on an axis: it hops") \
+  /* The spray of the extinguisher and the flamethrower -- see port/spray.h. */ \
+  X(spray_of_flame, "spray_starts", "its owner holds the flamethrower: flame") \
+  X(spray_of_foam, "spray_starts", "...or anything else: the extinguisher's foam") \
+  X(spray_grew, "spray_wakes", "a picture's frames are up: the next, for a frame longer") \
+  X(spray_spent, "spray_wakes", "...and it was the last: it ends") \
+  X(spray_met_ground, "spray_wakes", "ground where it would be shown: it ends") \
+  X(spray_went_on, "spray_wakes", "a step further out from its owner, and shown there") \
+  /* What weapons 7 to 11 send out -- see port/thrown.h. */                      \
+  X(thrown_weapon_changed, "thrown_starts", "its owner holds a weapon before 7: the thread ends") \
+  X(thrown_hit, "thrown_wakes", "its handler left something at `$3E`: it bursts") \
+  X(thrown_ran_out, "thrown_wakes", "its sixty frames are up: it ends") \
+  X(thrown_past_the_leash, "thrown_wakes", "further from a player than a thing may go: it ends") \
+  X(thrown_landed, "thrown_wakes", "its height below nothing: it bursts") \
+  X(thrown_over_the_ground, "thrown_wakes", "31 high or more: the ground is not asked about") \
+  X(thrown_met_ground, "thrown_wakes", "...lower, and on ground that stops a shot: it bursts") \
+  X(thrown_ground_clear, "thrown_wakes", "...or on ground that does not") \
+  X(thrown_slows, "thrown_wakes", "its age has none of its row's bits: its rise is one less") \
+  X(thrown_picture_stays, "thrown_wakes", "its picture has frames left") \
+  X(thrown_next_picture, "thrown_wakes", "...or has none: the next") \
+  X(thrown_first_picture_again, "thrown_wakes", "...or the first, after the last") \
+  X(thrown_flags_set, "thrown_wakes", "a picture that sets bits of its record's flags") \
+  X(thrown_flags_kept, "thrown_wakes", "...or keeps only some") \
   /* The giant ant's states -- see port/ant_states.h. */                        \
   X(ant_no_room_ground, "ant_asks_for_room", "solid ground at the top of the screen")         \
   X(ant_no_room_edge, "ant_asks_for_room", "...or that is past the level's edge")         \

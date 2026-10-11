@@ -18882,3 +18882,61 @@ of 2,228 to the cycle.
 Over the same 110 sessions the core executes 1,005,323 instructions
 where it executed 2,052,960, and takes over 74,589 times where it
 did 109,459, at 766 places where there were 788.
+
+## The spray and the thrown things (2026-10-10)
+
+### An older row inside a new stretch
+
+`spray_wakes` verified alone: 1,419 calls of 1,419 on `level17-weapon`,
+each to the cycle. With every routine it failed: 48 of 1,372 passed, and
+the ROM's side of a call ran as long as 63,522 cycles.
+
+    WRAM $7E:0006: ROM $0A, port $0B
+
+The cause was `end_81fb67`, one of the thirty-two ends `port/begin.h`
+names by address. `$81:FB67` is where the spray's frame goes when it is
+spent or meets ground, on the way to its `JML actor_slot_free`. An entry
+there is taken in the middle of the stretch, and the stretch's own exit is
+never seen.
+
+Two rows were tried together to find it, one suspect at a time with
+`-r spray_wakes -r <suspect>`: `thread_yield`, `terrain_point_bit2` and
+`spray_made` passed, `end_81fb67` did not.
+
+The two threads of this round differ in how they meet that list. The
+spray's end is reached from two places inside one frame and costs seven
+instructions, so the port does it and the row is gone. The thrown thing's
+end, `$81:F5C7`, is also reached after `pictures_play` returns, which is
+the harness's call. So its frame stops at `$81:F5C7` and the row stays.
+
+### A low address that is the cartridge's
+
+    $81:FB8E  ADC $FC06,X     X = the side: where that side's table is
+    $81:FB91  TAX
+    $81:FB95  ADC $0000,X     a word of that table
+
+`tools/cycles816.py` prices an operand under `$2000` as RAM, 8 cycles a
+byte. With X at `$FC12` it is the cartridge, 6. Four such words made
+`spray_made` 16 over on every call: the error read +64 to +104 where a
+stretch that crosses two or three scanlines is short by 80 to 120. The
+run's row takes 16 off and counts the 8 bytes as the cartridge's, so a
+slow cartridge is priced right as well.
+
+### Kinds a movie does not have, by a poke
+
+The thrown thing has five rows, and the frames of `level25-heavy` that
+were tried throw one. The other four
+were verified by holding the weapon and its rounds:
+
+    --poke 900+:1CBC=0007 --poke 900+:1CDA=0099
+
+`$1CCC` is player 1's rounds, a word a weapon. That is a state nothing
+proved reachable (`src/poke.h`), and what it shows is that the port does
+what the ROM does with it. Rows 0 to 2 took the arc: rising, slowing,
+over the ground, landing. Rows 3 and 4 never did.
+
+### After
+
+Over the same 110 sessions the core executes 577,131 instructions
+where it executed 1,005,323, and takes over 51,835 times where it
+did 74,589, at 755 places where there were 766.
