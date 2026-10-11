@@ -21,6 +21,7 @@ typedef struct {
   int index;          // which registry entry
   uint16_t entry_sp;  // SP as the routine was entered
   uint16_t min_sp;    // lowest SP seen during the call — see dead_stack()
+  uint16_t left_sp;   // SP where a stretch stopped, if that is above entry_sp
   uint32_t ret_pc;    // where it will return to, read off the stack at entry
   uint64_t cycles;    // core cycle count at entry
   bool hdma;          // ...and whether the PPU was stealing any, at entry
@@ -688,10 +689,18 @@ static void note(CosimStat* s, const char* fmt, ...) {
 // stack pointer got during the call up to where it started. A routine that
 // pushed nothing gets an empty window and no leeway at all, and nothing outside
 // the few bytes a routine actually touched is ever waved through.
+//
+// A stretch can stop with less on the stack than it began with: it pulls the
+// return addresses it was entered under and goes on in the routines they
+// name. What those call then pushes and abandons lies above where the stretch
+// began, and under where it stopped, which is free space as well. So for a
+// stretch the window's top is whichever of the two is higher.
 static bool dead_stack(const CosimRoutine* r, const CosimCall* call,
                        uint32_t off) {
   if (call->jump && r->stack_bytes == 0) return false;
-  return off > (uint32_t)call->min_sp && off <= (uint32_t)call->entry_sp;
+  uint32_t top = call->entry_sp;
+  if (call->jump && call->left_sp > top) top = call->left_sp;
+  return off > (uint32_t)call->min_sp && off <= top;
 }
 
 // Diff the WRAM half. Split out from compare() because a suspension is checked
@@ -2334,6 +2343,7 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
     call->index = index;
     call->entry_sp = snes->cpu->sp;
     call->min_sp = snes->cpu->sp;
+    call->left_sp = snes->cpu->sp;
     call->suspended = false;
     call->segment_spoiled = false;
     call->segment = 0;
@@ -2384,6 +2394,7 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
 static void segment_start(Cosim* c, CosimCall* call) {
   call->entry_sp = c->snes->cpu->sp;
   call->min_sp = c->snes->cpu->sp;
+  call->left_sp = c->snes->cpu->sp;
   call->cycles = c->snes->cycles - c->priv->irq_skip_all;
   call->hdma = hdma_armed(c->snes);
   call->segment_spoiled = false;
@@ -2598,6 +2609,7 @@ static void end_jump_verify(Cosim* c, CosimCall* call) {
 
   CosimRegs rom_regs;
   regs_capture(c->snes, &rom_regs);
+  call->left_sp = c->snes->cpu->sp;
 
   CosimRegs out;
   uint16_t ticks = 0;

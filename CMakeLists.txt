@@ -341,6 +341,7 @@ add_library(zamn_port STATIC
   src/port/ant_thread.c
   src/port/ant_states.c
   src/port/boss_thread.c
+  src/port/snakeoid.c
   src/port/tentacle.c
   src/port/decoy.c
   src/port/lunge.c

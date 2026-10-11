@@ -374,6 +374,32 @@
   X(tentacle_rests, "tentacle_wakes", "its fourth picture shown: twelve ticks' rest") \
   X(tentacle_ends, "tentacle_wakes", "`$0A` set: killed, or nobody about") \
   X(tentacle_looks_round, "tentacle_rested", "a rest's draw under 10: it looks round") \
+  /* The Snakeoid's thread -- see port/snakeoid.h. */                            \
+  X(snakeoid_wakes, "snakeoid_waited", "a player within `$DC`: its wait is over") \
+  X(snakeoid_dies, "snakeoid_wakes", "`$46` set: it is dying") \
+  X(snakeoid_piece_flattens, "snakeoid_wakes", "a piece of track eight frames older: shown flatter") \
+  X(snakeoid_piece_goes, "snakeoid_wakes", "...and 32 frames old: it is to be freed") \
+  X(snakeoid_finds_prey, "snakeoid_wakes", "neither word set: the nearest record is a kind it eats") \
+  X(snakeoid_not_prey, "snakeoid_wakes", "...or is not") \
+  X(snakeoid_finds_one_player, "snakeoid_wakes", "one word set: that player is within the range") \
+  X(snakeoid_finds_nearer_player, "snakeoid_wakes", "both set: the nearer player is") \
+  X(snakeoid_sees_someone, "snakeoid_wakes", "wandering: somebody within `$B4`, and it will chase") \
+  X(snakeoid_leaps, "snakeoid_wakes", "a step's draw under 15: it comes up beside a player") \
+  X(snakeoid_track_full, "snakeoid_wakes", "a piece of track due, and all four in use") \
+  X(snakeoid_drops_track, "snakeoid_dropped", "a record for a piece of track: it is laid") \
+  X(snakeoid_list_full, "snakeoid_dropped", "the list of tile changes is long: nothing is churned") \
+  X(snakeoid_churns, "snakeoid_dropped", "a tile about it that can be churned is") \
+  X(snakeoid_wanders, "snakeoid_dropped", "wandering: a step its way") \
+  X(snakeoid_wander_stopped, "snakeoid_dropped", "...stopped on an axis: a hop or a new way, by a draw") \
+  X(snakeoid_hops, "snakeoid_dropped", "a place along its way it can be: it comes up there") \
+  X(snakeoid_nowhere_to_hop, "snakeoid_dropped", "...and none in 26 tries") \
+  X(snakeoid_is_up, "snakeoid_rose", "its fourth picture shown: it has come up") \
+  X(snakeoid_loses_them, "snakeoid_wakes", "chasing: nobody within `$DC`, and it wanders") \
+  X(snakeoid_bites, "snakeoid_wakes", "chasing: within 12 of them, and it comes up under them") \
+  X(snakeoid_bites_beside, "snakeoid_wakes", "chasing: somebody beside a place it bites from") \
+  X(snakeoid_hurries, "snakeoid_wakes", "chasing: nearer than `$A0`, a frame off its wait") \
+  X(snakeoid_chases, "snakeoid_dropped", "chasing: a step towards them") \
+  X(snakeoid_chase_stopped, "snakeoid_dropped", "...stopped on an axis: it hops") \
   /* The giant ant's states -- see port/ant_states.h. */                        \
   X(ant_no_room_ground, "ant_asks_for_room", "solid ground at the top of the screen")         \
   X(ant_no_room_edge, "ant_asks_for_room", "...or that is past the level's edge")         \

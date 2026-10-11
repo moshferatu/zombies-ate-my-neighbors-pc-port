@@ -5,6 +5,105 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The Snakeoid, as far as its bite (2026-10-10)
+
+What the 65816 ran most was the mound that tunnels about levels 20, 40
+and 47. Its waiting, wandering, chasing and hopping are ported, in
+`port/snakeoid.h`. Its coming up to bite is not.
+
+* **The Snakeoid** (`$82:A8BB` and `$82:A8C3`: records 20, 40 and 47).
+  * *It waits* where it was put until a player is within `$DC`.
+  * *Wandering* (`$82:A451`): 6 pixels its way, one frame in seven. A
+    step stopped on either axis ends in a new way or in a hop, by a draw.
+    One step in seventeen it comes up beside a player instead.
+  * *Chasing* (`$82:A4C3`): towards who it found, stepping about twice as
+    often within `$A0` of them. A stopped step is always a hop.
+  * *A hop* looks along its way, 8 pixels at a time from 24 off, for the
+    first place it could be, and comes up there over 32 ticks.
+  * *Its track*: every other step lays a piece where it is, a record of
+    its own, and churns the four tiles about it that can be churned. A
+    piece lasts 32 frames and is shown flatter every eighth.
+  * *It keeps to its own ground*: a step or a landing is asked of
+    `terrain_footprint_bit12`, and of the level's edge.
+* **It finds a player by their pad.** Who it goes for is asked at
+  `$82:9F16`, three ways by the two words at `$6E` and `$70`, which are
+  the two pads as the NMI read them. Neither held, and it goes only for
+  the nearest record of a kind it eats. One held, and it is that player.
+  Both, and it is the nearer. So a player holding nothing is not found.
+  This is read from the listing and the sessions agree with it; it has
+  not been played.
+* **That it is the Snakeoid was looked at.** A picture of record 20 at
+  frame 3,200 shows a mound of earth beside the player and churned ground
+  where it has been. The two entries differ in one word, `$50`: which
+  four tiles it churns the ground into.
+* **Six stretches, and they go back by the stack.** The calls a stretch
+  stops on are its three sleeps, a record asked for and a record freed.
+  Three of those are inside routines its states call, as many as three
+  `JSR`s down. So a stretch that begins after one cannot know from its
+  address where it is to go on: `$82:9DE7`, after a piece is freed, is
+  reached from a frame's ageing of the track and from a hop's. The port
+  pulls the return address as the `RTS` would and goes on in the routine
+  it names. The guard reads the same words first and turns down a stack
+  it does not know.
+* **The harness's dead stack is wider for a stretch.** A stretch like
+  that stops with less on the stack than it began with. What its callees
+  pushed and abandoned on the way lies above where it began, and the
+  compare waived only below that. 335 of record 20's 348 frees failed on
+  one such byte: `actor_nearest`'s `PHD`. The window's top is now the
+  higher of where a stretch began and where it stopped, which is still
+  only free space.
+* **`tile_attrs_at_tile` prices itself.** It had a mean, 862. It is the
+  pixel form less ten instructions and has no branch, so it costs 840,
+  and the weeds' port already said so. Its 2,228 calls on the two records
+  are all that to the cycle.
+* **Checked.**
+  * The corpus verifies clean: 126,330,813 calls, none diverged. No
+    movie of the corpus reaches a Snakeoid.
+  * Records 20, 40 and 47, each verified alone: 13,044 calls of the six
+    stretches, none diverged, and every one cost what the ROM's did.
+
+    | Stretch | Record 20 | Record 40 | Record 47 |
+    |---|---|---|---|
+    | `snakeoid_ready` | 3 | 1 | 3 |
+    | `snakeoid_waited` | 745 | 0 | 2,234 |
+    | `snakeoid_wakes` | 5,232 | 2,886 | 0 |
+    | `snakeoid_freed` | 348 | 203 | 0 |
+    | `snakeoid_dropped` | 352 | 205 | 0 |
+    | `snakeoid_rose` | 736 | 96 | 0 |
+
+  * Lockstep: the corpus's table is what it was: 334,319 passes, 51 of 54
+    never part, the same three. `zamn_cosim run` takes `--level` now.
+    Records 20 and 47 never part over 4,699 passes each with every
+    stretch substituted, 10,814 calls of them on record 20. Record 40
+    parts at pass 318, in the level's load and before a Snakeoid exists,
+    and does so with the six stretches left out too. Records 0 and 31,
+    the tentacle's and the hunting clone's, never part either.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies,
+    and none differ, at both widths.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 699 to 677 | 102,287 to 67,417 | 1,952,105 to 904,468 |
+  | Left standing on an instruction | 50 to 50 | 2,965 to 2,965 | 67,508 to 67,508 |
+  | A port turned the call down | 32 to 32 | 4,012 to 4,012 | 24,477 to 24,477 |
+  | A port or a link called it | 6 to 6 | 85 to 85 | 950 to 950 |
+  | All | 788 to 766 | 109,459 to 74,589 | 2,052,960 to 1,005,323 |
+
+  818 routines are registered.
+* **Not done or not known.**
+  * Its coming up to bite, `$82:A538` and `$82:A56E`, and what they
+    call. No session reaches either: the stretches stop
+    there and the ROM goes on.
+  * How it starts (`$82:A82F`) and dies (`$82:A8FE` on).
+  * Eight of its branches are taken by no session: the two bites, its
+    dying, a prey found, the nearer of two players, a chase lost, all
+    four pieces of track in use, and the list of tile changes full. Each
+    is as the listing reads.
+  * Overflow after `actor_nearest`, `player_in_range`,
+    `tile_attrs_at_tile` and `map_tile_put` is waived, as it is
+    elsewhere.
+
 ### The purple tentacle, and the clone that only hunts (2026-10-10)
 
 The thread the 65816 still ran most was the bonus levels' purple

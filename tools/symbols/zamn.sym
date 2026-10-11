@@ -408,8 +408,8 @@ $82:AB95  level_script         # 19 levels: reads its parameter through [$00]
 $82:9569  level_intro_9569     # 3 levels: adds #$0028 to $00DE, then a palette load
 $82:873C  level_intro_873c     # 2 levels: the same with #$0018 and $94:FFAB
 $83:AD33  level_intro_ad33     # 2 levels: JSR $83:AAB2, then the $9569 idiom
-$82:A8BB  level_thread_a8bb    # 4 uses; falls into the same body as...
-$82:A8C3  level_thread_a8c3    # ...this, a second entry, 3 uses -- both yield at $82:A8EB
+$82:A8BB  snakeoid_thread      # 4 uses; falls into the same body as...
+$82:A8C3  snakeoid_thread_b    # ...this, a second entry, 3 uses -- both yield at $82:A8EB
 $82:DB46  victim_list_parse    # +$1E victim list -> victim_x/_y/_count arrays
 $80:C9A5  object_list_parse    # +$20 object list -> object_x/_y/_type arrays
 $80:C9E3  object_spawn         # one object -> a display record, from its type

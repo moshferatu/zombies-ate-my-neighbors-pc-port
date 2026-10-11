@@ -366,19 +366,35 @@ static int cmd_run(const Options* o) {
                     "       comparison.\n");
     return 2;
   }
-  // Refused for now rather than ignored: `cosim_lockstep` builds both of its
-  // cores from the file, so there is no one cartridge here to patch.
-  if (o->level >= 0) {
-    fprintf(stderr, "error: --level is a verify-only flag for now.\n");
-    return 2;
-  }
   int rom_len = 0;
   uint8_t* rom_data = read_file(o->rom_path, &rom_len);
   if (!rom_data) return 1;
-  int rc = cosim_lockstep(snes_init(), snes_init(), rom_data, rom_len, o->movie_path,
+
+  // `cosim_lockstep` builds both of its cores from an image, so `--level`
+  // changes one first: a console of its own loads the file, the cartridge it
+  // holds is changed as `verify` changes its one, and both cores are built
+  // from that.
+  Snes* changed = NULL;
+  const uint8_t* image = rom_data;
+  int image_len = rom_len;
+  if (o->level >= 0) {
+    changed = snes_init();
+    if (!snes_loadRom(changed, rom_data, rom_len)) {
+      fprintf(stderr, "error: core rejected ROM\n");
+      return 1;
+    }
+    if (!start_at_level(changed, o->level)) {
+      fprintf(stderr, "error: --level: this is not a cartridge it can change\n");
+      return 1;
+    }
+    image = changed->cart->rom;
+    image_len = changed->cart->romSize;
+  }
+  int rc = cosim_lockstep(snes_init(), snes_init(), image, image_len, o->movie_path,
                           o->frames, o->selected, o->selected_count, o->verbose);
   cosim_coverage_report(o->coverage);
   cosim_census_report();
+  if (changed) snes_free(changed);
   free(rom_data);
   return rc;
 }
@@ -404,7 +420,7 @@ static void usage(void) {
          "         repeatable). A branch taken this way is checked against the\n"
          "         ROM on a state nothing proved reachable — see src/poke.h.\n"
          "         --level <n> to start a new game on record n (0..55), as\n"
-         "         `zamn --level` does (verify only).\n");
+         "         `zamn --level` does.\n");
 }
 
 int main(int argc, char** argv) {

@@ -52,6 +52,7 @@
 #include "port/ant_thread.h"
 #include "port/boss_thread.h"
 #include "port/tentacle.h"
+#include "port/snakeoid.h"
 #include "port/neighbours.h"
 #include "port/objects.h"
 #include "port/player.h"
@@ -1156,6 +1157,9 @@ static int publish_cycles(bool two_part, bool fast, bool unaligned) {
 // `$80:AD1C` and `$80:ADC8`, which calls it. Neither has a branch.
 static const CosimRun TILE_ADDR_RUN = {250, 15, 0};
 static const CosimRun TILE_ATTRS_RUN = {710 + 250, 43 + 15, 0};
+// `$80:ADF3` is `$80:ADC8` less the six shifts and the four transfers
+// about them: ten instructions of a byte and two cycles each.
+static const CosimRun TILE_ATTRS_TILE_RUN = {590 + 250, 33 + 15, 0};
 
 // `$80:E86D`, on its caller's page, with `$80:F935` in line as the ROM has it
 // one `JSR` away.
@@ -4334,6 +4338,7 @@ static void shim_tile_attrs_at_tile(Wram* w, const Rom* rom,
   (void)rom;
   TileAttrsRegs r;
   tile_attrs_at_tile(w, in->x, in->y, &r);
+  cosim_cost(cosim_run_cycles(&TILE_ATTRS_TILE_RUN, in->fastrom));
   out->a = r.a;
   out->x = in->x;
   out->y = in->y;
@@ -20484,6 +20489,215 @@ static const uint32_t TENTACLE_SCORED_EXITS[] = {TENTACLE_CRY_PC};
 static const uint32_t TENTACLE_CRIED_EXITS[] = {TENTACLE_DEATH_PC};
 
 // ---------------------------------------------------------------------------
+// The Snakeoid's thread -- see `port/snakeoid.h`
+// ---------------------------------------------------------------------------
+//
+// One shim for every stretch, priced as the tentacle's are: the straight
+// runs it took, a taken branch at 6 more, and the calls it made itself by
+// their own models.
+static const CosimRun SNAKEOID_RUN_COST[SNAKEOID_RUN_COUNT] = {
+    [SNAKEOID_RUN_9DA7] = {36, 6, 0},  // LDX : LDY
+    [SNAKEOID_RUN_9DAD] = {64, 7, 1},  // LDA : CMP : BEQ
+    [SNAKEOID_RUN_9DB4] = {92, 7, 2},  // LDA : DEC : STA : BEQ
+    [SNAKEOID_RUN_9DBB] = {30, 5, 0},  // AND : BEQ
+    [SNAKEOID_RUN_9DC0] = {66, 8, 0},  // TXA : SEC : SBC : TAX : BPL
+    [SNAKEOID_RUN_9DC8] = {40, 1, 0},  // RTS
+    [SNAKEOID_RUN_9DC9] = {222, 20, 2},  // LDA : LSR : LSR : DEC : DEC : TAY : LDA : LDY : STA : JMP
+    [SNAKEOID_RUN_9DDB] = {114, 8, 2},  // PHX : LDY : LDA : STY
+    [SNAKEOID_RUN_9DE7] = {52, 4, 0},  // PLX : JMP
+    [SNAKEOID_RUN_9DF7] = {62, 4, 1},  // DEC : BPL
+    [SNAKEOID_RUN_9DFB] = {18, 3, 0},  // LDX
+    [SNAKEOID_RUN_9DFE] = {64, 7, 1},  // LDA : CMP : BEQ
+    [SNAKEOID_RUN_9E05] = {66, 8, 0},  // TXA : SEC : SBC : TAX : BPL
+    [SNAKEOID_RUN_9E0E] = {74, 6, 1},  // LDA : STA : PHX
+    [SNAKEOID_RUN_9E18] = {724, 62, 4},  // PLX : STA : TAY : LDA : STA : LDA : STA : LDA : STA : LDA : DEC : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : STA : JSR
+    [SNAKEOID_RUN_9E57] = {64, 8, 0},  // LDA : CMP : BCS
+    [SNAKEOID_RUN_9E5F] = {230, 19, 5},  // LDA : LSR : LSR : LSR : STA : LDA : LSR : LSR : LSR : STA : LDX : STX
+    [SNAKEOID_RUN_9E72] = {428, 39, 8},  // LDA : CLC : ADC : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDX : LDY : JSL : BIT : BEQ
+    [SNAKEOID_RUN_9E95] = {226, 19, 4},  // LDA : CLC : ADC : TAX : LDA : LDX : LDY : JSL
+    [SNAKEOID_RUN_9EA6] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [SNAKEOID_RUN_9F16] = {46, 4, 0},  // PHA : JMP
+    [SNAKEOID_RUN_9F1A] = {156, 11, 2},  // PLA : STA : JSL : CMP : BCS
+    [SNAKEOID_RUN_9F25] = {98, 10, 1},  // STA : LDY : CPY : BEQ
+    [SNAKEOID_RUN_9F2F] = {30, 5, 0},  // CPY : BEQ
+    [SNAKEOID_RUN_9F34] = {12, 2, 0},  // BRA
+    [SNAKEOID_RUN_9F36] = {582, 39, 1},  // PHX : LDY : PHY : LDA : TAX : PHX : JSR : ASL : ASL : TAY : PLA : SEC : SBC : TAX : PLA : SEC : SBC : TAY : JSR : PLX : LDY : RTS
+    [SNAKEOID_RUN_9F59] = {82, 6, 0},  // LDA : TAX : TAY : RTS
+    [SNAKEOID_RUN_9F5F] = {148, 13, 2},  // STX : STY : LDA : CLC : ADC : BEQ
+    [SNAKEOID_RUN_9F6C] = {86, 8, 1},  // STA : SEC : SBC : BEQ
+    [SNAKEOID_RUN_9F74] = {86, 8, 1},  // LDA : SEC : SBC : BEQ
+    [SNAKEOID_RUN_9F7C] = {112, 8, 0},  // PLA : JSL : TAY : BEQ
+    [SNAKEOID_RUN_9F84] = {52, 5, 1},  // STX : TAX : BRA
+    [SNAKEOID_RUN_9F89] = {46, 5, 0},  // LDX : BRA
+    [SNAKEOID_RUN_9F8E] = {34, 3, 0},  // LDX
+    [SNAKEOID_RUN_9F91] = {92, 8, 1},  // LDA : SEC : SBC : BPL
+    [SNAKEOID_RUN_9F99] = {30, 4, 0},  // EOR : INC
+    [SNAKEOID_RUN_9F9D] = {120, 10, 2},  // STA : LDA : SEC : SBC : BPL
+    [SNAKEOID_RUN_9FA7] = {30, 4, 0},  // EOR : INC
+    [SNAKEOID_RUN_9FAB] = {142, 10, 3},  // CLC : ADC : STA : PLA : CMP : BCS
+    [SNAKEOID_RUN_9FB5] = {12, 2, 0},  // BRA
+    [SNAKEOID_RUN_9FFB] = {160, 16, 1},  // STX : STY : LDX : LDA : CMP : BEQ
+    [SNAKEOID_RUN_A00B] = {66, 7, 0},  // TXA : ADC : ASL : ASL : TAX
+    [SNAKEOID_RUN_A012] = {74, 7, 1},  // LDA : CMP : BEQ
+    [SNAKEOID_RUN_A019] = {42, 5, 0},  // TXA : ADC : TAX
+    [SNAKEOID_RUN_A01E] = {94, 10, 0},  // LDA : AND : RTS
+    [SNAKEOID_RUN_A088] = {178, 14, 4},  // STX : STY : LDX : LDY : JSL : BCS
+    [SNAKEOID_RUN_A096] = {122, 10, 2},  // LDX : LDY : JSL : BCS
+    [SNAKEOID_RUN_A0A0] = {124, 9, 3},  // LDY : LDA : STA : STA
+    [SNAKEOID_RUN_A0A9] = {122, 10, 2},  // LDX : LDY : JSL : BCS
+    [SNAKEOID_RUN_A0B3] = {122, 10, 2},  // LDX : LDY : JSL : BCS
+    [SNAKEOID_RUN_A0BD] = {124, 9, 3},  // LDY : LDA : STA : STA
+    [SNAKEOID_RUN_A0C7] = {434, 43, 8},  // LDA : ASL : TAX : LDA : STA : LDA : STA : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : STA
+    [SNAKEOID_RUN_A0EA] = {324, 25, 8},  // LDA : CLC : ADC : STA : STA : TAX : LDA : CLC : ADC : STA : STA : TAY : JSR : BCS
+    [SNAKEOID_RUN_A103] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A106] = {52, 2, 0},  // CLC : RTS
+    [SNAKEOID_RUN_A108] = {62, 4, 1},  // DEC : BPL
+    [SNAKEOID_RUN_A10C] = {52, 2, 0},  // SEC : RTS
+    [SNAKEOID_RUN_A156] = {136, 13, 0},  // JSL : AND : TAX : LDA : BEQ
+    [SNAKEOID_RUN_A163] = {82, 9, 0},  // TAX : LDA : CMP : BEQ
+    [SNAKEOID_RUN_A16C] = {30, 5, 0},  // CMP : BEQ
+    [SNAKEOID_RUN_A172] = {132, 16, 0},  // JSL : AND : CLC : ADC : BIT : BEQ
+    [SNAKEOID_RUN_A182] = {30, 4, 0},  // EOR : INC
+    [SNAKEOID_RUN_A186] = {212, 22, 1},  // CLC : ADC : STA : JSL : AND : CLC : ADC : BIT : BEQ
+    [SNAKEOID_RUN_A19C] = {30, 4, 0},  // EOR : INC
+    [SNAKEOID_RUN_A1A0] = {132, 11, 1},  // CLC : ADC : STA : JSR : BCS
+    [SNAKEOID_RUN_A1AB] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A1AF] = {122, 10, 2},  // LDX : LDY : JSL : BCS
+    [SNAKEOID_RUN_A1B9] = {122, 10, 2},  // LDX : LDY : JSL : BCS
+    [SNAKEOID_RUN_A1C3] = {220, 16, 5},  // LDY : LDA : STA : STA : LDA : STA : STA
+    [SNAKEOID_RUN_A1D4] = {46, 4, 0},  // LDY : PHY
+    [SNAKEOID_RUN_A1D8] = {82, 8, 0},  // PLY : LDA : BEQ
+    [SNAKEOID_RUN_A1DE] = {208, 16, 1},  // LDX : STA : INY : INY : LDA : INY : INY : PHY : PHA
+    [SNAKEOID_RUN_A1EC] = {58, 4, 0},  // PLA : DEC : BMI
+    [SNAKEOID_RUN_A1F0] = {46, 4, 0},  // PHA : LDA
+    [SNAKEOID_RUN_A1F8] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A1FB] = {12, 2, 0},  // BRA
+    [SNAKEOID_RUN_A1FD] = {12, 2, 0},  // BRA
+    [SNAKEOID_RUN_A34A] = {46, 5, 1},  // LDX : STX
+    [SNAKEOID_RUN_A34F] = {374, 35, 7},  // LDX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : LDX : LDY : JSR : TAY : BNE
+    [SNAKEOID_RUN_A36E] = {98, 10, 2},  // LDA : SEC : SBC : STA : BPL
+    [SNAKEOID_RUN_A378] = {68, 3, 1},  // STA : RTS
+    [SNAKEOID_RUN_A37B] = {124, 7, 3},  // STX : LDA : STA : RTS
+    [SNAKEOID_RUN_A418] = {62, 4, 1},  // DEC : BPL
+    [SNAKEOID_RUN_A41C] = {46, 5, 1},  // LDA : STA
+    [SNAKEOID_RUN_A421] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A425] = {152, 14, 2},  // LDA : LDX : LDY : JSL : TAY : BNE
+    [SNAKEOID_RUN_A433] = {18, 3, 0},  // LDA
+    [SNAKEOID_RUN_A43A] = {12, 2, 0},  // BRA
+    [SNAKEOID_RUN_A43D] = {142, 14, 1},  // JSL : AND : INC : ASL : STA : JMP
+    [SNAKEOID_RUN_A44B] = {86, 6, 1},  // LDA : STA : RTS
+    [SNAKEOID_RUN_A451] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A454] = {138, 13, 2},  // LDA : LDX : LDY : JSR : TAY : BNE
+    [SNAKEOID_RUN_A461] = {40, 4, 1},  // LDA : BNE
+    [SNAKEOID_RUN_A465] = {84, 9, 0},  // JSL : CMP : BCS
+    [SNAKEOID_RUN_A46E] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A471] = {18, 3, 0},  // JMP
+    [SNAKEOID_RUN_A474] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A477] = {420, 37, 8},  // LDA : ASL : TAX : LDA : CLC : ADC : TAY : STA : LDA : CLC : ADC : STA : TAX : JSR : STZ : LDA : CMP : BEQ
+    [SNAKEOID_RUN_A498] = {50, 2, 1},  // INC
+    [SNAKEOID_RUN_A49A] = {68, 6, 2},  // LDA : CMP : BEQ
+    [SNAKEOID_RUN_A4A0] = {50, 2, 1},  // INC
+    [SNAKEOID_RUN_A4A2] = {40, 4, 1},  // LDA : BNE
+    [SNAKEOID_RUN_A4A7] = {84, 9, 0},  // JSL : CMP : BCS
+    [SNAKEOID_RUN_A4B0] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A4B3] = {12, 2, 0},  // BCC
+    [SNAKEOID_RUN_A4B5] = {18, 3, 0},  // JMP
+    [SNAKEOID_RUN_A4B8] = {46, 5, 1},  // STX : JMP
+    [SNAKEOID_RUN_A4BD] = {86, 6, 1},  // LDA : STA : RTS
+    [SNAKEOID_RUN_A4C3] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A4C6] = {144, 15, 2},  // LDA : LDX : LDY : JSR : CMP : BEQ
+    [SNAKEOID_RUN_A4D5] = {98, 10, 2},  // ASL : STA : STX : CPY : BCC
+    [SNAKEOID_RUN_A4DF] = {126, 8, 0},  // PHY : JSR : PLY : TAX : BPL
+    [SNAKEOID_RUN_A4E7] = {30, 5, 0},  // CPY : BCS
+    [SNAKEOID_RUN_A4EC] = {40, 4, 1},  // LDA : BEQ
+    [SNAKEOID_RUN_A4F0] = {40, 3, 1},  // DEC : STA
+    [SNAKEOID_RUN_A4F3] = {40, 4, 1},  // LDA : BNE
+    [SNAKEOID_RUN_A4F7] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A4FA] = {420, 37, 8},  // LDA : ASL : TAX : LDA : CLC : ADC : TAY : STA : LDA : CLC : ADC : STA : TAX : JSR : STZ : LDA : CMP : BEQ
+    [SNAKEOID_RUN_A51B] = {50, 2, 1},  // INC
+    [SNAKEOID_RUN_A51D] = {68, 6, 2},  // LDA : CMP : BEQ
+    [SNAKEOID_RUN_A523] = {50, 2, 1},  // INC
+    [SNAKEOID_RUN_A525] = {40, 4, 1},  // LDA : BNE
+    [SNAKEOID_RUN_A52A] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A52D] = {12, 2, 0},  // BCC
+    [SNAKEOID_RUN_A52F] = {18, 3, 0},  // JMP
+    [SNAKEOID_RUN_A532] = {18, 3, 0},  // JMP
+    [SNAKEOID_RUN_A535] = {18, 3, 0},  // JMP
+    [SNAKEOID_RUN_A8D8] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A8DB] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A8DE] = {170, 10, 2},  // STZ : PEA : LDA : DEC : PHA : RTS
+    [SNAKEOID_RUN_A8E8] = {18, 3, 0},  // LDA
+    [SNAKEOID_RUN_A8EF] = {40, 4, 1},  // LDA : BEQ
+};
+
+// Its tables are read through the bank, and so are its records. A stretch
+// that begins inside a routine its state called goes back by the return
+// addresses on the stack, and the port follows only the ones it knows.
+static bool accepts_snakeoid(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != SNAKEOID_BANK) return false;
+  if (wram_r16(w, (uint16_t)(in->d + SNAKEOID_DP_RECORD)) >= 0x1f00)
+    return false;
+  for (int i = 0; i < SNAKEOID_TRACK_PIECES; i++) {
+    const uint16_t piece = wram_r16(
+        w, (uint16_t)(in->d + SNAKEOID_DP_TRACK + i * SNAKEOID_TRACK_STRIDE));
+    if (piece != SNAKEOID_NO_PIECE && piece >= 0x1f00) return false;
+  }
+  // The record it was given for a piece is in A.
+  if (in->pc == SNAKEOID_DROPPED_PC && in->a >= 0x1f00) return false;
+  // It goes to its state by a computed `RTS`, and the port knows two.
+  if (in->pc == SNAKEOID_WAKES_PC &&
+      !snakeoid_state_known(
+          wram_r16(w, (uint16_t)(in->d + SNAKEOID_DP_STATE))))
+    return false;
+  return snakeoid_stack_known(w, in->pc, in->s);
+}
+
+static void shim_snakeoid(Wram* w, const Rom* rom, const CosimRegs* in,
+                          CosimRegs* out) {
+  PortCpu c;
+  SnakeoidWork k = {0};
+  cpu_from(in, &c);
+  snakeoid_run(w, rom, &c, &k);
+  cpu_to(&c, out);
+  if (!k.v_known) {
+    out->flags &= ~COSIM_FLAG_V;
+    out->p_keep = PORT_P_V;
+  }
+
+  const bool fast = fetch_fast(in);
+  CosimRun run = {0, 0, 0};
+  for (int i = 0; i < SNAKEOID_RUN_COUNT; i++)
+    run_add(&run, &SNAKEOID_RUN_COST[i], k.runs[i]);
+  run_add(&run, &RUN_TAKEN, k.taken);
+  int cycles = cosim_run_cycles_dp(&run, fast, (in->d & 0x00ffu) != 0);
+  for (int blocked = 0; blocked < 2; blocked++) {
+    for (int probes = 0; probes <= TERRAIN_PROBE_COUNT; probes++) {
+      const TerrainRegs ground = {.blocked = blocked != 0, .probes = probes};
+      cycles += k.grounds[blocked][probes] * terrain_enemy_cycles(&ground, fast);
+    }
+  }
+  for (int exit = 0; exit <= BOUNDS_LAST_COMPARE; exit++)
+    cycles += k.edges[exit] * bounds_cycles((BoundsExit)exit, fast);
+  for (int twice = 0; twice < 2; twice++)
+    cycles += k.draws[twice] * rng_cycles(twice != 0, fast);
+  cycles += k.tiles_read * cosim_run_cycles(&TILE_ATTRS_TILE_RUN, fast);
+  for (int i = 0; i < k.churn_count; i++)
+    cycles += tile_put_cycles(&k.churned[i], fast);
+  for (int i = 0; i < k.player_count; i++)
+    cycles += player_in_range_cycles(&k.players[i], fast);
+  for (int i = 0; i < k.nearest_count; i++)
+    cycles += nearest_cycles(&k.nearest[i], fast);
+  cosim_cost(cycles);
+}
+
+// Any stretch can end on any of these: a sleep, a record asked for or
+// freed, its death, or its coming up to bite, which is the ROM's.
+static const uint32_t SNAKEOID_EXITS[] = {
+    SNAKEOID_WAIT_PC,   SNAKEOID_SLEEP_PC, SNAKEOID_RISE_PC,
+    SNAKEOID_FREE_PC,   SNAKEOID_RECORD_PC, SNAKEOID_DIES_PC,
+    SNAKEOID_BITES_PC,  SNAKEOID_BITES_BESIDE_PC};
+
+// ---------------------------------------------------------------------------
 // The big figure's thread on level 25 -- see `port/boss_thread.h`
 // ---------------------------------------------------------------------------
 //
@@ -21810,8 +22024,6 @@ static const CosimRun WG_CLUMP_NEXT = {98, 10, 2};  // $D0EC-$D0F5
 static const CosimRun WG_END = {88, 11, 1};         // $D0F6-$D100
 static const CosimRun WG_WRAP = {18, 3, 0};         // LDA #$0000
 static const CosimRun WG_STORE = {68, 3, 1};        // STA $18 : RTS
-// `$80:ADF3` is `$80:ADC8` without its ten instructions of shifting.
-static const CosimRun TILE_ATTRS_TILE_RUN = {710 - 120 + 250, 43 - 10 + 15, 0};
 
 static int weed_grow_bill(CosimRun* run, const WeedWork* k, bool fast) {
   int calls = 0;
@@ -24758,7 +24970,8 @@ static const CosimRoutine ROUTINES[] = {
         // 52 on `level9-weapons` and 24 on `level29-ice`, both through
         // `$81:D0D4`, and nothing else in 42 movies reaches it. 128 cycles
         // under the pixel form, which is the six `LSR`s and the two transfers
-        // around them almost exactly.
+        // around them almost exactly. Its shim prices it now, at 840: the
+        // Snakeoid's records make 2,228 calls and every one is that.
         .cycles = 862,
         .stack_bytes = 13,
     },
@@ -28044,6 +28257,28 @@ static const CosimRoutine ROUTINES[] = {
     TENTACLE_ROW(looked, "$82:99F1", TENTACLE_LOOKED_PC, TENTACLE_FRAME_EXITS,
                  accepts_tentacle_record, 400)
 #undef TENTACLE_ROW
+    // The Snakeoid's thread. See `port/snakeoid.h`.
+#define SNAKEOID_ROW(name_, sym, pc, mean)                                   \
+    {                                                                        \
+        .name = "snakeoid_" #name_,                                          \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_snakeoid,                                                \
+        .accepts = accepts_snakeoid,                                         \
+        COSIM_EXITS(SNAKEOID_EXITS),                                         \
+        .uncalled = true,                                                    \
+        .cycles = mean,                                                      \
+        /* The deepest is a chase asking who is beside it: five returns, */  \
+        /* four words pushed, and `actor_nearest` under them. */             \
+        .stack_bytes = 32,                                                   \
+    },
+    SNAKEOID_ROW(ready, "$82:A8BA", SNAKEOID_READY_PC, 1200)
+    SNAKEOID_ROW(waited, "$82:A43A", SNAKEOID_WAITED_PC, 1200)
+    SNAKEOID_ROW(wakes, "$82:A8EF", SNAKEOID_WAKES_PC, 4000)
+    SNAKEOID_ROW(freed, "$82:9DE7", SNAKEOID_FREED_PC, 3000)
+    SNAKEOID_ROW(dropped, "$82:9E18", SNAKEOID_DROPPED_PC, 9000)
+    SNAKEOID_ROW(rose, "$82:A1F8", SNAKEOID_ROSE_PC, 900)
+#undef SNAKEOID_ROW
     // The big figure's thread on level 25. See `port/boss_thread.h`.
 #define BOSS_ROW(name_, sym, pc, exits_, jumped_to)                          \
     {                                                                        \

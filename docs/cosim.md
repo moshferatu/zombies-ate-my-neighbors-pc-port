@@ -18818,3 +18818,67 @@ word and goes to that thread's sleep.
 Over the same 110 sessions the core executes 2,052,960 instructions
 where it executed 3,399,313, and takes over 109,459 times where it
 did 210,693, at 788 places where there were 821.
+
+## The Snakeoid (2026-10-10)
+
+### A stretch that begins inside a routine
+
+Every stretch before this began where its thread's own loop was: after a
+sleep, a record, a handler. The Snakeoid's thread asks for a record, frees
+one and sleeps inside routines its states call:
+
+    $82:A8DE  the frame      PEA : ... : RTS to the state
+    $82:A451  wandering        JSR $A418
+    $82:A418  a tick             JSR $9DA7
+    $82:9DA7  the track ages       JSL actor_slot_free
+    $82:9DE7                       <- the stretch begins here
+
+`$82:9DA7` is called from a hop's ticks as well, at `$82:A1F8`, and a hop
+is called from either state or from a leap. So the address a stretch
+begins at does not say where it ends. The stack does:
+
+    X of the loop : $A423 : $A453 : $A8E7      a wandering frame's
+    X of the loop : $A1FA : ticks : place : $A105 : $A4B2 : $A8E7
+                                               a wandering hop's
+
+The port is written the way the ROM runs. A routine that can stop hands
+back the address it stopped on. One that ends in an `RTS` pulls the
+word, and `goes_back` goes on in the routine that word is the return
+to. There are fifteen such words. The routines that cannot stop are
+ordinary C calls and push and pull for the record only.
+
+The guard, `snakeoid_stack_known`, reads the same words before the port
+runs and turns down a chain that has one it does not know. One chain is
+shorter than the rest: `$82:A156`, the leap, is jumped to by the ROM's
+own biting as well as called by the wandering state, and then its `RTS`
+goes straight to `$A8E7`. That chain is known too.
+
+### Dead stack above where a stretch began
+
+The compare waives the stack a routine pushed and abandoned: from the
+lowest the stack pointer got, up to where it was at entry. A stretch that
+pulls its way back up breaks the second half of that. `snakeoid_freed`
+pulls six bytes, and then the state calls `actor_nearest`, whose `PHD`
+lands on the byte where the loop's X had been. The port's
+`actor_nearest` is a C function and pushes nothing. 335 of 348 calls
+failed on that byte and nothing else.
+
+The byte is free space: the stretch stops with the stack pointer above
+it. So for a stretch the window's top is now the higher of where it began
+and where it stopped (`left_sp`). A byte above where it stopped is live
+and is compared as before.
+
+### A row gets a price from a port that had one
+
+`tile_attrs_at_tile` was registered with a mean, 862, from 76 calls. The
+weeds' port prices the same call as it makes it, from the listing: the
+pixel form less ten instructions. The Snakeoid makes four of those calls
+a piece of track, so the constant moved up the file and the row's own
+shim reports it now. `verify` then says what the mean could not: 2,228
+of 2,228 to the cycle.
+
+### After
+
+Over the same 110 sessions the core executes 1,005,323 instructions
+where it executed 2,052,960, and takes over 74,589 times where it
+did 109,459, at 766 places where there were 788.

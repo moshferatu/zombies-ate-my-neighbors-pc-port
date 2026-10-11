@@ -246,6 +246,11 @@ purple tentacle was what the core ran most, and is ported with the second
 of the clones' two threads. The places are 788 and the core executes
 2,052,960 instructions over the survey.
 
+**The Snakeoid, the same day.** The mound of levels 20, 40 and 47 was
+what the core ran most, and is ported as far as its coming up to bite.
+The places are 766 and the core executes 1,005,323
+instructions over the survey.
+
 What is left of this step: registers of the driver's own in place of the
 core's, the clock, and a stop that names the address in place of the
 core.
