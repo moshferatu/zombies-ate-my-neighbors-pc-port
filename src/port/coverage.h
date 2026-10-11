@@ -1903,6 +1903,20 @@
   X(hud_count_over,   "hud_count_adapter",   "...or the slot is past the end of the inventory, which blanks them the same way") \
                                                                                    \
   /* $80:C4EC and the coda both number renderers share. */                          \
+  X(near_wait_found,  "near_wait",           "a player within 250: the wait is over") \
+  X(near_wait_on,     "near_wait",           "...or neither is: four more ticks") \
+  X(idle_wait_found,  "idle_wait",           "a player within 80: the wait is over") \
+  X(idle_wait_same_picture,"idle_wait",      "nobody, and the picture has ticks left") \
+  X(idle_wait_next_picture,"idle_wait",      "...or has none, and the next goes up") \
+  X(idle_wait_gone,   "idle_wait",           "its record was taken away while it waited") \
+  X(idle_wait_on,     "idle_wait",           "...or was not: two more ticks") \
+  X(hits_wait_same_picture,"hits_wait",      "the picture has ticks left") \
+  X(hits_wait_next_picture,"hits_wait",      "...or has none, and the next goes up") \
+  X(hits_wait_first_picture,"hits_wait",     "...which after the fourth is the first") \
+  X(hits_wait_quiet,  "hits_wait",           "nothing hit it: two more ticks") \
+  X(hits_wait_hit,    "hits_wait",           "...or something did, and it can take more") \
+  X(hits_wait_broken, "hits_wait",           "...or it cannot: the wait is over") \
+  X(hits_wait_gone,   "hits_wait",           "its record was taken away while it waited") \
   X(hud_digit_printed,"hud_digit",           "a digit worth showing: tile $3C07 plus it, and the rotate remembers") \
   X(hud_digit_blank,  "hud_digit",           "...or a leading zero, which writes an empty tile and leaves carry alone") \
   X(hud_digits_printed,"hud_digits_end",     "at least one digit printed, so the number stands as drawn") \

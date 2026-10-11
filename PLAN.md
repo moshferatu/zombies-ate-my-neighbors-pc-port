@@ -262,6 +262,11 @@ core ran most was the fishman's bite, and after it what the one that comes
 ashore does on land. Both are in `port/fishman.c`. The places are
 750 and the core executes 445,564 instructions over the survey.
 
+**Three waits, 2026-10-11.** The three places the core ran most were
+threads asleep in a loop, waiting for a player to come near or for hits.
+They are in `port/waits.c`. The places are 745 and the core executes
+386,484 instructions over the survey.
+
 What is left of this step: registers of the driver's own in place of the
 core's, the clock, and a stop that names the address in place of the
 core.

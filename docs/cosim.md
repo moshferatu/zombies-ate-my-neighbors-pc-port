@@ -18977,3 +18977,29 @@ return and does the one it names.
 Over the same 110 sessions the core executes 445,564 instructions
 where it executed 577,131, and takes over 44,122 times where it
 did 51,835, at 750 places where there were 755.
+
+## Three threads with nothing to do but wait (2026-10-11)
+
+### A wait is one row at where its sleep comes back
+
+    $81:A471  LDA #$0002 : JSL thread_yield
+    $81:A478  JSR $A603 : BCS $A484 : LDA $2A : BEQ $A471 : JMP $A523
+
+The row begins at `$81:A478` and stops on the `JSL` at `$81:A474` with A
+loaded, or at one of the two ways out. `thread_yield` is a row of its own,
+so a thread waiting this way never has the core execute an instruction.
+`$83:AAB2` and `$82:F280` are the same shape. `near_wait` is called as
+well as woken, so it has a second row at its top.
+
+### The overflow after a call that picks a player
+
+`player_in_range` and `player_bearing` leave an overflow their ports do
+not work out. Nothing in a tick of `near_wait` or `idle_wait` sets one
+after the call, so those two rows waive it. `hits_wait` calls nothing and
+claims every flag.
+
+### After
+
+Over the same 110 sessions the core executes 386,484 instructions
+where it executed 445,564, and takes over 36,718 times where it
+did 44,122, at 745 places where there were 750.

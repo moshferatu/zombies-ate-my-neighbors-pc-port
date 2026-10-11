@@ -120,6 +120,7 @@
 #include "port/tile_rows.h"
 #include "port/trig.h"
 #include "port/vblank.h"
+#include "port/waits.h"
 
 // ---------------------------------------------------------------------------
 // $80:B9D6  sprite_frame_tile — A = frame number, A = OAM tile word
@@ -11323,6 +11324,160 @@ static void shim_fired_wait(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t FIRED_WAIT_EXITS[] = {FIRED_WAIT_YIELD_PC,
                                             FIRED_WAIT_RTS_PC};
+
+// ---------------------------------------------------------------------------
+// Three threads with nothing to do but wait -- see `port/waits.h`
+// ---------------------------------------------------------------------------
+//
+// A tick is the runs it took, and for the two that ask after the players
+// the call that picks one. That call leaves an overflow the ports do not
+// work out, and nothing after it in a tick sets one.
+
+static void waits_done(const PortCpu* c, const CosimRegs* in, CosimRegs* out,
+                       const CosimRun* own, int call) {
+  cpu_to(c, out);
+  out->flags &= ~COSIM_FLAG_V;
+  out->p_keep = PORT_P_V;
+  cosim_cost(cosim_run_cycles_dp(own, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0) + call);
+}
+
+static const CosimRun NEAR_WAIT_RUN_COPY = {112, 8, 4};  // LDA : STA : LDA : STA
+static const CosimRun NEAR_WAIT_RUN_BACK = {12, 2, 0};   // BRA
+static const CosimRun NEAR_WAIT_RUN_ASK = {152, 14, 2};  // LDA : LDX : LDY : JSL : TAY : BNE
+static const CosimRun NEAR_WAIT_RUN_ON = {18, 3, 0};     // LDA
+
+static bool accepts_near_wait(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->d >= 0x0100;
+}
+
+static void shim_near_wait(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  NearWait did;
+  cpu_from(in, &c);
+  near_wait(w, &c, &did);
+  CosimRun own = {0, 0, 0};
+  if (did.begun) {
+    run_add(&own, &NEAR_WAIT_RUN_COPY, 1);
+  } else {
+    run_add(&own, &NEAR_WAIT_RUN_BACK, 1);
+    run_add(&own, &RUN_TAKEN, 1);
+  }
+  run_add(&own, &NEAR_WAIT_RUN_ASK, 1);
+  run_add(&own, did.found ? &RUN_TAKEN : &NEAR_WAIT_RUN_ON, 1);
+  waits_done(&c, in, out, &own,
+             player_in_range_cycles(&did.players, fetch_fast(in)));
+}
+
+static const uint32_t NEAR_WAIT_EXITS[] = {NEAR_WAIT_YIELD_PC,
+                                           NEAR_WAIT_RTS_PC};
+
+static const CosimRun IDLE_WAIT_RUN_LOOK = {40, 3, 0};    // JSR
+static const CosimRun IDLE_WAIT_RUN_ASK = {152, 14, 2};   // LDA : LDX : LDY : JSL : TAX : BEQ
+static const CosimRun IDLE_WAIT_RUN_FOUND = {52, 2, 0};   // SEC : RTS
+static const CosimRun IDLE_WAIT_RUN_COUNT = {62, 4, 1};   // DEC : BPL
+static const CosimRun IDLE_WAIT_RUN_NEXT = {260, 25, 4};  // $A617-$A62D
+static const CosimRun IDLE_WAIT_RUN_NONE = {52, 2, 0};    // CLC : RTS
+static const CosimRun IDLE_WAIT_RUN_CARRY = {12, 2, 0};   // BCS
+static const CosimRun IDLE_WAIT_RUN_GONE = {40, 4, 1};    // LDA : BEQ
+static const CosimRun IDLE_WAIT_RUN_ON = {18, 3, 0};      // LDA
+static const CosimRun IDLE_WAIT_RUN_ENDS = {18, 3, 0};    // JMP
+
+// Its pictures are read through the bank, and its record written through
+// it.
+static bool accepts_idle_wait(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == IDLE_WAIT_BANK &&
+         idle_wait_supported(w, in->d);
+}
+
+static void shim_idle_wait(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  PortCpu c;
+  IdleWait did;
+  cpu_from(in, &c);
+  idle_wait(w, rom, &c, &did);
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &IDLE_WAIT_RUN_LOOK, 1);
+  run_add(&own, &IDLE_WAIT_RUN_ASK, 1);
+  run_add(&own, &IDLE_WAIT_RUN_CARRY, 1);
+  if (did.end == IDLE_WAIT_FOUND) {
+    run_add(&own, &IDLE_WAIT_RUN_FOUND, 1);
+    run_add(&own, &RUN_TAKEN, 1);
+  } else {
+    run_add(&own, &RUN_TAKEN, 1);
+    run_add(&own, &IDLE_WAIT_RUN_COUNT, 1);
+    run_add(&own, did.turned ? &IDLE_WAIT_RUN_NEXT : &RUN_TAKEN, 1);
+    run_add(&own, &IDLE_WAIT_RUN_NONE, 1);
+    run_add(&own, &IDLE_WAIT_RUN_GONE, 1);
+    if (did.end == IDLE_WAIT_ON) {
+      run_add(&own, &RUN_TAKEN, 1);
+      run_add(&own, &IDLE_WAIT_RUN_ON, 1);
+    } else {
+      run_add(&own, &IDLE_WAIT_RUN_ENDS, 1);
+    }
+  }
+  waits_done(&c, in, out, &own,
+             player_bearing_cycles(&did.players, fetch_fast(in)));
+}
+
+static const uint32_t IDLE_WAIT_EXITS[] = {
+    IDLE_WAIT_YIELD_PC, IDLE_WAIT_FOUND_PC, IDLE_WAIT_GONE_PC};
+
+static const CosimRun HITS_WAIT_RUN_COUNT = {62, 4, 1};    // DEC : BPL
+static const CosimRun HITS_WAIT_RUN_NEXT = {116, 13, 2};   // LDA : STA : LDA : INC : CMP : BNE
+static const CosimRun HITS_WAIT_RUN_FIRST = {18, 3, 0};    // LDA
+static const CosimRun HITS_WAIT_RUN_SHOW = {360, 35, 3};   // $F294-$F2B2
+static const CosimRun HITS_WAIT_RUN_HIT = {40, 4, 1};      // LDA : BEQ
+static const CosimRun HITS_WAIT_RUN_ON = {18, 3, 0};       // LDA
+static const CosimRun HITS_WAIT_RUN_AWAY = {30, 5, 0};     // CMP : BEQ
+static const CosimRun HITS_WAIT_RUN_LEFT = {68, 6, 2};     // STZ : LDA : BPL
+
+// Its pictures are read through the bank, and its record written through
+// it.
+static bool accepts_hits_wait(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == HITS_WAIT_BANK &&
+         hits_wait_supported(w, in->d);
+}
+
+static void shim_hits_wait(Wram* w, const Rom* rom, const CosimRegs* in,
+                           CosimRegs* out) {
+  PortCpu c;
+  HitsWait did;
+  cpu_from(in, &c);
+  hits_wait(w, rom, &c, &did);
+  cpu_to(&c, out);
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &HITS_WAIT_RUN_COUNT, 1);
+  if (did.turned) {
+    run_add(&own, &HITS_WAIT_RUN_NEXT, 1);
+    run_add(&own, did.wrapped ? &HITS_WAIT_RUN_FIRST : &RUN_TAKEN, 1);
+    run_add(&own, &HITS_WAIT_RUN_SHOW, 1);
+  } else {
+    run_add(&own, &RUN_TAKEN, 1);
+  }
+  run_add(&own, &HITS_WAIT_RUN_HIT, 1);
+  if (did.end == HITS_WAIT_QUIET) {
+    run_add(&own, &RUN_TAKEN, 1);
+  } else {
+    run_add(&own, &HITS_WAIT_RUN_AWAY, 1);
+    if (did.end == HITS_WAIT_GONE) {
+      run_add(&own, &RUN_TAKEN, 1);
+    } else {
+      run_add(&own, &HITS_WAIT_RUN_LEFT, 1);
+      if (did.end == HITS_WAIT_HIT) run_add(&own, &RUN_TAKEN, 1);
+    }
+  }
+  if (did.end == HITS_WAIT_QUIET || did.end == HITS_WAIT_HIT)
+    run_add(&own, &HITS_WAIT_RUN_ON, 1);
+  cosim_cost(cosim_run_cycles_dp(&own, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+}
+
+static const uint32_t HITS_WAIT_EXITS[] = {
+    HITS_WAIT_YIELD_PC, HITS_WAIT_BROKEN_PC, HITS_WAIT_GONE_PC};
 
 static bool supported_tile_search(Wram* scratch, const Rom* rom,
                                   const CosimRegs* in) {
@@ -27659,6 +27814,51 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(FIRED_WAIT_EXITS),
         .uncalled = true,
         .cycles = 200,
+    },
+    // Three threads with nothing to do but wait. See `port/waits.h`.
+    {
+        .name = "near_wait",
+        .symbol = "$83:AAB2",
+        .entry = NEAR_WAIT_PC,
+        .run = shim_near_wait,
+        .accepts = accepts_near_wait,
+        COSIM_EXITS(NEAR_WAIT_EXITS),
+        .cycles = 1500,
+        // The call's `JSL`, and what `player_in_range` has under it.
+        .stack_bytes = 16,
+    },
+    {
+        .name = "near_wait_woken",
+        .symbol = "$83:AACF",
+        .entry = NEAR_WAIT_WOKEN_PC,
+        .run = shim_near_wait,
+        .accepts = accepts_near_wait,
+        COSIM_EXITS(NEAR_WAIT_EXITS),
+        .uncalled = true,
+        .cycles = 1500,
+        .stack_bytes = 16,
+    },
+    {
+        .name = "idle_wait",
+        .symbol = "$81:A478",
+        .entry = IDLE_WAIT_PC,
+        .run = shim_idle_wait,
+        .accepts = accepts_idle_wait,
+        COSIM_EXITS(IDLE_WAIT_EXITS),
+        .uncalled = true,
+        .cycles = 2000,
+        // A `JSR` to a `JSL`, and what `player_bearing` has under it.
+        .stack_bytes = 18,
+    },
+    {
+        .name = "hits_wait",
+        .symbol = "$82:F280",
+        .entry = HITS_WAIT_PC,
+        .run = shim_hits_wait,
+        .accepts = accepts_hits_wait,
+        COSIM_EXITS(HITS_WAIT_EXITS),
+        .uncalled = true,
+        .cycles = 400,
     },
     {
         .name = "tile_search",

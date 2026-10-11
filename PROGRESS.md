@@ -5,6 +5,65 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Three threads with nothing to do but wait (2026-10-11)
+
+The three places the 65816 ran most were each a thread asleep in a loop:
+woken every few ticks, it looked whether its wait was over and slept
+again. They are in `port/waits.c`, each a tick from where the sleep comes
+back to the next sleep or to the end of the wait.
+
+* **`near_wait`** (`$83:AAB2`) waits for a player within 250 of a point,
+  asking every four ticks. The thread at `$83:AD33` calls it first of all,
+  and two level records have that thread.
+* **`idle_wait`** (`$81:A478`) is in the thread of a thing only record 48
+  has. Every two ticks it asks whether a player is within 80. With nobody,
+  it counts a picture's ticks down and puts up the next of four, so each
+  shows for ten ticks.
+  * The wait is over with a player found, or with the record taken away:
+    its collide handler counts `$2A` down for that, and the thread ends.
+* **`hits_wait`** (`$82:F280`) is in the thread of a thing only record 36
+  has. It shows four pictures in turn, six ticks each, and each has its
+  own collide id.
+  * Its collide handler counts the hits of four weapons down from 5. The
+    tick sees what hit it, and with the count under zero the wait is over.
+* **Checked.**
+  * The corpus verifies clean: 126,346,137 calls, none diverged. Of the
+    three it reaches only `hits_wait`, 85 times.
+  * The level records do, over 7,000 frames with `--level`. Every call was
+    checked and cost what the ROM's did.
+
+    | Session | `near_wait` | `near_wait_woken` | `idle_wait` | `hits_wait` |
+    |---|---|---|---|---|
+    | `record 36` | 1 | 1,321 | | 564 |
+    | `record 48` | 1 | 1,319 | 845 | |
+
+  * Lockstep: 51 of 54 never part; `level25`, `level25-2p` and
+    `level25-heavy` do, as before.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies, and
+    none differ, at both widths.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 660 to 655 | 37,688 to 30,284 | 350,441 to 291,361 |
+  | Left standing on an instruction | 50 to 50 | 2,966 to 2,966 | 67,511 to 67,511 |
+  | A port turned the call down | 33 to 33 | 3,273 to 3,273 | 18,742 to 18,742 |
+  | A port or a link called it | 6 to 6 | 85 to 85 | 950 to 950 |
+  | All | 750 to 745 | 44,122 to 36,718 | 445,564 to 386,484 |
+
+  830 routines are registered.
+* **Not done or not known.**
+  * No session ends a wait the way it is meant to end. Nobody comes
+    within 250 of the point or within 80 of record 48's thing, and record
+    36's is hit six times in none: it is hit, and it is taken away. Those
+    three ends are written from the listing and have not been compared
+    with the ROM.
+  * What the two things are. I have not seen either on a screen, and a
+    screenshot of record 48 at frame 900 came out black.
+  * What comes after each wait is the ROM's: the rest of the thread at
+    `$83:AD33`, record 48's thing woken at `$81:A484`, record 36's broken
+    at `$82:F2C2`. So is the start of each thread, once a session.
+
 ### The fishman's bite, and the one that comes ashore going about (2026-10-11)
 
 What the 65816 ran most was listed as a routine at `$81:E1D6`. That is
