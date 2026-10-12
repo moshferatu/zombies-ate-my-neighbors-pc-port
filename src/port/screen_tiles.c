@@ -106,3 +106,52 @@ void screen_tiles_fill(Wram* w, PortCpu* c, ScreenTilesWork* k) {
   set_nz16(c, 0);  // the `DEX` that ended the loop
   c->pc = SCREEN_TILES_QUEUE_PC;
 }
+
+#define VMAIN_ACROSS 0x0080u  // the address steps by one
+#define VMAIN_DOWN 0x0081u    // ...or by a row
+#define VRAM_QUEUE_ROOM 0x30  // bytes in each of the queue's tables
+#define BUFFER_BANK 0x007eu
+
+bool screen_tiles_queue_supported(const Wram* w, uint16_t s) {
+  const uint8_t bank = wram_r8(w, (uint16_t)(s + 1));
+  return (bank & 0x40) == 0 &&
+         wram_r16(w, W_VRAM_QUEUE_COUNT) <= VRAM_QUEUE_ROOM - 4;
+}
+
+static void queue_entry(Wram* w, uint16_t at, uint16_t from, uint16_t vram,
+                        uint16_t vmain, uint16_t bytes) {
+  wram_w16(w, (uint16_t)(W_VRAM_QUEUE_SRC + at), from);
+  wram_w16(w, (uint16_t)(W_VRAM_QUEUE_BANK + at), BUFFER_BANK);
+  wram_w16(w, (uint16_t)(W_VRAM_QUEUE_DEST + at), vram);
+  wram_w16(w, (uint16_t)(W_VRAM_QUEUE_VMAIN + at), vmain);
+  wram_w16(w, (uint16_t)(W_VRAM_QUEUE_SIZE + at), bytes);
+}
+
+void screen_tiles_queue(Wram* w, PortCpu* c) {
+  PORT_COVER(screen_tiles_queue);
+  c->db = pull8(w, c);
+  c->x = wram_r16(w, W_VRAM_QUEUE_COUNT);
+  const uint16_t vram = wram_r16(w, W_TILEMAP_VRAM_BASE);
+  queue_entry(w, c->x, wram_r16(w, SCREEN_DP_BUFFER), vram, VMAIN_ACROSS,
+              SCREEN_ROWS_BYTES);
+  queue_entry(w, (uint16_t)(c->x + 2), wram_r16(w, SCREEN_DP_BUFFER_COLUMN),
+              (uint16_t)(vram + SCREEN_COLUMN_VRAM), VMAIN_DOWN,
+              SCREEN_COLUMN_BYTES);
+  set_c(c, false);
+  c->a = adc16(c, c->x, 4);
+  c->pc = SCREEN_TILES_QUEUED_PC;
+}
+
+void screen_tiles_queued(Wram* w, PortCpu* c) {
+  PORT_COVER(screen_tiles_queued);
+  wram_w16(w, W_VRAM_QUEUE_COUNT, c->a);
+  c->pc = SCREEN_TILES_REQUEST_PC;
+}
+
+void screen_tiles_end(const Wram* w, PortCpu* c) {
+  PORT_COVER(screen_tiles_end);
+  c->d = pull16(w, c);
+  c->db = pull8(w, c);
+  set_nz8(c, c->db);
+  c->pc = SCREEN_TILES_RTL_PC;
+}

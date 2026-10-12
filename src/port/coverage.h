@@ -1813,6 +1813,34 @@
   X(level_record_again, "level_record_find", "...or of the one $1F50 names, and the level counted down") \
   X(spawn_low_took,   "thread_spawn_low",   "one of the first fifteen slots free, and a thread begun in it") \
   X(spawn_low_full,   "thread_spawn_low",   "all fifteen live, so no thread") \
+  /* $80:86A2 a level loaded from its record -- see port/level_load.h. */      \
+  X(scene_cache_ask, "scene_cache_ask", "where the sprites' frames are, for the cache") \
+  X(scene_job_ask, "scene_job_ask", "the second layer's scroll job, to be queued") \
+  X(level_map_ask, "level_map_ask", "the map's blocks, its first row and its size") \
+  X(level_attrs_ask, "level_attrs_ask", "where the tiles' attributes are") \
+  X(level_tiles_ask, "level_tiles_ask", "where the tiles' pictures are, and all of them to be sent") \
+  X(level_camera_ask, "level_camera_ask", "halfway between the players' starts, less half a screen") \
+  X(level_screen_ask, "level_screen_ask", "the first layer's map at $7800") \
+  X(level_palette_ask, "level_palette_ask", "where the colours are") \
+  X(level_sprite_palette_ask, "level_sprite_palette_ask", "where the sprites' colours are") \
+  X(level_thread_ask, "level_thread_ask", "the level's own thread, to be begun") \
+  X(level_thread_none, "level_thread_ask", "...or the record has none") \
+  X(level_spawner_ask, "level_spawner_ask", "the spawner's thread and its list") \
+  X(level_victims_thread_ask, "level_victims_thread_ask", "the victims' thread and their list") \
+  X(level_victims_ask, "level_victims_ask", "the victims' list, to be parsed") \
+  X(level_objects_ask, "level_objects_ask", "the second spawner's thread and its list") \
+  X(level_extras_begin, "level_extras_begin", "the record's other threads: their table kept on the stack") \
+  X(level_extra_next, "level_extra_next", "the next of them, to be begun") \
+  X(level_extra_none, "level_extra_next", "...or the table's end") \
+  X(tiles_upload_begin, "tiles_upload_begin", "a run of tiles' pictures worked out for the upload job") \
+  X(tiles_upload_end, "tiles_upload_end", "the direct page taken back after the upload") \
+  X(camera_place_on, "camera_place", "the camera put at a place on the map") \
+  X(camera_place_kept, "camera_place", "...or at the nearest the map allows") \
+  X(palette_job_ask, "palette_job_ask", "the job that sends the colours, to be queued") \
+  X(screen_tiles_queue, "screen_tiles_queue", "the screen's rows and column written past the VRAM queue's end") \
+  X(screen_tiles_queued, "screen_tiles_queued", "...and counted in") \
+  X(screen_tiles_end, "screen_tiles_end", "the caller's direct page and data bank taken back") \
+  X(colour_window_reset, "colour_window_reset", "both windows given to the colour arithmetic, edges at zero") \
   X(send_args, "send_args", "what a screen's next send is called with") \
   X(palette_job, "palette_job", "all 256 colours sent") \
   X(background_job, "background_job", "the background's second copy sent") \

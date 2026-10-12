@@ -5,6 +5,77 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### A level loaded from its record (2026-10-12)
+
+`level_load` (`$80:86A2`) is a list of calls to routines that were ported
+already. The core still ran what is between them, and three callees' ends.
+This round is those.
+
+* **Fourteen stretches of `level_load`**, in the new `port/level_load.c`.
+  Each reads the level's record and stops on the call it feeds.
+
+  | Stretch | At | What it asks for |
+  |---|---|---|
+  | `level_map_ask` | `$80:86A2` | the map's blocks, first row and size |
+  | `level_attrs_ask` | `$80:86D0` | the tiles' attributes |
+  | `level_tiles_ask` | `$80:86DF` | the tiles' pictures, all sent to VRAM |
+  | `level_camera_ask` | `$80:870B` | halfway between the players' starts |
+  | `level_screen_ask` | `$80:872F` | the first layer's map at `$7800` |
+  | `level_palette_ask` | `$80:873D` | the colours |
+  | `level_sprite_palette_ask` | `$80:874C` | the sprites' colours |
+  | `level_thread_ask` | `$80:875F` | the level's own thread, if it has one |
+  | `level_spawner_ask` | `$80:8778` | the spawner's thread and list |
+  | `level_victims_thread_ask` | `$80:878F` | the victims' thread and list |
+  | `level_victims_ask` | `$80:87A6` | the victims' list, to be parsed |
+  | `level_objects_ask` | `$80:87B4` | the second spawner's thread and list |
+  | `level_extras_begin` | `$80:87CB` | the record's other threads, begun |
+  | `level_extra_next` | `$80:87D5` | the next of them, or the end |
+
+* **What it calls that had no port, or half of one.**
+  * `tiles_upload_begin` and `tiles_upload_end` (`$80:9F29`), on either
+    side of the wait.
+  * `camera_place` (`$80:A9CC`). X past its limit gets the limit of Y,
+    which I take for the ROM's mistake. The port makes it too.
+  * `palette_job_ask` (`$80:A079`).
+  * `screen_tiles_queue`, `screen_tiles_queued` and `screen_tiles_end`
+    (`$80:A4FA`), which `port/screen_tiles.h` had left to the ROM.
+  * `colour_window_reset` (`$82:DB96`), the registers the victims' list
+    ends on. It is in `port/dma.c`.
+* **`$80:8632`** has `scene_cache_ask` and `scene_job_ask` for its two
+  pairs of loads, and twelve links in `port/links.h` for calls and returns
+  that stand between two ports.
+* **Checked.**
+  * The corpus verifies clean: 126,356,322 calls, none diverged. Each new
+    row was checked 63 times or more.
+  * Costs were compared on `level1-2p`, `level13`, `level17` and
+    `demo-end`. Every row is exact or 40 cycles under the ROM. I take the
+    40 for a memory refresh landing in the stretch and have not shown it.
+  * Lockstep: 51 of 54 never part; `level25`, `level25-2p` and
+    `level25-heavy` do, as before.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies, and
+    none differ, at both widths.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 660 to 645 | 27,900 to 26,006 | 233,500 to 216,044 |
+  | Left standing on an instruction | 48 to 44 | 2,424 to 1,964 | 63,724 to 52,664 |
+  | A port turned the call down | 34 to 34 | 2,827 to 2,827 | 17,951 to 17,951 |
+  | A port or a link called it | 6 to 9 | 85 to 415 | 950 to 1,480 |
+  | All | 749 to 733 | 33,346 to 31,322 | 324,045 to 296,059 |
+
+  878 routines are registered.
+* **Not done or not known.**
+  * The three `WAI`s before each of the record's other threads are the
+    core's still. They are all that is left of `level_load`.
+  * `camera_place` kept a place on the map in the corpus, but I did not
+    look at which of its four ways were taken. The others are from the
+    listing.
+  * What reads the word at `$136E`, which `colour_window_reset` clears.
+  * `screen_tiles_queue` writes two entries past the queue's end in one
+    go, where the ROM takes 28 instructions. Nothing reads them there, but
+    that is from reading the vblank job, not from a test.
+
 ### The water's edge, and a level's scene begun (2026-10-12)
 
 Two things the survey ranked highest: why the player's walk was turned

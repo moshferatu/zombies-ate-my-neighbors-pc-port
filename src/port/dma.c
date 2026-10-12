@@ -12,6 +12,11 @@
 #define REG_VMAIN 0x2115u      // how VRAM's address steps
 #define REG_VMADD 0x2116u      // VRAM's address, in words
 #define REG_CGADD 0x2121u      // which colour
+#define REG_WOBJSEL 0x2125u    // which windows the colour arithmetic has
+#define REG_WH0 0x2126u        // the windows' four edges, from here
+#define REG_CGWSEL 0x2130u     // where the colour arithmetic is done
+#define REG_CGADSUB 0x2131u    // ...to what, and which way
+#define REG_COLDATA 0x2132u    // the fixed colour
 #define REG_MDMAEN 0x420bu     // start the channels whose bits are set
 #define REG_HDMAEN 0x420cu     // the channels that write every line
 #define REG_DMA_MODE 0x4300u   // channel 0: how it writes
@@ -150,6 +155,23 @@ void camera_job_begin(HwTrace* t) {
   PORT_COVER(camera_job_begin);
   store8(t, DMA_SEP_IMM, REG_BG1SC, BG1_MAP_6800_64_BY_64);
   hw_run(t, DMA_REP_LOADS);
+}
+
+#define COLOUR_IN_BOTH_WINDOWS 0xa0u
+#define MATH_INSIDE_THE_WINDOW 0x10u  // ...with the fixed colour
+#define SUBTRACT_FROM_BG2_AND_BACKDROP 0xa2u
+
+void colour_window_reset(Wram* w, HwTrace* t) {
+  PORT_COVER(colour_window_reset);
+  store8(t, DMA_SEP_IMM, REG_WOBJSEL, COLOUR_IN_BOTH_WINDOWS);
+  store8(t, DMA_IMM, REG_CGWSEL, MATH_INSIDE_THE_WINDOW);
+  store8(t, DMA_IMM, REG_CGADSUB, SUBTRACT_FROM_BG2_AND_BACKDROP);
+  store8(t, DMA_IMM, REG_COLDATA, COLOUR_WINDOW_FIXED);
+  for (uint16_t edge = REG_WH0; edge < REG_WH0 + 4; edge++)
+    store8(t, DMA_STORE, edge, 0);
+  store8(t, DMA_STORE, REG_HDMAEN, 0);
+  hw_run(t, DMA_REP_STZ16);
+  wram_w16(w, W_COLOUR_WINDOW_WORD, 0);
 }
 
 void hud_upload_job(HwTrace* t) {

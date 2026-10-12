@@ -7,6 +7,11 @@
 //   $80:8618  players_seed        what each player starts a game with
 //   $80:885B  level_record_find   where the level's record is
 //
+// Two of its calls take what two loads leave, and those loads are here as
+// well: `scene_cache_ask`, where the sprites' frames are, `$84:8000`, for
+// `sprite_cache_init`; and `scene_job_ask`, the vblank job at `$80:9E3E`
+// that scrolls the second layer, to be queued.
+//
 // ## The camera
 //
 // `camera_reset` is two stretches, with `camera_window_update` called
@@ -58,6 +63,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/wram.h"
 
 #define CAMERA_RESET_PC 0x80a64fu
@@ -85,6 +91,17 @@
 #define PLAYERS_DP_LEVEL 0x10  // the level's record, on the caller's page
 #define PLAYER_THREAD 0xcdf4u
 #define PLAYER_THREAD_BANK 0x0080u
+
+#define SCENE_CACHE_ASK_PC 0x80863eu
+#define SCENE_CACHE_INIT_PC 0x808644u  // `JSL sprite_cache_init`
+#define SCENE_JOB_ASK_PC 0x80865cu
+#define SCENE_JOB_QUEUE_PC 0x808662u   // `JSL vbl_queue_a_add`
+#define SPRITE_FRAMES_AT 0x8000u
+#define SPRITE_FRAMES_BANK 0x0084u
+#define SECOND_LAYER_JOB 0x9e3eu
+
+void scene_cache_ask(PortCpu* c);
+void scene_job_ask(PortCpu* c);
 
 // The first stretch of `camera_reset`.
 void camera_reset(Wram* w);

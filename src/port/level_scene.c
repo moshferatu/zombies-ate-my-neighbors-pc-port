@@ -7,6 +7,22 @@
 #include "port/thread.h"
 #include "port/walk.h"
 
+void scene_cache_ask(PortCpu* c) {
+  PORT_COVER(scene_cache_ask);
+  c->a = SPRITE_FRAMES_AT;
+  c->y = SPRITE_FRAMES_BANK;
+  set_nz16(c, c->y);
+  c->pc = SCENE_CACHE_INIT_PC;
+}
+
+void scene_job_ask(PortCpu* c) {
+  PORT_COVER(scene_job_ask);
+  c->a = SECOND_LAYER_JOB;
+  c->y = CAMERA_JOBS_BANK;
+  set_nz16(c, c->y);
+  c->pc = SCENE_JOB_QUEUE_PC;
+}
+
 void camera_reset(Wram* w) {
   PORT_COVER(camera_reset);
   wram_w16(w, W_TILEMAP_ARENA_LEFT, TILEMAP_ARENA_BYTES);

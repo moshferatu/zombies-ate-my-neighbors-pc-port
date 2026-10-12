@@ -200,6 +200,7 @@ enum {
   DMA_REP,       // REP #$20
   DMA_SEP_STORE, // SEP #$20 : STZ abs
   DMA_REP_LOADS, // REP #$30 : LDA #imm16 : LDY #imm16
+  DMA_REP_STZ16, // REP #$20 : STZ abs, to memory
   DMA_BLOCK_COUNT
 };
 
@@ -256,6 +257,17 @@ void window_hdma_setup(HwTrace* t);
 #define CAMERA_JOB 0x8209u
 #define CAMERA_JOB_BANK 0x0082u
 void camera_job_begin(HwTrace* t);
+
+// `$82:DB96` to its `RTL`, the end of the victims' list being parsed. Both
+// windows are given to the colour arithmetic, with their four edges at
+// zero. Inside them the fixed colour is taken off the second layer and the
+// backdrop: five of each of red, green and blue. No channel writes every line. And the word at
+// `$136E` is zero. I have not found what reads that.
+#define COLOUR_WINDOW_PC 0x82db96u
+#define COLOUR_WINDOW_RTL_PC 0x82dbc0u
+#define COLOUR_WINDOW_FIXED 0xe5u  // the last byte A is given
+#define W_COLOUR_WINDOW_WORD 0x136eu
+void colour_window_reset(Wram* w, HwTrace* t);
 
 // `$80:C34A`, which `hud_refresh` queues when the HUD has changed
 // (`port/hud.h`). It runs once: carry clear. A is left `$6401`, the high byte

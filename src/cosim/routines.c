@@ -120,6 +120,7 @@
 #include "port/tile_rows.h"
 #include "port/trig.h"
 #include "port/vblank.h"
+#include "port/level_load.h"
 #include "port/level_scene.h"
 #include "port/waits.h"
 
@@ -17734,6 +17735,7 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [DMA_REP] = {18, 2, 0},
     [DMA_SEP_STORE] = {36, 5, 0},
     [DMA_REP_LOADS] = {54, 8, 0},
+    [DMA_REP_STZ16] = {52, 5, 0},
     [VC_HEAD] = {46, 5, 1},
     [VC_STEP] = {94, 12, 1},
     [VC_TEST] = {58, 6, 1},
@@ -23332,6 +23334,281 @@ static void shim_camera_job_begin(Wram* w, const Rom* rom,
 }
 
 static const uint32_t CAMERA_JOB_BEGIN_EXITS[] = {CAMERA_JOB_BEGIN_QUEUE_PC};
+
+// Two of `$80:8632`'s calls take what two loads leave: `LDA # : LDY #`.
+static const CosimRun SCENE_ASK_RUN = {36, 6, 0};
+
+static void shim_scene_cache_ask(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  scene_cache_ask(&c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&SCENE_ASK_RUN, fetch_fast(in)));
+}
+
+static void shim_scene_job_ask(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  scene_job_ask(&c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&SCENE_ASK_RUN, fetch_fast(in)));
+}
+
+static const uint32_t SCENE_CACHE_ASK_EXITS[] = {SCENE_CACHE_INIT_PC};
+static const uint32_t SCENE_JOB_ASK_EXITS[] = {SCENE_JOB_QUEUE_PC};
+
+// ---------------------------------------------------------------------------
+// A level loaded from its record -- see `port/level_load.h`
+// ---------------------------------------------------------------------------
+//
+// A long read of the record is a read of the cartridge: 4 cycles less than
+// `tools/cycles816.py` says for each, and two bytes more that FastROM
+// fetches. These are corrected for it.
+static const CosimRun LEVEL_RUN_map_ask = {368, 46, 1};
+static const CosimRun LEVEL_RUN_attrs_ask = {112, 15, 1};
+static const CosimRun LEVEL_RUN_tiles_ask = {390, 48, 1};
+static const CosimRun LEVEL_RUN_camera_ask = {304, 40, 1};
+static const CosimRun LEVEL_RUN_screen_ask = {88, 10, 0};
+static const CosimRun LEVEL_RUN_palette_ask = {112, 15, 1};
+static const CosimRun LEVEL_RUN_sprite_palette_ask = {112, 15, 1};
+static const CosimRun LEVEL_RUN_spawner_ask = {174, 21, 3};
+static const CosimRun LEVEL_RUN_victims_thread_ask = {174, 21, 3};
+static const CosimRun LEVEL_RUN_victims_ask = {94, 12, 1};
+static const CosimRun LEVEL_RUN_objects_ask = {174, 21, 3};
+static const CosimRun LEVEL_RUN_extras_begin = {86, 7, 1};
+static const CosimRun LEVEL_RUN_THREAD_TEST = {112, 16, 1};  // $875F-$876A
+static const CosimRun LEVEL_RUN_THREAD_ASK = {84, 13, 0};    // $876B-$8773
+static const CosimRun LEVEL_RUN_EXTRA_TEST = {188, 21, 0};   // $87D5-$87E5
+static const CosimRun LEVEL_RUN_EXTRA_ASK = {212, 29, 2};    // $87E6-$87FA
+static const CosimRun LEVEL_RUN_EXTRA_END = {34, 1, 0};      // PLA
+
+static bool accepts_level_load(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && bank_sees_low_wram(in->db) &&
+         level_record_supported(w, in->d);
+}
+
+static bool accepts_level_extra(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && bank_sees_low_wram(in->db) &&
+         level_extra_supported(w, in->s);
+}
+
+static void level_cost(const CosimRun* run, const CosimRegs* in) {
+  cosim_cost(
+      cosim_run_cycles_dp(run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+}
+
+#define X(name, sym, entry, exit)                                            \
+  static void shim_level_##name(Wram* w, const Rom* rom, const CosimRegs* in, \
+                                CosimRegs* out) {                            \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    level_##name(w, rom, &c);                                                \
+    cpu_to(&c, out);                                                         \
+    level_cost(&LEVEL_RUN_##name, in);                                       \
+  }                                                                          \
+  static const uint32_t LEVEL_EXITS_##name[] = {exit};
+LEVEL_LOAD_STRETCHES(X)
+#undef X
+
+static void shim_level_thread_ask(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool has = level_thread_ask(w, rom, &c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &LEVEL_RUN_THREAD_TEST, 1);
+  run_add(&run, has ? &LEVEL_RUN_THREAD_ASK : &RUN_TAKEN, 1);
+  level_cost(&run, in);
+}
+
+static const uint32_t LEVEL_THREAD_ASK_EXITS[] = {LEVEL_THREAD_SPAWN_PC,
+                                                  LEVEL_THREAD_NONE_PC};
+
+static void shim_level_extra_next(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool has = level_extra_next(w, rom, &c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &LEVEL_RUN_EXTRA_TEST, 1);
+  if (has) {
+    run_add(&run, &LEVEL_RUN_EXTRA_ASK, 1);
+  } else {
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &LEVEL_RUN_EXTRA_END, 1);
+  }
+  level_cost(&run, in);
+}
+
+static const uint32_t LEVEL_EXTRA_NEXT_EXITS[] = {LEVEL_EXTRA_SPAWN_PC,
+                                                  LEVEL_LOAD_RTL_PC};
+
+// `$80:9F29` to its call. Page zero is put on before anything reads it.
+static const CosimRun TILES_UPLOAD_RUN = {604, 47, 0};
+static const CosimRun TILES_UPLOAD_END_RUN = {34, 1, 0};  // PLD
+
+static void shim_tiles_upload_begin(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  tiles_upload_begin(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&TILES_UPLOAD_RUN, fetch_fast(in)));
+}
+
+static bool accepts_pull(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return low_stack(in);
+}
+
+static void shim_tiles_upload_end(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  tiles_upload_end(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&TILES_UPLOAD_END_RUN, fetch_fast(in)));
+}
+
+static const uint32_t TILES_UPLOAD_EXITS[] = {TILES_UPLOAD_QUEUE_PC};
+static const uint32_t TILES_UPLOAD_END_EXITS[] = {TILES_UPLOAD_RTL_PC};
+
+// `$80:A9CC`. Each of X and Y is tested for its sign, then against its
+// limit, and what the flags are at the end depends on which way each went.
+static const CosimRun PLACE_RUN_SIGN = {24, 3, 0};   // TXA : BPL
+static const CosimRun PLACE_RUN_ZERO = {36, 5, 0};   // LDX #$0000 : BRA
+static const CosimRun PLACE_RUN_TEST = {46, 5, 0};   // CPX $00B8 : BCC
+static const CosimRun PLACE_RUN_LIMIT = {34, 3, 0};  // LDX $00B6
+static const CosimRun PLACE_RUN_TAIL = {110, 7, 0};  // STX : STY : RTL
+
+// One of the two: the flags and the cost of how it went, and where it is put.
+static uint16_t place_axis(PortCpu* c, CosimRun* run, CameraPlace how,
+                           uint16_t at, uint16_t limit, uint16_t limit_y) {
+  run_add(run, &PLACE_RUN_SIGN, 1);
+  if (how == CAMERA_PLACE_BEFORE) {
+    run_add(run, &PLACE_RUN_ZERO, 1);
+    set_nz16(c, 0);
+    return 0;
+  }
+  run_add(run, &RUN_TAKEN, 1);
+  run_add(run, &PLACE_RUN_TEST, 1);
+  cmp16(c, at, limit);
+  if (how == CAMERA_PLACE_ON) {
+    run_add(run, &RUN_TAKEN, 1);
+    return at;
+  }
+  run_add(run, &PLACE_RUN_LIMIT, 1);
+  set_nz16(c, limit_y);
+  return limit_y;
+}
+
+static void shim_camera_place(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  const uint16_t limit_x = wram_r16(w, W_CAMERA_MAX_X);
+  const uint16_t limit_y = wram_r16(w, W_CAMERA_MAX_Y);
+  const CameraPlaced did = camera_place(w, in->x, in->y);
+  PortCpu c;
+  cpu_from(in, &c);
+  CosimRun run = {0, 0, 0};
+  c.x = place_axis(&c, &run, did.x, in->x, limit_x, limit_y);
+  c.a = in->y;
+  c.y = place_axis(&c, &run, did.y, in->y, limit_y, limit_y);
+  run_add(&run, &PLACE_RUN_TAIL, 1);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static void shim_palette_job_ask(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  palette_job_ask(&c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&SCENE_ASK_RUN, fetch_fast(in)));
+}
+
+static const uint32_t PALETTE_JOB_ASK_EXITS[] = {PALETTE_JOB_QUEUE_PC};
+
+// What follows `screen_tiles_fill`, on page zero: `$80:A4FA` to the store
+// that counts the entries in, that store, and the two pulls after the wait.
+static const CosimRun TILES_QUEUE_RUN = {758, 70, 0};
+static const CosimRun TILES_QUEUED_RUN = {28, 2, 0};   // STA $CE
+static const CosimRun TILES_END_RUN = {60, 2, 0};      // PLD : PLB
+
+static bool accepts_screen_tiles_queue(const Wram* w, const CosimRegs* in) {
+  return wide(in) && (in->p & PORT_P_D) == 0 && in->d == 0 && low_stack(in) &&
+         screen_tiles_queue_supported(w, in->s);
+}
+
+static bool accepts_screen_tiles_queued(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && in->d == 0;
+}
+
+static void shim_screen_tiles_queue(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  screen_tiles_queue(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&TILES_QUEUE_RUN, fetch_fast(in)));
+}
+
+static void shim_screen_tiles_queued(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  screen_tiles_queued(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&TILES_QUEUED_RUN, fetch_fast(in)));
+}
+
+static void shim_screen_tiles_end(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  screen_tiles_end(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&TILES_END_RUN, fetch_fast(in)));
+}
+
+static const uint32_t SCREEN_TILES_QUEUE_EXITS[] = {SCREEN_TILES_QUEUED_PC};
+static const uint32_t SCREEN_TILES_QUEUED_EXITS[] = {SCREEN_TILES_REQUEST_PC};
+static const uint32_t SCREEN_TILES_END_EXITS[] = {SCREEN_TILES_RTL_PC};
+
+// `$82:DB96` to its `RTL`: see `port/dma.h`.
+static void shim_colour_window_reset(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  colour_window_reset(w, t);
+  PortCpu c;
+  cpu_from(in, &c);
+  c.p = (uint8_t)(c.p & ~PORT_P_M);
+  c.a = (uint16_t)((c.a & 0xff00u) | COLOUR_WINDOW_FIXED);
+  set_nz8(&c, COLOUR_WINDOW_FIXED);
+  c.pc = COLOUR_WINDOW_RTL_PC;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static const uint32_t COLOUR_WINDOW_EXITS[] = {COLOUR_WINDOW_RTL_PC};
 
 // `$80:AC7E` and `$80:88A9` -- see `port/layers_setup.h`. Their absolute
 // stores have to find the registers, which a data bank of `$7E` would not.
@@ -29970,6 +30247,139 @@ static const CosimRoutine ROUTINES[] = {
         .accepts = accepts_scene_registers,
         COSIM_EXITS(CAMERA_JOB_BEGIN_EXITS),
         .cycles = 110,
+        .hw = true,
+    },
+    {
+        .name = "scene_cache_ask",
+        .symbol = "$80:863E",
+        .entry = SCENE_CACHE_ASK_PC,
+        .run = shim_scene_cache_ask,
+        .accepts = accepts_camera_reset,
+        COSIM_EXITS(SCENE_CACHE_ASK_EXITS),
+        .uncalled = true,
+        .cycles = 36,
+    },
+    {
+        .name = "scene_job_ask",
+        .symbol = "$80:865C",
+        .entry = SCENE_JOB_ASK_PC,
+        .run = shim_scene_job_ask,
+        .accepts = accepts_camera_reset,
+        COSIM_EXITS(SCENE_JOB_ASK_EXITS),
+        .uncalled = true,
+        .cycles = 36,
+    },
+    // A level loaded from its record. See `port/level_load.h`.
+#define X(name_, sym, pc, exit)                                              \
+    {                                                                        \
+        .name = "level_" #name_,                                             \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_level_##name_,                                           \
+        .accepts = accepts_level_load,                                       \
+        COSIM_EXITS(LEVEL_EXITS_##name_),                                    \
+        .uncalled = true,  /* all but the first, which is called */          \
+        .cycles = 200,                                                       \
+    },
+    LEVEL_LOAD_STRETCHES(X)
+#undef X
+    {
+        .name = "level_thread_ask",
+        .symbol = "$80:875F",
+        .entry = LEVEL_THREAD_ASK_PC,
+        .run = shim_level_thread_ask,
+        .accepts = accepts_level_load,
+        COSIM_EXITS(LEVEL_THREAD_ASK_EXITS),
+        .uncalled = true,
+        .cycles = 200,
+    },
+    {
+        .name = "level_extra_next",
+        .symbol = "$80:87D5",
+        .entry = LEVEL_EXTRA_NEXT_PC,
+        .run = shim_level_extra_next,
+        .accepts = accepts_level_extra,
+        COSIM_EXITS(LEVEL_EXTRA_NEXT_EXITS),
+        .uncalled = true,
+        .cycles = 300,
+    },
+    {
+        .name = "tiles_upload_begin",
+        .symbol = "$80:9F29",
+        .entry = TILES_UPLOAD_PC,
+        .run = shim_tiles_upload_begin,
+        .accepts = accepts_body_low,
+        COSIM_EXITS(TILES_UPLOAD_EXITS),
+        .cycles = 604,
+    },
+    {
+        .name = "tiles_upload_end",
+        .symbol = "$80:9F60",
+        .entry = TILES_UPLOAD_END_PC,
+        .run = shim_tiles_upload_end,
+        .accepts = accepts_pull,
+        COSIM_EXITS(TILES_UPLOAD_END_EXITS),
+        .uncalled = true,
+        .cycles = 34,
+    },
+    {
+        .name = "camera_place",
+        .symbol = "$80:A9CC",
+        .entry = CAMERA_PLACE_PC,
+        .ret_op = CAMERA_PLACE_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_camera_place,
+        .accepts = accepts_camera_reset,
+        .cycles = 280,
+    },
+    {
+        .name = "palette_job_ask",
+        .symbol = "$80:A079",
+        .entry = PALETTE_JOB_ASK_PC,
+        .run = shim_palette_job_ask,
+        .accepts = accepts_camera_reset,
+        COSIM_EXITS(PALETTE_JOB_ASK_EXITS),
+        .cycles = 36,
+    },
+    {
+        .name = "screen_tiles_queue",
+        .symbol = "$80:A4FA",
+        .entry = SCREEN_TILES_QUEUE_PC,
+        .run = shim_screen_tiles_queue,
+        .accepts = accepts_screen_tiles_queue,
+        COSIM_EXITS(SCREEN_TILES_QUEUE_EXITS),
+        .uncalled = true,
+        .cycles = 758,
+    },
+    {
+        .name = "screen_tiles_queued",
+        .symbol = "$80:A540",
+        .entry = SCREEN_TILES_QUEUED_PC,
+        .run = shim_screen_tiles_queued,
+        .accepts = accepts_screen_tiles_queued,
+        COSIM_EXITS(SCREEN_TILES_QUEUED_EXITS),
+        .uncalled = true,
+        .cycles = 28,
+    },
+    {
+        .name = "screen_tiles_end",
+        .symbol = "$80:A54A",
+        .entry = SCREEN_TILES_END_PC,
+        .run = shim_screen_tiles_end,
+        .accepts = accepts_pull,
+        COSIM_EXITS(SCREEN_TILES_END_EXITS),
+        .uncalled = true,
+        .cycles = 60,
+    },
+    {
+        .name = "colour_window_reset",
+        .symbol = "$82:DB96",
+        .entry = COLOUR_WINDOW_PC,
+        .run = shim_colour_window_reset,
+        .accepts = accepts_scene_registers,
+        COSIM_EXITS(COLOUR_WINDOW_EXITS),
+        .uncalled = true,
+        .cycles = 330,
         .hw = true,
     },
 #define X(at, sym, pc, exit, pull, pushed, a, x, y)                          \

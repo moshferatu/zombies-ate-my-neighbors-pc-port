@@ -273,6 +273,10 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**A level loaded from its record, 2026-10-12.** `level_load` is ported
+between its calls, with the ends of three routines it calls. The places
+are 733 and the core executes 296,059 instructions over the survey.
+
 **The water's edge and a level's scene, 2026-10-12.** The walk has its
 first tile reaction, and nine rows serve what a level's beginning calls.
 The places are 749 and the core executes 324,045 instructions over the

@@ -19059,3 +19059,33 @@ own, and every write falls on the ROM's cycle with no callee's cost in it.
 Over the same 110 sessions the core executes 324,045 instructions
 where it executed 361,406, and takes over 33,346 times where it
 did 35,232, at 749 places where there were 743.
+
+## A level loaded from its record (2026-10-12)
+
+### Glue between ports
+
+`$80:86A2` calls a dozen routines, and all but three had ports. What the
+core ran was the loads before each call. Each is now a stretch that stops
+on the call, and the harness makes the call. Where a port returns straight
+onto a call, the call is a link in `port/links.h`.
+
+### One instruction on its own
+
+`$80:A4FA` writes two entries past the end of the VRAM queue and then
+counts them in with `STA $CE`. A stretch is published all at once, so a
+vblank landing in it would find the queue longer sooner than the ROM's
+would. The store is a stretch by itself, `screen_tiles_queued`. An
+interrupt is taken between instructions, so one instruction is as whole
+in the port as in the ROM.
+
+### 40 cycles
+
+Several of the new rows cost exactly 40 cycles less than the ROM on some
+calls and nothing less on others. I take it for the memory refresh, which
+holds the CPU 40 cycles once a line. I have not shown that it is.
+
+### After
+
+Over the same 110 sessions the core executes 296,059 instructions
+where it executed 324,045, and takes over 31,322 times where it
+did 33,346, at 733 places where there were 749.

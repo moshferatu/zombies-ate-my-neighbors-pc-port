@@ -15,9 +15,13 @@
 //     LDA $2C : STA $40
 //     JSR $A4A0      32 tiles of the next column
 //
-// The queueing is the ROM's still: thirty instructions, and leaving them
-// where they are leaves the queue filled when the ROM fills it. The wait
-// after it is `port/hold.h`'s.
+// The queueing is three stretches more. `screen_tiles_queue`, from
+// `$80:A4FA`, writes two entries past the VRAM queue's end: the rows to the
+// level's map, and the column to the page after it, a tile a row. Nothing
+// reads them there. `screen_tiles_queued` is the one instruction that counts
+// them in, `STA $CE`, kept on its own so that a vblank finds the queue
+// longer exactly when the ROM's would. The wait after it is `port/hold.h`'s,
+// and `screen_tiles_end` takes the caller's direct page and data bank back.
 //
 // ## A tile's priority
 //
@@ -46,6 +50,13 @@
 
 #define SCREEN_TILES_PC 0x80a4d9u
 #define SCREEN_TILES_QUEUE_PC 0x80a4fau  // the `PLB` before the queue is filled
+#define SCREEN_TILES_QUEUED_PC 0x80a540u  // `STA $CE`
+#define SCREEN_TILES_REQUEST_PC 0x80a542u  // `JSR $9E6D`
+#define SCREEN_TILES_END_PC 0x80a54au
+#define SCREEN_TILES_RTL_PC 0x80a54cu
+#define SCREEN_ROWS_BYTES 0x0740u    // 29 rows of 32 tiles
+#define SCREEN_COLUMN_BYTES 0x003au  // ...and 29 of the column
+#define SCREEN_COLUMN_VRAM 0x0400u   // the page after the map's first
 
 #define SCREEN_TILES_ACROSS 32
 #define SCREEN_TILES_DOWN 31
@@ -73,5 +84,12 @@ typedef struct {
 bool screen_tiles_supported(const Wram* w);
 
 void screen_tiles_fill(Wram* w, PortCpu* c, ScreenTilesWork* k);
+
+// The queue has to have room for two entries, and the byte the stack holds
+// has to be a data bank that sees low memory.
+bool screen_tiles_queue_supported(const Wram* w, uint16_t s);
+void screen_tiles_queue(Wram* w, PortCpu* c);
+void screen_tiles_queued(Wram* w, PortCpu* c);
+void screen_tiles_end(const Wram* w, PortCpu* c);
 
 #endif
