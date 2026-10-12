@@ -19089,3 +19089,26 @@ holds the CPU 40 cycles once a line. I have not shown that it is.
 Over the same 110 sessions the core executes 296,059 instructions
 where it executed 324,045, and takes over 31,322 times where it
 did 33,346, at 733 places where there were 749.
+
+## The logo screens' routine, between its calls (2026-10-12)
+
+### An argument on the stack
+
+`$83:8000` calls `dma_to_vram` and `lzss_decompress` with a word pushed
+before the call and pulled after it. The stretch that follows such a call
+begins with the pull, and ends with the next call's push. So the stack is
+the same depth at the start and end of each, and the first of them alone
+leaves a word on it.
+
+### A removal held back
+
+`vbl_queue_a_remove` zeroes a slot and takes one off the count. Its row
+names the same spans `vbl_queue_a_add`'s does, so the harness holds both
+stores back until the routine's cycles are spent. The ROM's stores are
+three instructions apart; the port's land together.
+
+### After
+
+Over the same 110 sessions the core executes 281,839 instructions
+where it executed 296,059, and takes over 30,558 times where it
+did 31,322, at 726 places where there were 733.

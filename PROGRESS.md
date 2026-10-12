@@ -5,6 +5,61 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The logo screens' routine, between its calls (2026-10-12)
+
+`$83:8000` shows the logo screens. Its eight loops, its tilemap and its
+colours were ported, and so was all it calls but one routine. The core
+still ran what sets each call up and what comes before each wait. This
+round is that.
+
+* **Sixteen stretches**, in the new `port/intro.c`. The first puts on the
+  routine's data bank and direct page and turns the screen off. Five set
+  out a send to VRAM or an unpacking, each pulling the argument the last
+  call was given. The rest queue the screen's job and keep its slot, begin
+  the slide and the two sweeps, give the job back, turn the screen off and
+  take back the caller's registers.
+* **Two that write to the picture hardware**, in `port/dma.c`.
+  * `intro_layers_setup` (`$83:8015`): the mode, where the two layers' maps
+    are and where their tiles are.
+  * `intro_layers_on` (`$83:80C7`): the scroll shadows and the two layers
+    turned on.
+* **`vbl_queue_a_remove`** (`$80:83D5`), in `port/thread.c`. It has ten
+  callers. Its two stores are held back as `vbl_queue_a_add`'s are.
+* **Two links**: `$80:9144` and `$83:823A`.
+* **Checked.**
+  * The corpus verifies clean: 126,357,630 calls, none diverged. Each
+    stretch of the routine was checked 54 times, once a movie, and
+    `vbl_queue_a_remove` 336 times.
+  * Costs were compared on `level1` only. Every new row is exact but
+    `vbl_queue_a_remove`, which is 40 cycles under the ROM on one call of
+    four.
+  * Lockstep: 51 of 54 never part; `level25`, `level25-2p` and
+    `level25-heavy` do, as before.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies, and
+    none differ.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 645 to 638 | 26,006 to 25,132 | 216,044 to 202,848 |
+  | Left standing on an instruction | 44 to 43 | 1,964 to 1,854 | 52,664 to 50,760 |
+  | A port turned the call down | 34 to 34 | 2,827 to 2,827 | 17,951 to 17,951 |
+  | A port or a link called it | 9 to 10 | 415 to 635 | 1,480 to 2,360 |
+  | All | 733 to 726 | 31,322 to 30,558 | 296,059 to 281,839 |
+
+  899 routines are registered.
+* **Not done or not known.**
+  * The routine's waits are the core's still: a `WAI` each, and one place,
+    `$83:81CB`, where two stand together.
+  * `vbl_queue_a_remove` has ten callers. I did not count which of them
+    the corpus reaches.
+  * The ROM zeroes the slot three instructions before it counts the job
+    out. The port's two stores are published together. A vblank between
+    them would find them otherwise than the ROM's, and nothing shows the
+    corpus has one there.
+  * `$80:9136`, which calls the routine, reads the hardware first and is
+    not ported.
+
 ### A level loaded from its record (2026-10-12)
 
 `level_load` (`$80:86A2`) is a list of calls to routines that were ported

@@ -77,6 +77,7 @@ typedef enum {
 #define W_LOGO_SCROLL_X 0x1360u
 #define W_LOGO_SCROLL_Y 0x1362u
 #define W_LOGO_SCROLL_2_X 0x1364u
+#define W_LOGO_SCROLL_2_Y 0x1366u
 #define W_LOGO_BRIGHTNESS 0x136cu  // `W_BRIGHTNESS_SHADOW`
 // The shown colours, in bank `$7E`: `PALETTE_SHOWN_AT` in `port/dma.h`.
 #define LOGO_COLOURS 0x5628u

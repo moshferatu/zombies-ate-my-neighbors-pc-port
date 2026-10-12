@@ -51,6 +51,15 @@ void thread_tick_waits(Wram* w);
 int vbl_queue_a_add(Wram* w, uint16_t addr, uint16_t bank);
 int vbl_queue_b_add(Wram* w, uint16_t addr, uint16_t bank);
 
+// `$80:83D5` takes a job out of queue A: the slot `vbl_queue_a_add` gave is
+// zeroed and the count goes down one. It does not look whether the slot had
+// a job in it. Only the job's address is zeroed, which is what the vblank
+// handler tests.
+#define VBL_QUEUE_A_REMOVE_PC 0x8083d5u
+#define VBL_QUEUE_A_REMOVE_RTL_PC 0x8083dfu
+bool vbl_queue_a_remove_supported(uint16_t slot);
+void vbl_queue_a_remove(Wram* w, uint16_t slot);
+
 // The three flags either adder leaves, given the queue it worked on, the Y it
 // was called with, and whether the job went in. Carry is the return value — set
 // means refused — and the comment in `src/cosim/routines.c` says what leaving it

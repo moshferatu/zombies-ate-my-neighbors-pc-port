@@ -87,6 +87,7 @@
 #include "port/page.h"
 #include "port/decoy.h"
 #include "port/logo.h"
+#include "port/intro.h"
 #include "port/card.h"
 #include "port/jumper.h"
 #include "port/radar_thread.h"
@@ -17736,6 +17737,9 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [DMA_SEP_STORE] = {36, 5, 0},
     [DMA_REP_LOADS] = {54, 8, 0},
     [DMA_REP_STZ16] = {52, 5, 0},
+    [DMA_IMM_ORA] = {42, 7, 0},
+    [DMA_IMM16_MEM] = {52, 6, 0},
+    [DMA_REP_LOADS3] = {72, 11, 0},
     [VC_HEAD] = {46, 5, 1},
     [VC_STEP] = {94, 12, 1},
     [VC_TEST] = {58, 6, 1},
@@ -23609,6 +23613,120 @@ static void shim_colour_window_reset(Wram* w, const Rom* rom,
 }
 
 static const uint32_t COLOUR_WINDOW_EXITS[] = {COLOUR_WINDOW_RTL_PC};
+
+// ---------------------------------------------------------------------------
+// The logo screens' routine, between its calls and its waits -- see
+// `port/intro.h`
+// ---------------------------------------------------------------------------
+static const CosimRun INTRO_RUN_begin = {248, 17, 0};
+static const CosimRun INTRO_RUN_map_send_ask = {100, 13, 0};
+static const CosimRun INTRO_RUN_map_2_unpack_ask = {134, 14, 0};
+static const CosimRun INTRO_RUN_map_2_send_ask = {134, 14, 0};
+static const CosimRun INTRO_RUN_tiles_unpack_ask = {134, 14, 0};
+static const CosimRun INTRO_RUN_tiles_send_ask = {134, 14, 0};
+static const CosimRun INTRO_RUN_job_ask = {70, 7, 0};
+static const CosimRun INTRO_RUN_job_kept = {28, 2, 1};
+static const CosimRun INTRO_RUN_slide_begin = {126, 13, 2};
+static const CosimRun INTRO_RUN_sweep_colours_ask = {54, 9, 0};
+static const CosimRun INTRO_RUN_sweep_begin = {46, 5, 1};
+static const CosimRun INTRO_RUN_sweep_2_begin = {46, 5, 1};
+static const CosimRun INTRO_RUN_job_remove_ask = {28, 2, 1};
+static const CosimRun INTRO_RUN_job_forgotten = {28, 2, 1};
+static const CosimRun INTRO_RUN_blank = {52, 6, 0};
+static const CosimRun INTRO_RUN_end = {60, 2, 0};
+
+static bool accepts_intro_begin(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && low_stack(in);
+}
+
+static void shim_intro_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  intro_begin(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&INTRO_RUN_begin, fetch_fast(in)));
+}
+
+static const uint32_t INTRO_BEGIN_EXITS[] = {INTRO_BEGUN_PC};
+
+#define X(name, sym, entry, exit)                                            \
+  static void shim_intro_##name(Wram* w, const Rom* rom, const CosimRegs* in, \
+                                CosimRegs* out) {                            \
+    (void)rom;                                                               \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    intro_##name(w, &c);                                                     \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(cosim_run_cycles_dp(&INTRO_RUN_##name, fetch_fast(in),        \
+                                   (c.d & 0x00ffu) != 0));                   \
+  }                                                                          \
+  static const uint32_t INTRO_EXITS_##name[] = {exit};
+INTRO_STRETCHES(X)
+#undef X
+
+// `$83:8015`. A is left 8 bits wide with a zero in it.
+static void shim_intro_layers_setup(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  intro_layers_setup(t);
+  PortCpu c;
+  cpu_from(in, &c);
+  c.p |= PORT_P_M;
+  c.a &= 0xff00u;
+  set_nz8(&c, 0);
+  c.pc = INTRO_LAYERS_SETUP_END_PC;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// `$83:80C7`. It stops on the call that copies the first screen's colours,
+// with what the call takes.
+static void shim_intro_layers_on(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  intro_layers_on(w, t);
+  PortCpu c;
+  cpu_from(in, &c);
+  c.a = INTRO_FIRST_COLOUR_BYTES;
+  c.y = INTRO_FIRST_COLOURS;
+  c.x = 0;
+  set_nz16(&c, c.x);
+  c.pc = INTRO_LAYERS_ON_END_PC;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static const uint32_t INTRO_LAYERS_SETUP_EXITS[] = {INTRO_LAYERS_SETUP_END_PC};
+static const uint32_t INTRO_LAYERS_ON_EXITS[] = {INTRO_LAYERS_ON_END_PC};
+
+// `$80:83D5`: `TAX : LDA #$0000 : STA $12A0,X : DEC $000C : RTL`. N and Z are
+// the count's.
+static const CosimRun QUEUE_A_REMOVE_RUN = {168, 11, 0};
+
+static bool accepts_vbl_queue_a_remove(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && bank_sees_low_wram(in->db) &&
+         vbl_queue_a_remove_supported(in->a);
+}
+
+static void shim_vbl_queue_a_remove(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  vbl_queue_a_remove(w, in->a);
+  PortCpu c;
+  cpu_from(in, &c);
+  c.x = in->a;
+  c.a = 0;
+  set_nz16(&c, wram_r16(w, W_VBL_QUEUE_A_COUNT));
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&QUEUE_A_REMOVE_RUN, fetch_fast(in)));
+}
 
 // `$80:AC7E` and `$80:88A9` -- see `port/layers_setup.h`. Their absolute
 // stores have to find the registers, which a data bank of `$7E` would not.
@@ -30381,6 +30499,63 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 330,
         .hw = true,
+    },
+    // The logo screens' routine, between its calls and its waits. See
+    // `port/intro.h`.
+    {
+        .name = "intro_begin",
+        .symbol = "$83:8000",
+        .entry = INTRO_PC,
+        .run = shim_intro_begin,
+        .accepts = accepts_intro_begin,
+        COSIM_EXITS(INTRO_BEGIN_EXITS),
+        .cycles = 248,
+    },
+#define X(name_, sym, pc, exit)                                              \
+    {                                                                        \
+        .name = "intro_" #name_,                                             \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_intro_##name_,                                           \
+        .accepts = accepts_logo_frame,                                       \
+        COSIM_EXITS(INTRO_EXITS_##name_),                                    \
+        .uncalled = true,                                                    \
+        .cycles = 100,                                                       \
+    },
+    INTRO_STRETCHES(X)
+#undef X
+    {
+        .name = "intro_layers_setup",
+        .symbol = "$83:8015",
+        .entry = INTRO_LAYERS_SETUP_PC,
+        .run = shim_intro_layers_setup,
+        .accepts = accepts_scene_registers,
+        COSIM_EXITS(INTRO_LAYERS_SETUP_EXITS),
+        .uncalled = true,
+        .cycles = 190,
+        .hw = true,
+    },
+    {
+        .name = "intro_layers_on",
+        .symbol = "$83:80C7",
+        .entry = INTRO_LAYERS_ON_PC,
+        .run = shim_intro_layers_on,
+        .accepts = accepts_logo_frame,
+        COSIM_EXITS(INTRO_LAYERS_ON_EXITS),
+        .uncalled = true,
+        .cycles = 330,
+        .hw = true,
+    },
+    {
+        .name = "vbl_queue_a_remove",
+        COSIM_COMMIT(COMMIT_VBL_A),
+        .symbol = "$80:83D5",
+        .entry = VBL_QUEUE_A_REMOVE_PC,
+        .ret_op = VBL_QUEUE_A_REMOVE_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_vbl_queue_a_remove,
+        .accepts = accepts_vbl_queue_a_remove,
+        .cycles = 168,
     },
 #define X(at, sym, pc, exit, pull, pushed, a, x, y)                          \
     {                                                                        \

@@ -273,6 +273,10 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**The logo screens' routine, 2026-10-12.** `$83:8000` is ported between
+its calls and its waits, and `vbl_queue_a_remove` with it. The places are
+726 and the core executes 281,839 instructions over the survey.
+
 **A level loaded from its record, 2026-10-12.** `level_load` is ported
 between its calls, with the ends of three routines it calls. The places
 are 733 and the core executes 296,059 instructions over the survey.

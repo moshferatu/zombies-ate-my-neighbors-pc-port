@@ -3,17 +3,22 @@
 #include "port/dma.h"
 
 #include "port/coverage.h"
+#include "port/logo.h"
 #include "port/thread.h"
 
 // The registers.
+#define REG_BGMODE 0x2105u     // the mode, and whose tiles are 16 across
 #define REG_BG1SC 0x2107u      // where the first layer's map is, and how big
+#define REG_BG2SC 0x2108u      // ...and the second's
 #define REG_BG3SC 0x2109u      // where the third layer's map is
-#define REG_BG34NBA 0x210cu    // ...and its tiles
+#define REG_BG12NBA 0x210bu    // where the first two layers' tiles are
+#define REG_BG34NBA 0x210cu    // ...and the third's
 #define REG_VMAIN 0x2115u      // how VRAM's address steps
 #define REG_VMADD 0x2116u      // VRAM's address, in words
 #define REG_CGADD 0x2121u      // which colour
 #define REG_WOBJSEL 0x2125u    // which windows the colour arithmetic has
 #define REG_WH0 0x2126u        // the windows' four edges, from here
+#define REG_TM 0x212cu         // which layers are on
 #define REG_CGWSEL 0x2130u     // where the colour arithmetic is done
 #define REG_CGADSUB 0x2131u    // ...to what, and which way
 #define REG_COLDATA 0x2132u    // the fixed colour
@@ -172,6 +177,34 @@ void colour_window_reset(Wram* w, HwTrace* t) {
   store8(t, DMA_STORE, REG_HDMAEN, 0);
   hw_run(t, DMA_REP_STZ16);
   wram_w16(w, W_COLOUR_WINDOW_WORD, 0);
+}
+
+#define MODE_1_BG1_TILES_16 0x19u
+#define MAP_AT_4000_FOUR_SCREENS 0x43u
+#define MAP_AT_6000 0x60u
+#define FIRST_TWO_LAYERS 0x03u
+
+void intro_layers_setup(HwTrace* t) {
+  PORT_COVER(intro_layers_setup);
+  store8(t, DMA_SEP_IMM, REG_BGMODE, MODE_1_BG1_TILES_16);
+  store8(t, DMA_IMM_ORA, REG_BG1SC, MAP_AT_4000_FOUR_SCREENS);
+  store8(t, DMA_IMM, REG_BG2SC, MAP_AT_6000);
+  store8(t, DMA_IMM, REG_BG12NBA, 0);
+}
+
+static void shadow_set(Wram* w, HwTrace* t, uint16_t at, uint16_t v) {
+  hw_run(t, DMA_IMM16_MEM);
+  wram_w16(w, at, v);
+}
+
+void intro_layers_on(Wram* w, HwTrace* t) {
+  PORT_COVER(intro_layers_on);
+  shadow_set(w, t, W_LOGO_SCROLL_X, 0x0100);
+  shadow_set(w, t, W_LOGO_SCROLL_Y, 0x0400);
+  shadow_set(w, t, W_LOGO_SCROLL_2_X, 0x0100);
+  shadow_set(w, t, W_LOGO_SCROLL_2_Y, 0);
+  store8(t, DMA_SEP_IMM, REG_TM, FIRST_TWO_LAYERS);
+  hw_run(t, DMA_REP_LOADS3);
 }
 
 void hud_upload_job(HwTrace* t) {

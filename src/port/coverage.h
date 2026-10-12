@@ -1841,6 +1841,25 @@
   X(screen_tiles_queued, "screen_tiles_queued", "...and counted in") \
   X(screen_tiles_end, "screen_tiles_end", "the caller's direct page and data bank taken back") \
   X(colour_window_reset, "colour_window_reset", "both windows given to the colour arithmetic, edges at zero") \
+  X(intro_begin, "intro_begin", "the logo screens' routine begun with the screen off") \
+  X(intro_map_send_ask, "intro_map_send_ask", "the tilemap it made, to be sent") \
+  X(intro_map_2_unpack_ask, "intro_map_2_unpack_ask", "the second layer's map, to be unpacked") \
+  X(intro_map_2_send_ask, "intro_map_2_send_ask", "...and sent") \
+  X(intro_tiles_unpack_ask, "intro_tiles_unpack_ask", "the tiles' pictures, to be unpacked") \
+  X(intro_tiles_send_ask, "intro_tiles_send_ask", "...and sent") \
+  X(intro_job_ask, "intro_job_ask", "the screen's vblank job, to be queued") \
+  X(intro_job_kept, "intro_job_kept", "the slot the job was given, kept") \
+  X(intro_slide_begin, "intro_slide_begin", "full brightness, and the slide's first tile") \
+  X(intro_sweep_colours_ask, "intro_sweep_colours_ask", "the sweep's colours, to be copied") \
+  X(intro_sweep_begin, "intro_sweep_begin", "ten times round the sweep") \
+  X(intro_sweep_2_begin, "intro_sweep_2_begin", "...and the second") \
+  X(intro_job_remove_ask, "intro_job_remove_ask", "the job's slot, to be given back") \
+  X(intro_job_forgotten, "intro_job_forgotten", "...and forgotten") \
+  X(intro_blank, "intro_blank", "the screen off again") \
+  X(intro_end, "intro_end", "the caller's direct page and data bank taken back") \
+  X(intro_layers_setup, "intro_layers_setup", "the logo screens' mode, maps and tiles set") \
+  X(intro_layers_on, "intro_layers_on", "their layers placed and turned on") \
+  X(queue_a_remove, "vbl_queue_a_remove", "a job taken out of vblank queue A") \
   X(send_args, "send_args", "what a screen's next send is called with") \
   X(palette_job, "palette_job", "all 256 colours sent") \
   X(background_job, "background_job", "the background's second copy sent") \

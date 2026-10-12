@@ -201,6 +201,9 @@ enum {
   DMA_SEP_STORE, // SEP #$20 : STZ abs
   DMA_REP_LOADS, // REP #$30 : LDA #imm16 : LDY #imm16
   DMA_REP_STZ16, // REP #$20 : STZ abs, to memory
+  DMA_IMM_ORA,   // LDA #imm : ORA #imm : STA abs
+  DMA_IMM16_MEM, // LDA #imm16 : STA abs, to memory
+  DMA_REP_LOADS3,// REP #$20 : LDA #imm16 : LDY #imm16 : LDX #imm16
   DMA_BLOCK_COUNT
 };
 
@@ -268,6 +271,25 @@ void camera_job_begin(HwTrace* t);
 #define COLOUR_WINDOW_FIXED 0xe5u  // the last byte A is given
 #define W_COLOUR_WINDOW_WORD 0x136eu
 void colour_window_reset(Wram* w, HwTrace* t);
+
+// `$83:8015` to `$83:802D`, in the logo screens' routine (`port/intro.h`).
+// Mode 1, with the first layer's tiles 16 across. The first layer's map is
+// at `$4000` and four screens big, the second's at `$6000`, and both
+// layers' tiles are at 0.
+#define INTRO_LAYERS_SETUP_PC 0x838015u
+#define INTRO_LAYERS_SETUP_END_PC 0x83802du  // `INTRO_FILL_PC`
+void intro_layers_setup(HwTrace* t);
+
+// `$83:80C7` to `$83:80F1`, after the first vblank the screen's job has
+// had. The first layer's shadow is put a screen to the left and four down,
+// the second's a screen to the left, and the two layers are turned on. It
+// stops on a call to `intro_colours_copy`, having set out what that takes:
+// the first screen's 128 bytes of colours.
+#define INTRO_LAYERS_ON_PC 0x8380c7u
+#define INTRO_LAYERS_ON_END_PC 0x8380f1u
+#define INTRO_FIRST_COLOURS 0x91f0u  // in bank `$83`
+#define INTRO_FIRST_COLOUR_BYTES 0x0080u
+void intro_layers_on(Wram* w, HwTrace* t);
 
 // `$80:C34A`, which `hud_refresh` queues when the HUD has changed
 // (`port/hud.h`). It runs once: carry clear. A is left `$6401`, the high byte

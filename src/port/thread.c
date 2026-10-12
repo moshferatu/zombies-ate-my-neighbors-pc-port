@@ -44,6 +44,17 @@ int vbl_queue_a_add(Wram* w, uint16_t addr, uint16_t bank) {
                        0x38, addr, bank);
 }
 
+bool vbl_queue_a_remove_supported(uint16_t slot) {
+  return slot < W_VBL_QUEUE_A_SLOTS * 4 && slot % 4 == 0;
+}
+
+void vbl_queue_a_remove(Wram* w, uint16_t slot) {
+  PORT_COVER(queue_a_remove);
+  wram_w16(w, W_VBL_QUEUE_A + (uint32_t)slot, 0);
+  wram_w16(w, W_VBL_QUEUE_A_COUNT,
+           (uint16_t)(wram_r16(w, W_VBL_QUEUE_A_COUNT) - 1));
+}
+
 int vbl_queue_b_add(Wram* w, uint16_t addr, uint16_t bank) {
   return vbl_queue_add(w, W_VBL_QUEUE_B, W_VBL_QUEUE_B_COUNT, W_VBL_QUEUE_B_SLOTS,
                        0x1c, addr, bank);
