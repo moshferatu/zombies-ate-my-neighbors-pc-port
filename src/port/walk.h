@@ -51,10 +51,15 @@
 //
 // * the double step, bit 15 of `$54`, which runs the whole walk twice. No
 //   input has taken it.
-// * a solid tile with a reaction of its own, but for the two below. The
+// * a solid tile with a reaction of its own, but for the three below. The
 //   reaction takes over from inside the walk.
 //
-// ## Two reactions the walk has
+// ## Three reactions the walk has
+//
+// **The water's edge**, the first: `$80:E7A1`. A player with health, in the
+// ordinary state and facing some way looks 32 pixels that way. With water
+// there, and the other player near enough to it, they jump in, and that is
+// the ROM's. Anything less and the tile is only solid.
 //
 // **A door**, the third. The walk looks at the tile a little way off the
 // way the player faces, up or down: `$80:E8D3`. If that is a door it wants
@@ -200,7 +205,23 @@ typedef enum {
   WALK_ASK_COUNT
 } WalkQuestion;
 
-enum { WALK_REACTION_DOOR = 3, WALK_REACTION_SQUARE = 5 };
+enum { WALK_REACTION_EDGE = 1, WALK_REACTION_DOOR = 3, WALK_REACTION_SQUARE = 5 };
+
+// The water's edge: where the point looked at is, for each way faced.
+#define WALK_EDGE_STEPS 0x80e7dau
+#define WALK_EDGE_DP_STATE 0x70   // the player's state, 0 the ordinary one
+#define WALK_EDGE_DP_PLAYER 0x0e  // which player, doubled
+#define W_WALK_EDGE_HEALTH 0x1cb8
+
+// Why a player at the water's edge did not jump in.
+typedef enum {
+  WALK_EDGE_DEAD,      // no health
+  WALK_EDGE_LESS,      // ...or less than none
+  WALK_EDGE_BUSY,      // not in the ordinary state
+  WALK_EDGE_NO_WAY,    // facing nowhere
+  WALK_EDGE_DRY,       // no water where they look
+  WALK_EDGE_TETHERED,  // water, too far from the other player
+} WalkEdge;
 
 // How a look through the five squares ended.
 typedef enum {
@@ -217,6 +238,7 @@ typedef struct {
   int slot;       // the thread begun, as `thread_spawn` answers
   uint8_t looked; // the fifth: squares looked at
   WalkSquareEnd end;
+  WalkEdge edge;  // the water's edge: what kept the player out
 } WalkReaction;
 
 // How a swimmer's look at the bank ended.

@@ -101,29 +101,14 @@ void spawn_has_room(const Wram* w, SpawnRoomRegs* out) {
 // $80:825E  thread_spawn
 // ---------------------------------------------------------------------------
 
-int thread_spawn(Wram* w, const Rom* rom, uint16_t entry, uint16_t bank,
-                 uint16_t caller_dp) {
+// `$80:8271`, where both searches come with a free slot in X: the thread is
+// made in it.
+static void thread_begin_in(Wram* w, const Rom* rom, int slot, uint16_t entry,
+                            uint16_t bank, uint16_t caller_dp) {
   // `PHD : DEC A : PHA`. The decrement is the same off-by-one every far address
   // in this game's stack frames carries: what reaches it is an `RTL`, and an
   // `RTL` adds one.
   uint16_t target = (uint16_t)(entry - 1);
-
-  // `LDX #$002E`, then `LDA $001180,X : BPL <found> : DEX DEX BPL`. Downwards,
-  // and slot 0 is tested like any other — the loop's `BPL` fires on X = 0 and
-  // only fails at $FFFE. So a full board falls out of the bottom.
-  int slot = -1;
-  for (int x = (WRAM_THREAD_SLOTS - 1) * 2; x >= 0; x -= 2) {
-    if (!(wram_r16(w, W_THREAD_WAIT + (uint32_t)x) & 0x8000)) {
-      slot = x;
-      break;
-    }
-  }
-  if (slot < 0) {
-    // `$80:82D8  PLA : PLD : LDA #$0000 : RTL`.
-    PORT_COVER(spawn_full);
-    return -1;
-  }
-  PORT_COVER(spawn_took);
 
   // `INC $0006`, and the two arrays that record what this thread was started
   // as. Neither is read by anything traced; they are written because the ROM
@@ -177,8 +162,42 @@ int thread_spawn(Wram* w, const Rom* rom, uint16_t entry, uint16_t bank,
   for (int i = 0; i < THREAD_SPAWN_ARGS; i++)
     wram_w16(w, (uint32_t)(uint16_t)(dp + i * 2),
              wram_r16(w, (uint32_t)(uint16_t)(caller_dp + i * 2)));
+}
 
+int thread_spawn(Wram* w, const Rom* rom, uint16_t entry, uint16_t bank,
+                 uint16_t caller_dp) {
+  // `LDX #$002E`, then `LDA $001180,X : BPL <found> : DEX DEX BPL`. Downwards,
+  // and slot 0 is tested like any other — the loop's `BPL` fires on X = 0 and
+  // only fails at $FFFE. So a full board falls out of the bottom.
+  int slot = -1;
+  for (int x = (WRAM_THREAD_SLOTS - 1) * 2; x >= 0; x -= 2) {
+    if (!(wram_r16(w, W_THREAD_WAIT + (uint32_t)x) & 0x8000)) {
+      slot = x;
+      break;
+    }
+  }
+  if (slot < 0) {
+    // `$80:82D8  PLA : PLD : LDA #$0000 : RTL`.
+    PORT_COVER(spawn_full);
+    return -1;
+  }
+  PORT_COVER(spawn_took);
+  thread_begin_in(w, rom, slot, entry, bank, caller_dp);
   return slot;
+}
+
+int thread_spawn_low(Wram* w, const Rom* rom, uint16_t entry, uint16_t bank,
+                     uint16_t caller_dp) {
+  // `LDX #$0000`, then `LDA $001180,X : BPL <found> : INX INX CPX #$001E BNE`.
+  for (int slot = 0; slot < THREAD_SPAWN_LOW_SLOTS * 2; slot += 2) {
+    if (wram_r16(w, W_THREAD_WAIT + (uint32_t)slot) & 0x8000) continue;
+    PORT_COVER(spawn_low_took);
+    thread_begin_in(w, rom, slot, entry, bank, caller_dp);
+    return slot;
+  }
+  // `$80:825B  PLA : PLA : RTL`.
+  PORT_COVER(spawn_low_full);
+  return -1;
 }
 
 void thread_set_handler(Wram* w, PortCpu* c) {

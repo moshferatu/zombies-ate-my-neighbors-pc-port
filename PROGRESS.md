@@ -5,6 +5,66 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The water's edge, and a level's scene begun (2026-10-12)
+
+Two things the survey ranked highest: why the player's walk was turned
+down, and what a level's beginning calls that had no port.
+
+* **The water's edge** (`$80:E7A1`) is the walk's first tile reaction, and
+  is in `port/walk.c`. The walk port turned 278 calls down over the survey,
+  and 270 of them were this tile.
+  * A player with health, in the ordinary state and facing some way looks
+    32 pixels that way. With water there and the other player near enough,
+    they jump in. That jump is still the ROM's.
+  * Anything less and the tile is only solid, which the walk now does.
+* **Nine rows for a level's beginning**, in the new `port/level_scene.c`,
+  `port/thread.c` and `port/dma.c`.
+
+  | Row | At | What it does |
+  |---|---|---|
+  | `players_seed` | `$80:8618` | health, lives, shots and a kit for each player |
+  | `level_record_find` | `$80:885B` | the level's record, kept on the page |
+  | `players_begin` | `$80:8803` | a thread for each player in the game |
+  | `thread_spawn_low` | `$80:8248` | a thread in one of the first fifteen slots |
+  | `camera_reset` | `$80:A64F` | the camera at the map's corner, to the `JSR` |
+  | `camera_jobs_queue` | `$80:A676` | its two vblank jobs queued |
+  | `walk_squares_clear` | `$82:F577` | the walk's five squares forgotten |
+  | `window_hdma_setup` | `$82:DF23` | three HDMA channels for the windows, to the `RTL` |
+  | `camera_job_begin` | `$82:8000` | the first layer's map placed, to the `JSL` |
+
+* **Checked.**
+  * The corpus verifies clean: 126,354,759 calls, none diverged. Each of
+    the nine was checked 59 to 68 times, and `player_walk` 115,715.
+  * Costs were compared on `level1-2p` for the nine, and all were exact.
+    The walk's were exact on `level1-rescue`: 3,229 of 3,229, with the
+    edge met 313 times.
+  * Lockstep: 51 of 54 never part; `level25`, `level25-2p` and
+    `level25-heavy` do, as before.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies, and
+    none differ, at both widths.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 654 to 660 | 29,289 to 27,900 | 269,866 to 233,500 |
+  | Left standing on an instruction | 48 to 48 | 2,424 to 2,424 | 63,724 to 63,724 |
+  | A port turned the call down | 34 to 34 | 3,324 to 2,827 | 18,946 to 17,951 |
+  | A port or a link called it | 6 to 6 | 85 to 85 | 950 to 950 |
+  | All | 743 to 749 | 35,232 to 33,346 | 361,406 to 324,045 |
+
+  842 routines are registered.
+* **Not done or not known.**
+  * Four of the edge's six ways out are reached by no movie of the corpus:
+    a player with no health, one not in the ordinary state, one facing
+    nowhere, and water too far from the other player. Only "no water
+    there" is compared with the ROM. The others are from the listing.
+  * `thread_spawn_low` with all fifteen slots live, and
+    `level_record_find` with `$1F50` set, are from the listing too.
+  * What reads the two words at `$7E:6054`, which `players_seed` sets to 4.
+  * `level_load` (`$80:86A2`) is still the core's between its calls:
+    13,352 instructions over the survey, in nine places.
+  * The `JSL`s of `$80:8632` between the rows, an instruction each.
+
 ### A player's two records, and two states on their own (2026-10-11)
 
 Three stretches of a player's thread that the core still ran, all in bank

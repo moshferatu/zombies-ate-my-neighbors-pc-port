@@ -113,6 +113,16 @@ void vbl_queue_flags(const Wram* w, uint32_t count_at, uint16_t y_in, bool added
 int thread_spawn(Wram* w, const Rom* rom, uint16_t entry, uint16_t bank,
                  uint16_t caller_dp);
 
+// `$80:8248` is the same with the other search: up from slot 0, and only the
+// first fifteen. The players' threads are begun with it, so a player's page
+// is one of the lowest. With all fifteen live it answers -1, and the ROM
+// hands back the caller's direct page in A.
+#define THREAD_SPAWN_LOW_PC 0x808248u
+#define THREAD_SPAWN_LOW_FULL_RTL_PC 0x80825du
+#define THREAD_SPAWN_LOW_SLOTS 15
+int thread_spawn_low(Wram* w, const Rom* rom, uint16_t entry, uint16_t bank,
+                     uint16_t caller_dp);
+
 // --- $80:9D5B  spawn_has_room — carry set means no ---------------------------
 //
 // Six instructions, fifteen bytes, and **every spawn in the game goes through

@@ -19028,3 +19028,34 @@ Otherwise the row's `.cycles` is charged, which is what
 Over the same 110 sessions the core executes 361,406 instructions
 where it executed 386,484, and takes over 35,232 times where it
 did 36,718, at 743 places where there were 745.
+
+## The water's edge, and a level's scene begun (2026-10-12)
+
+### One reaction was most of the walk's refusals
+
+`player_walk` turned 278 calls down over the survey, and each cost about
+fifty instructions in the core. 270 were the first reaction of `$80:E739`,
+the water's edge. It ends in a wall unless the player jumps in, and the
+jump is rare: 21 of the 270.
+
+Its tether question is the same four instructions the walk asks with, so
+the walk's own count prices it.
+
+### Long reads of the level's record
+
+`tools/cycles816.py` prices `LDA $9F002A,X` by the address written, which
+is not in the cartridge. X is the record's address, so the read is: each
+is 4 cycles cheaper than the tool says and two bytes more in the FastROM
+count. `PLAYERS_RUN_FIRST` and `PLAYERS_RUN_SECOND` are corrected by hand.
+
+### Rows that write registers and stop short
+
+`window_hdma_setup` and `camera_job_begin` stop on the `RTL` and the `JSL`
+that follow their last store. Everything before a store is then the row's
+own, and every write falls on the ROM's cycle with no callee's cost in it.
+
+### After
+
+Over the same 110 sessions the core executes 324,045 instructions
+where it executed 361,406, and takes over 33,346 times where it
+did 35,232, at 749 places where there were 743.

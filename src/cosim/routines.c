@@ -120,6 +120,7 @@
 #include "port/tile_rows.h"
 #include "port/trig.h"
 #include "port/vblank.h"
+#include "port/level_scene.h"
 #include "port/waits.h"
 
 // ---------------------------------------------------------------------------
@@ -6645,12 +6646,39 @@ static const CosimRun WALK_SQUARE_NEXT = {36, 4, 0};     // DEX : DEX : BPL
 static const CosimRun WALK_SQUARE_OUT = {146, 7, 0};     // $F539-$F53F
 static const CosimRun WALK_SQUARE_BEGIN = {444, 33, 3};  // $F540-$F560
 
+// Round the water's edge: `JSR $E739`, its chain to the first compare,
+// `JSR $E7A1`, its `CLC : RTS`, the `BCC` taken, `SEC : RTS` and the `BCS`
+// taken. Then `$80:E7A1` a test at a time. The tether's `LDX : LDY : JSL :
+// BCS` is what the walk's own costs, and is counted with those.
+static const CosimRun WALK_EDGE_AROUND = {280, 23, 0};
+static const CosimRun WALK_EDGE_HEALTH = {80, 7, 1};  // LDX $0E : LDA $1CB8,X : BEQ
+static const CosimRun WALK_EDGE_SIGN = {12, 2, 0};    // BMI
+static const CosimRun WALK_EDGE_STATE = {40, 4, 1};   // LDA $70 : BNE
+static const CosimRun WALK_EDGE_FACING = {40, 4, 1};  // LDA $26 : BEQ
+static const CosimRun WALK_EDGE_POINT = {322, 30, 4}; // $E7B2-$E7CB
+
+static int terrain_bit8_cycles(bool hit, bool fast);
+
 static int walk_reaction_cycles(const WalkReaction* did, const Rom* rom,
                                 const CosimRegs* in) {
   const bool fast = fetch_fast(in);
   const bool unaligned = (in->d & 0x00ffu) != 0;
   CosimRun own = {0, 0, 0};
   int calls = 0;
+  if (did->kind == WALK_REACTION_EDGE) {
+    run_add(&own, &WALK_EDGE_AROUND, 1);
+    run_add(&own, &WALK_EDGE_HEALTH, 1);
+    if (did->edge > WALK_EDGE_DEAD) run_add(&own, &WALK_EDGE_SIGN, 1);
+    if (did->edge > WALK_EDGE_LESS) run_add(&own, &WALK_EDGE_STATE, 1);
+    if (did->edge > WALK_EDGE_BUSY) run_add(&own, &WALK_EDGE_FACING, 1);
+    if (did->edge > WALK_EDGE_NO_WAY) {
+      run_add(&own, &WALK_EDGE_POINT, 1);
+      calls += terrain_bit8_cycles(did->edge == WALK_EDGE_TETHERED,
+                                   in->fastrom);
+    }
+    if (did->edge != WALK_EDGE_TETHERED) run_add(&own, &RUN_TAKEN, 1);
+    return calls + cosim_run_cycles_dp(&own, fast, unaligned);
+  }
   if (did->kind == WALK_REACTION_DOOR) {
     run_add(&own, &WALK_DOOR_AROUND, 1);
     run_add(&own, &WALK_DOOR_HEAD, 1);
@@ -17704,6 +17732,8 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [HJ_TAIL] = {78, 5, 0},
     [DCA_FIRST] = {88, 9, 0},
     [DMA_REP] = {18, 2, 0},
+    [DMA_SEP_STORE] = {36, 5, 0},
+    [DMA_REP_LOADS] = {54, 8, 0},
     [VC_HEAD] = {46, 5, 1},
     [VC_STEP] = {94, 12, 1},
     [VC_TEST] = {58, 6, 1},
@@ -23005,6 +23035,303 @@ static void shim_tracker_begin(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t TRACKER_BEGIN_EXITS[] = {TRACKER_BEGIN_RTS_PC};
+
+// A level's scene begun -- see `port/level_scene.h`, and `port/dma.h` for
+// the two that write registers.
+//
+// `$80:8248`, by the slot it took, doubled, or -1 with the first fifteen
+// live. The search goes up from slot 0, and from the free slot on it is
+// `thread_spawn`'s own code.
+static int thread_spawn_low_cycles(int slot, const Rom* rom, bool fast) {
+  static const CosimRun HEAD = {86, 6, 0};     // PHD : DEC : PHA : LDX #$0000
+  static const CosimRun LIVE = {106, 13, 0};   // LDA : BPL : INX : INX : CPX : BNE
+  static const CosimRun FOUND = {58, 6, 0};    // LDA : BPL, taken
+  static const CosimRun BODY = {1374, 107, 0}; // $8271-$82D7
+  static const CosimRun FULL = {110, 3, 0};    // PLA : PLA : RTL
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &HEAD, 1);
+  if (slot < 0) {
+    run_add(&run, &LIVE, THREAD_SPAWN_LOW_SLOTS);
+    run_add(&run, &RUN_TAKEN, THREAD_SPAWN_LOW_SLOTS - 1);
+    run_add(&run, &FULL, 1);
+    return cosim_run_cycles(&run, fast);
+  }
+  run_add(&run, &LIVE, slot / 2);
+  run_add(&run, &RUN_TAKEN, slot / 2);
+  run_add(&run, &FOUND, 1);
+  run_add(&run, &BODY, 1);
+  int cycles = cosim_run_cycles(&run, fast);
+  if (rom_word(rom, THREAD_DP_TABLE + (uint32_t)slot) & 0x00ffu) cycles += 5 * 6;
+  return cycles;
+}
+
+// What `$80:8248` leaves. With a thread begun it is what `thread_spawn`
+// leaves. With none, `PLA : PLA` has the caller's page in A, and X is where
+// the search stopped.
+static void spawn_low_out(const CosimRegs* in, int slot, CosimRegs* out) {
+  out->a = slot < 0 ? in->d : (uint16_t)slot;
+  out->x = slot < 0 ? THREAD_SPAWN_LOW_SLOTS * 2 : (uint16_t)slot;
+  out->y = slot < 0 ? in->y : (THREAD_SPAWN_ARGS - 1) * 2;
+  out->n = (out->a & 0x8000u) != 0;
+  out->z = out->a == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+}
+
+static bool accepts_thread_spawn_low(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && low_stack(in);
+}
+
+static void shim_thread_spawn_low(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  const int slot = thread_spawn_low(w, rom, in->a, in->y, in->d);
+  cosim_cost(thread_spawn_low_cycles(slot, rom, in->fastrom));
+  spawn_low_out(in, slot, out);
+}
+
+// `$80:8803`. Round each player: `LDA $1E88 : BEQ`, and for one in the game
+// the page's four words and `LDA # : LDY # : JSL`. The level's record is
+// read from the cartridge, which makes those bytes cheap too.
+static const CosimRun PLAYERS_RUN_TEST = {46, 5, 0};
+static const CosimRun PLAYERS_RUN_FIRST = {302, 32, 5};   // $8808-$8823
+static const CosimRun PLAYERS_RUN_SECOND = {320, 35, 5};  // $8829-$8847
+static const CosimRun PLAYERS_RUN_RTL = {42, 1, 0};
+
+static bool accepts_players_begin(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
+         players_begin_supported(w, in->d);
+}
+
+static void shim_players_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  PlayersBegun did;
+  players_begin(w, rom, in->d, &did);
+  CosimRun own = {0, 0, 0};
+  int calls = 0;
+  CosimRegs regs = *in;
+  out->flags = 0;
+  for (int player = 0; player < 2; player++) {
+    run_add(&own, &PLAYERS_RUN_TEST, 1);
+    if (!did.playing[player]) {
+      run_add(&own, &RUN_TAKEN, 1);
+      regs.a = 0;
+      out->n = false;
+      out->z = true;
+      out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+      continue;
+    }
+    run_add(&own, player ? &PLAYERS_RUN_SECOND : &PLAYERS_RUN_FIRST, 1);
+    calls += thread_spawn_low_cycles(did.slot[player], rom, in->fastrom);
+    regs.y = PLAYER_THREAD_BANK;
+    spawn_low_out(&regs, did.slot[player], out);
+    regs.a = out->a;
+    regs.x = out->x;
+    regs.y = out->y;
+  }
+  run_add(&own, &PLAYERS_RUN_RTL, 1);
+  out->a = regs.a;
+  out->x = regs.x;
+  out->y = regs.y;
+  out->regs = COSIM_REG_ALL;
+  cosim_cost(calls + cosim_run_cycles_dp(&own, fetch_fast(in),
+                                         (in->d & 0x00ffu) != 0));
+}
+
+// `$80:8618`: `LDX # : JSL $808874` for each player, and two long stores.
+// `$80:8874` leaves at once for a player not in the game. The first player's
+// turn makes six stores more than the second's.
+static const CosimRun SEED_RUN_CALL = {72, 7, 0};
+static const CosimRun SEED_RUN_TEST = {52, 5, 0};    // LDA $1E88,X : BEQ
+static const CosimRun SEED_RUN_STORES = {298, 35, 0}; // $8879-$889B
+static const CosimRun SEED_RUN_FIRST = {68, 6, 0};   // STA $1CCC : STY $1D1A
+static const CosimRun SEED_RUN_SECOND = {68, 6, 0};  // STA $1CEC : STY $1D3A
+static const CosimRun SEED_RUN_RTL = {42, 1, 0};
+static const CosimRun SEED_RUN_FOURS = {140, 12, 0}; // $8626-$8631
+
+static void shim_players_seed(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  bool seeded[2];
+  players_seed(w, seeded);
+  CosimRun run = {0, 0, 0};
+  for (int player = 0; player < 2; player++) {
+    run_add(&run, &SEED_RUN_CALL, 1);
+    run_add(&run, &SEED_RUN_TEST, 1);
+    run_add(&run, &SEED_RUN_RTL, 1);
+    if (!seeded[player]) {
+      run_add(&run, &RUN_TAKEN, 1);
+      continue;
+    }
+    run_add(&run, &SEED_RUN_STORES, 1);
+    run_add(&run, player ? &RUN_TAKEN : &SEED_RUN_FIRST, 1);
+    run_add(&run, &SEED_RUN_SECOND, 1);
+  }
+  run_add(&run, &SEED_RUN_FOURS, 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+  out->a = 4;
+  out->x = 2;
+  out->y = seeded[0] || seeded[1] ? 1 : in->y;
+  out->n = false;
+  out->z = false;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+  out->regs = COSIM_REG_ALL;
+}
+
+// `$80:885B`. `BRA` is priced as a branch that was not taken, so the one
+// path with it has the 6 more.
+static const CosimRun RECORD_RUN_TEST = {46, 5, 0};    // LDA $1F50 : BEQ
+static const CosimRun RECORD_RUN_AGAIN = {102, 8, 0};  // STZ : DEC : BRA
+static const CosimRun RECORD_RUN_LEVEL = {34, 3, 0};   // LDA $1E7C
+static const CosimRun RECORD_RUN_FIND = {130, 11, 1};  // $886B-$8873
+
+static bool accepts_level_record_find(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && bank_sees_low_wram(in->db) &&
+         level_record_find_supported(w);
+}
+
+static void shim_level_record_find(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  uint16_t index;
+  bool again;
+  out->a = level_record_find(w, rom, in->d, &index, &again);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &RECORD_RUN_TEST, 1);
+  run_add(&run, again ? &RECORD_RUN_AGAIN : &RECORD_RUN_LEVEL, 1);
+  run_add(&run, &RUN_TAKEN, 1);
+  run_add(&run, &RECORD_RUN_FIND, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+  out->x = index;
+  out->y = in->y;
+  out->n = (out->a & 0x8000u) != 0;
+  out->z = out->a == 0;
+  out->c = false;  // the level, doubled: `level_record_find_supported`
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  out->regs = COSIM_REG_ALL;
+}
+
+// `$80:A64F` to its `JSR`: two loads and ten stores, through the data bank.
+static const CosimRun CAMERA_RESET_RUN = {376, 36, 0};
+
+static bool accepts_camera_reset(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && low_stack(in) && bank_sees_low_wram(in->db);
+}
+
+static void shim_camera_reset(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  camera_reset(w);
+  PortCpu c;
+  cpu_from(in, &c);
+  c.a = TILEMAP_ARENA_AT;
+  set_nz16(&c, c.a);
+  c.pc = CAMERA_RESET_WINDOW_PC;
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&CAMERA_RESET_RUN, fetch_fast(in)));
+}
+
+static const uint32_t CAMERA_RESET_EXITS[] = {CAMERA_RESET_WINDOW_PC};
+
+// `$80:A676`: `LDA # : LDY # : JSL` and `LDA # : LDY # : JML`, and the two
+// adds. What is left is what the second leaves.
+static const CosimRun CAMERA_JOBS_RUN = {90 + 60, 20, 0};
+
+static void shim_camera_jobs_queue(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  // Y is the last word the second queue's search read: see
+  // `shim_vbl_queue_b_add`.
+  const uint16_t probe = wram_r16(w, W_VBL_QUEUE_B + 4);
+  CameraJobs did;
+  camera_jobs_queue(w, &did);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &CAMERA_JOBS_RUN, 1);
+  queue_b_bill(&run, did.second_slot);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)) +
+             saucer_queue_a_cycles(did.flush_slot, in->fastrom));
+  if (did.second_slot < 0) {
+    out->a = CAMERA_SECOND_JOB;
+    out->x = did.flush_slot < 0 ? in->x : (uint16_t)did.flush_slot;
+    out->y = CAMERA_JOBS_BANK;
+  } else {
+    out->a = CAMERA_JOBS_BANK;
+    out->x = (uint16_t)did.second_slot;
+    out->y = did.second_slot == 0 ? probe : 0;
+  }
+  out->regs = COSIM_REG_ALL;
+  queue_flags(w, W_VBL_QUEUE_B_COUNT, CAMERA_JOBS_BANK, did.second_slot >= 0,
+              out);
+}
+
+// `$82:F577`: page zero and bank `$7E` put on, five stores, and both taken
+// off again. N and Z are the data bank's, which the last `PLB` pulls.
+static const CosimRun SQUARES_RUN_HEAD = {212, 16, 0};  // $F577-$F586
+static const CosimRun SQUARES_RUN_STORE = {76, 8, 0};   // STA long,X : DEX : DEX : BPL
+static const CosimRun SQUARES_RUN_TAIL = {128, 4, 0};   // PLB : PLD : PLB : RTL
+
+static void shim_walk_squares_clear(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  walk_squares_clear(w);
+  const int squares = WALK_SQUARES_LAST / 2 + 1;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &SQUARES_RUN_HEAD, 1);
+  run_add(&run, &SQUARES_RUN_STORE, squares);
+  run_add(&run, &RUN_TAKEN, squares - 1);
+  run_add(&run, &SQUARES_RUN_TAIL, 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+  out->a = 0xffff;
+  out->x = 0xfffe;
+  out->y = in->y;
+  out->n = (in->db & 0x80u) != 0;
+  out->z = in->db == 0;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
+  out->regs = COSIM_REG_ALL;
+}
+
+// `$82:DF23` and `$82:8000`. Their stores are absolute, and have to find
+// the registers.
+static bool accepts_scene_registers(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return (in->p & PORT_P_X) == 0 && (in->db & 0x40) == 0 && low_stack(in);
+}
+
+static void shim_window_hdma_setup(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  window_hdma_setup(t);
+  PortCpu c;
+  cpu_from(in, &c);
+  c.p = (uint8_t)(c.p & ~PORT_P_M);
+  c.a = WINDOW_TABLE_B;
+  set_nz16(&c, c.a);
+  c.pc = WINDOW_HDMA_SETUP_RTL_PC;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static const uint32_t WINDOW_HDMA_SETUP_EXITS[] = {WINDOW_HDMA_SETUP_RTL_PC};
+
+static void shim_camera_job_begin(Wram* w, const Rom* rom,
+                                  const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  camera_job_begin(t);
+  PortCpu c;
+  cpu_from(in, &c);
+  c.p = (uint8_t)(c.p & ~(PORT_P_M | PORT_P_X));
+  c.a = CAMERA_JOB;
+  c.y = CAMERA_JOB_BANK;
+  set_nz16(&c, c.y);
+  c.pc = CAMERA_JOB_BEGIN_QUEUE_PC;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static const uint32_t CAMERA_JOB_BEGIN_EXITS[] = {CAMERA_JOB_BEGIN_QUEUE_PC};
 
 // `$80:AC7E` and `$80:88A9` -- see `port/layers_setup.h`. Their absolute
 // stores have to find the registers, which a data bank of `$7E` would not.
@@ -29546,6 +29873,102 @@ static const CosimRoutine ROUTINES[] = {
         .accepts = dma_to_vram_ok,
         COSIM_EXITS(HUD_LAYER_SET_EXITS),
         .uncalled = true,
+        .cycles = 110,
+        .hw = true,
+    },
+    // A level's scene begun. See `port/level_scene.h`.
+    {
+        .name = "thread_spawn_low",
+        .symbol = "$80:8248",
+        .entry = THREAD_SPAWN_LOW_PC,
+        .ret_op = 0x8082d7,  // RTL; with no slot free it has its own at $825D
+        .ret_kind = COSIM_RTL,
+        .run = shim_thread_spawn_low,
+        .accepts = accepts_thread_spawn_low,
+        .cycles = 1700,
+        .stack_bytes = 4,  // the opening PHD and the PHA under it
+    },
+    {
+        .name = "players_begin",
+        .symbol = "$80:8803",
+        .entry = PLAYERS_BEGIN_PC,
+        .ret_op = PLAYERS_BEGIN_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_players_begin,
+        .accepts = accepts_players_begin,
+        .cycles = 2400,
+        .stack_bytes = 7,  // the `JSL`'s three and the spawn's four
+    },
+    {
+        .name = "players_seed",
+        .symbol = "$80:8618",
+        .entry = PLAYERS_SEED_PC,
+        .ret_op = PLAYERS_SEED_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_players_seed,
+        .accepts = accepts_camera_reset,
+        .cycles = 1300,
+        .stack_bytes = 3,  // the `JSL`'s
+    },
+    {
+        .name = "level_record_find",
+        .symbol = "$80:885B",
+        .entry = LEVEL_RECORD_FIND_PC,
+        .ret_op = LEVEL_RECORD_FIND_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_level_record_find,
+        .accepts = accepts_level_record_find,
+        .cycles = 220,
+    },
+    {
+        .name = "camera_reset",
+        .symbol = "$80:A64F",
+        .entry = CAMERA_RESET_PC,
+        .run = shim_camera_reset,
+        .accepts = accepts_camera_reset,
+        COSIM_EXITS(CAMERA_RESET_EXITS),
+        .cycles = 376,
+    },
+    {
+        .name = "camera_jobs_queue",
+        .symbol = "$80:A676",
+        .entry = CAMERA_RESET_JOBS_PC,
+        .ret_op = 0x80843a,  // `vbl_queue_b_add`'s RTL, which it jumps to
+        .ret_kind = COSIM_RTL,
+        .run = shim_camera_jobs_queue,
+        .accepts = accepts_camera_reset,
+        .uncalled = true,
+        .cycles = 900,
+        .stack_bytes = 5,  // the `JSL`'s three and an add's `PHY`
+    },
+    {
+        .name = "walk_squares_clear",
+        .symbol = "$82:F577",
+        .entry = WALK_SQUARES_CLEAR_PC,
+        .ret_op = WALK_SQUARES_CLEAR_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_walk_squares_clear,
+        .accepts = accepts_thread_spawn_low,
+        .cycles = 750,
+        .stack_bytes = 6,
+    },
+    {
+        .name = "window_hdma_setup",
+        .symbol = "$82:DF23",
+        .entry = WINDOW_HDMA_SETUP_PC,
+        .run = shim_window_hdma_setup,
+        .accepts = accepts_scene_registers,
+        COSIM_EXITS(WINDOW_HDMA_SETUP_EXITS),
+        .cycles = 700,
+        .hw = true,
+    },
+    {
+        .name = "camera_job_begin",
+        .symbol = "$82:8000",
+        .entry = CAMERA_JOB_BEGIN_PC,
+        .run = shim_camera_job_begin,
+        .accepts = accepts_scene_registers,
+        COSIM_EXITS(CAMERA_JOB_BEGIN_EXITS),
         .cycles = 110,
         .hw = true,
     },

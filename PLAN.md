@@ -273,6 +273,11 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**The water's edge and a level's scene, 2026-10-12.** The walk has its
+first tile reaction, and nine rows serve what a level's beginning calls.
+The places are 749 and the core executes 324,045 instructions over the
+survey.
+
 What is left of this step: registers of the driver's own in place of the
 core's, the clock, and a stop that names the address in place of the
 core.

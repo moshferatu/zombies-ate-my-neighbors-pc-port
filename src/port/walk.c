@@ -82,6 +82,55 @@ static WalkReaction* reaction_met(Walk* k, int kind) {
   return did;
 }
 
+static bool too_far_from_partner(Walk* k, Point p);
+
+// `$80:E7A1`: the water's edge. Does the player stay out of the water? One
+// who jumps in is the ROM's: false.
+static bool edge_keeps_player_out(Walk* k) {
+  WalkReaction* did = reaction_met(k, WALK_REACTION_EDGE);
+  const uint16_t player = field(k, WALK_EDGE_DP_PLAYER);
+  const uint16_t facing = field(k, WALK_DP_FACING);
+  // The health and the table are read by these. Past either is not ours.
+  if (player >= 4 || facing > WALK_FACING_MAX) return false;
+  const uint16_t health =
+      wram_r16(k->w, (uint16_t)(W_WALK_EDGE_HEALTH + player));
+  if (health == 0 || (health & 0x8000u)) {
+    PORT_COVER(walk_edge_no_health);
+    did->edge = health == 0 ? WALK_EDGE_DEAD : WALK_EDGE_LESS;
+    return true;
+  }
+  if (field(k, WALK_EDGE_DP_STATE) != 0) {
+    PORT_COVER(walk_edge_busy);
+    did->edge = WALK_EDGE_BUSY;
+    return true;
+  }
+  if (facing == 0) {
+    PORT_COVER(walk_edge_no_way);
+    did->edge = WALK_EDGE_NO_WAY;
+    return true;
+  }
+  const uint32_t step = WALK_EDGE_STEPS + (uint32_t)(facing << 1);
+  const Point look = {
+      (uint16_t)(rom_word(k->rom, step) + field(k, WALK_DP_X)),
+      (uint16_t)(rom_word(k->rom, step + 2) + field(k, WALK_DP_Y))};
+  set_field(k, WALK_DP_LOOK_X, look.x);
+  set_field(k, WALK_DP_LOOK_Y, look.y);
+  TerrainRegs water;
+  terrain_point_bit8(k->w, look.x, look.y, &water);
+  overflow_left(k, lookup_overflows(k, look.x, look.y));
+  if (!water.blocked) {
+    PORT_COVER(walk_edge_dry);
+    did->edge = WALK_EDGE_DRY;
+    return true;
+  }
+  if (too_far_from_partner(k, look)) {
+    PORT_COVER(walk_edge_tethered);
+    did->edge = WALK_EDGE_TETHERED;
+    return true;
+  }
+  return false;
+}
+
 // `$80:E8D3`: is the player at a door, and with something to open it? A
 // door they cannot open begins a thread. One they can is the ROM's: false.
 static bool door_stays_shut(Walk* k) {
@@ -195,6 +244,13 @@ static bool ground_is_solid(Walk* k, Point p) {
   switch (walk_tile_reaction(r.a)) {
     case 0:
       return answer(k, WALK_ASK_REACTION, true);
+    case WALK_REACTION_EDGE:
+      if (edge_keeps_player_out(k)) {
+        if (k->log) k->log->last_yes = true;
+        return true;
+      }
+      PORT_COVER(walk_edge_jumped);
+      break;
     case WALK_REACTION_DOOR:
       if (door_stays_shut(k)) {
         if (k->log) k->log->last_yes = true;

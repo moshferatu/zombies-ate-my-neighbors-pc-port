@@ -72,6 +72,10 @@
 #define HUD_TILES_JOB_RTL_PC 0x80c2d9u
 #define HUD_LAYER_SET_PC 0x80c2e8u
 #define HUD_LAYER_SET_RTL_PC 0x80c2f6u
+#define WINDOW_HDMA_SETUP_PC 0x82df23u
+#define WINDOW_HDMA_SETUP_RTL_PC 0x82df6au
+#define CAMERA_JOB_BEGIN_PC 0x828000u
+#define CAMERA_JOB_BEGIN_QUEUE_PC 0x82800fu  // `JSL vbl_queue_b_add`
 #define PALETTE_JOB_PC 0x80a084u
 #define PALETTE_JOB_RTL_PC 0x80a092u
 #define BACKGROUND_JOB_PC 0x80a09eu
@@ -194,6 +198,8 @@ enum {
   LR_HEAD,       // $80:88A9 six STZ : SEP #$30 : LDA #$00 : STA $210D
   DCA_FIRST,     // REP #$20 : LDA $04,S : SEP #$20 : STA $2121
   DMA_REP,       // REP #$20
+  DMA_SEP_STORE, // SEP #$20 : STZ abs
+  DMA_REP_LOADS, // REP #$30 : LDA #imm16 : LDY #imm16
   DMA_BLOCK_COUNT
 };
 
@@ -233,6 +239,23 @@ void hud_tiles_job(HwTrace* t);
 // `$80:C2E8`, the end of `$80:C2DA`, from where its `JSL` to queue the job
 // comes back to its `RTL`. `$44` is left in A's low byte.
 void hud_layer_set(HwTrace* t);
+
+// `$82:DF23`, as far as its `RTL`: HDMA off, and channels 5, 6 and 7 set up
+// to move the two windows' edges down the screen. Each writes a pair of
+// registers a line. Channel 5 reads a table in WRAM for the first window,
+// and 6 and 7 a table each in bank `$82`, for the first and the second.
+// Nothing is switched on here. A is left the last table's address.
+#define WINDOW_TABLE_WRAM 0x6da6u
+#define WINDOW_TABLE_A 0xe691u
+#define WINDOW_TABLE_B 0xe69bu
+#define WINDOW_TABLE_BANK 0x82u
+void window_hdma_setup(HwTrace* t);
+
+// `$82:8000`, as far as its `JSL`: the first layer's map is 64 by 64 at
+// `$6800`, and the job that scrolls it, `$82:8209`, is loaded to be queued.
+#define CAMERA_JOB 0x8209u
+#define CAMERA_JOB_BANK 0x0082u
+void camera_job_begin(HwTrace* t);
 
 // `$80:C34A`, which `hud_refresh` queues when the HUD has changed
 // (`port/hud.h`). It runs once: carry clear. A is left `$6401`, the high byte

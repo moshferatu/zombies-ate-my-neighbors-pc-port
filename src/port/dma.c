@@ -6,12 +6,14 @@
 #include "port/thread.h"
 
 // The registers.
+#define REG_BG1SC 0x2107u      // where the first layer's map is, and how big
 #define REG_BG3SC 0x2109u      // where the third layer's map is
 #define REG_BG34NBA 0x210cu    // ...and its tiles
 #define REG_VMAIN 0x2115u      // how VRAM's address steps
 #define REG_VMADD 0x2116u      // VRAM's address, in words
 #define REG_CGADD 0x2121u      // which colour
 #define REG_MDMAEN 0x420bu     // start the channels whose bits are set
+#define REG_HDMAEN 0x420cu     // the channels that write every line
 #define REG_DMA_MODE 0x4300u   // channel 0: how it writes
 #define REG_DMA_DEST 0x4301u   // ...to which register of `$21xx`
 #define REG_DMA_SOURCE 0x4302u
@@ -24,6 +26,22 @@
 #define MODE_TWO_REGS 0x01u  // low and high bytes to it and the next
 #define MODE_FIXED_TWO_REGS 0x09u  // ...from a source that stays put
 #define VMAIN_STEP_ON_HIGH 0x80u
+#define DEST_WINDOW_1 0x26u  // `$2126`, a window's left edge, and its right
+#define DEST_WINDOW_2 0x28u
+#define BG1_MAP_6800_64_BY_64 0x6bu
+
+// A channel's registers, as HDMA reads them.
+enum {
+  HDMA_MODE = 0,
+  HDMA_DEST = 1,
+  HDMA_TABLE = 2,
+  HDMA_TABLE_BANK = 4,
+  HDMA_INDIRECT_BANK = 7,
+};
+
+static uint16_t hdma_reg(int channel, int which) {
+  return (uint16_t)(REG_DMA_MODE + channel * 0x10 + which);
+}
 
 static void store8(HwTrace* t, int run, uint16_t reg, uint8_t v) {
   hw_run(t, run);
@@ -107,6 +125,31 @@ void hud_layer_set(HwTrace* t) {
   store8(t, DMA_SEP_IMM, REG_BG3SC, HUD_LAYER_MAP);
   store8(t, DMA_IMM, REG_BG34NBA, HUD_LAYER_TILES);
   hw_run(t, DMA_REP);
+}
+
+void window_hdma_setup(HwTrace* t) {
+  PORT_COVER(window_hdma_setup);
+  store8(t, DMA_SEP_STORE, REG_HDMAEN, 0);
+  store8(t, DMA_IMM, hdma_reg(5, HDMA_MODE), MODE_TWO_REGS);
+  store8(t, DMA_STORE, hdma_reg(6, HDMA_MODE), MODE_TWO_REGS);
+  store8(t, DMA_STORE, hdma_reg(7, HDMA_MODE), MODE_TWO_REGS);
+  store8(t, DMA_IMM, hdma_reg(5, HDMA_DEST), DEST_WINDOW_1);
+  store8(t, DMA_STORE, hdma_reg(6, HDMA_DEST), DEST_WINDOW_1);
+  store8(t, DMA_IMM, hdma_reg(7, HDMA_DEST), DEST_WINDOW_2);
+  store8(t, DMA_IMM, hdma_reg(6, HDMA_TABLE_BANK), WINDOW_TABLE_BANK);
+  store8(t, DMA_STORE, hdma_reg(7, HDMA_TABLE_BANK), WINDOW_TABLE_BANK);
+  store8(t, DMA_IMM, hdma_reg(5, HDMA_TABLE_BANK), 0x7e);
+  for (int channel = 5; channel <= 7; channel++)
+    store8(t, DMA_STORE, hdma_reg(channel, HDMA_INDIRECT_BANK), 0);
+  store16(t, DMA_REP_IMM16, hdma_reg(5, HDMA_TABLE), WINDOW_TABLE_WRAM);
+  store16(t, DMA_IMM16, hdma_reg(6, HDMA_TABLE), WINDOW_TABLE_A);
+  store16(t, DMA_IMM16, hdma_reg(7, HDMA_TABLE), WINDOW_TABLE_B);
+}
+
+void camera_job_begin(HwTrace* t) {
+  PORT_COVER(camera_job_begin);
+  store8(t, DMA_SEP_IMM, REG_BG1SC, BG1_MAP_6800_64_BY_64);
+  hw_run(t, DMA_REP_LOADS);
 }
 
 void hud_upload_job(HwTrace* t) {

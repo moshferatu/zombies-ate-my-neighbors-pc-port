@@ -753,6 +753,12 @@
   X(walk_twice,       "player_walk",       "$54 bit 15: the ROM walks twice") \
   X(walk_solid,       "player_walk",       "solid ground where the step lands") \
   X(walk_reaction,    "player_walk",       "...with a reaction of its own, so the ROM walks") \
+  X(walk_edge_no_health, "player_walk",    "the water's edge, and a player with no health stays out") \
+  X(walk_edge_busy,   "player_walk",       "...or one not in the ordinary state") \
+  X(walk_edge_no_way, "player_walk",       "...or one facing nowhere") \
+  X(walk_edge_dry,    "player_walk",       "...or one looking at no water") \
+  X(walk_edge_tethered, "player_walk",     "...or at water too far from the other player") \
+  X(walk_edge_jumped, "player_walk",       "...or the player jumps in, so the ROM walks") \
   X(walk_door_no_reach, "player_walk",     "a door's tile, and no tile to look at the way the player faces") \
   X(walk_door_not_there, "player_walk",    "...or one to look at, which is not a door") \
   X(walk_door_locked, "player_walk",       "...or a door, and nothing to open it: a thread begun") \
@@ -1794,6 +1800,19 @@
   X(dma_to_cgram_at, "dma_to_cgram_at", "bytes of colours sent, from a colour the caller names") \
   X(hud_tiles_job, "hud_tiles_job", "the third layer's tiles sent to VRAM") \
   X(hud_layer_set, "hud_layer_set", "where the third layer's map and tiles are") \
+  X(window_hdma_setup, "window_hdma_setup", "three channels set up to move the windows' edges") \
+  X(camera_job_begin, "camera_job_begin", "the first layer's map placed, and its scroll job loaded") \
+  X(camera_reset, "camera_reset", "the camera at the map's corner") \
+  X(camera_jobs_queue, "camera_jobs_queue", "the camera's two vblank jobs queued") \
+  X(walk_squares_clear, "walk_squares_clear", "the walk's five squares forgotten") \
+  X(players_begin_playing, "players_begin", "a player in the game: a thread begun for them") \
+  X(players_begin_absent, "players_begin", "...or not in it") \
+  X(players_seed_playing, "players_seed", "a player in the game: what they start it with") \
+  X(players_seed_absent, "players_seed", "...or not in it") \
+  X(level_record_next, "level_record_find", "the record of the level the game is on") \
+  X(level_record_again, "level_record_find", "...or of the one $1F50 names, and the level counted down") \
+  X(spawn_low_took,   "thread_spawn_low",   "one of the first fifteen slots free, and a thread begun in it") \
+  X(spawn_low_full,   "thread_spawn_low",   "all fifteen live, so no thread") \
   X(send_args, "send_args", "what a screen's next send is called with") \
   X(palette_job, "palette_job", "all 256 colours sent") \
   X(background_job, "background_job", "the background's second copy sent") \
