@@ -14,6 +14,7 @@ typedef struct {
   const Rom* rom;
   uint16_t page;  // the player's direct page
   PlayerFrameLog* log;
+  bool state_alone;  // only the state, in a frame that is the ROM's
 } Frame;
 
 static uint16_t field(const Frame* f, uint16_t at) {
@@ -28,12 +29,13 @@ static void set_field(Frame* f, uint16_t at, uint16_t v) {
 // that was not, and `player_frame_supported` turns that frame down.
 
 // The ordinary state reads the pad. A press that changes the weapon or the
-// item or uses the item, and a press of a shoulder button, are the ROM's.
+// item or uses the item, and a press of a shoulder button, are the ROM's:
+// the frame's, that is, for the state alone takes them as its own entry does.
 static bool ordinary_state(Frame* f) {
   PlayerStateRegs* did = &f->log->normal;
   if (!player_state_normal_supported(f->w, f->page)) return false;
   player_state_normal(f->w, f->rom, f->page, did);
-  for (int button = 0; button < PSN_PRESS_COUNT; button++)
+  for (int button = 0; button < PSN_PRESS_COUNT && !f->state_alone; button++)
     if (did->press[button] == PSN_PRESS_EDGE) return false;
   f->log->c = did->c;
   f->log->c_set = true;
@@ -330,6 +332,21 @@ bool player_monster_state(Wram* w, const Rom* rom, uint16_t page,
   Frame f = {w, rom, page, log};
   PORT_COVER(player_monster_state_alone);
   return monster_state(&f);
+}
+
+void player_turning_state(Wram* w, uint16_t page, PlayerFrameLog* log) {
+  *log = (PlayerFrameLog){0};
+  Frame f = {.w = w, .page = page, .log = log, .state_alone = true};
+  PORT_COVER(player_turning_state_alone);
+  turning_state(&f);
+}
+
+bool player_flashing_state(Wram* w, const Rom* rom, uint16_t page,
+                           PlayerFrameLog* log) {
+  *log = (PlayerFrameLog){0};
+  Frame f = {w, rom, page, log, .state_alone = true};
+  PORT_COVER(player_flashing_state_alone);
+  return flashing_state(&f);
 }
 
 bool player_frame_tried(Wram* w, const Rom* rom, uint16_t page,

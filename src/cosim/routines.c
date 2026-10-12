@@ -11593,6 +11593,51 @@ static void shim_player_page_begin(Wram* w, const Rom* rom,
 
 static const uint32_t PAGE_BEGIN_EXITS[] = {PAGE_BEGIN_ALLOC_PC};
 
+// `$80:D174`, to the `JSR` at `$80:D1D8`. Each run ends with the call or the
+// return it comes to: `$D174` to the `JSL`; `$80:A8A4` to its `BNE`, and from
+// there to the `RTL`; `$D17C` to `JSR $EA42`, which is nine bytes; `$D1D0` to
+// `JSR $EA4B`, whose `ASL : BCS` is the last run but its `RTS` when no
+// weapon is chosen. The side's table of pictures is in the cartridge.
+static const CosimRun PAGE_RUN_FILE = {110, 8, 2};
+static const CosimRun PAGE_RUN_FILED = {70, 8, 0};
+static const CosimRun PAGE_RUN_FILED_THREAD = {110 - 42, 6, 0};
+static const CosimRun PAGE_RUN_RTL = {42, 1, 0};
+static const CosimRun PAGE_RUN_RECORDS = {1020, 92, 12};
+static const CosimRun PAGE_RUN_UNARM = {126, 9, 1};
+static const CosimRun PAGE_RUN_CHOSEN = {108, 8, 1};
+static const CosimRun PAGE_RUN_ARM = {24, 3, 0};
+static const CosimRun PAGE_RUN_ARMED = {304, 25, 5};
+
+static bool accepts_player_page_records(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->d < 0x1e00 &&
+         in->db == PAGE_BANK &&
+         player_page_records_supported(w, in->d, in->a);
+}
+
+static void shim_player_page_records(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  PageRecords did = {0};
+  cpu_from(in, &c);
+  player_page_records(w, rom, &c, &did);
+  cpu_to(&c, out);
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &PAGE_RUN_FILE, 1);
+  run_add(&own, &PAGE_RUN_FILED, 1);
+  run_add(&own, did.first_player ? &PAGE_RUN_FILED_THREAD : &RUN_TAKEN, 1);
+  run_add(&own, &PAGE_RUN_RTL, 1);
+  run_add(&own, &PAGE_RUN_RECORDS, 1);
+  run_add(&own, &PAGE_RUN_UNARM, 1);
+  run_add(&own, &PAGE_RUN_CHOSEN, 1);
+  run_add(&own, &PAGE_RUN_ARM, 1);
+  run_add(&own, did.armed ? &PAGE_RUN_ARMED : &RUN_TAKEN, 1);
+  run_add(&own, &RUN_RTS, 1);
+  cosim_cost(cosim_run_cycles_dp(&own, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+}
+
+static const uint32_t PAGE_RECORDS_EXITS[] = {PAGE_RECORDS_STAND_PC};
+
 // `$83:9C94`. Its table is read through the data bank, and so is its record.
 static const CosimRun BK_COST[BK_BLOCK_COUNT] = {
     [BK_TURN] = {318, 31, 5},
@@ -15993,21 +16038,30 @@ static bool weapon_pictures_ok(const Wram* w, uint16_t d) {
 // records and the three tables the page points at: the records have to be in
 // the WRAM bank `$80` mirrors, and the tables in the cartridge. The facing
 // and the state index tables too. Then the frame has to be one the port has.
-static bool pose_page_ok(const Wram* scratch, const CosimRegs* in) {
+//
+// A stand's beginning writes the pictures' table and the pose table before
+// it reads either, and a player's first has neither yet.
+static bool pose_page_ok_before_tables(const Wram* scratch,
+                                       const CosimRegs* in) {
   if (!body_ok(in) || in->db != POSE_BANK) return false;
   const uint16_t d = in->d;
   const uint16_t facing = wram_r16(scratch, (uint16_t)(d + PSN_DP_DIR_HELD));
   if (wram_r16(scratch, (uint16_t)(d + POSE_DP_RECORD)) >= 0x1f00 ||
       wram_r16(scratch, (uint16_t)(d + POSE_DP_WEAPON)) >= 0x1f00 ||
-      wram_r16(scratch, (uint16_t)(d + POSE_DP_PICTURES)) < 0x8000u ||
       !weapon_pictures_ok(scratch, d) ||
-      wram_r16(scratch, (uint16_t)(d + POSE_DP_FRAMES)) < 0x8000u ||
       wram_r16(scratch, (uint16_t)(d + POSE_DP_STATE)) >= 0x40 ||
       wram_r16(scratch, (uint16_t)(d + POSE_DP_PICTURES_SET)) >= 0x10 ||
       wram_r16(scratch, (uint16_t)(d + POSE_DP_PICTURES_ROW)) >= 0x40 ||
       facing < 2 || facing > 0x12)
     return false;
   return true;
+}
+
+static bool pose_page_ok(const Wram* scratch, const CosimRegs* in) {
+  const uint16_t d = in->d;
+  return pose_page_ok_before_tables(scratch, in) &&
+         wram_r16(scratch, (uint16_t)(d + POSE_DP_PICTURES)) >= 0x8000u &&
+         wram_r16(scratch, (uint16_t)(d + POSE_DP_FRAMES)) >= 0x8000u;
 }
 
 static bool pose_ok(Wram* scratch, const Rom* rom, const CosimRegs* in,
@@ -16019,10 +16073,11 @@ static bool pose_ok(Wram* scratch, const Rom* rom, const CosimRegs* in,
 // A handler, or a piece of one, that is asked by running it on the copy.
 // The monster's punch tells those in its box, and each has to have a price.
 static bool pose_tried(void (*piece)(Wram*, const Rom*, uint16_t, PoseLog*),
+                       bool (*page_ok)(const Wram*, const CosimRegs*),
                        Wram* scratch, const Rom* rom, const CosimRegs* in) {
   static PoseLog log;
   int told;
-  if (!pose_page_ok(scratch, in)) return false;
+  if (!page_ok(scratch, in)) return false;
   log = (PoseLog){0};
   piece(scratch, rom, in->d, &log);
   return !log.unported &&
@@ -16070,10 +16125,10 @@ POSE_SHIM(pose_arc, POSE_HANDLER_ARC)
 POSE_SHIM(pose_arc_ready, POSE_HANDLER_ARC_READY)
 POSE_SHIM(pose_swim, POSE_HANDLER_SWIM)
 
-#define POSE_PIECE_SHIM(name)                                                \
+#define POSE_PIECE_SHIM(name, page_ok)                                       \
   static bool guard_##name(Wram* scratch, const Rom* rom,                    \
                            const CosimRegs* in) {                            \
-    return pose_tried(name, scratch, rom, in);                               \
+    return pose_tried(name, page_ok, scratch, rom, in);                      \
   }                                                                          \
   static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
                           CosimRegs* out) {                                  \
@@ -16092,11 +16147,11 @@ POSE_SHIM(pose_swim, POSE_HANDLER_SWIM)
   }
 
 // Two handlers that had no entry of their own, and three pieces.
-POSE_PIECE_SHIM(pose_walk_band_b)
-POSE_PIECE_SHIM(pose_walk_6c)
-POSE_PIECE_SHIM(pose_begin)
-POSE_PIECE_SHIM(pose_stand_begin)
-POSE_PIECE_SHIM(pose_walk_begin)
+POSE_PIECE_SHIM(pose_walk_band_b, pose_page_ok)
+POSE_PIECE_SHIM(pose_walk_6c, pose_page_ok)
+POSE_PIECE_SHIM(pose_begin, pose_page_ok)
+POSE_PIECE_SHIM(pose_stand_begin, pose_page_ok_before_tables)
+POSE_PIECE_SHIM(pose_walk_begin, pose_page_ok)
 
 // `$80:ED30`, the shot. It leaves by one of two `RTS`s, or by `JMP $DE96`
 // to weapon 5's pose, whose first two instructions are a sleep: the stretch
@@ -16207,7 +16262,7 @@ static void pose_band_b_lower_bill(PoseBill* b) {
 #define POSE_STRETCH_SHIM(name, at_yield)                                    \
   static bool guard_##name(Wram* scratch, const Rom* rom,                    \
                            const CosimRegs* in) {                            \
-    return pose_tried(name, scratch, rom, in);                               \
+    return pose_tried(name, pose_page_ok, scratch, rom, in);                 \
   }                                                                          \
   static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
                           CosimRegs* out) {                                  \
@@ -16326,6 +16381,31 @@ static void pframe_turning_bill(CosimRun* own, const PlayerFrameLog* log) {
   run_add(own, &RUN_RTS, 1);
 }
 
+// `$80:D404` with its `RTS`. What it calls is the answer: the state under it
+// when that is the ordinary one, and everything told of the player.
+static int pframe_flashing_bill(CosimRun* own, const PlayerFrameLog* log,
+                                const CosimRegs* in) {
+  int calls = 0;
+  run_add(own, &PFRAME_RUN_FLASH_HEAD, 1);
+  run_add(own, &RUN_JSR, 1);
+  if (log->under_turning) {
+    run_add(own, &RUN_TAKEN, 1);
+    pframe_turning_bill(own, log);
+  } else {
+    calls += psn_cycles(&log->normal, in->fastrom, (in->d & 0x00ffu) != 0);
+    run_add(own, &RUN_BRA, 1);
+  }
+  run_add(own, &PFRAME_RUN_FLASH_BOX, 1);
+  int told = 0;
+  notify_box_cycles(&log->told, in, &told);
+  calls += told;
+  run_add(own, &PFRAME_RUN_FLASH_AFTER, 1);
+  run_add(own, log->flickered ? &PFRAME_RUN_FLASH_FLIP : &RUN_TAKEN, 1);
+  run_add(own, &PFRAME_RUN_FLASH_COUNT, 1);
+  run_add(own, &RUN_RTS, 1);
+  return calls;
+}
+
 static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
   static PlayerFrameLog log;
@@ -16362,26 +16442,9 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
                                    : &PFRAME_RUN_MONSTER_SPENT, 1);
       run_add(&own, &RUN_RTS, 1);
       break;
-    case PLAYER_STATE_FLASHING: {
-      run_add(&own, &PFRAME_RUN_FLASH_HEAD, 1);
-      run_add(&own, &RUN_JSR, 1);
-      if (log.under_turning) {
-        run_add(&own, &RUN_TAKEN, 1);
-        pframe_turning_bill(&own, &log);
-      } else {
-        calls += psn_cycles(&log.normal, in->fastrom, unaligned);
-        run_add(&own, &RUN_BRA, 1);
-      }
-      run_add(&own, &PFRAME_RUN_FLASH_BOX, 1);
-      int told = 0;
-      notify_box_cycles(&log.told, in, &told);
-      calls += told;
-      run_add(&own, &PFRAME_RUN_FLASH_AFTER, 1);
-      run_add(&own, log.flickered ? &PFRAME_RUN_FLASH_FLIP : &RUN_TAKEN, 1);
-      run_add(&own, &PFRAME_RUN_FLASH_COUNT, 1);
-      run_add(&own, &RUN_RTS, 1);
+    case PLAYER_STATE_FLASHING:
+      calls += pframe_flashing_bill(&own, &log, in);
       break;
-    }
     default:
       pframe_turning_bill(&own, &log);
       break;
@@ -16483,6 +16546,52 @@ static void shim_player_monster_state(Wram* w, const Rom* rom,
   run_add(&own, &RUN_RTS, 1);
   cosim_cost(floor_cycles(&log.floor, in->fastrom, unaligned) +
              cosim_run_cycles_dp(&own, fetch_fast(in), unaligned));
+
+  out->regs = 0;
+  out->flags = COSIM_FLAG_C;
+  out->c = log.c;
+}
+
+// `$80:D343` on its own, the same way. It leaves the carry it was called
+// with.
+static void shim_player_turning_state(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  static PlayerFrameLog log;
+  player_turning_state(w, in->d, &log);
+
+  CosimRun own = {0, 0, 0};
+  pframe_turning_bill(&own, &log);
+  cosim_cost(cosim_run_cycles_dp(&own, fetch_fast(in), (in->d & 0x00ffu) != 0));
+
+  out->regs = 0;
+  out->flags = 0;
+}
+
+// `$80:D404` on its own. A frame of the flashing is mostly here because
+// something told of the player has no price, which is what the whole frame
+// turns down. This takes it as `actor_notify_box`'s own entry does: it is
+// run, and costs the entry's figure and not a price.
+static bool guard_player_flashing_state(Wram* scratch, const Rom* rom,
+                                        const CosimRegs* in) {
+  static PlayerFrameLog log;
+  return player_flashing_state(scratch, rom, in->d, &log);
+}
+
+static void shim_player_flashing_state(Wram* w, const Rom* rom,
+                                       const CosimRegs* in, CosimRegs* out) {
+  static PlayerFrameLog log;
+  player_flashing_state(w, rom, in->d, &log);
+
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int told;
+  if (notify_box_cycles(&log.told, in, &told) &&
+      (log.under_turning ||
+       psn_cycles(&log.normal, in->fastrom, unaligned) >= 0)) {
+    CosimRun own = {0, 0, 0};
+    const int calls = pframe_flashing_bill(&own, &log, in);
+    cosim_cost(calls + cosim_run_cycles_dp(&own, fetch_fast(in), unaligned));
+  }
 
   out->regs = 0;
   out->flags = COSIM_FLAG_C;
@@ -27139,6 +27248,31 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 600,
         .stack_bytes = 16,
     },
+    // ...and the two the pad only turns the player in, and the flashing.
+    {
+        .name = "player_turning_state",
+        .symbol = "$80:D343",
+        .entry = PLAYER_TURNING_STATE_PC,
+        .ret_op = PLAYER_TURNING_STATE_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_turning_state,
+        .accepts = player_frame_ok,
+        .uncalled = true,
+        .cycles = 400,
+    },
+    {
+        .name = "player_flashing_state",
+        .symbol = "$80:D404",
+        .entry = PLAYER_FLASHING_STATE_PC,
+        .ret_op = PLAYER_FLASHING_STATE_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_flashing_state,
+        .accepts = player_frame_ok,
+        .supported = guard_player_flashing_state,
+        .uncalled = true,
+        .cycles = 3500,
+        .stack_bytes = 22,
+    },
 #undef POSE_ENTRY_AS
 #undef POSE_ENTRY
     // Vblank jobs, which write the PPU. See `port/vblank.h`. Each prices
@@ -27891,6 +28025,16 @@ static const CosimRoutine ROUTINES[] = {
         .accepts = accepts_player_page_begin,
         COSIM_EXITS(PAGE_BEGIN_EXITS),
         .cycles = 6200,
+    },
+    {
+        .name = "player_page_records",
+        .symbol = "$80:D174",
+        .entry = PAGE_RECORDS_PC,
+        .run = shim_player_page_records,
+        .accepts = accepts_player_page_records,
+        COSIM_EXITS(PAGE_RECORDS_EXITS),
+        .uncalled = true,
+        .cycles = 2000,
     },
     {
         .name = "blinker_frame",

@@ -267,6 +267,12 @@ threads asleep in a loop, waiting for a player to come near or for hits.
 They are in `port/waits.c`. The places are 745 and the core executes
 386,484 instructions over the survey.
 
+**A player's start and two states, 2026-10-11.** The second stretch of
+a player's start is in `port/page.c`, the standing pose's beginning takes
+the first stand, and the turning and the flashing states have rows of
+their own for frames the whole frame turns down. The places are 743 and
+the core executes 361,406 instructions over the survey.
+
 What is left of this step: registers of the driver's own in place of the
 core's, the clock, and a stop that names the address in place of the
 core.

@@ -19003,3 +19003,28 @@ claims every flag.
 Over the same 110 sessions the core executes 386,484 instructions
 where it executed 445,564, and takes over 36,718 times where it
 did 44,122, at 745 places where there were 750.
+
+## A player's two records, and two states on their own (2026-10-11)
+
+### A guard that asked for what the routine was about to write
+
+`pose_stand_begin` was never taken at a player's start. `pose_page_ok`
+wants `$10` and `$14` to point into the cartridge, and the page had just
+been cleared. `$80:D4F4` stores `$10` on every path and `$14` on every
+path the port has, before reading through either. Its row now uses
+`pose_page_ok_before_tables`, which is the same test without those two.
+
+### A state row for a frame turned down for want of a price
+
+`player_frame` turns a flashing frame down when something in the player's
+box has a handler with no cost table. The pieces then ran the state in
+the core, 441 times over the survey. `player_flashing_state` takes those
+frames: it runs the port, and bills a price only when it has one.
+Otherwise the row's `.cycles` is charged, which is what
+`actor_notify_box`'s own row does for the same box.
+
+### After
+
+Over the same 110 sessions the core executes 361,406 instructions
+where it executed 386,484, and takes over 35,232 times where it
+did 36,718, at 743 places where there were 745.

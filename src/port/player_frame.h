@@ -181,4 +181,19 @@ void player_frame(Wram* w, const Rom* rom, uint16_t page, PlayerFrameLog* log);
 bool player_monster_state(Wram* w, const Rom* rom, uint16_t page,
                           PlayerFrameLog* log);
 
+// `$80:D343` on its own, the same way: the state the pad only turns the
+// player in.
+#define PLAYER_TURNING_STATE_PC 0x80d343u
+#define PLAYER_TURNING_STATE_RTS_PC 0x80d35du
+void player_turning_state(Wram* w, uint16_t page, PlayerFrameLog* log);
+
+// `$80:D404` on its own: the flashing. Under it the ordinary state takes a
+// press as its own entry does. False on the frame the flashing ends, and when
+// the ordinary state or something told of the player is the ROM's; it is
+// asked of a copy first.
+#define PLAYER_FLASHING_STATE_PC 0x80d404u
+#define PLAYER_FLASHING_STATE_RTS_PC 0x80d460u
+bool player_flashing_state(Wram* w, const Rom* rom, uint16_t page,
+                           PlayerFrameLog* log);
+
 #endif

@@ -5,6 +5,73 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### A player's two records, and two states on their own (2026-10-11)
+
+Three stretches of a player's thread that the core still ran, all in bank
+`$80` between `$D13A` and `$D460`.
+
+* **`player_page_records`** (`$80:D174`) is the second stretch of a
+  player's start, in `port/page.c`. It is entered with the player's record
+  in A and stops at the `JSR` that begins the standing pose.
+  * The record is filed, and for the first player the thread too. It
+    stands where the page was told and is drawn.
+  * Both records are the thread's. The player's has the collide id of its
+    side. The hand weapon's has none.
+  * The player faces down, and the page has where their weapons and their
+    items are kept.
+  * With a weapon chosen, the page has its pictures for this side.
+* **The standing pose's beginning takes a player's first stand.**
+  `pose_stand_begin` was turned away there: its row wanted the pictures'
+  table and the pose table on the page already, and a new page has
+  neither. The routine writes both before it reads either, so that row no
+  longer asks for them.
+* **`player_turning_state`** (`$80:D343`) and **`player_flashing_state`**
+  (`$80:D404`) are rows for two states the whole frame already had, as the
+  monster's state has one. They serve a frame `player_frame` turns down.
+  * The flashing's frames were turned down mostly because something told
+    of the player has no price. The row runs those and charges the row's
+    own figure, as `actor_notify_box`'s row does.
+  * Under the flashing, the ordinary state takes a press as its own row
+    does.
+  * The frame the flashing ends on is still the ROM's.
+* **Checked.**
+  * The corpus verifies clean: 126,353,862 calls, none diverged.
+
+    | Row | Calls checked |
+    |---|---|
+    | `player_page_records` | 68 |
+    | `player_turning_state` | 4,631 |
+    | `player_flashing_state` | 2,598 |
+    | `pose_stand_begin` | 655 |
+
+  * Costs were compared on `level1-2p` and `level21`:
+    `player_page_records` 2 of 2 exact, `player_flashing_state` 240 of
+    240, `player_turning_state` 96 of 96.
+  * Lockstep: 51 of 54 never part; `level25`, `level25-2p` and
+    `level25-heavy` do, as before.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies, and
+    none differ, at both widths.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 655 to 654 | 30,284 to 29,289 | 291,361 to 269,866 |
+  | Left standing on an instruction | 50 to 48 | 2,966 to 2,424 | 67,511 to 63,724 |
+  | A port turned the call down | 33 to 34 | 3,273 to 3,324 | 18,742 to 18,946 |
+  | A port or a link called it | 6 to 6 | 85 to 85 | 950 to 950 |
+  | All | 745 to 743 | 36,718 to 35,232 | 386,484 to 361,406 |
+
+  833 routines are registered.
+* **Not done or not known.**
+  * A player starting with no weapon chosen. No movie of the corpus has
+    one, so that branch of `player_page_records` is written from the
+    listing and has not been compared with the ROM.
+  * A flashing frame with something unpriced in reach costs the row's
+    figure, 3,500 cycles, and not what the ROM's took.
+  * The frame the flashing ends on, 51 times over the survey.
+  * Between the start's two stretches the core still runs two
+    instructions, and after the second the `JSR` and the `JMP`.
+
 ### Three threads with nothing to do but wait (2026-10-11)
 
 The three places the 65816 ran most were each a thread asleep in a loop:

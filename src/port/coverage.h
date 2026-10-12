@@ -550,6 +550,9 @@
   X(hit_flinched,     "player_hit",         "one from their health, and on to the pictures") \
   X(hit_shown_the_other_way,"player_hit",   "...with the next bit set: the ROM's") \
   X(player_page_begun,"player_page_begin",  "a player's page cleared, and whose it is") \
+  X(player_page_records, "player_page_records", "a player's two records set up") \
+  X(player_page_records_armed, "player_page_records", "with a weapon chosen, and its pictures") \
+  X(player_page_records_unarmed, "player_page_records", "...or none") \
   X(knock_busy,       "knock_look",         "a tile is being knocked down already") \
   X(knock_nothing,    "knock_look",         "the tile the fist is at is not one to knock down") \
   X(knock_begun,      "knock_look",         "...or is, and the thread that does it is asked for") \
@@ -1847,6 +1850,8 @@
   X(player_frame_stuck, "player_frame", "...or stuck in slime") \
   X(player_frame_turning, "player_frame", "...or one of the two the pad only turns the player in") \
   X(player_monster_state_alone, "player_monster_state", "the monster's state, in a frame that is the ROM's") \
+  X(player_turning_state_alone, "player_turning_state", "the turning state, in a frame that is the ROM's") \
+  X(player_flashing_state_alone, "player_flashing_state", "the flashing, in a frame that is the ROM's") \
   X(player_frame_monster, "player_frame", "...or the potion's monster") \
   X(player_frame_flashing_normal, "player_frame", "...or flashing, over the ordinary state") \
   X(player_frame_flashing_turning, "player_frame", "......or over the turning one") \
