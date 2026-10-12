@@ -204,6 +204,10 @@ enum {
   DMA_IMM_ORA,   // LDA #imm : ORA #imm : STA abs
   DMA_IMM16_MEM, // LDA #imm16 : STA abs, to memory
   DMA_REP_LOADS3,// REP #$20 : LDA #imm16 : LDY #imm16 : LDX #imm16
+  DMA_JSL,       // JSL
+  DMA_REP_PLB2,  // REP #$20 : PLB : PLB
+  LC_BRIGHT,     // $82:AC2B LDA abs : AND # : STA abs : LDA # : STA abs
+  LC_WORDS,      // LDA #imm16 : PLX
   DMA_BLOCK_COUNT
 };
 
@@ -271,6 +275,26 @@ void camera_job_begin(HwTrace* t);
 #define COLOUR_WINDOW_FIXED 0xe5u  // the last byte A is given
 #define W_COLOUR_WINDOW_WORD 0x136eu
 void colour_window_reset(Wram* w, HwTrace* t);
+
+// `$82:AC27` to `$82:AC44`, in the screen before a level
+// (`port/level_card.h`). Through `$82:ACD6` the first layer is put at the
+// left, its map at `$6800` and its tiles at `$2000`, and VRAM's address
+// made to step on the high byte. Then full brightness goes in the shadow,
+// only the first layer is turned on, and the first string is pulled. It
+// stops on the call to the big letters, with the string's bank in A and
+// the string in X, which it returns.
+#define LEVEL_CARD_LAYER_PC 0x82ac27u
+#define LEVEL_CARD_LAYER_END_PC 0x82ac44u
+uint16_t level_card_layer(Wram* w, HwTrace* t, uint16_t s);
+
+// `$82:ACB0` to the `RTL` at `$82:ACD5`, with the screen off. The level's
+// layers: the first three and the sprites turned on, mode 1 with the third
+// layer in front, the first layer's tiles at `$5000` and the second's at
+// `$2000`, and the first layer at the top left. It pulls the spare byte and
+// the caller's data bank, which it returns.
+#define LEVEL_CARD_LAYERS_BACK_PC 0x82acb0u
+#define LEVEL_CARD_RTL_PC 0x82acd5u
+uint8_t level_card_layers_back(const Wram* w, HwTrace* t, uint16_t s);
 
 // `$83:8015` to `$83:802D`, in the logo screens' routine (`port/intro.h`).
 // Mode 1, with the first layer's tiles 16 across. The first layer's map is

@@ -48,6 +48,7 @@
 #include "assets/rom.h"
 #include "port/wram.h"
 
+#define PALFADE_PC 0x82ab95u        // where the thread starts
 #define PALFADE_FRAME_PC 0x82abbdu
 #define PALFADE_YIELD_PC 0x82abb9u  // `JSL thread_yield`, the ticks already in A
 #define PALFADE_OVER_PC 0x82ac06u   // the `RTL` that ends the thread
@@ -59,6 +60,7 @@
 #define PALFADE_UPLOAD_BANK 0x0080u
 
 // Fields on the thread's page.
+#define PALFADE_DP_ARGS 0x00         // what it was started with, a far address
 #define PALFADE_DP_MOVED 0x0a        // rows that moved, this sweep
 #define PALFADE_DP_ROW 0x0c          // the row, as a byte offset into a palette
 #define PALFADE_DP_TICKS 0x0e        // how long it sleeps
@@ -69,6 +71,7 @@
 #define PALFADE_ROW_COLOURS 16
 #define PALFADE_ROWS_END 0x100
 #define PALFADE_BACKGROUND_END 0xe0  // the background's rows stop one short
+#define PALFADE_FIRST_TICKS 0x0040u
 
 // For the harness, and only for it: what happened, which is what it takes to
 // price the ROM's instructions.
@@ -92,6 +95,17 @@ typedef struct {
   uint16_t ticks;  // how long it sleeps
   bool c, v;       // carry and overflow as the frame leaves them
 } PalfadeLog;
+
+// Can `palfade_begin` take the thread's start? Only with what it was started
+// with in the cartridge.
+bool palfade_begin_supported(const Wram* w, uint16_t page);
+
+// `$82:AB95` to the first `JSL thread_yield`. The thread is started with
+// the address of two far addresses, the background's palette and the
+// sprites'. It copies them to its page, starts at the first row with
+// nothing moved, and sleeps `PALFADE_FIRST_TICKS`. The ROM leaves that in A
+// and 6 in Y.
+void palfade_begin(Wram* w, const Rom* rom, uint16_t page);
 
 // Can `palfade_frame` take this waking? Not a row that is not one of the eight,
 // nor a palette that is not in the cartridge. It only looks.

@@ -8,6 +8,8 @@
 
 // The registers.
 #define REG_BGMODE 0x2105u     // the mode, and whose tiles are 16 across
+#define REG_BG1HOFS 0x210du    // the first layer's scroll across, written twice
+#define REG_BG1VOFS 0x210eu    // ...and down
 #define REG_BG1SC 0x2107u      // where the first layer's map is, and how big
 #define REG_BG2SC 0x2108u      // ...and the second's
 #define REG_BG3SC 0x2109u      // where the third layer's map is
@@ -183,6 +185,52 @@ void colour_window_reset(Wram* w, HwTrace* t) {
 #define MAP_AT_4000_FOUR_SCREENS 0x43u
 #define MAP_AT_6000 0x60u
 #define FIRST_TWO_LAYERS 0x03u
+
+#define LAYER_SETUP_PC 0x82acd6u
+#define LAYER_SETUP_RETURN 0xac2au   // what the `JSL` to it pushes
+#define MAP_AT_6800_TWO_DOWN 0x6au
+#define BG1_TILES_AT_2000 0x02u
+#define STEP_ON_HIGH_BYTE 0x80u
+#define FULL_BRIGHTNESS 0x000fu
+#define FIRST_LAYER 0x0001u
+#define WORDS_BANK 0x009fu
+#define THREE_LAYERS_AND_SPRITES 0x0017u
+#define MODE_1_BG3_IN_FRONT 0x0009u
+#define BG1_TILES_AT_5000_BG2_AT_2000 0x25u
+
+uint16_t level_card_layer(Wram* w, HwTrace* t, uint16_t s) {
+  PORT_COVER(level_card_layer);
+  hw_run(t, DMA_JSL);
+  wram_w8(w, s, LAYER_SETUP_PC >> 16);
+  wram_w16(w, (uint16_t)(s - 2), LAYER_SETUP_RETURN);
+  // A word each, so the second byte of each goes to the scroll down.
+  store16(t, DMA_STORE, REG_BG1HOFS, 0);
+  store16(t, DMA_STORE, REG_BG1HOFS, 0);
+  store8(t, DMA_SEP_IMM, REG_BG1SC, MAP_AT_6800_TWO_DOWN);
+  store8(t, DMA_IMM, REG_BG12NBA, BG1_TILES_AT_2000);
+  store8(t, DMA_IMM, REG_VMAIN, STEP_ON_HIGH_BYTE);
+  hw_run(t, DMA_RTL);
+  hw_run(t, LC_BRIGHT);
+  wram_w16(w, W_LOGO_BRIGHTNESS, FULL_BRIGHTNESS);
+  // A word again: nothing on the second screen.
+  store16(t, DMA_IMM16, REG_TM, FIRST_LAYER);
+  hw_run(t, LC_WORDS);
+  return wram_r16(w, (uint16_t)(s + 1));
+}
+
+uint8_t level_card_layers_back(const Wram* w, HwTrace* t, uint16_t s) {
+  PORT_COVER(level_card_layers_back);
+  store16(t, DMA_IMM16, REG_TM, THREE_LAYERS_AND_SPRITES);
+  // ...and the mosaic off, the word's other byte.
+  store16(t, DMA_IMM16, REG_BGMODE, MODE_1_BG3_IN_FRONT);
+  store8(t, DMA_SEP_IMM, REG_BG12NBA, BG1_TILES_AT_5000_BG2_AT_2000);
+  store8(t, DMA_IMM, REG_BG1VOFS, 0);
+  store8(t, DMA_STORE, REG_BG1VOFS, 0);
+  store8(t, DMA_STORE, REG_BG1HOFS, 0);
+  store8(t, DMA_STORE, REG_BG1HOFS, 0);
+  hw_run(t, DMA_REP_PLB2);
+  return wram_r8(w, (uint16_t)(s + 2));
+}
 
 void intro_layers_setup(HwTrace* t) {
   PORT_COVER(intro_layers_setup);

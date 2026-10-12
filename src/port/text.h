@@ -61,6 +61,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/hw.h"
 #include "port/wram.h"
 
@@ -198,5 +199,13 @@ void text_big_multiply(uint8_t which, uint8_t width, HwTrace* t);
 // `which` and `width` are A and X, the two bytes that were multiplied.
 void text_big_glyph(Wram* w, const Rom* rom, uint16_t page, uint8_t which,
                     uint8_t width, TextBigRegs* out, TextBigWork* k);
+
+// `$82:AE3F`, after the `WAI` that follows the asking. With carry clear the
+// job was queued: the spare byte and the caller's data bank are pulled, and
+// it stops on the `RTL`. With carry set the queue was full, and it stops on
+// the call that asks again, with the job in A and Y.
+#define TEXT_BIG_SENT_PC 0x82ae3fu
+#define TEXT_BIG_RTL_PC 0x82ae43u
+bool text_big_sent(Wram* w, PortCpu* c);
 
 #endif

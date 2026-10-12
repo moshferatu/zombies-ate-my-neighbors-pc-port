@@ -1860,6 +1860,23 @@
   X(intro_layers_setup, "intro_layers_setup", "the logo screens' mode, maps and tiles set") \
   X(intro_layers_on, "intro_layers_on", "their layers placed and turned on") \
   X(queue_a_remove, "vbl_queue_a_remove", "a job taken out of vblank queue A") \
+  X(level_card_begin, "level_card_begin", "the screen before a level begun with the screen off") \
+  X(level_card_colours_ask, "level_card_colours_ask", "its colours, to be sent") \
+  X(level_card_tiles_unpack_ask, "level_card_tiles_unpack_ask", "the letters' pictures, to be unpacked") \
+  X(level_card_tiles_send_ask, "level_card_tiles_send_ask", "...and sent") \
+  X(level_card_map_clear_ask, "level_card_map_clear_ask", "back out, to clear the letters' map") \
+  X(level_card_first_drop_begin, "level_card_first_drop_begin", "sixteen frames for the first string to come down in") \
+  X(level_card_song_ask, "level_card_song_ask", "the level's record kept, and its song asked for") \
+  X(level_card_second_words_ask, "level_card_second_words_ask", "the second string, to be drawn") \
+  X(level_card_second_drop_begin, "level_card_second_drop_begin", "...and sixteen frames for it") \
+  X(level_card_blocks_unpack_ask, "level_card_blocks_unpack_ask", "the level's blocks, to be unpacked") \
+  X(level_card_blocks_unpacked, "level_card_blocks_unpacked", "...and the argument pulled") \
+  X(level_card_blank, "level_card_blank", "the screen off again") \
+  X(level_card_layer, "level_card_layer", "the letters' layer set up and turned on") \
+  X(level_card_layers_back, "level_card_layers_back", "the level's layers put back") \
+  X(text_big_sent, "text_big_sent", "the big letters' map queued, and back to the caller") \
+  X(text_big_queue_full, "text_big_sent", "...or the queue full, and asked again") \
+  X(palfade_begin, "palfade_begin", "a colour fade's thread begun") \
   X(send_args, "send_args", "what a screen's next send is called with") \
   X(palette_job, "palette_job", "all 256 colours sent") \
   X(background_job, "background_job", "the background's second copy sent") \

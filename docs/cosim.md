@@ -19112,3 +19112,27 @@ three instructions apart; the port's land together.
 Over the same 110 sessions the core executes 281,839 instructions
 where it executed 296,059, and takes over 30,558 times where it
 did 31,322, at 726 places where there were 733.
+
+## The screen before a level, between its calls (2026-10-12)
+
+### A call made inside a stretch
+
+`$82:AC1F` is a `JSL` to `$82:ACF0`, which begins by setting out a call of
+its own. The stretch is both: it pushes the `JSL`'s three bytes and stops
+on the call inside. `level_card_map_clear_ask` is the other end. It pulls
+them and stops where the `RTL` lands.
+
+`level_card_layer` calls `$82:ACD6` and comes back within itself. The three
+bytes are under the stack when it ends, so it writes them there.
+
+### A word written to a byte register
+
+The routine stores words to `$210D`, `$212C` and `$2105`. The second byte
+of each goes to the next register: the scroll down, the second screen's
+layers, the mosaic. The ports record a word's write, as the ROM makes it.
+
+### After
+
+Over the same 110 sessions the core executes 269,330 instructions
+where it executed 281,839, and takes over 29,549 times where it
+did 30,558, at 717 places where there were 726.

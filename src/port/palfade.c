@@ -163,6 +163,30 @@ static void sleep_sooner(Palfade* f) {
   set_field(f, PALFADE_DP_TICKS, (uint16_t)(ticks - 1));
 }
 
+// The eight bytes the thread is started with.
+static bool args_in_cartridge(FarAddress args) {
+  const uint16_t bank = args.bank & 0x00ffu;
+  return bank >= 0x80 && bank <= 0x9f && args.at >= 0x8000u &&
+         args.at <= 0x10000u - 8;
+}
+
+bool palfade_begin_supported(const Wram* w, uint16_t page) {
+  return args_in_cartridge(far_field(w, page, PALFADE_DP_ARGS));
+}
+
+void palfade_begin(Wram* w, const Rom* rom, uint16_t page) {
+  PORT_COVER(palfade_begin);
+  const FarAddress args = far_field(w, page, PALFADE_DP_ARGS);
+  const uint32_t from = (uint32_t)(args.bank & 0x00ffu) << 16 | args.at;
+  for (uint16_t i = 0; i < 8; i = (uint16_t)(i + 2)) {
+    wram_w16(w, (uint16_t)(page + PALFADE_DP_BACKGROUND + i),
+             rom_word(rom, from + i));
+  }
+  wram_w16(w, (uint16_t)(page + PALFADE_DP_ROW), 0);
+  wram_w16(w, (uint16_t)(page + PALFADE_DP_MOVED), 0);
+  wram_w16(w, (uint16_t)(page + PALFADE_DP_TICKS), PALFADE_FIRST_TICKS);
+}
+
 bool palfade_frame_supported(const Wram* w, uint16_t page) {
   const uint16_t row = wram_r16(w, (uint16_t)(page + PALFADE_DP_ROW));
   return row < PALFADE_ROWS_END && row % PALFADE_ROW_BYTES == 0 &&

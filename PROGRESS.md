@@ -5,6 +5,62 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The screen before a level, between its calls (2026-10-12)
+
+`$82:AC07` shows two strings of big letters before a level. The letters,
+their coming down, the two holds and the dimming were ported. The core
+still ran what sets each call up and what comes before each wait. This
+round is that.
+
+* **Twelve stretches**, in the new `port/level_card.c`. The first puts on
+  the routine's data bank, pushes the three things it was given and turns
+  the screen off. The rest set out the colours, the letters' pictures, each
+  string, the level's song and the level's blocks, begin each string's
+  coming down, and turn the screen off at the end.
+* **Two that write to the picture hardware**, in `port/dma.c`.
+  * `level_card_layer` (`$82:AC27`): the letters' layer set up through
+    `$82:ACD6`, full brightness, that layer alone turned on.
+  * `level_card_layers_back` (`$82:ACB0`): the level's mode, layers and
+    tiles put back, to the `RTL`.
+* **`text_big_sent`** (`$82:AE3F`), in `port/text.c`: the big letters' own
+  end, after the wait that follows the asking.
+* **`palfade_begin`** (`$82:AB95`), in `port/palfade.c`: where a colour
+  fade's thread starts, as far as its first sleep.
+* **Checked.**
+  * The corpus verifies clean: 126,358,546 calls, none diverged. Each
+    stretch of the routine was checked 56 times, `text_big_sent` 112 and
+    `palfade_begin` 20.
+  * Costs were compared on `level1`, `level13` and `demo-end`. Every new
+    row is exact but two. `text_big_sent` is 40 cycles under the ROM on
+    all four calls seen, and `palfade_begin` on both of its two.
+  * Lockstep: 51 of 54 never part; `level25`, `level25-2p` and
+    `level25-heavy` do, as before.
+  * The picture: 77,686,784 lines drawn both ways over the 54 movies, and
+    none differ.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 638 to 630 | 25,132 to 24,231 | 202,848 to 192,283 |
+  | Left standing on an instruction | 43 to 41 | 1,854 to 1,638 | 50,760 to 47,628 |
+  | A port turned the call down | 34 to 34 | 2,827 to 2,827 | 17,951 to 17,951 |
+  | A port or a link called it | 10 to 11 | 635 to 743 | 2,360 to 3,548 |
+  | All | 726 to 717 | 30,558 to 29,549 | 281,839 to 269,330 |
+
+  915 routines are registered.
+* **Not done or not known.**
+  * The 40 cycles. I take them for the WRAM refresh, which the harness
+    does not show, but a refresh should not fall in the same stretch every
+    time unless the frame is the same every time. For `text_big_sent` it
+    may be: the screen is the same in every session. I did not show it.
+  * `text_big_sent`'s other way, the queue full and the job asked for
+    again, is never taken in the corpus.
+  * `$80:CBD9`, which starts the song, is not ported, and the core runs
+    eleven instructions of it each time.
+  * The routine's waits are the core's still, and so are the five
+    instructions from `$82:AC1B` into `$80:9F9D` before its hold.
+  * `$80:8858`, which jumps to the routine, is not ported.
+
 ### The logo screens' routine, between its calls (2026-10-12)
 
 `$83:8000` shows the logo screens. Its eight loops, its tilemap and its

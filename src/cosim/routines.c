@@ -88,6 +88,7 @@
 #include "port/decoy.h"
 #include "port/logo.h"
 #include "port/intro.h"
+#include "port/level_card.h"
 #include "port/card.h"
 #include "port/jumper.h"
 #include "port/radar_thread.h"
@@ -17740,6 +17741,10 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [DMA_IMM_ORA] = {42, 7, 0},
     [DMA_IMM16_MEM] = {52, 6, 0},
     [DMA_REP_LOADS3] = {72, 11, 0},
+    [DMA_JSL] = {54, 4, 0},
+    [DMA_REP_PLB2] = {70, 4, 0},
+    [LC_BRIGHT] = {138, 15, 0},
+    [LC_WORDS] = {52, 4, 0},
     [VC_HEAD] = {46, 5, 1},
     [VC_STEP] = {94, 12, 1},
     [VC_TEST] = {58, 6, 1},
@@ -23727,6 +23732,176 @@ static void shim_vbl_queue_a_remove(Wram* w, const Rom* rom,
   cpu_to(&c, out);
   cosim_cost(cosim_run_cycles(&QUEUE_A_REMOVE_RUN, fetch_fast(in)));
 }
+
+// ---------------------------------------------------------------------------
+// The screen before a level, between its calls and its waits -- see
+// `port/level_card.h`
+// ---------------------------------------------------------------------------
+//
+// The two that read the record read it through `$9F:xxxx,X`, the cartridge
+// at 6 a byte, which the tool prices as WRAM at 8.
+static const CosimRun LEVEL_CARD_RUN_begin = {268, 19, 0};
+static const CosimRun LEVEL_CARD_RUN_colours_ask = {108, 13, 0};
+static const CosimRun LEVEL_CARD_RUN_tiles_unpack_ask = {100, 13, 0};
+static const CosimRun LEVEL_CARD_RUN_tiles_send_ask = {116, 11, 0};
+static const CosimRun LEVEL_CARD_RUN_map_clear_ask = {76, 2, 0};
+static const CosimRun LEVEL_CARD_RUN_first_drop_begin = {92, 9, 0};
+static const CosimRun LEVEL_CARD_RUN_song_ask = {248, 22, 0};
+static const CosimRun LEVEL_CARD_RUN_second_words_ask = {52, 4, 0};
+static const CosimRun LEVEL_CARD_RUN_second_drop_begin = {92, 9, 0};
+static const CosimRun LEVEL_CARD_RUN_blocks_unpack_ask = {204, 25, 0};
+static const CosimRun LEVEL_CARD_RUN_blocks_unpacked = {34, 1, 0};
+static const CosimRun LEVEL_CARD_RUN_blank = {86, 9, 0};
+
+static bool accepts_level_card_begin(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && low_stack(in);
+}
+
+static bool accepts_level_card(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->db == LEVEL_CARD_DATA_BANK;
+}
+
+// The record is the word on top of the stack.
+static bool accepts_level_card_song_ask(const Wram* w, const CosimRegs* in) {
+  return accepts_level_card(w, in) &&
+         level_card_record_supported(wram_r16(w, (uint16_t)(in->s + 1)));
+}
+
+static bool accepts_level_card_blocks_unpack_ask(const Wram* w,
+                                                 const CosimRegs* in) {
+  return accepts_level_card(w, in) &&
+         level_card_record_supported(wram_r16(w, W_LEVEL_CARD_RECORD));
+}
+
+static void shim_level_card_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  level_card_begin(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&LEVEL_CARD_RUN_begin, fetch_fast(in)));
+}
+
+static void shim_level_card_song_ask(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  level_card_song_ask(w, rom, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&LEVEL_CARD_RUN_song_ask, fetch_fast(in)));
+}
+
+static void shim_level_card_blocks_unpack_ask(Wram* w, const Rom* rom,
+                                              const CosimRegs* in,
+                                              CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  level_card_blocks_unpack_ask(w, rom, &c);
+  cpu_to(&c, out);
+  cosim_cost(
+      cosim_run_cycles(&LEVEL_CARD_RUN_blocks_unpack_ask, fetch_fast(in)));
+}
+
+static const uint32_t LEVEL_CARD_BEGIN_EXITS[] = {LEVEL_CARD_BEGUN_PC};
+static const uint32_t LEVEL_CARD_SONG_ASK_EXITS[] = {LEVEL_CARD_SONG_ASKED_PC};
+static const uint32_t LEVEL_CARD_BLOCKS_ASK_EXITS[] = {
+    LEVEL_CARD_BLOCKS_ASKED_PC};
+
+#define X(name, sym, entry, exit)                                            \
+  static void shim_level_card_##name(Wram* w, const Rom* rom,                \
+                                     const CosimRegs* in, CosimRegs* out) {  \
+    (void)rom;                                                               \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    level_card_##name(w, &c);                                                \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(cosim_run_cycles(&LEVEL_CARD_RUN_##name, fetch_fast(in)));    \
+  }                                                                          \
+  static const uint32_t LEVEL_CARD_EXITS_##name[] = {exit};
+LEVEL_CARD_STRETCHES(X)
+#undef X
+
+// `$82:AC27`. The first string's address comes off the stack into X, and its
+// bank is in A.
+static void shim_level_card_layer(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  PortCpu c;
+  cpu_from(in, &c);
+  c.x = level_card_layer(w, t, in->s);
+  c.s = (uint16_t)(c.s + 2);
+  c.a = LEVEL_CARD_WORDS_BANK;
+  set_nz16(&c, c.x);
+  c.pc = LEVEL_CARD_LAYER_END_PC;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// `$82:ACB0`. A is left zero, and the flags are the data bank's.
+static void shim_level_card_layers_back(Wram* w, const Rom* rom,
+                                        const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  PortCpu c;
+  cpu_from(in, &c);
+  c.db = level_card_layers_back(w, t, in->s);
+  c.s = (uint16_t)(c.s + 2);
+  c.a = 0;
+  set_nz8(&c, c.db);
+  c.pc = LEVEL_CARD_RTL_PC;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static const uint32_t LEVEL_CARD_LAYER_EXITS[] = {LEVEL_CARD_LAYER_END_PC};
+static const uint32_t LEVEL_CARD_LAYERS_BACK_EXITS[] = {LEVEL_CARD_RTL_PC};
+
+// `$82:AE3F`, the big letters' end: `BCS : PLB : PLB`, or the branch taken
+// and `LDA # : LDY #`.
+static const CosimRun TEXT_BIG_SENT_RUN = {64, 4, 0};
+static const CosimRun TEXT_BIG_ASK_AGAIN_RUN = {54, 8, 0};
+
+static void shim_text_big_sent(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool sent = text_big_sent(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(sent ? &TEXT_BIG_SENT_RUN : &TEXT_BIG_ASK_AGAIN_RUN,
+                              fetch_fast(in)));
+}
+
+static const uint32_t TEXT_BIG_SENT_EXITS[] = {TEXT_BIG_RTL_PC,
+                                               TEXT_BIG_SEND_PC};
+
+// `$82:AB95`, where a colour fade's thread starts: four words through
+// `[$00]`, three stores and `LDA $0E`. The four words are the cartridge's.
+static const CosimRun PALFADE_BEGIN_RUN = {488, 44, 12};
+
+static bool accepts_palfade_begin(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && palfade_begin_supported(w, in->d);
+}
+
+static void shim_palfade_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  palfade_begin(w, rom, in->d);
+  PortCpu c;
+  cpu_from(in, &c);
+  c.y = 6;
+  c.a = PALFADE_FIRST_TICKS;
+  set_nz16(&c, c.a);
+  c.pc = PALFADE_YIELD_PC;
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&PALFADE_BEGIN_RUN, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+}
+
+static const uint32_t PALFADE_BEGIN_EXITS[] = {PALFADE_YIELD_PC};
 
 // `$80:AC7E` and `$80:88A9` -- see `port/layers_setup.h`. Their absolute
 // stores have to find the registers, which a data bank of `$7E` would not.
@@ -30556,6 +30731,93 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_vbl_queue_a_remove,
         .accepts = accepts_vbl_queue_a_remove,
         .cycles = 168,
+    },
+    // The screen before a level, between its calls and its waits. See
+    // `port/level_card.h`.
+    {
+        .name = "level_card_begin",
+        .symbol = "$82:AC07",
+        .entry = LEVEL_CARD_PC,
+        .run = shim_level_card_begin,
+        .accepts = accepts_level_card_begin,
+        COSIM_EXITS(LEVEL_CARD_BEGIN_EXITS),
+        .uncalled = true,  // it is jumped to
+        .cycles = 268,
+    },
+#define X(name_, sym, pc, exit)                                              \
+    {                                                                        \
+        .name = "level_card_" #name_,                                        \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_level_card_##name_,                                      \
+        .accepts = accepts_level_card,                                       \
+        COSIM_EXITS(LEVEL_CARD_EXITS_##name_),                               \
+        .uncalled = true,                                                    \
+        .cycles = 100,                                                       \
+    },
+    LEVEL_CARD_STRETCHES(X)
+#undef X
+    {
+        .name = "level_card_song_ask",
+        .symbol = "$82:AC4F",
+        .entry = LEVEL_CARD_SONG_ASK_PC,
+        .run = shim_level_card_song_ask,
+        .accepts = accepts_level_card_song_ask,
+        COSIM_EXITS(LEVEL_CARD_SONG_ASK_EXITS),
+        .uncalled = true,
+        .cycles = 248,
+    },
+    {
+        .name = "level_card_blocks_unpack_ask",
+        .symbol = "$82:AC78",
+        .entry = LEVEL_CARD_BLOCKS_ASK_PC,
+        .run = shim_level_card_blocks_unpack_ask,
+        .accepts = accepts_level_card_blocks_unpack_ask,
+        COSIM_EXITS(LEVEL_CARD_BLOCKS_ASK_EXITS),
+        .uncalled = true,
+        .cycles = 204,
+    },
+    {
+        .name = "level_card_layer",
+        .symbol = "$82:AC27",
+        .entry = LEVEL_CARD_LAYER_PC,
+        .run = shim_level_card_layer,
+        .accepts = accepts_level_card,
+        COSIM_EXITS(LEVEL_CARD_LAYER_EXITS),
+        .uncalled = true,
+        .cycles = 700,
+        .hw = true,
+    },
+    {
+        .name = "level_card_layers_back",
+        .symbol = "$82:ACB0",
+        .entry = LEVEL_CARD_LAYERS_BACK_PC,
+        .run = shim_level_card_layers_back,
+        .accepts = accepts_level_card,
+        COSIM_EXITS(LEVEL_CARD_LAYERS_BACK_EXITS),
+        .uncalled = true,
+        .cycles = 400,
+        .hw = true,
+    },
+    {
+        .name = "text_big_sent",
+        .symbol = "$82:AE3F",
+        .entry = TEXT_BIG_SENT_PC,
+        .run = shim_text_big_sent,
+        .accepts = accepts_level_card,
+        COSIM_EXITS(TEXT_BIG_SENT_EXITS),
+        .uncalled = true,
+        .cycles = 64,
+    },
+    {
+        .name = "palfade_begin",
+        .symbol = "$82:AB95",
+        .entry = PALFADE_PC,
+        .run = shim_palfade_begin,
+        .accepts = accepts_palfade_begin,
+        COSIM_EXITS(PALFADE_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 488,
     },
 #define X(at, sym, pc, exit, pull, pushed, a, x, y)                          \
     {                                                                        \

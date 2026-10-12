@@ -260,3 +260,20 @@ void text_big_glyph(Wram* w, const Rom* rom, uint16_t page, uint8_t which,
   t.x = from;
   big_scan(&t, k, out);
 }
+
+bool text_big_sent(Wram* w, PortCpu* c) {
+  if (c->p & PORT_P_C) {
+    PORT_COVER(text_big_queue_full);
+    c->a = TEXT_BIG_SEND_JOB;
+    c->y = TEXT_BIG_PC >> 16;
+    set_nz16(c, c->y);
+    c->pc = TEXT_BIG_SEND_PC;
+    return false;
+  }
+  PORT_COVER(text_big_sent);
+  pull8(w, c);
+  c->db = pull8(w, c);
+  set_nz8(c, c->db);
+  c->pc = TEXT_BIG_RTL_PC;
+  return true;
+}
