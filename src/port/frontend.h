@@ -288,6 +288,11 @@ void frontend_reset(Wram* w, PortCpu* c);
 //                            the `WAI` at `$9342`.
 //   $80:9322  opening_count  the count. It leaves at the `WAI` at `$931E`,
 //                            or at `$932D` with fifteen counted.
+//   $80:932D  opening_hold_begin  148 frames more, begun: X counts them.
+//   $80:9331  opening_hold   a frame of those: the pads as `opening_wait`
+//                            asks after them, and the count. It leaves at
+//                            the `WAI` at `$9330`, at `$9337` with all of
+//                            them counted, or with the screen ended.
 #define OPENING_JOB_PC 0x80938eu
 #define OPENING_JOB_RTL_PC 0x8093a9u       // carry set: it stays queued
 #define OPENING_JOB_OVER_RTL_PC 0x8093abu  // carry clear
@@ -297,6 +302,11 @@ void frontend_reset(Wram* w, PortCpu* c);
 #define OPENING_COUNT_PC 0x809322u
 #define OPENING_COUNT_WAI_PC 0x80931eu
 #define OPENING_COUNT_DONE_PC 0x80932du
+#define OPENING_HOLD_BEGIN_PC 0x80932du
+#define OPENING_HOLD_PC 0x809331u
+#define OPENING_HOLD_WAI_PC 0x809330u
+#define OPENING_HOLD_DONE_PC 0x809337u     // `JSR $9C72`
+#define OPENING_HOLD_FRAMES 0x0094u
 #define W_OPENING_FRAMES 0x136cu
 #define OPENING_OVER 0x0080u
 #define OPENING_FRAMES 0x000fu
@@ -319,6 +329,9 @@ bool opening_wait_supported(const Wram* w);
 void opening_wait(Wram* w, PortCpu* c, OpeningLog* log);
 // True when it goes round again.
 bool opening_count(Wram* w, PortCpu* c);
+void opening_hold_begin(PortCpu* c);
+// True when it goes round again. Supported as `opening_wait` is.
+bool opening_hold(Wram* w, PortCpu* c, OpeningLog* log);
 
 // --- $80:9A52  a portrait ----------------------------------------------------
 //

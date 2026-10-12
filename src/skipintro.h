@@ -25,6 +25,11 @@
 // 222 frames to the first lit frame of the title, where it was 1,050 with
 // Start mashed through the logos.
 //
+// The test is ported too, as `frontend_first_pass`, and a port does not read
+// the cartridge's instructions. So `intro_bypass` tells it as well
+// (`frontend_opening_skip`), and whichever of the two runs the test goes the
+// same way.
+//
 // The branch stays patched. The flag it tests is then never set, and if the
 // byte were put back the logos would play after the first game over.
 #ifndef ZAMN_SKIPINTRO_H
@@ -34,6 +39,7 @@
 #include <stdint.h>
 
 #include "cart.h"
+#include "port/frontend_thread.h"
 
 // `$80:9136` as an offset into the image: `A5 7C D0 18`.
 #define INTRO_FLAG_TEST 0x1136u
@@ -44,6 +50,7 @@ static inline bool intro_bypass(Cart* cart) {
   uint8_t* at = cart->rom + INTRO_FLAG_TEST;
   if (at[0] != 0xa5 || at[1] != 0x7c || (at[2] != 0xd0 && at[2] != 0x80) || at[3] != 0x18) return false;
   at[2] = 0x80;  // BRA
+  frontend_opening_skip(true);
   return true;
 }
 

@@ -198,6 +198,17 @@ void colour_window_reset(Wram* w, HwTrace* t) {
 #define MODE_1_BG3_IN_FRONT 0x0009u
 #define BG1_TILES_AT_5000_BG2_AT_2000 0x25u
 
+#define W_LAYER_SCROLLS 0x1360u  // across and down, for three layers
+#define THIRD_LAYER_SCROLL 4     // ...of which the third's are these two
+#define FIRST_AND_THIRD_LAYERS 0x05u
+#define THIRD_LAYER 0x0004u
+#define MODE_1_BG3_IN_FRONT_TILES_16 0x49u
+#define WAVE_CHANNEL 6
+#define WAVE_CHANNEL_ON 0x40u
+#define MODE_TWO_BYTES_ONE_REG 0x02u
+#define DEST_BG1_SCROLL_X 0x0du  // `$210D`
+#define WAVE_TABLE_BANK 0x7eu
+
 uint16_t level_card_layer(Wram* w, HwTrace* t, uint16_t s) {
   PORT_COVER(level_card_layer);
   hw_run(t, DMA_JSL);
@@ -455,4 +466,65 @@ void send_args(Wram* w, PortCpu* c, const SendArgs* args) {
     set_nz16(c, c->y);
   }
   c->pc = args->exit;
+}
+
+void opening_begin(Wram* w, HwTrace* t) {
+  PORT_COVER(opening_begin);
+  for (int word = 0; word < 6; word++) {
+    wram_w16(w, (uint16_t)(W_LAYER_SCROLLS + 2 * word), 0);
+  }
+  store8(t, OB_HEAD, REG_TM, FIRST_AND_THIRD_LAYERS);
+  hw_run(t, OB_TAIL);
+  wram_w16(w, W_BRIGHTNESS_SHADOW, 0);
+}
+
+void screen_show_begin(Wram* w, HwTrace* t, uint16_t s) {
+  PORT_COVER(screen_show_begin);
+  // A word: nothing on the second screen.
+  store16(t, DMA_IMM16, REG_TM, THIRD_LAYER);
+  hw_run(t, SS_SEND);
+  wram_w16(w, W_LAYER_SCROLLS + 2 * THIRD_LAYER_SCROLL, 0);
+  wram_w16(w, W_LAYER_SCROLLS + 2 * THIRD_LAYER_SCROLL + 2, 0);
+  wram_w16(w, (uint16_t)(s - 1), SCREEN_SHOW_MAP_BANK);
+}
+
+void screen_show_end(HwTrace* t) {
+  PORT_COVER(screen_show_end);
+  store8(t, DMA_SEP_STORE, REG_TM, 0);
+  hw_run(t, DMA_REP);
+}
+
+void title_hdma_setup(Wram* w, HwTrace* t) {
+  PORT_COVER(title_hdma_setup);
+  store8(t, DMA_SEP_STORE, REG_HDMAEN, 0);
+  wram_w8(w, W_COLOUR_WINDOW_WORD, 0);
+  wram_w8(w, W_COLOUR_WINDOW_WORD + 1, 0);
+  store8(t, TH_HEAD, hdma_reg(WAVE_CHANNEL, HDMA_MODE), MODE_TWO_BYTES_ONE_REG);
+  store8(t, DMA_IMM, hdma_reg(WAVE_CHANNEL, HDMA_DEST), DEST_BG1_SCROLL_X);
+  store8(t, DMA_IMM, hdma_reg(WAVE_CHANNEL, HDMA_TABLE_BANK), WAVE_TABLE_BANK);
+  store8(t, DMA_STORE, hdma_reg(WAVE_CHANNEL, HDMA_INDIRECT_BANK), 0);
+  store16(t, DMA_REP_IMM16, hdma_reg(WAVE_CHANNEL, HDMA_TABLE),
+          TITLE_WAVE_TABLE);
+}
+
+void title_layers(HwTrace* t) {
+  PORT_COVER(title_layers);
+  store8(t, DMA_SEP_IMM, REG_BGMODE, MODE_1_BG3_IN_FRONT_TILES_16);
+  // A word: nothing on the second screen.
+  store16(t, DMA_REP_IMM16, REG_TM, TITLE_LAYERS_ON);
+}
+
+void title_hdma_on(HwTrace* t) {
+  PORT_COVER(title_hdma_on);
+  store8(t, DMA_SEP_IMM, REG_HDMAEN, WAVE_CHANNEL_ON);
+  hw_run(t, DMA_REP);
+  hw_run(t, DMA_LOAD);
+}
+
+void title_hdma_off(Wram* w, HwTrace* t) {
+  PORT_COVER(title_hdma_off);
+  store8(t, DMA_SEP_STORE, REG_HDMAEN, 0);
+  hw_run(t, DMA_REP_STZ16);
+  wram_w16(w, W_LAYER_SCROLLS, 0);
+  hw_run(t, DMA_LOAD);
 }

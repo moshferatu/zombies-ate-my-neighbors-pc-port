@@ -19136,3 +19136,26 @@ layers, the mosaic. The ports record a word's write, as the ROM makes it.
 Over the same 110 sessions the core executes 269,330 instructions
 where it executed 281,839, and takes over 29,549 times where it
 did 30,558, at 717 places where there were 726.
+
+## The front end's thread, between its calls (2026-10-12)
+
+### A stretch that begins after a read
+
+`$80:918E` reads `$213F` for the bit that says fifty frames a second, and
+a port is not given what a register reads. So the read is left to the ROM
+and `frontend_region_check` begins on the instruction after it, eight bits
+wide, with the byte in A. It accepts the bit clear and no other.
+
+### A stretch that stops on another
+
+`title_layers` writes two registers and the instructions after it use the
+thread's page, which a stretch that writes to the hardware is priced
+without. It stops at `$80:94BE`, where `frontend_title_begin` starts, and
+that one is priced with the page. `title_first_pass` and `title_hdma_on`
+are divided the same way, the other way round.
+
+### After
+
+Over the same 110 sessions the core executes 236,543 instructions
+where it executed 269,330, and takes over 25,526 times where it
+did 29,549, at 691 places where there were 717.

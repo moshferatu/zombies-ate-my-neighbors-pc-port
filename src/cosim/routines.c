@@ -31,6 +31,7 @@
 #include "port/follower.h"
 #include "port/football.h"
 #include "port/frontend.h"
+#include "port/frontend_thread.h"
 #include "port/hud.h"
 #include "port/levelmap.h"
 #include "port/lzss.h"
@@ -17745,6 +17746,11 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [DMA_REP_PLB2] = {70, 4, 0},
     [LC_BRIGHT] = {138, 15, 0},
     [LC_WORDS] = {52, 4, 0},
+    [DMA_LOAD] = {18, 3, 0},
+    [OB_HEAD] = {252, 25, 0},
+    [OB_TAIL] = {106, 14, 0},
+    [SS_SEND] = {168, 19, 0},
+    [TH_HEAD] = {82, 11, 0},
     [VC_HEAD] = {46, 5, 1},
     [VC_STEP] = {94, 12, 1},
     [VC_TEST] = {58, 6, 1},
@@ -24338,6 +24344,265 @@ static const uint32_t OPENING_WAIT_EXITS[] = {OPENING_WAIT_RTS_PC,
 static const uint32_t OPENING_COUNT_EXITS[] = {OPENING_COUNT_WAI_PC,
                                                OPENING_COUNT_DONE_PC};
 
+// ---------------------------------------------------------------------------
+// The front end's thread, between its calls -- see `port/frontend_thread.h`
+// ---------------------------------------------------------------------------
+static const CosimRun FRONTEND_RUN_scroll_job_ask = {36, 6, 0};
+static const CosimRun FRONTEND_RUN_scroll_job_asked = {28, 2, 1};
+static const CosimRun FRONTEND_RUN_fade_in_ask = {88, 12, 0};
+static const CosimRun FRONTEND_RUN_fade_out_ask = {36, 6, 0};
+static const CosimRun FRONTEND_RUN_show_sleep = {18, 3, 0};
+static const CosimRun FRONTEND_RUN_title_begin = {346, 39, 3};
+static const CosimRun FRONTEND_RUN_title_song_ask = {64, 8, 1};
+static const CosimRun FRONTEND_RUN_vram_clear_ask = {70, 9, 0};
+static const CosimRun FIRST_PASS_RUN_TEST = {40, 4, 1};  // LDA dp : BNE
+static const CosimRun FIRST_PASS_RUN_MARK = {50, 2, 1};  // INC dp
+// REP #$20 : AND # : BEQ, taken
+static const CosimRun REGION_CHECK_RUN = {54, 7, 0};
+
+#define X(name, sym, entry, exit)                                            \
+  static void shim_frontend_##name(Wram* w, const Rom* rom,                  \
+                                   const CosimRegs* in, CosimRegs* out) {    \
+    (void)rom;                                                               \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    frontend_##name(w, &c);                                                  \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(cosim_run_cycles_dp(&FRONTEND_RUN_##name, fetch_fast(in),     \
+                                   (in->d & 0xffu) != 0));                   \
+  }                                                                          \
+  static const uint32_t FRONTEND_EXITS_##name[] = {exit};
+FRONTEND_STRETCHES(X)
+#undef X
+
+static void first_pass_cost(const CosimRegs* in, bool first) {
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &FIRST_PASS_RUN_TEST, 1);
+  run_add(&run, first ? &FIRST_PASS_RUN_MARK : &RUN_TAKEN, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static void shim_frontend_first_pass(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool first = frontend_first_pass(w, &c);
+  cpu_to(&c, out);
+  first_pass_cost(in, first);
+}
+
+static void shim_title_first_pass(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool first = title_first_pass(w, &c);
+  cpu_to(&c, out);
+  first_pass_cost(in, first);
+}
+
+static const uint32_t FRONTEND_FIRST_PASS_EXITS[] = {FRONTEND_OPENING_PC,
+                                                     FRONTEND_TITLE_PC};
+static const uint32_t TITLE_FIRST_PASS_EXITS[] = {TITLE_WAVE_BEGIN_PC,
+                                                  TITLE_WAVE_OVER_PC};
+
+// It is come to eight bits wide, after `SEP #$20 : LDA $213F`.
+static bool accepts_frontend_region_check(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return (in->p & PORT_P_X) == 0 && low_stack(in) &&
+         frontend_region_check_supported(in->a);
+}
+
+static void shim_frontend_region_check(Wram* w, const Rom* rom,
+                                       const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  frontend_region_check(&c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&REGION_CHECK_RUN, fetch_fast(in)));
+}
+
+static const uint32_t FRONTEND_REGION_CHECK_EXITS[] = {FRONTEND_REGION_RTL_PC};
+
+// The screen before the title's second wait.
+static const CosimRun OPENING_RUN_HOLD_BEGIN = {18, 3, 0};  // LDX #
+static const CosimRun OPENING_RUN_HOLD_COUNT = {24, 3, 0};  // DEX : BNE
+
+static void shim_opening_hold_begin(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  opening_hold_begin(&c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&OPENING_RUN_HOLD_BEGIN, fetch_fast(in)));
+}
+
+static void shim_opening_hold(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  OpeningLog log;
+  cpu_from(in, &c);
+  const bool again = opening_hold(w, &c, &log);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &RUN_JSR, 1);
+  run_add(&run, &OPENING_RUN_PAD, 2 + log.pads);
+  run_add(&run, &RUN_TAKEN, 2);
+  if (log.ended) {
+    run_add(&run, &RUN_TAKEN, 2);
+    run_add(&run, &OPENING_RUN_END, 1);
+    run_add(&run, &OPENING_RUN_PAD, 1);
+  } else {
+    run_add(&run, &RUN_RTS, 1);
+    run_add(&run, &OPENING_RUN_HOLD_COUNT, 1);
+    if (again) run_add(&run, &RUN_TAKEN, 1);
+  }
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static const uint32_t OPENING_HOLD_BEGIN_EXITS[] = {OPENING_HOLD_WAI_PC};
+static const uint32_t OPENING_HOLD_EXITS[] = {
+    OPENING_HOLD_WAI_PC, OPENING_HOLD_DONE_PC, OPENING_WAIT_ENDED_PC};
+
+// The stretches that write a register: see `port/dma.h`.
+static void shim_opening_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  PortCpu c;
+  cpu_from(in, &c);
+  opening_begin(w, t);
+  c.a = OPENING_JOB;
+  c.y = FRONTEND_JOB_BANK;
+  set_nz16(&c, c.y);
+  c.pc = OPENING_BEGUN_PC;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_screen_show_begin(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  PortCpu c;
+  cpu_from(in, &c);
+  screen_show_begin(w, t, in->s);
+  c.s = (uint16_t)(c.s - 2);
+  c.a = SCREEN_SHOW_MAP;
+  c.x = SCREEN_SHOW_MAP_VRAM;
+  c.y = SCREEN_SHOW_MAP_BYTES;
+  set_nz16(&c, c.y);
+  c.pc = SCREEN_SHOW_BEGUN_PC;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// No register is changed: `SEP #$20 : STZ $212C : REP #$20`.
+static void shim_screen_show_end(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  PortCpu c;
+  cpu_from(in, &c);
+  screen_show_end(t);
+  c.pc = SCREEN_SHOW_RTL_PC;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// Each of the title's leaves the last word it loaded in A.
+static void title_hw_out(const CosimRegs* in, CosimRegs* out, HwTrace* t,
+                         uint16_t a, uint32_t pc) {
+  PortCpu c;
+  cpu_from(in, &c);
+  c.a = a;
+  set_nz16(&c, a);
+  c.pc = pc;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_title_hdma_setup(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  title_hdma_setup(w, t);
+  title_hw_out(in, out, t, TITLE_WAVE_TABLE, TITLE_HDMA_SET_UP_PC);
+}
+
+static void shim_title_layers(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  title_layers(t);
+  title_hw_out(in, out, t, TITLE_LAYERS_ON, TITLE_LAYERS_END_PC);
+}
+
+static void shim_title_hdma_on(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  title_hdma_on(t);
+  title_hw_out(in, out, t, TITLE_WAVE_FRAME, TITLE_HDMA_ON_END_PC);
+}
+
+static void shim_title_hdma_off(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  title_hdma_off(w, t);
+  title_hw_out(in, out, t, TITLE_AFTER_WAVE_FRAMES, TITLE_HDMA_OFF_END_PC);
+}
+
+static const uint32_t OPENING_BEGIN_EXITS[] = {OPENING_BEGUN_PC};
+static const uint32_t SCREEN_SHOW_BEGIN_EXITS[] = {SCREEN_SHOW_BEGUN_PC};
+static const uint32_t SCREEN_SHOW_END_EXITS[] = {SCREEN_SHOW_RTL_PC};
+static const uint32_t TITLE_HDMA_SETUP_EXITS[] = {TITLE_HDMA_SET_UP_PC};
+static const uint32_t TITLE_LAYERS_EXITS[] = {TITLE_LAYERS_END_PC};
+static const uint32_t TITLE_HDMA_ON_EXITS[] = {TITLE_HDMA_ON_END_PC};
+static const uint32_t TITLE_HDMA_OFF_EXITS[] = {TITLE_HDMA_OFF_END_PC};
+
+// Between the sound's uploads: see `port/apu.h`. Every one begins with
+// `REP #$30`. One adds in binary and stores through the data bank.
+static const CosimRun APU_RUN_song_begin = {142, 8, 0};
+static const CosimRun APU_RUN_song_sounds = {116, 10, 0};
+static const CosimRun APU_RUN_song_play = {36, 5, 0};
+static const CosimRun APU_RUN_song_end = {52, 3, 0};
+static const CosimRun APU_RUN_sfx_bank_begin = {114, 7, 0};
+static const CosimRun APU_RUN_sfx_bank_play = {36, 5, 0};
+static const CosimRun APU_RUN_sfx_bank_end = {52, 3, 0};
+static const CosimRun APU_RUN_command_13_end = {52, 3, 0};
+static const CosimRun APU_RUN_set_announce = {76, 7, 0};
+static const CosimRun APU_RUN_set_announced = {52, 3, 0};
+
+static bool accepts_apu_stretch(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return low_stack(in) && !(in->p & PORT_P_D) && bank_sees_low_wram(in->db);
+}
+
+#define X(name, sym, entry, exit)                                            \
+  static void shim_apu_##name(Wram* w, const Rom* rom, const CosimRegs* in,  \
+                              CosimRegs* out) {                              \
+    (void)rom;                                                               \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    apu_##name(w, &c);                                                       \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(cosim_run_cycles(&APU_RUN_##name, fetch_fast(in)));           \
+  }                                                                          \
+  static const uint32_t APU_EXITS_##name[] = {exit};
+APU_STRETCHES(X)
+#undef X
+
 static const uint32_t GAME_OVER_SPRITE_BEGIN_EXITS[] = {
     GAME_OVER_SPRITE_BEGIN_RTS_PC};
 static const uint32_t PORTRAIT_SPRITES_BEGIN_EXITS[] = {
@@ -30819,6 +31084,159 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 488,
     },
+    // The front end's thread, between its calls. See
+    // `port/frontend_thread.h`. Some of these are called and some are come
+    // back to.
+#define X(name_, sym, pc, exit)                                              \
+    {                                                                        \
+        .name = "frontend_" #name_,                                          \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_frontend_##name_,                                        \
+        .accepts = accepts_frontend_reset,                                   \
+        COSIM_EXITS(FRONTEND_EXITS_##name_),                                 \
+        .cycles = 60,                                                        \
+    },
+    FRONTEND_STRETCHES(X)
+#undef X
+    {
+        .name = "frontend_first_pass",
+        .symbol = "$80:9136",
+        .entry = FRONTEND_FIRST_PASS_PC,
+        .run = shim_frontend_first_pass,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(FRONTEND_FIRST_PASS_EXITS),
+        .uncalled = true,
+        .cycles = 46,
+    },
+    {
+        .name = "frontend_region_check",
+        .symbol = "$80:9193",
+        .entry = FRONTEND_REGION_CHECK_PC,
+        .run = shim_frontend_region_check,
+        .accepts = accepts_frontend_region_check,
+        COSIM_EXITS(FRONTEND_REGION_CHECK_EXITS),
+        .uncalled = true,
+        .cycles = 54,
+    },
+    {
+        .name = "title_first_pass",
+        .symbol = "$80:94FC",
+        .entry = TITLE_FIRST_PASS_PC,
+        .run = shim_title_first_pass,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(TITLE_FIRST_PASS_EXITS),
+        .uncalled = true,
+        .cycles = 90,
+    },
+    {
+        .name = "opening_hold_begin",
+        .symbol = "$80:932D",
+        .entry = OPENING_HOLD_BEGIN_PC,
+        .run = shim_opening_hold_begin,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(OPENING_HOLD_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 18,
+    },
+    {
+        .name = "opening_hold",
+        .symbol = "$80:9331",
+        .entry = OPENING_HOLD_PC,
+        .run = shim_opening_hold,
+        .accepts = accepts_opening_wait,
+        COSIM_EXITS(OPENING_HOLD_EXITS),
+        .uncalled = true,
+        .cycles = 340,
+    },
+    {
+        .name = "opening_begin",
+        .symbol = "$80:92F3",
+        .entry = OPENING_BEGIN_PC,
+        .run = shim_opening_begin,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(OPENING_BEGIN_EXITS),
+        .cycles = 364,
+        .hw = true,
+    },
+    {
+        .name = "screen_show_begin",
+        .symbol = "$80:9219",
+        .entry = SCREEN_SHOW_BEGIN_PC,
+        .run = shim_screen_show_begin,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(SCREEN_SHOW_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 216,
+        .hw = true,
+    },
+    {
+        .name = "screen_show_end",
+        .symbol = "$80:9255",
+        .entry = SCREEN_SHOW_END_PC,
+        .run = shim_screen_show_end,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(SCREEN_SHOW_END_EXITS),
+        .uncalled = true,
+        .cycles = 60,
+        .hw = true,
+    },
+    {
+        .name = "title_hdma_setup",
+        .symbol = "$80:9418",
+        .entry = TITLE_HDMA_SETUP_PC,
+        .run = shim_title_hdma_setup,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(TITLE_HDMA_SETUP_EXITS),
+        .uncalled = true,
+        .cycles = 292,
+        .hw = true,
+    },
+    {
+        .name = "title_layers",
+        .symbol = "$80:94AF",
+        .entry = TITLE_LAYERS_PC,
+        .run = shim_title_layers,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(TITLE_LAYERS_EXITS),
+        .cycles = 120,
+        .hw = true,
+    },
+    {
+        .name = "title_hdma_on",
+        .symbol = "$80:9502",
+        .entry = TITLE_HDMA_ON_PC,
+        .run = shim_title_hdma_on,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(TITLE_HDMA_ON_EXITS),
+        .uncalled = true,
+        .cycles = 90,
+        .hw = true,
+    },
+    {
+        .name = "title_hdma_off",
+        .symbol = "$80:9529",
+        .entry = TITLE_HDMA_OFF_PC,
+        .run = shim_title_hdma_off,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(TITLE_HDMA_OFF_EXITS),
+        .uncalled = true,
+        .cycles = 112,
+        .hw = true,
+    },
+    // Between the sound's uploads. See `port/apu.h`.
+#define X(name_, sym, pc, exit)                                              \
+    {                                                                        \
+        .name = "apu_" #name_,                                               \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_apu_##name_,                                             \
+        .accepts = accepts_apu_stretch,                                      \
+        COSIM_EXITS(APU_EXITS_##name_),                                      \
+        .cycles = 60,                                                        \
+    },
+    APU_STRETCHES(X)
+#undef X
 #define X(at, sym, pc, exit, pull, pushed, a, x, y)                          \
     {                                                                        \
         .name = "send_args_" #at,                                            \

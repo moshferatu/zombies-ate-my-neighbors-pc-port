@@ -312,6 +312,7 @@ add_library(zamn_port STATIC
   src/port/level_scene.c
   src/port/intro.c
   src/port/level_card.c
+  src/port/frontend_thread.c
   src/port/level_load.c
   src/port/card.c
   src/port/jumper.c

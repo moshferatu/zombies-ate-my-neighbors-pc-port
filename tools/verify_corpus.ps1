@@ -68,6 +68,9 @@ Set-Location $root
 # so its interesting frames run to 7600.
 $corpus = [ordered]@{
     "boot.zmv"               = 2400
+    # Start in the second wait of the screen before the title, which no
+    # other movie presses there.
+    "opening-start.zmv"      = 1500
     # The demo that plays when the title is left alone starts near frame
     # 4350, past where `boot.zmv` stops, and a real button ends it at 6000.
     # Nothing else in the corpus runs the demo's playback job.

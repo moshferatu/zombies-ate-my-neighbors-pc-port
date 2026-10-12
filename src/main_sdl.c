@@ -565,8 +565,8 @@ static void share_summary(const Cosim* c, char* out, size_t n) {
 // to the title -- and `intro_bypass` (`src/skipintro.h`) takes it from the
 // first boot. What is left is the game loading its sound with the screen off,
 // about 220 frames, which are run as fast as the machine can; the hand-over
-// is the first frame the game turns the screen on, so what comes up in the
-// window is the title fading in.
+// is eight frames before the game turns the screen on, so what comes up in
+// the window is the title fading in, and its song from the first note.
 //
 // What follows is the older way, kept for a ROM whose opening is not the one
 // `intro_bypass` knows: run all of the intro at full speed with Start mashed,
@@ -594,6 +594,15 @@ static void share_summary(const Cosim* c, char* out, size_t n) {
 // never turns it on is handed over anyway.
 #define INTRO_BYPASS_FIRST 30
 #define INTRO_BYPASS_LIMIT 900
+// ...and with them bypassed the hand-over is a little before the title's
+// first lit frame, which is frame 222 on every boot: nothing is pressed and
+// nothing is random before it. The title's song is asked for in frame 221 and
+// its first sample is in the middle of 222, and a hand-over on 222 had its
+// first note clipped, the loop below and the audio device being a few frames
+// into their stride by then and no further. Eight dark frames are theirs to
+// start in. A boot that lights the screen sooner is still handed over there.
+#define INTRO_BYPASS_LIGHT 222
+#define INTRO_BYPASS_LEAD  8
 
 // Runs the intro through `cosim_frame`, exactly as the main loop would, rather
 // than through a bare core. Two reasons: the frames genuinely execute, so they
@@ -611,7 +620,8 @@ static long skip_intro(Cosim* cosim, Snes* snes, SDL_Window* win, PadSet* pads,
   long f = 0;
   *bypassed = !keep_logos && intro_bypass(snes->cart);
   const bool to_first_light = *bypassed || keep_logos;
-  const long last = to_first_light ? INTRO_BYPASS_LIMIT : INTRO_TITLE_FRAME;
+  const long last = *bypassed ? INTRO_BYPASS_LIGHT - INTRO_BYPASS_LEAD
+                    : keep_logos ? INTRO_BYPASS_LIMIT : INTRO_TITLE_FRAME;
   for (; f < last; f++) {
     // The title or the first logo, about to fade in: the game has turned the
     // screen on.

@@ -5,6 +5,76 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The front end's thread, between its calls (2026-10-12)
+
+`$80:9126` is everything outside a level, and most of it is calls to
+routines ported already. This round is what the core still ran between
+them, as far as the title's menu, and the routine that starts a song.
+
+* **Eleven stretches**, in the new `port/frontend_thread.c`. They ask
+  whether the screen before the title has been shown and whether the wave
+  has come down the title, check the console after the ROM's read of
+  `$213F`, set out the jobs for the scroll, the two fades and the clearing
+  of VRAM, and set down the title's backdrop and its song.
+* **Seven that write to the picture hardware**, in `port/dma.c`: the screen
+  before the title's layers on and off and its map's send, the title's mode
+  and layers, and the HDMA channel of the title's wave set up, turned on
+  and turned off.
+* **The screen before the title's second wait**, in `port/frontend.c`:
+  `opening_hold_begin` and `opening_hold`, 148 frames with the pads asked
+  after each.
+* **`$80:CBD9` and `$80:CBFD`**, in `port/apu.c`: ten stretches between the
+  sound's uploads and commands, which were ported. A song is started with
+  no instruction of the core's now.
+* **Twenty-nine links** in `port/links.h`, and one more entry in the list of
+  what a screen's sends are called with.
+* **`--skip-intro`, kept working.** It makes the branch after the test of
+  `$7C` a `BRA` in the cartridge, and `frontend_first_pass` is that test
+  now and does not read the cartridge. `intro_bypass` tells the port as
+  well, with `frontend_opening_skip`. The game hands over at frame 222
+  again, where with the port alone it was 187 and the first logo.
+  `zamn_test_layers --bypass-logos` passes on `boot`'s first 900 frames.
+  The verify runs do not bypass, so that way through the port is compared
+  with nothing.
+* **A movie**, `opening-start.zmv`: Start in the second wait, which ends
+  the screen and which no other movie presses there. The corpus is 55.
+* **Checked.**
+  * The corpus verifies clean: 127,067,860 calls over 55 movies, none
+    diverged. Every new stretch was reached, and every way through
+    `opening_hold`.
+  * Costs were compared on `boot`, `demo-end`, `level1`, `level21-exit`
+    and `opening-start`. Every new row is exact but for the 40 cycles of a
+    refresh, which the harness tells apart.
+  * Lockstep: 52 of 55 never part; `level25`, `level25-2p` and
+    `level25-heavy` do, as before.
+  * The picture: 78,023,456 lines drawn both ways over the 55 movies, and
+    none differ.
+* **What it bought**, over the same 110 sessions as before, which leave
+  the new movie out:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 630 to 609 | 24,231 to 20,771 | 192,283 to 164,758 |
+  | Left standing on an instruction | 41 to 37 | 1,638 to 1,288 | 47,628 to 39,289 |
+  | A port turned the call down | 34 to 34 | 2,827 to 2,827 | 17,951 to 17,951 |
+  | A port or a link called it | 11 to 10 | 743 to 530 | 3,548 to 6,625 |
+  | All | 717 to 691 | 29,549 to 25,526 | 269,330 to 236,543 |
+
+  975 routines are registered.
+* **Not done or not known.**
+  * `SEP #$20 : LDA $213F` at `$80:918E` is the core's still. A port is
+    not given what a register reads.
+  * `region_check` is the one way: the console the game was made for. The
+    other shows a screen and stops, and is left to the ROM.
+  * A shoulder button alone in either wait of the screen before the title
+    plays a sound, and that is left to the ROM as it was.
+  * The thread's two `WAI`s at `$80:931E` and `$80:93B0` are the core's.
+  * The title's menu, `$80:96B9`, is the most the core runs in one place
+    now, and the players' screen, `$80:98EA`, is not far behind.
+  * I have not read `$80:9570`, which makes the wave, closely, and the
+    names of its words on the thread's page are from what this round's
+    stretches do with them.
+
 ### The screen before a level, between its calls (2026-10-12)
 
 `$82:AC07` shows two strings of big letters before a level. The letters,

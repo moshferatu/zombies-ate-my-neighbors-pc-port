@@ -437,26 +437,62 @@ bool opening_wait_supported(const Wram* w) {
   return first != PAD_R && first != PAD_L;
 }
 
-void opening_wait(Wram* w, PortCpu* c, OpeningLog* log) {
-  *log = (OpeningLog){0};
-  push16(w, c, (uint16_t)(OPENING_WAIT_PC + 2));
+// `$80:9344`, with its return already pushed. True when Start alone was on
+// a pad, and then it has ended the screen and stands at the last `WAI`.
+static bool opening_pads(Wram* w, PortCpu* c, OpeningLog* log) {
   for (int pad = 0; pad < 2; pad++) {
     log->pads++;
     c->a = wram_r16(w, (uint16_t)(W_PADS + 2 * pad));
     cmp16(c, c->a, PAD_START);
     if (c->a != PAD_START) continue;
     // It does not go back to the loop: the return is thrown away.
-    PORT_COVER(opening_wait_ended);
     log->ended = true;
     pull16(w, c);
     wram_w16(w, W_OPENING_FRAMES, OPENING_OVER);
     c->a = OPENING_OVER;
     set_nz16(c, c->a);
     c->pc = OPENING_WAIT_ENDED_PC;
+    return true;
+  }
+  return false;
+}
+
+void opening_wait(Wram* w, PortCpu* c, OpeningLog* log) {
+  *log = (OpeningLog){0};
+  push16(w, c, (uint16_t)(OPENING_WAIT_PC + 2));
+  if (opening_pads(w, c, log)) {
+    PORT_COVER(opening_wait_ended);
     return;
   }
   PORT_COVER(opening_wait_on);
   c->pc = OPENING_WAIT_RTS_PC;
+}
+
+void opening_hold_begin(PortCpu* c) {
+  PORT_COVER(opening_hold_begin);
+  c->x = OPENING_HOLD_FRAMES;
+  set_nz16(c, c->x);
+  c->pc = OPENING_HOLD_WAI_PC;
+}
+
+bool opening_hold(Wram* w, PortCpu* c, OpeningLog* log) {
+  *log = (OpeningLog){0};
+  push16(w, c, (uint16_t)(OPENING_HOLD_PC + 2));
+  if (opening_pads(w, c, log)) {
+    PORT_COVER(opening_hold_ended);
+    return false;
+  }
+  pull16(w, c);
+  c->x = (uint16_t)(c->x - 1);
+  set_nz16(c, c->x);
+  if (c->x) {
+    PORT_COVER(opening_hold_on);
+    c->pc = OPENING_HOLD_WAI_PC;
+    return true;
+  }
+  PORT_COVER(opening_hold_done);
+  c->pc = OPENING_HOLD_DONE_PC;
+  return false;
 }
 
 bool opening_count(Wram* w, PortCpu* c) {

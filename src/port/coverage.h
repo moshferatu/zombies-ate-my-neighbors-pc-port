@@ -1877,6 +1877,40 @@
   X(text_big_sent, "text_big_sent", "the big letters' map queued, and back to the caller") \
   X(text_big_queue_full, "text_big_sent", "...or the queue full, and asked again") \
   X(palfade_begin, "palfade_begin", "a colour fade's thread begun") \
+  X(frontend_first_pass, "frontend_first_pass", "the front end's first pass, and the screen before the title") \
+  X(frontend_later_pass, "frontend_first_pass", "...or a later one, straight to the title")   X(frontend_opening_skipped, "frontend_first_pass", "...or the first with the logos skipped, and the same") \
+  X(frontend_region_check, "frontend_region_check", "the console is the one the game was made for") \
+  X(frontend_scroll_job_ask, "frontend_scroll_job_ask", "the job that sends the layers' scroll, asked for") \
+  X(frontend_scroll_job_asked, "frontend_scroll_job_asked", "...and where it went in the queue kept") \
+  X(frontend_fade_in_ask, "frontend_fade_in_ask", "a screen's brightness to be counted up") \
+  X(frontend_fade_out_ask, "frontend_fade_out_ask", "...and down") \
+  X(frontend_show_sleep, "frontend_show_sleep", "128 frames of the screen before the title") \
+  X(frontend_title_begin, "frontend_title_begin", "the title's backdrop set down and its wave begun") \
+  X(frontend_title_song_ask, "frontend_title_song_ask", "the title's song asked for") \
+  X(title_first_pass, "title_first_pass", "the title the first time, and the wave to come down") \
+  X(title_later_pass, "title_first_pass", "...or come back to, with no wave") \
+  X(frontend_vram_clear_ask, "frontend_vram_clear_ask", "VRAM to be cleared a kilobyte a frame") \
+  X(opening_hold_begin, "opening_hold_begin", "148 frames more of the screen before the title") \
+  X(opening_hold_on, "opening_hold", "a frame of them, and more to come") \
+  X(opening_hold_done, "opening_hold", "...or the last") \
+  X(opening_hold_ended, "opening_hold", "...or Start, and the screen ended") \
+  X(opening_begin, "opening_begin", "the screen before the title's layers turned on") \
+  X(screen_show_begin, "screen_show_begin", "the third layer alone, and its map's send set out") \
+  X(screen_show_end, "screen_show_end", "every layer off") \
+  X(title_hdma_setup, "title_hdma_setup", "the wave's channel pointed at its table") \
+  X(title_layers, "title_layers", "the title's mode and layers") \
+  X(title_hdma_on, "title_hdma_on", "the wave's channel on") \
+  X(title_hdma_off, "title_hdma_off", "...and off") \
+  X(apu_song_begin, "apu_song_begin", "a song and its sounds asked for") \
+  X(apu_song_sounds, "apu_song_sounds", "the song's set sent, and the sounds' to send") \
+  X(apu_song_play, "apu_song_play", "both sent, and the command that plays") \
+  X(apu_song_end, "apu_song_end", "the caller's page put back") \
+  X(apu_sfx_bank_begin, "apu_sfx_bank_begin", "a set asked for by itself") \
+  X(apu_sfx_bank_play, "apu_sfx_bank_play", "...sent, and its command") \
+  X(apu_sfx_bank_end, "apu_sfx_bank_end", "...and the caller's page put back") \
+  X(apu_command_13_end, "apu_command_13_end", "command $13 sent, and the page put back") \
+  X(apu_set_announce, "apu_set_announce", "a set's number, to be sent before it") \
+  X(apu_set_announced, "apu_set_announced", "...and the number pulled for the upload") \
   X(send_args, "send_args", "what a screen's next send is called with") \
   X(palette_job, "palette_job", "all 256 colours sent") \
   X(background_job, "background_job", "the background's second copy sent") \

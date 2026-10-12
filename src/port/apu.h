@@ -347,4 +347,43 @@ void apu_load_set_traced(Wram* w, const Rom* rom, PortCpu* c, HwTrace* t);
 // the routine clears the four ports on the way out.
 void apu_boot_traced(Wram* w, const Rom* rom, PortCpu* c, HwTrace* t);
 
+// --- $80:CBD9, $80:CBFD and $80:CC6F  between the uploads ---------------------
+//
+// `$80:CBD9` is called with a set of data in A and another in X. It sends
+// the first, then the one twelve after the second, and then command `$14`.
+// The second is kept at `$7E:1F52`. A level calls it with two words of its
+// record, and the title with 3 and 3: a song and the sounds that go with it.
+//
+// `$80:CBFD` sends the set in A and then command `$0D`.
+//
+// `$80:CC6F` is how both send their first set: command 8 with the set's
+// number, and then it falls into `apu_load_set`.
+//
+// The uploads and the commands are ported above. These are what is between
+// them, each a stretch from where one comes back to the next call or the
+// `RTL`. Every one begins with `REP #$30`, so they are come to with the
+// registers any width.
+#define W_APU_SOUNDS 0x1f52u
+#define APU_SOUND_SETS_FROM 0x000cu
+#define APU_CMD_SET 0x08
+#define APU_CMD_SONG 0x0014u
+#define APU_CMD_SFX_BANK 0x000du
+
+//  name, where it starts, the instruction it stops on
+#define APU_STRETCHES(X) \
+  X(song_begin, "$80:CBD9", 0x80cbd9u, 0x80cbe1u) \
+  X(song_sounds, "$80:CBE4", 0x80cbe4u, 0x80cbeeu) \
+  X(song_play, "$80:CBF1", 0x80cbf1u, 0x80cbf6u) \
+  X(song_end, "$80:CBF9", 0x80cbf9u, 0x80cbfcu) \
+  X(sfx_bank_begin, "$80:CBFD", 0x80cbfdu, 0x80cc04u) \
+  X(sfx_bank_play, "$80:CC07", 0x80cc07u, 0x80cc0cu) \
+  X(sfx_bank_end, "$80:CC0F", 0x80cc0fu, 0x80cc12u) \
+  X(command_13_end, "$80:CC6B", 0x80cc6bu, 0x80cc6eu) \
+  X(set_announce, "$80:CC6F", 0x80cc6fu, 0x80cc76u) \
+  X(set_announced, "$80:CC79", 0x80cc79u, 0x80cc7cu)
+
+#define X(name, sym, entry, exit) void apu_##name(Wram* w, PortCpu* c);
+APU_STRETCHES(X)
+#undef X
+
 #endif

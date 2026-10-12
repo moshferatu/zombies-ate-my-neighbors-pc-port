@@ -208,6 +208,11 @@ enum {
   DMA_REP_PLB2,  // REP #$20 : PLB : PLB
   LC_BRIGHT,     // $82:AC2B LDA abs : AND # : STA abs : LDA # : STA abs
   LC_WORDS,      // LDA #imm16 : PLX
+  DMA_LOAD,      // LDA #imm16
+  OB_HEAD,       // $80:92F3 six STZ : SEP #$20 : LDA # : STA $212C
+  OB_TAIL,       // REP #$20 : LDA # : STA abs : LDA # : LDY #
+  SS_SEND,       // $80:921F STZ : STZ : LDA # : PHA : LDA # : LDX # : LDY #
+  TH_HEAD,       // $80:941D STZ : STZ, a byte each : LDA # : STA $4360
   DMA_BLOCK_COUNT
 };
 
@@ -296,6 +301,67 @@ uint16_t level_card_layer(Wram* w, HwTrace* t, uint16_t s);
 #define LEVEL_CARD_RTL_PC 0x82acd5u
 uint8_t level_card_layers_back(const Wram* w, HwTrace* t, uint16_t s);
 
+// --- The front end's thread, where it writes to the hardware -----------------
+//
+// `$80:9126` between its calls is in `port/frontend_thread.h`. These are the
+// stretches of it that write a register.
+//
+// The screen before the title is `$80:92F3`, and `$80:91F7` shows it:
+//
+//   $80:92F3  opening_begin      every layer's scroll zeroed, the first and
+//                                third layers turned on and the brightness
+//                                shadow zeroed. It stops on the call that
+//                                queues `opening_job`.
+//   $80:9219  screen_show_begin  the third layer alone, at its corner, and
+//                                its map's send set out. It stops on that.
+//   $80:9255  screen_show_end    every layer off, to the `RTL`.
+//
+// The title has a wave on its first layer: a table at `$7E:8000` of where
+// each line is across, which `$80:9570` makes again every frame and HDMA's
+// seventh channel sends, two bytes a line, to the layer's scroll.
+//
+//   $80:9418  title_hdma_setup   that channel pointed at the table, with
+//                                every channel off. It stops where the
+//                                title's sprites begin.
+//   $80:94AF  title_layers       mode 1, the third layer in front with its
+//                                tiles 16 across, and the first and third
+//                                turned on. It stops at `title_begin`.
+//   $80:9502  title_hdma_on      the channel on, and a frame to sleep in A.
+//   $80:9529  title_hdma_off     ...and off, the first layer back at the
+//                                left, and sixteen frames to sleep.
+#define OPENING_BEGIN_PC 0x8092f3u
+#define OPENING_BEGUN_PC 0x80931au
+#define OPENING_JOB 0x938eu  // in bank `$80`
+#define SCREEN_SHOW_BEGIN_PC 0x809219u
+#define SCREEN_SHOW_BEGUN_PC 0x809232u
+#define SCREEN_SHOW_MAP 0xde80u  // in bank `$9E`
+#define SCREEN_SHOW_MAP_BANK 0x009eu
+#define SCREEN_SHOW_MAP_VRAM 0x6400u
+#define SCREEN_SHOW_MAP_BYTES 0x0780u
+#define SCREEN_SHOW_END_PC 0x809255u
+#define SCREEN_SHOW_RTL_PC 0x80925cu
+#define TITLE_HDMA_SETUP_PC 0x809418u
+#define TITLE_HDMA_SET_UP_PC 0x80943du
+#define TITLE_WAVE_TABLE 0x8000u  // in bank `$7E`
+#define TITLE_LAYERS_PC 0x8094afu
+#define TITLE_LAYERS_END_PC 0x8094beu
+#define TITLE_LAYERS_ON 0x0005u
+#define TITLE_HDMA_ON_PC 0x809502u
+#define TITLE_HDMA_ON_END_PC 0x80950eu
+#define TITLE_HDMA_OFF_PC 0x809529u
+#define TITLE_HDMA_OFF_END_PC 0x809536u
+#define TITLE_WAVE_FRAME 0x0001u
+#define TITLE_AFTER_WAVE_FRAMES 0x0010u
+
+void opening_begin(Wram* w, HwTrace* t);
+// `s` is the stack pointer it finds, and it pushes a word.
+void screen_show_begin(Wram* w, HwTrace* t, uint16_t s);
+void screen_show_end(HwTrace* t);
+void title_hdma_setup(Wram* w, HwTrace* t);
+void title_layers(HwTrace* t);
+void title_hdma_on(HwTrace* t);
+void title_hdma_off(Wram* w, HwTrace* t);
+
 // `$83:8015` to `$83:802D`, in the logo screens' routine (`port/intro.h`).
 // Mode 1, with the first layer's tiles 16 across. The first layer's map is
 // at `$4000` and four screens big, the second's at `$6000`, and both
@@ -377,6 +443,7 @@ uint16_t text_map_job(const Wram* w, HwTrace* t);
   /* `$80:91F7`, the screen before the title's colours */ \
   X(8091ff, "$80:91FF", 0x8091ffu, 0x809208u, 0, -1, 0x009e, 0x8e76, 0x0100) \
   X(80920c, "$80:920C", 0x80920cu, 0x809215u, 0, -1, 0x0094, 0xfeab, 0x0010) \
+  X(809236, "$80:9236", 0x809236u, 0x809237u, 1, -1, -1, -1, -1) \
   /* `$80:9290`, that screen's tiles and maps */ \
   X(809290, "$80:9290", 0x809290u, 0x80929du, 0, 0x0097, 0xafc4, 0x5000, 0x0e20) \
   X(8092a1, "$80:92A1", 0x8092a1u, 0x8092afu, 1, 0x009e, 0xaf00, 0x6800, 0x0800) \

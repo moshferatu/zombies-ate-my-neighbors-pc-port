@@ -530,3 +530,107 @@ void apu_boot_traced(Wram* w, const Rom* rom, PortCpu* c, HwTrace* t) {
   rep(c, PORT_P_M | PORT_P_X);
   c->pc = APU_BOOT_EXIT;
 }
+
+// --- Between the uploads -----------------------------------------------------
+
+static void wide_registers(PortCpu* c) {
+  c->p = (uint8_t)(c->p & ~(PORT_P_M | PORT_P_X));
+}
+
+// `REP #$30 : PHD : PEA $0000 : PLD`, which every call into the sound begins
+// with: the caller's page kept, and page zero put on.
+static void page_zero(Wram* w, PortCpu* c) {
+  wide_registers(c);
+  push16(w, c, c->d);
+  push16(w, c, 0);
+  c->d = pull16(w, c);
+  set_nz16(c, c->d);
+}
+
+// `REP #$30 : PLD`.
+static void page_back(Wram* w, PortCpu* c) {
+  wide_registers(c);
+  c->d = pull16(w, c);
+  set_nz16(c, c->d);
+}
+
+static void load_x(PortCpu* c, uint16_t v) {
+  wide_registers(c);
+  c->x = v;
+  set_nz16(c, v);
+}
+
+void apu_song_begin(Wram* w, PortCpu* c) {
+  PORT_COVER(apu_song_begin);
+  page_zero(w, c);
+  push16(w, c, c->x);
+  c->pc = 0x80cbe1u;
+}
+
+void apu_song_sounds(Wram* w, PortCpu* c) {
+  PORT_COVER(apu_song_sounds);
+  wide_registers(c);
+  const uint16_t sounds = pull16(w, c);
+  wram_w16(w, W_APU_SOUNDS, sounds);
+  set_c(c, false);
+  c->a = adc16(c, sounds, APU_SOUND_SETS_FROM);
+  c->pc = 0x80cbeeu;
+}
+
+void apu_song_play(Wram* w, PortCpu* c) {
+  (void)w;
+  PORT_COVER(apu_song_play);
+  load_x(c, APU_CMD_SONG);
+  c->pc = 0x80cbf6u;
+}
+
+void apu_song_end(Wram* w, PortCpu* c) {
+  PORT_COVER(apu_song_end);
+  page_back(w, c);
+  c->pc = 0x80cbfcu;
+}
+
+void apu_sfx_bank_begin(Wram* w, PortCpu* c) {
+  PORT_COVER(apu_sfx_bank_begin);
+  page_zero(w, c);
+  c->pc = 0x80cc04u;
+}
+
+void apu_sfx_bank_play(Wram* w, PortCpu* c) {
+  (void)w;
+  PORT_COVER(apu_sfx_bank_play);
+  load_x(c, APU_CMD_SFX_BANK);
+  c->pc = 0x80cc0cu;
+}
+
+void apu_sfx_bank_end(Wram* w, PortCpu* c) {
+  PORT_COVER(apu_sfx_bank_end);
+  page_back(w, c);
+  c->pc = 0x80cc12u;
+}
+
+void apu_command_13_end(Wram* w, PortCpu* c) {
+  PORT_COVER(apu_command_13_end);
+  page_back(w, c);
+  c->pc = 0x80cc6eu;
+}
+
+// `REP #$30 : PHA : SEP #$30 : LDX #$08`. The set's number is kept for the
+// upload, and the command goes with its low byte.
+void apu_set_announce(Wram* w, PortCpu* c) {
+  PORT_COVER(apu_set_announce);
+  wide_registers(c);
+  push16(w, c, c->a);
+  set_p(c, (uint8_t)(c->p | PORT_P_M | PORT_P_X));
+  c->x = APU_CMD_SET;
+  set_nz8(c, APU_CMD_SET);
+  c->pc = 0x80cc76u;
+}
+
+void apu_set_announced(Wram* w, PortCpu* c) {
+  PORT_COVER(apu_set_announced);
+  wide_registers(c);
+  c->a = pull16(w, c);
+  set_nz16(c, c->a);
+  c->pc = 0x80cc7cu;
+}
