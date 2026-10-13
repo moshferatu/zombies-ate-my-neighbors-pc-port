@@ -127,6 +127,61 @@
   X(radar_skipped_far_x, "radar_frame",     "...or too far across") \
   X(radar_skipped_far_y, "radar_frame",     "...or too far up or down") \
   X(radar_shown,      "radar_frame",        "the square put where the next near neighbour is") \
+  /* The neighbours' threads -- see port/neighbour_thread.h. */ \
+  X(neighbour_started_patient, "neighbour_started", "one that looks about it: told 3 twenty-five times first") \
+  X(neighbour_told_back, "neighbour_told", "back from the turn or the sign") \
+  X(neighbour_told_nothing_more, "neighbour_told", "...and told nothing since: its loop again") \
+  X(neighbour_told_end, "neighbour_told", "told to end") \
+  X(neighbour_told_turn, "neighbour_told", "told 2") \
+  X(neighbour_told_lost, "neighbour_told", "told 3: lost") \
+  X(neighbour_told_sign, "neighbour_told", "told 4: the sign") \
+  X(neighbour_told_saved, "neighbour_told", "told anything else: saved") \
+  X(watcher_told_back, "watcher_told", "back from the turn or the sign, and not lost since") \
+  X(watcher_told_lost_since, "watcher_told", "...or lost since") \
+  X(watcher_told_end, "watcher_told", "told to end") \
+  X(watcher_told_turn, "watcher_told", "told 2") \
+  X(watcher_told_sign, "watcher_told", "told 4: the sign") \
+  X(watcher_told_bore_it, "watcher_told", "told 3 with patience left") \
+  X(watcher_told_lost, "watcher_told", "...and with none: lost") \
+  X(watcher_told_not_listed, "watcher_told", "its entry in the list is zero, so it only ends") \
+  X(watcher_told_saved, "watcher_told", "told anything else: saved") \
+  X(neighbour_lost_quiet, "neighbour_lost_counted", "the stepper, which has cried out already") \
+  X(neighbour_lost_cry, "neighbour_lost_counted", "any other: the sound") \
+  X(neighbour_turn_told, "neighbour_turn_shown", "told something while the first pictures played") \
+  X(neighbour_turn_waits, "neighbour_turn_shown", "...or nothing: three hundred frames to be") \
+  X(neighbour_sign_ended, "neighbour_sign_end", "told to end beside its sign: lost") \
+  X(neighbour_sign_came_down, "neighbour_sign_end", "told something else beside its sign") \
+  X(victim_mark_gone_none, "victim_mark_gone", "no entry in the list") \
+  X(victim_mark_gone_marked, "victim_mark_gone", "its entry marked") \
+  X(saved_kind_second_side, "saved_kind_add", "the second player's side") \
+  X(saved_kind_second_slot, "saved_kind_add", "...which the second slot has") \
+  X(saved_kind_full, "saved_kind_add", "ten saved already: not listed") \
+  X(stepper_told_end, "stepper_told", "told to end") \
+  X(stepper_told_lost, "stepper_told", "told 3: lost") \
+  X(stepper_told_sign, "stepper_told", "told 4: the sign") \
+  X(stepper_told_saved, "stepper_told", "told anything else: saved") \
+  X(stepper_signed_lost, "stepper_signed", "lost beside its sign") \
+  X(stepper_signed_goes_on, "stepper_signed", "told nothing since: its loop again") \
+  X(jumper_told_end, "jumper_told", "told to end") \
+  X(jumper_told_turn, "jumper_told", "told 2") \
+  X(jumper_told_lost, "jumper_told", "told 3: lost") \
+  X(jumper_told_sign, "jumper_told", "told 4: the sign") \
+  X(jumper_told_saved, "jumper_told", "told anything else: saved") \
+  X(jumper_turned_told, "jumper_turned", "told something as the turn ended") \
+  X(jumper_turned_stands, "jumper_turned", "...or nothing: it stands again") \
+  X(bouncer_enter_first, "bouncer_enter", "no other in the level: it begins") \
+  X(bouncer_enter_waits, "bouncer_enter", "...or one, and it waits") \
+  X(bouncer_waited_gone, "bouncer_waited", "gone from the list while it waited") \
+  X(bouncer_waited_again, "bouncer_waited", "the other is still there") \
+  X(bouncer_waited_free, "bouncer_waited", "the other has left: it begins") \
+  X(bouncer_frame_leaves, "bouncer_frame", "told to end with one of the two words set") \
+  X(bouncer_frame_stays, "bouncer_frame", "...and with neither") \
+  X(bouncer_frame_lands, "bouncer_frame", "on the ground again") \
+  X(bouncer_frame_slows, "bouncer_frame", "the eighth frame: slower, and the next picture") \
+  X(bouncer_landed_untold, "bouncer_landed", "told nothing: up again") \
+  X(bouncer_landed_ends, "bouncer_landed", "told to end") \
+  X(bouncer_landed_saved, "bouncer_landed", "told 1: saved") \
+  X(bouncer_landed_forgets, "bouncer_landed", "told anything else, which it forgets") \
   X(radar_begin_in_step, "radar_begin",     "the tick is the player's own, and the panel goes up now") \
   X(radar_begin_waited, "radar_begin",      "...or the other's, and a tick is waited") \
   X(radar_count_first, "radar_count_ask",   "the first player's count asked for") \

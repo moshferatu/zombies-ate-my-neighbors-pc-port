@@ -5,6 +5,85 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The neighbours' threads, between their calls (2026-10-13)
+
+The loops a neighbour shows its pictures in were ported a frame each. This
+is the rest of each thread, in `port/neighbour_thread.c`: eighty-eight
+stretches, each from where the thread starts or a call comes back to the
+next call, sleep or return, and twenty-five links.
+
+* **How a thread starts.** Nine of the eleven start alike, and one port,
+  `neighbour_enter`, does them from a table: what the neighbour weighs, its
+  kind, its first picture. `neighbour_started` goes on to the loop's first
+  sleep for seven.
+* **What it does when it is told something.** The word at `$1E` on its page
+  says what: negative ends it, `2` is `$83:A21D`, `3` is lost, `4` is the
+  sign, and anything else is saved. `neighbour_told` is that for the five
+  that only go round their pictures and `watcher_told` for the two that look
+  about them, which bear `3` twenty-five times first.
+* **The routines they do it with**, `$83:A18F` to `$83:A333`: lost, saved,
+  the turn and the sign, between their calls.
+* **Three small routines they call**, whole.
+  * `victim_mark_gone`, `$81:8191`: the neighbour's byte in the level's
+    list set to `$80`.
+  * `neighbours_left_down`, `$80:C863`: one fewer neighbour, in decimal.
+    `port/bcd.h` has the decimal `SBC` now, written as the core has it.
+  * `saved_kind_add`, `$80:C81F`: the kind added to the list of those the
+    player saved, while the two lists hold fewer than ten.
+* **`$81:8349` and `$81:8377`**, which play a set of pictures with the data
+  bank their own: either side of the call.
+* **The tourists turning into werewolves**, `$83:A086`.
+* **The stepper, the jumper and the bouncer**, which differ.
+  * The bouncer is `$83:9843`, and nothing of it was ported before. It goes
+    up at four pixels a frame, a pixel slower every eight frames, and shows
+    the next of nine pictures as it slows. There is one at a time: a second
+    waits, a frame at a time, for the word at `$1FF6` to clear.
+    `bouncer_frame` was the largest takeover left that was not kept on
+    purpose, 6,822 instructions.
+* **Checked.** 1,234 routines are registered.
+  * The corpus verifies clean: 127,988,156 calls over 56 movies, none
+    diverged.
+  * Costs are compared over the whole corpus, and every new row is exact.
+  * Branch coverage is 1,622 of 1,945.
+  * Lockstep: 53 of 56 never part; `level25`, `level25-2p` and
+    `level25-heavy` do, as before.
+  * The picture: 78,360,128 lines drawn both ways over the 56 movies, at
+    off and at 16:9, and none differ.
+  * `zamn.exe` replays `level1-rescue` and ends with status 0.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 544 to 500 | 16,242 to 14,778 | 116,774 to 101,217 |
+  | Left standing on an instruction | 28 to 17 | 819 to 403 | 33,177 to 27,678 |
+  | A port turned the call down | 32 to 32 | 2,558 to 2,558 | 11,765 to 11,693 |
+  | A port or a link called it | 8 to 8 | 409 to 409 | 1,039 to 1,039 |
+  | All | 613 to 558 | 20,138 to 18,258 | 170,675 to 149,547 |
+
+  Nothing between `$83:9600` and `$83:A400` is left to the core in any of
+  them.
+* **Not done or not known.**
+  * Twelve stretches are written and no movie in the corpus runs them:
+    back from the turn for the blinker, the third that goes round, the
+    tourists and the first watcher; back from the sign for the second that
+    goes round, the blinker, the third, the tourists, the second watcher and
+    the jumper; a bouncer that waited; and a bouncer saved.
+  * Fourteen branches are untaken. Seven are the bouncer's: one waiting,
+    one saved, one told something it forgets, one told to leave. The others
+    are a jumper told `4`, a jumper that stands again after its turn, a
+    stepper saved, a stepper told nothing more beside its sign, a watcher
+    whose entry in the list is zero, a neighbour with no entry, and a
+    saved list that is full.
+  * The eleventh thread, the one that ends at `$83:9C3F`, is not here. No
+    session runs it.
+  * A thread's end is `BMI` to itself if the level's load goes negative.
+    `jumper_end` is turned down then, and the core hangs as the ROM does.
+  * The bouncer leaves when told to end only if `$1FB8` or `$1FBA` is set.
+    I have not seen what sets them.
+  * I have not seen which neighbour is which, the tourists apart, and I
+    did not play it. The checks above are the port against the ROM, and the
+    picture pass.
+
 ### The radar's panel and the animated tiles' first pass (2026-10-12)
 
 Three things the survey had the core still running: the first pass of a

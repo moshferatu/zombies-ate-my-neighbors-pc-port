@@ -92,6 +92,7 @@
 #include "port/level_card.h"
 #include "port/card.h"
 #include "port/jumper.h"
+#include "port/neighbour_thread.h"
 #include "port/radar_thread.h"
 #include "port/riser.h"
 #include "port/seeker.h"
@@ -8354,6 +8355,175 @@ static void shim_wave_thread_call(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t WAVE_THREAD_CALL_EXITS[] = {WAVE_HDMA_ENTRY};
+
+// ---------------------------------------------------------------------------
+// The neighbours' threads between their calls -- see `port/neighbour_thread.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py --db=83` over the block's own bytes,
+// with six more for each branch in it that is always taken.
+static const CosimRun NT_COST[NT_BLOCK_COUNT] = {
+    [NT_ENTER] = {180, 21, 1},
+    [NT_STARTED] = {130, 11, 4},
+    [NT_PATIENCE] = {46, 5, 1},
+    [NT_LDA_DP] = {28, 2, 1},
+    [NT_LDA_IMM] = {18, 3, 0},
+    [NT_STZ_DP] = {28, 2, 1},
+    [NT_BRANCH] = {12, 2, 0},
+    [NT_BRA] = {18, 2, 0},
+    [NT_JMP] = {18, 3, 0},
+    [NT_CMP_BRANCH] = {30, 5, 0},
+    [NT_SAVED] = {36, 6, 0},
+    [NT_SIGN] = {86, 8, 1},
+    [NT_RESET] = {74, 7, 2},
+    [NT_TOLD_TEST] = {40, 4, 1},
+    [NT_PATIENCE_DOWN] = {62, 4, 1},
+    [NT_THERE] = {98, 11, 1},
+    [NT_TOLD_CMP] = {58, 7, 1},
+    [NT_LOST] = {96, 7, 2},
+    [NT_LOST_KIND] = {58, 7, 1},
+    [NT_LOST_B] = {114, 10, 2},
+    [NT_SAVE_HEAD] = {84, 4, 1},
+    [NT_SAVE_KIND] = {56, 4, 2},
+    [NT_SAVE_AWARD] = {62, 3, 1},
+    [NT_SAVE_HANDLER] = {30, 4, 0},
+    [NT_SAVE_RISE] = {224, 20, 2},
+    [NT_TURN_HEAD] = {218, 20, 2},
+    [NT_TURN_WAIT] = {64, 8, 1},
+    [NT_TURN_TAIL] = {196, 18, 1},
+    [NT_SIGN_MAKE] = {866, 80, 7},
+    [NT_SIGN_OVER] = {46, 5, 1},
+    [NT_PLAY_A] = {84, 6, 0},
+    [NT_PLAY_A_TAIL] = {50, 3, 0},
+    [NT_PLAY_B] = {228, 18, 0},
+    [NT_PLAY_B_TAIL] = {26, 1, 0},
+    [NT_WOLVES_SHOW] = {104, 11, 1},
+    [NT_WOLF_LEFT] = {178, 18, 4},
+    [NT_WOLF_RIGHT] = {208, 22, 4},
+    [NT_GONE_TEST] = {30, 5, 0},
+    [NT_GONE_SET] = {92, 11, 0},
+    [NT_LEFT_DOWN] = {134, 14, 0},
+    [NT_KIND_HEAD] = {40, 3, 0},
+    [NT_KIND_FIRST] = {36, 5, 0},
+    [NT_JSR] = {40, 3, 0},
+    [NT_SLOT_TEST] = {46, 5, 0},
+    [NT_SLOT_FIRST] = {36, 5, 0},
+    [NT_RTS] = {40, 1, 0},
+    [NT_KIND_ROOM] = {122, 13, 0},
+    [NT_KIND_ADD] = {182, 15, 0},
+    [NT_PLA] = {34, 1, 0},
+    [NT_STEPPER_STARTED] = {176, 16, 5},
+    [NT_MAT_MAKE] = {498, 44, 4},
+    [NT_MAT_HIDE] = {126, 11, 1},
+    [NT_END_CALL] = {138, 14, 1},
+    [NT_MAT_FREE] = {52, 6, 1},
+    [NT_ABS_TEST] = {46, 5, 0},
+    [NT_BOUNCER_GONE] = {116, 14, 1},
+    [NT_BOUNCER_ENTER] = {236, 24, 1},
+    [NT_BOUNCER_STARTED] = {228, 20, 4},
+    [NT_BOUNCER_LEAVE] = {80, 8, 0},
+    [NT_BOUNCER_MOVE] = {160, 13, 2},
+    [NT_BOUNCER_COUNT] = {108, 9, 2},
+    [NT_BOUNCER_PICTURE] = {274, 20, 4},
+    [NT_BOUNCER_LAND] = {206, 20, 4},
+    [NT_BOUNCER_LANDED] = {126, 12, 2},
+    [NT_BOUNCER_OFF] = {34, 3, 0},
+    // `JMP ($C85F,X)`: three bytes, a cycle, and two of the table.
+    [NT_KIND_JUMP] = {36, 5, 0},
+    [NT_TAKEN] = {6, 0, 0},
+};
+
+static int neighbour_thread_cycles(const NeighbourThreadWork* k,
+                                   const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < NT_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles_dp(&NT_COST[i], fast, unaligned);
+  return cycles;
+}
+
+// The threads read the level's load and their tables through the data bank,
+// which has to be their own. What they call reads low WRAM through it.
+static bool neighbour_thread_bank_ok(const CosimRegs* in) {
+  if ((in->pc >> 16) == NEIGHBOUR_BANK) return in->db == NEIGHBOUR_BANK;
+  return bank_sees_low_wram(in->db);
+}
+
+#define X(name, sym, entry, port, exits, needs)                              \
+  static bool accepts_nt_##name(const Wram* w, const CosimRegs* in) {        \
+    (void)w;                                                                 \
+    return body_ok(in) && neighbour_thread_bank_ok(in);                      \
+  }                                                                          \
+  static bool guard_nt_##name(Wram* scratch, const Rom* rom,                 \
+                              const CosimRegs* in) {                         \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    return neighbour_thread_needs_met(scratch, rom, needs, &c);              \
+  }                                                                          \
+  static void shim_nt_##name(Wram* w, const Rom* rom, const CosimRegs* in,   \
+                             CosimRegs* out) {                               \
+    PortCpu c;                                                               \
+    NeighbourThreadWork k = {0};                                             \
+    cpu_from(in, &c);                                                        \
+    port(w, rom, &c, &k);                                                    \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(neighbour_thread_cycles(&k, in));                             \
+  }
+NEIGHBOUR_THREAD_STRETCHES(X)
+#undef X
+
+static const uint32_t NT_EXITS_ENTER[] = {
+    0x8396aeu, 0x83978bu, 0x839952u, 0x839a9eu, 0x839c82u,
+    0x839d15u, 0x839e2au, 0x839ed3u, 0x839ff7u};
+static const uint32_t NT_EXITS_STARTED[] = {
+    0x8396bcu, 0x839799u, 0x839965u, 0x839ab3u, 0x839c90u, 0x839e38u,
+    TOURISTS_SLEEP_PC};
+// A thread's loop, `JSR $A1D5`, `JSR $A18F`, its end, `JSR $A21D` and
+// `JSR $A2B4`.
+static const uint32_t NT_EXITS_TOLD[] = {
+    0x8396bcu, 0x8396f8u, 0x8396fdu, 0x839700u, 0x839712u, 0x839726u,
+    0x839799u, 0x8397d5u, 0x8397dau, 0x8397ddu, 0x8397efu, 0x839803u,
+    0x839c90u, 0x839cc6u, 0x839ccbu, 0x839cceu, 0x839ce0u, 0x839cecu,
+    0x839e38u, 0x839e74u, 0x839e79u, 0x839e7cu, 0x839e8eu, 0x839ea2u,
+    0x83a005u, 0x83a04cu, 0x83a051u, 0x83a054u, 0x83a066u, 0x83a07au};
+// Its two loops, `JSR $A1D5`, `JSR $A2B4`, `JSR $A18F`, its end and
+// `JSR $A21D`.
+static const uint32_t NT_EXITS_WATCHER[] = {
+    0x839965u, 0x8399a2u, 0x8399f4u, 0x839a01u, 0x839a20u, 0x839a23u,
+    0x839a35u,
+    0x839ab3u, 0x839af7u, 0x839b48u, 0x839b55u, 0x839b74u, 0x839b77u,
+    0x839b89u};
+static const uint32_t NT_EXITS_LOST[] = {0x83a196u, 0x83a1a8u, 0x83a1afu,
+                                         0x83a1beu};
+static const uint32_t NT_EXITS_SAVED[] = {0x83a1d9u, 0x83a1e5u, 0x83a1ecu,
+                                          0x83a1f4u, NEIGHBOUR_RISE_SLEEP_PC};
+static const uint32_t NT_EXITS_TURN[] = {0x83a231u, 0x83a245u, 0x83a249u,
+                                         0x83a25fu};
+static const uint32_t NT_EXITS_SIGN[] = {0x83a2b6u, NEIGHBOUR_SIGN_SLEEP_PC,
+                                         0x83a32fu};
+static const uint32_t NT_EXITS_PLAY[] = {0x81834fu, 0x818356u, 0x818389u,
+                                         0x81838eu};
+static const uint32_t NT_EXITS_WOLVES[] = {0x83a088u, 0x83a097u, 0x83a0adu,
+                                           0x83a0c7u};
+static const uint32_t NT_EXITS_ARGUMENT[] = {
+    0x83a1afu, 0x83a1c9u, 0x83a1d0u, 0x83a0ceu, 0x839da1u, 0x839da8u,
+    0x8398edu};
+static const uint32_t NT_EXITS_LEAF[] = {
+    VICTIM_MARK_GONE_RTL_PC, NEIGHBOURS_LEFT_DOWN_RTL_PC, 0x80c83eu,
+    0x80c84eu, 0x80c85eu};
+static const uint32_t NT_EXITS_STEPPER[] = {
+    STEPPER_SLEEP_PC, STEPPER_END_PC, STEPPER_SAVED_CALL_PC,
+    STEPPER_LOST_CALL_PC, STEPPER_SIGN_CALL_PC, STEPPER_SIGNED_LOST_PC};
+static const uint32_t NT_EXITS_JUMPER[] = {
+    0x839fc9u, JUMPER_LANDED_PC, JUMPER_END_PC, JUMPER_SAVED_HIDE_PC,
+    JUMPER_LOST_HIDE_PC, JUMPER_TURN_HIDE_PC, JUMPER_SIGN_CALL_PC,
+    0x839fe1u, JUMPER_SAVED_CALL_PC};
+static const uint32_t NT_EXITS_JUMPER_END[] = {JUMPER_END_FREE_PC,
+                                               ACTOR_SLOT_FREE_ENTRY};
+static const uint32_t NT_EXITS_BOUNCER[] = {
+    BOUNCER_WAIT_PC, BOUNCER_GONE_PC, BOUNCER_BEGIN_PC, BOUNCER_SLEEP_PC,
+    BOUNCER_LAND_PC, BOUNCER_END_PC, BOUNCER_SAVED_CALL_PC};
 
 // ---------------------------------------------------------------------------
 // $82:D8FD  the radar's thread -- see `port/radar_thread.h`
@@ -29421,6 +29591,21 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 1000,                                                      \
     },
     RADAR_STRETCHES(X)
+#undef X
+    // The neighbours' threads between their calls: see
+    // `port/neighbour_thread.h`.
+#define X(name_, sym, pc, port, exits_, needs)                               \
+    {                                                                        \
+        .name = "nt_" #name_,                                                \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_nt_##name_,                                              \
+        .accepts = accepts_nt_##name_,                                       \
+        .supported = guard_nt_##name_,                                       \
+        COSIM_EXITS(NT_EXITS_##exits_),                                      \
+        .cycles = 600,                                                       \
+    },
+    NEIGHBOUR_THREAD_STRETCHES(X)
 #undef X
     // The neighbour who jumps: see `port/jumper.h`.
     {

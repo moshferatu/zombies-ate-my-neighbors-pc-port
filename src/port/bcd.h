@@ -52,4 +52,26 @@ static inline uint16_t bcd_add16(uint16_t a, uint16_t value, bool* carry,
   return (uint16_t)result;
 }
 
+// The decimal `SBC`, as the core has it: the operand's complement added a
+// digit at a time, and six taken from each digit that did not carry.
+// `carry` is the `SEC` or `CLC` before it and not-borrow after, and
+// `overflow` is what the signs of the two and of the sum say before the top
+// digit is corrected.
+static inline uint16_t bcd_sub16(uint16_t a, uint16_t value, bool* carry,
+                                 bool* overflow) {
+  value = (uint16_t)~value;
+  int result = (a & 0xf) + (value & 0xf) + (*carry ? 1 : 0);
+  if (result < 0x10) result = (result - 0x6) & ((result - 0x6 < 0) ? 0xf : 0x1f);
+  result = (a & 0xf0) + (value & 0xf0) + result;
+  if (result < 0x100) result = (result - 0x60) & ((result - 0x60 < 0) ? 0xff : 0x1ff);
+  result = (a & 0xf00) + (value & 0xf00) + result;
+  if (result < 0x1000) result = (result - 0x600) & ((result - 0x600 < 0) ? 0xfff : 0x1fff);
+  result = (a & 0xf000) + (value & 0xf000) + result;
+  *overflow = (a & 0x8000) == (value & 0x8000) &&
+              (value & 0x8000) != (result & 0x8000);
+  if (result < 0x10000) result -= 0x6000;
+  *carry = result > 0xffff;
+  return (uint16_t)result;
+}
+
 #endif

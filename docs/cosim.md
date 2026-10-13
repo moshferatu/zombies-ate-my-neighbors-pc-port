@@ -19256,3 +19256,43 @@ indexed absolute address carries into the bank. With the data bank at
 Over the same 110 sessions the core executes 170,675 instructions
 where it executed 191,637, and takes over 20,138 times where it
 did 20,935, at 613 places where there were 630.
+
+## The neighbours' threads (2026-10-13)
+
+### One port for stretches that are alike
+
+Nine threads start with the same eight instructions and five are told
+with the same forty, each with its own numbers. A port for each would be
+the same function many times, so there is one, with a table, and it finds
+its row by where it was entered: `c->pc`. The registry still has a row for
+each entry, from `NEIGHBOUR_THREAD_STRETCHES`, and each is checked and
+counted by its own name.
+
+### Exits shared by a family
+
+A row's exits are where the ROM is stopped, and several rows here share one
+list. That is sound while every stretch stops at the first of them it
+comes to. It is not if an entry of the family is on the list: `jumper_end`
+begins at `$83:9F68`, where `jumper_told` stops, so it has a list of its
+own.
+
+### A block's price from its addresses
+
+`NT_BLOCKS` in the header names each block with its first instruction and
+the one after its last, and a script prices them all from that with
+`tools/cycles816.py`. A block that reads the cartridge through the data
+bank is priced with those bytes among its own: `NT_SIGN_MAKE` is 76 bytes
+long and 80 priced. `JMP ($C85F,X)` the tool does not price; it is three
+bytes, a cycle and two of its table, `{36, 5, 0}`.
+
+### Decimal subtraction
+
+`$80:C863` is the first `SBC` with `SED` on that a port has done.
+`bcd_sub16` is the core's own sums, a digit at a time, and overflow is
+taken before the top digit is corrected, as there.
+
+### After
+
+Over the same 110 sessions the core executes 149,547 instructions
+where it executed 170,675, and takes over 18,258 times where it
+did 20,138, at 558 places where there were 613.
