@@ -36,7 +36,8 @@
 //     one off, and a chip's x takes that one. Every key can be bound, Escape
 //     included, so a wait for a key is ended by a click or by five seconds.
 //   * A path is typed after Enter or a click, or chosen with Browse (Windows),
-//     or a cartridge dropped on the window.
+//     or a cartridge dropped on the window. When the cartridge named is not
+//     there, one in the launcher's folder is found by its contents and taken.
 //   * Ctrl+S saves; Ctrl+Enter, F5 or Start plays; Escape quits at once,
 //     unsaved changes or not.
 //
@@ -83,6 +84,7 @@
 #define GAME_EXE "zamn.exe"
 #define SEP '\\'
 #else
+#include <dirent.h>
 #include <limits.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -774,6 +776,65 @@ static bool rom_found(char* resolved, size_t size) {
   return file_exists(resolved);
 }
 
+// The one cartridge the port is made for, by its size and its CRC-32.
+#define CARTRIDGE_BYTES 0x100000
+#define CARTRIDGE_CRC32 0x7CFC0C7Cu
+
+static uint32_t crc32_of(const unsigned char* data, size_t len) {
+  uint32_t crc = 0xFFFFFFFFu;
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (int bit = 0; bit < 8; bit++) crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1)));
+  }
+  return ~crc;
+}
+
+// True when the file of that name in that directory is the cartridge, with
+// its path. Only a .sfc or a .smc is opened to see.
+static bool is_cartridge(const char* dir, const char* name, char* out, size_t size) {
+  const char* dot = strrchr(name, '.');
+  if (!dot || !(config_same(dot, ".sfc") || config_same(dot, ".smc"))) return false;
+  if ((size_t)snprintf(out, size, "%s%s", dir, name) >= size) return false;
+  long len = 0;
+  unsigned char* data = read_all(out, &len);
+  const bool is = data && len == CARTRIDGE_BYTES && crc32_of(data, (size_t)len) == CARTRIDGE_CRC32;
+  free(data);
+  return is;
+}
+
+static bool cartridge_in(const char* dir, char* out, size_t size) {
+  bool found = false;
+#ifdef _WIN32
+  char pattern[CONFIG_PATH_MAX + 2];
+  snprintf(pattern, sizeof pattern, "%s*", dir);
+  WIN32_FIND_DATAA entry;
+  const HANDLE files = FindFirstFileA(pattern, &entry);
+  if (files == INVALID_HANDLE_VALUE) return false;
+  do found = is_cartridge(dir, entry.cFileName, out, size);
+  while (!found && FindNextFileA(files, &entry));
+  FindClose(files);
+#else
+  DIR* files = opendir(*dir ? dir : ".");
+  if (!files) return false;
+  for (const struct dirent* entry; !found && (entry = readdir(files));)
+    found = is_cartridge(dir, entry->d_name, out, size);
+  closedir(files);
+#endif
+  return found;
+}
+
+// For when the cartridge the settings name is not there: one beside the
+// settings or beside the launcher is taken instead, whatever it is called.
+static bool find_cartridge(void) {
+  char path[CONFIG_PATH_MAX];
+  if (!cartridge_in(ui.ini_dir, path, sizeof path) &&
+      (!strcmp(ui.base, ui.ini_dir) || !cartridge_in(ui.base, path, sizeof path)))
+    return false;
+  relative_to_ini(path, ui.cfg.rom, sizeof ui.cfg.rom);
+  changed();
+  return true;
+}
+
 static void commit_edit(void);
 static void drop_close(void);
 
@@ -858,7 +919,7 @@ static bool game_closed(int* code) {
 // Never the launcher's end: it waits for the game, out of sight.
 static bool launch(void) {
   char rom[CONFIG_PATH_MAX];
-  if (!rom_found(rom, sizeof rom)) {
+  if (!rom_found(rom, sizeof rom) && !(find_cartridge() && rom_found(rom, sizeof rom))) {
     // The ROM row, focused, says where it looked: nothing beside the buttons.
     ui.tab = TAB_GAME;
     ui.on_buttons = false;
@@ -2212,6 +2273,8 @@ int main(int argc, char** argv) {
   find_base();
   build_rows();
   load(asked);
+  char rom[CONFIG_PATH_MAX];
+  if (!rom_found(rom, sizeof rom)) find_cartridge();
   ui.hover = -1;
   ui.dragging = -1;
   ui.browse_row = -1;
