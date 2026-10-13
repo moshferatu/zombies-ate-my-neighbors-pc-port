@@ -37,9 +37,30 @@ You will need to obtain a copy of the original ROM:
 
 Download the [latest release](https://github.com/moshferatu/zombies-ate-my-neighbors-pc-port/releases/latest).
 
-After extracting, run `zamn_launcher.exe`.
+### Windows
+
+Extract `zamn-windows-x86_64.zip` and run `zamn_launcher.exe`.
 
 Choose your ROM file under game settings, change any other setting you like, then press **Play**.
+
+### Linux
+
+> **Note:** The Linux build is currently experimental.
+
+Ensure SDL2 is installed:
+
+| | |
+| --- | --- |
+| Arch | `sudo pacman -S sdl2` |
+| Debian / Ubuntu | `sudo apt install libsdl2-2.0-0` |
+
+Then extract and run the launcher:
+
+```
+tar xzf zamn-linux-x86_64.tar.gz
+cd zamn
+./zamn_launcher
+```
 
 ## Generative AI Usage Disclaimer
 

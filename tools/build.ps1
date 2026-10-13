@@ -6,7 +6,7 @@
 #
 #   pwsh tools/build.ps1            # configure (if needed) + build
 #   pwsh tools/build.ps1 -Clean     # wipe build/ first
-#   pwsh tools/build.ps1 -Release   # also zip a release into build/zamn.zip
+#   pwsh tools/build.ps1 -Release   # also zip a release into build/zamn-windows-x86_64.zip
 param([switch]$Clean, [switch]$Release)
 $ErrorActionPreference = 'Stop'
 
@@ -33,4 +33,4 @@ if ($Release) { $inner += " && cmake --build `"$build`" --target zamn_release" }
 cmd /c $inner
 if ($LASTEXITCODE -ne 0) { throw "build failed (exit $LASTEXITCODE)" }
 Write-Host "`nBuild OK. zamn.exe and zamn_launcher.exe in: $root; the rest in: $build" -ForegroundColor Green
-if ($Release) { Write-Host "Release: $(Join-Path $build 'zamn.zip')" -ForegroundColor Green }
+if ($Release) { Write-Host "Release: $(Join-Path $build 'zamn-windows-x86_64.zip')" -ForegroundColor Green }

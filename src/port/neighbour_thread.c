@@ -2,6 +2,8 @@
 
 #include "port/neighbour_thread.h"
 
+#include <stddef.h>
+
 #include "port/bcd.h"
 #include "port/begin.h"       // NEIGHBOUR_HANDLER
 #include "port/bodies.h"      // W_NEIGHBOURS_LEFT

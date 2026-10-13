@@ -5,6 +5,10 @@ build/
 *.dll
 *.ilk
 *.pdb
+# ...and the Linux build's, which have no extension to go by.
+/zamn
+/zamn_launcher
+/libSDL2-2.0.so.0
 
 # Headless frame-dump scratch
 *.png

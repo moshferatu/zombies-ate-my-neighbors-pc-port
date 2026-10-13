@@ -570,9 +570,9 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
   # Play starts the zamn.exe beside the launcher, and building it copies SDL2.
   add_dependencies(zamn_launcher zamn)
 
-  # SDL2 builds as a DLL; place it next to the game and the launcher, and next
-  # to the tests left in the build directory, so all of them run.
-  if(TARGET SDL2::SDL2)
+  # On Windows SDL2 is a DLL; place it next to the game and the launcher, and
+  # next to the tests left in the build directory, so all of them run.
+  if(WIN32 AND TARGET SDL2::SDL2)
     add_custom_command(TARGET zamn POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E copy_if_different
               $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:zamn>
@@ -580,11 +580,27 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
               $<TARGET_FILE:SDL2::SDL2> "${CMAKE_CURRENT_BINARY_DIR}")
   endif()
 
+  # On Linux the game and the launcher look for their libraries beside
+  # themselves first (`$ORIGIN`), so the two can be moved to any folder. SDL2
+  # is the system's unless this build fetched and built its own, and that one
+  # goes beside them under the name the loader is asked for.
+  if(UNIX AND NOT APPLE)
+    set_target_properties(zamn zamn_launcher PROPERTIES
+      BUILD_WITH_INSTALL_RPATH ON
+      INSTALL_RPATH "$ORIGIN")
+    if(sdl2_SOURCE_DIR)
+      add_custom_command(TARGET zamn POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:SDL2::SDL2>
+                "$<TARGET_FILE_DIR:zamn>/$<TARGET_SONAME_FILE_NAME:SDL2::SDL2>")
+    endif()
+  endif()
+
   # `cmake --build build --target zamn_release` zips what a player needs: the
   # launcher, the game, SDL2.dll, and the licences of the code inside them
   # (LakeSnes is MIT, which asks for its notice in every copy; SDL2 is zlib,
   # which only appreciates one). Never the ROM. Not part of the default build.
-  if(TARGET SDL2::SDL2)
+  if(WIN32 AND TARGET SDL2::SDL2)
     if(sdl2_SOURCE_DIR)
       set(ZAMN_SDL_LICENSE_DEFAULT "${sdl2_SOURCE_DIR}/LICENSE.txt")
     else()
@@ -593,7 +609,7 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
     set(ZAMN_SDL_LICENSE "${ZAMN_SDL_LICENSE_DEFAULT}" CACHE FILEPATH
         "SDL2's LICENSE.txt, for the release zip (found by itself when SDL2 is fetched)")
     set(ZAMN_RELEASE_DIR "${CMAKE_CURRENT_BINARY_DIR}/release")
-    set(ZAMN_RELEASE_ZIP "${CMAKE_CURRENT_BINARY_DIR}/zamn.zip")
+    set(ZAMN_RELEASE_ZIP "${CMAKE_CURRENT_BINARY_DIR}/zamn-windows-x86_64.zip")
     if(ZAMN_SDL_LICENSE AND EXISTS "${ZAMN_SDL_LICENSE}")
       # The zip takes only the files it names, so a stale file here is harmless.
       # The folder is made on every run, and the zip made from inside it only
@@ -619,6 +635,42 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
     else()
       message(STATUS "No SDL2 LICENSE.txt known (set ZAMN_SDL_LICENSE): no 'zamn_release' target")
     endif()
+  endif()
+
+  # On Linux the same target makes a tarball of one folder, `zamn/`: the
+  # launcher, the game and LakeSnes's licence. A player extracts it and runs
+  # `./zamn_launcher`. SDL2 is their distribution's, unless this build made its
+  # own: then that and its licence go in the folder too.
+  if(UNIX AND NOT APPLE)
+    set(ZAMN_RELEASE_DIR "${CMAKE_CURRENT_BINARY_DIR}/release")
+    set(ZAMN_RELEASE_FOLDER "${ZAMN_RELEASE_DIR}/zamn")
+    set(ZAMN_RELEASE_TARBALL
+        "${CMAKE_CURRENT_BINARY_DIR}/zamn-linux-${CMAKE_SYSTEM_PROCESSOR}.tar.gz")
+    set(ZAMN_RELEASE_SDL "")
+    if(sdl2_SOURCE_DIR)
+      set(ZAMN_RELEASE_SDL
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:SDL2::SDL2>
+                "${ZAMN_RELEASE_FOLDER}/$<TARGET_SONAME_FILE_NAME:SDL2::SDL2>"
+        COMMAND ${CMAKE_COMMAND} -E copy "${sdl2_SOURCE_DIR}/LICENSE.txt"
+                "${ZAMN_RELEASE_FOLDER}/SDL2-LICENSE.txt")
+    endif()
+    # The tarball takes the whole folder, so the folder is made afresh.
+    add_custom_target(zamn_release
+      COMMAND ${CMAKE_COMMAND} -E rm -rf "${ZAMN_RELEASE_FOLDER}"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${ZAMN_RELEASE_FOLDER}"
+      COMMAND ${CMAKE_COMMAND} -E copy
+              $<TARGET_FILE:zamn_launcher> $<TARGET_FILE:zamn>
+              "${ZAMN_RELEASE_FOLDER}"
+      COMMAND ${CMAKE_COMMAND} -E copy
+              "${CMAKE_CURRENT_SOURCE_DIR}/third_party/lakesnes/LICENSE.txt"
+              "${ZAMN_RELEASE_FOLDER}/LakeSnes-LICENSE.txt"
+      ${ZAMN_RELEASE_SDL}
+      COMMAND ${CMAKE_COMMAND} -E rm -f "${ZAMN_RELEASE_TARBALL}"
+      COMMAND ${CMAKE_COMMAND} -E chdir "${ZAMN_RELEASE_DIR}"
+              ${CMAKE_COMMAND} -E tar czf "${ZAMN_RELEASE_TARBALL}" zamn
+      DEPENDS zamn zamn_launcher
+      COMMENT "Packing the release into ${ZAMN_RELEASE_TARBALL}"
+      VERBATIM)
   endif()
   message(STATUS "Interactive 'zamn' target enabled")
 endif()
