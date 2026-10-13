@@ -208,4 +208,21 @@ void text_big_glyph(Wram* w, const Rom* rom, uint16_t page, uint8_t which,
 #define TEXT_BIG_RTL_PC 0x82ae43u
 bool text_big_sent(Wram* w, PortCpu* c);
 
+// `$82:B820` sends the map a line was printed on: the job at `$82:B82E`
+// asked for, a `WAI`, and asked again if the queue was full. The printer of
+// several lines ends the same way at `$82:B9A6` with its own job, and then
+// gives its caller's data bank back.
+#define TEXT_MAP_SEND_PC 0x82b820u
+#define TEXT_MAP_SEND_ASK_PC 0x82b826u  // `JSL`, the job in A and Y
+#define TEXT_MAP_SENT_PC 0x82b82bu      // after the `WAI`
+#define TEXT_MAP_SENT_RTL_PC 0x82b82du
+#define TEXT_LINES_SENT_PC 0x82b9b1u
+#define TEXT_LINES_SENT_RTL_PC 0x82b9b5u
+void text_map_send_ask(PortCpu* c);
+// True if the queue took the job. If it did not, `text_map_sent` stops on
+// the routine's first instruction and `text_lines_sent` on the call that
+// asks again.
+bool text_map_sent(PortCpu* c);
+bool text_lines_sent(Wram* w, PortCpu* c);
+
 #endif

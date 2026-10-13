@@ -7,6 +7,7 @@
 #include "port/thread.h"
 
 // The registers.
+#define REG_INIDISP 0x2100u    // the brightness, and the picture blanked
 #define REG_BGMODE 0x2105u     // the mode, and whose tiles are 16 across
 #define REG_BG1HOFS 0x210du    // the first layer's scroll across, written twice
 #define REG_BG1VOFS 0x210eu    // ...and down
@@ -210,17 +211,22 @@ void colour_window_reset(Wram* w, HwTrace* t) {
 #define DEST_BG1_SCROLL_X 0x0du  // `$210D`
 #define WAVE_TABLE_BANK 0x7eu
 
-uint16_t level_card_layer(Wram* w, HwTrace* t, uint16_t s) {
-  PORT_COVER(level_card_layer);
-  hw_run(t, DMA_JSL);
-  wram_w8(w, s, LAYER_SETUP_PC >> 16);
-  wram_w16(w, (uint16_t)(s - 2), LAYER_SETUP_RETURN);
+// `$82:ACD6`, as far as its `REP`.
+static void layer_setup(HwTrace* t) {
   // A word each, so the second byte of each goes to the scroll down.
   store16(t, DMA_STORE, REG_BG1HOFS, 0);
   store16(t, DMA_STORE, REG_BG1HOFS, 0);
   store8(t, DMA_SEP_IMM, REG_BG1SC, MAP_AT_6800_TWO_DOWN);
   store8(t, DMA_IMM, REG_BG12NBA, BG1_TILES_AT_2000);
   store8(t, DMA_IMM, REG_VMAIN, STEP_ON_HIGH_BYTE);
+}
+
+uint16_t level_card_layer(Wram* w, HwTrace* t, uint16_t s) {
+  PORT_COVER(level_card_layer);
+  hw_run(t, DMA_JSL);
+  wram_w8(w, s, LAYER_SETUP_PC >> 16);
+  wram_w16(w, (uint16_t)(s - 2), LAYER_SETUP_RETURN);
+  layer_setup(t);
   hw_run(t, DMA_RTL);
   hw_run(t, LC_BRIGHT);
   wram_w16(w, W_LOGO_BRIGHTNESS, FULL_BRIGHTNESS);
@@ -505,6 +511,43 @@ void portraits_layers(Wram* w, HwTrace* t) {
   store8(t, DMA_IMM, REG_CGWSEL, ADD_SECOND_SCREEN);
   store8(t, DMA_IMM, REG_CGADSUB, ADD_TO_THIRD_LAYER);
   store8(t, DMA_IMM, REG_BG1SC, PORTRAITS_MAP_AT_6800);
+  hw_run(t, DMA_REP);
+}
+
+#define FORCED_BLANK 0x80u
+#define MAP_AT_6800 0x68u
+#define MAP_AT_6400 0x64u
+
+void cursor_screen_layers(Wram* w, HwTrace* t) {
+  PORT_COVER(cursor_screen_layers);
+  wram_w16(w, W_CAMERA_X, 0);
+  wram_w16(w, W_CAMERA_Y, 0);
+  // A word each, so the second byte of each goes to the scroll down.
+  store16(t, CS_HEAD, REG_BG1HOFS, 0);
+  store16(t, DMA_STORE, REG_BG1HOFS, 0);
+  store8(t, DMA_SEP_IMM, REG_INIDISP, FORCED_BLANK);
+  store8(t, DMA_IMM, REG_BG1SC, MAP_AT_6800);
+  store8(t, DMA_IMM, REG_BG12NBA, BG1_TILES_AT_2000);
+  store8(t, DMA_IMM, REG_TM, CURSOR_SCREEN_LAYERS_ON);
+  hw_run(t, DMA_REP);
+}
+
+void backdrop_layers(HwTrace* t) {
+  PORT_COVER(backdrop_layers);
+  store8(t, DMA_SEP_IMM, REG_BG3SC, MAP_AT_6400);
+  store8(t, DMA_IMM, REG_BG34NBA, BACKDROP_TILES_AT_2000);
+  hw_run(t, DMA_REP);
+}
+
+void words_layer_setup(HwTrace* t) {
+  PORT_COVER(words_layer_setup);
+  layer_setup(t);
+  hw_run(t, DMA_REP);
+}
+
+void scores_layers(HwTrace* t) {
+  PORT_COVER(scores_layers);
+  store8(t, DMA_SEP_IMM, REG_TM, SCORES_LAYERS_ON);
   hw_run(t, DMA_REP);
 }
 

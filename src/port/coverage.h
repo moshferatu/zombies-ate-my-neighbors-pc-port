@@ -196,6 +196,42 @@
   X(cursor_pick_end,  "cursor_pick",        "the grid's `$3B`: the entry is over") \
   X(cursor_after_pick,"cursor_after",       "the clock set again after a pick") \
   X(cursor_after_move,"cursor_after",       "...or after a move's sound") \
+  X(password_screen_ask, "cursor_password_screen_ask", "the table for a pad, for the password's screen") \
+  X(cursor_screen_begin, "cursor_screen_begin", "the data bank kept and the table made a far pointer") \
+  X(cursor_screen_dim, "cursor_screen_dim", "the picture to be blanked") \
+  X(cursor_screen_backdrop_ask, "cursor_screen_backdrop_ask", "which of the backdrop's colours") \
+  X(backdrop_colours_ask, "cursor_backdrop_colours_ask", "the backdrop's colours, to be sent") \
+  X(backdrop_slide_ask, "cursor_backdrop_slide_ask", "the job that slides it, to be queued") \
+  X(backdrop_slide_kept, "cursor_backdrop_slide_kept", "...and where the queue put it") \
+  X(backdrop_slide_job_ask, "cursor_backdrop_slide_job_ask", "...to be taken out") \
+  X(cursor_screen_words_ask, "cursor_screen_words_ask", "the screen's words, to be printed") \
+  X(cursor_screen_one_line, "cursor_screen_one_line", "not the screen with a second line, so shown") \
+  X(cursor_screen_shown, "cursor_screen_shown", "black, but no longer blank") \
+  X(cursor_screen_undim, "cursor_screen_undim", "the blanking bit off") \
+  X(cursor_sprites_ask, "cursor_sprites_ask", "the sprites' job, to be queued") \
+  X(cursor_sprites_job_kept, "cursor_sprites_job_kept", "...and where the queue put it") \
+  X(cursor_record_begin, "cursor_record_begin", "the cursor's display record set up") \
+  X(cursor_pads_forget, "cursor_pads_forget", "what the pads held forgotten") \
+  X(cursor_entry_clear, "cursor_entry_clear", "nothing entered, and the clock set") \
+  X(cursor_check_call, "cursor_check_call", "the screen's own routine jumped to") \
+  X(cursor_checked_right, "cursor_checked", "carry clear: the sound of a good entry") \
+  X(cursor_checked_wrong, "cursor_checked", "...or set: the sound of a bad one") \
+  X(cursor_flash_begin, "cursor_flash_begin", "the entry to flash twice") \
+  X(cursor_flash_lit, "cursor_flash_lit", "the entry printed lit") \
+  X(cursor_flash_lit_sleep, "cursor_flash_lit_sleep", "four ticks lit") \
+  X(cursor_flash_plain, "cursor_flash_plain", "...and printed plain") \
+  X(cursor_flash_plain_sleep, "cursor_flash_plain_sleep", "four ticks plain") \
+  X(cursor_flash_again, "cursor_flash_next", "another flash") \
+  X(cursor_flash_done, "cursor_flash_next", "...or none") \
+  X(cursor_record_free_ask, "cursor_record_free_ask", "the cursor's record, to be freed") \
+  X(cursor_screen_dark, "cursor_screen_dark", "faded down, and blanked") \
+  X(cursor_sprites_job_ask, "cursor_sprites_job_ask", "the sprites' job, to be taken out") \
+  X(cursor_screen_end, "cursor_screen_end", "the entry's address, and the caller's data bank") \
+  X(cursor_wrong_sleep, "cursor_wrong_sleep", "ten ticks after the sound of a bad entry") \
+  X(cursor_wrong_again, "cursor_wrong_again", "...the sound again") \
+  X(cursor_wrong_again_sleep, "cursor_wrong_again_sleep", "...and ten more") \
+  X(cursor_entry_print_ask, "cursor_entry_print_ask", "the entry printed after a pick's sound") \
+  X(cursor_pick_wide, "cursor_pick_end", "a pick's `REP`") \
   X(password_cheat,   "password_check",     "the one password tested by its letters") \
   X(password_good,    "password_check",     "a level, and one to nine neighbours") \
   X(password_ten,     "password_check",     "...or all ten") \
@@ -1681,6 +1717,7 @@
   X(title_menu_free_first, "menus_title_menu_free_first", "the first choice's record, to be freed") \
   X(title_menu_free_second, "menus_title_menu_free_second", "...and the second's") \
   X(title_menu_password_pad, "menus_title_menu_password_pad", "the pad pulled for the password's screen") \
+  X(title_menu_password_checked, "menus_title_menu_password_checked", "what the password's check found, against a level") \
   X(title_menu_go, "menus_title_menu_go", "carry set: on to the players' screen") \
   X(players_screen_begin, "menus_players_screen_begin", "its counts zeroed and its scroll's job asked") \
   X(players_screen_joined, "menus_players_screen_joined", "after the first player's join") \
@@ -1829,6 +1866,17 @@
   X(footballer_began, "footballer_begin", "its record, and its page cleared") \
   X(scores_line,      "scores_line",        "a line of the top scores to print") \
   X(scores_printed,   "scores_line",        "...and all ten printed") \
+  X(scores_screen_begin, "scores_screen_begin", "the data bank kept and set") \
+  X(scores_screen_dim, "scores_screen_dim", "the picture to be blanked") \
+  X(scores_backdrop_ask, "scores_backdrop_ask", "which of the backdrop's colours") \
+  X(scores_first_line, "scores_first_line", "the last line asked for first") \
+  X(scores_title_ask, "scores_title_ask", "the screen's title, to be printed") \
+  X(scores_screen_shown, "scores_screen_shown", "black, but no longer blank") \
+  X(scores_screen_undim, "scores_screen_undim", "the blanking bit off") \
+  X(scores_pads_forget, "scores_pads_forget", "what the pads held forgotten") \
+  X(scores_wait_begin, "scores_wait_begin", "six seconds to wait") \
+  X(scores_screen_dark, "scores_screen_dark", "faded down, and blanked") \
+  X(scores_screen_end, "scores_screen_end", "the caller's data bank") \
   X(footballer_sent_off, "footballer_frame", "a pass sent off") \
   X(footballer_off_turned, "footballer_frame", "...stopped by the ground: it turns") \
   X(footballer_ran_off, "footballer_frame", "...and its picture is off the screen: it ends") \
@@ -1915,6 +1963,11 @@
   X(level_card_layers_back, "level_card_layers_back", "the level's layers put back") \
   X(text_big_sent, "text_big_sent", "the big letters' map queued, and back to the caller") \
   X(text_big_queue_full, "text_big_sent", "...or the queue full, and asked again") \
+  X(text_map_send_ask, "text_map_send_ask", "the job that sends a line's map, to be queued") \
+  X(text_map_sent, "text_map_sent", "queued, and back to the caller") \
+  X(text_map_queue_full, "text_map_sent", "...or the queue full, and asked again") \
+  X(text_lines_sent, "text_lines_sent", "several lines' map queued, and back to the caller") \
+  X(text_lines_queue_full, "text_lines_sent", "...or the queue full, and asked again") \
   X(palfade_begin, "palfade_begin", "a colour fade's thread begun") \
   X(frontend_first_pass, "frontend_first_pass", "the front end's first pass, and the screen before the title") \
   X(frontend_later_pass, "frontend_first_pass", "...or a later one, straight to the title")   X(frontend_opening_skipped, "frontend_first_pass", "...or the first with the logos skipped, and the same") \
@@ -1942,6 +1995,10 @@
   X(title_hdma_off, "title_hdma_off", "...and off") \
   X(title_menu_layers, "title_menu_layers", "the sprites on with the title's layers") \
   X(portraits_layers, "portraits_layers", "the players' screen's layers and their arithmetic") \
+  X(cursor_screen_layers, "cursor_screen_layers", "a screen with a cursor's layers, blanked") \
+  X(backdrop_layers, "backdrop_layers", "where the backdrop's map and tiles are") \
+  X(words_layer_setup, "words_layer_setup", "the first layer set up for words") \
+  X(scores_layers, "scores_layers", "the top scores' layers on") \
   X(frontend_scroll_job_stop, "frontend_scroll_job_stop", "the scroll's job, to be taken out") \
   X(frontend_title_left_on, "frontend_title_left", "the menu over, and the players' screen next") \
   X(frontend_title_left_again, "frontend_title_left", "...or the title again") \

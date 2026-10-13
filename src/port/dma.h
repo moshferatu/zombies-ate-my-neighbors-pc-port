@@ -214,6 +214,7 @@ enum {
   SS_SEND,       // $80:921F STZ : STZ : LDA # : PHA : LDA # : LDX # : LDY #
   TH_HEAD,       // $80:941D STZ : STZ, a byte each : LDA # : STA $4360
   PL_HEAD,       // $80:98A9 LDA # : STA : STA : STZ : STZ : SEP #$20 : LDA # : STA $2125
+  CS_HEAD,       // $82:B4C4 STZ : STZ, to memory : STZ $210D
   DMA_BLOCK_COUNT
 };
 
@@ -374,6 +375,35 @@ uint8_t level_card_layers_back(const Wram* w, HwTrace* t, uint16_t s);
 void title_menu_layers(HwTrace* t);
 void portraits_layers(Wram* w, HwTrace* t);
 
+// The screens of words in bank `$82` (`port/cursor.h`, `port/card.h`). Each
+// stops where the next send's numbers are loaded, or on its `RTL`, and
+// leaves the last byte it loaded in A's low byte.
+//
+//   $82:B4C4  cursor_screen_layers  the camera at the corner, the picture
+//                                   blanked, and the first and third layers
+//                                   and the sprites on
+//   $82:B1B6  backdrop_layers       where the third layer's map and tiles are
+//   $82:ACD6  words_layer_setup     the first layer's scroll, map and tiles,
+//                                   for words
+//   $82:BA89  scores_layers         the first and third layers on
+#define CURSOR_SCREEN_LAYERS_PC 0x82b4c4u
+#define CURSOR_SCREEN_LAYERS_END_PC 0x82b4e8u
+#define CURSOR_SCREEN_LAYERS_ON 0x15u
+#define BACKDROP_LAYERS_PC 0x82b1b6u
+#define BACKDROP_LAYERS_END_PC 0x82b1c4u
+#define BACKDROP_TILES_AT_2000 0x02u
+#define WORDS_LAYER_SETUP_PC 0x82acd6u
+#define WORDS_LAYER_SETUP_RTL_PC 0x82acefu
+#define WORDS_LAYER_STEP_ON_HIGH_BYTE 0x80u
+#define SCORES_LAYERS_PC 0x82ba89u
+#define SCORES_LAYERS_END_PC 0x82ba92u
+#define SCORES_LAYERS_ON 0x05u
+
+void cursor_screen_layers(Wram* w, HwTrace* t);
+void backdrop_layers(HwTrace* t);
+void words_layer_setup(HwTrace* t);
+void scores_layers(HwTrace* t);
+
 void opening_begin(Wram* w, HwTrace* t);
 // `s` is the stack pointer it finds, and it pushes a word.
 void screen_show_begin(Wram* w, HwTrace* t, uint16_t s);
@@ -493,7 +523,18 @@ uint16_t text_map_job(const Wram* w, HwTrace* t);
   X(809834, "$80:9834", 0x809834u, 0x809841u, 0, 0x0080, 0x009e, 0x8f76, 0x0100) \
   X(809845, "$80:9845", 0x809845u, 0x809846u, 1, -1, -1, -1, -1) \
   /* `$80:9A90`, the job that sends the text map the portraits are on */ \
-  X(809a90, "$80:9A90", 0x809a90u, 0x809a9du, 0, 0x007e, 0x6502, 0x71a0, 0x0400)
+  X(809a90, "$80:9A90", 0x809a90u, 0x809a9du, 0, 0x007e, 0x6502, 0x71a0, 0x0400) \
+  /* `$82:B4B7`, a screen with a cursor's */ \
+  X(82b4e8, "$82:B4E8", 0x82b4e8u, 0x82b4f1u, 0, -1, 0x0083, 0xf18c, 0x0100) \
+  X(82b4f5, "$82:B4F5", 0x82b4f5u, 0x82b502u, 0, 0x0080, 0x009e, 0x8f76, 0x0100) \
+  X(82b506, "$82:B506", 0x82b506u, 0x82b514u, 1, 0x0096, 0x9683, 0x4000, 0x1620) \
+  /* `$82:B1A7`, the backdrop's */ \
+  X(82b1c4, "$82:B1C4", 0x82b1c4u, 0x82b1d1u, 0, 0x0097, 0xd5a2, 0x2000, 0x0a70) \
+  X(82b1d5, "$82:B1D5", 0x82b1d5u, 0x82b1e3u, 1, 0x009e, 0xb700, 0x6400, 0x0800) \
+  /* `$82:BA4F`, the top scores' */ \
+  X(82ba5c, "$82:BA5C", 0x82ba5cu, 0x82ba65u, 0, -1, 0x0083, 0xf18c, 0x0100) \
+  X(82ba69, "$82:BA69", 0x82ba69u, 0x82ba76u, 0, 0x0096, 0x9683, 0x4000, 0x1620) \
+  X(82ba7a, "$82:BA7A", 0x82ba7au, 0x82ba7bu, 1, -1, -1, -1, -1)
 
 typedef struct {
   uint32_t pc, exit;

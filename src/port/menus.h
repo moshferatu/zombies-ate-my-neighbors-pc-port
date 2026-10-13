@@ -202,6 +202,7 @@ bool players_screen_over(Wram* w, PortCpu* c);
   X(title_menu_free_first, "$80:9765", 0x809765u, 0x809767u) \
   X(title_menu_free_second, "$80:976B", 0x80976bu, 0x80976du) \
   X(title_menu_password_pad, "$80:9791", 0x809791u, 0x809792u) \
+  X(title_menu_password_checked, "$80:9797", 0x809797u, 0x80979du) \
   X(title_menu_go, "$80:97A2", 0x8097a2u, 0x8097a3u) \
   X(players_screen_begin, "$80:98EA", 0x8098eau, 0x8098f8u) \
   X(players_screen_joined, "$80:9961", 0x809961u, 0x8099bdu) \

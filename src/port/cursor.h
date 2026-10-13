@@ -164,4 +164,130 @@ bool cursor_pick(Wram* w, const Rom* rom, PortCpu* c, PickWork* k);
 
 void cursor_after(Wram* w, PortCpu* c, bool picked, PickWork* k);
 
+// ## The rest of the screen, between its calls
+//
+// `$82:B232` is called with the screen's table in A and Y. It dims the
+// picture, sends the screen's colours and tiles and the backdrop's, prints
+// the screen's words, makes the cursor's sprite and fades up. Then the loop
+// above. When that is done it calls the screen's own routine, which for a
+// password is the check at `$82:B018`, and on carry clear flashes the entry
+// twice. Carry set is two sounds a sixth of a second apart. It fades down,
+// stops its two jobs and returns the entry's address in A.
+//
+// `$82:AFF3` is what the title's menu calls for a password: the table for
+// the pad in X, and `$82:B232`.
+//
+// The backdrop is `$82:B1A7`'s, which the top scores' screen calls too: its
+// colours, the third layer's map and tiles, and the job that slides it. It
+// is called with which thirty-two colours in A, as an offset from
+// `$92:FF91`. `$82:B229` asks for that job's end.
+//
+// The stretches below are each from where a call or a wait comes back to
+// the next call, wait or return. They leave every register and flag as the
+// ROM does. The two that write to the picture hardware are in `port/dma.h`.
+//
+// Not here: the screen whose number is 4, which has a second line of words
+// and which I have not seen; a table with no routine of its own; and the
+// grid's `$3A`, which takes a character back.
+
+#define PASSWORD_SCREENS 0x82b000u  // a table's address for each pad
+#define CURSOR_SCREEN_WORDS 0x82b6b2u    // each screen's words
+#define CURSOR_SCREEN_PLACES 0x82b5e3u   // where its entry is printed
+#define CURSOR_ENTRY_PLAIN 0x82b5e9u     // how the entry is printed
+#define CURSOR_ENTRY_LIT 0x82b5fdu       // ...and when it flashes
+#define CURSOR_SCREEN_TWO_LINES 0x0004u  // the screen this does not take
+#define W_CURSOR_CHECK 0x00e0u           // where the check is jumped through
+#define CURSOR_SCREEN_BACKDROP 0x0008u   // which of the backdrop's colours
+#define CURSOR_TURN_TICKS 0x0004u
+#define CURSOR_CHECK_RETURN 0xb394u      // pushed for the check's `RTL`
+#define W_CURSOR_FLASHES 0x1e92u
+#define W_CURSOR_FLASH_SCREEN 0x1e96u    // `W_CURSOR_COLUMN`, when it is done
+#define W_CURSOR_SPRITES_JOB 0x0068u     // where each job is in the queue
+#define W_BACKDROP_SLIDE_JOB 0x006cu
+#define CURSOR_SPRITES_JOB 0x8000u       // `$84:8000`
+#define CURSOR_SPRITES_JOB_BANK 0x0084u
+#define CURSOR_SPRITE 0xd7e5u            // `$8F:D7E5`
+#define CURSOR_SPRITE_BANK 0x008fu
+#define CURSOR_SOUND_RIGHT 0x0005u
+#define CURSOR_SOUND_WRONG 0x0013u
+#define CURSOR_FLASH_TICKS 0x0004u
+#define CURSOR_WRONG_TICKS 0x000au
+#define BACKDROP_COLOURS 0xff91u         // in bank `$92`
+#define BACKDROP_COLOURS_BANK 0x0092u
+#define BACKDROP_COLOURS_BYTES 0x0020u
+#define BACKDROP_SLIDE_JOB 0xb1f9u       // `$82:B1F9`
+#define BRIGHTNESS_DARK 0x0080u          // the brightness shadow's bit
+
+#define CURSOR_CHECK_CALL_PC 0x82b378u
+#define CURSOR_CHECKED_PC 0x82b2deu
+#define CURSOR_RIGHT_PC 0x82b2e3u  // `JSL apu_play_sfx`, either way
+#define CURSOR_WRONG_PC 0x82b318u
+#define CURSOR_FLASH_NEXT_PC 0x82b3f0u
+#define CURSOR_FLASH_AGAIN_PC 0x82b3a2u
+#define CURSOR_FLASH_DONE_PC 0x82b3f5u  // `RTS`
+
+// Is the far pointer at a table in the cartridge, for a screen the tables
+// have and this takes?
+bool cursor_screen_known(const Wram* w, const Rom* rom, uint16_t page);
+// ...and is its routine the password's check?
+bool cursor_check_known(const Wram* w, const Rom* rom, uint16_t page);
+
+// `$82:B378`: the screen's own routine, jumped to with a return pushed.
+void cursor_check_call(Wram* w, const Rom* rom, PortCpu* c);
+// `$82:B2DE`: true if it left carry clear.
+bool cursor_checked(Wram* w, PortCpu* c);
+// `$82:B3F0`: true if the entry is to flash again.
+bool cursor_flash_next(Wram* w, PortCpu* c);
+
+// What a stretch has to find before it can be the port's.
+typedef enum {
+  CURSOR_NEEDS_NOTHING,
+  CURSOR_NEEDS_PAD,     // X a pad: 0 or 2
+  CURSOR_NEEDS_SCREEN,  // `cursor_screen_known`
+  CURSOR_NEEDS_FLASH,   // the screen it kept to flash is one the tables have
+  CURSOR_NEEDS_RECORD,  // A a display record
+} CursorNeeds;
+
+bool cursor_needs_met(CursorNeeds needs, const Wram* w, const Rom* rom,
+                      const PortCpu* c);
+
+// A name, where it starts, the instruction it stops on and what it needs.
+#define CURSOR_STRETCHES(X) \
+  X(password_screen_ask, "$82:AFF3", 0x82aff3u, 0x82affbu, CURSOR_NEEDS_PAD) \
+  X(screen_begin, "$82:B232", 0x82b232u, 0x82b23eu, CURSOR_NEEDS_NOTHING) \
+  X(screen_dim, "$82:B4B7", 0x82b4b7u, 0x82b4c0u, CURSOR_NEEDS_NOTHING) \
+  X(screen_backdrop_ask, "$82:B518", 0x82b518u, 0x82b51cu, CURSOR_NEEDS_NOTHING) \
+  X(backdrop_colours_ask, "$82:B1A7", 0x82b1a7u, 0x82b1b2u, CURSOR_NEEDS_NOTHING) \
+  X(backdrop_slide_ask, "$82:B1E7", 0x82b1e7u, 0x82b1eeu, CURSOR_NEEDS_NOTHING) \
+  X(backdrop_slide_kept, "$82:B1F2", 0x82b1f2u, 0x82b1f8u, CURSOR_NEEDS_NOTHING) \
+  X(backdrop_slide_job_ask, "$82:B229", 0x82b229u, 0x82b22cu, CURSOR_NEEDS_NOTHING) \
+  X(screen_words_ask, "$82:B523", 0x82b523u, 0x82b533u, CURSOR_NEEDS_SCREEN) \
+  X(screen_one_line, "$82:B537", 0x82b537u, 0x82b558u, CURSOR_NEEDS_SCREEN) \
+  X(screen_shown, "$82:B555", 0x82b555u, 0x82b558u, CURSOR_NEEDS_NOTHING) \
+  X(screen_undim, "$82:B559", 0x82b559u, 0x82b562u, CURSOR_NEEDS_NOTHING) \
+  X(sprites_ask, "$82:B588", 0x82b588u, 0x82b58eu, CURSOR_NEEDS_NOTHING) \
+  X(sprites_job_kept, "$82:B596", 0x82b596u, 0x82b59cu, CURSOR_NEEDS_NOTHING) \
+  X(record_begin, "$82:B5A4", 0x82b5a4u, 0x82b5deu, CURSOR_NEEDS_RECORD) \
+  X(pads_forget, "$82:B574", 0x82b574u, 0x82b583u, CURSOR_NEEDS_NOTHING) \
+  X(entry_clear, "$82:B241", 0x82b241u, 0x82b263u, CURSOR_NEEDS_NOTHING) \
+  X(flash_begin, "$82:B396", 0x82b396u, 0x82b3bau, CURSOR_NEEDS_SCREEN) \
+  X(flash_lit, "$82:B3A2", 0x82b3a2u, 0x82b3bau, CURSOR_NEEDS_FLASH) \
+  X(flash_lit_sleep, "$82:B3C2", 0x82b3c2u, 0x82b3c5u, CURSOR_NEEDS_NOTHING) \
+  X(flash_plain, "$82:B3C9", 0x82b3c9u, 0x82b3e1u, CURSOR_NEEDS_FLASH) \
+  X(flash_plain_sleep, "$82:B3E9", 0x82b3e9u, 0x82b3ecu, CURSOR_NEEDS_NOTHING) \
+  X(record_free_ask, "$82:B2EA", 0x82b2eau, 0x82b2edu, CURSOR_NEEDS_NOTHING) \
+  X(screen_dark, "$82:B2FD", 0x82b2fdu, 0x82b303u, CURSOR_NEEDS_NOTHING) \
+  X(sprites_job_ask, "$82:B307", 0x82b307u, 0x82b30au, CURSOR_NEEDS_NOTHING) \
+  X(screen_end, "$82:B30F", 0x82b30fu, 0x82b314u, CURSOR_NEEDS_NOTHING) \
+  X(wrong_sleep, "$82:B31C", 0x82b31cu, 0x82b31fu, CURSOR_NEEDS_NOTHING) \
+  X(wrong_again, "$82:B323", 0x82b323u, 0x82b326u, CURSOR_NEEDS_NOTHING) \
+  X(wrong_again_sleep, "$82:B32A", 0x82b32au, 0x82b32du, CURSOR_NEEDS_NOTHING) \
+  X(entry_print_ask, "$82:B48E", 0x82b48eu, 0x82b4a6u, CURSOR_NEEDS_SCREEN) \
+  X(pick_end, "$82:B4AE", 0x82b4aeu, 0x82b4b0u, CURSOR_NEEDS_NOTHING)
+
+#define X(name, sym, entry, exit, needs) \
+  void cursor_##name(Wram* w, const Rom* rom, PortCpu* c);
+CURSOR_STRETCHES(X)
+#undef X
+
 #endif

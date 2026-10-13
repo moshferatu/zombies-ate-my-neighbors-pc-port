@@ -19183,3 +19183,42 @@ the corpus, for a stretch `run` takes 65 times. `players_screen_sleep` at
 Over the same 110 sessions the core executes 210,414 instructions
 where it executed 236,543, and takes over 22,482 times where it
 did 25,526, at 662 places where there were 691.
+
+## The password's screen and the top scores (2026-10-12)
+
+### A limit that was also a size
+
+`COSIM_MAX_ROUTINES` sized two things: the mask of what is enabled, and
+an array of counts inside `Cosim`. The registry reached 1,095 and
+`cosim_init` said so, as it is there to. Raised to 2,048, `verify` ran and
+lockstep ended at once with status 127 and no output. The counts were
+about 800 KB, lockstep keeps two `Cosim`s on its stack, and the game and
+the tools keep one each. The counts are allocated by `cosim_init` now,
+one for each routine registered, and freed by `cosim_free`.
+
+### Two prices the tool had wrong
+
+`cursor_check_call` was 16 cycles short on its one call in each movie.
+The run ends `PHB : PER $B394 : JML ($00E0)`:
+
+* `PER` decodes with a 16-bit relative operand, so the tool priced it as
+  a `BRL`, 24, and never reached its own line for `PER`. It is 40, with
+  the two bytes pushed.
+* `JML ($00E0)` was priced as a `JML`, 18, without the three bytes it
+  jumps through, which are in low memory at 8 each. It is 42.
+
+I had allowed for the second by hand, so the row was short by the first
+alone. Both are fixed in `tools/cycles816.py`.
+
+### A jump through memory
+
+`JML ($00E0)` is not an instruction the harness makes, and where it goes
+is in the screen's table. The stretch makes the jump itself and has one
+exit, the password's check, which is the only routine either table
+names. Its guard reads the table and turns anything else down.
+
+### After
+
+Over the same 110 sessions the core executes 191,637 instructions
+where it executed 210,414, and takes over 20,935 times where it
+did 22,482, at 630 places where there were 662.

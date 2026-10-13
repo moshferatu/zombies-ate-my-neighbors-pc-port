@@ -3,6 +3,7 @@
 #include "port/card.h"
 
 #include "port/coverage.h"
+#include "port/cursor.h"  // the brightness shadow's bit
 #include "port/thread.h"
 
 bool card_bounce_supported(const Wram* w) {
@@ -121,6 +122,22 @@ bool scores_line_supported(const Wram* w) {
          line % SCORES_PLACE_BYTES == 0;
 }
 
+// What the printer is called with for a line: where it goes in X, its row
+// of the table in Y, and the table's bank where the printer looks for it.
+static void line_print_ask(Wram* w, const Rom* rom, PortCpu* c,
+                           uint16_t line) {
+  set_c(c, false);
+  // Kept on the stack while X indexes the rows.
+  push16(w, c, adc16(c, SCORES_PLACES, line));
+  wram_w16(w, W_SCORES_ROW_BANK, SCORES_ROW_BANK);
+  set_c(c, false);  // `LSR`, of a multiple of four
+  c->y = rom_word(rom, SCORES_ROWS + (line >> 1));
+  c->a = CARD_BANK;
+  c->x = pull16(w, c);
+  set_nz16(c, c->x);
+  c->pc = SCORES_LINE_PRINT_PC;
+}
+
 bool scores_line(Wram* w, const Rom* rom, PortCpu* c) {
   set_c(c, true);
   const uint16_t line =
@@ -133,13 +150,109 @@ bool scores_line(Wram* w, const Rom* rom, PortCpu* c) {
     return false;
   }
   PORT_COVER(scores_line);
-  set_c(c, false);
-  c->x = adc16(c, SCORES_PLACES, line);
-  wram_w16(w, W_SCORES_ROW_BANK, SCORES_ROW_BANK);
-  set_c(c, false);  // `LSR`, of a multiple of four
-  c->y = rom_word(rom, SCORES_ROWS + (line >> 1));
-  c->a = CARD_BANK;
-  set_nz16(c, c->x);
-  c->pc = SCORES_LINE_PRINT_PC;
+  line_print_ask(w, rom, c, line);
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// The rest of the top scores' screen
+// ---------------------------------------------------------------------------
+
+static void load_word(PortCpu* c, uint16_t v, uint32_t pc) {
+  c->a = v;
+  set_nz16(c, v);
+  c->pc = pc;
+}
+
+// The data bank kept, and set to this one.
+void scores_screen_begin(Wram* w, const Rom* rom, PortCpu* c) {
+  (void)rom;
+  PORT_COVER(scores_screen_begin);
+  push8(w, c, c->db);
+  push16(w, c, CARD_BANK);
+  c->db = pull8(w, c);
+  set_nz8(c, c->db);
+  c->pc = 0x82ba16u;
+}
+
+void scores_screen_dim(Wram* w, const Rom* rom, PortCpu* c) {
+  (void)rom;
+  PORT_COVER(scores_screen_dim);
+  wram_w16(w, W_BRIGHTNESS_SHADOW,
+           wram_r16(w, W_BRIGHTNESS_SHADOW) | BRIGHTNESS_DARK);
+  load_word(c, wram_r16(w, W_BRIGHTNESS_SHADOW), 0x82ba58u);
+}
+
+void scores_backdrop_ask(Wram* w, const Rom* rom, PortCpu* c) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(scores_backdrop_ask);
+  load_word(c, SCORES_BACKDROP, 0x82ba82u);
+}
+
+// The last line first.
+void scores_first_line(Wram* w, const Rom* rom, PortCpu* c) {
+  PORT_COVER(scores_first_line);
+  const uint16_t line = (SCORES_LINES - 1) * SCORES_PLACE_BYTES;
+  wram_w16(w, W_SCORES_LINE, line);
+  line_print_ask(w, rom, c, line);
+}
+
+// What the printer of several lines is called with for the title.
+void scores_title_ask(Wram* w, const Rom* rom, PortCpu* c) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(scores_title_ask);
+  c->y = 0;
+  c->x = SCORES_TITLE;
+  load_word(c, CARD_BANK, 0x82bad2u);
+}
+
+// Black, but no longer blank.
+void scores_screen_shown(Wram* w, const Rom* rom, PortCpu* c) {
+  (void)rom;
+  PORT_COVER(scores_screen_shown);
+  wram_w16(w, W_BRIGHTNESS_SHADOW, 0);
+  c->pc = 0x82bad9u;
+}
+
+void scores_screen_undim(Wram* w, const Rom* rom, PortCpu* c) {
+  (void)rom;
+  PORT_COVER(scores_screen_undim);
+  wram_w16(w, W_BRIGHTNESS_SHADOW,
+           wram_r16(w, W_BRIGHTNESS_SHADOW) & (BRIGHTNESS_DARK - 1u));
+  load_word(c, wram_r16(w, W_BRIGHTNESS_SHADOW), 0x82bae3u);
+}
+
+// What each pad holds, so that a button down already does not end the wait.
+void scores_pads_forget(Wram* w, const Rom* rom, PortCpu* c) {
+  (void)rom;
+  PORT_COVER(scores_pads_forget);
+  wram_w16(w, W_CARD_PADS, 0);
+  wram_w16(w, W_CARD_PADS + 2, 0);
+  c->pc = 0x82bafdu;
+}
+
+void scores_wait_begin(Wram* w, const Rom* rom, PortCpu* c) {
+  (void)rom;
+  PORT_COVER(scores_wait_begin);
+  wram_w16(w, W_CARD_WAIT_FRAMES, SCORES_WAIT_FRAMES);
+  load_word(c, SCORES_WAIT_TICKS, CARD_WAIT_YIELD_PC);
+}
+
+void scores_screen_dark(Wram* w, const Rom* rom, PortCpu* c) {
+  (void)rom;
+  PORT_COVER(scores_screen_dark);
+  wram_w16(w, W_BRIGHTNESS_SHADOW, BRIGHTNESS_DARK);
+  load_word(c, BRIGHTNESS_DARK, 0x82ba48u);
+}
+
+// `PLB : PLB`: the byte pushed to set this bank, and the caller's.
+void scores_screen_end(Wram* w, const Rom* rom, PortCpu* c) {
+  (void)rom;
+  PORT_COVER(scores_screen_end);
+  pull8(w, c);
+  c->db = pull8(w, c);
+  set_nz8(c, c->db);
+  c->pc = 0x82ba4eu;
 }

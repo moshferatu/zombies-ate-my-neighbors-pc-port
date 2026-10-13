@@ -232,7 +232,9 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
 
     if mode == REL:
         return c, "%d taken" % (c + IDLE), 0
-    if mode == REL16:  # BRL is always taken and always costs the extra
+    # BRL is always taken and always costs the extra. `PER` decodes with the
+    # same operand and is not a branch: it is priced with the pushes below.
+    if mode == REL16 and name != "PER":
         return c + IDLE, None, 0
 
     # The three that push something instead of reading it. Without these `PEA`
@@ -262,6 +264,10 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
         return c + IDLE + 3 * SLOW, None, 0
     if name == "JMP" and mode == ABS:
         return c, None, 0
+    if name == "JML" and mode == IND:
+        # `JML ($00E0)`: the three bytes it jumps through are read from bank
+        # `$00`, wherever the instruction is.
+        return c + 3 * access(val, 0x00), None, 0
     if name == "JML":
         return c, None, 0
     if name in ("JMP",):  # ($xxxx) and ($xxxx,X) reach a table this cannot see

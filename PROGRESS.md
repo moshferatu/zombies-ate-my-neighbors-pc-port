@@ -5,6 +5,73 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The password's screen and the top scores, between their calls (2026-10-12)
+
+`$82:B232` runs a screen with a cursor, which is the one a password is
+entered on. A turn of its loop, a pick and the password's check were
+ported. `$82:BA11` is the top scores, of which a line and the wait were.
+The rest of both was the core's, in 45 of the survey's 110 sessions and 8.
+
+* **The screen with a cursor**, in `port/cursor.c`: 31 stretches, each
+  from where a call or a wait comes back to the next call, wait or return,
+  and three more.
+  * `cursor_check_call`, `$82:B378`, jumps to the screen's own routine
+    through `$00E0` with a return pushed for its `RTL`. It takes the
+    password's check and nothing else.
+  * `cursor_checked`, `$82:B2DE`, is the sound of a good entry or a bad one.
+  * `cursor_flash_next`, `$82:B3F0`, counts the two flashes of a good entry.
+* **The backdrop**, `$82:B1A7`, which both screens call: its colours, the
+  third layer's map and tiles, and the job that slides it.
+* **A map sent**, in `port/text.c`: `$82:B820` asks for the job, waits a
+  frame, and asks again if the queue was full. The printer of several
+  lines ends the same way at `$82:B9B1`.
+* **The top scores**, in `port/card.c`: 11 stretches.
+* **After the password's screen**, in `port/menus.c`: the level the check
+  left against 2, for the carry the front end's thread branches on.
+* **Four that write to the picture hardware**, in `port/dma.c`, and eight
+  more entries in the list of what a screen's sends are called with.
+* **Fifteen links.**
+* **The registry's limit is 2,048**, and the harness's counts are
+  allocated. 1,095 routines are registered, and the limit was 1,024.
+  At 2,048 the counts were about 800 KB inside a struct that lockstep
+  keeps two of on the stack, and it ended before its first line with
+  nothing said.
+* **`tools/cycles816.py` had two prices wrong**: `PER` at 24 for 40, and
+  `JML ($00E0)` at 18 for 42. `verify` found the 16 and the 24 as one row
+  16 short, since the second was already allowed for by hand. Both are
+  fixed in the tool.
+* **Checked.**
+  * The corpus verifies clean: 127,984,124 calls over 56 movies, none
+    diverged.
+  * Costs are compared over the whole corpus, and every new row is exact.
+  * Lockstep: 53 of 56 never part; `level25`, `level25-2p` and
+    `level25-heavy` do, as before.
+  * The picture: 78,360,128 lines drawn both ways over the 56 movies, and
+    none differ.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 584 to 559 | 18,414 to 17,025 | 152,371 to 137,631 |
+  | Left standing on an instruction | 34 to 30 | 938 to 833 | 35,990 to 33,282 |
+  | A port turned the call down | 32 to 32 | 2,558 to 2,558 | 11,765 to 11,765 |
+  | A port or a link called it | 11 to 8 | 462 to 409 | 2,368 to 1,039 |
+  | All | 662 to 630 | 22,482 to 20,935 | 210,414 to 191,637 |
+
+  What the core still executes of the two screens is their `WAI`s, one
+  instruction each.
+* **Not done or not known.**
+  * Two ways no movie goes: the queue full when a map is sent, in
+    `text_map_sent` and `text_lines_sent`. They are written and not run.
+  * The screen whose number is 4 has a second line of words. I take it for
+    the one a name is entered on for the top scores, and I have not seen
+    it. Its stretches turn it down.
+  * The grid's `$3A`, which takes a character back, is still the core's.
+  * A `WAI` is not an instruction the harness makes, so each is the
+    core's.
+  * I did not play either screen in the game itself. The checks above are
+    the port against the ROM, not somebody pressing buttons.
+
 ### The title's menu and the players' screen, between their calls (2026-10-12)
 
 `$80:96B9` and `$80:98EA` were each one pass ported and the rest the

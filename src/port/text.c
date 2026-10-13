@@ -277,3 +277,44 @@ bool text_big_sent(Wram* w, PortCpu* c) {
   c->pc = TEXT_BIG_RTL_PC;
   return true;
 }
+
+#define TEXT_MAP_JOB 0xb82eu    // `$82:B82E`
+#define TEXT_LINES_JOB 0xb9b6u  // `$82:B9B6`
+#define TEXT_JOB_BANK 0x0082u
+
+static void job_ask(PortCpu* c, uint16_t job, uint32_t pc) {
+  c->a = job;
+  c->y = TEXT_JOB_BANK;
+  set_nz16(c, c->y);
+  c->pc = pc;
+}
+
+void text_map_send_ask(PortCpu* c) {
+  PORT_COVER(text_map_send_ask);
+  job_ask(c, TEXT_MAP_JOB, TEXT_MAP_SEND_ASK_PC);
+}
+
+bool text_map_sent(PortCpu* c) {
+  if (c->p & PORT_P_C) {
+    PORT_COVER(text_map_queue_full);
+    c->pc = TEXT_MAP_SEND_PC;
+    return false;
+  }
+  PORT_COVER(text_map_sent);
+  c->pc = TEXT_MAP_SENT_RTL_PC;
+  return true;
+}
+
+bool text_lines_sent(Wram* w, PortCpu* c) {
+  if (c->p & PORT_P_C) {
+    PORT_COVER(text_lines_queue_full);
+    job_ask(c, TEXT_LINES_JOB, TEXT_PRINT_LINES_SEND_PC);
+    return false;
+  }
+  PORT_COVER(text_lines_sent);
+  pull8(w, c);
+  c->db = pull8(w, c);
+  set_nz8(c, c->db);
+  c->pc = TEXT_LINES_SENT_RTL_PC;
+  return true;
+}

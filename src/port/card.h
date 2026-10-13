@@ -99,4 +99,33 @@ bool scores_line_supported(const Wram* w);
 // True if there was another line to print.
 bool scores_line(Wram* w, const Rom* rom, PortCpu* c);
 
+// The rest of the top scores' screen, `$82:BA11`, each from where a call or
+// a wait comes back to the next call, wait or return. It dims the picture,
+// sends its colours and tiles and the backdrop's (`port/cursor.h`), prints
+// the ten lines and its title over them, and fades up. Then the wait above,
+// and it fades down and stops the backdrop's job. The two that write to the
+// picture hardware are in `port/dma.h`.
+#define SCORES_BACKDROP 0xfff8u  // which of the backdrop's colours
+#define SCORES_TITLE 0xbafeu     // the screen's title, in this bank
+#define SCORES_WAIT_FRAMES 0x0168u  // six seconds
+#define SCORES_WAIT_TICKS 0x0001u
+
+#define SCORES_STRETCHES(X) \
+  X(screen_begin, "$82:BA11", 0x82ba11u, 0x82ba16u) \
+  X(screen_dim, "$82:BA4F", 0x82ba4fu, 0x82ba58u) \
+  X(backdrop_ask, "$82:BA7F", 0x82ba7fu, 0x82ba82u) \
+  X(first_line, "$82:BA92", 0x82ba92u, 0x82bab5u) \
+  X(title_ask, "$82:BAC9", 0x82bac9u, 0x82bad2u) \
+  X(screen_shown, "$82:BAD6", 0x82bad6u, 0x82bad9u) \
+  X(screen_undim, "$82:BADA", 0x82badau, 0x82bae3u) \
+  X(pads_forget, "$82:BAF7", 0x82baf7u, 0x82bafdu) \
+  X(wait_begin, "$82:BA19", 0x82ba19u, 0x82ba22u) \
+  X(screen_dark, "$82:BA42", 0x82ba42u, 0x82ba48u) \
+  X(screen_end, "$82:BA4C", 0x82ba4cu, 0x82ba4eu)
+
+#define X(name, sym, entry, exit) \
+  void scores_##name(Wram* w, const Rom* rom, PortCpu* c);
+SCORES_STRETCHES(X)
+#undef X
+
 #endif

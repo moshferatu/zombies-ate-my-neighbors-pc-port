@@ -8,6 +8,7 @@
 #include "port/flags.h"
 #include "port/frontend.h"  // the portraits' scroll job's count
 #include "port/oam.h"
+#include "port/password_check.h"
 #include "port/player.h"  // the pads
 
 // A blink is every tenth pass.
@@ -436,6 +437,18 @@ void menus_title_menu_password_pad(Wram* w, PortCpu* c) {
   c->x = pull16(w, c);
   set_nz16(c, c->x);
   c->pc = 0x809792u;
+}
+
+// After the password's screen. Carry set, and on to the players' screen,
+// if the check found a level: it leaves 1 for a password it turned down and
+// 0 for the one it tests first.
+#define PASSWORD_LEVELS_FROM 0x0002u
+
+void menus_title_menu_password_checked(Wram* w, PortCpu* c) {
+  PORT_COVER(title_menu_password_checked);
+  c->a = wram_r16(w, W_PASSWORD_LEVEL);
+  cmp16(c, c->a, PASSWORD_LEVELS_FROM);
+  c->pc = 0x80979du;
 }
 
 // Carry set: on to the players' screen.

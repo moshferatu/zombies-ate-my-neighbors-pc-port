@@ -546,8 +546,13 @@ void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
   if (count > COSIM_MAX_ROUTINES) {
     fprintf(stderr,
             "error: %d routines registered but COSIM_MAX_ROUTINES is %d — widen\n"
-            "       Cosim::enabled and Cosim::stats together, in cosim.h.\n",
+            "       it, and Cosim::enabled with it, in cosim.h.\n",
             count, COSIM_MAX_ROUTINES);
+    exit(2);
+  }
+  c->stats = calloc((size_t)count, sizeof *c->stats);
+  if (!c->stats) {
+    fprintf(stderr, "error: no memory for %d routines' counts\n", count);
     exit(2);
   }
   c->stat_count = count;
@@ -610,6 +615,9 @@ void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
 }
 
 void cosim_free(Cosim* c) {
+  free(c->stats);
+  c->stats = NULL;
+  c->stat_count = 0;
   if (!c->priv) return;
   apu_attach(NULL);  // the hook lives in `priv`, which is about to go
   if (c->mode == COSIM_VERIFY) {

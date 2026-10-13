@@ -13017,6 +13017,7 @@ static const CosimRun MENUS_RUN_title_menu_drift_stop = {28, 2, 1};
 static const CosimRun MENUS_RUN_title_menu_free_first = {28, 2, 1};
 static const CosimRun MENUS_RUN_title_menu_free_second = {28, 2, 1};
 static const CosimRun MENUS_RUN_title_menu_password_pad = {34, 1, 0};
+static const CosimRun MENUS_RUN_title_menu_password_checked = {52, 6, 0};
 static const CosimRun MENUS_RUN_title_menu_go = {12, 1, 0};
 static const CosimRun MENUS_RUN_players_screen_begin = {132, 14, 1};
 static const CosimRun MENUS_RUN_players_screen_joined = {36, 5, 0};
@@ -17937,6 +17938,7 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [SS_SEND] = {168, 19, 0},
     [TH_HEAD] = {82, 11, 0},
     [PL_HEAD] = {202, 22, 0},
+    [CS_HEAD] = {86, 9, 0},
     [VC_HEAD] = {46, 5, 1},
     [VC_STEP] = {94, 12, 1},
     [VC_TEST] = {58, 6, 1},
@@ -24806,6 +24808,261 @@ static void shim_portraits_layers(Wram* w, const Rom* rom, const CosimRegs* in,
 static const uint32_t TITLE_MENU_LAYERS_EXITS[] = {TITLE_MENU_LAYERS_END_PC};
 static const uint32_t PORTRAITS_LAYERS_EXITS[] = {PORTRAITS_LAYERS_END_PC};
 
+// ---------------------------------------------------------------------------
+// The screens of words in bank `$82`, between their calls: the one with a
+// cursor (`port/cursor.h`) and the top scores (`port/card.h`)
+// ---------------------------------------------------------------------------
+
+// The four that write to the picture hardware. Each leaves the last byte it
+// loaded in A's low byte.
+static void words_hw_out(const CosimRegs* in, CosimRegs* out, HwTrace* t,
+                         uint8_t last, uint32_t pc) {
+  PortCpu c;
+  cpu_from(in, &c);
+  c.a = (uint16_t)((c.a & 0xff00u) | last);
+  set_nz8(&c, last);
+  c.pc = pc;
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_cursor_screen_layers(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  cursor_screen_layers(w, t);
+  words_hw_out(in, out, t, CURSOR_SCREEN_LAYERS_ON,
+               CURSOR_SCREEN_LAYERS_END_PC);
+}
+
+static void shim_backdrop_layers(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  backdrop_layers(t);
+  words_hw_out(in, out, t, BACKDROP_TILES_AT_2000, BACKDROP_LAYERS_END_PC);
+}
+
+static void shim_words_layer_setup(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  words_layer_setup(t);
+  words_hw_out(in, out, t, WORDS_LAYER_STEP_ON_HIGH_BYTE,
+               WORDS_LAYER_SETUP_RTL_PC);
+}
+
+static void shim_scores_layers(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  scores_layers(t);
+  words_hw_out(in, out, t, SCORES_LAYERS_ON, SCORES_LAYERS_END_PC);
+}
+
+static const uint32_t CURSOR_SCREEN_LAYERS_EXITS[] = {
+    CURSOR_SCREEN_LAYERS_END_PC};
+static const uint32_t BACKDROP_LAYERS_EXITS[] = {BACKDROP_LAYERS_END_PC};
+static const uint32_t WORDS_LAYER_SETUP_EXITS[] = {WORDS_LAYER_SETUP_RTL_PC};
+static const uint32_t SCORES_LAYERS_EXITS[] = {SCORES_LAYERS_END_PC};
+
+// The stretches, each priced by `tools/cycles816.py --db=82`, the far
+// pointer at the cartridge. `entry_clear` is its loop nine times.
+static const CosimRun CURSOR_RUN_password_screen_ask = {66, 10, 0};
+static const CosimRun CURSOR_RUN_screen_begin = {172, 12, 2};
+static const CosimRun CURSOR_RUN_screen_dim = {86, 9, 0};
+static const CosimRun CURSOR_RUN_screen_backdrop_ask = {52, 4, 0};
+static const CosimRun CURSOR_RUN_backdrop_colours_ask = {78, 11, 0};
+static const CosimRun CURSOR_RUN_backdrop_slide_ask = {70, 7, 0};
+static const CosimRun CURSOR_RUN_backdrop_slide_kept = {68, 6, 0};
+static const CosimRun CURSOR_RUN_backdrop_slide_job_ask = {34, 3, 0};
+static const CosimRun CURSOR_RUN_screen_words_ask = {186, 22, 1};
+static const CosimRun CURSOR_RUN_screen_one_line = {118, 12, 1};
+static const CosimRun CURSOR_RUN_screen_shown = {34, 3, 0};
+static const CosimRun CURSOR_RUN_screen_undim = {86, 9, 0};
+static const CosimRun CURSOR_RUN_sprites_ask = {36, 6, 0};
+static const CosimRun CURSOR_RUN_sprites_job_kept = {52, 6, 0};
+static const CosimRun CURSOR_RUN_record_begin = {584, 58, 0};
+static const CosimRun CURSOR_RUN_pads_forget = {170, 15, 0};
+static const CosimRun CURSOR_RUN_entry_clear = {974, 90, 0};
+static const CosimRun CURSOR_RUN_flash_begin = {394, 42, 1};
+static const CosimRun CURSOR_RUN_flash_lit = {248, 28, 0};
+static const CosimRun CURSOR_RUN_flash_lit_sleep = {18, 3, 0};
+static const CosimRun CURSOR_RUN_flash_plain = {248, 28, 0};
+static const CosimRun CURSOR_RUN_flash_plain_sleep = {18, 3, 0};
+static const CosimRun CURSOR_RUN_record_free_ask = {34, 3, 0};
+static const CosimRun CURSOR_RUN_screen_dark = {52, 6, 0};
+static const CosimRun CURSOR_RUN_sprites_job_ask = {34, 3, 0};
+static const CosimRun CURSOR_RUN_screen_end = {70, 5, 0};
+static const CosimRun CURSOR_RUN_wrong_sleep = {18, 3, 0};
+static const CosimRun CURSOR_RUN_wrong_again = {18, 3, 0};
+static const CosimRun CURSOR_RUN_wrong_again_sleep = {18, 3, 0};
+static const CosimRun CURSOR_RUN_entry_print_ask = {274, 30, 1};
+static const CosimRun CURSOR_RUN_pick_end = {18, 2, 0};
+
+static bool cursor_stretch_ok(const CosimRegs* in) {
+  return body_ok(in) && bank_sees_low_wram(in->db);
+}
+
+#define X(name, sym, entry, exit, needs)                                     \
+  static bool supported_cursor_##name(Wram* scratch, const Rom* rom,         \
+                                      const CosimRegs* in) {                 \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    return cursor_stretch_ok(in) &&                                          \
+           cursor_needs_met(needs, scratch, rom, &c);                        \
+  }                                                                          \
+  static void shim_cursor_##name(Wram* w, const Rom* rom,                    \
+                                 const CosimRegs* in, CosimRegs* out) {      \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    cursor_##name(w, rom, &c);                                               \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(cosim_run_cycles_dp(&CURSOR_RUN_##name, fetch_fast(in),       \
+                                   (in->d & 0xffu) != 0));                   \
+  }                                                                          \
+  static const uint32_t CURSOR_EXITS_##name[] = {exit};
+CURSOR_STRETCHES(X)
+#undef X
+
+// `$82:B378`, with a routine to jump to.
+static const CosimRun CURSOR_RUN_CHECK_CALL = {406, 33, 2};
+static const CosimRun CURSOR_RUN_CHECKED = {12, 2, 0};     // BCS
+static const CosimRun CURSOR_RUN_LOAD = {18, 3, 0};        // LDA #
+static const CosimRun CURSOR_RUN_FLASH_NEXT = {68, 5, 0};  // DEC abs : BPL
+
+static bool supported_cursor_check_call(Wram* scratch, const Rom* rom,
+                                        const CosimRegs* in) {
+  return body_ok(in) && in->db == CURSOR_BANK &&
+         cursor_check_known(scratch, rom, in->d);
+}
+
+static void shim_cursor_check_call(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  cursor_check_call(w, rom, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&CURSOR_RUN_CHECK_CALL, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+static void shim_cursor_checked(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool right = cursor_checked(w, &c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &CURSOR_RUN_CHECKED, 1);
+  run_add(&run, &RUN_TAKEN, right ? 0 : 1);
+  run_add(&run, &CURSOR_RUN_LOAD, 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static void shim_cursor_flash_next(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool again = cursor_flash_next(w, &c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &CURSOR_RUN_FLASH_NEXT, 1);
+  run_add(&run, &RUN_TAKEN, again ? 1 : 0);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static const uint32_t CURSOR_CHECK_CALL_EXITS[] = {PASSWORD_CHECK_PC};
+static const uint32_t CURSOR_CHECKED_EXITS[] = {CURSOR_RIGHT_PC,
+                                                CURSOR_WRONG_PC};
+static const uint32_t CURSOR_FLASH_NEXT_EXITS[] = {CURSOR_FLASH_AGAIN_PC,
+                                                   CURSOR_FLASH_DONE_PC};
+
+// A line's map sent, and several lines'.
+static const CosimRun TEXT_RUN_SEND_ASK = {36, 6, 0};  // LDA # : LDY #
+static const CosimRun TEXT_RUN_SENT = {12, 2, 0};      // BCS
+static const CosimRun TEXT_RUN_BANK_BACK = {52, 2, 0}; // PLB : PLB
+
+static void shim_text_map_send_ask(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  text_map_send_ask(&c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(&TEXT_RUN_SEND_ASK, fetch_fast(in)));
+}
+
+static void shim_text_map_sent(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool sent = text_map_sent(&c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &TEXT_RUN_SENT, 1);
+  run_add(&run, &RUN_TAKEN, sent ? 0 : 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static void shim_text_lines_sent(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool sent = text_lines_sent(w, &c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &TEXT_RUN_SENT, 1);
+  if (sent) {
+    run_add(&run, &TEXT_RUN_BANK_BACK, 1);
+  } else {
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &TEXT_RUN_SEND_ASK, 1);
+  }
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static const uint32_t TEXT_MAP_SEND_ASK_EXITS[] = {TEXT_MAP_SEND_ASK_PC};
+static const uint32_t TEXT_MAP_SENT_EXITS[] = {TEXT_MAP_SENT_RTL_PC,
+                                               TEXT_MAP_SEND_PC};
+static const uint32_t TEXT_LINES_SENT_EXITS[] = {TEXT_LINES_SENT_RTL_PC,
+                                                 TEXT_PRINT_LINES_SEND_PC};
+
+// The top scores' stretches.
+static const CosimRun SCORES_RUN_screen_begin = {80, 5, 0};
+static const CosimRun SCORES_RUN_screen_dim = {86, 9, 0};
+static const CosimRun SCORES_RUN_backdrop_ask = {18, 3, 0};
+static const CosimRun SCORES_RUN_first_line = {378, 37, 0};
+static const CosimRun SCORES_RUN_title_ask = {54, 9, 0};
+static const CosimRun SCORES_RUN_screen_shown = {34, 3, 0};
+static const CosimRun SCORES_RUN_screen_undim = {86, 9, 0};
+static const CosimRun SCORES_RUN_pads_forget = {68, 6, 0};
+static const CosimRun SCORES_RUN_wait_begin = {70, 9, 0};
+static const CosimRun SCORES_RUN_screen_dark = {52, 6, 0};
+static const CosimRun SCORES_RUN_screen_end = {52, 2, 0};
+
+#define X(name, sym, entry, exit)                                            \
+  static void shim_scores_##name(Wram* w, const Rom* rom,                    \
+                                 const CosimRegs* in, CosimRegs* out) {      \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    scores_##name(w, rom, &c);                                               \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(cosim_run_cycles(&SCORES_RUN_##name, fetch_fast(in)));        \
+  }                                                                          \
+  static const uint32_t SCORES_EXITS_##name[] = {exit};
+SCORES_STRETCHES(X)
+#undef X
+
 static const uint32_t OPENING_BEGIN_EXITS[] = {OPENING_BEGUN_PC};
 static const uint32_t SCREEN_SHOW_BEGIN_EXITS[] = {SCREEN_SHOW_BEGUN_PC};
 static const uint32_t SCREEN_SHOW_END_EXITS[] = {SCREEN_SHOW_RTL_PC};
@@ -31465,6 +31722,133 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 430,
         .hw = true,
     },
+    // The screens of words in bank `$82`, between their calls. See
+    // `port/cursor.h`, `port/card.h` and `port/dma.h`.
+    {
+        .name = "cursor_screen_layers",
+        .symbol = "$82:B4C4",
+        .entry = CURSOR_SCREEN_LAYERS_PC,
+        .run = shim_cursor_screen_layers,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(CURSOR_SCREEN_LAYERS_EXITS),
+        .uncalled = true,
+        .cycles = 300,
+        .hw = true,
+    },
+    {
+        .name = "backdrop_layers",
+        .symbol = "$82:B1B6",
+        .entry = BACKDROP_LAYERS_PC,
+        .run = shim_backdrop_layers,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(BACKDROP_LAYERS_EXITS),
+        .uncalled = true,
+        .cycles = 110,
+        .hw = true,
+    },
+    {
+        .name = "words_layer_setup",
+        .symbol = "$82:ACD6",
+        .entry = WORDS_LAYER_SETUP_PC,
+        .run = shim_words_layer_setup,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(WORDS_LAYER_SETUP_EXITS),
+        .cycles = 200,
+        .hw = true,
+    },
+    {
+        .name = "scores_layers",
+        .symbol = "$82:BA89",
+        .entry = SCORES_LAYERS_PC,
+        .run = shim_scores_layers,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(SCORES_LAYERS_EXITS),
+        .uncalled = true,
+        .cycles = 80,
+        .hw = true,
+    },
+#define X(name_, sym, pc, exit, needs)                                       \
+    {                                                                        \
+        .name = "cursor_" #name_,                                            \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_cursor_##name_,                                          \
+        .supported = supported_cursor_##name_,                               \
+        COSIM_EXITS(CURSOR_EXITS_##name_),                                   \
+        .cycles = 100,                                                       \
+    },
+    CURSOR_STRETCHES(X)
+#undef X
+    {
+        .name = "cursor_check_call",
+        .symbol = "$82:B378",
+        .entry = CURSOR_CHECK_CALL_PC,
+        .run = shim_cursor_check_call,
+        .supported = supported_cursor_check_call,
+        COSIM_EXITS(CURSOR_CHECK_CALL_EXITS),
+        .cycles = 400,
+    },
+    {
+        .name = "cursor_checked",
+        .symbol = "$82:B2DE",
+        .entry = CURSOR_CHECKED_PC,
+        .run = shim_cursor_checked,
+        .accepts = accepts_body,
+        COSIM_EXITS(CURSOR_CHECKED_EXITS),
+        .uncalled = true,
+        .cycles = 30,
+    },
+    {
+        .name = "cursor_flash_next",
+        .symbol = "$82:B3F0",
+        .entry = CURSOR_FLASH_NEXT_PC,
+        .run = shim_cursor_flash_next,
+        .accepts = accepts_body_low,
+        COSIM_EXITS(CURSOR_FLASH_NEXT_EXITS),
+        .uncalled = true,
+        .cycles = 70,
+    },
+    {
+        .name = "text_map_send_ask",
+        .symbol = "$82:B820",
+        .entry = TEXT_MAP_SEND_PC,
+        .run = shim_text_map_send_ask,
+        .accepts = accepts_body,
+        COSIM_EXITS(TEXT_MAP_SEND_ASK_EXITS),
+        .cycles = 36,
+    },
+    {
+        .name = "text_map_sent",
+        .symbol = "$82:B82B",
+        .entry = TEXT_MAP_SENT_PC,
+        .run = shim_text_map_sent,
+        .accepts = accepts_body,
+        COSIM_EXITS(TEXT_MAP_SENT_EXITS),
+        .uncalled = true,
+        .cycles = 12,
+    },
+    {
+        .name = "text_lines_sent",
+        .symbol = "$82:B9B1",
+        .entry = TEXT_LINES_SENT_PC,
+        .run = shim_text_lines_sent,
+        .accepts = accepts_body,
+        COSIM_EXITS(TEXT_LINES_SENT_EXITS),
+        .uncalled = true,
+        .cycles = 64,
+    },
+#define X(name_, sym, pc, exit)                                              \
+    {                                                                        \
+        .name = "scores_" #name_,                                            \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_scores_##name_,                                          \
+        .accepts = accepts_body_low,                                         \
+        COSIM_EXITS(SCORES_EXITS_##name_),                                   \
+        .cycles = 80,                                                        \
+    },
+    SCORES_STRETCHES(X)
+#undef X
     {
         .name = "opening_hold_begin",
         .symbol = "$80:932D",

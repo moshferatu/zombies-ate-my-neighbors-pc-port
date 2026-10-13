@@ -79,9 +79,9 @@ enum {
   COSIM_FLAG_V = 1 << 3,
 };
 
-// How many routines the registry may hold. It sizes `Cosim::stats` and
-// `Cosim::enabled`, and `cosim_init` asserts the registry is within it — see
-// the note on `enabled` for what happened the one time nothing did.
+// How many routines the registry may hold. It sizes `Cosim::enabled`, and
+// `cosim_init` asserts the registry is within it — see the note on `enabled`
+// for what happened the one time nothing did.
 //
 // It was 64 until the registry reached 65, at which point that assert did its
 // job and said so instead of quietly measuring nothing. The mask is now a small
@@ -90,8 +90,9 @@ enum {
 // 256 until the squirt gun's thread and the monster's walk took it to 257, and
 // 448 until the martians' start and ends took it to 449, and 512 until the
 // fishman's leap and twenty more thread ends took it to 519, and 768 until
-// the big figure's thread took it to 769. It is 1024.
-#define COSIM_MAX_ROUTINES 1024
+// the big figure's thread took it to 769, and 1024 until the screens of
+// words between their calls took it to 1095. It is 2048.
+#define COSIM_MAX_ROUTINES 2048
 #define COSIM_MASK_WORDS ((COSIM_MAX_ROUTINES + 63) / 64)
 
 // Which routines are switched on. A struct rather than a `uint64_t` so it keeps
@@ -962,7 +963,11 @@ typedef struct {
   // `COSIM_MAX_ROUTINES` is asserted at init so the next one says so.
   CosimMask enabled;
 
-  CosimStat stats[COSIM_MAX_ROUTINES];
+  // One for each routine registered: `cosim_init` allocates them and
+  // `cosim_free` frees them. They were an array in here, `COSIM_MAX_ROUTINES`
+  // long, until that was 2048 and two of these no longer fitted on a stack:
+  // lockstep ended before its first line, with nothing said.
+  CosimStat* stats;
   int stat_count;
 
   // Cycles and calls, native and otherwise — see `CosimWork`.
