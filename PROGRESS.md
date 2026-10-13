@@ -5,6 +5,80 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The weed, the follower, the main thread and the martian, between their calls (2026-10-13)
+
+Four threads whose loops were ported a pass at a time, and what a pass
+could not hold: forty-three stretches in `port/thread_stretches.c`, one
+more in `port/follower.c`, and twenty-one links.
+
+* **The weed.** A pass on which it snaps was turned down, because the
+  pictures it shows sleep inside the call. Now `weed_frame` leaves at the
+  draw that decides on it, with the loop's return on the stack, and the
+  rest of the pass is stretches: who is nearest asked for, the pictures,
+  three seeds thrown five ticks apart, and forty-five passes of rest. Its
+  first instructions, its record and the end of its life are stretches
+  too. The frame has no guard any more.
+* **The follower.** Every sixteenth frame it looks at the tile it is over,
+  and on ground with bit 7 set it puts tile `$150D` there.
+  `follower_frame_rest` is what is left of that frame, from `$82:F4C3`.
+  How it begins and its last picture are here as well.
+* **The main thread.** Between its calls it is mostly calls, and those are
+  links. The rest is a game's first words, the level's record asked for,
+  and the neighbours a level begins with.
+  * **A level begins with as many neighbours as the two players have
+    saved.** `$80:867B` adds the two counts in decimal and stores the sum
+    at `$1D50` and `$1D52`.
+* **The martian.** The walker's first instructions either side of
+  `martian_begin`, and the twelve ticks its shot waits.
+* **Three small ones** the survey listed in every session: where the front
+  end begins, a word a player's thread keeps, and the first two sleeps of
+  the thread that puts things in a level.
+* **`--level` writes the operand of `$80:85F0`**, the level a game starts
+  at, and `main_reset` first had that as a constant. Every `--level`
+  session then started on level one. The corpus has no such session, so
+  verify and lockstep were clean. The survey showed it: all fifty-six
+  sessions by record came out the same. The port reads the operand from
+  the cartridge now.
+  * No other word `src/` writes into the cartridge is inside a block of
+    this round's.
+* **Checked.** 1,299 routines are registered.
+  * The corpus verifies clean: 128,039,680 calls over 56 movies, none
+    diverged.
+  * Every new row's cost is exact in the ten movies I compared them over.
+  * Branch coverage is 1,642 of 1,966.
+  * Lockstep: 53 of 56 never part; `level25`, `level25-2p` and
+    `level25-heavy` do, as before.
+  * The picture: 78,360,128 lines drawn both ways over the 56 movies, at
+    off and at 16:9, and none differ.
+  * Lockstep with `--level` on eight records, 0, 9, 13, 21, 38, 41, 49 and
+    51: six never part. 21 and 38 part at pass 318, in the level's load,
+    by a frame of timing and with no live byte differing before it. They
+    do the same with every row of this round's left out.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 500 to 456 | 14,778 to 10,015 | 101,217 to 77,824 |
+  | Left standing on an instruction | 17 to 16 | 403 to 386 | 27,678 to 27,653 |
+  | A port turned the call down | 32 to 31 | 2,558 to 2,513 | 11,693 to 11,423 |
+  | A port or a link called it | 8 to 8 | 409 to 270 | 1,039 to 1,081 |
+  | All | 558 to 512 | 18,258 to 13,294 | 149,547 to 125,901 |
+
+* **Not done or not known.**
+  * `ts_weed_enter_b`, the weed whose tiles have `$0800`, is written and no
+    movie in the corpus runs it.
+  * One branch is untaken: a follower looking at a place off the level.
+  * `ts_spawner_wait` and `ts_weed_pass_end` begin inside stretches that
+    were ported already, so verify checks them thousands of times and the
+    game seldom enters by them.
+  * The martian's passes that fire while it arrives, and the fishman's
+    that stop to look about, are still turned down. They are the largest
+    of what is left that a session runs often.
+  * What the follower is on the screen I have not seen, and I did not play
+    any of this. The checks above are the port against the ROM, and the
+    picture pass.
+
 ### The neighbours' threads, between their calls (2026-10-13)
 
 The loops a neighbour shows its pictures in were ported a frame each. This

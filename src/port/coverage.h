@@ -182,6 +182,27 @@
   X(bouncer_landed_ends, "bouncer_landed", "told to end") \
   X(bouncer_landed_saved, "bouncer_landed", "told 1: saved") \
   X(bouncer_landed_forgets, "bouncer_landed", "told anything else, which it forgets") \
+  X(weed_snapped, "weed_frame", "on its guard, and the draw said snap: it leaves at the draw") \
+  X(weed_throw_first, "weed_throw", "the first seed, with the picture it has") \
+  X(weed_throw_shows, "weed_throw", "...and the second and third, with a picture each") \
+  X(weed_pass_sleeps, "weed_pass_end", "its fate is nothing: two ticks") \
+  X(weed_pass_fated, "weed_pass_end", "...or something, and it is looked at") \
+  X(weed_fate_ends, "weed_fate", "positive: it only ends") \
+  X(weed_fate_killed, "weed_fate", "negative: who killed it is paid") \
+  X(follower_look_off_level, "follower_on_level", "the place is off the level") \
+  X(follower_look_on_level, "follower_on_level", "...or on it, and the tile is asked for") \
+  X(follower_tile_plain, "follower_tile", "not ground a weed can take") \
+  X(follower_tile_ground, "follower_tile", "...or it is: a tick, and a tile put there") \
+  X(follower_no_room, "follower_room", "the level has no room for it") \
+  X(follower_has_room, "follower_room", "...or has, and it weighs ten") \
+  X(follower_made_left, "follower_made", "put to the left of what it follows") \
+  X(follower_made_right, "follower_made", "...or to the right, and drawn the other way") \
+  X(main_scores_unset, "main_reset", "the top scores are not set yet") \
+  X(main_scores_were_set, "main_reset", "...or are") \
+  X(main_sound_unset, "main_reset", "the sound's bank is not sent yet") \
+  X(main_sound_was_set, "main_reset", "...or is") \
+  X(spawner_tick_even, "spawner_tick", "an even frame: one more slept first") \
+  X(spawner_tick_odd, "spawner_tick", "...or an odd one") \
   X(radar_begin_in_step, "radar_begin",     "the tick is the player's own, and the panel goes up now") \
   X(radar_begin_waited, "radar_begin",      "...or the other's, and a tick is waited") \
   X(radar_count_first, "radar_count_ask",   "the first player's count asked for") \

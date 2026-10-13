@@ -73,12 +73,15 @@ void follower_place(Wram* w, const Rom* rom, PortCpu* c, FollowerWork* k);
 // handler sets.
 //
 // A sixteenth frame leaves by the sleep inside `follower_place`, with the
-// return to `$82:F4C3` on the stack as the `JSR` left it.
+// return to `$82:F4C3` on the stack as the `JSR` left it. What that frame
+// does about the tile is in `port/thread_stretches.h`, and the rest of it
+// is `follower_frame_rest`, from `$82:F4C3`.
 
 #define FOLLOWER_FRAME_PC 0x82f4b8u
 #define FOLLOWER_FRAME_SLEEP_PC 0x82f4b4u  // `JSL`, A already 1
 #define FOLLOWER_FRAME_ENDED_PC 0x82f4cdu
 #define FOLLOWER_FRAME_HIT_PC 0x82f4cau
+#define FOLLOWER_FRAME_REST_PC 0x82f4c3u
 #define FOLLOWER_PLACE_RETURN 0xf4c2u  // what the `JSR` at `$82:F4C0` pushes
 
 #define FOLLOWER_PICTURES 0x82f3ecu  // four
@@ -95,7 +98,8 @@ enum {
   FF_COUNT,    // DEC $12 : BMI
   FF_NEXT,     // $F4E0-$F4EE
   FF_CALL,     // JSR $F40B
-  FF_BACK,     // RTS, JSR $F3CD, DEC $0E : BPL
+  FF_PLACED,   // RTS
+  FF_BACK,     // JSR $F3CD, DEC $0E : BPL
   FF_PICTURE,  // $F3D1-$F3E7
   FF_BLINK,    // JSR $F3B7, $F3B7-$F3BD
   FF_TURN,     // LDA ($08) : BMI
@@ -114,5 +118,7 @@ typedef struct {
 } FollowerFrameWork;
 
 void follower_frame(Wram* w, const Rom* rom, PortCpu* c, FollowerFrameWork* k);
+void follower_frame_rest(Wram* w, const Rom* rom, PortCpu* c,
+                         FollowerFrameWork* k);
 
 #endif

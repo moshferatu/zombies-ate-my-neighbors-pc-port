@@ -93,6 +93,7 @@
 #include "port/card.h"
 #include "port/jumper.h"
 #include "port/neighbour_thread.h"
+#include "port/thread_stretches.h"
 #include "port/radar_thread.h"
 #include "port/riser.h"
 #include "port/seeker.h"
@@ -8524,6 +8525,124 @@ static const uint32_t NT_EXITS_JUMPER_END[] = {JUMPER_END_FREE_PC,
 static const uint32_t NT_EXITS_BOUNCER[] = {
     BOUNCER_WAIT_PC, BOUNCER_GONE_PC, BOUNCER_BEGIN_PC, BOUNCER_SLEEP_PC,
     BOUNCER_LAND_PC, BOUNCER_END_PC, BOUNCER_SAVED_CALL_PC};
+
+// ---------------------------------------------------------------------------
+// Stretches of four threads between their calls -- see
+// `port/thread_stretches.h`
+// ---------------------------------------------------------------------------
+//
+// Each run is from `tools/cycles816.py` by the block's addresses in
+// `TS_BLOCKS`, with the data bank the block's own.
+static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
+    [TS_LDA_IMM] = {18, 3, 0},
+    [TS_LDA_DP] = {28, 2, 1},
+    [TS_LDA_LDY_IMM] = {36, 6, 0},
+    [TS_LDA_LDX_IMM] = {36, 6, 0},
+    [TS_LDX_LDY_DP] = {56, 4, 2},
+    [TS_BRANCH] = {12, 2, 0},
+    [TS_JSR] = {40, 3, 0},
+    [TS_WEED_AIM] = {74, 7, 2},
+    [TS_WEED_SHOW] = {46, 5, 1},
+    [TS_WEED_THROW_A] = {246, 23, 6},
+    [TS_WEED_THROW_B] = {332, 31, 7},
+    [TS_WEED_THROW_C] = {332, 31, 7},
+    [TS_WEED_REST] = {240, 22, 4},
+    [TS_WEED_FATE] = {40, 4, 1},
+    [TS_WEED_AGAIN] = {46, 5, 1},
+    [TS_WEED_KIND] = {64, 8, 1},
+    [TS_WEED_ENTER] = {98, 10, 0},
+    [TS_WEED_MADE] = {1140, 99, 19},
+    [TS_WEED_GROWS] = {86, 6, 1},
+    [TS_FOLLOWER_TILE] = {30, 5, 0},
+    [TS_FOLLOWER_MARK] = {92, 10, 2},
+    [TS_FOLLOWER_LOAD] = {98, 10, 0},
+    [TS_FOLLOWER_SIDE] = {80, 7, 2},
+    [TS_MAIN_RESET] = {242, 27, 0},
+    [TS_MAIN_SCORES_SET] = {58, 7, 0},
+    [TS_MAIN_SOUND_TEST] = {40, 4, 1},
+    [TS_MAIN_SOUND] = {52, 6, 0},
+    [TS_MAIN_SOUND_SET] = {50, 2, 1},
+    [TS_LEVEL_FADED] = {74, 6, 0},
+    [TS_LEVEL_COUNT] = {242, 24, 0},
+    [TS_CACHE_START] = {94, 13, 0},
+    [TS_MARTIAN_ENTER] = {98, 10, 0},
+    [TS_MARTIAN_WALKS] = {86, 6, 1},
+    // Its two words are read from the cartridge, which the tool prices as
+    // WRAM: four bytes more, and eight cycles fewer.
+    [TS_LEVEL_RECORD] = {176, 22, 2},
+    // What they read and write through the record's address is WRAM.
+    [TS_FOLLOWER_LEFT] = {98, 10, 1},
+    [TS_FOLLOWER_RIGHT] = {80, 8, 1},
+    [TS_FOLLOWER_MADE] = {706, 62, 10},
+    [TS_FOLLOWER_HIT] = {210, 18, 3},
+    [TS_REP] = {18, 2, 0},
+    [TS_STA_DP] = {28, 2, 1},
+    [TS_SPAWNER_TICK] = {64, 8, 0},
+    [TS_SPAWNER_WAIT] = {46, 5, 1},
+    [TS_TAKEN] = {6, 0, 0},
+};
+
+static int thread_stretch_cycles(const ThreadStretchWork* k,
+                                 const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < TS_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles_dp(&TS_COST[i], fast, unaligned);
+  return cycles;
+}
+
+// The weed, the follower and the martian read their tables and the level's
+// load through the data bank, which has to be their own. The main thread
+// reads low WRAM through it.
+static bool thread_stretch_bank_ok(const CosimRegs* in) {
+  const uint8_t bank = (uint8_t)(in->pc >> 16);
+  if (bank == 0x80) return bank_sees_low_wram(in->db);
+  return in->db == bank;
+}
+
+#define X(name, sym, entry, port, exits, needs)                              \
+  static bool accepts_ts_##name(const Wram* w, const CosimRegs* in) {        \
+    if (!body_ok(in) || !thread_stretch_bank_ok(in)) return false;           \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    return thread_stretch_needs_met(w, needs, &c);                           \
+  }                                                                          \
+  static void shim_ts_##name(Wram* w, const Rom* rom, const CosimRegs* in,   \
+                             CosimRegs* out) {                               \
+    PortCpu c;                                                               \
+    ThreadStretchWork k = {0};                                               \
+    cpu_from(in, &c);                                                        \
+    port(w, rom, &c, &k);                                                    \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(thread_stretch_cycles(&k, in));                               \
+  }
+THREAD_STRETCHES(X)
+#undef X
+
+static const uint32_t TS_EXITS_ARGUMENT[] = {
+    0x81d186u, 0x81d1b0u, 0x81d1dau, 0x82f4b4u, 0x808519u, 0x8199c5u};
+static const uint32_t TS_EXITS_PAIR[] = {0x8085d9u, 0x819b36u, 0x80c2e4u};
+// Its calls, the body's `RTS`, and the ends that are `port/begin.h`'s.
+static const uint32_t TS_EXITS_WEED[] = {
+    WEED_SNAP_ASK_PC, WEED_SNAP_SHOW_PC, 0x81d17fu, 0x81d1a9u, 0x81d1d3u,
+    WEED_SNAP_RTS_PC, WEED_END_PC, WEED_KILLED_PC, WEED_MARK_PC,
+    WEED_ALLOC_CALL_PC, WEED_HANDLER_PC};
+// `weed_fate` begins where a pass may end, so the two have lists apart.
+static const uint32_t TS_EXITS_WEED_PASS[] = {WEED_YIELD_PC, WEED_FATE_PC};
+static const uint32_t TS_EXITS_FOLLOWER[] = {
+    FOLLOWER_EDGE_PC, FOLLOWER_RTS_PC, FOLLOWER_TILE_ASK_PC,
+    FOLLOWER_MARK_SLEEP_PC, FOLLOWER_PUT_PC, FOLLOWER_NO_ROOM_PC,
+    FOLLOWER_MAKE_PC, FOLLOWER_HANDLER_PC, FOLLOWER_HIT_SLEEP_PC};
+static const uint32_t TS_EXITS_MAIN[] = {
+    MAIN_SCORES_ASK_PC, MAIN_SOUND_ASK_PC, MAIN_FIRST_RTL_PC, LEVEL_RECORD_PC,
+    MAIN_FRAME_SLEEP_PC, LEVEL_COUNT_ASK_PC, LEVEL_COUNT_ASK_B_PC,
+    THREAD_START_PC, FRONTEND_LAYERS_PC, PLAYER_ALLOC_PC,
+    SPAWNER_TICK_SLEEP_PC, SPAWNER_SLEEP_PC};
+// `spawner_wait` begins where that sleep comes back.
+static const uint32_t TS_EXITS_SPAWNER[] = {SPAWNER_SLEEP_PC};
+static const uint32_t TS_EXITS_MARTIAN[] = {MARTIAN_BEGIN_CALL_PC,
+                                            MARTIAN_FIRST_SLEEP_PC};
 
 // ---------------------------------------------------------------------------
 // $82:D8FD  the radar's thread -- see `port/radar_thread.h`
@@ -19860,7 +19979,8 @@ static const CosimRun FF_COST[FF_BLOCK_COUNT] = {
     [FF_COUNT] = {62, 4, 1},
     [FF_NEXT] = {144 + 6, 15, 3},
     [FF_CALL] = {40, 3, 0},
-    [FF_BACK] = {40 + 40 + 62, 1 + 3 + 4, 1},
+    [FF_PLACED] = {40, 1, 0},
+    [FF_BACK] = {40 + 62, 3 + 4, 1},
     [FF_PICTURE] = {260, 25, 4},
     [FF_BLINK] = {40 + 58, 3 + 7, 1},
     [FF_TURN] = {56, 4, 1},
@@ -19880,6 +20000,19 @@ static bool accepts_follower_frame(const Wram* w, const CosimRegs* in) {
           wram_r16(w, (uint16_t)(in->d + FOLLOWER_DP_LEFT)) != 0);
 }
 
+static int follower_frame_cycles(const FollowerFrameWork* k,
+                                 const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < FF_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles_dp(&FF_COST[i], fast, unaligned);
+  for (int i = 0; i < FW_BLOCK_COUNT; i++)
+    cycles +=
+        k->place.blocks[i] * cosim_run_cycles_dp(&FW_COST[i], fast, unaligned);
+  return cycles;
+}
+
 static void shim_follower_frame(Wram* w, const Rom* rom, const CosimRegs* in,
                                 CosimRegs* out) {
   PortCpu c;
@@ -19887,17 +20020,27 @@ static void shim_follower_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   cpu_from(in, &c);
   follower_frame(w, rom, &c, &k);
   cpu_to(&c, out);
-  const bool fast = fetch_fast(in);
-  const bool unaligned = (in->d & 0x00ffu) != 0;
-  int cycles = 0;
-  for (int i = 0; i < FF_BLOCK_COUNT; i++)
-    cycles += k.blocks[i] * cosim_run_cycles_dp(&FF_COST[i], fast, unaligned);
-  for (int i = 0; i < FW_BLOCK_COUNT; i++)
-    cycles +=
-        k.place.blocks[i] * cosim_run_cycles_dp(&FW_COST[i], fast, unaligned);
-  cosim_cost(cycles);
+  cosim_cost(follower_frame_cycles(&k, in));
 }
 
+// `$82:F4C3`: what is left of a frame that looked at its tile.
+static void shim_follower_frame_rest(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  FollowerFrameWork k = {0};
+  cpu_from(in, &c);
+  follower_frame_rest(w, rom, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(follower_frame_cycles(&k, in));
+}
+
+static bool accepts_follower_frame_rest(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == FOLLOWER_BANK &&
+         wram_r16(w, (uint16_t)(in->d + FOLLOWER_DP_RECORD)) < 0x1f00;
+}
+
+static const uint32_t FOLLOWER_FRAME_REST_EXITS[] = {FOLLOWER_FRAME_SLEEP_PC,
+                                                     FOLLOWER_FRAME_HIT_PC};
 static const uint32_t FOLLOWER_FRAME_EXITS[] = {
     FOLLOWER_FRAME_SLEEP_PC, FOLLOWER_FRAME_ENDED_PC, FOLLOWER_FRAME_HIT_PC,
     FOLLOWER_SLEEP_PC};
@@ -23240,18 +23383,9 @@ static bool weed_frame_ok(const Wram* w, const CosimRegs* in) {
          weed_frame_supported(w, in->d);
 }
 
-// Whether it puts out what snaps, only its draw says.
-static bool guard_weed_frame(Wram* scratch, const Rom* rom,
-                             const CosimRegs* in) {
-  static WeedWork k;
-  k = (WeedWork){0};
-  weed_frame(scratch, rom, in->d, (in->p & PORT_P_C) != 0,
-             (in->p & PORT_P_V) != 0, &k);
-  return !k.declined;
-}
-
 // It leaves by the `JSL thread_yield` with the tick count in A, or past the
-// test of its fate with that in A.
+// test of its fate with that in A, or past the draw that says it snaps, with
+// the draw in A and the loop's return pushed.
 static void shim_weed_frame(Wram* w, const Rom* rom, const CosimRegs* in,
                             CosimRegs* out) {
   static WeedWork k;
@@ -23276,6 +23410,10 @@ static void shim_weed_frame(Wram* w, const Rom* rom, const CosimRegs* in,
     case WEED_STATE_GUARD:
       run_add(&run, &WD_DRAW, 1);
       calls += rng_cycles(k.guard_overflow, in->fastrom);
+      if (k.snaps) {
+        run_add(&run, &RUN_TAKEN, 1);
+        break;
+      }
       run_add(&run, &WD_JMP, 2);
       run_add(&run, &WD_GROW_SET, 1);
       break;
@@ -23290,13 +23428,29 @@ static void shim_weed_frame(Wram* w, const Rom* rom, const CosimRegs* in,
       }
       break;
   }
-  run_add(&run, &WD_TAIL, 1);
-  if (sleeps) {
-    run_add(&run, &RUN_TAKEN, 1);
-    run_add(&run, &WD_AGAIN, 1);
+  if (!k.snaps) {
+    run_add(&run, &WD_TAIL, 1);
+    if (sleeps) {
+      run_add(&run, &RUN_TAKEN, 1);
+      run_add(&run, &WD_AGAIN, 1);
+    }
   }
   cosim_cost(calls + cosim_run_cycles_dp(&run, fetch_fast(in),
                                          (in->d & 0x00ffu) != 0));
+
+  if (k.snaps) {
+    PortCpu c;
+    cpu_from(in, &c);
+    push16(w, &c, WEED_BODY_RETURN);
+    out->s = c.s;
+    out->pc = WEED_SNAP_PC;
+    out->a = k.guard_draw;
+    out->regs = COSIM_REG_A;
+    // The compare's: the draw is under the odds.
+    out->p = (uint8_t)((in->p & ~(PORT_P_Z | PORT_P_C | PORT_P_V)) | PORT_P_N);
+    if (k.v) out->p |= PORT_P_V;
+    return;
+  }
 
   out->pc = sleeps ? WEED_YIELD_PC : WEED_FATE_PC;
   out->a = sleeps ? WEED_YIELD_TICKS
@@ -23309,7 +23463,8 @@ static void shim_weed_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   out->p_keep = (uint8_t)(k.v_known ? 0 : PORT_P_V);
 }
 
-static const uint32_t WEED_FRAME_EXITS[] = {WEED_YIELD_PC, WEED_FATE_PC};
+static const uint32_t WEED_FRAME_EXITS[] = {WEED_YIELD_PC, WEED_FATE_PC,
+                                            WEED_SNAP_PC};
 
 // `$81:D4D6`. `line_step` is priced by its own blocks.
 static const CosimRun SD_JSR = {40, 3, 0};
@@ -29607,6 +29762,30 @@ static const CosimRoutine ROUTINES[] = {
     },
     NEIGHBOUR_THREAD_STRETCHES(X)
 #undef X
+    // The stretches of `port/thread_stretches.h`.
+#define X(name_, sym, pc, port, exits_, needs)                               \
+    {                                                                        \
+        .name = "ts_" #name_,                                                \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_ts_##name_,                                              \
+        .accepts = accepts_ts_##name_,                                       \
+        COSIM_EXITS(TS_EXITS_##exits_),                                      \
+        .cycles = 600,                                                       \
+    },
+    THREAD_STRETCHES(X)
+#undef X
+    // What is left of a follower's frame that looked at its tile.
+    {
+        .name = "follower_frame_rest",
+        .symbol = "$82:F4C3",
+        .entry = FOLLOWER_FRAME_REST_PC,
+        .run = shim_follower_frame_rest,
+        .accepts = accepts_follower_frame_rest,
+        COSIM_EXITS(FOLLOWER_FRAME_REST_EXITS),
+        .cycles = 600,
+        .stack_bytes = 4,  // a `JSR` and another
+    },
     // The neighbour who jumps: see `port/jumper.h`.
     {
         .name = "jumper_up",
@@ -30694,7 +30873,6 @@ static const CosimRoutine ROUTINES[] = {
         .entry = WEED_FRAME_PC,
         .run = shim_weed_frame,
         .accepts = weed_frame_ok,
-        .supported = guard_weed_frame,
         COSIM_EXITS(WEED_FRAME_EXITS),
         .uncalled = true,
         .cycles = 6000,

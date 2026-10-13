@@ -154,6 +154,12 @@ void follower_frame(Wram* w, const Rom* rom, PortCpu* c,
     return;
   }
 
+  k->blocks[FF_PLACED]++;
+  follower_frame_rest(w, rom, c, k);
+}
+
+void follower_frame_rest(Wram* w, const Rom* rom, PortCpu* c,
+                         FollowerFrameWork* k) {
   picture(w, rom, c, k);
   c->a = field(w, c, FOLLOWER_DP_HIT);
   set_nz16(c, c->a);

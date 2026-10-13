@@ -295,8 +295,12 @@ bool weed_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
       }
       break;
     case WEED_STATE_GUARD:
-      if (draw(&m, &k->guard_overflow) < WEED_SNAP_ODDS) {
-        k->declined = true;
+      k->guard_draw = draw(&m, &k->guard_overflow);
+      if (k->guard_draw < WEED_SNAP_ODDS) {
+        PORT_COVER(weed_snapped);
+        k->snaps = true;
+        k->c = false;  // the compare's
+        k->v = k->guard_overflow;
         return true;
       }
       PORT_COVER(weed_stood_down);

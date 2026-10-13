@@ -19296,3 +19296,61 @@ taken before the top digit is corrected, as there.
 Over the same 110 sessions the core executes 149,547 instructions
 where it executed 170,675, and takes over 18,258 times where it
 did 20,138, at 558 places where there were 613.
+
+## Four threads between their calls (2026-10-13)
+
+### A pass that leaves in the middle of a body
+
+The weed's frame used to run a pass on a scratch copy to find out whether
+the draw said snap, and turn the pass down if it did. It now stops at
+that draw: an exit inside the state's body, `$81:D154`, with the return
+the loop pushed under the body written to the stack. What follows is
+stretches, and the last of them ends on the body's `RTS`, which goes back
+into the loop at `$81:D2AD`, where another stretch begins.
+
+A port that a draw turns down can be split at the draw this way. The
+guard goes, and with it a second run of every pass.
+
+### Dead stack in a row with exits
+
+A row with exits writes the stack as the ROM does, and none of it is
+waived. Two ways round a `JSR` inside a stretch are in use here.
+`weed_begun` and `martian_begun` push the return and pull it again, which
+leaves the two bytes as the ROM leaves them. `follower_frame_rest` has
+two calls one inside the other and declares `stack_bytes = 4`, as
+`follower_frame` does.
+
+### An operand the game is started with
+
+`src/levelstart.h` starts a game on another level by writing the operand
+of `LDA #$0001` at `$80:85F0`. A port of that instruction with the
+constant in it ignores `--level`, and nothing in the corpus says so: no
+movie is run with it. `main_reset` reads the operand from the cartridge.
+
+The same goes for anything else `src/` writes into the cartridge: the
+distances `src/widescreen.h` moves, the calls `src/twinstick.h` replaces
+and the masks of `src/blood.h`. None of those is inside a block of this
+round's.
+
+### A read from the cartridge by a long address
+
+`$80:8849` reads two words at `$9F:0036,X`, and X is the level's offset in
+bank `$9F`, so the words are in the cartridge. `tools/cycles816.py` cannot
+know X and prices them as WRAM. The block is four bytes more than its
+instructions and eight cycles fewer than the tool says: `{176, 22, 2}`.
+The stretch is turned down unless the offset puts both words at `$8000`
+or above.
+
+### Entries inside other stretches
+
+`$80:C908` and `$81:D2AD` are each in the middle of a stretch that was
+ported already. Verify takes an entry wherever the ROM reaches it, so it
+checks these two inside the larger ones, 43,560 and 1,755 times over the
+corpus. Substituted, the larger port runs and the game comes to them only
+after a sleep or a snap.
+
+### After
+
+Over the same 110 sessions the core executes 125,901 instructions
+where it executed 149,547, and takes over 13,294 times where it
+did 18,258, at 512 places where there were 558.

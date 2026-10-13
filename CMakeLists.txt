@@ -326,6 +326,7 @@ add_library(zamn_port STATIC
   src/port/logo.c
   src/port/radar_thread.c
   src/port/neighbour_thread.c
+  src/port/thread_stretches.c
   src/port/riser.c
   src/port/seeker.c
   src/port/tile_rows.c

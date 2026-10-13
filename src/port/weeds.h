@@ -6,11 +6,11 @@
 //
 //   $81:D2A5  weed_frame
 //
-// What is not here is the thread's setup, its death, and the pass on which
-// it puts out the things that snap at a player: that plays an animation
-// which sleeps inside the call. Whether a pass does is down to a draw, so
-// the port finds out by running it: `WeedWork::declined` says so, and a
-// guard asks it of a scratch copy first.
+// The pass on which it puts out the things that snap at a player plays an
+// animation which sleeps inside the call, so that pass stops at the draw
+// that decides on it: the frame leaves at `$81:D154`, inside the state's
+// body, with the loop's return on the stack. The rest of that pass, the
+// thread's setup and its death are stretches in `port/thread_stretches.h`.
 //
 // ## What a weed does
 //
@@ -113,6 +113,8 @@
 #define WEED_FRAME_PC 0x81d2a5u
 #define WEED_YIELD_PC 0x81d2a1u  // `JSL thread_yield`, A already 2
 #define WEED_FATE_PC 0x81d2b1u   // past the `BEQ`, its fate in A
+#define WEED_SNAP_PC 0x81d154u   // past the draw's `BCC`, the draw in A
+#define WEED_BODY_RETURN 0xd2acu // what the loop pushes under a body
 #define WEED_YIELD_TICKS 2
 
 // The state bodies, by the address the thread keeps in `$14`.
@@ -145,7 +147,7 @@
 
 typedef struct {
   uint16_t state;  // the body that ran
-  bool declined;   // the ROM's: it puts out what snaps
+  bool snaps;      // on its guard, and the draw said so: it leaves there
 
   // Growing.
   PlayerPickRegs seek;  // is a player near the root?
@@ -183,6 +185,7 @@ typedef struct {
 
   // On its guard.
   bool guard_overflow;
+  uint16_t guard_draw;
   // Resting.
   bool rest_over;
 
@@ -196,8 +199,8 @@ bool weed_frame_supported(const Wram* w, uint16_t page);
 
 // One pass, for the weed whose page is `page`. `carry` and `overflow` are
 // the thread's own, as it woke. True if it sleeps, false if its fate is no
-// longer zero. `k->declined` says the pass is the ROM's after all. WRAM is
-// then part written.
+// longer zero. `k->snaps` says it left at the draw instead, to put out what
+// snaps: the caller pushes the loop's return.
 bool weed_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
                 bool overflow, WeedWork* k);
 

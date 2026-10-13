@@ -273,6 +273,11 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**Four threads between their calls, 2026-10-13.** The weed's snap, the
+follower's look at its tile, the main thread's first instructions and the
+martian walker's are ported. The places are 512 and the core executes
+125,901 instructions over the survey.
+
 **The neighbours' threads, 2026-10-13.** The eleven threads' starts, what
 they do when told, and the routines they do it with are ported. The places
 are 558 and the core executes 149,547 instructions over the survey.
