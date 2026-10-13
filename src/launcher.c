@@ -380,7 +380,7 @@ static void range_text(const Row* r, int v, char* out, size_t size) {
   switch (r->id) {
     case S_LEVEL:
       if (v < 0 || v > 55) snprintf(out, size, "Off");
-      else if (v == 0 || v >= 50) snprintf(out, size, "Bonus room %d (%s)", v, level_names[v]);
+      else if (v == 0 || v >= 50) snprintf(out, size, "Bonus Level %d (%s)", v, level_names[v]);
       else if (v == 49) snprintf(out, size, "Credits (%s)", level_names[v]);
       else snprintf(out, size, "Level %d (%s)", v, level_names[v]);
       break;
