@@ -1368,6 +1368,19 @@ static void text_tail(const Font* f, float x, float y, float w, const char* s, S
   text(ui.ren, f, e, y, s, c);
 }
 
+// Text cut to `w` from the right, with an ellipsis: an option's start says
+// which one it is.
+static void text_head(const Font* f, float x, float y, float w, const char* s, SDL_Color c) {
+  if (text_width(f, s) <= w) { text(ui.ren, f, x, y, s, c); return; }
+  char cut[128];
+  snprintf(cut, sizeof cut, "%s", s);
+  const float dots = text_width(f, "...");
+  size_t n = strlen(cut);
+  while (n && text_width(f, cut) + dots > w) cut[--n] = '\0';
+  const float e = text(ui.ren, f, x, y, cut, c);
+  text(ui.ren, f, e, y, "...", c);
+}
+
 // Words laid into `w`, `max_lines` at most; returns how many lines it took.
 // Drawn unless `measure`.
 static int wrap_lines(const Font* f, float x, float y, float w, const char* s, SDL_Color c, int max_lines,
@@ -1404,6 +1417,21 @@ static SDL_Color option_color(const Row* r, int v) {
   return C_TEXT;
 }
 
+// A dropdown is `least` wide, or as wide as its longest option needs, up to
+// `most`.
+static float dropdown_width(const Row* r, float least, float most) {
+  int opts[OPTIONS_MAX];
+  const int n = row_options(r, opts);
+  float w = least;
+  for (int o = 0; o < n; o++) {
+    char label[128];
+    option_text(r, opts[o], label, sizeof label);
+    const float needs = text_width(&ui.body, label) + L(54);
+    if (needs > w) w = needs;
+  }
+  return w < most ? w : most;
+}
+
 static void draw_dropdown(int i, const Row* r, float x, float y, float w, float h, bool focused) {
   const int v = setting_get(&ui.cfg, r->id);
   const bool open = ui.drop_row == i;
@@ -1411,7 +1439,7 @@ static void draw_dropdown(int i, const Row* r, float x, float y, float w, float 
   option_text(r, v, label, sizeof label);
   fill(x, y, w, h, open ? (SDL_Color){18, 18, 18, 255} : C_BLACK);
   outline(x, y, w, h, L(1), open ? C_GREEN : focused ? C_DIM : C_FAINT);
-  text_tail(&ui.body, x + L(14), y + (h - ui.body.height) / 2, w - L(54), label, option_color(r, v));
+  text_head(&ui.body, x + L(14), y + (h - ui.body.height) / 2, w - L(54), label, option_color(r, v));
   chevron(x + w - L(22), y + h / 2, L(6), open, focused || open ? C_GREEN : C_DIM);
   hot(x, y, w, h, P_DROP, i, 0);
   if (open) {
@@ -1443,7 +1471,10 @@ static void draw_drop_list(void) {
   if (ui.drop_first > n - shown) ui.drop_first = n - shown;
   if (ui.drop_first < 0) ui.drop_first = 0;
   const float lh = shown * ih + pad * 2;
-  const float lx = ui.drop_x, lw = ui.drop_w;
+  // As wide as its box, or wider and further left when the window is too
+  // narrow for the box to hold the longest option.
+  const float lw = dropdown_width(r, ui.drop_w, ui.w - L(16));
+  const float lx = ui.drop_x + lw > ui.w - L(8) ? ui.w - L(8) - lw : ui.drop_x;
   const float ly = up ? ui.drop_y - lh + L(1) : ui.drop_y + ui.drop_h - L(1);
   fill(lx, ly, lw, lh, (SDL_Color){18, 18, 18, 255});
   outline(lx, ly, lw, lh, L(1), C_GREEN);
@@ -1458,7 +1489,7 @@ static void draw_drop_list(void) {
     char label[128];
     option_text(r, opts[o], label, sizeof label);
     SDL_Color c = opts[o] == cur ? C_GREEN : o == ui.drop_sel ? C_TEXT : (SDL_Color){205, 205, 205, 255};
-    text_tail(&ui.body, lx + L(14), iy + (ih - ui.body.height) / 2, lw - L(34), label, c);
+    text_head(&ui.body, lx + L(14), iy + (ih - ui.body.height) / 2, lw - L(34), label, c);
     hot(lx, iy, lw, ih, P_OPTION, ui.drop_row, o);
   }
   if (n > shown) {
@@ -1677,10 +1708,10 @@ static void draw(void) {
     text(ui.ren, &ui.body, L(MARGIN), y + (h - ui.body.height) / 2, r->label, focused ? C_TEXT : (SDL_Color){205, 205, 205, 255});
     const float cy = y + L(6), ch = h - L(12);
     switch (r->kind) {
-      case K_CHOICE: draw_dropdown(i, r, cx, cy, cw, ch, focused); break;
+      case K_CHOICE: draw_dropdown(i, r, cx, cy, dropdown_width(r, cw, cw_full), ch, focused); break;
       case K_RANGE:
         if (r->slider) draw_slider(i, r, cx, cy, cw, ch, focused);
-        else draw_dropdown(i, r, cx, cy, cw, ch, focused);
+        else draw_dropdown(i, r, cx, cy, dropdown_width(r, cw, cw_full), ch, focused);
         break;
       case K_PATH: draw_path(i, r, cx, cy, cw_full, ch, focused); break;
       default: draw_bindings(i, r, cx, cy, cw_full, ch, focused); break;
@@ -2156,12 +2187,16 @@ int main(int argc, char** argv) {
   const char* asked = NULL;
   const char* keys = NULL;
   const char* shot = NULL;
+  int asked_width = 980;  // of the window, before the display's scale
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--config") && i + 1 < argc) asked = argv[++i];
     else if (!strcmp(argv[i], "--press") && i + 1 < argc) keys = argv[++i];
     else if (!strcmp(argv[i], "--screenshot") && i + 1 < argc) shot = argv[++i];
+    else if (!strcmp(argv[i], "--width") && i + 1 < argc) asked_width = atoi(argv[++i]);
     else {
-      fprintf(stderr, "usage: %s [--config <file>] [--press <keys>] [--screenshot <file.png>]\n", argv[0]);
+      fprintf(stderr,
+              "usage: %s [--config <file>] [--press <keys>] [--screenshot <file.png>] [--width <layout units>]\n",
+              argv[0]);
       return 2;
     }
   }
@@ -2200,7 +2235,7 @@ int main(int argc, char** argv) {
   s = s < 1 ? 1 : s > 4 ? 4 : s;
   SDL_Rect usable = {0, 0, 1280, 720};
   SDL_GetDisplayUsableBounds(0, &usable);
-  int ww = (int)(980 * s), wh = (int)(780 * s);
+  int ww = (int)(asked_width * s), wh = (int)(780 * s);
   if (ww > usable.w * 9 / 10) ww = usable.w * 9 / 10;
   if (wh > usable.h * 9 / 10) wh = usable.h * 9 / 10;
   ui.win = SDL_CreateWindow("Zombies Ate My Neighbors", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, ww, wh,
