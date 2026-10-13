@@ -55,6 +55,7 @@ int vbl_queue_b_add(Wram* w, uint16_t addr, uint16_t bank);
 // zeroed and the count goes down one. It does not look whether the slot had
 // a job in it. Only the job's address is zeroed, which is what the vblank
 // handler tests.
+#define VBL_QUEUE_A_ADD_PC 0x8083aeu
 #define VBL_QUEUE_A_REMOVE_PC 0x8083d5u
 #define VBL_QUEUE_A_REMOVE_RTL_PC 0x8083dfu
 bool vbl_queue_a_remove_supported(uint16_t slot);

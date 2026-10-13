@@ -6418,6 +6418,12 @@ static const CosimRun ACTORS_COST[ACTORS_BLOCK_COUNT] = {
 };
 
 static const CosimRun TANIM_COST[TANIM_BLOCK_COUNT] = {
+    [TANIM_CLEAR_HEAD] = {36, 6, 0},
+    [TANIM_CLEAR] = {70, 6, 1},
+    [TANIM_LIST] = {132, 13, 2},
+    [TANIM_ENTRY] = {60, 6, 1},  // four bytes of it and two of the list
+    [TANIM_ADD] = {614, 48, 9},  // and four of the sequence
+    [TANIM_LIVE] = {52, 4, 1},
     [TANIM_HEAD] = {40, 4, 1},
     [TANIM_START] = {18, 3, 0},
     [TANIM_SLOT] = {70, 6, 1},
@@ -6552,7 +6558,19 @@ BODY_SHIM(object_acted, object_acted(w, &c, &k), OBJECT_COST)
 BODY_SHIM(actors_checked, actors_checked(w, rom, &c, &k), ACTORS_COST)
 BODY_SHIM(actors_measured, actors_measured(w, &c, &k), ACTORS_COST)
 BODY_SHIM(actors_started, actors_started(w, &c, &k), ACTORS_COST)
+BODY_SHIM(tile_anim_begin, tile_anim_begin(w, rom, &c, &k), TANIM_COST)
 BODY_SHIM(tile_anim_resume, tile_anim_resume(w, rom, &c, &k), TANIM_COST)
+
+// `$82:D7CF  STA $1F56,X` is a word below `$1F56` in the bank above the data
+// bank, which has to show low WRAM as well.
+static bool accepts_tile_anim_begin(const Wram* w, const CosimRegs* in) {
+  return accepts_body_low(w, in) && bank_sees_low_wram((uint8_t)(in->db + 1));
+}
+
+static bool guard_tile_anim_begin(Wram* scratch, const Rom* rom,
+                                  const CosimRegs* in) {
+  return tile_anim_list_known(scratch, rom, in->d);
+}
 BODY_SHIM(tile_anim_queued, tile_anim_queued(w, &c, &k), TANIM_COST)
 BODY_SHIM(pictures_play, pictures_play(w, rom, &c, &k), PICTURES_COST)
 BODY_SHIM(pictures_resume, pictures_resume(w, rom, &c, &k), PICTURES_COST)
@@ -8365,11 +8383,37 @@ static const CosimRun RD_COST[RD_BLOCK_COUNT] = {
     [RD_PUT_TAIL] = {58, 6, 0},
     [RD_YIELD] = {18, 3, 0},
     [RD_TAKEN] = {6, 0, 0},
+    [RD_BEGIN] = {206, 17, 2},
+    [RD_BEGIN_TICK] = {18, 3, 0},
+    [RD_CHANGED] = {28, 2, 1},
+    [RD_LOWER] = {132, 13, 1},
+    [RD_BLANK_ASK] = {156, 14, 2},
+    [RD_GONE] = {86, 7, 1},
+    [RD_COUNT_HEAD] = {40, 4, 1},
+    [RD_COUNT_ASK] = {36, 6, 0},
+    [RD_PANEL_ASK] = {368, 30, 5},
+    [RD_PLACE] = {556, 46, 7},
+    [RD_SQUARE] = {636, 63, 1},
+    [RD_SHOW] = {206, 20, 3},
+    // Its seven instructions on the page come after its `PLD`, with the page
+    // at zero whatever the caller's was.
+    [RD_TILES_ASK] = {916, 79, 0},
+    [RD_TILES_ASKED] = {34, 1, 0},
+    [RD_CHANNELS_ASK] = {60, 10, 0},
 };
 
 static bool accepts_radar_frame(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100 && bank_sees_low_wram(in->db) &&
          radar_frame_supported(w, in->d);
+}
+
+static int radar_cycles(const RadarWork* k, const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles = 0;
+  for (int i = 0; i < RD_BLOCK_COUNT; i++)
+    cycles += k->blocks[i] * cosim_run_cycles_dp(&RD_COST[i], fast, unaligned);
+  return cycles;
 }
 
 static void shim_radar_frame(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -8380,16 +8424,50 @@ static void shim_radar_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   cpu_from(in, &c);
   radar_frame(w, &c, &k);
   cpu_to(&c, out);
-  const bool fast = fetch_fast(in);
-  const bool unaligned = (in->d & 0x00ffu) != 0;
-  int cycles = 0;
-  for (int i = 0; i < RD_BLOCK_COUNT; i++)
-    cycles += k.blocks[i] * cosim_run_cycles_dp(&RD_COST[i], fast, unaligned);
-  cosim_cost(cycles);
+  cosim_cost(radar_cycles(&k, in));
 }
 
 static const uint32_t RADAR_EXITS[] = {RADAR_YIELD_PC, RADAR_DOWN_PC,
                                        RADAR_RECOUNT_PC};
+
+// The panel's stretches. They read its tables through the data bank, which
+// has to be the tables' own.
+#define X(name, sym, entry, needs)                                           \
+  static bool accepts_radar_##name(const Wram* w, const CosimRegs* in) {     \
+    if (!body_ok(in) || in->db != RADAR_BANK) return false;                  \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    return radar_needs_met(w, needs, &c);                                    \
+  }                                                                          \
+  static void shim_radar_##name(Wram* w, const Rom* rom, const CosimRegs* in, \
+                                CosimRegs* out) {                            \
+    PortCpu c;                                                               \
+    RadarWork k = {0};                                                       \
+    cpu_from(in, &c);                                                        \
+    radar_##name(w, rom, &c, &k);                                            \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(radar_cycles(&k, in));                                        \
+  }
+RADAR_STRETCHES(X)
+#undef X
+
+static const uint32_t RADAR_EXITS_begin[] = {RADAR_BEGIN_YIELD_PC,
+                                             RADAR_DRAW_PC};
+static const uint32_t RADAR_EXITS_drawn[] = {RADAR_YIELD_PC};
+static const uint32_t RADAR_EXITS_count_changed[] = {0x82d910u};
+static const uint32_t RADAR_EXITS_recounted[] = {RADAR_YIELD_PC};
+static const uint32_t RADAR_EXITS_lower[] = {0x82d9bfu};
+static const uint32_t RADAR_EXITS_blank_ask[] = {0x82d9d1u};
+static const uint32_t RADAR_EXITS_gone[] = {ACTOR_SLOT_FREE_ENTRY};
+static const uint32_t RADAR_EXITS_count_ask[] = {RADAR_COUNT_FIRST_PC,
+                                                 RADAR_COUNT_SECOND_PC};
+static const uint32_t RADAR_EXITS_panel_ask[] = {0x82da10u};
+static const uint32_t RADAR_EXITS_panel_place[] = {0x82da42u};
+static const uint32_t RADAR_EXITS_square_set[] = {0x82da85u};
+static const uint32_t RADAR_EXITS_panel_show[] = {0x82da9bu};
+static const uint32_t RADAR_EXITS_tiles_ask[] = {RADAR_TILES_QUEUE_PC};
+static const uint32_t RADAR_EXITS_tiles_asked[] = {0x82dc0bu};
+static const uint32_t RADAR_EXITS_channels_ask[] = {VBL_QUEUE_A_ADD_PC};
 
 // ---------------------------------------------------------------------------
 // $83:9F11 and $83:9F2E  the neighbour who jumps -- see `port/jumper.h`
@@ -17682,6 +17760,8 @@ static const uint32_t ACTORS_YIELD_EXITS[] = {ACTORS_YIELD_PC};
 static const uint32_t ACTORS_CHECKED_EXITS[] = {
     ACTORS_YIELD_PC, ACTORS_MEASURE_CALL_PC, ACTORS_START_CALL_PC};
 static const uint32_t TILE_ANIM_YIELD_EXITS[] = {TILE_ANIM_YIELD_PC};
+static const uint32_t TILE_ANIM_BEGIN_EXITS[] = {TILE_ANIM_YIELD_PC,
+                                                 TILE_ANIM_QUEUE_CALL_PC};
 static const uint32_t TILE_ANIM_RESUME_EXITS[] = {
     TILE_ANIM_YIELD_PC, TILE_ANIM_QUEUE_CALL_PC, TILE_ANIM_END_PC};
 
@@ -17950,6 +18030,22 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [TPJ_LOAD] = {58, 6, 0},
     [TPJ_NEXT] = {36, 4, 0},
     [TPJ_TAIL] = {82, 4, 1},
+    [RCJ_AT] = {70, 8, 0},
+    [RCJ_TENS] = {118, 16, 0},
+    [RCJ_TEST] = {30, 5, 0},
+    [RCJ_UNITS] = {84, 13, 0},
+    [DMA_STORE16] = {18, 3, 0},
+    [DMA_BRA] = {18, 2, 0},
+    [RECT_FIRST] = {88, 11, 0},
+    [RECT_ROW] = {70, 9, 0},
+    [RECT_WORD] = {66, 7, 0},  // five bytes of it and two of the words
+    [RECT_NEXT] = {70, 7, 0},
+    [RECT_ROW_END] = {68, 5, 0},
+    [RECT_ADVANCE] = {218, 20, 0},
+    [HEJ_LOAD] = {52, 6, 0},
+    // Priced at the speed the store left, whatever the job began at.
+    [HEJ_RTL_FAST] = {54, 0, 0},
+    [HEJ_RTL_SLOW] = {58, 0, 0},
     [LR_HEAD] = {252, 25, 0},
 };
 
@@ -18463,7 +18559,7 @@ static void shim_hud_upload_job(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_hw(t, DMA_COST, fetch_fast(in));
 }
 
-// `$82:B82E` and `$82:B9B6`. V is the `ADC #$6800`'s.
+// `$82:B82E`, `$82:B9B6` and `$82:AE44`. V is the `ADC #$6800`'s.
 static void shim_text_map_job(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
   (void)rom;
@@ -23946,6 +24042,7 @@ static const CosimRun LEVEL_CARD_RUN_second_drop_begin = {92, 9, 0};
 static const CosimRun LEVEL_CARD_RUN_blocks_unpack_ask = {204, 25, 0};
 static const CosimRun LEVEL_CARD_RUN_blocks_unpacked = {34, 1, 0};
 static const CosimRun LEVEL_CARD_RUN_blank = {86, 9, 0};
+static const CosimRun LEVEL_CARD_RUN_bounce_begin = {86, 9, 0};
 
 static bool accepts_level_card_begin(const Wram* w, const CosimRegs* in) {
   (void)w;
@@ -24127,6 +24224,55 @@ static void shim_layers_reset(Wram* w, const Rom* rom, const CosimRegs* in,
   layers_reset(w, t);
   layers_out(in, out);
   cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+// `$82:DC0C`, `$82:DC4F`, `$82:DAA0` and `$82:DADE` -- see `port/dma.h`.
+static bool accepts_tile_rect_job(const Wram* w, const CosimRegs* in) {
+  return accepts_vbl_job(w, in) && tile_rect_job_supported(w);
+}
+
+static void shim_tile_rect_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  HwTrace* t = dma_trace();
+  const uint16_t row_bytes = wram_r16(w, W_TILE_RECT_ROW_BYTES);
+  const uint16_t word = tile_rect_job(w, rom, t);
+  // The last `DEC`'s zero, and `CLC`.
+  dma_out(out, word, in->x, row_bytes, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
+  out->z = true;
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_hdma_channels_job(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  const uint16_t channels = hdma_channels_job(w, t);
+  dma_out(out, channels, in->x, in->y, (channels & 0x8000u) != 0,
+          COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
+  out->z = channels == 0;
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void radar_count_job_out(Wram* w, const CosimRegs* in, CosimRegs* out,
+                                int player) {
+  HwTrace* t = dma_trace();
+  const uint16_t units = radar_count_job(w, t, player);
+  dma_out(out, units, RADAR_COUNT_ONE, in->y, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_radar_count_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  radar_count_job_out(w, in, out, 0);
+}
+
+static void shim_radar_count_job_b(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  radar_count_job_out(w, in, out, 1);
 }
 
 // `$80:AC55` -- see `port/tile_put.h`.
@@ -27707,6 +27853,17 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 110,
     },
     {
+        .name = "tile_anim_begin",
+        .symbol = "$82:D7CF",
+        .entry = TILE_ANIM_PC,
+        .run = shim_tile_anim_begin,
+        .accepts = accepts_tile_anim_begin,
+        .supported = guard_tile_anim_begin,
+        COSIM_EXITS(TILE_ANIM_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 4000,
+    },
+    {
         .name = "tile_anim_resume",
         .symbol = "$82:D881",
         .entry = 0x82d881,
@@ -29253,6 +29410,18 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 3000,
     },
+#define X(name_, sym, pc, needs)                                             \
+    {                                                                        \
+        .name = "radar_" #name_,                                             \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_radar_##name_,                                           \
+        .accepts = accepts_radar_##name_,                                    \
+        COSIM_EXITS(RADAR_EXITS_##name_),                                    \
+        .cycles = 1000,                                                      \
+    },
+    RADAR_STRETCHES(X)
+#undef X
     // The neighbour who jumps: see `port/jumper.h`.
     {
         .name = "jumper_up",
@@ -31116,6 +31285,19 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 800,
         .stack_bytes = 5,
     },
+    {
+        .name = "big_letters_job",
+        .symbol = "$82:AE44",
+        .entry = BIG_LETTERS_JOB_PC,
+        .ret_op = BIG_LETTERS_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_text_map_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 800,
+        .stack_bytes = 5,
+    },
     DMA_JOB_ENTRY(colours_112_job, "$82:8308", COLOURS_112_JOB_PC,
                   COLOURS_112_JOB_RTL_PC, 420),
     DMA_JOB_ENTRY(vram_clear_job, "$80:9F62", VRAM_CLEAR_JOB_PC,
@@ -32061,6 +32243,55 @@ static const CosimRoutine ROUTINES[] = {
         .accepts = accepts_layers,
         .hw = true,
         .cycles = 900,
+    },
+    // The radar's jobs, and the two it shares: see `port/dma.h`.
+    {
+        .name = "tile_rect_job",
+        .symbol = "$82:DC0C",
+        .entry = TILE_RECT_JOB_PC,
+        .ret_op = TILE_RECT_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_tile_rect_job,
+        .accepts = accepts_tile_rect_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 12000,
+    },
+    {
+        .name = "hdma_channels_job",
+        .symbol = "$82:DC4F",
+        .entry = HDMA_CHANNELS_JOB_PC,
+        .ret_op = HDMA_CHANNELS_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_hdma_channels_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 130,
+    },
+    {
+        .name = "radar_count_job",
+        .symbol = "$82:DAA0",
+        .entry = RADAR_COUNT_JOB_PC,
+        .ret_op = RADAR_COUNT_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_radar_count_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 500,
+    },
+    {
+        .name = "radar_count_job_b",
+        .symbol = "$82:DADE",
+        .entry = RADAR_COUNT_JOB_B_PC,
+        .ret_op = RADAR_COUNT_JOB_B_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_radar_count_job_b,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 500,
     },
     // The job that sends the tiles `map_tile_put` listed.
     {

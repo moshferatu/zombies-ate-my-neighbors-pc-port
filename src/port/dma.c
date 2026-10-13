@@ -180,7 +180,7 @@ void colour_window_reset(Wram* w, HwTrace* t) {
     store8(t, DMA_STORE, edge, 0);
   store8(t, DMA_STORE, REG_HDMAEN, 0);
   hw_run(t, DMA_REP_STZ16);
-  wram_w16(w, W_COLOUR_WINDOW_WORD, 0);
+  wram_w16(w, W_HDMA_CHANNELS, 0);
 }
 
 #define MODE_1_BG1_TILES_16 0x19u
@@ -570,8 +570,8 @@ void screen_show_end(HwTrace* t) {
 void title_hdma_setup(Wram* w, HwTrace* t) {
   PORT_COVER(title_hdma_setup);
   store8(t, DMA_SEP_STORE, REG_HDMAEN, 0);
-  wram_w8(w, W_COLOUR_WINDOW_WORD, 0);
-  wram_w8(w, W_COLOUR_WINDOW_WORD + 1, 0);
+  wram_w8(w, W_HDMA_CHANNELS, 0);
+  wram_w8(w, W_HDMA_CHANNELS + 1, 0);
   store8(t, TH_HEAD, hdma_reg(WAVE_CHANNEL, HDMA_MODE), MODE_TWO_BYTES_ONE_REG);
   store8(t, DMA_IMM, hdma_reg(WAVE_CHANNEL, HDMA_DEST), DEST_BG1_SCROLL_X);
   store8(t, DMA_IMM, hdma_reg(WAVE_CHANNEL, HDMA_TABLE_BANK), WAVE_TABLE_BANK);
@@ -600,4 +600,101 @@ void title_hdma_off(Wram* w, HwTrace* t) {
   hw_run(t, DMA_REP_STZ16);
   wram_w16(w, W_LAYER_SCROLLS, 0);
   hw_run(t, DMA_LOAD);
+}
+
+// --- $82:DC4F  the channels that write every line -----------------------------
+
+uint16_t hdma_channels_job(const Wram* w, HwTrace* t) {
+  const uint16_t channels = wram_r16(w, W_HDMA_CHANNELS);
+  store16(t, HEJ_LOAD, REG_HDMAEN, channels);
+  // The second byte was the cartridge's speed, and the two bytes left are
+  // fetched at it.
+  hw_run(t, (channels & HDMA_CHANNELS_FAST) ? HEJ_RTL_FAST : HEJ_RTL_SLOW);
+  return channels;
+}
+
+// --- $82:DC0C  a rectangle of tiles -------------------------------------------
+
+#define REG_VMDATA 0x2118u  // a word to VRAM
+#define TILE_RECT_MOST_ROW_BYTES 0x0080u
+#define TILE_RECT_MOST_ROWS 0x0020u
+#define TILE_RECT_MOST_WORDS 0x0200u
+
+static uint32_t tile_rect_source(const Wram* w) {
+  return wram_r16(w, W_TILE_RECT_SOURCE) |
+         (uint32_t)wram_r8(w, W_TILE_RECT_SOURCE + 2) << 16;
+}
+
+// The row's loop ends when Y equals the bytes, two at a time, and the rows'
+// when the count reaches zero: an odd width or a zero of either never ends.
+bool tile_rect_job_supported(const Wram* w) {
+  const uint16_t bytes = wram_r16(w, W_TILE_RECT_ROW_BYTES);
+  const uint16_t rows = wram_r16(w, W_TILE_RECT_ROWS);
+  if ((bytes & 1) != 0 || bytes == 0 || bytes > TILE_RECT_MOST_ROW_BYTES)
+    return false;
+  if (rows == 0 || rows > TILE_RECT_MOST_ROWS) return false;
+  if ((uint32_t)(bytes / 2) * rows > TILE_RECT_MOST_WORDS) return false;
+  const uint32_t source = tile_rect_source(w);
+  return (source >> 16) >= 0x80 && (source & 0xffffu) >= 0x8000 &&
+         (source & 0xffffu) + (uint32_t)bytes * rows <= 0x10000u;
+}
+
+uint16_t tile_rect_job(Wram* w, const Rom* rom, HwTrace* t) {
+  store8(t, TJ_HEAD, REG_VMAIN, VMAIN_STEP_ON_HIGH);
+  const uint16_t bytes = wram_r16(w, W_TILE_RECT_ROW_BYTES);
+  uint16_t word = 0;
+  for (bool first = true;; first = false) {
+    store16(t, first ? RECT_FIRST : RECT_ROW, REG_VMADD,
+            wram_r16(w, W_TILE_RECT_AT));
+    const uint32_t source = tile_rect_source(w);
+    for (uint16_t at = 0; at != bytes; at += 2) {
+      word = bus_r16(w, rom, source + at);
+      store16(t, RECT_WORD, REG_VMDATA, word);
+      hw_run(t, RECT_NEXT);
+      if (at + 2 != bytes) hw_run(t, DMA_TAKEN);
+    }
+    const uint16_t rows = (uint16_t)(wram_r16(w, W_TILE_RECT_ROWS) - 1);
+    wram_w16(w, W_TILE_RECT_ROWS, rows);
+    hw_run(t, RECT_ROW_END);
+    if (rows == 0) break;
+    PORT_COVER(tile_rect_next_row);
+    wram_w16(w, W_TILE_RECT_AT,
+             (uint16_t)(wram_r16(w, W_TILE_RECT_AT) + TILE_RECT_VRAM_ROW));
+    wram_w16(w, W_TILE_RECT_SOURCE, (uint16_t)(source + bytes));
+    hw_run(t, RECT_ADVANCE);
+  }
+  hw_run(t, DMA_TAKEN);
+  hw_run(t, DMA_FLAG_RTL);
+  return word;
+}
+
+// --- $82:DAA0 and $82:DADE  the count under a radar ---------------------------
+
+uint16_t radar_count_job(const Wram* w, HwTrace* t, int player) {
+  store8(t, TJ_HEAD, REG_VMAIN, VMAIN_STEP_ON_HIGH);
+  store16(t, RCJ_AT, REG_VMADD,
+          wram_r16(w, (uint16_t)(W_RADAR_COUNT_AT + 2 * player)));
+  uint16_t left = wram_r16(w, W_RADAR_COUNT);
+  hw_run(t, RCJ_TENS);
+  if (left > RADAR_COUNT_MOST) {
+    PORT_COVER(radar_count_most);
+    left = RADAR_COUNT_MOST;
+    hw_run(t, DMA_LOAD);
+  } else {
+    hw_run(t, DMA_TAKEN);
+  }
+  hw_run(t, RCJ_TEST);
+  if (left & RADAR_COUNT_MOST) {
+    PORT_COVER(radar_count_sixteen);
+    hw_run(t, DMA_TAKEN);
+    store16(t, DMA_STORE16, REG_VMDATA, RADAR_COUNT_ONE);
+  } else {
+    PORT_COVER(radar_count_one_digit);
+    store16(t, DMA_STORE16, REG_VMDATA, 0);
+    hw_run(t, DMA_BRA);
+  }
+  const uint16_t units = (uint16_t)((left & 0x000fu) + RADAR_COUNT_ZERO);
+  store16(t, RCJ_UNITS, REG_VMDATA, units);
+  hw_run(t, DMA_FLAG_RTL);
+  return units;
 }

@@ -48,6 +48,15 @@ static uint16_t ind_long_y(const Wram* w, const Rom* rom, const PortCpu* c,
   return data_r16(w, rom, (ptr + c->y) & 0xffffffu, k);
 }
 
+// `LDA [$04]`: the same without the offset.
+static uint16_t ind_long(const Wram* w, const Rom* rom, const PortCpu* c,
+                         uint8_t off, BodyWork* k) {
+  const uint32_t ptr =
+      dp_r16(w, c, off) |
+      (uint32_t)wram_r8(w, (uint16_t)(c->d + off + 2)) << 16;
+  return data_r16(w, rom, ptr, k);
+}
+
 // `$38,X` and the like: the thread's page, indexed, still in bank 0.
 static uint16_t dpx(const PortCpu* c, uint8_t off) {
   return (uint16_t)(c->d + off + c->x);
@@ -511,8 +520,90 @@ void tile_anim_queued(Wram* w, PortCpu* c, BodyWork* k) {
   c->pc = TILE_ANIM_YIELD_PC;
 }
 
+// A word of the list or of a sequence, which have to be in the cartridge
+// through a bank that is priced as a program byte is.
+static bool tile_anim_word_known(uint32_t at) {
+  return (at >> 16) >= 0x80 && (at & 0xffffu) >= 0x8000 &&
+         (at & 0xffffu) <= 0xfffc;
+}
+
+bool tile_anim_list_known(const Wram* w, const Rom* rom, uint16_t d) {
+  const uint32_t bank = (uint32_t)wram_r8(w, (uint16_t)(d + 0x02)) << 16;
+  uint32_t entry = bank | wram_r16(w, d);
+  for (int slot = 0; slot <= TILE_ANIM_SLOTS; slot++, entry += 2) {
+    if (!tile_anim_word_known(entry)) return false;
+    const uint16_t sequence = bus_r16(w, rom, entry);
+    if (sequence == 0) return true;
+    if (!tile_anim_word_known(bank | sequence)) return false;
+  }
+  return false;
+}
+
+static void tile_anim_walk(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k);
+
 // `$1E80`, `$1F56` and the bit table are all through the data bank, which the
-// harness has checked shows low WRAM.
+// harness has checked shows low WRAM, and the bank above it too.
+void tile_anim_begin(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k) {
+  // $D7CF: no slot is live
+  c->x = 2 * (TILE_ANIM_SLOTS - 1);
+  lda(c, 0x0000);
+  k->blocks[TANIM_CLEAR_HEAD]++;
+  for (;;) {
+    wram_w16(w, dpx(c, 0x38), c->a);
+    c->x = (uint16_t)(c->x - 2);
+    set_nz16(c, c->x);
+    k->blocks[TANIM_CLEAR]++;
+    if (c->x & 0x8000u) break;
+    k->blocks[TANIM_TAKEN]++;
+  }
+  // $D7DB  STA $1F56,X, with X at $FFFE: the word before it
+  wram_w16(w, (uint16_t)(W_TILE_ANIM_DIRTY + c->x), c->a);
+  lda(c, dp_r16(w, c, 0x02));
+  dp_w16(w, c, 0x06, c->a);
+  c->x = 0x0000;
+  c->y = 0x0002;
+  set_nz16(c, c->y);
+  k->blocks[TANIM_LIST]++;
+
+  for (;;) {
+    // $D7E8  LDA [$00] : BEQ $D818
+    lda(c, ind_long(w, rom, c, 0x00, k));
+    k->blocks[TANIM_ENTRY]++;
+    if (c->a == 0) {
+      k->blocks[TANIM_TAKEN]++;
+      break;
+    }
+    // $D7EC: the sequence's first word is the tile, and its first pair
+    // follows
+    PORT_COVER(tile_anim_listed);
+    dp_w16(w, c, 0x00, (uint16_t)(dp_r16(w, c, 0x00) + 2));
+    dp_w16(w, c, 0x04, c->a);
+    wram_w16(w, dpx(c, 0x08), (uint16_t)(c->a + 2));
+    lda(c, ind_long(w, rom, c, 0x04, k));
+    c->a = asl16(c, c->a);
+    wram_w16(w, W_TILE_ANIM_NUMBER + c->x, c->a);
+    for (int i = 0; i < 3; i++) c->a = asl16(c, c->a);
+    set_c(c, false);
+    c->a = adc16(c, c->a, TILE_ANIM_VRAM_BASE);
+    wram_w16(w, W_TILE_ANIM_PLACE + c->x, c->a);
+    lda(c, ind_long_y(w, rom, c, 0x04, k));
+    wram_w16(w, dpx(c, 0x28), c->a);
+    wram_w16(w, dpx(c, 0x18), c->y);
+    lda(c, 0xffff);
+    wram_w16(w, dpx(c, 0x38), c->a);
+    c->x = (uint16_t)(c->x + 2);
+    set_nz16(c, c->x);
+    k->blocks[TANIM_ADD]++;
+  }
+
+  // $D818  TXA : LSR : STA $48
+  set_c(c, (c->x & 1) != 0);
+  lda(c, (uint16_t)(c->x >> 1));
+  dp_w16(w, c, 0x48, c->a);
+  k->blocks[TANIM_LIVE]++;
+  tile_anim_walk(w, rom, c, k);
+}
+
 void tile_anim_resume(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k) {
   // $D881  LDA $48 : BNE $D81C
   lda(c, dp_r16(w, c, 0x48));
@@ -523,6 +614,11 @@ void tile_anim_resume(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k) {
     return;
   }
   k->blocks[TANIM_TAKEN]++;
+  tile_anim_walk(w, rom, c, k);
+}
+
+// `$82:D81C`: every slot's frame, and the job if any tile changed.
+static void tile_anim_walk(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k) {
   c->x = 0xfffe;
   set_nz16(c, c->x);
   k->blocks[TANIM_START]++;

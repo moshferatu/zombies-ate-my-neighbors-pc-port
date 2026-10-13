@@ -127,6 +127,14 @@
   X(radar_skipped_far_x, "radar_frame",     "...or too far across") \
   X(radar_skipped_far_y, "radar_frame",     "...or too far up or down") \
   X(radar_shown,      "radar_frame",        "the square put where the next near neighbour is") \
+  X(radar_begin_in_step, "radar_begin",     "the tick is the player's own, and the panel goes up now") \
+  X(radar_begin_waited, "radar_begin",      "...or the other's, and a tick is waited") \
+  X(radar_count_first, "radar_count_ask",   "the first player's count asked for") \
+  X(radar_count_second, "radar_count_ask",  "...or the second's") \
+  X(radar_count_most, "radar_count_job",    "more than sixteen left, shown as sixteen") \
+  X(radar_count_sixteen, "radar_count_job", "sixteen: a 1 and a 0") \
+  X(radar_count_one_digit, "radar_count_job", "fewer: a blank and a digit") \
+  X(tile_rect_next_row, "tile_rect_job",    "a row sent and another to go") \
   /* $83:9F11, $83:9F2E the neighbour who jumps -- see port/jumper.h. */        \
   X(jumper_rose,      "jumper_up",          "a pixel up") \
   X(jumper_turned,    "jumper_up",          "the top of the jump, and the first pixel down") \
@@ -774,6 +782,7 @@
   X(actors_nearer,    "actors_measured",   "an entry nearer than any this pass") \
   X(actors_none_near, "actors_checked",    "a pass ended with nobody within $100") \
   X(actors_pick,      "actors_checked",    "a pass ended and the nearest entry is started") \
+  X(tile_anim_listed, "tile_anim_begin",   "a tile on the level's list is given a slot") \
   X(tile_anim_stepped, "tile_anim_resume", "a slot's count ran out and its next frame was read") \
   X(tile_anim_looped, "tile_anim_resume",  "a sequence ran out with $FFFF and started over") \
   X(tile_anim_stopped, "tile_anim_resume", "a sequence ran out with $FFFE and its slot stopped") \
@@ -1959,6 +1968,7 @@
   X(level_card_blocks_unpack_ask, "level_card_blocks_unpack_ask", "the level's blocks, to be unpacked") \
   X(level_card_blocks_unpacked, "level_card_blocks_unpacked", "...and the argument pulled") \
   X(level_card_blank, "level_card_blank", "the screen off again") \
+  X(level_card_bounce_begin, "level_card_bounce_begin", "a string down, and sixteen frames of bounce") \
   X(level_card_layer, "level_card_layer", "the letters' layer set up and turned on") \
   X(level_card_layers_back, "level_card_layers_back", "the level's layers put back") \
   X(text_big_sent, "text_big_sent", "the big letters' map queued, and back to the caller") \

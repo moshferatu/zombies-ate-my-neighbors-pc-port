@@ -14,6 +14,7 @@
 //   $80:9F62  vram_clear_job      a kilobyte of VRAM zeroed, a vblank at a time
 //   $82:B82E  text_map_job        the words a screen has printed, two rows
 //   $82:B9B6                      ...of sixteen: the same job again
+//   $82:AE44                      ...and again, for the big letters
 //
 // Each fills in DMA channel 0 and starts it. None of them writes the machine:
 // like every routine in `port/hw.h`'s scheme it records what it stored, in
@@ -98,6 +99,8 @@
 #define TEXT_MAP_JOB_RTL_PC 0x82b849u
 #define TEXT_LINES_JOB_PC 0x82b9b6u   // the same instructions
 #define TEXT_LINES_JOB_RTL_PC 0x82b9d1u
+#define BIG_LETTERS_JOB_PC 0x82ae44u  // ...and again, for the big letters,
+#define BIG_LETTERS_JOB_RTL_PC 0x82ae5fu  // on queue B
 
 // The third layer's tiles, in the cartridge, and where its map and they are
 // in VRAM as the two registers say it.
@@ -215,6 +218,21 @@ enum {
   TH_HEAD,       // $80:941D STZ : STZ, a byte each : LDA # : STA $4360
   PL_HEAD,       // $80:98A9 LDA # : STA : STA : STZ : STZ : SEP #$20 : LDA # : STA $2125
   CS_HEAD,       // $82:B4C4 STZ : STZ, to memory : STZ $210D
+  RCJ_AT,        // $82:DAA7 REP #$20 : LDA abs : STA $2116
+  RCJ_TENS,      // LDA # : ORA # : TAX : LDA long : CMP # : BCC
+  RCJ_TEST,      // BIT # : BNE
+  RCJ_UNITS,     // AND # : CLC : ADC # : ORA # : STA $2118
+  DMA_STORE16,   // STZ or STX abs, sixteen bits
+  DMA_BRA,       // BRA
+  RECT_FIRST,    // $82:DC13 REP #$20 : LDY # : LDA abs : STA $2116
+  RECT_ROW,      // LDY # : LDA abs : STA $2116
+  RECT_WORD,     // LDA [dp],Y : STA $2118
+  RECT_NEXT,     // INY : INY : CPY abs : BNE
+  RECT_ROW_END,  // DEC abs : BEQ
+  RECT_ADVANCE,  // $82:DC2F-$DC42: the next row's place and words, and BRA
+  HEJ_LOAD,      // $82:DC4F LDA abs : STA $420C
+  HEJ_RTL_FAST,  // CLC : RTL, once that store has made the cartridge fast
+  HEJ_RTL_SLOW,  // ...or slow
   DMA_BLOCK_COUNT
 };
 
@@ -275,13 +293,61 @@ void camera_job_begin(HwTrace* t);
 // `$82:DB96` to its `RTL`, the end of the victims' list being parsed. Both
 // windows are given to the colour arithmetic, with their four edges at
 // zero. Inside them the fixed colour is taken off the second layer and the
-// backdrop: five of each of red, green and blue. No channel writes every line. And the word at
-// `$136E` is zero. I have not found what reads that.
+// backdrop: five of each of red, green and blue. No channel writes every line,
+// and the word at `$136E`, which is the game's own copy of which do, is zero.
 #define COLOUR_WINDOW_PC 0x82db96u
 #define COLOUR_WINDOW_RTL_PC 0x82dbc0u
 #define COLOUR_WINDOW_FIXED 0xe5u  // the last byte A is given
-#define W_COLOUR_WINDOW_WORD 0x136eu
+#define W_HDMA_CHANNELS 0x136eu
 void colour_window_reset(Wram* w, HwTrace* t);
+
+// `$82:DC4F`, a job on queue A: the channels that write every line, from
+// the game's copy. The copy is a word and so is the store, so its high byte
+// goes to `$420D`, which is the cartridge's speed.
+#define HDMA_CHANNELS_JOB_PC 0x82dc4fu
+#define HDMA_CHANNELS_JOB_RTL_PC 0x82dc56u
+#define HDMA_CHANNELS_FAST 0x0100u  // bit 0 of `$420D`
+uint16_t hdma_channels_job(const Wram* w, HwTrace* t);
+
+// `$82:DC0C`, a job on queue A: a rectangle of tiles written to a layer's
+// map a word at a time, with no transfer. `$82:DBC1` leaves it where the
+// first row goes in VRAM, how many bytes a row is and how many rows, and
+// where the words are; see `port/radar_thread.h`. A row is thirty-two
+// words on in VRAM.
+#define TILE_RECT_JOB_PC 0x82dc0cu
+#define TILE_RECT_JOB_RTL_PC 0x82dc44u
+#define W_TILE_RECT_RECORD 0x0028u     // 24 bits: the record asked with
+#define W_TILE_RECT_SOURCE 0x00e9u     // 24 bits: the next row's words
+#define W_TILE_RECT_ROW_BYTES 0x1f58u
+#define W_TILE_RECT_ROWS 0x1f5au
+#define W_TILE_RECT_AT 0x1f5cu         // the next row's place in VRAM
+#define TILE_RECT_VRAM_ROW 0x0020u
+// The record: the map's corner in VRAM, tiles across, tiles down, and the
+// 24-bit address of the words in 32.
+#define TILE_RECT_CORNER 0
+#define TILE_RECT_ACROSS 2
+#define TILE_RECT_DOWN 4
+#define TILE_RECT_WORDS 6
+#define TILE_RECT_RECORD_BYTES 10u
+// The words in the cartridge, a row of no more than a screen's width and
+// few enough rows for what is recorded of them.
+bool tile_rect_job_supported(const Wram* w);
+// The last word sent.
+uint16_t tile_rect_job(Wram* w, const Rom* rom, HwTrace* t);
+
+// `$82:DAA0` and `$82:DADE`, jobs on queue A: the count of neighbours left,
+// two tiles under a player's radar. Sixteen is the most it shows.
+#define RADAR_COUNT_JOB_PC 0x82daa0u
+#define RADAR_COUNT_JOB_RTL_PC 0x82daddu
+#define RADAR_COUNT_JOB_B_PC 0x82dadeu
+#define RADAR_COUNT_JOB_B_RTL_PC 0x82db1bu
+#define W_RADAR_COUNT_AT 0x1f5eu  // a player: where in VRAM
+#define W_RADAR_COUNT 0x1d52u     // `W_NEIGHBOURS_LEFT` in `port/bodies.h`
+#define RADAR_COUNT_MOST 0x0010u
+#define RADAR_COUNT_ONE 0x3c08u   // the tile for a 1 in front
+#define RADAR_COUNT_ZERO 0x3c07u  // the tile for 0, and the digits follow
+// The last word sent.
+uint16_t radar_count_job(const Wram* w, HwTrace* t, int player);
 
 // `$82:AC27` to `$82:AC44`, in the screen before a level
 // (`port/level_card.h`). Through `$82:ACD6` the first layer is put at the

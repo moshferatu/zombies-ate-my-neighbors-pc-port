@@ -5,6 +5,82 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The radar's panel and the animated tiles' first pass (2026-10-12)
+
+Three things the survey had the core still running: the first pass of a
+level's animated tiles, the radar's panel going up and coming down, and
+two leftovers of the screen before a level.
+
+* **The animated tiles' first pass**, `tile_anim_begin`, `$82:D7CF`, in
+  `port/bodies.c`. It clears the eight slots, gives each tile on the
+  level's list a slot, and goes on into the walk that was ported already.
+  It was 33 takeovers and 7,572 instructions.
+  * The ROM means to clear `$1F56` there and misses. `STA $1F56,X` runs
+    with X left at `$FFFE`, which is `$1F54` in the next bank up. The port
+    writes what the ROM writes, and its guard wants that bank to show low
+    WRAM too.
+* **The radar's panel**, in `port/radar_thread.c`: fifteen stretches, each
+  from where the thread starts or a call comes back to the next call,
+  yield or return.
+  * Going up: `radar_begin`, `radar_panel_ask`, `radar_panel_place`,
+    `radar_square_set`, `radar_panel_show`, `radar_drawn`.
+  * The count changing: `radar_count_changed`, `radar_count_ask`, and
+    `radar_recounted`, which is the rest of a frame from `$82:D913`.
+  * Coming down: `radar_lower`, `radar_blank_ask`, `radar_gone`.
+  * `$82:DBC1`, which asks for a rectangle of tiles: `radar_tiles_ask`
+    and `radar_tiles_asked`. And `$82:DC45`, `radar_channels_ask`.
+* **Three jobs**, in `port/dma.c`.
+  * `tile_rect_job`, `$82:DC0C`: the rectangle, a word at a time to
+    `$2118` with no transfer. It was 6,902 instructions over 14 runs.
+  * `radar_count_job`, `$82:DAA0` and `$82:DADE`: the two tiles of the
+    count, a player each.
+  * `hdma_channels_job`, `$82:DC4F`: the game's copy of which channels
+    write every line, given to `$420C`.
+* **The radar slows the cartridge.** `$82:DC4F` stores the word at `$136E`
+  with A sixteen bits wide, so the high byte goes to `$420D`. It is zero,
+  and FastROM is off from the first time a radar goes up. Every run of the
+  job after the first in `level1-map` is at the slow price, so it stays
+  off at least that long. I have not looked for where it comes back on.
+  The job's last two bytes are fetched at the new speed and priced so.
+  `$136E` is renamed `W_HDMA_CHANNELS` now that what reads it is known.
+* **The screen before a level.** `level_card_bounce_begin`, `$82:AE98`.
+  And `big_letters_job`, `$82:AE44`, which is the text map's job a third
+  time, on queue B: one more row for the same port.
+* **Four links.**
+* **Checked.** 1,121 routines are registered.
+  * The corpus verifies clean: 127,985,887 calls over 56 movies, none
+    diverged.
+  * Costs are compared over the whole corpus, and every new row is exact.
+  * Branch coverage is 1,582 of 1,891.
+  * Lockstep: 53 of 56 never part; `level25`, `level25-2p` and
+    `level25-heavy` do, as before.
+  * The picture: 78,360,128 lines drawn both ways over the 56 movies, at
+    off and at 16:9, and none differ.
+  * `zamn.exe` replays `level1-map` and ends with status 0.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 559 to 544 | 17,025 to 16,242 | 137,631 to 116,774 |
+  | Left standing on an instruction | 30 to 28 | 833 to 819 | 33,282 to 33,177 |
+  | A port turned the call down | 32 to 32 | 2,558 to 2,558 | 11,765 to 11,765 |
+  | A port or a link called it | 8 to 8 | 409 to 409 | 1,039 to 1,039 |
+  | All | 630 to 613 | 20,935 to 20,138 | 191,637 to 170,675 |
+
+* **Not done or not known.**
+  * Three ways no movie goes: a radar that goes up on its own tick
+    (`radar_begin_in_step`), the second player's count
+    (`radar_count_second`), and more than sixteen neighbours left
+    (`radar_count_most`). They are written and not run. No movie has the
+    second player raise a radar.
+  * `tile_rect_job` takes words in the cartridge, at most 64 across, 32
+    down and 512 in all. The radar's two pictures are 8 by 8. Anything
+    else is turned down.
+  * `$82:AE3E`, the `WAI` after the big letters' job is asked for, is
+    still the core's, as every `WAI` is.
+  * I did not raise the radar in the game itself. The checks above are
+    the port against the ROM, and the picture pass.
+
 ### The password's screen and the top scores, between their calls (2026-10-12)
 
 `$82:B232` runs a screen with a cursor, which is the one a password is

@@ -19222,3 +19222,37 @@ names. Its guard reads the table and turns anything else down.
 Over the same 110 sessions the core executes 191,637 instructions
 where it executed 210,414, and takes over 20,935 times where it
 did 22,482, at 630 places where there were 662.
+
+## The radar's panel and the animated tiles' first pass (2026-10-12)
+
+### A store a word wide
+
+`$82:DC4F` is `LDA $136E : STA $420C : CLC : RTL` with A sixteen bits
+wide. The second byte of the store is `$420D`, the cartridge's speed. A
+trace is priced at one speed, the one the routine began at, and the first
+run of this job in a movie begins fast and ends slow. So the two bytes
+after the store have two blocks of their own, priced outright with no
+bytes to scale: 54 if the store left the cartridge fast, 58 if slow. The
+job is 122 cycles the first time and 134 after.
+
+### An exit is the call, not where it goes
+
+`radar_square_set` ends at `JSL $808475`. I gave it the routine's address
+as its exit, and `verify` found a byte of the stack different and the
+cost 54 or more out: the harness makes a `JSL` it is stopped on, and it
+was never stopped on one. A stretch whose last instruction is a `JML`
+does end where the jump goes, since nothing is pushed and the stretch
+makes the jump itself: `radar_gone` and `radar_channels_ask` do.
+
+### An index past the bank
+
+`STA $1F56,X` with X at `$FFFE` is not `$1F54` in the data bank: an
+indexed absolute address carries into the bank. With the data bank at
+`$82` it is `$83:1F54`, which is low WRAM as well, and the guard of
+`tile_anim_begin` asks that of the bank above.
+
+### After
+
+Over the same 110 sessions the core executes 170,675 instructions
+where it executed 191,637, and takes over 20,138 times where it
+did 20,935, at 613 places where there were 630.

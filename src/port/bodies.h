@@ -217,7 +217,19 @@ void actors_started(Wram* w, PortCpu* c, BodyWork* k);
 // slot's bit from the table at `$D8CB` goes into `$7E:1F56`. A duration of
 // `$FFFF` starts the sequence over; `$FFFE` stops the slot. If any bit is set
 // at the end, the upload job at `$82:D88C` is queued on queue A.
+//
+// It starts with a list at `[$00]`: a pointer to each tile's sequence, in
+// the list's own bank, and a zero after the last. A sequence begins with the
+// number of the tile it animates, which goes to `$7E:6DD4,X` doubled and to
+// `$7E:6DB4,X` as where the tile is in VRAM, and its first pair follows.
+// The first pass then goes on into the walk above.
+//
+// It means to clear `$1F56` first and misses: `STA $1F56,X` runs with X
+// left at `$FFFE` by the loop before it, which is the word before `$1F56`
+// in the next bank up.
 
+#define TILE_ANIM_PC 0x82d7cfu
+#define TILE_ANIM_SLOTS 8
 #define TILE_ANIM_RESUME_PC 0x82d881u  // after its `JSL thread_yield`
 #define TILE_ANIM_QUEUED_PC 0x82d87au  // after `JSL vbl_queue_a_add`
 // Where it leaves.
@@ -229,9 +241,18 @@ void actors_started(Wram* w, PortCpu* c, BodyWork* k);
 #define W_TILE_ANIM_DIRTY 0x1f56
 #define W_TILE_ANIM_FRAME 0x6de4
 #define W_TILE_ANIM_TILE 0x6dc4
+#define W_TILE_ANIM_NUMBER 0x6dd4
+#define W_TILE_ANIM_PLACE 0x6db4
+#define TILE_ANIM_VRAM_BASE 0x2000
 #define TILE_ANIM_BITS 0x82d8cbu
 
 enum {
+  TANIM_CLEAR_HEAD,  // LDX #$000E : LDA #$0000
+  TANIM_CLEAR,    // STA $38,X : DEX : DEX : BPL
+  TANIM_LIST,     // STA $1F56,X : LDA $02 : STA $06 : LDX #$0000 : LDY #$0002
+  TANIM_ENTRY,    // LDA [$00] : BEQ
+  TANIM_ADD,      // $D7EC-$D817: a tile's slot filled, and BRA
+  TANIM_LIVE,     // TXA : LSR : STA $48
   TANIM_HEAD,     // LDA $48 : BNE
   TANIM_START,    // LDX #$FFFE
   TANIM_SLOT,     // INX INX : LDA $38,X : BMI
@@ -250,6 +271,11 @@ enum {
   TANIM_BLOCK_COUNT
 };
 
+// Whether the list at `[$00]` on the page at `d` is one the first pass is
+// ported for: in the cartridge with its sequences, and no longer than the
+// slots there are.
+bool tile_anim_list_known(const Wram* w, const Rom* rom, uint16_t d);
+void tile_anim_begin(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k);
 void tile_anim_resume(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k);
 void tile_anim_queued(Wram* w, PortCpu* c, BodyWork* k);
 

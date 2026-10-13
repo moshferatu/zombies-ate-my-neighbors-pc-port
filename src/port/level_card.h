@@ -100,7 +100,8 @@ void level_card_blocks_unpack_ask(Wram* w, const Rom* rom, PortCpu* c);
   X(second_words_ask, "$82:AC6D", 0x82ac6du, 0x82ac71u) \
   X(second_drop_begin, "$82:AC75", 0x82ac75u, 0x82ae75u) \
   X(blocks_unpacked, "$82:AC91", 0x82ac91u, 0x82ac92u) \
-  X(blank, "$82:ACA6", 0x82aca6u, 0x82acafu)
+  X(blank, "$82:ACA6", 0x82aca6u, 0x82acafu) \
+  X(bounce_begin, "$82:AE98", 0x82ae98u, 0x82aea1u)
 
 #define X(name, sym, entry, exit) void level_card_##name(Wram* w, PortCpu* c);
 LEVEL_CARD_STRETCHES(X)

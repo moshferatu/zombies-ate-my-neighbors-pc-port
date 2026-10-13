@@ -105,6 +105,18 @@ void level_card_second_drop_begin(Wram* w, PortCpu* c) {
   drop_begin(w, c, SECOND_DROP_RETURN);
 }
 
+// `$82:AE98`: the string is down, with its sound. Its bounce is sixteen
+// frames, from the top of the table.
+#define LEVEL_CARD_BOUNCE_FRAMES 0x0010u
+
+void level_card_bounce_begin(Wram* w, PortCpu* c) {
+  PORT_COVER(level_card_bounce_begin);
+  load_a(c, LEVEL_CARD_BOUNCE_FRAMES);
+  wram_w16(w, W_CARD_FRAMES, c->a);
+  wram_w16(w, W_CARD_BOUNCE_AT, 0);
+  c->pc = CARD_BOUNCE_WAI_PC;
+}
+
 bool level_card_record_supported(uint16_t record) {
   return record >= 0x8000u && record <= 0xffffu - RECORD_SONG - 3;
 }

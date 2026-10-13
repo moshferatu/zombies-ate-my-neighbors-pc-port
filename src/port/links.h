@@ -157,6 +157,10 @@
   X(82b592, "$82:B592", 0x82b592u) /* JSL $80:C049 */ \
   X(82b5e2, "$82:B5E2", 0x82b5e2u) /* RTS */ \
   X(82ba49, "$82:BA49", 0x82ba49u) /* JSR $82:B229 */ \
-  X(82ba85, "$82:BA85", 0x82ba85u) /* JSL $82:AD44 */
+  X(82ba85, "$82:BA85", 0x82ba85u) /* JSL $82:AD44 */ \
+  X(82d8f3, "$82:D8F3", 0x82d8f3u) /* JSR $82:D9F6 */ \
+  X(82d9ea, "$82:D9EA", 0x82d9eau) /* RTS */ \
+  X(82d9f5, "$82:D9F5", 0x82d9f5u) /* RTS */ \
+  X(82da9f, "$82:DA9F", 0x82da9fu) /* RTS */
 
 #endif

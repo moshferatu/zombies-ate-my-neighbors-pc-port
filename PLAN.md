@@ -273,6 +273,10 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**The radar's panel, 2026-10-12.** The radar's panel, its three jobs and
+the animated tiles' first pass are ported. The places are 613 and the core
+executes 170,675 instructions over the survey.
+
 **The screens of words, 2026-10-12.** The password's screen and the top
 scores are ported between their calls. The places are 630 and the core
 executes 191,637 instructions over the survey.
