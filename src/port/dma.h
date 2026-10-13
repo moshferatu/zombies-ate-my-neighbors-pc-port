@@ -213,6 +213,7 @@ enum {
   OB_TAIL,       // REP #$20 : LDA # : STA abs : LDA # : LDY #
   SS_SEND,       // $80:921F STZ : STZ : LDA # : PHA : LDA # : LDX # : LDY #
   TH_HEAD,       // $80:941D STZ : STZ, a byte each : LDA # : STA $4360
+  PL_HEAD,       // $80:98A9 LDA # : STA : STA : STZ : STZ : SEP #$20 : LDA # : STA $2125
   DMA_BLOCK_COUNT
 };
 
@@ -353,6 +354,26 @@ uint8_t level_card_layers_back(const Wram* w, HwTrace* t, uint16_t s);
 #define TITLE_WAVE_FRAME 0x0001u
 #define TITLE_AFTER_WAVE_FRAMES 0x0010u
 
+// The two screens before a game (`port/menus.h`):
+//
+//   $80:96C1  title_menu_layers  the sprites turned on with the title's two
+//                                layers, for the menu's two choices. It
+//                                stops at the menu's first pass.
+//   $80:98A9  portraits_layers   the players' screen's: the first layer on
+//                                the second screen and added to the third,
+//                                under the second, the third and the
+//                                sprites. Two layers' scroll is set first.
+#define TITLE_MENU_LAYERS_PC 0x8096c1u
+#define TITLE_MENU_LAYERS_END_PC 0x8096c7u
+#define TITLE_MENU_LAYERS_ON 0x0015u
+#define PORTRAITS_LAYERS_PC 0x8098a9u
+#define PORTRAITS_LAYERS_END_PC 0x8098dfu
+#define PORTRAITS_MAP_AT_6800 0x0068u
+#define PORTRAITS_SCROLL_X 0x0006u
+
+void title_menu_layers(HwTrace* t);
+void portraits_layers(Wram* w, HwTrace* t);
+
 void opening_begin(Wram* w, HwTrace* t);
 // `s` is the stack pointer it finds, and it pushes a word.
 void screen_show_begin(Wram* w, HwTrace* t, uint16_t s);
@@ -470,7 +491,9 @@ uint16_t text_map_job(const Wram* w, HwTrace* t);
   X(809814, "$80:9814", 0x809814u, 0x809822u, 1, 0x009e, 0xb700, 0x6400, 0x0800) \
   X(809826, "$80:9826", 0x809826u, 0x809830u, 1, -1, 0x0083, 0xef8c, 0x0100) \
   X(809834, "$80:9834", 0x809834u, 0x809841u, 0, 0x0080, 0x009e, 0x8f76, 0x0100) \
-  X(809845, "$80:9845", 0x809845u, 0x809846u, 1, -1, -1, -1, -1)
+  X(809845, "$80:9845", 0x809845u, 0x809846u, 1, -1, -1, -1, -1) \
+  /* `$80:9A90`, the job that sends the text map the portraits are on */ \
+  X(809a90, "$80:9A90", 0x809a90u, 0x809a9du, 0, 0x007e, 0x6502, 0x71a0, 0x0400)
 
 typedef struct {
   uint32_t pc, exit;

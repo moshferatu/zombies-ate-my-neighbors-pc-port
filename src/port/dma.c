@@ -21,6 +21,7 @@
 #define REG_WOBJSEL 0x2125u    // which windows the colour arithmetic has
 #define REG_WH0 0x2126u        // the windows' four edges, from here
 #define REG_TM 0x212cu         // which layers are on
+#define REG_TS 0x212du         // ...and which are on the second screen
 #define REG_CGWSEL 0x2130u     // where the colour arithmetic is done
 #define REG_CGADSUB 0x2131u    // ...to what, and which way
 #define REG_COLDATA 0x2132u    // the fixed colour
@@ -476,6 +477,35 @@ void opening_begin(Wram* w, HwTrace* t) {
   store8(t, OB_HEAD, REG_TM, FIRST_AND_THIRD_LAYERS);
   hw_run(t, OB_TAIL);
   wram_w16(w, W_BRIGHTNESS_SHADOW, 0);
+}
+
+void title_menu_layers(HwTrace* t) {
+  PORT_COVER(title_menu_layers);
+  // A word: nothing on the second screen.
+  store16(t, DMA_IMM16, REG_TM, TITLE_MENU_LAYERS_ON);
+}
+
+#define NO_COLOUR_WINDOWS 0x00u
+#define FIXED_COLOUR_BLACK 0xe0u
+#define SECOND_THIRD_AND_SPRITES 0x16u
+#define FIRST_LAYER_ONLY 0x01u
+#define ADD_SECOND_SCREEN 0x02u
+#define ADD_TO_THIRD_LAYER 0x04u
+
+void portraits_layers(Wram* w, HwTrace* t) {
+  PORT_COVER(portraits_layers);
+  wram_w16(w, W_LAYER_SCROLLS, PORTRAITS_SCROLL_X);
+  wram_w16(w, W_LAYER_SCROLLS + 4, PORTRAITS_SCROLL_X);
+  wram_w16(w, W_LAYER_SCROLLS + 2 * THIRD_LAYER_SCROLL, 0);
+  wram_w16(w, W_LAYER_SCROLLS + 2 * THIRD_LAYER_SCROLL + 2, 0);
+  store8(t, PL_HEAD, REG_WOBJSEL, NO_COLOUR_WINDOWS);
+  store8(t, DMA_IMM, REG_COLDATA, FIXED_COLOUR_BLACK);
+  store8(t, DMA_IMM, REG_TM, SECOND_THIRD_AND_SPRITES);
+  store8(t, DMA_IMM, REG_TS, FIRST_LAYER_ONLY);
+  store8(t, DMA_IMM, REG_CGWSEL, ADD_SECOND_SCREEN);
+  store8(t, DMA_IMM, REG_CGADSUB, ADD_TO_THIRD_LAYER);
+  store8(t, DMA_IMM, REG_BG1SC, PORTRAITS_MAP_AT_6800);
+  hw_run(t, DMA_REP);
 }
 
 void screen_show_begin(Wram* w, HwTrace* t, uint16_t s) {

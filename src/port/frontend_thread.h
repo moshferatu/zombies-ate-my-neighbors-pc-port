@@ -7,9 +7,13 @@
 // comes back to the next call, wait or return.
 //
 //   $80:9136  first_pass        has the screen before the title been shown?
+//   $80:9167  title_left        the title's menu over: on, or the title again
+//   $80:9176  players_left      the players' screen over: a game, or the
+//                               demonstration
 //   $80:9193  region_check      ...and is this the console it was made for
 //   $80:9BEF  scroll_job_ask    the job that sends the layers' scroll, asked
 //   $80:9BF9  scroll_job_asked  ...and where it is in the queue, kept
+//   $80:9C4A  scroll_job_stop   ...and that job taken out of it
 //   $80:9C52  fade_in_ask       a screen's brightness, counted up from black
 //   $80:9C72  fade_out_ask      ...and down to it
 //   $80:9242  show_sleep        the screen before the title's 128 frames
@@ -75,6 +79,19 @@
 #define TITLE_WAVE_OVER_PC 0x809529u        // `title_hdma_off`
 #define TITLE_DP_WAVE_SHOWN 0x78
 
+// The two screens before a game come back with carry: see `port/menus.h`.
+#define FRONTEND_TITLE_LEFT_PC 0x809167u    // `BCC $915A`
+#define FRONTEND_TITLE_AGAIN_PC 0x80915au
+#define FRONTEND_PORTRAITS_PC 0x809169u     // `JSL $80:AC7E`
+#define FRONTEND_PLAYERS_LEFT_PC 0x809176u  // `BCS $9179`
+#define FRONTEND_GAME_PC 0x809178u          // `RTL`
+#define FRONTEND_DEMO_PC 0x809179u          // `JSR $9AB0`
+
+// True with carry set: on to the players' screen.
+bool frontend_title_left(PortCpu* c);
+// True with carry clear: somebody joined, and the thread returns to a game.
+bool frontend_players_left(PortCpu* c);
+
 // True the first time, when the screen before the title is to be shown.
 bool frontend_first_pass(Wram* w, PortCpu* c);
 // Whether `frontend_first_pass` takes every pass for a later one.
@@ -116,6 +133,7 @@ void frontend_region_check(PortCpu* c);
 #define FRONTEND_STRETCHES(X) \
   X(scroll_job_ask, "$80:9BEF", 0x809befu, 0x809bf5u) \
   X(scroll_job_asked, "$80:9BF9", 0x809bf9u, 0x809bfbu) \
+  X(scroll_job_stop, "$80:9C4A", 0x809c4au, 0x809c4cu) \
   X(fade_in_ask, "$80:9C52", 0x809c52u, 0x809c5eu) \
   X(fade_out_ask, "$80:9C72", 0x809c72u, 0x809c78u) \
   X(show_sleep, "$80:9242", 0x809242u, 0x809245u) \

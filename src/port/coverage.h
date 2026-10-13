@@ -1660,6 +1660,45 @@
   X(players_screen_waited, "players_screen_frame", "a pass with no press that counts") \
   X(players_screen_blinked, "players_screen_frame", "the tenth pass: who has not joined blinks") \
   X(players_screen_over, "players_screen_frame", "the count ran out") \
+  X(title_menu_first_pass, "title_menu_pass", "the menu's first pass, with no count") \
+  X(title_menu_confirm, "title_menu_frame", "a button that takes the choice") \
+  X(title_menu_move, "title_menu_frame", "...or any other, and the other choice") \
+  X(players_screen_first_pass, "players_screen_first_pass", "the screen's first pass") \
+  X(players_screen_join, "players_screen_frame", "Start: a player joins") \
+  X(players_screen_ignored, "players_screen_frame", "another button, with somebody joined") \
+  X(players_screen_swap, "players_screen_frame", "...and with nobody: the characters change places") \
+  X(title_menu_timed_out, "title_menu_result", "nobody chose") \
+  X(title_menu_game, "title_menu_result", "the game was chosen") \
+  X(title_menu_password, "title_menu_result", "...or a password, and whose pad enters it") \
+  X(players_screen_left, "players_screen_over", "somebody joined") \
+  X(players_screen_nobody, "players_screen_over", "nobody did: both sprites drawn a last frame") \
+  X(title_menu_begin, "menus_title_menu_begin", "the menu's four words zeroed") \
+  X(title_menu_moved, "menus_title_menu_moved", "after a move's sound: the wait begun again") \
+  X(title_menu_confirmed, "menus_title_menu_confirmed", "after a choice's sound: the wait run out") \
+  X(title_menu_flags_kept, "menus_title_menu_over", "the last test's flags pushed") \
+  X(title_menu_fade_sleep, "menus_title_menu_fade_sleep", "sixteen frames for the fade") \
+  X(title_menu_drift_stop, "menus_title_menu_drift_stop", "the backdrop's job, to be taken out") \
+  X(title_menu_free_first, "menus_title_menu_free_first", "the first choice's record, to be freed") \
+  X(title_menu_free_second, "menus_title_menu_free_second", "...and the second's") \
+  X(title_menu_password_pad, "menus_title_menu_password_pad", "the pad pulled for the password's screen") \
+  X(title_menu_go, "menus_title_menu_go", "carry set: on to the players' screen") \
+  X(players_screen_begin, "menus_players_screen_begin", "its counts zeroed and its scroll's job asked") \
+  X(players_screen_joined, "menus_players_screen_joined", "after the first player's join") \
+  X(players_screen_joined_2, "menus_players_screen_joined_2", "...and the second's") \
+  X(players_screen_swapped, "menus_players_screen_swapped", "the portraits drawn again, and the sound") \
+  X(players_screen_sleep, "menus_players_screen_sleep", "a tick to sleep, as after a swap's sound") \
+  X(players_screen_fade_sleep, "menus_players_screen_fade_sleep", "sixteen frames for the fade") \
+  X(players_screen_scroll_stop, "menus_players_screen_scroll_stop", "its scroll's job, to be taken out") \
+  X(players_screen_free_first, "menus_players_screen_free_first", "the first sprite's record, to be freed") \
+  X(players_screen_free_second, "menus_players_screen_free_second", "...and the second's") \
+  X(players_screen_go, "menus_players_screen_go", "carry clear: a game") \
+  X(players_screen_idle_free_first, "menus_players_screen_idle_free_first", "the first sprite's record, with nobody joined") \
+  X(players_screen_idle_free_second, "menus_players_screen_idle_free_second", "...and the second's") \
+  X(players_screen_idle, "menus_players_screen_idle", "carry set: the demonstration") \
+  X(portraits_first, "menus_portraits_first", "the first player's portrait asked for") \
+  X(portraits_second, "menus_portraits_second", "...and the second's") \
+  X(portraits_send_ask, "menus_portraits_send_ask", "the job that sends them") \
+  X(portraits_sent, "menus_portraits_sent", "...and its end") \
                                                                                    \
   /* $81:9878 chainsaw_frame -- the chainsaw maniac's four states. */              \
   X(chainsaw_charged, "chainsaw_frame", "a pass straight on") \
@@ -1901,6 +1940,13 @@
   X(title_layers, "title_layers", "the title's mode and layers") \
   X(title_hdma_on, "title_hdma_on", "the wave's channel on") \
   X(title_hdma_off, "title_hdma_off", "...and off") \
+  X(title_menu_layers, "title_menu_layers", "the sprites on with the title's layers") \
+  X(portraits_layers, "portraits_layers", "the players' screen's layers and their arithmetic") \
+  X(frontend_scroll_job_stop, "frontend_scroll_job_stop", "the scroll's job, to be taken out") \
+  X(frontend_title_left_on, "frontend_title_left", "the menu over, and the players' screen next") \
+  X(frontend_title_left_again, "frontend_title_left", "...or the title again") \
+  X(frontend_players_left_game, "frontend_players_left", "somebody joined: a game") \
+  X(frontend_players_left_demo, "frontend_players_left", "...or nobody: the demonstration") \
   X(apu_song_begin, "apu_song_begin", "a song and its sounds asked for") \
   X(apu_song_sounds, "apu_song_sounds", "the song's set sent, and the sounds' to send") \
   X(apu_song_play, "apu_song_play", "both sent, and the command that plays") \

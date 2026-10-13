@@ -57,6 +57,28 @@ bool title_first_pass(Wram* w, PortCpu* c) {
   return first;
 }
 
+bool frontend_title_left(PortCpu* c) {
+  const bool on = flag(c, PORT_P_C);
+  if (on) {
+    PORT_COVER(frontend_title_left_on);
+  } else {
+    PORT_COVER(frontend_title_left_again);
+  }
+  c->pc = on ? FRONTEND_PORTRAITS_PC : FRONTEND_TITLE_AGAIN_PC;
+  return on;
+}
+
+bool frontend_players_left(PortCpu* c) {
+  const bool game = !flag(c, PORT_P_C);
+  if (game) {
+    PORT_COVER(frontend_players_left_game);
+  } else {
+    PORT_COVER(frontend_players_left_demo);
+  }
+  c->pc = game ? FRONTEND_GAME_PC : FRONTEND_DEMO_PC;
+  return game;
+}
+
 bool frontend_region_check_supported(uint16_t a) {
   return (a & REGION_FIFTY_HERTZ) == 0;
 }
@@ -86,6 +108,13 @@ void frontend_scroll_job_asked(Wram* w, PortCpu* c) {
   PORT_COVER(frontend_scroll_job_asked);
   wram_w16(w, (uint16_t)(c->d + FRONTEND_DP_SCROLL_JOB), c->x);
   c->pc = 0x809bfbu;
+}
+
+// What `vbl_queue_a_remove` is called with.
+void frontend_scroll_job_stop(Wram* w, PortCpu* c) {
+  PORT_COVER(frontend_scroll_job_stop);
+  load_a(c, wram_r16(w, (uint16_t)(c->d + FRONTEND_DP_SCROLL_JOB)));
+  c->pc = 0x809c4cu;
 }
 
 void frontend_fade_in_ask(Wram* w, PortCpu* c) {

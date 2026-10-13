@@ -5,6 +5,70 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The title's menu and the players' screen, between their calls (2026-10-12)
+
+`$80:96B9` and `$80:98EA` were each one pass ported and the rest the
+core's: the setup, a pass with a press that counted, and everything after
+the loop ended. This round is the rest.
+
+* **A press is the port's now.** `title_menu_frame` and
+  `players_screen_frame` turned a pass down when a button counted, because
+  the pass plays a sound. The sound's routine is ported, so the pass stops
+  on its call with the sound in A. On the title that is a move to the other
+  choice or a choice taken. On the players' screen it is a join, a button
+  that does nothing because somebody has joined, or the two characters
+  changing places, which stops on the call that draws the portraits again.
+* **The first pass of each**, `title_menu_pass` at `$80:96C7` and
+  `players_screen_first_pass` at `$80:98FC`, which are not come to from a
+  yield.
+* **How each ends.** `title_menu_result` at `$80:9771` pulls the flags of
+  the count's last test and says whether nobody chose, the game was chosen,
+  or a password, and for a password which pad enters it.
+  `players_screen_over` at `$80:99CD` says whether anybody joined.
+* **Twenty-seven stretches** in `port/menus.c`, most of them a word loaded
+  for the call that follows, and one more in `port/frontend_thread.c`.
+* **Two branches of the front end's thread**, `frontend_title_left` and
+  `frontend_players_left`, on the carry each screen comes back with.
+* **Two that write to the picture hardware**, in `port/dma.c`: the sprites
+  turned on for the menu, and the players' screen's layers and colour
+  arithmetic.
+* **Seven links**, and one more entry in the list of what a screen's sends
+  are called with: the job that sends the portraits' text map.
+* **A movie**, `players-swap.zmv`: B twice on the players' screen before
+  anybody has joined, and B from the second pad after. No other movie
+  presses anything but Start there. The corpus is 56.
+* **Checked.**
+  * The corpus verifies clean: 127,980,805 calls over 56 movies, none
+    diverged. Every new stretch and every way through each was reached.
+  * Costs are compared over the whole corpus, and every new row is exact.
+  * Lockstep: 53 of 56 never part; `level25`, `level25-2p` and
+    `level25-heavy` do, as before.
+  * The picture: 78,360,128 lines drawn both ways over the 56 movies, and
+    none differ.
+* **What it bought**, over the same 110 sessions as before, which leave
+  the two new movies out:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 609 to 584 | 20,771 to 18,414 | 164,758 to 152,371 |
+  | Left standing on an instruction | 37 to 34 | 1,288 to 938 | 39,289 to 35,990 |
+  | A port turned the call down | 34 to 32 | 2,827 to 2,558 | 17,951 to 11,765 |
+  | A port or a link called it | 10 to 11 | 530 to 462 | 6,625 to 2,368 |
+  | All | 691 to 662 | 25,526 to 22,482 | 236,543 to 210,414 |
+
+  1,019 routines are registered.
+* **Not done or not known.**
+  * `$80:9AB0`, which begins the demonstration, is the core's between its
+    calls still: seven times over the survey.
+  * After a password is chosen, `JSL $82:AFF3` and what follows the `WAI`
+    at `$80:9796` are the core's.
+  * The `WAI` at `$80:9C50` is the core's.
+  * I have not seen the two sprites of the players' screen. A join clears
+    the draw bit of that player's, so I take them for prompts and not
+    pictures of the players, but the comments only say what the code does.
+  * I did not play either screen in the game itself. The checks above are
+    the port against the ROM, not somebody pressing buttons.
+
 ### The front end's thread, between its calls (2026-10-12)
 
 `$80:9126` is everything outside a level, and most of it is calls to

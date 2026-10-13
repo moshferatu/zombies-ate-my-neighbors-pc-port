@@ -71,6 +71,9 @@ $corpus = [ordered]@{
     # Start in the second wait of the screen before the title, which no
     # other movie presses there.
     "opening-start.zmv"      = 1500
+    # A button that is not Start on the players' screen, before anybody has
+    # joined and after.
+    "players-swap.zmv"       = 1500
     # The demo that plays when the title is left alone starts near frame
     # 4350, past where `boot.zmv` stops, and a real button ends it at 6000.
     # Nothing else in the corpus runs the demo's playback job.

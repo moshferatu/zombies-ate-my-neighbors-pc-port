@@ -19159,3 +19159,27 @@ are divided the same way, the other way round.
 Over the same 110 sessions the core executes 236,543 instructions
 where it executed 269,330, and takes over 25,526 times where it
 did 29,549, at 691 places where there were 717.
+
+## The title's menu and the players' screen (2026-10-12)
+
+### A pass that stops on a call
+
+A pass of either screen used to be turned down when a button counted,
+because the pass plays a sound and the sound was the ROM's. Now it stops
+on the `JSL` with the sound in A, and the row has an exit for each: four
+for the title's menu and five for the players' screen. The guard that ran
+the pass on a scratch copy to see whether it would be turned down is gone.
+
+### An entry inside another row
+
+`title_menu_pass` begins at `$80:96C7`, which `title_menu_frame` jumps
+back to on every pass. `verify` checks a row wherever the ROM reaches its
+entry, so the first pass's row is checked on every pass: 18,654 times over
+the corpus, for a stretch `run` takes 65 times. `players_screen_sleep` at
+`$80:99BA` is the same.
+
+### After
+
+Over the same 110 sessions the core executes 210,414 instructions
+where it executed 236,543, and takes over 22,482 times where it
+did 25,526, at 662 places where there were 691.

@@ -12802,23 +12802,33 @@ static const CosimRun MENUS_RUN_PLAYERS_ASK = {46, 5, 0};  // $992C LDA $1E88 : 
 static const CosimRun MENUS_RUN_TAKEN = {6, 0, 0};
 static const CosimRun MENUS_RUN_SLOW_TABLE = {8, 0, 0};  // four bytes, 2 each
 
+static const CosimRun MENUS_RUN_BUTTON_TEST = {30, 5, 0};  // $9707 BIT #$D0C0 : BNE, or $993F CMP #$1000 : BNE
+static const CosimRun MENUS_RUN_TITLE_MOVE = {120, 12, 3};  // $9721-$972C
+static const CosimRun MENUS_RUN_SOUND = {18, 3, 0};  // $9735 LDA #$0027
+static const CosimRun MENUS_RUN_PLAYERS_FIRST = {28, 2, 1};  // $98FC STX $6C
+static const CosimRun MENUS_RUN_PLAYERS_JOIN = {242, 25, 2};  // $9944-$995C, or $997B-$9993
+static const CosimRun MENUS_RUN_PLAYERS_ANYONE = {80, 8, 0};  // $999A LDA $1E88 : ORA $1E8A : BNE
+static const CosimRun MENUS_RUN_PLAYERS_SWAP = {164, 14, 1};  // $99A2-$99AF
+
 // One pad, when it is asked: held buttons leave by the `BNE`, and a pad with
 // nothing down by the `BEQ` after it is taken.
 static void menus_pad_bill(CosimRun* own, MenusPad pad) {
   run_add(own, &MENUS_RUN_PAD, 1);
   if (pad != MENUS_PAD_HELD) run_add(own, &MENUS_RUN_TAKE, 1);
-  run_add(own, &MENUS_RUN_TAKEN, 1);
+  if (pad != MENUS_PAD_PRESSED) run_add(own, &MENUS_RUN_TAKEN, 1);
 }
 
-static void menus_leave(const CosimRegs* in, CosimRegs* out, CosimRun* own,
-                        const MenusLog* log, uint32_t yield_pc,
-                        uint32_t over_pc) {
-  if (!log->over) run_add(own, &MENUS_RUN_TICKS, 1);
+static void menus_leave(const CosimRegs* in, CosimRegs* out,
+                        const CosimRun* own, const MenusLog* log) {
   cosim_cost(cosim_run_cycles_dp(own, fetch_fast(in), (in->d & 0x00ffu) != 0));
 
-  out->pc = log->over ? over_pc : yield_pc;
+  out->pc = log->pc;
   out->a = log->a;
   out->regs = COSIM_REG_A;
+  if (log->press == MENUS_PRESS_SWAP) {
+    out->x = log->x;
+    out->regs |= COSIM_REG_X;
+  }
   out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
   if (log->n) out->p |= PORT_P_N;
   if (log->z) out->p |= PORT_P_Z;
@@ -12846,20 +12856,33 @@ static bool players_screen_frame_ok(const Wram* w, const CosimRegs* in) {
          players_screen_frame_supported(w, in->d);
 }
 
-// A pass with a press that counts is the ROM's, and only running it says.
-static bool guard_title_menu_frame(Wram* scratch, const Rom* rom,
-                                   const CosimRegs* in) {
-  MenusLog log;
-  title_menu_frame(scratch, rom, in->d, &log);
-  return !log.declined;
-}
-
-static bool guard_players_screen_frame(Wram* scratch, const Rom* rom,
-                                       const CosimRegs* in) {
-  (void)rom;
-  MenusLog log;
-  players_screen_frame(scratch, in->d, &log);
-  return !log.declined;
+// A pass of the title's menu from `$80:96C7`.
+static void title_menu_pass_bill(CosimRun* own, const CosimRegs* in,
+                                 const MenusLog* log) {
+  run_add(own, &MENUS_RUN_TITLE_WAIT, 1);
+  run_add(own, log->blinked ? &MENUS_RUN_TITLE_BLINK : &MENUS_RUN_TAKEN, 1);
+  // The blink reads its table twice, and through bank `$00` the cartridge
+  // is slow whatever `$420D` says.
+  if (log->blinked && in->db == 0x00 && fetch_fast(in))
+    run_add(own, &MENUS_RUN_SLOW_TABLE, 1);
+  menus_pad_bill(own, log->pad[0]);
+  if (log->pad[0] != MENUS_PAD_PRESSED) menus_pad_bill(own, log->pad[1]);
+  switch (log->press) {
+    case MENUS_PRESS_CONFIRM:
+      run_add(own, &MENUS_RUN_BUTTON_TEST, 1);
+      run_add(own, &MENUS_RUN_TAKEN, 1);
+      run_add(own, &MENUS_RUN_SOUND, 1);
+      break;
+    case MENUS_PRESS_MOVE:
+      // The first pad's test is followed by a `BRA` over the second's.
+      run_add(own, &MENUS_RUN_BUTTON_TEST, 1);
+      if (log->presser == 0) run_add(own, &RUN_BRA, 1);
+      run_add(own, &MENUS_RUN_TITLE_MOVE, 1);
+      break;
+    default:
+      run_add(own, &MENUS_RUN_TICKS, 1);
+      break;
+  }
 }
 
 static void shim_title_menu_frame(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -12873,16 +12896,65 @@ static void shim_title_menu_frame(Wram* w, const Rom* rom, const CosimRegs* in,
     run_add(&own, &MENUS_RUN_TAKEN, 1);
   } else {
     run_add(&own, &MENUS_RUN_JMP, 1);
-    run_add(&own, &MENUS_RUN_TITLE_WAIT, 1);
-    run_add(&own, log.blinked ? &MENUS_RUN_TITLE_BLINK : &MENUS_RUN_TAKEN, 1);
-    // The blink reads its table twice, and through bank `$00` the cartridge
-    // is slow whatever `$420D` says.
-    if (log.blinked && in->db == 0x00 && fetch_fast(in))
-      run_add(&own, &MENUS_RUN_SLOW_TABLE, 1);
-    menus_pad_bill(&own, log.pad[0]);
-    menus_pad_bill(&own, log.pad[1]);
+    title_menu_pass_bill(&own, in, &log);
   }
-  menus_leave(in, out, &own, &log, TITLE_MENU_YIELD_PC, TITLE_MENU_OVER_PC);
+  menus_leave(in, out, &own, &log);
+}
+
+static void shim_title_menu_pass(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  MenusLog log;
+  title_menu_pass(w, rom, in->d, &log);
+
+  CosimRun own = {0, 0, 0};
+  title_menu_pass_bill(&own, in, &log);
+  menus_leave(in, out, &own, &log);
+}
+
+// A pass of the players' screen from `$80:98FE`.
+static void players_screen_pass_bill(CosimRun* own, const MenusLog* log) {
+  run_add(own, &MENUS_RUN_PLAYERS_COUNT, 1);
+  if (!log->blinked) {
+    run_add(own, &MENUS_RUN_TAKEN, 1);
+  } else {
+    run_add(own, &MENUS_RUN_PLAYERS_BLINK_A, 1);
+    run_add(own, log->joined[0] ? &MENUS_RUN_TAKEN : &MENUS_RUN_PLAYERS_FLIP,
+            1);
+    run_add(own, &MENUS_RUN_PLAYERS_BLINK_B, 1);
+    run_add(own, log->joined[1] ? &MENUS_RUN_TAKEN : &MENUS_RUN_PLAYERS_FLIP,
+            1);
+  }
+  for (int player = 0; player < 2; player++) {
+    run_add(own, &MENUS_RUN_PLAYERS_ASK, 1);
+    if (log->joined[player]) {
+      run_add(own, &MENUS_RUN_TAKEN, 1);
+      continue;
+    }
+    menus_pad_bill(own, log->pad[player]);
+    if (log->pad[player] == MENUS_PAD_PRESSED) break;
+  }
+  switch (log->press) {
+    case MENUS_PRESS_JOIN:
+      run_add(own, &MENUS_RUN_BUTTON_TEST, 1);
+      run_add(own, &MENUS_RUN_PLAYERS_JOIN, 1);
+      break;
+    case MENUS_PRESS_IGNORED:
+      run_add(own, &MENUS_RUN_BUTTON_TEST, 1);
+      run_add(own, &MENUS_RUN_TAKEN, 1);
+      run_add(own, &MENUS_RUN_PLAYERS_ANYONE, 1);
+      run_add(own, &MENUS_RUN_TAKEN, 1);
+      run_add(own, &MENUS_RUN_TICKS, 1);
+      break;
+    case MENUS_PRESS_SWAP:
+      run_add(own, &MENUS_RUN_BUTTON_TEST, 1);
+      run_add(own, &MENUS_RUN_TAKEN, 1);
+      run_add(own, &MENUS_RUN_PLAYERS_ANYONE, 1);
+      run_add(own, &MENUS_RUN_PLAYERS_SWAP, 1);
+      break;
+    default:
+      run_add(own, &MENUS_RUN_TICKS, 1);
+      break;
+  }
 }
 
 static void shim_players_screen_frame(Wram* w, const Rom* rom,
@@ -12897,33 +12969,146 @@ static void shim_players_screen_frame(Wram* w, const Rom* rom,
     run_add(&own, &MENUS_RUN_TAKEN, 1);
   } else {
     run_add(&own, &MENUS_RUN_JMP, 1);
-    run_add(&own, &MENUS_RUN_PLAYERS_COUNT, 1);
-    if (!log.blinked) {
-      run_add(&own, &MENUS_RUN_TAKEN, 1);
-    } else {
-      run_add(&own, &MENUS_RUN_PLAYERS_BLINK_A, 1);
-      run_add(&own, log.joined[0] ? &MENUS_RUN_TAKEN : &MENUS_RUN_PLAYERS_FLIP,
-              1);
-      run_add(&own, &MENUS_RUN_PLAYERS_BLINK_B, 1);
-      run_add(&own, log.joined[1] ? &MENUS_RUN_TAKEN : &MENUS_RUN_PLAYERS_FLIP,
-              1);
-    }
-    for (int player = 0; player < 2; player++) {
-      run_add(&own, &MENUS_RUN_PLAYERS_ASK, 1);
-      if (log.joined[player])
-        run_add(&own, &MENUS_RUN_TAKEN, 1);
-      else
-        menus_pad_bill(&own, log.pad[player]);
-    }
+    players_screen_pass_bill(&own, &log);
   }
-  menus_leave(in, out, &own, &log, PLAYERS_SCREEN_YIELD_PC,
-              PLAYERS_SCREEN_OVER_PC);
+  menus_leave(in, out, &own, &log);
 }
 
-static const uint32_t TITLE_MENU_FRAME_EXITS[] = {TITLE_MENU_YIELD_PC,
-                                                  TITLE_MENU_OVER_PC};
-static const uint32_t PLAYERS_SCREEN_FRAME_EXITS[] = {PLAYERS_SCREEN_YIELD_PC,
-                                                      PLAYERS_SCREEN_OVER_PC};
+static void shim_players_screen_first_pass(Wram* w, const Rom* rom,
+                                           const CosimRegs* in,
+                                           CosimRegs* out) {
+  (void)rom;
+  MenusLog log;
+  players_screen_first_pass(w, in->d, in->x, &log);
+
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &MENUS_RUN_PLAYERS_FIRST, 1);
+  players_screen_pass_bill(&own, &log);
+  menus_leave(in, out, &own, &log);
+}
+
+static const uint32_t TITLE_MENU_FRAME_EXITS[] = {
+    TITLE_MENU_YIELD_PC, TITLE_MENU_OVER_PC, TITLE_MENU_MOVE_PC,
+    TITLE_MENU_CONFIRM_PC};
+static const uint32_t TITLE_MENU_PASS_EXITS[] = {
+    TITLE_MENU_YIELD_PC, TITLE_MENU_MOVE_PC, TITLE_MENU_CONFIRM_PC};
+static const uint32_t PLAYERS_SCREEN_FRAME_EXITS[] = {
+    PLAYERS_SCREEN_YIELD_PC, PLAYERS_SCREEN_OVER_PC, PLAYERS_SCREEN_JOIN_PC,
+    PLAYERS_SCREEN_JOIN_2_PC, PLAYERS_SCREEN_SWAP_PC};
+static const uint32_t PLAYERS_SCREEN_FIRST_PASS_EXITS[] = {
+    PLAYERS_SCREEN_YIELD_PC, PLAYERS_SCREEN_JOIN_PC, PLAYERS_SCREEN_JOIN_2_PC,
+    PLAYERS_SCREEN_SWAP_PC};
+
+// How each ends, and the stretches between their calls.
+static const CosimRun MENUS_RUN_RESULT_PULL = {38, 3, 0};  // $9771 PLP : BEQ
+static const CosimRun MENUS_RUN_RESULT_CHOICE = {58, 7, 1};  // $9774 LDA $6A : CMP #$0004 : BCC
+static const CosimRun MENUS_RUN_RESULT_PAD = {76, 10, 1};  // $977B LDX # : LDA $62 : BIT # : BNE
+static const CosimRun MENUS_RUN_RESULT_SECOND = {18, 3, 0};  // $9785 LDX #$0002
+static const CosimRun MENUS_RUN_RESULT_PUSH = {28, 1, 0};  // $9788 PHX
+static const CosimRun MENUS_RUN_OVER_ANYONE = {80, 8, 0};  // $99CD LDA $1E88 : ORA $1E8A : BEQ
+static const CosimRun MENUS_RUN_OVER_NOBODY = {212, 19, 2};  // $99F6-$9A08
+
+static const CosimRun MENUS_RUN_title_menu_begin = {112, 8, 4};
+static const CosimRun MENUS_RUN_title_menu_moved = {64, 7, 1};
+static const CosimRun MENUS_RUN_title_menu_confirmed = {64, 8, 1};
+static const CosimRun MENUS_RUN_title_menu_over = {20, 1, 0};
+static const CosimRun MENUS_RUN_title_menu_fade_sleep = {18, 3, 0};
+static const CosimRun MENUS_RUN_title_menu_drift_stop = {28, 2, 1};
+static const CosimRun MENUS_RUN_title_menu_free_first = {28, 2, 1};
+static const CosimRun MENUS_RUN_title_menu_free_second = {28, 2, 1};
+static const CosimRun MENUS_RUN_title_menu_password_pad = {34, 1, 0};
+static const CosimRun MENUS_RUN_title_menu_go = {12, 1, 0};
+static const CosimRun MENUS_RUN_players_screen_begin = {132, 14, 1};
+static const CosimRun MENUS_RUN_players_screen_joined = {36, 5, 0};
+static const CosimRun MENUS_RUN_players_screen_joined_2 = {36, 5, 0};
+static const CosimRun MENUS_RUN_players_screen_swapped = {18, 3, 0};
+static const CosimRun MENUS_RUN_players_screen_sleep = {18, 3, 0};
+static const CosimRun MENUS_RUN_players_screen_fade_sleep = {18, 3, 0};
+static const CosimRun MENUS_RUN_players_screen_scroll_stop = {28, 2, 1};
+static const CosimRun MENUS_RUN_players_screen_free_first = {28, 2, 1};
+static const CosimRun MENUS_RUN_players_screen_free_second = {28, 2, 1};
+static const CosimRun MENUS_RUN_players_screen_go = {12, 1, 0};
+static const CosimRun MENUS_RUN_players_screen_idle_free_first = {28, 2, 1};
+static const CosimRun MENUS_RUN_players_screen_idle_free_second = {28, 2, 1};
+static const CosimRun MENUS_RUN_players_screen_idle = {12, 1, 0};
+static const CosimRun MENUS_RUN_portraits_first = {76, 8, 0};
+static const CosimRun MENUS_RUN_portraits_second = {76, 8, 0};
+static const CosimRun MENUS_RUN_portraits_send_ask = {36, 6, 0};
+static const CosimRun MENUS_RUN_portraits_sent = {46, 2, 0};
+
+static bool accepts_menus_stretch(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && bank_sees_low_wram(in->db);
+}
+
+#define X(name, sym, entry, exit)                                            \
+  static void shim_menus_##name(Wram* w, const Rom* rom, const CosimRegs* in, \
+                                CosimRegs* out) {                            \
+    (void)rom;                                                               \
+    PortCpu c;                                                               \
+    cpu_from(in, &c);                                                        \
+    menus_##name(w, &c);                                                     \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(cosim_run_cycles_dp(&MENUS_RUN_##name, fetch_fast(in),        \
+                                   (in->d & 0xffu) != 0));                   \
+  }                                                                          \
+  static const uint32_t MENUS_EXITS_##name[] = {exit};
+MENUS_STRETCHES(X)
+#undef X
+
+static void shim_title_menu_result(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  uint16_t pad = 0;
+  cpu_from(in, &c);
+  const TitleMenuResult result = title_menu_result(w, &c, &pad);
+  cpu_to(&c, out);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &MENUS_RUN_RESULT_PULL, 1);
+  if (result == TITLE_MENU_TIMED_OUT) {
+    run_add(&run, &MENUS_RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &MENUS_RUN_RESULT_CHOICE, 1);
+    if (result == TITLE_MENU_GAME) {
+      run_add(&run, &MENUS_RUN_TAKEN, 1);
+    } else {
+      run_add(&run, &MENUS_RUN_RESULT_PAD, 1);
+      run_add(&run, pad == 0 ? &MENUS_RUN_TAKEN : &MENUS_RUN_RESULT_SECOND, 1);
+      run_add(&run, &MENUS_RUN_RESULT_PUSH, 1);
+    }
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static void shim_players_screen_over(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool joined = players_screen_over(w, &c);
+  cpu_to(&c, out);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &MENUS_RUN_OVER_ANYONE, 1);
+  if (!joined) {
+    run_add(&run, &MENUS_RUN_TAKEN, 1);
+    run_add(&run, &MENUS_RUN_OVER_NOBODY, 1);
+  }
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+// The sprites' records are written through the data bank.
+static bool accepts_players_screen_over(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && menus_bank_ok(in) &&
+         players_screen_frame_supported(w, in->d);
+}
+
+static const uint32_t TITLE_MENU_RESULT_EXITS[] = {TITLE_MENU_GAME_PC,
+                                                   TITLE_MENU_PASSWORD_PC};
+static const uint32_t PLAYERS_SCREEN_OVER_EXITS[] = {PLAYERS_SCREEN_LEAVE_PC,
+                                                     PLAYERS_SCREEN_IDLE_PC};
 
 // ---------------------------------------------------------------------------
 // The chainsaw maniac -- see `port/chainsaw.h`
@@ -17751,6 +17936,7 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [OB_TAIL] = {106, 14, 0},
     [SS_SEND] = {168, 19, 0},
     [TH_HEAD] = {82, 11, 0},
+    [PL_HEAD] = {202, 22, 0},
     [VC_HEAD] = {46, 5, 1},
     [VC_STEP] = {94, 12, 1},
     [VC_TEST] = {58, 6, 1},
@@ -24349,6 +24535,7 @@ static const uint32_t OPENING_COUNT_EXITS[] = {OPENING_COUNT_WAI_PC,
 // ---------------------------------------------------------------------------
 static const CosimRun FRONTEND_RUN_scroll_job_ask = {36, 6, 0};
 static const CosimRun FRONTEND_RUN_scroll_job_asked = {28, 2, 1};
+static const CosimRun FRONTEND_RUN_scroll_job_stop = {28, 2, 1};
 static const CosimRun FRONTEND_RUN_fade_in_ask = {88, 12, 0};
 static const CosimRun FRONTEND_RUN_fade_out_ask = {36, 6, 0};
 static const CosimRun FRONTEND_RUN_show_sleep = {18, 3, 0};
@@ -24401,6 +24588,41 @@ static void shim_title_first_pass(Wram* w, const Rom* rom, const CosimRegs* in,
   cpu_to(&c, out);
   first_pass_cost(in, first);
 }
+
+static const CosimRun CARRY_BRANCH_RUN = {12, 2, 0};  // BCC or BCS
+
+static void shim_frontend_title_left(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool on = frontend_title_left(&c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &CARRY_BRANCH_RUN, 1);
+  if (!on) run_add(&run, &RUN_TAKEN, 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static void shim_frontend_players_left(Wram* w, const Rom* rom,
+                                       const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool game = frontend_players_left(&c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &CARRY_BRANCH_RUN, 1);
+  if (!game) run_add(&run, &RUN_TAKEN, 1);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static const uint32_t FRONTEND_TITLE_LEFT_EXITS[] = {FRONTEND_TITLE_AGAIN_PC,
+                                                     FRONTEND_PORTRAITS_PC};
+static const uint32_t FRONTEND_PLAYERS_LEFT_EXITS[] = {FRONTEND_GAME_PC,
+                                                       FRONTEND_DEMO_PC};
 
 static const uint32_t FRONTEND_FIRST_PASS_EXITS[] = {FRONTEND_OPENING_PC,
                                                      FRONTEND_TITLE_PC};
@@ -24562,6 +24784,27 @@ static void shim_title_hdma_off(Wram* w, const Rom* rom, const CosimRegs* in,
   title_hdma_off(w, t);
   title_hw_out(in, out, t, TITLE_AFTER_WAVE_FRAMES, TITLE_HDMA_OFF_END_PC);
 }
+
+static void shim_title_menu_layers(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  title_menu_layers(t);
+  title_hw_out(in, out, t, TITLE_MENU_LAYERS_ON, TITLE_MENU_LAYERS_END_PC);
+}
+
+// The last it loaded was a byte, with A's high byte zero from the first.
+static void shim_portraits_layers(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  portraits_layers(w, t);
+  title_hw_out(in, out, t, PORTRAITS_MAP_AT_6800, PORTRAITS_LAYERS_END_PC);
+}
+
+static const uint32_t TITLE_MENU_LAYERS_EXITS[] = {TITLE_MENU_LAYERS_END_PC};
+static const uint32_t PORTRAITS_LAYERS_EXITS[] = {PORTRAITS_LAYERS_END_PC};
 
 static const uint32_t OPENING_BEGIN_EXITS[] = {OPENING_BEGUN_PC};
 static const uint32_t SCREEN_SHOW_BEGIN_EXITS[] = {SCREEN_SHOW_BEGUN_PC};
@@ -28077,7 +28320,6 @@ static const CosimRoutine ROUTINES[] = {
         .entry = TITLE_MENU_FRAME_PC,
         .run = shim_title_menu_frame,
         .accepts = title_menu_frame_ok,
-        .supported = guard_title_menu_frame,
         COSIM_EXITS(TITLE_MENU_FRAME_EXITS),
         .uncalled = true,
         .cycles = 400,
@@ -28088,11 +28330,63 @@ static const CosimRoutine ROUTINES[] = {
         .entry = PLAYERS_SCREEN_FRAME_PC,
         .run = shim_players_screen_frame,
         .accepts = players_screen_frame_ok,
-        .supported = guard_players_screen_frame,
         COSIM_EXITS(PLAYERS_SCREEN_FRAME_EXITS),
         .uncalled = true,
         .cycles = 450,
     },
+    {
+        .name = "title_menu_pass",
+        .symbol = "$80:96C7",
+        .entry = TITLE_MENU_PASS_PC,
+        .run = shim_title_menu_pass,
+        .accepts = title_menu_frame_ok,
+        COSIM_EXITS(TITLE_MENU_PASS_EXITS),
+        .uncalled = true,
+        .cycles = 300,
+    },
+    {
+        .name = "players_screen_first_pass",
+        .symbol = "$80:98FC",
+        .entry = PLAYERS_SCREEN_FIRST_PASS_PC,
+        .run = shim_players_screen_first_pass,
+        .accepts = players_screen_frame_ok,
+        COSIM_EXITS(PLAYERS_SCREEN_FIRST_PASS_EXITS),
+        .uncalled = true,
+        .cycles = 350,
+    },
+    {
+        .name = "title_menu_result",
+        .symbol = "$80:9771",
+        .entry = TITLE_MENU_RESULT_PC,
+        .run = shim_title_menu_result,
+        .accepts = accepts_menus_stretch,
+        COSIM_EXITS(TITLE_MENU_RESULT_EXITS),
+        .uncalled = true,
+        .cycles = 110,
+    },
+    {
+        .name = "players_screen_over",
+        .symbol = "$80:99CD",
+        .entry = PLAYERS_SCREEN_OVER_PC,
+        .run = shim_players_screen_over,
+        .accepts = accepts_players_screen_over,
+        COSIM_EXITS(PLAYERS_SCREEN_OVER_EXITS),
+        .uncalled = true,
+        .cycles = 90,
+    },
+    // The rest of the two screens, between their calls. See `port/menus.h`.
+#define X(name_, sym, pc, exit)                                              \
+    {                                                                        \
+        .name = "menus_" #name_,                                             \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_menus_##name_,                                           \
+        .accepts = accepts_menus_stretch,                                    \
+        COSIM_EXITS(MENUS_EXITS_##name_),                                    \
+        .cycles = 40,                                                        \
+    },
+    MENUS_STRETCHES(X)
+#undef X
     {
         .name = "chainsaw_frame",
         .symbol = "$81:9878",
@@ -31128,6 +31422,48 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(TITLE_FIRST_PASS_EXITS),
         .uncalled = true,
         .cycles = 90,
+    },
+    {
+        .name = "frontend_title_left",
+        .symbol = "$80:9167",
+        .entry = FRONTEND_TITLE_LEFT_PC,
+        .run = shim_frontend_title_left,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(FRONTEND_TITLE_LEFT_EXITS),
+        .uncalled = true,
+        .cycles = 12,
+    },
+    {
+        .name = "frontend_players_left",
+        .symbol = "$80:9176",
+        .entry = FRONTEND_PLAYERS_LEFT_PC,
+        .run = shim_frontend_players_left,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(FRONTEND_PLAYERS_LEFT_EXITS),
+        .uncalled = true,
+        .cycles = 12,
+    },
+    {
+        .name = "title_menu_layers",
+        .symbol = "$80:96C1",
+        .entry = TITLE_MENU_LAYERS_PC,
+        .run = shim_title_menu_layers,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(TITLE_MENU_LAYERS_EXITS),
+        .uncalled = true,
+        .cycles = 36,
+        .hw = true,
+    },
+    {
+        .name = "portraits_layers",
+        .symbol = "$80:98A9",
+        .entry = PORTRAITS_LAYERS_PC,
+        .run = shim_portraits_layers,
+        .accepts = accepts_frontend_reset,
+        COSIM_EXITS(PORTRAITS_LAYERS_EXITS),
+        .uncalled = true,
+        .cycles = 430,
+        .hw = true,
     },
     {
         .name = "opening_hold_begin",

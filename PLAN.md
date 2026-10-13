@@ -273,6 +273,10 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**The two screens before a game, 2026-10-12.** The title's menu and the
+players' screen are ported between their calls, presses included. The
+places are 662 and the core executes 210,414 instructions over the survey.
+
 **The front end's thread, 2026-10-12.** `$80:9126` is ported between its
 calls as far as the title's menu, with the routine that starts a song. The
 places are 691 and the core executes 236,543 instructions over the survey.
