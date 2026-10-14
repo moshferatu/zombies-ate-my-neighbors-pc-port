@@ -1,7 +1,7 @@
 // The thing in level 37 that comes at a player.
 //
 // Its thread sleeps at `$82:EF4B` for as many frames as `$2C` says, and then
-// runs the state `$16` names. A frame of that is here, for nine states:
+// runs the state `$16` names. A frame of that is here, for eleven states:
 //
 //   $82:E858  It comes at whoever is nearest, a pixel a frame. From nearer
 //             than `$20` it backs off instead. Between `$20` and `$30` it
@@ -10,12 +10,11 @@
 //             pixels out, one way or the other. Every fourth frame of the
 //             game it goes by way of `$82:E8D9` next. Once it has been round,
 //             fifty-five draws in 256 say stop: it does if where it is is on
-//             the level and the ground there will do, and its next state is
-//             the one at `$82:EA35`.
+//             the level and the ground there will do, and it lands.
 //   $82:E8D9  ...which asks whether they are still there and still the
 //             nearest, and goes on circling.
 //   $82:EB64  It stays where it is and faces whoever is nearest.
-//   $82:EB7A  The same, with another thing to do next.
+//   $82:EB7A  The same, and when it stops it hides.
 //   $82:ECA3  The same again, and its record set to be drawn every frame.
 //   $82:ECF7  Three frames in which its record is put at its own place and
 //             at the place at `$0A` and `$0C` by turns, drawn on the game's
@@ -26,16 +25,23 @@
 //             within `$10` of them, or after eight to twenty-three hops.
 //   $82:EBCF  Hidden, it looks for somewhere to come back: a place 24 to 39
 //             pixels from whoever is nearest each way, drawn afresh every
-//             frame until the ground there will do.
+//             frame until the ground there will do. Then it is drawn there,
+//             and a puff begins a pixel below it.
+//   $82:EE0E  It fires: pictures the way it faces, then trackers.
+//   $82:EA35  It has landed from the swoop.
 //
 // The third of those goes on to the dart on thirty draws in 256. The fourth
-// goes on to the state at `$82:EE0E` on thirty-five, which begins threads at
-// `$82:F03E` and is the ROM's.
+// fires on thirty-five.
 //
-// What else each goes on to do when it stops is the ROM's: `seeker_frame`
-// says false for a frame that gets there, having changed only the copy it
-// was given. Those are the frames that sleep inside a state: it hides, it
-// comes back, it is hit.
+// Hiding, coming back, firing and landing each sleep in the middle. Each
+// frame of those here goes as far as the state's first call, and leaves the
+// loop's return on the stack; the rest is `port/thread_stretches.h`'s. A
+// landing goes no further than the state's first instruction, which is a
+// sample-set check the frontend watches: see `src/bank_sfx.h`.
+//
+// What else it goes on to do is the ROM's: `seeker_frame` says false for a
+// frame that gets there, having changed only the copy it was given. That is
+// when it is hit, or when nobody is near enough.
 //
 // Two leaves of it are entries of their own as well.
 //
@@ -92,6 +98,7 @@
 #define SEEKER_FRAME_PC 0x82ef4fu
 #define SEEKER_FRAME_SLEEP_PC 0x82ef4bu  // `JSL`, A already the frames
 #define SEEKER_FRAME_ENDED_PC 0x82ef5bu
+#define SEEKER_FRAME_RETURN 0xef56u      // the `PEA`'s: a state's `RTS` goes on
 
 #define SEEKER_STATE_CHASE 0xe858u
 #define SEEKER_STATE_CIRCLE_ASK 0xe8d9u
@@ -102,8 +109,28 @@
 #define SEEKER_STATE_BLINK 0xecf7u
 #define SEEKER_STATE_DART 0xecc1u
 #define SEEKER_STATE_PLACE 0xebcfu
-#define SEEKER_STATE_EE0E 0xee0eu  // the ROM's
-#define SEEKER_STATE_EA35 0xea35u  // the ROM's
+#define SEEKER_STATE_FIRE 0xee0eu
+#define SEEKER_STATE_LAND 0xea35u
+// Where each of the four leaves, and what it leaves for.
+#define SEEKER_LAND_PC 0x82ea35u         // the state itself
+#define SEEKER_FIRE_CALL_PC 0x82ee17u    // `JSL pictures_resume`
+#define SEEKER_FIRE_PICTURES 0x82ee67u   // a list for each way
+#define SEEKER_HIDE_CALL_PC 0x82eb9fu    // `JSL pictures_resume`
+#define SEEKER_HIDE_PICTURES 0xec76u
+#define SEEKER_BACK_CALL_PC 0x82ec56u    // `JSL thread_spawn`
+#define SEEKER_BACK_PICTURE 0xdbddu
+#define SEEKER_PUFF_THREAD 0xf1e6u
+#define SEEKER_DP_SPAWN_X 0x00           // what `thread_spawn` hands on
+#define SEEKER_DP_SPAWN_Y 0x02
+#define SEEKER_DP_SPAWN_WAY 0x04
+// Firing: the way of the next tracker, doubled, and how many are to come.
+#define SEEKER_DP_TRACKER_WAY 0x22
+#define SEEKER_DP_TRACKERS 0x24
+// What it does after firing.
+#define SEEKER_DP_AFTER 0x36
+#define SEEKER_AFTER_HIDE 0  // watch, then hide
+#define SEEKER_AFTER_FIRE 2  // watch, then fire again
+#define SEEKER_AFTER_DART 4  // hold, then dart
 
 #define SEEKER_TOO_NEAR 0x0020
 #define SEEKER_NEAR 0x0030
@@ -188,7 +215,7 @@ enum {
   SF_BLINK_ON,      // LDA #$8000 : ORA $0000,Y : BRA
   SF_BLINK_OFF,     // LDA #$7FFF : AND $0000,Y
   SF_BLINK_PUT,     // $ED1D-$ED2A
-  SF_GO_EE0E,       // JMP $EDFD, and $EDFD-$EE0D
+  SF_GO_FIRE,       // JMP $EDFD, and $EDFD-$EE0D
   SF_HOLD_GO,       // $ECAF-$ECC0
   SF_DART,          // $ECC1-$ECCD
   SF_DART_NEAR,     // JMP $EB5E, and $EB5E-$EB63
@@ -217,6 +244,10 @@ enum {
   SF_CIRCLE_MAP,    // $E955-$E95E
   SF_CIRCLE_GROUND, // $E95F-$E968
   SF_CIRCLE_LEAVE,  // JMP $EA0C, and $EA0C-$EA33
+  SF_FIRE,          // $EE0E-$EE16
+  SF_HIDE_HANDLER,  // LDA #$0000 : TAY : JSL
+  SF_HIDE,          // $EB8E-$EB9E
+  SF_BACK,          // $EC2C-$EC55
   SF_BLOCK_COUNT
 };
 

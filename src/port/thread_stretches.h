@@ -229,6 +229,50 @@
 // calls too. The second and third stretches are only the start's: each
 // goes on through an `RTS`, and needs it to return to the start.
 //
+// ## The seeker's states that sleep, `$82:EA35` and on
+//
+// See `port/seeker.h`: its frame goes as far as the first call of each and
+// leaves the loop's return on the stack. Then:
+//
+//   landing  $82:EA35  sound `$27` where the sample set is set 3
+//            $82:EA44  the pictures of landing asked for
+//            $82:EA4B  nine health, its handler again, and a draw...
+//            $82:EA5E  ...says whether it hides or darts after firing; and
+//                      it fires, drawn
+//   firing   $82:EE1B  its pictures played: trackers, more for a weaker one
+//            $82:EE3F  three ticks apart,
+//            $82:EE4A  each sent a way round from the last
+//            $82:EE62  the last pictures played: it watches and hides,
+//                      watches and fires, or holds and darts
+//   hiding   $82:EBA3  its going played: not drawn, and it keeps where
+//                      whoever it watched was
+//   back     $82:EC5A  32 ticks' sleep after its puff begins (an argument)
+//            $82:EC61  things that touch it are told to its handler again,
+//                      and it watches
+//
+// The four that end a state go on through its `RTS` to the loop, which
+// sleeps or ends. Each needs the loop's return on the stack.
+//
+// ## A tracker's start and end, `$82:F03E`, and the seeker's puff
+//
+// See `port/tracker.h`, which has the tracker's loop and its record:
+//
+//   $82:F03E  its weight, eight, on the level's load
+//   $82:F04B  its record kept, and a tick's sleep
+//   $82:F05E  its loop over: its last pictures asked for
+//
+// The puff the seeker comes back in, `$82:F1E6`:
+//
+//   $82:F1E6  its weight, five, on the load
+//   $82:F1F4  its record, at the place it was asked for, drawn, and its
+//             pictures asked for
+//
+// ## The colour pulse's setup, `$80:A0EF`
+//
+// See `port/palcycle.h`, which has its waking. The setup keeps the level's
+// colour 90 without its green, twice, and a step of one green, and sleeps
+// four ticks.
+//
 // ## One instruction or two
 //
 // What stands by itself between two calls and belongs to nothing ported: a
@@ -266,7 +310,7 @@ typedef struct {
   uint16_t value;
 } ThreadArgument;
 
-#define THREAD_ARGUMENT_COUNT 14
+#define THREAD_ARGUMENT_COUNT 15
 extern const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT];
 
 // `LDA #value : STA at`, on the thread's page, and the `RTS` after.
@@ -787,6 +831,54 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define SLIME_DP_STATE 0x16
 #define SLIME_DP_22 0x22
 
+// --- the seeker's states that sleep ------------------------------------------
+
+#define SEEKER_LAND_SFX_CALL_PC 0x82ea40u       // `JSL apu_play_sfx`
+#define SEEKER_LAND_SOUNDED_PC 0x82ea44u
+#define SEEKER_LAND_PICTURES_CALL_PC 0x82ea47u  // `JSL pictures_resume`
+#define SEEKER_LANDED_PC 0x82ea4bu
+#define SEEKER_LAND_DRAW_PC 0x82ea5au           // `JSL rng`
+#define SEEKER_LAND_WAY_PC 0x82ea5eu
+#define SEEKER_LAND_SOUNDS 0x0003               // the sample set with its sound
+#define SEEKER_LAND_SFX 0x0027
+#define SEEKER_LAND_PICTURES 0xea66u
+#define SEEKER_LANDED_HEALTH 0x0009
+#define SEEKER_FIRED_PC 0x82ee1bu
+#define SEEKER_SPAWN_CALL_PC 0x82ee3bu          // `JSL thread_spawn`
+#define SEEKER_SPAWNED_PC 0x82ee3fu
+#define SEEKER_SPAWN_SLEEP_PC 0x82ee46u         // `JSL thread_yield`
+#define SEEKER_SPAWN_AGAIN_PC 0x82ee4au
+#define SEEKER_FIRED_CALL_PC 0x82ee5eu          // `JSL pictures_resume`
+#define SEEKER_NEXT_PC 0x82ee62u
+#define SEEKER_TRACKERS_FROM 0x0036  // less its strength, by 32, and one more
+#define SEEKER_TRACKER_THREAD 0xf03eu
+#define SEEKER_SPAWN_TICKS 0x0003
+#define SEEKER_FIRED_PICTURES 0x82eeafu         // a list for each way
+#define SEEKER_HIDDEN_PC 0x82eba3u
+#define SEEKER_BACK_PC 0x82ec61u
+#define SEEKER_COLLIDE_ID 0x0003
+
+// --- a tracker's start and end, and the seeker's puff ------------------------
+
+#define TRACKER_ENTER_PC 0x82f03eu
+#define TRACKER_BEGIN_CALL_PC 0x82f048u  // `JSR tracker_begin`
+#define TRACKER_BEGUN_PC 0x82f04bu
+#define TRACKER_END_CALL_PC 0x82f069u    // `JSL pictures_resume`
+#define TRACKER_LOAD 0x0008
+#define TRACKER_END_PICTURE_BANK 0x008f
+#define TRACKER_END_PICTURES 0xf07fu
+#define PUFF_ENTER_PC 0x82f1e6u
+#define PUFF_ALLOC_CALL_PC 0x82f1f0u     // `JSL actor_slot_alloc`
+#define PUFF_MADE_PC 0x82f1f4u
+#define PUFF_PICTURES_CALL_PC 0x82f22bu  // `JSL pictures_resume`
+#define PUFF_LOAD 0x0005
+#define PUFF_PICTURE 0xa01du
+#define PUFF_PICTURE_BANK 0x0090
+#define PUFF_PICTURES 0xf241u
+#define PUFF_DP_RECORD 0x08
+#define PUFF_DP_X 0x00                   // where it was asked for
+#define PUFF_DP_Y 0x02
+
 // name, first instruction, the one after its last, and how many branches
 // in it are always taken. `tools/cycles816.py` prices each.
 #define TS_BLOCKS(X) \
@@ -917,7 +1009,34 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
   X(TS_SLIME_ENTER, 0x81cccf, 0x81ccd9, 0) \
   X(TS_SLIME_HANDLER, 0x81ccac, 0x81ccb6, 0)  /* the JSL too */ \
   X(TS_SLIME_WAY, 0x81c9e8, 0x81c9f9, 0)     /* the JMP too */ \
-  X(TS_SLIME_FIRST, 0x81ccdf, 0x81cce4, 0)
+  X(TS_SLIME_FIRST, 0x81ccdf, 0x81cce4, 0) \
+  X(TS_SEEKER_TAIL, 0x82ef57, 0x82ef5b, 0)    /* LDA $2E : BEQ */ \
+  X(TS_SEEKER_SLEEP, 0x82ef49, 0x82ef4b, 0)   /* LDA $2C */ \
+  X(TS_SEEKER_SET, 0x82eb5e, 0x82eb64, 0)     /* and $82:EB74-$EB79 */ \
+  X(TS_SEEKER_SET_HOLD, 0x82ec92, 0x82eca3, 0) \
+  X(TS_SEEKER_LAND_ASK, 0x82ea35, 0x82ea3d, 0)  /* LDA abs : CMP # : BNE */ \
+  X(TS_SEEKER_LAND_SOUND, 0x82ea3d, 0x82ea40, 0) \
+  X(TS_SEEKER_LAND_PICTURES, 0x82ea44, 0x82ea47, 0) \
+  X(TS_SEEKER_LANDED, 0x82ea4b, 0x82ea5a, 0)  /* the JSL too */ \
+  X(TS_SEEKER_LAND_WAY, 0x82ea5e, 0x82ea66, 0)  /* the JMP too */ \
+  X(TS_SEEKER_GO_FIRE, 0x82edfd, 0x82ee0e, 0)   /* the RTS too */ \
+  X(TS_SEEKER_FIRED, 0x82ee1b, 0x82ee29, 0) \
+  X(TS_SEEKER_SPAWN, 0x82ee29, 0x82ee3b, 0) \
+  X(TS_SEEKER_SPAWNED, 0x82ee3f, 0x82ee43, 0)   /* DEC dp : BEQ */ \
+  X(TS_SEEKER_PAUSE, 0x82ee43, 0x82ee46, 0) \
+  X(TS_SEEKER_AGAIN, 0x82ee4a, 0x82ee50, 0)     /* DEC dp, DEC dp : BNE */ \
+  X(TS_SEEKER_WRAP, 0x82ee50, 0x82ee57, 1)      /* the BRA too */ \
+  X(TS_SEEKER_LAST, 0x82ee57, 0x82ee5e, 0) \
+  X(TS_SEEKER_NEXT, 0x82ee62, 0x82ee67, 0)      /* LDX dp : JMP (abs,X) */ \
+  X(TS_SEEKER_HIDDEN, 0x82eba3, 0x82ebcf, 0)    /* the RTS too */ \
+  X(TS_SEEKER_BACK, 0x82ec61, 0x82ec73, 0)      /* the JSL too */ \
+  X(TS_SEEKER_BACK_ON, 0x82ec73, 0x82ec76, 0)   /* JMP $EB5E */ \
+  X(TS_TRACKER_ENTER, 0x82f03e, 0x82f048, 0) \
+  X(TS_TRACKER_BEGUN, 0x82f04b, 0x82f050, 0) \
+  X(TS_TRACKER_ENDED, 0x82f05e, 0x82f069, 0) \
+  X(TS_PUFF_ENTER, 0x82f1e6, 0x82f1f0, 0) \
+  X(TS_PUFF_MADE, 0x82f1f4, 0x82f22b, 0) \
+  X(TS_PULSE_ENTER, 0x80a0ef, 0x80a102, 0)
 
 enum {
 #define X(name, from, to, taken) name,
@@ -957,6 +1076,9 @@ typedef enum {
   TS_NEEDS_DEATH,       // which player, which of the two, and the record
   TS_NEEDS_SLIME_BEGUN,  // `slime_begin`'s `JSR` to return to
   TS_NEEDS_SLIME_WAY,    // the start's `JSR $C9E4` to return to
+  TS_NEEDS_SEEKER,       // the seeker's loop to return to, and its record
+  TS_NEEDS_SEEKER_HIDDEN,  // ...and whoever it watched, in low WRAM
+  TS_NEEDS_SEEKER_NEXT,    // ...and what it does after firing, one of three
 } ThreadStretchNeeds;
 
 bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
@@ -1077,7 +1199,24 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(door_buzzed, "$82:DF1F", DOOR_BUZZED_PC, door_buzzed, DOOR, TS_NEEDS_NOTHING) \
   X(slime_enter, "$81:CCCF", SLIME_ENTER_PC, slime_enter, SLIME, TS_NEEDS_NOTHING) \
   X(slime_shown, "$81:CCAC", SLIME_SHOWN_PC, slime_shown, SLIME, TS_NEEDS_SLIME_BEGUN) \
-  X(slime_way, "$81:C9E8", SLIME_WAY_PC, slime_way, SLIME, TS_NEEDS_SLIME_WAY)
+  X(slime_way, "$81:C9E8", SLIME_WAY_PC, slime_way, SLIME, TS_NEEDS_SLIME_WAY) \
+  X(argument_seeker_back, "$82:EC5A", 0x82ec5au, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(seeker_land, "$82:EA35", SEEKER_LAND_PC, seeker_land, SEEKER, TS_NEEDS_NOTHING) \
+  X(seeker_land_sounded, "$82:EA44", SEEKER_LAND_SOUNDED_PC, seeker_land_sounded, SEEKER, TS_NEEDS_NOTHING) \
+  X(seeker_landed, "$82:EA4B", SEEKER_LANDED_PC, seeker_landed, SEEKER, TS_NEEDS_NOTHING) \
+  X(seeker_land_way, "$82:EA5E", SEEKER_LAND_WAY_PC, seeker_land_way, SEEKER, TS_NEEDS_SEEKER) \
+  X(seeker_fired, "$82:EE1B", SEEKER_FIRED_PC, seeker_fired, SEEKER, TS_NEEDS_NOTHING) \
+  X(seeker_spawned, "$82:EE3F", SEEKER_SPAWNED_PC, seeker_spawned, SEEKER, TS_NEEDS_NOTHING) \
+  X(seeker_spawn_again, "$82:EE4A", SEEKER_SPAWN_AGAIN_PC, seeker_spawn_again, SEEKER, TS_NEEDS_NOTHING) \
+  X(seeker_next, "$82:EE62", SEEKER_NEXT_PC, seeker_next, SEEKER, TS_NEEDS_SEEKER_NEXT) \
+  X(seeker_hidden, "$82:EBA3", SEEKER_HIDDEN_PC, seeker_hidden, SEEKER, TS_NEEDS_SEEKER_HIDDEN) \
+  X(seeker_back, "$82:EC61", SEEKER_BACK_PC, seeker_back, SEEKER, TS_NEEDS_SEEKER) \
+  X(tracker_enter, "$82:F03E", TRACKER_ENTER_PC, tracker_enter, TRACKER, TS_NEEDS_NOTHING) \
+  X(tracker_begun, "$82:F04B", TRACKER_BEGUN_PC, tracker_begun, TRACKER, TS_NEEDS_NOTHING) \
+  X(tracker_ended, "$82:F05E", TRACKER_ENDED_PC, tracker_ended, TRACKER, TS_NEEDS_RECORD) \
+  X(puff_enter, "$82:F1E6", PUFF_ENTER_PC, puff_enter, TRACKER, TS_NEEDS_NOTHING) \
+  X(puff_made, "$82:F1F4", PUFF_MADE_PC, puff_made, TRACKER, TS_NEEDS_A) \
+  X(pulse_enter, "$80:A0EF", PALCYCLE_PULSE_ENTER_PC, pulse_enter, PULSE, TS_NEEDS_NOTHING)
 
 #define X(name, sym, entry, port, exits, needs) \
   void port(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k);

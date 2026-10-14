@@ -18,9 +18,12 @@
 #include "port/thread.h"            // thread_set_handler
 #include "port/player_frame.h"
 #include "port/apu.h"               // W_APU_SOUNDS
+#include "port/seeker.h"
+#include "port/tracker.h"
 #include "port/neighbours.h"        // W_TOURISTS_TURN
 #include "port/werewolf.h"
 #include "port/objects.h"           // W_VICTIM_GATE
+#include "port/palcycle.h"
 #include "port/weeds.h"
 
 const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
@@ -38,6 +41,7 @@ const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
     {0x82df0au, 0x000a},  // a locked door's two buzzes, and a sleep after each
     {0x82df11u, DOOR_BUZZ_SFX},
     {0x82df18u, 0x0014},
+    {0x82ec5au, 0x0020},  // the seeker's sleep after its puff begins
 };
 
 const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT] = {
@@ -116,6 +120,13 @@ static void jsr_and_back(Wram* w, PortCpu* c, uint16_t jsr_at,
   ran(k, TS_JSR);
 }
 
+// A seeker's state with the loop's return under it, and its record in low
+// WRAM.
+static bool seeker_returns(const Wram* w, const PortCpu* c) {
+  return wram_r16(w, (uint16_t)(c->s + 1)) == SEEKER_FRAME_RETURN &&
+         page(w, c, SEEKER_DP_RECORD) < 0x1f00;
+}
+
 bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
                               const PortCpu* c) {
   switch (needs) {
@@ -188,6 +199,15 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
       const uint16_t player = page(w, c, DEATH_DP_PLAYER);
       return c->db == 0x80 && who < 4 && (who & 1) == 0 && player < 4 &&
              (player & 1) == 0 && page(w, c, DEATH_DP_RECORD) < 0x1f00;
+    }
+    case TS_NEEDS_SEEKER:
+      return seeker_returns(w, c);
+    case TS_NEEDS_SEEKER_HIDDEN:
+      return seeker_returns(w, c) && page(w, c, SEEKER_DP_TARGET) < 0x1f00;
+    case TS_NEEDS_SEEKER_NEXT: {
+      const uint16_t after = page(w, c, SEEKER_DP_AFTER);
+      return seeker_returns(w, c) && after <= SEEKER_AFTER_DART &&
+             (after & 1) == 0;
     }
     case TS_NEEDS_SLIME_BEGUN:
       return wram_r16(w, (uint16_t)(c->s + 1)) == SLIME_BEGIN_RETURN;
@@ -1868,4 +1888,309 @@ void bystander_step(Wram* w, const Rom* rom, PortCpu* c,
   lda(c, BYSTANDER_WORDS_BANK);
   ran(k, TS_BYSTANDER_SAY);
   c->pc = BYSTANDER_SAY_PC;
+}
+
+// --- the seeker's states that sleep ------------------------------------------
+
+// The loop, from a state's `RTS`: the sleep, or with `$2E` set its end.
+static void seeker_return(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  pull16(w, c);
+  lda(c, page(w, c, SEEKER_DP_ENDED));
+  ran(k, TS_SEEKER_TAIL);
+  if (c->a != 0) {
+    PORT_COVER(seeker_loop_ended);
+    c->pc = SEEKER_FRAME_ENDED_PC;
+    return;
+  }
+  PORT_COVER(seeker_loop_slept);
+  ran(k, TS_TAKEN);
+  lda(c, page(w, c, SEEKER_DP_SLEEP));
+  ran(k, TS_SEEKER_SLEEP);
+  c->pc = SEEKER_FRAME_SLEEP_PC;
+}
+
+// `$82:EB5E` and `$82:EB74`: the next state.
+static void seeker_set(Wram* w, PortCpu* c, uint16_t state,
+                       ThreadStretchWork* k) {
+  lda(c, state);
+  set_page(w, c, SEEKER_DP_STATE, c->a);
+  ran(k, TS_SEEKER_SET);
+}
+
+// Its record drawn, `LDY $08 : LDA $0000,Y : ORA #$8000 : STA $0000,Y`.
+static void seeker_show(Wram* w, PortCpu* c) {
+  ldy(c, page(w, c, SEEKER_DP_RECORD));
+  lda(c, (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) | ACTOR_DRAW));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
+}
+
+// `$82:EA35`: landed from the swoop. Sound `$27`, where the sample set is
+// the one with it, and the pictures of landing.
+void seeker_land(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, wram_r16(w, W_APU_SOUNDS));
+  cmp16(c, c->a, SEEKER_LAND_SOUNDS);
+  ran(k, TS_SEEKER_LAND_ASK);
+  if (c->a == SEEKER_LAND_SOUNDS) {
+    PORT_COVER(seeker_land_heard);
+    lda(c, SEEKER_LAND_SFX);
+    ran(k, TS_SEEKER_LAND_SOUND);
+    c->pc = SEEKER_LAND_SFX_CALL_PC;
+    return;
+  }
+  PORT_COVER(seeker_land_unheard);
+  ran(k, TS_TAKEN);
+  seeker_land_sounded(w, rom, c, k);
+}
+
+// `$82:EA44`.
+void seeker_land_sounded(Wram* w, const Rom* rom, PortCpu* c,
+                         ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  lda(c, SEEKER_LAND_PICTURES);
+  ran(k, TS_SEEKER_LAND_PICTURES);
+  c->pc = SEEKER_LAND_PICTURES_CALL_PC;
+}
+
+// `$82:EA4B`: its health, and things that touch it told to its handler
+// again. Then a draw.
+void seeker_landed(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, SEEKER_DP_HURT, SEEKER_LANDED_HEALTH);
+  lda(c, SEEKER_HANDLER);
+  ldy(c, SEEKER_HANDLER_BANK);
+  ran(k, TS_SEEKER_LANDED);
+  thread_set_handler(w, c);
+  ran(k, TS_SET_HANDLER);
+  c->pc = SEEKER_LAND_DRAW_PC;
+}
+
+// `$82:EDFD`: it fires, drawn, from the next frame.
+static void seeker_go_fire(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, SEEKER_STATE_FIRE);
+  set_page(w, c, SEEKER_DP_STATE, c->a);
+  seeker_show(w, c);
+  ran(k, TS_SEEKER_GO_FIRE);
+  seeker_return(w, c, k);
+}
+
+// `$82:EA5E`: the draw says whether it hides or darts after firing.
+void seeker_land_way(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, (uint16_t)(c->a & SEEKER_AFTER_DART));
+  set_page(w, c, SEEKER_DP_AFTER, c->a);
+  ran(k, TS_SEEKER_LAND_WAY);
+  seeker_go_fire(w, c, k);
+}
+
+// `$82:EE29`: a tracker from where it is, sent the way `$22` says.
+static void seeker_spawn(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  set_page(w, c, SEEKER_DP_SPAWN_X, page(w, c, SEEKER_DP_X));
+  set_page(w, c, SEEKER_DP_SPAWN_Y, page(w, c, SEEKER_DP_Y));
+  set_page(w, c, SEEKER_DP_SPAWN_WAY, page(w, c, SEEKER_DP_TRACKER_WAY));
+  lda(c, SEEKER_TRACKER_THREAD);
+  ldy(c, SEEKER_BANK);
+  ran(k, TS_SEEKER_SPAWN);
+  c->pc = SEEKER_SPAWN_CALL_PC;
+}
+
+// `$82:EE1B`: its firing pictures played, as many trackers as its strength
+// leaves room for, the first the way it faces.
+void seeker_fired(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  set_c(c, true);
+  uint16_t n = sbc16(c, SEEKER_TRACKERS_FROM, page(w, c, SEEKER_DP_STRENGTH));
+  for (int i = 0; i < 5; i++) {  // the `LSR`s
+    set_c(c, (n & 1) != 0);
+    n = (uint16_t)(n >> 1);
+  }
+  lda(c, (uint16_t)(n + 1));
+  set_page(w, c, SEEKER_DP_TRACKERS, c->a);
+  ran(k, TS_SEEKER_FIRED);
+  seeker_spawn(w, c, k);
+}
+
+// `$82:EE3F`: three ticks' sleep before the next, or after the last its
+// last pictures.
+void seeker_spawned(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  const uint16_t left = (uint16_t)(page(w, c, SEEKER_DP_TRACKERS) - 1);
+  set_page(w, c, SEEKER_DP_TRACKERS, left);
+  set_nz16(c, left);
+  ran(k, TS_SEEKER_SPAWNED);
+  if (left != 0) {
+    PORT_COVER(seeker_spawns_more);
+    lda(c, SEEKER_SPAWN_TICKS);
+    ran(k, TS_SEEKER_PAUSE);
+    c->pc = SEEKER_SPAWN_SLEEP_PC;
+    return;
+  }
+  PORT_COVER(seeker_spawned_all);
+  ran(k, TS_TAKEN);
+  c->x = asl16(c, page(w, c, SEEKER_DP_WAY));
+  lda(c, rom_word(rom, SEEKER_FIRED_PICTURES + c->x));
+  ran(k, TS_SEEKER_LAST);
+  c->pc = SEEKER_FIRED_CALL_PC;
+}
+
+// `$82:EE4A`: the next tracker a way round from the last, and from the
+// first way to the eighth.
+void seeker_spawn_again(Wram* w, const Rom* rom, PortCpu* c,
+                        ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t way = (uint16_t)(page(w, c, SEEKER_DP_TRACKER_WAY) - 2);
+  set_page(w, c, SEEKER_DP_TRACKER_WAY, way);
+  set_nz16(c, way);
+  ran(k, TS_SEEKER_AGAIN);
+  if (way != 0) {
+    PORT_COVER(seeker_way_on);
+    ran(k, TS_TAKEN);
+  } else {
+    PORT_COVER(seeker_way_wrapped);
+    lda(c, (SEEKER_WAYS - 1) * 2);
+    set_page(w, c, SEEKER_DP_TRACKER_WAY, c->a);
+    ran(k, TS_SEEKER_WRAP);
+  }
+  seeker_spawn(w, c, k);
+}
+
+// `$82:EE62`: after firing, by `$36`, through `$82:E7AF`.
+void seeker_next(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  ldx(c, page(w, c, SEEKER_DP_AFTER));
+  ran(k, TS_SEEKER_NEXT);
+  switch (c->x) {
+    case SEEKER_AFTER_HIDE:
+      PORT_COVER(seeker_next_hides);
+      seeker_set(w, c, SEEKER_STATE_WATCH_B, k);
+      break;
+    case SEEKER_AFTER_FIRE:
+      PORT_COVER(seeker_next_fires);
+      seeker_set(w, c, SEEKER_STATE_WATCH, k);
+      break;
+    default:
+      PORT_COVER(seeker_next_darts);
+      lda(c, SEEKER_STATE_HOLD);
+      set_page(w, c, SEEKER_DP_STATE, c->a);
+      seeker_show(w, c);
+      ran(k, TS_SEEKER_SET_HOLD);
+      break;
+  }
+  seeker_return(w, c, k);
+}
+
+// `$82:EBA3`: its going played, it is not drawn, its record is put at the
+// corner of the level, and it keeps where whoever it watched was.
+void seeker_hidden(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  ldy(c, page(w, c, SEEKER_DP_RECORD));
+  lda(c, (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) & ~ACTOR_DRAW));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META_BANK), SEEKER_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_X), 0);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_Y), 0);
+  ldx(c, page(w, c, SEEKER_DP_TARGET));
+  set_page(w, c, SEEKER_DP_AHEAD_X, wram_r16(w, (uint16_t)(c->x + ACTOR_X)));
+  set_page(w, c, SEEKER_DP_AHEAD_Y, wram_r16(w, (uint16_t)(c->x + ACTOR_Y)));
+  lda(c, SEEKER_STATE_PLACE);
+  set_page(w, c, SEEKER_DP_STATE, c->a);
+  ran(k, TS_SEEKER_HIDDEN);
+  seeker_return(w, c, k);
+}
+
+// `$82:EC61`: back, so things that touch it are told to its handler again.
+// It watches.
+void seeker_back(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  ldy(c, page(w, c, SEEKER_DP_RECORD));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), SEEKER_COLLIDE_ID);
+  lda(c, SEEKER_HANDLER);
+  ldy(c, SEEKER_HANDLER_BANK);
+  ran(k, TS_SEEKER_BACK);
+  thread_set_handler(w, c);
+  ran(k, TS_SET_HANDLER);
+  ran(k, TS_SEEKER_BACK_ON);
+  seeker_set(w, c, SEEKER_STATE_WATCH, k);
+  seeker_return(w, c, k);
+}
+
+// --- a tracker's start and end, and the seeker's puff ------------------------
+
+// `$82:F03E`.
+void tracker_enter(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  load_up(w, c, TRACKER_LOAD);
+  ran(k, TS_TRACKER_ENTER);
+  c->pc = TRACKER_BEGIN_CALL_PC;
+}
+
+// `$82:F04B`: the record `tracker_begin` made, and a tick's sleep.
+void tracker_begun(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, TRACKER_DP_RECORD, c->a);
+  lda(c, 0x0001);
+  ran(k, TS_TRACKER_BEGUN);
+  c->pc = TRACKER_SLEEP_PC;
+}
+
+// `$82:F05E`: its loop over, its last pictures.
+void tracker_ended(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  ldy(c, page(w, c, TRACKER_DP_RECORD));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META_BANK), TRACKER_END_PICTURE_BANK);
+  lda(c, TRACKER_END_PICTURES);
+  ran(k, TS_TRACKER_ENDED);
+  c->pc = TRACKER_END_CALL_PC;
+}
+
+// `$82:F1E6`.
+void puff_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  load_up(w, c, PUFF_LOAD);
+  ran(k, TS_PUFF_ENTER);
+  c->pc = PUFF_ALLOC_CALL_PC;
+}
+
+// `$82:F1F4`: the record in A, at the place it was asked for, drawn.
+void puff_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t record = c->a;
+  set_page(w, c, PUFF_DP_RECORD, record);
+  ldy(c, record);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), page(w, c, PUFF_DP_X));
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), page(w, c, PUFF_DP_Y));
+  wram_w16(w, (uint16_t)(record + ACTOR_META), PUFF_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), PUFF_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD),
+           wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), 0);
+  lda(c, (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) | ACTOR_DRAW));
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS), c->a);
+  lda(c, PUFF_PICTURES);
+  ran(k, TS_PUFF_MADE);
+  c->pc = PUFF_PICTURES_CALL_PC;
+}
+
+// --- the colour pulse's setup ------------------------------------------------
+
+// `$80:A0EF`: the colour without its green is both where the pulse starts and
+// where it turns up again.
+void pulse_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, (uint16_t)(wram_r16(w, W_PALCYCLE_PULSE_LEVEL) &
+                    PALCYCLE_PULSE_NO_GREEN));
+  set_page(w, c, PALCYCLE_PULSE_DP_FLOOR, c->a);
+  set_page(w, c, PALCYCLE_PULSE_DP_NOW, c->a);
+  lda(c, PALCYCLE_PULSE_STEP);
+  set_page(w, c, PALCYCLE_PULSE_DP_STEP, c->a);
+  lda(c, PALCYCLE_PULSE_TICKS);
+  ran(k, TS_PULSE_ENTER);
+  c->pc = PALCYCLE_PULSE_YIELD_PC;
 }

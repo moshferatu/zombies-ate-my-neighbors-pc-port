@@ -730,7 +730,10 @@
   X(seeker_held,      "seeker_frame",       "facing them from a third state, and set to be drawn") \
   X(seeker_blinked_on,"seeker_frame",       "at one of two places, drawn: an even frame") \
   X(seeker_blinked_off,"seeker_frame",      "...and not drawn: an odd one") \
-  X(seeker_went_on,   "seeker_frame",       "watching: the draw sends it on to $82:EE0E") \
+  X(seeker_went_on,   "seeker_frame",       "watching: the draw says fire") \
+  X(seeker_hid,       "seeker_frame",       "...or from the other state, says hide") \
+  X(seeker_fired,     "seeker_frame",       "firing: the pictures the way it faces") \
+  X(seeker_landing,   "seeker_frame",       "landed from the swoop: on to the state's first instruction") \
   X(seeker_dart_began,"seeker_frame",       "held: the draw says dart, and for how many hops") \
   X(seeker_dart_arrived,"seeker_frame",     "darting: near enough, so it watches again") \
   X(seeker_dart_spent,"seeker_frame",       "...or out of hops, and the same") \
@@ -740,6 +743,7 @@
   X(seeker_hopped,    "seeker_frame",       "the third frame of a hop over: its place moved") \
   X(seeker_place_bad_ground,"seeker_frame", "hidden: the ground at the place drawn will not do") \
   X(seeker_place_off_level,"seeker_frame",  "...or the place is off the level") \
+  X(seeker_came_back, "seeker_frame",       "...or it will do, and it comes back there") \
   /* $81:F98A the thing thrown in an arc -- see port/lob.h. */                  \
   X(lob_flew,         "lob_frame",          "a frame in the air") \
   X(lob_slowed,       "lob_frame",          "a fourth frame: the rise one less") \
@@ -1994,6 +1998,17 @@
   X(death_none_left, "ts_death_counted", "...or none left, which is the ROM's") \
   X(door_buzzing_already, "ts_door_buzz", "a locked door pushed while it buzzes: the new thread only ends") \
   X(door_buzz_begun, "ts_door_buzz", "...or it is not, and the first buzz") \
+  X(seeker_land_heard, "ts_seeker_land", "the seeker landed where the sample set has its sound: sound $27") \
+  X(seeker_land_unheard, "ts_seeker_land", "...or the set is another, and the pictures of landing") \
+  X(seeker_spawns_more, "ts_seeker_spawned", "a tracker begun and another to come: three ticks' sleep") \
+  X(seeker_spawned_all, "ts_seeker_spawned", "...or the last, and the pictures after") \
+  X(seeker_way_on, "ts_seeker_spawn_again", "the next tracker a way round from the last") \
+  X(seeker_way_wrapped, "ts_seeker_spawn_again", "...or from the first way, the eighth") \
+  X(seeker_next_hides, "ts_seeker_next", "fired: it watches, and will hide") \
+  X(seeker_next_fires, "ts_seeker_next", "...or watches, and will fire again") \
+  X(seeker_next_darts, "ts_seeker_next", "...or holds, and will dart") \
+  X(seeker_loop_slept, "ts_seeker_next", "a state ended: the loop sleeps") \
+  X(seeker_loop_ended, "ts_seeker_next", "...or ends") \
   X(werewolf_dressed, "ts_werewolf_made", "its record made: its picture, and twenty ticks' sleep") \
   X(werewolf_leapt, "ts_werewolf_crouched", "a crouch's pictures shown: it is in the air") \
   X(werewolf_flew, "werewolf_frame", "a pass of a pounce") \

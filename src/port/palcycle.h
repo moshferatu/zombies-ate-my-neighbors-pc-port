@@ -13,7 +13,8 @@
 //   $80:A106  pulse        colour 90's green goes up and comes down, every 4
 //   $80:A180  figure       the big figure's row steps through ten arrangements
 //
-// What is not here is each thread's setup, which runs once.
+// What is not here is each thread's setup, which runs once. The pulse's is
+// a thread stretch: see `port/thread_stretches.h`.
 //
 // ## Turning
 //
@@ -80,6 +81,11 @@ extern const PalcycleTurn PALCYCLE_TURN_SEVEN;
 #define PALCYCLE_PULSE_DP_NOW 0x00     // red, blue, and the green being shown
 #define PALCYCLE_PULSE_DP_FLOOR 0x02   // red and blue alone
 #define PALCYCLE_PULSE_DP_STEP 0x04
+// Its setup: the level's own colour 90 without its green, and a step of one.
+#define PALCYCLE_PULSE_ENTER_PC 0x80a0efu
+#define W_PALCYCLE_PULSE_LEVEL 0x54dcu  // in `$7E`
+#define PALCYCLE_PULSE_NO_GREEN 0xfc1fu
+#define PALCYCLE_PULSE_STEP 0x0020
 
 #define PALCYCLE_FIGURE_PC 0x80a180u
 #define PALCYCLE_FIGURE_YIELD_PC 0x80a17cu

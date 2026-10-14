@@ -260,6 +260,11 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
         # whatever bank $80 costs, which is why they are counted as program.
         return (c + 2 * SLOW + IDLE + 2 * access(val, bank), None,
                 2 * fast_rom(val, bank))
+    if name == "JMP" and mode == IIDX:
+        # `JMP ($E7AF,X)`, a thread's next state by its kind: the `JSR`'s
+        # vector read from the program bank, without the return pushed.
+        return (c + IDLE + 2 * access(val, bank), None,
+                2 * fast_rom(val, bank))
     if name == "JSL":
         return c + IDLE + 3 * SLOW, None, 0
     if name == "JMP" and mode == ABS:
@@ -270,7 +275,7 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
         return c + 3 * access(val, 0x00), None, 0
     if name == "JML":
         return c, None, 0
-    if name in ("JMP",):  # ($xxxx) and ($xxxx,X) reach a table this cannot see
+    if name in ("JMP",):  # ($xxxx) reaches a pointer this cannot see
         raise Unpriced("%s %s: an indirect jump's table is not in this run" % (name, mode))
 
     if mode == BLK:

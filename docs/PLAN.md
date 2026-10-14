@@ -273,6 +273,12 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**The seeker's sleeping states, 2026-10-14.** The seeker's hiding, coming
+back, firing and landing are ported, with the tracker's start and end and
+the puff it comes back in; the doll's frame is no longer turned down when it
+has no target, and the colour pulse's setup is a stretch. The places are 358
+and the core executes 60,954 instructions over the survey.
+
 **A frame turned down and four threads' starts, 2026-10-14.** A call one
 row turns down goes on to the next row at the same address, which takes
 the frames `player_frame` turns down; a locked door's buzz, the swipe's

@@ -5,6 +5,65 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The seeker's sleeping states, a frozen doll, and the colour pulse's setup (2026-10-14)
+
+After last round the commonest places left were the doll's frame turned
+down on level 29's freeze movies and the seeker on level 37.
+
+* **The doll's frame, `$81:B2DF`.** Its guard asked for a target in low
+  WRAM on every frame. The target is `$FFFF` until the doll has sought
+  once, and only the knocked body reads it before seeking sets it. Now the
+  guard asks for it only in that state. No doll frame is turned down over
+  the corpus.
+* **The seeker's states that sleep.** `seeker_frame` turned down hiding,
+  coming back, firing and landing, which each sleep in the middle. It now
+  goes as far as each one's first call and leaves the loop's return on the
+  stack. Ten thread stretches do the rest: the landing's sound and
+  pictures, its health and handler, the trackers it fires (three ticks
+  apart, each a way round), what it does after firing, hiding, and coming
+  back.
+  * A landing begins with `LDA $1F52`, one of the sample-set checks
+    `src/bank_sfx.h` watches. A watch fires only where an instruction
+    begins under the harness, so `seeker_frame` stops on that instruction
+    and the stretch begins there.
+* **The tracker's start and end and the seeker's puff** are five more
+  stretches, and the puff's sleep is an argument.
+* **The colour pulse's setup, `$80:A0EF`**, is a stretch. The pulse itself
+  was ported already.
+* **`tools/cycles816.py` prices `JMP ($xxxx,X)`**, like the `JSR`: the
+  table is in the program bank.
+* **Two mistakes of mine.**
+  * The landing first left A as it found it. The ROM's A there is the state
+    less one, from the dispatch's `DEC`, and 260 calls of one movie
+    diverged until the port set it.
+  * A temporary debug line put in with `sed -i` rewrote all of
+    `routines.c` with bare LF. It was put back before anything else.
+* **Looked at and left.** The 24 walks turned down at `$80:E4BA` meet four
+  different reactions: the water's edge, the tile at `$80:E74A`, a door
+  opened with a key, and the tile `$80:E9B3` changes. And `$80:F360`
+  returns to seven different ends of a player's state.
+* **Checked.** 1,423 routines are registered.
+  * The corpus verifies clean: 128,076,788 calls over 56 movies, none
+    diverged, and every cost row is exact.
+  * Branch coverage is 1,710 of 2,052.
+  * Lockstep: 53 of 56 never part; level25, level25-2p and level25-heavy
+    part as before.
+  * The picture: 78,360,128 lines at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 334 to 311 | 2,754 to 2,328 | 25,857 to 22,455 |
+  | Left standing on an instruction | 15 to 14 | 274 to 247 | 26,752 to 26,617 |
+  | A port turned the call down | 23 to 22 | 365 to 245 | 4,050 to 3,163 |
+  | A port or a link called it | 10 to 10 | 189 to 189 | 799 to 799 |
+  | All | 383 to 358 | 3,692 to 3,119 | 65,378 to 60,954 |
+
+* **Not done.** The seeker hit and dying (`$82:EF0B` on), the level 25
+  thread at `$82:94B8`, level 17's at `$83:B34A` and `$81:D5DD`, the
+  chainsaw maniac's start.
+
 ### A frame turned down, a locked door's buzz, a slime's and a tough zombie's starts (2026-10-14)
 
 The survey's most frequent place after last round was the `JSR` at

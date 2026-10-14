@@ -19499,3 +19499,26 @@ on the three bytes the `JSL` pushes. They all declare three now.
 Over the same 110 sessions the core executes 70,451 instructions where it
 executed 78,057, and takes over 5,508 times where it did 6,273, at 401
 places where there were 422.
+
+## The seeker's states that sleep (2026-10-14)
+
+### A watched instruction is a place to stop
+
+`src/bank_sfx.h` watches the sample-set checks, and a watch fires only
+where an instruction begins under the harness. A port that runs through a
+check hides it. The seeker's landing begins with one, so `seeker_frame`
+stops on it, with the loop's return pushed, and a stretch begins there.
+That is the same as the doll's and the werewolf's checks.
+
+### What a dispatch leaves in A
+
+A frame that stops at the start of a state hands over the registers the
+`PEA : LDA $16 : DEC : PHA : RTS` left, and A is the state less one. The
+port first left A alone, and every later call of that movie compared
+against a machine that had parted.
+
+### After
+
+Over the same 110 sessions the core executes 60,954 instructions where it
+executed 65,378, and takes over 3,119 times where it did 3,692, at 358
+places where there were 383.

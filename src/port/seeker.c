@@ -65,6 +65,7 @@ typedef struct {
   const Rom* rom;
   PortCpu* c;
   SeekerWork* k;
+  bool left;  // in the middle of a state, which goes on after a call
 } Seeker;
 
 static uint16_t field(const Seeker* s, uint16_t at) {
@@ -144,6 +145,14 @@ static void show(Seeker* s) {
   wram_w16(s->w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
 }
 
+// Out of the frame at `pc`, a call in the middle of a state: the loop's
+// return is left on the stack for the state's `RTS`.
+static void leave_state(Seeker* s, uint32_t pc) {
+  push16(s->w, s->c, SEEKER_FRAME_RETURN);
+  s->c->pc = pc;
+  s->left = true;
+}
+
 // `$82:E8AC`: begin to circle, from the place opposite the way it faced,
 // and the other way round from last time. The stronger it is, the longer
 // it sleeps between frames.
@@ -206,12 +215,12 @@ static void chase(Seeker* s) {
 
 // `$82:EA0C`: it stops circling. Its record gets another picture, and is no
 // longer drawn in front of every layer nor sorted ahead of the rest. Next
-// frame its state is the one at `$82:EA35`, which is the ROM's.
+// frame it lands.
 static void leave_circle(Seeker* s) {
   PortCpu* c = s->c;
   PORT_COVER(seeker_circle_left);
   set_field(s, SEEKER_DP_SLEEP, 1);
-  set_field(s, SEEKER_DP_STATE, SEEKER_STATE_EA35);
+  set_field(s, SEEKER_DP_STATE, SEEKER_STATE_LAND);
   c->y = field(s, SEEKER_DP_RECORD);
   wram_w16(s->w, (uint16_t)(c->y + ACTOR_META), SEEKER_LEAVING_PICTURE);
   wram_w16(s->w, (uint16_t)(c->y + ACTOR_META_BANK), SEEKER_PICTURE_BANK);
@@ -392,21 +401,43 @@ static bool face_nearest(Seeker* s) {
   return true;
 }
 
+// `$82:EB86`: nothing can touch it while it hides, and it plays its
+// going.
+static void hide(Seeker* s) {
+  PortCpu* c = s->c;
+  PORT_COVER(seeker_hid);
+  c->a = 0;
+  c->y = 0;
+  set_nz16(c, 0);
+  ran(s, SF_HIDE_HANDLER);
+  thread_set_handler(s->w, c);
+  s->k->handler_set = true;
+  c->y = field(s, SEEKER_DP_RECORD);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_META_BANK), SEEKER_PICTURE_BANK);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), 0);
+  c->a = SEEKER_HIDE_PICTURES;
+  set_nz16(c, c->a);
+  ran(s, SF_HIDE);
+  leave_state(s, SEEKER_HIDE_CALL_PC);
+}
+
 // `$82:EB64` and `$82:EB7A`: face them, and most frames nothing else. The
-// first goes on to the state at `$82:EE0E`, with its record drawn. What the
-// second goes on to sleeps, and is the ROM's.
-static bool watch(Seeker* s, uint16_t odds, bool goes_on) {
+// first goes on to fire, with its record drawn. The second hides.
+static bool watch(Seeker* s, uint16_t odds, bool hides) {
   PortCpu* c = s->c;
   if (!face_nearest(s)) return false;
   draw(s);
   cmp16(c, c->a, odds);
   ran(s, SF_WATCH);
   if (c->a < odds) {
-    if (!goes_on) return false;
+    if (hides) {
+      hide(s);
+      return true;
+    }
     PORT_COVER(seeker_went_on);
-    set_field(s, SEEKER_DP_STATE, SEEKER_STATE_EE0E);
+    set_field(s, SEEKER_DP_STATE, SEEKER_STATE_FIRE);
     show(s);
-    ran(s, SF_GO_EE0E);
+    ran(s, SF_GO_FIRE);
     return true;
   }
   ran(s, SF_TAKEN);
@@ -595,9 +626,35 @@ static uint16_t place_step(Seeker* s) {
   return back ? (uint16_t)(0 - (sum >> 1)) : (uint16_t)(sum >> 1);
 }
 
+// `$82:EC2C`: the place will do. It is drawn there with its own picture,
+// and a puff begins a pixel below it.
+static void come_back(Seeker* s) {
+  PortCpu* c = s->c;
+  PORT_COVER(seeker_came_back);
+  ran(s, SF_PLACE_MAP);
+  c->y = field(s, SEEKER_DP_RECORD);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_META), SEEKER_BACK_PICTURE);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(s->w, (uint16_t)(c->y + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  const uint16_t x = field(s, SEEKER_DP_STEP_X);
+  set_field(s, SEEKER_DP_X, x);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_X), x);
+  set_field(s, SEEKER_DP_SPAWN_X, x);
+  const uint16_t y = field(s, SEEKER_DP_STEP_Y);
+  set_field(s, SEEKER_DP_Y, y);
+  wram_w16(s->w, (uint16_t)(c->y + ACTOR_Y), y);
+  set_field(s, SEEKER_DP_SPAWN_Y, (uint16_t)(y + 1));
+  c->a = SEEKER_PUFF_THREAD;
+  c->y = SEEKER_BANK;
+  set_nz16(c, c->y);
+  ran(s, SF_BACK);
+  leave_state(s, SEEKER_BACK_CALL_PC);
+}
+
 // `$82:EBCF`: hidden, it tries a place near whoever is nearest. Ground that
 // will not do, or a place off the level, and it tries again next frame.
-// Coming back sleeps, and is the ROM's. So is nobody in reach.
+// Nobody in reach is the ROM's.
 static bool place(Seeker* s) {
   PortCpu* c = s->c;
   look(s);
@@ -643,7 +700,10 @@ static bool place(Seeker* s) {
   c->x = x;
   c->y = y;
   set_c(c, map.c);
-  if (!map.c) return false;
+  if (!map.c) {
+    come_back(s);
+    return true;
+  }
   PORT_COVER(seeker_place_off_level);
   ran(s, SF_PLACE_MAP);
   ran(s, SF_TAKEN);
@@ -692,8 +752,23 @@ static bool blink(Seeker* s) {
   return true;
 }
 
+// `$82:EE0E`: the pictures of firing the way it faces, which sleep.
+static bool fire(Seeker* s) {
+  PortCpu* c = s->c;
+  const uint16_t way = field(s, SEEKER_DP_WAY);
+  if (way >= SEEKER_WAYS) return false;
+  PORT_COVER(seeker_fired);
+  c->x = asl16(c, way);
+  set_field(s, SEEKER_DP_TRACKER_WAY, c->x);
+  c->a = rom_word(s->rom, SEEKER_FIRE_PICTURES + c->x);
+  set_nz16(c, c->a);
+  ran(s, SF_FIRE);
+  leave_state(s, SEEKER_FIRE_CALL_PC);
+  return true;
+}
+
 bool seeker_frame(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k) {
-  Seeker s = {w, rom, c, k};
+  Seeker s = {w, rom, c, k, false};
   ran(&s, SF_HEAD);
   switch (field(&s, SEEKER_DP_STATE)) {
     case SEEKER_STATE_CHASE:
@@ -707,11 +782,11 @@ bool seeker_frame(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k) {
       break;
     case SEEKER_STATE_WATCH:
       PORT_COVER(seeker_watched);
-      if (!watch(&s, SEEKER_WATCH_ODDS, true)) return false;
+      if (!watch(&s, SEEKER_WATCH_ODDS, false)) return false;
       break;
     case SEEKER_STATE_WATCH_B:
       PORT_COVER(seeker_watched_b);
-      if (!watch(&s, SEEKER_WATCH_B_ODDS, false)) return false;
+      if (!watch(&s, SEEKER_WATCH_B_ODDS, true)) return false;
       break;
     case SEEKER_STATE_HOLD:
       if (!hold(&s)) return false;
@@ -725,9 +800,20 @@ bool seeker_frame(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k) {
     case SEEKER_STATE_PLACE:
       if (!place(&s)) return false;
       break;
+    case SEEKER_STATE_FIRE:
+      if (!fire(&s)) return false;
+      break;
+    case SEEKER_STATE_LAND:
+      // A is what the dispatch's `DEC` left.
+      PORT_COVER(seeker_landing);
+      c->a = SEEKER_STATE_LAND - 1;
+      set_nz16(c, c->a);
+      leave_state(&s, SEEKER_LAND_PC);
+      break;
     default:
       return false;
   }
+  if (s.left) return true;
 
   c->a = field(&s, SEEKER_DP_ENDED);
   set_nz16(c, c->a);

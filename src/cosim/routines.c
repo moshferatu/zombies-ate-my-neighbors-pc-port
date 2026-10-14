@@ -8764,6 +8764,35 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_SLIME_HANDLER] = {90, 10, 0},
     [TS_SLIME_WAY] = {158, 17, 2},
     [TS_SLIME_FIRST] = {46, 5, 1},
+    // The seeker's states, the tracker and the puff, `--db=82`.
+    [TS_SEEKER_TAIL] = {40, 4, 1},
+    [TS_SEEKER_SLEEP] = {28, 2, 1},
+    [TS_SEEKER_SET] = {86, 6, 1},
+    [TS_SEEKER_SET_HOLD] = {212, 17, 2},
+    [TS_SEEKER_LAND_ASK] = {64, 8, 0},
+    [TS_SEEKER_LAND_SOUND] = {18, 3, 0},
+    [TS_SEEKER_LAND_PICTURES] = {18, 3, 0},
+    [TS_SEEKER_LANDED] = {136, 15, 1},
+    [TS_SEEKER_LAND_WAY] = {64, 8, 1},
+    [TS_SEEKER_GO_FIRE] = {212, 17, 2},
+    [TS_SEEKER_FIRED] = {158, 14, 2},
+    [TS_SEEKER_SPAWN] = {204, 18, 6},
+    [TS_SEEKER_SPAWNED] = {62, 4, 1},
+    [TS_SEEKER_PAUSE] = {18, 3, 0},
+    [TS_SEEKER_AGAIN] = {112, 6, 2},
+    [TS_SEEKER_WRAP] = {58 + 6, 7, 1},
+    [TS_SEEKER_LAST] = {88, 9, 1},
+    [TS_SEEKER_NEXT] = {64, 7, 1},
+    [TS_SEEKER_HIDDEN] = {532, 44, 5},
+    [TS_SEEKER_BACK] = {176, 18, 1},
+    [TS_SEEKER_BACK_ON] = {18, 3, 0},
+    [TS_TRACKER_ENTER] = {98, 10, 0},
+    [TS_TRACKER_BEGUN] = {46, 5, 1},
+    [TS_TRACKER_ENDED] = {104, 11, 1},
+    [TS_PUFF_ENTER] = {98, 10, 0},
+    [TS_PUFF_MADE] = {598, 55, 3},
+    // The colour pulse's setup, `--db=7e`: the colour is read long.
+    [TS_PULSE_ENTER] = {178, 19, 3},
     [TS_TAKEN] = {6, 0, 0},
 };
 
@@ -8808,7 +8837,7 @@ THREAD_STRETCHES(X)
 static const uint32_t TS_EXITS_ARGUMENT[] = {
     0x81d186u, 0x81d1b0u, 0x81d1dau, 0x82f4b4u, 0x808519u, 0x8199c5u,
     0x80d06cu, 0x81ec75u, 0x81f311u, 0x82e0b7u, 0x81e8c4u, 0x82df0du,
-    0x82df14u, 0x82df1bu};
+    0x82df14u, 0x82df1bu, 0x82ec5du};
 static const uint32_t TS_EXITS_SETTER[] = {0x81921au, 0x819255u};
 static const uint32_t TS_EXITS_WOLF[] = {
     WEREWOLF_NONE_PC, WEREWOLF_HOWL_CHECK_PC, WEREWOLF_HOWL_CALL_PC,
@@ -8866,6 +8895,14 @@ static const uint32_t TS_EXITS_DEATH[] = {
 static const uint32_t TS_EXITS_DOOR[] = {DOOR_BUZZ_SOUND_PC, DOOR_END_PC};
 static const uint32_t TS_EXITS_SLIME[] = {SLIME_BEGIN_CALL_PC, SLIME_DRAW_PC,
                                           SLIME_FIRST_YIELD_PC};
+static const uint32_t TS_EXITS_SEEKER[] = {
+    SEEKER_LAND_SFX_CALL_PC, SEEKER_LAND_PICTURES_CALL_PC, SEEKER_LAND_DRAW_PC,
+    SEEKER_SPAWN_CALL_PC,    SEEKER_SPAWN_SLEEP_PC,        SEEKER_FIRED_CALL_PC,
+    SEEKER_FRAME_SLEEP_PC,   SEEKER_FRAME_ENDED_PC};
+static const uint32_t TS_EXITS_PULSE[] = {PALCYCLE_PULSE_YIELD_PC};
+static const uint32_t TS_EXITS_TRACKER[] = {
+    TRACKER_BEGIN_CALL_PC, TRACKER_SLEEP_PC, TRACKER_END_CALL_PC,
+    PUFF_ALLOC_CALL_PC, PUFF_PICTURES_CALL_PC};
 static const uint32_t TS_EXITS_MARTIAN[] = {
     MARTIAN_BEGIN_CALL_PC, MARTIAN_FIRST_SLEEP_PC, MARTIAN_PLACE_GROUND_PC,
     MARTIAN_PLACE_EDGE_PC, MARTIAN_ARRIVAL_NONE_PC,
@@ -11663,7 +11700,7 @@ static const CosimRun SF_COST[SF_BLOCK_COUNT] = {
     [SF_BLINK_ON] = {70 + 6, 8, 0},
     [SF_BLINK_OFF] = {58, 6, 0},
     [SF_BLINK_PUT] = {228, 14, 2},
-    [SF_GO_EE0E] = {18 + 212, 3 + 17, 2},
+    [SF_GO_FIRE] = {18 + 212, 3 + 17, 2},
     [SF_HOLD_GO] = {176, 18, 2},
     [SF_DART] = {140, 13, 2},
     [SF_DART_NEAR] = {18 + 86, 3 + 6, 1},
@@ -11692,6 +11729,10 @@ static const CosimRun SF_COST[SF_BLOCK_COUNT] = {
     [SF_CIRCLE_MAP] = {122, 10, 2},
     [SF_CIRCLE_GROUND] = {122, 10, 2},
     [SF_CIRCLE_LEAVE] = {18 + 408, 3 + 40, 5},
+    [SF_FIRE] = {116, 11, 2},
+    [SF_HIDE_HANDLER] = {84, 8, 0},
+    [SF_HIDE] = {162, 17, 1},
+    [SF_BACK] = {480, 42, 7},
 };
 
 // The records it reads are in low WRAM, and circling, the place it circles
@@ -11740,8 +11781,9 @@ static void shim_seeker_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(cycles);
 }
 
-static const uint32_t SEEKER_FRAME_EXITS[] = {SEEKER_FRAME_SLEEP_PC,
-                                              SEEKER_FRAME_ENDED_PC};
+static const uint32_t SEEKER_FRAME_EXITS[] = {
+    SEEKER_FRAME_SLEEP_PC, SEEKER_FRAME_ENDED_PC, SEEKER_LAND_PC,
+    SEEKER_FIRE_CALL_PC,   SEEKER_HIDE_CALL_PC,   SEEKER_BACK_CALL_PC};
 
 // ---------------------------------------------------------------------------
 // Five small things -- see `port/thread.h`, `port/line.h`, `port/flinch.h`,
@@ -18379,8 +18421,13 @@ static const CosimRun DOLL_RUN_FRAME_DISPATCH = {142, 8, 1};  // $B2DF-$B2E6
 static const CosimRun DOLL_RUN_FRAME_TICK = {80, 7, 1};       // JSR : LDA $0A : BEQ
 static const CosimRun DOLL_RUN_FRAME_AGAIN = {46, 5, 1};      // STZ $5A : LDA #1
 
+// Only the knocked body reads the target before seeking sets it, and the
+// target is `$FFFF` until a doll has sought once.
 static bool doll_frame_ok(const Wram* w, const CosimRegs* in) {
-  return doll_knocked_ok(w, in) && doll_frame_supported(w, in->d);
+  if (!doll_frame_supported(w, in->d)) return false;
+  if (wram_r16(w, (uint16_t)(in->d + DOLL_DP_STATE)) == DOLL_STATE_KNOCKED)
+    return doll_knocked_ok(w, in);
+  return doll_pictures_ok(w, in);
 }
 
 // It leaves by the `JSL thread_yield` with the tick count in A, or for the
