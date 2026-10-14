@@ -349,6 +349,16 @@ struct CosimPriv {
   uint32_t stood_pc;
   uint16_t stood_sp;
   const CosimRoutine* stood_by;
+  // Every routine's entry, by address, for the question asked before each
+  // instruction: does one begin here? A hash table of `entry_mask + 1` slots,
+  // each the address in `entry_key` and the first row with it in
+  // `entry_slot` (-1 for none), and `entry_next` chaining any later rows with
+  // the same entry, in the registry's order. Built over the whole registry,
+  // enabled or not. See `entry_at`.
+  uint32_t* entry_key;
+  int* entry_slot;
+  int* entry_next;
+  uint32_t entry_mask;
 };
 
 // ---------------------------------------------------------------------------
@@ -533,6 +543,46 @@ static bool link_opcode(const Rom* rom, uint32_t pc) {
   }
 }
 
+static uint32_t entry_hash(uint32_t pc) { return pc * 0x9e3779b1u >> 12; }
+
+static void entries_index(Cosim* c) {
+  CosimPriv* p = c->priv;
+  uint32_t size = 64;
+  while (size < 2u * (uint32_t)c->stat_count) size *= 2;
+  p->entry_mask = size - 1;
+  p->entry_key = malloc(size * sizeof *p->entry_key);
+  p->entry_slot = malloc(size * sizeof *p->entry_slot);
+  p->entry_next = malloc(((size_t)c->stat_count + 1) * sizeof *p->entry_next);
+  if (!p->entry_key || !p->entry_slot || !p->entry_next) {
+    fprintf(stderr, "error: no memory for the routines' entries\n");
+    exit(2);
+  }
+  for (uint32_t h = 0; h < size; h++) p->entry_slot[h] = -1;
+  // From the last row back, so that each chain is in the registry's order.
+  for (int i = c->stat_count - 1; i >= 0; i--) {
+    const uint32_t pc = c->stats[i].routine->entry;
+    uint32_t h = entry_hash(pc) & p->entry_mask;
+    while (p->entry_slot[h] >= 0 && p->entry_key[h] != pc)
+      h = (h + 1) & p->entry_mask;
+    p->entry_key[h] = pc;
+    p->entry_next[i] = p->entry_slot[h];
+    p->entry_slot[h] = i;
+  }
+}
+
+// The first enabled routine that begins at `pc`, in the registry's order, or
+// -1. This is asked before every instruction the core executes.
+static int entry_at(const Cosim* c, uint32_t pc) {
+  const CosimPriv* p = c->priv;
+  uint32_t h = entry_hash(pc) & p->entry_mask;
+  int i;
+  while ((i = p->entry_slot[h]) >= 0 && p->entry_key[h] != pc)
+    h = (h + 1) & p->entry_mask;
+  for (; i >= 0; i = p->entry_next[i])
+    if (cosim_mask_get(&c->enabled, i)) return i;
+  return -1;
+}
+
 void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
   memset(c, 0, sizeof *c);
   c->snes = snes;
@@ -573,6 +623,7 @@ void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
   c->priv->took_cur = -1;
   c->priv->stack_lo = stack_area_lo(&c->rom);
   c->priv->stack_hi = STACK_AREA_HI;
+  entries_index(c);
   // Verify mode needs somewhere to rewind to and somewhere to run; native mode
   // works on the emulator's memory in place and needs neither.
   if (mode == COSIM_VERIFY) {
@@ -632,6 +683,9 @@ void cosim_free(Cosim* c) {
   free(c->priv->scratch);
   free(c->priv->guard);
   free(c->priv->stale);
+  free(c->priv->entry_key);
+  free(c->priv->entry_slot);
+  free(c->priv->entry_next);
   for (int i = 0; i < COSIM_MAX_DEPTH; i++) {
     free(c->priv->stack[i].before);
     free(c->priv->stack[i].ctx);
@@ -1316,10 +1370,7 @@ static void native_publish(Cosim* c, const CosimRegs* out) {
 // port begins on, which is that port's to run.
 
 static bool is_entry(const Cosim* c, uint32_t pc) {
-  for (int i = 0; i < c->stat_count; i++)
-    if (c->stats[i].routine->entry == pc && cosim_mask_get(&c->enabled, i))
-      return true;
-  return false;
+  return entry_at(c, pc) >= 0;
 }
 
 // The program counter has been stood somewhere, and this is how. It matters
@@ -2674,6 +2725,41 @@ static CosimCall* find_yield(Cosim* c) {
   return NULL;
 }
 
+// The CPU is on the entry of row `i`, which is enabled: offer it the call.
+// True when the PC moved, and the entry instruction is not to be executed.
+static bool entry_offered(Cosim* c, int i) {
+  const CosimRoutine* r = c->stats[i].routine;
+  if (r->link) {
+    if (c->mode == COSIM_NATIVE && link_make(c, r, &c->stats[i])) return true;
+    if (c->mode == COSIM_VERIFY) c->stats[i].calls++;
+    return false;
+  }
+  // Verified but never substituted — see `CosimRoutine::verify_only`. Nothing
+  // is counted, because nothing was offered: the report says `verify only`
+  // against a row of zeroes rather than pretending this was a decline.
+  if (c->mode == COSIM_NATIVE && r->verify_only) {
+    handed(c, COSIM_TOOK_UNSERVED, r);
+    return false;
+  }
+  // ...and the mirror. `verify` cannot score this one — an interrupt lands
+  // inside the call window — so it does not intercept it either, rather
+  // than counting a call it is going to abandon. See
+  // `CosimRoutine::run_only`.
+  if (c->mode == COSIM_VERIFY && r->run_only) return false;
+  // The port has said it cannot handle this one. Step aside entirely and
+  // let the ROM's own instructions run — in both modes, so that `verify`
+  // and `run` decline exactly the same calls.
+  if (!guard_allows(c, r)) {
+    c->stats[i].calls++;
+    c->stats[i].declined++;
+    handed(c, COSIM_TOOK_DECLINED, r);
+    return false;
+  }
+  if (c->mode == COSIM_NATIVE) return run_native(c, i, r, &c->stats[i]);
+  begin_verify(c, i, r, &c->stats[i]);
+  return false;
+}
+
 static void cosim_step_inner(Cosim* c) {
   Snes* snes = c->snes;
 
@@ -2778,43 +2864,8 @@ static void cosim_step_inner(Cosim* c) {
       if (yielding) suspend_verify(c, yielding);
     }
 
-    for (int i = 0; i < c->stat_count; i++) {
-      if (!cosim_mask_get(&c->enabled, i)) continue;
-      const CosimRoutine* r = c->stats[i].routine;
-      if (pc != r->entry) continue;
-      if (r->link) {
-        if (c->mode == COSIM_NATIVE && link_make(c, r, &c->stats[i])) return;
-        if (c->mode == COSIM_VERIFY) c->stats[i].calls++;
-        break;
-      }
-      // Verified but never substituted — see `CosimRoutine::verify_only`. Nothing
-      // is counted, because nothing was offered: the report says `verify only`
-      // against a row of zeroes rather than pretending this was a decline.
-      if (c->mode == COSIM_NATIVE && r->verify_only) {
-        handed(c, COSIM_TOOK_UNSERVED, r);
-        break;
-      }
-      // ...and the mirror. `verify` cannot score this one — an interrupt lands
-      // inside the call window — so it does not intercept it either, rather
-      // than counting a call it is going to abandon. See
-      // `CosimRoutine::run_only`.
-      if (c->mode == COSIM_VERIFY && r->run_only) break;
-      // The port has said it cannot handle this one. Step aside entirely and
-      // let the ROM's own instructions run — in both modes, so that `verify`
-      // and `run` decline exactly the same calls.
-      if (!guard_allows(c, r)) {
-        c->stats[i].calls++;
-        c->stats[i].declined++;
-        handed(c, COSIM_TOOK_DECLINED, r);
-        break;
-      }
-      if (c->mode == COSIM_NATIVE) {
-        if (!run_native(c, i, r, &c->stats[i])) break;
-        return;  // the PC moved; do not also execute the entry instruction
-      }
-      begin_verify(c, i, r, &c->stats[i]);
-      break;
-    }
+    const int i = entry_at(c, pc);
+    if (i >= 0 && entry_offered(c, i)) return;  // the PC moved
   } else if (snes->cpu->intWanted && c->priv->depth > 0 &&
              c->mode == COSIM_VERIFY) {
     // An interrupt is about to land inside a call we are verifying. The handler

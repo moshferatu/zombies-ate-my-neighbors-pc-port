@@ -5,6 +5,39 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The game's processor time cut (2026-10-14)
+
+The game was using 1 to 1.5% of the machine in play. Profiled with a
+sampler over a movie, three things were cut; nothing the game does changed.
+
+* **Finding a routine's entry.** Before every instruction the core ran, the
+  harness walked all 1,394 registry rows for one beginning at the PC, and
+  `is_entry` walked them again at every hand-over: a cost that grew with
+  every round. `entry_at` asks a hash table of the entries built at
+  `cosim_init`, and keeps the registry's order among rows that share one.
+* **The clock's quiet cycles.** `snes_runCycles` called `snes_runCycle`
+  every two master cycles, 179,000 times a frame. Runs where it would only
+  move the counters -- no position it acts on, no line's end, no change in
+  the timer interrupt's condition -- are now moved in one go, with the
+  APU's catch-up still added a step at a time so it rounds the same.
+* **The textures' formats.** Direct3D 9 takes ARGB8888 and RGB888 only, and
+  the console's picture was RGBX8888 and the layers' planes RGBA32, so SDL
+  converted every upload in software. `present_takes` picks a format the
+  renderer takes, and the rows are shifted or swapped as they are copied in.
+* **Checked.** Emulation is about 1.5 ms a frame where it was 2.1 on level
+  25 and level 9. Paced at 240 Hz, the process's user time fell from 4.35 s
+  to 3.32 s over 20 s, the mean of six runs each; its kernel time, mostly
+  the driver presenting, varies more from run to run than that.
+  * The game's quick save and `zamn_headless`'s saved state at the end of
+    six movies are byte for byte what HEAD's were, and the GPU's pictures,
+    smoothed and not, are the same pixels. `zamn_test_present` passes on
+    the software renderer, which takes the converting path.
+  * The corpus was not run; it is the next porting session's first check.
+* **Left as it was.** The pacer still spins the last half millisecond before
+  each picture, a measured trade of cadence for processor (see
+  `PACE_SPIN_MS`). Direct3D 11 was tried and was no cheaper, and its present
+  blocks for the whole refresh.
+
 ### A player's leap into the water, the bystander's words, the footballer's start and level 29's stagger (2026-10-14)
 
 The survey's largest groups after last round were the code round a

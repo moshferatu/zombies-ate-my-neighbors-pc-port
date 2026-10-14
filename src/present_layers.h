@@ -43,18 +43,26 @@ typedef struct {
   SDL_BlendMode subtract;  // dst - src
   SDL_BlendMode add_masked, sub_masked;  // src * dstA +/- dst, alpha kept
   bool blends_ok;          // could the renderer take the custom blends at all
+  bool swap;               // the planes and atlas are ARGB8888: see `present_layers_put`
 } PresentLayers;
 
 static inline bool present_layers_init(PresentLayers* L, SDL_Renderer* ren) {
   memset(L, 0, sizeof *L);
+  // ARGB8888 is a little-endian RGBA32 pixel with red and blue swapped. See
+  // `present_takes` for why it is made in that.
+#if SDL_BYTEORDER == SDL_LIL_ENDIAN
+  L->swap = !present_takes(ren, SDL_PIXELFORMAT_RGBA32) &&
+            present_takes(ren, SDL_PIXELFORMAT_ARGB8888);
+#endif
+  const Uint32 format = L->swap ? SDL_PIXELFORMAT_ARGB8888 : SDL_PIXELFORMAT_RGBA32;
   for (int i = 0; i < LAYERS_PLANES; i++) {
-    L->plane[i] = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32,
+    L->plane[i] = SDL_CreateTexture(ren, format,
                                     SDL_TEXTUREACCESS_STREAMING, LAYERS_PLANE_W,
                                     LAYERS_PLANE_H);
     if (!L->plane[i]) return false;
     SDL_SetTextureScaleMode(L->plane[i], SDL_ScaleModeNearest);
   }
-  L->atlas = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32,
+  L->atlas = SDL_CreateTexture(ren, format,
                                SDL_TEXTUREACCESS_STREAMING, LAYERS_ATLAS_W,
                                LAYERS_ATLAS_H);
   if (!L->atlas) return false;
@@ -86,16 +94,40 @@ static inline void present_layers_free(PresentLayers* L) {
   memset(L, 0, sizeof *L);
 }
 
+// Rows of RGBA32 into a plane or the atlas, swapped if it was made ARGB8888.
+static inline void present_layers_put(const PresentLayers* L, SDL_Texture* t,
+                                      const SDL_Rect* r, const uint8_t* src,
+                                      int src_pitch) {
+  if (!L->swap) {
+    SDL_UpdateTexture(t, r, src, src_pitch);
+    return;
+  }
+  void* pixels;
+  int pitch;
+  if (SDL_LockTexture(t, r, &pixels, &pitch) != 0) return;
+  for (int y = 0; y < r->h; y++) {
+    uint8_t* d = (uint8_t*)pixels + (size_t)y * pitch;
+    const uint8_t* s = src + (size_t)y * src_pitch;
+    for (int x = 0; x < r->w; x++) {
+      uint32_t px;
+      memcpy(&px, s + 4 * x, 4);
+      px = (px & 0xff00ff00u) | (px >> 16 & 0xffu) | (px & 0xffu) << 16;
+      memcpy(d + 4 * x, &px, 4);
+    }
+  }
+  SDL_UnlockTexture(t);
+}
+
 // This tick's planes and sprites, into the textures. Once per tick; the
 // pictures between ticks only move them.
 static inline void present_layers_upload(PresentLayers* L, const LayersFrame* f) {
   const SDL_Rect planeRect = {0, 0, f->width + 2 * LAYERS_MARGIN, LAYERS_PLANE_H};
   for (int i = 0; i < LAYERS_PLANES; i++) {
     if (!f->planeUsed[i]) continue;
-    SDL_UpdateTexture(L->plane[i], &planeRect, &f->plane[i][0][0][0], LAYERS_PLANE_W * 4);
+    present_layers_put(L, L->plane[i], &planeRect, &f->plane[i][0][0][0], LAYERS_PLANE_W * 4);
   }
   const SDL_Rect atlasRect = {0, 0, LAYERS_ATLAS_COLS * f->cell, LAYERS_ATLAS_ROWS * f->cell};
-  SDL_UpdateTexture(L->atlas, &atlasRect, &f->atlas[0][0][0], LAYERS_ATLAS_W * 4);
+  present_layers_put(L, L->atlas, &atlasRect, &f->atlas[0][0][0], LAYERS_ATLAS_W * 4);
 }
 
 // The scale to build a list at, for the picture `plan` puts on screen: see

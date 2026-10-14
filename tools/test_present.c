@@ -79,15 +79,17 @@ static void fail(const char* fmt, ...) {
   failures++;
 }
 
-// A checkerboard of 2x2 blocks, straight into the streaming texture.
+// A checkerboard of 2x2 blocks, in the core's RGBX8888, into the streaming
+// texture as the game puts a picture there.
 static void fill_source(Present* p) {
+  static uint32_t source[SRC_H][SRC_W];
   void* pixels; int pitch;
   if (SDL_LockTexture(p->frame, NULL, &pixels, &pitch) != 0) {
     fail("cannot lock the source texture: %s", SDL_GetError());
     return;
   }
   for (int y = 0; y < SRC_H; y++) {
-    uint32_t* row = (uint32_t*)((uint8_t*)pixels + (size_t)y * pitch);
+    uint32_t* row = source[y];
     const bool live = y >= SRC_TOP && y < SRC_TOP + SRC_LIVE_H;
     for (int x = 0; x < SRC_W; x++) {
       if (!live) { row[x] = COL_DEAD; continue; }
@@ -97,6 +99,8 @@ static void fill_source(Present* p) {
       row[x] = (((x / BLOCK) + (ly / BLOCK)) & 1) ? COL_A : COL_B;
     }
   }
+  present_frame_rows(p, (uint8_t*)pixels, pitch, (const uint8_t*)source,
+                     SRC_W * 4, SRC_W, SRC_H);
   SDL_UnlockTexture(p->frame);
 }
 

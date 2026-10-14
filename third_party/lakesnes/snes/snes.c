@@ -143,14 +143,54 @@ void snes_runFrame(Snes* snes) {
   snes_catchupApu(snes); // catch up the apu after running
 }
 
+// How many of the next `most` two-cycle steps would do nothing in
+// snes_runCycle but move the counters: none on a position it acts on, none
+// that ends a line, and none where the timer interrupt's condition changes.
+static int snes_quietSteps(const Snes* snes, int most) {
+  const int h = snes->hPos;
+  if((h & 1) || h == 0 || h == 16 || h == 512 || h == 1104) return 0;
+  // an odd count would wrap below zero and go on; a step at a time, then
+  if(snes->autoJoyTimer & 1) return 0;
+  // the last step that cannot end a line, in either timing, starts at 1356
+  int stop = h < 16 ? 16 : h < 512 ? 512 : h < 1104 ? 1104 : 1358;
+  bool condition = false;
+  if(snes->vIrqEnabled || snes->hIrqEnabled) {
+    const int at = snes->hTimer * 4;
+    if(snes->hIrqEnabled && at == h) return 0;
+    if(snes->hIrqEnabled && at > h && at < stop) stop = at;
+    condition = !snes->hIrqEnabled && snes->vPos == snes->vTimer;
+  }
+  if(condition != snes->irqCondition) return 0;
+  if(h >= stop) return 0;
+  const int steps = (stop - h) / 2;
+  return steps < most ? steps : most;
+}
+
 void snes_runCycles(Snes* snes, int cycles) {
   if(snes->hPos + cycles >= 536 && snes->hPos < 536) {
     // if we go past 536, add 40 cycles for dram refersh
     cycles += 40;
     if(!snes->inDma) snes->stolenCycles += 40;
   }
-  for(int i = 0; i < cycles; i += 2) {
-    snes_runCycle(snes);
+  // one snes_runCycle for every two cycles, but the quiet ones together
+  int steps = cycles > 0 ? (cycles + 1) / 2 : 0;
+  while(steps > 0) {
+    const int quiet = snes_quietSteps(snes, steps);
+    if(quiet == 0) {
+      snes_runCycle(snes);
+      steps--;
+      continue;
+    }
+    // added one step at a time, as snes_runCycle does, to round the same
+    const double apu = (snes->palTiming ? apuCyclesPerMasterPal : apuCyclesPerMaster) * 2.0;
+    for(int i = 0; i < quiet; i++) snes->apuCatchupCycles += apu;
+    snes->cycles += 2 * quiet;
+    if(snes->autoJoyTimer > 0) {
+      const int left = (snes->autoJoyTimer + 1) / 2;
+      snes->autoJoyTimer -= 2 * (quiet < left ? quiet : left);
+    }
+    snes->hPos += 2 * quiet;
+    steps -= quiet;
   }
 }
 

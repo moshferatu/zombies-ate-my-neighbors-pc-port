@@ -37,7 +37,49 @@ typedef struct {
   // `tools/test_present.c`, which needs a whole multiple to be one on both
   // axes at once.
   bool square;
+  // `frame` is RGB888, and the core's RGBX8888 is shifted into it: see
+  // `present_takes`.
+  bool frame_shift;
 } Present;
+
+// Whether the renderer takes a texture in this format as it is.
+//
+// Direct3D 9, which SDL picks on Windows, takes ARGB8888 and RGB888 and
+// nothing else. A texture made in any other format SDL converts in software,
+// a pixel at a time, every time it is filled -- and the console's picture is
+// RGBX8888 and the layers' planes RGBA32, a few megabytes a tick between
+// them. That was the most processor the game spent on anything but the
+// machine. So where a picture's format is not taken, its texture is made in
+// one that is, and the rows are converted as they are copied in, at a shift
+// or a swap a pixel.
+static inline bool present_takes(SDL_Renderer* ren, Uint32 format) {
+  SDL_RendererInfo info;
+  if (SDL_GetRendererInfo(ren, &info) != 0) return false;
+  for (Uint32 i = 0; i < info.num_texture_formats; i++)
+    if (info.texture_formats[i] == format) return true;
+  return false;
+}
+
+// Rows of the console's picture, RGBX8888, into `frame`'s locked pixels.
+static inline void present_frame_rows(const Present* p, uint8_t* dst,
+                                      int dst_pitch, const uint8_t* src,
+                                      int src_pitch, int width, int rows) {
+  for (int y = 0; y < rows; y++) {
+    uint8_t* d = dst + (size_t)y * dst_pitch;
+    const uint8_t* s = src + (size_t)y * src_pitch;
+    if (!p->frame_shift) {
+      memcpy(d, s, (size_t)width * 4);
+      continue;
+    }
+    // RGB888 is the same three channels a byte further down.
+    for (int x = 0; x < width; x++) {
+      uint32_t px;
+      memcpy(&px, s + 4 * x, 4);
+      px >>= 8;
+      memcpy(d + 4 * x, &px, 4);
+    }
+  }
+}
 
 // The shape `scale_plan` is asked for.
 static inline void present_ratio(const Present* p, int* aw, int* ah) {
@@ -73,8 +115,11 @@ static inline bool present_init(Present* p, SDL_Renderer* ren, int tex_w,
   p->can_target = SDL_GetRendererInfo(ren, &info) == 0 &&
                   (info.flags & SDL_RENDERER_TARGETTEXTURE) != 0;
 
-  p->frame = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBX8888,
-                               SDL_TEXTUREACCESS_STREAMING, tex_w, tex_h);
+  p->frame_shift = !present_takes(ren, SDL_PIXELFORMAT_RGBX8888) &&
+                   present_takes(ren, SDL_PIXELFORMAT_RGB888);
+  p->frame = SDL_CreateTexture(
+      ren, p->frame_shift ? SDL_PIXELFORMAT_RGB888 : SDL_PIXELFORMAT_RGBX8888,
+      SDL_TEXTUREACCESS_STREAMING, tex_w, tex_h);
   if (!p->frame) return false;
   // Set rather than left to the default. Nearest *is* SDL's default, but it is
   // also overridable from outside the process by `SDL_RENDER_SCALE_QUALITY`,

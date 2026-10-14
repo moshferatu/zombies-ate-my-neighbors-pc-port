@@ -292,9 +292,7 @@ static void present_finish(Present* p) {
 static void present_pixels(Present* p, const uint8_t* fb, int width) {
   void* pixels; int pitch;
   if (SDL_LockTexture(p->frame, NULL, &pixels, &pitch) == 0) {
-    for (int y = 0; y < FB_H; y++)
-      memcpy((uint8_t*)pixels + (size_t)y * pitch, fb + (size_t)y * width * 4,
-             (size_t)width * 4);
+    present_frame_rows(p, (uint8_t*)pixels, pitch, fb, width * 4, width, FB_H);
     SDL_UnlockTexture(p->frame);
   }
   present_draw(p);
@@ -307,17 +305,16 @@ static void present_frame(Present* p, const VideoChip* chip) {
     // straight into the texture when SDL agrees about the pitch. It always has
     // — the width is a multiple of four pixels — but "always has" is not a
     // guarantee SDL makes, and the failure would be a sheared picture rather
-    // than anything that says what went wrong.
-    if (pitch == fb_w * 4) {
+    // than anything that says what went wrong. Nor can it when the texture
+    // is not the core's format (`present_takes`).
+    if (pitch == fb_w * 4 && !p->frame_shift) {
       video_put_pixels(chip, (uint8_t*)pixels);
     } else {
       static uint8_t* scratch = NULL;
       if (!scratch) scratch = (uint8_t*)malloc((size_t)FB_W_MAX * FB_H * 4);
       if (scratch) {
         video_put_pixels(chip, scratch);
-        for (int y = 0; y < FB_H; y++)
-          memcpy((uint8_t*)pixels + (size_t)y * pitch,
-                 scratch + (size_t)y * fb_w * 4, (size_t)fb_w * 4);
+        present_frame_rows(p, (uint8_t*)pixels, pitch, scratch, fb_w * 4, fb_w, FB_H);
       }
     }
     SDL_UnlockTexture(p->frame);
