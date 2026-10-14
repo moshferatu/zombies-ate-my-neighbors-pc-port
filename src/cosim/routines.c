@@ -6582,6 +6582,7 @@ BODY_SHIM(player_move, player_move(w, &c, &k), PBODY_COST)
 BODY_SHIM(player_buttons, player_buttons(w, &c, &k), PBODY_COST)
 BODY_SHIM(player_loop, player_loop(&c, &k), PBODY_COST)
 BODY_SHIM(player_branch, player_branch(w, rom, &c, &k), PBODY_COST)
+BODY_SHIM(player_branch_call, player_branch_call(w, rom, &c, &k), PBODY_COST)
 BODY_SHIM(player_hurt, player_hurt(w, &c, &k), PBODY_COST)
 BODY_SHIM(player_hurt_call, player_hurt_call(w, &c, &k), PBODY_COST)
 BODY_SHIM(player_dead_call, player_dead_call(w, &c, &k), PBODY_COST)
@@ -8755,6 +8756,14 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_DEATH_LIFE_KEPT] = {28 + 3 * 12 + 12, 7, 1},
     [TS_DEATH_SHOW] = {96, 7, 2},
     [TS_DEATH_AGAIN] = {350, 32, 5},
+    // A locked door's buzz, `--db=82`, and the slime's start, `--db=81`.
+    [TS_DOOR_ASK] = {46, 5, 0},
+    [TS_DOOR_BUZZ] = {74, 6, 0},
+    [TS_DOOR_DONE] = {34, 3, 0},
+    [TS_SLIME_ENTER] = {98, 10, 0},
+    [TS_SLIME_HANDLER] = {90, 10, 0},
+    [TS_SLIME_WAY] = {158, 17, 2},
+    [TS_SLIME_FIRST] = {46, 5, 1},
     [TS_TAKEN] = {6, 0, 0},
 };
 
@@ -8798,7 +8807,8 @@ THREAD_STRETCHES(X)
 
 static const uint32_t TS_EXITS_ARGUMENT[] = {
     0x81d186u, 0x81d1b0u, 0x81d1dau, 0x82f4b4u, 0x808519u, 0x8199c5u,
-    0x80d06cu, 0x81ec75u, 0x81f311u, 0x82e0b7u};
+    0x80d06cu, 0x81ec75u, 0x81f311u, 0x82e0b7u, 0x81e8c4u, 0x82df0du,
+    0x82df14u, 0x82df1bu};
 static const uint32_t TS_EXITS_SETTER[] = {0x81921au, 0x819255u};
 static const uint32_t TS_EXITS_WOLF[] = {
     WEREWOLF_NONE_PC, WEREWOLF_HOWL_CHECK_PC, WEREWOLF_HOWL_CALL_PC,
@@ -8853,6 +8863,9 @@ static const uint32_t TS_EXITS_DEATH[] = {
     DEATH_NONE_LEFT_PC,
     // The ends of `DEATH_ENDS`.
     0x80d97fu, 0x80da54u, 0x80db08u, 0x80dbdau, 0x80dc70u, 0x80f3a5u};
+static const uint32_t TS_EXITS_DOOR[] = {DOOR_BUZZ_SOUND_PC, DOOR_END_PC};
+static const uint32_t TS_EXITS_SLIME[] = {SLIME_BEGIN_CALL_PC, SLIME_DRAW_PC,
+                                          SLIME_FIRST_YIELD_PC};
 static const uint32_t TS_EXITS_MARTIAN[] = {
     MARTIAN_BEGIN_CALL_PC, MARTIAN_FIRST_SLEEP_PC, MARTIAN_PLACE_GROUND_PC,
     MARTIAN_PLACE_EDGE_PC, MARTIAN_ARRIVAL_NONE_PC,
@@ -21399,6 +21412,7 @@ static void shim_victim_start(Wram* w, const Rom* rom, const CosimRegs* in,
 // Each straight through, and what it calls.
 static const CosimRun RB_RUN = {462, 36, 3};     // $81:8000-$8023
 static const CosimRun ZB_RUN = {736, 58, 10};    // $81:87BE-$87F7
+static const CosimRun TZB_RUN = {708, 56, 9};    // $81:8BDF-$8C16
 static const CosimRun NH_RUN = {1076, 81, 11};   // $83:A13E-$A18E
 
 static bool accepts_begin(const Wram* w, const CosimRegs* in) {
@@ -21456,9 +21470,9 @@ static void shim_zombie_begin(Wram* w, const Rom* rom, const CosimRegs* in,
              cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
 }
 
-// The zombies' start -- see `port/zombie.h`. Both kinds' are the same
-// instructions as far as the walk, and the fast kind's has two more after
-// it.
+// The zombies' start -- see `port/zombie.h`. The three threads' are the
+// same instructions as far as the walk, but for the record, and the fast
+// kind's have two more after it.
 static const CosimRun ZS_RUN_SPAWN = {202, 21, 1};      // $87F8-$880C
 static const CosimRun ZS_RUN_RISEN = {126, 11, 1};      // $8811-$881B
 static const CosimRun ZS_RUN_SLOW_TAIL = {182, 20, 2};  // $881C-$882F
@@ -21469,7 +21483,7 @@ static bool zombie_risen_ok(const Wram* w, const CosimRegs* in) {
          wram_r16(w, (uint16_t)(in->d + ZOMBIE_DP_RECORD)) < 0x1f00;
 }
 
-#define ZOMBIE_START_SHIMS(name, kind)                                       \
+#define ZOMBIE_START_SHIMS(name, thread, begin_run)                          \
   static bool guard_##name##_spawn(Wram* scratch, const Rom* rom,            \
                                    const CosimRegs* in) {                    \
     (void)rom;                                                               \
@@ -21477,7 +21491,7 @@ static bool zombie_risen_ok(const Wram* w, const CosimRegs* in) {
     PortCpu c;                                                               \
     BeginWork k = {0};                                                       \
     cpu_from(in, &c);                                                        \
-    zombie_spawn(scratch, &c, kind, &k);                                     \
+    zombie_spawn(scratch, &c, thread, &k);                                   \
     return !k.declined;                                                      \
   }                                                                          \
   static void shim_##name##_spawn(Wram* w, const Rom* rom,                   \
@@ -21486,12 +21500,12 @@ static bool zombie_risen_ok(const Wram* w, const CosimRegs* in) {
     PortCpu c;                                                               \
     BeginWork k = {0};                                                       \
     cpu_from(in, &c);                                                        \
-    zombie_spawn(w, &c, kind, &k);                                           \
+    zombie_spawn(w, &c, thread, &k);                                         \
     cpu_to(&c, out);                                                         \
     CosimRun run = {0, 0, 0};                                                \
     run_add(&run, &ZS_RUN_SPAWN, 1);                                         \
     run_add(&run, &RB_RUN, 1);                                               \
-    run_add(&run, &ZB_RUN, 1);                                               \
+    run_add(&run, &begin_run, 1);                                            \
     cosim_cost(saucer_alloc_cycles(k.record, in->fastrom) +                  \
                cosim_run_cycles_dp(&run, fetch_fast(in),                     \
                                    (in->d & 0xffu) != 0));                   \
@@ -21500,8 +21514,9 @@ static bool zombie_risen_ok(const Wram* w, const CosimRegs* in) {
                                   const CosimRegs* in, CosimRegs* out) {     \
     PortCpu c;                                                               \
     ZombieLog log = {0};                                                     \
+    const ZombieKind kind = zombie_thread_kind(thread);                      \
     cpu_from(in, &c);                                                        \
-    zombie_risen(w, rom, &c, kind, &log);                                    \
+    zombie_risen(w, rom, &c, thread, &log);                                  \
     cpu_to(&c, out);                                                         \
     ZombieBill b = {{0, 0, 0}, 0, in};                                       \
     int next = 0;                                                            \
@@ -21514,8 +21529,9 @@ static bool zombie_risen_ok(const Wram* w, const CosimRegs* in) {
     cosim_cost(zombie_total(&b));                                            \
   }
 
-ZOMBIE_START_SHIMS(zombie_slow, ZOMBIE_SLOW)
-ZOMBIE_START_SHIMS(zombie_fast, ZOMBIE_FAST)
+ZOMBIE_START_SHIMS(zombie_slow, ZOMBIE_THREAD_87F8, ZB_RUN)
+ZOMBIE_START_SHIMS(zombie_fast, ZOMBIE_THREAD_88CA, ZB_RUN)
+ZOMBIE_START_SHIMS(zombie_tough, ZOMBIE_THREAD_8C17, TZB_RUN)
 
 // A thread's end, and a killed thing's last pictures begun. See
 // `port/begin.h`.
@@ -23565,6 +23581,8 @@ static const uint32_t ZOMBIE_SLOW_SPAWN_EXITS[] = {ZOMBIE_SLOW_RISE_PC};
 static const uint32_t ZOMBIE_FAST_SPAWN_EXITS[] = {ZOMBIE_FAST_RISE_PC};
 static const uint32_t ZOMBIE_SLOW_RISEN_EXITS[] = {ZOMBIE_87F8_YIELD_PC};
 static const uint32_t ZOMBIE_FAST_RISEN_EXITS[] = {ZOMBIE_88CA_YIELD_PC};
+static const uint32_t ZOMBIE_TOUGH_SPAWN_EXITS[] = {ZOMBIE_8C17_RISE_PC};
+static const uint32_t ZOMBIE_TOUGH_RISEN_EXITS[] = {ZOMBIE_8C17_YIELD_PC};
 
 static void shim_neighbour_begin(Wram* w, const Rom* rom, const CosimRegs* in,
                                  CosimRegs* out) {
@@ -31527,6 +31545,9 @@ static const CosimRoutine ROUTINES[] = {
     ZOMBIE_START_ENTRIES(zombie_fast, "$81:88CA", ZOMBIE_FAST_SPAWN_PC,
                          ZOMBIE_FAST_SPAWN_EXITS, "$81:88E3",
                          ZOMBIE_FAST_RISEN_PC, ZOMBIE_FAST_RISEN_EXITS),
+    ZOMBIE_START_ENTRIES(zombie_tough, "$81:8C17", ZOMBIE_8C17_SPAWN_PC,
+                         ZOMBIE_TOUGH_SPAWN_EXITS, "$81:8C30",
+                         ZOMBIE_8C17_RISEN_PC, ZOMBIE_TOUGH_RISEN_EXITS),
 #undef ZOMBIE_START_ENTRIES
     {
         .name = "neighbour_begin",
@@ -33373,6 +33394,19 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 20000,
         // The address the walk returns to, and the walk's own nineteen.
         .stack_bytes = 22,
+    },
+    // ...and a frame it turns down: the `JSR $D1EA` there, and the jump to
+    // the state's handler. Offered only after `player_frame`, which is why
+    // it is below it.
+    {
+        .name = "player_branch_call",
+        .symbol = "$80:CDFE",
+        .entry = PLAYER_BRANCH_CALL_PC,
+        .run = shim_player_branch_call,
+        .accepts = accepts_player_branch,
+        COSIM_EXITS(PLAYER_BRANCH_EXITS),
+        .uncalled = true,
+        .cycles = 104,  // `player_branch`'s and the `JSR`
     },
     // The rest of a frame that came down in the water.
     {

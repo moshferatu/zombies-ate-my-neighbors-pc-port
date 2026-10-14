@@ -277,14 +277,18 @@ uint16_t zombie_step_at(ZombieKind kind, uint16_t heading);
 //
 // A zombie's thread begins by coming up out of the ground, which is a list
 // of pictures it sleeps through. These are what it does before that and
-// after, for `$81:87F8` and `$81:88CA`:
+// after, for each of the three threads:
 //
-//     $81:87F8  $81:88CA  spawn   to where the pictures are played
-//     $81:8811  $81:88E3  risen   from there to the loop's first sleep
+//     $81:87F8  $81:88CA  $81:8C17  spawn   to where the pictures are played
+//     $81:8811  $81:88E3  $81:8C30  risen   from there to the loop's first sleep
 //
 // **Spawned**, it is charged to the level's load (`W_SPAWN_LOAD`), twenty of
 // it, and a record is made a zombie's at the place the thread was handed
 // (`port/begin.h`). The leg's timer starts from seven.
+//
+// `$81:8C17`'s record is `tough_zombie_begin`'s, with its own picture, and
+// it has four hits of health where the others have none. Otherwise the
+// three are the same instructions.
 //
 // **Risen**, it can be touched: its record takes collide id 3. It sets off
 // one of the four straight ways by a draw and takes that way's first step.
@@ -300,19 +304,24 @@ uint16_t zombie_step_at(ZombieKind kind, uint16_t heading);
 #define ZOMBIE_FAST_SPAWN_PC 0x8188cau
 #define ZOMBIE_FAST_RISE_PC 0x8188dfu
 #define ZOMBIE_FAST_RISEN_PC 0x8188e3u
+#define ZOMBIE_8C17_SPAWN_PC 0x818c17u
+#define ZOMBIE_8C17_RISE_PC 0x818c2cu
+#define ZOMBIE_8C17_RISEN_PC 0x818c30u
 
 #define ZOMBIE_LOAD 0x0014
 #define ZOMBIE_FIRST_TIMER 7
 #define ZOMBIE_SLOW_RISE_PICTURES 0x886cu
 #define ZOMBIE_FAST_RISE_PICTURES 0x8956u
+#define ZOMBIE_8C17_RISE_PICTURES 0x8c90u
+#define ZOMBIE_8C17_HEALTH 4
 #define ZOMBIE_COLLIDE_ID 0x0003
 #define ZOMBIE_HANDLER 0x8888u  // `enemy_collide`, in this bank
 #define ZOMBIE_DP_HEALTH 0x1e   // what a hit is taken from
 
 // With no record free the ROM goes on with what is no record, and that is
 // the ROM's to do: `k->declined`.
-void zombie_spawn(Wram* w, PortCpu* c, ZombieKind kind, BeginWork* k);
-void zombie_risen(Wram* w, const Rom* rom, PortCpu* c, ZombieKind kind,
+void zombie_spawn(Wram* w, PortCpu* c, ZombieThread thread, BeginWork* k);
+void zombie_risen(Wram* w, const Rom* rom, PortCpu* c, ZombieThread thread,
                   ZombieLog* log);
 
 #endif

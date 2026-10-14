@@ -5,6 +5,75 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### A frame turned down, a locked door's buzz, a slime's and a tough zombie's starts (2026-10-14)
+
+The survey's most frequent place after last round was the `JSR` at
+`$80:CDFE`, which the core made on every frame `player_frame` turned down,
+and then the sleep after the swipe's sound and a locked door's buzz.
+
+* **The processor time cut, checked first.** On the last commit the corpus
+  verifies clean: 128,075,047 calls, none diverged, every cost row exact.
+  Lockstep is 53 of 56 with the same three parting, and no picture line
+  differs.
+* **Two rows at one address.** A call one row turns down is now offered to
+  the next enabled row at the same address, in the registry's order.
+  `player_branch_call` is the second row at `$80:CDFE`: the `JSR $D1EA`,
+  and the jump to the state's handler.
+  * Only a decline goes on. A row that is `verify_only` or `run_only` for
+    the mode, or one that begins verifying, leaves the instruction to the
+    core as before.
+  * Two addresses had two rows already, never offered: `$81:E567`
+    (`fishman_patrol_end`, then `scored_81e567`) and `$81:E481`
+    (`fishman_ashore_begin`, then a link). The corpus now verifies
+    `scored_81e567` on four calls, which pass.
+* **A locked door's buzz**, `$82:DEFB`, is two stretches and three
+  arguments: one buzzing already and the new thread ends; otherwise the
+  word at `$7E:1FF4` set, sound `$13` twice with ten and twenty ticks'
+  sleep, and the word cleared.
+* **The swipe's first sleep**, `$81:E8C1`, is an argument: 409 times over
+  the survey, the most after `$80:CDFE`.
+* **A slime's start**, `$81:CCCF`, is three stretches: its weight on the
+  load and `slime_begin` asked for, its handler and the draw, and one of
+  four ways from the draw and its first sleep.
+  * The draw is `$81:C9E4`, which the slime's loop calls too. The second
+    and third stretches go on through an `RTS`, so each needs the start's
+    return on the stack and turns any other caller down.
+* **The tough zombie's start**, `$81:8C17`, the one with four hits, is a
+  third row of `zombie.c`'s starts: `zombie_spawn` and `zombie_risen` are
+  by thread now. Its record is `tough_zombie_begin`, `$81:8BDF`, beside
+  `zombie_begin` in `port/begin.c`, with its own picture.
+* **One mistake of mine.** The slime's stretches first ended at those
+  `RTS`s for other callers. An exit is one for every stretch in its group,
+  and `verify` ends the ROM's window at the first exit it passes, so the
+  start's own calls stopped at the `RTS` while the port went on: 17 movies
+  diverged. A stretch's path must pass no exit of its group.
+  * I first wrote the tough zombie as five stretches too, before finding
+    that `$81:88CA`'s start was ported whole and differs only in the record,
+    the pictures and the health.
+* **Checked.** 1,406 routines are registered.
+  * The corpus verifies clean: 128,076,634 calls over 56 movies, none
+    diverged, and every cost row is exact.
+  * Branch coverage is 1,701 of 2,037.
+  * Lockstep: 53 of 56 never part; level25, level25-2p and level25-heavy
+    part as before.
+  * The picture: 78,360,128 lines at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 350 to 334 | 3,740 to 2,754 | 30,088 to 25,857 |
+  | Left standing on an instruction | 15 to 15 | 274 to 274 | 26,752 to 26,752 |
+  | A port turned the call down | 25 to 23 | 1,195 to 365 | 4,892 to 4,050 |
+  | A port or a link called it | 10 to 10 | 189 to 189 | 799 to 799 |
+  | All | 401 to 383 | 5,508 to 3,692 | 70,451 to 65,378 |
+
+* **Not done or not known.**
+  * The chainsaw maniac's start, `$81:983A`: its record is long, and its
+    check of the sample set may be an instruction the frontend watches.
+  * The level 25 thread at `$82:94B8`, level 17's at `$83:B34A` and
+    `$81:D5DD`, the seeker on level 37, the swimmer climbing out.
+
 ### The game's processor time cut (2026-10-14)
 
 The game was using 1 to 1.5% of the machine in play. Profiled with a

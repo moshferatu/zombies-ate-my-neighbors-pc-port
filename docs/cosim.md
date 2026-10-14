@@ -18259,8 +18259,12 @@ The stretch is the `JSR` and the callee's port, with the callee's exits.
 `verify` also checks the callee's own row inside it, since the ROM passes
 its entry.
 
-`$80:CDFE` is the same shape and is not done. `player_frame` begins there,
-and the harness finds one row for an address.
+`$80:CDFE` is the same shape, and `player_frame` begins there too. A call
+one row turns down is offered to the next enabled row at the same address,
+in the registry's order, so `player_branch_call` is below `player_frame`
+and is offered only a frame that turns down. Only a decline goes on to the
+next row: a row that is `verify_only` or `run_only` for the mode, or that
+begins verifying, leaves the instruction to the core as before.
 
 ### `JML`
 

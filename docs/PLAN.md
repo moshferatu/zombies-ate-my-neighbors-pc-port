@@ -273,6 +273,12 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**A frame turned down and four threads' starts, 2026-10-14.** A call one
+row turns down goes on to the next row at the same address, which takes
+the frames `player_frame` turns down; a locked door's buzz, the swipe's
+sleep, a slime's start and the tough zombie's are ported. The places are
+383 and the core executes 65,378 instructions over the survey.
+
 **A player's leap into the water and three threads, 2026-10-14.** The
 walk leaps a player into the water, both landings are ported, the first
 as a frame that stops at its sound and two stretches after it; the

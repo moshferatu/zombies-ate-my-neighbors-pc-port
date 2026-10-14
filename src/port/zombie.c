@@ -517,45 +517,52 @@ bool zombie_frame(Wram* w, const Rom* rom, uint16_t page, ZombieThread thread,
 // The start
 // ---------------------------------------------------------------------------
 
-// What tells the two kinds' starts apart.
+// What tells the three threads' starts apart.
 typedef struct {
+  void (*begin)(Wram* w, PortCpu* c, BeginWork* k);  // the record
   uint16_t rise_pictures;
   uint32_t rise_pc, first_yield_pc;
+  uint16_t health;
   bool decides_at_once;  // `$24` begins negative
 } Start;
 
-static const Start STARTS[ZOMBIE_KINDS] = {
-    [ZOMBIE_SLOW] = {ZOMBIE_SLOW_RISE_PICTURES, ZOMBIE_SLOW_RISE_PC,
-                     ZOMBIE_87F8_YIELD_PC, false},
-    [ZOMBIE_FAST] = {ZOMBIE_FAST_RISE_PICTURES, ZOMBIE_FAST_RISE_PC,
-                     ZOMBIE_88CA_YIELD_PC, true},
+static const Start STARTS[ZOMBIE_THREADS] = {
+    [ZOMBIE_THREAD_87F8] = {zombie_begin, ZOMBIE_SLOW_RISE_PICTURES,
+                            ZOMBIE_SLOW_RISE_PC, ZOMBIE_87F8_YIELD_PC, 0,
+                            false},
+    [ZOMBIE_THREAD_88CA] = {zombie_begin, ZOMBIE_FAST_RISE_PICTURES,
+                            ZOMBIE_FAST_RISE_PC, ZOMBIE_88CA_YIELD_PC, 0,
+                            true},
+    [ZOMBIE_THREAD_8C17] = {tough_zombie_begin, ZOMBIE_8C17_RISE_PICTURES,
+                            ZOMBIE_8C17_RISE_PC, ZOMBIE_8C17_YIELD_PC,
+                            ZOMBIE_8C17_HEALTH, true},
 };
 
-void zombie_spawn(Wram* w, PortCpu* c, ZombieKind kind, BeginWork* k) {
+void zombie_spawn(Wram* w, PortCpu* c, ZombieThread thread, BeginWork* k) {
   set_c(c, false);
   wram_w16(w, W_SPAWN_LOAD, adc16(c, wram_r16(w, W_SPAWN_LOAD), ZOMBIE_LOAD));
   wram_w16(w, (uint16_t)(c->d + ZOMBIE_DP_TIMER), ZOMBIE_FIRST_TIMER);
-  zombie_begin(w, c, k);
+  STARTS[thread].begin(w, c, k);
   if (k->declined) return;
   PORT_COVER(zombie_spawned);
   // Overflow is the load's add, unless the search passed over a record in
   // use: it subtracts for each, and that leaves overflow clear.
   if (k->record != RECORD_SEARCHED_FIRST) set_v(c, false);
-  c->a = STARTS[kind].rise_pictures;
+  c->a = STARTS[thread].rise_pictures;
   set_nz16(c, c->a);
-  c->pc = STARTS[kind].rise_pc;
+  c->pc = STARTS[thread].rise_pc;
 }
 
-void zombie_risen(Wram* w, const Rom* rom, PortCpu* c, ZombieKind kind,
+void zombie_risen(Wram* w, const Rom* rom, PortCpu* c, ZombieThread thread,
                   ZombieLog* log) {
   ZombieLog scratch = {0};
   if (!log) log = &scratch;
   PORT_COVER(zombie_risen);
-  Zombie z = zombie(w, rom, c->d, kind, log);
+  Zombie z = zombie(w, rom, c->d, THREADS[thread].kind, log);
   wram_w16(w, (uint16_t)(z.record + ACTOR_COLLIDE_ID), ZOMBIE_COLLIDE_ID);
   wander(&z, flag(c, PORT_P_C));
-  set_field(&z, ZOMBIE_DP_HEALTH, 0);
-  if (STARTS[kind].decides_at_once) set_field(&z, ZOMBIE_DP_QUIET, 0xffff);
+  set_field(&z, ZOMBIE_DP_HEALTH, STARTS[thread].health);
+  if (STARTS[thread].decides_at_once) set_field(&z, ZOMBIE_DP_QUIET, 0xffff);
   c->a = ZOMBIE_HANDLER;
   c->y = ZOMBIE_BANK;
   thread_set_handler(w, c);
@@ -564,7 +571,7 @@ void zombie_risen(Wram* w, const Rom* rom, PortCpu* c, ZombieKind kind,
   set_nz16(c, c->a);
   set_c(c, log->carry);
   set_v(c, log->overflow);
-  c->pc = STARTS[kind].first_yield_pc;
+  c->pc = STARTS[thread].first_yield_pc;
 }
 
 // ---------------------------------------------------------------------------

@@ -300,13 +300,14 @@ void tile_anim_queued(Wram* w, PortCpu* c, BodyWork* k);
 // `$D1EA` is a stretch too, the `LDX` and the jump through the table of
 // states after it.
 //
-// Two of the calls have nothing between the last one's return and
-// themselves, `$CE01` and `$CE20`. Each is a stretch with what it calls: the
-// `JSR` and then the hurt timer, or the `JSR` and then the health.
+// Three of the calls have nothing between the last one's return and
+// themselves, `$CDFE`, `$CE01` and `$CE20`. Each is a stretch with what it
+// calls: the `JSR` and then the state's handler, the hurt timer or the
+// health. `$CDFE` is where `port/player_frame.h` begins too, so its stretch
+// is offered only a frame that turns down.
 //
-// Three more have no stretch -- `$CDF4`, `$CDFE` and `$CE16` -- and the ROM
-// executes the `JSR` itself. `$CDFE` is where `port/player_frame.h` begins,
-// so it is the ROM's only on a frame that turns down.
+// Two more have no stretch -- `$CDF4` and `$CE16` -- and the ROM executes the
+// `JSR` itself.
 //
 // The movement handler on ordinary ground, `$80:E4BA`, is `port/walk.h`.
 
@@ -316,6 +317,7 @@ void tile_anim_queued(Wram* w, PortCpu* c, BodyWork* k);
 #define PLAYER_BUTTONS_PC 0x80ce19u  // after `JSR $F327`
 #define PLAYER_LOOP_PC 0x80ce23u     // after `JSR $CE72`
 #define PLAYER_BRANCH_PC 0x80d1eau   // `$80:D1EA`, called
+#define PLAYER_BRANCH_CALL_PC 0x80cdfeu  // `JSR $D1EA`, where the sleep returns
 #define PLAYER_HURT_CALL_PC 0x80ce01u  // `JSR $D01B`, after the state's `RTS`
 #define PLAYER_DEAD_CALL_PC 0x80ce20u  // `JSR $CE72`, after `$CE25`'s `RTS`
 #define PLAYER_HURT_PC 0x80d01bu     // `$80:D01B`, called
@@ -384,6 +386,7 @@ void player_buttons(Wram* w, PortCpu* c, BodyWork* k);
 void player_loop(PortCpu* c, BodyWork* k);
 // False for a state the table has no handler for.
 bool player_branch(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k);
+bool player_branch_call(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k);
 void player_hurt(Wram* w, PortCpu* c, BodyWork* k);
 void player_hurt_call(Wram* w, PortCpu* c, BodyWork* k);
 void player_dead_call(Wram* w, PortCpu* c, BodyWork* k);

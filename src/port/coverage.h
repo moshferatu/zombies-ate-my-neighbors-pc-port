@@ -605,6 +605,7 @@
   /* A record begun, and the neighbours -- see port/begin.h, neighbours.h. */   \
   X(record_begun,     "record_begin",       "a record at the page's place") \
   X(zombie_begun,     "zombie_begin",       "...and a zombie's made of it") \
+  X(tough_zombie_begun, "zombie_tough_spawn", "...or the zombie with four hits' record") \
   X(neighbour_begun,  "neighbour_begin",    "a neighbour's record, and their handler") \
   X(record_ended,     "record_end",         "a thread's end: its weight given back and its record freed") \
   X(kill_scored,      "kill_scored",        "a thing a player killed: what it was worth, for them") \
@@ -1991,6 +1992,8 @@
   X(death_shown_a_list, "ts_death_shown", "...anyone else a list of pictures") \
   X(death_lives_left, "ts_death_counted", "a life gone and one left: health again, and flashing") \
   X(death_none_left, "ts_death_counted", "...or none left, which is the ROM's") \
+  X(door_buzzing_already, "ts_door_buzz", "a locked door pushed while it buzzes: the new thread only ends") \
+  X(door_buzz_begun, "ts_door_buzz", "...or it is not, and the first buzz") \
   X(werewolf_dressed, "ts_werewolf_made", "its record made: its picture, and twenty ticks' sleep") \
   X(werewolf_leapt, "ts_werewolf_crouched", "a crouch's pictures shown: it is in the air") \
   X(werewolf_flew, "werewolf_frame", "a pass of a pounce") \

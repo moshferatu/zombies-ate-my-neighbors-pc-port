@@ -204,11 +204,36 @@
 // **The lives cheat patches `$80:CEC5`**, the `DEC` of a life, which is in
 // the fourth. `port_cheats.lives` says when it is on: see `port/cheat.h`.
 //
+// ## A locked door's buzz, `$82:DEFB`
+//
+// See `port/walk.h`: a player who pushes at a door with no key begins this
+// thread every frame they push. The word at `$7E:1FF4` says one is buzzing
+// already, and then the new one only ends. Otherwise:
+//
+//   $82:DEFB  the word set, and sound `$13`
+//   $82:DF0A  ten ticks' sleep (an argument), sound `$13` again (another),
+//             and twenty ticks' sleep (a third)
+//   $82:DF1F  the word cleared, and the thread ends
+//
+// ## A slime's start, `$81:CCCF`
+//
+// See `port/slime.h`, which has its loop and `slime_begin`, its record:
+//
+//   $81:CCCF  its weight, thirty-two, on the level's load, and the record
+//             asked for
+//   $81:CCAC  its first pictures begun: its handler named, and a draw
+//   $81:C9E8  one of the four ways, from the draw, and the loop's state set
+//             to `$81:C9FA`. Then it sleeps four ticks.
+//
+// The draw and the way are `$81:C9E4`, a routine, which the slime's loop
+// calls too. The second and third stretches are only the start's: each
+// goes on through an `RTS`, and needs it to return to the start.
+//
 // ## One instruction or two
 //
 // What stands by itself between two calls and belongs to nothing ported: a
 // word of a thread's page set to an address before a return, a list of
-// pictures named, a page pulled.
+// pictures named, a page pulled, a sleep's ticks.
 //
 // ## A player's flashing ended, `$80:D97F`
 //
@@ -241,7 +266,7 @@ typedef struct {
   uint16_t value;
 } ThreadArgument;
 
-#define THREAD_ARGUMENT_COUNT 10
+#define THREAD_ARGUMENT_COUNT 14
 extern const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT];
 
 // `LDA #value : STA at`, on the thread's page, and the `RTS` after.
@@ -733,6 +758,35 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define PLAYER_DP_50 0x50                   // the use of either
 #define PLAYER_HURT_PICTURE_BANK 0x0090
 
+// --- a locked door's buzz ---------------------------------------------------
+
+#define DOOR_BUZZ_PC 0x82defbu
+#define DOOR_BUZZ_SOUND_PC 0x82df06u  // `JSL apu_play_sfx`, sound in A
+#define DOOR_BUZZED_PC 0x82df1fu
+#define DOOR_END_PC 0x82df22u         // the thread's `RTL`
+#define DOOR_BUZZ_SFX 0x0013
+#define W_DOOR_BUZZING 0x1ff4u        // in `$7E`: one is buzzing
+
+// --- a slime's start ---------------------------------------------------------
+
+#define SLIME_ENTER_PC 0x81cccfu
+#define SLIME_BEGIN_CALL_PC 0x81ccd9u   // `JSR slime_begin`
+#define SLIME_SHOWN_PC 0x81ccacu        // where its first pictures come back
+#define SLIME_BEGIN_RETURN 0xccdbu      // `slime_begin`'s return, less one
+#define SLIME_WAY_CALL_PC 0x81ccdcu     // `JSR $C9E4`
+#define SLIME_WAY_RETURN 0xccdeu
+#define SLIME_DRAW_PC 0x81c9e4u         // `JSL rng`
+#define SLIME_WAY_PC 0x81c9e8u
+#define SLIME_FIRST_YIELD_PC 0x81cce4u
+#define SLIME_LOAD 0x0020
+#define SLIME_HANDLER 0xcddeu
+#define SLIME_HANDLER_BANK 0x0081
+#define SLIME_STATE_FIRST 0xc9fau       // the loop's state after the way
+#define SLIME_YIELD_TICKS 4
+#define SLIME_DP_WAY 0x1a               // a way of four, as 2, 6, 10 or 14
+#define SLIME_DP_STATE 0x16
+#define SLIME_DP_22 0x22
+
 // name, first instruction, the one after its last, and how many branches
 // in it are always taken. `tools/cycles816.py` prices each.
 #define TS_BLOCKS(X) \
@@ -856,7 +910,14 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
   X(TS_DEATH_LIFE, 0x80cec3, 0x80cec9, 0)    /* LDX : DEC abs,X : BMI */ \
   X(TS_DEATH_LIFE_KEPT, 0x80cec3, 0x80cec9, 0)  /* ...with three NOPs */ \
   X(TS_DEATH_SHOW, 0x80ceca, 0x80ced0, 0) \
-  X(TS_DEATH_AGAIN, 0x80d95f, 0x80d97e, 0)   /* the RTS too */
+  X(TS_DEATH_AGAIN, 0x80d95f, 0x80d97e, 0)   /* the RTS too */ \
+  X(TS_DOOR_ASK, 0x82defb, 0x82df00, 0)      /* LDA abs : BNE */ \
+  X(TS_DOOR_BUZZ, 0x82df00, 0x82df06, 0) \
+  X(TS_DOOR_DONE, 0x82df1f, 0x82df22, 0) \
+  X(TS_SLIME_ENTER, 0x81cccf, 0x81ccd9, 0) \
+  X(TS_SLIME_HANDLER, 0x81ccac, 0x81ccb6, 0)  /* the JSL too */ \
+  X(TS_SLIME_WAY, 0x81c9e8, 0x81c9f9, 0)     /* the JMP too */ \
+  X(TS_SLIME_FIRST, 0x81ccdf, 0x81cce4, 0)
 
 enum {
 #define X(name, from, to, taken) name,
@@ -894,6 +955,8 @@ typedef enum {
   TS_NEEDS_CUT_FREED,   // the second list's `JSR` to return to
   TS_NEEDS_DEATH_ENDS,  // an end due that is one of the six, or none
   TS_NEEDS_DEATH,       // which player, which of the two, and the record
+  TS_NEEDS_SLIME_BEGUN,  // `slime_begin`'s `JSR` to return to
+  TS_NEEDS_SLIME_WAY,    // the start's `JSR $C9E4` to return to
 } ThreadStretchNeeds;
 
 bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
@@ -1005,7 +1068,16 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(death_sounded, "$80:CE81", DEATH_SOUNDED_PC, death_sounded, DEATH, TS_NEEDS_DEATH_ENDS) \
   X(death_shown, "$80:CE94", DEATH_SHOWN_PC, death_shown, DEATH, TS_NEEDS_DEATH) \
   X(death_still, "$80:CEAA", DEATH_STILL_PC, death_still, DEATH, TS_NEEDS_DEATH) \
-  X(death_counted, "$80:CEC3", DEATH_COUNTED_PC, death_counted, DEATH, TS_NEEDS_DEATH)
+  X(death_counted, "$80:CEC3", DEATH_COUNTED_PC, death_counted, DEATH, TS_NEEDS_DEATH) \
+  X(argument_swipe, "$81:E8C1", 0x81e8c1u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_door_a, "$82:DF0A", 0x82df0au, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_door_b, "$82:DF11", 0x82df11u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_door_c, "$82:DF18", 0x82df18u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(door_buzz, "$82:DEFB", DOOR_BUZZ_PC, door_buzz, DOOR, TS_NEEDS_NOTHING) \
+  X(door_buzzed, "$82:DF1F", DOOR_BUZZED_PC, door_buzzed, DOOR, TS_NEEDS_NOTHING) \
+  X(slime_enter, "$81:CCCF", SLIME_ENTER_PC, slime_enter, SLIME, TS_NEEDS_NOTHING) \
+  X(slime_shown, "$81:CCAC", SLIME_SHOWN_PC, slime_shown, SLIME, TS_NEEDS_SLIME_BEGUN) \
+  X(slime_way, "$81:C9E8", SLIME_WAY_PC, slime_way, SLIME, TS_NEEDS_SLIME_WAY)
 
 #define X(name, sym, entry, port, exits, needs) \
   void port(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k);

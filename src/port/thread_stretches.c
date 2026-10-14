@@ -34,6 +34,10 @@ const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
     {0x81ec72u, 0xee6b},  // two lists of pictures I have not read the use of
     {0x81f30eu, 0xf368},
     {0x82e0b4u, 0x0001},  // a bonus object's first sleep
+    {0x81e8c1u, 0x0001},  // the swipe's first sleep, after its sound
+    {0x82df0au, 0x000a},  // a locked door's two buzzes, and a sleep after each
+    {0x82df11u, DOOR_BUZZ_SFX},
+    {0x82df18u, 0x0014},
 };
 
 const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT] = {
@@ -185,6 +189,10 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
       return c->db == 0x80 && who < 4 && (who & 1) == 0 && player < 4 &&
              (player & 1) == 0 && page(w, c, DEATH_DP_RECORD) < 0x1f00;
     }
+    case TS_NEEDS_SLIME_BEGUN:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == SLIME_BEGIN_RETURN;
+    case TS_NEEDS_SLIME_WAY:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == SLIME_WAY_RETURN;
     case TS_NEEDS_WOLF: {
       const uint16_t to = wram_r16(w, (uint16_t)(c->s + 1));
       return page(w, c, WEREWOLF_DP_RECORD) < 0x1f00 &&
@@ -1766,6 +1774,77 @@ void stagger_over(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   ran(k, TS_SET_HANDLER);
   ran(k, TS_STAGGER_BACK);
   c->pc = STAGGER_BACK_PC;
+}
+
+// --- a locked door's buzz ----------------------------------------------------
+
+// `$82:DEFB`: one buzzing already, and this one ends. The word is read
+// through the data bank, which shows low WRAM.
+void door_buzz(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, wram_r16(w, W_DOOR_BUZZING));
+  ran(k, TS_DOOR_ASK);
+  if (c->a != 0) {
+    PORT_COVER(door_buzzing_already);
+    ran(k, TS_TAKEN);
+    c->pc = DOOR_END_PC;
+    return;
+  }
+  PORT_COVER(door_buzz_begun);
+  wram_w16(w, W_DOOR_BUZZING, (uint16_t)(c->a + 1));
+  lda(c, DOOR_BUZZ_SFX);
+  ran(k, TS_DOOR_BUZZ);
+  c->pc = DOOR_BUZZ_SOUND_PC;
+}
+
+// `$82:DF1F`.
+void door_buzzed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  wram_w16(w, W_DOOR_BUZZING, 0);
+  ran(k, TS_DOOR_DONE);
+  c->pc = DOOR_END_PC;
+}
+
+// --- a slime's start ---------------------------------------------------------
+
+// `$81:CCCF`.
+void slime_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  load_up(w, c, SLIME_LOAD);
+  ran(k, TS_SLIME_ENTER);
+  c->pc = SLIME_BEGIN_CALL_PC;
+}
+
+// `$81:CCAC`: its handler, and back from `slime_begin` to the draw.
+void slime_shown(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  c->a = SLIME_HANDLER;
+  c->y = SLIME_HANDLER_BANK;
+  ran(k, TS_SLIME_HANDLER);
+  thread_set_handler(w, c);
+  ran(k, TS_SET_HANDLER);
+  pull16(w, c);
+  ran(k, TS_RTS);
+  push16(w, c, SLIME_WAY_RETURN);
+  ran(k, TS_JSR);
+  c->pc = SLIME_DRAW_PC;
+}
+
+// `$81:C9E8`: the draw in A becomes a way, and the thread's first sleep.
+void slime_way(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t way = (uint16_t)((c->a & 0x0003u) * 4 + 2);
+  set_page(w, c, SLIME_DP_WAY, way);
+  set_c(c, false);  // the `ASL`s' carry
+  lda(c, SLIME_STATE_FIRST);
+  set_page(w, c, SLIME_DP_STATE, c->a);
+  ran(k, TS_SLIME_WAY);
+  pull16(w, c);
+  ran(k, TS_RTS);
+  set_page(w, c, SLIME_DP_22, 0);
+  lda(c, SLIME_YIELD_TICKS);
+  ran(k, TS_SLIME_FIRST);
+  c->pc = SLIME_FIRST_YIELD_PC;
 }
 
 // `$82:DE08`: a frame of the two words stepping. The table is in bank $7E.

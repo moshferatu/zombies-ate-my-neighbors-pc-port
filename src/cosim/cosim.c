@@ -570,6 +570,13 @@ static void entries_index(Cosim* c) {
   }
 }
 
+// The first enabled row from `i` on in its address's chain, or -1.
+static int entry_enabled_from(const Cosim* c, int i) {
+  for (; i >= 0; i = c->priv->entry_next[i])
+    if (cosim_mask_get(&c->enabled, i)) return i;
+  return -1;
+}
+
 // The first enabled routine that begins at `pc`, in the registry's order, or
 // -1. This is asked before every instruction the core executes.
 static int entry_at(const Cosim* c, uint32_t pc) {
@@ -578,9 +585,12 @@ static int entry_at(const Cosim* c, uint32_t pc) {
   int i;
   while ((i = p->entry_slot[h]) >= 0 && p->entry_key[h] != pc)
     h = (h + 1) & p->entry_mask;
-  for (; i >= 0; i = p->entry_next[i])
-    if (cosim_mask_get(&c->enabled, i)) return i;
-  return -1;
+  return entry_enabled_from(c, i);
+}
+
+// The next enabled routine after row `i` that begins where it does, or -1.
+static int entry_after(const Cosim* c, int i) {
+  return entry_enabled_from(c, c->priv->entry_next[i]);
 }
 
 void cosim_init(Cosim* c, Snes* snes, CosimMode mode) {
@@ -2725,27 +2735,38 @@ static CosimCall* find_yield(Cosim* c) {
   return NULL;
 }
 
+// What became of a call offered to a row.
+typedef enum {
+  OFFER_STOOD,     // the core executes the entry instruction
+  OFFER_MOVED,     // the PC moved, and the entry instruction is not executed
+  OFFER_DECLINED,  // the port turned it down: see `entry_offered`
+} EntryOffer;
+
 // The CPU is on the entry of row `i`, which is enabled: offer it the call.
-// True when the PC moved, and the entry instruction is not to be executed.
-static bool entry_offered(Cosim* c, int i) {
+//
+// A call the port turns down is offered to the next row that begins at the
+// same address, if there is one. `$80:CDFE` is two: a player's whole frame,
+// and on a frame that turns down, the `JSR` there with what it calls.
+static EntryOffer entry_offered(Cosim* c, int i) {
   const CosimRoutine* r = c->stats[i].routine;
   if (r->link) {
-    if (c->mode == COSIM_NATIVE && link_make(c, r, &c->stats[i])) return true;
+    if (c->mode == COSIM_NATIVE && link_make(c, r, &c->stats[i]))
+      return OFFER_MOVED;
     if (c->mode == COSIM_VERIFY) c->stats[i].calls++;
-    return false;
+    return OFFER_STOOD;
   }
   // Verified but never substituted — see `CosimRoutine::verify_only`. Nothing
   // is counted, because nothing was offered: the report says `verify only`
   // against a row of zeroes rather than pretending this was a decline.
   if (c->mode == COSIM_NATIVE && r->verify_only) {
     handed(c, COSIM_TOOK_UNSERVED, r);
-    return false;
+    return OFFER_STOOD;
   }
   // ...and the mirror. `verify` cannot score this one — an interrupt lands
   // inside the call window — so it does not intercept it either, rather
   // than counting a call it is going to abandon. See
   // `CosimRoutine::run_only`.
-  if (c->mode == COSIM_VERIFY && r->run_only) return false;
+  if (c->mode == COSIM_VERIFY && r->run_only) return OFFER_STOOD;
   // The port has said it cannot handle this one. Step aside entirely and
   // let the ROM's own instructions run — in both modes, so that `verify`
   // and `run` decline exactly the same calls.
@@ -2753,11 +2774,12 @@ static bool entry_offered(Cosim* c, int i) {
     c->stats[i].calls++;
     c->stats[i].declined++;
     handed(c, COSIM_TOOK_DECLINED, r);
-    return false;
+    return OFFER_DECLINED;
   }
-  if (c->mode == COSIM_NATIVE) return run_native(c, i, r, &c->stats[i]);
+  if (c->mode == COSIM_NATIVE)
+    return run_native(c, i, r, &c->stats[i]) ? OFFER_MOVED : OFFER_STOOD;
   begin_verify(c, i, r, &c->stats[i]);
-  return false;
+  return OFFER_STOOD;
 }
 
 static void cosim_step_inner(Cosim* c) {
@@ -2864,8 +2886,11 @@ static void cosim_step_inner(Cosim* c) {
       if (yielding) suspend_verify(c, yielding);
     }
 
-    const int i = entry_at(c, pc);
-    if (i >= 0 && entry_offered(c, i)) return;  // the PC moved
+    for (int i = entry_at(c, pc); i >= 0; i = entry_after(c, i)) {
+      const EntryOffer offer = entry_offered(c, i);
+      if (offer == OFFER_MOVED) return;
+      if (offer == OFFER_STOOD) break;
+    }
   } else if (snes->cpu->intWanted && c->priv->depth > 0 &&
              c->mode == COSIM_VERIFY) {
     // An interrupt is about to land inside a call we are verifying. The handler

@@ -819,6 +819,13 @@ void player_hurt(Wram* w, PortCpu* c, BodyWork* k) {
   c->pc = PLAYER_HURT_RESET_RTS_PC;
 }
 
+// `$80:CDFE  JSR $D1EA`, which the thread's sleep comes back to.
+bool player_branch_call(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k) {
+  push16(w, c, (uint16_t)(PLAYER_BRANCH_CALL_PC + 2));
+  k->blocks[PBODY_JSR]++;
+  return player_branch(w, rom, c, k);
+}
+
 // `$80:CE01  JSR $D01B`, which the state's handler comes back to.
 void player_hurt_call(Wram* w, PortCpu* c, BodyWork* k) {
   push16(w, c, (uint16_t)(PLAYER_HURT_CALL_PC + 2));

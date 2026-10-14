@@ -2,6 +2,7 @@
 //
 //   $81:8000  record_begin     a record at the place on the thread's page
 //   $81:87BE  zombie_begin     ...and a zombie's made of it
+//   $81:8BDF  tough_zombie_begin  ...or the zombie with four hits'
 //   $83:A13E  neighbour_begin  a neighbour's record, and their handler
 //
 // **`record_begin`** takes a free record and puts it at the place in the
@@ -12,6 +13,11 @@
 // **`zombie_begin`** calls that and goes on: the place kept at `$16` and
 // `$18`, the first picture of the two kinds of zombie, the record to be
 // drawn, and the page's own words for its walk cleared.
+//
+// **`tough_zombie_begin`** is the same for `$81:8C17`, the zombie with four
+// hits, with its own picture. It leaves `$22` as it was, which only `$81:88CA`
+// looks at, and comes back with the record's flags in A where the other has
+// its attributes.
 //
 // **`neighbour_begin`** is the same for the eleven kinds of neighbour, with
 // the picture and its bank handed in. A neighbour's collide id is 1, their
@@ -69,6 +75,7 @@
 #define RECORD_BEGIN_RTL_PC 0x818023u
 #define ZOMBIE_BEGIN_PC 0x8187beu
 #define ZOMBIE_BEGIN_RTS_PC 0x8187f7u
+#define TOUGH_ZOMBIE_BEGIN_RTS_PC 0x818c16u
 #define NEIGHBOUR_BEGIN_PC 0x83a13eu
 #define NEIGHBOUR_BEGIN_RTS_PC 0x83a18eu
 
@@ -79,6 +86,7 @@
 #define ZOMBIE_BEGIN_PICTURE 0xc98au
 #define ZOMBIE_BEGIN_META_BANK 0x0090
 #define ZOMBIE_BEGIN_ATTR 0x0c00
+#define TOUGH_ZOMBIE_BEGIN_PICTURE 0xe118u
 
 #define NEIGHBOUR_HANDLER 0xa364u
 #define NEIGHBOUR_HANDLER_BANK 0x0083
@@ -96,6 +104,7 @@ typedef struct {
 
 void record_begin(Wram* w, PortCpu* c, BeginWork* k);
 void zombie_begin(Wram* w, PortCpu* c, BeginWork* k);
+void tough_zombie_begin(Wram* w, PortCpu* c, BeginWork* k);
 void neighbour_begin(Wram* w, PortCpu* c, BeginWork* k);
 
 // A thread's end: where its seven instructions are, what it gives back,

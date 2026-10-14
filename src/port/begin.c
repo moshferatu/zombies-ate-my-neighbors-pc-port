@@ -52,24 +52,40 @@ void record_begin(Wram* w, PortCpu* c, BeginWork* k) {
   c->pc = RECORD_BEGIN_RTL_PC;
 }
 
+// What both zombies' records begin with: the place kept, a picture, and
+// drawn.
+static void zombie_record(Wram* w, PortCpu* c, uint16_t record,
+                          uint16_t picture) {
+  set_field(w, c, 0x0c, 0);
+  set_field(w, c, 0x16, field(w, c, BEGIN_DP_PLACE_X));
+  set_field(w, c, 0x18, field(w, c, BEGIN_DP_PLACE_Y));
+  wram_w16(w, (uint16_t)(record + ACTOR_META), picture);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), ZOMBIE_BEGIN_META_BANK);
+  drawn(w, record);
+  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), ZOMBIE_BEGIN_ATTR);
+  set_field(w, c, 0x7e, 0);
+  c->y = record;
+}
+
 void zombie_begin(Wram* w, PortCpu* c, BeginWork* k) {
   record_begin(w, c, k);
   if (k->declined) return;
   PORT_COVER(zombie_begun);
-  const uint16_t record = k->record;
-  set_field(w, c, 0x0c, 0);
-  set_field(w, c, 0x16, field(w, c, BEGIN_DP_PLACE_X));
-  set_field(w, c, 0x18, field(w, c, BEGIN_DP_PLACE_Y));
-  wram_w16(w, (uint16_t)(record + ACTOR_META), ZOMBIE_BEGIN_PICTURE);
-  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), ZOMBIE_BEGIN_META_BANK);
-  drawn(w, record);
-  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), ZOMBIE_BEGIN_ATTR);
+  zombie_record(w, c, k->record, ZOMBIE_BEGIN_PICTURE);
   set_field(w, c, 0x22, 0);
-  set_field(w, c, 0x7e, 0);
   c->a = ZOMBIE_BEGIN_ATTR;
   set_nz16(c, c->a);
-  c->y = record;
   c->pc = ZOMBIE_BEGIN_RTS_PC;
+}
+
+void tough_zombie_begin(Wram* w, PortCpu* c, BeginWork* k) {
+  record_begin(w, c, k);
+  if (k->declined) return;
+  PORT_COVER(tough_zombie_begun);
+  zombie_record(w, c, k->record, TOUGH_ZOMBIE_BEGIN_PICTURE);
+  c->a = wram_r16(w, (uint16_t)(k->record + ACTOR_FLAGS));
+  set_nz16(c, c->a);
+  c->pc = TOUGH_ZOMBIE_BEGIN_RTS_PC;
 }
 
 void neighbour_begin(Wram* w, PortCpu* c, BeginWork* k) {
