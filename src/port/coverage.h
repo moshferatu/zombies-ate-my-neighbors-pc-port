@@ -1693,9 +1693,17 @@
   X(martian_walked, "martian_frame", "a pass of walking") \
   X(martian_arrived, "martian_frame", "a pass of coming in across the top") \
   X(martian_held_fire, "martian_frame", "something lined up with it while it cooled") \
-  X(martian_fired, "martian_frame", "...or with nothing to wait for, arriving: the ROM's, so the pass was declined") \
-  X(martian_walker_fired, "martian_frame", "...or walking: it fired, and the frame ends at the shot's spawn") \
+  X(martian_fired, "martian_frame", "...or with nothing to wait for, arriving: it fired, and the frame ends at the shot's spawn") \
+  X(martian_walker_fired, "martian_frame", "...or walking: likewise") \
   X(martian_woke, "martian_wake", "the rest of a walking pass that fired") \
+  X(martian_arrival_woke, "martian_wake", "the rest of an arriving pass that fired") \
+  X(martian_arrival_entered, "ts_martian_arrival_enter", "a martian that comes in over the top: its place asked about") \
+  X(martian_arrival_blocked, "ts_martian_arrival_placed", "...which is in the ground or off the level, so there is none") \
+  X(martian_arrival_free, "ts_martian_arrival_placed", "...which is free") \
+  X(player_flashing_last_frame, "player_flashing_state", "the frame the flashing ends on: as far as the call that ends it") \
+  X(player_flashing_ended, "ts_flashing_end", "a player's flashing ended: drawn again, and the state under it put back") \
+  X(player_hit_shown, "ts_player_hit_show", "a player hit: the picture they had is kept while they are shown hurt") \
+  X(player_hit_back, "ts_player_hit_shown", "...and put back") \
   X(martian_began, "martian_begin", "a martian's record and its page set up") \
   X(martian_shot_begun, "martian_shoot", "the picture it fires in, and the shot's thread asked for") \
   X(martian_shot_cooling, "martian_shoot", "called while it cools: one counted off") \
@@ -1851,7 +1859,8 @@
   X(fishman_turned_at_wall, "fishman_frame", "it could not swim on: a quarter turn") \
   X(fishman_turned_at_opening, "fishman_frame", "it could swim a quarter turn round, so it turned") \
   X(fishman_closed_in, "fishman_frame", "somebody within 128: it closes in") \
-  X(fishman_looked_about, "fishman_frame", "the draw said stop and look about, which is the ROM's") \
+  X(fishman_looked_about, "fishman_frame", "the draw said stop and look about: it faces a way and shows its pictures") \
+  X(fishman_looked_on, "fishman_look_about_after", "it has looked about, and swims on") \
   X(fishman_leapt, "fishman_frame", "it is to leap, and sleeps a few ticks first") \
   X(fishman_leap_off_level, "fishman_frame", "the spot a leap would come down is off the level") \
   X(fishman_leap_taken, "fishman_frame", "...or has somebody on it") \
@@ -1908,6 +1917,7 @@
   X(fishman_begin_no_room, "fishman_patrol_begin", "the level has no room for it") \
   X(fishman_begin_not_water, "fishman_patrol_begin", "it was not put on deep water") \
   X(fishman_begun, "fishman_patrol_begin", "it begins, to its first sleep") \
+  X(fishman_begun_ashore, "fishman_ashore_begin", "...the one that comes ashore, swimming some way by a draw") \
   X(fishman_ended, "fishman_patrol_end", "one that left of itself: its record given back") \
   X(fishman_left_unshown, "fishman_frame", "...found when it came to show itself") \
   X(fishman_swept, "fishman_sweep_tick", "its second record at the next place in the ring") \
@@ -1929,7 +1939,14 @@
   X(werewolf_struck, "werewolf_frame", "its target beside it: a strike begins") \
   X(werewolf_striking, "werewolf_frame", "a pass of a strike") \
   X(werewolf_blow_shown, "werewolf_frame", "a picture from the sixth on: the blow is drawn") \
-  X(werewolf_strike_over, "werewolf_frame", "a strike's pictures ran out, which is the ROM's") \
+  X(werewolf_strike_over, "werewolf_frame", "a strike's pictures ran out: the pass stops at giving the blow's record back") \
+  X(werewolf_crouching, "werewolf_frame", "a crouch: it faces the spot, and the pass stops at its pictures") \
+  X(werewolf_not_due, "ts_werewolf_enter", "a werewolf's thread with no werewolves due: it ends at once") \
+  X(werewolf_entered, "ts_werewolf_enter", "...or with them due: it weighs in the level's load") \
+  X(werewolf_howled, "ts_werewolf_howl_check", "the level's sample set has its howl: it howls") \
+  X(werewolf_unheard, "ts_werewolf_howl_check", "...or has not, and the game leaves it out") \
+  X(werewolf_dressed, "ts_werewolf_made", "its record made: its picture, and twenty ticks' sleep") \
+  X(werewolf_leapt, "ts_werewolf_crouched", "a crouch's pictures shown: it is in the air") \
   X(werewolf_flew, "werewolf_frame", "a pass of a pounce") \
   X(werewolf_came_down, "werewolf_frame", "its height came to nothing exactly") \
   X(werewolf_landed_beside, "werewolf_frame", "...beside whoever it pounced at") \

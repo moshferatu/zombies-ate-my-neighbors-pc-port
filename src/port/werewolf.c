@@ -62,6 +62,7 @@ typedef struct {
 #define WEREWOLF_RUN_PICTURE_AT 0xa6c1u
 #define WEREWOLF_STRIKE_PICTURE_AT 0xab0au
 #define WEREWOLF_STRIKE_FLAGS 0xab20u     // by way, doubled
+#define WEREWOLF_CROUCH_FLAGS 0xa9c3u     // the same for a crouch
 #define WEREWOLF_BLOW_ASIDE 0xab6bu       // by way, doubled: the blow, from it
 #define WEREWOLF_LAND_BESIDE 0xaa49u      // by way, in fours
 #define WEREWOLF_POUNCE_PAST 0xa97cu      // by way, doubled: past its quarry
@@ -494,6 +495,11 @@ static void run(Werewolf* p) {
 
   log->steps = (random_byte(p) & WEREWOLF_STEP_ONCE_BIT) != 0 ? 1 : 2;
   for (int i = 0; i < log->steps; i++) run_step(p, &log->step[i]);
+  // No step chose a way, and the one it has is not one: see the header.
+  if (field(p, WEREWOLF_DP_WAY) > BEARING_UP_LEFT) {
+    log->declined = true;
+    return;
+  }
 
   const uint16_t wait = (uint16_t)(field(p, WEREWOLF_DP_PICTURE_WAIT) - 1);
   set_field(p, WEREWOLF_DP_PICTURE_WAIT, wait);
@@ -515,7 +521,7 @@ static void run(Werewolf* p) {
 // ---------------------------------------------------------------------------
 
 // `$81:AACF`: its next picture when this one has had its passes. The pass
-// they run out on gives the blow's record back, and is the ROM's.
+// they run out on stops at giving the blow's record back.
 static void strike(Werewolf* p) {
   WerewolfLog* log = p->log;
   const uint16_t wait = (uint16_t)(field(p, WEREWOLF_DP_PICTURE_WAIT) - 1);
@@ -531,7 +537,8 @@ static void strike(Werewolf* p) {
   if (picture == 0) {
     PORT_COVER(werewolf_strike_over);
     log->strike = WEREWOLF_STRIKE_OVER;
-    log->declined = true;
+    log->stop = WEREWOLF_STOP_STRIKE_OVER;
+    log->a = field(p, WEREWOLF_DP_BLOW);
     return;
   }
   set_record_field(p, ACTOR_META, picture);
@@ -552,6 +559,18 @@ static void strike(Werewolf* p) {
 // ---------------------------------------------------------------------------
 // A pounce
 // ---------------------------------------------------------------------------
+
+// `$81:A994`: it faces the spot, and shows three pictures of getting ready.
+// They sleep, and the pass stops there.
+static void crouch(Werewolf* p) {
+  WerewolfLog* log = p->log;
+  const uint16_t way = (uint16_t)(field(p, WEREWOLF_DP_WAY) << 1);
+  flags_carry(&p->flags, false);  // the way, doubled
+  log->crouch_mask_clears =
+      apply_to_flags(p, table_word(p, WEREWOLF_CROUCH_FLAGS, way));
+  log->stop = WEREWOLF_STOP_CROUCH;
+  log->a = WEREWOLF_CROUCH_PICTURES;
+}
 
 // One axis of a pounce: so many pixels this pass, by how its gap compares
 // with the longer one.
@@ -638,17 +657,22 @@ static void fly(Werewolf* p) {
 
 bool werewolf_frame_supported(const Wram* w, uint16_t page) {
   const uint16_t state = wram_r16(w, (uint16_t)(page + WEREWOLF_DP_STATE));
-  if (wram_r16(w, (uint16_t)(page + WEREWOLF_DP_WAY)) > BEARING_UP_LEFT)
-    return false;
+  const bool faces =
+      wram_r16(w, (uint16_t)(page + WEREWOLF_DP_WAY)) <= BEARING_UP_LEFT;
   switch (state) {
     case WEREWOLF_STATE_RUN:
-      return wram_r16(w, (uint16_t)(page + WEREWOLF_DP_PICTURE)) <
-             WEREWOLF_RUN_PICTURES;
+      // Whatever way it has and whichever picture a strike left it at: a
+      // step sets the one and the cycle masks the other before either is
+      // read.
+      return true;
     case WEREWOLF_STATE_STRIKE:
-      return wram_r16(w, (uint16_t)(page + WEREWOLF_DP_PICTURE)) < 0x0100;
+      return faces &&
+             wram_r16(w, (uint16_t)(page + WEREWOLF_DP_PICTURE)) < 0x0100;
     case WEREWOLF_STATE_FLIGHT:
       // A pounce over no distance would never finish its pass.
-      return wram_r16(w, (uint16_t)(page + WEREWOLF_DP_SPAN)) != 0;
+      return faces && wram_r16(w, (uint16_t)(page + WEREWOLF_DP_SPAN)) != 0;
+    case WEREWOLF_STATE_CROUCH:
+      return faces;
     default:
       return false;
   }
@@ -671,6 +695,10 @@ WerewolfFate werewolf_frame(Wram* w, const Rom* rom, uint16_t page,
     case WEREWOLF_STATE_STRIKE:
       PORT_COVER(werewolf_striking);
       strike(&p);
+      break;
+    case WEREWOLF_STATE_CROUCH:
+      PORT_COVER(werewolf_crouching);
+      crouch(&p);
       break;
     default:
       PORT_COVER(werewolf_flew);

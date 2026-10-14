@@ -102,7 +102,8 @@ static bool monster_state(Frame* f) {
 // `$80:D404`: a player who flashes and cannot be hurt. Under it runs the
 // ordinary state, or the turning one. Then everything within eight pixels is
 // told the player is there, the hurt timer is held at two, and the picture
-// is flipped on and off, a frame each. The frame it ends on is the ROM's.
+// is flipped on and off, a frame each. The frame it ends on is the ROM's when
+// it is part of a whole frame, and by itself stops at the call that ends it.
 static bool flashing_state(Frame* f) {
   if (field(f, FLASHING_DP_UNDER) == FLASHING_UNDER_TURNING) {
     PORT_COVER(player_frame_flashing_turning);
@@ -143,7 +144,12 @@ static bool flashing_state(Frame* f) {
   const uint16_t frames =
       (uint16_t)(field(f, FLASHING_DP_FRAMES_LEFT) - 1);
   set_field(f, FLASHING_DP_FRAMES_LEFT, frames);
-  return (frames & 0x8000u) == 0;
+  if ((frames & 0x8000u) == 0) return true;
+  if (!f->state_alone) return false;
+  PORT_COVER(player_flashing_last_frame);
+  f->log->flashing_ends = true;
+  set_field(f, FLASHING_DP_ENDS_BY, 0);
+  return true;
 }
 
 // A stuck player is still standing on something, and it acts on them first.

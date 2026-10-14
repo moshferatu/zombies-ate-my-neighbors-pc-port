@@ -273,6 +273,13 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**The passes that sleep in the middle, 2026-10-13.** The martian that
+fires while it arrives, the fishman that stops to look about and the
+werewolf's strike and crouch stop where they sleep, and what follows is
+ported. So is how the martian, the fishman and the werewolf start, and a
+`WAI` can be a link. The places are 450 and the core executes
+94,287 instructions over the survey.
+
 **Four threads between their calls, 2026-10-13.** The weed's snap, the
 follower's look at its tile, the main thread's first instructions and the
 martian walker's are ported. The places are 512 and the core executes

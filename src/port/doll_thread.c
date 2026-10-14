@@ -55,6 +55,9 @@ void doll_first_record(Wram* w, PortCpu* c, DollThreadWork* k) {
   c->pc = DOLL_ALLOC_2_CALL_PC;
 }
 
+#define DOLL_SCREEN_WIDTH 0x0100
+#define DOLL_SCREEN_HEIGHT 0x00f0
+
 // `$80:AA0D`, which nothing else calls: is the point on the screen? Within
 // 256 across and 240 down of the camera, its near edges excluded. Carry is
 // the answer and overflow is whatever its last sum left.
@@ -62,7 +65,7 @@ static bool on_screen(Wram* w, PortCpu* c, uint16_t x, uint16_t y,
                       DollThreadWork* k) {
   const uint16_t at[2] = {x, y};
   const uint16_t camera[2] = {wram_r16(w, W_CAMERA_X), wram_r16(w, W_CAMERA_Y)};
-  const uint16_t span[2] = {0x0100, 0x00f0};
+  const uint16_t span[2] = {DOLL_SCREEN_WIDTH, DOLL_SCREEN_HEIGHT};
   for (int i = 0; i < 2; i++) {
     wram_w16(w, DOLL_SCREEN_SCRATCH, at[i]);
     k->blocks[DT_SCREEN_LOW]++;
@@ -135,7 +138,7 @@ void doll_dress(Wram* w, PortCpu* c, DollThreadWork* k) {
   k->blocks[DT_DRESS_B]++;
   c->s = (uint16_t)(c->s + 2);  // the `RTS`, back to the launch
 
-  // Its arrival is heard, if it is on the screen and `$1F52` is 3.
+  // Its arrival is heard, if it is on the screen, and `doll_heard` says so.
   c->x = x;
   c->y = y;
   called(w, c, 0xb2c1, true);
@@ -148,9 +151,19 @@ void doll_dress(Wram* w, PortCpu* c, DollThreadWork* k) {
     again(w, c, k);
     return;
   }
-  cmp16(c, wram_r16(w, W_DOLL_HEARD), DOLL_HEARD);
+  // The test's last sum and compare, which were of the bottom edge.
+  c->a = (uint16_t)(wram_r16(w, W_CAMERA_Y) + DOLL_SCREEN_HEIGHT);
+  cmp16(c, c->a, y);
+  set_c(c, true);
+  c->pc = DOLL_HEARD_PC;
+}
+
+// `$81:B2C7`: see the header for why this begins where it does.
+void doll_heard(Wram* w, PortCpu* c, DollThreadWork* k) {
+  lda(c, wram_r16(w, W_DOLL_HEARD));
+  cmp16(c, c->a, DOLL_HEARD);
   k->blocks[DT_SEEN_KIND]++;
-  if (wram_r16(w, W_DOLL_HEARD) != DOLL_HEARD) {
+  if (c->a != DOLL_HEARD) {
     PORT_COVER(doll_arrived_unheard);
     k->blocks[DT_TAKEN]++;
     again(w, c, k);

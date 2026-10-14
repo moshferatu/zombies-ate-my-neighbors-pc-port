@@ -108,6 +108,7 @@
 // The flashing: the frames it has left, and a word that says the state under
 // it is the turning one when it holds this.
 #define FLASHING_DP_FRAMES_LEFT 0x74
+#define FLASHING_DP_ENDS_BY 0x72   // the routine that ends it, or 0
 #define FLASHING_DP_UNDER 0x10
 #define FLASHING_UNDER_TURNING 0xfd72u
 #define FLASHING_REACH 8  // pixels each way that are told of the player
@@ -150,6 +151,7 @@ typedef struct {
   bool under_turning;      // ...or flashing: over the turning state
   ActorNotifyWork told;    // ......what was in reach, and told
   bool flickered;          // ......an even frame, and the picture's flag flipped
+  bool flashing_ends;      // ......its last frame: it stops at the call that ends it
   PlayerHurtTimer hurt_timer;
   uint16_t pose;           // the pose handler that ran
   PoseLog pose_log;
@@ -188,11 +190,15 @@ bool player_monster_state(Wram* w, const Rom* rom, uint16_t page,
 void player_turning_state(Wram* w, uint16_t page, PlayerFrameLog* log);
 
 // `$80:D404` on its own: the flashing. Under it the ordinary state takes a
-// press as its own entry does. False on the frame the flashing ends, and when
-// the ordinary state or something told of the player is the ROM's; it is
-// asked of a copy first.
+// press as its own entry does. False when the ordinary state or something
+// told of the player is the ROM's; it is asked of a copy first.
+//
+// On the frame the flashing ends, `log->flashing_ends`, it goes as far as
+// the `JSR` to what ends it, `$80:D97F`, which is a stretch of
+// `port/thread_stretches.h`.
 #define PLAYER_FLASHING_STATE_PC 0x80d404u
 #define PLAYER_FLASHING_STATE_RTS_PC 0x80d460u
+#define PLAYER_FLASHING_END_CALL_PC 0x80d45du
 bool player_flashing_state(Wram* w, const Rom* rom, uint16_t page,
                            PlayerFrameLog* log);
 

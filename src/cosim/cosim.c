@@ -510,9 +510,9 @@ static uint32_t stack_area_lo(const Rom* rom) {
   return lo < 0x0d00u ? 0x0d00u : lo;
 }
 
-// Is this one of the calls, jumps and returns `leave_step` makes? A link has
-// to be. (Not the `RTI` or the `WAI`: those are the handler's and the
-// scheduler's own.)
+// Is this one of the calls, jumps, returns and waits `leave_step` makes? A
+// link has to be. (Not the `RTI`: that is the handler's own.) A `WAI` is one
+// where an interrupt comes back to a second, or a call comes back to one.
 static bool link_opcode(const Rom* rom, uint32_t pc) {
   uint32_t avail = 0;
   const uint8_t* op = rom_ptr(rom, pc, &avail);
@@ -526,6 +526,7 @@ static bool link_opcode(const Rom* rom, uint32_t pc) {
     case 0x5c:  // JML
     case 0x80:  // BRA
     case 0x82:  // BRL
+    case 0xcb:  // WAI
       return true;
     default:
       return false;

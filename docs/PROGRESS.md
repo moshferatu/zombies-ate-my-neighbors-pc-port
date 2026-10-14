@@ -5,6 +5,92 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The passes that sleep in the middle: the martian's shot, the fishman's look about, the werewolf (2026-10-13)
+
+Three creatures had passes the ports turned down, each because it sleeps
+part way through. Those passes now stop at the sleep, and what follows is an
+entry of its own. With them: how four threads start, two things that happen
+to a player, and the waits the 65816 was still asked for.
+
+* **The martian that fires while it arrives.** `martian_arrival_frame`
+  stops at the `JSL` that asks for the shot's thread, as a walker's pass
+  does. `martian_wake` is the rest of either, and tells which by the return
+  addresses on the stack: three for a shot at something lined up, two for
+  one downwards on a draw.
+  * **One that comes in over the top is put eight pixels below the top of
+    the screen**, at whatever X it was given. If that place is in the ground
+    or off the level, the thread ends and there is no martian. `$81:9A3E`,
+    four stretches.
+* **The fishman that stops to look about.** On five draws in 256 it faces
+  left or right by a second draw and shows eight pictures. `fishman_frame`
+  and `fishman_patrol_frame` stop at those pictures, and
+  `fishman_look_about_after` is the rest of the swim. That may be a leap
+  decided on, which stops again at the leap's sleep.
+* **The fishman that comes ashore begins as the other does**, but for its
+  first way, which is by a draw. `fishman_begin` is both, and
+  `fishman_ashore_begin` is the row at `$81:E481`.
+* **The werewolf.**
+  * Its running pass was turned down after every strike and on its first
+    pass. A strike leaves the picture's number at 20, and the thread's setup
+    leaves the way it faces unset. The pass masks the one and sets the other
+    before it reads either, so both are taken now. One case is still the
+    ROM's: a first pass that leaves because its target is exactly 360 away.
+  * The last pass of a strike stops at giving the blow's record back, and a
+    crouch at its three pictures. What follows each is a stretch.
+  * **Its thread ends at once unless the word at `$1F94` is set.** Otherwise
+    it weighs 28 in the level's load, howls if the level's sample set has
+    its howl, takes a record, sleeps twenty ticks and runs. It starts with
+    ten for what it can be hit by. Nine stretches.
+* **A player shown hurt**, `$80:D056`: the picture they had is kept on the
+  stack while a list of pictures plays, and put back. Two stretches and an
+  argument.
+* **The frame a player's flashing ends on.** `player_flashing_state` leaves
+  by one of two exits now: its `RTS`, or the `JSR` to what ends the
+  flashing. That is `ts_flashing_end`, `$80:D97F`: the player is drawn
+  again and goes back to the state that ran under the flashing.
+* **A `WAI` can be a link.** Sixteen stood where an interrupt comes back to
+  a second `WAI` or a call comes back to one, and the 65816 was asked for
+  each. `link_opcode` in `cosim.c` takes them now.
+* **Nine more links and eight stretches of one or two instructions**, from
+  the list of places the 65816 ran three instructions or fewer.
+* **A frontend feature was broken, and is mended.** `src/bank_sfx.h` plays
+  the monster sounds a level leaves out for want of the sample set. It knows
+  when by watching the 65816 come to each check of the set. A port that
+  runs through a check never puts the 65816 there.
+  * The werewolf's start would have been the second such port. Its check is
+    a stretch of its own, `ts_werewolf_howl_check`, so the one before stops
+    on the watched instruction.
+  * **The evil doll's was the first, on 2026-10-05.** `doll_dress` ran
+    through `$81:B2C7`, and since then no doll has laughed on a level with
+    another sample set. `doll_heard` is the check as its own row.
+  * Nothing in the corpus hears sound. I found this by reading
+    `src/bank_sfx.h` for addresses inside this round's blocks.
+* **Checked.** 1,352 routines are registered.
+  * The corpus verifies clean: 128,073,288 calls over 56 movies, none
+    diverged.
+  * Every new row's cost is exact over the corpus.
+  * Branch coverage is 1,659 of 1,983.
+  * Lockstep: 53 of 56 never part; `level25`, `level25-2p` and `level25-heavy` do, as before.
+  * The picture: 78,360,128 lines drawn both ways over the 56 movies, at off and at 16:9, and none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+  * With a print in `bank_sfx_at` for one build, the game came to the doll's check 23 times over four movies of the corpus, 9 of them on a level with another set, and to the werewolf's 10 times.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 456 to 399 | 10,015 to 5,757 | 77,824 to 51,614 |
+  | Left standing on an instruction | 16 to 15 | 386 to 274 | 27,653 to 26,752 |
+  | A port turned the call down | 31 to 27 | 2,513 to 2,140 | 11,423 to 7,242 |
+  | A port or a link called it | 8 to 8 | 270 to 176 | 1,081 to 759 |
+  | All | 512 to 450 | 13,294 to 8,457 | 125,901 to 94,287 |
+
+* **Not done or not known.**
+  * The werewolf's landing, `$81:AA71`, and its end are still the ROM's.
+  * The fishman's pass on land that finds water past what stopped it, and a bite with no record free, are still turned down.
+  * Whether the doll's laugh and the werewolf's howl sound right on a level with another sample set I have not heard. The check above is that the frontend is asked for them.
+  * Lockstep with `--level` was not run this round. The survey ran all 56 records in the game, and each ended with status 0.
+  * I did not play any of this. The checks above are the port against the ROM, and the picture pass.
+
 ### The weed, the follower, the main thread and the martian, between their calls (2026-10-13)
 
 Four threads whose loops were ported a pass at a time, and what a pass

@@ -11,20 +11,19 @@
 //   $81:9A5A  frame   the arrival's loop
 //
 // **A shot sleeps twelve ticks in the middle of the call that fires it.**
-// So a pass that fires is two stretches. A walker's are both here: the frame
-// ends at the `JSL` that asks for the shot's thread, three return addresses
-// deep, and the rest of the pass is an entry of its own, at the `RTS` the
-// sleep comes back to:
+// So a pass that fires is two stretches. The frame ends at the `JSL` that
+// asks for the shot's thread, two or three return addresses deep, and the
+// rest of the pass is an entry of its own, at the `RTS` the sleep comes back
+// to:
 //
-//   $81:99C9  wake    the rest of a walking pass that fired
+//   $81:99C9  wake    the rest of a pass that fired
 //
-// One that fires while it is arriving is left to the ROM, both halves.
-// Whether a pass fires can be down to a random draw, so the port finds out
-// by running it: `MartianLog::declined` says so, and a guard asks it of a
-// scratch copy first.
+// Which pass it is the rest of, the words on the stack say: a walker's, one
+// arriving that shot at something lined up, or one arriving that shot
+// downwards on a draw.
 //
-// Two pieces of such a pass are here all the same, each for the ROM to call
-// as it goes:
+// Two pieces of a pass are here by themselves as well, each for the ROM to
+// call:
 //
 //   $81:9981  shoot   as far as the shot's thread being asked for, or the
 //                     `RTS` when it is still cooling
@@ -212,9 +211,9 @@ typedef struct {
   uint16_t state;             // the body that ran
   bool aligned_asked;
   ActorAlignedRegs aligned;   // what `actor_aligned` did
-  bool held_fire;             // something was lined up, and it was cooling
-  bool declined;              // the ROM's: it fired while arriving
-  bool fired;                 // walking, it fired: the frame ends at the spawn
+  bool held_fire;             // something was lined up
+  bool declined;              // the ROM's: a shot the port cannot show
+  bool fired;                 // it fired: the frame ends at the spawn
   uint16_t shot_way;          // ...this way,
   bool shot_mirrored;         // ...which is to the left
   MartianLook look;
@@ -260,13 +259,19 @@ bool martian_frame_supported(const Wram* w, uint16_t page);
 // `log->declined` says the pass is the ROM's after all. WRAM is then part
 // written, which is why a guard asks on a scratch copy first.
 //
-// `log->fired` says a walker fired, and the pass has got as far as asking
-// for the shot's thread. What it returns is then no matter.
+// `log->fired` says it fired, and the pass has got as far as asking for the
+// shot's thread. What it returns is then no matter. Arriving,
+// `log->held_fire` says it was at something lined up, through the pointer at
+// `$22`, and otherwise it was downwards on a draw.
 bool martian_frame(Wram* w, const Rom* rom, uint16_t page, MartianLog* log);
 
 // `$81:99C9`: the rest of a walking pass that fired, from where its sleep
 // comes back. False when its fate is no longer zero.
 bool martian_wake(Wram* w, const Rom* rom, uint16_t page, MartianLog* log);
+
+// The same address, for a pass that fired while arriving: from `$81:9DEF`.
+bool martian_arrival_wake(Wram* w, const Rom* rom, uint16_t page,
+                          MartianLog* log);
 
 // `$81:9AC0`, called by either loop's start with the place in `$00` and
 // `$02`. False with no record free, which is the ROM's: it only looks then.

@@ -8,18 +8,31 @@
 //   $81:AC1E  werewolf_frame
 //
 // What is here is the running, the choosing of where a pounce is to come
-// down, the passes of a strike and the flight of a pounce. What is not is
-// the thread's setup, the crouch before a pounce and the landing after it,
-// which sleep in the middle, and its end. A pass in one of those states is
-// the ROM's. So are two kinds of pass that only running it finds, which
-// `WerewolfLog::declined` says and a guard asks of a scratch copy first: the
-// last of a strike, and one with nobody on the level to run at.
+// down, the passes of a strike, the crouch before a pounce and its flight.
+// What is not is the landing after it, which sleeps in the middle, and the
+// thread's end. A pass in that state is the ROM's. So is one that only
+// running it finds, which `WerewolfLog::declined` says and a guard asks of a
+// scratch copy first: one with nobody on the level to run at.
+//
+// **Two passes stop in the middle**, with the loop's return on the stack:
+//
+//   $81:AAFE  the last of a strike, at the `JSL` that gives the blow's
+//             record back
+//   $81:A9AB  a crouch, at the `JSL` that shows its three pictures, which
+//             sleeps
+//
+// What comes after each, and the thread's start, are stretches of
+// `port/thread_stretches.h`.
 //
 // ## What it does
 //
 // **Running**, it finds whoever `actor_nearest` knows and steps a pixel their
 // way, each axis by itself if the ground there may be walked on and nobody
 // is standing there. On a draw, half the time, it steps twice.
+//
+// **Its first pass has no way to face.** The thread's setup does not clear
+// the word, and the pass sets it before it reads it unless its target is
+// exactly 360 away, when it leaves. That one pass is the ROM's.
 //
 // **It pounces on a draw**, about one pass in seventeen, at somebody under
 // 325 away and 70 or more by the sum of the two gaps. Hurt since it last
@@ -67,13 +80,18 @@
 #define WEREWOLF_YIELD_PC 0x81ac1au  // `JSL thread_yield`, A already 1
 #define WEREWOLF_FATE_PC 0x81ac2au   // past the `BEQ`, its fate in A
 #define WEREWOLF_YIELD_TICKS 1
+#define WEREWOLF_STRIKE_FREE_PC 0x81aafeu  // `JSL actor_slot_free`, the blow in A
+#define WEREWOLF_CROUCH_LIST_PC 0x81a9abu  // `JSL pictures_play`, the list in A
+#define WEREWOLF_CROUCH_PICTURES 0xa9b3u
+// What the loop's `PEA` leaves for a body's `RTS`.
+#define WEREWOLF_LOOP_RETURN 0xac25u
 
 // The state bodies, by the address the thread keeps in `$0A`.
 #define WEREWOLF_STATE_RUN 0xabc6u
 #define WEREWOLF_STATE_STRIKE 0xaacfu
 #define WEREWOLF_STATE_FLIGHT 0xa9f0u
-// ...and two the port only names.
 #define WEREWOLF_STATE_CROUCH 0xa994u
+// ...and one the port only names.
 #define WEREWOLF_STATE_LANDED 0xaa71u
 
 // Fields on its page.
@@ -155,8 +173,15 @@ typedef enum {
   WEREWOLF_STRIKE_WAITED,     // not a pass with a new picture
   WEREWOLF_STRIKE_SHOWN,      // one of the first five
   WEREWOLF_STRIKE_BLOW_SHOWN, // ...or a later one, with the blow drawn
-  WEREWOLF_STRIKE_OVER,       // the pictures ran out, which is the ROM's
+  WEREWOLF_STRIKE_OVER,       // the pictures ran out: the pass stops
 } WerewolfStrike;
+
+// Where a pass stopped.
+typedef enum {
+  WEREWOLF_STOP_PASS,         // at its end
+  WEREWOLF_STOP_STRIKE_OVER,  // `$81:AAFE`
+  WEREWOLF_STOP_CROUCH,       // `$81:A9AB`
+} WerewolfStop;
 
 typedef enum {
   WEREWOLF_FLIGHT_UP,
@@ -172,6 +197,9 @@ typedef enum {
 typedef struct {
   uint16_t state;  // the body that ran
   bool declined;   // the ROM's: see the top of this file
+  WerewolfStop stop;
+  uint16_t a;      // at a stop in the middle: the blow's record, or the list
+  bool crouch_mask_clears;  // a crouch: the table's word for its flags clears
 
   // Running.
   int steps;

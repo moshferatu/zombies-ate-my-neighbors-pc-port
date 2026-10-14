@@ -7,6 +7,10 @@
 // was found by running every session and listing where the 65816 was asked
 // for exactly one instruction.
 //
+// **A `WAI` is one too.** It moves control to the interrupt and back. The
+// ones here stand where an interrupt returns to a second `WAI`, or where a
+// call comes back to one, so no port leaves by them.
+//
 // A link says nothing about what is round it. Most of these are in routines
 // nobody has ported whole, and are here so that the list of what is left to
 // port is a list of code, and not of calls to code that is ported already.
@@ -207,6 +211,31 @@
   X(808632, "$80:8632", 0x808632u) /* JSL $80:9F9D */ \
   X(809128, "$80:9128", 0x809128u) /* JSL $80:88A9 */ \
   X(8183c3, "$81:83C3", 0x8183c3u) /* RTL */ \
-  X(8181f5, "$81:81F5", 0x8181f5u) /* RTS */
+  X(8181f5, "$81:81F5", 0x8181f5u) /* RTS */ \
+  X(8381cb, "$83:81CB", 0x8381cbu) /* WAI */ \
+  X(8087d2, "$80:87D2", 0x8087d2u) /* WAI */ \
+  X(8087d3, "$80:87D3", 0x8087d3u) /* WAI */ \
+  X(8087d4, "$80:87D4", 0x8087d4u) /* WAI */ \
+  X(82b82a, "$82:B82A", 0x82b82au) /* WAI */ \
+  X(82ae3e, "$82:AE3E", 0x82ae3eu) /* WAI */ \
+  X(8093b0, "$80:93B0", 0x8093b0u) /* WAI */ \
+  X(809c50, "$80:9C50", 0x809c50u) /* WAI */ \
+  X(80931e, "$80:931E", 0x80931eu) /* WAI */ \
+  X(808371, "$80:8371", 0x808371u) /* WAI */ \
+  X(82b9b0, "$82:B9B0", 0x82b9b0u) /* WAI */ \
+  X(82b230, "$82:B230", 0x82b230u) /* WAI */ \
+  X(82b565, "$82:B565", 0x82b565u) /* WAI */ \
+  X(82b30e, "$82:B30E", 0x82b30eu) /* WAI */ \
+  X(82b2f1, "$82:B2F1", 0x82b2f1u) /* WAI */ \
+  X(809796, "$80:9796", 0x809796u) /* WAI */ \
+  X(828013, "$82:8013", 0x828013u) /* RTL */ \
+  X(81e077, "$81:E077", 0x81e077u) /* RTS */ \
+  X(8086a1, "$80:86A1", 0x8086a1u) /* RTL */ \
+  X(80e1ea, "$80:E1EA", 0x80e1eau) /* JMP $E2C5 */ \
+  X(83ad33, "$83:AD33", 0x83ad33u) /* JSR $83:AAB2 */ \
+  X(81d8b5, "$81:D8B5", 0x81d8b5u) /* RTS */ \
+  X(81c94d, "$81:C94D", 0x81c94du) /* RTS */ \
+  X(82dc9f, "$82:DC9F", 0x82dc9fu) /* RTL */ \
+  X(80c1f4, "$80:C1F4", 0x80c1f4u) /* RTL */
 
 #endif

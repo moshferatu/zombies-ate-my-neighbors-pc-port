@@ -8567,6 +8567,24 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_CACHE_START] = {94, 13, 0},
     [TS_MARTIAN_ENTER] = {98, 10, 0},
     [TS_MARTIAN_WALKS] = {86, 6, 1},
+    [TS_RTS] = {40, 1, 0},
+    [TS_ARRIVAL_PLACE] = {132, 12, 2},
+    [TS_ARRIVAL_FREE] = {52, 2, 0},
+    [TS_ARRIVAL_STATE] = {142, 10, 3},
+    [TS_PLAYER_HIT_KEEP] = {222, 16, 1},
+    [TS_PLAYER_HIT_BACK] = {232, 14, 3},
+    [TS_FLASHING_END] = {258, 25, 4},
+    // What it writes through its record's address on the page is WRAM.
+    [TS_WOLF_LEAP] = {336, 27, 4},
+    [TS_WOLF_ASK] = {46, 5, 0},
+    [TS_WOLF_HEARD] = {64, 8, 0},
+    [TS_WOLF_MADE] = {702, 63, 12},
+    [TS_WOLF_HEALTH] = {92, 10, 2},
+    [TS_WOLF_UNBLOW] = {64, 8, 1},
+    [TS_JMP] = {18, 3, 0},
+    [TS_STZ_DP] = {28, 2, 1},
+    [TS_PLD] = {34, 1, 0},
+    [TS_SEC] = {12, 1, 0},
     // Its two words are read from the cartridge, which the tool prices as
     // WRAM: four bytes more, and eight cycles fewer.
     [TS_LEVEL_RECORD] = {176, 22, 2},
@@ -8621,7 +8639,20 @@ THREAD_STRETCHES(X)
 #undef X
 
 static const uint32_t TS_EXITS_ARGUMENT[] = {
-    0x81d186u, 0x81d1b0u, 0x81d1dau, 0x82f4b4u, 0x808519u, 0x8199c5u};
+    0x81d186u, 0x81d1b0u, 0x81d1dau, 0x82f4b4u, 0x808519u, 0x8199c5u,
+    0x80d06cu, 0x81ec75u, 0x81f311u};
+static const uint32_t TS_EXITS_SETTER[] = {0x81921au, 0x819255u};
+static const uint32_t TS_EXITS_WOLF[] = {
+    WEREWOLF_NONE_PC, WEREWOLF_HOWL_CHECK_PC, WEREWOLF_HOWL_CALL_PC,
+    WEREWOLF_MAKE_PC,
+    WEREWOLF_FIRST_SLEEP_PC, WEREWOLF_HANDLER_CALL_PC, WEREWOLF_YIELD_PC,
+    WEREWOLF_FATE_PC};
+static const uint32_t TS_EXITS_SMALL[] = {PAGE_CLEAR_RTS_PC, PAGE_PULL_RTL_PC,
+                                          CARRY_SET_RTS_PC,
+                                          VICTIM_GONE_CALL_PC};
+static const uint32_t TS_EXITS_PLAYER_HIT[] = {PLAYER_HIT_SHOW_CALL_PC,
+                                               PLAYER_HIT_SHOWN_CALL_PC,
+                                               FLASHING_END_CALL_PC};
 static const uint32_t TS_EXITS_PAIR[] = {0x8085d9u, 0x819b36u, 0x80c2e4u};
 // Its calls, the body's `RTS`, and the ends that are `port/begin.h`'s.
 static const uint32_t TS_EXITS_WEED[] = {
@@ -8641,8 +8672,10 @@ static const uint32_t TS_EXITS_MAIN[] = {
     SPAWNER_TICK_SLEEP_PC, SPAWNER_SLEEP_PC};
 // `spawner_wait` begins where that sleep comes back.
 static const uint32_t TS_EXITS_SPAWNER[] = {SPAWNER_SLEEP_PC};
-static const uint32_t TS_EXITS_MARTIAN[] = {MARTIAN_BEGIN_CALL_PC,
-                                            MARTIAN_FIRST_SLEEP_PC};
+static const uint32_t TS_EXITS_MARTIAN[] = {
+    MARTIAN_BEGIN_CALL_PC, MARTIAN_FIRST_SLEEP_PC, MARTIAN_PLACE_GROUND_PC,
+    MARTIAN_PLACE_EDGE_PC, MARTIAN_ARRIVAL_NONE_PC,
+    MARTIAN_ARRIVAL_BEGIN_CALL_PC, MARTIAN_ARRIVAL_YIELD_PC};
 
 // ---------------------------------------------------------------------------
 // $82:D8FD  the radar's thread -- see `port/radar_thread.h`
@@ -9730,6 +9763,7 @@ static const CosimRun MARTIAN_RUN_FATE = {40, 4, 1};          // $99FE LDA $26 :
 static const CosimRun MARTIAN_RUN_TICKS = {18, 3, 0};         // $99EF LDA #$0001
 static const CosimRun MARTIAN_RUN_RTS = {40, 1, 0};
 static const CosimRun MARTIAN_RUN_NEGATE = {30, 4, 0};        // EOR : INC
+static const CosimRun MARTIAN_RUN_BRA = {12, 2, 0};
 static const CosimRun MARTIAN_RUN_TAKEN = {6, 0, 0};
 // The shot, while it cools.
 static const CosimRun MARTIAN_RUN_SHOOT_JSR = {40, 3, 0};     // $9D3B JSR $9D1F
@@ -9904,6 +9938,19 @@ static void martian_show_bill(MartianBill* b) {
   martian_add(b, &MARTIAN_RUN_RTS);
 }
 
+// As far as the `JSL` that asks for the shot's thread.
+static void martian_fire_bill(MartianBill* b, bool through_pointer) {
+  if (through_pointer) martian_add(b, &MARTIAN_RUN_SHOOT_VIA);
+  martian_add(b, &MARTIAN_RUN_SHOOT_HEAD);
+  martian_add(b, &MARTIAN_RUN_FIRE_SET);
+  martian_add(b, &MARTIAN_RUN_PICTURE);
+  martian_add(b, &MARTIAN_RUN_FIRE_FLAGS);
+  martian_add(b, b->log->shot_mirrored ? &MARTIAN_RUN_SHOW_MIRROR
+                                       : &MARTIAN_RUN_SHOW_PLAIN);
+  martian_taken(b);
+  martian_add(b, &MARTIAN_RUN_FIRE_STORE);
+}
+
 // From `$81:9D3E`: the look and the step.
 static void martian_walk_on_bill(MartianBill* b);
 
@@ -9916,15 +9963,7 @@ static void martian_walk_bill(MartianBill* b) {
   b->calls += aligned_cycles(&log->aligned, fast);
   if (log->fired) {
     martian_add(b, &MARTIAN_RUN_SHOOT_JSR);
-    martian_add(b, &MARTIAN_RUN_SHOOT_VIA);
-    martian_add(b, &MARTIAN_RUN_SHOOT_HEAD);
-    martian_add(b, &MARTIAN_RUN_FIRE_SET);
-    martian_add(b, &MARTIAN_RUN_PICTURE);
-    martian_add(b, &MARTIAN_RUN_FIRE_FLAGS);
-    martian_add(b, log->shot_mirrored ? &MARTIAN_RUN_SHOW_MIRROR
-                                      : &MARTIAN_RUN_SHOW_PLAIN);
-    martian_taken(b);
-    martian_add(b, &MARTIAN_RUN_FIRE_STORE);
+    martian_fire_bill(b, true);
     return;
   }
   if (log->held_fire) {
@@ -10002,6 +10041,10 @@ static void martian_above_bill(MartianBill* b) {
   martian_add(b, &MARTIAN_RUN_ABOVE_ANSWER);
 }
 
+// From `$81:9DEF`: its side, its height and its steps.
+static void martian_arrive_on_bill(MartianBill* b);
+
+// An arriving pass that fires stops at the same `JSL`.
 static void martian_arrive_bill(MartianBill* b) {
   const MartianLog* log = b->log;
   const bool fast = b->in->fastrom;
@@ -10020,6 +10063,11 @@ static void martian_arrive_bill(MartianBill* b) {
   martian_add(b, &MARTIAN_RUN_ARRIVE_ALIGN);
   b->calls += aligned_cycles(&log->aligned, fast);
   if (log->held_fire) {
+    if (log->fired) {
+      martian_add(b, &MARTIAN_RUN_SHOOT_JSR);
+      martian_fire_bill(b, true);
+      return;
+    }
     martian_add(b, &MARTIAN_RUN_ARRIVE_SHOOT);
     martian_taken(b);
     martian_shoot_bill(b, true);
@@ -10029,12 +10077,21 @@ static void martian_arrive_bill(MartianBill* b) {
     b->calls += rng_cycles(log->drew_overflow, fast);
     if (log->drew_fire) {
       martian_add(b, &MARTIAN_RUN_ARRIVE_FIRE);
+      if (log->fired) {
+        martian_fire_bill(b, false);
+        return;
+      }
       martian_shoot_bill(b, false);
     } else {
       martian_taken(b);
     }
   }
+  martian_arrive_on_bill(b);
+}
 
+static void martian_arrive_on_bill(MartianBill* b) {
+  const MartianLog* log = b->log;
+  const bool fast = b->in->fastrom;
   martian_add(b, &MARTIAN_RUN_ARRIVE_TIMER);
   if (log->picked_side) {
     martian_add(b, &MARTIAN_RUN_ARRIVE_LOOK);
@@ -10098,9 +10155,9 @@ static bool martian_frame_ok(const Wram* w, const CosimRegs* in) {
          martian_frame_supported(w, in->d);
 }
 
-// Two things only running the pass can find. It fired, which is the ROM's.
-// Or it looked, and what `actor_nearest` gave it is no record: with nothing
-// to find, that hands back whatever its last search left.
+// Two things only running the pass can find. It fired a shot the port has no
+// picture for. Or it looked, and what `actor_nearest` gave it is no record:
+// with nothing to find, that hands back whatever its last search left.
 static bool guard_martian_frame(Wram* scratch, const Rom* rom,
                                 const CosimRegs* in) {
   MartianLog log = {0};
@@ -10111,14 +10168,19 @@ static bool guard_martian_frame(Wram* scratch, const Rom* rom,
          wram_r16(scratch, (uint16_t)(in->d + MARTIAN_DP_TARGET)) < 0x1f00;
 }
 
-// The words a pass has on its stack: the loop's `PEA`, the walk's `JSR` to
-// the shot, and the `PEA` the shot is called through. And the two that are
-// left behind by the rest of the pass: its `JSR` to the picture, and that
-// one's to the setter.
+// The words a pass has on its stack: the loop's `PEA`, the state's `JSR` to
+// the shot, and the `PEA` the shot is called through. Arriving, a shot on a
+// draw is called by name, with no pointer between. And the two that are
+// left behind by the rest of a walking pass: its `JSR` to the picture, and
+// that one's to the setter.
 #define MARTIAN_RETURN_WALKER 0x99fdu
 #define MARTIAN_RETURN_ARRIVAL 0x9a61u
 #define MARTIAN_RETURN_WALK_SHOT 0x9d3du
+#define MARTIAN_RETURN_ARRIVE_SHOT 0x9dddu
+#define MARTIAN_RETURN_DRAW_SHOT 0x9deeu
 #define MARTIAN_RETURN_VIA 0x9d28u
+// ...and what firing leaves under them: its `JSR` to the picture's setter.
+#define MARTIAN_RETURN_FIRE_SET 0x99a0u
 #define MARTIAN_RETURN_SHOW 0x9dafu
 #define MARTIAN_RETURN_SHOW_SET 0x9cadu
 
@@ -10140,8 +10202,8 @@ static void martian_pass_leave(const Wram* w, const CosimRegs* in,
                                uint32_t fate_pc);
 
 // It leaves by the `JSL thread_yield` with the tick count in A, or past the
-// test of its fate with that in A. Or, a walker firing, by the `JSL` that
-// asks for the shot's thread, with the stack as the ROM has it there.
+// test of its fate with that in A. Or, firing, by the `JSL` that asks for
+// the shot's thread, with the stack as the ROM has it there.
 static void martian_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out, uint16_t loop_return,
                               uint32_t yield_pc, uint32_t fate_pc) {
@@ -10166,11 +10228,19 @@ static void martian_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
     if (log.shot_mirrored) out->p |= PORT_P_C;
     if (log.v) out->p |= PORT_P_V;
     out->p_keep = (uint8_t)(log.v_set ? 0 : PORT_P_V);
-    wram_w16(w, (uint16_t)(in->s - 1), loop_return);
-    wram_w16(w, (uint16_t)(in->s - 3), MARTIAN_RETURN_WALK_SHOT);
-    wram_w16(w, (uint16_t)(in->s - 5), MARTIAN_RETURN_VIA);
-    wram_w16(w, (uint16_t)(in->s - 7), (uint16_t)(MARTIAN_SHOOT - 1));
-    out->s = (uint16_t)(in->s - 6);
+    PortCpu stack = {.s = in->s};
+    push16(w, &stack, loop_return);
+    if (log.state == MARTIAN_STATE_WALK) {
+      push16(w, &stack, MARTIAN_RETURN_WALK_SHOT);
+      push16(w, &stack, MARTIAN_RETURN_VIA);
+    } else if (log.held_fire) {
+      push16(w, &stack, MARTIAN_RETURN_ARRIVE_SHOT);
+      push16(w, &stack, MARTIAN_RETURN_VIA);
+    } else {
+      push16(w, &stack, MARTIAN_RETURN_DRAW_SHOT);
+    }
+    out->s = stack.s;
+    wram_w16(w, (uint16_t)(stack.s - 1), MARTIAN_RETURN_FIRE_SET);
     return;
   }
   martian_pass_cost(&b, stays);
@@ -10210,17 +10280,39 @@ static const uint32_t MARTIAN_FRAME_EXITS[] = {
 static const uint32_t MARTIAN_ARRIVAL_FRAME_EXITS[] = {
     MARTIAN_ARRIVAL_YIELD_PC, MARTIAN_ARRIVAL_FATE_PC, MARTIAN_SHOOT_SPAWN_PC};
 
-// `$81:99C9`: the rest of a walking pass that fired. The sleep comes back
-// to an `RTS`, and what that goes back through is on the stack: the shot's
-// caller, the walk, and whichever loop the pass is of.
+// `$81:99C9`: the rest of a pass that fired. The sleep comes back to an
+// `RTS`, and what that goes back through is on the stack: the shot's
+// caller, the state, and whichever loop the pass is of.
+typedef enum {
+  MARTIAN_WOKE_ELSEWHERE,
+  MARTIAN_WOKE_WALKING,
+  MARTIAN_WOKE_ARRIVING_LINED_UP,  // through the pointer
+  MARTIAN_WOKE_ARRIVING_DREW,
+} MartianWoke;
+
+static MartianWoke martian_woke(const Wram* w, const CosimRegs* in) {
+  const uint16_t state = wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_STATE));
+  const uint16_t first = wram_r16(w, (uint16_t)(in->s + 1));
+  const uint16_t second = wram_r16(w, (uint16_t)(in->s + 3));
+  const uint16_t third = wram_r16(w, (uint16_t)(in->s + 5));
+  if (state == MARTIAN_STATE_WALK) {
+    return first == MARTIAN_RETURN_VIA && second == MARTIAN_RETURN_WALK_SHOT &&
+                   (third == MARTIAN_RETURN_WALKER ||
+                    third == MARTIAN_RETURN_ARRIVAL)
+               ? MARTIAN_WOKE_WALKING
+               : MARTIAN_WOKE_ELSEWHERE;
+  }
+  if (first == MARTIAN_RETURN_VIA && second == MARTIAN_RETURN_ARRIVE_SHOT &&
+      third == MARTIAN_RETURN_ARRIVAL)
+    return MARTIAN_WOKE_ARRIVING_LINED_UP;
+  if (first == MARTIAN_RETURN_DRAW_SHOT && second == MARTIAN_RETURN_ARRIVAL)
+    return MARTIAN_WOKE_ARRIVING_DREW;
+  return MARTIAN_WOKE_ELSEWHERE;
+}
+
 static bool accepts_martian_wake(const Wram* w, const CosimRegs* in) {
-  if (!martian_frame_ok(w, in) ||
-      wram_r16(w, (uint16_t)(in->d + MARTIAN_DP_STATE)) != MARTIAN_STATE_WALK)
-    return false;
-  const uint16_t loop = wram_r16(w, (uint16_t)(in->s + 5));
-  return wram_r16(w, (uint16_t)(in->s + 1)) == MARTIAN_RETURN_VIA &&
-         wram_r16(w, (uint16_t)(in->s + 3)) == MARTIAN_RETURN_WALK_SHOT &&
-         (loop == MARTIAN_RETURN_WALKER || loop == MARTIAN_RETURN_ARRIVAL);
+  return martian_frame_ok(w, in) &&
+         martian_woke(w, in) != MARTIAN_WOKE_ELSEWHERE;
 }
 
 // A look that chose no way returns without the step and the picture, and
@@ -10229,14 +10321,47 @@ static bool accepts_martian_wake(const Wram* w, const CosimRegs* in) {
 static bool guard_martian_wake(Wram* scratch, const Rom* rom,
                                const CosimRegs* in) {
   MartianLog log = {0};
+  if (martian_woke(scratch, in) != MARTIAN_WOKE_WALKING) {
+    martian_arrival_wake(scratch, rom, in->d, &log);
+    return !log.picked_side ||
+           wram_r16(scratch, (uint16_t)(in->d + MARTIAN_DP_TARGET)) < 0x1f00;
+  }
   martian_wake(scratch, rom, in->d, &log);
   if (log.look == MARTIAN_LOOK_NONE) return true;
   return log.look != MARTIAN_LOOK_STAND && log.look != MARTIAN_LOOK_LEAVE &&
          wram_r16(scratch, (uint16_t)(in->d + MARTIAN_DP_TARGET)) < 0x1f00;
 }
 
+// Arriving: the shot's `RTS`, and through the pointer that one's and the
+// `BRA` after the call.
+static void shim_martian_arrival_wake(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out,
+                                      bool through_pointer) {
+  MartianLog log = {0};
+  const bool stays = martian_arrival_wake(w, rom, in->d, &log);
+
+  MartianBill b = {{0, 0, 0}, 0, &log, in};
+  martian_add(&b, &MARTIAN_RUN_RTS);
+  if (through_pointer) {
+    martian_add(&b, &MARTIAN_RUN_RTS);
+    martian_add(&b, &MARTIAN_RUN_BRA);
+    martian_taken(&b);
+  }
+  martian_arrive_on_bill(&b);
+  martian_pass_cost(&b, stays);
+  martian_pass_leave(w, in, out, &log, stays, MARTIAN_ARRIVAL_YIELD_PC,
+                     MARTIAN_ARRIVAL_FATE_PC);
+  out->s = (uint16_t)(in->s + (through_pointer ? 6 : 4));
+}
+
 static void shim_martian_wake(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
+  const MartianWoke woke = martian_woke(w, in);
+  if (woke != MARTIAN_WOKE_WALKING) {
+    shim_martian_arrival_wake(w, rom, in, out,
+                              woke == MARTIAN_WOKE_ARRIVING_LINED_UP);
+    return;
+  }
   const bool arrival =
       wram_r16(w, (uint16_t)(in->s + 5)) == MARTIAN_RETURN_ARRIVAL;
   MartianLog log = {0};
@@ -13952,6 +14077,10 @@ static const CosimRun FISHMAN_RUN_LOOK_HEAD = {140, 13, 2};  // $DD57-$DD63, to 
 static const CosimRun FISHMAN_RUN_LOOK_NEAR = {46, 5, 1};  // $DD7A STX $24 : JMP, and $DED3
 static const CosimRun FISHMAN_RUN_BAND = {30, 5, 0};  // CMP # : BCC
 static const CosimRun FISHMAN_RUN_LOOK_ABOUT = {84, 9, 0};  // $DDA1 JSL : CMP #$0005 : BCC
+static const CosimRun FISHMAN_RUN_LOOK_DRAW = {112, 11, 1};  // $DDAB LDY $08 : JSL : CMP #$007F : BCC
+static const CosimRun FISHMAN_RUN_LOOK_RIGHT = {98 + 6, 10, 1};  // $DDB6 LDA : STA $26 : AND : BRA
+static const CosimRun FISHMAN_RUN_LOOK_LEFT = {86, 8, 1};  // $DDC0 LDA : STA $26 : ORA
+static const CosimRun FISHMAN_RUN_LOOK_LIST = {58, 6, 0};  // $DDC8 STA : LDA #$DDD3
 static const CosimRun FISHMAN_RUN_LEAP_DRAW = {84, 9, 0};  // $E007 JSL : CMP #$007D : BCS
 static const CosimRun FISHMAN_RUN_LEAP_NEAR = {140, 13, 2};  // $E010-$E01C, to CMP #$00C8 : BCS
 static const CosimRun FISHMAN_RUN_LEAP_SPOT = {640, 58, 5};  // $E01D-$E054, to the BCS after the bounds
@@ -14220,10 +14349,25 @@ static bool fishman_ask_leap_bill(FishmanBill* b) {
   return true;
 }
 
-static void fishman_ask_look_about_bill(FishmanBill* b) {
+// The `JSR` to the draw for a look about. False when it is to look, and the
+// pass stops at its pictures.
+static bool fishman_ask_look_about_bill(FishmanBill* b) {
   fishman_add(b, &FISHMAN_RUN_JSR);
   fishman_add(b, &FISHMAN_RUN_LOOK_ABOUT);
-  fishman_add(b, &FISHMAN_RUN_RTS);
+  if (b->log->stop != FISHMAN_STOP_LOOK_ABOUT) {
+    fishman_add(b, &FISHMAN_RUN_RTS);
+    return true;
+  }
+  fishman_taken(b);
+  fishman_add(b, &FISHMAN_RUN_LOOK_DRAW);
+  if (b->log->looks_left) {
+    fishman_taken(b);
+    fishman_add(b, &FISHMAN_RUN_LOOK_LEFT);
+  } else {
+    fishman_add(b, &FISHMAN_RUN_LOOK_RIGHT);
+  }
+  fishman_add(b, &FISHMAN_RUN_LOOK_LIST);
+  return false;
 }
 
 // The step the way it faces. True when it moved, and the body goes on.
@@ -14244,16 +14388,28 @@ static bool fishman_swim_on_bill(FishmanBill* b) {
   return true;
 }
 
-static void fishman_swim_bill(FishmanBill* b) {
-  fishman_add(b, &FISHMAN_RUN_JSR);
-  fishman_look_bill(b);
-  fishman_ask_look_about_bill(b);
+// From `$81:DE03`.
+static void fishman_swim_from_leap_bill(FishmanBill* b) {
   if (!fishman_ask_leap_bill(b)) return;
   if (fishman_swim_on_bill(b)) fishman_add(b, &FISHMAN_RUN_RTS);
 }
 
+static void fishman_swim_bill(FishmanBill* b) {
+  fishman_add(b, &FISHMAN_RUN_JSR);
+  fishman_look_bill(b);
+  if (!fishman_ask_look_about_bill(b)) return;
+  fishman_swim_from_leap_bill(b);
+}
+
+// From `$81:DE39`.
+static void fishman_swim_turned_from_leap_bill(FishmanBill* b);
+
 static void fishman_swim_turned_bill(FishmanBill* b) {
-  fishman_ask_look_about_bill(b);
+  if (!fishman_ask_look_about_bill(b)) return;
+  fishman_swim_turned_from_leap_bill(b);
+}
+
+static void fishman_swim_turned_from_leap_bill(FishmanBill* b) {
   if (!fishman_ask_leap_bill(b)) return;
   fishman_add(b, &FISHMAN_RUN_JSR);
   fishman_add(b, &FISHMAN_RUN_OPENING_HEAD);
@@ -14681,7 +14837,8 @@ static bool fishman_frame_ok(const Wram* w, const CosimRegs* in) {
          fishman_frame_supported(w, in->d);
 }
 
-// A pass that stops to look about is the ROM's, and only running it says.
+// A pass on land that finds water past what stopped it is the ROM's, and
+// only running it says.
 static bool guard_fishman_frame(Wram* scratch, const Rom* rom,
                                 const CosimRegs* in) {
   FishmanLog log;
@@ -14735,6 +14892,7 @@ static void fishman_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
       [FISHMAN_STOP_SWEEP] = FISHMAN_SWEEP_LIST_PC,
       [FISHMAN_STOP_SPLASH] = FISHMAN_SPLASH_LIST_PC,
       [FISHMAN_STOP_BITE] = FISHMAN_BITE_YIELD_PC,
+      [FISHMAN_STOP_LOOK_ABOUT] = FISHMAN_LOOK_ABOUT_LIST_PC,
   };
   FishmanLog log;
   const bool stays = fishman_frame(w, rom, loop, in->d, in->s,
@@ -14811,6 +14969,11 @@ static void fishman_frame_run(Wram* w, const Rom* rom, const CosimRegs* in,
         stays ? log.ticks : wram_r16(w, (uint16_t)(in->d + FISHMAN_DP_FATE));
   }
   out->regs = COSIM_REG_A;
+  if (log.stop == FISHMAN_STOP_LOOK_ABOUT) {
+    // Its record, which it has just written through.
+    out->y = wram_r16(w, (uint16_t)(in->d + FISHMAN_DP_RECORD));
+    out->regs |= COSIM_REG_Y;
+  }
   out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
   if (out->a & 0x8000u) out->p |= PORT_P_N;
   if (out->a == 0) out->p |= PORT_P_Z;
@@ -14832,7 +14995,7 @@ static void shim_fishman_patrol_frame(Wram* w, const Rom* rom,
 static const uint32_t FISHMAN_FRAME_EXITS[] = {
     FISHMAN_YIELD_PC,       FISHMAN_FATE_PC,       FISHMAN_LEAP_SLEEP_PC,
     FISHMAN_DIVE_SLEEP_PC,  FISHMAN_SWEEP_LIST_PC, FISHMAN_SPLASH_LIST_PC,
-    FISHMAN_BITE_YIELD_PC};
+    FISHMAN_BITE_YIELD_PC,  FISHMAN_LOOK_ABOUT_LIST_PC};
 
 // The stretches that begin where a body wakes. Each leaves as either loop
 // does.
@@ -14985,6 +15148,38 @@ static void shim_fishman_splash_after(Wram* w, const Rom* rom,
   fishman_end_bill(&b, stays);
   fishman_charge(&b);
 }
+// `$81:DDD2`: the look about's `RTS`, and the rest of the body it was in.
+static bool accepts_fishman_look_about_after(const Wram* w,
+                                             const CosimRegs* in) {
+  return fishman_woken_ok(w, in) &&
+         fishman_look_about_after_supported(w, in->d, in->s);
+}
+
+static void shim_fishman_look_about_after(Wram* w, const Rom* rom,
+                                          const CosimRegs* in,
+                                          CosimRegs* out) {
+  PortCpu c;
+  FishmanLog log;
+  bool turned = false;
+  cpu_from(in, &c);
+  const bool stays =
+      fishman_look_about_after(w, rom, &c, &log, &turned) == FISHMAN_SLEEPS;
+  fishman_woken_out(&c, &log, out);
+
+  FishmanBill b = {{0, 0, 0}, {0, 0, 0}, 0, &log, in, 0, 0, 0};
+  fishman_add(&b, &FISHMAN_RUN_RTS);
+  if (turned)
+    fishman_swim_turned_from_leap_bill(&b);
+  else
+    fishman_swim_from_leap_bill(&b);
+  if (log.stop == FISHMAN_STOP_PASS) fishman_end_bill(&b, stays);
+  fishman_charge(&b);
+}
+
+static const uint32_t FISHMAN_LOOK_ABOUT_AFTER_EXITS[] = {
+    FISHMAN_YIELD_PC, FISHMAN_FATE_PC, FISHMAN_PATROL_YIELD_PC,
+    FISHMAN_PATROL_FATE_PC, FISHMAN_LEAP_SLEEP_PC};
+
 // The beginning and the plain end of the one that patrols. `$80:9D5B`
 // runs on absolute addresses: both tests, or the first alone when the load
 // says no.
@@ -15192,6 +15387,11 @@ static bool accepts_fishman_patrol_begin(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100 && in->db == FISHMAN_BANK;
 }
 
+static const FishmanLoop* fishman_begins(const CosimRegs* in) {
+  return in->pc == FISHMAN_PATROL_BEGIN_PC ? &FISHMAN_PATROL_LOOP
+                                           : &FISHMAN_LOOP;
+}
+
 // No record free is the ROM's, which goes on with what is none.
 static bool guard_fishman_patrol_begin(Wram* scratch, const Rom* rom,
                                        const CosimRegs* in) {
@@ -15199,17 +15399,20 @@ static bool guard_fishman_patrol_begin(Wram* scratch, const Rom* rom,
   PortCpu c;
   FishmanBeginLog log;
   cpu_from(in, &c);
-  fishman_patrol_begin(scratch, rom, &c, &log);
+  fishman_begin(scratch, rom, fishman_begins(in), &c, &log);
   return !log.declined;
 }
 
+// Either kind. The one that comes ashore leaves a place that is not water
+// by a branch, and where the other sets out on its patrol it draws a way.
 static void shim_fishman_patrol_begin(Wram* w, const Rom* rom,
                                       const CosimRegs* in, CosimRegs* out) {
   PortCpu c;
   FishmanBeginLog log;
   cpu_from(in, &c);
   const bool load_full = wram_r16(w, W_SPAWN_LOAD) >= SPAWN_LOAD_MAX;
-  fishman_patrol_begin(w, rom, &c, &log);
+  const bool patrols = fishman_begins(in) == &FISHMAN_PATROL_LOOP;
+  fishman_begin(w, rom, fishman_begins(in), &c, &log);
   cpu_to(&c, out);
   out->regs = COSIM_REG_A;
   if (log.v_unknown) out->p_keep = PORT_P_V;
@@ -15228,20 +15431,27 @@ static void shim_fishman_patrol_begin(Wram* w, const Rom* rom,
     run_add(&own, &FISHMAN_RUN_BEGIN_TILE, 1);
     calls += cosim_run_cycles(&TILE_ATTRS_RUN, fast);
     if (log.how == FISHMAN_BEGIN_NOT_WATER) {
-      run_add(&own, &FISHMAN_RUN_JMP, 1);
+      run_add(&own, patrols ? &FISHMAN_RUN_JMP : &FISHMAN_RUN_TAKEN, 1);
     } else {
-      run_add(&own, &FISHMAN_RUN_TAKEN, 1);
+      if (patrols) run_add(&own, &FISHMAN_RUN_TAKEN, 1);
       run_add(&own, &FISHMAN_RUN_BEGIN_LOAD, 1);
       run_add(&own, &FISHMAN_RUN_BEGIN_DRESS, 1);
       calls += saucer_alloc_cycles(log.record, fast) +
                cosim_run_cycles(&SET_HANDLER_RUN, fast);
-      run_add(&own, &FISHMAN_RUN_BEGIN_WAY, 1);
-      run_add(&own, &FISHMAN_RUN_PATROL_AGAIN, 1);
-      run_add(&own, &FISHMAN_RUN_PLAYERS, 1);
-      calls += player_bearing_cycles(&log.players, fast);
-      run_add(&own, log.alone ? &FISHMAN_RUN_BEGIN_ALONE : &FISHMAN_RUN_TAKEN,
-              1);
-      run_add(&own, &FISHMAN_RUN_RTS, 1);
+      if (patrols) {
+        run_add(&own, &FISHMAN_RUN_BEGIN_WAY, 1);
+        run_add(&own, &FISHMAN_RUN_PATROL_AGAIN, 1);
+        run_add(&own, &FISHMAN_RUN_PLAYERS, 1);
+        calls += player_bearing_cycles(&log.players, fast);
+        run_add(&own,
+                log.alone ? &FISHMAN_RUN_BEGIN_ALONE : &FISHMAN_RUN_TAKEN, 1);
+        run_add(&own, &FISHMAN_RUN_RTS, 1);
+      } else {
+        run_add(&own, &FISHMAN_RUN_JSR, 1);
+        run_add(&own, &FISHMAN_RUN_ASHORE, 1);  // `$DD91`, the same again
+        calls += rng_cycles(log.draw_overflow, fast);
+        run_add(&own, &FISHMAN_RUN_SET_STATE, 1);
+      }
       run_add(&own, &FISHMAN_RUN_SLEEP, 1);
     }
   }
@@ -15251,6 +15461,8 @@ static void shim_fishman_patrol_begin(Wram* w, const Rom* rom,
 
 static const uint32_t FISHMAN_PATROL_BEGIN_EXITS[] = {FISHMAN_PATROL_YIELD_PC,
                                                       FISHMAN_PATROL_RTL_PC};
+static const uint32_t FISHMAN_ASHORE_BEGIN_EXITS[] = {FISHMAN_YIELD_PC,
+                                                      FISHMAN_ASHORE_RTL_PC};
 
 static bool accepts_fishman_patrol_end(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100 && in->db == FISHMAN_BANK &&
@@ -15281,7 +15493,7 @@ static const uint32_t FISHMAN_PATROL_END_EXITS[] = {FISHMAN_PATROL_RTL_PC};
 static const uint32_t FISHMAN_PATROL_FRAME_EXITS[] = {
     FISHMAN_PATROL_YIELD_PC, FISHMAN_PATROL_FATE_PC, FISHMAN_LEAP_SLEEP_PC,
     FISHMAN_DIVE_SLEEP_PC,   FISHMAN_SWEEP_LIST_PC,  FISHMAN_SPLASH_LIST_PC,
-    FISHMAN_BITE_YIELD_PC};
+    FISHMAN_BITE_YIELD_PC,   FISHMAN_LOOK_ABOUT_LIST_PC};
 
 // ---------------------------------------------------------------------------
 // The werewolf -- see `port/werewolf.h`
@@ -15353,6 +15565,10 @@ static const CosimRun WEREWOLF_RUN_STRIKE_HEAD = {62, 4, 1};  // $AACF DEC $0E :
 static const CosimRun WEREWOLF_RUN_STRIKE_NEXT = {186, 20, 3};  // $AAD3-$AAE4, to the BEQ
 static const CosimRun WEREWOLF_RUN_STRIKE_SHOW = {98, 10, 1};  // $AAE5-$AAEE, to CPX #$000C : BCS
 static const CosimRun WEREWOLF_RUN_STRIKE_BLOW = {166, 12, 1};  // $AAF0-$AAFB, the RTS too
+static const CosimRun WEREWOLF_RUN_STRIKE_OVER = {28, 2, 1};  // $AAFC LDA $38
+static const CosimRun WEREWOLF_RUN_CROUCH_HEAD = {100, 12, 1};  // $A994-$A99D, to the BMI
+static const CosimRun WEREWOLF_RUN_CROUCH_OR = {100 + 6, 6, 2};  // $A99E ORA ($08) : STA ($08) : BRA
+static const CosimRun WEREWOLF_RUN_CROUCH_AND = {88, 4, 2};  // $A9A4 AND ($08) : STA ($08)
 static const CosimRun WEREWOLF_RUN_RISE_HEAD = {98, 10, 2};  // $A85A-$A863, to the BPL
 static const CosimRun WEREWOLF_RUN_RISE_FALLING = {30, 4, 0};  // $A864 SEC : ORA #$0001
 static const CosimRun WEREWOLF_RUN_RISE_TAIL = {206, 12, 1};  // $A868-$A873, the RTS too
@@ -15586,6 +15802,11 @@ static void werewolf_strike_bill(WerewolfBill* b) {
     return;
   }
   werewolf_add(b, &WEREWOLF_RUN_STRIKE_NEXT);
+  if (b->log->strike == WEREWOLF_STRIKE_OVER) {
+    werewolf_taken(b);
+    werewolf_add(b, &WEREWOLF_RUN_STRIKE_OVER);
+    return;
+  }
   werewolf_add(b, &WEREWOLF_RUN_STRIKE_SHOW);
   if (b->log->strike == WEREWOLF_STRIKE_SHOWN) {
     werewolf_add(b, &WEREWOLF_RUN_RTS);
@@ -15672,12 +15893,23 @@ static void shim_werewolf_frame(Wram* w, const Rom* rom, const CosimRegs* in,
     case WEREWOLF_STATE_STRIKE:
       werewolf_strike_bill(&b);
       break;
+    case WEREWOLF_STATE_CROUCH:
+      werewolf_add(&b, &WEREWOLF_RUN_CROUCH_HEAD);
+      if (log.crouch_mask_clears) {
+        werewolf_taken(&b);
+        werewolf_add(&b, &WEREWOLF_RUN_CROUCH_AND);
+      } else {
+        werewolf_add(&b, &WEREWOLF_RUN_CROUCH_OR);
+      }
+      werewolf_add(&b, &WEREWOLF_RUN_TICKS);  // `LDA #$A9B3`, the same again
+      break;
     default:
       werewolf_fly_bill(&b);
       break;
   }
-  werewolf_add(&b, &WEREWOLF_RUN_FATE);
-  if (stays) {
+  const bool whole = log.stop == WEREWOLF_STOP_PASS;
+  if (whole) werewolf_add(&b, &WEREWOLF_RUN_FATE);
+  if (whole && stays) {
     werewolf_taken(&b);
     werewolf_add(&b, &WEREWOLF_RUN_TICKS);
   }
@@ -15690,19 +15922,30 @@ static void shim_werewolf_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
                                            (in->d & 0x00ffu) != 0));
 
-  out->pc = stays ? WEREWOLF_YIELD_PC : WEREWOLF_FATE_PC;
-  out->a = stays ? WEREWOLF_YIELD_TICKS
-                 : wram_r16(w, (uint16_t)(in->d + WEREWOLF_DP_FATE));
+  if (!whole) {
+    // In the middle of a body, with the loop's return under it.
+    out->pc = log.stop == WEREWOLF_STOP_CROUCH ? WEREWOLF_CROUCH_LIST_PC
+                                               : WEREWOLF_STRIKE_FREE_PC;
+    out->a = log.a;
+    wram_w16(w, (uint16_t)(in->s - 1), WEREWOLF_LOOP_RETURN);
+    out->s = (uint16_t)(in->s - 2);
+  } else {
+    out->pc = stays ? WEREWOLF_YIELD_PC : WEREWOLF_FATE_PC;
+    out->a = stays ? WEREWOLF_YIELD_TICKS
+                   : wram_r16(w, (uint16_t)(in->d + WEREWOLF_DP_FATE));
+  }
   out->regs = COSIM_REG_A;
   out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
   if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (out->a == 0) out->p |= PORT_P_Z;
   if (log.c) out->p |= PORT_P_C;
   if (log.v) out->p |= PORT_P_V;
   out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V));
 }
 
-static const uint32_t WEREWOLF_FRAME_EXITS[] = {WEREWOLF_YIELD_PC,
-                                               WEREWOLF_FATE_PC};
+static const uint32_t WEREWOLF_FRAME_EXITS[] = {
+    WEREWOLF_YIELD_PC, WEREWOLF_FATE_PC, WEREWOLF_STRIKE_FREE_PC,
+    WEREWOLF_CROUCH_LIST_PC};
 
 // ---------------------------------------------------------------------------
 // The footballers -- see `port/football.h`
@@ -16914,7 +17157,8 @@ static const CosimRun PFRAME_RUN_FLASH_HEAD = {58, 7, 1};
 static const CosimRun PFRAME_RUN_FLASH_BOX = {464, 46, 3};
 static const CosimRun PFRAME_RUN_FLASH_AFTER = {110, 13, 1};
 static const CosimRun PFRAME_RUN_FLASH_FLIP = {126, 11, 1};
-static const CosimRun PFRAME_RUN_FLASH_COUNT = {68, 4, 1};
+static const CosimRun PFRAME_RUN_FLASH_COUNT = {62, 4, 1};  // DEC $74 : BPL
+static const CosimRun PFRAME_RUN_FLASH_OVER = {28, 2, 1};   // STZ $72
 // `$80:CE2A  LDA $1F9C : ORA $1F9E : BNE`, with nobody left to rescue.
 static const CosimRun PFRAME_RUN_RESCUED = {80, 8, 0};
 
@@ -16987,6 +17231,11 @@ static int pframe_flashing_bill(CosimRun* own, const PlayerFrameLog* log,
   run_add(own, &PFRAME_RUN_FLASH_AFTER, 1);
   run_add(own, log->flickered ? &PFRAME_RUN_FLASH_FLIP : &RUN_TAKEN, 1);
   run_add(own, &PFRAME_RUN_FLASH_COUNT, 1);
+  if (log->flashing_ends) {
+    run_add(own, &PFRAME_RUN_FLASH_OVER, 1);
+    return calls;
+  }
+  run_add(own, &RUN_TAKEN, 1);
   run_add(own, &RUN_RTS, 1);
   return calls;
 }
@@ -17178,10 +17427,17 @@ static void shim_player_flashing_state(Wram* w, const Rom* rom,
     cosim_cost(calls + cosim_run_cycles_dp(&own, fetch_fast(in), unaligned));
   }
 
+  // Carry is the last thing told's, and the rest of the status byte is not
+  // followed.
   out->regs = 0;
-  out->flags = COSIM_FLAG_C;
-  out->c = log.c;
+  out->p = (uint8_t)((in->p & ~PORT_P_C) | (log.c ? PORT_P_C : 0));
+  out->p_keep = PORT_P_N | PORT_P_Z | PORT_P_V;
+  out->pc = log.flashing_ends ? PLAYER_FLASHING_END_CALL_PC
+                              : PLAYER_FLASHING_STATE_RTS_PC;
 }
+
+static const uint32_t PLAYER_FLASHING_EXITS[] = {PLAYER_FLASHING_STATE_RTS_PC,
+                                                 PLAYER_FLASHING_END_CALL_PC};
 
 // ---------------------------------------------------------------------------
 // The evil dolls -- see `port/doll.h`
@@ -17843,6 +18099,7 @@ static int doll_thread_cycles(const DollThreadWork* k, const Rom* rom,
 DOLL_THREAD_SHIM(doll_launch, doll_launch(w, &c, &k))
 DOLL_THREAD_SHIM(doll_first_record, doll_first_record(w, &c, &k))
 DOLL_THREAD_SHIM(doll_dress, doll_dress(w, &c, &k))
+DOLL_THREAD_SHIM(doll_heard, doll_heard(w, &c, &k))
 DOLL_THREAD_SHIM(doll_again, doll_again(w, &c, &k))
 DOLL_THREAD_SHIM(doll_opening, doll_opening(w, &c, &k))
 DOLL_THREAD_SHIM(doll_opened, doll_opened(w, &c, &k))
@@ -17872,6 +18129,8 @@ static const uint32_t DOLL_ANY_FRAME_EXITS[] = {
 static const uint32_t DOLL_LAUNCH_EXITS[] = {DOLL_ALLOC_CALL_PC};
 static const uint32_t DOLL_FIRST_RECORD_EXITS[] = {DOLL_ALLOC_2_CALL_PC};
 static const uint32_t DOLL_DRESS_EXITS[] = {DOLL_FRAME_YIELD_PC,
+                                            DOLL_HEARD_PC};
+static const uint32_t DOLL_HEARD_EXITS[] = {DOLL_FRAME_YIELD_PC,
                                             DOLL_SFX_CALL_PC};
 static const uint32_t DOLL_AGAIN_EXITS[] = {DOLL_FRAME_YIELD_PC};
 static const uint32_t DOLL_END_EXITS[] = {DOLL_SCORE_CALL_PC,
@@ -28547,6 +28806,8 @@ static const CosimRoutine ROUTINES[] = {
                       accepts_doll_thread, DOLL_FIRST_RECORD_EXITS, 28, 0),
     DOLL_THREAD_ENTRY(doll_dress, "$81:B39D", DOLL_DRESS_PC,
                       accepts_doll_dress, DOLL_DRESS_EXITS, 2500, 3),
+    DOLL_THREAD_ENTRY(doll_heard, "$81:B2C7", DOLL_HEARD_PC,
+                      accepts_doll_thread, DOLL_HEARD_EXITS, 116, 0),
     DOLL_THREAD_ENTRY(doll_again, "$81:B2D6", DOLL_AGAIN_PC,
                       accepts_doll_thread, DOLL_AGAIN_EXITS, 46, 0),
     DOLL_THREAD_ENTRY(doll_opened, "$81:B1E1", DOLL_OPENED_PC, doll_page_ok,
@@ -29243,6 +29504,17 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 32,
     },
     {
+        .name = "fishman_look_about_after",
+        .symbol = "$81:DDD2",
+        .entry = FISHMAN_LOOK_ABOUT_AFTER_PC,
+        .run = shim_fishman_look_about_after,
+        .accepts = accepts_fishman_look_about_after,
+        COSIM_EXITS(FISHMAN_LOOK_ABOUT_AFTER_EXITS),
+        .uncalled = true,
+        .cycles = 6000,
+        .stack_bytes = 32,
+    },
+    {
         .name = "fishman_leap_wake",
         .symbol = "$81:E076",
         .entry = FISHMAN_LEAP_WAKE_PC,
@@ -29273,6 +29545,17 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(FISHMAN_LANDING_EXITS),
         .cycles = 2000,
         .stack_bytes = 4,  // the `PHD`, and the `PHA` under it
+    },
+    {
+        .name = "fishman_ashore_begin",
+        .symbol = "$81:E481",
+        .entry = FISHMAN_ASHORE_BEGIN_PC,
+        .run = shim_fishman_patrol_begin,
+        .supported = guard_fishman_patrol_begin,
+        COSIM_EXITS(FISHMAN_ASHORE_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 5000,
+        .stack_bytes = 20,
     },
     {
         .name = "fishman_patrol_begin",
@@ -29459,9 +29742,8 @@ static const CosimRoutine ROUTINES[] = {
         .name = "player_flashing_state",
         .symbol = "$80:D404",
         .entry = PLAYER_FLASHING_STATE_PC,
-        .ret_op = PLAYER_FLASHING_STATE_RTS_PC,
-        .ret_kind = COSIM_RTS,
         .run = shim_player_flashing_state,
+        COSIM_EXITS(PLAYER_FLASHING_EXITS),
         .accepts = player_frame_ok,
         .supported = guard_player_flashing_state,
         .uncalled = true,

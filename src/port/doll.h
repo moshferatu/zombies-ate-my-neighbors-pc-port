@@ -270,9 +270,10 @@ bool doll_frame(Wram* w, const Rom* rom, uint16_t page, DollLog* log);
 //     $81:B2B0  launch        24 of the budget at `$00DE`, and on to ask for
 //                             a record
 //     $81:B397  first record  ...kept, and on to ask for the axe's
-//     $81:B39D  dress         both records and the page. Then, if it is on
-//                             the screen and `$1F52` is 3, the sound of its
-//                             arrival, and if not the first yield.
+//     $81:B39D  dress         both records and the page. Then, if it is off
+//                             the screen, the first yield.
+//     $81:B2C7  heard         on the screen: if `$1F52` is 3, the sound of
+//                             its arrival, and if not the first yield
 //     $81:B2D6  again         the yield, from after the sound
 //     $81:B2DF  opening       a frame in the opening state: on to play the
 //                             list of pictures at `$81:B239`
@@ -290,10 +291,17 @@ bool doll_frame(Wram* w, const Rom* rom, uint16_t page, DollLog* log);
 //
 // `$80:AA0D`, the test for being on the screen, is in the dress: nothing else
 // in the cartridge calls it.
+//
+// **`heard` is a stretch of its own because of who is listening.** On a
+// level with another sample set the frontend plays the sound itself, and
+// knows to by watching the 65816 come to `$81:B2C7`: see `src/bank_sfx.h`.
+// The dress ran on through that instruction once, and no doll was heard on
+// such a level. So the dress stops there, and `heard` begins there.
 
 #define DOLL_LAUNCH_PC 0x81b2b0u
 #define DOLL_FIRST_RECORD_PC 0x81b397u
 #define DOLL_DRESS_PC 0x81b39du
+#define DOLL_HEARD_PC 0x81b2c7u  // `LDA $1F52`, which is watched
 #define DOLL_AGAIN_PC 0x81b2d6u
 #define DOLL_OPENED_PC 0x81b1e1u
 #define DOLL_END_PC DOLL_FRAME_LEAVE_PC
@@ -383,6 +391,7 @@ typedef struct {
 void doll_launch(Wram* w, PortCpu* c, DollThreadWork* k);
 void doll_first_record(Wram* w, PortCpu* c, DollThreadWork* k);
 void doll_dress(Wram* w, PortCpu* c, DollThreadWork* k);
+void doll_heard(Wram* w, PortCpu* c, DollThreadWork* k);
 void doll_again(Wram* w, PortCpu* c, DollThreadWork* k);
 void doll_opening(Wram* w, PortCpu* c, DollThreadWork* k);
 void doll_opened(Wram* w, PortCpu* c, DollThreadWork* k);

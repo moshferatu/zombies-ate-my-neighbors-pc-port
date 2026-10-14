@@ -19354,3 +19354,68 @@ after a sleep or a snap.
 Over the same 110 sessions the core executes 125,901 instructions
 where it executed 149,547, and takes over 13,294 times where it
 did 18,258, at 512 places where there were 558.
+
+## The passes that sleep in the middle (2026-10-13)
+
+### A pass told apart by its stack
+
+`martian_wake` is entered where the shot's sleep comes back, `$81:99C9`,
+which is one `RTS`. Three passes sleep there: a walker's, an arriving one
+that shot at something lined up, and an arriving one that shot on a draw.
+The state on the page does not tell them apart, since a walker can be in
+the arrival's loop. The return addresses do: `$9D28` over `$9D3D`,
+`$9D28` over `$9DDD`, or `$9DEE` alone. `martian_woke` in `routines.c`
+reads them, and a stack it does not know is the ROM's.
+
+The fishman's look about is the same idea with two callers, `$DE02` and
+`$DE38`, and the werewolf's `ts_werewolf_runs` with two, the loop and the
+thread's start.
+
+### A stop that needs its own exit in every loop
+
+`fishman_frame` and `fishman_patrol_frame` share a shim and have a list of
+exits each. The look about was added to the first list only. Verify then
+ran the ROM past the stop in the patrol's loop, into another fishman's
+thread, and reported the first WRAM byte that differed: `$7E:0008`, the
+running thread. A divergence in the current thread's word means the ROM
+did not stop where the port did.
+
+### A row that changes from a return to exits
+
+`player_flashing_state` returned by `ret_op`, and claimed carry alone. As
+a row with exits the whole status byte is compared unless the shim says
+otherwise. It sets `p` from the one it was given with carry replaced, and
+`p_keep` to N, Z and V.
+
+### A `WAI` as a link
+
+`leave_step` has always made a `WAI`: the scheduler's port leaves by one.
+`link_opcode` refused it for a link, on the grounds that the `WAI` was the
+scheduler's own. Sixteen places are a `WAI` no port leaves by: an
+interrupt comes back to a second one, or a call comes back to one. Lockstep
+is the check, and it is unchanged with them.
+
+### An address the frontend watches
+
+`cosim_watch` fires when the 65816 is about to execute an instruction. A
+port that runs through that instruction never puts the 65816 there, and
+the watch is silent. `verify`, lockstep and the picture pass cannot see
+this: what is lost is something the frontend adds.
+
+Eleven checks of the sample set are watched, by `src/bank_sfx.h`. Three
+are inside ported code, and each has to be the first instruction of a row.
+The doll's was not from 2026-10-05 until this round. Before porting a
+block, search `src/*.h` for the addresses in it. Two more addresses are
+watched, by `src/widescreen.h`, and `$80:CCD1` in `apu_send`.
+
+### Bytes read from the cartridge by a long address
+
+`tools/cycles816.py` counts the bytes an instruction reads from the
+cartridge with the bytes it is. `LDA $81A9C3,X` is four bytes long and
+counts six. The figure goes in the run as the tool gives it.
+
+### After
+
+Over the same 110 sessions the core executes 94,287 instructions
+where it executed 125,901, and takes over 8,457 times where it
+did 13,294, at 450 places where there were 512.

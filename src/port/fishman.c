@@ -26,6 +26,10 @@ typedef struct {
 // It stops to look about on a draw under the first, and leaps on one under
 // the second.
 #define FISHMAN_LOOK_ABOUT_ODDS 0x05
+// ...to the left when a second draw is under this,
+#define FISHMAN_LOOK_LEFT_UNDER 0x7f
+// ...in these pictures.
+#define FISHMAN_LOOK_ABOUT_PICTURES 0xddd3u
 #define FISHMAN_LEAP_ODDS 0x7d
 
 // Where a leap comes down, from whoever it is at: one of two places across,
@@ -511,14 +515,28 @@ static void look(Fishman* s, uint16_t after) {
   leave_if_alone(s);
 }
 
-// `$81:DDA1`: stop and look about, on a draw. That sleeps, so it is the
-// ROM's.
-static void maybe_look_about(Fishman* s) {
-  s->log->look_about_asked = true;
+// `$81:DDA1`: stop and look about, on a draw. It faces left or right by
+// another, and shows a list of pictures, which sleeps: the pass stops
+// there. `from` is what the body's `JSR` here pushed. True when the body
+// goes on.
+static bool maybe_look_about(Fishman* s, uint16_t from) {
+  FishmanLog* log = s->log;
+  log->look_about_asked = true;
   if (flags_at_least(&s->flags, random_byte(s), FISHMAN_LOOK_ABOUT_ODDS))
-    return;
+    return true;
   PORT_COVER(fishman_looked_about);
-  s->log->declined = true;
+  log->looks_left =
+      !flags_at_least(&s->flags, random_byte(s), FISHMAN_LOOK_LEFT_UNDER);
+  const uint16_t flags = record_field(s, ACTOR_FLAGS);
+  if (log->looks_left) {
+    set_field(s, FISHMAN_DP_SCRATCH, FISHMAN_MIRROR);
+    set_record_field(s, ACTOR_FLAGS, (uint16_t)(flags | FISHMAN_MIRROR));
+  } else {
+    set_field(s, FISHMAN_DP_SCRATCH, (uint16_t)~FISHMAN_MIRROR);
+    set_record_field(s, ACTOR_FLAGS, (uint16_t)(flags & ~FISHMAN_MIRROR));
+  }
+  stop_at(s, FISHMAN_STOP_LOOK_ABOUT, FISHMAN_LOOK_ABOUT_PICTURES, from);
+  return false;
 }
 
 static uint16_t wait_ticks(Fishman* s) {
@@ -801,21 +819,29 @@ static void go_about(Fishman* s, uint16_t from) {
 // ---------------------------------------------------------------------------
 
 // `$81:DDFD`: the way it faces, until something stops it.
-static void swim(Fishman* s) {
-  look(s, FISHMAN_STATE_CLOSE_IN);
-  maybe_look_about(s);
-  if (s->log->declined) return;
+// `$81:DE03`: a leap, or a step.
+static void swim_from_leap(Fishman* s) {
   if (!maybe_leap(s, FISHMAN_LEAP_FROM_SWIM)) return;
   swim_on(s);
 }
 
-// `$81:DE36`: the same, turning at every opening.
-static void swim_turned(Fishman* s) {
-  maybe_look_about(s);
-  if (s->log->declined) return;
+static void swim(Fishman* s) {
+  look(s, FISHMAN_STATE_CLOSE_IN);
+  if (!maybe_look_about(s, FISHMAN_LOOK_ABOUT_FROM_SWIM)) return;
+  swim_from_leap(s);
+}
+
+// `$81:DE39`: the same, turning at every opening.
+static void swim_turned_from_leap(Fishman* s) {
   if (!maybe_leap(s, FISHMAN_LEAP_FROM_SWIM_TURNED)) return;
   turn_if_clear(s);
   if (swim_on(s)) look(s, FISHMAN_STATE_CLOSE_IN);
+}
+
+// `$81:DE36`.
+static void swim_turned(Fishman* s) {
+  if (!maybe_look_about(s, FISHMAN_LOOK_ABOUT_FROM_SWIM_TURNED)) return;
+  swim_turned_from_leap(s);
 }
 
 // One step at `target`.
@@ -1166,11 +1192,12 @@ static int place_in_list(const Wram* w, uint16_t record) {
   return place;
 }
 
-void fishman_patrol_begin(Wram* w, const Rom* rom, PortCpu* c,
-                          FishmanBeginLog* log) {
+void fishman_begin(Wram* w, const Rom* rom, const FishmanLoop* loop,
+                   PortCpu* c, FishmanBeginLog* log) {
   *log = (FishmanBeginLog){0};
   const uint16_t page = c->d;
-  c->pc = FISHMAN_PATROL_RTL_PC;
+  const bool patrols = loop == &FISHMAN_PATROL_LOOP;
+  c->pc = patrols ? FISHMAN_PATROL_RTL_PC : FISHMAN_ASHORE_RTL_PC;
 
   SpawnRoomRegs room;
   spawn_has_room(w, &room);
@@ -1245,17 +1272,27 @@ void fishman_patrol_begin(Wram* w, const Rom* rom, PortCpu* c,
   c->y = FISHMAN_BANK;
   thread_set_handler(w, c);
 
-  set_field(&s, FISHMAN_DP_STAYS, 0xffffu);
-  set_field(&s, FISHMAN_DP_WAY, FISHMAN_PATROL_FIRST_WAY);
-  patrol_again(&s);
-  log->players = pass.players[0];
-  log->alone = field(&s, FISHMAN_DP_FATE) != 0;
+  if (patrols) {
+    set_field(&s, FISHMAN_DP_STAYS, 0xffffu);
+    set_field(&s, FISHMAN_DP_WAY, FISHMAN_PATROL_FIRST_WAY);
+    patrol_again(&s);
+    log->players = pass.players[0];
+    log->alone = field(&s, FISHMAN_DP_FATE) != 0;
+  } else {
+    PORT_COVER(fishman_begun_ashore);
+    set_field(&s, FISHMAN_DP_STAYS, 0);
+    set_field(&s, FISHMAN_DP_WAY,
+              (uint16_t)(((random_byte(&s) & 3) << 2) + FISHMAN_FIRST_WAY));
+    log->draw_overflow = pass.draw_overflow[0];
+    flags_carry(&s.flags, false);  // the two `ASL`s
+    set_state(&s, FISHMAN_STATE_SWIM);
+  }
 
   set_field(&s, FISHMAN_DP_HIT_BY, 0);
   c->a = field(&s, FISHMAN_DP_TICKS);
   set_nz16(c, c->a);
   flags_to_cpu(c, &s.flags);
-  c->pc = FISHMAN_PATROL_YIELD_PC;
+  c->pc = loop->yield_pc;
 }
 
 bool fishman_patrol_end_supported(const Wram* w, uint16_t page) {
@@ -1736,6 +1773,41 @@ FishmanFate fishman_splash_after(Wram* w, const Rom* rom, PortCpu* c,
   flags_carry(&s.flags, false);  // the two `ASL`s
   set_state(&s, FISHMAN_STATE_SWIM);
   return finish(&s, c, 1);
+}
+
+bool fishman_look_about_after_supported(const Wram* w, uint16_t page,
+                                        uint16_t s) {
+  const uint16_t from = wram_r16(w, (uint16_t)(s + 1));
+  return (from == FISHMAN_LOOK_ABOUT_FROM_SWIM ||
+          from == FISHMAN_LOOK_ABOUT_FROM_SWIM_TURNED) &&
+         loop_of(wram_r16(w, (uint16_t)(s + 3))) != NULL && shows(w, page);
+}
+
+// `$81:DDD2`: it has looked about, and swims on.
+FishmanFate fishman_look_about_after(Wram* w, const Rom* rom, PortCpu* c,
+                                     FishmanLog* log, bool* turned) {
+  PORT_COVER(fishman_looked_on);
+  const uint16_t from = wram_r16(w, (uint16_t)(c->s + 1));
+  Fishman s = woken(w, rom, c, log, 2);
+  *turned = from == FISHMAN_LOOK_ABOUT_FROM_SWIM_TURNED;
+  if (*turned)
+    swim_turned_from_leap(&s);
+  else
+    swim_from_leap(&s);
+  if (log->stop == FISHMAN_STOP_PASS) return finish(&s, c, 2);
+
+  // A leap, at its sleep.
+  log->c = s.flags.c;
+  log->v = s.flags.v;
+  log->c_set = s.flags.c_set;
+  log->v_set = s.flags.v_set;
+  c->s = log->s;
+  c->pc = FISHMAN_LEAP_SLEEP_PC;
+  c->a = log->a;
+  set_nz16(c, c->a);
+  if (log->c_set) set_c(c, log->c);
+  if (log->v_set) set_v(c, log->v);
+  return FISHMAN_SLEEPS;
 }
 
 // ---------------------------------------------------------------------------

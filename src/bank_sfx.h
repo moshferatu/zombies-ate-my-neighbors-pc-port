@@ -50,6 +50,14 @@
 // of the game's: `$13`, the master volume, which the pause menu turns down.
 // That is the only other command the game sends while a level runs; `$02`
 // only ever stops the song, and `$09` is never sent.
+//
+// **A watch fires when the 65816 is about to execute the check, and a port
+// that runs through one never puts it there.** So a ported check has to be
+// the first instruction of a registry row: the row before it stops on the
+// check, the watch fires, and the next row begins. Three are ported, and
+// each is: `doll_heard` (`$81:B2C7`), `ts_werewolf_howl_check` (`$81:AC05`)
+// and `boss_spit_begins` (`$82:8D6C`). The doll's was not for a week, and
+// no doll was heard on a level with another set in that time.
 #ifndef ZAMN_BANK_SFX_H
 #define ZAMN_BANK_SFX_H
 

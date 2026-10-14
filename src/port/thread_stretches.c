@@ -12,6 +12,10 @@
 #include "port/martian.h"
 #include "port/neighbour_thread.h"  // W_SAVED_COUNT_A
 #include "port/oam.h"               // the display record's fields
+#include "port/player_frame.h"
+#include "port/apu.h"               // W_APU_SOUNDS
+#include "port/neighbours.h"        // W_TOURISTS_TURN
+#include "port/werewolf.h"
 #include "port/objects.h"           // W_VICTIM_GATE
 #include "port/weeds.h"
 
@@ -22,6 +26,14 @@ const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
     {0x82f4b1u, 0x0001},  // the follower's first sleep
     {0x808516u, 0x000a},  // ten ticks before a level fades in
     {0x8199c2u, 0x000c},  // what a martian's shot waits
+    {0x80d069u, 0xd0e0},  // the pictures of a player hurt
+    {0x81ec72u, 0xee6b},  // two lists of pictures I have not read the use of
+    {0x81f30eu, 0xf368},
+};
+
+const ThreadSetter THREAD_SETTERS[THREAD_SETTER_COUNT] = {
+    {0x819215u, 0x921b, 0x12},  // two states of the thread at `$81:92C2`
+    {0x819250u, 0x9256, 0x12},
 };
 
 const ThreadPair THREAD_PAIRS[THREAD_PAIR_COUNT] = {
@@ -108,6 +120,13 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
       // Small enough that the decimal sum cannot overflow.
       return wram_r16(w, W_SAVED_COUNT_A) < 0x4000 &&
              wram_r16(w, W_SAVED_COUNT_B) < 0x4000;
+    case TS_NEEDS_PLACE:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == MARTIAN_PLACE_RETURN;
+    case TS_NEEDS_WOLF: {
+      const uint16_t to = wram_r16(w, (uint16_t)(c->s + 1));
+      return page(w, c, WEREWOLF_DP_RECORD) < 0x1f00 &&
+             (to == WEREWOLF_LOOP_RETURN || to == WEREWOLF_MAKE_RETURN);
+    }
   }
   return false;
 }
@@ -593,4 +612,331 @@ void martian_begun(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   lda(c, MARTIAN_YIELD_TICKS);
   ran(k, TS_LDA_IMM);
   c->pc = MARTIAN_FIRST_SLEEP_PC;
+}
+
+// --- the werewolf ------------------------------------------------------------
+
+// Its record is asked for, by a `JSR` whose return stays on the stack.
+static void werewolf_make(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  push16(w, c, WEREWOLF_MAKE_RETURN);
+  ran(k, TS_JSR);
+  c->pc = WEREWOLF_MAKE_PC;
+}
+
+void werewolf_enter(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, wram_r16(w, W_TOURISTS_TURN));
+  ran(k, TS_WOLF_ASK);
+  if (c->a == 0) {
+    PORT_COVER(werewolf_not_due);
+    c->pc = WEREWOLF_NONE_PC;
+    return;
+  }
+  PORT_COVER(werewolf_entered);
+  ran(k, TS_TAKEN);
+  load_up(w, c, WEREWOLF_LOAD);
+  ran(k, TS_MARTIAN_ENTER);  // the same four instructions
+  c->pc = WEREWOLF_HOWL_CHECK_PC;
+}
+
+// `$81:AC05`: see the header for why this begins where it does.
+void werewolf_howl_check(Wram* w, const Rom* rom, PortCpu* c,
+                         ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, wram_r16(w, W_APU_SOUNDS));
+  cmp16(c, c->a, WEREWOLF_SAMPLE_SET);
+  ran(k, TS_WOLF_HEARD);
+  if (c->a == WEREWOLF_SAMPLE_SET) {
+    PORT_COVER(werewolf_howled);
+    lda(c, WEREWOLF_HOWL);
+    ran(k, TS_LDA_IMM);
+    c->pc = WEREWOLF_HOWL_CALL_PC;
+    return;
+  }
+  PORT_COVER(werewolf_unheard);
+  ran(k, TS_TAKEN);
+  werewolf_make(w, c, k);
+}
+
+void werewolf_howled(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  werewolf_make(w, c, k);
+}
+
+void werewolf_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(werewolf_dressed);
+  set_page(w, c, WEREWOLF_DP_X, page(w, c, WEREWOLF_DP_PLACED_X));
+  set_page(w, c, WEREWOLF_DP_Y, page(w, c, WEREWOLF_DP_PLACED_Y));
+  ldy(c, page(w, c, WEREWOLF_DP_RECORD));
+  const uint16_t record = c->y;
+  wram_w16(w, (uint16_t)(record + ACTOR_META), WEREWOLF_FIRST_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), 0x0090);
+  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), WEREWOLF_START_ATTR);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), WEREWOLF_COLLIDE_ID);
+  set_page(w, c, WEREWOLF_DP_PICTURE, 0);
+  set_page(w, c, WEREWOLF_DP_PICTURE_WAIT, 0);
+  set_page(w, c, WEREWOLF_DP_BLOW, 0xffff);
+  set_page(w, c, WEREWOLF_DP_QUARRY, 0xffff);
+  set_page(w, c, WEREWOLF_DP_7E, 0);
+  set_page(w, c, WEREWOLF_DP_KILLED, 0);
+  set_page(w, c, WEREWOLF_DP_FATE, 0);
+  lda(c, WEREWOLF_FIRST_SLEEP);
+  ran(k, TS_WOLF_MADE);
+  c->pc = WEREWOLF_FIRST_SLEEP_PC;
+}
+
+// `$81:ABB6`: what is told of it comes to its handler.
+static void werewolf_handler(PortCpu* c, ThreadStretchWork* k) {
+  c->a = WEREWOLF_HANDLER;
+  ldy(c, WEREWOLF_BANK);
+  ran(k, TS_LDA_LDY_IMM);
+  c->pc = WEREWOLF_HANDLER_CALL_PC;
+}
+
+void werewolf_woke(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, WEREWOLF_HEALTH);
+  set_page(w, c, WEREWOLF_DP_HURT, c->a);
+  set_page(w, c, WEREWOLF_DP_HURT_SEEN, c->a);
+  ran(k, TS_WOLF_HEALTH);
+  werewolf_handler(c, k);
+}
+
+// `$81:AB02`: a strike is over, and the blow's record has gone back.
+void werewolf_struck(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, 0xffff);
+  set_page(w, c, WEREWOLF_DP_BLOW, c->a);
+  ran(k, TS_WOLF_UNBLOW);
+  werewolf_handler(c, k);
+}
+
+// `$81:AA9B`: it has rested where it landed.
+void werewolf_rested(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  ran(k, TS_JMP);
+  werewolf_handler(c, k);
+}
+
+// A body's `RTS`, back in the loop: a tick's sleep, unless its fate says it
+// is over. The thread's start comes back past that test.
+static void werewolf_body_returns(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  if (pull16(w, c) == WEREWOLF_LOOP_RETURN) {
+    lda(c, page(w, c, WEREWOLF_DP_FATE));
+    ran(k, TS_WEED_FATE);
+    if (c->a != 0) {
+      c->pc = WEREWOLF_FATE_PC;
+      return;
+    }
+    ran(k, TS_TAKEN);
+  }
+  lda(c, WEREWOLF_YIELD_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = WEREWOLF_YIELD_PC;
+}
+
+// `$81:ABC0`: it runs from now.
+void werewolf_runs(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, WEREWOLF_DP_STATE, WEREWOLF_STATE_RUN);
+  ran(k, TS_MARTIAN_WALKS);
+  werewolf_body_returns(w, c, k);
+}
+
+// `$81:A9AF`: the crouch's pictures have been shown, and it is in the air.
+void werewolf_crouched(Wram* w, const Rom* rom, PortCpu* c,
+                       ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(werewolf_leapt);
+  ran(k, TS_JMP);
+  set_page(w, c, WEREWOLF_DP_STATE, WEREWOLF_STATE_FLIGHT);
+  ldy(c, page(w, c, WEREWOLF_DP_RECORD));
+  const uint16_t record = c->y;
+  wram_w16(w, (uint16_t)(record + ACTOR_META), WEREWOLF_LEAP_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      WEREWOLF_LEAP_FLAGS));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), 0);
+  ran(k, TS_WOLF_LEAP);
+  werewolf_body_returns(w, c, k);
+}
+
+// --- one instruction or two --------------------------------------------------
+
+void thread_setter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  for (int i = 0; i < THREAD_SETTER_COUNT; i++) {
+    if (THREAD_SETTERS[i].pc != c->pc) continue;
+    lda(c, THREAD_SETTERS[i].value);
+    set_page(w, c, THREAD_SETTERS[i].at, c->a);
+    ran(k, TS_LDA_IMM);
+    ran(k, TS_STA_DP);
+    c->pc += 5;
+    return;
+  }
+}
+
+void page_clear(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, PAGE_CLEARED, 0);
+  ran(k, TS_STZ_DP);
+  c->pc = PAGE_CLEAR_RTS_PC;
+}
+
+void page_pull(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  c->d = pull16(w, c);
+  set_nz16(c, c->d);
+  ran(k, TS_PLD);
+  c->pc = PAGE_PULL_RTL_PC;
+}
+
+void carry_set(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  set_c(c, true);
+  ran(k, TS_SEC);
+  c->pc = CARRY_SET_RTS_PC;
+}
+
+void victim_gone(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, VICTIM_DP_GONE));
+  ran(k, TS_LDA_DP);
+  c->pc = VICTIM_GONE_CALL_PC;
+}
+
+// --- a player's flashing ended -----------------------------------------------
+
+void flashing_end(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(player_flashing_ended);
+  set_page(w, c, FLASHING_DP_FRAMES_LEFT, 0);
+  set_page(w, c, FLASHING_DP_ENDS_BY, 0);
+  ldy(c, page(w, c, PLAYER_DP_RECORD));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) | ACTOR_DRAW));
+  lda(c, PLAYER_STATE_NORMAL);
+  c->x = page(w, c, FLASHING_DP_UNDER);
+  cmp16(c, c->x, FLASHING_UNDER_TURNING);
+  ran(k, TS_FLASHING_END);
+  if (c->x == FLASHING_UNDER_TURNING) {
+    lda(c, PLAYER_STATE_TURNING_B);
+    ran(k, TS_LDA_IMM);
+  } else {
+    ran(k, TS_TAKEN);
+  }
+  set_page(w, c, PLAYER_DP_STATE, c->a);
+  ran(k, TS_STA_DP);
+  c->pc = FLASHING_END_CALL_PC;
+}
+
+// --- a player shown hurt -----------------------------------------------------
+
+// `$80:D056`: the picture they had goes on the stack, bank first.
+void player_hit_show(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(player_hit_shown);
+  ldy(c, page(w, c, PLAYER_DP_RECORD));
+  push16(w, c, wram_r16(w, (uint16_t)(c->y + ACTOR_META_BANK)));
+  push16(w, c, wram_r16(w, (uint16_t)(c->y + ACTOR_META)));
+  lda(c, PLAYER_HURT_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META_BANK), c->a);
+  ran(k, TS_PLAYER_HIT_KEEP);
+  c->pc = PLAYER_HIT_SHOW_CALL_PC;
+}
+
+// `$80:D070`: the list has played, and it comes off again.
+void player_hit_shown(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(player_hit_back);
+  ldy(c, page(w, c, PLAYER_DP_RECORD));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META), pull16(w, c));
+  lda(c, pull16(w, c));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META_BANK), c->a);
+  set_page(w, c, PLAYER_DP_16, 0);
+  set_page(w, c, PLAYER_DP_50, 0);
+  ran(k, TS_PLAYER_HIT_BACK);
+  c->pc = PLAYER_HIT_SHOWN_CALL_PC;
+}
+
+// `$81:9A3E`: one that comes in over the top. Its place is just below the
+// top of the screen, and the ground and the level's edges are asked about it
+// before anything is made.
+void martian_arrival_enter(Wram* w, const Rom* rom, PortCpu* c,
+                           ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(martian_arrival_entered);
+  push16(w, c, MARTIAN_PLACE_RETURN);
+  ran(k, TS_JSR);
+  set_c(c, false);
+  lda(c, adc16(c, wram_r16(w, W_CAMERA_Y), MARTIAN_ARRIVAL_BELOW_TOP));
+  set_page(w, c, MARTIAN_DP_SHOT_Y, c->a);
+  ldy(c, c->a);
+  ldx(c, page(w, c, MARTIAN_DP_SHOT_X));
+  ran(k, TS_ARRIVAL_PLACE);
+  c->pc = MARTIAN_PLACE_GROUND_PC;
+}
+
+// The place is no good, and the thread ends with nothing made.
+static void arrival_refused(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  PORT_COVER(martian_arrival_blocked);
+  pull16(w, c);
+  ran(k, TS_RTS);
+  ran(k, TS_BRANCH);
+  ran(k, TS_TAKEN);
+  c->pc = MARTIAN_ARRIVAL_NONE_PC;
+}
+
+void martian_arrival_grounded(Wram* w, const Rom* rom, PortCpu* c,
+                              ThreadStretchWork* k) {
+  (void)rom;
+  if (branches(c, PORT_P_C, k)) {
+    arrival_refused(w, c, k);
+    return;
+  }
+  ldx(c, page(w, c, MARTIAN_DP_SHOT_X));
+  ldy(c, page(w, c, MARTIAN_DP_SHOT_Y));
+  ran(k, TS_LDX_LDY_DP);
+  c->pc = MARTIAN_PLACE_EDGE_PC;
+}
+
+void martian_arrival_placed(Wram* w, const Rom* rom, PortCpu* c,
+                            ThreadStretchWork* k) {
+  (void)rom;
+  if (branches(c, PORT_P_C, k)) {
+    arrival_refused(w, c, k);
+    return;
+  }
+  PORT_COVER(martian_arrival_free);
+  pull16(w, c);
+  ran(k, TS_ARRIVAL_FREE);
+  ran(k, TS_BRANCH);
+  load_up(w, c, MARTIAN_LOAD);
+  ran(k, TS_MARTIAN_ENTER);
+  c->pc = MARTIAN_ARRIVAL_BEGIN_CALL_PC;
+}
+
+void martian_arrival_begun(Wram* w, const Rom* rom, PortCpu* c,
+                           ThreadStretchWork* k) {
+  (void)rom;
+  jsr_and_back(w, c, (uint16_t)(MARTIAN_ARRIVAL_BEGUN_PC & 0xffffu), k);
+  set_page(w, c, MARTIAN_DP_STATE, MARTIAN_STATE_ARRIVE);
+  set_page(w, c, MARTIAN_DP_SIDE_TIMER, 0);
+  set_page(w, c, MARTIAN_DP_SIDE, 0);
+  ran(k, TS_ARRIVAL_STATE);
+  lda(c, MARTIAN_YIELD_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = MARTIAN_ARRIVAL_YIELD_PC;
 }

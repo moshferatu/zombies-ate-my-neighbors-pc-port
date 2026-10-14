@@ -203,8 +203,8 @@ static bool fire(Martian* m, uint16_t way) {
 }
 
 // `$81:9981`: fire along `way`, if it has not fired lately. The shot's
-// thread is the ROM's to start, and the pass sleeps once it has. A walker's
-// pass goes that far here. One arriving is the ROM's.
+// thread is the ROM's to start, and the pass sleeps once it has, so a pass
+// that fires goes only that far here.
 static void shoot(Martian* m, uint16_t way) {
   const Point me = position(m);
   set_field(m, MARTIAN_DP_SHOT_WAY, way);
@@ -216,13 +216,12 @@ static void shoot(Martian* m, uint16_t way) {
     set_field(m, MARTIAN_DP_COOLDOWN, (uint16_t)(cooldown - 1));
     return;
   }
-  if (m->log->state != MARTIAN_STATE_WALK ||
-      !martian_shoot_supported(m->w, m->rom, m->page, way)) {
-    PORT_COVER(martian_fired);
+  if (!martian_shoot_supported(m->w, m->rom, m->page, way)) {
     m->log->declined = true;
     return;
   }
-  PORT_COVER(martian_walker_fired);
+  PORT_COVER_IF(m->log->state == MARTIAN_STATE_WALK, martian_walker_fired,
+                martian_fired);
   m->log->fired = true;
   m->log->shot_way = way;
   m->log->shot_mirrored = fire(m, way);
@@ -458,41 +457,10 @@ static void pick_side(Martian* m) {
   set_field(m, MARTIAN_DP_SIDE, log->side_left ? WAY_LEFT : WAY_RIGHT);
 }
 
-// `$81:9DBB`: across the top, above its target, firing down now and then,
-// until a player is above it.
-static void arrive(Martian* m) {
+// `$81:9DEF`: to its side of the target, and up or down to its height
+// above them.
+static void arrive_on(Martian* m) {
   MartianLog* log = m->log;
-  PORT_COVER(martian_arrived);
-  if (!a_player_is_near(m, MARTIAN_ARRIVE_REACH)) {
-    log->nobody = true;
-    set_field(m, MARTIAN_DP_FATE, (uint16_t)(field(m, MARTIAN_DP_FATE) - 1));
-  }
-  if (a_player_is_above(m)) {
-    PORT_COVER(martian_came_down);
-    log->came_down = true;
-    set_field(m, MARTIAN_DP_CYCLE, 0);
-    set_field(m, MARTIAN_DP_PICTURE_TIMER, 0);
-    set_field(m, MARTIAN_DP_STATE, MARTIAN_STATE_WALK);
-    return;
-  }
-
-  const uint16_t way = lined_up_way(m);
-  if (way != 0) {
-    log->held_fire = true;
-    shoot(m, way);
-  } else {
-    RngResult draw;
-    rng_next(m->w, m->flags.c, &draw);
-    log->drew = true;
-    log->drew_overflow = draw.v;
-    flags_overflow(&m->flags, draw.v);
-    if (draw.a < MARTIAN_DRAW_FIRE) {
-      log->drew_fire = true;
-      shoot(m, WAY_DOWN);
-    }
-  }
-  if (log->declined) return;
-
   if (ran_out(m, MARTIAN_DP_SIDE_TIMER)) pick_side(m);
   const uint16_t side = field(m, MARTIAN_DP_SIDE);
   const bool left = side >= WAY_FIRST_LEFT;
@@ -524,6 +492,44 @@ static void arrive(Martian* m) {
     step(m, way_on, &log->step[i]);
     show_arriving(m, &log->step[i]);
   }
+}
+
+// `$81:9DBB`: across the top, above its target, firing down now and then,
+// until a player is above it. A pass that fires stops there, and
+// `martian_arrival_wake` is the rest of it.
+static void arrive(Martian* m) {
+  MartianLog* log = m->log;
+  PORT_COVER(martian_arrived);
+  if (!a_player_is_near(m, MARTIAN_ARRIVE_REACH)) {
+    log->nobody = true;
+    set_field(m, MARTIAN_DP_FATE, (uint16_t)(field(m, MARTIAN_DP_FATE) - 1));
+  }
+  if (a_player_is_above(m)) {
+    PORT_COVER(martian_came_down);
+    log->came_down = true;
+    set_field(m, MARTIAN_DP_CYCLE, 0);
+    set_field(m, MARTIAN_DP_PICTURE_TIMER, 0);
+    set_field(m, MARTIAN_DP_STATE, MARTIAN_STATE_WALK);
+    return;
+  }
+
+  const uint16_t way = lined_up_way(m);
+  if (way != 0) {
+    log->held_fire = true;
+    shoot(m, way);
+  } else {
+    RngResult draw;
+    rng_next(m->w, m->flags.c, &draw);
+    log->drew = true;
+    log->drew_overflow = draw.v;
+    flags_overflow(&m->flags, draw.v);
+    if (draw.a < MARTIAN_DRAW_FIRE) {
+      log->drew_fire = true;
+      shoot(m, WAY_DOWN);
+    }
+  }
+  if (log->declined || log->fired) return;
+  arrive_on(m);
 }
 
 // ---------------------------------------------------------------------------
@@ -571,6 +577,17 @@ bool martian_wake(Wram* w, const Rom* rom, uint16_t page, MartianLog* log) {
   PORT_COVER(martian_woke);
   m.log->state = MARTIAN_STATE_WALK;
   walk_on(&m);
+  return pass_over(&m);
+}
+
+bool martian_arrival_wake(Wram* w, const Rom* rom, uint16_t page,
+                          MartianLog* log) {
+  MartianLog scratch = {0};
+  Martian m = {w, rom, page, wram_r16(w, (uint16_t)(page + MARTIAN_DP_RECORD)),
+               log ? log : &scratch, {false, false, false, false}};
+  PORT_COVER(martian_arrival_woke);
+  m.log->state = MARTIAN_STATE_ARRIVE;
+  arrive_on(&m);
   return pass_over(&m);
 }
 
@@ -627,10 +644,8 @@ bool martian_begin(Wram* w, PortCpu* c, uint16_t* record_out) {
 }
 
 // ---------------------------------------------------------------------------
-// A pass that fires
+// Two pieces of a pass, for the ROM to call
 // ---------------------------------------------------------------------------
-//
-// Arriving, it is the ROM's, and these are two pieces of it.
 
 bool martian_show_supported(const Wram* w, uint16_t page) {
   return wram_r16(w, (uint16_t)(page + MARTIAN_DP_DIRECTION)) <=

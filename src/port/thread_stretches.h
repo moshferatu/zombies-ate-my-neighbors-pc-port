@@ -68,6 +68,44 @@
 // See `port/martian.h`. The walker's first instructions, either side of
 // `martian_begin`, the end of that, and the twelve ticks a shot waits.
 //
+// **One that comes in over the top starts at `$81:9A3E`**, eight pixels
+// below the top of the screen and at whatever X it was given. If that place
+// is in the ground or off the level there is no martian: the thread ends
+// before it has a record.
+//
+// ## The werewolf, `$81:ABF5`
+//
+// See `port/werewolf.h`. Its thread ends at once unless the word at `$1F94`
+// is set. Otherwise it weighs 28 in the level's load, howls if the level's
+// sample set is the one with its howl in it, takes a record, sleeps twenty
+// ticks, and begins running with ten for what it can be hit by. Then what
+// follows the end of a strike and a crouch's pictures, and the rest after a
+// landing.
+//
+// **The check of the sample set is a stretch of its own**, `$81:AC05`. The
+// frontend plays the howl itself on a level with another set, and knows to
+// by watching the 65816 come to that instruction: see `src/bank_sfx.h`. A
+// stretch that ran on through it would silence that, and nothing here would
+// notice. So the one before stops there, and this one begins there.
+//
+// ## One instruction or two
+//
+// What stands by itself between two calls and belongs to nothing ported: a
+// word of a thread's page set to an address before a return, a list of
+// pictures named, a page pulled.
+//
+// ## A player's flashing ended, `$80:D97F`
+//
+// See `port/player_frame.h`. The player is drawn again whichever frame it
+// is, and goes back to the ordinary state, or to the turning one if that is
+// what ran under the flashing.
+//
+// ## A player shown hurt, `$80:D056`
+//
+// `port/hit.h` leaves a hit player here when it is shown by a list of
+// pictures: the picture they had is kept on the thread's stack, the list
+// plays, which sleeps, and the picture is put back.
+//
 // Port code: libc only.
 
 #ifndef PORT_THREAD_STRETCHES_H
@@ -86,8 +124,18 @@ typedef struct {
   uint16_t value;
 } ThreadArgument;
 
-#define THREAD_ARGUMENT_COUNT 6
+#define THREAD_ARGUMENT_COUNT 9
 extern const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT];
+
+// `LDA #value : STA at`, on the thread's page, and the `RTS` after.
+typedef struct {
+  uint32_t pc;
+  uint16_t value;
+  uint8_t at;
+} ThreadSetter;
+
+#define THREAD_SETTER_COUNT 2
+extern const ThreadSetter THREAD_SETTERS[THREAD_SETTER_COUNT];
 
 // `LDA #a : LDY #y` and a call.
 typedef struct {
@@ -240,6 +288,78 @@ extern const WeedKind WEED_KINDS[WEED_KIND_COUNT];
 #define MARTIAN_FIRST_SLEEP_PC 0x8199f2u
 #define MARTIAN_WALKS_PC 0x819d2au
 #define MARTIAN_LOAD 0x001e
+#define MARTIAN_ARRIVAL_ENTER_PC 0x819a3eu
+#define MARTIAN_PLACE_RETURN 0x9a40u           // its `JSR $9AA2`
+#define MARTIAN_PLACE_GROUND_PC 0x819aaeu      // `JSL terrain_blocked`
+#define MARTIAN_PLACE_GROUNDED_PC 0x819ab2u
+#define MARTIAN_PLACE_EDGE_PC 0x819ab8u        // `JSL terrain_out_of_bounds`
+#define MARTIAN_PLACED_PC 0x819abcu
+#define MARTIAN_ARRIVAL_NONE_PC 0x819a8du      // the `RTL` with no martian
+#define MARTIAN_ARRIVAL_BEGIN_CALL_PC 0x819a4du
+#define MARTIAN_ARRIVAL_BEGUN_PC 0x819a50u
+#define MARTIAN_ARRIVAL_BELOW_TOP 0x0008
+
+// --- the werewolf ------------------------------------------------------------
+
+#define WEREWOLF_ENTER_PC 0x81abf5u
+#define WEREWOLF_NONE_PC 0x81abfau          // the `RTL` with none due
+#define WEREWOLF_HOWL_CHECK_PC 0x81ac05u    // `LDA $1F52`, which is watched
+#define WEREWOLF_SAMPLE_SET 0x0001
+#define WEREWOLF_HOWL_CALL_PC 0x81ac10u     // `JSL apu_play_sfx`
+#define WEREWOLF_HOWLED_PC 0x81ac14u
+#define WEREWOLF_MAKE_PC 0x81a643u          // `JSL record_begin`
+#define WEREWOLF_MAKE_RETURN 0xac16u        // what the `JSR` to it pushed
+#define WEREWOLF_MADE_PC 0x81a647u
+#define WEREWOLF_FIRST_SLEEP_PC 0x81a686u
+#define WEREWOLF_WOKE_PC 0x81a68au
+#define WEREWOLF_HANDLER_CALL_PC 0x81abbcu  // `JSL thread_set_handler`
+#define WEREWOLF_RUNS_PC 0x81abc0u
+#define WEREWOLF_STRUCK_PC 0x81ab02u
+#define WEREWOLF_RESTED_PC 0x81aa9bu
+#define WEREWOLF_CROUCHED_PC 0x81a9afu
+#define WEREWOLF_LOAD 0x001c
+#define WEREWOLF_HOWL 0x002b
+#define WEREWOLF_FIRST_PICTURE 0xe9d8u
+#define WEREWOLF_LEAP_PICTURE 0xeb89u
+#define WEREWOLF_START_ATTR 0x0c00
+#define WEREWOLF_COLLIDE_ID 0x0003
+#define WEREWOLF_FIRST_SLEEP 0x0014
+#define WEREWOLF_HEALTH 0x000a
+#define WEREWOLF_HANDLER 0xac92u
+// In the air it is drawn over everything, and is nothing to hit.
+#define WEREWOLF_LEAP_FLAGS 0x8008u
+#define WEREWOLF_DP_PLACED_X 0x00
+#define WEREWOLF_DP_PLACED_Y 0x02
+#define WEREWOLF_DP_7E 0x7e                 // cleared; I have not read its use
+
+// --- one instruction or two --------------------------------------------------
+
+#define PAGE_CLEAR_PC 0x80d0ddu       // `STZ $1C`, and an `RTS`
+#define PAGE_CLEAR_RTS_PC 0x80d0dfu
+#define PAGE_CLEARED 0x1c
+#define PAGE_PULL_PC 0x80abd1u        // `PLD`, and an `RTL`
+#define PAGE_PULL_RTL_PC 0x80abd2u
+#define CARRY_SET_PC 0x80e78eu        // `SEC`, and an `RTS`
+#define CARRY_SET_RTS_PC 0x80e78fu
+#define VICTIM_GONE_PC 0x8181efu      // `LDA $06`, and `JSL victim_mark_gone`
+#define VICTIM_GONE_CALL_PC 0x8181f1u
+#define VICTIM_DP_GONE 0x06
+
+// --- a player's flashing ended -----------------------------------------------
+
+#define FLASHING_END_PC 0x80d97fu
+#define FLASHING_END_CALL_PC 0x80d99du  // `JSR $F377`
+
+// --- a player shown hurt -----------------------------------------------------
+
+#define PLAYER_HIT_SHOW_PC 0x80d056u
+#define PLAYER_HIT_SHOW_CALL_PC 0x80d066u   // `JSR $F36C`
+#define PLAYER_HIT_SHOWN_PC 0x80d070u
+#define PLAYER_HIT_SHOWN_CALL_PC 0x80d07eu  // `JSR $F382`
+#define PLAYER_DP_RECORD 0x08
+#define PLAYER_DP_16 0x16                   // cleared after; I have not read
+#define PLAYER_DP_50 0x50                   // the use of either
+#define PLAYER_HURT_PICTURE_BANK 0x0090
 
 // name, first instruction, the one after its last, and how many branches
 // in it are always taken. `tools/cycles816.py` prices each.
@@ -285,7 +405,24 @@ extern const WeedKind WEED_KINDS[WEED_KIND_COUNT];
   X(TS_SPAWNER_TICK, 0x80c8f9, 0x80c901, 0)      /* LDA abs : AND # : BNE */ \
   X(TS_SPAWNER_WAIT, 0x80c908, 0x80c90d, 0) \
   X(TS_MARTIAN_ENTER, 0x8199df, 0x8199e9, 0) \
-  X(TS_MARTIAN_WALKS, 0x819d2a, 0x819d30, 0)  /* LDA # : STA $0A : RTS */
+  X(TS_MARTIAN_WALKS, 0x819d2a, 0x819d30, 0)  /* LDA # : STA $0A : RTS */ \
+  X(TS_RTS, 0x819abf, 0x819ac0, 0) \
+  X(TS_ARRIVAL_PLACE, 0x819aa2, 0x819aae, 0) \
+  X(TS_ARRIVAL_FREE, 0x819abe, 0x819ac0, 0)   /* CLC : RTS */ \
+  X(TS_ARRIVAL_STATE, 0x819db1, 0x819dbb, 0) \
+  X(TS_PLAYER_HIT_KEEP, 0x80d056, 0x80d066, 0) \
+  X(TS_PLAYER_HIT_BACK, 0x80d070, 0x80d07e, 0) \
+  X(TS_FLASHING_END, 0x80d97f, 0x80d998, 0)  /* to the BNE */ \
+  X(TS_WOLF_ASK, 0x81abf5, 0x81abfa, 0)      /* LDA abs : BNE */ \
+  X(TS_WOLF_HEARD, 0x81ac05, 0x81ac0d, 0)    /* LDA abs : CMP # : BNE */ \
+  X(TS_WOLF_MADE, 0x81a647, 0x81a686, 0) \
+  X(TS_WOLF_HEALTH, 0x81a68a, 0x81a694, 0)   /* the JMP too */ \
+  X(TS_WOLF_UNBLOW, 0x81ab02, 0x81ab0a, 0)   /* the JMP too */ \
+  X(TS_WOLF_LEAP, 0x81a9d5, 0x81a9f0, 0)     /* the RTS too */ \
+  X(TS_JMP, 0x81a9af, 0x81a9b2, 0) \
+  X(TS_STZ_DP, 0x80d0dd, 0x80d0df, 0) \
+  X(TS_PLD, 0x80abd1, 0x80abd2, 0) \
+  X(TS_SEC, 0x80e78e, 0x80e78f, 0)
 
 enum {
 #define X(name, from, to, taken) name,
@@ -306,6 +443,8 @@ typedef enum {
   TS_NEEDS_A,       // a record in A
   TS_NEEDS_LEVEL,   // the level's offset is one into the cartridge
   TS_NEEDS_COUNTS,  // the two counts of those saved are small
+  TS_NEEDS_PLACE,   // the arriving martian's `JSR $9AA2` is what it returns to
+  TS_NEEDS_WOLF,    // a werewolf's record, and its loop to return to
 } ThreadStretchNeeds;
 
 bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
@@ -319,6 +458,15 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(argument_follower, "$82:F4B1", 0x82f4b1u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_level_wait, "$80:8516", 0x808516u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_martian_shot, "$81:99C2", 0x8199c2u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_player_hurt, "$80:D069", 0x80d069u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_81ec72, "$81:EC72", 0x81ec72u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_81f30e, "$81:F30E", 0x81f30eu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(setter_819215, "$81:9215", 0x819215u, thread_setter, SETTER, TS_NEEDS_NOTHING) \
+  X(setter_819250, "$81:9250", 0x819250u, thread_setter, SETTER, TS_NEEDS_NOTHING) \
+  X(page_clear, "$80:D0DD", PAGE_CLEAR_PC, page_clear, SMALL, TS_NEEDS_NOTHING) \
+  X(page_pull, "$80:ABD1", PAGE_PULL_PC, page_pull, SMALL, TS_NEEDS_NOTHING) \
+  X(carry_set, "$80:E78E", CARRY_SET_PC, carry_set, SMALL, TS_NEEDS_NOTHING) \
+  X(victim_gone, "$81:81EF", VICTIM_GONE_PC, victim_gone, SMALL, TS_NEEDS_NOTHING) \
   X(pair_main_layers, "$80:85D3", 0x8085d3u, thread_pair, PAIR, TS_NEEDS_NOTHING) \
   X(pair_martian_handler, "$81:9B30", 0x819b30u, thread_pair, PAIR, TS_NEEDS_NOTHING) \
   X(pair_hud_thread, "$80:C2DE", 0x80c2deu, thread_pair, PAIR, TS_NEEDS_NOTHING) \
@@ -355,7 +503,23 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(spawner_tick, "$80:C8F9", SPAWNER_TICK_PC, spawner_tick, MAIN, TS_NEEDS_NOTHING) \
   X(spawner_wait, "$80:C908", SPAWNER_WAIT_PC, spawner_wait, SPAWNER, TS_NEEDS_NOTHING) \
   X(martian_enter, "$81:99DF", MARTIAN_ENTER_PC, martian_enter, MARTIAN, TS_NEEDS_NOTHING) \
-  X(martian_begun, "$81:99EC", MARTIAN_BEGUN_PC, martian_begun, MARTIAN, TS_NEEDS_NOTHING)
+  X(martian_begun, "$81:99EC", MARTIAN_BEGUN_PC, martian_begun, MARTIAN, TS_NEEDS_NOTHING) \
+  X(martian_arrival_enter, "$81:9A3E", MARTIAN_ARRIVAL_ENTER_PC, martian_arrival_enter, MARTIAN, TS_NEEDS_NOTHING) \
+  X(martian_arrival_grounded, "$81:9AB2", MARTIAN_PLACE_GROUNDED_PC, martian_arrival_grounded, MARTIAN, TS_NEEDS_PLACE) \
+  X(martian_arrival_placed, "$81:9ABC", MARTIAN_PLACED_PC, martian_arrival_placed, MARTIAN, TS_NEEDS_PLACE) \
+  X(martian_arrival_begun, "$81:9A50", MARTIAN_ARRIVAL_BEGUN_PC, martian_arrival_begun, MARTIAN, TS_NEEDS_NOTHING) \
+  X(flashing_end, "$80:D97F", FLASHING_END_PC, flashing_end, PLAYER_HIT, TS_NEEDS_RECORD) \
+  X(werewolf_enter, "$81:ABF5", WEREWOLF_ENTER_PC, werewolf_enter, WOLF, TS_NEEDS_NOTHING) \
+  X(werewolf_howl_check, "$81:AC05", WEREWOLF_HOWL_CHECK_PC, werewolf_howl_check, WOLF, TS_NEEDS_NOTHING) \
+  X(werewolf_howled, "$81:AC14", WEREWOLF_HOWLED_PC, werewolf_howled, WOLF, TS_NEEDS_NOTHING) \
+  X(werewolf_made, "$81:A647", WEREWOLF_MADE_PC, werewolf_made, WOLF, TS_NEEDS_RECORD) \
+  X(werewolf_woke, "$81:A68A", WEREWOLF_WOKE_PC, werewolf_woke, WOLF, TS_NEEDS_NOTHING) \
+  X(werewolf_runs, "$81:ABC0", WEREWOLF_RUNS_PC, werewolf_runs, WOLF, TS_NEEDS_WOLF) \
+  X(werewolf_struck, "$81:AB02", WEREWOLF_STRUCK_PC, werewolf_struck, WOLF, TS_NEEDS_NOTHING) \
+  X(werewolf_rested, "$81:AA9B", WEREWOLF_RESTED_PC, werewolf_rested, WOLF, TS_NEEDS_NOTHING) \
+  X(werewolf_crouched, "$81:A9AF", WEREWOLF_CROUCHED_PC, werewolf_crouched, WOLF, TS_NEEDS_WOLF) \
+  X(player_hit_show, "$80:D056", PLAYER_HIT_SHOW_PC, player_hit_show, PLAYER_HIT, TS_NEEDS_RECORD) \
+  X(player_hit_shown, "$80:D070", PLAYER_HIT_SHOWN_PC, player_hit_shown, PLAYER_HIT, TS_NEEDS_RECORD)
 
 #define X(name, sym, entry, port, exits, needs) \
   void port(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k);
