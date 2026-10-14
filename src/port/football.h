@@ -11,9 +11,14 @@
 //
 //   $81:C824  footballer_show    its picture where it now is, to the `RTS`
 //
-// What is here is the running. What is not is the thread's setup, the tackle
-// it makes when it runs into a player, which sleeps in the middle, and its
-// end. A pass in one of those states is the ROM's.
+// The thread's start is a stretch too, from its first instruction to its
+// first sleep:
+//
+//   $81:C87B  footballer_start
+//
+// What is not here is the tackle it makes when it runs into a player, which
+// sleeps in the middle, and its end. A pass in one of those states is the
+// ROM's.
 //
 // ## What a footballer does
 //
@@ -27,6 +32,12 @@
 // **It begins by standing a moment.** Then, each pass, a draw may make it
 // veer an eighth of a turn for sixteen passes or so. When those are up
 // another draw either straightens it out again or has it veer on.
+//
+// **It comes on from the edge of the screen** nearer to where it was asked
+// for (`footballer_enter`), and not at all if the ground there is solid or
+// off the level: the thread ends at once. Otherwise it takes a record, adds
+// ten to the census at `$00DE`, names its handler, and stands for 15 to 46
+// passes, by a draw.
 //
 // **With neither player within 320 it leaves.**
 //
@@ -193,5 +204,38 @@ bool footballer_enter(Wram* w, PortCpu* c);
 #define FOOTBALLER_START_ATTR 0x0c00
 #define FOOTBALLER_DP_7E 0x7e  // cleared; I have not read what uses it
 bool footballer_begin(Wram* w, PortCpu* c, uint16_t* record);
+
+// `$81:C87B`, the thread's start, to the `JSL thread_yield` with the ticks in
+// A. With the place it comes on at solid or off the level it stops at the
+// thread's `RTL`, `$81:C8C2`, with carry set.
+#define FOOTBALLER_START_PC 0x81c87bu
+#define FOOTBALLER_START_ENDED_PC 0x81c8c2u
+#define FOOTBALLER_HANDLER 0xc8c3u
+#define FOOTBALLER_CENSUS 10    // what one adds to the census at `$00DE`
+#define FOOTBALLER_STAND_DRAW 0x001f  // a stand's passes: a draw so masked...
+#define FOOTBALLER_STAND_LEAST 0x000f // ...and this many more
+
+typedef enum {
+  FOOTBALLER_STARTED,
+  FOOTBALLER_START_BLOCKED,  // the ground where it comes on is solid
+  FOOTBALLER_START_OUTSIDE,  // ...or it is off the level
+  FOOTBALLER_START_DECLINED, // no record, or a picture the tables lack: the ROM's
+} FootballerStart;
+
+// For the harness: what it did.
+typedef struct {
+  bool from_left;
+  TerrainRegs ground;
+  BoundsRegs bounds;
+  uint16_t record;
+  bool draw_overflow;
+  FootballerLog show;
+  bool v_known;  // ...and whether the show left an overflow the port follows
+} FootballerStartLog;
+
+// `log` may not be NULL. WRAM is part written when it declines, so a caller
+// asks it of a copy first.
+FootballerStart footballer_start(Wram* w, const Rom* rom, PortCpu* c,
+                                 FootballerStartLog* log);
 
 #endif

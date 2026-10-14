@@ -4,6 +4,7 @@
 //   $82:B8FB  text_print_lines  strings each with its own place, and then on
 //                               to send the text map to VRAM
 //   $82:AD5A  the big letters   a level's name, in two stretches: see below
+//   $80:C219  text_panel        words over the status panel: see below
 //
 // Every screen of words goes through one of these: the title's, the menus',
 // a level's name, the counts when one is over.
@@ -120,6 +121,47 @@ void text_print(Wram* w, const Rom* rom, uint16_t page, uint16_t a, uint16_t x,
                 uint16_t y, TextRegs* out, TextWork* k);
 void text_print_lines(Wram* w, const Rom* rom, uint16_t page, uint16_t a,
                       uint16_t x, uint16_t y, TextRegs* out, TextWork* k);
+
+// --- $80:C219  words over the status panel -----------------------------------
+//
+// What a bystander says, and three other callers' words in bank `$80`, go on
+// the status panel's shadow map at `$7E:5F36` (`port/hud.h`), a tile to a
+// character.
+//
+// **A place is three bytes**: a column, a row, and what the characters are
+// drawn with, whose low byte times four goes to `$1E8D` as above. `$1E8C` is
+// cleared. The column is doubled in eight bits, so one past 127 wraps.
+//
+// **A character is one tile.** A space is tile 0. A byte under `$3A` is its
+// tile less `$29`, and any other its tile plus `$4F`, with the place's
+// palette and `$3000` set on either. A byte under `$29` other than a space
+// comes out wrong, as it does in the ROM. A zero ends the string and `$FF`
+// starts a new place.
+//
+// **Its end is the HUD's**: the panel's count of changes goes up one, and the
+// job that uploads the map is queued, `LDA #$C34A : LDY #$0080 : JML $8083AE`.
+//
+// It sets the direct page to zero for itself, and the pointers at `$E0` and
+// `$E3` are on that page. Everything it returns is the queue adder's.
+#define TEXT_PANEL_PC 0x80c219u
+#define TEXT_PANEL_MAP_AT 0x5f36u
+#define TEXT_PANEL_SPACE 0x20
+#define TEXT_PANEL_DIGITS_END 0x3a
+#define TEXT_PANEL_LOW_SHIFT 0x29u
+#define TEXT_PANEL_HIGH_SHIFT 0x4fu
+#define TEXT_PANEL_TILE_FLAGS 0x3000u
+
+typedef struct {
+  TextWork text;  // bytes, places and slow words, as the others count them
+  int spaces;
+  int lows;  // bytes under `$3A`, the `SBC` path
+  int slot;  // the queue's slot, or -1 when it was full
+} TextPanelWork;
+
+// The bank of the places and the string is in A's low byte, and where they
+// are in X. A, X and Y come back as the queue adder leaves them, and so do N,
+// Z and carry.
+void text_panel(Wram* w, const Rom* rom, PortCpu* c, TextPanelWork* k);
 
 // --- $82:AD5A  the big letters -----------------------------------------------
 //

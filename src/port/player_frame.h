@@ -54,6 +54,25 @@
 // the ROM's, from that return. A hit that takes nothing goes on to the pose
 // as the hurt timer would have.
 //
+// ## Down from a leap into the water
+//
+// The first leap's landing (`port/pose.h`) plays a sound and then a list of
+// pictures, the splash, which sleeps. So a frame that lands stops at the
+// sound's `JSL`, `$80:DD75`, with the return of the pose's computed `RTS` on
+// the stack. `thread_stretches` has the next piece, to the pictures, and
+// where they come back to is a stretch of its own, as readable C:
+//
+//   $80:DD90  player_splashed   the rest of the landing, and of that frame
+//
+// The player can be touched and is told of things again, and swims: the
+// pose is the swim's and its pictures, the speed class 2, the state `$0E`,
+// and what they held is kept aside while they hold the swimmer's own, until
+// the state's end puts it back (`$80:F3A5`). Then the frame goes on as one
+// with no movement does.
+//
+// It turns down a movement handler, which the landing does not expect, and
+// what the frame turns down at its end.
+//
 // ## Its contract with the ROM
 //
 // It writes WRAM exactly as the ROM does. The frame ends at the thread's
@@ -89,6 +108,16 @@
 // What a frame that stops in a hit leaves on the stack: the return of the
 // `JSR $D01B` at `$80:CE01`.
 #define PLAYER_FRAME_HIT_RETURN 0xce03u
+// ...and one that stops in the pose: the `PEA` before its computed `RTS`.
+#define PLAYER_FRAME_POSE_RETURN 0xce0bu
+#define PLAYER_SPLASHED_PC 0x80dd90u
+// What swimming begins with: its pictures, a pose table for each player, its
+// speed class, and what a swimmer holds in place of the weapon and the item.
+#define SWIM_PICTURES 0xfd72u
+#define SWIM_FRAMES 0x80dcc9u
+#define SWIM_SPEED_CLASS 2
+#define SWIM_HELD_WEAPON 0x0012u
+#define SWIM_HELD_ITEM 0x0010u
 
 // The tables the state and the pose read are in bank `$80`, which is the
 // player thread's data bank.
@@ -181,6 +210,13 @@ typedef struct {
   bool c_set;              // false: carry is as the thread woke with it
   bool unported;           // the frame reached something that is the ROM's
 } PlayerFrameLog;
+
+// `$80:DD90`, the rest of a frame that came down in the water, for the player
+// whose page is `page`. `s` is the stack pointer, which the swap pushes
+// under. `log` may be NULL. `log->unported` says it reached something that is
+// the ROM's, so a caller asks it of a copy first.
+void player_splashed(Wram* w, const Rom* rom, uint16_t page, uint16_t s,
+                     PlayerFrameLog* log);
 
 // Would the port run this frame the way the ROM does? It runs the frame to
 // find out, so `w` is a copy.

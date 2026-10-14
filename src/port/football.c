@@ -522,6 +522,74 @@ bool footballer_enter(Wram* w, PortCpu* c) {
   return from_left;
 }
 
+// The two tests of where it comes on, `$81:C7CF` to the `RTS`: carry set
+// says it may not.
+static FootballerStart place_tested(Wram* w, PortCpu* c,
+                                    FootballerStartLog* log) {
+  terrain_blocked(w, c->x, c->y, &log->ground);
+  c->a = log->ground.a;
+  c->x = log->ground.x;
+  c->y = log->ground.y;
+  set_c(c, log->ground.blocked);
+  if (log->ground.blocked) {
+    PORT_COVER(footballer_start_blocked);
+    return FOOTBALLER_START_BLOCKED;
+  }
+  const uint16_t page = c->d;
+  c->x = wram_r16(w, (uint16_t)(page + FOOTBALLER_DP_ASKED_X));
+  c->y = wram_r16(w, (uint16_t)(page + FOOTBALLER_DP_ASKED_Y));
+  terrain_out_of_bounds(w, c->x, c->y, &log->bounds);
+  c->a = log->bounds.a;
+  c->p = (uint8_t)(c->p & ~(PORT_P_N | PORT_P_Z));
+  if (log->bounds.n) c->p |= PORT_P_N;
+  if (log->bounds.z) c->p |= PORT_P_Z;
+  set_c(c, log->bounds.c);
+  if (log->bounds.c) {
+    PORT_COVER(footballer_start_outside);
+    return FOOTBALLER_START_OUTSIDE;
+  }
+  set_c(c, false);
+  return FOOTBALLER_STARTED;
+}
+
+FootballerStart footballer_start(Wram* w, const Rom* rom, PortCpu* c,
+                                 FootballerStartLog* log) {
+  *log = (FootballerStartLog){0};
+  const uint16_t page = c->d;
+  log->from_left = footballer_enter(w, c);
+  const FootballerStart placed = place_tested(w, c, log);
+  if (placed != FOOTBALLER_STARTED) {
+    c->pc = FOOTBALLER_START_ENDED_PC;
+    return placed;
+  }
+  if (!footballer_begin(w, c, &log->record)) return FOOTBALLER_START_DECLINED;
+  PORT_COVER(footballer_started);
+  // `CLC : LDA $00DE : ADC #$000A : STA $00DE`
+  set_c(c, false);
+  c->a = adc16(c, wram_r16(w, W_SPAWN_LOAD), FOOTBALLER_CENSUS);
+  wram_w16(w, W_SPAWN_LOAD, c->a);
+  c->a = FOOTBALLER_HANDLER;
+  c->y = FOOTBALLER_BANK;
+  thread_set_handler(w, c);
+
+  // `$81:C5EC`: it stands, for a drawn while.
+  wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_STATE), FOOTBALLER_STATE_STAND);
+  RngResult draw;
+  rng_next(w, flag(c, PORT_P_C), &draw);
+  log->draw_overflow = draw.v;
+  set_c(c, false);
+  c->a = adc16(c, (uint16_t)(draw.a & FOOTBALLER_STAND_DRAW),
+               FOOTBALLER_STAND_LEAST);
+  wram_w16(w, (uint16_t)(page + FOOTBALLER_DP_COUNT), c->a);
+
+  if (!footballer_show_supported(w, page)) return FOOTBALLER_START_DECLINED;
+  footballer_show(w, rom, c, &log->show, &log->v_known);
+  c->a = FOOTBALLER_YIELD_TICKS;
+  set_nz16(c, c->a);
+  c->pc = FOOTBALLER_YIELD_PC;
+  return FOOTBALLER_STARTED;
+}
+
 bool footballer_begin(Wram* w, PortCpu* c, uint16_t* record_out) {
   const uint16_t page = c->d;
   SlotAllocRegs slot;

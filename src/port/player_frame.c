@@ -347,6 +347,49 @@ void player_frame(Wram* w, const Rom* rom, uint16_t page, PlayerFrameLog* log) {
     return;
   }
   if (!strike_pose(&f)) return;
+  if (log->pose_log.splashed) {
+    log->unported = false;  // it stops at the sound
+    return;
+  }
+  if (!move(&f)) return;
+  publish_position(&f);
+  set_field(&f, PLAYER_DP_LAST_BUTTONS, field(&f, PLAYER_DP_BUTTONS));
+  if (!level_goes_on(&f) || !alive(&f)) return;
+  log->unported = false;
+}
+
+void player_splashed(Wram* w, const Rom* rom, uint16_t page, uint16_t s,
+                     PlayerFrameLog* log) {
+  PlayerFrameLog scratch;
+  if (log == NULL) log = &scratch;
+  *log = (PlayerFrameLog){0};
+  Frame f = {w, rom, page, log};
+
+  log->unported = true;
+  if (field(&f, PLAYER_DP_MOVEMENT) != 0) return;
+  PORT_COVER(player_splashed);
+  const uint16_t record = field(&f, POSE_DP_RECORD);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) &
+                      ~ACTOR_PRIORITY_TOP));
+  // Each leaf is a `JSR` away, so the swap's push is under its return.
+  PortCpu c = {.s = (uint16_t)(s - 2), .d = page, .db = PLAYER_FRAME_BANK};
+  player_handled(w, &c);
+  player_touchable(w, rom, &c);
+
+  // `$80:DC76`: swimming.
+  set_field(&f, PLAYER_DP_POSE, POSE_HANDLER_SWIM);
+  set_field(&f, POSE_DP_PICTURES, SWIM_PICTURES);
+  set_field(&f, POSE_DP_FRAMES,
+            rom_word(rom, SWIM_FRAMES + field(&f, POSE_DP_PICTURES_ROW)));
+  set_field(&f, POSE_DP_CYCLE, 0);
+  set_field(&f, STEP_DP_SPEED_CLASS, SWIM_SPEED_CLASS);
+  set_field(&f, PLAYER_DP_STATE, PLAYER_STATE_TURNING_B);
+  set_field(&f, FLASHING_DP_ENDS_BY, (uint16_t)PLAYER_HANDS_BACK_PC);
+  c.a = SWIM_HELD_WEAPON;
+  c.y = SWIM_HELD_ITEM;
+  player_hands_swap(w, &c);
+
   if (!move(&f)) return;
   publish_position(&f);
   set_field(&f, PLAYER_DP_LAST_BUTTONS, field(&f, PLAYER_DP_BUTTONS));

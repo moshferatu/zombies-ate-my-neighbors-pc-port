@@ -771,6 +771,13 @@
   X(text_new_place,   "text_print_lines",   "a byte of $FF: a new place, and the string goes on") \
   X(text_char_drawn,  "text_print",         "a character's four tiles written") \
   X(text_char_skipped, "text_print",        "a byte under $2F, which draws nothing") \
+  X(text_panel,       "text_panel",         "words over the status panel") \
+  X(text_panel_new_place, "text_panel",     "...a byte of $FF: a new place") \
+  X(text_panel_space, "text_panel",         "...a space, tile 0") \
+  X(text_panel_low,   "text_panel",         "...a byte under $3A, its tile less $29") \
+  X(text_panel_high,  "text_panel",         "...any other, its tile plus $4F") \
+  X(text_panel_queued, "text_panel",        "...and the panel's upload queued") \
+  X(text_panel_queue_full, "text_panel",    "...or the queue full") \
   /* A level's loads -- see port/loads.h. */                                    \
   X(tile_attrs_load,  "tile_attrs_load",    "a kilobyte of tile attributes copied") \
   X(palette_load,     "palette_load",       "the background's colours copied, twice") \
@@ -1661,6 +1668,17 @@
   X(pose_arc_ready, "pose_arc_ready", "the picture before a leap, its time up") \
   X(pose_arc_flew, "pose_arc", "a frame through the air") \
   X(pose_arc_fell, "pose_arc", "...high up and on the way down") \
+  X(pose_arc_landed, "pose_arc", "...or down from the second leap, on the ground") \
+  X(pose_arc_splashed, "pose_arc", "...or from the first, into the water: the frame stops at its sound") \
+  X(leap_splash, "ts_leap_splash", "down in the water, and the splash's pictures asked for") \
+  X(stagger_began, "ts_stagger_begin", "level 29's creature staggered: the stagger's handler, and the spin begun") \
+  X(stagger_spun, "ts_stagger_spin", "...the next picture of the spin") \
+  X(stagger_spun_out, "ts_stagger_spin", "...or the spin over, and the first list") \
+  X(stagger_dazed_again, "ts_stagger_daze", "...the second list again") \
+  X(stagger_dazed_last, "ts_stagger_daze", "...or the last list") \
+  X(stagger_over, "ts_stagger_over", "...and itself again") \
+  X(player_splashed, "player_splashed", "the splash over: swimming begun, and the rest of the frame") \
+  X(pose_leapt, "player_walk", "a leap toward a point: into the water from the walk") \
   X(pose_bounce_rose, "pose_bounce", "up from a trampoline") \
   X(pose_bounce_fell, "pose_bounce", "...and down onto it again") \
   X(pose_bounce_waited, "pose_bounce_wait", "on it, between two bounces") \
@@ -2010,6 +2028,9 @@
   X(footballer_sent_off, "footballer_frame", "a pass sent off") \
   X(footballer_off_turned, "footballer_frame", "...stopped by the ground: it turns") \
   X(footballer_ran_off, "footballer_frame", "...and its picture is off the screen: it ends") \
+  X(footballer_started, "footballer_start", "a footballer's thread begun, as far as its first sleep") \
+  X(footballer_start_blocked, "footballer_start", "...or not: the ground where it comes on is solid") \
+  X(footballer_start_outside, "footballer_start", "...or off the level") \
                                                                                    \
   /* $80:C872, $80:C8B8, $80:A084, $80:A09E, $82:D88C -- DMA and its jobs. */       \
   X(dma_to_cgram, "dma_to_cgram", "colours sent") \

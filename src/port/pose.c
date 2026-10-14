@@ -11,6 +11,7 @@
 #include "port/oam.h"     // the display record's fields
 #include "port/player.h"  // PSN_DP_*: the buttons, the weapon words, the facing
 #include "port/player_frame.h"  // W_BOX_*: the box those in it are told of
+#include "port/player_small.h"  // what a landing puts back
 #include "port/step.h"    // where the player is
 #include "port/terrain.h"
 #include "port/thread.h"
@@ -50,6 +51,14 @@
 #define POSE_ARC_PICTURE_FALLING 8
 // How long the first picture in the air is held.
 #define POSE_ARC_READY_TIMER 5
+// A leap: the table of its pictures, by the player, how long its first is
+// held, and the speed upward it starts at.
+#define POSE_LEAP_PICTURES 0xfcf6u
+#define POSE_LEAP_HOLD 0x000f
+#define POSE_LEAP_RISE 4
+// What a landing lets go of, and what it walks for.
+#define POSE_BUTTON_Y 0x4000u
+#define POSE_BUTTONS_DIRECTION 0x0f00u
 // Bouncing off: a step across and a step down for each row, for three
 // frames in four, and the same for the fourth.
 #define POSE_OFF_STEPS 0xe1edu
@@ -633,17 +642,22 @@ static void rise(Pose* p) {
 }
 
 // One axis of `$80:F6B4`: add this frame's part to the sum, and move a step
-// for every whole one in it. It answers how many steps that was.
+// for every whole one in it. It answers how many steps that was, and
+// `overflow`, when it is not NULL, is the last add's or subtract's.
 static int along(Pose* p, uint16_t place, uint16_t part, uint16_t step,
-                 uint16_t sum) {
+                 uint16_t sum, bool* overflow) {
+  bool v = add16_overflows(field(p, sum), field(p, part));
   uint16_t total = (uint16_t)(field(p, sum) + field(p, part));
   int steps = 0;
   while (total >= POSE_ARC_WHOLE) {
     set_field(p, place, (uint16_t)(field(p, place) + field(p, step)));
-    total = (uint16_t)(total - POSE_ARC_WHOLE);
+    const uint16_t less = (uint16_t)(total - POSE_ARC_WHOLE);
+    v = ((total ^ POSE_ARC_WHOLE) & (total ^ less) & 0x8000u) != 0;
+    total = less;
     steps++;
   }
   set_field(p, sum, total);
+  if (overflow) *overflow = v;
   return steps;
 }
 
@@ -653,25 +667,87 @@ static void show_in_air(Pose* p, uint16_t picture) {
   show(p, flags_add(&p->flags, (uint16_t)(facing_index(p) << 4), picture));
 }
 
+// `$80:DD0D`: a leap, toward the point at `$60` and `$62`.
+static void leap(Pose* p, PlayerSpan* span) {
+  PORT_COVER(pose_leapt);
+  PortCpu c = {.d = p->page, .db = POSE_BANK};
+  player_span(p->w, &c, span);
+  set_field(p, PSN_DP_RESUME, POSE_HANDLER_ARC);
+  set_field(p, POSE_DP_MOVE, 0);
+  player_unhandled(p->w, &c);
+  player_untouchable(p->w, &c);
+  set_field(p, POSE_DP_PICTURES, table_word(p, POSE_LEAP_PICTURES,
+                                            field(p, POSE_DP_PICTURES_ROW)));
+  set_field(p, POSE_DP_FRAMES, POSE_FRAMES_ARC);
+  set_field(p, POSE_DP_RISE, POSE_LEAP_RISE);
+  set_field(p, POSE_DP_LAUNCH, POSE_LEAP_RISE + 1);
+  set_field(p, POSE_DP_RISE_COUNT, 0);
+  set_field(p, POSE_DP_TIMER, POSE_LEAP_HOLD);
+  hide_weapon(p);
+  show_in_air(p, 0);
+}
+
+// `$80:DE3E`: down from the second leap, on the ground.
+static void land(Pose* p) {
+  if (field(p, PLAYER_SMALL_DP_NUMBER) >= 4) {
+    leave_to_rom(p);  // the collide id is a table's, by the player
+    return;
+  }
+  PORT_COVER(pose_arc_landed);
+  p->log->landed = true;
+  set_field(p, STEP_DP_X, field(p, PLAYER_SPAN_DP_POINT_X));
+  set_field(p, STEP_DP_Y, field(p, PLAYER_SPAN_DP_POINT_Y));
+  const uint16_t record = field(p, POSE_DP_RECORD);
+  wram_w16(p->w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(p->w, (uint16_t)(record + ACTOR_FLAGS)) &
+                      ~ACTOR_PRIORITY_TOP));
+  PortCpu c = {.d = p->page, .db = POSE_BANK};
+  player_handled(p->w, &c);
+  player_touchable(p->w, p->rom, &c);
+  set_field(p, STEP_DP_SPEED_CLASS, 0);
+  set_field(p, POSE_DP_STATE, 0);
+  set_field(p, FLASHING_DP_ENDS_BY, 0);
+  player_hands_back(p->w, &c);
+
+  const uint16_t buttons =
+      (uint16_t)(field(p, PSN_DP_BUTTONS) & ~POSE_BUTTON_Y);
+  set_field(p, PSN_DP_BUTTONS, buttons);
+  if (buttons & POSE_BUTTONS_DIRECTION) walk_begin(p);
+  else stand_begin(p);
+}
+
+// `$80:DD72`: down from the first leap, into the water. The frame stops at
+// the sound's `JSL`. The sound does not touch overflow, and the thread parks
+// it at the splash's first sleep, so it is the last add's of `$80:F6B4`;
+// carry is that routine's last compare's.
+static void splash(Pose* p, bool overflow) {
+  PORT_COVER(pose_arc_splashed);
+  p->log->splashed = true;
+  flags_carry(&p->flags, false);
+  flags_overflow(&p->flags, overflow);
+}
+
 // `$80:DD41` and `$80:DE0D`: a frame through the air. The two differ in
-// where they land, which is the ROM's.
+// where they land.
 static void arc(Pose* p) {
   if (field(p, POSE_DP_TIMER) != 0) {
     p->log->waiting = true;
     return;
   }
   rise(p);
+  bool overflow = false;
   p->log->arc_x = along(p, STEP_DP_X, POSE_DP_ARC_PART_X, POSE_DP_ARC_STEP_X,
-                        POSE_DP_ARC_SUM_X);
+                        POSE_DP_ARC_SUM_X, NULL);
   p->log->arc_y = along(p, STEP_DP_Y, POSE_DP_ARC_PART_Y, POSE_DP_ARC_STEP_Y,
-                        POSE_DP_ARC_SUM_Y);
+                        POSE_DP_ARC_SUM_Y, &overflow);
   const uint16_t record = field(p, POSE_DP_RECORD);
   wram_w16(p->w, (uint16_t)(record + ACTOR_X), field(p, STEP_DP_X));
   wram_w16(p->w, (uint16_t)(record + ACTOR_Y), field(p, STEP_DP_Y));
 
   const uint16_t height = wram_r16(p->w, (uint16_t)(record + ACTOR_Z));
   if (height == 0) {
-    leave_to_rom(p);
+    if (field(p, PSN_DP_RESUME) == POSE_HANDLER_ARC_B) land(p);
+    else splash(p, overflow);
     return;
   }
   PORT_COVER(pose_arc_flew);
@@ -713,9 +789,9 @@ static void bounce(Pose* p) {
   }
   rise(p);
   p->log->arc_x = along(p, STEP_DP_X, POSE_DP_ARC_PART_X, POSE_DP_ARC_STEP_X,
-                        POSE_DP_ARC_SUM_X);
+                        POSE_DP_ARC_SUM_X, NULL);
   p->log->arc_y = along(p, STEP_DP_Y, POSE_DP_ARC_PART_Y, POSE_DP_ARC_STEP_Y,
-                        POSE_DP_ARC_SUM_Y);
+                        POSE_DP_ARC_SUM_Y, NULL);
   const uint16_t record = field(p, POSE_DP_RECORD);
   wram_w16(p->w, (uint16_t)(record + ACTOR_X), field(p, STEP_DP_X));
   wram_w16(p->w, (uint16_t)(record + ACTOR_Y), field(p, STEP_DP_Y));
@@ -875,6 +951,16 @@ void pose_bounce_off(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
 
 void pose_swim(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(swim, w, rom, page, log);
+}
+
+void pose_leap(Wram* w, const Rom* rom, uint16_t page, PoseLog* log,
+               PlayerSpan* span) {
+  Pose p = {w, rom, page, log, {false, false, false, false}};
+  leap(&p, span);
+  log->c = p.flags.c;
+  log->v = p.flags.v;
+  log->c_set = p.flags.c_set;
+  log->v_set = p.flags.v_set;
 }
 
 void pose_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {

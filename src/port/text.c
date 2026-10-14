@@ -4,6 +4,8 @@
 
 #include "port/coverage.h"
 #include "port/cpu.h"  // bus_r16, bus_fast
+#include "port/hud.h"     // the job that uploads the panel's map
+#include "port/thread.h"  // vbl_queue_a_add
 
 typedef struct {
   Wram* w;
@@ -163,6 +165,84 @@ void text_print_lines(Wram* w, const Rom* rom, uint16_t page, uint16_t a,
     }
   }
   finish(&t, out);
+}
+
+// --- $80:C219  words over the status panel -----------------------------------
+
+// A place: a column, a row, and a byte of what the characters are drawn with.
+static void read_panel_place(Text* t) {
+  const uint16_t place = next_word(t);
+  move_on(t, 2);
+  set_byte(t, TEXT_DP_TO, (uint8_t)(place << 1));
+  set_byte(t, TEXT_DP_TO + 1, 0);
+  set_word(t, TEXT_DP_TO,
+           (uint16_t)(((place >> 8) << 6) + word_at(t, TEXT_DP_TO) +
+                      TEXT_PANEL_MAP_AT));
+
+  const uint8_t with = (uint8_t)next_word(t);
+  move_on(t, 1);
+  wram_w8(t->w, W_TEXT_TILE_BASE + 1, (uint8_t)(with << 2));
+  wram_w8(t->w, W_TEXT_TILE_BASE, 0);
+  t->k->places++;
+}
+
+static uint16_t panel_tile(TextPanelWork* k, uint8_t ch, uint16_t base) {
+  if (ch == TEXT_PANEL_SPACE) {
+    PORT_COVER(text_panel_space);
+    k->spaces++;
+    return 0;
+  }
+  uint16_t tile;
+  if (ch < TEXT_PANEL_DIGITS_END) {
+    PORT_COVER(text_panel_low);
+    k->lows++;
+    tile = (uint16_t)(ch - TEXT_PANEL_LOW_SHIFT);
+  } else {
+    PORT_COVER(text_panel_high);
+    tile = (uint16_t)(ch + TEXT_PANEL_HIGH_SHIFT);
+  }
+  return (uint16_t)(tile | base | TEXT_PANEL_TILE_FLAGS);
+}
+
+void text_panel(Wram* w, const Rom* rom, PortCpu* c, TextPanelWork* k) {
+  Text t = {w, rom, 0, &k->text, c->x, c->y};
+  PORT_COVER(text_panel);
+  read_from(&t, (uint8_t)(c->a >> 8), (uint8_t)c->a, c->x);
+  set_word(&t, TEXT_DP_TO + 1, (uint16_t)(TEXT_MAP_BANK << 8));
+  read_panel_place(&t);
+  for (;;) {
+    const uint8_t ch = next_char(&t);
+    if (ch == 0) break;
+    if (ch == TEXT_NEW_PLACE) {
+      PORT_COVER(text_panel_new_place);
+      read_panel_place(&t);
+      continue;
+    }
+    put_tile(&t, 0, panel_tile(k, ch, wram_r16(w, W_TEXT_TILE_BASE)));
+    set_word(&t, TEXT_DP_TO, (uint16_t)(word_at(&t, TEXT_DP_TO) + 2));
+  }
+
+  // The panel's end: a change counted, and the upload queued.
+  wram_w16(w, W_HUD_DIRTY, (uint16_t)(wram_r16(w, W_HUD_DIRTY) + 1));
+  k->slot = vbl_queue_a_add(w, HUD_UPLOAD_JOB, HUD_UPLOAD_JOB_BANK);
+  VblQueueFlags f;
+  vbl_queue_flags(w, W_VBL_QUEUE_A_COUNT, HUD_UPLOAD_JOB_BANK, k->slot >= 0,
+                  &f);
+  if (k->slot < 0) {
+    PORT_COVER(text_panel_queue_full);
+    // `PLY : RTL` puts back what the tail jump loaded, and X is the caller's.
+    c->a = HUD_UPLOAD_JOB;
+    c->y = HUD_UPLOAD_JOB_BANK;
+  } else {
+    PORT_COVER(text_panel_queued);
+    c->a = (uint16_t)(HUD_UPLOAD_JOB - 1u);
+    c->y = c->a;
+    c->x = (uint16_t)k->slot;
+  }
+  c->p = (uint8_t)(c->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C));
+  if (f.n) c->p |= PORT_P_N;
+  if (f.z) c->p |= PORT_P_Z;
+  if (f.c) c->p |= PORT_P_C;
 }
 
 // --- $82:AD5A  the big letters -----------------------------------------------

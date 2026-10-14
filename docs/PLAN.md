@@ -273,6 +273,13 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**A player's leap into the water and three threads, 2026-10-14.** The
+walk leaps a player into the water, both landings are ported, the first
+as a frame that stops at its sound and two stretches after it; the
+bystander's words, the footballer's start and level 29's stagger are
+ported too. The places are 401 and the core executes 70,451 instructions
+over the survey.
+
 **A player's hit and death, and seven threads, 2026-10-13.** A player's
 frame takes a hit, stopping where one that shows sleeps, and a death is
 stretches to the life taken; the lives cheat is told to the port. The

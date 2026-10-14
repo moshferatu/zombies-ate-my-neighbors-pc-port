@@ -19463,3 +19463,35 @@ through.
 Over the same 110 sessions the core executes 78,057 instructions
 where it executed 94,287, and takes over 6,273 times where it did
 8,457, at 422 places where there were 450.
+
+## A leap into the water and three threads (2026-10-14)
+
+### A log sized for the usual walk
+
+The walk's log kept a tether test an axis. A leap adds the edge's own, and
+the third was dropped from the price without a word: two cycles short on
+two calls of one movie. A log that counts things to price them should
+fail loudly when it runs out of room, or be sized for the worst path.
+
+### A leaf that pushes
+
+`player_hands_swap` pushes A. Called from a port with a `PortCpu` whose
+stack pointer was never set, it wrote to `$7E:0000`. A port that builds
+its own `PortCpu` for a leaf must give it the real stack pointer, less
+whatever `JSR`s put above the leaf.
+
+### A stretch that calls
+
+Stretches stopped at every `JSL thread_set_handler` until this round, so
+none declared a stack depth, and the first that made the call was failed
+on the three bytes the `JSL` pushes. They all declare three now.
+
+### The rows' end is exclusive
+
+`TS_BLOCKS` gives the instruction after a row's last, not its last.
+
+### After
+
+Over the same 110 sessions the core executes 70,451 instructions where it
+executed 78,057, and takes over 5,508 times where it did 6,273, at 401
+places where there were 422.

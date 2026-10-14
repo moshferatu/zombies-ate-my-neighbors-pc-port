@@ -22,6 +22,7 @@ typedef struct {
   bool met_reaction;   // stopped at a tile with a reaction of its own
   WalkLog* log;        // may be NULL
   WalkKind kind;
+  bool leapt;          // leapt into the water this frame
 } Walk;
 
 static uint16_t field(const Walk* k, uint16_t at) {
@@ -84,8 +85,7 @@ static WalkReaction* reaction_met(Walk* k, int kind) {
 
 static bool too_far_from_partner(Walk* k, Point p);
 
-// `$80:E7A1`: the water's edge. Does the player stay out of the water? One
-// who jumps in is the ROM's: false.
+// `$80:E7A1`: the water's edge. Does the player stay out of the water?
 static bool edge_keeps_player_out(Walk* k) {
   WalkReaction* did = reaction_met(k, WALK_REACTION_EDGE);
   const uint16_t player = field(k, WALK_EDGE_DP_PLAYER);
@@ -128,7 +128,28 @@ static bool edge_keeps_player_out(Walk* k) {
     did->edge = WALK_EDGE_TETHERED;
     return true;
   }
+  did->edge = WALK_EDGE_JUMPED;
   return false;
+}
+
+// `JMP $DD0D`: the player leaps in, and the walk goes on as though the
+// ground were clear. A second leap is not ours: false.
+static bool leap_in(Walk* k) {
+  if (k->leapt) return false;
+  PORT_COVER(walk_edge_jumped);
+  k->leapt = true;
+  PoseLog pose_scratch;
+  PlayerSpan span_scratch;
+  PoseLog* pose = k->log ? &k->log->leap : &pose_scratch;
+  PlayerSpan* span = k->log ? &k->log->leap_span : &span_scratch;
+  *pose = (PoseLog){0};
+  pose_leap(k->w, k->rom, k->page, pose, span);
+  if (k->log) {
+    k->log->leapt = true;
+    k->log->last_yes = pose->c;
+  }
+  overflow_left(k, pose->v);
+  return true;
 }
 
 // `$80:E8D3`: is the player at a door, and with something to open it? A
@@ -249,8 +270,8 @@ static bool ground_is_solid(Walk* k, Point p) {
         if (k->log) k->log->last_yes = true;
         return true;
       }
-      PORT_COVER(walk_edge_jumped);
-      break;
+      if (!leap_in(k)) break;
+      return false;
     case WALK_REACTION_DOOR:
       if (door_stays_shut(k)) {
         if (k->log) k->log->last_yes = true;
@@ -276,7 +297,7 @@ static bool too_far_from_partner(Walk* k, Point p) {
   TetherRegs r;
   step_tether_blocked(k->w, p.x, p.y, &r);
   if (r.v_set) overflow_left(k, r.v);
-  if (k->log && k->log->tethers < WALK_AXES)
+  if (k->log && k->log->tethers < WALK_TETHERS)
     k->log->tether[k->log->tethers++] = r;
   return answer(k, WALK_ASK_TETHER, r.blocked);
 }

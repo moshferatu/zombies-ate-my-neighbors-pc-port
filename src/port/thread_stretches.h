@@ -448,6 +448,74 @@ extern const WeedKind WEED_KINDS[WEED_KIND_COUNT];
 #define BYSTANDER_STEP_PC 0x82de08u      // after a `WAI`
 #define BYSTANDER_WAIT_PC 0x82de07u      // the `WAI`
 #define BYSTANDER_SAY_PC 0x82de2bu       // `JSL $80:C219`
+
+// `$80:DD79`: the first leap's landing, from where its sound comes back. The
+// player is put where the leap was aimed, their record's pictures are bank
+// `$90`'s, and it stops at the `JSL` that plays the splash, the list in A.
+// `port/player_frame.h` has the rest.
+#define LEAP_SPLASH_PC 0x80dd79u
+#define LEAP_SPLASH_CALL_PC 0x80dd8cu  // `JSL $81:832C`
+#define LEAP_SPLASH_PICTURES 0xdda5u
+#define LEAP_DP_RECORD 0x08
+#define LEAP_DP_X 0x30
+#define LEAP_DP_Y 0x32
+#define LEAP_DP_AIM_X 0x60
+#define LEAP_DP_AIM_Y 0x62
+#define LEAP_RECORD_PICTURE_BANK 0x0a
+#define LEAP_PICTURE_BANK 0x0090u
+
+// --- level 29's creature staggered ----------------------------------------
+//
+// When its stagger meter empties (`enemy_990b_stagger`, `port/collide.h`)
+// its body's loop leaves for `$81:9643`. It is answered for by the stagger's
+// handler, `$81:96E4`, and spins: eight pictures two ticks apart, from the
+// way it faced and round, with bit 1 of its record's flags clear. Then its
+// flags are put back, its collide id is 2, and it plays a list of pictures,
+// another seven times, and a last. Then it is itself again: its pictures,
+// collide id 3, its own handler, and its loop's state at `$12`.
+//
+//   $81:9643  stagger_begin  the handler and the spin begun, to the sleep
+//   $81:9680  stagger_spin   the next picture and a sleep, or the spin over
+//                            and the first list asked for
+//   $81:96A7  stagger_dazed  the second list, the first of seven times
+//   $81:96B3  stagger_daze   ...the next time, or the last list
+//   $81:96BE  stagger_over   itself again, to the `JMP` to the state setter
+#define STAGGER_BEGIN_PC 0x819643u
+#define STAGGER_SPIN_YIELD_PC 0x81967cu  // `JSL thread_yield`, A already 2
+#define STAGGER_SPIN_PC 0x819680u
+#define STAGGER_SHOWN_CALL_PC 0x8196a3u  // `JSL $81:832C`, the list in A
+#define STAGGER_DAZED_PC 0x8196a7u
+#define STAGGER_DAZE_CALL_PC 0x8196afu
+#define STAGGER_DAZE_PC 0x8196b3u
+#define STAGGER_LAST_CALL_PC 0x8196bau
+#define STAGGER_OVER_PC 0x8196beu
+#define STAGGER_BACK_PC 0x819215u        // `$12` set to the loop's state
+#define STAGGER_BANK 0x0081
+#define STAGGER_HANDLER 0x96e4u
+#define STAGGER_SPIN_PICTURES 0x8196f1u  // a picture for each way
+#define STAGGER_SPIN_TICKS 2
+#define STAGGER_SPINS 8
+#define STAGGER_DAZES 6                  // more times the second list plays
+#define STAGGER_SHOWN_LIST 0x9701u
+#define STAGGER_DAZE_LIST 0x9713u
+#define STAGGER_LAST_LIST 0x971du
+#define STAGGER_RESUME 0x96acu           // `$12` while the lists play
+#define STAGGER_FLAG_CLEARED 0x0002u
+#define STAGGER_COLLIDE_DAZED 0x0002
+#define STAGGER_PICTURE_BANK_DAZED 0x008f
+#define STAGGER_OWN_PICTURE 0xc73bu
+#define STAGGER_OWN_PICTURE_BANK 0x0090
+#define STAGGER_COLLIDE_OWN 0x0003
+#define STAGGER_OWN_HANDLER 0x990bu
+#define STAGGER_DP_RECORD 0x08
+#define STAGGER_DP_WAY 0x0c      // the spin's: a way, doubled
+#define STAGGER_DP_FACING 0x0e   // the way it faced, from 2
+#define STAGGER_DP_STATE 0x12
+#define STAGGER_DP_SPINS 0x36
+#define STAGGER_DP_FLAGS 0x3c    // its record's flags, kept
+#define STAGGER_DP_4A 0x4a       // set to $0F, before and after; I have not
+#define STAGGER_DP_4A_VALUE 0x000f  // read what uses it
+#define STAGGER_DP_DAZES 0x7e
 #define BYSTANDER_HANDLER 0xdeebu
 #define BYSTANDER_HANDLER_BANK 0x0082
 #define BYSTANDER_PICTURES 0xe611u       // a long pointer by the kind
@@ -744,6 +812,18 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
   X(TS_BYSTANDER_SET, 0x82dee8, 0x82deea, 0)   /* STZ $12 : RTS */ \
   X(TS_BYSTANDER_STEP, 0x82de08, 0x82de1f, 0)  /* to the BNE */ \
   X(TS_BYSTANDER_SAY, 0x82de20, 0x82de2a, 0) \
+  X(TS_LEAP_SPLASH, 0x80dd79, 0x80dd8c, 0) \
+  X(TS_SET_HANDLER, 0x808475, 0x808480, 0)   /* thread_set_handler */ \
+  X(TS_STAGGER_HANDLER, 0x819643, 0x81964d, 0) \
+  X(TS_STAGGER_BEGIN, 0x81964d, 0x81966f, 0) \
+  X(TS_STAGGER_PICTURE, 0x81966f, 0x81967c, 0) \
+  X(TS_STAGGER_TURN, 0x819680, 0x81968d, 0)  /* to the BNE */ \
+  X(TS_STAGGER_SHOWN, 0x81968d, 0x8196a3, 0) \
+  X(TS_STAGGER_DAZED, 0x8196a7, 0x8196af, 0) \
+  X(TS_STAGGER_DAZE, 0x8196b3, 0x8196b7, 0)  /* DEC $7E : BPL */ \
+  X(TS_STAGGER_LAST, 0x8196b7, 0x8196ba, 0) \
+  X(TS_STAGGER_OVER, 0x8196be, 0x8196e1, 0) \
+  X(TS_STAGGER_BACK, 0x8196e1, 0x8196e4, 0)  /* JMP $9215 */ \
   X(TS_FREEZE_BEGIN, 0x8184d6, 0x8184ea, 0) \
   X(TS_FREEZE_COUNT, 0x8184f2, 0x8184f5, 0)  /* DEC $7E : BPL */ \
   X(TS_FREEZE_END, 0x8184f6, 0x818504, 0)    /* to the RTL */ \
@@ -899,6 +979,12 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(bystander_dress, "$82:DE87", BYSTANDER_DRESS_PC, bystander_dress, BYSTANDER, TS_NEEDS_BYSTANDER_RECORD) \
   X(bystander_set, "$82:DEE8", BYSTANDER_SET_PC, bystander_set, BYSTANDER, TS_NEEDS_BYSTANDER_SET) \
   X(bystander_step, "$82:DE08", BYSTANDER_STEP_PC, bystander_step, BYSTANDER, TS_NEEDS_BYSTANDER_KIND) \
+  X(leap_splash, "$80:DD79", LEAP_SPLASH_PC, leap_splash, LEAP, TS_NEEDS_RECORD) \
+  X(stagger_begin, "$81:9643", STAGGER_BEGIN_PC, stagger_begin, STAGGER, TS_NEEDS_RECORD) \
+  X(stagger_spin, "$81:9680", STAGGER_SPIN_PC, stagger_spin, STAGGER, TS_NEEDS_RECORD) \
+  X(stagger_dazed, "$81:96A7", STAGGER_DAZED_PC, stagger_dazed, STAGGER, TS_NEEDS_NOTHING) \
+  X(stagger_daze, "$81:96B3", STAGGER_DAZE_PC, stagger_daze, STAGGER, TS_NEEDS_NOTHING) \
+  X(stagger_over, "$81:96BE", STAGGER_OVER_PC, stagger_over, STAGGER, TS_NEEDS_RECORD) \
   X(freeze_begin, "$81:84D6", FREEZE_BEGIN_PC, freeze_begin, FREEZE, TS_NEEDS_RECORD) \
   X(freeze_pass, "$81:84F2", FREEZE_PASS_PC, freeze_pass, FREEZE, TS_NEEDS_RECORD) \
   X(cut_enter, "$81:92D6", CUT_PC, cut_enter, CUT, TS_NEEDS_NOTHING) \

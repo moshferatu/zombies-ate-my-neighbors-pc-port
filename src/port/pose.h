@@ -72,6 +72,24 @@
 // picture is one of three for each way of facing: going up, high and coming
 // down, and near the ground. High up they are drawn over everything.
 //
+// **A leap is aimed at the point at `$60` and `$62`.** `player_span` works
+// out each axis's part and step, the pose is the first flight's, and the
+// movement none. Nobody can touch the player and their thread is told of
+// nothing until they land, and the hand weapon is put away. The first
+// picture in the air is shown and held fifteen frames, and then they rise at
+// four. The pictures are the leap's own: `$10` is a table's, by the player.
+// The walk leaps a player into the water (`port/walk.h`).
+//
+// **The first leap comes down in the water**, with sound `$1F`. A frame
+// that lands stops at the sound's `JSL`, `$80:DD75`, and `port/player_frame.h`
+// says what comes after.
+//
+// **The second leap lands on the ground.** The player is put where it was
+// aimed (`$60` and `$62`), can be touched and is told of things again, has
+// back what they held, and is in the ordinary state. Then they stand or
+// walk, by whether a direction is held. The Y button is let go of first, so
+// a Y held through the landing is not a press.
+//
 // **A bounce is the same flight, straight up.** Going up, at ten pixels
 // and above, the player is drawn over everything and is in state 6. Coming
 // down they show the falling picture whatever the height.
@@ -125,8 +143,7 @@
 //
 // ## What is the ROM's
 //
-// The frame a player in the air comes down on: each of the handlers has a
-// landing of its own. The frame a wait on the trampoline ends on, which
+// The frame a bounce comes down on the trampoline. The frame a wait on the trampoline ends on, which
 // looks for where to bounce to.
 // A handler's frame that fires weapon 5, or that goes on to the second
 // band's standing shot (`$80:EE82`): the stretches above take over from
@@ -154,6 +171,7 @@
 #include "assets/rom.h"
 #include "port/cpu.h"
 #include "port/oam.h"
+#include "port/player_small.h"  // PlayerSpan
 #include "port/wram.h"
 
 // The tables are in bank `$80`, which is the player thread's data bank.
@@ -246,6 +264,8 @@
 #define POSE_DP_ARC_STEP_Y 0x42
 #define POSE_DP_ARC_SUM_X 0x44
 #define POSE_DP_ARC_SUM_Y 0x46
+// The speed upward a leap starts at, plus one, which a bounce reads.
+#define POSE_DP_LAUNCH 0x48
 #define POSE_DP_SHOT_DELAY 0x4c   // frames until the weapon may fire again
 #define POSE_DP_PACE 0x54         // bits 15 and 14 change how fast it walks
 #define POSE_DP_OFF_ROW 0x5a      // bouncing off: the row of steps for the way
@@ -303,6 +323,8 @@ typedef struct {
   bool arc_slowed;     // ...gravity took one from the speed
   bool arc_high;       // ...high enough to be drawn over everything
   bool arc_falling;    // ......and on the way down
+  bool landed;         // ...or down from the second leap
+  bool splashed;       // ...or from the first, into the water: stopped at the sound
   bool off_fourth;     // bouncing off: a fourth frame, which has its own step
   bool band_b_fired;   // the second band's walk: a step that fires
   bool punched;        // the monster's walk: those in the fist's box told...
@@ -341,6 +363,15 @@ void pose_swim(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 // is the ROM's. `pose_fire` sets it for weapon 5 too, with `log->recoils`,
 // having done everything the ROM does before that pose's sleep.
 void pose_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+
+// `$80:DD0D`, a leap. `log` and `span` are where it says what it did, and
+// neither may be NULL. It always finishes: nothing in it is the ROM's.
+#define POSE_LEAP_PC 0x80dd0du
+// The first leap's landing: the sound's `JSL`, with the sound in A.
+#define POSE_SPLASH_SOUND_PC 0x80dd75u
+#define POSE_SPLASH_SOUND 0x001f
+void pose_leap(Wram* w, const Rom* rom, uint16_t page, PoseLog* log,
+               PlayerSpan* span);
 void pose_stand_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_walk_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_fire(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);

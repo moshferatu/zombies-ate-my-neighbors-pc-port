@@ -58,8 +58,14 @@
 //
 // **The water's edge**, the first: `$80:E7A1`. A player with health, in the
 // ordinary state and facing some way looks 32 pixels that way. With water
-// there, and the other player near enough to it, they jump in, and that is
-// the ROM's. Anything less and the tile is only solid.
+// there, and the other player near enough to it, they leap in, toward that
+// point (`pose_leap`, `port/pose.h`). Anything less and the tile is only
+// solid.
+//
+// **The walk goes on after a leap** as though the ground were clear, with
+// the carry the leap's last add left: the tether and whoever stands there
+// are asked, and the step may be taken. A second leap in the same frame, on
+// the other axis, is the ROM's.
 //
 // **A door**, the third. The walk looks at the tile a little way off the
 // way the player faces, up or down: `$80:E8D3`. If that is a door it wants
@@ -122,6 +128,7 @@
 
 #include "assets/rom.h"
 #include "port/oam.h"  // ObstacleWork
+#include "port/pose.h"     // the leap into the water
 #include "port/step.h"     // TetherRegs
 #include "port/terrain.h"  // the ground test's probes, the map test's exits
 #include "port/wram.h"
@@ -223,6 +230,7 @@ typedef enum {
   WALK_EDGE_NO_WAY,    // facing nowhere
   WALK_EDGE_DRY,       // no water where they look
   WALK_EDGE_TETHERED,  // water, too far from the other player
+  WALK_EDGE_JUMPED,    // ...or near enough, and they leapt in
 } WalkEdge;
 
 // How a look through the five squares ended.
@@ -240,7 +248,7 @@ typedef struct {
   int slot;       // the thread begun, as `thread_spawn` answers
   uint8_t looked; // the fifth: squares looked at
   WalkSquareEnd end;
-  WalkEdge edge;  // the water's edge: what kept the player out
+  WalkEdge edge;  // the water's edge: what kept the player out, if anything
 } WalkReaction;
 
 // How a swimmer's look at the bank ended.
@@ -265,6 +273,8 @@ typedef enum {
 // the last one ended, how each tether test left, and which of the map test's
 // exits each ask took. A walk asks each at most once an axis.
 #define WALK_AXES 2
+// A tether test an axis, and with a leap into the water the edge's own.
+#define WALK_TETHERS (WALK_AXES + 1)
 
 typedef struct {
   uint16_t asked[WALK_ASK_COUNT][2];
@@ -273,7 +283,7 @@ typedef struct {
   bool doubled;    // the step proposed was two
   uint16_t probes[TERRAIN_PROBE_COUNT];
   uint16_t ground_cut_short;
-  TetherRegs tether[WALK_AXES];
+  TetherRegs tether[WALK_TETHERS];
   int tethers;
   uint16_t map_exits[BOUNDS_LAST_COMPARE + 1];
   bool last_yes;
@@ -288,6 +298,10 @@ typedef struct {
   // The swim's: "is it water?" by its answer, and each look at the bank.
   uint16_t water[2];
   uint16_t bank[SWIM_BANK_COUNT];
+  // A leap into the water, and what it did.
+  bool leapt;
+  PoseLog leap;
+  PlayerSpan leap_span;
 } WalkLog;
 
 // Would the port walk this frame the way the ROM does? False for the two

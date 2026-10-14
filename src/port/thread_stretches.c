@@ -15,6 +15,7 @@
 #include "port/martian.h"
 #include "port/neighbour_thread.h"  // W_SAVED_COUNT_A
 #include "port/oam.h"               // the display record's fields
+#include "port/thread.h"            // thread_set_handler
 #include "port/player_frame.h"
 #include "port/apu.h"               // W_APU_SOUNDS
 #include "port/neighbours.h"        // W_TOURISTS_TURN
@@ -1644,6 +1645,127 @@ void bystander_set(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   lda(c, BYSTANDER_YIELD_TICKS);
   ran(k, TS_LDA_IMM);
   c->pc = BYSTANDER_YIELD_PC;
+}
+
+// `$80:DD79`: down in the water, and the splash asked for.
+void leap_splash(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(leap_splash);
+  set_page(w, c, LEAP_DP_X, page(w, c, LEAP_DP_AIM_X));
+  set_page(w, c, LEAP_DP_Y, page(w, c, LEAP_DP_AIM_Y));
+  c->y = page(w, c, LEAP_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->y + LEAP_RECORD_PICTURE_BANK), LEAP_PICTURE_BANK);
+  lda(c, LEAP_SPLASH_PICTURES);
+  ran(k, TS_LEAP_SPLASH);
+  c->pc = LEAP_SPLASH_CALL_PC;
+}
+
+// The spin's picture for the way it is at, and its sleep.
+static void stagger_picture(Wram* w, const Rom* rom, PortCpu* c,
+                            ThreadStretchWork* k) {
+  c->y = page(w, c, STAGGER_DP_RECORD);
+  c->x = page(w, c, STAGGER_DP_WAY);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META),
+           rom_word(rom, STAGGER_SPIN_PICTURES + c->x));
+  lda(c, STAGGER_SPIN_TICKS);
+  ran(k, TS_STAGGER_PICTURE);
+  c->pc = STAGGER_SPIN_YIELD_PC;
+}
+
+// `$81:9643`.
+void stagger_begin(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  PORT_COVER(stagger_began);
+  c->a = STAGGER_HANDLER;
+  c->y = STAGGER_BANK;
+  ran(k, TS_STAGGER_HANDLER);
+  thread_set_handler(w, c);
+  ran(k, TS_SET_HANDLER);
+  set_page(w, c, STAGGER_DP_DAZES, STAGGER_DAZES);
+  set_page(w, c, STAGGER_DP_4A, STAGGER_DP_4A_VALUE);
+  set_page(w, c, STAGGER_DP_WAY,
+           (uint16_t)(page(w, c, STAGGER_DP_FACING) - 2));
+  const uint16_t record = page(w, c, STAGGER_DP_RECORD);
+  const uint16_t flags = wram_r16(w, (uint16_t)(record + ACTOR_FLAGS));
+  set_page(w, c, STAGGER_DP_FLAGS, flags);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(flags & ~STAGGER_FLAG_CLEARED));
+  set_page(w, c, STAGGER_DP_SPINS, STAGGER_SPINS);
+  ran(k, TS_STAGGER_BEGIN);
+  stagger_picture(w, rom, c, k);
+}
+
+// `$81:9680`.
+void stagger_spin(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  set_page(w, c, STAGGER_DP_WAY,
+           (uint16_t)((page(w, c, STAGGER_DP_WAY) + 2) & 0x000eu));
+  const uint16_t left = (uint16_t)(page(w, c, STAGGER_DP_SPINS) - 1);
+  set_page(w, c, STAGGER_DP_SPINS, left);
+  ran(k, TS_STAGGER_TURN);
+  if (left != 0) {
+    PORT_COVER(stagger_spun);
+    ran(k, TS_TAKEN);
+    stagger_picture(w, rom, c, k);
+    return;
+  }
+  PORT_COVER(stagger_spun_out);
+  c->y = page(w, c, STAGGER_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS), page(w, c, STAGGER_DP_FLAGS));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), STAGGER_COLLIDE_DAZED);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META_BANK),
+           STAGGER_PICTURE_BANK_DAZED);
+  lda(c, STAGGER_SHOWN_LIST);
+  ran(k, TS_STAGGER_SHOWN);
+  c->pc = STAGGER_SHOWN_CALL_PC;
+}
+
+// `$81:96A7`.
+void stagger_dazed(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, STAGGER_DP_STATE, STAGGER_RESUME);
+  lda(c, STAGGER_DAZE_LIST);
+  ran(k, TS_STAGGER_DAZED);
+  c->pc = STAGGER_DAZE_CALL_PC;
+}
+
+// `$81:96B3`.
+void stagger_daze(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t left = (uint16_t)(page(w, c, STAGGER_DP_DAZES) - 1);
+  set_page(w, c, STAGGER_DP_DAZES, left);
+  ran(k, TS_STAGGER_DAZE);
+  if (!(left & 0x8000u)) {
+    PORT_COVER(stagger_dazed_again);
+    ran(k, TS_TAKEN);
+    lda(c, STAGGER_DAZE_LIST);
+    ran(k, TS_LDA_IMM);
+    c->pc = STAGGER_DAZE_CALL_PC;
+    return;
+  }
+  PORT_COVER(stagger_dazed_last);
+  lda(c, STAGGER_LAST_LIST);
+  ran(k, TS_STAGGER_LAST);
+  c->pc = STAGGER_LAST_CALL_PC;
+}
+
+// `$81:96BE`.
+void stagger_over(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(stagger_over);
+  c->y = page(w, c, STAGGER_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META_BANK),
+           STAGGER_OWN_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META), STAGGER_OWN_PICTURE);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), STAGGER_COLLIDE_OWN);
+  set_page(w, c, STAGGER_DP_4A, STAGGER_DP_4A_VALUE);
+  c->a = STAGGER_OWN_HANDLER;
+  c->y = STAGGER_BANK;
+  ran(k, TS_STAGGER_OVER);
+  thread_set_handler(w, c);
+  ran(k, TS_SET_HANDLER);
+  ran(k, TS_STAGGER_BACK);
+  c->pc = STAGGER_BACK_PC;
 }
 
 // `$82:DE08`: a frame of the two words stepping. The table is in bank $7E.

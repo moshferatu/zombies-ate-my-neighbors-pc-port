@@ -5,6 +5,73 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### A player's leap into the water, the bystander's words, the footballer's start and level 29's stagger (2026-10-14)
+
+The survey's largest groups after last round were the code round a
+player's leap, which the ROM ran between ported calls, and a few short
+threads that sleep between the same few calls each time.
+
+* **The bystander's words**, `$80:C219`, are `text_panel` in
+  `port/text.c`. A place is three bytes and a character one tile on the
+  status panel's shadow map, and it ends as the HUD does: a change counted
+  and the upload queued.
+  * The corpus has one call, on level 49, and it runs under HDMA. WRAM and
+    the registers are checked, and its price only for its direction.
+* **A leap into the water, from the walk.** The water's edge no longer
+  hands the frame to the ROM. `pose_leap`, `$80:DD0D`'s port, aims the
+  player at the point looked at, and the walk goes on as though the
+  ground were clear, with carry clear from the leap's last add.
+  * **A leap makes three tether tests**, the edge's own and one an axis.
+    The walk's log kept two, and the third went unpriced: two cycles short
+    on `level1-rescue`. It keeps three now.
+* **The second leap lands on the ground**, `$80:DE3E`, inside `pose_arc`:
+  the player put where it was aimed, touched and told of things again,
+  what they held back in their hands, and a stand or a walk by the pad.
+* **The first leap lands in the water**, with a sound and then a list of
+  pictures that sleeps. Three pieces:
+  * The frame stops at the sound's `JSL`, `$80:DD75`, with the pose's
+    return `$CE0B` under it and the overflow of `$80:F6B4`'s last add.
+  * `ts_leap_splash`, `$80:DD79`, to the `JSL` that plays the splash.
+  * `player_splashed`, `$80:DD90`, where the splash comes back to: the
+    swim begun (state `$0E`, the swimmer's own things in hand), and the
+    rest of that frame as one with no movement. The frame's tail is
+    `pframe_tail_bill` now, shared by both.
+* **The footballer's start**, `$81:C87B` to its first sleep, is
+  `footballer_start`: the entry and its two tests, the record, ten on the
+  census at `$00DE`, its handler, a stand of 15 to 46 passes by a draw,
+  and its picture. A place that is solid or off the level ends the thread
+  at `$81:C8C2`.
+* **Level 29's creature staggered**, `$81:9643`, is five stretches: the
+  stagger's handler and a spin of eight pictures, a list of pictures, the
+  second list seven times, the last, and itself again.
+  * They call `thread_set_handler` themselves, which no stretch did before,
+    so every stretch now declares the three bytes of that `JSL` under its
+    stack.
+* **Checked.** 1,394 routines are registered.
+  * The corpus verifies clean: 128,075,047 calls over 56 movies, none
+    diverged, and every cost row is exact.
+  * Branch coverage is 1,698 of 2,034.
+  * Lockstep: 53 of 56 never part; level25, level25-2p and level25-heavy
+    part as before, at the same frames.
+  * The picture: 78,360,128 lines at off and at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 368 to 350 | 4,443 to 3,740 | 34,219 to 30,088 |
+  | Left standing on an instruction | 15 to 15 | 274 to 274 | 26,752 to 26,752 |
+  | A port turned the call down | 27 to 25 | 1,255 to 1,195 | 6,267 to 4,892 |
+  | A port or a link called it | 11 to 10 | 191 to 189 | 2,899 to 799 |
+  | All | 422 to 401 | 6,273 to 5,508 | 78,057 to 70,451 |
+
+* **Not done or not known.**
+  * A swimmer climbing out, `$80:DDBD`: a sound first, and then the swim
+    goes on from its second axis, which the port cannot start from.
+  * The seeker's hiding on level 37, which sleeps several times.
+  * Unreached: a footballer's place blocked or off the level, the words'
+    queue full, a second leap in one frame.
+
 ### A player's hit and death, and seven more threads between their calls (2026-10-13)
 
 The survey's largest places, after the two left to the ROM on purpose,
