@@ -8597,6 +8597,66 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_STA_DP] = {28, 2, 1},
     [TS_SPAWNER_TICK] = {64, 8, 0},
     [TS_SPAWNER_WAIT] = {46, 5, 1},
+    // The walk's square, `--db=82`: the players' records are WRAM.
+    [TS_SQUARE_BAND] = {534, 49, 11},
+    [TS_SQUARE_HANDLER] = {86, 6, 1},
+    [TS_SQUARE_CALL] = {142, 8, 1},
+    [TS_SQUARE_WHO] = {46, 5, 0},
+    [TS_SQUARE_ROW] = {80, 7, 1},
+    [TS_SQUARE_BRA] = {12, 2, 0},
+    [TS_SQUARE_HELD] = {52, 2, 0},
+    [TS_SQUARE_LEFT] = {52, 2, 0},
+    [TS_SQUARE_DONE] = {40, 4, 1},
+    // A bonus object flying off, `--db=82`: its table is read from the
+    // cartridge through the data bank.
+    [TS_FLYOFF_DRESS] = {668, 61, 4},
+    [TS_FLYOFF_WAY] = {116, 12, 2},
+    [TS_FLYOFF_STEP] = {374, 32, 3},
+    [TS_FLYOFF_END] = {28, 2, 1},
+    // The bystander, `--db=82`. The tool does not price `LDA ($14,X)`: it
+    // is 46 cycles, as `LDA ($14),Y` is, with its two bytes and the two it
+    // reads from the cartridge.
+    [TS_BYSTANDER_DRESS] = {564 + 18 + 46 + 364, 52 + 3 + 4 + 36, 9 + 1},
+    [TS_BYSTANDER_SET] = {68, 3, 1},
+    [TS_BYSTANDER_STEP] = {226, 24, 0},
+    [TS_BYSTANDER_SAY] = {118, 13, 1},
+    // A frozen creature, `--db=81`: its record is WRAM.
+    [TS_FREEZE_BEGIN] = {252, 21, 1},
+    [TS_FREEZE_COUNT] = {62, 4, 1},
+    [TS_FREEZE_END] = {200, 15, 1},
+    // The chainsaw maniac's cut, `--db=81`. Its tables and lists are read
+    // from the cartridge; the square's tile from WRAM.
+    [TS_CUT_HEARD] = {64, 8, 0},
+    [TS_CUT_AIM] = {104, 9, 1},
+    [TS_CUT_DRAWN] = {282, 26, 5},
+    [TS_CUT_WOKE] = {84, 6, 3},
+    [TS_CUT_KEEP] = {148, 9, 3},
+    [TS_CUT_PUT] = {498, 43, 10},
+    [TS_CUT_MADE] = {654, 53, 2},
+    [TS_CUT_MARKED] = {212, 20, 3},
+    [TS_CUT_SEVEN] = {58, 6, 0},
+    [TS_CUT_SHOWN] = {144, 14, 1},
+    [TS_CUT_NEXT] = {58, 6, 1},
+    [TS_CUT_PICTURE] = {138, 11, 1},
+    [TS_CUT_LISTED] = {126, 11, 1},
+    [TS_CUT_AGAIN] = {46, 3, 0},
+    [TS_CUT_TILED] = {130, 7, 0},
+    [TS_CUT_SECOND] = {134, 14, 2},
+    [TS_CUT_UNMARK] = {154, 13, 2},
+    [TS_CUT_FREED] = {86, 6, 1},
+    [TS_CUT_HANDLER] = {36, 6, 0},
+    [TS_CUT_DONE] = {46, 5, 1},
+    // A player's death, `--db=80`. Its tables are read from the cartridge.
+    [TS_DEATH_FLASHING] = {40, 4, 1},
+    [TS_DEATH_ENDS] = {114, 6, 0},
+    [TS_DEATH_WHICH] = {58, 7, 1},
+    [TS_DEATH_MONSTER] = {104, 11, 1},
+    [TS_DEATH_LIST] = {160, 14, 3},
+    [TS_DEATH_STILL] = {104, 11, 2},
+    [TS_DEATH_LIFE] = {102, 7, 1},
+    [TS_DEATH_LIFE_KEPT] = {28 + 3 * 12 + 12, 7, 1},
+    [TS_DEATH_SHOW] = {96, 7, 2},
+    [TS_DEATH_AGAIN] = {350, 32, 5},
     [TS_TAKEN] = {6, 0, 0},
 };
 
@@ -8640,7 +8700,7 @@ THREAD_STRETCHES(X)
 
 static const uint32_t TS_EXITS_ARGUMENT[] = {
     0x81d186u, 0x81d1b0u, 0x81d1dau, 0x82f4b4u, 0x808519u, 0x8199c5u,
-    0x80d06cu, 0x81ec75u, 0x81f311u};
+    0x80d06cu, 0x81ec75u, 0x81f311u, 0x82e0b7u};
 static const uint32_t TS_EXITS_SETTER[] = {0x81921au, 0x819255u};
 static const uint32_t TS_EXITS_WOLF[] = {
     WEREWOLF_NONE_PC, WEREWOLF_HOWL_CHECK_PC, WEREWOLF_HOWL_CALL_PC,
@@ -8672,6 +8732,25 @@ static const uint32_t TS_EXITS_MAIN[] = {
     SPAWNER_TICK_SLEEP_PC, SPAWNER_SLEEP_PC};
 // `spawner_wait` begins where that sleep comes back.
 static const uint32_t TS_EXITS_SPAWNER[] = {SPAWNER_SLEEP_PC};
+static const uint32_t TS_EXITS_SQUARE[] = {SQUARE_YIELD_PC, SQUARE_LEFT_PC,
+                                           SQUARE_DONE_PC};
+static const uint32_t TS_EXITS_FLYOFF[] = {FLYOFF_HANDLER_PC, FLYOFF_YIELD_PC,
+                                           FLYOFF_FREE_PC};
+static const uint32_t TS_EXITS_BYSTANDER[] = {
+    BYSTANDER_ALLOC_PC, BYSTANDER_HANDLER_CALL_PC, BYSTANDER_YIELD_PC,
+    BYSTANDER_WAIT_PC, BYSTANDER_SAY_PC};
+static const uint32_t TS_EXITS_FREEZE[] = {FREEZE_YIELD_PC, FREEZE_OVER_PC};
+static const uint32_t TS_EXITS_CUT[] = {
+    CUT_HEARD_PC, CUT_SOUND_PC, CUT_ACROSS_PC, CUT_DOWN_PC,
+    CUT_ACROSS_SLEEP_PC, CUT_DOWN_SLEEP_PC, CUT_ACROSS_ASK_PC,
+    CUT_DOWN_ASK_PC, CUT_MAKE_PC, CUT_SLEEP_PC, CUT_LISTED_PC,
+    CUT_SECOND_SLEEP_PC, CUT_FREE_PC,
+    CUT_HANDLER_CALL_PC, CUT_SETTER_PC};
+static const uint32_t TS_EXITS_DEATH[] = {
+    DEATH_HANDS_PC, DEATH_SLEEP_PC, DEATH_PLAY_PC, DEATH_BACK_PC,
+    DEATH_NONE_LEFT_PC,
+    // The ends of `DEATH_ENDS`.
+    0x80d97fu, 0x80da54u, 0x80db08u, 0x80dbdau, 0x80dc70u, 0x80f3a5u};
 static const uint32_t TS_EXITS_MARTIAN[] = {
     MARTIAN_BEGIN_CALL_PC, MARTIAN_FIRST_SLEEP_PC, MARTIAN_PLACE_GROUND_PC,
     MARTIAN_PLACE_EDGE_PC, MARTIAN_ARRIVAL_NONE_PC,
@@ -17193,6 +17272,9 @@ static bool supported_player_frame(Wram* scratch, const Rom* rom,
   // handler it told did.
   static PlayerFrameLog log;
   int told;
+  const uint16_t event =
+      wram_r16(scratch, (uint16_t)(in->d + PLAYER_DP_HIT_EVENT));
+  if ((event & 0x8000u) && !accepts_player_hit(scratch, in)) return false;
   return player_frame_tried(scratch, rom, in->d, &log) &&
          weapon_pictures_ok(scratch, in->d) &&
          (log.state != PLAYER_STATE_FLASHING ||
@@ -17284,18 +17366,35 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
       break;
   }
 
-  // JSR $D01B, the hurt timer.
+  // JSR $D01B, the hurt timer or the hit.
   run_add(&own, &RUN_JSR, 1);
   run_add(&own, &PBODY_COST[PBODY_EVENT], 1);
-  run_add(&own, &PBODY_COST[PBODY_SKIP], 1);
-  if (log.hurt_timer == PLAYER_HURT_TIMER_HELD) {
+  if (log.hit) {
     run_add(&own, &RUN_TAKEN, 1);
+    for (int i = 0; i < HT_BLOCK_COUNT; i++)
+      run_add(&own, &HT_COST[i], log.hit_work.blocks[i]);
+    if (log.hit_shows) {
+      // Stopped where it shows, with the hurt timer's return under it.
+      cosim_cost(calls + cosim_run_cycles_dp(&own, fast, unaligned));
+      PortCpu c = log.hit_cpu;
+      const uint8_t nzcv = PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V;
+      c.p = (uint8_t)((in->p & ~nzcv) | (c.p & nzcv));
+      wram_w16(w, (uint16_t)(in->s - 1), PLAYER_FRAME_HIT_RETURN);
+      c.s = (uint16_t)(in->s - 2);
+      cpu_to(&c, out);
+      return;
+    }
   } else {
-    run_add(&own, &PBODY_COST[PBODY_RECOVER], 1);
-    run_add(&own,
-            log.hurt_timer == PLAYER_HURT_TIMER_OUT
-                ? &PBODY_COST[PBODY_RECOVERED] : &RUN_TAKEN,
-            1);
+    run_add(&own, &PBODY_COST[PBODY_SKIP], 1);
+    if (log.hurt_timer == PLAYER_HURT_TIMER_HELD) {
+      run_add(&own, &RUN_TAKEN, 1);
+    } else {
+      run_add(&own, &PBODY_COST[PBODY_RECOVER], 1);
+      run_add(&own,
+              log.hurt_timer == PLAYER_HURT_TIMER_OUT
+                  ? &PBODY_COST[PBODY_RECOVERED] : &RUN_TAKEN,
+              1);
+    }
   }
   run_add(&own, &RUN_RTS, 1);
 
@@ -17351,7 +17450,8 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   if (log.v) out->p |= PORT_P_V;
 }
 
-static const uint32_t PLAYER_FRAME_EXITS[] = {PLAYER_FRAME_YIELD_PC};
+static const uint32_t PLAYER_FRAME_EXITS[] = {PLAYER_FRAME_YIELD_PC,
+                                              HIT_FLINCH_PC, HIT_OTHER_PC};
 
 // `$80:D2EA` on its own: the monster's state in a frame the port turned
 // down. The runs are the frame's.
@@ -20419,6 +20519,64 @@ static void shim_carried_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t CARRIED_EXITS[] = {CARRIED_SLEEP_PC, CARRIED_STOPPED_PC};
+
+// `$80:E33E`, from `tools/cycles816.py --db=80`. The tables are read by long
+// addresses, and the picture through the data bank from the cartridge.
+static const CosimRun CB_COST[CB_BLOCK_COUNT] = {
+    [CB_HEAD] = {508, 37, 7},
+    [CB_TURN] = {218, 18, 3},
+    [CB_CALL] = {40, 3, 0},
+    [CB_PROBE] = {250, 19, 6},
+    [CB_STEP] = {346, 32, 7},
+    [CB_LEASH] = {122, 10, 2},
+    [CB_EDGE] = {122, 10, 2},
+    [CB_COUNT] = {74, 6, 1},
+    [CB_CLEAR] = {86, 3, 0},
+    [CB_BLOCKED] = {86, 3, 0},
+    [CB_TRIED] = {12, 2, 0},
+    [CB_NEXT] = {92, 8, 1},
+    [CB_WAY] = {786, 80, 12},
+    [CB_SHOW] = {52 + 6, 5, 0},  // the BRA, taken
+    [CB_HIDE] = {40, 3, 0},
+    [CB_TAIL] = {58, 6, 0},
+    [CB_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_carried_begin(const Wram* w, const CosimRegs* in) {
+  if (!body_ok(in) || in->d < 0x0100 || in->db != CARRIED_BANK) return false;
+  const uint16_t pictures =
+      wram_r16(w, (uint16_t)(in->d + CARRIED_DP_PICTURES));
+  return wram_r16(w, (uint16_t)(in->d + CARRIED_DP_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + CARRIED_DP_OTHER_RECORD)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + CARRIED_DP_CARRIER)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(in->d + CARRIED_DP_PLAYER)) <= 2 &&
+         pictures >= 0x8000u && pictures < 0xff00u;
+}
+
+static void shim_carried_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  PortCpu c;
+  static CarriedBeginWork k;
+  k = (CarriedBeginWork){0};
+  cpu_from(in, &c);
+  carried_begin(w, rom, &c, &k);
+  cpu_to(&c, out);
+  const bool fast = fetch_fast(in);
+  const bool unaligned = (in->d & 0x00ffu) != 0;
+  int cycles =
+      actor_bearing_point_cycles(k.same_row, k.same_column, in->fastrom);
+  for (int i = 0; i < k.steps; i++) {
+    cycles += terrain_blocked_cycles(k.ground[i].probes, k.ground[i].blocked,
+                                     in->fastrom);
+    if (k.asked_leash[i]) cycles += tether_cycles(&k.leash[i], in->fastrom);
+    if (k.asked_edge[i]) cycles += bounds_cycles(k.edge[i].exit, in->fastrom);
+  }
+  for (int i = 0; i < CB_BLOCK_COUNT; i++)
+    cycles += k.blocks[i] * cosim_run_cycles_dp(&CB_COST[i], fast, unaligned);
+  cosim_cost(cycles);
+}
+
+static const uint32_t CARRIED_BEGIN_EXITS[] = {CARRIED_SLEEP_PC};
 
 // `$81:A74D`. It leaves by an `RTS` that is the ROM's.
 static const CosimRun PU_COST[PU_BLOCK_COUNT] = {
@@ -25911,6 +26069,26 @@ static void shim_knock_thread_swap(Wram* w, const Rom* rom,
   cosim_cost(swap_cycles(&KNOCK_RUN_SWAP_HEAD, &k, in));
 }
 
+// The chainsaw maniac's hedge, `$81:92D9`: the same instructions as the
+// punch's, at the same price.
+static bool guard_cut_swap(Wram* scratch, const Rom* rom,
+                           const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == CHAINSAW_BANK &&
+         cut_swap_supported(scratch, rom, in->d);
+}
+
+static void shim_cut_swap(Wram* w, const Rom* rom, const CosimRegs* in,
+                          CosimRegs* out) {
+  PortCpu c;
+  BlockSwapWork k = {0};
+  cpu_from(in, &c);
+  cut_swap(w, rom, &c, &k);
+  cpu_to(&c, out);
+  cosim_cost(swap_cycles(&KNOCK_RUN_SWAP_HEAD, &k, in));
+}
+
+static const uint32_t CUT_SWAP_EXITS[] = {CUT_SWAP_PUT_PC};
+
 // It comes back from the block's put on page zero, with its own page on the
 // stack.
 static bool accepts_knock_thread_swapped(const Wram* w, const CosimRegs* in) {
@@ -30762,6 +30940,19 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 32,
     },
     {
+        .name = "carried_begin",
+        .symbol = "$80:E33E",
+        .entry = CARRIED_BEGIN_PC,
+        .run = shim_carried_begin,
+        .accepts = accepts_carried_begin,
+        COSIM_EXITS(CARRIED_BEGIN_EXITS),
+        .uncalled = true,
+        .cycles = 12000,
+        // The position kept round the bearing, which pushes its own; and
+        // the probe's `JSR`, its way, a `JSL` and the deepest test.
+        .stack_bytes = 32,
+    },
+    {
         .name = "carried_frame",
         .symbol = "$80:E3D6",
         .entry = CARRIED_PC,
@@ -33101,6 +33292,16 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(KNOCK_THREAD_BEGIN_EXITS),
         .cycles = 2500,
         .stack_bytes = 6,  // a `JSL`, and `actor_slot_alloc`'s own three
+    },
+    {
+        .name = "cut_swap",
+        .symbol = "$81:92D9",
+        .entry = CUT_SWAP_PC,
+        .run = shim_cut_swap,
+        .supported = guard_cut_swap,
+        COSIM_EXITS(CUT_SWAP_EXITS),
+        .cycles = 950,
+        .stack_bytes = 7,  // as the punch's
     },
     {
         .name = "knock_thread_swap",

@@ -273,6 +273,14 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**A player's hit and death, and seven threads, 2026-10-13.** A player's
+frame takes a hit, stopping where one that shows sleeps, and a death is
+stretches to the life taken; the lives cheat is told to the port. The
+carried start, the walk's square, a bonus object flying off, the
+bystander's setup, a frozen creature and the chainsaw maniac's cut are
+ported. The places are 422 and the core executes
+78,057 instructions over the survey.
+
 **The passes that sleep in the middle, 2026-10-13.** The martian that
 fires while it arrives, the fishman that stops to look about and the
 werewolf's strike and crouch stop where they sleep, and what follows is

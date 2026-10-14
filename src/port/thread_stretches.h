@@ -1,8 +1,9 @@
-// Stretches of four threads, between their calls.
+// Stretches of threads, between their calls.
 //
-// Each of these threads has its loop ported already, a pass at a time. What
-// was left was whatever a pass cannot hold: a thread's first instructions,
-// its end, and a pass that sleeps in the middle. A stretch is from where the
+// Most of these threads have their loop ported already, a pass at a time.
+// What was left was whatever a pass cannot hold: a thread's first
+// instructions, its end, and a pass that sleeps in the middle. Others are
+// short enough to be stretches and nothing else. A stretch is from where the
 // thread starts or a call comes back to the next call, sleep or return.
 //
 // ## The weed, `$81:D28C`
@@ -88,6 +89,121 @@
 // stretch that ran on through it would silence that, and nothing here would
 // notice. So the one before stops there, and this one begins there.
 //
+// ## The walk's square, `$82:F6EB`
+//
+// See `port/walk.h`: the walk begins this thread for a square of 64 pixels
+// a player walks into. It keeps the square's columns, and rows from ten
+// above its top to fifty-six below it, and every six ticks asks whether
+// that band still has a player in it. While it does, nothing happens.
+//
+//   $82:F6EB  the band set, and the first sleep
+//   $82:F6F8  a pass: is somebody at or below the band's top, and somebody
+//             above its bottom?
+//
+// **The two need not be the same player.** With one above the band and the
+// other below it, the band counts as still held.
+//
+// When it is not held, what happens is the ROM's, `$82:F5FA`: a record is
+// shown with a sound and two lists of pictures, the tile at the middle of
+// the square becomes the tile before it, and the thread ends and lets the
+// square go.
+//
+// ## A bonus object flying off, `$82:E0B4`
+//
+// See `port/collide.h`: a player who picks up one of the four bonus objects
+// begins this thread, with the kind at `$04`. It sleeps a tick, takes a
+// record, and between its calls:
+//
+//   $82:E0BF  the record is put where the object was, with the object's own
+//             picture, drawn and with nothing that can touch it
+//   $82:E102  one of the four diagonals by the draw, for twenty-one ticks
+//   $82:E115  a tick of it: eight pixels each way. After the last the
+//             record is given back.
+//
+// ## The bystander, `$82:DD52`
+//
+// See `port/bystander.h`, which has its loop. Its setup:
+//
+//   $82:DD52  `JSR $DE83`, which asks for a record at once
+//   $82:DE87  the record put on the spot, drawn, with the picture its kind
+//             names and nothing that can touch it. Around the spot, a box
+//             forty wide and sixty-five tall, from twenty to the left and
+//             ten above. Its handler is named.
+//   $82:DEE8  it is not to end, and the first sleep is five ticks
+//
+// What it shows when a player comes up, `$82:DDA7`, waits a frame at a
+// time while two words of a table at `$7E:6DA6` step, the first down by
+// one and the second up by two, until the first is eight:
+//
+//   $82:DE08  a frame of that, as far as the next `WAI`. After the last,
+//             the words its kind names are asked for.
+//
+// ## A frozen creature, `$81:84D6`
+//
+// See `port/collide.h`: five hits of the ice weapon send a creature's
+// thread here, and it comes back when the freeze is over.
+//
+//   $81:84D6  its record takes its palette from the record's own attribute
+//             word, its collide id is kept on the thread's stack, and it
+//             is given `$36` in its place
+//   $81:84F2  ten ticks gone, and one off the count of hits at `$7E`. Once
+//             that is below zero, the record's palette and collide id are
+//             put back, and the thread goes on where it was sent from.
+//
+// ## The chainsaw maniac's cut, `$81:92D6`
+//
+// See `port/chainsaw.h`: the state it is in while it cuts a hedge, with the
+// hedge's place at `$42` and `$44` and the side it cuts from, one to eight,
+// at `$46`. Its stretches, from where each call comes back:
+//
+//   $81:92D6  the cut called
+//   $81:93D3  if the level's sample set is the first, the saw is heard
+//   $81:93E2  a place to cut from, across or down by the side
+//   $81:9326  across: a draw of one to four, times four, past twenty-eight
+//             into the hedge's square of 64. The maniac is put there, and
+//             sleeps a tick.
+//   $81:9362  down: the same, from thirty-two
+//   $81:9347  is somebody standing there? Then another draw.
+//   $81:9351  the place is kept, in pixels and quarters, and a record of
+//             chips is asked for beside it
+//   $81:939E  the chips are put there with their first picture, drawn in
+//             front of everything; side seven's the other way round. The
+//             maniac is hidden while the chips show their list, eight ticks
+//             a picture.
+//   $81:944E  the next picture of the list, or the maniac drawn again
+//   $81:92D9  the hedge's block swapped for its pair: `port/tile_rows.h`
+//             has the instructions, and `cut_swap` is a row of its own
+//   $81:930C  hedges cut counted at `$1FC2`, and a second list, five ticks
+//             a picture
+//   $81:94DA  the next picture of that, or the chips no longer in front and
+//             given back
+//   $81:94EE  and the maniac's handler is `$81:990B` again
+//   $81:931D  its count of refused steps cleared
+//
+// **The check of the sample set is a stretch of its own**, `$81:93D3`, for
+// the werewolf's reason: `src/bank_sfx.h` watches that instruction.
+//
+// ## A player's death, `$80:CE81`
+//
+// `$80:CE72`, which a player's thread asks every frame, has found them with
+// no health, and played the sound of it. Then:
+//
+//   $80:CE81  a state that has an end due is ended, by its routine at
+//             `$72`: the flashing's `$80:D97F`, or one of five others
+//   $80:CE94  the potion's monster shows one picture for thirty ticks.
+//             Anyone else is shown a list of pictures by which of the two
+//             they are, and the picture they had is kept.
+//   $80:CEAA  the monster's picture after, by the same
+//   $80:CEC3  a life gone. With one left the kept picture is put back, and
+//             `$80:D95F`: health is ten again, and they flash for 120
+//             frames with nothing able to touch them.
+//
+// With none left it is the ROM's, `$80:CED5`, and so is what comes between
+// the first and second for a player with no end due.
+//
+// **The lives cheat patches `$80:CEC5`**, the `DEC` of a life, which is in
+// the fourth. `port_cheats.lives` says when it is on: see `port/cheat.h`.
+//
 // ## One instruction or two
 //
 // What stands by itself between two calls and belongs to nothing ported: a
@@ -116,6 +232,7 @@
 
 #include "assets/rom.h"
 #include "port/cpu.h"
+#include "port/tile_rows.h"
 #include "port/wram.h"
 
 // `LDA #value` and a call: the whole of a stretch.
@@ -124,7 +241,7 @@ typedef struct {
   uint16_t value;
 } ThreadArgument;
 
-#define THREAD_ARGUMENT_COUNT 9
+#define THREAD_ARGUMENT_COUNT 10
 extern const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT];
 
 // `LDA #value : STA at`, on the thread's page, and the `RTS` after.
@@ -267,6 +384,193 @@ extern const WeedKind WEED_KINDS[WEED_KIND_COUNT];
 #define SPAWNER_DP_CLEARED 0x0c
 
 #define W_MAIN_1B80 0x1b80u            // $2000 as the thread starts
+
+// --- the walk's square -------------------------------------------------------
+
+#define SQUARE_ENTER_PC 0x82f6ebu
+#define SQUARE_PASS_PC 0x82f6f8u       // where its sleep comes back
+#define SQUARE_YIELD_PC 0x82f6f4u      // `JSL thread_yield`, six ticks in A
+#define SQUARE_LEFT_PC 0x82f5fau       // nobody in the band: the ROM's
+#define SQUARE_DONE_PC 0x82f704u       // ...and after that, the end
+#define SQUARE_BAND_CALL_PC 0xf6ebu    // `JSR $F6BA`
+#define SQUARE_HANDLER_CALL_PC 0xf6eeu // `JSR $F6AB`
+#define SQUARE_ASK_CALL_PC 0xf6b1u     // the handler: `JSR $F593`
+#define SQUARE_PASS_RETURN 0xf6ffu     // the `PEA` the handler returns by
+#define SQUARE_HANDLER 0xf6b1u
+#define SQUARE_TICKS 0x0006
+#define SQUARE_SIZE 0x0040
+#define SQUARE_ABOVE 0x000a            // the band's top, above the square's
+#define SQUARE_TO_MIDDLE 0x0042        // ...from there to the middle
+#define SQUARE_BELOW_MIDDLE 0x0024     // ...and from there to the bottom
+#define W_SQUARE_PLAYERS 0x00d2u       // each player's record, or 0
+#define SQUARE_DP_X 0x00               // given: where the square is
+#define SQUARE_DP_Y 0x02
+#define SQUARE_DP_SLOT 0x04            // ...and which of the five it is
+#define SQUARE_DP_DONE 0x0a
+#define SQUARE_DP_MIDDLE_X 0x0c
+#define SQUARE_DP_MIDDLE_Y 0x0e
+#define SQUARE_DP_HANDLER 0x10
+#define SQUARE_DP_LEFT 0x18
+#define SQUARE_DP_RIGHT 0x1a
+#define SQUARE_DP_TOP 0x1c
+#define SQUARE_DP_BOTTOM 0x1e
+#define SQUARE_DP_SLOT_KEPT 0x24
+
+// --- a bonus object flying off -----------------------------------------------
+
+#define FLYOFF_DRESS_PC 0x82e0bfu      // where the record comes back
+#define FLYOFF_HANDLER_PC 0x82e0fau    // `JSL thread_set_handler`, to none
+#define FLYOFF_WAY_PC 0x82e102u        // where the draw comes back
+#define FLYOFF_PASS_PC 0x82e115u       // where its sleep comes back
+#define FLYOFF_YIELD_PC 0x82e111u      // `JSL thread_yield`, one tick in A
+#define FLYOFF_FREE_PC 0x82e133u       // `JML actor_slot_free`
+#define FLYOFF_PICTURES 0x82e147u      // by the kind
+#define FLYOFF_STEPS 0x82e137u         // by the diagonal times four: x, y
+#define FLYOFF_PICTURE_BANK 0x008f
+#define FLYOFF_FLAGS 0x8008u           // drawn, and its priority
+#define FLYOFF_TICKS 20                // and one more: the count runs to -1
+#define FLYOFF_DIAGONALS 4
+#define FLYOFF_DP_X 0x00               // given: where the object was
+#define FLYOFF_DP_Y 0x02
+#define FLYOFF_DP_KIND 0x04
+#define FLYOFF_DP_RECORD 0x08
+#define FLYOFF_DP_STEP_AT 0x0a
+#define FLYOFF_DP_TICKS_LEFT 0x0c
+
+// --- the bystander -----------------------------------------------------------
+
+#define BYSTANDER_ENTER_PC 0x82dd52u
+#define BYSTANDER_SETUP_RETURN 0xdd54u   // `JSR $DE83`'s
+#define BYSTANDER_ALLOC_PC 0x82de83u     // `JSL actor_slot_alloc`
+#define BYSTANDER_DRESS_PC 0x82de87u     // where the record comes back
+#define BYSTANDER_HANDLER_CALL_PC 0x82dee4u  // `JSL thread_set_handler`
+#define BYSTANDER_SET_PC 0x82dee8u       // where that comes back
+#define BYSTANDER_STEP_PC 0x82de08u      // after a `WAI`
+#define BYSTANDER_WAIT_PC 0x82de07u      // the `WAI`
+#define BYSTANDER_SAY_PC 0x82de2bu       // `JSL $80:C219`
+#define BYSTANDER_HANDLER 0xdeebu
+#define BYSTANDER_HANDLER_BANK 0x0082
+#define BYSTANDER_PICTURES 0xe611u       // a long pointer by the kind
+#define BYSTANDER_PICTURE_BANK 0x008f
+#define BYSTANDER_FLAGS 0x8008u
+#define BYSTANDER_BOX_LEFT 0x0014
+#define BYSTANDER_BOX_WIDTH 0x0028
+#define BYSTANDER_BOX_ABOVE 0x000a
+#define BYSTANDER_BOX_HEIGHT 0x0041
+#define BYSTANDER_WORDS 0x82e14fu        // what each kind says, by the kind
+#define BYSTANDER_WORDS_BANK 0x0082
+#define BYSTANDER_DP_X 0x00              // given: the spot
+#define BYSTANDER_DP_Y 0x02
+#define BYSTANDER_DP_KIND 0x04
+#define BYSTANDER_DP_PICTURE 0x14        // the pointer the kind names
+#define W_BYSTANDER_SHRINKS 0x6da6u      // of bank $7E: down by one...
+#define W_BYSTANDER_GROWS 0x6da9u        // ...and up by two, a frame
+#define BYSTANDER_SHRUNK 0x0008
+
+// --- a frozen creature -------------------------------------------------------
+
+#define FREEZE_BEGIN_PC 0x8184d6u
+#define FREEZE_PASS_PC 0x8184f2u       // where its sleep comes back
+#define FREEZE_YIELD_PC 0x8184eeu      // `JSL thread_yield`, ten ticks in A
+#define FREEZE_OVER_PC 0x818505u       // the `RTL` back to where it was
+#define FREEZE_TICKS 0x000a
+#define FREEZE_COLLIDE_ID 0x0036
+#define FREEZE_DP_RECORD 0x08
+#define FREEZE_DP_HITS 0x7e            // `ACTOR_DP_FREEZE_HITS`
+
+// --- the chainsaw maniac's cut -----------------------------------------------
+
+#define CUT_PC 0x8192d6u
+#define CUT_RETURN 0x92d8u              // the first `JSR`'s
+#define CUT_HEARD_PC 0x8193d3u          // `LDA $1F52`, which is watched
+#define CUT_SOUND_PC 0x8193deu          // `JSL apu_play_sfx`
+#define CUT_SOUND 0x0029
+#define CUT_AIM_PC 0x8193e2u
+#define CUT_AIMS 0x81945du              // a routine by the side
+#define CUT_AIM_RETURN 0x93e8u
+#define CUT_ACROSS_PC 0x819322u         // `JSL rng`, and back for another
+#define CUT_DOWN_PC 0x81935eu
+#define CUT_ACROSS_DRAWN_PC 0x819326u
+#define CUT_DOWN_DRAWN_PC 0x819362u
+#define CUT_ACROSS_SLEEP_PC 0x819343u   // `JSL thread_yield`, a tick in A
+#define CUT_DOWN_SLEEP_PC 0x81937fu
+#define CUT_ACROSS_WOKE_PC 0x819347u
+#define CUT_DOWN_WOKE_PC 0x819383u
+#define CUT_ACROSS_ASK_PC 0x81934du     // `JSL actor_at_point`
+#define CUT_DOWN_ASK_PC 0x819389u
+#define CUT_ACROSS_PLACED_PC 0x819351u
+#define CUT_DOWN_PLACED_PC 0x81938du
+#define CUT_MAKE_PC 0x81939au           // `JSL actor_slot_alloc`
+#define CUT_MAKE_RETURN 0x9412u
+#define CUT_MADE_PC 0x81939eu
+#define CUT_SLEEP_PC 0x81944au          // `JSL thread_yield`, eight ticks
+#define CUT_SHOWN_PC 0x81944eu
+#define CUT_LISTED_PC 0x81945cu         // the `RTS` back to the cut
+#define CUT_SWAP_PC 0x8192d9u
+#define CUT_SWAP_PUT_PC 0x819308u       // `JSL $80:AB5A`, the block in A
+#define CUT_TILED_PC 0x81930cu
+#define CUT_SECOND_RETURN 0x9312u
+#define CUT_SECOND_SLEEP_PC 0x8194d6u   // `JSL thread_yield`, five ticks
+#define CUT_SHOWN_AGAIN_PC 0x8194dau
+#define CUT_FREE_PC 0x8194eau           // `JSL actor_slot_free`
+#define CUT_FREED_PC 0x8194eeu
+#define CUT_HANDLER_CALL_PC 0x819319u   // `JSL thread_set_handler`
+#define CUT_DONE_PC 0x81931du
+#define CUT_SETTER_PC 0x819250u         // `setter_819250`
+#define CUT_ACROSS_INTO 0x001c          // into the hedge's square
+#define CUT_DOWN_INTO 0x0020
+#define CUT_SQUARE 0x0040
+#define CUT_FIRST_LISTS 0x81946fu       // by the side times four: a list,
+                                        // and how far below the chips go
+#define CUT_SECOND_LISTS 0x8194f4u      // by the side doubled
+#define CUT_FIRST_TICKS 0x0008
+#define CUT_SECOND_TICKS 0x0005
+#define CUT_CHIPS 0xb944u
+#define CUT_CHIPS_BANK 0x0090
+#define CUT_SIDE_TURNED 7               // its chips are drawn the other way
+#define CUT_TURNED 0x0002u              // of `ACTOR_FLIP`
+#define CUT_HANDLER 0x990bu
+#define CUT_HANDLER_BANK 0x0081
+#define W_HEDGES_CUT 0x1fc2u
+#define CUT_DP_SPREAD 0x3c
+#define CUT_DP_LIST 0x48
+#define CUT_DP_CHIPS_X 0x00             // where the chips go
+#define CUT_DP_CHIPS_Y 0x02
+#define CUT_DP_CHIPS_Z 0x04
+
+// --- a player's death --------------------------------------------------------
+
+#define DEATH_SOUNDED_PC 0x80ce81u      // where the sound comes back
+#define DEATH_ENDS_RETURN 0xce8au       // the `PEA` before a state's end
+// What `$72` can hold: the routines that end a state, by the stores to it.
+#define DEATH_ENDS_COUNT 6
+extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
+#define DEATH_HANDS_PC 0x80ce8bu        // `JSR $ECFD`: the ROM's
+#define DEATH_SHOWN_PC 0x80ce94u
+#define DEATH_SLEEP_PC 0x80cea6u        // `JSL thread_yield`, thirty ticks
+#define DEATH_PLAY_PC 0x80cebfu         // `JSL pictures_play`, the list in A
+#define DEATH_STILL_PC 0x80ceaau
+#define DEATH_COUNTED_PC 0x80cec3u
+#define DEATH_BACK_PC 0x80ced4u         // the `RTS` to the thread's loop
+#define DEATH_NONE_LEFT_PC 0x80ced5u    // `JSR $F354`: the ROM's
+#define DEATH_AGAIN_RETURN 0xced3u      // `JSR $D95F`'s
+#define DEATH_MONSTER_PICTURES 0xfd72u  // `$10` while they are the monster
+#define DEATH_MONSTER_PICTURE 0x9b89u
+#define DEATH_MONSTER_TICKS 0x001e
+#define DEATH_LISTS 0x80cf63u           // by which of the two
+#define DEATH_PICTURES_AFTER 0x80cf5bu  // ...and the monster's after
+#define DEATH_HEALTH 0x000a
+#define DEATH_FLASHING_FRAMES 0x0078
+#define DEATH_COLLIDE_ID 0x0038         // nothing can touch them
+#define W_PLAYER_LIVES 0x1d4cu          // a word a player
+#define DEATH_DP_RECORD 0x08
+#define DEATH_DP_WHO 0x0c               // which of the two, doubled
+#define DEATH_DP_PLAYER 0x0e            // which player, doubled
+#define DEATH_DP_PICTURES 0x10
+#define DEATH_DP_PICTURE_KEPT 0x2e
+#define DEATH_DP_STATE 0x70
+#define DEATH_DP_ENDS_BY 0x72           // the routine that ends the state
+#define DEATH_DP_FRAMES_LEFT 0x74
 #define W_MAIN_1E7E 0x1e7eu            // 1 before the sound's bank is sent
 #define W_SCORES_SET 0x2124u           // in `$7E`
 #define W_LEVELS_FADED 0x1fb6u
@@ -422,7 +726,57 @@ extern const WeedKind WEED_KINDS[WEED_KIND_COUNT];
   X(TS_JMP, 0x81a9af, 0x81a9b2, 0) \
   X(TS_STZ_DP, 0x80d0dd, 0x80d0df, 0) \
   X(TS_PLD, 0x80abd1, 0x80abd2, 0) \
-  X(TS_SEC, 0x80e78e, 0x80e78f, 0)
+  X(TS_SEC, 0x80e78e, 0x80e78f, 0) \
+  X(TS_SQUARE_BAND, 0x82f6ba, 0x82f6ea, 0)   /* the RTS too */ \
+  X(TS_SQUARE_HANDLER, 0x82f6ab, 0x82f6b0, 0)  /* the RTS too */ \
+  X(TS_SQUARE_CALL, 0x82f6f8, 0x82f6ff, 0)   /* PEA : LDA : DEC : PHA : RTS */ \
+  X(TS_SQUARE_WHO, 0x82f593, 0x82f597, 0)    /* LDY abs : BEQ */ \
+  X(TS_SQUARE_ROW, 0x82f598, 0x82f59e, 0)    /* LDA abs,Y : CMP dp : BCS */ \
+  X(TS_SQUARE_BRA, 0x82f5ab, 0x82f5ac, 0) \
+  X(TS_SQUARE_HELD, 0x82f5c7, 0x82f5c8, 0)   /* CLC : RTS */ \
+  X(TS_SQUARE_LEFT, 0x82f5c9, 0x82f5ca, 0)   /* SEC : RTS */ \
+  X(TS_SQUARE_DONE, 0x82f700, 0x82f703, 0)   /* LDA $0A : BEQ */ \
+  X(TS_FLYOFF_DRESS, 0x82e0bf, 0x82e0f9, 0)  /* to the TAY */ \
+  X(TS_FLYOFF_WAY, 0x82e102, 0x82e10d, 0) \
+  X(TS_FLYOFF_STEP, 0x82e115, 0x82e130, 0)   /* to the BPL */ \
+  X(TS_FLYOFF_END, 0x82e131, 0x82e132, 0)    /* LDA $08 */ \
+  X(TS_BYSTANDER_DRESS, 0x82de87, 0x82dee3, 0)  /* to the LDY # */ \
+  X(TS_BYSTANDER_SET, 0x82dee8, 0x82deea, 0)   /* STZ $12 : RTS */ \
+  X(TS_BYSTANDER_STEP, 0x82de08, 0x82de1f, 0)  /* to the BNE */ \
+  X(TS_BYSTANDER_SAY, 0x82de20, 0x82de2a, 0) \
+  X(TS_FREEZE_BEGIN, 0x8184d6, 0x8184ea, 0) \
+  X(TS_FREEZE_COUNT, 0x8184f2, 0x8184f5, 0)  /* DEC $7E : BPL */ \
+  X(TS_FREEZE_END, 0x8184f6, 0x818504, 0)    /* to the RTL */ \
+  X(TS_CUT_HEARD, 0x8193d3, 0x8193da, 0)     /* LDA abs : CMP # : BNE */ \
+  X(TS_CUT_AIM, 0x8193e2, 0x8193e8, 0)       /* to the JSR (abs,X) */ \
+  X(TS_CUT_DRAWN, 0x819326, 0x81933f, 0)     /* and $81:9362-$937B */ \
+  X(TS_CUT_WOKE, 0x819347, 0x81934c, 0) \
+  X(TS_CUT_KEEP, 0x819355, 0x81935d, 0)      /* the RTS too */ \
+  X(TS_CUT_PUT, 0x8193e9, 0x81940f, 0) \
+  X(TS_CUT_MADE, 0x81939e, 0x8193d2, 0)      /* the RTS too */ \
+  X(TS_CUT_MARKED, 0x819413, 0x819426, 0)    /* to the BNE */ \
+  X(TS_CUT_SEVEN, 0x819427, 0x81942c, 0) \
+  X(TS_CUT_SHOWN, 0x81942d, 0x81943a, 0) \
+  X(TS_CUT_NEXT, 0x81943b, 0x81943e, 0)      /* LDA (dp),Y : BEQ */ \
+  X(TS_CUT_PICTURE, 0x81943f, 0x819449, 0) \
+  X(TS_CUT_LISTED, 0x819451, 0x81945b, 0) \
+  X(TS_CUT_AGAIN, 0x81944e, 0x81944f, 0)     /* PLY : BRA */ \
+  X(TS_CUT_TILED, 0x81930c, 0x819312, 0)     /* INC abs : PLD : JSR */ \
+  X(TS_CUT_SECOND, 0x8194bb, 0x8194c6, 0) \
+  X(TS_CUT_UNMARK, 0x8194dd, 0x8194e9, 0) \
+  X(TS_CUT_FREED, 0x8194ee, 0x8194f3, 0)     /* the RTS too */ \
+  X(TS_CUT_HANDLER, 0x819313, 0x819318, 0) \
+  X(TS_CUT_DONE, 0x81931d, 0x819321, 0)      /* STZ dp : JMP */ \
+  X(TS_DEATH_FLASHING, 0x80ce81, 0x80ce84, 0)  /* LDA $72 : BEQ */ \
+  X(TS_DEATH_ENDS, 0x80ce85, 0x80ce8a, 0)    /* PEA : DEC : PHA : RTS */ \
+  X(TS_DEATH_WHICH, 0x80ce94, 0x80ce9a, 0)   /* LDA $10 : CMP # : BNE */ \
+  X(TS_DEATH_MONSTER, 0x80ce9b, 0x80cea5, 0) \
+  X(TS_DEATH_LIST, 0x80ceb3, 0x80cebe, 0) \
+  X(TS_DEATH_STILL, 0x80ceaa, 0x80ceb2, 0)   /* the BRA too */ \
+  X(TS_DEATH_LIFE, 0x80cec3, 0x80cec9, 0)    /* LDX : DEC abs,X : BMI */ \
+  X(TS_DEATH_LIFE_KEPT, 0x80cec3, 0x80cec9, 0)  /* ...with three NOPs */ \
+  X(TS_DEATH_SHOW, 0x80ceca, 0x80ced0, 0) \
+  X(TS_DEATH_AGAIN, 0x80d95f, 0x80d97e, 0)   /* the RTS too */
 
 enum {
 #define X(name, from, to, taken) name,
@@ -445,6 +799,21 @@ typedef enum {
   TS_NEEDS_COUNTS,  // the two counts of those saved are small
   TS_NEEDS_PLACE,   // the arriving martian's `JSR $9AA2` is what it returns to
   TS_NEEDS_WOLF,    // a werewolf's record, and its loop to return to
+  TS_NEEDS_SQUARE,  // the band's handler, and the players' records in low WRAM
+  TS_NEEDS_FLYOFF_RECORD,  // a record in Y, and a kind that is one
+  TS_NEEDS_FLYOFF,  // the record on the page, and a diagonal
+  TS_NEEDS_BYSTANDER_RECORD,  // a record in Y, and a kind that is one
+  TS_NEEDS_BYSTANDER_SET,     // its setup's `JSR` to return to
+  TS_NEEDS_BYSTANDER_KIND,    // a kind that is one
+  TS_NEEDS_CUT,         // a side of one to eight, and the maniac's record
+  TS_NEEDS_CUT_PLACED,  // ...and the aim's `JSR` to return to
+  TS_NEEDS_CUT_MADE,    // ...and the chips' record in A, a list, and the
+                        //    `JSR` that asked for them
+  TS_NEEDS_CUT_LIST,    // the chips' record and a list
+  TS_NEEDS_CUT_TILED,   // the maniac's page on the stack, with a side
+  TS_NEEDS_CUT_FREED,   // the second list's `JSR` to return to
+  TS_NEEDS_DEATH_ENDS,  // an end due that is one of the six, or none
+  TS_NEEDS_DEATH,       // which player, which of the two, and the record
 } ThreadStretchNeeds;
 
 bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
@@ -461,6 +830,7 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(argument_player_hurt, "$80:D069", 0x80d069u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_81ec72, "$81:EC72", 0x81ec72u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_81f30e, "$81:F30E", 0x81f30eu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_flyoff, "$82:E0B4", 0x82e0b4u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(setter_819215, "$81:9215", 0x819215u, thread_setter, SETTER, TS_NEEDS_NOTHING) \
   X(setter_819250, "$81:9250", 0x819250u, thread_setter, SETTER, TS_NEEDS_NOTHING) \
   X(page_clear, "$80:D0DD", PAGE_CLEAR_PC, page_clear, SMALL, TS_NEEDS_NOTHING) \
@@ -519,12 +889,47 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(werewolf_rested, "$81:AA9B", WEREWOLF_RESTED_PC, werewolf_rested, WOLF, TS_NEEDS_NOTHING) \
   X(werewolf_crouched, "$81:A9AF", WEREWOLF_CROUCHED_PC, werewolf_crouched, WOLF, TS_NEEDS_WOLF) \
   X(player_hit_show, "$80:D056", PLAYER_HIT_SHOW_PC, player_hit_show, PLAYER_HIT, TS_NEEDS_RECORD) \
-  X(player_hit_shown, "$80:D070", PLAYER_HIT_SHOWN_PC, player_hit_shown, PLAYER_HIT, TS_NEEDS_RECORD)
+  X(player_hit_shown, "$80:D070", PLAYER_HIT_SHOWN_PC, player_hit_shown, PLAYER_HIT, TS_NEEDS_RECORD) \
+  X(square_enter, "$82:F6EB", SQUARE_ENTER_PC, square_enter, SQUARE, TS_NEEDS_NOTHING) \
+  X(square_pass, "$82:F6F8", SQUARE_PASS_PC, square_pass, SQUARE, TS_NEEDS_SQUARE) \
+  X(flyoff_dress, "$82:E0BF", FLYOFF_DRESS_PC, flyoff_dress, FLYOFF, TS_NEEDS_FLYOFF_RECORD) \
+  X(flyoff_way, "$82:E102", FLYOFF_WAY_PC, flyoff_way, FLYOFF, TS_NEEDS_NOTHING) \
+  X(flyoff_pass, "$82:E115", FLYOFF_PASS_PC, flyoff_pass, FLYOFF, TS_NEEDS_FLYOFF) \
+  X(bystander_enter, "$82:DD52", BYSTANDER_ENTER_PC, bystander_enter, BYSTANDER, TS_NEEDS_NOTHING) \
+  X(bystander_dress, "$82:DE87", BYSTANDER_DRESS_PC, bystander_dress, BYSTANDER, TS_NEEDS_BYSTANDER_RECORD) \
+  X(bystander_set, "$82:DEE8", BYSTANDER_SET_PC, bystander_set, BYSTANDER, TS_NEEDS_BYSTANDER_SET) \
+  X(bystander_step, "$82:DE08", BYSTANDER_STEP_PC, bystander_step, BYSTANDER, TS_NEEDS_BYSTANDER_KIND) \
+  X(freeze_begin, "$81:84D6", FREEZE_BEGIN_PC, freeze_begin, FREEZE, TS_NEEDS_RECORD) \
+  X(freeze_pass, "$81:84F2", FREEZE_PASS_PC, freeze_pass, FREEZE, TS_NEEDS_RECORD) \
+  X(cut_enter, "$81:92D6", CUT_PC, cut_enter, CUT, TS_NEEDS_NOTHING) \
+  X(cut_heard, "$81:93D3", CUT_HEARD_PC, cut_heard, CUT, TS_NEEDS_CUT) \
+  X(cut_aim, "$81:93E2", CUT_AIM_PC, cut_aim, CUT, TS_NEEDS_CUT) \
+  X(cut_drawn_across, "$81:9326", CUT_ACROSS_DRAWN_PC, cut_drawn, CUT, TS_NEEDS_CUT) \
+  X(cut_drawn_down, "$81:9362", CUT_DOWN_DRAWN_PC, cut_drawn, CUT, TS_NEEDS_CUT) \
+  X(cut_woke_across, "$81:9347", CUT_ACROSS_WOKE_PC, cut_woke, CUT, TS_NEEDS_CUT) \
+  X(cut_woke_down, "$81:9383", CUT_DOWN_WOKE_PC, cut_woke, CUT, TS_NEEDS_CUT) \
+  X(cut_placed_across, "$81:9351", CUT_ACROSS_PLACED_PC, cut_placed, CUT, TS_NEEDS_CUT_PLACED) \
+  X(cut_placed_down, "$81:938D", CUT_DOWN_PLACED_PC, cut_placed, CUT, TS_NEEDS_CUT_PLACED) \
+  X(cut_made, "$81:939E", CUT_MADE_PC, cut_made, CUT, TS_NEEDS_CUT_MADE) \
+  X(cut_shown, "$81:944E", CUT_SHOWN_PC, cut_list_again, CUT, TS_NEEDS_CUT_LIST) \
+  X(cut_tiled, "$81:930C", CUT_TILED_PC, cut_tiled, CUT, TS_NEEDS_CUT_TILED) \
+  X(cut_shown_again, "$81:94DA", CUT_SHOWN_AGAIN_PC, cut_list_again, CUT, TS_NEEDS_CUT_LIST) \
+  X(cut_freed, "$81:94EE", CUT_FREED_PC, cut_freed, CUT, TS_NEEDS_CUT_FREED) \
+  X(cut_done, "$81:931D", CUT_DONE_PC, cut_done, CUT, TS_NEEDS_NOTHING) \
+  X(death_sounded, "$80:CE81", DEATH_SOUNDED_PC, death_sounded, DEATH, TS_NEEDS_DEATH_ENDS) \
+  X(death_shown, "$80:CE94", DEATH_SHOWN_PC, death_shown, DEATH, TS_NEEDS_DEATH) \
+  X(death_still, "$80:CEAA", DEATH_STILL_PC, death_still, DEATH, TS_NEEDS_DEATH) \
+  X(death_counted, "$80:CEC3", DEATH_COUNTED_PC, death_counted, DEATH, TS_NEEDS_DEATH)
 
 #define X(name, sym, entry, port, exits, needs) \
   void port(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k);
 // Several stretches share a port, so each is declared as often.
 THREAD_STRETCHES(X)
 #undef X
+
+// `$81:92D9`, the cut's hedge, to the `JSL` that puts the block. False if
+// its cell is not where a word can be read.
+bool cut_swap_supported(const Wram* w, const Rom* rom, uint16_t page);
+void cut_swap(Wram* w, const Rom* rom, PortCpu* c, BlockSwapWork* k);
 
 #endif

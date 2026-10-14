@@ -8,9 +8,11 @@
 //
 //   $82:DD5C  frame   is a player standing in the box?
 //
-// What is not here is the setup, and what it does when a player is there,
-// `$82:DDA7`, which draws on the screen and reads the pads. That and the
-// thread's end are the ROM's.
+// What is not here is the setup, which is stretches of
+// `port/thread_stretches.h`, and what it does when a player is there,
+// `$82:DDA7`, which draws on the screen and reads the pads. That is the
+// ROM's but for a loop of it that is a stretch too, and so is the thread's
+// end.
 //
 // ## How it looks
 //

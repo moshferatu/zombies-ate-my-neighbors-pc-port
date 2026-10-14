@@ -5,6 +5,9 @@
 
 #include "port/bcd.h"
 #include "port/bodies.h"            // W_NEIGHBOURS_LEFT
+#include "port/bystander.h"
+#include "port/chainsaw.h"
+#include "port/cheat.h"
 #include "port/coverage.h"
 #include "port/follower.h"
 #include "port/frontend.h"            // the frame count
@@ -29,6 +32,12 @@ const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
     {0x80d069u, 0xd0e0},  // the pictures of a player hurt
     {0x81ec72u, 0xee6b},  // two lists of pictures I have not read the use of
     {0x81f30eu, 0xf368},
+    {0x82e0b4u, 0x0001},  // a bonus object's first sleep
+};
+
+const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT] = {
+    0xd97f,  // the flashing's, `$80:D96C`
+    0xda54, 0xdb08, 0xdbda, 0xdc70, 0xf3a5,
 };
 
 const ThreadSetter THREAD_SETTERS[THREAD_SETTER_COUNT] = {
@@ -122,6 +131,59 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
              wram_r16(w, W_SAVED_COUNT_B) < 0x4000;
     case TS_NEEDS_PLACE:
       return wram_r16(w, (uint16_t)(c->s + 1)) == MARTIAN_PLACE_RETURN;
+    case TS_NEEDS_SQUARE:
+      return page(w, c, SQUARE_DP_HANDLER) == SQUARE_HANDLER &&
+             wram_r16(w, W_SQUARE_PLAYERS) < 0x1f00 &&
+             wram_r16(w, W_SQUARE_PLAYERS + 2) < 0x1f00;
+    case TS_NEEDS_FLYOFF_RECORD:
+      return c->y < 0x1f00 && page(w, c, FLYOFF_DP_KIND) < 0x0100;
+    case TS_NEEDS_FLYOFF:
+      return page(w, c, FLYOFF_DP_RECORD) < 0x1f00 &&
+             page(w, c, FLYOFF_DP_STEP_AT) < 4 * FLYOFF_DIAGONALS;
+    case TS_NEEDS_BYSTANDER_RECORD:
+      return c->y < 0x1f00 && page(w, c, BYSTANDER_DP_KIND) < 0x0100;
+    case TS_NEEDS_BYSTANDER_SET:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == BYSTANDER_SETUP_RETURN;
+    case TS_NEEDS_BYSTANDER_KIND:
+      return page(w, c, BYSTANDER_DP_KIND) < 0x0100;
+    case TS_NEEDS_CUT: {
+      const uint16_t side = page(w, c, CHAINSAW_DP_CUT_SIDE);
+      return side >= 1 && side <= 8 &&
+             page(w, c, CHAINSAW_DP_RECORD) < 0x1f00;
+    }
+    case TS_NEEDS_CUT_PLACED:
+      return thread_stretch_needs_met(w, TS_NEEDS_CUT, c) &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == CUT_AIM_RETURN;
+    case TS_NEEDS_CUT_MADE:
+      return thread_stretch_needs_met(w, TS_NEEDS_CUT, c) &&
+             c->a < 0x1f00 && page(w, c, CUT_DP_LIST) >= 0x8000u &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == CUT_MAKE_RETURN;
+    case TS_NEEDS_CUT_LIST:
+      return page(w, c, CHAINSAW_DP_SAW) < 0x1f00 &&
+             page(w, c, CHAINSAW_DP_RECORD) < 0x1f00 &&
+             page(w, c, CUT_DP_LIST) >= 0x8000u;
+    case TS_NEEDS_CUT_TILED: {
+      PortCpu under = *c;
+      under.d = wram_r16(w, (uint16_t)(c->s + 1));
+      const uint16_t side = page(w, &under, CHAINSAW_DP_CUT_SIDE);
+      return under.d >= 0x0100 && under.d < 0x1f00 &&
+             (under.d & 0x00ffu) == 0 && side >= 1 && side <= 8;
+    }
+    case TS_NEEDS_CUT_FREED:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == CUT_SECOND_RETURN;
+    case TS_NEEDS_DEATH_ENDS: {
+      const uint16_t ends_by = page(w, c, DEATH_DP_ENDS_BY);
+      if (ends_by == 0) return true;
+      for (int i = 0; i < DEATH_ENDS_COUNT; i++)
+        if (DEATH_ENDS[i] == ends_by) return true;
+      return false;
+    }
+    case TS_NEEDS_DEATH: {
+      const uint16_t who = page(w, c, DEATH_DP_WHO);
+      const uint16_t player = page(w, c, DEATH_DP_PLAYER);
+      return c->db == 0x80 && who < 4 && (who & 1) == 0 && player < 4 &&
+             (player & 1) == 0 && page(w, c, DEATH_DP_RECORD) < 0x1f00;
+    }
     case TS_NEEDS_WOLF: {
       const uint16_t to = wram_r16(w, (uint16_t)(c->s + 1));
       return page(w, c, WEREWOLF_DP_RECORD) < 0x1f00 &&
@@ -939,4 +1001,670 @@ void martian_arrival_begun(Wram* w, const Rom* rom, PortCpu* c,
   lda(c, MARTIAN_YIELD_TICKS);
   ran(k, TS_LDA_IMM);
   c->pc = MARTIAN_ARRIVAL_YIELD_PC;
+}
+
+// --- the walk's square -------------------------------------------------------
+
+// `$82:F6EB`: the band is set from the square, the handler named, and the
+// first sleep is six ticks.
+void square_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  push16(w, c, (uint16_t)(SQUARE_BAND_CALL_PC + 2));
+  const uint16_t left = (uint16_t)(page(w, c, SQUARE_DP_X) & ~(SQUARE_SIZE - 1));
+  set_page(w, c, SQUARE_DP_LEFT, left);
+  set_c(c, false);
+  const uint16_t middle_x = adc16(c, left, SQUARE_SIZE / 2);
+  set_page(w, c, SQUARE_DP_MIDDLE_X, middle_x);
+  set_c(c, false);
+  set_page(w, c, SQUARE_DP_RIGHT, adc16(c, middle_x, SQUARE_SIZE / 2));
+  set_c(c, true);
+  const uint16_t top =
+      sbc16(c, (uint16_t)(page(w, c, SQUARE_DP_Y) & ~(SQUARE_SIZE - 1)),
+            SQUARE_ABOVE);
+  set_page(w, c, SQUARE_DP_TOP, top);
+  set_c(c, false);
+  const uint16_t middle_y = adc16(c, top, SQUARE_TO_MIDDLE);
+  set_page(w, c, SQUARE_DP_MIDDLE_Y, middle_y);
+  set_c(c, false);
+  set_page(w, c, SQUARE_DP_BOTTOM, adc16(c, middle_y, SQUARE_BELOW_MIDDLE));
+  lda(c, page(w, c, SQUARE_DP_SLOT));
+  set_page(w, c, SQUARE_DP_SLOT_KEPT, c->a);
+  set_page(w, c, SQUARE_DP_DONE, 0);
+  pull16(w, c);
+  ran(k, TS_JSR);
+  ran(k, TS_SQUARE_BAND);
+
+  push16(w, c, (uint16_t)(SQUARE_HANDLER_CALL_PC + 2));
+  lda(c, SQUARE_HANDLER);
+  set_page(w, c, SQUARE_DP_HANDLER, c->a);
+  pull16(w, c);
+  ran(k, TS_JSR);
+  ran(k, TS_SQUARE_HANDLER);
+
+  lda(c, SQUARE_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = SQUARE_YIELD_PC;
+}
+
+// Is either player on this side of an edge of the band? Below the top is
+// carry set, and above the bottom carry clear. Each is asked in turn, and
+// a player not in the game is passed over.
+static bool either_player(const Wram* w, PortCpu* c, ThreadStretchWork* k,
+                          uint16_t edge, bool carry_wanted) {
+  for (int i = 0; i < 2; i++) {
+    ldy(c, wram_r16(w, (uint16_t)(W_SQUARE_PLAYERS + 2 * i)));
+    ran(k, TS_SQUARE_WHO);
+    if (c->y == 0) {
+      ran(k, TS_TAKEN);
+      continue;
+    }
+    lda(c, wram_r16(w, (uint16_t)(c->y + ACTOR_Y)));
+    cmp16(c, c->a, edge);
+    ran(k, TS_SQUARE_ROW);
+    if (flag(c, PORT_P_C) == carry_wanted) {
+      ran(k, TS_TAKEN);
+      return true;
+    }
+    if (i == 1) {
+      ran(k, TS_SQUARE_BRA);
+      ran(k, TS_TAKEN);
+    }
+  }
+  return false;
+}
+
+// `$82:F6F8`: the handler is called by `PEA : LDA $10 : DEC : PHA : RTS`,
+// and asks `$82:F593` whether the band is still held.
+void square_pass(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  push16(w, c, SQUARE_PASS_RETURN);
+  lda(c, (uint16_t)(page(w, c, SQUARE_DP_HANDLER) - 1));
+  push16(w, c, c->a);
+  pull16(w, c);
+  ran(k, TS_SQUARE_CALL);
+
+  push16(w, c, (uint16_t)(SQUARE_ASK_CALL_PC + 2));
+  ran(k, TS_JSR);
+  const bool held =
+      either_player(w, c, k, page(w, c, SQUARE_DP_TOP), true) &&
+      either_player(w, c, k, page(w, c, SQUARE_DP_BOTTOM), false);
+  set_c(c, !held);
+  pull16(w, c);
+  ran(k, held ? TS_SQUARE_HELD : TS_SQUARE_LEFT);
+  ran(k, TS_BRANCH);  // BCC
+  if (!held) {
+    PORT_COVER(square_left);
+    ran(k, TS_JMP);
+    c->pc = SQUARE_LEFT_PC;
+    return;
+  }
+  ran(k, TS_TAKEN);
+  pull16(w, c);
+  ran(k, TS_RTS);
+
+  lda(c, page(w, c, SQUARE_DP_DONE));
+  ran(k, TS_SQUARE_DONE);
+  if (c->a != 0) {
+    PORT_COVER(square_done);
+    c->pc = SQUARE_DONE_PC;
+    return;
+  }
+  PORT_COVER(square_held);
+  ran(k, TS_TAKEN);
+  lda(c, SQUARE_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = SQUARE_YIELD_PC;
+}
+
+// --- a bonus object flying off -----------------------------------------------
+
+// `$82:E0BF`, with the record in A and in Y. The table is read through the
+// data bank, which is the thread's.
+void flyoff_dress(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  set_page(w, c, FLYOFF_DP_RECORD, c->a);
+  const uint16_t record = c->y;
+  wram_w16(w, (uint16_t)(record + ACTOR_X), page(w, c, FLYOFF_DP_X));
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), page(w, c, FLYOFF_DP_Y));
+  c->x = asl16(c, page(w, c, FLYOFF_DP_KIND));
+  wram_w16(w, (uint16_t)(record + ACTOR_META),
+           rom_word(rom, FLYOFF_PICTURES + c->x));
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), FLYOFF_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD),
+           wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      FLYOFF_FLAGS));
+  // No handler: `LDA #$0000 : TAY`.
+  c->a = 0;
+  ldy(c, 0);
+  ran(k, TS_FLYOFF_DRESS);
+  c->pc = FLYOFF_HANDLER_PC;
+}
+
+// `$82:E102`, with the draw in A.
+void flyoff_way(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  c->a = (uint16_t)(c->a & (FLYOFF_DIAGONALS - 1));
+  c->a = asl16(c, asl16(c, c->a));
+  set_page(w, c, FLYOFF_DP_STEP_AT, c->a);
+  set_page(w, c, FLYOFF_DP_TICKS_LEFT, FLYOFF_TICKS);
+  ran(k, TS_FLYOFF_WAY);
+  lda(c, 1);
+  ran(k, TS_LDA_IMM);
+  c->pc = FLYOFF_YIELD_PC;
+}
+
+// `$82:E115`: a step along the diagonal, and the count.
+void flyoff_pass(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  c->y = page(w, c, FLYOFF_DP_RECORD);
+  c->x = page(w, c, FLYOFF_DP_STEP_AT);
+  set_c(c, false);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_X),
+           adc16(c, wram_r16(w, (uint16_t)(c->y + ACTOR_X)),
+                 rom_word(rom, FLYOFF_STEPS + c->x)));
+  set_c(c, false);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_Y),
+           adc16(c, wram_r16(w, (uint16_t)(c->y + ACTOR_Y)),
+                 rom_word(rom, FLYOFF_STEPS + c->x + 2)));
+  const uint16_t left = (uint16_t)(page(w, c, FLYOFF_DP_TICKS_LEFT) - 1);
+  set_page(w, c, FLYOFF_DP_TICKS_LEFT, left);
+  ran(k, TS_FLYOFF_STEP);
+  if (left & 0x8000u) {
+    PORT_COVER(flyoff_gone);
+    lda(c, page(w, c, FLYOFF_DP_RECORD));
+    ran(k, TS_FLYOFF_END);
+    c->pc = FLYOFF_FREE_PC;
+    return;
+  }
+  PORT_COVER(flyoff_on);
+  ran(k, TS_TAKEN);
+  lda(c, 1);
+  ran(k, TS_LDA_IMM);
+  c->pc = FLYOFF_YIELD_PC;
+}
+
+// --- a frozen creature -------------------------------------------------------
+
+// `$81:84D6`.
+void freeze_begin(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  c->y = page(w, c, FREEZE_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) |
+                      ACTOR_ATTR_SET));
+  push16(w, c, wram_r16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID)));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), FREEZE_COLLIDE_ID);
+  ran(k, TS_FREEZE_BEGIN);
+  lda(c, FREEZE_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = FREEZE_YIELD_PC;
+}
+
+// `$81:84F2`.
+void freeze_pass(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t left = (uint16_t)(page(w, c, FREEZE_DP_HITS) - 1);
+  set_page(w, c, FREEZE_DP_HITS, left);
+  ran(k, TS_FREEZE_COUNT);
+  if ((left & 0x8000u) == 0) {
+    PORT_COVER(freeze_held);
+    ran(k, TS_TAKEN);
+    lda(c, FREEZE_TICKS);
+    ran(k, TS_LDA_IMM);
+    c->pc = FREEZE_YIELD_PC;
+    return;
+  }
+  PORT_COVER(freeze_over);
+  c->y = page(w, c, FREEZE_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) &
+                      ~ACTOR_ATTR_SET));
+  lda(c, pull16(w, c));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), c->a);
+  ran(k, TS_FREEZE_END);
+  c->pc = FREEZE_OVER_PC;
+}
+
+// --- the chainsaw maniac's cut -----------------------------------------------
+
+// `$81:92D6`: the cut is called, and its first instruction is watched.
+void cut_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  push16(w, c, CUT_RETURN);
+  ran(k, TS_JSR);
+  c->pc = CUT_HEARD_PC;
+}
+
+// `$81:93E2`: `JSR ($945D,X)` by the side, to the draw that begins either
+// way of aiming.
+void cut_aim(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  c->a = asl16(c, page(w, c, CHAINSAW_DP_CUT_SIDE));
+  c->x = c->a;
+  push16(w, c, CUT_AIM_RETURN);
+  ran(k, TS_CUT_AIM);
+  c->pc = (CUT_AIMS & 0xff0000u) | rom_word(rom, CUT_AIMS + c->x);
+}
+
+// `$81:93D3`.
+void cut_heard(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, wram_r16(w, W_APU_SOUNDS));
+  cmp16(c, c->a, 0);
+  ran(k, TS_CUT_HEARD);
+  if (c->a == 0) {
+    PORT_COVER(cut_heard);
+    lda(c, CUT_SOUND);
+    ran(k, TS_LDA_IMM);
+    c->pc = CUT_SOUND_PC;
+    return;
+  }
+  PORT_COVER(cut_unheard);
+  ran(k, TS_TAKEN);
+  cut_aim(w, rom, c, k);
+}
+
+static bool cut_across(const PortCpu* c) { return c->pc < CUT_DOWN_PC; }
+
+// `$81:9326` or `$81:9362`, with the draw in A.
+void cut_drawn(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const bool across = cut_across(c);
+  const uint16_t spread =
+      asl16(c, asl16(c, (uint16_t)((c->a & 3u) + 1)));
+  set_page(w, c, CUT_DP_SPREAD, spread);
+  const uint16_t from =
+      page(w, c, across ? CHAINSAW_DP_X : CHAINSAW_DP_Y) & ~(CUT_SQUARE - 1);
+  set_c(c, false);
+  uint16_t at = adc16(c, from, across ? CUT_ACROSS_INTO : CUT_DOWN_INTO);
+  at = adc16(c, at, spread);
+  set_page(w, c, across ? CHAINSAW_DP_TRY_X : CHAINSAW_DP_TRY_Y, at);
+  c->y = page(w, c, CHAINSAW_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->y + (across ? ACTOR_X : ACTOR_Y)), at);
+  ran(k, TS_CUT_DRAWN);
+  lda(c, 1);
+  ran(k, TS_LDA_IMM);
+  c->pc = across ? CUT_ACROSS_SLEEP_PC : CUT_DOWN_SLEEP_PC;
+}
+
+// `$81:9347` or `$81:9383`: who is at the place tried?
+void cut_woke(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const bool across = cut_across(c);
+  lda(c, page(w, c, CHAINSAW_DP_RECORD));
+  ldx(c, page(w, c, across ? CHAINSAW_DP_TRY_X : CHAINSAW_DP_X));
+  ldy(c, page(w, c, across ? CHAINSAW_DP_Y : CHAINSAW_DP_TRY_Y));
+  ran(k, TS_CUT_WOKE);
+  c->pc = across ? CUT_ACROSS_ASK_PC : CUT_DOWN_ASK_PC;
+}
+
+// `$81:9351` or `$81:938D`, with carry set if somebody is there.
+void cut_placed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  const bool across = cut_across(c);
+  ran(k, TS_BRANCH);  // BCC
+  if (flag(c, PORT_P_C)) {
+    PORT_COVER(cut_in_the_way);
+    ran(k, TS_BRANCH);  // BRA
+    ran(k, TS_TAKEN);
+    c->pc = across ? CUT_ACROSS_PC : CUT_DOWN_PC;
+    return;
+  }
+  PORT_COVER(cut_placed);
+  ran(k, TS_TAKEN);
+  lda(c, page(w, c, across ? CHAINSAW_DP_TRY_X : CHAINSAW_DP_TRY_Y));
+  set_page(w, c, across ? CHAINSAW_DP_X : CHAINSAW_DP_Y, c->a);
+  c->a = asl16(c, asl16(c, c->a));
+  set_page(w, c, across ? CHAINSAW_DP_FINE_X : CHAINSAW_DP_FINE_Y, c->a);
+  pull16(w, c);
+  ran(k, TS_CUT_KEEP);
+
+  // `$81:93E9`: the maniac put there, and the chips asked for beside it.
+  c->x = page(w, c, CHAINSAW_DP_RECORD);
+  const uint16_t x = page(w, c, CHAINSAW_DP_X);
+  const uint16_t y = page(w, c, CHAINSAW_DP_Y);
+  wram_w16(w, (uint16_t)(c->x + ACTOR_X), x);
+  wram_w16(w, (uint16_t)(c->x + ACTOR_Y), y);
+  c->y = asl16(c, asl16(c, page(w, c, CHAINSAW_DP_CUT_SIDE)));
+  set_page(w, c, CUT_DP_LIST, rom_word(rom, CUT_FIRST_LISTS + c->y));
+  set_page(w, c, CUT_DP_CHIPS_X, x);
+  set_c(c, false);
+  set_page(w, c, CUT_DP_CHIPS_Y,
+           adc16(c, y, rom_word(rom, CUT_FIRST_LISTS + c->y + 2)));
+  lda(c, 0);
+  set_page(w, c, CUT_DP_CHIPS_Z, 0);
+  push16(w, c, CUT_MAKE_RETURN);
+  ran(k, TS_CUT_PUT);
+  ran(k, TS_JSR);
+  c->pc = CUT_MAKE_PC;
+}
+
+// The next picture of a list of the chips', through the pointer at `$48`:
+// shown, and a sleep, or at the list's end what follows either list.
+static void cut_list_next(Wram* w, const Rom* rom, PortCpu* c,
+                          ThreadStretchWork* k, bool first) {
+  lda(c, bus_r16(w, rom, (((uint32_t)c->db << 16) +
+                          page(w, c, CUT_DP_LIST) + c->y) & 0xffffffu));
+  ran(k, TS_CUT_NEXT);
+  if (c->a != 0) {
+    c->x = page(w, c, CHAINSAW_DP_SAW);
+    wram_w16(w, (uint16_t)(c->x + ACTOR_META), c->a);
+    c->y = (uint16_t)(c->y + 2);
+    push16(w, c, c->y);
+    lda(c, first ? CUT_FIRST_TICKS : CUT_SECOND_TICKS);
+    ran(k, TS_CUT_PICTURE);
+    c->pc = first ? CUT_SLEEP_PC : CUT_SECOND_SLEEP_PC;
+    return;
+  }
+  ran(k, TS_TAKEN);
+  if (first) {
+    PORT_COVER(cut_first_list_over);
+    c->y = page(w, c, CHAINSAW_DP_RECORD);
+    lda(c, (uint16_t)(ACTOR_DRAW |
+                      wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS))));
+    wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
+    ran(k, TS_CUT_LISTED);
+    c->pc = CUT_LISTED_PC;
+  } else {
+    PORT_COVER(cut_second_list_over);
+    c->y = page(w, c, CHAINSAW_DP_SAW);
+    lda(c, (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) &
+                      ~ACTOR_PRIORITY_TOP));
+    wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
+    lda(c, page(w, c, CHAINSAW_DP_SAW));
+    ran(k, TS_CUT_UNMARK);
+    c->pc = CUT_FREE_PC;
+  }
+}
+
+// `$81:939E`, with the chips' record in A.
+void cut_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  push16(w, c, c->a);
+  c->y = c->a;
+  const uint16_t chips = c->y;
+  wram_w16(w, (uint16_t)(chips + ACTOR_X), page(w, c, CUT_DP_CHIPS_X));
+  wram_w16(w, (uint16_t)(chips + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(chips + ACTOR_Y), page(w, c, CUT_DP_CHIPS_Y));
+  wram_w16(w, (uint16_t)(chips + ACTOR_META), CUT_CHIPS);
+  wram_w16(w, (uint16_t)(chips + ACTOR_META_BANK), CUT_CHIPS_BANK);
+  wram_w16(w, (uint16_t)(chips + ACTOR_THREAD),
+           wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(chips + ACTOR_COLLIDE_ID), 0);
+  wram_w16(w, (uint16_t)(chips + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(chips + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  lda(c, pull16(w, c));
+  pull16(w, c);
+  ran(k, TS_CUT_MADE);
+
+  set_page(w, c, CHAINSAW_DP_SAW, c->a);
+  c->y = c->a;
+  uint16_t flags = (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) |
+                              ACTOR_PRIORITY_TOP);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS), flags);
+  c->x = page(w, c, CHAINSAW_DP_CUT_SIDE);
+  cmp16(c, c->x, CUT_SIDE_TURNED);
+  ran(k, TS_CUT_MARKED);
+  if (c->x == CUT_SIDE_TURNED) {
+    PORT_COVER(cut_chips_turned);
+    flags |= CUT_TURNED;
+    set_nz16(c, flags);
+    wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS), flags);
+    ran(k, TS_CUT_SEVEN);
+  } else {
+    ran(k, TS_TAKEN);
+  }
+  c->x = page(w, c, CHAINSAW_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->x + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(c->x + ACTOR_FLAGS)) &
+                      ~ACTOR_DRAW));
+  ldy(c, 0);
+  ran(k, TS_CUT_SHOWN);
+  cut_list_next(w, rom, c, k, true);
+}
+
+// `$81:944E` or `$81:94DA`, where a picture's sleep comes back.
+void cut_list_again(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  const bool first = c->pc == CUT_SHOWN_PC;
+  ldy(c, pull16(w, c));
+  ran(k, TS_CUT_AGAIN);
+  ran(k, TS_TAKEN);
+  cut_list_next(w, rom, c, k, first);
+}
+
+// `$81:92D9`: back from the first list, the hedge's block for its pair.
+bool cut_swap_supported(const Wram* w, const Rom* rom, uint16_t page_at) {
+  return tile_block_swap_supported(
+      w, rom, wram_r16(w, (uint16_t)(page_at + CHAINSAW_DP_CUT_X)),
+      wram_r16(w, (uint16_t)(page_at + CHAINSAW_DP_CUT_Y)));
+}
+
+void cut_swap(Wram* w, const Rom* rom, PortCpu* c, BlockSwapWork* k) {
+  PORT_COVER(cut_swapped);
+  tile_block_swap_ask(w, rom, c, page(w, c, CHAINSAW_DP_CUT_X),
+                      page(w, c, CHAINSAW_DP_CUT_Y), k);
+  c->pc = CUT_SWAP_PUT_PC;
+}
+
+// `$81:930C`: counted, the maniac's page back, and the second list.
+void cut_tiled(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  wram_w16(w, W_HEDGES_CUT, (uint16_t)(wram_r16(w, W_HEDGES_CUT) + 1));
+  c->d = pull16(w, c);
+  push16(w, c, CUT_SECOND_RETURN);
+  ran(k, TS_CUT_TILED);
+  c->a = page(w, c, CHAINSAW_DP_CUT_SIDE);
+  c->y = asl16(c, c->a);
+  set_page(w, c, CUT_DP_LIST, rom_word(rom, CUT_SECOND_LISTS + c->y));
+  ldy(c, 0);
+  ran(k, TS_CUT_SECOND);
+  cut_list_next(w, rom, c, k, false);
+}
+
+// `$81:94EE`: the chips gone, and the maniac's own handler named.
+void cut_freed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, 0xffff);
+  set_page(w, c, CHAINSAW_DP_SAW, c->a);
+  pull16(w, c);
+  ran(k, TS_CUT_FREED);
+  c->a = CUT_HANDLER;
+  ldy(c, CUT_HANDLER_BANK);
+  ran(k, TS_CUT_HANDLER);
+  c->pc = CUT_HANDLER_CALL_PC;
+}
+
+// `$81:931D`.
+void cut_done(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, CHAINSAW_DP_COUNT, 0);
+  ran(k, TS_CUT_DONE);
+  c->pc = CUT_SETTER_PC;
+}
+
+// --- a player's death --------------------------------------------------------
+
+// `$80:CE81`: a state with an end due is ended, by `PEA : DEC : PHA : RTS`
+// to the routine at `$72`.
+void death_sounded(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t ends_by = page(w, c, DEATH_DP_ENDS_BY);
+  lda(c, ends_by);
+  ran(k, TS_DEATH_FLASHING);
+  if (ends_by == 0) {
+    PORT_COVER(death_no_end_due);
+    ran(k, TS_TAKEN);
+    c->pc = DEATH_HANDS_PC;
+    return;
+  }
+  PORT_COVER(death_state_ended);
+  push16(w, c, DEATH_ENDS_RETURN);
+  lda(c, (uint16_t)(ends_by - 1));
+  push16(w, c, c->a);
+  pull16(w, c);
+  ran(k, TS_DEATH_ENDS);
+  c->pc = (DEATH_SOUNDED_PC & 0xff0000u) | ends_by;
+}
+
+// `$80:CE94`.
+void death_shown(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, page(w, c, DEATH_DP_PICTURES));
+  cmp16(c, c->a, DEATH_MONSTER_PICTURES);
+  ran(k, TS_DEATH_WHICH);
+  c->y = page(w, c, DEATH_DP_RECORD);
+  if (c->a == DEATH_MONSTER_PICTURES) {
+    PORT_COVER(death_of_the_monster);
+    wram_w16(w, (uint16_t)(c->y + ACTOR_META), DEATH_MONSTER_PICTURE);
+    lda(c, DEATH_MONSTER_TICKS);
+    ran(k, TS_DEATH_MONSTER);
+    c->pc = DEATH_SLEEP_PC;
+    return;
+  }
+  PORT_COVER(death_shown_a_list);
+  ran(k, TS_TAKEN);
+  lda(c, wram_r16(w, (uint16_t)(c->y + ACTOR_META)));
+  set_page(w, c, DEATH_DP_PICTURE_KEPT, c->a);
+  ldx(c, page(w, c, DEATH_DP_WHO));
+  lda(c, rom_word(rom, DEATH_LISTS + c->x));
+  ran(k, TS_DEATH_LIST);
+  c->pc = DEATH_PLAY_PC;
+}
+
+// `$80:CEC3`: a life gone, unless the cheat says not, and with one left
+// `$80:D95F`.
+static void death_count(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  ldx(c, page(w, c, DEATH_DP_PLAYER));
+  if (port_cheats.lives) {
+    ran(k, TS_DEATH_LIFE_KEPT);
+  } else {
+    const uint16_t lives =
+        (uint16_t)(wram_r16(w, (uint16_t)(W_PLAYER_LIVES + c->x)) - 1);
+    wram_w16(w, (uint16_t)(W_PLAYER_LIVES + c->x), lives);
+    set_nz16(c, lives);
+    ran(k, TS_DEATH_LIFE);
+  }
+  if (flag(c, PORT_P_N)) {
+    PORT_COVER(death_none_left);
+    ran(k, TS_TAKEN);
+    c->pc = DEATH_NONE_LEFT_PC;
+    return;
+  }
+  PORT_COVER(death_lives_left);
+  c->y = page(w, c, DEATH_DP_RECORD);
+  lda(c, page(w, c, DEATH_DP_PICTURE_KEPT));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META), c->a);
+  ran(k, TS_DEATH_SHOW);
+
+  push16(w, c, DEATH_AGAIN_RETURN);
+  ran(k, TS_JSR);
+  ldx(c, page(w, c, DEATH_DP_PLAYER));
+  wram_w16(w, (uint16_t)(W_PLAYER_HEALTH + c->x), DEATH_HEALTH);
+  set_page(w, c, DEATH_DP_STATE, PLAYER_STATE_FLASHING);
+  set_page(w, c, DEATH_DP_ENDS_BY, FLASHING_END_PC & 0xffffu);
+  set_page(w, c, DEATH_DP_FRAMES_LEFT, DEATH_FLASHING_FRAMES);
+  c->y = page(w, c, DEATH_DP_RECORD);
+  lda(c, DEATH_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), c->a);
+  pull16(w, c);
+  ran(k, TS_DEATH_AGAIN);
+  c->pc = DEATH_BACK_PC;
+}
+
+// `$80:CEAA`: the monster's picture after its thirty ticks.
+void death_still(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  ldx(c, page(w, c, DEATH_DP_WHO));
+  lda(c, rom_word(rom, DEATH_PICTURES_AFTER + c->x));
+  set_page(w, c, DEATH_DP_PICTURE_KEPT, c->a);
+  ran(k, TS_DEATH_STILL);
+  ran(k, TS_TAKEN);
+  death_count(w, c, k);
+}
+
+void death_counted(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  death_count(w, c, k);
+}
+
+// --- the bystander -----------------------------------------------------------
+
+// `$82:DD52`: its setup is called, and asks for a record at once.
+void bystander_enter(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  push16(w, c, BYSTANDER_SETUP_RETURN);
+  ran(k, TS_JSR);
+  c->pc = BYSTANDER_ALLOC_PC;
+}
+
+// `$82:DE87`, with the record in A and in Y. Its picture is read through a
+// pointer on the page, from the data bank, which is the thread's.
+void bystander_dress(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  set_page(w, c, BYSTANDER_DP_SLOT, c->a);
+  const uint16_t record = c->y;
+  const uint16_t x = page(w, c, BYSTANDER_DP_X);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), x);
+  const uint16_t left = (uint16_t)(x - BYSTANDER_BOX_LEFT);
+  set_page(w, c, BYSTANDER_DP_LEFT, left);
+  set_page(w, c, BYSTANDER_DP_RIGHT,
+           (uint16_t)(left + BYSTANDER_BOX_WIDTH));
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  const uint16_t y = page(w, c, BYSTANDER_DP_Y);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
+  const uint16_t top = (uint16_t)(y - BYSTANDER_BOX_ABOVE);
+  set_page(w, c, BYSTANDER_DP_TOP, top);
+  set_page(w, c, BYSTANDER_DP_BOTTOM,
+           (uint16_t)(top + BYSTANDER_BOX_HEIGHT));
+  set_c(c, false);
+  const uint16_t pointer =
+      adc16(c, (uint16_t)(page(w, c, BYSTANDER_DP_KIND) << 2),
+            BYSTANDER_PICTURES);
+  set_page(w, c, BYSTANDER_DP_PICTURE, pointer);
+  c->x = 0;
+  wram_w16(w, (uint16_t)(record + ACTOR_META),
+           bus_r16(w, rom, ((uint32_t)c->db << 16) | pointer));
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), BYSTANDER_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD),
+           wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      BYSTANDER_FLAGS));
+  c->a = BYSTANDER_HANDLER;
+  ldy(c, BYSTANDER_HANDLER_BANK);
+  ran(k, TS_BYSTANDER_DRESS);
+  c->pc = BYSTANDER_HANDLER_CALL_PC;
+}
+
+// `$82:DEE8`, and back in the thread for its first sleep.
+void bystander_set(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, BYSTANDER_DP_END, 0);
+  pull16(w, c);
+  ran(k, TS_BYSTANDER_SET);
+  lda(c, BYSTANDER_YIELD_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = BYSTANDER_YIELD_PC;
+}
+
+// `$82:DE08`: a frame of the two words stepping. The table is in bank $7E.
+void bystander_step(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  wram_w16(w, W_BYSTANDER_GROWS,
+           (uint16_t)(wram_r16(w, W_BYSTANDER_GROWS) + 2));
+  c->a = (uint16_t)(wram_r16(w, W_BYSTANDER_SHRINKS) - 1);
+  wram_w16(w, W_BYSTANDER_SHRINKS, c->a);
+  cmp16(c, c->a, BYSTANDER_SHRUNK);
+  ran(k, TS_BYSTANDER_STEP);
+  if (c->a != BYSTANDER_SHRUNK) {
+    PORT_COVER(bystander_stepped);
+    ran(k, TS_TAKEN);
+    c->pc = BYSTANDER_WAIT_PC;
+    return;
+  }
+  PORT_COVER(bystander_stepped_last);
+  c->x = asl16(c, page(w, c, BYSTANDER_DP_KIND));
+  c->x = rom_word(rom, BYSTANDER_WORDS + c->x);
+  lda(c, BYSTANDER_WORDS_BANK);
+  ran(k, TS_BYSTANDER_SAY);
+  c->pc = BYSTANDER_SAY_PC;
 }

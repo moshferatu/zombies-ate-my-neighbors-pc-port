@@ -9,7 +9,8 @@
 // What is here is how it gets about, four of its states, and the swing it
 // makes at somebody beside it. What is not is the thread's setup, the
 // cutting itself and being hit, each of which sleeps in the middle. A pass
-// in one of those states is the ROM's.
+// in one of those states is the ROM's. The cutting is stretches of
+// `port/thread_stretches.h` instead.
 //
 // The swing sleeps in the middle too, so it is two stretches:
 //

@@ -325,8 +325,9 @@ bool thread_call_handler(Wram* w, const Rom* rom, uint16_t slot, uint16_t arg,
 #define PLAYER_STATE_IGNORE_B 0x0004
 
 // What all four spawn — `LDA #$E0B4 : LDY #$0082` — and the four values of `$04`
-// that tell it apart. The thread body is unported; what the port owns is the
-// three words handed to it, which `thread_spawn` copies onto its page.
+// that tell it apart. The port hands it three words, which `thread_spawn`
+// copies onto its page; the thread itself is stretches of
+// `port/thread_stretches.h`.
 //
 // It is **the thing you just picked up, flying away.** `$82:E0B4` allocates a
 // display record at the position it was handed, takes its metasprite from a

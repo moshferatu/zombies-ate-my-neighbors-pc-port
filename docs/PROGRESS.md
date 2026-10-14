@@ -5,6 +5,77 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### A player's hit and death, and seven more threads between their calls (2026-10-13)
+
+The survey's largest places, after the two left to the ROM on purpose,
+were a player's frame turned down and short threads nobody had ported.
+This round takes most of them.
+
+* **A player told of a hit.** `player_frame` runs the hit itself now. A
+  hit that takes nothing goes on to the pose as the hurt timer would have.
+  One that takes health shows it, with a sound and pictures or with
+  `$80:D056`'s, and both sleep: the frame stops where the hit leaves for
+  them, with the return of the `JSR $D01B` that called the hit on the
+  stack.
+* **A player carried off, from the start.** `carried_begin`, `$80:E33E`:
+  the other record is hidden, and the player is sent away from what
+  carries them, the way opposite the one `actor_bearing_point` gives. That
+  way is probed five steps out by `$80:F71E`, and if the ground, the leash
+  or the level's edge rules it out the next way round is tried.
+  * **The ways go round from one to eight, and not to zero**, so the ninth
+    way reads past the ends of the tables. A player boxed in on all eight
+    goes the last way tried.
+* **The walk's square.** The thread the walk begins for a square of 64
+  pixels sets a band of rows round it, and every six ticks asks whether a
+  player is still in it. The two edges need not be held by the same
+  player. `$82:F6EB` and `$82:F6F8`.
+* **A bonus object flying off**, `$82:E0B4`: a record with the object's
+  own picture, drifting eight pixels a tick on a drawn diagonal for
+  twenty-one ticks.
+* **The bystander's setup**, and the loop of what it shows when a player
+  comes up, as far as each `WAI`.
+* **A frozen creature**, `$81:84D6`: its palette and collide id are changed
+  for as long as its count of ice hits lasts, ten ticks a hit.
+* **The chainsaw maniac's cut.** Thirteen stretches and a row from where
+  the cut is called to the maniac's handler again: the saw heard, a place
+  drawn beside the hedge, the chips and their two lists of pictures, and
+  the hedge's block swapped for its pair. The swap is the punch's own
+  instructions, so the row is `tile_block_swap_ask` at the punch's price.
+  * **The check of the sample set, `$81:93D3`, is a row of its own**, for
+    `src/bank_sfx.h`.
+* **A player's death**, from the sound to the life taken. The state with
+  an end due is ended first: the flashing, or one of five others. The
+  potion's monster shows one picture, anyone else a list. With a life
+  left, health is ten and they flash for 120 frames.
+  * **The lives cheat patches `$80:CEC5`**, the `DEC` of a life, which is
+    in that stretch. The port is told by a third flag in `port/cheat.h`,
+    `lives`. Tried in the game: with lives poked to nought and then
+    health, the death ends the game without `--infinite-lives` and does not
+    with it.
+* **Checked.** 1,385 routines are registered.
+  * The corpus verifies clean: 128,074,796 calls over 56 movies, none
+    diverged.
+  * Every new row's cost is exact over the corpus.
+  * Branch coverage is 1,682 of 2,013 sites.
+  * Lockstep: 53 of 56 never part, the same three of level 25 as before.
+  * The picture: 78,360,128 lines at off and at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 399 to 368 | 5,757 to 4,443 | 51,614 to 34,219 |
+  | Left standing on an instruction | 15 to 15 | 274 to 274 | 26,752 to 26,752 |
+  | A port turned the call down | 27 to 27 | 2,140 to 1,255 | 7,242 to 6,267 |
+  | A port or a link called it | 8 to 11 | 176 to 191 | 759 to 2,899 |
+  | All | 450 to 422 | 8,457 to 6,273 | 94,287 to 78,057 |
+
+* **Not done or not known.**
+  * A frame with a press that changes the weapon or the item is still the ROM's: a sound's price is not known inside another routine. So are the poses still turned down, and a frame in the carried pose.
+  * The carried start's turns and a player boxed in, the cut aimed down, and a death with no life left are not reached by the corpus.
+  * What the bystander's words do, `$80:C219`, is the ROM's, and is now counted as called: 2,100 of the instructions in that row were in the row returned to before.
+  * Lockstep with `--level` was not run this round. Nothing was played by hand but the lives cheat's death.
+
 ### The passes that sleep in the middle: the martian's shot, the fishman's look about, the werewolf (2026-10-13)
 
 Three creatures had passes the ports turned down, each because it sleeps

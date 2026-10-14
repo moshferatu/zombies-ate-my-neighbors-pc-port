@@ -14,7 +14,8 @@
 //                  is `port/stuck.h`. Two more share a handler in which the
 //                  pad only turns the player. The potion's monster has one,
 //                  and so has a player who flashes and cannot be hurt.
-//   the hurt timer counts down to the next time the player can be hurt
+//   the hurt timer counts down to the next time the player can be hurt, or
+//                  the player is told of a hit (`port/hit.h`)
 //   the pose       `$28` names a handler, which shows the next picture
 //                  (`port/pose.h`)
 //   the movement   `$2A` names another, or nothing for a player standing
@@ -35,7 +36,6 @@
 //   * a frame on which a button is pressed that changes the weapon or the
 //     item or uses the item, or a shoulder button is, and one with a
 //     frontend's request for such a change waiting
-//   * a frame that tells the player they were hit
 //   * a pose or a movement that is not one of those named, and the frames of
 //     those that their own files leave to the ROM: a shot that goes on to a
 //     pose of its own, a tile with a reaction the walk does not have, a
@@ -44,6 +44,15 @@
 //     rescued, and the one the player dies on
 //
 // `player_frame_supported` says which frames those are.
+//
+// ## A hit that shows
+//
+// A hit that takes health shows it, with a sound and pictures or with
+// `$80:D056`'s, and both sleep. Such a frame stops where the hit leaves for
+// them: at the sound's `JSL`, or at `$80:D056`, with the return of the
+// `JSR $D01B` that called the hit on the stack. The rest of the frame is
+// the ROM's, from that return. A hit that takes nothing goes on to the pose
+// as the hurt timer would have.
 //
 // ## Its contract with the ROM
 //
@@ -66,6 +75,7 @@
 
 #include "assets/rom.h"
 #include "port/floor.h"
+#include "port/hit.h"
 #include "port/oam.h"
 #include "port/player.h"
 #include "port/pose.h"
@@ -76,6 +86,9 @@
 // Where the sleep comes back to, and the `JSL` the next one is.
 #define PLAYER_FRAME_PC 0x80cdfeu
 #define PLAYER_FRAME_YIELD_PC 0x80cdfau
+// What a frame that stops in a hit leaves on the stack: the return of the
+// `JSR $D01B` at `$80:CE01`.
+#define PLAYER_FRAME_HIT_RETURN 0xce03u
 
 // The tables the state and the pose read are in bank `$80`, which is the
 // player thread's data bank.
@@ -153,6 +166,10 @@ typedef struct {
   bool flickered;          // ......an even frame, and the picture's flag flipped
   bool flashing_ends;      // ......its last frame: it stops at the call that ends it
   PlayerHurtTimer hurt_timer;
+  bool hit;                // or the player was told of a hit...
+  HitWork hit_work;
+  PortCpu hit_cpu;         // ...which left these registers
+  bool hit_shows;          // ...and shows, so the frame stops there
   uint16_t pose;           // the pose handler that ran
   PoseLog pose_log;
   bool walked;

@@ -1,4 +1,4 @@
-// The two cheats that reach into the port. See `src/cheats.h`, which is where
+// The three cheats that reach into the port. See `src/cheats.h`, which is where
 // all six are described and the only thing that sets these.
 //
 // Most of a cheat is a byte of the loaded image or a word of WRAM, and the
@@ -20,6 +20,9 @@ typedef struct {
   // `victim_collide` and `victim_a264_collide`: only the two players and `$FF`
   // are ids a neighbour reacts to.
   bool neighbors;
+  // A player's death, `$80:CEC3`: no life is taken, so there is always one
+  // left. The ROM's own is three `NOP`s where the `DEC` was.
+  bool lives;
 } PortCheats;
 
 extern PortCheats port_cheats;  // `port/collide.c`

@@ -418,6 +418,11 @@
   X(carried_past_the_leash,"carried_frame", "the other player is too far") \
   X(carried_off_the_level,"carried_frame",  "the level's edge stops them") \
   X(carried_ran_out,  "carried_frame",      "the count is up") \
+  X(carried_begin_way_clear,"carried_begin", "a way clear five steps out") \
+  X(carried_begin_turned,"carried_begin",   "...or not, and the next is tried") \
+  X(carried_begin_boxed_in,"carried_begin", "...all eight were blocked, and the last is taken") \
+  X(carried_begin_shown,"carried_begin",    "the way's mask is ORed into the record's flags") \
+  X(carried_begin_masked,"carried_begin",   "...or ANDed, and may hide it") \
   X(pursuer_done,     "pursuer_step",       "the count is at its end: no step") \
   X(pursuer_on_top_of_them,"pursuer_step",  "it faces nowhere: no step") \
   X(pursuer_went_across,"pursuer_step",     "the step across was clear") \
@@ -1945,6 +1950,29 @@
   X(werewolf_entered, "ts_werewolf_enter", "...or with them due: it weighs in the level's load") \
   X(werewolf_howled, "ts_werewolf_howl_check", "the level's sample set has its howl: it howls") \
   X(werewolf_unheard, "ts_werewolf_howl_check", "...or has not, and the game leaves it out") \
+  X(square_held, "ts_square_pass", "somebody is still in the band: it sleeps six ticks") \
+  X(square_left, "ts_square_pass", "...or nobody is, and what follows is the ROM's") \
+  X(square_done, "ts_square_pass", "...or the band is held and the thread was told to end") \
+  X(flyoff_on, "ts_flyoff_pass", "a bonus object flies on") \
+  X(flyoff_gone, "ts_flyoff_pass", "...or its ticks are up, and its record is given back") \
+  X(bystander_stepped, "ts_bystander_step", "the two words step, and it waits another frame") \
+  X(bystander_stepped_last, "ts_bystander_step", "...or the first is eight, and its words are asked for") \
+  X(freeze_held, "ts_freeze_pass", "a frozen creature stays frozen ten ticks more") \
+  X(freeze_over, "ts_freeze_pass", "...or its count is spent, and it is put back") \
+  X(cut_heard, "ts_cut_heard", "the level's sample set is the first: the saw is heard") \
+  X(cut_unheard, "ts_cut_heard", "...or it is not, and the game leaves it out") \
+  X(cut_in_the_way, "ts_cut_placed_across", "somebody is at the place drawn: another draw") \
+  X(cut_placed, "ts_cut_placed_across", "...or nobody, and the maniac is put there") \
+  X(cut_chips_turned, "ts_cut_made", "cutting from side seven, the chips are drawn the other way") \
+  X(cut_first_list_over, "ts_cut_made", "the first list is over, and the maniac is drawn again") \
+  X(cut_second_list_over, "ts_cut_tiled", "the second list is over, and the chips are given back") \
+  X(cut_swapped, "cut_swap", "the hedge's block swapped for its pair") \
+  X(death_no_end_due, "ts_death_sounded", "a player dead in a state with no end due") \
+  X(death_state_ended, "ts_death_sounded", "...or with one, which is called") \
+  X(death_of_the_monster, "ts_death_shown", "the potion's monster shows one picture thirty ticks") \
+  X(death_shown_a_list, "ts_death_shown", "...anyone else a list of pictures") \
+  X(death_lives_left, "ts_death_counted", "a life gone and one left: health again, and flashing") \
+  X(death_none_left, "ts_death_counted", "...or none left, which is the ROM's") \
   X(werewolf_dressed, "ts_werewolf_made", "its record made: its picture, and twenty ticks' sleep") \
   X(werewolf_leapt, "ts_werewolf_crouched", "a crouch's pictures shown: it is in the air") \
   X(werewolf_flew, "werewolf_frame", "a pass of a pounce") \
@@ -2181,6 +2209,8 @@
   X(player_frame_nobody_left, "player_frame", "nobody left to rescue and somebody rescued: the level goes on") \
   X(player_frame_hurt_timer_running, "player_frame", "the hurt timer counted down") \
   X(player_frame_hurt_timer_out, "player_frame", "...or had run out, and stays at minus one") \
+  X(player_frame_hit_back, "player_frame", "...or a hit took nothing, and the frame goes on") \
+  X(player_frame_hit_shows, "player_frame", "...or took health and shows: the frame stops there") \
   X(player_frame_still, "player_frame", "no movement handler: the player stands still") \
   X(player_frame_walked, "player_frame", "...or the walk is it") \
                                                                                    \

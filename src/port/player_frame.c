@@ -184,16 +184,35 @@ static bool run_state(Frame* f) {
   }
 }
 
-// The hurt timer runs down to minus one and stays there. Telling the player
-// of a hit is the ROM's.
-static bool run_hurt_timer(Frame* f) {
+// Told of a hit, in place of the hurt timer. Its compare leaves the carry.
+static void take_hit(Frame* f) {
+  PortCpu* c = &f->log->hit_cpu;
+  *c = (PortCpu){.d = f->page, .db = HIT_BANK};
+  player_hit(f->w, f->rom, c, &f->log->hit_work);
+  f->log->hit = true;
+  f->log->c = (c->p & PORT_P_C) != 0;
+  f->log->c_set = true;
+  if (c->pc != HIT_RTS_PC) {
+    PORT_COVER(player_frame_hit_shows);
+    f->log->hit_shows = true;
+  } else {
+    PORT_COVER(player_frame_hit_back);
+  }
+}
+
+// The hurt timer runs down to minus one and stays there, unless the player
+// is to be told of a hit.
+static void run_hurt_timer(Frame* f) {
   const uint16_t event = field(f, PLAYER_DP_HIT_EVENT);
-  if (event & 0x8000u) return false;
   f->log->v = (event & 0x4000u) != 0;
+  if (event & 0x8000u) {
+    take_hit(f);
+    return;
+  }
 
   if (field(f, PLAYER_DP_HURT_HELD) != 0) {
     f->log->hurt_timer = PLAYER_HURT_TIMER_HELD;
-    return true;
+    return;
   }
   const uint16_t left = (uint16_t)(field(f, PLAYER_DP_HURT_TIMER) - 1);
   if (left & 0x8000u) {
@@ -205,7 +224,6 @@ static bool run_hurt_timer(Frame* f) {
     f->log->hurt_timer = PLAYER_HURT_TIMER_RUNNING;
     set_field(f, PLAYER_DP_HURT_TIMER, left);
   }
-  return true;
 }
 
 static bool strike_pose(Frame* f) {
@@ -323,7 +341,11 @@ void player_frame(Wram* w, const Rom* rom, uint16_t page, PlayerFrameLog* log) {
 
   log->unported = true;
   if (!run_state(&f)) return;
-  if (!run_hurt_timer(&f)) return;
+  run_hurt_timer(&f);
+  if (log->hit_shows) {
+    log->unported = false;
+    return;
+  }
   if (!strike_pose(&f)) return;
   if (!move(&f)) return;
   publish_position(&f);

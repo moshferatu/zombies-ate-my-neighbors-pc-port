@@ -19419,3 +19419,47 @@ counts six. The figure goes in the run as the tool gives it.
 Over the same 110 sessions the core executes 94,287 instructions
 where it executed 125,901, and takes over 8,457 times where it
 did 13,294, at 450 places where there were 512.
+
+## A player's hit and death, and seven threads (2026-10-13)
+
+### An address the frontend patches
+
+`src/cheats.h` writes the cartridge's copy of the ROM: three `NOP`s for
+the `DEC` of a life at `$80:CEC5`, and eleven more patches. A port that
+runs through a patched instruction runs the original, and the cheat stops
+working in a native run. `verify` cannot see this, because the corpus
+plays with every cheat off. The port has a flag for each cheat it has an
+instruction of, in `port/cheat.h`, which `cheats_patch` sets.
+
+So before porting a block, search `src/*.h` and `src/*.c` for the
+addresses in it: the watches of `src/bank_sfx.h`, and the patches of
+`src/cheats.h`.
+
+### A frame that stops in a call two deep
+
+`player_frame` stops inside the hit, which its `JSR $D01B` called. The
+shim writes that `JSR`'s return where the ROM's stack has it and gives
+the stack pointer two bytes lower, as the werewolf's pass does. The
+registers at the stop are the hit's own, all of them, since the ROM goes
+on with them.
+
+### A row that is another row's code
+
+The chainsaw maniac's hedge, `$81:92D9`, is the same instructions as the
+punch's door, `$81:F315`. It is a row of its own, `cut_swap`, with the
+punch's port and its price, `swap_cycles`, rather than stretches priced
+afresh. The block map is in the cartridge on some levels, which is what
+the first try at it, stretches with WRAM's price, did not allow for.
+
+### A `BRA` is always taken
+
+`tools/cycles816.py` prices every branch as one that falls through, and a
+`BRA` never does. One of this round's first prices was six cycles short
+for it, and another twelve for a `BCC` counted only on the way it fell
+through.
+
+### After
+
+Over the same 110 sessions the core executes 78,057 instructions
+where it executed 94,287, and takes over 6,273 times where it did
+8,457, at 422 places where there were 450.

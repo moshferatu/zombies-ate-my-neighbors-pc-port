@@ -72,7 +72,9 @@
 // **The fifth** is ground the walk goes on over. `$82:F4FF` keeps five
 // squares of 64 pixels at `$7E:572C`, and begins a thread at `$82:F6EB` for
 // the square the player is in unless it is one of the five already. Levels
-// 13 and 41 have it. What the thread shows I have not seen.
+// 13 and 41 have it, and so does level 5. The thread waits for nobody to be
+// level with the square, which `port/thread_stretches.h` has; what it shows
+// then I have not seen.
 //
 // ## The monster's walk
 //

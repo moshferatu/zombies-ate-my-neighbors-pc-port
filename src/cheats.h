@@ -74,7 +74,8 @@
 // shows. A slot with none stays at none: this cheat gives nothing.
 //
 // **Lives.** `$80:CEC5  DEC $1D4C,X : BMI <game over>`. The `DEC` goes, and
-// the `BMI` reads the `LDX $0E` before it, which is 0 or 2.
+// the `BMI` reads the `LDX $0E` before it, which is 0 or 2. The port has that
+// instruction too, in a death's stretch, and `port_cheats.lives` tells it.
 //
 // **Give all.** Fourteen weapons and ten of the twelve items, at those same
 // ceilings. The two left out are item slots 6 and 11 -- an orange flask and a
@@ -271,6 +272,7 @@ static inline void cheats_patch(Cheats* c, uint8_t* rom, bool in) {
   }
   port_cheats.invincible = in && c->on[CHEAT_INVINCIBLE];
   port_cheats.neighbors = in && c->on[CHEAT_NEIGHBORS];
+  port_cheats.lives = in && c->on[CHEAT_LIVES];
   c->installed = in;
 }
 
