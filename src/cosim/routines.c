@@ -4060,11 +4060,49 @@ static void shim_terrain_footprint_bit12(Wram* w, const Rom* rom,
 // **A AND memory** rather than from memory, so the routine's existence check is
 // really an overlap test that works only because every actor record pointer in
 // the game has bits 11 and 12 set. `port/step.h` says why at length.
+//
+// Its price is by the way out, and none of it is on the direct page.
+static const CosimRun PARTNER_RUN_ASK = {46, 5, 0};     // BIT abs : BEQ
+static const CosimRun PARTNER_RUN_OUT = {54, 2, 0};     // SEC or CLC : RTL
+static const CosimRun PARTNER_RUN_WHICH = {80, 8, 0};   // STY abs : CMP abs : BEQ
+static const CosimRun PARTNER_RUN_OTHER = {34, 3, 0};   // LDY abs
+static const CosimRun PARTNER_RUN_DX = {76, 7, 0};      // TXA : SEC : SBC abs,Y : BPL
+static const CosimRun PARTNER_RUN_DY = {98, 9, 0};      // LDA abs : SEC : SBC abs,Y : BPL
+static const CosimRun PARTNER_RUN_NEGATE = {30, 4, 0};  // EOR # : INC
+static const CosimRun PARTNER_RUN_TEST = {30, 5, 0};    // CMP # : BCS or BCC
+
+static int partner_near_cycles(const PartnerRegs* r, bool fastrom) {
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &PARTNER_RUN_ASK, 1);
+  if (r->exit != PARTNER_NO_A) run_add(&run, &PARTNER_RUN_ASK, 1);
+  if (r->exit == PARTNER_NO_A || r->exit == PARTNER_NO_B) {
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &PARTNER_RUN_WHICH, 1);
+    run_add(&run, &PARTNER_RUN_OTHER, 1);
+    run_add(&run, r->is_a ? &RUN_TAKEN : &RUN_BRA, 1);
+    run_add(&run, &PARTNER_RUN_DX, 1);
+    run_add(&run, r->negated_x ? &PARTNER_RUN_NEGATE : &RUN_TAKEN, 1);
+    run_add(&run, &PARTNER_RUN_TEST, 1);
+    if (r->exit == PARTNER_FAR_X) {
+      run_add(&run, &RUN_TAKEN, 1);
+    } else {
+      run_add(&run, &PARTNER_RUN_DY, 1);
+      run_add(&run, r->negated_y ? &PARTNER_RUN_NEGATE : &RUN_TAKEN, 1);
+      run_add(&run, &PARTNER_RUN_TEST, 1);
+      if (r->exit == PARTNER_CLOSE) run_add(&run, &RUN_TAKEN, 1);
+    }
+  }
+  run_add(&run, &PARTNER_RUN_OUT, 1);
+  return cosim_run_cycles(&run, fastrom);
+}
+
 static void shim_partner_near(Wram* w, const Rom* rom, const CosimRegs* in,
                               CosimRegs* out) {
   (void)rom;
   PartnerRegs r;
   partner_near(w, in->a, in->x, in->y, &r);
+  cosim_cost(partner_near_cycles(&r, in->fastrom));
   out->a = r.a;
   out->x = r.x;
   out->y = r.y;
@@ -6706,9 +6744,21 @@ static const CosimRun WALK_EDGE_STATE = {40, 4, 1};   // LDA $70 : BNE
 static const CosimRun WALK_EDGE_FACING = {40, 4, 1};  // LDA $26 : BEQ
 static const CosimRun WALK_EDGE_POINT = {322, 30, 4}; // $E7B2-$E7CB
 
+// Round the trampoline: `JSR $E739`, its chain to the second compare, and
+// `LDA $70 : BNE`. Then `JSR $F3E3`, and the `BCC` after it. Found, `JMP
+// $DFAC` and, when the bounce is back, the `BCS` not taken.
+static const CosimRun WALK_TRAMPOLINE_HEAD = {176, 21, 1};
+static const CosimRun WALK_TRAMPOLINE_FOUND = {12, 2, 0};
+static const CosimRun WALK_TRAMPOLINE_BOUNCE = {30, 5, 0};
+// `SEC : RTS`, and the walk's `BCS` taken.
+static const CosimRun WALK_REACTION_SOLID = {70, 4, 0};
+
 static int terrain_bit8_cycles(bool hit, bool fast);
 static int leap_cycles(const PoseLog* log, const PlayerSpan* span,
                        const CosimRegs* in);
+static int bounce_begin_cycles(const PoseLog* log, const CosimRegs* in);
+static void tile_search_bill(CosimRun* own, CosimRun* far,
+                             const TileSearch* did);
 
 static int walk_reaction_cycles(const WalkReaction* did, const Rom* rom,
                                 const CosimRegs* in) {
@@ -6730,6 +6780,27 @@ static int walk_reaction_cycles(const WalkReaction* did, const Rom* rom,
     }
     if (did->edge < WALK_EDGE_TETHERED) run_add(&own, &RUN_TAKEN, 1);
     return calls + cosim_run_cycles_dp(&own, fast, unaligned);
+  }
+  if (did->kind == WALK_REACTION_TRAMPOLINE) {
+    run_add(&own, &WALK_TRAMPOLINE_HEAD, 1);
+    if (did->busy) {
+      run_add(&own, &RUN_TAKEN, 1);
+      run_add(&own, &WALK_REACTION_SOLID, 1);
+      return cosim_run_cycles_dp(&own, fast, unaligned);
+    }
+    CosimRun far = {0, 0, 0};
+    run_add(&own, &RUN_JSR, 1);
+    tile_search_bill(&own, &far, &did->search);
+    run_add(&own, &RUN_RTS, 1);
+    run_add(&own, &WALK_TRAMPOLINE_FOUND, 1);
+    if (did->search.found) {
+      run_add(&own, &WALK_TRAMPOLINE_BOUNCE, 1);
+    } else {
+      run_add(&own, &RUN_TAKEN, 1);
+      run_add(&own, &WALK_REACTION_SOLID, 1);
+    }
+    return cosim_run_cycles(&far, in->fastrom) +
+           cosim_run_cycles_dp(&own, fast, unaligned);
   }
   if (did->kind == WALK_REACTION_DOOR) {
     run_add(&own, &WALK_DOOR_AROUND, 1);
@@ -6864,6 +6935,7 @@ static int walk_cycles_as(const WalkLog* log, const Rom* rom,
   for (int i = 0; i < log->reactions; i++)
     cycles += walk_reaction_cycles(&log->reaction[i], rom, in);
   if (log->leapt) cycles += leap_cycles(&log->leap, &log->leap_span, in);
+  if (log->bounced) cycles += bounce_begin_cycles(&log->bounce, in);
   if (stuck && log->took[0])
     cycles += cosim_run_cycles_dp(&STUCK_WALK_TAKE_X, fast, unaligned);
   if (stuck && log->took[1])
@@ -8833,6 +8905,27 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_SAUCER_NEAREST_ASK] = {114, 11, 1},
     // The tables are read from the cartridge, through X.
     [TS_SAUCER_AIMED] = {464, 44, 3},
+    // The word at `$1F98` is in low WRAM through bank `$80`.
+    [TS_SLIMED] = {794, 70, 12},
+    [TS_SLIMED_REST] = {86, 8, 1},
+    [TS_SLIMED_RESTED] = {108, 6, 1},
+    [TS_SLIMED_HANDS] = {94, 12, 0},
+    [TS_HANDS_SWAP] = {382, 24, 1},
+    // The load and the thread are in low WRAM through the thread's bank.
+    [TS_SPIDER_ENTER] = {138, 13, 0},
+    [TS_SPIDER_MADE] = {970, 87, 11},
+    [TS_SPIDER_DRAW] = {54, 4, 0},
+    [TS_SPIDER_WAY] = {174, 16, 2},
+    [TS_SPIDER_FIRST] = {46, 5, 1},
+    [TS_WALKER_ENTER] = {138, 13, 0},
+    [TS_WALKER_MADE] = {898, 80, 11},
+    [TS_WALKER_SHOWN] = {90, 10, 0},
+    [TS_WALKER_DRAW] = {54, 4, 0},
+    [TS_WALKER_WAY] = {198, 18, 2},
+    [TS_WALKER_FIRST] = {46, 5, 1},
+    // `rng_cycles`'s two.
+    [TS_RNG_ONCE] = {338, 31, 0},
+    [TS_RNG_TWICE] = {372, 34, 0},
     [TS_TAKEN] = {6, 0, 0},
 };
 
@@ -8933,6 +9026,13 @@ static const uint32_t TS_EXITS_DEATH[] = {
     // The ends of `DEATH_ENDS`.
     0x80d97fu, 0x80da54u, 0x80db08u, 0x80dbdau, 0x80dc70u, 0x80f3a5u};
 static const uint32_t TS_EXITS_DOOR[] = {DOOR_BUZZ_SOUND_PC, DOOR_END_PC};
+static const uint32_t TS_EXITS_SLIMED[] = {SLIMED_YIELD_PC,
+                                           POSE_STAND_BEGIN_PC};
+static const uint32_t TS_EXITS_SPIDER[] = {SPIDER_NO_ROOM_PC, SPIDER_ALLOC_PC,
+                                           SPIDER_YIELD_PC};
+static const uint32_t TS_EXITS_WALKER[] = {
+    WALKER_NO_ROOM_PC, WALKER_ALLOC_PC, WALKER_PICTURES_CALL_PC,
+    WALKER_SLEEP_PC};
 static const uint32_t TS_EXITS_SLIME[] = {SLIME_BEGIN_CALL_PC, SLIME_DRAW_PC,
                                           SLIME_FIRST_YIELD_PC};
 static const uint32_t TS_EXITS_SEEKER[] = {
@@ -12032,6 +12132,14 @@ static const CosimRun TSEARCH_RUN_FOUND = {408, 39, 5};      // $F42D-$F44F
 static const CosimRun BIT3_RUN = {362 + 250, 30 + 15, 0};
 static const CosimRun BIT3_RUN_OUT = {88, 3, 0};
 
+// `$80:B03B` called once, by what it found.
+static int bit3_cycles(bool set, bool fastrom) {
+  CosimRun run = BIT3_RUN;
+  run_add(&run, &BIT3_RUN_OUT, 1);
+  if (set) run_add(&run, &RUN_TAKEN, 1);
+  return cosim_run_cycles(&run, fastrom);
+}
+
 static bool accepts_player_small(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100 && in->db == PLAYER_SMALL_BANK &&
          wram_r16(w, (uint16_t)(in->d + PLAYER_SMALL_DP_RECORD)) < 0x1f00 &&
@@ -12291,6 +12399,33 @@ static bool supported_tile_search(Wram* scratch, const Rom* rom,
          tile_search_supported(scratch, rom, in->d);
 }
 
+// `$80:F3E3` to its `RTS`, which is not counted. The tiles' own tests, on
+// page zero, go in `far`.
+static void tile_search_bill(CosimRun* own, CosimRun* far,
+                             const TileSearch* did) {
+  run_add(own, &TSEARCH_RUN_HEAD, 1);
+  if (!did->resting) {
+    run_add(own, &RUN_TAKEN, 1);
+    run_add(own, &TSEARCH_RUN_SETUP, 1);
+    run_add(own, &TSEARCH_RUN_LOOK, did->looked);
+    run_add(far, &BIT3_RUN, did->looked);
+    run_add(far, &BIT3_RUN_OUT, did->looked);
+    if (did->found) {
+      // The tile's `BNE` and the search's `BCS`, both taken.
+      run_add(far, &RUN_TAKEN, 1);
+      run_add(own, &RUN_TAKEN, 1);
+      run_add(own, &TSEARCH_RUN_NEXT, did->looked - 1);
+      run_add(own, &RUN_TAKEN, did->looked - 1);
+      run_add(own, &TSEARCH_RUN_FOUND, 1);
+      player_span_bill(own, &did->span);
+    } else {
+      run_add(own, &TSEARCH_RUN_NEXT, did->looked);
+      run_add(own, &RUN_TAKEN, did->looked - 1);
+    }
+  }
+  run_add(own, &TSEARCH_RUN_OUT, 1);
+}
+
 static void shim_tile_search(Wram* w, const Rom* rom, const CosimRegs* in,
                              CosimRegs* out) {
   PortCpu c;
@@ -12299,27 +12434,7 @@ static void shim_tile_search(Wram* w, const Rom* rom, const CosimRegs* in,
   tile_search(w, rom, &c, &did);
   CosimRun own = {0, 0, 0};
   CosimRun far = {0, 0, 0};
-  run_add(&own, &TSEARCH_RUN_HEAD, 1);
-  if (!did.resting) {
-    run_add(&own, &RUN_TAKEN, 1);
-    run_add(&own, &TSEARCH_RUN_SETUP, 1);
-    run_add(&own, &TSEARCH_RUN_LOOK, did.looked);
-    run_add(&far, &BIT3_RUN, did.looked);
-    run_add(&far, &BIT3_RUN_OUT, did.looked);
-    if (did.found) {
-      // The tile's `BNE` and the search's `BCS`, both taken.
-      run_add(&far, &RUN_TAKEN, 1);
-      run_add(&own, &RUN_TAKEN, 1);
-      run_add(&own, &TSEARCH_RUN_NEXT, did.looked - 1);
-      run_add(&own, &RUN_TAKEN, did.looked - 1);
-      run_add(&own, &TSEARCH_RUN_FOUND, 1);
-      player_span_bill(&own, &did.span);
-    } else {
-      run_add(&own, &TSEARCH_RUN_NEXT, did.looked);
-      run_add(&own, &RUN_TAKEN, did.looked - 1);
-    }
-  }
-  run_add(&own, &TSEARCH_RUN_OUT, 1);
+  tile_search_bill(&own, &far, &did);
   cpu_to(&c, out);
   cosim_cost(cosim_run_cycles(&far, in->fastrom) +
              cosim_run_cycles_dp(&own, fetch_fast(in),
@@ -16840,6 +16955,13 @@ static int pose_calls(const PoseLog* log, const Rom* rom,
   if (log->reached) calls += cosim_run_cycles(&TILE_ATTRS_RUN, in->fastrom);
   // A landing puts the player's handler back.
   if (log->landed) calls += cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom);
+  // The trampoline's: the handler, the looks at where a jump off lands, the
+  // tile a bounce comes down on, and the other player.
+  calls += log->handlers_set * cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom);
+  calls += log->tile_looks * cosim_run_cycles(&TILE_ATTRS_RUN, in->fastrom);
+  if (log->bounce_down) calls += bit3_cycles(log->on_trampoline, in->fastrom);
+  if (log->jumped_off)
+    calls += partner_near_cycles(&log->partner, in->fastrom);
   return calls;
 }
 
@@ -17140,6 +17262,30 @@ static const CosimRun POSE_RUN_OFF_HEAD = {120, 12, 2};  // $80:E183-$E18E
 static const CosimRun POSE_RUN_OFF_STEP = {300 + 6, 28, 4};  // $80:E18F-$E1A6
 static const CosimRun POSE_RUN_OFF_FOURTH = {288, 26, 4};  // $80:E1A7-$E1BC
 static const CosimRun POSE_RUN_OFF_HEIGHT = {52, 5, 0};  // $80:E1BD-$E1C1
+// `$80:E016` to the `BCC` after `JSL terrain_tile_bit3`, `$80:E865`.
+static const CosimRun POSE_RUN_BOUNCE_DOWN = {348, 29, 6};
+// `$80:E021`, a wait on the trampoline begun, to its `JMP $F70E`.
+static const CosimRun POSE_RUN_BOUNCE_WAIT_BEGIN = {184, 20, 4};
+// `$80:E039`, a jump off: the speed, the way, the point and the `JSL`, and
+// the `BCC` after it to the `JMP $E11B`.
+static const CosimRun POSE_RUN_JUMP_SPEED = {58, 7, 1};  // $80:E039-$E03E
+static const CosimRun POSE_RUN_JUMP_WAY = {40, 4, 1};    // $80:E040-$E042
+static const CosimRun POSE_RUN_JUMP_ASK = {282, 26, 3};  // $80:E044-$E056
+static const CosimRun POSE_RUN_JUMP_GO = {132, 14, 3};   // $80:E05A-$E065
+// `$80:E11B`. Its sound is `apu_play_sfx` with the sound chip caught up, as
+// `POSE_RUN_6C_SOUND` has it.
+static const CosimRun POSE_RUN_JUMP_SOUND = {72 + 266 + 218, 7 + 17 + 22, 0};
+static const CosimRun POSE_RUN_JUMP_HEAD = {142, 12, 3};     // $80:E122-$E12B
+static const CosimRun POSE_RUN_JUMP_LOOK = {350, 31, 5};     // $80:E131-$E148
+static const CosimRun POSE_RUN_JUMP_BIT = {30, 5, 0};        // BIT # : BNE or BEQ
+static const CosimRun POSE_RUN_JUMP_LOOK_ON = {334, 30, 4};  // $80:E151-$E167
+static const CosimRun POSE_RUN_JUMP_TILE = {64, 8, 1};       // $80:E178-$E17D
+// `$80:E1D2`, down from a jump off.
+static const CosimRun POSE_RUN_OFF_DOWN = {58, 7, 1};      // $80:E1D2-$E1D7
+static const CosimRun POSE_RUN_OFF_AGAIN = {166, 17, 4};   // $80:E1D9-$E1E7
+static const CosimRun POSE_RUN_OFF_GROUND = {232, 26, 3};  // $80:E1EA, $E2C5-$E2D7
+// `$80:E2DA`, up again: after its two `JSR`s, to the `BEQ` past the water.
+static const CosimRun POSE_RUN_GOT_UP = {212, 20, 3};  // $80:E2E4-$E2F6
 
 static void pose_rise_bill(PoseBill* b) {
   pose_add(b, &POSE_RUN_ARC_RISE);
@@ -17162,6 +17308,20 @@ static void pose_bounce_bill(PoseBill* b) {
   pose_arc_axis_bill(b, log->arc_y);
   pose_add(b, &POSE_RUN_ARC_PUBLISH);
   pose_add(b, &POSE_RUN_ARC_HEIGHT);
+  if (log->bounce_down) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_BOUNCE_DOWN);
+    if (log->on_trampoline) {
+      pose_add(b, &POSE_RUN_JMP);
+      pose_add(b, &POSE_RUN_BOUNCE_WAIT_BEGIN);
+      pose_add(b, &POSE_RUN_ARC_AT);
+    } else {
+      pose_taken(b);
+      pose_add(b, &POSE_RUN_JMP);
+      pose_stand_begin_bill(b);
+    }
+    return;
+  }
   pose_add(b, &POSE_RUN_BOUNCE_SPEED);
   if (log->arc_falling) {
     pose_taken(b);
@@ -17174,11 +17334,40 @@ static void pose_bounce_bill(PoseBill* b) {
   pose_add(b, &POSE_RUN_ARC_AT);
 }
 
-// `$80:E035`, for a frame the timer is still running on.
+// `$80:E11B`, from its `JMP`. The bit tests after the looks: `BNE` taken
+// with bit 3 at the first, `BEQ` taken without bit 0, or `BNE` taken with
+// bit 8 after it.
+static void pose_jump_off_bill(PoseBill* b) {
+  const PoseLog* log = b->log;
+  pose_add(b, &POSE_RUN_JUMP_SOUND);
+  pose_add(b, &POSE_RUN_JUMP_HEAD);
+  pose_add(b, &PSMALL_RUN_UNHANDLED);
+  pose_add(b, &POSE_RUN_JSR);
+  pose_add(b, &PSMALL_RUN_UNTOUCHABLE);
+  pose_add(b, &POSE_RUN_JUMP_LOOK);
+  pose_add(b, &POSE_RUN_JUMP_BIT);
+  if (log->tile_looks == 1) pose_taken(b);
+  else pose_add(b, &POSE_RUN_JUMP_LOOK_ON);
+  pose_add(b, &POSE_RUN_JUMP_BIT);
+  if (log->off_bit0) pose_add(b, &POSE_RUN_JUMP_BIT);
+  pose_taken(b);
+  pose_add(b, &POSE_RUN_JUMP_TILE);
+  pose_add(b, &POSE_RUN_ARC_AT);
+}
+
+// `$80:E035`: the timer, or a jump off.
 static void pose_bounce_wait_bill(PoseBill* b) {
   pose_add(b, &POSE_RUN_ARC_TIMER);
-  pose_taken(b);
-  pose_add(b, &POSE_RUN_RTS);
+  if (b->log->waiting) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_RTS);
+    return;
+  }
+  pose_add(b, &POSE_RUN_JUMP_SPEED);
+  pose_add(b, &POSE_RUN_JUMP_WAY);
+  pose_add(b, &POSE_RUN_JUMP_ASK);
+  pose_add(b, &POSE_RUN_JUMP_GO);
+  pose_jump_off_bill(b);
 }
 
 static void pose_bounce_off_bill(PoseBill* b) {
@@ -17193,10 +17382,42 @@ static void pose_bounce_off_bill(PoseBill* b) {
     pose_add(b, &POSE_RUN_OFF_STEP);
   }
   pose_add(b, &POSE_RUN_OFF_HEIGHT);
+  if (log->off_down) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_OFF_DOWN);
+    if (log->off_again) {
+      pose_add(b, &POSE_RUN_OFF_AGAIN);
+      pose_add(b, &POSE_RUN_BOUNCE_WAIT_BEGIN);
+    } else {
+      pose_taken(b);
+      pose_add(b, &POSE_RUN_OFF_GROUND);
+    }
+    pose_add(b, &POSE_RUN_ARC_AT);
+    return;
+  }
   pose_add(b, &POSE_RUN_BOUNCE_SPEED);
   if (log->arc_falling) pose_taken(b);
   pose_add(b, &POSE_RUN_ARC_PICTURE);
   pose_add(b, &POSE_RUN_ARC_AT);
+}
+
+// `$80:E2DA`.
+static void pose_begin_bill(PoseBill* b);
+
+static void pose_bounce_landed_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_ARC_TIMER);
+  if (b->log->waiting) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_RTS);
+    return;
+  }
+  pose_add_n(b, &POSE_RUN_JSR, 2);
+  pose_add(b, &PSMALL_RUN_TOUCHABLE);
+  pose_add(b, &PSMALL_RUN_HANDLED);
+  pose_add(b, &POSE_RUN_GOT_UP);
+  pose_taken(b);
+  pose_add(b, &POSE_RUN_JMP);
+  pose_begin_bill(b);
 }
 
 // `$80:DCA2`.
@@ -17245,6 +17466,21 @@ static int leap_cycles(const PoseLog* log, const PlayerSpan* span,
   pose_add(&b, &PSMALL_RUN_UNHANDLED);
   pose_add(&b, &PSMALL_RUN_UNTOUCHABLE);
   pose_add(&b, &POSE_RUN_LEAP_SET);
+  pose_add(&b, &POSE_RUN_LEAP_TAIL);
+  pose_add(&b, &POSE_RUN_ARC_AT);
+  return pose_total(&b, in) + cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom);
+}
+
+// `$80:DFAC`, from the walk's `JMP` to `$80:F300`'s `RTS`. Its runs have its
+// two `JSR`s in them.
+static const CosimRun POSE_RUN_BOUNCE_BEGIN_HEAD = {114, 10, 2};  // $80:DFAC-$DFB3
+static const CosimRun POSE_RUN_BOUNCE_BEGIN_SET = {338, 32, 7};   // $80:DFB6-$DFD1
+
+static int bounce_begin_cycles(const PoseLog* log, const CosimRegs* in) {
+  PoseBill b = {{0, 0, 0}, log};
+  pose_add(&b, &POSE_RUN_BOUNCE_BEGIN_HEAD);
+  pose_add(&b, &PSMALL_RUN_UNHANDLED);
+  pose_add(&b, &POSE_RUN_BOUNCE_BEGIN_SET);
   pose_add(&b, &POSE_RUN_LEAP_TAIL);
   pose_add(&b, &POSE_RUN_ARC_AT);
   return pose_total(&b, in) + cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom);
@@ -17780,6 +18016,7 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
     case POSE_HANDLER_BOUNCE: pose_bounce_bill(&pose); break;
     case POSE_HANDLER_BOUNCE_WAIT: pose_bounce_wait_bill(&pose); break;
     case POSE_HANDLER_BOUNCE_OFF: pose_bounce_off_bill(&pose); break;
+    case POSE_HANDLER_BOUNCE_LANDED: pose_bounce_landed_bill(&pose); break;
     case POSE_HANDLER_SWIM: pose_swim_bill(&pose); break;
     default: pose_walk_firing_bill(&pose); break;
   }

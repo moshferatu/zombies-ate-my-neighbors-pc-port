@@ -5,6 +5,79 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The trampoline, a player in a slime's splash, and level 17's spider and walker starts (2026-10-14)
+
+Three clusters of places: the trampoline on levels 5, 13, 21 and 41 and the
+attract demo, a player covered by a slime's glob, and the starts of level
+17's two creatures.
+
+* **The trampoline.** The walk's second reaction is a tile with bit 3, and
+  `port/pose.c` had the flight up and down but neither end of it. Now it
+  has the rest but one bounce:
+  * The walk puts the player on it, `$80:E74F`. In the ordinary state they
+    look round for a tile with bit 3 (`tile_search`), and found, `$80:DFAC`
+    starts a bounce: a leap with nowhere to go. The walk goes on as it does
+    after a leap.
+  * Down from a bounce, `$80:E016`, the player is put on the tile the search
+    found and its bit 3 is looked at again (`terrain_tile_bit3`). With it
+    they wait ten frames on it (`$80:E021`), and without they stand.
+  * A wait that ends with a direction held jumps off, `$80:E039`, if the
+    bounce got to five and the other player is near where it would land, a
+    hundred pixels that way. In a game of one they always are. `$80:E11B`
+    plays sound `$1B`, and looks at two points the way it goes; the tile
+    there decides the landing.
+  * Down from a jump on another trampoline they wait on it again; on other
+    ground, `$80:E2C5`, they lie there. The new handler `$80:E2DA` gets them
+    up when the timer runs out.
+  * Still the ROM's: the other bounce, `$80:E090`, higher each time, and the
+    three handlers it leads to, and lying down in the water. The corpus
+    takes none of them, and the survey only the water, three times.
+* **`partner_near` says which way it left**, and its row now prices itself
+  from that: six calls, all exact.
+* **A player caught in a slime's splash.** A glob's burst has collide id
+  `$34`, and the state tail gives the player `$80:DC1E` to do next. Two
+  thread stretches: the cover put over them, state `$0C` for 390 ticks, and
+  a tick's sleep in `$80:F354`; then from `$80:F360` back to the slime's
+  caller, what they hold put aside for weapon `$0F` and item `$0D`, and on
+  to `pose_stand_begin`. `$80:F354` has six other callers, and the second
+  stretch is offered only the slime's return.
+* **Level 17's spider and walker starts**, as five stretches: each one's
+  room and weight and record, its handler, a draw for the way it first goes
+  and the first sleep. The draws are `rng_next` made in the stretch, priced
+  by its overflow as its own row prices it.
+* **Looked at and left.** The second band's standing shot reached from a
+  stand (`$80:D51C  JMP $EE82`), and weapon 5's kick from a stand or a walk
+  with a weapon out. These frames are turned down 51 times over the
+  survey. The handler rows return by their `RTS`; a frame that goes on into
+  a pose that sleeps would need rows that name every `RTS` a handler can
+  leave by, and some of those, `$80:ECFD`'s, are reached by `JSR` as well.
+* **Checked.** 1,445 routines are registered.
+  * The corpus verifies clean: 128,077,241 calls over 56 movies, none
+    diverged, and all 1,060 cost rows are exact.
+  * Branch coverage is 1,733 of 2,085. Untaken among the new: a frame lying
+    beside the trampoline, coming down on a second one, a busy player at
+    one, and a spider or walker with no room.
+  * Lockstep: 53 of 56 never part. level25, level25-2p and level25-heavy
+    part at the same passes as before.
+  * The picture: 78,360,128 lines at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 295 to 275 | 2,055 to 1,746 | 19,497 to 15,084 |
+  | Left standing on an instruction | 13 to 13 | 223 to 223 | 26,584 to 26,584 |
+  | A port turned the call down | 22 to 23 | 245 to 252 | 3,163 to 3,253 |
+  | A port or a link called it | 9 to 8 | 165 to 159 | 607 to 493 |
+  | All | 340 to 320 | 2,798 to 2,490 | 57,771 to 53,334 |
+
+  The one more turned down is `$80:F360`: eleven calls that are not the
+  slime's are turned down there where they were returned to before.
+* **Not done.** The trampoline's other bounce; the poses that go on into a
+  sleep; the lob's three handlers; `$80:897F`, the third
+  stretch of the game's clear, which the NMI reads into; the seeker hit and
+  dying, `$82:EF0B` on; and the attract movies' third figure at `$82:A84B`.
+
 ### The bazooka's thread, and the starts of level 25's figure and level 21's saucer (2026-10-14)
 
 Three clusters of places were left that were all short stretches between

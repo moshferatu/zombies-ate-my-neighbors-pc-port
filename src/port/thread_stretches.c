@@ -19,6 +19,11 @@
 #include "port/oam.h"               // the display record's fields
 #include "port/thread.h"            // thread_set_handler
 #include "port/player_frame.h"
+#include "port/player.h"            // W_PLAYER_FLAG
+#include "port/player_small.h"      // player_hands_swap
+#include "port/rng.h"
+#include "port/spider.h"
+#include "port/walker.h"
 #include "port/apu.h"               // W_APU_SOUNDS
 #include "port/seeker.h"
 #include "port/tracker.h"
@@ -208,6 +213,21 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
       return c->db == 0x80 && who < 4 && (who & 1) == 0 && player < 4 &&
              (player & 1) == 0 && page(w, c, DEATH_DP_RECORD) < 0x1f00;
     }
+    case TS_NEEDS_SLIMED:
+      return page(w, c, SLIMED_DP_RECORD) < 0x1f00 &&
+             page(w, c, SLIMED_DP_COVER) < 0x1f00 &&
+             page(w, c, SLIMED_DP_PLAYER) < 4;
+    case TS_NEEDS_SLIMED_RESTED:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == SLIMED_REST_RETURN &&
+             page(w, c, SLIMED_DP_PLAYER) < 4;
+    case TS_NEEDS_SPIDER_MADE:
+      return c->a < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == SPIDER_MADE_RETURN;
+    case TS_NEEDS_WALKER_MADE:
+      return c->a < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == WALKER_MADE_RETURN;
+    case TS_NEEDS_WALKER_SHOWN:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == WALKER_MADE_RETURN;
     case TS_NEEDS_SEEKER:
       return seeker_returns(w, c);
     case TS_NEEDS_SEEKER_HIDDEN:
@@ -1692,6 +1712,209 @@ void bystander_set(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   lda(c, BYSTANDER_YIELD_TICKS);
   ran(k, TS_LDA_IMM);
   c->pc = BYSTANDER_YIELD_PC;
+}
+
+// `JSL rng_next`, made here: the byte in A, with its carry and overflow.
+static void draw(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  RngResult r;
+  rng_next(w, flag(c, PORT_P_C), &r);
+  c->a = r.a;
+  set_nz16(c, r.a);
+  set_c(c, r.c);
+  set_v(c, r.v);
+  ran(k, r.v ? TS_RNG_TWICE : TS_RNG_ONCE);
+}
+
+// The record in A, as the spider and the walker each put theirs: where the
+// thread was begun (`$00` and `$02`, kept at `x_at` and `y_at`), on the
+// ground, drawn, and the thread's own.
+static void creeper_record(Wram* w, PortCpu* c, uint8_t x_at, uint8_t y_at,
+                           uint16_t picture, uint16_t bank) {
+  const uint16_t record = c->a;
+  set_page(w, c, SPIDER_DP_RECORD, record);
+  c->y = record;
+  set_page(w, c, x_at, page(w, c, 0x00));
+  set_page(w, c, y_at, page(w, c, 0x02));
+  wram_w16(w, (uint16_t)(record + ACTOR_X), page(w, c, 0x00));
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), page(w, c, 0x02));
+  wram_w16(w, (uint16_t)(record + ACTOR_META), picture);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), bank);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), CREEPER_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), CREEPER_ATTR);
+}
+
+// `$83:B27B`: with room, its weight and a record asked for.
+void spider_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  ran(k, TS_BRANCH);
+  if (flag(c, PORT_P_C)) {
+    PORT_COVER(spider_no_room);
+    ran(k, TS_JMP);
+    c->pc = SPIDER_NO_ROOM_PC;
+    return;
+  }
+  PORT_COVER(spider_entered);
+  ran(k, TS_TAKEN);
+  load_up(w, c, SPIDER_LOAD);
+  push16(w, c, SPIDER_MADE_RETURN);
+  ran(k, TS_SPIDER_ENTER);
+  c->pc = SPIDER_ALLOC_PC;
+}
+
+// `$83:B34A`: its record, its handler, the way it first wanders, and the
+// first sleep.
+void spider_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(spider_made);
+  creeper_record(w, c, SPIDER_DP_X, SPIDER_DP_Y, SPIDER_PICTURE,
+                 SPIDER_PICTURE_BANK);
+  set_page(w, c, SPIDER_DP_22, 0);
+  set_page(w, c, SPIDER_DP_CYCLE, 0);
+  set_page(w, c, SPIDER_DP_PICTURE_TIMER, 0);
+  set_page(w, c, SPIDER_DP_FATE, 0);
+  set_page(w, c, SPIDER_DP_HIT_BY, 0);
+  set_page(w, c, 0x7e, 0);
+  c->a = SPIDER_HANDLER;
+  ldy(c, SPIDER_HANDLER_BANK);
+  ran(k, TS_SPIDER_MADE);
+  thread_set_handler(w, c);
+  ran(k, TS_SET_HANDLER);
+  pull16(w, c);
+  ran(k, TS_RTS);
+  push16(w, c, SPIDER_DRAW_RETURN);
+  ran(k, TS_JSR);
+  ran(k, TS_SPIDER_DRAW);
+  draw(w, c, k);
+  // One of the eight ways, doubled.
+  lda(c, (uint16_t)((c->a & 0x0007u) + 1));
+  lda(c, asl16(c, c->a));
+  set_page(w, c, SPIDER_DP_DIRECTION, c->a);
+  lda(c, SPIDER_STATE_WANDER);
+  set_page(w, c, SPIDER_DP_STATE, c->a);
+  pull16(w, c);
+  ran(k, TS_SPIDER_WAY);
+  set_page(w, c, SPIDER_DP_HIT_BY, 0);
+  lda(c, SPIDER_YIELD_TICKS);
+  ran(k, TS_SPIDER_FIRST);
+  c->pc = SPIDER_YIELD_PC;
+}
+
+// `$81:D708`: with room, its weight and a record asked for.
+void walker_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  ran(k, TS_BRANCH);
+  if (flag(c, PORT_P_C)) {
+    PORT_COVER(walker_no_room);
+    ran(k, TS_TAKEN);
+    c->pc = WALKER_NO_ROOM_PC;
+    return;
+  }
+  PORT_COVER(walker_entered);
+  load_up(w, c, WALKER_LOAD);
+  push16(w, c, WALKER_MADE_RETURN);
+  ran(k, TS_WALKER_ENTER);
+  c->pc = WALKER_ALLOC_PC;
+}
+
+// `$81:D691`: its record, and its first pictures asked for.
+void walker_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(walker_made);
+  creeper_record(w, c, WALKER_DP_X, WALKER_DP_Y, WALKER_PICTURE,
+                 WALKER_PICTURE_BANK);
+  set_page(w, c, WALKER_DP_HEALTH, WALKER_HEALTH);
+  set_page(w, c, WALKER_DP_PICTURE, 0);
+  set_page(w, c, WALKER_DP_PICTURE_LEFT, 0);
+  set_page(w, c, WALKER_DP_ENDED, 0);
+  set_page(w, c, WALKER_DP_SCORED, 0);
+  set_page(w, c, 0x7e, 0);
+  lda(c, WALKER_FIRST_PICTURES);
+  ran(k, TS_WALKER_MADE);
+  c->pc = WALKER_PICTURES_CALL_PC;
+}
+
+// `$81:D6E5`: its handler, the way it first walks, and the first sleep.
+void walker_shown(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(walker_shown);
+  c->a = WALKER_HANDLER;
+  ldy(c, WALKER_HANDLER_BANK);
+  ran(k, TS_WALKER_SHOWN);
+  thread_set_handler(w, c);
+  ran(k, TS_SET_HANDLER);
+  pull16(w, c);
+  ran(k, TS_RTS);
+  push16(w, c, WALKER_DRAW_RETURN);
+  ran(k, TS_JSR);
+  ran(k, TS_WALKER_DRAW);
+  draw(w, c, k);
+  // One of the four straight ways: up, right, down or left, doubled.
+  lda(c, asl16(c, (uint16_t)(c->a & 0x0003u)));
+  lda(c, (uint16_t)(asl16(c, c->a) + 2));
+  set_page(w, c, WALKER_DP_WAY, c->a);
+  lda(c, WALKER_STATE_WALK);
+  set_page(w, c, WALKER_DP_STATE, c->a);
+  pull16(w, c);
+  ran(k, TS_WALKER_WAY);
+  set_page(w, c, WALKER_DP_SCORED, 0);
+  lda(c, WALKER_SLEEP_FRAMES);
+  ran(k, TS_WALKER_FIRST);
+  c->pc = WALKER_SLEEP_PC;
+}
+
+// `$80:DC1E`: covered, and a tick's sleep in `$80:F354`.
+void slimed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(slimed);
+  // What they fire with, the walk's pace and its timer, and `$5A`.
+  static const uint8_t CLEARED[] = {0x1e, 0x20, 0x54, 0x56, 0x5a};
+  for (unsigned i = 0; i < sizeof CLEARED; i++) set_page(w, c, CLEARED[i], 0);
+  c->y = page(w, c, SLIMED_DP_COVER);
+  c->x = page(w, c, SLIMED_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(c->x + ACTOR_FLAGS)) |
+                      SLIMED_COVER_OVER));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META), SLIMED_COVER_PICTURE);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META_BANK), SLIMED_COVER_BANK);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_X), page(w, c, SLIMED_DP_X));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_Y),
+           (uint16_t)(page(w, c, SLIMED_DP_Y) + 1));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_Z), SLIMED_COVER_HEIGHT);
+  set_page(w, c, SLIMED_DP_STATE, SLIMED_STATE);
+  set_page(w, c, SLIMED_DP_ENDS_BY, SLIMED_ENDS_BY);
+  set_page(w, c, SLIMED_DP_TICKS, SLIMED_TICKS);
+  push16(w, c, SLIMED_REST_RETURN);
+  ran(k, TS_SLIMED);
+  ldx(c, page(w, c, SLIMED_DP_PLAYER));
+  wram_w16(w, (uint16_t)(W_PLAYER_FLAG + c->x), 0);
+  lda(c, 1);
+  ran(k, TS_SLIMED_REST);
+  c->pc = SLIMED_YIELD_PC;
+}
+
+// `$80:F360`, back to the slime's `$80:DC63`: the word cleared again, and
+// what the player holds put aside.
+void slimed_rested(Wram* w, const Rom* rom, PortCpu* c,
+                   ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(slimed_rested);
+  ldx(c, page(w, c, SLIMED_DP_PLAYER));
+  wram_w16(w, (uint16_t)(W_PLAYER_FLAG + c->x), 0);
+  pull16(w, c);
+  ran(k, TS_SLIMED_RESTED);
+  lda(c, SLIMED_WEAPON);
+  ldy(c, SLIMED_ITEM);
+  push16(w, c, SLIMED_HANDS_RETURN);
+  player_hands_swap(w, c);
+  ran(k, TS_HANDS_SWAP);
+  pull16(w, c);
+  ran(k, TS_SLIMED_HANDS);
+  c->pc = POSE_STAND_BEGIN_PC;
 }
 
 // `$80:DD79`: down in the water, and the splash asked for.

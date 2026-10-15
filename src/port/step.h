@@ -265,10 +265,24 @@ void step_tether_blocked(Wram* w, uint16_t x, uint16_t y, TetherRegs* out);
 // player" exits leave the `BIT`'s flags — `Z` set by construction, `N` from bit
 // 15 of the *record pointer in WRAM*, which is a record pointer and so always
 // clear. The three distance exits leave a `CMP`'s.
+//
+// Which of the five it left by, and the two differences each turned round or
+// not, is all it takes to price it.
+typedef enum {
+  PARTNER_NO_A,   // the first `BIT`
+  PARTNER_NO_B,   // ...or the second
+  PARTNER_FAR_X,
+  PARTNER_FAR_Y,
+  PARTNER_CLOSE,
+} PartnerExit;
+
 typedef struct {
   uint16_t a, x, y;
   bool n, z;
   bool c;  // set means near — or that there is nobody to be near
+  PartnerExit exit;
+  bool is_a;                  // the caller is player A
+  bool negated_x, negated_y;  // the difference was negative: `EOR : INC`
 } PartnerRegs;
 
 // `rec` is A, the caller's own record; `x`/`y` are the point being asked about,

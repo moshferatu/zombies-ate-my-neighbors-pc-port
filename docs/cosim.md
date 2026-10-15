@@ -19545,3 +19545,38 @@ the `JSL` prices it in, so the range has to stop short of it.
 Over the same 110 sessions the core executes 57,771 instructions where it
 executed 60,954, and takes over 2,798 times where it did 3,119, at 340
 places where there were 358.
+
+## The trampoline, the slime's splash and level 17's starts (2026-10-14)
+
+### A callee row that prices itself
+
+`partner_near` was a row with no price of its own, which was fine while
+only the ROM called it. Once a pose made the call in C, the pose needed its
+price, and the price depends on the way out. So `PartnerRegs` says which of
+the five exits it took and whether each difference was turned round, and
+`partner_near_cycles` builds the price from that. The row uses the same
+function, so the corpus checks it on every call the ROM still makes.
+
+### A shared routine with one caller's continuation
+
+`$80:F354` is a tick's sleep with a word cleared either side, called from
+seven places. The stretch from where the sleep comes back, `$80:F360`, goes
+on through the `RTS` into the slime's caller, and its guard checks that the
+return on the stack is the slime's. The other six still return to the ROM,
+and the survey shows them as turned down rather than returned to.
+
+### Why the band-B shot from a stand is left
+
+A pose handler row is a `ret_op` row: the harness makes its `RTS`. A frame
+that jumps into the second band's standing shot never returns that frame;
+it sleeps inside `$80:EE82`. Taking that frame would make the row an
+`exits` row, and `verify` ends an `exits` row at the first exit the ROM
+reaches. The handlers leave by several `RTS`s, `$80:ECFD`'s among them, and
+that one is reached by `JSR` from other code too. Until that is sorted out,
+those frames stay turned down.
+
+### After
+
+Over the same 110 sessions the core executes 53,334 instructions where it
+executed 57,771, and takes over 2,490 times where it did 2,798, at 320
+places where there were 340.

@@ -51,10 +51,10 @@
 //
 // * the double step, bit 15 of `$54`, which runs the whole walk twice. No
 //   input has taken it.
-// * a solid tile with a reaction of its own, but for the three below. The
+// * a solid tile with a reaction of its own, but for the four below. The
 //   reaction takes over from inside the walk.
 //
-// ## Three reactions the walk has
+// ## Four reactions the walk has
 //
 // **The water's edge**, the first: `$80:E7A1`. A player with health, in the
 // ordinary state and facing some way looks 32 pixels that way. With water
@@ -66,6 +66,13 @@
 // the carry the leap's last add left: the tether and whoever stands there
 // are asked, and the step may be taken. A second leap in the same frame, on
 // the other axis, is the ROM's.
+//
+// **The trampoline**, the second: `$80:E74F`. A player in the ordinary state
+// looks round for a tile with bit 3 (`tile_search`, `port/player_small.h`).
+// Found, they are on it (`pose_bounce_begin`, `port/pose.h`), and the walk
+// goes on as it does after a leap, and a second in the same frame, or a
+// leap and a bounce, is the ROM's. In another state, or with no such tile
+// round them, the tile is only solid.
 //
 // **A door**, the third. The walk looks at the tile a little way off the
 // way the player faces, up or down: `$80:E8D3`. If that is a door it wants
@@ -214,13 +221,21 @@ typedef enum {
   WALK_ASK_COUNT
 } WalkQuestion;
 
-enum { WALK_REACTION_EDGE = 1, WALK_REACTION_DOOR = 3, WALK_REACTION_SQUARE = 5 };
+enum {
+  WALK_REACTION_EDGE = 1,
+  WALK_REACTION_TRAMPOLINE = 2,
+  WALK_REACTION_DOOR = 3,
+  WALK_REACTION_SQUARE = 5,
+};
 
 // The water's edge: where the point looked at is, for each way faced.
 #define WALK_EDGE_STEPS 0x80e7dau
 #define WALK_EDGE_DP_STATE 0x70   // the player's state, 0 the ordinary one
 #define WALK_EDGE_DP_PLAYER 0x0e  // which player, doubled
 #define W_WALK_EDGE_HEALTH 0x1cb8
+
+// The trampoline is looked for only in the ordinary state.
+#define WALK_TRAMPOLINE_DP_STATE 0x70
 
 // Why a player at the water's edge did not jump in.
 typedef enum {
@@ -249,6 +264,8 @@ typedef struct {
   uint8_t looked; // the fifth: squares looked at
   WalkSquareEnd end;
   WalkEdge edge;  // the water's edge: what kept the player out, if anything
+  bool busy;      // the trampoline: not in the ordinary state
+  TileSearch search;  // ...or how the look round for it went
 } WalkReaction;
 
 // How a swimmer's look at the bank ended.
@@ -302,6 +319,9 @@ typedef struct {
   bool leapt;
   PoseLog leap;
   PlayerSpan leap_span;
+  // ...or onto the trampoline.
+  bool bounced;
+  PoseLog bounce;
 } WalkLog;
 
 // Would the port walk this frame the way the ROM does? False for the two

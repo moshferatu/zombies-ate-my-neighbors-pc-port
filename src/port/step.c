@@ -213,13 +213,17 @@ void partner_near(Wram* w, uint16_t rec, uint16_t x, uint16_t y,
   out->a = rec;
   out->x = x;
   out->y = y;
+  out->is_a = false;
+  out->negated_x = out->negated_y = false;
   if (partner_absent(out, rec, a_rec)) {
     PORT_COVER(partner_no_a);
+    out->exit = PARTNER_NO_A;
     out->c = true;
     return;
   }
   if (partner_absent(out, rec, b_rec)) {
     PORT_COVER(partner_no_b);
+    out->exit = PARTNER_NO_B;
     out->c = true;
     return;
   }
@@ -227,27 +231,33 @@ void partner_near(Wram* w, uint16_t rec, uint16_t x, uint16_t y,
   wram_w16(w, PARTNER_DP_Y, y);
 
   // `CMP $00D2 : BEQ` — am I player A? Then the other one is B.
-  const bool is_a = rec == a_rec;
-  PORT_COVER_IF(is_a, partner_mover_a, partner_mover_b);
-  const uint16_t ref = is_a ? b_rec : a_rec;
+  out->is_a = rec == a_rec;
+  PORT_COVER_IF(out->is_a, partner_mover_a, partner_mover_b);
+  const uint16_t ref = out->is_a ? b_rec : a_rec;
   out->y = ref;
-  int negated = 0;  // counted for the tether, not for this
 
+  int negated = 0;
   partner_cmp(out, abs_diff(w, x, ref, ACTOR_X, &negated));
+  out->negated_x = negated != 0;
   if (out->a >= PARTNER_NEAR_SPAN) {
     PORT_COVER(partner_far_x);
+    out->exit = PARTNER_FAR_X;
     out->c = false;
     return;
   }
 
   // `LDA $0038` — the Y argument comes back out of the scalar it was parked in.
+  negated = 0;
   partner_cmp(out, abs_diff(w, wram_r16(w, PARTNER_DP_Y), ref, ACTOR_Y, &negated));
+  out->negated_y = negated != 0;
   if (out->a >= PARTNER_NEAR_SPAN) {
     PORT_COVER(partner_far_y);
+    out->exit = PARTNER_FAR_Y;
     out->c = false;
     return;
   }
   PORT_COVER(partner_close);
+  out->exit = PARTNER_CLOSE;
   out->c = true;
 }
 

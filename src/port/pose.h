@@ -21,11 +21,12 @@
 //   $80:DD41  arc         through the air
 //   $80:DE0D  arc         the same again, with another landing
 //
-// and three of a player on a trampoline:
+// and four of a player on a trampoline:
 //
-//   $80:DFDA  bounce       up from it and down onto it again
-//   $80:E035  bounce_wait  on it, between two bounces
-//   $80:E180  bounce_off   off it, across the ground
+//   $80:DFDA  bounce         up from it and down onto it again
+//   $80:E035  bounce_wait    on it, between two bounces
+//   $80:E180  bounce_off     off it, across the ground
+//   $80:E2DA  bounce_landed  down beside it, until they get up
 //
 // and one in the water:
 //
@@ -90,13 +91,37 @@
 // walk, by whether a direction is held. The Y button is let go of first, so
 // a Y held through the landing is not a press.
 //
+// **The walk puts a player on a trampoline** (`port/walk.h`), at `$80:DFAC`.
+// It is a leap with nowhere to go: the speed, the first picture held fifteen
+// frames and the hand weapon put away, but no span, and the player can still
+// be touched. Their thread is told of nothing.
+//
 // **A bounce is the same flight, straight up.** Going up, at ten pixels
 // and above, the player is drawn over everything and is in state 6. Coming
 // down they show the falling picture whatever the height.
 //
+// **Down from a bounce, the player is put on the tile the walk found**,
+// `$60` and `$62`, and the tile there is looked at (`terrain_tile_bit3`).
+// With bit 3 they wait on it ten frames, and without they stand.
+//
+// **A wait that ends with a direction held jumps off**, if the bounce got as
+// far as five (`$48`), and the other player is near where it would land, a
+// hundred pixels that way (`partner_near`): in a game of one they always
+// are. The sound is `$1B`, the speed upward is six, nobody can touch the
+// player and their thread is told of nothing. Two points the way they go
+// are looked at, the first and, without bit 3 there, one further on
+// (`$5A` says which), and what the tile there is goes to `$5C`.
+//
 // **Bouncing off goes by a table and not by fractions.** `$5A` picks a row
 // for the way they go, and the row has two steps: one for three frames in
 // four and another for the fourth, by the frame count.
+//
+// **Down from it on a tile with bit 3**, they wait on the trampoline again.
+// Bit 7 of this frame's buttons is set first, and the frame keeps that as
+// last frame's. **Down on other ground**, they lie there, with a word of a
+// table for what can touch them, until the timer runs out. Then they can be
+// touched and are told of things again, are drawn under what is high, are
+// in the ordinary state, and stand or walk.
 //
 // **Swimming is eight pictures**, one every ten frames, and the same eight
 // whichever way the player faces. The handler names the movement afresh each
@@ -143,8 +168,11 @@
 //
 // ## What is the ROM's
 //
-// The frame a bounce comes down on the trampoline. The frame a wait on the trampoline ends on, which
-// looks for where to bounce to.
+// The trampoline's other bounce, `$80:E090`, higher each time: a wait that
+// ends with no direction held, before the bounce has got to five, or with
+// the other player too far, and a jump off that would land on a tile with
+// bit 0 and not bit 8. The three handlers it leads to, `$80:E0B1`, `$80:E0D0`
+// and `$80:E106`. Lying down in the water off it (bit 8 of `$5C`).
 // A handler's frame that fires weapon 5, or that goes on to the second
 // band's standing shot (`$80:EE82`): the stretches above take over from
 // where the ROM gets to. The pose for whatever sets `$6C` (`$80:EF67`). Of
@@ -172,6 +200,7 @@
 #include "port/cpu.h"
 #include "port/oam.h"
 #include "port/player_small.h"  // PlayerSpan
+#include "port/step.h"         // PartnerRegs
 #include "port/wram.h"
 
 // The tables are in bank `$80`, which is the player thread's data bank.
@@ -196,6 +225,7 @@
 #define POSE_HANDLER_BOUNCE 0xdfdau
 #define POSE_HANDLER_BOUNCE_WAIT 0xe035u
 #define POSE_HANDLER_BOUNCE_OFF 0xe180u
+#define POSE_HANDLER_BOUNCE_LANDED 0xe2dau
 #define POSE_HANDLER_SWIM 0xdca2u
 
 #define POSE_ARC_PC 0x80dd41u
@@ -266,9 +296,11 @@
 #define POSE_DP_ARC_SUM_Y 0x46
 // The speed upward a leap starts at, plus one, which a bounce reads.
 #define POSE_DP_LAUNCH 0x48
+#define POSE_DP_BOUNCE_WAY 0x4a   // the trampoline: the way a jump off goes
 #define POSE_DP_SHOT_DELAY 0x4c   // frames until the weapon may fire again
 #define POSE_DP_PACE 0x54         // bits 15 and 14 change how fast it walks
 #define POSE_DP_OFF_ROW 0x5a      // bouncing off: the row of steps for the way
+#define POSE_DP_OFF_TILE 0x5c     // ...and the attributes of where it lands
 #define POSE_DP_PICTURES_SET 0x6a // with `$0C`, which picture table is `$10`
 #define POSE_DP_6C 0x6c           // nonzero is a pose of its own, `$80:EF67`
 #define POSE_DP_STATE 0x70        // the player's state: picks the movement
@@ -326,6 +358,16 @@ typedef struct {
   bool landed;         // ...or down from the second leap
   bool splashed;       // ...or from the first, into the water: stopped at the sound
   bool off_fourth;     // bouncing off: a fourth frame, which has its own step
+  bool bounce_down;    // a bounce came down...
+  bool on_trampoline;  // ...on a tile with bit 3, so they wait on it again
+  bool jumped_off;     // a wait on it ended in a jump off it...
+  PartnerRegs partner; // ...the other player asked about first
+  int tile_looks;      // ...and one or two looks at where it lands
+  bool off_bit0;       // ......where the tile has bit 0
+  bool off_down;       // down from the jump off...
+  bool off_again;      // ...on the trampoline again
+  bool got_up;         // down beside it, and the wait over
+  int handlers_set;    // the thread's handler named or cleared, by `JSR`
   bool band_b_fired;   // the second band's walk: a step that fires
   bool punched;        // the monster's walk: those in the fist's box told...
   ActorNotifyWork told;  // ...and what telling them took
@@ -356,6 +398,7 @@ void pose_arc_ready(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_bounce(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_bounce_wait(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_bounce_off(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+void pose_bounce_landed(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_swim(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 
 // The pieces, for a frame whose handler is the ROM's. Each is asked of a
@@ -372,6 +415,10 @@ void pose_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 #define POSE_SPLASH_SOUND 0x001f
 void pose_leap(Wram* w, const Rom* rom, uint16_t page, PoseLog* log,
                PlayerSpan* span);
+// `$80:DFAC`, onto a trampoline. It always finishes, and `log` may not be
+// NULL.
+#define POSE_BOUNCE_BEGIN_PC 0x80dfacu
+void pose_bounce_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_stand_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_walk_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_fire(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);

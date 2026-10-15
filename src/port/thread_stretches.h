@@ -204,6 +204,46 @@
 // **The lives cheat patches `$80:CEC5`**, the `DEC` of a life, which is in
 // the fourth. `port_cheats.lives` says when it is on: see `port/cheat.h`.
 //
+// ## A player caught in a slime's splash, `$80:DC1E`
+//
+// A slime's glob bursts with collide id `$34`, and a player it touches in
+// the ordinary state, out of the hurt window, is given this as what they do
+// next (`port/collide.h`, the state tail):
+//
+//   $80:DC1E  covered: the record at `$0A` is put a pixel below them, with
+//             the cover's picture, thirty-two up, and drawn over them. They
+//             are in state `$0C` for 390 ticks, which `$80:DC70` ends, and
+//             nothing they were firing or carrying is out. Then `$80:F354`,
+//             a sleep of a tick with the word at `$1F98` cleared before
+//   $80:F360  ...and after. Back in `$80:DC1E`, what they hold is put aside
+//             for weapon `$0F` and item `$0D`, and they stand
+//             (`pose_stand_begin`, `port/pose.h`).
+//
+// The second is a stretch of `$80:F354`, which six other places call. It
+// is offered only the slime's return.
+//
+// ## The starts of level 17's spider and walker, `$83:B277` and `$81:D704`
+//
+// See `port/spider.h` and `port/walker.h`, which have their loops. Each
+// asks `spawn_has_room` first, which is a link, and with no room the thread
+// only ends. Then:
+//
+//   $83:B27B  the spider's weight, fifteen, on the level's load, and a
+//             record asked for
+//   $83:B34A  the record put where it was begun, drawn, with its picture
+//             and collide id 3. Its handler named, a draw of one of the
+//             eight ways, wandering, and the first sleep
+//
+//   $81:D708  the walker's weight, twenty-four, and a record asked for
+//   $81:D691  the record put as the spider's is, a health of one, and its
+//             first pictures asked for
+//   $81:D6E5  its handler named, a draw of one of the four straight ways,
+//             walking, and the first sleep
+//
+// The draws are `rng_next` (`port/rng.h`), made here. The stretches after
+// the record is asked for go on through the `RTS`s of the start's `JSR`s, so
+// each needs its start's return under it.
+//
 // ## A locked door's buzz, `$82:DEFB`
 //
 // See `port/walk.h`: a player who pushes at a door with no key begins this
@@ -736,6 +776,65 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define DEATH_DP_STATE 0x70
 #define DEATH_DP_ENDS_BY 0x72           // the routine that ends the state
 #define DEATH_DP_FRAMES_LEFT 0x74
+
+// --- level 17's spider and walker ------------------------------------------------
+
+#define SPIDER_ENTER_PC 0x83b27bu     // back from `spawn_has_room`
+#define SPIDER_NO_ROOM_PC 0x83b2cfu   // the `RTL` that ends it
+#define SPIDER_ALLOC_PC 0x83b346u     // `JSL actor_slot_alloc`
+#define SPIDER_MADE_PC 0x83b34au
+#define SPIDER_MADE_RETURN 0xb28cu    // `JSR $B346`'s
+#define SPIDER_DRAW_RETURN 0xb28fu    // `JSR $B457`'s
+#define SPIDER_LOAD 0x000f
+#define SPIDER_PICTURE 0xf695u
+#define SPIDER_PICTURE_BANK 0x008f
+#define SPIDER_HANDLER 0xb525u
+#define SPIDER_HANDLER_BANK 0x0083
+#define SPIDER_DP_22 0x22             // cleared; I have not read its use
+#define WALKER_ENTER_PC 0x81d708u
+#define WALKER_NO_ROOM_PC 0x81d759u
+#define WALKER_ALLOC_PC 0x81d68du
+#define WALKER_MADE_PC 0x81d691u
+#define WALKER_MADE_RETURN 0xd716u    // `JSR $D68D`'s
+#define WALKER_PICTURES_CALL_PC 0x81d6e1u  // `JSL $81:832C`, the list in A
+#define WALKER_SHOWN_PC 0x81d6e5u
+#define WALKER_DRAW_RETURN 0xd719u    // `JSR $D5D9`'s
+#define WALKER_LOAD 0x0018
+#define WALKER_PICTURE 0xe4feu
+#define WALKER_PICTURE_BANK 0x0090
+#define WALKER_FIRST_PICTURES 0xd6f0u
+#define WALKER_HANDLER 0xd7f6u
+#define WALKER_HANDLER_BANK 0x0081
+#define WALKER_HEALTH 0x0001
+#define WALKER_DP_HEALTH 0x0c
+// Both records: what can touch them, and their attributes.
+#define CREEPER_COLLIDE_ID 0x0003
+#define CREEPER_ATTR 0x0c00
+
+// --- a player caught in a slime's splash ---------------------------------------
+
+#define SLIMED_PC 0x80dc1eu
+#define SLIMED_REST_RETURN 0xdc63u   // `JSR $F354`'s
+#define SLIMED_YIELD_PC 0x80f35cu    // `JSL thread_yield`, A already 1
+#define SLIMED_RESTED_PC 0x80f360u
+#define SLIMED_HANDS_RETURN 0xdc6cu  // `JSR $F38D`'s
+#define SLIMED_COVER_PICTURE 0xa54bu
+#define SLIMED_COVER_BANK 0x0090
+#define SLIMED_COVER_HEIGHT 0x0020
+#define SLIMED_COVER_OVER 0x8000u    // the cover's flags: the player's, and this
+#define SLIMED_STATE 0x000c
+#define SLIMED_ENDS_BY 0xdc70u
+#define SLIMED_TICKS 0x0186
+#define SLIMED_WEAPON 0x000f         // what they hold meanwhile
+#define SLIMED_ITEM 0x000d
+#define SLIMED_DP_RECORD 0x08
+#define SLIMED_DP_COVER 0x0a
+#define SLIMED_DP_PLAYER 0x0e        // which player, doubled
+#define SLIMED_DP_X 0x30
+#define SLIMED_DP_Y 0x32
+#define SLIMED_DP_TICKS 0x56         // the countdown that ends the state
+#define SLIMED_DP_STATE 0x70
+#define SLIMED_DP_ENDS_BY 0x72
 #define W_MAIN_1E7E 0x1e7eu            // 1 before the sound's bank is sent
 #define W_SCORES_SET 0x2124u           // in `$7E`
 #define W_LEVELS_FADED 0x1fb6u
@@ -1082,6 +1181,24 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_DEATH_LIFE_KEPT, 0x80cec3, 0x80cec9, 0)  /* ...with three NOPs */ \
   X(TS_DEATH_SHOW, 0x80ceca, 0x80ced0, 0) \
   X(TS_DEATH_AGAIN, 0x80d95f, 0x80d97e, 0)   /* the RTS too */ \
+  X(TS_SPIDER_ENTER, 0x83b280, 0x83b28d, 0)  /* the JSR too */ \
+  X(TS_SPIDER_MADE, 0x83b34a, 0x83b3a1, 0)   /* the JSL too */ \
+  X(TS_SPIDER_DRAW, 0x83b457, 0x83b45b, 0)   /* JSL rng_next */ \
+  X(TS_SPIDER_WAY, 0x83b45b, 0x83b46b, 0)    /* and $83:B465, the RTS too */ \
+  X(TS_SPIDER_FIRST, 0x83b290, 0x83b295, 0) \
+  X(TS_WALKER_ENTER, 0x81d70a, 0x81d717, 0)  /* the JSR too */ \
+  X(TS_WALKER_MADE, 0x81d691, 0x81d6e1, 0) \
+  X(TS_WALKER_SHOWN, 0x81d6e5, 0x81d6ef, 0)  /* the JSL too */ \
+  X(TS_WALKER_DRAW, 0x81d5d9, 0x81d5dd, 0)   /* JSL rng_next */ \
+  X(TS_WALKER_WAY, 0x81d5dd, 0x81d5ef, 0)    /* and $81:D5E9, the RTS too */ \
+  X(TS_WALKER_FIRST, 0x81d71a, 0x81d71f, 0) \
+  X(TS_RNG_ONCE, 0x809d39, 0x809d5b, 0)      /* rng_next, a BVC taken */ \
+  X(TS_RNG_TWICE, 0x809d39, 0x809d5b, 0)     /* ...or not */ \
+  X(TS_SLIMED, 0x80dc1e, 0x80dc64, 0)        /* the JSR too */ \
+  X(TS_SLIMED_REST, 0x80f354, 0x80f35c, 0) \
+  X(TS_SLIMED_RESTED, 0x80f360, 0x80f366, 0)  /* the RTS too */ \
+  X(TS_SLIMED_HANDS, 0x80dc64, 0x80dc70, 0)  /* JSR $F38D : JMP $D4F4 */ \
+  X(TS_HANDS_SWAP, 0x80f38d, 0x80f3a5, 0)    /* the RTS too */ \
   X(TS_DOOR_ASK, 0x82defb, 0x82df00, 0)      /* LDA abs : BNE */ \
   X(TS_DOOR_BUZZ, 0x82df00, 0x82df06, 0) \
   X(TS_DOOR_DONE, 0x82df1f, 0x82df22, 0) \
@@ -1177,6 +1294,12 @@ typedef enum {
   TS_NEEDS_SEEKER_NEXT,    // ...and what it does after firing, one of three
   TS_NEEDS_FIGURE_PART,    // a record in A, and a part's `JSR` to return to
   TS_NEEDS_SAUCER_AIMED,   // a record in X, and the start's `JSR` to return to
+  TS_NEEDS_SLIMED,         // the player's two records in low WRAM, and which
+                           // player
+  TS_NEEDS_SLIMED_RESTED,  // ...and the slime's `JSR $F354` to return to
+  TS_NEEDS_SPIDER_MADE,    // a record in A, and the start's `JSR` to return to
+  TS_NEEDS_WALKER_MADE,    // likewise
+  TS_NEEDS_WALKER_SHOWN,   // the start's `JSR` to return to
 } ThreadStretchNeeds;
 
 bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
@@ -1293,6 +1416,13 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(argument_door_a, "$82:DF0A", 0x82df0au, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_door_b, "$82:DF11", 0x82df11u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_door_c, "$82:DF18", 0x82df18u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(slimed, "$80:DC1E", SLIMED_PC, slimed, SLIMED, TS_NEEDS_SLIMED) \
+  X(slimed_rested, "$80:F360", SLIMED_RESTED_PC, slimed_rested, SLIMED, TS_NEEDS_SLIMED_RESTED) \
+  X(spider_enter, "$83:B27B", SPIDER_ENTER_PC, spider_enter, SPIDER, TS_NEEDS_NOTHING) \
+  X(spider_made, "$83:B34A", SPIDER_MADE_PC, spider_made, SPIDER, TS_NEEDS_SPIDER_MADE) \
+  X(walker_enter, "$81:D708", WALKER_ENTER_PC, walker_enter, WALKER, TS_NEEDS_NOTHING) \
+  X(walker_made, "$81:D691", WALKER_MADE_PC, walker_made, WALKER, TS_NEEDS_WALKER_MADE) \
+  X(walker_shown, "$81:D6E5", WALKER_SHOWN_PC, walker_shown, WALKER, TS_NEEDS_WALKER_SHOWN) \
   X(door_buzz, "$82:DEFB", DOOR_BUZZ_PC, door_buzz, DOOR, TS_NEEDS_NOTHING) \
   X(door_buzzed, "$82:DF1F", DOOR_BUZZED_PC, door_buzzed, DOOR, TS_NEEDS_NOTHING) \
   X(slime_enter, "$81:CCCF", SLIME_ENTER_PC, slime_enter, SLIME, TS_NEEDS_NOTHING) \

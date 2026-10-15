@@ -261,6 +261,9 @@ static bool strike_pose(Frame* f) {
     case POSE_HANDLER_BOUNCE_OFF:
       pose_bounce_off(f->w, f->rom, f->page, did);
       break;
+    case POSE_HANDLER_BOUNCE_LANDED:
+      pose_bounce_landed(f->w, f->rom, f->page, did);
+      break;
     case POSE_HANDLER_SWIM:
       pose_swim(f->w, f->rom, f->page, did);
       break;

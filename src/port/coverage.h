@@ -906,6 +906,9 @@
   X(walk_edge_dry,    "player_walk",       "...or one looking at no water") \
   X(walk_edge_tethered, "player_walk",     "...or at water too far from the other player") \
   X(walk_edge_jumped, "player_walk",       "...or the player jumps in, so the ROM walks") \
+  X(walk_trampoline_busy, "player_walk",   "a trampoline's tile, and a player not in the ordinary state") \
+  X(walk_trampoline_none, "player_walk",   "...or one in it, and no tile with bit 3 round them") \
+  X(walk_trampoline_bounced, "player_walk", "...or one, and the player is on it") \
   X(walk_door_no_reach, "player_walk",     "a door's tile, and no tile to look at the way the player faces") \
   X(walk_door_not_there, "player_walk",    "...or one to look at, which is not a door") \
   X(walk_door_locked, "player_walk",       "...or a door, and nothing to open it: a thread begun") \
@@ -1693,10 +1696,18 @@
   X(stagger_over, "ts_stagger_over", "...and itself again") \
   X(player_splashed, "player_splashed", "the splash over: swimming begun, and the rest of the frame") \
   X(pose_leapt, "player_walk", "a leap toward a point: into the water from the walk") \
+  X(pose_bounce_began, "player_walk", "onto a trampoline from the walk") \
   X(pose_bounce_rose, "pose_bounce", "up from a trampoline") \
   X(pose_bounce_fell, "pose_bounce", "...and down onto it again") \
+  X(pose_bounce_down, "pose_bounce", "...and down, on the tile the walk found") \
+  X(pose_bounce_again, "pose_bounce", "......which has bit 3, so a wait on it") \
   X(pose_bounce_waited, "pose_bounce_wait", "on it, between two bounces") \
+  X(pose_bounce_jumped, "pose_bounce_wait", "...or the wait over, and a jump off it") \
   X(pose_bounced_off, "pose_bounce_off", "off it, across the ground") \
+  X(pose_bounce_off_again, "pose_bounce_off", "...and down on a trampoline again") \
+  X(pose_bounce_off_down, "pose_bounce_off", "...or down on the ground") \
+  X(pose_bounce_lay, "pose_bounce_landed", "down beside it, a frame of the wait") \
+  X(pose_bounce_got_up, "pose_bounce_landed", "...or the wait over, and up") \
   X(pose_swim_waited, "pose_swim", "a frame of a picture's ten") \
   X(pose_swim_stroked, "pose_swim", "the next picture of the stroke") \
   X(pose_swim_wrapped, "pose_swim", "...which is the first again") \
@@ -2005,6 +2016,15 @@
   X(death_shown_a_list, "ts_death_shown", "...anyone else a list of pictures") \
   X(death_lives_left, "ts_death_counted", "a life gone and one left: health again, and flashing") \
   X(death_none_left, "ts_death_counted", "...or none left, which is the ROM's") \
+  X(spider_no_room, "ts_spider_enter", "a spider begun with no room for it: the thread ends") \
+  X(spider_entered, "ts_spider_enter", "...or with room, and a record asked for") \
+  X(spider_made, "ts_spider_made", "its record, a draw of its way, and the first sleep") \
+  X(walker_no_room, "ts_walker_enter", "a walker begun with no room for it: the thread ends") \
+  X(walker_entered, "ts_walker_enter", "...or with room, and a record asked for") \
+  X(walker_made, "ts_walker_made", "its record, and its first pictures asked for") \
+  X(walker_shown, "ts_walker_shown", "its handler, a draw of its way, and the first sleep") \
+  X(slimed, "ts_slimed", "a player caught in a slime's splash: covered, and a tick's sleep") \
+  X(slimed_rested, "ts_slimed_rested", "...and after it, what they hold put aside") \
   X(door_buzzing_already, "ts_door_buzz", "a locked door pushed while it buzzes: the new thread only ends") \
   X(door_buzz_begun, "ts_door_buzz", "...or it is not, and the first buzz") \
   X(seeker_land_heard, "ts_seeker_land", "the seeker landed where the sample set has its sound: sound $27") \

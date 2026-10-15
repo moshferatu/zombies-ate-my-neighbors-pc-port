@@ -152,6 +152,44 @@ static bool leap_in(Walk* k) {
   return true;
 }
 
+// `$80:E74F`: the trampoline.
+typedef enum {
+  TRAMPOLINE_SOLID,     // only solid ground
+  TRAMPOLINE_BOUNCED,   // the player is on it, and the walk goes on
+  TRAMPOLINE_NOT_OURS,  // a second in one frame, or a list we cannot read
+} Trampoline;
+
+static Trampoline trampoline(Walk* k) {
+  WalkReaction* did = reaction_met(k, WALK_REACTION_TRAMPOLINE);
+  if (field(k, WALK_TRAMPOLINE_DP_STATE) != 0) {
+    PORT_COVER(walk_trampoline_busy);
+    did->busy = true;
+    return TRAMPOLINE_SOLID;
+  }
+  if (!tile_search_supported(k->w, k->rom, k->page))
+    return TRAMPOLINE_NOT_OURS;
+  PortCpu c = {.d = k->page, .db = 0x80};
+  tile_search(k->w, k->rom, &c, &did->search);
+  if (!did->search.found) {
+    PORT_COVER(walk_trampoline_none);
+    overflow_left(k, (c.p & PORT_P_V) != 0);
+    return TRAMPOLINE_SOLID;
+  }
+  if (k->leapt) return TRAMPOLINE_NOT_OURS;
+  PORT_COVER(walk_trampoline_bounced);
+  k->leapt = true;
+  PoseLog scratch;
+  PoseLog* pose = k->log ? &k->log->bounce : &scratch;
+  *pose = (PoseLog){0};
+  pose_bounce_begin(k->w, k->rom, k->page, pose);
+  if (k->log) {
+    k->log->bounced = true;
+    k->log->last_yes = pose->c;
+  }
+  overflow_left(k, pose->v);
+  return TRAMPOLINE_BOUNCED;
+}
+
 // `$80:E8D3`: is the player at a door, and with something to open it? A
 // door they cannot open begins a thread. One they can is the ROM's: false.
 static bool door_stays_shut(Walk* k) {
@@ -272,6 +310,17 @@ static bool ground_is_solid(Walk* k, Point p) {
       }
       if (!leap_in(k)) break;
       return false;
+    case WALK_REACTION_TRAMPOLINE:
+      switch (trampoline(k)) {
+        case TRAMPOLINE_SOLID:
+          if (k->log) k->log->last_yes = true;
+          return true;
+        case TRAMPOLINE_BOUNCED:
+          return false;
+        case TRAMPOLINE_NOT_OURS:
+          break;
+      }
+      break;
     case WALK_REACTION_DOOR:
       if (door_stays_shut(k)) {
         if (k->log) k->log->last_yes = true;

@@ -273,6 +273,12 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**The trampoline, the slime's splash and level 17's starts, 2026-10-14.**
+The trampoline is ported but for its higher bounce, a player caught in a
+slime's splash is two thread stretches, and level 17's spider and walker
+begin in five. The places are 320 and the core executes 53,334
+instructions over the survey.
+
 **The bazooka and the big figures' starts, 2026-10-14.** Weapon 5's shot,
 the bazooka's, is ported but for two calls, and the starts of level 25's
 figure and level 21's saucer are thread stretches, with the upload both

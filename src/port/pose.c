@@ -63,6 +63,24 @@
 // frames in four, and the same for the fourth.
 #define POSE_OFF_STEPS 0xe1edu
 #define POSE_OFF_STEPS_FOURTH 0xe235u
+// The trampoline: how long a player waits on it, and the picture.
+#define POSE_BOUNCE_WAIT_TIMER 0x000a
+#define POSE_ARC_PICTURE_WAITING 0x0c
+// A jump off it wants a bounce of five, and it goes up at six. The point the
+// other player is asked about, by the way the pad is held, a word across and
+// a word down; and the two points looked at where it lands, by `$5A`.
+#define POSE_JUMP_SPEED 5
+#define POSE_JUMP_RISE 6
+#define POSE_JUMP_REACH 0xe06cu
+#define POSE_JUMP_LOOKS 0xe27du
+#define POSE_SFX_BOUNCE 0x001b
+// What the tile where it lands says. Bit 3 is another trampoline.
+#define POSE_TILE_TRAMPOLINE 0x0008u
+#define POSE_TILE_BIT0 0x0001u
+#define POSE_TILE_WATER 0x0100u
+// Down beside it: what can touch the player, a word by the player.
+#define POSE_LANDED_COLLIDE_IDS 0xe315u
+#define POSE_BUTTON_BIT7 0x0080u
 // The state in which the hand weapon is left as it is.
 #define POSE_STATE_KEEPS_WEAPON 0x000c
 // What `$18` holds through the `$6C` walk until its first step.
@@ -780,8 +798,99 @@ static void arc_ready(Pose* p) {
   set_field(p, POSE_DP_TIMER, POSE_ARC_READY_TIMER);
 }
 
+// `$80:DFAC`: onto the trampoline, from the walk.
+static void bounce_begin(Pose* p) {
+  PORT_COVER(pose_bounce_began);
+  set_field(p, PSN_DP_RESUME, POSE_HANDLER_BOUNCE);
+  set_field(p, POSE_DP_MOVE, 0);
+  PortCpu c = {.d = p->page, .db = POSE_BANK};
+  player_unhandled(p->w, &c);
+  set_field(p, POSE_DP_PICTURES, table_word(p, POSE_LEAP_PICTURES,
+                                            field(p, POSE_DP_PICTURES_ROW)));
+  set_field(p, POSE_DP_FRAMES, POSE_FRAMES_ARC);
+  set_field(p, POSE_DP_RISE, POSE_LEAP_RISE);
+  set_field(p, POSE_DP_LAUNCH, POSE_LEAP_RISE + 1);
+  set_field(p, POSE_DP_RISE_COUNT, 0);
+  set_field(p, POSE_DP_TIMER, POSE_LEAP_HOLD);
+  hide_weapon(p);
+  show_in_air(p, 0);
+}
+
+// `$80:E021`: on the trampoline, for ten frames. The buttons are kept at
+// `$4A`, which a jump off writes again before it reads.
+static void wait_begin(Pose* p) {
+  set_field(p, PSN_DP_RESUME, POSE_HANDLER_BOUNCE_WAIT);
+  set_field(p, POSE_DP_TIMER, POSE_BOUNCE_WAIT_TIMER);
+  set_field(p, POSE_DP_BOUNCE_WAY, field(p, PSN_DP_BUTTONS));
+  show_in_air(p, POSE_ARC_PICTURE_WAITING);
+}
+
+// `$80:E016`: down from a bounce, on the tile the walk found. Its bit 3 is
+// looked at by tile coordinates, as `$80:E855` divides them.
+static void bounce_down(Pose* p) {
+  PORT_COVER(pose_bounce_down);
+  p->log->bounce_down = true;
+  const uint16_t x = field(p, PLAYER_SPAN_DP_POINT_X);
+  const uint16_t y = field(p, PLAYER_SPAN_DP_POINT_Y);
+  set_field(p, STEP_DP_X, x);
+  set_field(p, STEP_DP_Y, y);
+  TerrainRegs tile;
+  terrain_tile_bit3(p->w, (uint16_t)(x >> 3), (uint16_t)(y >> 3), &tile);
+  if (tile.blocked) {
+    PORT_COVER(pose_bounce_again);
+    p->log->on_trampoline = true;
+    wait_begin(p);
+  } else {
+    stand_begin(p);
+  }
+}
+
+// One of a jump off's looks at where it lands: the attributes of the tile
+// the row of `POSE_JUMP_LOOKS` puts it at.
+static uint16_t jump_look(Pose* p, uint16_t row) {
+  const uint16_t y = (uint16_t)(table_word(p, POSE_JUMP_LOOKS + 2, row) +
+                                field(p, STEP_DP_Y));
+  const uint16_t x =
+      (uint16_t)(table_word(p, POSE_JUMP_LOOKS, row) + field(p, STEP_DP_X));
+  TileAttrsRegs tile;
+  tile_attrs_at_pixel(p->w, x, y, &tile);
+  p->log->tile_looks++;
+  return tile.a;
+}
+
+// `$80:E11B`: off the trampoline, the way at `$4A`.
+static void jump_off(Pose* p) {
+  ApuSfxRegs unused;
+  apu_play_sfx(p->w, POSE_SFX_BOUNCE, p->page, &unused);
+  set_field(p, PSN_DP_RESUME, POSE_HANDLER_BOUNCE_OFF);
+  set_field(p, POSE_DP_RISE, field(p, POSE_DP_LAUNCH));
+  PortCpu c = {.d = p->page, .db = POSE_BANK};
+  player_unhandled(p->w, &c);
+  player_untouchable(p->w, &c);
+  p->log->handlers_set++;
+  set_field(p, POSE_DP_RISE_COUNT, 0);
+
+  uint16_t row = (uint16_t)(field(p, POSE_DP_BOUNCE_WAY) << 2);
+  set_field(p, POSE_DP_OFF_ROW, row);
+  uint16_t tile = jump_look(p, row);
+  if (!(tile & POSE_TILE_TRAMPOLINE)) {
+    row = (uint16_t)(row + 4);
+    set_field(p, POSE_DP_OFF_ROW, row);
+    tile = jump_look(p, row);
+  }
+  if (tile & POSE_TILE_BIT0) {
+    p->log->off_bit0 = true;
+    if (!(tile & POSE_TILE_WATER)) {
+      leave_to_rom(p);  // another bounce, `$80:E090`
+      return;
+    }
+  }
+  PORT_COVER(pose_bounce_jumped);
+  set_field(p, POSE_DP_OFF_TILE, tile);
+  show_in_air(p, POSE_ARC_PICTURE_RISING);
+}
+
 // `$80:DFDA`: a bounce on the trampoline, straight up and down again.
-// Landing on it is the ROM's.
 static void bounce(Pose* p) {
   if (field(p, POSE_DP_TIMER) != 0) {
     p->log->waiting = true;
@@ -798,7 +907,7 @@ static void bounce(Pose* p) {
 
   const uint16_t height = wram_r16(p->w, (uint16_t)(record + ACTOR_Z));
   if (height == 0) {
-    leave_to_rom(p);
+    bounce_down(p);
     return;
   }
   if (negative(field(p, POSE_DP_RISE))) {
@@ -819,19 +928,60 @@ static void bounce(Pose* p) {
   show_in_air(p, POSE_ARC_PICTURE_RISING);
 }
 
-// `$80:E035`: on the trampoline, until the timer runs out. What it does
-// then, which is look for where to bounce to, is the ROM's.
+// `$80:E035`: on the trampoline, until the timer runs out. Then a jump off
+// it, the way the pad is held. The bounce that is not a jump off is the
+// ROM's.
 static void bounce_wait(Pose* p) {
-  if (field(p, POSE_DP_TIMER) == 0) {
+  if (field(p, POSE_DP_TIMER) != 0) {
+    PORT_COVER(pose_bounce_waited);
+    p->log->waiting = true;
+    return;
+  }
+  const uint16_t way = field(p, PSN_DP_DIR);
+  if (field(p, POSE_DP_LAUNCH) < POSE_JUMP_SPEED || way == 0) {
     leave_to_rom(p);
     return;
   }
-  PORT_COVER(pose_bounce_waited);
-  p->log->waiting = true;
+  const uint16_t reach = (uint16_t)(way << 1);
+  const uint16_t y = (uint16_t)(table_word(p, POSE_JUMP_REACH + 2, reach) +
+                                field(p, STEP_DP_Y));
+  const uint16_t x =
+      (uint16_t)(table_word(p, POSE_JUMP_REACH, reach) + field(p, STEP_DP_X));
+  partner_near(p->w, field(p, POSE_DP_RECORD), x, y, &p->log->partner);
+  if (!p->log->partner.c) {
+    leave_to_rom(p);  // too far from the other player
+    return;
+  }
+  p->log->jumped_off = true;
+  set_field(p, POSE_DP_BOUNCE_WAY, way);
+  set_field(p, POSE_DP_LAUNCH, POSE_JUMP_RISE);
+  jump_off(p);
+}
+
+// `$80:E1D2`: down from a jump off it.
+static void off_down(Pose* p) {
+  p->log->off_down = true;
+  if (field(p, POSE_DP_OFF_TILE) & POSE_TILE_TRAMPOLINE) {
+    PORT_COVER(pose_bounce_off_again);
+    p->log->off_again = true;
+    set_field(p, POSE_DP_BOUNCE_WAY, 0);
+    set_field(p, POSE_DP_LAUNCH, POSE_JUMP_RISE);
+    set_field(p, PSN_DP_BUTTONS,
+              (uint16_t)(field(p, PSN_DP_BUTTONS) | POSE_BUTTON_BIT7));
+    wait_begin(p);
+    return;
+  }
+  // `$80:E2C5`, on the ground.
+  PORT_COVER(pose_bounce_off_down);
+  set_field(p, PSN_DP_RESUME, POSE_HANDLER_BOUNCE_LANDED);
+  wram_w16(p->w, (uint16_t)(field(p, POSE_DP_RECORD) + ACTOR_COLLIDE_ID),
+           table_word(p, POSE_LANDED_COLLIDE_IDS,
+                      field(p, PLAYER_SMALL_DP_NUMBER)));
+  show_in_air(p, 0);
 }
 
 // `$80:E180`: off the trampoline and across the ground, by the row's step
-// for this frame. Landing is the ROM's.
+// for this frame.
 static void bounce_off(Pose* p) {
   rise(p);
   const uint16_t row = field(p, POSE_DP_OFF_ROW);
@@ -850,13 +1000,40 @@ static void bounce_off(Pose* p) {
   wram_w16(p->w, (uint16_t)(record + ACTOR_Y), y);
 
   if (wram_r16(p->w, (uint16_t)(record + ACTOR_Z)) == 0) {
-    leave_to_rom(p);
+    off_down(p);
     return;
   }
   PORT_COVER(pose_bounced_off);
   p->log->arc_falling = negative(field(p, POSE_DP_RISE));
   show_in_air(p, p->log->arc_falling ? POSE_ARC_PICTURE_FALLING
                                      : POSE_ARC_PICTURE_RISING);
+}
+
+// `$80:E2DA`: down beside the trampoline until the timer runs out.
+static void bounce_landed(Pose* p) {
+  if (field(p, POSE_DP_TIMER) != 0) {
+    PORT_COVER(pose_bounce_lay);
+    p->log->waiting = true;
+    return;
+  }
+  // The collide id is a table's, by the player; and the water is the ROM's.
+  if (field(p, PLAYER_SMALL_DP_NUMBER) >= 4 ||
+      (field(p, POSE_DP_OFF_TILE) & POSE_TILE_WATER)) {
+    leave_to_rom(p);
+    return;
+  }
+  PORT_COVER(pose_bounce_got_up);
+  p->log->got_up = true;
+  PortCpu c = {.d = p->page, .db = POSE_BANK};
+  player_touchable(p->w, p->rom, &c);
+  player_handled(p->w, &c);
+  p->log->handlers_set++;
+  const uint16_t record = field(p, POSE_DP_RECORD);
+  wram_w16(p->w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(p->w, (uint16_t)(record + ACTOR_FLAGS)) &
+                      ~ACTOR_PRIORITY_TOP));
+  set_field(p, POSE_DP_STATE, 0);
+  start_again(p);
 }
 
 // ---------------------------------------------------------------------------
@@ -949,6 +1126,15 @@ void pose_bounce_off(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(bounce_off, w, rom, page, log);
 }
 
+void pose_bounce_landed(Wram* w, const Rom* rom, uint16_t page,
+                        PoseLog* log) {
+  run(bounce_landed, w, rom, page, log);
+}
+
+void pose_bounce_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
+  run(bounce_begin, w, rom, page, log);
+}
+
 void pose_swim(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(swim, w, rom, page, log);
 }
@@ -1010,6 +1196,9 @@ bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler) {
     case POSE_HANDLER_BOUNCE: run(bounce, w, rom, page, &log); break;
     case POSE_HANDLER_BOUNCE_WAIT: run(bounce_wait, w, rom, page, &log); break;
     case POSE_HANDLER_BOUNCE_OFF: run(bounce_off, w, rom, page, &log); break;
+    case POSE_HANDLER_BOUNCE_LANDED:
+      run(bounce_landed, w, rom, page, &log);
+      break;
     case POSE_HANDLER_SWIM: run(swim, w, rom, page, &log); break;
     default: return false;
   }
