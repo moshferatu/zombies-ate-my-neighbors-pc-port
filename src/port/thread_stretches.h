@@ -89,6 +89,42 @@
 // stretch that ran on through it would silence that, and nothing here would
 // notice. So the one before stops there, and this one begins there.
 //
+// ## The chainsaw maniac's start, `$81:983A`
+//
+// See `port/chainsaw.h`. Its weight on the level's load, seven passes to its
+// first picture, and a record asked for. Then:
+//
+//   $81:9733  its place kept, in pixels and in quarters of one, a quarter
+//             turn to the right, its picture, its record drawn, its
+//             attributes, health of 151, no saw, and the state that wanders
+//   $81:9854  its entry in the level's list marked
+//   $81:985A  its sound if the level has no samples of its own, and its
+//             first pictures
+//   $81:9820  ...which come back here after the sound
+//   $81:9827  what can touch it, and its handler
+//   $81:986F  the first sleep
+//
+// ## A player stung, `$80:F9D0`
+//
+// See `port/collide.h`: what touches a player with id `$0A` gives them this
+// to do next. With no health they only return. Otherwise:
+//
+//   $80:F9D0  a point of health gone, and sound `$19`
+//   $80:F9E2  a picture by the way they face, and they are no longer told
+//             what touches them
+//   $80:F9F2  ...and nothing can, for 75 ticks
+//
+// ## A footballer sent off, `$81:C6D9`
+//
+// See `port/football.h`. Back from its pictures, its handler gives it the
+// state for its next pass and returns.
+//
+// ## An ant's flash, `$81:BAEC`
+//
+// What hits an ant on level 45 puts a call to this in its thread, at its
+// next waking: its attributes `$0C00` for two ticks, and nothing after, and
+// back to where the thread was.
+//
 // ## The walk's square, `$82:F6EB`
 //
 // See `port/walk.h`: the walk begins this thread for a square of 64 pixels
@@ -378,7 +414,7 @@ typedef struct {
   uint16_t value;
 } ThreadArgument;
 
-#define THREAD_ARGUMENT_COUNT 17
+#define THREAD_ARGUMENT_COUNT 37
 extern const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT];
 
 // `LDA #value : STA at`, on the thread's page, and the `RTS` after.
@@ -397,7 +433,7 @@ typedef struct {
   uint16_t a, y;
 } ThreadPair;
 
-#define THREAD_PAIR_COUNT 3
+#define THREAD_PAIR_COUNT 6
 extern const ThreadPair THREAD_PAIRS[THREAD_PAIR_COUNT];
 
 // --- the weed ----------------------------------------------------------------
@@ -811,6 +847,70 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define CREEPER_COLLIDE_ID 0x0003
 #define CREEPER_ATTR 0x0c00
 
+// --- the chainsaw maniac's start ----------------------------------------------
+
+#define CHAINSAW_ENTER_PC 0x81983au
+#define CHAINSAW_RECORD_CALL_PC 0x81972fu   // `JSL record_begin`
+#define CHAINSAW_MADE_PC 0x819733u
+#define CHAINSAW_MADE_RETURN 0x984bu        // `JSR $972F`'s
+#define CHAINSAW_WANDER_CALL_PC 0x819215u   // `setter_819215`
+#define CHAINSAW_SET_PC 0x819854u
+#define CHAINSAW_MARK_CALL_PC 0x819856u     // `JSL $81:8191`
+#define CHAINSAW_MARKED_PC 0x81985au
+#define CHAINSAW_SOUND_CALL_PC 0x81981cu    // `JSL apu_play_sfx`
+#define CHAINSAW_PICTURES_PC 0x819820u
+#define CHAINSAW_PICTURES_CALL_PC 0x819823u // `JSL $81:832C`
+#define CHAINSAW_SHOWN_PC 0x819827u
+#define CHAINSAW_SHOWN_RETURN 0x985cu       // `JSR $9811`'s
+#define CHAINSAW_HANDLER_CALL_PC 0x81986bu  // `JSL thread_set_handler`
+#define CHAINSAW_HANDLED_PC 0x81986fu
+#define CHAINSAW_LOAD 0x001c
+#define CHAINSAW_FIRST_PICTURE_WAIT 0x0007
+#define CHAINSAW_START_TURN 0x0004
+#define CHAINSAW_START_WAY 0x0004
+#define CHAINSAW_PICTURE 0xc5f3u
+#define CHAINSAW_START_PICTURE_BANK 0x0090
+#define CHAINSAW_ATTR 0x0c00
+#define CHAINSAW_HEALTH 0x0097
+#define CHAINSAW_DP_4A 0x4a                 // set to fifteen; its use I have not read
+#define CHAINSAW_4A 0x000f
+#define CHAINSAW_DP_KILLER 0x2e             // who hit it last
+#define CHAINSAW_DP_7E 0x7e
+#define CHAINSAW_SOUND 0x002a
+#define CHAINSAW_FIRST_PICTURES 0x9828u
+#define CHAINSAW_COLLIDE_ID 0x0003
+#define CHAINSAW_HANDLER 0x990bu
+#define CHAINSAW_HANDLER_BANK 0x0081
+#define CHAINSAW_DP_LIST 0x06               // its entry in the level's list
+
+// --- a player stung, and an ant's flash ---------------------------------------
+
+#define STUNG_PC 0x80f9d0u
+#define STUNG_SPARED_PC 0x80f9cfu        // the `RTS`, with no health to take
+#define STUNG_SOUND_CALL_PC 0x80f9deu    // `JSL apu_play_sfx`
+#define STUNG_HEARD_PC 0x80f9e2u
+#define STUNG_UNHANDLED_PC 0x80f36cu     // `player_unhandled`
+#define STUNG_HEARD_RETURN 0xf9eeu       // its `JSR`'s
+#define STUNG_HELD_PC 0x80f9f2u
+#define STUNG_YIELD_PC 0x80f9f5u
+#define STUNG_SOUND 0x0019
+#define STUNG_TICKS 0x004b
+#define STUNG_PICTURES 0x80fa02u         // a word for each way, by `$0C`
+#define STUNG_DP_PLAYER 0x0e             // which player, doubled
+#define STUNG_DP_WAY 0x0c
+#define STUNG_DP_RECORD 0x08
+
+#define FOOTBALLER_OFF_PICTURED_PC 0x81c6d9u
+#define FOOTBALLER_OFF_RTS_PC 0x81c6f1u
+
+#define ANT_FLASH_PC 0x81baecu
+#define ANT_FLASH_YIELD_PC 0x81baf7u
+#define ANT_FLASHED_PC 0x81bafbu
+#define ANT_FLASHED_RTL_PC 0x81bb04u
+#define ANT_FLASH_ATTR 0x0c00
+#define ANT_FLASH_TICKS 0x0002
+#define ANT_DP_RECORD 0x08
+
 // --- a player caught in a slime's splash ---------------------------------------
 
 #define SLIMED_PC 0x80dc1eu
@@ -1192,12 +1292,24 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_WALKER_DRAW, 0x81d5d9, 0x81d5dd, 0)   /* JSL rng_next */ \
   X(TS_WALKER_WAY, 0x81d5dd, 0x81d5ef, 0)    /* and $81:D5E9, the RTS too */ \
   X(TS_WALKER_FIRST, 0x81d71a, 0x81d71f, 0) \
+  X(TS_CHAINSAW_ENTER, 0x81983a, 0x81984c, 0)  /* the JSR too */ \
+  X(TS_CHAINSAW_MADE, 0x819733, 0x81977d, 0)   /* the RTS too */ \
+  X(TS_CHAINSAW_WAYS, 0x81984c, 0x819854, 0)   /* the JSR too */ \
+  X(TS_CHAINSAW_SOUND_TEST, 0x819811, 0x819819, 0) \
+  X(TS_CHAINSAW_HANDLER, 0x81985d, 0x81986b, 0) \
+  X(TS_CHAINSAW_FIRST, 0x81986f, 0x819874, 0) \
   X(TS_RNG_ONCE, 0x809d39, 0x809d5b, 0)      /* rng_next, a BVC taken */ \
   X(TS_RNG_TWICE, 0x809d39, 0x809d5b, 0)     /* ...or not */ \
   X(TS_SLIMED, 0x80dc1e, 0x80dc64, 0)        /* the JSR too */ \
   X(TS_SLIMED_REST, 0x80f354, 0x80f35c, 0) \
   X(TS_SLIMED_RESTED, 0x80f360, 0x80f366, 0)  /* the RTS too */ \
   X(TS_SLIMED_HANDS, 0x80dc64, 0x80dc70, 0)  /* JSR $F38D : JMP $D4F4 */ \
+  X(TS_STUNG, 0x80f9d0, 0x80f9d7, 0)         /* LDX $0E : LDA $1CB8,X : BEQ */ \
+  X(TS_STUNG_HURT, 0x80f9d7, 0x80f9de, 0) \
+  X(TS_STUNG_SHOWN, 0x80f9e2, 0x80f9ef, 0)   /* the JSR too */ \
+  X(TS_ANT_FLASH, 0x81baec, 0x81baf7, 0) \
+  X(TS_FOOTBALLER_OFF, 0x81c6ec, 0x81c6f1, 0)  /* LDA # : STA $0A */ \
+  X(TS_ANT_FLASHED, 0x81bafb, 0x81bb04, 0) \
   X(TS_HANDS_SWAP, 0x80f38d, 0x80f3a5, 0)    /* the RTS too */ \
   X(TS_DOOR_ASK, 0x82defb, 0x82df00, 0)      /* LDA abs : BNE */ \
   X(TS_DOOR_BUZZ, 0x82df00, 0x82df06, 0) \
@@ -1300,6 +1412,10 @@ typedef enum {
   TS_NEEDS_SPIDER_MADE,    // a record in A, and the start's `JSR` to return to
   TS_NEEDS_WALKER_MADE,    // likewise
   TS_NEEDS_WALKER_SHOWN,   // the start's `JSR` to return to
+  TS_NEEDS_CHAINSAW_MADE,  // a record on the page, and the start's `JSR`
+  TS_NEEDS_STUNG,          // which player, and their record
+  TS_NEEDS_STUNG_SHOWN,    // ...and a way the table has, read through `$80`
+  TS_NEEDS_CHAINSAW_SHOWN, // ...and the start's other `JSR`
 } ThreadStretchNeeds;
 
 bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
@@ -1418,11 +1534,24 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(argument_door_c, "$82:DF18", 0x82df18u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(slimed, "$80:DC1E", SLIMED_PC, slimed, SLIMED, TS_NEEDS_SLIMED) \
   X(slimed_rested, "$80:F360", SLIMED_RESTED_PC, slimed_rested, SLIMED, TS_NEEDS_SLIMED_RESTED) \
+  X(stung, "$80:F9D0", STUNG_PC, stung, STUNG, TS_NEEDS_STUNG) \
+  X(stung_heard, "$80:F9E2", STUNG_HEARD_PC, stung_heard, STUNG, TS_NEEDS_STUNG_SHOWN) \
+  X(stung_held, "$80:F9F2", STUNG_HELD_PC, stung_held, STUNG, TS_NEEDS_NOTHING) \
+  X(footballer_off_pictured, "$81:C6D9", FOOTBALLER_OFF_PICTURED_PC, footballer_off_pictured, FOOTBALLER_OFF, TS_NEEDS_NOTHING) \
+  X(ant_flash, "$81:BAEC", ANT_FLASH_PC, ant_flash, ANT_FLASH, TS_NEEDS_RECORD) \
+  X(ant_flashed, "$81:BAFB", ANT_FLASHED_PC, ant_flashed, ANT_FLASH, TS_NEEDS_RECORD) \
   X(spider_enter, "$83:B27B", SPIDER_ENTER_PC, spider_enter, SPIDER, TS_NEEDS_NOTHING) \
   X(spider_made, "$83:B34A", SPIDER_MADE_PC, spider_made, SPIDER, TS_NEEDS_SPIDER_MADE) \
   X(walker_enter, "$81:D708", WALKER_ENTER_PC, walker_enter, WALKER, TS_NEEDS_NOTHING) \
   X(walker_made, "$81:D691", WALKER_MADE_PC, walker_made, WALKER, TS_NEEDS_WALKER_MADE) \
   X(walker_shown, "$81:D6E5", WALKER_SHOWN_PC, walker_shown, WALKER, TS_NEEDS_WALKER_SHOWN) \
+  X(chainsaw_enter, "$81:983A", CHAINSAW_ENTER_PC, chainsaw_enter, CHAINSAW, TS_NEEDS_NOTHING) \
+  X(chainsaw_made, "$81:9733", CHAINSAW_MADE_PC, chainsaw_made, CHAINSAW, TS_NEEDS_CHAINSAW_MADE) \
+  X(chainsaw_set, "$81:9854", CHAINSAW_SET_PC, chainsaw_set, CHAINSAW, TS_NEEDS_NOTHING) \
+  X(chainsaw_marked, "$81:985A", CHAINSAW_MARKED_PC, chainsaw_marked, CHAINSAW, TS_NEEDS_NOTHING) \
+  X(chainsaw_heard, "$81:9820", CHAINSAW_PICTURES_PC, chainsaw_heard, CHAINSAW, TS_NEEDS_NOTHING) \
+  X(chainsaw_shown, "$81:9827", CHAINSAW_SHOWN_PC, chainsaw_shown, CHAINSAW, TS_NEEDS_CHAINSAW_SHOWN) \
+  X(chainsaw_handled, "$81:986F", CHAINSAW_HANDLED_PC, chainsaw_handled, CHAINSAW, TS_NEEDS_NOTHING) \
   X(door_buzz, "$82:DEFB", DOOR_BUZZ_PC, door_buzz, DOOR, TS_NEEDS_NOTHING) \
   X(door_buzzed, "$82:DF1F", DOOR_BUZZED_PC, door_buzzed, DOOR, TS_NEEDS_NOTHING) \
   X(slime_enter, "$81:CCCF", SLIME_ENTER_PC, slime_enter, SLIME, TS_NEEDS_NOTHING) \
@@ -1447,6 +1576,29 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(pulse_enter, "$80:A0EF", PALCYCLE_PULSE_ENTER_PC, pulse_enter, PULSE, TS_NEEDS_NOTHING) \
   X(argument_figure_queued, "$82:950A", 0x82950au, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_82a871, "$82:A871", 0x82a871u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_8085bb, "$80:85BB", 0x8085bbu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_8085c2, "$80:85C2", 0x8085c2u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_80ea16, "$80:EA16", 0x80ea16u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_80ef7b, "$80:EF7B", 0x80ef7bu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_80ef88, "$80:EF88", 0x80ef88u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_80efa3, "$80:EFA3", 0x80efa3u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_80efb2, "$80:EFB2", 0x80efb2u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_81843b, "$81:843B", 0x81843bu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_81a471, "$81:A471", 0x81a471u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_81c6d2, "$81:C6D2", 0x81c6d2u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_81e500, "$81:E500", 0x81e500u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_81e593, "$81:E593", 0x81e593u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_81e8ba, "$81:E8BA", 0x81e8bau, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_81f1e6, "$81:F1E6", 0x81f1e6u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_81f9ab, "$81:F9AB", 0x81f9abu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_82ef0b, "$82:EF0B", 0x82ef0bu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_82f279, "$82:F279", 0x82f279u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_82f606, "$82:F606", 0x82f606u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_82f760, "$82:F760", 0x82f760u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_82f918, "$82:F918", 0x82f918u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(pair_80815f, "$80:815F", 0x80815fu, thread_pair, PAIR, TS_NEEDS_NOTHING) \
+  X(pair_81f252, "$81:F252", 0x81f252u, thread_pair, PAIR, TS_NEEDS_NOTHING) \
+  X(pair_82f91f, "$82:F91F", 0x82f91fu, thread_pair, PAIR, TS_NEEDS_NOTHING) \
   X(figure_enter, "$82:9569", FIGURE_ENTER_PC, figure_enter, FIGURE, TS_NEEDS_NOTHING) \
   X(figure_coloured, "$82:94EE", FIGURE_COLOURED_PC, figure_coloured, FIGURE, TS_NEEDS_NOTHING) \
   X(figure_waited, "$82:9511", FIGURE_WAITED_PC, figure_waited, FIGURE, TS_NEEDS_NOTHING) \

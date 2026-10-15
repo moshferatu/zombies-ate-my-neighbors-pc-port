@@ -8,21 +8,27 @@
 //   $81:AC1E  werewolf_frame
 //
 // What is here is the running, the choosing of where a pounce is to come
-// down, the passes of a strike, the crouch before a pounce and its flight.
-// What is not is the landing after it, which sleeps in the middle, and the
-// thread's end. A pass in that state is the ROM's. So is one that only
-// running it finds, which `WerewolfLog::declined` says and a guard asks of a
-// scratch copy first: one with nobody on the level to run at.
+// down, the passes of a strike, the crouch before a pounce, its flight and
+// its landing. What is not is the thread's end. A pass that only running it
+// finds is the ROM's, which `WerewolfLog::declined` says and a guard asks of
+// a scratch copy first: one with nobody on the level to run at.
 //
-// **Two passes stop in the middle**, with the loop's return on the stack:
+// **Three passes stop in the middle**, with the loop's return on the stack:
 //
 //   $81:AAFE  the last of a strike, at the `JSL` that gives the blow's
 //             record back
 //   $81:A9AB  a crouch, at the `JSL` that shows its three pictures, which
 //             sleeps
+//   $81:AA83  a landing, at the `JSL` that shows its pictures, which sleeps
 //
-// What comes after each, and the thread's start, are stretches of
-// `port/thread_stretches.h`.
+// After the landing's pictures:
+//
+//   $81:AA87  werewolf_landed_wake  beside its target it strikes, and the
+//                                   pass ends. Otherwise it rests one to
+//                                   sixteen ticks, by a draw
+//
+// What comes after the rest and the other two, and the thread's start, are
+// stretches of `port/thread_stretches.h`.
 //
 // ## What it does
 //
@@ -83,6 +89,12 @@
 #define WEREWOLF_STRIKE_FREE_PC 0x81aafeu  // `JSL actor_slot_free`, the blow in A
 #define WEREWOLF_CROUCH_LIST_PC 0x81a9abu  // `JSL pictures_play`, the list in A
 #define WEREWOLF_CROUCH_PICTURES 0xa9b3u
+#define WEREWOLF_LANDED_LIST_PC 0x81aa83u  // `JSL pictures_resume`, the list in A
+#define WEREWOLF_LANDED_PICTURES 0xaa9eu
+#define WEREWOLF_LANDED_WAKE_PC 0x81aa87u
+#define WEREWOLF_REST_YIELD_PC 0x81aa97u   // `JSL thread_yield`, the ticks in A
+#define WEREWOLF_LANDED_CLEARS 0x0008u     // of its record's flags
+#define WEREWOLF_LANDED_ID 0x0003
 // What the loop's `PEA` leaves for a body's `RTS`.
 #define WEREWOLF_LOOP_RETURN 0xac25u
 
@@ -91,7 +103,6 @@
 #define WEREWOLF_STATE_STRIKE 0xaacfu
 #define WEREWOLF_STATE_FLIGHT 0xa9f0u
 #define WEREWOLF_STATE_CROUCH 0xa994u
-// ...and one the port only names.
 #define WEREWOLF_STATE_LANDED 0xaa71u
 
 // Fields on its page.
@@ -181,6 +192,8 @@ typedef enum {
   WEREWOLF_STOP_PASS,         // at its end
   WEREWOLF_STOP_STRIKE_OVER,  // `$81:AAFE`
   WEREWOLF_STOP_CROUCH,       // `$81:A9AB`
+  WEREWOLF_STOP_LANDED,       // `$81:AA83`
+  WEREWOLF_STOP_REST,         // `$81:AA97`, with the ticks in `a`
 } WerewolfStop;
 
 typedef enum {
@@ -257,6 +270,12 @@ bool werewolf_frame_supported(const Wram* w, uint16_t page);
 // One pass, for the creature whose page is `page`. `log` may be NULL, and
 // `log->declined` says the pass is the ROM's after all. WRAM is then part
 // written.
+// `$81:AA87`. `carry` and `overflow` are the thread's own. Its target has
+// to be a record: `werewolf_landed_wake_supported` only looks.
+bool werewolf_landed_wake_supported(const Wram* w, uint16_t page);
+WerewolfFate werewolf_landed_wake(Wram* w, const Rom* rom, uint16_t page,
+                                  bool carry, bool overflow, WerewolfLog* log);
+
 WerewolfFate werewolf_frame(Wram* w, const Rom* rom, uint16_t page,
                           WerewolfLog* log);
 

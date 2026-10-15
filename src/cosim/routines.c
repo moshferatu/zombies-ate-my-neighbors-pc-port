@@ -119,6 +119,8 @@
 #include "port/zombie.h"
 #include "port/terrain.h"
 #include "port/clears.h"
+#include "port/game_over.h"
+#include "port/demo_thread.h"
 #include "port/textmap.h"
 #include "port/thread.h"
 #include "port/tile_put.h"
@@ -6272,8 +6274,30 @@ static void shim_game_clear_page(Wram* w, const Rom* rom, const CosimRegs* in,
                      GAME_CLEAR_VARS_PC);
 }
 
+// The third. The copy writes a byte a turn, from the second byte on, and an
+// interrupt is taken between turns: the hold word's bytes are each written
+// at the end of the turn that reaches them.
+static void shim_game_clear_vars(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)rom;
+  game_clear_stretch(w, in, out, GAME_CLEAR_VARS, 0x00, &GAME_CLEAR_LOW_HEAD,
+                     GAME_CLEAR_RTL_PC);
+  const bool fast = fetch_fast(in);
+  for (int i = 0; i < 2; i++) {
+    const uint32_t turns = W_RNG_HOLD + (uint32_t)i - GAME_CLEAR_VARS.first;
+    cosim_commit_due(i, cosim_run_cycles(&GAME_CLEAR_LOW_HEAD, fast) +
+                            (int)turns *
+                                cosim_run_cycles(&RESET_MOVE_BYTE, fast));
+  }
+}
+
 static const uint32_t GAME_CLEAR_HIGH_EXITS[] = {GAME_CLEAR_PAGE_PC};
 static const uint32_t GAME_CLEAR_PAGE_EXITS[] = {GAME_CLEAR_VARS_PC};
+static const uint32_t GAME_CLEAR_VARS_EXITS[] = {GAME_CLEAR_RTL_PC};
+static const CosimCommitSpan GAME_CLEAR_VARS_COMMIT[] = {
+    {W_RNG_HOLD, 1, false},
+    {W_RNG_HOLD + 1, 1, false},
+};
 
 static bool accepts_wide(const Wram* w, const CosimRegs* in) {
   (void)w;
@@ -8923,6 +8947,18 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_WALKER_DRAW] = {54, 4, 0},
     [TS_WALKER_WAY] = {198, 18, 2},
     [TS_WALKER_FIRST] = {46, 5, 1},
+    [TS_STUNG] = {80, 7, 1},
+    [TS_STUNG_HURT] = {70, 7, 0},
+    [TS_STUNG_SHOWN] = {172, 15, 2},
+    [TS_ANT_FLASH] = {104, 11, 1},
+    [TS_ANT_FLASHED] = {98, 9, 1},
+    [TS_FOOTBALLER_OFF] = {46, 5, 1},
+    [TS_CHAINSAW_ENTER] = {184, 18, 1},
+    [TS_CHAINSAW_MADE] = {888, 74, 18},
+    [TS_CHAINSAW_WAYS] = {86, 8, 1},
+    [TS_CHAINSAW_SOUND_TEST] = {64, 8, 0},
+    [TS_CHAINSAW_HANDLER] = {122, 14, 1},
+    [TS_CHAINSAW_FIRST] = {46, 5, 1},
     // `rng_cycles`'s two.
     [TS_RNG_ONCE] = {338, 31, 0},
     [TS_RNG_TWICE] = {372, 34, 0},
@@ -8970,7 +9006,7 @@ THREAD_STRETCHES(X)
 static const uint32_t TS_EXITS_ARGUMENT[] = {
     0x81d186u, 0x81d1b0u, 0x81d1dau, 0x82f4b4u, 0x808519u, 0x8199c5u,
     0x80d06cu, 0x81ec75u, 0x81f311u, 0x82e0b7u, 0x81e8c4u, 0x82df0du,
-    0x82df14u, 0x82df1bu, 0x82ec5du, 0x82950du, 0x82a874u};
+    0x82df14u, 0x82df1bu, 0x82ec5du, 0x82950du, 0x82a874u, 0x8085beu, 0x8085c5u, 0x80ea19u, 0x80ef7eu, 0x80ef8bu, 0x80efa6u, 0x80efb5u, 0x81843eu, 0x81a474u, 0x81c6d5u, 0x81e503u, 0x81e596u, 0x81e8bdu, 0x81f1e9u, 0x81f9aeu, 0x82ef0eu, 0x82f27cu, 0x82f609u, 0x82f763u, 0x82f91bu};
 static const uint32_t TS_EXITS_SETTER[] = {0x81921au, 0x819255u};
 static const uint32_t TS_EXITS_WOLF[] = {
     WEREWOLF_NONE_PC, WEREWOLF_HOWL_CHECK_PC, WEREWOLF_HOWL_CALL_PC,
@@ -8983,7 +9019,7 @@ static const uint32_t TS_EXITS_SMALL[] = {PAGE_CLEAR_RTS_PC, PAGE_PULL_RTL_PC,
 static const uint32_t TS_EXITS_PLAYER_HIT[] = {PLAYER_HIT_SHOW_CALL_PC,
                                                PLAYER_HIT_SHOWN_CALL_PC,
                                                FLASHING_END_CALL_PC};
-static const uint32_t TS_EXITS_PAIR[] = {0x8085d9u, 0x819b36u, 0x80c2e4u};
+static const uint32_t TS_EXITS_PAIR[] = {0x8085d9u, 0x819b36u, 0x80c2e4u, 0x808165u, 0x81f258u, 0x82f925u};
 static const uint32_t TS_EXITS_LEAP[] = {LEAP_SPLASH_CALL_PC};
 static const uint32_t TS_EXITS_STAGGER[] = {
     STAGGER_SPIN_YIELD_PC, STAGGER_SHOWN_CALL_PC, STAGGER_DAZE_CALL_PC,
@@ -9033,6 +9069,15 @@ static const uint32_t TS_EXITS_SPIDER[] = {SPIDER_NO_ROOM_PC, SPIDER_ALLOC_PC,
 static const uint32_t TS_EXITS_WALKER[] = {
     WALKER_NO_ROOM_PC, WALKER_ALLOC_PC, WALKER_PICTURES_CALL_PC,
     WALKER_SLEEP_PC};
+static const uint32_t TS_EXITS_STUNG[] = {
+    STUNG_SPARED_PC, STUNG_SOUND_CALL_PC, STUNG_UNHANDLED_PC, STUNG_YIELD_PC};
+static const uint32_t TS_EXITS_ANT_FLASH[] = {ANT_FLASH_YIELD_PC,
+                                              ANT_FLASHED_RTL_PC};
+static const uint32_t TS_EXITS_FOOTBALLER_OFF[] = {FOOTBALLER_OFF_RTS_PC};
+static const uint32_t TS_EXITS_CHAINSAW[] = {
+    CHAINSAW_RECORD_CALL_PC, CHAINSAW_WANDER_CALL_PC, CHAINSAW_MARK_CALL_PC,
+    CHAINSAW_SOUND_CALL_PC, CHAINSAW_PICTURES_CALL_PC, CHAINSAW_HANDLER_CALL_PC,
+    CHAINSAW_YIELD_PC};
 static const uint32_t TS_EXITS_SLIME[] = {SLIME_BEGIN_CALL_PC, SLIME_DRAW_PC,
                                           SLIME_FIRST_YIELD_PC};
 static const uint32_t TS_EXITS_SEEKER[] = {
@@ -14417,6 +14462,45 @@ static void shim_chainsaw_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 static const uint32_t CHAINSAW_FRAME_EXITS[] = {
     CHAINSAW_YIELD_PC, CHAINSAW_DEAD_PC, CHAINSAW_SWING_YIELD_PC};
 
+// `$81:9878` in the cut's state.
+static bool accepts_chainsaw_cut_pass(const Wram* w, const CosimRegs* in) {
+  return chainsaw_page_ok(w, in) &&
+         wram_r16(w, (uint16_t)(in->d + CHAINSAW_DP_STATE)) ==
+             CHAINSAW_STATE_CUT;
+}
+
+static void shim_chainsaw_cut_pass(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  chainsaw_cut_pass(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&CHAINSAW_RUN_ENTER, fetch_fast(in),
+                                 (in->d & 0x00ffu) != 0));
+}
+
+static const uint32_t CHAINSAW_CUT_PASS_EXITS[] = {
+    (CHAINSAW_BANK << 16) | CHAINSAW_STATE_CUT};
+
+// `$81:9880`: what is left of a pass the ROM's state body took.
+static bool accepts_chainsaw_pass_shown(const Wram* w, const CosimRegs* in) {
+  return chainsaw_page_ok(w, in) && chainsaw_pass_shown_supported(w, in->d);
+}
+
+static void shim_chainsaw_pass_shown(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  ChainsawLog log;
+  const bool stays =
+      chainsaw_pass_shown(w, rom, in->d, (in->p & PORT_P_C) != 0,
+                          (in->p & PORT_P_V) != 0, &log) == CHAINSAW_SLEEPS;
+  ChainsawBill b = {{0, 0, 0}, 0, &log, in};
+  chainsaw_pass_end(&b, w, stays, out);
+}
+
+static const uint32_t CHAINSAW_PASS_SHOWN_EXITS[] = {CHAINSAW_YIELD_PC,
+                                                     CHAINSAW_DEAD_PC};
+
 // `$81:9598`: where a swing wakes.
 static bool accepts_chainsaw_swing_next(const Wram* w, const CosimRegs* in) {
   return chainsaw_page_ok(w, in) && cur_task_ok(w) &&
@@ -15980,6 +16064,8 @@ static const CosimRun WEREWOLF_RUN_LAND_GAP = {120, 10, 2};  // $AA0C-$AA15, to 
 static const CosimRun WEREWOLF_RUN_LAND_BESIDE = {272, 27, 5};  // $AA1F-$AA35
 static const CosimRun WEREWOLF_RUN_LAND_PLACE = {238, 19, 5};  // $AA36-$AA48, the JMP too
 static const CosimRun WEREWOLF_RUN_TAKEN = {6, 0, 0};
+static const CosimRun WEREWOLF_RUN_LANDED = {210, 18, 3};  // $AA71-$AA82
+static const CosimRun WEREWOLF_RUN_REST_DRAW = {84, 8, 0};  // $AA8F JSL rng : AND : INC
 
 // The ROM's own instructions in `own`, and what its calls cost in `calls`.
 // `bearings` says how many of the log's the bill has come to.
@@ -16148,6 +16234,20 @@ static void werewolf_reach_bill(WerewolfBill* b) {
   werewolf_add(b, &WEREWOLF_RUN_ANSWER);
 }
 
+// `$81:AAAE`, from the `JMP` to it.
+static void werewolf_strike_begin_bill(WerewolfBill* b) {
+  const WerewolfLog* log = b->log;
+  werewolf_add(b, &WEREWOLF_RUN_JMP);
+  werewolf_add(b, &WEREWOLF_RUN_STRIKE_BEGIN);
+  werewolf_add(b, &WEREWOLF_RUN_BLOW_SET);
+  b->calls += saucer_alloc_cycles(log->blow, b->in->fastrom);
+  werewolf_add(b, &WEREWOLF_RUN_STRIKE_FACE);
+  werewolf_taken(b);  // the `BMI` to the `AND`, or the `BRA` round it
+  werewolf_add(b, log->blow_mask_clears ? &WEREWOLF_RUN_STRIKE_FACE_AND
+                                       : &WEREWOLF_RUN_STRIKE_FACE_OR);
+  werewolf_add(b, &WEREWOLF_RUN_STRIKE_FACE_STORE);
+}
+
 static void werewolf_run_bill(WerewolfBill* b) {
   const WerewolfLog* log = b->log;
   werewolf_add(b, &WEREWOLF_RUN_RUN_HEAD);
@@ -16180,15 +16280,7 @@ static void werewolf_run_bill(WerewolfBill* b) {
     return;
   }
   werewolf_taken(b);
-  werewolf_add(b, &WEREWOLF_RUN_JMP);
-  werewolf_add(b, &WEREWOLF_RUN_STRIKE_BEGIN);
-  werewolf_add(b, &WEREWOLF_RUN_BLOW_SET);
-  b->calls += saucer_alloc_cycles(log->blow, b->in->fastrom);
-  werewolf_add(b, &WEREWOLF_RUN_STRIKE_FACE);
-  werewolf_taken(b);  // the `BMI` to the `AND`, or the `BRA` round it
-  werewolf_add(b, log->blow_mask_clears ? &WEREWOLF_RUN_STRIKE_FACE_AND
-                                       : &WEREWOLF_RUN_STRIKE_FACE_OR);
-  werewolf_add(b, &WEREWOLF_RUN_STRIKE_FACE_STORE);
+  werewolf_strike_begin_bill(b);
 }
 
 static void werewolf_strike_bill(WerewolfBill* b) {
@@ -16290,6 +16382,9 @@ static void shim_werewolf_frame(Wram* w, const Rom* rom, const CosimRegs* in,
     case WEREWOLF_STATE_STRIKE:
       werewolf_strike_bill(&b);
       break;
+    case WEREWOLF_STATE_LANDED:
+      werewolf_add(&b, &WEREWOLF_RUN_LANDED);
+      break;
     case WEREWOLF_STATE_CROUCH:
       werewolf_add(&b, &WEREWOLF_RUN_CROUCH_HEAD);
       if (log.crouch_mask_clears) {
@@ -16321,8 +16416,9 @@ static void shim_werewolf_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 
   if (!whole) {
     // In the middle of a body, with the loop's return under it.
-    out->pc = log.stop == WEREWOLF_STOP_CROUCH ? WEREWOLF_CROUCH_LIST_PC
-                                               : WEREWOLF_STRIKE_FREE_PC;
+    out->pc = log.stop == WEREWOLF_STOP_CROUCH   ? WEREWOLF_CROUCH_LIST_PC
+              : log.stop == WEREWOLF_STOP_LANDED ? WEREWOLF_LANDED_LIST_PC
+                                                 : WEREWOLF_STRIKE_FREE_PC;
     out->a = log.a;
     wram_w16(w, (uint16_t)(in->s - 1), WEREWOLF_LOOP_RETURN);
     out->s = (uint16_t)(in->s - 2);
@@ -16342,7 +16438,70 @@ static void shim_werewolf_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t WEREWOLF_FRAME_EXITS[] = {
     WEREWOLF_YIELD_PC, WEREWOLF_FATE_PC, WEREWOLF_STRIKE_FREE_PC,
-    WEREWOLF_CROUCH_LIST_PC};
+    WEREWOLF_CROUCH_LIST_PC, WEREWOLF_LANDED_LIST_PC};
+
+// `$81:AA87`: back from the landing's pictures, with the loop's return on
+// the stack.
+static bool accepts_werewolf_landed_wake(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->d >= 0x0100 && in->db == WEREWOLF_BANK &&
+         wram_r16(w, (uint16_t)(in->s + 1)) == WEREWOLF_LOOP_RETURN &&
+         werewolf_landed_wake_supported(w, in->d);
+}
+
+static bool guard_werewolf_landed_wake(Wram* scratch, const Rom* rom,
+                                       const CosimRegs* in) {
+  WerewolfLog log;
+  werewolf_landed_wake(scratch, rom, in->d, (in->p & PORT_P_C) != 0,
+                       (in->p & PORT_P_V) != 0, &log);
+  return !log.declined;
+}
+
+static void shim_werewolf_landed_wake(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  WerewolfLog log;
+  const bool stays =
+      werewolf_landed_wake(w, rom, in->d, (in->p & PORT_P_C) != 0,
+                           (in->p & PORT_P_V) != 0, &log) == WEREWOLF_SLEEPS;
+  const bool fast = in->fastrom;
+  WerewolfBill b = {{0, 0, 0}, 0, &log, in, 0};
+  werewolf_add(&b, &WEREWOLF_RUN_JSR);
+  werewolf_reach_bill(&b);
+  werewolf_add(&b, &WEREWOLF_RUN_BRANCH);  // `BCC`
+  const bool rests = log.stop == WEREWOLF_STOP_REST;
+  if (rests) {
+    werewolf_taken(&b);
+    werewolf_add(&b, &WEREWOLF_RUN_REST_DRAW);
+    b.calls += rng_cycles(log.draw_overflow[0], fast);
+  } else {
+    werewolf_strike_begin_bill(&b);
+    werewolf_add(&b, &WEREWOLF_RUN_FATE);
+    if (stays) {
+      werewolf_taken(&b);
+      werewolf_add(&b, &WEREWOLF_RUN_TICKS);
+    }
+  }
+  cosim_cost(b.calls + cosim_run_cycles_dp(&b.own, fetch_fast(in),
+                                           (in->d & 0x00ffu) != 0));
+  if (rests) {
+    out->pc = WEREWOLF_REST_YIELD_PC;
+    out->a = log.a;
+  } else {
+    out->pc = stays ? WEREWOLF_YIELD_PC : WEREWOLF_FATE_PC;
+    out->a = stays ? WEREWOLF_YIELD_TICKS
+                   : wram_r16(w, (uint16_t)(in->d + WEREWOLF_DP_FATE));
+    out->s = (uint16_t)(in->s + 2);  // the strike's `RTS` to the loop
+  }
+  out->regs = COSIM_REG_A;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (out->a & 0x8000u) out->p |= PORT_P_N;
+  if (out->a == 0) out->p |= PORT_P_Z;
+  if (log.c) out->p |= PORT_P_C;
+  if (log.v) out->p |= PORT_P_V;
+  out->p_keep = (uint8_t)((log.c_set ? 0 : PORT_P_C) | (log.v_set ? 0 : PORT_P_V));
+}
+
+static const uint32_t WEREWOLF_LANDED_WAKE_EXITS[] = {
+    WEREWOLF_YIELD_PC, WEREWOLF_FATE_PC, WEREWOLF_REST_YIELD_PC};
 
 // ---------------------------------------------------------------------------
 // The footballers -- see `port/football.h`
@@ -16389,6 +16548,8 @@ static const CosimRun FOOTBALLER_RUN_OFF_PAST = {52, 5, 0};  // $C74B CMP $0002,
 static const CosimRun FOOTBALLER_RUN_OFF_SPAN = {82, 9, 0};  // $C750 CLC : ADC # : CMP : BCC, either way
 static const CosimRun FOOTBALLER_RUN_OFF_TOP = {86, 8, 0};  // $C759 LDA $1B6C : CMP $0006,Y : BCS
 static const CosimRun FOOTBALLER_RUN_OFF_GONE = {90, 3, 1};  // $C76B INC $22 : RTS
+static const CosimRun FOOTBALLER_RUN_SENT_HEAD = {84, 8, 0};  // $C6F2 LDA #0 : TAY : JSL
+static const CosimRun FOOTBALLER_RUN_SENT_TAIL = {166, 16, 4};  // $C6FD-$C70A
 static const CosimRun FOOTBALLER_RUN_TAKEN = {6, 0, 0};
 
 // The ROM's own instructions in `own`, and what its calls cost in `calls`.
@@ -16503,6 +16664,14 @@ static void footballer_body_bill(FootballerBill* b) {
     case FOOTBALLER_STATE_RUN_OFF:
       footballer_run_off_bill(b);
       return;
+    case FOOTBALLER_STATE_SENT_OFF:
+      footballer_add(b, &FOOTBALLER_RUN_SENT_HEAD);
+      footballer_add(b, &TS_COST[TS_SET_HANDLER]);
+      footballer_add(b, &FOOTBALLER_RUN_JSR);
+      footballer_steer_bill(b);
+      footballer_add(b, &FOOTBALLER_RUN_SENT_TAIL);
+      footballer_run_off_bill(b);
+      return;
     case FOOTBALLER_STATE_STAND:
       footballer_add(b, &FOOTBALLER_RUN_STAND_HEAD);
       if (log->stood_on) {
@@ -16553,7 +16722,8 @@ static void footballer_show_bill(FootballerBill* b) {
   footballer_add(b, log->mask_clears ? &FOOTBALLER_RUN_SHOW_AND
                                      : &FOOTBALLER_RUN_SHOW_OR);
   footballer_add(b, &FOOTBALLER_RUN_SHOW_REST);
-  b->calls += player_bearing_cycles(&log->players[log->ran ? 1 : 0],
+  // The show's test of the players is the pass's last.
+  b->calls += player_bearing_cycles(&log->players[(log->player_asks - 1) & 1],
                                     b->in->fastrom);
   footballer_add(b, log->gone ? &FOOTBALLER_RUN_SHOW_GONE
                               : &FOOTBALLER_RUN_TAKEN);
@@ -19270,6 +19440,7 @@ static const CosimRun DMA_COST[FRONTEND_BLOCK_COUNT] = {
     [FE_SEC_RTL] = {54, 2, 0},
     [BS_HEAD] = {110, 12, 0},
     [BS_STEP] = {112, 6, 0},
+    [GO_LAYER_ARGS] = {118, 15, 0},
     [DMA_STORE] = {18, 3, 0},
     [DMA_IMM] = {30, 5, 0},
     [DMA_TAKEN] = {6, 0, 0},
@@ -19726,6 +19897,86 @@ static void shim_palcycle_figure(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t PALCYCLE_FIGURE_EXITS[] = {PALCYCLE_FIGURE_YIELD_PC};
 
+// The threads' starts. Each run is from `tools/cycles816.py`.
+static const CosimRun PALCYCLE_RUN_BEGIN = {190, 13, 0};  // $A0AD-$A0B9
+static const CosimRun PALCYCLE_RUN_FIVE_TICKS = {18, 3, 0};  // LDA #$0005
+static const CosimRun PALCYCLE_RUN_FIGURE_ROW0 = {28, 2, 1};  // STZ $00
+
+static bool palcycle_begin_ok(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return wide(in) && (in->p & PORT_P_D) == 0 && low_stack(in);
+}
+
+static void palcycle_begin_shim(Wram* w, const CosimRegs* in, CosimRegs* out,
+                                bool drawn) {
+  PortCpu c;
+  cpu_from(in, &c);
+  palcycle_turn_begin(w, &c);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &PALCYCLE_RUN_BEGIN, 1);
+  int calls = 0;
+  if (drawn) {
+    RngResult draw;
+    c.a = palcycle_turn_seven_ticks(w, flag(&c, PORT_P_C), &draw);
+    set_nz16(&c, c.a);
+    set_c(&c, draw.c);
+    set_v(&c, draw.v);
+    run_add(&run, &PALCYCLE_RUN_T_DRAW, 1);
+    calls = rng_cycles(draw.v, in->fastrom);
+    c.pc = PALCYCLE_TURN_SEVEN_YIELD;
+  } else {
+    c.a = PALCYCLE_TURN_TICKS;
+    set_nz16(&c, c.a);
+    run_add(&run, &PALCYCLE_RUN_FIVE_TICKS, 1);
+    c.pc = in->pc + 0x10;
+  }
+  cpu_to(&c, out);
+  cosim_cost(calls + cosim_run_cycles(&run, fetch_fast(in)));
+}
+
+static void shim_palcycle_begin(Wram* w, const Rom* rom, const CosimRegs* in,
+                                CosimRegs* out) {
+  (void)rom;
+  palcycle_begin_shim(w, in, out, false);
+}
+
+static void shim_palcycle_seven_begin(Wram* w, const Rom* rom,
+                                      const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  palcycle_begin_shim(w, in, out, true);
+}
+
+static const uint32_t PALCYCLE_SIX_BEGIN_EXITS[] = {PALCYCLE_TURN_SIX_YIELD};
+static const uint32_t PALCYCLE_FIVE_BEGIN_EXITS[] = {PALCYCLE_TURN_FIVE_YIELD};
+static const uint32_t PALCYCLE_SEVEN_BEGIN_EXITS[] = {PALCYCLE_TURN_SEVEN_YIELD};
+
+// `$80:A137`: the figure's first row, and its first waking, which is
+// `shim_palcycle_figure`'s but for the `BRA` it comes back to.
+static void shim_palcycle_figure_begin(Wram* w, const Rom* rom,
+                                       const CosimRegs* in, CosimRegs* out) {
+  palcycle_figure_begin(w, in->d);
+  PalcycleLog log;
+  const uint16_t ticks = palcycle_figure(w, rom, in->d, &log);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &PALCYCLE_RUN_FIGURE_ROW0, 1);
+  run_add(&run, &PALCYCLE_RUN_F_HEAD, 1);
+  run_add(&run, &PALCYCLE_RUN_F_COLOUR, PALCYCLE_FIGURE_COLOURS);
+  run_add(&run, &PALCYCLE_RUN_TAKEN, PALCYCLE_FIGURE_COLOURS - 1);
+  run_add(&run, &PALCYCLE_RUN_F_ROW, 1);
+  run_add(&run, log.wrapped ? &PALCYCLE_RUN_F_ROW0 : &PALCYCLE_RUN_TAKEN, 1);
+  run_add(&run, &PALCYCLE_RUN_F_TAIL, 1);
+  palcycle_ask_bill(&run, &log);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0x00ffu) != 0));
+  palcycle_exit(w, in, out, PALCYCLE_FIGURE_YIELD_PC, ticks,
+                palcycle_queue_carry(w, &log), PORT_P_V, false);
+}
+
+static bool palcycle_figure_begin_ok(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->d >= 0x0100 && in->db == 0x80;
+}
+
 // ---------------------------------------------------------------------------
 // The demo's playback -- see `port/demo.h`
 // ---------------------------------------------------------------------------
@@ -19994,6 +20245,20 @@ static void shim_game_over_scroll_job(Wram* w, const Rom* rom,
   cosim_hw(t, DMA_COST, fetch_fast(in));
 }
 
+// `$80:8B2B`, to the send's `JSL`.
+static void shim_game_over_layer_job(Wram* w, const Rom* rom,
+                                     const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  PortCpu c;
+  cpu_from(in, &c);
+  game_over_layer_job(w, &c, t);
+  cpu_to(&c, out);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static const uint32_t GAME_OVER_LAYER_JOB_EXITS[] = {GAME_OVER_LAYER_SEND_PC};
+
 static void shim_game_over_colours_job(Wram* w, const Rom* rom,
                                        const CosimRegs* in, CosimRegs* out) {
   (void)w;
@@ -20098,6 +20363,126 @@ static const uint32_t GAME_OVER_FRAME_EXITS[] = {GAME_OVER_FRAME_YIELD_PC,
                                                  GAME_OVER_FRAME_END_PC};
 static const uint32_t GAME_OVER_FRAME_2_EXITS[] = {GAME_OVER_FRAME_2_YIELD_PC,
                                                    GAME_OVER_FRAME_2_END_PC};
+
+// The rest of the thread, between its calls -- see `port/game_over.h`. Each
+// run is from `tools/cycles816.py`.
+static const CosimRun GO_COST[GO_BLOCK_COUNT] = {
+    [GO_SCROLL_SET] = {118, 16, 0},
+    [GO_ASK] = {36, 6, 0},
+    [GO_SPRITE] = {58, 6, 0},
+    [GO_LAST_SPRITE] = {18, 3, 0},
+    [GO_REST] = {18, 3, 0},
+    [GO_FADE_TEST] = {46, 5, 0},
+    [GO_FADE] = {56, 3, 0},
+    [GO_BLANK] = {52, 6, 0},
+    [GO_JOB_SENT] = {46, 2, 0},
+    [GO_TAKEN] = {6, 0, 0},
+};
+
+static bool accepts_game_over(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && bank_sees_low_wram(in->db);
+}
+
+static void game_over_cost(const GameOverWork* k, const CosimRegs* in) {
+  CosimRun run = {0, 0, 0};
+  for (int i = 0; i < GO_BLOCK_COUNT; i++) run_add(&run, &GO_COST[i], k->blocks[i]);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+// Each of these is a port of `PortCpu` and a work record; this is the rest.
+#define GAME_OVER_SHIM(name, call)                                           \
+  static void shim_go_##name(Wram* w, const Rom* rom, const CosimRegs* in,   \
+                             CosimRegs* out) {                               \
+    (void)rom;                                                               \
+    (void)w;                                                                 \
+    PortCpu c;                                                               \
+    GameOverWork k = {0};                                                    \
+    cpu_from(in, &c);                                                        \
+    call;                                                                    \
+    cpu_to(&c, out);                                                         \
+    game_over_cost(&k, in);                                                  \
+  }
+
+GAME_OVER_SHIM(scroll_set, game_over_scroll_set(w, &c, &k))
+GAME_OVER_SHIM(last_sprite, game_over_sprite(w, &c, 6, true, &k))
+GAME_OVER_SHIM(wait, game_over_wait(w, &c, &k))
+static const uint32_t GO_EXITS_scroll_set[] = {GAME_OVER_SCROLL_SET_EXIT};
+static const uint32_t GO_EXITS_sprite[] = {GAME_OVER_SPRITE_PC};
+static const uint32_t GO_EXITS_wait[] = {GAME_OVER_FADE_WAI_PC,
+                                         GAME_OVER_BLANK_WAI_PC};
+
+#define X(name, sym, pc, job)                                                \
+  GAME_OVER_SHIM(name, game_over_ask(&c, job, pc + 6, &k))                   \
+  static const uint32_t GO_EXITS_##name[] = {pc + 6};
+GAME_OVER_ASKS(X)
+#undef X
+#define X(name, sym, pc, x) \
+  GAME_OVER_SHIM(name, game_over_sprite(w, &c, x, false, &k))
+GAME_OVER_SPRITES_BEGIN(X)
+#undef X
+#define X(name, sym, pc, ticks)                                              \
+  GAME_OVER_SHIM(name, game_over_rest(&c, ticks, pc + 3, &k))                \
+  static const uint32_t GO_EXITS_##name[] = {pc + 3};
+GAME_OVER_RESTS(X)
+#undef X
+#define X(name, sym, pc)                                                     \
+  GAME_OVER_SHIM(name, game_over_job_sent(w, &c, &k))                        \
+  static const uint32_t GO_EXITS_##name[] = {pc + 2};
+GAME_OVER_JOBS_SENT(X)
+#undef X
+
+// `$82:BBED`, the answer no. Each run is from `tools/cycles816.py --db=82`.
+static const CosimRun TSC_RUN_HEAD = {196, 15, 0};    // $BBED-$BBFB
+static const CosimRun TSC_RUN_FIRST = {86, 9, 0};     // LDA $1E74 : CMP : BCC
+static const CosimRun TSC_RUN_SECOND = {120, 10, 0};  // PLX : LDA $1E78 : CMP : BCC
+static const CosimRun TSC_RUN_EQUAL = {12, 2, 0};     // BNE
+static const CosimRun TSC_RUN_LOW = {86, 9, 0};       // LDA : CMP : BCC
+static const CosimRun TSC_RUN_TAIL = {58, 6, 0};      // CLC : LDA $42 : BEQ
+static const CosimRun TSC_RUN_END = {94, 3, 0};       // PLB : PLB : RTL
+static const CosimRun TSC_RUN_TAKEN = {6, 0, 0};
+
+static bool guard_top_scores_check(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  (void)rom;
+  return wide(in) && low_stack(in) && !top_scores_qualify(scratch, 0) &&
+         !top_scores_qualify(scratch, 1);
+}
+
+// The high word's compare decides it but where the two are equal.
+static void top_scores_bill(const Wram* w, int player, CosimRun* run) {
+  const uint16_t at = (uint16_t)(W_PLAYER_SCORE + 4 * player);
+  const uint16_t row = (uint16_t)(W_TOP_SCORES_SECOND + TOP_SCORES_LAST_ROW);
+  run_add(run, player ? &TSC_RUN_SECOND : &TSC_RUN_FIRST, 1);
+  run_add(run, &TSC_RUN_TAKEN, 1);
+  if (wram_r16(w, (uint16_t)(at + 2)) == wram_r16(w, (uint16_t)(row + 2))) {
+    run_add(run, &TSC_RUN_EQUAL, 1);
+    run_add(run, &TSC_RUN_LOW, 1);
+  }
+}
+
+static void shim_top_scores_check(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  (void)rom;
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &TSC_RUN_HEAD, 1);
+  top_scores_bill(w, 0, &run);
+  top_scores_bill(w, 1, &run);
+  run_add(&run, &TSC_RUN_TAIL, 1);
+  run_add(&run, &TSC_RUN_TAKEN, 1);
+  run_add(&run, &TSC_RUN_END, 1);
+  top_scores_none(w);
+  out->a = 0;
+  out->x = TOP_SCORES_LAST_ROW;
+  out->y = in->y;
+  // The flags are the last `PLB`'s: the caller's bank.
+  out->n = (in->db & 0x80u) != 0;
+  out->z = in->db == 0;
+  out->c = false;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  out->regs = COSIM_REG_ALL;
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
 
 // ---------------------------------------------------------------------------
 // $80:9A52  a portrait -- see `port/frontend.h`
@@ -26211,6 +26596,105 @@ static const CosimRun REGION_CHECK_RUN = {54, 7, 0};
 FRONTEND_STRETCHES(X)
 #undef X
 
+// The demonstration -- see `port/demo_thread.h`. Each run is from
+// `tools/cycles816.py`; a draw is priced as `rng_next`'s own row prices it.
+static const CosimRun DM_COST[DM_BLOCK_COUNT] = {
+    [DM_HOLD] = {154, 15, 0},
+    [DM_COUNT] = {64, 8, 0},
+    [DM_RESET] = {102, 9, 0},
+    [DM_DRAW] = {54, 4, 0},
+    [DM_TEST] = {100, 12, 0},
+    [DM_CHOSEN] = {486, 48, 0},
+    [DM_TABLES] = {48, 8, 0},
+    [DM_TABLES_SLOW] = {64, 0, 0},
+    // The record's words are read from the cartridge's fast copy, which
+    // `tools/cycles816.py` takes for WRAM at `$9F:0000`.
+    [DM_UNPACK] = {164, 21, 1},
+    [DM_PULL] = {34, 1, 0},
+    [DM_LDA_IMM] = {18, 3, 0},
+    [DM_LDA_DP] = {28, 2, 1},
+    [DM_SONG] = {174, 17, 1},
+    [DM_LIVES] = {34, 3, 0},
+    [DM_CLEAR] = {234, 22, 0},
+    [DM_JOB_ASK] = {36, 6, 0},
+    [DM_PLAYED] = {12, 2, 0},
+    [DM_ENDED] = {84, 9, 0},
+    [DM_OVER] = {104, 12, 0},
+    [DM_RETURN] = {66, 2, 0},
+    [DM_TAKEN] = {6, 0, 0},
+};
+
+static int demo_thread_cycles(const DemoThreadWork* k, const CosimRegs* in) {
+  const bool fast = fetch_fast(in);
+  CosimRun run = {0, 0, 0};
+  for (int i = 0; i < DM_BLOCK_COUNT; i++) run_add(&run, &DM_COST[i], k->blocks[i]);
+  const int draws = k->blocks[DM_DRAW];
+  return cosim_run_cycles_dp(&run, fast, (in->d & 0xffu) != 0) +
+         k->draws_twice * rng_cycles(true, fast) +
+         (draws - k->draws_twice) * rng_cycles(false, fast);
+}
+
+static bool accepts_demo_thread(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && bank_sees_low_wram(in->db);
+}
+
+static bool accepts_demo_record(const Wram* w, const CosimRegs* in) {
+  PortCpu c;
+  cpu_from(in, &c);
+  return accepts_demo_thread(w, in) && demo_record_supported(w, &c);
+}
+
+static bool accepts_demo_return(const Wram* w, const CosimRegs* in) {
+  PortCpu c;
+  cpu_from(in, &c);
+  return accepts_demo_thread(w, in) && demo_return_supported(w, &c);
+}
+
+#define DEMO_SHIM(name, call)                                                \
+  static void shim_demo_##name(Wram* w, const Rom* rom, const CosimRegs* in, \
+                               CosimRegs* out) {                             \
+    (void)rom;                                                               \
+    (void)w;                                                                 \
+    PortCpu c;                                                               \
+    DemoThreadWork k = {0};                                                  \
+    cpu_from(in, &c);                                                        \
+    call;                                                                    \
+    cpu_to(&c, out);                                                         \
+    cosim_cost(demo_thread_cycles(&k, in));                                  \
+  }
+
+DEMO_SHIM(begin, demo_begin(w, rom, &c, &k))
+DEMO_SHIM(unpack, demo_unpack(w, rom, &c, &k))
+DEMO_SHIM(unpacked, demo_unpacked(w, &c, &k))
+DEMO_SHIM(rest, demo_rest(&c, &k))
+DEMO_SHIM(scroll, demo_scroll(w, &c, &k))
+DEMO_SHIM(song, demo_song(w, rom, &c, &k))
+DEMO_SHIM(lives, demo_lives(w, &c, &k))
+DEMO_SHIM(clear, demo_clear(w, &c, &k))
+DEMO_SHIM(job_ask, demo_job_ask(&c, &k))
+DEMO_SHIM(played, demo_played(&c, &k))
+DEMO_SHIM(ended, demo_ended(w, &c, &k))
+DEMO_SHIM(over, demo_over(w, &c, &k))
+DEMO_SHIM(return, demo_return(w, &c, &k))
+
+static const uint32_t DEMO_EXITS_begin[] = {DEMO_RECORD_ASK_PC};
+static const uint32_t DEMO_EXITS_unpack[] = {DEMO_UNPACK_CALL_PC};
+static const uint32_t DEMO_EXITS_unpacked[] = {DEMO_FADE_OUT_CALL_PC};
+static const uint32_t DEMO_EXITS_rest[] = {DEMO_REST_CALL_PC};
+static const uint32_t DEMO_EXITS_scroll[] = {DEMO_SCROLL_CALL_PC};
+static const uint32_t DEMO_EXITS_song[] = {DEMO_SONG_CALL_PC};
+static const uint32_t DEMO_EXITS_lives[] = {DEMO_LIVES_WAI_PC};
+static const uint32_t DEMO_EXITS_clear[] = {DEMO_CLEAR_SAVE_PC};
+static const uint32_t DEMO_EXITS_job_ask[] = {DEMO_JOB_ASK_CALL_PC};
+static const uint32_t DEMO_EXITS_played[] = {DEMO_PLAYED_ENDED_PC,
+                                             DEMO_PLAYED_OVER_PC};
+static const uint32_t DEMO_EXITS_ended[] = {DEMO_SCORES_CALL_PC,
+                                            DEMO_ENDED_ON_PC};
+static const uint32_t DEMO_EXITS_over[] = {DEMO_OVER_CALL_PC};
+static const uint32_t DEMO_EXITS_return[] = {DEMO_BACK_TITLE_PC,
+                                             DEMO_BACK_START_PC};
+
 static void first_pass_cost(const CosimRegs* in, bool first) {
   CosimRun run = {0, 0, 0};
   run_add(&run, &FIRST_PASS_RUN_TEST, 1);
@@ -29184,7 +29668,8 @@ static const CosimRoutine ROUTINES[] = {
     },
     // What the game forgets: see `port/clears.h`. The first stretch is two
     // and a half frames of `MVN`, and after a demo the NMI lands in it. The
-    // third, at `$80:897F`, is the ROM's: the handler reads a word of it.
+    // handler reads a word of the third, which is written when the copy
+    // would reach it.
     {
         .name = "game_clear_high",
         .symbol = "$80:895A",
@@ -29204,6 +29689,19 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(GAME_CLEAR_PAGE_EXITS),
         .uncalled = true,
         .cycles = 9214,
+        .through_interrupts = true,
+    },
+    {
+        .name = "game_clear_vars",
+        .symbol = "$80:897F",
+        .entry = GAME_CLEAR_VARS_PC,
+        .run = shim_game_clear_vars,
+        .accepts = accepts_clear_low,
+        COSIM_EXITS(GAME_CLEAR_VARS_EXITS),
+        .uncalled = true,
+        .cycles = 147168,
+        .commit = GAME_CLEAR_VARS_COMMIT,
+        .commit_count = 2,
         .through_interrupts = true,
     },
     // What a level begins with: see `port/clears.h`.
@@ -30362,6 +30860,29 @@ static const CosimRoutine ROUTINES[] = {
         // `JSL` to its tests, and theirs.
         .stack_bytes = 32,
     },
+    // ...and the same pass in the cut's state, which the cut's stretches
+    // take, and the end of it.
+    {
+        .name = "chainsaw_cut_pass",
+        .symbol = "$81:9878",
+        .entry = CHAINSAW_FRAME_PC,
+        .run = shim_chainsaw_cut_pass,
+        .accepts = accepts_chainsaw_cut_pass,
+        COSIM_EXITS(CHAINSAW_CUT_PASS_EXITS),
+        .uncalled = true,
+        .cycles = 142,
+    },
+    {
+        .name = "chainsaw_pass_shown",
+        .symbol = "$81:9880",
+        .entry = CHAINSAW_PASS_SHOWN_PC,
+        .run = shim_chainsaw_pass_shown,
+        .accepts = accepts_chainsaw_pass_shown,
+        COSIM_EXITS(CHAINSAW_PASS_SHOWN_EXITS),
+        .uncalled = true,
+        .cycles = 500,
+        .stack_bytes = 2,  // the `JSR` to its picture
+    },
     {
         .name = "chainsaw_swing_next",
         .symbol = "$81:9598",
@@ -30554,6 +31075,18 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 9000,
         // The computed `RTS`'s two words, the `JSR`s down to a step, and the
         // `JSL` to its tests, and theirs.
+        .stack_bytes = 32,
+    },
+    {
+        .name = "werewolf_landed_wake",
+        .symbol = "$81:AA87",
+        .entry = WEREWOLF_LANDED_WAKE_PC,
+        .run = shim_werewolf_landed_wake,
+        .accepts = accepts_werewolf_landed_wake,
+        .supported = guard_werewolf_landed_wake,
+        COSIM_EXITS(WEREWOLF_LANDED_WAKE_EXITS),
+        .uncalled = true,
+        .cycles = 1000,
         .stack_bytes = 32,
     },
     {
@@ -30827,6 +31360,27 @@ static const CosimRoutine ROUTINES[] = {
                    palcycle_pulse_ok, PALCYCLE_PULSE_EXITS),
     PALCYCLE_ENTRY(palcycle_figure, "$80:A180", PALCYCLE_FIGURE_PC,
                    palcycle_figure_ok, PALCYCLE_FIGURE_EXITS),
+    PALCYCLE_ENTRY(palcycle_figure_begin, "$80:A137", PALCYCLE_FIGURE_BEGIN_PC,
+                   palcycle_figure_begin_ok, PALCYCLE_FIGURE_EXITS),
+#define PALCYCLE_BEGIN(n, sym, pc, shim, exits)                \
+  {                                                           \
+      .name = #n,                                             \
+      .symbol = sym,                                          \
+      .entry = pc,                                            \
+      .run = shim,                                            \
+      .accepts = palcycle_begin_ok,                           \
+      COSIM_EXITS(exits),                                     \
+      .uncalled = true,                                       \
+      .cycles = 210,                                          \
+      .stack_bytes = 3, /* the seventh's `JSL rng_next` */   \
+  }
+    PALCYCLE_BEGIN(palcycle_six_begin, "$80:A0AD", PALCYCLE_SIX_BEGIN_PC,
+                   shim_palcycle_begin, PALCYCLE_SIX_BEGIN_EXITS),
+    PALCYCLE_BEGIN(palcycle_five_begin, "$80:A222", PALCYCLE_FIVE_BEGIN_PC,
+                   shim_palcycle_begin, PALCYCLE_FIVE_BEGIN_EXITS),
+    PALCYCLE_BEGIN(palcycle_seven_begin, "$80:A264", PALCYCLE_SEVEN_BEGIN_PC,
+                   shim_palcycle_seven_begin, PALCYCLE_SEVEN_BEGIN_EXITS),
+#undef PALCYCLE_BEGIN
 #undef PALCYCLE_ENTRY
     {
         .name = "demo_job",
@@ -30909,6 +31463,88 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 900,
         .stack_bytes = 4,
+    },
+    // The rest of it, between its calls: see `port/game_over.h`.
+    {
+        .name = "go_scroll_set",
+        .symbol = "$80:8A7D",
+        .entry = GAME_OVER_SCROLL_SET_PC,
+        .run = shim_go_scroll_set,
+        .accepts = accepts_game_over,
+        COSIM_EXITS(GO_EXITS_scroll_set),
+        .uncalled = true,
+        .cycles = 120,
+    },
+    {
+        .name = "go_last_sprite",
+        .symbol = "$80:8AD0",
+        .entry = GAME_OVER_LAST_SPRITE_PC,
+        .run = shim_go_last_sprite,
+        .accepts = accepts_game_over,
+        COSIM_EXITS(GO_EXITS_sprite),
+        .uncalled = true,
+        .cycles = 18,
+    },
+    {
+        .name = "go_wait",
+        .symbol = "$80:8A45",
+        .entry = GAME_OVER_WAIT_PC,
+        .run = shim_go_wait,
+        .accepts = accepts_game_over,
+        COSIM_EXITS(GO_EXITS_wait),
+        .uncalled = true,
+        .cycles = 100,
+    },
+#define X(name_, sym, pc, arg)                                               \
+    {                                                                        \
+        .name = "go_" #name_,                                                \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_go_##name_,                                              \
+        .accepts = accepts_game_over,                                        \
+        COSIM_EXITS(GO_EXITS_##name_),                                       \
+        .uncalled = true,                                                    \
+        .cycles = 40,                                                        \
+    },
+    GAME_OVER_ASKS(X)
+    GAME_OVER_RESTS(X)
+#undef X
+#define X(name_, sym, pc, x)                                                 \
+    {                                                                        \
+        .name = "go_" #name_,                                                \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_go_##name_,                                              \
+        .accepts = accepts_game_over,                                        \
+        COSIM_EXITS(GO_EXITS_sprite),                                        \
+        .uncalled = true,                                                    \
+        .cycles = 60,                                                        \
+    },
+    GAME_OVER_SPRITES_BEGIN(X)
+#undef X
+#define X(name_, sym, pc)                                                    \
+    {                                                                        \
+        .name = "go_" #name_,                                                \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_go_##name_,                                              \
+        .accepts = accepts_game_over,                                        \
+        COSIM_EXITS(GO_EXITS_##name_),                                       \
+        .uncalled = true,                                                    \
+        .cycles = 46,                                                        \
+    },
+    GAME_OVER_JOBS_SENT(X)
+#undef X
+    {
+        .name = "top_scores_check",
+        .symbol = "$82:BBED",
+        .entry = TOP_SCORES_CHECK_PC,
+        .ret_op = TOP_SCORES_CHECK_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_top_scores_check,
+        .supported = guard_top_scores_check,
+        .cycles = 900,
+        .stack_bytes = 4,  // `PHB`, `PEA` and `PHX`, less a `PLB` between
     },
     {
         .name = "portrait_copy",
@@ -33024,6 +33660,17 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 190,
     },
     {
+        .name = "game_over_layer_job",
+        .symbol = "$80:8B2B",
+        .entry = GAME_OVER_LAYER_JOB_PC,
+        .run = shim_game_over_layer_job,
+        .accepts = accepts_vbl_job,
+        COSIM_EXITS(GAME_OVER_LAYER_JOB_EXITS),
+        .hw = true,
+        .uncalled = true,
+        .cycles = 170,
+    },
+    {
         .name = "game_over_colours_job",
         .symbol = "$80:8B82",
         .entry = GAME_OVER_COLOURS_JOB_PC,
@@ -33502,6 +34149,40 @@ static const CosimRoutine ROUTINES[] = {
     },
     FRONTEND_STRETCHES(X)
 #undef X
+    // The demonstration's: see `port/demo_thread.h`.
+#define DEMO_ROW(name_, sym, pc, ok, cyc)                                    \
+    {                                                                        \
+        .name = "demo_" #name_,                                              \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_demo_##name_,                                            \
+        .accepts = ok,                                                       \
+        COSIM_EXITS(DEMO_EXITS_##name_),                                     \
+        .cycles = cyc,                                                       \
+    },
+    {
+        .name = "demo_begin",
+        .symbol = "$80:9AB0",
+        .entry = DEMO_BEGIN_PC,
+        .run = shim_demo_begin,
+        .accepts = accepts_demo_thread,
+        COSIM_EXITS(DEMO_EXITS_begin),
+        .cycles = 1800,
+        .stack_bytes = 3,  // each draw's `JSL rng_next`
+    },
+    DEMO_ROW(unpack, "$80:9B14", DEMO_UNPACK_PC, accepts_demo_record, 180)
+    DEMO_ROW(unpacked, "$80:9B29", DEMO_UNPACKED_PC, accepts_demo_thread, 34)
+    DEMO_ROW(rest, "$80:9B2D", DEMO_REST_PC, accepts_demo_thread, 18)
+    DEMO_ROW(scroll, "$80:9B34", DEMO_SCROLL_PC, accepts_demo_thread, 28)
+    DEMO_ROW(song, "$80:9B4D", DEMO_SONG_PC, accepts_demo_record, 182)
+    DEMO_ROW(lives, "$80:9B5E", DEMO_LIVES_PC, accepts_demo_thread, 34)
+    DEMO_ROW(clear, "$80:9B62", DEMO_CLEAR_PC, accepts_demo_thread, 234)
+    DEMO_ROW(job_ask, "$80:9B7D", DEMO_JOB_ASK_PC, accepts_demo_thread, 36)
+    DEMO_ROW(played, "$80:9B8B", DEMO_PLAYED_PC, accepts_demo_thread, 15)
+    DEMO_ROW(ended, "$80:9BA0", DEMO_ENDED_PC, accepts_demo_thread, 88)
+    DEMO_ROW(over, "$80:9BBD", DEMO_OVER_PC, accepts_demo_thread, 104)
+    DEMO_ROW(return, "$80:9BCD", DEMO_RETURN_PC, accepts_demo_return, 82)
+#undef DEMO_ROW
     {
         .name = "frontend_first_pass",
         .symbol = "$80:9136",

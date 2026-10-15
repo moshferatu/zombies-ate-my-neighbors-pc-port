@@ -12,6 +12,13 @@
 // in one of those states is the ROM's. The cutting is stretches of
 // `port/thread_stretches.h` instead.
 //
+// A pass in the cut's state is the cut's stretches. Two more are its ends:
+//
+//   $81:9878  chainsaw_cut_pass    the loop's dispatch, to the cut
+//   $81:9880  chainsaw_pass_shown  where a pass in a state of the ROM's
+//                                  comes back to: it shows itself and its
+//                                  health is tested, as every pass ends
+//
 // The swing sleeps in the middle too, so it is two stretches:
 //
 //   $81:9878  chainsaw_frame       in the swing's state: as far as its first
@@ -256,5 +263,15 @@ void chainsaw_swing_next(Wram* w, const Rom* rom, PortCpu* c,
 // own, as it woke. `log` may be NULL.
 ChainsawFate chainsaw_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
                             ChainsawLog* log);
+
+// `$81:9878` in the cut's state: the pass's return pushed, and the state's
+// body gone to by the `RTS` after it, which leaves nothing on the stack.
+#define CHAINSAW_PASS_SHOWN_PC 0x819880u
+void chainsaw_cut_pass(Wram* w, PortCpu* c);
+// `$81:9880`. Facing a way the tables have.
+bool chainsaw_pass_shown_supported(const Wram* w, uint16_t page);
+// `carry` and `overflow` are the thread's own as the state's body left them.
+ChainsawFate chainsaw_pass_shown(Wram* w, const Rom* rom, uint16_t page,
+                                 bool carry, bool overflow, ChainsawLog* log);
 
 #endif

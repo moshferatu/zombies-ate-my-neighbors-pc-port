@@ -406,6 +406,8 @@ add_library(zamn_port STATIC
   src/port/player_frame.c
   src/port/demo.c
   src/port/frontend.c
+  src/port/game_over.c
+  src/port/demo_thread.c
   src/port/spawnlist.c)
 target_include_directories(zamn_port PUBLIC src)
 target_link_libraries(zamn_port PUBLIC zamn_assets_lib)

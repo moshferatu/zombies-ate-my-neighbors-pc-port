@@ -590,6 +590,11 @@ uint16_t text_map_job(const Wram* w, HwTrace* t);
   X(809845, "$80:9845", 0x809845u, 0x809846u, 1, -1, -1, -1, -1) \
   /* `$80:9A90`, the job that sends the text map the portraits are on */ \
   X(809a90, "$80:9A90", 0x809a90u, 0x809a9du, 0, 0x007e, 0x6502, 0x71a0, 0x0400) \
+  /* The game over's jobs, `$80:8B17`, `$80:8B48` and `$80:8B5C`: the text \
+     map, and the words in two halves */ \
+  X(808b17, "$80:8B17", 0x808b17u, 0x808b24u, 0, 0x007e, 0x6502, 0x4800, 0x0800) \
+  X(808b48, "$80:8B48", 0x808b48u, 0x808b55u, 0, 0x0097, 0xc3e4, 0x4b80, 0x0700) \
+  X(808b5c, "$80:8B5C", 0x808b5cu, 0x808b69u, 0, 0x0097, 0xbde4, 0x4800, 0x0700) \
   /* `$82:B4B7`, a screen with a cursor's */ \
   X(82b4e8, "$82:B4E8", 0x82b4e8u, 0x82b4f1u, 0, -1, 0x0083, 0xf18c, 0x0100) \
   X(82b4f5, "$82:B4F5", 0x82b4f5u, 0x82b502u, 0, 0x0080, 0x009e, 0x8f76, 0x0100) \

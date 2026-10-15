@@ -1895,6 +1895,8 @@
   X(chainsaw_chase_gave_up, "chainsaw_frame", "the 120th short step of a chase") \
   X(chainsaw_began_cutting, "chainsaw_frame", "a hedge beside it: it begins to cut") \
   X(chainsaw_died, "chainsaw_frame", "its health gone: the thread goes on to its end") \
+  X(chainsaw_cut_pass, "chainsaw_cut_pass", "a pass in the cut's state, gone to its body") \
+  X(chainsaw_pass_shown, "chainsaw_pass_shown", "the end of a pass the cut took: shown, and its health tested") \
   X(chainsaw_swing_began, "chainsaw_frame", "a pass in the swing's state: the saw's record, and the first picture") \
   /* $81:9598 chainsaw_swing_next -- where a swing wakes. */              \
   X(chainsaw_swing_turned, "chainsaw_swing_next", "the next picture of the turn") \
@@ -1989,6 +1991,9 @@
   X(werewolf_blow_shown, "werewolf_frame", "a picture from the sixth on: the blow is drawn") \
   X(werewolf_strike_over, "werewolf_frame", "a strike's pictures ran out: the pass stops at giving the blow's record back") \
   X(werewolf_crouching, "werewolf_frame", "a crouch: it faces the spot, and the pass stops at its pictures") \
+  X(werewolf_landing, "werewolf_frame", "down: it can be hurt again, and the pass stops at its pictures") \
+  X(werewolf_landed_struck, "werewolf_landed_wake", "after them, its target beside it: a strike") \
+  X(werewolf_landed_rests, "werewolf_landed_wake", "...or not, and it rests a draw of ticks") \
   X(werewolf_not_due, "ts_werewolf_enter", "a werewolf's thread with no werewolves due: it ends at once") \
   X(werewolf_entered, "ts_werewolf_enter", "...or with them due: it weighs in the level's load") \
   X(werewolf_howled, "ts_werewolf_howl_check", "the level's sample set has its howl: it howls") \
@@ -2023,6 +2028,21 @@
   X(walker_entered, "ts_walker_enter", "...or with room, and a record asked for") \
   X(walker_made, "ts_walker_made", "its record, and its first pictures asked for") \
   X(walker_shown, "ts_walker_shown", "its handler, a draw of its way, and the first sleep") \
+  X(chainsaw_entered, "ts_chainsaw_enter", "the chainsaw maniac's weight, and a record asked for") \
+  X(stung_spared, "ts_stung", "a player stung with no health: they only return") \
+  X(stung, "ts_stung", "...or a point of it gone, and a sound") \
+  X(stung_heard, "ts_stung_heard", "their picture, and nothing told what touches them") \
+  X(stung_held, "ts_stung_held", "...and 75 ticks") \
+  X(ant_flash, "ts_ant_flash", "an ant hit: its attributes for two ticks") \
+  X(footballer_off_pictured, "ts_footballer_off_pictured", "a footballer sent off: the state for its next pass") \
+  X(ant_flashed, "ts_ant_flashed", "...and back") \
+  X(chainsaw_made, "ts_chainsaw_made", "its place, its record, health and no saw, and it wanders") \
+  X(chainsaw_set, "ts_chainsaw_set", "its entry in the level's list") \
+  X(chainsaw_sounded, "ts_chainsaw_marked", "its sound, on a level with no samples") \
+  X(chainsaw_unheard, "ts_chainsaw_marked", "...or its first pictures at once") \
+  X(chainsaw_heard, "ts_chainsaw_heard", "its first pictures, after the sound") \
+  X(chainsaw_shown, "ts_chainsaw_shown", "what can touch it, and its handler") \
+  X(chainsaw_handled, "ts_chainsaw_handled", "the first sleep") \
   X(slimed, "ts_slimed", "a player caught in a slime's splash: covered, and a tick's sleep") \
   X(slimed_rested, "ts_slimed_rested", "...and after it, what they hold put aside") \
   X(door_buzzing_already, "ts_door_buzz", "a locked door pushed while it buzzes: the new thread only ends") \
@@ -2076,6 +2096,7 @@
   X(scores_wait_begin, "scores_wait_begin", "six seconds to wait") \
   X(scores_screen_dark, "scores_screen_dark", "faded down, and blanked") \
   X(scores_screen_end, "scores_screen_end", "the caller's data bank") \
+  X(footballer_first_off, "footballer_frame", "its first pass sent off: no handler, a turn, and off") \
   X(footballer_sent_off, "footballer_frame", "a pass sent off") \
   X(footballer_off_turned, "footballer_frame", "...stopped by the ground: it turns") \
   X(footballer_ran_off, "footballer_frame", "...and its picture is off the screen: it ends") \
@@ -2223,6 +2244,8 @@
   X(tile_anim_job_sent, "tile_anim_job", "an animated tile's frame sent") \
                                                                                    \
   /* $80:A0C1, $80:A236, $80:A27D, $80:A106, $80:A180 -- the colour animations. */  \
+  X(palcycle_turn_begin, "palcycle_six_begin", "a turn's thread begun: the bank and page, and a byte pulled") \
+  X(palcycle_figure_begin, "palcycle_figure_begin", "the figure's thread begun at its first row") \
   X(palcycle_turn_stepped, "palcycle_turn_*", "the run turned a place") \
   X(palcycle_turn_wrapped, "palcycle_turn_*", "...and the counter started over") \
   X(palcycle_pulse_between, "palcycle_pulse", "the green between its ends") \
@@ -2248,6 +2271,34 @@
   X(portrait_scroll_waited, "portrait_scroll_job", "the first layer alone") \
   X(portrait_scroll_fifth, "portrait_scroll_job", "a fifth frame: the third layer too") \
   X(game_over_scroll_job, "game_over_scroll_job", "the third layer's height sent") \
+  X(game_over_layer_job, "game_over_layer_job", "the third layer's map placed, and its tiles' send asked for") \
+  X(game_over_scroll_set, "go_scroll_set", "the shadow 32 lines down, and the text map's job asked for") \
+  X(game_over_ask, "go_text_map_ask", "one of the game over's jobs asked for") \
+  X(game_over_sprite, "go_sprite_0", "one of its sprites called for") \
+  X(game_over_last_sprite, "go_last_sprite", "...and the fourth, fallen into") \
+  X(game_over_rest, "go_rest", "a sleep asked for") \
+  X(game_over_fade, "go_wait", "the brightness a step down") \
+  X(game_over_blank, "go_wait", "...and at nothing, the screen blanked") \
+  X(game_over_job_sent, "go_text_map_sent", "a job's send done: the word pulled, and carry clear") \
+  X(top_scores_check, "top_scores_check", "neither score as good as the tenth") \
+  X(demo_all_played, "demo_begin", "all four demos played: all four again") \
+  X(demo_drawn_again, "demo_begin", "a demo drawn that has been played: again") \
+  X(demo_drawn, "demo_begin", "one not played yet, and its level and recording") \
+  X(demo_unpack, "demo_unpack", "its level's map, to be unpacked") \
+  X(demo_unpacked, "demo_unpacked", "...and the word given it pulled") \
+  X(demo_rest, "demo_rest", "sixteen ticks") \
+  X(demo_scroll, "demo_scroll", "the scroll's job, to be taken off") \
+  X(demo_song, "demo_song", "the level's song") \
+  X(demo_lives, "demo_lives", "no lives") \
+  X(demo_clear, "demo_clear", "the frame count and the random state from nothing") \
+  X(demo_job_ask, "demo_job_ask", "the job that plays the recording") \
+  X(demo_played_ended, "demo_played", "a pad ended it: the screen faded out") \
+  X(demo_played_out, "demo_played", "it played out") \
+  X(demo_ended_by_pad, "demo_ended", "ended by a pad: no top scores") \
+  X(demo_ended_scores, "demo_ended", "played out: the top scores") \
+  X(demo_over, "demo_over", "the first level and side again") \
+  X(demo_back_title, "demo_return", "back to the title") \
+  X(demo_back_start, "demo_return", "back to the front end's start") \
   X(game_over_colours_job, "game_over_colours_job", "three colours sent") \
   X(game_over_fell_one, "game_over_fall", "four sprites a pixel down") \
   X(game_over_fell_two, "game_over_fall", "an odd frame: two pixels") \

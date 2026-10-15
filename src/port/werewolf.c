@@ -572,6 +572,17 @@ static void crouch(Werewolf* p) {
   log->a = WEREWOLF_CROUCH_PICTURES;
 }
 
+// `$81:AA71`: down. Bit 3 of its flags cleared, ids that hurt it, and its
+// pictures, which sleep: the pass stops there.
+static void landed(Werewolf* p) {
+  WerewolfLog* log = p->log;
+  set_record_field(p, ACTOR_FLAGS, (uint16_t)(record_field(p, ACTOR_FLAGS) &
+                                              ~WEREWOLF_LANDED_CLEARS));
+  set_record_field(p, ACTOR_COLLIDE_ID, WEREWOLF_LANDED_ID);
+  log->stop = WEREWOLF_STOP_LANDED;
+  log->a = WEREWOLF_LANDED_PICTURES;
+}
+
 // One axis of a pounce: so many pixels this pass, by how its gap compares
 // with the longer one.
 static uint16_t glide(Werewolf* p, uint16_t place_at, uint16_t part_at,
@@ -673,9 +684,38 @@ bool werewolf_frame_supported(const Wram* w, uint16_t page) {
       return faces && wram_r16(w, (uint16_t)(page + WEREWOLF_DP_SPAN)) != 0;
     case WEREWOLF_STATE_CROUCH:
       return faces;
+    case WEREWOLF_STATE_LANDED:
+      return true;
     default:
       return false;
   }
+}
+
+bool werewolf_landed_wake_supported(const Wram* w, uint16_t page) {
+  return wram_r16(w, (uint16_t)(page + WEREWOLF_DP_TARGET)) < 0x1f00 &&
+         wram_r16(w, (uint16_t)(page + WEREWOLF_DP_RECORD)) < 0x1f00;
+}
+
+WerewolfFate werewolf_landed_wake(Wram* w, const Rom* rom, uint16_t page,
+                                  bool carry, bool overflow, WerewolfLog* log) {
+  *log = (WerewolfLog){0};
+  Werewolf p = {w, rom, page,
+                wram_r16(w, (uint16_t)(page + WEREWOLF_DP_RECORD)), log,
+                {carry, overflow, false, false}};
+  log->state = WEREWOLF_STATE_LANDED;
+  if (within_reach(&p)) {
+    PORT_COVER(werewolf_landed_struck);
+    begin_strike(&p);
+  } else {
+    PORT_COVER(werewolf_landed_rests);
+    log->stop = WEREWOLF_STOP_REST;
+    log->a = (uint16_t)((random_byte(&p) & 0x000fu) + 1);
+  }
+  log->c = p.flags.c;
+  log->v = p.flags.v;
+  log->c_set = p.flags.c_set;
+  log->v_set = p.flags.v_set;
+  return field(&p, WEREWOLF_DP_FATE) != 0 ? WEREWOLF_ENDS : WEREWOLF_SLEEPS;
 }
 
 WerewolfFate werewolf_frame(Wram* w, const Rom* rom, uint16_t page,
@@ -699,6 +739,10 @@ WerewolfFate werewolf_frame(Wram* w, const Rom* rom, uint16_t page,
     case WEREWOLF_STATE_CROUCH:
       PORT_COVER(werewolf_crouching);
       crouch(&p);
+      break;
+    case WEREWOLF_STATE_LANDED:
+      PORT_COVER(werewolf_landing);
+      landed(&p);
       break;
     default:
       PORT_COVER(werewolf_flew);

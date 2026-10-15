@@ -273,6 +273,13 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**The game's clear, the game over and the demonstration, 2026-10-15.**
+The third stretch of the game's clear is a port, with a word the NMI reads
+written when the copy reaches it. The game over and the demonstration's
+part of the front end are ported between their calls, with four
+creatures' pieces and about forty places that were only a call. The places
+are 221 and the core executes 21,541 instructions over the survey.
+
 **The trampoline, the slime's splash and level 17's starts, 2026-10-14.**
 The trampoline is ported but for its higher bounce, a player caught in a
 slime's splash is two thread stretches, and level 17's spider and walker

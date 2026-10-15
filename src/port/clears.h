@@ -3,8 +3,7 @@
 // Two routines, called one after the other when a game ends and when the
 // demo does, put WRAM back to nothing:
 //
-//   $80:895A  game_clear     everything a game keeps, in three stretches,
-//                            of which the first two are here
+//   $80:895A  game_clear     everything a game keeps, in three stretches
 //   $80:8992  threads_clear  the threads' pages and stacks
 //
 // ## The game's three stretches
@@ -24,14 +23,16 @@
 // writes into the second and third while the first is being cleared is
 // cleared after it, as in the ROM.
 //
-// **The third stretch is the ROM's.** A port clears a stretch at once, where
-// the ROM takes its time, and the NMI's handler reads a word of this one:
-// `$7E:1EB4`, which holds the random numbers still while it is set. The ROM
-// reaches that word nine tenths of the way through. An NMI that lands before
-// then finds it set and leaves the numbers alone; with the stretch cleared
-// at once it steps them. One step is enough to change which demo comes next.
-// Run in lockstep, a port of this stretch left `$7E:0024` one ahead on two
-// movies, and one of the two went on to a different game.
+// **The third stretch has a word the NMI reads.** A port clears a stretch
+// at once, where the ROM takes its time, and the NMI's handler reads a word
+// of this one: `$7E:1EB4`, which holds the random numbers still while it is
+// set. The ROM reaches that word nine tenths of the way through. An NMI that
+// lands before then finds it set and leaves the numbers alone; with the
+// stretch cleared at once it steps them. One step is enough to change which
+// demo comes next. Run in lockstep, a port that cleared it with the rest left
+// `$7E:0024` one ahead on two movies, and one of the two went on to a
+// different game. So its two bytes are written at the cycles the copy
+// reaches them (`cosim_commit_due`).
 //
 // ## The threads
 //
@@ -75,7 +76,8 @@
 
 #define GAME_CLEAR_PC 0x80895au
 #define GAME_CLEAR_PAGE_PC 0x80896du  // the second stretch
-#define GAME_CLEAR_VARS_PC 0x80897fu  // the third, which is the ROM's
+#define GAME_CLEAR_VARS_PC 0x80897fu  // the third
+#define GAME_CLEAR_RTL_PC 0x808991u
 #define THREADS_CLEAR_PC 0x808992u
 #define THREADS_CLEAR_RTL_PC 0x8089afu
 
@@ -85,6 +87,7 @@ typedef struct {
 
 #define GAME_CLEAR_HIGH ((ClearSpan){0x2128u, 0x6e31u})
 #define GAME_CLEAR_PAGE ((ClearSpan){0x0028u, 0x00eeu})
+#define GAME_CLEAR_VARS ((ClearSpan){0x137eu, 0x1ffbu})
 #define THREADS_CLEAR_PAGES ((ClearSpan){0x0100u, 0x0bffu})
 #define THREADS_CLEAR_LAST ((ClearSpan){0x0c80u, 0x0cffu})
 

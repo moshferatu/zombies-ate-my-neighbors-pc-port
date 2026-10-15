@@ -321,6 +321,23 @@ static void run_veering(Footballer* f) {
   run(f);
 }
 
+static void run_off(Footballer* f);
+
+// `$81:C6F2`: the first pass sent off. `LDA #0 : TAY : JSL thread_set_handler`,
+// a turn at a player in reach, and the other way from where that leaves it.
+static void sent_off(Footballer* f) {
+  const uint16_t thread = wram_r16(f->w, W_SCHED_CUR_TASK);
+  wram_w16(f->w, (uint16_t)(W_THREAD_HANDLER + thread), 0);
+  wram_w16(f->w, (uint16_t)(W_THREAD_HANDLER_BANK + thread), 0);
+  steer(f);
+  if (f->log->declined) return;
+  set_field(f, FOOTBALLER_DP_WAY,
+            table_word(f, FOOTBALLER_OFF_TURNED, field(f, FOOTBALLER_DP_WAY)));
+  set_field(f, FOOTBALLER_DP_COUNT, 0);
+  set_state(f, FOOTBALLER_STATE_RUN_OFF);
+  run_off(f);
+}
+
 // `$81:C70B`: sent off, it runs at twice the pace and looks for nobody. It
 // ends once the picture it last showed is off the screen.
 static void run_off(Footballer* f) {
@@ -446,7 +463,8 @@ bool footballer_frame_supported(const Wram* w, uint16_t page) {
   if (!footballer_show_supported(w, page)) return false;
   return state == FOOTBALLER_STATE_RUN || state == FOOTBALLER_STATE_STAND ||
          state == FOOTBALLER_STATE_RUN_LOOSE ||
-         state == FOOTBALLER_STATE_VEER || state == FOOTBALLER_STATE_RUN_OFF;
+         state == FOOTBALLER_STATE_VEER || state == FOOTBALLER_STATE_RUN_OFF ||
+         state == FOOTBALLER_STATE_SENT_OFF;
 }
 
 FootballerFate footballer_frame(Wram* w, const Rom* rom, uint16_t page,
@@ -474,6 +492,10 @@ FootballerFate footballer_frame(Wram* w, const Rom* rom, uint16_t page,
     case FOOTBALLER_STATE_RUN_OFF:
       PORT_COVER(footballer_sent_off);
       run_off(&f);
+      break;
+    case FOOTBALLER_STATE_SENT_OFF:
+      PORT_COVER(footballer_first_off);
+      sent_off(&f);
       break;
     default:
       PORT_COVER(footballer_ran_veering);

@@ -14,6 +14,7 @@
 #define REG_VMDATA 0x2118u
 #define REG_BG1_SCROLL_X 0x210du
 
+#define REG_BG3_MAP 0x2109u
 #define REG_BG3_SCROLL_X 0x2111u
 #define REG_BG3_SCROLL_Y 0x2112u
 #define REG_CGADD 0x2121u
@@ -165,6 +166,19 @@ uint8_t game_over_colours_job(HwTrace* t) {
   }
   hw_run(t, IS_TAIL);
   return colours[sizeof colours - 1];
+}
+
+void game_over_layer_job(Wram* w, PortCpu* c, HwTrace* t) {
+  PORT_COVER(game_over_layer_job);
+  hw_run(t, IS_VMAIN);
+  hw_w8(t, REG_BG3_MAP, GAME_OVER_LAYER_MAP);
+  hw_run(t, GO_LAYER_ARGS);
+  push16(w, c, GAME_OVER_LAYER_TILES_BANK);
+  c->a = GAME_OVER_LAYER_TILES;
+  c->x = GAME_OVER_LAYER_VRAM;
+  c->y = GAME_OVER_LAYER_BYTES;
+  set_nz16(c, c->y);
+  c->pc = GAME_OVER_LAYER_SEND_PC;
 }
 
 bool game_over_fall_supported(const Wram* w, uint16_t d) {

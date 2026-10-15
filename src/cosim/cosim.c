@@ -101,6 +101,8 @@ typedef struct {
   uint16_t delta[COSIM_MAX_COMMIT];  // for an `add` span
   uint8_t was[COSIM_MAX_COMMIT][COSIM_COMMIT_BYTES];   // before the port ran
   uint8_t now[COSIM_MAX_COMMIT][COSIM_COMMIT_BYTES];   // ...and after
+  int due[COSIM_MAX_COMMIT];  // the cycle each is written at, or -1: the end
+  bool sent[COSIM_MAX_COMMIT];
 } CosimCommit;
 
 typedef struct {
@@ -1273,6 +1275,13 @@ static int g_cosim_cost = -1;
 
 void cosim_cost(int cycles) { g_cosim_cost = cycles; }
 
+// ...and when the shim says its commit spans are written.
+static int g_commit_due[COSIM_MAX_COMMIT];
+
+void cosim_commit_due(int span, int cycles) {
+  if (span >= 0 && span < COSIM_MAX_COMMIT) g_commit_due[span] = cycles;
+}
+
 // Compare a reported cost against what the ROM's own instructions really took.
 // See `cosim_cost` for why a right answer here is a multiple of 40 rather than
 // zero, and `CosimStat::model_hdma` for when it is neither.
@@ -1984,8 +1993,11 @@ static void commit_capture(const Cosim* c, const CosimRoutine* r,
                            CosimCommit* k) {
   k->count = r->commit_count;
   k->span = r->commit;
-  for (int i = 0; i < k->count; i++)
+  for (int i = 0; i < k->count; i++) {
     memcpy(k->was[i], c->snes->ram + k->span[i].at, k->span[i].len);
+    k->sent[i] = false;
+    g_commit_due[i] = -1;
+  }
 }
 
 // Take back what the port just published, and keep it for later.
@@ -1996,6 +2008,7 @@ static void commit_capture(const Cosim* c, const CosimRoutine* r,
 // the handler may move the word while we are holding it.
 static void commit_hold(Cosim* c, CosimCommit* k) {
   for (int i = 0; i < k->count; i++) {
+    k->due[i] = g_commit_due[i];
     uint8_t* at = c->snes->ram + k->span[i].at;
     memcpy(k->now[i], at, k->span[i].len);
     memcpy(at, k->was[i], k->span[i].len);
@@ -2011,18 +2024,40 @@ static void commit_hold(Cosim* c, CosimCommit* k) {
 // all of it would undo the handler's own writes to the bytes the routine never
 // touched -- `$80:8408` zeroes the slots it dispatched, and those are somebody
 // else's jobs.
-static void commit_publish(Cosim* c, CosimCommit* k) {
+static void commit_publish_one(Cosim* c, CosimCommit* k, int i) {
   Wram* w = (Wram*)c->snes->ram;
-  for (int i = 0; i < k->count; i++) {
-    const CosimCommitSpan* sp = &k->span[i];
-    if (sp->add) {
-      wram_w16(w, sp->at, (uint16_t)(wram_r16(w, sp->at) + k->delta[i]));
-      continue;
-    }
-    for (uint16_t o = 0; o < sp->len; o++)
-      if (k->now[i][o] != k->was[i][o]) c->snes->ram[sp->at + o] = k->now[i][o];
+  const CosimCommitSpan* sp = &k->span[i];
+  k->sent[i] = true;
+  if (sp->add) {
+    wram_w16(w, sp->at, (uint16_t)(wram_r16(w, sp->at) + k->delta[i]));
+    return;
   }
+  for (uint16_t o = 0; o < sp->len; o++)
+    if (k->now[i][o] != k->was[i][o]) c->snes->ram[sp->at + o] = k->now[i][o];
+}
+
+static void commit_publish(Cosim* c, CosimCommit* k) {
+  for (int i = 0; i < k->count; i++)
+    if (!k->sent[i]) commit_publish_one(c, k, i);
   k->count = 0;
+}
+
+// The spans due by `spent` cycles into the budget (`cosim_commit_due`).
+static void commit_publish_due(Cosim* c, CosimCommit* k, int spent) {
+  for (int i = 0; i < k->count; i++)
+    if (!k->sent[i] && k->due[i] >= 0 && k->due[i] <= spent)
+      commit_publish_one(c, k, i);
+}
+
+// How many cycles from `spent` the next of them falls due, or -1 if none is
+// waiting.
+static int commit_next_due(const CosimCommit* k, int spent) {
+  int next = -1;
+  for (int i = 0; i < k->count; i++)
+    if (!k->sent[i] && k->due[i] >= 0 &&
+        (next < 0 || k->due[i] - spent < next))
+      next = k->due[i] - spent;
+  return next;
 }
 
 // Spend as much of the innermost budget as can be spent without standing in the
@@ -2210,6 +2245,7 @@ static bool burn_spend(Cosim* c) {
   const uint32_t frame = c->snes->frames;
   const bool vblank = c->snes->inVblank;
   uint64_t waited = 0;
+  commit_publish_due(c, &b->commit, b->spent);
   while ((b->left > 0 || b->wstep) && !burn_interrupt(c, b) &&
          c->snes->frames == frame && c->snes->inVblank == vblank) {
     if (b->wstep) {
@@ -2217,6 +2253,9 @@ static bool burn_spend(Cosim* c) {
       continue;
     }
     int piece = b->left < b->piece ? b->left : b->piece;
+    // ...and at a span that falls due, so an interrupt after it sees it.
+    const int due = commit_next_due(&b->commit, b->spent);
+    if (due > 0 && due < piece) piece = due;
     // A slice stops at the next event, so each lands on its own cycle.
     if (b->ev_i < b->ev_n) {
       const int to = b->ev[b->ev_i].at + b->shift - b->spent;
@@ -2230,6 +2269,7 @@ static bool burn_spend(Cosim* c) {
     b->left -= piece;
     b->spent += piece;
     b->polled = false;
+    commit_publish_due(c, &b->commit, b->spent);
   }
   // A model short of the ROM's would leave events over. They are still the
   // routine's, and `verify` is what says the model was short.

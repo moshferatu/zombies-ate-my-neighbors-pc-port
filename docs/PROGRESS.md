@@ -5,6 +5,99 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The game's clear, the game over, the demonstration, and a hundred small places (2026-10-15)
+
+A round about five times the size of the last few, validated once at the
+end: the third stretch of the game's clear, the whole of the game over and
+of the demonstration's part of the front end, four creatures' unported
+pieces, and the places that were only a call.
+
+* **The game's clear, `$80:897F`.** The third stretch had been the ROM's
+  because the NMI reads `$7E:1EB4` from the middle of it, and a port that
+  cleared the word at once moved the random numbers on two movies. A
+  commit span can now be written partway through the budget
+  (`cosim_commit_due`), and the word's two bytes are written at the cycles
+  the copy reaches them. The stretch was half of what the core still ran.
+* **The game over, `port/game_over.h`.** Everything between the calls of
+  `$80:8A00`: the scroll's shadow set, five jobs asked for a frame apart,
+  the four sprites begun, the five seconds' rest, and the fade to black a
+  `WAI` at a time. Three of its jobs only send, and are rows of
+  `port/dma.h`'s table; the fourth, `$80:8B2B`, puts the third layer's map
+  at `$4800` first and is a port of its own with its register write. The
+  `WAI`s and the calls round them are links.
+* **The top scores' check, `$82:BBED`**, which the main thread calls after
+  the game over: neither score as good as the tenth. A score that is good
+  enough goes on to take a name, which is the ROM's.
+* **The demonstration, `port/demo_thread.h`.** From `$80:9AB0`, when nobody
+  joins on the players' screen, to the front end again: one of the four
+  recordings not played yet drawn for, its level's map unpacked, its song,
+  the frame count and random state cleared, its job asked for, and after
+  the level's loop the top scores or the title. One store is left to the
+  core: `STA $70:0000`, to the cartridge's save memory, which the port does
+  not have.
+* **The chainsaw maniac.** Its start is seven thread stretches. A pass in
+  the cut's state was turned down by `chainsaw_frame`, which knows nothing
+  of the cut; a second row at `$81:9878` now takes that pass as far as the
+  cut's own stretches, and `$81:9880`, where every pass ends, is a row too.
+* **The werewolf's landing.** `werewolf_frame` takes the landing's pass to
+  its pictures, and `$81:AA87` after them strikes if its target is beside
+  it, and otherwise rests a drawn one to sixteen ticks.
+* **A footballer sent off.** Its handler leaves it a state, `$81:C6F2`, for
+  its next pass, which `footballer_frame` turned down: its hits go nowhere,
+  it turns at a player in reach and then the other way, and runs off in
+  the same pass. The handler's end is a stretch.
+* **A player stung**, by what has id `$0A`: a point of health, a sound, a
+  picture and 75 ticks untouchable, as three stretches. **An ant's flash**
+  on level 45, two.
+* **The colour animations' starts**: the three turns' threads begin alike,
+  and the figure's begins with its first waking.
+* **About forty places that were only a call.** A script reads the first
+  instructions at each place the survey lists. Those that are a single
+  call, return or `WAI`, a load and a call, or two loads and a call into a
+  registered entry became links, thread arguments and thread pairs. Two of
+  them are in every session: the reset's thread spawn and its `JMP`.
+* **Looked at and left.**
+  * The exit door's thread, `$82:F70B`, which looks round the player for
+    somewhere to put the door with seven calls a try. One session reaches
+    it.
+  * A bystander's words on level 49, `$82:DDA7`, which write a colour
+    register between `WAI`s.
+  * The attract movies' third figure, `$82:A84B`, which calls two routines
+    nothing has ported.
+  * The lob's burst, for the reason last round gave.
+* **Two mistakes of mine, caught by the corpus and the checks before it.**
+  * A footballer's show prices the players' test it makes from the pass's
+    first test where the pass did not run. Sent off, it had made two, and
+    the price was the wrong one's. It is the pass's last test now.
+  * Two stretches counted the instruction they stop at, an `RTS` and a
+    `JSL`, which the harness makes after them.
+* **Checked.** 1,570 routines are registered.
+  * The corpus verifies clean: 128,086,758 calls over 56 movies, none
+    diverged, and all 1,138 cost rows are exact.
+  * Branch coverage is 1,779 of 2,136.
+  * Lockstep: 53 of 56 never part. level25, level25-2p and level25-heavy
+    part at the same passes as before.
+  * The picture: 78,360,128 lines at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 275 to 181 | 1,746 to 929 | 15,084 to 9,328 |
+  | Left standing on an instruction | 13 to 11 | 223 to 214 | 26,584 to 934 |
+  | A port turned the call down | 23 to 22 | 252 to 212 | 3,253 to 2,933 |
+  | A port or a link called it | 8 to 6 | 159 to 148 | 493 to 426 |
+  | All | 320 to 221 | 2,490 to 1,613 | 53,334 to 21,541 |
+
+  The reset's own code, 7,920 instructions over the 110, is not in these
+  rows. Seventeen places are new, and none is more than 32 instructions:
+  where a new link returns to something not ported, and the demo's store
+  to save memory.
+* **Not done.** The exit door's thread; the bystander's words; the attract
+  movies' third figure; the lob's three handlers; the trampoline's other
+  bounce; the poses that go on into a sleep; and the reset's clear, the
+  one place every session still has.
+
 ### The trampoline, a player in a slime's splash, and level 17's spider and walker starts (2026-10-14)
 
 Three clusters of places: the trampoline on levels 5, 13, 21 and 41 and the

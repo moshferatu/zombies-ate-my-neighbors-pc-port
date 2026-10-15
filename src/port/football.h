@@ -44,7 +44,11 @@
 // **Sent off, it runs eight pixels a pass** the way it was facing, turning
 // where the ground stops it, and ends once its picture is off the screen:
 // eight to the left of it, or more than 328 across or 272 down from its
-// corner. Its handler sends it off, at `$81:C6F2`.
+// corner. Its handler sends it off: its pictures, and the state at
+// `$81:C6F2` for its next pass. That pass its hits go nowhere, it turns at a
+// player in reach, and then the other way, as the ground stopping it would
+// turn it. It runs off in the same pass. The handler's end, `$81:C6D9`, is a
+// stretch of `port/thread_stretches.h`.
 //
 // ## Its contract with the ROM
 //
@@ -81,6 +85,7 @@
 #define FOOTBALLER_STATE_RUN_LOOSE 0xc61cu
 #define FOOTBALLER_STATE_VEER 0xc665u
 #define FOOTBALLER_STATE_RUN_OFF 0xc70bu
+#define FOOTBALLER_STATE_SENT_OFF 0xc6f2u
 
 // Fields on its page.
 #define FOOTBALLER_DP_RECORD 0x08

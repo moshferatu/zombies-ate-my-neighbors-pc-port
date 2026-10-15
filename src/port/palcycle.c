@@ -59,6 +59,25 @@ void palcycle_turn(Wram* w, const PalcycleTurn* turn, PalcycleLog* log) {
   ask_for_upload(w, log);
 }
 
+void palcycle_turn_begin(Wram* w, PortCpu* c) {
+  PORT_COVER(palcycle_turn_begin);
+  push16(w, c, 0x007e);
+  c->db = pull8(w, c);
+  push16(w, c, 0x0000);
+  c->d = pull16(w, c);
+  // `SEP #$30` clears the index registers' high bytes, and `PLA` is a byte.
+  c->x &= 0x00ffu;
+  c->y &= 0x00ffu;
+  const uint8_t byte = pull8(w, c);
+  c->a = (uint16_t)((c->a & 0xff00u) | byte);
+  set_nz8(c, byte);
+}
+
+void palcycle_figure_begin(Wram* w, uint16_t page) {
+  PORT_COVER(palcycle_figure_begin);
+  wram_w16(w, (uint16_t)(page + PALCYCLE_FIGURE_DP_ROW), 0);
+}
+
 uint16_t palcycle_turn_seven_ticks(Wram* w, bool carry, RngResult* draw) {
   rng_next(w, carry, draw);
   return (uint16_t)((draw->a & 7) + 1);

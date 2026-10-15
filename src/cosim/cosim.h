@@ -427,6 +427,10 @@ typedef struct {
   // them know it is happening.
   //
   // Spans are in the order the ROM writes them.
+  //
+  // A span may be published before the end instead, at the cycle the shim
+  // names with `cosim_commit_due`: a long copy that passes a word the handler
+  // reads partway through.
   const CosimCommitSpan* commit;
   int commit_count;
 
@@ -583,6 +587,11 @@ typedef enum {
 // gets `cycles`, and one that can only price some of its paths can report on
 // those and stay silent on the rest.
 void cosim_cost(int cycles);
+
+// ...and when commit span `span` of this call is written, in the same cycles
+// as the cost, counted from the entry. A span no shim names this way is
+// written when the budget is spent. See `CosimRoutine::commit`.
+void cosim_commit_due(int span, int cycles);
 
 // Cycles the core inserts for a DRAM refresh, once per scanline. It is the unit
 // a correct cost model's residual error comes in — see `model_refresh_exact`.

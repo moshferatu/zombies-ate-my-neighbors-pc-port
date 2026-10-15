@@ -582,6 +582,30 @@ ChainsawFate chainsaw_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
   return finish(&c);
 }
 
+void chainsaw_cut_pass(Wram* w, PortCpu* cpu) {
+  PORT_COVER(chainsaw_cut_pass);
+  push16(w, cpu, CHAINSAW_PASS_RETURN);
+  const uint16_t state = wram_r16(w, (uint16_t)(cpu->d + CHAINSAW_DP_STATE));
+  cpu->a = (uint16_t)(state - 1);
+  set_nz16(cpu, cpu->a);
+  push16(w, cpu, cpu->a);
+  cpu->pc = (cpu->pc & 0xff0000u) | (uint16_t)(pull16(w, cpu) + 1);
+}
+
+bool chainsaw_pass_shown_supported(const Wram* w, uint16_t page) {
+  return way_known(w, page);
+}
+
+ChainsawFate chainsaw_pass_shown(Wram* w, const Rom* rom, uint16_t page,
+                                 bool carry, bool overflow, ChainsawLog* log) {
+  *log = (ChainsawLog){0};
+  Chainsaw c = {w, rom, page,
+                wram_r16(w, (uint16_t)(page + CHAINSAW_DP_RECORD)), log,
+                {carry, overflow, false, false}};
+  PORT_COVER(chainsaw_pass_shown);
+  return finish(&c);
+}
+
 // ---------------------------------------------------------------------------
 // The swing
 // ---------------------------------------------------------------------------

@@ -13,8 +13,14 @@
 //   $80:A106  pulse        colour 90's green goes up and comes down, every 4
 //   $80:A180  figure       the big figure's row steps through ten arrangements
 //
-// What is not here is each thread's setup, which runs once. The pulse's is
-// a thread stretch: see `port/thread_stretches.h`.
+// And each thread's start, which runs once. The pulse's is a thread
+// stretch: see `port/thread_stretches.h`. The others:
+//
+//   $80:A0AD  the turns' three begin alike: the data bank `$7E` and the
+//   $80:A222  direct page nothing, by `PEA : PLB : PEA : PLD`, and a byte
+//   $80:A264  pulled off the stack eight bits wide. Then the first sleep:
+//             five ticks, or for the seven a draw
+//   $80:A137  the figure's, at its first row, and its first waking at once
 //
 // ## Turning
 //
@@ -56,6 +62,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/rng.h"
 #include "port/wram.h"
 
@@ -87,6 +94,10 @@ extern const PalcycleTurn PALCYCLE_TURN_SEVEN;
 #define PALCYCLE_PULSE_NO_GREEN 0xfc1fu
 #define PALCYCLE_PULSE_STEP 0x0020
 
+#define PALCYCLE_SIX_BEGIN_PC 0x80a0adu
+#define PALCYCLE_FIVE_BEGIN_PC 0x80a222u
+#define PALCYCLE_SEVEN_BEGIN_PC 0x80a264u
+#define PALCYCLE_FIGURE_BEGIN_PC 0x80a137u
 #define PALCYCLE_FIGURE_PC 0x80a180u
 #define PALCYCLE_FIGURE_YIELD_PC 0x80a17cu
 #define PALCYCLE_FIGURE_TABLE 0x80a182u
@@ -120,8 +131,13 @@ void palcycle_turn(Wram* w, const PalcycleTurn* turn, PalcycleLog* log);
 uint16_t palcycle_turn_seven_ticks(Wram* w, bool carry, RngResult* draw);
 void palcycle_pulse(Wram* w, uint16_t page, PalcycleLog* log);
 
+// What the turns' threads begin with, to their first sleep's number.
+void palcycle_turn_begin(Wram* w, PortCpu* c);
+
 // Not a row past the table's ten.
 bool palcycle_figure_supported(const Wram* w, uint16_t page);
+// The figure's first row.
+void palcycle_figure_begin(Wram* w, uint16_t page);
 // Returns how many ticks the thread sleeps.
 uint16_t palcycle_figure(Wram* w, const Rom* rom, uint16_t page,
                          PalcycleLog* log);

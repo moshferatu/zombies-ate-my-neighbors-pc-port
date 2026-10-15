@@ -19580,3 +19580,40 @@ those frames stay turned down.
 Over the same 110 sessions the core executes 53,334 instructions where it
 executed 57,771, and takes over 2,490 times where it did 2,798, at 320
 places where there were 340.
+
+## The game's clear, the game over, the demonstration and a hundred small places (2026-10-15)
+
+### A commit span with a time
+
+`commit` held a word back until the budget was spent, which is right for a
+routine whose publishing store is its last. The third stretch of the game's
+clear is the other case. It is `MVN` over `$137E-$1FFB`, and the NMI reads
+`$1EB4` from the middle of it: set, the handler leaves the random numbers
+alone. The copy reaches that word nine tenths of the way through, so an NMI
+before then must see it set, and one after must see it clear.
+
+`cosim_commit_due(span, cycles)` lets a shim say when a span is written,
+counted from the entry as the cost is. `burn_spend` stops a slice at the
+next span due and writes it there, before it looks for an interrupt, as
+the ROM's turn of the copy ends before the interrupt is taken. A span no
+shim names is written at the end, as before. The clear's two bytes are two
+spans, each due at the end of the turn that reaches it.
+
+The stretch had been the ROM's because clearing it at once moved the
+random numbers on two movies. With the word held back it is a port, and
+lockstep on the five movies that reach it never parts.
+
+### Links found by looking
+
+A script now reads the first instructions at every place the survey lists
+and sorts out those that are a single call, return or wait, a load and a
+call, or two loads and a call, into a registered entry. Those are links,
+thread arguments and thread pairs, which needed no reading at all: about
+forty places.
+
+### After
+
+Over the same 110 sessions the core executes 21,541 instructions where it
+executed 53,334, and takes over 1,613 times where it did 2,490, at 221
+places where there were 320. The clear's third stretch was 25,632 of the
+instructions.

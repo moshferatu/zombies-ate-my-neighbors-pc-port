@@ -106,6 +106,7 @@ enum {
   FE_SEC_RTL,     // SEC : RTL
   BS_HEAD,        // $82:B1F9-$B204: the count, and the test for a fourth
   BS_STEP,        // INC $1368 : INC $136A
+  GO_LAYER_ARGS,  // $80:8B32-$8B40: REP, and what the send is called with
   FRONTEND_BLOCK_COUNT
 };
 
@@ -209,6 +210,21 @@ void game_over_frame(Wram* w, PortCpu* c, bool second, GameOverFrameLog* log);
 #define GAME_OVER_SPRITE_FLAGS 0xc028u
 
 bool game_over_sprite_begin_supported(uint16_t x);
+
+// --- $80:8B2B  the game over's third layer -----------------------------------
+//
+// A job the game over's thread asks for once: the third layer's map put at
+// VRAM `$4800`, and what the send of its tiles is called with, to the send's
+// `JSL`: `$0760` bytes from `$9E:E600` to `$4000`. The bank is a word on the
+// stack.
+#define GAME_OVER_LAYER_JOB_PC 0x808b2bu
+#define GAME_OVER_LAYER_SEND_PC 0x808b41u
+#define GAME_OVER_LAYER_MAP 0x4au  // the map at `$4800`, 64 across
+#define GAME_OVER_LAYER_TILES 0xe600u
+#define GAME_OVER_LAYER_TILES_BANK 0x009eu
+#define GAME_OVER_LAYER_VRAM 0x4000u
+#define GAME_OVER_LAYER_BYTES 0x0760u
+void game_over_layer_job(Wram* w, PortCpu* c, HwTrace* t);
 // False with no record free, which the ROM does not test for.
 bool game_over_sprite_begin(Wram* w, const Rom* rom, PortCpu* c,
                             uint16_t* record_out);

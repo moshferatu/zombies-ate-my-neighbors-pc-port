@@ -9,9 +9,11 @@
 #include "port/bossbg.h"            // W_BOSS_BG_ONE_SRC
 #include "port/bystander.h"
 #include "port/chainsaw.h"
+#include "port/apu.h"               // W_APU_SOUNDS
 #include "port/cheat.h"
 #include "port/coverage.h"
 #include "port/follower.h"
+#include "port/football.h"         // FOOTBALLER_STATE_SENT_OFF
 #include "port/frontend.h"            // the frame count
 #include "port/level_scene.h"       // W_LEVEL_NUMBER
 #include "port/martian.h"
@@ -52,6 +54,26 @@ const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
     {0x82ec5au, 0x0020},  // the seeker's sleep after its puff begins
     {0x82950au, 0x0001},  // the figure's sleeps while its tiles go up
     {0x82a871u, 0x0001},  // the same after `$82:A86D`'s upload
+    {0x8085bbu, 0x0007},  // sound 7, as both players reach the way out
+    {0x8085c2u, 0x0090},  // ...and 144 ticks
+    {0x80ea16u, 0x000a},  // ten ticks
+    {0x80ef7bu, 0x0023},  // a sound
+    {0x80ef88u, 0x0004},  // four ticks
+    {0x80efa3u, 0x0004},  // four ticks
+    {0x80efb2u, 0x0004},  // four ticks
+    {0x81843bu, 0x012c},  // five seconds
+    {0x81a471u, 0x0002},  // two ticks
+    {0x81c6d2u, 0xc6dc},  // a footballer sent off: its pictures
+    {0x81e500u, 0xe5b8},  // a fishman's pictures
+    {0x81e593u, 0xe5b8},  // ...the same
+    {0x81e8bau, 0x0014},  // the swipe's sound
+    {0x81f1e6u, 0xf296},  // a decoy's pictures
+    {0x81f9abu, 0xfab1},  // the lob's pictures as it bursts
+    {0x82ef0bu, 0xef20},  // a seeker's pictures
+    {0x82f279u, 0x0002},  // two ticks
+    {0x82f606u, 0xf623},  // a square let go: its pictures
+    {0x82f760u, 0xf77a},  // the exit door's last pictures
+    {0x82f918u, 0xf934},  // ...and its first
 };
 
 const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS] = {0x9533, 0x9538, 0x953d,
@@ -71,6 +93,9 @@ const ThreadPair THREAD_PAIRS[THREAD_PAIR_COUNT] = {
     {0x8085d3u, 0x8000, 0x0084},  // what the layers are reset with
     {0x819b30u, 0x9b6b, 0x0081},  // the martian's handler
     {0x80c2deu, 0xc2ab, 0x0080},  // the thread of the display's top
+    {0x80815fu, 0x84b1, 0x0080},  // the main thread, begun at the reset
+    {0x81f252u, 0xf25d, 0x0081},  // a decoy's handler
+    {0x82f91fu, 0xf958, 0x0082},  // the exit door's handler
 };
 
 const WeedThrow WEED_THROWS[WEED_THROW_COUNT] = {
@@ -228,6 +253,18 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
              wram_r16(w, (uint16_t)(c->s + 1)) == WALKER_MADE_RETURN;
     case TS_NEEDS_WALKER_SHOWN:
       return wram_r16(w, (uint16_t)(c->s + 1)) == WALKER_MADE_RETURN;
+    case TS_NEEDS_STUNG:
+      return page(w, c, STUNG_DP_PLAYER) < 4 &&
+             page(w, c, STUNG_DP_RECORD) < 0x1f00;
+    case TS_NEEDS_STUNG_SHOWN:
+      return page(w, c, STUNG_DP_RECORD) < 0x1f00 && c->db == 0x80 &&
+             page(w, c, STUNG_DP_WAY) <= 2;
+    case TS_NEEDS_CHAINSAW_MADE:
+      return page(w, c, CHAINSAW_DP_RECORD) < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == CHAINSAW_MADE_RETURN;
+    case TS_NEEDS_CHAINSAW_SHOWN:
+      return page(w, c, CHAINSAW_DP_RECORD) < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == CHAINSAW_SHOWN_RETURN;
     case TS_NEEDS_SEEKER:
       return seeker_returns(w, c);
     case TS_NEEDS_SEEKER_HIDDEN:
@@ -1802,6 +1839,202 @@ void spider_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   lda(c, SPIDER_YIELD_TICKS);
   ran(k, TS_SPIDER_FIRST);
   c->pc = SPIDER_YIELD_PC;
+}
+
+// `$80:F9D0`: a point of health, if they have one.
+void stung(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  ldx(c, page(w, c, STUNG_DP_PLAYER));
+  const uint16_t health = wram_r16(w, (uint16_t)(W_PLAYER_HEALTH + c->x));
+  lda(c, health);
+  ran(k, TS_STUNG);
+  if (health == 0) {
+    PORT_COVER(stung_spared);
+    ran(k, TS_TAKEN);
+    c->pc = STUNG_SPARED_PC;
+    return;
+  }
+  PORT_COVER(stung);
+  wram_w16(w, (uint16_t)(W_PLAYER_HEALTH + c->x), (uint16_t)(health - 1));
+  lda(c, STUNG_SOUND);
+  ran(k, TS_STUNG_HURT);
+  c->pc = STUNG_SOUND_CALL_PC;
+}
+
+// `$80:F9E2`: the picture, and `JSR player_unhandled`.
+void stung_heard(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  PORT_COVER(stung_heard);
+  c->x = page(w, c, STUNG_DP_WAY);
+  c->y = page(w, c, STUNG_DP_RECORD);
+  lda(c, rom_word(rom, STUNG_PICTURES + c->x));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META), c->a);
+  push16(w, c, STUNG_HEARD_RETURN);
+  ran(k, TS_STUNG_SHOWN);
+  c->pc = STUNG_UNHANDLED_PC;
+}
+
+// `$80:F9F2`: 75 ticks.
+void stung_held(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(stung_held);
+  lda(c, STUNG_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = STUNG_YIELD_PC;
+}
+
+// `$81:C6D9`: `JMP $C6EC`, and the state for its next pass.
+void footballer_off_pictured(Wram* w, const Rom* rom, PortCpu* c,
+                             ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(footballer_off_pictured);
+  ran(k, TS_JMP);
+  lda(c, FOOTBALLER_STATE_SENT_OFF);
+  set_page(w, c, FOOTBALLER_DP_STATE, c->a);
+  ran(k, TS_FOOTBALLER_OFF);
+  c->pc = FOOTBALLER_OFF_RTS_PC;
+}
+
+// `$81:BAEC`.
+void ant_flash(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(ant_flash);
+  c->y = page(w, c, ANT_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_ATTR), ANT_FLASH_ATTR);
+  lda(c, ANT_FLASH_TICKS);
+  ran(k, TS_ANT_FLASH);
+  c->pc = ANT_FLASH_YIELD_PC;
+}
+
+// `$81:BAFB`: carry clear, back to the thread.
+void ant_flashed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(ant_flashed);
+  c->y = page(w, c, ANT_DP_RECORD);
+  lda(c, 0);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_ATTR), 0);
+  set_c(c, false);
+  ran(k, TS_ANT_FLASHED);
+  c->pc = ANT_FLASHED_RTL_PC;
+}
+
+// `$81:983A`: its weight, seven passes to its first picture, and a record.
+void chainsaw_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(chainsaw_entered);
+  load_up(w, c, CHAINSAW_LOAD);
+  lda(c, CHAINSAW_FIRST_PICTURE_WAIT);
+  set_page(w, c, CHAINSAW_DP_PICTURE_WAIT, c->a);
+  push16(w, c, CHAINSAW_MADE_RETURN);
+  ran(k, TS_CHAINSAW_ENTER);
+  c->pc = CHAINSAW_RECORD_CALL_PC;
+}
+
+// `$81:9733`: where it is, its record, and its first state.
+void chainsaw_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(chainsaw_made);
+  const uint16_t record = page(w, c, CHAINSAW_DP_RECORD);
+  const uint16_t x = page(w, c, 0x00);
+  const uint16_t y = page(w, c, 0x02);
+  set_page(w, c, CHAINSAW_DP_X, x);
+  set_page(w, c, CHAINSAW_DP_FINE_X, (uint16_t)(x << 2));
+  set_page(w, c, CHAINSAW_DP_Y, y);
+  set_page(w, c, CHAINSAW_DP_FINE_Y, (uint16_t)(y << 2));
+  set_page(w, c, CHAINSAW_DP_TURN, CHAINSAW_START_TURN);
+  set_page(w, c, CHAINSAW_DP_WAY, 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), CHAINSAW_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), CHAINSAW_START_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  c->y = record;
+  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), CHAINSAW_ATTR);
+  set_page(w, c, CHAINSAW_DP_7E, 0);
+  set_page(w, c, CHAINSAW_DP_KILLER, 0);
+  set_page(w, c, CHAINSAW_DP_HEALTH, CHAINSAW_HEALTH);
+  set_page(w, c, CHAINSAW_DP_SAW, 0xffffu);
+  lda(c, CHAINSAW_4A);
+  set_page(w, c, CHAINSAW_DP_4A, c->a);
+  // The second `ASL` of the place down leaves the carry.
+  set_c(c, (y & 0x4000u) != 0);
+  pull16(w, c);
+  ran(k, TS_CHAINSAW_MADE);
+  // Back in the start: its way, and the state that wanders.
+  lda(c, CHAINSAW_START_WAY);
+  set_page(w, c, CHAINSAW_DP_WAY, c->a);
+  push16(w, c, (uint16_t)(CHAINSAW_SET_PC - 1));
+  ran(k, TS_CHAINSAW_WAYS);
+  c->pc = CHAINSAW_WANDER_CALL_PC;
+}
+
+// `$81:9854`: its entry in the level's list.
+void chainsaw_set(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(chainsaw_set);
+  lda(c, page(w, c, CHAINSAW_DP_LIST));
+  ran(k, TS_LDA_DP);
+  c->pc = CHAINSAW_MARK_CALL_PC;
+}
+
+// `$81:985A`: `JSR $9811`, which sounds it on a level with no samples of
+// its own, and asks for its first pictures.
+void chainsaw_marked(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  push16(w, c, (uint16_t)(CHAINSAW_SHOWN_RETURN));
+  ran(k, TS_JSR);
+  const uint16_t sounds = wram_r16(w, W_APU_SOUNDS);
+  lda(c, sounds);
+  cmp16(c, sounds, 0);
+  ran(k, TS_CHAINSAW_SOUND_TEST);
+  if (sounds == 0) {
+    PORT_COVER(chainsaw_sounded);
+    lda(c, CHAINSAW_SOUND);
+    ran(k, TS_LDA_IMM);
+    c->pc = CHAINSAW_SOUND_CALL_PC;
+    return;
+  }
+  PORT_COVER(chainsaw_unheard);
+  ran(k, TS_TAKEN);
+  lda(c, CHAINSAW_FIRST_PICTURES);
+  ran(k, TS_LDA_IMM);
+  c->pc = CHAINSAW_PICTURES_CALL_PC;
+}
+
+// `$81:9820`: back from the sound.
+void chainsaw_heard(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(chainsaw_heard);
+  lda(c, CHAINSAW_FIRST_PICTURES);
+  ran(k, TS_LDA_IMM);
+  c->pc = CHAINSAW_PICTURES_CALL_PC;
+}
+
+// `$81:9827`: back in the start, what can touch it and its handler.
+void chainsaw_shown(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(chainsaw_shown);
+  pull16(w, c);
+  ran(k, TS_RTS);
+  const uint16_t record = page(w, c, CHAINSAW_DP_RECORD);
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), CHAINSAW_COLLIDE_ID);
+  c->a = CHAINSAW_HANDLER;
+  ldy(c, CHAINSAW_HANDLER_BANK);
+  ran(k, TS_CHAINSAW_HANDLER);
+  c->pc = CHAINSAW_HANDLER_CALL_PC;
+}
+
+// `$81:986F`: the first sleep.
+void chainsaw_handled(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(chainsaw_handled);
+  set_page(w, c, 0x2c, 0);
+  lda(c, CHAINSAW_YIELD_TICKS);
+  ran(k, TS_CHAINSAW_FIRST);
+  c->pc = CHAINSAW_YIELD_PC;
 }
 
 // `$81:D708`: with room, its weight and a record asked for.

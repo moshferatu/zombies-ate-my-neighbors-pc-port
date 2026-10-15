@@ -236,6 +236,54 @@
   X(81d8b5, "$81:D8B5", 0x81d8b5u) /* RTS */ \
   X(81c94d, "$81:C94D", 0x81c94du) /* RTS */ \
   X(82dc9f, "$82:DC9F", 0x82dc9fu) /* RTL */ \
-  X(80c1f4, "$80:C1F4", 0x80c1f4u) /* RTL */
+  X(80c1f4, "$80:C1F4", 0x80c1f4u) /* RTL */ \
+  /* The game over's, and the main thread's round it: see port/game_over.h */ \
+  X(808a07, "$80:8A07", 0x808a07u) /* JSR $80:8A78 */ \
+  X(808a78, "$80:8A78", 0x808a78u) /* WAI */ \
+  X(808a79, "$80:8A79", 0x808a79u) /* JSL $82:AD44 */ \
+  X(808a91, "$80:8A91", 0x808a91u) /* WAI */ \
+  X(808a9c, "$80:8A9C", 0x808a9cu) /* WAI */ \
+  X(808aa7, "$80:8AA7", 0x808aa7u) /* WAI */ \
+  X(808ab2, "$80:8AB2", 0x808ab2u) /* WAI */ \
+  X(808abd, "$80:8ABD", 0x808abdu) /* WAI */ \
+  X(808a4e, "$80:8A4E", 0x808a4eu) /* BRA $8A45 */ \
+  X(808a57, "$80:8A57", 0x808a57u) /* RTL */ \
+  X(808500, "$80:8500", 0x808500u) /* JSL $80:CC27 */ \
+  X(808508, "$80:8508", 0x808508u) /* JSL $82:BBED */ \
+  X(80850c, "$80:850C", 0x80850cu) /* JSL $82:BA11 */ \
+  X(808510, "$80:8510", 0x808510u) /* JSL $80:895A */ \
+  X(808514, "$80:8514", 0x808514u) /* BRA $84B1 */ \
+  /* The demonstration's: see port/demo_thread.h */ \
+  X(809b3a, "$80:9B3A", 0x809b3au) /* JSR $80:9C4A */ \
+  X(809b3d, "$80:9B3D", 0x809b3du) /* JSL $80:8618 */ \
+  X(809b41, "$80:9B41", 0x809b41u) /* JSL $80:88A9 */ \
+  X(809b45, "$80:9B45", 0x809b45u) /* JSL $80:8632 */ \
+  X(809b49, "$80:9B49", 0x809b49u) /* JSL $80:86A2 */ \
+  X(809b87, "$80:9B87", 0x809b87u) /* JSL $80:8516 */ \
+  X(809b91, "$80:9B91", 0x809b91u) /* JSR $80:9C72 */ \
+  X(809bad, "$80:9BAD", 0x809badu) /* JSL $80:88A9 */ \
+  X(809bb1, "$80:9BB1", 0x809bb1u) /* JSL $80:895A */ \
+  X(809bb5, "$80:9BB5", 0x809bb5u) /* JSL $80:8992 */ \
+  X(809bb9, "$80:9BB9", 0x809bb9u) /* JSL $80:85CF */ \
+  /* Single calls, returns and waits round ports, found by the survey */ \
+  X(808169, "$80:8169", 0x808169u) /* JMP $80:8371 */ \
+  X(80a09d, "$80:A09D", 0x80a09du) /* RTS */ \
+  X(80c218, "$80:C218", 0x80c218u) /* RTL */ \
+  X(80e942, "$80:E942", 0x80e942u) /* RTS */ \
+  X(80ea1d, "$80:EA1D", 0x80ea1du) /* RTS */ \
+  X(80ebc1, "$80:EBC1", 0x80ebc1u) /* RTS */ \
+  X(80f08a, "$80:F08A", 0x80f08au) /* RTS */ \
+  X(818437, "$81:8437", 0x818437u) /* JSL $81:8349 */ \
+  X(818442, "$81:8442", 0x818442u) /* JSL $81:8377 */ \
+  X(81f25c, "$81:F25C", 0x81f25cu) /* RTS */ \
+  X(81f8fb, "$81:F8FB", 0x81f8fbu) /* RTS */ \
+  X(81faa0, "$81:FAA0", 0x81faa0u) /* RTS */ \
+  X(828199, "$82:8199", 0x828199u) /* RTL */ \
+  X(82bae4, "$82:BAE4", 0x82bae4u) /* WAI */ \
+  X(82de02, "$82:DE02", 0x82de02u) /* WAI */ \
+  X(82de07, "$82:DE07", 0x82de07u) /* WAI */ \
+  X(82de82, "$82:DE82", 0x82de82u) /* RTS */ \
+  X(82f5f9, "$82:F5F9", 0x82f5f9u) /* RTS */ \
+  X(82f63f, "$82:F63F", 0x82f63fu) /* JSL $80:BE0C */
 
 #endif
