@@ -114,6 +114,44 @@
 //             what touches them
 //   $80:F9F2  ...and nothing can, for 75 ticks
 //
+// ## The bolt's start, `$81:F808`
+//
+// See `port/bolt.h`. Its weight on the level's load, two, and sound `$15`;
+// then a record, by `JSR $F89D`:
+//
+//   $81:F8A1  the record, two pixels up at the place it was given, its
+//             flags and first picture by the way it goes, what it hits by
+//             the player it is from, nothing told it yet, sixty frames, and
+//             its handler; and back, to its first sleep
+//
+// ## The fishman's death, `$81:E4C1`
+//
+// See `port/fishman.h`. Its frame leaves at its fate, and from there:
+//
+//   $81:E4C1  nothing can tell it of anything
+//   $81:E4C9  the second record it keeps at `$42` freed, if it has one; then
+//             whoever killed it is paid, which is `port/begin.h`'s
+//   $81:E4DF  ...and counted: one more fishman, and one more to the side
+//             that killed it, as `$80:9D6A` finds the side. It can no
+//             longer be touched, and it is heard
+//
+// Its last pictures, and its record, are `port/begin.h`'s too. The patrol's
+// death is the same, with its count at `$81:E572`, and its end its own:
+//
+//   $81:E59A  its weight given back and its record freed
+//   $81:E5AC  ...and the second record, if it has one
+//
+// ## The pause, `$80:89C2`
+//
+// See `port/pause.h`. Between the waits, which are `port/hold.h`'s:
+//
+//   $80:89C2  the volume down: the screen dimmed to 8
+//   $80:89E9  Start let go of again: the volume back up, `$7F`
+//   $80:89F0  ...and the screen at 15 again, and back to the main loop
+//
+// The main loop's frame then goes on from the HUD's refresh, `$80:8537`,
+// with its two questions (`port/mainloop.h`).
+//
 // ## A footballer sent off, `$81:C6D9`
 //
 // See `port/football.h`. Back from its pictures, its handler gives it the
@@ -563,7 +601,37 @@ extern const WeedKind WEED_KINDS[WEED_KIND_COUNT];
 #define SQUARE_ENTER_PC 0x82f6ebu
 #define SQUARE_PASS_PC 0x82f6f8u       // where its sleep comes back
 #define SQUARE_YIELD_PC 0x82f6f4u      // `JSL thread_yield`, six ticks in A
-#define SQUARE_LEFT_PC 0x82f5fau       // nobody in the band: the ROM's
+#define SQUARE_LEFT_PC 0x82f5fau       // nobody in the band
+// ...and from there, round its calls.
+#define SQUARE_MADE_PC 0x82f643u       // its record, in A
+#define SQUARE_MADE_RETURN 0xf5fcu     // `JSR $F63F`'s
+#define SQUARE_SOUND_CALL_PC 0x82f602u // `JSL apu_play_sfx`
+#define SQUARE_SHOWN_PC 0x82f60du      // after its first pictures
+#define SQUARE_CELL_RETURN 0xf60fu     // `JSR $F678`'s
+#define SQUARE_CELL_CALL_PC 0x82f697u  // `JSL blockmap_cell_ptr`
+#define SQUARE_CELL_PC 0x82f69bu
+#define SQUARE_TILE_CALL_PC 0x82f6a5u  // `JSL $80:AB5A`, the tile less one
+#define SQUARE_TILED_PC 0x82f6a9u
+#define SQUARE_BOX_CALL_PC 0x82f5f5u   // `JSL actor_notify_box`
+#define SQUARE_TOLD_PC 0x82f613u       // after the box, by a link's `RTS`
+#define SQUARE_PICTURES_CALL_PC 0x82f616u  // `JSL pictures_play`
+#define SQUARE_HIDDEN_PC 0x82f61au
+#define SQUARE_FREE_CALL_PC 0x82f61cu  // `JSL actor_slot_free`
+#define SQUARE_FREED_PC 0x82f620u
+#define SQUARE_END_PC 0x82f70au        // its `RTL`
+#define SQUARE_SOUND 0x0021
+#define SQUARE_PICTURE 0xd93eu
+#define SQUARE_PICTURE_BANK 0x008f
+#define SQUARE_COLLIDE_ID 0x0069
+#define SQUARE_LAST_PICTURES 0xf62fu
+#define SQUARE_BOX_ID 0x006f           // what it tells those round it
+#define SQUARE_DP_RECORD 0x08
+#define W_SQUARE_COLUMN 0x0038u        // the tile under it, and the box
+#define W_SQUARE_ROW 0x003au
+#define W_SQUARE_BOX_TOP 0x003cu
+#define W_SQUARE_BOX_BOTTOM 0x003eu
+#define W_SQUARE_BOX_ID 0x0040u
+#define W_SQUARE_CELL 0x0028u          // where `blockmap_cell_ptr` leaves it
 #define SQUARE_DONE_PC 0x82f704u       // ...and after that, the end
 #define SQUARE_BAND_CALL_PC 0xf6ebu    // `JSR $F6BA`
 #define SQUARE_HANDLER_CALL_PC 0xf6eeu // `JSR $F6AB`
@@ -884,6 +952,56 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define CHAINSAW_DP_LIST 0x06               // its entry in the level's list
 
 // --- a player stung, and an ant's flash ---------------------------------------
+
+#define FISHMAN_UNHANDLED_CALL_PC 0x81e4c5u  // `JSL thread_set_handler`
+#define FISHMAN_UNHANDLED_PC 0x81e4c9u
+#define FISHMAN_SECOND_FREE_PC 0x81e4d0u     // `JSL actor_slot_free`
+#define FISHMAN_SCORED_PC 0x81e4d4u          // `port/begin.h`'s
+#define FISHMAN_COUNTED_PC 0x81e4dfu
+#define FISHMAN_SOUND_CALL_PC 0x81e4fcu      // `JSL apu_play_sfx`
+#define FISHMAN_PATROL_COUNTED_PC 0x81e572u
+#define FISHMAN_PATROL_SOUND_CALL_PC 0x81e58fu
+#define FISHMAN_PATROL_ENDED_PC 0x81e59au
+#define FISHMAN_PATROL_FREE_PC 0x81e5a8u     // `JSL actor_slot_free`
+#define FISHMAN_PATROL_FREED_PC 0x81e5acu
+#define FISHMAN_PATROL_SECOND_FREE_PC 0x81e5b3u  // `JML actor_slot_free`
+#define FISHMAN_DP_SECOND 0x42  // a second record, or `$FFFF`
+#define FISHMAN_DP_KILLER 0x22  // who killed it: bit 15 is the side
+#define FISHMAN_LOAD 0x0015
+#define FISHMAN_SOUND 0x0021
+#define W_FISHMEN_KILLED 0x1f70u
+#define W_KILLS_BY_SIDE 0x1fd8u  // a word for each side
+
+#define BOLT_ENTER_PC 0x81f808u
+#define BOLT_SOUND_CALL_PC 0x81f815u     // `JSL apu_play_sfx`
+#define BOLT_SOUND 0x0015
+#define BOLT_HEARD_PC 0x81f819u
+#define BOLT_ALLOC_PC 0x81f89du          // `JSL actor_slot_alloc`
+#define BOLT_MADE_PC 0x81f8a1u
+#define BOLT_MADE_RETURN 0xf81bu         // `JSR $F89D`'s
+#define BOLT_START_HEIGHT 0x001e
+#define BOLT_FLAGS 0x81f964u             // a word for each way
+#define BOLT_IDS 0x81f918u               // what it hits, by the player
+#define BOLT_PICTURE_BANK 0x0090
+#define BOLT_DRAWN 0x8002u
+#define BOLT_FRAMES 0x003c
+#define BOLT_HANDLER 0xf8fcu
+#define BOLT_HANDLER_BANK 0x0081
+#define BOLT_DP_X 0x00
+#define BOLT_DP_Y 0x02
+#define BOLT_DP_PLAYER 0x06
+#define BOLT_DP_SPRITE 0x08
+
+#define PAUSE_DIM_PC 0x8089c2u           // after the volume went down
+#define PAUSE_HELD_PC 0x8089c8u          // `port/hold.h`'s first wait
+#define PAUSE_OVER_PC 0x8089e9u          // after the last
+#define PAUSE_VOLUME_UP_CALL_PC 0x8089ecu  // `JSL`, A `$7F`
+#define PAUSE_VOLUME_UP 0x007f
+#define PAUSE_RESUMED_PC 0x8089f0u
+#define PAUSE_RTL_PC 0x8089f6u
+#define PAUSE_DIM 0x0008
+#define PAUSE_BRIGHT 0x000f
+#define MAIN_FRAME_REST_PC 0x808537u     // after the HUD's refresh
 
 #define STUNG_PC 0x80f9d0u
 #define STUNG_SPARED_PC 0x80f9cfu        // the `RTS`, with no health to take
@@ -1227,6 +1345,15 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_SQUARE_BRA, 0x82f5ab, 0x82f5ac, 0) \
   X(TS_SQUARE_HELD, 0x82f5c7, 0x82f5c8, 0)   /* CLC : RTS */ \
   X(TS_SQUARE_LEFT, 0x82f5c9, 0x82f5ca, 0)   /* SEC : RTS */ \
+  X(TS_SQUARE_MADE, 0x82f643, 0x82f678, 0)   /* the RTS too */ \
+  X(TS_SQUARE_KEPT, 0x82f5fd, 0x82f602, 0) \
+  X(TS_SQUARE_CELL_AT, 0x82f678, 0x82f697, 0) \
+  X(TS_SQUARE_TILE, 0x82f69b, 0x82f6a5, 0)   /* through `[$28]`, to the cartridge */ \
+  X(TS_SQUARE_BACK, 0x82f6a9, 0x82f6ab, 0)   /* PLD : RTS */ \
+  X(TS_SQUARE_BOX, 0x82f5cb, 0x82f5f5, 0) \
+  X(TS_SQUARE_FREED, 0x82f620, 0x82f623, 0)  /* INC : RTS */ \
+  X(TS_SQUARE_SLOT_GIVEN, 0x82f704, 0x82f70a, 0)  /* LDA $24 : JSL */ \
+  X(TS_SQUARE_SLOT_FREE, 0x82f561, 0x82f577, 0)  /* the RTL too */ \
   X(TS_SQUARE_DONE, 0x82f700, 0x82f703, 0)   /* LDA $0A : BEQ */ \
   X(TS_FLYOFF_DRESS, 0x82e0bf, 0x82e0f9, 0)  /* to the TAY */ \
   X(TS_FLYOFF_WAY, 0x82e102, 0x82e10d, 0) \
@@ -1305,6 +1432,20 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_SLIMED_RESTED, 0x80f360, 0x80f366, 0)  /* the RTS too */ \
   X(TS_SLIMED_HANDS, 0x80dc64, 0x80dc70, 0)  /* JSR $F38D : JMP $D4F4 */ \
   X(TS_STUNG, 0x80f9d0, 0x80f9d7, 0)         /* LDX $0E : LDA $1CB8,X : BEQ */ \
+  X(TS_BOLT_ENTER, 0x81f808, 0x81f815, 0) \
+  X(TS_FISH_FATE, 0x81e4c1, 0x81e4c5, 0)     /* LDA #0 : TAY */ \
+  X(TS_FISH_SECOND, 0x81e4c9, 0x81e4d0, 0)   /* and $81:E5AC, the same */ \
+  X(TS_FISH_COUNTED, 0x81e4df, 0x81e4ee, 0)  /* the JSL too; $81:E572 */ \
+  X(TS_KILLER_SIDE, 0x809d6a, 0x809d72, 0) \
+  X(TS_KILLER_OTHER, 0x809d72, 0x809d74, 0)  /* INX : INX */ \
+  X(TS_RTL, 0x809d74, 0x809d75, 0) \
+  X(TS_FISH_UNTOUCHABLE, 0x81e4ee, 0x81e4fc, 0)  /* and $81:E581 */ \
+  X(TS_FISH_ENDED, 0x81e59a, 0x81e5a8, 0) \
+  X(TS_BOLT_MADE, 0x81f8a1, 0x81f8fb, 0)     /* the JSL too */ \
+  X(TS_PAUSE_DIM, 0x8089c2, 0x8089c8, 0) \
+  X(TS_PAUSE_BRIGHT, 0x8089f0, 0x8089f6, 0) \
+  X(TS_MAIN_PLAYERS, 0x808537, 0x80853f, 0)  /* LDA : ORA : BEQ */ \
+  X(TS_MAIN_NEIGHBOURS, 0x80853f, 0x808544, 0)  /* LDA : BNE */ \
   X(TS_STUNG_HURT, 0x80f9d7, 0x80f9de, 0) \
   X(TS_STUNG_SHOWN, 0x80f9e2, 0x80f9ef, 0)   /* the JSR too */ \
   X(TS_ANT_FLASH, 0x81baec, 0x81baf7, 0) \
@@ -1414,6 +1555,16 @@ typedef enum {
   TS_NEEDS_WALKER_SHOWN,   // the start's `JSR` to return to
   TS_NEEDS_CHAINSAW_MADE,  // a record on the page, and the start's `JSR`
   TS_NEEDS_STUNG,          // which player, and their record
+  TS_NEEDS_SQUARE_MADE,    // a record in A, and the `JSR` to return to
+  TS_NEEDS_SQUARE_CELL,    // the direct page at zero, the page under it and
+                           // the `JSR` to return to, and a cell in the
+                           // cartridge
+  TS_NEEDS_SQUARE_TILED,   // ...the page and the `JSR`
+  TS_NEEDS_SQUARE_FREED,   // the pass's return, and one of the five
+  TS_NEEDS_FISHMAN_ENDED,  // its record, and a load to give its weight back
+                           // from
+  TS_NEEDS_BOLT_MADE,      // a record in A and Y, the start's `JSR` to return
+                           // to, and a way and a player the tables have
   TS_NEEDS_STUNG_SHOWN,    // ...and a way the table has, read through `$80`
   TS_NEEDS_CHAINSAW_SHOWN, // ...and the start's other `JSR`
 } ThreadStretchNeeds;
@@ -1534,6 +1685,26 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(argument_door_c, "$82:DF18", 0x82df18u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(slimed, "$80:DC1E", SLIMED_PC, slimed, SLIMED, TS_NEEDS_SLIMED) \
   X(slimed_rested, "$80:F360", SLIMED_RESTED_PC, slimed_rested, SLIMED, TS_NEEDS_SLIMED_RESTED) \
+  X(square_made, "$82:F643", SQUARE_MADE_PC, square_made, SQUARE_SHOWN, TS_NEEDS_SQUARE_MADE) \
+  X(square_shown, "$82:F60D", SQUARE_SHOWN_PC, square_shown, SQUARE_SHOWN, TS_NEEDS_RECORD) \
+  X(square_cell, "$82:F69B", SQUARE_CELL_PC, square_cell, SQUARE_SHOWN, TS_NEEDS_SQUARE_CELL) \
+  X(square_tiled, "$82:F6A9", SQUARE_TILED_PC, square_tiled, SQUARE_SHOWN, TS_NEEDS_SQUARE_TILED) \
+  X(square_told, "$82:F613", SQUARE_TOLD_PC, square_told, SQUARE_SHOWN, TS_NEEDS_NOTHING) \
+  X(square_hidden, "$82:F61A", SQUARE_HIDDEN_PC, square_hidden, SQUARE_SHOWN, TS_NEEDS_NOTHING) \
+  X(square_freed, "$82:F620", SQUARE_FREED_PC, square_freed, SQUARE_SHOWN, TS_NEEDS_SQUARE_FREED) \
+  X(fishman_fate, "$81:E4C1", FISHMAN_FATE_PC, fishman_fate, FISHMAN_DEATH, TS_NEEDS_NOTHING) \
+  X(fishman_unhandled, "$81:E4C9", FISHMAN_UNHANDLED_PC, fishman_unhandled, FISHMAN_DEATH, TS_NEEDS_NOTHING) \
+  X(fishman_counted, "$81:E4DF", FISHMAN_COUNTED_PC, fishman_counted, FISHMAN_DEATH, TS_NEEDS_RECORD) \
+  X(fishman_patrol_counted, "$81:E572", FISHMAN_PATROL_COUNTED_PC, fishman_counted, FISHMAN_DEATH, TS_NEEDS_RECORD) \
+  X(fishman_patrol_ended, "$81:E59A", FISHMAN_PATROL_ENDED_PC, fishman_patrol_ended, FISHMAN_DEATH, TS_NEEDS_FISHMAN_ENDED) \
+  X(fishman_patrol_freed, "$81:E5AC", FISHMAN_PATROL_FREED_PC, fishman_patrol_freed, FISHMAN_DEATH, TS_NEEDS_NOTHING) \
+  X(bolt_enter, "$81:F808", BOLT_ENTER_PC, bolt_enter, BOLT, TS_NEEDS_NOTHING) \
+  X(bolt_heard, "$81:F819", BOLT_HEARD_PC, bolt_heard, BOLT, TS_NEEDS_NOTHING) \
+  X(bolt_made, "$81:F8A1", BOLT_MADE_PC, bolt_made, BOLT, TS_NEEDS_BOLT_MADE) \
+  X(pause_dim, "$80:89C2", PAUSE_DIM_PC, pause_dim, PAUSE, TS_NEEDS_NOTHING) \
+  X(pause_over, "$80:89E9", PAUSE_OVER_PC, pause_over, PAUSE, TS_NEEDS_NOTHING) \
+  X(pause_resumed, "$80:89F0", PAUSE_RESUMED_PC, pause_resumed, PAUSE, TS_NEEDS_NOTHING) \
+  X(main_frame_rest, "$80:8537", MAIN_FRAME_REST_PC, main_frame_rest, MAIN_REST, TS_NEEDS_NOTHING) \
   X(stung, "$80:F9D0", STUNG_PC, stung, STUNG, TS_NEEDS_STUNG) \
   X(stung_heard, "$80:F9E2", STUNG_HEARD_PC, stung_heard, STUNG, TS_NEEDS_STUNG_SHOWN) \
   X(stung_held, "$80:F9F2", STUNG_HELD_PC, stung_held, STUNG, TS_NEEDS_NOTHING) \

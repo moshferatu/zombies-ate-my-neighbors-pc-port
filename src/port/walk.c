@@ -22,7 +22,8 @@ typedef struct {
   bool met_reaction;   // stopped at a tile with a reaction of its own
   WalkLog* log;        // may be NULL
   WalkKind kind;
-  bool leapt;          // leapt into the water this frame
+  int leaps;           // leaps into the water this frame
+  bool bounced;        // onto a trampoline this frame
 } Walk;
 
 static uint16_t field(const Walk* k, uint16_t at) {
@@ -133,19 +134,19 @@ static bool edge_keeps_player_out(Walk* k) {
 }
 
 // `JMP $DD0D`: the player leaps in, and the walk goes on as though the
-// ground were clear. A second leap is not ours: false.
+// ground were clear. A leap after a bounce is not ours: false.
 static bool leap_in(Walk* k) {
-  if (k->leapt) return false;
-  PORT_COVER(walk_edge_jumped);
-  k->leapt = true;
+  if (k->bounced || k->leaps == WALK_AXES) return false;
+  PORT_COVER_IF(k->leaps == 0, walk_edge_jumped, walk_edge_jumped_again);
   PoseLog pose_scratch;
   PlayerSpan span_scratch;
-  PoseLog* pose = k->log ? &k->log->leap : &pose_scratch;
-  PlayerSpan* span = k->log ? &k->log->leap_span : &span_scratch;
+  PoseLog* pose = k->log ? &k->log->leap[k->leaps] : &pose_scratch;
+  PlayerSpan* span = k->log ? &k->log->leap_span[k->leaps] : &span_scratch;
+  k->leaps++;
   *pose = (PoseLog){0};
   pose_leap(k->w, k->rom, k->page, pose, span);
   if (k->log) {
-    k->log->leapt = true;
+    k->log->leaps = k->leaps;
     k->log->last_yes = pose->c;
   }
   overflow_left(k, pose->v);
@@ -175,9 +176,9 @@ static Trampoline trampoline(Walk* k) {
     overflow_left(k, (c.p & PORT_P_V) != 0);
     return TRAMPOLINE_SOLID;
   }
-  if (k->leapt) return TRAMPOLINE_NOT_OURS;
+  if (k->leaps != 0 || k->bounced) return TRAMPOLINE_NOT_OURS;
   PORT_COVER(walk_trampoline_bounced);
-  k->leapt = true;
+  k->bounced = true;
   PoseLog scratch;
   PoseLog* pose = k->log ? &k->log->bounce : &scratch;
   *pose = (PoseLog){0};
@@ -446,7 +447,7 @@ static void walk(Walk* k) {
 // ---------------------------------------------------------------------------
 
 // `$80:E7FE`: where it is not water, is that the bank, and can the player
-// stand on it? True ends the swim.
+// stand on it? True ends the swim, with the point at `$60` and `$62`.
 static bool reaches_the_bank(Walk* k) {
   WalkLog* log = k->log;
   const uint16_t player = field(k, SWIM_DP_PLAYER);
@@ -483,11 +484,28 @@ static bool reaches_the_bank(Walk* k) {
   }
   if (!r.blocked) {
     PORT_COVER(swim_reached_bank);
+    if (log) log->bank[SWIM_BANK_CLEAR]++;
     return true;
   }
   PORT_COVER(swim_bank_solid);
   if (log) log->bank[SWIM_BANK_SOLID]++;
   return false;
+}
+
+// `$80:E82C`: `PLA : JMP $DDBD`, out of the water. The swim is over.
+static void climb_out(Walk* k) {
+  PoseLog pose_scratch;
+  PlayerSpan span_scratch;
+  PoseLog* pose = k->log ? &k->log->climb : &pose_scratch;
+  PlayerSpan* span = k->log ? &k->log->climb_span : &span_scratch;
+  *pose = (PoseLog){0};
+  pose_climb_out(k->w, k->rom, k->page, pose, span);
+  k->met_reaction = true;
+  if (k->log) {
+    k->log->climbed = true;
+    k->log->last_yes = pose->c;
+  }
+  overflow_left(k, pose->v);
 }
 
 static bool can_swim_to(Walk* k, Point to) {
@@ -500,7 +518,7 @@ static bool can_swim_to(Walk* k, Point to) {
   }
   if (!r.blocked) {
     PORT_COVER(swim_not_water);
-    if (reaches_the_bank(k)) k->met_reaction = true;
+    if (reaches_the_bank(k)) climb_out(k);
     return false;
   }
   if (too_far_from_partner(k, to)) {
@@ -533,11 +551,10 @@ static void swim(Walk* k) {
   }
 }
 
-bool swim_walk_checked(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
+void swim_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
   Walk k = {w, rom, page, false, log, WALK_SWIM};
   PORT_COVER(swim_walked);
   swim(&k);
-  return !k.met_reaction;
 }
 
 void player_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {

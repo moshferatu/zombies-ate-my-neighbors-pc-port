@@ -502,6 +502,11 @@
   /* The Snakeoid's thread -- see port/snakeoid.h. */                            \
   X(snakeoid_wakes, "snakeoid_waited", "a player within `$DC`: its wait is over") \
   X(snakeoid_dies, "snakeoid_wakes", "`$46` set: it is dying") \
+  X(snakeoid_entered, "snakeoid_enters", "a Snakeoid begun: its weight, and the ground it churns") \
+  X(snakeoid_coloured, "snakeoid_enters", "...the first of the level: the figure's colours") \
+  X(snakeoid_queue_waited, "snakeoid_queue_waits", "...and a tick more, for the queue's jobs") \
+  X(snakeoid_placed, "snakeoid_queue_waits", "...or none to wait for: its place and first values") \
+  X(snakeoid_made, "snakeoid_made", "its record, its track cleared, and its handler") \
   X(snakeoid_piece_flattens, "snakeoid_wakes", "a piece of track eight frames older: shown flatter") \
   X(snakeoid_piece_goes, "snakeoid_wakes", "...and 32 frames old: it is to be freed") \
   X(snakeoid_finds_prey, "snakeoid_wakes", "neither word set: the nearest record is a kind it eats") \
@@ -798,6 +803,7 @@
   X(palette_sprites_load, "palette_sprites_load", "the sprites' colours copied") \
   X(hud_reset,        "hud_reset",          "the HUD's shadow emptied") \
   /* $80:C34A, $82:8308, $80:9F62 three more jobs -- see port/dma.h. */        \
+  X(colours_240_job, "colours_240_job", "the sprites' last sixteen colours sent") \
   X(hud_upload_job,   "hud_upload_job",     "the HUD's shadow sent to VRAM") \
   X(text_map_job,     "text_map_job",       "a screen's printed words sent to VRAM") \
   X(colours_112_job,  "colours_112_job",    "colours 112 to 127 sent") \
@@ -930,7 +936,7 @@
   X(swim_walked,      "swim_walk",         "a player in water swam") \
   X(swim_not_water,   "swim_walk",         "no water where the step lands") \
   X(swim_bank_solid,  "swim_walk",         "...and the bank the way they face is solid") \
-  X(swim_reached_bank, "swim_walk",        "...or clear, so the ROM ends the swim") \
+  X(swim_reached_bank, "swim_walk",        "...or clear, and the player climbs out") \
   X(swim_tethered,    "swim_walk",         "too far from the other player to swim there") \
   X(swim_off_map,     "swim_walk",         "a stroke off the map") \
   /* Vblank jobs, which write the PPU. */                                      \
@@ -1696,7 +1702,26 @@
   X(stagger_over, "ts_stagger_over", "...and itself again") \
   X(player_splashed, "player_splashed", "the splash over: swimming begun, and the rest of the frame") \
   X(pose_leapt, "player_walk", "a leap toward a point: into the water from the walk") \
+  X(walk_edge_jumped_again, "player_walk", "...and again on the other axis, the same frame") \
+  X(pose_climbed_out, "swim_walk", "out of the water onto the bank the swim found") \
   X(pose_bounce_began, "player_walk", "onto a trampoline from the walk") \
+  X(pose_stood_aiming, "pose_stand_begin", "a stand with a second-band weapon ready: on into its shot") \
+  X(square_made, "ts_square_made", "nobody level with a square: its record") \
+  X(square_told, "ts_square_told", "...everything round it told, and its last pictures") \
+  X(square_freed, "ts_square_freed", "...its record freed, and its place among the five") \
+  X(fishman_died, "ts_fishman_fate", "a fishman dead: told of nothing more") \
+  X(fishman_second_freed, "ts_fishman_unhandled", "...and its second record freed") \
+  X(fishman_counted, "ts_fishman_counted", "...counted, by the side that killed it, and heard") \
+  X(fishman_patrol_ended, "ts_fishman_patrol_ended", "a patrolling fishman's weight given back, and its record freed") \
+  X(fishman_patrol_second_freed, "ts_fishman_patrol_freed", "...and its second record") \
+  X(bolt_entered, "ts_bolt_enter", "a bolt begun: its weight and its sound") \
+  X(bolt_made, "ts_bolt_made", "...its record, its handler, and its first sleep") \
+  X(pause_dimmed, "ts_pause_dim", "a pause: the screen dimmed") \
+  X(pause_over, "ts_pause_over", "...Start let go of again: the volume up") \
+  X(pause_resumed, "ts_pause_resumed", "...and the screen bright again") \
+  X(main_frame_rest, "ts_main_frame_rest", "the main loop's frame after a pause: on") \
+  X(main_frame_rest_nobody, "ts_main_frame_rest", "...or nobody playing") \
+  X(main_frame_rest_saved, "ts_main_frame_rest", "...or no neighbours left") \
   X(pose_bounce_rose, "pose_bounce", "up from a trampoline") \
   X(pose_bounce_fell, "pose_bounce", "...and down onto it again") \
   X(pose_bounce_down, "pose_bounce", "...and down, on the tile the walk found") \
@@ -1793,6 +1818,7 @@
                                                                                    \
   /* $82:8138 -- the big figure's colours. */                                      \
   X(figure_colours_set, "figure_colours_set", "sixteen colours into the background's eighth row") \
+  X(figure_sprite_colours_set, "figure_sprite_colours_set", "...or into the sprites' last row") \
                                                                                    \
   /* $82:DD5C -- the bystander's frame. */                                         \
   X(bystander_slept, "bystander_frame", "no player in the box") \
@@ -2235,6 +2261,7 @@
   X(apu_sfx_bank_begin, "apu_sfx_bank_begin", "a set asked for by itself") \
   X(apu_sfx_bank_play, "apu_sfx_bank_play", "...sent, and its command") \
   X(apu_sfx_bank_end, "apu_sfx_bank_end", "...and the caller's page put back") \
+  X(apu_command_13, "apu_command_13", "command $13, the volume, on page zero") \
   X(apu_command_13_end, "apu_command_13_end", "command $13 sent, and the page put back") \
   X(apu_set_announce, "apu_set_announce", "a set's number, to be sent before it") \
   X(apu_set_announced, "apu_set_announced", "...and the number pulled for the upload") \

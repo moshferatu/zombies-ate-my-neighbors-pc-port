@@ -2,8 +2,10 @@
 //
 // With Start held on either pad the ROM pauses there and then: it turns the
 // volume and the screen down and waits, in the routine itself, for Start to be
-// let go, pressed again and let go again. The three waits are `port/hold.h`'s.
-// What is round them is the ROM's still.
+// let go, pressed again and let go again. The three waits are `port/hold.h`'s,
+// and what is round them `port/thread_stretches.h`'s. A pause begins with
+// `LDA #$0040` and the `JSL` that turns the volume down, where the check
+// stops.
 //
 // On every other frame it does nothing. What is left of it is a compare of
 // pad one against Select alone whose branch goes to the next instruction
@@ -22,6 +24,8 @@
 
 #define PAUSE_CHECK_PC 0x8089b0u
 #define PAUSE_CHECK_RTL_PC 0x8089ffu
+#define PAUSE_VOLUME_DOWN_CALL_PC 0x8089beu  // `JSL`, A `$40`
+#define PAUSE_VOLUME_DOWN 0x0040
 
 #define PAUSE_PAD_START 0x1000u
 #define PAUSE_PAD_SELECT 0x2000u  // what the dead compare is against

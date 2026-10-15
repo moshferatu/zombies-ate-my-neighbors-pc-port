@@ -19617,3 +19617,33 @@ Over the same 110 sessions the core executes 21,541 instructions where it
 executed 53,334, and takes over 1,613 times where it did 2,490, at 221
 places where there were 320. The clear's third stretch was 25,632 of the
 instructions.
+
+## Two leaps, the poses that sleep, the Snakeoid's start and the pause (2026-10-15)
+
+### A return among a routine's exits
+
+A pose handler returns once a frame, unless the frame goes on into a pose
+that sleeps: weapon 5's shot, or a stand begun with a second-band weapon
+ready. Then it never returns that frame. It ends at the pose's `JSL
+thread_yield`, and the frame's stack has the shot's return address under
+it when the sleep is inside the shot.
+
+A routine with a `ret_op` can only end at its return, so the handlers
+became routines with exits: their five returns and the two sleeps. That
+needs one thing the harness did not have. `$80:ECFD` puts the weapon away;
+four of the handlers jump to it to end, and one also calls it on the way to
+another pose. Its `RTS`, `$80:ED0F`, is an exit when it ends the handler
+and not when it comes back to it. A routine with
+`returns_on_entry_stack` set ends at a return among its exits only when
+the stack is where it was on the way in. Below that, the return is from
+one of its own calls.
+
+An exit is where the ROM stops, before it makes the exit instruction, so a
+handler's price leaves out the `RTS` it stops on. With `ret_op` it was in.
+
+### After
+
+Over the same 110 sessions the core executes 15,011 instructions where it
+executed 21,541, and takes over 1,007 times where it did 1,613, at 174
+places where there were 221. The reset's own 7,920 are most of what is
+left.

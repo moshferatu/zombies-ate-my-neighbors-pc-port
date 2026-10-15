@@ -11,6 +11,14 @@
 // background's colours are (`port/palfade.h`), and both are written. The job
 // it queues, `$82:8163`, queues the one that does the sending.
 //
+// The Snakeoid sets a row of the sprites' colours the same way, the last of
+// them:
+//
+//   $82:816F  figure_sprite_colours_set   A the colours' address, Y their bank
+//
+// That row is kept at `$7E:5608` and `$7E:5808`, and the job that sends it,
+// `$82:819A` (`port/dma.h`), goes on the vblank's queue at once.
+//
 // ## Its contract with the ROM
 //
 // It writes WRAM exactly as the ROM does. Its registers at the `RTL` are
@@ -44,5 +52,16 @@ bool figure_colours_supported(uint16_t at, uint8_t bank);
 // Set the row from the sixteen colours at `bank:at`. Returns where the job
 // went in the queue, or -1 when the queue was full.
 int figure_colours_set(Wram* w, const Rom* rom, uint16_t at, uint8_t bank);
+
+#define FIGURE_SPRITE_COLOURS_PC 0x82816fu
+#define FIGURE_SPRITE_COLOURS_RTL_PC 0x828199u
+#define FIGURE_SPRITE_COLOURS_ROW 0x5608u
+#define FIGURE_SPRITE_COLOURS_ROW_COPY 0x5808u
+#define FIGURE_SPRITE_COLOURS_JOB 0x819au
+#define FIGURE_SPRITE_COLOURS_JOB_BANK 0x0082u
+
+// ...and the sprites' last row, likewise: `vbl_queue_a_add`'s answer.
+int figure_sprite_colours_set(Wram* w, const Rom* rom, uint16_t at,
+                              uint8_t bank);
 
 #endif

@@ -517,6 +517,13 @@ typedef struct {
   // goes unchecked is that the ROM's instructions wrote nothing, which for
   // a load, a compare and a branch is read off the listing.
   bool writes_nothing;
+  // A routine with `exits` whose returns are among them, and which calls a
+  // routine that ends at one of the same returns. The player's pose handlers
+  // end at `$80:ED0F`, `$80:ECFD`'s `RTS`, when they jump there to put the
+  // weapon away, and one of them also calls it on the way to another pose.
+  // Set, a return ends the call only on the stack the routine was entered
+  // on: below that it is a return from one of its own calls.
+  bool returns_on_entry_stack;
   // A link: one instruction of the ROM's that only moves control, standing
   // between two ports. `JSR ant_seek` in a thread's turn is one: the port
   // before it returns to it and the port after it begins where it goes. There

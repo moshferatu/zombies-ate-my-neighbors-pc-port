@@ -139,8 +139,7 @@
 //
 // **Weapon 5's shot goes on to a pose of its own**, which sleeps five ticks
 // before it does anything. `pose_fire` takes the round and starts the shot,
-// and says so: `PoseLog::recoils`. The handlers still leave that frame to
-// the ROM.
+// and says so: `PoseLog::recoils`.
 //
 // ## Two poses that sleep inside themselves
 //
@@ -166,6 +165,20 @@
 // direction the pad holds to change, and returns. That return is the
 // handler's own, to the frame it left many frames ago.
 //
+// ## A frame that goes on into a sleep
+//
+// A handler that fires weapon 5 goes on into its pose, and a stand begun
+// with a second-band weapon ready goes on into that weapon's standing shot,
+// `$80:EE82`. Either way the frame ends at the pose's first sleep, its `JSL
+// thread_yield`, and the stretches above take over from there when it wakes.
+// `PoseLog::sleep` says which. The shot is reached by `JSR`, so its return
+// address is on the stack under the sleep: `PoseLog::sleep_under`.
+//
+// The five handlers that walk or stand reach both with nothing else of
+// theirs on the stack. A landing or a bounce that begins a stand reaches the
+// standing shot from further in, and that is the ROM's: `pose_may_sleep`
+// says which handlers may.
+//
 // ## What is the ROM's
 //
 // The trampoline's other bounce, `$80:E090`, higher each time: a wait that
@@ -173,11 +186,9 @@
 // the other player too far, and a jump off that would land on a tile with
 // bit 0 and not bit 8. The three handlers it leads to, `$80:E0B1`, `$80:E0D0`
 // and `$80:E106`. Lying down in the water off it (bit 8 of `$5C`).
-// A handler's frame that fires weapon 5, or that goes on to the second
-// band's standing shot (`$80:EE82`): the stretches above take over from
-// where the ROM gets to. The pose for whatever sets `$6C` (`$80:EF67`). Of
-// the monster's walk, a punch that lands on a wall that comes down.
-// `pose_supported` says which frames those are.
+// The pose for whatever sets `$6C` (`$80:EF67`). Of the monster's walk, a
+// punch that lands on a wall that comes down. `pose_supported` says which
+// frames those are.
 //
 // ## Its contract with the ROM
 //
@@ -213,6 +224,10 @@
 #define POSE_WALK_RTS_PC 0x80d700u
 #define POSE_WALK_FIRING_PC 0x80d704u
 #define POSE_WALK_FIRING_RTS_PC 0x80d700u
+// ...and the two the walking and standing handlers end at when they jump to
+// show or put away the hand weapon.
+#define POSE_WEAPON_SHOWN_RTS_PC 0x80ecf9u
+#define POSE_WEAPON_HIDDEN_RTS_PC 0x80ed0fu
 
 #define POSE_HANDLER_STAND 0xd53du
 #define POSE_HANDLER_WALK 0xd6a8u
@@ -328,6 +343,12 @@ typedef enum {
   POSE_WALK_6C,
 } PoseWalk;
 
+typedef enum {
+  POSE_AWAKE,
+  POSE_SLEEP_RECOIL,  // weapon 5's pose: `POSE_RECOIL_YIELD_PC`
+  POSE_SLEEP_AIM,     // the second band's standing shot: `POSE_BAND_B_AIM_YIELD_PC`
+} PoseSleep;
+
 typedef struct {
   bool changed;        // the buttons changed, so the pose started again
   bool delayed;        // the last shot's delay was still running
@@ -349,6 +370,9 @@ typedef struct {
   int shot_slot;       // the thread slot the shot took, doubled, or -1 for none
   bool recoils;        // ...weapon 5's, which goes on to a pose of its own
   int ticks;           // a stretch of a pose that sleeps: how long
+  PoseSleep sleep;     // the frame goes on into a pose that sleeps...
+  uint16_t sleep_under;  // ...under the shot's `JSR`, whose return this is, or 0
+  uint32_t ends_at;    // ...or the `RTS` a walking or standing handler ends at
   bool aim_reset;      // band_b_aim: a picture set that starts the cycle again
   int hides, hides_kept;  // the weapon hidden, and left alone in state `$0C`
   int arc_x, arc_y;    // in the air: steps taken along each axis
@@ -386,6 +410,10 @@ typedef struct {
 // here. It runs the handler to find out, so `w` is a copy.
 bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler);
 
+// May a frame of the handler `handler` names go on into a pose that sleeps?
+// True for the five that walk or stand.
+bool pose_may_sleep(uint16_t handler);
+
 // One frame of each handler, for the player whose page is `page`. `log` may
 // be NULL.
 void pose_stand(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
@@ -415,6 +443,13 @@ void pose_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 #define POSE_SPLASH_SOUND 0x001f
 void pose_leap(Wram* w, const Rom* rom, uint16_t page, PoseLog* log,
                PlayerSpan* span);
+// `$80:DDBD`, out of the water toward the point at `$60` and `$62`, which
+// the swim found clear: sound `$18`, and the second leap's first picture,
+// held five frames. As for `pose_leap`, it always finishes and neither
+// pointer may be NULL. It returns where the swim would have.
+#define POSE_CLIMB_OUT_PC 0x80ddbdu
+void pose_climb_out(Wram* w, const Rom* rom, uint16_t page, PoseLog* log,
+                    PlayerSpan* span);
 // `$80:DFAC`, onto a trampoline. It always finishes, and `log` may not be
 // NULL.
 #define POSE_BOUNCE_BEGIN_PC 0x80dfacu

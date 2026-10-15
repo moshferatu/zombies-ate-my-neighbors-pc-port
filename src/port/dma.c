@@ -297,16 +297,27 @@ uint16_t text_map_job(const Wram* w, HwTrace* t) {
   return vram;
 }
 
-void colours_112_job(HwTrace* t) {
-  PORT_COVER(colours_112_job);
-  store8(t, DMA_SEP_IMM, REG_CGADD, COLOURS_112_FIRST);
+// Sixteen colours from `at` in the level's table to the colours from
+// `first`, in one transfer.
+static void send_sixteen(HwTrace* t, uint8_t first, uint16_t at) {
+  store8(t, DMA_SEP_IMM, REG_CGADD, first);
   store8(t, DMA_STORE, REG_MDMAEN, 0x00);
   store16(t, DMA_REP_IMM16, REG_DMA_MODE, (DEST_CGRAM << 8) | MODE_ONE_REG);
-  store16(t, DMA_IMM16, REG_DMA_SOURCE, COLOURS_112_AT);
+  store16(t, DMA_IMM16, REG_DMA_SOURCE, at);
   store16(t, DMA_IMM16, REG_DMA_BANK, PALETTE_BANK);
   store16(t, DMA_IMM16, REG_DMA_BYTES, COLOURS_112_BYTES);
   store8(t, DMA_SEP_IMM, REG_MDMAEN, 0x01);
   hw_run(t, DMA_REP_RTL);
+}
+
+void colours_112_job(HwTrace* t) {
+  PORT_COVER(colours_112_job);
+  send_sixteen(t, COLOURS_112_FIRST, COLOURS_112_AT);
+}
+
+void colours_240_job(HwTrace* t) {
+  PORT_COVER(colours_240_job);
+  send_sixteen(t, COLOURS_240_FIRST, COLOURS_240_AT);
 }
 
 void vram_wipe(HwTrace* t) {

@@ -11,6 +11,7 @@
 //   $82:D88C  tile_anim_job       the animated tiles that changed this frame
 //   $80:C34A  hud_upload_job      the HUD's four rows, from their shadow
 //   $82:8308  colours_112_job     sixteen colours, from the 112th on
+//   $82:819A  colours_240_job     ...and from the 240th, the sprites' last row
 //   $80:9F62  vram_clear_job      a kilobyte of VRAM zeroed, a vblank at a time
 //   $82:B82E  text_map_job        the words a screen has printed, two rows
 //   $82:B9B6                      ...of sixteen: the same job again
@@ -87,6 +88,8 @@
 #define HUD_UPLOAD_JOB_RTL_PC 0x80c378u
 #define COLOURS_112_JOB_PC 0x828308u
 #define COLOURS_112_JOB_RTL_PC 0x828336u
+#define COLOURS_240_JOB_PC 0x82819au
+#define COLOURS_240_JOB_RTL_PC 0x8281c8u
 #define VRAM_CLEAR_JOB_PC 0x809f62u
 #define VRAM_CLEAR_JOB_RTL_PC 0x809f98u  // of two: the other is at `$9F9A`
 #define COLOURS_112_ASK_PC 0x828163u
@@ -119,6 +122,9 @@
 #define COLOURS_112_AT 0x5508u
 #define COLOURS_112_BYTES 0x0020u
 #define COLOURS_112_FIRST 0x70u
+// ...and the sixteen `$82:819A` sends, the last of the sprites'.
+#define COLOURS_240_AT 0x5608u
+#define COLOURS_240_FIRST 0xf0u
 // `vram_clear_job`: the word address it has reached, a zero word in the
 // cartridge to send over and over, and how much it sends a vblank.
 #define W_VRAM_CLEAR_AT 0x00c8u
@@ -507,6 +513,10 @@ void hud_upload_job(HwTrace* t);
 // which is the eighth of the background's palettes. It runs once: carry
 // clear, and 1 in A.
 void colours_112_job(HwTrace* t);
+
+// `$82:819A`, which `figure_sprite_colours_set` queues: colours 240 to 255,
+// in the same instructions.
+void colours_240_job(HwTrace* t);
 
 // `$82:8163`, a job of the other queue, the one that runs after the
 // picture: it puts `colours_112_job` on the vblank's. It runs once: carry

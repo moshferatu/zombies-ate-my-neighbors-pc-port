@@ -275,7 +275,8 @@ static bool strike_pose(Frame* f) {
     f->log->c_set = true;
   }
   if (did->v_set) f->log->v = did->v;
-  return !did->unported;
+  return !did->unported &&
+         (did->sleep == POSE_AWAKE || pose_may_sleep(f->log->pose));
 }
 
 static bool move(Frame* f) {
@@ -297,8 +298,7 @@ static bool move(Frame* f) {
     stuck_walk(f->w, f->rom, f->page, &f->log->walk);
   } else if (movement == PLAYER_MOVEMENT_SWIM) {
     f->log->walk_kind = WALK_SWIM;
-    if (!swim_walk_checked(f->w, f->rom, f->page, &f->log->walk))
-      return false;
+    swim_walk(f->w, f->rom, f->page, &f->log->walk);
   } else if (movement == PLAYER_MOVEMENT_WALK) {
     PORT_COVER(player_frame_walked);
     if (!player_walk_checked(f->w, f->rom, f->page, &f->log->walk))
@@ -350,8 +350,8 @@ void player_frame(Wram* w, const Rom* rom, uint16_t page, PlayerFrameLog* log) {
     return;
   }
   if (!strike_pose(&f)) return;
-  if (log->pose_log.splashed) {
-    log->unported = false;  // it stops at the sound
+  if (log->pose_log.splashed || log->pose_log.sleep != POSE_AWAKE) {
+    log->unported = false;  // it stops at the sound, or at the sleep
     return;
   }
   if (!move(&f)) return;

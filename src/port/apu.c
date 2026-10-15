@@ -609,6 +609,16 @@ void apu_sfx_bank_end(Wram* w, PortCpu* c) {
   c->pc = 0x80cc12u;
 }
 
+// `REP #$30 : PHD : PEA $0000 : PLD : SEP #$30 : LDX #$13`, to the send.
+void apu_command_13(Wram* w, PortCpu* c) {
+  PORT_COVER(apu_command_13);
+  page_zero(w, c);
+  set_p(c, (uint8_t)(c->p | PORT_P_M | PORT_P_X));
+  c->x = APU_CMD_VOLUME;
+  set_nz8(c, APU_CMD_VOLUME);
+  c->pc = 0x80cc68u;
+}
+
 void apu_command_13_end(Wram* w, PortCpu* c) {
   PORT_COVER(apu_command_13_end);
   page_back(w, c);

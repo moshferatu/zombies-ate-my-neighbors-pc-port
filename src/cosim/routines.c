@@ -6885,6 +6885,12 @@ static const CosimRun SWIM_BANK_STATE = {58, 7, 1};    // LDA $70 : CMP # : BNE
 static const CosimRun SWIM_BANK_FACING = {40, 4, 1};   // LDA $26 : BEQ
 static const CosimRun SWIM_BANK_POINT = {322, 30, 4};  // $E812-$E82B
 
+// Clear: `PLA : JMP $DDBD`. The point's run has the `BCS` in it.
+static const CosimRun SWIM_BANK_CLIMB = {52, 4, 0};  // $E82C-$E82F
+
+static int climb_out_cycles(const PoseLog* log, const PlayerSpan* span,
+                            const CosimRegs* in);
+
 static int swim_cycles(const WalkLog* log, const CosimRegs* in) {
   const bool fast = fetch_fast(in);
   const bool unaligned = (in->d & 0x00ffu) != 0;
@@ -6893,9 +6899,12 @@ static int swim_cycles(const WalkLog* log, const CosimRegs* in) {
   run_add(&own, &RUN_JSR, 1);
   for (int wet = 0; wet < 2; wet++) {
     run_add(&own, &SWIM_ASK, log->water[wet]);
-    run_add(&own, wet ? &RUN_TAKEN : &SWIM_BANK_CALL, log->water[wet]);
     calls += log->water[wet] * terrain_bit8_cycles(wet != 0, in->fastrom);
   }
+  run_add(&own, &RUN_TAKEN, log->water[1]);
+  // The bank's `JSR`, and its `BRA` when it comes back.
+  run_add(&own, &RUN_JSR, log->water[0]);
+  run_add(&own, &RUN_BRA, log->water[0] - log->climbed);
   for (int e = 0; e < SWIM_BANK_COUNT; e++) {
     const int n = log->bank[e];
     run_add(&own, &SWIM_BANK_HEALTH, n);
@@ -6903,12 +6912,18 @@ static int swim_cycles(const WalkLog* log, const CosimRegs* in) {
     if (e > SWIM_BANK_LESS) run_add(&own, &SWIM_BANK_STATE, n);
     if (e > SWIM_BANK_NOT_SWIMMING) run_add(&own, &SWIM_BANK_FACING, n);
     if (e > SWIM_BANK_NO_WAY) run_add(&own, &SWIM_BANK_POINT, n);
+    if (e == SWIM_BANK_CLEAR) {
+      run_add(&own, &SWIM_BANK_CLIMB, n);
+      continue;
+    }
     run_add(&own, &RUN_TAKEN, n);
     run_add(&own, &RUN_RTS, n);
   }
+  if (log->climbed) calls += climb_out_cycles(&log->climb, &log->climb_span, in);
   CosimRun ground = {0, 0, 0};
-  run_add(&ground, &TERRAIN_PROLOGUE, log->bank[SWIM_BANK_SOLID]);
-  run_add(&ground, &TERRAIN_EXIT, log->bank[SWIM_BANK_SOLID]);
+  const int banks = log->bank[SWIM_BANK_SOLID] + log->bank[SWIM_BANK_CLEAR];
+  run_add(&ground, &TERRAIN_PROLOGUE, banks);
+  run_add(&ground, &TERRAIN_EXIT, banks);
   for (int i = 0; i < TERRAIN_PROBE_COUNT; i++)
     run_add(&ground, &TERRAIN_PROBE[i], log->probes[i]);
   run_add(&ground, &RUN_TAKEN, log->ground_cut_short);
@@ -6958,7 +6973,8 @@ static int walk_cycles_as(const WalkLog* log, const Rom* rom,
   cycles += log->taken * cosim_run_cycles_dp(&WALK_TAKE, fast, unaligned);
   for (int i = 0; i < log->reactions; i++)
     cycles += walk_reaction_cycles(&log->reaction[i], rom, in);
-  if (log->leapt) cycles += leap_cycles(&log->leap, &log->leap_span, in);
+  for (int i = 0; i < log->leaps; i++)
+    cycles += leap_cycles(&log->leap[i], &log->leap_span[i], in);
   if (log->bounced) cycles += bounce_begin_cycles(&log->bounce, in);
   if (stuck && log->took[0])
     cycles += cosim_run_cycles_dp(&STUCK_WALK_TAKE_X, fast, unaligned);
@@ -7054,22 +7070,19 @@ static void shim_stuck_walk(Wram* w, const Rom* rom, const CosimRegs* in,
   out->regs = 0;
 }
 
-// The swim reads a table by the way faced, through the data bank.
+// The swim reads a table by the way faced, through the data bank, and so
+// does the climb out.
 static bool accepts_swim_walk(const Wram* w, const CosimRegs* in) {
   return accepts_player_walk(w, in) && in->db == 0x80 &&
          wram_r16(w, (uint16_t)(in->d + WALK_DP_FACING)) <= WALK_FACING_MAX &&
          wram_r16(w, (uint16_t)(in->d + SWIM_DP_PLAYER)) < 4;
 }
 
-static bool supported_swim_walk(Wram* scratch, const Rom* rom,
-                                const CosimRegs* in) {
-  return swim_walk_checked(scratch, rom, in->d, NULL);
-}
-
+// A climb out comes back by `$80:DDBD`'s `RTS`, to where the swim's would.
 static void shim_swim_walk(Wram* w, const Rom* rom, const CosimRegs* in,
                            CosimRegs* out) {
   WalkLog log = {0};
-  swim_walk_checked(w, rom, in->d, &log);
+  swim_walk(w, rom, in->d, &log);
   cosim_cost(swim_cycles(&log, in));
   out->c = log.last_yes;
   out->v = log.overflow;
@@ -7764,31 +7777,54 @@ static void shim_camera_scroll(Wram* w, const Rom* rom, const CosimRegs* in,
 // $80:89B0  the pause check — see `port/pause.h`
 // ---------------------------------------------------------------------------
 //
-// The port's are the frames nobody is pausing on, which write nothing. A is
-// pad one, and the flags are the compare with Select alone. Its `BNE` goes to
-// the next instruction, so it costs 6 more when it is taken and changes
-// nothing else.
+// Nobody pausing, it writes nothing. A is pad one, and the flags are the
+// compare with Select alone. Its `BNE` goes to the next instruction, so it
+// costs 6 more when it is taken and changes nothing else. A pause stops at
+// the volume's `JSL`, with A `$40` and nothing else changed but N and Z.
+static const CosimRun PAUSE_RUN_TEST = {98, 11, 0};  // LDA : ORA : BIT : BEQ
+static const CosimRun PAUSE_RUN_REST = {64, 8, 0};   // LDA : CMP : BNE
+static const CosimRun PAUSE_RUN_VOLUME = {18, 3, 0}; // LDA #$0040
+
 static bool accepts_pause_check(const Wram* w, const CosimRegs* in) {
-  return wide(in) && bank_sees_low_wram(in->db) && !pause_wanted(w);
+  (void)w;
+  return wide(in) && bank_sees_low_wram(in->db);
+}
+
+// The check's registers and price, at whichever of its two ways out.
+static void pause_check_leave(const Wram* w, const CosimRegs* in,
+                              CosimRegs* out, int* cycles) {
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C));
+  out->p_keep = 0;
+  out->regs = COSIM_REG_A;
+  *cycles += cosim_run_cycles(&PAUSE_RUN_TEST, in->fastrom);
+  if (pause_wanted(w)) {
+    *cycles += cosim_run_cycles(&PAUSE_RUN_VOLUME, in->fastrom);
+    out->a = PAUSE_VOLUME_DOWN;
+    out->p = (uint8_t)(out->p | (in->p & PORT_P_C));
+    out->pc = PAUSE_VOLUME_DOWN_CALL_PC;
+    return;
+  }
+  const uint16_t pad = pause_pad_one(w);
+  *cycles += 6 + cosim_run_cycles(&PAUSE_RUN_REST, in->fastrom) +
+             (pad != PAUSE_PAD_SELECT ? 6 : 0);
+  out->a = pad;
+  const uint16_t diff = (uint16_t)(pad - PAUSE_PAD_SELECT);
+  if (diff & 0x8000u) out->p |= PORT_P_N;
+  if (diff == 0) out->p |= PORT_P_Z;
+  if (pad >= PAUSE_PAD_SELECT) out->p |= PORT_P_C;
+  out->pc = PAUSE_CHECK_RTL_PC;
 }
 
 static void shim_pause_check(Wram* w, const Rom* rom, const CosimRegs* in,
                              CosimRegs* out) {
   (void)rom;
-  static const CosimRun TEST = {98 + 6, 11, 0};  // LDA : ORA : BIT : BEQ, taken
-  static const CosimRun REST = {106, 9, 0};      // LDA : CMP : BNE : RTL
-  const uint16_t pad = pause_pad_one(w);
-  cosim_cost(cosim_run_cycles(&TEST, in->fastrom) +
-             cosim_run_cycles(&REST, in->fastrom) +
-             (pad != PAUSE_PAD_SELECT ? 6 : 0));
-  out->a = pad;
-  out->regs = COSIM_REG_A;
-  const uint16_t diff = (uint16_t)(pad - PAUSE_PAD_SELECT);
-  out->n = (diff & 0x8000u) != 0;
-  out->z = diff == 0;
-  out->c = pad >= PAUSE_PAD_SELECT;
-  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+  int cycles = 0;
+  pause_check_leave(w, in, out, &cycles);
+  cosim_cost(cycles);
 }
+
+static const uint32_t PAUSE_CHECK_EXITS[] = {PAUSE_CHECK_RTL_PC,
+                                             PAUSE_VOLUME_DOWN_CALL_PC};
 
 // ---------------------------------------------------------------------------
 // $80:852F  the level's main loop -- see `port/mainloop.h`
@@ -7803,12 +7839,28 @@ static void shim_pause_check(Wram* w, const Rom* rom, const CosimRegs* in,
 // what the HUD refresh left, so those hand over all three registers. The
 // refresh leaves an overflow the port does not follow, as its own entry does.
 static bool accepts_mainloop_frame(const Wram* w, const CosimRegs* in) {
-  return body_ok(in) && bank_sees_low_wram(in->db) && !pause_wanted(w);
+  (void)w;
+  return body_ok(in) && bank_sees_low_wram(in->db);
 }
+
+// A pass somebody pauses on stops in the check, at the volume's `JSL`, with
+// the check's return under it.
+#define MAINLOOP_PAUSE_RETURN 0x8532u  // `JSL pause_check`'s
 
 static void shim_mainloop_frame(Wram* w, const Rom* rom, const CosimRegs* in,
                                 CosimRegs* out) {
   static const CosimRun JSL = {54, 4, 0};
+  if (pause_wanted(w)) {
+    CosimRegs in_check = *in;
+    in_check.s = (uint16_t)(in->s - 3);
+    int cycles = cosim_run_cycles(&JSL, fetch_fast(in));
+    pause_check_leave(w, &in_check, out, &cycles);
+    cosim_cost(cycles);
+    wram_w8(w, in->s, (uint8_t)(MAINLOOP_FRAME_PC >> 16));
+    wram_w16(w, (uint16_t)(in->s - 2), MAINLOOP_PAUSE_RETURN);
+    out->s = in_check.s;
+    return;
+  }
   static const CosimRun PAUSE_TEST = {98 + 6, 11, 0};  // as `shim_pause_check`
   static const CosimRun PAUSE_REST = {106, 9, 0};
   static const CosimRun PLAYERS = {80, 8, 0};    // LDA $1E88 : ORA $1E8A : BEQ
@@ -7861,7 +7913,8 @@ static void shim_mainloop_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t MAINLOOP_FRAME_EXITS[] = {
-    MAINLOOP_YIELD_PC, MAINLOOP_NO_PLAYERS_PC, MAINLOOP_NO_NEIGHBOURS_PC};
+    MAINLOOP_YIELD_PC, MAINLOOP_NO_PLAYERS_PC, MAINLOOP_NO_NEIGHBOURS_PC,
+    PAUSE_VOLUME_DOWN_CALL_PC};
 
 // ---------------------------------------------------------------------------
 // $81:FD11  the squirt gun's water in flight -- see `port/squirt.h`
@@ -8948,6 +9001,29 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_WALKER_WAY] = {198, 18, 2},
     [TS_WALKER_FIRST] = {46, 5, 1},
     [TS_STUNG] = {80, 7, 1},
+    [TS_BOLT_ENTER] = {116, 13, 0},
+    [TS_FISH_FATE] = {30, 4, 0},
+    [TS_SQUARE_MADE] = {654, 53, 2},
+    [TS_SQUARE_KEPT] = {46, 5, 1},
+    [TS_SQUARE_CELL_AT] = {382, 31, 4},
+    [TS_SQUARE_TILE] = {134, 12, 3},
+    [TS_SQUARE_BACK] = {74, 2, 0},
+    [TS_SQUARE_BOX] = {416, 42, 1},
+    [TS_SQUARE_FREED] = {90, 3, 1},
+    [TS_SQUARE_SLOT_GIVEN] = {82, 6, 1},
+    [TS_SQUARE_SLOT_FREE] = {374, 22, 0},
+    [TS_FISH_SECOND] = {58, 7, 1},
+    [TS_FISH_COUNTED] = {192, 15, 1},
+    [TS_KILLER_SIDE] = {64, 8, 0},
+    [TS_KILLER_OTHER] = {24, 2, 0},
+    [TS_RTL] = {42, 1, 0},
+    [TS_FISH_UNTOUCHABLE] = {166, 14, 1},
+    [TS_FISH_ENDED] = {138, 14, 1},
+    [TS_BOLT_MADE] = {1060, 96, 10},
+    [TS_PAUSE_DIM] = {52, 6, 0},
+    [TS_PAUSE_BRIGHT] = {52, 6, 0},
+    [TS_MAIN_PLAYERS] = {80, 8, 0},
+    [TS_MAIN_NEIGHBOURS] = {46, 5, 0},
     [TS_STUNG_HURT] = {70, 7, 0},
     [TS_STUNG_SHOWN] = {172, 15, 2},
     [TS_ANT_FLASH] = {104, 11, 1},
@@ -9069,6 +9145,21 @@ static const uint32_t TS_EXITS_SPIDER[] = {SPIDER_NO_ROOM_PC, SPIDER_ALLOC_PC,
 static const uint32_t TS_EXITS_WALKER[] = {
     WALKER_NO_ROOM_PC, WALKER_ALLOC_PC, WALKER_PICTURES_CALL_PC,
     WALKER_SLEEP_PC};
+static const uint32_t TS_EXITS_SQUARE_SHOWN[] = {
+    SQUARE_SOUND_CALL_PC,    SQUARE_CELL_CALL_PC, SQUARE_TILE_CALL_PC,
+    SQUARE_BOX_CALL_PC,      SQUARE_PICTURES_CALL_PC,
+    SQUARE_FREE_CALL_PC,     SQUARE_END_PC};
+static const uint32_t TS_EXITS_FISHMAN_DEATH[] = {
+    FISHMAN_UNHANDLED_CALL_PC,    FISHMAN_SECOND_FREE_PC,
+    FISHMAN_SCORED_PC,            FISHMAN_SOUND_CALL_PC,
+    FISHMAN_PATROL_SOUND_CALL_PC, FISHMAN_PATROL_FREE_PC,
+    FISHMAN_PATROL_SECOND_FREE_PC, FISHMAN_PATROL_RTL_PC};
+static const uint32_t TS_EXITS_BOLT[] = {BOLT_SOUND_CALL_PC, BOLT_ALLOC_PC,
+                                         BOLT_SLEEP_PC};
+static const uint32_t TS_EXITS_PAUSE[] = {PAUSE_HELD_PC, PAUSE_VOLUME_UP_CALL_PC,
+                                          PAUSE_RTL_PC};
+static const uint32_t TS_EXITS_MAIN_REST[] = {
+    MAINLOOP_YIELD_PC, MAINLOOP_NO_PLAYERS_PC, MAINLOOP_NO_NEIGHBOURS_PC};
 static const uint32_t TS_EXITS_STUNG[] = {
     STUNG_SPARED_PC, STUNG_SOUND_CALL_PC, STUNG_UNHANDLED_PC, STUNG_YIELD_PC};
 static const uint32_t TS_EXITS_ANT_FLASH[] = {ANT_FLASH_YIELD_PC,
@@ -11487,6 +11578,37 @@ static void shim_figure_colours_set(Wram* w, const Rom* rom,
   out->x = (uint16_t)slot;
   out->y = slot == 0 ? probe : 0;
   queue_flags(w, W_VBL_QUEUE_B_COUNT, FIGURE_COLOURS_JOB_BANK, true, out);
+}
+
+// `$82:816F`: the same instructions, with `vbl_queue_a_add` at the end,
+// and its `RTL` straight after.
+static int saucer_queue_a_cycles(int slot, bool fast);
+
+static void shim_figure_sprite_colours_set(Wram* w, const Rom* rom,
+                                           const CosimRegs* in,
+                                           CosimRegs* out) {
+  const uint16_t job = FIGURE_SPRITE_COLOURS_JOB;
+  const uint16_t bank = FIGURE_SPRITE_COLOURS_JOB_BANK;
+  const int slot = figure_sprite_colours_set(w, rom, in->a, (uint8_t)in->y);
+  if (slot < 0) {  // full: the job and its bank as they were loaded
+    out->a = job;
+    out->x = 2 * FIGURE_COLOURS_COUNT;
+    out->y = bank;
+  } else {
+    out->a = (uint16_t)(job - 1);
+    out->y = out->a;
+    out->x = (uint16_t)slot;
+  }
+  queue_flags(w, W_VBL_QUEUE_A_COUNT, bank, slot >= 0, out);
+
+  CosimRun run = {0, 0, 0};
+  run_add(&run, &FIGURE_COLOURS_RUN_HEAD, 1);
+  run_add(&run, &FIGURE_COLOURS_RUN_LOOP, FIGURE_COLOURS_COUNT);
+  run_add(&run, &QUEUE_RUN_TAKEN, FIGURE_COLOURS_COUNT - 1);
+  run_add(&run, &FIGURE_COLOURS_RUN_TAIL, 1);
+  run_add(&run, &FIGURE_COLOURS_RUN_RTL, 1);
+  cosim_cost(saucer_queue_a_cycles(slot, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), false));
 }
 
 // ---------------------------------------------------------------------------
@@ -17003,6 +17125,8 @@ static const CosimRun POSE_RUN_FIRE_EMPTY = {52, 2, 0};  // $80:ED86-$ED87
 static const CosimRun POSE_RUN_CLD = {12, 1, 0};  // $80:ED86
 static const CosimRun POSE_RUN_FIRE_SHOT = {674, 57, 11};  // $80:ED45-$ED77
 static const CosimRun POSE_RUN_FIRE_TAIL = {98, 10, 1};  // $80:ED78-$ED81
+// Weapon 5: `JMP $DE96 : LDA #$0005`, to its pose's sleep.
+static const CosimRun POSE_RUN_RECOIL = {18 + 18, 6, 0};
 static const CosimRun POSE_RUN_BB_TEST = {68, 6, 2};  // $80:D6C2-$D6C7
 static const CosimRun POSE_RUN_BB_FIRED = {30 + 6, 5, 0};  // $80:D6CB-$D6CF
 static const CosimRun POSE_RUN_BB_PLAIN = {18, 3, 0};  // $80:D6D0-$D6D2
@@ -17107,6 +17231,10 @@ static void pose_fire_bill(PoseBill* b) {
   }
   pose_add(b, &POSE_RUN_FIRE_SHOT);
   pose_add(b, &POSE_RUN_FIRE_TAIL);
+  if (b->log->recoils) {
+    pose_add(b, &POSE_RUN_RECOIL);
+    return;
+  }
   pose_taken(b);
   pose_add(b, &POSE_RUN_RTS);
 }
@@ -17135,6 +17263,8 @@ static int pose_calls(const PoseLog* log, const Rom* rom,
   return calls;
 }
 
+static void pose_band_b_aim_bill(PoseBill* b);
+
 // `$80:D4F4`.
 static void pose_stand_begin_bill(PoseBill* b) {
   const PoseLog* log = b->log;
@@ -17146,6 +17276,11 @@ static void pose_stand_begin_bill(PoseBill* b) {
     pose_taken(b);
     pose_add(b, &POSE_RUN_SB_BAND_B);
     if (log->stand_band_b) pose_add(b, &POSE_RUN_SB_DELAY);
+    if (log->sleep == POSE_SLEEP_AIM) {
+      pose_add(b, &POSE_RUN_JMP);
+      pose_band_b_aim_bill(b);
+      return;
+    }
     pose_taken(b);
     pose_add(b, &POSE_RUN_SB_6C);
     pose_taken(b);
@@ -17230,7 +17365,7 @@ static void pose_stand_bill(PoseBill* b) {
     if (log->fire != POSE_FIRE_NONE) {
       pose_taken(b);
       pose_fire_bill(b);
-      pose_add(b, &POSE_RUN_RTS);
+      if (!log->recoils) pose_add(b, &POSE_RUN_RTS);
       return;
     }
     pose_add(b, &POSE_RUN_STAND_SPECIAL);
@@ -17276,6 +17411,7 @@ static void pose_walk_firing_bill(PoseBill* b) {
   pose_add(b, &POSE_RUN_WF_DELAY);
   if (log->delayed) pose_taken(b);
   else pose_fire_bill(b);
+  if (log->recoils) return;
   pose_add(b, &POSE_RUN_WF_TIMER);
   if (log->waiting) {
     pose_taken(b);
@@ -17305,6 +17441,7 @@ static void pose_walk_band_b_bill(PoseBill* b) {
   pose_add(b, &POSE_RUN_BB_TEST);
   if (log->band_b_fired) {
     pose_fire_bill(b);
+    if (log->recoils) return;
     pose_add(b, &POSE_RUN_BB_FIRED);
   } else {
     pose_taken(b);
@@ -17641,6 +17778,25 @@ static int leap_cycles(const PoseLog* log, const PlayerSpan* span,
   return pose_total(&b, in) + cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom);
 }
 
+// `$80:DDBD`, from the bank test's `JMP` to the `RTS` it ends with, which is
+// the swim's. Its sound is `apu_play_sfx` with the sound chip caught up.
+static const CosimRun POSE_RUN_CLIMB_SOUND = {72 + 266 + 218, 7 + 17 + 22, 0};
+static const CosimRun POSE_RUN_CLIMB_HEAD = {74, 7, 2};  // $80:DDC7-$DDCD
+static const CosimRun POSE_RUN_CLIMB_SET = {298, 29, 7};  // $80:DDD4-$DDEE
+
+static int climb_out_cycles(const PoseLog* log, const PlayerSpan* span,
+                            const CosimRegs* in) {
+  PoseBill b = {{0, 0, 0}, log};
+  pose_add(&b, &POSE_RUN_CLIMB_SOUND);
+  pose_add_n(&b, &POSE_RUN_JSR, 3);
+  player_span_bill(&b.own, span);
+  pose_add(&b, &POSE_RUN_CLIMB_HEAD);
+  pose_add(&b, &PSMALL_RUN_UNHANDLED);
+  pose_add(&b, &PSMALL_RUN_UNTOUCHABLE);
+  pose_add(&b, &POSE_RUN_CLIMB_SET);
+  return pose_total(&b, in) + cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom);
+}
+
 // `$80:DFAC`, from the walk's `JMP` to `$80:F300`'s `RTS`. Its runs have its
 // two `JSR`s in them.
 static const CosimRun POSE_RUN_BOUNCE_BEGIN_HEAD = {114, 10, 2};  // $80:DFAC-$DFB3
@@ -17770,9 +17926,64 @@ static void pose_begin_bill(PoseBill* b) {
     if (log.v_set) out->flags |= COSIM_FLAG_V;                               \
   }
 
-POSE_SHIM(pose_stand, POSE_HANDLER_STAND)
-POSE_SHIM(pose_walk, POSE_HANDLER_WALK)
-POSE_SHIM(pose_walk_firing, POSE_HANDLER_WALK_FIRING)
+// A walking or standing handler leaves by the `RTS` it ends at, or at the
+// sleep its frame goes on into, with the shot's return address under it when
+// that is where the sleep is. Nothing after reads A, X or Y but the sleep,
+// which takes its ticks in A.
+static void pose_leave(Wram* w, const CosimRegs* in, const PoseLog* log,
+                       CosimRegs* out) {
+  out->regs = 0;
+  out->s = in->s;
+  out->p = in->p;
+  out->p_keep = PORT_P_N | PORT_P_Z;
+  if (log->c_set) {
+    out->p &= (uint8_t)~PORT_P_C;
+    if (log->c) out->p |= PORT_P_C;
+  }
+  if (log->v_set) {
+    out->p &= (uint8_t)~PORT_P_V;
+    if (log->v) out->p |= PORT_P_V;
+  }
+  if (log->sleep == POSE_AWAKE) {
+    out->pc = log->ends_at;
+    return;
+  }
+  out->pc = log->sleep == POSE_SLEEP_RECOIL ? POSE_RECOIL_YIELD_PC
+                                            : POSE_BAND_B_AIM_YIELD_PC;
+  if (log->sleep_under) {
+    wram_w16(w, (uint16_t)(in->s - 1), log->sleep_under);
+    out->s = (uint16_t)(in->s - 2);
+  }
+  out->a = (uint16_t)log->ticks;
+  out->regs = COSIM_REG_A;
+  out->p &= (uint8_t)~(PORT_P_N | PORT_P_Z);
+  if (log->ticks == 0) out->p |= PORT_P_Z;
+  out->p_keep = 0;
+}
+
+#define POSE_EXITS_SHIM(name, guarded)                                       \
+  static bool guard_##name(Wram* scratch, const Rom* rom,                    \
+                           const CosimRegs* in) {                            \
+    return guarded;                                                          \
+  }                                                                          \
+  static void shim_##name(Wram* w, const Rom* rom, const CosimRegs* in,      \
+                          CosimRegs* out) {                                  \
+    static PoseLog log;                                                      \
+    log = (PoseLog){0};                                                      \
+    name(w, rom, in->d, &log);                                               \
+    PoseBill b = {{0, 0, 0}, &log};                                          \
+    name##_bill(&b);                                                         \
+    cosim_cost(pose_total(&b, in) + pose_calls(&log, rom, in) -              \
+               (log.sleep == POSE_AWAKE                                      \
+                    ? cosim_run_cycles(&RUN_RTS, fetch_fast(in))             \
+                    : 0));                                                   \
+    pose_leave(w, in, &log, out);                                            \
+  }
+
+POSE_EXITS_SHIM(pose_stand, pose_ok(scratch, rom, in, POSE_HANDLER_STAND))
+POSE_EXITS_SHIM(pose_walk, pose_ok(scratch, rom, in, POSE_HANDLER_WALK))
+POSE_EXITS_SHIM(pose_walk_firing,
+                pose_ok(scratch, rom, in, POSE_HANDLER_WALK_FIRING))
 POSE_SHIM(pose_arc, POSE_HANDLER_ARC)
 POSE_SHIM(pose_arc_ready, POSE_HANDLER_ARC_READY)
 POSE_SHIM(pose_swim, POSE_HANDLER_SWIM)
@@ -17798,25 +18009,37 @@ POSE_SHIM(pose_swim, POSE_HANDLER_SWIM)
     if (log.v_set) out->flags |= COSIM_FLAG_V;                               \
   }
 
-// Two handlers that had no entry of their own, and three pieces.
-POSE_PIECE_SHIM(pose_walk_band_b, pose_page_ok)
-POSE_PIECE_SHIM(pose_walk_6c, pose_page_ok)
-POSE_PIECE_SHIM(pose_begin, pose_page_ok)
-POSE_PIECE_SHIM(pose_stand_begin, pose_page_ok_before_tables)
+// Two handlers that had no entry of their own, and three pieces. All but the
+// last may go on into a sleep.
+POSE_EXITS_SHIM(pose_walk_band_b,
+                pose_tried(pose_walk_band_b, pose_page_ok, scratch, rom, in))
+POSE_EXITS_SHIM(pose_walk_6c,
+                pose_tried(pose_walk_6c, pose_page_ok, scratch, rom, in))
+POSE_EXITS_SHIM(pose_begin,
+                pose_tried(pose_begin, pose_page_ok, scratch, rom, in))
+POSE_EXITS_SHIM(pose_stand_begin,
+                pose_tried(pose_stand_begin, pose_page_ok_before_tables,
+                           scratch, rom, in))
 POSE_PIECE_SHIM(pose_walk_begin, pose_page_ok)
+
+// Where the five that walk or stand, and the two pieces that begin one, may
+// end. `$80:ED0F` is also where a call from inside one returns.
+static const uint32_t POSE_HANDLER_EXITS[] = {
+    POSE_STAND_RTS_PC,         POSE_WALK_BEGIN_RTS_PC,
+    POSE_WALK_RTS_PC,          POSE_WEAPON_SHOWN_RTS_PC,
+    POSE_WEAPON_HIDDEN_RTS_PC, POSE_RECOIL_YIELD_PC,
+    POSE_BAND_B_AIM_YIELD_PC};
 
 // `$80:ED30`, the shot. It leaves by one of two `RTS`s, or by `JMP $DE96`
 // to weapon 5's pose, whose first two instructions are a sleep: the stretch
 // ends at that `JSL`, on the stack it began on.
-static const CosimRun POSE_RUN_RECOIL = {18 + 18, 6, 0};  // JMP : LDA #$0005
-
 static bool guard_pose_fire(Wram* scratch, const Rom* rom,
                             const CosimRegs* in) {
   static PoseLog log;
   if (!pose_page_ok(scratch, in)) return false;
   log = (PoseLog){0};
   pose_fire(scratch, rom, in->d, &log);
-  return !log.unported || log.recoils;
+  return !log.unported;
 }
 
 static void shim_pose_fire(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -18191,6 +18414,22 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
     default: pose_walk_firing_bill(&pose); break;
   }
   calls += pose_total(&pose, in) + pose_calls(&log.pose_log, rom, in);
+  if (log.pose_log.sleep != POSE_AWAKE) {
+    // Stopped at the sleep the pose goes on into, with the pose's return
+    // under it and, when the sleep is inside the shot, the shot's.
+    cosim_cost(calls + cosim_run_cycles_dp(&own, fast, unaligned));
+    const PoseLog* did = &log.pose_log;
+    wram_w16(w, (uint16_t)(in->s - 1), PLAYER_FRAME_POSE_RETURN);
+    CosimRegs at_pose = *in;
+    at_pose.s = (uint16_t)(in->s - 2);
+    at_pose.p = (uint8_t)(in->p & ~(PORT_P_C | PORT_P_V));
+    if (log.c_set ? log.c : (in->p & PORT_P_C) != 0) at_pose.p |= PORT_P_C;
+    if (log.v) at_pose.p |= PORT_P_V;
+    PoseLog flags = *did;
+    flags.c_set = flags.v_set = false;
+    pose_leave(w, &at_pose, &flags, out);
+    return;
+  }
   if (log.pose_log.splashed) {
     // Stopped at the landing's sound, with the pose's return under it.
     cosim_cost(calls + cosim_run_cycles_dp(&own, fast, unaligned));
@@ -18216,7 +18455,8 @@ static void shim_player_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t PLAYER_FRAME_EXITS[] = {
-    PLAYER_FRAME_YIELD_PC, HIT_FLINCH_PC, HIT_OTHER_PC, POSE_SPLASH_SOUND_PC};
+    PLAYER_FRAME_YIELD_PC, HIT_FLINCH_PC, HIT_OTHER_PC, POSE_SPLASH_SOUND_PC,
+    POSE_RECOIL_YIELD_PC, POSE_BAND_B_AIM_YIELD_PC};
 
 // `$80:DD90`, where the splash comes back to -- see `port/player_frame.h`.
 // Its own runs, round `JSR`s to three leaves, and then the frame's tail.
@@ -20121,6 +20361,17 @@ static void shim_colours_112_job(Wram* w, const Rom* rom, const CosimRegs* in,
   (void)rom;
   HwTrace* t = dma_trace();
   colours_112_job(t);
+  dma_out(out, low_byte_one(COLOURS_112_BYTES), in->x, in->y, false,
+          COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
+  cosim_hw(t, DMA_COST, fetch_fast(in));
+}
+
+static void shim_colours_240_job(Wram* w, const Rom* rom, const CosimRegs* in,
+                                 CosimRegs* out) {
+  (void)w;
+  (void)rom;
+  HwTrace* t = dma_trace();
+  colours_240_job(t);
   dma_out(out, low_byte_one(COLOURS_112_BYTES), in->x, in->y, false,
           COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C);
   cosim_hw(t, DMA_COST, fetch_fast(in));
@@ -23125,6 +23376,23 @@ static const CosimRun SNAKEOID_RUN_COST[SNAKEOID_RUN_COUNT] = {
     [SNAKEOID_RUN_A52F] = {18, 3, 0},  // JMP
     [SNAKEOID_RUN_A532] = {18, 3, 0},  // JMP
     [SNAKEOID_RUN_A535] = {18, 3, 0},  // JMP
+    [SNAKEOID_RUN_80E0] = {76, 4, 0},  // LDA : RTL
+    [SNAKEOID_RUN_9D8F] = {82, 11, 1},  // LDA : STA : LDX : LDY
+    [SNAKEOID_RUN_9D9A] = {134, 12, 2},  // STY : STZ : TXA : SEC : SBC : TAX : BPL
+    [SNAKEOID_RUN_A7F7] = {660, 56, 3},  // STA : TAX : LDA : STA : STZ : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : STA : LDA : ORA : STA : RTS
+    [SNAKEOID_RUN_A82F] = {46, 5, 0},  // LDA : BNE
+    [SNAKEOID_RUN_A834] = {146, 19, 0},  // LDA : STA : LDA : STA : LDA : LDY
+    [SNAKEOID_RUN_A84B] = {36, 6, 0},  // LDA : LDY
+    [SNAKEOID_RUN_A855] = {208, 24, 0},  // LDA : STA : LDA : STA : LDA : STA : LDA : STA
+    [SNAKEOID_RUN_A871] = {18, 3, 0},  // LDA
+    [SNAKEOID_RUN_A878] = {54, 4, 0},  // JSL
+    [SNAKEOID_RUN_A87C] = {12, 2, 0},  // BNE
+    [SNAKEOID_RUN_A87E] = {498, 42, 12},  // LDA : STA : LDA : STA : LDA : STA : LDA : STA : STZ : STZ : STZ : STZ : STZ : STZ : LDA : STA : STA : JSR
+    [SNAKEOID_RUN_A8A8] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A8AB] = {136, 15, 1},  // LDA : STA : LDA : LDY : JSL
+    [SNAKEOID_RUN_A8BB] = {64, 8, 1},  // LDA : STA : JMP
+    [SNAKEOID_RUN_A8C3] = {64, 8, 1},  // LDA : STA : JMP
+    [SNAKEOID_RUN_A8CB] = {138, 13, 0},  // CLC : LDA : ADC : STA : JSR
     [SNAKEOID_RUN_A8D8] = {40, 3, 0},  // JSR
     [SNAKEOID_RUN_A8DB] = {40, 3, 0},  // JSR
     [SNAKEOID_RUN_A8DE] = {170, 10, 2},  // STZ : PEA : LDA : DEC : PHA : RTS
@@ -23137,6 +23405,18 @@ static const CosimRun SNAKEOID_RUN_COST[SNAKEOID_RUN_COUNT] = {
 // addresses on the stack, and the port follows only the ones it knows.
 static bool accepts_snakeoid(const Wram* w, const CosimRegs* in) {
   if (!body_ok(in) || in->d < 0x0100 || in->db != SNAKEOID_BANK) return false;
+  // Its start has no record or track yet, but for the record it is given.
+  switch (in->pc) {
+    case SNAKEOID_MADE_PC:
+      if (in->a >= 0x1f00) return false;
+      return snakeoid_stack_known(w, in->pc, in->s);
+    case SNAKEOID_ENTER_PC:
+    case SNAKEOID_ENTER_B_PC:
+    case SNAKEOID_COLOURED_PC:
+    case SNAKEOID_SPRITE_COLOURED_PC:
+    case SNAKEOID_QUEUE_WOKE_PC:
+      return snakeoid_stack_known(w, in->pc, in->s);
+  }
   if (wram_r16(w, (uint16_t)(in->d + SNAKEOID_DP_RECORD)) >= 0x1f00)
     return false;
   for (int i = 0; i < SNAKEOID_TRACK_PIECES; i++) {
@@ -23189,15 +23469,21 @@ static void shim_snakeoid(Wram* w, const Rom* rom, const CosimRegs* in,
     cycles += player_in_range_cycles(&k.players[i], fast);
   for (int i = 0; i < k.nearest_count; i++)
     cycles += nearest_cycles(&k.nearest[i], fast);
+  cycles += k.handlers_set * cosim_run_cycles(&SET_HANDLER_RUN, fast);
   cosim_cost(cycles);
 }
 
 // Any stretch can end on any of these: a sleep, a record asked for or
-// freed, its death, or its coming up to bite, which is the ROM's.
+// freed, its death, or its coming up to bite, which is the ROM's. Its start
+// ends on the calls round its colours and the upload too.
 static const uint32_t SNAKEOID_EXITS[] = {
-    SNAKEOID_WAIT_PC,   SNAKEOID_SLEEP_PC, SNAKEOID_RISE_PC,
-    SNAKEOID_FREE_PC,   SNAKEOID_RECORD_PC, SNAKEOID_DIES_PC,
-    SNAKEOID_BITES_PC,  SNAKEOID_BITES_BESIDE_PC};
+    SNAKEOID_WAIT_PC,          SNAKEOID_SLEEP_PC,
+    SNAKEOID_RISE_PC,          SNAKEOID_FREE_PC,
+    SNAKEOID_RECORD_PC,        SNAKEOID_DIES_PC,
+    SNAKEOID_BITES_PC,         SNAKEOID_BITES_BESIDE_PC,
+    SNAKEOID_COLOURS_PC,       SNAKEOID_SPRITE_COLOURS_PC,
+    SNAKEOID_UPLOAD_PC,        SNAKEOID_QUEUE_WAIT_PC,
+    SNAKEOID_START_RECORD_PC};
 
 // ---------------------------------------------------------------------------
 // The spray of the extinguisher and the flamethrower -- see `port/spray.h`
@@ -27211,6 +27497,7 @@ static const CosimRun APU_RUN_song_end = {52, 3, 0};
 static const CosimRun APU_RUN_sfx_bank_begin = {114, 7, 0};
 static const CosimRun APU_RUN_sfx_bank_play = {36, 5, 0};
 static const CosimRun APU_RUN_sfx_bank_end = {52, 3, 0};
+static const CosimRun APU_RUN_command_13 = {144, 11, 0};
 static const CosimRun APU_RUN_command_13_end = {52, 3, 0};
 static const CosimRun APU_RUN_set_announce = {76, 7, 0};
 static const CosimRun APU_RUN_set_announced = {52, 3, 0};
@@ -29186,12 +29473,10 @@ static const CosimRoutine ROUTINES[] = {
         .name = "pause_check",
         .symbol = "$80:89B0",
         .entry = PAUSE_CHECK_PC,
-        .ret_op = PAUSE_CHECK_RTL_PC,
-        .ret_kind = COSIM_RTL,
         .run = shim_pause_check,
         .accepts = accepts_pause_check,
-        .cycles = 216,
-        .stack_bytes = 0,
+        COSIM_EXITS(PAUSE_CHECK_EXITS),
+        .cycles = 174,
     },
     {
         .name = "actor_aligned",
@@ -30104,7 +30389,7 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 6000,
         .stack_bytes = 7,
     },
-    // ...and a player in water by a fourth, which declines the stroke that
+    // ...and a player in water by a fourth, with the climb out when a stroke
     // reaches the bank.
     {
         .name = "swim_walk",
@@ -30114,7 +30399,6 @@ static const CosimRoutine ROUTINES[] = {
         .ret_kind = COSIM_RTS,
         .run = shim_swim_walk,
         .accepts = accepts_swim_walk,
-        .supported = supported_swim_walk,
         .uncalled = true,
         .cycles = 4000,
         .stack_bytes = 7,
@@ -30739,6 +31023,17 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 5,
     },
     {
+        .name = "figure_sprite_colours_set",
+        .symbol = "$82:816F",
+        .entry = FIGURE_SPRITE_COLOURS_PC,
+        .ret_op = FIGURE_SPRITE_COLOURS_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_figure_sprite_colours_set,
+        .accepts = figure_colours_ok,
+        .cycles = 3900,
+        .stack_bytes = 5,
+    },
+    {
         .name = "bystander_frame",
         .symbol = "$82:DD5C",
         .entry = BYSTANDER_FRAME_PC,
@@ -31161,12 +31456,26 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 400,                                                       \
         .stack_bytes = 2,                                                    \
     }
+#define POSE_EXITS_ENTRY(n, sym, pc)                                         \
+    {                                                                        \
+        .name = #n,                                                          \
+        .symbol = sym,                                                       \
+        .entry = pc,                                                         \
+        .run = shim_##n,                                                     \
+        .supported = guard_##n,                                              \
+        COSIM_EXITS(POSE_HANDLER_EXITS),                                     \
+        .returns_on_entry_stack = true,                                      \
+        .uncalled = true,                                                    \
+        .cycles = 400,                                                       \
+        .stack_bytes = 26,                                                   \
+    }
     // The player's pose handlers, entered by the thread's computed `RTS`. See
-    // `port/pose.h`.
-    POSE_ENTRY(pose_stand, "$80:D53D", POSE_STAND_PC, POSE_STAND_RTS_PC),
-    POSE_ENTRY(pose_walk, "$80:D6A8", POSE_WALK_PC, POSE_WALK_RTS_PC),
-    POSE_ENTRY(pose_walk_firing, "$80:D704", POSE_WALK_FIRING_PC,
-               POSE_WALK_FIRING_RTS_PC),
+    // `port/pose.h`. The five that walk or stand may end at a sleep, and the
+    // deepest they go is the shot's `JSR`, its `thread_spawn` and what that
+    // pushes.
+    POSE_EXITS_ENTRY(pose_stand, "$80:D53D", POSE_STAND_PC),
+    POSE_EXITS_ENTRY(pose_walk, "$80:D6A8", POSE_WALK_PC),
+    POSE_EXITS_ENTRY(pose_walk_firing, "$80:D704", POSE_WALK_FIRING_PC),
     // ...and the three in the air. The second is the first again, with a
     // landing of its own that neither port has.
     POSE_ENTRY(pose_arc, "$80:DD41", POSE_ARC_PC, POSE_ARC_RTS_PC),
@@ -31177,13 +31486,11 @@ static const CosimRoutine ROUTINES[] = {
     // ...and the one in the water.
     POSE_ENTRY(pose_swim, "$80:DCA2", POSE_SWIM_PC, POSE_SWIM_RTS_PC),
     // ...and two walks, for the frames the whole frame is turned down on.
-    POSE_ENTRY(pose_walk_band_b, "$80:D6B8", POSE_WALK_BAND_B_PC,
-               POSE_WALK_RTS_PC),
-    POSE_ENTRY(pose_walk_6c, "$80:D6DC", POSE_WALK_6C_PC, POSE_WALK_RTS_PC),
+    POSE_EXITS_ENTRY(pose_walk_band_b, "$80:D6B8", POSE_WALK_BAND_B_PC),
+    POSE_EXITS_ENTRY(pose_walk_6c, "$80:D6DC", POSE_WALK_6C_PC),
     // The pieces a handler that is the ROM's still reaches, by `JMP`.
-    POSE_ENTRY(pose_begin, "$80:D4E9", POSE_BEGIN_PC, POSE_STAND_RTS_PC),
-    POSE_ENTRY(pose_stand_begin, "$80:D4F4", POSE_STAND_BEGIN_PC,
-               POSE_STAND_RTS_PC),
+    POSE_EXITS_ENTRY(pose_begin, "$80:D4E9", POSE_BEGIN_PC),
+    POSE_EXITS_ENTRY(pose_stand_begin, "$80:D4F4", POSE_STAND_BEGIN_PC),
     POSE_ENTRY(pose_walk_begin, "$80:D65B", POSE_WALK_BEGIN_PC,
                POSE_WALK_BEGIN_RTS_PC),
     // ...and the shot, by `JSR`. Weapon 5's ends at its pose's sleep.
@@ -33118,6 +33425,12 @@ static const CosimRoutine ROUTINES[] = {
         /* four words pushed, and `actor_nearest` under them. */             \
         .stack_bytes = 32,                                                   \
     },
+    SNAKEOID_ROW(enters, "$82:A8BB", SNAKEOID_ENTER_PC, 400)
+    SNAKEOID_ROW(enters_b, "$82:A8C3", SNAKEOID_ENTER_B_PC, 400)
+    SNAKEOID_ROW(coloured, "$82:A84B", SNAKEOID_COLOURED_PC, 40)
+    SNAKEOID_ROW(sprite_coloured, "$82:A855", SNAKEOID_SPRITE_COLOURED_PC, 140)
+    SNAKEOID_ROW(queue_waits, "$82:A878", SNAKEOID_QUEUE_WOKE_PC, 300)
+    SNAKEOID_ROW(made, "$82:A7F7", SNAKEOID_MADE_PC, 1500)
     SNAKEOID_ROW(ready, "$82:A8BA", SNAKEOID_READY_PC, 1200)
     SNAKEOID_ROW(waited, "$82:A43A", SNAKEOID_WAITED_PC, 1200)
     SNAKEOID_ROW(wakes, "$82:A8EF", SNAKEOID_WAKES_PC, 4000)
@@ -33606,6 +33919,8 @@ static const CosimRoutine ROUTINES[] = {
     },
     DMA_JOB_ENTRY(colours_112_job, "$82:8308", COLOURS_112_JOB_PC,
                   COLOURS_112_JOB_RTL_PC, 420),
+    DMA_JOB_ENTRY(colours_240_job, "$82:819A", COLOURS_240_JOB_PC,
+                  COLOURS_240_JOB_RTL_PC, 420),
     DMA_JOB_ENTRY(vram_clear_job, "$80:9F62", VRAM_CLEAR_JOB_PC,
                   VRAM_CLEAR_JOB_RTL_PC, 480),
     DMA_JOB_ENTRY(colours_job, "$80:9FDF", COLOURS_JOB_PC, COLOURS_JOB_RTL_PC,

@@ -5,6 +5,10 @@
 
 #include "port/bcd.h"
 #include "port/bodies.h"            // W_NEIGHBOURS_LEFT
+#include "port/bolt.h"
+#include "port/fishman.h"
+#include "port/walk.h"              // W_WALK_SQUARES
+#include "port/mainloop.h"
 #include "port/boss_thread.h"       // the figure's page
 #include "port/bossbg.h"            // W_BOSS_BG_ONE_SRC
 #include "port/bystander.h"
@@ -253,6 +257,36 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
              wram_r16(w, (uint16_t)(c->s + 1)) == WALKER_MADE_RETURN;
     case TS_NEEDS_WALKER_SHOWN:
       return wram_r16(w, (uint16_t)(c->s + 1)) == WALKER_MADE_RETURN;
+    case TS_NEEDS_SQUARE_MADE:
+      return c->a < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == SQUARE_MADE_RETURN;
+    case TS_NEEDS_SQUARE_CELL: {
+      // The block map is in the cartridge, which is what its price is.
+      const uint8_t bank = (uint8_t)wram_r16(w, W_SQUARE_CELL + 2);
+      return c->d == 0 && bank >= 0x80 && bank < 0xc0 &&
+             wram_r16(w, W_SQUARE_CELL) >= 0x8000u &&
+             wram_r16(w, (uint16_t)(c->s + 3)) == SQUARE_CELL_RETURN &&
+             wram_r16(w, (uint16_t)(c->s + 1)) >= 0x0100;
+    }
+    case TS_NEEDS_SQUARE_TILED: {
+      const uint16_t page_at = wram_r16(w, (uint16_t)(c->s + 1));
+      return page_at >= 0x0100 &&
+             wram_r16(w, (uint16_t)(c->s + 3)) == SQUARE_CELL_RETURN &&
+             wram_r16(w, (uint16_t)(page_at + SQUARE_DP_RECORD)) < 0x1f00;
+    }
+    case TS_NEEDS_SQUARE_FREED:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == SQUARE_PASS_RETURN &&
+             page(w, c, SQUARE_DP_DONE) != 0xffffu &&
+             page(w, c, SQUARE_DP_SLOT_KEPT) <= WALK_SQUARES_LAST;
+    case TS_NEEDS_FISHMAN_ENDED:
+      return page(w, c, FISHMAN_DP_RECORD) < 0x1f00 &&
+             (wram_r16(w, W_SPAWN_LOAD) & 0x8000u) == 0 &&
+             wram_r16(w, W_SPAWN_LOAD) >= FISHMAN_LOAD;
+    case TS_NEEDS_BOLT_MADE:
+      return c->a < 0x1f00 && c->y == c->a &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == BOLT_MADE_RETURN &&
+             page(w, c, BOLT_DP_WAY) <= BOLT_WAY_MAX &&
+             page(w, c, BOLT_DP_PLAYER) < 8;
     case TS_NEEDS_STUNG:
       return page(w, c, STUNG_DP_PLAYER) < 4 &&
              page(w, c, STUNG_DP_RECORD) < 0x1f00;
@@ -1839,6 +1873,348 @@ void spider_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   lda(c, SPIDER_YIELD_TICKS);
   ran(k, TS_SPIDER_FIRST);
   c->pc = SPIDER_YIELD_PC;
+}
+
+// --- the square ----------------------------------------------------------------
+//
+// From where nobody is level with it: a record at the middle of its square,
+// heard, its pictures, the tile under it one less, everything round it told,
+// its last pictures, and its record freed. Then its place among the five is
+// free again, and it ends.
+
+// `$82:F643`: its record, and back to keep it.
+void square_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(square_made);
+  const uint16_t record = c->a;
+  ldy(c, record);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), page(w, c, SQUARE_DP_MIDDLE_X));
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), page(w, c, SQUARE_DP_MIDDLE_Y));
+  wram_w16(w, (uint16_t)(record + ACTOR_META), SQUARE_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), SQUARE_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), SQUARE_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  lda(c, record);  // `PLA`
+  pull16(w, c);
+  ran(k, TS_SQUARE_MADE);
+  set_page(w, c, SQUARE_DP_RECORD, c->a);
+  lda(c, SQUARE_SOUND);
+  ran(k, TS_SQUARE_KEPT);
+  c->pc = SQUARE_SOUND_CALL_PC;
+}
+
+// `LSR` six times: a pixel to a tile of the block map.
+static uint16_t to_tile(PortCpu* c, uint16_t pixel) {
+  set_c(c, (pixel & 0x0020u) != 0);
+  lda(c, (uint16_t)(pixel >> 6));
+  return c->a;
+}
+
+// `$82:F60D`: `JSR $F678`, which asks where the cell under it is, with the
+// direct page at zero.
+void square_shown(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  push16(w, c, SQUARE_CELL_RETURN);
+  ran(k, TS_JSR);
+  push16(w, c, c->d);
+  wram_w16(w, W_SQUARE_COLUMN, to_tile(c, page(w, c, SQUARE_DP_MIDDLE_X)));
+  wram_w16(w, W_SQUARE_ROW, to_tile(c, page(w, c, SQUARE_DP_MIDDLE_Y)));
+  lda(c, 0);
+  c->d = c->a;
+  ldx(c, wram_r16(w, W_SQUARE_COLUMN));
+  ldy(c, wram_r16(w, W_SQUARE_ROW));
+  ran(k, TS_SQUARE_CELL_AT);
+  c->pc = SQUARE_CELL_CALL_PC;
+}
+
+// `$82:F69B`: the tile there, less one.
+void square_cell(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  ldy(c, 0);
+  const uint32_t cell = (uint32_t)(wram_r16(w, W_SQUARE_CELL + 2) & 0xffu) << 16 |
+                        wram_r16(w, W_SQUARE_CELL);
+  lda(c, (uint16_t)(bus_r16(w, rom, cell) - 1));
+  ldx(c, wram_r16(w, W_SQUARE_COLUMN));
+  ldy(c, wram_r16(w, W_SQUARE_ROW));
+  ran(k, TS_SQUARE_TILE);
+  c->pc = SQUARE_TILE_CALL_PC;
+}
+
+// `$82:F6A9`: back on its own page, and `JSR $F5CB`: everything in a box
+// round it is told `$6F`.
+void square_tiled(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  c->d = pull16(w, c);
+  set_nz16(c, c->d);
+  pull16(w, c);
+  ran(k, TS_SQUARE_BACK);
+  push16(w, c, 0xf612u);
+  ran(k, TS_JSR);
+  const uint16_t record = page(w, c, SQUARE_DP_RECORD);
+  ldy(c, record);
+  set_c(c, true);
+  lda(c, sbc16(c, wram_r16(w, (uint16_t)(record + ACTOR_X)), 0x0020));
+  wram_w16(w, W_SQUARE_COLUMN, c->a);
+  set_c(c, false);
+  lda(c, adc16(c, c->a, 0x0040));
+  wram_w16(w, W_SQUARE_ROW, c->a);
+  set_c(c, true);
+  lda(c, sbc16(c, wram_r16(w, (uint16_t)(record + ACTOR_Y)), 0x0038));
+  wram_w16(w, W_SQUARE_BOX_TOP, c->a);
+  set_c(c, false);
+  lda(c, adc16(c, c->a, 0x0040));
+  wram_w16(w, W_SQUARE_BOX_BOTTOM, c->a);
+  lda(c, SQUARE_BOX_ID);
+  wram_w16(w, W_SQUARE_BOX_ID, c->a);
+  ran(k, TS_SQUARE_BOX);
+  c->pc = SQUARE_BOX_CALL_PC;
+}
+
+// `$82:F613`: its last pictures.
+void square_told(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(square_told);
+  lda(c, SQUARE_LAST_PICTURES);
+  ran(k, TS_LDA_IMM);
+  c->pc = SQUARE_PICTURES_CALL_PC;
+}
+
+// `$82:F61A`: its record freed.
+void square_hidden(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, SQUARE_DP_RECORD));
+  ran(k, TS_LDA_DP);
+  c->pc = SQUARE_FREE_CALL_PC;
+}
+
+// `$82:F620`: done, and back to the pass, which gives its place among the
+// five back (`$82:F561`) and ends.
+void square_freed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(square_freed);
+  set_page(w, c, SQUARE_DP_DONE, (uint16_t)(page(w, c, SQUARE_DP_DONE) + 1));
+  pull16(w, c);
+  ran(k, TS_SQUARE_FREED);
+  ran(k, TS_SQUARE_DONE);
+  ran(k, TS_SQUARE_SLOT_GIVEN);
+  lda(c, page(w, c, SQUARE_DP_SLOT_KEPT));
+  ldx(c, c->a);
+  wram_w16(w, (uint32_t)(W_WALK_SQUARES + c->x), 0xffffu);
+  lda(c, 0xffffu);
+  // `PLB`, last: the bank is the thread's own.
+  set_nz16(c, (uint16_t)(c->db << 8));
+  ran(k, TS_SQUARE_SLOT_FREE);
+  c->pc = SQUARE_END_PC;
+}
+
+// `$81:E4C1`: dead, and told of nothing more.
+void fishman_fate(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(fishman_died);
+  lda(c, 0);
+  ldy(c, c->a);
+  ran(k, TS_FISH_FATE);
+  c->pc = FISHMAN_UNHANDLED_CALL_PC;
+}
+
+// `LDA $42 : CMP #$FFFF : BEQ`: is there a second record? True if so.
+static bool second_record(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, page(w, c, FISHMAN_DP_SECOND));
+  cmp16(c, c->a, 0xffffu);
+  ran(k, TS_FISH_SECOND);
+  if (c->a != 0xffffu) return true;
+  ran(k, TS_TAKEN);
+  return false;
+}
+
+// `$81:E4C9`: the second record freed, and on to being paid.
+void fishman_unhandled(Wram* w, const Rom* rom, PortCpu* c,
+                       ThreadStretchWork* k) {
+  (void)rom;
+  if (second_record(w, c, k)) {
+    PORT_COVER(fishman_second_freed);
+    c->pc = FISHMAN_SECOND_FREE_PC;
+    return;
+  }
+  c->pc = FISHMAN_SCORED_PC;
+}
+
+// `$81:E4DF` and `$81:E572`: counted, by the side that killed it, and
+// heard. `$80:9D6A` finds the side: 0 for the one in `$1E84`, 2 for the
+// other.
+void fishman_counted(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(fishman_counted);
+  wram_w16(w, W_FISHMEN_KILLED, (uint16_t)(wram_r16(w, W_FISHMEN_KILLED) + 1));
+  // `AND #$8000 : ASL : ROL : ROL`: bit 15 of who killed it, doubled.
+  const uint16_t side = (page(w, c, FISHMAN_DP_KILLER) & 0x8000u) ? 2 : 0;
+  set_c(c, false);
+  lda(c, side);
+  ran(k, TS_FISH_COUNTED);
+  ldx(c, 0);
+  cmp16(c, c->a, wram_r16(w, W_SCORE_SLOT_SIDE));
+  ran(k, TS_KILLER_SIDE);
+  if (c->a == wram_r16(w, W_SCORE_SLOT_SIDE)) {
+    ran(k, TS_TAKEN);
+  } else {
+    ldx(c, 2);
+    ran(k, TS_KILLER_OTHER);
+  }
+  ran(k, TS_RTL);
+  const uint16_t kills = (uint16_t)(W_KILLS_BY_SIDE + c->x);
+  wram_w16(w, kills, (uint16_t)(wram_r16(w, kills) + 1));
+  ldy(c, page(w, c, FISHMAN_DP_RECORD));
+  lda(c, 0);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), c->a);
+  lda(c, FISHMAN_SOUND);
+  ran(k, TS_FISH_UNTOUCHABLE);
+  c->pc = c->pc == FISHMAN_COUNTED_PC ? FISHMAN_SOUND_CALL_PC
+                                      : FISHMAN_PATROL_SOUND_CALL_PC;
+}
+
+// `$81:E59A`: the patrol's weight given back, and its record freed.
+void fishman_patrol_ended(Wram* w, const Rom* rom, PortCpu* c,
+                          ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(fishman_patrol_ended);
+  set_c(c, true);
+  lda(c, sbc16(c, wram_r16(w, W_SPAWN_LOAD), FISHMAN_LOAD));
+  wram_w16(w, W_SPAWN_LOAD, c->a);
+  lda(c, page(w, c, FISHMAN_DP_RECORD));
+  ran(k, TS_FISH_ENDED);
+  c->pc = FISHMAN_PATROL_FREE_PC;
+}
+
+// `$81:E5AC`: and the second record, by `JML`, or the thread's `RTL`.
+void fishman_patrol_freed(Wram* w, const Rom* rom, PortCpu* c,
+                          ThreadStretchWork* k) {
+  (void)rom;
+  if (second_record(w, c, k)) {
+    PORT_COVER(fishman_patrol_second_freed);
+    c->pc = FISHMAN_PATROL_SECOND_FREE_PC;
+    return;
+  }
+  c->pc = FISHMAN_PATROL_RTL_PC;
+}
+
+// `$81:F808`: its weight, and its sound.
+void bolt_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(bolt_entered);
+  load_up(w, c, BOLT_BUDGET);
+  lda(c, BOLT_SOUND);
+  ran(k, TS_BOLT_ENTER);
+  c->pc = BOLT_SOUND_CALL_PC;
+}
+
+// `$81:F819`: `JSR $F89D`, to its record.
+void bolt_heard(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  push16(w, c, BOLT_MADE_RETURN);
+  ran(k, TS_JSR);
+  c->pc = BOLT_ALLOC_PC;
+}
+
+// `$81:F8A1`: its record, its handler, and back to its first sleep.
+void bolt_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  PORT_COVER(bolt_made);
+  const uint16_t record = c->a;
+  set_page(w, c, BOLT_DP_RECORD, record);
+  set_page(w, c, BOLT_DP_SPRITE, record);
+  const uint16_t way = page(w, c, BOLT_DP_WAY);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), page(w, c, BOLT_DP_X));
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), BOLT_START_HEIGHT);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), page(w, c, BOLT_DP_Y));
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      rom_word(rom, BOLT_FLAGS + way)));
+  wram_w16(w, (uint16_t)(record + ACTOR_META),
+           rom_word(rom, BOLT_PICTURES + 2u * way));
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), BOLT_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  ldx(c, page(w, c, BOLT_DP_PLAYER));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID),
+           rom_word(rom, BOLT_IDS + c->x));
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      BOLT_DRAWN));
+  set_page(w, c, BOLT_DP_TOLD, 0);
+  set_page(w, c, BOLT_DP_WHICH, 0);
+  set_page(w, c, BOLT_DP_PICTURE_LEFT, 0);
+  set_page(w, c, BOLT_DP_FRAMES_LEFT, BOLT_FRAMES);
+  c->a = BOLT_HANDLER;
+  ldy(c, BOLT_HANDLER_BANK);
+  ran(k, TS_BOLT_MADE);
+  thread_set_handler(w, c);
+  ran(k, TS_SET_HANDLER);
+  pull16(w, c);
+  ran(k, TS_RTS);
+  lda(c, 0x0001);
+  ran(k, TS_LDA_IMM);
+  c->pc = BOLT_SLEEP_PC;
+}
+
+// `$80:89C2`: the screen dimmed, and on to the first wait.
+void pause_dim(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(pause_dimmed);
+  lda(c, PAUSE_DIM);
+  wram_w16(w, W_BRIGHTNESS_SHADOW, c->a);
+  ran(k, TS_PAUSE_DIM);
+  c->pc = PAUSE_HELD_PC;
+}
+
+// `$80:89E9`: the volume back up.
+void pause_over(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(pause_over);
+  lda(c, PAUSE_VOLUME_UP);
+  ran(k, TS_LDA_IMM);
+  c->pc = PAUSE_VOLUME_UP_CALL_PC;
+}
+
+// `$80:89F0`: the screen bright again, and the `RTL`.
+void pause_resumed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(pause_resumed);
+  lda(c, PAUSE_BRIGHT);
+  wram_w16(w, W_BRIGHTNESS_SHADOW, c->a);
+  ran(k, TS_PAUSE_BRIGHT);
+  c->pc = PAUSE_RTL_PC;
+}
+
+// `$80:8537`: the main loop's two questions, after the HUD's refresh.
+void main_frame_rest(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, (uint16_t)(wram_r16(w, W_HUD_PANEL_ON) |
+                    wram_r16(w, W_HUD_PANEL_ON + 2)));
+  ran(k, TS_MAIN_PLAYERS);
+  if (c->a == 0) {
+    PORT_COVER(main_frame_rest_nobody);
+    ran(k, TS_TAKEN);
+    c->pc = MAINLOOP_NO_PLAYERS_PC;
+    return;
+  }
+  lda(c, wram_r16(w, W_NEIGHBOURS_LEFT));
+  ran(k, TS_MAIN_NEIGHBOURS);
+  if (c->a == 0) {
+    PORT_COVER(main_frame_rest_saved);
+    c->pc = MAINLOOP_NO_NEIGHBOURS_PC;
+    return;
+  }
+  PORT_COVER(main_frame_rest);
+  ran(k, TS_TAKEN);
+  lda(c, MAINLOOP_YIELD_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = MAINLOOP_YIELD_PC;
 }
 
 // `$80:F9D0`: a point of health, if they have one.

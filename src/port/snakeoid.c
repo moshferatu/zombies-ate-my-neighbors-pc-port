@@ -2,8 +2,10 @@
 
 #include "port/snakeoid.h"
 
+#include "port/bossbg.h"  // the upload's four words
 #include "port/coverage.h"
 #include "port/rng.h"
+#include "port/thread.h"
 
 typedef struct {
   Wram* w;
@@ -1261,6 +1263,155 @@ static uint32_t rose(Snakeoid* s) {
   return ages_track(s);
 }
 
+// --- Its start ---------------------------------------------------------------
+
+// `$82:A87E`: where it was given, nobody to go for and no side to bite from,
+// and its record asked for.
+static uint32_t takes_its_place(Snakeoid* s) {
+  PORT_COVER(snakeoid_placed);
+  set_data(s, W_SNAKEOID_SPAN_X, SNAKEOID_SPAN_X);
+  set_data(s, W_SNAKEOID_SPAN_Y, SNAKEOID_SPAN_Y);
+  set_field(s, SNAKEOID_DP_X, field(s, 0x00));
+  set_field(s, SNAKEOID_DP_Y, field(s, 0x02));
+  set_field(s, SNAKEOID_DP_COUNT, 0);
+  set_field(s, 0x44, 0);
+  set_field(s, SNAKEOID_DP_DYING, 0);
+  set_field(s, 0x4a, 0);
+  set_field(s, 0x4c, 0);
+  set_field(s, SNAKEOID_DP_PAUSE, 0);
+  lda(s, 0xffff);
+  set_field(s, SNAKEOID_DP_SIDE, s->c->a);
+  set_field(s, 0x52, s->c->a);
+  jsr(s, 0xa8a5);
+  ran(s, SNAKEOID_RUN_A87E);
+  return SNAKEOID_START_RECORD_PC;
+}
+
+// `$82:A82F`, by `JSR` from its start: the first of a level sets the
+// figure's colours.
+static uint32_t starts(Snakeoid* s) {
+  lda(s, data(s, W_SNAKEOID_COLOURED));
+  ran(s, SNAKEOID_RUN_A82F);
+  if (took(s, s->c->a != 0)) return takes_its_place(s);
+  PORT_COVER(snakeoid_coloured);
+  lda(s, 0xffff);
+  set_data(s, W_SNAKEOID_COLOURED, s->c->a);
+  lda(s, 0);
+  wram_w16(s->w, W_SNAKEOID_COLOUR_CLEAR, s->c->a);
+  lda(s, SNAKEOID_COLOURS);
+  ldy(s, SNAKEOID_COLOURS_BANK);
+  ran(s, SNAKEOID_RUN_A834);
+  return SNAKEOID_COLOURS_PC;
+}
+
+// `$82:A8BB` and `$82:A8C3`: its thread, by the ground it churns.
+static uint32_t enters(Snakeoid* s, uint16_t ground) {
+  PORT_COVER(snakeoid_entered);
+  lda(s, ground);
+  set_field(s, SNAKEOID_DP_GROUND, ground);
+  ran(s, ground == 0 ? SNAKEOID_RUN_A8BB : SNAKEOID_RUN_A8C3);
+  lda(s, data(s, W_SPAWN_LOAD));
+  add(s, SNAKEOID_LOAD);
+  set_data(s, W_SPAWN_LOAD, s->c->a);
+  jsr(s, 0xa8d5);
+  ran(s, SNAKEOID_RUN_A8CB);
+  return starts(s);
+}
+
+static uint32_t enters_a(Snakeoid* s) { return enters(s, 0); }
+static uint32_t enters_b(Snakeoid* s) { return enters(s, SNAKEOID_GROUND_B); }
+
+// `$82:A84B`: the sprites' row too.
+static uint32_t coloured(Snakeoid* s) {
+  lda(s, SNAKEOID_COLOURS);
+  ldy(s, SNAKEOID_COLOURS_BANK);
+  ran(s, SNAKEOID_RUN_A84B);
+  return SNAKEOID_SPRITE_COLOURS_PC;
+}
+
+// `$82:A855`: the background's next upload, by `boss_bg_queue_one`.
+static uint32_t sprite_coloured(Snakeoid* s) {
+  set_data(s, W_BOSS_BG_ONE_SRC, SNAKEOID_UPLOAD_SOURCE);
+  set_data(s, W_BOSS_BG_ONE_BANK, SNAKEOID_UPLOAD_BANK);
+  set_data(s, W_BOSS_BG_ONE_BYTES, SNAKEOID_UPLOAD_BYTES);
+  lda(s, SNAKEOID_UPLOAD_VRAM);
+  set_data(s, W_BOSS_BG_ONE_VRAM, s->c->a);
+  ran(s, SNAKEOID_RUN_A855);
+  return SNAKEOID_UPLOAD_PC;
+}
+
+// `$82:A871`: a tick. Where the upload comes back to, this is a thread
+// argument (`port/thread_stretches.h`); it is here for the wait's loop.
+static uint32_t queued(Snakeoid* s) {
+  lda(s, 0x0001);
+  ran(s, SNAKEOID_RUN_A871);
+  return SNAKEOID_QUEUE_WAIT_PC;
+}
+
+// `$82:A878`: `JSL $82:80E0`, which loads how far the background's uploads
+// have got. Another tick while there are any.
+static uint32_t queue_woke(Snakeoid* s) {
+  jsl(s, 0xa878);
+  lda(s, data(s, W_BG_DMA_CURSOR));
+  ran(s, SNAKEOID_RUN_80E0);
+  rtl(s);
+  ran(s, SNAKEOID_RUN_A878);
+  ran(s, SNAKEOID_RUN_A87C);
+  if (took(s, s->c->a != 0)) {
+    PORT_COVER(snakeoid_queue_waited);
+    return queued(s);
+  }
+  return takes_its_place(s);
+}
+
+// `$82:A7F7`: its record, at its place and drawn, then its track cleared
+// (`$82:9D8F`), its count, and its handler.
+static uint32_t made(Snakeoid* s) {
+  PORT_COVER(snakeoid_made);
+  PortCpu* c = s->c;
+  const uint16_t record = c->a;
+  set_field(s, SNAKEOID_DP_RECORD, record);
+  ldx(s, record);
+  set_data(s, (uint16_t)(record + ACTOR_X), field(s, 0x00));
+  set_data(s, (uint16_t)(record + ACTOR_Z), 0);
+  set_data(s, (uint16_t)(record + ACTOR_Y), field(s, 0x02));
+  set_data(s, (uint16_t)(record + ACTOR_META), SNAKEOID_MOUND_PICTURE);
+  set_data(s, (uint16_t)(record + ACTOR_META_BANK), SNAKEOID_META_BANK);
+  set_data(s, (uint16_t)(record + ACTOR_COLLIDE_ID), 0);
+  set_data(s, (uint16_t)(record + ACTOR_THREAD), data(s, W_SCHED_CUR_TASK));
+  set_data(s, (uint16_t)(record + ACTOR_ATTR), SNAKEOID_ATTR);
+  lda(s, (uint16_t)(data(s, (uint16_t)(record + ACTOR_FLAGS)) | ACTOR_DRAW));
+  set_data(s, (uint16_t)(record + ACTOR_FLAGS), c->a);
+  back(s);
+  ran(s, SNAKEOID_RUN_A7F7);
+
+  jsr(s, 0xa8a8);
+  ran(s, SNAKEOID_RUN_A8A8);
+  lda(s, 0x0001);
+  set_field(s, SNAKEOID_DP_DROP_IN, c->a);
+  ldx(s, (SNAKEOID_TRACK_PIECES - 1) * SNAKEOID_TRACK_STRIDE);
+  ldy(s, SNAKEOID_NO_PIECE);
+  ran(s, SNAKEOID_RUN_9D8F);
+  do {
+    set_field(s, (uint16_t)(SNAKEOID_DP_TRACK + c->x), c->y);
+    set_field(s, (uint16_t)(SNAKEOID_DP_TRACK_AGE + c->x), 0);
+    lda(s, c->x);
+    sub(s, SNAKEOID_TRACK_STRIDE);
+    ldx(s, c->a);
+    ran(s, SNAKEOID_RUN_9D9A);
+  } while (took(s, !negative(c->x)));
+  rts(s);
+
+  lda(s, SNAKEOID_COUNT);
+  set_field(s, SNAKEOID_DP_COUNTED, c->a);
+  c->a = SNAKEOID_HANDLER;
+  ldy(s, SNAKEOID_HANDLER_BANK);
+  thread_set_handler(s->w, c);
+  s->k->handlers_set++;
+  ran(s, SNAKEOID_RUN_A8AB);
+  return returns(s);
+}
+
 // --- The stretches ----------------------------------------------------------
 
 static const struct {
@@ -1270,6 +1421,11 @@ static const struct {
     {SNAKEOID_READY_PC, returns},   {SNAKEOID_WAITED_PC, waited},
     {SNAKEOID_WAKES_PC, wakes},     {SNAKEOID_FREED_PC, freed},
     {SNAKEOID_DROPPED_PC, dropped}, {SNAKEOID_ROSE_PC, rose},
+    {SNAKEOID_ENTER_PC, enters_a},  {SNAKEOID_ENTER_B_PC, enters_b},
+    {SNAKEOID_COLOURED_PC, coloured},
+    {SNAKEOID_SPRITE_COLOURED_PC, sprite_coloured},
+    {SNAKEOID_QUEUE_WOKE_PC, queue_woke},
+    {SNAKEOID_MADE_PC, made},
 };
 
 bool snakeoid_state_known(uint16_t state) {
@@ -1307,7 +1463,16 @@ static bool piece_known(uint16_t at) {
 bool snakeoid_stack_known(const Wram* w, uint32_t pc, uint16_t s) {
   switch (pc) {
     case SNAKEOID_WAKES_PC:
+    case SNAKEOID_ENTER_PC:
+    case SNAKEOID_ENTER_B_PC:
       return true;
+    case SNAKEOID_COLOURED_PC:
+    case SNAKEOID_SPRITE_COLOURED_PC:
+    case SNAKEOID_QUEUE_WOKE_PC:
+      return stacked(w, s, 0) == SNAKEOID_RET_READY;
+    case SNAKEOID_MADE_PC:
+      return stacked(w, s, 0) == SNAKEOID_RET_RECORD &&
+             stacked(w, s, 2) == SNAKEOID_RET_READY;
     case SNAKEOID_READY_PC:
       return stacked(w, s, 0) == SNAKEOID_RET_READY;
     case SNAKEOID_WAITED_PC:

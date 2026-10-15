@@ -39,9 +39,16 @@
 // set, and it is the nearest record of a kind it eats. One set, and it is
 // that player. Both, and it is the nearer player.
 //
-// **Not here**: its coming up and biting, and how it starts and dies. No
-// session of the survey reaches the first, and the stretches stop where it
-// begins. Its handler is `boss_aa2e_collide`, in `port/collide.h`.
+// **It starts** with its weight on the level's load, `$23`, and the ground
+// it churns. The first of a level sets the figure's colours, both rows
+// (`port/figure_colours.h`), has the background's next upload queued
+// (`port/bossbg.h`), and sleeps a tick at a time until the uploads are
+// through. Then it is put where it was given, with no target and no side, its
+// record is asked for, its track cleared, and its handler set.
+//
+// **Not here**: its coming up and biting, and how it dies. No session of
+// the survey reaches the first, and the stretches stop where it begins. Its
+// handler is `boss_aa2e_collide`, in `port/collide.h`.
 //
 // **Written as stretches**, like `port/tentacle.h`. The calls a stretch
 // stops on are a record asked for, a record freed, and its sleeps. Two of
@@ -154,6 +161,12 @@
 #define W_SNAKEOID_TO_Y 0x00a4u
 
 // Where each stretch begins.
+#define SNAKEOID_ENTER_PC 0x82a8bbu      // its thread, churning one ground
+#define SNAKEOID_ENTER_B_PC 0x82a8c3u    // ...or the other
+#define SNAKEOID_COLOURED_PC 0x82a84bu   // after the figure's colours
+#define SNAKEOID_SPRITE_COLOURED_PC 0x82a855u  // ...and the sprites'
+#define SNAKEOID_QUEUE_WOKE_PC 0x82a878u // after a tick of waiting for the upload
+#define SNAKEOID_MADE_PC 0x82a7f7u       // its record, in A
 #define SNAKEOID_READY_PC 0x82a8bau      // the `RTS` after its handler is set
 #define SNAKEOID_WAITED_PC 0x82a43au     // after a sleep of its wait
 #define SNAKEOID_WAKES_PC 0x82a8efu      // after a frame's sleep
@@ -162,6 +175,11 @@
 #define SNAKEOID_ROSE_PC 0x82a1f8u       // after a tick of its coming up
 
 // Where one stops: a call the harness makes, or what is not ported.
+#define SNAKEOID_COLOURS_PC 0x82a847u    // `JSL figure_colours_set`
+#define SNAKEOID_SPRITE_COLOURS_PC 0x82a851u  // `JSL figure_sprite_colours_set`
+#define SNAKEOID_UPLOAD_PC 0x82a86du     // `JSL boss_bg_queue_one`
+#define SNAKEOID_QUEUE_WAIT_PC 0x82a874u // `JSL thread_yield`
+#define SNAKEOID_START_RECORD_PC 0x82a7f3u  // `JSL actor_slot_alloc`
 #define SNAKEOID_WAIT_PC 0x82a436u       // `JSL thread_yield`
 #define SNAKEOID_SLEEP_PC 0x82a8ebu      // `JSL thread_yield`
 #define SNAKEOID_RISE_PC 0x82a1f4u       // `JSL thread_yield`
@@ -172,6 +190,7 @@
 #define SNAKEOID_BITES_BESIDE_PC 0x82a56eu
 
 // The return addresses a stretch can find on the stack, as `RTS` pulls them.
+#define SNAKEOID_RET_RECORD 0xa8a7u      // `JSR $A7F3`
 #define SNAKEOID_RET_WAIT 0xa8dau        // `JSR $A425`
 #define SNAKEOID_RET_READY 0xa8d7u       // `JSR $A82F`
 #define SNAKEOID_RET_WAY 0xa8ddu         // `JSR $A43D`
@@ -188,9 +207,33 @@
 #define SNAKEOID_RET_HOP_CHASE 0xa52cu
 #define SNAKEOID_RET_LEAP 0xa470u        // `JSR $A156`
 
+// Its start: the figure's colours, once a level, and the upload.
+#define W_SNAKEOID_COLOURED 0x1ffau
+#define W_SNAKEOID_COLOUR_CLEAR 0x6058u  // in bank `$7E`
+#define SNAKEOID_COLOURS 0xfabcu
+#define SNAKEOID_COLOURS_BANK 0x0083u
+#define SNAKEOID_LOAD 0x0023u
+#define SNAKEOID_GROUND_B 0x0020u
+#define SNAKEOID_UPLOAD_SOURCE 0xc48bu
+#define SNAKEOID_UPLOAD_BANK 0x0094u
+#define SNAKEOID_UPLOAD_BYTES 0x2800u
+#define SNAKEOID_UPLOAD_VRAM 0x5000u
+#define W_SNAKEOID_SPAN_X 0x1e6au
+#define W_SNAKEOID_SPAN_Y 0x1e6cu
+#define SNAKEOID_SPAN_X 0x004eu
+#define SNAKEOID_SPAN_Y 0x005au
+#define SNAKEOID_DP_COUNTED 0x48
+#define SNAKEOID_COUNT 0x004bu
+#define SNAKEOID_HANDLER 0xaa2eu
+#define SNAKEOID_HANDLER_BANK 0x0082u
+#define SNAKEOID_ATTR 0x0c00u
+
 // The straight runs of the listing a stretch is made of, each named for where
 // it starts, with where it ends. `tools/price_runs.py` prices them.
 #define SNAKEOID_RUNS(X) \
+  X(80E0, 0x8280e4u) \
+  X(9D8F, 0x829d9au) \
+  X(9D9A, 0x829da6u) \
   X(9DA7, 0x829dadu) \
   X(9DAD, 0x829db4u) \
   X(9DB4, 0x829dbbu) \
@@ -318,6 +361,20 @@
   X(A52F, 0x82a532u) \
   X(A532, 0x82a535u) \
   X(A535, 0x82a538u) \
+  X(A7F7, 0x82a82fu) \
+  X(A82F, 0x82a834u) \
+  X(A834, 0x82a847u) \
+  X(A84B, 0x82a851u) \
+  X(A855, 0x82a86du) \
+  X(A871, 0x82a874u) \
+  X(A878, 0x82a87cu) \
+  X(A87C, 0x82a87eu) \
+  X(A87E, 0x82a8a8u) \
+  X(A8A8, 0x82a8abu) \
+  X(A8AB, 0x82a8bau) \
+  X(A8BB, 0x82a8c3u) \
+  X(A8C3, 0x82a8cbu) \
+  X(A8CB, 0x82a8d8u) \
   X(A8D8, 0x82a8dbu) \
   X(A8DB, 0x82a8deu) \
   X(A8DE, 0x82a8e8u) \
@@ -354,6 +411,7 @@ typedef struct {
   int player_count;
   ActorNearestWork nearest[SNAKEOID_MAX_NEAREST];  // `actor_nearest`
   int nearest_count;
+  uint16_t handlers_set;  // `thread_set_handler`
   // Overflow is the ROM's at the end, which it is not after a call that
   // does not say what it left there.
   bool v_known;

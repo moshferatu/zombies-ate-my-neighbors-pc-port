@@ -5,6 +5,87 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Two leaps, the climb out of the water, the poses that sleep, the Snakeoid's start, the pause, and four threads' ends (2026-10-15)
+
+Another round of about five times the usual, validated once at the end.
+
+* **A second leap in a frame.** A player at the water's edge on both axes
+  leaps twice in one walk, and the walk turned that down. It takes both
+  now, with a tether test at each, which the log had room for one of.
+* **Out of the water.** A swimmer whose stroke reaches the bank climbs out:
+  the bank test drops its own return and jumps to `$80:DDBD`, which plays
+  sound `$18` and begins the second leap toward the bank. That is
+  `pose_climb_out` now, and its `RTS` is the swim's.
+* **A frame that goes on into a sleep.** Weapon 5's shot goes on into its
+  pose, and a stand begun with a second-band weapon ready goes on into that
+  weapon's standing shot. Either way the handler never returns that frame:
+  it ends at the pose's `JSL thread_yield`. The five handlers that walk or
+  stand, the two pieces that begin one, and the player's frame now leave
+  there, with the shot's return address under the sleep when it is inside
+  the shot.
+  * They leave by their exits, so each says which of five returns it ends
+    at. One of those, `$80:ED0F`, is also where a call from inside one
+    comes back, and the harness has a new flag for that:
+    `returns_on_entry_stack`.
+* **The Snakeoid's start**, on records 20, 40 and 47: its weight, the
+  figure's colours once a level, an upload queued and waited for, its
+  place, its record, its track cleared and its handler, as seven stretches
+  in `port/snakeoid.c`. Two routines it calls are new:
+  * `$82:816F`, the sprites' last row of colours, beside
+    `figure_colours_set` in `port/figure_colours.h`;
+  * `$82:819A`, the job that sends it, beside `colours_112_job` in
+    `port/dma.h`.
+* **The pause.** The pause check and the main loop's frame turned a frame
+  with Start held down. Both now stop at the `JSL` that turns the volume
+  down, and the three stretches between the waits, and the rest of the
+  frame the pause comes back to, are ported. So is the head of the sound
+  command the pause sends, `$80:CC5D`, which nothing reached before, and
+  the `JSL hud_refresh` the pause comes back to is a link.
+* **The bolt's start**: its weight, its sound, its record and its handler.
+* **The fishman's death**, both kinds: told of nothing, its second record
+  freed, counted by the side that killed it, heard, and its end.
+  `$80:9D6A`, which finds that side, is three instructions done in C.
+* **The square's thread on level 5**, from nobody level with it to its
+  end: a record, a sound, the tile under it one less, everything round it
+  told `$6F`, its last pictures, and its place among the five given back.
+  Its tile is read from the block map in the cartridge, bank `$9D`.
+* **Three of my mistakes, caught on the way.**
+  * The handlers' prices counted the `RTS` the harness now makes.
+  * The climb counted the bank test's `BCS` twice.
+  * A stretch I added at `$82:A871` was a thread argument already.
+* **Checked.** 1,600 routines are registered.
+  * The corpus verifies clean: 128,127,384 calls over 56 movies, none
+    diverged, and all 1,158 cost rows are exact.
+  * Branch coverage is 1,794 of 2,162. Two branches that were taken are not
+    now: the second band's walk firing, and getting up beside a
+    trampoline. Both are rare frames that the port turned down, and a
+    guard's trial run is counted only when it declines. Now the port takes
+    them, and I think those calls are ones an interrupt landed in, which
+    `verify` does not check. I have not proved that.
+  * Lockstep: 53 of 56 never part. level25, level25-2p and level25-heavy
+    part at the same passes as before.
+  * The picture: 78,360,128 lines at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+  * The pause's command and its link came after those. I checked them on
+    `level21` and `level21-exit`, and lockstep on `level21-exit`.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 181 to 142 | 929 to 468 | 9,328 to 4,498 |
+  | Left standing on an instruction | 11 to 9 | 214 to 171 | 934 to 685 |
+  | A port turned the call down | 22 to 16 | 212 to 110 | 2,933 to 1,482 |
+  | A port or a link called it | 6 to 6 | 148 to 148 | 426 to 426 |
+  | All | 221 to 174 | 1,613 to 1,007 | 21,541 to 15,011 |
+
+  The reset's own code, 7,920 instructions, is in the last row and in no
+  other. No place is new.
+* **Not done.** Using an item, `$80:EAE1`, which the ordinary state and the
+  frame turn down; the lob's burst; the monster's punch at a wall; the
+  pose for `$6C`; the exit door's thread; a bystander's words; the
+  fishman's dive on records 18 and 38; and the reset's clear and the
+  front end's read of `$213F`, which are a register each.
+
 ### The game's clear, the game over, the demonstration, and a hundred small places (2026-10-15)
 
 A round about five times the size of the last few, validated once at the

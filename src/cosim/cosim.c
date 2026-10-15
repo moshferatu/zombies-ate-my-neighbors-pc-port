@@ -1256,6 +1256,18 @@ static bool is_exit(const CosimRoutine* r, uint32_t pc) {
   return false;
 }
 
+static int opcode_at(const Cosim* c, uint32_t pc);
+
+// Has the ROM come to the end of a call that leaves by its exits? See
+// `CosimRoutine::returns_on_entry_stack`.
+static bool exit_reached(const Cosim* c, const CosimCall* call,
+                         const CosimRoutine* r, uint32_t pc) {
+  if (!is_exit(r, pc)) return false;
+  if (!r->returns_on_entry_stack) return true;
+  const int op = opcode_at(c, pc);
+  return (op != 0x60 && op != 0x6b) || c->snes->cpu->sp == call->entry_sp;
+}
+
 static void record_cycles(CosimStat* s, long cycles) {
   if (s->cycles_min < 0 || cycles < s->cycles_min) s->cycles_min = cycles;
   if (cycles > s->cycles_max) s->cycles_max = cycles;
@@ -2905,7 +2917,7 @@ static void cosim_step_inner(Cosim* c) {
       CosimCall* call = &c->priv->stack[c->priv->depth - 1];
       const CosimRoutine* r = c->stats[call->index].routine;
       if (call->jump) {
-        if (!is_exit(r, pc)) break;
+        if (!exit_reached(c, call, r, pc)) break;
         c->priv->depth--;
         end_jump_verify(c, call);
         continue;

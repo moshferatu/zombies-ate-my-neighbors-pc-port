@@ -273,6 +273,14 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**Two leaps, the poses that sleep, the Snakeoid's start and the pause,
+2026-10-15.** A walk may leap twice and a swim climbs out; a pose handler's
+frame may go on into a pose that sleeps, which needed a routine that leaves
+by its returns or its sleeps. The Snakeoid's start, the pause, the bolt's
+start, the fishman's death and the square's thread on level 5 are ports.
+The places are 174 and the core executes 15,011 instructions over the
+survey.
+
 **The game's clear, the game over and the demonstration, 2026-10-15.**
 The third stretch of the game's clear is a port, with a word the NMI reads
 written when the copy reaches it. The game over and the demonstration's

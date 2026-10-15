@@ -64,15 +64,16 @@
 //
 // **The walk goes on after a leap** as though the ground were clear, with
 // the carry the leap's last add left: the tether and whoever stands there
-// are asked, and the step may be taken. A second leap in the same frame, on
-// the other axis, is the ROM's.
+// are asked, and the step may be taken. The other axis may meet the edge
+// too, and then the player leaps again in the same frame: the second leap's
+// fields are the ones left.
 //
 // **The trampoline**, the second: `$80:E74F`. A player in the ordinary state
 // looks round for a tile with bit 3 (`tile_search`, `port/player_small.h`).
 // Found, they are on it (`pose_bounce_begin`, `port/pose.h`), and the walk
 // goes on as it does after a leap, and a second in the same frame, or a
-// leap and a bounce, is the ROM's. In another state, or with no such tile
-// round them, the tile is only solid.
+// leap and a bounce, is the ROM's. Neither has been seen. In another state,
+// or with no such tile round them, the tile is only solid.
 //
 // **A door**, the third. The walk looks at the tile a little way off the
 // way the player faces, up or down: `$80:E8D3`. If that is a door it wants
@@ -123,7 +124,9 @@
 //
 // Where it is not water the walk looks at the bank, `$80:E7FE`: a point 15
 // or 16 pixels off the way the player faces, when that is straight up, down
-// or across. Clear ground there ends the swim, and that is the ROM's.
+// or across. Clear ground there ends the swim: the bank test drops its own
+// return address and jumps to `$80:DDBD`, and the player climbs out toward
+// that point (`pose_climb_out`, `port/pose.h`). Its `RTS` is the swim's.
 //
 // Port code: libc only.
 
@@ -275,6 +278,7 @@ typedef enum {
   SWIM_BANK_NOT_SWIMMING, // the state is not the swim's
   SWIM_BANK_NO_WAY,       // facing nowhere
   SWIM_BANK_SOLID,        // the ground there is solid
+  SWIM_BANK_CLEAR,        // ...or clear, and the player climbs out
   SWIM_BANK_COUNT
 } SwimBank;
 
@@ -290,8 +294,9 @@ typedef enum {
 // the last one ended, how each tether test left, and which of the map test's
 // exits each ask took. A walk asks each at most once an axis.
 #define WALK_AXES 2
-// A tether test an axis, and with a leap into the water the edge's own.
-#define WALK_TETHERS (WALK_AXES + 1)
+// A tether test an axis, and with a leap into the water the edge's own:
+// one an axis again.
+#define WALK_TETHERS (2 * WALK_AXES)
 
 typedef struct {
   uint16_t asked[WALK_ASK_COUNT][2];
@@ -315,10 +320,14 @@ typedef struct {
   // The swim's: "is it water?" by its answer, and each look at the bank.
   uint16_t water[2];
   uint16_t bank[SWIM_BANK_COUNT];
-  // A leap into the water, and what it did.
-  bool leapt;
-  PoseLog leap;
-  PlayerSpan leap_span;
+  // The leaps into the water, one an axis at most, and what each did.
+  int leaps;
+  PoseLog leap[WALK_AXES];
+  PlayerSpan leap_span[WALK_AXES];
+  // ...or a swimmer's climb out onto the bank, which ends the swim.
+  bool climbed;
+  PoseLog climb;
+  PlayerSpan climb_span;
   // ...or onto the trampoline.
   bool bounced;
   PoseLog bounce;
@@ -342,9 +351,9 @@ bool monster_walk_checked(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
 // `$80:E6C2`, the walk of a player stuck in slime. `log` may be NULL.
 void stuck_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
 
-// `$80:E543`, the swim. False is a swimmer who reaches the bank, and then
-// `w` is not what the ROM leaves. `log` may be NULL.
-bool swim_walk_checked(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
+// `$80:E543`, the swim, and the climb out when it reaches the bank. `log`
+// may be NULL.
+void swim_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
 
 // The reaction a solid tile has, 1 to 6, or 0 for none. `attrs` is the
 // attribute word as `terrain_blocked` leaves it, shifted right one.

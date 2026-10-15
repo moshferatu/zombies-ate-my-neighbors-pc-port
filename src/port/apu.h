@@ -359,6 +359,9 @@ void apu_boot_traced(Wram* w, const Rom* rom, PortCpu* c, HwTrace* t);
 // `$80:CC6F` is how both send their first set: command 8 with the set's
 // number, and then it falls into `apu_load_set`.
 //
+// `$80:CC5D` sends command `$13` with the volume in A, which the pause
+// turns down and up again.
+//
 // The uploads and the commands are ported above. These are what is between
 // them, each a stretch from where one comes back to the next call or the
 // `RTL`. Every one begins with `REP #$30`, so they are come to with the
@@ -368,6 +371,7 @@ void apu_boot_traced(Wram* w, const Rom* rom, PortCpu* c, HwTrace* t);
 #define APU_CMD_SET 0x08
 #define APU_CMD_SONG 0x0014u
 #define APU_CMD_SFX_BANK 0x000du
+#define APU_CMD_VOLUME 0x13
 
 //  name, where it starts, the instruction it stops on
 #define APU_STRETCHES(X) \
@@ -378,6 +382,7 @@ void apu_boot_traced(Wram* w, const Rom* rom, PortCpu* c, HwTrace* t);
   X(sfx_bank_begin, "$80:CBFD", 0x80cbfdu, 0x80cc04u) \
   X(sfx_bank_play, "$80:CC07", 0x80cc07u, 0x80cc0cu) \
   X(sfx_bank_end, "$80:CC0F", 0x80cc0fu, 0x80cc12u) \
+  X(command_13, "$80:CC5D", 0x80cc5du, 0x80cc68u) \
   X(command_13_end, "$80:CC6B", 0x80cc6bu, 0x80cc6eu) \
   X(set_announce, "$80:CC6F", 0x80cc6fu, 0x80cc76u) \
   X(set_announced, "$80:CC79", 0x80cc79u, 0x80cc7cu)

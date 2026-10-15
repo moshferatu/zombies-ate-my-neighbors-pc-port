@@ -56,6 +56,11 @@
 #define POSE_LEAP_PICTURES 0xfcf6u
 #define POSE_LEAP_HOLD 0x000f
 #define POSE_LEAP_RISE 4
+// Out of the water: its sound, the pictures it holds the first of, and for
+// how long.
+#define POSE_SFX_CLIMB 0x0018
+#define POSE_FRAMES_CLIMB 0xde76u
+#define POSE_CLIMB_HOLD 5
 // What a landing lets go of, and what it walks for.
 #define POSE_BUTTON_Y 0x4000u
 #define POSE_BUTTONS_DIRECTION 0x0f00u
@@ -167,6 +172,7 @@ static void show(Pose* p, uint16_t at) {
 // `$80:ECFD`: put the hand weapon away, except in the one state that keeps it.
 static void hide_weapon(Pose* p) {
   p->log->hides++;
+  p->log->ends_at = POSE_WEAPON_HIDDEN_RTS_PC;
   if (flags_same(&p->flags, field(p, POSE_DP_STATE), POSE_STATE_KEEPS_WEAPON)) {
     p->log->hides_kept++;
     return;
@@ -199,6 +205,7 @@ static void show_weapon(Pose* p) {
   }
   PORT_COVER(pose_weapon_shown);
   p->log->weapon = POSE_WEAPON_SHOWN;
+  p->log->ends_at = POSE_WEAPON_SHOWN_RTS_PC;
   const uint16_t weapon = field(p, POSE_DP_WEAPON);
   const uint16_t record = field(p, POSE_DP_RECORD);
   wram_w16(p->w, (uint16_t)(weapon + ACTOR_META),
@@ -224,6 +231,8 @@ static void pick_pictures(Pose* p) {
 // Starting a pose
 // ---------------------------------------------------------------------------
 
+static void band_b_aim(Pose* p);
+
 // `$80:D4F4`: stand still, with the hand weapon out if there is one.
 static void stand_begin(Pose* p) {
   PORT_COVER(pose_stood);
@@ -241,7 +250,9 @@ static void stand_begin(Pose* p) {
     if (field(p, PSN_DP_FIRE_B) != 0) {
       p->log->stand_band_b = true;
       if (field(p, POSE_DP_SHOT_DELAY) == 0) {
-        leave_to_rom(p);
+        PORT_COVER(pose_stood_aiming);
+        band_b_aim(p);
+        p->log->sleep = POSE_SLEEP_AIM;
         return;
       }
     }
@@ -293,6 +304,7 @@ static void walk_begin(Pose* p) {
   if (walk == POSE_WALK_6C) set_field(p, POSE_DP_CYCLE, POSE_CYCLE_UNSTARTED);
   set_field(p, PSN_DP_RESUME, WALKS[walk].handler);
   set_field(p, POSE_DP_FRAMES, WALKS[walk].frames);
+  p->log->ends_at = POSE_WALK_BEGIN_RTS_PC;
 }
 
 // `$80:D4E9`: the buttons changed, so start the pose the direction asks for.
@@ -362,8 +374,23 @@ static void fire(Pose* p) {
   if (weapon == POSE_WEAPON_OF_ITS_OWN) {
     PORT_COVER(pose_fire_recoiled);
     p->log->recoils = true;
-    leave_to_rom(p);  // the handler's frame goes on in a pose that sleeps
+    p->log->sleep = POSE_SLEEP_RECOIL;
+    p->log->ticks = POSE_RECOIL_TICKS;
   }
+}
+
+// The shot's `JSR`s in the three handlers that fire, by their returns.
+#define POSE_STAND_SHOT_RETURN 0xd556u
+#define POSE_WALK_BAND_B_SHOT_RETURN 0xd6cau
+#define POSE_WALK_FIRING_SHOT_RETURN 0xd710u
+
+// The shot, by `JSR` from a handler: weapon 5's goes on into its pose, with
+// the `JSR`'s return under the sleep. True when it does.
+static bool fire_from(Pose* p, uint16_t shot_return) {
+  fire(p);
+  if (p->log->sleep == POSE_AWAKE) return false;
+  p->log->sleep_under = shot_return;
+  return true;
 }
 
 // `$80:ED30` from the top: nothing, while the last shot's delay runs.
@@ -377,6 +404,7 @@ static void fire_when_ready(Pose* p) {
 }
 
 static void stand(Pose* p) {
+  p->log->ends_at = POSE_STAND_RTS_PC;
   if (buttons_changed(p)) {
     start_again(p);
     return;
@@ -386,7 +414,7 @@ static void stand(Pose* p) {
     return;
   }
   if (field(p, PSN_DP_FIRE_A) != 0) {
-    fire(p);
+    fire_from(p, POSE_STAND_SHOT_RETURN);
     return;
   }
   if ((field(p, PSN_DP_FIRE_B) | field(p, POSE_DP_6C)) == 0) return;
@@ -416,6 +444,7 @@ static void step(Pose* p) {
 }
 
 static void walk(Pose* p) {
+  p->log->ends_at = POSE_WALK_RTS_PC;
   if (buttons_changed(p)) {
     start_again(p);
     return;
@@ -432,6 +461,7 @@ static void walk(Pose* p) {
 // starts the cycle again fires, when the last shot's delay has run out, and
 // shows the pictures with the weapon out.
 static void walk_band_b(Pose* p) {
+  p->log->ends_at = POSE_WALK_RTS_PC;
   if (buttons_changed(p)) {
     start_again(p);
     return;
@@ -443,8 +473,7 @@ static void walk_band_b(Pose* p) {
   if ((field(p, POSE_DP_SHOT_DELAY) | field(p, POSE_DP_CYCLE)) == 0) {
     PORT_COVER(pose_band_b_fired);
     p->log->band_b_fired = true;
-    fire(p);
-    if (p->log->unported) return;
+    if (fire_from(p, POSE_WALK_BAND_B_SHOT_RETURN)) return;
     set_field(p, POSE_DP_FRAMES, POSE_FRAMES_WALK_BAND_B);
   } else {
     PORT_COVER(pose_band_b_stepped);
@@ -520,6 +549,7 @@ static void reach(Pose* p) {
 // `$80:D6DC`: the monster's walk, which is a punch of four pictures. The
 // first makes a sound and tells nobody.
 static void walk_6c(Pose* p) {
+  p->log->ends_at = POSE_WALK_RTS_PC;
   if (flags_same(&p->flags, field(p, POSE_DP_CYCLE), POSE_CYCLE_LAST)) {
     PORT_COVER(pose_6c_ended);
     start_again(p);
@@ -548,6 +578,7 @@ static void walk_6c(Pose* p) {
 }
 
 static void walk_firing(Pose* p) {
+  p->log->ends_at = POSE_WALK_FIRING_RTS_PC;
   if (buttons_changed(p)) {
     if (field(p, PSN_DP_FIRE_A) == 0) {
       p->log->hid_first = true;
@@ -557,8 +588,7 @@ static void walk_firing(Pose* p) {
     return;
   }
   if (field(p, POSE_DP_SHOT_DELAY) == 0) {
-    fire(p);
-    if (p->log->unported) return;
+    if (fire_from(p, POSE_WALK_FIRING_SHOT_RETURN)) return;
   } else {
     p->log->delayed = true;
   }
@@ -627,6 +657,7 @@ static void band_b_aim(Pose* p) {
 static void band_b_shoot(Pose* p) {
   PORT_COVER(pose_band_b_shot);
   fire_when_ready(p);
+  if (p->log->sleep != POSE_AWAKE) leave_to_rom(p);  // weapon 5, in band B
   if (p->log->unported) return;
   p->log->ticks = (int)band_b_ticks(p);
 }
@@ -703,6 +734,29 @@ static void leap(Pose* p, PlayerSpan* span) {
   set_field(p, POSE_DP_TIMER, POSE_LEAP_HOLD);
   hide_weapon(p);
   show_in_air(p, 0);
+}
+
+// `$80:DDBD`: out of the water, toward the point at `$60` and `$62`. Carry
+// and overflow are the span's.
+static void climb_out(Pose* p, PlayerSpan* span) {
+  PORT_COVER(pose_climbed_out);
+  ApuSfxRegs unused;
+  apu_play_sfx(p->w, POSE_SFX_CLIMB, p->page, &unused);
+  PortCpu c = {.d = p->page, .db = POSE_BANK};
+  player_span(p->w, &c, span);
+  flags_carry(&p->flags, flag(&c, PORT_P_C));
+  flags_overflow(&p->flags, flag(&c, PORT_P_V));
+  set_field(p, PSN_DP_RESUME, POSE_HANDLER_ARC_READY);
+  set_field(p, POSE_DP_MOVE, 0);
+  player_unhandled(p->w, &c);
+  player_untouchable(p->w, &c);
+  set_field(p, POSE_DP_PICTURES, table_word(p, POSE_LEAP_PICTURES,
+                                            field(p, POSE_DP_PICTURES_ROW)));
+  set_field(p, POSE_DP_FRAMES, POSE_FRAMES_CLIMB);
+  set_field(p, POSE_DP_RISE, POSE_LEAP_RISE);
+  set_field(p, POSE_DP_LAUNCH, POSE_LEAP_RISE + 1);
+  set_field(p, POSE_DP_RISE_COUNT, 0);
+  set_field(p, POSE_DP_TIMER, POSE_CLIMB_HOLD);
 }
 
 // `$80:DE3E`: down from the second leap, on the ground.
@@ -1149,6 +1203,16 @@ void pose_leap(Wram* w, const Rom* rom, uint16_t page, PoseLog* log,
   log->v_set = p.flags.v_set;
 }
 
+void pose_climb_out(Wram* w, const Rom* rom, uint16_t page, PoseLog* log,
+                    PlayerSpan* span) {
+  Pose p = {w, rom, page, log, {false, false, false, false}};
+  climb_out(&p, span);
+  log->c = p.flags.c;
+  log->v = p.flags.v;
+  log->c_set = p.flags.c_set;
+  log->v_set = p.flags.v_set;
+}
+
 void pose_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(start_again, w, rom, page, log);
 }
@@ -1202,7 +1266,20 @@ bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler) {
     case POSE_HANDLER_SWIM: run(swim, w, rom, page, &log); break;
     default: return false;
   }
-  return !log.unported;
+  return !log.unported && (log.sleep == POSE_AWAKE || pose_may_sleep(handler));
+}
+
+bool pose_may_sleep(uint16_t handler) {
+  switch (handler) {
+    case POSE_HANDLER_STAND:
+    case POSE_HANDLER_WALK:
+    case POSE_HANDLER_WALK_FIRING:
+    case POSE_HANDLER_WALK_BAND_B:
+    case POSE_HANDLER_WALK_6C:
+      return true;
+    default:
+      return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
