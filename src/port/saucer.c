@@ -25,7 +25,6 @@ typedef struct {
 // A shot is fired on a draw under this, and not again for this many passes.
 #define SAUCER_SHOT_ODDS 0x1e
 #define SAUCER_SHOT_WAIT 0x0064
-#define SAUCER_SHOTS 2
 #define SAUCER_SHOT_THREAD 0xf49eu
 
 // Out of shots, a draw of this or more swoops. Under it, it opens for this
@@ -68,19 +67,14 @@ typedef struct {
 // apart. A flash has its own, and holds the lights for four passes.
 #define SAUCER_LIGHTS_EVERY 5
 #define SAUCER_LIGHTS_STEP 0x0020
-#define SAUCER_COLOURS 0xffabu
-#define SAUCER_COLOURS_BANK 0x94
 #define SAUCER_FLASH_COLOURS 0xffd1u
 #define SAUCER_FLASH_COLOURS_BANK 0x97
 #define SAUCER_FLASH_PASSES 4
-#define SAUCER_FULL_HEALTH 9
 // The jobs that set the mosaic of a flash, and clear it.
 #define SAUCER_MOSAIC_JOB 0x8425u
 #define SAUCER_MOSAIC_OFF_JOB 0x882cu
 
 // Tables in `SAUCER_BANK`.
-#define SAUCER_SPOT_ASIDE 0x85bdu  // by side: where the spot is from it
-#define SAUCER_LINE_ASIDE 0x85c1u  // ...and the line its quarry crosses
 #define SAUCER_STEPS 0x85c5u       // by heading: a hunting move
 #define SAUCER_ON_TARGET_WOBBLE 0x8637u
 #define SAUCER_SWOOP_STEPS 0x86adu  // by heading: a swooping move

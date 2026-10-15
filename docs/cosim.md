@@ -19522,3 +19522,26 @@ against a machine that had parted.
 Over the same 110 sessions the core executes 60,954 instructions where it
 executed 65,378, and takes over 3,119 times where it did 3,692, at 358
 places where there were 383.
+
+## The bazooka and the big figures' starts (2026-10-14)
+
+### A row where a link already is
+
+`port/links.h` lists the bare `RTS`, `RTL` and jumps the harness makes
+itself under `run`. A row put at one of those addresses is never offered
+a call: the link is first in the address's chain and stands. So before a
+row goes on an `RTS`, look in `links.h`. The bazooka's `$81:ED12` was
+there already.
+
+### A stretch's run stops before its exit
+
+A stretch that ends at a `JSL` leaves the core standing on it, and the
+core makes the call. Its cost is everything before that instruction, not
+the instruction too. `tools/cycles816.py` asked for a range that ends on
+the `JSL` prices it in, so the range has to stop short of it.
+
+### After
+
+Over the same 110 sessions the core executes 57,771 instructions where it
+executed 60,954, and takes over 2,798 times where it did 3,119, at 340
+places where there were 358.

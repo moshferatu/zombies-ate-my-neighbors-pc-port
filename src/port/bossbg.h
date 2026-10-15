@@ -10,10 +10,16 @@
 //   $82:8014  boss_bg_queue        0.1%   twenty rows, queued where they lie
 //   $82:8069  boss_bg_queue_flip   1.1%   ...and the same figure facing the
 //                                         other way, mirrored on the way past
+//   $82:80E8  boss_bg_queue_one           one upload, whatever it is
 //
-// Both are called from `$82:892E`, which picks the frame, and both end by
-// registering the same vblank job -- `$82:81C9`, which is the DMA loop that
-// drains what they queued.
+// The first two are called from `$82:892E`, which picks the frame, and all
+// three end by registering the same vblank job -- `$82:81C9`, which is the
+// DMA loop that drains what they queued.
+//
+// `boss_bg_queue_one` takes its four words from `$7E:1E56`: where from, its
+// bank, how many bytes, and where in VRAM. The two big figures' starts put
+// their tiles up with it, `$2800` bytes to `$5000` each, and so does a third
+// thing seen only on the attract movies.
 //
 // ## The two of them are the same routine with one difference
 //
@@ -78,6 +84,14 @@
 
 #define BOSS_BG_QUEUE_ENTRY 0x828014u
 #define BOSS_BG_QUEUE_FLIP_ENTRY 0x828069u
+#define BOSS_BG_QUEUE_ONE_ENTRY 0x8280e8u
+#define BOSS_BG_QUEUE_ONE_RTL 0x828112u
+
+// `boss_bg_queue_one`'s four words, in the order its callers set them.
+#define W_BOSS_BG_ONE_SRC 0x1e58u
+#define W_BOSS_BG_ONE_BANK 0x1e5au
+#define W_BOSS_BG_ONE_BYTES 0x1e56u
+#define W_BOSS_BG_ONE_VRAM 0x1e5cu
 
 // Direct page, which both routines force to zero on entry with `PHD : PEA
 // $0000 : PLD`. The caller leaves the figure's far address in `$28`, and the
@@ -152,5 +166,10 @@ void boss_bg_queue(Wram* w, const Rom* rom, BossBgRegs* out);
 // contiguous addresses.
 bool boss_bg_queue_flip_supported(const Wram* w, const Rom* rom);
 void boss_bg_queue_flip(Wram* w, const Rom* rom, BossBgRegs* out);
+
+// `$82:80E8` -- the upload in `W_BOSS_BG_ONE_*` as one job of the queue, and
+// the same vblank job asked for. It has no direct page of its own, so N and
+// Z are the queue's.
+void boss_bg_queue_one(Wram* w, BossBgRegs* out);
 
 #endif

@@ -5151,6 +5151,27 @@ static void shim_boss_bg_queue_flip(Wram* w, const Rom* rom,
   boss_bg_out(&r, in, out);
 }
 
+static void palfade_queue_bill(CosimRun* zero, int slot);
+
+// `$82:80E8` to its `JSL`, and its `RTL`, from `tools/cycles816.py --db=82`.
+// The queue's search between them is priced as the colour fade prices it.
+static const CosimRun BG_ONE_RUN = {520, 43, 0};
+
+// N and Z are the queue's, there being no `PLD` here.
+static void shim_boss_bg_queue_one(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  BossBgRegs r;
+  boss_bg_queue_one(w, &r);
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  queue_flags(w, W_VBL_QUEUE_A_COUNT, BOSS_BG_VBL_JOB_BANK, !r.c, out);
+  CosimRun run = BG_ONE_RUN;
+  palfade_queue_bill(&run, r.c ? -1 : (int)r.x);
+  cosim_cost(cosim_run_cycles(&run, in->fastrom));  // all in `$80` and `$82`
+}
+
 // ---------------------------------------------------------------------------
 // $82:8F93  boss_step — the direction in `$16`, `#$6969` in A for double speed
 // ---------------------------------------------------------------------------
@@ -8793,6 +8814,25 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_PUFF_MADE] = {598, 55, 3},
     // The colour pulse's setup, `--db=7e`: the colour is read long.
     [TS_PULSE_ENTER] = {178, 19, 3},
+    // The figure's start and the saucer's, `--db=82`.
+    [TS_FIGURE_ENTER] = {138, 13, 0},
+    [TS_FIGURE_COLOURS] = {36, 6, 0},
+    [TS_FIGURE_COLOURED] = {208, 24, 0},
+    [TS_FIGURE_WAIT_ASK] = {142, 10, 0},  // JSL : LDA abs : RTL : BNE
+    [TS_FIGURE_PLACED] = {324, 29, 4},
+    [TS_FIGURE_PART] = {518, 44, 0},
+    [TS_FIGURE_PART_KEPT] = {68, 5, 1},
+    [TS_FIGURE_PARTS_KEPT] = {236, 17, 7},
+    [TS_FIGURE_NO_SPITS] = {226, 16, 6},
+    [TS_FIGURE_HANDLER] = {90, 10, 0},
+    [TS_FIGURE_CALM] = {132, 11, 2},
+    [TS_SAUCER_ENTER] = {134, 16, 0},
+    [TS_SAUCER_COLOURED] = {228, 22, 2},
+    [TS_SAUCER_DRAWN] = {208, 24, 0},
+    [TS_SAUCER_QUEUED] = {382, 36, 9},
+    [TS_SAUCER_NEAREST_ASK] = {114, 11, 1},
+    // The tables are read from the cartridge, through X.
+    [TS_SAUCER_AIMED] = {464, 44, 3},
     [TS_TAKEN] = {6, 0, 0},
 };
 
@@ -8837,7 +8877,7 @@ THREAD_STRETCHES(X)
 static const uint32_t TS_EXITS_ARGUMENT[] = {
     0x81d186u, 0x81d1b0u, 0x81d1dau, 0x82f4b4u, 0x808519u, 0x8199c5u,
     0x80d06cu, 0x81ec75u, 0x81f311u, 0x82e0b7u, 0x81e8c4u, 0x82df0du,
-    0x82df14u, 0x82df1bu, 0x82ec5du};
+    0x82df14u, 0x82df1bu, 0x82ec5du, 0x82950du, 0x82a874u};
 static const uint32_t TS_EXITS_SETTER[] = {0x81921au, 0x819255u};
 static const uint32_t TS_EXITS_WOLF[] = {
     WEREWOLF_NONE_PC, WEREWOLF_HOWL_CHECK_PC, WEREWOLF_HOWL_CALL_PC,
@@ -8900,6 +8940,12 @@ static const uint32_t TS_EXITS_SEEKER[] = {
     SEEKER_SPAWN_CALL_PC,    SEEKER_SPAWN_SLEEP_PC,        SEEKER_FIRED_CALL_PC,
     SEEKER_FRAME_SLEEP_PC,   SEEKER_FRAME_ENDED_PC};
 static const uint32_t TS_EXITS_PULSE[] = {PALCYCLE_PULSE_YIELD_PC};
+static const uint32_t TS_EXITS_FIGURE[] = {
+    FIGURE_COLOURS_CALL_PC, FIGURE_QUEUE_CALL_PC, FIGURE_YIELD_PC,
+    FIGURE_PART_CALL_PC, BOSS_CHOOSE_PC};
+static const uint32_t TS_EXITS_SAUCER[] = {
+    SAUCER_COLOURS_CALL_PC, SAUCER_DRAW_CALL_PC, SAUCER_QUEUE_CALL_PC,
+    SAUCER_NEAREST_CALL_PC, SAUCER_YIELD_PC};
 static const uint32_t TS_EXITS_TRACKER[] = {
     TRACKER_BEGIN_CALL_PC, TRACKER_SLEEP_PC, TRACKER_END_CALL_PC,
     PUFF_ALLOC_CALL_PC, PUFF_PICTURES_CALL_PC};
@@ -23314,54 +23360,110 @@ static const CosimRun S5_RUN_SET = {110, 10, 2};       // $FF2A-$FF31
 static const CosimRun S5_RUN_SET_OR = {92, 8, 0};      // ORA : STA : BRA
 static const CosimRun S5_RUN_SET_AND = {80, 6, 0};     // AND : STA
 static const CosimRun S5_RUN_SET_REST = {110, 9, 1};   // $FF40-$FF46
+static const CosimRun S5_RUN_ENTER = {156, 16, 0};     // $EBE2-$EBEE, LDA #
+// `$80:9D6A` called and back: the `JSL`, `LDX # : CMP abs : BEQ`, the `RTL`.
+static const CosimRun S5_RUN_SLOT = {160, 13, 0};
+static const CosimRun S5_RUN_SLOT_SECOND = {24, 2, 0};  // INX : INX
+static const CosimRun S5_RUN_COUNT_FIRED = {152, 13, 0};  // $ED80-$ED8C
+// `LDA # : STA $14 : RTS`, `JSR $EC72`, `LDA #`.
+static const CosimRun S5_RUN_FIRST_PICTURES = {144, 12, 1};
+static const CosimRun S5_RUN_FIRST_ASK = {110, 8, 2};  // LDX $00 : LDY $02 : JSL
+static const CosimRun S5_RUN_BCS = {12, 2, 0};
+static const CosimRun S5_RUN_DONE = {84, 8, 0};        // $EC58-$EC5F
+static const CosimRun S5_RUN_BROKEN = {154, 10, 0};    // $ECE0-$ECE9
+static const CosimRun S5_RUN_HOLE_WAY = {58, 7, 1};    // LDA $3C : CMP # : BNE
+static const CosimRun S5_RUN_HOLE = {180, 17, 3};      // $ECF1-$ED01
+static const CosimRun S5_RUN_AWARD = {82, 8, 1};       // $ED06-$ED0D
 
+// `$81:EBE2`, as the thread starts. It reads the level's load through the
+// data bank.
+static bool accepts_shot5_enter(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->db == SHOT5_BANK;
+}
+
+static void shim_shot5_enter(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  shot5_enter(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles_dp(&S5_RUN_ENTER, fetch_fast(in),
+                                 (in->d & 0xffu) != 0));
+}
+
+// Its `RTS` is to the thread's `JSR $ED13`, which is the only call.
 static bool guard_shot5_begin(Wram* scratch, const Rom* rom,
                               const CosimRegs* in) {
   if (!accepts_begin(scratch, in) || in->db != SHOT5_BANK ||
+      wram_r16(scratch, (uint16_t)(in->s + 1)) != SHOT5_ENTER_RETURN ||
       !shot5_begin_supported(scratch, in->d))
     return false;
   PortCpu c;
-  uint16_t record;
+  Shot5BeginLog log;
   cpu_from(in, &c);
-  return shot5_begin(scratch, rom, &c, &record);
+  return shot5_begin(scratch, rom, &c, &log);
 }
 
 static void shim_shot5_begin(Wram* w, const Rom* rom, const CosimRegs* in,
                              CosimRegs* out) {
   PortCpu c;
-  uint16_t record = 0;
+  Shot5BeginLog log = {0};
   cpu_from(in, &c);
-  shot5_begin(w, rom, &c, &record);
+  shot5_begin(w, rom, &c, &log);
   cpu_to(&c, out);
-  cosim_cost(saucer_alloc_cycles(record, in->fastrom) +
-             cosim_run_cycles_dp(&S5_RUN_BEGIN, fetch_fast(in),
-                                 (in->d & 0xffu) != 0));
+  CosimRun run = S5_RUN_BEGIN;
+  run_add(&run, &S5_RUN_SLOT, 1);
+  run_add(&run, log.second_slot ? &S5_RUN_SLOT_SECOND : &RUN_TAKEN, 1);
+  run_add(&run, &S5_RUN_COUNT_FIRED, 1);
+  run_add(&run, &SET_HANDLER_RUN, 1);
+  run_add(&run, &S5_RUN_FIRST_PICTURES, 1);
+  cosim_cost(saucer_alloc_cycles(log.record, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
 }
 
+// The setter's `RTS` is to the thread's `JSR $EC72`, which is the only call.
 static bool guard_shot5_aim(Wram* scratch, const Rom* rom,
                             const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100 && in->db == SHOT5_BANK &&
          wram_r16(scratch, (uint16_t)(in->d + SHOT5_DP_RECORD)) < 0x1f00 &&
+         wram_r16(scratch, (uint16_t)(in->s + 1)) == SHOT5_AIM_RETURN &&
          shot5_aim_supported(scratch, rom, in->d);
 }
 
 static void shim_shot5_aim(Wram* w, const Rom* rom, const CosimRegs* in,
                            CosimRegs* out) {
   PortCpu c;
+  Shot5AimLog log = {0};
   cpu_from(in, &c);
-  const bool clears = shot5_aim(w, rom, &c);
+  shot5_aim(w, rom, &c, &log);
   cpu_to(&c, out);
+  out->p_keep = PORT_P_V;  // the test's own sums, which the port does not follow
   CosimRun run = {0, 0, 0};
   run_add(&run, &S5_RUN_AIM, 1);
   run_add(&run, &S5_RUN_SET, 1);
   run_add(&run, &RUN_TAKEN, 1);  // the `BMI` to the `AND`, or the `BRA` round it
-  run_add(&run, clears ? &S5_RUN_SET_AND : &S5_RUN_SET_OR, 1);
+  run_add(&run, log.clears ? &S5_RUN_SET_AND : &S5_RUN_SET_OR, 1);
   run_add(&run, &S5_RUN_SET_REST, 1);
-  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+  run_add(&run, &RUN_RTS, 1);
+  run_add(&run, &S5_RUN_FIRST_ASK, 1);
+  run_add(&run, &S5_RUN_BCS, 1);
+  if (log.ground.blocked) {
+    // ...to the frame's `BCS`, and that taken to the burst.
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &S5_RUN_BCS, 1);
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &S5_RUN_TICK, 1);
+  }
+  cosim_cost(terrain_bit2_cycles(&log.ground, in->fastrom) +
+             cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
 }
 
-static const uint32_t SHOT5_BEGIN_EXITS[] = {SHOT5_BEGIN_OWNER_PC};
-static const uint32_t SHOT5_AIM_EXITS[] = {SHOT5_AIM_RTS_PC};
+static const uint32_t SHOT5_BEGIN_EXITS[] = {SHOT5_PICTURES_CALL_PC};
+static const uint32_t SHOT5_AIM_EXITS[] = {SHOT5_YIELD_PC, SHOT5_BURST_PC};
+static const uint32_t SHOT5_ENTER_EXITS[] = {SHOT5_SOUND_CALL_PC};
 
 static bool accepts_shot5(const Wram* w, const CosimRegs* in) {
   return body_ok(in) && in->d >= 0x0100 && in->db == SHOT5_BANK &&
@@ -23382,11 +23484,18 @@ static void shim_shot5_frame(Wram* w, const Rom* rom, const CosimRegs* in,
   run_add(&run, &S5_RUN_HEAD, 1);
   run_add(&run, &S5_RUN_MOVE, 1);
   if (log.ground.blocked) {
+    // The `BCS` to the stop's own, and that one to the burst.
+    run_add(&run, &RUN_TAKEN, 1);
+    run_add(&run, &S5_RUN_BCS, 1);
     run_add(&run, &RUN_TAKEN, 1);
   } else {
     run_add(&run, &S5_RUN_OVER, 1);
     run_add(&run, &S5_RUN_TEST, log.tests);
     if (!log.over || fate == SHOT5_STOPS) run_add(&run, &RUN_TAKEN, 1);
+    if (fate == SHOT5_STOPS) {  // without carry: `JSR $ECAC`
+      run_add(&run, &S5_RUN_BCS, 1);
+      run_add(&run, &RUN_JSR, 1);
+    }
     if (log.counted) {
       run_add(&run, &S5_RUN_COUNT, 1);
       run_add(&run, &RUN_TAKEN, 1);  // the `BNE` back, or the `BRA` on
@@ -23412,9 +23521,56 @@ static void shim_shot5_burst(Wram* w, const Rom* rom, const CosimRegs* in,
                                  (in->d & 0xffu) != 0));
 }
 
-static const uint32_t SHOT5_FRAME_EXITS[] = {SHOT5_YIELD_PC, SHOT5_STOP_PC,
-                                             SHOT5_SPENT_PC};
+static const uint32_t SHOT5_FRAME_EXITS[] = {SHOT5_YIELD_PC, SHOT5_BURST_PC,
+                                             SHOT5_BREAK_PC, SHOT5_SPENT_PC};
 static const uint32_t SHOT5_BURST_EXITS[] = {SHOT5_BURST_PLAY_PC};
+
+// `$81:EC58`. `thread_set_handler` finds the slot through the data bank.
+static bool accepts_shot5_done(const Wram* w, const CosimRegs* in) {
+  return body_ok(in) && in->db == SHOT5_BANK && cur_task_ok(w);
+}
+
+static void shim_shot5_done(Wram* w, const Rom* rom, const CosimRegs* in,
+                            CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  shot5_done(w, &c);
+  cpu_to(&c, out);
+  CosimRun run = S5_RUN_DONE;
+  run_add(&run, &SET_HANDLER_RUN, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+// `$81:ECE0`, on page zero, with the thread's page to pull.
+static bool accepts_shot5_broken(const Wram* w, const CosimRegs* in) {
+  const uint16_t page = wram_r16(w, (uint16_t)(in->s + 1));
+  return body_ok(in) && in->db == SHOT5_BANK && page >= 0x0100 &&
+         page < 0x1f00;
+}
+
+static void shim_shot5_broken(Wram* w, const Rom* rom, const CosimRegs* in,
+                              CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  const Shot5Broken how = shot5_broken(w, &c);
+  cpu_to(&c, out);
+  CosimRun run = S5_RUN_BROKEN;
+  if (how == SHOT5_BROKEN_PLAIN) {
+    run_add(&run, &RUN_TAKEN, 1);
+  } else {
+    run_add(&run, &S5_RUN_HOLE_WAY, 1);
+    if (how == SHOT5_BROKEN_WAY) run_add(&run, &RUN_TAKEN, 1);
+  }
+  run_add(&run, how == SHOT5_BROKEN_HOLE ? &S5_RUN_HOLE : &S5_RUN_AWARD, 1);
+  // The page it reads is the one it pulled.
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (c.d & 0xffu) != 0));
+}
+
+static const uint32_t SHOT5_DONE_EXITS[] = {SHOT5_END_PC};
+static const uint32_t SHOT5_BROKEN_EXITS[] = {SHOT5_HOLE_CALL_PC,
+                                              SHOT5_SCORE_CALL_PC};
 
 static const uint32_t LOB_BEGIN_EXITS[] = {LOB_YIELD_PC};
 static const uint32_t LOB_LANDED_EXITS[] = {LOB_LANDED_SOUND_PC};
@@ -28412,6 +28568,18 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 7,
     },
     {
+        .name = "boss_bg_queue_one",
+        COSIM_COMMIT(COMMIT_BOSS_BG),
+        .symbol = "$82:80E8",
+        .entry = BOSS_BG_QUEUE_ONE_ENTRY,
+        .ret_op = BOSS_BG_QUEUE_ONE_RTL,
+        .ret_kind = COSIM_RTL,
+        .run = shim_boss_bg_queue_one,
+        .cycles = 1370,
+        // The `JSL vbl_queue_a_add` and its own `PHY`.
+        .stack_bytes = 5,
+    },
+    {
         .name = "boss_step",
         .symbol = "$82:8F93",
         .entry = 0x828f93,
@@ -32322,8 +32490,18 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 140,
     },
-    // Weapon 5's shot: two stretches of its start, a frame of its flight,
-    // and where it bursts.
+    // Weapon 5's shot, the bazooka's: its start, a frame of its flight, where
+    // it bursts, and what is left between its calls.
+    {
+        .name = "shot5_enter",
+        .symbol = "$81:EBE2",
+        .entry = SHOT5_ENTER_PC,
+        .run = shim_shot5_enter,
+        .accepts = accepts_shot5_enter,
+        COSIM_EXITS(SHOT5_ENTER_EXITS),
+        .uncalled = true,
+        .cycles = 160,
+    },
     {
         .name = "shot5_begin",
         .symbol = "$81:ED1A",
@@ -32343,7 +32521,8 @@ static const CosimRoutine ROUTINES[] = {
         .supported = guard_shot5_aim,
         COSIM_EXITS(SHOT5_AIM_EXITS),
         .uncalled = true,
-        .cycles = 1000,
+        .cycles = 1900,
+        .stack_bytes = 16,
     },
     {
         .name = "shot5_frame",
@@ -32365,6 +32544,27 @@ static const CosimRoutine ROUTINES[] = {
         COSIM_EXITS(SHOT5_BURST_EXITS),
         .uncalled = true,
         .cycles = 430,
+    },
+    {
+        .name = "shot5_done",
+        .symbol = "$81:EC58",
+        .entry = SHOT5_DONE_PC,
+        .run = shim_shot5_done,
+        .accepts = accepts_shot5_done,
+        COSIM_EXITS(SHOT5_DONE_EXITS),
+        .uncalled = true,
+        .cycles = 250,
+        .stack_bytes = 3,  // the `JSL thread_set_handler`
+    },
+    {
+        .name = "shot5_broken",
+        .symbol = "$81:ECE0",
+        .entry = SHOT5_BROKEN_PC,
+        .run = shim_shot5_broken,
+        .accepts = accepts_shot5_broken,
+        COSIM_EXITS(SHOT5_BROKEN_EXITS),
+        .uncalled = true,
+        .cycles = 300,
     },
     // The swipe's thread, round its two calls.
     {

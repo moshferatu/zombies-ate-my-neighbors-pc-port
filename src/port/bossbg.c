@@ -157,3 +157,14 @@ void boss_bg_queue_flip(Wram* w, const Rom* rom, BossBgRegs* out) {
 
   register_vbl_job(w, at, out);
 }
+
+void boss_bg_queue_one(Wram* w, BossBgRegs* out) {
+  const uint16_t at = wram_r16(w, W_BG_DMA_CURSOR);
+  queue_append(w, at, wram_r16(w, W_BOSS_BG_ONE_SRC),
+               wram_r16(w, W_BOSS_BG_ONE_BANK),
+               wram_r16(w, W_BOSS_BG_ONE_BYTES),
+               wram_r16(w, W_BOSS_BG_ONE_VRAM));
+  const uint16_t next = (uint16_t)(at + 2);
+  wram_w16(w, W_BG_DMA_CURSOR, next);
+  register_vbl_job(w, next, out);
+}

@@ -5,6 +5,79 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The bazooka's thread, and the starts of level 25's figure and level 21's saucer (2026-10-14)
+
+Three clusters of places were left that were all short stretches between
+calls already ported: weapon 5's shot on level 5 and level 25's boss
+fight, and the starts of the two big figures drawn as backgrounds.
+
+* **Weapon 5 is the bazooka.** Its shot counts itself at `$1FCC`, a word
+  a score slot, and the level's end pays a bonus to a player whose count
+  is nothing, under the words "NO BAZOOKA FIRED". `port/shot5.h` now has
+  the whole thread but two calls:
+  * `shot5_enter`, `$81:EBE2`: its weight on the level's load, and its
+    sound.
+  * `shot5_begin` goes on past the record: counted against the score slot
+    of whoever fired it, its handler named, and its first pictures asked
+    for.
+  * `shot5_aim` goes on through the setter's `RTS` to the first test of the
+    ground. That test is at the place it was fired from, not where the
+    shot is put, so a shot fired into a wall bursts before it flies.
+  * `shot5_frame` takes the branch it used to stop on: to the burst, or
+    `JSR $ECAC` to break the tile first.
+  * `shot5_done`, `$81:EC58`: no handler, and on to its end.
+  * `shot5_broken`, `$81:ECE0`: the block counted, and fifty points to
+    whoever fired it. A tile with bit 5, broken by a shot fired the way
+    numbered two, calls `$82:DC57` instead, which I have not read. The
+    corpus never does that.
+* **The big figures' starts.** Level 25's figure and level 21's saucer
+  begin alike: a weight on the load, their colours, a picture, and their
+  tiles queued to go up, `$2800` bytes each to VRAM `$5000`.
+  * That queueing is `$82:80E8`, now `boss_bg_queue_one` in
+    `port/bossbg.h`. It puts one upload on the queue the blitter's rows go
+    on, held back from the NMI as theirs are, and asks for the same vblank
+    job.
+  * The rest are thread stretches. The figure's four parts are made one at
+    a time at `$82:94B8`, and the stretch knows which part it made by where
+    its `RTS` goes. The saucer's first aim, `$82:84DD`, is what
+    `port/saucer.c`'s `take_aim` does inside a pass, so the saucer's spot
+    and shot tables moved to `port/saucer.h`.
+  * Two sleeps of one tick after an upload are arguments, the figure's and
+    one at `$82:A871` seen only on the attract movies.
+* **Two mistakes of mine, both caught by the corpus.**
+  * The broken tile's cost first counted the `JSL score_add` it stops at,
+    which the core makes after. It charged 54 cycles too many.
+  * I gave the `RTS` the points come back to, `$81:ED12`, a row of its
+    own, which was never reached: `port/links.h` has it as a link already.
+    I took the row out.
+* **Looked at and left.** The lob's burst on level 21, level 5 and the
+  demo is turned down 24 times because three of the handlers it tells
+  have no price: the martian's `$81:9B6B`, `$81:C8C3` and `$82:84AC`.
+  Their ports exist. Pricing them means logging the paths of reactions
+  other enemies share.
+* **Checked.** 1,438 routines are registered.
+  * The corpus verifies clean: 128,076,969 calls over 56 movies, none
+    diverged, and all 1,052 cost rows are exact.
+  * Branch coverage is 1,718 of 2,065.
+  * Lockstep: 53 of 56 never part. level25, level25-2p and level25-heavy
+    part at the same passes as before.
+  * The picture: 78,360,128 lines at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 311 to 295 | 2,328 to 2,055 | 22,455 to 19,497 |
+  | Left standing on an instruction | 14 to 13 | 247 to 223 | 26,617 to 26,584 |
+  | A port turned the call down | 22 to 22 | 245 to 245 | 3,163 to 3,163 |
+  | A port or a link called it | 10 to 9 | 189 to 165 | 799 to 607 |
+  | All | 358 to 340 | 3,119 to 2,798 | 60,954 to 57,771 |
+
+* **Not done.** The lob's three handlers; `$80:DC1E` and `$80:DFDA` in
+  `player_state`; level 17's thread at `$83:B34A` and `$81:D5DD`; the
+  seeker hit and dying, `$82:EF0B` on; and the attract movies' third
+  figure at `$82:A84B`.
+
 ### The seeker's sleeping states, a frozen doll, and the colour pulse's setup (2026-10-14)
 
 After last round the commonest places left were the doll's frame turned

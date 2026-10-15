@@ -1,10 +1,11 @@
-// $81:EC03, $81:EC30  weapon 5's shot -- see port/shot5.h.
+// $81:EBE2  weapon 5's shot, the bazooka's -- see port/shot5.h.
 
 #include "port/shot5.h"
 
 #include "port/coverage.h"
+#include "port/knock.h"   // W_BLOCKS_SWAPPED
 #include "port/oam.h"  // the display record's fields
-#include "port/thread.h"  // W_SCHED_CUR_TASK
+#include "port/thread.h"  // W_SCHED_CUR_TASK, thread_set_handler
 
 static uint16_t field(const Wram* w, uint16_t page, uint16_t at) {
   return wram_r16(w, (uint16_t)(page + at));
@@ -20,9 +21,29 @@ static uint16_t table(const Rom* rom, uint16_t at) {
 
 static bool is_side(uint16_t v) { return (v & ~2u) == 0; }
 
+static void lda(PortCpu* c, uint16_t v) {
+  c->a = v;
+  set_nz16(c, v);
+}
+
+// `RTS`, to the instruction after the `JSR`.
+static void rts(Wram* w, PortCpu* c) {
+  c->pc = ((uint32_t)SHOT5_BANK << 16) | (uint16_t)(pull16(w, c) + 1);
+}
+
 // ---------------------------------------------------------------------------
 // The start
 // ---------------------------------------------------------------------------
+
+void shot5_enter(Wram* w, PortCpu* c) {
+  PORT_COVER(shot5_entered);
+  set_c(c, false);
+  lda(c, adc16(c, wram_r16(w, W_SPAWN_LOAD), SHOT5_LOAD));
+  wram_w16(w, W_SPAWN_LOAD, c->a);
+  push16(w, c, SHOT5_ENTER_RETURN);
+  lda(c, SHOT5_SOUND);
+  c->pc = SHOT5_SOUND_CALL_PC;
+}
 
 bool shot5_begin_supported(const Wram* w, uint16_t page) {
   const uint16_t way = field(w, page, SHOT5_DP_FIRED_WAY);
@@ -30,14 +51,14 @@ bool shot5_begin_supported(const Wram* w, uint16_t page) {
          is_side(field(w, page, SHOT5_DP_SIDE));
 }
 
-bool shot5_begin(Wram* w, const Rom* rom, PortCpu* c, uint16_t* record_out) {
+bool shot5_begin(Wram* w, const Rom* rom, PortCpu* c, Shot5BeginLog* log) {
   const uint16_t page = c->d;
   SlotAllocRegs slot;
   actor_slot_alloc(w, c->db, &slot);
   if (slot.c) return false;
   PORT_COVER(shot5_began);
   const uint16_t record = slot.a;
-  *record_out = record;
+  log->record = record;
   set_field(w, page, SHOT5_DP_RECORD, record);
   set_field(w, page, SHOT5_DP_SPRITE, record);
 
@@ -72,11 +93,29 @@ bool shot5_begin(Wram* w, const Rom* rom, PortCpu* c, uint16_t* record_out) {
            (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
                       ACTOR_DRAW));
 
-  c->x = side;
-  c->y = record;
-  c->a = side;
-  set_nz16(c, c->a);
-  c->pc = SHOT5_BEGIN_OWNER_PC;
+  // `$80:9D6A`: the score slot that is the side's, by one comparison with
+  // the first slot's. It has no answer for neither.
+  cmp16(c, side, wram_r16(w, W_SCORE_SLOT_SIDE));
+  log->second_slot = !flag(c, PORT_P_Z);
+  c->x = log->second_slot ? 2 : 0;
+  if (log->second_slot)
+    PORT_COVER(shot5_second_slot);
+  else
+    PORT_COVER(shot5_first_slot);
+  const uint16_t at = (uint16_t)(W_BAZOOKA_FIRED + c->x);
+  wram_w16(w, at, (uint16_t)(wram_r16(w, at) + 1));
+
+  c->a = SHOT5_HANDLER;
+  c->y = SHOT5_HANDLER_BANK;
+  thread_set_handler(w, c);
+  lda(c, SHOT5_WAY_PICTURES);
+  set_field(w, page, SHOT5_DP_PICTURES, c->a);
+  rts(w, c);
+
+  // `JSR $EC72`, for its first list of pictures.
+  push16(w, c, SHOT5_AIM_RETURN);
+  lda(c, SHOT5_FIRST_PICTURES);
+  c->pc = SHOT5_PICTURES_CALL_PC;
   return true;
 }
 
@@ -96,7 +135,25 @@ bool shot5_aim_supported(const Wram* w, const Rom* rom, uint16_t page) {
          mouths(w, rom, page) <= 0xffffu - 2 * SHOT5_WAY_MAX;
 }
 
-bool shot5_aim(Wram* w, const Rom* rom, PortCpu* c) {
+// From where the ground answers, as `shot5_frame` and the first ask share:
+// carry and the attributes, and N and Z from the page, which the test puts
+// back as it leaves.
+static void ground_answered(PortCpu* c, const TerrainRegs* ground) {
+  c->a = ground->a;
+  c->x = ground->x;
+  c->y = ground->y;
+  set_nz16(c, c->d);
+  set_c(c, ground->blocked);
+}
+
+// `LDA #$0001`, and off to sleep.
+static Shot5Fate flies(PortCpu* c) {
+  lda(c, 1);
+  c->pc = SHOT5_YIELD_PC;
+  return SHOT5_FLIES;
+}
+
+void shot5_aim(Wram* w, const Rom* rom, PortCpu* c, Shot5AimLog* log) {
   PORT_COVER(shot5_aimed);
   const uint16_t page = c->d;
   const uint16_t record = field(w, page, SHOT5_DP_RECORD);
@@ -132,26 +189,25 @@ bool shot5_aim(Wram* w, const Rom* rom, PortCpu* c) {
            clears ? (uint16_t)(flags & word) : (uint16_t)(flags | word));
   const uint16_t picture = table(rom, (uint16_t)(at + 2));
   wram_w16(w, (uint16_t)(record + ACTOR_META), picture);
+  log->clears = clears;
+  rts(w, c);
 
-  c->x = record;
-  c->y = (uint16_t)((fired << 1) + 2);
-  c->a = picture;
-  set_nz16(c, c->a);
-  c->pc = SHOT5_AIM_RTS_PC;
-  return clears;
+  // `$81:EBF2`: the ground where it was fired from.
+  terrain_point_bit2(w, field(w, page, SHOT5_DP_PLACE_X),
+                     field(w, page, SHOT5_DP_PLACE_Y), &log->ground);
+  ground_answered(c, &log->ground);
+  if (log->ground.blocked) {
+    PORT_COVER(shot5_fired_blocked);
+    c->pc = SHOT5_BURST_PC;
+    return;
+  }
+  PORT_COVER(shot5_fired_clear);
+  flies(c);
 }
 
 // ---------------------------------------------------------------------------
 // Its flight
 // ---------------------------------------------------------------------------
-
-// `LDA #$0001`, and off to sleep.
-static Shot5Fate flies(PortCpu* c) {
-  c->a = 1;
-  set_nz16(c, c->a);
-  c->pc = SHOT5_YIELD_PC;
-  return SHOT5_FLIES;
-}
 
 Shot5Fate shot5_frame(Wram* w, PortCpu* c, Shot5Log* log) {
   const uint16_t page = c->d;
@@ -169,17 +225,11 @@ Shot5Fate shot5_frame(Wram* w, PortCpu* c, Shot5Log* log) {
   set_field(w, page, SHOT5_DP_Y, y);
   wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
 
-  // The test puts the page back as it leaves, which is the last thing to
-  // write N and Z.
   terrain_point_bit2(w, x, y, &log->ground);
-  c->a = log->ground.a;
-  c->x = log->ground.x;
-  c->y = log->ground.y;
-  set_nz16(c, page);
-  set_c(c, log->ground.blocked);
-  c->pc = SHOT5_STOP_PC;
+  ground_answered(c, &log->ground);
   if (log->ground.blocked) {
     PORT_COVER(shot5_blocked);
+    c->pc = SHOT5_BURST_PC;
     return SHOT5_STOPS;
   }
 
@@ -193,6 +243,8 @@ Shot5Fate shot5_frame(Wram* w, PortCpu* c, Shot5Log* log) {
     if (c->a & (SHOT5_TILE_BREAKS_FIRST << i)) {
       PORT_COVER(shot5_struck);
       c->p = (uint8_t)(c->p & ~PORT_P_Z);
+      push16(w, c, SHOT5_BREAK_RETURN);
+      c->pc = SHOT5_BREAK_PC;
       return SHOT5_STOPS;
     }
   }
@@ -240,6 +292,15 @@ void shot5_burst(Wram* w, const Rom* rom, PortCpu* c) {
   c->pc = SHOT5_BURST_PLAY_PC;
 }
 
+// No handler: `LDA #$0000 : TAY`.
+void shot5_done(Wram* w, PortCpu* c) {
+  PORT_COVER(shot5_done);
+  lda(c, 0);
+  c->y = 0;
+  thread_set_handler(w, c);
+  c->pc = SHOT5_END_PC;
+}
+
 // --- $81:ECAC  the tile it struck ------------------------------------------------
 
 bool shot5_break_supported(const Wram* w, const Rom* rom, uint16_t page) {
@@ -254,4 +315,57 @@ void shot5_break(Wram* w, const Rom* rom, PortCpu* c, BlockSwapWork* k) {
   tile_block_swap_ask(w, rom, c, wram_r16(w, (uint16_t)(c->d + SHOT5_DP_X)),
                       wram_r16(w, (uint16_t)(c->d + SHOT5_DP_Y)), k);
   c->pc = SHOT5_BREAK_PUT_PC;
+}
+
+static uint16_t lsr16(PortCpu* c, uint16_t v) {
+  set_c(c, (v & 1) != 0);
+  v = (uint16_t)(v >> 1);
+  set_nz16(c, v);
+  return v;
+}
+
+static uint16_t ror16(PortCpu* c, uint16_t v) {
+  const bool in = flag(c, PORT_P_C);
+  set_c(c, (v & 1) != 0);
+  v = (uint16_t)((v >> 1) | (in ? 0x8000u : 0));
+  set_nz16(c, v);
+  return v;
+}
+
+Shot5Broken shot5_broken(Wram* w, PortCpu* c) {
+  const uint16_t swapped = (uint16_t)(wram_r16(w, W_BLOCKS_SWAPPED) + 1);
+  wram_w16(w, W_BLOCKS_SWAPPED, swapped);
+  c->d = pull16(w, c);
+  lda(c, pull16(w, c));
+  const uint16_t page = c->d;
+  // `BIT #`, which sets Z alone.
+  const bool hole = (c->a & SHOT5_HOLE_TILE) != 0;
+  c->p = (uint8_t)(hole ? c->p & ~PORT_P_Z : c->p | PORT_P_Z);
+  Shot5Broken how = SHOT5_BROKEN_PLAIN;
+  if (hole) {
+    lda(c, field(w, page, SHOT5_DP_WAY_KEPT));
+    cmp16(c, c->a, SHOT5_HOLE_WAY);
+    how = SHOT5_BROKEN_WAY;
+    if (c->a == SHOT5_HOLE_WAY) {
+      PORT_COVER(shot5_broken_hole);
+      set_c(c, false);
+      c->x = adc16(c, field(w, page, SHOT5_DP_X), SHOT5_HOLE_ACROSS);
+      set_c(c, false);
+      c->y = adc16(c, field(w, page, SHOT5_DP_Y), SHOT5_HOLE_DOWN);
+      lda(c, lsr16(c, field(w, page, SHOT5_DP_WAY)));
+      c->pc = SHOT5_HOLE_CALL_PC;
+      return SHOT5_BROKEN_HOLE;
+    }
+    PORT_COVER(shot5_broken_way);
+  } else {
+    PORT_COVER(shot5_broken_plain);
+  }
+
+  // `$81:ED06`: the points, to the side in the top bit of A.
+  c->x = SHOT5_BREAK_POINTS;
+  set_nz16(c, c->x);
+  lda(c, field(w, page, SHOT5_DP_SIDE));
+  lda(c, ror16(c, ror16(c, lsr16(c, c->a))));
+  c->pc = SHOT5_SCORE_CALL_PC;
+  return how;
 }

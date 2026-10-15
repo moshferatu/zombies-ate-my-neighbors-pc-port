@@ -755,9 +755,14 @@
   X(lob_burst,        "lob_burst",          "everything within forty pixels told") \
   X(lob_burst_again,  "lob_burst",          "...and told again a tick later") \
   X(lob_ended,        "lob_end",            "its weight given back") \
-  /* $81:EC03, $81:EC30 -- weapon 5's shot. */                                    \
+  /* $81:EBE2 -- weapon 5's shot, the bazooka's. */                              \
+  X(shot5_entered,    "shot5_enter",        "its weight in the level's load, and its sound") \
   X(shot5_began,      "shot5_begin",        "its record, in front of whoever fired it") \
+  X(shot5_first_slot, "shot5_begin",        "...counted against the first score slot") \
+  X(shot5_second_slot, "shot5_begin",       "...or the second: two players") \
   X(shot5_aimed,      "shot5_aim",          "...at the weapon's mouth, with the picture for its way") \
+  X(shot5_fired_clear, "shot5_aim",         "the ground where it was fired from clear: it sleeps") \
+  X(shot5_fired_blocked, "shot5_aim",       "...or blocked, and it bursts before it flies") \
   X(shot5_flew,       "shot5_frame",        "a frame over a tile without bit 1") \
   X(shot5_flew_over,  "shot5_frame",        "...or over one with it and none of the three: one of sixty") \
   X(shot5_spent,      "shot5_frame",        "...the sixtieth, and it is gone") \
@@ -765,6 +770,10 @@
   X(shot5_blocked,    "shot5_frame",        "carry from the test: it stops, the tile left alone") \
   X(shot5_burst,      "shot5_burst",        "its record where it bursts") \
   X(shot5_broke,      "shot5_break",        "the block it struck, and its pair asked for") \
+  X(shot5_broken_plain, "shot5_broken",     "the block counted, and fifty points") \
+  X(shot5_broken_way, "shot5_broken",       "...a tile with bit 5, fired another way than two") \
+  X(shot5_broken_hole, "shot5_broken",      "...or fired the way numbered two: `$82:DC57`") \
+  X(shot5_done,       "shot5_done",         "no handler, and on to its end") \
   /* $80:F300 a pose's picture, called on its own -- see port/pose.h. */        \
   X(pose_show_set,    "pose_show",          "the entry's word set in the record's flags") \
   X(pose_show_masked, "pose_show",          "...or a mask, and its bits cleared") \
@@ -2009,6 +2018,10 @@
   X(seeker_next_darts, "ts_seeker_next", "...or holds, and will dart") \
   X(seeker_loop_slept, "ts_seeker_next", "a state ended: the loop sleeps") \
   X(seeker_loop_ended, "ts_seeker_next", "...or ends") \
+  X(figure_waits, "ts_figure_waited", "the figure's tiles not all up: another frame") \
+  X(figure_placed, "ts_figure_waited", "...or up: its place, and its first part asked for") \
+  X(figure_part_made, "ts_figure_part", "a part made, and the next asked for") \
+  X(figure_parts_made, "ts_figure_part", "...or the fourth, and off to choose") \
   X(werewolf_dressed, "ts_werewolf_made", "its record made: its picture, and twenty ticks' sleep") \
   X(werewolf_leapt, "ts_werewolf_crouched", "a crouch's pictures shown: it is in the air") \
   X(werewolf_flew, "werewolf_frame", "a pass of a pounce") \

@@ -273,6 +273,34 @@
 // colour 90 without its green, twice, and a step of one green, and sleeps
 // four ticks.
 //
+// ## The big figure's start, level 25, `$82:9569`
+//
+// See `port/boss_thread.h`, which has its turns. Before the first:
+//
+//   $82:9569  its weight, forty, on the level's load, and its colours
+//             asked for
+//   $82:94EE  its tiles queued to go up, `$2800` bytes from `$93:8000` to
+//             VRAM `$5000`, by `port/bossbg.h`'s `boss_bg_queue_one`
+//   $82:9511  a frame at a time until they have gone up. Then its place,
+//             where its plane is drawn, and a record asked for
+//   $82:94B8  one of its four parts, which shows nothing and nothing can
+//             touch, kept on its page. After the fourth: none of its four
+//             spits out, its handler named, calm, and off to choose
+//
+// `$82:94B8` knows which part it has made by where its `RTS` goes.
+//
+// ## The saucer's start, level 21, `$82:873C`
+//
+// See `port/saucer.h`, which has its passes. Before the first:
+//
+//   $82:873C  its weight, twenty-four, on the load, and its colours
+//   $82:8750  its place, and its picture drawn
+//   $82:876A  its tiles queued as the figure's are, from `$93:A620`
+//   $82:8786  its lights, its two shots, its health of nine, its hatch
+//             shut, and the nearest thing asked for
+//   $82:84DD  the spot set beside it on the side that thing is on, as a
+//             hunting saucer sets it, and its first sleep
+//
 // ## One instruction or two
 //
 // What stands by itself between two calls and belongs to nothing ported: a
@@ -310,7 +338,7 @@ typedef struct {
   uint16_t value;
 } ThreadArgument;
 
-#define THREAD_ARGUMENT_COUNT 15
+#define THREAD_ARGUMENT_COUNT 17
 extern const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT];
 
 // `LDA #value : STA at`, on the thread's page, and the `RTS` after.
@@ -879,6 +907,57 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define PUFF_DP_X 0x00                   // where it was asked for
 #define PUFF_DP_Y 0x02
 
+// --- the big figure's start, and the saucer's --------------------------------
+
+#define FIGURE_ENTER_PC 0x829569u
+#define FIGURE_START_RETURN 0x9575u       // what `JSR $94E4` leaves
+#define FIGURE_COLOURS_CALL_PC 0x8294eau  // `JSL figure_colours_set`
+#define FIGURE_COLOURED_PC 0x8294eeu
+#define FIGURE_QUEUE_CALL_PC 0x829506u    // `JSL boss_bg_queue_one`
+#define FIGURE_YIELD_PC 0x82950du         // `JSL thread_yield`, A already 1
+#define FIGURE_WAITED_PC 0x829511u
+#define FIGURE_PART_CALL_PC 0x8294b4u     // `JSL actor_slot_alloc`
+#define FIGURE_PART_PC 0x8294b8u
+#define FIGURE_CHOOSE_RETURN 0x9578u      // what `JSR $89D2` leaves
+#define FIGURE_LOAD 0x0028
+#define FIGURE_COLOURS 0xffd1u
+#define FIGURE_COLOURS_BANK 0x0092
+#define FIGURE_TILES 0x8000u
+#define FIGURE_TILES_BANK 0x0093
+#define FIGURE_TILES_BYTES 0x2800
+#define FIGURE_TILES_VRAM 0x5000
+#define FIGURE_PLANE_AT_X 0x003c
+#define FIGURE_PLANE_AT_Y 0x0082
+#define FIGURE_PARTS 4
+#define FIGURE_PART_COLLIDE_ID 0x0003
+#define FIGURE_PART_FLAGS 0x8008u
+#define FIGURE_HANDLER 0x9660u
+#define FIGURE_HANDLER_BANK 0x0082
+#define FIGURE_DP_PLACE_X 0x00   // given: where it stands
+#define FIGURE_DP_PLACE_Y 0x02
+#define FIGURE_DP_3C 0x3c        // set to seventy; what reads it I have not found
+#define FIGURE_3C 0x0046
+// Where each part's `JSR $94B4` comes back to, less one.
+extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
+
+#define SAUCER_ENTER_PC 0x82873cu
+#define SAUCER_COLOURS_CALL_PC 0x82874cu  // `JSL figure_colours_set`
+#define SAUCER_COLOURED_PC 0x828750u
+#define SAUCER_DRAW_CALL_PC 0x828766u     // `JSL boss_bg_queue`
+#define SAUCER_DRAWN_PC 0x82876au
+#define SAUCER_QUEUE_CALL_PC 0x828782u    // `JSL boss_bg_queue_one`
+#define SAUCER_QUEUED_PC 0x828786u
+#define SAUCER_NEAREST_CALL_PC 0x8284d9u  // `JSL actor_nearest`
+#define SAUCER_AIMED_PC 0x8284ddu
+#define SAUCER_START_RETURN 0x87a9u       // what `JSR $84CE` leaves
+#define SAUCER_LOAD 0x0018
+#define SAUCER_FIGURE 0xf961u             // for `boss_bg_queue`
+#define SAUCER_FIGURE_BANK 0x0097
+#define SAUCER_TILES 0xa620u
+#define SAUCER_DP_PLACE_X 0x00            // given: where it is
+#define SAUCER_DP_PLACE_Y 0x02
+#define SAUCER_DP_12 0x12                 // cleared; I have not followed it
+
 // name, first instruction, the one after its last, and how many branches
 // in it are always taken. `tools/cycles816.py` prices each.
 #define TS_BLOCKS(X) \
@@ -1036,7 +1115,24 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
   X(TS_TRACKER_ENDED, 0x82f05e, 0x82f069, 0) \
   X(TS_PUFF_ENTER, 0x82f1e6, 0x82f1f0, 0) \
   X(TS_PUFF_MADE, 0x82f1f4, 0x82f22b, 0) \
-  X(TS_PULSE_ENTER, 0x80a0ef, 0x80a102, 0)
+  X(TS_PULSE_ENTER, 0x80a0ef, 0x80a102, 0) \
+  X(TS_FIGURE_ENTER, 0x829569, 0x829576, 0)     /* the JSR too */ \
+  X(TS_FIGURE_COLOURS, 0x8294e4, 0x8294ea, 0) \
+  X(TS_FIGURE_COLOURED, 0x8294ee, 0x829506, 0) \
+  X(TS_FIGURE_WAIT_ASK, 0x829511, 0x829517, 0)  /* $82:80E0 too */ \
+  X(TS_FIGURE_PLACED, 0x829517, 0x829534, 0)    /* the JSR too */ \
+  X(TS_FIGURE_PART, 0x8294b8, 0x8294e4, 0)      /* the RTS too */ \
+  X(TS_FIGURE_PART_KEPT, 0x829534, 0x829539, 0) /* and two like it */ \
+  X(TS_FIGURE_PARTS_KEPT, 0x829543, 0x829554, 0) \
+  X(TS_FIGURE_NO_SPITS, 0x8294a4, 0x8294b4, 0) \
+  X(TS_FIGURE_HANDLER, 0x829554, 0x82955e, 0)   /* the JSL too */ \
+  X(TS_FIGURE_CALM, 0x82955e, 0x829569, 0)      /* the RTS too */ \
+  X(TS_SAUCER_ENTER, 0x82873c, 0x82874c, 0) \
+  X(TS_SAUCER_COLOURED, 0x828750, 0x828766, 0) \
+  X(TS_SAUCER_DRAWN, 0x82876a, 0x828782, 0) \
+  X(TS_SAUCER_QUEUED, 0x828786, 0x8287aa, 0)    /* the JSR too */ \
+  X(TS_SAUCER_NEAREST_ASK, 0x8284ce, 0x8284d9, 0) \
+  X(TS_SAUCER_AIMED, 0x8284dd, 0x828505, 0)     /* the RTS too */
 
 enum {
 #define X(name, from, to, taken) name,
@@ -1079,6 +1175,8 @@ typedef enum {
   TS_NEEDS_SEEKER,       // the seeker's loop to return to, and its record
   TS_NEEDS_SEEKER_HIDDEN,  // ...and whoever it watched, in low WRAM
   TS_NEEDS_SEEKER_NEXT,    // ...and what it does after firing, one of three
+  TS_NEEDS_FIGURE_PART,    // a record in A, and a part's `JSR` to return to
+  TS_NEEDS_SAUCER_AIMED,   // a record in X, and the start's `JSR` to return to
 } ThreadStretchNeeds;
 
 bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
@@ -1216,7 +1314,18 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(tracker_ended, "$82:F05E", TRACKER_ENDED_PC, tracker_ended, TRACKER, TS_NEEDS_RECORD) \
   X(puff_enter, "$82:F1E6", PUFF_ENTER_PC, puff_enter, TRACKER, TS_NEEDS_NOTHING) \
   X(puff_made, "$82:F1F4", PUFF_MADE_PC, puff_made, TRACKER, TS_NEEDS_A) \
-  X(pulse_enter, "$80:A0EF", PALCYCLE_PULSE_ENTER_PC, pulse_enter, PULSE, TS_NEEDS_NOTHING)
+  X(pulse_enter, "$80:A0EF", PALCYCLE_PULSE_ENTER_PC, pulse_enter, PULSE, TS_NEEDS_NOTHING) \
+  X(argument_figure_queued, "$82:950A", 0x82950au, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_82a871, "$82:A871", 0x82a871u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(figure_enter, "$82:9569", FIGURE_ENTER_PC, figure_enter, FIGURE, TS_NEEDS_NOTHING) \
+  X(figure_coloured, "$82:94EE", FIGURE_COLOURED_PC, figure_coloured, FIGURE, TS_NEEDS_NOTHING) \
+  X(figure_waited, "$82:9511", FIGURE_WAITED_PC, figure_waited, FIGURE, TS_NEEDS_NOTHING) \
+  X(figure_part, "$82:94B8", FIGURE_PART_PC, figure_part, FIGURE, TS_NEEDS_FIGURE_PART) \
+  X(saucer_enter, "$82:873C", SAUCER_ENTER_PC, saucer_enter, SAUCER, TS_NEEDS_NOTHING) \
+  X(saucer_coloured, "$82:8750", SAUCER_COLOURED_PC, saucer_coloured, SAUCER, TS_NEEDS_NOTHING) \
+  X(saucer_drawn, "$82:876A", SAUCER_DRAWN_PC, saucer_drawn, SAUCER, TS_NEEDS_NOTHING) \
+  X(saucer_queued, "$82:8786", SAUCER_QUEUED_PC, saucer_queued, SAUCER, TS_NEEDS_NOTHING) \
+  X(saucer_aimed, "$82:84DD", SAUCER_AIMED_PC, saucer_aimed, SAUCER, TS_NEEDS_SAUCER_AIMED)
 
 #define X(name, sym, entry, port, exits, needs) \
   void port(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k);

@@ -1,20 +1,35 @@
 // Weapon 5's shot.
 //
-// `$81:EBE2` is a thread: the thing weapon 5 fires. Its start takes a
-// record and puts it in front of the player, and then every frame it moves
-// by its step and asks the ground about the point it has come to. Two of
-// its stretches are here, and two of its start:
+// `$81:EBE2` is a thread: the thing weapon 5 fires. Weapon 5 is the bazooka:
+// the shot counts itself at `$1FCC`, and the level's end pays a bonus to a
+// player whose count is nothing, under the words "NO BAZOOKA FIRED". Its
+// start takes a record and puts it in front of the player, and then every
+// frame it moves by its step and asks the ground about the point it has
+// come to. All of it is here but two calls, each from where the thread
+// starts or a call comes back to the next call:
 //
-//   $81:ED1A  begin   its record, in front of whoever fired it
-//   $81:EC79  aim     ...moved to the mouth of the weapon, and the picture
-//                     for the way it goes
+//   $81:EBE2  enter   its weight in the level's load, and its sound
+//   $81:ED1A  begin   its record, in front of whoever fired it, counted
+//                     against their score slot, with its handler named
+//   $81:EC79  aim     ...moved to the mouth of the weapon, with the picture
+//                     for the way it goes, and the ground where it was fired
+//                     from asked about
 //   $81:EC03  frame   a frame of its flight, from where the sleep comes
 //                     back to the next sleep, or to where it stops
 //   $81:EC30  burst   stopped: its record put where it bursts, as far as
 //                     the pictures it bursts in
+//   $81:EC58  done    no handler, and on to its end, which is a row of
+//                     `port/begin.h`'s
+//   $81:ECAC  break   the tile it struck, as far as the block is put
+//   $81:ECE0  broken  ...the block counted, and fifty points to whoever
+//                     fired it
 //
-// The rest of the start, and what it does to the tile it stops at, are the
-// ROM's.
+// The `RTS` the points come back to, `$81:ED12`, is a link of
+// `port/links.h`'s, and it returns to burst.
+//
+// The two calls not here are `$82:DC57`, after a broken tile with bit 5
+// when the shot was fired the way numbered two, and the end of the thread.
+// The corpus never breaks such a tile. I have not read `$82:DC57`.
 //
 // **Where it starts depends on whose it is.** The thread is handed a side
 // in `$06`, 0 or 2 in `port/score.h`'s sense, and keeps it in `$48`. Its
@@ -43,11 +58,13 @@
 // three down or right, two and two on a slant, from the table at
 // `$81:EDFF`. The thread's start reads it, not this.
 //
+// **Where it is first asked about is where it was fired from**, not where
+// it is put: the first test of the ground is at `$00` and `$02`, the
+// player's place. Blocked there, it bursts before it has flown at all.
+//
 // Each ends where the ROM goes on: at the `JSL thread_yield` with the tick
-// in A, at the test of carry where it stops, at the thread's last
-// instructions when it is spent, or at the `JSL pictures_play` with the
-// list in A. `begin` ends at a `JSL` to `$80:9D6A` with the side in A,
-// and `aim` at the `RTS` of the setter it jumps to, which the ROM makes.
+// in A, at a stop's burst or break, at the `JSL` of a sound, of a list of
+// pictures, of the points or of `$82:DC57`, or where the thread ends.
 //
 // Port code: libc only.
 
@@ -66,17 +83,40 @@
 #define SHOT5_BANK 0x81
 #define SHOT5_FRAME_PC 0x81ec03u
 #define SHOT5_YIELD_PC 0x81ebffu  // `JSL thread_yield`, A already 1
-#define SHOT5_STOP_PC 0x81ec2bu   // `BCS`: carry says leave the tile alone
 #define SHOT5_SPENT_PC 0x81ec58u  // gone without bursting
+#define SHOT5_BREAK_RETURN 0xec2fu  // what `JSR $ECAC` leaves
 #define SHOT5_BURST_PC 0x81ec30u
 #define SHOT5_BURST_PLAY_PC 0x81ec54u  // `JSL pictures_play`
 #define SHOT5_BREAK_PC 0x81ecacu       // the tile it struck changed
 #define SHOT5_BREAK_PUT_PC 0x81ecdcu   // `JSL $80:AB5A`
 
+#define SHOT5_ENTER_PC 0x81ebe2u
+#define SHOT5_SOUND_CALL_PC 0x81ed16u  // `JSL apu_play_sfx`, the sound in A
+#define SHOT5_ENTER_RETURN 0xebeeu     // what `JSR $ED13` leaves
+#define SHOT5_LOAD 0x0006
+#define SHOT5_SOUND 0x0006
+
 #define SHOT5_BEGIN_PC 0x81ed1au
-#define SHOT5_BEGIN_OWNER_PC 0x81ed7cu  // `JSL $80:9D6A`, the side in A
+#define SHOT5_PICTURES_CALL_PC 0x81ec75u  // `JSL pictures_play`, the list in A
+#define SHOT5_FIRST_PICTURES 0xee6bu
+#define SHOT5_WAY_PICTURES 0xee93u  // what `SHOT5_DP_PICTURES` is set to
+#define SHOT5_HANDLER 0xedaau
+#define SHOT5_HANDLER_BANK 0x0081
+#define W_BAZOOKA_FIRED 0x1fccu     // a word a score slot
 #define SHOT5_AIM_PC 0x81ec79u
-#define SHOT5_AIM_RTS_PC 0x81ff47u
+#define SHOT5_AIM_RETURN 0xebf1u    // what `JSR $EC72` leaves
+
+#define SHOT5_DONE_PC SHOT5_SPENT_PC
+#define SHOT5_END_PC 0x81ec60u      // `shot_5_end`
+
+#define SHOT5_BROKEN_PC 0x81ece0u      // where the block's put comes back
+#define SHOT5_HOLE_CALL_PC 0x81ed02u   // `JSL $82:DC57`
+#define SHOT5_SCORE_CALL_PC 0x81ed0eu  // `JSL score_add`
+#define SHOT5_HOLE_TILE 0x0020         // bit 5 of the tile struck
+#define SHOT5_HOLE_WAY 0x0002          // ...and `SHOT5_DP_WAY_KEPT`
+#define SHOT5_HOLE_ACROSS 0x000a       // where `$82:DC57` is asked about
+#define SHOT5_HOLE_DOWN 0x0005
+#define SHOT5_BREAK_POINTS 0x0050      // in decimal
 
 #define SHOT5_DP_PLACE_X 0x00   // where whoever fired it is
 #define SHOT5_DP_PLACE_Y 0x02
@@ -114,7 +154,7 @@
 
 typedef enum {
   SHOT5_FLIES,
-  SHOT5_STOPS,
+  SHOT5_STOPS,  // ...to burst, or to break the tile first
   SHOT5_SPENT,
 } Shot5Fate;
 
@@ -128,14 +168,27 @@ typedef struct {
 
 Shot5Fate shot5_frame(Wram* w, PortCpu* c, Shot5Log* log);
 
+// `$81:EBE2`.
+void shot5_enter(Wram* w, PortCpu* c);
+
+// For the harness, which prices the start from it.
+typedef struct {
+  uint16_t record;
+  bool second_slot;  // whoever fired it is the second score slot
+} Shot5BeginLog;
+
 // False for a way or a side the tables do not have.
 bool shot5_begin_supported(const Wram* w, uint16_t page);
 // False with no record free, which is the ROM's: it only looks then.
-bool shot5_begin(Wram* w, const Rom* rom, PortCpu* c, uint16_t* record);
+bool shot5_begin(Wram* w, const Rom* rom, PortCpu* c, Shot5BeginLog* log);
+
+typedef struct {
+  bool clears;  // the table's word for its flags is one that clears
+  TerrainRegs ground;
+} Shot5AimLog;
 
 bool shot5_aim_supported(const Wram* w, const Rom* rom, uint16_t page);
-// True if the table's word for its flags is one that clears.
-bool shot5_aim(Wram* w, const Rom* rom, PortCpu* c);
+void shot5_aim(Wram* w, const Rom* rom, PortCpu* c, Shot5AimLog* log);
 
 // `$81:ECAC`, as far as the `JSL` that puts the block: the block where the
 // shot is swapped for its pair. See `port/tile_rows.h`. The tile's
@@ -146,5 +199,16 @@ void shot5_break(Wram* w, const Rom* rom, PortCpu* c, BlockSwapWork* k);
 // False for a way the table does not have.
 bool shot5_burst_supported(const Wram* w, uint16_t page);
 void shot5_burst(Wram* w, const Rom* rom, PortCpu* c);
+
+// `$81:EC58`.
+void shot5_done(Wram* w, PortCpu* c);
+
+// `$81:ECE0`, with the page and the tile's attributes on the stack.
+typedef enum {
+  SHOT5_BROKEN_PLAIN,  // without bit 5
+  SHOT5_BROKEN_WAY,    // with it, fired another way
+  SHOT5_BROKEN_HOLE,   // with it, fired the way numbered two: `$82:DC57`
+} Shot5Broken;
+Shot5Broken shot5_broken(Wram* w, PortCpu* c);
 
 #endif

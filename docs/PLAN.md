@@ -273,6 +273,12 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**The bazooka and the big figures' starts, 2026-10-14.** Weapon 5's shot,
+the bazooka's, is ported but for two calls, and the starts of level 25's
+figure and level 21's saucer are thread stretches, with the upload both
+queue as `boss_bg_queue_one`. The places are 340 and the core executes
+57,771 instructions over the survey.
+
 **The seeker's sleeping states, 2026-10-14.** The seeker's hiding, coming
 back, firing and landing are ported, with the tracker's start and end and
 the puff it comes back in; the doll's frame is no longer turned down when it

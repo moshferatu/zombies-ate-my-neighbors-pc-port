@@ -5,6 +5,8 @@
 
 #include "port/bcd.h"
 #include "port/bodies.h"            // W_NEIGHBOURS_LEFT
+#include "port/boss_thread.h"       // the figure's page
+#include "port/bossbg.h"            // W_BOSS_BG_ONE_SRC
 #include "port/bystander.h"
 #include "port/chainsaw.h"
 #include "port/cheat.h"
@@ -24,6 +26,7 @@
 #include "port/werewolf.h"
 #include "port/objects.h"           // W_VICTIM_GATE
 #include "port/palcycle.h"
+#include "port/saucer.h"
 #include "port/weeds.h"
 
 const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
@@ -42,7 +45,12 @@ const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
     {0x82df11u, DOOR_BUZZ_SFX},
     {0x82df18u, 0x0014},
     {0x82ec5au, 0x0020},  // the seeker's sleep after its puff begins
+    {0x82950au, 0x0001},  // the figure's sleeps while its tiles go up
+    {0x82a871u, 0x0001},  // the same after `$82:A86D`'s upload
 };
+
+const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS] = {0x9533, 0x9538, 0x953d,
+                                                    0x9542};
 
 const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT] = {
     0xd97f,  // the flashing's, `$80:D96C`
@@ -209,6 +217,17 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
       return seeker_returns(w, c) && after <= SEEKER_AFTER_DART &&
              (after & 1) == 0;
     }
+    case TS_NEEDS_FIGURE_PART: {
+      const uint16_t back = wram_r16(w, (uint16_t)(c->s + 1));
+      for (int i = 0; i < FIGURE_PARTS - 1; i++)
+        if (back == FIGURE_PART_RETURNS[i]) return c->a < 0x1f00;
+      return back == FIGURE_PART_RETURNS[FIGURE_PARTS - 1] &&
+             wram_r16(w, (uint16_t)(c->s + 3)) == FIGURE_START_RETURN &&
+             c->a < 0x1f00;
+    }
+    case TS_NEEDS_SAUCER_AIMED:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == SAUCER_START_RETURN &&
+             c->x < 0x1f00;
     case TS_NEEDS_SLIME_BEGUN:
       return wram_r16(w, (uint16_t)(c->s + 1)) == SLIME_BEGIN_RETURN;
     case TS_NEEDS_SLIME_WAY:
@@ -2193,4 +2212,235 @@ void pulse_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   lda(c, PALCYCLE_PULSE_TICKS);
   ran(k, TS_PULSE_ENTER);
   c->pc = PALCYCLE_PULSE_YIELD_PC;
+}
+
+// --- the big figure's start, and the saucer's --------------------------------
+
+// `JSL` to a routine that is done here, and its `RTL`: the return is left on
+// the stack below as the ROM leaves it.
+static void jsl_and_back(Wram* w, PortCpu* c, uint16_t jsl_at) {
+  push8(w, c, (uint8_t)(c->pc >> 16));
+  push16(w, c, (uint16_t)(jsl_at + 3));
+  pull16(w, c);
+  pull8(w, c);
+}
+
+// The four words of an upload for `boss_bg_queue_one`, in the order both
+// starts store them.
+static void upload_words(Wram* w, PortCpu* c, uint16_t src, uint16_t bank) {
+  lda(c, src);
+  wram_w16(w, W_BOSS_BG_ONE_SRC, c->a);
+  lda(c, bank);
+  wram_w16(w, W_BOSS_BG_ONE_BANK, c->a);
+  lda(c, FIGURE_TILES_BYTES);
+  wram_w16(w, W_BOSS_BG_ONE_BYTES, c->a);
+  lda(c, FIGURE_TILES_VRAM);
+  wram_w16(w, W_BOSS_BG_ONE_VRAM, c->a);
+}
+
+// `$82:9569`.
+void figure_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  load_up(w, c, FIGURE_LOAD);
+  push16(w, c, FIGURE_START_RETURN);
+  ran(k, TS_FIGURE_ENTER);
+  c->a = FIGURE_COLOURS;
+  ldy(c, FIGURE_COLOURS_BANK);
+  ran(k, TS_FIGURE_COLOURS);
+  c->pc = FIGURE_COLOURS_CALL_PC;
+}
+
+// `$82:94EE`.
+void figure_coloured(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  upload_words(w, c, FIGURE_TILES, FIGURE_TILES_BANK);
+  ran(k, TS_FIGURE_COLOURED);
+  c->pc = FIGURE_QUEUE_CALL_PC;
+}
+
+// `$82:9511`: `JSL $82:80E0`, which is `LDA $1D54 : RTL`, and while that is
+// not zero its tiles have not all gone up.
+void figure_waited(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  jsl_and_back(w, c, (uint16_t)c->pc);
+  lda(c, wram_r16(w, W_BG_DMA_CURSOR));
+  ran(k, TS_FIGURE_WAIT_ASK);
+  if (c->a != 0) {
+    PORT_COVER(figure_waits);
+    ran(k, TS_TAKEN);
+    lda(c, 0x0001);
+    ran(k, TS_LDA_IMM);
+    c->pc = FIGURE_YIELD_PC;
+    return;
+  }
+  PORT_COVER(figure_placed);
+  lda(c, FIGURE_PLANE_AT_X);
+  wram_w16(w, W_BOSS_PLANE_AT_X, c->a);
+  lda(c, FIGURE_PLANE_AT_Y);
+  wram_w16(w, W_BOSS_PLANE_AT_Y, c->a);
+  lda(c, page(w, c, FIGURE_DP_PLACE_X));
+  wram_w16(w, W_BOSS_X, c->a);
+  lda(c, page(w, c, FIGURE_DP_PLACE_Y));
+  set_page(w, c, BOSS_DP_HOME_Y, c->a);
+  wram_w16(w, W_BOSS_Y, c->a);
+  set_page(w, c, BOSS_DP_TIMER, 0);
+  push16(w, c, FIGURE_PART_RETURNS[0]);
+  ran(k, TS_FIGURE_PLACED);
+  c->pc = FIGURE_PART_CALL_PC;
+}
+
+// `$82:94B8`, with the part's record in A.
+void figure_part(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t record = c->a;
+  c->x = record;
+  wram_w16(w, (uint16_t)(record + ACTOR_X), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), FIGURE_PART_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD),
+           wram_r16(w, W_SCHED_CUR_TASK));
+  lda(c, (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                    FIGURE_PART_FLAGS));
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS), c->a);
+  ran(k, TS_FIGURE_PART);
+
+  const uint16_t back = pull16(w, c);
+  int part = 0;
+  while (FIGURE_PART_RETURNS[part] != back) part++;
+  set_page(w, c, (uint8_t)(BOSS_PARTS_DP_FIRST + part * BOSS_PARTS_DP_STRIDE),
+           c->x);
+  if (part < FIGURE_PARTS - 1) {
+    PORT_COVER(figure_part_made);
+    push16(w, c, FIGURE_PART_RETURNS[part + 1]);
+    ran(k, TS_FIGURE_PART_KEPT);
+    c->pc = FIGURE_PART_CALL_PC;
+    return;
+  }
+
+  // `$82:9545`, after the fourth.
+  PORT_COVER(figure_parts_made);
+  set_page(w, c, BOSS_DP_FACING, 0);
+  set_page(w, c, BOSS_DP_DEAD, 0);
+  set_page(w, c, BOSS_DP_HIT, 0);
+  set_page(w, c, BOSS_DP_FLASH_LEFT, 0);
+  set_page(w, c, BOSS_DP_STRIDE_LEFT, 0);
+  set_page(w, c, BOSS_DP_STRIDE, 0);
+  ran(k, TS_FIGURE_PARTS_KEPT);
+  // `JSR $94A4`: none of the four spits out.
+  push16(w, c, 0x9553);
+  lda(c, BOSS_SPIT_NONE);
+  for (uint8_t at = 0; at < 4 * 8; at += 8)
+    set_page(w, c, (uint8_t)(BOSS_DP_SPIT_RECORD + at), c->a);
+  set_page(w, c, BOSS_DP_SPIT, 0);
+  set_page(w, c, BOSS_DP_SPITS, 0);
+  pull16(w, c);
+  ran(k, TS_FIGURE_NO_SPITS);
+
+  c->a = FIGURE_HANDLER;
+  ldy(c, FIGURE_HANDLER_BANK);
+  ran(k, TS_FIGURE_HANDLER);
+  thread_set_handler(w, c);
+  ran(k, TS_SET_HANDLER);
+  lda(c, FIGURE_3C);
+  set_page(w, c, FIGURE_DP_3C, c->a);
+  lda(c, BOSS_TEMPER_CALM);
+  set_page(w, c, BOSS_DP_TEMPER, c->a);
+  pull16(w, c);
+  ran(k, TS_FIGURE_CALM);
+
+  push16(w, c, FIGURE_CHOOSE_RETURN);
+  ran(k, TS_JSR);
+  c->pc = BOSS_CHOOSE_PC;
+}
+
+// `$82:873C`.
+void saucer_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  load_up(w, c, SAUCER_LOAD);
+  c->a = SAUCER_COLOURS;
+  ldy(c, SAUCER_COLOURS_BANK);
+  ran(k, TS_SAUCER_ENTER);
+  c->pc = SAUCER_COLOURS_CALL_PC;
+}
+
+// `$82:8750`: where it is, and the figure `boss_bg_queue` is to draw.
+void saucer_coloured(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, SAUCER_DP_PLACE_X));
+  wram_w16(w, W_BOSS_X, c->a);
+  lda(c, page(w, c, SAUCER_DP_PLACE_Y));
+  wram_w16(w, W_BOSS_Y, c->a);
+  lda(c, SAUCER_FIGURE);
+  wram_w16(w, BOSS_BG_DP_SRC, c->a);
+  lda(c, SAUCER_FIGURE_BANK);
+  wram_w16(w, BOSS_BG_DP_SRC_BANK, c->a);
+  ran(k, TS_SAUCER_COLOURED);
+  c->pc = SAUCER_DRAW_CALL_PC;
+}
+
+// `$82:876A`.
+void saucer_drawn(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  upload_words(w, c, SAUCER_TILES, FIGURE_TILES_BANK);
+  ran(k, TS_SAUCER_DRAWN);
+  c->pc = SAUCER_QUEUE_CALL_PC;
+}
+
+// `$82:8786`, and `JSR $84CE` as far as its call.
+void saucer_queued(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, 0x0001);
+  set_page(w, c, SAUCER_DP_LIGHTS_WAIT, c->a);
+  set_page(w, c, SAUCER_DP_LIGHTS_PHASE, 0);
+  lda(c, 0);
+  set_page(w, c, SAUCER_DP_FACING, c->a);
+  set_page(w, c, SAUCER_DP_12, c->a);
+  set_page(w, c, SAUCER_DP_SHOT_WAIT, c->a);
+  set_page(w, c, SAUCER_DP_REACH, 0);
+  lda(c, 0xffff);
+  set_page(w, c, SAUCER_DP_HATCH, c->a);
+  lda(c, SAUCER_FULL_HEALTH);
+  set_page(w, c, SAUCER_DP_HEALTH, c->a);
+  lda(c, SAUCER_SHOTS);
+  set_page(w, c, SAUCER_DP_SHOTS_LEFT, c->a);
+  push16(w, c, SAUCER_START_RETURN);
+  ran(k, TS_SAUCER_QUEUED);
+  lda(c, SAUCER_STATE_HUNT);
+  set_page(w, c, SAUCER_DP_STATE, c->a);
+  ldx(c, wram_r16(w, W_BOSS_X));
+  ldy(c, wram_r16(w, W_BOSS_Y));
+  ran(k, TS_SAUCER_NEAREST_ASK);
+  c->pc = SAUCER_NEAREST_CALL_PC;
+}
+
+// `$82:84DD`, with the nearest record in X: the spot on the side it is on,
+// as `port/saucer.c`'s `take_aim` sets it, and back for the first sleep.
+void saucer_aimed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  c->y = c->x;
+  const uint16_t me = wram_r16(w, W_BOSS_X);
+  cmp16(c, me, wram_r16(w, (uint16_t)(c->y + ACTOR_X)));
+  const uint16_t side = flag(c, PORT_P_C) ? 2 : 0;
+  ldx(c, side);
+  set_c(c, false);
+  set_page(w, c, SAUCER_DP_AIM_X,
+           adc16(c, rom_word(rom, (uint32_t)SAUCER_BANK << 16 |
+                                      (uint16_t)(SAUCER_SPOT_ASIDE + side)),
+                 me));
+  set_c(c, false);
+  set_page(w, c, SAUCER_DP_LINE_X,
+           adc16(c, rom_word(rom, (uint32_t)SAUCER_BANK << 16 |
+                                      (uint16_t)(SAUCER_LINE_ASIDE + side)),
+                 me));
+  lda(c, 0x0001);
+  set_page(w, c, SAUCER_DP_REAIM_WAIT, c->a);
+  pull16(w, c);
+  ran(k, TS_SAUCER_AIMED);
+  lda(c, SAUCER_YIELD_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = SAUCER_YIELD_PC;
 }

@@ -131,6 +131,15 @@
 // How coarse the mosaic of a flash is, for the job that sets it.
 #define W_SAUCER_MOSAIC 0x6db2u
 
+// What it begins with, and the tables its aim reads, in `SAUCER_BANK`.
+// `port/thread_stretches.h` has its start.
+#define SAUCER_SHOTS 2
+#define SAUCER_FULL_HEALTH 9
+#define SAUCER_COLOURS 0xffabu  // and the lights' others, `$20` on
+#define SAUCER_COLOURS_BANK 0x94
+#define SAUCER_SPOT_ASIDE 0x85bdu  // by side: where the spot is from it
+#define SAUCER_LINE_ASIDE 0x85c1u  // ...and the line its quarry crosses
+
 // For the harness, and only for it: what happened, which with the path is
 // what it takes to price the ROM's instructions around the calls.
 typedef struct {
