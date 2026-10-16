@@ -124,6 +124,66 @@
 //             the player it is from, nothing told it yet, sixty frames, and
 //             its handler; and back, to its first sleep
 //
+// ## The fourth's tile, `$80:EA02`
+//
+// See `port/walk.h`. The walk stops at the block that breaks the tile open,
+// and from there to the sleep after:
+//
+//   $80:EA02  ten pixels across from the player and twelve up, and the way
+//             they face, to `$82:DC57`, which draws a byte at random
+//   $82:DC5F  ...and looks it up at `$81:E79F`. `$FF` is nothing, `$FE` a
+//             thread at `$82:DCA0` beside the player when they face one of
+//             the ways it wants, and anything else a thing of that kind put
+//             back in the level's list, `object_put_back`, at that place
+//
+// Each comes back to the `RTL` there, and the thread sleeps ten ticks.
+//
+// ## The monster potion, `$80:D9A3`
+//
+// See `port/player.h`. The ordinary frame stops at the potion's `JMP`, and
+// from there the change is calls, and three stretches between them:
+//
+//   $80:D9AC  sound 5, after a tick's rest
+//   $80:D9B3  the pictures of the change, by the player, which sleep
+//   $80:D9BC  ...and after them, the monster's words: 2,000 frames, the
+//             pictures that are its own, no weapon out and nothing pressed
+//             before, facing down, state 2 and `$80:DA54` for what ends it.
+//             Then the weapon and the item it holds, `$0E` and `$0C`, by the
+//             swap of what the player held, and to `$80:D4E9` for its pose
+//
+// That comes back to the ordinary frame's `JSR` of its third button.
+//
+// ## The monster's punch, standing, `$80:EF67`
+//
+// See `port/pose.h`. The pose stops at the sound, and after it:
+//
+//   $80:EF82  `JSR $F051`, the fist's box, which on the first picture is
+//             nobody's. Then the fist's tile, which is a call
+//   $80:EF8F  after four ticks, the second picture
+//   $80:EF98  ...and the box for it, which tells those in it: to the `JSL`
+//   $80:EFAA  four more, and the third picture's box, which is the same
+//             picture
+//   $80:EFB9  four more, and the cycle back to nought: the pose's `RTS`
+//
+// ## A player out by the exit, `$80:FAF6`
+//
+// See `port/collide.h`: what the exit touches is given this to do next.
+//
+//   $80:FAF6  the state the player is in, if it has a routine to end it at
+//             `$72`, is ended first: by `RTS` to it, with `$80:FAFF` under
+//   $80:FB00  ...and back here: the player's 28 off the level's load, and
+//             they can no longer be touched or told anything. Below nought
+//             the ROM spins where it is, and the two stretches are turned
+//             down. Then the weapon put away and a tick's rest
+//   $80:FB18  their side of the panel blanked
+//   $80:FB1E  a picture of nothing, and the player out. Eighty ticks
+//   $80:FB35  ...and with two players' records, theirs is let go. Then a
+//             sleep that does not end
+//
+// The monster's routine, `$80:DA54`, asked by the exit, has nothing to show:
+// it is only the monster's words cleared, and the hands given back, and to
+// `$80:D4E9` for a pose. That comes back to `$80:FB00`.
+//
 // ## The exit door, `$82:F70B`
 //
 // Begun when a level's way out opens, with a player's record at `$04` and
@@ -271,12 +331,29 @@
 //             ten above. Its handler is named.
 //   $82:DEE8  it is not to end, and the first sleep is five ticks
 //
-// What it shows when a player comes up, `$82:DDA7`, waits a frame at a
-// time while two words of a table at `$7E:6DA6` step, the first down by
-// one and the second up by two, until the first is eight:
+// What it shows when a player comes up, `$82:DDA7`:
+//
+//   $82:DDA7  nothing, within sixty frames of the last time. Otherwise the
+//             frame is kept, both players' flags cleared, and three ticks
+//   $82:DDCF  ...the first player's side of the panel blanked
+//   $82:DDD6  ...and the second's. Then the panel drawn, and the screen
+//             dimmed, which is `port/bystander.h`'s
+//
+// Then it waits a frame at a time while two words of a table at `$7E:6DA6`
+// step, the first down by one and the second up by two, until the first is
+// eight:
 //
 //   $82:DE08  a frame of that, as far as the next `WAI`. After the last,
 //             the words its kind names are asked for.
+//   $82:DE2F  the pads as they are, kept, and the next of its two pictures
+//   $82:DE4F  ...and ten frames, `WAI` by `WAI` at `$82:DEF6`
+//   $82:DE56  the same again while neither pad changes. Then its first
+//             picture, and the panel back as it was
+//
+// The screen lit again is `port/bystander.h`'s too, and then the loop goes
+// on, or ends if it has been told to:
+//
+//   $82:DD64  five ticks, or its end
 //
 // ## A frozen creature, `$81:84D6`
 //
@@ -518,7 +595,7 @@ typedef struct {
   uint16_t value;
 } ThreadArgument;
 
-#define THREAD_ARGUMENT_COUNT 40
+#define THREAD_ARGUMENT_COUNT 42
 extern const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT];
 
 // `LDA #value : STA at`, on the thread's page, and the `RTS` after.
@@ -756,6 +833,27 @@ extern const WeedKind WEED_KINDS[WEED_KIND_COUNT];
 #define BYSTANDER_WAIT_PC 0x82de07u      // the `WAI`
 #define BYSTANDER_SAY_PC 0x82de2bu       // `JSL $80:C219`
 
+// What it shows.
+#define BYSTANDER_MEETS_PC 0x82dda7u
+#define BYSTANDER_TOO_SOON_PC 0x82ddbau  // the `RTS`
+#define BYSTANDER_MEETS_SLEEP_PC 0x82ddcbu
+#define W_BYSTANDER_MET_AT 0x6db0u     // of bank `$7E`: the frame it last did
+#define BYSTANDER_MEET_GAP 0x003c
+#define BYSTANDER_MEETS_TICKS 0x0003
+#define BYSTANDER_HUSH_PC 0x82ddcfu
+#define BYSTANDER_HUSH_CALL_PC 0x82ddd2u   // `JSL $80:C1CF`
+#define BYSTANDER_HUSH_2_PC 0x82ddd6u
+#define BYSTANDER_HUSH_2_CALL_PC 0x82ddd9u
+#define BYSTANDER_SAID_PC 0x82de2fu
+#define BYSTANDER_FLIP_CALL_PC 0x82de4bu   // `JSL sprite_build_oam`
+#define BYSTANDER_LOOKED_PC 0x82de56u
+#define BYSTANDER_DONE_CALL_PC 0x82de6eu   // `JSL hud_reset`
+#define BYSTANDER_BACK_PC 0x82dd64u
+#define BYSTANDER_DP_FLIP 0x16             // which of its two pictures
+#define BYSTANDER_DP_PADS 0x18             // the two pads, as they were
+#define WAIT_FRAMES_WAI_PC 0x82def6u       // `$82:DEF6`, a frame a `WAI`
+#define WAIT_FRAMES_PC 0x82def7u           // ...after one
+#define WAIT_FRAMES_RTL_PC 0x82defau
 // `$80:DD79`: the first leap's landing, from where its sound comes back. The
 // player is put where the leap was aimed, their record's pictures are bank
 // `$90`'s, and it stops at the `JSL` that plays the splash, the list in A.
@@ -1393,6 +1491,69 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define VICTIM_GONE_PC 0x8181efu      // `LDA $06`, and `JSL victim_mark_gone`
 #define VICTIM_GONE_CALL_PC 0x8181f1u
 #define VICTIM_DP_GONE 0x06
+// A player out by the exit.
+#define PLAYER_LEAVES_PC 0x80faf6u
+#define PLAYER_LEAVES_RTS_PC 0x80faffu  // the `RTS` to what ends the state
+#define PLAYER_LEAVES_BACK 0xfaffu      // ...and the `PEA` under it
+#define PLAYER_LEFT_PC 0x80fb00u
+#define PLAYER_LEFT_CALL_PC 0x80fb0cu   // `JSR player_unhandled`
+#define PLAYER_LEFT_PANEL_PC 0x80fb18u
+#define PLAYER_LEFT_PANEL_CALL_PC 0x80fb1au
+#define PLAYER_LEFT_SHOWN_PC 0x80fb1eu
+#define PLAYER_LEFT_SLEEP_PC 0x80fb31u
+#define PLAYER_GONE_PC 0x80fb35u
+#define PLAYER_GONE_SLEEP_PC 0x80fb4cu
+#define PLAYER_LOAD 0x001cu
+#define PLAYER_LEFT_PICTURE 0x9b89u
+#define PLAYER_LEFT_TICKS 0x0050u
+#define PLAYER_GONE_TICKS 0x7fffu
+#define MONSTER_ENDS_PC 0x80da54u
+#define MONSTER_ENDS_SHOWN_PC 0x80da58u  // with nothing at `$72`: its pictures
+#define MONSTER_ENDS_CALL_PC 0x80da6fu   // `JSR player_hands_back`
+// The monster's punch, standing.
+#define PUNCH_FIRST_PC 0x80ef82u
+#define PUNCH_AGAIN_PC 0x80ef8fu
+#define PUNCH_SECOND_PC 0x80ef98u
+#define PUNCH_THIRD_PC 0x80efaau
+#define PUNCH_OVER_PC 0x80efb9u
+#define PUNCH_FIRST_JSR 0xef82u       // each `JSR $F051`
+#define PUNCH_SECOND_JSR 0xef9du
+#define PUNCH_THIRD_JSR 0xefacu
+#define PUNCH_TELL_PC 0x80f086u       // `JSL actor_notify_box`
+#define PUNCH_SHOW_CALL_PC 0x80ef95u  // `JSR pose_show`
+#define PUNCH_RTS_PC 0x80efbbu
+#define PUNCH_NEXT_PICTURE 0x0004u
+#define PUNCH_SECOND_CYCLE 0x0002u
+// The monster potion's change.
+#define MONSTER_PICTURES_PC 0x80d9b3u
+#define MONSTER_PICTURES 0x80d9ecu        // by `$0C`
+#define MONSTER_PICTURES_CALL_PC 0x80d9b8u
+#define MONSTER_BEGUN_PC 0x80d9bcu
+#define MONSTER_FRAMES 0x07d0u
+#define MONSTER_ENDS_BY 0xda54u
+#define MONSTER_FACING 0x000au
+#define MONSTER_WEAPON 0x000eu            // what the swap gives it to hold
+#define MONSTER_ITEM 0x000cu
+#define MONSTER_SWAP_CALL_PC 0x80d9e3u    // `JSR player_hands_swap`
+// The fourth's tile, back from its block.
+#define FOURTH_PRIZE_PC 0x80ea02u
+#define FOURTH_PRIZE_RETURN 0xea15u      // what `JSL $82:DC57` pushes
+#define FOURTH_PRIZE_DRAW_PC 0x82dc5bu   // `JSL rng_next`
+#define FOURTH_PRIZE_ITEM_PC 0x82dc72u   // `JSL object_put_back`
+#define FOURTH_PRIZE_THREAD_PC 0x82dc9bu // `JSL thread_spawn`
+#define FOURTH_PRIZE_RTL_PC 0x82dc9fu
+#define FOURTH_PRIZE_ACROSS 0x000au
+#define FOURTH_PRIZE_UP 0x000cu
+#define FOURTH_PRIZES 0x81e79fu          // by the byte drawn
+#define FOURTH_PRIZE_NONE 0x00ffu
+#define FOURTH_PRIZE_BESIDE 0x00feu
+#define W_FOURTH_FACING 0x0038u          // the way faced, kept on page zero
+#define FOURTH_FACING_LOW 0x0006u        // up to here, or...
+#define FOURTH_FACING_HIGH 0x000eu       // ...from here
+#define FOURTH_BESIDE_LEFT 0x000au       // the thread's place, from X and Y
+#define FOURTH_BESIDE_UP 0x0014u
+#define FOURTH_BESIDE_THREAD 0xdca0u
+#define FOURTH_BESIDE_THREAD_BANK 0x0082u
 // The level's ending, `$80:8544`, where the main loop goes with no neighbours
 // left to save (`port/mainloop.h`). With neither player having one to their
 // name, the game is lost. Otherwise each player playing has a thread begun,
@@ -1680,6 +1841,19 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_BYSTANDER_SET, 0x82dee8, 0x82deea, 0)   /* STZ $12 : RTS */ \
   X(TS_BYSTANDER_STEP, 0x82de08, 0x82de1f, 0)  /* to the BNE */ \
   X(TS_BYSTANDER_SAY, 0x82de20, 0x82de2a, 0) \
+  X(TS_BYSTANDER_MEETS, 0x82dda7, 0x82ddb1, 0)  /* to the BPL */ \
+  X(TS_BYSTANDER_NEGATED, 0x82ddb1, 0x82ddb5, 0) \
+  X(TS_BYSTANDER_GAP, 0x82ddb5, 0x82ddba, 0)    /* CMP : BCS */ \
+  X(TS_BYSTANDER_KEPT, 0x82ddbb, 0x82ddcb, 0) \
+  X(TS_BYSTANDER_LDX, 0x82ddcf, 0x82ddd2, 0) \
+  X(TS_BYSTANDER_SAID, 0x82de2f, 0x82de31, 0) \
+  X(TS_BYSTANDER_FLIP, 0x82de31, 0x82de4b, 0) \
+  X(TS_BYSTANDER_LOOKED, 0x82de56, 0x82de5d, 0) \
+  X(TS_BYSTANDER_LOOKED_B, 0x82de5d, 0x82de64, 0) \
+  X(TS_BYSTANDER_DONE, 0x82de64, 0x82de6e, 0) \
+  X(TS_BYSTANDER_BACK, 0x82dd64, 0x82dd68, 0) \
+  X(TS_BYSTANDER_END, 0x82dd68, 0x82dd6a, 0) \
+  X(TS_WAIT_FRAMES, 0x82def7, 0x82defa, 0)      /* DEC : BNE */ \
   X(TS_LEAP_SPLASH, 0x80dd79, 0x80dd8c, 0) \
   X(TS_SOAK_SPLASH, 0x80e2ff, 0x80e30a, 0) \
   X(TS_SET_HANDLER, 0x808475, 0x808480, 0)   /* thread_set_handler */ \
@@ -1831,6 +2005,30 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_DECOY_ENTER, 0x81f159, 0x81f166, 0)    /* the JSR too */ \
   X(TS_BREAKABLE_ENTER, 0x82f25d, 0x82f26a, 0) /* the JSR too */ \
   X(TS_LEVEL_ENDING_SPAWN, 0x808551, 0x808561, 0) /* and $856A-$857A */ \
+  X(TS_MONSTER_PICTURES, 0x80d9b3, 0x80d9b8, 0) \
+  X(TS_LEAVE_ENDS_ASK, 0x80faf6, 0x80fafa, 0) \
+  X(TS_LEAVE_ENDS, 0x80fafa, 0x80faff, 0) \
+  X(TS_LEFT_LOAD, 0x80fb00, 0x80fb0a, 0) \
+  X(TS_LEFT_PANEL, 0x80fb18, 0x80fb1a, 0) \
+  X(TS_LEFT_SHOWN, 0x80fb1e, 0x80fb31, 0) \
+  X(TS_GONE_RECORDS, 0x80fb35, 0x80fb41, 0) \
+  X(TS_GONE_CLEARED, 0x80fb41, 0x80fb49, 0) \
+  X(TS_MONSTER_ENDS_ASK, 0x80da54, 0x80da58, 0) \
+  X(TS_MONSTER_ENDED, 0x80da67, 0x80da6f, 0) \
+  X(TS_PUNCH_TOLD_HEAD, 0x80f051, 0x80f055, 0) \
+  X(TS_PUNCH_BOX, 0x80f055, 0x80f086, 0) \
+  X(TS_PUNCH_AGAIN, 0x80ef8f, 0x80ef95, 0) \
+  X(TS_PUNCH_SECOND, 0x80ef98, 0x80ef9d, 0) \
+  X(TS_PUNCH_THIRD, 0x80efaa, 0x80efac, 0) \
+  X(TS_PUNCH_OVER, 0x80efb9, 0x80efbb, 0) \
+  X(TS_MONSTER_BEGUN, 0x80d9bc, 0x80d9e3, 0) \
+  X(TS_FOURTH_BACK, 0x80ea02, 0x80ea16, 0)      /* the JSL too */ \
+  X(TS_FOURTH_DRAW, 0x82dc57, 0x82dc5f, 0)      /* JSL rng_next */ \
+  X(TS_FOURTH_PRIZE, 0x82dc5f, 0x82dc6d, 0)     /* to the first BEQ */ \
+  X(TS_FOURTH_NOT_NONE, 0x82dc6d, 0x82dc72, 0) \
+  X(TS_FOURTH_FACING, 0x82dc78, 0x82dc80, 0) \
+  X(TS_FOURTH_FACING_B, 0x82dc82, 0x82dc87, 0) \
+  X(TS_FOURTH_BESIDE, 0x82dc87, 0x82dc9b, 0) \
   X(TS_BUBBLED, 0x818404, 0x818433, 0) \
   X(TS_BUBBLE_OVER, 0x818446, 0x81845a, 0) \
   X(TS_BREAKABLE_MADE, 0x82f2f0, 0x82f330, 0)  /* the RTS too */ \
@@ -1926,6 +2124,7 @@ typedef enum {
   TS_NEEDS_SEEKER_NEXT,    // ...and what it does after firing, one of three
   TS_NEEDS_FIGURE_PART,    // a record in A, and a part's `JSR` to return to
   TS_NEEDS_SAUCER_AIMED,   // a record in X, and the start's `JSR` to return to
+  TS_NEEDS_PLAYER_LOAD,    // the level's load holds a player's
   TS_NEEDS_SLIMED,         // the player's two records in low WRAM, and which
                            // player
   TS_NEEDS_SLIMED_RESTED,  // ...and the slime's `JSR $F354` to return to
@@ -2230,7 +2429,30 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(saucer_coloured, "$82:8750", SAUCER_COLOURED_PC, saucer_coloured, SAUCER, TS_NEEDS_NOTHING) \
   X(saucer_drawn, "$82:876A", SAUCER_DRAWN_PC, saucer_drawn, SAUCER, TS_NEEDS_NOTHING) \
   X(saucer_queued, "$82:8786", SAUCER_QUEUED_PC, saucer_queued, SAUCER, TS_NEEDS_NOTHING) \
-  X(saucer_aimed, "$82:84DD", SAUCER_AIMED_PC, saucer_aimed, SAUCER, TS_NEEDS_SAUCER_AIMED)
+  X(saucer_aimed, "$82:84DD", SAUCER_AIMED_PC, saucer_aimed, SAUCER, TS_NEEDS_SAUCER_AIMED) \
+  X(fourth_prize, "$80:EA02", FOURTH_PRIZE_PC, fourth_prize, FOURTH_PRIZE, TS_NEEDS_NOTHING) \
+  X(argument_80d9ac, "$80:D9AC", 0x80d9acu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(monster_pictured, "$80:D9B3", MONSTER_PICTURES_PC, monster_pictured, MONSTER, TS_NEEDS_NOTHING) \
+  X(monster_begun, "$80:D9BC", MONSTER_BEGUN_PC, monster_begun, MONSTER, TS_NEEDS_NOTHING) \
+  X(punch_first, "$80:EF82", PUNCH_FIRST_PC, punch_first, PUNCH, TS_NEEDS_NOTHING) \
+  X(punch_again, "$80:EF8F", PUNCH_AGAIN_PC, punch_again, PUNCH, TS_NEEDS_NOTHING) \
+  X(punch_second, "$80:EF98", PUNCH_SECOND_PC, punch_second, PUNCH, TS_NEEDS_NOTHING) \
+  X(punch_third, "$80:EFAA", PUNCH_THIRD_PC, punch_third, PUNCH, TS_NEEDS_NOTHING) \
+  X(punch_over, "$80:EFB9", PUNCH_OVER_PC, punch_over, PUNCH, TS_NEEDS_NOTHING) \
+  X(player_leaves, "$80:FAF6", PLAYER_LEAVES_PC, player_leaves, LEAVES, TS_NEEDS_PLAYER_LOAD) \
+  X(player_left, "$80:FB00", PLAYER_LEFT_PC, player_left, LEAVES, TS_NEEDS_PLAYER_LOAD) \
+  X(player_left_panel, "$80:FB18", PLAYER_LEFT_PANEL_PC, player_left_panel, LEAVES, TS_NEEDS_NOTHING) \
+  X(player_left_shown, "$80:FB1E", PLAYER_LEFT_SHOWN_PC, player_left_shown, LEAVES, TS_NEEDS_RECORD) \
+  X(player_gone, "$80:FB35", PLAYER_GONE_PC, player_gone, LEAVES, TS_NEEDS_NOTHING) \
+  X(monster_ends, "$80:DA54", MONSTER_ENDS_PC, monster_ends, MONSTER, TS_NEEDS_NOTHING) \
+  X(bystander_meets, "$82:DDA7", BYSTANDER_MEETS_PC, bystander_meets, BYSTANDER_MEETS, TS_NEEDS_NOTHING) \
+  X(bystander_hushed, "$82:DDCF", BYSTANDER_HUSH_PC, bystander_hushed, BYSTANDER_MEETS, TS_NEEDS_NOTHING) \
+  X(bystander_hushed_2, "$82:DDD6", BYSTANDER_HUSH_2_PC, bystander_hushed_2, BYSTANDER_MEETS, TS_NEEDS_NOTHING) \
+  X(bystander_said, "$82:DE2F", BYSTANDER_SAID_PC, bystander_said, BYSTANDER_MEETS, TS_NEEDS_NOTHING) \
+  X(argument_82de4f, "$82:DE4F", 0x82de4fu, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(wait_frames, "$82:DEF7", WAIT_FRAMES_PC, wait_frames, WAIT_FRAMES, TS_NEEDS_NOTHING) \
+  X(bystander_looked, "$82:DE56", BYSTANDER_LOOKED_PC, bystander_looked, BYSTANDER_MEETS, TS_NEEDS_NOTHING) \
+  X(bystander_back, "$82:DD64", BYSTANDER_BACK_PC, bystander_back, BYSTANDER_BACK, TS_NEEDS_NOTHING)
 
 #define X(name, sym, entry, port, exits, needs) \
   void port(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k);

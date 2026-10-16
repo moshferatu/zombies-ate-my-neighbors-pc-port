@@ -5,6 +5,7 @@
 #include <stddef.h>
 
 #include "port/coverage.h"
+#include "port/dma.h"  // W_HDMA_CHANNELS
 #include "port/oam.h"
 
 #define DRAWN_MAX_BYTES 0x40  // 32 records
@@ -84,6 +85,41 @@ static bool player_in_box(const Wram* w, uint16_t page, BystanderLog* log) {
     if (is_player_in_box(w, page, drawn_record(w, at), log)) return true;
   }
   return false;
+}
+
+// `SEP #$20 : LDA #colour : STA $2132`, and A's low byte left.
+static void colour_added(PortCpu* c, HwTrace* t, uint8_t colour) {
+  hw_run(t, BYS_SEP_IMM);
+  hw_w8(t, REG_COLDATA, colour);
+  c->a = (uint16_t)((c->a & 0xff00u) | colour);
+  set_nz8(c, colour);
+}
+
+void bystander_dim(Wram* w, const Rom* rom, PortCpu* c, HwTrace* t) {
+  PORT_COVER(bystander_dimmed);
+  colour_added(c, t, BYSTANDER_DIM);
+  hw_run(t, BYS_REP_LDX);
+  for (int at = BYSTANDER_SHADE_LAST; at >= 0; at -= 2) {
+    wram_w16(w, (uint16_t)(W_BYSTANDER_SHADE + at),
+             rom_word(rom, BYSTANDER_SHADE_SOURCE + (uint16_t)at));
+    hw_run(t, BYS_COPY);
+    if (at != 0) hw_run(t, BYS_TAKEN);
+  }
+  c->x = 0xfffeu;
+  c->a = BYSTANDER_HDMA;
+  set_nz16(c, c->a);
+  wram_w16(w, W_HDMA_CHANNELS, c->a);
+  hw_run(t, BYS_HDMA);
+  c->pc = BYSTANDER_DIMMED_PC;
+}
+
+void bystander_lit(Wram* w, PortCpu* c, HwTrace* t) {
+  PORT_COVER(bystander_lit);
+  wram_w16(w, W_HDMA_CHANNELS, 0);
+  hw_run(t, BYS_STZ);
+  colour_added(c, t, BYSTANDER_LIT);
+  hw_run(t, BYS_REP);
+  c->pc = BYSTANDER_LIT_CALL_PC;
 }
 
 BystanderFate bystander_frame(const Wram* w, uint16_t page, BystanderLog* log) {

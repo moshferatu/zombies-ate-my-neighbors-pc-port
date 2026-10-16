@@ -49,9 +49,8 @@ typedef struct {
 #define WAY_MAX WAY_UP_LEFT
 // The thread's setup does not clear its direction, so a martian that has not
 // yet chosen one has whatever was on its page before. The ROM reads its
-// tables with that all the same, far off their ends, and so does this, for as
-// long as what it reads is still in the cartridge's bank.
-#define WAY_READABLE_MAX 0x1800
+// tables with that all the same, far off their ends and on into the next
+// bank, and so does this, for as long as what it reads is in the cartridge.
 
 // `actor_bearing`'s, which are not doubled.
 #define BEARING_FIRST_LEFTWARD 5
@@ -100,9 +99,28 @@ static void set_record_field(Martian* m, uint16_t at, uint16_t v) {
   wram_w16(m->w, (uint16_t)(m->record + at), v);
 }
 
+// `LDA table,X`: an index past the end of the bank reads on into the next.
+static uint32_t table_at(uint16_t table, uint16_t index) {
+  return ((uint32_t)MARTIAN_BANK << 16) + table + index;
+}
+
 static uint16_t table_word(const Martian* m, uint16_t table, uint16_t index) {
-  return rom_word(m->rom, ((uint32_t)MARTIAN_BANK << 16) +
-                              (uint16_t)(table + index));
+  return rom_word(m->rom, table_at(table, index));
+}
+
+// Both bytes of the word at `at` are the cartridge's.
+static bool in_cartridge(uint32_t at) {
+  const uint16_t low = (uint16_t)at;
+  return low >= 0x8000u && low != 0xffffu;
+}
+
+// Can a pass that walks read its tables by `way`? Its step, and its picture.
+static bool way_readable(uint16_t way, uint16_t cycle) {
+  const uint16_t at = (uint16_t)(way << 1);
+  const uint16_t picture_at = (uint16_t)((uint16_t)(at | cycle) << 1);
+  return in_cartridge(table_at(MARTIAN_STEPS, at)) &&
+         in_cartridge(table_at(MARTIAN_STEPS + 2, at)) &&
+         in_cartridge(table_at(MARTIAN_WALK_PICTURES, picture_at));
 }
 
 static Point position(const Martian* m) {
@@ -543,9 +561,9 @@ bool martian_frame_supported(const Wram* w, uint16_t page) {
   if (state != MARTIAN_STATE_WALK && state != MARTIAN_STATE_ARRIVE) return false;
   if (wram_r16(w, (uint16_t)(page + MARTIAN_DP_SHOOT)) != MARTIAN_SHOOT)
     return false;
-  if (way > WAY_READABLE_MAX) return false;
-  if (state == MARTIAN_STATE_ARRIVE && side > WAY_MAX) return false;
-  return wram_r16(w, (uint16_t)(page + MARTIAN_DP_CYCLE)) <= 3;
+  const uint16_t cycle = wram_r16(w, (uint16_t)(page + MARTIAN_DP_CYCLE));
+  if (cycle > 3 || !way_readable(way, cycle)) return false;
+  return state != MARTIAN_STATE_ARRIVE || side <= WAY_MAX;
 }
 
 // What the pass leaves in carry and overflow, and whether the thread goes
@@ -648,9 +666,10 @@ bool martian_begin(Wram* w, PortCpu* c, uint16_t* record_out) {
 // ---------------------------------------------------------------------------
 
 bool martian_show_supported(const Wram* w, uint16_t page) {
-  return wram_r16(w, (uint16_t)(page + MARTIAN_DP_DIRECTION)) <=
-             WAY_READABLE_MAX &&
-         wram_r16(w, (uint16_t)(page + MARTIAN_DP_CYCLE)) <= 3;
+  const uint16_t cycle = wram_r16(w, (uint16_t)(page + MARTIAN_DP_CYCLE));
+  return cycle <= 3 &&
+         way_readable(wram_r16(w, (uint16_t)(page + MARTIAN_DP_DIRECTION)),
+                      cycle);
 }
 
 void martian_show_walking(Wram* w, const Rom* rom, PortCpu* c,

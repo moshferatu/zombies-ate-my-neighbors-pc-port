@@ -19772,3 +19772,50 @@ frame turns down for another reason still runs its end the ROM's way.
 Over the same 110 sessions the core executes 8,610 instructions where it
 executed 10,589, and takes over 187 times where it did 561, at 54 places
 where there were 102. The reset's own 7,920 are all but 690 of what is left.
+
+## The monster potion, the fourth tile and the bystander's words (2026-10-16)
+
+### A row that wakes where the ROM also walks
+
+The fourth tile's sleep comes back to `$80:EA1D`, an `RTS` the walk reaches
+every time it meets the fourth's reaction and the tile is not there. A row
+there has to tell the two apart, and what is under the stack does not: the
+sleep's return is left there after the first time, and nothing the walk
+does at that depth writes over it. A does. The scheduler wakes a thread
+with `LDA $11B0,X : TCS : PLD : PLP : PLB : RTL`, so A is the stack pointer
+it began from, seven below where the `RTL` leaves it, and the walk's own way
+there leaves the reach or the tile in A.
+
+### An exit the ROM always reaches
+
+A stretch that ends where the ROM spins, `$80:FB0A  BMI $FB0A`, cannot say
+so by an exit there: the `BMI` is the next instruction whichever way it
+goes, and `verify` ends the call at the first exit the ROM reaches. The
+spin is the stretch's guard instead.
+
+### The hardware from a thread
+
+`bystander_dim` and `bystander_lit` are the first rows in a thread's code
+to write a register. They are ordinary hardware rows, a trace of runs and
+writes priced by a table of their own, and they write WRAM too: a stretch
+can be both.
+
+### Indexed loads cross banks
+
+`LDA abs,X` forms a 24-bit address and carries out of the data bank. A
+martian with `$FFEC` for its direction reads its step from bank `$82`. The
+port had added inside the bank, so it read bank `$81`'s, and turned the
+pass down because of it rather than going the wrong way.
+
+### An exit left out
+
+A stretch's exits are a list, and two stretches of one thread may share
+one. The bystander's way back ends at the thread's `JML` too, which the
+list it was given did not have, and `verify` then followed the ROM to the
+next exit it did have, frames later. A stretch's list has to hold every
+way it can end, and that was found only on a movie where the thread ends.
+
+### After
+
+Over the same 110 sessions the core executes 7,920 instructions where it
+executed 8,610, all of them the reset's, at the one place that is left.

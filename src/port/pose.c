@@ -93,11 +93,6 @@
 // ...and at its last picture, after which the pose starts again.
 #define POSE_CYCLE_LAST 3
 
-// The monster's punch. A box for each facing, eight bytes: what to add to
-// where the player is for its left, right, top and bottom. Who the box says
-// is punching is by `$0C`.
-#define POSE_PUNCH_BOXES 0xf08fu
-#define POSE_PUNCH_IDS 0xf08bu
 // Where the fist is: a byte for each picture of the swing picks one of three
 // tables, which have a step across and a step down for each facing.
 #define POSE_REACH_ROWS 0xf12fu
@@ -237,6 +232,21 @@ static void pick_pictures(Pose* p) {
 
 static void band_b_aim(Pose* p);
 
+// `$80:EF67`: the monster's punch, standing. Its first picture, and the pose
+// stops where the sound is asked for.
+static void punch_begin(Pose* p) {
+  PORT_COVER(pose_punch_begun);
+  p->log->punch_begun = true;
+  set_field(p, POSE_DP_CYCLE, 0);
+  set_field(p, POSE_DP_FRAMES, POSE_FRAMES_PUNCH);
+  // `LDA $26 : DEC : DEC : ORA $18 : ASL : ASL`, with the cycle just zeroed.
+  const uint16_t at =
+      flags_double(&p->flags, flags_double(&p->flags, facing_index(p)));
+  set_field(p, POSE_DP_PUNCH_PICTURE, at);
+  show(p, at);
+  p->log->ends_at = POSE_PUNCH_SOUND_PC;
+}
+
 // `$80:D4F4`: stand still, with the hand weapon out if there is one.
 static void stand_begin(Pose* p) {
   PORT_COVER(pose_stood);
@@ -261,7 +271,7 @@ static void stand_begin(Pose* p) {
       }
     }
     if (field(p, POSE_DP_6C) != 0) {
-      leave_to_rom(p);
+      punch_begin(p);
       return;
     }
     set_field(p, POSE_DP_FRAMES, POSE_FRAMES_STAND);
@@ -593,6 +603,17 @@ static void walk_6c(Pose* p) {
   reach(p);
 }
 
+// `$80:D711`: after the shot, the next picture when the timer is out.
+static void walk_firing_step(Pose* p) {
+  if (field(p, POSE_DP_TIMER) != 0) {
+    p->log->waiting = true;
+    return;
+  }
+  set_field(p, POSE_DP_TIMER, POSE_FIRING_TIMER);
+  step(p);
+  show_weapon(p);
+}
+
 static void walk_firing(Pose* p) {
   p->log->ends_at = POSE_WALK_FIRING_RTS_PC;
   if (buttons_changed(p)) {
@@ -608,13 +629,14 @@ static void walk_firing(Pose* p) {
   } else {
     p->log->delayed = true;
   }
-  if (field(p, POSE_DP_TIMER) != 0) {
-    p->log->waiting = true;
-    return;
-  }
-  set_field(p, POSE_DP_TIMER, POSE_FIRING_TIMER);
-  step(p);
-  show_weapon(p);
+  walk_firing_step(p);
+}
+
+// `$80:D711`, the shot's `JSR` back after weapon 5's kick.
+static void walk_firing_shot(Pose* p) {
+  PORT_COVER(pose_walk_firing_kicked);
+  p->log->ends_at = POSE_WALK_FIRING_RTS_PC;
+  walk_firing_step(p);
 }
 
 // ---------------------------------------------------------------------------
@@ -1174,6 +1196,11 @@ void pose_walk_firing(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(walk_firing, w, rom, page, log);
 }
 
+void pose_walk_firing_shot(Wram* w, const Rom* rom, uint16_t page,
+                           PoseLog* log) {
+  run(walk_firing_shot, w, rom, page, log);
+}
+
 void pose_walk_band_b(Wram* w, const Rom* rom, uint16_t page, PoseLog* log) {
   run(walk_band_b, w, rom, page, log);
 }
@@ -1288,7 +1315,8 @@ bool pose_supported(Wram* w, const Rom* rom, uint16_t page, uint16_t handler) {
     case POSE_HANDLER_SWIM: run(swim, w, rom, page, &log); break;
     default: return false;
   }
-  return !log.unported && (log.sleep == POSE_AWAKE || pose_may_sleep(handler));
+  const bool stops = log.sleep != POSE_AWAKE || log.punch_begun;
+  return !log.unported && (!stops || pose_may_sleep(handler));
 }
 
 bool pose_may_sleep(uint16_t handler) {

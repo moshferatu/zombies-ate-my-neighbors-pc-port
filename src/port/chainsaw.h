@@ -12,9 +12,11 @@
 // in one of those states is the ROM's. The cutting is stretches of
 // `port/thread_stretches.h` instead.
 //
-// A pass in the cut's state is the cut's stretches. Two more are its ends:
+// A pass in the cut's state is the cut's stretches, and one in the stagger's
+// the stagger's (`port/collide.h`). Two more are their ends:
 //
-//   $81:9878  chainsaw_cut_pass    the loop's dispatch, to the cut
+//   $81:9878  chainsaw_cut_pass    the loop's dispatch, to the cut or the
+//                                  stagger
 //   $81:9880  chainsaw_pass_shown  where a pass in a state of the ROM's
 //                                  comes back to: it shows itself and its
 //                                  health is tested, as every pass ends
@@ -101,6 +103,7 @@
 #define CHAINSAW_STATE_SWING 0x9550u
 // ...and one the port leaves to the ROM.
 #define CHAINSAW_STATE_CUT 0x92d6u
+#define CHAINSAW_STATE_STAGGER 0x9643u  // a hit's, `D990B_STAGGER_BODY`
 
 // The swing's own stops.
 #define CHAINSAW_SWING_YIELD_PC 0x819594u  // `JSL thread_yield`, A already 3
@@ -264,8 +267,9 @@ void chainsaw_swing_next(Wram* w, const Rom* rom, PortCpu* c,
 ChainsawFate chainsaw_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
                             ChainsawLog* log);
 
-// `$81:9878` in the cut's state: the pass's return pushed, and the state's
-// body gone to by the `RTS` after it, which leaves nothing on the stack.
+// `$81:9878` in the cut's state or the stagger's: the pass's return pushed,
+// and the state's body gone to by the `RTS` after it, which leaves nothing
+// on the stack.
 #define CHAINSAW_PASS_SHOWN_PC 0x819880u
 void chainsaw_cut_pass(Wram* w, PortCpu* c);
 // `$81:9880`. Facing a way the tables have.

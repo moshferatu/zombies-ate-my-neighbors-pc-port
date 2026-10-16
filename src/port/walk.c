@@ -214,8 +214,8 @@ static const DoorKind DOOR = {WALK_DOOR_REACH, WALK_DOOR, true, 0,
 static const DoorKind DOOR_B = {WALK_DOOR_REACH, WALK_DOOR_B, true,
                                 WALK_DOOR_B_KEY, WALK_DOOR_B_PUT_PC,
                                 WALK_DOOR_B_RETURN};
-static const DoorKind FOURTH = {WALK_FOURTH_REACH, WALK_FOURTH, false, 0, 0,
-                                0};
+static const DoorKind FOURTH = {WALK_FOURTH_REACH, WALK_FOURTH, false, 0,
+                                WALK_FOURTH_PUT_PC, WALK_FOURTH_RETURN};
 
 #define COVER_BY_KIND(kind, door, door_b, fourth)  \
   do {                                             \
@@ -230,7 +230,7 @@ static const DoorKind FOURTH = {WALK_FOURTH_REACH, WALK_FOURTH, false, 0, 0,
 // `$80:E901`: a door opened. One key fewer, in decimal, the door's sound, and
 // its block with the low bit set, which is the door open. The walk stops at
 // the `JSL $80:AB5A` that puts that in the map. False for a block the map
-// cannot be read at.
+// cannot be read at. The fourth's tile, `$80:E9CE`, is the same with no key.
 static bool door_opens(Walk* k, int kind, WalkReaction* did,
                        const DoorKind* d, uint16_t key_at) {
   // `ASL : ASL : XBA : AND #$00FF`: a pixel to a block.
@@ -238,14 +238,15 @@ static bool door_opens(Walk* k, int kind, WalkReaction* did,
   const uint16_t row =
       (uint16_t)((uint16_t)(field(k, WALK_DP_LOOK_Y) << 2) >> 8);
   if (!tile_block_cell_supported(k->w, k->rom, column, row)) return false;
-  if (kind == WALK_REACTION_DOOR) PORT_COVER(walk_door_opened);
-  else PORT_COVER(walk_door_b_opened);
+  COVER_BY_KIND(kind, walk_door_opened, walk_door_b_opened, walk_fourth_broken);
   did->opened = true;
   ApuSfxRegs sound;
   apu_play_sfx(k->w, WALK_DOOR_SFX, k->page, &sound);
-  bool carry = true, overflow;
-  wram_w16(k->w, key_at,
-           bcd_sub16(wram_r16(k->w, key_at), 0x0001, &carry, &overflow));
+  if (d->has_key) {
+    bool carry = true, overflow;
+    wram_w16(k->w, key_at,
+             bcd_sub16(wram_r16(k->w, key_at), 0x0001, &carry, &overflow));
+  }
   set_field(k, WALK_DP_LOOK_X, column);
   set_field(k, WALK_DP_LOOK_Y, row);
   BlockCellRegs cell;
@@ -266,8 +267,8 @@ static bool door_opens(Walk* k, int kind, WalkReaction* did,
 
 // `$80:E8D3`, `$80:E943` and `$80:E9B3`: is the player at a door, or at the
 // fourth's tile? A door they cannot open begins a thread, and one they can
-// opens. The fourth's tile is the ROM's. Each of the three is solid ground
-// to the walk; `met_reaction` says what is not ours.
+// opens, and so does the fourth's tile. Each of the three is solid ground to
+// the walk; `met_reaction` says what is not ours.
 static void door_stays_shut(Walk* k, int kind) {
   const DoorKind* d = kind == WALK_REACTION_DOOR     ? &DOOR
                       : kind == WALK_REACTION_DOOR_B ? &DOOR_B
@@ -291,9 +292,9 @@ static void door_stays_shut(Walk* k, int kind) {
                   walk_fourth_not_there);
     return;
   }
-  // The fourth's tile: a sound, its block, a thread and a sleep.
+  // The fourth's tile breaks open, as a door with no key.
   if (!d->has_key) {
-    k->met_reaction = true;
+    if (!door_opens(k, kind, did, d, 0)) k->met_reaction = true;
     return;
   }
   // The items are in low WRAM. Anywhere else is not ours to read.

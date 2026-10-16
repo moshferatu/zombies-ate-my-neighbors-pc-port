@@ -934,6 +934,11 @@
   X(walk_door_b_opened, "player_walk",     "...or a skeleton key: it opens, and the walk stops at its block") \
   X(walk_fourth_no_reach, "player_walk",   "the fourth reaction, and no tile to look at the way the player faces") \
   X(walk_fourth_not_there, "player_walk",  "...or one to look at, which is not its tile") \
+  X(walk_fourth_broken, "player_walk",     "...or its tile: it breaks open, and the walk stops at its block") \
+  X(fourth_prize_none, "ts_fourth_prize",  "the fourth's tile broken, and the draw leaves nothing") \
+  X(fourth_prize_item, "ts_fourth_prize",  "...or a thing, put back in the level's list") \
+  X(fourth_prize_beside, "ts_fourth_prize", "...or a thread beside the player, who faces the right way for it") \
+  X(fourth_prize_away, "ts_fourth_prize",  "...or would, but the player faces the wrong way") \
   X(walk_resumed_across, "player_walk",    "a walk back from a door's block, which stopped it across") \
   X(walk_resumed_up_down, "player_walk",   "...or up or down") \
   X(walk_square_known, "player_walk",      "the fifth reaction: a square it has already") \
@@ -1463,6 +1468,10 @@
   X(item_use_decoy_blocked, "item_use",          "a decoy whose ground ahead is not clear") \
   X(item_use_decoy,   "item_use",                "...or is, and the decoy's thread begins") \
   X(item_use_ran_out, "item_use",                "the last of an item used, and the next selected") \
+  X(item_use_monster_blocked, "item_use",        "the monster potion, where the ground would not hold an enemy") \
+  X(item_use_monster, "item_use",                "...or would: one used, and the player becomes the monster") \
+  X(psn_used_rest,    "player_state_normal_used", "the ordinary frame back from its third button: the four countdowns") \
+  X(monster_begun,    "ts_monster_begun",        "the monster's pictures over: its words, and the hands swapped") \
   X(psn_spawn_swallowed, "player_state_normal",  "L or R with the flag already set: the press is eaten and the flag cleared") \
   X(psn_spawn,        "player_state_normal",     "...or the flag was clear, so a thread starts at $82:D8DB and a sound plays") \
   X(psn_press_none,   "player_state_normal",     "no button edge this frame, which is nearly all of them") \
@@ -1706,6 +1715,25 @@
   X(pose_band_b_stepped, "pose_walk_band_b", "...and any other step") \
   X(pose_6c_ended, "pose_walk_6c", "the fourth picture shown: the pose starts again") \
   X(pose_punched, "pose_walk_6c", "a picture of the swing: those in the fist's box told") \
+  X(pose_punch_begun, "pose_stand_begin", "a stand with $6C set: the monster's punch, to its sound") \
+  X(pose_walk_firing_kicked, "pose_walk_firing_shot", "the firing walk back from its shot, after weapon 5's kick") \
+  X(punch_told_nobody, "ts_punch", "the punch's first picture: nobody in the fist's box is told") \
+  X(player_leaves_as_is, "ts_player_leaves", "a player out by the exit, in a state with nothing to end it") \
+  X(bystander_too_soon, "ts_bystander_meets", "a player in the bystander's box within sixty frames of the last") \
+  X(bystander_meets, "ts_bystander_meets", "...or later: it shows what it has to say") \
+  X(bystander_dimmed, "bystander_dim", "the screen dimmed for its words") \
+  X(bystander_watched, "ts_bystander_looked", "ten frames on, neither pad changed: the other picture") \
+  X(bystander_left_be, "ts_bystander_looked", "...or one did: its first picture, and the panel back") \
+  X(bystander_lit, "bystander_lit", "the screen lit again") \
+  X(bystander_back_slept, "ts_bystander_back", "back from its words: five ticks") \
+  X(bystander_back_ended, "ts_bystander_back", "...or it has been told to end") \
+  X(wait_frames_more, "ts_wait_frames", "a frame of a wait of several, `WAI` by `WAI`") \
+  X(wait_frames_done, "ts_wait_frames", "...and the last") \
+  X(player_leaves_ended, "ts_player_leaves", "...or with a routine that ends it, which is asked first") \
+  X(player_gone_alone, "ts_player_gone", "out, with one record between the players: it is kept") \
+  X(player_gone_let_go, "ts_player_gone", "...or with two: the player's is let go") \
+  X(monster_ends_unshown, "ts_monster_ends", "the monster ended by the exit: no pictures, its words cleared") \
+  X(punch_told, "ts_punch", "...or a later one: those in it are") \
   X(pose_reached, "pose_walk_6c", "...and the tile the fist is at looked at") \
   X(pose_wall_broken, "pose_walk_6c", "......and it is a wall that comes down") \
   X(pose_reach_busy, "pose_walk_6c", "...or not, with a wall already coming down") \
@@ -2004,6 +2032,7 @@
   X(chainsaw_began_cutting, "chainsaw_frame", "a hedge beside it: it begins to cut") \
   X(chainsaw_died, "chainsaw_frame", "its health gone: the thread goes on to its end") \
   X(chainsaw_cut_pass, "chainsaw_cut_pass", "a pass in the cut's state, gone to its body") \
+  X(chainsaw_stagger_pass, "chainsaw_cut_pass", "...or in the stagger's") \
   X(chainsaw_pass_shown, "chainsaw_pass_shown", "the end of a pass the cut took: shown, and its health tested") \
   X(chainsaw_swing_began, "chainsaw_frame", "a pass in the swing's state: the saw's record, and the first picture") \
   /* $81:9598 chainsaw_swing_next -- where a swing wakes. */              \

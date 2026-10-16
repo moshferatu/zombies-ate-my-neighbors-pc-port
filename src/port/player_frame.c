@@ -35,7 +35,7 @@ static bool ordinary_state(Frame* f) {
   PlayerStateRegs* did = &f->log->normal;
   if (!player_state_normal_supported(f->w, f->rom, f->page)) return false;
   player_state_normal(f->w, f->rom, f->page, did);
-  if (did->unported) return false;
+  if (did->unported || did->stopped) return false;
   f->log->c = did->c;
   f->log->c_set = true;
   return true;
@@ -274,7 +274,8 @@ static bool strike_pose(Frame* f) {
     f->log->c_set = true;
   }
   if (did->v_set) f->log->v = did->v;
-  return !did->unported &&
+  // The punch stops at its sound, which only the pose's own row has.
+  return !did->unported && !did->punch_begun &&
          (did->sleep == POSE_AWAKE || pose_may_sleep(f->log->pose));
 }
 

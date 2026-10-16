@@ -8,11 +8,18 @@
 //
 //   $82:DD5C  frame   is a player standing in the box?
 //
-// What is not here is the setup, which is stretches of
-// `port/thread_stretches.h`, and what it does when a player is there,
-// `$82:DDA7`, which draws on the screen and reads the pads. That is the
-// ROM's but for a loop of it that is a stretch too, and so is the thread's
-// end.
+// What is not here is the setup, and what it does when a player is there,
+// `$82:DDA7`, which draws on the screen and reads the pads: those are
+// stretches of `port/thread_stretches.h`, between their calls, and so is the
+// thread's end. Two of them write the hardware, and are here.
+//
+// ## The screen dimmed, and lit again
+//
+// What it shows begins with the colour the screen is added to, `$2132`, at
+// `$E8`: a dark grey on all three channels. Five words go from `$82:E6A5` to
+// `$7E:6DA6`, which a table of the vblank's reads, and `$136E` says which
+// channels of HDMA run, `$20`. When the player moves on, none run, and the
+// colour is `$E5`.
 //
 // ## How it looks
 //
@@ -44,6 +51,9 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "assets/rom.h"
+#include "port/cpu.h"
+#include "port/hw.h"
 #include "port/wram.h"
 
 #define BYSTANDER_FRAME_PC 0x82dd5cu
@@ -80,6 +90,34 @@ typedef struct {
   uint16_t a;
   bool n, z;
 } BystanderLog;
+
+// `$82:DDE1` and `$82:DE72`, from where a call comes back to the next. A,
+// X and the flags as the ROM leaves them.
+#define BYSTANDER_DIM_PC 0x82dde1u
+#define BYSTANDER_DIMMED_PC 0x82ddfeu  // `JSL $82:DC45`
+#define BYSTANDER_LIT_PC 0x82de72u
+#define BYSTANDER_LIT_CALL_PC 0x82de7eu  // ...the same
+#define BYSTANDER_DIM 0xe8u
+#define BYSTANDER_LIT 0xe5u
+#define BYSTANDER_SHADE_SOURCE 0x82e6a5u
+#define W_BYSTANDER_SHADE 0x6da6u        // of bank `$7E`, five words
+#define BYSTANDER_SHADE_LAST 8
+#define BYSTANDER_HDMA 0x0020u
+#define REG_COLDATA 0x2132u
+
+enum {
+  BYS_SEP_IMM,  // `SEP #$20 : LDA #imm : STA $2132`, to its write
+  BYS_REP_LDX,  // `REP #$20 : LDX #8`
+  BYS_COPY,     // `LDA $E6A5,X : STA $7E6DA6,X : DEX : DEX : BPL`
+  BYS_TAKEN,    // ...taken
+  BYS_HDMA,     // `LDA #$20 : STA $136E`
+  BYS_STZ,      // `STZ $136E`
+  BYS_REP,      // `REP #$20`
+  BYS_BLOCK_COUNT
+};
+
+void bystander_dim(Wram* w, const Rom* rom, PortCpu* c, HwTrace* t);
+void bystander_lit(Wram* w, PortCpu* c, HwTrace* t);
 
 // Can `bystander_frame` take this pass? Not a list longer than there is room
 // for, nor a record outside the WRAM the thread's bank mirrors. It only looks.

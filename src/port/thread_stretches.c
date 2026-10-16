@@ -8,7 +8,7 @@
 #include "port/bolt.h"
 #include "port/fishman.h"
 #include "port/walk.h"              // W_WALK_SQUARES
-#include "port/mainloop.h"
+#include "port/mainloop.h"         // W_PLAYERS_OUT
 #include "port/boss_thread.h"       // the figure's page
 #include "port/bossbg.h"            // W_BOSS_BG_ONE_SRC
 #include "port/bystander.h"
@@ -83,6 +83,8 @@ const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
     {0x81cd05u, 0xcd1f},  // a slime killed: its last pictures
     {0x80857eu, 0x0002},  // the level's ending: the second loop's first sleep
     {0x808a00u, 0x001e},  // the game over's first sleep, half a second
+    {0x80d9acu, 0x0005},  // the monster potion's sound
+    {0x82de4fu, 0x000a},  // the bystander's ten frames, a `WAI` each
 };
 
 const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS] = {0x9533, 0x9538, 0x953d,
@@ -376,6 +378,10 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
              wram_r16(w, (uint16_t)(c->s + 3)) == FIGURE_START_RETURN &&
              c->a < 0x1f00;
     }
+    case TS_NEEDS_PLAYER_LOAD:
+      // `SBC #$1C : BMI` to itself, below nought.
+      return ((uint16_t)(wram_r16(w, W_SPAWN_LOAD) - PLAYER_LOAD) & 0x8000u) ==
+             0;
     case TS_NEEDS_SAUCER_AIMED:
       return wram_r16(w, (uint16_t)(c->s + 1)) == SAUCER_START_RETURN &&
              c->x < 0x1f00;
@@ -3598,6 +3604,153 @@ void bystander_step(Wram* w, const Rom* rom, PortCpu* c,
   c->pc = BYSTANDER_SAY_PC;
 }
 
+// `$82:DDA7`, with a player in the box.
+void bystander_meets(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  // `LDA $7E6DB0 : SEC : SBC $0020 : BPL : EOR #$FFFF : INC`.
+  set_c(c, true);
+  lda(c, sbc16(c, wram_r16(w, W_BYSTANDER_MET_AT), wram_r16(w, W_FRAME_COUNT)));
+  ran(k, TS_BYSTANDER_MEETS);
+  if (c->a & 0x8000u) {
+    lda(c, (uint16_t)((c->a ^ 0xffffu) + 1));
+    ran(k, TS_BYSTANDER_NEGATED);
+  } else {
+    ran(k, TS_TAKEN);
+  }
+  cmp16(c, c->a, BYSTANDER_MEET_GAP);
+  ran(k, TS_BYSTANDER_GAP);
+  if (c->a < BYSTANDER_MEET_GAP) {
+    PORT_COVER(bystander_too_soon);
+    c->pc = BYSTANDER_TOO_SOON_PC;
+    return;
+  }
+  PORT_COVER(bystander_meets);
+  ran(k, TS_TAKEN);
+  lda(c, wram_r16(w, W_FRAME_COUNT));
+  wram_w16(w, W_BYSTANDER_MET_AT, c->a);
+  wram_w16(w, W_PLAYER_FLAG, 0);
+  wram_w16(w, W_PLAYER_FLAG + 2, 0);
+  lda(c, BYSTANDER_MEETS_TICKS);
+  ran(k, TS_BYSTANDER_KEPT);
+  c->pc = BYSTANDER_MEETS_SLEEP_PC;
+}
+
+// `$82:DDCF` and `$82:DDD6`: each player's side of the panel.
+void bystander_hushed(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  ldx(c, 0x0000);
+  ran(k, TS_BYSTANDER_LDX);
+  c->pc = BYSTANDER_HUSH_CALL_PC;
+}
+
+void bystander_hushed_2(Wram* w, const Rom* rom, PortCpu* c,
+                        ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  ldx(c, 0x0002);
+  ran(k, TS_BYSTANDER_LDX);
+  c->pc = BYSTANDER_HUSH_2_CALL_PC;
+}
+
+// `$82:DE31`: the pads kept, and the other of its two pictures.
+static void bystander_flips(Wram* w, const Rom* rom, PortCpu* c,
+                            ThreadStretchWork* k) {
+  lda(c, wram_r16(w, W_JOY_RAW));
+  set_page(w, c, BYSTANDER_DP_PADS, c->a);
+  lda(c, wram_r16(w, W_JOY_RAW + 2));
+  set_page(w, c, BYSTANDER_DP_PADS + 2, c->a);
+  lda(c, page(w, c, BYSTANDER_DP_FLIP) ^ 0x0001u);
+  set_page(w, c, BYSTANDER_DP_FLIP, c->a);
+  ldy(c, asl16(c, c->a));
+  ldx(c, page(w, c, BYSTANDER_DP_SLOT));
+  lda(c, bus_r16(w, rom, (uint32_t)c->db << 16 |
+                             (uint16_t)(page(w, c, BYSTANDER_DP_PICTURE) + c->y)));
+  wram_w16(w, (uint16_t)(c->x + ACTOR_META), c->a);
+  ran(k, TS_BYSTANDER_FLIP);
+  c->pc = BYSTANDER_FLIP_CALL_PC;
+}
+
+// `$82:DE2F`, its words up: the first picture of the two next.
+void bystander_said(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  set_page(w, c, BYSTANDER_DP_FLIP, 0);
+  ran(k, TS_BYSTANDER_SAID);
+  bystander_flips(w, rom, c, k);
+}
+
+// `$82:DEF7`, after a `WAI`: one frame fewer.
+void wait_frames(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  lda(c, (uint16_t)(c->a - 1));
+  ran(k, TS_WAIT_FRAMES);
+  if (c->a != 0) {
+    PORT_COVER(wait_frames_more);
+    ran(k, TS_TAKEN);
+    c->pc = WAIT_FRAMES_WAI_PC;
+    return;
+  }
+  PORT_COVER(wait_frames_done);
+  c->pc = WAIT_FRAMES_RTL_PC;
+}
+
+// `$82:DE56`, ten frames on: neither pad changed, and the pictures go on;
+// or one did, and its first picture is put back.
+void bystander_looked(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  const uint16_t first = wram_r16(w, W_JOY_RAW);
+  lda(c, first);
+  cmp16(c, first, page(w, c, BYSTANDER_DP_PADS));
+  ran(k, TS_BYSTANDER_LOOKED);
+  bool same = first == page(w, c, BYSTANDER_DP_PADS);
+  if (same) {
+    const uint16_t second = wram_r16(w, W_JOY_RAW + 2);
+    lda(c, second);
+    cmp16(c, second, page(w, c, BYSTANDER_DP_PADS + 2));
+    ran(k, TS_BYSTANDER_LOOKED_B);
+    same = second == page(w, c, BYSTANDER_DP_PADS + 2);
+    if (same) {
+      PORT_COVER(bystander_watched);
+      ran(k, TS_TAKEN);
+      bystander_flips(w, rom, c, k);
+      return;
+    }
+  } else {
+    ran(k, TS_TAKEN);
+  }
+  PORT_COVER(bystander_left_be);
+  ldy(c, page(w, c, BYSTANDER_DP_SLOT));
+  ldx(c, 0x0000);
+  lda(c, bus_r16(w, rom, (uint32_t)c->db << 16 |
+                             page(w, c, BYSTANDER_DP_PICTURE)));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META), c->a);
+  ran(k, TS_BYSTANDER_DONE);
+  c->pc = BYSTANDER_DONE_CALL_PC;
+}
+
+// `$82:DD64`, back from what it showed: five ticks, or its end.
+void bystander_back(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, BYSTANDER_DP_END));
+  ran(k, TS_BYSTANDER_BACK);
+  if (c->a == 0) {
+    PORT_COVER(bystander_back_slept);
+    ran(k, TS_TAKEN);
+    lda(c, BYSTANDER_YIELD_TICKS);
+    ran(k, TS_LDA_IMM);
+    c->pc = BYSTANDER_YIELD_PC;
+    return;
+  }
+  PORT_COVER(bystander_back_ended);
+  lda(c, page(w, c, BYSTANDER_DP_SLOT));
+  ran(k, TS_BYSTANDER_END);
+  c->pc = BYSTANDER_END_PC;
+}
+
 // --- the seeker's states that sleep ------------------------------------------
 
 // The loop, from a state's `RTS`: the sleep, or with `$2E` set its end.
@@ -4204,6 +4357,295 @@ static void jsl_and_back(Wram* w, PortCpu* c, uint16_t jsl_at) {
   push16(w, c, (uint16_t)(jsl_at + 3));
   pull16(w, c);
   pull8(w, c);
+}
+
+// --- the monster potion -----------------------------------------------------
+
+// `$80:D9B3`: the change's pictures, by the player.
+void monster_pictured(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  ldx(c, page(w, c, POSE_DP_PICTURES_ROW));
+  lda(c, rom_word(rom, MONSTER_PICTURES + c->x));
+  ran(k, TS_MONSTER_PICTURES);
+  c->pc = MONSTER_PICTURES_CALL_PC;
+}
+
+// `$80:D9BC`, after them: the monster's words, and the swap.
+void monster_begun(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(monster_begun);
+  set_page(w, c, MONSTER_DP_FRAMES_LEFT, MONSTER_FRAMES);
+  set_page(w, c, POSE_DP_PICTURES_SET, 0x0001);
+  set_page(w, c, PSN_DP_FIRE_A, 0);
+  set_page(w, c, PSN_DP_FIRE_B, 0);
+  set_page(w, c, PSN_DP_T3_TAIL, 0);
+  set_page(w, c, PSN_DP_DIR_HELD, MONSTER_FACING);
+  set_page(w, c, PSN_DP_DIR, 0);
+  set_page(w, c, PLAYER_DP_STATE, PLAYER_STATE_MONSTER);
+  set_page(w, c, FLASHING_DP_ENDS_BY, MONSTER_ENDS_BY);
+  c->a = MONSTER_WEAPON;
+  ldy(c, MONSTER_ITEM);
+  ran(k, TS_MONSTER_BEGUN);
+  c->pc = MONSTER_SWAP_CALL_PC;
+}
+
+// --- a player out by the exit -----------------------------------------------
+
+// `$80:FB00`: the player's weight off the level's load, to the `JSR` that
+// leaves them untouchable. The `BMI` after is not taken: below nought it
+// spins, and `TS_NEEDS_PLAYER_LOAD` turns that down.
+void player_left(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  set_c(c, true);
+  lda(c, sbc16(c, wram_r16(w, W_SPAWN_LOAD), PLAYER_LOAD));
+  wram_w16(w, W_SPAWN_LOAD, c->a);
+  ran(k, TS_LEFT_LOAD);
+  ran(k, TS_BRANCH);
+  c->pc = PLAYER_LEFT_CALL_PC;
+}
+
+// `$80:FAF6`: the state ended, by the routine at `$72`, if it has one.
+void player_leaves(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, page(w, c, FLASHING_DP_ENDS_BY));
+  ran(k, TS_LEAVE_ENDS_ASK);
+  if (c->a == 0) {
+    PORT_COVER(player_leaves_as_is);
+    ran(k, TS_TAKEN);
+    player_left(w, rom, c, k);
+    return;
+  }
+  // `PEA $FAFF : DEC : PHA : RTS`.
+  PORT_COVER(player_leaves_ended);
+  push16(w, c, PLAYER_LEAVES_BACK);
+  lda(c, (uint16_t)(c->a - 1));
+  push16(w, c, c->a);
+  ran(k, TS_LEAVE_ENDS);
+  c->pc = PLAYER_LEAVES_RTS_PC;
+}
+
+// `$80:FB18`, after the rest: their side of the panel.
+void player_left_panel(Wram* w, const Rom* rom, PortCpu* c,
+                       ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, PLAYER_DP_INDEX));
+  ran(k, TS_LEFT_PANEL);
+  c->pc = PLAYER_LEFT_PANEL_CALL_PC;
+}
+
+// `$80:FB1E`: a picture of nothing, and the player out.
+void player_left_shown(Wram* w, const Rom* rom, PortCpu* c,
+                       ThreadStretchWork* k) {
+  (void)rom;
+  ldy(c, page(w, c, POSE_DP_RECORD));
+  lda(c, PLAYER_LEFT_PICTURE);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_META), c->a);
+  ldx(c, page(w, c, PLAYER_DP_INDEX));
+  lda(c, 0x0001);
+  wram_w16(w, (uint16_t)(W_PLAYERS_OUT + c->x), c->a);
+  lda(c, PLAYER_LEFT_TICKS);
+  ran(k, TS_LEFT_SHOWN);
+  c->pc = PLAYER_LEFT_SLEEP_PC;
+}
+
+// `$80:FB35`: with a record for each player the two words differ from the
+// first alone, and the player's is let go. Then the long sleep.
+void player_gone(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t first = wram_r16(w, W_PLAYER_RECORDS);
+  set_c(c, false);
+  lda(c, adc16(c, first, wram_r16(w, W_PLAYER_RECORDS + 2)));
+  cmp16(c, c->a, first);
+  ran(k, TS_GONE_RECORDS);
+  if (c->a == first) {
+    PORT_COVER(player_gone_alone);
+    ran(k, TS_TAKEN);
+  } else {
+    PORT_COVER(player_gone_let_go);
+    ldx(c, page(w, c, PLAYER_DP_INDEX));
+    lda(c, 0x0000);
+    wram_w16(w, (uint16_t)(W_PLAYER_RECORDS + c->x), c->a);
+    ran(k, TS_GONE_CLEARED);
+  }
+  lda(c, PLAYER_GONE_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = PLAYER_GONE_SLEEP_PC;
+}
+
+// `$80:DA54`: the monster ended. With its routine still at `$72` it is the
+// exit asking, and there is nothing to show: its words cleared, and to the
+// `JSR` that gives the hands back.
+void monster_ends(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, FLASHING_DP_ENDS_BY));
+  ran(k, TS_MONSTER_ENDS_ASK);
+  if (c->a == 0) {
+    c->pc = MONSTER_ENDS_SHOWN_PC;
+    return;
+  }
+  PORT_COVER(monster_ends_unshown);
+  ran(k, TS_TAKEN);
+  set_page(w, c, MONSTER_DP_PUNCH, 0);
+  set_page(w, c, POSE_DP_PICTURES_SET, 0);
+  set_page(w, c, PLAYER_DP_STATE, 0);
+  set_page(w, c, FLASHING_DP_ENDS_BY, 0);
+  ran(k, TS_MONSTER_ENDED);
+  c->pc = MONSTER_ENDS_CALL_PC;
+}
+
+// --- the monster's punch, standing ------------------------------------------
+
+// `JSR $F051` at `jsr_at`: the fist's box. With the cycle at nought it only
+// returns; otherwise its four sides and who is punching go to page zero, and
+// it stops at the `JSL` that tells those in it.
+static void punch_told(Wram* w, const Rom* rom, PortCpu* c,
+                       ThreadStretchWork* k, uint16_t jsr_at) {
+  push16(w, c, (uint16_t)(jsr_at + 2));
+  ran(k, TS_JSR);
+  lda(c, page(w, c, POSE_DP_CYCLE));
+  ran(k, TS_PUNCH_TOLD_HEAD);
+  if (c->a == 0) {
+    PORT_COVER(punch_told_nobody);
+    ran(k, TS_TAKEN);
+    pull16(w, c);
+    ran(k, TS_RTS);
+    c->pc = (c->pc & 0xff0000u) | (uint16_t)(jsr_at + 3);
+    return;
+  }
+  PORT_COVER(punch_told);
+  c->a = page(w, c, PSN_DP_DIR_HELD);
+  c->a = asl16(c, asl16(c, c->a));
+  ldx(c, c->a);
+  const uint32_t boxes = (c->pc & 0xff0000u) | POSE_PUNCH_BOXES;
+  static const uint16_t SIDES[] = {W_BOX_LEFT, W_BOX_RIGHT, W_BOX_TOP,
+                                   W_BOX_BOTTOM};
+  for (int side = 0; side < 4; side++) {
+    // `LDA $30 : PHA`, the left, `PLA`, the right; then the same for `$32`.
+    if (side % 2 == 0) {
+      lda(c, page(w, c, side == 0 ? STEP_DP_X : STEP_DP_Y));
+      push16(w, c, c->a);
+    } else {
+      lda(c, pull16(w, c));
+    }
+    set_c(c, false);
+    lda(c, adc16(c, c->a,
+                 rom_word(rom, boxes + (uint16_t)(c->x + 2 * side))));
+    wram_w16(w, SIDES[side], c->a);
+  }
+  ldx(c, page(w, c, POSE_DP_PICTURES_ROW));
+  lda(c, rom_word(rom, ((c->pc & 0xff0000u) | POSE_PUNCH_IDS) + c->x));
+  wram_w16(w, W_BOX_ID, c->a);
+  ran(k, TS_PUNCH_BOX);
+  c->pc = PUNCH_TELL_PC;
+}
+
+// `$80:EF82`, back from the sound: the first picture's box.
+void punch_first(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  punch_told(w, rom, c, k, PUNCH_FIRST_JSR);
+}
+
+// `$80:EF8F`, four ticks on: the second picture.
+void punch_again(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, POSE_DP_PUNCH_PICTURE));
+  set_c(c, false);
+  lda(c, adc16(c, c->a, PUNCH_NEXT_PICTURE));
+  ran(k, TS_PUNCH_AGAIN);
+  c->pc = PUNCH_SHOW_CALL_PC;
+}
+
+// `$80:EF98`, its picture shown: the cycle at two, and its box.
+void punch_second(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, PUNCH_SECOND_CYCLE);
+  set_page(w, c, POSE_DP_CYCLE, c->a);
+  ran(k, TS_PUNCH_SECOND);
+  punch_told(w, rom, c, k, PUNCH_SECOND_JSR);
+}
+
+// `$80:EFAA`, four ticks on: `INC $18`, and the box again.
+void punch_third(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  const uint16_t cycle = (uint16_t)(page(w, c, POSE_DP_CYCLE) + 1);
+  set_page(w, c, POSE_DP_CYCLE, cycle);
+  set_nz16(c, cycle);
+  ran(k, TS_PUNCH_THIRD);
+  punch_told(w, rom, c, k, PUNCH_THIRD_JSR);
+}
+
+// `$80:EFB9`, four ticks on: the cycle back to nought, and the pose's `RTS`.
+void punch_over(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, POSE_DP_CYCLE, 0);
+  ran(k, TS_PUNCH_OVER);
+  c->pc = PUNCH_RTS_PC;
+}
+
+// --- the fourth's tile, broken open -----------------------------------------
+
+// `$80:EA02`, back from the block, and `$82:DC57`: what the tile leaves, by
+// a byte at random.
+void fourth_prize(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  set_c(c, false);
+  ldx(c, adc16(c, page(w, c, WALK_DP_X), FOURTH_PRIZE_ACROSS));
+  set_c(c, true);
+  ldy(c, sbc16(c, page(w, c, WALK_DP_Y), FOURTH_PRIZE_UP));
+  lda(c, page(w, c, WALK_DP_FACING));
+  push8(w, c, (uint8_t)(c->pc >> 16));
+  push16(w, c, FOURTH_PRIZE_RETURN);
+  ran(k, TS_FOURTH_BACK);
+  push16(w, c, c->x);
+  wram_w16(w, W_FOURTH_FACING, c->a);
+  c->pc = FOURTH_PRIZE_DRAW_PC;
+  jsl_and_back(w, c, (uint16_t)FOURTH_PRIZE_DRAW_PC);
+  ran(k, TS_FOURTH_DRAW);
+  draw(w, c, k);
+  ldx(c, c->a);
+  lda(c, rom_word(rom, FOURTH_PRIZES + c->x));
+  ldx(c, pull16(w, c));
+  lda(c, c->a & 0x00ffu);
+  cmp16(c, c->a, FOURTH_PRIZE_NONE);
+  ran(k, TS_FOURTH_PRIZE);
+  if (c->a == FOURTH_PRIZE_NONE) {
+    PORT_COVER(fourth_prize_none);
+    ran(k, TS_TAKEN);
+    c->pc = FOURTH_PRIZE_RTL_PC;
+    return;
+  }
+  cmp16(c, c->a, FOURTH_PRIZE_BESIDE);
+  ran(k, TS_FOURTH_NOT_NONE);
+  if (c->a != FOURTH_PRIZE_BESIDE) {
+    PORT_COVER(fourth_prize_item);
+    c->pc = FOURTH_PRIZE_ITEM_PC;
+    return;
+  }
+  ran(k, TS_TAKEN);
+  // `CMP #6 : BEQ : BCC` and `CMP #$0E : BCC`: not between the two.
+  const uint16_t facing = wram_r16(w, W_FOURTH_FACING);
+  lda(c, facing);
+  cmp16(c, facing, FOURTH_FACING_LOW);
+  ran(k, TS_FOURTH_FACING);
+  const bool low = facing <= FOURTH_FACING_LOW;
+  if (facing != FOURTH_FACING_LOW) ran(k, TS_BRANCH);
+  if (low) ran(k, TS_TAKEN);
+  if (!low) {
+    cmp16(c, facing, FOURTH_FACING_HIGH);
+    ran(k, TS_FOURTH_FACING_B);
+    if (facing < FOURTH_FACING_HIGH) {
+      PORT_COVER(fourth_prize_away);
+      ran(k, TS_TAKEN);
+      c->pc = FOURTH_PRIZE_RTL_PC;
+      return;
+    }
+  }
+  PORT_COVER(fourth_prize_beside);
+  set_c(c, true);
+  lda(c, sbc16(c, c->x, FOURTH_BESIDE_LEFT));
+  set_page(w, c, 0x00, c->a);
+  set_c(c, true);
+  lda(c, sbc16(c, c->y, FOURTH_BESIDE_UP));
+  set_page(w, c, 0x02, c->a);
+  c->a = FOURTH_BESIDE_THREAD;
+  ldy(c, FOURTH_BESIDE_THREAD_BANK);
+  ran(k, TS_FOURTH_BESIDE);
+  c->pc = FOURTH_PRIZE_THREAD_PC;
 }
 
 // The four words of an upload for `boss_bg_queue_one`, in the order both

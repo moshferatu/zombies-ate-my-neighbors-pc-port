@@ -412,7 +412,8 @@ static ItemUseEnd item_kind(uint16_t held) {
     case ITEM_SPEED_SHOES: return ITEM_USE_SPEED;
     case ITEM_FIRST_AID: return ITEM_USE_HEALED;
     case ITEM_DECOY: return ITEM_USE_DECOY;
-    case 2: case 3: case 4: case 5: case 8: return ITEM_USE_UNPORTED;
+    case ITEM_MONSTER: return ITEM_USE_MONSTER;
+    case 3: case 4: case 5: case 8: return ITEM_USE_UNPORTED;
     default: return ITEM_USE_NOTHING;
   }
 }
@@ -454,6 +455,7 @@ static void use_one(Wram* w, const Rom* rom, uint16_t dp, ItemUseLog* u) {
   wram_w16(w, at, left);
   use_nz(u, left);
   u->c = carry;
+  u->v = overflow;
   if (left != 0) return;
   PORT_COVER(item_use_ran_out);
   u->ran_out = true;
@@ -579,6 +581,26 @@ void item_use(Wram* w, const Rom* rom, uint16_t dp, uint16_t y,
       use_one(w, rom, dp, u);
       return;
     }
+    case ITEM_USE_MONSTER:
+      // `$80:EB87`: the ground where the player stands, as an enemy's is.
+      terrain_blocked_enemy(w, wram_r16(w, dp + ITEM_USE_DP_X),
+                            wram_r16(w, dp + ITEM_USE_DP_Y), &u->ahead);
+      u->a = u->ahead.a;
+      u->x = u->ahead.x;
+      u->y = u->ahead.y;
+      u->c = u->ahead.blocked;
+      u->n = (dp & 0x8000u) != 0;  // the `PLD`'s
+      u->z = dp == 0;
+      if (u->ahead.blocked) {
+        PORT_COVER(item_use_monster_blocked);
+        u->end = ITEM_USE_MONSTER_BLOCKED;
+        return;
+      }
+      // `JSR $EB48 : STZ $24 : JMP $D9A3`.
+      PORT_COVER(item_use_monster);
+      use_one(w, rom, dp, u);
+      wram_w16(w, dp + PSN_DP_DIR, 0);
+      return;
     default:
       u->end = ITEM_USE_UNPORTED;
       return;
@@ -595,6 +617,26 @@ bool player_state_normal_supported(const Wram* w, const Rom* rom,
          use_allowed(w, rom, dp) != ITEM_USE_UNPORTED;
 }
 
+// $80:D2C9. Four countdowns. They write A, N and Z and **never carry**, so
+// whatever set carry before is what the caller gets.
+static void psn_countdowns(Wram* w, uint16_t dp, PlayerStateRegs* out) {
+  out->last_expired = false;
+  psn_countdown(w, dp + PSN_DP_T0, out, 0);
+  psn_countdown(w, dp + PSN_DP_T1, out, 1);
+  psn_countdown(w, dp + PSN_DP_T2, out, 2);
+  if (psn_countdown(w, dp + PSN_DP_T3, out, 3)) {
+    // `DEC $56 : BNE : STZ $54` -- `STZ` sets no flag, so the `DEC`'s stand.
+    PORT_COVER(psn_t3_expired);
+    out->last_expired = true;
+    wram_w16(w, dp + PSN_DP_T3_TAIL, 0);
+  }
+}
+
+void player_state_normal_used(Wram* w, uint16_t dp, PlayerStateRegs* out) {
+  PORT_COVER(psn_used_rest);
+  psn_countdowns(w, dp, out);
+}
+
 void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
                          PlayerStateRegs* out) {
   // $80:D1FF, and it is the first instruction: the ground, before a button.
@@ -606,6 +648,7 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
   out->press[PSN_PRESS_SPAWN] = PSN_PRESS_UNASKED;
   out->swallowed = false;
   out->unported = false;
+  out->stopped = false;
   out->spawn_slot = -1;
   out->last_expired = false;
   out->a = floor.a;
@@ -794,6 +837,11 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
     out->n = out->use.n;
     out->z = out->use.z;
     out->c = out->use.c;
+    if (out->use.end == ITEM_USE_MONSTER) {
+      // The change sleeps, so the frame stops at its `JMP`.
+      out->stopped = true;
+      return;
+    }
   } else if (psn_pressed(w, dp, buttons, PSN_BTN_SPAWN, out,
                          PSN_PRESS_SPAWN)) {
     // $80:D29C. A flag that has to be clear, and is cleared when it is not, so
@@ -833,15 +881,5 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
     PORT_COVER(psn_press_none);
   }
 
-  // $80:D2C9. Four countdowns. They write A, N and Z and **never carry**, so
-  // whatever set carry above is what the caller gets.
-  psn_countdown(w, dp + PSN_DP_T0, out, 0);
-  psn_countdown(w, dp + PSN_DP_T1, out, 1);
-  psn_countdown(w, dp + PSN_DP_T2, out, 2);
-  if (psn_countdown(w, dp + PSN_DP_T3, out, 3)) {
-    // `DEC $56 : BNE : STZ $54` -- `STZ` sets no flag, so the `DEC`'s stand.
-    PORT_COVER(psn_t3_expired);
-    out->last_expired = true;
-    wram_w16(w, dp + PSN_DP_T3_TAIL, 0);
-  }
+  psn_countdowns(w, dp, out);
 }

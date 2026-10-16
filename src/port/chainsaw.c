@@ -583,9 +583,10 @@ ChainsawFate chainsaw_frame(Wram* w, const Rom* rom, uint16_t page, bool carry,
 }
 
 void chainsaw_cut_pass(Wram* w, PortCpu* cpu) {
-  PORT_COVER(chainsaw_cut_pass);
   push16(w, cpu, CHAINSAW_PASS_RETURN);
   const uint16_t state = wram_r16(w, (uint16_t)(cpu->d + CHAINSAW_DP_STATE));
+  PORT_COVER_IF(state == CHAINSAW_STATE_CUT, chainsaw_cut_pass,
+                chainsaw_stagger_pass);
   cpu->a = (uint16_t)(state - 1);
   set_nz16(cpu, cpu->a);
   push16(w, cpu, cpu->a);

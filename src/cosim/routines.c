@@ -1376,6 +1376,8 @@ enum {
   USE_DECOY_SPAWN,  // $80:EB7A-$EB83, to the spawn's `JSL`
   USE_JMP_LESS,     // `JMP $EB48`, and the `BRA` there after the sound
   USE_LESS,         // $80:EB48-$EB5F, one fewer
+  USE_MONSTER,      // $80:EB87-$EB8E, to the ground's `JSL`
+  USE_MONSTER_ON,   // $80:EB94-$EB98, `STZ $24 : JMP $D9A3`
   USE_RUNS
 };
 static const CosimRun USE_RUN[USE_RUNS] = {
@@ -1387,6 +1389,7 @@ static const CosimRun USE_RUN[USE_RUNS] = {
     [USE_DECOY_BCS] = {12, 2, 0},
     [USE_DECOY_SPAWN] = {90, 10, 0}, [USE_JMP_LESS] = {18, 3, 0},
     [USE_LESS] = {278, 24, 2},
+    [USE_MONSTER] = {110, 8, 2},     [USE_MONSTER_ON] = {46, 5, 1},
 };
 
 static int item_use_cycles(const ItemUseLog* u, const Rom* rom, bool fast,
@@ -1442,6 +1445,28 @@ static int item_use_cycles(const ItemUseLog* u, const Rom* rom, bool fast,
       calls += thread_spawn_cycles(u->slot, rom, fast);
       run_add(&own, &USE_RUN[USE_JMP_LESS], 1);
       break;
+    case ITEM_USE_MONSTER_BLOCKED:
+    case ITEM_USE_MONSTER:
+      run_add(&own, &USE_RUN[USE_MONSTER], 1);
+      calls += terrain_enemy_cycles(&u->ahead, fast);
+      run_add(&own, &USE_RUN[USE_DECOY_BCS], 1);
+      if (u->end == ITEM_USE_MONSTER_BLOCKED) {
+        run_add(&own, &RUN_TAKEN, 1);
+        break;
+      }
+      // `JSR $EB48`, which comes back by its own `RTS` or by the next
+      // item's, and on to the `JMP` the frame stops at.
+      run_add(&own, &RUN_JSR, 1);
+      run_add(&own, &USE_RUN[USE_LESS], 1);
+      if (u->ran_out) {
+        run_add(&own, &USE_RUN[USE_JMP_LESS], 1);
+        calls += select_cycles(&u->next, false, fast, unaligned);
+      } else {
+        run_add(&own, &RUN_TAKEN, 1);
+        run_add(&own, &RUN_RTS, 1);
+      }
+      run_add(&own, &USE_RUN[USE_MONSTER_ON], 1);
+      return calls + cosim_run_cycles_dp(&own, fast, unaligned);
     default:  // `ITEM_USE_NOTHING`
       break;
   }
@@ -1477,6 +1502,22 @@ static const CosimRun PSN_RUN_LAST = {62, 4, 1};      // DEC $56 : BNE
 static const CosimRun PSN_RUN_STZ = {28, 2, 1};
 static const CosimRun PSN_RUN_SPAWN = {280, 28, 4};   // $80:D2A8-$D2C1
 static const CosimRun PSN_RUN_SPAWN_SOUND = {72, 7, 0};  // LDA # : JSL
+
+// `$80:D2C9`: the four countdowns, and the `RTS`.
+static void psn_countdowns_bill(CosimRun* own, const PlayerStateRegs* r) {
+  for (int i = 0; i < PSN_COUNTDOWNS - 1; i++) {
+    run_add(own, &PSN_RUN_TICK, 1);
+    run_add(own, r->counting[i] ? &PSN_RUN_DEC : &RUN_TAKEN, 1);
+  }
+  run_add(own, &PSN_RUN_TICK, 1);
+  if (!r->counting[PSN_COUNTDOWNS - 1]) {
+    run_add(own, &RUN_TAKEN, 1);
+  } else {
+    run_add(own, &PSN_RUN_LAST, 1);
+    run_add(own, r->last_expired ? &PSN_RUN_STZ : &RUN_TAKEN, 1);
+  }
+  run_add(own, &RUN_RTS, 1);
+}
 
 static int psn_cycles(const PlayerStateRegs* r, const Rom* rom, bool fast,
                       bool unaligned) {
@@ -1541,6 +1582,9 @@ static int psn_cycles(const PlayerStateRegs* r, const Rom* rom, bool fast,
           case PSN_PRESS_USE:
             run_add(&own, &RUN_JSR, 1);
             calls += item_use_cycles(&r->use, rom, fast, unaligned);
+            if (r->stopped)
+              return calls + floor_cycles(&r->floor, fast, unaligned) +
+                     cosim_run_cycles_dp(&own, fast, unaligned);
             run_add(&own, &RUN_BRA, 1);
             break;
           default:
@@ -1561,18 +1605,7 @@ static int psn_cycles(const PlayerStateRegs* r, const Rom* rom, bool fast,
     }
   }
 
-  for (int i = 0; i < PSN_COUNTDOWNS - 1; i++) {
-    run_add(&own, &PSN_RUN_TICK, 1);
-    run_add(&own, r->counting[i] ? &PSN_RUN_DEC : &RUN_TAKEN, 1);
-  }
-  run_add(&own, &PSN_RUN_TICK, 1);
-  if (!r->counting[PSN_COUNTDOWNS - 1]) {
-    run_add(&own, &RUN_TAKEN, 1);
-  } else {
-    run_add(&own, &PSN_RUN_LAST, 1);
-    run_add(&own, r->last_expired ? &PSN_RUN_STZ : &RUN_TAKEN, 1);
-  }
-  run_add(&own, &RUN_RTS, 1);
+  psn_countdowns_bill(&own, r);
   return calls + floor_cycles(&r->floor, fast, unaligned) +
          cosim_run_cycles_dp(&own, fast, unaligned);
 }
@@ -4780,7 +4813,57 @@ static bool guard_player_state_normal(Wram* scratch, const Rom* rom,
   if (!player_state_normal_supported(scratch, rom, in->d)) return false;
   PlayerStateRegs r;
   player_state_normal(scratch, rom, in->d, &r);
-  return !r.unported;
+  return !r.unported && !r.stopped;
+}
+
+// The same frame drinking the monster potion, which the row above turns
+// down: it stops at `JMP $D9A3`, with the third button's `JSR` under it.
+static bool guard_player_potion(Wram* scratch, const Rom* rom,
+                                const CosimRegs* in) {
+  if (!player_state_normal_supported(scratch, rom, in->d)) return false;
+  PlayerStateRegs r;
+  player_state_normal(scratch, rom, in->d, &r);
+  return !r.unported && r.stopped;
+}
+
+static void shim_player_potion(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  PlayerStateRegs r;
+  player_state_normal(w, rom, in->d, &r);
+  cosim_cost(psn_cycles(&r, rom, in->fastrom, (in->d & 0x00ffu) != 0));
+  wram_w16(w, (uint16_t)(in->s - 1), PSN_USE_RETURN);
+  out->s = (uint16_t)(in->s - 2);
+  out->pc = ITEM_MONSTER_PC;
+  out->a = r.a;
+  out->x = r.x;
+  out->y = r.y;
+  out->regs = COSIM_REG_A | COSIM_REG_X | COSIM_REG_Y;
+  out->p = (uint8_t)(in->p & ~(PORT_P_N | PORT_P_Z | PORT_P_C | PORT_P_V));
+  if (r.n) out->p |= PORT_P_N;
+  if (r.z) out->p |= PORT_P_Z;
+  if (r.c) out->p |= PORT_P_C;
+  if (r.use.v) out->p |= PORT_P_V;
+  out->p_keep = 0;
+}
+
+static const uint32_t PLAYER_POTION_EXITS[] = {ITEM_MONSTER_PC};
+
+// `$80:D28C`, the third button's `JSR` back: its `BRA`, the countdowns and
+// the `RTS`.
+static void shim_player_state_normal_used(Wram* w, const Rom* rom,
+                                          const CosimRegs* in,
+                                          CosimRegs* out) {
+  (void)rom;
+  PlayerStateRegs r = {0};
+  player_state_normal_used(w, in->d, &r);
+  CosimRun own = {0, 0, 0};
+  run_add(&own, &RUN_BRA, 1);
+  psn_countdowns_bill(&own, &r);
+  cosim_cost(cosim_run_cycles_dp(&own, in->fastrom, (in->d & 0x00ffu) != 0));
+  out->a = r.a;
+  out->n = r.n;
+  out->z = r.z;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z;
 }
 
 // ---------------------------------------------------------------------------
@@ -7082,6 +7165,10 @@ static const CosimRun WALK_DOOR_SOUND = {100, 8, 0};    // $E901-$E908
 static const CosimRun WALK_DOOR_KEY = {562, 43, 5};     // $E909-$E933
 static const CosimRun WALK_DOOR_BLOCK = {160, 10, 2};   // $E934-$E93D
 static const CosimRun WALK_DOOR_BLOCK_ROM = {156, 12, 2};
+// The fourth's tile: no items, the sound's `LDA : JSL`, and to the cell's
+// `JSL` with no key. Its block is the door's.
+static const CosimRun WALK_FOURTH_SOUND = {72, 7, 0};   // $E9CE-$E9D4
+static const CosimRun WALK_FOURTH_CELL = {406, 31, 4};  // $E9D5-$E9F3
 static const CosimRun WALK_SQUARE_AROUND = {494, 50, 1};
 // `$82:F4FF`, on page zero until its second `PLD`.
 static const CosimRun WALK_SQUARE_HEAD = {502, 41, 0};   // $F4FF-$F527
@@ -7177,12 +7264,18 @@ static int walk_reaction_cycles(const WalkReaction* did, const Rom* rom,
     } else {
       run_add(&own, &WALK_DOOR_LOOK, 1);
       calls += cosim_run_cycles(&TILE_ATTRS_RUN, in->fastrom);
-      if (did->opened) {
+      if (did->opened && did->kind == WALK_REACTION_FOURTH) {
+        run_add(&own, &WALK_FOURTH_SOUND, 1);
+        calls += cosim_run_cycles(&SFX_CALLEE_RUN, in->fastrom);
+        run_add(&own, &WALK_FOURTH_CELL, 1);
+      } else if (did->opened) {
         run_add(&own, &WALK_DOOR_ITEMS, 1);
         run_add(&own, &RUN_TAKEN, 1);
         run_add(&own, &WALK_DOOR_SOUND, 1);
         calls += cosim_run_cycles(&SFX_CALLEE_RUN, in->fastrom);
         run_add(&own, &WALK_DOOR_KEY, 1);
+      }
+      if (did->opened) {
         calls += cosim_run_cycles(&BLOCK_CELL_PTR, in->fastrom);
         run_add(&own, did->cell_in_rom ? &WALK_DOOR_BLOCK_ROM : &WALK_DOOR_BLOCK,
                 1);
@@ -9240,6 +9333,43 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     // Through the data bank, the record in WRAM.
     [TS_BREAKABLE_ENTER] = {138, 13, 0},
     [TS_LEVEL_ENDING_SPAWN] = {144, 16, 2},
+    [TS_MONSTER_PICTURES] = {64, 7, 1},
+    [TS_BYSTANDER_MEETS] = {98, 10, 0},
+    [TS_BYSTANDER_NEGATED] = {30, 4, 0},
+    [TS_BYSTANDER_GAP] = {30, 5, 0},
+    [TS_BYSTANDER_KEPT] = {160, 16, 0},
+    [TS_BYSTANDER_LDX] = {18, 3, 0},
+    [TS_BYSTANDER_SAID] = {28, 2, 1},
+    [TS_BYSTANDER_FLIP] = {336, 28, 6},
+    [TS_BYSTANDER_LOOKED] = {74, 7, 1},
+    [TS_BYSTANDER_LOOKED_B] = {74, 7, 1},
+    [TS_BYSTANDER_DONE] = {132, 12, 2},
+    [TS_BYSTANDER_BACK] = {40, 4, 1},
+    [TS_BYSTANDER_END] = {28, 2, 1},
+    [TS_WAIT_FRAMES] = {24, 3, 0},
+    [TS_LEAVE_ENDS_ASK] = {40, 4, 1},
+    [TS_LEAVE_ENDS] = {74, 5, 0},
+    [TS_LEFT_LOAD] = {98, 10, 0},
+    [TS_LEFT_PANEL] = {28, 2, 1},
+    [TS_LEFT_SHOWN] = {190, 19, 2},
+    [TS_GONE_RECORDS] = {126, 12, 0},
+    [TS_GONE_CLEARED] = {86, 8, 1},
+    [TS_MONSTER_ENDS_ASK] = {40, 4, 1},
+    [TS_MONSTER_ENDED] = {112, 8, 4},
+    [TS_PUNCH_TOLD_HEAD] = {40, 4, 1},
+    [TS_PUNCH_BOX] = {670, 59, 4},
+    [TS_PUNCH_AGAIN] = {58, 6, 1},
+    [TS_PUNCH_SECOND] = {46, 5, 1},
+    [TS_PUNCH_THIRD] = {50, 2, 1},
+    [TS_PUNCH_OVER] = {28, 2, 1},
+    [TS_MONSTER_BEGUN] = {378, 39, 9},
+    [TS_FOURTH_BACK] = {222, 20, 3},
+    [TS_FOURTH_DRAW] = {116, 8, 0},
+    [TS_FOURTH_PRIZE] = {130, 16, 0},
+    [TS_FOURTH_NOT_NONE] = {30, 5, 0},
+    [TS_FOURTH_FACING] = {64, 8, 0},
+    [TS_FOURTH_FACING_B] = {30, 5, 0},
+    [TS_FOURTH_BESIDE] = {176, 20, 2},
     [TS_BUBBLED] = {582, 47, 1},
     [TS_BUBBLE_OVER] = {346, 20, 1},
     [TS_BREAKABLE_MADE] = {786, 64, 10},
@@ -9506,8 +9636,26 @@ THREAD_STRETCHES(X)
 static const uint32_t TS_EXITS_ARGUMENT[] = {
     0x81d186u, 0x81d1b0u, 0x81d1dau, 0x82f4b4u, 0x808519u, 0x8199c5u,
     0x80d06cu, 0x81ec75u, 0x81f311u, 0x82e0b7u, 0x81e8c4u, 0x82df0du,
-    0x82df14u, 0x82df1bu, 0x82ec5du, 0x82950du, 0x82a874u, 0x8085beu, 0x8085c5u, 0x80ea19u, 0x80ef7eu, 0x80ef8bu, 0x80efa6u, 0x80efb5u, 0x81843eu, 0x81a474u, 0x81c6d5u, 0x81e503u, 0x81e596u, 0x81e8bdu, 0x81f1e9u, 0x81f9aeu, 0x82ef0eu, 0x82f27cu, 0x82f609u, 0x82f763u, 0x82f91bu, 0x81cd08u, 0x808581u, 0x808a03u};
+    0x82df14u, 0x82df1bu, 0x82ec5du, 0x82950du, 0x82a874u, 0x8085beu, 0x8085c5u, 0x80ea19u, 0x80ef7eu, 0x80ef8bu, 0x80efa6u, 0x80efb5u, 0x81843eu, 0x81a474u, 0x81c6d5u, 0x81e503u, 0x81e596u, 0x81e8bdu, 0x81f1e9u, 0x81f9aeu, 0x82ef0eu, 0x82f27cu, 0x82f609u, 0x82f763u, 0x82f91bu, 0x81cd08u, 0x808581u, 0x808a03u, 0x80d9afu, 0x82de52u};
 static const uint32_t TS_EXITS_SETTER[] = {0x81921au, 0x819255u};
+static const uint32_t TS_EXITS_BYSTANDER_MEETS[] = {
+    BYSTANDER_TOO_SOON_PC, BYSTANDER_MEETS_SLEEP_PC, BYSTANDER_HUSH_CALL_PC,
+    BYSTANDER_HUSH_2_CALL_PC, BYSTANDER_FLIP_CALL_PC, BYSTANDER_DONE_CALL_PC};
+static const uint32_t TS_EXITS_BYSTANDER_BACK[] = {BYSTANDER_YIELD_PC,
+                                                   BYSTANDER_END_PC};
+static const uint32_t TS_EXITS_WAIT_FRAMES[] = {WAIT_FRAMES_WAI_PC,
+                                                WAIT_FRAMES_RTL_PC};
+static const uint32_t TS_EXITS_MONSTER[] = {
+    MONSTER_PICTURES_CALL_PC, MONSTER_SWAP_CALL_PC, MONSTER_ENDS_SHOWN_PC,
+    MONSTER_ENDS_CALL_PC};
+static const uint32_t TS_EXITS_LEAVES[] = {
+    PLAYER_LEAVES_RTS_PC,      PLAYER_LEFT_CALL_PC, PLAYER_LEFT_PANEL_CALL_PC,
+    PLAYER_LEFT_SLEEP_PC,      PLAYER_GONE_SLEEP_PC};
+static const uint32_t TS_EXITS_PUNCH[] = {
+    PUNCH_TELL_PC, 0x80ef85u, 0x80efa0u, 0x80efafu, PUNCH_SHOW_CALL_PC,
+    PUNCH_RTS_PC};
+static const uint32_t TS_EXITS_FOURTH_PRIZE[] = {
+    FOURTH_PRIZE_ITEM_PC, FOURTH_PRIZE_THREAD_PC, FOURTH_PRIZE_RTL_PC};
 static const uint32_t TS_EXITS_WOLF[] = {
     WEREWOLF_NONE_PC, WEREWOLF_HOWL_CHECK_PC, WEREWOLF_HOWL_CALL_PC,
     WEREWOLF_MAKE_PC,
@@ -15112,11 +15260,11 @@ static void shim_chainsaw_frame(Wram* w, const Rom* rom, const CosimRegs* in,
 static const uint32_t CHAINSAW_FRAME_EXITS[] = {
     CHAINSAW_YIELD_PC, CHAINSAW_DEAD_PC, CHAINSAW_SWING_YIELD_PC};
 
-// `$81:9878` in the cut's state.
+// `$81:9878` in the cut's state, or the stagger's.
 static bool accepts_chainsaw_cut_pass(const Wram* w, const CosimRegs* in) {
+  const uint16_t state = wram_r16(w, (uint16_t)(in->d + CHAINSAW_DP_STATE));
   return chainsaw_page_ok(w, in) &&
-         wram_r16(w, (uint16_t)(in->d + CHAINSAW_DP_STATE)) ==
-             CHAINSAW_STATE_CUT;
+         (state == CHAINSAW_STATE_CUT || state == CHAINSAW_STATE_STAGGER);
 }
 
 static void shim_chainsaw_cut_pass(Wram* w, const Rom* rom,
@@ -15131,7 +15279,8 @@ static void shim_chainsaw_cut_pass(Wram* w, const Rom* rom,
 }
 
 static const uint32_t CHAINSAW_CUT_PASS_EXITS[] = {
-    (CHAINSAW_BANK << 16) | CHAINSAW_STATE_CUT};
+    (CHAINSAW_BANK << 16) | CHAINSAW_STATE_CUT,
+    (CHAINSAW_BANK << 16) | CHAINSAW_STATE_STAGGER};
 
 // `$81:9880`: what is left of a pass the ROM's state body took.
 static bool accepts_chainsaw_pass_shown(const Wram* w, const CosimRegs* in) {
@@ -17715,6 +17864,7 @@ static const CosimRun POSE_RUN_SB_BAND_B = {40, 4, 1};  // $80:D514-$D517
 static const CosimRun POSE_RUN_SB_DELAY = {40, 4, 1};  // $80:D518-$D51B
 static const CosimRun POSE_RUN_SB_6C = {40, 4, 1};  // $80:D51F-$D522
 static const CosimRun POSE_RUN_SB_PLAIN = {46, 5, 1};  // $80:D526-$D52A
+static const CosimRun POSE_RUN_PUNCH = {246, 20, 5};  // $80:EF67-$EF7A
 static const CosimRun POSE_RUN_SB_SHOW = {178, 15, 3};  // $80:D52B-$D539
 static const CosimRun POSE_RUN_SHOW_HEAD = {98, 9, 2};  // $80:F300-$F306
 static const CosimRun POSE_RUN_SHOW_ORA = {92, 8, 0};  // $80:F307-$F30E
@@ -17913,6 +18063,12 @@ static void pose_stand_begin_bill(PoseBill* b) {
     }
     pose_taken(b);
     pose_add(b, &POSE_RUN_SB_6C);
+    if (log->punch_begun) {
+      // `JMP $EF67`, to the sound.
+      pose_add(b, &POSE_RUN_JMP);
+      pose_add(b, &POSE_RUN_PUNCH);
+      return;
+    }
     pose_taken(b);
     pose_add(b, &POSE_RUN_SB_PLAIN);
   }
@@ -18027,6 +18183,19 @@ static void pose_walk_bill(PoseBill* b) {
   pose_step_bill(b);
 }
 
+// `$80:D711`, after the shot.
+static void pose_walk_firing_shot_bill(PoseBill* b) {
+  pose_add(b, &POSE_RUN_WF_TIMER);
+  if (b->log->waiting) {
+    pose_taken(b);
+    pose_add(b, &POSE_RUN_RTS);
+    return;
+  }
+  pose_add(b, &POSE_RUN_WF_STEP);
+  pose_step_bill(b);
+  pose_weapon_bill(b);
+}
+
 static void pose_walk_firing_bill(PoseBill* b) {
   const PoseLog* log = b->log;
   pose_add(b, &POSE_RUN_CHANGED);
@@ -18042,15 +18211,7 @@ static void pose_walk_firing_bill(PoseBill* b) {
   if (log->delayed) pose_taken(b);
   else pose_fire_bill(b);
   if (log->recoils) return;
-  pose_add(b, &POSE_RUN_WF_TIMER);
-  if (log->waiting) {
-    pose_taken(b);
-    pose_add(b, &POSE_RUN_RTS);
-    return;
-  }
-  pose_add(b, &POSE_RUN_WF_STEP);
-  pose_step_bill(b);
-  pose_weapon_bill(b);
+  pose_walk_firing_shot_bill(b);
 }
 
 // `$80:D6B8`.
@@ -18612,7 +18773,7 @@ static void pose_leave(Wram* w, const CosimRegs* in, const PoseLog* log,
     PoseBill b = {{0, 0, 0}, &log};                                          \
     name##_bill(&b);                                                         \
     cosim_cost(pose_total(&b, in) + pose_calls(&log, rom, in) -              \
-               (log.sleep == POSE_AWAKE                                      \
+               (log.sleep == POSE_AWAKE && !log.punch_begun                  \
                     ? cosim_run_cycles(&RUN_RTS, fetch_fast(in))             \
                     : 0));                                                   \
     pose_leave(w, in, &log, out);                                            \
@@ -18651,6 +18812,9 @@ POSE_SHIM(pose_swim, POSE_HANDLER_SWIM)
 // last may go on into a sleep.
 POSE_EXITS_SHIM(pose_walk_band_b,
                 pose_tried(pose_walk_band_b, pose_page_ok, scratch, rom, in))
+POSE_EXITS_SHIM(pose_walk_firing_shot,
+                pose_tried(pose_walk_firing_shot, pose_page_ok, scratch, rom,
+                           in))
 POSE_EXITS_SHIM(pose_walk_6c,
                 pose_tried(pose_walk_6c, pose_page_ok, scratch, rom, in))
 POSE_EXITS_SHIM(pose_begin,
@@ -18666,7 +18830,7 @@ static const uint32_t POSE_HANDLER_EXITS[] = {
     POSE_STAND_RTS_PC,         POSE_WALK_BEGIN_RTS_PC,
     POSE_WALK_RTS_PC,          POSE_WEAPON_SHOWN_RTS_PC,
     POSE_WEAPON_HIDDEN_RTS_PC, POSE_RECOIL_YIELD_PC,
-    POSE_BAND_B_AIM_YIELD_PC};
+    POSE_BAND_B_AIM_YIELD_PC,  POSE_PUNCH_SOUND_PC};
 
 // `$80:ED30`, the shot. It leaves by one of two `RTS`s, or by `JMP $DE96`
 // to weapon 5's pose, whose first two instructions are a sleep: the stretch
@@ -19146,7 +19310,7 @@ static const uint32_t PLAYER_FRAME_EXITS[] = {
     PLAYER_FRAME_YIELD_PC, HIT_FLINCH_PC,           HIT_OTHER_PC,
     POSE_SPLASH_SOUND_PC,  POSE_RECOIL_YIELD_PC,    POSE_BAND_B_AIM_YIELD_PC,
     POSE_SOAK_SOUND_PC,
-    WALK_DOOR_PUT_PC,      WALK_DOOR_B_PUT_PC};
+    WALK_DOOR_PUT_PC,      WALK_DOOR_B_PUT_PC,      WALK_FOURTH_PUT_PC};
 
 // `$80:E942` and `$80:E9B2`, back from a door's block: the reaction's `RTS`,
 // the rest of the walk from the axis under it, and the frame's tail. Every
@@ -19171,6 +19335,16 @@ static bool accepts_door_woken(const Wram* w, const CosimRegs* in) {
 
 static bool accepts_door_b_woken(const Wram* w, const CosimRegs* in) {
   return accepts_woken(w, in, WALK_DOOR_B_RETURN, WALK_DOOR_B_PUT_RETURN);
+}
+
+// The fourth's tile comes back to its `RTS` from a sleep, and not from the
+// block. The walk comes to the same `RTS` wherever the tile is not, with
+// what is under the stack left from before, so this asks A too: the
+// scheduler's `TCS : PLD : PLP : PLB : RTL` leaves the stack pointer it
+// began from there, seven below.
+static bool accepts_fourth_woken(const Wram* w, const CosimRegs* in) {
+  return in->a == (uint16_t)(in->s - 7) &&
+         accepts_woken(w, in, WALK_FOURTH_RETURN, WALK_FOURTH_SLEEP_RETURN);
 }
 
 static int woken_axis(const Wram* w, const CosimRegs* in) {
@@ -28156,6 +28330,44 @@ static void shim_nmi_on(Wram* w, const Rom* rom, const CosimRegs* in,
 
 static const uint32_t NMI_ON_EXITS[] = {NMI_ON_END_PC};
 
+// `$82:DDE1` and `$82:DE72`, the bystander's screen. Each store to `$2132`
+// is cut off before its write, which `cosim_hw` adds.
+static const CosimRun BYSTANDER_HW_COST[BYS_BLOCK_COUNT] = {
+    [BYS_SEP_IMM] = {48, 7, 0},  [BYS_REP_LDX] = {36, 5, 0},
+    [BYS_COPY] = {112, 13, 0},   [BYS_TAKEN] = {6, 0, 0},
+    [BYS_HDMA] = {52, 6, 0},     [BYS_STZ] = {34, 3, 0},
+    [BYS_REP] = {18, 2, 0},
+};
+
+static bool accepts_bystander_hw(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return body_ok(in) && in->db == 0x82;
+}
+
+static void shim_bystander_dim(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  HwTrace* t = dma_trace();
+  PortCpu c;
+  cpu_from(in, &c);
+  bystander_dim(w, rom, &c, t);
+  cpu_to(&c, out);
+  cosim_hw(t, BYSTANDER_HW_COST, fetch_fast(in));
+}
+
+static void shim_bystander_lit(Wram* w, const Rom* rom, const CosimRegs* in,
+                               CosimRegs* out) {
+  (void)rom;
+  HwTrace* t = dma_trace();
+  PortCpu c;
+  cpu_from(in, &c);
+  bystander_lit(w, &c, t);
+  cpu_to(&c, out);
+  cosim_hw(t, BYSTANDER_HW_COST, fetch_fast(in));
+}
+
+static const uint32_t BYSTANDER_DIM_EXITS[] = {BYSTANDER_DIMMED_PC};
+static const uint32_t BYSTANDER_LIT_EXITS[] = {BYSTANDER_LIT_CALL_PC};
+
 static void shim_title_hdma_on(Wram* w, const Rom* rom, const CosimRegs* in,
                                CosimRegs* out) {
   (void)w;
@@ -30712,6 +30924,27 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 18,
     },
     {
+        .name = "player_potion",
+        .symbol = "$80:D1FF",
+        .entry = 0x80d1ff,
+        .run = shim_player_potion,
+        .supported = guard_player_potion,
+        COSIM_EXITS(PLAYER_POTION_EXITS),
+        .uncalled = true,
+        .cycles = 4000,
+        .stack_bytes = 18,
+    },
+    {
+        .name = "player_state_normal_used",
+        .symbol = "$80:D28C",
+        .entry = PSN_USED_PC,
+        .ret_op = PSN_RTS_PC,
+        .ret_kind = COSIM_RTS,
+        .run = shim_player_state_normal_used,
+        .uncalled = true,
+        .cycles = 200,
+    },
+    {
         .name = "sprite_cache_init",
         .symbol = "$80:C05A",
         .entry = 0x80c05a,
@@ -32479,6 +32712,8 @@ static const CosimRoutine ROUTINES[] = {
     // ...and two walks, for the frames the whole frame is turned down on.
     POSE_EXITS_ENTRY(pose_walk_band_b, "$80:D6B8", POSE_WALK_BAND_B_PC),
     POSE_EXITS_ENTRY(pose_walk_6c, "$80:D6DC", POSE_WALK_6C_PC),
+    POSE_EXITS_ENTRY(pose_walk_firing_shot, "$80:D711",
+                     POSE_WALK_FIRING_SHOT_PC),
     // The pieces a handler that is the ROM's still reaches, by `JMP`.
     POSE_EXITS_ENTRY(pose_begin, "$80:D4E9", POSE_BEGIN_PC),
     POSE_EXITS_ENTRY(pose_stand_begin, "$80:D4F4", POSE_STAND_BEGIN_PC),
@@ -34613,6 +34848,18 @@ static const CosimRoutine ROUTINES[] = {
         .cycles = 8000,
         .stack_bytes = 22,
     },
+    {
+        .name = "player_fourth_woken",
+        .symbol = "$80:EA1D",
+        .entry = WALK_FOURTH_SLEPT_PC,
+        .run = shim_walk_woken,
+        .accepts = accepts_fourth_woken,
+        .supported = supported_walk_woken,
+        COSIM_EXITS(WALK_WOKEN_EXITS),
+        .uncalled = true,
+        .cycles = 8000,
+        .stack_bytes = 22,
+    },
     // ...and the ones that are in no port's table. See `port/links.h`.
 #define X(at, sym, pc)                                                       \
     {                                                                        \
@@ -35865,6 +36112,28 @@ static const CosimRoutine ROUTINES[] = {
         .run = shim_title_layers,
         .accepts = accepts_frontend_reset,
         COSIM_EXITS(TITLE_LAYERS_EXITS),
+        .cycles = 120,
+        .hw = true,
+    },
+    {
+        .name = "bystander_dim",
+        .symbol = "$82:DDE1",
+        .entry = BYSTANDER_DIM_PC,
+        .run = shim_bystander_dim,
+        .accepts = accepts_bystander_hw,
+        COSIM_EXITS(BYSTANDER_DIM_EXITS),
+        .uncalled = true,
+        .cycles = 600,
+        .hw = true,
+    },
+    {
+        .name = "bystander_lit",
+        .symbol = "$82:DE72",
+        .entry = BYSTANDER_LIT_PC,
+        .run = shim_bystander_lit,
+        .accepts = accepts_bystander_hw,
+        COSIM_EXITS(BYSTANDER_LIT_EXITS),
+        .uncalled = true,
         .cycles = 120,
         .hw = true,
     },

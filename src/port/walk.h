@@ -51,10 +51,10 @@
 //
 // * the double step, bit 15 of `$54`, which runs the whole walk twice. No
 //   input has taken it.
-// * a solid tile with a reaction of its own, but for the four below. The
+// * a solid tile with a reaction of its own, but for the five below. The
 //   reaction takes over from inside the walk.
 //
-// ## Four reactions the walk has
+// ## Five reactions the walk has
 //
 // **The water's edge**, the first: `$80:E7A1`. A player with health, in the
 // ordinary state and facing some way looks 32 pixels that way. With water
@@ -84,6 +84,13 @@
 // That thread plays sound `$13` twice, thirty ticks in all, and one begun
 // meanwhile does nothing: the word at `$7E:1FF4` says one is at it. With
 // one the door opens, and that is the ROM's. Either way the tile is solid.
+//
+// **The fourth** is a door that wants no key, `$80:E9B3`. It looks by a table
+// of its own for a tile of its own, and that tile breaks open: a sound, and
+// the walk stops at its block as it does at a door's. What the tile leaves
+// is drawn at random, and the thread sleeps ten ticks in the middle of the
+// walk: both are `fourth_prize`'s, in `port/thread_stretches.h`. The walk
+// goes on from the `RTS` the sleep comes back to.
 //
 // **The fifth** is ground the walk goes on over. `$82:F4FF` keeps five
 // squares of 64 pixels at `$7E:572C`, and begins a thread at `$82:F6EB` for
@@ -177,8 +184,8 @@ typedef enum {
 
 // The door a skeleton key opens, `$80:E943`, is the door again with its own
 // tile and its own count; the fourth, `$80:E9B3`, looks by a table of its own
-// for its own tile, and what it does there is the ROM's. A door that opens
-// plays a sound.
+// for its own tile, and opens with no count at all. A door that opens plays a
+// sound, and so does the fourth's tile.
 #define WALK_DOOR_B 0x8008u
 #define WALK_DOOR_B_KEY 0x0012u  // the skeleton key's count, past the key's
 #define WALK_FOURTH_REACH 0x80ea30u
@@ -200,6 +207,12 @@ typedef enum {
 #define WALK_DOOR_B_PUT_RETURN 0x80e9b1u
 #define WALK_DOOR_B_BACK_PC 0x80e9b2u
 #define WALK_DOOR_B_RETURN 0xe78bu   // ...and `JSR $E943`
+#define WALK_FOURTH_PUT_PC 0x80e9feu
+#define WALK_FOURTH_RETURN 0xe76cu   // ...and `JSR $E9B3`
+// The fourth goes on from its block to a sleep, and the walk from the `RTS`
+// after it, with the sleep's `JSL` just under the stack.
+#define WALK_FOURTH_SLEPT_PC 0x80ea1du
+#define WALK_FOURTH_SLEEP_RETURN 0x80ea1cu
 #define WALK_ACROSS_RETURN 0xe4d0u   // what each axis's `JSR $E739` pushes
 #define WALK_UP_DOWN_RETURN 0xe50fu
 

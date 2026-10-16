@@ -5,6 +5,94 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The monster potion, the fourth tile, the bystander's words, a martian's stale direction and the chainsaw's stagger (2026-10-16)
+
+Another batch of about four rounds', validated once at the end. It took
+every place the survey had left but the reset.
+
+* **The monster potion, drunk.** `item_use` has slot 2: if the ground where
+  the player stands would hold an enemy, one is used, and `JMP $D9A3`
+  makes the player the monster. The change sleeps, so the ordinary frame
+  stops at that `JMP`, with the third button's `JSR` under it, in a second
+  row at `$80:D1FF` that the first turns down. The change is calls with
+  three stretches between them: a sound, its pictures by the player, and
+  after them the monster's words and the hands swapped. It comes back to
+  the ordinary frame at `$80:D28C`, and `player_state_normal_used` is the
+  rest: the `BRA` and the four countdowns.
+* **The monster's punch, standing.** A stand begun with `$6C` set is the
+  punch, `$80:EF67`. The pose shows its first picture and stops where the
+  sound is asked for, which the pose rows may do and the whole frame and
+  the handlers that may not sleep turn down. The rest is five stretches
+  between its calls and its three sleeps of four ticks: the fist's box,
+  `$80:F051`, which tells nobody on the first picture, then the second
+  picture and its box, and the third, and the cycle back to nought.
+* **A player out by the exit**, `$80:FAF6`: the state they are in is ended
+  first if it has a routine at `$72`, by an `RTS` to it. The monster's,
+  `$80:DA54`, asked that way, clears its words and shows nothing. Then the
+  player's weight off the level's load, a picture of nothing, the player
+  out, and their record let go when there are two. Below nought the load's
+  `BMI` spins on itself, and the stretches turn that down.
+* **The firing walk after weapon 5's kick**, `$80:D711`: the kick ends by a
+  stand, whose `RTS` comes back to the shot's `JSR`. A pose row there is the
+  rest of the walk.
+* **The fourth tile reaction** is a door with no key: its tile breaks open
+  with a sound, and the walk stops at its block as at a door's. A stretch
+  draws what it leaves, `$82:DC57`: nothing, a thing put back in the
+  level's list, or a thread beside the player for some of the ways they
+  face. The thread sleeps ten ticks in the middle of the walk, and the walk
+  goes on from the `RTS` the sleep comes back to, `$80:EA1D`. The walk
+  meets that `RTS` wherever the tile is not, too, with the sleep's return
+  left under the stack from before, so the row asks A as well: the
+  scheduler leaves the thread's stack pointer there.
+* **The bystander's words**, `$82:DDA7`: nothing within sixty frames of the
+  last time; otherwise both sides of the panel blanked, the screen dimmed,
+  its words, its two pictures in turn ten frames at a time while neither
+  pad changes, and the screen lit again. Eight stretches, a wait of ten
+  `WAI`s, and two rows that write `$2132` through the hardware trace, the
+  first that do from a thread.
+* **A martian with a direction left on its page.** The ROM's indexed loads
+  carry into the next bank, and `$FFEC` reads bank `$82`. The port wrapped
+  inside bank `$81`, and so turned the pass down. Its tables are read as
+  the ROM reads them now, and a pass is turned down only for a read that
+  lands outside the cartridge.
+* **The chainsaw maniac's dispatch** takes a pass in the stagger's state as
+  well as the cut's: both bodies are stretches.
+* **Mistakes, caught before the corpus.**
+  * The fourth's wake asked for the sleep's `JSL` return one byte early.
+    A `JSL` pushes its own last byte. Found by printing what the guard saw.
+  * A stretch of the exit had an exit at the `BMI` that spins, which is the
+    next instruction the ROM always reaches, so `verify` ended every call
+    there. The spin is a guard now.
+  * The monster's pictures when nothing is at `$72` begin past the `BNE`,
+    not at it.
+  * Two words of bank `$7E` were written with the bank `$7F` offset.
+* **One the corpus caught.** The bystander's way back, `$82:DD64`, can end
+  the thread by its `JML` at `$82:DD6A`, and I had given it the list of
+  exits the bystander's setup has, which does not hold that address. Once
+  a bystander was told to end, `verify` ran the ROM on past it and the
+  calls after failed: level49 and its two other movies. It has a list of
+  its own now, its sleep and its end, and the three verify clean. The
+  other 53 movies had passed, and nothing else uses the list.
+* **Checked.** 1,715 routines are registered.
+  * The corpus verifies clean, the three level49 movies again after the
+    fix. All 1,256 cost rows are exact.
+  * Branch coverage is 1,869 of 2,278. No branch taken before is untaken
+    now but `walk_reaction`, the walk's fallback for a reaction it does not
+    have, which the fourth tile reached; the other seven newly untaken
+    ones are this round's own.
+  * Lockstep: 53 of 56 never part, the same as before. level25,
+    level25-2p and level25-heavy part as they did, at the same passes.
+  * The picture: 78,360,128 lines at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+  * `zamn_test_cheats` and `zamn_test_twinstick` pass. The build has no
+    warnings.
+* **What it bought**, over the same 110 sessions: the places are 54 to 1,
+  the times 187 to 110, and the instructions 8,610 to 7,920. What is left
+  is the reset's own code, once a session: `CLC : XCE`, the jump into bank
+  `$80` and `init_ppu_regs`. It begins in emulation mode, which no row has
+  begun in, and the harness does not carry the emulation bit in its
+  registers yet.
+
 ### Small places, two bounces, the water off a trampoline, four turned down and five starts (2026-10-16)
 
 Another batch of about three rounds', validated once at the end. It went

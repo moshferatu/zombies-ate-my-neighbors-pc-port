@@ -76,7 +76,8 @@
 // not clear the direction, and a first look that finds everything too far
 // away returns without choosing. For the sixty passes until the next look it
 // steps by whatever the tables hold far past their ends, at whatever was on
-// its page. The port reads the same words, so it goes the same way.
+// its page, and past the end of the bank into the next, as an indexed load
+// does. The port reads the same words, so it goes the same way.
 //
 // ## Its contract with the ROM
 //
@@ -249,8 +250,8 @@ typedef struct {
 } MartianLog;
 
 // Can `martian_frame` take this pass? Not a state it does not know, nor a
-// direction that would read the tables from outside the cartridge's bank.
-// It only looks.
+// direction that would read the tables from outside the cartridge. It only
+// looks.
 bool martian_frame_supported(const Wram* w, uint16_t page);
 
 // One pass, for the martian whose page is `page`. False when its fate is no

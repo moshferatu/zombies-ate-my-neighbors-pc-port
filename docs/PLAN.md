@@ -273,6 +273,14 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**The monster potion, the fourth tile and the bystander's words,
+2026-10-16.** The potion drunk, the change, the monster's punch standing and
+a player out by the exit; the fourth tile reaction; what a bystander shows,
+with the first rows in a thread's code to write a register; a martian's
+tables read across the bank's end as the ROM reads them; and the chainsaw's
+stagger. The survey's places are one, the reset, and the core executes its
+7,920 instructions and no others.
+
 **Small places, two bounces and the water off a trampoline, 2026-10-16.**
 The places of one or two instructions are gone; a walk may bounce twice and
 a trampoline's landing in the water is ported; four frames that were turned

@@ -198,7 +198,7 @@ void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
 //
 //     $8000  B   -> $80:EA63 weapon_select_next
 //     $0080  A   -> $80:EAA8 item_select_next
-//     $0040  X   -> $80:EAE1 item_use          -- but the potions and the box
+//     $0040  X   -> $80:EAE1 item_use          -- but three potions and the box
 //     $0030  L or R -> spawn $82:D8DB, and play sound $0D
 //
 // ## Weapon zero is empty, and the two flag words
@@ -351,18 +351,23 @@ void item_select_prev(Wram* w, const Rom* rom, uint16_t dp,
 // routine runs, through `JMP ($EB07,X)`. Most use one up, `$80:EB48`, and the
 // last one used selects the next item, by a `JMP` to `$80:EAA8`.
 //
-// Ported are the three the corpus uses, and those that do nothing:
+// Ported are the four the corpus uses, and those that do nothing:
 //
 //   * slot 1, the speed shoes: bit 15 of `$54` for the 850 frames `$56`
 //     counts, which is the fourth countdown of the frame;
+//   * slot 2, the monster potion: if the ground where the player stands
+//     would hold an enemy, one is used, and `JMP $D9A3` makes the player the
+//     monster. That sleeps, so the frame stops at the `JMP`, and what the
+//     ordinary frame has left to do after its third button is
+//     `player_state_normal_used`'s, when the change comes back to it;
 //   * slot 7, the first aid kit: the health back to ten, with a sound, or
 //     nothing at ten already;
 //   * slot 10, the decoy: unless three are out, a thread at `$81:F159` at the
 //     point 24 pixels ahead, if the ground there is clear for an enemy.
 //
-// The potions and the box are not: slots 2 to 5 change what the player is,
-// and slot 8 sleeps. A use that reaches one of them is `ITEM_USE_UNPORTED`,
-// and the frame is the ROM's.
+// The other potions and the box are not: slots 3 to 5 change what the
+// player is, and slot 8 sleeps. A use that reaches one of them is
+// `ITEM_USE_UNPORTED`, and the frame is the ROM's.
 #define ITEM_USE_OWN_PICTURES 0x80fb52u  // by `$0C`, against `$10`
 #define ITEM_USE_DP_PICTURES 0x10u
 #define ITEM_USE_DP_BUSY 0x70u
@@ -370,6 +375,13 @@ void item_select_prev(Wram* w, const Rom* rom, uint16_t dp,
 #define ITEM_USE_DP_Y 0x32u
 #define ITEM_USE_WAIT 0x0014u           // into `$4E`, the second countdown
 #define ITEM_SPEED_SHOES 1
+#define ITEM_MONSTER 2
+// The monster potion's `JMP`, and the third button's `JSR` it leaves under
+// the stack. The ordinary frame goes on from that `JSR`'s return.
+#define ITEM_MONSTER_PC 0x80d9a3u
+#define PSN_USE_RETURN 0xd28bu
+#define PSN_USED_PC 0x80d28cu
+#define PSN_RTS_PC 0x80d2e5u
 #define ITEM_FIRST_AID 7
 #define ITEM_DECOY 10
 #define ITEM_SPEED_BITS 0x8000u         // into `$54`...
@@ -394,6 +406,8 @@ typedef enum {
   ITEM_USE_DECOYS_OUT,     // three are out already
   ITEM_USE_DECOY_BLOCKED,  // the ground ahead is not clear
   ITEM_USE_DECOY,
+  ITEM_USE_MONSTER_BLOCKED,  // the ground is not clear for the monster
+  ITEM_USE_MONSTER,          // ...or is, and the frame stops at its `JMP`
   ITEM_USE_UNPORTED,       // a potion or the box
 } ItemUseEnd;
 
@@ -403,6 +417,7 @@ typedef struct {
   bool n, z, c;
   ItemUseEnd end;
   bool used_one;            // `$80:EB48` took one off the count
+  bool v;                   // ...and the overflow its decimal `SBC` left
   bool ran_out;             // ...the last, and the next was selected
   WeaponSelectRegs next;    // that selection
   TerrainRegs ahead;        // the decoy's ground
@@ -459,6 +474,7 @@ typedef struct {
   ItemUseLog use;                    // the third's
   int spawn_slot;                    // the fourth's thread, doubled, or -1
   bool unported;                     // the third reached an item not ours
+  bool stopped;                      // ...or the monster potion's `JMP`
 } PlayerStateRegs;
 
 // True unless the frame would reach an item `item_use` does not have. The
@@ -468,5 +484,10 @@ bool player_state_normal_supported(const Wram* w, const Rom* rom, uint16_t dp);
 
 void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
                          PlayerStateRegs* out);
+
+// `$80:D28C`, where the third button's `JSR` comes back to: the `BRA` past
+// the fourth, and the four countdowns. It writes A, N and Z, and `out`'s
+// other registers are left as they were.
+void player_state_normal_used(Wram* w, uint16_t dp, PlayerStateRegs* out);
 
 #endif

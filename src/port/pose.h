@@ -188,9 +188,16 @@
 // the other player too far, and a jump off that would land on a tile with
 // bit 0 and not bit 8. The three handlers it leads to, `$80:E0B1`, `$80:E0D0`
 // and `$80:E106`.
-// The pose for whatever sets `$6C` (`$80:EF67`). Of the monster's walk, a
-// punch that lands on a wall that comes down. `pose_supported` says which
-// frames those are.
+// Of the monster's walk, a punch that lands on a wall that comes down.
+// `pose_supported` says which frames those are.
+//
+// ## The monster's punch, standing
+//
+// A stand begun with `$6C` set is the monster's punch, `$80:EF67`: the first
+// of its pictures by the way it faces, kept at `$2E`, and a sound. The pose
+// stops where the sound is asked for, and the rest is calls and sleeps
+// between stretches in `port/thread_stretches.h`. Only a handler that may
+// sleep may punch: to the others `pose_supported` says no.
 //
 // ## Its contract with the ROM
 //
@@ -225,6 +232,9 @@
 #define POSE_WALK_PC 0x80d6a8u
 #define POSE_WALK_RTS_PC 0x80d700u
 #define POSE_WALK_FIRING_PC 0x80d704u
+// ...and where its shot's `JSR` comes back to, which after weapon 5's kick
+// is by the stand that kick ends with.
+#define POSE_WALK_FIRING_SHOT_PC 0x80d711u
 #define POSE_WALK_FIRING_RTS_PC 0x80d700u
 // ...and the two the walking and standing handlers end at when they jump to
 // show or put away the hand weapon.
@@ -287,6 +297,14 @@
 #define POSE_FRAMES_WALK_BAND_B 0xd85fu
 #define POSE_FRAMES_WALK_6C 0xd8dfu
 #define POSE_FRAMES_ARC 0xfe68u  // four pictures for each facing
+#define POSE_FRAMES_PUNCH 0xefbcu
+// Where the punch stops: `LDA #$23`, and the sound's `JSL`.
+#define POSE_PUNCH_SOUND_PC 0x80ef7bu
+// The monster's punch. A box for each facing, eight bytes: what to add to
+// where the player is for its left, right, top and bottom. Who the box says
+// is punching is by `$0C`.
+#define POSE_PUNCH_BOXES 0xf08fu
+#define POSE_PUNCH_IDS 0xf08bu
 
 // Fields on the player's page, beyond those `port/player.h` names.
 #define POSE_DP_RECORD 0x08       // the player's display record
@@ -300,6 +318,7 @@
 #define POSE_DP_MOVE 0x2a         // the movement handler, or 0 standing still
 #define POSE_DP_ARC_PICTURE 0x2e  // in the air: which of the facing's pictures
 #define POSE_DP_SHOT_PICTURE 0x2e // a standing shot: its picture, then its hold
+#define POSE_DP_PUNCH_PICTURE 0x2e  // the punch: its first picture
 #define POSE_DP_HELD_DIR 0x6e     // ...and the direction held as the hold began
 #define POSE_DP_REACH_X 0x34      // the monster: where the fist is
 #define POSE_DP_REACH_Y 0x36
@@ -402,6 +421,7 @@ typedef struct {
   bool wall_broken;    // ......which can be knocked down, and is begun to be
   int wall_slot;       // ......by a thread in this slot, doubled, or -1
   bool sounded;        // ...or the swing's first picture, and its sound
+  bool punch_begun;    // a stand that is the punch: it stops at its sound
   bool stroked;        // swimming: the next picture shown...
   bool stroke_wrapped; // ......which was the first again
   bool swims;          // ...and the movement is the swim
@@ -424,6 +444,9 @@ bool pose_may_sleep(uint16_t handler);
 void pose_stand(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_walk(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_walk_firing(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
+// The firing walk from after its shot.
+void pose_walk_firing_shot(Wram* w, const Rom* rom, uint16_t page,
+                           PoseLog* log);
 void pose_walk_band_b(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_walk_6c(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 void pose_arc(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);

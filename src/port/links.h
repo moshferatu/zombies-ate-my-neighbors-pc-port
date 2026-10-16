@@ -97,7 +97,12 @@
   X(80d557, "$80:D557", 0x80d557u) /* RTS */ \
   X(80d700, "$80:D700", 0x80d700u) /* RTS */ \
   X(80d9a0, "$80:D9A0", 0x80d9a0u) /* JMP $80:F382 */ \
+  X(80d9a3, "$80:D9A3", 0x80d9a3u) /* JSR $80:F36C, the monster potion */ \
+  X(80ef85, "$80:EF85", 0x80ef85u) /* JSR $80:F0D7, the punch's tile */ \
+  X(80efa0, "$80:EFA0", 0x80efa0u) /* JSR $80:F0D7 */ \
+  X(80efaf, "$80:EFAF", 0x80efafu) /* JSR $80:F0D7 */ \
   X(80d9a6, "$80:D9A6", 0x80d9a6u) /* JSR $80:ECFD */ \
+  X(80d9a9, "$80:D9A9", 0x80d9a9u) /* JSR $80:F354 */ \
   X(80d9e6, "$80:D9E6", 0x80d9e6u) /* JSR $80:F382 */ \
   X(80d9e9, "$80:D9E9", 0x80d9e9u) /* JMP $80:D4E9 */ \
   X(80da72, "$80:DA72", 0x80da72u) /* JSR $80:F377 */ \
@@ -120,6 +125,7 @@
   X(80f9fc, "$80:F9FC", 0x80f9fcu) /* JSR $80:F377 */ \
   X(80f9ff, "$80:F9FF", 0x80f9ffu) /* JMP $80:D4F4 */ \
   X(80fb0f, "$80:FB0F", 0x80fb0fu) /* JSR $80:F377 */ \
+  X(80fb15, "$80:FB15", 0x80fb15u) /* JSR $80:F354, a player out by the exit */ \
   X(80fb12, "$80:FB12", 0x80fb12u) /* JSR $80:ECFD */ \
   X(819e13, "$81:9E13", 0x819e13u) /* JSL $80:B22A */ \
   X(819e58, "$81:9E58", 0x819e58u) /* JSL $80:B22A */ \
@@ -288,7 +294,9 @@
   X(82bae7, "$82:BAE7", 0x82bae7u) /* WAI */ \
   X(82bae8, "$82:BAE8", 0x82bae8u) /* WAI */ \
   X(82dc76, "$82:DC76", 0x82dc76u) /* BRA $DC9F */ \
+  X(82dddd, "$82:DDDD", 0x82ddddu) /* JSL $80:C07F, the bystander's panel */ \
   X(82de02, "$82:DE02", 0x82de02u) /* WAI */ \
+  X(82def6, "$82:DEF6", 0x82def6u) /* WAI, a frame of ten */ \
   X(82de07, "$82:DE07", 0x82de07u) /* WAI */ \
   X(82de82, "$82:DE82", 0x82de82u) /* RTS */ \
   X(82f5f9, "$82:F5F9", 0x82f5f9u) /* RTS */ \
