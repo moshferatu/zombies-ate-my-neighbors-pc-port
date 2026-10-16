@@ -39,9 +39,16 @@
 // landing goes no further than the state's first instruction, which is a
 // sample-set check the frontend watches: see `src/bank_sfx.h`.
 //
+// Hit, or with nobody near enough, while it faces them, it is struck: it
+// plays pictures nothing may touch it through, and then comes at whoever is
+// nearest again, and the state it was in goes on. A frame of that stops at
+// the pictures' call, with the state's return and the loop's on the stack,
+// and `seeker_struck_shown` goes on from there. A dart with nobody in reach,
+// or solid ground where it would land, is struck the same way, drawn, with
+// only the loop's return under it.
+//
 // What else it goes on to do is the ROM's: `seeker_frame` says false for a
-// frame that gets there, having changed only the copy it was given. That is
-// when it is hit, or when nobody is near enough.
+// frame that gets there, having changed only the copy it was given.
 //
 // Two leaves of it are entries of their own as well.
 //
@@ -114,6 +121,14 @@
 // Where each of the four leaves, and what it leaves for.
 #define SEEKER_LAND_PC 0x82ea35u         // the state itself
 #define SEEKER_FIRE_CALL_PC 0x82ee17u    // `JSL pictures_resume`
+#define SEEKER_STRUCK_CALL_PC 0x82ef0eu  // `JSL pictures_resume`
+#define SEEKER_STRUCK_SHOWN_PC 0x82ef12u
+#define SEEKER_STRUCK_PICTURES 0xef20u
+#define SEEKER_HIT_LOSS 0x0009           // of its strength
+// What each state that faces whoever is nearest leaves under its `JSR $EB13`.
+#define SEEKER_WATCH_RETURN 0xeb66u
+#define SEEKER_WATCH_B_RETURN 0xeb7cu
+#define SEEKER_HOLD_RETURN 0xeca5u
 #define SEEKER_FIRE_PICTURES 0x82ee67u   // a list for each way
 #define SEEKER_HIDE_CALL_PC 0x82eb9fu    // `JSL pictures_resume`
 #define SEEKER_HIDE_PICTURES 0xec76u
@@ -248,6 +263,15 @@ enum {
   SF_HIDE_HANDLER,  // LDA #$0000 : TAY : JSL
   SF_HIDE,          // $EB8E-$EB9E
   SF_BACK,          // $EC2C-$EC55
+  SF_HIT,           // $EB50-$EB5A, the `JMP $EF03` too
+  SF_LOST,          // JMP $EF03
+  SF_STRUCK,        // LDA #$EF20
+  SF_SHOWN,         // $EF12-$EF1F, the `JMP $E827` too
+  SF_RESET,         // $E827-$E84F, the `JSL` too
+  SF_RESET_ALIVE,   // LDA $30 : BPL
+  SF_FACE_CALL,     // JSR $EB13
+  SF_WATCH_ON,      // JSL, CMP : BCS
+  SF_DART_LOST,     // $ED43-$ED50, the `JMP $EF03` too
   SF_BLOCK_COUNT
 };
 
@@ -264,13 +288,19 @@ typedef struct {
   TerrainRegs ground;
   bool mapped;    // ...and the level's edge
   BoundsExit map_exit;
-  bool handler_set;
+  int handlers_set;
 } SeekerWork;
 
 // A frame of the thread, from the sleep's return to the next sleep or to
 // the end of the loop. False for a frame that goes on to something that is
 // the ROM's.
 bool seeker_frame(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k);
+
+// `$82:EF12`, its pictures played after it was struck: to the next sleep or
+// the end of the loop, the same way. False when it has no strength left,
+// which is the ROM's, or for a frame of the state that goes on to something
+// that is.
+bool seeker_struck_shown(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k);
 
 // A is the way. False for one the table does not have.
 bool seeker_step_supported(uint16_t way);

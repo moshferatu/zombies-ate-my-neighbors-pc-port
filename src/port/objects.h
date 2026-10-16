@@ -139,6 +139,7 @@ typedef struct {
   bool ended_past;  // ...or at one past the level's
   bool ungated;     // the start's entry had a negative gate...
   bool at_gate;     // ...or one equal to the level's
+  bool retired;     // ...or one past it, marked gone and not started
   int slot;         // the thread started, doubled, or -1
 } VictimsWork;
 

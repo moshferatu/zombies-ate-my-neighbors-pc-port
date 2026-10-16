@@ -137,6 +137,7 @@
 #include <stdint.h>
 
 #include "assets/rom.h"
+#include "port/cpu.h"
 #include "port/oam.h"  // ObstacleWork
 #include "port/pose.h"     // the leap into the water
 #include "port/step.h"     // TetherRegs
@@ -171,6 +172,34 @@ typedef enum {
 #define WALK_DP_ITEMS 0x66    // where the player's items are
 #define WALK_DP_LOOK_X 0x60   // scratch: the point looked at
 #define WALK_DP_LOOK_Y 0x62
+
+// The door a skeleton key opens, `$80:E943`, is the door again with its own
+// tile and its own count; the fourth, `$80:E9B3`, looks by a table of its own
+// for its own tile, and what it does there is the ROM's. A door that opens
+// plays a sound.
+#define WALK_DOOR_B 0x8008u
+#define WALK_DOOR_B_KEY 0x0012u  // the skeleton key's count, past the key's
+#define WALK_FOURTH_REACH 0x80ea30u
+#define WALK_FOURTH 0x0020u
+#define WALK_DOOR_SFX 0x0010u
+
+// A door that opens stops the walk at the `JSL $80:AB5A` that puts its open
+// block in the map, with the reaction's `JSR` and the axis's under it: see
+// `player_walk_stoppable`. The walk goes on at the `RTS` that returns to.
+//
+// Every way out of a door ends at that `RTS`, the doors that stay shut too.
+// One back from the block leaves the `JSL`'s return just under the stack,
+// where its `RTL` took it from.
+#define WALK_DOOR_PUT_PC 0x80e93eu
+#define WALK_DOOR_PUT_RETURN 0x80e941u
+#define WALK_DOOR_BACK_PC 0x80e942u
+#define WALK_DOOR_RETURN 0xe762u     // what `JSR $E8D3` pushes
+#define WALK_DOOR_B_PUT_PC 0x80e9aeu
+#define WALK_DOOR_B_PUT_RETURN 0x80e9b1u
+#define WALK_DOOR_B_BACK_PC 0x80e9b2u
+#define WALK_DOOR_B_RETURN 0xe78bu   // ...and `JSR $E943`
+#define WALK_ACROSS_RETURN 0xe4d0u   // what each axis's `JSR $E739` pushes
+#define WALK_UP_DOWN_RETURN 0xe50fu
 
 // The fifth reaction's squares, and its thread.
 #define W_WALK_SQUARES 0x572cu
@@ -228,7 +257,9 @@ enum {
   WALK_REACTION_EDGE = 1,
   WALK_REACTION_TRAMPOLINE = 2,
   WALK_REACTION_DOOR = 3,
+  WALK_REACTION_FOURTH = 4,
   WALK_REACTION_SQUARE = 5,
+  WALK_REACTION_DOOR_B = 6,
 };
 
 // The water's edge: where the point looked at is, for each way faced.
@@ -263,6 +294,8 @@ typedef struct {
   uint8_t kind;
   bool reached;   // a door: a tile was looked at
   bool locked;    // ...and it is a door, with nothing to open it
+  bool opened;    // ...or something, and the walk stopped at its block
+  bool cell_in_rom;  // ......which the map has in the cartridge
   int slot;       // the thread begun, as `thread_spawn` answers
   uint8_t looked; // the fifth: squares looked at
   WalkSquareEnd end;
@@ -331,6 +364,14 @@ typedef struct {
   // ...or onto the trampoline.
   bool bounced;
   PoseLog bounce;
+  // A door opened: the walk stopped at its block's `JSL`, on this axis, with
+  // these registers for the call and this return under it.
+  bool stopped;
+  int stop_axis;
+  PortCpu stop;
+  uint16_t stop_return;
+  // ...or this is the rest of a walk that did, from the `RTS` it came back to.
+  bool resumed;
 } WalkLog;
 
 // Would the port walk this frame the way the ROM does? False for the two
@@ -343,6 +384,19 @@ void player_walk(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
 // The same, for a caller that has not asked `walk_supported`: false is one of
 // the two paths that are the ROM's, and then `w` is not what the ROM leaves.
 bool player_walk_checked(Wram* w, const Rom* rom, uint16_t page, WalkLog* log);
+
+// The same, for a caller that can stop where a door opens: false only for
+// what is the ROM's, and then `log->stopped` says the walk stopped at the
+// door's block, with the stack the ROM has there not yet written. `log` is
+// not NULL.
+bool player_walk_stoppable(Wram* w, const Rom* rom, uint16_t page,
+                           WalkLog* log);
+
+// The rest of a walk that stopped at a door's block, from the axis it stopped
+// on: `$80:E942` or `$80:E9B2`, the reaction's `RTS`. `v` is the overflow the
+// block's call left. False for what is the ROM's. `log` may be NULL.
+bool player_walk_resume(Wram* w, const Rom* rom, uint16_t page, int axis,
+                        bool v, WalkLog* log);
 
 // `$80:E595`, the monster's walk. False is a wall that breaks, and then `w`
 // is not what the ROM leaves. `log` may be NULL.

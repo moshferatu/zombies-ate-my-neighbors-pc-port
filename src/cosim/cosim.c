@@ -1207,6 +1207,24 @@ static long hw_spun(const Cosim* c, const CosimCall* call) {
   return shift;
 }
 
+// The same for a call that does not trace the hardware. Its sounds are
+// priced as sounds that did not wait, `CPY $2143` met on its first read, as
+// a substituted one is: under `run` the wait is `apu_drive`'s. Each read of
+// `$2143` past the write that ends a wait is one more `CPY $2143 : BNE`.
+static long apu_spun(const Cosim* c, const CosimCall* call) {
+  const int fetch = call->in.fastrom ? 6 : 8;
+  const long spin = 5 * fetch + 6 + 6;  // five bytes, the read, the branch
+  int k = call->hw_mark;
+  long reads = 0, writes = 0;
+  const CosimHwAccess* a;
+  while ((a = hw_next(c->priv, call, &k)) != NULL) {
+    if (a->addr != APU_PORT_SEQ) continue;
+    if (a->read) reads++;
+    else writes++;
+  }
+  return reads > writes ? (reads - writes) * spin : 0;
+}
+
 // ---------------------------------------------------------------------------
 // Interrupts inside a call that runs through them
 // ---------------------------------------------------------------------------
@@ -2597,8 +2615,9 @@ static PortStep verify_segment(Cosim* c, CosimCall* call, CosimRegs* out,
 
 static void record_segment(Cosim* c, CosimCall* call, CosimStat* s) {
   s->checked++;
-  if (s->routine->hw && g_cosim_cost >= 0)
-    g_cosim_cost += (int)hw_spun(c, call);
+  if (g_cosim_cost >= 0)
+    g_cosim_cost +=
+        (int)(s->routine->hw ? hw_spun(c, call) : apu_spun(c, call));
   const long actual =
       (long)(c->snes->cycles - c->priv->irq_skip_all - call->cycles);
   record_cycles(s, actual);

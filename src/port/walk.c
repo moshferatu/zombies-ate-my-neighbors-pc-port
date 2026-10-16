@@ -4,11 +4,14 @@
 
 #include <stddef.h>
 
+#include "port/apu.h"
+#include "port/bcd.h"
 #include "port/coverage.h"
 #include "port/cpu.h"
 #include "port/step.h"
 #include "port/terrain.h"
 #include "port/thread.h"
+#include "port/tile_rows.h"
 
 typedef struct {
   uint16_t x, y;
@@ -24,6 +27,10 @@ typedef struct {
   WalkKind kind;
   int leaps;           // leaps into the water this frame
   bool bounced;        // onto a trampoline this frame
+  bool stopped;        // at a door's block
+  int stop_axis;
+  PortCpu stop;
+  uint16_t stop_return;
 } Walk;
 
 static uint16_t field(const Walk* k, uint16_t at) {
@@ -191,15 +198,85 @@ static Trampoline trampoline(Walk* k) {
   return TRAMPOLINE_BOUNCED;
 }
 
-// `$80:E8D3`: is the player at a door, and with something to open it? A
-// door they cannot open begins a thread. One they can is the ROM's: false.
-static bool door_stays_shut(Walk* k) {
-  WalkReaction* did = reaction_met(k, WALK_REACTION_DOOR);
-  const uint16_t reach =
-      rom_word(k->rom, WALK_DOOR_REACH + field(k, WALK_DP_FACING));
+// The three that look up or down from the player for a tile of their own.
+typedef struct {
+  uint32_t reach;    // how far to look, by the way faced
+  uint16_t tile;     // the tile, under `WALK_DOOR_BITS`
+  bool has_key;      // a door, with a count that opens it...
+  uint16_t key;      // ...this far into the items
+  uint32_t put_pc;   // where the walk stops when it opens
+  uint16_t back;     // ...with the reaction's return under it
+} DoorKind;
+
+static const DoorKind DOOR = {WALK_DOOR_REACH, WALK_DOOR, true, 0,
+                              WALK_DOOR_PUT_PC, WALK_DOOR_RETURN};
+static const DoorKind DOOR_B = {WALK_DOOR_REACH, WALK_DOOR_B, true,
+                                WALK_DOOR_B_KEY, WALK_DOOR_B_PUT_PC,
+                                WALK_DOOR_B_RETURN};
+static const DoorKind FOURTH = {WALK_FOURTH_REACH, WALK_FOURTH, false, 0, 0,
+                                0};
+
+#define COVER_BY_KIND(kind, door, door_b, fourth)  \
+  do {                                             \
+    if ((kind) == WALK_REACTION_DOOR)              \
+      PORT_COVER(door);                            \
+    else if ((kind) == WALK_REACTION_DOOR_B)       \
+      PORT_COVER(door_b);                          \
+    else                                           \
+      PORT_COVER(fourth);                          \
+  } while (0)
+
+// `$80:E901`: a door opened. One key fewer, in decimal, the door's sound, and
+// its block with the low bit set, which is the door open. The walk stops at
+// the `JSL $80:AB5A` that puts that in the map. False for a block the map
+// cannot be read at.
+static bool door_opens(Walk* k, int kind, WalkReaction* did,
+                       const DoorKind* d, uint16_t key_at) {
+  // `ASL : ASL : XBA : AND #$00FF`: a pixel to a block.
+  const uint16_t column = (uint16_t)((uint16_t)(field(k, WALK_DP_X) << 2) >> 8);
+  const uint16_t row =
+      (uint16_t)((uint16_t)(field(k, WALK_DP_LOOK_Y) << 2) >> 8);
+  if (!tile_block_cell_supported(k->w, k->rom, column, row)) return false;
+  if (kind == WALK_REACTION_DOOR) PORT_COVER(walk_door_opened);
+  else PORT_COVER(walk_door_b_opened);
+  did->opened = true;
+  ApuSfxRegs sound;
+  apu_play_sfx(k->w, WALK_DOOR_SFX, k->page, &sound);
+  bool carry = true, overflow;
+  wram_w16(k->w, key_at,
+           bcd_sub16(wram_r16(k->w, key_at), 0x0001, &carry, &overflow));
+  set_field(k, WALK_DP_LOOK_X, column);
+  set_field(k, WALK_DP_LOOK_Y, row);
+  BlockCellRegs cell;
+  BlockSwapWork read;
+  const uint16_t block =
+      tile_block_read(k->w, k->rom, column, row, &cell, &read);
+  did->cell_in_rom = read.cell_in_rom;
+  // `ORA #$0001 : LDX $60 : LDY $62`.
+  k->stopped = true;
+  k->stop = (PortCpu){.a = (uint16_t)(block | 1), .x = column, .y = row,
+                      .d = k->page, .db = 0x80, .pc = d->put_pc};
+  set_nz16(&k->stop, row);
+  set_c(&k->stop, cell.c);
+  set_v(&k->stop, read.v);
+  k->stop_return = d->back;
+  return true;
+}
+
+// `$80:E8D3`, `$80:E943` and `$80:E9B3`: is the player at a door, or at the
+// fourth's tile? A door they cannot open begins a thread, and one they can
+// opens. The fourth's tile is the ROM's. Each of the three is solid ground
+// to the walk; `met_reaction` says what is not ours.
+static void door_stays_shut(Walk* k, int kind) {
+  const DoorKind* d = kind == WALK_REACTION_DOOR     ? &DOOR
+                      : kind == WALK_REACTION_DOOR_B ? &DOOR_B
+                                                     : &FOURTH;
+  WalkReaction* did = reaction_met(k, kind);
+  const uint16_t reach = rom_word(k->rom, d->reach + field(k, WALK_DP_FACING));
   if (reach == 0) {
-    PORT_COVER(walk_door_no_reach);
-    return true;
+    COVER_BY_KIND(kind, walk_door_no_reach, walk_door_b_no_reach,
+                  walk_fourth_no_reach);
+    return;
   }
   const uint16_t x = field(k, WALK_DP_X);
   const uint16_t y = (uint16_t)(field(k, WALK_DP_Y) + reach);
@@ -208,21 +285,32 @@ static bool door_stays_shut(Walk* k) {
   TileAttrsRegs tile;
   tile_attrs_at_pixel(k->w, x, y, &tile);
   overflow_left(k, lookup_overflows(k, x, y));
-  if ((tile.a & WALK_DOOR_BITS) != WALK_DOOR) {
-    PORT_COVER(walk_door_not_there);
-    return true;
+  if ((tile.a & WALK_DOOR_BITS) != d->tile) {
+    COVER_BY_KIND(kind, walk_door_not_there, walk_door_b_not_there,
+                  walk_fourth_not_there);
+    return;
+  }
+  // The fourth's tile: a sound, its block, a thread and a sleep.
+  if (!d->has_key) {
+    k->met_reaction = true;
+    return;
   }
   // The items are in low WRAM. Anywhere else is not ours to read.
   const uint16_t items = field(k, WALK_DP_ITEMS);
-  if (items >= 0x2000 || wram_r16(k->w, items) != 0) {
-    PORT_COVER(walk_door_opened);
-    return false;
+  if (items >= 0x2000) {
+    k->met_reaction = true;
+    return;
   }
-  PORT_COVER(walk_door_locked);
+  const uint16_t key_at = (uint16_t)(items + d->key);
+  if (wram_r16(k->w, key_at) != 0) {
+    if (!door_opens(k, kind, did, d, key_at)) k->met_reaction = true;
+    return;
+  }
+  if (kind == WALK_REACTION_DOOR) PORT_COVER(walk_door_locked);
+  else PORT_COVER(walk_door_b_locked);
   did->locked = true;
   did->slot = thread_spawn(k->w, k->rom, WALK_DOOR_THREAD,
                            WALK_DOOR_THREAD_BANK, k->page);
-  return true;
 }
 
 // `$82:F4FF`: the square of 64 pixels the player is in, looked for among
@@ -323,11 +411,12 @@ static bool ground_is_solid(Walk* k, Point p) {
       }
       break;
     case WALK_REACTION_DOOR:
-      if (door_stays_shut(k)) {
-        if (k->log) k->log->last_yes = true;
-        return true;
-      }
-      break;
+    case WALK_REACTION_FOURTH:
+    case WALK_REACTION_DOOR_B:
+      door_stays_shut(k, walk_tile_reaction(r.a));
+      if (k->met_reaction) break;
+      if (k->log) k->log->last_yes = true;
+      return true;
     case WALK_REACTION_SQUARE:
       // The one reaction the step goes on through.
       if (!square_entered(k)) break;
@@ -407,14 +496,9 @@ static bool can_step(Walk* k, Point from, Point to) {
   return true;
 }
 
-static void walk(Walk* k) {
-  StepProposeRegs proposed;
-  step_propose(k->w, k->rom, k->page, &proposed);
-  overflow_left(k, proposed.v);
-  if (k->log) k->log->doubled = proposed.x != 0;
-
-  // Across first, at the height the player stands at now.
-  Point here = position(k);
+// Across, at the height the player stands at now.
+static void step_across(Walk* k) {
+  const Point here = position(k);
   Point across = {field(k, WALK_DP_WANT_X), here.y};
   if (can_step(k, here, across)) {
     set_field(k, WALK_DP_X, across.x);
@@ -426,9 +510,11 @@ static void walk(Walk* k) {
       k->log->took[0] = true;
     }
   }
+}
 
-  // Then up or down, from wherever that left the player.
-  here = position(k);
+// Then up or down, from wherever that left the player.
+static void step_up_down(Walk* k) {
+  const Point here = position(k);
   Point up_down = {here.x, field(k, WALK_DP_WANT_Y)};
   if (can_step(k, here, up_down)) {
     set_field(k, WALK_DP_Y, up_down.y);
@@ -440,6 +526,22 @@ static void walk(Walk* k) {
       k->log->took[1] = true;
     }
   }
+}
+
+// A door that opens stops it, on the axis it opened on.
+static void walk(Walk* k) {
+  StepProposeRegs proposed;
+  step_propose(k->w, k->rom, k->page, &proposed);
+  overflow_left(k, proposed.v);
+  if (k->log) k->log->doubled = proposed.x != 0;
+
+  step_across(k);
+  if (k->stopped) {
+    k->stop_axis = 0;
+    return;
+  }
+  step_up_down(k);
+  if (k->stopped) k->stop_axis = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -576,14 +678,44 @@ bool monster_walk_checked(Wram* w, const Rom* rom, uint16_t page,
   return !k.met_reaction;
 }
 
-bool player_walk_checked(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
-  Walk k = {w, rom, page, false, log, WALK_ORDINARY};
-  if (field(&k, WALK_DP_MODE) & WALK_TWICE) {
+// The ordinary walk, but twice in one frame, which is the ROM's.
+static bool walk_once(Walk* k) {
+  if (field(k, WALK_DP_MODE) & WALK_TWICE) {
     PORT_COVER(walk_twice);
     return false;
   }
-  walk(&k);
-  return !k.met_reaction;
+  walk(k);
+  return !k->met_reaction;
+}
+
+bool player_walk_checked(Wram* w, const Rom* rom, uint16_t page, WalkLog* log) {
+  Walk k = {w, rom, page, false, log, WALK_ORDINARY};
+  return walk_once(&k) && !k.stopped;
+}
+
+bool player_walk_stoppable(Wram* w, const Rom* rom, uint16_t page,
+                           WalkLog* log) {
+  Walk k = {w, rom, page, false, log, WALK_ORDINARY};
+  if (!walk_once(&k)) return false;
+  log->stopped = k.stopped;
+  log->stop_axis = k.stop_axis;
+  log->stop = k.stop;
+  log->stop_return = k.stop_return;
+  return true;
+}
+
+bool player_walk_resume(Wram* w, const Rom* rom, uint16_t page, int axis,
+                        bool v, WalkLog* log) {
+  Walk k = {w, rom, page, false, log, WALK_ORDINARY};
+  PORT_COVER_IF(axis == 0, walk_resumed_across, walk_resumed_up_down);
+  // `SEC : RTS`, and the axis's `BCS` past the step.
+  if (log) {
+    log->resumed = true;
+    log->last_yes = true;
+    log->overflow = v;
+  }
+  if (axis == 0) step_up_down(&k);
+  return !k.met_reaction && !k.stopped;
 }
 
 bool walk_supported(Wram* w, const Rom* rom, uint16_t page) {

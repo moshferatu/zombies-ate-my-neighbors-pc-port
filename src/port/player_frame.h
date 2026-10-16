@@ -105,6 +105,9 @@
 // Where the sleep comes back to, and the `JSL` the next one is.
 #define PLAYER_FRAME_PC 0x80cdfeu
 #define PLAYER_FRAME_YIELD_PC 0x80cdfau
+// What the movement's call leaves under it, `PEA $CE15`, which a frame that
+// stops at a door's block leaves on the stack.
+#define PLAYER_FRAME_MOVE_RETURN 0xce15u
 // What a frame that stops in a hit leaves on the stack: the return of the
 // `JSR $D01B` at `$80:CE01`.
 #define PLAYER_FRAME_HIT_RETURN 0xce03u
@@ -217,6 +220,14 @@ typedef struct {
 // the ROM's, so a caller asks it of a copy first.
 void player_splashed(Wram* w, const Rom* rom, uint16_t page, uint16_t s,
                      PlayerFrameLog* log);
+
+// `$80:E942` or `$80:E9B2`, the rest of a frame whose walk stopped at a
+// door's block: the walk from the axis it stopped on, and the frame's tail.
+// `v` is the overflow the block's call left. `log` may be NULL;
+// `log->unported` says it reached something that is the ROM's, so a caller
+// asks it of a copy first.
+void player_walk_woken(Wram* w, const Rom* rom, uint16_t page, int axis,
+                       bool v, PlayerFrameLog* log);
 
 // Would the port run this frame the way the ROM does? It runs the frame to
 // find out, so `w` is a copy.

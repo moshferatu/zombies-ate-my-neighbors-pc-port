@@ -100,10 +100,8 @@ void tile_block_begin(Wram* w, PortCpu* c, bool* v) {
 
 static bool map_in_rom(uint8_t bank) { return (bank & 0xfeu) != 0x7eu; }
 
-bool tile_block_swap_supported(const Wram* w, const Rom* rom, uint16_t x,
-                               uint16_t y) {
-  const uint16_t column = (uint16_t)(x >> BLOCK_PIXEL_SHIFT);
-  const uint16_t row = (uint16_t)(y >> BLOCK_PIXEL_SHIFT);
+bool tile_block_cell_supported(const Wram* w, const Rom* rom, uint16_t column,
+                               uint16_t row) {
   const uint16_t at = (uint16_t)(
       wram_r16(w, (uint32_t)W_BLOCK_ROW_BASE + (uint32_t)(row << 1)) +
       (uint16_t)(column << 1));
@@ -111,6 +109,23 @@ bool tile_block_swap_supported(const Wram* w, const Rom* rom, uint16_t x,
   if (at == 0xffffu) return false;
   if (!map_in_rom(bank)) return true;
   return at >= 0x8000u && rom_has(rom, ((uint32_t)bank << 16) | at, 2);
+}
+
+uint16_t tile_block_read(Wram* w, const Rom* rom, uint16_t column,
+                         uint16_t row, BlockCellRegs* cell, BlockSwapWork* k) {
+  blockmap_cell_ptr(w, 0, column, row, cell);
+  const uint16_t at = wram_r16(w, LM_DP_SRC);
+  k->v = add16_overflows((uint16_t)(at - cell->x), cell->x);
+  const uint8_t bank = wram_r8(w, LM_DP_SRC_BANK);
+  k->cell_in_rom = map_in_rom(bank);
+  return k->cell_in_rom ? rom_word(rom, ((uint32_t)bank << 16) | at)
+                        : wram_r16(w, ((uint32_t)(bank & 1u) << 16) | at);
+}
+
+bool tile_block_swap_supported(const Wram* w, const Rom* rom, uint16_t x,
+                               uint16_t y) {
+  return tile_block_cell_supported(w, rom, (uint16_t)(x >> BLOCK_PIXEL_SHIFT),
+                                   (uint16_t)(y >> BLOCK_PIXEL_SHIFT));
 }
 
 void tile_block_swap_ask(Wram* w, const Rom* rom, PortCpu* c, uint16_t x,
@@ -124,16 +139,7 @@ void tile_block_swap_ask(Wram* w, const Rom* rom, PortCpu* c, uint16_t x,
   c->d = 0;
 
   BlockCellRegs cell;
-  blockmap_cell_ptr(w, 0, column, row, &cell);
-  const uint16_t at = wram_r16(w, LM_DP_SRC);
-  k->v = add16_overflows((uint16_t)(at - cell.x), cell.x);
-  const uint8_t bank = wram_r8(w, LM_DP_SRC_BANK);
-  k->cell_in_rom = map_in_rom(bank);
-  const uint16_t block =
-      k->cell_in_rom
-          ? rom_word(rom, ((uint32_t)bank << 16) | at)
-          : wram_r16(w, ((uint32_t)(bank & 1u) << 16) | at);
-
+  const uint16_t block = tile_block_read(w, rom, column, row, &cell, k);
   c->a = (uint16_t)(block ^ BLOCK_PAIR_BIT);
   c->x = column;
   c->y = row;

@@ -45,6 +45,7 @@
 
 #include "assets/rom.h"
 #include "port/cpu.h"
+#include "port/levelmap.h"
 #include "port/wram.h"
 
 #define TILEMAP_ROW_TABLES_PC 0x80aca2u
@@ -131,6 +132,15 @@ typedef struct {
   bool v;            // overflow, from the sum that found the cell
   bool cell_in_rom;  // the map of blocks is in the cartridge
 } BlockSwapWork;
+
+// `PEA $0000 : PLD : JSL $80:ACF6 : LDA [$28]`, which the swap and a door's
+// opening both make: the block at a column and a row of blocks. `cell` is
+// what `$80:ACF6` left, and `k` the overflow of the sum that found the cell
+// and where the map is.
+bool tile_block_cell_supported(const Wram* w, const Rom* rom, uint16_t column,
+                               uint16_t row);
+uint16_t tile_block_read(Wram* w, const Rom* rom, uint16_t column,
+                         uint16_t row, BlockCellRegs* cell, BlockSwapWork* k);
 
 // False if the cell for that place is not where a word can be read.
 bool tile_block_swap_supported(const Wram* w, const Rom* rom, uint16_t x,

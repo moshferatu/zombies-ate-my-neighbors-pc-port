@@ -5,6 +5,92 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Using an item, the walk's doors, the seeker struck, a neighbour past the gate, the swipe's cut, and two starts (2026-10-15)
+
+Another round of about five times the usual, validated once at the end.
+
+* **Using an item**, `$80:EAE1`, is `item_use` in `port/player.h`. The
+  third button uses the item held: not while the player's pictures are not
+  their own, nor while the last use's twenty frames run, nor with none held.
+  Ported are the speed shoes, the first aid kit and the decoy, which the
+  corpus uses, and the items whose use does nothing. Each but those takes one
+  off its count in decimal, and the last one used selects the next item. The
+  potions and the box are the ROM's still: the frame that would use one is
+  turned down.
+  * The ordinary state's four presses are all priced now, the two selectors
+    by what their search did, so a frame with a press in it is no longer
+    turned down for its price. The selectors price their own calls too.
+* **A sound that waits.** A sound is priced as one that finds the sound
+  chip caught up, which is what a substituted one is: under `run`, the wait
+  is the harness's. `verify` now adds the ROM's own waits, each read of
+  `$2143` past the one that met it, to the price of any call that plays one,
+  as it did for the routines that trace the hardware. Two calls on
+  `level1-keys` waited.
+* **The walk's doors.** A door the player has a key for opens: the key's
+  count comes down, a sound plays, and the walk stops at the `JSL $80:AB5A`
+  that puts the open block in the map, with the reaction's `JSR`, the axis's
+  and the movement's return under it, and the player's frame with it. The
+  rest of the walk and of the frame is `player_door_woken`, at the door's
+  `RTS`. The door the skeleton key opens, `$80:E943`, is the same routine with
+  its own tile and count. The fourth reaction, `$80:E9B3`, is solid ground
+  when its tile is not there; when it is, it sleeps, and that is the ROM's.
+  * `tile_block_read` in `port/tile_rows.h` is the block at a column and a
+    row, which the swap and a door's opening both read.
+* **The seeker struck.** Hit while it faces whoever is nearest, it loses
+  nine of its strength; with nobody near enough, or darting with nobody in
+  reach or solid ground where it would land, it does not. Either way its
+  pictures play with nothing to touch it, and the frame stops at their call,
+  with the state's return and the loop's under it. `seeker_struck_shown`, at
+  `$82:EF12`, goes on: it comes at whoever is nearest again, and the state
+  it was struck in goes on from its `JSR`.
+* **A neighbour past the level's gate.** `victim_start` marks its place in
+  the list gone, `$81:81EF`, where it turned the start down.
+* **The swipe's cut**, when it cuts something, is priced: the tiles put, the
+  count by side and the sound. The swipe's start that cut was turned down.
+* **Two starts**, between their calls: the seeker's, `$82:EF36`, its place
+  marked gone, its weight, its record and its sound, to its first sleep; and
+  the decoy's, `$81:F159`, to its first pictures, and from them to its first
+  sleep.
+* **Two of my mistakes, caught before the corpus was done.**
+  * The row that goes on from a door's `RTS` was never offered: a link had
+    that address earlier in the registry and took every call.
+  * Offered, it took too much. Every door the walk meets ends at that `RTS`,
+    and the row took the doors that stay shut too, inside the walk being
+    checked: on `level5` 101 walks were counted interrupted for it, and a
+    locked door's mark was lost. It asks now for the return address the
+    block's `JSL` leaves under the stack.
+* **Checked.** 1,648 routines are registered.
+  * The corpus verifies clean: 128,129,433 calls over 56 movies, none
+    diverged, and all 1,208 cost rows are exact.
+  * Branch coverage is 1,826 of 2,223. No branch taken before is untaken
+    now; the seventeen new ones untaken are this round's, among them most of
+    the item use's tests, the skeleton key's door, and the seeker struck
+    while it faces someone.
+  * Lockstep: 53 of 56 never part. level25, level25-2p and level25-heavy
+    part as before, at the same passes, and the bytes the check cannot
+    account for are the same.
+  * The picture: 78,360,128 lines at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 104 to 84 | 299 to 175 | 2,970 to 1,545 |
+  | Left standing on an instruction | 4 to 4 | 128 to 128 | 612 to 612 |
+  | A port turned the call down | 11 to 8 | 55 to 20 | 525 to 204 |
+  | A port or a link called it | 5 to 5 | 128 to 128 | 308 to 308 |
+  | All | 125 to 102 | 720 to 561 | 12,335 to 10,589 |
+
+  The reset's own code, 7,920 instructions, is in the last row and in no
+  other; without it the core executes 2,669 where it executed 4,415. No
+  place is new.
+* **Not done.** The potions and the box, which change what the player is or
+  sleep. The fourth reaction's tile, when it is there: a sound, its block, a
+  thread and a sleep in the middle of the walk. A walk that leaps after a
+  bounce. The slime's three frames on `level9-weapons` that are turned down,
+  which I have not looked into. A bystander's words, which write `$2132`
+  from a thread; and the reset's clear and the front end's read of `$213F`.
+
 ### Six handlers priced, the punch's walls, the exit door, the fishman's dive, five ends and a player out (2026-10-15)
 
 Another round of about five times the usual, validated once at the end.

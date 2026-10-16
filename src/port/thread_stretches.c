@@ -16,6 +16,7 @@
 #include "port/apu.h"               // W_APU_SOUNDS
 #include "port/cheat.h"
 #include "port/coverage.h"
+#include "port/decoy.h"
 #include "port/follower.h"
 #include "port/football.h"         // FOOTBALLER_STATE_SENT_OFF
 #include "port/frontend.h"            // the frame count
@@ -323,6 +324,15 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
     case TS_NEEDS_ZOMBIE_FREED:
       // Less than its weight, and the ROM goes round a `BMI` for good.
       return ((uint16_t)(wram_r16(w, W_SPAWN_LOAD) - ZOMBIE_8ED5_LOAD) & 0x8000u) == 0;
+    case TS_NEEDS_SEEKER_MADE:
+      return c->a < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == SEEKER_MADE_RETURN;
+    case TS_NEEDS_SEEKER_SOUNDED:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == SEEKER_MADE_RETURN &&
+             page(w, c, SEEKER_DP_RECORD) < 0x1f00;
+    case TS_NEEDS_DECOY_MADE:
+      return c->a < 0x1f00 && c->y == c->a &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == DECOY_MADE_RETURN;
     case TS_NEEDS_BOLT_MADE:
       return c->a < 0x1f00 && c->y == c->a &&
              wram_r16(w, (uint16_t)(c->s + 1)) == BOLT_MADE_RETURN &&
@@ -3696,6 +3706,154 @@ void seeker_back(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   ran(k, TS_SEEKER_BACK_ON);
   seeker_set(w, c, SEEKER_STATE_WATCH, k);
   seeker_return(w, c, k);
+}
+
+// --- the seeker's start --------------------------------------------------------
+
+// `$82:EF36`: its place in the level's list, to be marked gone.
+void seeker_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(seeker_entered);
+  lda(c, page(w, c, SEEKER_DP_GONE));
+  ran(k, TS_LDA_DP);
+  c->pc = SEEKER_GONE_CALL_PC;
+}
+
+// `$82:EF3C`: its weight, and `JSR $EF8B` to its record.
+void seeker_gone(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  load_up(w, c, SEEKER_LOAD);
+  push16(w, c, SEEKER_MADE_RETURN);
+  ran(k, TS_SEEKER_LOAD);
+  c->pc = SEEKER_ALLOC_PC;
+}
+
+// `$82:E827`, then the `RTS` of the start's `JSR` and the first sleep: it
+// comes at whoever is nearest, from the next frame.
+static void seeker_started(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  set_page(w, c, SEEKER_DP_SLEEP, 1);
+  set_page(w, c, SEEKER_DP_STATE, SEEKER_STATE_CHASE);
+  set_page(w, c, SEEKER_DP_FRAMES, SEEKER_FLAP_FRAMES);
+  set_page(w, c, SEEKER_DP_PICTURE,
+           (uint16_t)(page(w, c, SEEKER_DP_PICTURE) & 0x0001u));
+  ldy(c, page(w, c, SEEKER_DP_RECORD));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) |
+                      ACTOR_PRIORITY_TOP));
+  lda(c, 0);
+  ldy(c, 0);
+  ran(k, TS_SEEKER_RESET);
+  thread_set_handler(w, c);
+  ran(k, TS_SET_HANDLER);
+  lda(c, page(w, c, SEEKER_DP_STRENGTH));
+  ran(k, TS_SEEKER_ALIVE);
+  ran(k, TS_TAKEN);
+  pull16(w, c);
+  ran(k, TS_RTS);
+  lda(c, page(w, c, SEEKER_DP_SLEEP));
+  ran(k, TS_SEEKER_SLEEP);
+  c->pc = SEEKER_FRAME_SLEEP_PC;
+}
+
+// `$82:EF8F`: its record, at the place it was begun at, with its picture
+// and its id, drawn; its first turn and its strength; and with the sample
+// set that has it, its sound.
+void seeker_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t record = c->a;
+  set_page(w, c, SEEKER_DP_RECORD, record);
+  ldy(c, record);
+  const uint16_t x = page(w, c, SEEKER_DP_SPAWN_X);
+  set_page(w, c, SEEKER_DP_X, x);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), x);
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  const uint16_t y = page(w, c, SEEKER_DP_SPAWN_Y);
+  set_page(w, c, SEEKER_DP_Y, y);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), SEEKER_START_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), SEEKER_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), SEEKER_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), SEEKER_START_ATTR);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  set_page(w, c, SEEKER_DP_TURN, SEEKER_START_TURN);
+  set_page(w, c, SEEKER_DP_STRENGTH, SEEKER_START_STRENGTH);
+  set_page(w, c, SEEKER_DP_ENDED, 0);
+  set_page(w, c, SEEKER_DP_HIT_ID, 0);
+  set_page(w, c, SEEKER_DP_FREEZE_HITS, 0);
+  set_page(w, c, SEEKER_DP_AFTER, 0);
+  lda(c, wram_r16(w, W_APU_SOUNDS));
+  cmp16(c, c->a, SEEKER_LAND_SOUNDS);
+  ran(k, TS_SEEKER_MADE);
+  if (c->a == SEEKER_LAND_SOUNDS) {
+    PORT_COVER(seeker_start_heard);
+    lda(c, SEEKER_START_SFX);
+    ran(k, TS_LDA_IMM);
+    c->pc = SEEKER_START_SFX_CALL_PC;
+    return;
+  }
+  PORT_COVER(seeker_start_unheard);
+  ran(k, TS_TAKEN);
+  seeker_sounded(w, rom, c, k);
+}
+
+// `$82:EFED`: `JMP $E827`.
+void seeker_sounded(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  ran(k, TS_SEEKER_START);
+  seeker_started(w, c, k);
+}
+
+// --- the decoy's start ---------------------------------------------------------
+
+// `$81:F159`: its weight, and `JSR $F200` to its record.
+void decoy_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(decoy_entered);
+  load_up(w, c, DECOY_LOAD);
+  push16(w, c, DECOY_MADE_RETURN);
+  ran(k, TS_DECOY_ENTER);
+  c->pc = DECOY_ALLOC_PC;
+}
+
+// `$81:F204`: one more out, its record where it was begun, drawn, its
+// pictures from the first, a hundred turns, and its first pictures played.
+void decoy_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t record = c->a;
+  set_page(w, c, DECOY_DP_RECORD, record);
+  set_page(w, c, DECOY_DP_SPRITE, record);
+  wram_w16(w, W_DECOYS_OUT, (uint16_t)(wram_r16(w, W_DECOYS_OUT) + 1));
+  set_c(c, false);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), page(w, c, DECOY_DP_X));
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), page(w, c, DECOY_DP_Y));
+  wram_w16(w, (uint16_t)(record + ACTOR_META), DECOY_START_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), DECOY_START_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), DECOY_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  set_page(w, c, DECOY_DP_PICTURE, 0);
+  set_page(w, c, DECOY_DP_HIT, 0);
+  set_page(w, c, DECOY_DP_40, 0x0040);
+  set_page(w, c, DECOY_DP_TURNS_LEFT, DECOY_TURNS);
+  lda(c, DECOY_START_PICTURES);
+  ran(k, TS_DECOY_MADE);
+  c->pc = DECOY_PICTURES_CALL_PC;
+}
+
+// `$81:F166`, back from its start: its first sleep.
+void decoy_first(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  lda(c, DECOY_FIRST_TICKS);
+  ran(k, TS_LDA_IMM);
+  c->pc = DECOY_FIRST_SLEEP_PC;
 }
 
 // --- a tracker's start and end, and the seeker's puff ------------------------

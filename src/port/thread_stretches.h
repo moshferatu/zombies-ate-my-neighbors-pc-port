@@ -1103,6 +1103,24 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define DECOY_DEATH_PC 0x81f1dbu         // `port/decoy.h`'s frame leaves here
 #define DECOY_UNHANDLED_CALL_PC 0x81f1e2u  // `JSL thread_set_handler`
 #define W_DECOYS_OUT 0x1f90u
+// Its start: its weight, its record and its first pictures, under its
+// `JSR $F200`. Then, past its handler, its first sleep.
+#define DECOY_ENTER_PC 0x81f159u
+#define DECOY_ALLOC_PC 0x81f200u          // `JSL actor_slot_alloc`
+#define DECOY_MADE_PC 0x81f204u
+#define DECOY_MADE_RETURN 0xf165u         // `JSR $F200`'s
+#define DECOY_PICTURES_CALL_PC 0x81f24eu  // `JSL pictures_resume`
+#define DECOY_FIRST_PC 0x81f166u
+#define DECOY_FIRST_SLEEP_PC 0x81f169u    // `JSL thread_yield`
+#define DECOY_LOAD 0x0008
+#define DECOY_START_PICTURE 0xd659u
+#define DECOY_START_PICTURE_BANK 0x008fu
+#define DECOY_COLLIDE_ID 0x0038
+#define DECOY_START_PICTURES 0xf27eu
+#define DECOY_DP_SPRITE 0x08             // and `port/decoy.h`'s fields
+#define DECOY_DP_40 0x40                  // set, and nothing here reads it
+#define DECOY_TURNS 0x0064
+#define DECOY_FIRST_TICKS 0x000a
 #define WEREWOLF_DEAD_PC 0x81ac2au
 #define WEREWOLF_UNHANDLED_CALL_PC 0x81ac2eu
 #define WEREWOLF_UNHANDLED_PC 0x81ac32u
@@ -1389,6 +1407,26 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define SEEKER_SPAWN_TICKS 0x0003
 #define SEEKER_FIRED_PICTURES 0x82eeafu         // a list for each way
 #define SEEKER_HIDDEN_PC 0x82eba3u
+// Its start: the neighbour's place in the level's list marked gone, its
+// weight, its record, and with the sample set that has it a sound. Then the
+// state `$82:E827` sets, coming at whoever is nearest, and the first sleep.
+#define SEEKER_ENTER_PC 0x82ef36u
+#define SEEKER_GONE_CALL_PC 0x82ef38u     // `JSL victim_mark_gone`
+#define SEEKER_GONE_PC 0x82ef3cu
+#define SEEKER_ALLOC_PC 0x82ef8bu         // `JSL actor_slot_alloc`
+#define SEEKER_MADE_PC 0x82ef8fu
+#define SEEKER_MADE_RETURN 0xef48u        // `JSR $EF8B`'s
+#define SEEKER_START_SFX_CALL_PC 0x82efe9u  // `JSL apu_play_sfx`
+#define SEEKER_SOUNDED_PC 0x82efedu
+#define SEEKER_DP_GONE 0x06               // its place in the list
+#define SEEKER_LOAD 0x0014
+#define SEEKER_START_PICTURE 0xda44u
+#define SEEKER_START_ATTR 0x0c00u
+#define SEEKER_START_TURN 0x0004
+#define SEEKER_START_STRENGTH 0x0036
+#define SEEKER_START_SFX 0x0026
+#define SEEKER_DP_HIT_ID 0x34             // what `$82:EFF0` files
+#define SEEKER_DP_FREEZE_HITS 0x7e
 #define SEEKER_BACK_PC 0x82ec61u
 #define SEEKER_COLLIDE_ID 0x0003
 
@@ -1694,6 +1732,13 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_SLIME_FIRST, 0x81ccdf, 0x81cce4, 0) \
   X(TS_SEEKER_TAIL, 0x82ef57, 0x82ef5b, 0)    /* LDA $2E : BEQ */ \
   X(TS_SEEKER_SLEEP, 0x82ef49, 0x82ef4b, 0)   /* LDA $2C */ \
+  X(TS_SEEKER_LOAD, 0x82ef3c, 0x82ef49, 0)    /* the JSR too */ \
+  X(TS_SEEKER_MADE, 0x82ef8f, 0x82efe6, 0)    /* to the BNE */ \
+  X(TS_SEEKER_START, 0x82efed, 0x82eff0, 0)   /* JMP $E827 */ \
+  X(TS_SEEKER_RESET, 0x82e827, 0x82e850, 0)   /* the JSL too */ \
+  X(TS_SEEKER_ALIVE, 0x82e850, 0x82e854, 0)   /* LDA $30 : BPL */ \
+  X(TS_DECOY_ENTER, 0x81f159, 0x81f166, 0)    /* the JSR too */ \
+  X(TS_DECOY_MADE, 0x81f204, 0x81f24e, 0) \
   X(TS_SEEKER_SET, 0x82eb5e, 0x82eb64, 0)     /* and $82:EB74-$EB79 */ \
   X(TS_SEEKER_SET_HOLD, 0x82ec92, 0x82eca3, 0) \
   X(TS_SEEKER_LAND_ASK, 0x82ea35, 0x82ea3d, 0)  /* LDA abs : CMP # : BNE */ \
@@ -1808,6 +1853,9 @@ typedef enum {
                             //    if it is to
   TS_NEEDS_PLAYER_DROPS,    // its inventory in low WRAM
   TS_NEEDS_BOLT_MADE,      // a record in A and Y, the start's `JSR` to return
+  TS_NEEDS_SEEKER_MADE,    // a record in A, the start's `JSR` to return
+  TS_NEEDS_SEEKER_SOUNDED, // ...that `JSR`'s return
+  TS_NEEDS_DECOY_MADE,     // a record in A and Y, the start's `JSR` to return
                            // to, and a way and a player the tables have
   TS_NEEDS_STUNG_SHOWN,    // ...and a way the table has, read through `$80`
   TS_NEEDS_CHAINSAW_SHOWN, // ...and the start's other `JSR`
@@ -2018,6 +2066,13 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(seeker_next, "$82:EE62", SEEKER_NEXT_PC, seeker_next, SEEKER, TS_NEEDS_SEEKER_NEXT) \
   X(seeker_hidden, "$82:EBA3", SEEKER_HIDDEN_PC, seeker_hidden, SEEKER, TS_NEEDS_SEEKER_HIDDEN) \
   X(seeker_back, "$82:EC61", SEEKER_BACK_PC, seeker_back, SEEKER, TS_NEEDS_SEEKER) \
+  X(seeker_enter, "$82:EF36", SEEKER_ENTER_PC, seeker_enter, SEEKER, TS_NEEDS_NOTHING) \
+  X(seeker_gone, "$82:EF3C", SEEKER_GONE_PC, seeker_gone, SEEKER, TS_NEEDS_NOTHING) \
+  X(seeker_made, "$82:EF8F", SEEKER_MADE_PC, seeker_made, SEEKER, TS_NEEDS_SEEKER_MADE) \
+  X(seeker_sounded, "$82:EFED", SEEKER_SOUNDED_PC, seeker_sounded, SEEKER, TS_NEEDS_SEEKER_SOUNDED) \
+  X(decoy_enter, "$81:F159", DECOY_ENTER_PC, decoy_enter, DECOY_START, TS_NEEDS_NOTHING) \
+  X(decoy_made, "$81:F204", DECOY_MADE_PC, decoy_made, DECOY_START, TS_NEEDS_DECOY_MADE) \
+  X(decoy_first, "$81:F166", DECOY_FIRST_PC, decoy_first, DECOY_START, TS_NEEDS_NOTHING) \
   X(tracker_enter, "$82:F03E", TRACKER_ENTER_PC, tracker_enter, TRACKER, TS_NEEDS_NOTHING) \
   X(tracker_begun, "$82:F04B", TRACKER_BEGUN_PC, tracker_begun, TRACKER, TS_NEEDS_NOTHING) \
   X(tracker_ended, "$82:F05E", TRACKER_ENDED_PC, tracker_ended, TRACKER, TS_NEEDS_RECORD) \

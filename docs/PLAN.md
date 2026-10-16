@@ -273,6 +273,14 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**Using an item, the walk's doors and the seeker struck, 2026-10-15.** The
+item use is a port for the items the corpus uses; a door with a key opens
+and the walk stops at its block and goes on from the door's `RTS`; the
+seeker struck plays its pictures and goes on; a neighbour past the level's
+gate, the swipe's cut and the seeker's and the decoy's starts are ports too.
+`verify` gives back a sound's wait in any call. The places are 102 and the
+core executes 10,589 instructions over the survey.
+
 **Six handlers priced, the exit door, the fishman's dive and a player out,
 2026-10-15.** Six short collision handlers say which pieces of themselves
 they ran, so a box that tells them is priced; the monster's punch knocks

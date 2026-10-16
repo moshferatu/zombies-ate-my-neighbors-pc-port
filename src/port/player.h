@@ -31,6 +31,7 @@
 
 #include "assets/rom.h"
 #include "port/floor.h"
+#include "port/terrain.h"
 #include "port/wram.h"
 
 // --- $80:EA63 ---------------------------------------------------------------
@@ -130,10 +131,15 @@
 #define PLAYER_DP_WEAPON_DATA 0x12
 
 // What the routine leaves in the caller's registers, in the same shape
-// `port/collide.h` uses.
+// `port/collide.h` uses, and what its search did, which prices it.
 typedef struct {
   uint16_t a, x, y;
   bool n, z, c;
+  bool none_held;  // nothing was held, so the search began at slot 0
+  int empties;     // slots it found empty
+  int wraps;       // times it ran off the end and went back to slot 0
+  bool found;      // ...or every try was spent
+  bool changed;    // a different one was selected
 } WeaponSelectRegs;
 
 // Select the player's next non-empty inventory slot.
@@ -192,7 +198,7 @@ void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
 //
 //     $8000  B   -> $80:EA63 weapon_select_next
 //     $0080  A   -> $80:EAA8 item_select_next
-//     $0040  X   -> $80:EAE1 item_use          -- the one thing not ported
+//     $0040  X   -> $80:EAE1 item_use          -- but the potions and the box
 //     $0030  L or R -> spawn $82:D8DB, and play sound $0D
 //
 // ## Weapon zero is empty, and the two flag words
@@ -213,14 +219,12 @@ void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
 // weapon 3 makes the player immune — so *that* immunity is a weapon that is
 // both selected and not empty, and this is where the connection is made.
 //
-// ## `$80:EAE1 item_use` is not ported, so those calls are declined
+// ## `$80:EAE1 item_use`
 //
-// It executes **zero times in all ten profiles** and dispatches through a table
-// of per-item routines, so porting it would be a large amount of code the
-// corpus cannot check. The guard declines instead, and it can, because the
-// condition is entirely readable before the routine runs: `$006E,X & $0040`
-// set and `$1C & $0040` clear. Bit 15 is the only bit of `$006E,X` the routine
-// rewrites, so the guard reading the raw word rather than `$1A` is exact.
+// It dispatches through a table of per-item routines, and three of them, with
+// those that do nothing, are `item_use`. The guard declines a frame that
+// would use any other: the press is readable before the routine runs,
+// `$006E,X & $0040` set and `$1C & $0040` clear, and so is the item.
 #define PLAYER_STATE_NORMAL_ENTRY 0x80d1ffu
 
 // Absolute, not direct page: `$80:D208` is `BD 6E 00`, `LDA $006E,X`.
@@ -338,6 +342,81 @@ void weapon_select_prev(Wram* w, const Rom* rom, uint16_t dp,
 void item_select_prev(Wram* w, const Rom* rom, uint16_t dp,
                       WeaponSelectRegs* out);
 
+// --- $80:EAE1  item_use -------------------------------------------------
+//
+// The third button uses the item held. Not while the player looks like
+// something else, `$10` against their own pictures at `$FB52,X`; not while the
+// last use's wait at `$4E` is running, or `$70` is set; and not with none held
+// or a count gone negative. Then the wait is twenty frames, and the item's own
+// routine runs, through `JMP ($EB07,X)`. Most use one up, `$80:EB48`, and the
+// last one used selects the next item, by a `JMP` to `$80:EAA8`.
+//
+// Ported are the three the corpus uses, and those that do nothing:
+//
+//   * slot 1, the speed shoes: bit 15 of `$54` for the 850 frames `$56`
+//     counts, which is the fourth countdown of the frame;
+//   * slot 7, the first aid kit: the health back to ten, with a sound, or
+//     nothing at ten already;
+//   * slot 10, the decoy: unless three are out, a thread at `$81:F159` at the
+//     point 24 pixels ahead, if the ground there is clear for an enemy.
+//
+// The potions and the box are not: slots 2 to 5 change what the player is,
+// and slot 8 sleeps. A use that reaches one of them is `ITEM_USE_UNPORTED`,
+// and the frame is the ROM's.
+#define ITEM_USE_OWN_PICTURES 0x80fb52u  // by `$0C`, against `$10`
+#define ITEM_USE_DP_PICTURES 0x10u
+#define ITEM_USE_DP_BUSY 0x70u
+#define ITEM_USE_DP_X 0x30u            // the player's place
+#define ITEM_USE_DP_Y 0x32u
+#define ITEM_USE_WAIT 0x0014u           // into `$4E`, the second countdown
+#define ITEM_SPEED_SHOES 1
+#define ITEM_FIRST_AID 7
+#define ITEM_DECOY 10
+#define ITEM_SPEED_BITS 0x8000u         // into `$54`...
+#define ITEM_SPEED_FRAMES 0x0352u       // ...for this long, at `$56`
+#define ITEM_FULL_HEALTH 0x000au
+#define ITEM_AID_SFX 0x0005u
+#define W_DECOYS_OUT 0x1f90u
+#define ITEM_DECOYS_MAX 0x0003u
+#define ITEM_DECOY_AHEAD 0x80ebc2u      // a word of x and of y, by direction
+#define ITEM_DECOY_THREAD 0xf159u
+#define ITEM_DECOY_THREAD_BANK 0x0081u
+
+typedef enum {
+  ITEM_USE_NOT_NOW,        // the player's pictures are not their own
+  ITEM_USE_WAITING,        // `$4E` or `$70`
+  ITEM_USE_NONE_HELD,
+  ITEM_USE_NONE_LEFT,      // the count is negative
+  ITEM_USE_NOTHING,        // an item whose use is a bare `RTS`
+  ITEM_USE_SPEED,
+  ITEM_USE_HEALTH_FULL,    // the first aid kit at full health
+  ITEM_USE_HEALED,
+  ITEM_USE_DECOYS_OUT,     // three are out already
+  ITEM_USE_DECOY_BLOCKED,  // the ground ahead is not clear
+  ITEM_USE_DECOY,
+  ITEM_USE_UNPORTED,       // a potion or the box
+} ItemUseEnd;
+
+// The registers it leaves, and, for the harness, the way it went.
+typedef struct {
+  uint16_t a, x, y;
+  bool n, z, c;
+  ItemUseEnd end;
+  bool used_one;            // `$80:EB48` took one off the count
+  bool ran_out;             // ...the last, and the next was selected
+  WeaponSelectRegs next;    // that selection
+  TerrainRegs ahead;        // the decoy's ground
+  int slot;                 // the decoy's thread, doubled, or -1 for none
+} ItemUseLog;
+
+// `$80:EAE1` on the player's page. `y` is Y as the caller left it, which the
+// ways out before the item's slot is read hand back.
+void item_use(Wram* w, const Rom* rom, uint16_t dp, uint16_t y,
+              ItemUseLog* out);
+
+// What `item_use` would do now, without doing it.
+ItemUseEnd item_use_end(const Wram* w, const Rom* rom, uint16_t dp);
+
 // A, X and Y all differ by exit; there is no `PHD`, so N and Z are whichever
 // of the four countdowns the routine stopped on rather than anything to do
 // with the input.
@@ -375,10 +454,17 @@ typedef struct {
   bool swallowed;                    // the fourth button's press was eaten
   bool counting[PSN_COUNTDOWNS];     // the countdown had something left
   bool last_expired;                 // ...and the fourth reached zero
+  WeaponSelectRegs weapon_select;    // the first press's search
+  WeaponSelectRegs item_select;      // the second's
+  ItemUseLog use;                    // the third's
+  int spawn_slot;                    // the fourth's thread, doubled, or -1
+  bool unported;                     // the third reached an item not ours
 } PlayerStateRegs;
 
-// True unless the frame would reach `$80:EAE1 item_use`.
-bool player_state_normal_supported(const Wram* w, uint16_t dp);
+// True unless the frame would reach an item `item_use` does not have. The
+// item it would use is read now, so a frame that also selects an item is
+// asked after the selection: `player_state_normal` sets `unported` then.
+bool player_state_normal_supported(const Wram* w, const Rom* rom, uint16_t dp);
 
 void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
                          PlayerStateRegs* out);

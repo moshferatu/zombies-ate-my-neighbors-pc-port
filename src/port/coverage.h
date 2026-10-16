@@ -469,6 +469,7 @@
   X(victim_ungated,   "victim_start",       "an entry with no gate") \
   X(victim_at_the_gate,"victim_start",      "...or the last the level has") \
   X(victim_within_the_gate,"victim_start",  "...or one before the last") \
+  X(victim_retired,   "victim_start",       "...or one past the level's, marked gone") \
   /* The loops the game waits in -- see port/hold.h. */                         \
   X(hold_over,        "hold_turn",          "what a loop waited for has happened") \
   X(hold_goes_on,     "hold_turn",          "...or not yet, and it goes round") \
@@ -731,6 +732,11 @@
   X(seeker_watched_b, "seeker_frame",       "...and the same from the other state") \
   X(seeker_faced_left,"seeker_frame",       "...to the left of it, so drawn as it is") \
   X(seeker_faced_right,"seeker_frame",      "...to the right, so flipped") \
+  X(seeker_struck_hit, "seeker_frame",     "hit while it faces whoever is nearest: it loses nine and is struck") \
+  X(seeker_struck_alone, "seeker_frame",   "...or nobody is near enough, and it is struck all the same") \
+  X(seeker_dart_lost, "seeker_frame",       "darting, nobody in reach: drawn, and struck") \
+  X(seeker_dart_blocked, "seeker_frame",    "...or solid ground where the hop lands") \
+  X(seeker_struck_shown, "seeker_struck_shown", "its pictures played, it comes at them again and its state goes on") \
   X(seeker_frame_ended,"seeker_frame",      "the loop's end") \
   X(seeker_held,      "seeker_frame",       "facing them from a third state, and set to be drawn") \
   X(seeker_blinked_on,"seeker_frame",       "at one of two places, drawn: an even frame") \
@@ -918,7 +924,15 @@
   X(walk_door_no_reach, "player_walk",     "a door's tile, and no tile to look at the way the player faces") \
   X(walk_door_not_there, "player_walk",    "...or one to look at, which is not a door") \
   X(walk_door_locked, "player_walk",       "...or a door, and nothing to open it: a thread begun") \
-  X(walk_door_opened, "player_walk",       "...or a door and something to open it, so the ROM walks") \
+  X(walk_door_opened, "player_walk",       "...or a door and a key: it opens, and the walk stops at its block") \
+  X(walk_door_b_no_reach, "player_walk",   "the skeleton key's door, and no tile to look at the way the player faces") \
+  X(walk_door_b_not_there, "player_walk",  "...or one to look at, which is not that door") \
+  X(walk_door_b_locked, "player_walk",     "...or that door, and no skeleton key: a thread begun") \
+  X(walk_door_b_opened, "player_walk",     "...or a skeleton key: it opens, and the walk stops at its block") \
+  X(walk_fourth_no_reach, "player_walk",   "the fourth reaction, and no tile to look at the way the player faces") \
+  X(walk_fourth_not_there, "player_walk",  "...or one to look at, which is not its tile") \
+  X(walk_resumed_across, "player_walk",    "a walk back from a door's block, which stopped it across") \
+  X(walk_resumed_up_down, "player_walk",   "...or up or down") \
   X(walk_square_known, "player_walk",      "the fifth reaction: a square it has already") \
   X(walk_square_begun, "player_walk",      "...or a new one, and a thread begun for it") \
   X(walk_square_full, "player_walk",       "...or a new one, and five others in the way") \
@@ -1433,6 +1447,19 @@
   X(psn_dir_still,    "player_state_normal",     "...or none, and $26 keeps the last one") \
   X(psn_press_weapon, "player_state_normal",     "B on the edge: cycle to the next non-empty weapon") \
   X(psn_press_item,   "player_state_normal",     "A on the edge: cycle to the next item") \
+  X(psn_press_use,    "player_state_normal",     "X on the edge: use the item held") \
+  X(item_use_not_now, "item_use",                "the player's pictures are not their own") \
+  X(item_use_waiting, "item_use",                "the last use's wait at $4E, or $70, is still running") \
+  X(item_use_none_held, "item_use",              "no item held") \
+  X(item_use_none_left, "item_use",              "the item's count is negative") \
+  X(item_use_nothing, "item_use",                "an item whose routine is a bare RTS") \
+  X(item_use_speed,   "item_use",                "the speed shoes: $54 and $56") \
+  X(item_use_health_full, "item_use",            "the first aid kit at full health, which does nothing") \
+  X(item_use_healed,  "item_use",                "...or below it: back to ten, and a sound") \
+  X(item_use_decoys_out, "item_use",             "a decoy with three out already") \
+  X(item_use_decoy_blocked, "item_use",          "a decoy whose ground ahead is not clear") \
+  X(item_use_decoy,   "item_use",                "...or is, and the decoy's thread begins") \
+  X(item_use_ran_out, "item_use",                "the last of an item used, and the next selected") \
   X(psn_spawn_swallowed, "player_state_normal",  "L or R with the flag already set: the press is eaten and the flag cleared") \
   X(psn_spawn,        "player_state_normal",     "...or the flag was clear, so a thread starts at $82:D8DB and a sound plays") \
   X(psn_press_none,   "player_state_normal",     "no button edge this frame, which is nearly all of them") \
@@ -1733,6 +1760,10 @@
   X(slime_died_unpaid, "ts_slime_fate", "a slime dead with nothing to pay: its end") \
   X(slime_died_paid, "ts_slime_fate", "...or counted, and its killer paid") \
   X(decoy_ended, "ts_decoy_ended", "a decoy's last tick: one fewer out, and no handler") \
+  X(decoy_entered, "ts_decoy_enter", "a decoy's start: its weight, and to its record") \
+  X(seeker_entered, "ts_seeker_enter", "a seeker's start: its place in the level's list marked gone") \
+  X(seeker_start_heard, "ts_seeker_made", "its record made, where the sample set has its sound: sound $26") \
+  X(seeker_start_unheard, "ts_seeker_made", "...or not, and it goes on to come at whoever is nearest") \
   X(creature_unhandled, "ts_*_dead", "a werewolf or a chainsaw maniac dead: no handler") \
   X(werewolf_second_freed, "ts_werewolf_unhandled", "...and the werewolf's second record freed") \
   X(chainsaw_counted, "ts_chainsaw_scored", "the maniac counted by the side that killed it, and its last pictures") \

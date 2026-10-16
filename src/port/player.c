@@ -1,6 +1,7 @@
 #include "port/player.h"
 
 #include "port/apu.h"
+#include "port/bcd.h"
 #include "port/collide.h"  // ACTOR_DP_PLAYER, ACTOR_DP_RECORD
 #include "port/coverage.h"
 #include "port/floor.h"
@@ -67,14 +68,17 @@ void weapon_select_next(Wram* w, const Rom* rom, uint16_t dp,
   // makes this "next" rather than "first".
   uint16_t held = wram_r16(w, W_PLAYER_WEAPON + player);
   uint16_t y;
+  *out = (WeaponSelectRegs){0};
   if (held & 0x8000) {
     PORT_COVER(weapon_none_held);
+    out->none_held = true;
     y = 0;
   } else {
     // `ASL A : TAY : BRA $EA7C`, and `$EA7C` is the advance.
     y = (uint16_t)(held * 2 + 2);
     if (y == WEAPON_SCAN_WRAP) {
       PORT_COVER(weapon_scan_wrap);
+      out->wraps++;
       y = 0;
     }
   }
@@ -95,12 +99,15 @@ void weapon_select_next(Wram* w, const Rom* rom, uint16_t dp,
     if (bank80_word(w, rom, (uint16_t)(base + y)) != 0) {
       // `$EA8F  TYA : LSR A` — back from a byte offset to a slot number.
       found = (uint16_t)(y >> 1);
+      out->found = true;
       break;
     }
     PORT_COVER(weapon_scan_empty);
+    out->empties++;
     y = (uint16_t)(y + 2);
     if (y == WEAPON_SCAN_WRAP) {
       PORT_COVER(weapon_scan_wrap);
+      out->wraps++;
       y = 0;
     }
   }
@@ -120,6 +127,7 @@ void weapon_select_next(Wram* w, const Rom* rom, uint16_t dp,
   }
 
   PORT_COVER(weapon_changed);
+  out->changed = true;
   wram_w16(w, W_PLAYER_WEAPON + player, found);
   weapon_apply(w, rom, dp, found);
 
@@ -156,13 +164,16 @@ void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
   // after it. Identical to `$80:EAB2`'s twin twenty-nine bytes up.
   uint16_t held = wram_r16(w, W_PLAYER_ITEM + player);
   uint16_t y;
+  *out = (WeaponSelectRegs){0};
   if (held & 0x8000) {
     PORT_COVER(item_none_held);
+    out->none_held = true;
     y = 0;
   } else {
     y = (uint16_t)(held * 2 + 2);
     if (y == ITEM_SCAN_WRAP) {
       PORT_COVER(item_scan_wrap);
+      out->wraps++;
       y = 0;
     }
   }
@@ -183,12 +194,15 @@ void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
     if (bank80_word(w, rom, (uint16_t)(base + y)) != 0) {
       // `$EACF  TYA : LSR A`.
       found = (uint16_t)(y >> 1);
+      out->found = true;
       break;
     }
     PORT_COVER(item_scan_empty);
+    out->empties++;
     y = (uint16_t)(y + 2);
     if (y == ITEM_SCAN_WRAP) {
       PORT_COVER(item_scan_wrap);
+      out->wraps++;
       y = 0;
     }
   }
@@ -210,6 +224,7 @@ void item_select_next(Wram* w, const Rom* rom, uint16_t dp,
   // side — an item has no data table and does not change what the player is
   // drawn as — so the store and the noise are the whole of it.
   PORT_COVER(item_changed);
+  out->changed = true;
   wram_w16(w, W_PLAYER_ITEM + player, found);
 
   ApuSfxRegs sfx;
@@ -373,12 +388,211 @@ static bool psn_pressed(const Wram* w, uint16_t dp, uint16_t buttons,
   return edge;
 }
 
-bool player_state_normal_supported(const Wram* w, uint16_t dp) {
+// ---------------------------------------------------------------------------
+// $80:EAE1  item_use
+// ---------------------------------------------------------------------------
+
+static void use_nz(ItemUseLog* u, uint16_t v) {
+  u->a = v;
+  u->n = (v & 0x8000u) != 0;
+  u->z = v == 0;
+}
+
+// `CMP`: A against `v`, which leaves A as it was.
+static void use_cmp(ItemUseLog* u, uint16_t a, uint16_t v) {
+  u->a = a;
+  u->n = ((uint16_t)(a - v) & 0x8000u) != 0;
+  u->z = a == v;
+  u->c = a >= v;
+}
+
+// What the item's routine is, for the slot held.
+static ItemUseEnd item_kind(uint16_t held) {
+  switch (held) {
+    case ITEM_SPEED_SHOES: return ITEM_USE_SPEED;
+    case ITEM_FIRST_AID: return ITEM_USE_HEALED;
+    case ITEM_DECOY: return ITEM_USE_DECOY;
+    case 2: case 3: case 4: case 5: case 8: return ITEM_USE_UNPORTED;
+    default: return ITEM_USE_NOTHING;
+  }
+}
+
+// The tests before `JMP ($EB07,X)`, which write only the wait. The item's
+// kind when they pass.
+static ItemUseEnd use_allowed(const Wram* w, const Rom* rom, uint16_t dp) {
+  const uint16_t index = wram_r16(w, dp + PLAYER_DP_TABLE_INDEX);
+  if (rom_word(rom, ITEM_USE_OWN_PICTURES + index) !=
+      wram_r16(w, dp + ITEM_USE_DP_PICTURES))
+    return ITEM_USE_NOT_NOW;
+  if ((wram_r16(w, dp + PSN_DP_T1) | wram_r16(w, dp + ITEM_USE_DP_BUSY)) != 0)
+    return ITEM_USE_WAITING;
+  const uint16_t held =
+      wram_r16(w, (uint32_t)(W_PLAYER_ITEM + wram_r16(w, dp + PSN_DP_PLAYER)));
+  if (held & 0x8000u) return ITEM_USE_NONE_HELD;
+  const uint16_t items = wram_r16(w, dp + PLAYER_DP_ITEMS);
+  // Every count is read through bank `$80`, and one used up is written
+  // there too. Only low WRAM takes the write.
+  if (items >= 0x2000) return ITEM_USE_UNPORTED;
+  if (wram_r16(w, (uint16_t)(items + (held << 1))) & 0x8000u)
+    return ITEM_USE_NONE_LEFT;
+  return item_kind(held);
+}
+
+ItemUseEnd item_use_end(const Wram* w, const Rom* rom, uint16_t dp) {
+  return use_allowed(w, rom, dp);
+}
+
+// `$80:EB48`: one fewer, in decimal. The last selects the next item.
+static void use_one(Wram* w, const Rom* rom, uint16_t dp, ItemUseLog* u) {
+  u->used_one = true;
+  const uint16_t player = wram_r16(w, dp + PSN_DP_PLAYER);
+  const uint16_t held = wram_r16(w, (uint32_t)(W_PLAYER_ITEM + player));
+  const uint16_t at = (uint16_t)(wram_r16(w, dp + PLAYER_DP_ITEMS) + (held << 1));
+  u->x = at;
+  bool carry = true, overflow;
+  const uint16_t left = bcd_sub16(wram_r16(w, at), 0x0001, &carry, &overflow);
+  wram_w16(w, at, left);
+  use_nz(u, left);
+  u->c = carry;
+  if (left != 0) return;
+  PORT_COVER(item_use_ran_out);
+  u->ran_out = true;
+  item_select_next(w, rom, dp, &u->next);
+  u->a = u->next.a;
+  u->x = u->next.x;
+  u->y = u->next.y;
+  u->n = u->next.n;
+  u->z = u->next.z;
+  u->c = u->next.c;
+}
+
+static void sound_regs(ItemUseLog* u, const ApuSfxRegs* s) {
+  u->a = s->a;
+  u->x = s->x;
+  u->y = s->y;
+  u->n = s->n;
+  u->z = s->z;
+  u->c = s->c;
+}
+
+void item_use(Wram* w, const Rom* rom, uint16_t dp, uint16_t y,
+              ItemUseLog* u) {
+  *u = (ItemUseLog){.y = y, .slot = -1};
+  // `LDX $0C : LDA $FB52,X : CMP $10 : BNE`.
+  const uint16_t index = wram_r16(w, dp + PLAYER_DP_TABLE_INDEX);
+  u->x = index;
+  use_cmp(u, rom_word(rom, ITEM_USE_OWN_PICTURES + index),
+          wram_r16(w, dp + ITEM_USE_DP_PICTURES));
+  u->end = use_allowed(w, rom, dp);
+  if (u->end == ITEM_USE_NOT_NOW) {
+    PORT_COVER(item_use_not_now);
+    return;
+  }
+  // `LDA $4E : ORA $70 : BNE`.
+  use_nz(u, (uint16_t)(wram_r16(w, dp + PSN_DP_T1) |
+                       wram_r16(w, dp + ITEM_USE_DP_BUSY)));
+  if (u->end == ITEM_USE_WAITING) {
+    PORT_COVER(item_use_waiting);
+    return;
+  }
+  wram_w16(w, dp + PSN_DP_T1, ITEM_USE_WAIT);
+  const uint16_t player = wram_r16(w, dp + PSN_DP_PLAYER);
+  const uint16_t held = wram_r16(w, (uint32_t)(W_PLAYER_ITEM + player));
+  u->x = player;
+  use_nz(u, held);
+  if (u->end == ITEM_USE_NONE_HELD) {
+    PORT_COVER(item_use_none_held);
+    return;
+  }
+  // `ASL : TAY : TAX : LDA ($66),Y : BMI`. The shift's carry is bit 15 of a
+  // slot, which is clear.
+  u->c = false;
+  u->x = u->y = (uint16_t)(held << 1);
+  const uint16_t items = wram_r16(w, dp + PLAYER_DP_ITEMS);
+  use_nz(u, wram_r16(w, (uint16_t)(items + (held << 1))));
+  switch (u->end) {
+    case ITEM_USE_NONE_LEFT:
+      PORT_COVER(item_use_none_left);
+      return;
+    case ITEM_USE_NOTHING:
+      PORT_COVER(item_use_nothing);
+      return;
+    case ITEM_USE_SPEED:
+      // `$80:EB23`.
+      PORT_COVER(item_use_speed);
+      wram_w16(w, dp + PSN_DP_T3_TAIL, ITEM_SPEED_BITS);
+      wram_w16(w, dp + PSN_DP_T3, ITEM_SPEED_FRAMES);
+      use_one(w, rom, dp, u);
+      return;
+    case ITEM_USE_HEALED: {
+      // `$80:EB2F`.
+      const uint16_t health = wram_r16(w, (uint32_t)(W_PLAYER_HEALTH + player));
+      u->x = player;
+      use_cmp(u, health, ITEM_FULL_HEALTH);
+      if (health == ITEM_FULL_HEALTH) {
+        PORT_COVER(item_use_health_full);
+        u->end = ITEM_USE_HEALTH_FULL;
+        return;
+      }
+      PORT_COVER(item_use_healed);
+      wram_w16(w, (uint32_t)(W_PLAYER_HEALTH + player), ITEM_FULL_HEALTH);
+      ApuSfxRegs sound;
+      apu_play_sfx(w, ITEM_AID_SFX, dp, &sound);
+      sound_regs(u, &sound);
+      use_one(w, rom, dp, u);
+      return;
+    }
+    case ITEM_USE_DECOY: {
+      // `$80:EB6D`.
+      use_cmp(u, wram_r16(w, W_DECOYS_OUT), ITEM_DECOYS_MAX);
+      if (u->c) {
+        PORT_COVER(item_use_decoys_out);
+        u->end = ITEM_USE_DECOYS_OUT;
+        return;
+      }
+      // `$80:EBA7`: the point ahead, on the page at `$00` and `$02`, and
+      // the ground there.
+      const uint16_t way = (uint16_t)(wram_r16(w, dp + PSN_DP_DIR_HELD) << 1);
+      const uint16_t ahead_y = (uint16_t)(wram_r16(w, dp + ITEM_USE_DP_Y) +
+                                          rom_word(rom, ITEM_DECOY_AHEAD + 2 + way));
+      wram_w16(w, dp + 0x02u, ahead_y);
+      const uint16_t ahead_x = (uint16_t)(wram_r16(w, dp + ITEM_USE_DP_X) +
+                                          rom_word(rom, ITEM_DECOY_AHEAD + way));
+      wram_w16(w, dp + 0x00u, ahead_x);
+      terrain_blocked_enemy(w, ahead_x, ahead_y, &u->ahead);
+      u->a = u->ahead.a;
+      u->x = u->ahead.x;
+      u->y = u->ahead.y;
+      u->c = u->ahead.blocked;
+      u->n = (dp & 0x8000u) != 0;  // the `PLD`'s
+      u->z = dp == 0;
+      if (u->ahead.blocked) {
+        PORT_COVER(item_use_decoy_blocked);
+        u->end = ITEM_USE_DECOY_BLOCKED;
+        return;
+      }
+      PORT_COVER(item_use_decoy);
+      u->slot = thread_spawn(w, rom, ITEM_DECOY_THREAD, ITEM_DECOY_THREAD_BANK, dp);
+      // `LDY #$0008` is the spawn's last load of Y; a full board leaves the
+      // bank in it.
+      u->y = u->slot < 0 ? ITEM_DECOY_THREAD_BANK : 0x0008u;
+      use_one(w, rom, dp, u);
+      return;
+    }
+    default:
+      u->end = ITEM_USE_UNPORTED;
+      return;
+  }
+}
+
+bool player_state_normal_supported(const Wram* w, const Rom* rom,
+                                   uint16_t dp) {
   // Bit 15 is the only bit of `$006E,X` the routine rewrites, so the raw word
   // answers for `$1A` here and the guard needs nothing the routine computes.
   uint16_t player = wram_r16(w, dp + PSN_DP_PLAYER);
   uint16_t buttons = wram_r16(w, (uint32_t)(W_JOY_RAW + player));
-  return !psn_edge(w, dp, buttons, PSN_BTN_USE);
+  return !psn_edge(w, dp, buttons, PSN_BTN_USE) ||
+         use_allowed(w, rom, dp) != ITEM_USE_UNPORTED;
 }
 
 void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
@@ -391,6 +605,8 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
   out->moving = false;
   out->press[PSN_PRESS_SPAWN] = PSN_PRESS_UNASKED;
   out->swallowed = false;
+  out->unported = false;
+  out->spawn_slot = -1;
   out->last_expired = false;
   out->a = floor.a;
   out->x = floor.x;
@@ -522,6 +738,7 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
     PORT_COVER(psn_press_weapon);
     WeaponSelectRegs r;
     weapon_select_next(w, rom, dp, &r);
+    out->weapon_select = r;
     out->a = r.a;
     out->x = r.x;
     out->y = r.y;
@@ -533,6 +750,7 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
     PORT_COVER(psn_press_item);
     WeaponSelectRegs r;
     item_select_next(w, rom, dp, &r);
+    out->item_select = r;
     out->a = r.a;
     out->x = r.x;
     out->y = r.y;
@@ -562,12 +780,20 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
   }
 
   if (psn_pressed(w, dp, buttons, PSN_BTN_USE, out, PSN_PRESS_USE)) {
-    // `$80:EAE1 item_use` is not ported, so `player_state_normal_supported`
-    // declined this frame and the ROM ran it. **Unreachable**, which is why
-    // there is no coverage site here: the guard makes it one the harness can
-    // never take, and such a site dilutes the number rather than measuring
-    // anything. The branch itself has to stay, because `$80:D28C` is what makes
-    // the fourth button exclusive with the third.
+    // `$80:D289  JSR $EAE1`, and `$80:D28C` branches past the fourth. An
+    // item selected above is the one used, so this asks again.
+    PORT_COVER(psn_press_use);
+    if (use_allowed(w, rom, dp) == ITEM_USE_UNPORTED) {
+      out->unported = true;
+      return;
+    }
+    item_use(w, rom, dp, out->y, &out->use);
+    out->a = out->use.a;
+    out->x = out->use.x;
+    out->y = out->use.y;
+    out->n = out->use.n;
+    out->z = out->use.z;
+    out->c = out->use.c;
   } else if (psn_pressed(w, dp, buttons, PSN_BTN_SPAWN, out,
                          PSN_PRESS_SPAWN)) {
     // $80:D29C. A flag that has to be clear, and is cleared when it is not, so
@@ -591,7 +817,8 @@ void player_state_normal(Wram* w, const Rom* rom, uint16_t dp,
       wram_w16(w, dp + 0x00u, half);
       wram_w16(w, dp + 0x02u, rom_word(rom, PSN_SPAWN_ARG_TABLE + player));
       wram_w16(w, dp + 0x04u, PSN_SPAWN_ARG_COUNT);
-      thread_spawn(w, rom, PSN_SPAWN_ENTRY, PSN_SPAWN_BANK, dp);
+      out->spawn_slot =
+          thread_spawn(w, rom, PSN_SPAWN_ENTRY, PSN_SPAWN_BANK, dp);
 
       ApuSfxRegs sfx;
       apu_play_sfx(w, PSN_SPAWN_SFX, dp, &sfx);

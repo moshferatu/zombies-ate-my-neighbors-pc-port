@@ -19688,3 +19688,48 @@ in low WRAM, and the operand where `--ind` says the pointer points. That is
 Over the same 110 sessions the core executes 12,335 instructions where it
 executed 15,011, and takes over 720 times where it did 1,007, at 125 places
 where there were 174. The reset's own 7,920 are most of what is left.
+
+## Using an item, the walk's doors and the seeker struck (2026-10-15)
+
+### A sound's wait, in any call
+
+`apu_play_sfx` spins on `$2143` until the SPC700 echoes the last command.
+Every price in the registry that has a sound in it counts the spin once, the
+read that meets it, which is what a substituted call costs: under `run`,
+`apu_drive` spends the wait. Under `verify` the ROM's own call is measured,
+wait and all, so a sound that waited made its row's model wrong. The routines
+that trace the hardware were already given their waits back by `hw_spun`.
+`apu_spun` does the same for the rest: every read of `$2143` the ROM made in
+the call, past one for each write there, is one more `CPY $2143 : BNE`, five
+bytes, the read and the branch. It changed no row that was exact before, and
+two calls on `level1-keys` that waited are exact by it.
+
+### Two rows at one address, again
+
+The rest of a frame whose walk stopped at a door's block begins at the door's
+`RTS`, `$80:E942`, and `port/links.h` had a link there, the `RTS` alone,
+earlier in the registry. The link took every call and the new row was never
+offered. The two rows are before the links now. One that turns a call down
+leaves it to the link.
+
+Offered, the row took too much. Every door the walk meets ends at that
+`RTS`, the doors that stay shut as well, and the stack under it is the same.
+In `verify` the row took each of them inside the walk being checked, and
+stayed open past the walk's own `RTS`, to the frame's sleep: 101 walks on
+`level5` were counted interrupted for it, and a locked door's mark was lost
+with them. A return from the block's `JSL` is told by what that call left
+just under the stack, its return address, which no other way out of a door
+writes there. The row asks for that now.
+
+### The frame's tail in two
+
+`pframe_tail_bill` priced the movement and what follows it together. It is
+`pframe_move_bill` and `pframe_after_move_bill` now: a frame that stops at a
+door's block pays the first, to the block's `JSL`, and the row that goes on
+from the door's `RTS` pays the rest of the walk and the second.
+
+### After
+
+Over the same 110 sessions the core executes 10,589 instructions where it
+executed 12,335, and takes over 561 times where it did 720, at 102 places
+where there were 125. The reset's own 7,920 are most of what is left.

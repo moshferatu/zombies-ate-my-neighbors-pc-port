@@ -33,10 +33,9 @@ static void set_field(Frame* f, uint16_t at, uint16_t v) {
 // the frame's, that is, for the state alone takes them as its own entry does.
 static bool ordinary_state(Frame* f) {
   PlayerStateRegs* did = &f->log->normal;
-  if (!player_state_normal_supported(f->w, f->page)) return false;
+  if (!player_state_normal_supported(f->w, f->rom, f->page)) return false;
   player_state_normal(f->w, f->rom, f->page, did);
-  for (int button = 0; button < PSN_PRESS_COUNT && !f->state_alone; button++)
-    if (did->press[button] == PSN_PRESS_EDGE) return false;
+  if (did->unported) return false;
   f->log->c = did->c;
   f->log->c_set = true;
   return true;
@@ -301,7 +300,7 @@ static bool move(Frame* f) {
     swim_walk(f->w, f->rom, f->page, &f->log->walk);
   } else if (movement == PLAYER_MOVEMENT_WALK) {
     PORT_COVER(player_frame_walked);
-    if (!player_walk_checked(f->w, f->rom, f->page, &f->log->walk))
+    if (!player_walk_stoppable(f->w, f->rom, f->page, &f->log->walk))
       return false;
   } else {
     return false;
@@ -355,6 +354,30 @@ void player_frame(Wram* w, const Rom* rom, uint16_t page, PlayerFrameLog* log) {
     return;
   }
   if (!move(&f)) return;
+  if (log->walk.stopped) {
+    log->unported = false;  // it stops at a door's block
+    return;
+  }
+  publish_position(&f);
+  set_field(&f, PLAYER_DP_LAST_BUTTONS, field(&f, PLAYER_DP_BUTTONS));
+  if (!level_goes_on(&f) || !alive(&f)) return;
+  log->unported = false;
+}
+
+void player_walk_woken(Wram* w, const Rom* rom, uint16_t page, int axis,
+                       bool v, PlayerFrameLog* log) {
+  PlayerFrameLog scratch;
+  if (log == NULL) log = &scratch;
+  *log = (PlayerFrameLog){0};
+  Frame f = {w, rom, page, log};
+
+  log->unported = true;
+  log->walk_kind = WALK_ORDINARY;
+  if (!player_walk_resume(w, rom, page, axis, v, &log->walk)) return;
+  log->walked = true;
+  log->c_set = true;
+  log->c = log->walk.last_yes;
+  log->v = log->walk.overflow;
   publish_position(&f);
   set_field(&f, PLAYER_DP_LAST_BUTTONS, field(&f, PLAYER_DP_BUTTONS));
   if (!level_goes_on(&f) || !alive(&f)) return;

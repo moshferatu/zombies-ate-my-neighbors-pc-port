@@ -4,6 +4,7 @@
 #include "port/objects.h"
 
 #include "port/coverage.h"
+#include "port/neighbour_thread.h"
 #include "port/thread.h"
 
 static uint16_t field(const Wram* w, const PortCpu* c, uint16_t at) {
@@ -275,8 +276,18 @@ void victim_start(Wram* w, const Rom* rom, PortCpu* c, VictimsWork* k) {
   } else if (gate == level) {
     PORT_COVER(victim_at_the_gate);
     k->at_gate = true;
-  } else if (gate > level) {  // not this level's: the ROM's to retire
-    k->declined = true;
+  } else if (gate > level) {
+    // Not this level's: `$81:81EF`, its entry marked gone, and home.
+    PORT_COVER(victim_retired);
+    k->retired = true;
+    c->p |= PORT_P_C;  // the `BCS` taken
+    // Y is where the gate was read, `($0C),Y`.
+    c->y = (uint16_t)(eight + four + VICTIM_ENTRY_GATE);
+    c->a = field(w, c, VICTIM_DP_ARG_ENTRY);
+    set_nz16(c, c->a);
+    NeighbourThreadWork unused = {0};
+    victim_mark_gone(w, rom, c, &unused);
+    c->pc = VICTIM_START_RTS_PC;
     return;
   } else {
     PORT_COVER(victim_within_the_gate);

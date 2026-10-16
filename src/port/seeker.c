@@ -66,6 +66,8 @@ typedef struct {
   PortCpu* c;
   SeekerWork* k;
   bool left;  // in the middle of a state, which goes on after a call
+  uint16_t face_return;  // what the state's `JSR $EB13` leaves
+  bool after_struck;     // the state goes on from that `JSR`
 } Seeker;
 
 static uint16_t field(const Seeker* s, uint16_t at) {
@@ -365,16 +367,70 @@ static bool circle_ask(Seeker* s) {
   return circle(s);
 }
 
-// `$82:EB13`: turn to face whoever is nearest. With nobody near enough, or
-// when it has been hit, the ROM's.
+// `$82:EF03`: nothing may touch it while its pictures play, and the frame
+// stops at their `JSL`, with the loop's return and, struck in a state's
+// `JSR $EB13`, the state's on the stack.
+static void struck_pictures(Seeker* s, bool in_face) {
+  PortCpu* c = s->c;
+  c->a = 0;
+  c->y = 0;
+  set_nz16(c, 0);
+  ran(s, SF_HIDE_HANDLER);
+  thread_set_handler(s->w, c);
+  s->k->handlers_set++;
+  c->a = SEEKER_STRUCK_PICTURES;
+  set_nz16(c, c->a);
+  ran(s, SF_STRUCK);
+  push16(s->w, c, SEEKER_FRAME_RETURN);
+  if (in_face) push16(s->w, c, s->face_return);
+  c->pc = SEEKER_STRUCK_CALL_PC;
+  s->left = true;
+}
+
+// `$82:EB50` and `$82:EB5B`: hit, it loses nine of its strength; with
+// nobody near enough, it does not.
+static void struck(Seeker* s, bool hurt) {
+  PortCpu* c = s->c;
+  ran(s, SF_TAKEN);
+  if (hurt) {
+    PORT_COVER(seeker_struck_hit);
+    set_c(c, true);
+    c->a = sbc16(c, field(s, SEEKER_DP_STRENGTH), SEEKER_HIT_LOSS);
+    set_field(s, SEEKER_DP_STRENGTH, c->a);
+    ran(s, SF_HIT);
+  } else {
+    PORT_COVER(seeker_struck_alone);
+    ran(s, SF_LOST);
+  }
+  struck_pictures(s, true);
+}
+
+// `$82:ED43`: a dart that cannot go on, drawn.
+static void dart_struck(Seeker* s) {
+  ran(s, SF_TAKEN);
+  show(s);
+  ran(s, SF_DART_LOST);
+  struck_pictures(s, false);
+}
+
+// `$82:EB13`: turn to face whoever is nearest. Hit, or with nobody near
+// enough, it is struck instead, and false: the frame has left.
 static bool face_nearest(Seeker* s) {
   PortCpu* c = s->c;
+  if (s->after_struck) return true;
+  ran(s, SF_FACE_CALL);
   ran(s, SF_FACE);
-  if (field(s, SEEKER_DP_HURT) & 0x8000u) return false;
+  if (field(s, SEEKER_DP_HURT) & 0x8000u) {
+    struck(s, true);
+    return false;
+  }
   look(s);
   cmp16(c, c->a, SEEKER_TOO_FAR);
-  if (c->a >= SEEKER_TOO_FAR) return false;
   ran(s, SF_FACE_LOOK);
+  if (c->a >= SEEKER_TOO_FAR) {
+    struck(s, false);
+    return false;
+  }
   set_field(s, SEEKER_DP_TARGET, c->x);
   face(s, c->x);
   set_field(s, SEEKER_DP_WAY, c->a);
@@ -411,7 +467,7 @@ static void hide(Seeker* s) {
   set_nz16(c, 0);
   ran(s, SF_HIDE_HANDLER);
   thread_set_handler(s->w, c);
-  s->k->handler_set = true;
+  s->k->handlers_set++;
   c->y = field(s, SEEKER_DP_RECORD);
   wram_w16(s->w, (uint16_t)(c->y + ACTOR_META_BANK), SEEKER_PICTURE_BANK);
   wram_w16(s->w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), 0);
@@ -425,10 +481,11 @@ static void hide(Seeker* s) {
 // first goes on to fire, with its record drawn. The second hides.
 static bool watch(Seeker* s, uint16_t odds, bool hides) {
   PortCpu* c = s->c;
-  if (!face_nearest(s)) return false;
+  s->face_return = hides ? SEEKER_WATCH_B_RETURN : SEEKER_WATCH_RETURN;
+  if (!face_nearest(s)) return true;
   draw(s);
   cmp16(c, c->a, odds);
-  ran(s, SF_WATCH);
+  ran(s, SF_WATCH_ON);
   if (c->a < odds) {
     if (hides) {
       hide(s);
@@ -556,15 +613,19 @@ static bool dart(Seeker* s) {
     c->a = SEEKER_HANDLER;
     c->y = SEEKER_HANDLER_BANK;
     thread_set_handler(s->w, c);
-    s->k->handler_set = true;
+    s->k->handlers_set++;
     show(s);
     set_field(s, SEEKER_DP_STATE, SEEKER_STATE_WATCH);
     ran(s, SF_DART_OVER);
     return true;
   }
   cmp16(c, c->a, SEEKER_TOO_FAR);
-  if (c->a >= SEEKER_TOO_FAR) return false;
   ran(s, SF_DART_FAR);
+  if (c->a >= SEEKER_TOO_FAR) {
+    PORT_COVER(seeker_dart_lost);
+    dart_struck(s);
+    return true;
+  }
 
   aim(s);
   TerrainRegs* ground = &s->k->ground;
@@ -576,9 +637,13 @@ static bool dart(Seeker* s) {
   c->y = ground->y;
   set_c(c, ground->blocked);
   set_v(c, ground->v);
-  if (ground->blocked) return false;
-  PORT_COVER(seeker_hop_began);
   ran(s, SF_DART_AIM);
+  if (ground->blocked) {
+    PORT_COVER(seeker_dart_blocked);
+    dart_struck(s);
+    return true;
+  }
+  PORT_COVER(seeker_hop_began);
   set_field(s, SEEKER_DP_FRAMES, SEEKER_BLINK_START);
   set_field(s, SEEKER_DP_STATE, SEEKER_STATE_BLINK);
   ran(s, SF_DART_SET);
@@ -590,10 +655,11 @@ static bool dart(Seeker* s) {
 // fifteen more.
 static bool hold(Seeker* s) {
   PortCpu* c = s->c;
-  if (!face_nearest(s)) return false;
+  s->face_return = SEEKER_HOLD_RETURN;
+  if (!face_nearest(s)) return true;
   draw(s);
   cmp16(c, c->a, SEEKER_HOLD_ODDS);
-  ran(s, SF_WATCH);
+  ran(s, SF_WATCH_ON);
   if (c->a < SEEKER_HOLD_ODDS) {
     PORT_COVER(seeker_dart_began);
     draw(s);
@@ -767,6 +833,26 @@ static bool fire(Seeker* s) {
   return true;
 }
 
+// The loop after a state's `RTS`: its end, or the sleep.
+static bool frame_end(Seeker* s) {
+  PortCpu* c = s->c;
+  if (s->left) return true;
+  c->a = field(s, SEEKER_DP_ENDED);
+  set_nz16(c, c->a);
+  ran(s, SF_TAIL);
+  if (c->a != 0) {
+    PORT_COVER(seeker_frame_ended);
+    c->pc = SEEKER_FRAME_ENDED_PC;
+    return true;
+  }
+  ran(s, SF_TAKEN);
+  c->a = field(s, SEEKER_DP_SLEEP);
+  set_nz16(c, c->a);
+  ran(s, SF_AGAIN);
+  c->pc = SEEKER_FRAME_SLEEP_PC;
+  return true;
+}
+
 bool seeker_frame(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k) {
   Seeker s = {w, rom, c, k, false};
   ran(&s, SF_HEAD);
@@ -813,20 +899,58 @@ bool seeker_frame(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k) {
     default:
       return false;
   }
-  if (s.left) return true;
+  return frame_end(&s);
+}
 
-  c->a = field(&s, SEEKER_DP_ENDED);
+bool seeker_struck_shown(Wram* w, const Rom* rom, PortCpu* c, SeekerWork* k) {
+  Seeker s = {w, rom, c, k, false};
+  s.after_struck = true;
+  // `LDY $08 : LDA #$0008 : ORA $0000,Y : STA $0000,Y : JMP $E827`.
+  c->y = field(&s, SEEKER_DP_RECORD);
+  c->a = (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) |
+                    ACTOR_PRIORITY_TOP);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS), c->a);
+  ran(&s, SF_SHOWN);
+  // `$82:E827`: next frame it comes at whoever is nearest, and things that
+  // touch it are told to nobody.
+  set_field(&s, SEEKER_DP_SLEEP, 1);
+  set_field(&s, SEEKER_DP_STATE, SEEKER_STATE_CHASE);
+  set_field(&s, SEEKER_DP_FRAMES, SEEKER_FLAP_FRAMES);
+  set_field(&s, SEEKER_DP_PICTURE,
+            (uint16_t)(field(&s, SEEKER_DP_PICTURE) & 0x0001u));
+  wram_w16(w, (uint16_t)(c->y + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(c->y + ACTOR_FLAGS)) |
+                      ACTOR_PRIORITY_TOP));
+  c->a = 0;
+  c->y = 0;
+  set_nz16(c, 0);
+  thread_set_handler(w, c);
+  k->handlers_set++;
+  ran(&s, SF_RESET);
+  c->a = field(&s, SEEKER_DP_STRENGTH);
   set_nz16(c, c->a);
-  ran(&s, SF_TAIL);
-  if (c->a != 0) {
-    PORT_COVER(seeker_frame_ended);
-    c->pc = SEEKER_FRAME_ENDED_PC;
-    return true;
-  }
+  ran(&s, SF_RESET_ALIVE);
+  if (c->a & 0x8000u) return false;  // `JMP $EA7E`: its end
+  PORT_COVER(seeker_struck_shown);
   ran(&s, SF_TAKEN);
-  c->a = field(&s, SEEKER_DP_SLEEP);
-  set_nz16(c, c->a);
-  ran(&s, SF_AGAIN);
-  c->pc = SEEKER_FRAME_SLEEP_PC;
-  return true;
+  ran(&s, SF_RTS);
+  // Back in the state, after its `JSR $EB13`, with the loop's return under;
+  // or, struck darting, in the loop.
+  const uint16_t back = pull16(w, c);
+  if (back == SEEKER_FRAME_RETURN) return frame_end(&s);
+  if (pull16(w, c) != SEEKER_FRAME_RETURN) return false;
+  switch (back) {
+    case SEEKER_WATCH_RETURN:
+      if (!watch(&s, SEEKER_WATCH_ODDS, false)) return false;
+      break;
+    case SEEKER_WATCH_B_RETURN:
+      if (!watch(&s, SEEKER_WATCH_B_ODDS, true)) return false;
+      break;
+    case SEEKER_HOLD_RETURN:
+      if (!hold(&s)) return false;
+      break;
+    default:
+      return false;
+  }
+  return frame_end(&s);
 }
