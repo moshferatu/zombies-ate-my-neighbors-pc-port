@@ -21510,9 +21510,8 @@ static const uint32_t GAME_OVER_LAYER_JOB_EXITS[] = {GAME_OVER_LAYER_SEND_PC};
 static void shim_game_over_colours_job(Wram* w, const Rom* rom,
                                        const CosimRegs* in, CosimRegs* out) {
   (void)w;
-  (void)rom;
   HwTrace* t = dma_trace();
-  const uint8_t last = game_over_colours_job(t);
+  const uint8_t last = game_over_colours_job(rom, t);
   out->a = (uint16_t)((in->a & 0xff00u) | last);
   out->x = in->x;
   out->y = in->y;
@@ -21660,8 +21659,10 @@ static const uint32_t GO_EXITS_sprite[] = {GAME_OVER_SPRITE_PC};
 static const uint32_t GO_EXITS_wait[] = {GAME_OVER_FADE_WAI_PC,
                                          GAME_OVER_BLANK_WAI_PC};
 
+// The job is the `LDA #`'s operand in the cartridge, which `maskline.h` may
+// have changed.
 #define X(name, sym, pc, job)                                                \
-  GAME_OVER_SHIM(name, game_over_ask(&c, job, pc + 6, &k))                   \
+  GAME_OVER_SHIM(name, game_over_ask(&c, rom_word(rom, pc + 1), pc + 6, &k)) \
   static const uint32_t GO_EXITS_##name[] = {pc + 6};
 GAME_OVER_ASKS(X)
 #undef X

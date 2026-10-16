@@ -154,18 +154,19 @@ void game_over_scroll_job(const Wram* w, HwTrace* t) {
   hw_run(t, IS_TAIL);
 }
 
-uint8_t game_over_colours_job(HwTrace* t) {
-  // Three colours, low byte first.
-  static const uint8_t colours[] = {0x53, 0x59, 0x8a, 0x34, 0x26, 0x1c};
+uint8_t game_over_colours_job(const Rom* rom, HwTrace* t) {
+  // Three colours, low byte first: six bytes, each `LDA # : STA $2122`.
   PORT_COVER(game_over_colours_job);
   hw_run(t, IS_VMAIN);
   hw_w8(t, REG_CGADD, GAME_OVER_FIRST_COLOUR);
-  for (size_t i = 0; i < sizeof colours; i++) {
+  uint8_t byte = 0;
+  for (uint32_t i = 0; i < 6; i++) {
+    byte = (uint8_t)rom_word(rom, GAME_OVER_COLOURS_FIRST_LDA + 5 * i + 1);
     hw_run(t, DMA_IMM);
-    hw_w8(t, REG_CGDATA, colours[i]);
+    hw_w8(t, REG_CGDATA, byte);
   }
   hw_run(t, IS_TAIL);
-  return colours[sizeof colours - 1];
+  return byte;
 }
 
 void game_over_layer_job(Wram* w, PortCpu* c, HwTrace* t) {

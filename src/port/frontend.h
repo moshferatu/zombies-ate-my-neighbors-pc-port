@@ -156,8 +156,11 @@ bool portrait_scroll_job(Wram* w);
 
 // `$80:8B70`.
 void game_over_scroll_job(const Wram* w, HwTrace* t);
-// `$80:8B82`. The last byte it sent is left in A.
-uint8_t game_over_colours_job(HwTrace* t);
+// `$80:8B82`. The last byte it sent is left in A. The colours are read from
+// the job's `LDA #`s, as the 65816 would, because `blood.h` reddens them in
+// the game's copy of the cartridge.
+#define GAME_OVER_COLOURS_FIRST_LDA 0x808b89u  // then one `LDA : STA` in 5 bytes
+uint8_t game_over_colours_job(const Rom* rom, HwTrace* t);
 
 typedef struct {
   bool twice;      // an odd frame

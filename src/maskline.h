@@ -28,7 +28,9 @@
 // costs nothing to have the scroll early, because there is nothing to scroll:
 // by then the panel's own map is blank from corner to corner (every word of it
 // tile 0, three frames before the change). The same five jobs run on the same
-// five frames, so nothing about the game's timing moves.
+// five frames, so nothing about the game's timing moves. The port of the game
+// over (`port/game_over.h`) reads each job from its `LDA`, so it sees the
+// exchange too.
 #ifndef ZAMN_MASKLINE_H
 #define ZAMN_MASKLINE_H
 

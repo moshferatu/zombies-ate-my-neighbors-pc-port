@@ -65,6 +65,10 @@ typedef struct {
 
 // name, symbol, entry, and for an ask the job, for a sprite X, and for a
 // rest the ticks. The exit is the next call or `WAI`.
+//
+// An ask's job is the stock ROM's, for the reader: the shim reads it from the
+// `LDA #` in the cartridge, as the 65816 would, because `maskline.h` exchanges
+// the second and the fourth in the game's copy.
 #define GAME_OVER_ASKS(X) \
   X(text_map_ask, "$80:8A92", 0x808a92u, 0x8b2bu) \
   X(words_ask, "$80:8A9D", 0x808a9du, 0x8b48u) \
