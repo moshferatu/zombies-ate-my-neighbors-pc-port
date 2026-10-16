@@ -113,4 +113,11 @@ bool player_page_records_supported(const Wram* w, uint16_t page,
 void player_page_records(Wram* w, const Rom* rom, PortCpu* c,
                          PageRecords* did);
 
+// `$80:A8A4`: the record in A filed as player X's, and for the first player
+// the running thread too. Carry, N and Z are the `CPX #$0000`'s, or for the
+// first player N and Z the thread's.
+#define PLAYER_RECORD_FILE_PC 0x80a8a4u
+#define PLAYER_RECORD_FILE_RTL_PC 0x80a8b2u
+void player_record_file(Wram* w, PortCpu* c);
+
 #endif

@@ -334,6 +334,21 @@ void tilemap_tile_addr(const Wram* w, uint16_t x, uint16_t y,
   out->z = col == 0;
 }
 
+// --- $80:ADB4  tilemap_tile_word ----------------------------------------------
+
+void tilemap_tile_word(Wram* w, uint16_t x, uint16_t y, uint16_t d,
+                       TilemapWordRegs* out) {
+  TilemapAddrRegs addr;
+  tilemap_tile_addr(w, x, y, &addr);
+  wram_w16(w, W_TILE_WORD_AT, addr.a);
+  wram_w16(w, (uint16_t)(W_TILE_WORD_AT + 2), TERRAIN_MAP_BANK);
+  out->a = wram_r16(w, ((uint32_t)(TERRAIN_MAP_BANK & 1) << 16) + addr.a);
+  out->x = addr.x;
+  out->c = addr.c;
+  out->n = (d & 0x8000u) != 0;
+  out->z = d == 0;
+}
+
 // --- $80:ADC8 / $80:ADF3  tile_attrs_at_pixel / tile_attrs_at_tile ----------
 
 void tile_attrs_at_tile(const Wram* w, uint16_t col, uint16_t row,

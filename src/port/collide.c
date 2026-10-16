@@ -915,6 +915,16 @@ static void enemy_react_splice(Wram* w, uint16_t record, uint16_t resume,
   r->c = true;
 }
 
+// Note a piece, when somebody is counting them.
+static void piece(HandlerPieces* p, HandlerPiece what) {
+  if (p && p->count < HANDLER_PIECES_MAX) p->piece[p->count++] = (uint8_t)what;
+}
+
+// `enemy_survived_react`, and which of its two ways it went: carry set is
+// the splice.
+static bool survived_in_pieces(Wram* w, uint16_t dp, ActorHandlerRegs* r,
+                               HandlerPieces* p);
+
 bool enemy_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
   // `LDY $08 : LDA $0000,Y : AND #$0010 : BNE $855F`. `$08` on an enemy's page
   // is its own display record — the same offset the player keeps one at — and
@@ -939,6 +949,13 @@ bool enemy_survived_react(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
   PORT_COVER(react_splice);
   enemy_react_splice(w, record, ENEMY_REACT_RETURN, r);
   return true;
+}
+
+static bool survived_in_pieces(Wram* w, uint16_t dp, ActorHandlerRegs* r,
+                               HandlerPieces* p) {
+  const bool served = enemy_survived_react(w, dp, r);
+  piece(p, r->c ? HP_SURVIVED_SPLICED : HP_SURVIVED_ALREADY);
+  return served;
 }
 
 uint16_t enemy_flash_begin(Wram* w, uint16_t dp) {
@@ -1160,7 +1177,8 @@ static void victim_drop_collide_id(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
   wram_w16(w, (uint32_t)record + ACTOR_COLLIDE_ID, 0);
 }
 
-bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
+bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r,
+                    HandlerPieces* pieces) {
   // `$83:A364  LDX $1E : BNE $A3C8`, and `$A3C8` is `SEC : RTL` — the tail the
   // `$34` case falls into, shared. The latch is the whole design of the routine:
   // a victim has one fate, the first thing to reach it decides which, and every
@@ -1179,6 +1197,7 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
   r->x = latched;
   if (latched != 0) {
     PORT_COVER(victim_latched);
+    piece(pieces, HP_VICTIM_LATCHED);
     r->n = (latched & 0x8000) != 0;
     r->z = false;  // it is not zero; that is why we are here
     r->c = true;
@@ -1198,10 +1217,12 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
       // so this side's marker is literally `$0005`. Only bit 15 of it is ever
       // read.
       PORT_COVER(victim_claim_a);
+      piece(pieces, HP_VICTIM_CLAIM_A);
       wram_w16(w, (uint32_t)dp + VICTIM_DP_CLAIMANT, arg);
       break;
     case VICTIM_ID_CLAIM_B:
       PORT_COVER(victim_claim_b);
+      piece(pieces, HP_VICTIM_CLAIM_B);
       wram_w16(w, (uint32_t)dp + VICTIM_DP_CLAIMANT, 0x8000);
       break;
 
@@ -1209,6 +1230,7 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
       // `$83:A3A5  LDA #$0002 : STA $1E : SEC : RTL`. No record write, so X is
       // still the zero the entry `LDX` read.
       PORT_COVER(victim_event_2);
+      piece(pieces, HP_VICTIM_EVENT_2);
       wram_w16(w, (uint32_t)dp + VICTIM_DP_EVENT, VICTIM_EVENT_2);
       r->a = VICTIM_EVENT_2;
       r->n = false;
@@ -1223,6 +1245,9 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
       // that reads a second field before deciding, and the only one where the
       // collision id survives.
       PORT_COVER(victim_event_3);
+      piece(pieces, arg == VICTIM_ID_EVENT_3_A   ? HP_VICTIM_EVENT_3_A
+                    : arg == VICTIM_ID_EVENT_3_B ? HP_VICTIM_EVENT_3_B
+                                                 : HP_VICTIM_EVENT_3_C);
       wram_w16(w, (uint32_t)dp + VICTIM_DP_EVENT, VICTIM_EVENT_3);
       uint16_t flag = wram_r16(w, (uint32_t)dp + VICTIM_DP_FLAG_26);
       r->a = flag;
@@ -1230,7 +1255,9 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
       r->z = flag == 0;
       if (flag != 0) {
         PORT_COVER(victim_keep_id);
+        piece(pieces, HP_VICTIM_KEEP_ID);
       } else {
+        piece(pieces, HP_VICTIM_DROP_ID);
         victim_drop_collide_id(w, dp, r);
       }
       r->c = true;
@@ -1241,6 +1268,7 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
       // `$83:A3C3  LDA #$0004 : STA $1E`, falling into the shared `SEC : RTL`
       // the entry guard also branches to.
       PORT_COVER(victim_event_4);
+      piece(pieces, HP_VICTIM_EVENT_4);
       wram_w16(w, (uint32_t)dp + VICTIM_DP_EVENT, VICTIM_EVENT_4);
       r->a = VICTIM_EVENT_4;
       r->n = false;
@@ -1250,6 +1278,7 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
 
     case VICTIM_ID_EVENT_FF:
       PORT_COVER(victim_event_ff);
+      piece(pieces, HP_VICTIM_EVENT_FF);
       wram_w16(w, (uint32_t)dp + VICTIM_DP_EVENT, VICTIM_EVENT_FF);
       r->a = VICTIM_EVENT_FF;
       r->n = true;
@@ -1263,6 +1292,7 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
       // the first's. Nothing is written and nothing but `$1E` was read: an id a
       // victim has no reaction to costs it one word of WRAM.
       PORT_COVER(victim_ignore);
+      piece(pieces, HP_VICTIM_IGNORE);
       r->a = arg;
       r->n = ((uint16_t)(arg - VICTIM_ID_EVENT_FF) & 0x8000) != 0;
       r->z = false;
@@ -1284,7 +1314,8 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
 // $80:CAEE  object_collide
 // ---------------------------------------------------------------------------
 
-bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
+bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r,
+                    HandlerPieces* pieces) {
   // `$80:CAEE  LDY $0078 : LDX $000E,Y`. `$78` is the record whose handler is
   // running — the object that was touched — and Y keeps it for the rest of the
   // routine. The absolute-indexed read lands in `$7E` whichever of $7E/$80 the
@@ -1312,6 +1343,7 @@ bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
   // than the ROM. `object_spent` is the coverage site that says so by name.
   if (self_id == 0) {
     PORT_COVER(object_spent);
+    piece(pieces, HP_OBJECT_SPENT);
     r->n = false;
     r->z = true;  // the `LDX` is the last thing to set a flag before the `CLC`
     r->c = false;
@@ -1323,6 +1355,7 @@ bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
     // `$80:CB05  CLC : RTL` reached by falling through all three comparisons,
     // so the flags are the last one's — `arg - $0004` — and not the first's.
     PORT_COVER(object_ignore);
+    piece(pieces, HP_OBJECT_IGNORE);
     r->a = arg;
     r->n = ((uint16_t)(arg - OBJECT_ID_TAKE_C) & 0x8000) != 0;
     r->z = false;
@@ -1335,6 +1368,9 @@ bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r) {
   // find no id on this record and skip it (`overlap_no_id`), so a player
   // standing on an item cannot bank it twice.
   PORT_COVER(object_taken);
+  piece(pieces, arg == OBJECT_ID_TAKE_A   ? HP_OBJECT_TAKE_A
+                : arg == OBJECT_ID_TAKE_B ? HP_OBJECT_TAKE_B
+                                          : HP_OBJECT_TAKE_C);
   wram_w16(w, (uint32_t)self + ACTOR_COLLIDE_ID, 0);
 
   // `$80:CB0D  TXA : LDX $12 : STA $14,X : INC $12 : INC $12`. The record
@@ -1434,7 +1470,7 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
              entry == ENEMY_9A6D_COLLIDE_ENTRY) {
     served = enemy_d7f6_collide(w, rom, dp, arg, &r, NULL);
   } else if (entry == ENEMY_9B6B_COLLIDE_ENTRY) {
-    served = enemy_9b6b_collide(w, rom, dp, arg, &r, NULL);
+    served = enemy_9b6b_collide(w, rom, dp, arg, &r, NULL, &work->pieces);
   } else if (entry == ENEMY_9063_COLLIDE_ENTRY) {
     served = enemy_9063_collide(w, rom, dp, arg, &r, NULL);
   } else if (entry == ENEMY_D301_COLLIDE_ENTRY) {
@@ -1471,13 +1507,13 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
   } else if (entry == ACTOR_A638_COLLIDE_ENTRY) {
     served = actor_a638_collide(w, dp, arg, &r);
   } else if (entry == ACTOR_84AC_COLLIDE_ENTRY) {
-    served = actor_84ac_collide(w, dp, arg, &r);
+    served = actor_84ac_collide(w, dp, arg, &r, &work->pieces);
   } else if (entry == ENEMY_B95F_COLLIDE_ENTRY) {
-    served = enemy_b95f_collide(w, rom, dp, arg, &r);
+    served = enemy_b95f_collide(w, rom, dp, arg, &r, &work->pieces);
   } else if (entry == ENEMY_EFF0_COLLIDE_ENTRY) {
     served = enemy_eff0_collide(w, rom, dp, arg, &r);
   } else if (entry == ACTOR_C8C3_COLLIDE_ENTRY) {
-    served = actor_c8c3_collide(w, dp, arg, &r);
+    served = actor_c8c3_collide(w, dp, arg, &r, &work->pieces);
   } else if (entry == SHOT_COLLIDE_ENTRY) {
     served = shot_collide_counted(w, dp, arg, &r, &work->shot);
   } else if (entry == SHOT_EDAA_COLLIDE_ENTRY) {
@@ -1496,9 +1532,9 @@ bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,
   } else if (entry == ACTOR_F8FC_COLLIDE_ENTRY) {
     served = actor_f8fc_collide(w, dp, arg, &r);
   } else if (entry == VICTIM_COLLIDE_ENTRY) {
-    served = victim_collide(w, dp, arg, &r);
+    served = victim_collide(w, dp, arg, &r, &work->pieces);
   } else if (entry == OBJECT_COLLIDE_ENTRY) {
-    served = object_collide(w, dp, arg, &r);
+    served = object_collide(w, dp, arg, &r, &work->pieces);
   } else {
     // Thirty addresses are handled above. Anything else is a routine
     // that has not been written yet, and saying so by address is what makes the
@@ -2300,11 +2336,13 @@ bool enemy_d7f6_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 // ---------------------------------------------------------------------------
 
 bool enemy_9b6b_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                        ActorHandlerRegs* r, uint32_t* unported) {
+                        ActorHandlerRegs* r, uint32_t* unported,
+                        HandlerPieces* pieces) {
   if (arg < COLLIDE_ID_PLAYER) {
     // `$81:9B6B  CMP #$005C : BCC : CLC : RTL`, writing nothing — `$81:D7F6`'s
     // spelling rather than `enemy_cdde_collide`'s.
     PORT_COVER(d9b6b_ignore);
+    piece(pieces, HP_9B6B_IGNORE);
     uint16_t diff = (uint16_t)(arg - COLLIDE_ID_PLAYER);
     r->a = arg;
     r->n = (diff & 0x8000) != 0;
@@ -2323,11 +2361,13 @@ bool enemy_9b6b_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
     // this handed back, because those nine were the one thing between this copy
     // and a routine the port already had.
     PORT_COVER(d9b6b_fatal_id);
+    piece(pieces, HP_DEEP);
     (void)unported;
     return enemy_9b6b_bubble(w, dp, r);
   }
   if (id == ENEMY_HIT_SPECIAL_B) {
     PORT_COVER(d9b6b_special);
+    piece(pieces, HP_DEEP);
     return enemy_freeze(w, dp, r);
   }
 
@@ -2341,6 +2381,7 @@ bool enemy_9b6b_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
     // `$81:9B9A  DEC $26 : STA $32 : STZ $7E : SEC : RTL`. No award, and the
     // `DEC` is the last instruction here to set a flag.
     PORT_COVER(d9b6b_died);
+    piece(pieces, HP_9B6B_DIED);
     uint16_t count =
         (uint16_t)(wram_r16(w, (uint32_t)dp + D9B6B_DP_COUNTER_26) - 1);
     wram_w16(w, (uint32_t)dp + D9B6B_DP_COUNTER_26, count);
@@ -2355,6 +2396,7 @@ bool enemy_9b6b_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 
   if (left == health) {
     PORT_COVER(d9b6b_no_damage);
+    piece(pieces, HP_9B6B_NO_DAMAGE);
     r->a = left;
     r->n = false;
     r->z = true;
@@ -2363,8 +2405,9 @@ bool enemy_9b6b_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   }
 
   PORT_COVER(d9b6b_survived);
+  piece(pieces, HP_9B6B_SURVIVED);
   wram_w16(w, (uint32_t)dp + D9B6B_DP_HEALTH, left);
-  return enemy_survived_react(w, dp, r);
+  return survived_in_pieces(w, dp, r, pieces);
 }
 
 // ---------------------------------------------------------------------------
@@ -3667,13 +3710,14 @@ bool actor_a638_collide(Wram* w, uint16_t dp, uint16_t arg,
 // ---------------------------------------------------------------------------
 
 bool actor_84ac_collide(Wram* w, uint16_t dp, uint16_t arg,
-                        ActorHandlerRegs* r) {
+                        ActorHandlerRegs* r, HandlerPieces* pieces) {
   r->a = arg;
   r->c = false;  // every exit but one is the `CLC : RTL` at `$82:84BF`
 
   if (arg < COLLIDE_ID_PLAYER) {
     // `CMP #$005C : BCS`, not taken, then `BRA $84BF`. No writes.
     PORT_COVER(a84ac_ignore);
+    piece(pieces, HP_84AC_IGNORE);
     r->n = ((uint16_t)(arg - COLLIDE_ID_PLAYER) & 0x8000) != 0;
     r->z = false;
     return true;
@@ -3687,6 +3731,7 @@ bool actor_84ac_collide(Wram* w, uint16_t dp, uint16_t arg,
     // `STZ $34 : CLC : RTL`. The id it just parked is taken back, and the
     // flags are the `CMP`'s.
     PORT_COVER(a84ac_other);
+    piece(pieces, HP_84AC_OTHER);
     wram_w16(w, (uint32_t)dp + A84AC_DP_HIT_ID, 0);
     r->n = ((uint16_t)(id - A84AC_ID) & 0x8000) != 0;
     r->z = false;
@@ -3698,6 +3743,7 @@ bool actor_84ac_collide(Wram* w, uint16_t dp, uint16_t arg,
   r->a = timer;
   if (!(timer & 0x8000)) {
     PORT_COVER(a84ac_running);
+    piece(pieces, HP_84AC_RUNNING);
     r->n = false;
     r->z = timer == 0;
     return true;
@@ -3705,6 +3751,7 @@ bool actor_84ac_collide(Wram* w, uint16_t dp, uint16_t arg,
 
   // `LDA #$0004 : STA $32 : DEC $30 : SEC : RTL`.
   PORT_COVER(a84ac_took);
+  piece(pieces, HP_84AC_TOOK);
   wram_w16(w, (uint32_t)dp + A84AC_DP_TIMER, A84AC_TIMER_RESET);
   uint16_t n = (uint16_t)(wram_r16(w, (uint32_t)dp + A84AC_DP_COUNT) - 1);
   wram_w16(w, (uint32_t)dp + A84AC_DP_COUNT, n);
@@ -3733,10 +3780,11 @@ static void b95f_die(Wram* w, uint16_t dp, uint16_t health,
 }
 
 bool enemy_b95f_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                        ActorHandlerRegs* r) {
+                        ActorHandlerRegs* r, HandlerPieces* pieces) {
   if (arg < COLLIDE_ID_PLAYER) {
     // `CMP #$005C : BCS : CLC : RTL`, with no writes.
     PORT_COVER(b95f_ignore);
+    piece(pieces, HP_B95F_IGNORE);
     r->a = arg;
     r->n = ((uint16_t)(arg - COLLIDE_ID_PLAYER) & 0x8000) != 0;
     r->z = false;
@@ -3752,6 +3800,7 @@ bool enemy_b95f_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   if (id == ENEMY_HIT_SPECIAL_B) {
     // `CMP #$005D : BEQ $B989`: the ice weapon kills this one outright.
     PORT_COVER(b95f_fatal_id);
+    piece(pieces, HP_B95F_FATAL);
     b95f_die(w, dp, id, r);
     return true;
   }
@@ -3764,12 +3813,14 @@ bool enemy_b95f_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 
   if (left & 0x8000) {
     PORT_COVER(b95f_died);
+    piece(pieces, HP_B95F_DIED);
     b95f_die(w, dp, left, r);
     return true;
   }
   if (left == health) {
     // `CMP $0C : BEQ $B98F  CLC : RTL`.
     PORT_COVER(b95f_no_damage);
+    piece(pieces, HP_B95F_NO_DAMAGE);
     r->a = left;
     r->n = false;
     r->z = true;
@@ -3778,8 +3829,9 @@ bool enemy_b95f_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
   }
   // `STA $0C : JML $81:8506`.
   PORT_COVER(b95f_survived);
+  piece(pieces, HP_B95F_SURVIVED);
   wram_w16(w, (uint32_t)dp + B95F_DP_HEALTH, left);
-  return enemy_survived_react(w, dp, r);
+  return survived_in_pieces(w, dp, r, pieces);
 }
 
 // ---------------------------------------------------------------------------
@@ -3850,7 +3902,7 @@ static void c8c3_touched(Wram* w, uint16_t dp, ActorHandlerRegs* r) {
 }
 
 bool actor_c8c3_collide(Wram* w, uint16_t dp, uint16_t arg,
-                        ActorHandlerRegs* r) {
+                        ActorHandlerRegs* r, HandlerPieces* pieces) {
   // `$81:C8C3  TAY`, and Y is the raw id from here on.
   r->y = arg;
   r->a = arg;
@@ -3859,6 +3911,7 @@ bool actor_c8c3_collide(Wram* w, uint16_t dp, uint16_t arg,
     // `CMP #$0005 : BEQ` or `CMP #$0006 : BEQ`, before the mask, into
     // `$81:C8FB  JSR $C6EC : CLC : RTL`.
     PORT_COVER(c8c3_player);
+    piece(pieces, arg == C8C3_ID_P1 ? HP_C8C3_P5 : HP_C8C3_P6);
     c8c3_touched(w, dp, r);
     return true;
   }
@@ -3867,15 +3920,18 @@ bool actor_c8c3_collide(Wram* w, uint16_t dp, uint16_t arg,
   r->a = id;
   if (id == ENEMY_HIT_SPECIAL_A) {
     PORT_COVER(c8c3_bubble);  // `JML $81:83C6`
+    piece(pieces, HP_DEEP);
     return enemy_bubble_react(w, dp, r);
   }
   if (id == ENEMY_HIT_SPECIAL_B) {
     PORT_COVER(c8c3_freeze);  // `JML $81:847E`
+    piece(pieces, HP_DEEP);
     return enemy_freeze(w, dp, r);
   }
   if (id == C8C3_ID_61) {
     // `$81:C8F7  DEC $22 : CLC : RTL`.
     PORT_COVER(c8c3_61);
+    piece(pieces, HP_C8C3_61);
     uint16_t n = (uint16_t)(wram_r16(w, (uint32_t)dp + C8C3_DP_COUNT_22) - 1);
     wram_w16(w, (uint32_t)dp + C8C3_DP_COUNT_22, n);
     r->n = (n & 0x8000) != 0;
@@ -3890,6 +3946,8 @@ bool actor_c8c3_collide(Wram* w, uint16_t dp, uint16_t arg,
     PORT_COVER(c8c3_68);
     uint16_t side = (uint16_t)((arg & 0x8000) ? 2 : 0);
     uint16_t slot = side == wram_r16(w, W_SCORE_SLOT_SIDE) ? 0 : 2;
+    piece(pieces, HP_C8C3_68);
+    piece(pieces, slot == 0 ? HP_SIDE_SAME : HP_SIDE_OTHER);
     uint16_t at = (uint16_t)(W_C8C3_TALLY + slot);
     wram_w16(w, at, (uint16_t)(wram_r16(w, at) + 1));
 
@@ -3904,9 +3962,11 @@ bool actor_c8c3_collide(Wram* w, uint16_t dp, uint16_t arg,
     uint16_t flags = wram_r16(w, record);
     if (other_x < mine) {
       PORT_COVER(c8c3_face_left);
+      piece(pieces, HP_C6A7_LEFT);
       flags |= C8C3_FLAG_MIRROR;
     } else {
       PORT_COVER(c8c3_face_right);
+      piece(pieces, HP_C6A7_RIGHT);
       flags &= (uint16_t)~C8C3_FLAG_MIRROR;
     }
     wram_w16(w, record, flags);
@@ -3922,6 +3982,7 @@ bool actor_c8c3_collide(Wram* w, uint16_t dp, uint16_t arg,
   if (id < COLLIDE_ID_PLAYER) {
     // `CMP #$005C : BCC $C8F9  CLC : RTL`.
     PORT_COVER(c8c3_ignore);
+    piece(pieces, HP_C8C3_IGNORE);
     r->n = ((uint16_t)(id - COLLIDE_ID_PLAYER) & 0x8000) != 0;
     r->z = false;
     r->c = false;
@@ -3929,6 +3990,7 @@ bool actor_c8c3_collide(Wram* w, uint16_t dp, uint16_t arg,
   }
   // Every other shot: `JSR $C6EC : BRA $C8F9`.
   PORT_COVER(c8c3_shot);
+  piece(pieces, HP_C8C3_SHOT);
   c8c3_touched(w, dp, r);
   return true;
 }

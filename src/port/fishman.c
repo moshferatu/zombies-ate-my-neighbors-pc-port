@@ -215,6 +215,22 @@ static void stop_at(Fishman* s, FishmanStop stop, uint16_t a, uint16_t from) {
   s->log->s = s->sp;
 }
 
+// ...or two `JSR`s deep: `outer` into the routine, and `from` out of it to
+// where it stops.
+static void stop_under(Fishman* s, FishmanStop stop, uint16_t a,
+                       uint16_t outer, uint16_t from) {
+  push_return(s, s->loop->body_return);
+  push_return(s, outer);
+  push_return(s, from);
+  s->log->stop = stop;
+  s->log->a = a;
+  s->log->s = s->sp;
+}
+
+static bool stopped(const Fishman* s) {
+  return s->log->stop != FISHMAN_STOP_PASS;
+}
+
 // A few ticks where it is, before a leap or a dive.
 static uint16_t wait_ticks(Fishman* s);
 
@@ -603,9 +619,11 @@ static bool maybe_leap(Fishman* s, uint16_t from) {
 // ---------------------------------------------------------------------------
 
 // `$81:DA85`: stopped by the ground at `at`, is there water a little past
-// it? With water there and under it, on the level, it dives, and that is
-// the ROM's.
-static void seek_water(Fishman* s, Point at, FishmanSeek* k) {
+// it? With water there and under it, on the level, it waits a few ticks to
+// dive, and the pass stops there: under `from`, what the `JSR` here pushed,
+// and `outer`, what the `JSR` into the walk or the step did.
+static void seek_water(Fishman* s, Point at, FishmanSeek* k, uint16_t outer,
+                       uint16_t from) {
   uint16_t off = (uint16_t)((random_byte(s) & FISHMAN_SEEK_MASK) << 1);
   const uint16_t way = (uint16_t)(field(s, FISHMAN_DP_WAY) << 1);
   k->back = flags_at_least(&s->flags, way, FISHMAN_SEEK_BACK_FROM);
@@ -637,37 +655,45 @@ static void seek_water(Fishman* s, Point at, FishmanSeek* k) {
   k->edge_asked = true;
   k->edge = edge.exit;
   if (edge.c) return;
+  // `BCS` not taken, `JMP $DB04`, and the draw for the ticks.
   PORT_COVER(fishman_found_water);
-  s->log->declined = true;
+  k->dives = true;
+  flags_carry(&s->flags, false);
+  stop_under(s, FISHMAN_STOP_DIVE, wait_ticks(s), outer, from);
 }
 
 // May it walk to `at`? Ground that may be walked on, and nobody there.
-static bool can_walk_to(Fishman* s, Point at, FishmanLandProbe* k) {
+// `outer` and `from` are for a dive found past the ground.
+static bool can_walk_to(Fishman* s, Point at, FishmanLandProbe* k,
+                        uint16_t outer, uint16_t from) {
   terrain_blocked_enemy(s->w, at.x, at.y, &k->ground);
   flags_carry(&s->flags, k->ground.blocked);
   flags_overflow(&s->flags, k->ground.v);
   if (k->ground.blocked) {
     PORT_COVER(fishman_walk_stopped);
-    seek_water(s, at, &k->seek);
+    seek_water(s, at, &k->seek, outer, from);
     return false;
   }
   k->someone = someone_at(s, at);
   return !k->someone;
 }
 
-// `$81:D8B6`: take the step being tried, an axis at a time, the second from
-// wherever the first left it.
+// `$81:D8D9`: the step down, from wherever the step across left it.
+static void walk_down(Fishman* s) {
+  const uint16_t to = field(s, FISHMAN_DP_TRY_Y);
+  if (can_walk_to(s, (Point){field(s, FISHMAN_DP_X), to}, &s->log->land[1],
+                  FISHMAN_WALK_FROM_STALK, FISHMAN_SEEK_FROM_DOWN))
+    set_field(s, FISHMAN_DP_Y, to);
+}
+
+// `$81:D8B6`: take the step being tried, an axis at a time.
 static void walk(Fishman* s) {
-  FishmanLog* log = s->log;
-  Point me = position(s);
-  const Point to = {field(s, FISHMAN_DP_TRY_X), field(s, FISHMAN_DP_TRY_Y)};
-  if (can_walk_to(s, (Point){to.x, me.y}, &log->land[0])) {
-    me.x = to.x;
-    set_field(s, FISHMAN_DP_X, me.x);
-  }
-  if (log->declined) return;
-  if (can_walk_to(s, (Point){me.x, to.y}, &log->land[1]))
-    set_field(s, FISHMAN_DP_Y, to.y);
+  const uint16_t to = field(s, FISHMAN_DP_TRY_X);
+  if (can_walk_to(s, (Point){to, field(s, FISHMAN_DP_Y)}, &s->log->land[0],
+                  FISHMAN_WALK_FROM_STALK, FISHMAN_SEEK_FROM_ACROSS))
+    set_field(s, FISHMAN_DP_X, to);
+  if (stopped(s)) return;
+  walk_down(s);
 }
 
 // `$81:E309`: it sweeps from its next pass. The one that comes ashore does
@@ -766,20 +792,9 @@ static void turn_back_if_clear(Fishman* s) {
   set_field(s, FISHMAN_DP_WAY, other);
 }
 
-// `$81:D9BE` and `$81:D9F2`: a step the way it faces, or a quarter turn.
-// Stopped by the ground, it looks for water just past the place
-// (`$81:D85B`).
-static void step_ashore(Fishman* s) {
-  FishmanLog* log = s->log;
-  const Point to = try_way(s, field(s, FISHMAN_DP_WAY));
-  if (can_walk_to(s, to, &log->land[0])) {
-    PORT_COVER(fishman_ashore_stepped);
-    log->walked = true;
-    set_field(s, FISHMAN_DP_X, to.x);
-    set_field(s, FISHMAN_DP_Y, to.y);
-    return;
-  }
-  if (log->declined) return;
+// `$81:D926`: a quarter turn, and from the next pass a quarter turn back
+// is tried at every pass.
+static void turn_ashore(Fishman* s) {
   PORT_COVER(fishman_ashore_turned);
   const uint16_t way = (uint16_t)(field(s, FISHMAN_DP_WAY) - FISHMAN_FIRST_WAY);
   set_field(s, FISHMAN_DP_WAY,
@@ -787,11 +802,42 @@ static void step_ashore(Fishman* s) {
   set_state(s, FISHMAN_STATE_ASHORE_TURNED);
 }
 
+// `$81:D9BE` and `$81:D9F2`: a step the way it faces, or a quarter turn.
+// Stopped by the ground, it looks for water just past the place
+// (`$81:D85B`). `outer` is what the body's `JSR $D85B` pushed.
+static void step_ashore(Fishman* s, uint16_t outer) {
+  FishmanLog* log = s->log;
+  const Point to = try_way(s, field(s, FISHMAN_DP_WAY));
+  if (can_walk_to(s, to, &log->land[0], outer, FISHMAN_SEEK_FROM_STEP)) {
+    PORT_COVER(fishman_ashore_stepped);
+    log->walked = true;
+    set_field(s, FISHMAN_DP_X, to.x);
+    set_field(s, FISHMAN_DP_Y, to.y);
+    return;
+  }
+  if (stopped(s)) return;
+  turn_ashore(s);
+}
+
+// `$81:D9D5`, back from a dive set up past the ground. The `BCS` there reads
+// what the dive left in carry: clear, and the step is taken after all.
+static void step_after_seek(Fishman* s) {
+  if (s->flags.c) {
+    turn_ashore(s);
+    return;
+  }
+  PORT_COVER(fishman_dived_stepped);
+  s->log->walked = true;
+  set_field(s, FISHMAN_DP_X, field(s, FISHMAN_DP_TRY_X));
+  set_field(s, FISHMAN_DP_Y, field(s, FISHMAN_DP_TRY_Y));
+}
+
 // What is left of a pass going about, after it asked for water. `from` is
 // which body it is.
 static void go_about_on(Fishman* s, uint16_t from) {
-  if (from == FISHMAN_DIVE_FROM_ASHORE_TURNED) turn_back_if_clear(s);
-  step_ashore(s);
+  const bool turned = from == FISHMAN_DIVE_FROM_ASHORE_TURNED;
+  if (turned) turn_back_if_clear(s);
+  step_ashore(s, turned ? FISHMAN_STEP_FROM_TURNED : FISHMAN_STEP_FROM_ASHORE);
 }
 
 // `$81:D9B8` and `$81:D9E9`: it goes after somebody near, asks for water to
@@ -1689,8 +1735,24 @@ FishmanFate fishman_leap_wake(Wram* w, const Rom* rom, PortCpu* c,
   return finish(&s, c, 2);
 }
 
+// A dive found just past the ground, two `JSR`s deep.
+static bool seek_dive(uint16_t from) {
+  return from == FISHMAN_SEEK_FROM_STEP || from == FISHMAN_SEEK_FROM_ACROSS ||
+         from == FISHMAN_SEEK_FROM_DOWN;
+}
+
 bool fishman_dive_wake_supported(const Wram* w, uint16_t page, uint16_t s) {
   const uint16_t from = wram_r16(w, (uint16_t)(s + 1));
+  if (seek_dive(from)) {
+    const uint16_t outer = wram_r16(w, (uint16_t)(s + 3));
+    const bool outer_known =
+        from == FISHMAN_SEEK_FROM_STEP
+            ? outer == FISHMAN_STEP_FROM_ASHORE ||
+                  outer == FISHMAN_STEP_FROM_TURNED
+            : outer == FISHMAN_WALK_FROM_STALK;
+    return outer_known && loop_of(wram_r16(w, (uint16_t)(s + 5))) != NULL &&
+           shows(w, page);
+  }
   return (from == FISHMAN_DIVE_FROM_STALK ||
           from == FISHMAN_DIVE_FROM_ASHORE ||
           from == FISHMAN_DIVE_FROM_ASHORE_TURNED) &&
@@ -1704,7 +1766,8 @@ FishmanFate fishman_dive_wake(Wram* w, const Rom* rom, PortCpu* c,
   *k = (FishmanWakeLog){0};
   k->splash_slot = -1;
   k->from = wram_r16(w, (uint16_t)(c->s + 1));
-  Fishman s = woken(w, rom, c, &k->pass, 2);
+  const int returns = seek_dive(k->from) ? 3 : 2;
+  Fishman s = woken(w, rom, c, &k->pass, returns);
   const Point spot = {field(&s, FISHMAN_DP_LAND_X),
                       field(&s, FISHMAN_DP_LAND_Y)};
   way_to_spot(&s, spot, k);
@@ -1725,12 +1788,26 @@ FishmanFate fishman_dive_wake(Wram* w, const Rom* rom, PortCpu* c,
     set_field(&s, FISHMAN_DP_PART_Y, 0);
     set_state(&s, FISHMAN_STATE_DIVE_BEGIN);
   }
-  if (k->from == FISHMAN_DIVE_FROM_STALK)
-    stalk_on(&s);
-  else
-    go_about_on(&s, k->from);
+  switch (k->from) {
+    case FISHMAN_DIVE_FROM_STALK:
+      stalk_on(&s);
+      break;
+    case FISHMAN_SEEK_FROM_ACROSS:
+      walk_down(&s);
+      break;
+    case FISHMAN_SEEK_FROM_DOWN:
+      break;
+    case FISHMAN_SEEK_FROM_STEP:
+      step_after_seek(&s);
+      break;
+    default:
+      go_about_on(&s, k->from);
+      break;
+  }
+  // A second dive in what is left is the ROM's.
+  if (stopped(&s)) k->pass.declined = true;
   if (k->pass.declined) return FISHMAN_SLEEPS;
-  return finish(&s, c, 2);
+  return finish(&s, c, returns);
 }
 
 bool fishman_after_supported(const Wram* w, uint16_t page, uint16_t s) {

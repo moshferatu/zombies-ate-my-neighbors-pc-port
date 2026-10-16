@@ -375,6 +375,16 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
             c += IDLE
         at = access(ind & 0xFFFF, ind >> 16)
         fast = fast_rom(ind & 0xFFFF, ind >> 16)
+    elif mode == IDPX:
+        # `LDA ($66,X)`: X added to the direct-page address before the pointer
+        # is read, which `cpu_adrIdx` spends an internal cycle on, and the
+        # pointer's bank is the data bank's. `$80:CF3D` reads a player's first
+        # weapon count this way.
+        if ind is None:
+            raise Unpriced("%s (dp,X): pass --ind=BANK:ADDR for where it points" % name)
+        c += (IDLE if dp_unaligned else 0) + IDLE + 2 * SLOW
+        at = access(ind & 0xFFFF, ind >> 16)
+        fast = fast_rom(ind & 0xFFFF, ind >> 16)
     else:
         raise Unpriced("addressing mode %d is not priced" % mode)
 

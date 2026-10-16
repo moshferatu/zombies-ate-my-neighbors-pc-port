@@ -1677,6 +1677,7 @@
   X(pose_6c_ended, "pose_walk_6c", "the fourth picture shown: the pose starts again") \
   X(pose_punched, "pose_walk_6c", "a picture of the swing: those in the fist's box told") \
   X(pose_reached, "pose_walk_6c", "...and the tile the fist is at looked at") \
+  X(pose_wall_broken, "pose_walk_6c", "......and it is a wall that comes down") \
   X(pose_reach_busy, "pose_walk_6c", "...or not, with a wall already coming down") \
   X(pose_swung, "pose_walk_6c", "the swing's first picture, which makes a sound") \
   X(pose_fired, "pose_*", "a round taken and the shot's thread started") \
@@ -1709,6 +1710,33 @@
   X(square_made, "ts_square_made", "nobody level with a square: its record") \
   X(square_told, "ts_square_told", "...everything round it told, and its last pictures") \
   X(square_freed, "ts_square_freed", "...its record freed, and its place among the five") \
+  X(exit_door_begun, "ts_exit_door_enter", "the exit door's search begun") \
+  X(exit_door_player_unsteady, "ts_exit_door_looked", "the player not on solid ground: a tick more") \
+  X(exit_door_nobody, "ts_exit_door_looked", "...or out of the game: the thread ends") \
+  X(exit_door_other_player, "ts_exit_door_looked", "...or out of the level: the other player's way instead") \
+  X(exit_door_way_next, "ts_exit_door_*", "a way refused, and the next one tried") \
+  X(exit_door_ways_out, "ts_exit_door_*", "...or all eight refused: a tick more") \
+  X(exit_door_found, "ts_exit_door_tile_top", "a way that passes: the door goes there") \
+  X(exit_door_made, "ts_exit_door_made", "its record, and its picture") \
+  X(exit_door_touched, "ts_exit_door_wait", "both players have touched it: ten ticks") \
+  X(exit_door_no_players, "ts_exit_door_wait", "...or nobody is in the game: it goes") \
+  X(exit_door_waiting, "ts_exit_door_wait", "...or somebody is left to rescue: two ticks") \
+  X(exit_door_untouchable, "ts_exit_door_wait", "...or nobody is: it cannot be touched, and ten ticks") \
+  X(exit_door_toucher_in, "ts_exit_door_paused", "after them, the player who touched it is still in") \
+  X(exit_door_toucher_out, "ts_exit_door_paused", "...or is out: it goes") \
+  X(player_record_filed_first, "player_record_file", "the first player's record, and its thread filed with it") \
+  X(rest_begun, "ts_rest_begun", "a tick's rest, the player's flag cleared") \
+  X(rest_ended, "ts_rest_ended", "...and cleared again after, for a caller other than the slime") \
+  X(player_out_unloads, "ts_player_out", "a player out, with neighbours still to save, and the other in: its weight given back") \
+  X(player_out_forever, "ts_player_out", "...or the sentinel's page: it sleeps for good") \
+  X(player_out_drops, "ts_player_out_freed", "...its first weapon and its tenth item dropped where it was") \
+  X(slime_died_unpaid, "ts_slime_fate", "a slime dead with nothing to pay: its end") \
+  X(slime_died_paid, "ts_slime_fate", "...or counted, and its killer paid") \
+  X(decoy_ended, "ts_decoy_ended", "a decoy's last tick: one fewer out, and no handler") \
+  X(creature_unhandled, "ts_*_dead", "a werewolf or a chainsaw maniac dead: no handler") \
+  X(werewolf_second_freed, "ts_werewolf_unhandled", "...and the werewolf's second record freed") \
+  X(chainsaw_counted, "ts_chainsaw_scored", "the maniac counted by the side that killed it, and its last pictures") \
+  X(zombie_freed, "ts_zombie_freed", "a zombie's weight given back, after its record") \
   X(fishman_died, "ts_fishman_fate", "a fishman dead: told of nothing more") \
   X(fishman_second_freed, "ts_fishman_unhandled", "...and its second record freed") \
   X(fishman_counted, "ts_fishman_counted", "...counted, by the side that killed it, and heard") \
@@ -1958,7 +1986,8 @@
   X(fishman_landed_lurking, "fishman_frame", "landed, the one that keeps to its pool") \
   X(fishman_stalked, "fishman_frame", "a pass on land, at whoever is nearest") \
   X(fishman_walk_stopped, "fishman_frame", "...stopped by the ground one way, so it looks for water past it") \
-  X(fishman_found_water, "fishman_frame", "...and finds it, which is the dive and the ROM's") \
+  X(fishman_found_water, "fishman_frame", "...and finds it: a few ticks, and the dive") \
+  X(fishman_dived_stepped, "fishman_dive_wake", "the dive set up past the ground leaves carry clear: the step is taken") \
   X(fishman_stalk_found_water, "fishman_frame", "on land with water to go back to: it sleeps a few ticks first") \
   X(fishman_stalk_sweeps, "fishman_frame", "...somebody within 28 and to one side: it sweeps again") \
   X(fishman_stalk_beside, "fishman_frame", "...or under 8 across: a step all the same") \

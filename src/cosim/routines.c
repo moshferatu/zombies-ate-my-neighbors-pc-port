@@ -1969,6 +1969,78 @@ static void shim_enemy_d7f6_collide(Wram* w, const Rom* rom,
 }
 
 // ---------------------------------------------------------------------------
+// The pieces four short handlers say they ran
+// ---------------------------------------------------------------------------
+
+// Indexed by `HandlerPiece`. A whole way through a handler is one piece; the
+// survivor's `$81:8506`, the side `$80:9D6A` finds and the turn `$81:C6A7`
+// makes are pieces of their own.
+static const CosimRun HANDLER_PIECE_COST[HANDLER_PIECE_COUNT] = {
+    [HP_9B6B_IGNORE] = {84, 7, 0},
+    [HP_9B6B_DIED] = {450, 45, 5},
+    [HP_9B6B_NO_DAMAGE] = {384, 43, 3},
+    [HP_9B6B_SURVIVED] = {376, 47, 4},
+    [HP_B95F_IGNORE] = {84, 7, 0},
+    [HP_B95F_FATAL] = {250, 21, 3},
+    [HP_B95F_DIED] = {392, 38, 4},
+    [HP_B95F_NO_DAMAGE] = {354, 38, 3},
+    [HP_B95F_SURVIVED] = {346, 42, 4},
+    [HP_SURVIVED_ALREADY] = {158, 12, 1},
+    [HP_SURVIVED_SPLICED] = {780, 60, 1},
+    [HP_C8C3_P5] = {228, 17, 1},
+    [HP_C8C3_P6] = {258, 22, 1},
+    [HP_C8C3_61] = {290, 33, 1},
+    [HP_C8C3_68] = {492, 53, 0},
+    [HP_SIDE_SAME] = {112, 9, 0},
+    [HP_SIDE_OTHER] = {130, 11, 0},
+    [HP_C6A7_LEFT] = {332, 27, 3},
+    [HP_C6A7_RIGHT] = {344, 29, 3},
+    [HP_C8C3_IGNORE] = {300, 41, 0},
+    [HP_C8C3_SHOT] = {438, 52, 1},
+    [HP_84AC_IGNORE] = {102, 9, 0},
+    [HP_84AC_OTHER] = {194, 19, 2},
+    [HP_84AC_RUNNING] = {218, 21, 2},
+    [HP_84AC_TOOK] = {308, 28, 4},
+    [HP_VICTIM_LATCHED] = {100, 6, 1},
+    [HP_VICTIM_CLAIM_A] = {290, 25, 4},
+    [HP_VICTIM_CLAIM_B] = {320, 31, 4},
+    [HP_VICTIM_EVENT_2] = {236, 26, 2},
+    [HP_VICTIM_EVENT_3_A] = {166, 24, 1},
+    [HP_VICTIM_EVENT_3_B] = {196, 29, 1},
+    [HP_VICTIM_EVENT_3_C] = {226, 34, 1},
+    [HP_VICTIM_KEEP_ID] = {146, 11, 2},
+    [HP_VICTIM_DROP_ID] = {208, 16, 3},
+    [HP_VICTIM_EVENT_4] = {356, 46, 2},
+    [HP_VICTIM_EVENT_FF] = {386, 51, 2},
+    [HP_VICTIM_IGNORE] = {334, 46, 1},
+    [HP_OBJECT_SPENT] = {146, 10, 0},
+    [HP_OBJECT_IGNORE] = {230, 25, 0},
+    [HP_OBJECT_TAKE_A] = {424, 30, 4},
+    [HP_OBJECT_TAKE_B] = {454, 35, 4},
+    [HP_OBJECT_TAKE_C] = {484, 40, 4},
+};
+
+// False when a piece is `HP_DEEP`, or there were none.
+static bool pieces_cycles(const HandlerPieces* p, bool fast, bool dp_unaligned,
+                          int* out) {
+  if (p->count == 0) return false;
+  int cycles = 0;
+  for (int i = 0; i < p->count; i++) {
+    if (p->piece[i] == HP_DEEP) return false;
+    cycles += cosim_run_cycles_dp(&HANDLER_PIECE_COST[p->piece[i]], fast,
+                                  dp_unaligned);
+  }
+  *out = cycles;
+  return true;
+}
+
+static void cost_pieces(const HandlerPieces* p, const CosimRegs* in) {
+  int cycles;
+  if (pieces_cycles(p, in->fastrom, (in->d & 0xff) != 0, &cycles))
+    cosim_cost(cycles);
+}
+
+// ---------------------------------------------------------------------------
 // $81:9B6B  enemy_9b6b_collide — the sixth copy, on level 21
 // ---------------------------------------------------------------------------
 
@@ -1976,7 +2048,8 @@ static bool guard_enemy_9b6b_collide(Wram* scratch, const Rom* rom,
                                      const CosimRegs* in) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
   uint32_t unported = 0;
-  if (enemy_9b6b_collide(scratch, rom, in->d, in->a, &r, &unported)) return true;
+  if (enemy_9b6b_collide(scratch, rom, in->d, in->a, &r, &unported, NULL))
+    return true;
   cosim_census_note("9b6b id", unported);
   return false;
 }
@@ -1984,8 +2057,11 @@ static bool guard_enemy_9b6b_collide(Wram* scratch, const Rom* rom,
 static void shim_enemy_9b6b_collide(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  enemy_9b6b_collide(w, rom, in->d, in->a, &r, NULL);  // the guard allowed it
+  HandlerPieces pieces = {0};
+  // the guard allowed it
+  enemy_9b6b_collide(w, rom, in->d, in->a, &r, NULL, &pieces);
   handler_regs(&r, out);
+  cost_pieces(&pieces, in);
 }
 
 // ---------------------------------------------------------------------------
@@ -2386,15 +2462,19 @@ static void shim_actor_84ac_collide(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   (void)rom;
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  actor_84ac_collide(w, in->d, in->a, &r);
+  HandlerPieces pieces = {0};
+  actor_84ac_collide(w, in->d, in->a, &r, &pieces);
   handler_regs(&r, out);
+  cost_pieces(&pieces, in);
 }
 
 static void shim_enemy_b95f_collide(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  enemy_b95f_collide(w, rom, in->d, in->a, &r);
+  HandlerPieces pieces = {0};
+  enemy_b95f_collide(w, rom, in->d, in->a, &r, &pieces);
   handler_regs(&r, out);
+  cost_pieces(&pieces, in);
 }
 
 static void shim_enemy_eff0_collide(Wram* w, const Rom* rom,
@@ -2408,8 +2488,10 @@ static void shim_actor_c8c3_collide(Wram* w, const Rom* rom,
                                     const CosimRegs* in, CosimRegs* out) {
   (void)rom;
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y, .c = in->c};
-  actor_c8c3_collide(w, in->d, in->a, &r);
+  HandlerPieces pieces = {0};
+  actor_c8c3_collide(w, in->d, in->a, &r, &pieces);
   handler_regs(&r, out);
+  cost_pieces(&pieces, in);
 }
 
 // ---------------------------------------------------------------------------
@@ -2606,6 +2688,18 @@ static bool thread_call_cycles(const ThreadCallWork* k, const CosimRegs* in,
       cycles += handler;
       break;
     }
+    case ENEMY_9B6B_COLLIDE_ENTRY:
+    case ENEMY_B95F_COLLIDE_ENTRY:
+    case ACTOR_C8C3_COLLIDE_ENTRY:
+    case ACTOR_84AC_COLLIDE_ENTRY:
+    case VICTIM_COLLIDE_ENTRY:
+    case OBJECT_COLLIDE_ENTRY: {
+      int handler;
+      if (!pieces_cycles(&k->pieces, fast, dp_unaligned, &handler))
+        return false;
+      cycles += handler;
+      break;
+    }
     default:
       // A handler with no table. Not an error and not a gap in the port — the
       // port has twenty-five of these and this file prices four of them.
@@ -2636,8 +2730,10 @@ static void shim_victim_collide(Wram* w, const Rom* rom, const CosimRegs* in,
                                 CosimRegs* out) {
   (void)rom;  // no table, no ROM read
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
-  victim_collide(w, in->d, in->a, &r);
+  HandlerPieces pieces = {0};
+  victim_collide(w, in->d, in->a, &r, &pieces);
   handler_regs(&r, out);
+  cost_pieces(&pieces, in);
 }
 
 // ---------------------------------------------------------------------------
@@ -2651,8 +2747,10 @@ static void shim_object_collide(Wram* w, const Rom* rom, const CosimRegs* in,
                                 CosimRegs* out) {
   (void)rom;  // no table, no ROM read
   ActorHandlerRegs r = {.a = in->a, .x = in->x, .y = in->y};
-  object_collide(w, in->d, in->a, &r);
+  HandlerPieces pieces = {0};
+  object_collide(w, in->d, in->a, &r, &pieces);
   handler_regs(&r, out);
+  cost_pieces(&pieces, in);
 }
 
 // ---------------------------------------------------------------------------
@@ -4344,6 +4442,26 @@ static void shim_tilemap_tile_addr(Wram* w, const Rom* rom, const CosimRegs* in,
   out->a = r.a;
   out->x = r.x;
   out->y = in->y;  // never mentioned after the `TYA`
+  out->n = r.n;
+  out->z = r.z;
+  out->c = r.c;
+  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
+}
+
+// `$80:ADB4`-`$80:ADBC` and `$80:ADBD`-`$80:ADC7`, the second with its
+// `LDA [$28]` reading bank `$7F`; `tilemap_tile_addr` is between them.
+static const CosimRun TILE_WORD_RUN = {150 + 202, 9 + 11, 0};
+
+static void shim_tilemap_tile_word(Wram* w, const Rom* rom,
+                                   const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  TilemapWordRegs r;
+  tilemap_tile_word(w, in->x, in->y, in->d, &r);
+  cosim_cost(cosim_run_cycles(&TILE_WORD_RUN, in->fastrom) +
+             cosim_run_cycles(&TILE_ADDR_RUN, in->fastrom));
+  out->a = r.a;
+  out->x = r.x;
+  out->y = in->y;
   out->n = r.n;
   out->z = r.z;
   out->c = r.c;
@@ -9002,6 +9120,50 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_WALKER_FIRST] = {46, 5, 1},
     [TS_STUNG] = {80, 7, 1},
     [TS_BOLT_ENTER] = {116, 13, 0},
+    [TS_EXIT_DOOR_LOOK] = {188, 14, 3},
+    [TS_EXIT_DOOR_ALIVE] = {80, 7, 1},
+    [TS_EXIT_DOOR_NOBODY] = {52, 2, 0},
+    [TS_EXIT_DOOR_OUT] = {52, 5, 0},
+    [TS_EXIT_DOOR_OTHER] = {144, 13, 2},
+    [TS_EXIT_DOOR_WAYS] = {126, 11, 2},
+    [TS_EXIT_DOOR_TRY] = {328, 29, 5},
+    [TS_EXIT_DOOR_ABOVE] = {98, 9, 2},
+    [TS_EXIT_DOOR_XY] = {56, 4, 2},
+    [TS_EXIT_DOOR_ZERO_XY] = {74, 7, 2},
+    [TS_EXIT_DOOR_BRA] = {18, 2, 0},
+    [TS_EXIT_DOOR_TILES] = {208, 16, 4},
+    [TS_EXIT_DOOR_TILE_TEST] = {64, 8, 0},
+    [TS_EXIT_DOOR_UP_3] = {92, 7, 2},
+    [TS_EXIT_DOOR_UP_6] = {128, 10, 2},
+    [TS_EXIT_DOOR_NEXT] = {106, 11, 1},
+    [TS_EXIT_DOOR_COUNT] = {90, 6, 2},
+    [TS_EXIT_DOOR_FOUND] = {52, 2, 0},
+    [TS_EXIT_DOOR_LOAD] = {98, 10, 0},
+    [TS_EXIT_DOOR_MADE] = {598, 55, 3},
+    [TS_EXIT_DOOR_TOUCHABLE] = {154, 11, 2},
+    [TS_EXIT_DOOR_TOUCHED] = {40, 4, 1},
+    [TS_EXIT_DOOR_PLAYERS] = {80, 8, 0},
+    [TS_EXIT_DOOR_UNTOUCHABLE] = {68, 5, 1},
+    [TS_EXIT_DOOR_SIDE] = {158, 15, 2},
+    [TS_EXIT_DOOR_LEFT] = {52, 5, 0},
+    [TS_EXIT_DOOR_UNHANDLED] = {30, 4, 0},
+    [TS_REST_DONE] = {68, 5, 1},
+    [TS_OUT_NOTED] = {136, 10, 2},
+    [TS_OUT_LEFT] = {46, 5, 0},
+    [TS_OUT_TWO] = {80, 8, 0},
+    [TS_OUT_SENTINEL] = {58, 7, 1},
+    [TS_OUT_UNLOAD] = {156, 17, 1},
+    [TS_OUT_DROPS] = {160, 13, 2},
+    [TS_OUT_DROPPED] = {242, 17, 4},
+    [TS_PLA] = {34, 1, 0},
+    [TS_SLIME_SCORED] = {102, 8, 1},
+    [TS_UNHANDLED] = {30, 4, 0},
+    [TS_DECOY_ENDED] = {56, 3, 0},
+    [TS_WOLF_SECOND] = {58, 7, 1},
+    [TS_CHAINSAW_SCORED] = {102, 8, 1},
+    [TS_CHAINSAW_SIDE] = {136, 12, 1},
+    [TS_CHAINSAW_COUNTED] = {224, 20, 1},
+    [TS_ZOMBIE_FREED] = {110, 12, 0},
     [TS_FISH_FATE] = {30, 4, 0},
     [TS_SQUARE_MADE] = {654, 53, 2},
     [TS_SQUARE_KEPT] = {46, 5, 1},
@@ -9082,7 +9244,7 @@ THREAD_STRETCHES(X)
 static const uint32_t TS_EXITS_ARGUMENT[] = {
     0x81d186u, 0x81d1b0u, 0x81d1dau, 0x82f4b4u, 0x808519u, 0x8199c5u,
     0x80d06cu, 0x81ec75u, 0x81f311u, 0x82e0b7u, 0x81e8c4u, 0x82df0du,
-    0x82df14u, 0x82df1bu, 0x82ec5du, 0x82950du, 0x82a874u, 0x8085beu, 0x8085c5u, 0x80ea19u, 0x80ef7eu, 0x80ef8bu, 0x80efa6u, 0x80efb5u, 0x81843eu, 0x81a474u, 0x81c6d5u, 0x81e503u, 0x81e596u, 0x81e8bdu, 0x81f1e9u, 0x81f9aeu, 0x82ef0eu, 0x82f27cu, 0x82f609u, 0x82f763u, 0x82f91bu};
+    0x82df14u, 0x82df1bu, 0x82ec5du, 0x82950du, 0x82a874u, 0x8085beu, 0x8085c5u, 0x80ea19u, 0x80ef7eu, 0x80ef8bu, 0x80efa6u, 0x80efb5u, 0x81843eu, 0x81a474u, 0x81c6d5u, 0x81e503u, 0x81e596u, 0x81e8bdu, 0x81f1e9u, 0x81f9aeu, 0x82ef0eu, 0x82f27cu, 0x82f609u, 0x82f763u, 0x82f91bu, 0x81cd08u};
 static const uint32_t TS_EXITS_SETTER[] = {0x81921au, 0x819255u};
 static const uint32_t TS_EXITS_WOLF[] = {
     WEREWOLF_NONE_PC, WEREWOLF_HOWL_CHECK_PC, WEREWOLF_HOWL_CALL_PC,
@@ -9154,6 +9316,26 @@ static const uint32_t TS_EXITS_FISHMAN_DEATH[] = {
     FISHMAN_SCORED_PC,            FISHMAN_SOUND_CALL_PC,
     FISHMAN_PATROL_SOUND_CALL_PC, FISHMAN_PATROL_FREE_PC,
     FISHMAN_PATROL_SECOND_FREE_PC, FISHMAN_PATROL_RTL_PC};
+static const uint32_t TS_EXITS_EXIT_DOOR[] = {
+    EXIT_DOOR_SLEEP_PC,        EXIT_DOOR_LOOK_CALL_PC,      EXIT_DOOR_END_PC,
+    EXIT_DOOR_TRY_CALL_PC,     EXIT_DOOR_ABOVE_CALL_PC,     EXIT_DOOR_HIGHER_CALL_PC,
+    EXIT_DOOR_BELOW_CALL_PC,   EXIT_DOOR_EDGE_CALL_PC,      EXIT_DOOR_SOMEONE_CALL_PC,
+    EXIT_DOOR_TETHER_CALL_PC,  EXIT_DOOR_TILE_CALL_PC,      EXIT_DOOR_TILE_UP_CALL_PC,
+    EXIT_DOOR_TILE_TOP_CALL_PC, EXIT_DOOR_ALLOC_PC,         EXIT_DOOR_UNHANDLED_CALL_PC,
+    EXIT_DOOR_WAIT_CALL_PC,    EXIT_DOOR_PAUSE_CALL_PC,     EXIT_DOOR_GONE_CALL_PC};
+static const uint32_t TS_EXITS_PLAYER_OUT[] = {
+    REST_SLEEP_PC,           REST_RTS_PC,
+    PLAYER_OUT_LINK_PC,      PLAYER_OUT_SHOW_PC,
+    PLAYER_OUT_SLEEP_PC,     PLAYER_OUT_FILE_CALL_PC,
+    PLAYER_OUT_FREE_CALL_PC, PLAYER_OUT_FREE_2_CALL_PC,
+    PLAYER_OUT_DROP_CALL_PC, PLAYER_OUT_RTL_PC};
+static const uint32_t TS_EXITS_ENDS[] = {
+    SLIME_RECORD_END_PC,        SLIME_SCORED_CALL_PC,
+    DECOY_UNHANDLED_CALL_PC,    WEREWOLF_UNHANDLED_CALL_PC,
+    WEREWOLF_SECOND_FREE_PC,    WEREWOLF_SCORED_PC,
+    CHAINSAW_UNHANDLED_CALL_PC, CHAINSAW_SCORED_CALL_PC,
+    CHAINSAW_LAST_PICTURES_CALL_PC, ZOMBIE_FREE_CALL_PC,
+    ZOMBIE_RTL_PC};
 static const uint32_t TS_EXITS_BOLT[] = {BOLT_SOUND_CALL_PC, BOLT_ALLOC_PC,
                                          BOLT_SLEEP_PC};
 static const uint32_t TS_EXITS_PAUSE[] = {PAUSE_HELD_PC, PAUSE_VOLUME_UP_CALL_PC,
@@ -15221,30 +15403,46 @@ static void fishman_seek_bill(FishmanBill* b, const FishmanSeek* k) {
     fishman_add(b, &FISHMAN_RUN_SEEK_EDGE);
     b->calls += bounds_cycles(k->edge, fast);
   }
+  if (k->dives) {
+    // `JMP $DB04`, and the draw for its ticks, to the sleep.
+    fishman_add(b, &FISHMAN_RUN_JMP);
+    fishman_add(b, &FISHMAN_RUN_WAIT);
+    return;
+  }
   fishman_taken(b);
   fishman_add(b, &FISHMAN_RUN_SLIDE_ANSWER);
 }
 
-// `$81:D8B6`, its `RTS` too.
-static void fishman_walk_bill(FishmanBill* b) {
-  const bool fast = b->in->fastrom;
-  for (int axis = 0; axis < 2; axis++) {
-    const FishmanLandProbe* k = &b->log->land[axis];
-    fishman_add(b, &FISHMAN_RUN_WALK_GROUND);
-    b->calls += terrain_enemy_cycles(&k->ground, fast);
-    if (k->ground.blocked) {
-      fishman_add(b, &FISHMAN_RUN_WALK_SEEK);
+// One axis of `$81:D8B6`. False when it looked past the ground and dives.
+static bool fishman_walk_axis_bill(FishmanBill* b, int axis) {
+  const FishmanLandProbe* k = &b->log->land[axis];
+  fishman_add(b, &FISHMAN_RUN_WALK_GROUND);
+  b->calls += terrain_enemy_cycles(&k->ground, b->in->fastrom);
+  if (k->ground.blocked) {
+    if (k->seek.dives) {
+      fishman_add(b, &FISHMAN_RUN_STEP_SEEK);  // ...the `BRA` not reached
       fishman_seek_bill(b, &k->seek);
-      continue;
+      return false;
     }
-    fishman_taken(b);
-    fishman_add(b, &FISHMAN_RUN_ACTOR_ASK);
-    if (k->someone)
-      fishman_taken(b);
-    else
-      fishman_add(b, &FISHMAN_RUN_WALK_TAKE);
+    fishman_add(b, &FISHMAN_RUN_WALK_SEEK);
+    fishman_seek_bill(b, &k->seek);
+    return true;
   }
+  fishman_taken(b);
+  fishman_add(b, &FISHMAN_RUN_ACTOR_ASK);
+  if (k->someone)
+    fishman_taken(b);
+  else
+    fishman_add(b, &FISHMAN_RUN_WALK_TAKE);
+  return true;
+}
+
+// `$81:D8B6`, its `RTS` too. False as the axis is.
+static bool fishman_walk_bill(FishmanBill* b) {
+  for (int axis = 0; axis < 2; axis++)
+    if (!fishman_walk_axis_bill(b, axis)) return false;
   fishman_add(b, &FISHMAN_RUN_RTS);
+  return true;
 }
 
 // `$81:DA20`, its `RTS` too: the pass on land from whoever is nearest.
@@ -15287,8 +15485,7 @@ static void fishman_stalk_on_bill(FishmanBill* b) {
   b->calls += actor_snap_cycles(&log->snap[b->bearings], fast) +
               actor_bearing_cycles(&log->bearing[b->bearings], fast);
   b->bearings++;
-  fishman_walk_bill(b);
-  fishman_add(b, &FISHMAN_RUN_RTS);
+  if (fishman_walk_bill(b)) fishman_add(b, &FISHMAN_RUN_RTS);
 }
 
 // `$81:DA1D`: with water to go back to, as far as its sleep.
@@ -15302,6 +15499,21 @@ static void fishman_stalk_bill(FishmanBill* b) {
   }
   fishman_add(b, &FISHMAN_RUN_RTS);  // the wander's
   fishman_stalk_on_bill(b);
+}
+
+// `$81:D85B`'s `RTS`, and the `BCS` after it: the step, or a quarter turn.
+static void fishman_step_tail_bill(FishmanBill* b) {
+  fishman_add(b, &FISHMAN_RUN_RTS);
+  fishman_add(b, &FISHMAN_RUN_BRANCH);
+  if (b->log->walked) {
+    fishman_add(b, &FISHMAN_RUN_COMMIT);
+    fishman_add(b, &FISHMAN_RUN_RTS);
+    return;
+  }
+  fishman_taken(b);
+  fishman_add(b, &FISHMAN_RUN_JMP);
+  fishman_add(b, &FISHMAN_RUN_TURN_AT_WALL);  // `$D926` is the same
+  fishman_add(b, &FISHMAN_RUN_SET_STATE);
 }
 
 // What is left of a pass going about on land, after it asked for water:
@@ -15338,21 +15550,12 @@ static void fishman_go_about_on_bill(FishmanBill* b, uint16_t from) {
     fishman_taken(b);
     fishman_add(b, &FISHMAN_RUN_STEP_SEEK);
     fishman_seek_bill(b, &k->seek);
+    if (k->seek.dives) return;
   } else {
     fishman_add(b, &FISHMAN_RUN_ACTOR_ASK);
     if (k->someone) fishman_taken(b);
   }
-  fishman_add(b, &FISHMAN_RUN_RTS);
-  fishman_add(b, &FISHMAN_RUN_BRANCH);
-  if (log->walked) {
-    fishman_add(b, &FISHMAN_RUN_COMMIT);
-    fishman_add(b, &FISHMAN_RUN_RTS);
-    return;
-  }
-  fishman_taken(b);
-  fishman_add(b, &FISHMAN_RUN_JMP);
-  fishman_add(b, &FISHMAN_RUN_TURN_AT_WALL);  // `$D926` is the same
-  fishman_add(b, &FISHMAN_RUN_SET_STATE);
+  fishman_step_tail_bill(b);
 }
 
 // `$81:D9B8` and `$81:D9E9`: with water to go back to, as far as its sleep.
@@ -15705,10 +15908,27 @@ static void shim_fishman_dive_wake(Wram* w, const Rom* rom,
     fishman_add(&b, &FISHMAN_RUN_DIVE_SPAN);
   }
   fishman_add(&b, &FISHMAN_RUN_SET_STATE);
-  if (k.from == FISHMAN_DIVE_FROM_STALK)
-    fishman_stalk_on_bill(&b);
-  else
-    fishman_go_about_on_bill(&b, k.from);
+  switch (k.from) {
+    case FISHMAN_DIVE_FROM_STALK:
+      fishman_stalk_on_bill(&b);
+      break;
+    case FISHMAN_SEEK_FROM_ACROSS:
+    case FISHMAN_SEEK_FROM_DOWN:
+      // The walk's `BRA` past its seek, the step down after one across,
+      // and back out of the walk and the body.
+      fishman_add(&b, &FISHMAN_RUN_BRANCH);
+      fishman_taken(&b);
+      if (k.from == FISHMAN_SEEK_FROM_ACROSS) fishman_walk_axis_bill(&b, 1);
+      fishman_add(&b, &FISHMAN_RUN_RTS);
+      fishman_add(&b, &FISHMAN_RUN_RTS);
+      break;
+    case FISHMAN_SEEK_FROM_STEP:
+      fishman_step_tail_bill(&b);
+      break;
+    default:
+      fishman_go_about_on_bill(&b, k.from);
+      break;
+  }
   fishman_end_bill(&b, stays);
   fishman_charge(&b);
 }
@@ -17151,6 +17371,7 @@ static const CosimRun POSE_RUN_PUNCH_BOX = {724, 63, 4};  // $80:F055-$F089
 static const CosimRun POSE_RUN_REACH_TEST = {46, 5, 0};  // $80:F0D7-$F0DB
 static const CosimRun POSE_RUN_REACH = {744, 57, 13};  // $80:F0DC-$F10C
 static const CosimRun POSE_RUN_REACH_BIT = {30, 5, 0};  // $80:F10D-$F111
+static const CosimRun POSE_RUN_WALL = {342, 27, 7};     // $80:F113-$F12D
 static const CosimRun POSE_RUN_TAKEN = {6, 0, 0};
 // In the air. `$80:DE0D` is `$80:DD41` again as far as its landing.
 static const CosimRun POSE_RUN_ARC_TIMER = {40, 4, 1};  // $80:DD41-$DD44
@@ -17251,6 +17472,8 @@ static int pose_calls(const PoseLog* log, const Rom* rom,
     calls += told;
   }
   if (log->reached) calls += cosim_run_cycles(&TILE_ATTRS_RUN, in->fastrom);
+  if (log->wall_broken)
+    calls += thread_spawn_cycles(log->wall_slot, rom, in->fastrom);
   // A landing puts the player's handler back.
   if (log->landed) calls += cosim_run_cycles(&SET_HANDLER_RUN, in->fastrom);
   // The trampoline's: the handler, the looks at where a jump off lands, the
@@ -17481,6 +17704,10 @@ static void pose_walk_6c_bill(PoseBill* b) {
   if (log->reached) {
     pose_add(b, &POSE_RUN_REACH);
     pose_add(b, &POSE_RUN_REACH_BIT);
+    if (log->wall_broken) {
+      pose_taken(b);
+      pose_add(b, &POSE_RUN_WALL);
+    }
   } else {
     pose_taken(b);
   }
@@ -24191,6 +24418,30 @@ static bool accepts_lob_thread(const Wram* w, const CosimRegs* in) {
          (wram_r16(w, (uint16_t)(in->d + LOB_DP_PLAYER)) & ~2u) == 0;
 }
 
+// `$80:A8A4`-`$80:A8AB` and its `BNE` taken to the `RTL`, or the thread
+// filed too.
+static const CosimRun RECORD_FILE_RUN = {70 + 6 + 42, 9, 0};
+static const CosimRun RECORD_FILE_FIRST_RUN = {70 + 110, 15, 0};
+
+static bool guard_player_record_file(Wram* scratch, const Rom* rom,
+                                     const CosimRegs* in) {
+  (void)scratch;
+  (void)rom;
+  return in->x < 0x1f00 && (in->db < 0x40 || (in->db >= 0x80 && in->db < 0xc0));
+}
+
+static void shim_player_record_file(Wram* w, const Rom* rom,
+                                    const CosimRegs* in, CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  player_record_file(w, &c);
+  cpu_to(&c, out);
+  cosim_cost(cosim_run_cycles(in->x == 0 ? &RECORD_FILE_FIRST_RUN
+                                         : &RECORD_FILE_RUN,
+                              fetch_fast(in)));
+}
+
 static void shim_lob_landed(Wram* w, const Rom* rom, const CosimRegs* in,
                             CosimRegs* out) {
   (void)rom;
@@ -29159,6 +29410,17 @@ static const CosimRoutine ROUTINES[] = {
         .stack_bytes = 2,  // the PHA it reads back through `$01,S`
     },
     {
+        .name = "tilemap_tile_word",
+        .symbol = "$80:ADB4",
+        .entry = TILEMAP_TILE_WORD_ENTRY,
+        .ret_op = TILEMAP_TILE_WORD_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_tilemap_tile_word,
+        .cycles = 602,
+        // `PHD`, the `JSL` and `tilemap_tile_addr`'s `PHA`.
+        .stack_bytes = 7,
+    },
+    {
         .name = "lzss_decompress",
         .symbol = "$80:CD20",
         .entry = 0x80cd20,
@@ -32473,6 +32735,17 @@ static const CosimRoutine ROUTINES[] = {
         .accepts = accepts_player_page_begin,
         COSIM_EXITS(PAGE_BEGIN_EXITS),
         .cycles = 6200,
+    },
+    {
+        .name = "player_record_file",
+        .symbol = "$80:A8A4",
+        .entry = PLAYER_RECORD_FILE_PC,
+        .ret_op = PLAYER_RECORD_FILE_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_player_record_file,
+        .supported = guard_player_record_file,
+        .cycles = 140,
+        .stack_bytes = 0,
     },
     {
         .name = "player_page_records",

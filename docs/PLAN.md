@@ -273,6 +273,13 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**Six handlers priced, the exit door, the fishman's dive and a player out,
+2026-10-15.** Six short collision handlers say which pieces of themselves
+they ran, so a box that tells them is priced; the monster's punch knocks
+walls down; the exit door's thread, the fishman's dive from the ground, five
+creatures' ends and a player out of lives are ports. The places are 125 and
+the core executes 12,335 instructions over the survey.
+
 **Two leaps, the poses that sleep, the Snakeoid's start and the pause,
 2026-10-15.** A walk may leap twice and a swim climbs out; a pose handler's
 frame may go on into a pose that sleeps, which needed a routine that leaves

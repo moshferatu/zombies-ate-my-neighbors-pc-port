@@ -55,6 +55,16 @@ bool player_page_records_supported(const Wram* w, uint16_t page,
   return (weapon & 0x8000u) != 0 || weapon < 0x10;
 }
 
+void player_record_file(Wram* w, PortCpu* c) {
+  wram_w16(w, (uint16_t)(W_PLAYER_A_RECORD + c->x), c->a);
+  cmp16(c, c->x, 0);
+  if (c->x != 0) return;
+  PORT_COVER(player_record_filed_first);
+  c->a = wram_r16(w, W_SCHED_CUR_TASK);
+  set_nz16(c, c->a);
+  wram_w16(w, W_PLAYER_A_TASK, c->a);
+}
+
 void player_page_records(Wram* w, const Rom* rom, PortCpu* c,
                          PageRecords* did) {
   PORT_COVER(player_page_records);

@@ -78,6 +78,7 @@ const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
     {0x82f606u, 0xf623},  // a square let go: its pictures
     {0x82f760u, 0xf77a},  // the exit door's last pictures
     {0x82f918u, 0xf934},  // ...and its first
+    {0x81cd05u, 0xcd1f},  // a slime killed: its last pictures
 };
 
 const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS] = {0x9533, 0x9538, 0x953d,
@@ -167,6 +168,17 @@ static void jsr_and_back(Wram* w, PortCpu* c, uint16_t jsr_at,
 static bool seeker_returns(const Wram* w, const PortCpu* c) {
   return wram_r16(w, (uint16_t)(c->s + 1)) == SEEKER_FRAME_RETURN &&
          page(w, c, SEEKER_DP_RECORD) < 0x1f00;
+}
+
+// `$80:CEE6`: does a player out end, rather than stay for good? With
+// neighbours still to save, or some saved, and the two players' words not
+// the same.
+static bool player_out_unloads(const Wram* w) {
+  const bool saving =
+      wram_r16(w, W_NEIGHBOURS_LEFT) != 0 ||
+      (wram_r16(w, W_RESCUED) | wram_r16(w, W_RESCUED + 2)) != 0;
+  return saving && wram_r16(w, W_FRONTEND_PLAYERS) !=
+                       wram_r16(w, W_FRONTEND_PLAYERS + 2);
 }
 
 bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
@@ -282,6 +294,35 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
       return page(w, c, FISHMAN_DP_RECORD) < 0x1f00 &&
              (wram_r16(w, W_SPAWN_LOAD) & 0x8000u) == 0 &&
              wram_r16(w, W_SPAWN_LOAD) >= FISHMAN_LOAD;
+    case TS_NEEDS_EXIT_DOOR_FIND:
+      return wram_r16(w, (uint16_t)(c->s + 1)) == EXIT_DOOR_FIND_RETURN &&
+             page(w, c, EXIT_DOOR_DP_PLAYER_RECORD) < 0x1f00 &&
+             (page(w, c, EXIT_DOOR_DP_PLAYER) & ~2u) == 0;
+    case TS_NEEDS_EXIT_DOOR_MADE:
+      return c->a == c->y && c->y < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == EXIT_DOOR_MAKE_RETURN;
+    case TS_NEEDS_EXIT_DOOR_HANDLED:
+      return page(w, c, EXIT_DOOR_DP_RECORD) < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == EXIT_DOOR_MAKE_RETURN;
+    case TS_NEEDS_EXIT_DOOR:
+      return page(w, c, EXIT_DOOR_DP_RECORD) < 0x1f00;
+    case TS_NEEDS_PLAYER:
+      return page(w, c, PLAYER_OUT_DP_PLAYER) < 4;
+    case TS_NEEDS_REST_ENDED:
+      return page(w, c, PLAYER_OUT_DP_PLAYER) < 4 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) != SLIMED_REST_RETURN;
+    case TS_NEEDS_PLAYER_OUT:
+      return page(w, c, PLAYER_OUT_DP_PLAYER) < 4 &&
+             (!player_out_unloads(w) ||
+              ((uint16_t)(wram_r16(w, W_SPAWN_LOAD) - PLAYER_OUT_LOAD) &
+               0x8000u) == 0);
+    case TS_NEEDS_PLAYER_DROPS: {
+      const uint16_t at = page(w, c, PLAYER_OUT_DP_INVENTORY);
+      return at < 0x1f00 && (c->db < 0x40 || (c->db >= 0x80 && c->db < 0xc0));
+    }
+    case TS_NEEDS_ZOMBIE_FREED:
+      // Less than its weight, and the ROM goes round a `BMI` for good.
+      return ((uint16_t)(wram_r16(w, W_SPAWN_LOAD) - ZOMBIE_8ED5_LOAD) & 0x8000u) == 0;
     case TS_NEEDS_BOLT_MADE:
       return c->a < 0x1f00 && c->y == c->a &&
              wram_r16(w, (uint16_t)(c->s + 1)) == BOLT_MADE_RETURN &&
@@ -2009,6 +2050,695 @@ void square_freed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   set_nz16(c, (uint16_t)(c->db << 8));
   ran(k, TS_SQUARE_SLOT_FREE);
   c->pc = SQUARE_END_PC;
+}
+
+// --- the exit door ---------------------------------------------------------
+
+// `$82:F79E`: a tick's sleep, and the search again.
+static void exit_door_sleep(PortCpu* c, ThreadStretchWork* k) {
+  lda(c, 0x0001);
+  ran(k, TS_LDA_IMM);
+  c->pc = EXIT_DOOR_SLEEP_PC;
+}
+
+// `$82:F7DD`: the place one way from the player, and is it solid?
+static void exit_door_try(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  const uint16_t record = page(w, c, EXIT_DOOR_DP_PLAYER_RECORD);
+  ldy(c, record);
+  ldx(c, page(w, c, EXIT_DOOR_DP_WAY));
+  set_c(c, false);
+  lda(c, adc16(c, wram_r16(w, (uint16_t)(record + ACTOR_X)),
+               rom_word(rom, EXIT_DOOR_WAYS + c->x)));
+  set_page(w, c, EXIT_DOOR_DP_X, c->a);
+  set_c(c, false);
+  lda(c, adc16(c, wram_r16(w, (uint16_t)(record + ACTOR_Y)),
+               rom_word(rom, EXIT_DOOR_WAYS + 2 + c->x)));
+  set_page(w, c, EXIT_DOOR_DP_Y, c->a);
+  ldy(c, c->a);
+  ldx(c, page(w, c, EXIT_DOOR_DP_X));
+  ran(k, TS_EXIT_DOOR_TRY);
+  c->pc = EXIT_DOOR_TRY_CALL_PC;
+}
+
+// `$82:F895`: the next way round, and after eight a tick's sleep.
+static void exit_door_next_way(Wram* w, const Rom* rom, PortCpu* c,
+                          ThreadStretchWork* k) {
+  lda(c, (uint16_t)(page(w, c, EXIT_DOOR_DP_WAY) + 4));  // `INC A` four times
+  cmp16(c, c->a, EXIT_DOOR_WAYS_END);
+  ran(k, TS_EXIT_DOOR_NEXT);
+  if (c->a != EXIT_DOOR_WAYS_END) {
+    ran(k, TS_TAKEN);
+  } else {
+    lda(c, EXIT_DOOR_FIRST_WAY);
+    ran(k, TS_LDA_IMM);
+  }
+  set_page(w, c, EXIT_DOOR_DP_WAY, c->a);
+  const uint16_t tries = (uint16_t)(page(w, c, EXIT_DOOR_DP_TRIES) - 1);
+  set_page(w, c, EXIT_DOOR_DP_TRIES, tries);
+  set_nz16(c, tries);
+  ran(k, TS_EXIT_DOOR_COUNT);
+  ran(k, TS_JMP);
+  if (tries & 0x8000u) {
+    PORT_COVER(exit_door_ways_out);
+    ran(k, TS_TAKEN);
+    exit_door_sleep(c, k);
+    return;
+  }
+  PORT_COVER(exit_door_way_next);
+  exit_door_try(w, rom, c, k);
+}
+
+// The `BCS` each answer about a way begins with: true when the way is no
+// good, and the next has been tried.
+static bool exit_door_way_refused(Wram* w, const Rom* rom, PortCpu* c,
+                             ThreadStretchWork* k, bool by_bra) {
+  if (!branches(c, PORT_P_C, k)) return false;
+  if (by_bra) ran(k, TS_EXIT_DOOR_BRA);  // `BRA $F895`
+  exit_door_next_way(w, rom, c, k);
+  return true;
+}
+
+// `LDX $00 : LDY $02`, for the next question about the same place.
+static void exit_door_place(Wram* w, PortCpu* c) {
+  ldx(c, page(w, c, EXIT_DOOR_DP_X));
+  ldy(c, page(w, c, EXIT_DOOR_DP_Y));
+}
+
+// The ground some way above or below the place.
+static void exit_door_ground(Wram* w, PortCpu* c, ThreadStretchWork* k,
+                        int16_t down, uint32_t call) {
+  const uint16_t y = page(w, c, EXIT_DOOR_DP_Y);
+  set_c(c, down > 0 ? false : true);
+  lda(c, down > 0 ? adc16(c, y, (uint16_t)down)
+                  : sbc16(c, y, (uint16_t)-down));
+  ldy(c, c->a);
+  ldx(c, page(w, c, EXIT_DOOR_DP_X));
+  ran(k, TS_EXIT_DOOR_ABOVE);
+  c->pc = call;
+}
+
+// `$82:F70B`: the search, a tick from now.
+void exit_door_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(exit_door_begun);
+  push16(w, c, EXIT_DOOR_FIND_RETURN);
+  ran(k, TS_JSR);
+  exit_door_sleep(c, k);
+}
+
+// `$82:F7A5`: where the player is, and is it solid?
+void exit_door_look(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t record = page(w, c, EXIT_DOOR_DP_PLAYER_RECORD);
+  ldy(c, record);
+  lda(c, wram_r16(w, (uint16_t)(record + ACTOR_X)));
+  set_page(w, c, EXIT_DOOR_DP_X, c->a);
+  ldx(c, c->a);
+  lda(c, wram_r16(w, (uint16_t)(record + ACTOR_Y)));
+  set_page(w, c, EXIT_DOOR_DP_Y, c->a);
+  ldy(c, c->a);
+  ran(k, TS_EXIT_DOOR_LOOK);
+  c->pc = EXIT_DOOR_LOOK_CALL_PC;
+}
+
+// `$82:F7B7`: a player on solid ground, and the first way to try.
+void exit_door_looked(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  if (branches(c, PORT_P_C, k)) {
+    PORT_COVER(exit_door_player_unsteady);
+    exit_door_sleep(c, k);
+    return;
+  }
+  ldx(c, page(w, c, EXIT_DOOR_DP_PLAYER));
+  lda(c, wram_r16(w, (uint16_t)(W_FRONTEND_PLAYERS + c->x)));
+  ran(k, TS_EXIT_DOOR_ALIVE);
+  if (c->a == 0) {
+    // `SEC : RTS`, and the `BCS` after the search to the thread's end.
+    PORT_COVER(exit_door_nobody);
+    set_c(c, true);
+    pull16(w, c);
+    ran(k, TS_EXIT_DOOR_NOBODY);
+    ran(k, TS_BRANCH);
+    ran(k, TS_TAKEN);
+    c->pc = EXIT_DOOR_END_PC;
+    return;
+  }
+  ran(k, TS_TAKEN);
+  lda(c, wram_r16(w, (uint16_t)(W_PLAYERS_OUT + c->x)));
+  ran(k, TS_EXIT_DOOR_OUT);
+  if (c->a != 0) {
+    PORT_COVER(exit_door_other_player);
+    lda(c, rom_word(rom, EXIT_DOOR_OTHER_PLAYER + c->x));
+    set_page(w, c, EXIT_DOOR_DP_PLAYER, c->a);
+    ldx(c, c->a);
+    lda(c, wram_r16(w, (uint16_t)(W_PLAYER_A_RECORD + c->x)));
+    set_page(w, c, EXIT_DOOR_DP_PLAYER_RECORD, c->a);
+    ran(k, TS_EXIT_DOOR_OTHER);
+  } else {
+    ran(k, TS_TAKEN);
+  }
+  lda(c, asl16(c, wram_r16(w, (uint16_t)(W_JOY_DIR + c->x))));
+  set_page(w, c, EXIT_DOOR_DP_WAY, c->a);
+  lda(c, EXIT_DOOR_TRIES);
+  set_page(w, c, EXIT_DOOR_DP_TRIES, c->a);
+  ran(k, TS_EXIT_DOOR_WAYS);
+  exit_door_try(w, rom, c, k);
+}
+
+// `$82:F7FA`, `$82:F809` and `$82:F818`: the place itself, 16 above it and
+// 32 above it, each solid or not.
+void exit_door_tried(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  if (exit_door_way_refused(w, rom, c, k, true)) return;
+  exit_door_ground(w, c, k, -0x10, EXIT_DOOR_ABOVE_CALL_PC);
+}
+
+void exit_door_above(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  if (exit_door_way_refused(w, rom, c, k, true)) return;
+  exit_door_ground(w, c, k, -0x20, EXIT_DOOR_HIGHER_CALL_PC);
+}
+
+void exit_door_higher(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  if (exit_door_way_refused(w, rom, c, k, false)) return;
+  exit_door_ground(w, c, k, 0x10, EXIT_DOOR_BELOW_CALL_PC);
+}
+
+// `$82:F827`: 16 below, and then the map's edge.
+void exit_door_below(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  if (exit_door_way_refused(w, rom, c, k, false)) return;
+  exit_door_place(w, c);
+  ran(k, TS_EXIT_DOOR_XY);
+  c->pc = EXIT_DOOR_EDGE_CALL_PC;
+}
+
+// `$82:F831`: anyone at the place.
+void exit_door_edge(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  if (exit_door_way_refused(w, rom, c, k, false)) return;
+  lda(c, 0);
+  exit_door_place(w, c);
+  ran(k, TS_EXIT_DOOR_ZERO_XY);
+  c->pc = EXIT_DOOR_SOMEONE_CALL_PC;
+}
+
+// `$82:F83E`: how far the other player would be.
+void exit_door_someone(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  if (exit_door_way_refused(w, rom, c, k, false)) return;
+  exit_door_place(w, c);
+  ran(k, TS_EXIT_DOOR_XY);
+  c->pc = EXIT_DOOR_TETHER_CALL_PC;
+}
+
+// `LSR` three times: a pixel to a tile.
+static uint16_t exit_door_to_tile(PortCpu* c, uint16_t pixel) {
+  set_c(c, (pixel & 0x0004u) != 0);
+  const uint16_t tile = (uint16_t)(pixel >> 3);
+  set_nz16(c, tile);
+  return tile;
+}
+
+// `$82:F848`: the tile at the place.
+void exit_door_tether(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  if (exit_door_way_refused(w, rom, c, k, false)) return;
+  ran(k, TS_EXIT_DOOR_BRA);
+  ldx(c, exit_door_to_tile(c, page(w, c, EXIT_DOOR_DP_X)));
+  set_page(w, c, EXIT_DOOR_DP_COLUMN, c->x);
+  ldy(c, exit_door_to_tile(c, page(w, c, EXIT_DOOR_DP_Y)));
+  set_page(w, c, EXIT_DOOR_DP_ROW, c->y);
+  lda(c, c->y);  // `LDA $02` went before the shifts; A is the row's
+  ran(k, TS_EXIT_DOOR_TILES);
+  c->pc = EXIT_DOOR_TILE_CALL_PC;
+}
+
+// `AND #$01FF : CMP $00DC`: is the tile one drawn over sprites? Carry set
+// if so.
+static void exit_door_tile_test(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, (uint16_t)(c->a & 0x01ffu));
+  cmp16(c, c->a, wram_r16(w, W_TILE_PRIORITY_BELOW));
+  ran(k, TS_EXIT_DOOR_TILE_TEST);
+}
+
+// `$82:F862` and `$82:F875`: and the tile three up, and six up.
+static void exit_door_tile_above(Wram* w, const Rom* rom, PortCpu* c,
+                            ThreadStretchWork* k, uint16_t up, int block,
+                            uint32_t call) {
+  exit_door_tile_test(w, c, k);
+  if (!flag(c, PORT_P_C)) {
+    ran(k, TS_TAKEN);
+    exit_door_next_way(w, rom, c, k);
+    return;
+  }
+  ldx(c, page(w, c, EXIT_DOOR_DP_COLUMN));
+  ldy(c, (uint16_t)(page(w, c, EXIT_DOOR_DP_ROW) - up));  // `DEY`, that many
+  ran(k, block);
+  c->pc = call;
+}
+
+void exit_door_tile(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  exit_door_tile_above(w, rom, c, k, 3, TS_EXIT_DOOR_UP_3, EXIT_DOOR_TILE_UP_CALL_PC);
+}
+
+void exit_door_tile_up(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  exit_door_tile_above(w, rom, c, k, 6, TS_EXIT_DOOR_UP_6, EXIT_DOOR_TILE_TOP_CALL_PC);
+}
+
+// `$82:F88B`: the last tile has to be past the line, not on it. Then the
+// place is found: its weight, and `JSR $F8D9` for its record.
+void exit_door_tile_top(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  exit_door_tile_test(w, c, k);
+  if (flag(c, PORT_P_Z)) {
+    ran(k, TS_TAKEN);
+    exit_door_next_way(w, rom, c, k);
+    return;
+  }
+  if (!branches(c, PORT_P_C, k)) {
+    exit_door_next_way(w, rom, c, k);
+    return;
+  }
+  PORT_COVER(exit_door_found);
+  set_c(c, false);
+  pull16(w, c);
+  ran(k, TS_EXIT_DOOR_FOUND);
+  ran(k, TS_BRANCH);  // the search's `BCS`
+  load_up(w, c, EXIT_DOOR_LOAD);
+  ran(k, TS_EXIT_DOOR_LOAD);
+  push16(w, c, EXIT_DOOR_MAKE_RETURN);
+  ran(k, TS_JSR);
+  c->pc = EXIT_DOOR_ALLOC_PC;
+}
+
+// `$82:F8DD`: its record, at the place, with its picture and nothing to
+// touch it yet. Then its handler cleared.
+void exit_door_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(exit_door_made);
+  const uint16_t record = c->y;
+  set_page(w, c, EXIT_DOOR_DP_RECORD, c->a);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), page(w, c, EXIT_DOOR_DP_X));
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), page(w, c, EXIT_DOOR_DP_Y));
+  wram_w16(w, (uint16_t)(record + ACTOR_META), EXIT_DOOR_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), EXIT_DOOR_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD),
+           wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  lda(c, 0);
+  ldy(c, 0);
+  ran(k, TS_EXIT_DOOR_MADE);
+  c->pc = EXIT_DOOR_UNHANDLED_CALL_PC;
+}
+
+// `$82:F929`: it can be touched, and the first two ticks' sleep.
+void exit_door_handled(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  ldy(c, page(w, c, EXIT_DOOR_DP_RECORD));
+  lda(c, EXIT_DOOR_ID);
+  wram_w16(w, (uint16_t)(c->y + ACTOR_COLLIDE_ID), c->a);
+  set_page(w, c, EXIT_DOOR_DP_COUNT, 0);
+  pull16(w, c);
+  ran(k, TS_EXIT_DOOR_TOUCHABLE);
+  lda(c, 0x0002);
+  ran(k, TS_LDA_IMM);
+  c->pc = EXIT_DOOR_WAIT_CALL_PC;
+}
+
+// `$82:F758`: no handler, on the way out.
+static void exit_door_goes(PortCpu* c, ThreadStretchWork* k) {
+  lda(c, 0);
+  ldy(c, 0);
+  ran(k, TS_EXIT_DOOR_UNHANDLED);
+  c->pc = EXIT_DOOR_GONE_CALL_PC;
+}
+
+static void exit_door_waits_on(PortCpu* c, ThreadStretchWork* k) {
+  lda(c, 0x0002);
+  ran(k, TS_LDA_IMM);
+  c->pc = EXIT_DOOR_WAIT_CALL_PC;
+}
+
+static void exit_door_pauses(PortCpu* c, ThreadStretchWork* k) {
+  lda(c, 0x000a);
+  ran(k, TS_LDA_IMM);
+  c->pc = EXIT_DOOR_PAUSE_CALL_PC;
+}
+
+// `$82:F724`: every other tick.
+void exit_door_wait(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, EXIT_DOOR_DP_COUNT));
+  ran(k, TS_EXIT_DOOR_TOUCHED);
+  if (c->a & 0x8000u) {
+    PORT_COVER(exit_door_touched);
+    ran(k, TS_TAKEN);
+    exit_door_pauses(c, k);
+    return;
+  }
+  lda(c, (uint16_t)(wram_r16(w, W_FRONTEND_PLAYERS) |
+                    wram_r16(w, W_FRONTEND_PLAYERS + 2)));
+  ran(k, TS_EXIT_DOOR_PLAYERS);
+  if (c->a == 0) {
+    PORT_COVER(exit_door_no_players);
+    ran(k, TS_TAKEN);
+    exit_door_goes(c, k);
+    return;
+  }
+  lda(c, (uint16_t)(wram_r16(w, W_RESCUED) | wram_r16(w, W_RESCUED + 2)));
+  ran(k, TS_EXIT_DOOR_PLAYERS);
+  if (c->a != 0) {
+    PORT_COVER(exit_door_waiting);
+    ran(k, TS_TAKEN);
+    exit_door_waits_on(c, k);
+    return;
+  }
+  PORT_COVER(exit_door_untouchable);
+  ldx(c, page(w, c, EXIT_DOOR_DP_RECORD));
+  wram_w16(w, (uint16_t)(c->x + ACTOR_COLLIDE_ID), 0);
+  ran(k, TS_EXIT_DOOR_UNTOUCHABLE);
+  exit_door_pauses(c, k);
+}
+
+// `$82:F744`: after the ten ticks. The player who touched it, by
+// `$80:9D6A`'s side; out, and the door goes.
+void exit_door_paused(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, EXIT_DOOR_DP_COUNT, 0);
+  lda(c, (uint16_t)(page(w, c, EXIT_DOOR_DP_TOUCHED) & 0xfffeu));
+  set_c(c, true);
+  lda(c, sbc16(c, c->a, 0x0004));
+  ran(k, TS_EXIT_DOOR_SIDE);
+  ldx(c, 0);
+  cmp16(c, c->a, wram_r16(w, W_SCORE_SLOT_SIDE));
+  ran(k, TS_KILLER_SIDE);
+  if (c->a == wram_r16(w, W_SCORE_SLOT_SIDE)) {
+    ran(k, TS_TAKEN);
+  } else {
+    ldx(c, 2);
+    ran(k, TS_KILLER_OTHER);
+  }
+  ran(k, TS_RTL);
+  lda(c, wram_r16(w, (uint16_t)(W_PLAYERS_OUT + c->x)));
+  ran(k, TS_EXIT_DOOR_LEFT);
+  if (c->a == 0) {
+    PORT_COVER(exit_door_toucher_in);
+    ran(k, TS_TAKEN);
+    exit_door_waits_on(c, k);
+    return;
+  }
+  PORT_COVER(exit_door_toucher_out);
+  exit_door_goes(c, k);
+}
+
+// --- a player out ---------------------------------------------------------
+
+// `$80:F354`: the player's flag cleared, and a tick's sleep.
+void rest_begun(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(rest_begun);
+  ldx(c, page(w, c, PLAYER_OUT_DP_PLAYER));
+  wram_w16(w, (uint16_t)(W_PLAYER_FLAG + c->x), 0);
+  lda(c, 0x0001);
+  ran(k, TS_SLIMED_REST);
+  c->pc = REST_SLEEP_PC;
+}
+
+// `$80:F360`, for a caller other than the slime: cleared again, to its
+// `RTS`.
+void rest_ended(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(rest_ended);
+  ldx(c, page(w, c, PLAYER_OUT_DP_PLAYER));
+  wram_w16(w, (uint16_t)(W_PLAYER_FLAG + c->x), 0);
+  ran(k, TS_REST_DONE);
+  c->pc = REST_RTS_PC;
+}
+
+// `$80:CED8`: out of the game, and none of its rescues count.
+void player_out_noted(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)rom;
+  ldx(c, page(w, c, PLAYER_OUT_DP_PLAYER));
+  wram_w16(w, (uint16_t)(W_FRONTEND_PLAYERS + c->x), 0);
+  wram_w16(w, (uint16_t)(W_RESCUED + c->x), 0);
+  lda(c, page(w, c, PLAYER_OUT_DP_PLAYER));
+  ran(k, TS_OUT_NOTED);
+  c->pc = PLAYER_OUT_LINK_PC;
+}
+
+// `LDA #$7FFF`, to the sleep for good.
+static void player_out_sleeps(PortCpu* c, ThreadStretchWork* k) {
+  lda(c, PLAYER_OUT_FOREVER);
+  ran(k, TS_LDA_IMM);
+  c->pc = PLAYER_OUT_SLEEP_PC;
+}
+
+// `$80:CEE6`: does it end, or stay for good?
+void player_out(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, wram_r16(w, W_NEIGHBOURS_LEFT));
+  ran(k, TS_OUT_LEFT);
+  bool compare = c->a != 0;
+  if (compare) {
+    ran(k, TS_TAKEN);
+  } else {
+    lda(c, (uint16_t)(wram_r16(w, W_RESCUED) | wram_r16(w, W_RESCUED + 2)));
+    ran(k, TS_OUT_TWO);
+    if (c->a == 0)
+      ran(k, TS_TAKEN);
+    else
+      compare = true;
+  }
+  if (compare) {
+    lda(c, wram_r16(w, W_FRONTEND_PLAYERS));
+    cmp16(c, c->a, wram_r16(w, W_FRONTEND_PLAYERS + 2));
+    ran(k, TS_OUT_TWO);
+    if (c->a != wram_r16(w, W_FRONTEND_PLAYERS + 2)) {
+      // `$80:CF16`: its weight given back, and its record filed as none.
+      PORT_COVER(player_out_unloads);
+      ran(k, TS_TAKEN);
+      set_c(c, true);
+      lda(c, sbc16(c, wram_r16(w, W_SPAWN_LOAD), PLAYER_OUT_LOAD));
+      wram_w16(w, W_SPAWN_LOAD, c->a);
+      lda(c, 0);
+      ldx(c, page(w, c, PLAYER_OUT_DP_PLAYER));
+      ran(k, TS_OUT_UNLOAD);
+      c->pc = PLAYER_OUT_FILE_CALL_PC;
+      return;
+    }
+  }
+  lda(c, page(w, c, PLAYER_OUT_DP_SENTINEL));
+  cmp16(c, c->a, PLAYER_OUT_SENTINEL);
+  ran(k, TS_OUT_SENTINEL);
+  if (c->a != PLAYER_OUT_SENTINEL) {
+    ran(k, TS_TAKEN);
+    c->pc = PLAYER_OUT_SHOW_PC;
+    return;
+  }
+  PORT_COVER(player_out_forever);
+  player_out_sleeps(c, k);
+}
+
+// `$80:CF09`: `BRA`, and the sleep for good again.
+void player_out_slept(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  ran(k, TS_BRANCH);
+  ran(k, TS_TAKEN);
+  player_out_sleeps(c, k);
+}
+
+// `$80:CF2B` and `$80:CF31`: its two records freed.
+void player_out_filed(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, PLAYER_OUT_DP_RECORD));
+  ran(k, TS_LDA_DP);
+  c->pc = PLAYER_OUT_FREE_CALL_PC;
+}
+
+void player_out_freed(Wram* w, const Rom* rom, PortCpu* c,
+                      ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, PLAYER_OUT_DP_SECOND));
+  ran(k, TS_LDA_DP);
+  c->pc = PLAYER_OUT_FREE_2_CALL_PC;
+}
+
+// `PLA`, and the thread's `RTL`.
+static void player_out_ends(Wram* w, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, pull16(w, c));
+  ran(k, TS_PLA);
+  c->pc = PLAYER_OUT_RTL_PC;
+}
+
+// `$80:CF37`: its first weapon and its tenth item, read through the
+// inventory's pointer. Any of either is dropped where it was.
+void player_out_freed_2(Wram* w, const Rom* rom, PortCpu* c,
+                        ThreadStretchWork* k) {
+  const uint32_t at = ((uint32_t)c->db << 16) | page(w, c, PLAYER_OUT_DP_INVENTORY);
+  const uint16_t weapon = bus_r16(w, rom, at);
+  const uint16_t item = bus_r16(w, rom, at + PLAYER_OUT_ITEM);
+  ldx(c, 0);
+  ldy(c, PLAYER_OUT_ITEM);
+  set_c(c, false);
+  lda(c, adc16(c, weapon, item));
+  ran(k, TS_OUT_DROPS);
+  if (c->a == 0) {
+    ran(k, TS_TAKEN);
+    player_out_ends(w, c, k);
+    return;
+  }
+  PORT_COVER(player_out_drops);
+  wram_w16(w, W_DROPPED_WEAPON, weapon);
+  wram_w16(w, W_DROPPED_ITEM, item);
+  lda(c, PLAYER_OUT_DROP_RANGE);
+  ldx(c, page(w, c, PLAYER_OUT_DP_X));
+  ldy(c, page(w, c, PLAYER_OUT_DP_Y));
+  ran(k, TS_OUT_DROPPED);
+  c->pc = PLAYER_OUT_DROP_CALL_PC;
+}
+
+// `$80:CF59`: back from the drop, and the end.
+void player_out_dropped(Wram* w, const Rom* rom, PortCpu* c,
+                        ThreadStretchWork* k) {
+  (void)rom;
+  player_out_ends(w, c, k);
+}
+
+// --- five ends ---------------------------------------------------------------
+
+// A word of WRAM one more, or one less, and N and Z its.
+static void count(Wram* w, PortCpu* c, uint16_t at, int by) {
+  const uint16_t n = (uint16_t)(wram_r16(w, at) + by);
+  wram_w16(w, at, n);
+  set_nz16(c, n);
+}
+
+// `$81:CCF7`: a fate that is not zero, in A. Negative is nothing to pay.
+void slime_fate(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  if (branches(c, PORT_P_N, k)) {
+    PORT_COVER(slime_died_unpaid);
+    c->pc = SLIME_RECORD_END_PC;
+    return;
+  }
+  PORT_COVER(slime_died_paid);
+  count(w, c, W_SLIMES_KILLED, 1);
+  ldx(c, SLIME_WORTH);
+  lda(c, page(w, c, SLIME_DP_KILLER));
+  ran(k, TS_SLIME_SCORED);
+  c->pc = SLIME_SCORED_CALL_PC;
+}
+
+// `LDA #$0000 : TAY`, to `JSL thread_set_handler`: no handler.
+static void unhandled(PortCpu* c, ThreadStretchWork* k, uint32_t call) {
+  lda(c, 0);
+  ldy(c, c->a);
+  ran(k, TS_UNHANDLED);
+  c->pc = call;
+}
+
+// `$81:F1DB`: one fewer decoy out, and no handler.
+void decoy_ended(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(decoy_ended);
+  count(w, c, W_DECOYS_OUT, -1);
+  ran(k, TS_DECOY_ENDED);
+  unhandled(c, k, DECOY_UNHANDLED_CALL_PC);
+}
+
+// `$81:AC2A` and `$81:9887`: dead, and no handler.
+void creature_unhandled(Wram* w, const Rom* rom, PortCpu* c,
+                        ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(creature_unhandled);
+  unhandled(c, k,
+            c->pc == WEREWOLF_DEAD_PC ? WEREWOLF_UNHANDLED_CALL_PC
+                                      : CHAINSAW_UNHANDLED_CALL_PC);
+}
+
+// `$81:AC32`: the werewolf's second record freed, if it has one, and on to
+// being paid.
+void werewolf_unhandled(Wram* w, const Rom* rom, PortCpu* c,
+                        ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, WEREWOLF_DP_SECOND));
+  cmp16(c, c->a, 0xffffu);
+  ran(k, TS_WOLF_SECOND);
+  if (c->a == 0xffffu) {
+    ran(k, TS_TAKEN);
+    c->pc = WEREWOLF_SCORED_PC;
+    return;
+  }
+  PORT_COVER(werewolf_second_freed);
+  c->pc = WEREWOLF_SECOND_FREE_PC;
+}
+
+// `$81:988F`: one more chainsaw maniac killed, and the killer paid.
+void chainsaw_unhandled(Wram* w, const Rom* rom, PortCpu* c,
+                        ThreadStretchWork* k) {
+  (void)rom;
+  count(w, c, W_CHAINSAWS_KILLED, 1);
+  ldx(c, CHAINSAW_WORTH);
+  lda(c, page(w, c, CHAINSAW_DP_KILLER));
+  ran(k, TS_CHAINSAW_SCORED);
+  c->pc = CHAINSAW_SCORED_CALL_PC;
+}
+
+// `$81:989B`: counted by the side that killed it, as `$80:9D6A` finds the
+// side; nothing can touch it, and its last pictures.
+void chainsaw_scored(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(chainsaw_counted);
+  // `AND #$8000 : ASL A : ROL A : ROL A`: bit 15, doubled.
+  const bool side_b = (page(w, c, CHAINSAW_DP_KILLER) & 0x8000u) != 0;
+  set_c(c, false);
+  lda(c, side_b ? 2 : 0);
+  ran(k, TS_CHAINSAW_SIDE);
+  ldx(c, 0);
+  cmp16(c, c->a, wram_r16(w, W_SCORE_SLOT_SIDE));
+  ran(k, TS_KILLER_SIDE);
+  if (c->a == wram_r16(w, W_SCORE_SLOT_SIDE)) {
+    ran(k, TS_TAKEN);
+  } else {
+    ldx(c, 2);
+    ran(k, TS_KILLER_OTHER);
+  }
+  ran(k, TS_RTL);
+  const uint16_t kills = (uint16_t)(W_CHAINSAW_KILLS_BY_SIDE + c->x);
+  count(w, c, kills, 1);
+  const uint16_t record = page(w, c, CHAINSAW_DP_RECORD);
+  ldy(c, record);
+  lda(c, 0);
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), c->a);
+  lda(c, CHAINSAW_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), c->a);
+  lda(c, CHAINSAW_LAST_PICTURES);
+  ran(k, TS_CHAINSAW_COUNTED);
+  c->pc = CHAINSAW_LAST_PICTURES_CALL_PC;
+}
+
+// `$81:8EF0`: a zombie nobody killed, or one paid for: its record freed.
+void zombie_unscored(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  lda(c, page(w, c, ZOMBIE_DP_RECORD));
+  ran(k, TS_LDA_DP);
+  c->pc = ZOMBIE_FREE_CALL_PC;
+}
+
+// `$81:8EF6`: and its weight given back, to the thread's `RTL`.
+void zombie_freed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(zombie_freed);
+  set_c(c, true);
+  lda(c, sbc16(c, wram_r16(w, W_SPAWN_LOAD), ZOMBIE_8ED5_LOAD));
+  wram_w16(w, W_SPAWN_LOAD, c->a);
+  ran(k, TS_ZOMBIE_FREED);
+  c->pc = ZOMBIE_RTL_PC;
 }
 
 // `$81:E4C1`: dead, and told of nothing more.

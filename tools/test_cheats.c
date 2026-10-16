@@ -336,7 +336,7 @@ static void test_port(const uint8_t* rom_bytes, size_t size, const char* what) {
       wram_w16(w, dp + VICTIM_DP_RECORD, rec);
       wram_w16(w, rec + ACTOR_COLLIDE_ID, 1);
       r.a = deaths[i];
-      victim_collide(w, dp, deaths[i], &r);
+      victim_collide(w, dp, deaths[i], &r, NULL);
       const uint16_t event = wram_r16(w, dp + VICTIM_DP_EVENT);
       if (on ? event != 0 : event == 0) fail("%s: id $%02X %s a neighbour with the cheat %s", what, deaths[i], event ? "reached" : "spared", on ? "on" : "off");
       if (on && (r.c || wram_r16(w, rec + ACTOR_COLLIDE_ID) != 1)) fail("%s: id $%02X was not simply ignored", what, deaths[i]);
@@ -345,14 +345,14 @@ static void test_port(const uint8_t* rom_bytes, size_t size, const char* what) {
     ActorHandlerRegs r = {0};
     memset(w, 0, sizeof *w);
     wram_w16(w, dp + VICTIM_DP_RECORD, rec);
-    victim_collide(w, dp, VICTIM_ID_CLAIM_A, &r);
+    victim_collide(w, dp, VICTIM_ID_CLAIM_A, &r, NULL);
     if (wram_r16(w, dp + VICTIM_DP_EVENT) != VICTIM_EVENT_CLAIMED) fail("%s: player 1 cannot rescue (cheat %d)", what, on);
     wram_w16(w, dp + VICTIM_DP_EVENT, 0);
-    victim_collide(w, dp, VICTIM_ID_CLAIM_B, &r);
+    victim_collide(w, dp, VICTIM_ID_CLAIM_B, &r, NULL);
     if (wram_r16(w, dp + VICTIM_DP_EVENT) != VICTIM_EVENT_CLAIMED || wram_r16(w, dp + VICTIM_DP_CLAIMANT) != 0x8000)
       fail("%s: player 2 cannot rescue (cheat %d)", what, on);
     wram_w16(w, dp + VICTIM_DP_EVENT, 0);
-    victim_collide(w, dp, VICTIM_ID_EVENT_FF, &r);
+    victim_collide(w, dp, VICTIM_ID_EVENT_FF, &r, NULL);
     if (wram_r16(w, dp + VICTIM_DP_EVENT) != VICTIM_EVENT_FF) fail("%s: $FF does not clear a neighbour away (cheat %d)", what, on);
 
     // The bubbled one.

@@ -5,6 +5,91 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Six handlers priced, the punch's walls, the exit door, the fishman's dive, five ends and a player out (2026-10-15)
+
+Another round of about five times the usual, validated once at the end.
+
+* **Six handlers priced.** A box that tells everything in it, as the lob's
+  burst and the monster's punch do, could not be priced when it told one of
+  `$81:9B6B`, `$81:B95F`, `$81:C8C3`, `$82:84AC`, `$83:A364` or `$80:CAEE`:
+  the harness had a price for six handlers and these are six more. Each now
+  says which straight pieces of itself it ran, `HandlerPieces` in
+  `port/collide.h`, and one table in the harness prices them. A survivor's
+  `$81:8506` and the side `$80:9D6A` finds are pieces of their own. With
+  that, the lob's burst is never turned down, and the punch only at a wall.
+  Each of the six registry rows is priced by its pieces now too, where it
+  had a measured mean.
+* **The monster's punch knocks a wall down.** A tile with bit 6 where the
+  fist is begins the thread at `$81:F2B2`, with the place, the facing and
+  the tile, and `$1FF8` says a wall is coming down.
+* **The exit door**, `$82:F70B`, round its calls: the search for a place by
+  a player who stands still, eight ways 32 pixels off, each asked of the
+  ground three ways, the map's edge, anyone there, how far the other player
+  would be and three tiles that must be drawn over sprites; its record; and
+  every other tick, whether both players have touched it, nobody is left to
+  rescue, or nobody is in the game. Nineteen stretches. Its end was
+  `port/begin.h`'s already.
+  * `$80:ADB4`, the tile word at a column and a row, which the search asks
+    three times, is `tilemap_tile_word` in `port/terrain.h`.
+* **The fishman's dive from the ground.** On land, stopped by the ground
+  with water just past it, a fishman waits a few ticks and dives. The port
+  turned that pass down. Now it stops at the sleep with the seek's `JSR` and
+  the walk's or the step's under it, and the dive's wake finishes the pass
+  it was in: the step down after one across, or the step after all when the
+  dive leaves carry clear.
+* **Five ends**, between ports they reach: a slime's fate, a decoy's last
+  tick, a werewolf's death, the chainsaw maniac's death and its count by
+  side, and the zombie of `$81:8ED5` freed before its weight is given back.
+  Nine stretches, and the slime's last pictures as a thread argument.
+* **A player out of lives**: the tick's rest at `$80:F354` from any of its
+  seven callers, the player taken out of the game, then its end or its
+  pictures for good. `$80:A8A4`, which files a player's record, is
+  `player_record_file` in `port/page.h`. The drop of what it carried is
+  priced by `tools/cycles816.py`, which now prices `(dp,X)`.
+* **Two of my mistakes, caught on the way.**
+  * Three names I gave stretches were names other code had, with other
+    values: the compiler warned of a redefinition, and the first build would
+    have sent the chainsaw's pictures to the wrong place.
+  * My exit door had its own end at `$82:F767`, which `port/begin.h` had
+    already. That one is kept.
+* **Checked.** 1,638 routines are registered.
+  * The corpus verifies clean: 128,129,351 calls over 56 movies, none
+    diverged, and all 1,197 cost rows are exact.
+  * Branch coverage is 1,812 of 2,192. No branch taken before is untaken
+    now; the twelve new ones untaken are this round's, among them the exit
+    door with nobody in the game, a player out who drops what they carried,
+    and a slime killed by somebody.
+  * Lockstep: 53 of 56 never part. level25, level25-2p and level25-heavy
+    part as before, level25 at pass 2176 where it parted at 1962. Over the
+    214 passes it now compares that it did not, one byte the check cannot
+    account for differs, `$7E:0910`, 6A against 68, at pass 1995. Every
+    compared pass of that movie differs somewhere, as the two timelines
+    drift, and I think this is that, but I have not shown it.
+  * The picture: 78,360,128 lines at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 142 to 104 | 468 to 299 | 4,498 to 2,970 |
+  | Left standing on an instruction | 9 to 4 | 171 to 128 | 685 to 612 |
+  | A port turned the call down | 16 to 11 | 110 to 55 | 1,482 to 525 |
+  | A port or a link called it | 6 to 5 | 148 to 128 | 426 to 308 |
+  | All | 174 to 125 | 1,007 to 720 | 15,011 to 12,335 |
+
+  The reset's own code, 7,920 instructions, is in the last row and in no
+  other; without it the core executes 4,415 where it executed 7,091. Three
+  places are new, and each is an old one split, where a port now takes the
+  middle: `$80:C1CF`, which the player out calls, and `$80:D9AC` and
+  `$80:FB18`, where the tick's rest returns to on level 5.
+* **Not done.** Using an item, `$80:EAE1`: the last of one goes on to
+  `item_select_next`, which has no exact price yet, and the potion goes on
+  into pose code. A walk that opens a door with a key, or meets a tile of
+  kind 4, or a second trampoline in one frame: each needs the walk to stop
+  in the middle of an axis and go on after. A bystander's words, which write
+  `$2132` from a thread. And the reset's clear and the front end's read of
+  `$213F`, a register each.
+
 ### Two leaps, the climb out of the water, the poses that sleep, the Snakeoid's start, the pause, and four threads' ends (2026-10-15)
 
 Another round of about five times the usual, validated once at the end.

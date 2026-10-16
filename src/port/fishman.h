@@ -77,11 +77,10 @@
 // What is here is the swimming, a leap out and the dive back from the
 // deciding to the splash, the landing, the sweep, the bite, and both ways of
 // getting about on land. What is not is an end that is not the plain one.
-// Two passes are the ROM's
-// too: one on land that is stopped by the ground and finds water just past
-// it, and a bite with no record free. The first is down to a random draw,
-// so the port finds out by running the pass: `FishmanLog::declined` says
-// so, and a guard asks it of a scratch copy first.
+// A bite with no record free is the ROM's too, and so is a second dive in
+// what is left of a pass after the first. The port finds out by running the
+// pass: `FishmanLog::declined` says so, and a guard asks it of a scratch copy
+// first.
 //
 // ## What it does
 //
@@ -207,6 +206,14 @@ extern const FishmanLoop FISHMAN_PATROL_LOOP;
 #define FISHMAN_DIVE_FROM_STALK 0xda1fu
 #define FISHMAN_DIVE_FROM_ASHORE 0xd9bdu
 #define FISHMAN_DIVE_FROM_ASHORE_TURNED 0xd9eeu
+// A dive found just past the ground sleeps under the `JSR $DA85` that
+// looked, and under that the `JSR` into the walk or the step.
+#define FISHMAN_SEEK_FROM_STEP 0xd878u    // `$81:D876`'s
+#define FISHMAN_SEEK_FROM_ACROSS 0xd8c6u  // `$81:D8C4`'s, the walk across
+#define FISHMAN_SEEK_FROM_DOWN 0xd8e9u    // `$81:D8E7`'s, and down
+#define FISHMAN_WALK_FROM_STALK 0xda6bu   // `$81:DA69  JSR $D8B6`'s
+#define FISHMAN_STEP_FROM_ASHORE 0xd9d4u  // `$81:D9D2  JSR $D85B`'s
+#define FISHMAN_STEP_FROM_TURNED 0xda08u  // `$81:DA06`'s
 #define FISHMAN_PATROL_BEGIN_PC 0x81e51au
 #define FISHMAN_ASHORE_BEGIN_PC 0x81e481u
 #define FISHMAN_ASHORE_RTL_PC 0x81e519u  // ...and what it ends on with none
@@ -306,6 +313,7 @@ typedef struct {
   int tiles;        // how many tiles it looked at, of two
   bool edge_asked;
   BoundsExit edge;
+  bool dives;       // water there, under it, and on the level
 } FishmanSeek;
 
 // May it walk there? The ground is asked, and then who is there.

@@ -19647,3 +19647,44 @@ Over the same 110 sessions the core executes 15,011 instructions where it
 executed 21,541, and takes over 1,007 times where it did 1,613, at 174
 places where there were 221. The reset's own 7,920 are most of what is
 left.
+
+## Six handlers priced, the exit door, the fishman's dive and a player out (2026-10-15)
+
+### A handler's pieces
+
+`thread_call_cycles` prices what a handler a box tells cost, and it knew six:
+the shot's, the boss's, the player's, the enemy's, the ant's and `$81:B41C`'s,
+each by a table of blocks of its own. Anything else made the whole call
+unpriceable, so the lob's burst, which tells everything within forty pixels,
+was turned down whenever one of those was a creature with another handler.
+
+Six more are short enough not to need a table each. Each of them now fills
+in a `HandlerPieces`: up to four straight pieces, in the order it ran them,
+from one enum, `HandlerPiece`, that all six share. A piece is a whole way
+through a handler, or a way to a routine more than one of them reaches:
+`$81:8506`'s two ways, the side `$80:9D6A` finds and the turn `$81:C6A7`
+makes. `HANDLER_PIECE_COST` prices them, each run from `tools/cycles816.py`.
+A way that leaves for a routine the pieces do not cover is `HP_DEEP`, and a
+call that reaches one is still unpriced. The dispatcher hands the handler
+`&work->pieces`, and each handler's own registry row prices its call the
+same way.
+
+### The exit door's end was a record end already
+
+`port/begin.h` has `$82:F767` among the record ends. My stretch for the same
+address came first in the registry, so the record end was never reached. Two
+rows at one address are tried in order, and one that takes the call hides
+the other. Mine is gone.
+
+### `(dp,X)`
+
+`tools/cycles816.py` prices `LDA ($66,X)` now: the direct page's idle when
+it is unaligned, one internal cycle for the index, the pointer's two bytes
+in low WRAM, and the operand where `--ind` says the pointer points. That is
+`cpu_adrIdx`. A player out reads the count of its first weapon that way.
+
+### After
+
+Over the same 110 sessions the core executes 12,335 instructions where it
+executed 15,011, and takes over 720 times where it did 1,007, at 125 places
+where there were 174. The reset's own 7,920 are most of what is left.

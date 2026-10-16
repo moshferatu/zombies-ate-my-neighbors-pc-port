@@ -124,6 +124,72 @@
 //             the player it is from, nothing told it yet, sixty frames, and
 //             its handler; and back, to its first sleep
 //
+// ## The exit door, `$82:F70B`
+//
+// Begun when a level's way out opens, with a player's record at `$04` and
+// which player at `$06`. Between its calls:
+//
+//   $82:F70B  `JSR $F79E`, which sleeps a tick
+//   $82:F7A5  ...and asks whether the player stands on solid ground
+//   $82:F7B7  ...and if not, sleeps again. If so: nobody in the game ends
+//             the thread; a player who is already out hands the search to
+//             the other. It starts at the way the player is going, eight
+//             ways in all, each 32 pixels off, and asks of each
+//   $82:F7FA  ...the ground there, and 16 above, 32 above and 16 below
+//   $82:F827  ...the map's edge, anyone there, and how far the other player
+//             would be
+//   $82:F848  ...and the tile there, three above and six above, each of which
+//             has to be one drawn over sprites
+//   $82:F88B  The first way that passes is where the door goes, and its
+//             weight is added. Eight ways that do not pass, and the search
+//             sleeps a tick and starts again.
+//   $82:F8DD  its record made there, with no handler yet
+//   $82:F929  ...and then one that can be touched; every other tick:
+//   $82:F724  touched by both players, or nobody to rescue left, and it
+//             waits ten ticks; nobody in the game, and it goes; while there
+//             is somebody to rescue, it waits on
+//   $82:F744  ...and after the ten ticks, if the player who touched it last
+//             is out, it goes; if not, it waits on
+//             When it goes its handler is taken and it shows its last
+//             pictures. Its end, `$82:F767`, is `port/begin.h`'s.
+//
+// ## Five ends
+//
+// Where a creature's frame leaves at its end, or a port in the middle of
+// one, the rest round its calls. What each end reaches is a port already:
+// `port/begin.h`'s scores, counts and record ends, and the lists of
+// pictures.
+//
+//   $81:CCF7  a slime's fate: dead with nothing to pay goes straight to its
+//             end; otherwise it is counted and its killer paid
+//   $81:F1DB  a decoy's last tick: one fewer out, and no handler
+//   $81:AC2A  a werewolf's death: no handler,
+//   $81:AC32  ...and its second record freed, if it has one
+//   $81:9887  the chainsaw maniac's death: no handler,
+//   $81:988F  ...counted and its killer paid,
+//   $81:989B  ...counted by the side that killed it, nothing to touch, and
+//             its last pictures
+//   $81:8EF0  the zombie of `$81:8ED5`: its record freed,
+//   $81:8EF6  ...and its weight given back
+//
+// ## A player out, `$80:CED5`
+//
+// The death's count (above) finds no lives left and calls `$80:F354`, the
+// tick's rest six other places call too:
+//
+//   $80:F354  the player's flag cleared, and a tick's sleep
+//   $80:F360  ...and cleared again, back to whoever called; the slime's own
+//             is the row before
+//   $80:CED8  the player out of the game, and its rescues none
+//   $80:CEE6  With neighbours still to save, or some saved, and the other
+//             player in, it ends: its weight given back and its record
+//             filed as none. Otherwise its pictures play for good
+//             (`port/bodies.h`), or on the sentinel's page it sleeps for good
+//   $80:CF2B  ...its two records freed
+//   $80:CF37  ...its first weapon and its tenth item, if it has any of
+//             either, dropped where it was (`$80:C97F`), and the thread ends,
+//             one word pulled
+//
 // ## The fishman's death, `$81:E4C1`
 //
 // See `port/fishman.h`. Its frame leaves at its fate, and from there:
@@ -452,7 +518,7 @@ typedef struct {
   uint16_t value;
 } ThreadArgument;
 
-#define THREAD_ARGUMENT_COUNT 37
+#define THREAD_ARGUMENT_COUNT 38
 extern const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT];
 
 // `LDA #value : STA at`, on the thread's page, and the `RTS` after.
@@ -972,6 +1038,129 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define W_FISHMEN_KILLED 0x1f70u
 #define W_KILLS_BY_SIDE 0x1fd8u  // a word for each side
 
+#define EXIT_DOOR_ENTER_PC 0x82f70bu
+#define EXIT_DOOR_SLEEP_PC 0x82f7a1u        // `JSL thread_yield`, a tick
+#define EXIT_DOOR_LOOK_PC 0x82f7a5u
+#define EXIT_DOOR_LOOK_CALL_PC 0x82f7b3u    // `JSL terrain_blocked`
+#define EXIT_DOOR_LOOKED_PC 0x82f7b7u
+#define EXIT_DOOR_END_PC 0x82f779u          // its `RTL`
+#define EXIT_DOOR_TRY_CALL_PC 0x82f7f6u     // `JSL terrain_blocked`, a way
+#define EXIT_DOOR_TRIED_PC 0x82f7fau
+#define EXIT_DOOR_ABOVE_CALL_PC 0x82f805u   // ...16 above it
+#define EXIT_DOOR_ABOVE_PC 0x82f809u
+#define EXIT_DOOR_HIGHER_CALL_PC 0x82f814u  // ...32 above
+#define EXIT_DOOR_HIGHER_PC 0x82f818u
+#define EXIT_DOOR_BELOW_CALL_PC 0x82f823u   // ...16 below
+#define EXIT_DOOR_BELOW_PC 0x82f827u
+#define EXIT_DOOR_EDGE_CALL_PC 0x82f82du    // `JSL terrain_out_of_bounds`
+#define EXIT_DOOR_EDGE_PC 0x82f831u
+#define EXIT_DOOR_SOMEONE_CALL_PC 0x82f83au // `JSL actor_obstacle_at_point`
+#define EXIT_DOOR_SOMEONE_PC 0x82f83eu
+#define EXIT_DOOR_TETHER_CALL_PC 0x82f844u  // `JSL step_tether_blocked`
+#define EXIT_DOOR_TETHER_PC 0x82f848u
+#define EXIT_DOOR_TILE_CALL_PC 0x82f85eu    // `JSL tilemap_tile_word`
+#define EXIT_DOOR_TILE_PC 0x82f862u
+#define EXIT_DOOR_TILE_UP_CALL_PC 0x82f871u // ...three tiles up
+#define EXIT_DOOR_TILE_UP_PC 0x82f875u
+#define EXIT_DOOR_TILE_TOP_CALL_PC 0x82f887u  // ...six
+#define EXIT_DOOR_TILE_TOP_PC 0x82f88bu
+#define EXIT_DOOR_ALLOC_PC 0x82f8d9u        // `JSL actor_slot_alloc`
+#define EXIT_DOOR_MADE_PC 0x82f8ddu
+#define EXIT_DOOR_UNHANDLED_CALL_PC 0x82f914u  // `JSL thread_set_handler`, none
+#define EXIT_DOOR_HANDLED_PC 0x82f929u
+#define EXIT_DOOR_WAIT_CALL_PC 0x82f720u    // `JSL thread_yield`, two ticks
+#define EXIT_DOOR_WAIT_PC 0x82f724u
+#define EXIT_DOOR_PAUSE_CALL_PC 0x82f740u   // ...ten
+#define EXIT_DOOR_PAUSED_PC 0x82f744u
+#define EXIT_DOOR_GONE_CALL_PC 0x82f75cu    // `JSL thread_set_handler`, none
+#define EXIT_DOOR_FIND_RETURN 0xf70du       // `JSR $F79E`'s
+#define EXIT_DOOR_MAKE_RETURN 0xf71cu       // `JSR $F8D9`'s
+#define EXIT_DOOR_WAYS 0x82f8b1u            // a step across and down, each way
+#define EXIT_DOOR_OTHER_PLAYER 0x82f8d5u    // a word for each player: the other
+#define EXIT_DOOR_WAYS_END 0x0024           // past the last way
+#define EXIT_DOOR_FIRST_WAY 0x0004
+#define EXIT_DOOR_TRIES 0x0008
+#define EXIT_DOOR_LOAD 0x0005
+#define EXIT_DOOR_PICTURE 0xec16u
+#define EXIT_DOOR_PICTURE_BANK 0x008f
+#define EXIT_DOOR_ID 0x0037           // what touches it, `exit_door_collide`
+#define EXIT_DOOR_DP_X 0x00                 // where it may go
+#define EXIT_DOOR_DP_Y 0x02
+#define EXIT_DOOR_DP_PLAYER_RECORD 0x04     // given: whose way it looks along
+#define EXIT_DOOR_DP_PLAYER 0x06            // ...and which player, 0 or 2
+#define EXIT_DOOR_DP_RECORD 0x08
+#define EXIT_DOOR_DP_TRIES 0x0c
+#define EXIT_DOOR_DP_WAY 0x0e
+#define EXIT_DOOR_DP_COLUMN 0x10
+#define EXIT_DOOR_DP_ROW 0x12
+
+#define SLIME_DEATH_PC 0x81ccf7u         // `port/slime.h`'s frame leaves here
+#define SLIME_SCORED_CALL_PC 0x81cd01u   // `JSL score_add`
+#define SLIME_RECORD_END_PC 0x81cd0cu    // `port/begin.h`'s
+#define W_SLIMES_KILLED 0x1f6cu
+#define SLIME_WORTH 0x0200
+#define SLIME_DP_KILLER 0x22
+#define DECOY_DEATH_PC 0x81f1dbu         // `port/decoy.h`'s frame leaves here
+#define DECOY_UNHANDLED_CALL_PC 0x81f1e2u  // `JSL thread_set_handler`
+#define W_DECOYS_OUT 0x1f90u
+#define WEREWOLF_DEAD_PC 0x81ac2au
+#define WEREWOLF_UNHANDLED_CALL_PC 0x81ac2eu
+#define WEREWOLF_UNHANDLED_PC 0x81ac32u
+#define WEREWOLF_SECOND_FREE_PC 0x81ac39u  // `JSL actor_slot_free`
+#define WEREWOLF_SCORED_PC 0x81ac3du       // `port/begin.h`'s
+#define WEREWOLF_DP_SECOND 0x38            // a second record, or `$FFFF`
+#define CHAINSAW_DEATH_PC 0x819887u      // `port/chainsaw.h`'s frame leaves here
+#define CHAINSAW_UNHANDLED_CALL_PC 0x81988bu
+#define CHAINSAW_UNHANDLED_PC 0x81988fu
+#define CHAINSAW_SCORED_CALL_PC 0x819897u  // `JSL score_add`
+#define CHAINSAW_SCORED_PC 0x81989bu
+#define CHAINSAW_LAST_PICTURES_CALL_PC 0x8198bbu  // `JSL pictures_play`
+#define W_CHAINSAWS_KILLED 0x1f6eu
+#define W_CHAINSAW_KILLS_BY_SIDE 0x1fd0u  // a word for each side
+#define CHAINSAW_WORTH 0x0800
+#define CHAINSAW_DP_KILLER 0x2e        // who killed it: bit 15 is the side
+#define CHAINSAW_PICTURE_BANK 0x0090
+#define CHAINSAW_LAST_PICTURES 0x98ddu
+#define ZOMBIE_UNSCORED_PC 0x818ef0u
+#define ZOMBIE_FREE_CALL_PC 0x818ef2u  // `JSL actor_slot_free`
+#define ZOMBIE_FREED_PC 0x818ef6u
+#define ZOMBIE_RTL_PC 0x818f02u
+#define ZOMBIE_8ED5_LOAD 0x0018
+#define ZOMBIE_DP_RECORD 0x08
+
+#define REST_BEGUN_PC 0x80f354u
+#define REST_SLEEP_PC 0x80f35cu         // `JSL thread_yield`, a tick
+#define REST_ENDED_PC 0x80f360u
+#define REST_RTS_PC 0x80f365u
+#define PLAYER_OUT_NOTED_PC 0x80ced8u
+#define PLAYER_OUT_LINK_PC 0x80cee2u    // `JSL $80:C1CF`
+#define PLAYER_OUT_PC 0x80cee6u
+#define PLAYER_OUT_SLEEP_PC 0x80cf05u   // `JSL thread_yield`, for good
+#define PLAYER_OUT_SLEPT_PC 0x80cf09u
+#define PLAYER_OUT_FILE_CALL_PC 0x80cf27u  // `JSL player_record_file`
+#define PLAYER_OUT_FILED_PC 0x80cf2bu
+#define PLAYER_OUT_FREE_CALL_PC 0x80cf2du
+#define PLAYER_OUT_FREED_PC 0x80cf31u
+#define PLAYER_OUT_FREE_2_CALL_PC 0x80cf33u
+#define PLAYER_OUT_FREED_2_PC 0x80cf37u
+#define PLAYER_OUT_DROP_CALL_PC 0x80cf55u  // `JSL $80:C97F`
+#define PLAYER_OUT_DROPPED_PC 0x80cf59u
+#define PLAYER_OUT_RTL_PC 0x80cf5au
+#define PLAYER_OUT_SENTINEL 0xfd72u     // what `$10` holds on that page
+#define PLAYER_OUT_LOAD 0x001c
+#define PLAYER_OUT_FOREVER 0x7fff
+#define PLAYER_OUT_DROP_RANGE 0x0032
+#define PLAYER_OUT_DP_PLAYER 0x0e
+#define PLAYER_OUT_DP_SENTINEL 0x10
+#define PLAYER_OUT_DP_RECORD 0x08
+#define PLAYER_OUT_DP_SECOND 0x0a
+#define PLAYER_OUT_DP_X 0x30
+#define PLAYER_OUT_DP_Y 0x32
+#define PLAYER_OUT_DP_INVENTORY 0x66
+#define PLAYER_OUT_ITEM 0x0012          // the tenth item's count, in the inventory
+#define W_DROPPED_WEAPON 0x1fbeu
+#define W_DROPPED_ITEM 0x1fc0u
+
 #define BOLT_ENTER_PC 0x81f808u
 #define BOLT_SOUND_CALL_PC 0x81f815u     // `JSL apu_play_sfx`
 #define BOLT_SOUND 0x0015
@@ -1433,6 +1622,50 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_SLIMED_HANDS, 0x80dc64, 0x80dc70, 0)  /* JSR $F38D : JMP $D4F4 */ \
   X(TS_STUNG, 0x80f9d0, 0x80f9d7, 0)         /* LDX $0E : LDA $1CB8,X : BEQ */ \
   X(TS_BOLT_ENTER, 0x81f808, 0x81f815, 0) \
+  X(TS_REST_DONE, 0x80f360, 0x80f365, 0)      /* LDX : STZ abs,X */ \
+  X(TS_OUT_NOTED, 0x80ced8, 0x80cee2, 0) \
+  X(TS_OUT_LEFT, 0x80cee6, 0x80ceeb, 0)       /* LDA abs : BNE */ \
+  X(TS_OUT_TWO, 0x80ceeb, 0x80cef3, 0)        /* LDA abs : ORA abs : BEQ; and $80:CEF3 */ \
+  X(TS_OUT_SENTINEL, 0x80cefb, 0x80cf02, 0)   /* LDA dp : CMP # : BNE */ \
+  X(TS_OUT_UNLOAD, 0x80cf16, 0x80cf27, 0) \
+  X(TS_OUT_DROPS, 0x80cf37, 0x80cf44, 0)      /* to the BEQ */ \
+  X(TS_OUT_DROPPED, 0x80cf44, 0x80cf55, 0) \
+  X(TS_PLA, 0x80cf59, 0x80cf5a, 0) \
+  X(TS_SLIME_SCORED, 0x81ccf9, 0x81cd01, 0)   /* INC : LDX # : LDA dp */ \
+  X(TS_UNHANDLED, 0x819887, 0x81988b, 0)      /* LDA #0 : TAY */ \
+  X(TS_DECOY_ENDED, 0x81f1db, 0x81f1de, 0)    /* DEC abs */ \
+  X(TS_WOLF_SECOND, 0x81ac32, 0x81ac39, 0)    /* LDA dp : CMP # : BEQ */ \
+  X(TS_CHAINSAW_SCORED, 0x81988f, 0x819897, 0) \
+  X(TS_CHAINSAW_SIDE, 0x81989b, 0x8198a7, 0)  /* the JSL too */ \
+  X(TS_CHAINSAW_COUNTED, 0x8198a7, 0x8198bb, 0) \
+  X(TS_ZOMBIE_FREED, 0x818ef6, 0x818f02, 0)   /* to the RTL */ \
+  X(TS_EXIT_DOOR_LOOK, 0x82f7a5, 0x82f7b3, 0) \
+  X(TS_EXIT_DOOR_ALIVE, 0x82f7b9, 0x82f7c0, 0)     /* LDX : LDA abs,X : BNE */ \
+  X(TS_EXIT_DOOR_NOBODY, 0x82f7c0, 0x82f7c2, 0)    /* SEC : RTS */ \
+  X(TS_EXIT_DOOR_OUT, 0x82f7c2, 0x82f7c7, 0)       /* LDA abs,X : BEQ */ \
+  X(TS_EXIT_DOOR_OTHER, 0x82f7c7, 0x82f7d2, 0) \
+  X(TS_EXIT_DOOR_WAYS, 0x82f7d2, 0x82f7dd, 0) \
+  X(TS_EXIT_DOOR_TRY, 0x82f7dd, 0x82f7f6, 0) \
+  X(TS_EXIT_DOOR_ABOVE, 0x82f7fc, 0x82f805, 0)     /* and $82:F80B, $82:F81A */ \
+  X(TS_EXIT_DOOR_XY, 0x82f829, 0x82f82d, 0)        /* LDX dp : LDY dp; $82:F840 */ \
+  X(TS_EXIT_DOOR_ZERO_XY, 0x82f833, 0x82f83a, 0) \
+  X(TS_EXIT_DOOR_BRA, 0x82f84a, 0x82f84c, 1)       /* and $82:F84C */ \
+  X(TS_EXIT_DOOR_TILES, 0x82f84e, 0x82f85e, 0) \
+  X(TS_EXIT_DOOR_TILE_TEST, 0x82f862, 0x82f86a, 0) /* and $82:F875, $82:F88B */ \
+  X(TS_EXIT_DOOR_UP_3, 0x82f86a, 0x82f871, 0) \
+  X(TS_EXIT_DOOR_UP_6, 0x82f87d, 0x82f887, 0) \
+  X(TS_EXIT_DOOR_NEXT, 0x82f895, 0x82f8a0, 0)      /* to the BNE */ \
+  X(TS_EXIT_DOOR_COUNT, 0x82f8a3, 0x82f8a9, 0)     /* STA : DEC : BMI */ \
+  X(TS_EXIT_DOOR_FOUND, 0x82f8af, 0x82f8b1, 0)     /* CLC : RTS */ \
+  X(TS_EXIT_DOOR_LOAD, 0x82f710, 0x82f71a, 0) \
+  X(TS_EXIT_DOOR_MADE, 0x82f8dd, 0x82f914, 0) \
+  X(TS_EXIT_DOOR_TOUCHABLE, 0x82f929, 0x82f934, 0) /* the RTS too */ \
+  X(TS_EXIT_DOOR_TOUCHED, 0x82f724, 0x82f728, 0)   /* LDA dp : BMI */ \
+  X(TS_EXIT_DOOR_PLAYERS, 0x82f728, 0x82f730, 0)   /* and $82:F730 */ \
+  X(TS_EXIT_DOOR_UNTOUCHABLE, 0x82f738, 0x82f73d, 0) \
+  X(TS_EXIT_DOOR_SIDE, 0x82f744, 0x82f753, 0)      /* the JSL too */ \
+  X(TS_EXIT_DOOR_LEFT, 0x82f753, 0x82f758, 0)      /* LDA abs,X : BEQ */ \
+  X(TS_EXIT_DOOR_UNHANDLED, 0x82f758, 0x82f75c, 0) /* LDA #0 : TAY */ \
   X(TS_FISH_FATE, 0x81e4c1, 0x81e4c5, 0)     /* LDA #0 : TAY */ \
   X(TS_FISH_SECOND, 0x81e4c9, 0x81e4d0, 0)   /* and $81:E5AC, the same */ \
   X(TS_FISH_COUNTED, 0x81e4df, 0x81e4ee, 0)  /* the JSL too; $81:E572 */ \
@@ -1563,6 +1796,17 @@ typedef enum {
   TS_NEEDS_SQUARE_FREED,   // the pass's return, and one of the five
   TS_NEEDS_FISHMAN_ENDED,  // its record, and a load to give its weight back
                            // from
+  TS_NEEDS_EXIT_DOOR_FIND,      // the search's `JSR` to return to, a player's
+                           // record and which player
+  TS_NEEDS_EXIT_DOOR_MADE,      // a record in A and Y, and the `JSR` to return to
+  TS_NEEDS_EXIT_DOOR_HANDLED,   // the door's record, and the `JSR` to return to
+  TS_NEEDS_EXIT_DOOR,           // the door's record
+  TS_NEEDS_ZOMBIE_FREED,   // a load to give its weight back from
+  TS_NEEDS_PLAYER,          // which player, a small index, on the page
+  TS_NEEDS_REST_ENDED,      // ...and a caller other than the slime
+  TS_NEEDS_PLAYER_OUT,      // ...and a load to give its weight back from,
+                            //    if it is to
+  TS_NEEDS_PLAYER_DROPS,    // its inventory in low WRAM
   TS_NEEDS_BOLT_MADE,      // a record in A and Y, the start's `JSR` to return
                            // to, and a way and a player the tables have
   TS_NEEDS_STUNG_SHOWN,    // ...and a way the table has, read through `$80`
@@ -1692,6 +1936,41 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(square_told, "$82:F613", SQUARE_TOLD_PC, square_told, SQUARE_SHOWN, TS_NEEDS_NOTHING) \
   X(square_hidden, "$82:F61A", SQUARE_HIDDEN_PC, square_hidden, SQUARE_SHOWN, TS_NEEDS_NOTHING) \
   X(square_freed, "$82:F620", SQUARE_FREED_PC, square_freed, SQUARE_SHOWN, TS_NEEDS_SQUARE_FREED) \
+  X(exit_door_enter, "$82:F70B", EXIT_DOOR_ENTER_PC, exit_door_enter, EXIT_DOOR, TS_NEEDS_NOTHING) \
+  X(exit_door_look, "$82:F7A5", EXIT_DOOR_LOOK_PC, exit_door_look, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_FIND) \
+  X(exit_door_looked, "$82:F7B7", EXIT_DOOR_LOOKED_PC, exit_door_looked, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_FIND) \
+  X(exit_door_tried, "$82:F7FA", EXIT_DOOR_TRIED_PC, exit_door_tried, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_FIND) \
+  X(exit_door_above, "$82:F809", EXIT_DOOR_ABOVE_PC, exit_door_above, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_FIND) \
+  X(exit_door_higher, "$82:F818", EXIT_DOOR_HIGHER_PC, exit_door_higher, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_FIND) \
+  X(exit_door_below, "$82:F827", EXIT_DOOR_BELOW_PC, exit_door_below, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_FIND) \
+  X(exit_door_edge, "$82:F831", EXIT_DOOR_EDGE_PC, exit_door_edge, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_FIND) \
+  X(exit_door_someone, "$82:F83E", EXIT_DOOR_SOMEONE_PC, exit_door_someone, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_FIND) \
+  X(exit_door_tether, "$82:F848", EXIT_DOOR_TETHER_PC, exit_door_tether, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_FIND) \
+  X(exit_door_tile, "$82:F862", EXIT_DOOR_TILE_PC, exit_door_tile, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_FIND) \
+  X(exit_door_tile_up, "$82:F875", EXIT_DOOR_TILE_UP_PC, exit_door_tile_up, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_FIND) \
+  X(exit_door_tile_top, "$82:F88B", EXIT_DOOR_TILE_TOP_PC, exit_door_tile_top, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_FIND) \
+  X(exit_door_made, "$82:F8DD", EXIT_DOOR_MADE_PC, exit_door_made, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_MADE) \
+  X(exit_door_handled, "$82:F929", EXIT_DOOR_HANDLED_PC, exit_door_handled, EXIT_DOOR, TS_NEEDS_EXIT_DOOR_HANDLED) \
+  X(exit_door_wait, "$82:F724", EXIT_DOOR_WAIT_PC, exit_door_wait, EXIT_DOOR, TS_NEEDS_EXIT_DOOR) \
+  X(exit_door_paused, "$82:F744", EXIT_DOOR_PAUSED_PC, exit_door_paused, EXIT_DOOR, TS_NEEDS_NOTHING) \
+  X(rest_begun, "$80:F354", REST_BEGUN_PC, rest_begun, PLAYER_OUT, TS_NEEDS_PLAYER) \
+  X(rest_ended, "$80:F360", REST_ENDED_PC, rest_ended, PLAYER_OUT, TS_NEEDS_REST_ENDED) \
+  X(player_out_noted, "$80:CED8", PLAYER_OUT_NOTED_PC, player_out_noted, PLAYER_OUT, TS_NEEDS_PLAYER) \
+  X(player_out, "$80:CEE6", PLAYER_OUT_PC, player_out, PLAYER_OUT, TS_NEEDS_PLAYER_OUT) \
+  X(player_out_slept, "$80:CF09", PLAYER_OUT_SLEPT_PC, player_out_slept, PLAYER_OUT, TS_NEEDS_NOTHING) \
+  X(player_out_filed, "$80:CF2B", PLAYER_OUT_FILED_PC, player_out_filed, PLAYER_OUT, TS_NEEDS_NOTHING) \
+  X(player_out_freed, "$80:CF31", PLAYER_OUT_FREED_PC, player_out_freed, PLAYER_OUT, TS_NEEDS_NOTHING) \
+  X(player_out_freed_2, "$80:CF37", PLAYER_OUT_FREED_2_PC, player_out_freed_2, PLAYER_OUT, TS_NEEDS_PLAYER_DROPS) \
+  X(player_out_dropped, "$80:CF59", PLAYER_OUT_DROPPED_PC, player_out_dropped, PLAYER_OUT, TS_NEEDS_NOTHING) \
+  X(slime_fate, "$81:CCF7", SLIME_DEATH_PC, slime_fate, ENDS, TS_NEEDS_NOTHING) \
+  X(decoy_ended, "$81:F1DB", DECOY_DEATH_PC, decoy_ended, ENDS, TS_NEEDS_NOTHING) \
+  X(werewolf_dead, "$81:AC2A", WEREWOLF_DEAD_PC, creature_unhandled, ENDS, TS_NEEDS_NOTHING) \
+  X(werewolf_unhandled, "$81:AC32", WEREWOLF_UNHANDLED_PC, werewolf_unhandled, ENDS, TS_NEEDS_NOTHING) \
+  X(chainsaw_dead, "$81:9887", CHAINSAW_DEATH_PC, creature_unhandled, ENDS, TS_NEEDS_NOTHING) \
+  X(chainsaw_unhandled, "$81:988F", CHAINSAW_UNHANDLED_PC, chainsaw_unhandled, ENDS, TS_NEEDS_NOTHING) \
+  X(chainsaw_scored, "$81:989B", CHAINSAW_SCORED_PC, chainsaw_scored, ENDS, TS_NEEDS_RECORD) \
+  X(zombie_unscored, "$81:8EF0", ZOMBIE_UNSCORED_PC, zombie_unscored, ENDS, TS_NEEDS_NOTHING) \
+  X(zombie_freed, "$81:8EF6", ZOMBIE_FREED_PC, zombie_freed, ENDS, TS_NEEDS_ZOMBIE_FREED) \
   X(fishman_fate, "$81:E4C1", FISHMAN_FATE_PC, fishman_fate, FISHMAN_DEATH, TS_NEEDS_NOTHING) \
   X(fishman_unhandled, "$81:E4C9", FISHMAN_UNHANDLED_PC, fishman_unhandled, FISHMAN_DEATH, TS_NEEDS_NOTHING) \
   X(fishman_counted, "$81:E4DF", FISHMAN_COUNTED_PC, fishman_counted, FISHMAN_DEATH, TS_NEEDS_RECORD) \
@@ -1767,6 +2046,7 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(argument_82f606, "$82:F606", 0x82f606u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_82f760, "$82:F760", 0x82f760u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_82f918, "$82:F918", 0x82f918u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(argument_81cd05, "$81:CD05", 0x81cd05u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(pair_80815f, "$80:815F", 0x80815fu, thread_pair, PAIR, TS_NEEDS_NOTHING) \
   X(pair_81f252, "$81:F252", 0x81f252u, thread_pair, PAIR, TS_NEEDS_NOTHING) \
   X(pair_82f91f, "$82:F91F", 0x82f91fu, thread_pair, PAIR, TS_NEEDS_NOTHING) \

@@ -181,6 +181,66 @@ typedef struct {
   bool n, z, c;
 } ActorHandlerRegs;
 
+// The straight pieces a short handler ran, in order, for the harness to
+// price. `enemy_9b6b_collide`, `enemy_b95f_collide`, `actor_c8c3_collide`,
+// `actor_84ac_collide`, `victim_collide` and `object_collide` fill one in;
+// each piece is a whole way through, or a way to a routine they share, and
+// `HP_DEEP` is a way that leaves for one of the routines the pieces do not
+// cover.
+typedef enum {
+  HP_9B6B_IGNORE,       // $81:9B6B, an id below a shot's
+  HP_9B6B_DIED,         // ...a shot, to $81:9B9A
+  HP_9B6B_NO_DAMAGE,    // ...or to $81:9BB8
+  HP_9B6B_SURVIVED,     // ...or to the `JML $81:8506`
+  HP_B95F_IGNORE,       // $81:B95F, the same four, and id $5D's death
+  HP_B95F_FATAL,
+  HP_B95F_DIED,
+  HP_B95F_NO_DAMAGE,
+  HP_B95F_SURVIVED,
+  HP_SURVIVED_ALREADY,  // $81:8506, flashing already
+  HP_SURVIVED_SPLICED,  // ...or not, and the parked stack opened
+  HP_C8C3_P5,           // $81:C8C3, raw id 5, into `JSR $C6EC`
+  HP_C8C3_P6,           // ...raw id 6
+  HP_C8C3_61,           // ...id $61, `DEC $22`
+  HP_C8C3_68,           // ...id $68, to the `JSL $80:9D6A` and `JSR $C6A7`
+  HP_SIDE_SAME,         // $80:9D6A, the side in `$1E84`
+  HP_SIDE_OTHER,        // ...or the other
+  HP_C6A7_LEFT,         // $81:C6A7, the other record left of it
+  HP_C6A7_RIGHT,        // ...or not
+  HP_C8C3_IGNORE,       // $81:C8C3, a masked id below a shot's
+  HP_C8C3_SHOT,         // ...any other shot, into `JSR $C6EC`
+  HP_84AC_IGNORE,       // $82:84AC, an id below a shot's
+  HP_84AC_OTHER,        // ...a shot but $62
+  HP_84AC_RUNNING,      // ...$62, `$32` not negative
+  HP_84AC_TOOK,         // ...$62, `$32` negative
+  HP_VICTIM_LATCHED,    // $83:A364, its fate decided already
+  HP_VICTIM_CLAIM_A,    // ...id 5
+  HP_VICTIM_CLAIM_B,    // ...id 6
+  HP_VICTIM_EVENT_2,    // ...id $0B
+  HP_VICTIM_EVENT_3_A,  // ...id 3, to `$83:A3AC`
+  HP_VICTIM_EVENT_3_B,  // ...id 4
+  HP_VICTIM_EVENT_3_C,  // ...id 9
+  HP_VICTIM_KEEP_ID,    // $83:A3AC, `$26` set
+  HP_VICTIM_DROP_ID,    // ...or not, and its collision off
+  HP_VICTIM_EVENT_4,    // ...id $34
+  HP_VICTIM_EVENT_FF,   // ...id $FF
+  HP_VICTIM_IGNORE,     // ...any other
+  HP_OBJECT_SPENT,      // $80:CAEE, its collision off already
+  HP_OBJECT_IGNORE,     // ...an id it does not take
+  HP_OBJECT_TAKE_A,     // ...id 5, queued
+  HP_OBJECT_TAKE_B,     // ...id 6
+  HP_OBJECT_TAKE_C,     // ...id 4
+  HP_DEEP,
+  HANDLER_PIECE_COUNT,
+} HandlerPiece;
+
+#define HANDLER_PIECES_MAX 4
+
+typedef struct {
+  uint8_t count;
+  uint8_t piece[HANDLER_PIECES_MAX];
+} HandlerPieces;
+
 // What the dispatcher did.
 //
 // `entered` is the `BEQ` at `$80:8486`: a slot with no handler registered makes
@@ -826,7 +886,8 @@ bool shot_collide_counted(Wram* w, uint16_t dp, uint16_t arg,
 //
 // It takes no `Rom*` and it never declines: there is no table in it and every
 // one of its exits is here.
-bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r,
+                    HandlerPieces* pieces);
 
 // --- $80:CAEE ---------------------------------------------------------------
 
@@ -892,7 +953,8 @@ bool victim_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
 //
 // It takes no `Rom*` and it never declines: there is no table in it and all
 // three of its exits are here.
-bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+bool object_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r,
+                    HandlerPieces* pieces);
 
 // ---------------------------------------------------------------------------
 // $81:C4A6  ant_collide — a second, larger enemy's handler
@@ -1457,7 +1519,8 @@ bool enemy_b592_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r)
 
 // The handler. False on `$5D` only, now that `$5E` has somewhere to go.
 bool enemy_9b6b_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                        ActorHandlerRegs* r, uint32_t* unported);
+                        ActorHandlerRegs* r, uint32_t* unported,
+                        HandlerPieces* pieces);
 
 // The tally, then the splice. Always true — `enemy_bubble_react` has nothing
 // left to decline either.
@@ -2337,7 +2400,8 @@ bool actor_a638_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r)
 #define A84AC_DP_COUNT 0x30
 #define A84AC_ID 0x0062
 #define A84AC_TIMER_RESET 0x0004
-bool actor_84ac_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+bool actor_84ac_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r,
+                        HandlerPieces* pieces);
 
 // --- $81:B95F  enemy_b95f_collide — record 36, and another `$81:8888` -------
 //
@@ -2353,7 +2417,7 @@ bool actor_84ac_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r)
 #define B95F_DP_HIT_ID 0x5a
 #define B95F_DP_DEAD 0x0a
 bool enemy_b95f_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
-                        ActorHandlerRegs* r);
+                        ActorHandlerRegs* r, HandlerPieces* pieces);
 
 // --- $82:EFF0  enemy_eff0_collide — record 39 -------------------------------
 //
@@ -2390,7 +2454,8 @@ bool enemy_eff0_collide(Wram* w, const Rom* rom, uint16_t dp, uint16_t arg,
 #define C8C3_NEXT_68 0xc6ca
 #define W_C8C3_TALLY 0x1fc4    // two words, indexed by score slot
 #define C8C3_FLAG_MIRROR 0x0002
-bool actor_c8c3_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r);
+bool actor_c8c3_collide(Wram* w, uint16_t dp, uint16_t arg, ActorHandlerRegs* r,
+                        HandlerPieces* pieces);
 
 // ---------------------------------------------------------------------------
 // $81:D301  enemy_d301_collide — level 9's, and the copy whose counter has a
@@ -2551,6 +2616,7 @@ typedef struct {
   // one table — `AntCollideBlock` says why.
   AntCollideWork ant;
   B41cCollideWork b41c;
+  HandlerPieces pieces;
 } ThreadCallWork;
 
 bool thread_call_handler_counted(Wram* w, const Rom* rom, uint16_t slot,

@@ -396,6 +396,8 @@ typedef struct {
   bool punched;        // the monster's walk: those in the fist's box told...
   ActorNotifyWork told;  // ...and what telling them took
   bool reached;        // ...and the tile the fist is at looked at
+  bool wall_broken;    // ......which can be knocked down, and is begun to be
+  int wall_slot;       // ......by a thread in this slot, doubled, or -1
   bool sounded;        // ...or the swing's first picture, and its sound
   bool stroked;        // swimming: the next picture shown...
   bool stroke_wrapped; // ......which was the first again

@@ -106,6 +106,10 @@
 #define POSE_TILE_BREAKS 0x0040u
 // Not zero while a wall is coming down.
 #define W_WALL_FALLING 0x1ff8u
+// The thread that knocks one down. It is told where, which way the monster
+// faces, and the tile, in the first four words of the monster's page.
+#define POSE_WALL_THREAD 0xf2b2u
+#define POSE_WALL_THREAD_BANK 0x0081
 // The sound the swing's first picture makes.
 #define POSE_SFX_SWING 0x0015
 
@@ -518,7 +522,7 @@ static void punch(Pose* p) {
 }
 
 // `$80:F0D7`: look at the tile the fist is at, unless a wall is already
-// coming down. One that can be knocked down is the ROM's to start.
+// coming down. One that can be knocked down begins to come down.
 static void reach(Pose* p) {
   if (wram_r16(p->w, W_WALL_FALLING) != 0) {
     PORT_COVER(pose_reach_busy);
@@ -543,7 +547,19 @@ static void reach(Pose* p) {
   tile_attrs_at_pixel(p->w, x, y, &tile);
   flags_carry(&p->flags, tile.c);
   flags_overflow_unknown(&p->flags);
-  if (tile.a & POSE_TILE_BREAKS) leave_to_rom(p);
+  if ((tile.a & POSE_TILE_BREAKS) == 0) return;
+  // `$80:F113`. Neither the spawn nor anything before it writes carry or
+  // overflow, so the tile's stand.
+  PORT_COVER(pose_wall_broken);
+  wram_w16(p->w, W_WALL_FALLING,
+           (uint16_t)(wram_r16(p->w, W_WALL_FALLING) + 1));
+  set_field(p, 0x06, tile.a);
+  set_field(p, 0x00, x);
+  set_field(p, 0x02, y);
+  set_field(p, 0x04, field(p, PSN_DP_DIR_HELD));
+  p->log->wall_broken = true;
+  p->log->wall_slot = thread_spawn(p->w, p->rom, POSE_WALL_THREAD,
+                                   POSE_WALL_THREAD_BANK, p->page);
 }
 
 // `$80:D6DC`: the monster's walk, which is a punch of four pictures. The

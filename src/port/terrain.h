@@ -322,6 +322,24 @@ typedef struct {
 void tilemap_tile_addr(const Wram* w, uint16_t x, uint16_t y,
                        TilemapAddrRegs* out);
 
+// --- $80:ADB4  tilemap_tile_word — X = column, Y = row; A = the tile ---------
+//
+// `tilemap_tile_addr` on page zero, and the word there in bank `$7F`, read
+// through `$28`. It leaves that pointer on page zero. X is the doubled
+// column, carry the address's add, and N and Z the caller's direct page,
+// which the closing `PLD` puts back.
+#define TILEMAP_TILE_WORD_ENTRY 0x80adb4u
+#define TILEMAP_TILE_WORD_RTL_PC 0x80adc7u
+#define W_TILE_WORD_AT 0x0028u  // the pointer, and its bank at `$2A`
+
+typedef struct {
+  uint16_t a, x;
+  bool n, z, c;
+} TilemapWordRegs;
+
+void tilemap_tile_word(Wram* w, uint16_t x, uint16_t y, uint16_t d,
+                       TilemapWordRegs* out);
+
 // --- $80:ADC8 / $80:ADF3  one point's attribute word ------------------------
 //
 // The other leaf under this table, and the one the rest of the cartridge
