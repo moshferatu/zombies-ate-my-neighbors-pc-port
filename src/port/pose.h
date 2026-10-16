@@ -121,7 +121,9 @@
 // last frame's. **Down on other ground**, they lie there, with a word of a
 // table for what can touch them, until the timer runs out. Then they can be
 // touched and are told of things again, are drawn under what is high, are
-// in the ordinary state, and stand or walk.
+// in the ordinary state, and stand or walk. **Down in the water** (bit 8 of
+// `$5C`) they are all that too, but for standing: sound `$18`, and the
+// frame stops at its `JSL`, as the first leap's landing does.
 //
 // **Swimming is eight pictures**, one every ten frames, and the same eight
 // whichever way the player faces. The handler names the movement afresh each
@@ -185,7 +187,7 @@
 // ends with no direction held, before the bounce has got to five, or with
 // the other player too far, and a jump off that would land on a tile with
 // bit 0 and not bit 8. The three handlers it leads to, `$80:E0B1`, `$80:E0D0`
-// and `$80:E106`. Lying down in the water off it (bit 8 of `$5C`).
+// and `$80:E106`.
 // The pose for whatever sets `$6C` (`$80:EF67`). Of the monster's walk, a
 // punch that lands on a wall that comes down. `pose_supported` says which
 // frames those are.
@@ -391,6 +393,7 @@ typedef struct {
   bool off_down;       // down from the jump off...
   bool off_again;      // ...on the trampoline again
   bool got_up;         // down beside it, and the wait over
+  bool soaked;         // ...in the water: stopped at the sound
   int handlers_set;    // the thread's handler named or cleared, by `JSR`
   bool band_b_fired;   // the second band's walk: a step that fires
   bool punched;        // the monster's walk: those in the fist's box told...
@@ -443,6 +446,9 @@ void pose_begin(Wram* w, const Rom* rom, uint16_t page, PoseLog* log);
 // The first leap's landing: the sound's `JSL`, with the sound in A.
 #define POSE_SPLASH_SOUND_PC 0x80dd75u
 #define POSE_SPLASH_SOUND 0x001f
+// ...and down in the water off the trampoline, the same way.
+#define POSE_SOAK_SOUND_PC 0x80e2fbu
+#define POSE_SOAK_SOUND 0x0018
 void pose_leap(Wram* w, const Rom* rom, uint16_t page, PoseLog* log,
                PlayerSpan* span);
 // `$80:DDBD`, out of the water toward the point at `$60` and `$62`, which

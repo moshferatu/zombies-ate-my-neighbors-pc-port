@@ -483,6 +483,13 @@ void screen_show_end(HwTrace* t);
 void title_hdma_setup(Wram* w, HwTrace* t);
 void title_layers(HwTrace* t);
 void title_hdma_on(HwTrace* t);
+
+// `$80:8152`, once, at reset, where `reset_clear` stops (`port/sched.h`):
+// `NMITIMEN` to `$81`, the interrupt at each vblank and the pads read by
+// themselves. It ends at the `JSL` after, with `$81` in A's low byte.
+#define NMI_ON_END_PC 0x80815bu
+#define NMI_ON_VALUE 0x81u
+void nmi_on(HwTrace* t);
 void title_hdma_off(Wram* w, HwTrace* t);
 
 // `$83:8015` to `$83:802D`, in the logo screens' routine (`port/intro.h`).

@@ -518,7 +518,7 @@ typedef struct {
   uint16_t value;
 } ThreadArgument;
 
-#define THREAD_ARGUMENT_COUNT 38
+#define THREAD_ARGUMENT_COUNT 40
 extern const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT];
 
 // `LDA #value : STA at`, on the thread's page, and the `RTS` after.
@@ -769,6 +769,11 @@ extern const WeedKind WEED_KINDS[WEED_KIND_COUNT];
 #define LEAP_DP_AIM_X 0x60
 #define LEAP_DP_AIM_Y 0x62
 #define LEAP_RECORD_PICTURE_BANK 0x0a
+// `$80:E2FF`, down in the water off a trampoline, from where its sound comes
+// back: the same pictures' bank, and the `JSL` that plays its splash.
+#define SOAK_SPLASH_PC 0x80e2ffu
+#define SOAK_SPLASH_CALL_PC 0x80e30au  // `JSL $81:832C`
+#define SOAK_SPLASH_PICTURES 0xe319u
 #define LEAP_PICTURE_BANK 0x0090u
 
 // --- level 29's creature staggered ----------------------------------------
@@ -1105,6 +1110,53 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define W_DECOYS_OUT 0x1f90u
 // Its start: its weight, its record and its first pictures, under its
 // `JSR $F200`. Then, past its handler, its first sleep.
+// A creature bubbled, `$81:8404`, which `enemy_bubble_react` in
+// `port/collide.h` wakes its thread into. It keeps on its stack its handler,
+// the handler's bank a byte, its picture and its collide id; is nothing to
+// hit, in the bubble's picture bank; and has the bubble's handler. Three
+// hundred ticks later, `$81:8446`, it has back what it kept, and `JML
+// thread_set_handler` names the handler again.
+#define BUBBLED_PC 0x818404u
+#define BUBBLED_HANDLER_CALL_PC 0x818433u  // `JSL thread_set_handler`
+#define BUBBLE_OVER_PC 0x818446u
+#define BUBBLE_OVER_JML_PC 0x81845au       // `JML thread_set_handler`
+#define BUBBLED_COLLIDE_ID 0x0036
+#define BUBBLED_PICTURE_BANK 0x0090u
+#define BUBBLED_HANDLER 0x845eu
+#define BUBBLED_BANK 0x0081u
+// The thing record 36 places, whose wait for hits is `port/waits.h`'s: its
+// weight, `JSR $F2EC` to its record, and the handler that counts its hits.
+#define BREAKABLE_ENTER_PC 0x82f25du
+#define BREAKABLE_ALLOC_PC 0x82f2ecu        // `JSL actor_slot_alloc`
+#define BREAKABLE_MADE_PC 0x82f2f0u
+#define BREAKABLE_MADE_RETURN 0xf269u       // `JSR $F2EC`'s
+#define BREAKABLE_HANDLER_CALL_PC 0x82f275u // `JSL thread_set_handler`
+#define BREAKABLE_LOAD 0x0008
+#define BREAKABLE_PICTURE 0xd526u
+#define BREAKABLE_PICTURE_BANK 0x008fu
+#define BREAKABLE_COLLIDE_ID 0x0003
+#define BREAKABLE_HITS 0x0005
+#define BREAKABLE_HANDLER 0xf330u
+#define BREAKABLE_BANK 0x0082u
+#define BREAKABLE_DP_X 0x12             // where it was begun, kept
+#define BREAKABLE_DP_Y 0x14
+#define BREAKABLE_TICKS 0x0002          // of its first picture
+// ...and record 48's, which waits for a player near (`port/waits.h`): its
+// weight and its count, `JSR $A410` to `record_begin`, and from there its
+// record's picture and the rest of its page, as far as its handler.
+#define WATCHER_ENTER_PC 0x81a455u
+#define WATCHER_BEGIN_CALL_PC 0x81a410u  // `JSL record_begin`
+#define WATCHER_BEGUN_PC 0x81a414u
+#define WATCHER_BEGUN_RETURN 0xa466u     // `JSR $A410`'s
+#define WATCHER_HANDLER_CALL_PC 0x81a46du
+#define WATCHER_LOAD 0x001c
+#define WATCHER_COUNT 0x0007
+#define WATCHER_PICTURE 0xd11bu
+#define WATCHER_PICTURE_BANK 0x0090u
+#define WATCHER_FLAGS 0x8008u
+#define WATCHER_ATTR 0x0c00u
+#define WATCHER_HANDLER 0xa638u
+#define WATCHER_BANK 0x0081u
 #define DECOY_ENTER_PC 0x81f159u
 #define DECOY_ALLOC_PC 0x81f200u          // `JSL actor_slot_alloc`
 #define DECOY_MADE_PC 0x81f204u
@@ -1225,6 +1277,10 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define STUNG_DP_WAY 0x0c
 #define STUNG_DP_RECORD 0x08
 
+// `$81:C6D9`, where a footballer's pictures come back to: `JMP $C6EC`, and
+// the state for its next pass. It stops at the state's `RTS`. Not a stretch
+// of its own: `footballer_off_shown` in `src/cosim/routines.c` goes on from
+// it to the pass's end. See `port/football.h`.
 #define FOOTBALLER_OFF_PICTURED_PC 0x81c6d9u
 #define FOOTBALLER_OFF_RTS_PC 0x81c6f1u
 
@@ -1337,6 +1393,40 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define VICTIM_GONE_PC 0x8181efu      // `LDA $06`, and `JSL victim_mark_gone`
 #define VICTIM_GONE_CALL_PC 0x8181f1u
 #define VICTIM_DP_GONE 0x06
+// The level's ending, `$80:8544`, where the main loop goes with no neighbours
+// left to save (`port/mainloop.h`). With neither player having one to their
+// name, the game is lost. Otherwise each player playing has a thread begun,
+// `$82:F70B`, with their record and which player they are: their way out.
+// Then the second loop's first sleep.
+#define LEVEL_ENDING_PC 0x808544u
+#define LEVEL_ENDING_FIRST_CALL_PC 0x808561u   // `JSL thread_spawn`
+#define LEVEL_ENDING_SECOND_PC 0x808565u
+#define LEVEL_ENDING_SECOND_CALL_PC 0x80857au
+#define LEVEL_ENDING_SLEEP_PC 0x80857eu        // `LDA #2`, and the sleep
+#define W_PLAYERS_RESCUED 0x1f9cu              // a word for each player
+#define W_PLAYER_RECORDS 0x00d2u               // ...and their records
+#define LEVEL_ENDING_THREAD 0xf70bu
+#define LEVEL_ENDING_THREAD_BANK 0x0082u
+#define LEVEL_ENDING_DP_RECORD 0x04            // what the thread is begun with
+#define LEVEL_ENDING_DP_PLAYER 0x06
+// The main thread back from the level's loop, `$80:84D5`: `BCS` to the game
+// over, which carry set says, or on to the next level.
+#define MAIN_BACK_PC 0x8084d5u
+#define MAIN_BACK_NEXT_PC 0x8084d7u   // `JSL $80:866F`
+#define MAIN_BACK_OVER_PC 0x8084fcu   // `JSL $80:8A00`
+// The main loop's way out with nobody playing: `SEC`, and its `RTL`.
+#define GAME_LOST_PC 0x8085b5u
+#define GAME_LOST_RTL_PC 0x8085b6u
+// The last frame stuck in slime, back from what they held being given back:
+// the ordinary state, `STZ $70`, and the state's `RTS`. See `port/stuck.h`.
+#define STUCK_FREED_PC 0x80dc73u
+#define STUCK_FREED_RTS_PC 0x80dc75u
+// `$80:C1CF`, a player's side of the status panel blanked: `BNE` on the
+// player the caller's `LDX` named, and the `JSR` to that player's panel.
+// `port/hud.h` has the rest.
+#define PANEL_SIDE_PC 0x80c1cfu
+#define PANEL_SIDE_1_CALL_PC 0x80c1d1u
+#define PANEL_SIDE_2_CALL_PC 0x80c1f5u
 
 // --- a player's flashing ended -----------------------------------------------
 
@@ -1591,6 +1681,7 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_BYSTANDER_STEP, 0x82de08, 0x82de1f, 0)  /* to the BNE */ \
   X(TS_BYSTANDER_SAY, 0x82de20, 0x82de2a, 0) \
   X(TS_LEAP_SPLASH, 0x80dd79, 0x80dd8c, 0) \
+  X(TS_SOAK_SPLASH, 0x80e2ff, 0x80e30a, 0) \
   X(TS_SET_HANDLER, 0x808475, 0x808480, 0)   /* thread_set_handler */ \
   X(TS_STAGGER_HANDLER, 0x819643, 0x81964d, 0) \
   X(TS_STAGGER_BEGIN, 0x81964d, 0x81966f, 0) \
@@ -1738,6 +1829,16 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_SEEKER_RESET, 0x82e827, 0x82e850, 0)   /* the JSL too */ \
   X(TS_SEEKER_ALIVE, 0x82e850, 0x82e854, 0)   /* LDA $30 : BPL */ \
   X(TS_DECOY_ENTER, 0x81f159, 0x81f166, 0)    /* the JSR too */ \
+  X(TS_BREAKABLE_ENTER, 0x82f25d, 0x82f26a, 0) /* the JSR too */ \
+  X(TS_LEVEL_ENDING_SPAWN, 0x808551, 0x808561, 0) /* and $856A-$857A */ \
+  X(TS_BUBBLED, 0x818404, 0x818433, 0) \
+  X(TS_BUBBLE_OVER, 0x818446, 0x81845a, 0) \
+  X(TS_BREAKABLE_MADE, 0x82f2f0, 0x82f330, 0)  /* the RTS too */ \
+  X(TS_BREAKABLE_HANDLER, 0x82f26a, 0x82f275, 0) \
+  X(TS_WATCHER_ENTER, 0x81a455, 0x81a467, 0)   /* the JSR too */ \
+  X(TS_WATCHER_BEGUN, 0x81a414, 0x81a454, 0)   /* the JSR too */ \
+  X(TS_WATCHER_CLEARS, 0x81a191, 0x81a19f, 0)  /* the RTS too */ \
+  X(TS_WATCHER_HANDLER, 0x81a467, 0x81a46d, 0) \
   X(TS_DECOY_MADE, 0x81f204, 0x81f24e, 0) \
   X(TS_SEEKER_SET, 0x82eb5e, 0x82eb64, 0)     /* and $82:EB74-$EB79 */ \
   X(TS_SEEKER_SET_HOLD, 0x82ec92, 0x82eca3, 0) \
@@ -1855,6 +1956,8 @@ typedef enum {
   TS_NEEDS_BOLT_MADE,      // a record in A and Y, the start's `JSR` to return
   TS_NEEDS_SEEKER_MADE,    // a record in A, the start's `JSR` to return
   TS_NEEDS_SEEKER_SOUNDED, // ...that `JSR`'s return
+  TS_NEEDS_BREAKABLE_MADE, // a record in A, the start's `JSR` to return to
+  TS_NEEDS_WATCHER_BEGUN,  // a record on its page, the start's `JSR` likewise
   TS_NEEDS_DECOY_MADE,     // a record in A and Y, the start's `JSR` to return
                            // to, and a way and a player the tables have
   TS_NEEDS_STUNG_SHOWN,    // ...and a way the table has, read through `$80`
@@ -1882,6 +1985,14 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(page_pull, "$80:ABD1", PAGE_PULL_PC, page_pull, SMALL, TS_NEEDS_NOTHING) \
   X(carry_set, "$80:E78E", CARRY_SET_PC, carry_set, SMALL, TS_NEEDS_NOTHING) \
   X(victim_gone, "$81:81EF", VICTIM_GONE_PC, victim_gone, SMALL, TS_NEEDS_NOTHING) \
+  X(game_lost, "$80:85B5", GAME_LOST_PC, game_lost, SMALL, TS_NEEDS_NOTHING) \
+  X(main_back, "$80:84D5", MAIN_BACK_PC, main_back, SMALL, TS_NEEDS_NOTHING) \
+  X(argument_808a00, "$80:8A00", 0x808a00u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(level_ending, "$80:8544", LEVEL_ENDING_PC, level_ending, LEVEL_ENDING, TS_NEEDS_NOTHING) \
+  X(level_ending_second, "$80:8565", LEVEL_ENDING_SECOND_PC, level_ending_second, LEVEL_ENDING, TS_NEEDS_NOTHING) \
+  X(argument_80857e, "$80:857E", LEVEL_ENDING_SLEEP_PC, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
+  X(stuck_freed, "$80:DC73", STUCK_FREED_PC, stuck_freed, SMALL, TS_NEEDS_NOTHING) \
+  X(panel_side, "$80:C1CF", PANEL_SIDE_PC, panel_side, SMALL, TS_NEEDS_NOTHING) \
   X(pair_main_layers, "$80:85D3", 0x8085d3u, thread_pair, PAIR, TS_NEEDS_NOTHING) \
   X(pair_martian_handler, "$81:9B30", 0x819b30u, thread_pair, PAIR, TS_NEEDS_NOTHING) \
   X(pair_hud_thread, "$80:C2DE", 0x80c2deu, thread_pair, PAIR, TS_NEEDS_NOTHING) \
@@ -1945,6 +2056,7 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(bystander_set, "$82:DEE8", BYSTANDER_SET_PC, bystander_set, BYSTANDER, TS_NEEDS_BYSTANDER_SET) \
   X(bystander_step, "$82:DE08", BYSTANDER_STEP_PC, bystander_step, BYSTANDER, TS_NEEDS_BYSTANDER_KIND) \
   X(leap_splash, "$80:DD79", LEAP_SPLASH_PC, leap_splash, LEAP, TS_NEEDS_RECORD) \
+  X(soak_splash, "$80:E2FF", SOAK_SPLASH_PC, soak_splash, LEAP, TS_NEEDS_RECORD) \
   X(stagger_begin, "$81:9643", STAGGER_BEGIN_PC, stagger_begin, STAGGER, TS_NEEDS_RECORD) \
   X(stagger_spin, "$81:9680", STAGGER_SPIN_PC, stagger_spin, STAGGER, TS_NEEDS_RECORD) \
   X(stagger_dazed, "$81:96A7", STAGGER_DAZED_PC, stagger_dazed, STAGGER, TS_NEEDS_NOTHING) \
@@ -2035,7 +2147,6 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(stung, "$80:F9D0", STUNG_PC, stung, STUNG, TS_NEEDS_STUNG) \
   X(stung_heard, "$80:F9E2", STUNG_HEARD_PC, stung_heard, STUNG, TS_NEEDS_STUNG_SHOWN) \
   X(stung_held, "$80:F9F2", STUNG_HELD_PC, stung_held, STUNG, TS_NEEDS_NOTHING) \
-  X(footballer_off_pictured, "$81:C6D9", FOOTBALLER_OFF_PICTURED_PC, footballer_off_pictured, FOOTBALLER_OFF, TS_NEEDS_NOTHING) \
   X(ant_flash, "$81:BAEC", ANT_FLASH_PC, ant_flash, ANT_FLASH, TS_NEEDS_RECORD) \
   X(ant_flashed, "$81:BAFB", ANT_FLASHED_PC, ant_flashed, ANT_FLASH, TS_NEEDS_RECORD) \
   X(spider_enter, "$83:B27B", SPIDER_ENTER_PC, spider_enter, SPIDER, TS_NEEDS_NOTHING) \
@@ -2070,6 +2181,12 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(seeker_gone, "$82:EF3C", SEEKER_GONE_PC, seeker_gone, SEEKER, TS_NEEDS_NOTHING) \
   X(seeker_made, "$82:EF8F", SEEKER_MADE_PC, seeker_made, SEEKER, TS_NEEDS_SEEKER_MADE) \
   X(seeker_sounded, "$82:EFED", SEEKER_SOUNDED_PC, seeker_sounded, SEEKER, TS_NEEDS_SEEKER_SOUNDED) \
+  X(bubbled, "$81:8404", BUBBLED_PC, bubbled, BUBBLE, TS_NEEDS_RECORD) \
+  X(bubble_over, "$81:8446", BUBBLE_OVER_PC, bubble_over, BUBBLE, TS_NEEDS_RECORD) \
+  X(breakable_enter, "$82:F25D", BREAKABLE_ENTER_PC, breakable_enter, BREAKABLE, TS_NEEDS_NOTHING) \
+  X(breakable_made, "$82:F2F0", BREAKABLE_MADE_PC, breakable_made, BREAKABLE, TS_NEEDS_BREAKABLE_MADE) \
+  X(watcher_enter, "$81:A455", WATCHER_ENTER_PC, watcher_enter, WATCHER, TS_NEEDS_NOTHING) \
+  X(watcher_begun, "$81:A414", WATCHER_BEGUN_PC, watcher_begun, WATCHER, TS_NEEDS_WATCHER_BEGUN) \
   X(decoy_enter, "$81:F159", DECOY_ENTER_PC, decoy_enter, DECOY_START, TS_NEEDS_NOTHING) \
   X(decoy_made, "$81:F204", DECOY_MADE_PC, decoy_made, DECOY_START, TS_NEEDS_DECOY_MADE) \
   X(decoy_first, "$81:F166", DECOY_FIRST_PC, decoy_first, DECOY_START, TS_NEEDS_NOTHING) \
@@ -2120,6 +2237,9 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
 // Several stretches share a port, so each is declared as often.
 THREAD_STRETCHES(X)
 #undef X
+// ...and one that is not a row of its own: see `FOOTBALLER_OFF_PICTURED_PC`.
+void footballer_off_pictured(Wram* w, const Rom* rom, PortCpu* c,
+                             ThreadStretchWork* k);
 
 // `$81:92D9`, the cut's hedge, to the `JSL` that puts the block. False if
 // its cell is not where a word can be read.

@@ -460,11 +460,29 @@ void footballer_show(Wram* w, const Rom* rom, PortCpu* c, FootballerLog* log,
 
 bool footballer_frame_supported(const Wram* w, uint16_t page) {
   const uint16_t state = wram_r16(w, (uint16_t)(page + FOOTBALLER_DP_STATE));
+  if (state == FOOTBALLER_STATE_HANDLED) return true;  // it shows nothing
   if (!footballer_show_supported(w, page)) return false;
   return state == FOOTBALLER_STATE_RUN || state == FOOTBALLER_STATE_STAND ||
          state == FOOTBALLER_STATE_RUN_LOOSE ||
          state == FOOTBALLER_STATE_VEER || state == FOOTBALLER_STATE_RUN_OFF ||
          state == FOOTBALLER_STATE_SENT_OFF;
+}
+
+// `$81:C6CA`: no handler any more, and to its pictures.
+static void handled(Footballer* f) {
+  PortCpu c = {.a = 0, .y = 0, .d = f->page};
+  thread_set_handler(f->w, &c);
+}
+
+// `JSR $C824`, and `LDA $22 : BEQ` on its fate.
+static FootballerFate shown(Footballer* f) {
+  show(f);
+  f->log->c = f->flags.c;
+  f->log->v = f->flags.v;
+  f->log->c_set = f->flags.c_set;
+  f->log->v_set = f->flags.v_set;
+  return field(f, FOOTBALLER_DP_FATE) != 0 ? FOOTBALLER_ENDS
+                                           : FOOTBALLER_SLEEPS;
 }
 
 FootballerFate footballer_frame(Wram* w, const Rom* rom, uint16_t page,
@@ -497,20 +515,29 @@ FootballerFate footballer_frame(Wram* w, const Rom* rom, uint16_t page,
       PORT_COVER(footballer_first_off);
       sent_off(&f);
       break;
+    case FOOTBALLER_STATE_HANDLED:
+      PORT_COVER(footballer_handled);
+      handled(&f);
+      return FOOTBALLER_TO_PICTURES;
     default:
       PORT_COVER(footballer_ran_veering);
       run_veering(&f);
       break;
   }
   if (log->declined) return FOOTBALLER_SLEEPS;
-  show(&f);
+  return shown(&f);
+}
 
-  log->c = f.flags.c;
-  log->v = f.flags.v;
-  log->c_set = f.flags.c_set;
-  log->v_set = f.flags.v_set;
-  return field(&f, FOOTBALLER_DP_FATE) != 0 ? FOOTBALLER_ENDS
-                                            : FOOTBALLER_SLEEPS;
+FootballerFate footballer_shown(Wram* w, const Rom* rom, uint16_t page,
+                                bool carry, FootballerLog* log) {
+  FootballerLog scratch;
+  if (log == NULL) log = &scratch;
+  *log = (FootballerLog){0};
+  Footballer f = {w, rom, page,
+                  wram_r16(w, (uint16_t)(page + FOOTBALLER_DP_RECORD)), log,
+                  {carry, false, false, false}};
+  PORT_COVER(footballer_shown_after);
+  return shown(&f);
 }
 
 // ---------------------------------------------------------------------------

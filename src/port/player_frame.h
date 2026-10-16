@@ -73,6 +73,14 @@
 // It turns down a movement handler, which the landing does not expect, and
 // what the frame turns down at its end.
 //
+// ## Down in the water off a trampoline
+//
+// The same again, from `$80:E2DA`: the sound is `$18`, at `$80:E2FB`, and
+// the player is touchable and told of things before it. So where the
+// pictures come back to is only the swim begun, and the rest of the frame:
+//
+//   $80:E30E  player_soaked   swimming, from the trampoline
+//
 // ## Its contract with the ROM
 //
 // It writes WRAM exactly as the ROM does. The frame ends at the thread's
@@ -114,6 +122,7 @@
 // ...and one that stops in the pose: the `PEA` before its computed `RTS`.
 #define PLAYER_FRAME_POSE_RETURN 0xce0bu
 #define PLAYER_SPLASHED_PC 0x80dd90u
+#define PLAYER_SOAKED_PC 0x80e30eu
 // What swimming begins with: its pictures, a pose table for each player, its
 // speed class, and what a swimmer holds in place of the weapon and the item.
 #define SWIM_PICTURES 0xfd72u
@@ -220,6 +229,11 @@ typedef struct {
 // the ROM's, so a caller asks it of a copy first.
 void player_splashed(Wram* w, const Rom* rom, uint16_t page, uint16_t s,
                      PlayerFrameLog* log);
+
+// `$80:E30E`, the rest of a frame that came down in the water off a
+// trampoline, the same way.
+void player_soaked(Wram* w, const Rom* rom, uint16_t page, uint16_t s,
+                   PlayerFrameLog* log);
 
 // `$80:E942` or `$80:E9B2`, the rest of a frame whose walk stopped at a
 // door's block: the walk from the axis it stopped on, and the frame's tail.

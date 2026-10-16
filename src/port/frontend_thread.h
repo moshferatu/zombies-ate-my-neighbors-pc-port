@@ -33,6 +33,13 @@
 // good. `region_check` begins after the read, with the byte in A, and is the
 // other way only: the bit clear, and back to the thread.
 //
+// `region_read` is the read as well. The port's console draws sixty frames
+// a second, as the one the cartridge was made for does: its header names the
+// United States. So bit 4 is clear. The rest of the byte is the picture
+// chip's version and the state of its counters' latch, and the `AND` after
+// the read keeps none of it. The read also resets that latch, which matters
+// only to a read of the counters, and the ROM makes none.
+//
 // ## The first pass
 //
 // Two words on the thread's page are zero until something has been shown
@@ -70,6 +77,7 @@
 #define FRONTEND_TITLE_PC 0x809152u         // `JSL layers_reset`
 #define FRONTEND_DP_OPENING_SHOWN 0x7c
 
+#define FRONTEND_REGION_READ_PC 0x80918eu
 #define FRONTEND_REGION_CHECK_PC 0x809193u
 #define FRONTEND_REGION_RTL_PC 0x8091f6u
 #define REGION_FIFTY_HERTZ 0x0010u          // of `$213F`
@@ -102,6 +110,8 @@ bool title_first_pass(Wram* w, PortCpu* c);
 // The bit clear in the byte in A.
 bool frontend_region_check_supported(uint16_t a);
 void frontend_region_check(PortCpu* c);
+// ...or asked for first, of a console that draws sixty frames a second.
+void frontend_region_read(PortCpu* c);
 
 #define FRONTEND_DP_SCROLL_JOB 0x60  // where the scroll's job is in the queue
 #define FRONTEND_SCROLL_JOB 0x9bfcu  // jobs in bank `$80`

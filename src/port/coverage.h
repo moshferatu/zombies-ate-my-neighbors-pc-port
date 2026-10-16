@@ -81,6 +81,7 @@
   X(threads_cleared,  "threads_clear",     "the threads' pages and stacks cleared") \
   X(reset_cold,       "reset_clear",       "no top-scores table in WRAM: every byte cleared") \
   X(reset_warm,       "reset_clear",       "the four magic words found, so $7E:2000-$2127 survive") \
+  X(nmi_on,           "nmi_on",            "the interrupt and the pads' read on, at reset") \
   /* Thread bodies, between one yield and the next. */                        \
   X(victims_retired,   "victims_resume",     "a victim retired for good, stepped over") \
   X(victims_list_end,  "victims_resume",     "the victim list ran out: next frame starts at the top") \
@@ -450,6 +451,7 @@
   X(vram_send_more,   "vram_send_job",      "a kilobyte sent, and more to send") \
   X(vram_send_last,   "vram_send_job",      "the last of it sent") \
   X(bg1_vscroll_job,  "bg1_vscroll_job",    "BG1's scroll down, from its shadow") \
+  X(mosaic_job,       "mosaic_job",         "the saucer's mosaic, by its hurt") \
   X(mosaic_off_job,   "mosaic_off_job",     "the mosaic off")   X(boss_shake_job,   "boss_shake_job",     "the ground under the big figure, a few lines down") \
   X(brightness_up,    "brightness_up_job",  "a step brighter, and more to go") \
   X(brightness_full,  "brightness_up_job",  "...and the fifteenth") \
@@ -921,6 +923,7 @@
   X(walk_trampoline_busy, "player_walk",   "a trampoline's tile, and a player not in the ordinary state") \
   X(walk_trampoline_none, "player_walk",   "...or one in it, and no tile with bit 3 round them") \
   X(walk_trampoline_bounced, "player_walk", "...or one, and the player is on it") \
+  X(walk_trampoline_bounced_again, "player_walk", "...and again on the other axis, the same frame") \
   X(walk_door_no_reach, "player_walk",     "a door's tile, and no tile to look at the way the player faces") \
   X(walk_door_not_there, "player_walk",    "...or one to look at, which is not a door") \
   X(walk_door_locked, "player_walk",       "...or a door, and nothing to open it: a thread begun") \
@@ -1722,6 +1725,7 @@
   X(pose_arc_landed, "pose_arc", "...or down from the second leap, on the ground") \
   X(pose_arc_splashed, "pose_arc", "...or from the first, into the water: the frame stops at its sound") \
   X(leap_splash, "ts_leap_splash", "down in the water, and the splash's pictures asked for") \
+  X(soak_splash, "ts_soak_splash", "down in the water off a trampoline, and the splash's pictures asked for") \
   X(stagger_began, "ts_stagger_begin", "level 29's creature staggered: the stagger's handler, and the spin begun") \
   X(stagger_spun, "ts_stagger_spin", "...the next picture of the spin") \
   X(stagger_spun_out, "ts_stagger_spin", "...or the spin over, and the first list") \
@@ -1729,6 +1733,7 @@
   X(stagger_dazed_last, "ts_stagger_daze", "...or the last list") \
   X(stagger_over, "ts_stagger_over", "...and itself again") \
   X(player_splashed, "player_splashed", "the splash over: swimming begun, and the rest of the frame") \
+  X(player_soaked, "player_soaked", "the splash off a trampoline over: the same") \
   X(pose_leapt, "player_walk", "a leap toward a point: into the water from the walk") \
   X(walk_edge_jumped_again, "player_walk", "...and again on the other axis, the same frame") \
   X(pose_climbed_out, "swim_walk", "out of the water onto the bank the swim found") \
@@ -1761,7 +1766,24 @@
   X(slime_died_paid, "ts_slime_fate", "...or counted, and its killer paid") \
   X(decoy_ended, "ts_decoy_ended", "a decoy's last tick: one fewer out, and no handler") \
   X(decoy_entered, "ts_decoy_enter", "a decoy's start: its weight, and to its record") \
+  X(breakable_entered, "ts_breakable_enter", "record 36's thing's start: its weight, and to its record") \
+  X(bubbled, "ts_bubbled", "a creature bubbled: what it was kept, and the bubble's handler") \
+  X(bubble_over, "ts_bubble_over", "...and let go: all of it back") \
+  X(watcher_entered, "ts_watcher_enter", "record 48's thing's start: its weight, and to its record") \
   X(seeker_entered, "ts_seeker_enter", "a seeker's start: its place in the level's list marked gone") \
+  X(game_lost, "ts_game_lost", "nobody left playing: carry set, and out of the main loop") \
+  X(main_back_over, "ts_main_back", "the main thread back from the level: the game over") \
+  X(main_back_next, "ts_main_back", "...or the next level") \
+  X(level_ending_none_rescued, "ts_level_ending", "no neighbours left, and none saved: the game is lost") \
+  X(level_ending_first_leaves, "ts_level_ending", "...or the first player playing: their way out begun") \
+  X(level_ending_first_out, "ts_level_ending", "...or not playing") \
+  X(level_ending_second_leaves, "ts_level_ending_second", "the second player playing: their way out begun") \
+  X(level_ending_second_out, "ts_level_ending_second", "...or not: the second loop's first sleep") \
+  X(object_put_back_in_gone, "object_put_back", "what was held put back where an object was taken") \
+  X(object_put_back_at_end, "object_put_back", "...or at the list's end, which moves on") \
+  X(stuck_state_ended, "ts_stuck_freed", "the last frame stuck: the ordinary state again") \
+  X(panel_side_first, "ts_panel_side", "the first player's side of the panel") \
+  X(panel_side_second, "ts_panel_side", "...or the second's") \
   X(seeker_start_heard, "ts_seeker_made", "its record made, where the sample set has its sound: sound $26") \
   X(seeker_start_unheard, "ts_seeker_made", "...or not, and it goes on to come at whoever is nearest") \
   X(creature_unhandled, "ts_*_dead", "a werewolf or a chainsaw maniac dead: no handler") \
@@ -1792,6 +1814,7 @@
   X(pose_bounce_off_down, "pose_bounce_off", "...or down on the ground") \
   X(pose_bounce_lay, "pose_bounce_landed", "down beside it, a frame of the wait") \
   X(pose_bounce_got_up, "pose_bounce_landed", "...or the wait over, and up") \
+  X(pose_bounce_soaked, "pose_bounce_landed", "...or the wait over in the water: stopped at the sound") \
   X(pose_swim_waited, "pose_swim", "a frame of a picture's ten") \
   X(pose_swim_stroked, "pose_swim", "the next picture of the stroke") \
   X(pose_swim_wrapped, "pose_swim", "...which is the first again") \
@@ -2120,7 +2143,7 @@
   X(stung_heard, "ts_stung_heard", "their picture, and nothing told what touches them") \
   X(stung_held, "ts_stung_held", "...and 75 ticks") \
   X(ant_flash, "ts_ant_flash", "an ant hit: its attributes for two ticks") \
-  X(footballer_off_pictured, "ts_footballer_off_pictured", "a footballer sent off: the state for its next pass") \
+  X(footballer_off_pictured, "footballer_off_shown", "a footballer sent off: the state for its next pass") \
   X(ant_flashed, "ts_ant_flashed", "...and back") \
   X(chainsaw_made, "ts_chainsaw_made", "its place, its record, health and no saw, and it wanders") \
   X(chainsaw_set, "ts_chainsaw_set", "its entry in the level's list") \
@@ -2183,6 +2206,8 @@
   X(scores_screen_dark, "scores_screen_dark", "faded down, and blanked") \
   X(scores_screen_end, "scores_screen_end", "the caller's data bank") \
   X(footballer_first_off, "footballer_frame", "its first pass sent off: no handler, a turn, and off") \
+  X(footballer_handled, "footballer_frame", "the pass its handler left: no handler, and to its pictures") \
+  X(footballer_shown_after, "footballer_off_shown", "...and the pass's end") \
   X(footballer_sent_off, "footballer_frame", "a pass sent off") \
   X(footballer_off_turned, "footballer_frame", "...stopped by the ground: it turns") \
   X(footballer_ran_off, "footballer_frame", "...and its picture is off the screen: it ends") \
@@ -2282,6 +2307,7 @@
   X(frontend_first_pass, "frontend_first_pass", "the front end's first pass, and the screen before the title") \
   X(frontend_later_pass, "frontend_first_pass", "...or a later one, straight to the title")   X(frontend_opening_skipped, "frontend_first_pass", "...or the first with the logos skipped, and the same") \
   X(frontend_region_check, "frontend_region_check", "the console is the one the game was made for") \
+  X(frontend_region_read, "frontend_region_read", "...asked of the port's own, which is") \
   X(frontend_scroll_job_ask, "frontend_scroll_job_ask", "the job that sends the layers' scroll, asked for") \
   X(frontend_scroll_job_asked, "frontend_scroll_job_asked", "...and where it went in the queue kept") \
   X(frontend_fade_in_ask, "frontend_fade_in_ask", "a screen's brightness to be counted up") \

@@ -173,8 +173,15 @@ const KillScored KILLS_SCORED_BY[KILL_SCORED_COUNT] = {
 
 const KillCounted KILLS_COUNTED_BY[KILL_COUNTED_COUNT] = {
 #define X(at, sym, pc, count_at, pictures) \
-  [KILL_COUNTED_AT_##at] = {pc, count_at, pictures},
+  [KILL_COUNTED_AT_##at] = {pc, count_at, pictures, 0},
     KILLS_COUNTED(X)
+#undef X
+};
+
+const KillCounted KILLS_SHOWN_BY[KILL_SHOWN_COUNT] = {
+#define X(at, sym, pc, count_at, pictures, bank) \
+  [KILL_SHOWN_AT_##at] = {pc, count_at, pictures, bank},
+    KILLS_SHOWN(X)
 #undef X
 };
 
@@ -197,7 +204,14 @@ void kill_counted(Wram* w, PortCpu* c, const KillCounted* kill) {
   wram_w16(w, kill->count_at, (uint16_t)(wram_r16(w, kill->count_at) + 1));
   c->a = kill->pictures;
   set_nz16(c, c->a);
-  c->pc = kill->pc + KILL_COUNTED_CALL_BYTES;
+  if (kill->bank == 0) {
+    c->pc = kill->pc + KILL_COUNTED_CALL_BYTES;
+    return;
+  }
+  c->y = kill->bank;
+  c->x = DEATH_KILLED;
+  set_nz16(c, c->x);
+  c->pc = kill->pc + KILL_SHOWN_CALL_BYTES;
 }
 
 bool death_pictures(Wram* w, PortCpu* c) {

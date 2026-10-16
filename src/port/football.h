@@ -41,6 +41,18 @@
 //
 // **With neither player within 320 it leaves.**
 //
+// **Its handler leaves it a state of its own**, `$81:C6CA`. The pass in it
+// takes the handler away and plays its pictures, which sleeps: the pass
+// stops at that `JSL`, with the return of the loop's computed `RTS` under
+// it. Where the pictures come back to sends it off for its next pass, and
+// returns to the pass's end (`footballer_shown`):
+//
+//   $81:C6D9  footballer_off_shown   sent off, shown, and its fate tested
+//
+// The pass's end is not an entry of its own. Every state body returns to
+// it, and a row there would take each pass that `footballer_frame` is
+// being checked on.
+//
 // **Sent off, it runs eight pixels a pass** the way it was facing, turning
 // where the ground stops it, and ends once its picture is off the screen:
 // eight to the left of it, or more than 328 across or 272 down from its
@@ -86,6 +98,13 @@
 #define FOOTBALLER_STATE_VEER 0xc665u
 #define FOOTBALLER_STATE_RUN_OFF 0xc70bu
 #define FOOTBALLER_STATE_SENT_OFF 0xc6f2u
+#define FOOTBALLER_STATE_HANDLED 0xc6cau  // what its handler leaves
+
+// The computed `RTS`'s return, `PEA $C8A8`, and the pictures of the state
+// the handler leaves.
+#define FOOTBALLER_BODY_RETURN 0xc8a8u
+#define FOOTBALLER_HANDLED_PICTURES 0xc6dcu
+#define FOOTBALLER_HANDLED_CALL_PC 0x81c6d5u  // `JSL pictures_resume`
 
 // Fields on its page.
 #define FOOTBALLER_DP_RECORD 0x08
@@ -158,6 +177,7 @@ typedef struct {
 typedef enum {
   FOOTBALLER_SLEEPS,
   FOOTBALLER_ENDS,
+  FOOTBALLER_TO_PICTURES,  // stopped at its pictures' `JSL`
 } FootballerFate;
 
 // Can `footballer_frame` take this pass? Only in a state it knows, facing a
@@ -172,6 +192,12 @@ FootballerFate footballer_frame(Wram* w, const Rom* rom, uint16_t page,
 
 #define FOOTBALLER_SHOW_PC 0x81c824u
 #define FOOTBALLER_SHOW_RTS_PC 0x81c860u
+
+// `$81:C8A9`, the end of a pass from where a state body returns: it shows
+// itself, and its fate says whether it sleeps or ends. `carry` is as the body
+// left it. `log` may be NULL. For the pass after its pictures only.
+FootballerFate footballer_shown(Wram* w, const Rom* rom, uint16_t page,
+                                bool carry, FootballerLog* log);
 
 // `$81:C824`, called. False for a way or a picture the tables do not have.
 bool footballer_show_supported(const Wram* w, uint16_t page);

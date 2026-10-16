@@ -598,6 +598,12 @@ void title_layers(HwTrace* t) {
   store16(t, DMA_REP_IMM16, REG_TM, TITLE_LAYERS_ON);
 }
 
+void nmi_on(HwTrace* t) {
+  PORT_COVER(nmi_on);
+  store8(t, DMA_SEP_IMM, 0x4200, NMI_ON_VALUE);
+  hw_run(t, DMA_REP);
+}
+
 void title_hdma_on(HwTrace* t) {
   PORT_COVER(title_hdma_on);
   store8(t, DMA_SEP_IMM, REG_HDMAEN, WAVE_CHANNEL_ON);

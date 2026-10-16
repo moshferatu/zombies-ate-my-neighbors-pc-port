@@ -208,8 +208,10 @@ typedef struct {
   uint32_t pc;        // `INC $count`
   uint16_t count_at;  // how many of its kind have been killed
   uint16_t pictures;  // its last
+  uint16_t bank;      // ...in this bank, or 0: see `KILLS_SHOWN`
 } KillCounted;
 #define KILL_COUNTED_CALL_BYTES 6  // ...and to the `JSL pictures_play`
+#define KILL_SHOWN_CALL_BYTES 12   // ...or to the `JSL death_pictures`
 
 #define KILLS_SCORED(X) \
   X(818ed5, "$81:8ED5", 0x818ed5u, 0x0020, 0x30, 0x818ef0u) \
@@ -243,6 +245,13 @@ typedef struct {
   X(81d73d, "$81:D73D", 0x81d73du, 0x1f74u, 0xd75au) \
   X(83b2b3, "$83:B2B3", 0x83b2b3u, 0x1f78u, 0xb332u)
 
+// Two zombies count their kill the same way, and then go on to
+// `death_pictures` (below) with the pictures' bank in Y and a player's
+// kill in X: `LDY #bank : LDX #$F5F5`.
+#define KILLS_SHOWN(X) \
+  X(818ee0, "$81:8EE0", 0x818ee0u, 0x1f76u, 0x8f03u, 0x0090u) \
+  X(818f60, "$81:8F60", 0x818f60u, 0x1f76u, 0x8f83u, 0x0090u)
+
 enum {
 #define X(at, sym, pc, worth, killer_at, nobody_pc) KILL_SCORED_AT_##at,
   KILLS_SCORED(X)
@@ -256,7 +265,14 @@ enum {
   KILL_COUNTED_COUNT
 };
 extern const KillScored KILLS_SCORED_BY[KILL_SCORED_COUNT];
+enum {
+#define X(at, sym, pc, count_at, pictures, bank) KILL_SHOWN_AT_##at,
+  KILLS_SHOWN(X)
+#undef X
+  KILL_SHOWN_COUNT
+};
 extern const KillCounted KILLS_COUNTED_BY[KILL_COUNTED_COUNT];
+extern const KillCounted KILLS_SHOWN_BY[KILL_SHOWN_COUNT];
 
 // True when a player killed it, and it leaves at the `JSL score_add`.
 bool kill_scored(const Wram* w, PortCpu* c, const KillScored* kill);

@@ -19733,3 +19733,42 @@ from the door's `RTS` pays the rest of the walk and the second.
 Over the same 110 sessions the core executes 10,589 instructions where it
 executed 12,335, and takes over 561 times where it did 720, at 102 places
 where there were 125. The reset's own 7,920 are most of what is left.
+
+## Small places, two bounces and the water off a trampoline (2026-10-16)
+
+### A read the port answers
+
+`frontend_region_read`, `$80:918E`, is the first row that answers a read of
+the console's own: `SEP #$20 : LDA $213F`. The port's console is the one the
+cartridge was made for, so bit 4, fifty frames a second, is clear. The row
+asks the cartridge's header first: its country byte, `$80:FFD9`, has to be
+Japan's or the United States'. Nothing else of the byte survives the `AND`
+after it, and under `verify` only the registers where it stops are
+compared, so what else the port would say is never asked. The read has one
+other effect, on the latch of the counters at `$213C` and `$213D`, and the
+ROM reads neither of those, nor `$2137`.
+
+### Code the frontend writes
+
+`--level` writes a stub into the end of bank `$80`'s pad, and a row now
+takes it. A row has to begin at an instruction, and the stub began with the
+call it stood in for, which is a link's and not a row's: a link has to be an
+instruction the harness makes in every cartridge, and in one without the
+stub `$80:FF68` is `$FF`. So the stub stores first and jumps after, and
+`level_stub` guards on its bytes being there.
+
+### A row at a return every body shares
+
+A footballer's pass returns from its state body to `$81:C8A9`, whatever the
+state. A row there is entered under `verify` inside every pass
+`footballer_frame` is checked on, as last round's door row was inside every
+walk. This one passed every check, nested or not, but it was wider than it had
+to be. The pass it was for is the one after the handler's pictures, and the
+row where those come back now goes on to the pass's end itself. A pass the
+frame turns down for another reason still runs its end the ROM's way.
+
+### After
+
+Over the same 110 sessions the core executes 8,610 instructions where it
+executed 10,589, and takes over 187 times where it did 561, at 54 places
+where there were 102. The reset's own 7,920 are all but 690 of what is left.

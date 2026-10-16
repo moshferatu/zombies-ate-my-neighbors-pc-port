@@ -114,10 +114,17 @@ static const uint32_t level_site[LEVEL_SITES] = {0x005f0u, 0x01bbdu};
 //     $80:84BD  JSL $808618   <- here
 //     $80:84C1  JSL $80885B   the loop head, which reads $1F50
 //
-// So `$80:84BD` is redirected to a stub that makes the call it displaced and
-// then does the store. The stub goes at `$80:FF68`, which is 88 bytes of `$FF`
-// between the last code in the bank and the cartridge header at `$80:FFC0` — the
-// end-of-bank pad, and the only thing written outside the two immediates.
+// So `$80:84BD` is redirected to a stub that does the store and then jumps on to
+// the routine the call was for, whose `RTL` comes back to `$80:84C1` as before.
+// The stub goes at `$80:FF68`, which is 88 bytes of `$FF` between the last code
+// in the bank and the cartridge header at `$80:FFC0` — the end-of-bank pad, and
+// the only thing written outside the two immediates. It claims eleven bytes and
+// uses ten.
+//
+// The store comes first so that the stub is one stretch with a jump at its end,
+// which the port can take whole (`level_stub` in `src/cosim/routines.c`). The
+// routine it jumps to, `$80:8618`, reads neither A nor `$1F50` and leaves A
+// as it would have without the stub.
 #define LEVEL_DOOR_CALL 0x004bdu
 #define LEVEL_STUB 0x07f68u       // in the file...
 #define LEVEL_STUB_ADDR 0xff68u   // ...and to the 65816, which is what the JSL takes
@@ -182,16 +189,17 @@ static bool start_at_level(Snes* snes, int level) {
   }
   if (plan.arm) {
     uint8_t* stub = cart->rom + LEVEL_STUB;
-    // The call this is standing in front of, carried over rather than written
-    // out, so the stub stays right if `$80:84BD` ever points somewhere else.
-    memcpy(stub, cart->rom + LEVEL_DOOR_CALL, 4);
-    stub[4] = 0xa9;                          // LDA #$00xx  (16-bit here: the
-    stub[5] = (uint8_t)plan.arm;             // routine it just called opens
-    stub[6] = (uint8_t)(plan.arm >> 8);      // `LDX #$0000` three bytes wide)
-    stub[7] = 0x8d;                          // STA $1F50
-    stub[8] = 0x50;
-    stub[9] = 0x1f;
-    stub[10] = 0x6b;                         // RTL
+    stub[0] = 0xa9;                          // LDA #$00xx  (16-bit here: the
+    stub[1] = (uint8_t)plan.arm;             // routine it goes on to opens
+    stub[2] = (uint8_t)(plan.arm >> 8);      // `LDX #$0000` three bytes wide)
+    stub[3] = 0x8d;                          // STA $1F50
+    stub[4] = 0x50;
+    stub[5] = 0x1f;
+    // JML to where the call this stands in front of went, carried over rather
+    // than written out, so the stub stays right if `$80:84BD` ever points
+    // somewhere else.
+    stub[6] = 0x5c;
+    memcpy(stub + 7, cart->rom + LEVEL_DOOR_CALL + 1, 3);
     cart->rom[LEVEL_DOOR_CALL + 1] = (uint8_t)LEVEL_STUB_ADDR;         // JSL
     cart->rom[LEVEL_DOOR_CALL + 2] = (uint8_t)(LEVEL_STUB_ADDR >> 8);  // $80FF68
     cart->rom[LEVEL_DOOR_CALL + 3] = 0x80;

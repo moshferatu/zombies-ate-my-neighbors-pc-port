@@ -379,6 +379,21 @@ void vram_send_job(Wram* w, PortCpu* c, HwTrace* t) {
   set_c(c, true);
 }
 
+void mosaic_job(Wram* w, PortCpu* c, HwTrace* t) {
+  PORT_COVER(mosaic_job);
+  // `AND #$1E : ASL : ASL : ASL : ORA #$01`, a byte wide: the size is the
+  // register's top nibble, and bit 0 puts it on BG1. The tail is the scroll
+  // shadow's again.
+  const uint16_t word = wram_r16(w, W_MOSAIC_SIZE);
+  const uint8_t mosaic = (uint8_t)(((word & 0x1eu) << 3) | 0x01u);
+  c->a = (uint16_t)((word & 0xff00u) | mosaic);
+  set_nz8(c, mosaic);
+  hw_run(t, MZ_HEAD);
+  hw_w8(t, 0x2106, mosaic);
+  hw_run(t, SS_TAIL);
+  set_c(c, false);
+}
+
 void mosaic_off_job(Wram* w, PortCpu* c, HwTrace* t) {
   (void)w;
   PORT_COVER(mosaic_off_job);

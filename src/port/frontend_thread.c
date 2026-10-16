@@ -91,6 +91,18 @@ void frontend_region_check(PortCpu* c) {
   c->pc = FRONTEND_REGION_RTL_PC;
 }
 
+// `SEP #$20 : LDA $213F`, of a console at sixty frames a second: bit 4
+// clear. What else the byte holds the `AND` drops, and the port says none.
+#define REGION_SIXTY_HERTZ_STAT78 0x00u
+
+void frontend_region_read(PortCpu* c) {
+  PORT_COVER(frontend_region_read);
+  c->p = (uint8_t)(c->p | PORT_P_M);
+  c->a = (uint16_t)((c->a & 0xff00u) | REGION_SIXTY_HERTZ_STAT78);
+  set_nz8(c, (uint8_t)c->a);
+  frontend_region_check(c);
+}
+
 // What `vbl_queue_a_add` is called with: the job in A and its bank in Y.
 static void job_ask(PortCpu* c, uint16_t job) {
   c->a = job;

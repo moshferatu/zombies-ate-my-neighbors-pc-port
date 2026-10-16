@@ -93,6 +93,39 @@ static void victims_yield(PortCpu* c, BodyWork* k) {
   c->pc = VICTIMS_YIELD_PC;
 }
 
+// --- $80:C97F  object_put_back ------------------------------------------------
+
+// The end is gone too, so the list's 35 and the end are where to look.
+static int first_gone(const Wram* w) {
+  for (int at = 0; at <= 2 * OBJECT_SLOT_COUNT; at += 2)
+    if (wram_r16(w, (uint16_t)(W_OBJECT_STATE + at)) & OBJECT_GONE) return at;
+  return -1;
+}
+
+bool object_put_back_supported(const Wram* w) { return first_gone(w) >= 0; }
+
+void object_put_back(Wram* w, PortCpu* c, ObjectPutBack* k) {
+  const uint16_t at = (uint16_t)first_gone(w);
+  k->looked = at / 2 + 1;
+  // `BIT`: overflow is bit 14, the end's.
+  const uint16_t state = wram_r16(w, (uint16_t)(W_OBJECT_STATE + at));
+  k->at_end = (state & OBJECT_LIST_END) == OBJECT_LIST_END;
+  set_v(c, k->at_end);
+  if (k->at_end) {
+    PORT_COVER(object_put_back_at_end);
+    wram_w16(w, (uint16_t)(W_OBJECT_STATE + at + 2), OBJECT_LIST_END);
+  } else {
+    PORT_COVER(object_put_back_in_gone);
+  }
+  wram_w16(w, (uint16_t)(W_OBJECT_STATE + at), 0);
+  wram_w16(w, (uint16_t)(W_OBJECT_TYPE + at), c->a);
+  wram_w16(w, (uint16_t)(W_OBJECT_X + at), c->x);
+  wram_w16(w, (uint16_t)(W_OBJECT_Y + at), c->y);
+  c->x = at;
+  c->a = c->y;
+  set_nz16(c, c->a);
+}
+
 void victims_start(Wram* w, PortCpu* c, BodyWork* k) {
   // LDA $00 : STA $0C
   lda(c, dp_r16(w, c, 0x00));

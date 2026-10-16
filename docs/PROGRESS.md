@@ -5,6 +5,120 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### Small places, two bounces, the water off a trampoline, four turned down and five starts (2026-10-16)
+
+Another batch of about three rounds', validated once at the end. It went
+down the survey's list of places by session, as far as the potions.
+
+* **An instruction or two each.** The main loop's `SEC` before its way out
+  with nobody playing, `$80:85B5`. The last frame stuck in slime, `STZ $70`,
+  `$80:DC73`. Which player's side of the panel to blank, `$80:C1CF`. Four
+  `WAI`s under the top scores' fade, `$82:BAE5` to `$BAE8`, as links. The
+  demonstration's clear goes on to its `WAI`: the store to `$70:0000` on the
+  way is to save memory this cartridge does not have, so it goes nowhere and
+  only costs. Two zombies' kills, `$81:8EE0` and `$81:8F60`, counted with
+  their last pictures' bank in Y, which the kills the port had did not load.
+* **The saucer's mosaic**, `$82:8425`, is a job of the vblank's: the mosaic
+  on the first layer, coarse by how hurt the saucer is.
+* **The level's ending**, `$80:8544`: with no neighbours left, the game is
+  lost if neither player saved one, and otherwise each player playing has
+  their way out begun as a thread. Then the second loop's first sleep.
+* **What was held put back**, `$80:C97F`: the first entry of the level's
+  list of objects that is gone takes it, and if that was the list's end the
+  end moves on. A killed giant ant and a player out of lives both call it.
+* **Two bounces in one frame.** The walk may put a player on a trampoline
+  on each axis, as it may leap twice: the second's fields are the ones left.
+  A leap and a bounce in one frame is the ROM's still.
+* **Down in the water off a trampoline.** The landing beside it goes on as
+  far as the sound, and the frame stops at its `JSL`, as the first leap's
+  does. A stretch takes it to the splash's pictures, and `player_soaked`, at
+  `$80:E30E`, is the rest: swimming, and the frame's tail.
+* **The footballer's handler.** The state its handler leaves takes the
+  handler away and plays its pictures, which sleeps: the frame stops at that
+  `JSL`. `footballer_off_shown`, where they come back to, sends it off, and
+  goes through the state's `RTS` to the pass's end.
+* **Four that were turned down, and need not have been.**
+  * A slime that has not thought yet has whatever its page held where it
+    keeps whom it found. Only facing reads that as a record, so only a pass
+    that faces asks for one.
+  * A clone's first pass after growing has a direction nothing set. Its
+    picture reads the direction only when the timer runs out, so only such
+    a pass asks for one.
+  * A martian's look that stands, leaves or lines up goes by the distance
+    and the gaps alone, and no longer asks that what `actor_nearest` gave it
+    be a record.
+  * One frame of the four: a second martian begun on the same page has a
+    direction left from before, and its pass steps by it. That is the ROM's
+    still.
+* **Five starts and two halves of a bubble**, as stretches: the threads of
+  records 36 and 48, to their handlers; a creature bubbled, `$81:8404`, which
+  keeps what it was on its stack and is nothing to hit, and let go,
+  `$81:8446`.
+* **`--level`'s stub** stores the bonus room and then jumps on to the routine
+  the main thread's call was for, where it called that first. It is one
+  stretch with a jump at its end, and `level_stub` takes it.
+* **The console's region.** The front end's read of `$213F` is
+  `frontend_region_read`: bit 4 clear, as the console the cartridge was made
+  for has it. The rest of the byte the `AND` drops, and the read's other
+  effect is on a latch the ROM never reads.
+* **The interrupt on**, `$80:8152`: `NMITIMEN` to `$81` at reset, as a row
+  that traces the hardware.
+* **Two mistakes, caught before the corpus.**
+  * The footballer's new fate was named `FOOTBALLER_PICTURES`, and
+    `football.c` already has a macro of that name, the count of its
+    pictures, 4. The frame said 4 and the shim took it for a fate it did not
+    know: 1,987 of 3,755 frames failed on `level21`. I blamed a row I had
+    put at the pass's end, `$81:C8A9`, which every state body returns to and
+    so is entered inside each frame being checked, and took it out before I
+    found the macro. The row had passed every check. What replaced it, a
+    row where the pictures come back that goes on to the pass's end, is the
+    narrower of the two, and I kept it.
+  * A coverage mark took a name `port/stuck.c` already had.
+* **Two places the survey found new**, where the harness now makes what the
+  core had run on into. The main loop's `RTL` is the harness's, so the main
+  thread's `BCS` after it, `$80:84D5`, is a stretch, with links at the two
+  calls it goes to and the game over's first sleep an argument. The `BRA`
+  after `object_put_back`'s return on `level1-2p-rescue` is a link. The
+  corpus, lockstep, the picture and the survey were run again after these.
+* **Checked.** 1,678 routines are registered.
+  * The corpus verifies clean: 128,130,218 calls over 56 movies, none
+    diverged, and all 1,227 cost rows are exact.
+  * Branch coverage is 1,848 of 2,249. No branch taken before is untaken
+    now; the four new ones untaken are this round's: the level's ending
+    with none saved, with the first player out and with the second playing,
+    which no movie reaches, and record 48's start, which only its session
+    does.
+  * Lockstep: 53 of 56 never part. level25, level25-2p and level25-heavy
+    part as before, at the same passes, and level25-item's one byte the
+    check cannot account for is as before.
+  * The picture: 78,360,128 lines at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+    The records 36, 41, 46, 48 and 50 verify clean too.
+  * `zamn_test_cheats` and `zamn_test_twinstick` pass. The build has no
+    warnings.
+* **What it bought**, over the same 110 sessions:
+
+  | How the core got there | Places | Times | Instructions |
+  |---|---|---|---|
+  | A port returned to it | 84 to 47 | 175 to 64 | 1,545 to 579 |
+  | Left standing on an instruction | 4 to 0 | 128 to 0 | 612 to 0 |
+  | A port turned the call down | 8 to 5 | 20 to 11 | 204 to 83 |
+  | A port or a link called it | 5 to 1 | 128 to 2 | 308 to 28 |
+  | All | 102 to 54 | 561 to 187 | 10,589 to 8,610 |
+
+  The reset's own code, 7,920 instructions, is in the last row and in no
+  other; without it the core executes 690 where it executed 2,669. No
+  place is new.
+* **What is left**, by session: `level5` has 25 places, nearly all the
+  monster potion: the item's use, the monster's start, which sleeps in its
+  pictures, the rest of the ordinary state from there, its punch, and the
+  potion wearing off. `level1-2p-rescue` has 14, the fourth reaction's tile
+  when it is there, which sleeps in the middle of the walk. The bystander's
+  words, 9 on each of the two `level49` movies, write `$2132` from a thread.
+  The second martian begun on a page with a direction left on it; the
+  chainsaw's cut at `$81:9878`; a walking pose that fires, `$80:D711`, on
+  `level25-boss`; and the reset.
+
 ### Using an item, the walk's doors, the seeker struck, a neighbour past the gate, the swipe's cut, and two starts (2026-10-15)
 
 Another round of about five times the usual, validated once at the end.

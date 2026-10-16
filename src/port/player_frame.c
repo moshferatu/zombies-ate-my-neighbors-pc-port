@@ -349,7 +349,8 @@ void player_frame(Wram* w, const Rom* rom, uint16_t page, PlayerFrameLog* log) {
     return;
   }
   if (!strike_pose(&f)) return;
-  if (log->pose_log.splashed || log->pose_log.sleep != POSE_AWAKE) {
+  if (log->pose_log.splashed || log->pose_log.soaked ||
+      log->pose_log.sleep != POSE_AWAKE) {
     log->unported = false;  // it stops at the sound, or at the sleep
     return;
   }
@@ -384,6 +385,8 @@ void player_walk_woken(Wram* w, const Rom* rom, uint16_t page, int axis,
   log->unported = false;
 }
 
+static void swim_on(Frame* f, PortCpu* c);
+
 void player_splashed(Wram* w, const Rom* rom, uint16_t page, uint16_t s,
                      PlayerFrameLog* log) {
   PlayerFrameLog scratch;
@@ -402,25 +405,45 @@ void player_splashed(Wram* w, const Rom* rom, uint16_t page, uint16_t s,
   PortCpu c = {.s = (uint16_t)(s - 2), .d = page, .db = PLAYER_FRAME_BANK};
   player_handled(w, &c);
   player_touchable(w, rom, &c);
+  swim_on(&f, &c);
+}
 
-  // `$80:DC76`: swimming.
-  set_field(&f, PLAYER_DP_POSE, POSE_HANDLER_SWIM);
-  set_field(&f, POSE_DP_PICTURES, SWIM_PICTURES);
-  set_field(&f, POSE_DP_FRAMES,
-            rom_word(rom, SWIM_FRAMES + field(&f, POSE_DP_PICTURES_ROW)));
-  set_field(&f, POSE_DP_CYCLE, 0);
-  set_field(&f, STEP_DP_SPEED_CLASS, SWIM_SPEED_CLASS);
-  set_field(&f, PLAYER_DP_STATE, PLAYER_STATE_TURNING_B);
-  set_field(&f, FLASHING_DP_ENDS_BY, (uint16_t)PLAYER_HANDS_BACK_PC);
-  c.a = SWIM_HELD_WEAPON;
-  c.y = SWIM_HELD_ITEM;
-  player_hands_swap(w, &c);
+void player_soaked(Wram* w, const Rom* rom, uint16_t page, uint16_t s,
+                   PlayerFrameLog* log) {
+  PlayerFrameLog scratch;
+  if (log == NULL) log = &scratch;
+  *log = (PlayerFrameLog){0};
+  Frame f = {w, rom, page, log};
 
-  if (!move(&f)) return;
-  publish_position(&f);
-  set_field(&f, PLAYER_DP_LAST_BUTTONS, field(&f, PLAYER_DP_BUTTONS));
-  if (!level_goes_on(&f) || !alive(&f)) return;
-  log->unported = false;
+  log->unported = true;
+  if (field(&f, PLAYER_DP_MOVEMENT) != 0) return;
+  PORT_COVER(player_soaked);
+  PortCpu c = {.s = (uint16_t)(s - 2), .d = page, .db = PLAYER_FRAME_BANK};
+  swim_on(&f, &c);
+}
+
+// `$80:DC76`, swimming begun, and the rest of the frame. `c` is where the
+// swap's `JSR` is made from.
+static void swim_on(Frame* f, PortCpu* c) {
+  Wram* w = f->w;
+  const Rom* rom = f->rom;
+  set_field(f, PLAYER_DP_POSE, POSE_HANDLER_SWIM);
+  set_field(f, POSE_DP_PICTURES, SWIM_PICTURES);
+  set_field(f, POSE_DP_FRAMES,
+            rom_word(rom, SWIM_FRAMES + field(f, POSE_DP_PICTURES_ROW)));
+  set_field(f, POSE_DP_CYCLE, 0);
+  set_field(f, STEP_DP_SPEED_CLASS, SWIM_SPEED_CLASS);
+  set_field(f, PLAYER_DP_STATE, PLAYER_STATE_TURNING_B);
+  set_field(f, FLASHING_DP_ENDS_BY, (uint16_t)PLAYER_HANDS_BACK_PC);
+  c->a = SWIM_HELD_WEAPON;
+  c->y = SWIM_HELD_ITEM;
+  player_hands_swap(w, c);
+
+  if (!move(f)) return;
+  publish_position(f);
+  set_field(f, PLAYER_DP_LAST_BUTTONS, field(f, PLAYER_DP_BUTTONS));
+  if (!level_goes_on(f) || !alive(f)) return;
+  f->log->unported = false;
 }
 
 bool player_monster_state(Wram* w, const Rom* rom, uint16_t page,

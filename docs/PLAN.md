@@ -273,6 +273,15 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**Small places, two bounces and the water off a trampoline, 2026-10-16.**
+The places of one or two instructions are gone; a walk may bounce twice and
+a trampoline's landing in the water is ported; four frames that were turned
+down are not; five threads' starts, a bubble, the level's ending, what was
+held put back, the saucer's mosaic and `--level`'s stub are ports. The front
+end's read of `$213F` is answered as the console the cartridge was made for.
+The places are 54 and the core executes 8,610 instructions over the survey,
+690 of them not the reset's.
+
 **Using an item, the walk's doors and the seeker struck, 2026-10-15.** The
 item use is a port for the items the corpus uses; a door with a key opens
 and the walk stops at its block and goes on from the door's `RTS`; the

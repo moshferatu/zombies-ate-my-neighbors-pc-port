@@ -17,6 +17,7 @@
 #include "port/cheat.h"
 #include "port/coverage.h"
 #include "port/decoy.h"
+#include "port/waits.h"
 #include "port/follower.h"
 #include "port/football.h"         // FOOTBALLER_STATE_SENT_OFF
 #include "port/frontend.h"            // the frame count
@@ -80,6 +81,8 @@ const ThreadArgument THREAD_ARGUMENTS[THREAD_ARGUMENT_COUNT] = {
     {0x82f760u, 0xf77a},  // the exit door's last pictures
     {0x82f918u, 0xf934},  // ...and its first
     {0x81cd05u, 0xcd1f},  // a slime killed: its last pictures
+    {0x80857eu, 0x0002},  // the level's ending: the second loop's first sleep
+    {0x808a00u, 0x001e},  // the game over's first sleep, half a second
 };
 
 const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS] = {0x9533, 0x9538, 0x953d,
@@ -330,6 +333,12 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
     case TS_NEEDS_SEEKER_SOUNDED:
       return wram_r16(w, (uint16_t)(c->s + 1)) == SEEKER_MADE_RETURN &&
              page(w, c, SEEKER_DP_RECORD) < 0x1f00;
+    case TS_NEEDS_BREAKABLE_MADE:
+      return c->a < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == BREAKABLE_MADE_RETURN;
+    case TS_NEEDS_WATCHER_BEGUN:
+      return page(w, c, IDLE_WAIT_DP_RECORD) < 0x1f00 &&
+             wram_r16(w, (uint16_t)(c->s + 1)) == WATCHER_BEGUN_RETURN;
     case TS_NEEDS_DECOY_MADE:
       return c->a < 0x1f00 && c->y == c->a &&
              wram_r16(w, (uint16_t)(c->s + 1)) == DECOY_MADE_RETURN;
@@ -1065,6 +1074,104 @@ void victim_gone(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   lda(c, page(w, c, VICTIM_DP_GONE));
   ran(k, TS_LDA_DP);
   c->pc = VICTIM_GONE_CALL_PC;
+}
+
+// `LDA $00D2 : STA $04 : LDA #player : STA $06 : LDA #$F70B : LDY #$0082`,
+// or `$00D4` for the second player, to the `JSL thread_spawn`.
+static void way_out_begun(Wram* w, PortCpu* c, ThreadStretchWork* k,
+                          uint16_t player) {
+  lda(c, wram_r16(w, (uint16_t)(W_PLAYER_RECORDS + player)));
+  set_page(w, c, LEVEL_ENDING_DP_RECORD, c->a);
+  set_page(w, c, LEVEL_ENDING_DP_PLAYER, player);
+  c->a = LEVEL_ENDING_THREAD;
+  ldy(c, LEVEL_ENDING_THREAD_BANK);
+  ran(k, TS_LEVEL_ENDING_SPAWN);
+}
+
+void level_ending(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  lda(c, (uint16_t)(wram_r16(w, W_PLAYERS_RESCUED) |
+                    wram_r16(w, W_PLAYERS_RESCUED + 2)));
+  ran(k, TS_MAIN_PLAYERS);  // `LDA : ORA : BEQ` too
+  if (c->a == 0) {
+    PORT_COVER(level_ending_none_rescued);
+    ran(k, TS_TAKEN);
+    c->pc = GAME_LOST_PC;
+    return;
+  }
+  lda(c, wram_r16(w, W_HUD_PANEL_ON));
+  ran(k, TS_MAIN_NEIGHBOURS);  // `LDA abs` and a branch
+  if (c->a == 0) {
+    PORT_COVER(level_ending_first_out);
+    ran(k, TS_TAKEN);
+    level_ending_second(w, rom, c, k);
+    return;
+  }
+  PORT_COVER(level_ending_first_leaves);
+  way_out_begun(w, c, k, 0);
+  c->pc = LEVEL_ENDING_FIRST_CALL_PC;
+}
+
+void level_ending_second(Wram* w, const Rom* rom, PortCpu* c,
+                         ThreadStretchWork* k) {
+  lda(c, wram_r16(w, W_HUD_PANEL_ON + 2));
+  ran(k, TS_MAIN_NEIGHBOURS);
+  if (c->a == 0) {
+    PORT_COVER(level_ending_second_out);
+    ran(k, TS_TAKEN);
+    c->pc = LEVEL_ENDING_SLEEP_PC;
+    thread_argument(w, rom, c, k);
+    return;
+  }
+  PORT_COVER(level_ending_second_leaves);
+  way_out_begun(w, c, k, 2);
+  c->pc = LEVEL_ENDING_SECOND_CALL_PC;
+}
+
+void main_back(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  ran(k, TS_BRANCH);
+  if (flag(c, PORT_P_C)) {
+    PORT_COVER(main_back_over);
+    ran(k, TS_TAKEN);
+    c->pc = MAIN_BACK_OVER_PC;
+    return;
+  }
+  PORT_COVER(main_back_next);
+  c->pc = MAIN_BACK_NEXT_PC;
+}
+
+void game_lost(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  PORT_COVER(game_lost);
+  set_c(c, true);
+  ran(k, TS_SEC);
+  c->pc = GAME_LOST_RTL_PC;
+}
+
+void stuck_freed(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(stuck_state_ended);
+  set_page(w, c, PLAYER_DP_STATE, PLAYER_STATE_NORMAL);
+  ran(k, TS_STZ_DP);
+  c->pc = STUCK_FREED_RTS_PC;
+}
+
+// The `BNE` reads the zero the caller's `LDX` left: the first player is X
+// zero.
+void panel_side(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  ran(k, TS_BRANCH);
+  if (flag(c, PORT_P_Z)) {
+    PORT_COVER(panel_side_first);
+    c->pc = PANEL_SIDE_1_CALL_PC;
+    return;
+  }
+  PORT_COVER(panel_side_second);
+  ran(k, TS_TAKEN);
+  c->pc = PANEL_SIDE_2_CALL_PC;
 }
 
 // --- a player's flashing ended -----------------------------------------------
@@ -3279,6 +3386,16 @@ void leap_splash(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   c->pc = LEAP_SPLASH_CALL_PC;
 }
 
+void soak_splash(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(soak_splash);
+  c->y = page(w, c, LEAP_DP_RECORD);
+  wram_w16(w, (uint16_t)(c->y + LEAP_RECORD_PICTURE_BANK), LEAP_PICTURE_BANK);
+  lda(c, SOAK_SPLASH_PICTURES);
+  ran(k, TS_SOAK_SPLASH);
+  c->pc = SOAK_SPLASH_CALL_PC;
+}
+
 // The spin's picture for the way it is at, and its sleep.
 static void stagger_picture(Wram* w, const Rom* rom, PortCpu* c,
                             ThreadStretchWork* k) {
@@ -3805,6 +3922,150 @@ void seeker_sounded(Wram* w, const Rom* rom, PortCpu* c,
   (void)rom;
   ran(k, TS_SEEKER_START);
   seeker_started(w, c, k);
+}
+
+// --- a creature bubbled ------------------------------------------------------
+
+void bubbled(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(bubbled);
+  const uint16_t record = page(w, c, WEED_DP_RECORD);
+  c->y = record;
+  c->x = wram_r16(w, W_SCHED_CUR_TASK);
+  // `SEP #$20 : PHA : REP #$20`: the bank a byte.
+  lda(c, wram_r16(w, (uint16_t)(W_THREAD_HANDLER_BANK + c->x)));
+  push8(w, c, (uint8_t)c->a);
+  lda(c, wram_r16(w, (uint16_t)(W_THREAD_HANDLER + c->x)));
+  push16(w, c, c->a);
+  push16(w, c, wram_r16(w, (uint16_t)(record + ACTOR_META)));
+  push16(w, c, wram_r16(w, (uint16_t)(record + ACTOR_META_BANK)));
+  push16(w, c, wram_r16(w, (uint16_t)(record + ACTOR_COLLIDE_ID)));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), BUBBLED_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), BUBBLED_PICTURE_BANK);
+  c->a = BUBBLED_HANDLER;
+  c->y = BUBBLED_BANK;
+  set_nz16(c, c->y);
+  ran(k, TS_BUBBLED);
+  c->pc = BUBBLED_HANDLER_CALL_PC;
+}
+
+// The handler's bank comes back a byte, into an 8-bit Y.
+void bubble_over(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(bubble_over);
+  const uint16_t record = page(w, c, WEED_DP_RECORD);
+  c->y = record;
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), pull16(w, c));
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), pull16(w, c));
+  wram_w16(w, (uint16_t)(record + ACTOR_META), pull16(w, c));
+  c->a = pull16(w, c);
+  c->y = pull8(w, c);
+  set_nz8(c, (uint8_t)c->y);
+  ran(k, TS_BUBBLE_OVER);
+  c->pc = BUBBLE_OVER_JML_PC;
+}
+
+// --- the starts of records 36's and 48's things -------------------------------
+
+// `$82:F25D`: its weight, and `JSR $F2EC` to its record.
+void breakable_enter(Wram* w, const Rom* rom, PortCpu* c,
+                     ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(breakable_entered);
+  load_up(w, c, BREAKABLE_LOAD);
+  push16(w, c, BREAKABLE_MADE_RETURN);
+  ran(k, TS_BREAKABLE_ENTER);
+  c->pc = BREAKABLE_ALLOC_PC;
+}
+
+// `$82:F2F0`: its record, where it was begun, drawn and touchable, its first
+// picture for two ticks; back from the `JSR`, five hits to take, and to its
+// handler. The record keeps the word at `$0008`, whatever that is to it.
+void breakable_made(Wram* w, const Rom* rom, PortCpu* c,
+                    ThreadStretchWork* k) {
+  (void)rom;
+  const uint16_t record = c->a;
+  set_page(w, c, HITS_WAIT_DP_RECORD, record);
+  c->x = record;
+  const uint16_t x = page(w, c, 0x00);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), x);
+  set_page(w, c, BREAKABLE_DP_X, x);
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  const uint16_t y = page(w, c, 0x02);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
+  set_page(w, c, BREAKABLE_DP_Y, y);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), BREAKABLE_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), BREAKABLE_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_THREAD), wram_r16(w, W_SCHED_CUR_TASK));
+  wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), BREAKABLE_COLLIDE_ID);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      ACTOR_DRAW));
+  set_page(w, c, HITS_WAIT_DP_PICTURE, 0);
+  set_page(w, c, HITS_WAIT_DP_HIT_BY, 0);
+  set_page(w, c, HITS_WAIT_DP_LEFT, BREAKABLE_TICKS);
+  ran(k, TS_BREAKABLE_MADE);
+  pull16(w, c);
+  set_page(w, c, HITS_WAIT_DP_HITS, BREAKABLE_HITS);
+  c->a = BREAKABLE_HANDLER;
+  c->y = BREAKABLE_BANK;
+  set_nz16(c, c->y);
+  ran(k, TS_BREAKABLE_HANDLER);
+  c->pc = BREAKABLE_HANDLER_CALL_PC;
+}
+
+// `$81:A455`: its weight and its count, and `JSR $A410` to `record_begin`.
+void watcher_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  PORT_COVER(watcher_entered);
+  load_up(w, c, WATCHER_LOAD);
+  lda(c, WATCHER_COUNT);
+  set_page(w, c, IDLE_WAIT_DP_LEFT, c->a);
+  push16(w, c, WATCHER_BEGUN_RETURN);
+  ran(k, TS_WATCHER_ENTER);
+  c->pc = WATCHER_BEGIN_CALL_PC;
+}
+
+// `$81:A414`: its record's picture, drawn over everything and touchable, its
+// place kept, and the rest of its page cleared, `$81:A191` too; back from the
+// `JSR`, and to its handler.
+void watcher_begun(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  set_page(w, c, IDLE_WAIT_DP_PICTURE, 0);
+  const uint16_t record = page(w, c, IDLE_WAIT_DP_RECORD);
+  const uint16_t x = page(w, c, 0x00);
+  set_page(w, c, IDLE_WAIT_DP_X, x);
+  wram_w16(w, (uint16_t)(record + ACTOR_X), x);
+  wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
+  const uint16_t y = page(w, c, 0x02);
+  set_page(w, c, IDLE_WAIT_DP_Y, y);
+  wram_w16(w, (uint16_t)(record + ACTOR_Y), y);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), WATCHER_PICTURE);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), WATCHER_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_FLAGS),
+           (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) |
+                      WATCHER_FLAGS));
+  wram_w16(w, (uint16_t)(record + ACTOR_ATTR), WATCHER_ATTR);
+  set_page(w, c, IDLE_WAIT_DP_LEFT, 0);
+  set_page(w, c, IDLE_WAIT_DP_PICTURE, 0);
+  set_page(w, c, 0x12, 0);
+  set_page(w, c, 0x7e, 0);
+  set_page(w, c, IDLE_WAIT_DP_GONE, 0);
+  ran(k, TS_WATCHER_BEGUN);
+  // `$81:A191`.
+  set_page(w, c, 0x2e, 0xffff);
+  set_page(w, c, 0x36, 0xffff);
+  set_page(w, c, 0x3e, 0xffff);
+  set_page(w, c, 0x46, 0xffff);
+  set_page(w, c, 0x2c, 0);
+  ran(k, TS_WATCHER_CLEARS);
+  ran(k, TS_RTS);
+  pull16(w, c);
+  c->a = WATCHER_HANDLER;
+  c->y = WATCHER_BANK;
+  set_nz16(c, c->y);
+  ran(k, TS_WATCHER_HANDLER);
+  c->pc = WATCHER_HANDLER_CALL_PC;
 }
 
 // --- the decoy's start ---------------------------------------------------------

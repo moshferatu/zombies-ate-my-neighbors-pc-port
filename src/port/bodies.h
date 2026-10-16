@@ -103,6 +103,29 @@ void victims_resume(Wram* w, const Rom* rom, PortCpu* c, BodyWork* k);
 void victims_started(Wram* w, PortCpu* c, BodyWork* k);
 void victims_stopped(Wram* w, PortCpu* c, BodyWork* k);
 
+// --- $80:C97F  object_put_back ------------------------------------------------
+//
+// What a killed thing or a player out of lives was holding, put back in the
+// level's list of objects (`port/wram.h`): in the first entry that is gone,
+// `$8000`. That may be the one past the end, `$C000`, and then the end moves
+// on one. A is what it is, X and Y where. The entry has no record yet, and
+// the spawner gives it one when the camera comes near. It returns with the
+// entry in X and Y in A.
+#define OBJECT_PUT_BACK_PC 0x80c97fu
+#define OBJECT_PUT_BACK_RTL_PC 0x80c9a4u
+#define OBJECT_GONE 0x8000u
+#define OBJECT_LIST_END 0xc000u
+
+typedef struct {
+  int looked;   // entries looked at, the one it took too
+  bool at_end;  // ...which was the list's end
+} ObjectPutBack;
+
+// False if no entry of the list's is gone, when the ROM would look on past
+// it. It only looks.
+bool object_put_back_supported(const Wram* w);
+void object_put_back(Wram* w, PortCpu* c, ObjectPutBack* k);
+
 // --- $80:C8F6  object_spawner_body --------------------------------------------
 //
 // The level's objects, started when the camera comes near. The list is in

@@ -17,8 +17,10 @@
 //   $80:9B4D  demo_song      the level's song asked for, from its record
 //   $80:9B5E  demo_lives     no lives, and a frame waited
 //   $80:9B62  demo_clear     the frame count and the random state from
-//                            nothing, to the `STA $70:0000`, which is the
-//                            ROM's: the port has no save memory
+//                            nothing, to the `WAI`. On the way it stores
+//                            to `$70:0000`, where a cartridge with save
+//                            memory would have it. This one has none, so
+//                            the store goes nowhere and only costs.
 //   $80:9B7D  demo_job_ask   the job that plays the recording, asked for on
 //                            the queue after the picture
 //   $80:9B8B  demo_played    the level's loop come back: with carry set it
@@ -81,7 +83,7 @@
 #define DEMO_LIVES_PC 0x809b5eu
 #define DEMO_LIVES_WAI_PC 0x809b61u
 #define DEMO_CLEAR_PC 0x809b62u
-#define DEMO_CLEAR_SAVE_PC 0x809b78u  // `STA $70:0000`
+#define DEMO_CLEAR_WAI_PC 0x809b7cu
 #define DEMO_JOB_ASK_PC 0x809b7du
 #define DEMO_JOB_ASK_CALL_PC 0x809b83u
 #define DEMO_PLAYED_PC 0x809b8bu
@@ -111,7 +113,7 @@ enum {
   DM_LDA_DP,     // LDA dp
   DM_SONG,       // $9B4D-$9B59
   DM_LIVES,      // STZ $1D4C
-  DM_CLEAR,      // $9B62-$9B77
+  DM_CLEAR,      // $9B62-$9B7B
   DM_JOB_ASK,    // LDA # : LDY #
   DM_PLAYED,     // BCC
   DM_ENDED,      // LDA $1EB6 : CMP #1 : PHP : BCS

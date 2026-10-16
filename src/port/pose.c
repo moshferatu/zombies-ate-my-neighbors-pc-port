@@ -1086,14 +1086,11 @@ static void bounce_landed(Pose* p) {
     p->log->waiting = true;
     return;
   }
-  // The collide id is a table's, by the player; and the water is the ROM's.
-  if (field(p, PLAYER_SMALL_DP_NUMBER) >= 4 ||
-      (field(p, POSE_DP_OFF_TILE) & POSE_TILE_WATER)) {
+  // The collide id is a table's, by the player.
+  if (field(p, PLAYER_SMALL_DP_NUMBER) >= 4) {
     leave_to_rom(p);
     return;
   }
-  PORT_COVER(pose_bounce_got_up);
-  p->log->got_up = true;
   PortCpu c = {.d = p->page, .db = POSE_BANK};
   player_touchable(p->w, p->rom, &c);
   player_handled(p->w, &c);
@@ -1103,6 +1100,15 @@ static void bounce_landed(Pose* p) {
            (uint16_t)(wram_r16(p->w, (uint16_t)(record + ACTOR_FLAGS)) &
                       ~ACTOR_PRIORITY_TOP));
   set_field(p, POSE_DP_STATE, 0);
+  // `$80:E2F8`, in the water: the frame stops at the sound's `JSL`. Nothing
+  // here writes carry or overflow.
+  if (field(p, POSE_DP_OFF_TILE) & POSE_TILE_WATER) {
+    PORT_COVER(pose_bounce_soaked);
+    p->log->soaked = true;
+    return;
+  }
+  PORT_COVER(pose_bounce_got_up);
+  p->log->got_up = true;
   start_again(p);
 }
 

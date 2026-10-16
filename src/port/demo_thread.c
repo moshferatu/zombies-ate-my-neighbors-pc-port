@@ -150,7 +150,7 @@ void demo_clear(Wram* w, PortCpu* c, DemoThreadWork* k) {
   wram_w16(w, W_DEMO_AT, 0);
   lda(c, 0);
   k->blocks[DM_CLEAR]++;
-  c->pc = DEMO_CLEAR_SAVE_PC;
+  c->pc = DEMO_CLEAR_WAI_PC;
 }
 
 void demo_job_ask(PortCpu* c, DemoThreadWork* k) {

@@ -96,6 +96,9 @@ enum {
   // $82:882C mosaic_off_job
   MO_HEAD,      // SEP #$20 : STZ $2106
 
+  // $82:8425 mosaic_job
+  MZ_HEAD,      // LDA $7E:6DB2 to the `STA $2106`, less the store
+
   // $82:8C49 boss_shake_job
   SK_FIRST,     // LDA $0020 : AND #$0003 : ADC $1B68 : SEP #$20 : STA $2110
   SK_SECOND,    // XBA : STA $2110
@@ -171,6 +174,16 @@ void bg1_vscroll_job(Wram* w, PortCpu* c, HwTrace* t);
 #define W_VRAM_SEND_AT 0x00c8u
 #define VRAM_SEND_BYTES 0x0400u
 void vram_send_job(Wram* w, PortCpu* c, HwTrace* t);
+
+// --- $82:8425 mosaic_job -------------------------------------------------------
+//
+// The saucer's flash, coarse by how hurt it is: the mosaic on the first layer
+// only, its size from bits 1-4 of `$7E:6DB2`, which the saucer sets as it is
+// hit (`port/saucer.h`). It runs once: carry clear.
+#define MOSAIC_JOB_PC 0x828425u
+#define MOSAIC_JOB_RTL_PC 0x828438u
+#define W_MOSAIC_SIZE 0x6db2u
+void mosaic_job(Wram* w, PortCpu* c, HwTrace* t);
 
 // --- $82:882C mosaic_off_job ---------------------------------------------------
 //

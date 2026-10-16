@@ -26,7 +26,7 @@ typedef struct {
   WalkLog* log;        // may be NULL
   WalkKind kind;
   int leaps;           // leaps into the water this frame
-  bool bounced;        // onto a trampoline this frame
+  int bounces;         // onto a trampoline this frame
   bool stopped;        // at a door's block
   int stop_axis;
   PortCpu stop;
@@ -143,7 +143,7 @@ static bool edge_keeps_player_out(Walk* k) {
 // `JMP $DD0D`: the player leaps in, and the walk goes on as though the
 // ground were clear. A leap after a bounce is not ours: false.
 static bool leap_in(Walk* k) {
-  if (k->bounced || k->leaps == WALK_AXES) return false;
+  if (k->bounces != 0 || k->leaps == WALK_AXES) return false;
   PORT_COVER_IF(k->leaps == 0, walk_edge_jumped, walk_edge_jumped_again);
   PoseLog pose_scratch;
   PlayerSpan span_scratch;
@@ -183,15 +183,16 @@ static Trampoline trampoline(Walk* k) {
     overflow_left(k, (c.p & PORT_P_V) != 0);
     return TRAMPOLINE_SOLID;
   }
-  if (k->leaps != 0 || k->bounced) return TRAMPOLINE_NOT_OURS;
-  PORT_COVER(walk_trampoline_bounced);
-  k->bounced = true;
+  if (k->leaps != 0 || k->bounces == WALK_AXES) return TRAMPOLINE_NOT_OURS;
+  PORT_COVER_IF(k->bounces == 0, walk_trampoline_bounced,
+                walk_trampoline_bounced_again);
   PoseLog scratch;
-  PoseLog* pose = k->log ? &k->log->bounce : &scratch;
+  PoseLog* pose = k->log ? &k->log->bounce[k->bounces] : &scratch;
+  k->bounces++;
   *pose = (PoseLog){0};
   pose_bounce_begin(k->w, k->rom, k->page, pose);
   if (k->log) {
-    k->log->bounced = true;
+    k->log->bounces = k->bounces;
     k->log->last_yes = pose->c;
   }
   overflow_left(k, pose->v);

@@ -71,9 +71,11 @@
 // **The trampoline**, the second: `$80:E74F`. A player in the ordinary state
 // looks round for a tile with bit 3 (`tile_search`, `port/player_small.h`).
 // Found, they are on it (`pose_bounce_begin`, `port/pose.h`), and the walk
-// goes on as it does after a leap, and a second in the same frame, or a
-// leap and a bounce, is the ROM's. Neither has been seen. In another state,
-// or with no such tile round them, the tile is only solid.
+// goes on as it does after a leap. The other axis may meet a trampoline too,
+// and then they are put on it again in the same frame: the second bounce's
+// fields are the ones left. A leap and a bounce in one frame is the ROM's,
+// and has not been seen. In another state, or with no such tile round them,
+// the tile is only solid.
 //
 // **A door**, the third. The walk looks at the tile a little way off the
 // way the player faces, up or down: `$80:E8D3`. If that is a door it wants
@@ -361,9 +363,9 @@ typedef struct {
   bool climbed;
   PoseLog climb;
   PlayerSpan climb_span;
-  // ...or onto the trampoline.
-  bool bounced;
-  PoseLog bounce;
+  // ...or onto the trampoline, one an axis at most.
+  int bounces;
+  PoseLog bounce[WALK_AXES];
   // A door opened: the walk stopped at its block's `JSL`, on this axis, with
   // these registers for the call and this return under it.
   bool stopped;
