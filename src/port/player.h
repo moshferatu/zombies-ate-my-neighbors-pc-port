@@ -337,6 +337,15 @@ void player_cycle_age(void);
 // What is waiting, signed; for a test.
 int player_cycle_pending(uint16_t player, int which);
 
+// Everything waiting, to be put back. The steps live here and not in WRAM, so
+// a guard that tries `player_state_normal` on scratch WRAM takes them as the
+// real call would, and the real call would then find none.
+typedef struct {
+  int8_t steps[2][2];
+} PlayerCycleSteps;
+PlayerCycleSteps player_cycle_save(void);
+void player_cycle_restore(const PlayerCycleSteps* saved);
+
 void weapon_select_prev(Wram* w, const Rom* rom, uint16_t dp,
                         WeaponSelectRegs* out);
 void item_select_prev(Wram* w, const Rom* rom, uint16_t dp,

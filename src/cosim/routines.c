@@ -4808,11 +4808,21 @@ static void shim_player_state_normal(Wram* w, const Rom* rom,
   out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
 }
 
+// The routine tried on scratch, for the two guards. A frontend's next weapon
+// or item is not in WRAM, so the trial would take it and leave the real call
+// nothing to do: it is put back.
+static void psn_try(Wram* scratch, const Rom* rom, uint16_t dp,
+                    PlayerStateRegs* r) {
+  const PlayerCycleSteps waiting = player_cycle_save();
+  player_state_normal(scratch, rom, dp, r);
+  player_cycle_restore(&waiting);
+}
+
 static bool guard_player_state_normal(Wram* scratch, const Rom* rom,
                                       const CosimRegs* in) {
   if (!player_state_normal_supported(scratch, rom, in->d)) return false;
   PlayerStateRegs r;
-  player_state_normal(scratch, rom, in->d, &r);
+  psn_try(scratch, rom, in->d, &r);
   return !r.unported && !r.stopped;
 }
 
@@ -4822,7 +4832,7 @@ static bool guard_player_potion(Wram* scratch, const Rom* rom,
                                 const CosimRegs* in) {
   if (!player_state_normal_supported(scratch, rom, in->d)) return false;
   PlayerStateRegs r;
-  player_state_normal(scratch, rom, in->d, &r);
+  psn_try(scratch, rom, in->d, &r);
   return !r.unported && r.stopped;
 }
 

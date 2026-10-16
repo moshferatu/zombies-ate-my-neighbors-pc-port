@@ -1,5 +1,7 @@
 #include "port/player.h"
 
+#include <string.h>
+
 #include "port/apu.h"
 #include "port/bcd.h"
 #include "port/collide.h"  // ACTOR_DP_PLAYER, ACTOR_DP_RECORD
@@ -321,6 +323,16 @@ void player_cycle_age(void) {
 
 int player_cycle_pending(uint16_t player, int which) {
   return psn_cycle[(player >> 1) & 1u][which & 1];
+}
+
+PlayerCycleSteps player_cycle_save(void) {
+  PlayerCycleSteps saved;
+  memcpy(saved.steps, psn_cycle, sizeof saved.steps);
+  return saved;
+}
+
+void player_cycle_restore(const PlayerCycleSteps* saved) {
+  memcpy(psn_cycle, saved->steps, sizeof psn_cycle);
 }
 
 // --- $80:D1FF  player_state_normal ------------------------------------------

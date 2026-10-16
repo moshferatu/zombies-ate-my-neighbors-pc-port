@@ -34,6 +34,7 @@
 #include "port/oam.h"      // ACTOR_META_BANK
 #include "port/player.h"
 #include "port/wram.h"
+#include "cosim/cosim.h"   // cosim_find, for the rows at $80:D1FF
 #include "twinstick.h"
 
 static int failures;
@@ -578,6 +579,32 @@ static void test_cycle(const uint8_t* rom_bytes, uint32_t rom_size) {
   if (player_cycle_pending(0, PSN_CYCLE_ITEM) != 0) fail("cycle: a request outlived its welcome");
   player_state_normal(w, &rom, dp, &r);
   if (ITEM() != 11) fail("cycle: an expired request was answered (%u)", ITEM());
+
+  // And the way the game reaches it: the harness asks each row at `$80:D1FF`
+  // on scratch WRAM before one runs. Asking must not take the request.
+  wram_w16(w, W_PLAYER_INVENTORY + 3 * 2, 0x0005);
+  wram_w16(w, W_PLAYER_INVENTORY + 7 * 2, 0x0001);
+  wram_w16(w, W_PLAYER_WEAPON, 3);
+  const CosimRoutine* normal = cosim_find("player_state_normal");
+  const CosimRoutine* potion = cosim_find("player_potion");
+  if (!normal || !potion) {
+    fail("cycle: the registry has no row for $80:D1FF");
+  } else {
+    Wram* scratch = (Wram*)malloc(sizeof *scratch);
+    CosimRegs in = {0}, out = {0};
+    in.d = dp;
+    player_cycle_request(0, PSN_CYCLE_WEAPON, +1);
+    memcpy(scratch, w, sizeof *w);
+    if (!normal->supported(scratch, &rom, &in)) fail("cycle: the ordinary row turned the frame down");
+    memcpy(scratch, w, sizeof *w);
+    if (potion->supported(scratch, &rom, &in)) fail("cycle: the potion's row took an ordinary frame");
+    if (player_cycle_pending(0, PSN_CYCLE_WEAPON) != 1)
+      fail("cycle: asking the rows took the request (%d left)",
+           player_cycle_pending(0, PSN_CYCLE_WEAPON));
+    normal->run(w, &rom, &in, &out);
+    if (WEAPON() != 7) fail("cycle: through the registry the weapon after 3 became %u", WEAPON());
+    free(scratch);
+  }
   #undef WEAPON
   #undef ITEM
   free(w);

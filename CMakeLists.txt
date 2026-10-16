@@ -203,7 +203,9 @@ target_include_directories(zamn_test_twinstick PRIVATE src)
 # It links the port because half of `--twin-stick` *is* the port: `$80:D1FF` is
 # substituted, so the ROM patch is the `--stock` path and `player_set_aim` is the
 # one the playable build takes. Only the section given a real cartridge runs it.
-target_link_libraries(zamn_test_twinstick PRIVATE zamn_port)
+# And the harness's registry, whose guards at `$80:D1FF` must leave a frontend's
+# next weapon or item for the call they let through.
+target_link_libraries(zamn_test_twinstick PRIVATE zamn_cosim_lib)
 if(MSVC)
   target_compile_definitions(zamn_test_twinstick PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
