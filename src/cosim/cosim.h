@@ -187,6 +187,12 @@ typedef struct {
   // the port does not follow; `regs` says which of A, X and Y it claims, as it
   // does for every other routine.
   uint8_t p_keep;
+  // The emulation bit, which `XCE` swaps with the carry. The CPU comes out of
+  // reset with it set and the game's first two instructions clear it, so the
+  // reset's own stretch is the one row that begins with it set; every other
+  // begins and ends with it clear. In and out as `p` is, and compared with the
+  // other registers at an exit.
+  bool e;
   // The auto-joypad latch, `$4218` and `$421A`. Inputs only, for the one
   // stretch of the NMI that reads them: a latch rather than a bus access, so
   // reading it here has no effect on the machine, and it holds still from the

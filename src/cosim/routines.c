@@ -6236,6 +6236,7 @@ static void cpu_from(const CosimRegs* in, PortCpu* c) {
   c->db = in->db;
   c->p = in->p;
   c->pc = in->pc;
+  c->e = in->e;
 }
 
 // Code fetched through bank `$00` is slow whatever `$420D` says, and the
@@ -6254,6 +6255,7 @@ static void cpu_to(const PortCpu* c, CosimRegs* out) {
   out->db = c->db;
   out->p = c->p;
   out->pc = c->pc;
+  out->e = c->e;
   out->n = (c->p & PORT_P_N) != 0;
   out->v = (c->p & PORT_P_V) != 0;
   out->z = (c->p & PORT_P_Z) != 0;
@@ -6811,6 +6813,41 @@ static void shim_threads_clear(Wram* w, const Rom* rom, const CosimRegs* in,
   out->regs = COSIM_REG_ALL;
 }
 
+// $00:80AE  the reset vector, through `init_ppu_regs`. Every fetch before the
+// last store is slow: the first eight bytes are in bank `$00`, and `$420D`
+// is clear until that store sets it.
+static const CosimRun RESET_ENTRY_COST[RESET_ENTRY_BLOCK_COUNT] = {
+    [RESET_ENTRY_HEAD] = {244, 28, 0},
+    // Each less the write it ends on, which `cosim_hw` adds.
+    [RESET_ENTRY_STORE] = {18, 3, 0},
+    [RESET_ENTRY_LOAD] = {30, 5, 0},
+    // ...and after it every fetch is fast, so this carries no bytes.
+    [RESET_ENTRY_TAIL] = {88, 0, 0},
+};
+
+// The CPU comes out of reset in emulation mode with FastROM off, and the
+// stretch is priced so.
+static bool accepts_reset_entry(const Wram* w, const CosimRegs* in) {
+  (void)w;
+  return in->e && !in->fastrom;
+}
+
+// About 130 steps: a run and a write or two for each of the 48 stores.
+static HwStep g_reset_steps[192];
+static HwTrace g_reset_trace = {0, 192, false, g_reset_steps};
+
+static void shim_reset_entry(Wram* w, const Rom* rom, const CosimRegs* in,
+                             CosimRegs* out) {
+  (void)rom;
+  PortCpu c;
+  cpu_from(in, &c);
+  g_reset_trace.n = 0;
+  g_reset_trace.full = false;
+  reset_entry(w, &c, &g_reset_trace);
+  cpu_to(&c, out);
+  cosim_hw(&g_reset_trace, RESET_ENTRY_COST, in->fastrom);
+}
+
 // `init_ppu_regs` leaves page zero and 16-bit registers, and the stack at
 // `$01FF` from the `TXS` before it.
 static bool accepts_reset_clear(const Wram* w, const CosimRegs* in) {
@@ -6834,6 +6871,7 @@ static void shim_reset_clear(Wram* w, const Rom* rom, const CosimRegs* in,
 }
 
 static const uint32_t RESET_EXITS[] = {RESET_NMI_ON_PC};
+static const uint32_t RESET_ENTRY_EXITS[] = {RESET_CLEAR_PC};
 
 static const uint32_t NMI_ENTER_EXITS[] = {NMI_BLANK_PC, NMI_RETURN_PC};
 static const uint32_t NMI_STACK_EXITS[] = {NMI_FLUSH_PC};
@@ -31160,6 +31198,20 @@ static const CosimRoutine ROUTINES[] = {
         .hw = true,
         .uncalled = true,
         .cycles = 180,
+    },
+    // The reset vector, in emulation mode, to where `init_ppu_regs` returns.
+    // The one row the CPU enters with the emulation bit set. See
+    // `port/sched.h`.
+    {
+        .name = "reset_entry",
+        .symbol = "$00:80AE",
+        .entry = RESET_ENTRY_PC,
+        .run = shim_reset_entry,
+        .accepts = accepts_reset_entry,
+        COSIM_EXITS(RESET_ENTRY_EXITS),
+        .hw = true,
+        .uncalled = true,
+        .cycles = 2128,
     },
     // Where `JSR init_ppu_regs` returns, to just before the NMI is turned on.
     // Nothing interrupts it, and `verify` checks it like any other call. The

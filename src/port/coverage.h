@@ -79,6 +79,7 @@
   X(text_map_cleared, "text_map_clear",    "the text layer's map blanked") \
   X(span_cleared,     "game_clear",        "a stretch of WRAM cleared") \
   X(threads_cleared,  "threads_clear",     "the threads' pages and stacks cleared") \
+  X(reset_entered,    "reset_entry",       "native mode, the stack and every register the game sets cleared") \
   X(reset_cold,       "reset_clear",       "no top-scores table in WRAM: every byte cleared") \
   X(reset_warm,       "reset_clear",       "the four magic words found, so $7E:2000-$2127 survive") \
   X(nmi_on,           "nmi_on",            "the interrupt and the pads' read on, at reset") \

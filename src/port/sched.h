@@ -276,6 +276,31 @@ void nmi_queue_a(Wram* w, PortCpu* c, VblRunWork* k);
 // `nmi_input` does not read.
 void nmi_unblank(const Wram* w, PortCpu* c, HwTrace* t);
 
+// --- The reset's first stretch -------------------------------------------------
+//
+// `$00:80AE`, the reset vector, to `$80:80C1`, where `JSR init_ppu_regs`
+// returns. The CPU comes out of reset in emulation mode with FastROM off, and
+// `CLC : XCE` puts it in native mode, `JML $80:80B6` leaves bank `$00`, and
+// the boot stack and direct page are set. `init_ppu_regs` then blanks the
+// screen and writes every PPU and CPU register the game uses, most of them to
+// zero, and its last two stores turn FastROM on. Nothing in WRAM is written
+// but the `JSR`'s return address.
+
+#define RESET_ENTRY_PC 0x0080aeu
+#define RESET_PPU_BACK 0x80c0u  // the `JSR`'s last byte, which it pushes
+
+enum {
+  RESET_ENTRY_HEAD,   // $00:80AE to init_ppu_regs's INY, before its first load
+  RESET_ENTRY_STORE,  // a store to a register, less its write
+  RESET_ENTRY_LOAD,   // LDA #imm8 and a store, less its write
+  RESET_ENTRY_TAIL,   // REP #$30 : LDA #0 : TCD : RTS
+  RESET_ENTRY_BLOCK_COUNT
+};
+
+// Leaves at `RESET_CLEAR_PC` in native mode, with the carry set by the
+// emulation bit the `XCE` took.
+void reset_entry(Wram* w, PortCpu* c, HwTrace* t);
+
 // --- The reset's WRAM clear -----------------------------------------------------
 //
 // `$80:80C1`, where `JSR init_ppu_regs` returns, to the `SEP #$20` before

@@ -392,6 +392,7 @@ static void regs_capture(Snes* snes, CosimRegs* r) {
   r->p = (uint8_t)(cpu->n << 7 | cpu->v << 6 | cpu->mf << 5 | cpu->xf << 4 |
                    cpu->d << 3 | cpu->i << 2 | cpu->z << 1 | cpu->c);
   r->pc = ((uint32_t)cpu->k << 16) | cpu->pc;
+  r->e = cpu->e;
   r->joy[0] = snes->portAutoRead[0];
   r->joy[1] = snes->portAutoRead[1];
   r->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C | COSIM_FLAG_V;
@@ -886,6 +887,8 @@ static void compare_jump(CosimStat* s, const CosimCall* call, const Wram* ours,
     note(s, "D: ROM $%04X, port $%04X", rom_regs->d, our_regs->d);
   else if (our_regs->db != rom_regs->db)
     note(s, "DB: ROM $%02X, port $%02X", rom_regs->db, our_regs->db);
+  else if (our_regs->e != rom_regs->e)
+    note(s, "E: ROM %d, port %d", rom_regs->e, our_regs->e);
 }
 
 // ---------------------------------------------------------------------------
@@ -1681,6 +1684,8 @@ static void jump_publish(Cosim* c, const CosimRegs* out) {
   cpu->i = p & 0x04;
   cpu->z = p & 0x02;
   cpu->c = p & 0x01;
+  // Only the reset's stretch changes it, leaving emulation mode for good.
+  cpu->e = out->e;
   if (cpu->xf) {
     cpu->x &= 0xff;
     cpu->y &= 0xff;

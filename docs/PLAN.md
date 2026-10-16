@@ -273,6 +273,12 @@ the first stand, and the turning and the flashing states have rows of
 their own for frames the whole frame turns down. The places are 743 and
 the core executes 361,406 instructions over the survey.
 
+**The reset, 2026-10-16.** The vector's stretch, in emulation mode, through
+`init_ppu_regs`, with the emulation bit carried by the harness. The survey
+has no places left: over its 110 sessions the core executes no instruction
+of the game. Step 1 is done by the survey's measure. Its map of the ROM's
+code, and the code no session reaches, are not.
+
 **The monster potion, the fourth tile and the bystander's words,
 2026-10-16.** The potion drunk, the change, the monster's punch standing and
 a player out by the exit; the fourth tile reaction; what a bystander shows,

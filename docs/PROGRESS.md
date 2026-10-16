@@ -5,6 +5,39 @@ milestone lands. See `PLAN.md` for the full multi-phase plan.
 
 ## Current status: **Phase 3 underway** 🔨 (2026-09-20)
 
+### The reset, and a survey with no instructions in it (2026-10-16)
+
+The last place the survey had: the reset vector, `$00:80AE`, to where
+`JSR init_ppu_regs` returns at `$80:80C1` and `reset_clear` begins.
+
+* **The emulation bit.** The CPU comes out of reset in emulation mode, and
+  no row had begun in it. `CosimRegs` and `PortCpu` carry `e` now. It is
+  captured with the other registers, installed when a jump row leaves, and
+  compared at an exit, so `verify` would see an `XCE` the port got wrong.
+* **The port**, `reset_entry` in `port/sched.c`. `CLC : XCE` takes the
+  emulation bit into the carry, then the jump into bank `$80`, the boot
+  stack and page zero, and `init_ppu_regs`: the screen blanked, then 48
+  stores to the PPU's and the CPU's registers, and FastROM on at the end.
+  The stores are handed over as a register trace, as the NMI's are, and
+  `verify` compares all 82 writes, their values and their cycles. The run
+  is priced slow up to the last store, because eight bytes are in bank `$00`
+  and `$420D` is clear until then, and fast after it.
+* **Checked.** 1,716 routines are registered.
+  * The corpus verifies clean. All 1,257 cost rows are exact, the new one
+    at +0.
+  * Branch coverage is 1,870 of 2,279, the new point taken.
+  * Lockstep: 53 of 56 never part, as before. level25, level25-2p and
+    level25-heavy part as they did, at the same passes.
+  * The picture: 78,360,128 lines at 16:9, none differ.
+  * `zamn.exe` ran the survey's 110 sessions and each ended with status 0.
+  * `zamn_test_cheats` and `zamn_test_twinstick` pass. The build has no
+    warnings.
+* **What it bought.** Over the same 110 sessions the places are 1 to 0,
+  and the instructions 7,920 to 0. **In none of the survey's sessions does
+  the 65816 execute an instruction of the game.** It is still the clock,
+  the bus and what carries control from one port to the next. That is
+  step 2 of the plan.
+
 ### The monster potion, the fourth tile, the bystander's words, a martian's stale direction and the chainsaw's stagger (2026-10-16)
 
 Another batch of about four rounds', validated once at the end. It took

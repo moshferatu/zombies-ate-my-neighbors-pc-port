@@ -38,11 +38,13 @@
 // The whole CPU, in and out. `pc` is the entry on the way in and, on the way
 // out, the 24-bit address of the instruction the stretch stopped on, which is
 // always one of the ROM's. It is in the entry's bank for every stretch but
-// the NMI's first and last, which cross between `$00` and `$80`.
+// the NMI's first and last and the reset's, which cross between `$00` and
+// `$80`. `e` is the emulation bit, set only on the way into the reset's.
 typedef struct {
   uint16_t a, x, y, s, d;
   uint8_t db, p;
   uint32_t pc;
+  bool e;
 } PortCpu;
 
 static inline void set_nz16(PortCpu* c, uint16_t v) {

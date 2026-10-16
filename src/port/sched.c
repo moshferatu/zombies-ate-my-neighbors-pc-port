@@ -545,6 +545,101 @@ static void ldy(PortCpu* c, uint16_t v) {
   set_nz16(c, v);
 }
 
+// A store's three fetches and its write: `STA` or `STZ` a byte wide, and a
+// 16-bit `STX` or `STY`, which writes the register and the one after it.
+static void store8(HwTrace* t, uint16_t reg, uint8_t v) {
+  hw_run(t, RESET_ENTRY_STORE);
+  hw_w8(t, reg, v);
+}
+
+static void store16(HwTrace* t, uint16_t reg, uint16_t v) {
+  hw_run(t, RESET_ENTRY_STORE);
+  hw_w16(t, reg, v);
+}
+
+// `LDA #imm` a byte wide, and an `STA` of it.
+static void load_store8(PortCpu* c, HwTrace* t, uint16_t reg, uint8_t v) {
+  c->a = (uint16_t)((c->a & 0xff00u) | v);
+  set_nz8(c, v);
+  hw_run(t, RESET_ENTRY_LOAD);
+  hw_w8(t, reg, v);
+}
+
+// `$80:8002 init_ppu_regs`, from its first load, with X at 0, Y at 1 and the
+// accumulator a byte wide. The registers that take two writes, the scrolls
+// and mode 7's, are stored to twice.
+static void init_ppu_regs(PortCpu* c, HwTrace* t) {
+  const uint16_t x = c->x, y = c->y;
+  load_store8(c, t, 0x2100, 0x8f);  // the screen blanked
+  // The sprites' size and OAM's address, the mode, and the layers' maps and
+  // tiles, `$2101-$210C`.
+  for (uint16_t reg = 0x2101; reg <= 0x210b; reg += 2) store16(t, reg, x);
+  // Four layers' scrolls.
+  for (uint16_t reg = 0x210d; reg <= 0x2113; reg += 2) {
+    store16(t, reg, x);
+    store16(t, reg, x);
+  }
+  load_store8(c, t, 0x2115, 0x80);  // VRAM's step, after the high byte
+  store16(t, 0x2116, x);
+  store16(t, 0x2118, x);
+  // Mode 7: its settings, its matrix and its centre.
+  store8(t, 0x211a, 0);
+  store16(t, 0x211b, x);
+  store16(t, 0x211b, y);
+  store8(t, 0x211d, 0);
+  store8(t, 0x211d, 0);
+  store16(t, 0x211e, x);
+  store16(t, 0x211e, y);
+  store16(t, 0x2120, x);
+  store16(t, 0x2120, x);
+  // Colour 0 at CGRAM's address 0, then the windows and the screens,
+  // `$2122-$212E`.
+  for (uint16_t reg = 0x2122; reg <= 0x212c; reg += 2) store16(t, reg, x);
+  store8(t, 0x212e, 0);
+  // Colour maths and the fixed colour.
+  load_store8(c, t, 0x2130, 0x30);
+  store8(t, 0x2131, 0);
+  load_store8(c, t, 0x2132, 0xe0);
+  store8(t, 0x2133, 0);
+  // The CPU's own: the interrupts off, the I/O port high, the multiplier and
+  // divider, the timers, and no DMA.
+  store8(t, 0x4200, 0);
+  load_store8(c, t, 0x4201, 0xff);
+  for (uint16_t reg = 0x4202; reg <= 0x4208; reg += 2) store16(t, reg, x);
+  store16(t, 0x4209, x);
+  store16(t, 0x420b, x);
+  // FastROM off and then on, which every fetch after is.
+  store8(t, 0x420d, 0);
+  load_store8(c, t, 0x420d, 0x01);
+}
+
+void reset_entry(Wram* w, PortCpu* c, HwTrace* t) {
+  PORT_COVER(reset_entered);
+  // `CLC : XCE`: native mode, and the carry the emulation bit it was.
+  set_c(c, c->e);
+  c->e = false;
+  // `REP #$30 : JML $80:80B6`, then `LDX #$01FF : TXS : LDA #$0000 : TCD`.
+  c->p &= (uint8_t)~(PORT_P_M | PORT_P_X);
+  ldx(c, 0x01ff);
+  c->s = c->x;
+  lda(c, 0x0000);
+  c->d = c->a;
+  // `JSR init_ppu_regs`, and its `REP #$10 : SEP #$20 : LDX #0 : TXY : INY`.
+  push16(w, c, RESET_PPU_BACK);
+  c->p |= PORT_P_M;
+  ldx(c, 0x0000);
+  ldy(c, (uint16_t)(c->x + 1));
+  hw_run(t, RESET_ENTRY_HEAD);
+  init_ppu_regs(c, t);
+  // `REP #$30 : LDA #$0000 : TCD : RTS`.
+  c->p &= (uint8_t)~(PORT_P_M | PORT_P_X);
+  lda(c, 0x0000);
+  c->d = c->a;
+  (void)pull16(w, c);
+  hw_run(t, RESET_ENTRY_TAIL);
+  c->pc = RESET_CLEAR_PC;
+}
+
 void reset_clear(Wram* w, PortCpu* c, ResetWork* k) {
   static const struct {
     uint16_t at, magic;
