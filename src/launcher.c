@@ -1792,10 +1792,10 @@ static void draw(void) {
   float hy = help_y + L(10);
   if (ui.on_buttons) {
     static const char* const button_help[UI_BUTTONS] = {
-      "Put this tab back to its defaults. Nothing is written until Save or Play.",
-      "Write these settings to the file. Ctrl+S.",
-      "Close the launcher. Escape.",
-      "Save, then start the game. Ctrl+Enter or F5, or Start on a controller.",
+      "Reset settings to their defaults.",
+      "Save settings.",
+      "Close the launcher.",
+      "Start the game.",
     };
     wrap(&ui.small, L(MARGIN), hy, help_w, button_help[ui.button], C_DIM, 2);
   } else if (row_at(ui.focus)) {
