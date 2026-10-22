@@ -439,12 +439,19 @@ target_link_libraries(zamn_cosim PRIVATE zamn_cosim_lib snescore)
 # by clearing the enable mask. See the header comment in src/main_sdl.c.
 #
 # Uses a system SDL2 if present, otherwise fetches & builds SDL2 from source.
+# On Linux it is always built from source unless -DZAMN_BUNDLE_SDL=OFF, so the
+# release carries its own and a player needs nothing installed.
 # Disable with -DZAMN_BUILD_SDL=OFF (headless target always builds).
 # ---------------------------------------------------------------------------
 option(ZAMN_BUILD_SDL "Build the interactive SDL frontend" ON)
+if(UNIX AND NOT APPLE)
+  option(ZAMN_BUNDLE_SDL "Build SDL2 from source and ship it beside the game" ON)
+endif()
 
 if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
-  find_package(SDL2 CONFIG QUIET)
+  if(NOT ZAMN_BUNDLE_SDL)
+    find_package(SDL2 CONFIG QUIET)
+  endif()
   if(NOT SDL2_FOUND)
     message(STATUS "SDL2 not found on system: fetching & building from source")
     include(FetchContent)
@@ -642,9 +649,11 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
   endif()
 
   # On Linux the same target makes a tarball of one folder, `zamn/`: the
-  # launcher, the game and LakeSnes's licence. A player extracts it and runs
-  # `./zamn_launcher`. SDL2 is their distribution's, unless this build made its
-  # own: then that and its licence go in the folder too.
+  # launcher, the game, SDL2 and the licences. A player extracts it and runs
+  # `./zamn_launcher`. SDL2 opens X11 or Wayland and PipeWire, PulseAudio or
+  # ALSA when it starts, so it runs wherever those are, but it is only built
+  # with the ones whose headers the build machine has (libsdl2-dev pulls them
+  # all in). With ZAMN_BUNDLE_SDL=OFF it is the player's distribution's.
   if(UNIX AND NOT APPLE)
     set(ZAMN_RELEASE_DIR "${CMAKE_CURRENT_BINARY_DIR}/release")
     set(ZAMN_RELEASE_FOLDER "${ZAMN_RELEASE_DIR}/zamn")

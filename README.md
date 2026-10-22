@@ -47,14 +47,7 @@ Choose your ROM file under game settings, change any other setting you like, the
 
 > **Note:** The Linux build is currently experimental.
 
-Ensure SDL2 is installed:
-
-| | |
-| --- | --- |
-| Arch | `sudo pacman -S sdl2` |
-| Debian / Ubuntu | `sudo apt install libsdl2-2.0-0` |
-
-Then extract and run the launcher:
+Extract and run the launcher. SDL2 is included, so nothing else needs to be installed:
 
 ```
 tar xzf zamn-linux-x86_64.tar.gz
