@@ -21,6 +21,7 @@
 #include "analysis/movie_apply.h"
 #include "sfx_overlay.h"
 #include "snes.h"
+#include "sound/console.h"
 
 #define SAMPLES 534
 
@@ -83,13 +84,17 @@ int main(int argc, char** argv) {
     printf("FAIL: the core will not load '%s'\n", rom_path);
     return 1;
   }
+  // Each with the port's sound in it, as the game has.
+  static Sound with_sound, without_sound;
+  sound_attach(with, &with_sound);
+  sound_attach(without, &without_sound);
   static SfxOverlay ov;
-  sfx_overlay_init(&ov, with, true);
+  sfx_overlay_init(&ov, &with_sound, true);
 
   int16_t* orig = (int16_t*)calloc((size_t)n * SAMPLES * 2, sizeof(int16_t));
   int16_t* mixed = (int16_t*)calloc((size_t)n * SAMPLES * 2, sizeof(int16_t));
   int16_t other[SAMPLES * 2];
-  long first_sound = -1, silent_after = 0, diverged = -1, unheard = -1;
+  long first_sound = -1, silent_after = 0, diverged = -1, unheard = -1, quiet_since = -1;
 
   for (long f = 0; f < n; f++) {
     movie_apply(&movie, with, (int)f);
@@ -97,7 +102,10 @@ int main(int argc, char** argv) {
     snes_runFrame(with);
     snes_runFrame(without);
     const long losses = ov.effects_dropped + ov.notes_dropped + ov.voices_stolen;
+    const long takes = ov.resyncs;
     sfx_overlay_tick(&ov);
+    if (ov.resyncs != takes && takes)
+      printf("tick %ld: the copy was taken again: %s\n", f, ov.lost ? ov.lost : "?");
 
     int16_t* o = orig + f * SAMPLES * 2;
     int16_t* m = mixed + f * SAMPLES * 2;
@@ -107,7 +115,7 @@ int main(int argc, char** argv) {
     sfx_overlay_mix(&ov, m, SAMPLES);
 
     if (diverged < 0 && (memcmp(with->ram, without->ram, 0x20000) ||
-                         memcmp(with->apu->ram, without->apu->ram, 0x10000) ||
+                         memcmp(with_sound.ram, without_sound.ram, 0x10000) ||
                          memcmp(o, other, sizeof other))) {
       diverged = f;
     }
@@ -115,19 +123,25 @@ int main(int argc, char** argv) {
     for (int i = 0; i < SAMPLES * 2; i++) sound |= m[i] != o[i];
     if (sound && first_sound < 0) first_sound = f;
     // Before any loss the copy must be silent: every one of its voices is one
-    // the real APU is playing. (`losses` is from before this tick's run, so a
+    // the real driver is playing. (`losses` is from before this tick's run, so a
     // loss inside the tick is allowed to be heard in it.)
     if (sound && losses == 0 && ov.effects_dropped + ov.notes_dropped + ov.voices_stolen == 0)
       silent_after = f + 1;
     // And a voice it has opened is heard while it sounds. (Not every opened
     // voice sounds: a held note can have decayed to nothing before the music
     // takes its voice, and then there is nothing to carry on.)
-    const Dsp* d = ov.copy->dsp;
-    for (int v = 0; v < 8 && !sound && unheard < 0 && ov.synced; v++) {
-      if (d->channelMute & (1 << v)) continue;
-      if (d->channel[v].gain > 0x40 && (d->channel[v].volumeL || d->channel[v].volumeR))
-        unheard = f;
-    }
+    // A voice is opened at the cycle the real driver lost it, but the copy's
+    // DSP may have made a few samples past that with it muted (see Limits in
+    // `src/sfx_overlay.h`), so one opened at the end of a tick is heard from
+    // the next.
+    const SoundDsp* d = &ov.copy->dsp;
+    bool sounding = false;
+    for (int v = 0; v < 8 && ov.synced; v++)
+      if (!(d->voice_mute & (1 << v)) && d->voice[v].level > 0x40 &&
+          (d->voice[v].vol_l || d->voice[v].vol_r))
+        sounding = true;
+    if (sounding && !sound && quiet_since >= 0 && unheard < 0) unheard = f;
+    quiet_since = sounding && !sound ? f : -1;
   }
 
   printf("%ld ticks of '%s'\n", n, movie_path);
@@ -144,7 +158,8 @@ int main(int argc, char** argv) {
     failures++;
   }
   if (unheard >= 0) {
-    printf("FAIL: an opened voice was sounding at tick %ld and nothing was added\n", unheard);
+    printf("FAIL: an opened voice was sounding at ticks %ld and %ld and nothing was added\n",
+           unheard - 1, unheard);
     failures++;
   }
 

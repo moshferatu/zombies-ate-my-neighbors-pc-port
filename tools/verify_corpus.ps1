@@ -18,6 +18,11 @@
 # compares all of WRAM once per scheduler pass -- a stronger claim over fewer
 # calls, and about forty seconds a movie against one.
 #
+# `-PortSound` gives the lockstep pass's port core the port's sound
+# (`src/sound`), as the game has it, while the stock core keeps the console's
+# APU. The game waits on the sound, so a driver answering on other cycles would
+# part them; with it right, the report is the same as without.
+#
 # `-Picture` is about the picture and not the game: it runs the game as it is
 # built with the emulated PPU in it, `build\zamn_with_ppu.exe`, with no window,
 # and has every scanline of every frame drawn twice, by `src/video` and by the
@@ -36,6 +41,8 @@ param(
     [switch]$Coverage,
     # Run the lockstep pass instead of the verify pass.
     [switch]$Lockstep,
+    # ...with the port's sound on the port's side.
+    [switch]$PortSound,
     # Run the picture pass instead, at each of these widths: off, 16:9, 16:10
     # or 21:9. `-Widescreen off,16:9,16:10,21:9` is all four; under -File a
     # list arrives as one string with the commas in it, and is split below.
@@ -351,11 +358,13 @@ if ($Lockstep) {
     $Without = @($Without | Where-Object { $_ -and $_ -ne "none" })
     $flags = @()
     foreach ($w in $Without) { $flags += @("-x", $w) }
+    if ($PortSound) { $flags += "--port-sound" }
     if ($Without.Count -gt 0) {
         "Lockstep over the corpus, leaving $($Without -join ' and ') to the ROM."
     } else {
         "Lockstep over the corpus, with every ported routine substituted."
     }
+    if ($PortSound) { "The port's side has the port's sound." }
     ""
     $row = "{0,-24} {1,6} {2,8} {3,7} {4,9} {5,8} {6,7}  {7}"
     $results = Invoke-Corpus "run" $flags

@@ -39,6 +39,7 @@ Snes* snes_initWithoutPpu(void) {
   snes->ppu = NULL;
   snes->freePpu = NULL;
   memset(&snes->video, 0, sizeof(snes->video));
+  memset(&snes->sound, 0, sizeof(snes->sound));
   snes->cart = cart_init(snes);
   snes->input1 = input_init(snes);
   snes->input2 = input_init(snes);
@@ -70,6 +71,7 @@ void snes_free(Snes* snes) {
 void snes_reset(Snes* snes, bool hard) {
   cpu_reset(snes->cpu, hard);
   apu_reset(snes->apu);
+  if(snes->sound.reset) snes->sound.reset(snes->sound.user);
   dma_reset(snes->dma);
   snes->video.reset(snes->video.user);
   input_reset(snes->input1);
@@ -123,7 +125,8 @@ void snes_handleState(Snes* snes, StateHandler* sh) {
   cpu_handleState(snes->cpu, sh);
   dma_handleState(snes->dma, sh);
   snes->video.handleState(snes->video.user, sh);
-  apu_handleState(snes->apu, sh);
+  if(snes->sound.handleState) snes->sound.handleState(snes->sound.user, sh);
+  else apu_handleState(snes->apu, sh);
   input_handleState(snes->input1, sh);
   input_handleState(snes->input2, sh);
   cart_handleState(snes->cart, sh);
@@ -291,7 +294,9 @@ static void snes_runCycle(Snes* snes) {
 
 static void snes_catchupApu(Snes* snes) {
   int catchupCycles = (int) snes->apuCatchupCycles;
-  int ranCycles = apu_runCycles(snes->apu, catchupCycles);
+  int ranCycles = snes->sound.run
+    ? (catchupCycles > 0 ? snes->sound.run(snes->sound.user, catchupCycles) : 0)
+    : apu_runCycles(snes->apu, catchupCycles);
   snes->apuCatchupCycles -= (double) ranCycles;
 }
 
@@ -318,6 +323,7 @@ uint8_t snes_readBBus(Snes* snes, uint8_t adr) {
   }
   if(adr < 0x80) {
     snes_catchupApu(snes); // catch up the apu before reading
+    if(snes->sound.read) return snes->sound.read(snes->sound.user, adr & 0x3);
     return snes->apu->outPorts[adr & 0x3];
   }
   if(adr == 0x80) {
@@ -335,7 +341,8 @@ void snes_writeBBus(Snes* snes, uint8_t adr, uint8_t val) {
   }
   if(adr < 0x80) {
     snes_catchupApu(snes); // catch up the apu before writing
-    snes->apu->inPorts[adr & 0x3] = val;
+    if(snes->sound.write) snes->sound.write(snes->sound.user, adr & 0x3, val);
+    else snes->apu->inPorts[adr & 0x3] = val;
     return;
   }
   switch(adr) {

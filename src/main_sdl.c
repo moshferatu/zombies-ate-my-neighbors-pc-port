@@ -94,6 +94,7 @@
 #include "config.h"
 #include "sfx_overlay.h"
 #include "bank_sfx.h"
+#include "sound/console.h"
 #include "video/console.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -1447,18 +1448,23 @@ int main(int argc, char** argv) {
       printf("note : --red-blood does not know this ROM's game over, and is off.\n");
     }
   }
+  // The sound is the port's (`src/sound`): the game's own driver, in C, on
+  // the port's DSP. The console's APU is left alone, and a quick save from a
+  // build that used it does not load.
+  static Sound sound;
+  sound_attach(snes, &sound);
   snes_reset(snes, true);
 
   // The sound effects the driver drops or cuts short (`src/sfx_overlay.h`). It
-  // watches the machine from here on and takes its copy of the APU once the
+  // watches the driver from here on and takes its copy of the sound once the
   // driver is running.
   static SfxOverlay sfx;
-  sfx_overlay_init(&sfx, snes, want_audio && effect_overlay);
+  sfx_overlay_init(&sfx, &sound, want_audio && effect_overlay);
   // The monster sounds the game skips when the level has another sample set
   // loaded (`src/bank_sfx.h`): the checks are watched from here on, and the
   // copies holding the other sets are built once the driver is running.
   static BankSfx bank;
-  bank_sfx_init(&bank, snes, snes->cart->rom, (int)snes->cart->romSize,
+  bank_sfx_init(&bank, &sound, snes->cart->rom, (int)snes->cart->romSize,
                 want_audio && all_monster_sounds);
   if (bank.enabled) {
     bool watched = cosim_watch(&cosim, BSFX_SEND_AT, bank_sfx_at, &bank);

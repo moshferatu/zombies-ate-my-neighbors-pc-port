@@ -27,12 +27,17 @@ of the ROM is in the repository.
 The picture is drawn by `src/video`, and `zamn.exe` has no emulated PPU in
 it. `build/zamn_with_ppu` is the same game with one, for the check.
 
+The sound is made by `src/sound` (2026-10-28): the boot loader and the
+game's driver in C, on a DSP of the port's own, exact to the cycle and the
+sample on every movie. `zamn.exe` still links LakeSnes's APU but does not
+use it. See `docs/sound.md`.
+
 What `zamn.exe` still links from LakeSnes:
 
 | Piece | Lines | What the game uses it for |
 |---|---|---|
 | The 65816, `cpu.c` | 2,478 | Runs what is not ported. Carries control from one port to the next. Is the clock every cost is spent on |
-| Sound, `apu.c` `spc.c` `dsp.c` | 2,462 | The SPC700 running the game's sound driver, and the DSP mixing it. The game's machine, and more of them for the frontend |
+| Sound, `apu.c` `spc.c` `dsp.c` | 2,462 | Nothing in the game: linked, and left alone since `src/sound` took its place |
 | The console, `snes.c` `snes_other.c` | 863 | The beam, the bus, WRAM, when the NMI falls, the multiplier, the pads' latch |
 | DMA, `dma.c` | 388 | Copies to VRAM, the palette and the sprites. HDMA, a line at a time |
 | States, the cartridge, the pads | 468 | The layout of a saved state, where the ROM is mapped, the buttons |
@@ -433,7 +438,11 @@ Then `zamn.exe` is `main_sdl.c` on the driver and this, with the sound.
 
 ### Step 4. The sound
 
-Independent of steps 1 to 3.
+Independent of steps 1 to 3. Items 1 and 2 are done (2026-10-28), and the
+frontend's two machines run on copies of the port's sound; see
+`docs/sound.md`. Item 3 is not: the game still uploads a byte and an answer
+at a time, and with the console's timing kept the driver must take as long
+over it as it did. Item 4, the one engine, is not begun.
 
 1. **The DSP**, written again: BRR decoding, ADSR, pitch, echo with its
    filter, the mix. It is a fixed specification. Checked sample for sample

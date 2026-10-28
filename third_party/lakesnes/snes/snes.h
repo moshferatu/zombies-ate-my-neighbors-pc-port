@@ -57,9 +57,28 @@ typedef struct SnesVideo {
   bool (*frameInterlace)(void* user);
 } SnesVideo;
 
+// The sound chip, as the console asks it. With nobody here (`run` NULL) it is
+// the console's own APU, `apu`. `snes_setSound` puts somebody else there:
+// `src/sound` is the one user, and the APU is then left alone.
+//
+// `run` is given the SPC700 cycles the console's clock has passed since it
+// was last asked, as LakeSnes counts them, and says how many it ran: all of
+// them, unless it keeps to instruction boundaries as the APU does. `read` and
+// `write` are the game's side of the four ports, after a `run`.
+typedef struct SnesSound {
+  void* user;
+  void (*reset)(void* user);
+  int (*run)(void* user, int cycles);
+  uint8_t (*read)(void* user, uint8_t port);
+  void (*write)(void* user, uint8_t port, uint8_t val);
+  void (*getSamples)(void* user, int16_t* sampleData, int samplesPerFrame);
+  void (*handleState)(void* user, StateHandler* sh);
+} SnesSound;
+
 struct Snes {
   Cpu* cpu;
   Apu* apu;
+  SnesSound sound;  // see `SnesSound`; all NULL for the APU
   // The PPU, which is the console's video chip unless `snes_setVideo` has
   // said otherwise: `video` is who is asked. NULL, as is the way to free it,
   // in a console made without one.
@@ -161,6 +180,8 @@ void snes_setPixels(Snes* snes, uint8_t* pixelData);
 int snes_pixelWidth(const Snes* snes);
 // See `SnesVideo`.
 void snes_setVideo(Snes* snes, const SnesVideo* video);
+// See `SnesSound`. NULL gives the sound back to the APU.
+void snes_setSound(Snes* snes, const SnesSound* sound);
 // See `SnesFrameHook`. Pass NULL to remove it.
 void snes_setFrameHook(Snes* snes, SnesFrameHook hook, void* ctx);
 // See `SnesWriteHook`. Pass NULL to remove it.

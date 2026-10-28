@@ -148,7 +148,13 @@ void snes_setReadHook(Snes* snes, SnesReadHook hook, void* ctx) {
 void snes_setSamples(Snes* snes, int16_t* sampleData, int samplesPerFrame) {
   // size is 2 (int16) * 2 (stereo) * samplesPerFrame
   // sets samples in the sampleData
-  dsp_getSamples(snes->apu->dsp, sampleData, samplesPerFrame);
+  if(snes->sound.getSamples) snes->sound.getSamples(snes->sound.user, sampleData, samplesPerFrame);
+  else dsp_getSamples(snes->apu->dsp, sampleData, samplesPerFrame);
+}
+
+void snes_setSound(Snes* snes, const SnesSound* sound) {
+  if(sound) snes->sound = *sound;
+  else memset(&snes->sound, 0, sizeof(snes->sound));
 }
 
 int snes_saveBattery(Snes* snes, uint8_t* data) {

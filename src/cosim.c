@@ -23,9 +23,15 @@
 //   zamn_cosim verify <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v]
 //                               [--twin-aim <period>[,<from>]] [--level n]
 //   zamn_cosim run   <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v]
+//                               [--port-sound]
 //
 // `-x routine` is the inverse of `-r`: run everything the registry has
 // except the named ones.
+//
+// `--port-sound` gives `run`'s port core the port's sound (`src/sound`), as
+// `zamn` has it, and leaves the stock core with the console's APU. The game
+// waits on the sound, so a driver that answered on other cycles would move
+// the port core's clock and part the two.
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -38,6 +44,7 @@
 #include "cosim/cosim.h"
 #include "levelstart.h"
 #include "poke.h"
+#include "sound/console.h"
 #include "port/player.h"  // player_set_aim, for --twin-aim
 #include "twinstick.h"
 
@@ -98,6 +105,8 @@ typedef struct {
   // game's records have no movie of their own, and a handler that only one of
   // them places is otherwise out of `verify`'s reach. -1 when absent.
   int level;
+  // `--port-sound`: see the top of the file.
+  bool port_sound;
 } Options;
 
 static uint8_t* read_file(const char* path, int* out_len) {
@@ -175,6 +184,8 @@ static bool parse_options(int argc, char** argv, Options* o) {
         fprintf(stderr, "error: --level wants %d..%d\n", LEVEL_FIRST, LEVEL_LAST);
         return false;
       }
+    } else if (!strcmp(argv[i], "--port-sound")) {
+      o->port_sound = true;
     } else if (!strcmp(argv[i], "-v") || !strcmp(argv[i], "--verbose")) {
       o->verbose = true;
     } else if (!strcmp(argv[i], "-c") || !strcmp(argv[i], "--coverage")) {
@@ -390,7 +401,10 @@ static int cmd_run(const Options* o) {
     image = changed->cart->rom;
     image_len = changed->cart->romSize;
   }
-  int rc = cosim_lockstep(snes_init(), snes_init(), image, image_len, o->movie_path,
+  Snes* native = snes_init();
+  static Sound sound;
+  if (o->port_sound) sound_attach(native, &sound);
+  int rc = cosim_lockstep(snes_init(), native, image, image_len, o->movie_path,
                           o->frames, o->selected, o->selected_count, o->verbose);
   cosim_coverage_report(o->coverage);
   cosim_census_report();

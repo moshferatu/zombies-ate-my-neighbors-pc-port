@@ -40,6 +40,7 @@
 #include "scale.h"
 #include "sfx_overlay.h"
 #include "skipintro.h"
+#include "sound/console.h"
 #include "widescreen.h"
 
 #define SAMPLES_PER_TICK 800
@@ -145,9 +146,12 @@ int main(int argc, char** argv) {
     if (!blood_patch_rom(snes->cart->rom, (size_t)snes->cart->romSize)) { fprintf(stderr, "error: --red-blood does not know this ROM\n"); return 1; }
     ws.blood.on = true;
   }
+  // The game's sound: the port's, as `zamn` has it.
+  static Sound sound;
+  sound_attach(snes, &sound);
   snes_reset(snes, true);
   static SfxOverlay sfx;
-  sfx_overlay_init(&sfx, snes, overlay);
+  sfx_overlay_init(&sfx, &sound, overlay);
 
   Cosim cosim;
   cosim_init(&cosim, snes, COSIM_NATIVE);

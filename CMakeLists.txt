@@ -187,6 +187,7 @@ endif()
 # frames for ffmpeg, and the sound as a WAV. How a trailer is made at 4K on a
 # display that is not 4K.
 add_executable(zamn_record tools/record.c)
+target_link_libraries(zamn_record PRIVATE zamn_sound_console)
 target_link_libraries(zamn_record PRIVATE zamn_cosim_lib zamn_video_with_ppu)
 target_include_directories(zamn_record PRIVATE src)
 if(MSVC)
@@ -225,7 +226,7 @@ endif()
 # driver lost some. Needs the cartridge; skips without it.
 add_executable(zamn_test_sfx_overlay tools/test_sfx_overlay.c)
 target_include_directories(zamn_test_sfx_overlay PRIVATE src)
-target_link_libraries(zamn_test_sfx_overlay PRIVATE snescore zamn_analysis)
+target_link_libraries(zamn_test_sfx_overlay PRIVATE snescore zamn_analysis zamn_sound_console)
 if(MSVC)
   target_compile_definitions(zamn_test_sfx_overlay PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
@@ -236,9 +237,36 @@ endif()
 # a level with its set. Needs the cartridge; skips without it.
 add_executable(zamn_test_bank_sfx tools/test_bank_sfx.c)
 target_include_directories(zamn_test_bank_sfx PRIVATE src)
-target_link_libraries(zamn_test_bank_sfx PRIVATE zamn_cosim_lib snescore)
+target_link_libraries(zamn_test_bank_sfx PRIVATE zamn_cosim_lib snescore zamn_sound_console)
 if(MSVC)
   target_compile_definitions(zamn_test_bank_sfx PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+# The port's sound (src/sound): the DSP, and in time the driver. Libc only.
+add_library(zamn_sound STATIC src/sound/dsp.c src/sound/sound.c src/sound/driver.c)
+target_include_directories(zamn_sound PUBLIC src)
+# ...and put into a LakeSnes console in place of its APU (src/sound/console.h).
+add_library(zamn_sound_console STATIC src/sound/console.c)
+target_link_libraries(zamn_sound_console PUBLIC zamn_sound snescore_without_ppu)
+
+# The port's DSP beside LakeSnes's on every movie (tools/test_dsp.c): every
+# sample, every register, and the sound RAM the echo writes. `--break` shows
+# it fails. Needs the cartridge; skips without it.
+add_executable(zamn_test_dsp tools/test_dsp.c)
+target_include_directories(zamn_test_dsp PRIVATE src)
+target_link_libraries(zamn_test_dsp PRIVATE snescore zamn_analysis zamn_sound)
+if(MSVC)
+  target_compile_definitions(zamn_test_dsp PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+
+# The port's sound driver beside the game's on the stock console
+# (tools/test_sound.c): every port the game reads, every DSP write and its
+# cycle, the driver's RAM at each poll, and every sample. Needs the cartridge.
+add_executable(zamn_test_sound tools/test_sound.c)
+target_include_directories(zamn_test_sound PRIVATE src)
+target_link_libraries(zamn_test_sound PRIVATE snescore zamn_analysis zamn_sound)
+if(MSVC)
+  target_compile_definitions(zamn_test_sound PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # `src/radar.h`: the survivor radar with every square drawn, against the
@@ -427,7 +455,7 @@ target_link_libraries(zamn_cosim_lib PUBLIC snescore_without_ppu zamn_port zamn_
 # zamn_cosim: runs the port against the ROM, either checked call-by-call
 # (`verify`) or actually substituted and diffed per frame (`run`).
 add_executable(zamn_cosim src/cosim.c)
-target_link_libraries(zamn_cosim PRIVATE zamn_cosim_lib snescore)
+target_link_libraries(zamn_cosim PRIVATE zamn_cosim_lib snescore zamn_sound_console)
 
 # ---------------------------------------------------------------------------
 # The interactive frontend — the playable build, with the port substituted in.
@@ -479,7 +507,8 @@ if(ZAMN_BUILD_SDL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/src/main_sdl.c")
   add_executable(zamn_with_ppu WIN32 src/main_sdl.c)
   target_link_libraries(zamn_with_ppu PRIVATE zamn_video_with_ppu)
   foreach(game zamn zamn_with_ppu)
-    target_link_libraries(${game} PRIVATE zamn_cosim_lib SDL2::SDL2 SDL2::SDL2main)
+    target_link_libraries(${game} PRIVATE zamn_cosim_lib zamn_sound_console SDL2::SDL2
+                          SDL2::SDL2main)
     if(WIN32)
       # The desktop compositor's frame statistics, for the cadence report.
       target_link_libraries(${game} PRIVATE dwmapi)

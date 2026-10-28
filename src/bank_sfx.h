@@ -28,11 +28,11 @@
 //
 // ## What this does about it
 //
-// It keeps an APU for each of the other sets, each running the same driver
-// with that set loaded, and when a check fails, it asks the one that has the
-// set to play the id. Its sound is added to the real APU's.
+// It keeps a sound chip (`src/sound`) for each of the other sets, each running
+// the same driver with that set loaded, and when a check fails, it asks the one
+// that has the set to play the id. Its sound is added to the real one's.
 //
-// Each is built from a copy of the real APU, taken once the driver is running
+// Each is built from a copy of the real sound, taken once the driver is running
 // and has registered its effects (`$DE`, which `$0D` sets after the effect bank
 // arrives at boot). A level's music is then loaded on the copy the way
 // `apu_play_song` loads it: command `$08` and the song, the set's samples
@@ -41,12 +41,12 @@
 // plays, so the pairing is one the driver was built for, and it is stopped as
 // soon as it starts. Set 2 has no level and borrows level 1's song.
 //
-// The copies are independent of the real APU from then on: they are not kept
+// The copies are independent of the real sound from then on: they are not kept
 // in step with it, a load or a reset leaves them as they are, and nothing about
 // them is saved. A copy that has nothing to play is not run.
 //
 // The game is only read: the checks are watched through `cosim_watch`, and the
-// real APU, WRAM and the save states are never written. It follows one command
+// real sound, WRAM and the save states are never written. It follows one command
 // of the game's: `$13`, the master volume, which the pause menu turns down.
 // That is the only other command the game sends while a level runs; `$02`
 // only ever stops the song, and `$09` is never sent.
@@ -66,14 +66,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "apu.h"
-#include "dsp.h"
 #include "snes.h"
-#include "spc.h"
-#include "statehandler.h"
 
 #include "assets/music.h"
 #include "assets/rom.h"
+#include "sound/sound.h"
 
 #define BSFX_BANK_AT 0x1F52u     // $7E:1F52, the sample set `apu_play_song` loaded
 #define BSFX_SETS MUSIC_SAMPLE_SET_COUNT
@@ -101,7 +98,7 @@
 #define BSFX_TAIL_FRAMES 90       // run on this long after the last activity
 
 typedef struct {
-  Apu* apu;
+  Sound* apu;
   bool ready;
   uint8_t kind[BSFX_QUEUE];   // commands waiting for the driver: play or volume...
   uint8_t queue[BSFX_QUEUE];  // ...and the id or the volume
@@ -111,7 +108,7 @@ typedef struct {
 } BsfxSet;
 
 typedef struct {
-  Snes* snes;
+  Sound* real;
   Rom rom;
   bool enabled;
   bool built;
@@ -120,7 +117,7 @@ typedef struct {
   uint32_t site_at[BSFX_MAX_SITES];
   uint8_t site_set[BSFX_MAX_SITES], site_id[BSFX_MAX_SITES];
   BsfxSet set[BSFX_SETS];
-  uint32_t last_cycles;
+  uint64_t last_cycles;      // the real sound's clock at the last tick
   uint8_t volume;             // the last `$13`, or 0 for none yet
   long wanted;                // checks that failed while this was ready
 } BankSfx;
@@ -146,10 +143,10 @@ static inline int bsfx_find_sites(BankSfx* b) {
   return b->sites;
 }
 
-static inline void bank_sfx_init(BankSfx* b, Snes* snes, const uint8_t* rom, int rom_len,
+static inline void bank_sfx_init(BankSfx* b, Sound* real, const uint8_t* rom, int rom_len,
                                  bool enabled) {
   memset(b, 0, sizeof *b);
-  b->snes = snes;
+  b->real = real;
   b->rom.data = rom;
   b->rom.size = (uint32_t)rom_len;
   b->enabled = enabled;
@@ -158,32 +155,37 @@ static inline void bank_sfx_init(BankSfx* b, Snes* snes, const uint8_t* rom, int
 
 static inline void bank_sfx_free(BankSfx* b) {
   for (int i = 0; i < BSFX_SETS; i++)
-    if (b->set[i].apu) { apu_free(b->set[i].apu); b->set[i].apu = NULL; }
+    if (b->set[i].apu) { free(b->set[i].apu); b->set[i].apu = NULL; }
   b->built = false;
 }
 
-// --- Building a set's APU ---------------------------------------------------
+// --- Building a set's sound -------------------------------------------------
 
-static inline bool bsfx_run_until_taken(Apu* a) {
-  uint32_t start = a->cycles;
-  while (a->inPorts[3] != a->ram[BSFX_LAST_SEQ]) {
-    if (a->cycles - start > BSFX_COMMAND_LIMIT) return false;
-    spc_runOpcode(a->spc);
+// A copy runs on a clock of its own: `n` more cycles of it.
+static inline void bsfx_run(Sound* a, uint64_t n) { sound_run(a, a->host + n); }
+
+static inline bool bsfx_run_until_taken(Sound* a) {
+  // The driver is stopped at a read of a port; it is let make that read, and
+  // the next, until it has taken the command.
+  const uint64_t start = a->host;
+  while (a->written[3] != a->ram[BSFX_LAST_SEQ]) {
+    if (a->host - start > BSFX_COMMAND_LIMIT || a->state == SOUND_HALTED) return false;
+    sound_run(a, a->now + 1);
   }
   return true;
 }
 
 // One command, the way `apu_send` puts it on the ports, once the driver has
 // taken the last one.
-static inline bool bsfx_send(Apu* a, uint8_t cmd, uint8_t param) {
+static inline bool bsfx_send(Sound* a, uint8_t cmd, uint8_t param) {
   if (!bsfx_run_until_taken(a)) return false;
-  a->inPorts[1] = param;
-  a->inPorts[2] = cmd;
-  a->inPorts[3] = (uint8_t)(a->inPorts[3] + 1);
+  sound_write_port(a, 2, cmd);
+  sound_write_port(a, 1, param);
+  sound_write_port(a, 3, (uint8_t)(a->written[3] + 1));
   return true;
 }
 
-typedef struct { Apu* apu; bool ok; } BsfxUpload;
+typedef struct { Sound* apu; bool ok; } BsfxUpload;
 
 static void bsfx_upload_send(uint8_t cmd, uint8_t param, void* ctx) {
   BsfxUpload* u = (BsfxUpload*)ctx;
@@ -191,14 +193,14 @@ static void bsfx_upload_send(uint8_t cmd, uint8_t param, void* ctx) {
 }
 
 // Stop every slot playing a sequence at or past the effects, which is the song.
-static inline bool bsfx_stop_song(Apu* a) {
+static inline bool bsfx_stop_song(Sound* a) {
   for (int i = 0; i < 4; i++)
     if ((a->ram[0x28 + i] | a->ram[0x2C + i]) && a->ram[BSFX_SEQ_ID + i] >= a->ram[BSFX_EFFECTS])
       if (!bsfx_send(a, BSFX_CMD_STOP, a->ram[BSFX_SEQ_ID + i])) return false;
   return bsfx_run_until_taken(a);
 }
 
-static inline bool bsfx_song_playing(const Apu* a) {
+static inline bool bsfx_song_playing(const Sound* a) {
   for (int i = 0; i < 4; i++)
     if ((a->ram[0x28 + i] | a->ram[0x2C + i]) && a->ram[BSFX_SEQ_ID + i] >= a->ram[BSFX_EFFECTS])
       return true;
@@ -222,9 +224,9 @@ static inline int bsfx_song_for(const Rom* rom, int set) {
   return fallback;
 }
 
-// Load set `set` on `a`, a copy of the real APU: stop whatever song it has,
+// Load set `set` on `a`, a copy of the real sound: stop whatever song it has,
 // then what `apu_play_song` sends, then stop that song too.
-static inline bool bsfx_load(const Rom* rom, Apu* a, int set) {
+static inline bool bsfx_load(const Rom* rom, Sound* a, int set) {
   const int song = bsfx_song_for(rom, set);
   if (song < 0 || !bsfx_stop_song(a)) return false;
   BsfxUpload u = {a, true};
@@ -234,47 +236,39 @@ static inline bool bsfx_load(const Rom* rom, Apu* a, int set) {
   // `$80:CBF3  LDX #$14`, with A as `apu_load_set` left it: the zero that
   // ended the set.
   if (!bsfx_send(a, BSFX_CMD_PLAY_SONG, 0x00) || !bsfx_run_until_taken(a)) return false;
-  const uint32_t start = a->cycles;
-  while (!bsfx_song_playing(a) && a->cycles - start < BSFX_COMMAND_LIMIT) spc_runOpcode(a->spc);
+  const uint64_t start = a->host;
+  while (!bsfx_song_playing(a) && a->host - start < BSFX_COMMAND_LIMIT) sound_run(a, a->now + 1);
   if (!bsfx_stop_song(a)) return false;
-  const uint32_t settle = a->cycles;
-  while (a->cycles - settle < BSFX_SETTLE) spc_runOpcode(a->spc);
+  bsfx_run(a, BSFX_SETTLE);
   return !bsfx_song_playing(a);
 }
 
-// The real APU is running the driver with its effects registered, and has
-// taken every command it was given.
-static inline bool bsfx_real_ready(const Apu* r) {
+// The real driver is running with its effects registered, and has taken
+// every command it was given.
+static inline bool bsfx_real_ready(const Sound* r) {
   static const uint8_t banner[6] = {'A', 'U', 'D', 'I', 'O', ' '};
-  return !memcmp(r->ram + BSFX_DRIVER_BANNER, banner, 6) && r->spc->pc >= 0x0600 &&
-         r->spc->pc < 0x1200 && r->ram[BSFX_EFFECTS] != 0 &&
-         r->inPorts[3] == r->ram[BSFX_LAST_SEQ];
+  return !memcmp(r->ram + BSFX_DRIVER_BANNER, banner, 6) && sound_driver_running(r) &&
+         r->ram[BSFX_EFFECTS] != 0 && r->written[3] == r->ram[BSFX_LAST_SEQ];
 }
 
 static inline void bsfx_build(BankSfx* b) {
-  Apu* r = b->snes->apu;
-  StateHandler* save = sh_init(true, NULL, 0);
-  apu_handleState(r, save);
   for (int i = 0; i < BSFX_SETS; i++) {
     BsfxSet* s = &b->set[i];
-    s->apu = apu_init(b->snes);
-    apu_reset(s->apu);
-    StateHandler* load = sh_init(false, save->data, save->offset);
-    apu_handleState(s->apu, load);
-    sh_free(load);
-    s->apu->dsp->channelMute = 0xFF;
+    s->apu = (Sound*)malloc(sizeof *s->apu);
+    if (!s->apu) { b->failed = true; continue; }
+    sound_copy(s->apu, b->real);
+    s->apu->dsp.voice_mute = 0xFF;
     s->ready = bsfx_load(&b->rom, s->apu, i);
     if (!s->ready) {
-      apu_free(s->apu);
+      free(s->apu);
       s->apu = NULL;
       b->failed = true;
       continue;
     }
-    memset(s->apu->dsp->sampleBuffer, 0, sizeof s->apu->dsp->sampleBuffer);
-    s->apu->dsp->channelMute = 0;
+    memset(s->apu->ring, 0, sizeof s->apu->ring);
+    s->apu->dsp.voice_mute = 0;
     s->idle = BSFX_TAIL_FRAMES;
   }
-  sh_free(save);
   b->built = true;
 }
 
@@ -307,7 +301,7 @@ static void bank_sfx_at(Snes* snes, void* ctx) {
   }
 }
 
-static inline bool bsfx_active(const Apu* a) {
+static inline bool bsfx_active(const Sound* a) {
   for (int i = 0; i < 4; i++)
     if (a->ram[0x28 + i] | a->ram[0x2C + i]) return true;
   for (int v = 0; v < 8; v++)
@@ -315,38 +309,40 @@ static inline bool bsfx_active(const Apu* a) {
   return false;
 }
 
-// After each tick: build the copies once the real APU can be copied, then give
-// each one its commands and run it for as long as the real one ran.
+// After each tick: build the copies once the real sound can be copied, then
+// give each one its commands and run it for as long as the real one ran.
 static inline void bank_sfx_tick(BankSfx* b) {
   if (!b->enabled) return;
-  Apu* r = b->snes->apu;
+  Sound* r = b->real;
   if (!b->built) {
     if (!bsfx_real_ready(r)) return;
     bsfx_build(b);
-    b->last_cycles = r->cycles;
+    b->last_cycles = r->host;
     return;
   }
-  const int32_t d = (int32_t)(r->cycles - b->last_cycles);
-  b->last_cycles = r->cycles;
-  const uint32_t run = d > 0 && d < 2 * BSFX_FRAME_CYCLES ? (uint32_t)d : BSFX_FRAME_CYCLES;
+  const int64_t d = (int64_t)(r->host - b->last_cycles);
+  b->last_cycles = r->host;
+  const uint64_t run = d > 0 && d < 2 * BSFX_FRAME_CYCLES ? (uint64_t)d : BSFX_FRAME_CYCLES;
   for (int i = 0; i < BSFX_SETS; i++) {
     BsfxSet* s = &b->set[i];
     if (!s->apu) continue;
     if (s->queued) s->idle = 0;
     if (s->idle >= BSFX_TAIL_FRAMES) continue;  // silent: not run until asked
-    Apu* a = s->apu;
-    const uint32_t start = a->cycles;
-    while (a->cycles - start < run) {
+    Sound* a = s->apu;
+    const uint64_t end = a->host + run;
+    while (a->host < end) {
       // One at a time, as the game sends them.
-      if (s->queued && a->inPorts[3] == a->ram[BSFX_LAST_SEQ]) {
-        a->inPorts[1] = s->queue[0];
-        a->inPorts[2] = s->kind[0];
-        a->inPorts[3] = (uint8_t)(a->inPorts[3] + 1);
+      if (s->queued && a->written[3] == a->ram[BSFX_LAST_SEQ]) {
+        sound_write_port(a, 2, s->kind[0]);
+        sound_write_port(a, 1, s->queue[0]);
+        sound_write_port(a, 3, (uint8_t)(a->written[3] + 1));
         if (s->kind[0] == BSFX_CMD_PLAY) s->played++;
         memmove(s->queue, s->queue + 1, (size_t)--s->queued);
         memmove(s->kind, s->kind + 1, (size_t)s->queued);
       }
-      spc_runOpcode(a->spc);
+      // A read at a time while there is a command to give it, else the rest
+      // at once.
+      sound_run(a, s->queued && a->now < end ? a->now + 1 : end);
     }
     s->idle = bsfx_active(a) || s->queued ? 0 : s->idle + 1;
   }
@@ -360,7 +356,7 @@ static inline void bank_sfx_mix(BankSfx* b, int16_t* buf, int samples) {
   for (int i = 0; i < BSFX_SETS; i++) {
     BsfxSet* s = &b->set[i];
     if (!s->apu || s->idle >= BSFX_TAIL_FRAMES) continue;
-    dsp_getSamples(s->apu->dsp, add, samples);
+    sound_get_samples(s->apu, add, samples);
     for (int k = 0; k < samples * 2; k++) {
       const int v = buf[k] + add[k];
       buf[k] = (int16_t)(v < -32768 ? -32768 : v > 32767 ? 32767 : v);
