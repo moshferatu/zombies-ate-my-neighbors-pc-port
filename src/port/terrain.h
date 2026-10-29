@@ -250,6 +250,13 @@ typedef struct {
 void terrain_blocked_wide_counted(Wram* w, uint16_t x, uint16_t y,
                                   TerrainRegs* out, TerrainWideWork* work);
 
+// `$82:A214`, the Snakeoid's copy, asked where it would come up
+// (`port/snakeoid.h`): the same ten probes about a point eight pixels lower,
+// `TYA : CLC : ADC #$0008` where `$82:90F7` has `SEC : SBC`. The two cost the
+// same, block for block, and this adds to `work` as that does.
+void terrain_blocked_wide_low_counted(Wram* w, uint16_t x, uint16_t y,
+                                      TerrainRegs* out, TerrainWideWork* work);
+
 // --- $80:B422 ---------------------------------------------------------------
 
 // **Is the point off the edge of the level?** Carry set means yes.

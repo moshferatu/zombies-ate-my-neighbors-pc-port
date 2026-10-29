@@ -160,14 +160,16 @@ static TerrainWideBlock wide_load_block(int i) {
   return WIDE_BLK_LOAD_ROW_ADD;
 }
 
-void terrain_blocked_wide_counted(Wram* w, uint16_t x, uint16_t y,
-                                  TerrainRegs* out, TerrainWideWork* work) {
+// `low` is `$82:A214`'s row: eight pixels below the point, not above it.
+static void wide_counted(Wram* w, uint16_t x, uint16_t y, bool low,
+                         TerrainRegs* out, TerrainWideWork* work) {
   work->blocks[WIDE_BLK_PROLOGUE]++;
 
   // $82:90F8-$82:9118, and it is `$80:AE14`'s opening with one constant
   // changed: `SBC #$0011` where that one has `SBC #$0009`.
-  uint16_t row = (uint16_t)(((uint16_t)(y - TERRAIN_WIDE_ORIGIN_Y) >>
-                             TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
+  const uint16_t row_y = low ? (uint16_t)(y + TERRAIN_WIDE_ORIGIN_Y)
+                             : (uint16_t)(y - TERRAIN_WIDE_ORIGIN_Y);
+  uint16_t row = (uint16_t)((row_y >> TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
   uint16_t col = (uint16_t)(((uint16_t)(x - TERRAIN_WIDE_ORIGIN_X) >>
                              TERRAIN_TILE_SHIFT) & TERRAIN_TILE_MASK);
   uint16_t map = (uint16_t)(col + wram_r16(w, W_TILE_ROW_BASE + row));
@@ -231,6 +233,16 @@ void terrain_blocked_wide_counted(Wram* w, uint16_t x, uint16_t y,
   PORT_COVER(wide_clear);
   work->blocks[WIDE_BLK_EXIT_PLD]++;
   out->blocked = false;
+}
+
+void terrain_blocked_wide_counted(Wram* w, uint16_t x, uint16_t y,
+                                  TerrainRegs* out, TerrainWideWork* work) {
+  wide_counted(w, x, y, false, out, work);
+}
+
+void terrain_blocked_wide_low_counted(Wram* w, uint16_t x, uint16_t y,
+                                      TerrainRegs* out, TerrainWideWork* work) {
+  wide_counted(w, x, y, true, out, work);
 }
 
 void terrain_blocked_wide(Wram* w, uint16_t x, uint16_t y, TerrainRegs* out) {

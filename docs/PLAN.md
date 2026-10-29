@@ -193,8 +193,9 @@ banks:
 | Touched by nothing | 38,097 | |
 
 The game's own run of the same sessions has the 65816 executing nothing
-but in the two where the Snakeoid bites, below. So of the other core bytes
-a session ran, each was run by a port every time in play. The map reaches them on the core by a chain of exits no
+(but in the two where the Snakeoid bites, until its bite was ported,
+below). So of the core bytes a session ran, each was run by a port every
+time in play. The map reaches them on the core by a chain of exits no
 session followed in that order. Each is a row missing for a case nobody
 played, or a way the ports never go. The map assumes every exit can happen
 from every way in, so it errs towards the core.
@@ -240,12 +241,19 @@ down, and the filing was the ROM's. Both are ported now
 (`port/game_over.h`), and all four game overs run with the 65816
 executing nothing.
 
-The bite is not ported. Each of the two sessions has the 65816 run about
-280,000 instructions at 22 places: the Snakeoid's coming up and going
-under (`$82:9C02`, `$82:9CEC`), the bite (`$82:A538`-`$82:A730`), a job of
-the vertical blank's that moves the second layer (`$82:9CA6`), and the
-ground test at `$82:A214`. About 1,500 bytes. Its dying (`$82:A8F3`) and
-record 48's thing waking have no session yet.
+The bite was the last thing left: each of the two sessions had the 65816
+run about 280,000 instructions at 22 places. It is ported now
+(`port/snakeoid.h`): its coming up and going under (`$82:9C02`,
+`$82:9CEC`), the bite beside and under them (`$82:A538`-`$82:A730`), the
+two scripts its pictures play from, and three jobs of the vertical blank's,
+its shake (`$82:9CA6`, and its copy at `$82:9D4D`) and the big figures'
+layer blanked (`$82:82B5`, `port/vblank.h`). Its ground test at `$82:A214`
+is `$82:90F7`'s, eight pixels lower, and shares that port. All 21 stretch
+starts and the three jobs check against the ROM, and in both sessions the
+65816 now runs nothing. Neither session bites from under them or from a
+side above, or hits it while it is up, so those paths are ported but not
+yet checked. Its dying (`$82:A8F3`) and record 48's thing waking have no
+session yet.
 
 Not counted yet: what of the 38,097 bytes is code.
 

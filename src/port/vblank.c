@@ -1,5 +1,6 @@
 #include "port/vblank.h"
 
+#include "port/bossbg.h"  // the clear's four words
 #include "port/coverage.h"
 #include "port/frontend.h"  // W_FRAME_COUNT
 
@@ -421,6 +422,75 @@ void boss_shake_job(Wram* w, PortCpu* c, HwTrace* t) {
   // shadow's does.
   hw_run(t, SS_TAIL);
   set_c(c, false);
+}
+
+void snakeoid_shake_job(Wram* w, PortCpu* c, HwTrace* t) {
+  PORT_COVER(snakeoid_shake_job);
+  const uint8_t p = c->p;
+  const uint16_t lines = wram_r16(w, W_FRAME_COUNT) & BOSS_SHAKE_LINES;
+  const uint16_t ground = adc16(c, lines, wram_r16(w, W_CAMERA_SUB_Y));
+  hw_run(t, SN_FIRST);
+  hw_w8(t, 0x2110, (uint8_t)ground);
+  hw_run(t, SK_SECOND);
+  hw_w8(t, 0x2110, (uint8_t)(ground >> 8));
+  // `$1E70` is where its plane is drawn: `W_BOSS_PLANE_Y`.
+  const uint16_t plane = adc16(c, lines, wram_r16(w, W_BOSS_PLANE_Y));
+  hw_run(t, SN_THIRD);
+  hw_w8(t, 0x210e, (uint8_t)plane);
+  hw_run(t, SK_SECOND);
+  hw_w8(t, 0x210e, (uint8_t)(plane >> 8));
+  hw_run(t, SN_TAIL);
+  // A is the second sum after its `XBA`, and `PLP` puts the flags back.
+  c->a = (uint16_t)(plane << 8 | plane >> 8);
+  c->p = p;
+  set_c(c, true);
+}
+
+void boss_bg_clear_job(Wram* w, PortCpu* c, HwTrace* t) {
+  hw_run(t, VS_VMAIN);
+  lda8(c, 0x80);
+  hw_w8(t, 0x2115, 0x80);
+  rep30(c);
+  hw_run(t, CL_MODE);
+  hw_w16(t, 0x4300, 0x1809);
+  hw_run(t, CL_LOAD);
+  hw_w16(t, 0x4302, wram_r16(w, W_BOSS_BG_ONE_SRC));
+  hw_run(t, CL_LOAD);
+  hw_w16(t, 0x4304, wram_r16(w, W_BOSS_BG_ONE_BANK));
+
+  const uint16_t left = wram_r16(w, W_BOSS_BG_ONE_BYTES);
+  hw_run(t, CL_TEST);
+  cmp16(c, BOSS_BG_CLEAR_STEP, left);
+  uint16_t sent = BOSS_BG_CLEAR_STEP;
+  if (left > BOSS_BG_CLEAR_STEP) {
+    hw_run(t, VBL_TAKEN);
+  } else {
+    hw_run(t, CL_LEFT);
+    sent = left;
+  }
+  wram_w16(w, W_BOSS_BG_CLEAR_SENT, sent);
+  hw_run(t, CL_SIZE);
+  hw_w16(t, 0x4305, sent);
+  const uint16_t at = wram_r16(w, W_BOSS_BG_ONE_VRAM);
+  hw_run(t, CL_LOAD);
+  hw_w16(t, 0x2116, at);
+  dma_go(c, t);
+
+  // VRAM's address is in words. The `LSR` carry goes nowhere: `CLC` is next.
+  wram_w16(w, W_BOSS_BG_ONE_VRAM, (uint16_t)(at + (sent >> 1)));
+  set_c(c, true);
+  lda16(c, sbc16(c, left, sent));
+  wram_w16(w, W_BOSS_BG_ONE_BYTES, c->a);
+  hw_run(t, CL_STEP);
+  if (c->a == 0) {
+    PORT_COVER(boss_bg_cleared);
+    hw_run(t, VBL_TAKEN);
+    set_c(c, false);
+  } else {
+    PORT_COVER(boss_bg_clearing);
+    set_c(c, true);
+  }
+  hw_run(t, CL_TAIL);
 }
 
 bool brightness_up_job(Wram* w, PortCpu* c) {

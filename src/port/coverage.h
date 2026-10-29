@@ -456,6 +456,9 @@
   X(bg1_vscroll_job,  "bg1_vscroll_job",    "BG1's scroll down, from its shadow") \
   X(mosaic_job,       "mosaic_job",         "the saucer's mosaic, by its hurt") \
   X(mosaic_off_job,   "mosaic_off_job",     "the mosaic off")   X(boss_shake_job,   "boss_shake_job",     "the ground under the big figure, a few lines down") \
+  X(snakeoid_shake_job, "snakeoid_shake_job", "the ground and the Snakeoid's layer, a few lines down") \
+  X(boss_bg_clearing, "boss_bg_clear_job",  "a kilobyte of the big figures' layer blanked, more to do") \
+  X(boss_bg_cleared,  "boss_bg_clear_job",  "...and the last of it") \
   X(brightness_up,    "brightness_up_job",  "a step brighter, and more to go") \
   X(brightness_full,  "brightness_up_job",  "...and the fifteenth") \
   X(brightness_down,  "brightness_down_job","a step darker") \
@@ -536,6 +539,25 @@
   X(snakeoid_hurries, "snakeoid_wakes", "chasing: nearer than `$A0`, a frame off its wait") \
   X(snakeoid_chases, "snakeoid_dropped", "chasing: a step towards them") \
   X(snakeoid_chase_stopped, "snakeoid_dropped", "...stopped on an axis: it hops") \
+  X(snakeoid_cannot_bite, "snakeoid_wakes", "a bite, and it may not come up there or another is up: a draw") \
+  X(snakeoid_comes_up, "snakeoid_wakes", "...or it comes up: its place kept, and no other may") \
+  X(snakeoid_rises_dying, "snakeoid_wakes", "...dying: no records that hurt") \
+  X(snakeoid_clears_piece, "snakeoid_hurt_made", "a piece of its track freed as it comes up or goes under") \
+  X(snakeoid_queue_full, "snakeoid_hurt_made", "five jobs queued: a tick before its shake") \
+  X(snakeoid_uploads_busy, "snakeoid_played", "the picture it wants waits for the uploads") \
+  X(snakeoid_picture_up, "snakeoid_played", "a picture of it put up") \
+  X(snakeoid_picture_mirrored, "snakeoid_played", "...mirrored, facing who it bites on its right") \
+  X(snakeoid_blanks, "snakeoid_played", "picture nought: the layer blanked") \
+  X(snakeoid_flashes, "snakeoid_played", "hit since its last flash: it flashes") \
+  X(snakeoid_unflashes, "snakeoid_played", "...and two frames on, its colours back") \
+  X(snakeoid_body_made, "snakeoid_body_made", "beside them: its body of four records") \
+  X(snakeoid_strikes_low, "snakeoid_body_made", "...its mouth working, from a side below") \
+  X(snakeoid_strikes_high, "snakeoid_body_made", "...from a side above") \
+  X(snakeoid_strike_ends, "snakeoid_struck_low", "a draw under 15 on the right picture: its mouth stops early") \
+  X(snakeoid_lunge_tells, "snakeoid_lunged", "a frame of its lunge with no bit of `$2F`: the box at its mouth told") \
+  X(snakeoid_lunge_ends, "snakeoid_lunged", "its lunge's last picture over") \
+  X(snakeoid_goes_under, "snakeoid_bitten", "room in the queue: it goes under") \
+  X(snakeoid_sunk, "snakeoid_sunk", "under, back where it came up") \
   /* The spray of the extinguisher and the flamethrower -- see port/spray.h. */ \
   X(spray_of_flame, "spray_starts", "its owner holds the flamethrower: flame") \
   X(spray_of_foam, "spray_starts", "...or anything else: the extinguisher's foam") \

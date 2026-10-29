@@ -344,6 +344,17 @@ def cost(name, mode, val, size, m, x, dp_unaligned, db=0x80, ind=None,
         # is built from S. See `DP_MODES`.
         c += IDLE
         at = SLOW
+    elif mode == SRIY:
+        # `LDA ($01,S),Y` -- the Snakeoid's two script readers, `$82:9B54` and
+        # `$82:9B83`, walk the list whose address they pushed. `cpu_adrIsy`
+        # spends an internal cycle on S plus the offset, reads the two-byte
+        # pointer out of the stack (low WRAM, 8 apiece), spends another adding
+        # Y, and reads the operand in the data bank, wherever the pointer says.
+        if ind is None:
+            raise Unpriced("%s (sr,S),Y: pass --ind=BANK:ADDR for where it points" % name)
+        c += IDLE + 2 * SLOW + IDLE
+        at = access(ind & 0xFFFF, ind >> 16)
+        fast = fast_rom(ind & 0xFFFF, ind >> 16)
     elif mode in (ILDP, ILDPY):
         # `LDA [$8A]` and `LDA [$8A],Y`: three bytes of pointer read out of the
         # direct page — always low WRAM, always 8 apiece — and then the operand,

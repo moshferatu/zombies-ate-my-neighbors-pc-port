@@ -101,7 +101,21 @@ enum {
 
   // $82:8C49 boss_shake_job
   SK_FIRST,     // LDA $0020 : AND #$0003 : ADC $1B68 : SEP #$20 : STA $2110
-  SK_SECOND,    // XBA : STA $2110
+  SK_SECOND,    // XBA : STA $2110, and the same to `$210E`
+
+  // $82:9CA6 and $82:9D4D snakeoid_shake_job
+  SN_FIRST,     // PHP : REP #$30 : LDA $0020 : AND : ADC $1B68 : SEP : STA $2110
+  SN_THIRD,     // REP #$30 : LDA $0020 : AND : ADC $1E70 : SEP : STA $210E
+  SN_TAIL,      // REP #$30 : PLP : SEC : RTL
+
+  // $82:82B5 boss_bg_clear_job
+  CL_MODE,      // REP #$30 : LDA #$1809 : STA $4300
+  CL_LOAD,      // LDA $1E58 : STA $4302, and the same for `$4304` and `$2116`
+  CL_TEST,      // LDA #$0400 : CMP $1E56 : BCC
+  CL_LEFT,      // LDA $1E56
+  CL_SIZE,      // STA $5C : STA $4305
+  CL_STEP,      // REP #$20 to `STA $1E56 : BEQ`: both moved on
+  CL_TAIL,      // SEC : RTL, or CLC : RTL
 
   VBL_BLOCK_COUNT
 };
@@ -206,6 +220,38 @@ void mosaic_off_job(Wram* w, PortCpu* c, HwTrace* t);
 #define BOSS_SHAKE_JOB_RTL_PC 0x828c5eu
 #define BOSS_SHAKE_LINES 0x0003u
 void boss_shake_job(Wram* w, PortCpu* c, HwTrace* t);
+
+// --- $82:9CA6 and $82:9D4D snakeoid_shake_job -----------------------------------
+//
+// The ground shaking while the Snakeoid comes up and goes under
+// (`port/snakeoid.h`). Two copies of one job, byte for byte, one queued for
+// each. BG2 is scrolled down 0 to 3 lines more than the camera has it, as
+// the big figure's shake does, and BG1, the layer the Snakeoid is drawn on,
+// by the same 0 to 3 more than its plane's place.
+//
+// Neither sum has a `CLC`. The first takes the carry the queue's walk left,
+// and the second the first's. It is wrapped in `PHP : PLP`, so the flags
+// are the caller's but for carry, which is set: it stays queued until the
+// Snakeoid takes it out.
+#define SNAKEOID_SHAKE_JOB_PC 0x829ca6u
+#define SNAKEOID_SHAKE_JOB_RTL_PC 0x829cd3u
+#define SNAKEOID_SINK_JOB_PC 0x829d4du
+#define SNAKEOID_SINK_JOB_RTL_PC 0x829d7au
+void snakeoid_shake_job(Wram* w, PortCpu* c, HwTrace* t);
+
+// --- $82:82B5 boss_bg_clear_job -------------------------------------------------
+//
+// The big figures' layer blanked: `$82:8113` queues it with a word of nought
+// at `$82:8136`, `$2000` bytes of it to the tilemap at `$6800`, and this
+// fills VRAM from that one word, by DMA that does not move along the
+// source. A kilobyte a vblank, the four words of `boss_bg_queue_one`
+// (`port/bossbg.h`) moved on as it goes. It stays queued, carry set, until
+// nothing is left.
+#define BOSS_BG_CLEAR_JOB_PC 0x8282b5u
+#define BOSS_BG_CLEAR_JOB_RTL_PC 0x828305u  // of two: the other is at `$8307`
+#define BOSS_BG_CLEAR_STEP 0x0400u
+#define W_BOSS_BG_CLEAR_SENT 0x005cu
+void boss_bg_clear_job(Wram* w, PortCpu* c, HwTrace* t);
 
 // --- $80:9C63 and $80:9C7D: the screen's brightness, a step a vblank ----------
 //
