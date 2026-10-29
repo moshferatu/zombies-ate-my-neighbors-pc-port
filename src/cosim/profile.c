@@ -20,6 +20,16 @@ typedef struct {
   bool used;
 } Edge;
 
+// A port's way out: its entry, the exit, and how far the stack rose. A few
+// hundred distinct ones in a whole survey.
+#define LEAVE_CAP (1u << 14)
+
+typedef struct {
+  uint32_t entry, exit, count;
+  int depth;
+  bool used;
+} Leave;
+
 struct CosimProfile {
   uint32_t size;
   uint32_t* exec;
@@ -30,6 +40,8 @@ struct CosimProfile {
   // Edges that found the table full. Never expected, and said so if it happens
   // rather than left to be discovered as a caller that went missing.
   uint64_t edges_dropped;
+  Leave* leaves;
+  uint64_t leaves_dropped;
 };
 
 CosimProfile* cosim_profile_new(uint32_t rom_size) {
@@ -39,7 +51,9 @@ CosimProfile* cosim_profile_new(uint32_t rom_size) {
   p->exec = (uint32_t*)calloc(rom_size, sizeof *p->exec);
   p->call = (uint32_t*)calloc(rom_size, sizeof *p->call);
   p->edges = (Edge*)calloc(EDGE_CAP, sizeof *p->edges);
-  if (!p->exec || !p->call || !p->edges || !cdl_alloc(&p->cdl, rom_size)) {
+  p->leaves = (Leave*)calloc(LEAVE_CAP, sizeof *p->leaves);
+  if (!p->exec || !p->call || !p->edges || !p->leaves ||
+      !cdl_alloc(&p->cdl, rom_size)) {
     cosim_profile_free(p);
     return NULL;
   }
@@ -51,6 +65,7 @@ void cosim_profile_free(CosimProfile* p) {
   free(p->exec);
   free(p->call);
   free(p->edges);
+  free(p->leaves);
   cdl_free(&p->cdl);
   free(p);
 }
@@ -101,6 +116,30 @@ void cosim_profile_entry(CosimProfile* p, uint32_t pc24) {
   if (snes_to_rom(pc24, p->size, &off)) p->cdl.flags[off] |= CDL_SUB;
 }
 
+static void add_leave(CosimProfile* p, uint32_t entry, uint32_t exit, int depth,
+                      uint32_t n) {
+  uint32_t h = (entry * 2654435761u) ^ (exit * 40503u) ^ ((uint32_t)depth * 97u);
+  uint32_t i = h & (LEAVE_CAP - 1);
+  for (uint32_t probe = 0; probe < LEAVE_CAP; probe++) {
+    Leave* l = &p->leaves[i];
+    if (!l->used) {
+      *l = (Leave){entry, exit, n, depth, true};
+      return;
+    }
+    if (l->entry == entry && l->exit == exit && l->depth == depth) {
+      l->count += n;
+      return;
+    }
+    i = (i + 1) & (LEAVE_CAP - 1);
+  }
+  p->leaves_dropped++;
+}
+
+void cosim_profile_exit(CosimProfile* p, uint32_t entry24, uint32_t exit24,
+                        int depth) {
+  add_leave(p, entry24, exit24, depth, 1);
+}
+
 // ---------------------------------------------------------------------------
 // Saving, on top of whatever the directory already holds
 // ---------------------------------------------------------------------------
@@ -145,6 +184,19 @@ static bool merge_cdl(uint8_t* flags, uint32_t size, const char* path) {
   return ok;
 }
 
+static void merge_leaves(CosimProfile* p, const char* path) {
+  FILE* f = fopen(path, "r");
+  if (!f) return;
+  char line[128];
+  while (fgets(line, sizeof line, f)) {
+    unsigned nb, na, xb, xa, n;
+    int depth;
+    if (sscanf(line, "$%2X:%4X,$%2X:%4X,%d,%u", &nb, &na, &xb, &xa, &depth, &n) == 6)
+      add_leave(p, (nb << 16) | na, (xb << 16) | xa, depth, n);
+  }
+  fclose(f);
+}
+
 static void merge_edges(CosimProfile* p, const char* path) {
   FILE* f = fopen(path, "r");
   if (!f) return;
@@ -177,15 +229,23 @@ bool cosim_profile_save(const CosimProfile* src, const char* dir) {
   for (uint32_t i = 0; i < EDGE_CAP; i++)
     if (src->edges[i].used)
       add_edge(p, src->edges[i].caller, src->edges[i].callee, src->edges[i].count);
+  for (uint32_t i = 0; i < LEAVE_CAP; i++) {
+    const Leave* l = &src->leaves[i];
+    if (l->used) add_leave(p, l->entry, l->exit, l->depth, l->count);
+  }
 
-  char prof[512], cdl[512], graph[512];
+  char prof[512], cdl[512], graph[512], exits[512];
   join(prof, sizeof prof, dir, "profile.bin");
   join(cdl, sizeof cdl, dir, "zamn.cdl");
   join(graph, sizeof graph, dir, "callgraph.csv");
+  join(exits, sizeof exits, dir, "exits.csv");
 
   bool ok = merge_profile(p->exec, p->call, p->size, prof) &&
             merge_cdl(p->cdl.flags, p->size, cdl);
-  if (ok) merge_edges(p, graph);
+  if (ok) {
+    merge_edges(p, graph);
+    merge_leaves(p, exits);
+  }
 
   if (ok) {
     FILE* f = fopen(prof, "wb");
@@ -214,6 +274,26 @@ bool cosim_profile_save(const CosimProfile* src, const char* dir) {
       fprintf(stderr, "error: cannot write '%s'\n", graph);
     }
   }
+  if (ok) {
+    FILE* f = fopen(exits, "w");
+    ok = f != NULL;
+    if (f) {
+      fprintf(f, "entry,exit,depth,count\n");
+      for (uint32_t i = 0; i < LEAVE_CAP; i++) {
+        const Leave* l = &p->leaves[i];
+        if (l->used)
+          fprintf(f, "$%02X:%04X,$%02X:%04X,%d,%u\n", l->entry >> 16,
+                  l->entry & 0xffff, l->exit >> 16, l->exit & 0xffff, l->depth,
+                  l->count);
+      }
+      fclose(f);
+    } else {
+      fprintf(stderr, "error: cannot write '%s'\n", exits);
+    }
+  }
+  if (p->leaves_dropped)
+    fprintf(stderr, "warning: %llu port exits did not fit in the profile's table\n",
+            (unsigned long long)p->leaves_dropped);
   if (p->edges_dropped)
     fprintf(stderr, "warning: %llu call edges did not fit in the profile's table\n",
             (unsigned long long)p->edges_dropped);

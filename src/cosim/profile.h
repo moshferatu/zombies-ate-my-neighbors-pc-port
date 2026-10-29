@@ -10,7 +10,8 @@
 // So the game can keep the same books. With `--profile <dir>` every instruction
 // the core executes is counted at its opcode byte, every call at its target,
 // every call edge by caller and callee, and the lot is written on the way out
-// in `zamn_trace`'s own formats: `profile.bin`, `zamn.cdl`, `callgraph.csv`.
+// in `zamn_trace`'s own formats: `profile.bin`, `zamn.cdl`, `callgraph.csv`,
+// and the exits the ports left by in `exits.csv`.
 // What is *not* in it is anything the port served, because under substitution
 // those instructions never execute. A profile of a played session is therefore
 // the residue itself, measured rather than inferred, and
@@ -47,8 +48,15 @@ void cosim_profile_call(CosimProfile* p, uint32_t caller24, uint32_t callee24);
 // target, or reset's. An entry for attribution, as the tracer marks it.
 void cosim_profile_entry(CosimProfile* p, uint32_t pc24);
 
+// A port entered at `entry24` that left by its exit `exit24`, with the stack
+// `depth` bytes above where it was on the way in: more than zero is a port
+// that went on through a return into its caller. `tools/code_map.py` reads
+// these, as `exits.csv`, to tell which ports do.
+void cosim_profile_exit(CosimProfile* p, uint32_t entry24, uint32_t exit24,
+                        int depth);
+
 // Add this session into `dir`, creating it if need be. False, with a message
-// on stderr, if any of the three files could not be read back or written.
+// on stderr, if any of the four files could not be read back or written.
 bool cosim_profile_save(const CosimProfile* p, const char* dir);
 
 #endif

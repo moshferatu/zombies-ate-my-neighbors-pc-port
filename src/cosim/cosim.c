@@ -2520,6 +2520,8 @@ static bool run_native(Cosim* c, int index, const CosimRoutine* r, CosimStat* s)
   commit_capture(c, r, &commit);
   r->run((Wram*)snes->ram, &c->rom, &in, &out);
   commit_hold(c, &commit);
+  if (r->exit_count > 0 && c->profile)
+    cosim_profile_exit(c->profile, r->entry, out.pc, (int)out.s - (int)in.s);
 
   // Stand in for the work the ROM's instructions would have done, and return
   // when it is paid for. Usually that is here and now; a budget an interrupt

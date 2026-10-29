@@ -43,6 +43,13 @@ tracer's `zamn.cdl`, `callgraph.csv` and `flows.csv`, or the game's `zamn.cdl`.
     `BRL`, `RTS`, `RTL`, `RTI`, `WAI`) and the 65816's when not. A return that is not
     an exit is gone through: the port carries on in its caller, which is each
     place its routine was called from, and wherever the traces saw it return.
+    With `--game`, only by a port the game saw do it: one that left with its
+    stack above where it came in (`exits.csv`). The ROM's code has ways to a
+    return that the port's guard turns down, and from a return a stretch can
+    wander through its caller into much of the game.
+  * A port that leaves from inside something its stretch called leaves that
+    call's return to whoever runs the callee's return. With `--game`, only a
+    port the game saw leave with its stack below where it came in does.
   * A link is a row whose entry is one such instruction, made by the harness.
 
 Where control goes when the harness makes an instruction is where the next
@@ -50,7 +57,10 @@ port must be.
 
 **What is not followed.** A jump through a table (`JMP (a,X)`, `JSR (a,X)`,
 `JMP (a)`, `JML [a]`) and a return into an address the game pushed go where
-the traces saw them go, and nowhere else. Code behind a table entry that no
+the traces saw them go, and nowhere else. A return into an address a `PEA`
+in the traced code pushed is the 65816's only as far as that `PEA` is: when it
+is only ever run by a port, or on the way a guard turns down, so is the return.
+Code behind a table entry that no
 session used is not found, and the report lists each such site with no target
 seen. The register widths come from the traces where the instruction was run,
 and from `SEP`/`REP` followed from there where not; a call is taken to come
@@ -67,6 +77,12 @@ is wrong. Each such stretch is listed.
 **What the map does not know** is what a guard or an `accepts` turns down, or
 which exit a port takes when. It takes every exit as possible from every way
 in, so it errs towards the core. That is the safe side for a game with no CPU.
+What it learns from the game's `exits.csv` (which ports go through a return,
+which leave from inside a call) is what 112 sessions saw, and the report counts
+the ports it held back that way.
+
+A row entered on the way a guard turns down is walked apart from the same row
+entered on the core: what that port leaves onto is guarded too.
 """
 
 import argparse
@@ -93,6 +109,13 @@ CALLS = {0x20, 0x22, 0xFC}
 RETURNS = {0x60, 0x6B, 0x40}
 INDIRECT = {0x6C, 0x7C, 0xDC, 0xFC}
 ENDS = {0x00, 0x02, 0xDB}  # BRK, COP, STP: nothing in this game follows them
+
+# Tables of code addresses whose length is known, read from the ROM for every
+# `JMP (a,X)` or `JSR (a,X)` through them, on top of what the traces saw:
+# table -> entries.
+TABLES = {
+    0x82D1EE: 56,  # one per level, by the level in $1E7C: from $82:D0E0 and $82:D104
+}
 
 # The map's classes, one byte each, in the order a byte reached two ways takes.
 UNKNOWN, DATA, GUARDED, PORTED, CORE = 0, 1, 2, 3, 4
@@ -176,16 +199,27 @@ def load_pairs(paths):
     return out
 
 
+def load_leaves(paths):
+    """The game's `exits.csv`: entry -> Counter of (exit, how far the stack
+    rose) -> times."""
+    out = collections.defaultdict(collections.Counter)
+    for p in paths:
+        with open(p) as f:
+            next(f, None)
+            for line in f:
+                parts = line.strip().split(',')
+                if len(parts) < 4:
+                    continue
+                entry, ex = canon(parse_addr(parts[0])), canon(parse_addr(parts[1]))
+                out[entry][(ex, int(parts[2]))] += int(parts[3])
+    return out
+
+
 class Row:
     def __init__(self, name, entry, ret_op, exits, flags):
         self.name, self.entry, self.ret_op = name, entry, ret_op
         self.exits = set(exits)
         self.flags = set(flags)
-        # The walk's state for this row's stretch.
-        self.seen = set()
-        self.inner_calls = collections.defaultdict(set)  # callee -> its calls' next places
-        self.came_back = set()  # callees the stretch comes back from
-        self.left_in = set()    # callees the port leaves from inside
 
     @property
     def guarded(self):
@@ -199,6 +233,21 @@ class Row:
     @property
     def by_exits(self):
         return bool(self.exits) and not self.link
+
+
+class Stretch:
+    """A row as the walk enters it, in the class of the way in: core, or the
+    way a guard turns down. What the port leaves onto is in that class too."""
+
+    def __init__(self, row, cls):
+        self.row, self.cls = row, cls
+        self.seen = set()
+        self.inner_calls = collections.defaultdict(set)  # callee -> its calls' next places
+        self.came_back = set()  # callees the stretch comes back from
+        self.left_in = set()    # callees the port leaves from inside
+
+    def __getattr__(self, name):
+        return getattr(self.row, name)
 
 
 def load_registry(path):
@@ -295,8 +344,15 @@ def widths_after(ins, m, x):
 # ---------------------------------------------------------------------------
 
 class Map:
-    def __init__(self, rom, stock, flows, calls, rows, symbols):
+    def __init__(self, rom, stock, flows, calls, rows, symbols, leaves=None):
         self.rom, self.size = rom, len(rom)
+        # Entries whose port the game saw go through a return, or None to take
+        # every port as able to.
+        self.goes_through = None if leaves is None else {
+            e for e, c in leaves.items() if any(d > 0 for _, d in c)}
+        # ...and that it saw leave from inside a call.
+        self.leaves_inside = None if leaves is None else {
+            e for e, c in leaves.items() if any(d < 0 for _, d in c)}
         self.stock = stock
         self.symbols = symbols
         self.cls = bytearray(self.size)          # the map's class per byte
@@ -325,10 +381,21 @@ class Map:
                 if not self.after_call(target):
                     self.pushed[site].add(target)
         self.noreturn, self.inline = self.study_calls(calls)
+        # Return addresses a traced `PEA` pushes: target -> the classes the
+        # core has run a `PEA` of it at, and the returns waiting on one.
+        self.pea_targets = set()
+        for off in range(self.size):
+            if self.stock[off] & CDL_CODE and rom[off] == 0xF4 and off + 2 < self.size:
+                site = snes(off)
+                val = rom[off + 1] | rom[off + 2] << 8
+                self.pea_targets.add((site & 0xFF0000) | ((val + 1) & 0xFFFF))
+        self.pea_cls = collections.defaultdict(set)
+        self.pea_wait = collections.defaultdict(set)
         self.switch_memo = {}
         self.work = []
         self.core_seen = set()
         self.entered = set()                     # (row, frame)
+        self.stretches = {}                      # (row, class) -> Stretch
         # frame -> the places calls to it come back to: (address, the caller's
         # frame, m, x, the caller's class, how the caller was reached)
         self.ret_points = collections.defaultdict(set)
@@ -340,6 +407,8 @@ class Map:
         self.into_data = collections.Counter()
         self.overlaps = collections.Counter()
         self.through_rows = set()
+        self.through_unseen = set()
+        self.inside_unseen = set()
         self.off_rom = collections.Counter()
 
     # -- what the traces say -------------------------------------------------
@@ -401,7 +470,13 @@ class Map:
     def callees(self, ins, where):
         if ins.op in (0x20, 0x22):
             return direct_targets(ins)
-        seen = sorted(self.indirect.get(ins.addr, ()))
+        seen = set(self.indirect.get(ins.addr, ()))
+        bank = ins.addr & 0xFF0000
+        if ins.op in (0x7C, 0xFC) and bank | ins.val in TABLES:
+            off = rom_off(bank | ins.val, self.size)
+            for i in range(TABLES[bank | ins.val]):
+                seen.add(bank | self.rom[off + 2 * i] | self.rom[off + 2 * i + 1] << 8)
+        seen = sorted(seen)
         if not seen:
             self.unseen_indirect[ins.addr].add(where)
         return seen
@@ -514,7 +589,7 @@ class Map:
         if w[0] == 'port':
             self.stretch(w[1], ret, m, x, frame, False)
         elif w[0] == 'made':
-            self.core(ret, m, x, cls, frame, ('leaves', w[1].name))
+            self.core(ret, m, x, min(cls, w[1].cls), frame, ('leaves', w[1].name))
         else:
             self.core(ret, m, x, cls, frame, how)
 
@@ -530,6 +605,27 @@ class Map:
         else:
             seen = self.pushed.get(site, ())
         for t in seen:
+            self.pushed_return(w, t, m, x, cls, how)
+
+    def pushed_return(self, w, t, m, x, cls, how):
+        """A return into an address the game pushed. One a `PEA` pushed goes
+        there as the 65816 only when the core ran that `PEA`, and in its class."""
+        if w[0] == 'port' or t not in self.pea_targets:
+            self.resume(w, (t, None, m, x, cls, how))
+            return
+        item = (w, m, x, how)
+        if item in self.pea_wait[t]:
+            return
+        self.pea_wait[t].add(item)
+        for c in list(self.pea_cls[t]):
+            self.resume(w, (t, None, m, x, min(c, cls), how))
+
+    def pea_run(self, ins, cls):
+        t = (ins.addr & 0xFF0000) | ((ins.val + 1) & 0xFFFF)
+        if cls in self.pea_cls[t]:
+            return
+        self.pea_cls[t].add(cls)
+        for w, m, x, how in list(self.pea_wait[t]):
             self.resume(w, (t, None, m, x, cls, how))
 
     # -- the 65816's code -----------------------------------------------------
@@ -542,7 +638,7 @@ class Map:
         rows = self.row_at.get(addr)
         if rows:
             for r in rows:
-                self.enter(r, frame)
+                self.enter(r, frame, cls)
             if not all(r.guarded for r in rows):
                 return
             cls = GUARDED
@@ -554,6 +650,8 @@ class Map:
             self.reached_by.setdefault(addr, how)
         op = ins.op
         m2, x2 = widths_after(ins, m, x)
+        if op == 0xF4:
+            self.pea_run(ins, cls)
         if op in ENDS or op == 0x40:
             return
         if op in RETURNS:
@@ -576,7 +674,11 @@ class Map:
 
     # -- a port's stretch -----------------------------------------------------
 
-    def enter(self, row, frame):
+    def enter(self, row, frame, cls=CORE):
+        key = (id(row), cls)
+        if key not in self.stretches:
+            self.stretches[key] = Stretch(row, cls)
+        row = self.stretches[key]
         if (id(row), frame) in self.entered:
             return
         self.entered.add((id(row), frame))
@@ -606,14 +708,17 @@ class Map:
         if addr in row.exits and not first:
             if addr in self.row_at:
                 # The harness hands over to that row (`is_entry` in `leave`).
-                self.core(addr, m, x, CORE, frame, how)
+                self.core(addr, m, x, row.cls, frame, how)
             elif ins.op in HARNESS_MAKES:
                 self.mark(ins, PORTED)
                 self.harness_makes(ins, m, x, row, frame)
             else:
-                self.core(addr, m, x, CORE, frame, how)
+                self.core(addr, m, x, row.cls, frame, how)
             if inner:
-                self.left_inside(row, frame)
+                if self.leaves_inside is None or row.entry in self.leaves_inside:
+                    self.left_inside(row, frame)
+                else:
+                    self.inside_unseen.add(row.name)
             return
         self.mark(ins, PORTED)
         op = ins.op
@@ -630,13 +735,16 @@ class Map:
                 return
             if row.by_exits:
                 # Gone through: the port carries on in its caller.
+                if self.goes_through is not None and row.entry not in self.goes_through:
+                    self.through_unseen.add(row.name)
+                    return
                 self.through_rows.add(row.name)
-                self.returned(addr, frame, ('port', row), m2, x2, CORE, how)
+                self.returned(addr, frame, ('port', row), m2, x2, row.cls, how)
             else:
                 # `ret_op`: the harness makes the return.
-                self.returned(addr, frame, ('made', row), m2, x2, CORE, how)
+                self.returned(addr, frame, ('made', row), m2, x2, row.cls, how)
                 for t in self.pushed.get(row.ret_op, ()):
-                    self.core(t, m2, x2, CORE, None, how)
+                    self.pushed_return(('made', row), t, m2, x2, row.cls, how)
             return
         if op in CALLS:
             for t in self.callees(ins, 'ported'):
@@ -685,7 +793,7 @@ class Map:
         point of the callee's frame at the CPU's level, and the caller, if it
         was inside the stretch too, was left from inside as well."""
         ret, frame, inner, m, x = c
-        rp = (ret, frame, m, x, CORE, ('leaves', row.name))
+        rp = (ret, frame, m, x, row.cls, ('leaves', row.name))
         if rp not in self.ret_points[callee]:
             self.ret_points[callee].add(rp)
             for w in list(self.waiting[callee]):
@@ -700,16 +808,16 @@ class Map:
         m2, x2 = widths_after(ins, m, x)
         op = ins.op
         if op in RETURNS:
-            self.returned(ins.addr, frame, ('made', row), m2, x2, CORE, how)
+            self.returned(ins.addr, frame, ('made', row), m2, x2, row.cls, how)
             return
         if op == 0xCB:  # WAI
-            self.core(next_addr(ins), m2, x2, CORE, frame, how)
+            self.core(next_addr(ins), m2, x2, row.cls, frame, how)
             return
         for t in direct_targets(ins):
             if op in (0x20, 0x22):
-                self.call(t, self.returns_to(ins, t), m2, x2, CORE, frame, how)
+                self.call(t, self.returns_to(ins, t), m2, x2, row.cls, frame, how)
             else:
-                self.core(t, m2, x2, CORE, frame, how)
+                self.core(t, m2, x2, row.cls, frame, how)
 
 
 # ---------------------------------------------------------------------------
@@ -767,7 +875,15 @@ def main():
     here = os.path.dirname(os.path.abspath(__file__))
     symbols = load_symbols(os.path.join(here, 'symbols', 'zamn.sym'))
 
-    mp = Map(rom, stock, flows, calls, rows, symbols)
+    leaves = None
+    if args.game:
+        paths = session_dirs(args.game, 'exits.csv')
+        if paths:
+            leaves = load_leaves(paths)
+        else:
+            print('warning: no exits.csv in %s: every port is taken as able to go '
+                  'through a return' % args.game)
+    mp = Map(rom, stock, flows, calls, rows, symbols, leaves)
 
     # Vectors, native and emulation, as the game sees them.
     def vec(o):
@@ -848,6 +964,11 @@ def main():
         len(mp.noreturn), len(mp.inline)))
     print('Ports whose stretch goes through a return into their caller: %d.' % len(
         mp.through_rows))
+    if mp.goes_through is not None:
+        print('...and whose stretch has a way to one, but the game never saw them '
+              'take it: %d.' % len(mp.through_unseen))
+        print('Ports whose stretch can leave from inside a call, but the game never '
+              'saw them do it: %d.' % len(mp.inside_unseen))
     print()
 
     if args.game:
@@ -871,6 +992,10 @@ def main():
         for first, last in runs(short, {CORE})[:args.top]:
             print('    %s..%s  reached by %s' % (fmt(first), fmt(last),
                                                mp.reached_by.get(first)))
+        by = collections.Counter(mp.reached_by.get(a, ('?', '?'))[1] for a in short)
+        print('  By the port the walk first left to reach them:')
+        for name, n in by.most_common(args.top):
+            print('    %5d  %s' % (n, name))
         print()
 
     stretches = []

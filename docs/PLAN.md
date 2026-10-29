@@ -180,26 +180,39 @@ has no code byte that is not ported.
 **The map, begun 2026-10-29.** `tools/code_map.py` follows the code from the
 vectors and from where each registry row leaves, using the tracer's record
 of jumps through tables and returns (`flows.csv`), and sorts each byte. Over
-112 sessions (the 56 movies and the 56 records under `--level`), the four
-banks:
+112 sessions (the 56 movies and the 56 records under `--level`, which
+`tools/code_map_survey.py` runs), the four banks:
 
 | | Bytes | Never run in a session |
 |---|---|---|
-| Core: reached, and in no port's stretch | 13,117 | 5,440 |
-| Ported: inside a port's stretch | 56,790 | 2,003 |
+| Core: reached, and in no port's stretch | 8,303 | 4,616 |
+| Guarded: run only when a guard turns a call down | 472 | 0 |
+| Ported: inside a port's stretch | 61,235 | 2,930 |
 | Data | 20,247 | |
-| Touched by nothing | 40,918 | |
+| Touched by nothing | 40,815 | |
 
 The game's own run of the same sessions has the 65816 executing nothing.
-So of the core bytes, the 7,677 a session did run were run by a port every
+So of the core bytes, the 3,687 a session did run were run by a port every
 time in play. The map reaches them on the core by a chain of exits no
 session followed in that order. Each is a row missing for a case nobody
 played, or a way the ports never go. The map assumes every exit can happen
 from every way in, so it errs towards the core.
 
-Not counted yet: code behind table entries no session used (two jumps
-through a table have no target seen at all), and what of the 40,918 bytes
-is code.
+The first count was 13,117 core bytes, 7,677 of them run. Three things the
+map got wrong made up most of the difference. It let a port's stretch go
+through a return wherever the ROM's code could, including on ways the port's
+guard turns down; now only ports the game saw do it (`exits.csv`, which the
+game's `--profile` now writes). A return into an address a `PEA` pushed was
+the 65816's even when only a port runs that `PEA` (the actor handlers that
+`thread_call_handler` calls). And a port entered only on a guard's way down
+left onto core code, not guarded code. A table of 56 entries at `$82:D1EE`,
+one per level, is now read from the ROM.
+
+Most of what is left runs through the threads. A return from `thread_yield`
+can resume any thread, so one core call to it puts every thread's next
+instruction on the core.
+
+Not counted yet: what of the 40,815 bytes is code.
 
 ### Step 2. A driver with no CPU
 
