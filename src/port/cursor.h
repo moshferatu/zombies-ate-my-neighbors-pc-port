@@ -186,16 +186,22 @@ void cursor_after(Wram* w, PortCpu* c, bool picked, PickWork* k);
 // the next call, wait or return. They leave every register and flag as the
 // ROM does. The two that write to the picture hardware are in `port/dma.h`.
 //
-// Not here: the screen whose number is 4, which has a second line of words
-// and which I have not seen; a table with no routine of its own; and the
-// grid's `$3A`, which takes a character back.
+// The screen whose number is 4 is the top scores' (`port/game_over.h`). It
+// has a second line of words, the player's, by the table's pad, and no
+// routine of its own: `$82:B378` finds a nought where the routine's address
+// would be and returns with carry clear, so the entry always flashes.
+//
+// Not here: the grid's `$3A`, which takes a character back.
 
 #define PASSWORD_SCREENS 0x82b000u  // a table's address for each pad
 #define CURSOR_SCREEN_WORDS 0x82b6b2u    // each screen's words
 #define CURSOR_SCREEN_PLACES 0x82b5e3u   // where its entry is printed
 #define CURSOR_ENTRY_PLAIN 0x82b5e9u     // how the entry is printed
 #define CURSOR_ENTRY_LIT 0x82b5fdu       // ...and when it flashes
-#define CURSOR_SCREEN_TWO_LINES 0x0004u  // the screen this does not take
+#define CURSOR_SCREEN_TWO_LINES 0x0004u  // the top scores' screen
+#define CURSOR_SECOND_LINES 0x82b7d7u    // its second line, by the pad
+#define CURSOR_SECOND_LINE_PC 0x82b551u  // `JSL` the printer, for that line
+#define CURSOR_SHOWN_PC 0x82b558u
 #define W_CURSOR_CHECK 0x00e0u           // where the check is jumped through
 #define CURSOR_SCREEN_BACKDROP 0x0008u   // which of the backdrop's colours
 #define CURSOR_TURN_TICKS 0x0004u
@@ -229,8 +235,13 @@ void cursor_after(Wram* w, PortCpu* c, bool picked, PickWork* k);
 // Is the far pointer at a table in the cartridge, for a screen the tables
 // have and this takes?
 bool cursor_screen_known(const Wram* w, const Rom* rom, uint16_t page);
-// ...and is its routine the password's check?
+// ...and is its routine the password's check, or none?
 bool cursor_check_known(const Wram* w, const Rom* rom, uint16_t page);
+bool cursor_check_none(const Wram* w, const Rom* rom, uint16_t page);
+
+// `$82:B537`: true for the screen with a second line, which stops on the
+// printer's `JSL` for it rather than going on to be shown.
+bool cursor_screen_one_line(Wram* w, const Rom* rom, PortCpu* c);
 
 // `$82:B378`: the screen's own routine, jumped to with a return pushed.
 void cursor_check_call(Wram* w, const Rom* rom, PortCpu* c);
@@ -262,7 +273,6 @@ bool cursor_needs_met(CursorNeeds needs, const Wram* w, const Rom* rom,
   X(backdrop_slide_kept, "$82:B1F2", 0x82b1f2u, 0x82b1f8u, CURSOR_NEEDS_NOTHING) \
   X(backdrop_slide_job_ask, "$82:B229", 0x82b229u, 0x82b22cu, CURSOR_NEEDS_NOTHING) \
   X(screen_words_ask, "$82:B523", 0x82b523u, 0x82b533u, CURSOR_NEEDS_SCREEN) \
-  X(screen_one_line, "$82:B537", 0x82b537u, 0x82b558u, CURSOR_NEEDS_SCREEN) \
   X(screen_shown, "$82:B555", 0x82b555u, 0x82b558u, CURSOR_NEEDS_NOTHING) \
   X(screen_undim, "$82:B559", 0x82b559u, 0x82b562u, CURSOR_NEEDS_NOTHING) \
   X(sprites_ask, "$82:B588", 0x82b588u, 0x82b58eu, CURSOR_NEEDS_NOTHING) \

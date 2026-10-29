@@ -1,8 +1,17 @@
 r"""Run the sessions `tools/code_map.py` reads.
 
-Each corpus movie at its length in `verify_corpus.ps1`, and each level started
-with `--level N` under `level1.zmv` for 4700 frames, run twice: as the stock
-ROM under the tracer, and as the game with `--profile`.
+Each corpus movie at its length in `verify_corpus.ps1`, and each level
+started with `--level N` under `level1.zmv` for 4700 frames. Then what no
+movie reaches, by a `--poke`:
+
+  * four game overs, the player's health held at nought: one with a low
+    score, two that type a name for the top scores (`game-over-name.zmv`),
+    and one with both players' scores going in;
+  * the Snakeoid's two levels under `hold-y.zmv`, a player standing still
+    for it to bite, with their health held up.
+
+Each is run twice: as the stock ROM under the tracer, and as the game with
+`--profile`.
 
     python tools/code_map_survey.py <rom> <out> [--jobs 12] [--only stock|game] [--match re]
     zamn_cosim list --tsv > <out>/registry.tsv
@@ -25,6 +34,17 @@ import sys
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LEVELS = 56
 LEVEL_FRAMES = 4700
+# Health held at nought from frame 1900: the game over, the name entry (which
+# times out) and the table filed by about frame 5000, then the title.
+DEAD = ['--poke', '1900+:1CB8=0000']
+SCORE = ['--poke', '1900+:1E72=4321', '--poke', '1900+:1E74=0765']
+OVER_FRAMES = 6500
+ALIVE = ['--poke', '1600+:1CB8=000A']
+# Both players of `level1-2p.zmv` dead, and both scores going in: the second
+# is asked after the first is filed.
+BOTH_DEAD = ['--poke', '3000+:1CB8=0000', '--poke', '3000+:1CBA=0000',
+             '--poke', '3000+:1E72=4321', '--poke', '3000+:1E74=0765',
+             '--poke', '3000+:1E76=0000', '--poke', '3000+:1E78=0800']
 
 
 def exe(*parts):
@@ -42,6 +62,13 @@ def sessions():
         out.append((movie[:-4], movie, int(frames), []))
     for n in range(LEVELS):
         out.append(('rec%d' % n, 'level1.zmv', LEVEL_FRAMES, ['--level', str(n)]))
+    out.append(('over_score', 'game-over-name.zmv', OVER_FRAMES, DEAD + SCORE))
+    out.append(('over_low', 'level1.zmv', OVER_FRAMES, DEAD))
+    out.append(('over_rec10', 'game-over-name.zmv', OVER_FRAMES,
+                ['--level', '10'] + DEAD + SCORE))
+    out.append(('over_2p', 'level1-2p.zmv', 9500, BOTH_DEAD))
+    for n in (20, 40):
+        out.append(('bitten%d' % n, 'hold-y.zmv', 7000, ['--level', str(n)] + ALIVE))
     return out
 
 

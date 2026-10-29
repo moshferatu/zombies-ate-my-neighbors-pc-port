@@ -21681,57 +21681,74 @@ GAME_OVER_RESTS(X)
 GAME_OVER_JOBS_SENT(X)
 #undef X
 
-// `$82:BBED`, the answer no. Each run is from `tools/cycles816.py --db=82`.
-static const CosimRun TSC_RUN_HEAD = {196, 15, 0};    // $BBED-$BBFB
-static const CosimRun TSC_RUN_FIRST = {86, 9, 0};     // LDA $1E74 : CMP : BCC
-static const CosimRun TSC_RUN_SECOND = {120, 10, 0};  // PLX : LDA $1E78 : CMP : BCC
-static const CosimRun TSC_RUN_EQUAL = {12, 2, 0};     // BNE
-static const CosimRun TSC_RUN_LOW = {86, 9, 0};       // LDA : CMP : BCC
-static const CosimRun TSC_RUN_TAIL = {58, 6, 0};      // CLC : LDA $42 : BEQ
-static const CosimRun TSC_RUN_END = {94, 3, 0};       // PLB : PLB : RTL
-static const CosimRun TSC_RUN_TAKEN = {6, 0, 0};
+// `$82:BBED` and `$82:BC4C`. Each run is from `tools/cycles816.py`, with
+// the data bank `$82` up to the filing's `PLB` and `$7E` after it; a taken
+// branch is in the run for the three ways of a digit.
+static const CosimRun TOPS_RUNS[TOPS_RUN_COUNT] = {
+    [TOPS_HEAD] = {196, 15, 0},       [TOPS_FIRST] = {86, 9, 0},
+    [TOPS_SECOND] = {120, 10, 0},     [TOPS_EQUAL] = {12, 2, 0},
+    [TOPS_LOW] = {86, 9, 0},          [TOPS_QUALIFIES] = {114, 7, 0},
+    [TOPS_SCREEN] = {82, 9, 0},       [TOPS_TAIL] = {58, 6, 0},
+    [TOPS_SEC] = {12, 1, 0},          [TOPS_END] = {52, 2, 0},
+    [TOPS_FILE_HEAD] = {42, 6, 0},        [TOPS_BLANK_TEST] = {38, 5, 0},
+    [TOPS_BLANK] = {32, 3, 0},        [TOPS_BLANK_NEXT] = {36, 5, 0},
+    [TOPS_SCORE_AT] = {210, 21, 0},   [TOPS_HIGH] = {146, 13, 0},
+    [TOPS_LOW_NIBBLE] = {98, 9, 0},         [TOPS_NEXT_BYTE] = {80, 6, 0},
+    [TOPS_DIGIT] = {236, 19, 0},      [TOPS_DIGIT_NOUGHT] = {282, 24, 0},
+    [TOPS_DIGIT_SPACE] = {214, 21, 0},[TOPS_ROW_HEAD] = {146, 12, 0},
+    [TOPS_ROW_HIGH] = {92, 8, 0},     [TOPS_ROW_HIGHER] = {12, 2, 0},
+    [TOPS_ROW_BRA] = {12, 2, 0},      [TOPS_ROW_LOW] = {92, 8, 0},
+    [TOPS_ROW_UP] = {66, 8, 0},       [TOPS_ROWS] = {342, 39, 0},
+    [TOPS_DEC] = {12, 1, 0},          [TOPS_MOVED] = {46, 3, 0},
+    [TOPS_SCORE_IN] = {270, 23, 0},   [TOPS_NAMES] = {386, 43, 0},
+    [TOPS_NAME_IN] = {70, 9, 0},      [TOPS_FILE_END] = {92, 3, 0},
+    [TOPS_TAKEN] = {6, 0, 0},
+};
+
+static void top_scores_cost(const TopScoresWork* k, const CosimRegs* in) {
+  CosimRun run = {0, 0, 0};
+  for (int i = 0; i < TOPS_RUN_COUNT; i++) run_add(&run, &TOPS_RUNS[i], k->runs[i]);
+  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+}
 
 static bool guard_top_scores_check(Wram* scratch, const Rom* rom,
                                    const CosimRegs* in) {
+  (void)scratch;
   (void)rom;
-  return wide(in) && low_stack(in) && !top_scores_qualify(scratch, 0) &&
-         !top_scores_qualify(scratch, 1);
-}
-
-// The high word's compare decides it but where the two are equal.
-static void top_scores_bill(const Wram* w, int player, CosimRun* run) {
-  const uint16_t at = (uint16_t)(W_PLAYER_SCORE + 4 * player);
-  const uint16_t row = (uint16_t)(W_TOP_SCORES_SECOND + TOP_SCORES_LAST_ROW);
-  run_add(run, player ? &TSC_RUN_SECOND : &TSC_RUN_FIRST, 1);
-  run_add(run, &TSC_RUN_TAKEN, 1);
-  if (wram_r16(w, (uint16_t)(at + 2)) == wram_r16(w, (uint16_t)(row + 2))) {
-    run_add(run, &TSC_RUN_EQUAL, 1);
-    run_add(run, &TSC_RUN_LOW, 1);
-  }
+  return wide(in) && low_stack(in);
 }
 
 static void shim_top_scores_check(Wram* w, const Rom* rom, const CosimRegs* in,
                                   CosimRegs* out) {
-  (void)rom;
-  CosimRun run = {0, 0, 0};
-  run_add(&run, &TSC_RUN_HEAD, 1);
-  top_scores_bill(w, 0, &run);
-  top_scores_bill(w, 1, &run);
-  run_add(&run, &TSC_RUN_TAIL, 1);
-  run_add(&run, &TSC_RUN_TAKEN, 1);
-  run_add(&run, &TSC_RUN_END, 1);
-  top_scores_none(w);
-  out->a = 0;
-  out->x = TOP_SCORES_LAST_ROW;
-  out->y = in->y;
-  // The flags are the last `PLB`'s: the caller's bank.
-  out->n = (in->db & 0x80u) != 0;
-  out->z = in->db == 0;
-  out->c = false;
-  out->flags = COSIM_FLAG_N | COSIM_FLAG_Z | COSIM_FLAG_C;
-  out->regs = COSIM_REG_ALL;
-  cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
+  PortCpu c;
+  TopScoresWork k = {0};
+  cpu_from(in, &c);
+  top_scores_ask(w, rom, &c, &k);
+  cpu_to(&c, out);
+  top_scores_cost(&k, in);
 }
+
+// The filing is in bank `$82`, with the stack `$82:BC41` left, and the
+// entry where the cursor's screen keeps it.
+static bool guard_top_scores_filed(Wram* scratch, const Rom* rom,
+                                   const CosimRegs* in) {
+  (void)rom;
+  return wide(in) && low_stack(in) && in->db == 0x82 &&
+         top_scores_file_known(scratch, in->s);
+}
+
+static void shim_top_scores_filed(Wram* w, const Rom* rom, const CosimRegs* in,
+                                  CosimRegs* out) {
+  PortCpu c;
+  TopScoresWork k = {0};
+  cpu_from(in, &c);
+  top_scores_file(w, rom, &c, &k);
+  cpu_to(&c, out);
+  top_scores_cost(&k, in);
+}
+
+static const uint32_t TOP_SCORES_EXITS[] = {TOP_SCORES_SCREEN_PC,
+                                            TOP_SCORES_RTL_PC};
 
 // ---------------------------------------------------------------------------
 // $80:9A52  a portrait -- see `port/frontend.h`
@@ -28527,7 +28544,9 @@ static const CosimRun CURSOR_RUN_backdrop_slide_ask = {70, 7, 0};
 static const CosimRun CURSOR_RUN_backdrop_slide_kept = {68, 6, 0};
 static const CosimRun CURSOR_RUN_backdrop_slide_job_ask = {34, 3, 0};
 static const CosimRun CURSOR_RUN_screen_words_ask = {186, 22, 1};
-static const CosimRun CURSOR_RUN_screen_one_line = {118, 12, 1};
+// `screen_one_line`, each way: to be shown, and to the second line's `JSL`.
+static const CosimRun CURSOR_RUN_ONE_LINE = {118, 12, 1};
+static const CosimRun CURSOR_RUN_TWO_LINES = {294, 34, 2};
 static const CosimRun CURSOR_RUN_screen_shown = {34, 3, 0};
 static const CosimRun CURSOR_RUN_screen_undim = {86, 9, 0};
 static const CosimRun CURSOR_RUN_sprites_ask = {36, 6, 0};
@@ -28575,8 +28594,32 @@ static bool cursor_stretch_ok(const CosimRegs* in) {
 CURSOR_STRETCHES(X)
 #undef X
 
-// `$82:B378`, with a routine to jump to.
+static bool supported_cursor_screen_one_line(Wram* scratch, const Rom* rom,
+                                             const CosimRegs* in) {
+  PortCpu c;
+  cpu_from(in, &c);
+  return cursor_stretch_ok(in) &&
+         cursor_needs_met(CURSOR_NEEDS_SCREEN, scratch, rom, &c);
+}
+
+static void shim_cursor_screen_one_line(Wram* w, const Rom* rom,
+                                        const CosimRegs* in, CosimRegs* out) {
+  PortCpu c;
+  cpu_from(in, &c);
+  const bool two = cursor_screen_one_line(w, rom, &c);
+  cpu_to(&c, out);
+  CosimRun run = {0, 0, 0};
+  run_add(&run, two ? &CURSOR_RUN_TWO_LINES : &CURSOR_RUN_ONE_LINE, 1);
+  cosim_cost(cosim_run_cycles_dp(&run, fetch_fast(in), (in->d & 0xffu) != 0));
+}
+
+static const uint32_t CURSOR_ONE_LINE_EXITS[] = {CURSOR_SHOWN_PC,
+                                                 CURSOR_SECOND_LINE_PC};
+
+// `$82:B378`, with a routine to jump to, and with none: `CLC : LDY # : LDA
+// [$E6],Y : BEQ`, taken, and the `RTS`.
 static const CosimRun CURSOR_RUN_CHECK_CALL = {406, 33, 2};
+static const CosimRun CURSOR_RUN_CHECK_NONE = {136, 11, 1};
 static const CosimRun CURSOR_RUN_CHECKED = {12, 2, 0};     // BCS
 static const CosimRun CURSOR_RUN_LOAD = {18, 3, 0};        // LDA #
 static const CosimRun CURSOR_RUN_FLASH_NEXT = {68, 5, 0};  // DEC abs : BPL
@@ -28591,10 +28634,12 @@ static void shim_cursor_check_call(Wram* w, const Rom* rom,
                                    const CosimRegs* in, CosimRegs* out) {
   PortCpu c;
   cpu_from(in, &c);
+  const bool none = cursor_check_none(w, rom, c.d);
   cursor_check_call(w, rom, &c);
   cpu_to(&c, out);
-  cosim_cost(cosim_run_cycles_dp(&CURSOR_RUN_CHECK_CALL, fetch_fast(in),
-                                 (in->d & 0xffu) != 0));
+  cosim_cost(cosim_run_cycles_dp(
+      none ? &CURSOR_RUN_CHECK_NONE : &CURSOR_RUN_CHECK_CALL, fetch_fast(in),
+      (in->d & 0xffu) != 0));
 }
 
 static void shim_cursor_checked(Wram* w, const Rom* rom, const CosimRegs* in,
@@ -28624,7 +28669,8 @@ static void shim_cursor_flash_next(Wram* w, const Rom* rom,
   cosim_cost(cosim_run_cycles(&run, fetch_fast(in)));
 }
 
-static const uint32_t CURSOR_CHECK_CALL_EXITS[] = {PASSWORD_CHECK_PC};
+static const uint32_t CURSOR_CHECK_CALL_EXITS[] = {PASSWORD_CHECK_PC,
+                                                   CURSOR_CHECKED_PC};
 static const uint32_t CURSOR_CHECKED_EXITS[] = {CURSOR_RIGHT_PC,
                                                 CURSOR_WRONG_PC};
 static const uint32_t CURSOR_FLASH_NEXT_EXITS[] = {CURSOR_FLASH_AGAIN_PC,
@@ -33135,12 +33181,20 @@ static const CosimRoutine ROUTINES[] = {
         .name = "top_scores_check",
         .symbol = "$82:BBED",
         .entry = TOP_SCORES_CHECK_PC,
-        .ret_op = TOP_SCORES_CHECK_RTL_PC,
-        .ret_kind = COSIM_RTL,
         .run = shim_top_scores_check,
         .supported = guard_top_scores_check,
+        COSIM_EXITS(TOP_SCORES_EXITS),
         .cycles = 900,
-        .stack_bytes = 4,  // `PHB`, `PEA` and `PHX`, less a `PLB` between
+    },
+    {
+        .name = "top_scores_filed",
+        .symbol = "$82:BC4C",
+        .entry = TOP_SCORES_FILE_PC,
+        .run = shim_top_scores_filed,
+        .supported = guard_top_scores_filed,
+        COSIM_EXITS(TOP_SCORES_EXITS),
+        .uncalled = true,
+        .cycles = 12000,
     },
     {
         .name = "portrait_copy",
@@ -36035,6 +36089,15 @@ static const CosimRoutine ROUTINES[] = {
     },
     CURSOR_STRETCHES(X)
 #undef X
+    {
+        .name = "cursor_screen_one_line",
+        .symbol = "$82:B537",
+        .entry = 0x82b537u,
+        .run = shim_cursor_screen_one_line,
+        .supported = supported_cursor_screen_one_line,
+        COSIM_EXITS(CURSOR_ONE_LINE_EXITS),
+        .cycles = 120,
+    },
     {
         .name = "cursor_check_call",
         .symbol = "$82:B378",

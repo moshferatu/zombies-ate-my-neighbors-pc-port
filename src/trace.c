@@ -44,6 +44,7 @@
 #include "analysis/movie_apply.h"
 #include "analysis/w65816.h"
 #include "levelstart.h"
+#include "poke.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -866,7 +867,8 @@ int main(int argc, char** argv) {
   if (argc < 2) {
     fprintf(stderr,
             "usage: %s <rom.sfc> [-o dir] [-f frames] [-m movie]\n"
-            "          [--trace-reset n] [--trace-nmi frame] [--level n]\n",
+            "          [--trace-reset n] [--trace-nmi frame] [--level n]\n"
+            "          [--poke frame[+]:addr=value[.b]]...\n",
             argv[0]);
     return 2;
   }
@@ -877,6 +879,7 @@ int main(int argc, char** argv) {
   int frames = 600;
   int64_t trace_reset = 0;
   int start_level = -1;
+  PokeList pokes = {0};
   g.nmi_trace_frame = -1;
 
   for (int i = 2; i < argc; i++) {
@@ -889,6 +892,10 @@ int main(int argc, char** argv) {
     else if (!strcmp(a, "--trace-nmi") && has_next) g.nmi_trace_frame = atoi(argv[++i]);
     else if (!strcmp(a, "--png") && has_next) png_path = argv[++i];
     else if (!strcmp(a, "--stats-from") && has_next) g.stats_from = atoi(argv[++i]);
+    // A state asserted, as zamn_headless takes it: the way to a game over.
+    else if (!strcmp(a, "--poke") && has_next) {
+      if (!poke_parse(&pokes, argv[++i])) return 2;
+    }
     else if (!strcmp(a, "--level") && has_next) {
       start_level = atoi(argv[++i]);
       if (start_level < LEVEL_FIRST || start_level > LEVEL_LAST) {
@@ -982,6 +989,7 @@ int main(int argc, char** argv) {
     if (have_movie) {
       movie_apply(&movie, snes, g.frame);
     }
+    poke_apply(&pokes, snes->ram, g.frame);
     run_frame(snes);
     if ((g.frame % 200) == 0) {
       printf("  frame %5d  %10llu instructions\n", g.frame,

@@ -180,20 +180,21 @@ has no code byte that is not ported.
 **The map, begun 2026-10-29.** `tools/code_map.py` follows the code from the
 vectors and from where each registry row leaves, using the tracer's record
 of jumps through tables and returns (`flows.csv`), and sorts each byte. Over
-112 sessions (the 56 movies and the 56 records under `--level`, which
-`tools/code_map_survey.py` runs), the four banks:
+118 sessions (the 56 movies, the 56 records under `--level`, and six made
+with a `--poke`, below; `tools/code_map_survey.py` runs them), the four
+banks:
 
 | | Bytes | Never run in a session |
 |---|---|---|
-| Core: reached, and in no port's stretch | 6,068 | 3,845 |
-| Guarded: run only when a guard turns a call down | 475 | 0 |
-| Ported: inside a port's stretch | 63,467 | 3,701 |
-| Data | 20,247 | |
-| Touched by nothing | 40,815 | |
+| Core: reached, and in no port's stretch | 6,243 | 2,559 |
+| Guarded: run only when a guard turns a call down | 0 | 0 |
+| Ported: inside a port's stretch | 63,942 | 3,329 |
+| Data | 22,790 | |
+| Touched by nothing | 38,097 | |
 
-The game's own run of the same sessions has the 65816 executing nothing.
-So of the core bytes, the 2,223 a session did run were run by a port every
-time in play. The map reaches them on the core by a chain of exits no
+The game's own run of the same sessions has the 65816 executing nothing
+but in the two where the Snakeoid bites, below. So of the other core bytes
+a session ran, each was run by a port every time in play. The map reaches them on the core by a chain of exits no
 session followed in that order. Each is a row missing for a case nobody
 played, or a way the ports never go. The map assumes every exit can happen
 from every way in, so it errs towards the core.
@@ -219,7 +220,34 @@ play. They are in the player's states, reached by a chain of hand-overs
 each taken somewhere: the map pairs each return with every call to its
 routine, in an order no session went.
 
-Not counted yet: what of the 40,815 bytes is code.
+**Sessions for the exits nobody took** (2026-10-29). Followed back, nearly
+all of those 5,092 bytes are behind four exits: the game over (2,313
+bytes), the Snakeoid coming up to bite beside a player (1,111) and under
+one (779 with the next), and record 48's thing finding a player (714). No
+movie reaches any. `zamn_trace` takes `--poke` now, as the game does, and
+the survey has six sessions more:
+
+* four game overs, health held at nought: a low score; a score that goes in
+  the table with a name typed (`movies/game-over-name.zmv`), twice; and
+  both players' scores going in (`level1-2p.zmv`);
+* levels 20 and 40 under `movies/hold-y.zmv`, a player standing still with
+  Y held and health held up. The Snakeoid goes only for a held pad, and it
+  comes up beside them and bites.
+
+The low score was all ported. A score that goes in was not: the name's
+screen is the cursor's fourth (`port/cursor.h`), which the ports turned
+down, and the filing was the ROM's. Both are ported now
+(`port/game_over.h`), and all four game overs run with the 65816
+executing nothing.
+
+The bite is not ported. Each of the two sessions has the 65816 run about
+280,000 instructions at 22 places: the Snakeoid's coming up and going
+under (`$82:9C02`, `$82:9CEC`), the bite (`$82:A538`-`$82:A730`), a job of
+the vertical blank's that moves the second layer (`$82:9CA6`), and the
+ground test at `$82:A214`. About 1,500 bytes. Its dying (`$82:A8F3`) and
+record 48's thing waking have no session yet.
+
+Not counted yet: what of the 38,097 bytes is code.
 
 ### Step 2. A driver with no CPU
 

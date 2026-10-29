@@ -300,6 +300,8 @@
   X(cursor_pads_forget, "cursor_pads_forget", "what the pads held forgotten") \
   X(cursor_entry_clear, "cursor_entry_clear", "nothing entered, and the clock set") \
   X(cursor_check_call, "cursor_check_call", "the screen's own routine jumped to") \
+  X(cursor_check_none, "cursor_check_call", "...or it has none: carry clear") \
+  X(cursor_screen_two_lines, "cursor_screen_one_line", "the screen with a second line of words") \
   X(cursor_checked_right, "cursor_checked", "carry clear: the sound of a good entry") \
   X(cursor_checked_wrong, "cursor_checked", "...or set: the sound of a bad one") \
   X(cursor_flash_begin, "cursor_flash_begin", "the entry to flash twice") \
@@ -2424,6 +2426,9 @@
   X(game_over_blank, "go_wait", "...and at nothing, the screen blanked") \
   X(game_over_job_sent, "go_text_map_sent", "a job's send done: the word pulled, and carry clear") \
   X(top_scores_check, "top_scores_check", "neither score as good as the tenth") \
+  X(top_scores_goes_in, "top_scores_check", "...or one is: its name asked for") \
+  X(top_scores_filed, "top_scores_filed", "a name and score filed") \
+  X(top_scores_rows_move, "top_scores_filed", "...below the tenth's row, so rows move down") \
   X(demo_all_played, "demo_begin", "all four demos played: all four again") \
   X(demo_drawn_again, "demo_begin", "a demo drawn that has been played: again") \
   X(demo_drawn, "demo_begin", "one not played yet, and its level and recording") \

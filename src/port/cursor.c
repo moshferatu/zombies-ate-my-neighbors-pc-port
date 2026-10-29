@@ -338,7 +338,12 @@ bool cursor_screen_known(const Wram* w, const Rom* rom, uint16_t page) {
   const uint32_t at = screen(w, page);
   if (!pointer_in_cartridge(at)) return false;
   const uint16_t which = rom_word(rom, at);
-  return which < TABLE_SCREENS && which != CURSOR_SCREEN_TWO_LINES;
+  // The second line is the player's, by the table's pad.
+  if (which == CURSOR_SCREEN_TWO_LINES) {
+    const uint16_t pad = rom_word(rom, at + 2);
+    return pad == 0 || pad == 2;
+  }
+  return which < TABLE_SCREENS;
 }
 
 static uint32_t check_routine(const Wram* w, const Rom* rom, uint16_t page) {
@@ -349,7 +354,12 @@ static uint32_t check_routine(const Wram* w, const Rom* rom, uint16_t page) {
 
 bool cursor_check_known(const Wram* w, const Rom* rom, uint16_t page) {
   return pointer_in_cartridge(screen(w, page)) &&
-         check_routine(w, rom, page) == PASSWORD_CHECK_PC;
+         (cursor_check_none(w, rom, page) ||
+          check_routine(w, rom, page) == PASSWORD_CHECK_PC);
+}
+
+bool cursor_check_none(const Wram* w, const Rom* rom, uint16_t page) {
+  return rom_word(rom, screen(w, page) + 4) == 0;
 }
 
 bool cursor_needs_met(CursorNeeds needs, const Wram* w, const Rom* rom,
@@ -485,11 +495,22 @@ static void shown(Wram* w, PortCpu* c) {
 }
 
 // Not the screen with a second line, so shown: black, but no longer blank.
-void cursor_screen_one_line(Wram* w, const Rom* rom, PortCpu* c) {
-  PORT_COVER(cursor_screen_one_line);
-  c->a = rom_word(rom, screen(w, c->d));
+// That screen prints the player's line first: the words by the table's pad,
+// where its entry goes.
+bool cursor_screen_one_line(Wram* w, const Rom* rom, PortCpu* c) {
+  const uint32_t at = screen(w, c->d);
+  c->a = rom_word(rom, at);
   cmp16(c, c->a, CURSOR_SCREEN_TWO_LINES);
-  shown(w, c);
+  if (c->a != CURSOR_SCREEN_TWO_LINES) {
+    PORT_COVER(cursor_screen_one_line);
+    shown(w, c);
+    return false;
+  }
+  PORT_COVER(cursor_screen_two_lines);
+  c->y = rom_word(rom, CURSOR_SCREEN_PLACES + c->a);
+  c->x = rom_word(rom, CURSOR_SECOND_LINES + rom_word(rom, at + 2));
+  load_word(c, CURSOR_BANK, CURSOR_SECOND_LINE_PC);
+  return true;
 }
 
 void cursor_screen_shown(Wram* w, const Rom* rom, PortCpu* c) {
@@ -570,9 +591,17 @@ void cursor_entry_clear(Wram* w, const Rom* rom, PortCpu* c) {
 }
 
 void cursor_check_call(Wram* w, const Rom* rom, PortCpu* c) {
-  PORT_COVER(cursor_check_call);
   const uint32_t at = screen(w, c->d);
   set_c(c, false);
+  if (cursor_check_none(w, rom, c->d)) {
+    // `LDY #4 : LDA [$E6],Y : BEQ`, to the `RTS`.
+    PORT_COVER(cursor_check_none);
+    c->y = 4;
+    load_a(c, 0);
+    c->pc = (uint32_t)CURSOR_BANK << 16 | (uint16_t)(pull16(w, c) + 1);
+    return;
+  }
+  PORT_COVER(cursor_check_call);
   push16(w, c, rom_word(rom, at + 4));
   c->y = 6;
   c->a = rom_word(rom, at + 6);
