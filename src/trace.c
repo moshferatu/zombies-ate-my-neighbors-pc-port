@@ -7,6 +7,8 @@
 //   * a WRAM access map    — every RAM address, who reads it, who writes it
 //   * a register map       — every $21xx/$42xx/$43xx access and its caller
 //   * a call graph         — every JSR/JSL edge, with hit counts
+//   * the flows the code does not spell out — every jump through a table and
+//     every return, from where to where, for tools/code_map.py
 //   * a DMA log            — every transfer's ROM source, destination, length
 //   * optional instruction traces of reset and of a chosen NMI
 //
@@ -105,6 +107,11 @@ static struct {
 
   CallEdge* edges;
   uint32_t edge_count;
+  // Returns and jumps through an address in memory: site -> target. A return
+  // to the instruction after its call is the ordinary kind; the rest are the
+  // game pushing an address and returning into it, a thread or a job.
+  CallEdge* flows;
+  uint32_t flow_count;
 
   DmaEvent dma[DMA_CAP];
   uint32_t dma_count;
@@ -382,17 +389,18 @@ static void trace_close(TraceOut* t) {
 // Call graph
 // ---------------------------------------------------------------------------
 
-static void add_edge(uint32_t caller, uint32_t callee) {
+static void add_edge_to(CallEdge* edges, uint32_t* edge_count, uint32_t caller,
+                        uint32_t callee) {
   uint32_t h = (caller * 2654435761u) ^ (callee * 40503u);
   uint32_t i = h & (EDGE_CAP - 1);
   for (uint32_t probe = 0; probe < EDGE_CAP; probe++) {
-    CallEdge* e = &g.edges[i];
+    CallEdge* e = &edges[i];
     if (!e->used) {
       e->used = true;
       e->caller = caller;
       e->callee = callee;
       e->count = 1;
-      g.edge_count++;
+      (*edge_count)++;
       return;
     }
     if (e->caller == caller && e->callee == callee) {
@@ -401,6 +409,10 @@ static void add_edge(uint32_t caller, uint32_t callee) {
     }
     i = (i + 1) & (EDGE_CAP - 1);
   }
+}
+
+static void add_edge(uint32_t caller, uint32_t callee) {
+  add_edge_to(g.edges, &g.edge_count, caller, callee);
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +487,12 @@ static void step(Snes* snes) {
   snes_runCpuCycle(snes);
 
   uint32_t new_pc = ((uint32_t)cpu->k << 16) | cpu->pc;
+  switch (opcode) {
+    case 0x6c: case 0x7c: case 0xdc: case 0xfc:  // JMP (a), JMP (a,X), JML [a], JSR (a,X)
+    case 0x60: case 0x6b: case 0x40:              // RTS, RTL, RTI
+      add_edge_to(g.flows, &g.flow_count, pc, new_pc);
+      break;
+  }
   switch (w65816_ops[opcode].flow) {
     case FLOW_CALL:
       mark_rom(new_pc, CDL_SUB);
@@ -681,6 +699,18 @@ static void report_subs(const char* dir) {
       fprintf(f, "$%02X:%04X,$%02X:%04X,%u\n", g.edges[e].caller >> 16,
               g.edges[e].caller & 0xffff, g.edges[e].callee >> 16,
               g.edges[e].callee & 0xffff, g.edges[e].count);
+    }
+    fclose(f);
+  }
+
+  f = open_out(dir, "flows.csv");
+  if (f) {
+    fprintf(f, "site,target,count\n");
+    for (uint32_t e = 0; e < EDGE_CAP; e++) {
+      if (!g.flows[e].used) continue;
+      fprintf(f, "$%02X:%04X,$%02X:%04X,%u\n", g.flows[e].caller >> 16,
+              g.flows[e].caller & 0xffff, g.flows[e].callee >> 16,
+              g.flows[e].callee & 0xffff, g.flows[e].count);
     }
     fclose(f);
   }
@@ -902,7 +932,8 @@ int main(int argc, char** argv) {
   g.exec_count = (uint32_t*)calloc(g.rom_size, sizeof(uint32_t));
   g.call_count = (uint32_t*)calloc(g.rom_size, sizeof(uint32_t));
   g.edges = (CallEdge*)calloc(EDGE_CAP, sizeof(CallEdge));
-  if (!g.wram || !g.reg || !g.exec_count || !g.call_count || !g.edges) {
+  g.flows = (CallEdge*)calloc(EDGE_CAP, sizeof(CallEdge));
+  if (!g.wram || !g.reg || !g.exec_count || !g.call_count || !g.edges || !g.flows) {
     fprintf(stderr, "error: out of memory\n");
     return 1;
   }

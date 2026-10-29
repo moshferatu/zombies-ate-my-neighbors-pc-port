@@ -222,6 +222,29 @@ static bool parse_options(int argc, char** argv, Options* o) {
   return true;
 }
 
+// One row a line, tab-separated, for tools/code_map.py: where each port is
+// entered, the instructions it leaves by, and what kind of row it is.
+static int cmd_list_tsv(void) {
+  int count = 0;
+  const CosimRoutine* all = cosim_routines(&count);
+  printf("name\tentry\tret_op\tret_kind\tend\tyield_op\texits\tflags\n");
+  for (int i = 0; i < count; i++) {
+    const CosimRoutine* r = &all[i];
+    printf("%s\t%06X\t%06X\t%s\t%06X\t%06X\t", r->name, (unsigned)r->entry,
+           (unsigned)r->ret_op, r->ret_kind == COSIM_RTL ? "RTL" : "RTS", (unsigned)r->end,
+           (unsigned)r->yield_op);
+    for (int e = 0; e < r->exit_count; e++)
+      printf("%s%06X", e ? "," : "", (unsigned)r->exits[e]);
+    printf("\t%s%s%s%s%s%s%s%s%s\n", r->run_yield ? "resumable," : "",
+           r->supported ? "guard," : "", r->accepts ? "accepts," : "",
+           r->verify_only ? "verify_only," : "",
+           r->run_only ? "run_only," : "", r->uncalled ? "uncalled," : "",
+           r->link ? "link," : "", r->hw ? "hw," : "",
+           r->returns_on_entry_stack ? "entry_stack," : "");
+  }
+  return 0;
+}
+
 static int cmd_list(void) {
   int count = 0;
   const CosimRoutine* all = cosim_routines(&count);
@@ -419,8 +442,9 @@ static int cmd_run(const Options* o) {
 
 static void usage(void) {
   printf("zamn_cosim — Phase 3 co-simulation harness\n\n"
-         "  list\n"
-         "      What has been ported, and what the diff covers for each.\n\n"
+         "  list [--tsv]\n"
+         "      What has been ported, and what the diff covers for each.\n"
+         "      --tsv: one row a line, for tools/code_map.py.\n\n"
          "  verify <rom.sfc> [-m movie] [-f frames] [-r routine]... [-v] [-c]\n"
          "      Let the ROM run the game, and check the port against every call\n"
          "      it makes to a ported routine: 128 KB of WRAM plus registers,\n"
@@ -444,7 +468,8 @@ static void usage(void) {
 int main(int argc, char** argv) {
   if (argc < 2) { usage(); return 2; }
   const char* cmd = argv[1];
-  if (!strcmp(cmd, "list")) return cmd_list();
+  if (!strcmp(cmd, "list"))
+    return argc > 2 && !strcmp(argv[2], "--tsv") ? cmd_list_tsv() : cmd_list();
 
   Options o;
   if (!strcmp(cmd, "verify") || !strcmp(cmd, "run")) {

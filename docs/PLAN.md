@@ -177,6 +177,30 @@ is the target and the ranking.
 Done when all 110 sessions run with the 65816 executing nothing, and the map
 has no code byte that is not ported.
 
+**The map, begun 2026-10-29.** `tools/code_map.py` follows the code from the
+vectors and from where each registry row leaves, using the tracer's record
+of jumps through tables and returns (`flows.csv`), and sorts each byte. Over
+112 sessions (the 56 movies and the 56 records under `--level`), the four
+banks:
+
+| | Bytes | Never run in a session |
+|---|---|---|
+| Core: reached, and in no port's stretch | 13,117 | 5,440 |
+| Ported: inside a port's stretch | 56,790 | 2,003 |
+| Data | 20,247 | |
+| Touched by nothing | 40,918 | |
+
+The game's own run of the same sessions has the 65816 executing nothing.
+So of the core bytes, the 7,677 a session did run were run by a port every
+time in play. The map reaches them on the core by a chain of exits no
+session followed in that order. Each is a row missing for a case nobody
+played, or a way the ports never go. The map assumes every exit can happen
+from every way in, so it errs towards the core.
+
+Not counted yet: code behind table entries no session used (two jumps
+through a table have no target seen at all), and what of the 40,918 bytes
+is code.
+
 ### Step 2. A driver with no CPU
 
 Run the registry without the core. The pieces exist: `PortCpu` in
