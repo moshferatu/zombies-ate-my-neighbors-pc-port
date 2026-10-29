@@ -29,9 +29,9 @@
 // except the named ones.
 //
 // `--port-sound` gives `run`'s port core the port's sound (`src/sound`), as
-// `zamn` has it, and leaves the stock core with the console's APU. The game
-// waits on the sound, so a driver that answered on other cycles would move
-// the port core's clock and part the two.
+// `zamn` has it, the player on the chip, and leaves the stock core with the
+// console's APU. The game waits on the sound, so a player that answered on
+// other cycles would move the port core's clock and part the two.
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -403,7 +403,11 @@ static int cmd_run(const Options* o) {
   }
   Snes* native = snes_init();
   static Sound sound;
-  if (o->port_sound) sound_attach(native, &sound);
+  static Player lead;
+  if (o->port_sound) {
+    sound_attach(native, &sound, &lead);
+    lead.silent = true;  // only its answers are wanted
+  }
   int rc = cosim_lockstep(snes_init(), native, image, image_len, o->movie_path,
                           o->frames, o->selected, o->selected_count, o->verbose);
   cosim_coverage_report(o->coverage);

@@ -19,9 +19,10 @@
 # calls, and about forty seconds a movie against one.
 #
 # `-PortSound` gives the lockstep pass's port core the port's sound
-# (`src/sound`), as the game has it, while the stock core keeps the console's
-# APU. The game waits on the sound, so a driver answering on other cycles would
-# part them; with it right, the report is the same as without.
+# (`src/sound`), as the game has it, the player on the chip, while the stock
+# core keeps the console's APU. The game waits on the sound, so a player
+# answering on other cycles would part them; with it right, the report is the
+# same as without.
 #
 # `-Picture` is about the picture and not the game: it runs the game as it is
 # built with the emulated PPU in it, `build\zamn_with_ppu.exe`, with no window,

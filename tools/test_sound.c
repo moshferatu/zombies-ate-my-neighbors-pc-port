@@ -12,13 +12,20 @@
 //   * the driver's RAM at every tick, and all of the sound RAM every 64;
 //   * every sample, and each frame's audio as the frontend asks for it.
 //
-// `--break N` makes the port's driver one cycle late at its Nth poll, to show
-// the check sees it. It must then fail.
+// With `--player` the program on the port's chip is the player the game runs
+// (`src/sound/player.h`) and not `driver.c`. It keeps the driver's variables
+// in structs, so the RAM checked is all of it every 64 ticks but for $0000 to
+// $05FF, the songs' table there excepted; and the marks are those it makes:
+// the loader's, the start, the poll, the tick and the pickup. All the rest is
+// checked as for the driver.
+//
+// `--break N` makes the port's program one cycle late at its Nth poll, to
+// show the check sees it. It must then fail.
 //
 // `--spc-cycles` prints LakeSnes's cycles for each SPC700 opcode, branch
 // taken and not, for checking the costs `src/sound/driver.c` was written with.
 //
-//   zamn_test_sound [--break N] <rom.sfc> <movie.zmv>... [-f frames]
+//   zamn_test_sound [--player] [--break N] <rom.sfc> <movie.zmv>... [-f frames]
 
 #include <stdarg.h>
 #include <stdint.h>
@@ -29,6 +36,7 @@
 #include "analysis/movie_apply.h"
 #include "snes.h"
 #include "sound/chip.h"
+#include "sound/player.h"
 #include "sound/sound.h"
 
 #define SAMPLES 534
@@ -42,6 +50,12 @@ static const uint16_t marked[] = {
     // follows the first, and `zamn_test_player` counts the rest.
     0x0B1D, 0x0B9B, 0x0B9D, 0x0D70, 0x0D84, 0x0D87, 0x0D97,
 };
+
+// ...and those the player marks.
+static const uint16_t marked_by_player[] = {0xFFC0, 0xFFEF, 0x0600, 0x0AFF, 0x06B5, 0x0B1D};
+
+// --player: the program is the player.
+static Player* lead;
 
 // The register each of those carries.
 static uint8_t marked_reg(const Spc* spc, uint16_t adr) {
@@ -132,6 +146,11 @@ static void driver_ram(const uint8_t* ram, uint8_t* out) {
   memcpy(out + 0xF0, ram + 0x200, 0x1000);
 }
 
+// Where the player keeps nothing the driver keeps: its variables.
+static bool player_skips(int i) {
+  return i < 0x600 && !(i >= 0x540 && i < 0x5A6);
+}
+
 static void compare_ram(const Event* a, const Event* b) {
   const uint8_t* lake = a->ram;
   const uint8_t* port = b->ram;
@@ -139,6 +158,7 @@ static void compare_ram(const Event* a, const Event* b) {
     g.fulls++;
     for (int i = 0; i < 0x10000; i++) {
       if ((i >= 0xF0 && i < 0x200)) continue;  // the registers, the stack
+      if (lead && player_skips(i)) continue;
       if (lake[i] != port[i]) {
         fail("sound RAM $%04X at the tick on cycle %llu: console $%02X, port $%02X", i,
              (unsigned long long)a->cycle, lake[i], port[i]);
@@ -237,7 +257,7 @@ static void lake_fetch(uint16_t adr, uint8_t byte, uint64_t cycle) {
   if (adr == 0x06B5) {
     g.ticks_lake++;
     e.full = g.ticks_lake % full_every == 0;
-    e.ram = take_ram(g.apu->ram, e.full);
+    if (e.full || !lead) e.ram = take_ram(g.apu->ram, e.full);
   }
   seen(&g.lake, &g.port, true, &e);
 }
@@ -298,8 +318,15 @@ static void port_watch(void* ctx, SoundSeen what, uint16_t a, uint8_t v, uint64_
     // The echo writes into the RAM, and the port's DSP keeps step only with
     // what the driver does. The console's has made its tick on this cycle by
     // the time the instruction is fetched, so this one makes it too.
-    if (e.full) chip_sync(s, cycle);
-    e.ram = take_ram(s->ram, e.full);
+    if (lead) {
+      if (e.full) {
+        player_sync(lead, cycle);
+        e.ram = take_ram(lead->unit[0].ram, true);
+      }
+    } else {
+      if (e.full) chip_sync(s, cycle);
+      e.ram = take_ram(s->ram, e.full);
+    }
   }
   if (what == SOUND_SEEN_AT && a == 0x0AFF && ++g.polls == g.break_at) {
     s->now++;
@@ -364,16 +391,22 @@ static void drain(Queue* q) {
   }
 }
 
+// The port's DSP, its RAM and its samples: the chip's, or the player's.
+static const SoundDsp* port_dsp(void) { return lead ? &lead->unit[0].dsp : &g.sound.dsp; }
+static const uint8_t* port_ram(void) { return lead ? lead->unit[0].ram : g.sound.ram; }
+static const int16_t* port_ring(void) { return lead && g.sound.dsp_idle ? lead->ring : g.sound.ring; }
+
 // When the samples part: where the two DSPs, and the RAM they read, differ.
 static void report_dsp(void) {
   const Dsp* d = g.apu->dsp;
-  const SoundDsp* p = &g.sound.dsp;
+  const SoundDsp* p = port_dsp();
+  const uint8_t* ram = port_ram();
   for (int v = 0; v < 8; v++) {
     const DspVoice* x = &p->voice[v];
     const uint16_t dir = (uint16_t)(p->dir + 4 * x->srcn);
     printf("  voice %d: srcn $%02X (start $%04X loop $%04X) block $%04X level $%03X phase %d\n", v,
-           x->srcn, g.sound.ram[dir] | g.sound.ram[dir + 1] << 8,
-           g.sound.ram[dir + 2] | g.sound.ram[dir + 3] << 8, x->block, x->level, (int)x->phase);
+           x->srcn, ram[dir] | ram[dir + 1] << 8, ram[(uint16_t)(dir + 2)] | ram[(uint16_t)(dir + 3)] << 8,
+           x->block, x->level, (int)x->phase);
   }
   for (int v = 0; v < 8; v++) {
     const DspChannel* c = &d->channel[v];
@@ -393,7 +426,8 @@ static void report_dsp(void) {
   printf("  port:    echo at $%04X+%d length %d fir_at %d counter %d mvol %d,%d evol %d,%d "
          "efb %d; ticks %u\n",
          p->echo_start, p->echo_at, p->echo_length, p->fir_at, p->counter, p->main_vol_l,
-         p->main_vol_r, p->echo_vol_l, p->echo_vol_r, p->feedback, (unsigned)(uint16_t)g.sound.ticks);
+         p->main_vol_r, p->echo_vol_l, p->echo_vol_r, p->feedback,
+         (unsigned)(uint16_t)(lead ? lead->ticks : g.sound.ticks));
   for (int i = 0; i < 8; i++)
     if (d->firBufferL[i] != p->fir_l[i] || d->firBufferR[i] != p->fir_r[i])
       printf("  fir %d: console %d,%d port %d,%d\n", i, d->firBufferL[i], d->firBufferR[i],
@@ -401,8 +435,9 @@ static void report_dsp(void) {
   int shown = 0;
   for (int i = 0; i < 0x10000 && shown < 12; i++) {
     if (i >= 0xF0 && i < 0x200) continue;
-    if (g.apu->ram[i] != g.sound.ram[i]) {
-      printf("  RAM $%04X: console $%02X, port $%02X\n", i, g.apu->ram[i], g.sound.ram[i]);
+    if (lead && player_skips(i)) continue;
+    if (g.apu->ram[i] != ram[i]) {
+      printf("  RAM $%04X: console $%02X, port $%02X\n", i, g.apu->ram[i], ram[i]);
       shown++;
     }
   }
@@ -431,6 +466,8 @@ static bool run_movie(const uint8_t* rom, int rom_len, const char* path, long fr
   g.break_at = break_at;
   g.insn_at = 0;
   g.insn_end = 0;
+  if (lead) player_lead(lead, &g.sound);
+  else sound_use_driver(&g.sound);
   sound_reset(&g.sound);
   memset(lake_ring, 0, sizeof lake_ring);
   g.sound.watch = port_watch;
@@ -458,7 +495,7 @@ static bool run_movie(const uint8_t* rom, int rom_len, const char* path, long fr
     uint64_t last_parted = 0;
     for (uint64_t k = g.samples_checked; k < made; k++) {
       const int16_t* lake = &lake_ring[(k & 16383) * 2];
-      const int16_t* port = &g.sound.ring[(k & 16383) * 2];
+      const int16_t* port = &port_ring()[(k & 16383) * 2];
       if (lake[0] == port[0] && lake[1] == port[1]) continue;
       if (!g.failed)
         fail("sample %llu (cycle %llu): console %d,%d, port %d,%d", (unsigned long long)k,
@@ -529,6 +566,7 @@ int main(int argc, char** argv) {
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--spc-cycles")) { spc_cycles(); return 0; }
     else if (!strcmp(argv[i], "--break") && i + 1 < argc) break_at = atol(argv[++i]);
+    else if (!strcmp(argv[i], "--player")) lead = (Player*)malloc(sizeof *lead);
     else if (!strcmp(argv[i], "-f") && i + 1 < argc) frames = atol(argv[++i]);
     else if (!strcmp(argv[i], "--full") && i + 1 < argc) full_every = atol(argv[++i]);
     else if (!strcmp(argv[i], "--around") && i + 1 < argc) around = strtoull(argv[++i], NULL, 10);
@@ -536,11 +574,15 @@ int main(int argc, char** argv) {
     else if (count < 256) movies[count++] = argv[i];
   }
   if (!rom_path || !count) {
-    fprintf(stderr, "usage: zamn_test_sound [--break N] <rom.sfc> <movie.zmv>... [-f frames]\n"
+    fprintf(stderr, "usage: zamn_test_sound [--player] [--break N] <rom.sfc> <movie.zmv>... [-f frames]\n"
                     "       zamn_test_sound --spc-cycles\n");
     return 2;
   }
-  for (size_t i = 0; i < sizeof marked / sizeof *marked; i++) is_marked[marked[i]] = true;
+  if (lead)
+    for (size_t i = 0; i < sizeof marked_by_player / sizeof *marked_by_player; i++)
+      is_marked[marked_by_player[i]] = true;
+  else
+    for (size_t i = 0; i < sizeof marked / sizeof *marked; i++) is_marked[marked[i]] = true;
   int rom_len = 0;
   uint8_t* rom = read_file(rom_path, &rom_len);
   if (!rom) { printf("SKIP: no cartridge at '%s'\n", rom_path); return 0; }

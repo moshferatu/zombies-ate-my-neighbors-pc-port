@@ -476,11 +476,11 @@ typedef struct {
   double take_ms;  // ...and how long taking it apart took
 } EmuThread;
 
-// After each tick: the player up to the driver's clock, and the other sample
+// After each tick: the follower up to the chip's clock, and the other sample
 // sets loaded on it once they can be.
 static void heard_tick(Player* player, BankSfx* bank) {
   if (!player) return;
-  player_run(player, player->real->host);
+  player_run(player, player->lead->chip->host);
   bank_sfx_tick(bank);
 }
 
@@ -1456,29 +1456,36 @@ int main(int argc, char** argv) {
       printf("note : --red-blood does not know this ROM's game over, and is off.\n");
     }
   }
-  // The sound is the port's (`src/sound`): the game's own driver, in C, on
-  // the port's DSP. The console's APU is left alone, and a quick save from a
-  // build that used it does not load.
+  // The sound is the port's (`src/sound`): the console's loader, and then the
+  // player (`src/sound/player.h`), the game's driver again in C, as the sound
+  // chip's program, on the port's DSP. The console's APU is left alone, and a
+  // quick save from a build that used it does not load.
   static Sound sound;
-  sound_attach(snes, &sound);
+  static Player sound_lead;
+  sound_attach(snes, &sound, &sound_lead);
   snes_reset(snes, true);
 
-  // What is heard is the player (`src/sound/player.h`): the driver's sequencer
-  // again, following the driver, with more of everything. With the effect
-  // overlay it has eight tracks and 24 voices, so the effects the driver drops
-  // or cuts short are heard; with all the monster sounds it holds the other
-  // sample sets as well (`src/bank_sfx.h`). With neither, the driver itself is
-  // heard, as on the console.
+  // The player on the chip has the console's settings, since the game waits
+  // on its answers. More of everything is a second player that follows it:
+  // with the effect overlay it has eight tracks and 24 voices, so the effects
+  // the driver drops or cuts short are heard; with all the monster sounds it
+  // holds the other sample sets as well (`src/bank_sfx.h`). That one is heard,
+  // and the one on the chip makes no samples. With neither, the one on the
+  // chip is heard, as the console's driver was.
   Player* player = NULL;
   if (want_audio && (effect_overlay || all_monster_sounds)) {
     player = (Player*)malloc(sizeof *player);
     if (player) {
       PlayerSettings ps = effect_overlay ? player_wide : player_console;
       ps.other_sets = all_monster_sounds;
-      player_init(player, &sound, ps);
-      player_attach(player, &sound);
+      player_init(player, ps);
+      player_follow(player, &sound_lead);
     }
   }
+  sound_lead.silent = !want_audio || player;
+  // A quick save keeps the follower too, in a part of the most any settings
+  // take, so that the file is the same size whatever they are.
+  uint8_t* follower_state = (uint8_t*)calloc(1, player_state_max);
   // The monster sounds the game skips when the level has another sample set
   // loaded: the checks are watched from here on, and the sets are loaded on the
   // player once the driver has its effects.
@@ -2176,12 +2183,17 @@ int main(int argc, char** argv) {
           {&sprite_oam_owners, sizeof sprite_oam_owners},
           {sprite_oam_history, sizeof sprite_oam_history},
           {&fresh, sizeof fresh},
+          {follower_state, follower_state ? player_state_max : 0},
         };
         const int part_count = (int)(sizeof parts / sizeof parts[0]);
         if (quick_want == QUICK_SAVE) {
           // Not while the harness is part way through a routine of its own:
           // wait for a tick that ends clean, which is nearly all of them.
           if (cosim_idle(&cosim)) {
+            if (follower_state) {
+              memset(follower_state, 0, player_state_max);
+              if (player) player_save(player, follower_state);
+            }
             const bool ok = quicksave_write(&quick, snes, parts, part_count);
             printf(ok ? "Quick save: '%s'.\n" : "Quick save: cannot write '%s'.\n", quick.path);
             if (ok) notice_show("SAVED", 120, 255, 120);
@@ -2196,7 +2208,10 @@ int main(int argc, char** argv) {
           const QuickLoad got = quicksave_read(&quick, snes, parts, part_count);
           if (got == QUICKLOAD_OK) {
             cosim_forget_calls(&cosim);
-            if (player) player_resync(player);
+            // The follower as it was saved, or, saved with other settings or
+            // none, taken from the player on the chip again.
+            if (player && !(follower_state && player_load(player, follower_state, player_state_max)))
+              player_resync(player);
             widescreen_forget_passes(&ws);
             // The smoothing: the tick being shown and the first one after the
             // load are not neighbours, so the link between them is cut when it
@@ -2429,12 +2444,19 @@ int main(int argc, char** argv) {
   if (audio_refills > 1)
     printf("  audio backlog refilled %ld times — rate control is not keeping up\n",
            audio_refills);
-  if (verbose && player)
+  if (verbose) {
+    const Player* heard = player ? player : &sound_lead;
     printf("  sound: the player started %ld effects; %ld had no track and %ld were\n"
            "         playing %d times already; %ld notes had no voice and %ld took\n"
-           "         one; it took the driver's place %ld times\n",
-           player->effects_started, player->effects_dropped, player->effects_held,
-           player->set.max_same, player->notes_dropped, player->voices_stolen, player->imports);
+           "         one",
+           heard->effects_started, heard->effects_dropped, heard->effects_held,
+           heard->set.max_same, heard->notes_dropped, heard->voices_stolen);
+    if (player)
+      printf(". On the chip, with the console's settings, %ld effects had no\n"
+             "         track and %ld notes no voice. The follower took its start %ld times",
+             sound_lead.effects_dropped, sound_lead.notes_dropped, player->imports);
+    printf("\n");
+  }
   if (verbose && bank.enabled)
     printf("  monster sounds: %ld asked for with another sample set loaded, %ld played\n"
            "                 (%ld, %ld, %ld and %ld from sets 0 to 3)%s\n",
@@ -2481,9 +2503,10 @@ int main(int argc, char** argv) {
   }
   cosim_free(&cosim);
   if (player) {
-    player_detach(player, &sound);
+    player_unfollow(player);
     free(player);
   }
+  free(follower_state);
   video_snes_free(snes);
   free(rom);
   return picture_ok ? 0 : 1;

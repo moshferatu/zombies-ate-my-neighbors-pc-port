@@ -1,6 +1,8 @@
 // The sound chip as the game sees it, with nothing emulated: the console's
-// boot loader and the game's sound driver are C (`sound.c`, `driver.c`), and
-// they drive the port's DSP (`dsp.c`).
+// boot loader is C (`sound.c`), and so is what it starts at `$0600`. That is
+// a program of the caller's choosing (`SoundProgram`): the player of our own
+// (`player.h`), which is what the game has, or the game's driver as it was
+// (`driver.c`, for the tests). Either drives the port's DSP (`dsp.c`).
 //
 // ## Time
 //
@@ -89,8 +91,23 @@ typedef enum {
 } SoundSeen;
 typedef void (*SoundWatchFn)(void* ctx, SoundSeen what, uint16_t a, uint8_t v, uint64_t cycle);
 
+struct Sound;
+
+// What runs from `$0600`, where the loader jumps. `run` goes on from where the
+// program stopped until it stops again at a read of a port, as `driver_run`
+// does (see `chip.h`): `s->state` says where, from `SOUND_DRIVER_START` on.
+// A program with DSPs of its own sets `dsp_idle` on the chip as it starts, and
+// then `samples` is what is heard.
+typedef struct {
+  void (*run)(void* ctx, struct Sound* s);
+  void (*samples)(const void* ctx, int16_t* out, int count);
+  void* ctx;
+} SoundProgram;
+
 typedef struct Sound {
-  uint8_t ram[0x10000];  // the 64 KB of sound RAM, the driver's variables too
+  // The 64 KB of sound RAM, the driver's variables too. A program with DSPs of
+  // its own takes it as it starts, and keeps its own from then on.
+  uint8_t ram[0x10000];
   SoundDsp dsp;
 
   uint64_t now;   // the program's clock: where its next instruction begins
@@ -114,13 +131,20 @@ typedef struct Sound {
   // What the game has been given, as of `host`: the samples made before it.
   int16_t ring[16384 * 2];
   uint64_t ticks;  // DSP ticks so far, all of them
+  bool dsp_idle;   // the program has DSPs of its own, and this one stopped
 
+  SoundProgram program;
   SoundWatchFn watch;
   void* watch_ctx;
 } Sound;
 
-// Power on. The loader starts at cycle 0.
+// Power on. The loader starts at cycle 0. The program and the watcher are
+// kept: they are the caller's wiring, not the machine's.
 void sound_reset(Sound* s);
+
+// The game's driver as it was, routine by routine (`driver.c`), as `s`'s
+// program. Only the tests have it: it is what they check the player against.
+void sound_use_driver(Sound* s);
 
 // `dst` becomes a copy of `src`, from here on a machine of its own. Nothing
 // watches it.
@@ -140,7 +164,12 @@ void sound_write_port(Sound* s, int port, uint8_t val);
 
 // The last 534 samples made before the last `sound_run`'s `t` (one NTSC frame),
 // stretched or squeezed to `count` pairs, as LakeSnes's `dsp_getSamples` does.
+// The program's, once it has DSPs of its own.
 void sound_get_samples(const Sound* s, int16_t* out, int count);
+
+// ...the same, from a ring of 16,384 pairs, `ticks` of them made, as of `host`.
+void sound_ring_samples(const int16_t* ring, uint64_t ticks, uint64_t host, int16_t* out,
+                        int count);
 
 // DSP ticks made before cycle `t`: the one at cycle 32k is made before
 // anything else the chip does in that cycle.

@@ -7,20 +7,31 @@
 // instructions in order, `+ 8` before a call is the CALL, and every routine
 // spends its own RET. Where a routine is the driver's, its address is given.
 //
+// The sound RAM keeps what the driver keeps there and the player reads: the
+// songs, the instruments and samples, the directory, the driver's tables, and
+// the echo's delay line. The driver's variables, `$0000` to `$05FF` but for
+// the songs' table, are the structs.
+//
 // Port code: libc only.
 
 #include "sound/player.h"
 
 #include <string.h>
 
+// `chip.h`'s `spend` is the chip's clock, which the driver counts on; the
+// player counts its own (`Player.at`) and hands it to the chip at each call.
+#define spend chip_spend
+#include "sound/chip.h"
+#undef spend
 #include "sound/driver_ram.h"
 
 const PlayerSettings player_console = {4, 8, 0, false};
 const PlayerSettings player_wide = {8, 24, 3, false};
 
-#define DRIVER_PICKUP 0x0B1D  // `driver.c` marks the command picked up here...
-#define DRIVER_TICK 0x06B5    // ...each tick of its timer here...
-#define DRIVER_START 0x0600   // ...and the driver starting here
+#define DRIVER_PICKUP 0x0B1D  // where the command is picked up, marked for a follower...
+#define DRIVER_TICK 0x06B5    // ...each tick of the timer...
+#define DRIVER_START 0x0600   // ...the driver starting...
+#define DRIVER_POLL 0x0AFF    // ...and the poll
 #define PICKUP_TO_COMMAND 35  // from the mark to the command's handler
 #define BUSY_TO_TICK 44       // from the end of a tick to the next, round the loop
 #define BUSY_TO_PICKUP 11     // ...and to the poll
@@ -65,8 +76,16 @@ static void dsp_tick(Player* p) {
   p->dsp_at += 32;
 }
 
-// The DSP's ticks up to and including cycle `c`.
+// The DSP's ticks up to and including cycle `c`. A silent player only counts
+// them.
 static void catch_up(Player* p, uint64_t c) {
+  if (p->dsp_at > c) return;
+  if (p->silent) {
+    const uint64_t n = (c - p->dsp_at) / 32 + 1;
+    p->ticks += n;
+    p->dsp_at += 32 * n;
+    return;
+  }
   while (p->dsp_at <= c) dsp_tick(p);
 }
 
@@ -80,20 +99,47 @@ static void bank_put(Player* p, int b, int at, uint16_t adr, uint8_t val) {
   for (int u = k->first_unit; u < k->first_unit + k->units; u++) p->unit[u].ram[adr] = val;
 }
 
+// The driver picks a handler by writing its address, from a pair of tables,
+// into the operand of a JMP of its own at `at - 1`. The player calls the
+// handler, and writes the address too, so that the RAM is the console's.
+static void code_jump(Player* p, int b, uint16_t at, uint16_t lo, uint16_t hi, uint8_t index) {
+  const PlayerBank* k = &p->bank[b];
+  for (int u = k->first_unit; u < k->first_unit + k->units; u++) {
+    uint8_t* ram = p->unit[u].ram;
+    ram[at] = ram[(uint16_t)(lo + index)];
+    ram[(uint16_t)(at + 1)] = ram[(uint16_t)(hi + index)];
+  }
+}
+
 static int unit_of(int v) { return v >> 3; }
 static uint8_t bit_of(int v) { return (uint8_t)(1 << (v & 7)); }
 
-// $0EF1: MOV $F2, Y : MOV $F3, A : RET -- to unit `u`, or every unit for -1.
-static void dsp_set(Player* p, int u, uint8_t reg, uint8_t val) {
-  spend(p, 4);
-  const uint64_t c = p->at + 3;
+// A DSP register written by the current instruction, on its cycle `at`: to
+// unit `u`, or every unit for -1. A leader tells its chip's watcher, as the
+// chip does of the driver's.
+static void dsp_write(Player* p, int u, int at, uint8_t reg, uint8_t val) {
+  const uint64_t c = p->at + (uint64_t)at;
   catch_up(p, c);
   if (p->on_write) p->on_write(p->write_ctx, u, reg, val, c);
+  if (p->chip && p->chip->watch) p->chip->watch(p->chip->watch_ctx, SOUND_SEEN_DSP, reg, val, c);
+  if (reg >= 0x80) return;
   for (int i = u < 0 ? 0 : u; i < (u < 0 ? p->units : u + 1); i++) {
     sound_dsp_write(&p->unit[i].dsp, reg, val);
     if (reg == DSP_KON && val) p->unit[i].quiet = 0;
   }
+}
+
+// $0EF1: MOV $F2, Y : MOV $F3, A : RET
+static void dsp_set(Player* p, int u, uint8_t reg, uint8_t val) {
+  spend(p, 4);
+  dsp_write(p, u, 3, reg, val);
   spend(p, 4 + 5);
+}
+
+// The first unit's register `reg`, read on the current instruction's cycle `at`.
+static uint8_t dsp_read(Player* p, int at, uint8_t reg) {
+  catch_up(p, p->at + (uint64_t)at);
+  return sound_dsp_read(&p->unit[0].dsp, reg & 0x7F);
 }
 
 // $0EEB: one of voice `v`'s registers.
@@ -118,6 +164,42 @@ static void unit_fresh(PlayerUnit* n, const SoundDsp* from) {
   for (uint32_t i = 0; i < len; i++) n->ram[(uint16_t)(n->dsp.echo_start + i)] = 0;
   n->eon = n->non = 0;
   n->quiet = SLEEP_TICKS;
+}
+
+// ---------------------------------------------------------------------------
+// The chip, for a leader: each on the current instruction's cycle
+// ---------------------------------------------------------------------------
+
+// A port read. False if the game has not got that far yet: then the program
+// stops here, to come back to it.
+static bool port_in(Player* p, int port, uint8_t* val) {
+  p->chip->now = p->at;
+  return chip_port_in(p->chip, port, val);
+}
+
+static void port_out(Player* p, int port, uint8_t val) {
+  p->chip->now = p->at;
+  chip_port_out(p->chip, port, val);
+}
+
+static uint8_t t0_read(Player* p, int at) {
+  p->chip->now = p->at;
+  return chip_t0_read(p->chip, at);
+}
+
+// CONTROL: the timer, and clearing the ports the game writes.
+static void chip_set_control(Player* p, int at, uint8_t val) {
+  p->chip->now = p->at;
+  chip_control(p->chip, at, val);
+}
+
+// Tells the chip's watcher where the program is: a follower, or a test,
+// which may move the clock on to see that it is caught.
+static void mark(Player* p, uint16_t adr, uint8_t reg) {
+  if (!p->chip) return;
+  p->chip->now = p->at;
+  chip_mark(p->chip, adr, reg);
+  p->at = p->chip->now;
 }
 
 // ---------------------------------------------------------------------------
@@ -751,6 +833,7 @@ static void controller(Player* p, int t, uint8_t number, uint8_t val) {
     spend(p, 4 + 5);
     return;
   }
+  code_jump(p, p->track[t].bank, 0x07C2, 0x07C4, 0x07DA, number);
   spend(p, 2 + 4 + 2 + 5 + 5 + 5 + 5 + 4 + 3);
   control(p, t, number, val);
 }
@@ -828,6 +911,7 @@ static bool track_event(Player* p, int t) {
   }
   spend(p, 4 + 8);
   const uint8_t b2 = track_byte(p, t);
+  code_jump(p, tr->bank, 0x074C, 0x074E, 0x0755, (uint8_t)((tr->status - 0x80) >> 4));
   spend(p, 4 + 4 + 2 + 2 + 5 + 2 + 5 + 5 + 5 + 5 + 3);
   switch (tr->status) {
     case 0x90: note_on(p, t, b, b2); break;
@@ -936,6 +1020,7 @@ static void vibrato(Player* p, const PlayerBank* k) {
 
 // $0EB1: a track's sixteen channels, as a song starts. The wave is kept.
 static void channels_reset(Player* p, int t) {
+  spend(p, 2 + 5 + 2 + 2);
   for (int i = 0; i < 16; i++) {
     PlayerChannel* c = &p->channel[t][i];
     c->pan = c->tune = c->priority = 0x40;
@@ -944,7 +1029,9 @@ static void channels_reset(Player* p, int t) {
     c->vib_rate = 0x20;
     c->vib_range = 0x02;
     c->bend_range = 0x0C;
+    spend(p, 88 + loop_end(i < 15));
   }
+  spend(p, 5);
 }
 
 // How many tracks are playing `song` of bank `b`.
@@ -957,23 +1044,35 @@ static int playing(const Player* p, int b, uint8_t song) {
 
 // $0B8A, commands $01 and $11: song `song` of bank `b` on a free track, the
 // highest. False if it is not a song, or it is an effect playing `max_same`
-// times already, or no track is free. (It makes no DSP writes, so its cycles
-// are not counted: they are over by the next tick.)
+// times already, or no track is free.
 static bool start_song(Player* p, int b, uint8_t song, bool shifted) {
-  if (song >= p->bank[b].songs) return false;
+  const PlayerBank* k = &p->bank[b];
+  spend(p, 3 + 3);
+  if (song >= k->songs) {
+    spend(p, 4 + 2 + 5);
+    return false;
+  }
   const bool effect = song < p->bank[0].saved_songs;
   if (effect && p->set.max_same && playing(p, b, song) >= p->set.max_same) {
     p->effects_held++;
+    spend(p, 2 + 2 + 2 + 5);
     return false;
   }
-  const int low = p->bank[b].first_track;
-  int t = low + p->bank[b].tracks - 1;
-  while (t >= low && p->track[t].wait) t--;
+  spend(p, 2 + 2);
+  const int low = k->first_track;
+  int t = low + k->tracks - 1;
+  for (; t >= low; t--) {
+    spend(p, 4 + 4);
+    if (!p->track[t].wait) break;
+    spend(p, 2 + 2 + loop_end(t > low));
+  }
   if (t < low) {
     if (effect) p->effects_dropped++;
+    spend(p, 2 + 5);
     return false;
   }
   if (effect) p->effects_started++;
+  spend(p, 4);
   PlayerTrack* tr = &p->track[t];
   tr->bank = b;
   tr->song = song;
@@ -982,9 +1081,17 @@ static bool start_song(Player* p, int b, uint8_t song, bool shifted) {
   tr->shifted = shifted;
   tr->tempo = 0x0927C0;
   tr->volume = 0xFF;
+  spend(p, 3 + 5 + 5 + 5 + 5 + 2 + 5 + 5 + 2 + 5 + 2 + 5 + 2 + 5 + 2 + 5 + 4 + 8);
   channels_reset(p, t);
   tr->ptr = tr->loop = song_start(p, b, song);
-  if (!track_delta(p, t)) tr->wait = 1;
+  spend(p, 4 + 4 + 2 + 2 + 3 + 5 + 5 + 5 + 5 + 5 + 5 + 4 + 4 + 8);
+  if (track_delta(p, t)) {
+    spend(p, 4);
+  } else {
+    spend(p, 2 + 5);
+    tr->wait = 1;
+  }
+  spend(p, 2 + 5);
   return true;
 }
 
@@ -1067,35 +1174,68 @@ static void echo_clear(Player* p, int b) {
   }
 }
 
-// The commands that upload, for bank `b`, from their handlers. True if `cmd`
-// was one.
-static bool bank_command(Player* p, int b, uint8_t cmd, uint8_t param, uint8_t param0) {
+// The commands that upload, for bank `b`, from their handlers.
+
+// $0C2A, command $0B: two bytes, PARAM then PARAM0.
+static void upload_two(Player* p, int b, uint8_t param, uint8_t param0) {
+  bank_put(p, b, 2 + 3 + 6, p->bank[b].upload, param);
+  spend(p, 3 + 2 + 7 + 8);
+  upload_next(p, b);
+  spend(p, 3 + 3);
+  upload_byte(p, b, param0);
+}
+
+// $0C4D, command $0A: a song starts at the upload address.
+static void register_song(Player* p, int b) {
   PlayerBank* k = &p->bank[b];
-  switch (cmd) {
-    case 0x04: k->upload = (uint16_t)((k->upload & 0xFF00) | param); return true;
-    case 0x05: k->upload = (uint16_t)((k->upload & 0x00FF) | param << 8); return true;
-    case 0x06: spend(p, 3 + 2); upload_byte(p, b, param); return true;
-    case 0x07: k->upload++; return true;  // a byte read back
-    case 0x08:  // the uploads put back
-      k->upload = k->saved_upload;
-      k->songs = k->saved_songs;
-      return true;
-    case 0x0A:  // a song starts at the upload address
-      bank_put(p, b, 0, (uint16_t)(SONG_LO + k->songs), (uint8_t)k->upload);
-      bank_put(p, b, 0, (uint16_t)(SONG_HI + k->songs), (uint8_t)(k->upload >> 8));
-      k->songs++;
-      return true;
-    case 0x0B:  // $0C2A: two bytes, PARAM then PARAM0
-      bank_put(p, b, 2 + 3 + 6, k->upload, param);
-      spend(p, 3 + 2 + 7 + 8);
-      upload_next(p, b);
-      spend(p, 3 + 3);
-      upload_byte(p, b, param0);
-      return true;
-    case 0x0D: k->saved_upload = k->upload; k->saved_songs = k->songs; return true;
-    case 0x14: sample_song(p, b); return true;
-    default: return false;
+  bank_put(p, b, 0, (uint16_t)(SONG_LO + k->songs), (uint8_t)k->upload);
+  bank_put(p, b, 0, (uint16_t)(SONG_HI + k->songs), (uint8_t)(k->upload >> 8));
+  k->songs++;
+  spend(p, 3 + 3 + 6 + 3 + 6 + 4 + 5);
+}
+
+// $0CAD, command $0D: the uploads so far kept, for command $08 to go back to.
+static void keep_uploads(Player* p, int b) {
+  PlayerBank* k = &p->bank[b];
+  k->saved_upload = k->upload;
+  k->saved_songs = k->songs;
+  spend(p, 3 + 4 + 3 + 4 + 3 + 4 + 5);
+}
+
+// The end of command $08: back to them.
+static void restore_uploads(Player* p, int b) {
+  PlayerBank* k = &p->bank[b];
+  k->upload = k->saved_upload;
+  k->songs = k->saved_songs;
+  spend(p, 3 + 4 + 3 + 4 + 3 + 4 + 5);
+}
+
+// $0BFE, command $03: bytes of a MIDI message, gathered. Nothing reads them.
+// They go where the driver puts them, the ninth over SHIFT.
+static void midi_byte(Player* p, uint8_t param) {
+  uint8_t y = p->midi_count;
+  spend(p, 4 + 3);
+  if (param & 0x80) {
+    spend(p, 2 + 2);
+    y = 0;
+  } else {
+    spend(p, 4);
   }
+  const uint16_t at = (uint16_t)(MIDI_BYTES + y);
+  bank_put(p, 0, 0, at, param);
+  if (at == SHIFT) p->shift = param;
+  p->midi_count = ++y;
+  spend(p, 6 + 2 + 5 + 2);
+  if (y == 1) {
+    spend(p, 4 + 5);
+    return;
+  }
+  spend(p, 2 + 4 + 2 + 2);
+  if ((bank_ram(p, 0)[MIDI_BYTES] & 0xF0) == 0xC0) {
+    spend(p, 4 + 5);
+    return;
+  }
+  spend(p, 2 + 2 + (y == 2 ? 4 : 2) + 5);
 }
 
 // $0C5C, command $08: the echo off and its end of RAM cleared, every track
@@ -1124,44 +1264,102 @@ static void reset_songs(Player* p) {
     }
     spend(p, 2 + loop_end(t > 0));
   }
-  bank_command(p, 0, 0x08, 0, 0);
+  restore_uploads(p, 0);
 }
 
-// A command the driver has picked up, from its handler.
-static void command(Player* p, uint8_t cmd, uint8_t param, uint8_t param0) {
+// A command picked up, from its handler, the driver's jump at $0B31. False
+// if it starts the driver again.
+static bool command(Player* p, uint8_t cmd, uint8_t param, uint8_t param0) {
+  PlayerBank* k = &p->bank[0];
   p->commands++;
   switch (cmd) {
-    case 0x01: start_song(p, 0, param, false); return;
-    case 0x11: start_song(p, 0, param, true); return;
-    case 0x02: stop_song(p, param); return;
-    case 0x08: reset_songs(p); return;
-    case 0x09: p->synced = false; p->lost = "the driver started again"; return;
-    case 0x0C: p->paused = param; return;
-    case 0x0E: p->mono = param; return;
-    case 0x12: p->shift = param; return;
+    case 0x01:
+      start_song(p, 0, param, false);
+      return true;
+    case 0x02:
+      stop_song(p, param);
+      return true;
+    case 0x03:
+      midi_byte(p, param);
+      return true;
+    case 0x04:  // $0C20: the upload address
+      k->upload = (uint16_t)((k->upload & 0xFF00) | param);
+      spend(p, 3 + 4 + 5);
+      return true;
+    case 0x05:  // $0C25
+      k->upload = (uint16_t)((k->upload & 0x00FF) | param << 8);
+      spend(p, 3 + 4 + 5);
+      return true;
+    case 0x06:  // $0C38: a byte uploaded
+      spend(p, 3 + 2);
+      upload_byte(p, 0, param);
+      return true;
+    case 0x07:  // $0C40: a byte read back, on port 0
+      spend(p, 2 + 6);
+      if (p->chip) port_out(p, 0, bank_ram(p, 0)[k->upload]);
+      spend(p, 4);
+      upload_next(p, 0);
+      return true;
+    case 0x08:
+      reset_songs(p);
+      return true;
+    case 0x09:  // $0B5F: start again
+      spend(p, 3);
+      return false;
+    case 0x0A:
+      register_song(p, 0);
+      return true;
+    case 0x0B:
+      upload_two(p, 0, param, param0);
+      return true;
+    case 0x0C:  // $0B62: pause the tracks
+      p->paused = param;
+      spend(p, 3 + 4 + 5);
+      return true;
+    case 0x0D:
+      keep_uploads(p, 0);
+      return true;
+    case 0x0E:  // $0B67: mono
+      p->mono = param;
+      spend(p, 3 + 5 + 5);
+      return true;
+    case 0x11:  // $0B80: a song started with its notes shifted
+      spend(p, 8);
+      spend(p, start_song(p, 0, param, true) ? 2 + 2 + 5 : 4);
+      spend(p, 5);
+      return true;
+    case 0x12:  // $0B7A: ...by this much
+      p->shift = param;
+      spend(p, 3 + 5 + 5);
+      return true;
     case 0x13:  // $0B6D: the main volume
       spend(p, 3 + 2 + 8);
       dsp_set(p, -1, DSP_MVOL_L, param);
       spend(p, 2 + 8);
       dsp_set(p, -1, DSP_MVOL_R, param);
-      return;
-    default: bank_command(p, 0, cmd, param, param0); return;
+      spend(p, 5);
+      return true;
+    case 0x14:
+      sample_song(p, 0);
+      return true;
+    default:  // $00, $0F and $10
+      spend(p, 5);
+      return true;
   }
 }
 
 // ---------------------------------------------------------------------------
-// Following the driver
+// Setting up
 // ---------------------------------------------------------------------------
 
-void player_init(Player* p, const Sound* real, PlayerSettings set) {
-  memset(p, 0, sizeof *p);
+void player_init(Player* p, PlayerSettings set) {
+  memset(p, 0, offsetof(Player, unit));
   if (set.tracks < 4) set.tracks = 4;  // the driver's, which it takes over
   if (set.tracks > PLAYER_GAME_TRACKS_MAX) set.tracks = PLAYER_GAME_TRACKS_MAX;
   int live = set.live_voices / 8;
   live = live < 1 ? 1 : live > PLAYER_LIVE_UNITS_MAX ? PLAYER_LIVE_UNITS_MAX : live;
   set.live_voices = live * 8;
   p->set = set;
-  p->real = real;
   p->units = live + (set.other_sets ? PLAYER_SETS : 0);
   p->tracks = set.tracks + (set.other_sets ? PLAYER_SETS * PLAYER_SET_TRACKS : 0);
   p->voices = p->units * 8;
@@ -1176,106 +1374,343 @@ void player_init(Player* p, const Sound* real, PlayerSettings set) {
   }
   for (int b = 0; b <= PLAYER_SETS; b++) {
     PlayerBank* k = &p->bank[b];
-    for (int u = k->first_unit; u < k->first_unit + k->units; u++) p->unit[u].bank = b;
     for (int i = 0; i < voice_count(k); i++) k->order[i] = (uint8_t)(first_voice(k) + i);
   }
-  for (int u = 0; u < p->units; u++) sound_dsp_reset(&p->unit[u].dsp, p->unit[u].ram);
+  for (int u = 0; u < p->units; u++) {
+    memset(&p->unit[u], 0, sizeof p->unit[u]);
+    p->unit[u].bank = u < live ? 0 : 1 + (u - live);
+    sound_dsp_reset(&p->unit[u].dsp, p->unit[u].ram);
+  }
 }
 
-// Take the driver as it stands: its RAM, tracks, voices, DSP and samples.
+// ---------------------------------------------------------------------------
+// Leading: the program on the chip
+// ---------------------------------------------------------------------------
+
+// $0F47: the DSP's registers from the table of pairs at $118E.
+static void dsp_defaults(Player* p) {
+  const uint8_t* ram = bank_ram(p, 0);
+  spend(p, 2);
+  for (int x = 0;; x += 2) {
+    const uint8_t reg = ram[DSP_INIT + x], val = ram[DSP_INIT + x + 1];
+    spend(p, 5 + 2 + 2 + 5 + 2 + 2);
+    if (reg == 0xFF) break;
+    spend(p, 2 + 8);
+    dsp_set(p, -1, reg, val);
+    spend(p, 4);
+  }
+  spend(p, 4 + 5);
+}
+
+// $0F5C: the echo set up for a delay of 1, if it is not already. A delay
+// longer than the one in force needs its buffer cleared first; the echo is
+// muted, and given time, before it is changed. The buffer goes below $D000.
+// (The driver keeps the delay and two bytes beside it in its direct page,
+// which it has just cleared: so the delay is 1 and the others 0.)
+static void echo_setup(Player* p) {
+  const uint8_t delay = 1;
+  spend(p, 2 + 4 + 2 + 5);
+  uint8_t a = dsp_read(p, 3, DSP_EDL);
+  spend(p, 4 + 3);
+  if (a != delay) {
+    spend(p, 2 + 2 + 2 + 7 + 4 + 2);
+    for (int y = 4; y > 0; y--) {
+      spend(p, 5 + 5 + 2);
+      dsp_write(p, -1, 4, bank_ram(p, 0)[ECHO_CLEARS + y], 0);
+      spend(p, 5 + (y > 1 ? 6 : 4));
+    }
+    spend(p, 3 + 2 + 2 + 8);
+    dsp_set(p, -1, DSP_FLG, 0x20);
+    a = delay;
+    spend(p, 3 + 2 + 8);
+    dsp_set(p, -1, DSP_EDL, a);
+  } else {
+    spend(p, 4);
+  }
+  spend(p, 2 + 2 + 2 + 2 + 2 + 2 + 2 + 3);
+  dsp_set(p, -1, DSP_ESA, (uint8_t)((uint8_t)~(a << 3) + 0xD1));
+}
+
+// The driver's variables as its start leaves them: cleared, but for the
+// voices' order and where the uploads begin.
+static void lead_clear(Player* p) {
+  memset(p->track, 0, sizeof p->track);
+  memset(p->channel, 0, sizeof p->channel);
+  memset(p->voice, 0, sizeof p->voice);
+  PlayerBank* k = &p->bank[0];
+  k->upload = k->saved_upload = 0;
+  k->songs = k->saved_songs = 0;
+  p->flg = p->mono = p->shift = p->paused = 0;
+  p->midi_count = 0;
+  p->cmd = p->param = p->param0 = p->seq = 0;
+  for (int u = 0; u < p->units; u++) p->unit[u].eon = p->unit[u].non = 0;
+}
+
+// $0600: the driver starts. Its RAM cleared, the ports zeroed, the echo set
+// up, everything above $A203 cleared, the DSP set, and timer 0 started at
+// 500 Hz. Then $A2 on port 3: ready.
+//
+// The first time, from the loader, the chip's RAM, DSP and samples so far
+// become the player's, and the chip's DSP stops.
+static void lead_start(Player* p) {
+  Sound* s = p->chip;
+  if (!s->dsp_idle) {
+    for (int u = 0; u < p->bank[0].units; u++) memcpy(p->unit[u].ram, s->ram, sizeof s->ram);
+    p->unit[0].dsp = s->dsp;
+    p->unit[0].dsp.ram = p->unit[0].ram;
+    p->unit[0].quiet = 0;
+    for (int u = 1; u < p->units; u++) unit_fresh(&p->unit[u], &s->dsp);
+    p->dsp_at = s->dsp_at;
+    p->ticks = s->ticks;
+    memcpy(p->ring, s->ring, sizeof p->ring);
+    s->dsp_idle = true;
+  }
+  p->synced = true;
+  lead_clear(p);
+  mark(p, DRIVER_START, 0);
+
+  uint8_t* ram = bank_ram(p, 0);
+  spend(p, 3 + 2 + 2 + 2 + 2 + 2);
+  for (int x = 0; x < 0xF0; x++) {
+    ram[x] = 0;
+    spend(p, 4 + 2 + loop_end(x < 0xEF));
+  }
+  spend(p, 2);
+  for (int x = 0; x < 256; x++) {
+    for (int page = 1; page <= 5; page++) ram[page << 8 | x] = 0;
+    spend(p, 6 * 5 + 2 + loop_end(x < 255));
+  }
+  for (int port = 0; port < 4; port++) {
+    port_out(p, port, 0);
+    spend(p, 4);
+  }
+  spend(p, 8);
+  echo_setup(p);
+  spend(p, 2);
+  chip_set_control(p, 3, 0x30);
+  spend(p, 4);
+  p->mono = 0x30;
+  spend(p, 5 + 2 + 2 + 4 + 2);
+  // MOV [$C0]+Y, A : INC Y : BNE, and at the end of a page INC $C1 : BNE.
+  for (uint32_t adr = 0xA203; adr <= 0xFFFF; adr++) {
+    bank_put(p, 0, 6, (uint16_t)adr, 0);
+    spend(p, 7 + 2);
+    if ((adr & 0xFF) != 0xFF) spend(p, 4);
+    else spend(p, 2 + 4 + loop_end(adr < 0xFFFF));
+  }
+  spend(p, 2 + 2 + 8);
+  dsp_set(p, -1, DSP_DIR, 0x14);
+  spend(p, 8);
+  dsp_defaults(p);
+  spend(p, 2);
+  PlayerBank* k = &p->bank[0];
+  for (int x = 7; x >= 0; x--) {
+    k->order[x] = (uint8_t)x;
+    spend(p, 2 + 5 + 2 + loop_end(x > 0));
+  }
+  spend(p, 2);
+  chip_t0_target(s, 0x10);
+  spend(p, 4 + 2);
+  chip_set_control(p, 3, 0x01);
+  spend(p, 4);
+  k->saved_upload = 0xA203;
+  spend(p, 2 + 4 + 2 + 4);
+  port_out(p, 3, 0xA2);
+  spend(p, 4);
+  p->seq = 0xA2;
+  spend(p, 4);
+}
+
+// $0AFF and $06A4: the poll, then the tick if one is due: the driver's main
+// loop, as `driver_run` has it. The poll is the only read of the ports, and
+// the program can stop at each of its five reads; `s->state` says which.
+static void lead_run(void* ctx, Sound* s) {
+  Player* p = (Player*)ctx;
+  p->at = s->now;
+  p->host = s->host;
+  uint8_t v;
+  for (;;) {
+    // A port's queue or log overflowed: the chip has halted, and stays so.
+    if (s->fault) {
+      s->state = SOUND_HALTED;
+      goto stopped;
+    }
+    switch (s->state) {
+      case SOUND_DRIVER_START:
+        lead_start(p);
+        spend(p, 8);  // $06A1: CALL $0AFF
+        s->state = SOUND_DRIVER_POLL;
+        continue;
+
+      case SOUND_DRIVER_POLL:  // MOV X, $F7 : CMP X, $C9 : BEQ
+      case SOUND_DRIVER_POLL_2:
+        if (!port_in(p, 3, &s->x)) goto stopped;
+        if (s->state == SOUND_DRIVER_POLL) mark(p, DRIVER_POLL, 0);
+        spend(p, 3 + 3);
+        if (s->x == p->seq) {
+          spend(p, 4 + 5);
+          break;
+        }
+        spend(p, 2);
+        // Read twice: the game writes the count last, but the port may be
+        // caught as it changes.
+        s->state = s->state == SOUND_DRIVER_POLL ? SOUND_DRIVER_POLL_2 : SOUND_DRIVER_POLL_3;
+        continue;
+
+      case SOUND_DRIVER_POLL_3:  // each port read, echoed, and kept
+      case SOUND_DRIVER_POLL_4: {
+        const int port = s->state == SOUND_DRIVER_POLL_3 ? 0 : 1;
+        if (!port_in(p, port, &v)) goto stopped;
+        spend(p, 3);
+        port_out(p, port, v);
+        spend(p, 4);
+        if (port) p->param = v;
+        else p->param0 = v;
+        spend(p, 4);
+        s->state = s->state == SOUND_DRIVER_POLL_3 ? SOUND_DRIVER_POLL_4 : SOUND_DRIVER_POLL_5;
+        continue;
+      }
+
+      case SOUND_DRIVER_POLL_5:
+        if (!port_in(p, 2, &v)) goto stopped;
+        spend(p, 3);
+        port_out(p, 2, v);
+        spend(p, 4);
+        p->cmd = v;
+        spend(p, 4);
+        mark(p, DRIVER_PICKUP, s->x);
+        port_out(p, 3, s->x);  // the answer
+        spend(p, 4);
+        p->seq = s->x;
+        spend(p, 4 + 2);
+        if (v >= 0x15) {
+          spend(p, 4 + 5);
+          break;
+        }
+        code_jump(p, 0, 0x0B32, 0x0B34, 0x0B49, v);
+        spend(p, 2 + 5 + 5 + 5 + 5 + 3);
+        if (!command(p, v, p->param, p->param0)) {
+          s->state = SOUND_DRIVER_START;
+          continue;
+        }
+        break;
+
+      default:
+        goto stopped;
+    }
+    if (s->fault) continue;
+
+    // $06A4: MOV A, $FD : BEQ $06A1 -- a tick due? -- then paused?
+    s->state = SOUND_DRIVER_POLL;
+    const uint8_t due = t0_read(p, 2);
+    spend(p, 3);
+    if (!due) {
+      spend(p, 4 + 8);
+      continue;
+    }
+    spend(p, 2 + 3);
+    if (p->paused) {
+      spend(p, 4 + 8);
+      continue;
+    }
+    spend(p, 2 + 8);
+    mark(p, DRIVER_TICK, 0);
+    tick(p, &p->bank[0]);
+    spend(p, 8);
+    vibrato(p, &p->bank[0]);
+    spend(p, 3 + 8);
+  }
+stopped:
+  s->now = p->at;
+  // The samples before the chip's `host`. The program is stopped at a read
+  // at `host` or later, so nothing it does will be before them.
+  if (s->host) catch_up(p, s->host - 1);
+}
+
+static void lead_samples(const void* ctx, int16_t* out, int count) {
+  player_get_samples((const Player*)ctx, out, count);
+}
+
+void player_lead(Player* p, Sound* s) {
+  player_init(p, player_console);
+  p->chip = s;
+  s->program.run = lead_run;
+  s->program.samples = lead_samples;
+  s->program.ctx = p;
+}
+
+Player* player_leading(const Sound* s) {
+  return s->program.run == lead_run ? (Player*)s->program.ctx : NULL;
+}
+
+void player_sync(Player* p, uint64_t c) { catch_up(p, c); }
+
+// ---------------------------------------------------------------------------
+// Following
+// ---------------------------------------------------------------------------
+
+// Take the leader as it stands: its RAM, tracks, voices, DSP and samples. A
+// silent leader's DSP has made nothing since it started, so its registers are
+// taken and its voices are not: the next notes start them.
 static void player_import(Player* p) {
-  const Sound* s = p->real;
-  const uint8_t* r = s->ram;
-  for (int u = 0; u < p->bank[0].units; u++) memcpy(p->unit[u].ram, r, sizeof p->unit[u].ram);
+  const Player* l = p->lead;
+  const PlayerUnit* from = &l->unit[0];
+  for (int u = 0; u < p->bank[0].units; u++) memcpy(p->unit[u].ram, from->ram, sizeof from->ram);
   PlayerUnit* first = &p->unit[0];
-  first->dsp = s->dsp;
-  first->dsp.ram = first->ram;
-  first->dsp.voice_mute = 0;
-  first->eon = r[EON];
-  first->non = r[NON];
-  first->quiet = 0;
-  for (int u = 1; u < p->units; u++) unit_fresh(&p->unit[u], &s->dsp);
+  if (l->silent) {
+    unit_fresh(first, &from->dsp);
+    first->quiet = 0;
+  } else {
+    first->dsp = from->dsp;
+    first->dsp.ram = first->ram;
+    first->eon = from->eon;
+    first->non = from->non;
+    first->quiet = 0;
+  }
+  for (int u = 1; u < p->units; u++) unit_fresh(&p->unit[u], &from->dsp);
 
   PlayerBank* k = &p->bank[0];
-  k->upload = (uint16_t)(r[UPLOAD_LO] | r[UPLOAD_HI] << 8);
-  k->saved_upload = (uint16_t)(r[SAVED_LO] | r[SAVED_HI] << 8);
-  k->songs = r[SONGS];
-  k->saved_songs = r[SAVED_SONGS];
+  const PlayerBank* lk = &l->bank[0];
+  k->upload = lk->upload;
+  k->saved_upload = lk->saved_upload;
+  k->songs = lk->songs;
+  k->saved_songs = lk->saved_songs;
 
   memset(p->track, 0, sizeof p->track);
   memset(p->channel, 0, sizeof p->channel);
   memset(p->voice, 0, sizeof p->voice);
-  for (int t = 0; t < 4; t++) {
-    PlayerTrack* tr = &p->track[t];
-    tr->ptr = (uint16_t)(r[TRACK_PTR + 2 * t] | r[TRACK_PTR + 2 * t + 1] << 8);
-    tr->loop = (uint16_t)(r[TRACK_LOOP + 2 * t] | r[TRACK_LOOP + 2 * t + 1] << 8);
-    tr->tempo = (uint32_t)(r[TRACK_TEMPO + t] | r[TRACK_TEMPO + 4 + t] << 8 | r[TRACK_TEMPO + 8 + t] << 16);
-    tr->clock = (uint32_t)(r[TRACK_CLOCK + t] | r[TRACK_CLOCK + 4 + t] << 8 | r[TRACK_CLOCK + 8 + t] << 16);
-    tr->wait = (uint16_t)(r[TRACK_WAIT + t] | r[TRACK_WAIT + 4 + t] << 8);
-    tr->status = r[TRACK_STATUS + t];
-    tr->channel = r[TRACK_CHANNEL + t];
-    tr->volume = r[TRACK_VOLUME + t];
-    tr->song = r[TRACK_SONG + t];
-    tr->loops = r[TRACK_LOOPS + t];
-    tr->shifted = r[TRACK_SHIFTED + t] != 0;
-    for (int i = 0; i < 16; i++) {
-      PlayerChannel* c = &p->channel[t][i];
-      const int y = t << 4 | i;
-      c->program = r[CH_PROGRAM + y];
-      c->pan = r[CH_PAN + y];
-      c->volume = r[CH_VOLUME + y];
-      c->bend = r[CH_BEND + y];
-      c->bend_range = r[CH_BEND_RANGE + y];
-      c->flags = r[CH_FLAGS + y];
-      c->tune = r[CH_TUNE + y];
-      c->vib_depth = r[CH_VIB_DEPTH + y];
-      c->vib_range = r[CH_VIB_RANGE + y];
-      c->vib_rate = r[CH_VIB_RATE + y];
-      c->vib_wave = r[CH_VIB_WAVE + y];
-      c->priority = r[CH_PRIORITY + y];
-      c->mute = r[CH_MUTE + y];
-    }
+  for (int t = 0; t < l->set.tracks; t++) {
+    p->track[t] = l->track[t];
+    memcpy(p->channel[t], l->channel[t], sizeof p->channel[t]);
   }
-  for (int v = 0; v < 8; v++) {
-    PlayerVoice* vo = &p->voice[v];
-    vo->on = r[VOICE_ON + v] != 0;
-    vo->track = r[VOICE_TRACK + v];
-    vo->channel = r[VOICE_CHANNEL + v];
-    vo->note = r[VOICE_NOTE + v];
-    vo->key = r[VOICE_KEY + v];
-    vo->pitch = (uint16_t)(r[VOICE_PITCH_LO + v] | r[VOICE_PITCH_HI + v] << 8);
-    vo->velocity = r[VOICE_VELOCITY + v];
-    vo->vib_depth = r[VOICE_VIB_DEPTH + v];
-    vo->vib_range = r[VOICE_VIB_RANGE + v];
-    vo->vib_rate = r[VOICE_VIB_RATE + v];
-    vo->vib_time = r[VOICE_VIB_TIME + v];
-    vo->vib_step = r[VOICE_VIB_STEP + v];
-    vo->vib_wave = r[VOICE_VIB_WAVE + v];
-    vo->priority = r[VOICE_PRIORITY + v];
-    vo->echo = first->eon & (1 << v);
-    vo->noise = first->non & (1 << v);
+  for (int v = 0; v < l->voices; v++) {
+    p->voice[v] = l->voice[v];
+    if (l->silent) p->voice[v].on = false;
   }
-  // The voices the driver does not have are the least recently used.
+  // The voices the leader does not have are the least recently used.
   int n = 0;
-  for (int v = 8; v < voice_count(k); v++) k->order[n++] = (uint8_t)v;
-  for (int i = 0; i < 8; i++) k->order[n++] = r[VOICE_ORDER + i] & 7;
+  for (int v = l->voices; v < voice_count(k); v++) k->order[n++] = (uint8_t)v;
+  for (int i = 0; i < l->voices && n < voice_count(k); i++) k->order[n++] = lk->order[i];
   for (int b = 1; b <= PLAYER_SETS; b++)
     for (int i = 0; i < voice_count(&p->bank[b]); i++)
       p->bank[b].order[i] = (uint8_t)(first_voice(&p->bank[b]) + i);
-  p->flg = r[FLG];
-  p->mono = r[MONO];
-  p->shift = r[SHIFT];
-  p->paused = r[PAUSED];
+  p->flg = l->flg;
+  p->mono = l->mono;
+  p->shift = l->shift;
+  p->paused = l->paused;
+  p->midi_count = l->midi_count;
 
+  const Sound* s = l->chip;
   p->at = s->now;
   for (int b = 0; b <= PLAYER_SETS; b++) {
     p->bank[b].busy = s->now;
     p->bank[b].tick_owed = false;
   }
-  p->host = s->host;
-  p->dsp_at = s->dsp_at;
-  p->ticks = s->ticks;
-  memcpy(p->ring, s->ring, sizeof p->ring < sizeof s->ring ? sizeof p->ring : sizeof s->ring);
+  p->host = l->host;
+  p->dsp_at = l->dsp_at;
+  p->ticks = l->ticks;
+  if (l->silent) memset(p->ring, 0, sizeof p->ring);
+  else memcpy(p->ring, l->ring, sizeof p->ring);
   p->synced = true;
   p->imports++;
 }
@@ -1298,8 +1733,8 @@ static void settle(Player* p, PlayerBank* k, uint64_t c) {
   }
 }
 
-// A tick of the driver's timer, for every bank: the game's first, so that its
-// writes are made on their cycles.
+// A tick of the timer, for every bank: the game's first, so that its writes
+// are made on their cycles.
 static void tick_all(Player* p, uint64_t c) {
   for (int b = 0; b <= PLAYER_SETS; b++) {
     PlayerBank* k = &p->bank[b];
@@ -1312,7 +1747,7 @@ static void tick_all(Player* p, uint64_t c) {
 
 void player_seen(Player* p, SoundSeen what, uint16_t a, uint8_t v, uint64_t cycle) {
   (void)v;
-  if (what != SOUND_SEEN_AT) return;
+  if (what != SOUND_SEEN_AT || !p->lead) return;
   if (a == DRIVER_START) {
     p->synced = false;
     p->lost = "the driver started again";
@@ -1322,10 +1757,14 @@ void player_seen(Player* p, SoundSeen what, uint16_t a, uint8_t v, uint64_t cycl
   if (a == DRIVER_PICKUP) {
     PlayerBank* k = &p->bank[0];
     settle(p, k, cycle);
-    const uint8_t* r = p->real->ram;
+    const Player* l = p->lead;
     const uint64_t free = k->busy + BUSY_TO_PICKUP;
     p->at = (cycle > free ? cycle : free) + PICKUP_TO_COMMAND;
-    if (r[CMD] < 0x15) command(p, r[CMD], r[PARAM], r[PARAM0]);
+    if (l->cmd < 0x15 && !command(p, l->cmd, l->param, l->param0)) {
+      p->synced = false;
+      p->lost = "the driver started again";
+      return;
+    }
     if (p->at > k->busy) k->busy = p->at;
   } else if (a == DRIVER_TICK) {
     tick_all(p, cycle);
@@ -1336,29 +1775,37 @@ static void player_watch(void* ctx, SoundSeen what, uint16_t a, uint8_t v, uint6
   player_seen((Player*)ctx, what, a, v, cycle);
 }
 
-void player_attach(Player* p, Sound* real) {
-  real->watch = player_watch;
-  real->watch_ctx = p;
+void player_follow(Player* p, Player* lead) {
+  p->lead = lead;
+  p->synced = false;
+  lead->chip->watch = player_watch;
+  lead->chip->watch_ctx = p;
 }
 
-void player_detach(Player* p, Sound* real) {
-  if (real->watch == player_watch && real->watch_ctx == p) {
-    real->watch = NULL;
-    real->watch_ctx = NULL;
+void player_unfollow(Player* p) {
+  if (!p->lead) return;
+  Sound* s = p->lead->chip;
+  if (s->watch == player_watch && s->watch_ctx == p) {
+    s->watch = NULL;
+    s->watch_ctx = NULL;
   }
+  p->lead = NULL;
+  p->synced = false;
 }
 
 void player_run(Player* p, uint64_t t) {
-  const Sound* s = p->real;
+  if (!p->lead) return;
+  const Player* l = p->lead;
+  const Sound* s = l->chip;
   if (p->synced) {
-    if (s->host < p->host) p->lost = "the driver's clock went back";
+    if (s->host < p->host) p->lost = "the chip's clock went back";
     else if (s->state == SOUND_HALTED) p->lost = s->fault;
     else p->lost = NULL;
     if (p->lost) p->synced = false;
   }
   if (!p->synced) {
     p->host = t;
-    if (!sound_driver_running(s)) return;
+    if (!l->synced || !sound_driver_running(s)) return;
     player_import(p);
   }
   p->host = t;
@@ -1367,27 +1814,53 @@ void player_run(Player* p, uint64_t t) {
 }
 
 void player_get_samples(const Player* p, int16_t* out, int count) {
-  if (!p->synced) {
-    sound_get_samples(p->real, out, count);
+  // A leader before it starts, after a reset as at power on: the loader's,
+  // on the chip's own DSP.
+  if (p->chip && !p->chip->dsp_idle) {
+    sound_get_samples(p->chip, out, count);
     return;
   }
-  // `sound_get_samples`'s arithmetic, on the player's ring.
-  const uint64_t made = sound_ticks_before(p->host);
-  const uint16_t made16 = (uint16_t)made;
-  const float per_frame = 534.0f;
-  const double step = per_frame / count;
-  double at = made16 - per_frame;
-  for (int i = 0; i < count; i++) {
-    const int j = (int)at & 0x3FF;
-    const int64_t k = (int64_t)made - 1 - (int64_t)((made - 1 - (uint64_t)j) & 0x3FF);
-    if (made == 0 || k < 0 || (uint64_t)k >= p->ticks) {
-      out[i * 2] = out[i * 2 + 1] = 0;
-    } else {
-      out[i * 2] = p->ring[(k % PLAYER_RING) * 2];
-      out[i * 2 + 1] = p->ring[(k % PLAYER_RING) * 2 + 1];
-    }
-    at += step;
+  if (!p->synced) {
+    if (p->lead) player_get_samples(p->lead, out, count);
+    else memset(out, 0, sizeof *out * 2 * (size_t)count);
+    return;
   }
+  sound_ring_samples(p->ring, p->ticks, p->host, out, count);
+}
+
+// ---------------------------------------------------------------------------
+// Quick saves
+// ---------------------------------------------------------------------------
+
+size_t player_state_size(const Player* p) {
+  return offsetof(Player, chip) + sizeof(PlayerUnit) * (size_t)p->units;
+}
+
+void player_save(const Player* p, uint8_t* out) {
+  memcpy(out, p, offsetof(Player, chip));
+  uint8_t* at = out + offsetof(Player, chip);
+  for (int u = 0; u < p->units; u++, at += sizeof(PlayerUnit)) {
+    memcpy(at, &p->unit[u], sizeof(PlayerUnit));
+    ((PlayerUnit*)at)->dsp.ram = NULL;
+  }
+}
+
+bool player_load(Player* p, const uint8_t* in, size_t len) {
+  if (len < offsetof(Player, chip)) return false;
+  PlayerSettings set;
+  int units;
+  memcpy(&set, in + offsetof(Player, set), sizeof set);
+  memcpy(&units, in + offsetof(Player, units), sizeof units);
+  if (memcmp(&set, &p->set, sizeof set) || units != p->units) return false;
+  if (len < offsetof(Player, chip) + sizeof(PlayerUnit) * (size_t)units) return false;
+  memcpy(p, in, offsetof(Player, chip));
+  const uint8_t* at = in + offsetof(Player, chip);
+  for (int u = 0; u < p->units; u++, at += sizeof(PlayerUnit)) {
+    memcpy(&p->unit[u], at, sizeof(PlayerUnit));
+    p->unit[u].dsp.ram = p->unit[u].ram;
+  }
+  p->lost = NULL;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1411,10 +1884,24 @@ void player_build_set(Player* p, int set) {
 
 void player_set_command(Player* p, int set, uint8_t cmd, uint8_t param, uint8_t param0) {
   if (set < 0 || set >= PLAYER_SETS || !p->set.other_sets) return;
+  const int b = 1 + set;
+  PlayerBank* k = &p->bank[b];
   // Not the game's: its clock is left as it was.
   const uint64_t at = p->at;
-  bank_command(p, 1 + set, cmd, param, param0);
-  if (cmd == 0x08) echo_clear(p, 1 + set);
+  switch (cmd) {
+    case 0x04: k->upload = (uint16_t)((k->upload & 0xFF00) | param); break;
+    case 0x05: k->upload = (uint16_t)((k->upload & 0x00FF) | param << 8); break;
+    case 0x06: upload_byte(p, b, param); break;
+    case 0x08:  // the uploads put back, and the echo's end of RAM cleared
+      echo_clear(p, b);
+      restore_uploads(p, b);
+      break;
+    case 0x0A: register_song(p, b); break;
+    case 0x0B: upload_two(p, b, param, param0); break;
+    case 0x0D: keep_uploads(p, b); break;
+    case 0x14: sample_song(p, b); break;
+    default: break;
+  }
   p->at = at;
 }
 
@@ -1428,7 +1915,7 @@ void player_set_done(Player* p, int set) {
 
 bool player_play_from_set(Player* p, int set, uint8_t id) {
   if (set < 0 || set >= PLAYER_SETS || !p->synced || !p->bank[1 + set].ready) return false;
-  // Not on the driver's clock: the next tick starts its notes.
+  // Not on the game's clock: the next tick starts its notes.
   const uint64_t at = p->at;
   const bool ok = start_song(p, 1 + set, id, false);
   p->at = at;

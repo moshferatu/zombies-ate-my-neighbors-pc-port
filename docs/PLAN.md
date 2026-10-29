@@ -140,8 +140,9 @@ bytes of the four banks were touched by nothing, as code or as data.
   of 1992: 2,999 bytes at `$0600`, with 36,547 bytes of samples. The 65816
   sends it one-byte commands and uploads songs and sample sets through it.
 - All of it is read now: `src/sound/driver.c` is the driver to the cycle,
-  and `src/sound/player.c` is its sequencer again with no cycles counted:
-  four sequence slots, eight voices, a priority to each, or more.
+  and `src/sound/player.c` is the driver again with its state in structs:
+  four sequence slots, eight voices, a priority to each, or more. The player
+  is what the game runs; the driver is kept for the tests.
 - The DSP as each of the 56 levels' songs starts: every voice on ADSR, echo
   on with a delay of 3 and feedback up to `$6E`, no noise and no pitch
   modulation. That is one moment of each song. Whether an effect turns
@@ -438,10 +439,18 @@ Then `zamn.exe` is `main_sdl.c` on the driver and this, with the sound.
 
 ### Step 4. The sound
 
-Independent of steps 1 to 3. Items 1, 2 and 4 are done (2026-10-28); see
-`docs/sound.md`. Item 3 is not: the game still uploads a byte and an answer
-at a time, and with the console's timing kept the driver must take as long
-over it as it did.
+Independent of steps 1 to 3. Done: items 1, 2 and 4 on 2026-10-28, item 3
+on 2026-10-29; see `docs/sound.md`.
+
+Item 3 came out other than written. With the console's timing kept (the
+first decision below), the game must still send each byte and wait for its
+answer, and the answer must come on the console's cycle, which depends on
+everything the driver did before it. So the uploads stay, and what went is
+the second engine: the player with the console's settings is the program on
+the chip, answers the ports itself, and is checked against the SPC700 on
+every movie, port, DSP write and sample. `driver.c` left the game and stays
+for the tests. Reading a set from the ROM instead would need the game not to
+wait, which is the "drop it" side of that decision.
 
 1. **The DSP**, written again: BRR decoding, ADSR, pitch, echo with its
    filter, the mix. It is a fixed specification. Checked sample for sample
@@ -450,7 +459,8 @@ over it as it did.
    reads a song and drives the DSP. Checked against the SPC700 running the
    original, by the DSP writes each makes and when.
 3. **The uploads go.** A song and its samples are read from the ROM.
-   `src/assets/music.c` already decodes every data set.
+   `src/assets/music.c` already decodes every data set. (Done as one engine
+   on the chip instead; see above.)
 4. **The frontend's two extra machines go.** A driver of our own can have
    more slots and voices than four and eight, and all four sample sets
    loaded. The dropped effects and the missing monster sounds become

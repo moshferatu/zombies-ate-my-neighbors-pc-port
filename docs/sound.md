@@ -7,6 +7,13 @@ and the APU is left alone. It is checked against the APU on every movie: the
 same answers to the game on the same cycles, the same writes to the DSP on
 the same cycles, the same RAM, and the same samples.
 
+The driver is there twice. `src/sound/player.c` is the one the game runs:
+the driver written again as plain C with its state in structs, with
+settings for more tracks, voices and sample sets than the console had.
+`src/sound/driver.c` is the driver routine by routine, its variables where
+the original kept them; it is how the port was first checked against the
+SPC700, and the tests keep it for that, as they keep LakeSnes.
+
 ## What the game's sound is
 
 The whole audio program runs on the sound chip's SPC700. It is David
@@ -34,14 +41,16 @@ run. The listing goes in `analysis/`, which is never committed.
 |---|---|
 | `src/sound/dsp.c` | The DSP: BRR, pitch, envelopes, noise, echo and its filter, the mix |
 | `src/sound/sound.c` | The chip around the program: the clock, the four ports, timer 0, the DSP kept in step, and the boot loader |
-| `src/sound/driver.c` | The game's driver, routine by routine |
-| `src/sound/player.c` | The driver's sequencer again, with more tracks, voices and sample sets: what the frontend hears |
+| `src/sound/player.c` | The driver as the game runs it, on the chip, and with more tracks, voices and sample sets as a second player following that one |
+| `src/sound/driver.c` | The driver routine by routine, for the tests only |
 | `src/sound/console.c` | The one place the sound meets LakeSnes: `snes_setSound` |
 
-The driver keeps its variables where the original kept them, in the sound
-RAM, under names of this project's. That is what lets the test compare the
-RAM byte for byte, and what lets the player (`src/sound/driver_ram.h`) take
-the driver's place from wherever it is.
+What the loader starts at `$0600` is the chip's program (`SoundProgram`):
+the player in the game, or `driver.c` in a test. `driver.c` keeps the
+driver's variables where the original kept them, in the sound RAM, under
+the names in `src/sound/driver_ram.h`, which is what let the first test
+compare the RAM byte for byte. The player keeps them in structs, and the
+rest of the RAM as the driver does.
 
 ## Time
 
@@ -96,28 +105,45 @@ makes to the ports, at the console's cycle:
 `--spc-cycles` prints LakeSnes's cycles for each opcode, which agree with the
 costs the driver was written with.
 
+**`zamn_test_sound --player`** is the same test with the player as the
+chip's program, the game's sound as the game has it. All of the above is
+checked but two things: the marks are the five the player makes (the start,
+the poll, the tick, the pickup, and the loader's), and since its variables
+are structs, the RAM is checked whole every 64 ticks but for `$0000` to
+`$05FF`, the songs' table there excepted. Over the 56 movies:
+
+| Checked | Over the 56 movies |
+|---|---|
+| Every read the game makes of the ports, byte and cycle | 108.2 million |
+| The marks, each on the same cycle | 106.4 million |
+| Every DSP write: register, value and cycle | 2.7 million |
+| Every port write | 7.7 million |
+| The sound RAM every 64 ticks | 36,125 times |
+| Every sample, and each frame's audio | 152.8 million |
+
 **`verify_corpus.ps1 -Lockstep -PortSound`** runs the corpus's lockstep pass
-with the port's sound on the port's core and the APU on the stock one.
+with the port's sound on the port's core and the APU on the stock one. The
+report is the same as without it: 53 of the 56 movies never part, and the
+three level 25 movies that do part at the same passes either way.
 
-**`zamn_test_player`** runs the player beside the driver on each movie, with
-the console's settings: every DSP write the driver makes must be the
-player's, register, value and cycle, and every frame's audio the same. Over
-the 56 movies, 2,717,807 writes and 281,379 frames, all the same, and the
-two lose the same: 218 effects with no track, 70 notes with no voice, 1,045
-voices taken. `--break` gives the player a ninth voice, and it fails.
-`--wide` counts what the effect overlay's settings save instead:
+**`zamn_test_player`** runs a follower beside the player on the chip, each
+with the console's settings: every DSP write the one on the chip makes must
+be the follower's, register, value and cycle, and every frame's audio the
+same. Over the 56 movies, 2,717,807 writes and 281,379 frames, all the same.
+`--break` gives the follower a ninth voice, and it fails. `--wide` counts
+what the effect overlay's settings save:
 
-| Over the 56 movies | Driver | Player, overlay on |
+| Over the 56 movies | Console | Follower, overlay on |
 |---|---|---|
-| Effects started | 7,252 | 7,286 |
+| Effects started | 7,252 | 7,280 |
 | Effects with no track | 218 | 0 |
-| Effects held, playing three times already | | 184 |
+| Effects held, playing three times already | | 190 |
 | Notes with no voice | 70 | 0 |
 | Voices taken from another note | 1,045 | 0 |
 
-**`zamn_test_bank_sfx`** loads the sets on the player and plays the monster
+**`zamn_test_bank_sfx`** loads the sets on a follower and plays the monster
 sounds from them: the game is untouched, every one is heard, and each is
-the driver's sound on a level with that set (`$29` and `$2B` to 0.0%,
+the game's sound on a level with that set (`$29` and `$2B` to 0.0%,
 `$2A` to 3.1%, lined up to the sample).
 
 ## The player
@@ -132,9 +158,9 @@ machines: a copy of the sound chip that played the dropped effects, its
 voices muted until the real driver lost one, and four more copies holding
 the other sets.
 
-`src/sound/player.c` is one engine instead. It is the driver's sequencer
-written again as plain C, its state in structs, with settings for what the
-console was short of:
+`src/sound/player.c` is one engine instead. It is the driver written again
+as plain C, its state in structs, with settings for what the console was
+short of:
 
 | Setting | Console | Effect overlay on |
 |---|---|---|
@@ -147,37 +173,50 @@ The limit of three is the console's own: a weapon that fires faster than
 its sound ends fills every track the song leaves, three, with itself, and
 that is how it sounds there. With more tracks it would stack higher.
 
-The game still talks to the driver in C, to the cycle, since it waits on
-the driver's answers. The player follows it: `Sound.watch` tells it each
-command the driver picks up and each tick of the driver's timer, and it
-does the same at the same cycle. It takes its start from the driver, the
-RAM, tracks, voices, DSP and the samples made so far, when the driver is
-first running and again after a quick load or a reset. The frontend hears
-the player; with both settings off it hears the driver, as before.
-
 The player counts the driver's cycles as `driver.c` does, routine by
-routine, and makes each DSP write on its cycle. That matters: a note's
-writes take the driver a thousand cycles, and the DSP takes a key-on or a
-key-off only every other sample. And it keeps the driver's way with time:
-the driver runs at most one tick each time round its loop, so a tick that
-comes while it is busy waits, two lose one, and the song slows. The
-chainsaw's first beat does that on the console.
+routine, every path, and makes each DSP write on its cycle. That matters
+twice. The game waits on the chip's answers, a command and a byte at a
+time, songs and samples included, so the answers must come on the
+console's cycles, and they do only if everything before them took as long
+as it did there. And a note's writes take the driver a thousand cycles, and
+the DSP takes a key-on or a key-off only every other sample.
 
-With the console's settings the player is the driver: every DSP write on
-the same cycle, and every frame's audio the same.
+So the player with the console's settings is the program on the chip
+(`player_lead`). It polls the ports, answers, takes the commands and ticks
+on the timer as the driver does, and it is the driver to the cycle: the
+same answers, DSP writes, RAM and samples as the SPC700. With both settings
+off it is what is heard.
+
+More tracks and voices would take more cycles, and move the answers. So
+the wider settings are a second player that follows the first
+(`player_follow`): `Sound.watch` tells it each command the first picks up
+and each tick of the timer, and it does the same at the same cycle. It
+takes its start from the first, the RAM, tracks, voices and DSP, when that
+one has started, and again after a reset or a quick load that did not keep
+it. It is what is heard, and the one on the chip makes no samples, which
+costs nothing the game can see. It keeps the driver's way with time: the
+driver runs at most one tick each time round its loop, so a tick that comes
+while it is busy waits, two lose one, and the song slows. The chainsaw's
+first beat does that on the console.
+
+A quick save keeps the chip, the player on it, and the follower. One made
+with other settings for the follower loads, and the follower takes its
+start from the player on the chip again.
 
 ## What is left
 
 - **LakeSnes's APU is still linked into `zamn.exe`**, unused. It leaves with
   the rest of the console, in step 5 of `docs/PLAN.md`.
-- **The driver still runs beside the player**, for the game's timing, and
-  its DSP with it. When the game stops uploading a byte at a time (step 4,
-  item 3, of `docs/PLAN.md`), the player alone can be the sound.
+- **The game still uploads a byte and an answer at a time**, and must,
+  while the console's timing is kept: each answer's cycle is the game's.
+  Reading the sets from the ROM instead would be the game not waiting,
+  which is the other side of the first decision in `docs/PLAN.md`.
 - **`zamn_test_bank_sfx` finds too few of the game's checks.** It hears the
   monsters' checks of the sample set through `cosim_watch` on the 65816's
   program counter, and since the reset was ported the 65816 runs none of the
   game's code, so a check that is not the first instruction of a ported
   routine is never seen. Three checks of the test fail for it, as they did
   before the sound was ported, and in the game as well as the test.
-- **Quick saves** made before this do not load: the sound's part of a state
-  is laid out differently, and a different size, and the file is refused.
+- **Quick saves** made before 2026-10-29 do not load: the sound's part of a
+  state now holds the player on the chip, and the follower is a part of its
+  own, so the file is a different size and is refused.

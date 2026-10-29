@@ -10,10 +10,13 @@
 #define SOUND_CONSOLE_H
 
 #include "snes.h"
+#include "sound/player.h"
 #include "sound/sound.h"
 
-// From here on `snes` makes its sound with `s`, which is reset, and must
-// outlive it (or be detached with `snes_setSound(snes, NULL)`).
-void sound_attach(Snes* snes, Sound* s);
+// From here on `snes` makes its sound with `s`, which is reset, and whose
+// program is `lead`, a player with the console's settings (`player_lead`).
+// Both must outlive it (or be detached with `snes_setSound(snes, NULL)`).
+// A state keeps both.
+void sound_attach(Snes* snes, Sound* s, Player* lead);
 
 #endif

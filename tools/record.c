@@ -146,16 +146,18 @@ int main(int argc, char** argv) {
     if (!blood_patch_rom(snes->cart->rom, (size_t)snes->cart->romSize)) { fprintf(stderr, "error: --red-blood does not know this ROM\n"); return 1; }
     ws.blood.on = true;
   }
-  // The game's sound: the port's, as `zamn` has it.
+  // The game's sound: the port's, as `zamn` has it, the player on the chip.
   static Sound sound;
-  sound_attach(snes, &sound);
+  static Player lead;
+  sound_attach(snes, &sound, &lead);
   snes_reset(snes, true);
-  // What is heard: the player with the effect overlay's settings, or the
-  // driver itself (`src/sound/player.h`).
+  // What is heard: a follower with the effect overlay's settings, or the
+  // player on the chip itself (`src/sound/player.h`).
   static Player player;
   if (overlay) {
-    player_init(&player, &sound, player_wide);
-    player_attach(&player, &sound);
+    player_init(&player, player_wide);
+    player_follow(&player, &lead);
+    lead.silent = true;
   }
 
   Cosim cosim;
@@ -234,7 +236,7 @@ int main(int argc, char** argv) {
   fflush(stdout);
   if (wav) { fseek(wav, 0, SEEK_SET); wav_header(wav, wav_samples); fclose(wav); }
   fprintf(stderr, "zamn_record: %d ticks, %ld drawn from the PPU's picture\n", last - first + 1, fallbacks);
-  if (overlay) player_detach(&player, &sound);
+  if (overlay) player_unfollow(&player);
   cosim_free(&cosim);
   movie_free(&movie);
   video_snes_free(snes);

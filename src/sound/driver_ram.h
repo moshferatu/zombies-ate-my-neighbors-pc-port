@@ -1,6 +1,8 @@
 // Where the game's sound driver keeps its variables in the sound RAM, by
-// address. `driver.c` keeps them there, as the original did, and the player
-// (`player.c`) reads them to take the driver's place. Private to `src/sound`.
+// address. `driver.c` keeps them there, as the original did. The player
+// (`player.c`) keeps them in structs, and uses the rest of the map: the songs'
+// table, the instruments, the directory and the driver's own tables. Private
+// to `src/sound`.
 
 #ifndef SOUND_DRIVER_RAM_H
 #define SOUND_DRIVER_RAM_H

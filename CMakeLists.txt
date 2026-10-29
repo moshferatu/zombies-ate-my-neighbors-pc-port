@@ -221,9 +221,10 @@ if(MSVC)
   target_compile_definitions(zamn_test_cheats PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-# The player (src/sound/player.h) beside the driver it follows, on each movie:
+# A follower (src/sound/player.h) beside the player it follows, on each movie:
 # with the console's settings, every DSP write the same and in order. `--wide`
-# counts what the effect overlay's settings save. Needs the cartridge.
+# counts what the effect overlay's settings save against the driver's losses.
+# Needs the cartridge.
 add_executable(zamn_test_player tools/test_player.c)
 target_include_directories(zamn_test_player PRIVATE src)
 target_link_libraries(zamn_test_player PRIVATE snescore zamn_analysis zamn_sound_console)
@@ -242,11 +243,15 @@ if(MSVC)
   target_compile_definitions(zamn_test_bank_sfx PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-# The port's sound (src/sound): the DSP, the driver, and the player that
-# follows it. Libc only.
-add_library(zamn_sound STATIC src/sound/dsp.c src/sound/sound.c src/sound/driver.c
-            src/sound/player.c)
+# The port's sound (src/sound): the DSP, the chip with its loader, and the
+# player that is its program. Libc only.
+add_library(zamn_sound STATIC src/sound/dsp.c src/sound/sound.c src/sound/player.c)
 target_include_directories(zamn_sound PUBLIC src)
+# The game's driver as it was, routine by routine: for the tests only, which
+# check the player against it and it against the SPC700. The game does not
+# link it.
+add_library(zamn_sound_driver STATIC src/sound/driver.c)
+target_link_libraries(zamn_sound_driver PUBLIC zamn_sound)
 # ...and put into a LakeSnes console in place of its APU (src/sound/console.h).
 add_library(zamn_sound_console STATIC src/sound/console.c)
 target_link_libraries(zamn_sound_console PUBLIC zamn_sound snescore_without_ppu)
@@ -261,12 +266,13 @@ if(MSVC)
   target_compile_definitions(zamn_test_dsp PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-# The port's sound driver beside the game's on the stock console
-# (tools/test_sound.c): every port the game reads, every DSP write and its
-# cycle, the driver's RAM at each poll, and every sample. Needs the cartridge.
+# The port's sound beside the game's on the stock console (tools/test_sound.c):
+# the driver in C, or with `--player` the player the game runs. Every port the
+# game reads, every DSP write and its cycle, the sound RAM, and every sample.
+# Needs the cartridge.
 add_executable(zamn_test_sound tools/test_sound.c)
 target_include_directories(zamn_test_sound PRIVATE src)
-target_link_libraries(zamn_test_sound PRIVATE snescore zamn_analysis zamn_sound)
+target_link_libraries(zamn_test_sound PRIVATE snescore zamn_analysis zamn_sound_driver)
 if(MSVC)
   target_compile_definitions(zamn_test_sound PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()

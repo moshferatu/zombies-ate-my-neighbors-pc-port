@@ -1,5 +1,10 @@
 // The game's sound driver, David Warhol's of 1992, as C.
 //
+// The game does not run this: it runs the player (`player.c`), which is this
+// driver again with its state in structs. This is kept, as LakeSnes is, for
+// the tests: `zamn_test_sound` checks it against the SPC700 running the
+// original, and the player against both.
+//
 // It plays songs that are MIDI files in all but name: four tracks at once,
 // each a stream of delta times and events, sixteen channels to a track, and
 // eight voices shared between them by priority. The game talks to it through
@@ -1547,6 +1552,7 @@ void driver_run(Sound* s) {
     }
 
     // $06A4: MOV A, $FD : BEQ $06A1 -- a tick due? -- then paused?
+    // (`player.c` has this loop too, as `lead_run`.)
     s->state = SOUND_DRIVER_POLL;
     const uint8_t due = chip_t0_read(s, 2);
     spend(s, 3);
@@ -1566,4 +1572,15 @@ void driver_run(Sound* s) {
     vibrato(s);
     spend(s, 3 + 8);
   }
+}
+
+static void driver_program(void* ctx, Sound* s) {
+  (void)ctx;
+  driver_run(s);
+}
+
+void sound_use_driver(Sound* s) {
+  s->program.run = driver_program;
+  s->program.samples = NULL;
+  s->program.ctx = NULL;
 }

@@ -4,13 +4,13 @@
 //     and id it was found asking for.
 //   * A movie with checks the level's set fails runs twice side by side, once
 //     watched and once not. Every tick, both machines' work RAM, sound RAM and
-//     the driver's sound must be identical: this only reads the machine. The
-//     sets are loaded on the player, every failed check is played from its
+//     the game's sound must be identical: this only reads the machine. The
+//     sets are loaded on a follower, every failed check is played from its
 //     set, and each one is heard.
-//   * The player plays what the driver plays for the same id on a level that
-//     has that set loaded: the sets are loaded on a set 3 level and compared
-//     with the driver on a set 0 and a set 1 level, song stopped, the two
-//     lined up to the sample.
+//   * The follower plays what the game's sound plays for the same id on a
+//     level that has that set loaded: the sets are loaded on a set 3 level and
+//     compared with the player on the chip on a set 0 and a set 1 level, song
+//     stopped, the two lined up to the sample.
 //
 // Given a folder, it also writes each gated sound, as the player plays it, as
 // `bank_sfx_<id>.wav` there for listening.
@@ -71,42 +71,46 @@ static long movie_end(const Movie* m) {
   return last + 600;
 }
 
-// A console with the port's sound in it, as the game has, and with `heard`, a
-// player following it that holds the other sets.
+// A console with the port's sound in it, as the game has: the chip and the
+// player on it. With `heard`, a follower that holds the other sets.
 typedef struct {
   Snes* snes;
   Sound* sound;
+  Player* lead;
   Player* player;
 } Machine;
 
 static Machine machine(uint8_t* rom, int rom_len, bool heard) {
-  Machine m = {snes_init(), (Sound*)malloc(sizeof(Sound)), NULL};
+  Machine m = {snes_init(), (Sound*)malloc(sizeof(Sound)), (Player*)malloc(sizeof(Player)), NULL};
   if (!snes_loadRom(m.snes, rom, rom_len)) { printf("FAIL: the core will not load the ROM\n"); exit(1); }
-  sound_attach(m.snes, m.sound);
+  sound_attach(m.snes, m.sound, m.lead);
   snes_reset(m.snes, true);
   if (heard) {
     m.player = (Player*)malloc(sizeof(Player));
     PlayerSettings set = player_console;
     set.other_sets = true;
-    player_init(m.player, m.sound, set);
-    player_attach(m.player, m.sound);
+    player_init(m.player, set);
+    player_follow(m.player, m.lead);
   }
   return m;
 }
 
 static void machine_free(Machine* m) {
+  if (m->player) player_unfollow(m->player);
   snes_free(m->snes);
   free(m->sound);
+  free(m->lead);
   free(m->player);
 }
 
 // --- Driving a sound with nothing on the 65816 side -------------------------
 
-static bool run_until_taken(Sound* a) {
-  // The driver is stopped at a read of a port; it is let make that read, and
+static bool run_until_taken(Machine* m) {
+  // The player is stopped at a read of a port; it is let make that read, and
   // the next, until it has taken the command.
+  Sound* a = m->sound;
   const uint64_t start = a->host;
-  while (a->written[3] != a->ram[0xC9]) {
+  while (a->written[3] != m->lead->seq) {
     if (a->host - start > 400000 || a->state == SOUND_HALTED) return false;
     sound_run(a, a->now + 1);
   }
@@ -114,30 +118,30 @@ static bool run_until_taken(Sound* a) {
 }
 
 // One command, the way `apu_send` puts it on the ports.
-static bool send(Sound* a, uint8_t cmd, uint8_t param) {
-  if (!run_until_taken(a)) return false;
+static bool send(Machine* m, uint8_t cmd, uint8_t param) {
+  if (!run_until_taken(m)) return false;
+  Sound* a = m->sound;
   sound_write_port(a, 2, cmd);
   sound_write_port(a, 1, param);
   sound_write_port(a, 3, (uint8_t)(a->written[3] + 1));
-  return run_until_taken(a);
+  return run_until_taken(m);
 }
 
 // Every track playing a song (a sequence at or past the effects) stopped.
-static void stop_song(Sound* a) {
+static void stop_song(Machine* m) {
+  const Player* l = m->lead;
   for (int i = 0; i < 4; i++)
-    if ((a->ram[0x28 + i] | a->ram[0x2C + i]) && a->ram[0x3C + i] >= a->ram[0xDE])
-      send(a, 0x02, a->ram[0x3C + i]);
+    if (l->track[i].wait && l->track[i].song >= l->bank[0].saved_songs)
+      send(m, 0x02, l->track[i].song);
 }
 
-// A frame of `a`, and of `p` following it.
-static void frame(Sound* a, Player* p, int16_t* out) {
+// A frame of the machine, and of `p` following it, which is heard if given.
+static void frame(Machine* m, Player* p, int16_t* out) {
+  Sound* a = m->sound;
   sound_run(a, a->host + 17088);
-  if (p) {
-    player_run(p, a->host);
-    player_get_samples(p, out, SAMPLES);
-  } else {
-    sound_get_samples(a, out, SAMPLES);
-  }
+  if (m->player) player_run(m->player, a->host);
+  if (p) player_get_samples(p, out, SAMPLES);
+  else sound_get_samples(a, out, SAMPLES);
 }
 
 // Play a movie to its end, for its sound; with a player, the sets are loaded
@@ -161,7 +165,7 @@ static bool play_to_end(Machine* m, const char* path) {
     snes_setSamples(m->snes, audio, SAMPLES);
   }
   if (m->player && (!b.built || b.failed)) {
-    printf("FAIL: the sets were not all loaded on the player\n");
+    printf("FAIL: the sets were not all loaded on the follower\n");
     failures++;
   }
   cosim_free(&c);
@@ -169,22 +173,22 @@ static bool play_to_end(Machine* m, const char* path) {
   return true;
 }
 
-// `id` from set `set` on `m`'s player, or (`set` < 0) on its driver, with the
-// song stopped and everything rung out first.
+// `id` from set `set` on `m`'s follower, or (`set` < 0) on the player on the
+// chip, with the song stopped and everything rung out first.
 static void render(Machine* m, int set, uint8_t id, int16_t* out) {
   static int16_t scratch[SAMPLES * 2];
-  stop_song(m->sound);
-  for (int f = 0; f < 240; f++) frame(m->sound, m->player, scratch);
+  stop_song(m);
+  for (int f = 0; f < 240; f++) frame(m, m->player, scratch);
   if (set >= 0) {
     if (!player_play_from_set(m->player, set, id)) {
-      printf("FAIL: the player would not play $%02X from set %d\n", id, set);
+      printf("FAIL: the follower would not play $%02X from set %d\n", id, set);
       failures++;
     }
   } else {
-    send(m->sound, 0x01, id);
+    send(m, 0x01, id);
   }
   for (int f = 0; f < RENDER_FRAMES; f++)
-    frame(m->sound, set >= 0 ? m->player : NULL, out + f * SAMPLES * 2);
+    frame(m, set >= 0 ? m->player : NULL, out + f * SAMPLES * 2);
 }
 
 // How much of `a` is left once `b`, moved by the lag that fits best, is taken
@@ -237,10 +241,10 @@ static uint64_t fnv(uint64_t h, const void* p, size_t n) {
   return h;
 }
 
-// The machine after a tick: work RAM, sound RAM and the driver's sound.
+// The machine after a tick: work RAM, sound RAM and the game's sound.
 static uint64_t tick_hash(const Machine* m, const int16_t* audio) {
   uint64_t h = fnv(0xcbf29ce484222325ull, m->snes->ram, sizeof m->snes->ram);
-  h = fnv(h, m->sound->ram, sizeof m->sound->ram);
+  h = fnv(h, m->lead->unit[0].ram, sizeof m->lead->unit[0].ram);
   return fnv(h, audio, SAMPLES * 4);
 }
 
@@ -326,7 +330,7 @@ static void side_by_side(uint8_t* rom, int rom_len, const char* path, long want_
   if (built_at < 0 || b.failed) { printf("FAIL: the sets were not all loaded\n"); failures++; }
   if (b.wanted < want_min) { printf("FAIL: fewer failed checks than %ld\n", want_min); failures++; }
   if (b.played != b.wanted) { printf("FAIL: %ld failed checks but %ld played\n", b.wanted, b.played); failures++; }
-  if (unheard || !heard) { printf("FAIL: %ld sounds handed to the player were not heard\n", unheard); failures++; }
+  if (unheard || !heard) { printf("FAIL: %ld sounds handed to the follower were not heard\n", unheard); failures++; }
   cosim_free(&cw);
   machine_free(&with);
   movie_free(&mv);
@@ -358,12 +362,12 @@ int main(int argc, char** argv) {
   snprintf(path, sizeof path, "%s/level37.zmv", movies);
   side_by_side(rom, rom_len, path, 3);
 
-  // The sets, loaded on the player on level 1 (set 3), against the driver on
-  // level 5 (set 0) and level 17 (set 1).
+  // The sets, loaded on the follower on level 1 (set 3), against the player
+  // on the chip on level 5 (set 0) and level 17 (set 1).
   snprintf(path, sizeof path, "%s/level1.zmv", movies);
   Machine base = machine(rom, rom_len, true);
   const bool have_base = play_to_end(&base, path);
-  if (have_base) printf("sets loaded on the player on set %d\n", base.snes->ram[BSFX_BANK_AT]);
+  if (have_base) printf("sets loaded on the follower on set %d\n", base.snes->ram[BSFX_BANK_AT]);
   static const struct { const char* movie; int set; uint8_t ids[2]; } refs[] = {
     {"level5.zmv", 0, {0x29, 0x2A}},
     {"level17.zmv", 1, {0x2B, 0x2B}},
@@ -382,7 +386,7 @@ int main(int argc, char** argv) {
       render(&base, refs[r].set, refs[r].ids[k], x);
       double ex, ey;
       const double res = residual(x, y, &ex, &ey);
-      printf("$%02X from set %d on the player against %s: energy %.3g and %.3g, %.1f%% left over\n",
+      printf("$%02X from set %d on the follower against %s: energy %.3g and %.3g, %.1f%% left over\n",
              refs[r].ids[k], refs[r].set, refs[r].movie, ex, ey, res * 100);
       if (ex <= 0 || res > 0.10 || ex < 0.8 * ey || ex > 1.25 * ey) {
         printf("FAIL: not the same sound\n");

@@ -1,6 +1,6 @@
 // The game's sound driver as a player of our own: the same sequencer, written
-// as plain C with no cycles counted, that can be given more of everything than
-// the console had.
+// as plain C with its state in structs, that can be given more of everything
+// than the console had. It is what the game runs on the sound chip.
 //
 // On the console the driver has four tracks and eight voices for the song and
 // every sound effect between them, and one sample set at a time. A busy fight
@@ -23,35 +23,40 @@
 //     load. The game's songs and effects lose nothing to them: not a track, a
 //     voice or a cycle.
 //
-// With `player_console` (four, eight, no limit, no other sets) the player
-// makes the driver's DSP writes on the driver's cycles, and so the same
-// samples: `zamn_test_player` checks that on every movie.
+// ## Leading: the program on the chip
 //
-// ## How it is driven
+// The game waits on the sound chip's answers, a command and a byte at a time,
+// songs and samples included, so when each answer comes moves everything the
+// game does after it (see `sound.h`). A player with the console's settings
+// (`player_lead`) is the program the chip's loader starts at `$0600`: it polls
+// the ports, answers, takes each command and ticks on the timer, all on the
+// driver's cycles, so the game sees what it saw on the console. It counts the
+// cycles of the driver's routines as `driver.c` has them, every path, and
+// makes each DSP write on its cycle: a note's volumes, sample and pitch over
+// the thousand cycles the driver takes to key it on. `zamn_test_sound
+// --player` checks it against the SPC700 running the original: every port
+// read and write, every DSP write and every sample.
 //
-// The game still talks to `Sound`, the driver in C to the cycle, because it
-// waits on the driver's answers. The player follows that driver. It is told,
-// through `Sound.watch`, each command the driver picks up and each tick of its
-// timer, with the cycle, and does the same at the same cycle. So uploads,
-// songs, effects, the pause and the volume all reach it as they reach the
-// driver. The frontend hears the player instead of the driver.
+// ## Following: more than the console had
 //
-// It takes its start from the driver: its RAM, its tracks and voices, its DSP
-// as it stands, and the samples it has made so far (`player_import`). That is
-// done when the driver is first found running, and again after a quick load
-// or a reset, which put the driver somewhere the player was not.
+// More tracks or voices would take more cycles, and move the answers. So the
+// wider settings are a second player (`player_follow`) that follows the
+// leader: it is told, through `Sound.watch`, each command the leader picks up
+// and each tick of the timer, with the cycle, and does the same at the same
+// cycle. It is what is heard, and the leader makes no samples (`silent`).
 //
-// The player counts the cycles of the driver's routines, the costs `driver.c`
-// has, and makes each DSP write on its cycle: a note's volumes, sample and
-// pitch over the thousand cycles the driver takes to key it on. So two notes
-// in one tick are keyed on far enough apart for the DSP to take both, as on
-// the console. With more tracks or voices than the driver, its loops take
-// longer, as the driver's would. A tick or command starts on the driver's
-// cycle, unless the player is still busy with the last: the driver runs at
+// A follower takes its start from the leader: its RAM, tracks and voices, its
+// DSP, and the samples it has made (`player_import`). That is done when the
+// leader is first found running, and again after a reset, or a quick load
+// that did not keep the follower. A tick or command starts on the leader's
+// cycle, unless the follower is still busy with the last: the driver runs at
 // most one tick each time round its loop, so a tick that comes while it is
-// busy waits for it, and two that come lose one, and the song slows. That is
-// the console's way, and the player keeps it whether it is busy for its own
-// reasons or the driver's.
+// busy waits, and two that come lose one, and the song slows. That is the
+// console's way, and the follower keeps it whether it is busy for its own
+// reasons or the leader's.
+//
+// With `player_console` a follower makes the leader's DSP writes on the
+// leader's cycles, and so the same samples: `zamn_test_player` checks that.
 //
 // Port code: libc only.
 
@@ -59,6 +64,7 @@
 #define SOUND_PLAYER_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #include "sound/dsp.h"
@@ -84,10 +90,10 @@ extern const PlayerSettings player_console;
 // Eight tracks, 24 voices, three of an effect at once; no other sets.
 extern const PlayerSettings player_wide;
 
-// One DSP of the port's own, with eight voices and a sound RAM. A unit's RAM
-// is a copy of the driver's: the live units' get every upload the game makes,
-// and the other sets' units each hold that set (`player_build_set`). The echo
-// writes its delay line into it, as on the console.
+// One DSP of the port's own, with eight voices and a sound RAM. The live
+// units' RAM gets every upload the game makes, and the other sets' units each
+// hold that set (`player_build_set`). The echo writes its delay line into it,
+// as on the console.
 typedef struct {
   SoundDsp dsp;
   uint8_t ram[0x10000];
@@ -105,8 +111,8 @@ typedef struct {
   int first_unit, units;          // its voices are the units', eight each
   int first_track, tracks;
   uint8_t order[PLAYER_LIVE_UNITS_MAX * 8];  // its voices, least recently used first
-  uint64_t busy;                  // where its last tick or command ended
-  bool tick_owed;                 // a tick came while it was busy
+  uint64_t busy;                  // following: where its last tick or command ended
+  bool tick_owed;                 // ...a tick came while it was busy
   bool ready;                     // an other set's: built
 } PlayerBank;
 
@@ -138,56 +144,88 @@ typedef struct {
 typedef void (*PlayerWriteFn)(void* ctx, int unit, uint8_t reg, uint8_t val, uint64_t cycle);
 
 typedef struct Player {
+  // --- State: what a quick save keeps ---
   PlayerSettings set;
   int units, voices;  // in use
   int tracks;         // in use: the game's, then two for each other set
-  PlayerUnit unit[PLAYER_UNITS_MAX];
   PlayerBank bank[1 + PLAYER_SETS];
   PlayerTrack track[PLAYER_TRACKS_MAX];
   PlayerChannel channel[PLAYER_TRACKS_MAX][16];
   PlayerVoice voice[PLAYER_VOICES_MAX];
   uint8_t flg, mono, shift, paused;
+  uint8_t midi_count;               // command $03's bytes so far
+  uint8_t cmd, param, param0, seq;  // the last command picked up, and its count
 
-  const Sound* real;  // the driver it follows
-  bool synced;
-  const char* lost;   // why it last had to import again
+  bool silent;  // makes no samples: a follower is heard instead
+  bool synced;  // leading: started at $0600; following: in step with the leader
 
   uint64_t at;        // the clock of the bank playing, as the player counts it
-  uint64_t host;      // the last `player_run`'s `t`
+  uint64_t host;      // the chip's `host` as of the last run
   uint64_t dsp_at;    // the next DSP tick, a multiple of 32
   uint64_t ticks;     // DSP ticks so far
   int16_t ring[PLAYER_RING * 2];
 
-  PlayerWriteFn on_write;
-  void* write_ctx;
-
   // Counts, for `--verbose` and the tests.
   long commands, effects_started, effects_dropped, effects_held, notes_dropped,
        voices_stolen, imports, other_played[PLAYER_SETS];
+
+  // --- Wiring: what a quick save leaves out ---
+  Sound* chip;                // leading: the chip it is the program of
+  const struct Player* lead;  // following: the player it follows
+  const char* lost;           // following: why it last had to import again
+  PlayerWriteFn on_write;
+  void* write_ctx;
+
+  // Last, so that a quick save keeps only those in use.
+  PlayerUnit unit[PLAYER_UNITS_MAX];
 } Player;
 
-// Set up, following `real`. Nothing is played until the driver is running.
-// `p` is large (a megabyte): give it static or allocated storage.
-void player_init(Player* p, const Sound* real, PlayerSettings set);
+// Set up with settings `set`, neither leading nor following yet. `p` is large
+// (a megabyte): give it static or allocated storage.
+void player_init(Player* p, PlayerSettings set);
 
-// What `real` tells its watcher: pass every call on. (`player_attach` makes the
-// player the watcher outright.)
+// `p`, set up afresh with the console's settings, becomes `s`'s program: from
+// `$0600` on it is the sound chip's. It takes the chip's RAM, DSP and samples
+// as it starts, and the chip's own DSP stops.
+void player_lead(Player* p, Sound* s);
+
+// The player `s` runs, if it runs one.
+Player* player_leading(const Sound* s);
+
+// `p` follows `lead`, as its chip's watcher. Nothing is played until the
+// leader has started. `player_unfollow` lets it go.
+void player_follow(Player* p, Player* lead);
+void player_unfollow(Player* p);
+
+// What the leader's chip tells its watcher: pass every call on, if something
+// else is the watcher (`player_follow` makes the follower the watcher outright).
 void player_seen(Player* p, SoundSeen what, uint16_t a, uint8_t v, uint64_t cycle);
-void player_attach(Player* p, Sound* real);
-void player_detach(Player* p, Sound* real);
 
-// Bring the player up to `real`'s clock: import it if it must, then make the
-// samples before `t`.
+// A follower brought up to its leader: imported if it must be, then the
+// samples before `t` made. (A leader runs inside `sound_run`.)
 void player_run(Player* p, uint64_t t);
 
-// After a quick load: import the driver again at the next run.
+// A follower imports the leader again at the next run.
 static inline void player_resync(Player* p) { p->synced = false; }
 
-// The last 534 samples before the last `player_run`'s `t`, stretched or
-// squeezed to `count` pairs: `sound_get_samples`, from the player.
+// A leader's DSP ticks up to and including cycle `c`, for a test that looks
+// at its RAM.
+void player_sync(Player* p, uint64_t c);
+
+// The last 534 samples before the last run's `t`, stretched or squeezed to
+// `count` pairs: `sound_get_samples`, from the player.
 void player_get_samples(const Player* p, int16_t* out, int count);
 
-// The other sets, for the monster sounds. Once the driver has its effects
+// A quick save's share: the state, and the units in use, without the wiring.
+// `player_save` writes `player_state_size` bytes; `player_state_max` is the
+// most any settings take. `player_load` takes them back, and is false, leaving
+// `p` as it was, if they were saved with other settings or none.
+size_t player_state_size(const Player* p);
+#define player_state_max (offsetof(Player, chip) + sizeof(PlayerUnit) * PLAYER_UNITS_MAX)
+void player_save(const Player* p, uint8_t* out);
+bool player_load(Player* p, const uint8_t* in, size_t len);
+
+// The other sets, for the monster sounds. Once the game has its effects
 // (`player_can_build`), `player_build_set` copies the game's RAM into set
 // `set`'s units, and the frontend sends it the upload commands of a song with
 // that set (`player_set_command`), as `apu_play_song` would; then

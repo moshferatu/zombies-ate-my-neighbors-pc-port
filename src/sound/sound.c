@@ -9,6 +9,7 @@
 // ---------------------------------------------------------------------------
 
 void chip_sync(Sound* s, uint64_t c) {
+  if (s->dsp_idle) return;
   while (s->dsp_at <= c) {
     sound_dsp_sample(&s->dsp);
     const size_t k = (size_t)(s->ticks & 16383);
@@ -284,7 +285,13 @@ static bool ipl_step(Sound* s) {
 // ---------------------------------------------------------------------------
 
 void sound_reset(Sound* s) {
+  const SoundProgram program = s->program;
+  const SoundWatchFn watch = s->watch;
+  void* ctx = s->watch_ctx;
   memset(s, 0, sizeof *s);
+  s->program = program;
+  s->watch = watch;
+  s->watch_ctx = ctx;
   sound_dsp_reset(&s->dsp, s->ram);
   s->state = SOUND_IPL_START;
   // The SPC700 comes out of reset as from a BRK that writes nothing: five
@@ -299,8 +306,11 @@ void sound_run(Sound* s, uint64_t t) {
     if (s->state == SOUND_HALTED) break;
     if (s->state < SOUND_DRIVER_START) {
       if (!ipl_step(s)) break;
+    } else if (s->program.run) {
+      s->program.run(s->program.ctx, s);  // until it stops at a read, or halts
+      break;
     } else {
-      driver_run(s);  // until it stops at a read, or halts
+      chip_halt(s, "the loader started a program, and there is none");
       break;
     }
   }
@@ -329,9 +339,18 @@ void sound_copy(Sound* dst, const Sound* src) {
 }
 
 void sound_get_samples(const Sound* s, int16_t* out, int count) {
+  if (s->dsp_idle && s->program.samples) {
+    s->program.samples(s->program.ctx, out, count);
+    return;
+  }
+  sound_ring_samples(s->ring, s->ticks, s->host, out, count);
+}
+
+void sound_ring_samples(const int16_t* ring, uint64_t ticks, uint64_t host, int16_t* out,
+                        int count) {
   // LakeSnes's arithmetic to the bit: its sample counter is 16 bits wide and
   // its ring 1,024 samples, and the float is taken of that.
-  const uint64_t made = sound_ticks_before(s->host);
+  const uint64_t made = sound_ticks_before(host);
   const uint16_t made16 = (uint16_t)made;
   const float per_frame = 534.0f;
   const double step = per_frame / count;
@@ -340,11 +359,11 @@ void sound_get_samples(const Sound* s, int16_t* out, int count) {
     const int j = (int)at & 0x3FF;
     // The tick LakeSnes's ring holds at `j`: the last one made with that index.
     const int64_t k = (int64_t)made - 1 - (int64_t)((made - 1 - (uint64_t)j) & 0x3FF);
-    if (made == 0 || k < 0) {
+    if (made == 0 || k < 0 || (uint64_t)k >= ticks) {
       out[i * 2] = out[i * 2 + 1] = 0;
     } else {
-      out[i * 2] = s->ring[(k & 16383) * 2];
-      out[i * 2 + 1] = s->ring[(k & 16383) * 2 + 1];
+      out[i * 2] = ring[(k & 16383) * 2];
+      out[i * 2 + 1] = ring[(k & 16383) * 2 + 1];
     }
     at += step;
   }

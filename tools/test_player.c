@@ -1,16 +1,18 @@
-// The player (`src/sound/player.h`) beside the driver it follows, on each
+// A follower (`src/sound/player.h`) beside the player it follows, on each
 // movie. The game runs on the stock console with the port's sound in it, as
-// `zamn` has, and the player is told what the driver is told.
+// `zamn` has: the player on the chip, with the console's settings. The
+// follower is told what that one picks up.
 //
-// With the console's settings (`player_console`), every DSP write the driver
-// makes must be the next one the player made: register, value and cycle, with
-// none left over at the end of a tick. And every frame's audio must be the
-// same, from the first the player makes.
+// With the console's settings (`player_console`), every DSP write the player
+// on the chip makes must be the next one the follower made: register, value
+// and cycle, with none left over at the end of a tick. And every frame's
+// audio must be the same, from the first the follower makes.
 //
-// `--wide` gives the player the effect overlay's settings (`player_wide`) and
-// counts instead: what the driver dropped and what the player did.
+// `--wide` gives the follower the effect overlay's settings (`player_wide`)
+// and counts instead: what the console's settings lose, and what the wider
+// ones do.
 //
-// `--break` gives the player a ninth voice the driver does not have, which
+// `--break` gives the follower a ninth voice the other does not have, which
 // changes which voice a note gets: it must then fail.
 //
 //   zamn_test_player [--wide | --break] <rom.sfc> <movie.zmv>... [-f frames]
@@ -35,6 +37,7 @@ typedef struct {
 
 static struct {
   Player* player;
+  Player* lead;
   Sound* sound;
   bool compare;
   Write fifo[FIFO];
@@ -42,8 +45,6 @@ static struct {
   bool failed;
   char why[256];
   long frame, writes;
-  // What the driver lost.
-  long real_no_track, real_no_voice, real_steal_pass;
 } g;
 
 static void on_write(void* ctx, int unit, uint8_t reg, uint8_t val, uint64_t cycle) {
@@ -61,18 +62,12 @@ static void on_write(void* ctx, int unit, uint8_t reg, uint8_t val, uint64_t cyc
 static void watch(void* ctx, SoundSeen what, uint16_t a, uint8_t v, uint64_t cycle) {
   (void)ctx;
   player_seen(g.player, what, a, v, cycle);
-  const uint8_t* r = g.sound->ram;
-  if (what == SOUND_SEEN_AT) {
-    if (a == 0x0B9B && r[0xC7] < r[0xCA]) g.real_no_track++;
-    if (a == 0x0D84) g.real_no_voice++;
-    if (a == 0x0D70) g.real_steal_pass++;
-    return;
-  }
   if (what != SOUND_SEEN_DSP || !g.compare || !g.player->synced || g.failed) return;
   g.writes++;
   if (!g.count) {
     snprintf(g.why, sizeof g.why,
-             "frame %ld, cycle %llu: the driver wrote $%02X to DSP $%02X, and the player nothing",
+             "frame %ld, cycle %llu: the chip's player wrote $%02X to DSP $%02X, and the "
+             "follower nothing",
              g.frame, (unsigned long long)cycle, v, a);
     g.failed = true;
     return;
@@ -82,8 +77,8 @@ static void watch(void* ctx, SoundSeen what, uint16_t a, uint8_t v, uint64_t cyc
   g.count--;
   if (w.reg != a || w.val != v || w.cycle != cycle) {
     snprintf(g.why, sizeof g.why,
-             "frame %ld: the driver wrote $%02X to DSP $%02X on cycle %llu, the player $%02X to "
-             "$%02X on %llu",
+             "frame %ld: the chip's player wrote $%02X to DSP $%02X on cycle %llu, the follower "
+             "$%02X to $%02X on %llu",
              g.frame, v, a, (unsigned long long)cycle, w.val, w.reg, (unsigned long long)w.cycle);
     g.failed = true;
   }
@@ -123,17 +118,18 @@ static bool run_movie(const uint8_t* rom, int rom_len, const char* path, long fr
     printf("FAIL: the core will not load the cartridge\n");
     return false;
   }
-  sound_attach(snes, g.sound);
+  sound_attach(snes, g.sound, g.lead);
   snes_reset(snes, true);
   PlayerSettings set = mode == MODE_WIDE ? player_wide : player_console;
   if (mode == MODE_BREAK) set.live_voices = 16;
-  player_init(g.player, g.sound, set);
+  player_init(g.player, set);
+  player_follow(g.player, g.lead);
   g.player->on_write = on_write;
   g.compare = mode != MODE_WIDE;
   g.sound->watch = watch;
   g.head = g.count = 0;
   g.failed = false;
-  g.writes = g.real_no_track = g.real_no_voice = g.real_steal_pass = 0;
+  g.writes = 0;
 
   int16_t real[SAMPLES * 2], heard[SAMPLES * 2];
   double e_real = 0, e_heard = 0;
@@ -147,8 +143,9 @@ static bool run_movie(const uint8_t* rom, int rom_len, const char* path, long fr
       g.head = g.count = 0;
     }
     if (g.compare && g.count && !g.failed) {
-      snprintf(g.why, sizeof g.why, "frame %ld: the player made %d writes the driver did not",
-               g.frame, g.count);
+      snprintf(g.why, sizeof g.why,
+               "frame %ld: the follower made %d writes the chip's player did not", g.frame,
+               g.count);
       g.failed = true;
     }
     snes_setSamples(snes, real, SAMPLES);
@@ -157,7 +154,7 @@ static bool run_movie(const uint8_t* rom, int rom_len, const char* path, long fr
       heard_frames++;
       if (!memcmp(real, heard, sizeof real)) same++;
       else if (g.compare && !g.failed) {
-        snprintf(g.why, sizeof g.why, "frame %ld: the player's audio differs", g.frame);
+        snprintf(g.why, sizeof g.why, "frame %ld: the follower's audio differs", g.frame);
         g.failed = true;
       }
     }
@@ -169,24 +166,26 @@ static bool run_movie(const uint8_t* rom, int rom_len, const char* path, long fr
   const double ratio = e_real > 0 ? e_heard / e_real : 1.0;
   const Player* p = g.player;
   if (mode != MODE_WIDE && !g.failed && (ratio < 0.9 || ratio > 1.1)) {
-    snprintf(g.why, sizeof g.why, "the player's sound has %.3f of the driver's energy", ratio);
+    snprintf(g.why, sizeof g.why, "the follower's sound has %.3f of the chip's energy", ratio);
     g.failed = true;
   }
   if (mode != MODE_WIDE && !g.failed && !g.writes) {
-    snprintf(g.why, sizeof g.why, "the driver made no DSP writes after the player took over");
+    snprintf(g.why, sizeof g.why, "the chip's player made no DSP writes after the follower started");
     g.failed = true;
   }
+  const Player* l = g.lead;
   printf("%s %s: %ld frames, %ld DSP writes the same, %ld imports; energy %.4f of the "
-         "driver's, %ld of %ld frames identical\n",
+         "chip's, %ld of %ld frames identical\n",
          g.failed ? "FAIL" : "ok", path, g.frame, g.writes, p->imports, ratio, same, heard_frames);
-  printf("    driver: %ld effects with no track, %ld notes with no voice, %ld taken\n",
-         g.real_no_track, g.real_no_voice, g.real_steal_pass - g.real_no_voice);
-  printf("    player: %ld effects started, %ld with no track, %ld held at %d, %ld notes "
+  printf("    console:  %ld effects started, %ld with no track, %ld notes with no voice, "
+         "%ld taken\n",
+         l->effects_started, l->effects_dropped, l->notes_dropped, l->voices_stolen);
+  printf("    follower: %ld effects started, %ld with no track, %ld held at %d, %ld notes "
          "with no voice, %ld taken\n",
          p->effects_started, p->effects_dropped, p->effects_held, p->set.max_same,
          p->notes_dropped, p->voices_stolen);
   if (g.failed) printf("  %s\n", g.why);
-  player_detach(g.player, g.sound);
+  player_unfollow(g.player);
   g.sound->watch = NULL;
   snes_free(snes);
   movie_free(&movie);
@@ -214,6 +213,7 @@ int main(int argc, char** argv) {
   uint8_t* rom = read_file(rom_path, &rom_len);
   if (!rom) { printf("SKIP: no cartridge at '%s'\n", rom_path); return 0; }
   g.player = (Player*)malloc(sizeof *g.player);
+  g.lead = (Player*)malloc(sizeof *g.lead);
   g.sound = (Sound*)malloc(sizeof *g.sound);
   int bad = 0;
   for (int i = 0; i < count; i++)
