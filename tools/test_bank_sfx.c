@@ -3,16 +3,16 @@
 //   * The eleven checks are where they were surveyed, each asking for the set
 //     and id it was found asking for.
 //   * A movie with checks the level's set fails runs twice side by side, once
-//     watched and once not. Every tick, both machines' work RAM, APU RAM and
-//     sound must be identical: this only reads the machine. The copies are
-//     built, every failed check is played on the copy holding its set, and
-//     each one is heard.
-//   * A copy plays what the real APU plays for the same id on a level that has
-//     that set loaded: the copies are built on a set 3 level and compared with
-//     the real APU on a set 0 and a set 1 level, song stopped, the two lined up
-//     to the sample.
+//     watched and once not. Every tick, both machines' work RAM, sound RAM and
+//     the driver's sound must be identical: this only reads the machine. The
+//     sets are loaded on the player, every failed check is played from its
+//     set, and each one is heard.
+//   * The player plays what the driver plays for the same id on a level that
+//     has that set loaded: the sets are loaded on a set 3 level and compared
+//     with the driver on a set 0 and a set 1 level, song stopped, the two
+//     lined up to the sample.
 //
-// Given a folder, it also writes each gated sound, as the copies play it, as
+// Given a folder, it also writes each gated sound, as the player plays it, as
 // `bank_sfx_<id>.wav` there for listening.
 //
 //   zamn_test_bank_sfx [rom.sfc] [movies folder] [folder]
@@ -27,6 +27,7 @@
 #include "cosim/cosim.h"
 #include "snes.h"
 #include "sound/console.h"
+#include "sound/player.h"
 
 #define SAMPLES 534
 #define RENDER_FRAMES 180
@@ -70,58 +71,120 @@ static long movie_end(const Movie* m) {
   return last + 600;
 }
 
-// A console with the port's sound in it, as the game has.
-static Snes* machine(uint8_t* rom, int rom_len) {
-  Snes* s = snes_init();
-  if (!snes_loadRom(s, rom, rom_len)) { printf("FAIL: the core will not load the ROM\n"); exit(1); }
-  Sound* sound = (Sound*)malloc(sizeof *sound);
-  sound_attach(s, sound);
-  snes_reset(s, true);
-  return s;
+// A console with the port's sound in it, as the game has, and with `heard`, a
+// player following it that holds the other sets.
+typedef struct {
+  Snes* snes;
+  Sound* sound;
+  Player* player;
+} Machine;
+
+static Machine machine(uint8_t* rom, int rom_len, bool heard) {
+  Machine m = {snes_init(), (Sound*)malloc(sizeof(Sound)), NULL};
+  if (!snes_loadRom(m.snes, rom, rom_len)) { printf("FAIL: the core will not load the ROM\n"); exit(1); }
+  sound_attach(m.snes, m.sound);
+  snes_reset(m.snes, true);
+  if (heard) {
+    m.player = (Player*)malloc(sizeof(Player));
+    PlayerSettings set = player_console;
+    set.other_sets = true;
+    player_init(m.player, m.sound, set);
+    player_attach(m.player, m.sound);
+  }
+  return m;
 }
 
-static Sound* sound_of(const Snes* s) { return (Sound*)s->sound.user; }
-
-static void machine_free(Snes* s) {
-  Sound* sound = sound_of(s);
-  snes_free(s);
-  free(sound);
+static void machine_free(Machine* m) {
+  snes_free(m->snes);
+  free(m->sound);
+  free(m->player);
 }
 
-// Play a movie to its end on a bare machine, for its sound.
-static Snes* play_to_end(uint8_t* rom, int rom_len, const char* path) {
-  Movie m;
-  if (!movie_load(&m, path)) { printf("FAIL: cannot load '%s'\n", path); failures++; return NULL; }
-  Snes* s = machine(rom, rom_len);
+// --- Driving a sound with nothing on the 65816 side -------------------------
+
+static bool run_until_taken(Sound* a) {
+  // The driver is stopped at a read of a port; it is let make that read, and
+  // the next, until it has taken the command.
+  const uint64_t start = a->host;
+  while (a->written[3] != a->ram[0xC9]) {
+    if (a->host - start > 400000 || a->state == SOUND_HALTED) return false;
+    sound_run(a, a->now + 1);
+  }
+  return true;
+}
+
+// One command, the way `apu_send` puts it on the ports.
+static bool send(Sound* a, uint8_t cmd, uint8_t param) {
+  if (!run_until_taken(a)) return false;
+  sound_write_port(a, 2, cmd);
+  sound_write_port(a, 1, param);
+  sound_write_port(a, 3, (uint8_t)(a->written[3] + 1));
+  return run_until_taken(a);
+}
+
+// Every track playing a song (a sequence at or past the effects) stopped.
+static void stop_song(Sound* a) {
+  for (int i = 0; i < 4; i++)
+    if ((a->ram[0x28 + i] | a->ram[0x2C + i]) && a->ram[0x3C + i] >= a->ram[0xDE])
+      send(a, 0x02, a->ram[0x3C + i]);
+}
+
+// A frame of `a`, and of `p` following it.
+static void frame(Sound* a, Player* p, int16_t* out) {
+  sound_run(a, a->host + 17088);
+  if (p) {
+    player_run(p, a->host);
+    player_get_samples(p, out, SAMPLES);
+  } else {
+    sound_get_samples(a, out, SAMPLES);
+  }
+}
+
+// Play a movie to its end, for its sound; with a player, the sets are loaded
+// on it.
+static bool play_to_end(Machine* m, const char* path) {
+  Movie mv;
+  if (!movie_load(&mv, path)) { printf("FAIL: cannot load '%s'\n", path); failures++; return false; }
   Cosim c;
-  cosim_init(&c, s, COSIM_NATIVE);
+  cosim_init(&c, m->snes, COSIM_NATIVE);
   cosim_enable_all(&c);
+  static BankSfx b;
+  bank_sfx_init(&b, m->player, m->snes->cart->rom, (int)m->snes->cart->romSize, m->player != NULL);
   int16_t audio[SAMPLES * 2];
-  for (long f = 0, n = movie_end(&m); f < n; f++) {
-    movie_apply(&m, s, (int)f);
+  for (long f = 0, n = movie_end(&mv); f < n; f++) {
+    movie_apply(&mv, m->snes, (int)f);
     cosim_frame(&c);
-    snes_setSamples(s, audio, SAMPLES);
+    if (m->player) {
+      player_run(m->player, m->sound->host);
+      bank_sfx_tick(&b);
+    }
+    snes_setSamples(m->snes, audio, SAMPLES);
+  }
+  if (m->player && (!b.built || b.failed)) {
+    printf("FAIL: the sets were not all loaded on the player\n");
+    failures++;
   }
   cosim_free(&c);
-  movie_free(&m);
-  return s;
+  movie_free(&mv);
+  return true;
 }
 
-static void render(Sound* a, uint8_t id, int16_t* out) {
-  bsfx_send(a, BSFX_CMD_PLAY, id);
-  for (int f = 0; f < RENDER_FRAMES; f++) {
-    bsfx_run(a, BSFX_FRAME_CYCLES);
-    sound_get_samples(a, out + f * SAMPLES * 2, SAMPLES);
+// `id` from set `set` on `m`'s player, or (`set` < 0) on its driver, with the
+// song stopped and everything rung out first.
+static void render(Machine* m, int set, uint8_t id, int16_t* out) {
+  static int16_t scratch[SAMPLES * 2];
+  stop_song(m->sound);
+  for (int f = 0; f < 240; f++) frame(m->sound, m->player, scratch);
+  if (set >= 0) {
+    if (!player_play_from_set(m->player, set, id)) {
+      printf("FAIL: the player would not play $%02X from set %d\n", id, set);
+      failures++;
+    }
+  } else {
+    send(m->sound, 0x01, id);
   }
-}
-
-// A copy of a machine's sound with its song stopped and everything rung out.
-static Sound* reference(Snes* snes) {
-  Sound* a = (Sound*)malloc(sizeof *a);
-  sound_copy(a, sound_of(snes));
-  bsfx_stop_song(a);
-  bsfx_run(a, 8 * BSFX_SETTLE);
-  return a;
+  for (int f = 0; f < RENDER_FRAMES; f++)
+    frame(m->sound, set >= 0 ? m->player : NULL, out + f * SAMPLES * 2);
 }
 
 // How much of `a` is left once `b`, moved by the lag that fits best, is taken
@@ -174,96 +237,99 @@ static uint64_t fnv(uint64_t h, const void* p, size_t n) {
   return h;
 }
 
-// The machine after a tick: work RAM, sound RAM and the tick's sound.
-static uint64_t tick_hash(const Snes* s, const int16_t* audio) {
-  uint64_t h = fnv(0xcbf29ce484222325ull, s->ram, sizeof s->ram);
-  h = fnv(h, sound_of(s)->ram, sizeof sound_of(s)->ram);
+// The machine after a tick: work RAM, sound RAM and the driver's sound.
+static uint64_t tick_hash(const Machine* m, const int16_t* audio) {
+  uint64_t h = fnv(0xcbf29ce484222325ull, m->snes->ram, sizeof m->snes->ram);
+  h = fnv(h, m->sound->ram, sizeof m->sound->ram);
   return fnv(h, audio, SAMPLES * 4);
 }
 
-// Run a movie unwatched, keeping a hash of every tick. One machine at a time:
-// the port's APU hook is one global (`apu_attach`), so two harnesses in one
-// process would send each other's sound effects to the wrong APU.
+// Run a movie unwatched and with no player, keeping a hash of every tick.
 static uint64_t* unwatched_run(uint8_t* rom, int rom_len, const char* path, long* out_n) {
-  Movie m;
-  if (!movie_load(&m, path)) return NULL;
-  Snes* s = machine(rom, rom_len);
+  Movie mv;
+  if (!movie_load(&mv, path)) return NULL;
+  Machine m = machine(rom, rom_len, false);
   Cosim c;
-  cosim_init(&c, s, COSIM_NATIVE);
+  cosim_init(&c, m.snes, COSIM_NATIVE);
   cosim_enable_all(&c);
-  const long n = movie_end(&m);
+  const long n = movie_end(&mv);
   uint64_t* h = (uint64_t*)malloc(sizeof *h * (size_t)n);
   int16_t audio[SAMPLES * 2];
   for (long f = 0; f < n; f++) {
-    movie_apply(&m, s, (int)f);
+    movie_apply(&mv, m.snes, (int)f);
     cosim_frame(&c);
-    snes_setSamples(s, audio, SAMPLES);
-    h[f] = tick_hash(s, audio);
+    snes_setSamples(m.snes, audio, SAMPLES);
+    h[f] = tick_hash(&m, audio);
   }
   cosim_free(&c);
-  machine_free(s);
-  movie_free(&m);
+  machine_free(&m);
+  movie_free(&mv);
   *out_n = n;
   return h;
+}
+
+// Whether any of the other sets' voices is sounding.
+static bool sets_sounding(const Player* p) {
+  for (int s = 0; s < PLAYER_SETS; s++) {
+    const PlayerUnit* u = &p->unit[p->bank[1 + s].first_unit];
+    for (int v = 0; v < 8; v++)
+      if (u->dsp.voice[v].level > 0x40) return true;
+  }
+  return false;
 }
 
 // A movie watched, against the same movie unwatched.
 static void side_by_side(uint8_t* rom, int rom_len, const char* path, long want_min) {
   long n = 0;
   uint64_t* plain = unwatched_run(rom, rom_len, path, &n);
-  Movie m1;
-  if (!plain || !movie_load(&m1, path)) {
+  Movie mv;
+  if (!plain || !movie_load(&mv, path)) {
     printf("FAIL: cannot load '%s'\n", path);
     failures++;
     free(plain);
     return;
   }
-  Snes* with = machine(rom, rom_len);
+  Machine with = machine(rom, rom_len, true);
   Cosim cw;
-  cosim_init(&cw, with, COSIM_NATIVE);
+  cosim_init(&cw, with.snes, COSIM_NATIVE);
   cosim_enable_all(&cw);
   static BankSfx b;
-  bank_sfx_init(&b, sound_of(with), rom, rom_len, true);
-  bool watched = cosim_watch(&cw, BSFX_SEND_AT, bank_sfx_at, &b);
+  bank_sfx_init(&b, with.player, rom, rom_len, true);
+  bool watched = true;
   for (int k = 0; k < b.sites; k++) watched = watched && cosim_watch(&cw, b.site_at[k], bank_sfx_at, &b);
   if (!watched) { printf("FAIL: no room for the watches\n"); failures++; }
 
-  int16_t aw[SAMPLES * 2], mix[SAMPLES * 2];
+  int16_t aw[SAMPLES * 2];
   long diverged = -1, built_at = -1;
   long played_before = 0, pending_since = -1, heard = 0, unheard = 0;
   for (long f = 0; f < n; f++) {
-    movie_apply(&m1, with, (int)f);
+    movie_apply(&mv, with.snes, (int)f);
     cosim_frame(&cw);
+    player_run(with.player, with.sound->host);
     bank_sfx_tick(&b);
     if (b.built && built_at < 0) built_at = f;
-    snes_setSamples(with, aw, SAMPLES);
-    if (diverged < 0 && tick_hash(with, aw) != plain[f]) diverged = f;
-    // Whether the copies add anything within ten ticks of being handed a
+    snes_setSamples(with.snes, aw, SAMPLES);
+    if (diverged < 0 && tick_hash(&with, aw) != plain[f]) diverged = f;
+    // Whether the sets' voices sound within ten ticks of being handed a
     // sound. Two in quick succession are one wait.
-    long played = 0;
-    for (int i = 0; i < BSFX_SETS; i++) played += b.set[i].played;
-    if (played > played_before && pending_since < 0) pending_since = f;
-    played_before = played;
-    memcpy(mix, aw, sizeof mix);
-    bank_sfx_mix(&b, mix, SAMPLES);
-    if (pending_since >= 0 && memcmp(mix, aw, sizeof mix)) { heard++; pending_since = -1; }
+    if (b.played > played_before && pending_since < 0) pending_since = f;
+    played_before = b.played;
+    if (pending_since >= 0 && sets_sounding(with.player)) { heard++; pending_since = -1; }
     if (pending_since >= 0 && f - pending_since > 10) { unheard++; pending_since = -1; }
   }
-  long played = 0;
-  for (int i = 0; i < BSFX_SETS; i++) played += b.set[i].played;
-  printf("%s: %ld ticks, copies built at %ld%s; %ld checks failed, %ld played (%ld, %ld, %ld, %ld), "
-         "heard on %ld ticks, %ld unheard\n",
-         path, n, built_at, b.failed ? " (not all)" : "", b.wanted, played, b.set[0].played,
-         b.set[1].played, b.set[2].played, b.set[3].played, heard, unheard);
+  const Player* p = with.player;
+  printf("%s: %ld ticks, sets loaded at %ld%s; %ld checks failed, %ld played (%ld, %ld, %ld, %ld), "
+         "heard %ld times, %ld unheard\n",
+         path, n, built_at, b.failed ? " (not all)" : "", b.wanted, b.played, p->other_played[0],
+         p->other_played[1], p->other_played[2], p->other_played[3], heard, unheard);
   if (diverged >= 0) { printf("FAIL: the machines differ from tick %ld\n", diverged); failures++; }
-  if (built_at < 0 || b.failed) { printf("FAIL: the copies were not all built\n"); failures++; }
+  if (built_at < 0 || b.failed) { printf("FAIL: the sets were not all loaded\n"); failures++; }
   if (b.wanted < want_min) { printf("FAIL: fewer failed checks than %ld\n", want_min); failures++; }
-  if (played != b.wanted) { printf("FAIL: %ld failed checks but %ld played\n", b.wanted, played); failures++; }
-  if (unheard || !heard) { printf("FAIL: %ld sounds handed to a copy were not heard\n", unheard); failures++; }
-  bank_sfx_free(&b);
+  if (b.played != b.wanted) { printf("FAIL: %ld failed checks but %ld played\n", b.wanted, b.played); failures++; }
+  if (unheard || !heard) { printf("FAIL: %ld sounds handed to the player were not heard\n", unheard); failures++; }
   cosim_free(&cw);
-  machine_free(with);
-  movie_free(&m1);
+  machine_free(&with);
+  movie_free(&mv);
   free(plain);
 }
 
@@ -278,11 +344,11 @@ int main(int argc, char** argv) {
   char path[1024];
 
   {
-    Snes* s = machine(rom, rom_len);
+    Machine m = machine(rom, rom_len, true);
     static BankSfx b;
-    bank_sfx_init(&b, sound_of(s), rom, rom_len, true);
+    bank_sfx_init(&b, m.player, rom, rom_len, true);
     check_sites(&b);
-    machine_free(s);
+    machine_free(&m);
   }
 
   // Level 25 asks for set 2's $25 on set 0, and level 37 for set 3's $26
@@ -292,60 +358,54 @@ int main(int argc, char** argv) {
   snprintf(path, sizeof path, "%s/level37.zmv", movies);
   side_by_side(rom, rom_len, path, 3);
 
-  // The copies, built on level 1 (set 3), against the real sound on level 5
-  // (set 0) and level 17 (set 1).
+  // The sets, loaded on the player on level 1 (set 3), against the driver on
+  // level 5 (set 0) and level 17 (set 1).
   snprintf(path, sizeof path, "%s/level1.zmv", movies);
-  Snes* base = play_to_end(rom, rom_len, path);
-  static BankSfx b;
-  if (base) {
-    bank_sfx_init(&b, sound_of(base), rom, rom_len, true);
-    bank_sfx_tick(&b);
-    printf("copies built on set %d: %s\n", base->ram[BSFX_BANK_AT],
-           b.built && !b.failed ? "all four" : "not all");
-    if (!b.built || b.failed) failures++;
-  }
+  Machine base = machine(rom, rom_len, true);
+  const bool have_base = play_to_end(&base, path);
+  if (have_base) printf("sets loaded on the player on set %d\n", base.snes->ram[BSFX_BANK_AT]);
   static const struct { const char* movie; int set; uint8_t ids[2]; } refs[] = {
     {"level5.zmv", 0, {0x29, 0x2A}},
     {"level17.zmv", 1, {0x2B, 0x2B}},
   };
   static int16_t x[RENDER_FRAMES * SAMPLES * 2], y[RENDER_FRAMES * SAMPLES * 2];
-  for (int r = 0; base && b.built && r < 2; r++) {
+  for (int r = 0; have_base && r < 2; r++) {
     snprintf(path, sizeof path, "%s/%s", movies, refs[r].movie);
-    Snes* s = play_to_end(rom, rom_len, path);
-    if (!s) continue;
-    if (s->ram[BSFX_BANK_AT] != refs[r].set) {
-      printf("FAIL: %s ends on set %d, not %d\n", path, s->ram[BSFX_BANK_AT], refs[r].set);
+    Machine s = machine(rom, rom_len, false);
+    if (!play_to_end(&s, path)) { machine_free(&s); continue; }
+    if (s.snes->ram[BSFX_BANK_AT] != refs[r].set) {
+      printf("FAIL: %s ends on set %d, not %d\n", path, s.snes->ram[BSFX_BANK_AT], refs[r].set);
       failures++;
     }
     for (int k = 0; k < 2 && (k == 0 || refs[r].ids[1] != refs[r].ids[0]); k++) {
-      Sound* ref = reference(s);
-      render(ref, refs[r].ids[k], y);
-      free(ref);
-      render(b.set[refs[r].set].apu, refs[r].ids[k], x);
+      render(&s, -1, refs[r].ids[k], y);
+      render(&base, refs[r].set, refs[r].ids[k], x);
       double ex, ey;
       const double res = residual(x, y, &ex, &ey);
-      printf("$%02X on the set %d copy against %s: energy %.3g and %.3g, %.1f%% left over\n",
+      printf("$%02X from set %d on the player against %s: energy %.3g and %.3g, %.1f%% left over\n",
              refs[r].ids[k], refs[r].set, refs[r].movie, ex, ey, res * 100);
       if (ex <= 0 || res > 0.10 || ex < 0.8 * ey || ex > 1.25 * ey) {
         printf("FAIL: not the same sound\n");
         failures++;
       }
     }
-    machine_free(s);
+    machine_free(&s);
   }
 
-  if (dir && base && b.built) {
+  if (dir && have_base) {
+    static BankSfx b;
+    bank_sfx_init(&b, base.player, rom, rom_len, true);
     static const uint8_t ids[] = {0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B};
     for (size_t i = 0; i < sizeof ids; i++) {
       int set = -1;
       for (int k = 0; k < b.sites; k++) if (b.site_id[k] == ids[i]) set = b.site_set[k];
-      if (set < 0 || !b.set[set].apu) continue;
-      render(b.set[set].apu, ids[i], x);
+      if (set < 0) continue;
+      render(&base, set, ids[i], x);
       write_wav(dir, ids[i], x, RENDER_FRAMES);
     }
   }
 
-  if (base) { bank_sfx_free(&b); machine_free(base); }
+  machine_free(&base);
   free(rom);
   if (failures) { printf("%d failure(s)\n", failures); return 1; }
   printf("PASS\n");

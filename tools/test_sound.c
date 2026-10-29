@@ -37,7 +37,9 @@
 static const uint16_t marked[] = {
     0xFFC0, 0xFFEF, 0x0600, 0x0AFF, 0x06B5, 0x0D03, 0x0705, 0x0941, 0x098C, 0x0ACD,
     0x075C, 0x0938, 0x07A9, 0x0B8A, 0x0BE1, 0x0C5C, 0x0CBA,
-    // ...and those `src/sfx_overlay.h` watches, with a register each.
+    // ...and where a command is picked up, an effect gets a track or none, and
+    // a note a voice or none, with a register each. `src/sound/player.c`
+    // follows the first, and `zamn_test_player` counts the rest.
     0x0B1D, 0x0B9B, 0x0B9D, 0x0D70, 0x0D84, 0x0D87, 0x0D97,
 };
 

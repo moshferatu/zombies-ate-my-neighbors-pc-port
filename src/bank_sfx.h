@@ -24,32 +24,27 @@
 // So Monster Phobia (36, set 3) has chainsaws and werewolves that never make
 // a sound, and Warehouse of the Evil Dolls (24, set 0) has dolls that never
 // laugh. On a console as well: this is the game's choice, not the driver
-// running out of room, which is what `src/sfx_overlay.h` is about.
+// running out of room, which the player's wider settings are about
+// (`src/sound/player.h`).
 //
 // ## What this does about it
 //
-// It keeps a sound chip (`src/sound`) for each of the other sets, each running
-// the same driver with that set loaded, and when a check fails, it asks the one
-// that has the set to play the id. Its sound is added to the real one's.
+// The player (`src/sound/player.h`) has a unit of eight voices for each set,
+// its RAM holding that set, and two tracks for them. When a check fails, this
+// asks the player to play the id from the set the monster wanted, and the
+// sound is mixed with the rest.
 //
-// Each is built from a copy of the real sound, taken once the driver is running
-// and has registered its effects (`$DE`, which `$0D` sets after the effect bank
-// arrives at boot). A level's music is then loaded on the copy the way
-// `apu_play_song` loads it: command `$08` and the song, the set's samples
-// (data set 12 + set), and `$14`, all from `music_upload`, so the copy gets
-// the bytes the game would send. The song is one a level with that set really
-// plays, so the pairing is one the driver was built for, and it is stopped as
-// soon as it starts. Set 2 has no level and borrows level 1's song.
-//
-// The copies are independent of the real sound from then on: they are not kept
-// in step with it, a load or a reset leaves them as they are, and nothing about
-// them is saved. A copy that has nothing to play is not run.
+// Each set's RAM is the game's, taken once the driver has registered its
+// effects (`$DE`, which `$0D` sets after the effect bank arrives at boot), with
+// a level's music loaded on it the way `apu_play_song` loads it: command `$08`
+// and the song, the set's samples (data set 12 + set), and `$14`, all from
+// `music_upload`, so the set gets the bytes the game would send. The song is
+// one a level with that set really plays, so the pairing is one the driver was
+// built for; it is never started. Set 2 has no level and borrows level 1's
+// song.
 //
 // The game is only read: the checks are watched through `cosim_watch`, and the
-// real sound, WRAM and the save states are never written. It follows one command
-// of the game's: `$13`, the master volume, which the pause menu turns down.
-// That is the only other command the game sends while a level runs; `$02`
-// only ever stops the song, and `$09` is never sent.
+// sound, WRAM and the save states are never written.
 //
 // **A watch fires when the 65816 is about to execute the check, and a port
 // that runs through one never puts it there.** So a ported check has to be
@@ -63,52 +58,22 @@
 
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdlib.h>
 #include <string.h>
 
 #include "snes.h"
 
 #include "assets/music.h"
 #include "assets/rom.h"
-#include "sound/sound.h"
+#include "sound/player.h"
 
 #define BSFX_BANK_AT 0x1F52u     // $7E:1F52, the sample set `apu_play_song` loaded
 #define BSFX_SETS MUSIC_SAMPLE_SET_COUNT
 #define BSFX_LEVEL_TABLE 0x9F8000u  // a word per level, from 1: its record in bank $9F
 #define BSFX_MAX_SITES 16
-// `$80:CCD1  STX $2142` in `apu_send`: the ROM putting a command on the bus,
-// the command in X and its parameter in A, both 8 bits wide.
-#define BSFX_SEND_AT 0x80CCD1u
-#define BSFX_CMD_PLAY 0x01
-#define BSFX_CMD_STOP 0x02
-#define BSFX_CMD_VOLUME 0x13
 #define BSFX_CMD_PLAY_SONG 0x14
 
-// The driver's zero page, as `src/sfx_overlay.h` names it.
-#define BSFX_SEQ_ID 0x3C      // +slot: the sequence each slot plays
-#define BSFX_VOICE_ON 0x48    // +voice: note held
-#define BSFX_LAST_SEQ 0xC9    // the counter of the last command taken
-#define BSFX_EFFECTS 0xDE     // effect sequences registered; 0 until `$0D`
-#define BSFX_DRIVER_BANNER 0x0603u
-
-#define BSFX_QUEUE 8
-#define BSFX_FRAME_CYCLES 17088   // 534 samples at 32 cycles each
-#define BSFX_COMMAND_LIMIT 400000 // cycles a command may take to be picked up
-#define BSFX_SETTLE 512000        // cycles run muted after the song is stopped
-#define BSFX_TAIL_FRAMES 90       // run on this long after the last activity
-
 typedef struct {
-  Sound* apu;
-  bool ready;
-  uint8_t kind[BSFX_QUEUE];   // commands waiting for the driver: play or volume...
-  uint8_t queue[BSFX_QUEUE];  // ...and the id or the volume
-  int queued;
-  int idle;                   // frames with nothing sounding
-  long played;
-} BsfxSet;
-
-typedef struct {
-  Sound* real;
+  Player* player;
   Rom rom;
   bool enabled;
   bool built;
@@ -116,10 +81,8 @@ typedef struct {
   int sites;
   uint32_t site_at[BSFX_MAX_SITES];
   uint8_t site_set[BSFX_MAX_SITES], site_id[BSFX_MAX_SITES];
-  BsfxSet set[BSFX_SETS];
-  uint64_t last_cycles;      // the real sound's clock at the last tick
-  uint8_t volume;             // the last `$13`, or 0 for none yet
-  long wanted;                // checks that failed while this was ready
+  long wanted;                // checks that failed once the sets were built
+  long played;                // ...and were given a track
 } BankSfx;
 
 // Every `LDA $1F52 : CMP #set : BNE +7 : LDA #id : JSL $80:CC3B` in banks
@@ -143,68 +106,15 @@ static inline int bsfx_find_sites(BankSfx* b) {
   return b->sites;
 }
 
-static inline void bank_sfx_init(BankSfx* b, Sound* real, const uint8_t* rom, int rom_len,
+// `player` must have `other_sets`.
+static inline void bank_sfx_init(BankSfx* b, Player* player, const uint8_t* rom, int rom_len,
                                  bool enabled) {
   memset(b, 0, sizeof *b);
-  b->real = real;
+  b->player = player;
   b->rom.data = rom;
   b->rom.size = (uint32_t)rom_len;
-  b->enabled = enabled;
-  if (enabled && bsfx_find_sites(b) == 0) b->enabled = false;
-}
-
-static inline void bank_sfx_free(BankSfx* b) {
-  for (int i = 0; i < BSFX_SETS; i++)
-    if (b->set[i].apu) { free(b->set[i].apu); b->set[i].apu = NULL; }
-  b->built = false;
-}
-
-// --- Building a set's sound -------------------------------------------------
-
-// A copy runs on a clock of its own: `n` more cycles of it.
-static inline void bsfx_run(Sound* a, uint64_t n) { sound_run(a, a->host + n); }
-
-static inline bool bsfx_run_until_taken(Sound* a) {
-  // The driver is stopped at a read of a port; it is let make that read, and
-  // the next, until it has taken the command.
-  const uint64_t start = a->host;
-  while (a->written[3] != a->ram[BSFX_LAST_SEQ]) {
-    if (a->host - start > BSFX_COMMAND_LIMIT || a->state == SOUND_HALTED) return false;
-    sound_run(a, a->now + 1);
-  }
-  return true;
-}
-
-// One command, the way `apu_send` puts it on the ports, once the driver has
-// taken the last one.
-static inline bool bsfx_send(Sound* a, uint8_t cmd, uint8_t param) {
-  if (!bsfx_run_until_taken(a)) return false;
-  sound_write_port(a, 2, cmd);
-  sound_write_port(a, 1, param);
-  sound_write_port(a, 3, (uint8_t)(a->written[3] + 1));
-  return true;
-}
-
-typedef struct { Sound* apu; bool ok; } BsfxUpload;
-
-static void bsfx_upload_send(uint8_t cmd, uint8_t param, void* ctx) {
-  BsfxUpload* u = (BsfxUpload*)ctx;
-  if (u->ok) u->ok = bsfx_send(u->apu, cmd, param);
-}
-
-// Stop every slot playing a sequence at or past the effects, which is the song.
-static inline bool bsfx_stop_song(Sound* a) {
-  for (int i = 0; i < 4; i++)
-    if ((a->ram[0x28 + i] | a->ram[0x2C + i]) && a->ram[BSFX_SEQ_ID + i] >= a->ram[BSFX_EFFECTS])
-      if (!bsfx_send(a, BSFX_CMD_STOP, a->ram[BSFX_SEQ_ID + i])) return false;
-  return bsfx_run_until_taken(a);
-}
-
-static inline bool bsfx_song_playing(const Sound* a) {
-  for (int i = 0; i < 4; i++)
-    if ((a->ram[0x28 + i] | a->ram[0x2C + i]) && a->ram[BSFX_SEQ_ID + i] >= a->ram[BSFX_EFFECTS])
-      return true;
-  return false;
+  b->enabled = enabled && player && player->set.other_sets;
+  if (b->enabled && bsfx_find_sites(b) == 0) b->enabled = false;
 }
 
 // The song a level with this set plays, or level 1's for a set none has. The
@@ -224,144 +134,49 @@ static inline int bsfx_song_for(const Rom* rom, int set) {
   return fallback;
 }
 
-// Load set `set` on `a`, a copy of the real sound: stop whatever song it has,
-// then what `apu_play_song` sends, then stop that song too.
-static inline bool bsfx_load(const Rom* rom, Sound* a, int set) {
+typedef struct { Player* player; int set; } BsfxUpload;
+
+static void bsfx_upload_send(uint8_t cmd, uint8_t param, void* ctx) {
+  const BsfxUpload* u = (const BsfxUpload*)ctx;
+  player_set_command(u->player, u->set, cmd, param, 0);
+}
+
+// Set `set` loaded on the player's unit for it: what `apu_play_song` sends.
+static inline bool bsfx_load(const Rom* rom, Player* p, int set) {
   const int song = bsfx_song_for(rom, set);
-  if (song < 0 || !bsfx_stop_song(a)) return false;
-  BsfxUpload u = {a, true};
-  if (music_upload(rom, song, true, bsfx_upload_send, &u) != MUSIC_OK || !u.ok) return false;
-  if (music_upload(rom, MUSIC_SET_SAMPLES + set, false, bsfx_upload_send, &u) != MUSIC_OK || !u.ok)
+  if (song < 0) return false;
+  player_build_set(p, set);
+  BsfxUpload u = {p, set};
+  if (music_upload(rom, song, true, bsfx_upload_send, &u) != MUSIC_OK) return false;
+  if (music_upload(rom, MUSIC_SET_SAMPLES + set, false, bsfx_upload_send, &u) != MUSIC_OK)
     return false;
-  // `$80:CBF3  LDX #$14`, with A as `apu_load_set` left it: the zero that
-  // ended the set.
-  if (!bsfx_send(a, BSFX_CMD_PLAY_SONG, 0x00) || !bsfx_run_until_taken(a)) return false;
-  const uint64_t start = a->host;
-  while (!bsfx_song_playing(a) && a->host - start < BSFX_COMMAND_LIMIT) sound_run(a, a->now + 1);
-  if (!bsfx_stop_song(a)) return false;
-  bsfx_run(a, BSFX_SETTLE);
-  return !bsfx_song_playing(a);
+  // `$80:CBF3  LDX #$14`, with A as `apu_load_set` left it.
+  player_set_command(p, set, BSFX_CMD_PLAY_SONG, 0x00, 0);
+  player_set_done(p, set);
+  return true;
 }
 
-// The real driver is running with its effects registered, and has taken
-// every command it was given.
-static inline bool bsfx_real_ready(const Sound* r) {
-  static const uint8_t banner[6] = {'A', 'U', 'D', 'I', 'O', ' '};
-  return !memcmp(r->ram + BSFX_DRIVER_BANNER, banner, 6) && sound_driver_running(r) &&
-         r->ram[BSFX_EFFECTS] != 0 && r->written[3] == r->ram[BSFX_LAST_SEQ];
-}
-
-static inline void bsfx_build(BankSfx* b) {
-  for (int i = 0; i < BSFX_SETS; i++) {
-    BsfxSet* s = &b->set[i];
-    s->apu = (Sound*)malloc(sizeof *s->apu);
-    if (!s->apu) { b->failed = true; continue; }
-    sound_copy(s->apu, b->real);
-    s->apu->dsp.voice_mute = 0xFF;
-    s->ready = bsfx_load(&b->rom, s->apu, i);
-    if (!s->ready) {
-      free(s->apu);
-      s->apu = NULL;
-      b->failed = true;
-      continue;
-    }
-    memset(s->apu->ring, 0, sizeof s->apu->ring);
-    s->apu->dsp.voice_mute = 0;
-    s->idle = BSFX_TAIL_FRAMES;
-  }
-  b->built = true;
-}
-
-// --- While the game runs ----------------------------------------------------
-
-static inline void bsfx_queue(BsfxSet* s, uint8_t kind, uint8_t value) {
-  if (!s->apu || s->queued == BSFX_QUEUE) return;
-  s->kind[s->queued] = kind;
-  s->queue[s->queued++] = value;
-}
-
-// For `cosim_watch`, at each check and at `BSFX_SEND_AT`.
+// For `cosim_watch`, at each check.
 static void bank_sfx_at(Snes* snes, void* ctx) {
   BankSfx* b = (BankSfx*)ctx;
   if (!b->built) return;
   const uint32_t pc = (uint32_t)snes->cpu->k << 16 | snes->cpu->pc;
-  if (pc == BSFX_SEND_AT) {
-    if ((snes->cpu->x & 0xff) != BSFX_CMD_VOLUME) return;
-    b->volume = (uint8_t)snes->cpu->a;
-    for (int i = 0; i < BSFX_SETS; i++) bsfx_queue(&b->set[i], BSFX_CMD_VOLUME, b->volume);
-    return;
-  }
   const uint8_t have = snes->ram[BSFX_BANK_AT];
   for (int k = 0; k < b->sites; k++) {
     if (b->site_at[k] != pc) continue;
     if (b->site_set[k] == have) return;  // the game plays this one itself
     b->wanted++;
-    bsfx_queue(&b->set[b->site_set[k]], BSFX_CMD_PLAY, b->site_id[k]);
+    b->played += player_play_from_set(b->player, b->site_set[k], b->site_id[k]);
     return;
   }
 }
 
-static inline bool bsfx_active(const Sound* a) {
-  for (int i = 0; i < 4; i++)
-    if (a->ram[0x28 + i] | a->ram[0x2C + i]) return true;
-  for (int v = 0; v < 8; v++)
-    if (a->ram[BSFX_VOICE_ON + v]) return true;
-  return false;
-}
-
-// After each tick: build the copies once the real sound can be copied, then
-// give each one its commands and run it for as long as the real one ran.
+// After each tick: load the sets once the game's sound has its effects.
 static inline void bank_sfx_tick(BankSfx* b) {
-  if (!b->enabled) return;
-  Sound* r = b->real;
-  if (!b->built) {
-    if (!bsfx_real_ready(r)) return;
-    bsfx_build(b);
-    b->last_cycles = r->host;
-    return;
-  }
-  const int64_t d = (int64_t)(r->host - b->last_cycles);
-  b->last_cycles = r->host;
-  const uint64_t run = d > 0 && d < 2 * BSFX_FRAME_CYCLES ? (uint64_t)d : BSFX_FRAME_CYCLES;
-  for (int i = 0; i < BSFX_SETS; i++) {
-    BsfxSet* s = &b->set[i];
-    if (!s->apu) continue;
-    if (s->queued) s->idle = 0;
-    if (s->idle >= BSFX_TAIL_FRAMES) continue;  // silent: not run until asked
-    Sound* a = s->apu;
-    const uint64_t end = a->host + run;
-    while (a->host < end) {
-      // One at a time, as the game sends them.
-      if (s->queued && a->written[3] == a->ram[BSFX_LAST_SEQ]) {
-        sound_write_port(a, 2, s->kind[0]);
-        sound_write_port(a, 1, s->queue[0]);
-        sound_write_port(a, 3, (uint8_t)(a->written[3] + 1));
-        if (s->kind[0] == BSFX_CMD_PLAY) s->played++;
-        memmove(s->queue, s->queue + 1, (size_t)--s->queued);
-        memmove(s->kind, s->kind + 1, (size_t)s->queued);
-      }
-      // A read at a time while there is a command to give it, else the rest
-      // at once.
-      sound_run(a, s->queued && a->now < end ? a->now + 1 : end);
-    }
-    s->idle = bsfx_active(a) || s->queued ? 0 : s->idle + 1;
-  }
-}
-
-// Add the copies' sound to a tick's samples, before the volume.
-static inline void bank_sfx_mix(BankSfx* b, int16_t* buf, int samples) {
-  if (!b->enabled || !b->built) return;
-  int16_t add[2048 * 2];
-  if (samples > 2048) samples = 2048;
-  for (int i = 0; i < BSFX_SETS; i++) {
-    BsfxSet* s = &b->set[i];
-    if (!s->apu || s->idle >= BSFX_TAIL_FRAMES) continue;
-    sound_get_samples(s->apu, add, samples);
-    for (int k = 0; k < samples * 2; k++) {
-      const int v = buf[k] + add[k];
-      buf[k] = (int16_t)(v < -32768 ? -32768 : v > 32767 ? 32767 : v);
-    }
-  }
+  if (!b->enabled || b->built || !player_can_build(b->player)) return;
+  for (int i = 0; i < BSFX_SETS; i++)
+    if (!bsfx_load(&b->rom, b->player, i)) b->failed = true;
+  b->built = true;
 }
 
 #endif  // ZAMN_BANK_SFX_H

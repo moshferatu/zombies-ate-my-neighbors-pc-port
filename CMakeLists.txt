@@ -221,20 +221,20 @@ if(MSVC)
   target_compile_definitions(zamn_test_cheats PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-# The sound effect overlay (src/sfx_overlay.h): a movie run with it and without
-# it, which must leave the machine identical and add sound only where the
-# driver lost some. Needs the cartridge; skips without it.
-add_executable(zamn_test_sfx_overlay tools/test_sfx_overlay.c)
-target_include_directories(zamn_test_sfx_overlay PRIVATE src)
-target_link_libraries(zamn_test_sfx_overlay PRIVATE snescore zamn_analysis zamn_sound_console)
+# The player (src/sound/player.h) beside the driver it follows, on each movie:
+# with the console's settings, every DSP write the same and in order. `--wide`
+# counts what the effect overlay's settings save. Needs the cartridge.
+add_executable(zamn_test_player tools/test_player.c)
+target_include_directories(zamn_test_player PRIVATE src)
+target_link_libraries(zamn_test_player PRIVATE snescore zamn_analysis zamn_sound_console)
 if(MSVC)
-  target_compile_definitions(zamn_test_sfx_overlay PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_compile_definitions(zamn_test_player PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
 # The monster sounds of the other sample sets (src/bank_sfx.h): the checks where
 # they were surveyed, a movie run watched and not, which must leave the machine
-# identical and play every failed check, and each copy against the real APU on
-# a level with its set. Needs the cartridge; skips without it.
+# identical and play every failed check, and each set on the player against the
+# driver on a level with that set. Needs the cartridge; skips without it.
 add_executable(zamn_test_bank_sfx tools/test_bank_sfx.c)
 target_include_directories(zamn_test_bank_sfx PRIVATE src)
 target_link_libraries(zamn_test_bank_sfx PRIVATE zamn_cosim_lib snescore zamn_sound_console)
@@ -242,8 +242,10 @@ if(MSVC)
   target_compile_definitions(zamn_test_bank_sfx PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 
-# The port's sound (src/sound): the DSP, and in time the driver. Libc only.
-add_library(zamn_sound STATIC src/sound/dsp.c src/sound/sound.c src/sound/driver.c)
+# The port's sound (src/sound): the DSP, the driver, and the player that
+# follows it. Libc only.
+add_library(zamn_sound STATIC src/sound/dsp.c src/sound/sound.c src/sound/driver.c
+            src/sound/player.c)
 target_include_directories(zamn_sound PUBLIC src)
 # ...and put into a LakeSnes console in place of its APU (src/sound/console.h).
 add_library(zamn_sound_console STATIC src/sound/console.c)

@@ -84,8 +84,8 @@ struct Dsp {
   int16_t sampleBuffer[0x400 * 2];
   uint16_t sampleOffset; // current offset in samplebuffer
   // channels left out of the mix and the echo, a bit each; they keep running.
-  // Not machine state (the port's `src/sfx_overlay.h` sets it on a second DSP),
-  // so not saved either.
+  // Not machine state (the port's frontend once set it on a second DSP), so
+  // not saved either.
   uint8_t channelMute;
 };
 

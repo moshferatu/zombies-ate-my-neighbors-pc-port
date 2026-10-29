@@ -35,12 +35,13 @@ run. The listing goes in `analysis/`, which is never committed.
 | `src/sound/dsp.c` | The DSP: BRR, pitch, envelopes, noise, echo and its filter, the mix |
 | `src/sound/sound.c` | The chip around the program: the clock, the four ports, timer 0, the DSP kept in step, and the boot loader |
 | `src/sound/driver.c` | The game's driver, routine by routine |
+| `src/sound/player.c` | The driver's sequencer again, with more tracks, voices and sample sets: what the frontend hears |
 | `src/sound/console.c` | The one place the sound meets LakeSnes: `snes_setSound` |
 
 The driver keeps its variables where the original kept them, in the sound
 RAM, under names of this project's. That is what lets the test compare the
-RAM byte for byte, and what lets `src/sfx_overlay.h` read the driver as it
-always did.
+RAM byte for byte, and what lets the player (`src/sound/driver_ram.h`) take
+the driver's place from wherever it is.
 
 ## Time
 
@@ -98,39 +99,85 @@ costs the driver was written with.
 **`verify_corpus.ps1 -Lockstep -PortSound`** runs the corpus's lockstep pass
 with the port's sound on the port's core and the APU on the stock one.
 
-## The frontend's other sound machines
+**`zamn_test_player`** runs the player beside the driver on each movie, with
+the console's settings: every DSP write the driver makes must be the
+player's, register, value and cycle, and every frame's audio the same. Over
+the 56 movies, 2,717,807 writes and 281,379 frames, all the same, and the
+two lose the same: 218 effects with no track, 70 notes with no voice, 1,045
+voices taken. `--break` gives the player a ninth voice, and it fails.
+`--wide` counts what the effect overlay's settings save instead:
 
-`src/sfx_overlay.h` (the effects the driver drops) and `src/bank_sfx.h` (the
-monster sounds of the other sample sets) ran extra copies of LakeSnes's APU.
-They now run copies of the port's sound: a `Sound` is a plain struct, and
-`sound_copy` makes another machine of one. The overlay watches the real
-driver through `Sound.watch`, at seven places `driver.c` marks for it with a
-register each, and the test checks those marks' cycles and registers too.
+| Over the 56 movies | Driver | Player, overlay on |
+|---|---|---|
+| Effects started | 7,252 | 7,286 |
+| Effects with no track | 218 | 0 |
+| Effects held, playing three times already | | 184 |
+| Notes with no voice | 70 | 0 |
+| Voices taken from another note | 1,045 | 0 |
 
-Two things changed in the overlay. It takes its copy only once the real
-driver has taken every command on the ports; after the boot loader, port 3
-holds a byte that is not a command, which the old check took for one, so
-the overlay skipped the game's first real command and the copy never set
-its upload address. And a voice it opens can be heard up to one pass of the driver's
-loop late, because the copy's DSP keeps step with its own driver.
+**`zamn_test_bank_sfx`** loads the sets on the player and plays the monster
+sounds from them: the game is untouched, every one is heard, and each is
+the driver's sound on a level with that set (`$29` and `$2B` to 0.0%,
+`$2A` to 3.1%, lined up to the sample).
 
-`zamn_test_sfx_overlay` gives the numbers it gave on the APU.
-`zamn_test_bank_sfx` fails the three checks it already failed before the
-sound was ported, and passes the rest; see below.
+## The player
+
+The driver has four tracks and eight voices for the song and every effect,
+and one sample set at a time. A busy fight runs out: an effect with no free
+track is not started, and a note with no free voice takes one from
+something else or is not played. And seven monster sounds are drawn with
+the level's sample set, so a monster whose sound is in another set is
+silent (`src/bank_sfx.h`). The frontend used to patch both with extra
+machines: a copy of the sound chip that played the dropped effects, its
+voices muted until the real driver lost one, and four more copies holding
+the other sets.
+
+`src/sound/player.c` is one engine instead. It is the driver's sequencer
+written again as plain C, its state in structs, with settings for what the
+console was short of:
+
+| Setting | Console | Effect overlay on |
+|---|---|---|
+| Tracks for the game | 4 | 8 |
+| Voices for the game | 8 | 24, on three DSPs whose outputs are added |
+| One effect playing at once, at most | no limit | 3 |
+| The other sample sets | | with all the monster sounds on: a driver of their own for each, two tracks and eight voices |
+
+The limit of three is the console's own: a weapon that fires faster than
+its sound ends fills every track the song leaves, three, with itself, and
+that is how it sounds there. With more tracks it would stack higher.
+
+The game still talks to the driver in C, to the cycle, since it waits on
+the driver's answers. The player follows it: `Sound.watch` tells it each
+command the driver picks up and each tick of the driver's timer, and it
+does the same at the same cycle. It takes its start from the driver, the
+RAM, tracks, voices, DSP and the samples made so far, when the driver is
+first running and again after a quick load or a reset. The frontend hears
+the player; with both settings off it hears the driver, as before.
+
+The player counts the driver's cycles as `driver.c` does, routine by
+routine, and makes each DSP write on its cycle. That matters: a note's
+writes take the driver a thousand cycles, and the DSP takes a key-on or a
+key-off only every other sample. And it keeps the driver's way with time:
+the driver runs at most one tick each time round its loop, so a tick that
+comes while it is busy waits, two lose one, and the song slows. The
+chainsaw's first beat does that on the console.
+
+With the console's settings the player is the driver: every DSP write on
+the same cycle, and every frame's audio the same.
 
 ## What is left
 
 - **LakeSnes's APU is still linked into `zamn.exe`**, unused. It leaves with
   the rest of the console, in step 5 of `docs/PLAN.md`.
-- **The extra machines are still copies.** The plan's step 4 ends with one
-  engine that has more slots and voices than the driver's four and eight,
-  and all four sample sets loaded, with the overlay and the monster sounds
-  as settings of it.
+- **The driver still runs beside the player**, for the game's timing, and
+  its DSP with it. When the game stops uploading a byte at a time (step 4,
+  item 3, of `docs/PLAN.md`), the player alone can be the sound.
 - **`zamn_test_bank_sfx` finds too few of the game's checks.** It hears the
   monsters' checks of the sample set through `cosim_watch` on the 65816's
   program counter, and since the reset was ported the 65816 runs none of the
   game's code, so a check that is not the first instruction of a ported
-  routine is never seen. This is so before the sound
-  was ported too, and in the game as well as the test.
+  routine is never seen. Three checks of the test fail for it, as they did
+  before the sound was ported, and in the game as well as the test.
 - **Quick saves** made before this do not load: the sound's part of a state
   is laid out differently, and a different size, and the file is refused.

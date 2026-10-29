@@ -92,9 +92,9 @@
 #include "maskline.h"
 #include "quicksave.h"
 #include "config.h"
-#include "sfx_overlay.h"
 #include "bank_sfx.h"
 #include "sound/console.h"
+#include "sound/player.h"
 #include "video/console.h"
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -465,7 +465,7 @@ static bool pace_sleep(double ms) {
 typedef struct {
   Cosim* cosim;
   Snes* snes;
-  SfxOverlay* sfx;
+  Player* player;
   BankSfx* bank;
   Layers* layers;
   SDL_sem* go;
@@ -476,6 +476,14 @@ typedef struct {
   double take_ms;  // ...and how long taking it apart took
 } EmuThread;
 
+// After each tick: the player up to the driver's clock, and the other sample
+// sets loaded on it once they can be.
+static void heard_tick(Player* player, BankSfx* bank) {
+  if (!player) return;
+  player_run(player, player->real->host);
+  bank_sfx_tick(bank);
+}
+
 static int emu_thread_main(void* arg) {
   EmuThread* t = (EmuThread*)arg;
   const double freq = (double)SDL_GetPerformanceFrequency();
@@ -484,8 +492,7 @@ static int emu_thread_main(void* arg) {
     if (t->quit) return 0;
     const Uint64 t0 = SDL_GetPerformanceCounter();
     cosim_frame(t->cosim);
-    sfx_overlay_tick(t->sfx);
-    bank_sfx_tick(t->bank);
+    heard_tick(t->player, t->bank);
     const Uint64 t1 = SDL_GetPerformanceCounter();
     t->last_ms = (double)(t1 - t0) * 1000.0 / freq;
     t->take_ms = 0.0;
@@ -778,7 +785,8 @@ static void usage(void) {
     "  --no-effect-overlay\n"
     "                  Let the sound driver drop and cut short sound effects when\n"
     "                  too much is playing, as the console does. --effect-overlay\n"
-    "                  is the other way. See src/sfx_overlay.h.\n"
+    "                  is the other way: twice the tracks and three times the\n"
+    "                  voices. See src/sound/player.h.\n"
     "  --no-all-monster-sounds\n"
     "                  Leave out the monster sounds the game drops when the\n"
     "                  level has another monster's samples loaded (the chainsaw\n"
@@ -1455,19 +1463,30 @@ int main(int argc, char** argv) {
   sound_attach(snes, &sound);
   snes_reset(snes, true);
 
-  // The sound effects the driver drops or cuts short (`src/sfx_overlay.h`). It
-  // watches the driver from here on and takes its copy of the sound once the
-  // driver is running.
-  static SfxOverlay sfx;
-  sfx_overlay_init(&sfx, &sound, want_audio && effect_overlay);
+  // What is heard is the player (`src/sound/player.h`): the driver's sequencer
+  // again, following the driver, with more of everything. With the effect
+  // overlay it has eight tracks and 24 voices, so the effects the driver drops
+  // or cuts short are heard; with all the monster sounds it holds the other
+  // sample sets as well (`src/bank_sfx.h`). With neither, the driver itself is
+  // heard, as on the console.
+  Player* player = NULL;
+  if (want_audio && (effect_overlay || all_monster_sounds)) {
+    player = (Player*)malloc(sizeof *player);
+    if (player) {
+      PlayerSettings ps = effect_overlay ? player_wide : player_console;
+      ps.other_sets = all_monster_sounds;
+      player_init(player, &sound, ps);
+      player_attach(player, &sound);
+    }
+  }
   // The monster sounds the game skips when the level has another sample set
-  // loaded (`src/bank_sfx.h`): the checks are watched from here on, and the
-  // copies holding the other sets are built once the driver is running.
+  // loaded: the checks are watched from here on, and the sets are loaded on the
+  // player once the driver has its effects.
   static BankSfx bank;
-  bank_sfx_init(&bank, &sound, snes->cart->rom, (int)snes->cart->romSize,
+  bank_sfx_init(&bank, player, snes->cart->rom, (int)snes->cart->romSize,
                 want_audio && all_monster_sounds);
   if (bank.enabled) {
-    bool watched = cosim_watch(&cosim, BSFX_SEND_AT, bank_sfx_at, &bank);
+    bool watched = true;
     for (int k = 0; k < bank.sites && watched; k++)
       watched = cosim_watch(&cosim, bank.site_at[k], bank_sfx_at, &bank);
     if (!watched) {
@@ -1802,7 +1821,7 @@ int main(int argc, char** argv) {
   if (smooth_possible) {
     emu.cosim = &cosim;
     emu.snes = snes;
-    emu.sfx = &sfx;
+    emu.player = player;
     emu.bank = &bank;
     emu.layers = &lay;
     emu.go = SDL_CreateSemaphore(0);
@@ -2095,8 +2114,7 @@ int main(int argc, char** argv) {
         // returns through the routine's own RTS/RTL.
         const Uint64 t0 = SDL_GetPerformanceCounter();
         cosim_frame(&cosim);
-        sfx_overlay_tick(&sfx);
-        bank_sfx_tick(&bank);
+        heard_tick(player, &bank);
         trace_emulate_ms = PACE_MS(t0, SDL_GetPerformanceCounter());
         pace_add(&h_emulate, trace_emulate_ms);
       }
@@ -2121,8 +2139,7 @@ int main(int argc, char** argv) {
           const int want_samples = pace_audio_samples(
               SAMPLES_PER_FRAME, queued, audio_target, 4, AUDIO_MAX_ADJUST);
           snes_setSamples(snes, audio_buf, want_samples);
-          sfx_overlay_mix(&sfx, audio_buf, want_samples);
-          bank_sfx_mix(&bank, audio_buf, want_samples);
+          if (player) player_get_samples(player, audio_buf, want_samples);
           if (volume != 100)
             for (int i = 0; i < want_samples * 2; i++)
               audio_buf[i] = (int16_t)(audio_buf[i] * volume / 100);
@@ -2179,7 +2196,7 @@ int main(int argc, char** argv) {
           const QuickLoad got = quicksave_read(&quick, snes, parts, part_count);
           if (got == QUICKLOAD_OK) {
             cosim_forget_calls(&cosim);
-            sfx_overlay_resync(&sfx);
+            if (player) player_resync(player);
             widescreen_forget_passes(&ws);
             // The smoothing: the tick being shown and the first one after the
             // load are not neighbours, so the link between them is cut when it
@@ -2412,16 +2429,18 @@ int main(int argc, char** argv) {
   if (audio_refills > 1)
     printf("  audio backlog refilled %ld times — rate control is not keeping up\n",
            audio_refills);
-  if (verbose && sfx.enabled)
-    printf("  sound effects: the driver dropped %ld and lost %ld notes and %ld voices;\n"
-           "                 the overlay opened %ld voices, and took its copy %ld times\n",
-           sfx.effects_dropped, sfx.notes_dropped, sfx.voices_stolen, sfx.voices_opened,
-           sfx.resyncs);
+  if (verbose && player)
+    printf("  sound: the player started %ld effects; %ld had no track and %ld were\n"
+           "         playing %d times already; %ld notes had no voice and %ld took\n"
+           "         one; it took the driver's place %ld times\n",
+           player->effects_started, player->effects_dropped, player->effects_held,
+           player->set.max_same, player->notes_dropped, player->voices_stolen, player->imports);
   if (verbose && bank.enabled)
-    printf("  monster sounds: %ld asked for with another sample set loaded; played %ld,\n"
-           "                 %ld, %ld and %ld on the copies holding sets 0 to 3%s\n",
-           bank.wanted, bank.set[0].played, bank.set[1].played, bank.set[2].played,
-           bank.set[3].played, bank.failed ? " (one or more could not be built)" : "");
+    printf("  monster sounds: %ld asked for with another sample set loaded, %ld played\n"
+           "                 (%ld, %ld, %ld and %ld from sets 0 to 3)%s\n",
+           bank.wanted, bank.played, player->other_played[0], player->other_played[1],
+           player->other_played[2], player->other_played[3],
+           bank.failed ? "; one or more sets could not be loaded" : "");
   bool picture_ok = true;
   if (verbose || drawn_by == VIDEO_CHECK)
     picture_ok = video_snes_report(snes, stdout);
@@ -2461,8 +2480,10 @@ int main(int argc, char** argv) {
     cosim.profile = NULL;
   }
   cosim_free(&cosim);
-  sfx_overlay_free(&sfx);
-  bank_sfx_free(&bank);
+  if (player) {
+    player_detach(player, &sound);
+    free(player);
+  }
   video_snes_free(snes);
   free(rom);
   return picture_ok ? 0 : 1;

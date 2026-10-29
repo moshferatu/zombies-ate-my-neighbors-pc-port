@@ -139,18 +139,18 @@ bytes of the four banks were touched by nothing, as code or as data.
 - The whole audio program runs on the SPC700. It is David Warhol's driver
   of 1992: 2,999 bytes at `$0600`, with 36,547 bytes of samples. The 65816
   sends it one-byte commands and uploads songs and sample sets through it.
-- Part of it is already read. `src/sfx_overlay.h` knows where a command is
-  taken, where an effect is started or dropped, and how a note takes a
-  voice: four sequence slots, eight voices, a priority to each.
+- All of it is read now: `src/sound/driver.c` is the driver to the cycle,
+  and `src/sound/player.c` is its sequencer again with no cycles counted:
+  four sequence slots, eight voices, a priority to each, or more.
 - The DSP as each of the 56 levels' songs starts: every voice on ADSR, echo
   on with a delay of 3 and feedback up to `$6E`, no noise and no pitch
   modulation. That is one moment of each song. Whether an effect turns
   noise on later was not looked at.
-- The frontend runs more sound machines on LakeSnes, for two things. One
-  brings back effects the driver drops for want of a slot or a voice. One
-  plays monster sounds from sample sets the level did not load. Both exist
-  only because the driver has four slots, eight voices and room for one
-  set.
+- The frontend ran more sound machines on LakeSnes, for two things. One
+  brought back effects the driver drops for want of a slot or a voice. One
+  played monster sounds from sample sets the level did not load. Both
+  existed only because the driver has four slots, eight voices and room for
+  one set, and both are now settings of the player.
 
 ## The plan
 
@@ -438,11 +438,10 @@ Then `zamn.exe` is `main_sdl.c` on the driver and this, with the sound.
 
 ### Step 4. The sound
 
-Independent of steps 1 to 3. Items 1 and 2 are done (2026-10-28), and the
-frontend's two machines run on copies of the port's sound; see
+Independent of steps 1 to 3. Items 1, 2 and 4 are done (2026-10-28); see
 `docs/sound.md`. Item 3 is not: the game still uploads a byte and an answer
 at a time, and with the console's timing kept the driver must take as long
-over it as it did. Item 4, the one engine, is not begun.
+over it as it did.
 
 1. **The DSP**, written again: BRR decoding, ADSR, pitch, echo with its
    filter, the mix. It is a fixed specification. Checked sample for sample

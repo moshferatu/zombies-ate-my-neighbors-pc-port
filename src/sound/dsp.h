@@ -108,7 +108,7 @@ typedef struct SoundDsp {
   uint16_t ring_at;
 
   // Voices left out of the mix and the echo, a bit each. They keep running.
-  // Not the chip's: the frontend's extra sound machines use it.
+  // Not the chip's: for the tests.
   uint8_t voice_mute;
 } SoundDsp;
 

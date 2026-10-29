@@ -38,9 +38,9 @@
 #include "poke.h"
 #include "port/oam.h"
 #include "scale.h"
-#include "sfx_overlay.h"
 #include "skipintro.h"
 #include "sound/console.h"
+#include "sound/player.h"
 #include "widescreen.h"
 
 #define SAMPLES_PER_TICK 800
@@ -150,8 +150,13 @@ int main(int argc, char** argv) {
   static Sound sound;
   sound_attach(snes, &sound);
   snes_reset(snes, true);
-  static SfxOverlay sfx;
-  sfx_overlay_init(&sfx, &sound, overlay);
+  // What is heard: the player with the effect overlay's settings, or the
+  // driver itself (`src/sound/player.h`).
+  static Player player;
+  if (overlay) {
+    player_init(&player, &sound, player_wide);
+    player_attach(&player, &sound);
+  }
 
   Cosim cosim;
   cosim_init(&cosim, snes, COSIM_NATIVE);
@@ -189,9 +194,11 @@ int main(int argc, char** argv) {
     movie_apply(&movie, snes, i);
     poke_apply(&pokes, snes->ram, i);
     cosim_frame(&cosim);
-    sfx_overlay_tick(&sfx);
     snes_setSamples(snes, audio, SAMPLES_PER_TICK);
-    sfx_overlay_mix(&sfx, audio, SAMPLES_PER_TICK);
+    if (overlay) {
+      player_run(&player, sound.host);
+      player_get_samples(&player, audio, SAMPLES_PER_TICK);
+    }
     // Taken every tick, drawn or not, so the first drawn has a last to ease from.
     const bool fresh = sprite_oam_owners.serial != last_serial;
     last_serial = sprite_oam_owners.serial;
@@ -227,7 +234,7 @@ int main(int argc, char** argv) {
   fflush(stdout);
   if (wav) { fseek(wav, 0, SEEK_SET); wav_header(wav, wav_samples); fclose(wav); }
   fprintf(stderr, "zamn_record: %d ticks, %ld drawn from the PPU's picture\n", last - first + 1, fallbacks);
-  sfx_overlay_free(&sfx);
+  if (overlay) player_detach(&player, &sound);
   cosim_free(&cosim);
   movie_free(&movie);
   video_snes_free(snes);

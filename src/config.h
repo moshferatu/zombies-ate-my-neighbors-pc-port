@@ -147,7 +147,7 @@ typedef struct {
   // [audio]
   bool audio;
   int volume;   // percent, 0..100
-  bool effect_overlay;  // src/sfx_overlay.h
+  bool effect_overlay;  // src/sound/player.h: the player's wide settings
   bool all_monster_sounds;  // src/bank_sfx.h
   // [controller]
   bool pads;
