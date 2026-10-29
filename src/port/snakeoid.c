@@ -2,6 +2,7 @@
 
 #include "port/snakeoid.h"
 
+#include "port/begin.h"  // where its thread's last `RTL` goes
 #include "port/bossbg.h"  // the upload's four words, and the picture's
 #include "port/coverage.h"
 #include "port/frontend.h"  // W_FRAME_COUNT
@@ -1193,7 +1194,16 @@ static void set_bank_word(Snakeoid* s, uint16_t at, uint16_t v) {
     const uint32_t a = (((uint32_t)SNAKEOID_BANK << 16) + at + (uint32_t)i);
     if ((a & 0xffffu) < 0x2000u)
       wram_w8(s->w, a & 0xffffu, (uint8_t)(i ? v >> 8 : v));
+    else if ((a & 0xffffu) >= 0x8000u)
+      s->k->rom_bytes++;
   }
+}
+
+// ...and read.
+static uint16_t bank_word(Snakeoid* s, uint16_t at) {
+  for (int i = 0; i < 2; i++)
+    if ((uint16_t)(at + i) >= 0x8000u) s->k->rom_bytes++;
+  return data(s, at);
 }
 
 // `LDA ($01,S),Y`: a word of the script whose address is on top of the
@@ -1298,11 +1308,11 @@ static uint32_t puts_picture(Snakeoid* s) {
   return queues_picture(s, true);
 }
 
-// `$82:8113`, by `JSL`: the layer blanked, by a job of its own.
-static uint32_t blanks(Snakeoid* s) {
+// `$82:8113`, by the `JSL` at `at`: the layer blanked, by a job of its own.
+static uint32_t blanks(Snakeoid* s, uint16_t at, SnakeoidRun call) {
   PORT_COVER(snakeoid_blanks);
-  jsl(s, 0xa3ab);
-  ran(s, SNAKEOID_RUN_A3AB);
+  jsl(s, at);
+  ran(s, call);
   lda(s, SNAKEOID_BLANK_SOURCE);
   set_data(s, W_BOSS_BG_ONE_SRC, s->c->a);
   lda(s, SNAKEOID_BLANK_BANK);
@@ -1338,7 +1348,7 @@ static uint32_t picks_picture(Snakeoid* s) {
   doubled(s);
   tax(s);
   ran(s, SNAKEOID_RUN_A39E);
-  if (took(s, c->x == 0)) return blanks(s);
+  if (took(s, c->x == 0)) return blanks(s, 0xa3ab, SNAKEOID_RUN_A3AB);
   lda(s, data(s, (uint16_t)(SNAKEOID_PICTURE_OF + c->x)));
   jsr(s, 0xa3a7);
   ran(s, SNAKEOID_RUN_A3A4);
@@ -1363,7 +1373,7 @@ static uint32_t flashes(Snakeoid* s) {
     lda(s, (uint16_t)(data(s, c->y) | ACTOR_ATTR_SET));
     set_data(s, c->y, c->a);
     ldy(s, field(s, SNAKEOID_DP_BODY));
-    lda(s, (uint16_t)(data(s, c->y) | ACTOR_ATTR_SET));
+    lda(s, (uint16_t)(bank_word(s, c->y) | ACTOR_ATTR_SET));
     set_bank_word(s, c->y, c->a);
     lda(s, SNAKEOID_FLASH_COLOURS);
     ldy(s, SNAKEOID_COLOURS_BANK);
@@ -1378,7 +1388,7 @@ static uint32_t flashes(Snakeoid* s) {
   lda(s, (uint16_t)(data(s, c->y) & ~ACTOR_ATTR_SET));
   set_data(s, c->y, c->a);
   ldy(s, field(s, SNAKEOID_DP_BODY));
-  lda(s, (uint16_t)(data(s, c->y) & ~ACTOR_ATTR_SET));
+  lda(s, (uint16_t)(bank_word(s, c->y) & ~ACTOR_ATTR_SET));
   set_bank_word(s, c->y, c->a);
   lda(s, SNAKEOID_COLOURS);
   ldy(s, SNAKEOID_COLOURS_BANK);
@@ -2170,6 +2180,20 @@ static uint32_t bite_goes_back(Snakeoid* s, uint16_t pulled) {
   return 0;
 }
 
+static uint32_t dies_waits(Snakeoid* s);
+static uint32_t dies_up(Snakeoid* s);
+
+// ...and of its death.
+static uint32_t death_goes_back(Snakeoid* s, uint16_t pulled) {
+  switch (pulled) {
+    case SNAKEOID_RET_DIES_CLEARS:
+      return dies_waits(s);
+    case SNAKEOID_RET_DIES_RISES:
+      return dies_up(s);
+  }
+  return 0;
+}
+
 // --- Where a stretch of its bite begins ----------------------------------------------
 
 // `$82:9C2F` and `$82:9CFB`: a tick of waiting for room in the queue.
@@ -2220,11 +2244,217 @@ static uint32_t bitten(Snakeoid* s) {
   return goes_under(s);
 }
 
-// `$82:8135`: the blanking job queued, and back by `RTL` and `RTS`.
+static uint32_t dies_blanked(Snakeoid* s);
+
+// `$82:8135`: the blanking job queued, and back by `RTL`: to its picture's
+// `RTS`, or on in its death.
 static uint32_t blank_queued(Snakeoid* s) {
-  rtl(s);
+  const uint16_t pulled = pull16(s->w, s->c);
+  (void)pull8(s->w, s->c);
   ran(s, SNAKEOID_RUN_8135);
+  if (pulled == SNAKEOID_RET_DIES_BLANKS) return dies_blanked(s);
   return returns(s);
+}
+
+// --- Its death --------------------------------------------------------------
+
+// `$82:A901`: a frame's sleep.
+static uint32_t dies_waits(Snakeoid* s) {
+  lda(s, 0x0001);
+  ran(s, SNAKEOID_RUN_A901);
+  return SNAKEOID_DIES_WAIT_PC;
+}
+
+// `$82:A8FE`: its worth paid, and its track cleared.
+static uint32_t dies_scored(Snakeoid* s) {
+  jsr(s, 0xa8fe);
+  ran(s, SNAKEOID_RUN_A8FE);
+  return clears_track(s);
+}
+
+// `$82:A908`: it comes up when no other Snakeoid is.
+static uint32_t dies_waited(Snakeoid* s) {
+  lda(s, wram_r16(s->w, W_SNAKEOID_UP));
+  ran(s, SNAKEOID_RUN_A908);
+  if (took(s, s->c->a != 0)) {
+    PORT_COVER(snakeoid_dies_waits);
+    return dies_waits(s);
+  }
+  jsr(s, 0xa90e);
+  ran(s, SNAKEOID_RUN_A90E);
+  return comes_up(s);
+}
+
+// `$82:A911`: up, and four ticks' sleep.
+static uint32_t dies_up(Snakeoid* s) {
+  lda(s, SNAKEOID_DEATH_TICK);
+  ran(s, SNAKEOID_RUN_A911);
+  return SNAKEOID_DIES_UP_WAIT_PC;
+}
+
+// `$82:A924`: a tick of its death.
+static uint32_t dies_ticks(Snakeoid* s) {
+  lda(s, SNAKEOID_DEATH_TICK);
+  ran(s, SNAKEOID_RUN_A924);
+  return SNAKEOID_DIES_TICK_PC;
+}
+
+// `$82:A918`: no mosaic yet, and twenty ticks to go.
+static uint32_t dies_counted(Snakeoid* s) {
+  PORT_COVER(snakeoid_dies_up);
+  lda(s, 0);
+  wram_w16(s->w, W_MOSAIC_SIZE, s->c->a);
+  lda(s, SNAKEOID_DEATH_TICKS);
+  set_field(s, SNAKEOID_DP_COUNT, s->c->a);
+  ran(s, SNAKEOID_RUN_A918);
+  return dies_ticks(s);
+}
+
+// `$82:A98B`: its own colours again.
+static uint32_t dies_unflashes(Snakeoid* s) {
+  lda(s, SNAKEOID_COLOURS);
+  ldy(s, SNAKEOID_COLOURS_BANK);
+  ran(s, SNAKEOID_RUN_A98B);
+  return SNAKEOID_DIES_UNFLASH_PC;
+}
+
+// `$82:A956`: on an even tick a piece of it bursts off, from the place the
+// table has for that tick; on an odd one its colours come back.
+static uint32_t dies_bursts(Snakeoid* s) {
+  PortCpu* c = s->c;
+  lda(s, (uint16_t)(field(s, SNAKEOID_DP_COUNT) & 0x000fu));
+  shares_bit(s, 0x0001);
+  ran(s, SNAKEOID_RUN_A956);
+  if (took(s, !zero(s))) {
+    PORT_COVER(snakeoid_dies_unflashes);
+    return dies_unflashes(s);
+  }
+  PORT_COVER(snakeoid_dies_bursts);
+  doubled(s);
+  doubled(s);
+  tax(s);
+  lda(s, data(s, (uint16_t)(SNAKEOID_BURSTS + c->x)));
+  add(s, field(s, SNAKEOID_DP_X));
+  set_field(s, SNAKEOID_DP_PLACE_X, c->a);
+  lda(s, data(s, (uint16_t)(SNAKEOID_BURSTS + 2 + c->x)));
+  add(s, field(s, SNAKEOID_DP_Y));
+  set_field(s, SNAKEOID_DP_PLACE_Y, c->a);
+  lda(s, SNAKEOID_PIECE);
+  ldy(s, SNAKEOID_PIECE_BANK);
+  ran(s, SNAKEOID_RUN_A960);
+  return SNAKEOID_DIES_SPAWN_PC;
+}
+
+// `$82:A932`: the mosaic's job queued when the queue has room, or a frame's
+// sleep.
+static uint32_t dies_makes_room(Snakeoid* s) {
+  PortCpu* c = s->c;
+  lda(s, data(s, W_VBL_QUEUE_A_COUNT));
+  cmp16(c, c->a, SNAKEOID_QUEUE_ROOM);
+  ran(s, SNAKEOID_RUN_A932);
+  if (took(s, !carry(s))) {
+    lda(s, SNAKEOID_MOSAIC_JOB_PC & 0xffffu);
+    ldy(s, SNAKEOID_BANK);
+    ran(s, SNAKEOID_RUN_A943);
+    return SNAKEOID_DIES_MOSAIC_QUEUE_PC;
+  }
+  PORT_COVER(snakeoid_dies_queue_full);
+  lda(s, 0x0001);
+  ran(s, SNAKEOID_RUN_A93A);
+  return SNAKEOID_DIES_ROOM_WAIT_PC;
+}
+
+// `$82:A92B`: a tick over. From the fifth on, the mosaic grows first.
+static uint32_t dies_ticked(Snakeoid* s) {
+  PortCpu* c = s->c;
+  lda(s, field(s, SNAKEOID_DP_COUNT));
+  cmp16(c, c->a, SNAKEOID_DEATH_MOSAIC_UNDER);
+  ran(s, SNAKEOID_RUN_A92B);
+  if (took(s, carry(s))) return dies_bursts(s);
+  PORT_COVER(snakeoid_dies_mosaic);
+  return dies_makes_room(s);
+}
+
+// `$82:A941`.
+static uint32_t dies_room_waited(Snakeoid* s) {
+  took(s, true);
+  ran(s, SNAKEOID_RUN_A941);
+  return dies_makes_room(s);
+}
+
+// `$82:A94D`: the mosaic a step coarser.
+static uint32_t dies_mosaic_queued(Snakeoid* s) {
+  lda(s, (uint16_t)(wram_r16(s->w, W_MOSAIC_SIZE) + 1));
+  wram_w16(s->w, W_MOSAIC_SIZE, s->c->a);
+  ran(s, SNAKEOID_RUN_A94D);
+  return dies_bursts(s);
+}
+
+// `$82:A97D`: a piece begun, and its colours flash.
+static uint32_t dies_burst(Snakeoid* s) {
+  lda(s, SNAKEOID_DEATH_COLOURS);
+  ldy(s, SNAKEOID_DEATH_COLOURS_BANK);
+  ran(s, SNAKEOID_RUN_A97D);
+  return SNAKEOID_DIES_FLASH_PC;
+}
+
+// `$82:A987`: a tick less, which from an even one is never the last.
+static uint32_t dies_flashed(Snakeoid* s) {
+  count_down(s, SNAKEOID_DP_COUNT);
+  ran(s, SNAKEOID_RUN_A987);
+  if (took(s, !zero(s))) return dies_ticks(s);
+  return dies_unflashes(s);
+}
+
+// `$82:A995`: a tick less, and after the last its layer blanked.
+static uint32_t dies_unflashed(Snakeoid* s) {
+  count_down(s, SNAKEOID_DP_COUNT);
+  ran(s, SNAKEOID_RUN_A995);
+  if (took(s, !zero(s))) return dies_ticks(s);
+  return blanks(s, 0xa999, SNAKEOID_RUN_A999);
+}
+
+// `$82:A99D`: the mosaic's end queued.
+static uint32_t dies_blanked(Snakeoid* s) {
+  lda(s, SNAKEOID_MOSAIC_OFF_JOB_PC & 0xffffu);
+  ldy(s, SNAKEOID_BANK);
+  ran(s, SNAKEOID_RUN_A99D);
+  return SNAKEOID_DIES_END_QUEUE_PC;
+}
+
+// `$82:A9A7`: its record freed.
+static uint32_t dies_ended(Snakeoid* s) {
+  lda(s, field(s, SNAKEOID_DP_RECORD));
+  ran(s, SNAKEOID_RUN_A9A7);
+  return SNAKEOID_DIES_FREE_PC;
+}
+
+// `$82:A9AD`: what it leaves, put down a little above where it was.
+static uint32_t dies_freed(Snakeoid* s) {
+  ldx(s, field(s, SNAKEOID_DP_X));
+  lda(s, field(s, SNAKEOID_DP_Y));
+  sub(s, SNAKEOID_LEAVES_UP);
+  tay(s);
+  lda(s, SNAKEOID_LEAVES);
+  ran(s, SNAKEOID_RUN_A9AD);
+  return SNAKEOID_DIES_LEAVE_PC;
+}
+
+// `$82:A9BD`: none up, its weight off the level's load, and its thread's
+// `RTL`, to `thread_exit`. A load that would go below nothing stops the ROM
+// on a branch to itself, which the guard leaves to the ROM.
+static uint32_t dies_left(Snakeoid* s) {
+  PortCpu* c = s->c;
+  PORT_COVER(snakeoid_died);
+  lda(s, 0);
+  wram_w16(s->w, W_SNAKEOID_UP, c->a);
+  lda(s, data(s, W_SPAWN_LOAD));
+  sub(s, SNAKEOID_LOAD);
+  set_data(s, W_SPAWN_LOAD, c->a);
+  ran(s, SNAKEOID_RUN_A9BD);
+  rtl(s);
+  ran(s, SNAKEOID_RUN_A9D0);
+  return RECORD_END_EXITED_PC;
 }
 
 // --- Its thread -------------------------------------------------------------
@@ -2326,6 +2556,8 @@ static uint32_t goes_back(Snakeoid* s) {
   }
   const uint32_t bite = bite_goes_back(s, pulled);
   if (bite != 0) return bite;
+  const uint32_t death = death_goes_back(s, pulled);
+  if (death != 0) return death;
   // Not one of its own, which the harness's guard has ruled out.
   return (uint32_t)SNAKEOID_BANK << 16 | (uint16_t)(pulled + 1);
 }
@@ -2522,6 +2754,18 @@ static const struct {
     {SNAKEOID_SINK_WAITED_PC, sink_waited},
     {SNAKEOID_SINK_QUEUED_PC, sink_queued},
     {SNAKEOID_SUNK_PC, sunk},
+    {SNAKEOID_DIES_SCORED_PC, dies_scored},
+    {SNAKEOID_DIES_WAITED_PC, dies_waited},
+    {SNAKEOID_DIES_UP_PC, dies_counted},
+    {SNAKEOID_DIES_TICKED_PC, dies_ticked},
+    {SNAKEOID_DIES_ROOM_PC, dies_room_waited},
+    {SNAKEOID_DIES_MOSAIC_PC, dies_mosaic_queued},
+    {SNAKEOID_DIES_BURST_PC, dies_burst},
+    {SNAKEOID_DIES_FLASHED_PC, dies_flashed},
+    {SNAKEOID_DIES_UNFLASHED_PC, dies_unflashed},
+    {SNAKEOID_DIES_ENDED_PC, dies_ended},
+    {SNAKEOID_DIES_FREED_PC, dies_freed},
+    {SNAKEOID_DIES_LEFT_PC, dies_left},
 };
 
 bool snakeoid_state_known(uint16_t state) {
@@ -2572,9 +2816,16 @@ static bool slot_at(const Wram* w, uint16_t s, int at) {
   return vbl_queue_a_remove_supported(stacked(w, s, at));
 }
 
+// Its thread's own end, `thread_exit`'s return, which is under its death.
+static bool exit_at(const Wram* w, uint16_t s, int at) {
+  return stacked(w, s, at) == (RECORD_END_EXITED_PC & 0xffffu) - 1 &&
+         wram_r8(w, (uint16_t)(s + 3 + at)) == (RECORD_END_EXITED_PC >> 16);
+}
+
 static bool rising_at(const Wram* w, uint16_t s, int at) {
-  return one_of(stacked(w, s, at), SNAKEOID_RET_UNDER_RISES,
-                SNAKEOID_RET_BESIDE_RISES) &&
+  const uint16_t ret = stacked(w, s, at);
+  if (ret == SNAKEOID_RET_DIES_RISES) return exit_at(w, s, at + 2);
+  return one_of(ret, SNAKEOID_RET_UNDER_RISES, SNAKEOID_RET_BESIDE_RISES) &&
          state_at(w, s, at + 2);
 }
 
@@ -2668,6 +2919,9 @@ static bool bite_known(const Wram* w, uint16_t s, int at) {
       return stacked(w, s, at + 2) == SNAKEOID_RET_PUTS &&
              stacked(w, s, at + 4) == SNAKEOID_RET_PICKS &&
              shows_at(w, s, at + 6);
+    case SNAKEOID_RET_DIES_CLEARS:
+    case SNAKEOID_RET_DIES_RISES:
+      return exit_at(w, s, at + 2);
   }
   return false;
 }
@@ -2683,8 +2937,9 @@ static bool bite_stack_known(const Wram* w, uint32_t pc, uint16_t s) {
     case SNAKEOID_CLEARED_PC:
       // The piece it pushed, and under it the return of the clearing.
       return piece_known(top) &&
-             one_of(stacked(w, s, 2), SNAKEOID_RET_RISE_CLEARS,
-                    SNAKEOID_RET_SINK_CLEARS) &&
+             (one_of(stacked(w, s, 2), SNAKEOID_RET_RISE_CLEARS,
+                     SNAKEOID_RET_SINK_CLEARS) ||
+              stacked(w, s, 2) == SNAKEOID_RET_DIES_CLEARS) &&
              bite_known(w, s, 2);
     case SNAKEOID_HURT_FREED_PC:
       return top == SNAKEOID_RET_SINK_FREES && bite_known(w, s, 0);
@@ -2702,9 +2957,11 @@ static bool bite_stack_known(const Wram* w, uint32_t pc, uint16_t s) {
     case SNAKEOID_PICTURE_FLIPPED_PC:
       return top == SNAKEOID_RET_PICTURE_FLIP && bite_known(w, s, 0);
     case SNAKEOID_BLANKED_PC:
-      // A `JSL`'s three bytes, and under them `$82:A392`'s return.
+      // A `JSL`'s three bytes, and under them `$82:A392`'s return, or its
+      // thread's end.
+      if (wram_r8(w, (uint16_t)(s + 3)) != SNAKEOID_BANK) return false;
+      if (top == SNAKEOID_RET_DIES_BLANKS) return exit_at(w, s, 3);
       return top == SNAKEOID_RET_BLANKS &&
-             wram_r8(w, (uint16_t)(s + 3)) == SNAKEOID_BANK &&
              stacked(w, s, 3) == SNAKEOID_RET_PICKS && shows_at(w, s, 5);
     case SNAKEOID_UNFLASHED_PC:
     case SNAKEOID_FLASHED_PC:
@@ -2722,6 +2979,24 @@ static bool bite_stack_known(const Wram* w, uint32_t pc, uint16_t s) {
     case SNAKEOID_SINK_QUEUED_PC:
     case SNAKEOID_SUNK_PC:
       return sinking_at(w, s, 0);
+    case SNAKEOID_DIES_SCORED_PC:
+    case SNAKEOID_DIES_WAITED_PC:
+    case SNAKEOID_DIES_UP_PC:
+    case SNAKEOID_DIES_TICKED_PC:
+    case SNAKEOID_DIES_ROOM_PC:
+    case SNAKEOID_DIES_MOSAIC_PC:
+    case SNAKEOID_DIES_BURST_PC:
+    case SNAKEOID_DIES_FLASHED_PC:
+    case SNAKEOID_DIES_UNFLASHED_PC:
+    case SNAKEOID_DIES_ENDED_PC:
+    case SNAKEOID_DIES_FREED_PC:
+      return exit_at(w, s, 0);
+    case SNAKEOID_DIES_LEFT_PC: {
+      // ...and the load must not go below nothing.
+      const uint16_t load = wram_r16(w, W_SPAWN_LOAD);
+      return exit_at(w, s, 0) && load >= SNAKEOID_LOAD &&
+             ((load - SNAKEOID_LOAD) & 0x8000u) == 0;
+    }
   }
   return false;
 }

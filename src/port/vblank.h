@@ -207,6 +207,13 @@ void mosaic_job(Wram* w, PortCpu* c, HwTrace* t);
 #define MOSAIC_OFF_JOB_RTL_PC 0x828834u
 void mosaic_off_job(Wram* w, PortCpu* c, HwTrace* t);
 
+// The Snakeoid's death has a copy of each, byte for byte, which the same two
+// functions run (`port/snakeoid.h`).
+#define SNAKEOID_MOSAIC_JOB_PC 0x82a9d1u
+#define SNAKEOID_MOSAIC_JOB_RTL_PC 0x82a9e4u
+#define SNAKEOID_MOSAIC_OFF_JOB_PC 0x82a9e5u
+#define SNAKEOID_MOSAIC_OFF_JOB_RTL_PC 0x82a9edu
+
 // --- $82:8C49 boss_shake_job ---------------------------------------------------
 //
 // The screen shaking under the big figure of level 25 while it stamps. BG2,

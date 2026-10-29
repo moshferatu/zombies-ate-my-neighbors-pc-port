@@ -9519,6 +9519,9 @@ static const CosimRun TS_COST[TS_BLOCK_COUNT] = {
     [TS_TRACKER_ENDED] = {104, 11, 1},
     [TS_PUFF_ENTER] = {98, 10, 0},
     [TS_PUFF_MADE] = {598, 55, 3},
+    [TS_PIECE_ENTER] = {98, 10, 0},
+    [TS_PIECE_MADE] = {598, 55, 3},
+    [TS_PIECE_HEARD] = {18, 3, 0},
     // The colour pulse's setup, `--db=7e`: the colour is read long.
     [TS_PULSE_ENTER] = {178, 19, 3},
     // The figure's start and the saucer's, `--db=82`.
@@ -9838,7 +9841,8 @@ static const uint32_t TS_EXITS_SAUCER[] = {
     SAUCER_NEAREST_CALL_PC, SAUCER_YIELD_PC};
 static const uint32_t TS_EXITS_TRACKER[] = {
     TRACKER_BEGIN_CALL_PC, TRACKER_SLEEP_PC, TRACKER_END_CALL_PC,
-    PUFF_ALLOC_CALL_PC, PUFF_PICTURES_CALL_PC};
+    PUFF_ALLOC_CALL_PC, PUFF_PICTURES_CALL_PC,
+    PIECE_ALLOC_CALL_PC, PIECE_SOUND_CALL_PC, PIECE_PICTURES_CALL_PC};
 static const uint32_t TS_EXITS_MARTIAN[] = {
     MARTIAN_BEGIN_CALL_PC, MARTIAN_FIRST_SLEEP_PC, MARTIAN_PLACE_GROUND_PC,
     MARTIAN_PLACE_EDGE_PC, MARTIAN_ARRIVAL_NONE_PC,
@@ -24325,6 +24329,10 @@ static const uint32_t TENTACLE_CRIED_EXITS[] = {TENTACLE_DEATH_PC};
 // their own models.
 // `vbl_queue_a_remove`, which its bite makes itself: `QUEUE_A_REMOVE_RUN`.
 static const CosimRun SNAKEOID_UNQUEUE_RUN = {168, 11, 0};
+// A byte of its body's record read or written in the cartridge rather than
+// in WRAM, which the runs price: two cycles less under FastROM, and the same
+// otherwise, as a fetch is.
+static const CosimRun SNAKEOID_ROM_BYTE_RUN = {-2, 1, 0};
 
 static const CosimRun SNAKEOID_RUN_COST[SNAKEOID_RUN_COUNT] = {
     [SNAKEOID_RUN_80E0] = {76, 4, 0},  // LDA : RTL
@@ -24605,6 +24613,31 @@ static const CosimRun SNAKEOID_RUN_COST[SNAKEOID_RUN_COUNT] = {
     [SNAKEOID_RUN_A8DE] = {170, 10, 2},  // STZ : PEA : LDA : DEC : PHA : RTS
     [SNAKEOID_RUN_A8E8] = {18, 3, 0},  // LDA
     [SNAKEOID_RUN_A8EF] = {40, 4, 1},  // LDA : BEQ
+    [SNAKEOID_RUN_A8FE] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A901] = {18, 3, 0},  // LDA
+    [SNAKEOID_RUN_A908] = {52, 6, 0},  // LDA : BNE
+    [SNAKEOID_RUN_A90E] = {40, 3, 0},  // JSR
+    [SNAKEOID_RUN_A911] = {18, 3, 0},  // LDA
+    [SNAKEOID_RUN_A918] = {104, 12, 1},  // LDA : STA : LDA : STA
+    [SNAKEOID_RUN_A924] = {18, 3, 0},  // LDA
+    [SNAKEOID_RUN_A92B] = {58, 7, 1},  // LDA : CMP : BCS
+    [SNAKEOID_RUN_A932] = {64, 8, 0},  // LDA : CMP : BCC
+    [SNAKEOID_RUN_A93A] = {18, 3, 0},  // LDA
+    [SNAKEOID_RUN_A941] = {12, 2, 0},  // BRA
+    [SNAKEOID_RUN_A943] = {36, 6, 0},  // LDA : LDY
+    [SNAKEOID_RUN_A94D] = {92, 9, 0},  // LDA : INC : STA
+    [SNAKEOID_RUN_A956] = {76, 10, 1},  // LDA : AND : BIT : BNE
+    [SNAKEOID_RUN_A960] = {280, 29, 4},  // ASL : ASL : TAX : LDA : CLC : ADC : STA : LDA : CLC : ADC : STA : LDA : LDY
+    [SNAKEOID_RUN_A97D] = {36, 6, 0},  // LDA : LDY
+    [SNAKEOID_RUN_A987] = {62, 4, 1},  // DEC : BNE
+    [SNAKEOID_RUN_A98B] = {36, 6, 0},  // LDA : LDY
+    [SNAKEOID_RUN_A995] = {62, 4, 1},  // DEC : BNE
+    [SNAKEOID_RUN_A999] = {54, 4, 0},  // JSL
+    [SNAKEOID_RUN_A99D] = {36, 6, 0},  // LDA : LDY
+    [SNAKEOID_RUN_A9A7] = {28, 2, 1},  // LDA
+    [SNAKEOID_RUN_A9AD] = {116, 12, 2},  // LDX : LDA : SEC : SBC : TAY : LDA
+    [SNAKEOID_RUN_A9BD] = {168, 19, 0},  // LDA : STA : SEC : LDA : SBC : STA : BMI
+    [SNAKEOID_RUN_A9D0] = {42, 1, 0},  // RTL
 };
 
 // Its tables are read through the bank, and so are its records. A stretch
@@ -24683,6 +24716,7 @@ static void shim_snakeoid(Wram* w, const Rom* rom, const CosimRegs* in,
   // routine's `QUEUE_A_REMOVE_RUN`, below.
   cycles += wide_cycles(&k.wide, fast);
   cycles += k.unqueued * cosim_run_cycles(&SNAKEOID_UNQUEUE_RUN, fast);
+  cycles += k.rom_bytes * cosim_run_cycles(&SNAKEOID_ROM_BYTE_RUN, fast);
   cosim_cost(cycles);
 }
 
@@ -24707,7 +24741,13 @@ static const uint32_t SNAKEOID_EXITS[] = {
     SNAKEOID_CRY_PC,           SNAKEOID_PICTURE_PC,
     SNAKEOID_PICTURE_FLIP_PC,  SNAKEOID_UNFLASH_PC,
     SNAKEOID_FLASH_PC,         SNAKEOID_TELL_PC,
-    SNAKEOID_SINK_WAI_PC};
+    SNAKEOID_SINK_WAI_PC,
+    SNAKEOID_DIES_WAIT_PC,     SNAKEOID_DIES_UP_WAIT_PC,
+    SNAKEOID_DIES_TICK_PC,     SNAKEOID_DIES_ROOM_WAIT_PC,
+    SNAKEOID_DIES_MOSAIC_QUEUE_PC, SNAKEOID_DIES_SPAWN_PC,
+    SNAKEOID_DIES_FLASH_PC,    SNAKEOID_DIES_UNFLASH_PC,
+    SNAKEOID_DIES_END_QUEUE_PC, SNAKEOID_DIES_FREE_PC,
+    SNAKEOID_DIES_LEAVE_PC,    RECORD_END_EXITED_PC};
 
 // ---------------------------------------------------------------------------
 // The spray of the extinguisher and the flamethrower -- see `port/spray.h`
@@ -34449,6 +34489,32 @@ static const CosimRoutine ROUTINES[] = {
         .uncalled = true,
         .cycles = 900,
     },
+    // The Snakeoid's death's mosaic, and its end: the saucer's jobs, byte for
+    // byte.
+    {
+        .name = "snakeoid_mosaic_job",
+        .symbol = "$82:A9D1",
+        .entry = SNAKEOID_MOSAIC_JOB_PC,
+        .ret_op = SNAKEOID_MOSAIC_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_mosaic_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 220,
+    },
+    {
+        .name = "snakeoid_mosaic_off_job",
+        .symbol = "$82:A9E5",
+        .entry = SNAKEOID_MOSAIC_OFF_JOB_PC,
+        .ret_op = SNAKEOID_MOSAIC_OFF_JOB_RTL_PC,
+        .ret_kind = COSIM_RTL,
+        .run = shim_mosaic_off_job,
+        .accepts = accepts_vbl_job,
+        .hw = true,
+        .uncalled = true,
+        .cycles = 120,
+    },
     // A record begun, and three of the neighbours' loops.
     {
         .name = "record_begin",
@@ -35037,6 +35103,19 @@ static const CosimRoutine ROUTINES[] = {
     SNAKEOID_ROW(sink_waited, "$82:9CFB", SNAKEOID_SINK_WAITED_PC, 150)
     SNAKEOID_ROW(sink_queued, "$82:9D07", SNAKEOID_SINK_QUEUED_PC, 300)
     SNAKEOID_ROW(sunk, "$82:9D25", SNAKEOID_SUNK_PC, 300)
+    // ...and of its death.
+    SNAKEOID_ROW(dies_scored, "$82:A8FE", SNAKEOID_DIES_SCORED_PC, 600)
+    SNAKEOID_ROW(dies_waited, "$82:A908", SNAKEOID_DIES_WAITED_PC, 900)
+    SNAKEOID_ROW(dies_up, "$82:A918", SNAKEOID_DIES_UP_PC, 120)
+    SNAKEOID_ROW(dies_ticked, "$82:A92B", SNAKEOID_DIES_TICKED_PC, 300)
+    SNAKEOID_ROW(dies_room, "$82:A941", SNAKEOID_DIES_ROOM_PC, 120)
+    SNAKEOID_ROW(dies_mosaic, "$82:A94D", SNAKEOID_DIES_MOSAIC_PC, 400)
+    SNAKEOID_ROW(dies_burst, "$82:A97D", SNAKEOID_DIES_BURST_PC, 40)
+    SNAKEOID_ROW(dies_flashed, "$82:A987", SNAKEOID_DIES_FLASHED_PC, 90)
+    SNAKEOID_ROW(dies_unflashed, "$82:A995", SNAKEOID_DIES_UNFLASHED_PC, 90)
+    SNAKEOID_ROW(dies_ended, "$82:A9A7", SNAKEOID_DIES_ENDED_PC, 30)
+    SNAKEOID_ROW(dies_freed, "$82:A9AD", SNAKEOID_DIES_FREED_PC, 120)
+    SNAKEOID_ROW(dies_left, "$82:A9BD", SNAKEOID_DIES_LEFT_PC, 210)
 #undef SNAKEOID_ROW
     // The spray of the extinguisher and the flamethrower. See
     // `port/spray.h`.

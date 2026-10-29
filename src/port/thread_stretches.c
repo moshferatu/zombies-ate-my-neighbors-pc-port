@@ -4310,25 +4310,58 @@ void puff_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
   c->pc = PUFF_ALLOC_CALL_PC;
 }
 
-// `$82:F1F4`: the record in A, at the place it was asked for, drawn.
-void puff_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
-  (void)rom;
+// The record in A, at the place it was asked for, with its picture and its
+// flags: a puff's, and a piece's.
+static void puff_record(Wram* w, PortCpu* c, uint16_t picture, uint16_t bank,
+                        uint16_t flags) {
   const uint16_t record = c->a;
   set_page(w, c, PUFF_DP_RECORD, record);
   ldy(c, record);
   wram_w16(w, (uint16_t)(record + ACTOR_X), page(w, c, PUFF_DP_X));
   wram_w16(w, (uint16_t)(record + ACTOR_Z), 0);
   wram_w16(w, (uint16_t)(record + ACTOR_Y), page(w, c, PUFF_DP_Y));
-  wram_w16(w, (uint16_t)(record + ACTOR_META), PUFF_PICTURE);
-  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), PUFF_PICTURE_BANK);
+  wram_w16(w, (uint16_t)(record + ACTOR_META), picture);
+  wram_w16(w, (uint16_t)(record + ACTOR_META_BANK), bank);
   wram_w16(w, (uint16_t)(record + ACTOR_THREAD),
            wram_r16(w, W_SCHED_CUR_TASK));
   wram_w16(w, (uint16_t)(record + ACTOR_COLLIDE_ID), 0);
-  lda(c, (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) | ACTOR_DRAW));
+  lda(c, (uint16_t)(wram_r16(w, (uint16_t)(record + ACTOR_FLAGS)) | flags));
   wram_w16(w, (uint16_t)(record + ACTOR_FLAGS), c->a);
+}
+
+// `$82:F1F4`: the record in A, at the place it was asked for, drawn.
+void puff_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  puff_record(w, c, PUFF_PICTURE, PUFF_PICTURE_BANK, ACTOR_DRAW);
   lda(c, PUFF_PICTURES);
   ran(k, TS_PUFF_MADE);
   c->pc = PUFF_PICTURES_CALL_PC;
+}
+
+// `$83:B1DD`: a piece of the Snakeoid.
+void piece_enter(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  load_up(w, c, PIECE_LOAD);
+  ran(k, TS_PIECE_ENTER);
+  c->pc = PIECE_ALLOC_CALL_PC;
+}
+
+// `$83:B1EB`: its record, as a puff's, and its sound.
+void piece_made(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)rom;
+  puff_record(w, c, PIECE_PICTURE, PIECE_PICTURE_BANK, PIECE_FLAGS);
+  lda(c, PIECE_SOUND);
+  ran(k, TS_PIECE_MADE);
+  c->pc = PIECE_SOUND_CALL_PC;
+}
+
+// `$83:B226`: its pictures.
+void piece_heard(Wram* w, const Rom* rom, PortCpu* c, ThreadStretchWork* k) {
+  (void)w;
+  (void)rom;
+  lda(c, PIECE_PICTURES);
+  ran(k, TS_PIECE_HEARD);
+  c->pc = PIECE_PICTURES_CALL_PC;
 }
 
 // --- the colour pulse's setup ------------------------------------------------

@@ -76,13 +76,24 @@
 // are lists of a picture and how many frames, read through the address
 // each pushed.
 //
-// **Not here**: how it dies. No session of the survey reaches it. Its
-// handler is `boss_aa2e_collide`, in `port/collide.h`.
+// **Its death.** Its handler is `boss_aa2e_collide`, in `port/collide.h`,
+// and it sets `$46`. The frame its thread sees that, whoever killed it is
+// paid (`port/begin.h`), its track is cleared, and it waits until no other
+// Snakeoid is up to come up itself, with nothing under it that hurts. Then
+// twenty ticks of four frames: on each even one a piece of it bursts off,
+// a thread of its own at `$83:B1DD` (`port/thread_stretches.h`), and its
+// colours flash; on each odd one they are its own again. From the fifth
+// tick on, each tick queues a job that makes the first layer's mosaic a
+// step coarser, `$82:A9D1`, a copy of the saucer's (`port/vblank.h`). At
+// the end its layer is blanked, the mosaic ended, its record freed, and
+// what it leaves put down four pixels above where it was. Its weight comes
+// off the level's load and its thread ends.
 //
 // **Written as stretches**, like `port/tentacle.h`. The calls a stretch
 // stops on are a record asked for, a record freed, and its sleeps, and in
 // its bite a job queued, its cry, a picture's upload, its colours, a box
-// told, and the `WAI` it goes under on. Most of those are inside routines
+// told, and the `WAI` it goes under on, and in its death a piece begun and
+// what it leaves put down. Most of those are inside routines
 // its states call, so a stretch that begins after one finds its way back by
 // the return addresses on the stack, as the ROM does. The calls it makes
 // itself are the ones whose cost is known to the cycle: a draw, the ground
@@ -238,6 +249,19 @@
 #define SNAKEOID_SINK_WAITED_PC 0x829cfbu
 #define SNAKEOID_SINK_QUEUED_PC 0x829d07u
 #define SNAKEOID_SUNK_PC 0x829d25u       // after the `WAI`
+// ...and in its death.
+#define SNAKEOID_DIES_SCORED_PC 0x82a8feu     // its worth paid, or nobody's
+#define SNAKEOID_DIES_WAITED_PC 0x82a908u     // a frame on, waiting to come up
+#define SNAKEOID_DIES_UP_PC 0x82a918u         // up, and four ticks on
+#define SNAKEOID_DIES_TICKED_PC 0x82a92bu     // a tick of its death over
+#define SNAKEOID_DIES_ROOM_PC 0x82a941u       // a frame on, waiting for room
+#define SNAKEOID_DIES_MOSAIC_PC 0x82a94du     // the mosaic's job queued
+#define SNAKEOID_DIES_BURST_PC 0x82a97du      // a piece of it begun
+#define SNAKEOID_DIES_FLASHED_PC 0x82a987u    // its colours flashed
+#define SNAKEOID_DIES_UNFLASHED_PC 0x82a995u  // ...or its own again
+#define SNAKEOID_DIES_ENDED_PC 0x82a9a7u      // the mosaic's end queued
+#define SNAKEOID_DIES_FREED_PC 0x82a9adu      // its record freed
+#define SNAKEOID_DIES_LEFT_PC 0x82a9bdu       // what it leaves put down
 
 // Where one stops: a call the harness makes, or what is not ported.
 #define SNAKEOID_COLOURS_PC 0x82a847u    // `JSL figure_colours_set`
@@ -273,6 +297,18 @@
 #define SNAKEOID_FLASH_PC 0x82a083u
 #define SNAKEOID_TELL_PC 0x82a345u          // `JSL actor_notify_box`
 #define SNAKEOID_SINK_WAI_PC 0x829d24u      // `WAI`
+// ...and in its death.
+#define SNAKEOID_DIES_WAIT_PC 0x82a904u       // `JSL thread_yield`
+#define SNAKEOID_DIES_UP_WAIT_PC 0x82a914u
+#define SNAKEOID_DIES_TICK_PC 0x82a927u
+#define SNAKEOID_DIES_ROOM_WAIT_PC 0x82a93du
+#define SNAKEOID_DIES_MOSAIC_QUEUE_PC 0x82a949u  // `JSL vbl_queue_a_add`
+#define SNAKEOID_DIES_SPAWN_PC 0x82a979u      // `JSL thread_spawn`
+#define SNAKEOID_DIES_FLASH_PC 0x82a983u      // `JSL figure_colours_set`
+#define SNAKEOID_DIES_UNFLASH_PC 0x82a991u
+#define SNAKEOID_DIES_END_QUEUE_PC 0x82a9a3u  // `JSL vbl_queue_a_add`
+#define SNAKEOID_DIES_FREE_PC 0x82a9a9u       // `JSL actor_slot_free`
+#define SNAKEOID_DIES_LEAVE_PC 0x82a9b9u      // `JSL object_put_back`
 
 // The return addresses a stretch can find on the stack, as `RTS` pulls them.
 #define SNAKEOID_RET_RECORD 0xa8a7u      // `JSR $A7F3`
@@ -321,6 +357,10 @@
 #define SNAKEOID_RET_PICTURE 0x9b1du       // `JSR $9AD2`
 #define SNAKEOID_RET_PICTURE_FLIP 0x9b22u  // `JSR $9AE3`
 #define SNAKEOID_RET_BLANKS 0xa3aeu        // `JSL $82:8113`
+// ...and of its death, which is under nothing but its thread's own end.
+#define SNAKEOID_RET_DIES_CLEARS 0xa900u   // `JSR $9EF1`
+#define SNAKEOID_RET_DIES_RISES 0xa910u    // `JSR $9C02`
+#define SNAKEOID_RET_DIES_BLANKS 0xa99cu   // `JSL $82:8113`
 
 // Its bite. One Snakeoid is up at a time, and while it is this word in bank
 // `$7E` is set. It came up where these two say, and goes back there.
@@ -388,6 +428,20 @@
 #define SNAKEOID_BLANK_BYTES 0x2000u
 // The bits of a record's flags it clears.
 #define SNAKEOID_BODY_CLEARS 0xffd9u  // `ACTOR_FLIP` and `ACTOR_SORT_FIRST`
+
+// Its death: twenty ticks of four frames, and from the fifth the mosaic.
+#define SNAKEOID_DEATH_TICKS 0x0014u
+#define SNAKEOID_DEATH_TICK 0x0004u
+#define SNAKEOID_DEATH_MOSAIC_UNDER 0x0010u
+#define SNAKEOID_BURSTS 0xa9eeu       // where a piece begins, from it, by tick
+#define SNAKEOID_PIECE 0xb1ddu        // ...and the piece's thread
+#define SNAKEOID_PIECE_BANK 0x0083u
+#define SNAKEOID_DP_PLACE_X 0x00      // the place a thread it begins is given
+#define SNAKEOID_DP_PLACE_Y 0x02
+#define SNAKEOID_DEATH_COLOURS 0xffd1u
+#define SNAKEOID_DEATH_COLOURS_BANK 0x0097u
+#define SNAKEOID_LEAVES 0x002eu       // what it leaves, as `object_put_back`
+#define SNAKEOID_LEAVES_UP 0x0004u    // takes it
 
 // Its start: the figure's colours, once a level, and the upload.
 #define W_SNAKEOID_COLOURED 0x1ffau
@@ -689,7 +743,32 @@
   X(A8DB, 0x82a8deu) \
   X(A8DE, 0x82a8e8u) \
   X(A8E8, 0x82a8ebu) \
-  X(A8EF, 0x82a8f3u)
+  X(A8EF, 0x82a8f3u) \
+  X(A8FE, 0x82a901u) \
+  X(A901, 0x82a904u) \
+  X(A908, 0x82a90eu) \
+  X(A90E, 0x82a911u) \
+  X(A911, 0x82a914u) \
+  X(A918, 0x82a924u) \
+  X(A924, 0x82a927u) \
+  X(A92B, 0x82a932u) \
+  X(A932, 0x82a93au) \
+  X(A93A, 0x82a93du) \
+  X(A941, 0x82a943u) \
+  X(A943, 0x82a949u) \
+  X(A94D, 0x82a956u) \
+  X(A956, 0x82a960u) \
+  X(A960, 0x82a979u) \
+  X(A97D, 0x82a983u) \
+  X(A987, 0x82a98bu) \
+  X(A98B, 0x82a991u) \
+  X(A995, 0x82a999u) \
+  X(A999, 0x82a99du) \
+  X(A99D, 0x82a9a3u) \
+  X(A9A7, 0x82a9a9u) \
+  X(A9AD, 0x82a9b9u) \
+  X(A9BD, 0x82a9d0u) \
+  X(A9D0, 0x82a9d1u)
 
 typedef enum {
 #define X(from, to) SNAKEOID_RUN_##from,
@@ -727,6 +806,10 @@ typedef struct {
   bool v_known;
   TerrainWideWork wide;  // `$82:A214`, `terrain_blocked_wide`'s test lower
   uint16_t unqueued;     // `vbl_queue_a_remove`
+  // Bytes of its body's record read or written in the cartridge, which is
+  // where `$0000,Y` is with the record `$FFFF`: quicker than WRAM under
+  // FastROM.
+  uint16_t rom_bytes;
 } SnakeoidWork;
 
 // True if `state` is one of the two it can be in.

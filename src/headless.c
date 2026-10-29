@@ -55,6 +55,7 @@
 #include "analysis/movie_apply.h"
 #include "poke.h"
 #include "cheats.h"
+#include "levelstart.h"
 #include "scale.h"
 #include "twinstick.h"
 #include "widescreen.h"
@@ -344,7 +345,7 @@ int main(int argc, char** argv) {
             "       [--pos first[,last[,step]]] [--records first[,last[,step]]]\n"
             "       [--watch addr[,first[,last[,step]]]]...\n"
             "       [--save frame,file] [--load file]\n"
-            "       [--poke frame[+]:addr=value[.b]]...\n"
+            "       [--poke frame[+]:addr=value[.b]]... [--level n]\n"
             "       [--twin-stick] [--aim frame[+]:U|D|L|R...|-]...\n"
             "       [--widescreen off|16:9|16:10|21:9] [--flashing-radar]\n"
             "       [--renderer native|emulated|check]\n"
@@ -365,6 +366,7 @@ int main(int argc, char** argv) {
   int snap_count = 0;
   int pos_first = -1, pos_last = -1, pos_step = 10;
   PokeList pokes = {{{0}}, 0};
+  int start_level = -1;
   Cheats cheats;
   cheats_init(&cheats);
   AimSpec aims[MAX_AIMS];
@@ -447,6 +449,15 @@ int main(int argc, char** argv) {
       // The same flag `zamn_cosim verify` takes, so a state worked out with
       // pictures here transfers to the run that checks it verbatim.
       if (!poke_parse(&pokes, argv[++i])) return 2;
+    } else if (!strcmp(argv[i], "--level") && has_next) {
+      // As the tracer and the game take it (`src/levelstart.h`).
+      char* end = NULL;
+      const long v = strtol(argv[++i], &end, 10);
+      if (end == argv[i] || *end || v < LEVEL_FIRST || v > LEVEL_LAST) {
+        fprintf(stderr, "error: --level wants %d..%d\n", LEVEL_FIRST, LEVEL_LAST);
+        return 2;
+      }
+      start_level = (int)v;
     } else if (!strcmp(argv[i], "--twin-stick")) {
       twin = true;
     } else if (!strcmp(argv[i], "--aim") && has_next) {
@@ -520,6 +531,10 @@ int main(int argc, char** argv) {
     return 1;
   }
   cheats_print(&cheats);
+  if (start_level >= 0 && !start_at_level(snes, start_level)) {
+    fprintf(stderr, "error: --level: this is not a cartridge it can change\n");
+    return 1;
+  }
   if (twin) {
     if (!twin_install(snes->cart->rom, snes->cart->romSize)) {
       fprintf(stderr, "error: this is not a cartridge twin stick knows how to change\n");

@@ -250,10 +250,38 @@ its shake (`$82:9CA6`, and its copy at `$82:9D4D`) and the big figures'
 layer blanked (`$82:82B5`, `port/vblank.h`). Its ground test at `$82:A214`
 is `$82:90F7`'s, eight pixels lower, and shares that port. All 21 stretch
 starts and the three jobs check against the ROM, and in both sessions the
-65816 now runs nothing. Neither session bites from under them or from a
-side above, or hits it while it is up, so those paths are ported but not
-yet checked. Its dying (`$82:A8F3`) and record 48's thing waking have no
-session yet.
+65816 now runs nothing.
+
+Neither of those bit from under the player or from a side above, so two
+sessions more move the Snakeoid there on one frame (`--poke` of its place
+on its page, `$0700`), in `code_map_survey.py`. Under them it comes up at
+once. From above, the player's water hits it while it is up, and in time
+it dies: the first session of the survey to reach its death. That was the
+65816's: from `$82:A8FE`, after the kill is paid (`port/begin.h`), its
+track cleared, its coming up, twenty ticks of pieces bursting off it and
+its colours flashing, a mosaic growing from the fifth, and its end. Ported
+now (`port/snakeoid.h`): twelve stretches more, the piece's thread at
+`$83:B1DD` beside the seeker's puff, which it is but for four words
+(`port/thread_stretches.h`), and the two mosaic jobs, which are copies of
+the saucer's (`port/vblank.h`). Both sessions run with the 65816 executing
+nothing.
+
+They also showed a cost the model had wrong. Its flash writes the colour
+bit to its body's record through `$0000,Y`, and after a bite from under
+there is no body: Y is `$FFFF`, and the low byte of each access is in the
+cartridge, two cycles quicker than WRAM. The port counts those bytes now.
+
+`zamn_headless` takes `--level`, as the tracer and the game do, which is
+how the places were found: `--watch` on the Snakeoid's page while it chased.
+
+**Record 48's thing** (`ts_watcher_enter`, `port/waits.h`) waits for a
+player within 80. The record-48 session stands 150 away. A one-frame poke
+of the player's place, `$0130` and `$0132` on page `$0100`, wakes it, and
+then the 65816 runs it: its walk, kept as a state's address at `$14`, the
+four things it throws, which it moves itself, and its collide handler,
+`$81:A594`, about 1,000 bytes from `$81:9F9D` to `$81:A535`. Because that
+handler is not ported, `sprite_build_oam` turns down every pass while it
+is awake, and the 65816 runs the sprite pass too. It is the next to port.
 
 Not counted yet: what of the 38,097 bytes is code.
 

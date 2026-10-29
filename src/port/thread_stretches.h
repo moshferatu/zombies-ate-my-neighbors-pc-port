@@ -510,7 +510,7 @@
 // The four that end a state go on through its `RTS` to the loop, which
 // sleeps or ends. Each needs the loop's return on the stack.
 //
-// ## A tracker's start and end, `$82:F03E`, and the seeker's puff
+// ## A tracker's start and end, `$82:F03E`, the seeker's puff, and the Snakeoid's pieces
 //
 // See `port/tracker.h`, which has the tracker's loop and its record:
 //
@@ -523,6 +523,17 @@
 //   $82:F1E6  its weight, five, on the load
 //   $82:F1F4  its record, at the place it was asked for, drawn, and its
 //             pictures asked for
+//
+// A piece of the Snakeoid bursting off as it dies (`port/snakeoid.h`),
+// `$83:B1DD`, is the same thread but for its weight, its picture, its
+// record's flags and a sound:
+//
+//   $83:B1DD  its weight, seven, on the load
+//   $83:B1EB  its record, as the puff's, drawn sorted first and in front of
+//             every layer, and sound `$21`
+//   $83:B226  its pictures asked for
+//
+// Its end, at `$83:B22D`, is `port/begin.h`'s.
 //
 // ## The colour pulse's setup, `$80:A0EF`
 //
@@ -1701,6 +1712,18 @@ extern const uint16_t DEATH_ENDS[DEATH_ENDS_COUNT];
 #define PUFF_DP_RECORD 0x08
 #define PUFF_DP_X 0x00                   // where it was asked for
 #define PUFF_DP_Y 0x02
+#define PIECE_ENTER_PC 0x83b1ddu
+#define PIECE_ALLOC_CALL_PC 0x83b1e7u    // `JSL actor_slot_alloc`
+#define PIECE_MADE_PC 0x83b1ebu
+#define PIECE_SOUND_CALL_PC 0x83b222u    // `JSL apu_play_sfx`
+#define PIECE_HEARD_PC 0x83b226u
+#define PIECE_PICTURES_CALL_PC 0x83b229u // `JSL pictures_resume`
+#define PIECE_LOAD 0x0007
+#define PIECE_PICTURE 0xb9e0u
+#define PIECE_PICTURE_BANK 0x0090
+#define PIECE_FLAGS (ACTOR_DRAW | ACTOR_SORT_FIRST | ACTOR_PRIORITY_TOP)
+#define PIECE_SOUND 0x0021
+#define PIECE_PICTURES 0xb23fu
 
 // --- the big figure's start, and the saucer's --------------------------------
 
@@ -2062,6 +2085,9 @@ extern const uint16_t FIGURE_PART_RETURNS[FIGURE_PARTS];
   X(TS_TRACKER_ENDED, 0x82f05e, 0x82f069, 0) \
   X(TS_PUFF_ENTER, 0x82f1e6, 0x82f1f0, 0) \
   X(TS_PUFF_MADE, 0x82f1f4, 0x82f22b, 0) \
+  X(TS_PIECE_ENTER, 0x83b1dd, 0x83b1e7, 0) \
+  X(TS_PIECE_MADE, 0x83b1eb, 0x83b222, 0)       /* the sound's LDA too */ \
+  X(TS_PIECE_HEARD, 0x83b226, 0x83b229, 0) \
   X(TS_PULSE_ENTER, 0x80a0ef, 0x80a102, 0) \
   X(TS_FIGURE_ENTER, 0x829569, 0x829576, 0)     /* the JSR too */ \
   X(TS_FIGURE_COLOURS, 0x8294e4, 0x8294ea, 0) \
@@ -2394,6 +2420,9 @@ bool thread_stretch_needs_met(const Wram* w, ThreadStretchNeeds needs,
   X(tracker_ended, "$82:F05E", TRACKER_ENDED_PC, tracker_ended, TRACKER, TS_NEEDS_RECORD) \
   X(puff_enter, "$82:F1E6", PUFF_ENTER_PC, puff_enter, TRACKER, TS_NEEDS_NOTHING) \
   X(puff_made, "$82:F1F4", PUFF_MADE_PC, puff_made, TRACKER, TS_NEEDS_A) \
+  X(piece_enter, "$83:B1DD", PIECE_ENTER_PC, piece_enter, TRACKER, TS_NEEDS_NOTHING) \
+  X(piece_made, "$83:B1EB", PIECE_MADE_PC, piece_made, TRACKER, TS_NEEDS_A) \
+  X(piece_heard, "$83:B226", PIECE_HEARD_PC, piece_heard, TRACKER, TS_NEEDS_NOTHING) \
   X(pulse_enter, "$80:A0EF", PALCYCLE_PULSE_ENTER_PC, pulse_enter, PULSE, TS_NEEDS_NOTHING) \
   X(argument_figure_queued, "$82:950A", 0x82950au, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \
   X(argument_82a871, "$82:A871", 0x82a871u, thread_argument, ARGUMENT, TS_NEEDS_NOTHING) \

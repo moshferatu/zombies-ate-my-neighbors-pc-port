@@ -8,7 +8,10 @@ movie reaches, by a `--poke`:
     score, two that type a name for the top scores (`game-over-name.zmv`),
     and one with both players' scores going in;
   * the Snakeoid's two levels under `hold-y.zmv`, a player standing still
-    for it to bite, with their health held up.
+    for it to bite, with their health held up;
+  * level 20 twice more with the Snakeoid moved, on one frame, to where it
+    bites: from under the player, and from the side above them, where their
+    water hits it until it dies.
 
 Each is run twice: as the stock ROM under the tracer, and as the game with
 `--profile`.
@@ -40,6 +43,11 @@ DEAD = ['--poke', '1900+:1CB8=0000']
 SCORE = ['--poke', '1900+:1E72=4321', '--poke', '1900+:1E74=0765']
 OVER_FRAMES = 6500
 ALIVE = ['--poke', '1600+:1CB8=000A']
+# The Snakeoid's place on its page, `$0700`, at frame 1800 while it chases:
+# four pixels left of the player standing at (695, 1371), and 17 below and 30
+# right, which is the place it bites from above. See `port/snakeoid.h`.
+UNDER = ['--poke', '1800:728=02B3', '--poke', '1800:72A=055B']
+ABOVE = ['--poke', '1800:728=02D5', '--poke', '1800:72A=056C']
 # Both players of `level1-2p.zmv` dead, and both scores going in: the second
 # is asked after the first is filed.
 BOTH_DEAD = ['--poke', '3000+:1CB8=0000', '--poke', '3000+:1CBA=0000',
@@ -69,6 +77,8 @@ def sessions():
     out.append(('over_2p', 'level1-2p.zmv', 9500, BOTH_DEAD))
     for n in (20, 40):
         out.append(('bitten%d' % n, 'hold-y.zmv', 7000, ['--level', str(n)] + ALIVE))
+    out.append(('bitten_under', 'hold-y.zmv', 7000, ['--level', '20'] + ALIVE + UNDER))
+    out.append(('bitten_above', 'hold-y.zmv', 7000, ['--level', '20'] + ALIVE + ABOVE))
     return out
 
 

@@ -558,6 +558,13 @@
   X(snakeoid_lunge_ends, "snakeoid_lunged", "its lunge's last picture over") \
   X(snakeoid_goes_under, "snakeoid_bitten", "room in the queue: it goes under") \
   X(snakeoid_sunk, "snakeoid_sunk", "under, back where it came up") \
+  X(snakeoid_dies_waits, "snakeoid_dies_waited", "dying, and another is up: a frame's sleep") \
+  X(snakeoid_dies_up, "snakeoid_dies_up", "dying, and up: twenty ticks to go") \
+  X(snakeoid_dies_mosaic, "snakeoid_dies_ticked", "a tick from the fifth on: the mosaic grows first") \
+  X(snakeoid_dies_queue_full, "snakeoid_dies_ticked", "...and five jobs are queued: a frame's sleep") \
+  X(snakeoid_dies_bursts, "snakeoid_dies_ticked", "an even tick: a piece bursts off it") \
+  X(snakeoid_dies_unflashes, "snakeoid_dies_ticked", "an odd tick: its own colours again") \
+  X(snakeoid_died, "snakeoid_dies_left", "its load off and its thread ended") \
   /* The spray of the extinguisher and the flamethrower -- see port/spray.h. */ \
   X(spray_of_flame, "spray_starts", "its owner holds the flamethrower: flame") \
   X(spray_of_foam, "spray_starts", "...or anything else: the extinguisher's foam") \
