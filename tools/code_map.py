@@ -81,6 +81,13 @@ What it learns from the game's `exits.csv` (which ports go through a return,
 which leave from inside a call) is what 112 sessions saw, and the report counts
 the ports it held back that way.
 
+With `--game` the map is walked a second time with only the exits the game saw
+each port take. The core that walk still finds does not rest on an exit no
+session took; the rest of the core is behind one. What the second walk still
+calls core, though a port ran it every time in play, comes of the map pairing
+each return with every call to its routine: hand-overs each taken somewhere,
+in an order no session went.
+
 A row entered on the way a guard turns down is walked apart from the same row
 entered on the core: what that port leaves onto is guarded too.
 """
@@ -344,8 +351,15 @@ def widths_after(ins, m, x):
 # ---------------------------------------------------------------------------
 
 class Map:
-    def __init__(self, rom, stock, flows, calls, rows, symbols, leaves=None):
+    def __init__(self, rom, stock, flows, calls, rows, symbols, leaves=None,
+                 seen_only=False):
         self.rom, self.size = rom, len(rom)
+        # With `seen_only`, the exits the game saw each port take, as (entry,
+        # exit): the only ones the walk lets a port leave by.
+        self.seen_exits = None
+        if seen_only and leaves is not None:
+            self.seen_exits = {(e, ex) for e, c in leaves.items() for ex, _ in c}
+        self.cut_exits = set()
         # Entries whose port the game saw go through a return, or None to take
         # every port as able to.
         self.goes_through = None if leaves is None else {
@@ -591,7 +605,9 @@ class Map:
         elif w[0] == 'made':
             self.core(ret, m, x, min(cls, w[1].cls), frame, ('leaves', w[1].name))
         else:
-            self.core(ret, m, x, cls, frame, how)
+            # A return run only on the way a guard turns down comes back in
+            # that class, whatever the caller's.
+            self.core(ret, m, x, min(cls, w[1]), frame, how)
 
     def returned(self, site, frame, w, m, x, cls, how):
         """A return in `frame`, run by `w`: to its frame's callers, and to
@@ -706,6 +722,9 @@ class Map:
             return
         how = ('leaves', row.name)
         if addr in row.exits and not first:
+            if self.seen_exits is not None and (row.entry, addr) not in self.seen_exits:
+                self.cut_exits.add((row.name, addr))
+                return
             if addr in self.row_at:
                 # The harness hands over to that row (`is_entry` in `leave`).
                 self.core(addr, m, x, row.cls, frame, how)
@@ -841,6 +860,37 @@ def runs(starts, wanted):
     return out
 
 
+def walk(mp, orphans=None):
+    """Walk from the vectors, then from what the stock ROM ran that no walk
+    reached: `orphans`, or found here. Returns the orphans and the places
+    walked from as core."""
+    rom = mp.rom
+    for o, what in ((0x1C, 'reset'), (0x0A, 'NMI'), (0x0E, 'IRQ'), (0x06, 'BRK'),
+                    (0x04, 'COP'), (0x1A, 'NMI (emulation)'), (0x1E, 'IRQ (emulation)')):
+        wide = 1 if what == 'reset' else 0
+        v = canon(struct.unpack('<H', rom[0x7FE0 + o:0x7FE2 + o])[0])
+        mp.core(v, wide, wide, CORE, None, ('vector', what))
+    mp.run()
+    # What the stock ROM ran and no walk reached: arrived at some way the walk
+    # does not model. Each is walked from, and counted.
+    if orphans is None:
+        orphans = [snes(off) for off in range(mp.size)
+                   if mp.stock[off] & CDL_CODE and snes(off) not in mp.starts]
+    roots = []
+    for a in orphans:
+        if a in mp.starts:
+            continue
+        if a in mp.row_at:
+            for r in mp.row_at[a]:
+                mp.enter(r, None)
+        else:
+            roots.append(a)
+            m, x = mp.widths(a, 0, 0)
+            mp.core(a, m, x, CORE, None, ('orphan', fmt(a)))
+        mp.run()
+    return orphans, roots
+
+
 def session_dirs(root, name):
     dirs = sorted(d for d in glob.glob(os.path.join(root, '*')) if os.path.isdir(d))
     return [os.path.join(d, name) for d in dirs if os.path.exists(os.path.join(d, name))]
@@ -884,33 +934,13 @@ def main():
             print('warning: no exits.csv in %s: every port is taken as able to go '
                   'through a return' % args.game)
     mp = Map(rom, stock, flows, calls, rows, symbols, leaves)
-
-    # Vectors, native and emulation, as the game sees them.
-    def vec(o):
-        return canon(struct.unpack('<H', rom[0x7FE0 + o:0x7FE2 + o])[0])
-    for o, what in ((0x1C, 'reset'), (0x0A, 'NMI'), (0x0E, 'IRQ'), (0x06, 'BRK'),
-                    (0x04, 'COP'), (0x1A, 'NMI (emulation)'), (0x1E, 'IRQ (emulation)')):
-        wide = 1 if what == 'reset' else 0
-        mp.core(vec(o), wide, wide, CORE, None, ('vector', what))
-    mp.run()
-
-    # What the stock ROM ran and no walk reached: arrived at some way the walk
-    # does not model. Each is walked from, and counted.
-    orphans = [snes(off) for off in range(size)
-               if stock[off] & CDL_CODE and snes(off) not in mp.starts]
-    orphan_roots = []
-    for a in orphans:
-        if a in mp.starts:
-            continue
-        if a in mp.row_at:
-            for r in mp.row_at[a]:
-                mp.enter(r, None)
-        else:
-            orphan_roots.append(a)
-            m, x = mp.widths(a, 0, 0)
-            mp.core(a, m, x, CORE, None, ('orphan', fmt(a)))
-        mp.run()
+    orphans, orphan_roots = walk(mp)
     still = [a for a in orphans if a not in mp.starts]
+    # Again, with only the exits the game saw taken.
+    seen = None
+    if leaves is not None:
+        seen = Map(rom, stock, flows, calls, rows, symbols, leaves, seen_only=True)
+        walk(seen, orphans)
 
     # Data, from the traces, where no walk put code.
     for off in range(size):
@@ -996,6 +1026,23 @@ def main():
         print('  By the port the walk first left to reach them:')
         for name, n in by.most_common(args.top):
             print('    %5d  %s' % (n, name))
+        print()
+    if seen is not None:
+        sc = collections.Counter()
+        for b in range(lo, hi + 1):
+            for off in range((b - 0x80) * BANK, (b - 0x7F) * BANK):
+                if seen.cls[off] == CORE:
+                    sc['core'] += 1
+                    if not ran(off):
+                        sc['unrun'] += 1
+        sshort = [a for a, c in seen.starts.items()
+                  if c == CORE and seen.code_at(a) and not game[rom_off(a, size)] & CDL_CODE]
+        print('With only the exits the game saw taken (%d exits in the registry never '
+              'were, on the walk):' % len(seen.cut_exits))
+        print('  core %d bytes, %d of them never run; so %d of the core bytes above are '
+              'behind an exit no session took.' % (sc['core'], sc['unrun'], t[CORE] - sc['core']))
+        print('  Core, run by the stock ROM, and by a port every time in the game: %d '
+              'instructions.' % len(sshort))
         print()
 
     stretches = []

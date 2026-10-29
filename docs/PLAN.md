@@ -185,32 +185,39 @@ of jumps through tables and returns (`flows.csv`), and sorts each byte. Over
 
 | | Bytes | Never run in a session |
 |---|---|---|
-| Core: reached, and in no port's stretch | 8,303 | 4,616 |
-| Guarded: run only when a guard turns a call down | 472 | 0 |
-| Ported: inside a port's stretch | 61,235 | 2,930 |
+| Core: reached, and in no port's stretch | 6,068 | 3,845 |
+| Guarded: run only when a guard turns a call down | 475 | 0 |
+| Ported: inside a port's stretch | 63,467 | 3,701 |
 | Data | 20,247 | |
 | Touched by nothing | 40,815 | |
 
 The game's own run of the same sessions has the 65816 executing nothing.
-So of the core bytes, the 3,687 a session did run were run by a port every
+So of the core bytes, the 2,223 a session did run were run by a port every
 time in play. The map reaches them on the core by a chain of exits no
 session followed in that order. Each is a row missing for a case nobody
 played, or a way the ports never go. The map assumes every exit can happen
 from every way in, so it errs towards the core.
 
-The first count was 13,117 core bytes, 7,677 of them run. Three things the
+The first count was 13,117 core bytes, 7,677 of them run. Four things the
 map got wrong made up most of the difference. It let a port's stretch go
 through a return wherever the ROM's code could, including on ways the port's
 guard turns down; now only ports the game saw do it (`exits.csv`, which the
 game's `--profile` now writes). A return into an address a `PEA` pushed was
 the 65816's even when only a port runs that `PEA` (the actor handlers that
 `thread_call_handler` calls). And a port entered only on a guard's way down
-left onto core code, not guarded code. A table of 56 entries at `$82:D1EE`,
-one per level, is now read from the ROM.
+left onto core code, not guarded code; and the same for a return the
+65816 runs only on that way, which came back to a core caller as core
+(2,235 bytes of it, about 1,000 in the snakeoid's thread in bank `$82`). A
+table of 56 entries at `$82:D1EE`, one per level, is now read from the ROM.
 
-Most of what is left runs through the threads. A return from `thread_yield`
-can resume any thread, so one core call to it puts every thread's next
-instruction on the core.
+Walked again with only the exits the game saw each port take, the core is
+976 bytes, 155 of them never run. So 5,092 of the core bytes are behind an
+exit no session took: a case nobody played, where the 65816 would run code
+no port stands for. That is the list to port, or to show cannot happen.
+The second walk still finds 363 instructions a port ran every time in
+play. They are in the player's states, reached by a chain of hand-overs
+each taken somewhere: the map pairs each return with every call to its
+routine, in an order no session went.
 
 Not counted yet: what of the 40,815 bytes is code.
 
